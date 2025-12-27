@@ -1,0 +1,43 @@
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Go
+/vendor/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+go.work.sum
+
+# Build
+/bin/
+/dist/
+/build/
+
+# Logs
+*.log
+/storage/logs/
+
+# Environment
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test coverage
+*.coverprofile
+coverage.txt
+coverage.html
+
+# Internal documentation (public docs at velocity-docs repo)
+/docs/

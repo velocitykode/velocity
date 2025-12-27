@@ -1,0 +1,132 @@
+package testing_test
+
+import (
+	"testing"
+
+	"github.com/velocitykode/velocity/pkg/orm"
+	"github.com/velocitykode/velocity/pkg/orm/migrate"
+	ormtesting "github.com/velocitykode/velocity/pkg/orm/testing"
+)
+
+func init() {
+	// Register migration for testing
+	migrate.Register(&migrate.Migration{
+		Version: "20251009120000",
+		Up: func(m *migrate.Migrator) error {
+			return m.CreateTable("users", func(t *migrate.TableBuilder) {
+				t.ID()
+				t.String("name")
+				t.String("email")
+				t.Timestamps()
+			})
+		},
+		Down: func(m *migrate.Migrator) error {
+			return m.DropTable("users")
+		},
+	})
+}
+
+func UserFactory() *ormtesting.Factory {
+	faker := ormtesting.Faker()
+	return ormtesting.NewFactory("users", func() map[string]interface{} {
+		return map[string]interface{}{
+			"name":  faker.Name(),
+			"email": faker.Email(),
+		}
+	})
+}
+
+func TestFactoryMake(t *testing.T) {
+	user := UserFactory().Make()
+
+	userMap, ok := user.(map[string]interface{})
+	if !ok {
+		t.Fatal("expected map[string]interface{}")
+	}
+
+	if userMap["name"] == nil {
+		t.Error("expected name to be set")
+	}
+
+	if userMap["email"] == nil {
+		t.Error("expected email to be set")
+	}
+
+	t.Logf("Factory Make() working! Generated: %+v", userMap)
+}
+
+func TestFactoryCreate(t *testing.T) {
+	// Initialize ORM
+	err := orm.Init("sqlite", map[string]any{
+		"database": ":memory:",
+	})
+	if err != nil {
+		t.Fatalf("failed to init ORM: %v", err)
+	}
+	defer orm.Close()
+
+	// Run migrations
+	migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+	err = migrator.Up()
+	if err != nil {
+		t.Fatalf("failed to run migrations: %v", err)
+	}
+
+	// Create user via factory
+	user := UserFactory().Create()
+
+	userMap, ok := user.(map[string]interface{})
+	if !ok {
+		t.Fatal("expected map[string]interface{}")
+	}
+
+	if userMap["id"] == nil {
+		t.Error("expected id to be set after Create()")
+	}
+
+	// Verify in database
+	db := orm.DB()
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count)
+	if err != nil {
+		t.Fatalf("failed to query users: %v", err)
+	}
+
+	if count != 1 {
+		t.Errorf("expected 1 user in database, got %d", count)
+	}
+
+	t.Logf("Factory Create() working! User ID: %v", userMap["id"])
+}
+
+func TestRefreshDatabase(t *testing.T) {
+	// Initialize ORM
+	err := orm.Init("sqlite", map[string]any{
+		"database": ":memory:",
+	})
+	if err != nil {
+		t.Fatalf("failed to init ORM: %v", err)
+	}
+
+	// Use RefreshDatabase
+	db := ormtesting.RefreshDatabase(t)
+	if db == nil {
+		t.Fatal("expected database connection")
+	}
+
+	// Create a user
+	UserFactory().Create()
+
+	// Verify table exists and has data
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count)
+	if err != nil {
+		t.Fatalf("failed to query users: %v", err)
+	}
+
+	if count != 1 {
+		t.Errorf("expected 1 user, got %d", count)
+	}
+
+	t.Log("RefreshDatabase() working! Migrations ran, factory created data")
+}

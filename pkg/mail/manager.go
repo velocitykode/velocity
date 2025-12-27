@@ -1,0 +1,141 @@
+package mail
+
+import (
+	"context"
+	"fmt"
+	"sync"
+)
+
+// Manager manages multiple mail channels
+type Manager struct {
+	channels map[string]Mailer
+	mu       sync.RWMutex
+}
+
+// NewManager creates a new mail manager
+func NewManager() *Manager {
+	return &Manager{
+		channels: make(map[string]Mailer),
+	}
+}
+
+// Channel gets or creates a mail channel
+func (m *Manager) Channel(name string) Mailer {
+	ensureInitialized() // Ensure drivers are registered
+
+	m.mu.RLock()
+	mailer, exists := m.channels[name]
+	m.mu.RUnlock()
+
+	if exists {
+		return mailer
+	}
+
+	// Create new channel with default driver
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Double-check after acquiring write lock
+	if mailer, exists := m.channels[name]; exists {
+		return mailer
+	}
+
+	// Create new log driver for this channel using registry
+	mailer, err := createDriver("log")
+	if err != nil {
+		// This should never happen since log driver is always registered
+		panic(fmt.Sprintf("failed to create log driver for channel: %v", err))
+	}
+	m.channels[name] = mailer
+	return mailer
+}
+
+// SetChannel sets a specific mailer for a channel
+func (m *Manager) SetChannel(name string, mailer Mailer) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.channels[name] = mailer
+}
+
+// HasChannel checks if a channel exists
+func (m *Manager) HasChannel(name string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, exists := m.channels[name]
+	return exists
+}
+
+// GetChannels returns all channel names
+func (m *Manager) GetChannels() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	names := make([]string, 0, len(m.channels))
+	for name := range m.channels {
+		names = append(names, name)
+	}
+	return names
+}
+
+// Send sends a message using a specific channel
+func (m *Manager) Send(ctx context.Context, channel string, msg *Message) error {
+	mailer := m.Channel(channel)
+	return mailer.Send(ctx, msg)
+}
+
+// Broadcast sends a message to multiple channels
+func (m *Manager) Broadcast(ctx context.Context, channels []string, msg *Message) error {
+	var wg sync.WaitGroup
+	errChan := make(chan error, len(channels))
+
+	for _, channel := range channels {
+		wg.Add(1)
+		go func(ch string) {
+			defer wg.Done()
+			if err := m.Send(ctx, ch, msg); err != nil {
+				errChan <- fmt.Errorf("channel %s: %w", ch, err)
+			}
+		}(channel)
+	}
+
+	wg.Wait()
+	close(errChan)
+
+	// Collect errors
+	var errors []error
+	for err := range errChan {
+		errors = append(errors, err)
+	}
+
+	if len(errors) > 0 {
+		return fmt.Errorf("broadcast failed: %v", errors)
+	}
+
+	return nil
+}
+
+// RemoveChannel removes a channel
+func (m *Manager) RemoveChannel(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.channels, name)
+}
+
+// ClearChannels removes all channels
+func (m *Manager) ClearChannels() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.channels = make(map[string]Mailer)
+}
+
+// Default manager instance
+var defaultManager *Manager
+var managerOnce sync.Once
+
+// GetManager returns the default manager instance
+func GetManager() *Manager {
+	managerOnce.Do(func() {
+		defaultManager = NewManager()
+	})
+	return defaultManager
+}
