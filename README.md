@@ -18,17 +18,49 @@ Velocity brings joy and elegance to Go web development, without sacrificing Go's
 - **Driver-Based Architecture**: Swap implementations via config (Redis ↔ Memory, PostgreSQL ↔ MySQL)
 - **Expressive DX**: Familiar conventions, expressive APIs, and developer-friendly errors
 
-## Installation
+## Requirements
 
-**Requirements**: Go 1.25 or higher
+- Go 1.25 or higher
+- Node.js 18+ (for frontend assets)
+
+## CLI Installation
+
+Install the Velocity CLI to create and manage projects:
 
 ```bash
-go get github.com/velocitykode/velocity
+# Homebrew (macOS)
+brew tap velocitykode/tap
+brew install velocity
+
+# Or with Go
+go install github.com/velocitykode/velocity-cli@latest
+```
+
+Verify installation:
+
+```bash
+velocity version
 ```
 
 ## Quick Start
 
-Create `main.go`:
+Create a new project:
+
+```bash
+velocity new myapp
+cd myapp
+velocity serve
+```
+
+Your app runs at `http://localhost:3000`
+
+### Manual Setup
+
+Add the framework to an existing project:
+
+```bash
+go get github.com/velocitykode/velocity
+```
 
 ```go
 package main
@@ -42,17 +74,8 @@ func main() {
     r := router.New()
 
     r.Get("/", func(c *router.Context) error {
-        log.Info("Hello request received")
         return c.JSON(200, map[string]string{
             "message": "Welcome to Velocity!",
-        })
-    })
-
-    r.Get("/users/:id", func(c *router.Context) error {
-        id := c.Param("id")
-        return c.JSON(200, map[string]interface{}{
-            "user_id": id,
-            "name": "John Doe",
         })
     })
 
@@ -60,14 +83,6 @@ func main() {
     r.Run(":8080")
 }
 ```
-
-Run your application:
-
-```bash
-go run main.go
-```
-
-Visit `http://localhost:8080` to see it in action!
 
 ## Feature Status
 
@@ -97,40 +112,20 @@ Visit `http://localhost:8080` to see it in action!
 
 ## Documentation
 
-Full documentation available at **[velocitykode.com/docs](https://velocitykode.com/docs)**
+Full documentation at **[velocitykode.com/docs](https://velocitykode.com/docs)**
 
-- **Getting Started**: Installation, configuration, and your first app
-- **Core Concepts**: Routing, controllers, and middleware
-- **Database**: ORM, query builder, migrations
-- **Frontend**: Views, Vite integration, Inertia.js
-- **Advanced**: Queues, events, broadcasting, WebSockets
+- [Getting Started](https://velocitykode.com/docs/getting-started/)
+- [CLI Reference](https://velocitykode.com/docs/cli/)
+- [Core Concepts](https://velocitykode.com/docs/core/)
+- [Database](https://velocitykode.com/docs/database/)
+- [Frontend](https://velocitykode.com/docs/frontend/)
+- [Advanced](https://velocitykode.com/docs/advanced/)
 
 ## Community
 
-- **GitHub Discussions**: Ask questions and share ideas
-- **Issues**: Report bugs and request features
-- **Contributing**: See [CONTRIBUTING.md](CONTRIBUTING.md)
-
-## CLI
-
-Install the Velocity CLI for project scaffolding:
-
-```bash
-# Homebrew (macOS)
-brew tap velocitykode/tap
-brew install velocity
-
-# Or with Go
-go install github.com/velocitykode/velocity-cli@latest
-```
-
-Create a new project:
-
-```bash
-velocity new myapp
-cd myapp
-go run main.go
-```
+- [GitHub Discussions](https://github.com/velocitykode/velocity/discussions) - Ask questions and share ideas
+- [Issues](https://github.com/velocitykode/velocity/issues) - Report bugs and request features
+- [Contributing](CONTRIBUTING.md) - Contribution guidelines
 
 ## Philosophy
 
@@ -140,8 +135,6 @@ Velocity is built on three principles:
 2. **Convention over Configuration**: Sensible defaults, configure only when needed
 3. **Go's Strengths**: Embrace simplicity, performance, and type safety
 
-We're bringing the best web framework ideas to Go's ecosystem.
-
 ## Contributing
 
 We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
@@ -149,5 +142,3 @@ We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guid
 ## License
 
 Velocity is open-source software licensed under the [MIT License](LICENSE).
-
-
