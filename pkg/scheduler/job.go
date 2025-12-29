@@ -18,35 +18,35 @@ type Job struct {
 	schedule *Schedule
 
 	// Execution control
-	withoutOverlapping bool
-	onOneServer        bool
+	withoutOverlapping    bool
+	onOneServer           bool
 	evenInMaintenanceMode bool
-	runInBackground    bool
+	runInBackground       bool
 
 	// State
-	running    bool
-	lastRun    time.Time
-	nextRun    time.Time
-	scheduler  *Scheduler
-	timezone   *time.Location
+	running   bool
+	lastRun   time.Time
+	nextRun   time.Time
+	scheduler *Scheduler
+	timezone  *time.Location
 
 	// Constraints
-	when       func() bool
-	skip       func() bool
-	between    [2]string // [start, end] times
+	when          func() bool
+	skip          func() bool
+	between       [2]string // [start, end] times
 	unlessBetween [2]string
-	environments []string
+	environments  []string
 
 	// Hooks
-	beforeCallbacks  []func()
-	afterCallbacks   []func()
+	beforeCallbacks    []func()
+	afterCallbacks     []func()
 	onSuccessCallbacks []func()
 	onFailureCallbacks []func(error)
 
 	// Output
-	outputFile string
+	outputFile   string
 	appendOutput bool
-	emailOutput string
+	emailOutput  string
 
 	// Mutex for preventing overlapping
 	mutex *sync.Mutex

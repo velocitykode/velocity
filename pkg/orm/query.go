@@ -12,22 +12,22 @@ import (
 
 // Query represents a chainable query builder with generics
 type Query[T any] struct {
-	driver      drivers.Driver
-	table       string
-	conditions  []drivers.Condition
-	orders      []drivers.Order
-	groups      []string
-	having      []drivers.Condition
-	joins       []drivers.Join
-	limit       *int
-	offset      *int
-	columns     []string
-	distinct    bool
-	preloads     []string
-	withTrashed  bool
-	onlyTrashed  bool
+	driver        drivers.Driver
+	table         string
+	conditions    []drivers.Condition
+	orders        []drivers.Order
+	groups        []string
+	having        []drivers.Condition
+	joins         []drivers.Join
+	limit         *int
+	offset        *int
+	columns       []string
+	distinct      bool
+	preloads      []string
+	withTrashed   bool
+	onlyTrashed   bool
 	lockForUpdate bool // For pessimistic locking
-	skipLocked   bool  // For SKIP LOCKED clause
+	skipLocked    bool // For SKIP LOCKED clause
 
 	// Query state
 	lastSQL  string

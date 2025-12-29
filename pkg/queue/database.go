@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/velocitykode/velocity/pkg/orm"
 	"github.com/velocitykode/velocity/pkg/log"
+	"github.com/velocitykode/velocity/pkg/orm"
 )
 
 // JobRecord represents a job in the database
@@ -34,7 +34,7 @@ func (JobRecord) TableName() string {
 
 // FailedJobRecord represents a failed job
 type FailedJobRecord struct {
-	ID        uint      `orm:"primaryKey;autoIncrement" json:"id"`
+	ID        uint `orm:"primaryKey;autoIncrement" json:"id"`
 	Queue     string
 	Payload   string    `orm:"type:text"`
 	Exception string    `orm:"type:text"`

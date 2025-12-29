@@ -8,15 +8,15 @@ import (
 
 // Test subscriber that implements multiple event handlers
 type TestOrderSubscriber struct {
-	mu               sync.Mutex
-	orderPlaced      bool
-	orderShipped     bool
-	orderCancelled   bool
-	orderRefunded    bool
-	placedEvent      interface{}
-	shippedEvent     interface{}
-	cancelledEvent   interface{}
-	refundedEvent    interface{}
+	mu             sync.Mutex
+	orderPlaced    bool
+	orderShipped   bool
+	orderCancelled bool
+	orderRefunded  bool
+	placedEvent    interface{}
+	shippedEvent   interface{}
+	cancelledEvent interface{}
+	refundedEvent  interface{}
 }
 
 func (s *TestOrderSubscriber) HandleOrderPlaced(event interface{}) error {
@@ -175,8 +175,8 @@ func TestMappedSubscriber(t *testing.T) {
 
 	// Create mapped subscriber with explicit mappings
 	mappings := EventMap{
-		"HandleOrderPlaced":   "custom.order.new",
-		"HandleOrderShipped":  "custom.order.sent",
+		"HandleOrderPlaced":    "custom.order.new",
+		"HandleOrderShipped":   "custom.order.sent",
 		"HandleOrderCancelled": "custom.order.void",
 	}
 

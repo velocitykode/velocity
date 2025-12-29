@@ -274,7 +274,7 @@ func TestContextHelpers(t *testing.T) {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.ParseForm()
 		req.Form.Set("name", "John")
-		
+
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
 
@@ -288,7 +288,7 @@ func TestHTTPMethods(t *testing.T) {
 	router := NewRouter()
 
 	methods := []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"}
-	
+
 	for _, method := range methods {
 		m := method
 		switch m {
@@ -470,9 +470,9 @@ func TestQueryIntAndBool(t *testing.T) {
 	})
 
 	tests := []struct {
-		query       string
-		expectPage  int
-		expectLimit int
+		query        string
+		expectPage   int
+		expectLimit  int
 		expectActive bool
 	}{
 		{"?page=5&limit=10&active=true", 5, 10, true},

@@ -511,6 +511,7 @@ func TestGlobalFunctions(t *testing.T) {
 		}
 	})
 }
+
 // Test global convenience functions
 func TestGlobalGetString(t *testing.T) {
 	os.Setenv("CACHE_DRIVER", "memory")
@@ -530,7 +531,7 @@ func TestGlobalForever(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Forever failed: %v", err)
 	}
-	
+
 	val, found := cache.Get("forever_key")
 	if !found || val != "forever_value" {
 		t.Error("Forever value not stored")
@@ -542,12 +543,12 @@ func TestGlobalFlush(t *testing.T) {
 	cache.Initialize()
 	cache.Put("key1", "val1", 1*time.Hour)
 	cache.Put("key2", "val2", 1*time.Hour)
-	
+
 	err := cache.Flush()
 	if err != nil {
 		t.Fatalf("Flush failed: %v", err)
 	}
-	
+
 	_, found := cache.Get("key1")
 	if found {
 		t.Error("Key should be flushed")
@@ -558,7 +559,7 @@ func TestGlobalIncrement(t *testing.T) {
 	os.Setenv("CACHE_DRIVER", "memory")
 	cache.Initialize()
 	cache.Put("counter", 10, 1*time.Hour)
-	
+
 	newVal, err := cache.Increment("counter", 5)
 	if err != nil {
 		t.Fatalf("Increment failed: %v", err)
@@ -572,7 +573,7 @@ func TestGlobalDecrement(t *testing.T) {
 	os.Setenv("CACHE_DRIVER", "memory")
 	cache.Initialize()
 	cache.Put("counter", 20, 1*time.Hour)
-	
+
 	newVal, err := cache.Decrement("counter", 5)
 	if err != nil {
 		t.Fatalf("Decrement failed: %v", err)
@@ -624,7 +625,7 @@ func TestGlobalMany(t *testing.T) {
 func TestGlobalPutMany(t *testing.T) {
 	os.Setenv("CACHE_DRIVER", "memory")
 	cache.Initialize()
-	
+
 	values := map[string]interface{}{
 		"k1": "v1",
 		"k2": "v2",
@@ -633,7 +634,7 @@ func TestGlobalPutMany(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PutMany failed: %v", err)
 	}
-	
+
 	val, found := cache.Get("k1")
 	if !found || val != "v1" {
 		t.Error("PutMany didn't store k1")

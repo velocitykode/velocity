@@ -8,8 +8,8 @@ import (
 
 // LoggingConfig defines the logging configuration structure
 type LoggingConfig struct {
-	Default  string                    `json:"default"`
-	Channels map[string]ChannelConfig  `json:"channels"`
+	Default  string                   `json:"default"`
+	Channels map[string]ChannelConfig `json:"channels"`
 }
 
 // ChannelConfig defines configuration for a specific log channel

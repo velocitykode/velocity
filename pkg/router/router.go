@@ -48,14 +48,14 @@ type ResourceRoute interface {
 
 // VelocityRouter is the main router implementation using gorilla/mux
 type VelocityRouter struct {
-	mux            *mux.Router
-	prefix         string
-	middlewares    []MiddlewareFunc
-	namedRoutes    map[string]*mux.Route
-	mu             sync.RWMutex
-	staticDir      string
-	staticFS       http.Handler
-	staticEnabled  bool
+	mux           *mux.Router
+	prefix        string
+	middlewares   []MiddlewareFunc
+	namedRoutes   map[string]*mux.Route
+	mu            sync.RWMutex
+	staticDir     string
+	staticFS      http.Handler
+	staticEnabled bool
 }
 
 // routeWrapper wraps a mux.Route to implement our Route interface

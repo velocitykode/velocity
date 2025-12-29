@@ -9,9 +9,9 @@ import (
 
 // JobWrapper wraps a job with its metadata for internal storage
 type JobWrapper struct {
-	Job      Job             `json:"-"` // The actual job instance
-	Payload  *Payload        `json:"payload"`
-	RawData  json.RawMessage `json:"raw_data"`
+	Job     Job             `json:"-"` // The actual job instance
+	Payload *Payload        `json:"payload"`
+	RawData json.RawMessage `json:"raw_data"`
 }
 
 // jobStore is an internal store for keeping job instances in memory

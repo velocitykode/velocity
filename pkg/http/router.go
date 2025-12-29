@@ -77,20 +77,20 @@ type Route struct {
 }
 
 type Context struct {
-	Request  *http.Request
-	Writer   http.ResponseWriter
-	Params   map[string]string
-	ctx      context.Context
+	Request *http.Request
+	Writer  http.ResponseWriter
+	Params  map[string]string
+	ctx     context.Context
 
 	// Trace IDs (extracted from headers, not auto-generated)
 	TraceID   string
 	RequestID string
 
 	// Error tracking (generated on error)
-	ErrorID   string
+	ErrorID string
 
 	// Request-scoped storage (slice-based like fasthttp)
-	locals    []localKV
+	locals []localKV
 }
 
 // DefaultErrorHandler handles errors with JSON response
@@ -327,7 +327,7 @@ func (g *RouteGroup) addRoute(method, pattern string, handler HandlerFunc) *Rout
 		pattern:         pattern,
 		method:          method,
 		handler:         handler,
-		middleware:      make([]MiddlewareFunc, 0),                  // Route-specific starts empty
+		middleware:      make([]MiddlewareFunc, 0),                   // Route-specific starts empty
 		groupMiddleware: append([]MiddlewareFunc{}, g.middleware...), // Copy group middleware
 	}
 

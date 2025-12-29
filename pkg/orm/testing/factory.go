@@ -16,12 +16,12 @@ var (
 
 // Factory represents a model factory for generating test data
 type Factory struct {
-	tableName      string
-	definition     func() map[string]interface{}
-	states         map[string]map[string]interface{}
-	sequences      map[string]func(int) interface{}
-	count          int
-	activeState    string // Track which state to apply
+	tableName   string
+	definition  func() map[string]interface{}
+	states      map[string]map[string]interface{}
+	sequences   map[string]func(int) interface{}
+	count       int
+	activeState string // Track which state to apply
 }
 
 // NewFactory creates a new factory for generating test data

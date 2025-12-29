@@ -1247,6 +1247,7 @@ func TestToStringable(t *testing.T) {
 		t.Error("ToString failed")
 	}
 }
+
 // Additional Stringable method tests for better coverage
 func TestStringableCharAt(t *testing.T) {
 	result := Of("hello").CharAt(1)
@@ -1661,6 +1662,7 @@ func TestStringableWordCount(t *testing.T) {
 		t.Errorf("WordCount = %d; want 3", count)
 	}
 }
+
 // Additional tests for uncovered edge cases
 func TestStringableAfterLast(t *testing.T) {
 	result := Of("App\\Http\\Controllers\\Controller").AfterLast("\\").String()

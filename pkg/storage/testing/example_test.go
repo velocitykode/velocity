@@ -338,7 +338,7 @@ func TestChunkedUpload(t *testing.T) {
 
 	// Simulate uploading a large file in chunks
 	totalSize := 5 * 1024 * 1024 // 5MB
-	chunkSize := 1024 * 1024      // 1MB chunks
+	chunkSize := 1024 * 1024     // 1MB chunks
 
 	var uploadedContent []byte
 

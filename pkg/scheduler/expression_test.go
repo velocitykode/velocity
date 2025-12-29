@@ -40,10 +40,10 @@ func TestParseExpression(t *testing.T) {
 
 func TestExpressionIsDue(t *testing.T) {
 	tests := []struct {
-		name   string
-		expr   string
-		time   time.Time
-		isDue  bool
+		name  string
+		expr  string
+		time  time.Time
+		isDue bool
 	}{
 		{
 			name:  "every minute",

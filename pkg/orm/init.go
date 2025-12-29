@@ -17,7 +17,7 @@ func init() {
 
 	// Register built-in drivers
 	RegisterDriver("sqlite", drivers.NewSQLiteDriver)
-	RegisterDriver("sqlite3", drivers.NewSQLiteDriver)  // Alias for compatibility
+	RegisterDriver("sqlite3", drivers.NewSQLiteDriver) // Alias for compatibility
 	RegisterDriver("postgres", drivers.NewPostgresDriver)
 	// RegisterDriver("mysql", drivers.NewMySQLDriver)
 

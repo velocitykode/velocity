@@ -283,13 +283,13 @@ func (b *FakeFileBuilder) Video(name string, sizeInKB int) *FakeFile {
 	// Add basic MP4 file structure (ftyp box)
 	ftypBox := []byte{
 		0x00, 0x00, 0x00, 0x20, // Box size (32 bytes)
-		'f', 't', 'y', 'p',     // Box type
-		'i', 's', 'o', 'm',     // Major brand
+		'f', 't', 'y', 'p', // Box type
+		'i', 's', 'o', 'm', // Major brand
 		0x00, 0x00, 0x02, 0x00, // Minor version
-		'i', 's', 'o', 'm',     // Compatible brand
-		'i', 's', 'o', '2',     // Compatible brand
-		'a', 'v', 'c', '1',     // Compatible brand
-		'm', 'p', '4', '1',     // Compatible brand
+		'i', 's', 'o', 'm', // Compatible brand
+		'i', 's', 'o', '2', // Compatible brand
+		'a', 'v', 'c', '1', // Compatible brand
+		'm', 'p', '4', '1', // Compatible brand
 	}
 
 	copy(content, ftypBox)
@@ -297,7 +297,7 @@ func (b *FakeFileBuilder) Video(name string, sizeInKB int) *FakeFile {
 	// Add mdat box header (media data)
 	mdatHeader := []byte{
 		0x00, 0x00, 0x00, 0x08, // Box size (just header)
-		'm', 'd', 'a', 't',     // Box type
+		'm', 'd', 'a', 't', // Box type
 	}
 	copy(content[32:], mdatHeader)
 
@@ -318,11 +318,11 @@ func (b *FakeFileBuilder) Archive(name string, sizeInKB int) *FakeFile {
 	// Add ZIP file header
 	zipHeader := []byte{
 		'P', 'K', 0x03, 0x04, // Local file header signature
-		0x14, 0x00,           // Version needed
-		0x00, 0x00,           // Flags
-		0x00, 0x00,           // Compression method (stored)
-		0x00, 0x00,           // Last mod time
-		0x00, 0x00,           // Last mod date
+		0x14, 0x00, // Version needed
+		0x00, 0x00, // Flags
+		0x00, 0x00, // Compression method (stored)
+		0x00, 0x00, // Last mod time
+		0x00, 0x00, // Last mod date
 	}
 
 	copy(content, zipHeader)

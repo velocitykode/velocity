@@ -4,8 +4,8 @@ import (
 	"os"
 	"sync"
 
-	"github.com/velocitykode/velocity/pkg/log/drivers"
 	"github.com/joho/godotenv"
+	"github.com/velocitykode/velocity/pkg/log/drivers"
 )
 
 var initOnce sync.Once

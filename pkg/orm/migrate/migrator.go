@@ -251,21 +251,21 @@ func (m *Migrator) Raw(sql string) error {
 
 // TableBuilder provides a fluent API for defining database tables
 type TableBuilder struct {
-	tableName   string
-	driver      string
-	columns     []Column
-	lastColumn  *Column // Track last column for chaining modifiers
+	tableName  string
+	driver     string
+	columns    []Column
+	lastColumn *Column // Track last column for chaining modifiers
 }
 
 // Column represents a table column definition
 type Column struct {
-	Name       string
-	Type       string
-	Length     int
-	Nullable   bool
-	Default    interface{}
-	Unique     bool
-	PrimaryKey bool
+	Name          string
+	Type          string
+	Length        int
+	Nullable      bool
+	Default       interface{}
+	Unique        bool
+	PrimaryKey    bool
 	AutoIncrement bool
 }
 

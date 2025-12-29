@@ -9,16 +9,16 @@ import (
 
 // Scheduler manages and executes scheduled jobs
 type Scheduler struct {
-	mu               sync.RWMutex
-	jobs             []*Job
-	ticker           *time.Ticker
-	stop             chan struct{}
-	running          bool
-	timezone         *time.Location
-	maintenanceMode  bool
-	beforeCallbacks  []func()
-	afterCallbacks   []func()
-	logger           Logger
+	mu              sync.RWMutex
+	jobs            []*Job
+	ticker          *time.Ticker
+	stop            chan struct{}
+	running         bool
+	timezone        *time.Location
+	maintenanceMode bool
+	beforeCallbacks []func()
+	afterCallbacks  []func()
+	logger          Logger
 }
 
 // Logger interface for scheduler logging
@@ -31,9 +31,15 @@ type Logger interface {
 // defaultLogger implements a simple logger
 type defaultLogger struct{}
 
-func (l *defaultLogger) Info(msg string, keysAndValues ...interface{})  { log.Println("[INFO]", msg, keysAndValues) }
-func (l *defaultLogger) Error(msg string, keysAndValues ...interface{}) { log.Println("[ERROR]", msg, keysAndValues) }
-func (l *defaultLogger) Debug(msg string, keysAndValues ...interface{}) { log.Println("[DEBUG]", msg, keysAndValues) }
+func (l *defaultLogger) Info(msg string, keysAndValues ...interface{}) {
+	log.Println("[INFO]", msg, keysAndValues)
+}
+func (l *defaultLogger) Error(msg string, keysAndValues ...interface{}) {
+	log.Println("[ERROR]", msg, keysAndValues)
+}
+func (l *defaultLogger) Debug(msg string, keysAndValues ...interface{}) {
+	log.Println("[DEBUG]", msg, keysAndValues)
+}
 
 // New creates a new scheduler instance
 func New() *Scheduler {
