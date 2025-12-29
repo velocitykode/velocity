@@ -2,6 +2,11 @@ module github.com/velocitykode/velocity
 
 go 1.25.1
 
+retract (
+	v1.0.0 // accidentally tagged
+	v0.1.1 // accidentally tagged
+)
+
 require (
 	github.com/aws/aws-sdk-go v1.55.8
 	github.com/golang-jwt/jwt/v5 v5.3.0
