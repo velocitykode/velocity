@@ -19,7 +19,7 @@ func TestNewManager(t *testing.T) {
 
 	manager := NewManager(cfg)
 	if manager == nil {
-		t.Error("NewManager() returned nil")
+		t.Fatal("NewManager() returned nil")
 	}
 	if manager.config.Default != "console" {
 		t.Errorf("NewManager() default = %v, want console", manager.config.Default)

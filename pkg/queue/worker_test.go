@@ -96,7 +96,6 @@ func TestWorker(t *testing.T) {
 		})
 
 		// Track failed jobs
-		failedJobs := make([]*TestJob, 0)
 		for i := 0; i < 6; i++ {
 			job := &TestJob{
 				ID:      "fail-" + string(rune(i)),
@@ -105,7 +104,6 @@ func TestWorker(t *testing.T) {
 					atomic.AddInt32(&failed, 1)
 				},
 			}
-			failedJobs = append(failedJobs, job)
 			err := q.Push(job, "fail-worker")
 			if err != nil {
 				t.Fatalf("Failed to push job: %v", err)

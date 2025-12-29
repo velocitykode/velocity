@@ -58,7 +58,7 @@ func (r *EventRegistry) DiscoverFromType(subscriber interface{}) map[string]stri
 	// Handle pointer types
 	if typ.Kind() == reflect.Ptr {
 		typ = typ.Elem()
-		val = val.Elem()
+		_ = val.Elem() // val not used after dereference
 	}
 
 	typeName := typ.Name()

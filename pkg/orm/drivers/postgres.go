@@ -482,10 +482,7 @@ func (g *PostgresGrammar) CompileCreateTable(name string, table *Table) string {
 		if column.Primary {
 			sql.WriteString(" PRIMARY KEY")
 		}
-		if column.AutoIncrement {
-			// PostgreSQL uses SERIAL for auto-increment
-			// Type should already be set to SERIAL
-		}
+		// PostgreSQL uses SERIAL for auto-increment (type already set)
 		if !column.Nullable {
 			sql.WriteString(" NOT NULL")
 		}

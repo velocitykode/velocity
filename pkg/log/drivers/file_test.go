@@ -11,7 +11,7 @@ import (
 func TestNewFileLogger(t *testing.T) {
 	logger := NewFileLogger("/tmp/test-logs")
 	if logger == nil {
-		t.Error("NewFileLogger() returned nil")
+		t.Fatal("NewFileLogger() returned nil")
 	}
 	if logger.path != "/tmp/test-logs" {
 		t.Errorf("NewFileLogger() path = %v, want /tmp/test-logs", logger.path)

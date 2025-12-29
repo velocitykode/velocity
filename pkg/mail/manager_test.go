@@ -10,7 +10,7 @@ import (
 func TestNewManager(t *testing.T) {
 	manager := NewManager()
 	if manager == nil {
-		t.Error("Expected manager to be created")
+		t.Fatal("Expected manager to be created")
 	}
 
 	if manager.channels == nil {

@@ -3,7 +3,6 @@ package events
 import (
 	"encoding/json"
 	"errors"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -547,13 +546,8 @@ func TestStoppablePropagationDispatcherWithQueued(t *testing.T) {
 	}
 
 	// This will fail to queue but should not panic
-	err := dispatcher.Dispatch(event)
-	// We expect an error since queue.Push is not mocked
-	if err == nil || !strings.Contains(err.Error(), "failed to queue") {
-		// If no error or wrong error, that's unexpected
-		// But in practice, queue.Push might work with memory driver
-		// so we just ensure no panic
-	}
+	// We just ensure no panic occurs
+	_ = dispatcher.Dispatch(event)
 }
 
 // TestShouldHandleListener for testing ShouldHandle interface
