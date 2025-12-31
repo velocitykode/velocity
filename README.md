@@ -79,8 +79,8 @@ func main() {
         })
     })
 
-    log.Info("Starting server on :8080")
-    r.Run(":8080")
+    log.Info("Starting server on :4000")
+    r.Run(":4000")
 }
 ```
 
