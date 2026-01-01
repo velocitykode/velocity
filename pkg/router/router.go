@@ -22,7 +22,7 @@ type Router interface {
 	Head(path string, handler HandlerFunc) RouteConfig
 
 	// Route Management
-	Group(prefix string) Router
+	Group(prefix string, fn ...func(Router)) Router
 	Prefix(prefix string)
 	Resource(path string, controller interface{}) ResourceRoute
 
@@ -152,19 +152,27 @@ func (r *VelocityRouter) Head(path string, handler HandlerFunc) RouteConfig {
 	return &routeWrapper{route: route, router: r, handler: handler}
 }
 
-// Group creates a new router group with a prefix
-func (r *VelocityRouter) Group(prefix string) Router {
+// Group creates a new router group with a prefix.
+// Optionally accepts a closure to define routes within the group.
+func (r *VelocityRouter) Group(prefix string, fn ...func(Router)) Router {
 	fullPrefix := r.buildPath(prefix)
 	// Copy parent middleware to child group
 	childMiddlewares := make([]MiddlewareFunc, len(r.middlewares))
 	copy(childMiddlewares, r.middlewares)
 
-	return &VelocityRouter{
+	group := &VelocityRouter{
 		mux:         r.mux,
 		prefix:      fullPrefix,
 		middlewares: childMiddlewares,
 		namedRoutes: r.namedRoutes, // Share named routes
 	}
+
+	// If closure provided, execute it
+	if len(fn) > 0 && fn[0] != nil {
+		fn[0](group)
+	}
+
+	return group
 }
 
 // Use adds middleware to the router/group
