@@ -33,6 +33,15 @@ jobs:
         if: steps.check.outputs.skip == 'false'
         id: version
         run: |
+          # TODO: Remove this override after first release
+          # Override: force v0.0.5 for first automated release
+          OVERRIDE_VERSION="0.0.5"
+          if [ -n "$OVERRIDE_VERSION" ]; then
+            echo "new=$OVERRIDE_VERSION" >> $GITHUB_OUTPUT
+            echo "Override version: v$OVERRIDE_VERSION"
+            exit 0
+          fi
+
           # Get last tag
           LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
           echo "last_tag=$LAST_TAG" >> $GITHUB_OUTPUT
