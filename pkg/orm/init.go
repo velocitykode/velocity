@@ -19,7 +19,7 @@ func init() {
 	RegisterDriver("sqlite", drivers.NewSQLiteDriver)
 	RegisterDriver("sqlite3", drivers.NewSQLiteDriver) // Alias for compatibility
 	RegisterDriver("postgres", drivers.NewPostgresDriver)
-	// RegisterDriver("mysql", drivers.NewMySQLDriver)
+	RegisterDriver("mysql", drivers.NewMySQLDriver)
 
 	// Check if auto-initialization is disabled
 	if os.Getenv("ORM_AUTO_INIT") == "false" {
