@@ -22,6 +22,8 @@ type Router interface {
 	Head(path string, handler HandlerFunc) RouteConfig
 
 	// Route Management
+	// Group creates a route group with optional closure for inline route definitions.
+	// Example: r.Group("/api", func(api Router) { api.Get("/users", handler) })
 	Group(prefix string, fn ...func(Router)) Router
 	Prefix(prefix string)
 	Resource(path string, controller interface{}) ResourceRoute
