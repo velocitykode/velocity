@@ -10,7 +10,7 @@ func TestPage_ToJSON(t *testing.T) {
 	page := Page{
 		Component: "Dashboard",
 		Props: Props{
-			"user": "Ali",
+			"user":  "Ali",
 			"count": 42,
 		},
 		URL:     "/dashboard",
