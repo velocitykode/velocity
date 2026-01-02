@@ -2,21 +2,25 @@ package view
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 
-	"github.com/romsar/gonertia"
+	"github.com/velocitykode/velocity/pkg/bond"
 )
 
+func resetBond() {
+	// Use bond's reset function for testing
+	bond.ResetForTesting()
+}
+
 func TestInitialize(t *testing.T) {
-	// Reset singleton for testing
-	instance = nil
-	once = sync.Once{}
+	resetBond()
+	defer resetBond()
 
 	config := Config{
-		RootTemplate: "<div id='app' data-page='{{ .page }}'></div>",
+		RootTemplate: `<html><body>{{ .inertia }}</body></html>`,
 		Version:      "test-version",
 	}
 
@@ -25,28 +29,37 @@ func TestInitialize(t *testing.T) {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	if instance == nil {
-		t.Error("Expected instance to be initialized")
+	// Should not panic - instance is initialized
+	_ = bond.Get()
+}
+
+func TestInitialize_DefaultTemplate(t *testing.T) {
+	resetBond()
+	defer resetBond()
+
+	config := Config{
+		Version: "1.0",
 	}
 
-	if instance.version != "test-version" {
-		t.Errorf("Expected version to be 'test-version', got '%s'", instance.version)
+	err := Initialize(config)
+	if err != nil {
+		t.Fatalf("Initialize failed with default template: %v", err)
 	}
 }
 
 func TestRender_HTMLResponse(t *testing.T) {
-	// Reset and initialize
-	instance = nil
-	once = sync.Once{}
+	resetBond()
+	defer resetBond()
+
 	Initialize(Config{
-		RootTemplate: `<div id="app">{{ .inertia }}</div>`,
+		RootTemplate: `<html><body>{{ .inertia }}</body></html>`,
 		Version:      "1.0",
 	})
 
 	req := httptest.NewRequest("GET", "/users", nil)
 	rec := httptest.NewRecorder()
 
-	props := gonertia.Props{
+	props := Props{
 		"users": []map[string]interface{}{
 			{"id": 1, "name": "John"},
 			{"id": 2, "name": "Jane"},
@@ -58,7 +71,6 @@ func TestRender_HTMLResponse(t *testing.T) {
 		t.Fatalf("Render failed: %v", err)
 	}
 
-	// Check response
 	contentType := rec.Header().Get("Content-Type")
 	if !strings.Contains(contentType, "text/html") {
 		t.Errorf("Expected HTML content type, got: %s", contentType)
@@ -75,9 +87,9 @@ func TestRender_HTMLResponse(t *testing.T) {
 }
 
 func TestRender_JSONResponse(t *testing.T) {
-	// Reset and initialize
-	instance = nil
-	once = sync.Once{}
+	resetBond()
+	defer resetBond()
+
 	Initialize(Config{
 		RootTemplate: defaultTemplate,
 		Version:      "1.0",
@@ -87,7 +99,7 @@ func TestRender_JSONResponse(t *testing.T) {
 	req.Header.Set("X-Inertia", "true")
 	rec := httptest.NewRecorder()
 
-	props := gonertia.Props{
+	props := Props{
 		"users": []map[string]interface{}{
 			{"id": 1, "name": "John"},
 		},
@@ -98,7 +110,6 @@ func TestRender_JSONResponse(t *testing.T) {
 		t.Fatalf("Render failed: %v", err)
 	}
 
-	// Check JSON response
 	contentType := rec.Header().Get("Content-Type")
 	if !strings.Contains(contentType, "application/json") {
 		t.Errorf("Expected JSON content type, got: %s", contentType)
@@ -114,22 +125,20 @@ func TestRender_JSONResponse(t *testing.T) {
 		t.Errorf("Expected component to be 'Users/Index', got: %v", response["component"])
 	}
 
-	// Version could be auto-generated hash or the configured version
 	if response["version"] == nil || response["version"] == "" {
 		t.Error("Expected version to be present")
 	}
 }
 
 func TestShare(t *testing.T) {
-	// Reset and initialize
-	instance = nil
-	once = sync.Once{}
+	resetBond()
+	defer resetBond()
+
 	Initialize(Config{
 		RootTemplate: defaultTemplate,
 		Version:      "1.0",
 	})
 
-	// Share global data
 	Share("app_name", "Test App")
 	Share("user", map[string]interface{}{
 		"id":   123,
@@ -140,7 +149,7 @@ func TestShare(t *testing.T) {
 	req.Header.Set("X-Inertia", "true")
 	rec := httptest.NewRecorder()
 
-	err := Render(rec, req, "Dashboard", gonertia.Props{
+	err := Render(rec, req, "Dashboard", Props{
 		"stats": "some stats",
 	})
 	if err != nil {
@@ -152,7 +161,6 @@ func TestShare(t *testing.T) {
 
 	props := response["props"].(map[string]interface{})
 
-	// Check shared props are included
 	if props["app_name"] != "Test App" {
 		t.Error("Expected shared app_name to be included")
 	}
@@ -165,16 +173,15 @@ func TestShare(t *testing.T) {
 		}
 	}
 
-	// Check component props are also included
 	if props["stats"] != "some stats" {
 		t.Error("Expected component stats to be included")
 	}
 }
 
 func TestWithErrors(t *testing.T) {
-	// Reset and initialize
-	instance = nil
-	once = sync.Once{}
+	resetBond()
+	defer resetBond()
+
 	Initialize(Config{
 		RootTemplate: defaultTemplate,
 		Version:      "1.0",
@@ -189,7 +196,7 @@ func TestWithErrors(t *testing.T) {
 		"name":  "Name is too short",
 	}
 
-	err := WithErrors(rec, req, "Users/Create", gonertia.Props{
+	err := WithErrors(rec, req, "Users/Create", Props{
 		"form": "empty",
 	}, errors)
 
@@ -202,17 +209,19 @@ func TestWithErrors(t *testing.T) {
 
 	props := response["props"].(map[string]interface{})
 
-	// Note: In real usage, errors would be picked up by gonertia's
-	// ValidationErrorsProvider. This test just verifies the function works.
 	if props["form"] != "empty" {
 		t.Error("Expected form prop to be included")
+	}
+
+	if props["errors"] == nil {
+		t.Error("Expected errors prop to be included")
 	}
 }
 
 func TestOptionalAndAlwaysProps(t *testing.T) {
-	// Reset and initialize
-	instance = nil
-	once = sync.Once{}
+	resetBond()
+	defer resetBond()
+
 	Initialize(Config{
 		RootTemplate: defaultTemplate,
 		Version:      "1.0",
@@ -222,9 +231,8 @@ func TestOptionalAndAlwaysProps(t *testing.T) {
 	req.Header.Set("X-Inertia", "true")
 	rec := httptest.NewRecorder()
 
-	props := gonertia.Props{
+	props := Props{
 		"required": "always included",
-		"optional": Optional("only on full load"),
 		"always":   Always("always included even on partial"),
 	}
 
@@ -242,14 +250,15 @@ func TestOptionalAndAlwaysProps(t *testing.T) {
 		t.Error("Expected required prop to be included")
 	}
 
-	// Note: The actual behavior of Optional/Always props depends on
-	// gonertia's internal handling of partial reloads
+	if responseProps["always"] != "always included even on partial" {
+		t.Error("Expected always prop to be included")
+	}
 }
 
 func TestLazyProp(t *testing.T) {
-	// Reset and initialize
-	instance = nil
-	once = sync.Once{}
+	resetBond()
+	defer resetBond()
+
 	Initialize(Config{
 		RootTemplate: defaultTemplate,
 		Version:      "1.0",
@@ -259,7 +268,7 @@ func TestLazyProp(t *testing.T) {
 	req.Header.Set("X-Inertia", "true")
 	rec := httptest.NewRecorder()
 
-	props := gonertia.Props{
+	props := Props{
 		"lazy": LazyProp("lazy value"),
 	}
 
@@ -268,20 +277,26 @@ func TestLazyProp(t *testing.T) {
 		t.Fatalf("Render failed: %v", err)
 	}
 
-	// LazyProp (OptionalProp) behavior depends on gonertia's implementation
-	t.Log("LazyProp test completed")
+	// LazyProp should not be included on initial load
+	var response map[string]interface{}
+	json.Unmarshal(rec.Body.Bytes(), &response)
+
+	responseProps := response["props"].(map[string]interface{})
+
+	// Lazy props are excluded on initial load
+	if _, ok := responseProps["lazy"]; ok {
+		t.Error("Lazy prop should not be included on initial load")
+	}
 }
 
 func TestSimpleFlashProvider(t *testing.T) {
 	provider := NewSimpleFlashProvider()
 
-	// Set flash messages
 	provider.Set("success", "Operation successful")
 	provider.Set("warning", "Be careful")
 
 	req := httptest.NewRequest("GET", "/", nil)
 
-	// Get flash data
 	flash, err := provider.GetFlashData(req)
 	if err != nil {
 		t.Fatalf("GetFlashData failed: %v", err)
@@ -295,7 +310,6 @@ func TestSimpleFlashProvider(t *testing.T) {
 		t.Error("Expected warning flash message")
 	}
 
-	// Flash should be cleared after reading
 	flash2, _ := provider.GetFlashData(req)
 	if len(flash2) != 0 {
 		t.Error("Expected flash to be cleared after reading")
@@ -305,7 +319,6 @@ func TestSimpleFlashProvider(t *testing.T) {
 func TestSimpleValidationProvider(t *testing.T) {
 	provider := NewSimpleValidationProvider()
 
-	// Set validation errors
 	errors := map[string]interface{}{
 		"email": "Invalid email format",
 		"age":   "Must be 18 or older",
@@ -314,7 +327,6 @@ func TestSimpleValidationProvider(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/", nil)
 
-	// Get validation errors
 	gotErrors, err := provider.GetValidationErrors(req)
 	if err != nil {
 		t.Fatalf("GetValidationErrors failed: %v", err)
@@ -328,7 +340,6 @@ func TestSimpleValidationProvider(t *testing.T) {
 		t.Error("Expected age error")
 	}
 
-	// Errors should be cleared after reading
 	errors2, _ := provider.GetValidationErrors(req)
 	if len(errors2) != 0 {
 		t.Error("Expected errors to be cleared after reading")
@@ -336,126 +347,82 @@ func TestSimpleValidationProvider(t *testing.T) {
 }
 
 func TestRedirect(t *testing.T) {
-	t.Skip("TODO: fix redirect status code mismatch")
-	// Reset and initialize
-	instance = nil
-	once = sync.Once{}
+	resetBond()
+	defer resetBond()
+
 	Initialize(Config{
 		RootTemplate: defaultTemplate,
 		Version:      "1.0",
 	})
 
-	tests := []struct {
-		name           string
-		url            string
-		inertiaRequest bool
-		expectedStatus int
-		expectedHeader string
-	}{
-		{
-			name:           "Regular request redirect",
-			url:            "/dashboard",
-			inertiaRequest: false,
-			expectedStatus: 302,
-			expectedHeader: "/dashboard",
-		},
-		{
-			name:           "Inertia request redirect",
-			url:            "/users",
-			inertiaRequest: true,
-			expectedStatus: 302,
-			expectedHeader: "/users",
-		},
-		{
-			name:           "External URL redirect",
-			url:            "https://example.com",
-			inertiaRequest: false,
-			expectedStatus: 302,
-			expectedHeader: "https://example.com",
-		},
+	req := httptest.NewRequest("POST", "/", nil)
+	rec := httptest.NewRecorder()
+
+	Redirect(rec, req, "/dashboard")
+
+	if rec.Code != 303 {
+		t.Errorf("Expected status 303, got %d", rec.Code)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest("GET", "/", nil)
-			if tt.inertiaRequest {
-				req.Header.Set("X-Inertia", "true")
-			}
-			rec := httptest.NewRecorder()
-
-			Redirect(rec, req, tt.url)
-
-			if rec.Code != tt.expectedStatus {
-				t.Errorf("Expected status %d, got %d", tt.expectedStatus, rec.Code)
-			}
-
-			location := rec.Header().Get("Location")
-			if location != tt.expectedHeader {
-				t.Errorf("Expected Location header %s, got %s", tt.expectedHeader, location)
-			}
-		})
+	location := rec.Header().Get("Location")
+	if location != "/dashboard" {
+		t.Errorf("Expected Location /dashboard, got %s", location)
 	}
 }
 
-func TestLocation(t *testing.T) {
-	t.Skip("TODO: fix location status code mismatch")
-	// Reset and initialize
-	instance = nil
-	once = sync.Once{}
+func TestLocation_InertiaRequest(t *testing.T) {
+	resetBond()
+	defer resetBond()
+
 	Initialize(Config{
 		RootTemplate: defaultTemplate,
 		Version:      "1.0",
 	})
 
-	tests := []struct {
-		name           string
-		url            string
-		inertiaRequest bool
-		expectedStatus int
-	}{
-		{
-			name:           "Regular request with Location",
-			url:            "/dashboard",
-			inertiaRequest: false,
-			expectedStatus: 409,
-		},
-		{
-			name:           "Inertia request with Location (forced reload)",
-			url:            "/users",
-			inertiaRequest: true,
-			expectedStatus: 409,
-		},
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-Inertia", "true")
+	rec := httptest.NewRecorder()
+
+	Location(rec, req, "/external")
+
+	if rec.Code != 409 {
+		t.Errorf("Expected status 409, got %d", rec.Code)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest("GET", "/", nil)
-			if tt.inertiaRequest {
-				req.Header.Set("X-Inertia", "true")
-			}
-			rec := httptest.NewRecorder()
+	location := rec.Header().Get("X-Inertia-Location")
+	if location != "/external" {
+		t.Errorf("Expected X-Inertia-Location /external, got %s", location)
+	}
+}
 
-			Location(rec, req, tt.url)
+func TestLocation_NonInertiaRequest(t *testing.T) {
+	resetBond()
+	defer resetBond()
 
-			if rec.Code != tt.expectedStatus {
-				t.Errorf("Expected status %d, got %d", tt.expectedStatus, rec.Code)
-			}
+	Initialize(Config{
+		RootTemplate: defaultTemplate,
+		Version:      "1.0",
+	})
 
-			// Location should set X-Inertia-Location header
-			if tt.inertiaRequest {
-				location := rec.Header().Get("X-Inertia-Location")
-				if location != tt.url {
-					t.Errorf("Expected X-Inertia-Location header %s, got %s", tt.url, location)
-				}
-			}
-		})
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+
+	Location(rec, req, "/external")
+
+	if rec.Code != 302 {
+		t.Errorf("Expected status 302, got %d", rec.Code)
+	}
+
+	location := rec.Header().Get("Location")
+	if location != "/external" {
+		t.Errorf("Expected Location /external, got %s", location)
 	}
 }
 
 func TestBack(t *testing.T) {
-	// Reset and initialize
-	instance = nil
-	once = sync.Once{}
+	resetBond()
+	defer resetBond()
+
 	Initialize(Config{
 		RootTemplate: defaultTemplate,
 		Version:      "1.0",
@@ -500,5 +467,119 @@ func TestBack(t *testing.T) {
 				t.Errorf("Expected Location header %s, got %s", tt.expectedLocation, location)
 			}
 		})
+	}
+}
+
+func TestLoadTemplateFromFile(t *testing.T) {
+	// This test would need a temporary file to be complete
+	// For now, we just verify the function exists and can be called
+	_, err := LoadTemplateFromFile("/nonexistent/file.html")
+	if err == nil {
+		t.Error("Expected error for nonexistent file")
+	}
+}
+
+func TestMiddleware(t *testing.T) {
+	resetBond()
+	defer resetBond()
+
+	Initialize(Config{
+		RootTemplate: defaultTemplate,
+		Version:      "1.0",
+	})
+
+	mw := Middleware()
+	if mw == nil {
+		t.Error("Expected middleware to be returned")
+	}
+}
+
+func TestSetSharePropsFunc(t *testing.T) {
+	resetBond()
+	defer resetBond()
+
+	Initialize(Config{
+		RootTemplate: defaultTemplate,
+		Version:      "1.0",
+	})
+
+	called := false
+	SetSharePropsFunc(func(r *http.Request) (Props, error) {
+		called = true
+		return Props{
+			"auth": map[string]string{"user": "Ali"},
+		}, nil
+	})
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-Inertia", "true")
+	rec := httptest.NewRecorder()
+
+	Render(rec, req, "Test", Props{})
+
+	if !called {
+		t.Error("Expected SharePropsFunc to be called")
+	}
+}
+
+func TestShareFunc(t *testing.T) {
+	resetBond()
+	defer resetBond()
+
+	Initialize(Config{
+		RootTemplate: defaultTemplate,
+		Version:      "1.0",
+	})
+
+	ShareFunc("path", func(r *http.Request) (interface{}, error) {
+		return r.URL.Path, nil
+	})
+
+	req := httptest.NewRequest("GET", "/test-path", nil)
+	req.Header.Set("X-Inertia", "true")
+	rec := httptest.NewRecorder()
+
+	Render(rec, req, "Test", Props{})
+
+	var response map[string]interface{}
+	json.Unmarshal(rec.Body.Bytes(), &response)
+
+	props := response["props"].(map[string]interface{})
+
+	if props["path"] != "/test-path" {
+		t.Errorf("Expected path /test-path, got %v", props["path"])
+	}
+}
+
+func TestShareMultiple(t *testing.T) {
+	resetBond()
+	defer resetBond()
+
+	Initialize(Config{
+		RootTemplate: defaultTemplate,
+		Version:      "1.0",
+	})
+
+	ShareMultiple(Props{
+		"a": 1,
+		"b": 2,
+	})
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-Inertia", "true")
+	rec := httptest.NewRecorder()
+
+	Render(rec, req, "Test", Props{})
+
+	var response map[string]interface{}
+	json.Unmarshal(rec.Body.Bytes(), &response)
+
+	props := response["props"].(map[string]interface{})
+
+	if props["a"] != float64(1) {
+		t.Errorf("Expected a=1, got %v", props["a"])
+	}
+	if props["b"] != float64(2) {
+		t.Errorf("Expected b=2, got %v", props["b"])
 	}
 }

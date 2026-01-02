@@ -3,87 +3,74 @@ package view
 import (
 	"net/http"
 
-	"github.com/romsar/gonertia"
+	"github.com/velocitykode/velocity/pkg/bond"
 )
 
-// VelocityHelpers provides Velocity-specific enhancements to gonertia
-type VelocityHelpers struct {
-	inertia *gonertia.Inertia
-}
-
-// Helpers returns a new VelocityHelpers instance
-func Helpers() *VelocityHelpers {
-	return &VelocityHelpers{
-		inertia: Inertia(),
-	}
-}
-
-// WithErrors renders with validation errors
-func WithErrors(w http.ResponseWriter, r *http.Request, component string, props gonertia.Props, errors map[string]interface{}) error {
-	// Set errors in context for gonertia to pick up
-	ctx := gonertia.SetValidationErrors(r.Context(), errors)
-	r = r.WithContext(ctx)
-
-	return Render(w, r, component, props)
-}
-
-// WithFlash renders with flash message
-func WithFlash(w http.ResponseWriter, r *http.Request, component string, props gonertia.Props, flash map[string]interface{}) error {
-	// Note: gonertia handles flash through FlashProvider, not context
-	// For now, we'll add flash as props
+// WithErrors renders with validation errors merged into props
+func WithErrors(w http.ResponseWriter, r *http.Request, component string, props Props, errors map[string]interface{}) error {
 	if props == nil {
-		props = gonertia.Props{}
+		props = Props{}
 	}
-	for k, v := range flash {
-		props["flash_"+k] = v
-	}
-
+	props["errors"] = errors
 	return Render(w, r, component, props)
 }
 
-// Success redirects with a success message
+// WithFlash renders with flash messages merged into props
+func WithFlash(w http.ResponseWriter, r *http.Request, component string, props Props, flash map[string]interface{}) error {
+	if props == nil {
+		props = Props{}
+	}
+	props["flash"] = flash
+	return Render(w, r, component, props)
+}
+
+// Success redirects with a success status
 func Success(w http.ResponseWriter, r *http.Request, message string, url string) {
-	// Note: Flash messages need to be handled through session/FlashProvider
+	// Note: Flash messages need to be handled through session
 	// For now, we'll just redirect
 	http.Redirect(w, r, url, http.StatusSeeOther)
 }
 
-// Error redirects with an error message
+// Error redirects with an error status
 func Error(w http.ResponseWriter, r *http.Request, message string, url string) {
-	// Note: Flash messages need to be handled through session/FlashProvider
+	// Note: Flash messages need to be handled through session
 	// For now, we'll just redirect
 	http.Redirect(w, r, url, http.StatusSeeOther)
 }
 
 // FormError redirects back with form validation errors
 func FormError(w http.ResponseWriter, r *http.Request, errors map[string]interface{}) {
-	// Set validation errors in context
-	ctx := gonertia.SetValidationErrors(r.Context(), errors)
-	r = r.WithContext(ctx)
-
-	// Redirect back
+	// Note: Validation errors need to be stored in session for back redirect
+	// For now, we'll just redirect back
 	Back(w, r)
 }
 
-// Optional creates an optional prop that only loads on direct visits
-func Optional(value interface{}) gonertia.OptionalProp {
-	return gonertia.Optional(value)
+// Lazy creates a lazy prop that only evaluates when explicitly requested
+func Lazy(fn func() (any, error)) bond.LazyProp {
+	return bond.Lazy(fn)
+}
+
+// Optional creates an optional prop (alias for Lazy)
+func Optional(fn func() (any, error)) bond.OptionalProp {
+	return bond.Optional(fn)
 }
 
 // Always creates a prop that always loads (even on partial reloads)
-func Always(value interface{}) gonertia.AlwaysProp {
-	return gonertia.Always(value)
+func Always(value any) bond.AlwaysProp {
+	return bond.Always(value)
 }
 
 // Defer creates a deferred prop that loads after the initial response
-func Defer(value interface{}, group ...string) gonertia.DeferProp {
-	return gonertia.Defer(value, group...)
+func Defer(fn func() (any, error), group ...string) bond.DeferredProp {
+	return bond.Defer(fn, group...)
 }
 
 // LazyProp creates a lazy prop that only evaluates when needed
-// Note: In gonertia, LazyProp is an alias for OptionalProp
-func LazyProp(value interface{}) gonertia.OptionalProp {
-	return gonertia.Optional(value)
+// Note: This is an alias for Optional for backwards compatibility
+func LazyProp(value any) bond.OptionalProp {
+	return bond.Optional(func() (any, error) {
+		return value, nil
+	})
 }
 
 // SimpleFlashProvider is a basic flash message provider
