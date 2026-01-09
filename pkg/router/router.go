@@ -46,6 +46,9 @@ type ResourceRoute interface {
 	Except(methods ...string) ResourceRoute
 }
 
+// VelocityRouter is an alias for backward compatibility
+type VelocityRouter = VelocityRouterV2
+
 var (
 	// globalRouter is the singleton router instance
 	globalRouter *VelocityRouterV2
