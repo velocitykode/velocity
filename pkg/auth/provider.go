@@ -33,7 +33,7 @@ func (p *ORMUserProvider) FindByID(id interface{}) (Authenticatable, error) {
 		return nil, errors.New("database not initialized")
 	}
 
-	var user MockUser
+	var user AuthUser
 	row := db.QueryRow("SELECT id, name, email, password FROM users WHERE id = $1", id)
 	err := row.Scan(&user.ID, &user.Name, &user.Email, &user.Password)
 	if err == sql.ErrNoRows {
@@ -58,7 +58,7 @@ func (p *ORMUserProvider) FindByCredentials(credentials map[string]interface{}) 
 		return nil, errors.New("database not initialized")
 	}
 
-	var user MockUser
+	var user AuthUser
 	row := db.QueryRow("SELECT id, name, email, password FROM users WHERE email = $1", email)
 	err := row.Scan(&user.ID, &user.Name, &user.Email, &user.Password)
 	if err == sql.ErrNoRows {
@@ -88,8 +88,8 @@ func (p *ORMUserProvider) UpdateRememberToken(user Authenticatable, token string
 	return nil
 }
 
-// MockUser is a mock user for testing
-type MockUser struct {
+// AuthUser represents an authenticated user
+type AuthUser struct {
 	ID            interface{}
 	Name          string
 	Email         string
@@ -98,26 +98,26 @@ type MockUser struct {
 }
 
 // GetAuthIdentifier returns user ID
-func (u *MockUser) GetAuthIdentifier() interface{} {
+func (u *AuthUser) GetAuthIdentifier() interface{} {
 	return u.ID
 }
 
 // GetAuthPassword returns user password hash
-func (u *MockUser) GetAuthPassword() string {
+func (u *AuthUser) GetAuthPassword() string {
 	return u.Password
 }
 
 // GetRememberToken returns remember token
-func (u *MockUser) GetRememberToken() string {
+func (u *AuthUser) GetRememberToken() string {
 	return u.RememberToken
 }
 
 // SetRememberToken sets remember token
-func (u *MockUser) SetRememberToken(token string) {
+func (u *AuthUser) SetRememberToken(token string) {
 	u.RememberToken = token
 }
 
 // String returns string representation
-func (u *MockUser) String() string {
-	return fmt.Sprintf("MockUser<%v: %s>", u.ID, u.Email)
+func (u *AuthUser) String() string {
+	return fmt.Sprintf("AuthUser<%v: %s>", u.ID, u.Email)
 }

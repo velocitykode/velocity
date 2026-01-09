@@ -68,7 +68,7 @@ func TestJWTGeneration(t *testing.T) {
 	manager := NewJWTManager(config)
 
 	// Create mock user
-	user := &MockUser{
+	user := &AuthUser{
 		ID:    123,
 		Email: "test@example.com",
 	}
@@ -136,7 +136,7 @@ func TestJWTBlacklist(t *testing.T) {
 
 	manager := NewJWTManager(config)
 
-	user := &MockUser{ID: 1}
+	user := &AuthUser{ID: 1}
 	token, _ := manager.GenerateToken(user)
 
 	// Token should be valid initially
@@ -407,7 +407,7 @@ func BenchmarkJWTGeneration(b *testing.B) {
 		TTL:       60,
 	}
 	manager := NewJWTManager(config)
-	user := &MockUser{ID: 1}
+	user := &AuthUser{ID: 1}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -422,7 +422,7 @@ func BenchmarkJWTValidation(b *testing.B) {
 		TTL:       60,
 	}
 	manager := NewJWTManager(config)
-	user := &MockUser{ID: 1}
+	user := &AuthUser{ID: 1}
 	token, _ := manager.GenerateToken(user)
 
 	b.ResetTimer()
