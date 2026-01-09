@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/velocitykode/velocity/pkg/auth"
@@ -17,6 +18,7 @@ type SessionGuard struct {
 	store    auth.SessionStore
 	config   auth.SessionConfig
 	hasher   auth.Hasher
+	mu       sync.RWMutex                   // Protects sessions map
 	sessions map[*http.Request]auth.Session // Request-scoped session cache
 }
 
@@ -110,7 +112,9 @@ func (g *SessionGuard) Login(w http.ResponseWriter, r *http.Request, user auth.A
 		if err != nil {
 			return err
 		}
+		g.mu.Lock()
 		g.sessions[r] = session
+		g.mu.Unlock()
 	}
 
 	// Regenerate session ID for security
@@ -192,10 +196,13 @@ func (g *SessionGuard) SetProvider(provider auth.UserProvider) {
 
 // getSession gets or creates session for request
 func (g *SessionGuard) getSession(r *http.Request) auth.Session {
-	// Check cache first
+	// Check cache first (read lock)
+	g.mu.RLock()
 	if session, ok := g.sessions[r]; ok {
+		g.mu.RUnlock()
 		return session
 	}
+	g.mu.RUnlock()
 
 	// Get from store
 	session, err := auth.GetSessionFromRequest(r, g.store, g.config.Name)
@@ -203,8 +210,11 @@ func (g *SessionGuard) getSession(r *http.Request) auth.Session {
 		return nil
 	}
 
-	// Cache for this request
+	// Cache for this request (write lock)
+	g.mu.Lock()
 	g.sessions[r] = session
+	g.mu.Unlock()
+
 	return session
 }
 
