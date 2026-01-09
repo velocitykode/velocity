@@ -96,23 +96,23 @@ type routeTree struct {
 }
 
 type treeNode struct {
-	segment      string
-	isParam      bool
-	paramName    string
-	isWildcard   bool
-	regex        *regexp.Regexp
-	children     map[string]*treeNode
-	paramChild   *treeNode
+	segment       string
+	isParam       bool
+	paramName     string
+	isWildcard    bool
+	regex         *regexp.Regexp
+	children      map[string]*treeNode
+	paramChild    *treeNode
 	wildcardChild *treeNode
-	handlers     map[string]*Route
+	handlers      map[string]*Route
 }
 
 type segment struct {
-	value     string
-	isParam   bool
-	paramName string
+	value      string
+	isParam    bool
+	paramName  string
 	isWildcard bool
-	regex     *regexp.Regexp
+	regex      *regexp.Regexp
 }
 
 func newRouteTree() *routeTree {
