@@ -7,8 +7,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/gorilla/mux"
 )
 
 func TestNewContext(t *testing.T) {
@@ -27,7 +25,7 @@ func TestNewContext(t *testing.T) {
 
 func TestContext_Param(t *testing.T) {
 	req := httptest.NewRequest("GET", "/users/123", nil)
-	req = mux.SetURLVars(req, map[string]string{"id": "123"})
+	req = SetParams(req, map[string]string{"id": "123"})
 	w := httptest.NewRecorder()
 
 	c := NewContext(w, req)

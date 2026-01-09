@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
-
-	"github.com/gorilla/mux"
 )
 
 type HandlerFunc func(*Context) error
@@ -23,8 +23,9 @@ type Config struct {
 	ErrorHandler ErrorHandler
 }
 
+// Router is a lightweight HTTP router using radix tree
 type Router struct {
-	mux              *mux.Router
+	tree             *routeTree
 	globalMiddleware []MiddlewareFunc
 	namedRoutes      map[string]*Route
 	errorHandler     ErrorHandler
@@ -71,9 +72,10 @@ type Route struct {
 	pattern         string
 	method          string
 	handler         HandlerFunc
-	middleware      []MiddlewareFunc // Route-specific middleware
-	groupMiddleware []MiddlewareFunc // Group middleware
-	muxRoute        *mux.Route
+	middleware      []MiddlewareFunc
+	groupMiddleware []MiddlewareFunc
+	segments        []segment
+	router          *Router
 }
 
 type Context struct {
@@ -82,15 +84,202 @@ type Context struct {
 	Params  map[string]string
 	ctx     context.Context
 
-	// Trace IDs (extracted from headers, not auto-generated)
 	TraceID   string
 	RequestID string
+	ErrorID   string
+	locals    []localKV
+}
 
-	// Error tracking (generated on error)
-	ErrorID string
+// Simple radix tree for routing
+type routeTree struct {
+	root *treeNode
+}
 
-	// Request-scoped storage (slice-based like fasthttp)
-	locals []localKV
+type treeNode struct {
+	segment      string
+	isParam      bool
+	paramName    string
+	isWildcard   bool
+	regex        *regexp.Regexp
+	children     map[string]*treeNode
+	paramChild   *treeNode
+	wildcardChild *treeNode
+	handlers     map[string]*Route
+}
+
+type segment struct {
+	value     string
+	isParam   bool
+	paramName string
+	isWildcard bool
+	regex     *regexp.Regexp
+}
+
+func newRouteTree() *routeTree {
+	return &routeTree{
+		root: &treeNode{
+			children: make(map[string]*treeNode),
+			handlers: make(map[string]*Route),
+		},
+	}
+}
+
+func parseSegments(pattern string) []segment {
+	pattern = strings.Trim(pattern, "/")
+	if pattern == "" {
+		return nil
+	}
+
+	parts := strings.Split(pattern, "/")
+	segments := make([]segment, 0, len(parts))
+
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+
+		seg := segment{value: part}
+
+		if strings.HasPrefix(part, "{") && strings.HasSuffix(part, "}") {
+			inner := part[1 : len(part)-1]
+			colonIdx := strings.Index(inner, ":")
+
+			if colonIdx == -1 {
+				seg.isParam = true
+				seg.paramName = inner
+			} else {
+				name := inner[:colonIdx]
+				pattern := inner[colonIdx+1:]
+
+				if pattern == ".*" {
+					seg.isWildcard = true
+					seg.paramName = name
+				} else {
+					seg.isParam = true
+					seg.paramName = name
+					seg.regex, _ = regexp.Compile("^" + pattern + "$")
+				}
+			}
+		}
+
+		segments = append(segments, seg)
+	}
+
+	return segments
+}
+
+func (t *routeTree) insert(method, pattern string, route *Route) {
+	segments := parseSegments(pattern)
+	route.segments = segments
+
+	node := t.root
+
+	for _, seg := range segments {
+		if seg.isWildcard {
+			if node.wildcardChild == nil {
+				node.wildcardChild = &treeNode{
+					segment:    seg.value,
+					isWildcard: true,
+					paramName:  seg.paramName,
+					children:   make(map[string]*treeNode),
+					handlers:   make(map[string]*Route),
+				}
+			}
+			node = node.wildcardChild
+			break
+		} else if seg.isParam {
+			if node.paramChild == nil {
+				node.paramChild = &treeNode{
+					segment:   seg.value,
+					isParam:   true,
+					paramName: seg.paramName,
+					regex:     seg.regex,
+					children:  make(map[string]*treeNode),
+					handlers:  make(map[string]*Route),
+				}
+			}
+			node = node.paramChild
+		} else {
+			if node.children == nil {
+				node.children = make(map[string]*treeNode)
+			}
+			child, exists := node.children[seg.value]
+			if !exists {
+				child = &treeNode{
+					segment:  seg.value,
+					children: make(map[string]*treeNode),
+					handlers: make(map[string]*Route),
+				}
+				node.children[seg.value] = child
+			}
+			node = child
+		}
+	}
+
+	if node.handlers == nil {
+		node.handlers = make(map[string]*Route)
+	}
+	node.handlers[method] = route
+}
+
+func (t *routeTree) match(method, path string) (*Route, map[string]string) {
+	path = strings.Trim(path, "/")
+	params := make(map[string]string)
+
+	var parts []string
+	if path != "" {
+		parts = strings.Split(path, "/")
+	}
+
+	route := t.root.match(parts, method, params)
+	return route, params
+}
+
+func (n *treeNode) match(parts []string, method string, params map[string]string) *Route {
+	if len(parts) == 0 {
+		if n.handlers != nil {
+			if route, ok := n.handlers[method]; ok {
+				return route
+			}
+		}
+		return nil
+	}
+
+	part := parts[0]
+	rest := parts[1:]
+
+	// Try static match first
+	if n.children != nil {
+		if child, ok := n.children[part]; ok {
+			if route := child.match(rest, method, params); route != nil {
+				return route
+			}
+		}
+	}
+
+	// Try param match
+	if n.paramChild != nil {
+		if n.paramChild.regex == nil || n.paramChild.regex.MatchString(part) {
+			params[n.paramChild.paramName] = part
+			if route := n.paramChild.match(rest, method, params); route != nil {
+				return route
+			}
+			delete(params, n.paramChild.paramName)
+		}
+	}
+
+	// Try wildcard match
+	if n.wildcardChild != nil {
+		params[n.wildcardChild.paramName] = strings.Join(parts, "/")
+		if n.wildcardChild.handlers != nil {
+			if route, ok := n.wildcardChild.handlers[method]; ok {
+				return route
+			}
+		}
+		delete(params, n.wildcardChild.paramName)
+	}
+
+	return nil
 }
 
 // DefaultErrorHandler handles errors with JSON response
@@ -98,13 +287,11 @@ func DefaultErrorHandler(c *Context, err error) {
 	code := 500
 	message := err.Error()
 
-	// Check for custom Error type
 	if e, ok := err.(*Error); ok {
 		code = e.Code
 		message = e.Message
 	}
 
-	// Generate error ID if not set
 	if c.ErrorID == "" {
 		c.ErrorID = fmt.Sprintf("err-%d-%s", time.Now().Unix(), generateShortID())
 	}
@@ -134,7 +321,7 @@ func NewRouter(config ...Config) *Router {
 	}
 
 	return &Router{
-		mux:              mux.NewRouter(),
+		tree:             newRouteTree(),
 		globalMiddleware: make([]MiddlewareFunc, 0),
 		namedRoutes:      make(map[string]*Route),
 		errorHandler:     cfg.ErrorHandler,
@@ -175,74 +362,65 @@ func (r *Router) addRoute(method, pattern string, handler HandlerFunc) *Route {
 		method:          method,
 		handler:         handler,
 		middleware:      make([]MiddlewareFunc, 0),
-		groupMiddleware: make([]MiddlewareFunc, 0), // No group middleware for root routes
+		groupMiddleware: make([]MiddlewareFunc, 0),
+		router:          r,
 	}
 
-	muxRoute := r.mux.HandleFunc(pattern, r.wrapHandler(route)).Methods(method)
-	route.muxRoute = muxRoute
-
+	r.tree.insert(method, pattern, route)
 	return route
 }
 
-func (r *Router) wrapHandler(route *Route) http.HandlerFunc {
-	return func(w http.ResponseWriter, req *http.Request) {
-		ctx := &Context{
-			Request:   req,
-			Writer:    w,
-			Params:    make(map[string]string),
-			ctx:       req.Context(),
-			TraceID:   req.Header.Get("X-Trace-ID"),
-			RequestID: req.Header.Get("X-Request-ID"),
-			locals:    make([]localKV, 0, 4), // Pre-allocate capacity
-		}
+func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	route, params := r.tree.match(req.Method, req.URL.Path)
 
-		// Echo trace IDs back in response headers
-		if ctx.TraceID != "" {
-			w.Header().Set("X-Trace-ID", ctx.TraceID)
-		}
-		if ctx.RequestID != "" {
-			w.Header().Set("X-Request-ID", ctx.RequestID)
-		}
+	if route == nil {
+		http.NotFound(w, req)
+		return
+	}
 
-		vars := mux.Vars(req)
-		for k, v := range vars {
-			ctx.Params[k] = v
-		}
+	ctx := &Context{
+		Request:   req,
+		Writer:    w,
+		Params:    params,
+		ctx:       req.Context(),
+		TraceID:   req.Header.Get("X-Trace-ID"),
+		RequestID: req.Header.Get("X-Request-ID"),
+		locals:    make([]localKV, 0, 4),
+	}
 
-		// Panic recovery
-		defer func() {
-			if rvr := recover(); rvr != nil {
-				err, ok := rvr.(error)
-				if !ok {
-					err = fmt.Errorf("%v", rvr)
-				}
-				r.errorHandler(ctx, err)
+	if ctx.TraceID != "" {
+		w.Header().Set("X-Trace-ID", ctx.TraceID)
+	}
+	if ctx.RequestID != "" {
+		w.Header().Set("X-Request-ID", ctx.RequestID)
+	}
+
+	defer func() {
+		if rvr := recover(); rvr != nil {
+			err, ok := rvr.(error)
+			if !ok {
+				err = fmt.Errorf("%v", rvr)
 			}
-		}()
-
-		handler := route.handler
-
-		// Apply middleware in order: Route -> Group -> Global
-		// They execute in reverse order: Global -> Group -> Route
-
-		// Route-specific middleware (innermost)
-		for i := len(route.middleware) - 1; i >= 0; i-- {
-			handler = route.middleware[i](handler)
-		}
-
-		// Group middleware (middle)
-		for i := len(route.groupMiddleware) - 1; i >= 0; i-- {
-			handler = route.groupMiddleware[i](handler)
-		}
-
-		// Global middleware (outermost)
-		for i := len(r.globalMiddleware) - 1; i >= 0; i-- {
-			handler = r.globalMiddleware[i](handler)
-		}
-
-		if err := handler(ctx); err != nil {
 			r.errorHandler(ctx, err)
 		}
+	}()
+
+	handler := route.handler
+
+	for i := len(route.middleware) - 1; i >= 0; i-- {
+		handler = route.middleware[i](handler)
+	}
+
+	for i := len(route.groupMiddleware) - 1; i >= 0; i-- {
+		handler = route.groupMiddleware[i](handler)
+	}
+
+	for i := len(r.globalMiddleware) - 1; i >= 0; i-- {
+		handler = r.globalMiddleware[i](handler)
+	}
+
+	if err := handler(ctx); err != nil {
+		r.errorHandler(ctx, err)
 	}
 }
 
@@ -257,33 +435,30 @@ func (route *Route) Middleware(middleware ...MiddlewareFunc) *Route {
 
 func (route *Route) Name(name string) *Route {
 	route.name = name
-	if route.muxRoute != nil {
-		route.muxRoute.Name(name)
+	if route.router != nil {
+		route.router.namedRoutes[name] = route
 	}
 	return route
 }
 
-func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	r.mux.ServeHTTP(w, req)
-}
-
 func (r *Router) URL(name string, params map[string]string) (string, error) {
-	route := r.mux.Get(name)
-	if route == nil {
+	route, ok := r.namedRoutes[name]
+	if !ok {
 		return "", fmt.Errorf("route with name '%s' not found", name)
 	}
 
-	var pairs []string
-	for k, v := range params {
-		pairs = append(pairs, k, v)
+	path := route.pattern
+	for key, value := range params {
+		path = strings.ReplaceAll(path, "{"+key+"}", value)
+		path = regexp.MustCompile(`\{`+key+`:[^}]+\}`).ReplaceAllString(path, value)
 	}
 
-	url, err := route.URL(pairs...)
-	if err != nil {
-		return "", err
+	// Check if any params are still unreplaced
+	if strings.Contains(path, "{") && strings.Contains(path, "}") {
+		return "", fmt.Errorf("missing required parameters for route '%s'", name)
 	}
 
-	return url.String(), nil
+	return path, nil
 }
 
 func (r *Router) Prefix(prefix string) *RouteGroup {
@@ -291,7 +466,6 @@ func (r *Router) Prefix(prefix string) *RouteGroup {
 		router:     r,
 		prefix:     prefix,
 		middleware: make([]MiddlewareFunc, 0),
-		subrouter:  r.mux.PathPrefix(prefix).Subrouter(),
 	}
 }
 
@@ -299,7 +473,6 @@ type RouteGroup struct {
 	router     *Router
 	prefix     string
 	middleware []MiddlewareFunc
-	subrouter  *mux.Router
 }
 
 func (g *RouteGroup) GET(pattern string, handler HandlerFunc) *Route {
@@ -324,16 +497,15 @@ func (g *RouteGroup) PATCH(pattern string, handler HandlerFunc) *Route {
 
 func (g *RouteGroup) addRoute(method, pattern string, handler HandlerFunc) *Route {
 	route := &Route{
-		pattern:         pattern,
+		pattern:         g.prefix + pattern,
 		method:          method,
 		handler:         handler,
-		middleware:      make([]MiddlewareFunc, 0),                   // Route-specific starts empty
-		groupMiddleware: append([]MiddlewareFunc{}, g.middleware...), // Copy group middleware
+		middleware:      make([]MiddlewareFunc, 0),
+		groupMiddleware: append([]MiddlewareFunc{}, g.middleware...),
+		router:          g.router,
 	}
 
-	muxRoute := g.subrouter.HandleFunc(pattern, g.router.wrapHandler(route)).Methods(method)
-	route.muxRoute = muxRoute
-
+	g.router.tree.insert(method, g.prefix+pattern, route)
 	return route
 }
 
@@ -347,7 +519,6 @@ func (g *RouteGroup) Group(prefix string) *RouteGroup {
 		router:     g.router,
 		prefix:     g.prefix + prefix,
 		middleware: append([]MiddlewareFunc{}, g.middleware...),
-		subrouter:  g.subrouter.PathPrefix(prefix).Subrouter(),
 	}
 }
 
@@ -401,20 +572,16 @@ func (ctx *Context) Status(code int) *Context {
 	return ctx
 }
 
-// SetLocal stores a value in request-scoped storage
 func (ctx *Context) SetLocal(key string, value any) {
-	// Check if key exists, update if found
 	for i := range ctx.locals {
 		if ctx.locals[i].key == key {
 			ctx.locals[i].value = value
 			return
 		}
 	}
-	// Append new key-value pair
 	ctx.locals = append(ctx.locals, localKV{key: key, value: value})
 }
 
-// GetLocal retrieves a value from request-scoped storage
 func (ctx *Context) GetLocal(key string) (any, bool) {
 	for i := range ctx.locals {
 		if ctx.locals[i].key == key {
@@ -424,13 +591,11 @@ func (ctx *Context) GetLocal(key string) (any, bool) {
 	return nil, false
 }
 
-// Locals retrieves a value (returns nil if not found)
 func (ctx *Context) Locals(key string) any {
 	val, _ := ctx.GetLocal(key)
 	return val
 }
 
-// Error response helpers
 func (ctx *Context) BadRequest(message string) error {
 	return NewError(400, message)
 }
@@ -451,7 +616,6 @@ func (ctx *Context) InternalServerError(message string) error {
 	return NewError(500, message)
 }
 
-// Type-safe parameter extraction
 func (ctx *Context) ParamInt(key string) (int, error) {
 	val := ctx.Param(key)
 	if val == "" {
@@ -481,7 +645,6 @@ func (ctx *Context) QueryBool(key string) bool {
 	return b
 }
 
-// Request binding methods
 func (ctx *Context) BindJSON(v interface{}) error {
 	if ctx.Request.Body == nil {
 		return fmt.Errorf("request body is empty")
@@ -496,7 +659,6 @@ func (ctx *Context) Body() ([]byte, error) {
 	return io.ReadAll(ctx.Request.Body)
 }
 
-// Header helper methods
 func (ctx *Context) Get(key string) string {
 	return ctx.Request.Header.Get(key)
 }

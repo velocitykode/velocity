@@ -3,42 +3,47 @@ package router
 import (
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"testing"
 )
 
 func TestParam(t *testing.T) {
-	r := New()
-	var capturedValue string
+	t.Run("extracts parameter value", func(t *testing.T) {
+		r := New()
+		var capturedValue string
 
-	r.Get("/test/{param}", func(c *Context) error {
-		capturedValue = Param(c.Request, "param")
-		c.Response.WriteHeader(http.StatusOK)
-		return nil
+		r.Get("/test/{param}", func(c *Context) error {
+			capturedValue = Param(c.Request, "param")
+			c.Response.WriteHeader(http.StatusOK)
+			return nil
+		})
+
+		req := httptest.NewRequest("GET", "/test/value123", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if capturedValue != "value123" {
+			t.Errorf("Expected param 'value123', got '%s'", capturedValue)
+		}
 	})
 
-	req := httptest.NewRequest("GET", "/test/value123", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
+	t.Run("returns empty for non-existent parameter", func(t *testing.T) {
+		r := New()
+		var capturedValue string
 
-	if capturedValue != "value123" {
-		t.Errorf("Expected param 'value123', got '%s'", capturedValue)
-	}
+		r.Get("/other", func(c *Context) error {
+			capturedValue = Param(c.Request, "nonexistent")
+			c.Response.WriteHeader(http.StatusOK)
+			return nil
+		})
 
-	// Test non-existent parameter
-	r.Get("/other", func(c *Context) error {
-		capturedValue = Param(c.Request, "nonexistent")
-		c.Response.WriteHeader(http.StatusOK)
-		return nil
+		req := httptest.NewRequest("GET", "/other", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if capturedValue != "" {
+			t.Errorf("Expected empty string for non-existent param, got '%s'", capturedValue)
+		}
 	})
-
-	req = httptest.NewRequest("GET", "/other", nil)
-	w = httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if capturedValue != "" {
-		t.Errorf("Expected empty string for non-existent param, got '%s'", capturedValue)
-	}
 }
 
 func TestParams(t *testing.T) {
@@ -69,10 +74,7 @@ func TestParams(t *testing.T) {
 }
 
 func TestRouteGeneration(t *testing.T) {
-	// Reset global router for clean test
-	globalRouter = nil
-	once = sync.Once{}
-
+	ResetGlobalRouter()
 	r := Get()
 
 	// Register named routes
@@ -85,6 +87,11 @@ func TestRouteGeneration(t *testing.T) {
 		c.Response.WriteHeader(http.StatusOK)
 		return nil
 	}).Name("comment.show")
+
+	// Trigger route commit
+	req := httptest.NewRequest("GET", "/users/1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
 
 	// Test single parameter route
 	url, err := Route("user.show", map[string]string{"id": "123"})
@@ -123,51 +130,58 @@ func TestRouteGeneration(t *testing.T) {
 }
 
 func TestCurrentRouteName(t *testing.T) {
-	r := New()
-	var capturedName string
+	t.Run("returns name for named route", func(t *testing.T) {
+		r := New()
+		var capturedName string
 
-	// Named route
-	r.Get("/named", func(c *Context) error {
-		capturedName = CurrentRoute(c.Request)
-		c.Response.WriteHeader(http.StatusOK)
-		return nil
-	}).Name("test.named")
+		r.Get("/named", func(c *Context) error {
+			capturedName = CurrentRoute(c.Request)
+			c.Response.WriteHeader(http.StatusOK)
+			return nil
+		}).Name("test.named")
 
-	req := httptest.NewRequest("GET", "/named", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
+		req := httptest.NewRequest("GET", "/named", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
 
-	if capturedName != "test.named" {
-		t.Errorf("Expected route name 'test.named', got '%s'", capturedName)
-	}
-
-	// Unnamed route
-	r.Get("/unnamed", func(c *Context) error {
-		capturedName = CurrentRoute(c.Request)
-		c.Response.WriteHeader(http.StatusOK)
-		return nil
+		if capturedName != "test.named" {
+			t.Errorf("Expected route name 'test.named', got '%s'", capturedName)
+		}
 	})
 
-	req = httptest.NewRequest("GET", "/unnamed", nil)
-	w = httptest.NewRecorder()
-	r.ServeHTTP(w, req)
+	t.Run("returns empty for unnamed route", func(t *testing.T) {
+		r := New()
+		var capturedName string
 
-	if capturedName != "" {
-		t.Errorf("Expected empty route name for unnamed route, got '%s'", capturedName)
-	}
+		r.Get("/unnamed", func(c *Context) error {
+			capturedName = CurrentRoute(c.Request)
+			c.Response.WriteHeader(http.StatusOK)
+			return nil
+		})
+
+		req := httptest.NewRequest("GET", "/unnamed", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if capturedName != "" {
+			t.Errorf("Expected empty route name for unnamed route, got '%s'", capturedName)
+		}
+	})
 }
 
 func TestRouteGenerationWithSpecialCharacters(t *testing.T) {
-	// Reset global router
-	globalRouter = nil
-	once = sync.Once{}
-
+	ResetGlobalRouter()
 	r := Get()
 
 	r.Get("/search/{query}", func(c *Context) error {
 		c.Response.WriteHeader(http.StatusOK)
 		return nil
 	}).Name("search")
+
+	// Trigger route commit
+	req := httptest.NewRequest("GET", "/search/test", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
 
 	// Test with special characters
 	url, err := Route("search", map[string]string{"query": "hello world"})
@@ -213,16 +227,18 @@ func TestConcurrentParamAccess(t *testing.T) {
 }
 
 func TestRouteGenerationMissingParams(t *testing.T) {
-	// Reset global router
-	globalRouter = nil
-	once = sync.Once{}
-
+	ResetGlobalRouter()
 	r := Get()
 
 	r.Get("/users/{id}/posts/{post_id}", func(c *Context) error {
 		c.Response.WriteHeader(http.StatusOK)
 		return nil
 	}).Name("user.post")
+
+	// Trigger route commit
+	req := httptest.NewRequest("GET", "/users/1/posts/1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
 
 	// Test with missing parameter - should return error
 	_, err := Route("user.post", map[string]string{"id": "123"})

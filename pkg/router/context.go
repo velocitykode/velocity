@@ -3,8 +3,6 @@ package router
 import (
 	"encoding/json"
 	"net/http"
-
-	"github.com/gorilla/mux"
 )
 
 // HandlerFunc is the Velocity handler function signature
@@ -27,7 +25,7 @@ func NewContext(w http.ResponseWriter, r *http.Request) *Context {
 	return &Context{
 		Response: w,
 		Request:  r,
-		params:   mux.Vars(r),
+		params:   GetParams(r),
 		values:   make(map[string]interface{}),
 	}
 }
