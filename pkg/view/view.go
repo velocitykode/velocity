@@ -41,9 +41,13 @@ func Initialize(config Config) error {
 	})
 }
 
-// Render renders a component with props
-func Render(w http.ResponseWriter, r *http.Request, component string, props Props) error {
-	return bond.Render(w, r, component, props)
+// Render renders a component with optional props
+func Render(w http.ResponseWriter, r *http.Request, component string, props ...Props) error {
+	var p Props
+	if len(props) > 0 && props[0] != nil {
+		p = props[0]
+	}
+	return bond.Render(w, r, component, p)
 }
 
 // Share shares a prop globally
