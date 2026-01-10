@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/velocitykode/velocity/pkg/bond"
+	"github.com/velocitykode/velocity/pkg/router"
 )
 
 func resetBond() {
@@ -581,5 +583,339 @@ func TestShareMultiple(t *testing.T) {
 	}
 	if props["b"] != float64(2) {
 		t.Errorf("Expected b=2, got %v", props["b"])
+	}
+}
+
+func TestInitialize_DefaultVersion(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  Config
+		wantErr bool
+	}{
+		{
+			name: "uses default version when empty",
+			config: Config{
+				RootTemplate: `<html><body>{{ .inertia }}</body></html>`,
+				Version:      "",
+			},
+			wantErr: false,
+		},
+		{
+			name: "uses provided version",
+			config: Config{
+				RootTemplate: `<html><body>{{ .inertia }}</body></html>`,
+				Version:      "custom-version",
+			},
+			wantErr: false,
+		},
+		{
+			name:    "uses all defaults",
+			config:  Config{},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetBond()
+			defer resetBond()
+
+			err := Initialize(tt.config)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Initialize() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestRender_WithVariousProps(t *testing.T) {
+	tests := []struct {
+		name      string
+		component string
+		props     []Props
+		wantProps bool
+	}{
+		{
+			name:      "renders with nil props slice",
+			component: "Test/Component",
+			props:     nil,
+			wantProps: false,
+		},
+		{
+			name:      "renders with empty props slice",
+			component: "Test/Component",
+			props:     []Props{},
+			wantProps: false,
+		},
+		{
+			name:      "renders with nil props in slice",
+			component: "Test/Component",
+			props:     []Props{nil},
+			wantProps: false,
+		},
+		{
+			name:      "renders with empty props map",
+			component: "Test/Component",
+			props:     []Props{{}},
+			wantProps: true,
+		},
+		{
+			name:      "renders with populated props",
+			component: "Test/Component",
+			props:     []Props{{"key": "value"}},
+			wantProps: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetBond()
+			defer resetBond()
+
+			Initialize(Config{
+				RootTemplate: defaultTemplate,
+				Version:      "1.0",
+			})
+
+			req := httptest.NewRequest("GET", "/test", nil)
+			req.Header.Set("X-Inertia", "true")
+			rec := httptest.NewRecorder()
+
+			var err error
+			if tt.props == nil {
+				err = Render(rec, req, tt.component)
+			} else {
+				err = Render(rec, req, tt.component, tt.props...)
+			}
+
+			if err != nil {
+				t.Fatalf("Render failed: %v", err)
+			}
+
+			var response map[string]interface{}
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatalf("Failed to parse JSON response: %v", err)
+			}
+
+			if response["component"] != tt.component {
+				t.Errorf("component = %v, want %v", response["component"], tt.component)
+			}
+		})
+	}
+}
+
+func TestLoadTemplateFromFile_ValidFile(t *testing.T) {
+	tests := []struct {
+		name        string
+		content     string
+		wantContent string
+		wantErr     bool
+	}{
+		{
+			name:        "loads simple template",
+			content:     `<html><body>{{ .inertia }}</body></html>`,
+			wantContent: `<html><body>{{ .inertia }}</body></html>`,
+			wantErr:     false,
+		},
+		{
+			name:        "loads template with multiple placeholders",
+			content:     `<!DOCTYPE html><html><head>{{ .inertiaHead }}</head><body>{{ .inertia }}</body></html>`,
+			wantContent: `<!DOCTYPE html><html><head>{{ .inertiaHead }}</head><body>{{ .inertia }}</body></html>`,
+			wantErr:     false,
+		},
+		{
+			name:        "loads empty file",
+			content:     "",
+			wantContent: "",
+			wantErr:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create temp file
+			tmpFile, err := os.CreateTemp("", "template-*.html")
+			if err != nil {
+				t.Fatalf("Failed to create temp file: %v", err)
+			}
+			defer os.Remove(tmpFile.Name())
+
+			if _, err := tmpFile.WriteString(tt.content); err != nil {
+				t.Fatalf("Failed to write to temp file: %v", err)
+			}
+			tmpFile.Close()
+
+			got, err := LoadTemplateFromFile(tmpFile.Name())
+			if (err != nil) != tt.wantErr {
+				t.Errorf("LoadTemplateFromFile() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if got != tt.wantContent {
+				t.Errorf("LoadTemplateFromFile() = %v, want %v", got, tt.wantContent)
+			}
+		})
+	}
+}
+
+func TestLoadTemplateFromFile_Errors(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		wantErr bool
+	}{
+		{
+			name:    "returns error for nonexistent file",
+			path:    "/nonexistent/path/template.html",
+			wantErr: true,
+		},
+		{
+			name:    "returns error for empty path",
+			path:    "",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := LoadTemplateFromFile(tt.path)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("LoadTemplateFromFile() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestMiddleware_Integration(t *testing.T) {
+	tests := []struct {
+		name           string
+		method         string
+		inertiaHeader  bool
+		versionMatch   bool
+		wantStatusCode int
+	}{
+		{
+			name:           "passes through GET request without Inertia header",
+			method:         "GET",
+			inertiaHeader:  false,
+			versionMatch:   true,
+			wantStatusCode: http.StatusOK,
+		},
+		{
+			name:           "passes through GET request with Inertia header",
+			method:         "GET",
+			inertiaHeader:  true,
+			versionMatch:   true,
+			wantStatusCode: http.StatusOK,
+		},
+		{
+			name:           "passes through POST request",
+			method:         "POST",
+			inertiaHeader:  false,
+			versionMatch:   true,
+			wantStatusCode: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetBond()
+			defer resetBond()
+
+			Initialize(Config{
+				RootTemplate: defaultTemplate,
+				Version:      "1.0",
+			})
+
+			mw := Middleware()
+
+			handler := mw(func(c *router.Context) error {
+				c.Response.WriteHeader(http.StatusOK)
+				c.Response.Write([]byte("OK"))
+				return nil
+			})
+
+			req := httptest.NewRequest(tt.method, "/test", nil)
+			if tt.inertiaHeader {
+				req.Header.Set("X-Inertia", "true")
+				if tt.versionMatch {
+					req.Header.Set("X-Inertia-Version", "1.0")
+				}
+			}
+			rec := httptest.NewRecorder()
+
+			// Create a router.Context and call the handler
+			ctx := router.NewContext(rec, req)
+			handler(ctx)
+
+			if rec.Code != tt.wantStatusCode {
+				t.Errorf("status code = %d, want %d", rec.Code, tt.wantStatusCode)
+			}
+		})
+	}
+}
+
+func TestRedirect_TableDriven(t *testing.T) {
+	tests := []struct {
+		name           string
+		method         string
+		url            string
+		wantStatusCode int
+		wantLocation   string
+	}{
+		{
+			name:           "redirects POST request to dashboard",
+			method:         "POST",
+			url:            "/dashboard",
+			wantStatusCode: http.StatusSeeOther,
+			wantLocation:   "/dashboard",
+		},
+		{
+			name:           "redirects GET request to home",
+			method:         "GET",
+			url:            "/",
+			wantStatusCode: http.StatusSeeOther,
+			wantLocation:   "/",
+		},
+		{
+			name:           "redirects to nested path",
+			method:         "POST",
+			url:            "/users/123/profile",
+			wantStatusCode: http.StatusSeeOther,
+			wantLocation:   "/users/123/profile",
+		},
+		{
+			name:           "redirects to path with query params",
+			method:         "POST",
+			url:            "/search?q=test",
+			wantStatusCode: http.StatusSeeOther,
+			wantLocation:   "/search?q=test",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetBond()
+			defer resetBond()
+
+			Initialize(Config{
+				RootTemplate: defaultTemplate,
+				Version:      "1.0",
+			})
+
+			req := httptest.NewRequest(tt.method, "/submit", nil)
+			rec := httptest.NewRecorder()
+
+			Redirect(rec, req, tt.url)
+
+			if rec.Code != tt.wantStatusCode {
+				t.Errorf("status code = %d, want %d", rec.Code, tt.wantStatusCode)
+			}
+
+			location := rec.Header().Get("Location")
+			if location != tt.wantLocation {
+				t.Errorf("Location header = %s, want %s", location, tt.wantLocation)
+			}
+		})
 	}
 }
