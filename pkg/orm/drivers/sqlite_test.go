@@ -1605,8 +1605,10 @@ func TestSQLiteGrammar_CompileSelect_JOINQueries(t *testing.T) {
 // =============================================================================
 
 func TestSQLiteDriver_ConcurrentReads(t *testing.T) {
+	// Use temp file for concurrent test - in-memory doesn't share across connections
+	tmpFile := t.TempDir() + "/concurrent_reads.db"
 	driver := NewSQLiteDriver()
-	if err := driver.Connect(ConnectionConfig{Database: ":memory:", MaxIdleConns: 1}); err != nil {
+	if err := driver.Connect(ConnectionConfig{Database: tmpFile, MaxOpenConns: 10, MaxIdleConns: 5}); err != nil {
 		t.Fatalf("Connect() error = %v", err)
 	}
 	defer driver.Close()
@@ -1680,8 +1682,10 @@ func TestSQLiteDriver_ConcurrentReads(t *testing.T) {
 }
 
 func TestSQLiteDriver_ConcurrentWrites(t *testing.T) {
+	// Use temp file for concurrent test - in-memory doesn't share across connections
+	tmpFile := t.TempDir() + "/concurrent_writes.db"
 	driver := NewSQLiteDriver()
-	if err := driver.Connect(ConnectionConfig{Database: ":memory:", MaxIdleConns: 1}); err != nil {
+	if err := driver.Connect(ConnectionConfig{Database: tmpFile, MaxOpenConns: 10, MaxIdleConns: 5}); err != nil {
 		t.Fatalf("Connect() error = %v", err)
 	}
 	defer driver.Close()
@@ -1755,8 +1759,10 @@ func TestSQLiteDriver_ConcurrentWrites(t *testing.T) {
 }
 
 func TestSQLiteDriver_ConcurrentReadWrite(t *testing.T) {
+	// Use temp file for concurrent test - in-memory doesn't share across connections
+	tmpFile := t.TempDir() + "/concurrent_test.db"
 	driver := NewSQLiteDriver()
-	if err := driver.Connect(ConnectionConfig{Database: ":memory:", MaxIdleConns: 1}); err != nil {
+	if err := driver.Connect(ConnectionConfig{Database: tmpFile, MaxOpenConns: 10, MaxIdleConns: 5}); err != nil {
 		t.Fatalf("Connect() error = %v", err)
 	}
 	defer driver.Close()
@@ -1847,8 +1853,10 @@ func TestSQLiteDriver_ConcurrentReadWrite(t *testing.T) {
 }
 
 func TestSQLiteDriver_ConcurrentTransactions(t *testing.T) {
+	// Use temp file for concurrent test - in-memory doesn't share across connections
+	tmpFile := t.TempDir() + "/concurrent_txn.db"
 	driver := NewSQLiteDriver()
-	if err := driver.Connect(ConnectionConfig{Database: ":memory:", MaxIdleConns: 1}); err != nil {
+	if err := driver.Connect(ConnectionConfig{Database: tmpFile, MaxOpenConns: 10, MaxIdleConns: 5}); err != nil {
 		t.Fatalf("Connect() error = %v", err)
 	}
 	defer driver.Close()
