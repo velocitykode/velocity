@@ -36,15 +36,17 @@ func (b *Bond) Middleware(next http.Handler) http.Handler {
 func (b *Bond) MiddlewareFunc() router.MiddlewareFunc {
 	return func(next router.HandlerFunc) router.HandlerFunc {
 		return func(c *router.Context) error {
-			// Create a handler wrapper
+			var handlerErr error
+
+			// Create a handler wrapper that captures the error
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				c.Response = w
 				c.Request = r
-				next(c)
+				handlerErr = next(c)
 			})
 
 			b.Middleware(handler).ServeHTTP(c.Response, c.Request)
-			return nil
+			return handlerErr
 		}
 	}
 }
