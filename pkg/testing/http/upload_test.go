@@ -158,14 +158,14 @@ func TestUploadBuilder_AddHeader(t *testing.T) {
 
 func TestUploadBuilder_Build(t *testing.T) {
 	tests := []struct {
-		name       string
-		files      []UploadedFile
-		fields     map[string]string
-		headers    map[string]string
-		method     string
-		url        string
-		wantErr    bool
-		checkBody  bool
+		name         string
+		files        []UploadedFile
+		fields       map[string]string
+		headers      map[string]string
+		method       string
+		url          string
+		wantErr      bool
+		checkBody    bool
 		bodyContains string
 	}{
 		{

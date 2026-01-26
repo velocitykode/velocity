@@ -8,8 +8,8 @@ import (
 
 // mockHasher implements Hasher interface for testing
 type mockHasher struct {
-	hashFn       func(password string) (string, error)
-	verifyFn     func(password, hash string) bool
+	hashFn        func(password string) (string, error)
+	verifyFn      func(password, hash string) bool
 	needsRehashFn func(hash string) bool
 }
 

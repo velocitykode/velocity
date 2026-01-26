@@ -73,14 +73,14 @@ func (u *mockSessionGuardUser) SetRememberToken(token string) {
 
 // mockSessionGuardSession implements auth.Session for testing
 type mockSessionGuardSession struct {
-	id        string
-	data      map[string]interface{}
-	flash     map[string]interface{}
-	saveError error
+	id              string
+	data            map[string]interface{}
+	flash           map[string]interface{}
+	saveError       error
 	regenerateError error
 	invalidateError error
-	regenerated bool
-	invalidated bool
+	regenerated     bool
+	invalidated     bool
 }
 
 func newMockSessionGuardSession(id string) *mockSessionGuardSession {

@@ -73,11 +73,11 @@ func TestNewWebSocketDriverInitialization(t *testing.T) {
 
 func TestWebSocketDriver_Subscribe(t *testing.T) {
 	tests := []struct {
-		name           string
-		setupChannels  map[string][]string // channel -> client IDs to pre-add
-		subscribeOps   []struct{ channel, clientID string }
-		wantChannels   map[string][]string
-		wantErr        bool
+		name          string
+		setupChannels map[string][]string // channel -> client IDs to pre-add
+		subscribeOps  []struct{ channel, clientID string }
+		wantChannels  map[string][]string
+		wantErr       bool
 	}{
 		{
 			name:          "creates new channel when subscribing first client",
@@ -787,10 +787,10 @@ func TestWebSocketDriver_handleClientEvent(t *testing.T) {
 			wantReceivers: []string{"client-2", "client-3"},
 		},
 		{
-			name:     "returns error when data is not a map",
-			clientID: "client-1",
-			msgData:  "invalid",
-			wantErr:  true,
+			name:       "returns error when data is not a map",
+			clientID:   "client-1",
+			msgData:    "invalid",
+			wantErr:    true,
 			wantErrMsg: "invalid client event data",
 		},
 		{

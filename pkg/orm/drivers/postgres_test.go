@@ -347,9 +347,9 @@ func TestPostgresDriver_SQLInjectionInWhereClause(t *testing.T) {
 	driver.Exec("INSERT INTO auth_test (username, password) VALUES ($1, $2)", "user1", "password1")
 
 	tests := []struct {
-		name             string
+		name              string
 		maliciousUsername string
-		wantRowCount     int
+		wantRowCount      int
 	}{
 		{
 			name:              "OR injection does not bypass authentication",

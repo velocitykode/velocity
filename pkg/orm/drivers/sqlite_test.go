@@ -568,11 +568,11 @@ func TestSQLiteDriver_Begin(t *testing.T) {
 	driver.Exec("INSERT INTO counter (id, value) VALUES (1, 0)")
 
 	tests := []struct {
-		name       string
-		commit     bool
-		wantValue  int
-		testName   string
-		wantErr    bool
+		name      string
+		commit    bool
+		wantValue int
+		testName  string
+		wantErr   bool
 	}{
 		{
 			name:      "commits transaction",
@@ -1059,9 +1059,9 @@ func TestSQLiteDriver_SQLInjectionInWhereClause(t *testing.T) {
 	driver.Exec("INSERT INTO users (name, password) VALUES (?, ?)", "user1", "password1")
 
 	tests := []struct {
-		name           string
-		maliciousName  string
-		wantRowCount   int
+		name          string
+		maliciousName string
+		wantRowCount  int
 	}{
 		{
 			name:          "OR injection does not bypass authentication",
@@ -1256,28 +1256,28 @@ func TestSQLiteDriver_TransactionRollbackNestedOperations(t *testing.T) {
 	driver.Exec("INSERT INTO inventory (product, stock) VALUES (?, ?)", "Gadget", 50)
 
 	tests := []struct {
-		name              string
-		shouldRollback    bool
-		wantOrderCount    int
-		wantItemCount     int
-		wantWidgetStock   int
-		wantGadgetStock   int
+		name            string
+		shouldRollback  bool
+		wantOrderCount  int
+		wantItemCount   int
+		wantWidgetStock int
+		wantGadgetStock int
 	}{
 		{
-			name:             "rollback reverts all nested operations",
-			shouldRollback:   true,
-			wantOrderCount:   0,
-			wantItemCount:    0,
-			wantWidgetStock:  100,
-			wantGadgetStock:  50,
+			name:            "rollback reverts all nested operations",
+			shouldRollback:  true,
+			wantOrderCount:  0,
+			wantItemCount:   0,
+			wantWidgetStock: 100,
+			wantGadgetStock: 50,
 		},
 		{
-			name:             "commit persists all nested operations",
-			shouldRollback:   false,
-			wantOrderCount:   1,
-			wantItemCount:    2,
-			wantWidgetStock:  95,
-			wantGadgetStock:  47,
+			name:            "commit persists all nested operations",
+			shouldRollback:  false,
+			wantOrderCount:  1,
+			wantItemCount:   2,
+			wantWidgetStock: 95,
+			wantGadgetStock: 47,
 		},
 	}
 
@@ -1702,10 +1702,10 @@ func TestSQLiteDriver_ConcurrentWrites(t *testing.T) {
 	driver.Exec("INSERT INTO counters (id, value) VALUES (?, ?)", 1, 0)
 
 	tests := []struct {
-		name           string
-		goroutineCount int
+		name            string
+		goroutineCount  int
 		incrementsPerGo int
-		wantFinalValue int
+		wantFinalValue  int
 	}{
 		{
 			name:            "10 concurrent incrementers",

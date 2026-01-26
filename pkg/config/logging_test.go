@@ -350,11 +350,11 @@ func TestLoggingConfig_GetChannel(t *testing.T) {
 
 func TestLoggingConfig_GetDefaultChannel(t *testing.T) {
 	tests := []struct {
-		name           string
-		logChannelEnv  string
-		setEnv         bool
-		wantExists     bool
-		wantDriver     string
+		name          string
+		logChannelEnv string
+		setEnv        bool
+		wantExists    bool
+		wantDriver    string
 	}{
 		{
 			name:          "returns stack channel by default",

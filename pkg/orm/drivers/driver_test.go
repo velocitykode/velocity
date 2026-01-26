@@ -582,9 +582,9 @@ func TestIndex_Types(t *testing.T) {
 
 func TestAllDrivers_DriverName(t *testing.T) {
 	tests := []struct {
-		name       string
-		driver     Driver
-		wantName   string
+		name     string
+		driver   Driver
+		wantName string
 	}{
 		{"MySQL driver name", NewMySQLDriver(), "mysql"},
 		{"PostgreSQL driver name", NewPostgresDriver(), "postgres"},

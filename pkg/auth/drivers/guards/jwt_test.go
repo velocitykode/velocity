@@ -13,8 +13,8 @@ import (
 
 // mockJWTUserProvider implements auth.UserProvider for JWT tests
 type mockJWTUserProvider struct {
-	findByIDFunc          func(id interface{}) (auth.Authenticatable, error)
-	findByCredentialsFunc func(credentials map[string]interface{}) (auth.Authenticatable, error)
+	findByIDFunc            func(id interface{}) (auth.Authenticatable, error)
+	findByCredentialsFunc   func(credentials map[string]interface{}) (auth.Authenticatable, error)
 	validateCredentialsFunc func(user auth.Authenticatable, credentials map[string]interface{}) bool
 	updateRememberTokenFunc func(user auth.Authenticatable, token string) error
 }
@@ -128,10 +128,10 @@ func TestNewJWTGuard(t *testing.T) {
 
 func TestJWTGuard_Check(t *testing.T) {
 	tests := []struct {
-		name        string
-		setupGuard  func() *JWTGuard
-		setupReq    func(guard *JWTGuard) *http.Request
-		want        bool
+		name       string
+		setupGuard func() *JWTGuard
+		setupReq   func(guard *JWTGuard) *http.Request
+		want       bool
 	}{
 		{
 			name: "returns true for valid token with existing user",
@@ -1036,10 +1036,10 @@ func TestJWTGuard_RefreshToken(t *testing.T) {
 
 func TestJWTGuard_ValidateToken(t *testing.T) {
 	tests := []struct {
-		name       string
-		setupGuard func() *JWTGuard
-		setupToken func(guard *JWTGuard) string
-		wantErr    bool
+		name        string
+		setupGuard  func() *JWTGuard
+		setupToken  func(guard *JWTGuard) string
+		wantErr     bool
 		checkClaims func(t *testing.T, claims *auth.Claims)
 	}{
 		{

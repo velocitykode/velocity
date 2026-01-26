@@ -935,11 +935,11 @@ func TestManagerRegisterProvider(t *testing.T) {
 
 func TestManagerGuard(t *testing.T) {
 	tests := []struct {
-		name         string
-		setup        func(*Manager)
-		guardName    string
-		wantErr      bool
-		wantDefault  bool
+		name        string
+		setup       func(*Manager)
+		guardName   string
+		wantErr     bool
+		wantDefault bool
 	}{
 		{
 			name: "returns error for nonexistent guard",

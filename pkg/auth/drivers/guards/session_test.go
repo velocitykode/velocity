@@ -25,14 +25,14 @@ func newMockSession() *mockSession {
 	}
 }
 
-func (s *mockSession) ID() string                        { return s.id }
-func (s *mockSession) Get(key string) interface{}        { return s.data[key] }
-func (s *mockSession) Put(key string, value interface{}) { s.data[key] = value }
-func (s *mockSession) Has(key string) bool               { _, ok := s.data[key]; return ok }
-func (s *mockSession) Remove(key string)                 { delete(s.data, key) }
-func (s *mockSession) Clear()                            { s.data = make(map[string]interface{}) }
-func (s *mockSession) Regenerate() error                 { return nil }
-func (s *mockSession) Invalidate() error                 { s.data = make(map[string]interface{}); return nil }
+func (s *mockSession) ID() string                          { return s.id }
+func (s *mockSession) Get(key string) interface{}          { return s.data[key] }
+func (s *mockSession) Put(key string, value interface{})   { s.data[key] = value }
+func (s *mockSession) Has(key string) bool                 { _, ok := s.data[key]; return ok }
+func (s *mockSession) Remove(key string)                   { delete(s.data, key) }
+func (s *mockSession) Clear()                              { s.data = make(map[string]interface{}) }
+func (s *mockSession) Regenerate() error                   { return nil }
+func (s *mockSession) Invalidate() error                   { s.data = make(map[string]interface{}); return nil }
 func (s *mockSession) Flash(key string, value interface{}) { s.flash[key] = value }
 func (s *mockSession) GetFlash(key string) interface{} {
 	v := s.flash[key]

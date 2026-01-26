@@ -952,7 +952,7 @@ func TestCookieStore_EdgeCases(t *testing.T) {
 		encryptor *mockEncryptor
 	}{
 		{
-			name: "handles nil data in session",
+			name:      "handles nil data in session",
 			encryptor: &mockEncryptor{},
 			test: func(t *testing.T, store *CookieStore) {
 				session, _ := store.Create("nil-test")
@@ -966,7 +966,7 @@ func TestCookieStore_EdgeCases(t *testing.T) {
 			},
 		},
 		{
-			name: "handles empty string values",
+			name:      "handles empty string values",
 			encryptor: &mockEncryptor{},
 			test: func(t *testing.T, store *CookieStore) {
 				session, _ := store.Create("empty-test")
@@ -980,7 +980,7 @@ func TestCookieStore_EdgeCases(t *testing.T) {
 			},
 		},
 		{
-			name: "handles special characters in values",
+			name:      "handles special characters in values",
 			encryptor: &mockEncryptor{},
 			test: func(t *testing.T, store *CookieStore) {
 				session, _ := store.Create("special-test")
@@ -994,7 +994,7 @@ func TestCookieStore_EdgeCases(t *testing.T) {
 			},
 		},
 		{
-			name: "handles unicode values",
+			name:      "handles unicode values",
 			encryptor: &mockEncryptor{},
 			test: func(t *testing.T, store *CookieStore) {
 				session, _ := store.Create("unicode-test")
@@ -1020,17 +1020,17 @@ func TestCookieStore_EdgeCases(t *testing.T) {
 // unsupportedSession is a mock session type that is not supported by CookieStore
 type unsupportedSession struct{}
 
-func (s *unsupportedSession) ID() string                           { return "unsupported" }
-func (s *unsupportedSession) Get(key string) interface{}           { return nil }
-func (s *unsupportedSession) Put(key string, value interface{})    {}
-func (s *unsupportedSession) Has(key string) bool                  { return false }
-func (s *unsupportedSession) Remove(key string)                    {}
-func (s *unsupportedSession) Clear()                               {}
-func (s *unsupportedSession) Regenerate() error                    { return nil }
-func (s *unsupportedSession) Invalidate() error                    { return nil }
-func (s *unsupportedSession) Flash(key string, value interface{})  {}
-func (s *unsupportedSession) GetFlash(key string) interface{}      { return nil }
-func (s *unsupportedSession) Save(w http.ResponseWriter) error     { return nil }
+func (s *unsupportedSession) ID() string                          { return "unsupported" }
+func (s *unsupportedSession) Get(key string) interface{}          { return nil }
+func (s *unsupportedSession) Put(key string, value interface{})   {}
+func (s *unsupportedSession) Has(key string) bool                 { return false }
+func (s *unsupportedSession) Remove(key string)                   {}
+func (s *unsupportedSession) Clear()                              {}
+func (s *unsupportedSession) Regenerate() error                   { return nil }
+func (s *unsupportedSession) Invalidate() error                   { return nil }
+func (s *unsupportedSession) Flash(key string, value interface{}) {}
+func (s *unsupportedSession) GetFlash(key string) interface{}     { return nil }
+func (s *unsupportedSession) Save(w http.ResponseWriter) error    { return nil }
 
 // Compile-time check that unsupportedSession implements auth.Session
 var _ auth.Session = (*unsupportedSession)(nil)
