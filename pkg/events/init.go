@@ -16,6 +16,8 @@ func Initialize(dispatcher Dispatcher) {
 	globalMu.Lock()
 	defer globalMu.Unlock()
 	globalDispatcher = dispatcher
+	// Re-wire the package hooks with the new dispatcher
+	wirePackageHooks()
 }
 
 // GetDispatcher returns the global event dispatcher
@@ -25,6 +27,8 @@ func GetDispatcher() Dispatcher {
 			// Create default dispatcher if not initialized
 			globalDispatcher = NewDispatcher()
 		}
+		// Wire up event dispatching for router, orm, cache packages
+		wirePackageHooks()
 	})
 
 	globalMu.RLock()
@@ -93,4 +97,6 @@ func Reset() {
 	defer globalMu.Unlock()
 	globalDispatcher = nil
 	once = sync.Once{}
+	// Clear package hooks
+	clearPackageHooks()
 }

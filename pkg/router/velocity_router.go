@@ -1,8 +1,11 @@
 package router
 
 import (
+	"context"
 	"net/http"
+	"runtime"
 	"sync"
+	"time"
 )
 
 // VelocityRouterV2 is the tree-based router implementation
@@ -155,13 +158,55 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Commit routes on first request
 	r.commitOnce()
 
+	// Generate request ID and capture start time
+	requestID := generateRequestID()
+	startedAt := time.Now()
+
+	// Add request ID to context
+	reqCtx := context.WithValue(req.Context(), RequestIDKey, requestID)
+	req = req.WithContext(reqCtx)
+
+	// Wrap response writer to capture metrics
+	rw := newResponseWriter(w)
+
+	// Dispatch RequestStarted event
+	dispatchEvent(&RequestStarted{
+		Context:    req.Context(),
+		Method:     req.Method,
+		Path:       req.URL.Path,
+		RemoteAddr: req.RemoteAddr,
+		UserAgent:  req.UserAgent(),
+		RequestID:  requestID,
+		StartedAt:  startedAt,
+	})
+
 	// Try to serve static file if enabled
 	if r.staticEnabled {
 		if file, err := http.Dir(r.staticDir).Open(req.URL.Path); err == nil {
 			stat, statErr := file.Stat()
 			file.Close()
 			if statErr == nil && !stat.IsDir() {
-				r.staticFS.ServeHTTP(w, req)
+				// Dispatch routed event for static file
+				dispatchEvent(&RequestRouted{
+					Context:   req.Context(),
+					RequestID: requestID,
+					Route:     "[static]",
+					Matched:   true,
+				})
+
+				r.staticFS.ServeHTTP(rw, req)
+
+				// Dispatch handled event for static file
+				dispatchEvent(&RequestHandled{
+					Context:      req.Context(),
+					RequestID:    requestID,
+					Method:       req.Method,
+					Path:         req.URL.Path,
+					Route:        "[static]",
+					StatusCode:   rw.Status(),
+					BytesWritten: rw.BytesWritten(),
+					Duration:     time.Since(startedAt),
+				})
 				return
 			}
 		}
@@ -175,20 +220,154 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if result == nil {
-		http.NotFound(w, req)
+		// Dispatch routed event for 404
+		dispatchEvent(&RequestRouted{
+			Context:   req.Context(),
+			RequestID: requestID,
+			Matched:   false,
+		})
+
+		http.NotFound(rw, req)
+
+		// Dispatch handled event for 404
+		dispatchEvent(&RequestHandled{
+			Context:      req.Context(),
+			RequestID:    requestID,
+			Method:       req.Method,
+			Path:         req.URL.Path,
+			StatusCode:   http.StatusNotFound,
+			BytesWritten: rw.BytesWritten(),
+			Duration:     time.Since(startedAt),
+		})
 		return
 	}
+
+	// Dispatch routed event for matched route
+	dispatchEvent(&RequestRouted{
+		Context:   req.Context(),
+		RequestID: requestID,
+		Route:     result.Path,
+		RouteName: result.Name,
+		Params:    result.Params,
+		Matched:   true,
+	})
 
 	// Set params and route name in request context
 	req = SetParams(req, result.Params)
 	if result.Name != "" {
 		req = SetRouteName(req, result.Name)
 	}
+	// Also store route pattern in context
+	reqCtx = context.WithValue(req.Context(), RoutePatternKey, result.Path)
+	req = req.WithContext(reqCtx)
 
-	// Create context and call handler
-	ctx := NewContextV2(w, req)
-	if err := result.Handler(ctx); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	// Create context and call handler with panic recovery
+	ctx := NewContextV2(rw, req)
+
+	// Use defer for panic recovery and event dispatch
+	var handlerErr error
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			// Capture stack trace
+			buf := make([]byte, 4096)
+			n := runtime.Stack(buf, false)
+			stack := string(buf[:n])
+
+			// Convert recovered value to error
+			var err error
+			switch v := recovered.(type) {
+			case error:
+				err = v
+			default:
+				err = &panicError{value: v}
+			}
+
+			// Dispatch failed event
+			dispatchEvent(&RequestFailed{
+				Context:   req.Context(),
+				RequestID: requestID,
+				Method:    req.Method,
+				Path:      req.URL.Path,
+				Error:     err,
+				Stack:     stack,
+				Recovered: true,
+			})
+
+			// Write error response
+			http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
+
+			// Dispatch handled event
+			dispatchEvent(&RequestHandled{
+				Context:      req.Context(),
+				RequestID:    requestID,
+				Method:       req.Method,
+				Path:         req.URL.Path,
+				Route:        result.Path,
+				StatusCode:   http.StatusInternalServerError,
+				BytesWritten: rw.BytesWritten(),
+				Duration:     time.Since(startedAt),
+			})
+		} else if handlerErr != nil {
+			// Dispatch failed event for handler error
+			dispatchEvent(&RequestFailed{
+				Context:   req.Context(),
+				RequestID: requestID,
+				Method:    req.Method,
+				Path:      req.URL.Path,
+				Error:     handlerErr,
+				Recovered: false,
+			})
+
+			// Dispatch handled event
+			dispatchEvent(&RequestHandled{
+				Context:      req.Context(),
+				RequestID:    requestID,
+				Method:       req.Method,
+				Path:         req.URL.Path,
+				Route:        result.Path,
+				StatusCode:   rw.Status(),
+				BytesWritten: rw.BytesWritten(),
+				Duration:     time.Since(startedAt),
+			})
+		} else {
+			// Dispatch handled event for success
+			dispatchEvent(&RequestHandled{
+				Context:      req.Context(),
+				RequestID:    requestID,
+				Method:       req.Method,
+				Path:         req.URL.Path,
+				Route:        result.Path,
+				StatusCode:   rw.Status(),
+				BytesWritten: rw.BytesWritten(),
+				Duration:     time.Since(startedAt),
+			})
+		}
+	}()
+
+	handlerErr = result.Handler(ctx)
+	if handlerErr != nil {
+		http.Error(rw, handlerErr.Error(), http.StatusInternalServerError)
+	}
+}
+
+// panicError wraps a recovered panic value as an error
+type panicError struct {
+	value interface{}
+}
+
+func (e *panicError) Error() string {
+	return "panic: " + toString(e.value)
+}
+
+// toString converts an interface to string
+func toString(v interface{}) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case error:
+		return val.Error()
+	default:
+		return "unknown panic"
 	}
 }
 

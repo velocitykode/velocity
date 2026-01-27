@@ -1,11 +1,13 @@
 package orm
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/velocitykode/velocity/pkg/orm/drivers"
 )
@@ -28,6 +30,9 @@ type Query[T any] struct {
 	onlyTrashed   bool
 	lockForUpdate bool // For pessimistic locking
 	skipLocked    bool // For SKIP LOCKED clause
+
+	// Context for event propagation
+	ctx context.Context
 
 	// Query state
 	lastSQL  string
@@ -255,6 +260,20 @@ func (q *Query[T]) SkipLocked() *Query[T] {
 	return q
 }
 
+// WithContext sets the context for the query (for event propagation)
+func (q *Query[T]) WithContext(ctx context.Context) *Query[T] {
+	q.ctx = ctx
+	return q
+}
+
+// getContext returns the query context, or a background context if none set
+func (q *Query[T]) getContext() context.Context {
+	if q.ctx != nil {
+		return q.ctx
+	}
+	return context.Background()
+}
+
 // Execution methods
 
 // Get retrieves all matching records
@@ -286,8 +305,20 @@ func (q *Query[T]) Get() ([]T, error) {
 	q.lastSQL = sql
 	q.lastArgs = args
 
+	// Track query timing
+	start := time.Now()
+
 	rows, err := q.driver.Query(sql, args...)
+
+	// Dispatch event regardless of error
+	duration := time.Since(start)
+	var rowCount int64
+	if err == nil {
+		// We'll count rows as we scan them
+	}
+
 	if err != nil {
+		dispatchQueryExecuted(q.getContext(), sql, args, duration, 0, q.driver.DriverName(), 2)
 		return nil, err
 	}
 	defer rows.Close()
@@ -296,6 +327,7 @@ func (q *Query[T]) Get() ([]T, error) {
 	for rows.Next() {
 		var model T
 		if err := scanIntoStruct(rows, &model); err != nil {
+			dispatchQueryExecuted(q.getContext(), sql, args, duration, int64(len(results)), q.driver.DriverName(), 2)
 			return nil, err
 		}
 
@@ -306,6 +338,9 @@ func (q *Query[T]) Get() ([]T, error) {
 
 		results = append(results, model)
 	}
+
+	rowCount = int64(len(results))
+	dispatchQueryExecuted(q.getContext(), sql, args, time.Since(start), rowCount, q.driver.DriverName(), 2)
 
 	// Handle eager loading
 	if len(q.preloads) > 0 {
@@ -350,8 +385,11 @@ func (q *Query[T]) Count() (int64, error) {
 
 	sql, args := q.driver.Grammar().CompileSelect(selectQuery)
 
+	start := time.Now()
 	var count int64
 	err := q.driver.QueryRow(sql, args...).Scan(&count)
+	dispatchQueryExecuted(q.getContext(), sql, args, time.Since(start), 1, q.driver.DriverName(), 2)
+
 	return count, err
 }
 
@@ -377,8 +415,10 @@ func (q *Query[T]) Pluck(column string) ([]any, error) {
 
 	sql, args := q.driver.Grammar().CompileSelect(selectQuery)
 
+	start := time.Now()
 	rows, err := q.driver.Query(sql, args...)
 	if err != nil {
+		dispatchQueryExecuted(q.getContext(), sql, args, time.Since(start), 0, q.driver.DriverName(), 2)
 		return nil, err
 	}
 	defer rows.Close()
@@ -387,11 +427,13 @@ func (q *Query[T]) Pluck(column string) ([]any, error) {
 	for rows.Next() {
 		var value any
 		if err := rows.Scan(&value); err != nil {
+			dispatchQueryExecuted(q.getContext(), sql, args, time.Since(start), int64(len(results)), q.driver.DriverName(), 2)
 			return nil, err
 		}
 		results = append(results, value)
 	}
 
+	dispatchQueryExecuted(q.getContext(), sql, args, time.Since(start), int64(len(results)), q.driver.DriverName(), 2)
 	return results, nil
 }
 
@@ -405,12 +447,20 @@ func (q *Query[T]) Update(updates map[string]any) (int64, error) {
 	updates["updated_at"] = "NOW()"
 
 	sql, args := q.driver.Grammar().CompileUpdate(q.table, updates, q.conditions)
+
+	start := time.Now()
 	result, err := q.driver.Exec(sql, args...)
+	duration := time.Since(start)
+
 	if err != nil {
+		dispatchQueryExecuted(q.getContext(), sql, args, duration, 0, q.driver.DriverName(), 2)
 		return 0, err
 	}
 
-	return result.RowsAffected()
+	rowsAffected, _ := result.RowsAffected()
+	dispatchQueryExecuted(q.getContext(), sql, args, duration, rowsAffected, q.driver.DriverName(), 2)
+
+	return rowsAffected, nil
 }
 
 // InsertGetId inserts a record and returns the ID
@@ -444,12 +494,18 @@ func (q *Query[T]) InsertGetId(data map[string]any) (int64, error) {
 			strings.Join(placeholders, ", "),
 		)
 
+		start := time.Now()
 		result, err := q.driver.Exec(sql, values...)
+		duration := time.Since(start)
+
 		if err != nil {
+			dispatchQueryExecuted(q.getContext(), sql, values, duration, 0, driverName, 2)
 			return 0, err
 		}
 
-		return result.LastInsertId()
+		lastID, _ := result.LastInsertId()
+		dispatchQueryExecuted(q.getContext(), sql, values, duration, 1, driverName, 2)
+		return lastID, nil
 	} else {
 		// PostgreSQL: Use RETURNING id clause
 		sql := fmt.Sprintf(
@@ -459,13 +515,17 @@ func (q *Query[T]) InsertGetId(data map[string]any) (int64, error) {
 			strings.Join(placeholders, ", "),
 		)
 
-		// Execute and scan the returned ID
+		start := time.Now()
 		var lastID int64
 		err := q.driver.QueryRow(sql, values...).Scan(&lastID)
+		duration := time.Since(start)
+
 		if err != nil {
+			dispatchQueryExecuted(q.getContext(), sql, values, duration, 0, driverName, 2)
 			return 0, err
 		}
 
+		dispatchQueryExecuted(q.getContext(), sql, values, duration, 1, driverName, 2)
 		return lastID, nil
 	}
 }
@@ -488,12 +548,20 @@ func (q *Query[T]) Delete() (int64, error) {
 // ForceDelete permanently deletes matching records
 func (q *Query[T]) ForceDelete() (int64, error) {
 	sql, args := q.driver.Grammar().CompileDelete(q.table, q.conditions)
+
+	start := time.Now()
 	result, err := q.driver.Exec(sql, args...)
+	duration := time.Since(start)
+
 	if err != nil {
+		dispatchQueryExecuted(q.getContext(), sql, args, duration, 0, q.driver.DriverName(), 2)
 		return 0, err
 	}
 
-	return result.RowsAffected()
+	rowsAffected, _ := result.RowsAffected()
+	dispatchQueryExecuted(q.getContext(), sql, args, duration, rowsAffected, q.driver.DriverName(), 2)
+
+	return rowsAffected, nil
 }
 
 // Chunk processes results in chunks

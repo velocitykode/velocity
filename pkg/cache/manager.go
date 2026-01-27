@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -134,11 +135,22 @@ func (m *Manager) Close() error {
 
 // Get retrieves a value from the default cache store
 func (m *Manager) Get(key string) (interface{}, bool) {
+	return m.GetWithContext(context.Background(), key)
+}
+
+// GetWithContext retrieves a value from the default cache store with context
+func (m *Manager) GetWithContext(ctx context.Context, key string) (interface{}, bool) {
 	store, err := m.DefaultStore()
 	if err != nil {
 		return nil, false
 	}
-	return store.Get(key)
+	value, found := store.Get(key)
+	if found {
+		dispatchCacheHit(ctx, key, m.defaultStore)
+	} else {
+		dispatchCacheMiss(ctx, key, m.defaultStore)
+	}
+	return value, found
 }
 
 // GetString retrieves a string value from the default cache store
@@ -152,29 +164,56 @@ func (m *Manager) GetString(key string) (string, bool) {
 
 // Put stores a value in the default cache store
 func (m *Manager) Put(key string, value interface{}, ttl time.Duration) error {
+	return m.PutWithContext(context.Background(), key, value, ttl)
+}
+
+// PutWithContext stores a value in the default cache store with context
+func (m *Manager) PutWithContext(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
 	store, err := m.DefaultStore()
 	if err != nil {
 		return err
 	}
-	return store.Put(key, value, ttl)
+	if err := store.Put(key, value, ttl); err != nil {
+		return err
+	}
+	dispatchCacheWritten(ctx, key, m.defaultStore, ttl)
+	return nil
 }
 
 // Forever stores a value in the default cache store indefinitely
 func (m *Manager) Forever(key string, value interface{}) error {
+	return m.ForeverWithContext(context.Background(), key, value)
+}
+
+// ForeverWithContext stores a value in the default cache store indefinitely with context
+func (m *Manager) ForeverWithContext(ctx context.Context, key string, value interface{}) error {
 	store, err := m.DefaultStore()
 	if err != nil {
 		return err
 	}
-	return store.Forever(key, value)
+	if err := store.Forever(key, value); err != nil {
+		return err
+	}
+	dispatchCacheWritten(ctx, key, m.defaultStore, 0) // TTL=0 means forever
+	return nil
 }
 
 // Forget removes a value from the default cache store
 func (m *Manager) Forget(key string) error {
+	return m.ForgetWithContext(context.Background(), key)
+}
+
+// ForgetWithContext removes a value from the default cache store with context
+func (m *Manager) ForgetWithContext(ctx context.Context, key string) error {
 	store, err := m.DefaultStore()
 	if err != nil {
 		return err
 	}
-	return store.Forget(key)
+	if err := store.Forget(key); err != nil {
+		return err
+	}
+	dispatchCacheForgotten(ctx, key, m.defaultStore)
+	return nil
 }
 
 // Flush removes all values from the default cache store
