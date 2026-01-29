@@ -351,6 +351,18 @@ func (t *TableBuilder) Timestamps() *TableBuilder {
 	return t
 }
 
+// SoftDeletes adds a deleted_at column for soft delete support
+func (t *TableBuilder) SoftDeletes() *TableBuilder {
+	col := Column{
+		Name:     "deleted_at",
+		Type:     "timestamp",
+		Nullable: true,
+	}
+	t.columns = append(t.columns, col)
+	t.lastColumn = &t.columns[len(t.columns)-1]
+	return t
+}
+
 // Unique marks the previous column as unique
 func (t *TableBuilder) Unique() *TableBuilder {
 	if t.lastColumn != nil {

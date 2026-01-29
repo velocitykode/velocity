@@ -65,6 +65,7 @@ t.String("code", 10)            // VARCHAR(10)
 t.Integer("count")              // INTEGER
 t.Boolean("active")             // BOOLEAN
 t.Timestamps()                  // created_at, updated_at
+t.SoftDeletes()                 // deleted_at (nullable)
 
 // Modifiers
 t.String("email").Unique()      // UNIQUE constraint
