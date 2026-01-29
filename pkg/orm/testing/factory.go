@@ -89,12 +89,21 @@ func (f *Factory) Create(overrides ...map[string]interface{}) interface{} {
 		panic("cannot determine database driver")
 	}
 
-	if f.count == 1 {
+	// Capture count for this call
+	count := f.count
+
+	// Reset count and state for next call (defer to ensure reset even on panic)
+	defer func() {
+		f.count = 1
+		f.activeState = ""
+	}()
+
+	if count == 1 {
 		return f.persistOne(db, driver, 0, overrides...)
 	}
 
-	results := make([]map[string]interface{}, 0, f.count)
-	for i := 0; i < f.count; i++ {
+	results := make([]map[string]interface{}, 0, count)
+	for i := 0; i < count; i++ {
 		results = append(results, f.persistOne(db, driver, i, overrides...))
 	}
 	return results
