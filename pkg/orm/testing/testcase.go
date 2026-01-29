@@ -19,7 +19,6 @@ var (
 type TestCase struct {
 	t  *testing.T
 	db *sql.DB
-	tx *sql.Tx
 }
 
 // NewTestCase creates a new test case instance
@@ -32,8 +31,7 @@ func NewTestCase(t *testing.T) *TestCase {
 
 // LazyRefreshDatabase resets the database for testing:
 // 1. Runs migrations ONCE per test suite (not per test)
-// 2. Wraps each test in a transaction
-// 3. Rolls back after test (fast, ~1ms)
+// 2. Truncates all tables before each test (fast cleanup)
 //
 // Usage:
 //
@@ -41,7 +39,7 @@ func NewTestCase(t *testing.T) *TestCase {
 //	    tc := testing.NewTestCase(t)
 //	    tc.LazyRefreshDatabase()
 //
-//	    // Test code - runs in transaction, auto-rollback after
+//	    // Test code - clean database, fast setup
 //	}
 func (tc *TestCase) LazyRefreshDatabase() {
 	tc.ensureSafeEnvironment()
@@ -60,8 +58,10 @@ func (tc *TestCase) LazyRefreshDatabase() {
 		schemaRefreshed = true
 	})
 
-	// Begin transaction for this test
-	tc.beginTransaction()
+	// Truncate tables for each test (fast cleanup)
+	if err := TruncateAllTables(tc.db, orm.GetDriver()); err != nil {
+		tc.t.Fatalf("LazyRefreshDatabase: failed to truncate tables: %v", err)
+	}
 }
 
 // RefreshDatabase drops all tables and runs migrations for EACH test
@@ -91,34 +91,9 @@ func (tc *TestCase) RefreshDatabase() {
 	}
 }
 
-// beginTransaction starts a transaction and sets up rollback on cleanup
-func (tc *TestCase) beginTransaction() {
-	tx, err := tc.db.Begin()
-	if err != nil {
-		tc.t.Fatalf("failed to begin transaction: %v", err)
-	}
-	tc.tx = tx
-
-	// Override ORM's DB connection to use this transaction
-	orm.SetTx(tx)
-
-	// Rollback when test completes
-	tc.t.Cleanup(func() {
-		if tc.tx != nil {
-			tc.tx.Rollback()
-			orm.ClearTx()
-		}
-	})
-}
-
-// DB returns the database connection (or transaction if active)
+// DB returns the database connection
 func (tc *TestCase) DB() *sql.DB {
 	return tc.db
-}
-
-// Tx returns the current transaction (nil if not in transaction)
-func (tc *TestCase) Tx() *sql.Tx {
-	return tc.tx
 }
 
 // ensureSafeEnvironment checks we're in test mode

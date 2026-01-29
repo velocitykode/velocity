@@ -1,7 +1,6 @@
 package testing
 
 import (
-	"database/sql"
 	"fmt"
 	"sync"
 
@@ -79,8 +78,8 @@ func (f *Factory) Make(overrides ...map[string]interface{}) interface{} {
 
 // Create generates data and persists to database
 func (f *Factory) Create(overrides ...map[string]interface{}) interface{} {
-	db := orm.DB()
-	if db == nil {
+	exec := orm.Executor()
+	if exec == nil {
 		panic("ORM not initialized - call orm.Init() before using factories")
 	}
 
@@ -99,12 +98,12 @@ func (f *Factory) Create(overrides ...map[string]interface{}) interface{} {
 	}()
 
 	if count == 1 {
-		return f.persistOne(db, driver, 0, overrides...)
+		return f.persistOne(exec, driver, 0, overrides...)
 	}
 
 	results := make([]map[string]interface{}, 0, count)
 	for i := 0; i < count; i++ {
-		results = append(results, f.persistOne(db, driver, i, overrides...))
+		results = append(results, f.persistOne(exec, driver, i, overrides...))
 	}
 	return results
 }
@@ -139,7 +138,7 @@ func (f *Factory) generateOne(index int, overrides ...map[string]interface{}) ma
 }
 
 // persistOne generates and persists a single record
-func (f *Factory) persistOne(db *sql.DB, driver string, index int, overrides ...map[string]interface{}) map[string]interface{} {
+func (f *Factory) persistOne(exec orm.QueryExecutor, driver string, index int, overrides ...map[string]interface{}) map[string]interface{} {
 	data := f.generateOne(index, overrides...)
 
 	// Build INSERT query
@@ -149,13 +148,13 @@ func (f *Factory) persistOne(db *sql.DB, driver string, index int, overrides ...
 	if driver == "postgres" {
 		query += " RETURNING id"
 		var id int64
-		err := db.QueryRow(query, values...).Scan(&id)
+		err := exec.QueryRow(query, values...).Scan(&id)
 		if err != nil {
 			panic(fmt.Sprintf("failed to create %s: %v", f.tableName, err))
 		}
 		data["id"] = id
 	} else {
-		result, err := db.Exec(query, values...)
+		result, err := exec.Exec(query, values...)
 		if err != nil {
 			panic(fmt.Sprintf("failed to create %s: %v", f.tableName, err))
 		}
