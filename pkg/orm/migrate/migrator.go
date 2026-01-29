@@ -334,6 +334,54 @@ func (t *TableBuilder) Boolean(name string) *TableBuilder {
 	return t
 }
 
+// Text adds a TEXT column (unlimited length)
+func (t *TableBuilder) Text(name string) *TableBuilder {
+	col := Column{
+		Name:     name,
+		Type:     "text",
+		Nullable: false,
+	}
+	t.columns = append(t.columns, col)
+	t.lastColumn = &t.columns[len(t.columns)-1]
+	return t
+}
+
+// Timestamp adds a single TIMESTAMP column
+func (t *TableBuilder) Timestamp(name string) *TableBuilder {
+	col := Column{
+		Name:     name,
+		Type:     "timestamp",
+		Nullable: false,
+	}
+	t.columns = append(t.columns, col)
+	t.lastColumn = &t.columns[len(t.columns)-1]
+	return t
+}
+
+// Date adds a DATE column
+func (t *TableBuilder) Date(name string) *TableBuilder {
+	col := Column{
+		Name:     name,
+		Type:     "date",
+		Nullable: false,
+	}
+	t.columns = append(t.columns, col)
+	t.lastColumn = &t.columns[len(t.columns)-1]
+	return t
+}
+
+// BigInteger adds a BIGINT column
+func (t *TableBuilder) BigInteger(name string) *TableBuilder {
+	col := Column{
+		Name:     name,
+		Type:     "biginteger",
+		Nullable: false,
+	}
+	t.columns = append(t.columns, col)
+	t.lastColumn = &t.columns[len(t.columns)-1]
+	return t
+}
+
 // Timestamps adds created_at and updated_at columns
 func (t *TableBuilder) Timestamps() *TableBuilder {
 	createdAt := Column{
@@ -419,12 +467,18 @@ func (t *TableBuilder) toSQLiteSyntax() string {
 			} else {
 				sql += "INTEGER"
 			}
+		case "biginteger":
+			sql += "INTEGER" // SQLite uses INTEGER for all int sizes
 		case "string":
 			sql += "VARCHAR(" + fmt.Sprintf("%d", col.Length) + ")"
+		case "text":
+			sql += "TEXT"
 		case "boolean":
 			sql += "INTEGER" // SQLite uses 0/1 for boolean
 		case "timestamp":
 			sql += "DATETIME DEFAULT CURRENT_TIMESTAMP"
+		case "date":
+			sql += "DATE"
 		}
 
 		// Constraints
@@ -464,12 +518,18 @@ func (t *TableBuilder) toPostgresSyntax() string {
 			} else {
 				sql += "INTEGER"
 			}
+		case "biginteger":
+			sql += "BIGINT"
 		case "string":
 			sql += "VARCHAR(" + fmt.Sprintf("%d", col.Length) + ")"
+		case "text":
+			sql += "TEXT"
 		case "boolean":
 			sql += "BOOLEAN"
 		case "timestamp":
 			sql += "TIMESTAMP DEFAULT NOW()"
+		case "date":
+			sql += "DATE"
 		}
 
 		// Constraints (skip if already handled by SERIAL PRIMARY KEY)
@@ -511,12 +571,18 @@ func (t *TableBuilder) toMySQLSyntax() string {
 			} else {
 				sql += "INT"
 			}
+		case "biginteger":
+			sql += "BIGINT"
 		case "string":
 			sql += "VARCHAR(" + fmt.Sprintf("%d", col.Length) + ")"
+		case "text":
+			sql += "TEXT"
 		case "boolean":
 			sql += "BOOLEAN"
 		case "timestamp":
 			sql += "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+		case "date":
+			sql += "DATE"
 		}
 
 		// Constraints (skip if already handled by AUTO_INCREMENT PRIMARY KEY)

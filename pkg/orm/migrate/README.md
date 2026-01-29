@@ -62,8 +62,12 @@ err := migrator.Up()
 t.ID()                           // Auto-increment primary key
 t.String("name")                 // VARCHAR(255)
 t.String("code", 10)            // VARCHAR(10)
+t.Text("bio")                   // TEXT (unlimited)
 t.Integer("count")              // INTEGER
+t.BigInteger("views")           // BIGINT
 t.Boolean("active")             // BOOLEAN
+t.Timestamp("verified_at")      // Single TIMESTAMP column
+t.Date("birth_date")            // DATE
 t.Timestamps()                  // created_at, updated_at
 t.SoftDeletes()                 // deleted_at (nullable)
 

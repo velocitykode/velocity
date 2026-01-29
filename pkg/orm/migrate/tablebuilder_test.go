@@ -150,8 +150,12 @@ func TestTableBuilder_AllColumns(t *testing.T) {
 		t.ID()
 		t.String("name")
 		t.String("code", 10)
+		t.Text("bio")
 		t.Integer("count")
+		t.BigInteger("views")
 		t.Boolean("active")
+		t.Timestamp("verified_at").Nullable()
+		t.Date("birth_date").Nullable()
 		t.Timestamps()
 		t.SoftDeletes()
 	})
@@ -168,14 +172,18 @@ func TestTableBuilder_AllColumns(t *testing.T) {
 	defer rows.Close()
 
 	expectedColumns := map[string]bool{
-		"id":         false,
-		"name":       false,
-		"code":       false,
-		"count":      false,
-		"active":     false,
-		"created_at": false,
-		"updated_at": false,
-		"deleted_at": false,
+		"id":          false,
+		"name":        false,
+		"code":        false,
+		"bio":         false,
+		"count":       false,
+		"views":       false,
+		"active":      false,
+		"verified_at": false,
+		"birth_date":  false,
+		"created_at":  false,
+		"updated_at":  false,
+		"deleted_at":  false,
 	}
 
 	for rows.Next() {
@@ -201,4 +209,127 @@ func TestTableBuilder_AllColumns(t *testing.T) {
 	}
 
 	migrator.DropTable("full_model")
+}
+
+func TestTableBuilder_NewColumnTypes(t *testing.T) {
+	err := orm.Init("sqlite", map[string]any{
+		"database": ":memory:",
+	})
+	if err != nil {
+		t.Fatalf("failed to init ORM: %v", err)
+	}
+	defer orm.Close()
+
+	migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+
+	// Test Text column
+	t.Run("Text", func(t *testing.T) {
+		err := migrator.CreateTable("text_test", func(tb *migrate.TableBuilder) {
+			tb.ID()
+			tb.Text("content")
+		})
+		if err != nil {
+			t.Fatalf("failed to create table: %v", err)
+		}
+		defer migrator.DropTable("text_test")
+
+		// Insert and retrieve text data
+		db := orm.DB()
+		longText := strings.Repeat("a", 1000)
+		_, err = db.Exec("INSERT INTO text_test (content) VALUES (?)", longText)
+		if err != nil {
+			t.Fatalf("failed to insert: %v", err)
+		}
+
+		var retrieved string
+		err = db.QueryRow("SELECT content FROM text_test WHERE id = 1").Scan(&retrieved)
+		if err != nil {
+			t.Fatalf("failed to query: %v", err)
+		}
+		if retrieved != longText {
+			t.Errorf("text content mismatch")
+		}
+	})
+
+	// Test BigInteger column
+	t.Run("BigInteger", func(t *testing.T) {
+		err := migrator.CreateTable("bigint_test", func(tb *migrate.TableBuilder) {
+			tb.ID()
+			tb.BigInteger("big_number")
+		})
+		if err != nil {
+			t.Fatalf("failed to create table: %v", err)
+		}
+		defer migrator.DropTable("bigint_test")
+
+		db := orm.DB()
+		bigNum := int64(9223372036854775807) // Max int64
+		_, err = db.Exec("INSERT INTO bigint_test (big_number) VALUES (?)", bigNum)
+		if err != nil {
+			t.Fatalf("failed to insert: %v", err)
+		}
+
+		var retrieved int64
+		err = db.QueryRow("SELECT big_number FROM bigint_test WHERE id = 1").Scan(&retrieved)
+		if err != nil {
+			t.Fatalf("failed to query: %v", err)
+		}
+		if retrieved != bigNum {
+			t.Errorf("expected %d, got %d", bigNum, retrieved)
+		}
+	})
+
+	// Test Date column
+	t.Run("Date", func(t *testing.T) {
+		err := migrator.CreateTable("date_test", func(tb *migrate.TableBuilder) {
+			tb.ID()
+			tb.Date("birth_date").Nullable()
+		})
+		if err != nil {
+			t.Fatalf("failed to create table: %v", err)
+		}
+		defer migrator.DropTable("date_test")
+
+		db := orm.DB()
+		_, err = db.Exec("INSERT INTO date_test (birth_date) VALUES (?)", "2000-01-15")
+		if err != nil {
+			t.Fatalf("failed to insert: %v", err)
+		}
+
+		var retrieved string
+		err = db.QueryRow("SELECT birth_date FROM date_test WHERE id = 1").Scan(&retrieved)
+		if err != nil {
+			t.Fatalf("failed to query: %v", err)
+		}
+		if !strings.Contains(retrieved, "2000-01-15") {
+			t.Errorf("expected date containing 2000-01-15, got %s", retrieved)
+		}
+	})
+
+	// Test single Timestamp column
+	t.Run("Timestamp", func(t *testing.T) {
+		err := migrator.CreateTable("ts_test", func(tb *migrate.TableBuilder) {
+			tb.ID()
+			tb.Timestamp("verified_at").Nullable()
+		})
+		if err != nil {
+			t.Fatalf("failed to create table: %v", err)
+		}
+		defer migrator.DropTable("ts_test")
+
+		db := orm.DB()
+		_, err = db.Exec("INSERT INTO ts_test (verified_at) VALUES (?)", "2024-01-15 10:30:00")
+		if err != nil {
+			t.Fatalf("failed to insert: %v", err)
+		}
+
+		var retrieved string
+		err = db.QueryRow("SELECT verified_at FROM ts_test WHERE id = 1").Scan(&retrieved)
+		if err != nil {
+			t.Fatalf("failed to query: %v", err)
+		}
+		if !strings.Contains(retrieved, "2024-01-15") {
+			t.Errorf("expected timestamp containing 2024-01-15, got %s", retrieved)
+		}
+	})
 }
