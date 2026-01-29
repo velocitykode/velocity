@@ -344,9 +344,16 @@ func mapToStruct(m map[string]any, s any) error {
 		if val, ok := m[fieldName]; ok {
 			fieldValue := v.Field(i)
 			if fieldValue.CanSet() {
-				// Simple type conversion - expand as needed
 				valReflect := reflect.ValueOf(val)
-				if valReflect.Type().ConvertibleTo(fieldValue.Type()) {
+
+				// Handle pointer fields: if field is *T and val is T, create pointer
+				if fieldValue.Kind() == reflect.Ptr && valReflect.Kind() != reflect.Ptr {
+					if valReflect.Type().ConvertibleTo(fieldValue.Type().Elem()) {
+						ptr := reflect.New(fieldValue.Type().Elem())
+						ptr.Elem().Set(valReflect.Convert(fieldValue.Type().Elem()))
+						fieldValue.Set(ptr)
+					}
+				} else if valReflect.Type().ConvertibleTo(fieldValue.Type()) {
 					fieldValue.Set(valReflect.Convert(fieldValue.Type()))
 				}
 			}
