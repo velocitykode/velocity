@@ -476,7 +476,10 @@ func (t *TableBuilder) toSQLiteSyntax() string {
 		case "boolean":
 			sql += "INTEGER" // SQLite uses 0/1 for boolean
 		case "timestamp":
-			sql += "DATETIME DEFAULT CURRENT_TIMESTAMP"
+			sql += "DATETIME"
+			if !col.Nullable {
+				sql += " DEFAULT CURRENT_TIMESTAMP"
+			}
 		case "date":
 			sql += "DATE"
 		}
@@ -527,7 +530,10 @@ func (t *TableBuilder) toPostgresSyntax() string {
 		case "boolean":
 			sql += "BOOLEAN"
 		case "timestamp":
-			sql += "TIMESTAMP DEFAULT NOW()"
+			sql += "TIMESTAMP"
+			if !col.Nullable {
+				sql += " DEFAULT NOW()"
+			}
 		case "date":
 			sql += "DATE"
 		}
@@ -580,7 +586,10 @@ func (t *TableBuilder) toMySQLSyntax() string {
 		case "boolean":
 			sql += "BOOLEAN"
 		case "timestamp":
-			sql += "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+			sql += "TIMESTAMP"
+			if !col.Nullable {
+				sql += " DEFAULT CURRENT_TIMESTAMP"
+			}
 		case "date":
 			sql += "DATE"
 		}
