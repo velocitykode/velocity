@@ -136,16 +136,24 @@ func (f *Factory) persistOne(db *sql.DB, driver string, index int, overrides ...
 	// Build INSERT query
 	query, values := buildInsertSQL(f.tableName, data, driver)
 
-	// Execute insert
-	result, err := db.Exec(query, values...)
-	if err != nil {
-		panic(fmt.Sprintf("failed to create %s: %v", f.tableName, err))
-	}
-
-	// Get inserted ID
-	id, err := result.LastInsertId()
-	if err == nil {
+	// PostgreSQL uses RETURNING, others use LastInsertId
+	if driver == "postgres" {
+		query += " RETURNING id"
+		var id int64
+		err := db.QueryRow(query, values...).Scan(&id)
+		if err != nil {
+			panic(fmt.Sprintf("failed to create %s: %v", f.tableName, err))
+		}
 		data["id"] = id
+	} else {
+		result, err := db.Exec(query, values...)
+		if err != nil {
+			panic(fmt.Sprintf("failed to create %s: %v", f.tableName, err))
+		}
+		id, err := result.LastInsertId()
+		if err == nil {
+			data["id"] = id
+		}
 	}
 
 	return data
