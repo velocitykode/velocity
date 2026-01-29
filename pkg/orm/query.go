@@ -736,8 +736,9 @@ func toSnakeCase(str string) string {
 	var result []byte
 	for i, r := range str {
 		if i > 0 && r >= 'A' && r <= 'Z' {
-			// Only add underscore if previous char is lowercase
-			if len(result) > 0 && result[len(result)-1] >= 'a' && result[len(result)-1] <= 'z' {
+			// Only add underscore if previous char in ORIGINAL string is lowercase
+			prevChar := str[i-1]
+			if prevChar >= 'a' && prevChar <= 'z' {
 				result = append(result, '_')
 			}
 		}
