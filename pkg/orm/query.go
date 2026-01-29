@@ -731,11 +731,15 @@ func scanIntoStruct(rows *sql.Rows, dest any) error {
 }
 
 // toSnakeCase converts a string from CamelCase to snake_case
+// Handles consecutive capitals: ProviderID -> provider_id, not provider_i_d
 func toSnakeCase(str string) string {
 	var result []byte
 	for i, r := range str {
 		if i > 0 && r >= 'A' && r <= 'Z' {
-			result = append(result, '_')
+			// Only add underscore if previous char is lowercase
+			if len(result) > 0 && result[len(result)-1] >= 'a' && result[len(result)-1] <= 'z' {
+				result = append(result, '_')
+			}
 		}
 		result = append(result, byte(strings.ToLower(string(r))[0]))
 	}
