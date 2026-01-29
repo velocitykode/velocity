@@ -24,6 +24,10 @@ var (
 
 	// Current database name
 	currentDatabaseName string
+
+	// Test transaction (for RefreshDatabase pattern)
+	testTx   *sql.Tx
+	testTxMu sync.RWMutex
 )
 
 // Init initializes the ORM with the specified driver and configuration
@@ -232,6 +236,45 @@ func Begin() (*sql.Tx, error) {
 		return nil, errors.New("no database connection")
 	}
 	return driver.Begin()
+}
+
+// SetTx sets a test transaction for RefreshDatabase pattern
+// All queries will use this transaction until ClearTx is called
+func SetTx(tx *sql.Tx) {
+	testTxMu.Lock()
+	defer testTxMu.Unlock()
+	testTx = tx
+}
+
+// ClearTx clears the test transaction
+func ClearTx() {
+	testTxMu.Lock()
+	defer testTxMu.Unlock()
+	testTx = nil
+}
+
+// GetTx returns the current test transaction (nil if not in test)
+func GetTx() *sql.Tx {
+	testTxMu.RLock()
+	defer testTxMu.RUnlock()
+	return testTx
+}
+
+// Executor returns the current query executor (transaction if set, otherwise DB)
+func Executor() QueryExecutor {
+	testTxMu.RLock()
+	defer testTxMu.RUnlock()
+	if testTx != nil {
+		return testTx
+	}
+	return DB()
+}
+
+// QueryExecutor interface for *sql.DB and *sql.Tx
+type QueryExecutor interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
 }
 
 // Raw executes a raw SQL query

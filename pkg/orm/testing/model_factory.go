@@ -160,6 +160,7 @@ func (f *ModelFactory[T]) makeOne(activeState string, overrides *T) *T {
 func (f *ModelFactory[T]) createOne(activeState string, overrides *T) *T {
 	model := f.makeOne(activeState, overrides)
 
+	// Use transaction if available (RefreshDatabase pattern)
 	if err := orm.Save(model); err != nil {
 		panic("failed to create model: " + err.Error())
 	}
