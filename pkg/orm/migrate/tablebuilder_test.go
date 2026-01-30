@@ -332,4 +332,63 @@ func TestTableBuilder_NewColumnTypes(t *testing.T) {
 			t.Errorf("expected timestamp containing 2024-01-15, got %s", retrieved)
 		}
 	})
+
+	// Test UUID column
+	t.Run("UUID", func(t *testing.T) {
+		err := migrator.CreateTable("uuid_col_test", func(tb *migrate.TableBuilder) {
+			tb.ID()
+			tb.UUID("external_id").Unique()
+		})
+		if err != nil {
+			t.Fatalf("failed to create table: %v", err)
+		}
+		defer migrator.DropTable("uuid_col_test")
+
+		db := orm.DB()
+		testUUID := "550e8400-e29b-41d4-a716-446655440000"
+		_, err = db.Exec("INSERT INTO uuid_col_test (external_id) VALUES (?)", testUUID)
+		if err != nil {
+			t.Fatalf("failed to insert: %v", err)
+		}
+
+		var retrieved string
+		err = db.QueryRow("SELECT external_id FROM uuid_col_test WHERE id = 1").Scan(&retrieved)
+		if err != nil {
+			t.Fatalf("failed to query: %v", err)
+		}
+		if retrieved != testUUID {
+			t.Errorf("expected %s, got %s", testUUID, retrieved)
+		}
+	})
+
+	// Test UUIDPrimary column
+	t.Run("UUIDPrimary", func(t *testing.T) {
+		err := migrator.CreateTable("uuid_pk_test", func(tb *migrate.TableBuilder) {
+			tb.UUIDPrimary()
+			tb.String("name")
+		})
+		if err != nil {
+			t.Fatalf("failed to create table: %v", err)
+		}
+		defer migrator.DropTable("uuid_pk_test")
+
+		db := orm.DB()
+		testUUID := "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
+		_, err = db.Exec("INSERT INTO uuid_pk_test (id, name) VALUES (?, ?)", testUUID, "Test")
+		if err != nil {
+			t.Fatalf("failed to insert: %v", err)
+		}
+
+		var retrievedID, retrievedName string
+		err = db.QueryRow("SELECT id, name FROM uuid_pk_test WHERE id = ?", testUUID).Scan(&retrievedID, &retrievedName)
+		if err != nil {
+			t.Fatalf("failed to query: %v", err)
+		}
+		if retrievedID != testUUID {
+			t.Errorf("expected ID %s, got %s", testUUID, retrievedID)
+		}
+		if retrievedName != "Test" {
+			t.Errorf("expected name Test, got %s", retrievedName)
+		}
+	})
 }

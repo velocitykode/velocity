@@ -292,6 +292,34 @@ func (t *TableBuilder) ID() *TableBuilder {
 	return t
 }
 
+// UUIDPrimary adds a UUID primary key column named 'id' with auto-generation
+// For PostgreSQL: Uses gen_random_uuid() (built-in since v13) or uuid_generate_v4() (requires pgcrypto)
+// For MySQL: Uses UUID() function
+// For SQLite: Requires application-level UUID generation
+func (t *TableBuilder) UUIDPrimary() *TableBuilder {
+	col := Column{
+		Name:       "id",
+		Type:       "uuid",
+		PrimaryKey: true,
+		Nullable:   false,
+	}
+	t.columns = append(t.columns, col)
+	t.lastColumn = &t.columns[len(t.columns)-1]
+	return t
+}
+
+// UUID adds a UUID column
+func (t *TableBuilder) UUID(name string) *TableBuilder {
+	col := Column{
+		Name:     name,
+		Type:     "uuid",
+		Nullable: false,
+	}
+	t.columns = append(t.columns, col)
+	t.lastColumn = &t.columns[len(t.columns)-1]
+	return t
+}
+
 // String adds a VARCHAR column
 func (t *TableBuilder) String(name string, length ...int) *TableBuilder {
 	colLength := 255
@@ -482,6 +510,11 @@ func (t *TableBuilder) toSQLiteSyntax() string {
 			}
 		case "date":
 			sql += "DATE"
+		case "uuid":
+			sql += "TEXT" // SQLite doesn't have native UUID, use TEXT
+			if col.PrimaryKey {
+				sql += " PRIMARY KEY"
+			}
 		}
 
 		// Constraints
@@ -536,10 +569,16 @@ func (t *TableBuilder) toPostgresSyntax() string {
 			}
 		case "date":
 			sql += "DATE"
+		case "uuid":
+			if col.PrimaryKey {
+				sql += "UUID PRIMARY KEY DEFAULT gen_random_uuid()"
+			} else {
+				sql += "UUID"
+			}
 		}
 
-		// Constraints (skip if already handled by SERIAL PRIMARY KEY)
-		if !(col.PrimaryKey && col.AutoIncrement) {
+		// Constraints (skip if already handled by SERIAL PRIMARY KEY or UUID PRIMARY KEY)
+		if !(col.PrimaryKey && col.AutoIncrement) && !(col.PrimaryKey && col.Type == "uuid") {
 			if !col.Nullable {
 				sql += " NOT NULL"
 			}
@@ -592,10 +631,16 @@ func (t *TableBuilder) toMySQLSyntax() string {
 			}
 		case "date":
 			sql += "DATE"
+		case "uuid":
+			if col.PrimaryKey {
+				sql += "CHAR(36) PRIMARY KEY"
+			} else {
+				sql += "CHAR(36)"
+			}
 		}
 
-		// Constraints (skip if already handled by AUTO_INCREMENT PRIMARY KEY)
-		if !(col.PrimaryKey && col.AutoIncrement) {
+		// Constraints (skip if already handled by AUTO_INCREMENT PRIMARY KEY or UUID PRIMARY KEY)
+		if !(col.PrimaryKey && col.AutoIncrement) && !(col.PrimaryKey && col.Type == "uuid") {
 			if !col.Nullable {
 				sql += " NOT NULL"
 			}

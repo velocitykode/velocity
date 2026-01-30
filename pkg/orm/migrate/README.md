@@ -59,13 +59,18 @@ err := migrator.Up()
 ## TableBuilder API
 
 ```go
-t.ID()                           // Auto-increment primary key
+// Primary Keys
+t.ID()                           // Auto-increment integer primary key
+t.UUIDPrimary()                  // UUID primary key with auto-generation
+
+// Column Types
 t.String("name")                 // VARCHAR(255)
 t.String("code", 10)            // VARCHAR(10)
 t.Text("bio")                   // TEXT (unlimited)
 t.Integer("count")              // INTEGER
 t.BigInteger("views")           // BIGINT
 t.Boolean("active")             // BOOLEAN
+t.UUID("external_id")           // UUID column
 t.Timestamp("verified_at")      // Single TIMESTAMP column
 t.Date("birth_date")            // DATE
 t.Timestamps()                  // created_at, updated_at
@@ -76,6 +81,30 @@ t.String("email").Unique()      // UNIQUE constraint
 t.String("bio").Nullable()      // Allow NULL
 t.Integer("status").Default(0)  // Default value
 ```
+
+### UUID Primary Keys
+
+For distributed systems or external-facing APIs where sequential IDs pose security risks:
+
+```go
+// Migration
+m.CreateTable("projects", func(t *migrate.TableBuilder) {
+    t.UUIDPrimary()              // UUID primary key
+    t.String("name")
+    t.Timestamps()
+})
+
+// Model (use UUIDModel instead of Model)
+type Project struct {
+    orm.UUIDModel[Project]
+    Name string `orm:"column:name" json:"name"`
+}
+```
+
+**Database-specific behavior:**
+- **PostgreSQL**: Uses `UUID` type with `gen_random_uuid()` default
+- **MySQL**: Uses `CHAR(36)`
+- **SQLite**: Uses `TEXT`
 
 ## Commands
 
