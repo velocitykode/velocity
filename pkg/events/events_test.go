@@ -383,3 +383,165 @@ func TestFakeDispatcher(t *testing.T) {
 	// Reset global dispatcher
 	Reset()
 }
+
+func TestListenerIDReturned(t *testing.T) {
+	dispatcher := NewDispatcher()
+	listener := &TestListener{}
+
+	// Listen should return a non-zero ID
+	id := dispatcher.Listen("test.event", listener)
+	if id == 0 {
+		t.Error("Expected non-zero listener ID")
+	}
+
+	// Each listener should get a unique ID
+	id2 := dispatcher.Listen("test.event", listener)
+	if id2 == id {
+		t.Error("Expected unique listener IDs")
+	}
+	if id2 <= id {
+		t.Error("Expected IDs to be incrementing")
+	}
+}
+
+func TestOffRemovesListener(t *testing.T) {
+	dispatcher := NewDispatcher()
+	listener := &TestListener{}
+
+	// Register listener
+	id := dispatcher.Listen("test.event", listener)
+
+	// Verify listener is registered
+	if !dispatcher.HasListeners("test.event") {
+		t.Error("Expected listener to be registered")
+	}
+
+	// Remove listener by ID
+	removed := dispatcher.Off(id)
+	if !removed {
+		t.Error("Expected Off to return true")
+	}
+
+	// Verify listener is removed
+	if dispatcher.HasListeners("test.event") {
+		t.Error("Expected listener to be removed")
+	}
+
+	// Dispatch should not trigger listener
+	dispatcher.Dispatch("test.event")
+	if listener.WasHandled() {
+		t.Error("Expected listener not to be called after Off")
+	}
+}
+
+func TestOffWithInvalidID(t *testing.T) {
+	dispatcher := NewDispatcher()
+
+	// Off with non-existent ID should return false
+	removed := dispatcher.Off(9999)
+	if removed {
+		t.Error("Expected Off to return false for invalid ID")
+	}
+}
+
+func TestOffRemovesOnlySpecificListener(t *testing.T) {
+	dispatcher := NewDispatcher()
+	listener1 := &TestListener{}
+	listener2 := &TestListener{}
+
+	// Register two listeners
+	id1 := dispatcher.Listen("test.event", listener1)
+	_ = dispatcher.Listen("test.event", listener2)
+
+	// Remove first listener
+	dispatcher.Off(id1)
+
+	// Dispatch event
+	dispatcher.Dispatch("test.event")
+
+	// Only listener2 should be called
+	if listener1.WasHandled() {
+		t.Error("Expected listener1 not to be called")
+	}
+	if !listener2.WasHandled() {
+		t.Error("Expected listener2 to be called")
+	}
+}
+
+func TestOffWithWildcardListener(t *testing.T) {
+	dispatcher := NewDispatcher()
+	listener := &TestListener{}
+
+	// Register wildcard listener
+	id := dispatcher.Listen("user.*", listener)
+
+	// Verify it matches
+	if !dispatcher.HasListeners(UserRegistered{}) {
+		t.Error("Expected wildcard listener to match")
+	}
+
+	// Remove it
+	removed := dispatcher.Off(id)
+	if !removed {
+		t.Error("Expected Off to return true for wildcard listener")
+	}
+
+	// Verify it's removed
+	if dispatcher.HasListeners(UserRegistered{}) {
+		t.Error("Expected wildcard listener to be removed")
+	}
+}
+
+func TestGlobalOnReturnsID(t *testing.T) {
+	Reset()
+
+	handlerCalled := false
+	id := On("test.event", func(e interface{}) error {
+		handlerCalled = true
+		return nil
+	})
+
+	if id == 0 {
+		t.Error("Expected non-zero listener ID from On()")
+	}
+
+	// Verify it works
+	Dispatch("test.event")
+	if !handlerCalled {
+		t.Error("Expected handler to be called")
+	}
+
+	// Remove and verify
+	handlerCalled = false
+	Off(id)
+	Dispatch("test.event")
+	if handlerCalled {
+		t.Error("Expected handler not to be called after Off")
+	}
+
+	Reset()
+}
+
+func TestConcurrentOnOff(t *testing.T) {
+	dispatcher := NewDispatcher()
+	var wg sync.WaitGroup
+
+	// Concurrently add and remove listeners
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			listener := &TestListener{}
+			id := dispatcher.Listen("concurrent.event", listener)
+			// Small delay to mix operations
+			dispatcher.Off(id)
+		}()
+	}
+
+	wg.Wait()
+
+	// All listeners should be removed
+	if dispatcher.HasListeners("concurrent.event") {
+		t.Error("Expected all listeners to be removed")
+	}
+}

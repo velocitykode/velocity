@@ -9,25 +9,32 @@ import (
 
 // FakeDispatcher is a fake event dispatcher for testing
 type FakeDispatcher struct {
-	mu         sync.RWMutex
-	events     []interface{}
-	listeners  map[string][]Listener
-	shouldFake bool
+	mu           sync.RWMutex
+	events       []interface{}
+	listeners    map[string][]listenerEntry
+	listenerByID map[int]string
+	nextID       int
+	shouldFake   bool
 }
 
 // NewFakeDispatcher creates a new fake dispatcher
 func NewFakeDispatcher() *FakeDispatcher {
 	return &FakeDispatcher{
-		events:     make([]interface{}, 0),
-		listeners:  make(map[string][]Listener),
-		shouldFake: true,
+		events:       make([]interface{}, 0),
+		listeners:    make(map[string][]listenerEntry),
+		listenerByID: make(map[int]string),
+		shouldFake:   true,
 	}
 }
 
-// Listen registers a listener (but won't execute in fake mode)
-func (f *FakeDispatcher) Listen(events interface{}, listener Listener) {
+// Listen registers a listener (but won't execute in fake mode).
+// Returns a listener ID that can be used with Off() to unregister.
+func (f *FakeDispatcher) Listen(events interface{}, listener Listener) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	f.nextID++
+	id := f.nextID
 
 	var eventNames []string
 	switch e := events.(type) {
@@ -40,8 +47,38 @@ func (f *FakeDispatcher) Listen(events interface{}, listener Listener) {
 	}
 
 	for _, event := range eventNames {
-		f.listeners[event] = append(f.listeners[event], listener)
+		entry := listenerEntry{id: id, listener: listener}
+		f.listeners[event] = append(f.listeners[event], entry)
+		f.listenerByID[id] = event
 	}
+
+	return id
+}
+
+// Off removes a listener by its ID.
+// Returns true if the listener was found and removed, false otherwise.
+func (f *FakeDispatcher) Off(id int) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	eventName, exists := f.listenerByID[id]
+	if !exists {
+		return false
+	}
+
+	entries := f.listeners[eventName]
+	for i, entry := range entries {
+		if entry.id == id {
+			f.listeners[eventName] = append(entries[:i], entries[i+1:]...)
+			if len(f.listeners[eventName]) == 0 {
+				delete(f.listeners, eventName)
+			}
+			delete(f.listenerByID, id)
+			return true
+		}
+	}
+
+	return false
 }
 
 // Subscribe registers an event subscriber
@@ -88,6 +125,13 @@ func (f *FakeDispatcher) Until(event interface{}) (interface{}, error) {
 func (f *FakeDispatcher) Flush(event string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	// Remove listener ID mappings
+	if entries, ok := f.listeners[event]; ok {
+		for _, entry := range entries {
+			delete(f.listenerByID, entry.id)
+		}
+	}
 	delete(f.listeners, event)
 }
 
@@ -112,7 +156,12 @@ func (f *FakeDispatcher) GetListeners(event interface{}) []Listener {
 	defer f.mu.RUnlock()
 
 	eventName := f.getEventName(event)
-	return f.listeners[eventName]
+	entries := f.listeners[eventName]
+	listeners := make([]Listener, len(entries))
+	for i, entry := range entries {
+		listeners[i] = entry.listener
+	}
+	return listeners
 }
 
 // AssertDispatched asserts that an event was dispatched
@@ -249,10 +298,10 @@ func (f *FakeDispatcher) StartFaking() {
 // executeListeners executes listeners for an event (when not faking)
 func (f *FakeDispatcher) executeListeners(event interface{}) error {
 	eventName := f.getEventName(event)
-	listeners := f.listeners[eventName]
+	entries := f.listeners[eventName]
 
-	for _, listener := range listeners {
-		if err := listener.Handle(event); err != nil {
+	for _, entry := range entries {
+		if err := entry.listener.Handle(event); err != nil {
 			return err
 		}
 	}

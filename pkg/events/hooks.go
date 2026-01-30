@@ -41,17 +41,20 @@ func (f ListenerFunc) ShouldQueue() bool {
 }
 
 // On registers a function handler for one or more events.
+// Returns a listener ID that can be used with Off() to unregister the listener.
 // This is a convenience method that wraps a function as a Listener.
 //
 // Example:
 //
-//	events.On("query.executed", func(e interface{}) error {
+//	id := events.On("query.executed", func(e interface{}) error {
 //	    q := e.(*orm.QueryExecuted)
 //	    log.Printf("Query: %s took %v", q.SQL, q.Duration)
 //	    return nil
 //	})
-func On(eventName interface{}, handler func(event interface{}) error) {
-	Listen(eventName, ListenerFunc(handler))
+//	// Later, to unregister:
+//	events.Off(id)
+func On(eventName interface{}, handler func(event interface{}) error) int {
+	return Listen(eventName, ListenerFunc(handler))
 }
 
 // OnEvent is a generic helper for type-safe event handling.

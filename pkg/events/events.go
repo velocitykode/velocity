@@ -44,8 +44,13 @@ type Subscriber interface {
 
 // Dispatcher manages event dispatching to listeners
 type Dispatcher interface {
-	// Listen registers a listener for one or more events
-	Listen(events interface{}, listener Listener)
+	// Listen registers a listener for one or more events and returns a listener ID.
+	// The ID can be used with Off() to unregister the specific listener.
+	Listen(events interface{}, listener Listener) int
+
+	// Off removes a listener by its ID.
+	// Returns true if the listener was found and removed, false otherwise.
+	Off(id int) bool
 
 	// Subscribe registers an event subscriber
 	Subscribe(subscriber Subscriber)

@@ -36,9 +36,16 @@ func GetDispatcher() Dispatcher {
 	return globalDispatcher
 }
 
-// Listen registers a listener for one or more events using the global dispatcher
-func Listen(events interface{}, listener Listener) {
-	GetDispatcher().Listen(events, listener)
+// Listen registers a listener for one or more events using the global dispatcher.
+// Returns a listener ID that can be used with Off() to unregister the listener.
+func Listen(events interface{}, listener Listener) int {
+	return GetDispatcher().Listen(events, listener)
+}
+
+// Off removes a listener by its ID using the global dispatcher.
+// Returns true if the listener was found and removed, false otherwise.
+func Off(id int) bool {
+	return GetDispatcher().Off(id)
 }
 
 // Subscribe registers an event subscriber using the global dispatcher

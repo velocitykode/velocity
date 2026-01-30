@@ -10,10 +10,18 @@ import (
 
 // DefaultDispatcher is the default event dispatcher implementation
 type DefaultDispatcher struct {
-	mu        sync.RWMutex
-	listeners map[string][]Listener
-	wildcards map[string][]Listener
-	queue     QueueDispatcher // Optional queue dispatcher for async events
+	mu           sync.RWMutex
+	listeners    map[string][]listenerEntry
+	wildcards    map[string][]listenerEntry
+	queue        QueueDispatcher // Optional queue dispatcher for async events
+	nextID       int             // Counter for generating listener IDs
+	listenerByID map[int]string  // Maps listener ID to event name for removal
+}
+
+// listenerEntry wraps a Listener with an ID for tracking
+type listenerEntry struct {
+	id       int
+	listener Listener
 }
 
 // QueueDispatcher handles queued event dispatching
@@ -24,8 +32,9 @@ type QueueDispatcher interface {
 // NewDispatcher creates a new event dispatcher
 func NewDispatcher() *DefaultDispatcher {
 	return &DefaultDispatcher{
-		listeners: make(map[string][]Listener),
-		wildcards: make(map[string][]Listener),
+		listeners:    make(map[string][]listenerEntry),
+		wildcards:    make(map[string][]listenerEntry),
+		listenerByID: make(map[int]string),
 	}
 }
 
@@ -36,34 +45,88 @@ func (d *DefaultDispatcher) SetQueueDispatcher(qd QueueDispatcher) {
 	d.queue = qd
 }
 
-// Listen registers a listener for one or more events
-func (d *DefaultDispatcher) Listen(events interface{}, listener Listener) {
+// Listen registers a listener for one or more events and returns a listener ID.
+// The ID can be used with Off() to unregister the listener.
+func (d *DefaultDispatcher) Listen(events interface{}, listener Listener) int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	// Generate a unique ID for this listener
+	d.nextID++
+	id := d.nextID
 
 	// Handle different event types
 	switch e := events.(type) {
 	case string:
-		d.addListener(e, listener)
+		d.addListener(e, listener, id)
 	case []string:
 		for _, event := range e {
-			d.addListener(event, listener)
+			d.addListener(event, listener, id)
 		}
 	default:
 		// Try to get event name from type
 		eventName := d.getEventName(e)
-		d.addListener(eventName, listener)
+		d.addListener(eventName, listener, id)
 	}
+
+	return id
 }
 
-// addListener adds a listener to the appropriate map
-func (d *DefaultDispatcher) addListener(event string, listener Listener) {
+// addListener adds a listener to the appropriate map with the given ID
+func (d *DefaultDispatcher) addListener(event string, listener Listener, id int) {
+	entry := listenerEntry{id: id, listener: listener}
+
 	// Check if it's a wildcard pattern
 	if strings.Contains(event, "*") {
-		d.wildcards[event] = append(d.wildcards[event], listener)
+		d.wildcards[event] = append(d.wildcards[event], entry)
 	} else {
-		d.listeners[event] = append(d.listeners[event], listener)
+		d.listeners[event] = append(d.listeners[event], entry)
 	}
+
+	// Track ID to event mapping for removal
+	d.listenerByID[id] = event
+}
+
+// Off removes a listener by its ID.
+// Returns true if the listener was found and removed, false otherwise.
+func (d *DefaultDispatcher) Off(id int) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	eventName, exists := d.listenerByID[id]
+	if !exists {
+		return false
+	}
+
+	// Remove from the appropriate map based on whether it's a wildcard
+	var removed bool
+	if strings.Contains(eventName, "*") {
+		d.wildcards[eventName], removed = d.removeListenerByID(d.wildcards[eventName], id)
+		if len(d.wildcards[eventName]) == 0 {
+			delete(d.wildcards, eventName)
+		}
+	} else {
+		d.listeners[eventName], removed = d.removeListenerByID(d.listeners[eventName], id)
+		if len(d.listeners[eventName]) == 0 {
+			delete(d.listeners, eventName)
+		}
+	}
+
+	if removed {
+		delete(d.listenerByID, id)
+	}
+
+	return removed
+}
+
+// removeListenerByID removes a listener entry by ID from a slice
+func (d *DefaultDispatcher) removeListenerByID(entries []listenerEntry, id int) ([]listenerEntry, bool) {
+	for i, entry := range entries {
+		if entry.id == id {
+			return append(entries[:i], entries[i+1:]...), true
+		}
+	}
+	return entries, false
 }
 
 // Subscribe registers an event subscriber
@@ -174,11 +237,20 @@ func (d *DefaultDispatcher) Flush(event string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	// Remove listener ID mappings for this event
+	if entries, ok := d.listeners[event]; ok {
+		for _, entry := range entries {
+			delete(d.listenerByID, entry.id)
+		}
+	}
 	delete(d.listeners, event)
 
 	// Also remove matching wildcards
-	for pattern := range d.wildcards {
+	for pattern, entries := range d.wildcards {
 		if d.matchesPattern(event, pattern) {
+			for _, entry := range entries {
+				delete(d.listenerByID, entry.id)
+			}
 			delete(d.wildcards, pattern)
 		}
 	}
@@ -208,14 +280,18 @@ func (d *DefaultDispatcher) getListenersForEvent(event interface{}) []Listener {
 	var result []Listener
 
 	// Get exact match listeners
-	if listeners, ok := d.listeners[eventName]; ok {
-		result = append(result, listeners...)
+	if entries, ok := d.listeners[eventName]; ok {
+		for _, entry := range entries {
+			result = append(result, entry.listener)
+		}
 	}
 
 	// Get wildcard listeners
-	for pattern, listeners := range d.wildcards {
+	for pattern, entries := range d.wildcards {
 		if d.matchesPattern(eventName, pattern) {
-			result = append(result, listeners...)
+			for _, entry := range entries {
+				result = append(result, entry.listener)
+			}
 		}
 	}
 
