@@ -5,6 +5,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/velocitykode/velocity/pkg/trace"
 )
 
 // QueryExecuted is dispatched when a database query completes
@@ -17,6 +19,9 @@ type QueryExecuted struct {
 	Connection   string // Database connection/driver name
 	File         string // Caller file
 	Line         int    // Caller line
+	TraceID      string // APM trace ID
+	SpanID       string // APM span ID
+	ParentID     string // Parent span ID for correlation
 }
 
 // Name returns the event name
@@ -46,6 +51,9 @@ func captureCallerInfo(skip int) (file string, line int) {
 func dispatchQueryExecuted(ctx context.Context, sql string, bindings []any, duration time.Duration, rowsAffected int64, connection string, callerSkip int) {
 	file, line := captureCallerInfo(callerSkip + 1) // +1 to skip this function
 
+	// Extract trace context
+	traceID, spanID, parentID := trace.GetTraceContext(ctx)
+
 	dispatchEvent(&QueryExecuted{
 		Context:      ctx,
 		SQL:          sql,
@@ -55,5 +63,8 @@ func dispatchQueryExecuted(ctx context.Context, sql string, bindings []any, dura
 		Connection:   connection,
 		File:         file,
 		Line:         line,
+		TraceID:      traceID,
+		SpanID:       spanID,
+		ParentID:     parentID,
 	})
 }
