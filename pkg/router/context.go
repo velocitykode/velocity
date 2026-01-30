@@ -2,7 +2,10 @@ package router
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 )
 
 // HandlerFunc is the Velocity handler function signature
@@ -53,6 +56,24 @@ func (c *Context) Param(name string) string {
 	return c.params[name]
 }
 
+// ParamInt returns a route parameter as int
+func (c *Context) ParamInt(name string) (int, error) {
+	val := c.Param(name)
+	if val == "" {
+		return 0, fmt.Errorf("param '%s' not found", name)
+	}
+	return strconv.Atoi(val)
+}
+
+// ParamInt64 returns a route parameter as int64
+func (c *Context) ParamInt64(name string) (int64, error) {
+	val := c.Param(name)
+	if val == "" {
+		return 0, fmt.Errorf("param '%s' not found", name)
+	}
+	return strconv.ParseInt(val, 10, 64)
+}
+
 // Query returns a query parameter by name
 func (c *Context) Query(name string) string {
 	return c.Request.URL.Query().Get(name)
@@ -67,9 +88,72 @@ func (c *Context) QueryDefault(name, defaultValue string) string {
 	return value
 }
 
+// QueryInt returns a query parameter as int, with optional default
+func (c *Context) QueryInt(name string, defaultValue ...int) int {
+	val := c.Query(name)
+	if val == "" {
+		if len(defaultValue) > 0 {
+			return defaultValue[0]
+		}
+		return 0
+	}
+	i, err := strconv.Atoi(val)
+	if err != nil {
+		if len(defaultValue) > 0 {
+			return defaultValue[0]
+		}
+		return 0
+	}
+	return i
+}
+
+// QueryInt64 returns a query parameter as int64, with optional default
+func (c *Context) QueryInt64(name string, defaultValue ...int64) int64 {
+	val := c.Query(name)
+	if val == "" {
+		if len(defaultValue) > 0 {
+			return defaultValue[0]
+		}
+		return 0
+	}
+	i, err := strconv.ParseInt(val, 10, 64)
+	if err != nil {
+		if len(defaultValue) > 0 {
+			return defaultValue[0]
+		}
+		return 0
+	}
+	return i
+}
+
+// QueryBool returns a query parameter as bool (handles "true", "1", "yes")
+func (c *Context) QueryBool(name string) bool {
+	val := strings.ToLower(c.Query(name))
+	return val == "true" || val == "1" || val == "yes"
+}
+
 // Header returns a request header value
 func (c *Context) Header(name string) string {
 	return c.Request.Header.Get(name)
+}
+
+// HeaderInt64 returns a header value as int64, with optional default
+func (c *Context) HeaderInt64(name string, defaultValue ...int64) int64 {
+	val := c.Header(name)
+	if val == "" {
+		if len(defaultValue) > 0 {
+			return defaultValue[0]
+		}
+		return 0
+	}
+	i, err := strconv.ParseInt(val, 10, 64)
+	if err != nil {
+		if len(defaultValue) > 0 {
+			return defaultValue[0]
+		}
+		return 0
+	}
+	return i
 }
 
 // SetHeader sets a response header
