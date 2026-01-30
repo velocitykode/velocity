@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/pkg/trace"
 )
 
 // VelocityRouterV2 is the tree-based router implementation
@@ -162,8 +164,11 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	requestID := generateRequestID()
 	startedAt := time.Now()
 
+	// Generate trace context
+	reqCtx, traceID, spanID := trace.StartTrace(req.Context())
+
 	// Add request ID to context
-	reqCtx := context.WithValue(req.Context(), RequestIDKey, requestID)
+	reqCtx = context.WithValue(reqCtx, RequestIDKey, requestID)
 	req = req.WithContext(reqCtx)
 
 	// Wrap response writer to capture metrics
@@ -178,6 +183,8 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		UserAgent:  req.UserAgent(),
 		RequestID:  requestID,
 		StartedAt:  startedAt,
+		TraceID:    traceID,
+		SpanID:     spanID,
 	})
 
 	// Try to serve static file if enabled
@@ -206,6 +213,8 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 					StatusCode:   rw.Status(),
 					BytesWritten: rw.BytesWritten(),
 					Duration:     time.Since(startedAt),
+					TraceID:      traceID,
+					SpanID:       spanID,
 				})
 				return
 			}
@@ -238,6 +247,8 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			StatusCode:   http.StatusNotFound,
 			BytesWritten: rw.BytesWritten(),
 			Duration:     time.Since(startedAt),
+			TraceID:      traceID,
+			SpanID:       spanID,
 		})
 		return
 	}
@@ -291,6 +302,8 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				Error:     err,
 				Stack:     stack,
 				Recovered: true,
+				TraceID:   traceID,
+				SpanID:    spanID,
 			})
 
 			// Write error response
@@ -306,6 +319,8 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				StatusCode:   http.StatusInternalServerError,
 				BytesWritten: rw.BytesWritten(),
 				Duration:     time.Since(startedAt),
+				TraceID:      traceID,
+				SpanID:       spanID,
 			})
 		} else if handlerErr != nil {
 			// Dispatch failed event for handler error
@@ -316,6 +331,8 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				Path:      req.URL.Path,
 				Error:     handlerErr,
 				Recovered: false,
+				TraceID:   traceID,
+				SpanID:    spanID,
 			})
 
 			// Dispatch handled event
@@ -328,6 +345,8 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				StatusCode:   rw.Status(),
 				BytesWritten: rw.BytesWritten(),
 				Duration:     time.Since(startedAt),
+				TraceID:      traceID,
+				SpanID:       spanID,
 			})
 		} else {
 			// Dispatch handled event for success
@@ -340,6 +359,8 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				StatusCode:   rw.Status(),
 				BytesWritten: rw.BytesWritten(),
 				Duration:     time.Since(startedAt),
+				TraceID:      traceID,
+				SpanID:       spanID,
 			})
 		}
 	}()
