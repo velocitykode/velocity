@@ -302,14 +302,14 @@ func TestMessageFluentAPI(t *testing.T) {
 }
 
 func TestMessageTemplate(t *testing.T) {
-	// Create temp template
+	// Create temp template directory
 	tmpDir, err := os.MkdirTemp("", "mail-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	templatesDir := tmpDir + "/templates"
+	templatesDir := tmpDir + "/emails"
 	os.MkdirAll(templatesDir, 0755)
 
 	templateContent := `<h1>Hello {{.Name}}!</h1>`
@@ -318,10 +318,9 @@ func TestMessageTemplate(t *testing.T) {
 		t.Fatalf("Failed to write template: %v", err)
 	}
 
-	// Change to temp dir
-	oldDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(oldDir)
+	// Set template path to our temp directory
+	SetTemplatePath(templatesDir)
+	defer SetTemplatePath("resources/views/emails") // Restore default
 
 	data := struct{ Name string }{Name: "World"}
 	msg := NewMessage().Template("test", data)

@@ -9,6 +9,14 @@ import (
 	"path/filepath"
 )
 
+// templatePath is the directory where email templates are stored
+var templatePath = "resources/views/emails"
+
+// SetTemplatePath configures the directory for email templates
+func SetTemplatePath(path string) {
+	templatePath = path
+}
+
 // Message represents an email message
 type Message struct {
 	from        Address
@@ -143,7 +151,7 @@ func (m *Message) AttachData(data []byte, name, contentType string) *Message {
 
 // Template renders a template with data and sets it as HTML body
 func (m *Message) Template(name string, data interface{}) *Message {
-	tmpl, err := template.ParseFiles("templates/" + name + ".html")
+	tmpl, err := template.ParseFiles(templatePath + "/" + name + ".html")
 	if err != nil {
 		panic(err)
 	}

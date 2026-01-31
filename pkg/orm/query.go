@@ -30,6 +30,7 @@ type Query[T any] struct {
 	onlyTrashed   bool
 	lockForUpdate bool // For pessimistic locking
 	skipLocked    bool // For SKIP LOCKED clause
+	hasSoftDelete bool // Whether the model supports soft deletes
 
 	// Context for event propagation
 	ctx context.Context
@@ -42,11 +43,47 @@ type Query[T any] struct {
 // newQuery creates a new query builder for type T
 func newQuery[T any]() *Query[T] {
 	q := &Query[T]{
-		driver:  getCurrentDriver(),
-		table:   getTableName[T](),
-		columns: []string{"*"},
+		driver:        getCurrentDriver(),
+		table:         getTableName[T](),
+		columns:       []string{"*"},
+		hasSoftDelete: modelHasSoftDelete[T](),
 	}
 	return q
+}
+
+// modelHasSoftDelete checks if the model type T has a DeletedAt field (supports soft deletes)
+func modelHasSoftDelete[T any]() bool {
+	var model T
+	t := reflect.TypeOf(model)
+
+	// Handle pointer types
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+
+	// Check all fields including embedded structs
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+
+		// Check for embedded SoftDeleteModel or SoftDeleteUUIDModel (which HAVE DeletedAt)
+		if strings.HasPrefix(field.Type.String(), "orm.SoftDeleteModel[") ||
+			strings.HasPrefix(field.Type.String(), "orm.SoftDeleteUUIDModel[") {
+			return true
+		}
+
+		// Check for embedded Model or UUIDModel (which do NOT have DeletedAt)
+		if strings.HasPrefix(field.Type.String(), "orm.Model[") ||
+			strings.HasPrefix(field.Type.String(), "orm.UUIDModel[") {
+			return false
+		}
+
+		// Direct DeletedAt field check (for custom models)
+		if field.Name == "DeletedAt" {
+			return true
+		}
+	}
+
+	return false
 }
 
 // Where adds a WHERE condition
@@ -278,11 +315,13 @@ func (q *Query[T]) getContext() context.Context {
 
 // Get retrieves all matching records
 func (q *Query[T]) Get() ([]T, error) {
-	// Apply soft delete filtering
-	if !q.withTrashed {
-		q.WhereNull("deleted_at")
-	} else if q.onlyTrashed {
-		q.WhereNotNull("deleted_at")
+	// Apply soft delete filtering only if model supports soft deletes
+	if q.hasSoftDelete {
+		if !q.withTrashed {
+			q.WhereNull("deleted_at")
+		} else if q.onlyTrashed {
+			q.WhereNotNull("deleted_at")
+		}
 	}
 
 	// Build SELECT query
@@ -530,18 +569,17 @@ func (q *Query[T]) InsertGetId(data map[string]any) (int64, error) {
 	}
 }
 
-// Delete soft deletes matching records
+// Delete soft deletes matching records (if model supports soft deletes) or hard deletes
 func (q *Query[T]) Delete() (int64, error) {
 	// Check if model has soft deletes
-	var model T
-	if _, ok := any(&model).(*Model[T]); ok {
+	if q.hasSoftDelete {
 		// Soft delete
 		return q.Update(map[string]any{
 			"deleted_at": "NOW()",
 		})
 	}
 
-	// Hard delete
+	// Hard delete for models without soft delete support
 	return q.ForceDelete()
 }
 

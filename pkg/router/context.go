@@ -126,6 +126,22 @@ func (c *Context) QueryInt64(name string, defaultValue ...int64) int64 {
 	return i
 }
 
+// QueryFloat64 returns a query parameter as float64, with optional default
+func (c *Context) QueryFloat64(name string, defaultValue ...float64) float64 {
+	val := c.Query(name)
+	if val == "" {
+		if len(defaultValue) > 0 {
+			return defaultValue[0]
+		}
+		return 0
+	}
+	f, err := strconv.ParseFloat(val, 64)
+	if err != nil && len(defaultValue) > 0 {
+		return defaultValue[0]
+	}
+	return f
+}
+
 // QueryBool returns a query parameter as bool (handles "true", "1", "yes")
 func (c *Context) QueryBool(name string) bool {
 	val := strings.ToLower(c.Query(name))

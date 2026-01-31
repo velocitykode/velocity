@@ -10,8 +10,36 @@ import (
 	"github.com/google/uuid"
 )
 
-// Model is the generic base model that provides Laravel-style static methods
+// Model is the generic base model that provides Laravel-style static methods.
+// By default, models do NOT have soft deletes. Use SoftDeleteModel for soft delete support.
 type Model[T any] struct {
+	ID        uint      `orm:"primaryKey;autoIncrement" json:"id"`
+	CreatedAt time.Time `orm:"autoCreateTime" json:"created_at"`
+	UpdatedAt time.Time `orm:"autoUpdateTime" json:"updated_at"`
+
+	// Internal fields (not persisted)
+	IsExisting bool            `orm:"-" json:"-"`
+	Original   map[string]any  `orm:"-" json:"-"`
+	Changed    map[string]bool `orm:"-" json:"-"`
+}
+
+// UUIDModel is a generic base model with UUID primary key for distributed systems
+// and external-facing APIs where sequential IDs pose security risks.
+// By default, models do NOT have soft deletes. Use SoftDeleteUUIDModel for soft delete support.
+type UUIDModel[T any] struct {
+	ID        string    `orm:"primaryKey;type:uuid" json:"id"`
+	CreatedAt time.Time `orm:"autoCreateTime" json:"created_at"`
+	UpdatedAt time.Time `orm:"autoUpdateTime" json:"updated_at"`
+
+	// Internal fields (not persisted)
+	IsExisting bool            `orm:"-" json:"-"`
+	Original   map[string]any  `orm:"-" json:"-"`
+	Changed    map[string]bool `orm:"-" json:"-"`
+}
+
+// SoftDeleteModel is a base model WITH soft delete support.
+// Use this when you need to keep deleted records (e.g., users, orders, audit trails).
+type SoftDeleteModel[T any] struct {
 	ID        uint       `orm:"primaryKey;autoIncrement" json:"id"`
 	CreatedAt time.Time  `orm:"autoCreateTime" json:"created_at"`
 	UpdatedAt time.Time  `orm:"autoUpdateTime" json:"updated_at"`
@@ -23,9 +51,8 @@ type Model[T any] struct {
 	Changed    map[string]bool `orm:"-" json:"-"`
 }
 
-// UUIDModel is a generic base model with UUID primary key for distributed systems
-// and external-facing APIs where sequential IDs pose security risks.
-type UUIDModel[T any] struct {
+// SoftDeleteUUIDModel is a UUID primary key model WITH soft delete support.
+type SoftDeleteUUIDModel[T any] struct {
 	ID        string     `orm:"primaryKey;type:uuid" json:"id"`
 	CreatedAt time.Time  `orm:"autoCreateTime" json:"created_at"`
 	UpdatedAt time.Time  `orm:"autoUpdateTime" json:"updated_at"`
@@ -172,34 +199,13 @@ func (Model[T]) Update(conditions map[string]any, updates map[string]any) (int64
 	return query.Update(updates)
 }
 
-// DeleteWhere soft deletes records matching conditions
+// DeleteWhere permanently deletes records matching conditions
 func (Model[T]) DeleteWhere(conditions map[string]any) (int64, error) {
 	query := newQuery[T]()
 	for field, value := range conditions {
 		query = query.Where(field+" = ?", value)
 	}
-	return query.Delete()
-}
-
-// ForceDeleteWhere permanently deletes records matching conditions
-func (Model[T]) ForceDeleteWhere(conditions map[string]any) (int64, error) {
-	query := newQuery[T]()
-	for field, value := range conditions {
-		query = query.Where(field+" = ?", value)
-	}
 	return query.ForceDelete()
-}
-
-// OnlyTrashed retrieves only soft deleted records
-func (Model[T]) OnlyTrashed() *Query[T] {
-	query := newQuery[T]()
-	return query.OnlyTrashed()
-}
-
-// WithTrashed includes soft deleted records
-func (Model[T]) WithTrashed() *Query[T] {
-	query := newQuery[T]()
-	return query.WithTrashed()
 }
 
 // Instance methods
@@ -212,19 +218,8 @@ func (m *Model[T]) Save() error {
 	return m.insert()
 }
 
-// Delete soft deletes the model
+// Delete permanently deletes the model
 func (m *Model[T]) Delete() error {
-	if !m.IsExisting {
-		return errors.New("cannot delete non-existent model")
-	}
-
-	now := time.Now()
-	m.DeletedAt = &now
-	return m.update()
-}
-
-// ForceDelete permanently deletes the model
-func (m *Model[T]) ForceDelete() error {
 	if !m.IsExisting {
 		return errors.New("cannot delete non-existent model")
 	}
@@ -232,16 +227,6 @@ func (m *Model[T]) ForceDelete() error {
 	query := newQuery[T]()
 	_, err := query.Where("id = ?", m.ID).ForceDelete()
 	return err
-}
-
-// Restore restores a soft deleted model
-func (m *Model[T]) Restore() error {
-	if !m.IsExisting {
-		return errors.New("cannot restore non-existent model")
-	}
-
-	m.DeletedAt = nil
-	return m.update()
 }
 
 // Refresh reloads the model from database
@@ -433,34 +418,13 @@ func (UUIDModel[T]) Update(conditions map[string]any, updates map[string]any) (i
 	return query.Update(updates)
 }
 
-// DeleteWhere soft deletes records matching conditions
+// DeleteWhere permanently deletes records matching conditions
 func (UUIDModel[T]) DeleteWhere(conditions map[string]any) (int64, error) {
 	query := newQuery[T]()
 	for field, value := range conditions {
 		query = query.Where(field+" = ?", value)
 	}
-	return query.Delete()
-}
-
-// ForceDeleteWhere permanently deletes records matching conditions
-func (UUIDModel[T]) ForceDeleteWhere(conditions map[string]any) (int64, error) {
-	query := newQuery[T]()
-	for field, value := range conditions {
-		query = query.Where(field+" = ?", value)
-	}
 	return query.ForceDelete()
-}
-
-// OnlyTrashed retrieves only soft deleted records
-func (UUIDModel[T]) OnlyTrashed() *Query[T] {
-	query := newQuery[T]()
-	return query.OnlyTrashed()
-}
-
-// WithTrashed includes soft deleted records
-func (UUIDModel[T]) WithTrashed() *Query[T] {
-	query := newQuery[T]()
-	return query.WithTrashed()
 }
 
 // UUIDModel instance methods
@@ -473,19 +437,8 @@ func (m *UUIDModel[T]) Save() error {
 	return m.insert()
 }
 
-// Delete soft deletes the model
+// Delete permanently deletes the model
 func (m *UUIDModel[T]) Delete() error {
-	if !m.IsExisting {
-		return errors.New("cannot delete non-existent model")
-	}
-
-	now := time.Now()
-	m.DeletedAt = &now
-	return m.update()
-}
-
-// ForceDelete permanently deletes the model
-func (m *UUIDModel[T]) ForceDelete() error {
 	if !m.IsExisting {
 		return errors.New("cannot delete non-existent model")
 	}
@@ -493,16 +446,6 @@ func (m *UUIDModel[T]) ForceDelete() error {
 	query := newQuery[T]()
 	_, err := query.Where("id = ?", m.ID).ForceDelete()
 	return err
-}
-
-// Restore restores a soft deleted model
-func (m *UUIDModel[T]) Restore() error {
-	if !m.IsExisting {
-		return errors.New("cannot restore non-existent model")
-	}
-
-	m.DeletedAt = nil
-	return m.update()
 }
 
 // Refresh reloads the model from database
@@ -557,6 +500,548 @@ func (m *UUIDModel[T]) IsDirty() bool {
 // IsClean checks if the model has no unsaved changes
 func (m *UUIDModel[T]) IsClean() bool {
 	return !m.IsDirty()
+}
+
+// SoftDeleteModel static methods
+
+// Find retrieves a record by primary key
+func (SoftDeleteModel[T]) Find(id any) (*T, error) {
+	var model T
+	query := newQuery[T]()
+	err := query.Where("id = ?", id).First(&model)
+	if err != nil {
+		return nil, err
+	}
+	return &model, nil
+}
+
+// FindBy retrieves a record by a specific field
+func (SoftDeleteModel[T]) FindBy(field string, value any) (*T, error) {
+	var model T
+	query := newQuery[T]()
+	err := query.Where(field+" = ?", value).First(&model)
+	if err != nil {
+		return nil, err
+	}
+	return &model, nil
+}
+
+// First retrieves the first record
+func (SoftDeleteModel[T]) First() (*T, error) {
+	var model T
+	query := newQuery[T]()
+	err := query.First(&model)
+	if err != nil {
+		return nil, err
+	}
+	return &model, nil
+}
+
+// Last retrieves the last record
+func (SoftDeleteModel[T]) Last() (*T, error) {
+	var model T
+	query := newQuery[T]()
+	err := query.OrderBy("id", "DESC").First(&model)
+	if err != nil {
+		return nil, err
+	}
+	return &model, nil
+}
+
+// All retrieves all records
+func (SoftDeleteModel[T]) All() ([]T, error) {
+	query := newQuery[T]()
+	return query.Get()
+}
+
+// Where starts a query with a WHERE condition
+func (SoftDeleteModel[T]) Where(condition string, args ...any) *Query[T] {
+	query := newQuery[T]()
+	return query.Where(condition, args...)
+}
+
+// WhereIn queries for records where field is in the given values
+func (SoftDeleteModel[T]) WhereIn(field string, values []any) *Query[T] {
+	query := newQuery[T]()
+	return query.WhereIn(field, values)
+}
+
+// OrderBy starts a query with an ORDER BY clause
+func (SoftDeleteModel[T]) OrderBy(column, direction string) *Query[T] {
+	query := newQuery[T]()
+	return query.OrderBy(column, direction)
+}
+
+// With eager loads relationships
+func (SoftDeleteModel[T]) With(relations ...string) *Query[T] {
+	query := newQuery[T]()
+	return query.With(relations...)
+}
+
+// Create inserts a new record
+func (SoftDeleteModel[T]) Create(data any) (*T, error) {
+	switch v := data.(type) {
+	case map[string]any:
+		model := new(T)
+		if err := mapToStruct(v, model); err != nil {
+			return nil, err
+		}
+		if err := Save(model); err != nil {
+			return nil, err
+		}
+		return model, nil
+	case *T:
+		if err := Save(v); err != nil {
+			return nil, err
+		}
+		return v, nil
+	default:
+		return nil, errors.New("unsupported data type for create")
+	}
+}
+
+// CreateMany inserts multiple records
+func (SoftDeleteModel[T]) CreateMany(records []T) error {
+	for _, record := range records {
+		if err := Save(&record); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Count returns the number of records
+func (SoftDeleteModel[T]) Count() (int64, error) {
+	query := newQuery[T]()
+	return query.Count()
+}
+
+// Exists checks if any records exist
+func (SoftDeleteModel[T]) Exists() bool {
+	count, _ := SoftDeleteModel[T]{}.Count()
+	return count > 0
+}
+
+// Pluck retrieves a single column values
+func (SoftDeleteModel[T]) Pluck(column string) ([]any, error) {
+	query := newQuery[T]()
+	return query.Pluck(column)
+}
+
+// Update updates records matching conditions
+func (SoftDeleteModel[T]) Update(conditions map[string]any, updates map[string]any) (int64, error) {
+	query := newQuery[T]()
+	for field, value := range conditions {
+		query = query.Where(field+" = ?", value)
+	}
+	return query.Update(updates)
+}
+
+// DeleteWhere soft deletes records matching conditions
+func (SoftDeleteModel[T]) DeleteWhere(conditions map[string]any) (int64, error) {
+	query := newQuery[T]()
+	for field, value := range conditions {
+		query = query.Where(field+" = ?", value)
+	}
+	return query.Delete()
+}
+
+// ForceDeleteWhere permanently deletes records matching conditions
+func (SoftDeleteModel[T]) ForceDeleteWhere(conditions map[string]any) (int64, error) {
+	query := newQuery[T]()
+	for field, value := range conditions {
+		query = query.Where(field+" = ?", value)
+	}
+	return query.ForceDelete()
+}
+
+// OnlyTrashed retrieves only soft deleted records
+func (SoftDeleteModel[T]) OnlyTrashed() *Query[T] {
+	query := newQuery[T]()
+	return query.OnlyTrashed()
+}
+
+// WithTrashed includes soft deleted records
+func (SoftDeleteModel[T]) WithTrashed() *Query[T] {
+	query := newQuery[T]()
+	return query.WithTrashed()
+}
+
+// SoftDeleteModel instance methods
+
+// Save inserts or updates the model
+func (m *SoftDeleteModel[T]) Save() error {
+	if m.IsExisting {
+		return m.update()
+	}
+	return m.insert()
+}
+
+// Delete soft deletes the model
+func (m *SoftDeleteModel[T]) Delete() error {
+	if !m.IsExisting {
+		return errors.New("cannot delete non-existent model")
+	}
+
+	now := time.Now()
+	m.DeletedAt = &now
+	return m.update()
+}
+
+// ForceDelete permanently deletes the model
+func (m *SoftDeleteModel[T]) ForceDelete() error {
+	if !m.IsExisting {
+		return errors.New("cannot delete non-existent model")
+	}
+
+	query := newQuery[T]()
+	_, err := query.Where("id = ?", m.ID).ForceDelete()
+	return err
+}
+
+// Restore restores a soft deleted model
+func (m *SoftDeleteModel[T]) Restore() error {
+	if !m.IsExisting {
+		return errors.New("cannot restore non-existent model")
+	}
+
+	m.DeletedAt = nil
+	return m.update()
+}
+
+// Refresh reloads the model from database
+func (m *SoftDeleteModel[T]) Refresh() error {
+	if !m.IsExisting {
+		return errors.New("cannot refresh non-existent model")
+	}
+
+	fresh, err := SoftDeleteModel[T]{}.Find(m.ID)
+	if err != nil {
+		return err
+	}
+
+	reflect.ValueOf(m).Elem().Set(reflect.ValueOf(fresh).Elem())
+	return nil
+}
+
+// HasChanged checks if a field has changed
+func (m *SoftDeleteModel[T]) HasChanged(field string) bool {
+	if m.Changed == nil {
+		return false
+	}
+	return m.Changed[field]
+}
+
+// GetChanges returns all changed fields
+func (m *SoftDeleteModel[T]) GetChanges() map[string]any {
+	changes := make(map[string]any)
+	if m.Changed == nil {
+		return changes
+	}
+
+	v := reflect.ValueOf(m).Elem()
+	t := v.Type()
+
+	for i := 0; i < v.NumField(); i++ {
+		field := t.Field(i)
+		if m.Changed[field.Name] {
+			changes[field.Name] = v.Field(i).Interface()
+		}
+	}
+
+	return changes
+}
+
+// IsDirty checks if the model has any unsaved changes
+func (m *SoftDeleteModel[T]) IsDirty() bool {
+	return len(m.Changed) > 0
+}
+
+// IsClean checks if the model has no unsaved changes
+func (m *SoftDeleteModel[T]) IsClean() bool {
+	return !m.IsDirty()
+}
+
+func (m *SoftDeleteModel[T]) insert() error {
+	m.CreatedAt = time.Now()
+	m.UpdatedAt = time.Now()
+	return errors.New("direct insert on SoftDeleteModel not supported - use orm.Save()")
+}
+
+func (m *SoftDeleteModel[T]) update() error {
+	m.UpdatedAt = time.Now()
+	return errors.New("direct update on SoftDeleteModel not supported - use orm.Save()")
+}
+
+// SoftDeleteUUIDModel static methods
+
+// Find retrieves a record by UUID primary key
+func (SoftDeleteUUIDModel[T]) Find(id string) (*T, error) {
+	var model T
+	query := newQuery[T]()
+	err := query.Where("id = ?", id).First(&model)
+	if err != nil {
+		return nil, err
+	}
+	return &model, nil
+}
+
+// FindBy retrieves a record by a specific field
+func (SoftDeleteUUIDModel[T]) FindBy(field string, value any) (*T, error) {
+	var model T
+	query := newQuery[T]()
+	err := query.Where(field+" = ?", value).First(&model)
+	if err != nil {
+		return nil, err
+	}
+	return &model, nil
+}
+
+// First retrieves the first record
+func (SoftDeleteUUIDModel[T]) First() (*T, error) {
+	var model T
+	query := newQuery[T]()
+	err := query.First(&model)
+	if err != nil {
+		return nil, err
+	}
+	return &model, nil
+}
+
+// Last retrieves the last record (by created_at descending)
+func (SoftDeleteUUIDModel[T]) Last() (*T, error) {
+	var model T
+	query := newQuery[T]()
+	err := query.OrderBy("created_at", "DESC").First(&model)
+	if err != nil {
+		return nil, err
+	}
+	return &model, nil
+}
+
+// All retrieves all records
+func (SoftDeleteUUIDModel[T]) All() ([]T, error) {
+	query := newQuery[T]()
+	return query.Get()
+}
+
+// Where starts a query with a WHERE condition
+func (SoftDeleteUUIDModel[T]) Where(condition string, args ...any) *Query[T] {
+	query := newQuery[T]()
+	return query.Where(condition, args...)
+}
+
+// WhereIn queries for records where field is in the given values
+func (SoftDeleteUUIDModel[T]) WhereIn(field string, values []any) *Query[T] {
+	query := newQuery[T]()
+	return query.WhereIn(field, values)
+}
+
+// OrderBy starts a query with an ORDER BY clause
+func (SoftDeleteUUIDModel[T]) OrderBy(column, direction string) *Query[T] {
+	query := newQuery[T]()
+	return query.OrderBy(column, direction)
+}
+
+// With eager loads relationships
+func (SoftDeleteUUIDModel[T]) With(relations ...string) *Query[T] {
+	query := newQuery[T]()
+	return query.With(relations...)
+}
+
+// Create inserts a new record
+func (SoftDeleteUUIDModel[T]) Create(data any) (*T, error) {
+	switch v := data.(type) {
+	case map[string]any:
+		model := new(T)
+		if err := mapToStruct(v, model); err != nil {
+			return nil, err
+		}
+		if err := Save(model); err != nil {
+			return nil, err
+		}
+		return model, nil
+	case *T:
+		if err := Save(v); err != nil {
+			return nil, err
+		}
+		return v, nil
+	default:
+		return nil, errors.New("unsupported data type for create")
+	}
+}
+
+// CreateMany inserts multiple records
+func (SoftDeleteUUIDModel[T]) CreateMany(records []T) error {
+	for _, record := range records {
+		if err := Save(&record); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Count returns the number of records
+func (SoftDeleteUUIDModel[T]) Count() (int64, error) {
+	query := newQuery[T]()
+	return query.Count()
+}
+
+// Exists checks if any records exist
+func (SoftDeleteUUIDModel[T]) Exists() bool {
+	count, _ := SoftDeleteUUIDModel[T]{}.Count()
+	return count > 0
+}
+
+// Pluck retrieves a single column values
+func (SoftDeleteUUIDModel[T]) Pluck(column string) ([]any, error) {
+	query := newQuery[T]()
+	return query.Pluck(column)
+}
+
+// Update updates records matching conditions
+func (SoftDeleteUUIDModel[T]) Update(conditions map[string]any, updates map[string]any) (int64, error) {
+	query := newQuery[T]()
+	for field, value := range conditions {
+		query = query.Where(field+" = ?", value)
+	}
+	return query.Update(updates)
+}
+
+// DeleteWhere soft deletes records matching conditions
+func (SoftDeleteUUIDModel[T]) DeleteWhere(conditions map[string]any) (int64, error) {
+	query := newQuery[T]()
+	for field, value := range conditions {
+		query = query.Where(field+" = ?", value)
+	}
+	return query.Delete()
+}
+
+// ForceDeleteWhere permanently deletes records matching conditions
+func (SoftDeleteUUIDModel[T]) ForceDeleteWhere(conditions map[string]any) (int64, error) {
+	query := newQuery[T]()
+	for field, value := range conditions {
+		query = query.Where(field+" = ?", value)
+	}
+	return query.ForceDelete()
+}
+
+// OnlyTrashed retrieves only soft deleted records
+func (SoftDeleteUUIDModel[T]) OnlyTrashed() *Query[T] {
+	query := newQuery[T]()
+	return query.OnlyTrashed()
+}
+
+// WithTrashed includes soft deleted records
+func (SoftDeleteUUIDModel[T]) WithTrashed() *Query[T] {
+	query := newQuery[T]()
+	return query.WithTrashed()
+}
+
+// SoftDeleteUUIDModel instance methods
+
+// Save inserts or updates the model
+func (m *SoftDeleteUUIDModel[T]) Save() error {
+	if m.IsExisting {
+		return m.update()
+	}
+	return m.insert()
+}
+
+// Delete soft deletes the model
+func (m *SoftDeleteUUIDModel[T]) Delete() error {
+	if !m.IsExisting {
+		return errors.New("cannot delete non-existent model")
+	}
+
+	now := time.Now()
+	m.DeletedAt = &now
+	return m.update()
+}
+
+// ForceDelete permanently deletes the model
+func (m *SoftDeleteUUIDModel[T]) ForceDelete() error {
+	if !m.IsExisting {
+		return errors.New("cannot delete non-existent model")
+	}
+
+	query := newQuery[T]()
+	_, err := query.Where("id = ?", m.ID).ForceDelete()
+	return err
+}
+
+// Restore restores a soft deleted model
+func (m *SoftDeleteUUIDModel[T]) Restore() error {
+	if !m.IsExisting {
+		return errors.New("cannot restore non-existent model")
+	}
+
+	m.DeletedAt = nil
+	return m.update()
+}
+
+// Refresh reloads the model from database
+func (m *SoftDeleteUUIDModel[T]) Refresh() error {
+	if !m.IsExisting {
+		return errors.New("cannot refresh non-existent model")
+	}
+
+	fresh, err := SoftDeleteUUIDModel[T]{}.Find(m.ID)
+	if err != nil {
+		return err
+	}
+
+	reflect.ValueOf(m).Elem().Set(reflect.ValueOf(fresh).Elem())
+	return nil
+}
+
+// HasChanged checks if a field has changed
+func (m *SoftDeleteUUIDModel[T]) HasChanged(field string) bool {
+	if m.Changed == nil {
+		return false
+	}
+	return m.Changed[field]
+}
+
+// GetChanges returns all changed fields
+func (m *SoftDeleteUUIDModel[T]) GetChanges() map[string]any {
+	changes := make(map[string]any)
+	if m.Changed == nil {
+		return changes
+	}
+
+	v := reflect.ValueOf(m).Elem()
+	t := v.Type()
+
+	for i := 0; i < v.NumField(); i++ {
+		field := t.Field(i)
+		if m.Changed[field.Name] {
+			changes[field.Name] = v.Field(i).Interface()
+		}
+	}
+
+	return changes
+}
+
+// IsDirty checks if the model has any unsaved changes
+func (m *SoftDeleteUUIDModel[T]) IsDirty() bool {
+	return len(m.Changed) > 0
+}
+
+// IsClean checks if the model has no unsaved changes
+func (m *SoftDeleteUUIDModel[T]) IsClean() bool {
+	return !m.IsDirty()
+}
+
+func (m *SoftDeleteUUIDModel[T]) insert() error {
+	m.CreatedAt = time.Now()
+	m.UpdatedAt = time.Now()
+	return errors.New("direct insert on SoftDeleteUUIDModel not supported - use orm.Save()")
+}
+
+func (m *SoftDeleteUUIDModel[T]) update() error {
+	m.UpdatedAt = time.Now()
+	return errors.New("direct update on SoftDeleteUUIDModel not supported - use orm.Save()")
 }
 
 // UUIDModel private methods
@@ -706,9 +1191,28 @@ func structToMap(s any) map[string]any {
 			}
 		}
 
-		// Handle Model[T] embedded field specially
+		// Handle Model[T] embedded field (no DeletedAt)
 		if strings.HasPrefix(field.Type.String(), "orm.Model[") {
-			// Extract the base Model fields
+			modelValue := v.Field(i)
+			result["created_at"] = modelValue.FieldByName("CreatedAt").Interface()
+			result["updated_at"] = modelValue.FieldByName("UpdatedAt").Interface()
+			continue
+		}
+
+		// Handle UUIDModel[T] embedded field (no DeletedAt)
+		if strings.HasPrefix(field.Type.String(), "orm.UUIDModel[") {
+			modelValue := v.Field(i)
+			// Include ID for UUID models (it's set before insert)
+			if idVal := modelValue.FieldByName("ID").String(); idVal != "" {
+				result["id"] = idVal
+			}
+			result["created_at"] = modelValue.FieldByName("CreatedAt").Interface()
+			result["updated_at"] = modelValue.FieldByName("UpdatedAt").Interface()
+			continue
+		}
+
+		// Handle SoftDeleteModel[T] embedded field (with DeletedAt)
+		if strings.HasPrefix(field.Type.String(), "orm.SoftDeleteModel[") {
 			modelValue := v.Field(i)
 			result["created_at"] = modelValue.FieldByName("CreatedAt").Interface()
 			result["updated_at"] = modelValue.FieldByName("UpdatedAt").Interface()
@@ -718,9 +1222,8 @@ func structToMap(s any) map[string]any {
 			continue
 		}
 
-		// Handle UUIDModel[T] embedded field specially
-		if strings.HasPrefix(field.Type.String(), "orm.UUIDModel[") {
-			// Extract the base UUIDModel fields
+		// Handle SoftDeleteUUIDModel[T] embedded field (with DeletedAt)
+		if strings.HasPrefix(field.Type.String(), "orm.SoftDeleteUUIDModel[") {
 			modelValue := v.Field(i)
 			// Include ID for UUID models (it's set before insert)
 			if idVal := modelValue.FieldByName("ID").String(); idVal != "" {
@@ -746,16 +1249,30 @@ func Save[T any](model *T) error {
 	v := reflect.ValueOf(model).Elem()
 	t := v.Type()
 
-	// Find the embedded Model or UUIDModel field
+	// Find the embedded Model, UUIDModel, SoftDeleteModel, or SoftDeleteUUIDModel field
 	var modelField reflect.Value
 	var isUUIDModel bool
+	var isSoftDeleteModel bool
 	var found bool
 
 	for i := 0; i < v.NumField(); i++ {
 		field := t.Field(i)
+		if strings.HasPrefix(field.Type.String(), "orm.SoftDeleteUUIDModel[") {
+			modelField = v.Field(i)
+			isUUIDModel = true
+			isSoftDeleteModel = true
+			found = true
+			break
+		}
 		if strings.HasPrefix(field.Type.String(), "orm.UUIDModel[") {
 			modelField = v.Field(i)
 			isUUIDModel = true
+			found = true
+			break
+		}
+		if strings.HasPrefix(field.Type.String(), "orm.SoftDeleteModel[") {
+			modelField = v.Field(i)
+			isSoftDeleteModel = true
 			found = true
 			break
 		}
@@ -767,8 +1284,10 @@ func Save[T any](model *T) error {
 	}
 
 	if !found {
-		return errors.New("model does not embed orm.Model or orm.UUIDModel")
+		return errors.New("model does not embed orm.Model, orm.UUIDModel, orm.SoftDeleteModel, or orm.SoftDeleteUUIDModel")
 	}
+
+	_ = isSoftDeleteModel // Used for future optimizations if needed
 
 	// Get the table name
 	tableName := toSnakeCase(t.Name()) + "s" // pluralize

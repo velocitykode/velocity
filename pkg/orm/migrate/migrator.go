@@ -527,7 +527,7 @@ func (t *TableBuilder) toSQLiteSyntax() string {
 		}
 
 		if col.Default != nil && col.Type != "timestamp" {
-			sql += " DEFAULT " + formatDefaultValue(col.Default)
+			sql += " DEFAULT " + formatDefaultValue(col.Default, col.Type, "sqlite")
 		}
 
 		if i < len(t.columns)-1 {
@@ -588,7 +588,7 @@ func (t *TableBuilder) toPostgresSyntax() string {
 			}
 
 			if col.Default != nil && col.Type != "timestamp" {
-				sql += " DEFAULT " + formatDefaultValue(col.Default)
+				sql += " DEFAULT " + formatDefaultValue(col.Default, col.Type, "postgres")
 			}
 		}
 
@@ -650,7 +650,7 @@ func (t *TableBuilder) toMySQLSyntax() string {
 			}
 
 			if col.Default != nil && col.Type != "timestamp" {
-				sql += " DEFAULT " + formatDefaultValue(col.Default)
+				sql += " DEFAULT " + formatDefaultValue(col.Default, col.Type, "mysql")
 			}
 		}
 
@@ -664,13 +664,21 @@ func (t *TableBuilder) toMySQLSyntax() string {
 	return sql
 }
 
-func formatDefaultValue(value interface{}) string {
+func formatDefaultValue(value interface{}, colType string, driver string) string {
 	switch v := value.(type) {
 	case string:
 		return "'" + v + "'"
 	case int, int64, int32:
 		return fmt.Sprintf("%d", v)
 	case bool:
+		// PostgreSQL BOOLEAN type requires true/false literals, not 0/1
+		if driver == "postgres" && colType == "boolean" {
+			if v {
+				return "true"
+			}
+			return "false"
+		}
+		// SQLite and MySQL can use 0/1
 		if v {
 			return "1"
 		}
