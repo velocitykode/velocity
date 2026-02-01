@@ -173,7 +173,7 @@ func (Model[T]) CreateMany(records []T) error {
 }
 
 // Count returns the number of records
-func (Model[T]) Count() (int64, error) {
+func (Model[T]) Count() (int, error) {
 	query := newQuery[T]()
 	return query.Count()
 }
@@ -182,6 +182,12 @@ func (Model[T]) Count() (int64, error) {
 func (Model[T]) Exists() bool {
 	count, _ := Model[T]{}.Count()
 	return count > 0
+}
+
+// Raw creates a raw SQL query builder for executing custom queries
+// Usage: Model{}.Raw("SELECT * FROM users WHERE id = ?", 1).First(&user)
+func (Model[T]) Raw(sql string, args ...any) *RawQuery[T] {
+	return NewRawQuery[T](sql, args...)
 }
 
 // Pluck retrieves a single column values
@@ -392,7 +398,7 @@ func (UUIDModel[T]) CreateMany(records []T) error {
 }
 
 // Count returns the number of records
-func (UUIDModel[T]) Count() (int64, error) {
+func (UUIDModel[T]) Count() (int, error) {
 	query := newQuery[T]()
 	return query.Count()
 }
@@ -401,6 +407,12 @@ func (UUIDModel[T]) Count() (int64, error) {
 func (UUIDModel[T]) Exists() bool {
 	count, _ := UUIDModel[T]{}.Count()
 	return count > 0
+}
+
+// Raw creates a raw SQL query builder for executing custom queries
+// Usage: UUIDModel{}.Raw("SELECT * FROM users WHERE id = ?", 1).First(&user)
+func (UUIDModel[T]) Raw(sql string, args ...any) *RawQuery[T] {
+	return NewRawQuery[T](sql, args...)
 }
 
 // Pluck retrieves a single column values
@@ -611,7 +623,7 @@ func (SoftDeleteModel[T]) CreateMany(records []T) error {
 }
 
 // Count returns the number of records
-func (SoftDeleteModel[T]) Count() (int64, error) {
+func (SoftDeleteModel[T]) Count() (int, error) {
 	query := newQuery[T]()
 	return query.Count()
 }
@@ -620,6 +632,12 @@ func (SoftDeleteModel[T]) Count() (int64, error) {
 func (SoftDeleteModel[T]) Exists() bool {
 	count, _ := SoftDeleteModel[T]{}.Count()
 	return count > 0
+}
+
+// Raw creates a raw SQL query builder for executing custom queries
+// Usage: SoftDeleteModel{}.Raw("SELECT * FROM users WHERE id = ?", 1).First(&user)
+func (SoftDeleteModel[T]) Raw(sql string, args ...any) *RawQuery[T] {
+	return NewRawQuery[T](sql, args...)
 }
 
 // Pluck retrieves a single column values
@@ -882,7 +900,7 @@ func (SoftDeleteUUIDModel[T]) CreateMany(records []T) error {
 }
 
 // Count returns the number of records
-func (SoftDeleteUUIDModel[T]) Count() (int64, error) {
+func (SoftDeleteUUIDModel[T]) Count() (int, error) {
 	query := newQuery[T]()
 	return query.Count()
 }
@@ -891,6 +909,12 @@ func (SoftDeleteUUIDModel[T]) Count() (int64, error) {
 func (SoftDeleteUUIDModel[T]) Exists() bool {
 	count, _ := SoftDeleteUUIDModel[T]{}.Count()
 	return count > 0
+}
+
+// Raw creates a raw SQL query builder for executing custom queries
+// Usage: SoftDeleteUUIDModel{}.Raw("SELECT * FROM users WHERE id = ?", 1).First(&user)
+func (SoftDeleteUUIDModel[T]) Raw(sql string, args ...any) *RawQuery[T] {
+	return NewRawQuery[T](sql, args...)
 }
 
 // Pluck retrieves a single column values

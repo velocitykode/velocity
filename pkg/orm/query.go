@@ -411,7 +411,7 @@ func (q *Query[T]) Find(id any, dest *T) error {
 }
 
 // Count returns the number of matching records
-func (q *Query[T]) Count() (int64, error) {
+func (q *Query[T]) Count() (int, error) {
 	q.columns = []string{"COUNT(*) as count"}
 
 	selectQuery := &drivers.SelectQuery{
@@ -429,7 +429,7 @@ func (q *Query[T]) Count() (int64, error) {
 	err := q.driver.QueryRow(sql, args...).Scan(&count)
 	dispatchQueryExecuted(q.getContext(), sql, args, time.Since(start), 1, q.driver.DriverName(), 2)
 
-	return count, err
+	return int(count), err
 }
 
 // Exists checks if any records match
@@ -783,4 +783,120 @@ func toSnakeCase(str string) string {
 		result = append(result, byte(strings.ToLower(string(r))[0]))
 	}
 	return string(result)
+}
+
+// RawQuery represents a raw SQL query that can be executed with First() or Get()
+type RawQuery[T any] struct {
+	driver drivers.Driver
+	sql    string
+	args   []any
+	ctx    context.Context
+}
+
+// NewRawQuery creates a new raw query builder
+func NewRawQuery[T any](sql string, args ...any) *RawQuery[T] {
+	return &RawQuery[T]{
+		driver: getCurrentDriver(),
+		sql:    sql,
+		args:   args,
+	}
+}
+
+// WithContext sets the context for the raw query
+func (r *RawQuery[T]) WithContext(ctx context.Context) *RawQuery[T] {
+	r.ctx = ctx
+	return r
+}
+
+// getContext returns the query context, or a background context if none set
+func (r *RawQuery[T]) getContext() context.Context {
+	if r.ctx != nil {
+		return r.ctx
+	}
+	return context.Background()
+}
+
+// First executes the raw query and scans the first result into dest
+func (r *RawQuery[T]) First(dest *T) error {
+	start := time.Now()
+	rows, err := r.driver.Query(r.sql, r.args...)
+	duration := time.Since(start)
+
+	if err != nil {
+		dispatchQueryExecuted(r.getContext(), r.sql, r.args, duration, 0, r.driver.DriverName(), 2)
+		return err
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		dispatchQueryExecuted(r.getContext(), r.sql, r.args, duration, 0, r.driver.DriverName(), 2)
+		return ErrRecordNotFound
+	}
+
+	if err := scanIntoStruct(rows, dest); err != nil {
+		dispatchQueryExecuted(r.getContext(), r.sql, r.args, duration, 0, r.driver.DriverName(), 2)
+		return err
+	}
+
+	dispatchQueryExecuted(r.getContext(), r.sql, r.args, duration, 1, r.driver.DriverName(), 2)
+	return nil
+}
+
+// Get executes the raw query and returns all matching results
+func (r *RawQuery[T]) Get() ([]T, error) {
+	start := time.Now()
+	rows, err := r.driver.Query(r.sql, r.args...)
+	duration := time.Since(start)
+
+	if err != nil {
+		dispatchQueryExecuted(r.getContext(), r.sql, r.args, duration, 0, r.driver.DriverName(), 2)
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []T
+	for rows.Next() {
+		var model T
+		if err := scanIntoStruct(rows, &model); err != nil {
+			dispatchQueryExecuted(r.getContext(), r.sql, r.args, duration, int64(len(results)), r.driver.DriverName(), 2)
+			return nil, err
+		}
+		results = append(results, model)
+	}
+
+	dispatchQueryExecuted(r.getContext(), r.sql, r.args, duration, int64(len(results)), r.driver.DriverName(), 2)
+	return results, nil
+}
+
+// Scan executes the raw query and scans into custom destination pointers
+// Useful for queries that return scalar values or don't map to structs
+func (r *RawQuery[T]) Scan(dest ...any) error {
+	start := time.Now()
+	err := r.driver.QueryRow(r.sql, r.args...).Scan(dest...)
+	duration := time.Since(start)
+
+	rowCount := int64(0)
+	if err == nil {
+		rowCount = 1
+	}
+	dispatchQueryExecuted(r.getContext(), r.sql, r.args, duration, rowCount, r.driver.DriverName(), 2)
+
+	return err
+}
+
+// Exec executes a raw SQL statement (INSERT, UPDATE, DELETE) and returns affected rows
+func (r *RawQuery[T]) Exec() (int64, error) {
+	start := time.Now()
+	result, err := r.driver.Exec(r.sql, r.args...)
+	duration := time.Since(start)
+
+	if err != nil {
+		dispatchQueryExecuted(r.getContext(), r.sql, r.args, duration, 0, r.driver.DriverName(), 2)
+		return 0, err
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	dispatchQueryExecuted(r.getContext(), r.sql, r.args, duration, rowsAffected, r.driver.DriverName(), 2)
+
+	return rowsAffected, nil
 }

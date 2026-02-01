@@ -249,6 +249,247 @@ func (m *Migrator) Raw(sql string) error {
 	return nil
 }
 
+// AddColumn adds a column to an existing table
+func (m *Migrator) AddColumn(table, column string, fn func(*ColumnBuilder)) error {
+	builder := &ColumnBuilder{
+		name:   column,
+		driver: m.driver,
+	}
+	fn(builder)
+
+	sql := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", table, builder.ToSQL())
+	_, err := m.db.Exec(sql)
+	if err != nil {
+		return fmt.Errorf("failed to add column %s to table %s: %w", column, table, err)
+	}
+	return nil
+}
+
+// DropColumn removes a column from a table
+// Note: SQLite does not support DROP COLUMN prior to version 3.35.0
+func (m *Migrator) DropColumn(table, column string) error {
+	var sql string
+
+	switch m.driver {
+	case "postgres":
+		sql = fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", table, column)
+	case "mysql":
+		sql = fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", table, column)
+	case "sqlite":
+		// SQLite 3.35.0+ supports DROP COLUMN
+		sql = fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", table, column)
+	default:
+		sql = fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", table, column)
+	}
+
+	_, err := m.db.Exec(sql)
+	if err != nil {
+		return fmt.Errorf("failed to drop column %s from table %s: %w", column, table, err)
+	}
+	return nil
+}
+
+// ColumnBuilder provides a fluent API for defining a single column
+type ColumnBuilder struct {
+	name       string
+	driver     string
+	colType    string
+	length     int
+	nullable   bool
+	defValue   interface{}
+	hasDefault bool
+	unique     bool
+}
+
+// NewColumnBuilder creates a new ColumnBuilder for the given column name and driver
+func NewColumnBuilder(name, driver string) *ColumnBuilder {
+	return &ColumnBuilder{
+		name:   name,
+		driver: driver,
+	}
+}
+
+// Type sets the column type (string, integer, text, boolean, timestamp, date, biginteger, uuid)
+func (c *ColumnBuilder) Type(t string) *ColumnBuilder {
+	c.colType = t
+	return c
+}
+
+// String sets the column type to VARCHAR with optional length (default 255)
+func (c *ColumnBuilder) String(length ...int) *ColumnBuilder {
+	c.colType = "string"
+	c.length = 255
+	if len(length) > 0 {
+		c.length = length[0]
+	}
+	return c
+}
+
+// Integer sets the column type to INTEGER
+func (c *ColumnBuilder) Integer() *ColumnBuilder {
+	c.colType = "integer"
+	return c
+}
+
+// BigInteger sets the column type to BIGINT
+func (c *ColumnBuilder) BigInteger() *ColumnBuilder {
+	c.colType = "biginteger"
+	return c
+}
+
+// Text sets the column type to TEXT
+func (c *ColumnBuilder) Text() *ColumnBuilder {
+	c.colType = "text"
+	return c
+}
+
+// Boolean sets the column type to BOOLEAN
+func (c *ColumnBuilder) Boolean() *ColumnBuilder {
+	c.colType = "boolean"
+	return c
+}
+
+// Timestamp sets the column type to TIMESTAMP
+func (c *ColumnBuilder) Timestamp() *ColumnBuilder {
+	c.colType = "timestamp"
+	return c
+}
+
+// Date sets the column type to DATE
+func (c *ColumnBuilder) Date() *ColumnBuilder {
+	c.colType = "date"
+	return c
+}
+
+// UUID sets the column type to UUID
+func (c *ColumnBuilder) UUID() *ColumnBuilder {
+	c.colType = "uuid"
+	return c
+}
+
+// Nullable marks the column as allowing NULL values
+func (c *ColumnBuilder) Nullable() *ColumnBuilder {
+	c.nullable = true
+	return c
+}
+
+// Default sets a default value for the column
+func (c *ColumnBuilder) Default(v interface{}) *ColumnBuilder {
+	c.defValue = v
+	c.hasDefault = true
+	return c
+}
+
+// Unique marks the column as having a unique constraint
+func (c *ColumnBuilder) Unique() *ColumnBuilder {
+	c.unique = true
+	return c
+}
+
+// ToSQL generates the column definition SQL fragment
+func (c *ColumnBuilder) ToSQL() string {
+	var sql string
+
+	// Column name
+	sql = c.name + " "
+
+	// Type mapping based on driver
+	switch c.driver {
+	case "sqlite":
+		sql += c.toSQLiteType()
+	case "postgres":
+		sql += c.toPostgresType()
+	case "mysql":
+		sql += c.toMySQLType()
+	default:
+		sql += c.toSQLiteType()
+	}
+
+	// Constraints
+	if !c.nullable {
+		sql += " NOT NULL"
+	}
+
+	if c.unique {
+		sql += " UNIQUE"
+	}
+
+	if c.hasDefault {
+		sql += " DEFAULT " + formatDefaultValue(c.defValue, c.colType, c.driver)
+	}
+
+	return sql
+}
+
+func (c *ColumnBuilder) toSQLiteType() string {
+	switch c.colType {
+	case "integer":
+		return "INTEGER"
+	case "biginteger":
+		return "INTEGER"
+	case "string":
+		return fmt.Sprintf("VARCHAR(%d)", c.length)
+	case "text":
+		return "TEXT"
+	case "boolean":
+		return "INTEGER"
+	case "timestamp":
+		return "DATETIME"
+	case "date":
+		return "DATE"
+	case "uuid":
+		return "TEXT"
+	default:
+		return "TEXT"
+	}
+}
+
+func (c *ColumnBuilder) toPostgresType() string {
+	switch c.colType {
+	case "integer":
+		return "INTEGER"
+	case "biginteger":
+		return "BIGINT"
+	case "string":
+		return fmt.Sprintf("VARCHAR(%d)", c.length)
+	case "text":
+		return "TEXT"
+	case "boolean":
+		return "BOOLEAN"
+	case "timestamp":
+		return "TIMESTAMP"
+	case "date":
+		return "DATE"
+	case "uuid":
+		return "UUID"
+	default:
+		return "TEXT"
+	}
+}
+
+func (c *ColumnBuilder) toMySQLType() string {
+	switch c.colType {
+	case "integer":
+		return "INT"
+	case "biginteger":
+		return "BIGINT"
+	case "string":
+		return fmt.Sprintf("VARCHAR(%d)", c.length)
+	case "text":
+		return "TEXT"
+	case "boolean":
+		return "BOOLEAN"
+	case "timestamp":
+		return "TIMESTAMP"
+	case "date":
+		return "DATE"
+	case "uuid":
+		return "CHAR(36)"
+	default:
+		return "TEXT"
+	}
+}
+
 // TableBuilder provides a fluent API for defining database tables
 type TableBuilder struct {
 	tableName  string
