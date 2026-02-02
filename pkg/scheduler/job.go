@@ -1,11 +1,14 @@
 package scheduler
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/pkg/trace"
 )
 
 // Job represents a scheduled task
@@ -129,6 +132,7 @@ func (j *Job) Run() error {
 	afterCallbacks := j.afterCallbacks
 	onSuccessCallbacks := j.onSuccessCallbacks
 	onFailureCallbacks := j.onFailureCallbacks
+	jobName := j.name
 	j.mu.Unlock()
 
 	defer func() {
@@ -136,6 +140,13 @@ func (j *Job) Run() error {
 		j.running = false
 		j.mu.Unlock()
 	}()
+
+	// Create context with trace for APM
+	ctx, traceID, _ := trace.StartTrace(context.Background())
+
+	// Dispatch scheduled.starting event
+	dispatchScheduledTaskStarting(ctx, jobName)
+	startTime := time.Now()
 
 	// Run before callbacks
 	for _, callback := range beforeCallbacks {
@@ -180,21 +191,28 @@ func (j *Job) Run() error {
 		}
 	}
 
+	duration := time.Since(startTime)
+
 	// Run after callbacks
 	for _, callback := range afterCallbacks {
 		callback()
 	}
 
-	// Run success/failure callbacks
+	// Run success/failure callbacks and dispatch events
 	if err != nil {
 		for _, callback := range onFailureCallbacks {
 			callback(err)
 		}
+		dispatchScheduledTaskFailed(ctx, jobName, err, duration)
 	} else {
 		for _, callback := range onSuccessCallbacks {
 			callback()
 		}
+		dispatchScheduledTaskFinished(ctx, jobName, duration)
 	}
+
+	// Suppress unused variable warning
+	_ = traceID
 
 	return err
 }

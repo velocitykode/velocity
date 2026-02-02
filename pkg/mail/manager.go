@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // Manager manages multiple mail channels
@@ -80,7 +81,26 @@ func (m *Manager) GetChannels() []string {
 // Send sends a message using a specific channel
 func (m *Manager) Send(ctx context.Context, channel string, msg *Message) error {
 	mailer := m.Channel(channel)
-	return mailer.Send(ctx, msg)
+
+	// Extract recipient emails for event dispatching
+	toAddresses := msg.GetTo()
+	toEmails := make([]string, len(toAddresses))
+	for i, addr := range toAddresses {
+		toEmails[i] = addr.Email
+	}
+	subject := msg.GetSubject()
+
+	start := time.Now()
+	err := mailer.Send(ctx, msg)
+	duration := time.Since(start)
+
+	if err != nil {
+		dispatchMailFailed(ctx, toEmails, subject, channel, err, duration)
+		return err
+	}
+
+	dispatchMailSent(ctx, toEmails, subject, channel, duration)
+	return nil
 }
 
 // Broadcast sends a message to multiple channels

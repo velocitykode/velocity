@@ -2,9 +2,12 @@ package events
 
 import (
 	"github.com/velocitykode/velocity/pkg/cache"
+	"github.com/velocitykode/velocity/pkg/httpclient"
+	"github.com/velocitykode/velocity/pkg/mail"
 	"github.com/velocitykode/velocity/pkg/orm"
 	"github.com/velocitykode/velocity/pkg/queue"
 	"github.com/velocitykode/velocity/pkg/router"
+	"github.com/velocitykode/velocity/pkg/scheduler"
 )
 
 // wirePackageHooks sets up event dispatching for all framework packages.
@@ -18,6 +21,9 @@ func wirePackageHooks() {
 	orm.SetEventDispatcher(dispatch)
 	cache.SetEventDispatcher(dispatch)
 	queue.SetEventDispatcher(dispatch)
+	httpclient.SetEventDispatcher(dispatch)
+	mail.SetEventDispatcher(dispatch)
+	scheduler.SetEventDispatcher(dispatch)
 }
 
 // clearPackageHooks removes event dispatchers from all packages.
@@ -27,6 +33,9 @@ func clearPackageHooks() {
 	orm.SetEventDispatcher(nil)
 	cache.SetEventDispatcher(nil)
 	queue.SetEventDispatcher(nil)
+	httpclient.SetEventDispatcher(nil)
+	mail.SetEventDispatcher(nil)
+	scheduler.SetEventDispatcher(nil)
 }
 
 // ListenerFunc is a function that handles events.
