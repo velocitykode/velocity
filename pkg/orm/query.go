@@ -88,15 +88,11 @@ func modelHasSoftDelete[T any]() bool {
 
 // Where adds a WHERE condition
 func (q *Query[T]) Where(condition string, args ...any) *Query[T] {
-	parts := strings.SplitN(condition, " ", 3)
-	if len(parts) < 2 {
-		parts = append(parts, "=")
-	}
-
+	col, op, val := parseCondition(condition, args)
 	q.conditions = append(q.conditions, drivers.Condition{
-		Column:   parts[0],
-		Operator: parts[1],
-		Value:    args[0],
+		Column:   col,
+		Operator: op,
+		Value:    val,
 		Type:     "and",
 	})
 	return q
@@ -104,15 +100,11 @@ func (q *Query[T]) Where(condition string, args ...any) *Query[T] {
 
 // OrWhere adds an OR WHERE condition
 func (q *Query[T]) OrWhere(condition string, args ...any) *Query[T] {
-	parts := strings.SplitN(condition, " ", 3)
-	if len(parts) < 2 {
-		parts = append(parts, "=")
-	}
-
+	col, op, val := parseCondition(condition, args)
 	q.conditions = append(q.conditions, drivers.Condition{
-		Column:   parts[0],
-		Operator: parts[1],
-		Value:    args[0],
+		Column:   col,
+		Operator: op,
+		Value:    val,
 		Type:     "or",
 	})
 	return q
@@ -173,6 +165,47 @@ func (q *Query[T]) WhereBetween(field string, start, end any) *Query[T] {
 	return q
 }
 
+// parseCondition parses a condition string and args into column, operator, and value.
+// Handles formats like:
+//   - "col = ?", val        -> col, "=", val
+//   - "col", val            -> col, "=", val (default operator)
+//   - "col IS NULL"         -> col, "IS NULL", nil
+//   - "col IS NOT NULL"     -> col, "IS NOT NULL", nil
+//   - "col > ?", val        -> col, ">", val
+func parseCondition(condition string, args []any) (column, operator string, value any) {
+	condition = strings.TrimSpace(condition)
+
+	// Check for IS NULL / IS NOT NULL patterns (case-insensitive)
+	upperCond := strings.ToUpper(condition)
+	if idx := strings.Index(upperCond, " IS NOT NULL"); idx != -1 {
+		return strings.TrimSpace(condition[:idx]), "IS NOT NULL", nil
+	}
+	if idx := strings.Index(upperCond, " IS NULL"); idx != -1 {
+		return strings.TrimSpace(condition[:idx]), "IS NULL", nil
+	}
+
+	// Split into parts: column, operator, rest
+	parts := strings.SplitN(condition, " ", 3)
+
+	if len(parts) == 1 {
+		// Only column provided, default to "="
+		if len(args) > 0 {
+			return parts[0], "=", args[0]
+		}
+		return parts[0], "=", nil
+	}
+
+	// Column and operator provided
+	column = parts[0]
+	operator = parts[1]
+
+	if len(args) > 0 {
+		value = args[0]
+	}
+
+	return column, operator, value
+}
+
 // OrderBy adds an ORDER BY clause
 func (q *Query[T]) OrderBy(column, direction string) *Query[T] {
 	if direction == "" {
@@ -198,15 +231,11 @@ func (q *Query[T]) GroupBy(columns ...string) *Query[T] {
 
 // Having adds a HAVING condition
 func (q *Query[T]) Having(condition string, args ...any) *Query[T] {
-	parts := strings.SplitN(condition, " ", 3)
-	if len(parts) < 2 {
-		parts = append(parts, "=")
-	}
-
+	col, op, val := parseCondition(condition, args)
 	q.having = append(q.having, drivers.Condition{
-		Column:   parts[0],
-		Operator: parts[1],
-		Value:    args[0],
+		Column:   col,
+		Operator: op,
+		Value:    val,
 		Type:     "and",
 	})
 	return q

@@ -204,6 +204,84 @@ func TestQuery(t *testing.T) {
 			t.Error("Expected query builder, got nil")
 		}
 	})
+
+	t.Run("WhereChaining", func(t *testing.T) {
+		// Test chaining multiple Where conditions - should return only Alice (age=25, excluded)
+		// Bob is 30, Charlie is 35
+		users, err := User{}.Where("age > ?", 25).Where("name = ?", "Bob").Get()
+		if err != nil {
+			t.Errorf("Failed to execute chained where query: %v", err)
+		}
+		if len(users) != 1 {
+			t.Errorf("Expected 1 user (Bob), got %d", len(users))
+		}
+		if len(users) > 0 && users[0].Name != "Bob" {
+			t.Errorf("Expected user Bob, got %s", users[0].Name)
+		}
+	})
+
+	t.Run("WhereIsNull", func(t *testing.T) {
+		// Test IS NULL condition without args - all users have NULL deleted_at
+		users, err := User{}.Where("deleted_at IS NULL").Get()
+		if err != nil {
+			t.Errorf("Failed to execute IS NULL query: %v", err)
+		}
+		// All 3 users should be returned (none have deleted_at set)
+		if len(users) != 3 {
+			t.Errorf("Expected 3 users with NULL deleted_at, got %d", len(users))
+		}
+	})
+
+	t.Run("WhereIsNotNull", func(t *testing.T) {
+		// Test IS NOT NULL condition without args
+		users, err := User{}.Where("email IS NOT NULL").Get()
+		if err != nil {
+			t.Errorf("Failed to execute IS NOT NULL query: %v", err)
+		}
+		// All 3 users have email set
+		if len(users) != 3 {
+			t.Errorf("Expected 3 users with NOT NULL email, got %d", len(users))
+		}
+	})
+
+	t.Run("WhereMixedConditions", func(t *testing.T) {
+		// Test mixing regular conditions with IS NULL
+		// age > 25 AND deleted_at IS NULL AND name = 'Bob' -> should be Bob only
+		users, err := User{}.Where("age > ?", 25).Where("deleted_at IS NULL").Where("name = ?", "Bob").Get()
+		if err != nil {
+			t.Errorf("Failed to execute mixed conditions query: %v", err)
+		}
+		if len(users) != 1 {
+			t.Errorf("Expected 1 user, got %d", len(users))
+		}
+		if len(users) > 0 && users[0].Name != "Bob" {
+			t.Errorf("Expected user Bob, got %s", users[0].Name)
+		}
+	})
+
+	t.Run("WhereNullHelper", func(t *testing.T) {
+		// Test WhereNull static method - starts query with IS NULL
+		users, err := User{}.WhereNull("deleted_at").Where("age > ?", 25).Get()
+		if err != nil {
+			t.Errorf("Failed to execute WhereNull query: %v", err)
+		}
+		// Bob (30) and Charlie (35) have age > 25 and NULL deleted_at
+		if len(users) != 2 {
+			t.Errorf("Expected 2 users, got %d", len(users))
+		}
+	})
+
+	t.Run("WhereNotNullHelper", func(t *testing.T) {
+		// Test WhereNotNull static method - starts query with IS NOT NULL
+		users, err := User{}.WhereNotNull("email").Where("age >= ?", 30).Get()
+		if err != nil {
+			t.Errorf("Failed to execute WhereNotNull query: %v", err)
+		}
+		// Bob (30) and Charlie (35) have age >= 30 and NOT NULL email
+		if len(users) != 2 {
+			t.Errorf("Expected 2 users, got %d", len(users))
+		}
+	})
 }
 
 func TestAutoInit(t *testing.T) {

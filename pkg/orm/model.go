@@ -128,6 +128,18 @@ func (Model[T]) WhereIn(field string, values []any) *Query[T] {
 	return query.WhereIn(field, values)
 }
 
+// WhereNull starts a query with a WHERE IS NULL condition
+func (Model[T]) WhereNull(field string) *Query[T] {
+	query := newQuery[T]()
+	return query.WhereNull(field)
+}
+
+// WhereNotNull starts a query with a WHERE IS NOT NULL condition
+func (Model[T]) WhereNotNull(field string) *Query[T] {
+	query := newQuery[T]()
+	return query.WhereNotNull(field)
+}
+
 // OrderBy starts a query with an ORDER BY clause
 func (Model[T]) OrderBy(column, direction string) *Query[T] {
 	query := newQuery[T]()
@@ -353,6 +365,18 @@ func (UUIDModel[T]) WhereIn(field string, values []any) *Query[T] {
 	return query.WhereIn(field, values)
 }
 
+// WhereNull starts a query with a WHERE IS NULL condition
+func (UUIDModel[T]) WhereNull(field string) *Query[T] {
+	query := newQuery[T]()
+	return query.WhereNull(field)
+}
+
+// WhereNotNull starts a query with a WHERE IS NOT NULL condition
+func (UUIDModel[T]) WhereNotNull(field string) *Query[T] {
+	query := newQuery[T]()
+	return query.WhereNotNull(field)
+}
+
 // OrderBy starts a query with an ORDER BY clause
 func (UUIDModel[T]) OrderBy(column, direction string) *Query[T] {
 	query := newQuery[T]()
@@ -576,6 +600,18 @@ func (SoftDeleteModel[T]) Where(condition string, args ...any) *Query[T] {
 func (SoftDeleteModel[T]) WhereIn(field string, values []any) *Query[T] {
 	query := newQuery[T]()
 	return query.WhereIn(field, values)
+}
+
+// WhereNull starts a query with a WHERE IS NULL condition
+func (SoftDeleteModel[T]) WhereNull(field string) *Query[T] {
+	query := newQuery[T]()
+	return query.WhereNull(field)
+}
+
+// WhereNotNull starts a query with a WHERE IS NOT NULL condition
+func (SoftDeleteModel[T]) WhereNotNull(field string) *Query[T] {
+	query := newQuery[T]()
+	return query.WhereNotNull(field)
 }
 
 // OrderBy starts a query with an ORDER BY clause
@@ -853,6 +889,18 @@ func (SoftDeleteUUIDModel[T]) Where(condition string, args ...any) *Query[T] {
 func (SoftDeleteUUIDModel[T]) WhereIn(field string, values []any) *Query[T] {
 	query := newQuery[T]()
 	return query.WhereIn(field, values)
+}
+
+// WhereNull starts a query with a WHERE IS NULL condition
+func (SoftDeleteUUIDModel[T]) WhereNull(field string) *Query[T] {
+	query := newQuery[T]()
+	return query.WhereNull(field)
+}
+
+// WhereNotNull starts a query with a WHERE IS NOT NULL condition
+func (SoftDeleteUUIDModel[T]) WhereNotNull(field string) *Query[T] {
+	query := newQuery[T]()
+	return query.WhereNotNull(field)
 }
 
 // OrderBy starts a query with an ORDER BY clause
