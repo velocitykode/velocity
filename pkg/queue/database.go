@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -120,6 +121,8 @@ func (d *DatabaseDriver) PushDelayed(job Job, delay time.Duration, queueName ...
 		"scheduled_at", scheduledAt.Format(time.RFC3339),
 	)
 
+	// Dispatch job.queued event
+	dispatchJobQueued(context.Background(), wrapper.Payload.Type, name, delay > 0, delay)
 	return nil
 }
 

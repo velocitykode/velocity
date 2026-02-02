@@ -67,7 +67,13 @@ func (r *RedisDriver) Push(job Job, queueName ...string) error {
 		return fmt.Errorf("failed to marshal payload: %w", err)
 	}
 
-	return r.client.RPush(r.ctx, queueKey, data).Err()
+	if err := r.client.RPush(r.ctx, queueKey, data).Err(); err != nil {
+		return err
+	}
+
+	// Dispatch job.queued event
+	dispatchJobQueued(r.ctx, payload.Type, name, false, 0)
+	return nil
 }
 
 // PushDelayed adds a job to the queue with a delay
@@ -86,10 +92,16 @@ func (r *RedisDriver) PushDelayed(job Job, delay time.Duration, queueName ...str
 	}
 
 	score := float64(time.Now().Add(delay).Unix())
-	return r.client.ZAdd(r.ctx, delayedKey, redis.Z{
+	if err := r.client.ZAdd(r.ctx, delayedKey, redis.Z{
 		Score:  score,
 		Member: data,
-	}).Err()
+	}).Err(); err != nil {
+		return err
+	}
+
+	// Dispatch job.queued event with delay info
+	dispatchJobQueued(r.ctx, payload.Type, name, true, delay)
+	return nil
 }
 
 // Pop retrieves and removes the next job from the queue

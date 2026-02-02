@@ -117,6 +117,9 @@ func (w *Worker) processJob() error {
 		return fmt.Errorf("no job available")
 	}
 
+	// Get job type for event dispatching
+	jobType := fmt.Sprintf("%T", job)
+
 	// Process the job with timeout (default 30 seconds, configurable for tests)
 	timeout := 30 * time.Second
 	if w.interval < time.Second {
@@ -126,6 +129,10 @@ func (w *Worker) processJob() error {
 	jobCtx, cancel := context.WithTimeout(w.ctx, timeout)
 	defer cancel()
 
+	// Dispatch job.processing event
+	dispatchJobProcessing(jobCtx, jobType, w.queueName)
+	startTime := time.Now()
+
 	done := make(chan error, 1)
 	go func() {
 		done <- w.handler(job)
@@ -133,17 +140,25 @@ func (w *Worker) processJob() error {
 
 	select {
 	case err := <-done:
+		duration := time.Since(startTime)
 		if err != nil {
+			// Dispatch job.failed event
+			dispatchJobFailed(jobCtx, jobType, w.queueName, err, duration)
 			// Handle job failure
 			if failErr := w.queue.Failed(job, err, w.queueName); failErr != nil {
 				log.Printf("Failed to mark job as failed: %v", failErr)
 			}
 			return fmt.Errorf("job failed: %w", err)
 		}
+		// Dispatch job.processed event
+		dispatchJobProcessed(jobCtx, jobType, w.queueName, duration)
 		return nil
 	case <-jobCtx.Done():
+		duration := time.Since(startTime)
 		// Job timed out
 		timeoutErr := fmt.Errorf("job timed out")
+		// Dispatch job.failed event
+		dispatchJobFailed(jobCtx, jobType, w.queueName, timeoutErr, duration)
 		if failErr := w.queue.Failed(job, timeoutErr, w.queueName); failErr != nil {
 			log.Printf("Failed to mark job as failed: %v", failErr)
 		}

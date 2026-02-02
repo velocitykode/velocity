@@ -2,6 +2,7 @@ package queue
 
 import (
 	"container/list"
+	"context"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -63,6 +64,9 @@ func (m *MemoryDriver) Push(job Job, queueName ...string) error {
 	}
 
 	m.queues[name].PushBack(wrapper)
+
+	// Dispatch job.queued event
+	dispatchJobQueued(context.Background(), wrapper.Payload.Type, name, false, 0)
 	return nil
 }
 
@@ -87,6 +91,8 @@ func (m *MemoryDriver) PushDelayed(job Job, delay time.Duration, queueName ...st
 		runAt:   time.Now().Add(delay),
 	})
 
+	// Dispatch job.queued event with delay info
+	dispatchJobQueued(context.Background(), wrapper.Payload.Type, name, true, delay)
 	return nil
 }
 
