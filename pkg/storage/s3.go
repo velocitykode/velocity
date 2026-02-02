@@ -2,25 +2,25 @@ package storage
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/aws/aws-sdk-go/service/s3/s3iface"
-	"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 // S3Driver implements the Driver interface for AWS S3 storage
 type S3Driver struct {
-	client     s3iface.S3API
-	uploader   *s3manager.Uploader
-	downloader *s3manager.Downloader
+	client     *s3.Client
+	uploader   *manager.Uploader
+	downloader *manager.Downloader
 	bucket     string
 	region     string
 	url        string
@@ -28,49 +28,49 @@ type S3Driver struct {
 }
 
 // NewS3Driver creates a new S3 storage driver
-func NewS3Driver(config DiskConfig) (*S3Driver, error) {
-	// Create AWS session
-	awsConfig := &aws.Config{
-		Region: aws.String(config.Region),
-	}
+func NewS3Driver(diskConfig DiskConfig) (*S3Driver, error) {
+	ctx := context.Background()
+
+	// Build config options
+	var opts []func(*config.LoadOptions) error
+	opts = append(opts, config.WithRegion(diskConfig.Region))
 
 	// Set credentials if provided
-	if config.Key != "" && config.Secret != "" {
-		awsConfig.Credentials = credentials.NewStaticCredentials(
-			config.Key,
-			config.Secret,
-			"", // token
-		)
+	if diskConfig.Key != "" && diskConfig.Secret != "" {
+		opts = append(opts, config.WithCredentialsProvider(
+			credentials.NewStaticCredentialsProvider(diskConfig.Key, diskConfig.Secret, ""),
+		))
 	}
 
-	sess, err := session.NewSession(awsConfig)
+	// Load AWS config
+	cfg, err := config.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create AWS session: %w", err)
+		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
-	// Create S3 service client
-	svc := s3.New(sess)
+	// Create S3 client
+	client := s3.NewFromConfig(cfg)
 
 	// Check if bucket exists
-	_, err = svc.HeadBucket(&s3.HeadBucketInput{
-		Bucket: aws.String(config.Bucket),
+	_, err = client.HeadBucket(ctx, &s3.HeadBucketInput{
+		Bucket: aws.String(diskConfig.Bucket),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to access bucket %s: %w", config.Bucket, err)
+		return nil, fmt.Errorf("failed to access bucket %s: %w", diskConfig.Bucket, err)
 	}
 
 	visibility := Public
-	if config.Visibility == "private" {
+	if diskConfig.Visibility == "private" {
 		visibility = Private
 	}
 
 	return &S3Driver{
-		client:     svc,
-		uploader:   s3manager.NewUploader(sess),
-		downloader: s3manager.NewDownloader(sess),
-		bucket:     config.Bucket,
-		region:     config.Region,
-		url:        strings.TrimSuffix(config.URL, "/"),
+		client:     client,
+		uploader:   manager.NewUploader(client),
+		downloader: manager.NewDownloader(client),
+		bucket:     diskConfig.Bucket,
+		region:     diskConfig.Region,
+		url:        strings.TrimSuffix(diskConfig.URL, "/"),
 		visibility: visibility,
 	}, nil
 }
@@ -83,31 +83,30 @@ func (d *S3Driver) Put(path string, contents []byte) error {
 
 // PutStream stores a stream at the given path
 func (d *S3Driver) PutStream(path string, stream io.Reader) error {
+	ctx := context.Background()
 	path = d.cleanPath(path)
 
-	input := &s3manager.UploadInput{
-		Bucket: aws.String(d.bucket),
-		Key:    aws.String(path),
-		Body:   stream,
+	// Read content to detect mime type
+	content, err := io.ReadAll(stream)
+	if err != nil {
+		return fmt.Errorf("failed to read stream: %w", err)
+	}
+
+	input := &s3.PutObjectInput{
+		Bucket:      aws.String(d.bucket),
+		Key:         aws.String(path),
+		Body:        bytes.NewReader(content),
+		ContentType: aws.String(detectMimeType(content)),
 	}
 
 	// Set ACL based on visibility
 	if d.visibility == Public {
-		input.ACL = aws.String("public-read")
+		input.ACL = types.ObjectCannedACLPublicRead
 	} else {
-		input.ACL = aws.String("private")
+		input.ACL = types.ObjectCannedACLPrivate
 	}
 
-	// Detect content type if possible
-	if reader, ok := stream.(io.ReadSeeker); ok {
-		buffer := make([]byte, 512)
-		n, _ := reader.Read(buffer)
-		contentType := detectMimeType(buffer[:n])
-		input.ContentType = aws.String(contentType)
-		reader.Seek(0, 0) // Reset to beginning
-	}
-
-	_, err := d.uploader.Upload(input)
+	_, err = d.uploader.Upload(ctx, input)
 	if err != nil {
 		return fmt.Errorf("failed to upload to S3: %w", err)
 	}
@@ -133,14 +132,15 @@ func (d *S3Driver) Get(path string) ([]byte, error) {
 
 // GetStream retrieves a stream from the given path
 func (d *S3Driver) GetStream(path string) (io.ReadCloser, error) {
+	ctx := context.Background()
 	path = d.cleanPath(path)
 
-	result, err := d.client.GetObject(&s3.GetObjectInput{
+	result, err := d.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(d.bucket),
 		Key:    aws.String(path),
 	})
 	if err != nil {
-		if aerr, ok := err.(awserr.Error); ok && aerr.Code() == s3.ErrCodeNoSuchKey {
+		if isNotFoundError(err) {
 			return nil, ErrFileNotFound
 		}
 		return nil, fmt.Errorf("failed to get object from S3: %w", err)
@@ -151,9 +151,10 @@ func (d *S3Driver) GetStream(path string) (io.ReadCloser, error) {
 
 // Exists checks if a file exists at the given path
 func (d *S3Driver) Exists(path string) bool {
+	ctx := context.Background()
 	path = d.cleanPath(path)
 
-	_, err := d.client.HeadObject(&s3.HeadObjectInput{
+	_, err := d.client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(d.bucket),
 		Key:    aws.String(path),
 	})
@@ -167,19 +168,21 @@ func (d *S3Driver) Delete(paths ...string) error {
 		return nil
 	}
 
+	ctx := context.Background()
+
 	// Build delete objects
-	objects := make([]*s3.ObjectIdentifier, len(paths))
+	objects := make([]types.ObjectIdentifier, len(paths))
 	for i, path := range paths {
 		cleanPath := d.cleanPath(path)
-		objects[i] = &s3.ObjectIdentifier{
+		objects[i] = types.ObjectIdentifier{
 			Key: aws.String(cleanPath),
 		}
 	}
 
 	// Delete objects
-	_, err := d.client.DeleteObjects(&s3.DeleteObjectsInput{
+	_, err := d.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
 		Bucket: aws.String(d.bucket),
-		Delete: &s3.Delete{
+		Delete: &types.Delete{
 			Objects: objects,
 			Quiet:   aws.Bool(true),
 		},
@@ -194,6 +197,7 @@ func (d *S3Driver) Delete(paths ...string) error {
 
 // Copy copies a file from one path to another
 func (d *S3Driver) Copy(from, to string) error {
+	ctx := context.Background()
 	from = d.cleanPath(from)
 	to = d.cleanPath(to)
 
@@ -201,14 +205,14 @@ func (d *S3Driver) Copy(from, to string) error {
 	source := fmt.Sprintf("%s/%s", d.bucket, from)
 
 	// Copy object
-	_, err := d.client.CopyObject(&s3.CopyObjectInput{
+	_, err := d.client.CopyObject(ctx, &s3.CopyObjectInput{
 		Bucket:     aws.String(d.bucket),
 		CopySource: aws.String(source),
 		Key:        aws.String(to),
 	})
 
 	if err != nil {
-		if aerr, ok := err.(awserr.Error); ok && aerr.Code() == s3.ErrCodeNoSuchKey {
+		if isNotFoundError(err) {
 			return ErrFileNotFound
 		}
 		return fmt.Errorf("failed to copy object in S3: %w", err)
@@ -228,15 +232,16 @@ func (d *S3Driver) Move(from, to string) error {
 
 // Size returns the size of a file at the given path
 func (d *S3Driver) Size(path string) (int64, error) {
+	ctx := context.Background()
 	path = d.cleanPath(path)
 
-	result, err := d.client.HeadObject(&s3.HeadObjectInput{
+	result, err := d.client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(d.bucket),
 		Key:    aws.String(path),
 	})
 
 	if err != nil {
-		if aerr, ok := err.(awserr.Error); ok && aerr.Code() == s3.ErrCodeNoSuchKey {
+		if isNotFoundError(err) {
 			return 0, ErrFileNotFound
 		}
 		return 0, fmt.Errorf("failed to get object metadata from S3: %w", err)
@@ -247,15 +252,16 @@ func (d *S3Driver) Size(path string) (int64, error) {
 
 // LastModified returns the last modified time of a file
 func (d *S3Driver) LastModified(path string) (time.Time, error) {
+	ctx := context.Background()
 	path = d.cleanPath(path)
 
-	result, err := d.client.HeadObject(&s3.HeadObjectInput{
+	result, err := d.client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(d.bucket),
 		Key:    aws.String(path),
 	})
 
 	if err != nil {
-		if aerr, ok := err.(awserr.Error); ok && aerr.Code() == s3.ErrCodeNoSuchKey {
+		if isNotFoundError(err) {
 			return time.Time{}, ErrFileNotFound
 		}
 		return time.Time{}, fmt.Errorf("failed to get object metadata from S3: %w", err)
@@ -266,15 +272,16 @@ func (d *S3Driver) LastModified(path string) (time.Time, error) {
 
 // MimeType returns the MIME type of a file
 func (d *S3Driver) MimeType(path string) (string, error) {
+	ctx := context.Background()
 	path = d.cleanPath(path)
 
-	result, err := d.client.HeadObject(&s3.HeadObjectInput{
+	result, err := d.client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(d.bucket),
 		Key:    aws.String(path),
 	})
 
 	if err != nil {
-		if aerr, ok := err.(awserr.Error); ok && aerr.Code() == s3.ErrCodeNoSuchKey {
+		if isNotFoundError(err) {
 			return "", ErrFileNotFound
 		}
 		return "", fmt.Errorf("failed to get object metadata from S3: %w", err)
@@ -289,6 +296,7 @@ func (d *S3Driver) MimeType(path string) (string, error) {
 
 // Files lists files in a directory
 func (d *S3Driver) Files(directory string) ([]string, error) {
+	ctx := context.Background()
 	directory = d.cleanPath(directory)
 	if directory != "" && !strings.HasSuffix(directory, "/") {
 		directory += "/"
@@ -297,13 +305,18 @@ func (d *S3Driver) Files(directory string) ([]string, error) {
 	var files []string
 
 	// List objects with prefix
-	input := &s3.ListObjectsV2Input{
+	paginator := s3.NewListObjectsV2Paginator(d.client, &s3.ListObjectsV2Input{
 		Bucket:    aws.String(d.bucket),
 		Prefix:    aws.String(directory),
 		Delimiter: aws.String("/"), // Don't recurse
-	}
+	})
 
-	err := d.client.ListObjectsV2Pages(input, func(page *s3.ListObjectsV2Output, lastPage bool) bool {
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list objects from S3: %w", err)
+		}
+
 		for _, obj := range page.Contents {
 			key := *obj.Key
 			// Skip the directory itself
@@ -311,11 +324,6 @@ func (d *S3Driver) Files(directory string) ([]string, error) {
 				files = append(files, key)
 			}
 		}
-		return true
-	})
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to list objects from S3: %w", err)
 	}
 
 	return files, nil
@@ -323,6 +331,7 @@ func (d *S3Driver) Files(directory string) ([]string, error) {
 
 // AllFiles lists all files recursively in a directory
 func (d *S3Driver) AllFiles(directory string) ([]string, error) {
+	ctx := context.Background()
 	directory = d.cleanPath(directory)
 	if directory != "" && !strings.HasSuffix(directory, "/") {
 		directory += "/"
@@ -331,12 +340,17 @@ func (d *S3Driver) AllFiles(directory string) ([]string, error) {
 	var files []string
 
 	// List all objects with prefix (no delimiter for recursion)
-	input := &s3.ListObjectsV2Input{
+	paginator := s3.NewListObjectsV2Paginator(d.client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(d.bucket),
 		Prefix: aws.String(directory),
-	}
+	})
 
-	err := d.client.ListObjectsV2Pages(input, func(page *s3.ListObjectsV2Output, lastPage bool) bool {
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list objects from S3: %w", err)
+		}
+
 		for _, obj := range page.Contents {
 			key := *obj.Key
 			// Skip directories (keys ending with /)
@@ -344,11 +358,6 @@ func (d *S3Driver) AllFiles(directory string) ([]string, error) {
 				files = append(files, key)
 			}
 		}
-		return true
-	})
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to list objects from S3: %w", err)
 	}
 
 	return files, nil
@@ -356,6 +365,7 @@ func (d *S3Driver) AllFiles(directory string) ([]string, error) {
 
 // Directories lists directories
 func (d *S3Driver) Directories(directory string) ([]string, error) {
+	ctx := context.Background()
 	directory = d.cleanPath(directory)
 	if directory != "" && !strings.HasSuffix(directory, "/") {
 		directory += "/"
@@ -364,13 +374,11 @@ func (d *S3Driver) Directories(directory string) ([]string, error) {
 	var dirs []string
 
 	// List objects with delimiter to get "folders"
-	input := &s3.ListObjectsV2Input{
+	result, err := d.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 		Bucket:    aws.String(d.bucket),
 		Prefix:    aws.String(directory),
 		Delimiter: aws.String("/"),
-	}
-
-	result, err := d.client.ListObjectsV2(input)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list objects from S3: %w", err)
 	}
@@ -459,20 +467,23 @@ func (d *S3Driver) URL(path string) string {
 
 // TemporaryURL returns a temporary URL for a file
 func (d *S3Driver) TemporaryURL(path string, expiration time.Duration) (string, error) {
+	ctx := context.Background()
 	path = d.cleanPath(path)
 
+	// Create presign client
+	presignClient := s3.NewPresignClient(d.client)
+
 	// Generate presigned URL
-	req, _ := d.client.GetObjectRequest(&s3.GetObjectInput{
+	result, err := presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(d.bucket),
 		Key:    aws.String(path),
-	})
+	}, s3.WithPresignExpires(expiration))
 
-	urlStr, err := req.Presign(expiration)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate presigned URL: %w", err)
 	}
 
-	return urlStr, nil
+	return result.URL, nil
 }
 
 // cleanPath cleans and normalizes a path for S3
@@ -482,4 +493,13 @@ func (d *S3Driver) cleanPath(path string) string {
 	// Ensure forward slashes
 	path = strings.ReplaceAll(path, "\\", "/")
 	return path
+}
+
+// isNotFoundError checks if an error is a "not found" error
+func isNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "NotFound") ||
+		strings.Contains(err.Error(), "NoSuchKey")
 }
