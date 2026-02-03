@@ -492,10 +492,11 @@ func (c *ColumnBuilder) toMySQLType() string {
 
 // TableBuilder provides a fluent API for defining database tables
 type TableBuilder struct {
-	tableName  string
-	driver     string
-	columns    []Column
-	lastColumn *Column // Track last column for chaining modifiers
+	tableName           string
+	driver              string
+	columns             []Column
+	lastColumn          *Column   // Track last column for chaining modifiers
+	compositePrimaryKey []string  // For composite primary keys
 }
 
 // Column represents a table column definition
@@ -503,6 +504,8 @@ type Column struct {
 	Name          string
 	Type          string
 	Length        int
+	Precision     int // For decimal types
+	Scale         int // For decimal types
 	Nullable      bool
 	Default       interface{}
 	Unique        bool
@@ -651,6 +654,34 @@ func (t *TableBuilder) BigInteger(name string) *TableBuilder {
 	return t
 }
 
+// IP creates a column for IP addresses (varchar 45, supports IPv4 and IPv6)
+func (t *TableBuilder) IP(name string) *TableBuilder {
+	col := Column{
+		Name:     name,
+		Type:     "string",
+		Length:   45,
+		Nullable: false,
+	}
+	t.columns = append(t.columns, col)
+	t.lastColumn = &t.columns[len(t.columns)-1]
+	return t
+}
+
+// Decimal creates a numeric column with precision and scale
+// e.g., Decimal("price", 10, 2) = numeric(10,2)
+func (t *TableBuilder) Decimal(name string, precision, scale int) *TableBuilder {
+	col := Column{
+		Name:      name,
+		Type:      "decimal",
+		Precision: precision,
+		Scale:     scale,
+		Nullable:  false,
+	}
+	t.columns = append(t.columns, col)
+	t.lastColumn = &t.columns[len(t.columns)-1]
+	return t
+}
+
 // Timestamps adds created_at and updated_at columns
 func (t *TableBuilder) Timestamps() *TableBuilder {
 	createdAt := Column{
@@ -704,6 +735,20 @@ func (t *TableBuilder) Default(value interface{}) *TableBuilder {
 	return t
 }
 
+// Primary makes the current column a primary key (for 1:1 relations where FK is the PK)
+func (t *TableBuilder) Primary() *TableBuilder {
+	if t.lastColumn != nil {
+		t.lastColumn.PrimaryKey = true
+	}
+	return t
+}
+
+// PrimaryKey sets a composite primary key (for junction tables without auto-increment ID)
+func (t *TableBuilder) PrimaryKey(columns ...string) *TableBuilder {
+	t.compositePrimaryKey = columns
+	return t
+}
+
 // ToSQL generates driver-specific CREATE TABLE SQL
 func (t *TableBuilder) ToSQL() string {
 	var sql string
@@ -735,6 +780,9 @@ func (t *TableBuilder) toSQLiteSyntax() string {
 				sql += "INTEGER PRIMARY KEY AUTOINCREMENT"
 			} else {
 				sql += "INTEGER"
+				if col.PrimaryKey && len(t.compositePrimaryKey) == 0 {
+					sql += " PRIMARY KEY"
+				}
 			}
 		case "biginteger":
 			sql += "INTEGER" // SQLite uses INTEGER for all int sizes
@@ -753,9 +801,11 @@ func (t *TableBuilder) toSQLiteSyntax() string {
 			sql += "DATE"
 		case "uuid":
 			sql += "TEXT" // SQLite doesn't have native UUID, use TEXT
-			if col.PrimaryKey {
+			if col.PrimaryKey && len(t.compositePrimaryKey) == 0 {
 				sql += " PRIMARY KEY"
 			}
+		case "decimal":
+			sql += fmt.Sprintf("NUMERIC(%d,%d)", col.Precision, col.Scale)
 		}
 
 		// Constraints
@@ -771,10 +821,22 @@ func (t *TableBuilder) toSQLiteSyntax() string {
 			sql += " DEFAULT " + formatDefaultValue(col.Default, col.Type, "sqlite")
 		}
 
-		if i < len(t.columns)-1 {
+		if i < len(t.columns)-1 || len(t.compositePrimaryKey) > 0 {
 			sql += ","
 		}
 		sql += "\n"
+	}
+
+	// Add composite primary key constraint
+	if len(t.compositePrimaryKey) > 0 {
+		sql += "  PRIMARY KEY ("
+		for i, col := range t.compositePrimaryKey {
+			if i > 0 {
+				sql += ", "
+			}
+			sql += col
+		}
+		sql += ")\n"
 	}
 
 	sql += ")"
@@ -794,6 +856,9 @@ func (t *TableBuilder) toPostgresSyntax() string {
 				sql += "SERIAL PRIMARY KEY"
 			} else {
 				sql += "INTEGER"
+				if col.PrimaryKey && len(t.compositePrimaryKey) == 0 {
+					sql += " PRIMARY KEY"
+				}
 			}
 		case "biginteger":
 			sql += "BIGINT"
@@ -811,15 +876,17 @@ func (t *TableBuilder) toPostgresSyntax() string {
 		case "date":
 			sql += "DATE"
 		case "uuid":
-			if col.PrimaryKey {
+			if col.PrimaryKey && len(t.compositePrimaryKey) == 0 {
 				sql += "UUID PRIMARY KEY DEFAULT gen_random_uuid()"
 			} else {
 				sql += "UUID"
 			}
+		case "decimal":
+			sql += fmt.Sprintf("NUMERIC(%d,%d)", col.Precision, col.Scale)
 		}
 
 		// Constraints (skip if already handled by SERIAL PRIMARY KEY or UUID PRIMARY KEY)
-		if !(col.PrimaryKey && col.AutoIncrement) && !(col.PrimaryKey && col.Type == "uuid") {
+		if !(col.PrimaryKey && col.AutoIncrement) && !(col.PrimaryKey && col.Type == "uuid" && len(t.compositePrimaryKey) == 0) {
 			if !col.Nullable {
 				sql += " NOT NULL"
 			}
@@ -833,10 +900,22 @@ func (t *TableBuilder) toPostgresSyntax() string {
 			}
 		}
 
-		if i < len(t.columns)-1 {
+		if i < len(t.columns)-1 || len(t.compositePrimaryKey) > 0 {
 			sql += ","
 		}
 		sql += "\n"
+	}
+
+	// Add composite primary key constraint
+	if len(t.compositePrimaryKey) > 0 {
+		sql += "  PRIMARY KEY ("
+		for i, col := range t.compositePrimaryKey {
+			if i > 0 {
+				sql += ", "
+			}
+			sql += col
+		}
+		sql += ")\n"
 	}
 
 	sql += ")"
@@ -856,6 +935,9 @@ func (t *TableBuilder) toMySQLSyntax() string {
 				sql += "INT AUTO_INCREMENT PRIMARY KEY"
 			} else {
 				sql += "INT"
+				if col.PrimaryKey && len(t.compositePrimaryKey) == 0 {
+					sql += " PRIMARY KEY"
+				}
 			}
 		case "biginteger":
 			sql += "BIGINT"
@@ -873,15 +955,17 @@ func (t *TableBuilder) toMySQLSyntax() string {
 		case "date":
 			sql += "DATE"
 		case "uuid":
-			if col.PrimaryKey {
+			if col.PrimaryKey && len(t.compositePrimaryKey) == 0 {
 				sql += "CHAR(36) PRIMARY KEY"
 			} else {
 				sql += "CHAR(36)"
 			}
+		case "decimal":
+			sql += fmt.Sprintf("DECIMAL(%d,%d)", col.Precision, col.Scale)
 		}
 
 		// Constraints (skip if already handled by AUTO_INCREMENT PRIMARY KEY or UUID PRIMARY KEY)
-		if !(col.PrimaryKey && col.AutoIncrement) && !(col.PrimaryKey && col.Type == "uuid") {
+		if !(col.PrimaryKey && col.AutoIncrement) && !(col.PrimaryKey && col.Type == "uuid" && len(t.compositePrimaryKey) == 0) {
 			if !col.Nullable {
 				sql += " NOT NULL"
 			}
@@ -895,10 +979,22 @@ func (t *TableBuilder) toMySQLSyntax() string {
 			}
 		}
 
-		if i < len(t.columns)-1 {
+		if i < len(t.columns)-1 || len(t.compositePrimaryKey) > 0 {
 			sql += ","
 		}
 		sql += "\n"
+	}
+
+	// Add composite primary key constraint
+	if len(t.compositePrimaryKey) > 0 {
+		sql += "  PRIMARY KEY ("
+		for i, col := range t.compositePrimaryKey {
+			if i > 0 {
+				sql += ", "
+			}
+			sql += col
+		}
+		sql += ")\n"
 	}
 
 	sql += ")"

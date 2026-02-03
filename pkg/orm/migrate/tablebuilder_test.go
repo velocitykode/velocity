@@ -392,3 +392,226 @@ func TestTableBuilder_NewColumnTypes(t *testing.T) {
 		}
 	})
 }
+
+func TestTableBuilder_IP(t *testing.T) {
+	err := orm.Init("sqlite", map[string]any{
+		"database": ":memory:",
+	})
+	if err != nil {
+		t.Fatalf("failed to init ORM: %v", err)
+	}
+	defer orm.Close()
+
+	migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+
+	var generatedSQL string
+	err = migrator.CreateTable("servers", func(tb *migrate.TableBuilder) {
+		tb.ID()
+		tb.IP("ip_address").Nullable()
+		tb.IP("private_ip").Nullable()
+		generatedSQL = tb.ToSQL()
+	})
+	if err != nil {
+		t.Fatalf("failed to create table: %v", err)
+	}
+	defer migrator.DropTable("servers")
+
+	// IP should be VARCHAR(45) to support IPv6
+	if !strings.Contains(generatedSQL, "ip_address VARCHAR(45)") {
+		t.Errorf("expected VARCHAR(45) for IP column, got:\n%s", generatedSQL)
+	}
+
+	// Test storing IPv4 and IPv6 addresses
+	db := orm.DB()
+	_, err = db.Exec("INSERT INTO servers (ip_address, private_ip) VALUES (?, ?)", "192.168.1.1", "2001:0db8:85a3:0000:0000:8a2e:0370:7334")
+	if err != nil {
+		t.Fatalf("failed to insert: %v", err)
+	}
+
+	var ipv4, ipv6 string
+	err = db.QueryRow("SELECT ip_address, private_ip FROM servers WHERE id = 1").Scan(&ipv4, &ipv6)
+	if err != nil {
+		t.Fatalf("failed to query: %v", err)
+	}
+	if ipv4 != "192.168.1.1" {
+		t.Errorf("expected 192.168.1.1, got %s", ipv4)
+	}
+	if ipv6 != "2001:0db8:85a3:0000:0000:8a2e:0370:7334" {
+		t.Errorf("expected IPv6 address, got %s", ipv6)
+	}
+}
+
+func TestTableBuilder_Decimal(t *testing.T) {
+	err := orm.Init("sqlite", map[string]any{
+		"database": ":memory:",
+	})
+	if err != nil {
+		t.Fatalf("failed to init ORM: %v", err)
+	}
+	defer orm.Close()
+
+	migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+
+	var generatedSQL string
+	err = migrator.CreateTable("metrics", func(tb *migrate.TableBuilder) {
+		tb.ID()
+		tb.Decimal("cpu_percent", 5, 2)
+		tb.Decimal("load_avg", 6, 2)
+		generatedSQL = tb.ToSQL()
+	})
+	if err != nil {
+		t.Fatalf("failed to create table: %v", err)
+	}
+	defer migrator.DropTable("metrics")
+
+	// Decimal should be NUMERIC(precision, scale)
+	if !strings.Contains(generatedSQL, "cpu_percent NUMERIC(5,2)") {
+		t.Errorf("expected NUMERIC(5,2) for decimal column, got:\n%s", generatedSQL)
+	}
+
+	// Test storing decimal values
+	db := orm.DB()
+	_, err = db.Exec("INSERT INTO metrics (cpu_percent, load_avg) VALUES (?, ?)", 75.55, 123.45)
+	if err != nil {
+		t.Fatalf("failed to insert: %v", err)
+	}
+
+	var cpu, load float64
+	err = db.QueryRow("SELECT cpu_percent, load_avg FROM metrics WHERE id = 1").Scan(&cpu, &load)
+	if err != nil {
+		t.Fatalf("failed to query: %v", err)
+	}
+	if cpu != 75.55 {
+		t.Errorf("expected 75.55, got %f", cpu)
+	}
+}
+
+func TestTableBuilder_CompositePrimaryKey(t *testing.T) {
+	err := orm.Init("sqlite", map[string]any{
+		"database": ":memory:",
+	})
+	if err != nil {
+		t.Fatalf("failed to init ORM: %v", err)
+	}
+	defer orm.Close()
+
+	migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+
+	var generatedSQL string
+	err = migrator.CreateTable("server_ssh_keys", func(tb *migrate.TableBuilder) {
+		tb.Integer("server_id")
+		tb.Integer("ssh_key_id")
+		tb.Timestamps()
+		tb.PrimaryKey("server_id", "ssh_key_id")
+		generatedSQL = tb.ToSQL()
+	})
+	if err != nil {
+		t.Fatalf("failed to create table: %v", err)
+	}
+	defer migrator.DropTable("server_ssh_keys")
+
+	// Should have composite primary key
+	if !strings.Contains(generatedSQL, "PRIMARY KEY (server_id, ssh_key_id)") {
+		t.Errorf("expected composite PRIMARY KEY, got:\n%s", generatedSQL)
+	}
+
+	// Test inserting with composite key
+	db := orm.DB()
+	_, err = db.Exec("INSERT INTO server_ssh_keys (server_id, ssh_key_id) VALUES (?, ?)", 1, 1)
+	if err != nil {
+		t.Fatalf("failed to insert: %v", err)
+	}
+	_, err = db.Exec("INSERT INTO server_ssh_keys (server_id, ssh_key_id) VALUES (?, ?)", 1, 2)
+	if err != nil {
+		t.Fatalf("failed to insert second row: %v", err)
+	}
+
+	// Should fail on duplicate composite key
+	_, err = db.Exec("INSERT INTO server_ssh_keys (server_id, ssh_key_id) VALUES (?, ?)", 1, 1)
+	if err == nil {
+		t.Error("expected error on duplicate composite key, got none")
+	}
+}
+
+func TestTableBuilder_Primary(t *testing.T) {
+	err := orm.Init("sqlite", map[string]any{
+		"database": ":memory:",
+	})
+	if err != nil {
+		t.Fatalf("failed to init ORM: %v", err)
+	}
+	defer orm.Close()
+
+	migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+
+	var generatedSQL string
+	err = migrator.CreateTable("user_two_factor", func(tb *migrate.TableBuilder) {
+		tb.Integer("user_id").Primary()
+		tb.String("secret")
+		generatedSQL = tb.ToSQL()
+	})
+	if err != nil {
+		t.Fatalf("failed to create table: %v", err)
+	}
+	defer migrator.DropTable("user_two_factor")
+
+	// Should have PRIMARY KEY on user_id
+	if !strings.Contains(generatedSQL, "user_id INTEGER PRIMARY KEY") {
+		t.Errorf("expected PRIMARY KEY on user_id, got:\n%s", generatedSQL)
+	}
+
+	// Test inserting with primary key
+	db := orm.DB()
+	_, err = db.Exec("INSERT INTO user_two_factor (user_id, secret) VALUES (?, ?)", 1, "TOTP123")
+	if err != nil {
+		t.Fatalf("failed to insert: %v", err)
+	}
+
+	// Should fail on duplicate primary key
+	_, err = db.Exec("INSERT INTO user_two_factor (user_id, secret) VALUES (?, ?)", 1, "TOTP456")
+	if err == nil {
+		t.Error("expected error on duplicate primary key, got none")
+	}
+}
+
+func TestTableBuilder_Decimal_SQL(t *testing.T) {
+	tests := []struct {
+		name     string
+		driver   string
+		contains string
+	}{
+		{"sqlite", "sqlite", "cpu NUMERIC(5,2)"},
+		{"postgres", "postgres", "cpu NUMERIC(5,2)"},
+		{"mysql", "mysql", "cpu DECIMAL(5,2)"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := orm.Init(tt.driver, map[string]any{
+				"database": ":memory:",
+			})
+			if err != nil && tt.driver == "sqlite" {
+				t.Fatalf("failed to init ORM: %v", err)
+			}
+			if err != nil {
+				t.Skip("driver not available")
+			}
+			defer orm.Close()
+
+			migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+
+			var generatedSQL string
+			err = migrator.CreateTable("decimal_test", func(tb *migrate.TableBuilder) {
+				tb.ID()
+				tb.Decimal("cpu", 5, 2)
+				generatedSQL = tb.ToSQL()
+			})
+
+			if !strings.Contains(generatedSQL, tt.contains) {
+				t.Errorf("expected SQL to contain %q, got:\n%s", tt.contains, generatedSQL)
+			}
+
+			migrator.DropTable("decimal_test")
+		})
+	}
+}
