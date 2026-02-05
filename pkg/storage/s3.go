@@ -16,15 +16,27 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
+// s3API defines the S3 operations used by the driver.
+// *s3.Client satisfies this interface.
+type s3API interface {
+	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
+	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
+	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
+	DeleteObjects(ctx context.Context, params *s3.DeleteObjectsInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectsOutput, error)
+	CopyObject(ctx context.Context, params *s3.CopyObjectInput, optFns ...func(*s3.Options)) (*s3.CopyObjectOutput, error)
+	ListObjectsV2(ctx context.Context, params *s3.ListObjectsV2Input, optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
+}
+
 // S3Driver implements the Driver interface for AWS S3 storage
 type S3Driver struct {
-	client     *s3.Client
-	uploader   *manager.Uploader
-	downloader *manager.Downloader
-	bucket     string
-	region     string
-	url        string
-	visibility Visibility
+	client        s3API
+	presignClient *s3.PresignClient
+	uploader      *manager.Uploader
+	downloader    *manager.Downloader
+	bucket        string
+	region        string
+	url           string
+	visibility    Visibility
 }
 
 // NewS3Driver creates a new S3 storage driver
@@ -65,13 +77,14 @@ func NewS3Driver(diskConfig DiskConfig) (*S3Driver, error) {
 	}
 
 	return &S3Driver{
-		client:     client,
-		uploader:   manager.NewUploader(client),
-		downloader: manager.NewDownloader(client),
-		bucket:     diskConfig.Bucket,
-		region:     diskConfig.Region,
-		url:        strings.TrimSuffix(diskConfig.URL, "/"),
-		visibility: visibility,
+		client:        client,
+		presignClient: s3.NewPresignClient(client),
+		uploader:      manager.NewUploader(client),
+		downloader:    manager.NewDownloader(client),
+		bucket:        diskConfig.Bucket,
+		region:        diskConfig.Region,
+		url:           strings.TrimSuffix(diskConfig.URL, "/"),
+		visibility:    visibility,
 	}, nil
 }
 
@@ -470,11 +483,8 @@ func (d *S3Driver) TemporaryURL(path string, expiration time.Duration) (string, 
 	ctx := context.Background()
 	path = d.cleanPath(path)
 
-	// Create presign client
-	presignClient := s3.NewPresignClient(d.client)
-
 	// Generate presigned URL
-	result, err := presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
+	result, err := d.presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(d.bucket),
 		Key:    aws.String(path),
 	}, s3.WithPresignExpires(expiration))

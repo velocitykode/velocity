@@ -2,28 +2,25 @@ package storage
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
-	"net/http"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/aws/request"
-	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/aws/aws-sdk-go/service/s3/s3iface"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
-// mockS3Client is a mock implementation of S3 client
+// mockS3Client implements s3API for testing
 type mockS3Client struct {
-	s3iface.S3API
 	files       map[string][]byte
 	shouldError bool
 }
 
-func (m *mockS3Client) PutObject(input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+func (m *mockS3Client) PutObject(_ context.Context, input *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
 	if m.shouldError {
 		return nil, errors.New("mock error")
 	}
@@ -31,27 +28,26 @@ func (m *mockS3Client) PutObject(input *s3.PutObjectInput) (*s3.PutObjectOutput,
 		m.files = make(map[string][]byte)
 	}
 
-	// Read the body
 	buf := new(bytes.Buffer)
 	if input.Body != nil {
 		io.Copy(buf, input.Body)
 	}
 
-	key := aws.StringValue(input.Key)
+	key := aws.ToString(input.Key)
 	m.files[key] = buf.Bytes()
 
 	return &s3.PutObjectOutput{}, nil
 }
 
-func (m *mockS3Client) GetObject(input *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+func (m *mockS3Client) GetObject(_ context.Context, input *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
 	if m.shouldError {
 		return nil, errors.New("mock error")
 	}
 
-	key := aws.StringValue(input.Key)
+	key := aws.ToString(input.Key)
 	data, exists := m.files[key]
 	if !exists {
-		return nil, awserr.New(s3.ErrCodeNoSuchKey, "key not found", nil)
+		return nil, errors.New("NoSuchKey: key not found")
 	}
 
 	return &s3.GetObjectOutput{
@@ -61,34 +57,35 @@ func (m *mockS3Client) GetObject(input *s3.GetObjectInput) (*s3.GetObjectOutput,
 	}, nil
 }
 
-func (m *mockS3Client) HeadObject(input *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {
+func (m *mockS3Client) HeadObject(_ context.Context, input *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
 	if m.shouldError {
 		return nil, errors.New("mock error")
 	}
 
-	key := aws.StringValue(input.Key)
+	key := aws.ToString(input.Key)
 	data, exists := m.files[key]
 	if !exists {
-		return nil, awserr.New(s3.ErrCodeNoSuchKey, "key not found", nil)
+		return nil, errors.New("NoSuchKey: key not found")
 	}
 
+	now := time.Now()
 	return &s3.HeadObjectOutput{
 		ContentLength: aws.Int64(int64(len(data))),
 		ContentType:   aws.String("application/octet-stream"),
-		LastModified:  aws.Time(time.Now()),
+		LastModified:  &now,
 	}, nil
 }
 
-func (m *mockS3Client) DeleteObjects(input *s3.DeleteObjectsInput) (*s3.DeleteObjectsOutput, error) {
+func (m *mockS3Client) DeleteObjects(_ context.Context, input *s3.DeleteObjectsInput, _ ...func(*s3.Options)) (*s3.DeleteObjectsOutput, error) {
 	if m.shouldError {
 		return nil, errors.New("mock error")
 	}
 
-	deleted := []*s3.DeletedObject{}
+	deleted := []types.DeletedObject{}
 	for _, obj := range input.Delete.Objects {
-		key := aws.StringValue(obj.Key)
+		key := aws.ToString(obj.Key)
 		delete(m.files, key)
-		deleted = append(deleted, &s3.DeletedObject{Key: obj.Key})
+		deleted = append(deleted, types.DeletedObject{Key: obj.Key})
 	}
 
 	return &s3.DeleteObjectsOutput{
@@ -96,40 +93,39 @@ func (m *mockS3Client) DeleteObjects(input *s3.DeleteObjectsInput) (*s3.DeleteOb
 	}, nil
 }
 
-func (m *mockS3Client) CopyObject(input *s3.CopyObjectInput) (*s3.CopyObjectOutput, error) {
+func (m *mockS3Client) CopyObject(_ context.Context, input *s3.CopyObjectInput, _ ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
 	if m.shouldError {
 		return nil, errors.New("mock error")
 	}
 
-	// Parse source (format: bucket/key)
-	source := aws.StringValue(input.CopySource)
+	source := aws.ToString(input.CopySource)
 	parts := strings.SplitN(source, "/", 2)
 	if len(parts) != 2 {
 		return nil, errors.New("invalid copy source")
 	}
 
 	sourceKey := parts[1]
-	destKey := aws.StringValue(input.Key)
+	destKey := aws.ToString(input.Key)
 
 	data, exists := m.files[sourceKey]
 	if !exists {
-		return nil, awserr.New(s3.ErrCodeNoSuchKey, "source key not found", nil)
+		return nil, errors.New("NoSuchKey: source key not found")
 	}
 
 	m.files[destKey] = data
 	return &s3.CopyObjectOutput{}, nil
 }
 
-func (m *mockS3Client) ListObjectsV2(input *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error) {
+func (m *mockS3Client) ListObjectsV2(_ context.Context, input *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
 	if m.shouldError {
 		return nil, errors.New("mock error")
 	}
 
-	prefix := aws.StringValue(input.Prefix)
-	delimiter := aws.StringValue(input.Delimiter)
+	prefix := aws.ToString(input.Prefix)
+	delimiter := aws.ToString(input.Delimiter)
 
-	contents := []*s3.Object{}
-	commonPrefixes := []*s3.CommonPrefix{}
+	var contents []types.Object
+	var commonPrefixes []types.CommonPrefix
 	prefixMap := make(map[string]bool)
 
 	for key := range m.files {
@@ -140,20 +136,18 @@ func (m *mockS3Client) ListObjectsV2(input *s3.ListObjectsV2Input) (*s3.ListObje
 		relKey := strings.TrimPrefix(key, prefix)
 
 		if delimiter != "" && strings.Contains(relKey, delimiter) {
-			// Add to common prefixes
 			idx := strings.Index(relKey, delimiter)
 			if idx > 0 {
 				dirPrefix := prefix + relKey[:idx+1]
 				if !prefixMap[dirPrefix] {
 					prefixMap[dirPrefix] = true
-					commonPrefixes = append(commonPrefixes, &s3.CommonPrefix{
+					commonPrefixes = append(commonPrefixes, types.CommonPrefix{
 						Prefix: aws.String(dirPrefix),
 					})
 				}
 			}
 		} else {
-			// Add to contents
-			contents = append(contents, &s3.Object{
+			contents = append(contents, types.Object{
 				Key:  aws.String(key),
 				Size: aws.Int64(int64(len(m.files[key]))),
 			})
@@ -165,27 +159,6 @@ func (m *mockS3Client) ListObjectsV2(input *s3.ListObjectsV2Input) (*s3.ListObje
 		CommonPrefixes: commonPrefixes,
 		IsTruncated:    aws.Bool(false),
 	}, nil
-}
-
-func (m *mockS3Client) ListObjectsV2Pages(input *s3.ListObjectsV2Input, fn func(*s3.ListObjectsV2Output, bool) bool) error {
-	output, err := m.ListObjectsV2(input)
-	if err != nil {
-		return err
-	}
-	fn(output, true) // Call the callback with the results, marking it as the last page
-	return nil
-}
-
-func (m *mockS3Client) GetObjectRequest(input *s3.GetObjectInput) (*request.Request, *s3.GetObjectOutput) {
-	httpReq, _ := http.NewRequest("GET", "https://s3.amazonaws.com/test-bucket/"+aws.StringValue(input.Key), nil)
-	req := &request.Request{
-		HTTPRequest: httpReq,
-		Operation:   &request.Operation{Name: "GetObject"},
-		Time:        time.Now(),
-		ExpireTime:  30 * time.Second,
-	}
-	output := &s3.GetObjectOutput{}
-	return req, output
 }
 
 // mockS3Driver is a test implementation that bypasses uploader/downloader
@@ -200,7 +173,7 @@ func (d *mockS3Driver) Put(path string, contents []byte) error {
 		Key:    aws.String(path),
 		Body:   bytes.NewReader(contents),
 	}
-	_, err := d.mock.PutObject(input)
+	_, err := d.mock.PutObject(context.Background(), input)
 	return err
 }
 
@@ -209,7 +182,7 @@ func (d *mockS3Driver) Get(path string) ([]byte, error) {
 		Bucket: aws.String(d.bucket),
 		Key:    aws.String(path),
 	}
-	output, err := d.mock.GetObject(input)
+	output, err := d.mock.GetObject(context.Background(), input)
 	if err != nil {
 		return nil, err
 	}
@@ -224,18 +197,16 @@ func (d *mockS3Driver) Exists(path string) bool {
 		Bucket: aws.String(d.bucket),
 		Key:    aws.String(path),
 	}
-	_, err := d.mock.HeadObject(input)
+	_, err := d.mock.HeadObject(context.Background(), input)
 	return err == nil
 }
 
 // TestS3DriverWithMock tests S3 driver with mock client
 func TestS3DriverWithMock(t *testing.T) {
-	// Create mock client
 	mock := &mockS3Client{
 		files: make(map[string][]byte),
 	}
 
-	// Create S3 driver with mock
 	driver := &mockS3Driver{
 		S3Driver: &S3Driver{
 			client:     mock,
@@ -397,7 +368,6 @@ func TestS3DriverWithMock(t *testing.T) {
 		if err != nil {
 			t.Errorf("Directories failed: %v", err)
 		}
-		// Should have "sub" directory
 		hasSubDir := false
 		for _, dir := range dirs {
 			if strings.Contains(dir, "sub") {
@@ -417,7 +387,6 @@ func TestS3DriverWithMock(t *testing.T) {
 		if err != nil {
 			t.Errorf("AllDirectories failed: %v", err)
 		}
-		// Should have b and b/c
 		if len(dirs) < 2 {
 			t.Errorf("AllDirectories should have at least 2 dirs, got %d", len(dirs))
 		}
@@ -487,13 +456,16 @@ func TestS3DriverWithMock(t *testing.T) {
 
 	// Test error cases
 	t.Run("ErrorCases", func(t *testing.T) {
-		t.Skip("TODO: fix test to use mockS3Driver")
-		errorDriver := &S3Driver{
-			client: &mockS3Client{
-				files:       make(map[string][]byte),
-				shouldError: true,
+		errorMock := &mockS3Client{
+			files:       make(map[string][]byte),
+			shouldError: true,
+		}
+		errorDriver := &mockS3Driver{
+			S3Driver: &S3Driver{
+				client: errorMock,
+				bucket: "test-bucket",
 			},
-			bucket: "test-bucket",
+			mock: errorMock,
 		}
 
 		// Test Put error
@@ -567,11 +539,12 @@ func TestS3DriverWithMock(t *testing.T) {
 
 // TestS3DriverPutStream tests PutStream for S3
 func TestS3DriverPutStream(t *testing.T) {
-	t.Skip("TODO: fix test")
+	t.Skip("TODO: fix test - requires uploader mock")
+	mock := &mockS3Client{
+		files: make(map[string][]byte),
+	}
 	driver := &S3Driver{
-		client: &mockS3Client{
-			files: make(map[string][]byte),
-		},
+		client: mock,
 		bucket: "test-bucket",
 	}
 
@@ -589,7 +562,6 @@ func TestS3DriverPutStream(t *testing.T) {
 
 	// Test larger file (multipart simulation)
 	t.Run("LargeFile", func(t *testing.T) {
-		// Create content larger than 5MB threshold
 		largeContent := make([]byte, 6*1024*1024) // 6MB
 		for i := range largeContent {
 			largeContent[i] = byte(i % 256)
