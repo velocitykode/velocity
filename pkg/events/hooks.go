@@ -24,6 +24,7 @@ func wirePackageHooks() {
 	httpclient.SetEventDispatcher(dispatch)
 	mail.SetEventDispatcher(dispatch)
 	scheduler.SetEventDispatcher(dispatch)
+	// Note: grpc package wires itself via grpc.init() to avoid import cycles
 }
 
 // clearPackageHooks removes event dispatchers from all packages.
@@ -36,6 +37,7 @@ func clearPackageHooks() {
 	httpclient.SetEventDispatcher(nil)
 	mail.SetEventDispatcher(nil)
 	scheduler.SetEventDispatcher(nil)
+	// Note: grpc package handles its own cleanup
 }
 
 // ListenerFunc is a function that handles events.
