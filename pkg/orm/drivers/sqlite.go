@@ -510,6 +510,8 @@ func (g *SQLiteGrammar) getSQLiteType(typ string) string {
 		return "INTEGER"
 	case "DATE", "DATETIME", "TIMESTAMP":
 		return "TEXT"
+	case "JSON", "JSONB":
+		return "TEXT"
 	default:
 		return typ
 	}

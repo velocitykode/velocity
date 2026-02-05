@@ -473,6 +473,8 @@ func TestSQLiteGrammar_getSQLiteType(t *testing.T) {
 		{"DATE to TEXT", "DATE", "TEXT"},
 		{"DATETIME to TEXT", "DATETIME", "TEXT"},
 		{"TIMESTAMP to TEXT", "TIMESTAMP", "TEXT"},
+		{"JSON to TEXT", "JSON", "TEXT"},
+		{"JSONB to TEXT", "JSONB", "TEXT"},
 		{"unknown type passthrough", "CUSTOM", "CUSTOM"},
 	}
 

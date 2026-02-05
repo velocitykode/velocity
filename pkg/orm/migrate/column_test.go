@@ -90,6 +90,20 @@ func TestMigrator_AddColumn(t *testing.T) {
 				c.UUID().Nullable()
 			},
 		},
+		{
+			name:   "add json column",
+			column: "metadata",
+			builder: func(c *migrate.ColumnBuilder) {
+				c.JSON().Nullable()
+			},
+		},
+		{
+			name:   "add jsonb column",
+			column: "settings",
+			builder: func(c *migrate.ColumnBuilder) {
+				c.JSONB().Nullable()
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -257,6 +271,22 @@ func TestColumnBuilder_ToSQL(t *testing.T) {
 				c.Boolean().Default(false)
 			},
 			contains: []string{"INTEGER", "DEFAULT 0"},
+		},
+		{
+			name:   "sqlite json column",
+			driver: "sqlite",
+			builder: func(c *migrate.ColumnBuilder) {
+				c.JSON().Nullable()
+			},
+			contains: []string{"TEXT"},
+		},
+		{
+			name:   "sqlite jsonb column",
+			driver: "sqlite",
+			builder: func(c *migrate.ColumnBuilder) {
+				c.JSONB().Nullable()
+			},
+			contains: []string{"TEXT"},
 		},
 	}
 

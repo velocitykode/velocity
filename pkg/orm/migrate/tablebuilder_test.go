@@ -154,6 +154,8 @@ func TestTableBuilder_AllColumns(t *testing.T) {
 		t.Integer("count")
 		t.BigInteger("views")
 		t.Boolean("active")
+		t.JSON("metadata")
+		t.JSONB("settings").Nullable()
 		t.Timestamp("verified_at").Nullable()
 		t.Date("birth_date").Nullable()
 		t.Timestamps()
@@ -179,6 +181,8 @@ func TestTableBuilder_AllColumns(t *testing.T) {
 		"count":       false,
 		"views":       false,
 		"active":      false,
+		"metadata":    false,
+		"settings":    false,
 		"verified_at": false,
 		"birth_date":  false,
 		"created_at":  false,
@@ -483,6 +487,102 @@ func TestTableBuilder_Decimal(t *testing.T) {
 	}
 	if cpu != 75.55 {
 		t.Errorf("expected 75.55, got %f", cpu)
+	}
+}
+
+func TestTableBuilder_JSON(t *testing.T) {
+	err := orm.Init("sqlite", map[string]any{
+		"database": ":memory:",
+	})
+	if err != nil {
+		t.Fatalf("failed to init ORM: %v", err)
+	}
+	defer orm.Close()
+
+	migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+
+	var generatedSQL string
+	err = migrator.CreateTable("json_test", func(tb *migrate.TableBuilder) {
+		tb.ID()
+		tb.JSON("metadata")
+		tb.JSONB("settings").Nullable()
+		generatedSQL = tb.ToSQL()
+	})
+	if err != nil {
+		t.Fatalf("failed to create table: %v", err)
+	}
+	defer migrator.DropTable("json_test")
+
+	// SQLite maps JSON/JSONB to TEXT
+	if !strings.Contains(generatedSQL, "metadata TEXT") {
+		t.Errorf("expected TEXT for JSON column in SQLite, got:\n%s", generatedSQL)
+	}
+	if !strings.Contains(generatedSQL, "settings TEXT") {
+		t.Errorf("expected TEXT for JSONB column in SQLite, got:\n%s", generatedSQL)
+	}
+
+	// Test storing and retrieving JSON data
+	db := orm.DB()
+	jsonData := `{"key":"value","nested":{"arr":[1,2,3]}}`
+	_, err = db.Exec("INSERT INTO json_test (metadata, settings) VALUES (?, ?)", jsonData, nil)
+	if err != nil {
+		t.Fatalf("failed to insert: %v", err)
+	}
+
+	var retrieved string
+	err = db.QueryRow("SELECT metadata FROM json_test WHERE id = 1").Scan(&retrieved)
+	if err != nil {
+		t.Fatalf("failed to query: %v", err)
+	}
+	if retrieved != jsonData {
+		t.Errorf("expected %s, got %s", jsonData, retrieved)
+	}
+}
+
+func TestTableBuilder_JSON_SQL(t *testing.T) {
+	tests := []struct {
+		name         string
+		driver       string
+		jsonContains string
+		jsonbContains string
+	}{
+		{"sqlite", "sqlite", "metadata TEXT", "settings TEXT"},
+		{"postgres", "postgres", "metadata JSON", "settings JSONB"},
+		{"mysql", "mysql", "metadata JSON", "settings JSON"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := orm.Init(tt.driver, map[string]any{
+				"database": ":memory:",
+			})
+			if err != nil && tt.driver == "sqlite" {
+				t.Fatalf("failed to init ORM: %v", err)
+			}
+			if err != nil {
+				t.Skip("driver not available")
+			}
+			defer orm.Close()
+
+			migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+
+			var generatedSQL string
+			err = migrator.CreateTable("json_sql_test", func(tb *migrate.TableBuilder) {
+				tb.ID()
+				tb.JSON("metadata")
+				tb.JSONB("settings").Nullable()
+				generatedSQL = tb.ToSQL()
+			})
+
+			if !strings.Contains(generatedSQL, tt.jsonContains) {
+				t.Errorf("expected SQL to contain %q, got:\n%s", tt.jsonContains, generatedSQL)
+			}
+			if !strings.Contains(generatedSQL, tt.jsonbContains) {
+				t.Errorf("expected SQL to contain %q, got:\n%s", tt.jsonbContains, generatedSQL)
+			}
+
+			migrator.DropTable("json_sql_test")
+		})
 	}
 }
 

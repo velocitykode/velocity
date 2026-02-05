@@ -367,6 +367,18 @@ func (c *ColumnBuilder) UUID() *ColumnBuilder {
 	return c
 }
 
+// JSON sets the column type to JSON
+func (c *ColumnBuilder) JSON() *ColumnBuilder {
+	c.colType = "json"
+	return c
+}
+
+// JSONB sets the column type to JSONB (binary JSON)
+func (c *ColumnBuilder) JSONB() *ColumnBuilder {
+	c.colType = "jsonb"
+	return c
+}
+
 // Nullable marks the column as allowing NULL values
 func (c *ColumnBuilder) Nullable() *ColumnBuilder {
 	c.nullable = true
@@ -439,6 +451,8 @@ func (c *ColumnBuilder) toSQLiteType() string {
 		return "DATE"
 	case "uuid":
 		return "TEXT"
+	case "json", "jsonb":
+		return "TEXT"
 	default:
 		return "TEXT"
 	}
@@ -462,6 +476,10 @@ func (c *ColumnBuilder) toPostgresType() string {
 		return "DATE"
 	case "uuid":
 		return "UUID"
+	case "json":
+		return "JSON"
+	case "jsonb":
+		return "JSONB"
 	default:
 		return "TEXT"
 	}
@@ -485,6 +503,8 @@ func (c *ColumnBuilder) toMySQLType() string {
 		return "DATE"
 	case "uuid":
 		return "CHAR(36)"
+	case "json", "jsonb":
+		return "JSON"
 	default:
 		return "TEXT"
 	}
@@ -682,6 +702,36 @@ func (t *TableBuilder) Decimal(name string, precision, scale int) *TableBuilder 
 	return t
 }
 
+// JSON adds a JSON column
+// For PostgreSQL: JSON type (text-based, validates JSON on insert)
+// For MySQL: JSON type (binary storage)
+// For SQLite: TEXT (no native JSON type)
+func (t *TableBuilder) JSON(name string) *TableBuilder {
+	col := Column{
+		Name:     name,
+		Type:     "json",
+		Nullable: false,
+	}
+	t.columns = append(t.columns, col)
+	t.lastColumn = &t.columns[len(t.columns)-1]
+	return t
+}
+
+// JSONB adds a JSONB column (binary JSON)
+// For PostgreSQL: JSONB type (binary storage, indexable, faster queries)
+// For MySQL: JSON type (MySQL has no separate JSONB)
+// For SQLite: TEXT (no native JSON type)
+func (t *TableBuilder) JSONB(name string) *TableBuilder {
+	col := Column{
+		Name:     name,
+		Type:     "jsonb",
+		Nullable: false,
+	}
+	t.columns = append(t.columns, col)
+	t.lastColumn = &t.columns[len(t.columns)-1]
+	return t
+}
+
 // Timestamps adds created_at and updated_at columns
 func (t *TableBuilder) Timestamps() *TableBuilder {
 	createdAt := Column{
@@ -806,6 +856,8 @@ func (t *TableBuilder) toSQLiteSyntax() string {
 			}
 		case "decimal":
 			sql += fmt.Sprintf("NUMERIC(%d,%d)", col.Precision, col.Scale)
+		case "json", "jsonb":
+			sql += "TEXT" // SQLite has no native JSON type
 		}
 
 		// Constraints
@@ -883,6 +935,10 @@ func (t *TableBuilder) toPostgresSyntax() string {
 			}
 		case "decimal":
 			sql += fmt.Sprintf("NUMERIC(%d,%d)", col.Precision, col.Scale)
+		case "json":
+			sql += "JSON"
+		case "jsonb":
+			sql += "JSONB"
 		}
 
 		// Constraints (skip if already handled by SERIAL PRIMARY KEY or UUID PRIMARY KEY)
@@ -962,6 +1018,8 @@ func (t *TableBuilder) toMySQLSyntax() string {
 			}
 		case "decimal":
 			sql += fmt.Sprintf("DECIMAL(%d,%d)", col.Precision, col.Scale)
+		case "json", "jsonb":
+			sql += "JSON" // MySQL has no separate JSONB type
 		}
 
 		// Constraints (skip if already handled by AUTO_INCREMENT PRIMARY KEY or UUID PRIMARY KEY)
