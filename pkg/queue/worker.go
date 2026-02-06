@@ -15,6 +15,7 @@ type Worker struct {
 	handler     func(Job) error
 	concurrency int
 	interval    time.Duration
+	timeout     time.Duration
 	maxRetries  int
 	ctx         context.Context
 	cancel      context.CancelFunc
@@ -37,6 +38,15 @@ func WithConcurrency(n int) WorkerOption {
 func WithInterval(d time.Duration) WorkerOption {
 	return func(w *Worker) {
 		w.interval = d
+	}
+}
+
+// WithTimeout sets the job processing timeout
+func WithTimeout(d time.Duration) WorkerOption {
+	return func(w *Worker) {
+		if d > 0 {
+			w.timeout = d
+		}
 	}
 }
 
@@ -120,11 +130,14 @@ func (w *Worker) processJob() error {
 	// Get job type for event dispatching
 	jobType := fmt.Sprintf("%T", job)
 
-	// Process the job with timeout (default 30 seconds, configurable for tests)
-	timeout := 30 * time.Second
-	if w.interval < time.Second {
-		// For tests with short intervals, use shorter timeout
-		timeout = 5 * time.Second
+	// Process the job with timeout
+	timeout := w.timeout
+	if timeout == 0 {
+		timeout = 30 * time.Second
+		if w.interval < time.Second {
+			// For tests with short intervals, use shorter timeout
+			timeout = 5 * time.Second
+		}
 	}
 	jobCtx, cancel := context.WithTimeout(w.ctx, timeout)
 	defer cancel()
