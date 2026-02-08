@@ -287,6 +287,147 @@ func TestBroadcast(t *testing.T) {
 	}
 }
 
+func TestHandleRaw(t *testing.T) {
+	s := New(DefaultConfig())
+
+	// Create test server
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := s.HandleRaw(w, r)
+		if err != nil {
+			t.Errorf("HandleRaw failed: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		// Echo raw messages back
+		for {
+			mt, msg, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			if err := conn.WriteMessage(mt, msg); err != nil {
+				return
+			}
+		}
+	}))
+	defer ts.Close()
+
+	// Connect to WebSocket
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to connect to WebSocket: %v", err)
+	}
+	defer ws.Close()
+
+	// Send a text message
+	err = ws.WriteMessage(websocket.TextMessage, []byte("hello raw"))
+	if err != nil {
+		t.Fatalf("Failed to send message: %v", err)
+	}
+
+	// Read echoed response
+	mt, msg, err := ws.ReadMessage()
+	if err != nil {
+		t.Fatalf("Failed to read message: %v", err)
+	}
+
+	if mt != websocket.TextMessage {
+		t.Errorf("Expected text message type, got %d", mt)
+	}
+	if string(msg) != "hello raw" {
+		t.Errorf("Expected 'hello raw', got '%s'", string(msg))
+	}
+
+	// Send a binary message
+	binaryData := []byte{0x00, 0x01, 0x02, 0x03}
+	err = ws.WriteMessage(websocket.BinaryMessage, binaryData)
+	if err != nil {
+		t.Fatalf("Failed to send binary message: %v", err)
+	}
+
+	mt, msg, err = ws.ReadMessage()
+	if err != nil {
+		t.Fatalf("Failed to read binary message: %v", err)
+	}
+
+	if mt != websocket.BinaryMessage {
+		t.Errorf("Expected binary message type, got %d", mt)
+	}
+	if string(msg) != string(binaryData) {
+		t.Errorf("Binary data mismatch")
+	}
+}
+
+func TestHandleRaw_DoesNotRegisterClient(t *testing.T) {
+	s := New(DefaultConfig())
+	s.Start()
+	defer s.Stop()
+
+	// Create test server using HandleRaw
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := s.HandleRaw(w, r)
+		if err != nil {
+			t.Errorf("HandleRaw failed: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		// Keep connection open briefly
+		time.Sleep(200 * time.Millisecond)
+	}))
+	defer ts.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+	defer ws.Close()
+
+	// Wait for connection to be established
+	time.Sleep(50 * time.Millisecond)
+
+	// Raw connections should NOT appear in managed clients or stats
+	stats := s.GetStats()
+	if stats.ConnectedClients != 0 {
+		t.Errorf("Expected 0 connected clients for raw connection, got %d", stats.ConnectedClients)
+	}
+
+	clients := s.GetClients()
+	if len(clients) != 0 {
+		t.Errorf("Expected 0 managed clients for raw connection, got %d", len(clients))
+	}
+}
+
+func TestHandleRaw_RespectsOriginCheck(t *testing.T) {
+	config := DefaultConfig()
+	config.AllowedOrigins = []string{"https://allowed.example.com"}
+	s := New(config)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := s.HandleRaw(w, r)
+		if err != nil {
+			return
+		}
+		conn.Close()
+	}))
+	defer ts.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
+
+	// Connection with disallowed origin should fail
+	header := http.Header{}
+	header.Set("Origin", "https://evil.example.com")
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err == nil {
+		t.Fatal("Expected connection with disallowed origin to fail")
+	}
+	if resp != nil && resp.StatusCode != http.StatusForbidden {
+		t.Errorf("Expected status 403, got %d", resp.StatusCode)
+	}
+}
+
 func TestConnectionLimit(t *testing.T) {
 	config := DefaultConfig()
 	config.MaxConnections = 2

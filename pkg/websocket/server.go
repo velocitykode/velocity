@@ -352,6 +352,19 @@ func (s *Server) GetClient(id string) (*Client, bool) {
 	return client, ok
 }
 
+// HandleRaw upgrades the HTTP connection to a WebSocket and returns the raw
+// connection. Unlike HandleConnection, it does NOT register a managed Client,
+// does NOT start readPump/writePump goroutines, and does NOT enter the
+// message routing system. The caller owns the connection and is responsible
+// for reading, writing, and closing it.
+func (s *Server) HandleRaw(w http.ResponseWriter, r *http.Request) (*websocket.Conn, error) {
+	conn, err := s.upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return nil, fmt.Errorf("websocket upgrade: %w", err)
+	}
+	return conn, nil
+}
+
 // GetClients returns all connected clients
 func (s *Server) GetClients() map[string]*Client {
 	s.mu.RLock()
