@@ -109,7 +109,7 @@ func InitFromEnv() error {
 	// Get database connection from environment
 	dbConnection := os.Getenv("DB_CONNECTION")
 	if dbConnection == "" {
-		return fmt.Errorf("DB_CONNECTION not set in environment")
+		return nil
 	}
 
 	// Build configuration
