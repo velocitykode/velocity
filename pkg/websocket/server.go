@@ -4,12 +4,25 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
+
+// sanitizeForLog strips control characters and newlines from a string for safe logging.
+func sanitizeForLog(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r >= 32 && r != 127 {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
 
 // Server manages WebSocket connections
 type Server struct {
@@ -253,18 +266,28 @@ func (s *Server) handleBroadcast(message Message) {
 	atomic.AddInt64(&s.stats.MessagesSent, int64(len(s.clients)))
 }
 
-// checkOrigin validates the origin of the connection
+// checkOrigin validates the origin of the connection.
+// If no AllowedOrigins are configured, only same-origin requests are accepted.
+// Use AllowedOrigins: []string{"*"} to explicitly allow all origins.
 func (s *Server) checkOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 
-	// If no allowed origins specified, allow all
+	// If no allowed origins specified, only allow same-origin
 	if len(s.config.AllowedOrigins) == 0 {
-		return true
+		if origin == "" {
+			return true
+		}
+		// Compare origin to the Host header (same-origin check)
+		host := r.Host
+		return origin == "http://"+host || origin == "https://"+host
 	}
 
 	// Check if origin is in allowed list
 	for _, allowed := range s.config.AllowedOrigins {
-		if allowed == "*" || allowed == origin {
+		if allowed == "*" {
+			return true
+		}
+		if allowed == origin {
 			return true
 		}
 	}

@@ -2,6 +2,7 @@ package bond
 
 import (
 	"encoding/json"
+	"html"
 	"html/template"
 	"net/http"
 	"strings"
@@ -69,7 +70,7 @@ func (b *Bond) renderJSON(w http.ResponseWriter, page Page) error {
 
 // buildInertiaDiv constructs the Inertia container div
 func (b *Bond) buildInertiaDiv(pageJSON string) string {
-	return `<div id="` + b.containerID + `" data-page='` + pageJSON + `'></div>`
+	return `<div id="` + html.EscapeString(b.containerID) + `" data-page='` + pageJSON + `'></div>`
 }
 
 // isPartialReload checks if this is a partial reload for the given component

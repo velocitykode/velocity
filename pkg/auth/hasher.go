@@ -2,10 +2,14 @@ package auth
 
 import (
 	"errors"
+	"fmt"
+	"log"
 	"sync"
 
 	"golang.org/x/crypto/bcrypt"
 )
+
+const minSecureBcryptCost = 10
 
 // Hasher handles password hashing and verification
 type Hasher interface {
@@ -25,10 +29,14 @@ type BcryptHasher struct {
 	mu   sync.RWMutex
 }
 
-// NewBcryptHasher creates a new bcrypt hasher
+// NewBcryptHasher creates a new bcrypt hasher.
+// Minimum cost is 10 for security; lower values are overridden with a warning.
 func NewBcryptHasher(cost int) *BcryptHasher {
-	if cost < bcrypt.MinCost {
-		cost = bcrypt.DefaultCost
+	if cost < minSecureBcryptCost {
+		if cost > 0 {
+			log.Printf("auth: bcrypt cost %d is below minimum secure cost %d, using %d", cost, minSecureBcryptCost, minSecureBcryptCost)
+		}
+		cost = minSecureBcryptCost
 	}
 	if cost > bcrypt.MaxCost {
 		cost = bcrypt.MaxCost
@@ -43,6 +51,10 @@ func NewBcryptHasher(cost int) *BcryptHasher {
 func (h *BcryptHasher) Hash(password string) (string, error) {
 	if password == "" {
 		return "", errors.New("password cannot be empty")
+	}
+
+	if len([]byte(password)) > 72 {
+		return "", fmt.Errorf("password exceeds bcrypt's 72-byte limit (%d bytes)", len([]byte(password)))
 	}
 
 	h.mu.RLock()
@@ -87,8 +99,11 @@ func (h *BcryptHasher) NeedsRehash(hash string) bool {
 
 // SetCost updates the bcrypt cost factor
 func (h *BcryptHasher) SetCost(cost int) {
-	if cost < bcrypt.MinCost {
-		cost = bcrypt.DefaultCost
+	if cost < minSecureBcryptCost {
+		if cost > 0 {
+			log.Printf("auth: bcrypt cost %d is below minimum secure cost %d, using %d", cost, minSecureBcryptCost, minSecureBcryptCost)
+		}
+		cost = minSecureBcryptCost
 	}
 	if cost > bcrypt.MaxCost {
 		cost = bcrypt.MaxCost
@@ -103,7 +118,6 @@ func (h *BcryptHasher) SetCost(cost int) {
 var (
 	globalHasher Hasher
 	hasherMux    sync.RWMutex
-	hasherOnce   sync.Once
 )
 
 // InitHasher initializes the global hasher
@@ -116,13 +130,20 @@ func InitHasher(hasher Hasher) {
 // GetHasher returns the global hasher
 func GetHasher() Hasher {
 	hasherMux.RLock()
-	defer hasherMux.RUnlock()
+	h := globalHasher
+	hasherMux.RUnlock()
 
+	if h != nil {
+		return h
+	}
+
+	// Acquire write lock to initialize default hasher
+	hasherMux.Lock()
+	defer hasherMux.Unlock()
+
+	// Double-check after acquiring write lock
 	if globalHasher == nil {
-		// Default to bcrypt with default cost if not initialized
-		hasherOnce.Do(func() {
-			globalHasher = NewBcryptHasher(bcrypt.DefaultCost)
-		})
+		globalHasher = NewBcryptHasher(bcrypt.DefaultCost)
 	}
 
 	return globalHasher

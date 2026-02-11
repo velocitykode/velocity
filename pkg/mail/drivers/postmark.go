@@ -20,12 +20,18 @@ func init() {
 	})
 }
 
-// PostmarkDriver sends emails via Postmark API
+// PostmarkDriver sends emails via Postmark API.
+// The token field contains sensitive credentials and must not be logged.
 type PostmarkDriver struct {
-	token         string
+	token         string // SENSITIVE: do not log
 	messageStream string
 	client        *http.Client
 	mu            sync.Mutex
+}
+
+// String returns a safe representation with credentials redacted.
+func (d *PostmarkDriver) String() string {
+	return fmt.Sprintf("PostmarkDriver{MessageStream:%s, Token:[REDACTED]}", d.messageStream)
 }
 
 // NewPostmarkDriver creates a new Postmark driver

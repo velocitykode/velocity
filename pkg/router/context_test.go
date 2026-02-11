@@ -302,19 +302,19 @@ func TestContext_IP(t *testing.T) {
 		expected string
 	}{
 		{
-			name:     "X-Forwarded-For header",
+			name:     "X-Forwarded-For header ignored (untrusted)",
 			headers:  map[string]string{"X-Forwarded-For": "192.168.1.1"},
-			expected: "192.168.1.1",
+			expected: "192.0.2.1",
 		},
 		{
-			name:     "X-Real-IP header",
+			name:     "X-Real-IP header ignored (untrusted)",
 			headers:  map[string]string{"X-Real-IP": "10.0.0.1"},
-			expected: "10.0.0.1",
+			expected: "192.0.2.1",
 		},
 		{
-			name:     "RemoteAddr fallback",
+			name:     "RemoteAddr with port stripped",
 			headers:  map[string]string{},
-			expected: "192.0.2.1:1234",
+			expected: "192.0.2.1",
 		},
 	}
 

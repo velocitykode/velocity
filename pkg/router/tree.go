@@ -1,6 +1,7 @@
 package router
 
 import (
+	"net/url"
 	"strings"
 )
 
@@ -229,8 +230,12 @@ func (n *Node) match(parts []string, method string, matchedValues []string) *Mat
 
 	// Priority 4: Wildcard (consumes rest of path)
 	if n.wildcardChild != nil {
-		// Wildcard captures everything including the current part
+		// Wildcard captures everything including the current part.
+		// URL-decode the value since URL path segments may be percent-encoded.
 		wildcardValue := strings.Join(parts, "/")
+		if decoded, err := url.PathUnescape(wildcardValue); err == nil {
+			wildcardValue = decoded
+		}
 		newValues := append(copyValues(matchedValues), wildcardValue)
 
 		if n.wildcardChild.handlers != nil {

@@ -2,6 +2,7 @@ package interceptors
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -240,11 +241,27 @@ func logRequest(ctx context.Context, method string, start time.Time, err error, 
 
 // Event dispatching helpers
 
+// redactMetadata returns a copy of md with sensitive headers redacted
+func redactMetadata(md map[string][]string) map[string][]string {
+	if md == nil {
+		return nil
+	}
+	redacted := make(map[string][]string, len(md))
+	for k, v := range md {
+		if strings.EqualFold(k, "authorization") {
+			redacted[k] = []string{"[REDACTED]"}
+		} else {
+			redacted[k] = v
+		}
+	}
+	return redacted
+}
+
 func dispatchRequestStarted(ctx context.Context, method string, start time.Time) {
 	var md map[string][]string
 	protocol := detectProtocol(ctx)
 	if inMD, ok := metadata.FromIncomingContext(ctx); ok {
-		md = inMD
+		md = redactMetadata(inMD)
 	}
 
 	grpcevents.DispatchEvent(&grpcevents.RequestStarted{
@@ -339,7 +356,7 @@ func dispatchStreamStarted(ctx context.Context, method string, start time.Time) 
 	var md map[string][]string
 	protocol := detectProtocol(ctx)
 	if inMD, ok := metadata.FromIncomingContext(ctx); ok {
-		md = inMD
+		md = redactMetadata(inMD)
 	}
 
 	grpcevents.DispatchEvent(&grpcevents.StreamStarted{

@@ -2,6 +2,7 @@ package exceptions
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"reflect"
 	"sync"
@@ -42,6 +43,10 @@ func NewHandler(opts ...HandlerOption) *Handler {
 
 	for _, opt := range opts {
 		opt(h)
+	}
+
+	if h.debug {
+		log.Println("[WARN] Exception handler running in debug mode — stack traces and source code will be exposed in error responses. Ensure APP_DEBUG is not enabled in production.")
 	}
 
 	return h
@@ -106,6 +111,9 @@ func (h *Handler) SetDebug(debug bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.debug = debug
+	if debug {
+		log.Println("[WARN] Exception handler debug mode enabled — stack traces and source code will be exposed in error responses. Ensure this is not enabled in production.")
+	}
 }
 
 // IsDebug returns whether debug mode is enabled.

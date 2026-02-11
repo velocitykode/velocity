@@ -10,6 +10,16 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+// hasDotDotTraversal checks if a cleaned path still contains ".." traversal components.
+func hasDotDotTraversal(path string) bool {
+	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
+}
+
 // SQLiteDriver implements the Driver interface for SQLite
 type SQLiteDriver struct {
 	db     *sql.DB
@@ -34,6 +44,15 @@ func (d *SQLiteDriver) Connect(config ConnectionConfig) error {
 	// If dsn is just a filename (no path separators), put it in database/ folder
 	if dsn != ":memory:" && !strings.Contains(dsn, "/") && !strings.Contains(dsn, "\\") {
 		dsn = "database/" + dsn
+	}
+
+	// Validate path to prevent directory traversal attacks
+	if dsn != ":memory:" {
+		cleanPath := filepath.Clean(dsn)
+		if hasDotDotTraversal(cleanPath) {
+			return fmt.Errorf("database path contains invalid traversal component: %s", dsn)
+		}
+		dsn = cleanPath
 	}
 
 	// Create directory if it doesn't exist (for file-based databases)
@@ -105,7 +124,7 @@ func (d *SQLiteDriver) DB() *sql.DB {
 // Query executes a query that returns rows
 func (d *SQLiteDriver) Query(query string, args ...any) (*sql.Rows, error) {
 	if d.config.LogQueries {
-		fmt.Printf("SQL: %s\nArgs: %v\n", query, args)
+		fmt.Printf("SQL: %s\nArgs: [%d params]\n", query, len(args))
 	}
 	return d.db.Query(query, args...)
 }
@@ -113,7 +132,7 @@ func (d *SQLiteDriver) Query(query string, args ...any) (*sql.Rows, error) {
 // QueryRow executes a query that returns at most one row
 func (d *SQLiteDriver) QueryRow(query string, args ...any) *sql.Row {
 	if d.config.LogQueries {
-		fmt.Printf("SQL: %s\nArgs: %v\n", query, args)
+		fmt.Printf("SQL: %s\nArgs: [%d params]\n", query, len(args))
 	}
 	return d.db.QueryRow(query, args...)
 }
@@ -121,7 +140,7 @@ func (d *SQLiteDriver) QueryRow(query string, args ...any) *sql.Row {
 // Exec executes a query that doesn't return rows
 func (d *SQLiteDriver) Exec(query string, args ...any) (sql.Result, error) {
 	if d.config.LogQueries {
-		fmt.Printf("SQL: %s\nArgs: %v\n", query, args)
+		fmt.Printf("SQL: %s\nArgs: [%d params]\n", query, len(args))
 	}
 	return d.db.Exec(query, args...)
 }
@@ -215,7 +234,17 @@ func (g *SQLiteGrammar) CompileSelect(query *SelectQuery) (string, []any) {
 
 	// Columns
 	if len(query.Columns) > 0 {
-		sql.WriteString(strings.Join(query.Columns, ", "))
+		for i, col := range query.Columns {
+			if i > 0 {
+				sql.WriteString(", ")
+			}
+			// Don't quote expressions like COUNT(*) or wildcard *
+			if strings.Contains(col, "(") || col == "*" {
+				sql.WriteString(col)
+			} else {
+				sql.WriteString(g.QuoteIdentifier(col))
+			}
+		}
 	} else {
 		sql.WriteString("*")
 	}
@@ -482,7 +511,7 @@ func (g *SQLiteGrammar) CompileHasColumn(table, column string) string {
 
 // QuoteIdentifier quotes a database identifier
 func (g *SQLiteGrammar) QuoteIdentifier(name string) string {
-	return fmt.Sprintf("`%s`", name)
+	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
 }
 
 // QuoteString quotes a string value

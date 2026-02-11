@@ -3,12 +3,25 @@ package orm
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"reflect"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// identifierRegex validates SQL column/field names
+var identifierRegex = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_.]*$`)
+
+// validateIdentifier checks that a field name is a valid SQL identifier
+func validateIdentifier(name string) error {
+	if !identifierRegex.MatchString(name) {
+		return fmt.Errorf("invalid identifier: %q", name)
+	}
+	return nil
+}
 
 // Model is the generic base model that provides Laravel-style static methods.
 // By default, models do NOT have soft deletes. Use SoftDeleteModel for soft delete support.
@@ -79,6 +92,9 @@ func (Model[T]) Find(id any) (*T, error) {
 
 // FindBy retrieves a record by a specific field
 func (Model[T]) FindBy(field string, value any) (*T, error) {
+	if err := validateIdentifier(field); err != nil {
+		return nil, err
+	}
 	var model T
 	query := newQuery[T]()
 	err := query.Where(field+" = ?", value).First(&model)
@@ -212,6 +228,9 @@ func (Model[T]) Pluck(column string) ([]any, error) {
 func (Model[T]) Update(conditions map[string]any, updates map[string]any) (int64, error) {
 	query := newQuery[T]()
 	for field, value := range conditions {
+		if err := validateIdentifier(field); err != nil {
+			return 0, err
+		}
 		query = query.Where(field+" = ?", value)
 	}
 	return query.Update(updates)
@@ -221,6 +240,9 @@ func (Model[T]) Update(conditions map[string]any, updates map[string]any) (int64
 func (Model[T]) DeleteWhere(conditions map[string]any) (int64, error) {
 	query := newQuery[T]()
 	for field, value := range conditions {
+		if err := validateIdentifier(field); err != nil {
+			return 0, err
+		}
 		query = query.Where(field+" = ?", value)
 	}
 	return query.ForceDelete()
@@ -316,6 +338,9 @@ func (UUIDModel[T]) Find(id string) (*T, error) {
 
 // FindBy retrieves a record by a specific field
 func (UUIDModel[T]) FindBy(field string, value any) (*T, error) {
+	if err := validateIdentifier(field); err != nil {
+		return nil, err
+	}
 	var model T
 	query := newQuery[T]()
 	err := query.Where(field+" = ?", value).First(&model)
@@ -449,6 +474,9 @@ func (UUIDModel[T]) Pluck(column string) ([]any, error) {
 func (UUIDModel[T]) Update(conditions map[string]any, updates map[string]any) (int64, error) {
 	query := newQuery[T]()
 	for field, value := range conditions {
+		if err := validateIdentifier(field); err != nil {
+			return 0, err
+		}
 		query = query.Where(field+" = ?", value)
 	}
 	return query.Update(updates)
@@ -458,6 +486,9 @@ func (UUIDModel[T]) Update(conditions map[string]any, updates map[string]any) (i
 func (UUIDModel[T]) DeleteWhere(conditions map[string]any) (int64, error) {
 	query := newQuery[T]()
 	for field, value := range conditions {
+		if err := validateIdentifier(field); err != nil {
+			return 0, err
+		}
 		query = query.Where(field+" = ?", value)
 	}
 	return query.ForceDelete()
@@ -553,6 +584,9 @@ func (SoftDeleteModel[T]) Find(id any) (*T, error) {
 
 // FindBy retrieves a record by a specific field
 func (SoftDeleteModel[T]) FindBy(field string, value any) (*T, error) {
+	if err := validateIdentifier(field); err != nil {
+		return nil, err
+	}
 	var model T
 	query := newQuery[T]()
 	err := query.Where(field+" = ?", value).First(&model)
@@ -686,6 +720,9 @@ func (SoftDeleteModel[T]) Pluck(column string) ([]any, error) {
 func (SoftDeleteModel[T]) Update(conditions map[string]any, updates map[string]any) (int64, error) {
 	query := newQuery[T]()
 	for field, value := range conditions {
+		if err := validateIdentifier(field); err != nil {
+			return 0, err
+		}
 		query = query.Where(field+" = ?", value)
 	}
 	return query.Update(updates)
@@ -695,6 +732,9 @@ func (SoftDeleteModel[T]) Update(conditions map[string]any, updates map[string]a
 func (SoftDeleteModel[T]) DeleteWhere(conditions map[string]any) (int64, error) {
 	query := newQuery[T]()
 	for field, value := range conditions {
+		if err := validateIdentifier(field); err != nil {
+			return 0, err
+		}
 		query = query.Where(field+" = ?", value)
 	}
 	return query.Delete()
@@ -704,6 +744,9 @@ func (SoftDeleteModel[T]) DeleteWhere(conditions map[string]any) (int64, error) 
 func (SoftDeleteModel[T]) ForceDeleteWhere(conditions map[string]any) (int64, error) {
 	query := newQuery[T]()
 	for field, value := range conditions {
+		if err := validateIdentifier(field); err != nil {
+			return 0, err
+		}
 		query = query.Where(field+" = ?", value)
 	}
 	return query.ForceDelete()
@@ -842,6 +885,9 @@ func (SoftDeleteUUIDModel[T]) Find(id string) (*T, error) {
 
 // FindBy retrieves a record by a specific field
 func (SoftDeleteUUIDModel[T]) FindBy(field string, value any) (*T, error) {
+	if err := validateIdentifier(field); err != nil {
+		return nil, err
+	}
 	var model T
 	query := newQuery[T]()
 	err := query.Where(field+" = ?", value).First(&model)
@@ -975,6 +1021,9 @@ func (SoftDeleteUUIDModel[T]) Pluck(column string) ([]any, error) {
 func (SoftDeleteUUIDModel[T]) Update(conditions map[string]any, updates map[string]any) (int64, error) {
 	query := newQuery[T]()
 	for field, value := range conditions {
+		if err := validateIdentifier(field); err != nil {
+			return 0, err
+		}
 		query = query.Where(field+" = ?", value)
 	}
 	return query.Update(updates)
@@ -984,6 +1033,9 @@ func (SoftDeleteUUIDModel[T]) Update(conditions map[string]any, updates map[stri
 func (SoftDeleteUUIDModel[T]) DeleteWhere(conditions map[string]any) (int64, error) {
 	query := newQuery[T]()
 	for field, value := range conditions {
+		if err := validateIdentifier(field); err != nil {
+			return 0, err
+		}
 		query = query.Where(field+" = ?", value)
 	}
 	return query.Delete()
@@ -993,6 +1045,9 @@ func (SoftDeleteUUIDModel[T]) DeleteWhere(conditions map[string]any) (int64, err
 func (SoftDeleteUUIDModel[T]) ForceDeleteWhere(conditions map[string]any) (int64, error) {
 	query := newQuery[T]()
 	for field, value := range conditions {
+		if err := validateIdentifier(field); err != nil {
+			return 0, err
+		}
 		query = query.Where(field+" = ?", value)
 	}
 	return query.ForceDelete()
@@ -1174,6 +1229,16 @@ type AfterDeleteHook interface {
 	AfterDelete() error
 }
 
+// Fillable interface allows models to specify which fields can be mass-assigned
+type Fillable interface {
+	Fillable() []string
+}
+
+// Guarded interface allows models to specify which fields are protected from mass-assignment
+type Guarded interface {
+	Guarded() []string
+}
+
 // Helper functions
 
 func mapToStruct(m map[string]any, s any) error {
@@ -1183,12 +1248,37 @@ func mapToStruct(m map[string]any, s any) error {
 	}
 	t := v.Type()
 
+	// Check for Fillable/Guarded interfaces
+	var fillableSet map[string]bool
+	var guardedSet map[string]bool
+
+	if f, ok := s.(Fillable); ok {
+		fillableSet = make(map[string]bool)
+		for _, field := range f.Fillable() {
+			fillableSet[field] = true
+		}
+	}
+	if g, ok := s.(Guarded); ok {
+		guardedSet = make(map[string]bool)
+		for _, field := range g.Guarded() {
+			guardedSet[field] = true
+		}
+	}
+
 	for i := 0; i < v.NumField(); i++ {
 		field := t.Field(i)
 		fieldName := toSnakeCase(field.Name)
 
 		// Check if field value exists in map
 		if val, ok := m[fieldName]; ok {
+			// Mass assignment protection
+			if fillableSet != nil && !fillableSet[fieldName] {
+				continue
+			}
+			if guardedSet != nil && guardedSet[fieldName] {
+				continue
+			}
+
 			fieldValue := v.Field(i)
 			if fieldValue.CanSet() {
 				valReflect := reflect.ValueOf(val)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -19,8 +20,13 @@ type MiddlewareFunc func(HandlerFunc) HandlerFunc
 
 type ErrorHandler func(*Context, error)
 
+// DefaultMaxBodySize is the default maximum request body size (10MB).
+const DefaultMaxBodySize int64 = 10 * 1024 * 1024
+
 type Config struct {
 	ErrorHandler ErrorHandler
+	// MaxBodySize limits the size of request bodies. Defaults to 10MB.
+	MaxBodySize int64
 }
 
 // Router is a lightweight HTTP router using radix tree
@@ -29,6 +35,7 @@ type Router struct {
 	globalMiddleware []MiddlewareFunc
 	namedRoutes      map[string]*Route
 	errorHandler     ErrorHandler
+	maxBodySize      int64
 }
 
 type localKV struct {
@@ -84,10 +91,11 @@ type Context struct {
 	Params  map[string]string
 	ctx     context.Context
 
-	TraceID   string
-	RequestID string
-	ErrorID   string
-	locals    []localKV
+	TraceID     string
+	RequestID   string
+	ErrorID     string
+	locals      []localKV
+	maxBodySize int64
 }
 
 // Simple radix tree for routing
@@ -285,7 +293,7 @@ func (n *treeNode) match(parts []string, method string, params map[string]string
 // DefaultErrorHandler handles errors with JSON response
 func DefaultErrorHandler(c *Context, err error) {
 	code := 500
-	message := err.Error()
+	message := "Internal Server Error"
 
 	if e, ok := err.(*Error); ok {
 		code = e.Code
@@ -316,8 +324,16 @@ func generateShortID() string {
 
 func NewRouter(config ...Config) *Router {
 	cfg := Config{ErrorHandler: DefaultErrorHandler}
-	if len(config) > 0 && config[0].ErrorHandler != nil {
-		cfg.ErrorHandler = config[0].ErrorHandler
+	if len(config) > 0 {
+		if config[0].ErrorHandler != nil {
+			cfg.ErrorHandler = config[0].ErrorHandler
+		}
+		if config[0].MaxBodySize > 0 {
+			cfg.MaxBodySize = config[0].MaxBodySize
+		}
+	}
+	if cfg.MaxBodySize <= 0 {
+		cfg.MaxBodySize = DefaultMaxBodySize
 	}
 
 	return &Router{
@@ -325,6 +341,7 @@ func NewRouter(config ...Config) *Router {
 		globalMiddleware: make([]MiddlewareFunc, 0),
 		namedRoutes:      make(map[string]*Route),
 		errorHandler:     cfg.ErrorHandler,
+		maxBodySize:      cfg.MaxBodySize,
 	}
 }
 
@@ -379,19 +396,23 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	ctx := &Context{
-		Request:   req,
-		Writer:    w,
-		Params:    params,
-		ctx:       req.Context(),
-		TraceID:   req.Header.Get("X-Trace-ID"),
-		RequestID: req.Header.Get("X-Request-ID"),
-		locals:    make([]localKV, 0, 4),
+		Request:     req,
+		Writer:      w,
+		Params:      params,
+		ctx:         req.Context(),
+		TraceID:     req.Header.Get("X-Trace-ID"),
+		RequestID:   req.Header.Get("X-Request-ID"),
+		locals:      make([]localKV, 0, 4),
+		maxBodySize: r.maxBodySize,
 	}
 
 	if ctx.TraceID != "" {
 		w.Header().Set("X-Trace-ID", ctx.TraceID)
 	}
 	if ctx.RequestID != "" {
+		if !isValidRequestID(ctx.RequestID) {
+			ctx.RequestID = "req-" + generateShortID()
+		}
 		w.Header().Set("X-Request-ID", ctx.RequestID)
 	}
 
@@ -449,8 +470,9 @@ func (r *Router) URL(name string, params map[string]string) (string, error) {
 
 	path := route.pattern
 	for key, value := range params {
-		path = strings.ReplaceAll(path, "{"+key+"}", value)
-		path = regexp.MustCompile(`\{`+key+`:[^}]+\}`).ReplaceAllString(path, value)
+		encoded := url.PathEscape(value)
+		path = strings.ReplaceAll(path, "{"+key+"}", encoded)
+		path = regexp.MustCompile(`\{`+key+`:[^}]+\}`).ReplaceAllString(path, encoded)
 	}
 
 	// Check if any params are still unreplaced
@@ -531,10 +553,19 @@ func (ctx *Context) JSON(code int, data interface{}) error {
 func (ctx *Context) String(code int, format string, values ...interface{}) error {
 	ctx.Writer.Header().Set("Content-Type", "text/plain")
 	ctx.Writer.WriteHeader(code)
+	// When no format values are provided, write the string directly to avoid
+	// treating user-supplied data as a format string (format string vulnerability).
+	if len(values) == 0 {
+		_, err := ctx.Writer.Write([]byte(format))
+		return err
+	}
 	_, err := fmt.Fprintf(ctx.Writer, format, values...)
 	return err
 }
 
+// HTML sends an HTML response.
+// WARNING: This method writes raw, unescaped HTML content. Callers must sanitize
+// any user-supplied input before passing it to this method to prevent XSS attacks.
 func (ctx *Context) HTML(code int, html string) error {
 	ctx.Writer.Header().Set("Content-Type", "text/html")
 	ctx.Writer.WriteHeader(code)
@@ -542,7 +573,11 @@ func (ctx *Context) HTML(code int, html string) error {
 	return err
 }
 
+// Redirect redirects to a URL with the given status code.
+// The URL is validated to prevent open redirects: only relative paths and
+// same-host URLs are allowed. Absolute URLs to external domains redirect to "/".
 func (ctx *Context) Redirect(code int, location string) error {
+	location = sanitizeRedirect(location, ctx.Request.Host)
 	http.Redirect(ctx.Writer, ctx.Request, location, code)
 	return nil
 }
@@ -649,6 +684,7 @@ func (ctx *Context) BindJSON(v interface{}) error {
 	if ctx.Request.Body == nil {
 		return fmt.Errorf("request body is empty")
 	}
+	ctx.Request.Body = http.MaxBytesReader(ctx.Writer, ctx.Request.Body, ctx.maxBodySize)
 	return json.NewDecoder(ctx.Request.Body).Decode(v)
 }
 
@@ -656,6 +692,7 @@ func (ctx *Context) Body() ([]byte, error) {
 	if ctx.Request.Body == nil {
 		return nil, fmt.Errorf("request body is empty")
 	}
+	ctx.Request.Body = http.MaxBytesReader(ctx.Writer, ctx.Request.Body, ctx.maxBodySize)
 	return io.ReadAll(ctx.Request.Body)
 }
 
@@ -665,4 +702,34 @@ func (ctx *Context) Get(key string) string {
 
 func (ctx *Context) Set(key, value string) {
 	ctx.Writer.Header().Set(key, value)
+}
+
+// sanitizeRedirect validates a redirect URL to prevent open redirects.
+// Allows relative paths and same-host URLs. Rejects absolute URLs to external domains.
+func sanitizeRedirect(target, host string) string {
+	if strings.HasPrefix(target, "/") && !strings.HasPrefix(target, "//") {
+		return target
+	}
+	u, err := url.Parse(target)
+	if err != nil {
+		return "/"
+	}
+	if u.Host != "" && u.Host != host {
+		return "/"
+	}
+	return target
+}
+
+// isValidRequestID checks if a request ID is safe to reflect in headers.
+// Allows alphanumeric, hyphens, underscores, and periods. Max 64 chars.
+func isValidRequestID(id string) bool {
+	if len(id) == 0 || len(id) > 64 {
+		return false
+	}
+	for _, c := range id {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') {
+			return false
+		}
+	}
+	return true
 }

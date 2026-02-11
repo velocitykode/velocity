@@ -2,13 +2,17 @@ package grpc
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/encoding/protojson"
 
@@ -97,11 +101,41 @@ func GatewayWithMuxOption(opt runtime.ServeMuxOption) GatewayOption {
 	}
 }
 
-// GatewayWithInsecure configures the gateway to use insecure credentials (default)
+// GatewayWithInsecure explicitly configures the gateway to use insecure credentials.
+// This should only be used for local development.
 func GatewayWithInsecure() GatewayOption {
 	return func(g *Gateway) {
 		g.dialOptions = []grpc.DialOption{
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
+		}
+	}
+}
+
+// GatewayWithTLS configures the gateway to use TLS credentials for the
+// connection to the gRPC server. certFile is the CA certificate used to verify
+// the server. If certFile is empty, the system certificate pool is used.
+func GatewayWithTLS(certFile string) GatewayOption {
+	return func(g *Gateway) {
+		tlsConfig := &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		}
+
+		if certFile != "" {
+			caCert, err := os.ReadFile(certFile)
+			if err != nil {
+				log.Error("Failed to read TLS cert file for gateway", "error", err, "file", certFile)
+				return
+			}
+			pool := x509.NewCertPool()
+			if !pool.AppendCertsFromPEM(caCert) {
+				log.Error("Failed to parse TLS cert for gateway", "file", certFile)
+				return
+			}
+			tlsConfig.RootCAs = pool
+		}
+
+		g.dialOptions = []grpc.DialOption{
+			grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
 		}
 	}
 }

@@ -1,13 +1,16 @@
 package crypto
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"sync"
 
 	"github.com/velocitykode/velocity/pkg/crypto/drivers"
+	"golang.org/x/crypto/hkdf"
 )
 
 // Global instance
@@ -145,9 +148,9 @@ func NewEncryptor(config Config) (Encryptor, error) {
 
 // newDriver creates the appropriate driver based on cipher
 func newDriver(config Config) (Encryptor, error) {
-	// Default to AES-256-CBC if no cipher specified
+	// Default to AES-256-GCM if no cipher specified
 	if config.Cipher == "" {
-		config.Cipher = "AES-256-CBC"
+		config.Cipher = "AES-256-GCM"
 	}
 
 	// Parse the key
@@ -172,12 +175,31 @@ func newDriver(config Config) (Encryptor, error) {
 
 	// Create the appropriate driver
 	cipher := strings.ToUpper(config.Cipher)
+
+	// Determine required key size for derivation
+	var requiredKeySize int
 	switch cipher {
-	case "AES-128-CBC", "AES-256-CBC", "AES-128-GCM", "AES-256-GCM":
-		return drivers.NewAESDriver(key, previousKeys, cipher)
+	case "AES-128-CBC", "AES-128-GCM":
+		requiredKeySize = 16
+	case "AES-256-CBC", "AES-256-GCM":
+		requiredKeySize = 32
 	default:
 		return nil, ErrInvalidCipher
 	}
+
+	// If key doesn't match required size, derive using HKDF
+	if len(key) != requiredKeySize {
+		key = deriveKey(key, requiredKeySize)
+	}
+
+	// Derive previous keys as well
+	for i, pk := range previousKeys {
+		if len(pk) != requiredKeySize {
+			previousKeys[i] = deriveKey(pk, requiredKeySize)
+		}
+	}
+
+	return drivers.NewAESDriver(key, previousKeys, cipher)
 }
 
 // parseKey parses a key string which may be base64 encoded
@@ -194,6 +216,15 @@ func parseKey(keyStr string) ([]byte, error) {
 
 	// Use raw key
 	return []byte(keyStr), nil
+}
+
+// deriveKey uses HKDF-SHA256 to derive an AES key of the required size from arbitrary key material.
+func deriveKey(password []byte, keySize int) []byte {
+	r := hkdf.New(sha256.New, password, nil, []byte("velocity-encryption"))
+	derived := make([]byte, keySize)
+	// HKDF with SHA-256 can always produce up to 255*32 bytes; keySize is 16 or 32.
+	io.ReadFull(r, derived)
+	return derived
 }
 
 // SerializePayload converts a payload to base64 JSON

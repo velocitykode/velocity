@@ -805,7 +805,7 @@ func TestSQLiteGrammar_CompileSelect_WithGroupByAndHaving(t *testing.T) {
 					{Column: "order_count", Operator: ">", Value: 5, Type: "and"},
 				},
 			},
-			wantSQL:  "SELECT user_id, COUNT(*) as order_count FROM `orders` GROUP BY `user_id` HAVING `order_count` > ?",
+			wantSQL:  "SELECT `user_id`, COUNT(*) as order_count FROM `orders` GROUP BY `user_id` HAVING `order_count` > ?",
 			wantArgs: []any{5},
 		},
 	}
@@ -842,7 +842,7 @@ func TestSQLiteGrammar_CompileSelect_WithOrCondition(t *testing.T) {
 					{Column: "role", Operator: "=", Value: "moderator", Type: "or"},
 				},
 			},
-			wantSQL:  "SELECT id, name FROM `users` WHERE `role` = ? OR `role` = ?",
+			wantSQL:  "SELECT `id`, `name` FROM `users` WHERE `role` = ? OR `role` = ?",
 			wantArgs: []any{"admin", "moderator"},
 		},
 	}
@@ -876,7 +876,7 @@ func TestSQLiteGrammar_CompileSelect_IgnoresLockForUpdate(t *testing.T) {
 				Columns:       []string{"id"},
 				LockForUpdate: true,
 			},
-			wantSQL:  "SELECT id FROM `users`",
+			wantSQL:  "SELECT `id` FROM `users`",
 			wantArgs: nil,
 		},
 		{
@@ -887,7 +887,7 @@ func TestSQLiteGrammar_CompileSelect_IgnoresLockForUpdate(t *testing.T) {
 				LockForUpdate: true,
 				SkipLocked:    true,
 			},
-			wantSQL:  "SELECT id FROM `users`",
+			wantSQL:  "SELECT `id` FROM `users`",
 			wantArgs: nil,
 		},
 	}
@@ -1384,7 +1384,7 @@ func TestSQLiteGrammar_CompileSelect_ComplexQueries(t *testing.T) {
 				Table:   "users",
 				Columns: []string{"id", "name"},
 			},
-			wantSQL:  "SELECT id, name FROM `users`",
+			wantSQL:  "SELECT `id`, `name` FROM `users`",
 			wantArgs: nil,
 		},
 		{
@@ -1410,7 +1410,7 @@ func TestSQLiteGrammar_CompileSelect_ComplexQueries(t *testing.T) {
 					{Column: "role", Operator: "=", Value: "admin", Type: "and"},
 				},
 			},
-			wantSQL:  "SELECT id, name, email FROM `users` WHERE `active` = ? AND `age` >= ? AND `role` = ?",
+			wantSQL:  "SELECT `id`, `name`, `email` FROM `users` WHERE `active` = ? AND `age` >= ? AND `role` = ?",
 			wantArgs: []any{true, 18, "admin"},
 		},
 		{
@@ -1420,7 +1420,7 @@ func TestSQLiteGrammar_CompileSelect_ComplexQueries(t *testing.T) {
 				Columns:  []string{"country"},
 				Distinct: true,
 			},
-			wantSQL:  "SELECT DISTINCT country FROM `users`",
+			wantSQL:  "SELECT DISTINCT `country` FROM `users`",
 			wantArgs: nil,
 		},
 		{
@@ -1476,7 +1476,7 @@ func TestSQLiteGrammar_CompileSelect_ComplexQueries(t *testing.T) {
 				Columns: []string{"user_id", "COUNT(*) as total"},
 				Groups:  []string{"user_id"},
 			},
-			wantSQL:  "SELECT user_id, COUNT(*) as total FROM `orders` GROUP BY `user_id`",
+			wantSQL:  "SELECT `user_id`, COUNT(*) as total FROM `orders` GROUP BY `user_id`",
 			wantArgs: nil,
 		},
 		{
@@ -1489,7 +1489,7 @@ func TestSQLiteGrammar_CompileSelect_ComplexQueries(t *testing.T) {
 					{Column: "total", Operator: ">", Value: 1000, Type: "and"},
 				},
 			},
-			wantSQL:  "SELECT user_id, SUM(amount) as total FROM `orders` GROUP BY `user_id` HAVING `total` > ?",
+			wantSQL:  "SELECT `user_id`, SUM(amount) as total FROM `orders` GROUP BY `user_id` HAVING `total` > ?",
 			wantArgs: []any{1000},
 		},
 	}
@@ -1530,7 +1530,7 @@ func TestSQLiteGrammar_CompileSelect_JOINQueries(t *testing.T) {
 					{Type: "INNER", Table: "roles", On: "users.role_id = roles.id"},
 				},
 			},
-			wantSQL:  "SELECT users.id, users.name, roles.name FROM `users` INNER JOIN `roles` ON users.role_id = roles.id",
+			wantSQL:  "SELECT `users.id`, `users.name`, `roles.name` FROM `users` INNER JOIN `roles` ON users.role_id = roles.id",
 			wantArgs: nil,
 		},
 		{
@@ -1542,7 +1542,7 @@ func TestSQLiteGrammar_CompileSelect_JOINQueries(t *testing.T) {
 					{Type: "LEFT", Table: "profiles", On: "users.id = profiles.user_id"},
 				},
 			},
-			wantSQL:  "SELECT users.*, profiles.bio FROM `users` LEFT JOIN `profiles` ON users.id = profiles.user_id",
+			wantSQL:  "SELECT `users.*`, `profiles.bio` FROM `users` LEFT JOIN `profiles` ON users.id = profiles.user_id",
 			wantArgs: nil,
 		},
 		{
@@ -1567,7 +1567,7 @@ func TestSQLiteGrammar_CompileSelect_JOINQueries(t *testing.T) {
 					{Type: "LEFT", Table: "products", On: "orders.product_id = products.id"},
 				},
 			},
-			wantSQL:  "SELECT orders.id, users.name, products.title FROM `orders` INNER JOIN `users` ON orders.user_id = users.id LEFT JOIN `products` ON orders.product_id = products.id",
+			wantSQL:  "SELECT `orders.id`, `users.name`, `products.title` FROM `orders` INNER JOIN `users` ON orders.user_id = users.id LEFT JOIN `products` ON orders.product_id = products.id",
 			wantArgs: nil,
 		},
 		{
@@ -1582,7 +1582,7 @@ func TestSQLiteGrammar_CompileSelect_JOINQueries(t *testing.T) {
 					{Column: "orders.status", Operator: "=", Value: "completed", Type: "and"},
 				},
 			},
-			wantSQL:  "SELECT users.name, orders.total FROM `users` LEFT JOIN `orders` ON users.id = orders.user_id WHERE `orders.status` = ?",
+			wantSQL:  "SELECT `users.name`, `orders.total` FROM `users` LEFT JOIN `orders` ON users.id = orders.user_id WHERE `orders.status` = ?",
 			wantArgs: []any{"completed"},
 		},
 	}

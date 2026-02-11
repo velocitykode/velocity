@@ -34,7 +34,7 @@ func init() {
 		Lifetime: sessionLifetime,
 		Path:     getEnvOrDefault("SESSION_PATH", "/"),
 		Domain:   os.Getenv("SESSION_DOMAIN"),
-		Secure:   os.Getenv("SESSION_SECURE") == "true",
+		Secure:   os.Getenv("SESSION_SECURE") != "false",
 		HttpOnly: getEnvOrDefault("SESSION_HTTP_ONLY", "true") == "true",
 		SameSite: parseSameSite(os.Getenv("SESSION_SAME_SITE")),
 	}
@@ -59,12 +59,17 @@ func init() {
 		jwtRefreshTTL = 20160 // Default 2 weeks
 	}
 
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret != "" && len(jwtSecret) < 32 {
+		panic("auth: JWT_SECRET must be at least 32 bytes")
+	}
+
 	jwtConfig := JWTConfig{
-		Secret:           os.Getenv("JWT_SECRET"),
+		Secret:           jwtSecret,
 		Algorithm:        getEnvOrDefault("JWT_ALGO", "HS256"),
 		TTL:              jwtTTL,
 		RefreshTTL:       jwtRefreshTTL,
-		BlacklistEnabled: os.Getenv("JWT_BLACKLIST_ENABLED") == "true",
+		BlacklistEnabled: os.Getenv("JWT_BLACKLIST_ENABLED") != "false",
 	}
 
 	config.Guards["api"] = GuardConfig{

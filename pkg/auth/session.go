@@ -235,8 +235,7 @@ func (s *BaseSession) SetFlashData(flash map[string]interface{}) {
 func generateSessionID() string {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
-		// Fallback to timestamp-based ID
-		return base64.URLEncoding.EncodeToString([]byte(time.Now().String()))
+		panic("auth: failed to generate session ID: " + err.Error())
 	}
 	return base64.URLEncoding.EncodeToString(b)
 }
@@ -262,9 +261,9 @@ func NewSessionConfigFromEnv() SessionConfig {
 		}
 	}
 
-	secure := false
-	if os.Getenv("SESSION_SECURE") == "true" {
-		secure = true
+	secure := true
+	if os.Getenv("SESSION_SECURE") == "false" {
+		secure = false
 	}
 
 	httpOnly := true

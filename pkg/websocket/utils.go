@@ -23,13 +23,15 @@ func generateID() string {
 	return hex.EncodeToString(b)
 }
 
-// DefaultConfig returns a default configuration
+// DefaultConfig returns a default configuration.
+// AllowedOrigins defaults to nil (same-origin only).
+// Set AllowedOrigins to []string{"*"} to explicitly allow all origins.
 func DefaultConfig() Config {
 	return Config{
 		Host:            "0.0.0.0",
 		Port:            6001,
 		Path:            "/ws",
-		AllowedOrigins:  []string{"*"},
+		AllowedOrigins:  nil, // same-origin only by default
 		MaxConnections:  10000,
 		ReadBufferSize:  1024,
 		WriteBufferSize: 1024,

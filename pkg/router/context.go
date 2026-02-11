@@ -3,7 +3,9 @@ package router
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 )
@@ -202,7 +204,9 @@ func (c *Context) String(status int, text string) error {
 	return err
 }
 
-// HTML sends an HTML response
+// HTML sends an HTML response.
+// WARNING: This method writes raw, unescaped HTML content. Callers must sanitize
+// any user-supplied input before passing it to this method to prevent XSS attacks.
 func (c *Context) HTML(status int, html string) error {
 	c.Response.Header().Set("Content-Type", "text/html; charset=utf-8")
 	c.Response.WriteHeader(status)
@@ -210,9 +214,12 @@ func (c *Context) HTML(status int, html string) error {
 	return err
 }
 
-// Redirect redirects to a URL with the given status code
-func (c *Context) Redirect(status int, url string) error {
-	http.Redirect(c.Response, c.Request, url, status)
+// Redirect redirects to a URL with the given status code.
+// The URL is validated to prevent open redirects: only relative paths and
+// same-host URLs are allowed. Absolute URLs to external domains redirect to "/".
+func (c *Context) Redirect(status int, rawURL string) error {
+	rawURL = sanitizeRedirectForHost(rawURL, c.Request.Host)
+	http.Redirect(c.Response, c.Request, rawURL, status)
 	return nil
 }
 
@@ -228,8 +235,12 @@ func (c *Context) NoContent() error {
 	return nil
 }
 
+// DefaultMaxBodySize is the default maximum request body size (10MB).
+const DefaultMaxBodySize int64 = 10 * 1024 * 1024
+
 // Bind parses the request body as JSON into the given struct
 func (c *Context) Bind(v interface{}) error {
+	c.Request.Body = http.MaxBytesReader(c.Response, c.Request.Body, DefaultMaxBodySize)
 	return json.NewDecoder(c.Request.Body).Decode(v)
 }
 
@@ -243,17 +254,18 @@ func (c *Context) Path() string {
 	return c.Request.URL.Path
 }
 
-// IP returns the client IP address
+// IP returns the client IP address from RemoteAddr (with port stripped).
+// This does NOT trust X-Forwarded-For or X-Real-IP by default to prevent
+// IP spoofing. Use the rate limiter's WithTrustedProxies option for
+// proxy-aware IP extraction.
 func (c *Context) IP() string {
-	// Check X-Forwarded-For first
-	if xff := c.Request.Header.Get("X-Forwarded-For"); xff != "" {
-		return xff
+	addr := c.Request.RemoteAddr
+	// Strip port
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
 	}
-	// Check X-Real-IP
-	if xri := c.Request.Header.Get("X-Real-IP"); xri != "" {
-		return xri
-	}
-	return c.Request.RemoteAddr
+	return host
 }
 
 // IsAjax returns true if the request is an AJAX request
@@ -272,8 +284,7 @@ func Wrap(h HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		c := NewContext(w, r)
 		if err := h(c); err != nil {
-			// Default error handling - can be customized
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		}
 	}
 }
@@ -317,6 +328,23 @@ func (c *Context) Unauthorized(message ...string) error {
 		msg = message[0]
 	}
 	return c.Error(http.StatusUnauthorized, msg)
+}
+
+// sanitizeRedirectForHost validates a redirect URL to prevent open redirects.
+// Allows relative paths and same-host URLs. Rejects absolute URLs to external domains.
+func sanitizeRedirectForHost(target, host string) string {
+	// Allow relative paths (but not protocol-relative //evil.com)
+	if strings.HasPrefix(target, "/") && !strings.HasPrefix(target, "//") {
+		return target
+	}
+	u, err := url.Parse(target)
+	if err != nil {
+		return "/"
+	}
+	if u.Host != "" && u.Host != host {
+		return "/"
+	}
+	return target
 }
 
 // Forbidden sends a 403 error response

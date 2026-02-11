@@ -3,10 +3,12 @@ package mail
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"html/template"
 	"mime"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // templatePath is the directory where email templates are stored
@@ -118,25 +120,32 @@ func (m *Message) HTMLBody(body string) *Message {
 	return m
 }
 
-// AttachFile attaches a file from the filesystem
-func (m *Message) AttachFile(path string) *Message {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		panic(err)
+// AttachFile attaches a file from the filesystem.
+// Returns an error if the file cannot be read or the path contains traversal sequences.
+func (m *Message) AttachFile(path string) (*Message, error) {
+	// Reject paths containing ".." to prevent directory traversal
+	cleanPath := filepath.Clean(path)
+	if strings.Contains(cleanPath, "..") {
+		return m, fmt.Errorf("mail: invalid attachment path: path traversal not allowed")
 	}
 
-	contentType := mime.TypeByExtension(filepath.Ext(path))
+	data, err := os.ReadFile(cleanPath)
+	if err != nil {
+		return m, fmt.Errorf("mail: failed to read attachment %q: %w", cleanPath, err)
+	}
+
+	contentType := mime.TypeByExtension(filepath.Ext(cleanPath))
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
 
 	m.attachments = append(m.attachments, Attachment{
-		Name:        filepath.Base(path),
+		Name:        filepath.Base(cleanPath),
 		Data:        data,
 		ContentType: contentType,
 	})
 
-	return m
+	return m, nil
 }
 
 // AttachData attaches data from memory
@@ -149,20 +158,34 @@ func (m *Message) AttachData(data []byte, name, contentType string) *Message {
 	return m
 }
 
-// Template renders a template with data and sets it as HTML body
-func (m *Message) Template(name string, data interface{}) *Message {
-	tmpl, err := template.ParseFiles(templatePath + "/" + name + ".html")
+// Template renders a template with data and sets it as HTML body.
+// Returns an error if the template name is invalid or template processing fails.
+func (m *Message) Template(name string, data interface{}) (*Message, error) {
+	// Validate template name: reject path separators and traversal sequences
+	if strings.Contains(name, "..") || strings.ContainsAny(name, "/\\") {
+		return m, fmt.Errorf("mail: invalid template name %q: must not contain path separators or traversal sequences", name)
+	}
+
+	tmplFile := filepath.Join(templatePath, name+".html")
+	// Verify the resolved path stays within templatePath
+	cleanBase := filepath.Clean(templatePath) + string(filepath.Separator)
+	cleanFile := filepath.Clean(tmplFile)
+	if !strings.HasPrefix(cleanFile, cleanBase) {
+		return m, fmt.Errorf("mail: template path traversal detected")
+	}
+
+	tmpl, err := template.ParseFiles(cleanFile)
 	if err != nil {
-		panic(err)
+		return m, fmt.Errorf("mail: failed to parse template %q: %w", name, err)
 	}
 
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
-		panic(err)
+		return m, fmt.Errorf("mail: failed to execute template %q: %w", name, err)
 	}
 
 	m.htmlBody = buf.String()
-	return m
+	return m, nil
 }
 
 // Header adds a custom header

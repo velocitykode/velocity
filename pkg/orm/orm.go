@@ -4,10 +4,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/velocitykode/velocity/pkg/orm/drivers"
+	"golang.org/x/crypto/bcrypt"
 )
 
 var (
@@ -51,6 +53,7 @@ func Init(driverName string, config map[string]any) error {
 		Username: getStringOrDefault(config, "username", ""),
 		Password: getStringOrDefault(config, "password", ""),
 		Charset:  getStringOrDefault(config, "charset", "utf8mb4"),
+		SSLMode:  getStringOrDefault(config, "ssl_mode", ""),
 	}
 
 	// Connection pool settings
@@ -203,7 +206,7 @@ func GetDatabaseName() string {
 }
 
 // Transaction executes a function within a database transaction
-func Transaction(fn func() error) error {
+func Transaction(fn func(tx *sql.Tx) error) error {
 	driver := getCurrentDriver()
 	if driver == nil {
 		return errors.New("no database connection")
@@ -216,13 +219,17 @@ func Transaction(fn func() error) error {
 
 	defer func() {
 		if p := recover(); p != nil {
-			tx.Rollback()
+			if rbErr := tx.Rollback(); rbErr != nil {
+				fmt.Fprintf(os.Stderr, "orm: rollback failed after panic: %v\n", rbErr)
+			}
 			panic(p)
 		}
 	}()
 
-	if err := fn(); err != nil {
-		tx.Rollback()
+	if err := fn(tx); err != nil {
+		if rbErr := tx.Rollback(); rbErr != nil {
+			fmt.Fprintf(os.Stderr, "orm: rollback failed: %v (original error: %v)\n", rbErr, err)
+		}
 		return err
 	}
 
@@ -277,22 +284,29 @@ type QueryExecutor interface {
 	QueryRow(query string, args ...any) *sql.Row
 }
 
-// Raw executes a raw SQL query
-func Raw(query string, args ...any) *sql.Rows {
+// Raw executes a raw SQL query and returns the resulting rows.
+//
+// WARNING: This method executes raw SQL directly. The caller is responsible for
+// preventing SQL injection by using parameterized queries with placeholder arguments.
+// Never concatenate user input directly into the query string.
+func Raw(query string, args ...any) (*sql.Rows, error) {
 	driver := getCurrentDriver()
 	if driver == nil {
-		return nil
+		return nil, errors.New("no database connection")
 	}
 
 	rows, err := driver.Query(query, args...)
 	if err != nil {
-		// Log error
-		return nil
+		return nil, fmt.Errorf("raw query failed: %w", err)
 	}
-	return rows
+	return rows, nil
 }
 
-// Exec executes a raw SQL statement
+// Exec executes a raw SQL statement.
+//
+// WARNING: This method executes raw SQL directly. The caller is responsible for
+// preventing SQL injection by using parameterized queries with placeholder arguments.
+// Never concatenate user input directly into the query string.
 func Exec(query string, args ...any) (sql.Result, error) {
 	driver := getCurrentDriver()
 	if driver == nil {
@@ -355,9 +369,11 @@ func getDefaultPort(driver string) string {
 	}
 }
 
-// Hash hashes a password (utility function for seeders)
+// Hash hashes a password using bcrypt
 func Hash(password string) string {
-	// This would use bcrypt or similar
-	// For now, return as-is
-	return password
+	hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		panic("failed to hash password: " + err.Error())
+	}
+	return string(hashed)
 }

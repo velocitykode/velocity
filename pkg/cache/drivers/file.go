@@ -1,7 +1,7 @@
 package drivers
 
 import (
-	"crypto/md5"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -84,7 +84,7 @@ func (s *FileStore) cleanupExpired() {
 // getCacheFilePath returns the file path for a cache key
 func (s *FileStore) getCacheFilePath(key string) string {
 	// Create a hash of the key for the filename
-	hasher := md5.New()
+	hasher := sha256.New()
 	hasher.Write([]byte(s.prefixedKey(key)))
 	hash := hex.EncodeToString(hasher.Sum(nil))
 
@@ -174,7 +174,7 @@ func (s *FileStore) Put(key string, value interface{}, ttl time.Duration) error 
 
 	// Write to file
 	path := s.getCacheFilePath(key)
-	if err := ioutil.WriteFile(path, data, 0644); err != nil {
+	if err := ioutil.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write cache file: %w", err)
 	}
 
@@ -205,7 +205,7 @@ func (s *FileStore) Forever(key string, value interface{}) error {
 
 	// Write to file
 	path := s.getCacheFilePath(key)
-	if err := ioutil.WriteFile(path, data, 0644); err != nil {
+	if err := ioutil.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write cache file: %w", err)
 	}
 
@@ -292,7 +292,7 @@ func (s *FileStore) Increment(key string, value int64) (int64, error) {
 		return 0, err
 	}
 
-	if err := ioutil.WriteFile(path, data, 0644); err != nil {
+	if err := ioutil.WriteFile(path, data, 0600); err != nil {
 		return 0, err
 	}
 

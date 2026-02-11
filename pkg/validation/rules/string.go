@@ -2,9 +2,41 @@ package rules
 
 import (
 	"fmt"
+	"net"
+	"net/mail"
+	"net/url"
 	"regexp"
 	"strconv"
 )
+
+// Pre-compiled regexes to avoid recompilation on every call
+var (
+	emailRegex    = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
+	urlRegex      = regexp.MustCompile(`^https?://[^\s]+$`)
+	alphaRegex    = regexp.MustCompile(`^[a-zA-Z]+$`)
+	alphaDashRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	alphaNumRegex  = regexp.MustCompile(`^[a-zA-Z0-9]+$`)
+)
+
+// privateNetworks contains CIDR ranges considered private/internal
+var privateNetworks []*net.IPNet
+
+func init() {
+	cidrs := []string{
+		"127.0.0.0/8",    // IPv4 loopback
+		"10.0.0.0/8",     // RFC1918
+		"172.16.0.0/12",  // RFC1918
+		"192.168.0.0/16", // RFC1918
+		"169.254.0.0/16", // Link-local
+		"::1/128",        // IPv6 loopback
+		"fc00::/7",       // IPv6 unique local
+		"fe80::/10",      // IPv6 link-local
+	}
+	for _, cidr := range cidrs {
+		_, network, _ := net.ParseCIDR(cidr)
+		privateNetworks = append(privateNetworks, network)
+	}
+}
 
 // StringRule validates that a value is a string
 func StringRule(field string, value interface{}, params []string, data map[string]interface{}) error {
@@ -18,7 +50,7 @@ func StringRule(field string, value interface{}, params []string, data map[strin
 	return nil
 }
 
-// EmailRule validates that a value is a valid email
+// EmailRule validates that a value is a valid email using both regex and net/mail.ParseAddress
 func EmailRule(field string, value interface{}, params []string, data map[string]interface{}) error {
 	if value == nil {
 		return nil
@@ -29,9 +61,11 @@ func EmailRule(field string, value interface{}, params []string, data map[string
 		return fmt.Errorf("%s must be a string", field)
 	}
 
-	// Basic email regex
-	emailRegex := regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
 	if !emailRegex.MatchString(str) {
+		return fmt.Errorf("%s must be a valid email address", field)
+	}
+	// Additional validation via net/mail
+	if _, err := mail.ParseAddress(str); err != nil {
 		return fmt.Errorf("%s must be a valid email address", field)
 	}
 	return nil
@@ -48,11 +82,47 @@ func URLRule(field string, value interface{}, params []string, data map[string]i
 		return fmt.Errorf("%s must be a string", field)
 	}
 
-	// Basic URL regex
-	urlRegex := regexp.MustCompile(`^https?://[^\s]+$`)
 	if !urlRegex.MatchString(str) {
 		return fmt.Errorf("%s must be a valid URL", field)
 	}
+	return nil
+}
+
+// URLPublicRule validates that a value is a valid URL pointing to a public (non-internal) host.
+// Rejects private/internal IPs (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, ::1, fc00::/7).
+func URLPublicRule(field string, value interface{}, params []string, data map[string]interface{}) error {
+	if value == nil {
+		return nil
+	}
+
+	str, ok := value.(string)
+	if !ok {
+		return fmt.Errorf("%s must be a string", field)
+	}
+
+	if !urlRegex.MatchString(str) {
+		return fmt.Errorf("%s must be a valid URL", field)
+	}
+
+	parsed, err := url.Parse(str)
+	if err != nil {
+		return fmt.Errorf("%s must be a valid URL", field)
+	}
+
+	host := parsed.Hostname()
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return fmt.Errorf("%s must resolve to a valid host", field)
+	}
+
+	for _, ip := range ips {
+		for _, network := range privateNetworks {
+			if network.Contains(ip) {
+				return fmt.Errorf("%s must not point to a private or internal address", field)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -67,7 +137,6 @@ func AlphaRule(field string, value interface{}, params []string, data map[string
 		return fmt.Errorf("%s must be a string", field)
 	}
 
-	alphaRegex := regexp.MustCompile(`^[a-zA-Z]+$`)
 	if !alphaRegex.MatchString(str) {
 		return fmt.Errorf("%s must contain only alphabetic characters", field)
 	}
@@ -85,7 +154,6 @@ func AlphaDashRule(field string, value interface{}, params []string, data map[st
 		return fmt.Errorf("%s must be a string", field)
 	}
 
-	alphaDashRegex := regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 	if !alphaDashRegex.MatchString(str) {
 		return fmt.Errorf("%s must contain only letters, numbers, dashes, and underscores", field)
 	}
@@ -103,7 +171,6 @@ func AlphaNumRule(field string, value interface{}, params []string, data map[str
 		return fmt.Errorf("%s must be a string", field)
 	}
 
-	alphaNumRegex := regexp.MustCompile(`^[a-zA-Z0-9]+$`)
 	if !alphaNumRegex.MatchString(str) {
 		return fmt.Errorf("%s must contain only letters and numbers", field)
 	}

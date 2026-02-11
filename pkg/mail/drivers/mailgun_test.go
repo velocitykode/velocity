@@ -1,6 +1,9 @@
 package drivers
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"testing"
 )
@@ -70,13 +73,26 @@ func TestNewMailgunDriverDefaultEndpoint(t *testing.T) {
 func TestMailgunDriverVerifyWebhookSignature(t *testing.T) {
 	os.Setenv("MAILGUN_DOMAIN", "mg.example.com")
 	os.Setenv("MAILGUN_SECRET", "test-api-key")
+	os.Setenv("MAILGUN_WEBHOOK_SIGNING_KEY", "test-signing-key")
+	defer os.Unsetenv("MAILGUN_WEBHOOK_SIGNING_KEY")
 
 	driver, _ := NewMailgunDriver()
 
-	// Test with non-empty signature (placeholder test)
-	result := driver.VerifyWebhookSignature("timestamp", "token", "signature")
+	// Compute valid HMAC-SHA256 signature
+	mac := hmac.New(sha256.New, []byte("test-signing-key"))
+	mac.Write([]byte("timestamp" + "token"))
+	validSig := hex.EncodeToString(mac.Sum(nil))
+
+	// Test with valid signature
+	result := driver.VerifyWebhookSignature("timestamp", "token", validSig)
 	if !result {
-		t.Error("Expected signature verification to return true for non-empty signature")
+		t.Error("Expected signature verification to return true for valid signature")
+	}
+
+	// Test with invalid signature
+	result = driver.VerifyWebhookSignature("timestamp", "token", "invalid-signature")
+	if result {
+		t.Error("Expected signature verification to return false for invalid signature")
 	}
 
 	// Test with empty signature

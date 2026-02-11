@@ -33,7 +33,7 @@ func TestSQLiteGrammar_CompileSelect(t *testing.T) {
 				Table:   "users",
 				Columns: []string{"id", "name", "email"},
 			},
-			wantSQL:  "SELECT id, name, email FROM `users`",
+			wantSQL:  "SELECT `id`, `name`, `email` FROM `users`",
 			wantArgs: nil,
 		},
 		{
@@ -46,7 +46,7 @@ func TestSQLiteGrammar_CompileSelect(t *testing.T) {
 					{Column: "role", Operator: "=", Value: "admin", Type: "and"},
 				},
 			},
-			wantSQL:  "SELECT id, name FROM `users` WHERE `active` = ? AND `role` = ?",
+			wantSQL:  "SELECT `id`, `name` FROM `users` WHERE `active` = ? AND `role` = ?",
 			wantArgs: []any{true, "admin"},
 		},
 		{
@@ -56,7 +56,7 @@ func TestSQLiteGrammar_CompileSelect(t *testing.T) {
 				Columns:  []string{"role"},
 				Distinct: true,
 			},
-			wantSQL:  "SELECT DISTINCT role FROM `users`",
+			wantSQL:  "SELECT DISTINCT `role` FROM `users`",
 			wantArgs: nil,
 		},
 		{
@@ -68,7 +68,7 @@ func TestSQLiteGrammar_CompileSelect(t *testing.T) {
 					{Column: "deleted_at", Operator: "IS NULL", Value: nil, Type: "and"},
 				},
 			},
-			wantSQL:  "SELECT id, name FROM `users` WHERE `deleted_at` IS NULL",
+			wantSQL:  "SELECT `id`, `name` FROM `users` WHERE `deleted_at` IS NULL",
 			wantArgs: nil,
 		},
 		{
@@ -80,7 +80,7 @@ func TestSQLiteGrammar_CompileSelect(t *testing.T) {
 					{Type: "INNER", Table: "posts", On: "users.id = posts.user_id"},
 				},
 			},
-			wantSQL:  "SELECT users.id, posts.title FROM `users` INNER JOIN `posts` ON users.id = posts.user_id",
+			wantSQL:  "SELECT `users.id`, `posts.title` FROM `users` INNER JOIN `posts` ON users.id = posts.user_id",
 			wantArgs: nil,
 		},
 		{
@@ -93,7 +93,7 @@ func TestSQLiteGrammar_CompileSelect(t *testing.T) {
 					{Column: "name", Direction: "ASC"},
 				},
 			},
-			wantSQL:  "SELECT id, name FROM `users` ORDER BY `created_at` DESC, `name` ASC",
+			wantSQL:  "SELECT `id`, `name` FROM `users` ORDER BY `created_at` DESC, `name` ASC",
 			wantArgs: nil,
 		},
 		{
@@ -104,7 +104,7 @@ func TestSQLiteGrammar_CompileSelect(t *testing.T) {
 				Limit:   intPtr(10),
 				Offset:  intPtr(20),
 			},
-			wantSQL:  "SELECT id, name FROM `users` LIMIT 10 OFFSET 20",
+			wantSQL:  "SELECT `id`, `name` FROM `users` LIMIT 10 OFFSET 20",
 			wantArgs: nil,
 		},
 		{
@@ -122,7 +122,7 @@ func TestSQLiteGrammar_CompileSelect(t *testing.T) {
 				Limit:  intPtr(10),
 				Offset: intPtr(0),
 			},
-			wantSQL:  "SELECT DISTINCT id, name, email FROM `users` WHERE `active` = ? ORDER BY `created_at` DESC LIMIT 10 OFFSET 0",
+			wantSQL:  "SELECT DISTINCT `id`, `name`, `email` FROM `users` WHERE `active` = ? ORDER BY `created_at` DESC LIMIT 10 OFFSET 0",
 			wantArgs: []any{true},
 		},
 	}

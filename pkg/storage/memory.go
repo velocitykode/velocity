@@ -76,10 +76,18 @@ func (d *MemoryDriver) Put(path string, contents []byte) error {
 
 // PutStream stores a stream at the given path
 func (d *MemoryDriver) PutStream(path string, stream io.Reader) error {
-	// Read stream into memory
+	// Limit stream size to the configured max to prevent unbounded memory usage
+	limit := d.maxSize
+	if limit <= 0 {
+		limit = 100 * 1024 * 1024 // 100MB fallback
+	}
+	limited := io.LimitReader(stream, limit+1)
 	buf := new(bytes.Buffer)
-	if _, err := io.Copy(buf, stream); err != nil {
+	if _, err := io.Copy(buf, limited); err != nil {
 		return fmt.Errorf("failed to read stream: %w", err)
+	}
+	if int64(buf.Len()) > limit {
+		return fmt.Errorf("stream exceeds maximum size of %d bytes", limit)
 	}
 
 	return d.Put(path, buf.Bytes())

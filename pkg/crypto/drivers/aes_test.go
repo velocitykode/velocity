@@ -1043,8 +1043,6 @@ func TestGenerateMACWithKey(t *testing.T) {
 	key1 := []byte("0123456789abcdef")
 	key2 := []byte("fedcba9876543210")
 
-	driver, _ := NewAESDriver(key1, nil, "AES-128-CBC")
-
 	value := "test_value"
 	iv := "test_iv"
 
@@ -1058,7 +1056,7 @@ func TestGenerateMACWithKey(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mac := driver.generateMACWithKey(value, iv, tt.key)
+			mac := generateMACWith(value, iv, tt.key)
 
 			if mac == "" {
 				t.Error("MAC should not be empty")
@@ -1077,8 +1075,8 @@ func TestGenerateMACWithKey(t *testing.T) {
 
 	// Test that different keys produce different MACs
 	t.Run("different keys produce different MACs", func(t *testing.T) {
-		mac1 := driver.generateMACWithKey(value, iv, key1)
-		mac2 := driver.generateMACWithKey(value, iv, key2)
+		mac1 := generateMACWith(value, iv, key1)
+		mac2 := generateMACWith(value, iv, key2)
 
 		if mac1 == mac2 {
 			t.Error("different keys should produce different MACs")

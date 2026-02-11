@@ -11,11 +11,15 @@ import (
 	"time"
 )
 
+// defaultMaxFileSize is the default maximum file size for local storage (100MB)
+const defaultMaxFileSize = 100 * 1024 * 1024
+
 // LocalDriver implements the Driver interface for local filesystem storage
 type LocalDriver struct {
-	root       string
-	url        string
-	visibility Visibility
+	root        string
+	url         string
+	visibility  Visibility
+	maxFileSize int64
 }
 
 // NewLocalDriver creates a new local storage driver
@@ -28,34 +32,47 @@ func NewLocalDriver(config DiskConfig) *LocalDriver {
 		}
 	}
 
-	// Ensure root directory exists
-	os.MkdirAll(root, 0755)
+	// Ensure root directory exists with restricted permissions
+	os.MkdirAll(root, 0700)
 
-	visibility := Public
-	if config.Visibility == "private" {
-		visibility = Private
+	visibility := Private
+	if config.Visibility == "public" {
+		visibility = Public
+	}
+
+	maxFileSize := int64(defaultMaxFileSize)
+	if config.MaxSize > 0 {
+		maxFileSize = config.MaxSize
 	}
 
 	return &LocalDriver{
-		root:       root,
-		url:        strings.TrimSuffix(config.URL, "/"),
-		visibility: visibility,
+		root:        root,
+		url:         strings.TrimSuffix(config.URL, "/"),
+		visibility:  visibility,
+		maxFileSize: maxFileSize,
 	}
 }
 
 // Put stores content at the given path
 func (d *LocalDriver) Put(path string, contents []byte) error {
-	fullPath := d.fullPath(path)
+	if int64(len(contents)) > d.maxFileSize {
+		return fmt.Errorf("file size %d exceeds maximum of %d bytes: %w", len(contents), d.maxFileSize, ErrQuotaExceeded)
+	}
+
+	fullPath, err := d.safePath(path)
+	if err != nil {
+		return err
+	}
 
 	// Create directory if it doesn't exist
 	dir := filepath.Dir(fullPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
 	// Write file atomically (write to temp, then rename)
 	tempFile := fullPath + ".tmp"
-	if err := os.WriteFile(tempFile, contents, 0644); err != nil {
+	if err := os.WriteFile(tempFile, contents, 0600); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 
@@ -69,11 +86,14 @@ func (d *LocalDriver) Put(path string, contents []byte) error {
 
 // PutStream stores a stream at the given path
 func (d *LocalDriver) PutStream(path string, stream io.Reader) error {
-	fullPath := d.fullPath(path)
+	fullPath, err := d.safePath(path)
+	if err != nil {
+		return err
+	}
 
 	// Create directory if it doesn't exist
 	dir := filepath.Dir(fullPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
@@ -85,10 +105,17 @@ func (d *LocalDriver) PutStream(path string, stream io.Reader) error {
 	}
 	defer file.Close()
 
-	// Copy stream to file
-	if _, err := io.Copy(file, stream); err != nil {
+	// Copy stream to file with size limit
+	limited := io.LimitReader(stream, d.maxFileSize+1)
+	written, err := io.Copy(file, limited)
+	if err != nil {
 		os.Remove(tempFile)
 		return fmt.Errorf("failed to write stream: %w", err)
+	}
+	if written > d.maxFileSize {
+		file.Close()
+		os.Remove(tempFile)
+		return fmt.Errorf("stream exceeds maximum size of %d bytes: %w", d.maxFileSize, ErrQuotaExceeded)
 	}
 
 	// Close and rename
@@ -103,7 +130,10 @@ func (d *LocalDriver) PutStream(path string, stream io.Reader) error {
 
 // Get retrieves content from the given path
 func (d *LocalDriver) Get(path string) ([]byte, error) {
-	fullPath := d.fullPath(path)
+	fullPath, err := d.safePath(path)
+	if err != nil {
+		return nil, err
+	}
 
 	contents, err := os.ReadFile(fullPath)
 	if err != nil {
@@ -118,7 +148,10 @@ func (d *LocalDriver) Get(path string) ([]byte, error) {
 
 // GetStream retrieves a stream from the given path
 func (d *LocalDriver) GetStream(path string) (io.ReadCloser, error) {
-	fullPath := d.fullPath(path)
+	fullPath, err := d.safePath(path)
+	if err != nil {
+		return nil, err
+	}
 
 	file, err := os.Open(fullPath)
 	if err != nil {
@@ -133,15 +166,21 @@ func (d *LocalDriver) GetStream(path string) (io.ReadCloser, error) {
 
 // Exists checks if a file exists at the given path
 func (d *LocalDriver) Exists(path string) bool {
-	fullPath := d.fullPath(path)
-	_, err := os.Stat(fullPath)
+	fullPath, err := d.safePath(path)
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(fullPath)
 	return err == nil
 }
 
 // Delete removes files at the given paths
 func (d *LocalDriver) Delete(paths ...string) error {
 	for _, path := range paths {
-		fullPath := d.fullPath(path)
+		fullPath, err := d.safePath(path)
+		if err != nil {
+			return err
+		}
 		if err := os.Remove(fullPath); err != nil {
 			if !os.IsNotExist(err) {
 				return fmt.Errorf("failed to delete %s: %w", path, err)
@@ -153,8 +192,14 @@ func (d *LocalDriver) Delete(paths ...string) error {
 
 // Copy copies a file from one path to another
 func (d *LocalDriver) Copy(from, to string) error {
-	fromPath := d.fullPath(from)
-	toPath := d.fullPath(to)
+	fromPath, err := d.safePath(from)
+	if err != nil {
+		return err
+	}
+	toPath, err := d.safePath(to)
+	if err != nil {
+		return err
+	}
 
 	// Open source file
 	source, err := os.Open(fromPath)
@@ -168,7 +213,7 @@ func (d *LocalDriver) Copy(from, to string) error {
 
 	// Create destination directory
 	dir := filepath.Dir(toPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
@@ -189,12 +234,18 @@ func (d *LocalDriver) Copy(from, to string) error {
 
 // Move moves a file from one path to another
 func (d *LocalDriver) Move(from, to string) error {
-	fromPath := d.fullPath(from)
-	toPath := d.fullPath(to)
+	fromPath, err := d.safePath(from)
+	if err != nil {
+		return err
+	}
+	toPath, err := d.safePath(to)
+	if err != nil {
+		return err
+	}
 
 	// Create destination directory
 	dir := filepath.Dir(toPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
@@ -212,7 +263,10 @@ func (d *LocalDriver) Move(from, to string) error {
 
 // Size returns the size of a file at the given path
 func (d *LocalDriver) Size(path string) (int64, error) {
-	fullPath := d.fullPath(path)
+	fullPath, err := d.safePath(path)
+	if err != nil {
+		return 0, err
+	}
 
 	info, err := os.Stat(fullPath)
 	if err != nil {
@@ -227,7 +281,10 @@ func (d *LocalDriver) Size(path string) (int64, error) {
 
 // LastModified returns the last modified time of a file
 func (d *LocalDriver) LastModified(path string) (time.Time, error) {
-	fullPath := d.fullPath(path)
+	fullPath, err := d.safePath(path)
+	if err != nil {
+		return time.Time{}, err
+	}
 
 	info, err := os.Stat(fullPath)
 	if err != nil {
@@ -242,7 +299,10 @@ func (d *LocalDriver) LastModified(path string) (time.Time, error) {
 
 // MimeType returns the MIME type of a file
 func (d *LocalDriver) MimeType(path string) (string, error) {
-	fullPath := d.fullPath(path)
+	fullPath, err := d.safePath(path)
+	if err != nil {
+		return "", err
+	}
 
 	// Read first 512 bytes for content detection
 	file, err := os.Open(fullPath)
@@ -267,7 +327,10 @@ func (d *LocalDriver) MimeType(path string) (string, error) {
 
 // Files lists files in a directory
 func (d *LocalDriver) Files(directory string) ([]string, error) {
-	fullPath := d.fullPath(directory)
+	fullPath, err := d.safePath(directory)
+	if err != nil {
+		return nil, err
+	}
 
 	entries, err := os.ReadDir(fullPath)
 	if err != nil {
@@ -289,10 +352,13 @@ func (d *LocalDriver) Files(directory string) ([]string, error) {
 
 // AllFiles lists all files recursively in a directory
 func (d *LocalDriver) AllFiles(directory string) ([]string, error) {
-	fullPath := d.fullPath(directory)
+	fullPath, err := d.safePath(directory)
+	if err != nil {
+		return nil, err
+	}
 	var files []string
 
-	err := filepath.WalkDir(fullPath, func(path string, entry fs.DirEntry, err error) error {
+	err = filepath.WalkDir(fullPath, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -320,7 +386,10 @@ func (d *LocalDriver) AllFiles(directory string) ([]string, error) {
 
 // Directories lists directories
 func (d *LocalDriver) Directories(directory string) ([]string, error) {
-	fullPath := d.fullPath(directory)
+	fullPath, err := d.safePath(directory)
+	if err != nil {
+		return nil, err
+	}
 
 	entries, err := os.ReadDir(fullPath)
 	if err != nil {
@@ -342,10 +411,13 @@ func (d *LocalDriver) Directories(directory string) ([]string, error) {
 
 // AllDirectories lists all directories recursively
 func (d *LocalDriver) AllDirectories(directory string) ([]string, error) {
-	fullPath := d.fullPath(directory)
+	fullPath, err := d.safePath(directory)
+	if err != nil {
+		return nil, err
+	}
 	var dirs []string
 
-	err := filepath.WalkDir(fullPath, func(path string, entry fs.DirEntry, err error) error {
+	err = filepath.WalkDir(fullPath, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -373,13 +445,19 @@ func (d *LocalDriver) AllDirectories(directory string) ([]string, error) {
 
 // MakeDirectory creates a directory
 func (d *LocalDriver) MakeDirectory(path string) error {
-	fullPath := d.fullPath(path)
-	return os.MkdirAll(fullPath, 0755)
+	fullPath, err := d.safePath(path)
+	if err != nil {
+		return err
+	}
+	return os.MkdirAll(fullPath, 0700)
 }
 
 // DeleteDirectory deletes a directory and all its contents
 func (d *LocalDriver) DeleteDirectory(directory string) error {
-	fullPath := d.fullPath(directory)
+	fullPath, err := d.safePath(directory)
+	if err != nil {
+		return err
+	}
 	return os.RemoveAll(fullPath)
 }
 
@@ -400,9 +478,15 @@ func (d *LocalDriver) TemporaryURL(path string, expiration time.Duration) (strin
 	return d.URL(path), nil
 }
 
-// fullPath returns the full filesystem path for a given storage path
-func (d *LocalDriver) fullPath(path string) string {
-	// Clean the path and ensure it doesn't escape root
+// safePath returns the full filesystem path for a given storage path.
+// It validates that the resolved path stays within the root directory to prevent path traversal.
+func (d *LocalDriver) safePath(path string) (string, error) {
 	path = filepath.Clean(filepath.FromSlash(path))
-	return filepath.Join(d.root, path)
+	full := filepath.Join(d.root, path)
+	cleanRoot := filepath.Clean(d.root) + string(filepath.Separator)
+	cleanFull := filepath.Clean(full)
+	if cleanFull != filepath.Clean(d.root) && !strings.HasPrefix(cleanFull, cleanRoot) {
+		return "", fmt.Errorf("path traversal detected: %w", ErrInvalidPath)
+	}
+	return cleanFull, nil
 }

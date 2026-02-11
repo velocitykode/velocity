@@ -1,6 +1,7 @@
 package stores
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"time"
@@ -12,8 +13,10 @@ var (
 
 // SessionStore implements in-memory session-based CSRF token storage
 type SessionStore struct {
-	tokens map[string]*tokenEntry
-	mu     sync.RWMutex
+	tokens   map[string]*tokenEntry
+	mu       sync.RWMutex
+	lifetime time.Duration
+	cancel   context.CancelFunc
 }
 
 type tokenEntry struct {
@@ -21,14 +24,28 @@ type tokenEntry struct {
 	expiresAt time.Time
 }
 
-// NewSessionStore creates a new session-based token store
-func NewSessionStore() *SessionStore {
+// NewSessionStore creates a new session-based token store.
+// An optional lifetime can be provided; defaults to 24h if zero or omitted.
+// Call Close() when done to stop the background cleanup goroutine.
+func NewSessionStore(lifetime ...time.Duration) *SessionStore {
+	ttl := 24 * time.Hour
+	if len(lifetime) > 0 && lifetime[0] > 0 {
+		ttl = lifetime[0]
+	}
+	ctx, cancel := context.WithCancel(context.Background())
 	s := &SessionStore{
-		tokens: make(map[string]*tokenEntry),
+		tokens:   make(map[string]*tokenEntry),
+		lifetime: ttl,
+		cancel:   cancel,
 	}
 	// Start cleanup goroutine
-	go s.cleanup()
+	go s.cleanup(ctx)
 	return s
+}
+
+// Close stops the background cleanup goroutine.
+func (s *SessionStore) Close() {
+	s.cancel()
 }
 
 // Get retrieves a token for the given session ID
@@ -56,7 +73,7 @@ func (s *SessionStore) Set(id string, token string) error {
 
 	s.tokens[id] = &tokenEntry{
 		token:     token,
-		expiresAt: time.Now().Add(24 * time.Hour),
+		expiresAt: time.Now().Add(s.lifetime),
 	}
 	return nil
 }
@@ -84,19 +101,24 @@ func (s *SessionStore) Exists(id string) bool {
 	return !time.Now().After(entry.expiresAt)
 }
 
-// cleanup removes expired tokens every hour
-func (s *SessionStore) cleanup() {
+// cleanup removes expired tokens every hour until the context is cancelled.
+func (s *SessionStore) cleanup(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		s.mu.Lock()
-		now := time.Now()
-		for id, entry := range s.tokens {
-			if now.After(entry.expiresAt) {
-				delete(s.tokens, id)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.mu.Lock()
+			now := time.Now()
+			for id, entry := range s.tokens {
+				if now.After(entry.expiresAt) {
+					delete(s.tokens, id)
+				}
 			}
+			s.mu.Unlock()
 		}
-		s.mu.Unlock()
 	}
 }
