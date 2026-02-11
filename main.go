@@ -472,6 +472,12 @@ func initAuth(authCfg AuthConfig, sessCfg SessionConfig, logger log.Logger) *aut
 					logger.Warn("JWT guard config has wrong type, using defaults", "guard", name, "type", fmt.Sprintf("%T", opts))
 				}
 			}
+			if jwtCfg.Secret == "" {
+				if logger != nil {
+					logger.Warn("JWT guard skipped: no secret configured", "guard", name)
+				}
+				continue
+			}
 			guard := guards.NewJWTGuard(provider, jwtCfg)
 			manager.RegisterGuard(name, guard)
 		}
