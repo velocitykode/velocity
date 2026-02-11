@@ -128,15 +128,18 @@ type StorageConfig struct {
 
 // DiskConfig holds configuration for a single storage disk.
 type DiskConfig struct {
-	Driver string // "local", "s3", "memory"
-	Root   string // Root path for local driver
+	Driver     string // "local", "s3", "memory"
+	Root       string // Root path for local driver
+	URL        string // Base URL for file access
+	Visibility string // Default visibility (public/private)
 	// S3 fields
 	Bucket   string
 	Region   string
 	Key      string
 	Secret   string
 	Endpoint string
-	URL      string
+	// Memory driver
+	MaxSize int64 // Maximum memory usage in bytes
 }
 
 // Option is a function that configures the App.

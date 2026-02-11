@@ -400,13 +400,15 @@ func initStorage(config StorageConfig, logger log.Logger) *storage.Manager {
 	}
 	for name, disk := range config.Disks {
 		storageCfg.Disks[name] = storage.DiskConfig{
-			Driver: disk.Driver,
-			Root:   disk.Root,
-			URL:    disk.URL,
-			Key:    disk.Key,
-			Secret: disk.Secret,
-			Region: disk.Region,
-			Bucket: disk.Bucket,
+			Driver:     disk.Driver,
+			Root:       disk.Root,
+			URL:        disk.URL,
+			Visibility: disk.Visibility,
+			Key:        disk.Key,
+			Secret:     disk.Secret,
+			Region:     disk.Region,
+			Bucket:     disk.Bucket,
+			MaxSize:    disk.MaxSize,
 		}
 	}
 	mgr := storage.NewManager(storageCfg)
@@ -466,6 +468,8 @@ func initAuth(authCfg AuthConfig, sessCfg SessionConfig, logger log.Logger) *aut
 			if opts, ok := guardCfg.Options["jwt"]; ok {
 				if jc, ok := opts.(auth.JWTConfig); ok {
 					jwtCfg = jc
+				} else if logger != nil {
+					logger.Warn("JWT guard config has wrong type, using defaults", "guard", name, "type", fmt.Sprintf("%T", opts))
 				}
 			}
 			guard := guards.NewJWTGuard(provider, jwtCfg)
