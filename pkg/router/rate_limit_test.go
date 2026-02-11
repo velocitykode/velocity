@@ -74,9 +74,17 @@ func TestRateLimitByIP_TracksSeparateIPs(t *testing.T) {
 	middleware := RateLimitByIP(2, time.Second)
 	handler := middleware(successHandler)
 
+	// Helper to create context with specific RemoteAddr
+	ctxWithIP := func(ip string) (*Context, *httptest.ResponseRecorder) {
+		req := httptest.NewRequest("GET", "/test", nil)
+		req.RemoteAddr = ip + ":12345"
+		rec := httptest.NewRecorder()
+		return &Context{Request: req, Response: rec, params: make(map[string]string), values: make(map[string]interface{})}, rec
+	}
+
 	// IP1 makes 2 requests (should be allowed)
 	for i := 0; i < 2; i++ {
-		ctx, rec := createTestContext("GET", "/test", map[string]string{"X-Real-IP": "192.168.1.1"})
+		ctx, rec := ctxWithIP("192.168.1.1")
 		_ = handler(ctx)
 		if rec.Code != http.StatusOK {
 			t.Errorf("IP1 request %d: expected 200, got %d", i+1, rec.Code)
@@ -84,14 +92,14 @@ func TestRateLimitByIP_TracksSeparateIPs(t *testing.T) {
 	}
 
 	// IP1 makes 3rd request (should be blocked)
-	ctx, rec := createTestContext("GET", "/test", map[string]string{"X-Real-IP": "192.168.1.1"})
+	ctx, rec := ctxWithIP("192.168.1.1")
 	_ = handler(ctx)
 	if rec.Code != http.StatusTooManyRequests {
 		t.Errorf("IP1 3rd request: expected 429, got %d", rec.Code)
 	}
 
 	// IP2 makes request (should be allowed - separate limit)
-	ctx, rec = createTestContext("GET", "/test", map[string]string{"X-Real-IP": "192.168.1.2"})
+	ctx, rec = ctxWithIP("192.168.1.2")
 	_ = handler(ctx)
 	if rec.Code != http.StatusOK {
 		t.Errorf("IP2 request: expected 200, got %d", rec.Code)
@@ -292,6 +300,9 @@ func TestRateLimit_WithMessage(t *testing.T) {
 }
 
 func TestExtractIP_XForwardedFor(t *testing.T) {
+	// Trust headers only when proxy is trusted — httptest default RemoteAddr is 192.0.2.1:1234
+	trusted := parseTrustedProxies([]string{"192.0.2.1"})
+
 	tests := []struct {
 		name     string
 		xff      string
@@ -305,7 +316,7 @@ func TestExtractIP_XForwardedFor(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx, _ := createTestContext("GET", "/", map[string]string{"X-Forwarded-For": tt.xff})
-			ip := extractIP(ctx)
+			ip := extractIP(ctx, trusted)
 			if ip != tt.expected {
 				t.Errorf("Expected IP %s, got %s", tt.expected, ip)
 			}
@@ -313,9 +324,19 @@ func TestExtractIP_XForwardedFor(t *testing.T) {
 	}
 }
 
+func TestExtractIP_XForwardedFor_UntrustedProxy(t *testing.T) {
+	// Without trusted proxies, headers should be ignored
+	ctx, _ := createTestContext("GET", "/", map[string]string{"X-Forwarded-For": "192.168.1.1"})
+	ip := extractIP(ctx, nil)
+	if ip != "192.0.2.1" {
+		t.Errorf("Expected RemoteAddr IP 192.0.2.1, got %s", ip)
+	}
+}
+
 func TestExtractIP_XRealIP(t *testing.T) {
+	trusted := parseTrustedProxies([]string{"192.0.2.1"})
 	ctx, _ := createTestContext("GET", "/", map[string]string{"X-Real-IP": "10.0.0.1"})
-	ip := extractIP(ctx)
+	ip := extractIP(ctx, trusted)
 	if ip != "10.0.0.1" {
 		t.Errorf("Expected IP 10.0.0.1, got %s", ip)
 	}
@@ -327,7 +348,7 @@ func TestExtractIP_FallbackToRemoteAddr(t *testing.T) {
 	rec := httptest.NewRecorder()
 	ctx := &Context{Request: req, Response: rec}
 
-	ip := extractIP(ctx)
+	ip := extractIP(ctx, nil)
 	if ip != "127.0.0.1" {
 		t.Errorf("Expected IP 127.0.0.1, got %s", ip)
 	}
@@ -339,19 +360,20 @@ func TestExtractIP_IPv6WithPort(t *testing.T) {
 	rec := httptest.NewRecorder()
 	ctx := &Context{Request: req, Response: rec}
 
-	ip := extractIP(ctx)
-	if ip != "[::1]" {
-		t.Errorf("Expected IP [::1], got %s", ip)
+	ip := extractIP(ctx, nil)
+	if ip != "::1" {
+		t.Errorf("Expected IP ::1, got %s", ip)
 	}
 }
 
 func TestExtractIP_XForwardedForPriority(t *testing.T) {
-	// X-Forwarded-For should take priority over X-Real-IP
+	// X-Forwarded-For should take priority over X-Real-IP when proxy is trusted
+	trusted := parseTrustedProxies([]string{"192.0.2.1"})
 	ctx, _ := createTestContext("GET", "/", map[string]string{
 		"X-Forwarded-For": "192.168.1.1",
 		"X-Real-IP":       "10.0.0.1",
 	})
-	ip := extractIP(ctx)
+	ip := extractIP(ctx, trusted)
 	if ip != "192.168.1.1" {
 		t.Errorf("Expected X-Forwarded-For IP 192.168.1.1, got %s", ip)
 	}
@@ -440,13 +462,16 @@ func TestRateLimitByIP_ConcurrentRequests(t *testing.T) {
 		results[ip] = &struct{ allowed, blocked int64 }{}
 	}
 
-	// Fire 20 concurrent requests per IP
+	// Fire 20 concurrent requests per IP using RemoteAddr
 	for _, ip := range ips {
 		for i := 0; i < 20; i++ {
 			wg.Add(1)
 			go func(ipAddr string) {
 				defer wg.Done()
-				ctx, rec := createTestContext("GET", "/test", map[string]string{"X-Real-IP": ipAddr})
+				req := httptest.NewRequest("GET", "/test", nil)
+				req.RemoteAddr = ipAddr + ":12345"
+				rec := httptest.NewRecorder()
+				ctx := &Context{Request: req, Response: rec, params: make(map[string]string), values: make(map[string]interface{})}
 				_ = handler(ctx)
 				mu.Lock()
 				if rec.Code == http.StatusOK {
@@ -881,7 +906,7 @@ func TestExtractIP_IPv6NoPort(t *testing.T) {
 	rec := httptest.NewRecorder()
 	ctx := &Context{Request: req, Response: rec}
 
-	ip := extractIP(ctx)
+	ip := extractIP(ctx, nil)
 	if ip != "::1" {
 		t.Errorf("Expected IP ::1, got %s", ip)
 	}

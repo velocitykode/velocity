@@ -13,7 +13,9 @@ import (
 // init automatically initializes the ORM from environment variables
 func init() {
 	// Try to load .env file if it exists
-	godotenv.Load()
+	if err := godotenv.Load(); err == nil {
+		fmt.Fprintln(os.Stderr, "orm: auto-loaded .env file")
+	}
 
 	// Register built-in drivers
 	RegisterDriver("sqlite", drivers.NewSQLiteDriver)
@@ -120,6 +122,11 @@ func InitFromEnv() error {
 	config["database"] = os.Getenv("DB_DATABASE")
 	config["username"] = os.Getenv("DB_USERNAME")
 	config["password"] = os.Getenv("DB_PASSWORD")
+
+	// Optional settings
+	if sslMode := os.Getenv("DB_SSL_MODE"); sslMode != "" {
+		config["ssl_mode"] = sslMode
+	}
 
 	// Parse numeric settings
 	if maxIdle := os.Getenv("DB_MAX_IDLE_CONNS"); maxIdle != "" {

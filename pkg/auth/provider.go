@@ -81,11 +81,17 @@ func (p *ORMUserProvider) ValidateCredentials(user Authenticatable, credentials 
 	return p.hasher.Verify(password, user.GetAuthPassword())
 }
 
-// UpdateRememberToken updates user's remember token
+// UpdateRememberToken updates user's remember token and persists it to the database.
 func (p *ORMUserProvider) UpdateRememberToken(user Authenticatable, token string) error {
 	user.SetRememberToken(token)
-	// In real implementation, save to database
-	return nil
+
+	db := orm.DB()
+	if db == nil {
+		return errors.New("database not initialized")
+	}
+
+	_, err := db.Exec("UPDATE users SET remember_token = $1 WHERE id = $2", token, user.GetAuthIdentifier())
+	return err
 }
 
 // AuthUser represents an authenticated user

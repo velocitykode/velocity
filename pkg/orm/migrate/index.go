@@ -94,9 +94,9 @@ func (b *IndexBuilder) toPostgresSQL() string {
 	if b.ifNotExists {
 		sql.WriteString("IF NOT EXISTS ")
 	}
-	sql.WriteString(b.name)
+	sql.WriteString(quoteIdentifier(b.name, b.driver))
 	sql.WriteString(" ON ")
-	sql.WriteString(b.table)
+	sql.WriteString(quoteIdentifier(b.table, b.driver))
 
 	// Index type (USING)
 	if b.using != "" {
@@ -133,9 +133,9 @@ func (b *IndexBuilder) toMySQLSQL() string {
 		sql.WriteString("UNIQUE ")
 	}
 	sql.WriteString("INDEX ")
-	sql.WriteString(b.name)
+	sql.WriteString(quoteIdentifier(b.name, b.driver))
 	sql.WriteString(" ON ")
-	sql.WriteString(b.table)
+	sql.WriteString(quoteIdentifier(b.table, b.driver))
 
 	// Index type (MySQL uses different syntax)
 	if b.using != "" && (b.using == "btree" || b.using == "hash") {
@@ -165,9 +165,9 @@ func (b *IndexBuilder) toSQLiteSQL() string {
 	if b.ifNotExists {
 		sql.WriteString("IF NOT EXISTS ")
 	}
-	sql.WriteString(b.name)
+	sql.WriteString(quoteIdentifier(b.name, b.driver))
 	sql.WriteString(" ON ")
-	sql.WriteString(b.table)
+	sql.WriteString(quoteIdentifier(b.table, b.driver))
 
 	// Columns
 	sql.WriteString(" (")
@@ -202,21 +202,22 @@ func (m *Migrator) CreateIndex(name, table string, fn func(*IndexBuilder)) error
 
 // DropIndex drops an index
 func (m *Migrator) DropIndex(name string, table ...string) error {
+	quotedName := quoteIdentifier(name, m.driver)
 	var sql string
 
 	switch m.driver {
 	case "postgres":
-		sql = "DROP INDEX IF EXISTS " + name
+		sql = "DROP INDEX IF EXISTS " + quotedName
 	case "mysql":
 		// MySQL requires table name
 		if len(table) == 0 {
 			return fmt.Errorf("MySQL requires table name to drop index")
 		}
-		sql = "DROP INDEX " + name + " ON " + table[0]
+		sql = "DROP INDEX " + quotedName + " ON " + quoteIdentifier(table[0], m.driver)
 	case "sqlite":
-		sql = "DROP INDEX IF EXISTS " + name
+		sql = "DROP INDEX IF EXISTS " + quotedName
 	default:
-		sql = "DROP INDEX IF EXISTS " + name
+		sql = "DROP INDEX IF EXISTS " + quotedName
 	}
 
 	_, err := m.db.Exec(sql)

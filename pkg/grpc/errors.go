@@ -2,9 +2,13 @@ package grpc
 
 import (
 	"errors"
+	"os"
+	"strings"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/velocitykode/velocity/pkg/log"
 )
 
 // Common gRPC errors with standard messages
@@ -94,9 +98,17 @@ func Unavailable(msg string) error {
 	return status.Error(codes.Unavailable, msg)
 }
 
+// isDebugMode returns true when the application is running in debug mode
+func isDebugMode() bool {
+	v := strings.ToLower(os.Getenv("APP_DEBUG"))
+	return v == "true" || v == "1"
+}
+
 // WrapError wraps a Go error in a gRPC status error.
 // If the error is already a gRPC status error, it is returned unchanged.
-// Otherwise, it's wrapped as an internal error.
+// Otherwise, it's wrapped as an internal error with a generic message
+// (the real error is logged server-side). In debug mode, the original
+// message is preserved for developer convenience.
 func WrapError(err error) error {
 	if err == nil {
 		return nil
@@ -107,12 +119,19 @@ func WrapError(err error) error {
 		return err
 	}
 
-	// Wrap as internal error
-	return status.Error(codes.Internal, err.Error())
+	// Log the actual error server-side
+	log.Error("gRPC internal error", "error", err.Error())
+
+	if isDebugMode() {
+		return status.Error(codes.Internal, err.Error())
+	}
+	return status.Error(codes.Internal, "internal server error")
 }
 
 // WrapErrorWithCode wraps a Go error with a specific gRPC code.
 // If the error is already a gRPC status error, it is returned unchanged.
+// For Internal/Unknown codes, the raw message is hidden from clients
+// unless debug mode is enabled.
 func WrapErrorWithCode(err error, code codes.Code) error {
 	if err == nil {
 		return nil
@@ -121,6 +140,14 @@ func WrapErrorWithCode(err error, code codes.Code) error {
 	// Check if it's already a gRPC status error
 	if _, ok := status.FromError(err); ok {
 		return err
+	}
+
+	// For internal-class errors, hide details from clients
+	if code == codes.Internal || code == codes.Unknown {
+		log.Error("gRPC error", "code", code.String(), "error", err.Error())
+		if !isDebugMode() {
+			return status.Error(code, "internal server error")
+		}
 	}
 
 	return status.Error(code, err.Error())

@@ -4,12 +4,16 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/velocitykode/velocity/pkg/orm"
 	"github.com/velocitykode/velocity/pkg/orm/migrate"
 )
+
+// dbIdentifierRegex validates database/table names
+var dbIdentifierRegex = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 // GetAllTables returns a list of all tables in the database
 func GetAllTables(db *sql.DB, driver string) ([]string, error) {
@@ -23,6 +27,9 @@ func GetAllTables(db *sql.DB, driver string) ([]string, error) {
 		dbName := orm.GetDatabaseName()
 		if dbName == "" {
 			return nil, fmt.Errorf("cannot get database name for MySQL")
+		}
+		if !dbIdentifierRegex.MatchString(dbName) {
+			return nil, fmt.Errorf("invalid database name: %q", dbName)
 		}
 		query = fmt.Sprintf("SELECT table_name FROM information_schema.tables WHERE table_schema = '%s' ORDER BY table_name", dbName)
 

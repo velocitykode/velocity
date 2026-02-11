@@ -2,6 +2,7 @@ package testing
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/brianvoe/gofakeit/v6"
@@ -167,6 +168,16 @@ func (f *Factory) persistOne(exec orm.QueryExecutor, driver string, index int, o
 	return data
 }
 
+// quoteIdent quotes a database identifier based on the driver.
+func quoteIdent(name, driver string) string {
+	switch driver {
+	case "mysql", "sqlite", "sqlite3":
+		return "`" + strings.ReplaceAll(name, "`", "``") + "`"
+	default: // postgres
+		return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+	}
+}
+
 // buildInsertSQL generates driver-specific INSERT statement
 func buildInsertSQL(table string, data map[string]interface{}, driver string) (string, []interface{}) {
 	columns := make([]string, 0, len(data))
@@ -175,7 +186,7 @@ func buildInsertSQL(table string, data map[string]interface{}, driver string) (s
 
 	i := 1
 	for col, val := range data {
-		columns = append(columns, col)
+		columns = append(columns, quoteIdent(col, driver))
 
 		if driver == "postgres" {
 			placeholders = append(placeholders, fmt.Sprintf("$%d", i))
@@ -190,7 +201,7 @@ func buildInsertSQL(table string, data map[string]interface{}, driver string) (s
 
 	query := fmt.Sprintf(
 		"INSERT INTO %s (%s) VALUES (%s)",
-		table,
+		quoteIdent(table, driver),
 		joinStrings(columns, ", "),
 		joinStrings(placeholders, ", "),
 	)

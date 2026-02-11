@@ -3,6 +3,7 @@ package guards
 import (
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/velocitykode/velocity/pkg/auth"
 )
@@ -12,6 +13,7 @@ type JWTGuard struct {
 	provider   auth.UserProvider
 	jwtManager *auth.JWTManager
 	config     auth.JWTConfig
+	mu         sync.RWMutex
 	userCache  map[string]auth.Authenticatable // Simple cache for request
 }
 
@@ -44,7 +46,9 @@ func (g *JWTGuard) Check(r *http.Request) bool {
 	}
 
 	// Cache user for this request
+	g.mu.Lock()
 	g.userCache[token] = user
+	g.mu.Unlock()
 	return true
 }
 
@@ -56,9 +60,12 @@ func (g *JWTGuard) User(r *http.Request) auth.Authenticatable {
 	}
 
 	// Check cache first
+	g.mu.RLock()
 	if user, ok := g.userCache[token]; ok {
+		g.mu.RUnlock()
 		return user
 	}
+	g.mu.RUnlock()
 
 	claims, err := g.jwtManager.ValidateToken(token)
 	if err != nil {
@@ -71,7 +78,9 @@ func (g *JWTGuard) User(r *http.Request) auth.Authenticatable {
 	}
 
 	// Cache for subsequent calls
+	g.mu.Lock()
 	g.userCache[token] = user
+	g.mu.Unlock()
 	return user
 }
 
@@ -165,11 +174,13 @@ func (g *JWTGuard) Logout(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 
-	// Revoke token
-	g.jwtManager.RevokeToken(claims.ID)
+	// Revoke token using its actual expiry for blacklist duration
+	g.jwtManager.RevokeToken(claims.ID, claims.ExpiresAt.Time)
 
 	// Clear cache
+	g.mu.Lock()
 	delete(g.userCache, token)
+	g.mu.Unlock()
 
 	return nil
 }
@@ -201,16 +212,13 @@ func (g *JWTGuard) ValidateToken(token string) (*auth.Claims, error) {
 
 // getTokenFromRequest extracts JWT token from request
 func (g *JWTGuard) getTokenFromRequest(r *http.Request) string {
-	// Check Authorization header
+	// Check Authorization header — only accept "Bearer <token>" format
 	authHeader := r.Header.Get("Authorization")
 	if authHeader != "" {
-		// Bearer token
-		parts := strings.Split(authHeader, " ")
-		if len(parts) == 2 && strings.ToLower(parts[0]) == "bearer" {
-			return parts[1]
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			return ""
 		}
-		// Plain token
-		return authHeader
+		return strings.TrimPrefix(authHeader, "Bearer ")
 	}
 
 	// Check X-Auth-Token header
@@ -218,9 +226,11 @@ func (g *JWTGuard) getTokenFromRequest(r *http.Request) string {
 		return token
 	}
 
-	// Check query parameter (useful for websockets)
-	if token := r.URL.Query().Get("token"); token != "" {
-		return token
+	// Check query parameter (restricted to WebSocket upgrade requests only)
+	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		if token := r.URL.Query().Get("token"); token != "" {
+			return token
+		}
 	}
 
 	// Check form value

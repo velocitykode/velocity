@@ -2,6 +2,7 @@ package storage
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"time"
 )
@@ -65,7 +66,8 @@ type Driver interface {
 	TemporaryURL(path string, expiration time.Duration) (string, error)
 }
 
-// DiskConfig holds configuration for a storage disk
+// DiskConfig holds configuration for a storage disk.
+// The Key and Secret fields contain sensitive credentials and must not be logged.
 type DiskConfig struct {
 	Driver string // "local", "s3", "memory"
 
@@ -75,13 +77,18 @@ type DiskConfig struct {
 	Visibility string // Default visibility (public/private)
 
 	// S3 driver config
-	Key    string // AWS Access Key
-	Secret string // AWS Secret Key
+	Key    string // AWS Access Key — SENSITIVE: do not log
+	Secret string // AWS Secret Key — SENSITIVE: do not log
 	Region string // AWS Region
 	Bucket string // S3 Bucket name
 
 	// Memory driver config
 	MaxSize int64 // Maximum memory usage in bytes
+}
+
+// String returns a safe representation with credentials redacted.
+func (c DiskConfig) String() string {
+	return fmt.Sprintf("DiskConfig{Driver:%s, Region:%s, Bucket:%s, Key:[REDACTED], Secret:[REDACTED]}", c.Driver, c.Region, c.Bucket)
 }
 
 // Config holds storage configuration

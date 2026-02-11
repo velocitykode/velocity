@@ -3,6 +3,7 @@ package guards
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -189,6 +190,14 @@ func (g *SessionGuard) Logout(w http.ResponseWriter, r *http.Request) error {
 	return session.Save(w)
 }
 
+// CleanupRequest removes the cached session for a completed request.
+// Call this from middleware after the request has been served to prevent memory leaks.
+func (g *SessionGuard) CleanupRequest(r *http.Request) {
+	g.mu.Lock()
+	delete(g.sessions, r)
+	g.mu.Unlock()
+}
+
 // SetProvider sets the user provider
 func (g *SessionGuard) SetProvider(provider auth.UserProvider) {
 	g.provider = provider
@@ -250,7 +259,11 @@ func (g *SessionGuard) setRememberCookie(w http.ResponseWriter, user auth.Authen
 	}
 
 	// Create cookie value: userID|token
-	value := string(user.GetAuthIdentifier().(string)) + "|" + token
+	userID, ok := user.GetAuthIdentifier().(string)
+	if !ok {
+		return fmt.Errorf("auth: expected string user identifier, got %T", user.GetAuthIdentifier())
+	}
+	value := userID + "|" + token
 
 	// Encrypt value
 	encrypted, err := crypto.Encrypt(value)

@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -17,27 +18,15 @@ type CookieStore struct {
 
 // NewCookieStore creates a new cookie session store
 func NewCookieStore(config auth.SessionConfig) (*CookieStore, error) {
-	// Use global encryptor if available, otherwise create one
+	// Verify the global encryptor is available
 	var encryptor crypto.Encryptor
 
-	// Try to use the global crypto encryptor
 	testData := "test"
-	if _, err := crypto.Encrypt(testData); err == nil {
-		// Global encryptor is available
-		encryptor = nil // We'll use global functions
-	} else {
-		// Create a new encryptor with a default key
-		// In production, this should come from configuration
-		encConfig := crypto.Config{
-			Key:    "default-session-key-32-bytes-long!!",
-			Cipher: "AES-256-CBC",
-		}
-		enc, err := crypto.NewEncryptor(encConfig)
-		if err != nil {
-			return nil, err
-		}
-		encryptor = enc
+	if _, err := crypto.Encrypt(testData); err != nil {
+		return nil, fmt.Errorf("cookie store requires a configured encryption key: %w", err)
 	}
+	// Global encryptor is available; we'll use global functions
+	encryptor = nil
 
 	return &CookieStore{
 		config:    config,

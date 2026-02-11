@@ -39,5 +39,6 @@ type Payload struct {
 	Queue      string          `json:"queue"`
 	Attempts   int             `json:"attempts"`
 	CreatedAt  time.Time       `json:"created_at"`
-	DatabaseID int64           `json:"-"` // Internal use for database driver
+	Signature  string          `json:"signature,omitempty"` // HMAC-SHA256 integrity signature
+	DatabaseID int64           `json:"-"`                   // Internal use for database driver
 }

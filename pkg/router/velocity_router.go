@@ -148,7 +148,10 @@ func (r *VelocityRouterV2) Resource(path string, controller interface{}) Resourc
 	return rr
 }
 
-// Static serves static files from the specified directory
+// Static serves static files from the specified directory.
+// Note: The underlying http.Dir follows symlinks by default. If this is a concern,
+// ensure the directory does not contain symlinks pointing outside the intended root,
+// or use a custom http.FileSystem that rejects symlinks.
 func (r *VelocityRouterV2) Static(directory string) {
 	r.staticDir = directory
 	r.staticFS = http.FileServer(http.Dir(directory))
@@ -367,7 +370,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	handlerErr = result.Handler(ctx)
 	if handlerErr != nil {
-		http.Error(rw, handlerErr.Error(), http.StatusInternalServerError)
+		http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
 	}
 }
 

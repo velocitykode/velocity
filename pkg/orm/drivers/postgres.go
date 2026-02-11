@@ -8,6 +8,22 @@ import (
 	_ "github.com/lib/pq"
 )
 
+// escapePgDSNValue escapes a value for use in a PostgreSQL key=value DSN string.
+// Values containing spaces, single quotes, or backslashes must be single-quoted
+// with internal single quotes and backslashes escaped.
+func escapePgDSNValue(val string) string {
+	if val == "" {
+		return "''"
+	}
+	// If value contains special characters, wrap in single quotes with escaping
+	if strings.ContainsAny(val, ` '"\`) {
+		escaped := strings.ReplaceAll(val, `\`, `\\`)
+		escaped = strings.ReplaceAll(escaped, `'`, `\'`)
+		return "'" + escaped + "'"
+	}
+	return val
+}
+
 // PostgresDriver implements the Driver interface for PostgreSQL
 type PostgresDriver struct {
 	db     *sql.DB
@@ -24,37 +40,32 @@ func (d *PostgresDriver) Connect(config ConnectionConfig) error {
 	d.config = config
 
 	// Build DSN (PostgreSQL connection string)
+	// Escape values to handle special characters (spaces, quotes, backslashes)
 	dsn := fmt.Sprintf("host=%s port=%s user=%s dbname=%s",
-		config.Host,
-		config.Port,
-		config.Username,
-		config.Database,
+		escapePgDSNValue(config.Host),
+		escapePgDSNValue(config.Port),
+		escapePgDSNValue(config.Username),
+		escapePgDSNValue(config.Database),
 	)
 
 	// Add password only if provided
 	if config.Password != "" {
-		dsn = fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s",
-			config.Host,
-			config.Port,
-			config.Username,
-			config.Password,
-			config.Database,
-		)
+		dsn += " password=" + escapePgDSNValue(config.Password)
 	}
 
 	// Add optional parameters
 	if config.SSLMode != "" {
-		dsn += " sslmode=" + config.SSLMode
+		dsn += " sslmode=" + escapePgDSNValue(config.SSLMode)
 	} else {
-		dsn += " sslmode=disable" // Default to disable for development
+		dsn += " sslmode=prefer" // Default to prefer for secure connections
 	}
 
 	if config.TimeZone != "" {
-		dsn += " TimeZone=" + config.TimeZone
+		dsn += " TimeZone=" + escapePgDSNValue(config.TimeZone)
 	}
 
 	if config.Schema != "" {
-		dsn += " search_path=" + config.Schema
+		dsn += " search_path=" + escapePgDSNValue(config.Schema)
 	}
 
 	db, err := sql.Open("postgres", dsn)
@@ -109,7 +120,7 @@ func (d *PostgresDriver) DB() *sql.DB {
 // Query executes a query that returns rows
 func (d *PostgresDriver) Query(query string, args ...any) (*sql.Rows, error) {
 	if d.config.LogQueries {
-		fmt.Printf("SQL: %s\nArgs: %v\n", query, args)
+		fmt.Printf("SQL: %s\nArgs: [%d params]\n", query, len(args))
 	}
 	return d.db.Query(query, args...)
 }
@@ -117,7 +128,7 @@ func (d *PostgresDriver) Query(query string, args ...any) (*sql.Rows, error) {
 // QueryRow executes a query that returns at most one row
 func (d *PostgresDriver) QueryRow(query string, args ...any) *sql.Row {
 	if d.config.LogQueries {
-		fmt.Printf("SQL: %s\nArgs: %v\n", query, args)
+		fmt.Printf("SQL: %s\nArgs: [%d params]\n", query, len(args))
 	}
 	return d.db.QueryRow(query, args...)
 }
@@ -125,7 +136,7 @@ func (d *PostgresDriver) QueryRow(query string, args ...any) *sql.Row {
 // Exec executes a query that doesn't return rows
 func (d *PostgresDriver) Exec(query string, args ...any) (sql.Result, error) {
 	if d.config.LogQueries {
-		fmt.Printf("SQL: %s\nArgs: %v\n", query, args)
+		fmt.Printf("SQL: %s\nArgs: [%d params]\n", query, len(args))
 	}
 	return d.db.Exec(query, args...)
 }
@@ -553,7 +564,7 @@ func (g *PostgresGrammar) CompileHasColumn(table, column string) string {
 
 // QuoteIdentifier quotes a database identifier for PostgreSQL
 func (g *PostgresGrammar) QuoteIdentifier(name string) string {
-	return fmt.Sprintf(`"%s"`, name)
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
 // QuoteString quotes a string value for PostgreSQL

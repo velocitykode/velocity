@@ -2,6 +2,7 @@ package router
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -19,6 +20,11 @@ type RateLimitConfig struct {
 	OnLimitReached  func(*Context)
 	Message         string
 	CleanupInterval time.Duration
+	// TrustedProxies is a list of trusted proxy IPs/CIDRs.
+	// Only when the direct connection comes from a trusted proxy will
+	// X-Forwarded-For / X-Real-IP headers be used for IP extraction.
+	// If empty, only RemoteAddr is used (headers are not trusted).
+	TrustedProxies []string
 }
 
 // RateLimitOption is a functional option for configuring rate limiters.
@@ -59,11 +65,23 @@ func WithCleanupInterval(interval time.Duration) RateLimitOption {
 	}
 }
 
+// WithTrustedProxies sets the list of trusted proxy IPs/CIDRs.
+// When set, X-Forwarded-For and X-Real-IP headers are only trusted
+// when the direct connection IP is in this list.
+func WithTrustedProxies(proxies []string) RateLimitOption {
+	return func(cfg *RateLimitConfig) {
+		cfg.TrustedProxies = proxies
+	}
+}
+
 // limiterEntry holds a rate limiter and its last access time.
 type limiterEntry struct {
 	limiter    *rate.Limiter
 	lastAccess atomic.Int64 // Unix nano timestamp for atomic access
 }
+
+// maxRateLimitEntries is the maximum number of per-key rate limiters to prevent memory exhaustion.
+const maxRateLimitEntries = 100000
 
 // keyedRateLimiter manages per-key rate limiters with automatic cleanup.
 type keyedRateLimiter struct {
@@ -112,12 +130,35 @@ func (krl *keyedRateLimiter) getLimiter(key string) *rate.Limiter {
 		return entry.limiter
 	}
 
+	// Evict oldest entry if at capacity to prevent memory exhaustion
+	if len(krl.limiters) >= maxRateLimitEntries {
+		krl.evictOldest()
+	}
+
 	entry = &limiterEntry{
 		limiter: rate.NewLimiter(krl.rate, krl.burst),
 	}
 	entry.lastAccess.Store(time.Now().UnixNano())
 	krl.limiters[key] = entry
 	return entry.limiter
+}
+
+// evictOldest removes the least recently accessed limiter entry.
+func (krl *keyedRateLimiter) evictOldest() {
+	var oldestKey string
+	first := true
+	var oldestTime int64
+	for key, entry := range krl.limiters {
+		t := entry.lastAccess.Load()
+		if first || t < oldestTime {
+			oldestTime = t
+			oldestKey = key
+			first = false
+		}
+	}
+	if oldestKey != "" {
+		delete(krl.limiters, oldestKey)
+	}
 }
 
 // cleanup removes stale limiters periodically.
@@ -295,51 +336,94 @@ func RateLimitByKey(requests int, window time.Duration, keyFunc func(*Context) s
 }
 
 // RateLimitByIP creates a per-IP rate limiter middleware.
-// It extracts the client IP from X-Forwarded-For, X-Real-IP, or RemoteAddr.
+// It extracts the client IP from RemoteAddr by default. If TrustedProxies
+// is configured (via WithTrustedProxies), it will trust X-Forwarded-For
+// and X-Real-IP headers only when the direct connection comes from a
+// trusted proxy.
 func RateLimitByIP(requests int, window time.Duration, opts ...RateLimitOption) MiddlewareFunc {
+	// Pre-parse opts to extract trusted proxies for the key func closure
+	cfg := &RateLimitConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+	trustedNets := parseTrustedProxies(cfg.TrustedProxies)
+
 	return RateLimitByKey(requests, window, func(c *Context) string {
-		return extractIP(c)
+		return extractIP(c, trustedNets)
 	}, opts...)
 }
 
-// extractIP extracts the client IP address from the request.
-// It checks X-Forwarded-For, X-Real-IP, then falls back to RemoteAddr.
-func extractIP(c *Context) string {
-	// Check X-Forwarded-For header (may contain comma-separated list)
-	if xff := c.Header("X-Forwarded-For"); xff != "" {
-		// Take the first IP in the list (original client)
-		if idx := strings.Index(xff, ","); idx != -1 {
-			return strings.TrimSpace(xff[:idx])
-		}
-		return strings.TrimSpace(xff)
-	}
-
-	// Check X-Real-IP header
-	if xri := c.Header("X-Real-IP"); xri != "" {
-		return strings.TrimSpace(xri)
-	}
-
-	// Fall back to RemoteAddr
-	addr := c.Request.RemoteAddr
-	// Strip port if present
-	if idx := strings.LastIndex(addr, ":"); idx != -1 {
-		// Check if this looks like IPv6 with port [::1]:8080
-		if strings.Contains(addr, "]") {
-			if bracketIdx := strings.LastIndex(addr, "]"); bracketIdx != -1 && idx > bracketIdx {
-				return addr[:idx]
+// parseTrustedProxies parses a list of IP/CIDR strings into net.IPNet entries.
+func parseTrustedProxies(proxies []string) []*net.IPNet {
+	var nets []*net.IPNet
+	for _, p := range proxies {
+		if strings.Contains(p, "/") {
+			_, ipNet, err := net.ParseCIDR(p)
+			if err == nil {
+				nets = append(nets, ipNet)
 			}
-			// IPv6 in brackets without port, return as-is
-			return addr
+		} else {
+			ip := net.ParseIP(p)
+			if ip != nil {
+				var mask net.IPMask
+				if ip.To4() != nil {
+					mask = net.CIDRMask(32, 32)
+				} else {
+					mask = net.CIDRMask(128, 128)
+				}
+				nets = append(nets, &net.IPNet{IP: ip, Mask: mask})
+			}
 		}
-		// Check if this is a bare IPv6 address (contains multiple colons)
-		if strings.Count(addr, ":") > 1 {
-			// This is an IPv6 address without brackets, return as-is
-			return addr
-		}
-		// IPv4 with port
-		return addr[:idx]
 	}
-	return addr
+	return nets
+}
+
+// isTrustedProxy checks if an IP is in the trusted proxies list.
+func isTrustedProxy(remoteIP string, trustedNets []*net.IPNet) bool {
+	ip := net.ParseIP(remoteIP)
+	if ip == nil {
+		return false
+	}
+	for _, n := range trustedNets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// extractIP extracts the client IP address from the request.
+// Only trusts X-Forwarded-For and X-Real-IP when the direct connection
+// comes from a trusted proxy. Otherwise, uses RemoteAddr.
+func extractIP(c *Context, trustedNets []*net.IPNet) string {
+	remoteIP := stripPort(c.Request.RemoteAddr)
+
+	// Only trust forwarded headers when the direct connection is from a trusted proxy
+	if len(trustedNets) > 0 && isTrustedProxy(remoteIP, trustedNets) {
+		// Check X-Forwarded-For header — take the leftmost (client) IP
+		if xff := c.Header("X-Forwarded-For"); xff != "" {
+			if idx := strings.Index(xff, ","); idx != -1 {
+				return strings.TrimSpace(xff[:idx])
+			}
+			return strings.TrimSpace(xff)
+		}
+		// Check X-Real-IP header
+		if xri := c.Header("X-Real-IP"); xri != "" {
+			return strings.TrimSpace(xri)
+		}
+	}
+
+	return remoteIP
+}
+
+// stripPort removes the port from a RemoteAddr string.
+func stripPort(addr string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		// No port or unparseable — return as-is
+		return addr
+	}
+	return host
 }
 
 // RateLimitStore is an interface for custom rate limit storage backends.

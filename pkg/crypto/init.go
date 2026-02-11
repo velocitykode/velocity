@@ -1,6 +1,7 @@
 package crypto
 
 import (
+	"fmt"
 	"os"
 	"strings"
 )
@@ -20,7 +21,7 @@ func init() {
 	// Get cipher configuration
 	cipher := os.Getenv("CRYPTO_CIPHER")
 	if cipher == "" {
-		cipher = "AES-256-CBC" // Default cipher
+		cipher = "AES-256-GCM" // Default cipher
 	}
 
 	// Get previous keys for rotation
@@ -37,8 +38,6 @@ func init() {
 	}
 
 	if err := Init(config); err != nil {
-		// Silently fail if auto-init fails
-		// This allows the package to be used without auto-init
-		return
+		panic(fmt.Sprintf("crypto: failed to initialize encryption: %v", err))
 	}
 }

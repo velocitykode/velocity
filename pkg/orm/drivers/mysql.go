@@ -3,6 +3,7 @@ package drivers
 import (
 	"database/sql"
 	"fmt"
+	"net/url"
 	"strings"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -24,18 +25,21 @@ func (d *MySQLDriver) Connect(config ConnectionConfig) error {
 	d.config = config
 
 	// Build DSN: user:password@tcp(host:port)/dbname
+	// URL-encode username and password to handle special characters
+	escapedUser := url.QueryEscape(config.Username)
 	var dsn string
 	if config.Password != "" {
+		escapedPass := url.QueryEscape(config.Password)
 		dsn = fmt.Sprintf("%s:%s@tcp(%s:%s)/%s",
-			config.Username,
-			config.Password,
+			escapedUser,
+			escapedPass,
 			config.Host,
 			config.Port,
 			config.Database,
 		)
 	} else {
 		dsn = fmt.Sprintf("%s@tcp(%s:%s)/%s",
-			config.Username,
+			escapedUser,
 			config.Host,
 			config.Port,
 			config.Database,
@@ -110,7 +114,7 @@ func (d *MySQLDriver) DB() *sql.DB {
 // Query executes a query that returns rows
 func (d *MySQLDriver) Query(query string, args ...any) (*sql.Rows, error) {
 	if d.config.LogQueries {
-		fmt.Printf("SQL: %s\nArgs: %v\n", query, args)
+		fmt.Printf("SQL: %s\nArgs: [%d params]\n", query, len(args))
 	}
 	return d.db.Query(query, args...)
 }
@@ -118,7 +122,7 @@ func (d *MySQLDriver) Query(query string, args ...any) (*sql.Rows, error) {
 // QueryRow executes a query that returns at most one row
 func (d *MySQLDriver) QueryRow(query string, args ...any) *sql.Row {
 	if d.config.LogQueries {
-		fmt.Printf("SQL: %s\nArgs: %v\n", query, args)
+		fmt.Printf("SQL: %s\nArgs: [%d params]\n", query, len(args))
 	}
 	return d.db.QueryRow(query, args...)
 }
@@ -126,7 +130,7 @@ func (d *MySQLDriver) QueryRow(query string, args ...any) *sql.Row {
 // Exec executes a query that doesn't return rows
 func (d *MySQLDriver) Exec(query string, args ...any) (sql.Result, error) {
 	if d.config.LogQueries {
-		fmt.Printf("SQL: %s\nArgs: %v\n", query, args)
+		fmt.Printf("SQL: %s\nArgs: [%d params]\n", query, len(args))
 	}
 	return d.db.Exec(query, args...)
 }
@@ -535,7 +539,7 @@ func (g *MySQLGrammar) CompileHasColumn(table, column string) string {
 
 // QuoteIdentifier quotes a database identifier for MySQL
 func (g *MySQLGrammar) QuoteIdentifier(name string) string {
-	return fmt.Sprintf("`%s`", name)
+	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
 }
 
 // QuoteString quotes a string value for MySQL

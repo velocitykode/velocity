@@ -100,6 +100,15 @@ func (d *DatabaseDriver) PushDelayed(job Job, delay time.Duration, queueName ...
 		return fmt.Errorf("failed to serialize job: %w", err)
 	}
 
+	// Sign the payload for integrity verification
+	if sig := signPayload(payload); sig != "" {
+		wrapper.Payload.Signature = sig
+		payload, err = json.Marshal(wrapper)
+		if err != nil {
+			return fmt.Errorf("failed to serialize signed job: %w", err)
+		}
+	}
+
 	scheduledAt := time.Now()
 	if delay > 0 {
 		scheduledAt = scheduledAt.Add(delay)
@@ -180,6 +189,16 @@ func (d *DatabaseDriver) Pop(queueName string) (Job, error) {
 	var wrapper JobWrapper
 	if err := json.Unmarshal([]byte(jobRecord.Payload), &wrapper); err != nil {
 		return nil, fmt.Errorf("failed to deserialize job: %w", err)
+	}
+
+	// Verify payload integrity if signing is enabled
+	if wrapper.Payload != nil {
+		sig := wrapper.Payload.Signature
+		wrapper.Payload.Signature = "" // Remove signature before verification
+		verifyData, _ := json.Marshal(wrapper)
+		if err := verifyPayload(verifyData, sig); err != nil {
+			return nil, fmt.Errorf("queue integrity check failed: %w", err)
+		}
 	}
 
 	// Restore the job from wrapper

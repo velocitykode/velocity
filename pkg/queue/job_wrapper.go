@@ -14,15 +14,43 @@ type JobWrapper struct {
 	RawData json.RawMessage `json:"raw_data"`
 }
 
+// jobStoreEntry holds a job and its creation time for staleness tracking
+type jobStoreEntry struct {
+	job       Job
+	createdAt time.Time
+}
+
 // jobStore is an internal store for keeping job instances in memory
 type jobStore struct {
 	mu   sync.RWMutex
-	jobs map[string]Job
+	jobs map[string]jobStoreEntry
 	seq  uint64
 }
 
-var store = &jobStore{
-	jobs: make(map[string]Job),
+var store = newJobStore()
+
+func newJobStore() *jobStore {
+	s := &jobStore{
+		jobs: make(map[string]jobStoreEntry),
+	}
+	go s.periodicCleanup()
+	return s
+}
+
+// periodicCleanup removes stale entries older than 1 hour
+func (s *jobStore) periodicCleanup() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.mu.Lock()
+		cutoff := time.Now().Add(-1 * time.Hour)
+		for id, entry := range s.jobs {
+			if entry.createdAt.Before(cutoff) {
+				delete(s.jobs, id)
+			}
+		}
+		s.mu.Unlock()
+	}
 }
 
 // StoreJob stores a job and returns its ID
@@ -32,7 +60,7 @@ func (s *jobStore) Store(job Job) string {
 
 	s.seq++
 	id := fmt.Sprintf("job_%d", s.seq)
-	s.jobs[id] = job
+	s.jobs[id] = jobStoreEntry{job: job, createdAt: time.Now()}
 	return id
 }
 
@@ -41,8 +69,8 @@ func (s *jobStore) Get(id string) (Job, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	job, exists := s.jobs[id]
-	return job, exists
+	entry, exists := s.jobs[id]
+	return entry.job, exists
 }
 
 // RemoveJob removes a job from the store
@@ -95,4 +123,18 @@ func GetJobFromWrapper(wrapper *JobWrapper) Job {
 
 	// Fallback to GenericJob
 	return &GenericJob{Payload: wrapper.Payload}
+}
+
+// CleanupJob removes a job from the in-memory store after processing.
+// Call this after a job has been processed (success or failure) to prevent memory leaks.
+func CleanupJob(wrapper *JobWrapper) {
+	if wrapper == nil || wrapper.Payload == nil {
+		return
+	}
+	var data map[string]string
+	if err := json.Unmarshal(wrapper.Payload.Data, &data); err == nil {
+		if jobID, ok := data["job_id"]; ok {
+			store.Remove(jobID)
+		}
+	}
 }

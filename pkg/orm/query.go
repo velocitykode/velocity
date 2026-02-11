@@ -12,6 +12,22 @@ import (
 	"github.com/velocitykode/velocity/pkg/orm/drivers"
 )
 
+// validOperators is the allowlist of valid SQL operators
+var validOperators = map[string]bool{
+	"=": true, "!=": true, "<>": true,
+	"<": true, ">": true, "<=": true, ">=": true,
+	"LIKE": true, "NOT LIKE": true, "ILIKE": true,
+	"IN": true, "NOT IN": true,
+	"IS": true, "IS NOT": true,
+	"BETWEEN": true, "NOT BETWEEN": true,
+	"IS NULL": true, "IS NOT NULL": true,
+}
+
+// isValidOperator checks if the operator is in the allowlist (case-insensitive)
+func isValidOperator(op string) bool {
+	return validOperators[strings.ToUpper(strings.TrimSpace(op))]
+}
+
 // Query represents a chainable query builder with generics
 type Query[T any] struct {
 	driver        drivers.Driver
@@ -199,6 +215,11 @@ func parseCondition(condition string, args []any) (column, operator string, valu
 	column = parts[0]
 	operator = parts[1]
 
+	// Validate operator against allowlist
+	if !isValidOperator(operator) {
+		panic(fmt.Sprintf("invalid SQL operator: %q", operator))
+	}
+
 	if len(args) > 0 {
 		value = args[0]
 	}
@@ -208,12 +229,13 @@ func parseCondition(condition string, args []any) (column, operator string, valu
 
 // OrderBy adds an ORDER BY clause
 func (q *Query[T]) OrderBy(column, direction string) *Query[T] {
-	if direction == "" {
-		direction = "ASC"
+	dir := strings.ToUpper(strings.TrimSpace(direction))
+	if dir != "ASC" && dir != "DESC" {
+		dir = "ASC"
 	}
 	q.orders = append(q.orders, drivers.Order{
 		Column:    column,
-		Direction: strings.ToUpper(direction),
+		Direction: dir,
 	})
 	return q
 }
@@ -241,12 +263,21 @@ func (q *Query[T]) Having(condition string, args ...any) *Query[T] {
 	return q
 }
 
+// buildJoinOn safely builds a JOIN ON clause with validated identifiers and operator
+func (q *Query[T]) buildJoinOn(first, operator, second string) string {
+	if !isValidOperator(operator) {
+		panic(fmt.Sprintf("invalid JOIN operator: %q", operator))
+	}
+	grammar := q.driver.Grammar()
+	return fmt.Sprintf("%s %s %s", grammar.QuoteIdentifier(first), operator, grammar.QuoteIdentifier(second))
+}
+
 // Join adds an INNER JOIN
 func (q *Query[T]) Join(table, first, operator, second string) *Query[T] {
 	q.joins = append(q.joins, drivers.Join{
 		Type:  "INNER",
 		Table: table,
-		On:    fmt.Sprintf("%s %s %s", first, operator, second),
+		On:    q.buildJoinOn(first, operator, second),
 	})
 	return q
 }
@@ -256,7 +287,7 @@ func (q *Query[T]) LeftJoin(table, first, operator, second string) *Query[T] {
 	q.joins = append(q.joins, drivers.Join{
 		Type:  "LEFT",
 		Table: table,
-		On:    fmt.Sprintf("%s %s %s", first, operator, second),
+		On:    q.buildJoinOn(first, operator, second),
 	})
 	return q
 }
@@ -266,7 +297,7 @@ func (q *Query[T]) RightJoin(table, first, operator, second string) *Query[T] {
 	q.joins = append(q.joins, drivers.Join{
 		Type:  "RIGHT",
 		Table: table,
-		On:    fmt.Sprintf("%s %s %s", first, operator, second),
+		On:    q.buildJoinOn(first, operator, second),
 	})
 	return q
 }
@@ -822,7 +853,11 @@ type RawQuery[T any] struct {
 	ctx    context.Context
 }
 
-// NewRawQuery creates a new raw query builder
+// NewRawQuery creates a new raw query builder.
+//
+// WARNING: This method executes raw SQL directly. The caller is responsible for
+// preventing SQL injection by using parameterized queries with placeholder arguments.
+// Never concatenate user input directly into the sql string.
 func NewRawQuery[T any](sql string, args ...any) *RawQuery[T] {
 	return &RawQuery[T]{
 		driver: getCurrentDriver(),

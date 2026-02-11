@@ -1,9 +1,11 @@
 package csrf
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
@@ -30,7 +32,7 @@ func New(config *Config) *CSRF {
 
 	// Set default store if none provided
 	if config.Store == nil {
-		config.Store = stores.NewSessionStore()
+		config.Store = stores.NewSessionStore(config.TokenLifetime)
 	}
 
 	return &CSRF{config: config}
@@ -83,7 +85,9 @@ func (c *CSRF) validateToken(r *http.Request) error {
 
 	// Handle single-use tokens
 	if c.config.SingleUse {
-		c.config.Store.Delete(sessionID)
+		if err := c.config.Store.Delete(sessionID); err != nil {
+			log.Printf("csrf: failed to delete single-use token for session %s: %v", sessionID, err)
+		}
 	}
 
 	return nil
@@ -120,8 +124,12 @@ func (c *CSRF) getSessionID(r *http.Request) string {
 		return cookie.Value
 	}
 
-	// Fallback to generating a temporary ID based on request
-	return fmt.Sprintf("temp-%s", r.RemoteAddr)
+	// Generate a random per-request identifier instead of using RemoteAddr
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
+	return "temp-" + hex.EncodeToString(b)
 }
 
 // isExcluded checks if the request should be excluded from CSRF protection
@@ -220,7 +228,7 @@ func (c *CSRF) GetToken(sessionID string) (string, error) {
 // Helper functions
 
 func isSafeMethod(method string) bool {
-	return method == "GET" || method == "HEAD" || method == "OPTIONS" || method == "TRACE"
+	return method == "GET" || method == "HEAD" || method == "OPTIONS"
 }
 
 func matchPath(path, pattern string) bool {

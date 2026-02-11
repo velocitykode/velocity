@@ -408,8 +408,6 @@ func TestInvalidKey(t *testing.T) {
 		key    string
 	}{
 		{"Empty key", "AES-256-CBC", ""},
-		{"Wrong size for AES-128", "AES-128-CBC", "wrongsize"},
-		{"Wrong size for AES-256", "AES-256-CBC", "wrongsize"},
 	}
 
 	for _, tt := range tests {
@@ -422,6 +420,40 @@ func TestInvalidKey(t *testing.T) {
 			_, err := NewEncryptor(config)
 			if err == nil {
 				t.Errorf("Expected error for invalid key")
+			}
+		})
+	}
+}
+
+func TestKeyDerivation(t *testing.T) {
+	// Non-standard-size keys are now accepted and derived via HKDF
+	tests := []struct {
+		name   string
+		cipher string
+		key    string
+	}{
+		{"Short key for AES-128", "AES-128-CBC", "shortkey"},
+		{"Short key for AES-256", "AES-256-CBC", "shortkey"},
+		{"Long key for AES-128", "AES-128-GCM", "this-is-a-much-longer-key-than-required"},
+		{"Long key for AES-256", "AES-256-GCM", "this-is-a-much-longer-key-than-required"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			enc, err := NewEncryptor(Config{Key: tt.key, Cipher: tt.cipher})
+			if err != nil {
+				t.Fatalf("Expected no error, got: %v", err)
+			}
+			ciphertext, err := enc.Encrypt("hello world")
+			if err != nil {
+				t.Fatalf("Encrypt failed: %v", err)
+			}
+			plaintext, err := enc.Decrypt(ciphertext)
+			if err != nil {
+				t.Fatalf("Decrypt failed: %v", err)
+			}
+			if plaintext != "hello world" {
+				t.Errorf("Expected 'hello world', got %q", plaintext)
 			}
 		})
 	}

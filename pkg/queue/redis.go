@@ -2,20 +2,28 @@ package queue
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 )
 
-// RedisConfig holds Redis connection configuration
+// RedisConfig holds Redis connection configuration.
+// The Password field contains sensitive credentials and must not be logged.
 type RedisConfig struct {
 	Host     string
 	Port     string
-	Password string
+	Password string // SENSITIVE: do not log
 	DB       string
+}
+
+// String returns a safe representation with credentials redacted.
+func (c RedisConfig) String() string {
+	return fmt.Sprintf("RedisConfig{Host:%s, Port:%s, DB:%s, Password:[REDACTED]}", c.Host, c.Port, c.DB)
 }
 
 // RedisDriver implements Queue interface using Redis
@@ -25,18 +33,28 @@ type RedisDriver struct {
 	config RedisConfig
 }
 
-// NewRedisDriver creates a new Redis queue driver
+// NewRedisDriver creates a new Redis queue driver.
+// Set REDIS_TLS=true environment variable to enable TLS connections.
 func NewRedisDriver(config RedisConfig) (*RedisDriver, error) {
 	db, err := strconv.Atoi(config.DB)
 	if err != nil {
 		db = 0
 	}
 
-	client := redis.NewClient(&redis.Options{
+	opts := &redis.Options{
 		Addr:     fmt.Sprintf("%s:%s", config.Host, config.Port),
 		Password: config.Password,
 		DB:       db,
-	})
+	}
+
+	// Enable TLS if configured
+	if os.Getenv("REDIS_TLS") == "true" {
+		opts.TLSConfig = &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		}
+	}
+
+	client := redis.NewClient(opts)
 
 	ctx := context.Background()
 
@@ -67,6 +85,16 @@ func (r *RedisDriver) Push(job Job, queueName ...string) error {
 		return fmt.Errorf("failed to marshal payload: %w", err)
 	}
 
+	// Sign the payload for integrity verification
+	if sig := signPayload(data); sig != "" {
+		payload.Signature = sig
+		// Re-marshal with the signature included
+		data, err = json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("failed to marshal signed payload: %w", err)
+		}
+	}
+
 	if err := r.client.RPush(r.ctx, queueKey, data).Err(); err != nil {
 		return err
 	}
@@ -89,6 +117,15 @@ func (r *RedisDriver) PushDelayed(job Job, delay time.Duration, queueName ...str
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	// Sign the payload for integrity verification
+	if sig := signPayload(data); sig != "" {
+		payload.Signature = sig
+		data, err = json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("failed to marshal signed payload: %w", err)
+		}
 	}
 
 	score := float64(time.Now().Add(delay).Unix())
@@ -129,6 +166,14 @@ func (r *RedisDriver) Pop(queueName string) (Job, error) {
 	var payload Payload
 	if err := json.Unmarshal([]byte(result[1]), &payload); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal payload: %w", err)
+	}
+
+	// Verify payload integrity if signing is enabled
+	sig := payload.Signature
+	payload.Signature = "" // Remove signature before verification
+	verifyData, _ := json.Marshal(payload)
+	if err := verifyPayload(verifyData, sig); err != nil {
+		return nil, fmt.Errorf("queue integrity check failed: %w", err)
 	}
 
 	// Deserialize the job using the registry

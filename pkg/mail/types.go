@@ -1,6 +1,10 @@
 package mail
 
-import "context"
+import (
+	"context"
+	"fmt"
+	netmail "net/mail"
+)
 
 // Mailer interface that all mail drivers must implement
 type Mailer interface {
@@ -20,6 +24,19 @@ const (
 type Address struct {
 	Email string
 	Name  string
+}
+
+// NewAddress creates and validates an email address.
+// Returns an error if the email format is invalid.
+func NewAddress(email string, name ...string) (Address, error) {
+	if _, err := netmail.ParseAddress(email); err != nil {
+		return Address{}, fmt.Errorf("mail: invalid email address %q: %w", email, err)
+	}
+	addr := Address{Email: email}
+	if len(name) > 0 {
+		addr.Name = name[0]
+	}
+	return addr, nil
 }
 
 // String returns the formatted email address

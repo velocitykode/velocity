@@ -167,7 +167,10 @@ func TestMessageAttachFile(t *testing.T) {
 	}
 	tmpFile.Close()
 
-	msg := NewMessage().AttachFile(tmpFile.Name())
+	msg, err := NewMessage().AttachFile(tmpFile.Name())
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
 
 	attachments := msg.GetAttachments()
 	if len(attachments) != 1 {
@@ -179,14 +182,18 @@ func TestMessageAttachFile(t *testing.T) {
 	}
 }
 
-func TestMessageAttachFilePanicsOnError(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("Expected panic when attaching non-existent file")
-		}
-	}()
+func TestMessageAttachFileReturnsErrorOnMissing(t *testing.T) {
+	_, err := NewMessage().AttachFile("/nonexistent/file.txt")
+	if err == nil {
+		t.Error("Expected error when attaching non-existent file")
+	}
+}
 
-	NewMessage().AttachFile("/nonexistent/file.txt")
+func TestMessageAttachFileRejectsTraversal(t *testing.T) {
+	_, err := NewMessage().AttachFile("../../etc/passwd")
+	if err == nil {
+		t.Error("Expected error for path traversal")
+	}
 }
 
 func TestMessageHeader(t *testing.T) {
@@ -323,7 +330,10 @@ func TestMessageTemplate(t *testing.T) {
 	defer SetTemplatePath("resources/views/emails") // Restore default
 
 	data := struct{ Name string }{Name: "World"}
-	msg := NewMessage().Template("test", data)
+	msg, err := NewMessage().Template("test", data)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
 
 	expected := "<h1>Hello World!</h1>"
 	if msg.GetHTMLBody() != expected {
@@ -331,12 +341,16 @@ func TestMessageTemplate(t *testing.T) {
 	}
 }
 
-func TestMessageTemplatePanicsOnError(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("Expected panic when template file not found")
-		}
-	}()
+func TestMessageTemplateReturnsErrorOnMissing(t *testing.T) {
+	_, err := NewMessage().Template("nonexistent", nil)
+	if err == nil {
+		t.Error("Expected error when template file not found")
+	}
+}
 
-	NewMessage().Template("nonexistent", nil)
+func TestMessageTemplateRejectsTraversal(t *testing.T) {
+	_, err := NewMessage().Template("../../etc/passwd", nil)
+	if err == nil {
+		t.Error("Expected error for path traversal in template name")
+	}
 }

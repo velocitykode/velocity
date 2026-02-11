@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 )
 
 // Migrator handles migration execution for a specific database connection
@@ -222,14 +224,15 @@ func (m *Migrator) CreateTable(name string, fn func(*TableBuilder)) error {
 
 // DropTable drops a database table
 func (m *Migrator) DropTable(name string) error {
+	quoted := quoteIdentifier(name, m.driver)
 	var sql string
 
 	switch m.driver {
 	case "postgres":
 		// Postgres needs CASCADE to drop dependent objects
-		sql = "DROP TABLE IF EXISTS " + name + " CASCADE"
+		sql = "DROP TABLE IF EXISTS " + quoted + " CASCADE"
 	default:
-		sql = "DROP TABLE IF EXISTS " + name
+		sql = "DROP TABLE IF EXISTS " + quoted
 	}
 
 	_, err := m.db.Exec(sql)
@@ -240,7 +243,11 @@ func (m *Migrator) DropTable(name string) error {
 	return nil
 }
 
-// Raw executes arbitrary SQL
+// Raw executes arbitrary SQL.
+//
+// WARNING: This method executes raw SQL directly. The caller is responsible for
+// preventing SQL injection by using parameterized queries with placeholder arguments.
+// Never concatenate user input directly into the sql string.
 func (m *Migrator) Raw(sql string) error {
 	_, err := m.db.Exec(sql)
 	if err != nil {
@@ -257,7 +264,7 @@ func (m *Migrator) AddColumn(table, column string, fn func(*ColumnBuilder)) erro
 	}
 	fn(builder)
 
-	sql := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", table, builder.ToSQL())
+	sql := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", quoteIdentifier(table, m.driver), builder.ToSQL())
 	_, err := m.db.Exec(sql)
 	if err != nil {
 		return fmt.Errorf("failed to add column %s to table %s: %w", column, table, err)
@@ -268,19 +275,9 @@ func (m *Migrator) AddColumn(table, column string, fn func(*ColumnBuilder)) erro
 // DropColumn removes a column from a table
 // Note: SQLite does not support DROP COLUMN prior to version 3.35.0
 func (m *Migrator) DropColumn(table, column string) error {
-	var sql string
-
-	switch m.driver {
-	case "postgres":
-		sql = fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", table, column)
-	case "mysql":
-		sql = fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", table, column)
-	case "sqlite":
-		// SQLite 3.35.0+ supports DROP COLUMN
-		sql = fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", table, column)
-	default:
-		sql = fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", table, column)
-	}
+	quotedTable := quoteIdentifier(table, m.driver)
+	quotedColumn := quoteIdentifier(column, m.driver)
+	sql := fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", quotedTable, quotedColumn)
 
 	_, err := m.db.Exec(sql)
 	if err != nil {
@@ -818,7 +815,7 @@ func (t *TableBuilder) ToSQL() string {
 }
 
 func (t *TableBuilder) toSQLiteSyntax() string {
-	sql := "CREATE TABLE " + t.tableName + " (\n"
+	sql := "CREATE TABLE " + quoteIdentifier(t.tableName, t.driver) + " (\n"
 
 	for i, col := range t.columns {
 		sql += "  " + col.Name + " "
@@ -896,7 +893,7 @@ func (t *TableBuilder) toSQLiteSyntax() string {
 }
 
 func (t *TableBuilder) toPostgresSyntax() string {
-	sql := "CREATE TABLE " + t.tableName + " (\n"
+	sql := "CREATE TABLE " + quoteIdentifier(t.tableName, t.driver) + " (\n"
 
 	for i, col := range t.columns {
 		sql += "  " + col.Name + " "
@@ -979,7 +976,7 @@ func (t *TableBuilder) toPostgresSyntax() string {
 }
 
 func (t *TableBuilder) toMySQLSyntax() string {
-	sql := "CREATE TABLE " + t.tableName + " (\n"
+	sql := "CREATE TABLE " + quoteIdentifier(t.tableName, t.driver) + " (\n"
 
 	for i, col := range t.columns {
 		sql += "  " + col.Name + " "
@@ -1062,7 +1059,7 @@ func (t *TableBuilder) toMySQLSyntax() string {
 func formatDefaultValue(value interface{}, colType string, driver string) string {
 	switch v := value.(type) {
 	case string:
-		return "'" + v + "'"
+		return "'" + strings.ReplaceAll(v, "'", "''") + "'"
 	case int, int64, int32:
 		return fmt.Sprintf("%d", v)
 	case bool:
@@ -1080,5 +1077,20 @@ func formatDefaultValue(value interface{}, colType string, driver string) string
 		return "0"
 	default:
 		return fmt.Sprintf("%v", v)
+	}
+}
+
+// ddlIdentifierRegex validates SQL identifiers for DDL statements
+var ddlIdentifierRegex = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+// quoteIdentifier quotes a database identifier for DDL statements based on driver
+func quoteIdentifier(name, driver string) string {
+	switch driver {
+	case "mysql", "sqlite":
+		return "`" + strings.ReplaceAll(name, "`", "``") + "`"
+	case "postgres":
+		return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+	default:
+		return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 	}
 }

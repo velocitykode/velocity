@@ -1,8 +1,10 @@
 package auth
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 // authChecker is an internal variable that can be overridden for testing
@@ -26,11 +28,26 @@ func RedirectIfAuthenticated(redirectTo string) func(http.Handler) http.Handler 
 	return Guest(redirectTo)
 }
 
+// wantsJSON returns true if the request expects a JSON response.
+func wantsJSON(r *http.Request) bool {
+	if r.Header.Get("X-Requested-With") == "XMLHttpRequest" {
+		return true
+	}
+	accept := r.Header.Get("Accept")
+	return strings.Contains(accept, "application/json")
+}
+
 // Middleware that requires authentication
 func Middleware(redirectTo string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if !authChecker(r) {
+				if wantsJSON(r) {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusUnauthorized)
+					json.NewEncoder(w).Encode(map[string]string{"error": "Unauthenticated."})
+					return
+				}
 				// Store intended URL for redirect after login
 				redirectURL := r.URL.Path
 				if r.URL.RawQuery != "" {

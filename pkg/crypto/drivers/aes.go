@@ -13,11 +13,14 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"golang.org/x/crypto/hkdf"
 )
 
 // AESDriver implements AES encryption with CBC and GCM modes
 type AESDriver struct {
-	key          []byte   // Primary encryption key
+	key          []byte   // Primary encryption key (used for GCM which provides its own auth)
+	hmacKey      []byte   // Derived HMAC key for CBC mode (separate from encryption key)
 	previousKeys [][]byte // Previous keys for rotation
 	cipher       string   // Cipher mode (AES-128-CBC, AES-256-CBC, AES-128-GCM, AES-256-GCM)
 	keySize      int      // Key size in bytes
@@ -26,7 +29,6 @@ type AESDriver struct {
 // NewAESDriver creates a new AES driver
 func NewAESDriver(key []byte, previousKeys [][]byte, cipher string) (*AESDriver, error) {
 	d := &AESDriver{
-		key:          key,
 		previousKeys: previousKeys,
 		cipher:       strings.ToUpper(cipher),
 	}
@@ -46,7 +48,30 @@ func NewAESDriver(key []byte, previousKeys [][]byte, cipher string) (*AESDriver,
 		return nil, fmt.Errorf("invalid key size for %s: expected %d bytes, got %d", cipher, d.keySize, len(key))
 	}
 
+	// Derive separate encryption and HMAC subkeys via HKDF
+	encKey, err := deriveSubkey(key, d.keySize, []byte("encryption"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive encryption key: %w", err)
+	}
+	hmacKey, err := deriveSubkey(key, 32, []byte("hmac"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive hmac key: %w", err)
+	}
+
+	d.key = encKey
+	d.hmacKey = hmacKey
+
 	return d, nil
+}
+
+// deriveSubkey derives a subkey from a master key using HKDF-SHA256.
+func deriveSubkey(master []byte, size int, info []byte) ([]byte, error) {
+	r := hkdf.New(sha256.New, master, nil, info)
+	out := make([]byte, size)
+	if _, err := io.ReadFull(r, out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // Encrypt encrypts plaintext
@@ -79,15 +104,20 @@ func (d *AESDriver) DecryptBytes(payload string) ([]byte, error) {
 		return nil, err
 	}
 
-	// Try current key first
-	plaintext, err := d.decryptWithKey(p, d.key)
+	// Try current key first (already-derived enc + hmac subkeys)
+	plaintext, err := d.decryptWithKeys(p, d.key, d.hmacKey)
 	if err == nil {
 		return plaintext, nil
 	}
 
-	// Try previous keys for rotation support
-	for _, key := range d.previousKeys {
-		plaintext, err = d.decryptWithKey(p, key)
+	// Try previous keys for rotation support (derive subkeys from each master key)
+	for _, masterKey := range d.previousKeys {
+		encKey, ekErr := deriveSubkey(masterKey, d.keySize, []byte("encryption"))
+		hk, hkErr := deriveSubkey(masterKey, 32, []byte("hmac"))
+		if ekErr != nil || hkErr != nil {
+			continue
+		}
+		plaintext, err = d.decryptWithKeys(p, encKey, hk)
 		if err == nil {
 			return plaintext, nil
 		}
@@ -178,22 +208,25 @@ func (d *AESDriver) encryptGCM(plaintext []byte) (string, error) {
 	return serializePayload(p)
 }
 
-// decryptWithKey attempts to decrypt with a specific key
-func (d *AESDriver) decryptWithKey(p *Payload, key []byte) ([]byte, error) {
+// decryptWithKeys attempts to decrypt with specific encryption and HMAC keys.
+func (d *AESDriver) decryptWithKeys(p *Payload, encKey, hmacKey []byte) ([]byte, error) {
 	if strings.Contains(d.cipher, "GCM") {
-		return d.decryptGCMWithKey(p, key)
+		return d.decryptGCMWithKey(p, encKey)
 	}
-	return d.decryptCBCWithKey(p, key)
+	return d.decryptCBCWithKey(p, encKey, hmacKey)
 }
 
-// decryptCBCWithKey decrypts CBC mode with a specific key
-func (d *AESDriver) decryptCBCWithKey(p *Payload, key []byte) ([]byte, error) {
-	// Verify MAC if present
-	if p.MAC != "" {
-		expectedMAC := d.generateMACWithKey(p.Value, p.IV, key)
-		if !secureCompare(p.MAC, expectedMAC) {
-			return nil, errors.New("MAC verification failed")
-		}
+// decryptCBCWithKey decrypts CBC mode with separate encryption and HMAC keys
+func (d *AESDriver) decryptCBCWithKey(p *Payload, encKey, hmacKey []byte) ([]byte, error) {
+	// MAC is required for CBC decryption to ensure integrity
+	if p.MAC == "" {
+		return nil, errors.New("MAC required for CBC decryption")
+	}
+
+	// Verify MAC using the dedicated HMAC key
+	expectedMAC := generateMACWith(p.Value, p.IV, hmacKey)
+	if !secureCompare(p.MAC, expectedMAC) {
+		return nil, errors.New("MAC verification failed")
 	}
 
 	// Decode components
@@ -208,7 +241,7 @@ func (d *AESDriver) decryptCBCWithKey(p *Payload, key []byte) ([]byte, error) {
 	}
 
 	// Create cipher block
-	block, err := aes.NewCipher(key)
+	block, err := aes.NewCipher(encKey)
 	if err != nil {
 		return nil, err
 	}
@@ -269,14 +302,14 @@ func (d *AESDriver) decryptGCMWithKey(p *Payload, key []byte) ([]byte, error) {
 	return plaintext, nil
 }
 
-// generateMAC generates HMAC for CBC mode
+// generateMAC generates HMAC for CBC mode using the derived HMAC key
 func (d *AESDriver) generateMAC(value, iv string) string {
-	return d.generateMACWithKey(value, iv, d.key)
+	return generateMACWith(value, iv, d.hmacKey)
 }
 
-// generateMACWithKey generates HMAC with a specific key
-func (d *AESDriver) generateMACWithKey(value, iv string, key []byte) string {
-	mac := hmac.New(sha256.New, key)
+// generateMACWith generates HMAC with the provided HMAC key
+func generateMACWith(value, iv string, hmacKey []byte) string {
+	mac := hmac.New(sha256.New, hmacKey)
 	mac.Write([]byte(fmt.Sprintf("base64:%s.%s", value, iv)))
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
@@ -297,7 +330,15 @@ func pkcs7Unpad(data []byte) ([]byte, error) {
 		return nil, errors.New("invalid padding")
 	}
 	padding := int(data[len(data)-1])
-	if padding == 0 || padding > len(data) {
+	if padding == 0 || padding > aes.BlockSize || padding > len(data) {
+		return nil, errors.New("invalid padding")
+	}
+	// Verify all padding bytes match using constant-time comparison
+	expected := make([]byte, padding)
+	for i := range expected {
+		expected[i] = byte(padding)
+	}
+	if subtle.ConstantTimeCompare(data[len(data)-padding:], expected) != 1 {
 		return nil, errors.New("invalid padding")
 	}
 	return data[:len(data)-padding], nil

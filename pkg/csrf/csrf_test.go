@@ -36,7 +36,7 @@ func TestMiddleware_SafeMethods(t *testing.T) {
 	}))
 
 	// Test safe methods (should pass without token)
-	safeMethods := []string{"GET", "HEAD", "OPTIONS", "TRACE"}
+	safeMethods := []string{"GET", "HEAD", "OPTIONS"}
 
 	for _, method := range safeMethods {
 		t.Run(method, func(t *testing.T) {

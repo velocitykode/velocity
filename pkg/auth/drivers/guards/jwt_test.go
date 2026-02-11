@@ -96,7 +96,7 @@ func TestNewJWTGuard(t *testing.T) {
 			name:     "creates guard with empty algorithm defaults to HS256",
 			provider: &mockJWTUserProvider{},
 			config: auth.JWTConfig{
-				Secret: "test-secret-key",
+				Secret: "test-secret-key-for-jwt-minimum-32b",
 				TTL:    60,
 			},
 		},
@@ -104,7 +104,7 @@ func TestNewJWTGuard(t *testing.T) {
 			name:     "creates guard with zero TTL defaults to 60",
 			provider: &mockJWTUserProvider{},
 			config: auth.JWTConfig{
-				Secret: "test-secret-key",
+				Secret: "test-secret-key-for-jwt-minimum-32b",
 			},
 		},
 	}
@@ -756,22 +756,22 @@ func TestJWTGuard_getTokenFromRequest(t *testing.T) {
 			wantToken: "my-jwt-token",
 		},
 		{
-			name: "extracts bearer token case insensitive",
+			name: "rejects lowercase bearer (case sensitive)",
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("GET", "/", nil)
 				req.Header.Set("Authorization", "bearer my-jwt-token")
 				return req
 			},
-			wantToken: "my-jwt-token",
+			wantToken: "",
 		},
 		{
-			name: "extracts plain token from Authorization header",
+			name: "rejects plain token in Authorization header",
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("GET", "/", nil)
 				req.Header.Set("Authorization", "plain-token")
 				return req
 			},
-			wantToken: "plain-token",
+			wantToken: "",
 		},
 		{
 			name: "extracts token from X-Auth-Token header",
@@ -783,12 +783,21 @@ func TestJWTGuard_getTokenFromRequest(t *testing.T) {
 			wantToken: "x-auth-token-value",
 		},
 		{
-			name: "extracts token from query parameter",
+			name: "extracts token from query parameter for WebSocket requests",
+			setupReq: func() *http.Request {
+				req := httptest.NewRequest("GET", "/?token=query-token", nil)
+				req.Header.Set("Upgrade", "websocket")
+				return req
+			},
+			wantToken: "query-token",
+		},
+		{
+			name: "rejects query parameter for non-WebSocket requests",
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("GET", "/?token=query-token", nil)
 				return req
 			},
-			wantToken: "query-token",
+			wantToken: "",
 		},
 		{
 			name: "extracts token from POST form value",
@@ -828,7 +837,7 @@ func TestJWTGuard_getTokenFromRequest(t *testing.T) {
 			wantToken: "x-auth-token",
 		},
 		{
-			name: "query parameter takes precedence over form value for POST",
+			name: "query parameter ignored for non-WebSocket POST (falls through to form)",
 			setupReq: func() *http.Request {
 				form := url.Values{}
 				form.Set("token", "form-token")
@@ -836,7 +845,7 @@ func TestJWTGuard_getTokenFromRequest(t *testing.T) {
 				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 				return req
 			},
-			wantToken: "query-token",
+			wantToken: "form-token",
 		},
 		{
 			name: "does not check form value for GET request",
@@ -850,24 +859,22 @@ func TestJWTGuard_getTokenFromRequest(t *testing.T) {
 			wantToken: "",
 		},
 		{
-			name: "handles malformed Bearer token",
+			name: "rejects malformed Bearer token (no space after Bearer)",
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("GET", "/", nil)
 				req.Header.Set("Authorization", "Bearer")
 				return req
 			},
-			wantToken: "Bearer",
+			wantToken: "",
 		},
 		{
-			name: "handles Bearer with extra spaces",
+			name: "handles Bearer with extra spaces (preserves token as-is after prefix)",
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("GET", "/", nil)
 				req.Header.Set("Authorization", "Bearer  token-with-extra-space")
 				return req
 			},
-			// When there are extra spaces, the bearer format isn't detected (needs exactly 2 parts)
-			// so the entire header value is returned as a plain token
-			wantToken: "Bearer  token-with-extra-space",
+			wantToken: " token-with-extra-space",
 		},
 	}
 

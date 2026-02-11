@@ -3,13 +3,16 @@ package drivers
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -22,13 +25,20 @@ func init() {
 	})
 }
 
-// MailgunDriver sends emails via Mailgun API
+// MailgunDriver sends emails via Mailgun API.
+// The apiKey and webhookSigningKey fields contain sensitive credentials and must not be logged.
 type MailgunDriver struct {
-	domain   string
-	apiKey   string
-	endpoint string
-	client   *http.Client
-	mu       sync.Mutex
+	domain            string
+	apiKey            string // SENSITIVE: do not log
+	endpoint          string
+	webhookSigningKey string // SENSITIVE: do not log
+	client            *http.Client
+	mu                sync.Mutex
+}
+
+// String returns a safe representation with credentials redacted.
+func (d *MailgunDriver) String() string {
+	return fmt.Sprintf("MailgunDriver{Domain:%s, Endpoint:%s, APIKey:[REDACTED]}", d.domain, d.endpoint)
 }
 
 // NewMailgunDriver creates a new Mailgun driver
@@ -48,10 +58,13 @@ func NewMailgunDriver() (*MailgunDriver, error) {
 		endpoint = "https://api.mailgun.net/v3"
 	}
 
+	webhookSigningKey := os.Getenv("MAILGUN_WEBHOOK_SIGNING_KEY")
+
 	return &MailgunDriver{
-		domain:   domain,
-		apiKey:   apiKey,
-		endpoint: endpoint,
+		domain:            domain,
+		apiKey:            apiKey,
+		endpoint:          endpoint,
+		webhookSigningKey: webhookSigningKey,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -217,9 +230,16 @@ func (d *MailgunDriver) ParseWebhook(body []byte) (map[string]interface{}, error
 	return event, nil
 }
 
-// VerifyWebhookSignature verifies Mailgun webhook signature (for future use)
+// VerifyWebhookSignature verifies a Mailgun webhook signature using HMAC-SHA256.
+// The signature is computed as HMAC-SHA256(webhookSigningKey, timestamp+token).
 func (d *MailgunDriver) VerifyWebhookSignature(timestamp, token, signature string) bool {
-	// Implementation would use HMAC verification
-	// This is a placeholder for webhook support
-	return strings.TrimSpace(signature) != ""
+	if d.webhookSigningKey == "" || timestamp == "" || token == "" || signature == "" {
+		return false
+	}
+
+	mac := hmac.New(sha256.New, []byte(d.webhookSigningKey))
+	mac.Write([]byte(timestamp + token))
+	expected := hex.EncodeToString(mac.Sum(nil))
+
+	return subtle.ConstantTimeCompare([]byte(expected), []byte(signature)) == 1
 }

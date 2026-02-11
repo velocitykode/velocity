@@ -176,6 +176,7 @@ func (s *Server) Build() error {
 
 	// Enable reflection if configured
 	if s.enableReflection {
+		log.Warn("gRPC reflection is enabled — disable in production (GRPC_REFLECTION=false)")
 		reflection.Register(s.grpcServer)
 	}
 

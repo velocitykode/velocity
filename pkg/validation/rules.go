@@ -64,6 +64,7 @@ func registerBuiltInRules() {
 	// String rules from rules package
 	RegisterRule("email", rules.EmailRule)
 	RegisterRule("url", rules.URLRule)
+	RegisterRule("url_public", rules.URLPublicRule)
 	RegisterRule("alpha", rules.AlphaRule)
 	RegisterRule("alpha_dash", rules.AlphaDashRule)
 	RegisterRule("alpha_num", rules.AlphaNumRule)

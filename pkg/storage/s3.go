@@ -94,15 +94,22 @@ func (d *S3Driver) Put(path string, contents []byte) error {
 	return d.PutStream(path, reader)
 }
 
+// maxS3StreamSize is the default maximum stream size for S3 uploads (100MB)
+const maxS3StreamSize = 100 * 1024 * 1024
+
 // PutStream stores a stream at the given path
 func (d *S3Driver) PutStream(path string, stream io.Reader) error {
 	ctx := context.Background()
 	path = d.cleanPath(path)
 
-	// Read content to detect mime type
-	content, err := io.ReadAll(stream)
+	// Limit stream size to prevent unbounded memory usage
+	limited := io.LimitReader(stream, maxS3StreamSize+1)
+	content, err := io.ReadAll(limited)
 	if err != nil {
 		return fmt.Errorf("failed to read stream: %w", err)
+	}
+	if int64(len(content)) > maxS3StreamSize {
+		return fmt.Errorf("stream exceeds maximum size of %d bytes", maxS3StreamSize)
 	}
 
 	input := &s3.PutObjectInput{
@@ -496,12 +503,21 @@ func (d *S3Driver) TemporaryURL(path string, expiration time.Duration) (string, 
 	return result.URL, nil
 }
 
-// cleanPath cleans and normalizes a path for S3
+// cleanPath cleans and normalizes a path for S3.
+// Rejects paths containing ".." components to prevent path traversal.
 func (d *S3Driver) cleanPath(path string) string {
 	// Remove leading/trailing slashes
 	path = strings.Trim(path, "/")
 	// Ensure forward slashes
 	path = strings.ReplaceAll(path, "\\", "/")
+
+	// Reject path traversal
+	for _, segment := range strings.Split(path, "/") {
+		if segment == ".." {
+			return ""
+		}
+	}
+
 	return path
 }
 

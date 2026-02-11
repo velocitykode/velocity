@@ -98,12 +98,11 @@ func (c *Client) handleMessage(msg Message) {
 	c.Server.mu.RUnlock()
 
 	if !ok {
-		// No handler registered, send error
+		// No handler registered — use generic error to avoid reflecting user input
 		c.Send <- Message{
 			Type: "error",
 			Data: map[string]interface{}{
-				"message": "Unknown message type: " + msg.Type,
-				"type":    msg.Type,
+				"message": "unknown message type",
 			},
 		}
 		return
@@ -115,12 +114,11 @@ func (c *Client) handleMessage(msg Message) {
 		if c.Server.onError != nil {
 			c.Server.onError(c, err)
 		} else {
-			// Send error message
+			// Send generic error — avoid leaking internal error details to clients
 			c.Send <- Message{
 				Type: "error",
 				Data: map[string]interface{}{
-					"message": err.Error(),
-					"type":    msg.Type,
+					"message": "internal error",
 				},
 			}
 		}

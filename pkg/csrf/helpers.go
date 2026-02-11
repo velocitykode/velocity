@@ -3,6 +3,8 @@ package csrf
 import (
 	"fmt"
 	"html/template"
+	"log"
+	"net/http"
 
 	"github.com/velocitykode/velocity/pkg/router"
 )
@@ -73,8 +75,16 @@ func Middleware() router.MiddlewareFunc {
 			if globalCSRF == nil {
 				return next(c)
 			}
-			// Wrap the Context-based handler for the CSRF middleware
-			globalCSRF.Middleware(router.Wrap(next)).ServeHTTP(c.Response, c.Request)
+			// Track whether the inner handler was called (CSRF passed)
+			var called bool
+			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				router.Wrap(next).ServeHTTP(w, r)
+			})
+			globalCSRF.Middleware(inner).ServeHTTP(c.Response, c.Request)
+			if !called {
+				log.Printf("csrf: request blocked for %s %s", c.Request.Method, c.Request.URL.Path)
+			}
 			return nil
 		}
 	}

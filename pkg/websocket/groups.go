@@ -27,7 +27,7 @@ func (s *Server) JoinGroup(clientID, groupName string) error {
 	client.Groups[groupName] = true
 	client.mu.Unlock()
 
-	log.Printf("Client %s joined group %s", clientID, groupName)
+	log.Printf("Client %s joined group %s", sanitizeForLog(clientID), sanitizeForLog(groupName))
 	return nil
 }
 
@@ -54,7 +54,7 @@ func (s *Server) LeaveGroup(clientID, groupName string) error {
 	delete(client.Groups, groupName)
 	client.mu.Unlock()
 
-	log.Printf("Client %s left group %s", clientID, groupName)
+	log.Printf("Client %s left group %s", sanitizeForLog(clientID), sanitizeForLog(groupName))
 	return nil
 }
 

@@ -201,13 +201,14 @@ func (m *Migrator) getAllTables() ([]string, error) {
 
 // dropTable drops a table
 func (m *Migrator) dropTable(table string) error {
+	quoted := quoteIdentifier(table, m.driver)
 	var query string
 
 	switch m.driver {
 	case "postgres":
-		query = fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", table)
+		query = fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", quoted)
 	case "sqlite", "mysql":
-		query = fmt.Sprintf("DROP TABLE IF EXISTS %s", table)
+		query = fmt.Sprintf("DROP TABLE IF EXISTS %s", quoted)
 	default:
 		return fmt.Errorf("unsupported driver: %s", m.driver)
 	}

@@ -2,8 +2,10 @@ package drivers
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -15,13 +17,23 @@ type RedisStore struct {
 	prefix string
 }
 
-// NewRedisStore creates a new Redis cache store
+// NewRedisStore creates a new Redis cache store.
+// Set REDIS_TLS=true environment variable to enable TLS connections.
 func NewRedisStore(prefix string, host string, port int, password string, database int) (*RedisStore, error) {
-	client := redis.NewClient(&redis.Options{
+	opts := &redis.Options{
 		Addr:     fmt.Sprintf("%s:%d", host, port),
 		Password: password,
 		DB:       database,
-	})
+	}
+
+	// Enable TLS if configured
+	if os.Getenv("REDIS_TLS") == "true" {
+		opts.TLSConfig = &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		}
+	}
+
+	client := redis.NewClient(opts)
 
 	// Test the connection
 	ctx := context.Background()
@@ -97,11 +109,32 @@ func (s *RedisStore) Forget(key string) error {
 	return s.client.Del(ctx, s.prefixedKey(key)).Err()
 }
 
-// Flush removes all values from the cache
-// WARNING: This flushes the entire Redis database, not just prefixed keys
+// Flush removes all cache keys matching the configured prefix.
+// Uses SCAN + DEL to avoid destroying the entire Redis database.
 func (s *RedisStore) Flush() error {
 	ctx := context.Background()
-	return s.client.FlushDB(ctx).Err()
+	pattern := s.prefix + ":*"
+	if s.prefix == "" {
+		pattern = "*"
+	}
+
+	var cursor uint64
+	for {
+		keys, nextCursor, err := s.client.Scan(ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			return fmt.Errorf("failed to scan cache keys: %w", err)
+		}
+		if len(keys) > 0 {
+			if err := s.client.Del(ctx, keys...).Err(); err != nil {
+				return fmt.Errorf("failed to delete cache keys: %w", err)
+			}
+		}
+		cursor = nextCursor
+		if cursor == 0 {
+			break
+		}
+	}
+	return nil
 }
 
 // Has checks if a key exists in the cache

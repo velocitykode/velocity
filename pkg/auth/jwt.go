@@ -5,10 +5,68 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
+
+// BlacklistStore defines the interface for JWT token blacklist storage.
+// Implement with Redis or another persistent store for production use.
+type BlacklistStore interface {
+	// Add adds a token JTI to the blacklist with an expiration time.
+	Add(jti string, expiresAt time.Time)
+	// IsBlacklisted checks whether a token JTI has been blacklisted.
+	IsBlacklisted(jti string) bool
+	// Cleanup removes expired entries.
+	Cleanup()
+}
+
+// InMemoryBlacklistStore is the default in-memory blacklist (not suitable for multi-instance deployments).
+type InMemoryBlacklistStore struct {
+	mu      sync.RWMutex
+	entries map[string]time.Time
+}
+
+// NewInMemoryBlacklistStore creates a new in-memory blacklist store.
+func NewInMemoryBlacklistStore() *InMemoryBlacklistStore {
+	return &InMemoryBlacklistStore{
+		entries: make(map[string]time.Time),
+	}
+}
+
+func (s *InMemoryBlacklistStore) Add(jti string, expiresAt time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.entries[jti] = expiresAt
+}
+
+func (s *InMemoryBlacklistStore) IsBlacklisted(jti string) bool {
+	s.mu.RLock()
+	expiresAt, exists := s.entries[jti]
+	s.mu.RUnlock()
+	if !exists {
+		return false
+	}
+	if time.Now().After(expiresAt) {
+		s.mu.Lock()
+		delete(s.entries, jti)
+		s.mu.Unlock()
+		return false
+	}
+	return true
+}
+
+func (s *InMemoryBlacklistStore) Cleanup() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	for jti, expiresAt := range s.entries {
+		if now.After(expiresAt) {
+			delete(s.entries, jti)
+		}
+	}
+}
 
 // JWTConfig holds JWT configuration
 type JWTConfig struct {
@@ -16,25 +74,37 @@ type JWTConfig struct {
 	Algorithm        string
 	TTL              int // Minutes
 	RefreshTTL       int // Minutes
+	Issuer           string // Optional JWT issuer (iss claim)
+	Audience         string // Optional JWT audience (aud claim)
 	BlacklistEnabled bool
+	BlacklistStore   BlacklistStore // Optional persistent store; defaults to in-memory
 }
 
 // Claims represents JWT claims
 type Claims struct {
 	jwt.RegisteredClaims
-	UserID interface{} `json:"uid,omitempty"`
-	Email  string      `json:"email,omitempty"`
-	Role   string      `json:"role,omitempty"`
+	UserID    interface{} `json:"uid,omitempty"`
+	Email     string      `json:"email,omitempty"`
+	Role      string      `json:"role,omitempty"`
+	TokenType string      `json:"type,omitempty"` // "access" or "refresh"
 }
 
 // JWTManager handles JWT operations
 type JWTManager struct {
-	config    JWTConfig
-	blacklist map[string]time.Time // Simple in-memory blacklist
+	config         JWTConfig
+	blacklistStore BlacklistStore
 }
 
-// NewJWTManager creates a new JWT manager
+// NewJWTManager creates a new JWT manager.
+// Panics if Secret is empty or shorter than 32 bytes.
 func NewJWTManager(config JWTConfig) *JWTManager {
+	if config.Secret == "" {
+		panic("auth: JWT secret must not be empty")
+	}
+	if len(config.Secret) < 32 {
+		panic("auth: JWT secret must be at least 32 bytes")
+	}
+
 	if config.Algorithm == "" {
 		config.Algorithm = "HS256"
 	}
@@ -45,10 +115,20 @@ func NewJWTManager(config JWTConfig) *JWTManager {
 		config.RefreshTTL = 20160 // Default 2 weeks
 	}
 
-	return &JWTManager{
-		config:    config,
-		blacklist: make(map[string]time.Time),
+	store := config.BlacklistStore
+	if store == nil {
+		store = NewInMemoryBlacklistStore()
 	}
+
+	return &JWTManager{
+		config:         config,
+		blacklistStore: store,
+	}
+}
+
+// SetBlacklistStore replaces the blacklist store (e.g., swap in a Redis-backed store).
+func (j *JWTManager) SetBlacklistStore(store BlacklistStore) {
+	j.blacklistStore = store
 }
 
 // GenerateToken generates a JWT token for a user
@@ -66,8 +146,13 @@ func (j *JWTManager) GenerateToken(user Authenticatable, customClaims ...map[str
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
 			NotBefore: jwt.NewNumericDate(now),
+			Issuer:    j.config.Issuer,
 		},
-		UserID: user.GetAuthIdentifier(),
+		UserID:    user.GetAuthIdentifier(),
+		TokenType: "access",
+	}
+	if j.config.Audience != "" {
+		claims.Audience = jwt.ClaimStrings{j.config.Audience}
 	}
 
 	// Add custom claims if provided
@@ -104,8 +189,13 @@ func (j *JWTManager) GenerateRefreshToken(user Authenticatable) (string, error) 
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
 			NotBefore: jwt.NewNumericDate(now),
+			Issuer:    j.config.Issuer,
 		},
-		UserID: user.GetAuthIdentifier(),
+		UserID:    user.GetAuthIdentifier(),
+		TokenType: "refresh",
+	}
+	if j.config.Audience != "" {
+		claims.Audience = jwt.ClaimStrings{j.config.Audience}
 	}
 
 	token := jwt.NewWithClaims(j.getSigningMethod(), claims)
@@ -114,13 +204,21 @@ func (j *JWTManager) GenerateRefreshToken(user Authenticatable) (string, error) 
 
 // ValidateToken validates a JWT token
 func (j *JWTManager) ValidateToken(tokenString string) (*Claims, error) {
+	var parserOpts []jwt.ParserOption
+	if j.config.Issuer != "" {
+		parserOpts = append(parserOpts, jwt.WithIssuer(j.config.Issuer))
+	}
+	if j.config.Audience != "" {
+		parserOpts = append(parserOpts, jwt.WithAudience(j.config.Audience))
+	}
+
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
 		// Validate signing method
 		if token.Method.Alg() != j.config.Algorithm {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Method.Alg())
 		}
 		return []byte(j.config.Secret), nil
-	})
+	}, parserOpts...)
 
 	if err != nil {
 		return nil, err
@@ -147,25 +245,37 @@ func (j *JWTManager) RefreshToken(refreshTokenString string, provider UserProvid
 		return "", err
 	}
 
+	// Ensure this is actually a refresh token
+	if claims.TokenType != "refresh" {
+		return "", errors.New("token is not a refresh token")
+	}
+
 	// Get user
 	user, err := provider.FindByID(claims.UserID)
 	if err != nil {
 		return "", err
 	}
 
-	// Blacklist old refresh token
+	// Blacklist old refresh token using its actual expiry
 	if j.config.BlacklistEnabled {
-		j.RevokeToken(claims.ID)
+		j.RevokeToken(claims.ID, claims.ExpiresAt.Time)
 	}
 
 	// Generate new access token
 	return j.GenerateToken(user)
 }
 
-// RevokeToken adds token to blacklist
-func (j *JWTManager) RevokeToken(jti string) {
+// RevokeToken adds token to blacklist. If expiresAt is provided, use it as the
+// blacklist expiry; otherwise falls back to the access token TTL.
+func (j *JWTManager) RevokeToken(jti string, expiresAt ...time.Time) {
 	if j.config.BlacklistEnabled {
-		j.blacklist[jti] = time.Now().Add(time.Duration(j.config.TTL) * time.Minute)
+		var expiry time.Time
+		if len(expiresAt) > 0 && !expiresAt[0].IsZero() {
+			expiry = expiresAt[0]
+		} else {
+			expiry = time.Now().Add(time.Duration(j.config.TTL) * time.Minute)
+		}
+		j.blacklistStore.Add(jti, expiry)
 	}
 }
 
@@ -174,29 +284,12 @@ func (j *JWTManager) IsBlacklisted(jti string) bool {
 	if !j.config.BlacklistEnabled {
 		return false
 	}
-
-	expiresAt, exists := j.blacklist[jti]
-	if !exists {
-		return false
-	}
-
-	// Clean up expired blacklist entries
-	if time.Now().After(expiresAt) {
-		delete(j.blacklist, jti)
-		return false
-	}
-
-	return true
+	return j.blacklistStore.IsBlacklisted(jti)
 }
 
 // CleanupBlacklist removes expired entries from blacklist
 func (j *JWTManager) CleanupBlacklist() {
-	now := time.Now()
-	for jti, expiresAt := range j.blacklist {
-		if now.After(expiresAt) {
-			delete(j.blacklist, jti)
-		}
-	}
+	j.blacklistStore.Cleanup()
 }
 
 // getSigningMethod returns the signing method based on algorithm
@@ -217,13 +310,18 @@ func (j *JWTManager) getSigningMethod() jwt.SigningMethod {
 func generateJTI() string {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("%d", time.Now().UnixNano())
+		panic("auth: failed to generate JWT ID: " + err.Error())
 	}
 	return base64.URLEncoding.EncodeToString(b)
 }
 
-// ParseTokenWithoutValidation parses token without validating signature
-// Useful for extracting claims from expired tokens
+// ParseTokenWithoutValidation parses a token WITHOUT verifying its signature.
+//
+// WARNING: This method is UNSAFE for authentication or authorization decisions.
+// Claims returned by this method have NOT been verified and may have been tampered with.
+// Only use this for non-security-sensitive operations such as extracting claims from
+// expired tokens for logging or token rotation. Never trust the returned claims
+// for granting access or making security decisions.
 func (j *JWTManager) ParseTokenWithoutValidation(tokenString string) (*Claims, error) {
 	token, _, err := jwt.NewParser().ParseUnverified(tokenString, &Claims{})
 	if err != nil {

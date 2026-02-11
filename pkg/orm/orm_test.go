@@ -1,6 +1,7 @@
 package orm
 
 import (
+	"database/sql"
 	"testing"
 	"time"
 )
@@ -82,7 +83,7 @@ func TestTransaction(t *testing.T) {
 	defer Close()
 
 	// Test transaction
-	err = Transaction(func() error {
+	err = Transaction(func(tx *sql.Tx) error {
 		// Transaction operations would go here
 		return nil
 	})
@@ -92,7 +93,7 @@ func TestTransaction(t *testing.T) {
 	}
 
 	// Test transaction rollback
-	err = Transaction(func() error {
+	err = Transaction(func(tx *sql.Tx) error {
 		// Return error to trigger rollback
 		return ErrTransaction
 	})

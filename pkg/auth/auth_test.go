@@ -45,22 +45,24 @@ func TestPasswordHashing(t *testing.T) {
 		t.Error("Should error on empty password")
 	}
 
-	// Test NeedsRehash
-	oldHasher := NewBcryptHasher(4)
+	// Test NeedsRehash — use cost 12 for "current" and cost 10 (minimum secure) for "old"
+	currentHasher := NewBcryptHasher(12)
+	currentHash, _ := currentHasher.Hash(password)
+	oldHasher := NewBcryptHasher(10)
 	oldHash, _ := oldHasher.Hash(password)
 
-	if !hasher.NeedsRehash(oldHash) {
+	if !currentHasher.NeedsRehash(oldHash) {
 		t.Error("Should need rehash for lower cost")
 	}
 
-	if hasher.NeedsRehash(hash) {
+	if currentHasher.NeedsRehash(currentHash) {
 		t.Error("Should not need rehash for same cost")
 	}
 }
 
 func TestJWTGeneration(t *testing.T) {
 	config := JWTConfig{
-		Secret:    "test-secret-key-for-testing",
+		Secret:    "test-secret-key-for-testing-must-be-32",
 		Algorithm: "HS256",
 		TTL:       60,
 	}
@@ -128,7 +130,7 @@ func TestJWTGeneration(t *testing.T) {
 
 func TestJWTBlacklist(t *testing.T) {
 	config := JWTConfig{
-		Secret:           "test-secret",
+		Secret:           "test-secret-key-for-testing-must-be-32",
 		Algorithm:        "HS256",
 		TTL:              60,
 		BlacklistEnabled: true,
@@ -402,7 +404,7 @@ func BenchmarkPasswordVerification(b *testing.B) {
 
 func BenchmarkJWTGeneration(b *testing.B) {
 	config := JWTConfig{
-		Secret:    "benchmark-secret",
+		Secret:    "benchmark-secret-must-be-at-least-32-b",
 		Algorithm: "HS256",
 		TTL:       60,
 	}
@@ -417,7 +419,7 @@ func BenchmarkJWTGeneration(b *testing.B) {
 
 func BenchmarkJWTValidation(b *testing.B) {
 	config := JWTConfig{
-		Secret:    "benchmark-secret",
+		Secret:    "benchmark-secret-must-be-at-least-32-b",
 		Algorithm: "HS256",
 		TTL:       60,
 	}
@@ -543,7 +545,7 @@ func TestJWTAuthFlow(t *testing.T) {
 
 	provider := NewORMUserProvider("User")
 	config := JWTConfig{
-		Secret:    "test-secret",
+		Secret:    "test-secret-key-for-testing-must-be-32",
 		Algorithm: "HS256",
 		TTL:       60,
 	}

@@ -74,18 +74,14 @@ func Register(migration *Migration) {
 
 // All returns all registered migrations sorted by version
 func (r *MigrationRegistry) All() []Migration {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
 	if !r.sorted {
-		r.mu.RUnlock()
-		r.mu.Lock()
 		sort.Slice(r.migrations, func(i, j int) bool {
 			return r.migrations[i].Version < r.migrations[j].Version
 		})
 		r.sorted = true
-		r.mu.Unlock()
-		r.mu.RLock()
 	}
 
 	// Return a copy
