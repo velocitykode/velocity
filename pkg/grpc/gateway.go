@@ -36,6 +36,9 @@ type Gateway struct {
 
 	// Middleware
 	middleware []func(http.Handler) http.Handler
+
+	// configErr holds any error from transport configuration, surfaced at Build() time
+	configErr error
 }
 
 // GatewayRegistrationFunc is called to register handlers with the gateway
@@ -70,7 +73,9 @@ func NewGateway(opts ...GatewayOption) *Gateway {
 
 	// If no transport credentials were configured via options, configure from environment
 	if len(g.dialOptions) == 0 {
-		g.dialOptions = configureGatewayTransport()
+		opts, err := configureGatewayTransport()
+		g.dialOptions = opts
+		g.configErr = err
 	}
 
 	return g
@@ -78,8 +83,9 @@ func NewGateway(opts ...GatewayOption) *Gateway {
 
 // configureGatewayTransport configures gRPC dial credentials from environment variables.
 // Checks GRPC_GATEWAY_TLS_CERT and GRPC_GATEWAY_TLS_KEY for TLS configuration.
-// Falls back to insecure credentials only when GRPC_GATEWAY_INSECURE=true.
-func configureGatewayTransport() []grpc.DialOption {
+// Falls back to insecure credentials only when GRPC_GATEWAY_INSECURE=true is explicitly set.
+// Returns an error if neither TLS nor explicit insecure mode is configured.
+func configureGatewayTransport() ([]grpc.DialOption, error) {
 	certFile := os.Getenv("GRPC_GATEWAY_TLS_CERT")
 	keyFile := os.Getenv("GRPC_GATEWAY_TLS_KEY")
 
@@ -94,19 +100,17 @@ func configureGatewayTransport() []grpc.DialOption {
 		}
 		return []grpc.DialOption{
 			grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
-		}
+		}, nil
 	}
 
 	if os.Getenv("GRPC_GATEWAY_INSECURE") == "true" {
+		log.Warn("gRPC gateway: running without TLS (GRPC_GATEWAY_INSECURE=true). Do not use in production")
 		return []grpc.DialOption{
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
-		}
+		}, nil
 	}
 
-	log.Warn("gRPC gateway: running without TLS. Set GRPC_GATEWAY_TLS_CERT and GRPC_GATEWAY_TLS_KEY for TLS, or GRPC_GATEWAY_INSECURE=true to suppress this warning")
-	return []grpc.DialOption{
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	}
+	return nil, fmt.Errorf("gRPC gateway: TLS is required. Set GRPC_GATEWAY_TLS_CERT and GRPC_GATEWAY_TLS_KEY, or set GRPC_GATEWAY_INSECURE=true for local development")
 }
 
 // GatewayWithPort sets the port for the HTTP gateway
@@ -204,6 +208,10 @@ func (g *Gateway) Build(ctx context.Context) error {
 
 	if g.mux != nil {
 		return nil // Already built
+	}
+
+	if g.configErr != nil {
+		return g.configErr
 	}
 
 	if g.grpcEndpoint == "" {

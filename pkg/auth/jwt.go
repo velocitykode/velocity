@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -118,6 +119,9 @@ func NewJWTManager(config JWTConfig) *JWTManager {
 	store := config.BlacklistStore
 	if store == nil {
 		store = NewInMemoryBlacklistStore()
+		if config.BlacklistEnabled {
+			log.Println("jwt: using in-memory token blacklist. Set a persistent BlacklistStore for production multi-instance deployments")
+		}
 	}
 
 	return &JWTManager{

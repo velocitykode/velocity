@@ -1,6 +1,7 @@
 package guards
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"sync"
@@ -30,8 +31,11 @@ type JWTGuard struct {
 	stopCleanup chan struct{}
 }
 
-// NewJWTGuard creates a new JWT guard
-func NewJWTGuard(provider auth.UserProvider, config auth.JWTConfig) *JWTGuard {
+// NewJWTGuard creates a new JWT guard. An optional context.Context can be passed
+// to control the lifecycle of the background cache cleanup goroutine. When the
+// context is cancelled, the cleanup goroutine stops automatically. If no context
+// is provided, call StopCleanup() to stop the goroutine manually.
+func NewJWTGuard(provider auth.UserProvider, config auth.JWTConfig, ctx ...context.Context) *JWTGuard {
 	g := &JWTGuard{
 		provider:    provider,
 		jwtManager:  auth.NewJWTManager(config),
@@ -39,7 +43,11 @@ func NewJWTGuard(provider auth.UserProvider, config auth.JWTConfig) *JWTGuard {
 		userCache:   make(map[string]cachedUser),
 		stopCleanup: make(chan struct{}),
 	}
-	go g.cleanupLoop()
+	if len(ctx) > 0 && ctx[0] != nil {
+		go g.cleanupLoopWithContext(ctx[0])
+	} else {
+		go g.cleanupLoop()
+	}
 	return g
 }
 
@@ -61,6 +69,21 @@ func (g *JWTGuard) cleanupLoop() {
 		case <-ticker.C:
 			g.evictExpired()
 		case <-g.stopCleanup:
+			return
+		}
+	}
+}
+
+func (g *JWTGuard) cleanupLoopWithContext(ctx context.Context) {
+	ticker := time.NewTicker(jwtCleanupInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			g.evictExpired()
+		case <-g.stopCleanup:
+			return
+		case <-ctx.Done():
 			return
 		}
 	}

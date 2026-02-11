@@ -48,16 +48,9 @@ func NewAESDriver(key []byte, previousKeys [][]byte, cipher string) (*AESDriver,
 		return nil, fmt.Errorf("invalid key size: key must not be empty")
 	}
 
-	// If key doesn't match required size, derive to correct size via HKDF
-	if len(key) != d.keySize {
-		derived, err := deriveSubkey(key, d.keySize, []byte("velocity-encryption"))
-		if err != nil {
-			return nil, fmt.Errorf("failed to derive key to correct size: %w", err)
-		}
-		key = derived
-	}
-
-	// Derive separate encryption and HMAC subkeys via HKDF
+	// Derive separate encryption and HMAC subkeys directly from the original key
+	// via HKDF with distinct info strings. HKDF handles any input key size, so
+	// no intermediate normalization step is needed.
 	encKey, err := deriveSubkey(key, d.keySize, []byte("encryption"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to derive encryption key: %w", err)
@@ -122,18 +115,10 @@ func (d *AESDriver) DecryptBytes(payload string) ([]byte, error) {
 		return plaintext, nil
 	}
 
-	// Try previous keys for rotation support (derive subkeys from each master key)
+	// Try previous keys for rotation support (derive subkeys directly from each master key)
 	for _, masterKey := range d.previousKeys {
-		mk := masterKey
-		if len(mk) != d.keySize {
-			derived, dErr := deriveSubkey(mk, d.keySize, []byte("velocity-encryption"))
-			if dErr != nil {
-				continue
-			}
-			mk = derived
-		}
-		encKey, ekErr := deriveSubkey(mk, d.keySize, []byte("encryption"))
-		hk, hkErr := deriveSubkey(mk, 32, []byte("hmac"))
+		encKey, ekErr := deriveSubkey(masterKey, d.keySize, []byte("encryption"))
+		hk, hkErr := deriveSubkey(masterKey, 32, []byte("hmac"))
 		if ekErr != nil || hkErr != nil {
 			continue
 		}

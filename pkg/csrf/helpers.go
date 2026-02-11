@@ -5,6 +5,8 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 
 	"github.com/velocitykode/velocity/pkg/router"
 )
@@ -73,8 +75,13 @@ func Middleware() router.MiddlewareFunc {
 	return func(next router.HandlerFunc) router.HandlerFunc {
 		return func(c *router.Context) error {
 			if globalCSRF == nil {
-				log.Println("csrf: middleware invoked without initialization, all requests will pass through")
-				return next(c)
+				if strings.EqualFold(os.Getenv("APP_DEBUG"), "true") {
+					log.Println("csrf: middleware invoked without initialization, all requests will pass through (APP_DEBUG=true)")
+					return next(c)
+				}
+				log.Println("csrf: middleware invoked without initialization, blocking request")
+				http.Error(c.Response, "CSRF protection not configured", http.StatusInternalServerError)
+				return fmt.Errorf("csrf: protection not configured")
 			}
 			// Track whether the inner handler was called (CSRF passed)
 			var called bool
