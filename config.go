@@ -8,6 +8,11 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/velocitykode/velocity/pkg/auth"
+	"github.com/velocitykode/velocity/pkg/crypto"
+	"github.com/velocitykode/velocity/pkg/log"
+	"github.com/velocitykode/velocity/pkg/mail"
+	"github.com/velocitykode/velocity/pkg/view"
 )
 
 // Config holds all configuration for a Velocity application.
@@ -54,6 +59,7 @@ type Config struct {
 }
 
 // DBConfig holds database configuration.
+// Kept as a root type because it differs structurally from orm.ManagerConfig.
 type DBConfig struct {
 	Connection      string        // DB_CONNECTION: sqlite, postgres, mysql
 	Host            string        // DB_HOST, default "127.0.0.1"
@@ -74,50 +80,23 @@ type DBConfig struct {
 	SlowThreshold   time.Duration // DB_SLOW_QUERY_THRESHOLD
 }
 
-// AuthConfig holds authentication configuration.
-type AuthConfig struct {
-	DefaultGuard string                    // AUTH_GUARD
-	Guards       map[string]GuardConfig    // Guard definitions
-	Providers    map[string]ProviderConfig // Provider definitions
-	BcryptCost   int                       // HASH_BCRYPT_COST, default 10
-}
-
-// GuardConfig holds configuration for an auth guard.
-type GuardConfig struct {
-	Driver   string                 // "session" or "jwt"
-	Provider string                 // Provider name
-	Options  map[string]interface{} // Guard-specific options
-}
-
-// ProviderConfig holds configuration for an auth user provider.
-type ProviderConfig struct {
-	Driver  string // "orm"
-	Model   string // AUTH_MODEL, default "User"
-	Options map[string]interface{}
-}
-
-// SessionConfig holds session configuration.
-type SessionConfig struct {
-	Driver   string        // SESSION_DRIVER, default "cookie"
-	Name     string        // SESSION_NAME, default "velocity_session"
-	Lifetime int           // SESSION_LIFETIME in minutes, default 120
-	Path     string        // SESSION_PATH, default "/"
-	Domain   string        // SESSION_DOMAIN
-	Secure   bool          // SESSION_SECURE, default true
-	HttpOnly bool          // SESSION_HTTP_ONLY, default true
-	SameSite http.SameSite // SESSION_SAME_SITE, default Lax
-}
-
-// JWTConfig holds JWT guard configuration.
-type JWTConfig struct {
-	Secret           string // JWT_SECRET
-	Algorithm        string // JWT_ALGO, default "HS256"
-	TTL              int    // JWT_TTL in minutes, default 60
-	RefreshTTL       int    // JWT_REFRESH_TTL in minutes, default 20160
-	BlacklistEnabled bool   // JWT_BLACKLIST_ENABLED, default true
-}
+// Type aliases — these reuse the canonical package types to avoid duplication.
+// Consumers can use either velocity.AuthConfig or auth.Config interchangeably.
+type (
+	AuthConfig     = auth.Config
+	GuardConfig    = auth.GuardConfig
+	ProviderConfig = auth.ProviderConfig
+	SessionConfig  = auth.SessionConfig
+	JWTConfig      = auth.JWTConfig
+	LogConfig      = log.LogConfig
+	CryptoConfig   = crypto.Config
+	ViewConfig     = view.Config
+	MailConfig     = mail.MailConfig
+)
 
 // CacheConfig holds cache configuration.
+// Kept as a root type because it uses a flat structure (single driver)
+// while cache.Config uses a multi-store map pattern.
 type CacheConfig struct {
 	Driver        string // CACHE_DRIVER: memory, file, redis, database
 	Prefix        string // CACHE_PREFIX, default "velocity_cache"
@@ -128,13 +107,9 @@ type CacheConfig struct {
 	RedisDatabase int    // REDIS_DATABASE, default 0
 }
 
-// LogConfig holds logging configuration.
-type LogConfig struct {
-	Driver string         // LOG_DRIVER: console, file
-	Config map[string]any // Driver-specific config (e.g., "path" for file driver)
-}
-
 // QueueConfig holds queue configuration.
+// Kept as a root type because it uses a flat structure while
+// queue.QueueConfig nests Redis fields in a sub-struct.
 type QueueConfig struct {
 	Driver        string // QUEUE_DRIVER: memory, redis, database
 	RedisHost     string // QUEUE_REDIS_HOST, default "localhost"
@@ -144,6 +119,8 @@ type QueueConfig struct {
 }
 
 // StorageConfig holds storage configuration.
+// Kept as a root type because the DiskConfig fields differ slightly
+// from storage.DiskConfig (Endpoint field).
 type StorageConfig struct {
 	Default string                // STORAGE_DRIVER, default "local"
 	Disks   map[string]DiskConfig // Disk configurations
@@ -160,26 +137,6 @@ type DiskConfig struct {
 	Secret   string
 	Endpoint string
 	URL      string
-}
-
-// ViewConfig holds view/Inertia configuration.
-type ViewConfig struct {
-	RootTemplate string // Path to root template or template string
-	Version      string // Asset version for cache busting
-	SSREnabled   bool   // Future: SSR support
-	SSRURL       string // SSR server URL
-}
-
-// CryptoConfig holds encryption configuration.
-type CryptoConfig struct {
-	Key          string   // APP_KEY or CRYPTO_KEY
-	Cipher       string   // CRYPTO_CIPHER, default "AES-256-GCM"
-	PreviousKeys []string // CRYPTO_OLD_KEYS (comma-separated)
-}
-
-// MailConfig holds mail configuration.
-type MailConfig struct {
-	Driver string // MAIL_DRIVER: postmark, mailgun, log
 }
 
 // Option is a function that configures the App.
@@ -336,9 +293,26 @@ func ConfigFromEnv() Config {
 	}
 
 	// Storage
+	storageDefault := envOrDefault("STORAGE_DRIVER", "local")
 	config.Storage = StorageConfig{
-		Default: envOrDefault("STORAGE_DRIVER", "local"),
+		Default: storageDefault,
 		Disks:   make(map[string]DiskConfig),
+	}
+	// Always configure a local disk
+	config.Storage.Disks["local"] = DiskConfig{
+		Driver: "local",
+		Root:   envOrDefault("FILESYSTEM_LOCAL_ROOT", "./storage/app"),
+	}
+	// Configure S3 disk if credentials are present
+	if s3Bucket := os.Getenv("AWS_BUCKET"); s3Bucket != "" {
+		config.Storage.Disks["s3"] = DiskConfig{
+			Driver: "s3",
+			Bucket: s3Bucket,
+			Region: os.Getenv("AWS_DEFAULT_REGION"),
+			Key:    os.Getenv("AWS_ACCESS_KEY_ID"),
+			Secret: os.Getenv("AWS_SECRET_ACCESS_KEY"),
+			URL:    os.Getenv("AWS_URL"),
+		}
 	}
 
 	// Mail

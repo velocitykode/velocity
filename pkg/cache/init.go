@@ -107,10 +107,27 @@ func SetDefaultManager(m *Manager) {
 	defaultManager = m
 }
 
-// GetManager returns the default cache manager, or nil if not initialized.
+// GetManager returns the default cache manager.
+// If not explicitly initialized, falls back to an in-memory cache manager.
 func GetManager() *Manager {
 	mu.RLock()
-	defer mu.RUnlock()
+	m := defaultManager
+	mu.RUnlock()
+	if m != nil {
+		return m
+	}
+	// Upgrade to write lock for lazy fallback
+	mu.Lock()
+	defer mu.Unlock()
+	if defaultManager == nil {
+		defaultManager = NewManager(&Config{
+			Default: "default",
+			Prefix:  "velocity_cache",
+			Stores: map[string]StoreConfig{
+				"default": {Driver: DriverMemory},
+			},
+		})
+	}
 	return defaultManager
 }
 

@@ -30,7 +30,6 @@ type Logger interface {
 
 var (
 	instance Logger
-	once     sync.Once
 	mu       sync.RWMutex
 )
 
@@ -83,12 +82,16 @@ func Init(driver string, config map[string]any) error {
 // Get returns the global logger instance, creating a default console logger if needed.
 func Get() Logger {
 	mu.RLock()
-	defer mu.RUnlock()
-
+	l := instance
+	mu.RUnlock()
+	if l != nil {
+		return l
+	}
+	// Upgrade to write lock for lazy init
+	mu.Lock()
+	defer mu.Unlock()
 	if instance == nil {
-		once.Do(func() {
-			instance = drivers.NewConsoleLogger()
-		})
+		instance = drivers.NewConsoleLogger()
 	}
 	return instance
 }

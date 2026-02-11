@@ -4,64 +4,54 @@ import (
 	"os"
 	"strings"
 	"sync"
-
-	"github.com/joho/godotenv"
 )
 
 var (
 	globalHandler *Handler
-	initOnce      sync.Once
 	mu            sync.RWMutex
 )
 
-// Initialize initializes the global exception handler.
-// This is called automatically on first use, but can be called explicitly
-// to configure the handler before use.
+// Deprecated: Initialize reads env vars directly (APP_DEBUG, APP_ENV, API_MODE).
+// Use NewHandler() with explicit options and SetGlobal() instead, or let the
+// velocity.App container handle construction.
 func Initialize(opts ...HandlerOption) {
-	initOnce.Do(func() {
-		_ = godotenv.Load()
+	mu.Lock()
+	defer mu.Unlock()
+	if globalHandler != nil {
+		return
+	}
 
-		// Determine debug mode from environment
-		debug := isDebugMode()
-		env := getEnvOrDefault("APP_ENV", "production")
-		apiMode := isAPIMode()
+	debug := isDebugMode()
+	env := getEnvOrDefault("APP_ENV", "production")
+	apiMode := isAPIMode()
 
-		// Create base options
-		baseOpts := []HandlerOption{
-			WithDebug(debug),
-			WithEnvironment(env),
-			WithAPIMode(apiMode),
-			WithAPIPrefixes("/api"),
-		}
+	baseOpts := []HandlerOption{
+		WithDebug(debug),
+		WithEnvironment(env),
+		WithAPIMode(apiMode),
+		WithAPIPrefixes("/api"),
+	}
 
-		// Merge with provided options
-		allOpts := append(baseOpts, opts...)
-
-		handler := NewHandler(allOpts...)
-
-		mu.Lock()
-		globalHandler = handler
-		mu.Unlock()
-	})
+	allOpts := append(baseOpts, opts...)
+	globalHandler = NewHandler(allOpts...)
 }
 
 // Get returns the global exception handler.
-// If not initialized, it will be initialized with default settings.
+// If not initialized, creates a default handler (production mode, no debug).
 func Get() *Handler {
 	mu.RLock()
 	h := globalHandler
 	mu.RUnlock()
-
 	if h != nil {
 		return h
 	}
-
-	Initialize()
-
-	mu.RLock()
-	h = globalHandler
-	mu.RUnlock()
-	return h
+	// Upgrade to write lock for lazy init
+	mu.Lock()
+	defer mu.Unlock()
+	if globalHandler == nil {
+		globalHandler = NewHandler()
+	}
+	return globalHandler
 }
 
 // SetGlobal sets the global exception handler.
@@ -119,13 +109,10 @@ func SetAPIPrefixes(prefixes ...string) {
 
 // isDebugMode determines if debug mode should be enabled.
 func isDebugMode() bool {
-	// Check APP_DEBUG environment variable
 	debugStr := strings.ToLower(getEnvOrDefault("APP_DEBUG", "false"))
 	if debugStr == "true" || debugStr == "1" || debugStr == "yes" {
 		return true
 	}
-
-	// Also enable debug for local/development environments
 	env := strings.ToLower(getEnvOrDefault("APP_ENV", "production"))
 	return env == "local" || env == "development"
 }
@@ -150,5 +137,4 @@ func ResetGlobal() {
 	mu.Lock()
 	defer mu.Unlock()
 	globalHandler = nil
-	initOnce = sync.Once{}
 }

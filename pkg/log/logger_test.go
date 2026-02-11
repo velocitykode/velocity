@@ -3,7 +3,6 @@ package log
 import (
 	"os"
 	"os/exec"
-	"sync"
 	"testing"
 )
 
@@ -151,14 +150,11 @@ func TestEnsureInitialized(t *testing.T) {
 func TestGetWithNilInstance(t *testing.T) {
 	// Save original instance
 	original := instance
-	originalOnce := once
 	defer func() {
 		instance = original
-		once = originalOnce
 	}()
 
-	// Reset once and instance
-	once = sync.Once{}
+	// Reset instance
 	instance = nil
 
 	// Get should initialize and return a logger
@@ -217,15 +213,12 @@ func TestNewLoggerInvalidDriverReturnsError(t *testing.T) {
 func TestGetFallbackToConsole(t *testing.T) {
 	// Save original state
 	original := instance
-	originalOnce := once
 	defer func() {
 		instance = original
-		once = originalOnce
 	}()
 
 	// Reset state so Get() triggers fallback
 	instance = nil
-	once = sync.Once{}
 
 	logger := Get()
 	if logger == nil {

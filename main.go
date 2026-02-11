@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/pkg/auth"
+	"github.com/velocitykode/velocity/pkg/auth/drivers/guards"
 	"github.com/velocitykode/velocity/pkg/cache"
 	"github.com/velocitykode/velocity/pkg/crypto"
 	"github.com/velocitykode/velocity/pkg/csrf"
@@ -72,10 +73,7 @@ func New(opts ...Option) (*App, error) {
 	}
 
 	// 1. Initialize logger first (everything else may need to log)
-	logger, err := log.NewLogger(log.LogConfig{
-		Driver: app.config.Log.Driver,
-		Config: app.config.Log.Config,
-	})
+	logger, err := log.NewLogger(app.config.Log)
 	if err != nil {
 		// Fall back to console logger
 		logger, _ = log.NewLogger(log.LogConfig{Driver: "console"})
@@ -84,11 +82,7 @@ func New(opts ...Option) (*App, error) {
 
 	// 2. Initialize crypto (auth/csrf may need it)
 	if app.config.Crypto.Key != "" {
-		enc, err := crypto.NewEncryptor(crypto.Config{
-			Key:          app.config.Crypto.Key,
-			PreviousKeys: app.config.Crypto.PreviousKeys,
-			Cipher:       app.config.Crypto.Cipher,
-		})
+		enc, err := crypto.NewEncryptor(app.config.Crypto)
 		if err != nil {
 			return nil, fmt.Errorf("velocity: failed to initialize crypto: %w", err)
 		}
@@ -118,8 +112,8 @@ func New(opts ...Option) (*App, error) {
 		app.DB = dbManager
 	}
 
-	// 4. Initialize auth manager
-	app.Auth = auth.NewManager()
+	// 4. Initialize auth manager with guards/providers from config
+	app.Auth = initAuth(app.config.Auth, app.config.Session, app.Log)
 
 	// 5. Initialize cache
 	app.Cache = initCache(app.config.Cache)
@@ -129,12 +123,7 @@ func New(opts ...Option) (*App, error) {
 
 	// 7. Initialize view/bond engine
 	if app.config.View.RootTemplate != "" {
-		viewEngine, err := view.NewEngine(view.Config{
-			RootTemplate: app.config.View.RootTemplate,
-			Version:      app.config.View.Version,
-			SSREnabled:   app.config.View.SSREnabled,
-			SSRURL:       app.config.View.SSRURL,
-		})
+		viewEngine, err := view.NewEngine(app.config.View)
 		if err != nil {
 			return nil, fmt.Errorf("velocity: failed to initialize view engine: %w", err)
 		}
@@ -147,19 +136,15 @@ func New(opts ...Option) (*App, error) {
 	// 9. Initialize queue
 	app.Queue = initQueue(app.config.Queue)
 
-	// 10. Initialize storage
-	app.Storage = storage.NewManager(storage.Config{
-		Default: app.config.Storage.Default,
-	})
+	// 10. Initialize storage with disk drivers
+	app.Storage = initStorage(app.config.Storage, app.Log)
 
 	// 11. Initialize scheduler
 	app.Scheduler = scheduler.New()
 
 	// 12. Initialize mail
 	if app.config.Mail.Driver != "" {
-		mailer, err := mail.NewMailer(mail.MailConfig{
-			Driver: app.config.Mail.Driver,
-		})
+		mailer, err := mail.NewMailer(app.config.Mail)
 		if err != nil {
 			app.Log.Warn("Failed to initialize mailer", "error", err)
 		} else {
@@ -308,11 +293,7 @@ func setDefaultApp(app *App) {
 
 	// Wire crypto global
 	if app.Crypto != nil {
-		crypto.Init(crypto.Config{
-			Key:          app.config.Crypto.Key,
-			PreviousKeys: app.config.Crypto.PreviousKeys,
-			Cipher:       app.config.Crypto.Cipher,
-		})
+		crypto.Init(app.config.Crypto)
 	}
 
 	// Wire ORM global (for Model[T] backward compat)
@@ -410,6 +391,89 @@ func initCache(config CacheConfig) *cache.Manager {
 	}
 
 	return cache.NewManager(cacheConfig)
+}
+
+func initStorage(config StorageConfig, logger log.Logger) *storage.Manager {
+	storageCfg := storage.Config{
+		Default: config.Default,
+		Disks:   make(map[string]storage.DiskConfig),
+	}
+	for name, disk := range config.Disks {
+		storageCfg.Disks[name] = storage.DiskConfig{
+			Driver: disk.Driver,
+			Root:   disk.Root,
+			URL:    disk.URL,
+			Key:    disk.Key,
+			Secret: disk.Secret,
+			Region: disk.Region,
+			Bucket: disk.Bucket,
+		}
+	}
+	mgr := storage.NewManager(storageCfg)
+	if err := mgr.Configure(storageCfg); err != nil {
+		if logger != nil {
+			logger.Warn("Failed to configure storage disks", "error", err)
+		}
+	}
+	return mgr
+}
+
+func initAuth(authCfg AuthConfig, sessCfg SessionConfig, logger log.Logger) *auth.Manager {
+	manager := auth.NewManager()
+
+	if authCfg.DefaultGuard != "" {
+		manager.SetDefaultGuard(authCfg.DefaultGuard)
+	}
+	if authCfg.BcryptCost > 0 {
+		manager.SetHasher(auth.NewBcryptHasher(authCfg.BcryptCost))
+	}
+
+	// Register providers
+	for name, provCfg := range authCfg.Providers {
+		switch provCfg.Driver {
+		case "orm":
+			model := provCfg.Model
+			if model == "" {
+				model = "User"
+			}
+			manager.RegisterProvider(name, auth.NewORMUserProvider(model))
+		}
+	}
+
+	// Register guards
+	for name, guardCfg := range authCfg.Guards {
+		provider, err := manager.Provider(guardCfg.Provider)
+		if err != nil {
+			if logger != nil {
+				logger.Warn("Auth guard skipped: provider not found", "guard", name, "provider", guardCfg.Provider)
+			}
+			continue
+		}
+
+		switch guardCfg.Driver {
+		case "session":
+			guard, err := guards.NewSessionGuard(provider, sessCfg)
+			if err != nil {
+				if logger != nil {
+					logger.Warn("Failed to create session guard", "guard", name, "error", err)
+				}
+				continue
+			}
+			manager.RegisterGuard(name, guard)
+
+		case "jwt":
+			var jwtCfg auth.JWTConfig
+			if opts, ok := guardCfg.Options["jwt"]; ok {
+				if jc, ok := opts.(auth.JWTConfig); ok {
+					jwtCfg = jc
+				}
+			}
+			guard := guards.NewJWTGuard(provider, jwtCfg)
+			manager.RegisterGuard(name, guard)
+		}
+	}
+
+	return manager
 }
 
 func initQueue(config QueueConfig) queue.Driver {
