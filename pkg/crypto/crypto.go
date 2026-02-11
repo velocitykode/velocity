@@ -76,6 +76,14 @@ func Init(config Config) error {
 	return nil
 }
 
+// SetGlobal sets the global encryptor to an already-constructed instance.
+// Used by velocity.Default() to wire the App's encryptor into the global.
+func SetGlobal(enc Encryptor) {
+	globalMux.Lock()
+	defer globalMux.Unlock()
+	globalEncryptor = enc
+}
+
 // Encrypt encrypts plaintext using the global encryptor.
 func Encrypt(plaintext string) (string, error) {
 	globalMux.RLock()

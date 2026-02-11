@@ -293,7 +293,7 @@ func setDefaultApp(app *App) {
 
 	// Wire crypto global
 	if app.Crypto != nil {
-		crypto.Init(app.config.Crypto)
+		crypto.SetGlobal(app.Crypto)
 	}
 
 	// Wire ORM global (for Model[T] backward compat)
