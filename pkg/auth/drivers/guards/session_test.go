@@ -89,7 +89,6 @@ func TestSessionGuard_ConcurrentGetSession(t *testing.T) {
 		store:    &mockSessionStore{},
 		config:   auth.SessionConfig{Name: "test_session"},
 		hasher:   auth.GetHasher(),
-		sessions: make(map[*http.Request]auth.Session),
 	}
 
 	// Create multiple requests
@@ -125,7 +124,6 @@ func TestSessionGuard_ConcurrentCheck(t *testing.T) {
 		store:    &mockSessionStore{},
 		config:   auth.SessionConfig{Name: "test_session"},
 		hasher:   auth.GetHasher(),
-		sessions: make(map[*http.Request]auth.Session),
 	}
 
 	// Create a request with session containing user_id
@@ -161,7 +159,6 @@ func TestSessionGuard_ConcurrentMixedOperations(t *testing.T) {
 		store:    &mockSessionStore{},
 		config:   auth.SessionConfig{Name: "test_session"},
 		hasher:   auth.GetHasher(),
-		sessions: make(map[*http.Request]auth.Session),
 	}
 
 	var wg sync.WaitGroup
@@ -192,14 +189,12 @@ func TestSessionGuard_ConcurrentMixedOperations(t *testing.T) {
 }
 
 func TestSessionGuard_RaceCondition(t *testing.T) {
-	// This test specifically verifies that concurrent access
-	// to the sessions map doesn't cause a race condition
+	// This test verifies that concurrent access to getSession doesn't cause a race condition
 	guard := &SessionGuard{
 		provider: &mockUserProvider{},
 		store:    &mockSessionStore{},
 		config:   auth.SessionConfig{Name: "test_session"},
 		hasher:   auth.GetHasher(),
-		sessions: make(map[*http.Request]auth.Session),
 	}
 
 	// Create a single request that will be accessed by multiple goroutines

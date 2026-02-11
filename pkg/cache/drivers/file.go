@@ -32,7 +32,7 @@ func NewFileStore(prefix, path string) (*FileStore, error) {
 	}
 
 	// Create cache directory if it doesn't exist
-	if err := os.MkdirAll(path, 0755); err != nil {
+	if err := os.MkdirAll(path, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create cache directory: %w", err)
 	}
 
@@ -90,7 +90,7 @@ func (s *FileStore) getCacheFilePath(key string) string {
 
 	// Use first 2 characters for directory structure
 	dir := filepath.Join(s.path, hash[:2])
-	os.MkdirAll(dir, 0755)
+	os.MkdirAll(dir, 0700)
 
 	return filepath.Join(dir, hash)
 }

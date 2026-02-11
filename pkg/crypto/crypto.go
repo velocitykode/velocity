@@ -176,27 +176,14 @@ func newDriver(config Config) (Encryptor, error) {
 	// Create the appropriate driver
 	cipher := strings.ToUpper(config.Cipher)
 
-	// Determine required key size for derivation
-	var requiredKeySize int
+	// Validate cipher and determine required key size for derivation
 	switch cipher {
 	case "AES-128-CBC", "AES-128-GCM":
-		requiredKeySize = 16
+		// 16-byte key
 	case "AES-256-CBC", "AES-256-GCM":
-		requiredKeySize = 32
+		// 32-byte key
 	default:
 		return nil, ErrInvalidCipher
-	}
-
-	// If key doesn't match required size, derive using HKDF
-	if len(key) != requiredKeySize {
-		key = deriveKey(key, requiredKeySize)
-	}
-
-	// Derive previous keys as well
-	for i, pk := range previousKeys {
-		if len(pk) != requiredKeySize {
-			previousKeys[i] = deriveKey(pk, requiredKeySize)
-		}
 	}
 
 	return drivers.NewAESDriver(key, previousKeys, cipher)
@@ -220,7 +207,7 @@ func parseKey(keyStr string) ([]byte, error) {
 
 // deriveKey uses HKDF-SHA256 to derive an AES key of the required size from arbitrary key material.
 func deriveKey(password []byte, keySize int) []byte {
-	r := hkdf.New(sha256.New, password, nil, []byte("velocity-encryption"))
+	r := hkdf.New(sha256.New, password, []byte("velocity-framework-hkdf-salt-v1"), []byte("velocity-encryption"))
 	derived := make([]byte, keySize)
 	// HKDF with SHA-256 can always produce up to 255*32 bytes; keySize is 16 or 32.
 	io.ReadFull(r, derived)

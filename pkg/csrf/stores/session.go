@@ -26,7 +26,11 @@ type tokenEntry struct {
 
 // NewSessionStore creates a new session-based token store.
 // An optional lifetime can be provided; defaults to 24h if zero or omitted.
-// Call Close() when done to stop the background cleanup goroutine.
+//
+// IMPORTANT: Close() must be called when the store is no longer needed to stop
+// the background cleanup goroutine. Wire Close() into your server's shutdown
+// hook to prevent goroutine leaks. The cleanup goroutine starts immediately
+// upon creation.
 func NewSessionStore(lifetime ...time.Duration) *SessionStore {
 	ttl := 24 * time.Hour
 	if len(lifetime) > 0 && lifetime[0] > 0 {

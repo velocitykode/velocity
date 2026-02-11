@@ -128,6 +128,9 @@ func (q *Query[T]) OrWhere(condition string, args ...any) *Query[T] {
 
 // WhereIn adds a WHERE IN condition
 func (q *Query[T]) WhereIn(field string, values []any) *Query[T] {
+	if err := validateIdentifier(field); err != nil {
+		panic(fmt.Sprintf("WhereIn: %s", err))
+	}
 	q.conditions = append(q.conditions, drivers.Condition{
 		Column:   field,
 		Operator: "IN",
@@ -139,6 +142,9 @@ func (q *Query[T]) WhereIn(field string, values []any) *Query[T] {
 
 // WhereNotIn adds a WHERE NOT IN condition
 func (q *Query[T]) WhereNotIn(field string, values []any) *Query[T] {
+	if err := validateIdentifier(field); err != nil {
+		panic(fmt.Sprintf("WhereNotIn: %s", err))
+	}
 	q.conditions = append(q.conditions, drivers.Condition{
 		Column:   field,
 		Operator: "NOT IN",
@@ -150,6 +156,9 @@ func (q *Query[T]) WhereNotIn(field string, values []any) *Query[T] {
 
 // WhereNull adds a WHERE IS NULL condition
 func (q *Query[T]) WhereNull(field string) *Query[T] {
+	if err := validateIdentifier(field); err != nil {
+		panic(fmt.Sprintf("WhereNull: %s", err))
+	}
 	q.conditions = append(q.conditions, drivers.Condition{
 		Column:   field,
 		Operator: "IS NULL",
@@ -161,6 +170,9 @@ func (q *Query[T]) WhereNull(field string) *Query[T] {
 
 // WhereNotNull adds a WHERE IS NOT NULL condition
 func (q *Query[T]) WhereNotNull(field string) *Query[T] {
+	if err := validateIdentifier(field); err != nil {
+		panic(fmt.Sprintf("WhereNotNull: %s", err))
+	}
 	q.conditions = append(q.conditions, drivers.Condition{
 		Column:   field,
 		Operator: "IS NOT NULL",
@@ -172,6 +184,9 @@ func (q *Query[T]) WhereNotNull(field string) *Query[T] {
 
 // WhereBetween adds a WHERE BETWEEN condition
 func (q *Query[T]) WhereBetween(field string, start, end any) *Query[T] {
+	if err := validateIdentifier(field); err != nil {
+		panic(fmt.Sprintf("WhereBetween: %s", err))
+	}
 	q.conditions = append(q.conditions, drivers.Condition{
 		Column:   field,
 		Operator: "BETWEEN",
@@ -229,6 +244,9 @@ func parseCondition(condition string, args []any) (column, operator string, valu
 
 // OrderBy adds an ORDER BY clause
 func (q *Query[T]) OrderBy(column, direction string) *Query[T] {
+	if err := validateIdentifier(column); err != nil {
+		panic(fmt.Sprintf("OrderBy: %s", err))
+	}
 	dir := strings.ToUpper(strings.TrimSpace(direction))
 	if dir != "ASC" && dir != "DESC" {
 		dir = "ASC"
@@ -247,6 +265,11 @@ func (q *Query[T]) OrderByDesc(column string) *Query[T] {
 
 // GroupBy adds a GROUP BY clause
 func (q *Query[T]) GroupBy(columns ...string) *Query[T] {
+	for _, col := range columns {
+		if err := validateIdentifier(col); err != nil {
+			panic(fmt.Sprintf("GroupBy: %s", err))
+		}
+	}
 	q.groups = append(q.groups, columns...)
 	return q
 }
@@ -254,6 +277,9 @@ func (q *Query[T]) GroupBy(columns ...string) *Query[T] {
 // Having adds a HAVING condition
 func (q *Query[T]) Having(condition string, args ...any) *Query[T] {
 	col, op, val := parseCondition(condition, args)
+	if err := validateIdentifier(col); err != nil {
+		panic(fmt.Sprintf("Having: %s", err))
+	}
 	q.having = append(q.having, drivers.Condition{
 		Column:   col,
 		Operator: op,

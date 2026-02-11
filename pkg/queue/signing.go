@@ -6,8 +6,11 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"sync"
+
+	"golang.org/x/crypto/hkdf"
 )
 
 var (
@@ -20,23 +23,38 @@ func init() {
 	configureQueueSigning()
 }
 
-// configureQueueSigning reads signing config from environment
+// configureQueueSigning reads signing config from environment.
+// Signing is always enabled when a key is available.
 func configureQueueSigning() {
 	key := os.Getenv("QUEUE_SIGNING_KEY")
+	useAppKey := false
 	if key == "" {
-		// Fall back to APP_KEY
 		key = os.Getenv("APP_KEY")
+		useAppKey = true
 	}
-
-	disabled := os.Getenv("QUEUE_SIGNING_DISABLED")
 
 	signingMu.Lock()
 	defer signingMu.Unlock()
 
-	if key != "" && disabled != "true" {
-		signingKey = []byte(key)
-		signingEnabled = true
+	if key == "" {
+		fmt.Fprintln(os.Stderr, "queue: no signing key found (QUEUE_SIGNING_KEY or APP_KEY), payload signing disabled")
+		return
 	}
+
+	if useAppKey {
+		// Derive a queue-specific key from APP_KEY using HKDF to avoid
+		// using the same key material for different purposes.
+		r := hkdf.New(sha256.New, []byte(key), nil, []byte("queue-signing"))
+		derived := make([]byte, 32)
+		if _, err := io.ReadFull(r, derived); err != nil {
+			fmt.Fprintf(os.Stderr, "queue: failed to derive signing key from APP_KEY: %v\n", err)
+			return
+		}
+		signingKey = derived
+	} else {
+		signingKey = []byte(key)
+	}
+	signingEnabled = true
 }
 
 // SetSigningKey configures the HMAC key for queue payload signing.

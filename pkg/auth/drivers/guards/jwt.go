@@ -4,27 +4,115 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/velocitykode/velocity/pkg/auth"
 )
 
+const (
+	jwtCacheTTL        = 5 * time.Minute
+	jwtCacheMaxSize    = 10000
+	jwtCleanupInterval = 1 * time.Minute
+)
+
+type cachedUser struct {
+	user     auth.Authenticatable
+	cachedAt time.Time
+}
+
 // JWTGuard implements JWT-based authentication for APIs
 type JWTGuard struct {
-	provider   auth.UserProvider
-	jwtManager *auth.JWTManager
-	config     auth.JWTConfig
-	mu         sync.RWMutex
-	userCache  map[string]auth.Authenticatable // Simple cache for request
+	provider    auth.UserProvider
+	jwtManager  *auth.JWTManager
+	config      auth.JWTConfig
+	mu          sync.RWMutex
+	userCache   map[string]cachedUser
+	stopCleanup chan struct{}
 }
 
 // NewJWTGuard creates a new JWT guard
 func NewJWTGuard(provider auth.UserProvider, config auth.JWTConfig) *JWTGuard {
-	return &JWTGuard{
-		provider:   provider,
-		jwtManager: auth.NewJWTManager(config),
-		config:     config,
-		userCache:  make(map[string]auth.Authenticatable),
+	g := &JWTGuard{
+		provider:    provider,
+		jwtManager:  auth.NewJWTManager(config),
+		config:      config,
+		userCache:   make(map[string]cachedUser),
+		stopCleanup: make(chan struct{}),
 	}
+	go g.cleanupLoop()
+	return g
+}
+
+// StopCleanup stops the background cache cleanup goroutine.
+func (g *JWTGuard) StopCleanup() {
+	select {
+	case <-g.stopCleanup:
+		// already closed
+	default:
+		close(g.stopCleanup)
+	}
+}
+
+func (g *JWTGuard) cleanupLoop() {
+	ticker := time.NewTicker(jwtCleanupInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			g.evictExpired()
+		case <-g.stopCleanup:
+			return
+		}
+	}
+}
+
+func (g *JWTGuard) evictExpired() {
+	now := time.Now()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for token, entry := range g.userCache {
+		if now.Sub(entry.cachedAt) > jwtCacheTTL {
+			delete(g.userCache, token)
+		}
+	}
+}
+
+func (g *JWTGuard) getCachedUser(token string) (auth.Authenticatable, bool) {
+	g.mu.RLock()
+	entry, ok := g.userCache[token]
+	g.mu.RUnlock()
+	if !ok {
+		return nil, false
+	}
+	if time.Since(entry.cachedAt) > jwtCacheTTL {
+		g.mu.Lock()
+		delete(g.userCache, token)
+		g.mu.Unlock()
+		return nil, false
+	}
+	return entry.user, true
+}
+
+func (g *JWTGuard) cacheUser(token string, user auth.Authenticatable) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	// If cache is full, evict oldest entry
+	if len(g.userCache) >= jwtCacheMaxSize {
+		var oldestToken string
+		var oldestTime time.Time
+		for t, entry := range g.userCache {
+			if oldestToken == "" || entry.cachedAt.Before(oldestTime) {
+				oldestToken = t
+				oldestTime = entry.cachedAt
+			}
+		}
+		if oldestToken != "" {
+			delete(g.userCache, oldestToken)
+		}
+	}
+
+	g.userCache[token] = cachedUser{user: user, cachedAt: time.Now()}
 }
 
 // Check if user is authenticated via JWT
@@ -46,9 +134,7 @@ func (g *JWTGuard) Check(r *http.Request) bool {
 	}
 
 	// Cache user for this request
-	g.mu.Lock()
-	g.userCache[token] = user
-	g.mu.Unlock()
+	g.cacheUser(token, user)
 	return true
 }
 
@@ -60,12 +146,9 @@ func (g *JWTGuard) User(r *http.Request) auth.Authenticatable {
 	}
 
 	// Check cache first
-	g.mu.RLock()
-	if user, ok := g.userCache[token]; ok {
-		g.mu.RUnlock()
+	if user, ok := g.getCachedUser(token); ok {
 		return user
 	}
-	g.mu.RUnlock()
 
 	claims, err := g.jwtManager.ValidateToken(token)
 	if err != nil {
@@ -78,9 +161,7 @@ func (g *JWTGuard) User(r *http.Request) auth.Authenticatable {
 	}
 
 	// Cache for subsequent calls
-	g.mu.Lock()
-	g.userCache[token] = user
-	g.mu.Unlock()
+	g.cacheUser(token, user)
 	return user
 }
 

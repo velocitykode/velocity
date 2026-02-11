@@ -73,6 +73,7 @@ func Middleware() router.MiddlewareFunc {
 	return func(next router.HandlerFunc) router.HandlerFunc {
 		return func(c *router.Context) error {
 			if globalCSRF == nil {
+				log.Println("csrf: middleware invoked without initialization, all requests will pass through")
 				return next(c)
 			}
 			// Track whether the inner handler was called (CSRF passed)
@@ -84,6 +85,7 @@ func Middleware() router.MiddlewareFunc {
 			globalCSRF.Middleware(inner).ServeHTTP(c.Response, c.Request)
 			if !called {
 				log.Printf("csrf: request blocked for %s %s", c.Request.Method, c.Request.URL.Path)
+				return fmt.Errorf("csrf: request rejected for %s %s", c.Request.Method, c.Request.URL.Path)
 			}
 			return nil
 		}

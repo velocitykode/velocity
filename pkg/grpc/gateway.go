@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"sync"
@@ -48,9 +49,6 @@ func NewGateway(opts ...GatewayOption) *Gateway {
 	g := &Gateway{
 		port:          "8080",
 		registrations: make([]GatewayRegistrationFunc, 0),
-		dialOptions: []grpc.DialOption{
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
-		},
 		muxOptions: []runtime.ServeMuxOption{
 			// Use JSON names and emit defaults
 			runtime.WithMarshalerOption(runtime.MIMEWildcard, &runtime.JSONPb{
@@ -70,7 +68,45 @@ func NewGateway(opts ...GatewayOption) *Gateway {
 		opt(g)
 	}
 
+	// If no transport credentials were configured via options, configure from environment
+	if len(g.dialOptions) == 0 {
+		g.dialOptions = configureGatewayTransport()
+	}
+
 	return g
+}
+
+// configureGatewayTransport configures gRPC dial credentials from environment variables.
+// Checks GRPC_GATEWAY_TLS_CERT and GRPC_GATEWAY_TLS_KEY for TLS configuration.
+// Falls back to insecure credentials only when GRPC_GATEWAY_INSECURE=true.
+func configureGatewayTransport() []grpc.DialOption {
+	certFile := os.Getenv("GRPC_GATEWAY_TLS_CERT")
+	keyFile := os.Getenv("GRPC_GATEWAY_TLS_KEY")
+
+	if certFile != "" && keyFile != "" {
+		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+		caCert, err := os.ReadFile(certFile)
+		if err == nil {
+			pool := x509.NewCertPool()
+			if pool.AppendCertsFromPEM(caCert) {
+				tlsConfig.RootCAs = pool
+			}
+		}
+		return []grpc.DialOption{
+			grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
+		}
+	}
+
+	if os.Getenv("GRPC_GATEWAY_INSECURE") == "true" {
+		return []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+		}
+	}
+
+	log.Warn("gRPC gateway: running without TLS. Set GRPC_GATEWAY_TLS_CERT and GRPC_GATEWAY_TLS_KEY for TLS, or GRPC_GATEWAY_INSECURE=true to suppress this warning")
+	return []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	}
 }
 
 // GatewayWithPort sets the port for the HTTP gateway
@@ -172,6 +208,11 @@ func (g *Gateway) Build(ctx context.Context) error {
 
 	if g.grpcEndpoint == "" {
 		return ErrNoEndpoint
+	}
+
+	// Validate endpoint format (must be host:port)
+	if _, _, err := net.SplitHostPort(g.grpcEndpoint); err != nil {
+		return fmt.Errorf("invalid gRPC endpoint %q: expected host:port format: %w", g.grpcEndpoint, err)
 	}
 
 	// Create mux with options

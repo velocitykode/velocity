@@ -100,7 +100,11 @@ const maxS3StreamSize = 100 * 1024 * 1024
 // PutStream stores a stream at the given path
 func (d *S3Driver) PutStream(path string, stream io.Reader) error {
 	ctx := context.Background()
-	path = d.cleanPath(path)
+	var err error
+	path, err = d.cleanPath(path)
+	if err != nil {
+		return err
+	}
 
 	// Limit stream size to prevent unbounded memory usage
 	limited := io.LimitReader(stream, maxS3StreamSize+1)
@@ -153,7 +157,11 @@ func (d *S3Driver) Get(path string) ([]byte, error) {
 // GetStream retrieves a stream from the given path
 func (d *S3Driver) GetStream(path string) (io.ReadCloser, error) {
 	ctx := context.Background()
-	path = d.cleanPath(path)
+	var err error
+	path, err = d.cleanPath(path)
+	if err != nil {
+		return nil, err
+	}
 
 	result, err := d.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(d.bucket),
@@ -172,9 +180,13 @@ func (d *S3Driver) GetStream(path string) (io.ReadCloser, error) {
 // Exists checks if a file exists at the given path
 func (d *S3Driver) Exists(path string) bool {
 	ctx := context.Background()
-	path = d.cleanPath(path)
+	var err error
+	path, err = d.cleanPath(path)
+	if err != nil {
+		return false
+	}
 
-	_, err := d.client.HeadObject(ctx, &s3.HeadObjectInput{
+	_, err = d.client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(d.bucket),
 		Key:    aws.String(path),
 	})
@@ -193,7 +205,10 @@ func (d *S3Driver) Delete(paths ...string) error {
 	// Build delete objects
 	objects := make([]types.ObjectIdentifier, len(paths))
 	for i, path := range paths {
-		cleanPath := d.cleanPath(path)
+		cleanPath, err := d.cleanPath(path)
+		if err != nil {
+			return err
+		}
 		objects[i] = types.ObjectIdentifier{
 			Key: aws.String(cleanPath),
 		}
@@ -218,14 +233,21 @@ func (d *S3Driver) Delete(paths ...string) error {
 // Copy copies a file from one path to another
 func (d *S3Driver) Copy(from, to string) error {
 	ctx := context.Background()
-	from = d.cleanPath(from)
-	to = d.cleanPath(to)
+	var err error
+	from, err = d.cleanPath(from)
+	if err != nil {
+		return err
+	}
+	to, err = d.cleanPath(to)
+	if err != nil {
+		return err
+	}
 
 	// Create copy source
 	source := fmt.Sprintf("%s/%s", d.bucket, from)
 
 	// Copy object
-	_, err := d.client.CopyObject(ctx, &s3.CopyObjectInput{
+	_, err = d.client.CopyObject(ctx, &s3.CopyObjectInput{
 		Bucket:     aws.String(d.bucket),
 		CopySource: aws.String(source),
 		Key:        aws.String(to),
@@ -253,7 +275,11 @@ func (d *S3Driver) Move(from, to string) error {
 // Size returns the size of a file at the given path
 func (d *S3Driver) Size(path string) (int64, error) {
 	ctx := context.Background()
-	path = d.cleanPath(path)
+	var err error
+	path, err = d.cleanPath(path)
+	if err != nil {
+		return 0, err
+	}
 
 	result, err := d.client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(d.bucket),
@@ -273,7 +299,11 @@ func (d *S3Driver) Size(path string) (int64, error) {
 // LastModified returns the last modified time of a file
 func (d *S3Driver) LastModified(path string) (time.Time, error) {
 	ctx := context.Background()
-	path = d.cleanPath(path)
+	var err error
+	path, err = d.cleanPath(path)
+	if err != nil {
+		return time.Time{}, err
+	}
 
 	result, err := d.client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(d.bucket),
@@ -293,7 +323,11 @@ func (d *S3Driver) LastModified(path string) (time.Time, error) {
 // MimeType returns the MIME type of a file
 func (d *S3Driver) MimeType(path string) (string, error) {
 	ctx := context.Background()
-	path = d.cleanPath(path)
+	var err error
+	path, err = d.cleanPath(path)
+	if err != nil {
+		return "", err
+	}
 
 	result, err := d.client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(d.bucket),
@@ -317,7 +351,11 @@ func (d *S3Driver) MimeType(path string) (string, error) {
 // Files lists files in a directory
 func (d *S3Driver) Files(directory string) ([]string, error) {
 	ctx := context.Background()
-	directory = d.cleanPath(directory)
+	var err error
+	directory, err = d.cleanPath(directory)
+	if err != nil {
+		return nil, err
+	}
 	if directory != "" && !strings.HasSuffix(directory, "/") {
 		directory += "/"
 	}
@@ -352,7 +390,11 @@ func (d *S3Driver) Files(directory string) ([]string, error) {
 // AllFiles lists all files recursively in a directory
 func (d *S3Driver) AllFiles(directory string) ([]string, error) {
 	ctx := context.Background()
-	directory = d.cleanPath(directory)
+	var err error
+	directory, err = d.cleanPath(directory)
+	if err != nil {
+		return nil, err
+	}
 	if directory != "" && !strings.HasSuffix(directory, "/") {
 		directory += "/"
 	}
@@ -386,7 +428,11 @@ func (d *S3Driver) AllFiles(directory string) ([]string, error) {
 // Directories lists directories
 func (d *S3Driver) Directories(directory string) ([]string, error) {
 	ctx := context.Background()
-	directory = d.cleanPath(directory)
+	var err error
+	directory, err = d.cleanPath(directory)
+	if err != nil {
+		return nil, err
+	}
 	if directory != "" && !strings.HasSuffix(directory, "/") {
 		directory += "/"
 	}
@@ -474,7 +520,11 @@ func (d *S3Driver) DeleteDirectory(directory string) error {
 
 // URL returns the public URL for a file
 func (d *S3Driver) URL(path string) string {
-	path = d.cleanPath(path)
+	var err error
+	path, err = d.cleanPath(path)
+	if err != nil {
+		return ""
+	}
 
 	if d.url != "" {
 		// Use custom URL if configured
@@ -488,7 +538,11 @@ func (d *S3Driver) URL(path string) string {
 // TemporaryURL returns a temporary URL for a file
 func (d *S3Driver) TemporaryURL(path string, expiration time.Duration) (string, error) {
 	ctx := context.Background()
-	path = d.cleanPath(path)
+	var err error
+	path, err = d.cleanPath(path)
+	if err != nil {
+		return "", err
+	}
 
 	// Generate presigned URL
 	result, err := d.presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
@@ -505,7 +559,7 @@ func (d *S3Driver) TemporaryURL(path string, expiration time.Duration) (string, 
 
 // cleanPath cleans and normalizes a path for S3.
 // Rejects paths containing ".." components to prevent path traversal.
-func (d *S3Driver) cleanPath(path string) string {
+func (d *S3Driver) cleanPath(path string) (string, error) {
 	// Remove leading/trailing slashes
 	path = strings.Trim(path, "/")
 	// Ensure forward slashes
@@ -514,11 +568,11 @@ func (d *S3Driver) cleanPath(path string) string {
 	// Reject path traversal
 	for _, segment := range strings.Split(path, "/") {
 		if segment == ".." {
-			return ""
+			return "", fmt.Errorf("path traversal detected")
 		}
 	}
 
-	return path
+	return path, nil
 }
 
 // isNotFoundError checks if an error is a "not found" error
