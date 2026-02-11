@@ -25,18 +25,40 @@ type tokenEntry struct {
 }
 
 // NewSessionStore creates a new session-based token store.
-// An optional lifetime can be provided; defaults to 24h if zero or omitted.
+// The first argument is an optional context.Context used to control the
+// lifetime of the background cleanup goroutine. When the context is cancelled,
+// the goroutine stops automatically. If no context is provided (or nil),
+// context.Background() is used and Close() must be called manually.
 //
-// IMPORTANT: Close() must be called when the store is no longer needed to stop
-// the background cleanup goroutine. Wire Close() into your server's shutdown
-// hook to prevent goroutine leaks. The cleanup goroutine starts immediately
-// upon creation.
-func NewSessionStore(lifetime ...time.Duration) *SessionStore {
+// An optional lifetime duration can be provided after the context; defaults to
+// 24h if zero or omitted.
+//
+// Accepted call signatures:
+//
+//	NewSessionStore()                         // background ctx, 24h lifetime
+//	NewSessionStore(ctx)                      // caller ctx, 24h lifetime
+//	NewSessionStore(lifetime)                 // background ctx, custom lifetime (backward compat)
+//	NewSessionStore(ctx, lifetime)            // caller ctx, custom lifetime
+func NewSessionStore(args ...any) *SessionStore {
+	var parentCtx context.Context
 	ttl := 24 * time.Hour
-	if len(lifetime) > 0 && lifetime[0] > 0 {
-		ttl = lifetime[0]
+
+	for _, arg := range args {
+		switch v := arg.(type) {
+		case context.Context:
+			parentCtx = v
+		case time.Duration:
+			if v > 0 {
+				ttl = v
+			}
+		}
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+
+	ctx, cancel := context.WithCancel(parentCtx)
 	s := &SessionStore{
 		tokens:   make(map[string]*tokenEntry),
 		lifetime: ttl,
@@ -48,6 +70,9 @@ func NewSessionStore(lifetime ...time.Duration) *SessionStore {
 }
 
 // Close stops the background cleanup goroutine.
+// It is safe to call Close() even if the parent context has already been
+// cancelled (it becomes a no-op in that case). Close is kept for backward
+// compatibility; prefer passing a cancellable context to NewSessionStore.
 func (s *SessionStore) Close() {
 	s.cancel()
 }

@@ -183,7 +183,19 @@ func TestGatewayOptions(t *testing.T) {
 	}
 }
 
+func TestGatewayBuildRequiresTLS(t *testing.T) {
+	t.Setenv("GRPC_GATEWAY_INSECURE", "")
+	t.Setenv("GRPC_GATEWAY_TLS_CERT", "")
+	t.Setenv("GRPC_GATEWAY_TLS_KEY", "")
+	gateway := grpc.NewGateway(grpc.GatewayWithGRPCEndpoint("localhost:50051"))
+	err := gateway.Build(context.Background())
+	if err == nil {
+		t.Error("Build() should fail without TLS config or explicit insecure opt-in")
+	}
+}
+
 func TestGatewayBuildRequiresEndpoint(t *testing.T) {
+	t.Setenv("GRPC_GATEWAY_INSECURE", "true")
 	gateway := grpc.NewGateway()
 	err := gateway.Build(context.Background())
 	if err != grpc.ErrNoEndpoint {

@@ -42,6 +42,7 @@ func configureQueueSigning() {
 	}
 
 	if useAppKey {
+		fmt.Fprintln(os.Stderr, "queue: WARNING: using APP_KEY for queue signing. Set a dedicated QUEUE_SIGNING_KEY for production environments")
 		// Derive a queue-specific key from APP_KEY using HKDF to avoid
 		// using the same key material for different purposes.
 		r := hkdf.New(sha256.New, []byte(key), nil, []byte("queue-signing"))
