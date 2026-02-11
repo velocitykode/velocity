@@ -111,6 +111,14 @@ func (b *Bond) ContainerID() string {
 	return b.containerID
 }
 
+// SetGlobalInstance sets the global bond instance.
+// Used by velocity.Default() to wire the App's view engine into the global.
+func SetGlobalInstance(b *Bond) {
+	initMu.Lock()
+	defer initMu.Unlock()
+	instance = b
+}
+
 // resetGlobal resets the global instance (for testing)
 func resetGlobal() {
 	initMu.Lock()

@@ -245,6 +245,14 @@ func NewManagerFromConfig(config Config) (*Manager, error) {
 	return manager, nil
 }
 
+// SetGlobalManager sets the global auth manager instance.
+// Used by velocity.Default() to wire the App's auth manager into the global.
+func SetGlobalManager(m *Manager) {
+	globalMux.Lock()
+	defer globalMux.Unlock()
+	globalManager = m
+}
+
 // Init initializes the global auth manager.
 func Init(config Config) error {
 	globalMux.Lock()

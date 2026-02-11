@@ -67,6 +67,12 @@ func Get() *VelocityRouterV2 {
 	return globalRouter
 }
 
+// SetGlobalRouter sets the global router instance.
+// Used by velocity.Default() to wire the App's router into the global.
+func SetGlobalRouter(r *VelocityRouterV2) {
+	globalRouter = r
+}
+
 func ResetGlobalRouter() {
 	once = sync.Once{}
 	globalRouter = nil

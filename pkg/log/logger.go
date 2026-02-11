@@ -34,6 +34,14 @@ var (
 	mu       sync.RWMutex
 )
 
+// SetGlobalLogger sets the global logger instance.
+// Used by velocity.Default() to wire the App's logger into the global.
+func SetGlobalLogger(l Logger) {
+	mu.Lock()
+	defer mu.Unlock()
+	instance = l
+}
+
 // NewLogger creates a new Logger instance with the given configuration.
 // This is the preferred way to create loggers instead of using the global Init().
 func NewLogger(config LogConfig) (Logger, error) {

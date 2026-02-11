@@ -269,6 +269,16 @@ func (a *App) Run() {
 // setDefaultApp wires the App's service instances into the package-level globals
 // for backward compatibility with code that uses package-level convenience functions.
 func setDefaultApp(app *App) {
+	// Wire router global
+	if app.Router != nil {
+		router.SetGlobalRouter(app.Router)
+	}
+
+	// Wire logger global
+	if app.Log != nil {
+		log.SetGlobalLogger(app.Log)
+	}
+
 	// Wire crypto global
 	if app.Crypto != nil {
 		crypto.Init(crypto.Config{
@@ -276,6 +286,11 @@ func setDefaultApp(app *App) {
 			PreviousKeys: app.config.Crypto.PreviousKeys,
 			Cipher:       app.config.Crypto.Cipher,
 		})
+	}
+
+	// Wire auth global
+	if app.Auth != nil {
+		auth.SetGlobalManager(app.Auth)
 	}
 
 	// Wire events global
@@ -286,6 +301,11 @@ func setDefaultApp(app *App) {
 	// Wire CSRF global
 	if app.CSRF != nil {
 		csrf.SetGlobalCSRF(app.CSRF)
+	}
+
+	// Wire view/bond global
+	if app.View != nil {
+		view.SetGlobalEngine(app.View)
 	}
 
 	// Wire queue global

@@ -99,6 +99,14 @@ func (e *Engine) Bond() *bond.Bond {
 	return e.bond
 }
 
+// SetGlobalEngine sets the global view engine and wires its bond instance into the bond global.
+// Used by velocity.Default() to wire the App's view engine into the global.
+func SetGlobalEngine(e *Engine) {
+	if e != nil && e.bond != nil {
+		bond.SetGlobalInstance(e.bond)
+	}
+}
+
 // --- Package-level convenience functions ---
 
 func Initialize(config Config) error {
