@@ -230,8 +230,8 @@ func TestNewSessionGuard(t *testing.T) {
 				if guard.provider != tt.provider {
 					t.Error("provider not set correctly")
 				}
-				if guard.sessions == nil {
-					t.Error("sessions map not initialized")
+				if guard.store == nil {
+					t.Error("store not initialized")
 				}
 			}
 		})
@@ -263,7 +263,6 @@ func TestSessionGuard_Check(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -289,7 +288,6 @@ func TestSessionGuard_Check(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -317,7 +315,6 @@ func TestSessionGuard_Check(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -350,7 +347,6 @@ func TestSessionGuard_Check(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -383,7 +379,6 @@ func TestSessionGuard_Check(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -433,7 +428,6 @@ func TestSessionGuard_User(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -460,7 +454,6 @@ func TestSessionGuard_User(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -487,7 +480,6 @@ func TestSessionGuard_User(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -520,7 +512,6 @@ func TestSessionGuard_User(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -580,7 +571,6 @@ func TestSessionGuard_ID(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -607,7 +597,6 @@ func TestSessionGuard_ID(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -634,7 +623,6 @@ func TestSessionGuard_ID(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -691,7 +679,6 @@ func TestSessionGuard_Login(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -730,7 +717,6 @@ func TestSessionGuard_Login(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -755,7 +741,6 @@ func TestSessionGuard_Login(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -786,7 +771,6 @@ func TestSessionGuard_Login(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -843,7 +827,6 @@ func TestSessionGuard_LoginByID(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -867,7 +850,6 @@ func TestSessionGuard_LoginByID(t *testing.T) {
 					store:    &mockSessionGuardStore{},
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -893,7 +875,6 @@ func TestSessionGuard_LoginByID(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -956,7 +937,6 @@ func TestSessionGuard_Attempt(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -984,7 +964,6 @@ func TestSessionGuard_Attempt(t *testing.T) {
 					store:    &mockSessionGuardStore{},
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -1005,7 +984,6 @@ func TestSessionGuard_Attempt(t *testing.T) {
 					store:    &mockSessionGuardStore{},
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -1031,7 +1009,6 @@ func TestSessionGuard_Attempt(t *testing.T) {
 					store:    &mockSessionGuardStore{},
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -1060,7 +1037,6 @@ func TestSessionGuard_Attempt(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -1119,7 +1095,6 @@ func TestSessionGuard_Logout(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -1145,7 +1120,6 @@ func TestSessionGuard_Logout(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -1175,7 +1149,6 @@ func TestSessionGuard_Logout(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -1202,7 +1175,6 @@ func TestSessionGuard_Logout(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -1261,7 +1233,6 @@ func TestSessionGuard_SetProvider(t *testing.T) {
 				store:    &mockSessionGuardStore{},
 				config:   newTestSessionConfig(),
 				hasher:   auth.GetHasher(),
-				sessions: map[*http.Request]auth.Session{},
 			}
 			guard.SetProvider(tt.newProvider)
 			if guard.provider != tt.newProvider {
@@ -1286,7 +1257,6 @@ func TestSessionGuard_getSession(t *testing.T) {
 					store:    &mockSessionGuardStore{},
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 				return guard
 			},
@@ -1313,7 +1283,6 @@ func TestSessionGuard_getSession(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -1336,7 +1305,6 @@ func TestSessionGuard_getSession(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -1360,7 +1328,6 @@ func TestSessionGuard_getSession(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 			},
 			setupReq: func() *http.Request {
@@ -1414,7 +1381,6 @@ func TestSessionGuard_SessionRegeneration(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 				return guard, session
 			},
@@ -1466,7 +1432,6 @@ func TestSessionGuard_SessionInvalidation(t *testing.T) {
 					store:    store,
 					config:   newTestSessionConfig(),
 					hasher:   auth.GetHasher(),
-					sessions: map[*http.Request]auth.Session{},
 				}
 				return guard, session
 			},

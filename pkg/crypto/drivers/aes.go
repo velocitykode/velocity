@@ -43,9 +43,13 @@ func NewAESDriver(key []byte, previousKeys [][]byte, cipher string) (*AESDriver,
 		return nil, fmt.Errorf("unsupported cipher: %s", cipher)
 	}
 
-	// Validate key size
+	// If key doesn't match required size, derive to correct size via HKDF
 	if len(key) != d.keySize {
-		return nil, fmt.Errorf("invalid key size for %s: expected %d bytes, got %d", cipher, d.keySize, len(key))
+		derived, err := deriveSubkey(key, d.keySize, []byte("velocity-encryption"))
+		if err != nil {
+			return nil, fmt.Errorf("failed to derive key to correct size: %w", err)
+		}
+		key = derived
 	}
 
 	// Derive separate encryption and HMAC subkeys via HKDF
@@ -64,9 +68,12 @@ func NewAESDriver(key []byte, previousKeys [][]byte, cipher string) (*AESDriver,
 	return d, nil
 }
 
+// hkdfSalt is a static salt for HKDF key derivation.
+var hkdfSalt = []byte("velocity-framework-hkdf-salt-v1")
+
 // deriveSubkey derives a subkey from a master key using HKDF-SHA256.
 func deriveSubkey(master []byte, size int, info []byte) ([]byte, error) {
-	r := hkdf.New(sha256.New, master, nil, info)
+	r := hkdf.New(sha256.New, master, hkdfSalt, info)
 	out := make([]byte, size)
 	if _, err := io.ReadFull(r, out); err != nil {
 		return nil, err
@@ -112,8 +119,16 @@ func (d *AESDriver) DecryptBytes(payload string) ([]byte, error) {
 
 	// Try previous keys for rotation support (derive subkeys from each master key)
 	for _, masterKey := range d.previousKeys {
-		encKey, ekErr := deriveSubkey(masterKey, d.keySize, []byte("encryption"))
-		hk, hkErr := deriveSubkey(masterKey, 32, []byte("hmac"))
+		mk := masterKey
+		if len(mk) != d.keySize {
+			derived, dErr := deriveSubkey(mk, d.keySize, []byte("velocity-encryption"))
+			if dErr != nil {
+				continue
+			}
+			mk = derived
+		}
+		encKey, ekErr := deriveSubkey(mk, d.keySize, []byte("encryption"))
+		hk, hkErr := deriveSubkey(mk, 32, []byte("hmac"))
 		if ekErr != nil || hkErr != nil {
 			continue
 		}

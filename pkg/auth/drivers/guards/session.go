@@ -1,11 +1,13 @@
 package guards
 
 import (
+	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
 	"net/http"
-	"sync"
+	"strings"
 	"time"
 
 	"github.com/velocitykode/velocity/pkg/auth"
@@ -13,14 +15,27 @@ import (
 	"github.com/velocitykode/velocity/pkg/crypto"
 )
 
+// sessionCtxKey is an unexported context key type to avoid collisions.
+type sessionCtxKey struct{}
+
+// sessionHolder is a mutable container for session data stored in request context.
+type sessionHolder struct {
+	session auth.Session
+}
+
+// WithSessionContext returns a new request with a session cache attached to its context.
+// Call this from middleware to enable per-request session caching that is automatically
+// cleaned up when the request completes.
+func WithSessionContext(r *http.Request) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), sessionCtxKey{}, &sessionHolder{}))
+}
+
 // SessionGuard implements session-based authentication
 type SessionGuard struct {
 	provider auth.UserProvider
 	store    auth.SessionStore
 	config   auth.SessionConfig
 	hasher   auth.Hasher
-	mu       sync.RWMutex                   // Protects sessions map
-	sessions map[*http.Request]auth.Session // Request-scoped session cache
 }
 
 // NewSessionGuard creates a new session guard
@@ -46,7 +61,6 @@ func NewSessionGuard(provider auth.UserProvider, config auth.SessionConfig) (*Se
 		store:    store,
 		config:   config,
 		hasher:   auth.GetHasher(),
-		sessions: make(map[*http.Request]auth.Session),
 	}, nil
 }
 
@@ -61,7 +75,7 @@ func (g *SessionGuard) Check(r *http.Request) bool {
 	userID := session.Get("user_id")
 	if userID == nil {
 		// Check remember cookie
-		return g.checkRememberCookie(r)
+		return g.checkRememberCookie(r) != nil
 	}
 
 	// Validate user still exists
@@ -79,11 +93,13 @@ func (g *SessionGuard) User(r *http.Request) auth.Authenticatable {
 	userID := session.Get("user_id")
 	if userID == nil {
 		// Try remember cookie
-		if g.checkRememberCookie(r) {
-			userID = session.Get("user_id")
-		} else {
-			return nil
+		user := g.checkRememberCookie(r)
+		if user != nil {
+			// Re-establish session for the remembered user
+			session.Put("user_id", user.GetAuthIdentifier())
+			return user
 		}
+		return nil
 	}
 
 	user, err := g.provider.FindByID(userID)
@@ -113,9 +129,10 @@ func (g *SessionGuard) Login(w http.ResponseWriter, r *http.Request, user auth.A
 		if err != nil {
 			return err
 		}
-		g.mu.Lock()
-		g.sessions[r] = session
-		g.mu.Unlock()
+		// Cache in request context if available
+		if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok {
+			holder.session = session
+		}
 	}
 
 	// Regenerate session ID for security
@@ -190,14 +207,6 @@ func (g *SessionGuard) Logout(w http.ResponseWriter, r *http.Request) error {
 	return session.Save(w)
 }
 
-// CleanupRequest removes the cached session for a completed request.
-// Call this from middleware after the request has been served to prevent memory leaks.
-func (g *SessionGuard) CleanupRequest(r *http.Request) {
-	g.mu.Lock()
-	delete(g.sessions, r)
-	g.mu.Unlock()
-}
-
 // SetProvider sets the user provider
 func (g *SessionGuard) SetProvider(provider auth.UserProvider) {
 	g.provider = provider
@@ -205,13 +214,10 @@ func (g *SessionGuard) SetProvider(provider auth.UserProvider) {
 
 // getSession gets or creates session for request
 func (g *SessionGuard) getSession(r *http.Request) auth.Session {
-	// Check cache first (read lock)
-	g.mu.RLock()
-	if session, ok := g.sessions[r]; ok {
-		g.mu.RUnlock()
-		return session
+	// Check request context cache first
+	if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok && holder.session != nil {
+		return holder.session
 	}
-	g.mu.RUnlock()
 
 	// Get from store
 	session, err := auth.GetSessionFromRequest(r, g.store, g.config.Name)
@@ -219,32 +225,50 @@ func (g *SessionGuard) getSession(r *http.Request) auth.Session {
 		return nil
 	}
 
-	// Cache for this request (write lock)
-	g.mu.Lock()
-	g.sessions[r] = session
-	g.mu.Unlock()
+	// Cache in request context if available
+	if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok {
+		holder.session = session
+	}
 
 	return session
 }
 
-// checkRememberCookie checks and validates remember cookie
-func (g *SessionGuard) checkRememberCookie(r *http.Request) bool {
+// checkRememberCookie checks and validates remember cookie.
+// Returns the authenticated user if the cookie is valid, nil otherwise.
+func (g *SessionGuard) checkRememberCookie(r *http.Request) auth.Authenticatable {
 	cookie, err := r.Cookie("remember_" + g.config.Name)
 	if err != nil {
-		return false
+		return nil
 	}
 
 	// Decrypt cookie value
-	_, err = crypto.Decrypt(cookie.Value)
+	decrypted, err := crypto.Decrypt(cookie.Value)
 	if err != nil {
-		return false
+		return nil
 	}
 
 	// Parse remember token format: userID|token
-	// This is simplified - in production, store tokens in database
-	// and validate against stored tokens
+	parts := strings.SplitN(decrypted, "|", 2)
+	if len(parts) != 2 {
+		return nil
+	}
 
-	return false // Simplified for now
+	userID := parts[0]
+	token := parts[1]
+
+	// Look up user by ID
+	user, err := g.provider.FindByID(userID)
+	if err != nil || user == nil {
+		return nil
+	}
+
+	// Verify remember token with constant-time comparison
+	storedToken := user.GetRememberToken()
+	if storedToken == "" || subtle.ConstantTimeCompare([]byte(storedToken), []byte(token)) != 1 {
+		return nil
+	}
+
+	return user
 }
 
 // setRememberCookie sets remember me cookie
@@ -303,11 +327,9 @@ func (g *SessionGuard) clearRememberCookie(w http.ResponseWriter) {
 
 // generateRememberToken generates a random remember token
 func generateRememberToken() string {
-	// Use crypto package to generate secure token
 	token := make([]byte, 32)
 	if _, err := rand.Read(token); err != nil {
-		// Fallback
-		return base64.URLEncoding.EncodeToString([]byte(time.Now().String()))
+		panic("auth: crypto/rand failure: " + err.Error())
 	}
 	return base64.URLEncoding.EncodeToString(token)
 }

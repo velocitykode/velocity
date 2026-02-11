@@ -15,6 +15,17 @@ import (
 // dbIdentifierRegex validates database/table names
 var dbIdentifierRegex = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
+// quoteIdentifier quotes a table/database name for use in DDL statements
+func quoteIdentifier(name, driver string) string {
+	if !dbIdentifierRegex.MatchString(name) {
+		panic(fmt.Sprintf("invalid identifier: %q", name))
+	}
+	if driver == "mysql" {
+		return "`" + name + "`"
+	}
+	return `"` + name + `"`
+}
+
 // GetAllTables returns a list of all tables in the database
 func GetAllTables(db *sql.DB, driver string) ([]string, error) {
 	var query string
@@ -74,19 +85,21 @@ func DropAllTables(db *sql.DB, driver string) error {
 		table := tables[i]
 		var dropSQL string
 
+		quoted := quoteIdentifier(table, driver)
+
 		switch driver {
 		case "sqlite":
-			dropSQL = fmt.Sprintf("DROP TABLE IF EXISTS %s", table)
+			dropSQL = fmt.Sprintf("DROP TABLE IF EXISTS %s", quoted)
 
 		case "mysql":
 			// Disable foreign key checks temporarily
 			if _, err := db.Exec("SET FOREIGN_KEY_CHECKS = 0"); err != nil {
 				return fmt.Errorf("failed to disable foreign key checks: %w", err)
 			}
-			dropSQL = fmt.Sprintf("DROP TABLE IF EXISTS %s", table)
+			dropSQL = fmt.Sprintf("DROP TABLE IF EXISTS %s", quoted)
 
 		case "postgres":
-			dropSQL = fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", table)
+			dropSQL = fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", quoted)
 
 		default:
 			return fmt.Errorf("unsupported driver: %s", driver)
@@ -126,7 +139,8 @@ func TruncateAllTables(db *sql.DB, driver string) error {
 	case "sqlite":
 		// SQLite doesn't support TRUNCATE, use DELETE
 		for _, table := range tables {
-			if _, err := db.Exec(fmt.Sprintf("DELETE FROM %s", table)); err != nil {
+			quoted := quoteIdentifier(table, driver)
+			if _, err := db.Exec(fmt.Sprintf("DELETE FROM %s", quoted)); err != nil {
 				return fmt.Errorf("failed to truncate table %s: %w", table, err)
 			}
 		}
@@ -138,7 +152,8 @@ func TruncateAllTables(db *sql.DB, driver string) error {
 		}
 
 		for _, table := range tables {
-			if _, err := db.Exec(fmt.Sprintf("TRUNCATE TABLE %s", table)); err != nil {
+			quoted := quoteIdentifier(table, driver)
+			if _, err := db.Exec(fmt.Sprintf("TRUNCATE TABLE %s", quoted)); err != nil {
 				return fmt.Errorf("failed to truncate table %s: %w", table, err)
 			}
 		}
@@ -151,7 +166,11 @@ func TruncateAllTables(db *sql.DB, driver string) error {
 	case "postgres":
 		// Truncate all at once with CASCADE
 		if len(tables) > 0 {
-			tableList := strings.Join(tables, ", ")
+			quotedTables := make([]string, len(tables))
+			for i, table := range tables {
+				quotedTables[i] = quoteIdentifier(table, driver)
+			}
+			tableList := strings.Join(quotedTables, ", ")
 			if _, err := db.Exec(fmt.Sprintf("TRUNCATE TABLE %s RESTART IDENTITY CASCADE", tableList)); err != nil {
 				return fmt.Errorf("failed to truncate tables: %w", err)
 			}

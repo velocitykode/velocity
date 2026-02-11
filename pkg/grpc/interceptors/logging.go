@@ -248,7 +248,9 @@ func redactMetadata(md map[string][]string) map[string][]string {
 	}
 	redacted := make(map[string][]string, len(md))
 	for k, v := range md {
-		if strings.EqualFold(k, "authorization") {
+		lower := strings.ToLower(k)
+		if lower == "authorization" || lower == "cookie" || lower == "set-cookie" || lower == "x-api-key" ||
+			strings.Contains(lower, "token") || strings.Contains(lower, "secret") {
 			redacted[k] = []string{"[REDACTED]"}
 		} else {
 			redacted[k] = v

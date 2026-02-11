@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/velocitykode/velocity/pkg/auth"
 )
@@ -314,7 +315,7 @@ func TestJWTGuard_User(t *testing.T) {
 			setupGuard: func() *JWTGuard {
 				guard := NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 				// Pre-cache a user
-				guard.userCache["cached-token"] = &mockJWTUser{id: "cached-user"}
+				guard.userCache["cached-token"] = cachedUser{user: &mockJWTUser{id: "cached-user"}, cachedAt: time.Now()}
 				return guard
 			},
 			setupReq: func(guard *JWTGuard) *http.Request {
@@ -695,7 +696,7 @@ func TestJWTGuard_Logout(t *testing.T) {
 				user := &mockJWTUser{id: "user123"}
 				token, _ := guard.jwtManager.GenerateToken(user)
 				// Pre-cache user
-				guard.userCache[token] = user
+				guard.userCache[token] = cachedUser{user: user, cachedAt: time.Now()}
 				req := httptest.NewRequest("POST", "/logout", nil)
 				req.Header.Set("Authorization", "Bearer "+token)
 				return req

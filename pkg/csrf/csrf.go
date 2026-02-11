@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -72,7 +73,10 @@ func (c *CSRF) validateToken(r *http.Request) error {
 	}
 
 	// Get expected token from store
-	sessionID := c.getSessionID(r)
+	sessionID, err := c.getSessionID(r)
+	if err != nil {
+		return err
+	}
 	expectedToken, err := c.config.Store.Get(sessionID)
 	if err != nil {
 		return ErrTokenInvalid
@@ -111,7 +115,7 @@ func (c *CSRF) getTokenFromRequest(r *http.Request) string {
 }
 
 // getSessionID extracts the session ID from the request
-func (c *CSRF) getSessionID(r *http.Request) string {
+func (c *CSRF) getSessionID(r *http.Request) (string, error) {
 	// Use configured session cookie name
 	cookieName := c.config.SessionCookieName
 	if cookieName == "" {
@@ -121,15 +125,15 @@ func (c *CSRF) getSessionID(r *http.Request) string {
 	// Try to get session ID from cookie
 	cookie, err := r.Cookie(cookieName)
 	if err == nil {
-		return cookie.Value
+		return cookie.Value, nil
 	}
 
 	// Generate a random per-request identifier instead of using RemoteAddr
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		return ""
+		return "", fmt.Errorf("csrf: failed to generate session ID: %w", err)
 	}
-	return "temp-" + hex.EncodeToString(b)
+	return "temp-" + hex.EncodeToString(b), nil
 }
 
 // isExcluded checks if the request should be excluded from CSRF protection
@@ -176,7 +180,11 @@ func (c *CSRF) handleError(w http.ResponseWriter, r *http.Request, err error) {
 // RefreshHandler returns a handler that generates and returns a new CSRF token
 func (c *CSRF) RefreshHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		sessionID := c.getSessionID(r)
+		sessionID, err := c.getSessionID(r)
+		if err != nil {
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
 
 		// Generate new token
 		token, err := GenerateToken()
