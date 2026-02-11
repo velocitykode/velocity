@@ -43,6 +43,11 @@ func NewAESDriver(key []byte, previousKeys [][]byte, cipher string) (*AESDriver,
 		return nil, fmt.Errorf("unsupported cipher: %s", cipher)
 	}
 
+	// Reject empty or nil keys
+	if len(key) == 0 {
+		return nil, fmt.Errorf("invalid key size: key must not be empty")
+	}
+
 	// If key doesn't match required size, derive to correct size via HKDF
 	if len(key) != d.keySize {
 		derived, err := deriveSubkey(key, d.keySize, []byte("velocity-encryption"))

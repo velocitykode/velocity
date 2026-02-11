@@ -530,7 +530,7 @@ func TestS3DriverWithMock(t *testing.T) {
 	// Test cleanPath
 	t.Run("cleanPath", func(t *testing.T) {
 		t.Skip("TODO: fix cleanPath to remove double slashes")
-		path := driver.cleanPath("/path/to//file.txt")
+		path, _ := driver.cleanPath("/path/to//file.txt")
 		if path != "path/to/file.txt" {
 			t.Errorf("cleanPath wrong: got %s", path)
 		}
