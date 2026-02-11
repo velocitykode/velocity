@@ -300,6 +300,12 @@ func (d *DatabaseDriver) ProcessDelayedJobs(queueName string) error {
 	return nil
 }
 
+// Close is a no-op for the database driver; the underlying DB connection
+// is owned by the ORM and closed separately.
+func (d *DatabaseDriver) Close() error {
+	return nil
+}
+
 // scanJobRecord scans a database row into a JobRecord
 func scanJobRecord(row *sql.Row, job *JobRecord) error {
 	return row.Scan(

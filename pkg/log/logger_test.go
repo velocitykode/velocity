@@ -5,8 +5,6 @@ import (
 	"os/exec"
 	"sync"
 	"testing"
-
-	"github.com/velocitykode/velocity/pkg/log/drivers"
 )
 
 func TestInit(t *testing.T) {
@@ -209,47 +207,29 @@ func TestGetEnvOrDefault(t *testing.T) {
 	}
 }
 
-func TestInitFallbackToConsole(t *testing.T) {
-	// Save original instance
+func TestNewLoggerInvalidDriverReturnsError(t *testing.T) {
+	_, err := NewLogger(LogConfig{Driver: "invalid_driver_that_will_fail"})
+	if err == nil {
+		t.Error("Expected error for invalid driver")
+	}
+}
+
+func TestGetFallbackToConsole(t *testing.T) {
+	// Save original state
 	original := instance
 	originalOnce := once
-	originalInitOnce := initOnce
 	defer func() {
 		instance = original
 		once = originalOnce
-		initOnce = originalInitOnce
 	}()
 
-	// Reset state
+	// Reset state so Get() triggers fallback
 	instance = nil
 	once = sync.Once{}
-	initOnce = sync.Once{}
 
-	// Set invalid driver to trigger fallback
-	t.Setenv("LOG_DRIVER", "invalid_driver_that_will_fail")
-
-	// Call init logic directly
-	initOnce.Do(func() {
-		driver := os.Getenv("LOG_DRIVER")
-		if driver == "" {
-			driver = "console"
-		}
-
-		config := map[string]any{
-			"path":   getEnvOrDefault("LOG_PATH", "./storage/logs"),
-			"level":  getEnvOrDefault("LOG_LEVEL", "debug"),
-			"format": getEnvOrDefault("LOG_FORMAT", "text"),
-		}
-
-		// This should fail and fall back to console
-		if err := Init(driver, config); err != nil {
-			instance = drivers.NewConsoleLogger()
-		}
-	})
-
-	// Verify instance is console logger
-	if instance == nil {
-		t.Error("Instance should be initialized with fallback console logger")
+	logger := Get()
+	if logger == nil {
+		t.Error("Get() should return a fallback console logger when instance is nil")
 	}
 }
 

@@ -105,5 +105,5 @@ func Reset() {
 	globalDispatcher = nil
 	once = sync.Once{}
 	// Clear package hooks
-	clearPackageHooks()
+	ClearPackageHooks()
 }

@@ -109,3 +109,15 @@ func (f *FileLogger) Error(msg string, kvs ...any) {
 func (f *FileLogger) Fatal(msg string, kvs ...any) {
 	f.log("FATAL", msg, kvs...)
 }
+
+// Close closes the underlying file handle.
+func (f *FileLogger) Close() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.file != nil {
+		err := f.file.Close()
+		f.file = nil
+		return err
+	}
+	return nil
+}

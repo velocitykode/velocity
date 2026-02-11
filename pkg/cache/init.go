@@ -99,19 +99,19 @@ func getEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
-// GetManager returns the default cache manager.
+// SetDefaultManager sets the global default cache manager.
+// Used by velocity.Default() to wire the App's cache into the global.
+func SetDefaultManager(m *Manager) {
+	mu.Lock()
+	defer mu.Unlock()
+	defaultManager = m
+}
+
+// GetManager returns the default cache manager, or nil if not initialized.
 func GetManager() *Manager {
 	mu.RLock()
-	m := defaultManager
-	mu.RUnlock()
-
-	if m == nil {
-		Initialize()
-		mu.RLock()
-		m = defaultManager
-		mu.RUnlock()
-	}
-	return m
+	defer mu.RUnlock()
+	return defaultManager
 }
 
 // Global convenience functions that use the default manager

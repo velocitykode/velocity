@@ -95,6 +95,24 @@ var (
 	globalMu sync.RWMutex
 )
 
+// NewValidator creates a new Validator instance.
+func NewValidator() Validator {
+	return &defaultValidator{
+		messages: make(Messages),
+		locale:   "en",
+	}
+}
+
+// SetGlobal sets the global validator instance.
+// Used by velocity.Default() to wire the App's validator into the global.
+func SetGlobal(v Validator) {
+	globalMu.Lock()
+	defer globalMu.Unlock()
+	if dv, ok := v.(*defaultValidator); ok {
+		instance = dv
+	}
+}
+
 // Get returns the global validator instance
 func Get() Validator {
 	once.Do(func() {

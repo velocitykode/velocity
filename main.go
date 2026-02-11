@@ -14,6 +14,7 @@ import (
 	"github.com/velocitykode/velocity/pkg/crypto"
 	"github.com/velocitykode/velocity/pkg/csrf"
 	"github.com/velocitykode/velocity/pkg/events"
+	"github.com/velocitykode/velocity/pkg/exceptions"
 	"github.com/velocitykode/velocity/pkg/log"
 	"github.com/velocitykode/velocity/pkg/mail"
 	"github.com/velocitykode/velocity/pkg/orm"
@@ -21,6 +22,7 @@ import (
 	"github.com/velocitykode/velocity/pkg/router"
 	"github.com/velocitykode/velocity/pkg/scheduler"
 	"github.com/velocitykode/velocity/pkg/storage"
+	"github.com/velocitykode/velocity/pkg/validation"
 	"github.com/velocitykode/velocity/pkg/view"
 )
 
@@ -30,19 +32,21 @@ const frameworkVersion = "0.1.0"
 // It owns all framework subsystem instances and provides them to the consumer.
 type App struct {
 	// Core services — all exported for direct access
-	Router    *router.VelocityRouterV2
-	DB        *orm.Manager
-	Auth      *auth.Manager
-	Log       log.Logger
-	Cache     *cache.Manager
-	Crypto    crypto.Encryptor
-	CSRF      *csrf.CSRF
-	Events    events.Dispatcher
-	Queue     queue.Driver
-	Storage   *storage.Manager
-	View      *view.Engine
-	Scheduler *scheduler.Scheduler
-	Mail      mail.Mailer
+	Router     *router.VelocityRouterV2
+	DB         *orm.Manager
+	Auth       *auth.Manager
+	Log        log.Logger
+	Cache      *cache.Manager
+	Crypto     crypto.Encryptor
+	CSRF       *csrf.CSRF
+	Events     events.Dispatcher
+	Queue      queue.Driver
+	Storage    *storage.Manager
+	View       *view.Engine
+	Scheduler  *scheduler.Scheduler
+	Mail       mail.Mailer
+	Exceptions *exceptions.Handler
+	Validator  validation.Validator
 
 	// Internal
 	config  *Config
@@ -166,6 +170,15 @@ func New(opts ...Option) (*App, error) {
 	// 13. Create router
 	app.Router = router.New()
 
+	// 14. Initialize exception handler
+	app.Exceptions = exceptions.NewHandler(
+		exceptions.WithDebug(app.config.Debug),
+		exceptions.WithEnvironment(app.config.Env),
+	)
+
+	// 15. Initialize validator
+	app.Validator = validation.NewValidator()
+
 	// Wire event dispatching into packages
 	wireEvents(app)
 
@@ -228,6 +241,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 	}
 
+	// 0. Clear event wiring first so in-flight ops don't dispatch to torn-down services
+	events.ClearPackageHooks()
+
 	// 1. Stop accepting new connections
 	if a.server != nil {
 		setErr(a.server.Shutdown(ctx))
@@ -238,21 +254,32 @@ func (a *App) Shutdown(ctx context.Context) error {
 		a.Scheduler.Stop()
 	}
 
-	// 3. Close cache connections
+	// 3. Close queue driver
+	if a.Queue != nil {
+		setErr(a.Queue.Close())
+	}
+
+	// 4. Close cache connections
 	if a.Cache != nil {
 		setErr(a.Cache.Close())
 	}
 
-	// 4. Close database connections
+	// 5. Close database connections
 	if a.DB != nil {
 		setErr(a.DB.Close())
+	}
+
+	// 6. Close logger if it supports it (e.g., file logger)
+	if a.Log != nil {
+		if closer, ok := a.Log.(interface{ Close() error }); ok {
+			setErr(closer.Close())
+		}
 	}
 
 	if firstErr != nil {
 		return fmt.Errorf("velocity: shutdown error: %w", firstErr)
 	}
 
-	a.Log.Info("Velocity server stopped")
 	return nil
 }
 
@@ -288,6 +315,11 @@ func setDefaultApp(app *App) {
 		})
 	}
 
+	// Wire ORM global (for Model[T] backward compat)
+	if app.DB != nil {
+		orm.SetGlobalFromManager(app.DB)
+	}
+
 	// Wire auth global
 	if app.Auth != nil {
 		auth.SetGlobalManager(app.Auth)
@@ -308,6 +340,11 @@ func setDefaultApp(app *App) {
 		view.SetGlobalEngine(app.View)
 	}
 
+	// Wire cache global
+	if app.Cache != nil {
+		cache.SetDefaultManager(app.Cache)
+	}
+
 	// Wire queue global
 	if app.Queue != nil {
 		queue.SetDefault(app.Queue)
@@ -321,6 +358,16 @@ func setDefaultApp(app *App) {
 	// Wire mail global
 	if app.Mail != nil {
 		mail.SetDefaultMailer(app.Mail)
+	}
+
+	// Wire exceptions global
+	if app.Exceptions != nil {
+		exceptions.SetGlobal(app.Exceptions)
+	}
+
+	// Wire validator global
+	if app.Validator != nil {
+		validation.SetGlobal(app.Validator)
 	}
 }
 

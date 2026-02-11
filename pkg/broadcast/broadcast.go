@@ -81,6 +81,12 @@ func New(driver Driver) *broadcaster {
 	}
 }
 
+// SetDefault sets the global default broadcaster.
+// Used by velocity.Default() to wire the App's broadcaster into the global.
+func SetDefault(b *broadcaster) {
+	defaultBroadcaster = b
+}
+
 // Default returns the default broadcaster instance
 func Default() *broadcaster {
 	once.Do(func() {

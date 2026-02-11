@@ -30,6 +30,9 @@ type Driver interface {
 
 	// Failed moves a job to the failed queue
 	Failed(job Job, err error, queue string) error
+
+	// Close gracefully shuts down the driver, releasing resources.
+	Close() error
 }
 
 // Payload represents a serialized job

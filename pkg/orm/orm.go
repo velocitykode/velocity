@@ -127,6 +127,23 @@ func SetDefaultDriver(d drivers.Driver) {
 	defaultDriver = d
 }
 
+// SetGlobalFromManager sets the global default driver and database name from
+// a Manager instance. Used by velocity.Default() to bridge DI to globals.
+func SetGlobalFromManager(m *Manager) {
+	if m == nil {
+		return
+	}
+	m.mu.RLock()
+	d := m.defaultDriver
+	dbName := m.databaseName
+	m.mu.RUnlock()
+
+	driverMu.Lock()
+	defaultDriver = d
+	currentDatabaseName = dbName
+	driverMu.Unlock()
+}
+
 // DB returns the underlying *sql.DB instance.
 func DB() *sql.DB {
 	driverMu.RLock()

@@ -44,9 +44,9 @@ func wirePackageHooks() {
 	// Note: grpc package wires itself via grpc.init() to avoid import cycles
 }
 
-// clearPackageHooks removes event dispatchers from all packages.
-// This is called when resetting the events system (e.g., for testing).
-func clearPackageHooks() {
+// ClearPackageHooks removes event dispatchers from all packages.
+// Called during App.Shutdown() and for testing resets.
+func ClearPackageHooks() {
 	router.SetEventDispatcher(nil)
 	orm.SetEventDispatcher(nil)
 	cache.SetEventDispatcher(nil)

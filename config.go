@@ -76,10 +76,10 @@ type DBConfig struct {
 
 // AuthConfig holds authentication configuration.
 type AuthConfig struct {
-	DefaultGuard string                   // AUTH_GUARD
-	Guards       map[string]GuardConfig   // Guard definitions
+	DefaultGuard string                    // AUTH_GUARD
+	Guards       map[string]GuardConfig    // Guard definitions
 	Providers    map[string]ProviderConfig // Provider definitions
-	BcryptCost   int                      // HASH_BCRYPT_COST, default 10
+	BcryptCost   int                       // HASH_BCRYPT_COST, default 10
 }
 
 // GuardConfig holds configuration for an auth guard.
@@ -119,9 +119,9 @@ type JWTConfig struct {
 
 // CacheConfig holds cache configuration.
 type CacheConfig struct {
-	Driver   string // CACHE_DRIVER: memory, file, redis, database
-	Prefix   string // CACHE_PREFIX, default "velocity_cache"
-	Path     string // CACHE_PATH (for file driver)
+	Driver        string // CACHE_DRIVER: memory, file, redis, database
+	Prefix        string // CACHE_PREFIX, default "velocity_cache"
+	Path          string // CACHE_PATH (for file driver)
 	RedisHost     string // REDIS_HOST, default "127.0.0.1"
 	RedisPort     int    // REDIS_PORT, default 6379
 	RedisPassword string // REDIS_PASSWORD
@@ -145,7 +145,7 @@ type QueueConfig struct {
 
 // StorageConfig holds storage configuration.
 type StorageConfig struct {
-	Default string            // STORAGE_DRIVER, default "local"
+	Default string                // STORAGE_DRIVER, default "local"
 	Disks   map[string]DiskConfig // Disk configurations
 }
 

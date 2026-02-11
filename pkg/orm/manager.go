@@ -90,12 +90,6 @@ func NewManager(config ManagerConfig) (*Manager, error) {
 		databaseName:  config.Database,
 	}
 
-	// Also set the global default driver for backward compatibility with Model[T]
-	driverMu.Lock()
-	defaultDriver = driver
-	currentDatabaseName = config.Database
-	driverMu.Unlock()
-
 	return m, nil
 }
 
