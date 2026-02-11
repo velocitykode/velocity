@@ -62,7 +62,7 @@ type Config struct {
 	Cipher       string   // Cipher algorithm
 }
 
-// Init initializes the global encryptor
+// Init initializes the global encryptor.
 func Init(config Config) error {
 	globalMux.Lock()
 	defer globalMux.Unlock()
@@ -76,7 +76,7 @@ func Init(config Config) error {
 	return nil
 }
 
-// Encrypt encrypts plaintext using the global encryptor
+// Encrypt encrypts plaintext using the global encryptor.
 func Encrypt(plaintext string) (string, error) {
 	globalMux.RLock()
 	enc := globalEncryptor
@@ -89,7 +89,7 @@ func Encrypt(plaintext string) (string, error) {
 	return enc.Encrypt(plaintext)
 }
 
-// EncryptBytes encrypts bytes using the global encryptor
+// EncryptBytes encrypts bytes using the global encryptor.
 func EncryptBytes(plaintext []byte) (string, error) {
 	globalMux.RLock()
 	enc := globalEncryptor
@@ -102,7 +102,7 @@ func EncryptBytes(plaintext []byte) (string, error) {
 	return enc.EncryptBytes(plaintext)
 }
 
-// Decrypt decrypts a payload using the global encryptor
+// Decrypt decrypts a payload using the global encryptor.
 func Decrypt(payload string) (string, error) {
 	globalMux.RLock()
 	enc := globalEncryptor
@@ -115,7 +115,7 @@ func Decrypt(payload string) (string, error) {
 	return enc.Decrypt(payload)
 }
 
-// DecryptBytes decrypts a payload using the global encryptor
+// DecryptBytes decrypts a payload using the global encryptor.
 func DecryptBytes(payload string) ([]byte, error) {
 	globalMux.RLock()
 	enc := globalEncryptor
@@ -128,7 +128,7 @@ func DecryptBytes(payload string) ([]byte, error) {
 	return enc.DecryptBytes(payload)
 }
 
-// GenerateKey generates a new encryption key for the current cipher
+// GenerateKey generates a new encryption key for the current cipher.
 func GenerateKey() (string, error) {
 	globalMux.RLock()
 	enc := globalEncryptor

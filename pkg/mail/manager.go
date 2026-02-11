@@ -22,8 +22,6 @@ func NewManager() *Manager {
 
 // Channel gets or creates a mail channel
 func (m *Manager) Channel(name string) Mailer {
-	ensureInitialized() // Ensure drivers are registered
-
 	m.mu.RLock()
 	mailer, exists := m.channels[name]
 	m.mu.RUnlock()
@@ -152,7 +150,7 @@ func (m *Manager) ClearChannels() {
 var defaultManager *Manager
 var managerOnce sync.Once
 
-// GetManager returns the default manager instance
+// GetManager returns the default manager instance.
 func GetManager() *Manager {
 	managerOnce.Do(func() {
 		defaultManager = NewManager()

@@ -1,6 +1,6 @@
 module github.com/velocitykode/velocity
 
-go 1.25.1
+go 1.25.7
 
 retract (
 	v1.0.0 // accidentally tagged

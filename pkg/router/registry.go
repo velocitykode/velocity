@@ -12,14 +12,12 @@ var (
 	registryMu    sync.Mutex
 )
 
-// Register adds a route registration function to be called during initialization
 func Register(fn RegistrationFunc) {
 	registryMu.Lock()
 	defer registryMu.Unlock()
 	registrations = append(registrations, fn)
 }
 
-// RegisterWithPrefix adds a route registration function with a prefix
 func RegisterWithPrefix(prefix string, fn RegistrationFunc) {
 	registryMu.Lock()
 	defer registryMu.Unlock()
@@ -40,7 +38,6 @@ func applyRegistrations(r Router) {
 	}
 }
 
-// LoadRoutes applies all registered routes to the global router
 func LoadRoutes() {
 	applyRegistrations(Get())
 }

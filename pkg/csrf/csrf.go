@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/velocitykode/velocity/pkg/csrf/stores"
+	"github.com/velocitykode/velocity/pkg/router"
 )
 
 var (
@@ -62,6 +63,27 @@ func (c *CSRF) Middleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// RouterMiddleware returns a router.MiddlewareFunc that validates CSRF tokens.
+// This is the instance-based alternative to the global Middleware() function.
+func (c *CSRF) RouterMiddleware() router.MiddlewareFunc {
+	return func(next router.HandlerFunc) router.HandlerFunc {
+		return func(ctx *router.Context) error {
+			// Track whether the inner handler was called (CSRF passed)
+			var called bool
+			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				router.Wrap(next).ServeHTTP(w, r)
+			})
+			c.Middleware(inner).ServeHTTP(ctx.Response, ctx.Request)
+			if !called {
+				log.Printf("csrf: request blocked for %s %s", ctx.Request.Method, ctx.Request.URL.Path)
+				return fmt.Errorf("csrf: request rejected for %s %s", ctx.Request.Method, ctx.Request.URL.Path)
+			}
+			return nil
+		}
+	}
 }
 
 // validateToken validates the CSRF token in the request

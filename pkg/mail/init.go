@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"os"
 	"sync"
-
-	"github.com/joho/godotenv"
 )
 
 var (
@@ -13,32 +11,27 @@ var (
 	driverMu        sync.RWMutex
 )
 
-var initOnce sync.Once
-
-func init() {
-	// Load .env file
-	godotenv.Load()
+// MailConfig holds configuration for creating a mailer.
+type MailConfig struct {
+	// Driver is the mail driver to use (e.g. "log", "postmark", "mailgun").
+	Driver string
 }
 
-// ensureInitialized lazily initializes the default mailer on first use
-func ensureInitialized() {
-	initOnce.Do(func() {
-		if defaultMailer != nil {
-			return // Already initialized
-		}
+// NewMailer creates a new Mailer from the given configuration.
+// Drivers must be registered via RegisterDriver before calling this function.
+func NewMailer(config MailConfig) (Mailer, error) {
+	driver := config.Driver
+	if driver == "" {
+		driver = "log"
+	}
+	return createDriver(driver)
+}
 
-		// Get mail driver from environment
-		driver := os.Getenv("MAIL_DRIVER")
-		if driver == "" {
-			driver = "log" // Default to log driver for development
-		}
-
-		mailer, err := createDriver(driver)
-		if err != nil {
-			panic(fmt.Sprintf("Failed to initialize mail driver '%s': %v", driver, err))
-		}
-		defaultMailer = mailer
-	})
+// init initializes the mail package.
+// Use NewMailer() to create mailer instances explicitly.
+func init() {
+	// No-op: global singleton is no longer eagerly initialized.
+	// Driver registration still happens via RegisterDriver() calls in driver packages.
 }
 
 // RegisterDriver allows drivers to register themselves
@@ -61,7 +54,7 @@ func createDriver(driver string) (Mailer, error) {
 	return factory()
 }
 
-// Reinitialize reinitializes the mail driver (useful after config changes)
+// Reinitialize reinitializes the mail driver (useful after config changes).
 func Reinitialize() error {
 	driver := os.Getenv("MAIL_DRIVER")
 	if driver == "" {
@@ -77,7 +70,7 @@ func Reinitialize() error {
 	return nil
 }
 
-// ReinitializeWithDriver reinitializes with a specific driver
+// ReinitializeWithDriver reinitializes with a specific driver.
 func ReinitializeWithDriver(driver string) error {
 	mailer, err := createDriver(driver)
 	if err != nil {

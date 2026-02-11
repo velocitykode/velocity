@@ -9,9 +9,16 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// init no longer auto-initializes from environment.
+// Use NewManager(config) to create an instance, or call InitFromEnv() explicitly.
 func init() {
-	// Auto-initialize storage from environment on package import
+	// Intentionally empty — env loading moved to InitFromEnv().
+}
+
+// InitFromEnv configures the global storage manager from environment variables.
+func InitFromEnv() error {
 	initializeFromEnv()
+	return nil
 }
 
 // initializeFromEnv configures storage from environment variables
@@ -158,8 +165,7 @@ func findEnvFile() string {
 	return ""
 }
 
-// ReloadFromEnv reloads storage configuration from environment
-// Useful for testing or runtime reconfiguration
+// ReloadFromEnv reloads storage configuration from environment.
 func ReloadFromEnv() {
 	initializeFromEnv()
 }

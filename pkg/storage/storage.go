@@ -102,7 +102,7 @@ func createDriver(config DiskConfig) (Driver, error) {
 
 // Global API functions
 
-// Configure configures the global storage manager
+// Configure configures the global storage manager.
 func Configure(config Config) error {
 	mu.Lock()
 	defer mu.Unlock()
@@ -116,7 +116,7 @@ func Configure(config Config) error {
 	return nil
 }
 
-// Disk returns a specific disk from the global manager
+// Disk returns a specific disk from the global manager.
 func Disk(name string) Driver {
 	mu.RLock()
 	defer mu.RUnlock()
@@ -140,7 +140,7 @@ func getDefaultDriver() Driver {
 	return globalManager.Default()
 }
 
-// Put stores content at the given path using the default disk
+// Put stores content at the given path using the default disk.
 func Put(path string, contents []byte) error {
 	driver := getDefaultDriver()
 	if driver == nil {
@@ -149,7 +149,7 @@ func Put(path string, contents []byte) error {
 	return driver.Put(path, contents)
 }
 
-// PutStream stores a stream at the given path using the default disk
+// PutStream stores a stream at the given path using the default disk.
 func PutStream(path string, stream io.Reader) error {
 	driver := getDefaultDriver()
 	if driver == nil {
@@ -158,7 +158,7 @@ func PutStream(path string, stream io.Reader) error {
 	return driver.PutStream(path, stream)
 }
 
-// Get retrieves content from the given path using the default disk
+// Get retrieves content from the given path using the default disk.
 func Get(path string) ([]byte, error) {
 	driver := getDefaultDriver()
 	if driver == nil {
@@ -167,7 +167,7 @@ func Get(path string) ([]byte, error) {
 	return driver.Get(path)
 }
 
-// GetStream retrieves a stream from the given path using the default disk
+// GetStream retrieves a stream from the given path using the default disk.
 func GetStream(path string) (io.ReadCloser, error) {
 	driver := getDefaultDriver()
 	if driver == nil {
@@ -176,7 +176,7 @@ func GetStream(path string) (io.ReadCloser, error) {
 	return driver.GetStream(path)
 }
 
-// Exists checks if a file exists at the given path using the default disk
+// Exists checks if a file exists at the given path using the default disk.
 func Exists(path string) bool {
 	driver := getDefaultDriver()
 	if driver == nil {
@@ -185,7 +185,7 @@ func Exists(path string) bool {
 	return driver.Exists(path)
 }
 
-// Delete removes files at the given paths using the default disk
+// Delete removes files at the given paths using the default disk.
 func Delete(paths ...string) error {
 	driver := getDefaultDriver()
 	if driver == nil {
@@ -194,7 +194,7 @@ func Delete(paths ...string) error {
 	return driver.Delete(paths...)
 }
 
-// Copy copies a file from one path to another using the default disk
+// Copy copies a file from one path to another using the default disk.
 func Copy(from, to string) error {
 	driver := getDefaultDriver()
 	if driver == nil {
@@ -203,7 +203,7 @@ func Copy(from, to string) error {
 	return driver.Copy(from, to)
 }
 
-// Move moves a file from one path to another using the default disk
+// Move moves a file from one path to another using the default disk.
 func Move(from, to string) error {
 	driver := getDefaultDriver()
 	if driver == nil {
@@ -212,7 +212,7 @@ func Move(from, to string) error {
 	return driver.Move(from, to)
 }
 
-// Size returns the size of a file at the given path using the default disk
+// Size returns the size of a file at the given path using the default disk.
 func Size(path string) (int64, error) {
 	driver := getDefaultDriver()
 	if driver == nil {
@@ -221,7 +221,7 @@ func Size(path string) (int64, error) {
 	return driver.Size(path)
 }
 
-// LastModified returns the last modified time of a file using the default disk
+// LastModified returns the last modified time of a file using the default disk.
 func LastModified(path string) (time.Time, error) {
 	driver := getDefaultDriver()
 	if driver == nil {
@@ -230,7 +230,7 @@ func LastModified(path string) (time.Time, error) {
 	return driver.LastModified(path)
 }
 
-// MimeType returns the MIME type of a file using the default disk
+// MimeType returns the MIME type of a file using the default disk.
 func MimeType(path string) (string, error) {
 	driver := getDefaultDriver()
 	if driver == nil {
@@ -239,7 +239,7 @@ func MimeType(path string) (string, error) {
 	return driver.MimeType(path)
 }
 
-// Files lists files in a directory using the default disk
+// Files lists files in a directory using the default disk.
 func Files(directory string) ([]string, error) {
 	driver := getDefaultDriver()
 	if driver == nil {
@@ -248,7 +248,7 @@ func Files(directory string) ([]string, error) {
 	return driver.Files(directory)
 }
 
-// AllFiles lists all files recursively in a directory using the default disk
+// AllFiles lists all files recursively in a directory using the default disk.
 func AllFiles(directory string) ([]string, error) {
 	driver := getDefaultDriver()
 	if driver == nil {
@@ -257,7 +257,7 @@ func AllFiles(directory string) ([]string, error) {
 	return driver.AllFiles(directory)
 }
 
-// Directories lists directories using the default disk
+// Directories lists directories using the default disk.
 func Directories(directory string) ([]string, error) {
 	driver := getDefaultDriver()
 	if driver == nil {
@@ -266,7 +266,7 @@ func Directories(directory string) ([]string, error) {
 	return driver.Directories(directory)
 }
 
-// AllDirectories lists all directories recursively using the default disk
+// AllDirectories lists all directories recursively using the default disk.
 func AllDirectories(directory string) ([]string, error) {
 	driver := getDefaultDriver()
 	if driver == nil {
@@ -275,7 +275,7 @@ func AllDirectories(directory string) ([]string, error) {
 	return driver.AllDirectories(directory)
 }
 
-// MakeDirectory creates a directory using the default disk
+// MakeDirectory creates a directory using the default disk.
 func MakeDirectory(path string) error {
 	driver := getDefaultDriver()
 	if driver == nil {
@@ -284,7 +284,7 @@ func MakeDirectory(path string) error {
 	return driver.MakeDirectory(path)
 }
 
-// DeleteDirectory deletes a directory using the default disk
+// DeleteDirectory deletes a directory using the default disk.
 func DeleteDirectory(directory string) error {
 	driver := getDefaultDriver()
 	if driver == nil {
@@ -293,7 +293,7 @@ func DeleteDirectory(directory string) error {
 	return driver.DeleteDirectory(directory)
 }
 
-// URL returns the public URL for a file using the default disk
+// URL returns the public URL for a file using the default disk.
 func URL(path string) string {
 	driver := getDefaultDriver()
 	if driver == nil {
@@ -302,7 +302,7 @@ func URL(path string) string {
 	return driver.URL(path)
 }
 
-// TemporaryURL returns a temporary URL for a file using the default disk
+// TemporaryURL returns a temporary URL for a file using the default disk.
 func TemporaryURL(path string, expiration time.Duration) (string, error) {
 	driver := getDefaultDriver()
 	if driver == nil {
@@ -311,7 +311,7 @@ func TemporaryURL(path string, expiration time.Duration) (string, error) {
 	return driver.TemporaryURL(path, expiration)
 }
 
-// SetGlobalManager sets the global storage manager (mainly for testing)
+// SetGlobalManager sets the global storage manager (mainly for testing).
 func SetGlobalManager(manager *Manager) {
 	mu.Lock()
 	defer mu.Unlock()

@@ -37,13 +37,28 @@ type StoreConfig struct {
 	Table    string // For database driver
 }
 
-// NewManager creates a new cache manager
+// NewManager creates a new cache manager with lazy store initialization.
 func NewManager(config *Config) *Manager {
 	return &Manager{
 		stores:       make(map[string]Store),
 		defaultStore: config.Default,
 		config:       config,
 	}
+}
+
+// NewManagerFromConfig creates a new cache manager and eagerly initializes
+// all configured stores, returning an error if any store fails to initialize.
+func NewManagerFromConfig(config *Config) (*Manager, error) {
+	m := NewManager(config)
+
+	// Eagerly create all configured stores to detect errors at startup
+	for name := range config.Stores {
+		if _, err := m.createStore(name); err != nil {
+			return nil, fmt.Errorf("failed to create cache store %q: %w", name, err)
+		}
+	}
+
+	return m, nil
 }
 
 // Store returns a cache store by name
