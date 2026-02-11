@@ -60,7 +60,6 @@ func New() *VelocityRouterV2 {
 	return NewV2()
 }
 
-// Get returns the global router instance, creating it if necessary
 func Get() *VelocityRouterV2 {
 	once.Do(func() {
 		globalRouter = New()
@@ -68,7 +67,6 @@ func Get() *VelocityRouterV2 {
 	return globalRouter
 }
 
-// ResetGlobalRouter resets the global router (for testing)
 func ResetGlobalRouter() {
 	once = sync.Once{}
 	globalRouter = nil

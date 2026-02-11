@@ -179,7 +179,7 @@ func (w *Worker) processJob() error {
 	}
 }
 
-// Work is a global helper to start a worker
+// Work is a global helper to start a worker.
 func Work(queueName string, handler func(Job) error, opts ...WorkerOption) *Worker {
 	globalMu.RLock()
 	q := globalQueue

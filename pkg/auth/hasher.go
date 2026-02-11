@@ -120,14 +120,14 @@ var (
 	hasherMux    sync.RWMutex
 )
 
-// InitHasher initializes the global hasher
+// InitHasher initializes the global hasher.
 func InitHasher(hasher Hasher) {
 	hasherMux.Lock()
 	defer hasherMux.Unlock()
 	globalHasher = hasher
 }
 
-// GetHasher returns the global hasher
+// GetHasher returns the global hasher.
 func GetHasher() Hasher {
 	hasherMux.RLock()
 	h := globalHasher
@@ -149,17 +149,17 @@ func GetHasher() Hasher {
 	return globalHasher
 }
 
-// Hash hashes a password using the global hasher
+// Hash hashes a password using the global hasher.
 func Hash(password string) (string, error) {
 	return GetHasher().Hash(password)
 }
 
-// Verify verifies a password against a hash using the global hasher
+// Verify verifies a password against a hash using the global hasher.
 func Verify(password string, hash string) bool {
 	return GetHasher().Verify(password, hash)
 }
 
-// NeedsRehash checks if a hash needs rehashing using the global hasher
+// NeedsRehash checks if a hash needs rehashing using the global hasher.
 func NeedsRehash(hash string) bool {
 	return GetHasher().NeedsRehash(hash)
 }

@@ -78,6 +78,7 @@ type Manager struct {
 	guards       map[string]Guard
 	providers    map[string]UserProvider
 	defaultGuard string
+	hasher       Hasher
 	mu           sync.RWMutex
 }
 
@@ -146,7 +147,105 @@ func (m *Manager) Provider(name string) (UserProvider, error) {
 	return provider, nil
 }
 
-// Init initializes the global auth manager
+// Check returns true if the request is authenticated using the default guard.
+func (m *Manager) Check(r *http.Request) bool {
+	guard, err := m.DefaultGuard()
+	if err != nil {
+		return false
+	}
+	return guard.Check(r)
+}
+
+// User returns the authenticated user using the default guard.
+func (m *Manager) User(r *http.Request) Authenticatable {
+	guard, err := m.DefaultGuard()
+	if err != nil {
+		return nil
+	}
+	return guard.User(r)
+}
+
+// ID returns the authenticated user ID using the default guard.
+func (m *Manager) ID(r *http.Request) interface{} {
+	guard, err := m.DefaultGuard()
+	if err != nil {
+		return nil
+	}
+	return guard.ID(r)
+}
+
+// Login logs in a user using the default guard.
+func (m *Manager) Login(w http.ResponseWriter, r *http.Request, user Authenticatable, remember ...bool) error {
+	guard, err := m.DefaultGuard()
+	if err != nil {
+		return err
+	}
+	return guard.Login(w, r, user, remember...)
+}
+
+// Attempt attempts login with credentials using the default guard.
+func (m *Manager) Attempt(w http.ResponseWriter, r *http.Request, credentials map[string]interface{}, remember ...bool) (bool, error) {
+	guard, err := m.DefaultGuard()
+	if err != nil {
+		return false, err
+	}
+	return guard.Attempt(w, r, credentials, remember...)
+}
+
+// Logout logs out the user using the default guard.
+func (m *Manager) Logout(w http.ResponseWriter, r *http.Request) error {
+	guard, err := m.DefaultGuard()
+	if err != nil {
+		return err
+	}
+	return guard.Logout(w, r)
+}
+
+// Hash hashes a password using the manager's hasher.
+func (m *Manager) Hash(password string) (string, error) {
+	return m.GetHasher().Hash(password)
+}
+
+// Verify verifies a password against a hash using the manager's hasher.
+func (m *Manager) Verify(password string, hash string) bool {
+	return m.GetHasher().Verify(password, hash)
+}
+
+// SetHasher sets the hasher on the manager.
+func (m *Manager) SetHasher(h Hasher) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.hasher = h
+}
+
+// GetHasher returns the manager's hasher, falling back to a default bcrypt hasher.
+func (m *Manager) GetHasher() Hasher {
+	m.mu.RLock()
+	h := m.hasher
+	m.mu.RUnlock()
+	if h != nil {
+		return h
+	}
+	return GetHasher()
+}
+
+// NewManagerFromConfig creates a new Manager configured from the provided Config.
+// This is the preferred way to create auth managers instead of using the global Init().
+func NewManagerFromConfig(config Config) (*Manager, error) {
+	manager := NewManager()
+
+	if config.DefaultGuard != "" {
+		manager.SetDefaultGuard(config.DefaultGuard)
+	}
+
+	if config.BcryptCost > 0 {
+		manager.SetHasher(NewBcryptHasher(config.BcryptCost))
+	}
+
+	return manager, nil
+}
+
+// Init initializes the global auth manager.
 func Init(config Config) error {
 	globalMux.Lock()
 	defer globalMux.Unlock()
@@ -165,7 +264,7 @@ func Init(config Config) error {
 	return nil
 }
 
-// GetManager returns the global auth manager
+// GetManager returns the global auth manager.
 func GetManager() (*Manager, error) {
 	globalMux.RLock()
 	defer globalMux.RUnlock()
@@ -177,7 +276,7 @@ func GetManager() (*Manager, error) {
 	return globalManager, nil
 }
 
-// GetGuard returns a guard by name from global manager
+// GetGuard returns a guard by name from global manager.
 func GetGuard(name string) (Guard, error) {
 	manager, err := GetManager()
 	if err != nil {
@@ -187,7 +286,7 @@ func GetGuard(name string) (Guard, error) {
 	return manager.Guard(name)
 }
 
-// Check if user is authenticated using default guard
+// Check checks if user is authenticated using default guard.
 func Check(r *http.Request) bool {
 	manager, err := GetManager()
 	if err != nil {
@@ -202,7 +301,7 @@ func Check(r *http.Request) bool {
 	return guard.Check(r)
 }
 
-// User returns authenticated user using default guard
+// User returns authenticated user using default guard.
 func User(r *http.Request) Authenticatable {
 	manager, err := GetManager()
 	if err != nil {
@@ -217,7 +316,7 @@ func User(r *http.Request) Authenticatable {
 	return guard.User(r)
 }
 
-// ID returns authenticated user ID using default guard
+// ID returns authenticated user ID using default guard.
 func ID(r *http.Request) interface{} {
 	manager, err := GetManager()
 	if err != nil {
@@ -232,7 +331,7 @@ func ID(r *http.Request) interface{} {
 	return guard.ID(r)
 }
 
-// Login logs in a user using default guard
+// Login logs in a user using default guard.
 func Login(w http.ResponseWriter, r *http.Request, user Authenticatable, remember ...bool) error {
 	manager, err := GetManager()
 	if err != nil {
@@ -247,7 +346,7 @@ func Login(w http.ResponseWriter, r *http.Request, user Authenticatable, remembe
 	return guard.Login(w, r, user, remember...)
 }
 
-// LoginByID logs in a user by ID using default guard
+// LoginByID logs in a user by ID using default guard.
 func LoginByID(w http.ResponseWriter, r *http.Request, id interface{}, remember ...bool) error {
 	manager, err := GetManager()
 	if err != nil {
@@ -262,7 +361,7 @@ func LoginByID(w http.ResponseWriter, r *http.Request, id interface{}, remember 
 	return guard.LoginByID(w, r, id, remember...)
 }
 
-// Attempt login with credentials using default guard
+// Attempt attempts login with credentials using default guard.
 func Attempt(w http.ResponseWriter, r *http.Request, credentials map[string]interface{}, remember ...bool) (bool, error) {
 	manager, err := GetManager()
 	if err != nil {
@@ -277,7 +376,7 @@ func Attempt(w http.ResponseWriter, r *http.Request, credentials map[string]inte
 	return guard.Attempt(w, r, credentials, remember...)
 }
 
-// Logout logs out user using default guard
+// Logout logs out user using default guard.
 func Logout(w http.ResponseWriter, r *http.Request) error {
 	manager, err := GetManager()
 	if err != nil {
@@ -297,6 +396,7 @@ type Config struct {
 	DefaultGuard string
 	Guards       map[string]GuardConfig
 	Providers    map[string]ProviderConfig
+	BcryptCost   int // Bcrypt cost for password hashing. 0 uses the default.
 }
 
 // GuardConfig holds guard configuration

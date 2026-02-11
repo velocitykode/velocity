@@ -1,43 +1,36 @@
 package crypto
 
 import (
-	"fmt"
 	"os"
 	"strings"
 )
 
-// init automatically initializes the encryption from environment variables
-func init() {
-	// Only auto-initialize if CRYPTO_KEY is set
+// ConfigFromEnv builds a Config from environment variables.
+// It reads CRYPTO_KEY (or APP_KEY), CRYPTO_CIPHER, and CRYPTO_OLD_KEYS.
+// Returns the config and true if a key was found, or a zero Config and false otherwise.
+func ConfigFromEnv() (Config, bool) {
 	cryptoKey := os.Getenv("CRYPTO_KEY")
 	if cryptoKey == "" {
 		// Also check for APP_KEY (Laravel compatibility)
 		cryptoKey = os.Getenv("APP_KEY")
 		if cryptoKey == "" {
-			return
+			return Config{}, false
 		}
 	}
 
-	// Get cipher configuration
 	cipher := os.Getenv("CRYPTO_CIPHER")
 	if cipher == "" {
 		cipher = "AES-256-GCM" // Default cipher
 	}
 
-	// Get previous keys for rotation
 	var previousKeys []string
 	if oldKeys := os.Getenv("CRYPTO_OLD_KEYS"); oldKeys != "" {
 		previousKeys = strings.Split(oldKeys, ",")
 	}
 
-	// Initialize the global encryptor
-	config := Config{
+	return Config{
 		Key:          cryptoKey,
 		PreviousKeys: previousKeys,
 		Cipher:       cipher,
-	}
-
-	if err := Init(config); err != nil {
-		panic(fmt.Sprintf("crypto: failed to initialize encryption: %v", err))
-	}
+	}, true
 }

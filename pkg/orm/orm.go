@@ -32,7 +32,7 @@ var (
 	testTxMu sync.RWMutex
 )
 
-// Init initializes the ORM with the specified driver and configuration
+// Init initializes the ORM with the specified driver and configuration.
 func Init(driverName string, config map[string]any) error {
 	driverMu.Lock()
 	defer driverMu.Unlock()
@@ -119,7 +119,15 @@ func Connection(name string) (drivers.Driver, error) {
 	return driver, nil
 }
 
-// DB returns the underlying *sql.DB instance
+// SetDefaultDriver sets the global default driver for backward compatibility.
+// This is used by the App constructor to wire the global for Model[T] usage.
+func SetDefaultDriver(d drivers.Driver) {
+	driverMu.Lock()
+	defer driverMu.Unlock()
+	defaultDriver = d
+}
+
+// DB returns the underlying *sql.DB instance.
 func DB() *sql.DB {
 	driverMu.RLock()
 	defer driverMu.RUnlock()
@@ -130,7 +138,7 @@ func DB() *sql.DB {
 	return defaultDriver.DB()
 }
 
-// Close closes the database connection
+// Close closes the database connection.
 func Close() error {
 	driverMu.Lock()
 	defer driverMu.Unlock()
@@ -205,7 +213,7 @@ func GetDatabaseName() string {
 	return currentDatabaseName
 }
 
-// Transaction executes a function within a database transaction
+// Transaction executes a function within a database transaction.
 func Transaction(fn func(tx *sql.Tx) error) error {
 	driver := getCurrentDriver()
 	if driver == nil {

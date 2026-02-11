@@ -3,10 +3,9 @@ package queue
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
-
-	"github.com/velocitykode/velocity/pkg/log"
 )
 
 // Queue is an alias for Driver interface for backward compatibility
@@ -56,7 +55,7 @@ func SetDefault(d Driver) {
 	globalQueue = d
 }
 
-// Push adds a job to the default or specified queue
+// Push adds a job to the default or specified queue.
 func Push(job Job, queue ...string) error {
 	globalMu.RLock()
 	q := globalQueue
@@ -69,7 +68,7 @@ func Push(job Job, queue ...string) error {
 	return q.Push(job, queue...)
 }
 
-// Later adds a delayed job to the queue
+// Later adds a delayed job to the queue.
 func Later(delay time.Duration, job Job, queue ...string) error {
 	globalMu.RLock()
 	q := globalQueue
@@ -82,7 +81,7 @@ func Later(delay time.Duration, job Job, queue ...string) error {
 	return q.PushDelayed(job, delay, queue...)
 }
 
-// Pop retrieves the next job from the queue
+// Pop retrieves the next job from the queue.
 func Pop(queue string) (Job, error) {
 	globalMu.RLock()
 	q := globalQueue
@@ -95,7 +94,7 @@ func Pop(queue string) (Job, error) {
 	return q.Pop(queue)
 }
 
-// Size returns the number of jobs in the queue
+// Size returns the number of jobs in the queue.
 func Size(queue string) (int64, error) {
 	globalMu.RLock()
 	q := globalQueue
@@ -108,7 +107,7 @@ func Size(queue string) (int64, error) {
 	return q.Size(queue)
 }
 
-// Clear removes all jobs from the queue
+// Clear removes all jobs from the queue.
 func Clear(queue string) error {
 	globalMu.RLock()
 	q := globalQueue
@@ -121,34 +120,36 @@ func Clear(queue string) error {
 	return q.Clear(queue)
 }
 
-// Reinitialize reinitializes the queue driver from environment
+// Reinitialize reinitializes the queue driver from environment variables.
 func Reinitialize() error {
-	driver := os.Getenv("QUEUE_DRIVER")
+	driver := strings.ToLower(os.Getenv("QUEUE_DRIVER"))
 	if driver == "" {
 		driver = "memory"
 	}
 
-	var d Driver
-	var err error
+	config := QueueConfig{Driver: driver}
 
-	switch driver {
-	case "redis":
-		d, err = NewRedisQueue()
-		if err != nil {
-			return fmt.Errorf("failed to initialize Redis queue: %w", err)
+	if driver == "redis" {
+		config.Redis = RedisConfig{
+			Host:     getEnvDefault("QUEUE_REDIS_HOST", "localhost"),
+			Port:     getEnvDefault("QUEUE_REDIS_PORT", "6379"),
+			Password: os.Getenv("QUEUE_REDIS_PASSWORD"),
+			DB:       getEnvDefault("QUEUE_REDIS_DB", "0"),
 		}
-	case "database":
-		d, err = NewDatabaseQueue()
-		if err != nil {
-			return fmt.Errorf("failed to initialize database queue: %w", err)
-		}
-	case "memory":
-		d = NewMemoryQueue()
-	default:
-		return fmt.Errorf("unknown queue driver: %s", driver)
+	}
+
+	d, err := NewQueue(config)
+	if err != nil {
+		return fmt.Errorf("failed to initialize %s queue: %w", driver, err)
 	}
 
 	SetDefault(d)
-	log.Info("Queue driver reinitialized", "driver", driver)
 	return nil
+}
+
+func getEnvDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }

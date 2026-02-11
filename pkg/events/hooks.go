@@ -10,6 +10,23 @@ import (
 	"github.com/velocitykode/velocity/pkg/scheduler"
 )
 
+// WirePackageHooks sets up event dispatching for all framework packages
+// using the provided dispatcher. This is the instance-based alternative to
+// the automatic wiring that happens when using the global dispatcher.
+func WirePackageHooks(dispatcher Dispatcher) {
+	dispatch := func(event interface{}) error {
+		return dispatcher.Dispatch(event)
+	}
+
+	router.SetEventDispatcher(dispatch)
+	orm.SetEventDispatcher(dispatch)
+	cache.SetEventDispatcher(dispatch)
+	queue.SetEventDispatcher(dispatch)
+	httpclient.SetEventDispatcher(dispatch)
+	mail.SetEventDispatcher(dispatch)
+	scheduler.SetEventDispatcher(dispatch)
+}
+
 // wirePackageHooks sets up event dispatching for all framework packages.
 // This is called when the events package is initialized.
 func wirePackageHooks() {
@@ -54,7 +71,7 @@ func (f ListenerFunc) ShouldQueue() bool {
 	return false
 }
 
-// On registers a function handler for one or more events.
+// On registers a function handler for one or more events using the global dispatcher.
 // Returns a listener ID that can be used with Off() to unregister the listener.
 // This is a convenience method that wraps a function as a Listener.
 //

@@ -10,12 +10,7 @@ import (
 
 var initOnce sync.Once
 
-// init automatically initializes the logger on package import.
-// Loads .env file if present and configures logger based on environment variables:
-// - LOG_DRIVER: Driver to use (console, file). Defaults to console.
-// - LOG_PATH: Directory for file logs. Defaults to ./storage/logs
-// - LOG_LEVEL: Minimum log level. Defaults to debug.
-// - LOG_FORMAT: Output format. Defaults to text.
+// init loads the .env file and auto-initializes the logger.
 func init() {
 	// Try to load .env file (optional - won't error if missing)
 	godotenv.Load()
@@ -50,7 +45,33 @@ func getEnvOrDefault(key, defaultValue string) string {
 }
 
 // EnsureInitialized can be called explicitly to guarantee logger initialization,
-// though the logger auto-initializes on first use through the init() function
+// though the logger auto-initializes on first use through the init() function.
 func EnsureInitialized() {
 	Get() // This triggers initialization if not done
+}
+
+// LogConfig holds configuration for creating a Logger instance.
+type LogConfig struct {
+	// Driver specifies the log driver: "console" or "file".
+	Driver string
+	// Config holds driver-specific options (e.g., "path" for file driver).
+	Config map[string]any
+}
+
+// LogConfigFromEnv builds a LogConfig from environment variables.
+// It reads LOG_DRIVER, LOG_PATH, LOG_LEVEL, and LOG_FORMAT.
+func LogConfigFromEnv() LogConfig {
+	driver := os.Getenv("LOG_DRIVER")
+	if driver == "" {
+		driver = "console"
+	}
+
+	return LogConfig{
+		Driver: driver,
+		Config: map[string]any{
+			"path":   getEnvOrDefault("LOG_PATH", "./storage/logs"),
+			"level":  getEnvOrDefault("LOG_LEVEL", "debug"),
+			"format": getEnvOrDefault("LOG_FORMAT", "text"),
+		},
+	}
 }

@@ -78,7 +78,6 @@ func New(config Config) (*Bond, error) {
 	}, nil
 }
 
-// Initialize sets up the global Bond instance
 func Initialize(config Config) error {
 	initMu.Lock()
 	defer initMu.Unlock()
@@ -92,7 +91,6 @@ func Initialize(config Config) error {
 	return nil
 }
 
-// Get returns the global instance
 func Get() *Bond {
 	initMu.RLock()
 	defer initMu.RUnlock()
@@ -133,55 +131,44 @@ func isInertiaRequest(r *http.Request) bool {
 
 // --- Package-level convenience functions using global instance ---
 
-// Render renders a component with props using the global instance
 func Render(w http.ResponseWriter, r *http.Request, component string, props Props) error {
 	return Get().Render(w, r, component, props)
 }
 
-// Share adds a static shared prop using the global instance
 func Share(key string, value any) {
 	Get().Share(key, value)
 }
 
-// ShareFunc adds a dynamic shared prop using the global instance
 func ShareFunc(key string, fn SharedPropFunc) {
 	Get().ShareFunc(key, fn)
 }
 
-// ShareMultiple adds multiple shared props using the global instance
 func ShareMultiple(props Props) {
 	Get().ShareMultiple(props)
 }
 
-// Redirect performs an SPA redirect using the global instance
 func Redirect(w http.ResponseWriter, r *http.Request, url string) {
 	Get().Redirect(w, r, url)
 }
 
-// Location forces a full page reload using the global instance
 func Location(w http.ResponseWriter, r *http.Request, url string) {
 	Get().Location(w, r, url)
 }
 
-// Back redirects to the previous page using the global instance
 func Back(w http.ResponseWriter, r *http.Request) {
 	Get().Back(w, r)
 }
 
-// Middleware returns router middleware using the global instance
 func Middleware() router.MiddlewareFunc {
 	return Get().MiddlewareFunc()
 }
 
-// SetSharePropsFunc sets a function for per-request shared props
-// This is a convenience wrapper matching the view package API
-// The returned props are evaluated per-request and merged with component props
 func SetSharePropsFunc(fn func(r *http.Request) (Props, error)) {
-	Get().setSharePropsFunc(fn)
+	Get().SetSharePropsFunc(fn)
 }
 
-// setSharePropsFunc stores the SharePropsFunc to be called during render
-func (b *Bond) setSharePropsFunc(fn func(r *http.Request) (Props, error)) {
+// SetSharePropsFunc sets a function that returns props to be shared per request.
+func (b *Bond) SetSharePropsFunc(fn func(r *http.Request) (Props, error)) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.sharePropsFunc = fn

@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/velocitykode/velocity/pkg/router"
 )
 
 // authChecker is an internal variable that can be overridden for testing
@@ -66,4 +68,25 @@ func Middleware(redirectTo string) func(http.Handler) http.Handler {
 // RequireAuth is an alias for Middleware
 func RequireAuth(redirectTo string) func(http.Handler) http.Handler {
 	return Middleware(redirectTo)
+}
+
+// AuthMiddleware returns a router.MiddlewareFunc that requires authentication
+// using the provided Manager instance.
+func AuthMiddleware(manager *Manager) router.MiddlewareFunc {
+	return func(next router.HandlerFunc) router.HandlerFunc {
+		return func(c *router.Context) error {
+			if !manager.Check(c.Request) {
+				if wantsJSON(c.Request) {
+					return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthenticated."})
+				}
+				redirectURL := c.Request.URL.Path
+				if c.Request.URL.RawQuery != "" {
+					redirectURL += "?" + c.Request.URL.RawQuery
+				}
+				escapedURL := url.QueryEscape(redirectURL)
+				return c.Redirect(http.StatusSeeOther, "/login?redirect="+escapedURL)
+			}
+			return next(c)
+		}
+	}
 }

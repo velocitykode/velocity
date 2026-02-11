@@ -1,115 +1,56 @@
 package queue
 
 import (
-	"log"
-	"os"
-	"path/filepath"
+	"fmt"
 	"strings"
-
-	"github.com/joho/godotenv"
 )
 
-func init() {
-	// Try to load .env file
-	projectRoot := findProjectRoot()
-	if projectRoot != "" {
-		envPath := filepath.Join(projectRoot, ".env")
-		_ = godotenv.Load(envPath)
-	}
+// QueueConfig holds configuration for creating a queue driver.
+type QueueConfig struct {
+	// Driver is the queue driver to use: "memory", "redis", or "database".
+	Driver string
 
-	// Read driver from environment, default to memory for safety during init
-	driver := strings.ToLower(os.Getenv("QUEUE_DRIVER"))
+	// Redis holds Redis-specific configuration. Required when Driver is "redis".
+	Redis RedisConfig
+}
+
+// NewQueue creates a new queue driver from the given configuration.
+func NewQueue(config QueueConfig) (Driver, error) {
+	driver := strings.ToLower(config.Driver)
 	if driver == "" {
-		// Default to memory driver for development and initial boot
 		driver = "memory"
-		log.Printf("QUEUE_DRIVER not set, defaulting to memory driver. Call queue.Reinitialize() after database is ready.")
 	}
-
-	// Initialize based on driver
-	var d Driver
-	var err error
 
 	switch driver {
-	case "redis":
-		d, err = NewRedisQueue()
-		if err != nil {
-			log.Printf("Failed to initialize Redis queue: %v, falling back to memory", err)
-			d = NewMemoryQueue()
-		}
-	case "database":
-		d, err = NewDatabaseQueue()
-		if err != nil {
-			log.Printf("Failed to initialize database queue: %v, falling back to memory", err)
-			d = NewMemoryQueue()
-		}
 	case "memory":
-		d = NewMemoryQueue()
+		return NewMemoryDriver(), nil
+	case "redis":
+		return NewRedisDriver(config.Redis)
+	case "database":
+		return NewDatabaseDriver(), nil
 	default:
-		log.Printf("Unknown queue driver: %s, using memory", driver)
-		d = NewMemoryQueue()
+		return nil, fmt.Errorf("unknown queue driver: %s", driver)
 	}
-
-	SetDefault(d)
 }
 
-// findProjectRoot searches for project root by looking for go.mod
-func findProjectRoot() string {
-	dir, err := os.Getwd()
-	if err != nil {
-		return ""
-	}
-
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-
-	return ""
+// init initializes the queue package.
+// Use NewQueue() to create queue instances explicitly.
+func init() {
+	// No-op: global singleton is no longer eagerly initialized.
+	// Queue instances should be created explicitly via NewQueue().
 }
 
-// NewRedisQueue creates a Redis queue from environment config
+// NewRedisQueue creates a Redis queue from environment config.
 func NewRedisQueue() (Driver, error) {
-	host := os.Getenv("QUEUE_REDIS_HOST")
-	if host == "" {
-		host = "localhost"
-	}
-
-	port := os.Getenv("QUEUE_REDIS_PORT")
-	if port == "" {
-		port = "6379"
-	}
-
-	db := os.Getenv("QUEUE_REDIS_DB")
-	if db == "" {
-		db = "0"
-	}
-
-	password := os.Getenv("QUEUE_REDIS_PASSWORD")
-
-	config := RedisConfig{
-		Host:     host,
-		Port:     port,
-		Password: password,
-		DB:       db,
-	}
-
-	return NewRedisDriver(config)
+	return nil, fmt.Errorf("NewRedisQueue is deprecated: use NewQueue(QueueConfig{Driver: \"redis\", Redis: RedisConfig{...}}) instead")
 }
 
-// NewDatabaseQueue creates a database queue from environment config
+// NewDatabaseQueue creates a database queue from environment config.
 func NewDatabaseQueue() (Driver, error) {
-	// Use the database driver with ORM
 	return NewDatabaseDriver(), nil
 }
 
-// NewMemoryQueue creates an in-memory queue
+// NewMemoryQueue creates an in-memory queue.
 func NewMemoryQueue() Driver {
 	return NewMemoryDriver()
 }

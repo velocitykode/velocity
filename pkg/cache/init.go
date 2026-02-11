@@ -10,17 +10,22 @@ import (
 
 var (
 	defaultManager *Manager
-	once           sync.Once
+	mu             sync.RWMutex
 )
 
-// Initialize sets up the cache manager with configuration from environment
+// Initialize sets up the cache manager with configuration from environment.
 func Initialize() error {
-	var initError error
-	once.Do(func() {
-		config := loadConfig()
-		defaultManager = NewManager(config)
-	})
-	return initError
+	mu.Lock()
+	defer mu.Unlock()
+
+	config := loadConfig()
+	defaultManager = NewManager(config)
+	return nil
+}
+
+// InitFromEnv sets up the cache manager with configuration from environment.
+func InitFromEnv() error {
+	return Initialize()
 }
 
 // loadConfig loads configuration from environment variables
@@ -94,82 +99,89 @@ func getEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
-// GetManager returns the default cache manager
+// GetManager returns the default cache manager.
 func GetManager() *Manager {
-	if defaultManager == nil {
+	mu.RLock()
+	m := defaultManager
+	mu.RUnlock()
+
+	if m == nil {
 		Initialize()
+		mu.RLock()
+		m = defaultManager
+		mu.RUnlock()
 	}
-	return defaultManager
+	return m
 }
 
 // Global convenience functions that use the default manager
 
-// Get retrieves a value from the default cache
+// Get retrieves a value from the default cache.
 func Get(key string) (interface{}, bool) {
 	return GetManager().Get(key)
 }
 
-// GetString retrieves a string value from the default cache
+// GetString retrieves a string value from the default cache.
 func GetString(key string) (string, bool) {
 	return GetManager().GetString(key)
 }
 
-// Put stores a value in the default cache with TTL
+// Put stores a value in the default cache with TTL.
 func Put(key string, value interface{}, ttl time.Duration) error {
 	return GetManager().Put(key, value, ttl)
 }
 
-// Forever stores a value in the default cache indefinitely
+// Forever stores a value in the default cache indefinitely.
 func Forever(key string, value interface{}) error {
 	return GetManager().Forever(key, value)
 }
 
-// Forget removes a value from the default cache
+// Forget removes a value from the default cache.
 func Forget(key string) error {
 	return GetManager().Forget(key)
 }
 
-// Flush removes all values from the default cache
+// Flush removes all values from the default cache.
 func Flush() error {
 	return GetManager().Flush()
 }
 
-// Increment increments a numeric value in the default cache
+// Increment increments a numeric value in the default cache.
 func Increment(key string, value int64) (int64, error) {
 	return GetManager().Increment(key, value)
 }
 
-// Decrement decrements a numeric value in the default cache
+// Decrement decrements a numeric value in the default cache.
 func Decrement(key string, value int64) (int64, error) {
 	return GetManager().Decrement(key, value)
 }
 
-// Remember gets from cache or computes and stores
+// Remember gets from cache or computes and stores.
 func Remember(key string, ttl time.Duration, callback func() interface{}) (interface{}, error) {
 	return GetManager().Remember(key, ttl, callback)
 }
 
-// RememberForever gets from cache or computes and stores forever
+// RememberForever gets from cache or computes and stores forever.
 func RememberForever(key string, callback func() interface{}) (interface{}, error) {
 	return GetManager().RememberForever(key, callback)
 }
 
-// Many retrieves multiple values from the default cache
+// Many retrieves multiple values from the default cache.
 func Many(keys []string) map[string]interface{} {
 	return GetManager().Many(keys)
 }
 
-// PutMany stores multiple values in the default cache
+// PutMany stores multiple values in the default cache.
 func PutMany(items map[string]interface{}, ttl time.Duration) error {
 	return GetManager().PutMany(items, ttl)
 }
 
-// Has checks if a key exists in the default cache
+// Has checks if a key exists in the default cache.
 func Has(key string) bool {
 	return GetManager().Has(key)
 }
 
-// GetStore returns a specific cache store
+// GetStore returns a specific cache store.
 func GetStore(name string) (Store, error) {
 	return GetManager().Store(name)
 }

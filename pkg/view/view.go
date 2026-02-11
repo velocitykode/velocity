@@ -22,7 +22,85 @@ type Config struct {
 // SharePropsFunc is a function that returns props to be shared per request
 type SharePropsFunc func(r *http.Request) (Props, error)
 
-// Initialize sets up the view system using Bond
+// Engine wraps a bond.Bond instance and provides the view layer API.
+type Engine struct {
+	bond *bond.Bond
+}
+
+// NewEngine creates a new view Engine with the given configuration.
+func NewEngine(config Config) (*Engine, error) {
+	if config.RootTemplate == "" {
+		config.RootTemplate = defaultTemplate
+	}
+	if config.Version == "" {
+		config.Version = "1"
+	}
+
+	b, err := bond.New(bond.Config{
+		RootTemplate: config.RootTemplate,
+		Version:      config.Version,
+		ContainerID:  "app",
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &Engine{bond: b}, nil
+}
+
+// Render renders a component with optional props.
+func (e *Engine) Render(w http.ResponseWriter, r *http.Request, component string, props ...Props) error {
+	var p Props
+	if len(props) > 0 && props[0] != nil {
+		p = props[0]
+	}
+	return e.bond.Render(w, r, component, p)
+}
+
+// Share adds a static shared prop.
+func (e *Engine) Share(key string, value interface{}) {
+	e.bond.Share(key, value)
+}
+
+// ShareFunc adds a dynamic shared prop evaluated per-request.
+func (e *Engine) ShareFunc(key string, fn func(r *http.Request) (interface{}, error)) {
+	e.bond.ShareFunc(key, func(r *http.Request) (any, error) {
+		return fn(r)
+	})
+}
+
+// SetSharePropsFunc sets a function that returns props to be shared per request.
+func (e *Engine) SetSharePropsFunc(fn SharePropsFunc) {
+	e.bond.SetSharePropsFunc(fn)
+}
+
+// Redirect performs an SPA redirect (for internal navigation).
+func (e *Engine) Redirect(w http.ResponseWriter, r *http.Request, url string) {
+	e.bond.Redirect(w, r, url)
+}
+
+// Location performs an external redirect (forces full page load).
+func (e *Engine) Location(w http.ResponseWriter, r *http.Request, url string) {
+	e.bond.Location(w, r, url)
+}
+
+// Back redirects back (SPA navigation).
+func (e *Engine) Back(w http.ResponseWriter, r *http.Request) {
+	e.bond.Back(w, r)
+}
+
+// Middleware returns the Inertia middleware as a router.MiddlewareFunc.
+func (e *Engine) Middleware() router.MiddlewareFunc {
+	return e.bond.MiddlewareFunc()
+}
+
+// Bond returns the underlying bond.Bond instance.
+func (e *Engine) Bond() *bond.Bond {
+	return e.bond
+}
+
+// --- Package-level convenience functions ---
+
 func Initialize(config Config) error {
 	// Set default template if not provided
 	if config.RootTemplate == "" {
@@ -41,7 +119,6 @@ func Initialize(config Config) error {
 	})
 }
 
-// Render renders a component with optional props
 func Render(w http.ResponseWriter, r *http.Request, component string, props ...Props) error {
 	var p Props
 	if len(props) > 0 && props[0] != nil {
@@ -50,46 +127,36 @@ func Render(w http.ResponseWriter, r *http.Request, component string, props ...P
 	return bond.Render(w, r, component, p)
 }
 
-// Share shares a prop globally
 func Share(key string, value interface{}) {
 	bond.Share(key, value)
 }
 
-// ShareFunc shares a dynamic prop evaluated per-request
 func ShareFunc(key string, fn func(r *http.Request) (interface{}, error)) {
 	bond.ShareFunc(key, func(r *http.Request) (any, error) {
 		return fn(r)
 	})
 }
 
-// ShareMultiple shares multiple props at once
 func ShareMultiple(props Props) {
 	bond.ShareMultiple(props)
 }
 
-// SetSharePropsFunc sets a function that will be called to get shared props for each request
 func SetSharePropsFunc(fn SharePropsFunc) {
 	bond.SetSharePropsFunc(fn)
 }
 
-// Redirect performs an SPA redirect (for internal navigation)
-// Uses 303 See Other for POST-Redirect-GET pattern
 func Redirect(w http.ResponseWriter, r *http.Request, url string) {
 	bond.Redirect(w, r, url)
 }
 
-// Location performs an external redirect (forces full page load)
-// Use for external URLs or when you need to break out of the SPA
 func Location(w http.ResponseWriter, r *http.Request, url string) {
 	bond.Location(w, r, url)
 }
 
-// Back redirects back (SPA navigation)
 func Back(w http.ResponseWriter, r *http.Request) {
 	bond.Back(w, r)
 }
 
-// Middleware returns the Inertia middleware
 func Middleware() router.MiddlewareFunc {
 	return bond.Middleware()
 }

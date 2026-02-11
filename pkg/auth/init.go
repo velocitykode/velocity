@@ -8,14 +8,35 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// init automatically initializes auth from environment variables
-func init() {
-	// Check if AUTH_GUARD is set
+// getEnvOrDefault gets environment variable or returns default
+func getEnvOrDefault(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+// parseSameSite parses SameSite cookie attribute
+func parseSameSite(value string) http.SameSite {
+	switch value {
+	case "strict":
+		return http.SameSiteStrictMode
+	case "lax":
+		return http.SameSiteLaxMode
+	case "none":
+		return http.SameSiteNoneMode
+	default:
+		return http.SameSiteLaxMode
+	}
+}
+
+// ConfigFromEnv builds a Config from environment variables.
+// Returns the config and true if AUTH_GUARD is set, or a zero Config and false otherwise.
+func ConfigFromEnv() (Config, bool) {
 	if os.Getenv("AUTH_GUARD") == "" {
-		return // No auto-init if not configured
+		return Config{}, false
 	}
 
-	// Build configuration from environment
 	config := Config{
 		DefaultGuard: os.Getenv("AUTH_GUARD"),
 		Guards:       make(map[string]GuardConfig),
@@ -59,13 +80,8 @@ func init() {
 		jwtRefreshTTL = 20160 // Default 2 weeks
 	}
 
-	jwtSecret := os.Getenv("JWT_SECRET")
-	if jwtSecret != "" && len(jwtSecret) < 32 {
-		panic("auth: JWT_SECRET must be at least 32 bytes")
-	}
-
 	jwtConfig := JWTConfig{
-		Secret:           jwtSecret,
+		Secret:           os.Getenv("JWT_SECRET"),
 		Algorithm:        getEnvOrDefault("JWT_ALGO", "HS256"),
 		TTL:              jwtTTL,
 		RefreshTTL:       jwtRefreshTTL,
@@ -87,36 +103,12 @@ func init() {
 		Model:  getEnvOrDefault("AUTH_MODEL", "User"),
 	}
 
-	// Initialize hasher with bcrypt
+	// Configure hasher
 	bcryptCost, _ := strconv.Atoi(os.Getenv("HASH_BCRYPT_COST"))
 	if bcryptCost == 0 {
 		bcryptCost = bcrypt.DefaultCost
 	}
-	InitHasher(NewBcryptHasher(bcryptCost))
+	config.BcryptCost = bcryptCost
 
-	// Initialize the auth manager
-	// The ORM provider will be initialized later when the database is available
-	Init(config)
-}
-
-// getEnvOrDefault gets environment variable or returns default
-func getEnvOrDefault(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
-}
-
-// parseSameSite parses SameSite cookie attribute
-func parseSameSite(value string) http.SameSite {
-	switch value {
-	case "strict":
-		return http.SameSiteStrictMode
-	case "lax":
-		return http.SameSiteLaxMode
-	case "none":
-		return http.SameSiteNoneMode
-	default:
-		return http.SameSiteLaxMode
-	}
+	return config, true
 }
