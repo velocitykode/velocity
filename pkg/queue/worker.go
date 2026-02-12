@@ -8,6 +8,32 @@ import (
 	"time"
 )
 
+// WorkerLogger is the logging interface used by Worker.
+// It is intentionally minimal to avoid coupling the queue package to a
+// specific logging implementation. Any structured logger (e.g. velocity's
+// log.Logger) satisfies this interface.
+type WorkerLogger interface {
+	Info(msg string, kvs ...any)
+	Error(msg string, kvs ...any)
+}
+
+// stdlibLogger adapts Go's standard log package to WorkerLogger.
+type stdlibLogger struct{}
+
+func (stdlibLogger) Info(msg string, kvs ...any)  { log.Print("[INFO] " + msg + fmtKVs(kvs)) }
+func (stdlibLogger) Error(msg string, kvs ...any) { log.Print("[ERROR] " + msg + fmtKVs(kvs)) }
+
+func fmtKVs(kvs []any) string {
+	if len(kvs) == 0 {
+		return ""
+	}
+	s := ""
+	for i := 0; i+1 < len(kvs); i += 2 {
+		s += fmt.Sprintf(" %v=%v", kvs[i], kvs[i+1])
+	}
+	return s
+}
+
 // Worker processes jobs from a queue
 type Worker struct {
 	queue           Driver
@@ -20,6 +46,7 @@ type Worker struct {
 	ctx             context.Context
 	cancel          context.CancelFunc
 	wg              sync.WaitGroup
+	logger          WorkerLogger
 	eventDispatcher func(event interface{}) error
 }
 
@@ -70,6 +97,14 @@ func WithMaxRetries(n int) WorkerOption {
 	}
 }
 
+// WithWorkerLogger sets the logger for the worker.
+// If not set, the worker uses Go's standard log package.
+func WithWorkerLogger(l WorkerLogger) WorkerOption {
+	return func(w *Worker) {
+		w.logger = l
+	}
+}
+
 // NewWorker creates a new queue worker
 func NewWorker(queue Driver, queueName string, handler func(Job) error, opts ...WorkerOption) *Worker {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -87,6 +122,10 @@ func NewWorker(queue Driver, queueName string, handler func(Job) error, opts ...
 
 	for _, opt := range opts {
 		opt(w)
+	}
+
+	if w.logger == nil {
+		w.logger = stdlibLogger{}
 	}
 
 	return w
@@ -110,17 +149,17 @@ func (w *Worker) Stop() {
 func (w *Worker) work(id int) {
 	defer w.wg.Done()
 
-	log.Printf("Worker %d started for queue %s", id, w.queueName)
+	w.logger.Info("Worker started", "id", id, "queue", w.queueName)
 
 	for {
 		select {
 		case <-w.ctx.Done():
-			log.Printf("Worker %d stopped", id)
+			w.logger.Info("Worker stopped", "id", id)
 			return
 		default:
 			if err := w.processJob(); err != nil {
 				if err.Error() != "no job available" {
-					log.Printf("Worker %d error: %v", id, err)
+					w.logger.Error("Worker error", "id", id, "error", err)
 				}
 				// Back off on errors
 				time.Sleep(w.interval)
@@ -172,7 +211,7 @@ func (w *Worker) processJob() error {
 			dispatchJobFailed(w.dispatchEvent, jobCtx, jobType, w.queueName, err, duration)
 			// Handle job failure
 			if failErr := w.queue.Failed(job, err, w.queueName); failErr != nil {
-				log.Printf("Failed to mark job as failed: %v", failErr)
+				w.logger.Error("Failed to mark job as failed", "error", failErr)
 			}
 			return fmt.Errorf("job failed: %w", err)
 		}
@@ -186,7 +225,7 @@ func (w *Worker) processJob() error {
 		// Dispatch job.failed event
 		dispatchJobFailed(w.dispatchEvent, jobCtx, jobType, w.queueName, timeoutErr, duration)
 		if failErr := w.queue.Failed(job, timeoutErr, w.queueName); failErr != nil {
-			log.Printf("Failed to mark job as failed: %v", failErr)
+			w.logger.Error("Failed to mark job as failed", "error", failErr)
 		}
 		return timeoutErr
 	}
