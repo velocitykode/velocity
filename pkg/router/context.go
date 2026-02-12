@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -29,6 +30,15 @@ type HandlerFunc func(c *Context) error
 // MiddlewareFunc is the Velocity middleware function signature
 type MiddlewareFunc func(next HandlerFunc) HandlerFunc
 
+// servicesCtxKey is used to propagate *app.Services through r.Context()
+// so that Wrap / NewContext automatically inherit them.
+type servicesCtxKey struct{}
+
+// WithServices returns a copy of r whose context carries s.
+func WithServices(r *http.Request, s *app.Services) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), servicesCtxKey{}, s))
+}
+
 // Context wraps http.Request and http.ResponseWriter with helper methods
 type Context struct {
 	Response http.ResponseWriter
@@ -39,13 +49,20 @@ type Context struct {
 	services *app.Services
 }
 
-// NewContext creates a new Context from http.Request and http.ResponseWriter
+// NewContext creates a new Context from http.Request and http.ResponseWriter.
+// If services were previously stashed on r.Context() (via the router pipeline),
+// they are inherited automatically.
 func NewContext(w http.ResponseWriter, r *http.Request) *Context {
+	var svc *app.Services
+	if s, ok := r.Context().Value(servicesCtxKey{}).(*app.Services); ok {
+		svc = s
+	}
 	return &Context{
 		Response: w,
 		Request:  r,
 		params:   GetParams(r),
 		values:   make(map[string]interface{}),
+		services: svc,
 	}
 }
 
@@ -370,9 +387,13 @@ func (c *Context) Forbidden(message ...string) error {
 	return c.Error(http.StatusForbidden, msg)
 }
 
-// SetServices sets the service container on this context.
+// SetServices sets the service container on this context and stashes it
+// on r.Context() so that any downstream Wrap / NewContext inherits it.
 func (c *Context) SetServices(s *app.Services) {
 	c.services = s
+	if s != nil {
+		c.Request = WithServices(c.Request, s)
+	}
 }
 
 // mustServices returns the service container or panics if it is nil.

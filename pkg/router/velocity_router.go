@@ -299,6 +299,11 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	reqCtx = context.WithValue(req.Context(), RoutePatternKey, result.Path)
 	req = req.WithContext(reqCtx)
 
+	// Stash services on the request context so Wrap/NewContext inherit them
+	if r.services != nil {
+		req = WithServices(req, r.services)
+	}
+
 	// Create context and call handler with panic recovery
 	ctx := NewContextV2(rw, req)
 	ctx.services = r.services
@@ -456,13 +461,19 @@ func (r *VelocityRouterV2) buildPath(path string) string {
 	return path
 }
 
-// NewContextV2 creates a new Context using the new param storage
+// NewContextV2 creates a new Context using the new param storage.
+// Inherits services from r.Context() if present.
 func NewContextV2(w http.ResponseWriter, r *http.Request) *Context {
+	var svc *app.Services
+	if s, ok := r.Context().Value(servicesCtxKey{}).(*app.Services); ok {
+		svc = s
+	}
 	return &Context{
 		Response: w,
 		Request:  r,
 		params:   GetParams(r),
 		values:   make(map[string]interface{}),
+		services: svc,
 	}
 }
 
