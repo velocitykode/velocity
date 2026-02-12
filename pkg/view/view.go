@@ -122,6 +122,13 @@ const defaultTemplate = `<!DOCTYPE html>
 </body>
 </html>`
 
+// FromContext extracts the *Engine from a router.Context.
+// Returns nil if view is not configured.
+func FromContext(ctx *router.Context) *Engine {
+	e, _ := ctx.View().(*Engine)
+	return e
+}
+
 // LoadTemplateFromFile loads the root template from a file
 func LoadTemplateFromFile(path string) (string, error) {
 	content, err := os.ReadFile(path)

@@ -270,6 +270,13 @@ func matchPath(path, pattern string) bool {
 	return path == pattern
 }
 
+// FromContext extracts the *CSRF from a router.Context.
+// Returns nil if CSRF is not configured.
+func FromContext(ctx *router.Context) *CSRF {
+	c, _ := ctx.CSRF().(*CSRF)
+	return c
+}
+
 func isJSONRequest(r *http.Request) bool {
 	contentType := r.Header.Get("Content-Type")
 	accept := r.Header.Get("Accept")

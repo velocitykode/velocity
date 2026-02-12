@@ -48,12 +48,15 @@ import (
     _ "myapp/migrations" // Import to register
 )
 
-// Initialize ORM
-orm.Init("sqlite", map[string]any{"database": "./database.db"})
+// Initialize ORM via the Manager
+manager, err := orm.NewManager(orm.Config{
+    Driver:   "sqlite",
+    Database: "./database.db",
+})
 
 // Run migrations
-migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
-err := migrator.Up()
+migrator := migrate.NewMigrator(manager.DB(), manager.DriverName())
+err = migrator.Up()
 ```
 
 ## TableBuilder API
@@ -109,7 +112,7 @@ type Project struct {
 ## Commands
 
 ```go
-migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+migrator := migrate.NewMigrator(manager.DB(), manager.DriverName())
 
 // Run pending migrations
 migrator.Up()

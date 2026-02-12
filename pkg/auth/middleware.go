@@ -17,6 +17,13 @@ func wantsJSON(r *http.Request) bool {
 	return strings.Contains(accept, "application/json")
 }
 
+// FromContext extracts the *Manager from a router.Context.
+// Returns nil if auth is not configured.
+func FromContext(ctx *router.Context) *Manager {
+	m, _ := ctx.Auth().(*Manager)
+	return m
+}
+
 // AuthMiddleware returns a router.MiddlewareFunc that requires authentication
 // using the provided Manager instance.
 func AuthMiddleware(manager *Manager) router.MiddlewareFunc {
