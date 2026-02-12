@@ -100,22 +100,19 @@ func recoveryStream(cfg *RecoveryConfig) grpc.StreamServerInterceptor {
 }
 
 func handlePanic(ctx context.Context, p interface{}, method string, cfg *RecoveryConfig) error {
-	logger := cfg.Logger
-	if logger == nil {
-		return status.Errorf(codes.Internal, "internal error") // No logger, return generic error
-	}
+	// Log if logger is available
+	if logger := cfg.Logger; logger != nil {
+		fields := []interface{}{
+			"method", method,
+			"panic", p,
+		}
 
-	// Build log fields
-	fields := []interface{}{
-		"method", method,
-		"panic", p,
-	}
+		if cfg.EnableStackTrace {
+			fields = append(fields, "stack", string(debug.Stack()))
+		}
 
-	if cfg.EnableStackTrace {
-		fields = append(fields, "stack", string(debug.Stack()))
+		logger.Error("gRPC panic recovered", fields...)
 	}
-
-	logger.Error("gRPC panic recovered", fields...)
 
 	// Call custom handler if set
 	if cfg.PanicHandler != nil {

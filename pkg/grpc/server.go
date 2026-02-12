@@ -49,6 +49,11 @@ func NewServer(opts ...ServerOption) *Server {
 		opt(s)
 	}
 
+	// Default to console logger if none provided
+	if s.logger == nil {
+		s.logger, _ = log.NewLogger(log.LogConfig{Driver: "console"})
+	}
+
 	return s
 }
 
