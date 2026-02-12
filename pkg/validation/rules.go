@@ -2,7 +2,6 @@ package validation
 
 import (
 	"fmt"
-	"sync"
 
 	"github.com/velocitykode/velocity/pkg/validation/rules"
 )
@@ -13,75 +12,55 @@ type RuleHandler func(field string, value interface{}, params []string, data map
 // RuleRegistry manages validation rules
 type RuleRegistry struct {
 	rules map[string]RuleHandler
-	mu    sync.RWMutex
-}
-
-// global rule registry
-var ruleRegistry = &RuleRegistry{
-	rules: make(map[string]RuleHandler),
 }
 
 // Register registers a validation rule
 func (r *RuleRegistry) Register(name string, handler RuleHandler) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.rules[name] = handler
 }
 
 // Get retrieves a validation rule handler
 func (r *RuleRegistry) Get(name string) (RuleHandler, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
 	handler, exists := r.rules[name]
 	return handler, exists
 }
 
-// RegisterRule registers a custom validation rule globally
-func RegisterRule(name string, handler RuleHandler) {
-	ruleRegistry.Register(name, handler)
-}
-
-// init registers all built-in rules
-func init() {
-	registerBuiltInRules()
-}
-
-// registerBuiltInRules registers all built-in validation rules
-func registerBuiltInRules() {
+// registerBuiltInRules registers all built-in validation rules on the given registry.
+func registerBuiltInRules(reg *RuleRegistry) {
 	// Presence rules
-	RegisterRule("required", requiredRule)
-	RegisterRule("nullable", nullableRule)
-	RegisterRule("filled", filledRule)
-	RegisterRule("present", presentRule)
+	reg.Register("required", requiredRule)
+	reg.Register("nullable", nullableRule)
+	reg.Register("filled", filledRule)
+	reg.Register("present", presentRule)
 
 	// Type rules from rules package
-	RegisterRule("string", rules.StringRule)
-	RegisterRule("integer", rules.IntegerRule)
-	RegisterRule("numeric", rules.NumericRule)
-	RegisterRule("boolean", rules.BooleanRule)
-	RegisterRule("array", rules.ArrayRule)
+	reg.Register("string", rules.StringRule)
+	reg.Register("integer", rules.IntegerRule)
+	reg.Register("numeric", rules.NumericRule)
+	reg.Register("boolean", rules.BooleanRule)
+	reg.Register("array", rules.ArrayRule)
 
 	// String rules from rules package
-	RegisterRule("email", rules.EmailRule)
-	RegisterRule("url", rules.URLRule)
-	RegisterRule("url_public", rules.URLPublicRule)
-	RegisterRule("alpha", rules.AlphaRule)
-	RegisterRule("alpha_dash", rules.AlphaDashRule)
-	RegisterRule("alpha_num", rules.AlphaNumRule)
+	reg.Register("email", rules.EmailRule)
+	reg.Register("url", rules.URLRule)
+	reg.Register("url_public", rules.URLPublicRule)
+	reg.Register("alpha", rules.AlphaRule)
+	reg.Register("alpha_dash", rules.AlphaDashRule)
+	reg.Register("alpha_num", rules.AlphaNumRule)
 
 	// Size rules from rules package
-	RegisterRule("min", rules.MinRule)
-	RegisterRule("max", rules.MaxRule)
-	RegisterRule("size", rules.SizeRule)
-	RegisterRule("between", rules.BetweenRule)
+	reg.Register("min", rules.MinRule)
+	reg.Register("max", rules.MaxRule)
+	reg.Register("size", rules.SizeRule)
+	reg.Register("between", rules.BetweenRule)
 
 	// Comparison rules from rules package
-	RegisterRule("same", rules.SameRule)
-	RegisterRule("different", rules.DifferentRule)
-	RegisterRule("in", rules.InRule)
-	RegisterRule("not_in", rules.NotInRule)
-	RegisterRule("confirmed", rules.ConfirmedRule)
-	RegisterRule("accepted", rules.AcceptedRule)
+	reg.Register("same", rules.SameRule)
+	reg.Register("different", rules.DifferentRule)
+	reg.Register("in", rules.InRule)
+	reg.Register("not_in", rules.NotInRule)
+	reg.Register("confirmed", rules.ConfirmedRule)
+	reg.Register("accepted", rules.AcceptedRule)
 }
 
 // requiredRule validates that a field is present and not empty

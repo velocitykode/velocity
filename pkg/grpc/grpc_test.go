@@ -2,7 +2,6 @@ package grpc_test
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -564,21 +563,12 @@ func TestHealthService(t *testing.T) {
 	})
 }
 
-func TestInit(t *testing.T) {
-	// Reset for clean test
-	grpc.Reset()
-
+func TestLoadConfig(t *testing.T) {
 	t.Run("environment config", func(t *testing.T) {
-		os.Setenv("GRPC_PORT", "50052")
-		os.Setenv("GRPC_REFLECTION", "true")
-		os.Setenv("GATEWAY_PORT", "8082")
-		os.Setenv("GRPC_ENDPOINT", "localhost:50052")
-		defer func() {
-			os.Unsetenv("GRPC_PORT")
-			os.Unsetenv("GRPC_REFLECTION")
-			os.Unsetenv("GATEWAY_PORT")
-			os.Unsetenv("GRPC_ENDPOINT")
-		}()
+		t.Setenv("GRPC_PORT", "50052")
+		t.Setenv("GRPC_REFLECTION", "true")
+		t.Setenv("GATEWAY_PORT", "8082")
+		t.Setenv("GRPC_ENDPOINT", "localhost:50052")
 
 		cfg := grpc.LoadConfig()
 		if cfg.ServerPort != "50052" {
@@ -596,51 +586,14 @@ func TestInit(t *testing.T) {
 	})
 
 	t.Run("default config", func(t *testing.T) {
-		grpc.Reset()
+		t.Setenv("GRPC_PORT", "")
+		t.Setenv("GRPC_REFLECTION", "")
 		cfg := grpc.LoadConfig()
 		if cfg.ServerPort != "50051" {
 			t.Errorf("ServerPort = %v, want 50051", cfg.ServerPort)
 		}
 		if cfg.EnableReflection {
 			t.Error("EnableReflection should be false by default")
-		}
-	})
-
-	t.Run("get server creates default", func(t *testing.T) {
-		grpc.Reset()
-		server := grpc.GetServer()
-		if server == nil {
-			t.Error("GetServer() returned nil")
-		}
-	})
-
-	t.Run("get gateway creates default", func(t *testing.T) {
-		grpc.Reset()
-		gateway := grpc.GetGateway()
-		if gateway == nil {
-			t.Error("GetGateway() returned nil")
-		}
-	})
-
-	t.Run("set server", func(t *testing.T) {
-		grpc.Reset()
-		custom := grpc.NewServer(grpc.WithPort("12345"))
-		grpc.SetServer(custom)
-
-		got := grpc.GetServer()
-		if got.Port() != "12345" {
-			t.Errorf("Port() = %v, want 12345", got.Port())
-		}
-	})
-
-	t.Run("set gateway", func(t *testing.T) {
-		grpc.Reset()
-		custom := grpc.NewGateway(grpc.GatewayWithPort("12345"))
-		grpc.SetGateway(custom)
-
-		got := grpc.GetGateway()
-		if got.Port() != "12345" {
-			t.Errorf("Port() = %v, want 12345", got.Port())
 		}
 	})
 }

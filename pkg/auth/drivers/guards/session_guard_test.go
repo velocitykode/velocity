@@ -265,7 +265,7 @@ func TestSessionGuard_Check(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -290,7 +290,7 @@ func TestSessionGuard_Check(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -317,7 +317,7 @@ func TestSessionGuard_Check(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -349,7 +349,7 @@ func TestSessionGuard_Check(t *testing.T) {
 					provider: provider,
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -381,7 +381,7 @@ func TestSessionGuard_Check(t *testing.T) {
 					provider: provider,
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -430,7 +430,7 @@ func TestSessionGuard_User(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -456,7 +456,7 @@ func TestSessionGuard_User(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -482,7 +482,7 @@ func TestSessionGuard_User(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -514,7 +514,7 @@ func TestSessionGuard_User(t *testing.T) {
 					provider: provider,
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -573,7 +573,7 @@ func TestSessionGuard_ID(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -599,7 +599,7 @@ func TestSessionGuard_ID(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -625,7 +625,7 @@ func TestSessionGuard_ID(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -681,7 +681,7 @@ func TestSessionGuard_Login(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -719,7 +719,7 @@ func TestSessionGuard_Login(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -743,7 +743,7 @@ func TestSessionGuard_Login(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -773,7 +773,7 @@ func TestSessionGuard_Login(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -829,7 +829,7 @@ func TestSessionGuard_LoginByID(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -852,7 +852,7 @@ func TestSessionGuard_LoginByID(t *testing.T) {
 					provider: provider,
 					store:    &mockSessionGuardStore{},
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -877,7 +877,7 @@ func TestSessionGuard_LoginByID(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -944,7 +944,7 @@ func TestSessionGuard_Attempt(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -971,7 +971,7 @@ func TestSessionGuard_Attempt(t *testing.T) {
 					provider: provider,
 					store:    &mockSessionGuardStore{},
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -991,7 +991,7 @@ func TestSessionGuard_Attempt(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    &mockSessionGuardStore{},
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -1016,7 +1016,7 @@ func TestSessionGuard_Attempt(t *testing.T) {
 					provider: provider,
 					store:    &mockSessionGuardStore{},
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -1044,7 +1044,7 @@ func TestSessionGuard_Attempt(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -1102,7 +1102,7 @@ func TestSessionGuard_Logout(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -1127,7 +1127,7 @@ func TestSessionGuard_Logout(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -1156,7 +1156,7 @@ func TestSessionGuard_Logout(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -1182,7 +1182,7 @@ func TestSessionGuard_Logout(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -1240,7 +1240,7 @@ func TestSessionGuard_SetProvider(t *testing.T) {
 				provider: &mockSessionGuardUserProvider{},
 				store:    &mockSessionGuardStore{},
 				config:   newTestSessionConfig(),
-				hasher:   auth.GetHasher(),
+				hasher:   auth.NewBcryptHasher(10),
 			}
 			guard.SetProvider(tt.newProvider)
 			if guard.provider != tt.newProvider {
@@ -1264,7 +1264,7 @@ func TestSessionGuard_getSession(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    &mockSessionGuardStore{},
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 				return guard
 			},
@@ -1290,7 +1290,7 @@ func TestSessionGuard_getSession(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -1312,7 +1312,7 @@ func TestSessionGuard_getSession(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -1335,7 +1335,7 @@ func TestSessionGuard_getSession(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 			},
 			setupReq: func() *http.Request {
@@ -1388,7 +1388,7 @@ func TestSessionGuard_SessionRegeneration(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 				return guard, session
 			},
@@ -1439,7 +1439,7 @@ func TestSessionGuard_SessionInvalidation(t *testing.T) {
 					provider: &mockSessionGuardUserProvider{},
 					store:    store,
 					config:   newTestSessionConfig(),
-					hasher:   auth.GetHasher(),
+					hasher:   auth.NewBcryptHasher(10),
 				}
 				return guard, session
 			},

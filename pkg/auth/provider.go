@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // ORMUserProvider provides users from ORM models
@@ -13,12 +15,16 @@ type ORMUserProvider struct {
 	hasher    Hasher
 }
 
-// NewORMUserProvider creates a new ORM user provider
-func NewORMUserProvider(db *sql.DB, modelType string) *ORMUserProvider {
+// NewORMUserProvider creates a new ORM user provider.
+// If hasher is nil, a default bcrypt hasher is used.
+func NewORMUserProvider(db *sql.DB, modelType string, hasher Hasher) *ORMUserProvider {
+	if hasher == nil {
+		hasher = NewBcryptHasher(bcrypt.DefaultCost)
+	}
 	return &ORMUserProvider{
 		db:        db,
 		modelType: modelType,
-		hasher:    GetHasher(),
+		hasher:    hasher,
 	}
 }
 

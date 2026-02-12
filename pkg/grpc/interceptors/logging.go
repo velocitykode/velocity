@@ -33,6 +33,9 @@ type LoggingConfig struct {
 
 	// ExtraFields adds extra fields to log entries
 	ExtraFields func(ctx context.Context) []interface{}
+
+	// EventDispatcher dispatches gRPC events. If nil, no events are dispatched.
+	EventDispatcher grpcevents.EventDispatchFunc
 }
 
 // LoggingOption configures logging behavior
@@ -83,6 +86,13 @@ func WithExtraFields(fn func(ctx context.Context) []interface{}) LoggingOption {
 	}
 }
 
+// WithEventDispatcher sets the event dispatcher for gRPC events.
+func WithEventDispatcher(dispatcher grpcevents.EventDispatchFunc) LoggingOption {
+	return func(c *LoggingConfig) {
+		c.EventDispatcher = dispatcher
+	}
+}
+
 // Logging creates a logging interceptor pair that logs all requests.
 func Logging(opts ...LoggingOption) InterceptorPair {
 	cfg := &LoggingConfig{
@@ -122,7 +132,7 @@ func loggingUnary(cfg *LoggingConfig) grpc.UnaryServerInterceptor {
 		start := time.Now()
 
 		// Dispatch request started event
-		dispatchRequestStarted(ctx, info.FullMethod, start)
+		dispatchRequestStarted(ctx, info.FullMethod, start, cfg.EventDispatcher)
 
 		// Call handler
 		resp, err := handler(ctx, req)
@@ -131,7 +141,7 @@ func loggingUnary(cfg *LoggingConfig) grpc.UnaryServerInterceptor {
 		logRequest(ctx, info.FullMethod, start, err, cfg)
 
 		// Dispatch completion event
-		dispatchRequestCompleted(ctx, info.FullMethod, start, err)
+		dispatchRequestCompleted(ctx, info.FullMethod, start, err, cfg.EventDispatcher)
 
 		return resp, err
 	}
@@ -147,7 +157,7 @@ func loggingStream(cfg *LoggingConfig) grpc.StreamServerInterceptor {
 		start := time.Now()
 
 		// Dispatch stream started event
-		dispatchStreamStarted(ss.Context(), info.FullMethod, start)
+		dispatchStreamStarted(ss.Context(), info.FullMethod, start, cfg.EventDispatcher)
 
 		// Call handler
 		err := handler(srv, ss)
@@ -156,7 +166,7 @@ func loggingStream(cfg *LoggingConfig) grpc.StreamServerInterceptor {
 		logRequest(ss.Context(), info.FullMethod, start, err, cfg)
 
 		// Dispatch stream completion event
-		dispatchStreamCompleted(ss.Context(), info.FullMethod, start, err)
+		dispatchStreamCompleted(ss.Context(), info.FullMethod, start, err, cfg.EventDispatcher)
 
 		return err
 	}
@@ -259,14 +269,24 @@ func redactMetadata(md map[string][]string) map[string][]string {
 	return redacted
 }
 
-func dispatchRequestStarted(ctx context.Context, method string, start time.Time) {
+func dispatchEvent(dispatcher grpcevents.EventDispatchFunc, event interface{}) {
+	if dispatcher != nil {
+		_ = dispatcher(event)
+	}
+}
+
+func dispatchRequestStarted(ctx context.Context, method string, start time.Time, dispatcher grpcevents.EventDispatchFunc) {
+	if dispatcher == nil {
+		return
+	}
+
 	var md map[string][]string
 	protocol := detectProtocol(ctx)
 	if inMD, ok := metadata.FromIncomingContext(ctx); ok {
 		md = redactMetadata(inMD)
 	}
 
-	grpcevents.DispatchEvent(&grpcevents.RequestStarted{
+	dispatchEvent(dispatcher, &grpcevents.RequestStarted{
 		Method:    method,
 		Protocol:  protocol,
 		StartTime: start,
@@ -306,7 +326,11 @@ func detectProtocol(ctx context.Context) grpcevents.Protocol {
 	return grpcevents.ProtocolGRPC
 }
 
-func dispatchRequestCompleted(ctx context.Context, method string, start time.Time, err error) {
+func dispatchRequestCompleted(ctx context.Context, method string, start time.Time, err error, dispatcher grpcevents.EventDispatchFunc) {
+	if dispatcher == nil {
+		return
+	}
+
 	end := time.Now()
 	duration := end.Sub(start)
 	protocol := detectProtocol(ctx)
@@ -327,7 +351,7 @@ func dispatchRequestCompleted(ctx context.Context, method string, start time.Tim
 	}
 
 	if err != nil {
-		grpcevents.DispatchEvent(&grpcevents.RequestFailed{
+		dispatchEvent(dispatcher, &grpcevents.RequestFailed{
 			Method:     method,
 			Protocol:   protocol,
 			StartTime:  start,
@@ -340,7 +364,7 @@ func dispatchRequestCompleted(ctx context.Context, method string, start time.Tim
 			TeamID:     teamID,
 		})
 	} else {
-		grpcevents.DispatchEvent(&grpcevents.RequestCompleted{
+		dispatchEvent(dispatcher, &grpcevents.RequestCompleted{
 			Method:     method,
 			Protocol:   protocol,
 			StartTime:  start,
@@ -354,14 +378,18 @@ func dispatchRequestCompleted(ctx context.Context, method string, start time.Tim
 	}
 }
 
-func dispatchStreamStarted(ctx context.Context, method string, start time.Time) {
+func dispatchStreamStarted(ctx context.Context, method string, start time.Time, dispatcher grpcevents.EventDispatchFunc) {
+	if dispatcher == nil {
+		return
+	}
+
 	var md map[string][]string
 	protocol := detectProtocol(ctx)
 	if inMD, ok := metadata.FromIncomingContext(ctx); ok {
 		md = redactMetadata(inMD)
 	}
 
-	grpcevents.DispatchEvent(&grpcevents.StreamStarted{
+	dispatchEvent(dispatcher, &grpcevents.StreamStarted{
 		Method:    method,
 		Protocol:  protocol,
 		StartTime: start,
@@ -370,7 +398,11 @@ func dispatchStreamStarted(ctx context.Context, method string, start time.Time) 
 	})
 }
 
-func dispatchStreamCompleted(ctx context.Context, method string, start time.Time, err error) {
+func dispatchStreamCompleted(ctx context.Context, method string, start time.Time, err error, dispatcher grpcevents.EventDispatchFunc) {
+	if dispatcher == nil {
+		return
+	}
+
 	end := time.Now()
 	duration := end.Sub(start)
 	protocol := detectProtocol(ctx)
@@ -382,7 +414,7 @@ func dispatchStreamCompleted(ctx context.Context, method string, start time.Time
 	}
 
 	if err != nil {
-		grpcevents.DispatchEvent(&grpcevents.StreamFailed{
+		dispatchEvent(dispatcher, &grpcevents.StreamFailed{
 			Method:    method,
 			Protocol:  protocol,
 			StartTime: start,
@@ -394,7 +426,7 @@ func dispatchStreamCompleted(ctx context.Context, method string, start time.Time
 			TeamID:    teamID,
 		})
 	} else {
-		grpcevents.DispatchEvent(&grpcevents.StreamCompleted{
+		dispatchEvent(dispatcher, &grpcevents.StreamCompleted{
 			Method:    method,
 			Protocol:  protocol,
 			StartTime: start,

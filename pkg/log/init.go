@@ -4,10 +4,6 @@ import (
 	"os"
 )
 
-// init is intentionally a no-op. Logger initialization is handled explicitly
-// via NewLogger() or the global Get() fallback to console.
-func init() {}
-
 // getEnvOrDefault retrieves an environment variable or returns a default value if not set
 func getEnvOrDefault(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {

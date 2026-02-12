@@ -7,24 +7,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-
-	"github.com/velocitykode/velocity/pkg/log"
 )
-
-// errLogger is the logger used by package-level error functions.
-// Set via SetErrorLogger during app initialization.
-var errLogger log.Logger
-
-// SetErrorLogger sets the logger used by WrapError and WrapErrorWithCode.
-func SetErrorLogger(l log.Logger) {
-	errLogger = l
-}
-
-func logError(msg string, kvs ...any) {
-	if errLogger != nil {
-		errLogger.Error(msg, kvs...)
-	}
-}
 
 // Common gRPC errors with standard messages
 var (
@@ -121,9 +104,8 @@ func isDebugMode() bool {
 
 // WrapError wraps a Go error in a gRPC status error.
 // If the error is already a gRPC status error, it is returned unchanged.
-// Otherwise, it's wrapped as an internal error with a generic message
-// (the real error is logged server-side). In debug mode, the original
-// message is preserved for developer convenience.
+// Otherwise, it's wrapped as an internal error with a generic message.
+// In debug mode, the original message is preserved for developer convenience.
 func WrapError(err error) error {
 	if err == nil {
 		return nil
@@ -133,9 +115,6 @@ func WrapError(err error) error {
 	if _, ok := status.FromError(err); ok {
 		return err
 	}
-
-	// Log the actual error server-side
-	logError("gRPC internal error", "error", err.Error())
 
 	if isDebugMode() {
 		return status.Error(codes.Internal, err.Error())
@@ -159,7 +138,6 @@ func WrapErrorWithCode(err error, code codes.Code) error {
 
 	// For internal-class errors, hide details from clients
 	if code == codes.Internal || code == codes.Unknown {
-		logError("gRPC error", "code", code.String(), "error", err.Error())
 		if !isDebugMode() {
 			return status.Error(code, "internal server error")
 		}

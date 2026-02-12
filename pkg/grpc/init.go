@@ -3,17 +3,8 @@ package grpc
 import (
 	"os"
 	"strconv"
-	"sync"
 
 	"github.com/velocitykode/velocity/pkg/config"
-)
-
-var (
-	defaultServer  *Server
-	defaultGateway *Gateway
-	serverOnce     sync.Once
-	gatewayOnce    sync.Once
-	mu             sync.RWMutex
 )
 
 // Config holds gRPC configuration loaded from environment
@@ -55,92 +46,4 @@ func getEnvInt(key string, defaultValue int) int {
 		}
 	}
 	return defaultValue
-}
-
-// Initialize sets up the default server and gateway from environment.
-// Call this at application startup if you want to use the global instances.
-func Initialize() error {
-	cfg := LoadConfig()
-
-	// Initialize default server
-	serverOnce.Do(func() {
-		opts := []ServerOption{
-			WithPort(cfg.ServerPort),
-			WithReflection(cfg.EnableReflection),
-		}
-
-		if cfg.MaxRecvMsgSize > 0 {
-			opts = append(opts, WithMaxRecvMsgSize(cfg.MaxRecvMsgSize))
-		}
-		if cfg.MaxSendMsgSize > 0 {
-			opts = append(opts, WithMaxSendMsgSize(cfg.MaxSendMsgSize))
-		}
-
-		defaultServer = NewServer(opts...)
-	})
-
-	// Initialize default gateway
-	gatewayOnce.Do(func() {
-		defaultGateway = NewGateway(
-			GatewayWithPort(cfg.GatewayPort),
-			GatewayWithGRPCEndpoint(cfg.GRPCEndpoint),
-		)
-	})
-
-	return nil
-}
-
-// GetServer returns the default gRPC server instance.
-// Initializes from environment if not already initialized.
-func GetServer() *Server {
-	mu.RLock()
-	if defaultServer != nil {
-		defer mu.RUnlock()
-		return defaultServer
-	}
-	mu.RUnlock()
-
-	Initialize()
-	return defaultServer
-}
-
-// GetGateway returns the default HTTP gateway instance.
-// Initializes from environment if not already initialized.
-func GetGateway() *Gateway {
-	mu.RLock()
-	if defaultGateway != nil {
-		defer mu.RUnlock()
-		return defaultGateway
-	}
-	mu.RUnlock()
-
-	Initialize()
-	return defaultGateway
-}
-
-// SetServer sets the default server instance.
-// Useful for testing or custom initialization.
-func SetServer(s *Server) {
-	mu.Lock()
-	defer mu.Unlock()
-	defaultServer = s
-}
-
-// SetGateway sets the default gateway instance.
-// Useful for testing or custom initialization.
-func SetGateway(g *Gateway) {
-	mu.Lock()
-	defer mu.Unlock()
-	defaultGateway = g
-}
-
-// Reset resets the global instances.
-// Useful for testing.
-func Reset() {
-	mu.Lock()
-	defer mu.Unlock()
-	defaultServer = nil
-	defaultGateway = nil
-	serverOnce = sync.Once{}
-	gatewayOnce = sync.Once{}
 }

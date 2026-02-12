@@ -358,7 +358,7 @@ func initAuth(authCfg AuthConfig, sessCfg SessionConfig, logger log.Logger, db *
 			if model == "" {
 				model = "User"
 			}
-			manager.RegisterProvider(name, auth.NewORMUserProvider(db, model))
+			manager.RegisterProvider(name, auth.NewORMUserProvider(db, model, manager.GetHasher()))
 		}
 	}
 

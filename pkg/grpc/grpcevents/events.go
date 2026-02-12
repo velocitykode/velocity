@@ -19,23 +19,8 @@ const (
 	ProtocolHTTP Protocol = "http"
 )
 
-// Event dispatcher function type
+// EventDispatchFunc is a function type for dispatching events.
 type EventDispatchFunc func(event interface{}) error
-
-var eventDispatcher EventDispatchFunc
-
-// SetEventDispatcher sets the event dispatcher function.
-// This is called by the events package to wire up event dispatching.
-func SetEventDispatcher(dispatcher EventDispatchFunc) {
-	eventDispatcher = dispatcher
-}
-
-// DispatchEvent dispatches an event if a dispatcher is configured
-func DispatchEvent(event interface{}) {
-	if eventDispatcher != nil {
-		_ = eventDispatcher(event)
-	}
-}
 
 // RequestStarted is dispatched when a gRPC request begins
 type RequestStarted struct {

@@ -26,13 +26,6 @@ func NewMailer(config MailConfig) (Mailer, error) {
 	return createDriver(driver)
 }
 
-// init initializes the mail package.
-// Use NewMailer() to create mailer instances explicitly.
-func init() {
-	// No-op: global singleton is no longer eagerly initialized.
-	// Driver registration still happens via RegisterDriver() calls in driver packages.
-}
-
 // RegisterDriver allows drivers to register themselves
 func RegisterDriver(name string, factory func() (Mailer, error)) {
 	driverMu.Lock()

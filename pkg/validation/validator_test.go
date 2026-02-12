@@ -440,8 +440,10 @@ func TestValidationErrors(t *testing.T) {
 }
 
 func TestRegisterCustomRule(t *testing.T) {
-	// Register a custom rule
-	RegisterRule("uppercase", func(field string, value interface{}, params []string, data map[string]interface{}) error {
+	v := NewValidator()
+
+	// Register a custom rule on the validator instance
+	v.RegisterRule("uppercase", func(field string, value interface{}, params []string, data map[string]interface{}) error {
 		str, ok := value.(string)
 		if !ok {
 			return nil
@@ -451,8 +453,6 @@ func TestRegisterCustomRule(t *testing.T) {
 		}
 		return nil
 	})
-
-	v := NewValidator()
 
 	// Test the custom rule
 	data := map[string]interface{}{

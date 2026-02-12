@@ -2,7 +2,9 @@ package auth
 
 import (
 	"fmt"
+	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/velocitykode/velocity/pkg/orm"
@@ -220,7 +222,7 @@ func TestAuthManager(t *testing.T) {
 	manager := NewManager()
 
 	// Register a mock provider
-	provider := NewORMUserProvider(nil, "User")
+	provider := NewORMUserProvider(nil, "User", nil)
 	manager.RegisterProvider("users", provider)
 
 	// Note: In a real test, we'd create actual guard instances
@@ -244,6 +246,190 @@ func TestAuthManager(t *testing.T) {
 	if err == nil {
 		t.Error("Should error on non-existent provider")
 	}
+}
+
+// mockGuard implements Guard for Manager tests.
+type mockGuard struct {
+	name string
+}
+
+func (g *mockGuard) Check(*http.Request) bool                        { return false }
+func (g *mockGuard) User(*http.Request) Authenticatable              { return nil }
+func (g *mockGuard) ID(*http.Request) interface{}                    { return nil }
+func (g *mockGuard) SetProvider(UserProvider)                        {}
+func (g *mockGuard) Logout(http.ResponseWriter, *http.Request) error { return nil }
+func (g *mockGuard) Login(http.ResponseWriter, *http.Request, Authenticatable, ...bool) error {
+	return nil
+}
+func (g *mockGuard) LoginByID(http.ResponseWriter, *http.Request, interface{}, ...bool) error {
+	return nil
+}
+func (g *mockGuard) Attempt(http.ResponseWriter, *http.Request, map[string]interface{}, ...bool) (bool, error) {
+	return false, nil
+}
+
+// mockProvider implements UserProvider for Manager tests.
+type mockProvider struct{}
+
+func (p *mockProvider) FindByID(interface{}) (Authenticatable, error) { return nil, nil }
+func (p *mockProvider) FindByCredentials(map[string]interface{}) (Authenticatable, error) {
+	return nil, nil
+}
+func (p *mockProvider) ValidateCredentials(Authenticatable, map[string]interface{}) bool {
+	return false
+}
+func (p *mockProvider) UpdateRememberToken(Authenticatable, string) error { return nil }
+
+func TestNewManager(t *testing.T) {
+	m := NewManager()
+	if m == nil {
+		t.Fatal("NewManager() returned nil")
+	}
+	if m.guards == nil {
+		t.Error("guards map not initialized")
+	}
+	if m.providers == nil {
+		t.Error("providers map not initialized")
+	}
+	if m.defaultGuard != "web" {
+		t.Errorf("defaultGuard = %q, want %q", m.defaultGuard, "web")
+	}
+}
+
+func TestManagerRegisterGuard(t *testing.T) {
+	m := NewManager()
+	g := &mockGuard{name: "session"}
+
+	m.RegisterGuard("web", g)
+
+	got, err := m.Guard("web")
+	if err != nil {
+		t.Fatalf("Guard() error: %v", err)
+	}
+	if got != g {
+		t.Error("Guard() returned wrong instance")
+	}
+}
+
+func TestManagerRegisterProvider(t *testing.T) {
+	m := NewManager()
+	p := &mockProvider{}
+
+	m.RegisterProvider("users", p)
+
+	got, err := m.Provider("users")
+	if err != nil {
+		t.Fatalf("Provider() error: %v", err)
+	}
+	if got != p {
+		t.Error("Provider() returned wrong instance")
+	}
+}
+
+func TestManagerGuard(t *testing.T) {
+	m := NewManager()
+	g := &mockGuard{name: "web"}
+	m.RegisterGuard("web", g)
+
+	tests := []struct {
+		name    string
+		guard   string
+		wantErr bool
+	}{
+		{"nonexistent guard returns error", "api", true},
+		{"empty name uses default guard", "", false},
+		{"named guard returns guard", "web", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := m.Guard(tt.guard)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Guard(%q) error = %v, wantErr %v", tt.guard, err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && got == nil {
+				t.Error("Guard() returned nil")
+			}
+		})
+	}
+}
+
+func TestManagerDefaultGuard(t *testing.T) {
+	m := NewManager()
+
+	// No guard registered — should error
+	_, err := m.DefaultGuard()
+	if err == nil {
+		t.Error("DefaultGuard() should error when no guard is registered")
+	}
+
+	// Register and retrieve
+	g := &mockGuard{name: "web"}
+	m.RegisterGuard("web", g)
+	got, err := m.DefaultGuard()
+	if err != nil {
+		t.Fatalf("DefaultGuard() error: %v", err)
+	}
+	if got != g {
+		t.Error("DefaultGuard() returned wrong instance")
+	}
+
+	// Custom default
+	g2 := &mockGuard{name: "api"}
+	m.RegisterGuard("api", g2)
+	m.SetDefaultGuard("api")
+	got, err = m.DefaultGuard()
+	if err != nil {
+		t.Fatalf("DefaultGuard() after SetDefaultGuard error: %v", err)
+	}
+	if got != g2 {
+		t.Error("DefaultGuard() did not switch to api guard")
+	}
+}
+
+func TestManagerSetDefaultGuard(t *testing.T) {
+	m := NewManager()
+
+	m.SetDefaultGuard("jwt")
+	if m.defaultGuard != "jwt" {
+		t.Errorf("defaultGuard = %q, want %q", m.defaultGuard, "jwt")
+	}
+
+	m.SetDefaultGuard("session")
+	if m.defaultGuard != "session" {
+		t.Errorf("defaultGuard = %q, want %q", m.defaultGuard, "session")
+	}
+}
+
+func TestManagerConcurrency(t *testing.T) {
+	m := NewManager()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			name := fmt.Sprintf("guard-%d", idx)
+
+			// Register guard
+			m.RegisterGuard(name, &mockGuard{name: name})
+
+			// Register provider
+			m.RegisterProvider(name, &mockProvider{})
+
+			// Retrieve guard
+			_, _ = m.Guard(name)
+
+			// Retrieve provider
+			_, _ = m.Provider(name)
+
+			// Default guard operations
+			m.SetDefaultGuard(name)
+			_, _ = m.DefaultGuard()
+		}(i)
+	}
+	wg.Wait()
 }
 
 func TestORMUserProvider(t *testing.T) {
@@ -282,7 +468,7 @@ func TestORMUserProvider(t *testing.T) {
 		t.Fatalf("Failed to insert test user: %v", err)
 	}
 
-	provider := NewORMUserProvider(db, "User")
+	provider := NewORMUserProvider(db, "User", nil)
 
 	// Test FindByCredentials with valid email
 	user, err := provider.FindByCredentials(map[string]interface{}{
@@ -350,35 +536,6 @@ func TestORMUserProvider(t *testing.T) {
 
 	if user.GetRememberToken() != token {
 		t.Error("Remember token should be updated")
-	}
-}
-
-func TestGlobalAuthFunctions(t *testing.T) {
-	// Initialize global hasher
-	InitHasher(NewBcryptHasher(10))
-
-	// Test global hash function
-	hash, err := Hash("test-password")
-	if err != nil {
-		t.Errorf("Global hash failed: %v", err)
-	}
-
-	if hash == "" {
-		t.Error("Hash should not be empty")
-	}
-
-	// Test global verify function
-	if !Verify("test-password", hash) {
-		t.Error("Should verify correct password")
-	}
-
-	if Verify("wrong-password", hash) {
-		t.Error("Should not verify wrong password")
-	}
-
-	// Test NeedsRehash
-	if NeedsRehash(hash) {
-		t.Error("Should not need rehash for current cost")
 	}
 }
 
@@ -474,7 +631,7 @@ func TestSessionAuthFlow(t *testing.T) {
 	// This would be a more complete test with actual HTTP handlers
 	// For now, we test the components
 
-	provider := NewORMUserProvider(db, "User")
+	provider := NewORMUserProvider(db, "User", nil)
 
 	// Simulate login attempt
 	credentials := map[string]interface{}{
@@ -546,7 +703,7 @@ func TestJWTAuthFlow(t *testing.T) {
 		t.Fatalf("Failed to insert test user: %v", err)
 	}
 
-	provider := NewORMUserProvider(db, "User")
+	provider := NewORMUserProvider(db, "User", nil)
 	config := JWTConfig{
 		Secret:    "test-secret-key-for-testing-must-be-32",
 		Algorithm: "HS256",

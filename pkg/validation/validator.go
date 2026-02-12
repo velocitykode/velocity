@@ -13,6 +13,7 @@ type Validator interface {
 	Validate(data interface{}, rules Rules) (*ValidatedData, error)
 	ValidateRequest(r *http.Request, rules Rules) (*ValidatedData, error)
 	ValidateValue(value interface{}, rule string) error
+	RegisterRule(name string, handler RuleHandler)
 	SetMessages(messages Messages)
 	SetLocale(locale string)
 }
@@ -84,6 +85,7 @@ func (v *ValidatedData) Errors() ValidationErrors {
 
 // defaultValidator is the default validator implementation
 type defaultValidator struct {
+	registry *RuleRegistry
 	messages Messages
 	locale   string
 	mu       sync.RWMutex
@@ -91,10 +93,20 @@ type defaultValidator struct {
 
 // NewValidator creates a new Validator instance.
 func NewValidator() Validator {
-	return &defaultValidator{
+	v := &defaultValidator{
+		registry: &RuleRegistry{
+			rules: make(map[string]RuleHandler),
+		},
 		messages: make(Messages),
 		locale:   "en",
 	}
+	registerBuiltInRules(v.registry)
+	return v
+}
+
+// RegisterRule registers a custom validation rule on this validator instance.
+func (v *defaultValidator) RegisterRule(name string, handler RuleHandler) {
+	v.registry.Register(name, handler)
 }
 
 // Validate implements the Validator interface
@@ -188,7 +200,7 @@ func (v *defaultValidator) SetLocale(locale string) {
 
 // validateField validates a single field against a rule
 func (v *defaultValidator) validateField(field string, value interface{}, rule parsedRule, data map[string]interface{}) error {
-	handler, exists := ruleRegistry.Get(rule.name)
+	handler, exists := v.registry.Get(rule.name)
 	if !exists {
 		return fmt.Errorf("unknown validation rule: %s", rule.name)
 	}

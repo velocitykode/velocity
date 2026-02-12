@@ -8,7 +8,7 @@ import (
 )
 
 func TestWorker(t *testing.T) {
-	q := NewMemoryQueue()
+	q := NewMemoryDriver()
 
 	t.Run("Basic Worker", func(t *testing.T) {
 		processed := int32(0)
@@ -171,7 +171,7 @@ func TestWorker(t *testing.T) {
 }
 
 func TestGlobalWorker(t *testing.T) {
-	q := NewMemoryQueue()
+	q := NewMemoryDriver()
 
 	processed := int32(0)
 

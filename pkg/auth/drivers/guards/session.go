@@ -67,7 +67,7 @@ func NewSessionGuard(provider auth.UserProvider, config auth.SessionConfig, encr
 		provider: provider,
 		store:    store,
 		config:   config,
-		hasher:   auth.GetHasher(),
+		hasher:   auth.NewBcryptHasher(10),
 	}, nil
 }
 

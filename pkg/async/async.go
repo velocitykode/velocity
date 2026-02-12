@@ -6,21 +6,9 @@ import (
 	"time"
 )
 
-// panicHandler is a global panic handler
-var panicHandler func(any)
-
-// SetPanicHandler sets a custom panic handler
-func SetPanicHandler(handler func(any)) {
-	panicHandler = handler
-}
-
 // handlePanic handles panics in goroutines
 func handlePanic(p any) {
-	if panicHandler != nil {
-		panicHandler(p)
-	} else {
-		fmt.Printf("async: panic recovered: %v\n", p)
-	}
+	fmt.Printf("async: panic recovered: %v\n", p)
 }
 
 // Run executes function asynchronously

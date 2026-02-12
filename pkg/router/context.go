@@ -10,6 +10,17 @@ import (
 	"strings"
 
 	"github.com/velocitykode/velocity/pkg/app"
+	"github.com/velocitykode/velocity/pkg/cache"
+	"github.com/velocitykode/velocity/pkg/crypto"
+	"github.com/velocitykode/velocity/pkg/events"
+	"github.com/velocitykode/velocity/pkg/exceptions"
+	"github.com/velocitykode/velocity/pkg/log"
+	"github.com/velocitykode/velocity/pkg/mail"
+	"github.com/velocitykode/velocity/pkg/orm"
+	"github.com/velocitykode/velocity/pkg/queue"
+	"github.com/velocitykode/velocity/pkg/scheduler"
+	"github.com/velocitykode/velocity/pkg/storage"
+	"github.com/velocitykode/velocity/pkg/validation"
 )
 
 // HandlerFunc is the Velocity handler function signature
@@ -364,7 +375,85 @@ func (c *Context) SetServices(s *app.Services) {
 	c.services = s
 }
 
+// mustServices returns the service container or panics if it is nil.
+func (c *Context) mustServices() *app.Services {
+	if c.services == nil {
+		panic("velocity: router.Context has no services — create the router via velocity.New()")
+	}
+	return c.services
+}
+
 // Services returns the service container.
 func (c *Context) Services() *app.Services {
-	return c.services
+	return c.mustServices()
+}
+
+// DB returns the ORM manager.
+func (c *Context) DB() *orm.Manager {
+	return c.mustServices().DB
+}
+
+// Cache returns the cache manager.
+func (c *Context) Cache() *cache.Manager {
+	return c.mustServices().Cache
+}
+
+// Log returns the logger.
+func (c *Context) Log() log.Logger {
+	return c.mustServices().Log
+}
+
+// Queue returns the queue driver.
+func (c *Context) Queue() queue.Driver {
+	return c.mustServices().Queue
+}
+
+// Storage returns the storage manager.
+func (c *Context) Storage() *storage.Manager {
+	return c.mustServices().Storage
+}
+
+// Mail returns the mailer.
+func (c *Context) Mail() mail.Mailer {
+	return c.mustServices().Mail
+}
+
+// Events returns the event dispatcher.
+func (c *Context) Events() events.Dispatcher {
+	return c.mustServices().Events
+}
+
+// Crypto returns the encryptor.
+func (c *Context) Crypto() crypto.Encryptor {
+	return c.mustServices().Crypto
+}
+
+// Validator returns the validator.
+func (c *Context) Validator() validation.Validator {
+	return c.mustServices().Validator
+}
+
+// Exceptions returns the exception handler.
+func (c *Context) Exceptions() *exceptions.Handler {
+	return c.mustServices().Exceptions
+}
+
+// Scheduler returns the task scheduler.
+func (c *Context) Scheduler() *scheduler.Scheduler {
+	return c.mustServices().Scheduler
+}
+
+// Auth returns the auth manager (*auth.Manager). Requires type assertion.
+func (c *Context) Auth() any {
+	return c.mustServices().Auth
+}
+
+// CSRF returns the CSRF protection instance (*csrf.CSRF). Requires type assertion.
+func (c *Context) CSRF() any {
+	return c.mustServices().CSRF
+}
+
+// View returns the view engine (*view.Engine). Requires type assertion.
+func (c *Context) View() any {
+	return c.mustServices().View
 }

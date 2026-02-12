@@ -28,14 +28,3 @@ type (
 	PanicRecovered   = grpcevents.PanicRecovered
 	AuthFailed       = grpcevents.AuthFailed
 )
-
-// SetEventDispatcher sets the event dispatcher function.
-// This is called by the events package to wire up event dispatching.
-func SetEventDispatcher(dispatcher func(event interface{}) error) {
-	grpcevents.SetEventDispatcher(dispatcher)
-}
-
-// DispatchEvent dispatches an event if a dispatcher is configured
-func DispatchEvent(event interface{}) {
-	grpcevents.DispatchEvent(event)
-}

@@ -88,7 +88,7 @@ func TestSessionGuard_ConcurrentGetSession(t *testing.T) {
 		provider: &mockUserProvider{},
 		store:    &mockSessionStore{},
 		config:   auth.SessionConfig{Name: "test_session"},
-		hasher:   auth.GetHasher(),
+		hasher:   auth.NewBcryptHasher(10),
 	}
 
 	// Create multiple requests
@@ -123,7 +123,7 @@ func TestSessionGuard_ConcurrentCheck(t *testing.T) {
 		provider: &mockUserProvider{},
 		store:    &mockSessionStore{},
 		config:   auth.SessionConfig{Name: "test_session"},
-		hasher:   auth.GetHasher(),
+		hasher:   auth.NewBcryptHasher(10),
 	}
 
 	// Create a request with session containing user_id
@@ -158,7 +158,7 @@ func TestSessionGuard_ConcurrentMixedOperations(t *testing.T) {
 		provider: &mockUserProvider{},
 		store:    &mockSessionStore{},
 		config:   auth.SessionConfig{Name: "test_session"},
-		hasher:   auth.GetHasher(),
+		hasher:   auth.NewBcryptHasher(10),
 	}
 
 	var wg sync.WaitGroup
@@ -194,7 +194,7 @@ func TestSessionGuard_RaceCondition(t *testing.T) {
 		provider: &mockUserProvider{},
 		store:    &mockSessionStore{},
 		config:   auth.SessionConfig{Name: "test_session"},
-		hasher:   auth.GetHasher(),
+		hasher:   auth.NewBcryptHasher(10),
 	}
 
 	// Create a single request that will be accessed by multiple goroutines

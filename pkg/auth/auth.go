@@ -4,6 +4,8 @@ import (
 	"errors"
 	"net/http"
 	"sync"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // Errors
@@ -219,7 +221,7 @@ func (m *Manager) GetHasher() Hasher {
 	if h != nil {
 		return h
 	}
-	return GetHasher()
+	return NewBcryptHasher(bcrypt.DefaultCost)
 }
 
 // NewManagerFromConfig creates a new Manager configured from the provided Config.

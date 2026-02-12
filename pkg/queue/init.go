@@ -39,26 +39,3 @@ func NewQueue(config QueueConfig) (Driver, error) {
 		return nil, fmt.Errorf("unknown queue driver: %s", driver)
 	}
 }
-
-// init initializes the queue package.
-// Use NewQueue() to create queue instances explicitly.
-func init() {
-	// No-op: global singleton is no longer eagerly initialized.
-	// Queue instances should be created explicitly via NewQueue().
-}
-
-// NewRedisQueue creates a Redis queue from environment config.
-func NewRedisQueue() (Driver, error) {
-	return nil, fmt.Errorf("NewRedisQueue is deprecated: use NewQueue(QueueConfig{Driver: \"redis\", Redis: RedisConfig{...}}) instead")
-}
-
-// NewDatabaseQueue creates a database queue from environment config.
-// Deprecated: Use NewDatabaseDriver(db) directly with an injected *sql.DB.
-func NewDatabaseQueue() (Driver, error) {
-	return nil, fmt.Errorf("NewDatabaseQueue is deprecated: use NewDatabaseDriver(db) with an injected *sql.DB")
-}
-
-// NewMemoryQueue creates an in-memory queue.
-func NewMemoryQueue() Driver {
-	return NewMemoryDriver()
-}
