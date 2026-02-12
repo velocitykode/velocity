@@ -138,8 +138,12 @@ func TestModelCreate(t *testing.T) {
 		t.Fatalf("Failed to create test table: %v", err)
 	}
 
+	// Set default manager so Create can resolve the driver
+	SetDefault(manager)
+	defer ResetDefault()
+
 	// Test Create with map - should return created model
-	user, err := TestUser{}.Create(manager, map[string]any{
+	user, err := TestUser{}.Create(map[string]any{
 		"name":      "Alice",
 		"email":     "alice@example.com",
 		"age":       25,
@@ -390,8 +394,12 @@ func TestUUIDModelCreate(t *testing.T) {
 		t.Fatalf("Failed to create test table: %v", err)
 	}
 
+	// Set default manager so Create can resolve the driver
+	SetDefault(manager)
+	defer ResetDefault()
+
 	// Test Create with map - should return created model with auto-generated UUID
-	project, err := TestProject{}.Create(manager, map[string]any{
+	project, err := TestProject{}.Create(map[string]any{
 		"name":        "Created Project",
 		"description": "Created via map",
 	})

@@ -58,8 +58,12 @@ type Query[T any] struct {
 
 // newQuery creates a new query builder for type T
 func newQuery[T any]() *Query[T] {
+	var drv drivers.Driver
+	if m := Default(); m != nil {
+		drv = m.DefaultDriver()
+	}
 	q := &Query[T]{
-		driver:        nil, // Set via DI; nil until wired
+		driver:        drv,
 		table:         getTableName[T](),
 		columns:       []string{"*"},
 		hasSoftDelete: modelHasSoftDelete[T](),
@@ -885,8 +889,12 @@ type RawQuery[T any] struct {
 // preventing SQL injection by using parameterized queries with placeholder arguments.
 // Never concatenate user input directly into the sql string.
 func NewRawQuery[T any](sql string, args ...any) *RawQuery[T] {
+	var drv drivers.Driver
+	if m := Default(); m != nil {
+		drv = m.DefaultDriver()
+	}
 	return &RawQuery[T]{
-		driver: nil, // Set via DI; nil until wired
+		driver: drv,
 		sql:    sql,
 		args:   args,
 	}

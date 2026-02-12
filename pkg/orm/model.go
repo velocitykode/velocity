@@ -171,19 +171,19 @@ func (Model[T]) With(relations ...string) *Query[T] {
 
 // Create inserts a new record or multiple records.
 // Requires a *Manager — use orm.Save(manager, model) directly.
-func (Model[T]) Create(m *Manager, data any) (*T, error) {
+func (Model[T]) Create(data any) (*T, error) {
 	switch v := data.(type) {
 	case map[string]any:
 		model := new(T)
 		if err := mapToStruct(v, model); err != nil {
 			return nil, err
 		}
-		if err := Save(m, model); err != nil {
+		if err := Save(nil,model); err != nil {
 			return nil, err
 		}
 		return model, nil
 	case *T:
-		if err := Save(m, v); err != nil {
+		if err := Save(nil,v); err != nil {
 			return nil, err
 		}
 		return v, nil
@@ -194,9 +194,9 @@ func (Model[T]) Create(m *Manager, data any) (*T, error) {
 
 // CreateMany inserts multiple records.
 // Requires a *Manager — use orm.Save(manager, model) directly.
-func (Model[T]) CreateMany(m *Manager, records []T) error {
+func (Model[T]) CreateMany(records []T) error {
 	for _, record := range records {
-		if err := Save(m, &record); err != nil {
+		if err := Save(nil,&record); err != nil {
 			return err
 		}
 	}
@@ -418,19 +418,19 @@ func (UUIDModel[T]) With(relations ...string) *Query[T] {
 }
 
 // Create inserts a new record or multiple records
-func (UUIDModel[T]) Create(m *Manager, data any) (*T, error) {
+func (UUIDModel[T]) Create(data any) (*T, error) {
 	switch v := data.(type) {
 	case map[string]any:
 		model := new(T)
 		if err := mapToStruct(v, model); err != nil {
 			return nil, err
 		}
-		if err := Save(m, model); err != nil {
+		if err := Save(nil,model); err != nil {
 			return nil, err
 		}
 		return model, nil
 	case *T:
-		if err := Save(m, v); err != nil {
+		if err := Save(nil,v); err != nil {
 			return nil, err
 		}
 		return v, nil
@@ -440,9 +440,9 @@ func (UUIDModel[T]) Create(m *Manager, data any) (*T, error) {
 }
 
 // CreateMany inserts multiple records
-func (UUIDModel[T]) CreateMany(m *Manager, records []T) error {
+func (UUIDModel[T]) CreateMany(records []T) error {
 	for _, record := range records {
-		if err := Save(m, &record); err != nil {
+		if err := Save(nil,&record); err != nil {
 			return err
 		}
 	}
@@ -664,19 +664,19 @@ func (SoftDeleteModel[T]) With(relations ...string) *Query[T] {
 }
 
 // Create inserts a new record
-func (SoftDeleteModel[T]) Create(m *Manager, data any) (*T, error) {
+func (SoftDeleteModel[T]) Create(data any) (*T, error) {
 	switch v := data.(type) {
 	case map[string]any:
 		model := new(T)
 		if err := mapToStruct(v, model); err != nil {
 			return nil, err
 		}
-		if err := Save(m, model); err != nil {
+		if err := Save(nil,model); err != nil {
 			return nil, err
 		}
 		return model, nil
 	case *T:
-		if err := Save(m, v); err != nil {
+		if err := Save(nil,v); err != nil {
 			return nil, err
 		}
 		return v, nil
@@ -686,9 +686,9 @@ func (SoftDeleteModel[T]) Create(m *Manager, data any) (*T, error) {
 }
 
 // CreateMany inserts multiple records
-func (SoftDeleteModel[T]) CreateMany(m *Manager, records []T) error {
+func (SoftDeleteModel[T]) CreateMany(records []T) error {
 	for _, record := range records {
-		if err := Save(m, &record); err != nil {
+		if err := Save(nil,&record); err != nil {
 			return err
 		}
 	}
@@ -965,19 +965,19 @@ func (SoftDeleteUUIDModel[T]) With(relations ...string) *Query[T] {
 }
 
 // Create inserts a new record
-func (SoftDeleteUUIDModel[T]) Create(m *Manager, data any) (*T, error) {
+func (SoftDeleteUUIDModel[T]) Create(data any) (*T, error) {
 	switch v := data.(type) {
 	case map[string]any:
 		model := new(T)
 		if err := mapToStruct(v, model); err != nil {
 			return nil, err
 		}
-		if err := Save(m, model); err != nil {
+		if err := Save(nil,model); err != nil {
 			return nil, err
 		}
 		return model, nil
 	case *T:
-		if err := Save(m, v); err != nil {
+		if err := Save(nil,v); err != nil {
 			return nil, err
 		}
 		return v, nil
@@ -987,9 +987,9 @@ func (SoftDeleteUUIDModel[T]) Create(m *Manager, data any) (*T, error) {
 }
 
 // CreateMany inserts multiple records
-func (SoftDeleteUUIDModel[T]) CreateMany(m *Manager, records []T) error {
+func (SoftDeleteUUIDModel[T]) CreateMany(records []T) error {
 	for _, record := range records {
-		if err := Save(m, &record); err != nil {
+		if err := Save(nil,&record); err != nil {
 			return err
 		}
 	}
@@ -1412,7 +1412,10 @@ func structToMap(s any) map[string]any {
 
 func Save[T any](m *Manager, model *T) error {
 	if m == nil {
-		return errors.New("orm: manager is nil")
+		m = Default()
+	}
+	if m == nil {
+		return errors.New("orm: no default manager set — call SetDefault or pass a *Manager")
 	}
 	drv := m.DefaultDriver()
 	if drv == nil {
@@ -1632,9 +1635,9 @@ func saveUUIDModel[T any](drv drivers.Driver, model *T, modelField, idField, exi
 	return nil
 }
 
-func CreateMany[T any](m *Manager, records []T) error {
+func CreateMany[T any](records []T) error {
 	for i := range records {
-		if err := Save(m, &records[i]); err != nil {
+		if err := Save(nil,&records[i]); err != nil {
 			return err
 		}
 	}

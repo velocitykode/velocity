@@ -291,6 +291,40 @@ func (m *Manager) dispatchEvent(event interface{}) {
 	}
 }
 
+// defaultManager is the framework-level default ORM Manager, set once by
+// velocity.New(). Model static methods (Find, Where, All, etc.) resolve their
+// database driver from this manager so that application code can write:
+//
+//	Team{}.Find(id)
+//
+// without passing a manager explicitly.
+var (
+	defaultManager *Manager
+	defaultMu      sync.RWMutex
+)
+
+// SetDefault sets the package-level default Manager. Called by velocity.New()
+// after constructing the manager — application code should never call this.
+func SetDefault(m *Manager) {
+	defaultMu.Lock()
+	defer defaultMu.Unlock()
+	defaultManager = m
+}
+
+// Default returns the package-level default Manager, or nil if none is set.
+func Default() *Manager {
+	defaultMu.RLock()
+	defer defaultMu.RUnlock()
+	return defaultManager
+}
+
+// ResetDefault clears the default manager. Used in tests to ensure isolation.
+func ResetDefault() {
+	defaultMu.Lock()
+	defer defaultMu.Unlock()
+	defaultManager = nil
+}
+
 func stringOrDefault(val, def string) string {
 	if val != "" {
 		return val

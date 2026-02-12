@@ -102,6 +102,7 @@ func New(opts ...Option) (*App, error) {
 			return nil, fmt.Errorf("velocity: failed to initialize database: %w", err)
 		}
 		a.DB = dbManager
+		orm.SetDefault(dbManager)
 	}
 
 	// 4. Initialize auth manager — pass DB for ORM provider
@@ -234,6 +235,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// 5. Close database connections
 	if a.DB != nil {
 		setErr(a.DB.Close())
+		orm.ResetDefault()
 	}
 
 	// 6. Close logger if it supports it (e.g., file logger)
