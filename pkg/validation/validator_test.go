@@ -261,9 +261,11 @@ func TestValidate(t *testing.T) {
 		},
 	}
 
+	v := NewValidator()
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := Validate(tt.data, tt.rules)
+			result, err := v.Validate(tt.data, tt.rules)
 
 			if tt.wantError {
 				if err == nil {
@@ -299,7 +301,8 @@ func TestValidateRequest(t *testing.T) {
 		"age":   "required|numeric",
 	}
 
-	result, err := ValidateRequest(req, rules)
+	v := NewValidator()
+	result, err := v.ValidateRequest(req, rules)
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
@@ -351,9 +354,11 @@ func TestValidateValue(t *testing.T) {
 		},
 	}
 
+	v := NewValidator()
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateValue(tt.value, tt.rule)
+			err := v.ValidateValue(tt.value, tt.rule)
 			if tt.wantError && err == nil {
 				t.Error("Expected error but got none")
 			}
@@ -365,7 +370,7 @@ func TestValidateValue(t *testing.T) {
 }
 
 func TestCustomMessages(t *testing.T) {
-	validator := Get()
+	validator := NewValidator()
 
 	// Set custom messages
 	validator.SetMessages(Messages{
@@ -447,6 +452,8 @@ func TestRegisterCustomRule(t *testing.T) {
 		return nil
 	})
 
+	v := NewValidator()
+
 	// Test the custom rule
 	data := map[string]interface{}{
 		"code": "ABC",
@@ -456,20 +463,22 @@ func TestRegisterCustomRule(t *testing.T) {
 		"code": "uppercase",
 	}
 
-	_, err := Validate(data, rules)
+	_, err := v.Validate(data, rules)
 	if err != nil {
 		t.Errorf("Unexpected error for uppercase value: %v", err)
 	}
 
 	// Test with lowercase (should fail)
 	data["code"] = "abc"
-	_, err = Validate(data, rules)
+	_, err = v.Validate(data, rules)
 	if err == nil {
 		t.Error("Expected error for lowercase value")
 	}
 }
 
 func BenchmarkValidation(b *testing.B) {
+	v := NewValidator()
+
 	data := map[string]interface{}{
 		"name":     "John Doe",
 		"email":    "john@example.com",
@@ -488,7 +497,7 @@ func BenchmarkValidation(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = Validate(data, rules)
+		_, _ = v.Validate(data, rules)
 	}
 }
 

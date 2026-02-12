@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/velocitykode/velocity/pkg/app"
 )
 
 // HandlerFunc is the Velocity handler function signature
@@ -22,7 +24,8 @@ type Context struct {
 	Request  *http.Request
 	params   map[string]string
 	// For storing values across middleware
-	values map[string]interface{}
+	values   map[string]interface{}
+	services *app.Services
 }
 
 // NewContext creates a new Context from http.Request and http.ResponseWriter
@@ -354,4 +357,14 @@ func (c *Context) Forbidden(message ...string) error {
 		msg = message[0]
 	}
 	return c.Error(http.StatusForbidden, msg)
+}
+
+// SetServices sets the service container on this context.
+func (c *Context) SetServices(s *app.Services) {
+	c.services = s
+}
+
+// Services returns the service container.
+func (c *Context) Services() *app.Services {
+	return c.services
 }

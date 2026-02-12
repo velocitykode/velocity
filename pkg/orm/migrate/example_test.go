@@ -25,27 +25,33 @@ func init() {
 	})
 }
 
-func TestMigrationBasic(t *testing.T) {
-	// Initialize ORM with in-memory SQLite
-	err := orm.Init("sqlite", map[string]any{
-		"database": ":memory:",
+func newTestORM(t *testing.T) *orm.Manager {
+	t.Helper()
+	m, err := orm.NewManager(orm.ManagerConfig{
+		Driver:   "sqlite",
+		Database: ":memory:",
 	})
 	if err != nil {
 		t.Fatalf("failed to init ORM: %v", err)
 	}
-	defer orm.Close()
+	return m
+}
+
+func TestMigrationBasic(t *testing.T) {
+	m := newTestORM(t)
+	defer m.Close()
 
 	// Create migrator
-	migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+	migrator := migrate.NewMigrator(m.DB(), m.DriverName())
 
 	// Run migrations
-	err = migrator.Up()
+	err := migrator.Up()
 	if err != nil {
 		t.Fatalf("failed to run migrations: %v", err)
 	}
 
 	// Verify table exists
-	db := orm.DB()
+	db := m.DB()
 	var count int
 	err = db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='users'").Scan(&count)
 	if err != nil {

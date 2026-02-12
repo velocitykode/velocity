@@ -74,8 +74,7 @@ func TestParams(t *testing.T) {
 }
 
 func TestRouteGeneration(t *testing.T) {
-	ResetGlobalRouter()
-	r := Get()
+	r := New()
 
 	// Register named routes
 	r.Get("/users/{id}", func(c *Context) error {
@@ -94,7 +93,7 @@ func TestRouteGeneration(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	// Test single parameter route
-	url, err := Route("user.show", map[string]string{"id": "123"})
+	url, err := r.RouteURL("user.show", map[string]string{"id": "123"})
 	if err != nil {
 		t.Fatalf("Failed to generate URL: %v", err)
 	}
@@ -103,7 +102,7 @@ func TestRouteGeneration(t *testing.T) {
 	}
 
 	// Test multiple parameter route
-	url, err = Route("comment.show", map[string]string{
+	url, err = r.RouteURL("comment.show", map[string]string{
 		"post":    "456",
 		"comment": "789",
 	})
@@ -115,7 +114,7 @@ func TestRouteGeneration(t *testing.T) {
 	}
 
 	// Test non-existent route
-	_, err = Route("nonexistent", nil)
+	_, err = r.RouteURL("nonexistent", nil)
 	if err == nil {
 		t.Error("Expected error for non-existent route")
 	}
@@ -170,8 +169,7 @@ func TestCurrentRouteName(t *testing.T) {
 }
 
 func TestRouteGenerationWithSpecialCharacters(t *testing.T) {
-	ResetGlobalRouter()
-	r := Get()
+	r := New()
 
 	r.Get("/search/{query}", func(c *Context) error {
 		c.Response.WriteHeader(http.StatusOK)
@@ -184,7 +182,7 @@ func TestRouteGenerationWithSpecialCharacters(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	// Test with special characters
-	url, err := Route("search", map[string]string{"query": "hello world"})
+	url, err := r.RouteURL("search", map[string]string{"query": "hello world"})
 	if err != nil {
 		t.Fatalf("Failed to generate URL: %v", err)
 	}
@@ -227,8 +225,7 @@ func TestConcurrentParamAccess(t *testing.T) {
 }
 
 func TestRouteGenerationMissingParams(t *testing.T) {
-	ResetGlobalRouter()
-	r := Get()
+	r := New()
 
 	r.Get("/users/{id}/posts/{post_id}", func(c *Context) error {
 		c.Response.WriteHeader(http.StatusOK)
@@ -241,7 +238,7 @@ func TestRouteGenerationMissingParams(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	// Test with missing parameter - should return error
-	_, err := Route("user.post", map[string]string{"id": "123"})
+	_, err := r.RouteURL("user.post", map[string]string{"id": "123"})
 	if err == nil {
 		t.Error("Expected error for missing parameter")
 	}

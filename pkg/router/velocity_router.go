@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/velocitykode/velocity/pkg/app"
 	"github.com/velocitykode/velocity/pkg/trace"
 )
 
@@ -26,6 +27,12 @@ type VelocityRouterV2 struct {
 	rootGroup *GroupDefinition
 	resources []*resourceWrapperV2
 	committed bool
+
+	// Service container injected into every Context
+	services *app.Services
+
+	// Event dispatcher (instance-level, replaces package-level var)
+	eventDispatcher func(event interface{}) error
 }
 
 // NewV2 creates a new tree-based router instance
@@ -34,6 +41,23 @@ func NewV2() *VelocityRouterV2 {
 		tree:        NewTree(),
 		namedRoutes: make(map[string]*MatchResult),
 		rootGroup:   NewGroupDefinition("", nil),
+	}
+}
+
+// SetServices sets the service container that will be injected into every Context.
+func (r *VelocityRouterV2) SetServices(s *app.Services) {
+	r.services = s
+}
+
+// SetInstanceEventDispatcher sets the event dispatcher on this router instance.
+func (r *VelocityRouterV2) SetInstanceEventDispatcher(fn func(event interface{}) error) {
+	r.eventDispatcher = fn
+}
+
+// dispatchInstanceEvent dispatches an event using the instance-level dispatcher.
+func (r *VelocityRouterV2) dispatchInstanceEvent(event interface{}) {
+	if r.eventDispatcher != nil {
+		r.eventDispatcher(event)
 	}
 }
 
@@ -178,7 +202,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	rw := newResponseWriter(w)
 
 	// Dispatch RequestStarted event
-	dispatchEvent(&RequestStarted{
+	r.dispatchInstanceEvent(&RequestStarted{
 		Context:    req.Context(),
 		Method:     req.Method,
 		Path:       req.URL.Path,
@@ -197,7 +221,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			file.Close()
 			if statErr == nil && !stat.IsDir() {
 				// Dispatch routed event for static file
-				dispatchEvent(&RequestRouted{
+				r.dispatchInstanceEvent(&RequestRouted{
 					Context:   req.Context(),
 					RequestID: requestID,
 					Route:     "[static]",
@@ -207,7 +231,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				r.staticFS.ServeHTTP(rw, req)
 
 				// Dispatch handled event for static file
-				dispatchEvent(&RequestHandled{
+				r.dispatchInstanceEvent(&RequestHandled{
 					Context:      req.Context(),
 					RequestID:    requestID,
 					Method:       req.Method,
@@ -233,7 +257,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	if result == nil {
 		// Dispatch routed event for 404
-		dispatchEvent(&RequestRouted{
+		r.dispatchInstanceEvent(&RequestRouted{
 			Context:   req.Context(),
 			RequestID: requestID,
 			Matched:   false,
@@ -242,7 +266,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.NotFound(rw, req)
 
 		// Dispatch handled event for 404
-		dispatchEvent(&RequestHandled{
+		r.dispatchInstanceEvent(&RequestHandled{
 			Context:      req.Context(),
 			RequestID:    requestID,
 			Method:       req.Method,
@@ -257,7 +281,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Dispatch routed event for matched route
-	dispatchEvent(&RequestRouted{
+	r.dispatchInstanceEvent(&RequestRouted{
 		Context:   req.Context(),
 		RequestID: requestID,
 		Route:     result.Path,
@@ -277,6 +301,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	// Create context and call handler with panic recovery
 	ctx := NewContextV2(rw, req)
+	ctx.services = r.services
 
 	// Use defer for panic recovery and event dispatch
 	var handlerErr error
@@ -297,7 +322,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			}
 
 			// Dispatch failed event
-			dispatchEvent(&RequestFailed{
+			r.dispatchInstanceEvent(&RequestFailed{
 				Context:   req.Context(),
 				RequestID: requestID,
 				Method:    req.Method,
@@ -313,7 +338,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
 
 			// Dispatch handled event
-			dispatchEvent(&RequestHandled{
+			r.dispatchInstanceEvent(&RequestHandled{
 				Context:      req.Context(),
 				RequestID:    requestID,
 				Method:       req.Method,
@@ -327,7 +352,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			})
 		} else if handlerErr != nil {
 			// Dispatch failed event for handler error
-			dispatchEvent(&RequestFailed{
+			r.dispatchInstanceEvent(&RequestFailed{
 				Context:   req.Context(),
 				RequestID: requestID,
 				Method:    req.Method,
@@ -339,7 +364,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			})
 
 			// Dispatch handled event
-			dispatchEvent(&RequestHandled{
+			r.dispatchInstanceEvent(&RequestHandled{
 				Context:      req.Context(),
 				RequestID:    requestID,
 				Method:       req.Method,
@@ -353,7 +378,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			})
 		} else {
 			// Dispatch handled event for success
-			dispatchEvent(&RequestHandled{
+			r.dispatchInstanceEvent(&RequestHandled{
 				Context:      req.Context(),
 				RequestID:    requestID,
 				Method:       req.Method,

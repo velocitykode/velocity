@@ -6,24 +6,6 @@ import (
 	"github.com/velocitykode/velocity/pkg/bond"
 )
 
-// WithErrors renders with validation errors merged into props
-func WithErrors(w http.ResponseWriter, r *http.Request, component string, props Props, errors map[string]interface{}) error {
-	if props == nil {
-		props = Props{}
-	}
-	props["errors"] = errors
-	return Render(w, r, component, props)
-}
-
-// WithFlash renders with flash messages merged into props
-func WithFlash(w http.ResponseWriter, r *http.Request, component string, props Props, flash map[string]interface{}) error {
-	if props == nil {
-		props = Props{}
-	}
-	props["flash"] = flash
-	return Render(w, r, component, props)
-}
-
 // Success redirects with a success status
 func Success(w http.ResponseWriter, r *http.Request, message string, url string) {
 	// Note: Flash messages need to be handled through session
@@ -36,13 +18,6 @@ func Error(w http.ResponseWriter, r *http.Request, message string, url string) {
 	// Note: Flash messages need to be handled through session
 	// For now, we'll just redirect
 	http.Redirect(w, r, url, http.StatusSeeOther)
-}
-
-// FormError redirects back with form validation errors
-func FormError(w http.ResponseWriter, r *http.Request, errors map[string]interface{}) {
-	// Note: Validation errors need to be stored in session for back redirect
-	// For now, we'll just redirect back
-	Back(w, r)
 }
 
 // Lazy creates a lazy prop that only evaluates when explicitly requested

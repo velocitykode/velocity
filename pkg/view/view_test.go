@@ -8,55 +8,57 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/velocitykode/velocity/pkg/bond"
 	"github.com/velocitykode/velocity/pkg/router"
 )
 
-func resetBond() {
-	// Use bond's reset function for testing
-	bond.ResetForTesting()
+func newTestEngine(t *testing.T) *Engine {
+	t.Helper()
+	engine, err := NewEngine(Config{
+		RootTemplate: defaultTemplate,
+		Version:      "1.0",
+	})
+	if err != nil {
+		t.Fatalf("NewEngine failed: %v", err)
+	}
+	return engine
 }
 
-func TestInitialize(t *testing.T) {
-	resetBond()
-	defer resetBond()
-
+func TestNewEngine(t *testing.T) {
 	config := Config{
 		RootTemplate: `<html><body>{{ .inertia }}</body></html>`,
 		Version:      "test-version",
 	}
 
-	err := Initialize(config)
+	engine, err := NewEngine(config)
 	if err != nil {
-		t.Fatalf("Initialize failed: %v", err)
+		t.Fatalf("NewEngine failed: %v", err)
 	}
 
 	// Should not panic - instance is initialized
-	_ = bond.Get()
+	if engine.Bond() == nil {
+		t.Error("Expected Bond instance to be set")
+	}
 }
 
-func TestInitialize_DefaultTemplate(t *testing.T) {
-	resetBond()
-	defer resetBond()
-
+func TestNewEngine_DefaultTemplate(t *testing.T) {
 	config := Config{
 		Version: "1.0",
 	}
 
-	err := Initialize(config)
+	_, err := NewEngine(config)
 	if err != nil {
-		t.Fatalf("Initialize failed with default template: %v", err)
+		t.Fatalf("NewEngine failed with default template: %v", err)
 	}
 }
 
 func TestRender_HTMLResponse(t *testing.T) {
-	resetBond()
-	defer resetBond()
-
-	Initialize(Config{
+	engine, err := NewEngine(Config{
 		RootTemplate: `<html><body>{{ .inertia }}</body></html>`,
 		Version:      "1.0",
 	})
+	if err != nil {
+		t.Fatalf("NewEngine failed: %v", err)
+	}
 
 	req := httptest.NewRequest("GET", "/users", nil)
 	rec := httptest.NewRecorder()
@@ -68,7 +70,7 @@ func TestRender_HTMLResponse(t *testing.T) {
 		},
 	}
 
-	err := Render(rec, req, "Users/Index", props)
+	err = engine.Render(rec, req, "Users/Index", props)
 	if err != nil {
 		t.Fatalf("Render failed: %v", err)
 	}
@@ -89,13 +91,7 @@ func TestRender_HTMLResponse(t *testing.T) {
 }
 
 func TestRender_JSONResponse(t *testing.T) {
-	resetBond()
-	defer resetBond()
-
-	Initialize(Config{
-		RootTemplate: defaultTemplate,
-		Version:      "1.0",
-	})
+	engine := newTestEngine(t)
 
 	req := httptest.NewRequest("GET", "/users", nil)
 	req.Header.Set("X-Inertia", "true")
@@ -107,7 +103,7 @@ func TestRender_JSONResponse(t *testing.T) {
 		},
 	}
 
-	err := Render(rec, req, "Users/Index", props)
+	err := engine.Render(rec, req, "Users/Index", props)
 	if err != nil {
 		t.Fatalf("Render failed: %v", err)
 	}
@@ -133,16 +129,10 @@ func TestRender_JSONResponse(t *testing.T) {
 }
 
 func TestShare(t *testing.T) {
-	resetBond()
-	defer resetBond()
+	engine := newTestEngine(t)
 
-	Initialize(Config{
-		RootTemplate: defaultTemplate,
-		Version:      "1.0",
-	})
-
-	Share("app_name", "Test App")
-	Share("user", map[string]interface{}{
+	engine.Share("app_name", "Test App")
+	engine.Share("user", map[string]interface{}{
 		"id":   123,
 		"name": "John",
 	})
@@ -151,7 +141,7 @@ func TestShare(t *testing.T) {
 	req.Header.Set("X-Inertia", "true")
 	rec := httptest.NewRecorder()
 
-	err := Render(rec, req, "Dashboard", Props{
+	err := engine.Render(rec, req, "Dashboard", Props{
 		"stats": "some stats",
 	})
 	if err != nil {
@@ -181,13 +171,7 @@ func TestShare(t *testing.T) {
 }
 
 func TestWithErrors(t *testing.T) {
-	resetBond()
-	defer resetBond()
-
-	Initialize(Config{
-		RootTemplate: defaultTemplate,
-		Version:      "1.0",
-	})
+	engine := newTestEngine(t)
 
 	req := httptest.NewRequest("POST", "/users", nil)
 	req.Header.Set("X-Inertia", "true")
@@ -198,12 +182,14 @@ func TestWithErrors(t *testing.T) {
 		"name":  "Name is too short",
 	}
 
-	err := WithErrors(rec, req, "Users/Create", Props{
-		"form": "empty",
-	}, errors)
+	renderProps := Props{
+		"form":   "empty",
+		"errors": errors,
+	}
 
+	err := engine.Render(rec, req, "Users/Create", renderProps)
 	if err != nil {
-		t.Fatalf("WithErrors failed: %v", err)
+		t.Fatalf("Render with errors failed: %v", err)
 	}
 
 	var response map[string]interface{}
@@ -221,13 +207,7 @@ func TestWithErrors(t *testing.T) {
 }
 
 func TestOptionalAndAlwaysProps(t *testing.T) {
-	resetBond()
-	defer resetBond()
-
-	Initialize(Config{
-		RootTemplate: defaultTemplate,
-		Version:      "1.0",
-	})
+	engine := newTestEngine(t)
 
 	req := httptest.NewRequest("GET", "/users", nil)
 	req.Header.Set("X-Inertia", "true")
@@ -238,7 +218,7 @@ func TestOptionalAndAlwaysProps(t *testing.T) {
 		"always":   Always("always included even on partial"),
 	}
 
-	err := Render(rec, req, "Users/Index", props)
+	err := engine.Render(rec, req, "Users/Index", props)
 	if err != nil {
 		t.Fatalf("Render failed: %v", err)
 	}
@@ -258,13 +238,7 @@ func TestOptionalAndAlwaysProps(t *testing.T) {
 }
 
 func TestLazyProp(t *testing.T) {
-	resetBond()
-	defer resetBond()
-
-	Initialize(Config{
-		RootTemplate: defaultTemplate,
-		Version:      "1.0",
-	})
+	engine := newTestEngine(t)
 
 	req := httptest.NewRequest("GET", "/users", nil)
 	req.Header.Set("X-Inertia", "true")
@@ -274,7 +248,7 @@ func TestLazyProp(t *testing.T) {
 		"lazy": LazyProp("lazy value"),
 	}
 
-	err := Render(rec, req, "Users/Index", props)
+	err := engine.Render(rec, req, "Users/Index", props)
 	if err != nil {
 		t.Fatalf("Render failed: %v", err)
 	}
@@ -349,18 +323,12 @@ func TestSimpleValidationProvider(t *testing.T) {
 }
 
 func TestRedirect(t *testing.T) {
-	resetBond()
-	defer resetBond()
-
-	Initialize(Config{
-		RootTemplate: defaultTemplate,
-		Version:      "1.0",
-	})
+	engine := newTestEngine(t)
 
 	req := httptest.NewRequest("POST", "/", nil)
 	rec := httptest.NewRecorder()
 
-	Redirect(rec, req, "/dashboard")
+	engine.Redirect(rec, req, "/dashboard")
 
 	if rec.Code != 303 {
 		t.Errorf("Expected status 303, got %d", rec.Code)
@@ -373,19 +341,13 @@ func TestRedirect(t *testing.T) {
 }
 
 func TestLocation_InertiaRequest(t *testing.T) {
-	resetBond()
-	defer resetBond()
-
-	Initialize(Config{
-		RootTemplate: defaultTemplate,
-		Version:      "1.0",
-	})
+	engine := newTestEngine(t)
 
 	req := httptest.NewRequest("GET", "/", nil)
 	req.Header.Set("X-Inertia", "true")
 	rec := httptest.NewRecorder()
 
-	Location(rec, req, "/external")
+	engine.Location(rec, req, "/external")
 
 	if rec.Code != 409 {
 		t.Errorf("Expected status 409, got %d", rec.Code)
@@ -398,18 +360,12 @@ func TestLocation_InertiaRequest(t *testing.T) {
 }
 
 func TestLocation_NonInertiaRequest(t *testing.T) {
-	resetBond()
-	defer resetBond()
-
-	Initialize(Config{
-		RootTemplate: defaultTemplate,
-		Version:      "1.0",
-	})
+	engine := newTestEngine(t)
 
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
 
-	Location(rec, req, "/external")
+	engine.Location(rec, req, "/external")
 
 	if rec.Code != 302 {
 		t.Errorf("Expected status 302, got %d", rec.Code)
@@ -422,13 +378,7 @@ func TestLocation_NonInertiaRequest(t *testing.T) {
 }
 
 func TestBack(t *testing.T) {
-	resetBond()
-	defer resetBond()
-
-	Initialize(Config{
-		RootTemplate: defaultTemplate,
-		Version:      "1.0",
-	})
+	engine := newTestEngine(t)
 
 	tests := []struct {
 		name             string
@@ -458,7 +408,7 @@ func TestBack(t *testing.T) {
 			}
 			rec := httptest.NewRecorder()
 
-			Back(rec, req)
+			engine.Back(rec, req)
 
 			if rec.Code != tt.expectedStatus {
 				t.Errorf("Expected status %d, got %d", tt.expectedStatus, rec.Code)
@@ -482,31 +432,19 @@ func TestLoadTemplateFromFile(t *testing.T) {
 }
 
 func TestMiddleware(t *testing.T) {
-	resetBond()
-	defer resetBond()
+	engine := newTestEngine(t)
 
-	Initialize(Config{
-		RootTemplate: defaultTemplate,
-		Version:      "1.0",
-	})
-
-	mw := Middleware()
+	mw := engine.Middleware()
 	if mw == nil {
 		t.Error("Expected middleware to be returned")
 	}
 }
 
 func TestSetSharePropsFunc(t *testing.T) {
-	resetBond()
-	defer resetBond()
-
-	Initialize(Config{
-		RootTemplate: defaultTemplate,
-		Version:      "1.0",
-	})
+	engine := newTestEngine(t)
 
 	called := false
-	SetSharePropsFunc(func(r *http.Request) (Props, error) {
+	engine.SetSharePropsFunc(func(r *http.Request) (Props, error) {
 		called = true
 		return Props{
 			"auth": map[string]string{"user": "Ali"},
@@ -517,7 +455,7 @@ func TestSetSharePropsFunc(t *testing.T) {
 	req.Header.Set("X-Inertia", "true")
 	rec := httptest.NewRecorder()
 
-	Render(rec, req, "Test", Props{})
+	engine.Render(rec, req, "Test", Props{})
 
 	if !called {
 		t.Error("Expected SharePropsFunc to be called")
@@ -525,15 +463,9 @@ func TestSetSharePropsFunc(t *testing.T) {
 }
 
 func TestShareFunc(t *testing.T) {
-	resetBond()
-	defer resetBond()
+	engine := newTestEngine(t)
 
-	Initialize(Config{
-		RootTemplate: defaultTemplate,
-		Version:      "1.0",
-	})
-
-	ShareFunc("path", func(r *http.Request) (interface{}, error) {
+	engine.ShareFunc("path", func(r *http.Request) (interface{}, error) {
 		return r.URL.Path, nil
 	})
 
@@ -541,7 +473,7 @@ func TestShareFunc(t *testing.T) {
 	req.Header.Set("X-Inertia", "true")
 	rec := httptest.NewRecorder()
 
-	Render(rec, req, "Test", Props{})
+	engine.Render(rec, req, "Test", Props{})
 
 	var response map[string]interface{}
 	json.Unmarshal(rec.Body.Bytes(), &response)
@@ -554,15 +486,9 @@ func TestShareFunc(t *testing.T) {
 }
 
 func TestShareMultiple(t *testing.T) {
-	resetBond()
-	defer resetBond()
+	engine := newTestEngine(t)
 
-	Initialize(Config{
-		RootTemplate: defaultTemplate,
-		Version:      "1.0",
-	})
-
-	ShareMultiple(Props{
+	engine.ShareMultiple(Props{
 		"a": 1,
 		"b": 2,
 	})
@@ -571,7 +497,7 @@ func TestShareMultiple(t *testing.T) {
 	req.Header.Set("X-Inertia", "true")
 	rec := httptest.NewRecorder()
 
-	Render(rec, req, "Test", Props{})
+	engine.Render(rec, req, "Test", Props{})
 
 	var response map[string]interface{}
 	json.Unmarshal(rec.Body.Bytes(), &response)
@@ -586,7 +512,7 @@ func TestShareMultiple(t *testing.T) {
 	}
 }
 
-func TestInitialize_DefaultVersion(t *testing.T) {
+func TestNewEngine_DefaultVersion(t *testing.T) {
 	tests := []struct {
 		name    string
 		config  Config
@@ -617,12 +543,9 @@ func TestInitialize_DefaultVersion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resetBond()
-			defer resetBond()
-
-			err := Initialize(tt.config)
+			_, err := NewEngine(tt.config)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("Initialize() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("NewEngine() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}
@@ -669,13 +592,7 @@ func TestRender_WithVariousProps(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resetBond()
-			defer resetBond()
-
-			Initialize(Config{
-				RootTemplate: defaultTemplate,
-				Version:      "1.0",
-			})
+			engine := newTestEngine(t)
 
 			req := httptest.NewRequest("GET", "/test", nil)
 			req.Header.Set("X-Inertia", "true")
@@ -683,9 +600,9 @@ func TestRender_WithVariousProps(t *testing.T) {
 
 			var err error
 			if tt.props == nil {
-				err = Render(rec, req, tt.component)
+				err = engine.Render(rec, req, tt.component)
 			} else {
-				err = Render(rec, req, tt.component, tt.props...)
+				err = engine.Render(rec, req, tt.component, tt.props...)
 			}
 
 			if err != nil {
@@ -819,15 +736,9 @@ func TestMiddleware_Integration(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resetBond()
-			defer resetBond()
+			engine := newTestEngine(t)
 
-			Initialize(Config{
-				RootTemplate: defaultTemplate,
-				Version:      "1.0",
-			})
-
-			mw := Middleware()
+			mw := engine.Middleware()
 
 			handler := mw(func(c *router.Context) error {
 				c.Response.WriteHeader(http.StatusOK)
@@ -895,18 +806,12 @@ func TestRedirect_TableDriven(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resetBond()
-			defer resetBond()
-
-			Initialize(Config{
-				RootTemplate: defaultTemplate,
-				Version:      "1.0",
-			})
+			engine := newTestEngine(t)
 
 			req := httptest.NewRequest(tt.method, "/submit", nil)
 			rec := httptest.NewRecorder()
 
-			Redirect(rec, req, tt.url)
+			engine.Redirect(rec, req, tt.url)
 
 			if rec.Code != tt.wantStatusCode {
 				t.Errorf("status code = %d, want %d", rec.Code, tt.wantStatusCode)

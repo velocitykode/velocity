@@ -1,105 +1,101 @@
 package log
 
 import (
-	"os"
-	"os/exec"
 	"testing"
 )
 
-func TestInit(t *testing.T) {
+func TestNewLogger_ConsoleDriver(t *testing.T) {
+	logger, err := NewLogger(LogConfig{
+		Driver: "console",
+		Config: map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("NewLogger(console) error = %v", err)
+	}
+	if logger == nil {
+		t.Fatal("NewLogger(console) returned nil")
+	}
+}
+
+func TestNewLogger_FileDriver(t *testing.T) {
 	tests := []struct {
-		name      string
-		driver    string
-		config    map[string]any
-		wantError bool
+		name   string
+		config LogConfig
 	}{
 		{
-			name:      "console driver",
-			driver:    "console",
-			config:    map[string]any{},
-			wantError: false,
+			name: "file driver with path",
+			config: LogConfig{
+				Driver: "file",
+				Config: map[string]any{"path": "/tmp/test-logs"},
+			},
 		},
 		{
-			name:      "file driver with path",
-			driver:    "file",
-			config:    map[string]any{"path": "/tmp/test-logs"},
-			wantError: false,
-		},
-		{
-			name:      "file driver without path",
-			driver:    "file",
-			config:    map[string]any{},
-			wantError: false,
-		},
-		{
-			name:      "unsupported driver",
-			driver:    "unknown",
-			config:    map[string]any{},
-			wantError: true,
+			name: "file driver without path",
+			config: LogConfig{
+				Driver: "file",
+				Config: map[string]any{},
+			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := Init(tt.driver, tt.config)
-			if (err != nil) != tt.wantError {
-				t.Errorf("Init() error = %v, wantError %v", err, tt.wantError)
+			logger, err := NewLogger(tt.config)
+			if err != nil {
+				t.Fatalf("NewLogger() error = %v", err)
+			}
+			if logger == nil {
+				t.Fatal("NewLogger() returned nil")
 			}
 		})
 	}
 }
 
-func TestGet(t *testing.T) {
-	// Test default console logger when not initialized
-	logger := Get()
-	if logger == nil {
-		t.Error("Get() should return a logger even when not initialized")
-	}
-
-	// Test after initialization
-	err := Init("console", map[string]any{})
-	if err != nil {
-		t.Fatalf("Failed to initialize logger: %v", err)
-	}
-
-	logger = Get()
-	if logger == nil {
-		t.Error("Get() should return the initialized logger")
+func TestNewLogger_InvalidDriver(t *testing.T) {
+	_, err := NewLogger(LogConfig{Driver: "invalid_driver_that_will_fail"})
+	if err == nil {
+		t.Error("Expected error for invalid driver")
 	}
 }
 
-func TestGlobalLogFunctions(t *testing.T) {
-	// Initialize with console logger for testing
-	err := Init("console", map[string]any{})
+func TestNewLogger_UnsupportedDriver(t *testing.T) {
+	_, err := NewLogger(LogConfig{
+		Driver: "unknown",
+		Config: map[string]any{},
+	})
+	if err == nil {
+		t.Error("Expected error for unsupported driver")
+	}
+}
+
+func TestLoggerMethods_DoNotPanic(t *testing.T) {
+	logger, err := NewLogger(LogConfig{
+		Driver: "console",
+		Config: map[string]any{},
+	})
 	if err != nil {
-		t.Fatalf("Failed to initialize logger: %v", err)
+		t.Fatalf("NewLogger() error = %v", err)
 	}
 
 	// These should not panic
-	Debug("test debug message", "key", "value")
-	Info("test info message", "key", "value")
-	Warn("test warn message", "key", "value")
-	Error("test error message", "key", "value")
-
-	// We can't test Fatal as it calls os.Exit, but we can test the function exists
-	// Fatal("test fatal message", "key", "value") // Would exit
+	logger.Debug("test debug message", "key", "value")
+	logger.Info("test info message", "key", "value")
+	logger.Warn("test warn message", "key", "value")
+	logger.Error("test error message", "key", "value")
 }
 
-func TestFatalFunction(t *testing.T) {
-	// Test that Fatal calls the logger's Fatal method
-	// We mock the instance to avoid os.Exit
-	original := instance
-	defer func() { instance = original }()
-
+func TestLoggerFatal(t *testing.T) {
+	// Test that the Logger interface includes Fatal method
+	// We use a mock to avoid os.Exit
 	called := false
-	instance = &mockLogger{
+	mock := &mockLogger{
 		onFatal: func(msg string, kvs ...any) {
 			called = true
 		},
 	}
 
-	// This calls the logger's Fatal but our mock doesn't exit
-	Get().Fatal("test", "key", "value")
+	var logger Logger = mock
+	logger.Fatal("test", "key", "value")
 
 	if !called {
 		t.Error("Fatal should call the logger's Fatal method")
@@ -128,39 +124,6 @@ func TestLoggerLevels(t *testing.T) {
 		if int(level) != expected[i] {
 			t.Errorf("Level %d = %d, want %d", i, level, expected[i])
 		}
-	}
-}
-
-func TestEnsureInitialized(t *testing.T) {
-	// Save original instance
-	original := instance
-	defer func() { instance = original }()
-
-	// Set instance to nil to test EnsureInitialized
-	instance = nil
-
-	// Should initialize with default console logger
-	EnsureInitialized()
-
-	if instance == nil {
-		t.Error("EnsureInitialized() should create a default instance")
-	}
-}
-
-func TestGetWithNilInstance(t *testing.T) {
-	// Save original instance
-	original := instance
-	defer func() {
-		instance = original
-	}()
-
-	// Reset instance
-	instance = nil
-
-	// Get should initialize and return a logger
-	logger := Get()
-	if logger == nil {
-		t.Error("Get() should return a logger even when instance is nil")
 	}
 }
 
@@ -201,47 +164,4 @@ func TestGetEnvOrDefault(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestNewLoggerInvalidDriverReturnsError(t *testing.T) {
-	_, err := NewLogger(LogConfig{Driver: "invalid_driver_that_will_fail"})
-	if err == nil {
-		t.Error("Expected error for invalid driver")
-	}
-}
-
-func TestGetFallbackToConsole(t *testing.T) {
-	// Save original state
-	original := instance
-	defer func() {
-		instance = original
-	}()
-
-	// Reset state so Get() triggers fallback
-	instance = nil
-
-	logger := Get()
-	if logger == nil {
-		t.Error("Get() should return a fallback console logger when instance is nil")
-	}
-}
-
-func TestGlobalFatalFunction(t *testing.T) {
-	if os.Getenv("TEST_FATAL") == "1" {
-		// This will actually call Fatal and exit
-		Fatal("test fatal", "key", "value")
-		return
-	}
-
-	// Run the test in a subprocess
-	cmd := exec.Command(os.Args[0], "-test.run=TestGlobalFatalFunction")
-	cmd.Env = append(os.Environ(), "TEST_FATAL=1")
-	err := cmd.Run()
-
-	// Check that it exited with code 1
-	if e, ok := err.(*exec.ExitError); ok && !e.Success() {
-		// Expected behavior - Fatal should exit with non-zero
-		return
-	}
-	t.Fatalf("process ran with err %v, want exit status 1", err)
 }

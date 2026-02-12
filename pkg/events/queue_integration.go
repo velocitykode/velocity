@@ -37,6 +37,7 @@ func (j *EventListenerJob) Failed(err error) {
 type QueueIntegratedDispatcher struct {
 	*DefaultDispatcher
 	listenerRegistry map[string]func() Listener // Registry of listener factories
+	queueDriver      queue.Driver               // Injected queue driver
 }
 
 // NewQueueIntegratedDispatcher creates a new queue-integrated dispatcher
@@ -45,6 +46,11 @@ func NewQueueIntegratedDispatcher() *QueueIntegratedDispatcher {
 		DefaultDispatcher: NewDispatcher(),
 		listenerRegistry:  make(map[string]func() Listener),
 	}
+}
+
+// SetQueueDriver sets the queue driver for dispatching queued listeners.
+func (d *QueueIntegratedDispatcher) SetQueueDriver(driver queue.Driver) {
+	d.queueDriver = driver
 }
 
 // RegisterListenerFactory registers a factory function for creating listener instances
@@ -101,10 +107,13 @@ func (d *QueueIntegratedDispatcher) pushToQueue(event interface{}, listener List
 	}
 
 	// Push to queue
-	if delay > 0 {
-		return queue.Later(delay, job, queueName)
+	if d.queueDriver == nil {
+		return fmt.Errorf("queue driver not set on QueueIntegratedDispatcher")
 	}
-	return queue.Push(job, queueName)
+	if delay > 0 {
+		return d.queueDriver.PushDelayed(job, delay, queueName)
+	}
+	return d.queueDriver.Push(job, queueName)
 }
 
 // getListenerType returns a string representation of the listener type

@@ -53,9 +53,12 @@ func (e *ScheduledTaskFailed) Name() string {
 }
 
 // dispatchScheduledTaskStarting dispatches a ScheduledTaskStarting event
-func dispatchScheduledTaskStarting(ctx context.Context, name string) {
+func dispatchScheduledTaskStarting(dispatch func(interface{}), ctx context.Context, name string) {
+	if dispatch == nil {
+		return
+	}
 	traceID, spanID, parentID := trace.GetTraceContext(ctx)
-	dispatchEvent(&ScheduledTaskStarting{
+	dispatch(&ScheduledTaskStarting{
 		Context:  ctx,
 		TaskName: name,
 		TraceID:  traceID,
@@ -65,9 +68,12 @@ func dispatchScheduledTaskStarting(ctx context.Context, name string) {
 }
 
 // dispatchScheduledTaskFinished dispatches a ScheduledTaskFinished event
-func dispatchScheduledTaskFinished(ctx context.Context, name string, duration time.Duration) {
+func dispatchScheduledTaskFinished(dispatch func(interface{}), ctx context.Context, name string, duration time.Duration) {
+	if dispatch == nil {
+		return
+	}
 	traceID, spanID, parentID := trace.GetTraceContext(ctx)
-	dispatchEvent(&ScheduledTaskFinished{
+	dispatch(&ScheduledTaskFinished{
 		Context:    ctx,
 		TaskName:   name,
 		DurationMs: duration.Milliseconds(),
@@ -78,13 +84,16 @@ func dispatchScheduledTaskFinished(ctx context.Context, name string, duration ti
 }
 
 // dispatchScheduledTaskFailed dispatches a ScheduledTaskFailed event
-func dispatchScheduledTaskFailed(ctx context.Context, name string, err error, duration time.Duration) {
+func dispatchScheduledTaskFailed(dispatch func(interface{}), ctx context.Context, name string, err error, duration time.Duration) {
+	if dispatch == nil {
+		return
+	}
 	traceID, spanID, parentID := trace.GetTraceContext(ctx)
 	errMsg := ""
 	if err != nil {
 		errMsg = err.Error()
 	}
-	dispatchEvent(&ScheduledTaskFailed{
+	dispatch(&ScheduledTaskFailed{
 		Context:    ctx,
 		TaskName:   name,
 		Error:      errMsg,

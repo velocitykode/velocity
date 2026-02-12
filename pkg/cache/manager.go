@@ -11,10 +11,24 @@ import (
 
 // Manager manages multiple cache stores
 type Manager struct {
-	mu           sync.RWMutex
-	stores       map[string]Store
-	defaultStore string
-	config       *Config
+	mu              sync.RWMutex
+	stores          map[string]Store
+	defaultStore    string
+	config          *Config
+	eventDispatcher func(event interface{}) error
+}
+
+// SetEventDispatcher sets the function used to dispatch events.
+// This is called by the events package to wire up event dispatching.
+func (m *Manager) SetEventDispatcher(fn func(event interface{}) error) {
+	m.eventDispatcher = fn
+}
+
+// dispatchEvent dispatches an event if a dispatcher is configured.
+func (m *Manager) dispatchEvent(event interface{}) {
+	if m.eventDispatcher != nil {
+		m.eventDispatcher(event)
+	}
 }
 
 // Config holds cache configuration
@@ -161,9 +175,9 @@ func (m *Manager) GetWithContext(ctx context.Context, key string) (interface{}, 
 	}
 	value, found := store.Get(key)
 	if found {
-		dispatchCacheHit(ctx, key, m.defaultStore)
+		m.dispatchCacheHit(ctx, key, m.defaultStore)
 	} else {
-		dispatchCacheMiss(ctx, key, m.defaultStore)
+		m.dispatchCacheMiss(ctx, key, m.defaultStore)
 	}
 	return value, found
 }
@@ -191,7 +205,7 @@ func (m *Manager) PutWithContext(ctx context.Context, key string, value interfac
 	if err := store.Put(key, value, ttl); err != nil {
 		return err
 	}
-	dispatchCacheWritten(ctx, key, m.defaultStore, ttl)
+	m.dispatchCacheWritten(ctx, key, m.defaultStore, ttl)
 	return nil
 }
 
@@ -209,7 +223,7 @@ func (m *Manager) ForeverWithContext(ctx context.Context, key string, value inte
 	if err := store.Forever(key, value); err != nil {
 		return err
 	}
-	dispatchCacheWritten(ctx, key, m.defaultStore, 0) // TTL=0 means forever
+	m.dispatchCacheWritten(ctx, key, m.defaultStore, 0) // TTL=0 means forever
 	return nil
 }
 
@@ -227,7 +241,7 @@ func (m *Manager) ForgetWithContext(ctx context.Context, key string) error {
 	if err := store.Forget(key); err != nil {
 		return err
 	}
-	dispatchCacheForgotten(ctx, key, m.defaultStore)
+	m.dispatchCacheForgotten(ctx, key, m.defaultStore)
 	return nil
 }
 

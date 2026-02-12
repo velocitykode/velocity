@@ -11,9 +11,9 @@ import (
 
 // Pre-compiled regexes to avoid recompilation on every call
 var (
-	emailRegex    = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
-	urlRegex      = regexp.MustCompile(`^https?://[^\s]+$`)
-	alphaRegex    = regexp.MustCompile(`^[a-zA-Z]+$`)
+	emailRegex     = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
+	urlRegex       = regexp.MustCompile(`^https?://[^\s]+$`)
+	alphaRegex     = regexp.MustCompile(`^[a-zA-Z]+$`)
 	alphaDashRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 	alphaNumRegex  = regexp.MustCompile(`^[a-zA-Z0-9]+$`)
 )

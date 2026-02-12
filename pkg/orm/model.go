@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/velocitykode/velocity/pkg/orm/drivers"
 )
 
 // identifierRegex validates SQL column/field names
@@ -168,20 +169,21 @@ func (Model[T]) With(relations ...string) *Query[T] {
 	return query.With(relations...)
 }
 
-// Create inserts a new record or multiple records
-func (Model[T]) Create(data any) (*T, error) {
+// Create inserts a new record or multiple records.
+// Requires a *Manager — use orm.Save(manager, model) directly.
+func (Model[T]) Create(m *Manager, data any) (*T, error) {
 	switch v := data.(type) {
 	case map[string]any:
 		model := new(T)
 		if err := mapToStruct(v, model); err != nil {
 			return nil, err
 		}
-		if err := Save(model); err != nil {
+		if err := Save(m, model); err != nil {
 			return nil, err
 		}
 		return model, nil
 	case *T:
-		if err := Save(v); err != nil {
+		if err := Save(m, v); err != nil {
 			return nil, err
 		}
 		return v, nil
@@ -190,10 +192,11 @@ func (Model[T]) Create(data any) (*T, error) {
 	}
 }
 
-// CreateMany inserts multiple records
-func (Model[T]) CreateMany(records []T) error {
+// CreateMany inserts multiple records.
+// Requires a *Manager — use orm.Save(manager, model) directly.
+func (Model[T]) CreateMany(m *Manager, records []T) error {
 	for _, record := range records {
-		if err := Save(&record); err != nil {
+		if err := Save(m, &record); err != nil {
 			return err
 		}
 	}
@@ -415,19 +418,19 @@ func (UUIDModel[T]) With(relations ...string) *Query[T] {
 }
 
 // Create inserts a new record or multiple records
-func (UUIDModel[T]) Create(data any) (*T, error) {
+func (UUIDModel[T]) Create(m *Manager, data any) (*T, error) {
 	switch v := data.(type) {
 	case map[string]any:
 		model := new(T)
 		if err := mapToStruct(v, model); err != nil {
 			return nil, err
 		}
-		if err := Save(model); err != nil {
+		if err := Save(m, model); err != nil {
 			return nil, err
 		}
 		return model, nil
 	case *T:
-		if err := Save(v); err != nil {
+		if err := Save(m, v); err != nil {
 			return nil, err
 		}
 		return v, nil
@@ -437,9 +440,9 @@ func (UUIDModel[T]) Create(data any) (*T, error) {
 }
 
 // CreateMany inserts multiple records
-func (UUIDModel[T]) CreateMany(records []T) error {
+func (UUIDModel[T]) CreateMany(m *Manager, records []T) error {
 	for _, record := range records {
-		if err := Save(&record); err != nil {
+		if err := Save(m, &record); err != nil {
 			return err
 		}
 	}
@@ -661,19 +664,19 @@ func (SoftDeleteModel[T]) With(relations ...string) *Query[T] {
 }
 
 // Create inserts a new record
-func (SoftDeleteModel[T]) Create(data any) (*T, error) {
+func (SoftDeleteModel[T]) Create(m *Manager, data any) (*T, error) {
 	switch v := data.(type) {
 	case map[string]any:
 		model := new(T)
 		if err := mapToStruct(v, model); err != nil {
 			return nil, err
 		}
-		if err := Save(model); err != nil {
+		if err := Save(m, model); err != nil {
 			return nil, err
 		}
 		return model, nil
 	case *T:
-		if err := Save(v); err != nil {
+		if err := Save(m, v); err != nil {
 			return nil, err
 		}
 		return v, nil
@@ -683,9 +686,9 @@ func (SoftDeleteModel[T]) Create(data any) (*T, error) {
 }
 
 // CreateMany inserts multiple records
-func (SoftDeleteModel[T]) CreateMany(records []T) error {
+func (SoftDeleteModel[T]) CreateMany(m *Manager, records []T) error {
 	for _, record := range records {
-		if err := Save(&record); err != nil {
+		if err := Save(m, &record); err != nil {
 			return err
 		}
 	}
@@ -962,19 +965,19 @@ func (SoftDeleteUUIDModel[T]) With(relations ...string) *Query[T] {
 }
 
 // Create inserts a new record
-func (SoftDeleteUUIDModel[T]) Create(data any) (*T, error) {
+func (SoftDeleteUUIDModel[T]) Create(m *Manager, data any) (*T, error) {
 	switch v := data.(type) {
 	case map[string]any:
 		model := new(T)
 		if err := mapToStruct(v, model); err != nil {
 			return nil, err
 		}
-		if err := Save(model); err != nil {
+		if err := Save(m, model); err != nil {
 			return nil, err
 		}
 		return model, nil
 	case *T:
-		if err := Save(v); err != nil {
+		if err := Save(m, v); err != nil {
 			return nil, err
 		}
 		return v, nil
@@ -984,9 +987,9 @@ func (SoftDeleteUUIDModel[T]) Create(data any) (*T, error) {
 }
 
 // CreateMany inserts multiple records
-func (SoftDeleteUUIDModel[T]) CreateMany(records []T) error {
+func (SoftDeleteUUIDModel[T]) CreateMany(m *Manager, records []T) error {
 	for _, record := range records {
-		if err := Save(&record); err != nil {
+		if err := Save(m, &record); err != nil {
 			return err
 		}
 	}
@@ -1407,7 +1410,15 @@ func structToMap(s any) map[string]any {
 
 // Global convenience functions
 
-func Save[T any](model *T) error {
+func Save[T any](m *Manager, model *T) error {
+	if m == nil {
+		return errors.New("orm: manager is nil")
+	}
+	drv := m.DefaultDriver()
+	if drv == nil {
+		return errors.New("orm: no database connection")
+	}
+
 	v := reflect.ValueOf(model).Elem()
 	t := v.Type()
 
@@ -1463,13 +1474,13 @@ func Save[T any](model *T) error {
 	isInsert := !existsField.Bool()
 
 	if isUUIDModel {
-		return saveUUIDModel(model, modelField, idField, existsField, tableName, isInsert)
+		return saveUUIDModel(drv, model, modelField, idField, existsField, tableName, isInsert)
 	}
-	return saveModel(model, modelField, idField, existsField, tableName, isInsert)
+	return saveModel(drv, model, modelField, idField, existsField, tableName, isInsert)
 }
 
 // saveModel handles saving for auto-increment ID models
-func saveModel[T any](model *T, modelField, idField, existsField reflect.Value, tableName string, isInsert bool) error {
+func saveModel[T any](drv drivers.Driver, model *T, modelField, idField, existsField reflect.Value, tableName string, isInsert bool) error {
 	if isInsert {
 		// Set timestamps
 		modelField.FieldByName("CreatedAt").Set(reflect.ValueOf(time.Now()))
@@ -1489,7 +1500,7 @@ func saveModel[T any](model *T, modelField, idField, existsField reflect.Value, 
 		// Create query and insert
 		query := &Query[T]{
 			table:  tableName,
-			driver: getCurrentDriver(),
+			driver: drv,
 		}
 
 		lastID, err := query.InsertGetId(data)
@@ -1525,7 +1536,7 @@ func saveModel[T any](model *T, modelField, idField, existsField reflect.Value, 
 		// Create query and update
 		query := &Query[T]{
 			table:  tableName,
-			driver: getCurrentDriver(),
+			driver: drv,
 		}
 
 		_, err := query.Where("id = ?", idField.Uint()).Update(data)
@@ -1544,7 +1555,7 @@ func saveModel[T any](model *T, modelField, idField, existsField reflect.Value, 
 }
 
 // saveUUIDModel handles saving for UUID primary key models
-func saveUUIDModel[T any](model *T, modelField, idField, existsField reflect.Value, tableName string, isInsert bool) error {
+func saveUUIDModel[T any](drv drivers.Driver, model *T, modelField, idField, existsField reflect.Value, tableName string, isInsert bool) error {
 	if isInsert {
 		// Generate UUID if not already set
 		if idField.String() == "" {
@@ -1568,7 +1579,7 @@ func saveUUIDModel[T any](model *T, modelField, idField, existsField reflect.Val
 		// Create query and insert
 		query := &Query[T]{
 			table:  tableName,
-			driver: getCurrentDriver(),
+			driver: drv,
 		}
 
 		_, err := query.InsertGetId(data)
@@ -1602,7 +1613,7 @@ func saveUUIDModel[T any](model *T, modelField, idField, existsField reflect.Val
 		// Create query and update
 		query := &Query[T]{
 			table:  tableName,
-			driver: getCurrentDriver(),
+			driver: drv,
 		}
 
 		_, err := query.Where("id = ?", idField.String()).Update(data)
@@ -1621,9 +1632,9 @@ func saveUUIDModel[T any](model *T, modelField, idField, existsField reflect.Val
 	return nil
 }
 
-func CreateMany[T any](records []T) error {
+func CreateMany[T any](m *Manager, records []T) error {
 	for i := range records {
-		if err := Save(&records[i]); err != nil {
+		if err := Save(m, &records[i]); err != nil {
 			return err
 		}
 	}

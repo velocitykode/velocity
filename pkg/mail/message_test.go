@@ -1,7 +1,6 @@
 package mail
 
 import (
-	"context"
 	"os"
 	"testing"
 )
@@ -216,45 +215,6 @@ func TestMessagePriority(t *testing.T) {
 
 	if msg.GetPriority() != HighPriority {
 		t.Errorf("Expected HighPriority, got %d", msg.GetPriority())
-	}
-}
-
-func TestMessageSend(t *testing.T) {
-	mock := &mockMailer{sent: make([]*Message, 0)}
-	SetDefaultMailer(mock)
-
-	msg := NewMessage().
-		To("test@example.com").
-		Subject("Test").
-		Body("Hello")
-
-	err := msg.Send()
-	if err != nil {
-		t.Errorf("Expected no error, got %v", err)
-	}
-
-	if len(mock.sent) != 1 {
-		t.Errorf("Expected 1 message sent, got %d", len(mock.sent))
-	}
-}
-
-func TestMessageSendWithContext(t *testing.T) {
-	mock := &mockMailer{sent: make([]*Message, 0)}
-	SetDefaultMailer(mock)
-
-	msg := NewMessage().
-		To("test@example.com").
-		Subject("Test").
-		Body("Hello")
-
-	ctx := context.Background()
-	err := msg.SendWithContext(ctx)
-	if err != nil {
-		t.Errorf("Expected no error, got %v", err)
-	}
-
-	if len(mock.sent) != 1 {
-		t.Errorf("Expected 1 message sent, got %d", len(mock.sent))
 	}
 }
 

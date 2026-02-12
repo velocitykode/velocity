@@ -25,25 +25,28 @@ func (m *mockMailer) SentCount() int {
 	return len(m.sent)
 }
 
-func TestSetDefaultMailer(t *testing.T) {
+func TestManagerSetAndGetChannel(t *testing.T) {
+	manager := NewManager()
 	mock := &mockMailer{sent: make([]*Message, 0)}
-	SetDefaultMailer(mock)
+	manager.SetChannel("default", mock)
 
-	if GetDefaultMailer() != mock {
-		t.Error("Expected default mailer to be set")
+	mailer := manager.Channel("default")
+	if mailer != mock {
+		t.Error("Expected channel mailer to be the mock")
 	}
 }
 
-func TestSend(t *testing.T) {
+func TestManagerSendViaChannel(t *testing.T) {
+	manager := NewManager()
 	mock := &mockMailer{sent: make([]*Message, 0)}
-	SetDefaultMailer(mock)
+	manager.SetChannel("default", mock)
 
 	msg := NewMessage().
 		To("test@example.com").
 		Subject("Test").
 		Body("Hello")
 
-	err := Send(context.Background(), msg)
+	err := manager.Send(context.Background(), "default", msg)
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
@@ -53,23 +56,22 @@ func TestSend(t *testing.T) {
 	}
 }
 
-func TestSendPanicsWithoutMailer(t *testing.T) {
-	// Save current mailer
-	saved := defaultMailer
-	defer func() {
-		defaultMailer = saved
-	}()
+func TestDirectMailerSend(t *testing.T) {
+	mock := &mockMailer{sent: make([]*Message, 0)}
 
-	// Set to nil
-	defaultMailer = nil
+	msg := NewMessage().
+		To("test@example.com").
+		Subject("Test").
+		Body("Hello")
 
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("Expected panic when mailer not initialized")
-		}
-	}()
+	err := mock.Send(context.Background(), msg)
+	if err != nil {
+		t.Errorf("Expected no error, got %v", err)
+	}
 
-	Send(context.Background(), NewMessage())
+	if len(mock.sent) != 1 {
+		t.Errorf("Expected 1 message sent, got %d", len(mock.sent))
+	}
 }
 
 func TestAddress(t *testing.T) {

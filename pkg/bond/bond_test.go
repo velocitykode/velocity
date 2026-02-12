@@ -105,68 +105,6 @@ func TestNew_EncryptHistoryFlag(t *testing.T) {
 	}
 }
 
-func TestInitialize_Success(t *testing.T) {
-	resetGlobal()
-	defer resetGlobal()
-
-	err := Initialize(Config{
-		RootTemplate: validTemplate,
-		Version:      "2.0.0",
-	})
-
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-
-	b := Get()
-	if b.Version() != "2.0.0" {
-		t.Errorf("expected version 2.0.0, got %s", b.Version())
-	}
-}
-
-func TestInitialize_InvalidConfig_ReturnsError(t *testing.T) {
-	resetGlobal()
-	defer resetGlobal()
-
-	err := Initialize(Config{
-		RootTemplate: "",
-	})
-
-	if err != ErrTemplateRequired {
-		t.Errorf("expected ErrTemplateRequired, got %v", err)
-	}
-}
-
-func TestGet_NotInitialized_Panics(t *testing.T) {
-	resetGlobal()
-	defer resetGlobal()
-
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic when Get() called without Initialize()")
-		}
-	}()
-
-	Get()
-}
-
-func TestGet_AfterInitialize_ReturnsInstance(t *testing.T) {
-	resetGlobal()
-	defer resetGlobal()
-
-	err := Initialize(Config{
-		RootTemplate: validTemplate,
-	})
-	if err != nil {
-		t.Fatalf("Initialize failed: %v", err)
-	}
-
-	b := Get()
-	if b == nil {
-		t.Error("expected bond instance, got nil")
-	}
-}
-
 func TestIsInertiaRequest_True(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.Header.Set("X-Inertia", "true")
@@ -193,44 +131,19 @@ func TestIsInertiaRequest_FalseValue(t *testing.T) {
 	}
 }
 
-func TestResetGlobal(t *testing.T) {
-	resetGlobal()
+// --- Tests for instance-level methods ---
 
-	err := Initialize(Config{
-		RootTemplate: validTemplate,
-	})
+func TestBond_Render(t *testing.T) {
+	b, err := New(Config{RootTemplate: validTemplate})
 	if err != nil {
-		t.Fatalf("Initialize failed: %v", err)
+		t.Fatalf("New failed: %v", err)
 	}
-
-	// Verify instance exists
-	_ = Get()
-
-	// Reset and verify panic
-	resetGlobal()
-
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic after resetGlobal")
-		}
-	}()
-
-	Get()
-}
-
-// --- Tests for package-level convenience functions ---
-
-func TestGlobalRender(t *testing.T) {
-	resetGlobal()
-	defer resetGlobal()
-
-	Initialize(Config{RootTemplate: validTemplate})
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.Header.Set("X-Inertia", "true")
 
-	err := Render(w, r, "Test", Props{"key": "value"})
+	err = b.Render(w, r, "Test", Props{"key": "value"})
 	if err != nil {
 		t.Fatalf("Render failed: %v", err)
 	}
@@ -240,91 +153,91 @@ func TestGlobalRender(t *testing.T) {
 	}
 }
 
-func TestGlobalShare(t *testing.T) {
-	resetGlobal()
-	defer resetGlobal()
+func TestBond_Share(t *testing.T) {
+	b, err := New(Config{RootTemplate: validTemplate})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
 
-	Initialize(Config{RootTemplate: validTemplate})
+	b.Share("appName", "Velocity")
 
-	Share("appName", "Velocity")
-
-	if Get().sharedProps["appName"] != "Velocity" {
+	if b.sharedProps["appName"] != "Velocity" {
 		t.Error("expected appName to be shared")
 	}
 }
 
-func TestGlobalShareFunc(t *testing.T) {
-	resetGlobal()
-	defer resetGlobal()
+func TestBond_ShareFunc(t *testing.T) {
+	b, err := New(Config{RootTemplate: validTemplate})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
 
-	Initialize(Config{RootTemplate: validTemplate})
-
-	ShareFunc("dynamic", func(r *http.Request) (any, error) {
+	b.ShareFunc("dynamic", func(r *http.Request) (any, error) {
 		return "dynamic value", nil
 	})
 
-	if Get().sharedFuncs["dynamic"] == nil {
+	if b.sharedFuncs["dynamic"] == nil {
 		t.Error("expected dynamic func to be shared")
 	}
 }
 
-func TestGlobalShareMultiple(t *testing.T) {
-	resetGlobal()
-	defer resetGlobal()
+func TestBond_ShareMultiple(t *testing.T) {
+	b, err := New(Config{RootTemplate: validTemplate})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
 
-	Initialize(Config{RootTemplate: validTemplate})
+	b.ShareMultiple(Props{"a": 1, "b": 2})
 
-	ShareMultiple(Props{"a": 1, "b": 2})
-
-	if Get().sharedProps["a"] != 1 || Get().sharedProps["b"] != 2 {
+	if b.sharedProps["a"] != 1 || b.sharedProps["b"] != 2 {
 		t.Error("expected multiple props to be shared")
 	}
 }
 
-func TestGlobalRedirect(t *testing.T) {
-	resetGlobal()
-	defer resetGlobal()
-
-	Initialize(Config{RootTemplate: validTemplate})
+func TestBond_Redirect(t *testing.T) {
+	b, err := New(Config{RootTemplate: validTemplate})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 
-	Redirect(w, r, "/dashboard")
+	b.Redirect(w, r, "/dashboard")
 
 	if w.Code != http.StatusSeeOther {
 		t.Errorf("expected status 303, got %d", w.Code)
 	}
 }
 
-func TestGlobalLocation(t *testing.T) {
-	resetGlobal()
-	defer resetGlobal()
-
-	Initialize(Config{RootTemplate: validTemplate})
+func TestBond_Location(t *testing.T) {
+	b, err := New(Config{RootTemplate: validTemplate})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.Header.Set("X-Inertia", "true")
 
-	Location(w, r, "https://external.com")
+	b.Location(w, r, "https://external.com")
 
 	if w.Code != http.StatusConflict {
 		t.Errorf("expected status 409, got %d", w.Code)
 	}
 }
 
-func TestGlobalBack(t *testing.T) {
-	resetGlobal()
-	defer resetGlobal()
-
-	Initialize(Config{RootTemplate: validTemplate})
+func TestBond_Back(t *testing.T) {
+	b, err := New(Config{RootTemplate: validTemplate})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 	r.Header.Set("Referer", "/previous")
 
-	Back(w, r)
+	b.Back(w, r)
 
 	location := w.Header().Get("Location")
 	if location != "/previous" {
@@ -332,26 +245,26 @@ func TestGlobalBack(t *testing.T) {
 	}
 }
 
-func TestGlobalMiddleware(t *testing.T) {
-	resetGlobal()
-	defer resetGlobal()
+func TestBond_MiddlewareFunc(t *testing.T) {
+	b, err := New(Config{RootTemplate: validTemplate})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
 
-	Initialize(Config{RootTemplate: validTemplate})
-
-	mw := Middleware()
+	mw := b.MiddlewareFunc()
 	if mw == nil {
 		t.Error("expected middleware to be returned")
 	}
 }
 
-func TestSetSharePropsFunc(t *testing.T) {
-	resetGlobal()
-	defer resetGlobal()
-
-	Initialize(Config{RootTemplate: validTemplate})
+func TestBond_SetSharePropsFunc(t *testing.T) {
+	b, err := New(Config{RootTemplate: validTemplate})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
 
 	called := false
-	SetSharePropsFunc(func(r *http.Request) (Props, error) {
+	b.SetSharePropsFunc(func(r *http.Request) (Props, error) {
 		called = true
 		return Props{
 			"auth": map[string]string{"user": "Ali"},
@@ -363,7 +276,7 @@ func TestSetSharePropsFunc(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.Header.Set("X-Inertia", "true")
 
-	err := Render(w, r, "Test", Props{})
+	err = b.Render(w, r, "Test", Props{})
 	if err != nil {
 		t.Fatalf("Render failed: %v", err)
 	}
@@ -379,13 +292,13 @@ func TestSetSharePropsFunc(t *testing.T) {
 	}
 }
 
-func TestSetSharePropsFunc_Error(t *testing.T) {
-	resetGlobal()
-	defer resetGlobal()
+func TestBond_SetSharePropsFunc_Error(t *testing.T) {
+	b, err := New(Config{RootTemplate: validTemplate})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
 
-	Initialize(Config{RootTemplate: validTemplate})
-
-	SetSharePropsFunc(func(r *http.Request) (Props, error) {
+	b.SetSharePropsFunc(func(r *http.Request) (Props, error) {
 		return nil, errors.New("share props failed")
 	})
 
@@ -394,7 +307,7 @@ func TestSetSharePropsFunc_Error(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.Header.Set("X-Inertia", "true")
 
-	err := Render(w, r, "Test", Props{})
+	err = b.Render(w, r, "Test", Props{})
 	// Should not fail - errors from shared funcs are ignored
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)

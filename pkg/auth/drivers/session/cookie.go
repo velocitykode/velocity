@@ -16,18 +16,11 @@ type CookieStore struct {
 	encryptor crypto.Encryptor
 }
 
-// NewCookieStore creates a new cookie session store
-func NewCookieStore(config auth.SessionConfig) (*CookieStore, error) {
-	// Verify the global encryptor is available
-	var encryptor crypto.Encryptor
-
-	testData := "test"
-	if _, err := crypto.Encrypt(testData); err != nil {
-		return nil, fmt.Errorf("cookie store requires a configured encryption key: %w", err)
+// NewCookieStore creates a new cookie session store with an injected encryptor.
+func NewCookieStore(config auth.SessionConfig, encryptor crypto.Encryptor) (*CookieStore, error) {
+	if encryptor == nil {
+		return nil, fmt.Errorf("cookie store requires an encryptor")
 	}
-	// Global encryptor is available; we'll use global functions
-	encryptor = nil
-
 	return &CookieStore{
 		config:    config,
 		encryptor: encryptor,
@@ -51,12 +44,7 @@ func (s *CookieStore) Get(r *http.Request, id string) (auth.Session, error) {
 	}
 
 	// Decrypt cookie value
-	var decrypted string
-	if s.encryptor != nil {
-		decrypted, err = s.encryptor.Decrypt(cookie.Value)
-	} else {
-		decrypted, err = crypto.Decrypt(cookie.Value)
-	}
+	decrypted, err := s.encryptor.Decrypt(cookie.Value)
 	if err != nil {
 		return s.Create("")
 	}
@@ -130,12 +118,7 @@ func (s *CookieStore) Save(w http.ResponseWriter, session auth.Session) error {
 	}
 
 	// Encrypt data
-	var encrypted string
-	if s.encryptor != nil {
-		encrypted, err = s.encryptor.Encrypt(string(data))
-	} else {
-		encrypted, err = crypto.Encrypt(string(data))
-	}
+	encrypted, err := s.encryptor.Encrypt(string(data))
 	if err != nil {
 		return err
 	}

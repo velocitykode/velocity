@@ -246,24 +246,23 @@ func TestConcurrentAccess(t *testing.T) {
 	}
 }
 
-func TestGlobalAPI(t *testing.T) {
-	// Set a memory queue as default
-	SetDefault(NewMemoryQueue())
+func TestInstanceAPI(t *testing.T) {
+	q := NewMemoryQueue()
 
-	t.Run("Global Push and Pop", func(t *testing.T) {
+	t.Run("Push and Pop", func(t *testing.T) {
 		job := &TestJob{
-			ID:      "global-1",
-			Message: "Global test",
+			ID:      "instance-1",
+			Message: "Instance test",
 		}
 
-		// Push using global API
-		err := Push(job, "global-queue")
+		// Push using instance API
+		err := q.Push(job, "instance-queue")
 		if err != nil {
 			t.Fatalf("Failed to push job: %v", err)
 		}
 
 		// Check size
-		size, err := Size("global-queue")
+		size, err := q.Size("instance-queue")
 		if err != nil {
 			t.Fatalf("Failed to get queue size: %v", err)
 		}
@@ -271,8 +270,8 @@ func TestGlobalAPI(t *testing.T) {
 			t.Errorf("Expected queue size 1, got %d", size)
 		}
 
-		// Pop using global API
-		poppedJob, err := Pop("global-queue")
+		// Pop using instance API
+		poppedJob, err := q.Pop("instance-queue")
 		if err != nil {
 			t.Fatalf("Failed to pop job: %v", err)
 		}
@@ -281,14 +280,14 @@ func TestGlobalAPI(t *testing.T) {
 		}
 	})
 
-	t.Run("Global Delayed", func(t *testing.T) {
+	t.Run("Delayed", func(t *testing.T) {
 		job := &TestJob{
-			ID:      "global-delayed-1",
-			Message: "Global delayed test",
+			ID:      "instance-delayed-1",
+			Message: "Instance delayed test",
 		}
 
-		// Push delayed using global API (use 1 second delay for consistency)
-		err := Later(1*time.Second, job, "global-delayed")
+		// Push delayed using instance API (use 1 second delay for consistency)
+		err := q.PushDelayed(job, 1*time.Second, "instance-delayed")
 		if err != nil {
 			t.Fatalf("Failed to push delayed job: %v", err)
 		}
@@ -296,7 +295,7 @@ func TestGlobalAPI(t *testing.T) {
 		// Wait and pop
 		time.Sleep(2 * time.Second)
 
-		poppedJob, err := Pop("global-delayed")
+		poppedJob, err := q.Pop("instance-delayed")
 		if err != nil {
 			t.Fatalf("Failed to pop job: %v", err)
 		}
@@ -305,27 +304,27 @@ func TestGlobalAPI(t *testing.T) {
 		}
 	})
 
-	t.Run("Global Clear", func(t *testing.T) {
+	t.Run("Clear", func(t *testing.T) {
 		// Push jobs
 		for i := 0; i < 3; i++ {
 			job := &TestJob{
-				ID:      "global-clear-" + string(rune(i)),
+				ID:      "instance-clear-" + string(rune(i)),
 				Message: "Clear test",
 			}
-			err := Push(job, "global-clear")
+			err := q.Push(job, "instance-clear")
 			if err != nil {
 				t.Fatalf("Failed to push job: %v", err)
 			}
 		}
 
-		// Clear using global API
-		err := Clear("global-clear")
+		// Clear using instance API
+		err := q.Clear("instance-clear")
 		if err != nil {
 			t.Fatalf("Failed to clear queue: %v", err)
 		}
 
 		// Check size
-		size, err := Size("global-clear")
+		size, err := q.Size("instance-clear")
 		if err != nil {
 			t.Fatalf("Failed to get queue size: %v", err)
 		}

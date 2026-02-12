@@ -2,7 +2,6 @@ package mail_test
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/velocitykode/velocity/pkg/mail"
@@ -11,50 +10,34 @@ import (
 	_ "github.com/velocitykode/velocity/pkg/mail/drivers"
 )
 
-func TestReinitialize(t *testing.T) {
+func TestNewMailer(t *testing.T) {
 	t.Run("with log driver", func(t *testing.T) {
-		// Set to log driver
-		os.Setenv("MAIL_DRIVER", "log")
-
-		err := mail.Reinitialize()
+		mailer, err := mail.NewMailer(mail.MailConfig{Driver: "log"})
 		if err != nil {
-			t.Errorf("Expected no error reinitializing with log driver, got %v", err)
+			t.Errorf("Expected no error creating log mailer, got %v", err)
 		}
 
-		if mail.GetDefaultMailer() == nil {
-			t.Error("Expected default mailer to be set after reinitialize")
+		if mailer == nil {
+			t.Error("Expected mailer to be created")
 		}
 	})
 
 	t.Run("with empty driver falls back to log", func(t *testing.T) {
-		os.Unsetenv("MAIL_DRIVER")
-
-		err := mail.Reinitialize()
+		mailer, err := mail.NewMailer(mail.MailConfig{Driver: ""})
 		if err != nil {
 			t.Errorf("Expected no error with empty driver, got %v", err)
 		}
 
-		if mail.GetDefaultMailer() == nil {
-			t.Error("Expected default mailer to be set")
+		if mailer == nil {
+			t.Error("Expected mailer to be created")
 		}
 	})
 }
 
-func TestReinitializeWithDriver(t *testing.T) {
-	err := mail.ReinitializeWithDriver("log")
-	if err != nil {
-		t.Errorf("Expected no error reinitializing with log driver, got %v", err)
-	}
-
-	if mail.GetDefaultMailer() == nil {
-		t.Error("Expected default mailer to be set after reinitialize")
-	}
-}
-
-func TestReinitializeWithInvalidDriver(t *testing.T) {
-	err := mail.ReinitializeWithDriver("invalid")
+func TestNewMailerWithInvalidDriver(t *testing.T) {
+	_, err := mail.NewMailer(mail.MailConfig{Driver: "invalid"})
 	if err == nil {
-		t.Error("Expected error reinitializing with invalid driver")
+		t.Error("Expected error creating mailer with invalid driver")
 	}
 }
 
@@ -69,8 +52,12 @@ func TestRegisterDriver(t *testing.T) {
 		return &mockMailer{}, nil
 	})
 
-	err := mail.ReinitializeWithDriver("custom")
+	mailer, err := mail.NewMailer(mail.MailConfig{Driver: "custom"})
 	if err != nil {
 		t.Errorf("Expected no error with custom driver, got %v", err)
+	}
+
+	if mailer == nil {
+		t.Error("Expected mailer to be created from custom driver")
 	}
 }

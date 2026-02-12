@@ -235,26 +235,6 @@ func TestMiddlewareFunc_NoPanic(t *testing.T) {
 	}
 }
 
-func TestRecoverMiddleware_NoPanic(t *testing.T) {
-	ResetGlobal()
-	defer ResetGlobal()
-
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-
-	wrapped := RecoverMiddleware(handler)
-
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/test", nil)
-
-	wrapped.ServeHTTP(w, r)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("StatusCode = %d, want %d", w.Code, http.StatusOK)
-	}
-}
-
 func TestErrorHandler_ReportableError(t *testing.T) {
 	var reported bool
 	mockReporter := NewCallbackReporter(func(err error, ctx *ExceptionContext) {

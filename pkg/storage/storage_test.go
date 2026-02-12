@@ -430,14 +430,8 @@ func TestManager(t *testing.T) {
 	}
 }
 
-// TestGlobalAPI tests the global storage API
-func TestGlobalAPI(t *testing.T) {
-	// Save current manager
-	originalManager := globalManager
-	defer func() {
-		globalManager = originalManager
-	}()
-
+// TestManagerAPI tests the manager storage API using instances
+func TestManagerAPI(t *testing.T) {
 	// Configure test storage
 	testDir := filepath.Join(os.TempDir(), "velocity-storage-global-test")
 	os.RemoveAll(testDir)
@@ -453,44 +447,50 @@ func TestGlobalAPI(t *testing.T) {
 		},
 	}
 
-	err := Configure(config)
+	manager := NewManager(config)
+	err := manager.Configure(config)
 	if err != nil {
-		t.Fatalf("Failed to configure global storage: %v", err)
+		t.Fatalf("Failed to configure storage: %v", err)
 	}
 
-	// Test global Put
-	err = Put("global.txt", []byte("global content"))
-	if err != nil {
-		t.Fatalf("Global Put failed: %v", err)
+	d := manager.Default()
+	if d == nil {
+		t.Fatal("Default disk is nil")
 	}
 
-	// Test global Get
-	content, err := Get("global.txt")
+	// Test Put
+	err = d.Put("global.txt", []byte("global content"))
 	if err != nil {
-		t.Fatalf("Global Get failed: %v", err)
+		t.Fatalf("Put failed: %v", err)
+	}
+
+	// Test Get
+	content, err := d.Get("global.txt")
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
 	}
 
 	if string(content) != "global content" {
 		t.Errorf("Content mismatch: got %s, want global content", content)
 	}
 
-	// Test global Exists
-	if !Exists("global.txt") {
-		t.Error("Global file should exist")
+	// Test Exists
+	if !d.Exists("global.txt") {
+		t.Error("File should exist")
 	}
 
-	// Test global Delete
-	err = Delete("global.txt")
+	// Test Delete
+	err = d.Delete("global.txt")
 	if err != nil {
-		t.Fatalf("Global Delete failed: %v", err)
+		t.Fatalf("Delete failed: %v", err)
 	}
 
-	if Exists("global.txt") {
+	if d.Exists("global.txt") {
 		t.Error("File should be deleted")
 	}
 
 	// Test accessing specific disk
-	testDisk := Disk("test")
+	testDisk := manager.Disk("test")
 	if testDisk == nil {
 		t.Fatal("Test disk is nil")
 	}

@@ -70,65 +70,46 @@ func newTestCookieStore(config auth.SessionConfig, enc *mockEncryptor) *CookieSt
 
 func TestNewCookieStore(t *testing.T) {
 	tests := []struct {
-		name          string
-		config        auth.SessionConfig
-		setupGlobal   func()
-		cleanupGlobal func()
-		wantErr       bool
-		checkResult   func(t *testing.T, store *CookieStore)
+		name        string
+		config      auth.SessionConfig
+		encryptor   crypto.Encryptor
+		wantErr     bool
+		checkResult func(t *testing.T, store *CookieStore)
 	}{
 		{
-			name:   "creates store with global encryptor available",
+			name:   "creates store with provided encryptor",
 			config: testConfig(),
-			setupGlobal: func() {
-				_ = crypto.Init(crypto.Config{
+			encryptor: func() crypto.Encryptor {
+				enc, err := crypto.NewEncryptor(crypto.Config{
 					Key:    "test-key-32-bytes-long-for-test!",
 					Cipher: "AES-256-CBC",
 				})
-			},
-			cleanupGlobal: func() {
-				// Note: crypto package doesn't expose reset, but the store will work
-			},
+				if err != nil {
+					t.Fatalf("Failed to create encryptor: %v", err)
+				}
+				return enc
+			}(),
 			wantErr: false,
 			checkResult: func(t *testing.T, store *CookieStore) {
 				if store == nil {
 					t.Error("expected store to be non-nil")
 				}
-				// When global encryptor is available, store.encryptor should be nil
-				// (uses global functions)
-				if store.encryptor != nil {
-					t.Error("expected encryptor to be nil when global is available")
+				if store.encryptor == nil {
+					t.Error("expected encryptor to be set")
 				}
 			},
 		},
 		{
-			name:   "creates store with fallback encryptor when global unavailable",
-			config: testConfig(),
-			setupGlobal: func() {
-				// Don't initialize global crypto - it should fall back
-			},
-			cleanupGlobal: func() {},
-			wantErr:       false,
-			checkResult: func(t *testing.T, store *CookieStore) {
-				if store == nil {
-					t.Error("expected store to be non-nil")
-				}
-				// When global is not available, fallback encryptor should be set
-				// Note: The implementation creates a fallback when global fails
-			},
+			name:      "returns error when encryptor is nil",
+			config:    testConfig(),
+			encryptor: nil,
+			wantErr:   true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.setupGlobal != nil {
-				tt.setupGlobal()
-			}
-			if tt.cleanupGlobal != nil {
-				defer tt.cleanupGlobal()
-			}
-
-			got, err := NewCookieStore(tt.config)
+			got, err := NewCookieStore(tt.config, tt.encryptor)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("NewCookieStore() error = %v, wantErr %v", err, tt.wantErr)
 				return

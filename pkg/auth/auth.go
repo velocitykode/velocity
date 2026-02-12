@@ -6,13 +6,6 @@ import (
 	"sync"
 )
 
-var (
-	// Global auth manager instance
-	globalManager *Manager
-	globalMux     sync.RWMutex
-	initOnce      sync.Once
-)
-
 // Errors
 var (
 	ErrNotAuthenticated   = errors.New("not authenticated")
@@ -230,7 +223,6 @@ func (m *Manager) GetHasher() Hasher {
 }
 
 // NewManagerFromConfig creates a new Manager configured from the provided Config.
-// This is the preferred way to create auth managers instead of using the global Init().
 func NewManagerFromConfig(config Config) (*Manager, error) {
 	manager := NewManager()
 
@@ -243,160 +235,6 @@ func NewManagerFromConfig(config Config) (*Manager, error) {
 	}
 
 	return manager, nil
-}
-
-// SetGlobalManager sets the global auth manager instance.
-// Used by velocity.Default() to wire the App's auth manager into the global.
-func SetGlobalManager(m *Manager) {
-	globalMux.Lock()
-	defer globalMux.Unlock()
-	globalManager = m
-}
-
-// Init initializes the global auth manager.
-func Init(config Config) error {
-	globalMux.Lock()
-	defer globalMux.Unlock()
-
-	manager := NewManager()
-
-	// Set default guard
-	if config.DefaultGuard != "" {
-		manager.SetDefaultGuard(config.DefaultGuard)
-	}
-
-	// Initialize providers and guards based on config
-	// This will be expanded with actual implementations
-
-	globalManager = manager
-	return nil
-}
-
-// GetManager returns the global auth manager.
-func GetManager() (*Manager, error) {
-	globalMux.RLock()
-	defer globalMux.RUnlock()
-
-	if globalManager == nil {
-		return nil, ErrNotInitialized
-	}
-
-	return globalManager, nil
-}
-
-// GetGuard returns a guard by name from global manager.
-func GetGuard(name string) (Guard, error) {
-	manager, err := GetManager()
-	if err != nil {
-		return nil, err
-	}
-
-	return manager.Guard(name)
-}
-
-// Check checks if user is authenticated using default guard.
-func Check(r *http.Request) bool {
-	manager, err := GetManager()
-	if err != nil {
-		return false
-	}
-
-	guard, err := manager.DefaultGuard()
-	if err != nil {
-		return false
-	}
-
-	return guard.Check(r)
-}
-
-// User returns authenticated user using default guard.
-func User(r *http.Request) Authenticatable {
-	manager, err := GetManager()
-	if err != nil {
-		return nil
-	}
-
-	guard, err := manager.DefaultGuard()
-	if err != nil {
-		return nil
-	}
-
-	return guard.User(r)
-}
-
-// ID returns authenticated user ID using default guard.
-func ID(r *http.Request) interface{} {
-	manager, err := GetManager()
-	if err != nil {
-		return nil
-	}
-
-	guard, err := manager.DefaultGuard()
-	if err != nil {
-		return nil
-	}
-
-	return guard.ID(r)
-}
-
-// Login logs in a user using default guard.
-func Login(w http.ResponseWriter, r *http.Request, user Authenticatable, remember ...bool) error {
-	manager, err := GetManager()
-	if err != nil {
-		return err
-	}
-
-	guard, err := manager.DefaultGuard()
-	if err != nil {
-		return err
-	}
-
-	return guard.Login(w, r, user, remember...)
-}
-
-// LoginByID logs in a user by ID using default guard.
-func LoginByID(w http.ResponseWriter, r *http.Request, id interface{}, remember ...bool) error {
-	manager, err := GetManager()
-	if err != nil {
-		return err
-	}
-
-	guard, err := manager.DefaultGuard()
-	if err != nil {
-		return err
-	}
-
-	return guard.LoginByID(w, r, id, remember...)
-}
-
-// Attempt attempts login with credentials using default guard.
-func Attempt(w http.ResponseWriter, r *http.Request, credentials map[string]interface{}, remember ...bool) (bool, error) {
-	manager, err := GetManager()
-	if err != nil {
-		return false, err
-	}
-
-	guard, err := manager.DefaultGuard()
-	if err != nil {
-		return false, err
-	}
-
-	return guard.Attempt(w, r, credentials, remember...)
-}
-
-// Logout logs out user using default guard.
-func Logout(w http.ResponseWriter, r *http.Request) error {
-	manager, err := GetManager()
-	if err != nil {
-		return err
-	}
-
-	guard, err := manager.DefaultGuard()
-	if err != nil {
-		return err
-	}
-
-	return guard.Logout(w, r)
 }
 
 // Config holds authentication configuration

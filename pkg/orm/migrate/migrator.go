@@ -512,8 +512,8 @@ type TableBuilder struct {
 	tableName           string
 	driver              string
 	columns             []Column
-	lastColumn          *Column   // Track last column for chaining modifiers
-	compositePrimaryKey []string  // For composite primary keys
+	lastColumn          *Column  // Track last column for chaining modifiers
+	compositePrimaryKey []string // For composite primary keys
 }
 
 // Column represents a table column definition

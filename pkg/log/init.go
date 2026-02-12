@@ -16,12 +16,6 @@ func getEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
-// EnsureInitialized can be called explicitly to guarantee logger initialization,
-// though the logger auto-initializes on first use through the init() function.
-func EnsureInitialized() {
-	Get() // This triggers initialization if not done
-}
-
 // LogConfig holds configuration for creating a Logger instance.
 type LogConfig struct {
 	// Driver specifies the log driver: "console" or "file".

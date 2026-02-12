@@ -1,25 +1,34 @@
 package migrate_test
 
 import (
+	"database/sql"
 	"testing"
 
 	"github.com/velocitykode/velocity/pkg/orm"
 	"github.com/velocitykode/velocity/pkg/orm/migrate"
 )
 
-func TestMigrator_AddColumn(t *testing.T) {
-	err := orm.Init("sqlite", map[string]any{
-		"database": ":memory:",
+func newTestManager(t *testing.T) *orm.Manager {
+	t.Helper()
+	manager, err := orm.NewManager(orm.ManagerConfig{
+		Driver:   "sqlite",
+		Database: ":memory:",
 	})
 	if err != nil {
-		t.Fatalf("failed to init ORM: %v", err)
+		t.Fatalf("failed to create ORM manager: %v", err)
 	}
-	defer orm.Close()
+	return manager
+}
 
-	migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+func TestMigrator_AddColumn(t *testing.T) {
+	manager := newTestManager(t)
+	defer manager.Close()
+
+	db := manager.DB()
+	migrator := migrate.NewMigrator(db, manager.DriverName())
 
 	// Create initial table
-	err = migrator.CreateTable("users", func(tb *migrate.TableBuilder) {
+	err := migrator.CreateTable("users", func(tb *migrate.TableBuilder) {
 		tb.ID()
 		tb.String("name")
 	})
@@ -29,10 +38,10 @@ func TestMigrator_AddColumn(t *testing.T) {
 	defer migrator.DropTable("users")
 
 	tests := []struct {
-		name     string
-		column   string
-		builder  func(*migrate.ColumnBuilder)
-		wantErr  bool
+		name    string
+		column  string
+		builder func(*migrate.ColumnBuilder)
+		wantErr bool
 	}{
 		{
 			name:   "add string column",
@@ -115,7 +124,7 @@ func TestMigrator_AddColumn(t *testing.T) {
 
 			if err == nil {
 				// Verify column exists
-				if !columnExists(t, "users", tt.column) {
+				if !columnExists(t, db, "users", tt.column) {
 					t.Errorf("column %s was not added", tt.column)
 				}
 			}
@@ -126,17 +135,13 @@ func TestMigrator_AddColumn(t *testing.T) {
 func TestMigrator_AddColumn_Unique(t *testing.T) {
 	// Note: SQLite does not support adding a UNIQUE column with ALTER TABLE ADD COLUMN
 	// This test verifies the limitation is handled gracefully
-	err := orm.Init("sqlite", map[string]any{
-		"database": ":memory:",
-	})
-	if err != nil {
-		t.Fatalf("failed to init ORM: %v", err)
-	}
-	defer orm.Close()
+	manager := newTestManager(t)
+	defer manager.Close()
 
-	migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+	db := manager.DB()
+	migrator := migrate.NewMigrator(db, manager.DriverName())
 
-	err = migrator.CreateTable("products", func(tb *migrate.TableBuilder) {
+	err := migrator.CreateTable("products", func(tb *migrate.TableBuilder) {
 		tb.ID()
 		tb.String("name")
 	})
@@ -161,24 +166,20 @@ func TestMigrator_AddColumn_Unique(t *testing.T) {
 		t.Fatalf("AddColumn() without UNIQUE error = %v", err)
 	}
 
-	if !columnExists(t, "products", "code") {
+	if !columnExists(t, db, "products", "code") {
 		t.Error("column code should exist")
 	}
 }
 
 func TestMigrator_DropColumn(t *testing.T) {
-	err := orm.Init("sqlite", map[string]any{
-		"database": ":memory:",
-	})
-	if err != nil {
-		t.Fatalf("failed to init ORM: %v", err)
-	}
-	defer orm.Close()
+	manager := newTestManager(t)
+	defer manager.Close()
 
-	migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+	db := manager.DB()
+	migrator := migrate.NewMigrator(db, manager.DriverName())
 
 	// Create table with multiple columns
-	err = migrator.CreateTable("posts", func(tb *migrate.TableBuilder) {
+	err := migrator.CreateTable("posts", func(tb *migrate.TableBuilder) {
 		tb.ID()
 		tb.String("title")
 		tb.Text("content")
@@ -190,7 +191,7 @@ func TestMigrator_DropColumn(t *testing.T) {
 	defer migrator.DropTable("posts")
 
 	// Verify column exists before drop
-	if !columnExists(t, "posts", "slug") {
+	if !columnExists(t, db, "posts", "slug") {
 		t.Fatal("column slug should exist before drop")
 	}
 
@@ -201,31 +202,27 @@ func TestMigrator_DropColumn(t *testing.T) {
 	}
 
 	// Verify column no longer exists
-	if columnExists(t, "posts", "slug") {
+	if columnExists(t, db, "posts", "slug") {
 		t.Error("column slug should not exist after drop")
 	}
 
 	// Verify other columns still exist
-	if !columnExists(t, "posts", "title") {
+	if !columnExists(t, db, "posts", "title") {
 		t.Error("column title should still exist")
 	}
-	if !columnExists(t, "posts", "content") {
+	if !columnExists(t, db, "posts", "content") {
 		t.Error("column content should still exist")
 	}
 }
 
 func TestMigrator_DropColumn_NonExistent(t *testing.T) {
-	err := orm.Init("sqlite", map[string]any{
-		"database": ":memory:",
-	})
-	if err != nil {
-		t.Fatalf("failed to init ORM: %v", err)
-	}
-	defer orm.Close()
+	manager := newTestManager(t)
+	defer manager.Close()
 
-	migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+	db := manager.DB()
+	migrator := migrate.NewMigrator(db, manager.DriverName())
 
-	err = migrator.CreateTable("items", func(tb *migrate.TableBuilder) {
+	err := migrator.CreateTable("items", func(tb *migrate.TableBuilder) {
 		tb.ID()
 		tb.String("name")
 	})
@@ -292,15 +289,17 @@ func TestColumnBuilder_ToSQL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := orm.Init(tt.driver, map[string]any{
-				"database": ":memory:",
+			manager, err := orm.NewManager(orm.ManagerConfig{
+				Driver:   tt.driver,
+				Database: ":memory:",
 			})
 			if err != nil {
 				t.Skip("driver not available")
 			}
-			defer orm.Close()
+			defer manager.Close()
 
-			migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+			db := manager.DB()
+			migrator := migrate.NewMigrator(db, manager.DriverName())
 
 			// Create table and add column to verify SQL works
 			err = migrator.CreateTable("test_col_sql", func(tb *migrate.TableBuilder) {
@@ -320,10 +319,10 @@ func TestColumnBuilder_ToSQL(t *testing.T) {
 }
 
 // columnExists checks if a column exists in a table (SQLite-specific)
-func columnExists(t *testing.T, table, column string) bool {
+func columnExists(t *testing.T, db *sql.DB, table, column string) bool {
 	t.Helper()
 
-	rows, err := orm.DB().Query("PRAGMA table_info(" + table + ")")
+	rows, err := db.Query("PRAGMA table_info(" + table + ")")
 	if err != nil {
 		t.Fatalf("failed to get table info: %v", err)
 	}

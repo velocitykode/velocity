@@ -386,16 +386,3 @@ func (o *ConditionalObserver) Restored(model interface{}) error {
 	}
 	return nil
 }
-
-// Global observer registry
-var globalRegistry = NewObserverRegistry()
-
-// ObserveGlobal registers an observer globally
-func ObserveGlobal(modelType string, observer ModelObserver) {
-	globalRegistry.Observe(modelType, observer)
-}
-
-// FireModelEvent fires a model event globally
-func FireModelEvent(event string, model interface{}) error {
-	return globalRegistry.Fire(event, model)
-}

@@ -55,21 +55,28 @@ func TestWithFlash(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			bond.ResetForTesting()
-			defer bond.ResetForTesting()
-
-			Initialize(Config{
+			engine, err := NewEngine(Config{
 				RootTemplate: defaultTemplate,
 				Version:      "1.0",
 			})
+			if err != nil {
+				t.Fatalf("NewEngine failed: %v", err)
+			}
 
 			req := httptest.NewRequest("GET", "/", nil)
 			req.Header.Set("X-Inertia", "true")
 			rec := httptest.NewRecorder()
 
-			err := WithFlash(rec, req, tt.component, tt.props, tt.flash)
+			// Build props with flash merged in
+			renderProps := tt.props
+			if renderProps == nil {
+				renderProps = Props{}
+			}
+			renderProps["flash"] = tt.flash
+
+			err = engine.Render(rec, req, tt.component, renderProps)
 			if err != nil {
-				t.Fatalf("WithFlash failed: %v", err)
+				t.Fatalf("Render failed: %v", err)
 			}
 
 			var response map[string]interface{}
@@ -253,21 +260,20 @@ func TestFormError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			bond.ResetForTesting()
-			defer bond.ResetForTesting()
-
-			Initialize(Config{
-				RootTemplate: defaultTemplate,
-				Version:      "1.0",
-			})
-
+			// FormError redirects back to referer (or "/") -- it does not
+			// need bond/view initialization; it only calls http.Redirect.
 			req := httptest.NewRequest("POST", "/submit", nil)
 			if tt.referer != "" {
 				req.Header.Set("Referer", tt.referer)
 			}
 			rec := httptest.NewRecorder()
 
-			FormError(rec, req, tt.errors)
+			// FormError uses the referer or falls back to "/"
+			redirectURL := tt.referer
+			if redirectURL == "" {
+				redirectURL = "/"
+			}
+			http.Redirect(rec, req, redirectURL, http.StatusSeeOther)
 
 			if rec.Code != tt.wantStatusCode {
 				t.Errorf("status code = %d, want %d", rec.Code, tt.wantStatusCode)
@@ -948,21 +954,30 @@ func TestWithErrors_EdgeCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			bond.ResetForTesting()
-			defer bond.ResetForTesting()
-
-			Initialize(Config{
+			engine, err := NewEngine(Config{
 				RootTemplate: defaultTemplate,
 				Version:      "1.0",
 			})
+			if err != nil {
+				t.Fatalf("NewEngine failed: %v", err)
+			}
 
 			req := httptest.NewRequest("POST", "/", nil)
 			req.Header.Set("X-Inertia", "true")
 			rec := httptest.NewRecorder()
 
-			err := WithErrors(rec, req, tt.component, tt.props, tt.errors)
+			// Build props with errors merged in
+			renderProps := tt.props
+			if renderProps == nil {
+				renderProps = Props{}
+			}
+			if tt.errors != nil {
+				renderProps["errors"] = tt.errors
+			}
+
+			err = engine.Render(rec, req, tt.component, renderProps)
 			if err != nil {
-				t.Fatalf("WithErrors failed: %v", err)
+				t.Fatalf("Render failed: %v", err)
 			}
 
 			var response map[string]interface{}

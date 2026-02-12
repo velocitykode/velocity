@@ -51,14 +51,17 @@ func (c *testEventCollector) findEvent(predicate func(interface{}) bool) interfa
 	return nil
 }
 
-func setupTestDispatcher() *testEventCollector {
-	collector := newTestEventCollector()
-	SetEventDispatcher(collector.dispatch)
-	return collector
-}
-
-func teardownTestDispatcher() {
-	SetEventDispatcher(nil)
+// newTestManager creates a memory-backed Manager with the given collector wired up.
+func newTestManager(collector *testEventCollector) *Manager {
+	config := &Config{
+		Default: "memory",
+		Stores: map[string]StoreConfig{
+			"memory": {Driver: DriverMemory},
+		},
+	}
+	manager := NewManager(config)
+	manager.SetEventDispatcher(collector.dispatch)
+	return manager
 }
 
 func TestCacheEventNames(t *testing.T) {
@@ -80,16 +83,20 @@ func TestCacheEventNames(t *testing.T) {
 }
 
 func TestDispatchCacheHit(t *testing.T) {
-	collector := setupTestDispatcher()
-	defer teardownTestDispatcher()
+	collector := newTestEventCollector()
+	manager := newTestManager(collector)
+
+	// Put a value first so Get triggers a CacheHit
+	_ = manager.Put("user:1", "value", time.Minute)
+	collector.clear()
 
 	ctx := context.WithValue(context.Background(), "request_id", "test-123")
-	dispatchCacheHit(ctx, "user:1", "redis")
+	_, _ = manager.GetWithContext(ctx, "user:1")
 
 	event := collector.findEvent(func(e interface{}) bool {
 		if ch, ok := e.(*CacheHit); ok {
 			return ch.Key == "user:1" &&
-				ch.Store == "redis" &&
+				ch.Store == "memory" &&
 				ch.Context.Value("request_id") == "test-123"
 		}
 		return false
@@ -100,11 +107,10 @@ func TestDispatchCacheHit(t *testing.T) {
 }
 
 func TestDispatchCacheMiss(t *testing.T) {
-	collector := setupTestDispatcher()
-	defer teardownTestDispatcher()
+	collector := newTestEventCollector()
+	manager := newTestManager(collector)
 
-	ctx := context.Background()
-	dispatchCacheMiss(ctx, "user:999", "memory")
+	_, _ = manager.Get("user:999")
 
 	event := collector.findEvent(func(e interface{}) bool {
 		if cm, ok := e.(*CacheMiss); ok {
@@ -118,17 +124,16 @@ func TestDispatchCacheMiss(t *testing.T) {
 }
 
 func TestDispatchCacheWritten(t *testing.T) {
-	collector := setupTestDispatcher()
-	defer teardownTestDispatcher()
+	collector := newTestEventCollector()
+	manager := newTestManager(collector)
 
-	ctx := context.Background()
 	ttl := 5 * time.Minute
-	dispatchCacheWritten(ctx, "session:abc", "file", ttl)
+	_ = manager.Put("session:abc", "value", ttl)
 
 	event := collector.findEvent(func(e interface{}) bool {
 		if cw, ok := e.(*CacheWritten); ok {
 			return cw.Key == "session:abc" &&
-				cw.Store == "file" &&
+				cw.Store == "memory" &&
 				cw.TTL == ttl
 		}
 		return false
@@ -139,11 +144,10 @@ func TestDispatchCacheWritten(t *testing.T) {
 }
 
 func TestDispatchCacheWrittenForever(t *testing.T) {
-	collector := setupTestDispatcher()
-	defer teardownTestDispatcher()
+	collector := newTestEventCollector()
+	manager := newTestManager(collector)
 
-	ctx := context.Background()
-	dispatchCacheWritten(ctx, "config:app", "memory", 0)
+	_ = manager.Forever("config:app", "value")
 
 	event := collector.findEvent(func(e interface{}) bool {
 		if cw, ok := e.(*CacheWritten); ok {
@@ -157,15 +161,18 @@ func TestDispatchCacheWrittenForever(t *testing.T) {
 }
 
 func TestDispatchCacheForgotten(t *testing.T) {
-	collector := setupTestDispatcher()
-	defer teardownTestDispatcher()
+	collector := newTestEventCollector()
+	manager := newTestManager(collector)
 
-	ctx := context.Background()
-	dispatchCacheForgotten(ctx, "temp:data", "redis")
+	// Put a value first, then forget it
+	_ = manager.Put("temp:data", "value", time.Minute)
+	collector.clear()
+
+	_ = manager.Forget("temp:data")
 
 	event := collector.findEvent(func(e interface{}) bool {
 		if cf, ok := e.(*CacheForgotten); ok {
-			return cf.Key == "temp:data" && cf.Store == "redis"
+			return cf.Key == "temp:data" && cf.Store == "memory"
 		}
 		return false
 	})
@@ -175,16 +182,8 @@ func TestDispatchCacheForgotten(t *testing.T) {
 }
 
 func TestManagerGetDispatchesEvents(t *testing.T) {
-	collector := setupTestDispatcher()
-	defer teardownTestDispatcher()
-
-	config := &Config{
-		Default: "memory",
-		Stores: map[string]StoreConfig{
-			"memory": {Driver: DriverMemory},
-		},
-	}
-	manager := NewManager(config)
+	collector := newTestEventCollector()
+	manager := newTestManager(collector)
 
 	// Put a value first (this will also dispatch an event)
 	_ = manager.Put("test:key", "value", time.Minute)
@@ -208,16 +207,8 @@ func TestManagerGetDispatchesEvents(t *testing.T) {
 }
 
 func TestManagerGetMissDispatchesEvents(t *testing.T) {
-	collector := setupTestDispatcher()
-	defer teardownTestDispatcher()
-
-	config := &Config{
-		Default: "memory",
-		Stores: map[string]StoreConfig{
-			"memory": {Driver: DriverMemory},
-		},
-	}
-	manager := NewManager(config)
+	collector := newTestEventCollector()
+	manager := newTestManager(collector)
 
 	// Get non-existent key - should dispatch CacheMiss
 	_, found := manager.Get("nonexistent:key")
@@ -237,16 +228,8 @@ func TestManagerGetMissDispatchesEvents(t *testing.T) {
 }
 
 func TestManagerPutDispatchesEvents(t *testing.T) {
-	collector := setupTestDispatcher()
-	defer teardownTestDispatcher()
-
-	config := &Config{
-		Default: "memory",
-		Stores: map[string]StoreConfig{
-			"memory": {Driver: DriverMemory},
-		},
-	}
-	manager := NewManager(config)
+	collector := newTestEventCollector()
+	manager := newTestManager(collector)
 
 	ttl := 5 * time.Minute
 	err := manager.Put("new:key", "value", ttl)
@@ -266,16 +249,8 @@ func TestManagerPutDispatchesEvents(t *testing.T) {
 }
 
 func TestManagerForeverDispatchesEvents(t *testing.T) {
-	collector := setupTestDispatcher()
-	defer teardownTestDispatcher()
-
-	config := &Config{
-		Default: "memory",
-		Stores: map[string]StoreConfig{
-			"memory": {Driver: DriverMemory},
-		},
-	}
-	manager := NewManager(config)
+	collector := newTestEventCollector()
+	manager := newTestManager(collector)
 
 	err := manager.Forever("permanent:key", "value")
 	if err != nil {
@@ -294,16 +269,8 @@ func TestManagerForeverDispatchesEvents(t *testing.T) {
 }
 
 func TestManagerForgetDispatchesEvents(t *testing.T) {
-	collector := setupTestDispatcher()
-	defer teardownTestDispatcher()
-
-	config := &Config{
-		Default: "memory",
-		Stores: map[string]StoreConfig{
-			"memory": {Driver: DriverMemory},
-		},
-	}
-	manager := NewManager(config)
+	collector := newTestEventCollector()
+	manager := newTestManager(collector)
 
 	// Put and then forget
 	_ = manager.Put("temp:key", "value", time.Minute)
@@ -326,16 +293,8 @@ func TestManagerForgetDispatchesEvents(t *testing.T) {
 }
 
 func TestManagerWithContextMethods(t *testing.T) {
-	collector := setupTestDispatcher()
-	defer teardownTestDispatcher()
-
-	config := &Config{
-		Default: "memory",
-		Stores: map[string]StoreConfig{
-			"memory": {Driver: DriverMemory},
-		},
-	}
-	manager := NewManager(config)
+	collector := newTestEventCollector()
+	manager := newTestManager(collector)
 
 	ctx := context.WithValue(context.Background(), "request_id", "req-456")
 

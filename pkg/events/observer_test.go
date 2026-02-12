@@ -378,28 +378,27 @@ func TestConditionalObserver(t *testing.T) {
 	}
 }
 
-func TestGlobalObserver(t *testing.T) {
-	// Clear any existing global observers
-	globalRegistry.ClearAll()
+func TestObserverWithInstance(t *testing.T) {
+	registry := NewObserverRegistry()
 
 	observer := NewTestUserObserver()
 
-	// Register globally
-	ObserveGlobal("TestUser", observer)
+	// Register on instance
+	registry.Observe("TestUser", observer)
 
-	// Fire global event
+	// Fire event
 	user := &TestUser{ID: 1}
-	err := FireModelEvent("creating", user)
+	err := registry.Fire("creating", user)
 	if err != nil {
-		t.Errorf("FireModelEvent failed: %v", err)
+		t.Errorf("Fire failed: %v", err)
 	}
 
 	if len(observer.events) != 1 {
-		t.Error("Global observer was not called")
+		t.Error("Observer was not called")
 	}
 
 	// Clean up
-	globalRegistry.ClearAll()
+	registry.ClearAll()
 }
 
 func TestObserverConcurrency(t *testing.T) {

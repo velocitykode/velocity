@@ -16,10 +16,10 @@ import (
 
 func TestServerOptions(t *testing.T) {
 	tests := []struct {
-		name       string
-		opts       []grpc.ServerOption
-		wantPort   string
-		wantRefl   bool
+		name     string
+		opts     []grpc.ServerOption
+		wantPort string
+		wantRefl bool
 	}{
 		{
 			name:     "default options",

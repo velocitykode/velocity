@@ -22,20 +22,6 @@ func TestNew(t *testing.T) {
 	}
 }
 
-func TestGet_Singleton(t *testing.T) {
-	ResetGlobalRouter()
-	r1 := Get()
-	r2 := Get()
-
-	if r1 != r2 {
-		t.Fatal("Get() should return the same instance")
-	}
-
-	if r1 == nil {
-		t.Fatal("Get() returned nil")
-	}
-}
-
 func TestHTTPMethods(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -215,8 +201,7 @@ func TestPrefix(t *testing.T) {
 }
 
 func TestNamedRoutes(t *testing.T) {
-	ResetGlobalRouter()
-	r := Get()
+	r := New()
 
 	r.Get("/users/{id}", func(c *Context) error {
 		c.Response.WriteHeader(http.StatusOK)
@@ -229,7 +214,7 @@ func TestNamedRoutes(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	// Test URL generation
-	url, err := Route("user.show", map[string]string{"id": "123"})
+	url, err := r.RouteURL("user.show", map[string]string{"id": "123"})
 	if err != nil {
 		t.Fatalf("Failed to generate URL: %v", err)
 	}
@@ -239,7 +224,7 @@ func TestNamedRoutes(t *testing.T) {
 	}
 
 	// Test non-existent route
-	_, err = Route("non.existent", nil)
+	_, err = r.RouteURL("non.existent", nil)
 	if err == nil {
 		t.Error("Expected error for non-existent route")
 	}

@@ -33,60 +33,64 @@ func TestEventNames(t *testing.T) {
 }
 
 func TestDispatcher(t *testing.T) {
-	t.Run("SetEventDispatcher", func(t *testing.T) {
-		// Clear any existing dispatcher
-		SetEventDispatcher(nil)
+	t.Run("SetEventDispatcher on MemoryDriver", func(t *testing.T) {
+		q := NewMemoryDriver()
+		defer q.Close()
+
+		q.SetEventDispatcher(nil)
 
 		called := false
-		SetEventDispatcher(func(event interface{}) error {
+		q.SetEventDispatcher(func(event interface{}) error {
 			called = true
 			return nil
 		})
 
-		// Dispatch an event
-		dispatchEvent(&JobQueued{})
+		// Dispatch an event by pushing a job
+		job := &TestJob{ID: "test", Message: "test"}
+		_ = q.Push(job, "test-queue")
 
 		if !called {
 			t.Error("dispatcher was not called")
 		}
 
-		// Clean up
-		SetEventDispatcher(nil)
+		q.SetEventDispatcher(nil)
 	})
 
 	t.Run("dispatchEvent with nil dispatcher", func(t *testing.T) {
-		SetEventDispatcher(nil)
+		q := NewMemoryDriver()
+		defer q.Close()
+		q.SetEventDispatcher(nil)
 
-		// Should not panic
-		dispatchEvent(&JobQueued{})
+		// Should not panic - dispatch function checks for nil
+		q.dispatchEvent(&JobQueued{})
 	})
 
 	t.Run("dispatchEvent with error returning dispatcher", func(t *testing.T) {
-		SetEventDispatcher(func(event interface{}) error {
+		q := NewMemoryDriver()
+		defer q.Close()
+		q.SetEventDispatcher(func(event interface{}) error {
 			return errors.New("dispatcher error")
 		})
 
 		// Should not panic, errors are ignored
-		dispatchEvent(&JobQueued{})
+		q.dispatchEvent(&JobQueued{})
 
-		SetEventDispatcher(nil)
+		q.SetEventDispatcher(nil)
 	})
 }
 
 func TestDispatchJobQueued(t *testing.T) {
 	var captured *JobQueued
-	SetEventDispatcher(func(event interface{}) error {
+	dispatch := func(event interface{}) {
 		if e, ok := event.(*JobQueued); ok {
 			captured = e
 		}
-		return nil
-	})
-	defer SetEventDispatcher(nil)
+	}
 
 	t.Run("immediate job", func(t *testing.T) {
 		captured = nil
 		ctx := context.Background()
-		dispatchJobQueued(ctx, "*queue.TestJob", "default", false, 0)
+		dispatchJobQueued(dispatch, ctx, "*queue.TestJob", "default", false, 0)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -109,7 +113,7 @@ func TestDispatchJobQueued(t *testing.T) {
 		captured = nil
 		ctx := context.Background()
 		delay := 5 * time.Second
-		dispatchJobQueued(ctx, "*queue.EmailJob", "emails", true, delay)
+		dispatchJobQueued(dispatch, ctx, "*queue.EmailJob", "emails", true, delay)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -133,7 +137,7 @@ func TestDispatchJobQueued(t *testing.T) {
 		// Start with trace and first span, then create child span (which sets parent)
 		ctx := trace.WithTrace(context.Background(), "trace-123", "parent-span")
 		ctx = trace.WithSpan(ctx, "span-456")
-		dispatchJobQueued(ctx, "*queue.TestJob", "default", false, 0)
+		dispatchJobQueued(dispatch, ctx, "*queue.TestJob", "default", false, 0)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -148,22 +152,25 @@ func TestDispatchJobQueued(t *testing.T) {
 			t.Errorf("ParentID = %q, want %q", captured.ParentID, "parent-span")
 		}
 	})
+
+	t.Run("with nil dispatch", func(t *testing.T) {
+		// Should not panic
+		dispatchJobQueued(nil, context.Background(), "*queue.TestJob", "default", false, 0)
+	})
 }
 
 func TestDispatchJobProcessing(t *testing.T) {
 	var captured *JobProcessing
-	SetEventDispatcher(func(event interface{}) error {
+	dispatch := func(event interface{}) {
 		if e, ok := event.(*JobProcessing); ok {
 			captured = e
 		}
-		return nil
-	})
-	defer SetEventDispatcher(nil)
+	}
 
 	t.Run("basic dispatch", func(t *testing.T) {
 		captured = nil
 		ctx := context.Background()
-		dispatchJobProcessing(ctx, "*queue.TestJob", "default")
+		dispatchJobProcessing(dispatch, ctx, "*queue.TestJob", "default")
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -180,7 +187,7 @@ func TestDispatchJobProcessing(t *testing.T) {
 		captured = nil
 		ctx := trace.WithTrace(context.Background(), "trace-abc", "parent-ghi")
 		ctx = trace.WithSpan(ctx, "span-def")
-		dispatchJobProcessing(ctx, "*queue.TestJob", "high-priority")
+		dispatchJobProcessing(dispatch, ctx, "*queue.TestJob", "high-priority")
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -199,19 +206,17 @@ func TestDispatchJobProcessing(t *testing.T) {
 
 func TestDispatchJobProcessed(t *testing.T) {
 	var captured *JobProcessed
-	SetEventDispatcher(func(event interface{}) error {
+	dispatch := func(event interface{}) {
 		if e, ok := event.(*JobProcessed); ok {
 			captured = e
 		}
-		return nil
-	})
-	defer SetEventDispatcher(nil)
+	}
 
 	t.Run("basic dispatch", func(t *testing.T) {
 		captured = nil
 		ctx := context.Background()
 		duration := 150 * time.Millisecond
-		dispatchJobProcessed(ctx, "*queue.TestJob", "default", duration)
+		dispatchJobProcessed(dispatch, ctx, "*queue.TestJob", "default", duration)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -230,7 +235,7 @@ func TestDispatchJobProcessed(t *testing.T) {
 	t.Run("with trace context", func(t *testing.T) {
 		captured = nil
 		ctx := trace.WithTrace(context.Background(), "trace-xyz", "span-uvw")
-		dispatchJobProcessed(ctx, "*queue.ReportJob", "reports", 2*time.Second)
+		dispatchJobProcessed(dispatch, ctx, "*queue.ReportJob", "reports", 2*time.Second)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -249,20 +254,18 @@ func TestDispatchJobProcessed(t *testing.T) {
 
 func TestDispatchJobFailed(t *testing.T) {
 	var captured *JobFailed
-	SetEventDispatcher(func(event interface{}) error {
+	dispatch := func(event interface{}) {
 		if e, ok := event.(*JobFailed); ok {
 			captured = e
 		}
-		return nil
-	})
-	defer SetEventDispatcher(nil)
+	}
 
 	t.Run("basic dispatch", func(t *testing.T) {
 		captured = nil
 		ctx := context.Background()
 		err := errors.New("connection refused")
 		duration := 50 * time.Millisecond
-		dispatchJobFailed(ctx, "*queue.TestJob", "default", err, duration)
+		dispatchJobFailed(dispatch, ctx, "*queue.TestJob", "default", err, duration)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -284,7 +287,7 @@ func TestDispatchJobFailed(t *testing.T) {
 	t.Run("with nil error", func(t *testing.T) {
 		captured = nil
 		ctx := context.Background()
-		dispatchJobFailed(ctx, "*queue.TestJob", "default", nil, 100*time.Millisecond)
+		dispatchJobFailed(dispatch, ctx, "*queue.TestJob", "default", nil, 100*time.Millisecond)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -298,7 +301,7 @@ func TestDispatchJobFailed(t *testing.T) {
 		captured = nil
 		ctx := trace.WithTrace(context.Background(), "trace-fail", "parent-fail")
 		ctx = trace.WithSpan(ctx, "span-fail")
-		dispatchJobFailed(ctx, "*queue.NotificationJob", "notifications", errors.New("timeout"), 5*time.Second)
+		dispatchJobFailed(dispatch, ctx, "*queue.NotificationJob", "notifications", errors.New("timeout"), 5*time.Second)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -320,15 +323,15 @@ func TestEventDispatchingIntegration(t *testing.T) {
 	var events []interface{}
 	var mu sync.Mutex
 
-	SetEventDispatcher(func(event interface{}) error {
+	q := NewMemoryDriver()
+	defer q.Close()
+
+	q.SetEventDispatcher(func(event interface{}) error {
 		mu.Lock()
 		events = append(events, event)
 		mu.Unlock()
 		return nil
 	})
-	defer SetEventDispatcher(nil)
-
-	q := NewMemoryDriver()
 
 	t.Run("Push dispatches JobQueued", func(t *testing.T) {
 		events = nil
@@ -359,7 +362,10 @@ func TestEventDispatchingIntegration(t *testing.T) {
 	})
 
 	t.Run("PushDelayed dispatches JobQueued with delay info", func(t *testing.T) {
+		mu.Lock()
 		events = nil
+		mu.Unlock()
+
 		job := &TestJob{ID: "test-2", Message: "delayed test"}
 
 		err := q.PushDelayed(job, 2*time.Second, "delayed-queue")
@@ -396,7 +402,7 @@ func TestWorkerEventDispatching(t *testing.T) {
 	var failedEvents []*JobFailed
 	var mu sync.Mutex
 
-	SetEventDispatcher(func(event interface{}) error {
+	dispatcher := func(event interface{}) error {
 		mu.Lock()
 		defer mu.Unlock()
 		switch e := event.(type) {
@@ -408,16 +414,16 @@ func TestWorkerEventDispatching(t *testing.T) {
 			failedEvents = append(failedEvents, e)
 		}
 		return nil
-	})
-	defer SetEventDispatcher(nil)
-
-	q := NewMemoryDriver()
-	SetDefault(q)
+	}
 
 	t.Run("successful job dispatches processing and processed", func(t *testing.T) {
 		processingEvents = nil
 		processedEvents = nil
 		failedEvents = nil
+
+		q := NewMemoryDriver()
+		defer q.Close()
+		q.SetEventDispatcher(dispatcher)
 
 		processed := int32(0)
 		job := &TestJob{
@@ -438,6 +444,7 @@ func TestWorkerEventDispatching(t *testing.T) {
 		worker := NewWorker(q, "success-queue", func(j Job) error {
 			return j.Handle()
 		}, WithInterval(10*time.Millisecond))
+		worker.SetEventDispatcher(dispatcher)
 
 		worker.Start()
 		time.Sleep(100 * time.Millisecond)
@@ -462,9 +469,15 @@ func TestWorkerEventDispatching(t *testing.T) {
 	})
 
 	t.Run("failed job dispatches processing and failed", func(t *testing.T) {
+		mu.Lock()
 		processingEvents = nil
 		processedEvents = nil
 		failedEvents = nil
+		mu.Unlock()
+
+		q := NewMemoryDriver()
+		defer q.Close()
+		q.SetEventDispatcher(dispatcher)
 
 		job := &TestJob{
 			ID:      "fail-job",
@@ -482,6 +495,7 @@ func TestWorkerEventDispatching(t *testing.T) {
 		worker := NewWorker(q, "fail-queue", func(j Job) error {
 			return j.Handle()
 		}, WithInterval(10*time.Millisecond))
+		worker.SetEventDispatcher(dispatcher)
 
 		worker.Start()
 		time.Sleep(100 * time.Millisecond)

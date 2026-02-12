@@ -26,8 +26,9 @@ func quoteIdentifier(name, driver string) string {
 	return `"` + name + `"`
 }
 
-// GetAllTables returns a list of all tables in the database
-func GetAllTables(db *sql.DB, driver string) ([]string, error) {
+// GetAllTables returns a list of all tables in the database.
+// For MySQL, the dbName parameter is used for the information_schema query.
+func GetAllTables(db *sql.DB, driver string, dbName ...string) ([]string, error) {
 	var query string
 
 	switch driver {
@@ -35,14 +36,17 @@ func GetAllTables(db *sql.DB, driver string) ([]string, error) {
 		query = "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
 
 	case "mysql":
-		dbName := orm.GetDatabaseName()
-		if dbName == "" {
+		name := ""
+		if len(dbName) > 0 {
+			name = dbName[0]
+		}
+		if name == "" {
 			return nil, fmt.Errorf("cannot get database name for MySQL")
 		}
-		if !dbIdentifierRegex.MatchString(dbName) {
-			return nil, fmt.Errorf("invalid database name: %q", dbName)
+		if !dbIdentifierRegex.MatchString(name) {
+			return nil, fmt.Errorf("invalid database name: %q", name)
 		}
-		query = fmt.Sprintf("SELECT table_name FROM information_schema.tables WHERE table_schema = '%s' ORDER BY table_name", dbName)
+		query = fmt.Sprintf("SELECT table_name FROM information_schema.tables WHERE table_schema = '%s' ORDER BY table_name", name)
 
 	case "postgres":
 		query = "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename"
@@ -74,8 +78,8 @@ func GetAllTables(db *sql.DB, driver string) ([]string, error) {
 }
 
 // DropAllTables drops all tables in the database
-func DropAllTables(db *sql.DB, driver string) error {
-	tables, err := GetAllTables(db, driver)
+func DropAllTables(db *sql.DB, driver string, dbName ...string) error {
+	tables, err := GetAllTables(db, driver, dbName...)
 	if err != nil {
 		return err
 	}
@@ -121,8 +125,8 @@ func DropAllTables(db *sql.DB, driver string) error {
 }
 
 // TruncateAllTables clears all data from tables (faster than drop/recreate)
-func TruncateAllTables(db *sql.DB, driver string) error {
-	tables, err := GetAllTables(db, driver)
+func TruncateAllTables(db *sql.DB, driver string, dbName ...string) error {
+	tables, err := GetAllTables(db, driver, dbName...)
 	if err != nil {
 		return err
 	}
@@ -199,13 +203,12 @@ func isTestDatabase(name string) bool {
 	return strings.Contains(lowerName, "test")
 }
 
-// RefreshDatabase resets the database to a clean state and runs all migrations
+// RefreshDatabase resets the database to a clean state and runs all migrations.
 //
 // This function:
 // 1. Validates it's safe to run (test database, not production)
 // 2. Drops all existing tables
 // 3. Runs all registered migrations via migrate.Up()
-// 4. Registers cleanup to close the connection after test
 //
 // Safety checks:
 // - Requires testing.T (only callable from tests)
@@ -215,27 +218,27 @@ func isTestDatabase(name string) bool {
 // Usage:
 //
 //	func TestExample(t *testing.T) {
-//	    testing.RefreshDatabase(t)
+//	    testing.RefreshDatabase(t, manager)
 //	    // Test with clean database
 //	}
-func RefreshDatabase(t *testing.T) *sql.DB {
+func RefreshDatabase(t *testing.T, manager *orm.Manager) *sql.DB {
 	if t == nil {
 		panic("RefreshDatabase requires testing.T - can only be called from tests")
 	}
 
 	// Get database connection
-	db := orm.DB()
+	db := manager.DB()
 	if db == nil {
-		panic("ORM not initialized - call orm.Init() before RefreshDatabase")
+		panic("ORM not connected - manager has no active database connection")
 	}
 
 	// Get driver and database name
-	driver := orm.GetDriver()
+	driver := manager.DriverName()
 	if driver == "" {
 		panic("cannot determine database driver")
 	}
 
-	dbName := orm.GetDatabaseName()
+	dbName := manager.DatabaseName()
 
 	// Safety check: Verify we're in testing environment
 	appEnv := os.Getenv("APP_ENV")
@@ -246,7 +249,7 @@ func RefreshDatabase(t *testing.T) *sql.DB {
 
 	// Best practice: APP_ENV should be "testing" (set via .env.testing)
 	if appEnv == "testing" {
-		// ✓ Explicitly in testing mode - safe to proceed
+		// Explicitly in testing mode - safe to proceed
 	} else {
 		// Not explicitly "testing" - verify database name as fallback safety
 		if !isTestDatabase(dbName) {
@@ -255,7 +258,7 @@ func RefreshDatabase(t *testing.T) *sql.DB {
 	}
 
 	// Drop all tables
-	if err := DropAllTables(db, driver); err != nil {
+	if err := DropAllTables(db, driver, dbName); err != nil {
 		t.Fatalf("RefreshDatabase: failed to drop tables: %v", err)
 	}
 

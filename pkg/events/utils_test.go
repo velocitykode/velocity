@@ -119,26 +119,19 @@ func TestDispatcherSetQueueDispatcher(t *testing.T) {
 	}
 }
 
-func TestGlobalDispatcherInitialization(t *testing.T) {
-	// Reset to ensure clean state
-	Reset()
-
-	// First call should initialize
-	d1 := GetDispatcher()
+func TestDispatcherCreation(t *testing.T) {
+	// NewDispatcher should return a new instance each time
+	d1 := NewDispatcher()
 	if d1 == nil {
-		t.Fatal("GetDispatcher should initialize dispatcher")
+		t.Fatal("NewDispatcher should return non-nil dispatcher")
 	}
 
-	// Second call should return same instance
-	d2 := GetDispatcher()
-	if d1 != d2 {
-		t.Error("GetDispatcher should return same instance")
+	d2 := NewDispatcher()
+	if d2 == nil {
+		t.Fatal("NewDispatcher should return non-nil dispatcher")
 	}
 
-	// After reset, should get new instance
-	Reset()
-	d3 := GetDispatcher()
-	if d3 == nil {
-		t.Fatal("GetDispatcher should reinitialize after reset")
+	if d1 == d2 {
+		t.Error("NewDispatcher should return different instances")
 	}
 }

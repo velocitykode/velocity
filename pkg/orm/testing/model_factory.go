@@ -10,8 +10,8 @@ import (
 // ModelFactory is a type-safe factory for creating test models
 // Usage:
 //
-//	func (User) Factory() *ModelFactory[User] {
-//	    return NewModelFactory(func() *User {
+//	func (User) Factory(m *orm.Manager) *ModelFactory[User] {
+//	    return NewModelFactory[User](m, func() *User {
 //	        return &User{Name: Faker().Name(), Email: Faker().Email()}
 //	    })
 //	}
@@ -21,6 +21,7 @@ import (
 //	admin := models.User{}.Factory().Create(&models.User{Role: "admin"})
 //	users := models.User{}.Factory().Count(3).Create(nil)
 type ModelFactory[T any] struct {
+	manager     *orm.Manager
 	definition  func() *T
 	states      map[string]func(*T)
 	count       int
@@ -29,8 +30,9 @@ type ModelFactory[T any] struct {
 }
 
 // NewModelFactory creates a new type-safe model factory
-func NewModelFactory[T any](definition func() *T) *ModelFactory[T] {
+func NewModelFactory[T any](manager *orm.Manager, definition func() *T) *ModelFactory[T] {
 	return &ModelFactory[T]{
+		manager:    manager,
 		definition: definition,
 		states:     make(map[string]func(*T)),
 		count:      1,
@@ -160,8 +162,7 @@ func (f *ModelFactory[T]) makeOne(activeState string, overrides *T) *T {
 func (f *ModelFactory[T]) createOne(activeState string, overrides *T) *T {
 	model := f.makeOne(activeState, overrides)
 
-	// Use transaction if available (RefreshDatabase pattern)
-	if err := orm.Save(model); err != nil {
+	if err := orm.Save(f.manager, model); err != nil {
 		panic("failed to create model: " + err.Error())
 	}
 

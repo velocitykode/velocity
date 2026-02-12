@@ -26,9 +26,21 @@ func init() {
 	})
 }
 
-func UserFactory() *ormtesting.Factory {
+func newExampleTestManager(t *testing.T) *orm.Manager {
+	t.Helper()
+	manager, err := orm.NewManager(orm.ManagerConfig{
+		Driver:   "sqlite",
+		Database: ":memory:",
+	})
+	if err != nil {
+		t.Fatalf("failed to create ORM manager: %v", err)
+	}
+	return manager
+}
+
+func UserFactory(manager *orm.Manager) *ormtesting.Factory {
 	faker := ormtesting.Faker()
-	return ormtesting.NewFactory("users", func() map[string]interface{} {
+	return ormtesting.NewFactory(manager, "users", func() map[string]interface{} {
 		return map[string]interface{}{
 			"name":  faker.Name(),
 			"email": faker.Email(),
@@ -37,7 +49,7 @@ func UserFactory() *ormtesting.Factory {
 }
 
 func TestFactoryMake(t *testing.T) {
-	user := UserFactory().Make()
+	user := UserFactory(nil).Make()
 
 	userMap, ok := user.(map[string]interface{})
 	if !ok {
@@ -56,24 +68,18 @@ func TestFactoryMake(t *testing.T) {
 }
 
 func TestFactoryCreate(t *testing.T) {
-	// Initialize ORM
-	err := orm.Init("sqlite", map[string]any{
-		"database": ":memory:",
-	})
-	if err != nil {
-		t.Fatalf("failed to init ORM: %v", err)
-	}
-	defer orm.Close()
+	manager := newExampleTestManager(t)
+	defer manager.Close()
 
 	// Run migrations
-	migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
-	err = migrator.Up()
+	migrator := migrate.NewMigrator(manager.DB(), manager.DriverName())
+	err := migrator.Up()
 	if err != nil {
 		t.Fatalf("failed to run migrations: %v", err)
 	}
 
 	// Create user via factory
-	user := UserFactory().Create()
+	user := UserFactory(manager).Create()
 
 	userMap, ok := user.(map[string]interface{})
 	if !ok {
@@ -85,7 +91,7 @@ func TestFactoryCreate(t *testing.T) {
 	}
 
 	// Verify in database
-	db := orm.DB()
+	db := manager.DB()
 	var count int
 	err = db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count)
 	if err != nil {
@@ -100,26 +106,21 @@ func TestFactoryCreate(t *testing.T) {
 }
 
 func TestRefreshDatabase(t *testing.T) {
-	// Initialize ORM
-	err := orm.Init("sqlite", map[string]any{
-		"database": ":memory:",
-	})
-	if err != nil {
-		t.Fatalf("failed to init ORM: %v", err)
-	}
+	manager := newExampleTestManager(t)
+	defer manager.Close()
 
 	// Use RefreshDatabase
-	db := ormtesting.RefreshDatabase(t)
+	db := ormtesting.RefreshDatabase(t, manager)
 	if db == nil {
 		t.Fatal("expected database connection")
 	}
 
 	// Create a user
-	UserFactory().Create()
+	UserFactory(manager).Create()
 
 	// Verify table exists and has data
 	var count int
-	err = db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count)
+	err := db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count)
 	if err != nil {
 		t.Fatalf("failed to query users: %v", err)
 	}

@@ -7,14 +7,14 @@ import (
 
 // IndexBuilder provides a fluent API for creating database indexes
 type IndexBuilder struct {
-	name      string
-	table     string
-	columns   []string
-	unique    bool
-	where     string   // Partial index condition (PostgreSQL, SQLite)
-	include   []string // Covering index columns (PostgreSQL 11+)
-	using     string   // Index type: btree, hash, gin, gist, brin (PostgreSQL)
-	driver    string
+	name        string
+	table       string
+	columns     []string
+	unique      bool
+	where       string   // Partial index condition (PostgreSQL, SQLite)
+	include     []string // Covering index columns (PostgreSQL 11+)
+	using       string   // Index type: btree, hash, gin, gist, brin (PostgreSQL)
+	driver      string
 	ifNotExists bool
 }
 

@@ -5,8 +5,6 @@ import (
 	"runtime"
 	"strings"
 	"time"
-
-	"github.com/velocitykode/velocity/pkg/trace"
 )
 
 // QueryExecuted is dispatched when a database query completes
@@ -47,24 +45,7 @@ func captureCallerInfo(skip int) (file string, line int) {
 	return file, line
 }
 
-// dispatchQueryExecuted dispatches a QueryExecuted event
-func dispatchQueryExecuted(ctx context.Context, sql string, bindings []any, duration time.Duration, rowsAffected int64, connection string, callerSkip int) {
-	file, line := captureCallerInfo(callerSkip + 1) // +1 to skip this function
-
-	// Extract trace context
-	traceID, spanID, parentID := trace.GetTraceContext(ctx)
-
-	dispatchEvent(&QueryExecuted{
-		Context:      ctx,
-		SQL:          sql,
-		Bindings:     bindings,
-		Duration:     duration,
-		RowsAffected: rowsAffected,
-		Connection:   connection,
-		File:         file,
-		Line:         line,
-		TraceID:      traceID,
-		SpanID:       spanID,
-		ParentID:     parentID,
-	})
+// dispatchQueryExecuted is a no-op after DI refactor.
+// Event dispatching is handled through Manager.dispatchEvent().
+func dispatchQueryExecuted(_ context.Context, _ string, _ []any, _ time.Duration, _ int64, _ string, _ int) {
 }

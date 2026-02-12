@@ -27,10 +27,10 @@ func init() {
 }
 
 // UserFactory for TestCase tests
-func UserFactory() *Factory {
+func UserFactory(manager *orm.Manager) *Factory {
 	faker := Faker()
 
-	factory := NewFactory("test_users", func() map[string]interface{} {
+	factory := NewFactory(manager, "test_users", func() map[string]interface{} {
 		return map[string]interface{}{
 			"name":  faker.Name(),
 			"email": faker.Email(),
@@ -40,25 +40,34 @@ func UserFactory() *Factory {
 	return factory
 }
 
+// testManager is the shared ORM manager for all tests in this package.
+var testManager *orm.Manager
+
 // TestMain initializes test database
 func TestMain(m *testing.M) {
 	os.Setenv("APP_ENV", "testing")
 
 	// Use in-memory SQLite for tests
-	orm.Init("sqlite", map[string]any{
-		"database": ":memory:",
+	var err error
+	testManager, err = orm.NewManager(orm.ManagerConfig{
+		Driver:   "sqlite",
+		Database: ":memory:",
 	})
-	defer orm.Close()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to create ORM manager: %v\n", err)
+		os.Exit(1)
+	}
+	defer testManager.Close()
 
 	m.Run()
 }
 
 func TestTestCaseLazyRefresh(t *testing.T) {
-	tc := NewTestCase(t)
+	tc := NewTestCase(t, testManager)
 	tc.LazyRefreshDatabase()
 
 	// Use factory to create test data
-	user := UserFactory().Create()
+	user := UserFactory(testManager).Create()
 	if user == nil {
 		t.Fatal("factory returned nil")
 	}
@@ -84,7 +93,7 @@ func TestTestCaseLazyRefresh(t *testing.T) {
 }
 
 func TestTestCaseLazyRefreshIsolation(t *testing.T) {
-	tc := NewTestCase(t)
+	tc := NewTestCase(t, testManager)
 	tc.LazyRefreshDatabase()
 
 	// This test should NOT see data from previous test
@@ -99,7 +108,7 @@ func TestTestCaseLazyRefreshIsolation(t *testing.T) {
 	}
 
 	// Create multiple users with factory
-	UserFactory().Count(5).Create()
+	UserFactory(testManager).Count(5).Create()
 
 	// Verify count
 	err = tc.DB().QueryRow("SELECT COUNT(*) FROM test_users").Scan(&count)
@@ -112,11 +121,11 @@ func TestTestCaseLazyRefreshIsolation(t *testing.T) {
 }
 
 func TestTestCaseRefreshDatabase(t *testing.T) {
-	tc := NewTestCase(t)
+	tc := NewTestCase(t, testManager)
 	tc.RefreshDatabase()
 
 	// Create users with factory
-	users := UserFactory().Count(3).Create()
+	users := UserFactory(testManager).Count(3).Create()
 	usersSlice := users.([]map[string]interface{})
 	if len(usersSlice) != 3 {
 		t.Errorf("expected 3 users from factory, got %d", len(usersSlice))
@@ -134,11 +143,11 @@ func TestTestCaseRefreshDatabase(t *testing.T) {
 }
 
 func TestTestCaseWithStates(t *testing.T) {
-	tc := NewTestCase(t)
+	tc := NewTestCase(t, testManager)
 	tc.LazyRefreshDatabase()
 
 	// Define admin state
-	factory := UserFactory()
+	factory := UserFactory(testManager)
 	factory.DefineState("admin", map[string]interface{}{
 		"name": "Admin User",
 	})
@@ -153,11 +162,11 @@ func TestTestCaseWithStates(t *testing.T) {
 }
 
 func TestTestCaseWithSequence(t *testing.T) {
-	tc := NewTestCase(t)
+	tc := NewTestCase(t, testManager)
 	tc.LazyRefreshDatabase()
 
 	// Create users with sequential emails
-	users := UserFactory().
+	users := UserFactory(testManager).
 		Count(3).
 		Sequence("email", func(i int) interface{} {
 			return fmt.Sprintf("user%d@test.com", i)

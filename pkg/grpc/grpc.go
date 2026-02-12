@@ -23,11 +23,11 @@ import (
 
 // Common errors
 var (
-	ErrServerNotInitialized = errors.New("grpc server not initialized")
+	ErrServerNotInitialized  = errors.New("grpc server not initialized")
 	ErrGatewayNotInitialized = errors.New("grpc gateway not initialized")
-	ErrInvalidPort          = errors.New("invalid port")
-	ErrServerAlreadyRunning = errors.New("server already running")
-	ErrNoEndpoint           = errors.New("no grpc endpoint configured for gateway")
+	ErrInvalidPort           = errors.New("invalid port")
+	ErrServerAlreadyRunning  = errors.New("server already running")
+	ErrNoEndpoint            = errors.New("no grpc endpoint configured for gateway")
 )
 
 // Service is an interface that all gRPC services should implement

@@ -19,17 +19,13 @@ func (TestUser) TableName() string {
 }
 
 func TestModelSave(t *testing.T) {
-	// Initialize with SQLite in-memory database
-	err := Init("sqlite", map[string]any{
-		"database": ":memory:",
-	})
-	if err != nil {
-		t.Fatalf("Failed to initialize ORM: %v", err)
-	}
-	defer Close()
+	manager := newTestManager(t)
+	defer manager.Close()
+
+	db := manager.DB()
 
 	// Create the test table
-	_, err = DB().Exec(`
+	_, err := db.Exec(`
 		CREATE TABLE test_users (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
@@ -54,7 +50,7 @@ func TestModelSave(t *testing.T) {
 	}
 
 	// Save the user
-	err = Save(user)
+	err = Save(manager, user)
 	if err != nil {
 		t.Fatalf("Failed to save user: %v", err)
 	}
@@ -79,7 +75,7 @@ func TestModelSave(t *testing.T) {
 
 	// Verify the user was actually inserted
 	var count int
-	err = DB().QueryRow("SELECT COUNT(*) FROM test_users WHERE email = ?", user.Email).Scan(&count)
+	err = db.QueryRow("SELECT COUNT(*) FROM test_users WHERE email = ?", user.Email).Scan(&count)
 	if err != nil {
 		t.Fatalf("Failed to query user count: %v", err)
 	}
@@ -94,7 +90,7 @@ func TestModelSave(t *testing.T) {
 	user.Name = "Jane Doe"
 	user.Age = 31
 
-	err = Save(user)
+	err = Save(manager, user)
 	if err != nil {
 		t.Fatalf("Failed to update user: %v", err)
 	}
@@ -107,7 +103,7 @@ func TestModelSave(t *testing.T) {
 	// Verify the update
 	var name string
 	var age int
-	err = DB().QueryRow("SELECT name, age FROM test_users WHERE id = ?", user.Model.ID).Scan(&name, &age)
+	err = db.QueryRow("SELECT name, age FROM test_users WHERE id = ?", user.Model.ID).Scan(&name, &age)
 	if err != nil {
 		t.Fatalf("Failed to query updated user: %v", err)
 	}
@@ -120,17 +116,13 @@ func TestModelSave(t *testing.T) {
 }
 
 func TestModelCreate(t *testing.T) {
-	// Initialize with SQLite in-memory database
-	err := Init("sqlite", map[string]any{
-		"database": ":memory:",
-	})
-	if err != nil {
-		t.Fatalf("Failed to initialize ORM: %v", err)
-	}
-	defer Close()
+	manager := newTestManager(t)
+	defer manager.Close()
+
+	db := manager.DB()
 
 	// Create the test table
-	_, err = DB().Exec(`
+	_, err := db.Exec(`
 		CREATE TABLE test_users (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
@@ -147,7 +139,7 @@ func TestModelCreate(t *testing.T) {
 	}
 
 	// Test Create with map - should return created model
-	user, err := TestUser{}.Create(map[string]any{
+	user, err := TestUser{}.Create(manager, map[string]any{
 		"name":      "Alice",
 		"email":     "alice@example.com",
 		"age":       25,
@@ -173,7 +165,7 @@ func TestModelCreate(t *testing.T) {
 
 	// Verify the user was created in database
 	var count int
-	err = DB().QueryRow("SELECT COUNT(*) FROM test_users WHERE email = ?", "alice@example.com").Scan(&count)
+	err = db.QueryRow("SELECT COUNT(*) FROM test_users WHERE email = ?", "alice@example.com").Scan(&count)
 	if err != nil {
 		t.Fatalf("Failed to query user count: %v", err)
 	}
@@ -230,17 +222,13 @@ func (TestProject) TableName() string {
 }
 
 func TestUUIDModelSave(t *testing.T) {
-	// Initialize with SQLite in-memory database
-	err := Init("sqlite", map[string]any{
-		"database": ":memory:",
-	})
-	if err != nil {
-		t.Fatalf("Failed to initialize ORM: %v", err)
-	}
-	defer Close()
+	manager := newTestManager(t)
+	defer manager.Close()
+
+	db := manager.DB()
 
 	// Create the test table with UUID primary key
-	_, err = DB().Exec(`
+	_, err := db.Exec(`
 		CREATE TABLE test_projects (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
@@ -261,7 +249,7 @@ func TestUUIDModelSave(t *testing.T) {
 	}
 
 	// Save the project
-	err = Save(project)
+	err = Save(manager, project)
 	if err != nil {
 		t.Fatalf("Failed to save project: %v", err)
 	}
@@ -291,7 +279,7 @@ func TestUUIDModelSave(t *testing.T) {
 
 	// Verify the project was actually inserted
 	var count int
-	err = DB().QueryRow("SELECT COUNT(*) FROM test_projects WHERE id = ?", project.UUIDModel.ID).Scan(&count)
+	err = db.QueryRow("SELECT COUNT(*) FROM test_projects WHERE id = ?", project.UUIDModel.ID).Scan(&count)
 	if err != nil {
 		t.Fatalf("Failed to query project count: %v", err)
 	}
@@ -306,7 +294,7 @@ func TestUUIDModelSave(t *testing.T) {
 	project.Name = "Updated Project"
 	project.Description = "Updated description"
 
-	err = Save(project)
+	err = Save(manager, project)
 	if err != nil {
 		t.Fatalf("Failed to update project: %v", err)
 	}
@@ -318,7 +306,7 @@ func TestUUIDModelSave(t *testing.T) {
 
 	// Verify the update
 	var name, description string
-	err = DB().QueryRow("SELECT name, description FROM test_projects WHERE id = ?", project.UUIDModel.ID).Scan(&name, &description)
+	err = db.QueryRow("SELECT name, description FROM test_projects WHERE id = ?", project.UUIDModel.ID).Scan(&name, &description)
 	if err != nil {
 		t.Fatalf("Failed to query updated project: %v", err)
 	}
@@ -331,17 +319,13 @@ func TestUUIDModelSave(t *testing.T) {
 }
 
 func TestUUIDModelWithPresetID(t *testing.T) {
-	// Initialize with SQLite in-memory database
-	err := Init("sqlite", map[string]any{
-		"database": ":memory:",
-	})
-	if err != nil {
-		t.Fatalf("Failed to initialize ORM: %v", err)
-	}
-	defer Close()
+	manager := newTestManager(t)
+	defer manager.Close()
+
+	db := manager.DB()
 
 	// Create the test table
-	_, err = DB().Exec(`
+	_, err := db.Exec(`
 		CREATE TABLE test_projects (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
@@ -364,7 +348,7 @@ func TestUUIDModelWithPresetID(t *testing.T) {
 	project.UUIDModel.ID = presetID
 
 	// Save the project
-	err = Save(project)
+	err = Save(manager, project)
 	if err != nil {
 		t.Fatalf("Failed to save project with preset ID: %v", err)
 	}
@@ -376,7 +360,7 @@ func TestUUIDModelWithPresetID(t *testing.T) {
 
 	// Verify it was inserted with the preset ID
 	var retrievedName string
-	err = DB().QueryRow("SELECT name FROM test_projects WHERE id = ?", presetID).Scan(&retrievedName)
+	err = db.QueryRow("SELECT name FROM test_projects WHERE id = ?", presetID).Scan(&retrievedName)
 	if err != nil {
 		t.Fatalf("Failed to query project by preset ID: %v", err)
 	}
@@ -386,17 +370,13 @@ func TestUUIDModelWithPresetID(t *testing.T) {
 }
 
 func TestUUIDModelCreate(t *testing.T) {
-	// Initialize with SQLite in-memory database
-	err := Init("sqlite", map[string]any{
-		"database": ":memory:",
-	})
-	if err != nil {
-		t.Fatalf("Failed to initialize ORM: %v", err)
-	}
-	defer Close()
+	manager := newTestManager(t)
+	defer manager.Close()
+
+	db := manager.DB()
 
 	// Create the test table
-	_, err = DB().Exec(`
+	_, err := db.Exec(`
 		CREATE TABLE test_projects (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
@@ -411,7 +391,7 @@ func TestUUIDModelCreate(t *testing.T) {
 	}
 
 	// Test Create with map - should return created model with auto-generated UUID
-	project, err := TestProject{}.Create(map[string]any{
+	project, err := TestProject{}.Create(manager, map[string]any{
 		"name":        "Created Project",
 		"description": "Created via map",
 	})
@@ -432,7 +412,7 @@ func TestUUIDModelCreate(t *testing.T) {
 
 	// Verify the project was created in database
 	var count int
-	err = DB().QueryRow("SELECT COUNT(*) FROM test_projects WHERE id = ?", project.UUIDModel.ID).Scan(&count)
+	err = db.QueryRow("SELECT COUNT(*) FROM test_projects WHERE id = ?", project.UUIDModel.ID).Scan(&count)
 	if err != nil {
 		t.Fatalf("Failed to query project count: %v", err)
 	}

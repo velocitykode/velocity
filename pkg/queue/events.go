@@ -73,9 +73,12 @@ func (e *JobFailed) Name() string {
 }
 
 // dispatchJobQueued dispatches a JobQueued event
-func dispatchJobQueued(ctx context.Context, jobType, queue string, delayed bool, delay time.Duration) {
+func dispatchJobQueued(dispatch func(interface{}), ctx context.Context, jobType, queue string, delayed bool, delay time.Duration) {
+	if dispatch == nil {
+		return
+	}
 	traceID, spanID, parentID := trace.GetTraceContext(ctx)
-	dispatchEvent(&JobQueued{
+	dispatch(&JobQueued{
 		Context:  ctx,
 		JobType:  jobType,
 		Queue:    queue,
@@ -88,9 +91,12 @@ func dispatchJobQueued(ctx context.Context, jobType, queue string, delayed bool,
 }
 
 // dispatchJobProcessing dispatches a JobProcessing event
-func dispatchJobProcessing(ctx context.Context, jobType, queue string) {
+func dispatchJobProcessing(dispatch func(interface{}), ctx context.Context, jobType, queue string) {
+	if dispatch == nil {
+		return
+	}
 	traceID, spanID, parentID := trace.GetTraceContext(ctx)
-	dispatchEvent(&JobProcessing{
+	dispatch(&JobProcessing{
 		Context:  ctx,
 		JobType:  jobType,
 		Queue:    queue,
@@ -101,9 +107,12 @@ func dispatchJobProcessing(ctx context.Context, jobType, queue string) {
 }
 
 // dispatchJobProcessed dispatches a JobProcessed event
-func dispatchJobProcessed(ctx context.Context, jobType, queue string, duration time.Duration) {
+func dispatchJobProcessed(dispatch func(interface{}), ctx context.Context, jobType, queue string, duration time.Duration) {
+	if dispatch == nil {
+		return
+	}
 	traceID, spanID, parentID := trace.GetTraceContext(ctx)
-	dispatchEvent(&JobProcessed{
+	dispatch(&JobProcessed{
 		Context:    ctx,
 		JobType:    jobType,
 		Queue:      queue,
@@ -115,13 +124,16 @@ func dispatchJobProcessed(ctx context.Context, jobType, queue string, duration t
 }
 
 // dispatchJobFailed dispatches a JobFailed event
-func dispatchJobFailed(ctx context.Context, jobType, queue string, err error, duration time.Duration) {
+func dispatchJobFailed(dispatch func(interface{}), ctx context.Context, jobType, queue string, err error, duration time.Duration) {
+	if dispatch == nil {
+		return
+	}
 	traceID, spanID, parentID := trace.GetTraceContext(ctx)
 	errMsg := ""
 	if err != nil {
 		errMsg = err.Error()
 	}
-	dispatchEvent(&JobFailed{
+	dispatch(&JobFailed{
 		Context:    ctx,
 		JobType:    jobType,
 		Queue:      queue,

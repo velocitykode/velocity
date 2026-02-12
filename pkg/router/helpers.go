@@ -15,11 +15,6 @@ func Params(r *http.Request) map[string]string {
 	return GetParams(r)
 }
 
-// Route generates a URL for a named route
-func Route(name string, params map[string]string) (string, error) {
-	return Get().RouteURL(name, params)
-}
-
 // CurrentRoute returns the current route name if it exists
 func CurrentRoute(r *http.Request) string {
 	return GetRouteName(r)

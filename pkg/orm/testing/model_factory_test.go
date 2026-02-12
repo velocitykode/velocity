@@ -15,7 +15,7 @@ type TestUser struct {
 }
 
 func TestModelFactory_CreateOne(t *testing.T) {
-	factory := NewModelFactory(func() *TestUser {
+	factory := NewModelFactory[TestUser](nil, func() *TestUser {
 		return &TestUser{
 			Name:     "Default Name",
 			Email:    "default@test.com",
@@ -56,7 +56,7 @@ func TestModelFactory_CreateOne(t *testing.T) {
 }
 
 func TestModelFactory_States(t *testing.T) {
-	factory := NewModelFactory(func() *TestUser {
+	factory := NewModelFactory[TestUser](nil, func() *TestUser {
 		return &TestUser{
 			Name:     "Default Name",
 			Email:    "default@test.com",
@@ -101,7 +101,7 @@ func TestModelFactory_States(t *testing.T) {
 }
 
 func TestModelFactory_Count(t *testing.T) {
-	factory := NewModelFactory(func() *TestUser {
+	factory := NewModelFactory[TestUser](nil, func() *TestUser {
 		return &TestUser{
 			Name:  Faker().Name(),
 			Email: Faker().Email(),
@@ -138,7 +138,7 @@ func TestModelFactory_Count(t *testing.T) {
 }
 
 func TestModelFactory_CreateMany(t *testing.T) {
-	factory := NewModelFactory(func() *TestUser {
+	factory := NewModelFactory[TestUser](nil, func() *TestUser {
 		return &TestUser{
 			Name:  Faker().Name(),
 			Email: Faker().Email(),

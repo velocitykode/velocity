@@ -220,7 +220,7 @@ func TestAuthManager(t *testing.T) {
 	manager := NewManager()
 
 	// Register a mock provider
-	provider := NewORMUserProvider("User")
+	provider := NewORMUserProvider(nil, "User")
 	manager.RegisterProvider("users", provider)
 
 	// Note: In a real test, we'd create actual guard instances
@@ -249,16 +249,17 @@ func TestAuthManager(t *testing.T) {
 func TestORMUserProvider(t *testing.T) {
 	t.Skip("TODO: fix ORM user provider test")
 	// Initialize SQLite in-memory database for testing
-	err := orm.Init("sqlite", map[string]any{
-		"database": ":memory:",
+	manager, err := orm.NewManager(orm.ManagerConfig{
+		Driver:   "sqlite",
+		Database: ":memory:",
 	})
 	if err != nil {
 		t.Fatalf("Failed to initialize ORM: %v", err)
 	}
-	defer orm.Close()
+	defer manager.Close()
 
 	// Create users table
-	db := orm.DB()
+	db := manager.DB()
 	_, err = db.Exec(`
 		CREATE TABLE users (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -281,7 +282,7 @@ func TestORMUserProvider(t *testing.T) {
 		t.Fatalf("Failed to insert test user: %v", err)
 	}
 
-	provider := NewORMUserProvider("User")
+	provider := NewORMUserProvider(db, "User")
 
 	// Test FindByCredentials with valid email
 	user, err := provider.FindByCredentials(map[string]interface{}{
@@ -437,16 +438,17 @@ func BenchmarkJWTValidation(b *testing.B) {
 func TestSessionAuthFlow(t *testing.T) {
 	t.Skip("TODO: fix test")
 	// Initialize SQLite in-memory database for testing
-	err := orm.Init("sqlite", map[string]any{
-		"database": ":memory:",
+	manager, err := orm.NewManager(orm.ManagerConfig{
+		Driver:   "sqlite",
+		Database: ":memory:",
 	})
 	if err != nil {
 		t.Fatalf("Failed to initialize ORM: %v", err)
 	}
-	defer orm.Close()
+	defer manager.Close()
 
 	// Create users table
-	db := orm.DB()
+	db := manager.DB()
 	_, err = db.Exec(`
 		CREATE TABLE users (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -472,7 +474,7 @@ func TestSessionAuthFlow(t *testing.T) {
 	// This would be a more complete test with actual HTTP handlers
 	// For now, we test the components
 
-	provider := NewORMUserProvider("User")
+	provider := NewORMUserProvider(db, "User")
 
 	// Simulate login attempt
 	credentials := map[string]interface{}{
@@ -511,16 +513,17 @@ func TestSessionAuthFlow(t *testing.T) {
 func TestJWTAuthFlow(t *testing.T) {
 	t.Skip("TODO: fix test")
 	// Initialize SQLite in-memory database for testing
-	err := orm.Init("sqlite", map[string]any{
-		"database": ":memory:",
+	manager, err := orm.NewManager(orm.ManagerConfig{
+		Driver:   "sqlite",
+		Database: ":memory:",
 	})
 	if err != nil {
 		t.Fatalf("Failed to initialize ORM: %v", err)
 	}
-	defer orm.Close()
+	defer manager.Close()
 
 	// Create users table
-	db := orm.DB()
+	db := manager.DB()
 	_, err = db.Exec(`
 		CREATE TABLE users (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -543,13 +546,13 @@ func TestJWTAuthFlow(t *testing.T) {
 		t.Fatalf("Failed to insert test user: %v", err)
 	}
 
-	provider := NewORMUserProvider("User")
+	provider := NewORMUserProvider(db, "User")
 	config := JWTConfig{
 		Secret:    "test-secret-key-for-testing-must-be-32",
 		Algorithm: "HS256",
 		TTL:       60,
 	}
-	manager := NewJWTManager(config)
+	jwtMgr := NewJWTManager(config)
 
 	// Simulate login
 	credentials := map[string]interface{}{
@@ -563,7 +566,7 @@ func TestJWTAuthFlow(t *testing.T) {
 	_ = provider.ValidateCredentials(user, credentials)
 
 	// Generate token
-	token, err := manager.GenerateToken(user)
+	token, err := jwtMgr.GenerateToken(user)
 	if err != nil {
 		t.Fatalf("Failed to generate token: %v", err)
 	}
@@ -582,7 +585,7 @@ func TestJWTAuthFlow(t *testing.T) {
 	tokenFromHeader := authHeader[7:]
 
 	// Validate token
-	claims, err := manager.ValidateToken(tokenFromHeader)
+	claims, err := jwtMgr.ValidateToken(tokenFromHeader)
 	if err != nil {
 		t.Fatalf("Failed to validate token from header: %v", err)
 	}

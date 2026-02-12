@@ -73,8 +73,8 @@ func (s *InMemoryBlacklistStore) Cleanup() {
 type JWTConfig struct {
 	Secret           string
 	Algorithm        string
-	TTL              int // Minutes
-	RefreshTTL       int // Minutes
+	TTL              int    // Minutes
+	RefreshTTL       int    // Minutes
 	Issuer           string // Optional JWT issuer (iss claim)
 	Audience         string // Optional JWT audience (aud claim)
 	BlacklistEnabled bool

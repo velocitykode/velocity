@@ -2,7 +2,6 @@ package mail
 
 import (
 	"fmt"
-	"os"
 	"sync"
 )
 
@@ -52,25 +51,4 @@ func createDriver(driver string) (Mailer, error) {
 	}
 
 	return factory()
-}
-
-// Deprecated: Reinitialize reads MAIL_DRIVER from the environment directly,
-// bypassing the config system. Use ReinitializeWithDriver instead.
-func Reinitialize() error {
-	driver := os.Getenv("MAIL_DRIVER")
-	if driver == "" {
-		driver = "log"
-	}
-	return ReinitializeWithDriver(driver)
-}
-
-// ReinitializeWithDriver reinitializes with a specific driver.
-func ReinitializeWithDriver(driver string) error {
-	mailer, err := createDriver(driver)
-	if err != nil {
-		return err
-	}
-
-	defaultMailer = mailer
-	return nil
 }

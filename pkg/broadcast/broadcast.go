@@ -4,9 +4,6 @@ package broadcast
 
 import (
 	"sync"
-
-	"github.com/velocitykode/velocity/pkg/broadcast/drivers"
-	"github.com/velocitykode/velocity/pkg/websocket"
 )
 
 // Broadcaster defines the main broadcasting interface
@@ -38,13 +35,13 @@ type Event interface {
 // ChannelBuilder builds broadcast operations
 type ChannelBuilder struct {
 	channels    []string
-	broadcaster *broadcaster
+	broadcaster *BroadcastManager
 	toOthers    string // Socket ID to exclude
 	condition   bool
 }
 
-// broadcaster is the default implementation
-type broadcaster struct {
+// BroadcastManager is the default implementation
+type BroadcastManager struct {
 	driver     Driver
 	authorizer Authorizer
 	presence   PresenceDataFunc
@@ -69,50 +66,15 @@ type Authorizer func(channel string, user interface{}) bool
 // PresenceDataFunc returns presence data for a user
 type PresenceDataFunc func(channel string, user interface{}) interface{}
 
-var (
-	defaultBroadcaster *broadcaster
-	once               sync.Once
-)
-
 // New creates a new broadcaster with the given driver
-func New(driver Driver) *broadcaster {
-	return &broadcaster{
+func New(driver Driver) *BroadcastManager {
+	return &BroadcastManager{
 		driver: driver,
 	}
 }
 
-// SetDefault sets the global default broadcaster.
-// Used by velocity.Default() to wire the App's broadcaster into the global.
-func SetDefault(b *broadcaster) {
-	defaultBroadcaster = b
-}
-
-// Default returns the default broadcaster instance
-func Default() *broadcaster {
-	once.Do(func() {
-		// Use WebSocket driver by default
-		defaultBroadcaster = New(drivers.NewWebSocketDriver(websocket.DefaultConfig()))
-	})
-	return defaultBroadcaster
-}
-
 // Channel returns a channel builder for the given channels
-func Channel(names ...string) *ChannelBuilder {
-	return Default().Channel(names...)
-}
-
-// Private returns a private channel builder
-func Private(name string) *ChannelBuilder {
-	return Default().Private(name)
-}
-
-// Presence returns a presence channel builder
-func Presence(name string) *ChannelBuilder {
-	return Default().Presence(name)
-}
-
-// Channel returns a channel builder for the given channels
-func (b *broadcaster) Channel(names ...string) *ChannelBuilder {
+func (b *BroadcastManager) Channel(names ...string) *ChannelBuilder {
 	return &ChannelBuilder{
 		channels:    names,
 		broadcaster: b,
@@ -121,7 +83,7 @@ func (b *broadcaster) Channel(names ...string) *ChannelBuilder {
 }
 
 // Private returns a private channel builder
-func (b *broadcaster) Private(name string) *ChannelBuilder {
+func (b *BroadcastManager) Private(name string) *ChannelBuilder {
 	return &ChannelBuilder{
 		channels:    []string{"private-" + name},
 		broadcaster: b,
@@ -130,7 +92,7 @@ func (b *broadcaster) Private(name string) *ChannelBuilder {
 }
 
 // Presence returns a presence channel builder
-func (b *broadcaster) Presence(name string) *ChannelBuilder {
+func (b *BroadcastManager) Presence(name string) *ChannelBuilder {
 	return &ChannelBuilder{
 		channels:    []string{"presence-" + name},
 		broadcaster: b,
@@ -164,7 +126,7 @@ func (cb *ChannelBuilder) Emit(event string, data interface{}) error {
 }
 
 // Auth handles channel authorization
-func (b *broadcaster) Auth(channel string, socketID string, user interface{}) (interface{}, error) {
+func (b *BroadcastManager) Auth(channel string, socketID string, user interface{}) (interface{}, error) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
@@ -185,31 +147,21 @@ func (b *broadcaster) Auth(channel string, socketID string, user interface{}) (i
 }
 
 // Leave handles user leaving presence channel
-func (b *broadcaster) Leave(channel string, socketID string) error {
+func (b *BroadcastManager) Leave(channel string, socketID string) error {
 	// Implementation depends on driver
 	return nil
 }
 
 // SetAuthorizer sets the channel authorizer
-func (b *broadcaster) SetAuthorizer(fn Authorizer) {
+func (b *BroadcastManager) SetAuthorizer(fn Authorizer) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.authorizer = fn
 }
 
 // SetPresenceData sets the presence data function
-func (b *broadcaster) SetPresenceData(fn PresenceDataFunc) {
+func (b *BroadcastManager) SetPresenceData(fn PresenceDataFunc) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.presence = fn
-}
-
-// SetAuthorizer sets the default authorizer
-func SetAuthorizer(fn Authorizer) {
-	Default().SetAuthorizer(fn)
-}
-
-// SetPresenceData sets the default presence data function
-func SetPresenceData(fn PresenceDataFunc) {
-	Default().SetPresenceData(fn)
 }

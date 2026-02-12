@@ -29,6 +29,7 @@ type Gateway struct {
 	grpcEndpoint string
 	dialOptions  []grpc.DialOption
 	running      bool
+	logger       log.Logger
 
 	// Handler registration functions to call after gateway is built
 	registrations []GatewayRegistrationFunc
@@ -104,7 +105,7 @@ func configureGatewayTransport() ([]grpc.DialOption, error) {
 	}
 
 	if os.Getenv("GRPC_GATEWAY_INSECURE") == "true" {
-		log.Warn("gRPC gateway: running without TLS (GRPC_GATEWAY_INSECURE=true). Do not use in production")
+		// Warning logged at gateway Build() time when logger is available
 		return []grpc.DialOption{
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 		}, nil
@@ -141,6 +142,13 @@ func GatewayWithMuxOption(opt runtime.ServeMuxOption) GatewayOption {
 	}
 }
 
+// GatewayWithLogger sets the logger for the HTTP gateway
+func GatewayWithLogger(logger log.Logger) GatewayOption {
+	return func(g *Gateway) {
+		g.logger = logger
+	}
+}
+
 // GatewayWithInsecure explicitly configures the gateway to use insecure credentials.
 // This should only be used for local development.
 func GatewayWithInsecure() GatewayOption {
@@ -163,12 +171,12 @@ func GatewayWithTLS(certFile string) GatewayOption {
 		if certFile != "" {
 			caCert, err := os.ReadFile(certFile)
 			if err != nil {
-				log.Error("Failed to read TLS cert file for gateway", "error", err, "file", certFile)
+				g.configErr = fmt.Errorf("failed to read TLS cert file for gateway: %w", err)
 				return
 			}
 			pool := x509.NewCertPool()
 			if !pool.AppendCertsFromPEM(caCert) {
-				log.Error("Failed to parse TLS cert for gateway", "file", certFile)
+				g.configErr = fmt.Errorf("failed to parse TLS cert for gateway: %s", certFile)
 				return
 			}
 			tlsConfig.RootCAs = pool
@@ -271,7 +279,7 @@ func (g *Gateway) StartWithContext(ctx context.Context) error {
 	g.running = true
 	g.mu.Unlock()
 
-	log.Info("HTTP gateway starting",
+	g.logger.Info("HTTP gateway starting",
 		"address", g.httpServer.Addr,
 		"grpc_endpoint", g.grpcEndpoint,
 	)
@@ -300,12 +308,12 @@ func (g *Gateway) StartAsyncWithContext(ctx context.Context) error {
 	g.mu.Unlock()
 
 	go func() {
-		log.Info("HTTP gateway starting",
+		g.logger.Info("HTTP gateway starting",
 			"address", g.httpServer.Addr,
 			"grpc_endpoint", g.grpcEndpoint,
 		)
 		if err := g.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Error("HTTP gateway error", "error", err)
+			g.logger.Error("HTTP gateway error", "error", err)
 		}
 	}()
 
@@ -318,7 +326,7 @@ func (g *Gateway) Stop() {
 	defer g.mu.Unlock()
 
 	if g.httpServer != nil && g.running {
-		log.Info("HTTP gateway stopping")
+		g.logger.Info("HTTP gateway stopping")
 		g.httpServer.Close()
 		g.running = false
 	}
@@ -335,7 +343,7 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	g.running = false
 	g.mu.Unlock()
 
-	log.Info("HTTP gateway gracefully shutting down")
+	g.logger.Info("HTTP gateway gracefully shutting down")
 	return server.Shutdown(ctx)
 }
 

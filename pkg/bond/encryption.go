@@ -2,8 +2,7 @@ package bond
 
 import (
 	"encoding/json"
-
-	"github.com/velocitykode/velocity/pkg/crypto"
+	"fmt"
 )
 
 // EncryptHistoryState encrypts page data for secure browser history storage
@@ -13,20 +12,26 @@ func (b *Bond) EncryptHistoryState(page Page) (string, error) {
 		return "", nil
 	}
 
+	if b.encryptor == nil {
+		return "", fmt.Errorf("bond: encryptor not configured for history encryption")
+	}
+
 	// Serialize page to JSON
 	data, err := json.Marshal(page)
 	if err != nil {
 		return "", err
 	}
 
-	// Encrypt using pkg/crypto
-	return crypto.Encrypt(string(data))
+	return b.encryptor.Encrypt(string(data))
 }
 
 // DecryptHistoryState decrypts page data from encrypted browser history
 func (b *Bond) DecryptHistoryState(encrypted string) (*Page, error) {
-	// Decrypt using pkg/crypto
-	decrypted, err := crypto.Decrypt(encrypted)
+	if b.encryptor == nil {
+		return nil, fmt.Errorf("bond: encryptor not configured for history decryption")
+	}
+
+	decrypted, err := b.encryptor.Decrypt(encrypted)
 	if err != nil {
 		return nil, err
 	}

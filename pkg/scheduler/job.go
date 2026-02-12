@@ -55,6 +55,14 @@ type Job struct {
 	mutex *sync.Mutex
 }
 
+// getDispatch returns the event dispatch function from the parent scheduler, or nil.
+func (j *Job) getDispatch() func(interface{}) {
+	if j.scheduler != nil {
+		return j.scheduler.dispatchEvent
+	}
+	return nil
+}
+
 // IsDue checks if the job should run at the given time
 func (j *Job) IsDue(t time.Time) bool {
 	j.mu.RLock()
@@ -145,7 +153,7 @@ func (j *Job) Run() error {
 	ctx, traceID, _ := trace.StartTrace(context.Background())
 
 	// Dispatch scheduled.starting event
-	dispatchScheduledTaskStarting(ctx, jobName)
+	dispatchScheduledTaskStarting(j.getDispatch(), ctx, jobName)
 	startTime := time.Now()
 
 	// Run before callbacks
@@ -203,12 +211,12 @@ func (j *Job) Run() error {
 		for _, callback := range onFailureCallbacks {
 			callback(err)
 		}
-		dispatchScheduledTaskFailed(ctx, jobName, err, duration)
+		dispatchScheduledTaskFailed(j.getDispatch(), ctx, jobName, err, duration)
 	} else {
 		for _, callback := range onSuccessCallbacks {
 			callback()
 		}
-		dispatchScheduledTaskFinished(ctx, jobName, duration)
+		dispatchScheduledTaskFinished(j.getDispatch(), ctx, jobName, duration)
 	}
 
 	// Suppress unused variable warning

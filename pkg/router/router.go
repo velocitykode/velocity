@@ -5,7 +5,6 @@ package router
 
 import (
 	"net/http"
-	"sync"
 )
 
 // Router defines the interface for HTTP routing
@@ -49,31 +48,7 @@ type ResourceRoute interface {
 // VelocityRouter is an alias for backward compatibility
 type VelocityRouter = VelocityRouterV2
 
-var (
-	// globalRouter is the singleton router instance
-	globalRouter *VelocityRouterV2
-	once         sync.Once
-)
-
 // New creates a new router instance
 func New() *VelocityRouterV2 {
 	return NewV2()
-}
-
-func Get() *VelocityRouterV2 {
-	once.Do(func() {
-		globalRouter = New()
-	})
-	return globalRouter
-}
-
-// SetGlobalRouter sets the global router instance.
-// Used by velocity.Default() to wire the App's router into the global.
-func SetGlobalRouter(r *VelocityRouterV2) {
-	globalRouter = r
-}
-
-func ResetGlobalRouter() {
-	once = sync.Once{}
-	globalRouter = nil
 }

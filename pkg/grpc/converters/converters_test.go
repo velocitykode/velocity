@@ -378,7 +378,7 @@ func TestCalculateTotalPages(t *testing.T) {
 		{21, 10, 3},
 		{100, 25, 4},
 		{101, 25, 5},
-		{0, 0, 1},  // zero page size defaults
+		{0, 0, 1},   // zero page size defaults
 		{10, -1, 1}, // negative page size defaults
 	}
 

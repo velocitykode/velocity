@@ -231,15 +231,14 @@ func TestMiddlewareFunc(t *testing.T) {
 }
 
 func TestRecoverMiddleware(t *testing.T) {
-	// Reset global handler for testing
-	ResetGlobal()
-	defer ResetGlobal()
+	h := NewHandler(WithDebug(false))
+	middleware := Middleware(h)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("test panic")
 	})
 
-	wrapped := RecoverMiddleware(handler)
+	wrapped := middleware(handler)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/test", nil)

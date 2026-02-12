@@ -589,21 +589,23 @@ func TestFakeDispatcherUncoveredMethods(t *testing.T) {
 	}
 }
 
-// Test global init functions
-func TestGlobalInitFunctions(t *testing.T) {
-	// Test global DispatchNow
-	err := DispatchNow("test.event")
+// Test dispatcher DispatchNow and Until
+func TestDispatcherDispatchNowAndUntil(t *testing.T) {
+	d := NewDispatcher()
+
+	// Test DispatchNow
+	err := d.DispatchNow("test.event")
 	if err != nil {
-		t.Errorf("Global DispatchNow failed: %v", err)
+		t.Errorf("DispatchNow failed: %v", err)
 	}
 
-	// Test global Until
-	result, err := Until("test.event")
+	// Test Until
+	result, err := d.Until("test.event")
 	if err != nil {
-		t.Errorf("Global Until failed: %v", err)
+		t.Errorf("Until failed: %v", err)
 	}
 	if result != nil {
-		t.Error("Global Until should return nil by default")
+		t.Error("Until should return nil by default")
 	}
 }
 

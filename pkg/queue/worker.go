@@ -10,16 +10,29 @@ import (
 
 // Worker processes jobs from a queue
 type Worker struct {
-	queue       Driver
-	queueName   string
-	handler     func(Job) error
-	concurrency int
-	interval    time.Duration
-	timeout     time.Duration
-	maxRetries  int
-	ctx         context.Context
-	cancel      context.CancelFunc
-	wg          sync.WaitGroup
+	queue           Driver
+	queueName       string
+	handler         func(Job) error
+	concurrency     int
+	interval        time.Duration
+	timeout         time.Duration
+	maxRetries      int
+	ctx             context.Context
+	cancel          context.CancelFunc
+	wg              sync.WaitGroup
+	eventDispatcher func(event interface{}) error
+}
+
+// SetEventDispatcher sets the function used to dispatch events.
+func (w *Worker) SetEventDispatcher(fn func(event interface{}) error) {
+	w.eventDispatcher = fn
+}
+
+// dispatchEvent dispatches an event if a dispatcher is configured.
+func (w *Worker) dispatchEvent(event interface{}) {
+	if w.eventDispatcher != nil {
+		w.eventDispatcher(event)
+	}
 }
 
 // WorkerOption configures a worker
@@ -143,7 +156,7 @@ func (w *Worker) processJob() error {
 	defer cancel()
 
 	// Dispatch job.processing event
-	dispatchJobProcessing(jobCtx, jobType, w.queueName)
+	dispatchJobProcessing(w.dispatchEvent, jobCtx, jobType, w.queueName)
 	startTime := time.Now()
 
 	done := make(chan error, 1)
@@ -156,7 +169,7 @@ func (w *Worker) processJob() error {
 		duration := time.Since(startTime)
 		if err != nil {
 			// Dispatch job.failed event
-			dispatchJobFailed(jobCtx, jobType, w.queueName, err, duration)
+			dispatchJobFailed(w.dispatchEvent, jobCtx, jobType, w.queueName, err, duration)
 			// Handle job failure
 			if failErr := w.queue.Failed(job, err, w.queueName); failErr != nil {
 				log.Printf("Failed to mark job as failed: %v", failErr)
@@ -164,32 +177,17 @@ func (w *Worker) processJob() error {
 			return fmt.Errorf("job failed: %w", err)
 		}
 		// Dispatch job.processed event
-		dispatchJobProcessed(jobCtx, jobType, w.queueName, duration)
+		dispatchJobProcessed(w.dispatchEvent, jobCtx, jobType, w.queueName, duration)
 		return nil
 	case <-jobCtx.Done():
 		duration := time.Since(startTime)
 		// Job timed out
 		timeoutErr := fmt.Errorf("job timed out")
 		// Dispatch job.failed event
-		dispatchJobFailed(jobCtx, jobType, w.queueName, timeoutErr, duration)
+		dispatchJobFailed(w.dispatchEvent, jobCtx, jobType, w.queueName, timeoutErr, duration)
 		if failErr := w.queue.Failed(job, timeoutErr, w.queueName); failErr != nil {
 			log.Printf("Failed to mark job as failed: %v", failErr)
 		}
 		return timeoutErr
 	}
-}
-
-// Work is a global helper to start a worker.
-func Work(queueName string, handler func(Job) error, opts ...WorkerOption) *Worker {
-	globalMu.RLock()
-	q := globalQueue
-	globalMu.RUnlock()
-
-	if q == nil {
-		log.Fatal("queue not initialized")
-	}
-
-	worker := NewWorker(q, queueName, handler, opts...)
-	worker.Start()
-	return worker
 }

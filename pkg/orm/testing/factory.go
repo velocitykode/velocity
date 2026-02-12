@@ -16,6 +16,7 @@ var (
 
 // Factory represents a model factory for generating test data
 type Factory struct {
+	manager     *orm.Manager
 	tableName   string
 	definition  func() map[string]interface{}
 	states      map[string]map[string]interface{}
@@ -24,9 +25,12 @@ type Factory struct {
 	activeState string // Track which state to apply
 }
 
-// NewFactory creates a new factory for generating test data
-func NewFactory(tableName string, definition func() map[string]interface{}) *Factory {
+// NewFactory creates a new factory for generating test data.
+// The manager parameter is required for Create() (database persistence).
+// Pass nil if you only use Make() (in-memory generation).
+func NewFactory(manager *orm.Manager, tableName string, definition func() map[string]interface{}) *Factory {
 	return &Factory{
+		manager:    manager,
 		tableName:  tableName,
 		definition: definition,
 		states:     make(map[string]map[string]interface{}),
@@ -79,12 +83,16 @@ func (f *Factory) Make(overrides ...map[string]interface{}) interface{} {
 
 // Create generates data and persists to database
 func (f *Factory) Create(overrides ...map[string]interface{}) interface{} {
-	exec := orm.Executor()
-	if exec == nil {
-		panic("ORM not initialized - call orm.Init() before using factories")
+	if f.manager == nil {
+		panic("ORM manager not set - pass *orm.Manager to NewFactory for database persistence")
 	}
 
-	driver := orm.GetDriver()
+	exec := f.manager.DB()
+	if exec == nil {
+		panic("ORM not connected - manager has no active database connection")
+	}
+
+	driver := f.manager.DriverName()
 	if driver == "" {
 		panic("cannot determine database driver")
 	}

@@ -1,6 +1,7 @@
 package migrate_test
 
 import (
+	"database/sql"
 	"os"
 	"strings"
 	"testing"
@@ -218,16 +219,14 @@ func TestIndexBuilder_SQLGeneration(t *testing.T) {
 // =============================================================================
 
 func TestCreateIndex_SQLite(t *testing.T) {
-	err := orm.Init("sqlite", map[string]any{"database": ":memory:"})
-	if err != nil {
-		t.Fatalf("failed to init ORM: %v", err)
-	}
-	defer orm.Close()
+	manager := newTestManager(t)
+	defer manager.Close()
 
-	migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+	db := manager.DB()
+	migrator := migrate.NewMigrator(db, manager.DriverName())
 
 	// Create test table
-	err = migrator.CreateTable("users", func(tb *migrate.TableBuilder) {
+	err := migrator.CreateTable("users", func(tb *migrate.TableBuilder) {
 		tb.ID()
 		tb.String("email").Unique()
 		tb.String("name")
@@ -277,7 +276,7 @@ func TestCreateIndex_SQLite(t *testing.T) {
 	})
 
 	// Verify indexes exist
-	indexes := getIndexes(t, "users")
+	indexes := getIndexes(t, db, "users")
 	expected := []string{"idx_users_name", "idx_users_team_name", "idx_users_active", "idx_users_team_email"}
 	for _, idx := range expected {
 		if !indexes[idx] {
@@ -287,15 +286,13 @@ func TestCreateIndex_SQLite(t *testing.T) {
 }
 
 func TestDropIndex_SQLite(t *testing.T) {
-	err := orm.Init("sqlite", map[string]any{"database": ":memory:"})
-	if err != nil {
-		t.Fatalf("failed to init ORM: %v", err)
-	}
-	defer orm.Close()
+	manager := newTestManager(t)
+	defer manager.Close()
 
-	migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+	db := manager.DB()
+	migrator := migrate.NewMigrator(db, manager.DriverName())
 
-	err = migrator.CreateTable("test", func(tb *migrate.TableBuilder) {
+	err := migrator.CreateTable("test", func(tb *migrate.TableBuilder) {
 		tb.ID()
 		tb.String("name")
 	})
@@ -319,22 +316,20 @@ func TestDropIndex_SQLite(t *testing.T) {
 
 	// Verify index is gone
 	var count int
-	orm.DB().QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_to_drop'").Scan(&count)
+	db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_to_drop'").Scan(&count)
 	if count != 0 {
 		t.Error("index should have been dropped")
 	}
 }
 
 func TestShorthandMethods_SQLite(t *testing.T) {
-	err := orm.Init("sqlite", map[string]any{"database": ":memory:"})
-	if err != nil {
-		t.Fatalf("failed to init ORM: %v", err)
-	}
-	defer orm.Close()
+	manager := newTestManager(t)
+	defer manager.Close()
 
-	migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+	db := manager.DB()
+	migrator := migrate.NewMigrator(db, manager.DriverName())
 
-	err = migrator.CreateTable("test", func(tb *migrate.TableBuilder) {
+	err := migrator.CreateTable("test", func(tb *migrate.TableBuilder) {
 		tb.ID()
 		tb.String("email")
 		tb.String("name")
@@ -369,12 +364,14 @@ func TestShorthandMethods_SQLite(t *testing.T) {
 // =============================================================================
 
 func TestCreateIndex_Postgres(t *testing.T) {
-	if !initPostgres(t) {
+	manager := initPostgres(t)
+	if manager == nil {
 		return
 	}
-	defer orm.Close()
+	defer manager.Close()
 
-	migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+	db := manager.DB()
+	migrator := migrate.NewMigrator(db, manager.DriverName())
 
 	err := migrator.CreateTable("idx_test_pg", func(tb *migrate.TableBuilder) {
 		tb.ID()
@@ -431,21 +428,26 @@ func TestCreateIndex_Postgres(t *testing.T) {
 // Helpers
 // =============================================================================
 
-func initPostgres(t *testing.T) bool {
+func initPostgres(t *testing.T) *orm.Manager {
 	host := envOr("TEST_PG_HOST", "localhost")
 	port := envOr("TEST_PG_PORT", "5432")
 	user := envOr("TEST_PG_USER", "postgres")
 	pass := envOr("TEST_PG_PASS", "postgres")
 	db := envOr("TEST_PG_DB", "velocity_test")
 
-	err := orm.Init("postgres", map[string]any{
-		"host": host, "port": port, "username": user, "password": pass, "database": db,
+	manager, err := orm.NewManager(orm.ManagerConfig{
+		Driver:   "postgres",
+		Host:     host,
+		Port:     port,
+		Database: db,
+		Username: user,
+		Password: pass,
 	})
 	if err != nil {
 		t.Skipf("PostgreSQL not available: %v", err)
-		return false
+		return nil
 	}
-	return true
+	return manager
 }
 
 func envOr(key, def string) string {
@@ -455,8 +457,8 @@ func envOr(key, def string) string {
 	return def
 }
 
-func getIndexes(t *testing.T, table string) map[string]bool {
-	rows, err := orm.DB().Query("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=?", table)
+func getIndexes(t *testing.T, db *sql.DB, table string) map[string]bool {
+	rows, err := db.Query("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=?", table)
 	if err != nil {
 		t.Fatalf("failed to query indexes: %v", err)
 	}

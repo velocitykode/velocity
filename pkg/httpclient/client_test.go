@@ -50,7 +50,8 @@ func TestClientDo(t *testing.T) {
 	var failedEvents []*RequestFailed
 	var mu sync.Mutex
 
-	SetEventDispatcher(func(event interface{}) error {
+	client := New()
+	client.SetEventDispatcher(func(event interface{}) error {
 		mu.Lock()
 		defer mu.Unlock()
 		switch e := event.(type) {
@@ -61,11 +62,12 @@ func TestClientDo(t *testing.T) {
 		}
 		return nil
 	})
-	defer SetEventDispatcher(nil)
 
 	t.Run("successful request", func(t *testing.T) {
+		mu.Lock()
 		sentEvents = nil
 		failedEvents = nil
+		mu.Unlock()
 
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Length", "13")
@@ -74,7 +76,6 @@ func TestClientDo(t *testing.T) {
 		}))
 		defer server.Close()
 
-		client := New()
 		req, _ := http.NewRequest("GET", server.URL+"/test", nil)
 		resp, err := client.Do(context.Background(), req)
 
@@ -104,12 +105,26 @@ func TestClientDo(t *testing.T) {
 	})
 
 	t.Run("failed request", func(t *testing.T) {
+		mu.Lock()
 		sentEvents = nil
 		failedEvents = nil
+		mu.Unlock()
 
-		client := New(WithTimeout(100 * time.Millisecond))
+		failClient := New(WithTimeout(100 * time.Millisecond))
+		failClient.SetEventDispatcher(func(event interface{}) error {
+			mu.Lock()
+			defer mu.Unlock()
+			switch e := event.(type) {
+			case *RequestSent:
+				sentEvents = append(sentEvents, e)
+			case *RequestFailed:
+				failedEvents = append(failedEvents, e)
+			}
+			return nil
+		})
+
 		req, _ := http.NewRequest("GET", "http://localhost:59999/nonexistent", nil)
-		_, err := client.Do(context.Background(), req)
+		_, err := failClient.Do(context.Background(), req)
 
 		if err == nil {
 			t.Fatal("Do() expected error, got nil")
@@ -137,7 +152,8 @@ func TestClientGet(t *testing.T) {
 	var sentEvents []*RequestSent
 	var mu sync.Mutex
 
-	SetEventDispatcher(func(event interface{}) error {
+	client := New()
+	client.SetEventDispatcher(func(event interface{}) error {
 		mu.Lock()
 		defer mu.Unlock()
 		if e, ok := event.(*RequestSent); ok {
@@ -145,7 +161,6 @@ func TestClientGet(t *testing.T) {
 		}
 		return nil
 	})
-	defer SetEventDispatcher(nil)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" {
@@ -155,7 +170,6 @@ func TestClientGet(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New()
 	resp, err := client.Get(context.Background(), server.URL+"/users")
 
 	if err != nil {
@@ -178,7 +192,8 @@ func TestClientPost(t *testing.T) {
 	var sentEvents []*RequestSent
 	var mu sync.Mutex
 
-	SetEventDispatcher(func(event interface{}) error {
+	client := New()
+	client.SetEventDispatcher(func(event interface{}) error {
 		mu.Lock()
 		defer mu.Unlock()
 		if e, ok := event.(*RequestSent); ok {
@@ -186,7 +201,6 @@ func TestClientPost(t *testing.T) {
 		}
 		return nil
 	})
-	defer SetEventDispatcher(nil)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
@@ -203,7 +217,6 @@ func TestClientPost(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New()
 	resp, err := client.Post(context.Background(), server.URL+"/users", "application/json", strings.NewReader(`{"name":"test"}`))
 
 	if err != nil {
@@ -229,7 +242,8 @@ func TestClientPut(t *testing.T) {
 	var sentEvents []*RequestSent
 	var mu sync.Mutex
 
-	SetEventDispatcher(func(event interface{}) error {
+	client := New()
+	client.SetEventDispatcher(func(event interface{}) error {
 		mu.Lock()
 		defer mu.Unlock()
 		if e, ok := event.(*RequestSent); ok {
@@ -237,7 +251,6 @@ func TestClientPut(t *testing.T) {
 		}
 		return nil
 	})
-	defer SetEventDispatcher(nil)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "PUT" {
@@ -247,7 +260,6 @@ func TestClientPut(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New()
 	resp, err := client.Put(context.Background(), server.URL+"/users/1", "application/json", strings.NewReader(`{"name":"updated"}`))
 
 	if err != nil {
@@ -270,7 +282,8 @@ func TestClientDelete(t *testing.T) {
 	var sentEvents []*RequestSent
 	var mu sync.Mutex
 
-	SetEventDispatcher(func(event interface{}) error {
+	client := New()
+	client.SetEventDispatcher(func(event interface{}) error {
 		mu.Lock()
 		defer mu.Unlock()
 		if e, ok := event.(*RequestSent); ok {
@@ -278,7 +291,6 @@ func TestClientDelete(t *testing.T) {
 		}
 		return nil
 	})
-	defer SetEventDispatcher(nil)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "DELETE" {
@@ -288,7 +300,6 @@ func TestClientDelete(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New()
 	resp, err := client.Delete(context.Background(), server.URL+"/users/1")
 
 	if err != nil {
@@ -314,7 +325,8 @@ func TestClientPatch(t *testing.T) {
 	var sentEvents []*RequestSent
 	var mu sync.Mutex
 
-	SetEventDispatcher(func(event interface{}) error {
+	client := New()
+	client.SetEventDispatcher(func(event interface{}) error {
 		mu.Lock()
 		defer mu.Unlock()
 		if e, ok := event.(*RequestSent); ok {
@@ -322,7 +334,6 @@ func TestClientPatch(t *testing.T) {
 		}
 		return nil
 	})
-	defer SetEventDispatcher(nil)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "PATCH" {
@@ -332,7 +343,6 @@ func TestClientPatch(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New()
 	resp, err := client.Patch(context.Background(), server.URL+"/users/1", "application/json", strings.NewReader(`{"status":"active"}`))
 
 	if err != nil {
@@ -385,17 +395,11 @@ func TestResolveURL(t *testing.T) {
 	})
 }
 
-func TestDefaultClient(t *testing.T) {
-	if Default == nil {
-		t.Fatal("Default client is nil")
-	}
-}
-
-func TestGlobalFunctions(t *testing.T) {
-	SetEventDispatcher(func(event interface{}) error {
+func TestClientMethods(t *testing.T) {
+	client := New()
+	client.SetEventDispatcher(func(event interface{}) error {
 		return nil
 	})
-	defer SetEventDispatcher(nil)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -403,7 +407,7 @@ func TestGlobalFunctions(t *testing.T) {
 	defer server.Close()
 
 	t.Run("Get", func(t *testing.T) {
-		resp, err := Get(context.Background(), server.URL)
+		resp, err := client.Get(context.Background(), server.URL)
 		if err != nil {
 			t.Fatalf("Get() error = %v", err)
 		}
@@ -411,7 +415,7 @@ func TestGlobalFunctions(t *testing.T) {
 	})
 
 	t.Run("Post", func(t *testing.T) {
-		resp, err := Post(context.Background(), server.URL, "text/plain", strings.NewReader("test"))
+		resp, err := client.Post(context.Background(), server.URL, "text/plain", strings.NewReader("test"))
 		if err != nil {
 			t.Fatalf("Post() error = %v", err)
 		}
@@ -419,7 +423,7 @@ func TestGlobalFunctions(t *testing.T) {
 	})
 
 	t.Run("Put", func(t *testing.T) {
-		resp, err := Put(context.Background(), server.URL, "text/plain", strings.NewReader("test"))
+		resp, err := client.Put(context.Background(), server.URL, "text/plain", strings.NewReader("test"))
 		if err != nil {
 			t.Fatalf("Put() error = %v", err)
 		}
@@ -427,7 +431,7 @@ func TestGlobalFunctions(t *testing.T) {
 	})
 
 	t.Run("Delete", func(t *testing.T) {
-		resp, err := Delete(context.Background(), server.URL)
+		resp, err := client.Delete(context.Background(), server.URL)
 		if err != nil {
 			t.Fatalf("Delete() error = %v", err)
 		}
@@ -435,7 +439,7 @@ func TestGlobalFunctions(t *testing.T) {
 	})
 
 	t.Run("Patch", func(t *testing.T) {
-		resp, err := Patch(context.Background(), server.URL, "text/plain", strings.NewReader("test"))
+		resp, err := client.Patch(context.Background(), server.URL, "text/plain", strings.NewReader("test"))
 		if err != nil {
 			t.Fatalf("Patch() error = %v", err)
 		}

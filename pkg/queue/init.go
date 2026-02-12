@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 )
@@ -12,6 +13,9 @@ type QueueConfig struct {
 
 	// Redis holds Redis-specific configuration. Required when Driver is "redis".
 	Redis RedisConfig
+
+	// DB holds a *sql.DB for the database driver. Required when Driver is "database".
+	DB *sql.DB
 }
 
 // NewQueue creates a new queue driver from the given configuration.
@@ -27,7 +31,10 @@ func NewQueue(config QueueConfig) (Driver, error) {
 	case "redis":
 		return NewRedisDriver(config.Redis)
 	case "database":
-		return NewDatabaseDriver(), nil
+		if config.DB == nil {
+			return nil, fmt.Errorf("database queue driver requires a *sql.DB in QueueConfig.DB")
+		}
+		return NewDatabaseDriver(config.DB), nil
 	default:
 		return nil, fmt.Errorf("unknown queue driver: %s", driver)
 	}
@@ -46,8 +53,9 @@ func NewRedisQueue() (Driver, error) {
 }
 
 // NewDatabaseQueue creates a database queue from environment config.
+// Deprecated: Use NewDatabaseDriver(db) directly with an injected *sql.DB.
 func NewDatabaseQueue() (Driver, error) {
-	return NewDatabaseDriver(), nil
+	return nil, fmt.Errorf("NewDatabaseQueue is deprecated: use NewDatabaseDriver(db) with an injected *sql.DB")
 }
 
 // NewMemoryQueue creates an in-memory queue.

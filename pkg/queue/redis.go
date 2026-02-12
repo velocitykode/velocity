@@ -28,9 +28,10 @@ func (c RedisConfig) String() string {
 
 // RedisDriver implements Queue interface using Redis
 type RedisDriver struct {
-	client *redis.Client
-	ctx    context.Context
-	config RedisConfig
+	client          *redis.Client
+	ctx             context.Context
+	config          RedisConfig
+	eventDispatcher func(event interface{}) error
 }
 
 // NewRedisDriver creates a new Redis queue driver.
@@ -70,6 +71,18 @@ func NewRedisDriver(config RedisConfig) (*RedisDriver, error) {
 	}, nil
 }
 
+// SetEventDispatcher sets the function used to dispatch events.
+func (r *RedisDriver) SetEventDispatcher(fn func(event interface{}) error) {
+	r.eventDispatcher = fn
+}
+
+// dispatchEvent dispatches an event if a dispatcher is configured.
+func (r *RedisDriver) dispatchEvent(event interface{}) {
+	if r.eventDispatcher != nil {
+		r.eventDispatcher(event)
+	}
+}
+
 // Push adds a job to the queue
 func (r *RedisDriver) Push(job Job, queueName ...string) error {
 	name := r.getQueueName(queueName...)
@@ -100,7 +113,7 @@ func (r *RedisDriver) Push(job Job, queueName ...string) error {
 	}
 
 	// Dispatch job.queued event
-	dispatchJobQueued(r.ctx, payload.Type, name, false, 0)
+	dispatchJobQueued(r.dispatchEvent, r.ctx, payload.Type, name, false, 0)
 	return nil
 }
 
@@ -137,7 +150,7 @@ func (r *RedisDriver) PushDelayed(job Job, delay time.Duration, queueName ...str
 	}
 
 	// Dispatch job.queued event with delay info
-	dispatchJobQueued(r.ctx, payload.Type, name, true, delay)
+	dispatchJobQueued(r.dispatchEvent, r.ctx, payload.Type, name, true, delay)
 	return nil
 }
 

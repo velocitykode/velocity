@@ -3,6 +3,8 @@ package orm
 import (
 	"os"
 	"testing"
+
+	"github.com/velocitykode/velocity/pkg/orm/drivers"
 )
 
 // RawQueryUser is a custom struct for raw query results
@@ -18,16 +20,36 @@ type RawQueryUserPartial struct {
 	Email string `orm:"column:email"`
 }
 
-func setupRawQueryTestDB(t *testing.T, driver string) func() {
-	var config map[string]any
+// rawQueryTestEnv holds the manager and driver used by raw query tests.
+type rawQueryTestEnv struct {
+	manager *Manager
+	driver  drivers.Driver
+}
 
-	switch driver {
+// newRawQuery creates a RawQuery with the driver from the test environment.
+func (env *rawQueryTestEnv) newRawQuery(sql string, args ...any) *RawQuery[RawQueryUser] {
+	rq := NewRawQuery[RawQueryUser](sql, args...)
+	rq.driver = env.driver
+	return rq
+}
+
+// newRawQueryPartial creates a RawQuery for RawQueryUserPartial with the driver from the test environment.
+func (env *rawQueryTestEnv) newRawQueryPartial(sql string, args ...any) *RawQuery[RawQueryUserPartial] {
+	rq := NewRawQuery[RawQueryUserPartial](sql, args...)
+	rq.driver = env.driver
+	return rq
+}
+
+func setupRawQueryTestDB(t *testing.T, driverName string) (*rawQueryTestEnv, func()) {
+	var config ManagerConfig
+
+	switch driverName {
 	case "sqlite":
-		config = map[string]any{
-			"database": ":memory:",
+		config = ManagerConfig{
+			Driver:   "sqlite",
+			Database: ":memory:",
 		}
 	case "postgres":
-		// Use environment variables for PostgreSQL connection
 		host := os.Getenv("POSTGRES_HOST")
 		if host == "" {
 			host = "localhost"
@@ -49,28 +71,34 @@ func setupRawQueryTestDB(t *testing.T, driver string) func() {
 			password = ""
 		}
 
-		config = map[string]any{
-			"host":     host,
-			"port":     port,
-			"database": database,
-			"username": username,
-			"password": password,
+		config = ManagerConfig{
+			Driver:   "postgres",
+			Host:     host,
+			Port:     port,
+			Database: database,
+			Username: username,
+			Password: password,
 		}
 	default:
-		t.Fatalf("Unsupported driver: %s", driver)
+		t.Fatalf("Unsupported driver: %s", driverName)
 	}
 
-	err := Init(driver, config)
+	m, err := NewManager(config)
 	if err != nil {
-		if driver == "postgres" {
+		if driverName == "postgres" {
 			t.Skipf("Skipping PostgreSQL test: %v", err)
 		}
-		t.Fatalf("Failed to initialize ORM with %s: %v", driver, err)
+		t.Fatalf("Failed to initialize ORM with %s: %v", driverName, err)
+	}
+
+	env := &rawQueryTestEnv{
+		manager: m,
+		driver:  m.defaultDriver,
 	}
 
 	// Create test table
 	var createSQL string
-	if driver == "sqlite" {
+	if driverName == "sqlite" {
 		createSQL = `
 			CREATE TABLE IF NOT EXISTS raw_query_users (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -94,24 +122,24 @@ func setupRawQueryTestDB(t *testing.T, driver string) func() {
 		`
 	}
 
-	_, err = DB().Exec(createSQL)
+	_, err = m.DB().Exec(createSQL)
 	if err != nil {
 		t.Fatalf("Failed to create test table: %v", err)
 	}
 
 	// Clean up any existing data
-	_, _ = DB().Exec("DELETE FROM raw_query_users")
+	_, _ = m.DB().Exec("DELETE FROM raw_query_users")
 
 	// Insert test data
-	if driver == "sqlite" {
-		_, err = DB().Exec(`
+	if driverName == "sqlite" {
+		_, err = m.DB().Exec(`
 			INSERT INTO raw_query_users (name, email, age) VALUES
 			('Alice', 'alice@example.com', 25),
 			('Bob', 'bob@example.com', 30),
 			('Charlie', 'charlie@example.com', 35)
 		`)
 	} else {
-		_, err = DB().Exec(`
+		_, err = m.DB().Exec(`
 			INSERT INTO raw_query_users (name, email, age) VALUES
 			('Alice', 'alice@example.com', 25),
 			('Bob', 'bob@example.com', 30),
@@ -122,18 +150,18 @@ func setupRawQueryTestDB(t *testing.T, driver string) func() {
 		t.Fatalf("Failed to insert test data: %v", err)
 	}
 
-	return func() {
-		_, _ = DB().Exec("DROP TABLE IF EXISTS raw_query_users")
-		Close()
+	return env, func() {
+		_, _ = m.DB().Exec("DROP TABLE IF EXISTS raw_query_users")
+		m.Close()
 	}
 }
 
 func TestRawQuery_First_SQLite(t *testing.T) {
-	cleanup := setupRawQueryTestDB(t, "sqlite")
+	env, cleanup := setupRawQueryTestDB(t, "sqlite")
 	defer cleanup()
 
 	var user RawQueryUser
-	err := NewRawQuery[RawQueryUser]("SELECT id, name, email FROM raw_query_users WHERE name = ?", "Alice").First(&user)
+	err := env.newRawQuery("SELECT id, name, email FROM raw_query_users WHERE name = ?", "Alice").First(&user)
 	if err != nil {
 		t.Fatalf("RawQuery.First() failed: %v", err)
 	}
@@ -147,21 +175,23 @@ func TestRawQuery_First_SQLite(t *testing.T) {
 }
 
 func TestRawQuery_First_NotFound_SQLite(t *testing.T) {
-	cleanup := setupRawQueryTestDB(t, "sqlite")
+	env, cleanup := setupRawQueryTestDB(t, "sqlite")
 	defer cleanup()
 
 	var user RawQueryUser
-	err := NewRawQuery[RawQueryUser]("SELECT id, name, email FROM raw_query_users WHERE name = ?", "NonExistent").First(&user)
+	err := env.newRawQuery("SELECT id, name, email FROM raw_query_users WHERE name = ?", "NonExistent").First(&user)
 	if err != ErrRecordNotFound {
 		t.Errorf("Expected ErrRecordNotFound, got %v", err)
 	}
 }
 
 func TestRawQuery_Get_SQLite(t *testing.T) {
-	cleanup := setupRawQueryTestDB(t, "sqlite")
+	env, cleanup := setupRawQueryTestDB(t, "sqlite")
 	defer cleanup()
 
-	users, err := NewRawQuery[RawQueryUser]("SELECT id, name, email FROM raw_query_users ORDER BY name").Get()
+	rq := NewRawQuery[RawQueryUser]("SELECT id, name, email FROM raw_query_users ORDER BY name")
+	rq.driver = env.driver
+	users, err := rq.Get()
 	if err != nil {
 		t.Fatalf("RawQuery.Get() failed: %v", err)
 	}
@@ -179,10 +209,12 @@ func TestRawQuery_Get_SQLite(t *testing.T) {
 }
 
 func TestRawQuery_Get_Empty_SQLite(t *testing.T) {
-	cleanup := setupRawQueryTestDB(t, "sqlite")
+	env, cleanup := setupRawQueryTestDB(t, "sqlite")
 	defer cleanup()
 
-	users, err := NewRawQuery[RawQueryUser]("SELECT id, name, email FROM raw_query_users WHERE age > ?", 100).Get()
+	rq := NewRawQuery[RawQueryUser]("SELECT id, name, email FROM raw_query_users WHERE age > ?", 100)
+	rq.driver = env.driver
+	users, err := rq.Get()
 	if err != nil {
 		t.Fatalf("RawQuery.Get() failed: %v", err)
 	}
@@ -193,11 +225,13 @@ func TestRawQuery_Get_Empty_SQLite(t *testing.T) {
 }
 
 func TestRawQuery_Scan_SQLite(t *testing.T) {
-	cleanup := setupRawQueryTestDB(t, "sqlite")
+	env, cleanup := setupRawQueryTestDB(t, "sqlite")
 	defer cleanup()
 
+	rq := NewRawQuery[RawQueryUser]("SELECT COUNT(*) FROM raw_query_users")
+	rq.driver = env.driver
 	var count int
-	err := NewRawQuery[RawQueryUser]("SELECT COUNT(*) FROM raw_query_users").Scan(&count)
+	err := rq.Scan(&count)
 	if err != nil {
 		t.Fatalf("RawQuery.Scan() failed: %v", err)
 	}
@@ -208,10 +242,12 @@ func TestRawQuery_Scan_SQLite(t *testing.T) {
 }
 
 func TestRawQuery_Exec_SQLite(t *testing.T) {
-	cleanup := setupRawQueryTestDB(t, "sqlite")
+	env, cleanup := setupRawQueryTestDB(t, "sqlite")
 	defer cleanup()
 
-	affected, err := NewRawQuery[RawQueryUser]("UPDATE raw_query_users SET age = ? WHERE name = ?", 26, "Alice").Exec()
+	rq := NewRawQuery[RawQueryUser]("UPDATE raw_query_users SET age = ? WHERE name = ?", 26, "Alice")
+	rq.driver = env.driver
+	affected, err := rq.Exec()
 	if err != nil {
 		t.Fatalf("RawQuery.Exec() failed: %v", err)
 	}
@@ -222,7 +258,7 @@ func TestRawQuery_Exec_SQLite(t *testing.T) {
 
 	// Verify the update
 	var age int
-	err = DB().QueryRow("SELECT age FROM raw_query_users WHERE name = ?", "Alice").Scan(&age)
+	err = env.manager.DB().QueryRow("SELECT age FROM raw_query_users WHERE name = ?", "Alice").Scan(&age)
 	if err != nil {
 		t.Fatalf("Failed to verify update: %v", err)
 	}
@@ -232,12 +268,12 @@ func TestRawQuery_Exec_SQLite(t *testing.T) {
 }
 
 func TestRawQuery_PartialStruct_SQLite(t *testing.T) {
-	cleanup := setupRawQueryTestDB(t, "sqlite")
+	env, cleanup := setupRawQueryTestDB(t, "sqlite")
 	defer cleanup()
 
 	// Test with partial struct (no ID field)
 	var user RawQueryUserPartial
-	err := NewRawQuery[RawQueryUserPartial]("SELECT name, email FROM raw_query_users WHERE name = ?", "Bob").First(&user)
+	err := env.newRawQueryPartial("SELECT name, email FROM raw_query_users WHERE name = ?", "Bob").First(&user)
 	if err != nil {
 		t.Fatalf("RawQuery.First() with partial struct failed: %v", err)
 	}
@@ -251,13 +287,15 @@ func TestRawQuery_PartialStruct_SQLite(t *testing.T) {
 }
 
 func TestRawQuery_WithPlaceholders_SQLite(t *testing.T) {
-	cleanup := setupRawQueryTestDB(t, "sqlite")
+	env, cleanup := setupRawQueryTestDB(t, "sqlite")
 	defer cleanup()
 
-	users, err := NewRawQuery[RawQueryUser](
+	rq := NewRawQuery[RawQueryUser](
 		"SELECT id, name, email FROM raw_query_users WHERE age >= ? AND age <= ? ORDER BY age",
 		25, 30,
-	).Get()
+	)
+	rq.driver = env.driver
+	users, err := rq.Get()
 	if err != nil {
 		t.Fatalf("RawQuery.Get() with multiple placeholders failed: %v", err)
 	}
@@ -273,11 +311,11 @@ func TestRawQuery_First_Postgres(t *testing.T) {
 		t.Skip("Skipping PostgreSQL test (set TEST_POSTGRES=1 to run)")
 	}
 
-	cleanup := setupRawQueryTestDB(t, "postgres")
+	env, cleanup := setupRawQueryTestDB(t, "postgres")
 	defer cleanup()
 
 	var user RawQueryUser
-	err := NewRawQuery[RawQueryUser]("SELECT id, name, email FROM raw_query_users WHERE name = $1", "Alice").First(&user)
+	err := env.newRawQuery("SELECT id, name, email FROM raw_query_users WHERE name = $1", "Alice").First(&user)
 	if err != nil {
 		t.Fatalf("RawQuery.First() failed: %v", err)
 	}
@@ -292,10 +330,12 @@ func TestRawQuery_Get_Postgres(t *testing.T) {
 		t.Skip("Skipping PostgreSQL test (set TEST_POSTGRES=1 to run)")
 	}
 
-	cleanup := setupRawQueryTestDB(t, "postgres")
+	env, cleanup := setupRawQueryTestDB(t, "postgres")
 	defer cleanup()
 
-	users, err := NewRawQuery[RawQueryUser]("SELECT id, name, email FROM raw_query_users ORDER BY name").Get()
+	rq := NewRawQuery[RawQueryUser]("SELECT id, name, email FROM raw_query_users ORDER BY name")
+	rq.driver = env.driver
+	users, err := rq.Get()
 	if err != nil {
 		t.Fatalf("RawQuery.Get() failed: %v", err)
 	}
@@ -310,11 +350,13 @@ func TestRawQuery_Scan_Postgres(t *testing.T) {
 		t.Skip("Skipping PostgreSQL test (set TEST_POSTGRES=1 to run)")
 	}
 
-	cleanup := setupRawQueryTestDB(t, "postgres")
+	env, cleanup := setupRawQueryTestDB(t, "postgres")
 	defer cleanup()
 
+	rq := NewRawQuery[RawQueryUser]("SELECT COUNT(*) FROM raw_query_users")
+	rq.driver = env.driver
 	var count int
-	err := NewRawQuery[RawQueryUser]("SELECT COUNT(*) FROM raw_query_users").Scan(&count)
+	err := rq.Scan(&count)
 	if err != nil {
 		t.Fatalf("RawQuery.Scan() failed: %v", err)
 	}
@@ -326,12 +368,14 @@ func TestRawQuery_Scan_Postgres(t *testing.T) {
 
 // TestModel_Raw tests the Raw method on Model types
 func TestModel_Raw_SQLite(t *testing.T) {
-	cleanup := setupRawQueryTestDB(t, "sqlite")
+	env, cleanup := setupRawQueryTestDB(t, "sqlite")
 	defer cleanup()
 
-	// Test using Model{}.Raw()
+	// Test using Model{}.Raw() - set driver manually since no global wiring
+	rq := Model[RawQueryUser]{}.Raw("SELECT id, name, email FROM raw_query_users WHERE name = ?", "Charlie")
+	rq.driver = env.driver
 	var user RawQueryUser
-	err := Model[RawQueryUser]{}.Raw("SELECT id, name, email FROM raw_query_users WHERE name = ?", "Charlie").First(&user)
+	err := rq.First(&user)
 	if err != nil {
 		t.Fatalf("Model.Raw().First() failed: %v", err)
 	}
@@ -343,10 +387,12 @@ func TestModel_Raw_SQLite(t *testing.T) {
 
 // TestModel_Raw_Get tests the Raw method with Get()
 func TestModel_Raw_Get_SQLite(t *testing.T) {
-	cleanup := setupRawQueryTestDB(t, "sqlite")
+	env, cleanup := setupRawQueryTestDB(t, "sqlite")
 	defer cleanup()
 
-	users, err := Model[RawQueryUser]{}.Raw("SELECT id, name, email FROM raw_query_users WHERE age < ?", 35).Get()
+	rq := Model[RawQueryUser]{}.Raw("SELECT id, name, email FROM raw_query_users WHERE age < ?", 35)
+	rq.driver = env.driver
+	users, err := rq.Get()
 	if err != nil {
 		t.Fatalf("Model.Raw().Get() failed: %v", err)
 	}

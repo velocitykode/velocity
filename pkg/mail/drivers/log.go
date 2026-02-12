@@ -3,10 +3,10 @@ package drivers
 import (
 	"context"
 	"fmt"
+	stdlog "log"
 	"strings"
 	"sync"
 
-	"github.com/velocitykode/velocity/pkg/log"
 	"github.com/velocitykode/velocity/pkg/mail"
 )
 
@@ -105,8 +105,8 @@ func (d *LogDriver) Send(ctx context.Context, msg *mail.Message) error {
 	logEntry := strings.Join(parts, " | ")
 	d.log = append(d.log, logEntry)
 
-	// Log to velocity logger
-	log.Info("MAIL", "details", logEntry)
+	// Log to stdout for development visibility
+	stdlog.Printf("[MAIL] %s", logEntry)
 
 	return nil
 }

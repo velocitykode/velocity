@@ -31,21 +31,34 @@ type ManagerConfig struct {
 // Manager manages database connections. It is the instance-based alternative
 // to the package-level global functions.
 type Manager struct {
-	mu            sync.RWMutex
-	defaultDriver drivers.Driver
-	connections   map[string]drivers.Driver
-	defaultName   string
-	databaseName  string
+	mu              sync.RWMutex
+	defaultDriver   drivers.Driver
+	connections     map[string]drivers.Driver
+	defaultName     string
+	databaseName    string
+	eventDispatcher func(event interface{}) error
+}
+
+// createDriver instantiates a database driver by name.
+func createDriver(name string) (drivers.Driver, error) {
+	switch name {
+	case "sqlite", "sqlite3":
+		return drivers.NewSQLiteDriver(), nil
+	case "postgres":
+		return drivers.NewPostgresDriver(), nil
+	case "mysql":
+		return drivers.NewMySQLDriver(), nil
+	default:
+		return nil, fmt.Errorf("orm: driver %q not registered", name)
+	}
 }
 
 // NewManager creates a new ORM Manager with a connected database driver.
 func NewManager(config ManagerConfig) (*Manager, error) {
-	factory, exists := driverFactories[config.Driver]
-	if !exists {
-		return nil, fmt.Errorf("orm: driver %s not registered", config.Driver)
+	driver, err := createDriver(config.Driver)
+	if err != nil {
+		return nil, err
 	}
-
-	driver := factory()
 
 	connConfig := drivers.ConnectionConfig{
 		Driver:   config.Driver,
@@ -229,6 +242,13 @@ func (m *Manager) Ping() error {
 	return m.defaultDriver.Ping()
 }
 
+// DefaultDriver returns the default database driver (used internally by model Save).
+func (m *Manager) DefaultDriver() drivers.Driver {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.defaultDriver
+}
+
 // DriverName returns the name of the default database driver.
 func (m *Manager) DriverName() string {
 	m.mu.RLock()
@@ -252,6 +272,23 @@ func (m *Manager) Stats() sql.DBStats {
 		return db.Stats()
 	}
 	return sql.DBStats{}
+}
+
+// SetEventDispatcher sets the function used to dispatch ORM events.
+func (m *Manager) SetEventDispatcher(fn func(event interface{}) error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.eventDispatcher = fn
+}
+
+// dispatchEvent dispatches an event if a dispatcher is configured.
+func (m *Manager) dispatchEvent(event interface{}) {
+	m.mu.RLock()
+	fn := m.eventDispatcher
+	m.mu.RUnlock()
+	if fn != nil {
+		fn(event)
+	}
 }
 
 func stringOrDefault(val, def string) string {

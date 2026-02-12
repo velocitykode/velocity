@@ -43,9 +43,12 @@ func (e *MailFailed) Name() string {
 }
 
 // dispatchMailSent dispatches a MailSent event
-func dispatchMailSent(ctx context.Context, to []string, subject, channel string, duration time.Duration) {
+func dispatchMailSent(dispatch func(interface{}), ctx context.Context, to []string, subject, channel string, duration time.Duration) {
+	if dispatch == nil {
+		return
+	}
 	traceID, spanID, parentID := trace.GetTraceContext(ctx)
-	dispatchEvent(&MailSent{
+	dispatch(&MailSent{
 		Context:    ctx,
 		To:         to,
 		Subject:    subject,
@@ -58,13 +61,16 @@ func dispatchMailSent(ctx context.Context, to []string, subject, channel string,
 }
 
 // dispatchMailFailed dispatches a MailFailed event
-func dispatchMailFailed(ctx context.Context, to []string, subject, channel string, err error, duration time.Duration) {
+func dispatchMailFailed(dispatch func(interface{}), ctx context.Context, to []string, subject, channel string, err error, duration time.Duration) {
+	if dispatch == nil {
+		return
+	}
 	traceID, spanID, parentID := trace.GetTraceContext(ctx)
 	errMsg := ""
 	if err != nil {
 		errMsg = err.Error()
 	}
-	dispatchEvent(&MailFailed{
+	dispatch(&MailFailed{
 		Context:    ctx,
 		To:         to,
 		Subject:    subject,

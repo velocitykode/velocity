@@ -9,14 +9,8 @@ import (
 	"time"
 )
 
-// TestGlobalAPICompleteCoverage tests all global API functions
-func TestGlobalAPICompleteCoverage(t *testing.T) {
-	// Save and restore original manager
-	originalManager := globalManager
-	defer func() {
-		globalManager = originalManager
-	}()
-
+// TestManagerAPICompleteCoverage tests all Manager API functions using an instance
+func TestManagerAPICompleteCoverage(t *testing.T) {
 	// Setup test storage
 	testDir := filepath.Join(os.TempDir(), "velocity-storage-coverage-test")
 	os.RemoveAll(testDir)
@@ -37,15 +31,21 @@ func TestGlobalAPICompleteCoverage(t *testing.T) {
 		},
 	}
 
-	err := Configure(config)
+	manager := NewManager(config)
+	err := manager.Configure(config)
 	if err != nil {
 		t.Fatalf("Failed to configure: %v", err)
+	}
+
+	d := manager.Default()
+	if d == nil {
+		t.Fatal("Default disk should not be nil")
 	}
 
 	// Test PutStream
 	t.Run("PutStream", func(t *testing.T) {
 		reader := strings.NewReader("stream content")
-		err := PutStream("stream.txt", reader)
+		err := d.PutStream("stream.txt", reader)
 		if err != nil {
 			t.Errorf("PutStream failed: %v", err)
 		}
@@ -53,7 +53,7 @@ func TestGlobalAPICompleteCoverage(t *testing.T) {
 
 	// Test GetStream
 	t.Run("GetStream", func(t *testing.T) {
-		stream, err := GetStream("stream.txt")
+		stream, err := d.GetStream("stream.txt")
 		if err != nil {
 			t.Errorf("GetStream failed: %v", err)
 		}
@@ -64,8 +64,8 @@ func TestGlobalAPICompleteCoverage(t *testing.T) {
 
 	// Test Copy
 	t.Run("Copy", func(t *testing.T) {
-		Put("original.txt", []byte("original"))
-		err := Copy("original.txt", "copy.txt")
+		d.Put("original.txt", []byte("original"))
+		err := d.Copy("original.txt", "copy.txt")
 		if err != nil {
 			t.Errorf("Copy failed: %v", err)
 		}
@@ -73,8 +73,8 @@ func TestGlobalAPICompleteCoverage(t *testing.T) {
 
 	// Test Move
 	t.Run("Move", func(t *testing.T) {
-		Put("tomove.txt", []byte("move me"))
-		err := Move("tomove.txt", "moved.txt")
+		d.Put("tomove.txt", []byte("move me"))
+		err := d.Move("tomove.txt", "moved.txt")
 		if err != nil {
 			t.Errorf("Move failed: %v", err)
 		}
@@ -82,8 +82,8 @@ func TestGlobalAPICompleteCoverage(t *testing.T) {
 
 	// Test Size
 	t.Run("Size", func(t *testing.T) {
-		Put("sized.txt", []byte("12345"))
-		size, err := Size("sized.txt")
+		d.Put("sized.txt", []byte("12345"))
+		size, err := d.Size("sized.txt")
 		if err != nil {
 			t.Errorf("Size failed: %v", err)
 		}
@@ -94,8 +94,8 @@ func TestGlobalAPICompleteCoverage(t *testing.T) {
 
 	// Test LastModified
 	t.Run("LastModified", func(t *testing.T) {
-		Put("timed.txt", []byte("time"))
-		_, err := LastModified("timed.txt")
+		d.Put("timed.txt", []byte("time"))
+		_, err := d.LastModified("timed.txt")
 		if err != nil {
 			t.Errorf("LastModified failed: %v", err)
 		}
@@ -103,8 +103,8 @@ func TestGlobalAPICompleteCoverage(t *testing.T) {
 
 	// Test MimeType
 	t.Run("MimeType", func(t *testing.T) {
-		Put("mime.txt", []byte("text"))
-		_, err := MimeType("mime.txt")
+		d.Put("mime.txt", []byte("text"))
+		_, err := d.MimeType("mime.txt")
 		if err != nil {
 			t.Errorf("MimeType failed: %v", err)
 		}
@@ -112,9 +112,9 @@ func TestGlobalAPICompleteCoverage(t *testing.T) {
 
 	// Test Files
 	t.Run("Files", func(t *testing.T) {
-		Put("dir/file1.txt", []byte("1"))
-		Put("dir/file2.txt", []byte("2"))
-		files, err := Files("dir")
+		d.Put("dir/file1.txt", []byte("1"))
+		d.Put("dir/file2.txt", []byte("2"))
+		files, err := d.Files("dir")
 		if err != nil {
 			t.Errorf("Files failed: %v", err)
 		}
@@ -125,8 +125,8 @@ func TestGlobalAPICompleteCoverage(t *testing.T) {
 
 	// Test AllFiles
 	t.Run("AllFiles", func(t *testing.T) {
-		Put("dir2/sub/file.txt", []byte("sub"))
-		files, err := AllFiles("dir2")
+		d.Put("dir2/sub/file.txt", []byte("sub"))
+		files, err := d.AllFiles("dir2")
 		if err != nil {
 			t.Errorf("AllFiles failed: %v", err)
 		}
@@ -137,8 +137,8 @@ func TestGlobalAPICompleteCoverage(t *testing.T) {
 
 	// Test Directories
 	t.Run("Directories", func(t *testing.T) {
-		Put("parent/child/file.txt", []byte("nested"))
-		dirs, err := Directories("parent")
+		d.Put("parent/child/file.txt", []byte("nested"))
+		dirs, err := d.Directories("parent")
 		if err != nil {
 			t.Errorf("Directories failed: %v", err)
 		}
@@ -149,7 +149,7 @@ func TestGlobalAPICompleteCoverage(t *testing.T) {
 
 	// Test AllDirectories
 	t.Run("AllDirectories", func(t *testing.T) {
-		dirs, err := AllDirectories("")
+		dirs, err := d.AllDirectories("")
 		if err != nil {
 			t.Errorf("AllDirectories failed: %v", err)
 		}
@@ -161,7 +161,7 @@ func TestGlobalAPICompleteCoverage(t *testing.T) {
 
 	// Test MakeDirectory
 	t.Run("MakeDirectory", func(t *testing.T) {
-		err := MakeDirectory("newdir")
+		err := d.MakeDirectory("newdir")
 		if err != nil {
 			t.Errorf("MakeDirectory failed: %v", err)
 		}
@@ -169,8 +169,8 @@ func TestGlobalAPICompleteCoverage(t *testing.T) {
 
 	// Test DeleteDirectory
 	t.Run("DeleteDirectory", func(t *testing.T) {
-		Put("deldir/file.txt", []byte("delete me"))
-		err := DeleteDirectory("deldir")
+		d.Put("deldir/file.txt", []byte("delete me"))
+		err := d.DeleteDirectory("deldir")
 		if err != nil {
 			t.Errorf("DeleteDirectory failed: %v", err)
 		}
@@ -178,8 +178,8 @@ func TestGlobalAPICompleteCoverage(t *testing.T) {
 
 	// Test URL
 	t.Run("URL", func(t *testing.T) {
-		Put("public.txt", []byte("public"))
-		url := URL("public.txt")
+		d.Put("public.txt", []byte("public"))
+		url := d.URL("public.txt")
 		if url == "" {
 			t.Error("URL returned empty")
 		}
@@ -188,34 +188,16 @@ func TestGlobalAPICompleteCoverage(t *testing.T) {
 	// Test TemporaryURL
 	t.Run("TemporaryURL", func(t *testing.T) {
 		// Local driver doesn't support temporary URLs
-		_, err := TemporaryURL("public.txt", 1*time.Hour)
+		_, err := d.TemporaryURL("public.txt", 1*time.Hour)
 		// We expect an error or empty string for local driver
 		_ = err
 	})
 
-	// Test with nil manager
-	t.Run("NilManager", func(t *testing.T) {
-		globalManager = nil
-
-		// All these should handle nil manager gracefully
-		if Disk("test") != nil {
-			t.Error("Disk should return nil for nil manager")
-		}
-
-		if err := Put("test.txt", []byte("test")); err != ErrDiskNotFound {
-			t.Errorf("Put should return ErrDiskNotFound for nil manager, got: %v", err)
-		}
-
-		if _, err := Get("test.txt"); err != ErrDiskNotFound {
-			t.Errorf("Get should return ErrDiskNotFound for nil manager, got: %v", err)
-		}
-
-		if Exists("test.txt") {
-			t.Error("Exists should return false for nil manager")
-		}
-
-		if URL("test.txt") != "" {
-			t.Error("URL should return empty for nil manager")
+	// Test Disk with nil return
+	t.Run("NilDisk", func(t *testing.T) {
+		disk := manager.Disk("nonexistent")
+		if disk != nil {
+			t.Error("Disk should return nil for nonexistent disk")
 		}
 	})
 }
@@ -519,7 +501,6 @@ func TestLocalDriverAdditional(t *testing.T) {
 	t.Run("ErrorCases", func(t *testing.T) {
 		// Create a file for testing
 		driver.Put("unreadable.txt", []byte("test"))
-		// Note: fullPath would be filepath.Join(testDir, "unreadable.txt") if needed
 
 		// Test with directory instead of file for Size
 		driver.MakeDirectory("testdir")
@@ -627,78 +608,20 @@ func TestConfigurationDriver(t *testing.T) {
 	})
 }
 
-// TestInitFunctions tests initialization functions
-func TestInitFunctions(t *testing.T) {
-	// Save original manager
-	originalManager := globalManager
-	defer func() {
-		globalManager = originalManager
-	}()
-
-	// Test ReloadFromEnv
-	t.Run("ReloadFromEnv", func(t *testing.T) {
-		// Set environment variables
-		os.Setenv("FILESYSTEM_DISK", "memory")
-		os.Setenv("FILESYSTEM_LOCAL_ROOT", "/tmp/test")
-		defer os.Unsetenv("FILESYSTEM_DISK")
-		defer os.Unsetenv("FILESYSTEM_LOCAL_ROOT")
-
-		ReloadFromEnv()
-		// Just verify it doesn't panic
-	})
-
-	// Test findEnvFile
-	t.Run("findEnvFile", func(t *testing.T) {
-		// Create a temporary .env file
-		tempDir := filepath.Join(os.TempDir(), "velocity-env-test")
-		os.MkdirAll(tempDir, 0755)
-		defer os.RemoveAll(tempDir)
-
-		envFile := filepath.Join(tempDir, ".env")
-		os.WriteFile(envFile, []byte("TEST=1"), 0644)
-
-		// Change to temp directory
-		originalWd, _ := os.Getwd()
-		os.Chdir(tempDir)
-		defer os.Chdir(originalWd)
-
-		path := findEnvFile()
-		if path == "" {
-			t.Error("findEnvFile should find .env file")
-		}
-	})
-
-	// Test Configure with error
-	t.Run("ConfigureError", func(t *testing.T) {
-		config := Config{
-			Default: "invalid",
-			Disks: map[string]DiskConfig{
-				"invalid": {
-					Driver: "unknown_driver",
-				},
+// TestConfigureError tests Configure with error
+func TestConfigureError(t *testing.T) {
+	manager := NewManager(Config{})
+	config := Config{
+		Default: "invalid",
+		Disks: map[string]DiskConfig{
+			"invalid": {
+				Driver: "unknown_driver",
 			},
-		}
-		err := Configure(config)
-		if err == nil {
-			t.Error("Configure should fail with unknown driver")
-		}
-	})
-}
-
-// TestSetGlobalManager tests the SetGlobalManager function
-func TestSetGlobalManager(t *testing.T) {
-	originalManager := globalManager
-	defer func() {
-		globalManager = originalManager
-	}()
-
-	testManager := NewManager(Config{
-		Default: "test",
-	})
-
-	SetGlobalManager(testManager)
-	if globalManager != testManager {
-		t.Error("SetGlobalManager didn't set the manager")
+		},
+	}
+	err := manager.Configure(config)
+	if err == nil {
+		t.Error("Configure should fail with unknown driver")
 	}
 }
 

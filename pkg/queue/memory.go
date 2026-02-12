@@ -11,12 +11,13 @@ import (
 
 // MemoryDriver implements Queue interface using in-memory storage
 type MemoryDriver struct {
-	mu       sync.RWMutex
-	queues   map[string]*list.List
-	delayed  map[string][]*delayedJob
-	failed   map[string][]*failedJob
-	stopChan chan struct{}
-	wg       sync.WaitGroup
+	mu              sync.RWMutex
+	queues          map[string]*list.List
+	delayed         map[string][]*delayedJob
+	failed          map[string][]*failedJob
+	stopChan        chan struct{}
+	wg              sync.WaitGroup
+	eventDispatcher func(event interface{}) error
 }
 
 type delayedJob struct {
@@ -47,6 +48,18 @@ func NewMemoryDriver() *MemoryDriver {
 	return m
 }
 
+// SetEventDispatcher sets the function used to dispatch events.
+func (m *MemoryDriver) SetEventDispatcher(fn func(event interface{}) error) {
+	m.eventDispatcher = fn
+}
+
+// dispatchEvent dispatches an event if a dispatcher is configured.
+func (m *MemoryDriver) dispatchEvent(event interface{}) {
+	if m.eventDispatcher != nil {
+		m.eventDispatcher(event)
+	}
+}
+
 // Push adds a job to the queue
 func (m *MemoryDriver) Push(job Job, queueName ...string) error {
 	name := m.getQueueName(queueName...)
@@ -66,7 +79,7 @@ func (m *MemoryDriver) Push(job Job, queueName ...string) error {
 	m.queues[name].PushBack(wrapper)
 
 	// Dispatch job.queued event
-	dispatchJobQueued(context.Background(), wrapper.Payload.Type, name, false, 0)
+	dispatchJobQueued(m.dispatchEvent, context.Background(), wrapper.Payload.Type, name, false, 0)
 	return nil
 }
 
@@ -92,7 +105,7 @@ func (m *MemoryDriver) PushDelayed(job Job, delay time.Duration, queueName ...st
 	})
 
 	// Dispatch job.queued event with delay info
-	dispatchJobQueued(context.Background(), wrapper.Payload.Type, name, true, delay)
+	dispatchJobQueued(m.dispatchEvent, context.Background(), wrapper.Payload.Type, name, true, delay)
 	return nil
 }
 

@@ -117,7 +117,7 @@ func WithoutContext() LogReporterOption {
 func (r *LogReporter) Report(err error, ctx *ExceptionContext) {
 	logger := r.logger
 	if logger == nil {
-		logger = log.Get()
+		return // No logger configured, skip reporting
 	}
 
 	fields := r.buildFields(err, ctx)

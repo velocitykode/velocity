@@ -14,15 +14,8 @@ import (
 
 // TestIntegrationMemoryDriver tests memory driver with real job processing
 func TestIntegrationMemoryDriver(t *testing.T) {
-	// Set environment to use memory driver
-	os.Setenv("QUEUE_DRIVER", "memory")
-	defer os.Unsetenv("QUEUE_DRIVER")
-
-	// Reinitialize to pick up the config
-	err := Reinitialize()
-	if err != nil {
-		t.Fatalf("Failed to reinitialize with memory driver: %v", err)
-	}
+	driver := NewMemoryDriver()
+	defer driver.Close()
 
 	t.Run("ConfigurationPickup", func(t *testing.T) {
 		// Verify we're using memory driver
@@ -32,18 +25,18 @@ func TestIntegrationMemoryDriver(t *testing.T) {
 			Message: "Testing configuration",
 		}
 
-		err := Push(job, "config-queue")
+		err := driver.Push(job, "config-queue")
 		if err != nil {
 			t.Fatalf("Failed to push job: %v", err)
 		}
 
-		size, _ := Size("config-queue")
+		size, _ := driver.Size("config-queue")
 		if size != 1 {
 			t.Errorf("Expected queue size 1, got %d", size)
 		}
 
 		// Clean up
-		Clear("config-queue")
+		driver.Clear("config-queue")
 	})
 
 	t.Run("JobDispatchAndProcessing", func(t *testing.T) {
@@ -72,12 +65,12 @@ func TestIntegrationMemoryDriver(t *testing.T) {
 		}
 
 		// Dispatch jobs
-		err := Push(successJob, "process-queue")
+		err := driver.Push(successJob, "process-queue")
 		if err != nil {
 			t.Fatalf("Failed to push success job: %v", err)
 		}
 
-		err = Push(failJob, "process-queue")
+		err = driver.Push(failJob, "process-queue")
 		if err != nil {
 			t.Fatalf("Failed to push fail job: %v", err)
 		}
@@ -86,7 +79,7 @@ func TestIntegrationMemoryDriver(t *testing.T) {
 		handler := func(job Job) error {
 			return job.Handle()
 		}
-		worker := NewWorker(globalQueue, "process-queue", handler)
+		worker := NewWorker(driver, "process-queue", handler)
 		go worker.Start()
 		defer worker.Stop()
 
@@ -103,7 +96,7 @@ func TestIntegrationMemoryDriver(t *testing.T) {
 		}
 
 		// Queue should be empty
-		size, _ := Size("process-queue")
+		size, _ := driver.Size("process-queue")
 		if size != 0 {
 			t.Errorf("Expected empty queue after processing, got size %d", size)
 		}
@@ -122,7 +115,7 @@ func TestIntegrationMemoryDriver(t *testing.T) {
 		}
 
 		// Push with 1 second delay
-		err := Later(1*time.Second, delayedJob, "delayed-queue")
+		err := driver.PushDelayed(delayedJob, 1*time.Second, "delayed-queue")
 		if err != nil {
 			t.Fatalf("Failed to push delayed job: %v", err)
 		}
@@ -131,7 +124,7 @@ func TestIntegrationMemoryDriver(t *testing.T) {
 		handler := func(job Job) error {
 			return job.Handle()
 		}
-		worker := NewWorker(globalQueue, "delayed-queue", handler)
+		worker := NewWorker(driver, "delayed-queue", handler)
 		go worker.Start()
 		defer worker.Stop()
 
@@ -165,7 +158,7 @@ func TestIntegrationMemoryDriver(t *testing.T) {
 				},
 			}
 
-			err := Push(job, "concurrent-queue")
+			err := driver.Push(job, "concurrent-queue")
 			if err != nil {
 				t.Fatalf("Failed to push job %d: %v", i, err)
 			}
@@ -178,7 +171,7 @@ func TestIntegrationMemoryDriver(t *testing.T) {
 			return job.Handle()
 		}
 		for i := 0; i < numWorkers; i++ {
-			workers[i] = NewWorker(globalQueue, "concurrent-queue", handler)
+			workers[i] = NewWorker(driver, "concurrent-queue", handler)
 			go workers[i].Start()
 		}
 
@@ -210,7 +203,7 @@ func TestIntegrationMemoryDriver(t *testing.T) {
 		}
 
 		// Queue should be empty
-		size, _ := Size("concurrent-queue")
+		size, _ := driver.Size("concurrent-queue")
 		if size != 0 {
 			t.Errorf("Expected empty queue, got size %d", size)
 		}
@@ -287,19 +280,11 @@ func TestIntegrationDatabaseDriver(t *testing.T) {
 		os.Unsetenv("DB_CONNECTION")
 	}()
 
-	// Initialize ORM with the test database
-	// The database driver needs orm.DB() to return a valid connection
-	// We'll use a global variable that the driver can access
-	// For now, we'll create the driver with the db directly
-	// Note: In production, this is handled by the consumer app's bootstrap
+	// Create the driver with the db directly
+	driver := NewDatabaseDriver(db)
 
 	t.Run("DatabaseJobPersistence", func(t *testing.T) {
-		// For testing, we'll use the database connection directly
-		// The database driver would normally get this from orm.DB()
 		t.Skip("Database driver requires full ORM initialization")
-
-		// Create database driver directly
-		driver := NewDatabaseDriver()
 
 		// Push a job
 		job := &TestJob{
@@ -346,7 +331,6 @@ func TestIntegrationDatabaseDriver(t *testing.T) {
 
 	t.Run("DatabaseDelayedJobs", func(t *testing.T) {
 		t.Skip("Database driver requires full ORM initialization")
-		driver := NewDatabaseDriver()
 
 		// Push delayed job
 		job := &TestJob{
@@ -383,7 +367,6 @@ func TestIntegrationDatabaseDriver(t *testing.T) {
 
 	t.Run("DatabaseConcurrentProcessing", func(t *testing.T) {
 		t.Skip("Database driver requires full ORM initialization")
-		driver := NewDatabaseDriver()
 
 		// Push multiple jobs
 		numJobs := 20
@@ -613,68 +596,46 @@ func TestIntegrationRedisDriver(t *testing.T) {
 	driver.Clear("redis-concurrent")
 }
 
-// TestConfigurationFromEnvironment tests that drivers are configured from env vars
+// TestConfigurationFromEnvironment tests that drivers can be created directly
 func TestConfigurationFromEnvironment(t *testing.T) {
-	originalDriver := os.Getenv("QUEUE_DRIVER")
-	defer os.Setenv("QUEUE_DRIVER", originalDriver)
+	t.Run("MemoryDriver", func(t *testing.T) {
+		// Memory driver should always work
+		driver := NewMemoryDriver()
+		defer driver.Close()
 
-	tests := []struct {
-		name   string
-		driver string
-		verify func(t *testing.T)
-	}{
-		{
-			name:   "MemoryFromEnv",
-			driver: "memory",
-			verify: func(t *testing.T) {
-				// Memory driver should always work
-				job := &TestJob{ID: "mem-env", Message: "test"}
-				err := Push(job, "env-test")
-				if err != nil {
-					t.Errorf("Failed to push with memory driver: %v", err)
-				}
-				Clear("env-test")
-			},
-		},
-		{
-			name:   "DatabaseFromEnv",
-			driver: "database",
-			verify: func(t *testing.T) {
-				// Database driver needs ORM initialized, skip if not available
-				t.Log("Database driver would be used if ORM was initialized")
-			},
-		},
-		{
-			name:   "RedisFromEnv",
-			driver: "redis",
-			verify: func(t *testing.T) {
-				// This might fail if Redis is not available, which is ok
-				job := &TestJob{ID: "redis-env", Message: "test"}
-				_ = Push(job, "env-test")
-				Clear("env-test")
-			},
-		},
-	}
+		job := &TestJob{ID: "mem-env", Message: "test"}
+		err := driver.Push(job, "env-test")
+		if err != nil {
+			t.Errorf("Failed to push with memory driver: %v", err)
+		}
+		driver.Clear("env-test")
+	})
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			os.Setenv("QUEUE_DRIVER", tt.driver)
-			err := Reinitialize()
-			if err != nil {
-				// Some drivers might fail if backend is not available
-				t.Logf("Reinitialize with %s failed (ok if backend unavailable): %v", tt.driver, err)
-				return
-			}
-			tt.verify(t)
-		})
-	}
+	t.Run("RedisDriver", func(t *testing.T) {
+		// This might fail if Redis is not available, which is ok
+		config := RedisConfig{
+			Host:     "localhost",
+			Port:     "6379",
+			Password: "",
+			DB:       "15",
+		}
+		driver, err := NewRedisDriver(config)
+		if err != nil {
+			t.Skipf("Redis not available: %v", err)
+			return
+		}
+
+		job := &TestJob{ID: "redis-env", Message: "test"}
+		_ = driver.Push(job, "env-test")
+		driver.Clear("env-test")
+	})
 }
 
 // BenchmarkQueueOperations benchmarks queue operations
 func BenchmarkQueueOperations(b *testing.B) {
 	// Use memory driver for consistent benchmarks
-	os.Setenv("QUEUE_DRIVER", "memory")
-	Reinitialize()
+	driver := NewMemoryDriver()
+	defer driver.Close()
 
 	b.Run("Push", func(b *testing.B) {
 		b.ResetTimer()
@@ -683,10 +644,10 @@ func BenchmarkQueueOperations(b *testing.B) {
 				ID:      fmt.Sprintf("bench-%d", i),
 				Message: "Benchmark",
 			}
-			Push(job, "bench-queue")
+			driver.Push(job, "bench-queue")
 		}
 		b.StopTimer()
-		Clear("bench-queue")
+		driver.Clear("bench-queue")
 	})
 
 	b.Run("PushAndPop", func(b *testing.B) {
@@ -696,8 +657,8 @@ func BenchmarkQueueOperations(b *testing.B) {
 				ID:      fmt.Sprintf("bench-%d", i),
 				Message: "Benchmark",
 			}
-			Push(job, "bench-queue")
-			Pop("bench-queue")
+			driver.Push(job, "bench-queue")
+			driver.Pop("bench-queue")
 		}
 	})
 
@@ -709,11 +670,11 @@ func BenchmarkQueueOperations(b *testing.B) {
 					ID:      fmt.Sprintf("bench-parallel-%d", i),
 					Message: "Benchmark",
 				}
-				Push(job, "bench-parallel")
+				driver.Push(job, "bench-parallel")
 				i++
 			}
 		})
 		b.StopTimer()
-		Clear("bench-parallel")
+		driver.Clear("bench-parallel")
 	})
 }

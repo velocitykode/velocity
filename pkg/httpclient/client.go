@@ -11,8 +11,9 @@ import (
 
 // Client is an instrumented HTTP client that dispatches events for APM monitoring
 type Client struct {
-	client  *http.Client
-	baseURL string
+	client          *http.Client
+	baseURL         string
+	eventDispatcher func(event interface{}) error
 }
 
 // Option configures a Client
@@ -73,7 +74,7 @@ func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, err
 	duration := time.Since(start)
 
 	if err != nil {
-		dispatchRequestFailed(ctx, method, url, err, duration)
+		c.dispatchRequestFailed(ctx, method, url, err, duration)
 		return nil, err
 	}
 
@@ -83,7 +84,7 @@ func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, err
 		responseSize = resp.ContentLength
 	}
 
-	dispatchRequestSent(ctx, method, url, resp.StatusCode, duration, requestSize, responseSize)
+	c.dispatchRequestSent(ctx, method, url, resp.StatusCode, duration, requestSize, responseSize)
 	return resp, nil
 }
 
@@ -135,38 +136,22 @@ func (c *Client) Patch(ctx context.Context, url string, contentType string, body
 	return c.Do(ctx, req)
 }
 
+// SetEventDispatcher sets the function used to dispatch events.
+func (c *Client) SetEventDispatcher(fn func(event interface{}) error) {
+	c.eventDispatcher = fn
+}
+
+// dispatchEvent dispatches an event if a dispatcher is configured.
+func (c *Client) dispatchEvent(event interface{}) {
+	if c.eventDispatcher != nil {
+		c.eventDispatcher(event)
+	}
+}
+
 // resolveURL resolves the URL with the base URL if set
 func (c *Client) resolveURL(url string) string {
 	if c.baseURL != "" && len(url) > 0 && url[0] == '/' {
 		return c.baseURL + url
 	}
 	return url
-}
-
-// Default is the default instrumented HTTP client
-var Default = New()
-
-// Get performs a GET request using the default client
-func Get(ctx context.Context, url string) (*http.Response, error) {
-	return Default.Get(ctx, url)
-}
-
-// Post performs a POST request using the default client
-func Post(ctx context.Context, url string, contentType string, body io.Reader) (*http.Response, error) {
-	return Default.Post(ctx, url, contentType, body)
-}
-
-// Put performs a PUT request using the default client
-func Put(ctx context.Context, url string, contentType string, body io.Reader) (*http.Response, error) {
-	return Default.Put(ctx, url, contentType, body)
-}
-
-// Delete performs a DELETE request using the default client
-func Delete(ctx context.Context, url string) (*http.Response, error) {
-	return Default.Delete(ctx, url)
-}
-
-// Patch performs a PATCH request using the default client
-func Patch(ctx context.Context, url string, contentType string, body io.Reader) (*http.Response, error) {
-	return Default.Patch(ctx, url, contentType, body)
 }

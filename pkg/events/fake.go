@@ -326,10 +326,3 @@ func (f *FakeDispatcher) getEventName(event interface{}) string {
 
 	return t.Name()
 }
-
-// Fake sets up fake event dispatching for testing
-func Fake() *FakeDispatcher {
-	fake := NewFakeDispatcher()
-	Initialize(fake)
-	return fake
-}

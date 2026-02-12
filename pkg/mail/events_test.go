@@ -30,56 +30,57 @@ func TestEventNames(t *testing.T) {
 
 func TestMailDispatcher(t *testing.T) {
 	t.Run("SetEventDispatcher", func(t *testing.T) {
-		SetEventDispatcher(nil)
+		manager := NewManager()
+		manager.SetEventDispatcher(nil)
 
 		called := false
-		SetEventDispatcher(func(event interface{}) error {
+		manager.SetEventDispatcher(func(event interface{}) error {
 			called = true
 			return nil
 		})
 
-		dispatchEvent(&MailSent{})
+		manager.dispatchEvent(&MailSent{})
 
 		if !called {
 			t.Error("dispatcher was not called")
 		}
 
-		SetEventDispatcher(nil)
+		manager.SetEventDispatcher(nil)
 	})
 
 	t.Run("dispatchEvent with nil dispatcher", func(t *testing.T) {
-		SetEventDispatcher(nil)
+		manager := NewManager()
+		manager.SetEventDispatcher(nil)
 		// Should not panic
-		dispatchEvent(&MailSent{})
+		manager.dispatchEvent(&MailSent{})
 	})
 
 	t.Run("dispatchEvent with error returning dispatcher", func(t *testing.T) {
-		SetEventDispatcher(func(event interface{}) error {
+		manager := NewManager()
+		manager.SetEventDispatcher(func(event interface{}) error {
 			return errors.New("dispatcher error")
 		})
 
 		// Should not panic
-		dispatchEvent(&MailSent{})
+		manager.dispatchEvent(&MailSent{})
 
-		SetEventDispatcher(nil)
+		manager.SetEventDispatcher(nil)
 	})
 }
 
 func TestDispatchMailSent(t *testing.T) {
 	var captured *MailSent
-	SetEventDispatcher(func(event interface{}) error {
+	dispatch := func(event interface{}) {
 		if e, ok := event.(*MailSent); ok {
 			captured = e
 		}
-		return nil
-	})
-	defer SetEventDispatcher(nil)
+	}
 
 	t.Run("basic dispatch", func(t *testing.T) {
 		captured = nil
 		ctx := context.Background()
 		to := []string{"user@example.com", "other@example.com"}
-		dispatchMailSent(ctx, to, "Welcome!", "smtp", 150*time.Millisecond)
+		dispatchMailSent(dispatch, ctx, to, "Welcome!", "smtp", 150*time.Millisecond)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -105,7 +106,7 @@ func TestDispatchMailSent(t *testing.T) {
 		captured = nil
 		ctx := trace.WithTrace(context.Background(), "trace-mail", "parent-mail")
 		ctx = trace.WithSpan(ctx, "span-mail")
-		dispatchMailSent(ctx, []string{"test@example.com"}, "Test", "log", 50*time.Millisecond)
+		dispatchMailSent(dispatch, ctx, []string{"test@example.com"}, "Test", "log", 50*time.Millisecond)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -120,23 +121,26 @@ func TestDispatchMailSent(t *testing.T) {
 			t.Errorf("ParentID = %q, want %q", captured.ParentID, "parent-mail")
 		}
 	})
+
+	t.Run("with nil dispatch", func(t *testing.T) {
+		// Should not panic
+		dispatchMailSent(nil, context.Background(), []string{"test@example.com"}, "Test", "log", 50*time.Millisecond)
+	})
 }
 
 func TestDispatchMailFailed(t *testing.T) {
 	var captured *MailFailed
-	SetEventDispatcher(func(event interface{}) error {
+	dispatch := func(event interface{}) {
 		if e, ok := event.(*MailFailed); ok {
 			captured = e
 		}
-		return nil
-	})
-	defer SetEventDispatcher(nil)
+	}
 
 	t.Run("basic dispatch", func(t *testing.T) {
 		captured = nil
 		ctx := context.Background()
 		err := errors.New("SMTP connection failed")
-		dispatchMailFailed(ctx, []string{"user@example.com"}, "Important", "smtp", err, 5*time.Second)
+		dispatchMailFailed(dispatch, ctx, []string{"user@example.com"}, "Important", "smtp", err, 5*time.Second)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -155,7 +159,7 @@ func TestDispatchMailFailed(t *testing.T) {
 	t.Run("with nil error", func(t *testing.T) {
 		captured = nil
 		ctx := context.Background()
-		dispatchMailFailed(ctx, []string{"user@example.com"}, "Test", "log", nil, 100*time.Millisecond)
+		dispatchMailFailed(dispatch, ctx, []string{"user@example.com"}, "Test", "log", nil, 100*time.Millisecond)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -169,7 +173,7 @@ func TestDispatchMailFailed(t *testing.T) {
 		captured = nil
 		ctx := trace.WithTrace(context.Background(), "trace-fail", "parent-fail")
 		ctx = trace.WithSpan(ctx, "span-fail")
-		dispatchMailFailed(ctx, []string{"test@example.com"}, "Failed", "postmark", errors.New("timeout"), 30*time.Second)
+		dispatchMailFailed(dispatch, ctx, []string{"test@example.com"}, "Failed", "postmark", errors.New("timeout"), 30*time.Second)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -183,6 +187,11 @@ func TestDispatchMailFailed(t *testing.T) {
 		if captured.ParentID != "parent-fail" {
 			t.Errorf("ParentID = %q, want %q", captured.ParentID, "parent-fail")
 		}
+	})
+
+	t.Run("with nil dispatch", func(t *testing.T) {
+		// Should not panic
+		dispatchMailFailed(nil, context.Background(), []string{"test@example.com"}, "Test", "log", nil, 100*time.Millisecond)
 	})
 }
 

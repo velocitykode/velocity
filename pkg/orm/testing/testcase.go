@@ -17,15 +17,18 @@ var (
 
 // TestCase provides test helpers for database testing
 type TestCase struct {
-	t  *testing.T
-	db *sql.DB
+	t       *testing.T
+	db      *sql.DB
+	manager *orm.Manager
 }
 
-// NewTestCase creates a new test case instance
-func NewTestCase(t *testing.T) *TestCase {
+// NewTestCase creates a new test case instance.
+// The manager must be an initialized *orm.Manager with an active connection.
+func NewTestCase(t *testing.T, manager *orm.Manager) *TestCase {
 	return &TestCase{
-		t:  t,
-		db: orm.DB(),
+		t:       t,
+		db:      manager.DB(),
+		manager: manager,
 	}
 }
 
@@ -36,7 +39,7 @@ func NewTestCase(t *testing.T) *TestCase {
 // Usage:
 //
 //	func TestExample(t *testing.T) {
-//	    tc := testing.NewTestCase(t)
+//	    tc := testing.NewTestCase(t, manager)
 //	    tc.LazyRefreshDatabase()
 //
 //	    // Test code - clean database, fast setup
@@ -44,14 +47,16 @@ func NewTestCase(t *testing.T) *TestCase {
 func (tc *TestCase) LazyRefreshDatabase() {
 	tc.ensureSafeEnvironment()
 
+	driver := tc.manager.DriverName()
+
 	// Run migrations ONCE per test suite
 	schemaRefreshedOnce.Do(func() {
 		// Drop all tables and run migrations fresh
-		if err := DropAllTables(tc.db, orm.GetDriver()); err != nil {
+		if err := DropAllTables(tc.db, driver); err != nil {
 			tc.t.Fatalf("LazyRefreshDatabase: failed to drop tables: %v", err)
 		}
 
-		migrator := migrate.NewMigrator(tc.db, orm.GetDriver())
+		migrator := migrate.NewMigrator(tc.db, driver)
 		if err := migrator.Up(); err != nil {
 			tc.t.Fatalf("LazyRefreshDatabase: failed to run migrations: %v", err)
 		}
@@ -59,7 +64,7 @@ func (tc *TestCase) LazyRefreshDatabase() {
 	})
 
 	// Truncate tables for each test (fast cleanup)
-	if err := TruncateAllTables(tc.db, orm.GetDriver()); err != nil {
+	if err := TruncateAllTables(tc.db, driver); err != nil {
 		tc.t.Fatalf("LazyRefreshDatabase: failed to truncate tables: %v", err)
 	}
 }
@@ -71,7 +76,7 @@ func (tc *TestCase) LazyRefreshDatabase() {
 // Usage:
 //
 //	func TestExample(t *testing.T) {
-//	    tc := testing.NewTestCase(t)
+//	    tc := testing.NewTestCase(t, manager)
 //	    tc.RefreshDatabase()
 //
 //	    // Test code - completely fresh database
@@ -79,13 +84,15 @@ func (tc *TestCase) LazyRefreshDatabase() {
 func (tc *TestCase) RefreshDatabase() {
 	tc.ensureSafeEnvironment()
 
+	driver := tc.manager.DriverName()
+
 	// Drop all tables
-	if err := DropAllTables(tc.db, orm.GetDriver()); err != nil {
+	if err := DropAllTables(tc.db, driver); err != nil {
 		tc.t.Fatalf("RefreshDatabase: failed to drop tables: %v", err)
 	}
 
 	// Run migrations
-	migrator := migrate.NewMigrator(tc.db, orm.GetDriver())
+	migrator := migrate.NewMigrator(tc.db, driver)
 	if err := migrator.Up(); err != nil {
 		tc.t.Fatalf("RefreshDatabase: failed to run migrations: %v", err)
 	}
@@ -105,7 +112,7 @@ func (tc *TestCase) ensureSafeEnvironment() {
 	}
 
 	if appEnv != "testing" {
-		dbName := orm.GetDatabaseName()
+		dbName := tc.manager.DatabaseName()
 		if !isTestDatabase(dbName) {
 			panic("Not in testing environment and database doesn't look like a test database.\nTip: Set APP_ENV=testing in .env.testing")
 		}

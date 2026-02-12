@@ -9,7 +9,6 @@ import (
 
 func TestWorker(t *testing.T) {
 	q := NewMemoryQueue()
-	SetDefault(q)
 
 	t.Run("Basic Worker", func(t *testing.T) {
 		processed := int32(0)
@@ -173,7 +172,6 @@ func TestWorker(t *testing.T) {
 
 func TestGlobalWorker(t *testing.T) {
 	q := NewMemoryQueue()
-	SetDefault(q)
 
 	processed := int32(0)
 
@@ -183,17 +181,18 @@ func TestGlobalWorker(t *testing.T) {
 			ID:      "global-worker-" + string(rune(i)),
 			Message: "Global worker test",
 		}
-		err := Push(job, "global-worker")
+		err := q.Push(job, "global-worker")
 		if err != nil {
 			t.Fatalf("Failed to push job: %v", err)
 		}
 	}
 
-	// Start worker using global API
-	worker := Work("global-worker", func(job Job) error {
+	// Start worker
+	worker := NewWorker(q, "global-worker", func(job Job) error {
 		atomic.AddInt32(&processed, 1)
 		return nil
 	}, WithConcurrency(2))
+	worker.Start()
 
 	// Wait for processing
 	time.Sleep(200 * time.Millisecond)

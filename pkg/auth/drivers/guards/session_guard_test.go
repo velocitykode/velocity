@@ -174,11 +174,14 @@ func newTestSessionConfig() auth.SessionConfig {
 }
 
 func TestNewSessionGuard(t *testing.T) {
-	// Initialize crypto package for cookie store creation
-	_ = crypto.Init(crypto.Config{
+	// Create encryptor instance for cookie store creation
+	encryptor, err := crypto.NewEncryptor(crypto.Config{
 		Key:    "test-key-32-bytes-long-for-test!",
 		Cipher: "AES-256-CBC",
 	})
+	if err != nil {
+		t.Fatalf("Failed to create encryptor: %v", err)
+	}
 
 	tests := []struct {
 		name     string
@@ -217,7 +220,7 @@ func TestNewSessionGuard(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			guard, err := NewSessionGuard(tt.provider, tt.config)
+			guard, err := NewSessionGuard(tt.provider, tt.config, encryptor)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("NewSessionGuard() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -890,15 +893,20 @@ func TestSessionGuard_LoginByID(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Initialize crypto for tests that use remember functionality
+			guard := tt.setupGuard()
+
+			// Set encryptor on guard for tests that use remember functionality
 			if len(tt.remember) > 0 && tt.remember[0] {
-				_ = crypto.Init(crypto.Config{
+				enc, err := crypto.NewEncryptor(crypto.Config{
 					Key:    "test-key-32-bytes-long-for-test!",
 					Cipher: "AES-256-CBC",
 				})
+				if err != nil {
+					t.Fatalf("Failed to create encryptor: %v", err)
+				}
+				guard.encryptor = enc
 			}
 
-			guard := tt.setupGuard()
 			req := tt.setupReq()
 			w := httptest.NewRecorder()
 

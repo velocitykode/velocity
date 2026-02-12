@@ -32,24 +32,31 @@ func WithSessionContext(r *http.Request) *http.Request {
 
 // SessionGuard implements session-based authentication
 type SessionGuard struct {
-	provider auth.UserProvider
-	store    auth.SessionStore
-	config   auth.SessionConfig
-	hasher   auth.Hasher
+	provider  auth.UserProvider
+	store     auth.SessionStore
+	config    auth.SessionConfig
+	hasher    auth.Hasher
+	encryptor crypto.Encryptor
 }
 
-// NewSessionGuard creates a new session guard
-func NewSessionGuard(provider auth.UserProvider, config auth.SessionConfig) (*SessionGuard, error) {
+// NewSessionGuard creates a new session guard.
+// The encryptor parameter is optional — pass nil if crypto is not configured
+// (session guard will still work if a non-cookie store is used later).
+func NewSessionGuard(provider auth.UserProvider, config auth.SessionConfig, encryptor ...crypto.Encryptor) (*SessionGuard, error) {
 	// Create session store based on driver
 	var store auth.SessionStore
 	var err error
 
+	var enc crypto.Encryptor
+	if len(encryptor) > 0 {
+		enc = encryptor[0]
+	}
+
 	switch config.Driver {
 	case "cookie", "":
-		store, err = session.NewCookieStore(config)
+		store, err = session.NewCookieStore(config, enc)
 	default:
-		// Default to cookie store
-		store, err = session.NewCookieStore(config)
+		store, err = session.NewCookieStore(config, enc)
 	}
 
 	if err != nil {
@@ -242,7 +249,10 @@ func (g *SessionGuard) checkRememberCookie(r *http.Request) auth.Authenticatable
 	}
 
 	// Decrypt cookie value
-	decrypted, err := crypto.Decrypt(cookie.Value)
+	if g.encryptor == nil {
+		return nil
+	}
+	decrypted, err := g.encryptor.Decrypt(cookie.Value)
 	if err != nil {
 		return nil
 	}
@@ -290,7 +300,10 @@ func (g *SessionGuard) setRememberCookie(w http.ResponseWriter, user auth.Authen
 	value := userID + "|" + token
 
 	// Encrypt value
-	encrypted, err := crypto.Encrypt(value)
+	if g.encryptor == nil {
+		return fmt.Errorf("auth: encryptor not configured, cannot set remember cookie")
+	}
+	encrypted, err := g.encryptor.Encrypt(value)
 	if err != nil {
 		return err
 	}

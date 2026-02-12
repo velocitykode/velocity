@@ -2,7 +2,6 @@ package mail
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"html/template"
 	"mime"
@@ -198,16 +197,6 @@ func (m *Message) Header(key, value string) *Message {
 func (m *Message) Priority(priority Priority) *Message {
 	m.priority = priority
 	return m
-}
-
-// Send sends the message using the default mailer
-func (m *Message) Send() error {
-	return Send(context.Background(), m)
-}
-
-// SendWithContext sends the message using the default mailer with context
-func (m *Message) SendWithContext(ctx context.Context) error {
-	return Send(ctx, m)
 }
 
 // Getters for driver access

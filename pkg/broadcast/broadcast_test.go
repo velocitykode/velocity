@@ -231,54 +231,6 @@ func TestPresenceData(t *testing.T) {
 	}
 }
 
-func TestDefaultInstance(t *testing.T) {
-	// Test that default instance is created
-	b1 := Default()
-	b2 := Default()
-
-	if b1 != b2 {
-		t.Error("Expected same default instance")
-	}
-}
-
-func TestPackageLevelFunctions(t *testing.T) {
-	// Replace default with mock for testing
-	mockDriver := NewMockDriver()
-	defaultBroadcaster = New(mockDriver)
-
-	// Test package-level Channel function
-	err := Channel("test").Emit("event", "data")
-	if err != nil {
-		t.Fatalf("Failed to emit: %v", err)
-	}
-
-	if len(mockDriver.broadcasts) != 1 {
-		t.Error("Expected 1 broadcast from package-level function")
-	}
-
-	// Test package-level Private function
-	mockDriver.broadcasts = []BroadcastCall{}
-	err = Private("user.1").Emit("update", "data")
-	if err != nil {
-		t.Fatalf("Failed to emit: %v", err)
-	}
-
-	if mockDriver.broadcasts[0].Channels[0] != "private-user.1" {
-		t.Errorf("Expected private channel, got %s", mockDriver.broadcasts[0].Channels[0])
-	}
-
-	// Test package-level Presence function
-	mockDriver.broadcasts = []BroadcastCall{}
-	err = Presence("room.1").Emit("join", "data")
-	if err != nil {
-		t.Fatalf("Failed to emit: %v", err)
-	}
-
-	if mockDriver.broadcasts[0].Channels[0] != "presence-room.1" {
-		t.Errorf("Expected presence channel, got %s", mockDriver.broadcasts[0].Channels[0])
-	}
-}
-
 func TestWebSocketDriverIntegration(t *testing.T) {
 	// This test would require a running WebSocket server
 	// Skipping for unit tests, but included for completeness
@@ -559,14 +511,14 @@ func TestLeave(t *testing.T) {
 func TestChannelBuilderChaining(t *testing.T) {
 	tests := []struct {
 		name          string
-		setupBuilder  func(*broadcaster) *ChannelBuilder
+		setupBuilder  func(*BroadcastManager) *ChannelBuilder
 		wantChannels  []string
 		wantToOthers  string
 		wantCondition bool
 	}{
 		{
 			name: "chains ToOthers and When",
-			setupBuilder: func(b *broadcaster) *ChannelBuilder {
+			setupBuilder: func(b *BroadcastManager) *ChannelBuilder {
 				return b.Channel("chat").ToOthers("socket-1").When(true)
 			},
 			wantChannels:  []string{"chat"},
@@ -575,7 +527,7 @@ func TestChannelBuilderChaining(t *testing.T) {
 		},
 		{
 			name: "chains When before ToOthers",
-			setupBuilder: func(b *broadcaster) *ChannelBuilder {
+			setupBuilder: func(b *BroadcastManager) *ChannelBuilder {
 				return b.Channel("chat").When(false).ToOthers("socket-2")
 			},
 			wantChannels:  []string{"chat"},
@@ -584,7 +536,7 @@ func TestChannelBuilderChaining(t *testing.T) {
 		},
 		{
 			name: "private channel with chaining",
-			setupBuilder: func(b *broadcaster) *ChannelBuilder {
+			setupBuilder: func(b *BroadcastManager) *ChannelBuilder {
 				return b.Private("user.1").ToOthers("socket-3").When(true)
 			},
 			wantChannels:  []string{"private-user.1"},
@@ -593,7 +545,7 @@ func TestChannelBuilderChaining(t *testing.T) {
 		},
 		{
 			name: "presence channel with chaining",
-			setupBuilder: func(b *broadcaster) *ChannelBuilder {
+			setupBuilder: func(b *BroadcastManager) *ChannelBuilder {
 				return b.Presence("room.1").ToOthers("socket-4").When(true)
 			},
 			wantChannels:  []string{"presence-room.1"},
@@ -664,65 +616,6 @@ func TestSetAuthorizerAndPresenceData(t *testing.T) {
 			_, _ = b.Auth("presence-room", "socket", nil)
 			if !presenceCalled {
 				t.Error("presence func was not called after SetPresenceData")
-			}
-		})
-	}
-}
-
-func TestPackageLevelSetAuthorizer(t *testing.T) {
-	tests := []struct {
-		name string
-	}{
-		{"sets authorizer on default broadcaster"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Reset default broadcaster for testing
-			mockDriver := NewMockDriver()
-			defaultBroadcaster = New(mockDriver)
-
-			authCalled := false
-			SetAuthorizer(func(channel string, user interface{}) bool {
-				authCalled = true
-				return true
-			})
-
-			_, _ = Default().Auth("test", "socket", nil)
-			if !authCalled {
-				t.Error("package-level SetAuthorizer did not set authorizer on default broadcaster")
-			}
-		})
-	}
-}
-
-func TestPackageLevelSetPresenceData(t *testing.T) {
-	tests := []struct {
-		name string
-	}{
-		{"sets presence data func on default broadcaster"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Reset default broadcaster for testing
-			mockDriver := NewMockDriver()
-			defaultBroadcaster = New(mockDriver)
-
-			// Set authorizer first so we can test presence data
-			SetAuthorizer(func(channel string, user interface{}) bool {
-				return true
-			})
-
-			presenceCalled := false
-			SetPresenceData(func(channel string, user interface{}) interface{} {
-				presenceCalled = true
-				return map[string]interface{}{"test": true}
-			})
-
-			_, _ = Default().Auth("presence-room", "socket", nil)
-			if !presenceCalled {
-				t.Error("package-level SetPresenceData did not set presence func on default broadcaster")
 			}
 		})
 	}

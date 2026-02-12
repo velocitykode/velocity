@@ -9,9 +9,6 @@ import (
 	"os"
 	"sync"
 	"time"
-
-	"github.com/velocitykode/velocity/pkg/log"
-	"github.com/velocitykode/velocity/pkg/orm"
 )
 
 // JobRecord represents a job in the database
@@ -45,29 +42,34 @@ type FailedJobRecord struct {
 
 // DatabaseDriver implements the Driver interface using database
 type DatabaseDriver struct {
-	mu       sync.RWMutex
-	workerID string
+	mu              sync.RWMutex
+	db              *sql.DB
+	workerID        string
+	eventDispatcher func(event interface{}) error
 }
 
-// NewDatabaseDriver creates a new database queue driver
-func NewDatabaseDriver() Driver {
+// NewDatabaseDriver creates a new database queue driver with an injected *sql.DB.
+func NewDatabaseDriver(db *sql.DB) *DatabaseDriver {
 	workerID := fmt.Sprintf("worker_%d_%d", time.Now().Unix(), time.Now().Nanosecond())
 
 	driver := &DatabaseDriver{
+		db:       db,
 		workerID: workerID,
 	}
-
-	// Ensure tables exist
-	driver.ensureTables()
 
 	return driver
 }
 
-// ensureTables creates the necessary tables if they don't exist
-func (d *DatabaseDriver) ensureTables() {
-	// For now, we'll rely on migrations
-	// In production, users should run migrations to create these tables
-	log.Info("Database queue driver initialized", "worker_id", d.workerID)
+// SetEventDispatcher sets the function used to dispatch events.
+func (d *DatabaseDriver) SetEventDispatcher(fn func(event interface{}) error) {
+	d.eventDispatcher = fn
+}
+
+// dispatchEvent dispatches an event if a dispatcher is configured.
+func (d *DatabaseDriver) dispatchEvent(event interface{}) {
+	if d.eventDispatcher != nil {
+		d.eventDispatcher(event)
+	}
 }
 
 // Push adds a job to the queue
@@ -83,7 +85,7 @@ func (d *DatabaseDriver) PushDelayed(job Job, delay time.Duration, queueName ...
 	}
 
 	// Check if database is available
-	db := orm.DB()
+	db := d.db
 	if db == nil {
 		return fmt.Errorf("database not initialized")
 	}
@@ -124,14 +126,8 @@ func (d *DatabaseDriver) PushDelayed(job Job, delay time.Duration, queueName ...
 		return fmt.Errorf("failed to insert job: %w", err)
 	}
 
-	log.Info("Job pushed to database queue",
-		"queue", name,
-		"job_id", jobID,
-		"scheduled_at", scheduledAt.Format(time.RFC3339),
-	)
-
 	// Dispatch job.queued event
-	dispatchJobQueued(context.Background(), wrapper.Payload.Type, name, delay > 0, delay)
+	dispatchJobQueued(d.dispatchEvent, context.Background(), wrapper.Payload.Type, name, delay > 0, delay)
 	return nil
 }
 
@@ -169,7 +165,7 @@ func (d *DatabaseDriver) Pop(queueName string) (Job, error) {
 			LIMIT 1`
 	}
 
-	row := orm.DB().QueryRow(sqlQuery, queueName, time.Now())
+	row := d.db.QueryRow(sqlQuery, queueName, time.Now())
 	err := scanJobRecord(row, &jobRecord)
 
 	if err != nil {
@@ -180,7 +176,7 @@ func (d *DatabaseDriver) Pop(queueName string) (Job, error) {
 	}
 
 	// Delete the job (simulating pop)
-	_, err = orm.DB().Exec("DELETE FROM jobs WHERE id = $1", jobRecord.ID)
+	_, err = d.db.Exec("DELETE FROM jobs WHERE id = $1", jobRecord.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to delete job: %w", err)
 	}
@@ -207,19 +203,13 @@ func (d *DatabaseDriver) Pop(queueName string) (Job, error) {
 		return nil, fmt.Errorf("failed to restore job from wrapper")
 	}
 
-	log.Info("Job popped from database queue",
-		"queue", queueName,
-		"job_id", jobRecord.ID,
-		"attempts", jobRecord.Attempts,
-	)
-
 	return job, nil
 }
 
 // Size returns the number of jobs in the queue
 func (d *DatabaseDriver) Size(queueName string) (int64, error) {
 	var count int64
-	err := orm.DB().QueryRow(
+	err := d.db.QueryRow(
 		"SELECT COUNT(*) FROM jobs WHERE queue = ? AND reserved_at IS NULL AND failed_at IS NULL",
 		queueName,
 	).Scan(&count)
@@ -233,13 +223,12 @@ func (d *DatabaseDriver) Size(queueName string) (int64, error) {
 
 // Clear removes all jobs from a queue
 func (d *DatabaseDriver) Clear(queueName string) error {
-	_, err := orm.DB().Exec("DELETE FROM jobs WHERE queue = ?", queueName)
+	_, err := d.db.Exec("DELETE FROM jobs WHERE queue = ?", queueName)
 
 	if err != nil {
 		return fmt.Errorf("failed to clear queue: %w", err)
 	}
 
-	log.Info("Database queue cleared", "queue", queueName)
 	return nil
 }
 
@@ -265,14 +254,13 @@ func (d *DatabaseDriver) Failed(job Job, err error, queueName string) error {
 	}
 
 	// Insert into failed_jobs table
-	if dbErr := orm.Save(failedJob); dbErr != nil {
+	_, dbErr := d.db.Exec(
+		"INSERT INTO failed_jobs (queue, payload, exception, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
+		failedJob.Queue, failedJob.Payload, failedJob.Exception, time.Now(), time.Now(),
+	)
+	if dbErr != nil {
 		return fmt.Errorf("failed to record failed job: %w", dbErr)
 	}
-
-	log.Error("Job failed and moved to failed_jobs",
-		"queue", queueName,
-		"error", err.Error(),
-	)
 
 	return nil
 }
@@ -280,7 +268,7 @@ func (d *DatabaseDriver) Failed(job Job, err error, queueName string) error {
 // GetDelayedJobs returns the number of delayed jobs
 func (d *DatabaseDriver) GetDelayedJobs(queueName string) (int64, error) {
 	var count int64
-	err := orm.DB().QueryRow(
+	err := d.db.QueryRow(
 		"SELECT COUNT(*) FROM jobs WHERE queue = ? AND scheduled_at > ? AND reserved_at IS NULL AND failed_at IS NULL",
 		queueName, time.Now(),
 	).Scan(&count)

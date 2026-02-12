@@ -112,7 +112,7 @@ func TestORMUserProviderValidateCredentials(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			provider := NewORMUserProvider("User")
+			provider := NewORMUserProvider(nil, "User")
 
 			got := provider.ValidateCredentials(tt.user, tt.credentials)
 			if got != tt.want {
@@ -164,7 +164,7 @@ func TestORMUserProviderFindByCredentials_EmailValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			provider := NewORMUserProvider("User")
+			provider := NewORMUserProvider(nil, "User")
 
 			_, err := provider.FindByCredentials(tt.credentials)
 			if (err != nil) != tt.wantErr {
@@ -196,7 +196,7 @@ func TestORMUserProviderFindByID_NilHandling(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			provider := NewORMUserProvider("User")
+			provider := NewORMUserProvider(nil, "User")
 
 			_, err := provider.FindByID(tt.id)
 			if (err != nil) != tt.wantErr {
@@ -247,7 +247,7 @@ func TestORMUserProviderUpdateRememberToken(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			provider := NewORMUserProvider("User")
+			provider := NewORMUserProvider(nil, "User")
 
 			err := provider.UpdateRememberToken(tt.user, tt.token)
 			if (err != nil) != tt.wantErr {
@@ -285,7 +285,7 @@ func TestNewORMUserProvider(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			provider := NewORMUserProvider(tt.modelType)
+			provider := NewORMUserProvider(nil, tt.modelType)
 
 			if provider == nil {
 				t.Fatal("NewORMUserProvider() returned nil")
@@ -428,7 +428,7 @@ func TestORMUserProviderValidateCredentialsWithMockHasher(t *testing.T) {
 			tt.setupHasher()
 
 			// Create a new provider that will use the updated hasher
-			provider := NewORMUserProvider("User")
+			provider := NewORMUserProvider(nil, "User")
 
 			got := provider.ValidateCredentials(tt.user, tt.credentials)
 			if got != tt.want {
@@ -443,7 +443,7 @@ func TestORMUserProviderUserProviderInterface(t *testing.T) {
 	var _ UserProvider = (*ORMUserProvider)(nil)
 
 	t.Run("ORMUserProvider implements UserProvider interface", func(t *testing.T) {
-		provider := NewORMUserProvider("User")
+		provider := NewORMUserProvider(nil, "User")
 
 		// Verify all methods exist and are callable
 		_, _ = provider.FindByID(nil)

@@ -31,55 +31,56 @@ func TestSchedulerEventNames(t *testing.T) {
 
 func TestSchedulerDispatcher(t *testing.T) {
 	t.Run("SetEventDispatcher", func(t *testing.T) {
-		SetEventDispatcher(nil)
+		s := New()
+		s.SetEventDispatcher(nil)
 
 		called := false
-		SetEventDispatcher(func(event interface{}) error {
+		s.SetEventDispatcher(func(event interface{}) error {
 			called = true
 			return nil
 		})
 
-		dispatchEvent(&ScheduledTaskStarting{})
+		s.dispatchEvent(&ScheduledTaskStarting{})
 
 		if !called {
 			t.Error("dispatcher was not called")
 		}
 
-		SetEventDispatcher(nil)
+		s.SetEventDispatcher(nil)
 	})
 
 	t.Run("dispatchEvent with nil dispatcher", func(t *testing.T) {
-		SetEventDispatcher(nil)
+		s := New()
+		s.SetEventDispatcher(nil)
 		// Should not panic
-		dispatchEvent(&ScheduledTaskStarting{})
+		s.dispatchEvent(&ScheduledTaskStarting{})
 	})
 
 	t.Run("dispatchEvent with error returning dispatcher", func(t *testing.T) {
-		SetEventDispatcher(func(event interface{}) error {
+		s := New()
+		s.SetEventDispatcher(func(event interface{}) error {
 			return errors.New("dispatcher error")
 		})
 
 		// Should not panic
-		dispatchEvent(&ScheduledTaskStarting{})
+		s.dispatchEvent(&ScheduledTaskStarting{})
 
-		SetEventDispatcher(nil)
+		s.SetEventDispatcher(nil)
 	})
 }
 
 func TestDispatchScheduledTaskStarting(t *testing.T) {
 	var captured *ScheduledTaskStarting
-	SetEventDispatcher(func(event interface{}) error {
+	dispatch := func(event interface{}) {
 		if e, ok := event.(*ScheduledTaskStarting); ok {
 			captured = e
 		}
-		return nil
-	})
-	defer SetEventDispatcher(nil)
+	}
 
 	t.Run("basic dispatch", func(t *testing.T) {
 		captured = nil
 		ctx := context.Background()
-		dispatchScheduledTaskStarting(ctx, "cleanup-old-files")
+		dispatchScheduledTaskStarting(dispatch, ctx, "cleanup-old-files")
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -93,7 +94,7 @@ func TestDispatchScheduledTaskStarting(t *testing.T) {
 		captured = nil
 		ctx := trace.WithTrace(context.Background(), "trace-sched", "parent-sched")
 		ctx = trace.WithSpan(ctx, "span-sched")
-		dispatchScheduledTaskStarting(ctx, "send-reports")
+		dispatchScheduledTaskStarting(dispatch, ctx, "send-reports")
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -108,22 +109,25 @@ func TestDispatchScheduledTaskStarting(t *testing.T) {
 			t.Errorf("ParentID = %q, want %q", captured.ParentID, "parent-sched")
 		}
 	})
+
+	t.Run("with nil dispatch", func(t *testing.T) {
+		// Should not panic
+		dispatchScheduledTaskStarting(nil, context.Background(), "test")
+	})
 }
 
 func TestDispatchScheduledTaskFinished(t *testing.T) {
 	var captured *ScheduledTaskFinished
-	SetEventDispatcher(func(event interface{}) error {
+	dispatch := func(event interface{}) {
 		if e, ok := event.(*ScheduledTaskFinished); ok {
 			captured = e
 		}
-		return nil
-	})
-	defer SetEventDispatcher(nil)
+	}
 
 	t.Run("basic dispatch", func(t *testing.T) {
 		captured = nil
 		ctx := context.Background()
-		dispatchScheduledTaskFinished(ctx, "backup-database", 5*time.Second)
+		dispatchScheduledTaskFinished(dispatch, ctx, "backup-database", 5*time.Second)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -140,7 +144,7 @@ func TestDispatchScheduledTaskFinished(t *testing.T) {
 		captured = nil
 		ctx := trace.WithTrace(context.Background(), "trace-done", "parent-done")
 		ctx = trace.WithSpan(ctx, "span-done")
-		dispatchScheduledTaskFinished(ctx, "sync-data", 2*time.Second)
+		dispatchScheduledTaskFinished(dispatch, ctx, "sync-data", 2*time.Second)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -156,19 +160,17 @@ func TestDispatchScheduledTaskFinished(t *testing.T) {
 
 func TestDispatchScheduledTaskFailed(t *testing.T) {
 	var captured *ScheduledTaskFailed
-	SetEventDispatcher(func(event interface{}) error {
+	dispatch := func(event interface{}) {
 		if e, ok := event.(*ScheduledTaskFailed); ok {
 			captured = e
 		}
-		return nil
-	})
-	defer SetEventDispatcher(nil)
+	}
 
 	t.Run("basic dispatch", func(t *testing.T) {
 		captured = nil
 		ctx := context.Background()
 		err := errors.New("disk full")
-		dispatchScheduledTaskFailed(ctx, "cleanup", err, 10*time.Second)
+		dispatchScheduledTaskFailed(dispatch, ctx, "cleanup", err, 10*time.Second)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -187,7 +189,7 @@ func TestDispatchScheduledTaskFailed(t *testing.T) {
 	t.Run("with nil error", func(t *testing.T) {
 		captured = nil
 		ctx := context.Background()
-		dispatchScheduledTaskFailed(ctx, "task", nil, 100*time.Millisecond)
+		dispatchScheduledTaskFailed(dispatch, ctx, "task", nil, 100*time.Millisecond)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -201,7 +203,7 @@ func TestDispatchScheduledTaskFailed(t *testing.T) {
 		captured = nil
 		ctx := trace.WithTrace(context.Background(), "trace-fail", "parent-fail")
 		ctx = trace.WithSpan(ctx, "span-fail")
-		dispatchScheduledTaskFailed(ctx, "email-report", errors.New("smtp error"), 30*time.Second)
+		dispatchScheduledTaskFailed(dispatch, ctx, "email-report", errors.New("smtp error"), 30*time.Second)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -212,6 +214,11 @@ func TestDispatchScheduledTaskFailed(t *testing.T) {
 		if captured.SpanID != "span-fail" {
 			t.Errorf("SpanID = %q, want %q", captured.SpanID, "span-fail")
 		}
+	})
+
+	t.Run("with nil dispatch", func(t *testing.T) {
+		// Should not panic
+		dispatchScheduledTaskFailed(nil, context.Background(), "task", nil, 100*time.Millisecond)
 	})
 }
 

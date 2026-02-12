@@ -19,6 +19,21 @@ type Scheduler struct {
 	beforeCallbacks []func()
 	afterCallbacks  []func()
 	logger          Logger
+	eventDispatcher func(event interface{}) error
+}
+
+// SetEventDispatcher sets the function used to dispatch events.
+func (s *Scheduler) SetEventDispatcher(fn func(event interface{}) error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.eventDispatcher = fn
+}
+
+// dispatchEvent dispatches an event if a dispatcher is configured.
+func (s *Scheduler) dispatchEvent(event interface{}) {
+	if s.eventDispatcher != nil {
+		s.eventDispatcher(event)
+	}
 }
 
 // Logger interface for scheduler logging

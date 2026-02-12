@@ -113,21 +113,6 @@ func MiddlewareFunc(handler *Handler) func(http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// RecoverMiddleware is a simple panic recovery middleware that uses the global handler.
-func RecoverMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := newHTTPRenderContext(w, r)
-
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				Get().HandlePanic(ctx, recovered)
-			}
-		}()
-
-		next.ServeHTTP(w, r)
-	})
-}
-
 // ErrorHandler creates an error handler function for use with routers that support error returns.
 func ErrorHandler(handler *Handler) func(http.ResponseWriter, *http.Request, error) {
 	return func(w http.ResponseWriter, r *http.Request, err error) {

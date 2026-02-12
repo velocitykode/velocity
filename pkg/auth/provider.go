@@ -4,19 +4,19 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-
-	"github.com/velocitykode/velocity/pkg/orm"
 )
 
 // ORMUserProvider provides users from ORM models
 type ORMUserProvider struct {
+	db        *sql.DB
 	modelType string
 	hasher    Hasher
 }
 
 // NewORMUserProvider creates a new ORM user provider
-func NewORMUserProvider(modelType string) *ORMUserProvider {
+func NewORMUserProvider(db *sql.DB, modelType string) *ORMUserProvider {
 	return &ORMUserProvider{
+		db:        db,
 		modelType: modelType,
 		hasher:    GetHasher(),
 	}
@@ -28,13 +28,12 @@ func (p *ORMUserProvider) FindByID(id interface{}) (Authenticatable, error) {
 		return nil, ErrUserNotFound
 	}
 
-	db := orm.DB()
-	if db == nil {
+	if p.db == nil {
 		return nil, errors.New("database not initialized")
 	}
 
 	var user AuthUser
-	row := db.QueryRow("SELECT id, name, email, password FROM users WHERE id = $1", id)
+	row := p.db.QueryRow("SELECT id, name, email, password FROM users WHERE id = $1", id)
 	err := row.Scan(&user.ID, &user.Name, &user.Email, &user.Password)
 	if err == sql.ErrNoRows {
 		return nil, ErrUserNotFound
@@ -53,13 +52,12 @@ func (p *ORMUserProvider) FindByCredentials(credentials map[string]interface{}) 
 		return nil, errors.New("email is required")
 	}
 
-	db := orm.DB()
-	if db == nil {
+	if p.db == nil {
 		return nil, errors.New("database not initialized")
 	}
 
 	var user AuthUser
-	row := db.QueryRow("SELECT id, name, email, password FROM users WHERE email = $1", email)
+	row := p.db.QueryRow("SELECT id, name, email, password FROM users WHERE email = $1", email)
 	err := row.Scan(&user.ID, &user.Name, &user.Email, &user.Password)
 	if err == sql.ErrNoRows {
 		return nil, ErrUserNotFound
@@ -85,12 +83,11 @@ func (p *ORMUserProvider) ValidateCredentials(user Authenticatable, credentials 
 func (p *ORMUserProvider) UpdateRememberToken(user Authenticatable, token string) error {
 	user.SetRememberToken(token)
 
-	db := orm.DB()
-	if db == nil {
+	if p.db == nil {
 		return errors.New("database not initialized")
 	}
 
-	_, err := db.Exec("UPDATE users SET remember_token = $1 WHERE id = $2", token, user.GetAuthIdentifier())
+	_, err := p.db.Exec("UPDATE users SET remember_token = $1 WHERE id = $2", token, user.GetAuthIdentifier())
 	return err
 }
 

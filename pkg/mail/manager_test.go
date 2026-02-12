@@ -170,12 +170,12 @@ func TestManagerClearChannels(t *testing.T) {
 	}
 }
 
-func TestGetManager(t *testing.T) {
-	manager1 := GetManager()
-	manager2 := GetManager()
+func TestNewManagerReturnsDistinctInstances(t *testing.T) {
+	manager1 := NewManager()
+	manager2 := NewManager()
 
-	if manager1 != manager2 {
-		t.Error("Expected same manager instance (singleton)")
+	if manager1 == manager2 {
+		t.Error("Expected distinct manager instances from NewManager()")
 	}
 }
 

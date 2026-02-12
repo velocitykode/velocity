@@ -12,22 +12,22 @@ import (
 func TestCrossDatabaseMigrations(t *testing.T) {
 	drivers := []struct {
 		name   string
-		config map[string]any
+		config orm.ManagerConfig
 		skip   bool
 	}{
 		{
 			name:   "sqlite",
-			config: map[string]any{"database": ":memory:"},
+			config: orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"},
 			skip:   false,
 		},
 		{
 			name:   "mysql",
-			config: map[string]any{"database": "velocity_test"},
+			config: orm.ManagerConfig{Driver: "mysql", Database: "velocity_test"},
 			skip:   true, // Skip if MySQL not available
 		},
 		{
 			name:   "postgres",
-			config: map[string]any{"database": "velocity_test"},
+			config: orm.ManagerConfig{Driver: "postgres", Database: "velocity_test"},
 			skip:   true, // Skip if Postgres not available
 		},
 	}
@@ -39,14 +39,14 @@ func TestCrossDatabaseMigrations(t *testing.T) {
 			}
 
 			// Initialize ORM with this driver
-			err := orm.Init(d.name, d.config)
+			manager, err := orm.NewManager(d.config)
 			if err != nil {
 				t.Skipf("Failed to init %s (server may not be running): %v", d.name, err)
 			}
-			defer orm.Close()
+			defer manager.Close()
 
 			// Create migrator
-			migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+			migrator := migrate.NewMigrator(manager.DB(), manager.DriverName())
 
 			// Run migrations
 			err = migrator.Up()
@@ -55,7 +55,7 @@ func TestCrossDatabaseMigrations(t *testing.T) {
 			}
 
 			// Verify table exists
-			db := orm.DB()
+			db := manager.DB()
 			tables, err := ormtesting.GetAllTables(db, d.name)
 			if err != nil {
 				t.Fatalf("%s: failed to get tables: %v", d.name, err)
@@ -66,7 +66,7 @@ func TestCrossDatabaseMigrations(t *testing.T) {
 				t.Errorf("%s: expected at least 2 tables (migrations + users), got %d", d.name, len(tables))
 			}
 
-			t.Logf("%s: ✓ Migrations working - created %d tables", d.name, len(tables))
+			t.Logf("%s: Migrations working - created %d tables", d.name, len(tables))
 		})
 	}
 }
@@ -74,22 +74,22 @@ func TestCrossDatabaseMigrations(t *testing.T) {
 func TestCrossDatabaseFactories(t *testing.T) {
 	drivers := []struct {
 		name   string
-		config map[string]any
+		config orm.ManagerConfig
 		skip   bool
 	}{
 		{
 			name:   "sqlite",
-			config: map[string]any{"database": ":memory:"},
+			config: orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"},
 			skip:   false,
 		},
 		{
 			name:   "mysql",
-			config: map[string]any{"database": "velocity_test"},
+			config: orm.ManagerConfig{Driver: "mysql", Database: "velocity_test"},
 			skip:   true,
 		},
 		{
 			name:   "postgres",
-			config: map[string]any{"database": "velocity_test"},
+			config: orm.ManagerConfig{Driver: "postgres", Database: "velocity_test"},
 			skip:   true,
 		},
 	}
@@ -101,20 +101,20 @@ func TestCrossDatabaseFactories(t *testing.T) {
 			}
 
 			// Initialize
-			err := orm.Init(d.name, d.config)
+			manager, err := orm.NewManager(d.config)
 			if err != nil {
 				t.Skipf("Failed to init %s: %v", d.name, err)
 			}
-			defer orm.Close()
+			defer manager.Close()
 
 			// Run migrations
-			migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+			migrator := migrate.NewMigrator(manager.DB(), manager.DriverName())
 			if err := migrator.Up(); err != nil {
 				t.Fatalf("%s: failed to run migrations: %v", d.name, err)
 			}
 
 			// Create user via factory
-			user := UserFactory().Create()
+			user := UserFactory(manager).Create()
 			userMap := user.(map[string]interface{})
 
 			if userMap["id"] == nil {
@@ -122,7 +122,7 @@ func TestCrossDatabaseFactories(t *testing.T) {
 			}
 
 			// Verify in database
-			db := orm.DB()
+			db := manager.DB()
 			var count int
 			err = db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count)
 			if err != nil {
@@ -133,7 +133,7 @@ func TestCrossDatabaseFactories(t *testing.T) {
 				t.Errorf("%s: expected 1 user, got %d", d.name, count)
 			}
 
-			t.Logf("%s: ✓ Factory Create() working - inserted user ID %v", d.name, userMap["id"])
+			t.Logf("%s: Factory Create() working - inserted user ID %v", d.name, userMap["id"])
 		})
 	}
 }
@@ -141,22 +141,22 @@ func TestCrossDatabaseFactories(t *testing.T) {
 func TestCrossDatabaseRefresh(t *testing.T) {
 	drivers := []struct {
 		name   string
-		config map[string]any
+		config orm.ManagerConfig
 		skip   bool
 	}{
 		{
 			name:   "sqlite",
-			config: map[string]any{"database": ":memory:"},
+			config: orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"},
 			skip:   false,
 		},
 		{
 			name:   "mysql",
-			config: map[string]any{"database": "velocity_test"},
+			config: orm.ManagerConfig{Driver: "mysql", Database: "velocity_test"},
 			skip:   true,
 		},
 		{
 			name:   "postgres",
-			config: map[string]any{"database": "velocity_test"},
+			config: orm.ManagerConfig{Driver: "postgres", Database: "velocity_test"},
 			skip:   true,
 		},
 	}
@@ -168,16 +168,17 @@ func TestCrossDatabaseRefresh(t *testing.T) {
 			}
 
 			// Initialize
-			err := orm.Init(d.name, d.config)
+			manager, err := orm.NewManager(d.config)
 			if err != nil {
 				t.Skipf("Failed to init %s: %v", d.name, err)
 			}
+			defer manager.Close()
 
 			// Use RefreshDatabase
-			db := ormtesting.RefreshDatabase(t)
+			db := ormtesting.RefreshDatabase(t, manager)
 
 			// Create some data
-			UserFactory().Count(5).Create()
+			UserFactory(manager).Count(5).Create()
 
 			// Verify data exists
 			var count int
@@ -200,7 +201,7 @@ func TestCrossDatabaseRefresh(t *testing.T) {
 				t.Errorf("%s: expected migrations to be recorded", d.name)
 			}
 
-			t.Logf("%s: ✓ RefreshDatabase working - tables dropped, migrations ran, factory created data", d.name)
+			t.Logf("%s: RefreshDatabase working - tables dropped, migrations ran, factory created data", d.name)
 		})
 	}
 }
@@ -209,22 +210,22 @@ func TestCrossDatabaseRefresh(t *testing.T) {
 func TestCrossDatabasePlaceholders(t *testing.T) {
 	drivers := []struct {
 		name   string
-		config map[string]any
+		config orm.ManagerConfig
 		skip   bool
 	}{
 		{
 			name:   "sqlite",
-			config: map[string]any{"database": ":memory:"},
+			config: orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"},
 			skip:   false,
 		},
 		{
 			name:   "mysql",
-			config: map[string]any{"database": "velocity_test"},
+			config: orm.ManagerConfig{Driver: "mysql", Database: "velocity_test"},
 			skip:   true,
 		},
 		{
 			name:   "postgres",
-			config: map[string]any{"database": "velocity_test"},
+			config: orm.ManagerConfig{Driver: "postgres", Database: "velocity_test"},
 			skip:   true,
 		},
 	}
@@ -236,20 +237,20 @@ func TestCrossDatabasePlaceholders(t *testing.T) {
 			}
 
 			// Initialize
-			err := orm.Init(d.name, d.config)
+			manager, err := orm.NewManager(d.config)
 			if err != nil {
 				t.Skipf("Failed to init %s: %v", d.name, err)
 			}
-			defer orm.Close()
+			defer manager.Close()
 
 			// Run migrations
-			migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+			migrator := migrate.NewMigrator(manager.DB(), manager.DriverName())
 			if err := migrator.Up(); err != nil {
 				t.Fatalf("%s: failed to run migrations: %v", d.name, err)
 			}
 
 			// Create 10 users with sequences (tests placeholders)
-			users := UserFactory().
+			users := UserFactory(manager).
 				Count(10).
 				Sequence("email", func(i int) interface{} {
 					return "user" + string(rune(i)) + "@test.com"
@@ -262,7 +263,7 @@ func TestCrossDatabasePlaceholders(t *testing.T) {
 			}
 
 			// Verify all inserted
-			db := orm.DB()
+			db := manager.DB()
 			var count int
 			err = db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count)
 			if err != nil {
@@ -273,7 +274,7 @@ func TestCrossDatabasePlaceholders(t *testing.T) {
 				t.Errorf("%s: expected 10 users in database, got %d", d.name, count)
 			}
 
-			t.Logf("%s: ✓ Placeholders working correctly - inserted 10 users", d.name)
+			t.Logf("%s: Placeholders working correctly - inserted 10 users", d.name)
 		})
 	}
 }

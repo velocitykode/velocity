@@ -454,54 +454,60 @@ func TestManager(t *testing.T) {
 	})
 }
 
-func TestGlobalFunctions(t *testing.T) {
-	// Initialize with default config
-	cache.Initialize()
+func newTestManager() *cache.Manager {
+	return cache.NewManager(&cache.Config{
+		Default: "memory",
+		Prefix:  "",
+		Stores: map[string]cache.StoreConfig{
+			"memory": {Driver: cache.DriverMemory},
+		},
+	})
+}
 
-	t.Run("GlobalOperations", func(t *testing.T) {
-		// Put
-		err := cache.Put("global-key", "global-value", 1*time.Hour)
+func TestManagerConvenienceMethods(t *testing.T) {
+	m := newTestManager()
+	defer m.Close()
+
+	t.Run("PutGetHasForget", func(t *testing.T) {
+		err := m.Put("global-key", "global-value", 1*time.Hour)
 		if err != nil {
-			t.Fatalf("Global Put failed: %v", err)
+			t.Fatalf("Put failed: %v", err)
 		}
 
-		// Get
-		val, found := cache.Get("global-key")
+		val, found := m.Get("global-key")
 		if !found {
-			t.Fatal("Global key not found")
+			t.Fatal("Key not found")
 		}
 		if val != "global-value" {
 			t.Fatalf("Expected global-value, got %v", val)
 		}
 
-		// Has
-		if !cache.Has("global-key") {
-			t.Fatal("Global Has failed")
+		if !m.Has("global-key") {
+			t.Fatal("Has failed")
 		}
 
-		// Forget
-		cache.Forget("global-key")
-		if cache.Has("global-key") {
-			t.Fatal("Global Forget failed")
+		m.Forget("global-key")
+		if m.Has("global-key") {
+			t.Fatal("Forget failed")
 		}
 	})
 
-	t.Run("GlobalRemember", func(t *testing.T) {
+	t.Run("Remember", func(t *testing.T) {
 		callCount := 0
-		val, err := cache.Remember("global-remember", 1*time.Hour, func() interface{} {
+		val, err := m.Remember("global-remember", 1*time.Hour, func() interface{} {
 			callCount++
 			return "remembered"
 		})
 
 		if err != nil {
-			t.Fatalf("Global Remember failed: %v", err)
+			t.Fatalf("Remember failed: %v", err)
 		}
 		if val != "remembered" {
 			t.Fatalf("Expected remembered, got %v", val)
 		}
 
 		// Second call should use cache
-		cache.Remember("global-remember", 1*time.Hour, func() interface{} {
+		m.Remember("global-remember", 1*time.Hour, func() interface{} {
 			callCount++
 			return "remembered"
 		})
@@ -512,55 +518,58 @@ func TestGlobalFunctions(t *testing.T) {
 	})
 }
 
-// Test global convenience functions
-func TestGlobalGetString(t *testing.T) {
-	os.Setenv("CACHE_DRIVER", "memory")
-	cache.Initialize()
-	cache.Put("test_str", "hello", 1*time.Hour)
+func TestManagerGetString(t *testing.T) {
+	m := newTestManager()
+	defer m.Close()
 
-	str, found := cache.GetString("test_str")
+	m.Put("test_str", "hello", 1*time.Hour)
+
+	str, found := m.GetString("test_str")
 	if !found || str != "hello" {
 		t.Error("GetString failed")
 	}
 }
 
-func TestGlobalForever(t *testing.T) {
-	os.Setenv("CACHE_DRIVER", "memory")
-	cache.Initialize()
-	err := cache.Forever("forever_key", "forever_value")
+func TestManagerForever(t *testing.T) {
+	m := newTestManager()
+	defer m.Close()
+
+	err := m.Forever("forever_key", "forever_value")
 	if err != nil {
 		t.Fatalf("Forever failed: %v", err)
 	}
 
-	val, found := cache.Get("forever_key")
+	val, found := m.Get("forever_key")
 	if !found || val != "forever_value" {
 		t.Error("Forever value not stored")
 	}
 }
 
-func TestGlobalFlush(t *testing.T) {
-	os.Setenv("CACHE_DRIVER", "memory")
-	cache.Initialize()
-	cache.Put("key1", "val1", 1*time.Hour)
-	cache.Put("key2", "val2", 1*time.Hour)
+func TestManagerFlush(t *testing.T) {
+	m := newTestManager()
+	defer m.Close()
 
-	err := cache.Flush()
+	m.Put("key1", "val1", 1*time.Hour)
+	m.Put("key2", "val2", 1*time.Hour)
+
+	err := m.Flush()
 	if err != nil {
 		t.Fatalf("Flush failed: %v", err)
 	}
 
-	_, found := cache.Get("key1")
+	_, found := m.Get("key1")
 	if found {
 		t.Error("Key should be flushed")
 	}
 }
 
-func TestGlobalIncrement(t *testing.T) {
-	os.Setenv("CACHE_DRIVER", "memory")
-	cache.Initialize()
-	cache.Put("counter", 10, 1*time.Hour)
+func TestManagerIncrement(t *testing.T) {
+	m := newTestManager()
+	defer m.Close()
 
-	newVal, err := cache.Increment("counter", 5)
+	m.Put("counter", 10, 1*time.Hour)
+
+	newVal, err := m.Increment("counter", 5)
 	if err != nil {
 		t.Fatalf("Increment failed: %v", err)
 	}
@@ -569,12 +578,13 @@ func TestGlobalIncrement(t *testing.T) {
 	}
 }
 
-func TestGlobalDecrement(t *testing.T) {
-	os.Setenv("CACHE_DRIVER", "memory")
-	cache.Initialize()
-	cache.Put("counter", 20, 1*time.Hour)
+func TestManagerDecrement(t *testing.T) {
+	m := newTestManager()
+	defer m.Close()
 
-	newVal, err := cache.Decrement("counter", 5)
+	m.Put("counter", 20, 1*time.Hour)
+
+	newVal, err := m.Decrement("counter", 5)
 	if err != nil {
 		t.Fatalf("Decrement failed: %v", err)
 	}
@@ -583,11 +593,11 @@ func TestGlobalDecrement(t *testing.T) {
 	}
 }
 
-func TestGlobalRememberForever(t *testing.T) {
-	os.Setenv("CACHE_DRIVER", "memory")
-	cache.Initialize()
+func TestManagerRememberForever(t *testing.T) {
+	m := newTestManager()
+	defer m.Close()
 
-	val, err := cache.RememberForever("remember_forever_key", func() interface{} {
+	val, err := m.RememberForever("remember_forever_key", func() interface{} {
 		return "computed_value"
 	})
 	if err != nil {
@@ -598,19 +608,20 @@ func TestGlobalRememberForever(t *testing.T) {
 	}
 
 	// Should return cached value
-	val2, _ := cache.Get("remember_forever_key")
+	val2, _ := m.Get("remember_forever_key")
 	if val2 != "computed_value" {
 		t.Error("RememberForever didn't cache value")
 	}
 }
 
-func TestGlobalMany(t *testing.T) {
-	os.Setenv("CACHE_DRIVER", "memory")
-	cache.Initialize()
-	cache.Put("key1", "val1", 1*time.Hour)
-	cache.Put("key2", "val2", 1*time.Hour)
+func TestManagerMany(t *testing.T) {
+	m := newTestManager()
+	defer m.Close()
 
-	values := cache.Many([]string{"key1", "key2"})
+	m.Put("key1", "val1", 1*time.Hour)
+	m.Put("key2", "val2", 1*time.Hour)
+
+	values := m.Many([]string{"key1", "key2"})
 	if len(values) < 2 {
 		t.Errorf("Expected at least 2 values, got %d", len(values))
 	}
@@ -622,33 +633,34 @@ func TestGlobalMany(t *testing.T) {
 	}
 }
 
-func TestGlobalPutMany(t *testing.T) {
-	os.Setenv("CACHE_DRIVER", "memory")
-	cache.Initialize()
+func TestManagerPutMany(t *testing.T) {
+	m := newTestManager()
+	defer m.Close()
 
 	values := map[string]interface{}{
 		"k1": "v1",
 		"k2": "v2",
 	}
-	err := cache.PutMany(values, 1*time.Hour)
+	err := m.PutMany(values, 1*time.Hour)
 	if err != nil {
 		t.Fatalf("PutMany failed: %v", err)
 	}
 
-	val, found := cache.Get("k1")
+	val, found := m.Get("k1")
 	if !found || val != "v1" {
 		t.Error("PutMany didn't store k1")
 	}
 }
 
-func TestGlobalGetStore(t *testing.T) {
-	os.Setenv("CACHE_DRIVER", "memory")
-	cache.Initialize()
-	store, err := cache.GetStore("default")
+func TestManagerGetStore(t *testing.T) {
+	m := newTestManager()
+	defer m.Close()
+
+	store, err := m.Store("memory")
 	if err != nil {
-		t.Fatalf("GetStore failed: %v", err)
+		t.Fatalf("Store failed: %v", err)
 	}
 	if store == nil {
-		t.Error("GetStore returned nil store")
+		t.Error("Store returned nil")
 	}
 }

@@ -7,19 +7,22 @@ import (
 	"github.com/velocitykode/velocity/pkg/crypto"
 )
 
+var testEncryptor crypto.Encryptor
+
 func setupCrypto(t *testing.T) {
 	t.Helper()
 	// Initialize crypto with a proper 32-byte key (base64 encoded)
 	// "01234567890123456789012345678901" is exactly 32 bytes
 	key := "base64:MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE="
 	os.Setenv("APP_KEY", key)
-	err := crypto.Init(crypto.Config{
+	enc, err := crypto.NewEncryptor(crypto.Config{
 		Key:    key,
 		Cipher: "AES-256-CBC",
 	})
 	if err != nil {
 		t.Fatalf("failed to initialize crypto: %v", err)
 	}
+	testEncryptor = enc
 }
 
 func TestEncryptHistoryState_Disabled(t *testing.T) {
@@ -50,6 +53,7 @@ func TestEncryptHistoryState_Enabled(t *testing.T) {
 		RootTemplate:   validTemplate,
 		EncryptHistory: true,
 	})
+	b.SetEncryptor(testEncryptor)
 
 	page := Page{
 		Component: "Test",
@@ -79,6 +83,7 @@ func TestDecryptHistoryState_RoundTrip(t *testing.T) {
 		RootTemplate:   validTemplate,
 		EncryptHistory: true,
 	})
+	b.SetEncryptor(testEncryptor)
 
 	original := Page{
 		Component: "Dashboard",
@@ -133,6 +138,7 @@ func TestEncryptHistoryState_WithComplexProps(t *testing.T) {
 		RootTemplate:   validTemplate,
 		EncryptHistory: true,
 	})
+	b.SetEncryptor(testEncryptor)
 
 	page := Page{
 		Component: "Users/Index",
@@ -179,6 +185,7 @@ func TestEncryptHistoryState_UnmarshalableProps(t *testing.T) {
 		RootTemplate:   validTemplate,
 		EncryptHistory: true,
 	})
+	b.SetEncryptor(testEncryptor)
 
 	page := Page{
 		Component: "Test",
@@ -202,9 +209,10 @@ func TestDecryptHistoryState_InvalidJSON(t *testing.T) {
 	b := setupBond(t)
 
 	// Encrypt some invalid JSON (not a Page)
-	encrypted, err := crypto.Encrypt("not valid json")
+	b.SetEncryptor(testEncryptor)
+	encrypted, err := testEncryptor.Encrypt("not valid json")
 	if err != nil {
-		t.Fatalf("crypto.Encrypt failed: %v", err)
+		t.Fatalf("testEncryptor.Encrypt failed: %v", err)
 	}
 
 	_, err = b.DecryptHistoryState(encrypted)
@@ -221,6 +229,7 @@ func TestEncryptHistoryState_EmptyPage(t *testing.T) {
 		RootTemplate:   validTemplate,
 		EncryptHistory: true,
 	})
+	b.SetEncryptor(testEncryptor)
 
 	page := Page{}
 

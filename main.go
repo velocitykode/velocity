@@ -2,6 +2,7 @@ package velocity
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/velocitykode/velocity/pkg/app"
 	"github.com/velocitykode/velocity/pkg/auth"
 	"github.com/velocitykode/velocity/pkg/auth/drivers/guards"
 	"github.com/velocitykode/velocity/pkg/cache"
@@ -32,22 +34,12 @@ const frameworkVersion = "0.1.0"
 // App represents the Velocity application container.
 // It owns all framework subsystem instances and provides them to the consumer.
 type App struct {
-	// Core services — all exported for direct access
-	Router     *router.VelocityRouterV2
-	DB         *orm.Manager
-	Auth       *auth.Manager
-	Log        log.Logger
-	Cache      *cache.Manager
-	Crypto     crypto.Encryptor
-	CSRF       *csrf.CSRF
-	Events     events.Dispatcher
-	Queue      queue.Driver
-	Storage    *storage.Manager
-	View       *view.Engine
-	Scheduler  *scheduler.Scheduler
-	Mail       mail.Mailer
-	Exceptions *exceptions.Handler
-	Validator  validation.Validator
+	// Services contains all non-router services, shared with router.Context.
+	*app.Services
+
+	// Router is separate from Services because it creates contexts that
+	// reference Services — putting Router inside Services would be circular.
+	Router *router.VelocityRouterV2
 
 	// Internal
 	config  *Config
@@ -59,127 +51,120 @@ type App struct {
 // Services are initialized in dependency order. If any required service
 // fails to initialize, New returns an error — it never panics.
 func New(opts ...Option) (*App, error) {
-	app := &App{
-		version: frameworkVersion,
+	a := &App{
+		Services: &app.Services{},
+		version:  frameworkVersion,
 	}
 
 	// Load config from env by default
 	config := ConfigFromEnv()
-	app.config = &config
+	a.config = &config
 
 	// Apply options (may override config)
 	for _, opt := range opts {
-		opt(app)
+		opt(a)
 	}
 
 	// 1. Initialize logger first (everything else may need to log)
-	logger, err := log.NewLogger(app.config.Log)
+	logger, err := log.NewLogger(a.config.Log)
 	if err != nil {
-		// Fall back to console logger
 		logger, _ = log.NewLogger(log.LogConfig{Driver: "console"})
 	}
-	app.Log = logger
+	a.Log = logger
 
 	// 2. Initialize crypto (auth/csrf may need it)
-	if app.config.Crypto.Key != "" {
-		enc, err := crypto.NewEncryptor(app.config.Crypto)
+	if a.config.Crypto.Key != "" {
+		enc, err := crypto.NewEncryptor(a.config.Crypto)
 		if err != nil {
 			return nil, fmt.Errorf("velocity: failed to initialize crypto: %w", err)
 		}
-		app.Crypto = enc
+		a.Crypto = enc
 	}
 
 	// 3. Initialize database connection
-	if app.config.DB.Connection != "" {
+	if a.config.DB.Connection != "" {
 		dbManager, err := orm.NewManager(orm.ManagerConfig{
-			Driver:          app.config.DB.Connection,
-			Host:            app.config.DB.Host,
-			Port:            app.config.DB.Port,
-			Database:        app.config.DB.Database,
-			Username:        app.config.DB.Username,
-			Password:        app.config.DB.Password,
-			Charset:         app.config.DB.Charset,
-			SSLMode:         app.config.DB.SSLMode,
-			MaxIdleConns:    app.config.DB.MaxIdleConns,
-			MaxOpenConns:    app.config.DB.MaxOpenConns,
-			ConnMaxLifetime: app.config.DB.ConnMaxLifetime,
-			LogQueries:      app.config.DB.LogQueries,
-			SlowThreshold:   app.config.DB.SlowThreshold,
+			Driver:          a.config.DB.Connection,
+			Host:            a.config.DB.Host,
+			Port:            a.config.DB.Port,
+			Database:        a.config.DB.Database,
+			Username:        a.config.DB.Username,
+			Password:        a.config.DB.Password,
+			Charset:         a.config.DB.Charset,
+			SSLMode:         a.config.DB.SSLMode,
+			MaxIdleConns:    a.config.DB.MaxIdleConns,
+			MaxOpenConns:    a.config.DB.MaxOpenConns,
+			ConnMaxLifetime: a.config.DB.ConnMaxLifetime,
+			LogQueries:      a.config.DB.LogQueries,
+			SlowThreshold:   a.config.DB.SlowThreshold,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("velocity: failed to initialize database: %w", err)
 		}
-		app.DB = dbManager
+		a.DB = dbManager
 	}
 
-	// 4. Initialize auth manager with guards/providers from config
-	app.Auth = initAuth(app.config.Auth, app.config.Session, app.Log)
+	// 4. Initialize auth manager — pass DB for ORM provider
+	var sqlDB *sql.DB
+	if a.DB != nil {
+		sqlDB = a.DB.DB()
+	}
+	a.Auth = initAuth(a.config.Auth, a.config.Session, a.Log, sqlDB, a.Crypto)
 
 	// 5. Initialize cache
-	app.Cache = initCache(app.config.Cache)
+	a.Cache = initCache(a.config.Cache)
 
 	// 6. Initialize CSRF
-	app.CSRF = csrf.New(nil)
+	a.CSRF = csrf.New(nil)
 
 	// 7. Initialize view/bond engine
-	if app.config.View.RootTemplate != "" {
-		viewEngine, err := view.NewEngine(app.config.View)
+	if a.config.View.RootTemplate != "" {
+		viewEngine, err := view.NewEngine(a.config.View)
 		if err != nil {
 			return nil, fmt.Errorf("velocity: failed to initialize view engine: %w", err)
 		}
-		app.View = viewEngine
+		a.View = viewEngine
 	}
 
 	// 8. Initialize events dispatcher
-	app.Events = events.NewDispatcher()
+	a.Events = events.NewDispatcher()
 
-	// 9. Initialize queue
-	app.Queue = initQueue(app.config.Queue)
+	// 9. Initialize queue — pass DB for database driver
+	a.Queue = initQueue(a.config.Queue, sqlDB)
 
 	// 10. Initialize storage with disk drivers
-	app.Storage = initStorage(app.config.Storage, app.Log)
+	a.Storage = initStorage(a.config.Storage, a.Log)
 
 	// 11. Initialize scheduler
-	app.Scheduler = scheduler.New()
+	a.Scheduler = scheduler.New()
 
 	// 12. Initialize mail
-	if app.config.Mail.Driver != "" {
-		mailer, err := mail.NewMailer(app.config.Mail)
+	if a.config.Mail.Driver != "" {
+		mailer, err := mail.NewMailer(a.config.Mail)
 		if err != nil {
-			app.Log.Warn("Failed to initialize mailer", "error", err)
+			a.Log.Warn("Failed to initialize mailer", "error", err)
 		} else {
-			app.Mail = mailer
+			a.Mail = mailer
 		}
 	}
 
-	// 13. Create router
-	app.Router = router.New()
+	// 13. Create router and inject services
+	a.Router = router.New()
+	a.Router.SetServices(a.Services)
 
 	// 14. Initialize exception handler
-	app.Exceptions = exceptions.NewHandler(
-		exceptions.WithDebug(app.config.Debug),
-		exceptions.WithEnvironment(app.config.Env),
+	a.Exceptions = exceptions.NewHandler(
+		exceptions.WithDebug(a.config.Debug),
+		exceptions.WithEnvironment(a.config.Env),
 	)
 
 	// 15. Initialize validator
-	app.Validator = validation.NewValidator()
+	a.Validator = validation.NewValidator()
 
-	// Wire event dispatching into packages
-	wireEvents(app)
+	// Wire event dispatchers into service instances
+	wireInstanceEvents(a)
 
-	return app, nil
-}
-
-// Default creates a pre-configured App from env vars and sets it as the
-// default for all package-level convenience functions. This provides a
-// migration path from global singletons to explicit DI.
-func Default(opts ...Option) (*App, error) {
-	app, err := New(opts...)
-	if err != nil {
-		return nil, err
-	}
-	setDefaultApp(app)
-	return app, nil
+	return a, nil
 }
 
 // Serve starts the HTTP server with signal handling and graceful shutdown.
@@ -225,9 +210,6 @@ func (a *App) Shutdown(ctx context.Context) error {
 			firstErr = err
 		}
 	}
-
-	// 0. Clear event wiring first so in-flight ops don't dispatch to torn-down services
-	events.ClearPackageHooks()
 
 	// 1. Stop accepting new connections
 	if a.server != nil {
@@ -278,87 +260,25 @@ func (a *App) Run() {
 	fmt.Printf("Velocity v%s is running! (Local development mode)\n", a.version)
 }
 
-// setDefaultApp wires the App's service instances into the package-level globals
-// for backward compatibility with code that uses package-level convenience functions.
-func setDefaultApp(app *App) {
-	// Wire router global
-	if app.Router != nil {
-		router.SetGlobalRouter(app.Router)
-	}
-
-	// Wire logger global
-	if app.Log != nil {
-		log.SetGlobalLogger(app.Log)
-	}
-
-	// Wire crypto global
-	if app.Crypto != nil {
-		crypto.SetGlobal(app.Crypto)
-	}
-
-	// Wire ORM global (for Model[T] backward compat)
-	if app.DB != nil {
-		orm.SetGlobalFromManager(app.DB)
-	}
-
-	// Wire auth global
-	if app.Auth != nil {
-		auth.SetGlobalManager(app.Auth)
-	}
-
-	// Wire events global
-	if app.Events != nil {
-		events.Initialize(app.Events)
-	}
-
-	// Wire CSRF global
-	if app.CSRF != nil {
-		csrf.SetGlobalCSRF(app.CSRF)
-	}
-
-	// Wire view/bond global
-	if app.View != nil {
-		view.SetGlobalEngine(app.View)
-	}
-
-	// Wire cache global
-	if app.Cache != nil {
-		cache.SetDefaultManager(app.Cache)
-	}
-
-	// Wire queue global
-	if app.Queue != nil {
-		queue.SetDefault(app.Queue)
-	}
-
-	// Wire storage global
-	if app.Storage != nil {
-		storage.SetGlobalManager(app.Storage)
-	}
-
-	// Wire mail global
-	if app.Mail != nil {
-		mail.SetDefaultMailer(app.Mail)
-	}
-
-	// Wire exceptions global
-	if app.Exceptions != nil {
-		exceptions.SetGlobal(app.Exceptions)
-	}
-
-	// Wire validator global
-	if app.Validator != nil {
-		validation.SetGlobal(app.Validator)
-	}
-}
-
-// wireEvents wires the App's event dispatcher into subsystem packages
-// using the instance-based hook from the events package.
-func wireEvents(app *App) {
-	if app.Events == nil {
+// wireInstanceEvents wires the event dispatcher into service instances.
+// Each service that fires events gets the dispatcher set on its instance.
+func wireInstanceEvents(a *App) {
+	if a.Events == nil {
 		return
 	}
-	events.WirePackageHooks(app.Events)
+
+	dispatch := func(event interface{}) error {
+		return a.Events.Dispatch(event)
+	}
+
+	a.Router.SetInstanceEventDispatcher(dispatch)
+
+	if a.DB != nil {
+		a.DB.SetEventDispatcher(dispatch)
+	}
+	if a.Cache != nil {
+		a.Cache.SetEventDispatcher(dispatch)
+	}
 }
 
 // --- Service initializers ---
@@ -420,7 +340,7 @@ func initStorage(config StorageConfig, logger log.Logger) *storage.Manager {
 	return mgr
 }
 
-func initAuth(authCfg AuthConfig, sessCfg SessionConfig, logger log.Logger) *auth.Manager {
+func initAuth(authCfg AuthConfig, sessCfg SessionConfig, logger log.Logger, db *sql.DB, enc crypto.Encryptor) *auth.Manager {
 	manager := auth.NewManager()
 
 	if authCfg.DefaultGuard != "" {
@@ -438,7 +358,7 @@ func initAuth(authCfg AuthConfig, sessCfg SessionConfig, logger log.Logger) *aut
 			if model == "" {
 				model = "User"
 			}
-			manager.RegisterProvider(name, auth.NewORMUserProvider(model))
+			manager.RegisterProvider(name, auth.NewORMUserProvider(db, model))
 		}
 	}
 
@@ -454,7 +374,7 @@ func initAuth(authCfg AuthConfig, sessCfg SessionConfig, logger log.Logger) *aut
 
 		switch guardCfg.Driver {
 		case "session":
-			guard, err := guards.NewSessionGuard(provider, sessCfg)
+			guard, err := guards.NewSessionGuard(provider, sessCfg, enc)
 			if err != nil {
 				if logger != nil {
 					logger.Warn("Failed to create session guard", "guard", name, "error", err)
@@ -486,7 +406,7 @@ func initAuth(authCfg AuthConfig, sessCfg SessionConfig, logger log.Logger) *aut
 	return manager
 }
 
-func initQueue(config QueueConfig) queue.Driver {
+func initQueue(config QueueConfig, db *sql.DB) queue.Driver {
 	switch config.Driver {
 	case "redis":
 		d, err := queue.NewRedisDriver(queue.RedisConfig{
@@ -500,7 +420,10 @@ func initQueue(config QueueConfig) queue.Driver {
 		}
 		return d
 	case "database":
-		return queue.NewDatabaseDriver()
+		if db == nil {
+			return queue.NewMemoryDriver()
+		}
+		return queue.NewDatabaseDriver(db)
 	default:
 		return queue.NewMemoryDriver()
 	}

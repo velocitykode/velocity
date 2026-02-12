@@ -89,54 +89,12 @@ type defaultValidator struct {
 	mu       sync.RWMutex
 }
 
-var (
-	instance *defaultValidator
-	once     sync.Once
-	globalMu sync.RWMutex
-)
-
 // NewValidator creates a new Validator instance.
 func NewValidator() Validator {
 	return &defaultValidator{
 		messages: make(Messages),
 		locale:   "en",
 	}
-}
-
-// SetGlobal sets the global validator instance.
-// Used by velocity.Default() to wire the App's validator into the global.
-func SetGlobal(v Validator) {
-	globalMu.Lock()
-	defer globalMu.Unlock()
-	if dv, ok := v.(*defaultValidator); ok {
-		instance = dv
-	}
-}
-
-// Get returns the global validator instance
-func Get() Validator {
-	once.Do(func() {
-		instance = &defaultValidator{
-			messages: make(Messages),
-			locale:   "en",
-		}
-	})
-	return instance
-}
-
-// Validate validates data against rules
-func Validate(data interface{}, rules Rules) (*ValidatedData, error) {
-	return Get().Validate(data, rules)
-}
-
-// ValidateRequest validates an HTTP request
-func ValidateRequest(r *http.Request, rules Rules) (*ValidatedData, error) {
-	return Get().ValidateRequest(r, rules)
-}
-
-// ValidateValue validates a single value
-func ValidateValue(value interface{}, rule string) error {
-	return Get().ValidateValue(value, rule)
 }
 
 // Validate implements the Validator interface

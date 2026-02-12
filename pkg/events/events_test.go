@@ -309,48 +309,46 @@ func TestDispatchAfter(t *testing.T) {
 	}
 }
 
-func TestGlobalDispatcher(t *testing.T) {
-	// Reset global dispatcher
-	Reset()
+func TestDispatcherWithInstance(t *testing.T) {
+	dispatcher := NewDispatcher()
 
 	listener := &TestListener{}
 
-	// Use global functions
-	Listen("test.event", listener)
+	dispatcher.Listen("test.event", listener)
 
-	if !HasListeners("test.event") {
-		t.Error("Expected global dispatcher to have listeners")
+	if !dispatcher.HasListeners("test.event") {
+		t.Error("Expected dispatcher to have listeners")
 	}
 
-	Dispatch("test.event")
+	dispatcher.Dispatch("test.event")
 
 	if !listener.WasHandled() {
-		t.Error("Expected global listener to handle event")
+		t.Error("Expected listener to handle event")
 	}
 
 	// Clean up
-	Forget("test.event")
+	dispatcher.Forget("test.event")
 
-	if HasListeners("test.event") {
+	if dispatcher.HasListeners("test.event") {
 		t.Error("Expected no listeners after forget")
 	}
 }
 
 func TestFakeDispatcher(t *testing.T) {
 	// Set up fake dispatcher
-	fake := Fake()
+	fake := NewFakeDispatcher()
 
-	// Register listener (won't actually execute)
-	Listen("user.registered", &TestListener{})
+	// Register listener (won't actually execute in fake mode)
+	fake.Listen("user.registered", &TestListener{})
 
 	// Dispatch events
 	event1 := UserRegistered{UserID: 1, Email: "test1@example.com"}
 	event2 := UserRegistered{UserID: 2, Email: "test2@example.com"}
 	event3 := OrderPlaced{OrderID: 100, Amount: 99.99}
 
-	Dispatch(event1)
-	Dispatch(event2)
-	Dispatch(event3)
+	fake.Dispatch(event1)
+	fake.Dispatch(event2)
+	fake.Dispatch(event3)
 
 	// Assert events were dispatched
 	err := fake.AssertDispatched(&UserRegistered{}, func(e interface{}) bool {
@@ -379,9 +377,6 @@ func TestFakeDispatcher(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-
-	// Reset global dispatcher
-	Reset()
 }
 
 func TestListenerIDReturned(t *testing.T) {
@@ -492,34 +487,35 @@ func TestOffWithWildcardListener(t *testing.T) {
 	}
 }
 
-func TestGlobalOnReturnsID(t *testing.T) {
-	Reset()
+func TestListenOffReturnsID(t *testing.T) {
+	dispatcher := NewDispatcher()
 
-	handlerCalled := false
-	id := On("test.event", func(e interface{}) error {
-		handlerCalled = true
-		return nil
-	})
+	listener := &TestListener{}
+	id := dispatcher.Listen("test.event", listener)
 
 	if id == 0 {
-		t.Error("Expected non-zero listener ID from On()")
+		t.Error("Expected non-zero listener ID from Listen()")
 	}
 
 	// Verify it works
-	Dispatch("test.event")
-	if !handlerCalled {
+	dispatcher.Dispatch("test.event")
+	if !listener.WasHandled() {
 		t.Error("Expected handler to be called")
 	}
 
-	// Remove and verify
-	handlerCalled = false
-	Off(id)
-	Dispatch("test.event")
-	if handlerCalled {
-		t.Error("Expected handler not to be called after Off")
+	// Remove the listener and verify it's no longer called
+	removed := dispatcher.Off(id)
+	if !removed {
+		t.Error("Expected Off to return true")
 	}
 
-	Reset()
+	// Register a new listener to verify the old one isn't called
+	newListener := &TestListener{}
+	dispatcher.Listen("test.event", newListener)
+	dispatcher.Dispatch("test.event")
+	if !newListener.WasHandled() {
+		t.Error("Expected new listener to be called")
+	}
 }
 
 func TestConcurrentOnOff(t *testing.T) {

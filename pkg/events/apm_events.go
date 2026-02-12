@@ -24,15 +24,15 @@ func (e *ExceptionReported) Name() string {
 
 // ReportException dispatches an ExceptionReported event for the given error.
 // It automatically captures the stack trace and extracts trace context from ctx.
-func ReportException(ctx context.Context, err error) {
-	if err == nil {
+func ReportException(ctx context.Context, d Dispatcher, err error) {
+	if err == nil || d == nil {
 		return
 	}
 
 	traceID, spanID, _ := GetTraceContext(ctx)
 	stack := captureStack(3) // Skip ReportException and runtime.Callers
 
-	Dispatch(&ExceptionReported{
+	d.Dispatch(&ExceptionReported{
 		Context:    ctx,
 		Type:       getErrorType(err),
 		Message:    err.Error(),
@@ -44,14 +44,14 @@ func ReportException(ctx context.Context, err error) {
 
 // ReportExceptionWithStack dispatches an ExceptionReported event with a custom stack trace.
 // Use this when you already have a captured stack trace (e.g., from panic recovery).
-func ReportExceptionWithStack(ctx context.Context, err error, stack string) {
-	if err == nil {
+func ReportExceptionWithStack(ctx context.Context, d Dispatcher, err error, stack string) {
+	if err == nil || d == nil {
 		return
 	}
 
 	traceID, spanID, _ := GetTraceContext(ctx)
 
-	Dispatch(&ExceptionReported{
+	d.Dispatch(&ExceptionReported{
 		Context:    ctx,
 		Type:       getErrorType(err),
 		Message:    err.Error(),
@@ -63,8 +63,8 @@ func ReportExceptionWithStack(ctx context.Context, err error, stack string) {
 
 // ReportPanic dispatches an ExceptionReported event for a recovered panic value.
 // This should be called from a defer block after recover().
-func ReportPanic(ctx context.Context, recovered interface{}, stack string) {
-	if recovered == nil {
+func ReportPanic(ctx context.Context, d Dispatcher, recovered interface{}, stack string) {
+	if recovered == nil || d == nil {
 		return
 	}
 
@@ -83,7 +83,7 @@ func ReportPanic(ctx context.Context, recovered interface{}, stack string) {
 		message = toString(v)
 	}
 
-	Dispatch(&ExceptionReported{
+	d.Dispatch(&ExceptionReported{
 		Context:    ctx,
 		Type:       typeName,
 		Message:    message,

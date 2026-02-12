@@ -30,55 +30,58 @@ func TestEventNames(t *testing.T) {
 
 func TestDispatcher(t *testing.T) {
 	t.Run("SetEventDispatcher", func(t *testing.T) {
-		SetEventDispatcher(nil)
+		client := New()
+		client.SetEventDispatcher(nil)
 
 		called := false
-		SetEventDispatcher(func(event interface{}) error {
+		client.SetEventDispatcher(func(event interface{}) error {
 			called = true
 			return nil
 		})
 
-		dispatchEvent(&RequestSent{})
+		client.dispatchEvent(&RequestSent{})
 
 		if !called {
 			t.Error("dispatcher was not called")
 		}
 
-		SetEventDispatcher(nil)
+		client.SetEventDispatcher(nil)
 	})
 
 	t.Run("dispatchEvent with nil dispatcher", func(t *testing.T) {
-		SetEventDispatcher(nil)
+		client := New()
+		client.SetEventDispatcher(nil)
 		// Should not panic
-		dispatchEvent(&RequestSent{})
+		client.dispatchEvent(&RequestSent{})
 	})
 
 	t.Run("dispatchEvent with error returning dispatcher", func(t *testing.T) {
-		SetEventDispatcher(func(event interface{}) error {
+		client := New()
+		client.SetEventDispatcher(func(event interface{}) error {
 			return errors.New("dispatcher error")
 		})
 
 		// Should not panic
-		dispatchEvent(&RequestSent{})
+		client.dispatchEvent(&RequestSent{})
 
-		SetEventDispatcher(nil)
+		client.SetEventDispatcher(nil)
 	})
 }
 
 func TestDispatchRequestSent(t *testing.T) {
 	var captured *RequestSent
-	SetEventDispatcher(func(event interface{}) error {
+	client := New()
+	client.SetEventDispatcher(func(event interface{}) error {
 		if e, ok := event.(*RequestSent); ok {
 			captured = e
 		}
 		return nil
 	})
-	defer SetEventDispatcher(nil)
 
 	t.Run("basic dispatch", func(t *testing.T) {
 		captured = nil
 		ctx := context.Background()
-		dispatchRequestSent(ctx, "GET", "https://api.example.com/users", 200, 150*time.Millisecond, 0, 1024)
+		client.dispatchRequestSent(ctx, "GET", "https://api.example.com/users", 200, 150*time.Millisecond, 0, 1024)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -107,7 +110,7 @@ func TestDispatchRequestSent(t *testing.T) {
 		captured = nil
 		ctx := trace.WithTrace(context.Background(), "trace-http", "parent-span")
 		ctx = trace.WithSpan(ctx, "span-http")
-		dispatchRequestSent(ctx, "POST", "https://api.example.com/data", 201, 50*time.Millisecond, 512, 256)
+		client.dispatchRequestSent(ctx, "POST", "https://api.example.com/data", 201, 50*time.Millisecond, 512, 256)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -126,19 +129,19 @@ func TestDispatchRequestSent(t *testing.T) {
 
 func TestDispatchRequestFailed(t *testing.T) {
 	var captured *RequestFailed
-	SetEventDispatcher(func(event interface{}) error {
+	client := New()
+	client.SetEventDispatcher(func(event interface{}) error {
 		if e, ok := event.(*RequestFailed); ok {
 			captured = e
 		}
 		return nil
 	})
-	defer SetEventDispatcher(nil)
 
 	t.Run("basic dispatch", func(t *testing.T) {
 		captured = nil
 		ctx := context.Background()
 		err := errors.New("connection refused")
-		dispatchRequestFailed(ctx, "GET", "https://api.example.com/users", err, 5*time.Second)
+		client.dispatchRequestFailed(ctx, "GET", "https://api.example.com/users", err, 5*time.Second)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -160,7 +163,7 @@ func TestDispatchRequestFailed(t *testing.T) {
 	t.Run("with nil error", func(t *testing.T) {
 		captured = nil
 		ctx := context.Background()
-		dispatchRequestFailed(ctx, "GET", "https://api.example.com/users", nil, 100*time.Millisecond)
+		client.dispatchRequestFailed(ctx, "GET", "https://api.example.com/users", nil, 100*time.Millisecond)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -174,7 +177,7 @@ func TestDispatchRequestFailed(t *testing.T) {
 		captured = nil
 		ctx := trace.WithTrace(context.Background(), "trace-fail", "parent-fail")
 		ctx = trace.WithSpan(ctx, "span-fail")
-		dispatchRequestFailed(ctx, "POST", "https://api.example.com/data", errors.New("timeout"), 30*time.Second)
+		client.dispatchRequestFailed(ctx, "POST", "https://api.example.com/data", errors.New("timeout"), 30*time.Second)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")

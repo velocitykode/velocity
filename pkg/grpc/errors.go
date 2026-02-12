@@ -11,21 +11,36 @@ import (
 	"github.com/velocitykode/velocity/pkg/log"
 )
 
+// errLogger is the logger used by package-level error functions.
+// Set via SetErrorLogger during app initialization.
+var errLogger log.Logger
+
+// SetErrorLogger sets the logger used by WrapError and WrapErrorWithCode.
+func SetErrorLogger(l log.Logger) {
+	errLogger = l
+}
+
+func logError(msg string, kvs ...any) {
+	if errLogger != nil {
+		errLogger.Error(msg, kvs...)
+	}
+}
+
 // Common gRPC errors with standard messages
 var (
-	ErrUnauthenticated     = status.Error(codes.Unauthenticated, "authentication required")
-	ErrPermissionDenied    = status.Error(codes.PermissionDenied, "permission denied")
-	ErrNotFound            = status.Error(codes.NotFound, "resource not found")
-	ErrAlreadyExists       = status.Error(codes.AlreadyExists, "resource already exists")
-	ErrInvalidArgument     = status.Error(codes.InvalidArgument, "invalid argument")
-	ErrInternal            = status.Error(codes.Internal, "internal server error")
-	ErrUnimplemented       = status.Error(codes.Unimplemented, "not implemented")
-	ErrUnavailable         = status.Error(codes.Unavailable, "service unavailable")
-	ErrResourceExhausted   = status.Error(codes.ResourceExhausted, "resource exhausted")
-	ErrFailedPrecondition  = status.Error(codes.FailedPrecondition, "failed precondition")
-	ErrAborted             = status.Error(codes.Aborted, "operation aborted")
-	ErrDeadlineExceeded    = status.Error(codes.DeadlineExceeded, "deadline exceeded")
-	ErrCancelled           = status.Error(codes.Canceled, "operation cancelled")
+	ErrUnauthenticated    = status.Error(codes.Unauthenticated, "authentication required")
+	ErrPermissionDenied   = status.Error(codes.PermissionDenied, "permission denied")
+	ErrNotFound           = status.Error(codes.NotFound, "resource not found")
+	ErrAlreadyExists      = status.Error(codes.AlreadyExists, "resource already exists")
+	ErrInvalidArgument    = status.Error(codes.InvalidArgument, "invalid argument")
+	ErrInternal           = status.Error(codes.Internal, "internal server error")
+	ErrUnimplemented      = status.Error(codes.Unimplemented, "not implemented")
+	ErrUnavailable        = status.Error(codes.Unavailable, "service unavailable")
+	ErrResourceExhausted  = status.Error(codes.ResourceExhausted, "resource exhausted")
+	ErrFailedPrecondition = status.Error(codes.FailedPrecondition, "failed precondition")
+	ErrAborted            = status.Error(codes.Aborted, "operation aborted")
+	ErrDeadlineExceeded   = status.Error(codes.DeadlineExceeded, "deadline exceeded")
+	ErrCancelled          = status.Error(codes.Canceled, "operation cancelled")
 )
 
 // NewError creates a new gRPC status error with the given code and message
@@ -120,7 +135,7 @@ func WrapError(err error) error {
 	}
 
 	// Log the actual error server-side
-	log.Error("gRPC internal error", "error", err.Error())
+	logError("gRPC internal error", "error", err.Error())
 
 	if isDebugMode() {
 		return status.Error(codes.Internal, err.Error())
@@ -144,7 +159,7 @@ func WrapErrorWithCode(err error, code codes.Code) error {
 
 	// For internal-class errors, hide details from clients
 	if code == codes.Internal || code == codes.Unknown {
-		log.Error("gRPC error", "code", code.String(), "error", err.Error())
+		logError("gRPC error", "code", code.String(), "error", err.Error())
 		if !isDebugMode() {
 			return status.Error(code, "internal server error")
 		}

@@ -184,7 +184,7 @@ func isHealthCheck(method string) bool {
 func logRequest(ctx context.Context, method string, start time.Time, err error, cfg *LoggingConfig) {
 	logger := cfg.Logger
 	if logger == nil {
-		logger = log.Get()
+		return // No logger configured, skip logging
 	}
 
 	duration := time.Since(start)

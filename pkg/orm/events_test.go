@@ -50,16 +50,6 @@ func (c *testEventCollector) findEvent(predicate func(interface{}) bool) interfa
 	return nil
 }
 
-func setupTestDispatcher() *testEventCollector {
-	collector := newTestEventCollector()
-	SetEventDispatcher(collector.dispatch)
-	return collector
-}
-
-func teardownTestDispatcher() {
-	SetEventDispatcher(nil)
-}
-
 func TestQueryExecutedEventName(t *testing.T) {
 	event := &QueryExecuted{}
 	if got := event.Name(); got != "query.executed" {
@@ -83,15 +73,24 @@ func TestCaptureCallerInfo(t *testing.T) {
 	}
 }
 
-func TestDispatchQueryExecuted(t *testing.T) {
-	collector := setupTestDispatcher()
-	defer teardownTestDispatcher()
+func TestManagerDispatchEvent(t *testing.T) {
+	collector := newTestEventCollector()
+	m := &Manager{}
+	m.SetEventDispatcher(collector.dispatch)
 
 	ctx := context.Background()
 	sql := "SELECT * FROM users WHERE id = ?"
 	bindings := []any{1}
 
-	dispatchQueryExecuted(ctx, sql, bindings, 100, 5, "mysql", 1)
+	m.dispatchEvent(&QueryExecuted{
+		Context:      ctx,
+		SQL:          sql,
+		Bindings:     bindings,
+		RowsAffected: 5,
+		Connection:   "mysql",
+		File:         "pkg/orm/events_test.go",
+		Line:         90,
+	})
 
 	// Verify event was dispatched
 	event := collector.findEvent(func(e interface{}) bool {
@@ -141,13 +140,18 @@ func TestQueryGetContextDefault(t *testing.T) {
 	}
 }
 
-func TestQueryExecutedEventWithContext(t *testing.T) {
-	collector := setupTestDispatcher()
-	defer teardownTestDispatcher()
+func TestManagerDispatchEventWithContext(t *testing.T) {
+	collector := newTestEventCollector()
+	m := &Manager{}
+	m.SetEventDispatcher(collector.dispatch)
 
 	ctx := context.WithValue(context.Background(), "request_id", "test-123")
 
-	dispatchQueryExecuted(ctx, "SELECT 1", nil, 50, 1, "sqlite", 1)
+	m.dispatchEvent(&QueryExecuted{
+		Context:    ctx,
+		SQL:        "SELECT 1",
+		Connection: "sqlite",
+	})
 
 	// Verify context was included in event
 	event := collector.findEvent(func(e interface{}) bool {
@@ -165,12 +169,18 @@ func TestQueryExecutedEventWithContext(t *testing.T) {
 	}
 }
 
-func TestQueryExecutedEventBindings(t *testing.T) {
-	collector := setupTestDispatcher()
-	defer teardownTestDispatcher()
+func TestManagerDispatchEventBindings(t *testing.T) {
+	collector := newTestEventCollector()
+	m := &Manager{}
+	m.SetEventDispatcher(collector.dispatch)
 
 	bindings := []any{1, "test", true, 3.14}
-	dispatchQueryExecuted(context.Background(), "INSERT INTO test", bindings, 100, 1, "postgres", 1)
+	m.dispatchEvent(&QueryExecuted{
+		Context:    context.Background(),
+		SQL:        "INSERT INTO test",
+		Bindings:   bindings,
+		Connection: "postgres",
+	})
 
 	// Verify bindings were captured
 	event := collector.findEvent(func(e interface{}) bool {
@@ -190,15 +200,20 @@ func TestQueryExecutedEventBindings(t *testing.T) {
 	}
 }
 
-func TestQueryExecutedEventConnection(t *testing.T) {
-	collector := setupTestDispatcher()
-	defer teardownTestDispatcher()
+func TestManagerDispatchEventConnection(t *testing.T) {
+	collector := newTestEventCollector()
+	m := &Manager{}
+	m.SetEventDispatcher(collector.dispatch)
 
 	testCases := []string{"mysql", "postgres", "sqlite"}
 
 	for _, conn := range testCases {
 		collector.clear()
-		dispatchQueryExecuted(context.Background(), "SELECT 1", nil, 10, 1, conn, 1)
+		m.dispatchEvent(&QueryExecuted{
+			Context:    context.Background(),
+			SQL:        "SELECT 1",
+			Connection: conn,
+		})
 
 		event := collector.findEvent(func(e interface{}) bool {
 			if q, ok := e.(*QueryExecuted); ok {
@@ -210,4 +225,13 @@ func TestQueryExecutedEventConnection(t *testing.T) {
 			t.Errorf("QueryExecuted connection %s not captured", conn)
 		}
 	}
+}
+
+func TestManagerDispatchEventNilDispatcher(t *testing.T) {
+	m := &Manager{}
+	// No dispatcher set - should not panic
+	m.dispatchEvent(&QueryExecuted{
+		Context: context.Background(),
+		SQL:     "SELECT 1",
+	})
 }

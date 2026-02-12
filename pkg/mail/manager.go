@@ -9,8 +9,21 @@ import (
 
 // Manager manages multiple mail channels
 type Manager struct {
-	channels map[string]Mailer
-	mu       sync.RWMutex
+	channels        map[string]Mailer
+	mu              sync.RWMutex
+	eventDispatcher func(event interface{}) error
+}
+
+// SetEventDispatcher sets the function used to dispatch events.
+func (m *Manager) SetEventDispatcher(fn func(event interface{}) error) {
+	m.eventDispatcher = fn
+}
+
+// dispatchEvent dispatches an event if a dispatcher is configured.
+func (m *Manager) dispatchEvent(event interface{}) {
+	if m.eventDispatcher != nil {
+		m.eventDispatcher(event)
+	}
 }
 
 // NewManager creates a new mail manager
@@ -93,11 +106,11 @@ func (m *Manager) Send(ctx context.Context, channel string, msg *Message) error 
 	duration := time.Since(start)
 
 	if err != nil {
-		dispatchMailFailed(ctx, toEmails, subject, channel, err, duration)
+		dispatchMailFailed(m.dispatchEvent, ctx, toEmails, subject, channel, err, duration)
 		return err
 	}
 
-	dispatchMailSent(ctx, toEmails, subject, channel, duration)
+	dispatchMailSent(m.dispatchEvent, ctx, toEmails, subject, channel, duration)
 	return nil
 }
 
@@ -144,16 +157,4 @@ func (m *Manager) ClearChannels() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.channels = make(map[string]Mailer)
-}
-
-// Default manager instance
-var defaultManager *Manager
-var managerOnce sync.Once
-
-// GetManager returns the default manager instance.
-func GetManager() *Manager {
-	managerOnce.Do(func() {
-		defaultManager = NewManager()
-	})
-	return defaultManager
 }

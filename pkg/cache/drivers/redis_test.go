@@ -29,9 +29,9 @@ func newTestRedisStore(t *testing.T, prefix string) (*RedisStore, *miniredis.Min
 
 func TestNewRedisStore(t *testing.T) {
 	tests := []struct {
-		name     string
-		prefix   string
-		wantErr  bool
+		name    string
+		prefix  string
+		wantErr bool
 	}{
 		{"creates store with prefix", "app", false},
 		{"creates store with empty prefix", "", false},

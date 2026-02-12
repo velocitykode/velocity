@@ -69,9 +69,9 @@ func (e *CacheForgotten) Name() string {
 }
 
 // dispatchCacheHit dispatches a CacheHit event
-func dispatchCacheHit(ctx context.Context, key, store string) {
+func (m *Manager) dispatchCacheHit(ctx context.Context, key, store string) {
 	traceID, spanID, parentID := trace.GetTraceContext(ctx)
-	dispatchEvent(&CacheHit{
+	m.dispatchEvent(&CacheHit{
 		Context:  ctx,
 		Key:      key,
 		Store:    store,
@@ -82,9 +82,9 @@ func dispatchCacheHit(ctx context.Context, key, store string) {
 }
 
 // dispatchCacheMiss dispatches a CacheMiss event
-func dispatchCacheMiss(ctx context.Context, key, store string) {
+func (m *Manager) dispatchCacheMiss(ctx context.Context, key, store string) {
 	traceID, spanID, parentID := trace.GetTraceContext(ctx)
-	dispatchEvent(&CacheMiss{
+	m.dispatchEvent(&CacheMiss{
 		Context:  ctx,
 		Key:      key,
 		Store:    store,
@@ -95,9 +95,9 @@ func dispatchCacheMiss(ctx context.Context, key, store string) {
 }
 
 // dispatchCacheWritten dispatches a CacheWritten event
-func dispatchCacheWritten(ctx context.Context, key, store string, ttl time.Duration) {
+func (m *Manager) dispatchCacheWritten(ctx context.Context, key, store string, ttl time.Duration) {
 	traceID, spanID, parentID := trace.GetTraceContext(ctx)
-	dispatchEvent(&CacheWritten{
+	m.dispatchEvent(&CacheWritten{
 		Context:  ctx,
 		Key:      key,
 		Store:    store,
@@ -109,9 +109,9 @@ func dispatchCacheWritten(ctx context.Context, key, store string, ttl time.Durat
 }
 
 // dispatchCacheForgotten dispatches a CacheForgotten event
-func dispatchCacheForgotten(ctx context.Context, key, store string) {
+func (m *Manager) dispatchCacheForgotten(ctx context.Context, key, store string) {
 	traceID, spanID, parentID := trace.GetTraceContext(ctx)
-	dispatchEvent(&CacheForgotten{
+	m.dispatchEvent(&CacheForgotten{
 		Context:  ctx,
 		Key:      key,
 		Store:    store,

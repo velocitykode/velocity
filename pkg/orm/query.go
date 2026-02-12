@@ -59,7 +59,7 @@ type Query[T any] struct {
 // newQuery creates a new query builder for type T
 func newQuery[T any]() *Query[T] {
 	q := &Query[T]{
-		driver:        getCurrentDriver(),
+		driver:        nil, // Set via DI; nil until wired
 		table:         getTableName[T](),
 		columns:       []string{"*"},
 		hasSoftDelete: modelHasSoftDelete[T](),
@@ -886,7 +886,7 @@ type RawQuery[T any] struct {
 // Never concatenate user input directly into the sql string.
 func NewRawQuery[T any](sql string, args ...any) *RawQuery[T] {
 	return &RawQuery[T]{
-		driver: getCurrentDriver(),
+		driver: nil, // Set via DI; nil until wired
 		sql:    sql,
 		args:   args,
 	}

@@ -15,14 +15,13 @@ func TestExceptionReportedEventName(t *testing.T) {
 }
 
 func TestReportException(t *testing.T) {
-	Reset()
-	fake := Fake()
+	fake := NewFakeDispatcher()
 
 	ctx := context.Background()
 	ctx = WithTrace(ctx, "trace123", "span456")
 
 	testErr := errors.New("test error message")
-	ReportException(ctx, testErr)
+	ReportException(ctx, fake, testErr)
 
 	// Verify event was dispatched
 	err := fake.AssertDispatched(&ExceptionReported{}, func(e interface{}) bool {
@@ -35,36 +34,30 @@ func TestReportException(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-
-	Reset()
 }
 
 func TestReportExceptionWithNilError(t *testing.T) {
-	Reset()
-	fake := Fake()
+	fake := NewFakeDispatcher()
 
 	ctx := context.Background()
-	ReportException(ctx, nil)
+	ReportException(ctx, fake, nil)
 
 	// Should not dispatch anything
 	err := fake.AssertNothingDispatched()
 	if err != nil {
 		t.Error(err)
 	}
-
-	Reset()
 }
 
 func TestReportExceptionWithStack(t *testing.T) {
-	Reset()
-	fake := Fake()
+	fake := NewFakeDispatcher()
 
 	ctx := context.Background()
 	ctx = WithTrace(ctx, "abc123", "def456")
 
 	testErr := errors.New("custom error")
 	customStack := "custom stack trace\nat SomeFunction:123"
-	ReportExceptionWithStack(ctx, testErr, customStack)
+	ReportExceptionWithStack(ctx, fake, testErr, customStack)
 
 	err := fake.AssertDispatched(&ExceptionReported{}, func(e interface{}) bool {
 		event := e.(*ExceptionReported)
@@ -75,13 +68,10 @@ func TestReportExceptionWithStack(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-
-	Reset()
 }
 
 func TestReportPanicWithError(t *testing.T) {
-	Reset()
-	fake := Fake()
+	fake := NewFakeDispatcher()
 
 	ctx := context.Background()
 	ctx = WithTrace(ctx, "trace789", "span012")
@@ -89,7 +79,7 @@ func TestReportPanicWithError(t *testing.T) {
 	panicErr := errors.New("panic error")
 	stack := "goroutine 1 [running]:\nsome/package.Function()"
 
-	ReportPanic(ctx, panicErr, stack)
+	ReportPanic(ctx, fake, panicErr, stack)
 
 	err := fake.AssertDispatched(&ExceptionReported{}, func(e interface{}) bool {
 		event := e.(*ExceptionReported)
@@ -100,16 +90,13 @@ func TestReportPanicWithError(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-
-	Reset()
 }
 
 func TestReportPanicWithString(t *testing.T) {
-	Reset()
-	fake := Fake()
+	fake := NewFakeDispatcher()
 
 	ctx := context.Background()
-	ReportPanic(ctx, "string panic message", "stack")
+	ReportPanic(ctx, fake, "string panic message", "stack")
 
 	err := fake.AssertDispatched(&ExceptionReported{}, func(e interface{}) bool {
 		event := e.(*ExceptionReported)
@@ -119,35 +106,29 @@ func TestReportPanicWithString(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-
-	Reset()
 }
 
 func TestReportPanicWithNil(t *testing.T) {
-	Reset()
-	fake := Fake()
+	fake := NewFakeDispatcher()
 
 	ctx := context.Background()
-	ReportPanic(ctx, nil, "stack")
+	ReportPanic(ctx, fake, nil, "stack")
 
 	err := fake.AssertNothingDispatched()
 	if err != nil {
 		t.Error(err)
 	}
-
-	Reset()
 }
 
 func TestExceptionReportedCapturesTraceContext(t *testing.T) {
-	Reset()
-	fake := Fake()
+	fake := NewFakeDispatcher()
 
 	// Create context with trace information
 	ctx := context.Background()
 	ctx, traceID, spanID := StartTrace(ctx)
 
 	testErr := errors.New("traced error")
-	ReportException(ctx, testErr)
+	ReportException(ctx, fake, testErr)
 
 	err := fake.AssertDispatched(&ExceptionReported{}, func(e interface{}) bool {
 		event := e.(*ExceptionReported)
@@ -156,8 +137,6 @@ func TestExceptionReportedCapturesTraceContext(t *testing.T) {
 	if err != nil {
 		t.Errorf("Trace context not captured: %v", err)
 	}
-
-	Reset()
 }
 
 func TestTraceHelperReexports(t *testing.T) {
@@ -226,12 +205,11 @@ func (e *customError) Error() string {
 }
 
 func TestReportExceptionWithCustomErrorType(t *testing.T) {
-	Reset()
-	fake := Fake()
+	fake := NewFakeDispatcher()
 
 	ctx := context.Background()
 	testErr := &customError{msg: "custom error type"}
-	ReportException(ctx, testErr)
+	ReportException(ctx, fake, testErr)
 
 	err := fake.AssertDispatched(&ExceptionReported{}, func(e interface{}) bool {
 		event := e.(*ExceptionReported)
@@ -240,6 +218,4 @@ func TestReportExceptionWithCustomErrorType(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-
-	Reset()
 }

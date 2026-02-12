@@ -25,18 +25,14 @@ func TestTableBuilder_SoftDeletes(t *testing.T) {
 				t.Skip("skipping non-sqlite driver test")
 			}
 
-			err := orm.Init("sqlite", map[string]any{
-				"database": ":memory:",
-			})
-			if err != nil {
-				t.Fatalf("failed to init ORM: %v", err)
-			}
-			defer orm.Close()
+			manager := newTestManager(t)
+			defer manager.Close()
 
-			migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+			db := manager.DB()
+			migrator := migrate.NewMigrator(db, manager.DriverName())
 
 			// Create table with SoftDeletes
-			err = migrator.CreateTable("test_soft_deletes", func(t *migrate.TableBuilder) {
+			err := migrator.CreateTable("test_soft_deletes", func(t *migrate.TableBuilder) {
 				t.ID()
 				t.String("name")
 				t.Timestamps()
@@ -47,7 +43,6 @@ func TestTableBuilder_SoftDeletes(t *testing.T) {
 			}
 
 			// Verify deleted_at column exists and is nullable
-			db := orm.DB()
 			rows, err := db.Query("PRAGMA table_info(test_soft_deletes)")
 			if err != nil {
 				t.Fatalf("failed to get table info: %v", err)
@@ -101,8 +96,9 @@ func TestTableBuilder_SoftDeletes_SQL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := orm.Init(tt.driver, map[string]any{
-				"database": ":memory:",
+			manager, err := orm.NewManager(orm.ManagerConfig{
+				Driver:   tt.driver,
+				Database: ":memory:",
 			})
 			if err != nil && tt.driver == "sqlite" {
 				t.Fatalf("failed to init ORM: %v", err)
@@ -110,9 +106,10 @@ func TestTableBuilder_SoftDeletes_SQL(t *testing.T) {
 			if err != nil {
 				t.Skip("driver not available")
 			}
-			defer orm.Close()
+			defer manager.Close()
 
-			migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+			db := manager.DB()
+			migrator := migrate.NewMigrator(db, manager.DriverName())
 
 			// Use CreateTableSQL to get the SQL without executing
 			var generatedSQL string
@@ -135,18 +132,14 @@ func TestTableBuilder_SoftDeletes_SQL(t *testing.T) {
 }
 
 func TestTableBuilder_AllColumns(t *testing.T) {
-	err := orm.Init("sqlite", map[string]any{
-		"database": ":memory:",
-	})
-	if err != nil {
-		t.Fatalf("failed to init ORM: %v", err)
-	}
-	defer orm.Close()
+	manager := newTestManager(t)
+	defer manager.Close()
 
-	migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+	db := manager.DB()
+	migrator := migrate.NewMigrator(db, manager.DriverName())
 
 	// Create table with all column types
-	err = migrator.CreateTable("full_model", func(t *migrate.TableBuilder) {
+	err := migrator.CreateTable("full_model", func(t *migrate.TableBuilder) {
 		t.ID()
 		t.String("name")
 		t.String("code", 10)
@@ -166,7 +159,6 @@ func TestTableBuilder_AllColumns(t *testing.T) {
 	}
 
 	// Verify all columns exist
-	db := orm.DB()
 	rows, err := db.Query("PRAGMA table_info(full_model)")
 	if err != nil {
 		t.Fatalf("failed to get table info: %v", err)
@@ -216,15 +208,11 @@ func TestTableBuilder_AllColumns(t *testing.T) {
 }
 
 func TestTableBuilder_NewColumnTypes(t *testing.T) {
-	err := orm.Init("sqlite", map[string]any{
-		"database": ":memory:",
-	})
-	if err != nil {
-		t.Fatalf("failed to init ORM: %v", err)
-	}
-	defer orm.Close()
+	manager := newTestManager(t)
+	defer manager.Close()
 
-	migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+	db := manager.DB()
+	migrator := migrate.NewMigrator(db, manager.DriverName())
 
 	// Test Text column
 	t.Run("Text", func(t *testing.T) {
@@ -238,7 +226,6 @@ func TestTableBuilder_NewColumnTypes(t *testing.T) {
 		defer migrator.DropTable("text_test")
 
 		// Insert and retrieve text data
-		db := orm.DB()
 		longText := strings.Repeat("a", 1000)
 		_, err = db.Exec("INSERT INTO text_test (content) VALUES (?)", longText)
 		if err != nil {
@@ -266,7 +253,6 @@ func TestTableBuilder_NewColumnTypes(t *testing.T) {
 		}
 		defer migrator.DropTable("bigint_test")
 
-		db := orm.DB()
 		bigNum := int64(9223372036854775807) // Max int64
 		_, err = db.Exec("INSERT INTO bigint_test (big_number) VALUES (?)", bigNum)
 		if err != nil {
@@ -294,7 +280,6 @@ func TestTableBuilder_NewColumnTypes(t *testing.T) {
 		}
 		defer migrator.DropTable("date_test")
 
-		db := orm.DB()
 		_, err = db.Exec("INSERT INTO date_test (birth_date) VALUES (?)", "2000-01-15")
 		if err != nil {
 			t.Fatalf("failed to insert: %v", err)
@@ -321,7 +306,6 @@ func TestTableBuilder_NewColumnTypes(t *testing.T) {
 		}
 		defer migrator.DropTable("ts_test")
 
-		db := orm.DB()
 		_, err = db.Exec("INSERT INTO ts_test (verified_at) VALUES (?)", "2024-01-15 10:30:00")
 		if err != nil {
 			t.Fatalf("failed to insert: %v", err)
@@ -348,7 +332,6 @@ func TestTableBuilder_NewColumnTypes(t *testing.T) {
 		}
 		defer migrator.DropTable("uuid_col_test")
 
-		db := orm.DB()
 		testUUID := "550e8400-e29b-41d4-a716-446655440000"
 		_, err = db.Exec("INSERT INTO uuid_col_test (external_id) VALUES (?)", testUUID)
 		if err != nil {
@@ -376,7 +359,6 @@ func TestTableBuilder_NewColumnTypes(t *testing.T) {
 		}
 		defer migrator.DropTable("uuid_pk_test")
 
-		db := orm.DB()
 		testUUID := "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
 		_, err = db.Exec("INSERT INTO uuid_pk_test (id, name) VALUES (?, ?)", testUUID, "Test")
 		if err != nil {
@@ -398,18 +380,14 @@ func TestTableBuilder_NewColumnTypes(t *testing.T) {
 }
 
 func TestTableBuilder_IP(t *testing.T) {
-	err := orm.Init("sqlite", map[string]any{
-		"database": ":memory:",
-	})
-	if err != nil {
-		t.Fatalf("failed to init ORM: %v", err)
-	}
-	defer orm.Close()
+	manager := newTestManager(t)
+	defer manager.Close()
 
-	migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+	db := manager.DB()
+	migrator := migrate.NewMigrator(db, manager.DriverName())
 
 	var generatedSQL string
-	err = migrator.CreateTable("servers", func(tb *migrate.TableBuilder) {
+	err := migrator.CreateTable("servers", func(tb *migrate.TableBuilder) {
 		tb.ID()
 		tb.IP("ip_address").Nullable()
 		tb.IP("private_ip").Nullable()
@@ -426,7 +404,6 @@ func TestTableBuilder_IP(t *testing.T) {
 	}
 
 	// Test storing IPv4 and IPv6 addresses
-	db := orm.DB()
 	_, err = db.Exec("INSERT INTO servers (ip_address, private_ip) VALUES (?, ?)", "192.168.1.1", "2001:0db8:85a3:0000:0000:8a2e:0370:7334")
 	if err != nil {
 		t.Fatalf("failed to insert: %v", err)
@@ -446,18 +423,14 @@ func TestTableBuilder_IP(t *testing.T) {
 }
 
 func TestTableBuilder_Decimal(t *testing.T) {
-	err := orm.Init("sqlite", map[string]any{
-		"database": ":memory:",
-	})
-	if err != nil {
-		t.Fatalf("failed to init ORM: %v", err)
-	}
-	defer orm.Close()
+	manager := newTestManager(t)
+	defer manager.Close()
 
-	migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+	db := manager.DB()
+	migrator := migrate.NewMigrator(db, manager.DriverName())
 
 	var generatedSQL string
-	err = migrator.CreateTable("metrics", func(tb *migrate.TableBuilder) {
+	err := migrator.CreateTable("metrics", func(tb *migrate.TableBuilder) {
 		tb.ID()
 		tb.Decimal("cpu_percent", 5, 2)
 		tb.Decimal("load_avg", 6, 2)
@@ -474,7 +447,6 @@ func TestTableBuilder_Decimal(t *testing.T) {
 	}
 
 	// Test storing decimal values
-	db := orm.DB()
 	_, err = db.Exec("INSERT INTO metrics (cpu_percent, load_avg) VALUES (?, ?)", 75.55, 123.45)
 	if err != nil {
 		t.Fatalf("failed to insert: %v", err)
@@ -491,18 +463,14 @@ func TestTableBuilder_Decimal(t *testing.T) {
 }
 
 func TestTableBuilder_JSON(t *testing.T) {
-	err := orm.Init("sqlite", map[string]any{
-		"database": ":memory:",
-	})
-	if err != nil {
-		t.Fatalf("failed to init ORM: %v", err)
-	}
-	defer orm.Close()
+	manager := newTestManager(t)
+	defer manager.Close()
 
-	migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+	db := manager.DB()
+	migrator := migrate.NewMigrator(db, manager.DriverName())
 
 	var generatedSQL string
-	err = migrator.CreateTable("json_test", func(tb *migrate.TableBuilder) {
+	err := migrator.CreateTable("json_test", func(tb *migrate.TableBuilder) {
 		tb.ID()
 		tb.JSON("metadata")
 		tb.JSONB("settings").Nullable()
@@ -522,7 +490,6 @@ func TestTableBuilder_JSON(t *testing.T) {
 	}
 
 	// Test storing and retrieving JSON data
-	db := orm.DB()
 	jsonData := `{"key":"value","nested":{"arr":[1,2,3]}}`
 	_, err = db.Exec("INSERT INTO json_test (metadata, settings) VALUES (?, ?)", jsonData, nil)
 	if err != nil {
@@ -541,9 +508,9 @@ func TestTableBuilder_JSON(t *testing.T) {
 
 func TestTableBuilder_JSON_SQL(t *testing.T) {
 	tests := []struct {
-		name         string
-		driver       string
-		jsonContains string
+		name          string
+		driver        string
+		jsonContains  string
 		jsonbContains string
 	}{
 		{"sqlite", "sqlite", "metadata TEXT", "settings TEXT"},
@@ -553,8 +520,9 @@ func TestTableBuilder_JSON_SQL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := orm.Init(tt.driver, map[string]any{
-				"database": ":memory:",
+			manager, err := orm.NewManager(orm.ManagerConfig{
+				Driver:   tt.driver,
+				Database: ":memory:",
 			})
 			if err != nil && tt.driver == "sqlite" {
 				t.Fatalf("failed to init ORM: %v", err)
@@ -562,9 +530,10 @@ func TestTableBuilder_JSON_SQL(t *testing.T) {
 			if err != nil {
 				t.Skip("driver not available")
 			}
-			defer orm.Close()
+			defer manager.Close()
 
-			migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+			db := manager.DB()
+			migrator := migrate.NewMigrator(db, manager.DriverName())
 
 			var generatedSQL string
 			err = migrator.CreateTable("json_sql_test", func(tb *migrate.TableBuilder) {
@@ -587,18 +556,14 @@ func TestTableBuilder_JSON_SQL(t *testing.T) {
 }
 
 func TestTableBuilder_CompositePrimaryKey(t *testing.T) {
-	err := orm.Init("sqlite", map[string]any{
-		"database": ":memory:",
-	})
-	if err != nil {
-		t.Fatalf("failed to init ORM: %v", err)
-	}
-	defer orm.Close()
+	manager := newTestManager(t)
+	defer manager.Close()
 
-	migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+	db := manager.DB()
+	migrator := migrate.NewMigrator(db, manager.DriverName())
 
 	var generatedSQL string
-	err = migrator.CreateTable("server_ssh_keys", func(tb *migrate.TableBuilder) {
+	err := migrator.CreateTable("server_ssh_keys", func(tb *migrate.TableBuilder) {
 		tb.Integer("server_id")
 		tb.Integer("ssh_key_id")
 		tb.Timestamps()
@@ -616,7 +581,6 @@ func TestTableBuilder_CompositePrimaryKey(t *testing.T) {
 	}
 
 	// Test inserting with composite key
-	db := orm.DB()
 	_, err = db.Exec("INSERT INTO server_ssh_keys (server_id, ssh_key_id) VALUES (?, ?)", 1, 1)
 	if err != nil {
 		t.Fatalf("failed to insert: %v", err)
@@ -634,18 +598,14 @@ func TestTableBuilder_CompositePrimaryKey(t *testing.T) {
 }
 
 func TestTableBuilder_Primary(t *testing.T) {
-	err := orm.Init("sqlite", map[string]any{
-		"database": ":memory:",
-	})
-	if err != nil {
-		t.Fatalf("failed to init ORM: %v", err)
-	}
-	defer orm.Close()
+	manager := newTestManager(t)
+	defer manager.Close()
 
-	migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+	db := manager.DB()
+	migrator := migrate.NewMigrator(db, manager.DriverName())
 
 	var generatedSQL string
-	err = migrator.CreateTable("user_two_factor", func(tb *migrate.TableBuilder) {
+	err := migrator.CreateTable("user_two_factor", func(tb *migrate.TableBuilder) {
 		tb.Integer("user_id").Primary()
 		tb.String("secret")
 		generatedSQL = tb.ToSQL()
@@ -661,7 +621,6 @@ func TestTableBuilder_Primary(t *testing.T) {
 	}
 
 	// Test inserting with primary key
-	db := orm.DB()
 	_, err = db.Exec("INSERT INTO user_two_factor (user_id, secret) VALUES (?, ?)", 1, "TOTP123")
 	if err != nil {
 		t.Fatalf("failed to insert: %v", err)
@@ -687,8 +646,9 @@ func TestTableBuilder_Decimal_SQL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := orm.Init(tt.driver, map[string]any{
-				"database": ":memory:",
+			manager, err := orm.NewManager(orm.ManagerConfig{
+				Driver:   tt.driver,
+				Database: ":memory:",
 			})
 			if err != nil && tt.driver == "sqlite" {
 				t.Fatalf("failed to init ORM: %v", err)
@@ -696,9 +656,10 @@ func TestTableBuilder_Decimal_SQL(t *testing.T) {
 			if err != nil {
 				t.Skip("driver not available")
 			}
-			defer orm.Close()
+			defer manager.Close()
 
-			migrator := migrate.NewMigrator(orm.DB(), orm.GetDriver())
+			db := manager.DB()
+			migrator := migrate.NewMigrator(db, manager.DriverName())
 
 			var generatedSQL string
 			err = migrator.CreateTable("decimal_test", func(tb *migrate.TableBuilder) {

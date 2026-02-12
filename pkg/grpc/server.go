@@ -21,6 +21,7 @@ type Server struct {
 	enableReflection bool
 	running          bool
 	serverOptions    []grpc.ServerOption
+	logger           log.Logger
 
 	// Interceptors
 	unaryInterceptors  []grpc.UnaryServerInterceptor
@@ -83,6 +84,13 @@ func WithMaxRecvMsgSize(size int) ServerOption {
 func WithMaxSendMsgSize(size int) ServerOption {
 	return func(s *Server) {
 		s.serverOptions = append(s.serverOptions, grpc.MaxSendMsgSize(size))
+	}
+}
+
+// WithLogger sets the logger for the gRPC server
+func WithLogger(logger log.Logger) ServerOption {
+	return func(s *Server) {
+		s.logger = logger
 	}
 }
 
@@ -176,7 +184,7 @@ func (s *Server) Build() error {
 
 	// Enable reflection if configured
 	if s.enableReflection {
-		log.Warn("gRPC reflection is enabled — disable in production (GRPC_REFLECTION=false)")
+		s.logger.Warn("gRPC reflection is enabled — disable in production (GRPC_REFLECTION=false)")
 		reflection.Register(s.grpcServer)
 	}
 
@@ -198,7 +206,7 @@ func (s *Server) Start() error {
 	s.running = true
 	s.mu.Unlock()
 
-	log.Info("gRPC server starting", "address", s.listener.Addr().String())
+	s.logger.Info("gRPC server starting", "address", s.listener.Addr().String())
 	return s.grpcServer.Serve(s.listener)
 }
 
@@ -218,9 +226,9 @@ func (s *Server) StartAsync() error {
 	s.mu.Unlock()
 
 	go func() {
-		log.Info("gRPC server starting", "address", s.listener.Addr().String())
+		s.logger.Info("gRPC server starting", "address", s.listener.Addr().String())
 		if err := s.grpcServer.Serve(s.listener); err != nil {
-			log.Error("gRPC server error", "error", err)
+			s.logger.Error("gRPC server error", "error", err)
 		}
 	}()
 
@@ -233,7 +241,7 @@ func (s *Server) Stop() {
 	defer s.mu.Unlock()
 
 	if s.grpcServer != nil && s.running {
-		log.Info("gRPC server stopping")
+		s.logger.Info("gRPC server stopping")
 		s.grpcServer.Stop()
 		s.running = false
 	}
@@ -245,7 +253,7 @@ func (s *Server) GracefulStop() {
 	defer s.mu.Unlock()
 
 	if s.grpcServer != nil && s.running {
-		log.Info("gRPC server gracefully stopping")
+		s.logger.Info("gRPC server gracefully stopping")
 		s.grpcServer.GracefulStop()
 		s.running = false
 	}
