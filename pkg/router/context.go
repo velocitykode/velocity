@@ -3,10 +3,17 @@ package router
 import (
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
+	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -39,14 +46,22 @@ func WithServices(r *http.Request, s *app.Services) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), servicesCtxKey{}, s))
 }
 
+// Param represents a single route parameter key-value pair.
+type Param struct {
+	Key   string
+	Value string
+}
+
 // Context wraps http.Request and http.ResponseWriter with helper methods
 type Context struct {
 	Response http.ResponseWriter
 	Request  *http.Request
-	params   map[string]string
+	params   []Param
 	// For storing values across middleware
-	values   map[string]interface{}
-	services *app.Services
+	values         map[string]interface{}
+	services       *app.Services
+	sseStarted     bool
+	trustedProxies []string
 }
 
 // NewContext creates a new Context from http.Request and http.ResponseWriter.
@@ -57,10 +72,19 @@ func NewContext(w http.ResponseWriter, r *http.Request) *Context {
 	if s, ok := r.Context().Value(servicesCtxKey{}).(*app.Services); ok {
 		svc = s
 	}
+	// Convert map params from request context to []Param
+	mapParams := GetParams(r)
+	var params []Param
+	if len(mapParams) > 0 {
+		params = make([]Param, 0, len(mapParams))
+		for k, v := range mapParams {
+			params = append(params, Param{Key: k, Value: v})
+		}
+	}
 	return &Context{
 		Response: w,
 		Request:  r,
-		params:   GetParams(r),
+		params:   params,
 		values:   make(map[string]interface{}),
 		services: svc,
 	}
@@ -86,7 +110,12 @@ func (c *Context) GetString(key string) string {
 
 // Param returns a route parameter by name
 func (c *Context) Param(name string) string {
-	return c.params[name]
+	for _, p := range c.params {
+		if p.Key == name {
+			return p.Value
+		}
+	}
+	return ""
 }
 
 // ParamInt returns a route parameter as int
@@ -286,17 +315,53 @@ func (c *Context) Path() string {
 }
 
 // IP returns the client IP address from RemoteAddr (with port stripped).
-// This does NOT trust X-Forwarded-For or X-Real-IP by default to prevent
-// IP spoofing. Use the rate limiter's WithTrustedProxies option for
-// proxy-aware IP extraction.
+// If trusted proxies are configured and the remote address is in the trusted
+// list, X-Forwarded-For is consulted and the first non-trusted IP is returned.
 func (c *Context) IP() string {
 	addr := c.Request.RemoteAddr
 	// Strip port
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
-		return addr
+		host = addr
 	}
+
+	if len(c.trustedProxies) > 0 && c.isTrustedProxy(host) {
+		if xff := c.Request.Header.Get("X-Forwarded-For"); xff != "" {
+			ips := strings.Split(xff, ",")
+			// Walk from right to left, return first non-trusted IP
+			for i := len(ips) - 1; i >= 0; i-- {
+				ip := strings.TrimSpace(ips[i])
+				if ip != "" && !c.isTrustedProxy(ip) {
+					return ip
+				}
+			}
+		}
+	}
+
 	return host
+}
+
+// isTrustedProxy checks if the given IP is in the trusted proxies list.
+func (c *Context) isTrustedProxy(ip string) bool {
+	for _, trusted := range c.trustedProxies {
+		if trusted == ip {
+			return true
+		}
+	}
+	return false
+}
+
+// reset clears the context for reuse by the sync.Pool.
+func (c *Context) reset() {
+	c.Response = nil
+	c.Request = nil
+	c.params = c.params[:0]
+	for k := range c.values {
+		delete(c.values, k)
+	}
+	c.services = nil
+	c.sseStarted = false
+	c.trustedProxies = nil
 }
 
 // IsAjax returns true if the request is an AJAX request
@@ -477,4 +542,325 @@ func (c *Context) CSRF() any {
 // View returns the view engine (*view.Engine). Requires type assertion.
 func (c *Context) View() any {
 	return c.mustServices().View
+}
+
+// ---------------------------------------------------------------------------
+// Multi-format binding
+// ---------------------------------------------------------------------------
+
+// BindForm parses form data and maps it to v using `form` struct tags.
+func (c *Context) BindForm(v interface{}) error {
+	if err := c.Request.ParseForm(); err != nil {
+		return err
+	}
+	return bindValues(v, c.Request.Form, "form")
+}
+
+// BindQuery maps URL query parameters to v using `query` struct tags.
+func (c *Context) BindQuery(v interface{}) error {
+	return bindValues(v, c.Request.URL.Query(), "query")
+}
+
+// BindXML parses the request body as XML into v (10 MB limit).
+func (c *Context) BindXML(v interface{}) error {
+	c.Request.Body = http.MaxBytesReader(c.Response, c.Request.Body, DefaultMaxBodySize)
+	return xml.NewDecoder(c.Request.Body).Decode(v)
+}
+
+// BindAuto inspects Content-Type and delegates to the appropriate binder.
+// Fallback is JSON.
+func (c *Context) BindAuto(v interface{}) error {
+	ct := c.Request.Header.Get("Content-Type")
+	switch {
+	case strings.HasPrefix(ct, "application/xml"), strings.HasPrefix(ct, "text/xml"):
+		return c.BindXML(v)
+	case strings.HasPrefix(ct, "application/x-www-form-urlencoded"),
+		strings.HasPrefix(ct, "multipart/form-data"):
+		return c.BindForm(v)
+	default:
+		return c.Bind(v)
+	}
+}
+
+// Validatable is implemented by structs that define their own validation rules.
+type Validatable interface {
+	ValidationRules() validation.Rules
+}
+
+// BindValid binds JSON then validates using the struct's own rules (if any).
+func (c *Context) BindValid(v interface{}) error {
+	if err := c.Bind(v); err != nil {
+		return err
+	}
+	if c.services == nil || c.services.Validator == nil {
+		return nil
+	}
+	if val, ok := v.(Validatable); ok {
+		dataMap := structToMap(v)
+		_, err := c.services.Validator.Validate(dataMap, val.ValidationRules())
+		return err
+	}
+	return nil
+}
+
+// structToMap converts a struct (or pointer to struct) to map[string]interface{}
+// using json tags for field names.
+func structToMap(v interface{}) map[string]interface{} {
+	result := make(map[string]interface{})
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Ptr {
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Struct {
+		return result
+	}
+	rt := rv.Type()
+	for i := 0; i < rt.NumField(); i++ {
+		field := rt.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		name := field.Tag.Get("json")
+		if name == "" || name == "-" {
+			name = field.Name
+		}
+		if idx := strings.Index(name, ","); idx != -1 {
+			name = name[:idx]
+		}
+		result[name] = rv.Field(i).Interface()
+	}
+	return result
+}
+
+// bindValues uses reflection to populate v from url.Values using the given struct tag.
+func bindValues(v interface{}, vals url.Values, tag string) error {
+	rv := reflect.ValueOf(v)
+	if rv.Kind() != reflect.Ptr || rv.IsNil() {
+		return fmt.Errorf("bind target must be a non-nil pointer to struct")
+	}
+	rv = rv.Elem()
+	if rv.Kind() != reflect.Struct {
+		return fmt.Errorf("bind target must be a pointer to struct")
+	}
+	rt := rv.Type()
+	for i := 0; i < rt.NumField(); i++ {
+		field := rt.Field(i)
+		name := field.Tag.Get(tag)
+		if name == "" || name == "-" {
+			continue
+		}
+		val := vals.Get(name)
+		if val == "" {
+			continue
+		}
+		fv := rv.Field(i)
+		if !fv.CanSet() {
+			continue
+		}
+		switch fv.Kind() {
+		case reflect.String:
+			fv.SetString(val)
+		case reflect.Int, reflect.Int64:
+			n, err := strconv.ParseInt(val, 10, 64)
+			if err != nil {
+				return fmt.Errorf("field %s: %w", field.Name, err)
+			}
+			fv.SetInt(n)
+		case reflect.Float64:
+			f, err := strconv.ParseFloat(val, 64)
+			if err != nil {
+				return fmt.Errorf("field %s: %w", field.Name, err)
+			}
+			fv.SetFloat(f)
+		case reflect.Bool:
+			b, err := strconv.ParseBool(val)
+			if err != nil {
+				return fmt.Errorf("field %s: %w", field.Name, err)
+			}
+			fv.SetBool(b)
+		}
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// XML response
+// ---------------------------------------------------------------------------
+
+// XML sends an XML response with the given status code.
+func (c *Context) XML(status int, data interface{}) error {
+	c.Response.Header().Set("Content-Type", "application/xml; charset=utf-8")
+	c.Response.WriteHeader(status)
+	return xml.NewEncoder(c.Response).Encode(data)
+}
+
+// ---------------------------------------------------------------------------
+// File response methods
+// ---------------------------------------------------------------------------
+
+// File serves a file from the given path.
+func (c *Context) File(path string) error {
+	if strings.Contains(path, "..") {
+		return fmt.Errorf("invalid file path")
+	}
+	path = filepath.Clean(path)
+	http.ServeFile(c.Response, c.Request, path)
+	return nil
+}
+
+// Download sends a file as an attachment with the given filename.
+func (c *Context) Download(path string, filename string) error {
+	if strings.Contains(path, "..") {
+		return fmt.Errorf("invalid file path")
+	}
+	path = filepath.Clean(path)
+	c.Response.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	http.ServeFile(c.Response, c.Request, path)
+	return nil
+}
+
+// Attachment is an alias for Download.
+func (c *Context) Attachment(path string, filename string) error {
+	return c.Download(path, filename)
+}
+
+// ---------------------------------------------------------------------------
+// SSE helper
+// ---------------------------------------------------------------------------
+
+// SSE sends a Server-Sent Event. On the first call it sets the appropriate
+// headers (Content-Type, Cache-Control, Connection) and flushes.
+func (c *Context) SSE(event string, data interface{}) error {
+	if !c.sseStarted {
+		c.Response.Header().Set("Content-Type", "text/event-stream")
+		c.Response.Header().Set("Cache-Control", "no-cache")
+		c.Response.Header().Set("Connection", "keep-alive")
+		c.sseStarted = true
+	}
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(c.Response, "event: %s\ndata: %s\n\n", event, jsonData)
+	if err != nil {
+		return err
+	}
+	if f, ok := c.Response.(http.Flusher); ok {
+		f.Flush()
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Form and file helpers
+// ---------------------------------------------------------------------------
+
+// FormValue returns a form value by key.
+func (c *Context) FormValue(key string) string {
+	return c.Request.FormValue(key)
+}
+
+// FormFile returns the first file for the provided form key.
+func (c *Context) FormFile(key string) (*multipart.FileHeader, error) {
+	if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
+		return nil, err
+	}
+	_, fh, err := c.Request.FormFile(key)
+	return fh, err
+}
+
+// SaveFile saves an uploaded file to dst. The destination path must not
+// contain ".." to prevent directory traversal.
+func (c *Context) SaveFile(fh *multipart.FileHeader, dst string) error {
+	if strings.Contains(dst, "..") {
+		return fmt.Errorf("invalid destination path")
+	}
+	dst = filepath.Clean(dst)
+	src, err := fh.Open()
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, src)
+	return err
+}
+
+// ---------------------------------------------------------------------------
+// Cookie delete helper
+// ---------------------------------------------------------------------------
+
+// DeleteCookie expires a cookie by name.
+func (c *Context) DeleteCookie(name string) {
+	c.SetCookie(&http.Cookie{
+		Name:     name,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Content negotiation
+// ---------------------------------------------------------------------------
+
+// Accepts parses the Accept header and returns the first offered type that
+// the client accepts (ordered by quality value). Returns "" if no match.
+func (c *Context) Accepts(offered ...string) string {
+	accept := c.Request.Header.Get("Accept")
+	if accept == "" {
+		if len(offered) > 0 {
+			return offered[0]
+		}
+		return ""
+	}
+
+	type entry struct {
+		mime string
+		q    float64
+	}
+
+	parts := strings.Split(accept, ",")
+	entries := make([]entry, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		mime := p
+		q := 1.0
+		if idx := strings.Index(p, ";"); idx != -1 {
+			mime = strings.TrimSpace(p[:idx])
+			params := p[idx+1:]
+			for _, param := range strings.Split(params, ";") {
+				param = strings.TrimSpace(param)
+				if strings.HasPrefix(param, "q=") {
+					if v, err := strconv.ParseFloat(strings.TrimPrefix(param, "q="), 64); err == nil {
+						q = v
+					}
+				}
+			}
+		}
+		entries = append(entries, entry{mime: mime, q: q})
+	}
+
+	sort.SliceStable(entries, func(i, j int) bool {
+		return entries[i].q > entries[j].q
+	})
+
+	for _, e := range entries {
+		for _, o := range offered {
+			if e.mime == o || e.mime == "*/*" {
+				return o
+			}
+		}
+	}
+	return ""
 }

@@ -1,11 +1,9 @@
 package router
 
-// RouteURL generates a URL for a named route with the given parameters
+// RouteURL generates a URL for a named route with the given parameters.
+// This is safe to call concurrently after routes are committed (frozen).
 func (r *VelocityRouterV2) RouteURL(name string, params map[string]string) (string, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	if !r.committed {
+	if !r.frozen {
 		return "", &RouteNotFoundError{Name: name}
 	}
 

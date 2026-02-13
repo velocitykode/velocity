@@ -23,7 +23,7 @@ func GetParams(r *http.Request) map[string]string {
 	if params, ok := r.Context().Value(paramsKey{}).(map[string]string); ok {
 		return params
 	}
-	return make(map[string]string)
+	return nil
 }
 
 // SetRouteName stores the current route name in the request context

@@ -55,6 +55,11 @@ type Config struct {
 	// Mail
 	Mail MailConfig
 
+	// Server timeouts
+	ReadTimeout  time.Duration // SERVER_READ_TIMEOUT, default 30s
+	WriteTimeout time.Duration // SERVER_WRITE_TIMEOUT, default 30s
+	IdleTimeout  time.Duration // SERVER_IDLE_TIMEOUT, default 120s
+
 	// Scheduler (no config needed, created fresh)
 }
 
@@ -156,6 +161,27 @@ func WithConfig(config Config) Option {
 func WithPort(port string) Option {
 	return func(a *App) {
 		a.config.Port = port
+	}
+}
+
+// WithReadTimeout sets the HTTP server read timeout.
+func WithReadTimeout(d time.Duration) Option {
+	return func(a *App) {
+		a.config.ReadTimeout = d
+	}
+}
+
+// WithWriteTimeout sets the HTTP server write timeout.
+func WithWriteTimeout(d time.Duration) Option {
+	return func(a *App) {
+		a.config.WriteTimeout = d
+	}
+}
+
+// WithIdleTimeout sets the HTTP server idle timeout.
+func WithIdleTimeout(d time.Duration) Option {
+	return func(a *App) {
+		a.config.IdleTimeout = d
 	}
 }
 
@@ -322,6 +348,11 @@ func ConfigFromEnv() Config {
 	config.Mail = MailConfig{
 		Driver: envOrDefault("MAIL_DRIVER", "log"),
 	}
+
+	// Server timeouts
+	config.ReadTimeout = envDurationOrDefault("SERVER_READ_TIMEOUT", 30*time.Second)
+	config.WriteTimeout = envDurationOrDefault("SERVER_WRITE_TIMEOUT", 30*time.Second)
+	config.IdleTimeout = envDurationOrDefault("SERVER_IDLE_TIMEOUT", 120*time.Second)
 
 	return config
 }

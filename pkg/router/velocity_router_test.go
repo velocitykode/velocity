@@ -873,3 +873,487 @@ func TestVelocityRouterV2_AnyFallback(t *testing.T) {
 		}
 	})
 }
+
+func TestVelocityRouterV2_ContextPooling(t *testing.T) {
+	t.Run("context is reused from pool", func(t *testing.T) {
+		router := NewV2()
+		var contexts []*Context
+
+		router.Get("/pool", func(c *Context) error {
+			contexts = append(contexts, c)
+			return c.String(http.StatusOK, "ok")
+		})
+
+		// Make multiple requests
+		for i := 0; i < 10; i++ {
+			req := httptest.NewRequest("GET", "/pool", nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Errorf("request %d: expected 200, got %d", i, w.Code)
+			}
+		}
+
+		// After reset+return to pool, contexts should be reused
+		// We can't guarantee exact reuse count, but verify no crash
+		if len(contexts) != 10 {
+			t.Errorf("expected 10 handler calls, got %d", len(contexts))
+		}
+	})
+
+	t.Run("context values are cleared between requests", func(t *testing.T) {
+		router := NewV2()
+		callCount := 0
+
+		router.Get("/clean", func(c *Context) error {
+			callCount++
+			if callCount == 1 {
+				c.Set("key", "value")
+			} else {
+				if v := c.Get("key"); v != nil {
+					t.Error("context value should be cleared between requests")
+				}
+			}
+			return c.String(http.StatusOK, "ok")
+		})
+
+		for i := 0; i < 2; i++ {
+			req := httptest.NewRequest("GET", "/clean", nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+		}
+	})
+
+	t.Run("params are cleared between requests", func(t *testing.T) {
+		router := NewV2()
+		callCount := 0
+
+		router.Get("/users/{id}", func(c *Context) error {
+			callCount++
+			id := c.Param("id")
+			if callCount == 1 && id != "123" {
+				t.Errorf("expected id=123, got %q", id)
+			}
+			if callCount == 2 && id != "456" {
+				t.Errorf("expected id=456, got %q", id)
+			}
+			return c.String(http.StatusOK, "ok")
+		})
+
+		req := httptest.NewRequest("GET", "/users/123", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		req = httptest.NewRequest("GET", "/users/456", nil)
+		w = httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+	})
+}
+
+func TestVelocityRouterV2_RouteFreeze(t *testing.T) {
+	t.Run("routes registered before serve work", func(t *testing.T) {
+		router := NewV2()
+		router.Get("/test", func(c *Context) error {
+			return c.String(http.StatusOK, "ok")
+		})
+
+		req := httptest.NewRequest("GET", "/test", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("expected 200, got %d", w.Code)
+		}
+	})
+
+	t.Run("frozen flag set after first request", func(t *testing.T) {
+		router := NewV2()
+		router.Get("/test", func(c *Context) error {
+			return nil
+		})
+
+		if router.frozen {
+			t.Error("router should not be frozen before first request")
+		}
+
+		req := httptest.NewRequest("GET", "/test", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if !router.frozen {
+			t.Error("router should be frozen after first request")
+		}
+	})
+}
+
+func TestVelocityRouterV2_CustomErrorHandler(t *testing.T) {
+	t.Run("custom error handler called for handler error", func(t *testing.T) {
+		router := NewV2()
+		var capturedErr error
+
+		router.ErrorHandler = func(ctx *Context, err error) {
+			capturedErr = err
+			ctx.Response.WriteHeader(http.StatusBadGateway)
+			ctx.Response.Write([]byte("custom error"))
+		}
+
+		router.Get("/error", func(c *Context) error {
+			return NewHTTPError(http.StatusBadRequest, "bad input")
+		})
+
+		req := httptest.NewRequest("GET", "/error", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if capturedErr == nil {
+			t.Fatal("expected error handler to be called")
+		}
+		he, ok := capturedErr.(*HTTPError)
+		if !ok {
+			t.Fatal("expected *HTTPError")
+		}
+		if he.Code != http.StatusBadRequest {
+			t.Errorf("expected code 400, got %d", he.Code)
+		}
+	})
+
+	t.Run("default error handler returns 500", func(t *testing.T) {
+		router := NewV2()
+
+		router.Get("/error", func(c *Context) error {
+			return http.ErrBodyNotAllowed
+		})
+
+		req := httptest.NewRequest("GET", "/error", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusInternalServerError {
+			t.Errorf("expected 500, got %d", w.Code)
+		}
+	})
+
+	t.Run("HTTPError uses its code when no custom handler", func(t *testing.T) {
+		router := NewV2()
+
+		router.Get("/forbidden", func(c *Context) error {
+			return NewHTTPError(http.StatusForbidden, "not allowed")
+		})
+
+		req := httptest.NewRequest("GET", "/forbidden", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusForbidden {
+			t.Errorf("expected 403, got %d", w.Code)
+		}
+		if !strings.Contains(w.Body.String(), "not allowed") {
+			t.Errorf("expected error message in body, got %q", w.Body.String())
+		}
+	})
+
+	t.Run("custom error handler called on panic", func(t *testing.T) {
+		router := NewV2()
+		var capturedErr error
+
+		router.ErrorHandler = func(ctx *Context, err error) {
+			capturedErr = err
+			ctx.Response.WriteHeader(http.StatusInternalServerError)
+			ctx.Response.Write([]byte("panic handled"))
+		}
+
+		router.Get("/panic", func(c *Context) error {
+			panic("test panic")
+		})
+
+		req := httptest.NewRequest("GET", "/panic", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if capturedErr == nil {
+			t.Fatal("expected error handler to be called on panic")
+		}
+	})
+}
+
+func TestVelocityRouterV2_TrustedProxies(t *testing.T) {
+	t.Run("IP uses X-Forwarded-For when proxy is trusted", func(t *testing.T) {
+		router := NewV2()
+		router.TrustedProxies = []string{"10.0.0.1"}
+
+		var capturedIP string
+		router.Get("/ip", func(c *Context) error {
+			capturedIP = c.IP()
+			return nil
+		})
+
+		req := httptest.NewRequest("GET", "/ip", nil)
+		req.RemoteAddr = "10.0.0.1:8080"
+		req.Header.Set("X-Forwarded-For", "203.0.113.50, 10.0.0.1")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if capturedIP != "203.0.113.50" {
+			t.Errorf("expected IP '203.0.113.50', got %q", capturedIP)
+		}
+	})
+
+	t.Run("IP ignores X-Forwarded-For when proxy is not trusted", func(t *testing.T) {
+		router := NewV2()
+		// No trusted proxies configured
+
+		var capturedIP string
+		router.Get("/ip", func(c *Context) error {
+			capturedIP = c.IP()
+			return nil
+		})
+
+		req := httptest.NewRequest("GET", "/ip", nil)
+		req.RemoteAddr = "192.168.1.1:8080"
+		req.Header.Set("X-Forwarded-For", "203.0.113.50")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if capturedIP != "192.168.1.1" {
+			t.Errorf("expected IP '192.168.1.1', got %q", capturedIP)
+		}
+	})
+
+	t.Run("IP returns first non-trusted from chain", func(t *testing.T) {
+		router := NewV2()
+		router.TrustedProxies = []string{"10.0.0.1", "10.0.0.2"}
+
+		var capturedIP string
+		router.Get("/ip", func(c *Context) error {
+			capturedIP = c.IP()
+			return nil
+		})
+
+		req := httptest.NewRequest("GET", "/ip", nil)
+		req.RemoteAddr = "10.0.0.1:8080"
+		req.Header.Set("X-Forwarded-For", "1.1.1.1, 10.0.0.2, 10.0.0.1")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if capturedIP != "1.1.1.1" {
+			t.Errorf("expected IP '1.1.1.1', got %q", capturedIP)
+		}
+	})
+
+	t.Run("IP returns RemoteAddr when all XFF IPs are trusted", func(t *testing.T) {
+		router := NewV2()
+		router.TrustedProxies = []string{"10.0.0.1", "10.0.0.2"}
+
+		var capturedIP string
+		router.Get("/ip", func(c *Context) error {
+			capturedIP = c.IP()
+			return nil
+		})
+
+		req := httptest.NewRequest("GET", "/ip", nil)
+		req.RemoteAddr = "10.0.0.1:8080"
+		req.Header.Set("X-Forwarded-For", "10.0.0.2, 10.0.0.1")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if capturedIP != "10.0.0.1" {
+			t.Errorf("expected IP '10.0.0.1', got %q", capturedIP)
+		}
+	})
+}
+
+func TestVelocityRouterV2_StaticFileOptimization(t *testing.T) {
+	t.Run("static file served without double stat", func(t *testing.T) {
+		router := NewV2()
+		router.Static("./testdata")
+
+		req := httptest.NewRequest("GET", "/test.txt", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("expected 200, got %d", w.Code)
+		}
+		if !strings.Contains(w.Body.String(), "test content") {
+			t.Errorf("expected test content, got %q", w.Body.String())
+		}
+	})
+
+	t.Run("falls through to routes on 404 static", func(t *testing.T) {
+		router := NewV2()
+		router.Static("./testdata")
+		router.Get("/api/data", func(c *Context) error {
+			return c.String(http.StatusOK, "api response")
+		})
+
+		req := httptest.NewRequest("GET", "/api/data", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("expected 200, got %d", w.Code)
+		}
+		if w.Body.String() != "api response" {
+			t.Errorf("expected 'api response', got %q", w.Body.String())
+		}
+	})
+}
+
+func TestContext_Reset(t *testing.T) {
+	t.Run("reset clears all fields", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/test", nil)
+		w := httptest.NewRecorder()
+
+		ctx := &Context{
+			Response:       w,
+			Request:        req,
+			params:         []Param{{Key: "id", Value: "123"}},
+			values:         map[string]interface{}{"key": "value"},
+			sseStarted:     true,
+			trustedProxies: []string{"10.0.0.1"},
+		}
+
+		ctx.reset()
+
+		if ctx.Response != nil {
+			t.Error("expected Response to be nil after reset")
+		}
+		if ctx.Request != nil {
+			t.Error("expected Request to be nil after reset")
+		}
+		if len(ctx.params) != 0 {
+			t.Error("expected params to be empty after reset")
+		}
+		if len(ctx.values) != 0 {
+			t.Error("expected values to be empty after reset")
+		}
+		if ctx.services != nil {
+			t.Error("expected services to be nil after reset")
+		}
+		if ctx.sseStarted {
+			t.Error("expected sseStarted to be false after reset")
+		}
+		if ctx.trustedProxies != nil {
+			t.Error("expected trustedProxies to be nil after reset")
+		}
+	})
+
+	t.Run("reset preserves params slice capacity", func(t *testing.T) {
+		ctx := &Context{
+			params: make([]Param, 0, 8),
+			values: make(map[string]interface{}),
+		}
+		ctx.params = append(ctx.params, Param{Key: "a", Value: "1"})
+		ctx.params = append(ctx.params, Param{Key: "b", Value: "2"})
+
+		ctx.reset()
+
+		if cap(ctx.params) < 8 {
+			t.Errorf("expected params capacity preserved, got %d", cap(ctx.params))
+		}
+		if len(ctx.params) != 0 {
+			t.Error("expected params length to be 0")
+		}
+	})
+}
+
+func TestContext_ParamSlice(t *testing.T) {
+	t.Run("Param returns value for existing key", func(t *testing.T) {
+		ctx := &Context{
+			params: []Param{
+				{Key: "id", Value: "123"},
+				{Key: "name", Value: "test"},
+			},
+			values: make(map[string]interface{}),
+		}
+
+		if ctx.Param("id") != "123" {
+			t.Errorf("expected '123', got %q", ctx.Param("id"))
+		}
+		if ctx.Param("name") != "test" {
+			t.Errorf("expected 'test', got %q", ctx.Param("name"))
+		}
+	})
+
+	t.Run("Param returns empty for missing key", func(t *testing.T) {
+		ctx := &Context{
+			params: []Param{{Key: "id", Value: "123"}},
+			values: make(map[string]interface{}),
+		}
+
+		if ctx.Param("missing") != "" {
+			t.Errorf("expected empty string, got %q", ctx.Param("missing"))
+		}
+	})
+
+	t.Run("Param works with nil params", func(t *testing.T) {
+		ctx := &Context{
+			values: make(map[string]interface{}),
+		}
+
+		if ctx.Param("anything") != "" {
+			t.Errorf("expected empty string, got %q", ctx.Param("anything"))
+		}
+	})
+}
+
+func TestContext_TrustedProxyIP(t *testing.T) {
+	t.Run("returns remote addr when no trusted proxies", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/test", nil)
+		req.RemoteAddr = "192.168.1.1:1234"
+		ctx := &Context{
+			Request: req,
+			values:  make(map[string]interface{}),
+		}
+
+		if ip := ctx.IP(); ip != "192.168.1.1" {
+			t.Errorf("expected '192.168.1.1', got %q", ip)
+		}
+	})
+
+	t.Run("reads XFF when remote is trusted", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/test", nil)
+		req.RemoteAddr = "10.0.0.1:1234"
+		req.Header.Set("X-Forwarded-For", "8.8.8.8")
+		ctx := &Context{
+			Request:        req,
+			values:         make(map[string]interface{}),
+			trustedProxies: []string{"10.0.0.1"},
+		}
+
+		if ip := ctx.IP(); ip != "8.8.8.8" {
+			t.Errorf("expected '8.8.8.8', got %q", ip)
+		}
+	})
+
+	t.Run("ignores XFF when remote is not trusted", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/test", nil)
+		req.RemoteAddr = "192.168.1.1:1234"
+		req.Header.Set("X-Forwarded-For", "8.8.8.8")
+		ctx := &Context{
+			Request:        req,
+			values:         make(map[string]interface{}),
+			trustedProxies: []string{"10.0.0.1"},
+		}
+
+		if ip := ctx.IP(); ip != "192.168.1.1" {
+			t.Errorf("expected '192.168.1.1', got %q", ip)
+		}
+	})
+
+	t.Run("skips trusted IPs in XFF chain", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/test", nil)
+		req.RemoteAddr = "10.0.0.1:1234"
+		req.Header.Set("X-Forwarded-For", "203.0.113.1, 10.0.0.2")
+		ctx := &Context{
+			Request:        req,
+			values:         make(map[string]interface{}),
+			trustedProxies: []string{"10.0.0.1", "10.0.0.2"},
+		}
+
+		if ip := ctx.IP(); ip != "203.0.113.1" {
+			t.Errorf("expected '203.0.113.1', got %q", ip)
+		}
+	})
+}

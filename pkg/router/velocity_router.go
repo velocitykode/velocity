@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"runtime"
 	"sync"
@@ -18,7 +19,7 @@ type VelocityRouterV2 struct {
 	prefix        string
 	middlewares   []MiddlewareFunc
 	namedRoutes   map[string]*MatchResult
-	mu            sync.RWMutex
+	mu            sync.Mutex
 	staticDir     string
 	staticFS      http.Handler
 	staticEnabled bool
@@ -27,21 +28,39 @@ type VelocityRouterV2 struct {
 	rootGroup *GroupDefinition
 	resources []*resourceWrapperV2
 	committed bool
+	frozen    bool
 
 	// Service container injected into every Context
 	services *app.Services
 
 	// Event dispatcher (instance-level, replaces package-level var)
 	eventDispatcher func(event interface{}) error
+
+	// Context pool for reuse
+	ctxPool sync.Pool
+
+	// Trusted proxies for X-Forwarded-For support
+	TrustedProxies []string
+
+	// ErrorHandler is called when a handler returns an error or a panic occurs.
+	// If nil, the default behavior (HTTP 500) is used.
+	ErrorHandler func(*Context, error)
 }
 
 // NewV2 creates a new tree-based router instance
 func NewV2() *VelocityRouterV2 {
-	return &VelocityRouterV2{
+	r := &VelocityRouterV2{
 		tree:        NewTree(),
 		namedRoutes: make(map[string]*MatchResult),
 		rootGroup:   NewGroupDefinition("", nil),
 	}
+	r.ctxPool.New = func() interface{} {
+		return &Context{
+			params: make([]Param, 0, 8),
+			values: make(map[string]interface{}),
+		}
+	}
+	return r
 }
 
 // SetServices sets the service container that will be injected into every Context.
@@ -112,6 +131,9 @@ func (r *VelocityRouterV2) Match(methods []string, path string, handler HandlerF
 
 // addRoute adds a route to the current group
 func (r *VelocityRouterV2) addRoute(method, path string, handler HandlerFunc) RouteConfig {
+	if r.frozen {
+		log.Println("velocity: route registered after server start, this route will not be served")
+	}
 	fullPath := r.buildPath(path)
 	route := r.currentGroup().AddRoute(method, fullPath, handler)
 	return &routeConfigV2{route: route, router: r}
@@ -124,6 +146,9 @@ func (r *VelocityRouterV2) currentGroup() *GroupDefinition {
 
 // Group creates a new router group with a prefix
 func (r *VelocityRouterV2) Group(prefix string, fn ...func(Router)) Router {
+	if r.frozen {
+		log.Println("velocity: route registered after server start, this route will not be served")
+	}
 	// Use relative prefix - full path calculated during CommitToTree
 	child := r.rootGroup.AddChild(prefix)
 
@@ -182,6 +207,39 @@ func (r *VelocityRouterV2) Static(directory string) {
 	r.staticEnabled = true
 }
 
+// statusCaptureWriter wraps http.ResponseWriter to capture the status code
+// without writing through to the underlying writer when the status is 404.
+// This is used for static file serving to allow fallthrough to route matching.
+type statusCaptureWriter struct {
+	http.ResponseWriter
+	status    int
+	wrote     bool
+	suppress  bool
+}
+
+func (w *statusCaptureWriter) WriteHeader(code int) {
+	if w.wrote {
+		return
+	}
+	w.status = code
+	w.wrote = true
+	if code == http.StatusNotFound {
+		w.suppress = true
+		return
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusCaptureWriter) Write(b []byte) (int, error) {
+	if !w.wrote {
+		w.WriteHeader(http.StatusOK)
+	}
+	if w.suppress {
+		return len(b), nil // discard
+	}
+	return w.ResponseWriter.Write(b)
+}
+
 // ServeHTTP implements http.Handler interface
 func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Commit routes on first request
@@ -214,38 +272,34 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		SpanID:     spanID,
 	})
 
-	// Try to serve static file if enabled
+	// Try to serve static file if enabled (single-stat via capture writer)
 	if r.staticEnabled {
-		if file, err := http.Dir(r.staticDir).Open(req.URL.Path); err == nil {
-			stat, statErr := file.Stat()
-			file.Close()
-			if statErr == nil && !stat.IsDir() {
-				// Dispatch routed event for static file
-				r.dispatchInstanceEvent(&RequestRouted{
-					Context:   req.Context(),
-					RequestID: requestID,
-					Route:     "[static]",
-					Matched:   true,
-				})
+		cw := &statusCaptureWriter{ResponseWriter: rw}
+		r.staticFS.ServeHTTP(cw, req)
+		if !cw.suppress {
+			// Static file was served successfully
+			r.dispatchInstanceEvent(&RequestRouted{
+				Context:   req.Context(),
+				RequestID: requestID,
+				Route:     "[static]",
+				Matched:   true,
+			})
 
-				r.staticFS.ServeHTTP(rw, req)
-
-				// Dispatch handled event for static file
-				r.dispatchInstanceEvent(&RequestHandled{
-					Context:      req.Context(),
-					RequestID:    requestID,
-					Method:       req.Method,
-					Path:         req.URL.Path,
-					Route:        "[static]",
-					StatusCode:   rw.Status(),
-					BytesWritten: rw.BytesWritten(),
-					Duration:     time.Since(startedAt),
-					TraceID:      traceID,
-					SpanID:       spanID,
-				})
-				return
-			}
+			r.dispatchInstanceEvent(&RequestHandled{
+				Context:      req.Context(),
+				RequestID:    requestID,
+				Method:       req.Method,
+				Path:         req.URL.Path,
+				Route:        "[static]",
+				StatusCode:   rw.Status(),
+				BytesWritten: rw.BytesWritten(),
+				Duration:     time.Since(startedAt),
+				TraceID:      traceID,
+				SpanID:       spanID,
+			})
+			return
 		}
+		// 404 from static — fall through to route matching
 	}
 
 	// Match route
@@ -304,11 +358,28 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		req = WithServices(req, r.services)
 	}
 
-	// Create context and call handler with panic recovery
-	ctx := NewContextV2(rw, req)
+	// Acquire context from pool
+	ctx := r.ctxPool.Get().(*Context)
+	ctx.Response = rw
+	ctx.Request = req
 	ctx.services = r.services
+	ctx.trustedProxies = r.TrustedProxies
 
-	// Use defer for panic recovery and event dispatch
+	// Build params from match result
+	if result.segments != nil {
+		ctx.params = ctx.params[:0]
+		valueIdx := 0
+		for _, seg := range result.segments {
+			if seg.Type == SegmentParam || seg.Type == SegmentRegex || seg.Type == SegmentWildcard {
+				if valueIdx < len(result.matchedValues) {
+					ctx.params = append(ctx.params, Param{Key: seg.Value, Value: result.matchedValues[valueIdx]})
+					valueIdx++
+				}
+			}
+		}
+	}
+
+	// Use defer for panic recovery, event dispatch, and context return to pool
 	var handlerErr error
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -340,7 +411,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			})
 
 			// Write error response
-			http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
+			r.handleError(ctx, rw, err)
 
 			// Dispatch handled event
 			r.dispatchInstanceEvent(&RequestHandled{
@@ -349,7 +420,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				Method:       req.Method,
 				Path:         req.URL.Path,
 				Route:        result.Path,
-				StatusCode:   http.StatusInternalServerError,
+				StatusCode:   rw.Status(),
 				BytesWritten: rw.BytesWritten(),
 				Duration:     time.Since(startedAt),
 				TraceID:      traceID,
@@ -396,12 +467,33 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				SpanID:       spanID,
 			})
 		}
+
+		// Return context to pool
+		ctx.reset()
+		r.ctxPool.Put(ctx)
 	}()
 
 	handlerErr = result.Handler(ctx)
 	if handlerErr != nil {
-		http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
+		r.handleError(ctx, rw, handlerErr)
 	}
+}
+
+// handleError writes an error response using the custom ErrorHandler if set,
+// or falls back to the default HTTP 500 behavior.
+func (r *VelocityRouterV2) handleError(ctx *Context, rw *responseWriter, err error) {
+	if r.ErrorHandler != nil {
+		r.ErrorHandler(ctx, err)
+		return
+	}
+
+	// Check for HTTPError type
+	if he, ok := err.(*HTTPError); ok {
+		http.Error(rw, he.Message, he.Code)
+		return
+	}
+
+	http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
 }
 
 // panicError wraps a recovered panic value as an error
@@ -451,6 +543,7 @@ func (r *VelocityRouterV2) commitOnce() {
 	r.namedRoutes = r.tree.namedRoutes
 
 	r.committed = true
+	r.frozen = true
 }
 
 // buildPath constructs the full path including any prefix
@@ -468,10 +561,19 @@ func NewContextV2(w http.ResponseWriter, r *http.Request) *Context {
 	if s, ok := r.Context().Value(servicesCtxKey{}).(*app.Services); ok {
 		svc = s
 	}
+	// Convert map params from request context to []Param
+	mapParams := GetParams(r)
+	var params []Param
+	if len(mapParams) > 0 {
+		params = make([]Param, 0, len(mapParams))
+		for k, v := range mapParams {
+			params = append(params, Param{Key: k, Value: v})
+		}
+	}
 	return &Context{
 		Response: w,
 		Request:  r,
-		params:   GetParams(r),
+		params:   params,
 		values:   make(map[string]interface{}),
 		services: svc,
 	}

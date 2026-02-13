@@ -23,16 +23,13 @@ func TestSetParams_GetParams(t *testing.T) {
 		}
 	})
 
-	t.Run("returns empty map when no params set", func(t *testing.T) {
+	t.Run("returns nil when no params set", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/users", nil)
 
 		retrieved := GetParams(req)
 
-		if retrieved == nil {
-			t.Error("expected empty map, got nil")
-		}
-		if len(retrieved) != 0 {
-			t.Errorf("expected empty map, got %d entries", len(retrieved))
+		if retrieved != nil {
+			t.Errorf("expected nil, got %v", retrieved)
 		}
 	})
 
@@ -44,7 +41,7 @@ func TestSetParams_GetParams(t *testing.T) {
 
 		// Original should not have params
 		origParams := GetParams(original)
-		if len(origParams) != 0 {
+		if origParams != nil {
 			t.Error("original request should not have params")
 		}
 

@@ -172,8 +172,11 @@ func New(opts ...Option) (*App, error) {
 func (a *App) Serve() error {
 	addr := ":" + a.config.Port
 	a.server = &http.Server{
-		Addr:    addr,
-		Handler: a.Router,
+		Addr:         addr,
+		Handler:      a.Router,
+		ReadTimeout:  a.config.ReadTimeout,
+		WriteTimeout: a.config.WriteTimeout,
+		IdleTimeout:  a.config.IdleTimeout,
 	}
 
 	// Start server in a goroutine

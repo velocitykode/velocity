@@ -6,13 +6,13 @@ import (
 	"testing"
 )
 
-func TestParam(t *testing.T) {
+func TestParamFromRequest(t *testing.T) {
 	t.Run("extracts parameter value", func(t *testing.T) {
 		r := New()
 		var capturedValue string
 
 		r.Get("/test/{param}", func(c *Context) error {
-			capturedValue = Param(c.Request, "param")
+			capturedValue = ParamFromRequest(c.Request, "param")
 			c.Response.WriteHeader(http.StatusOK)
 			return nil
 		})
@@ -31,7 +31,7 @@ func TestParam(t *testing.T) {
 		var capturedValue string
 
 		r.Get("/other", func(c *Context) error {
-			capturedValue = Param(c.Request, "nonexistent")
+			capturedValue = ParamFromRequest(c.Request, "nonexistent")
 			c.Response.WriteHeader(http.StatusOK)
 			return nil
 		})
@@ -199,13 +199,15 @@ func TestConcurrentParamAccess(t *testing.T) {
 	done := make(chan bool, 10)
 
 	r.Get("/concurrent/{id}", func(c *Context) error {
-		// Simulate concurrent param access
+		// Capture the request before spawning goroutines, since the
+		// context is pooled and reset after the handler returns.
+		req := c.Request
 		go func() {
-			_ = Param(c.Request, "id")
+			_ = ParamFromRequest(req, "id")
 			done <- true
 		}()
 		go func() {
-			_ = Params(c.Request)
+			_ = Params(req)
 			done <- true
 		}()
 		c.Response.WriteHeader(http.StatusOK)

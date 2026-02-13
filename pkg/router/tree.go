@@ -31,11 +31,12 @@ type Node struct {
 
 // MatchResult contains the matched route info
 type MatchResult struct {
-	Handler  HandlerFunc
-	Params   map[string]string
-	Name     string
-	Path     string
-	segments []Segment // internal: for param name extraction
+	Handler       HandlerFunc
+	Params        map[string]string
+	Name          string
+	Path          string
+	segments      []Segment  // internal: for param name extraction
+	matchedValues []string   // internal: raw matched values for pool-based context init
 }
 
 // NewTree creates a new routing tree
@@ -138,10 +139,11 @@ func (t *Tree) Match(method, path string) *MatchResult {
 		if t.root.handlers != nil {
 			if result, ok := t.root.handlers[method]; ok {
 				return &MatchResult{
-					Handler: result.Handler,
-					Params:  make(map[string]string),
-					Name:    result.Name,
-					Path:    result.Path,
+					Handler:  result.Handler,
+					Params:   make(map[string]string),
+					Name:     result.Name,
+					Path:     result.Path,
+					segments: result.segments,
 				}
 			}
 		}
@@ -173,10 +175,12 @@ func (n *Node) match(parts []string, method string, matchedValues []string) *Mat
 				// Build params map using stored segments for param names
 				params := buildParams(result.segments, matchedValues)
 				return &MatchResult{
-					Handler: result.Handler,
-					Params:  params,
-					Name:    result.Name,
-					Path:    result.Path,
+					Handler:       result.Handler,
+					Params:        params,
+					Name:          result.Name,
+					Path:          result.Path,
+					segments:      result.segments,
+					matchedValues: matchedValues,
 				}
 			}
 		}
@@ -187,10 +191,12 @@ func (n *Node) match(parts []string, method string, matchedValues []string) *Mat
 				newValues := append(copyValues(matchedValues), "") // empty wildcard
 				params := buildParams(result.segments, newValues)
 				return &MatchResult{
-					Handler: result.Handler,
-					Params:  params,
-					Name:    result.Name,
-					Path:    result.Path,
+					Handler:       result.Handler,
+					Params:        params,
+					Name:          result.Name,
+					Path:          result.Path,
+					segments:      result.segments,
+					matchedValues: newValues,
 				}
 			}
 		}
@@ -242,10 +248,12 @@ func (n *Node) match(parts []string, method string, matchedValues []string) *Mat
 			if result, ok := n.wildcardChild.handlers[method]; ok {
 				params := buildParams(result.segments, newValues)
 				return &MatchResult{
-					Handler: result.Handler,
-					Params:  params,
-					Name:    result.Name,
-					Path:    result.Path,
+					Handler:       result.Handler,
+					Params:        params,
+					Name:          result.Name,
+					Path:          result.Path,
+					segments:      result.segments,
+					matchedValues: newValues,
 				}
 			}
 		}
@@ -263,6 +271,24 @@ func buildParams(segments []Segment, values []string) map[string]string {
 		if seg.Type == SegmentParam || seg.Type == SegmentRegex || seg.Type == SegmentWildcard {
 			if valueIdx < len(values) {
 				params[seg.Value] = values[valueIdx]
+				valueIdx++
+			}
+		}
+	}
+
+	return params
+}
+
+// buildParamSlice creates a []Param from segments and matched values.
+// Used by the router to populate Context.params directly.
+func buildParamSlice(segments []Segment, values []string) []Param {
+	params := make([]Param, 0, len(values))
+	valueIdx := 0
+
+	for _, seg := range segments {
+		if seg.Type == SegmentParam || seg.Type == SegmentRegex || seg.Type == SegmentWildcard {
+			if valueIdx < len(values) {
+				params = append(params, Param{Key: seg.Value, Value: values[valueIdx]})
 				valueIdx++
 			}
 		}
