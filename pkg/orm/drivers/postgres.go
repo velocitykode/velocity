@@ -57,7 +57,7 @@ func (d *PostgresDriver) Connect(config ConnectionConfig) error {
 	if config.SSLMode != "" {
 		dsn += " sslmode=" + escapePgDSNValue(config.SSLMode)
 	} else {
-		dsn += " sslmode=prefer" // Default to prefer for secure connections
+		dsn += " sslmode=disable" // Default to disable — lib/pq does not support "prefer"
 	}
 
 	if config.TimeZone != "" {

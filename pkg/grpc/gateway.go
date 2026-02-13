@@ -72,6 +72,11 @@ func NewGateway(opts ...GatewayOption) *Gateway {
 		opt(g)
 	}
 
+	// Default to a basic logger if none was provided
+	if g.logger == nil {
+		g.logger, _ = log.NewLogger(log.LogConfig{Driver: "console", Config: map[string]interface{}{"level": "info"}})
+	}
+
 	// If no transport credentials were configured via options, configure from environment
 	if len(g.dialOptions) == 0 {
 		opts, err := configureGatewayTransport()
