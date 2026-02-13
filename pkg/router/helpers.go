@@ -4,13 +4,18 @@ import (
 	"net/http"
 )
 
-// ParamFromRequest extracts a route parameter from the request context.
-func ParamFromRequest(r *http.Request, name string) string {
+// Param extracts a route parameter from the request context.
+func Param(r *http.Request, name string) string {
 	params := GetParams(r)
 	if params == nil {
 		return ""
 	}
 	return params[name]
+}
+
+// ParamFromRequest is an alias for Param.
+func ParamFromRequest(r *http.Request, name string) string {
+	return Param(r, name)
 }
 
 // Params returns all route parameters from the request

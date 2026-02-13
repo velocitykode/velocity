@@ -279,24 +279,6 @@ func buildParams(segments []Segment, values []string) map[string]string {
 	return params
 }
 
-// buildParamSlice creates a []Param from segments and matched values.
-// Used by the router to populate Context.params directly.
-func buildParamSlice(segments []Segment, values []string) []Param {
-	params := make([]Param, 0, len(values))
-	valueIdx := 0
-
-	for _, seg := range segments {
-		if seg.Type == SegmentParam || seg.Type == SegmentRegex || seg.Type == SegmentWildcard {
-			if valueIdx < len(values) {
-				params = append(params, Param{Key: seg.Value, Value: values[valueIdx]})
-				valueIdx++
-			}
-		}
-	}
-
-	return params
-}
-
 // copyValues creates a copy of the values slice
 func copyValues(values []string) []string {
 	result := make([]string, len(values))

@@ -1208,7 +1208,7 @@ func TestContext_Reset(t *testing.T) {
 		ctx := &Context{
 			Response:       w,
 			Request:        req,
-			params:         []Param{{Key: "id", Value: "123"}},
+			params:         []RouteParam{{Key: "id", Value: "123"}},
 			values:         map[string]interface{}{"key": "value"},
 			sseStarted:     true,
 			trustedProxies: []string{"10.0.0.1"},
@@ -1241,11 +1241,11 @@ func TestContext_Reset(t *testing.T) {
 
 	t.Run("reset preserves params slice capacity", func(t *testing.T) {
 		ctx := &Context{
-			params: make([]Param, 0, 8),
+			params: make([]RouteParam, 0, 8),
 			values: make(map[string]interface{}),
 		}
-		ctx.params = append(ctx.params, Param{Key: "a", Value: "1"})
-		ctx.params = append(ctx.params, Param{Key: "b", Value: "2"})
+		ctx.params = append(ctx.params, RouteParam{Key: "a", Value: "1"})
+		ctx.params = append(ctx.params, RouteParam{Key: "b", Value: "2"})
 
 		ctx.reset()
 
@@ -1261,7 +1261,7 @@ func TestContext_Reset(t *testing.T) {
 func TestContext_ParamSlice(t *testing.T) {
 	t.Run("Param returns value for existing key", func(t *testing.T) {
 		ctx := &Context{
-			params: []Param{
+			params: []RouteParam{
 				{Key: "id", Value: "123"},
 				{Key: "name", Value: "test"},
 			},
@@ -1278,7 +1278,7 @@ func TestContext_ParamSlice(t *testing.T) {
 
 	t.Run("Param returns empty for missing key", func(t *testing.T) {
 		ctx := &Context{
-			params: []Param{{Key: "id", Value: "123"}},
+			params: []RouteParam{{Key: "id", Value: "123"}},
 			values: make(map[string]interface{}),
 		}
 

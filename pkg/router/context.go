@@ -47,7 +47,7 @@ func WithServices(r *http.Request, s *app.Services) *http.Request {
 }
 
 // Param represents a single route parameter key-value pair.
-type Param struct {
+type RouteParam struct {
 	Key   string
 	Value string
 }
@@ -56,7 +56,7 @@ type Param struct {
 type Context struct {
 	Response http.ResponseWriter
 	Request  *http.Request
-	params   []Param
+	params   []RouteParam
 	// For storing values across middleware
 	values         map[string]interface{}
 	services       *app.Services
@@ -72,13 +72,13 @@ func NewContext(w http.ResponseWriter, r *http.Request) *Context {
 	if s, ok := r.Context().Value(servicesCtxKey{}).(*app.Services); ok {
 		svc = s
 	}
-	// Convert map params from request context to []Param
+	// Convert map params from request context to []RouteParam
 	mapParams := GetParams(r)
-	var params []Param
+	var params []RouteParam
 	if len(mapParams) > 0 {
-		params = make([]Param, 0, len(mapParams))
+		params = make([]RouteParam, 0, len(mapParams))
 		for k, v := range mapParams {
-			params = append(params, Param{Key: k, Value: v})
+			params = append(params, RouteParam{Key: k, Value: v})
 		}
 	}
 	return &Context{

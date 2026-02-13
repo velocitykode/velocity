@@ -21,7 +21,7 @@ func createTestContext(method, path string, headers map[string]string) (*Context
 	ctx := &Context{
 		Request:  req,
 		Response: rec,
-		params:   make([]Param, 0),
+		params:   make([]RouteParam, 0),
 		values:   make(map[string]interface{}),
 	}
 	return ctx, rec
@@ -79,7 +79,7 @@ func TestRateLimitByIP_TracksSeparateIPs(t *testing.T) {
 		req := httptest.NewRequest("GET", "/test", nil)
 		req.RemoteAddr = ip + ":12345"
 		rec := httptest.NewRecorder()
-		return &Context{Request: req, Response: rec, params: make([]Param, 0), values: make(map[string]interface{})}, rec
+		return &Context{Request: req, Response: rec, params: make([]RouteParam, 0), values: make(map[string]interface{})}, rec
 	}
 
 	// IP1 makes 2 requests (should be allowed)
@@ -471,7 +471,7 @@ func TestRateLimitByIP_ConcurrentRequests(t *testing.T) {
 				req := httptest.NewRequest("GET", "/test", nil)
 				req.RemoteAddr = ipAddr + ":12345"
 				rec := httptest.NewRecorder()
-				ctx := &Context{Request: req, Response: rec, params: make([]Param, 0), values: make(map[string]interface{})}
+				ctx := &Context{Request: req, Response: rec, params: make([]RouteParam, 0), values: make(map[string]interface{})}
 				_ = handler(ctx)
 				mu.Lock()
 				if rec.Code == http.StatusOK {
@@ -622,7 +622,7 @@ func TestRateLimitByIP_EmptyHeaders(t *testing.T) {
 	ctx := &Context{
 		Request:  req,
 		Response: rec,
-		params:   make([]Param, 0),
+		params:   make([]RouteParam, 0),
 		values:   make(map[string]interface{}),
 	}
 

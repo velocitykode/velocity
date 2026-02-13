@@ -56,7 +56,7 @@ func NewV2() *VelocityRouterV2 {
 	}
 	r.ctxPool.New = func() interface{} {
 		return &Context{
-			params: make([]Param, 0, 8),
+			params: make([]RouteParam, 0, 8),
 			values: make(map[string]interface{}),
 		}
 	}
@@ -167,6 +167,9 @@ func (r *VelocityRouterV2) Group(prefix string, fn ...func(Router)) Router {
 
 // Use adds middleware to the router
 func (r *VelocityRouterV2) Use(middlewares ...MiddlewareFunc) Router {
+	if r.frozen {
+		log.Println("velocity: middleware registered after server start, this middleware will not be applied")
+	}
 	r.middlewares = append(r.middlewares, middlewares...)
 	return r
 }
@@ -178,6 +181,9 @@ func (r *VelocityRouterV2) Prefix(prefix string) {
 
 // Resource creates RESTful routes for a controller
 func (r *VelocityRouterV2) Resource(path string, controller interface{}) ResourceRoute {
+	if r.frozen {
+		log.Println("velocity: resource registered after server start, this resource will not be served")
+	}
 	rr := &resourceWrapperV2{
 		router:     r,
 		path:       path,
@@ -275,16 +281,17 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Try to serve static file if enabled (single-stat via capture writer)
 	if r.staticEnabled {
 		cw := &statusCaptureWriter{ResponseWriter: rw}
+		// Dispatch routed event before serving (preserves original event ordering)
+		r.dispatchInstanceEvent(&RequestRouted{
+			Context:   req.Context(),
+			RequestID: requestID,
+			Route:     "[static]",
+			Matched:   true,
+		})
+
 		r.staticFS.ServeHTTP(cw, req)
 		if !cw.suppress {
 			// Static file was served successfully
-			r.dispatchInstanceEvent(&RequestRouted{
-				Context:   req.Context(),
-				RequestID: requestID,
-				Route:     "[static]",
-				Matched:   true,
-			})
-
 			r.dispatchInstanceEvent(&RequestHandled{
 				Context:      req.Context(),
 				RequestID:    requestID,
@@ -372,7 +379,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		for _, seg := range result.segments {
 			if seg.Type == SegmentParam || seg.Type == SegmentRegex || seg.Type == SegmentWildcard {
 				if valueIdx < len(result.matchedValues) {
-					ctx.params = append(ctx.params, Param{Key: seg.Value, Value: result.matchedValues[valueIdx]})
+					ctx.params = append(ctx.params, RouteParam{Key: seg.Value, Value: result.matchedValues[valueIdx]})
 					valueIdx++
 				}
 			}
@@ -561,13 +568,13 @@ func NewContextV2(w http.ResponseWriter, r *http.Request) *Context {
 	if s, ok := r.Context().Value(servicesCtxKey{}).(*app.Services); ok {
 		svc = s
 	}
-	// Convert map params from request context to []Param
+	// Convert map params from request context to []RouteParam
 	mapParams := GetParams(r)
-	var params []Param
+	var params []RouteParam
 	if len(mapParams) > 0 {
-		params = make([]Param, 0, len(mapParams))
+		params = make([]RouteParam, 0, len(mapParams))
 		for k, v := range mapParams {
-			params = append(params, Param{Key: k, Value: v})
+			params = append(params, RouteParam{Key: k, Value: v})
 		}
 	}
 	return &Context{

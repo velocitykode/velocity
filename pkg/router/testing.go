@@ -17,6 +17,7 @@ func NewTestContext(method, path string, body ...io.Reader) (*Context, *httptest
 	return &Context{
 		Response: w,
 		Request:  r,
+		params:   make([]RouteParam, 0, 8),
 		values:   make(map[string]interface{}),
 	}, w
 }

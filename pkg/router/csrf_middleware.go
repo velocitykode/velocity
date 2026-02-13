@@ -4,25 +4,21 @@ import (
 	"net/http"
 )
 
-// csrfVerifier is the interface that csrf_middleware expects.
-// It is satisfied by *csrf.CSRF without importing that package, which
-// avoids an import cycle (csrf already imports router).
-type csrfVerifier interface {
-	VerifyToken(r *http.Request) error
-	Token(r *http.Request) string
+// csrfMiddlewarer is satisfied by *csrf.CSRF which exports Middleware() and
+// RouterMiddleware(). We use Middleware(http.Handler) to avoid importing csrf.
+type csrfMiddlewarer interface {
+	Middleware(next http.Handler) http.Handler
 }
 
-// CSRFMiddleware returns a middleware that verifies CSRF tokens on
-// state-changing requests (anything other than GET, HEAD, OPTIONS).
-// The csrfInstance must implement VerifyToken and Token; if it does not,
-// all requests pass through unmodified.
+// CSRFMiddleware returns a MiddlewareFunc that delegates to the CSRF
+// instance's exported Middleware method. The csrfInstance must satisfy
+// the Middleware(http.Handler) http.Handler interface (e.g. *csrf.CSRF).
 //
-// On success the current token is stored in the context under the key
-// "csrf_token" so templates and JSON responses can read it.
+// Usage: router.Use(router.CSRFMiddleware(app.CSRF))
 func CSRFMiddleware(csrfInstance interface{}) MiddlewareFunc {
 	return func(next HandlerFunc) HandlerFunc {
 		return func(c *Context) error {
-			verifier, ok := csrfInstance.(csrfVerifier)
+			m, ok := csrfInstance.(csrfMiddlewarer)
 			if !ok {
 				return next(c)
 			}
@@ -30,17 +26,28 @@ func CSRFMiddleware(csrfInstance interface{}) MiddlewareFunc {
 			// Only verify on state-changing methods
 			switch c.Request.Method {
 			case http.MethodGet, http.MethodHead, http.MethodOptions:
-				// safe methods — skip verification
-			default:
-				if err := verifier.VerifyToken(c.Request); err != nil {
-					return c.Error(http.StatusForbidden, "Forbidden")
-				}
+				return next(c)
 			}
 
-			// Store the token so downstream handlers/templates can use it
-			c.Set("csrf_token", verifier.Token(c.Request))
+			var handlerErr error
+			var called bool
 
-			return next(c)
+			// Wrap the next handler as http.Handler so csrf.Middleware can call it
+			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				// Update the context's request in case CSRF middleware modified it
+				c.Request = r
+				handlerErr = next(c)
+			})
+
+			m.Middleware(inner).ServeHTTP(c.Response, c.Request)
+
+			if !called {
+				// CSRF middleware rejected the request (already wrote 403)
+				return nil
+			}
+
+			return handlerErr
 		}
 	}
 }
