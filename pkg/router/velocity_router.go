@@ -212,9 +212,9 @@ func (r *VelocityRouterV2) Static(directory string) {
 // This is used for static file serving to allow fallthrough to route matching.
 type statusCaptureWriter struct {
 	http.ResponseWriter
-	status    int
-	wrote     bool
-	suppress  bool
+	status   int
+	wrote    bool
+	suppress bool
 }
 
 func (w *statusCaptureWriter) WriteHeader(code int) {

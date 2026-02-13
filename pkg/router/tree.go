@@ -35,8 +35,8 @@ type MatchResult struct {
 	Params        map[string]string
 	Name          string
 	Path          string
-	segments      []Segment  // internal: for param name extraction
-	matchedValues []string   // internal: raw matched values for pool-based context init
+	segments      []Segment // internal: for param name extraction
+	matchedValues []string  // internal: raw matched values for pool-based context init
 }
 
 // NewTree creates a new routing tree
