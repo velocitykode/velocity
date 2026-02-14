@@ -1422,10 +1422,11 @@ func TestContext_Authorize(t *testing.T) {
 			wantErr:  false,
 		},
 		{
-			name:     "denied ability returns error",
+			name:     "denied ability returns 403",
 			services: &app.Services{Auth: &mockAuthGateChecker{allows: map[string]bool{"delete": false}}},
 			ability:  "delete",
 			wantErr:  true,
+			wantCode: http.StatusForbidden,
 		},
 		{
 			name:     "nil auth returns 403",
@@ -1475,7 +1476,7 @@ func TestContext_Authorize(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Resource / ResourceCollection tests (end-to-end with pkg/resource)
+// Resource test (end-to-end with pkg/resource)
 // ---------------------------------------------------------------------------
 
 // userResource wraps a user model and implements resource.Resource with
@@ -1536,88 +1537,5 @@ func TestContext_Resource(t *testing.T) {
 	json.Unmarshal(w2.Body.Bytes(), &result2)
 	if _, exists := result2["email"]; exists {
 		t.Error("expected email excluded for non-admin")
-	}
-}
-
-func TestContext_ResourceCollection(t *testing.T) {
-	req := httptest.NewRequest("GET", "/", nil)
-	w := httptest.NewRecorder()
-	c := NewContext(w, req)
-
-	users := []*userResource{
-		{ID: 1, Name: "Alice", IsAdmin: true, Email: "alice@example.com"},
-		{ID: 2, Name: "Bob", IsAdmin: false, Email: "bob@example.com"},
-	}
-	// Use real resource.NewCollection — exercises the transformation pipeline
-	collection := resource.NewCollection(users)
-
-	if err := c.ResourceCollection(collection); err != nil {
-		t.Fatalf("ResourceCollection() error: %v", err)
-	}
-
-	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", w.Code)
-	}
-
-	var result []map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
-		t.Fatalf("failed to unmarshal: %v", err)
-	}
-	if len(result) != 2 {
-		t.Fatalf("expected 2 items, got %d", len(result))
-	}
-	// Alice is admin → email included
-	if result[0]["email"] != "alice@example.com" {
-		t.Errorf("expected Alice's email included, got %v", result[0]["email"])
-	}
-	// Bob is not admin → email excluded
-	if _, exists := result[1]["email"]; exists {
-		t.Error("expected Bob's email excluded")
-	}
-}
-
-func TestContext_ResourceCollection_Paginated(t *testing.T) {
-	req := httptest.NewRequest("GET", "/", nil)
-	w := httptest.NewRecorder()
-	c := NewContext(w, req)
-
-	users := []*userResource{
-		{ID: 1, Name: "Alice"},
-		{ID: 2, Name: "Bob"},
-	}
-	// Use real resource.NewPaginatedCollection — exercises LastPage auto-computation
-	paginated := resource.NewPaginatedCollection(users, resource.PaginationMeta{
-		Total:       11,
-		PerPage:     5,
-		CurrentPage: 1,
-	})
-
-	if err := c.ResourceCollection(paginated); err != nil {
-		t.Fatalf("ResourceCollection() error: %v", err)
-	}
-
-	var result map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
-		t.Fatalf("failed to unmarshal: %v", err)
-	}
-
-	meta, ok := result["meta"].(map[string]any)
-	if !ok {
-		t.Fatal("expected meta to be a map")
-	}
-	// LastPage should be auto-computed: ceil(11/5) = 3
-	if meta["last_page"] != float64(3) {
-		t.Errorf("expected last_page=3 (auto-computed), got %v", meta["last_page"])
-	}
-	if meta["total"] != float64(11) {
-		t.Errorf("expected total=11, got %v", meta["total"])
-	}
-
-	data, ok := result["data"].([]any)
-	if !ok {
-		t.Fatal("expected data to be an array")
-	}
-	if len(data) != 2 {
-		t.Errorf("expected 2 data items, got %d", len(data))
 	}
 }

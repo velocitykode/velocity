@@ -21,7 +21,14 @@ type PaginationMeta struct {
 // NewPaginatedCollection transforms a slice of Resource-implementing items
 // into a paginated response with data and meta fields.
 // LastPage is auto-computed from Total and PerPage (ceiling division).
+// Negative Total or PerPage are clamped to 0.
 func NewPaginatedCollection[T Resource](items []T, meta PaginationMeta) map[string]any {
+	if meta.Total < 0 {
+		meta.Total = 0
+	}
+	if meta.PerPage < 0 {
+		meta.PerPage = 0
+	}
 	if meta.PerPage > 0 {
 		meta.LastPage = (meta.Total + meta.PerPage - 1) / meta.PerPage
 	}

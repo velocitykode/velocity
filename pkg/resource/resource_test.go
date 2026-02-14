@@ -358,25 +358,62 @@ func TestResourceWithConditionals(t *testing.T) {
 }
 
 func TestWhenNotNil_NilValues(t *testing.T) {
-	// Test with various nil-like values
-	_, _, ok := WhenNotNil("key", nil)
-	if ok {
-		t.Error("expected ok=false for nil")
+	tests := []struct {
+		name string
+		val  any
+		want bool
+	}{
+		{"untyped nil", nil, false},
+		{"typed nil pointer", (*string)(nil), false},
+		{"typed nil slice", ([]string)(nil), false},
+		{"typed nil map", (map[string]any)(nil), false},
+		{"zero int", 0, true},
+		{"empty string", "", true},
+		{"false", false, true},
+		{"non-nil pointer", func() any { s := "x"; return &s }(), true},
 	}
-
-	// Non-nil value should be included
-	_, _, ok = WhenNotNil("key", 0)
-	if !ok {
-		t.Error("expected ok=true for zero int (not nil)")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, ok := WhenNotNil("key", tt.val)
+			if ok != tt.want {
+				t.Errorf("WhenNotNil(%v) ok = %v, want %v", tt.val, ok, tt.want)
+			}
+		})
 	}
+}
 
-	_, _, ok = WhenNotNil("key", "")
-	if !ok {
-		t.Error("expected ok=true for empty string (not nil)")
+func TestMerge_NilMap(t *testing.T) {
+	// Should not panic
+	Merge(nil, func(m map[string]any) {
+		m["key"] = "value"
+	})
+}
+
+func TestNewCollection_NilSlice(t *testing.T) {
+	result := NewCollection[testUser](nil)
+	if result == nil {
+		t.Fatal("expected non-nil result for nil input")
 	}
+	if len(result) != 0 {
+		t.Errorf("expected 0 items, got %d", len(result))
+	}
+}
 
-	_, _, ok = WhenNotNil("key", false)
-	if !ok {
-		t.Error("expected ok=true for false (not nil)")
+func TestNewPaginatedCollection_NegativeValues(t *testing.T) {
+	result := NewPaginatedCollection([]testUser{}, PaginationMeta{
+		Total:       -5,
+		PerPage:     -3,
+		CurrentPage: 1,
+	})
+
+	meta := result["meta"].(PaginationMeta)
+	if meta.Total != 0 {
+		t.Errorf("expected negative total clamped to 0, got %d", meta.Total)
+	}
+	if meta.PerPage != 0 {
+		t.Errorf("expected negative per_page clamped to 0, got %d", meta.PerPage)
+	}
+	if meta.LastPage != 0 {
+		t.Errorf("expected last_page=0, got %d", meta.LastPage)
 	}
 }

@@ -254,16 +254,18 @@ func (a *App) Shutdown(ctx context.Context) error {
 		orm.ResetDefault()
 	}
 
-	// 6. Close logger if it supports it (e.g., file logger)
+	// 6. Shutdown providers in reverse registration order (before logger closes,
+	// so providers can log during teardown).
+	for i := len(a.providers) - 1; i >= 0; i-- {
+		setErr(a.providers[i].Shutdown(ctx))
+	}
+
+	// 7. Close logger if it supports it (e.g., file logger) — last, so all
+	// prior shutdown steps can still log.
 	if a.Log != nil {
 		if closer, ok := a.Log.(interface{ Close() error }); ok {
 			setErr(closer.Close())
 		}
-	}
-
-	// 7. Shutdown providers in reverse registration order
-	for i := len(a.providers) - 1; i >= 0; i-- {
-		setErr(a.providers[i].Shutdown(ctx))
 	}
 
 	if firstErr != nil {

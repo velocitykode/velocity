@@ -262,13 +262,6 @@ func (c *Context) Resource(r resource.Resource) error {
 	return c.JSON(http.StatusOK, r.ToResource())
 }
 
-// ResourceCollection sends a collection or paginated resource as JSON with a 200 status.
-// The data argument should be a []map[string]any (from NewCollection) or
-// a map[string]any (from NewPaginatedCollection).
-func (c *Context) ResourceCollection(data any) error {
-	return c.JSON(http.StatusOK, data)
-}
-
 // String sends a plain text response
 func (c *Context) String(status int, text string) error {
 	c.Response.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -584,7 +577,8 @@ func (c *Context) Cannot(ability string, args ...interface{}) bool {
 }
 
 // Authorize checks if the authenticated user can perform the given ability and
-// returns an error if denied or auth is not configured.
+// returns *HTTPError{403} if denied or auth is not configured. The returned
+// error type is always *HTTPError so callers and error handlers can rely on it.
 func (c *Context) Authorize(ability string, args ...interface{}) error {
 	if c.services == nil || c.services.Auth == nil {
 		return NewHTTPError(http.StatusForbidden)
@@ -593,7 +587,10 @@ func (c *Context) Authorize(ability string, args ...interface{}) error {
 	if !ok {
 		return NewHTTPError(http.StatusForbidden)
 	}
-	return checker.GateAuthorize(c.Request, ability, args...)
+	if err := checker.GateAuthorize(c.Request, ability, args...); err != nil {
+		return NewHTTPError(http.StatusForbidden)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------

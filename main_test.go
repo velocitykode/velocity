@@ -124,3 +124,35 @@ func TestNewTestApp_WithProviders_BootError(t *testing.T) {
 		t.Errorf("expected 2 register calls, got %d", registered)
 	}
 }
+
+func TestNewTestApp_WithProviders_ShutdownError(t *testing.T) {
+	var calls []string
+	shutdownErr := errors.New("shutdown boom")
+	pA := &trackingProvider{name: "A", calls: &calls}
+	pB := &trackingProvider{name: "B", calls: &calls, shutdownErr: shutdownErr}
+
+	a, err := NewTestApp(WithProviders(pA, pB))
+	if err != nil {
+		t.Fatalf("NewTestApp() error: %v", err)
+	}
+
+	calls = nil
+	err = a.Shutdown(context.Background())
+	if err == nil {
+		t.Fatal("expected shutdown error to propagate")
+	}
+	if !errors.Is(err, shutdownErr) {
+		t.Errorf("expected wrapped shutdown error, got: %v", err)
+	}
+
+	// Both providers should still have been called (first error captured, chain continues)
+	wantShutdown := []string{"B:shutdown", "A:shutdown"}
+	if len(calls) != len(wantShutdown) {
+		t.Fatalf("got %d shutdown calls, want %d: %v", len(calls), len(wantShutdown), calls)
+	}
+	for i, c := range calls {
+		if c != wantShutdown[i] {
+			t.Errorf("shutdown call[%d] = %q, want %q", i, c, wantShutdown[i])
+		}
+	}
+}
