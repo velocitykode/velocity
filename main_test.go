@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/velocitykode/velocity/pkg/app"
+	"github.com/velocitykode/velocity/app"
 )
 
 // trackingProvider records lifecycle calls for verification.

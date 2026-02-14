@@ -8,12 +8,12 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
-	"github.com/velocitykode/velocity/pkg/app"
-	"github.com/velocitykode/velocity/pkg/auth"
-	"github.com/velocitykode/velocity/pkg/crypto"
-	"github.com/velocitykode/velocity/pkg/log"
-	"github.com/velocitykode/velocity/pkg/mail"
-	"github.com/velocitykode/velocity/pkg/view"
+	"github.com/velocitykode/velocity/app"
+	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/crypto"
+	"github.com/velocitykode/velocity/log"
+	"github.com/velocitykode/velocity/mail"
+	"github.com/velocitykode/velocity/view"
 )
 
 // Config holds all configuration for a Velocity application.

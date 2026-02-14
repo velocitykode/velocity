@@ -1,31 +1,23 @@
 # Velocity
 
-> A batteries-included web framework for Go
+**The full-stack Go framework. One binary. Zero compromise.**
 
-Velocity brings joy and elegance to Go web development, without sacrificing Go's simplicity, performance, and type safety. Build web applications with expressive APIs and the speed of Go.
+Full-stack frameworks give you everything — but re-bootstrap every request, require runtimes in production, and fake concurrency with child processes. Go gives you speed — but leaves you wiring auth, ORM, queues, mail, and caching from scratch.
 
-## Why Velocity?
+Velocity eliminates the trade-off.
 
-**For Framework Users**: Get familiar conventions and developer happiness, with Go's performance and concurrency.
+```bash
+go build -o myapp
+scp myapp server:/usr/local/bin/
+```
 
-**For Go Developers**: Skip the boilerplate and focus on building. Velocity provides a unified, elegant interface over common web development tasks.
-
-### Key Features
-
-- **Single Binary**: Deploy anywhere with zero dependencies
-- **Type Safety**: Full compile-time type checking with Go's type system
-- **True Concurrency**: Built-in goroutines and channels for high performance
-- **Driver-Based Architecture**: Swap implementations via config (Redis ↔ Memory, PostgreSQL ↔ MySQL)
-- **Expressive DX**: Familiar conventions, expressive APIs, and developer-friendly errors
+Your application *is* the server.
 
 ## Requirements
 
 - Go 1.25 or higher
-- Node.js 18+ (for frontend assets)
 
-## CLI Installation
-
-Install the Velocity CLI to create and manage projects:
+## Quick Start
 
 ```bash
 # Homebrew (macOS)
@@ -36,108 +28,152 @@ brew install velocity
 go install github.com/velocitykode/velocity-cli@latest
 ```
 
-Verify installation:
-
-```bash
-velocity version
-```
-
-## Quick Start
-
-Create a new project:
-
 ```bash
 velocity new myapp
 cd myapp
 velocity serve
 ```
 
-Your app runs at `http://localhost:3000`
-
-### Manual Setup
-
-Add the framework to an existing project:
+Or add to an existing project:
 
 ```bash
 go get github.com/velocitykode/velocity
 ```
 
 ```go
-package main
-
-import (
-    "github.com/velocitykode/velocity/pkg/router"
-    "github.com/velocitykode/velocity/pkg/log"
-)
-
 func main() {
-    r := router.New()
+    v, _ := velocity.New()
 
-    r.Get("/", func(c *router.Context) error {
-        return c.JSON(200, map[string]string{
-            "message": "Welcome to Velocity!",
-        })
+    v.Router.Get("/", func(c *router.Context) error {
+        return c.JSON(200, map[string]string{"message": "Hello"})
     })
 
-    log.Info("Starting server on :4000")
-    r.Run(":4000")
+    v.Serve()
 }
 ```
 
-## Feature Status
+## Why Velocity
 
-| Package | Status | Description |
-|---------|--------|-------------|
-| **async** | ✅ Complete | Async primitives and concurrency patterns |
-| **auth** | ✅ Complete | Authentication and session management |
-| **broadcast** | ✅ Complete | Real-time event broadcasting |
-| **cache** | ✅ Complete | Multi-driver caching (memory, file, redis) |
-| **config** | ✅ Complete | Configuration management |
-| **crypto** | ✅ Complete | Encryption and decryption |
-| **csrf** | ✅ Complete | CSRF protection |
-| **events** | ✅ Complete | Event system with listeners |
-| **log** | ✅ Complete | Structured logging with multiple drivers |
-| **mail** | ✅ Complete | Email sending with multiple drivers |
-| **orm** | ✅ Complete | Database ORM with relationships |
-| **queue** | ✅ Complete | Job queue system with workers |
-| **router** | ✅ Complete | HTTP routing with middleware |
-| **scheduler** | ✅ Complete | Task scheduling (cron-like) |
-| **storage** | ✅ Complete | File storage abstraction |
-| **str** | ✅ Complete | String manipulation utilities |
-| **testing** | ✅ Complete | Testing helpers and utilities |
-| **validation** | ✅ Complete | Input validation |
-| **view** | ✅ Complete | Template rendering |
-| **vite** | ✅ Complete | Vite.js integration for frontend |
-| **websocket** | ✅ Complete | WebSocket support |
+### Boot Once, Serve Forever
+
+15 services initialize in dependency order at startup. Every request hits a fully warmed app with zero bootstrap overhead.
+
+```
+Logger → Crypto → DB → Auth → Cache → CSRF → View → Events
+→ Queue → Storage → Scheduler → Mail → Router → Exceptions → Validator
+```
+
+No per-request config loading. No per-request DI resolution. 100% of CPU goes to your handler.
+
+### Native Concurrency
+
+Goroutines at ~2KB each, scheduled across all cores. No serialization. No process spawning.
+
+```go
+results := async.All(
+    func() int { return db.Table("users").Count() },
+    func() int { return db.Table("orders").Count() },
+    func() int { return db.Table("products").Count() },
+)
+```
+
+Full toolkit: `Run`, `All`, `AllWithError`, `Race`, `RaceWithTimeout`, `ForEach`, `Map`, `Go` — all with built-in panic recovery.
+
+### Type-Safe ORM
+
+Queries checked at compile time. If the types don't match, it won't build.
+
+```go
+type User struct {
+    orm.Model[User]
+    Name  string
+    Email string
+}
+
+users, err := User{}.Where("active = ?", true).
+    OrderBy("created_at", "DESC").
+    Limit(10).
+    Get() // returns []User, not []interface{}
+```
+
+Four model types: `Model[T]`, `UUIDModel[T]`, `SoftDeleteModel[T]`, `SoftDeleteUUIDModel[T]`. Chainable query builder with eager loading, pagination, locking, and raw queries.
+
+### gRPC + REST in One Binary
+
+First-class gRPC server and HTTP/REST gateway. No sidecar. No protocol translation layer.
+
+```go
+app.Router.Post("/api/users", createUser)
+grpcServer.RegisterService(&userService{})
+```
+
+### Pluggable Drivers
+
+Every subsystem swaps via config, not code.
+
+| | Drivers |
+|---|---|
+| Database | PostgreSQL, MySQL, SQLite |
+| Cache | Memory, File, Redis |
+| Queue | Memory, Redis, Database |
+| Storage | Local, S3, Memory |
+| Mail | SMTP, Mailgun, SendGrid, SES |
+| Auth | Session, JWT |
+| Broadcasting | Log, Redis |
+
+SQLite in dev, PostgreSQL in prod. One env var change.
+
+### No Magic
+
+No static proxies. No runtime reflection for DI. No implicit model fetching. No hidden interceptors. What you write is what runs.
+
+```go
+app.Router.Get("/users/{id}", func(c *router.Context) error {
+    user, err := User{}.Find(c.Param("id"))
+    return c.JSON(200, user)
+})
+```
+
+### And Everything Else
+
+- **WebSocket server** — client management, rooms, broadcasting, built in
+- **Queue jobs** — zero-copy in-memory, typed deserialization for Redis/DB, job signing, automatic retries
+- **Event system** — dispatcher with sync/async listeners, wildcard matching, queued listeners
+- **Task scheduler** — cron-based scheduling with callbacks
+- **Graceful shutdown** — reverse-order teardown, 30-second grace period, nothing drops
+- **AES-256-GCM encryption** — authenticated encryption by default
+- **CSRF protection** — session and cookie store drivers
+- **Validation** — rule engine with custom rules
+- **Storage** — local filesystem, S3, memory with a unified API
+
+## The Stack
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                   Single Binary Output                   │
+├─────────────┬─────────────┬──────────────┬──────────────┤
+│  Routing    │    ORM      │    Auth      │  Real-time   │
+│  Radix tree │  Generics   │ Session+JWT  │  WS + gRPC   │
+├─────────────┼─────────────┼──────────────┼──────────────┤
+│  Cache      │   Queue     │  Storage     │    Mail      │
+├─────────────┼─────────────┼──────────────┼──────────────┤
+│  Events     │  Scheduler  │  Validation  │    Async     │
+├─────────────┴─────────────┴──────────────┴──────────────┤
+│       Service Providers (Register → Boot → Shutdown)     │
+├─────────────────────────────────────────────────────────┤
+│      Explicit DI — No magic, compile-time safety         │
+└─────────────────────────────────────────────────────────┘
+```
 
 ## Documentation
 
 Full documentation at **[velocitykode.com/docs](https://velocitykode.com/docs)**
 
-- [Getting Started](https://velocitykode.com/docs/getting-started/)
-- [CLI Reference](https://velocitykode.com/docs/cli/)
-- [Core Concepts](https://velocitykode.com/docs/core/)
-- [Database](https://velocitykode.com/docs/database/)
-- [Frontend](https://velocitykode.com/docs/frontend/)
-- [Advanced](https://velocitykode.com/docs/advanced/)
-
 ## Community
 
-- [GitHub Discussions](https://github.com/velocitykode/velocity/discussions) - Ask questions and share ideas
-- [Issues](https://github.com/velocitykode/velocity/issues) - Report bugs and request features
-- [Contributing](CONTRIBUTING.md) - Contribution guidelines
-
-## Philosophy
-
-Velocity is built on three principles:
-
-1. **Developer Happiness**: Code should be a joy to write and read
-2. **Convention over Configuration**: Sensible defaults, configure only when needed
-3. **Go's Strengths**: Embrace simplicity, performance, and type safety
-
-## Contributing
-
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+- [GitHub Discussions](https://github.com/velocitykode/velocity/discussions)
+- [Issues](https://github.com/velocitykode/velocity/issues)
+- [Contributing](CONTRIBUTING.md)
 
 ## License
 
