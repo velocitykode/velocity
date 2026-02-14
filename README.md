@@ -1,12 +1,12 @@
 # Velocity
 
-> A Laravel-inspired web framework for Go
+> A batteries-included web framework for Go
 
 Velocity brings joy and elegance to Go web development, without sacrificing Go's simplicity, performance, and type safety. Build web applications with expressive APIs and the speed of Go.
 
 ## Why Velocity?
 
-**For Framework Users**: Get familiar conventions and developer happiness you love, with Go's performance and concurrency.
+**For Framework Users**: Get familiar conventions and developer happiness, with Go's performance and concurrency.
 
 **For Go Developers**: Skip the boilerplate and focus on building. Velocity provides a unified, elegant interface over common web development tasks.
 
