@@ -42,9 +42,10 @@ type App struct {
 	Router *router.VelocityRouterV2
 
 	// Internal
-	config  *Config
-	server  *http.Server
-	version string
+	config    *Config
+	server    *http.Server
+	version   string
+	providers []app.ServiceProvider
 }
 
 // New creates a new Velocity application with all services initialized.
@@ -165,6 +166,18 @@ func New(opts ...Option) (*App, error) {
 	// Wire event dispatchers into service instances
 	wireInstanceEvents(a)
 
+	// Run provider lifecycle: Register all, then Boot all
+	for _, p := range a.providers {
+		if err := p.Register(a.Services); err != nil {
+			return nil, fmt.Errorf("velocity: provider register failed: %w", err)
+		}
+	}
+	for _, p := range a.providers {
+		if err := p.Boot(a.Services); err != nil {
+			return nil, fmt.Errorf("velocity: provider boot failed: %w", err)
+		}
+	}
+
 	return a, nil
 }
 
@@ -246,6 +259,11 @@ func (a *App) Shutdown(ctx context.Context) error {
 		if closer, ok := a.Log.(interface{ Close() error }); ok {
 			setErr(closer.Close())
 		}
+	}
+
+	// 7. Shutdown providers in reverse registration order
+	for i := len(a.providers) - 1; i >= 0; i-- {
+		setErr(a.providers[i].Shutdown(ctx))
 	}
 
 	if firstErr != nil {

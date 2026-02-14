@@ -178,12 +178,12 @@ func (Model[T]) Create(data any) (*T, error) {
 		if err := mapToStruct(v, model); err != nil {
 			return nil, err
 		}
-		if err := Save(nil,model); err != nil {
+		if err := Save(nil, model); err != nil {
 			return nil, err
 		}
 		return model, nil
 	case *T:
-		if err := Save(nil,v); err != nil {
+		if err := Save(nil, v); err != nil {
 			return nil, err
 		}
 		return v, nil
@@ -196,7 +196,7 @@ func (Model[T]) Create(data any) (*T, error) {
 // Requires a *Manager — use orm.Save(manager, model) directly.
 func (Model[T]) CreateMany(records []T) error {
 	for _, record := range records {
-		if err := Save(nil,&record); err != nil {
+		if err := Save(nil, &record); err != nil {
 			return err
 		}
 	}
@@ -425,12 +425,12 @@ func (UUIDModel[T]) Create(data any) (*T, error) {
 		if err := mapToStruct(v, model); err != nil {
 			return nil, err
 		}
-		if err := Save(nil,model); err != nil {
+		if err := Save(nil, model); err != nil {
 			return nil, err
 		}
 		return model, nil
 	case *T:
-		if err := Save(nil,v); err != nil {
+		if err := Save(nil, v); err != nil {
 			return nil, err
 		}
 		return v, nil
@@ -442,7 +442,7 @@ func (UUIDModel[T]) Create(data any) (*T, error) {
 // CreateMany inserts multiple records
 func (UUIDModel[T]) CreateMany(records []T) error {
 	for _, record := range records {
-		if err := Save(nil,&record); err != nil {
+		if err := Save(nil, &record); err != nil {
 			return err
 		}
 	}
@@ -671,12 +671,12 @@ func (SoftDeleteModel[T]) Create(data any) (*T, error) {
 		if err := mapToStruct(v, model); err != nil {
 			return nil, err
 		}
-		if err := Save(nil,model); err != nil {
+		if err := Save(nil, model); err != nil {
 			return nil, err
 		}
 		return model, nil
 	case *T:
-		if err := Save(nil,v); err != nil {
+		if err := Save(nil, v); err != nil {
 			return nil, err
 		}
 		return v, nil
@@ -688,7 +688,7 @@ func (SoftDeleteModel[T]) Create(data any) (*T, error) {
 // CreateMany inserts multiple records
 func (SoftDeleteModel[T]) CreateMany(records []T) error {
 	for _, record := range records {
-		if err := Save(nil,&record); err != nil {
+		if err := Save(nil, &record); err != nil {
 			return err
 		}
 	}
@@ -972,12 +972,12 @@ func (SoftDeleteUUIDModel[T]) Create(data any) (*T, error) {
 		if err := mapToStruct(v, model); err != nil {
 			return nil, err
 		}
-		if err := Save(nil,model); err != nil {
+		if err := Save(nil, model); err != nil {
 			return nil, err
 		}
 		return model, nil
 	case *T:
-		if err := Save(nil,v); err != nil {
+		if err := Save(nil, v); err != nil {
 			return nil, err
 		}
 		return v, nil
@@ -989,7 +989,7 @@ func (SoftDeleteUUIDModel[T]) Create(data any) (*T, error) {
 // CreateMany inserts multiple records
 func (SoftDeleteUUIDModel[T]) CreateMany(records []T) error {
 	for _, record := range records {
-		if err := Save(nil,&record); err != nil {
+		if err := Save(nil, &record); err != nil {
 			return err
 		}
 	}
@@ -1637,7 +1637,7 @@ func saveUUIDModel[T any](drv drivers.Driver, model *T, modelField, idField, exi
 
 func CreateMany[T any](records []T) error {
 	for i := range records {
-		if err := Save(nil,&records[i]); err != nil {
+		if err := Save(nil, &records[i]); err != nil {
 			return err
 		}
 	}

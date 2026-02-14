@@ -250,11 +250,13 @@ func TestAuthManager(t *testing.T) {
 
 // mockGuard implements Guard for Manager tests.
 type mockGuard struct {
-	name string
+	name     string
+	user     Authenticatable
+	checkVal bool
 }
 
-func (g *mockGuard) Check(*http.Request) bool                        { return false }
-func (g *mockGuard) User(*http.Request) Authenticatable              { return nil }
+func (g *mockGuard) Check(*http.Request) bool                        { return g.checkVal }
+func (g *mockGuard) User(*http.Request) Authenticatable              { return g.user }
 func (g *mockGuard) ID(*http.Request) interface{}                    { return nil }
 func (g *mockGuard) SetProvider(UserProvider)                        {}
 func (g *mockGuard) Logout(http.ResponseWriter, *http.Request) error { return nil }
@@ -536,6 +538,112 @@ func TestORMUserProvider(t *testing.T) {
 
 	if user.GetRememberToken() != token {
 		t.Error("Remember token should be updated")
+	}
+}
+
+func TestManagerGate(t *testing.T) {
+	m := NewManager()
+
+	if m.Gate() == nil {
+		t.Fatal("Gate() should not be nil on a new Manager")
+	}
+
+	// Define a gate and verify it works through the manager
+	m.Gate().Define("edit-post", func(user Authenticatable, args ...interface{}) bool {
+		if len(args) == 0 {
+			return false
+		}
+		post, ok := args[0].(*mockPost)
+		if !ok {
+			return false
+		}
+		return user.GetAuthIdentifier() == post.AuthorID
+	})
+
+	user := &mockUser{id: 1}
+	guard := &mockGuard{name: "web", user: user, checkVal: true}
+	m.RegisterGuard("web", guard)
+
+	r := httptest.NewRequest("GET", "/", nil)
+
+	ownPost := &mockPost{ID: 1, AuthorID: 1}
+	otherPost := &mockPost{ID: 2, AuthorID: 2}
+
+	if !m.GateAllows(r, "edit-post", ownPost) {
+		t.Error("expected GateAllows to return true for own post")
+	}
+
+	if m.GateAllows(r, "edit-post", otherPost) {
+		t.Error("expected GateAllows to return false for other's post")
+	}
+}
+
+func TestManagerGateAllows_NoUser(t *testing.T) {
+	m := NewManager()
+
+	// Guard that returns no user
+	guard := &mockGuard{name: "web", user: nil, checkVal: false}
+	m.RegisterGuard("web", guard)
+
+	m.Gate().Define("anything", func(user Authenticatable, args ...interface{}) bool {
+		return true
+	})
+
+	r := httptest.NewRequest("GET", "/", nil)
+
+	if m.GateAllows(r, "anything") {
+		t.Error("expected GateAllows to return false when no user is authenticated")
+	}
+}
+
+func TestManagerGateAllows_NoGuard(t *testing.T) {
+	m := NewManager()
+
+	// No guard registered at all
+	r := httptest.NewRequest("GET", "/", nil)
+
+	if m.GateAllows(r, "anything") {
+		t.Error("expected GateAllows to return false when no guard is registered")
+	}
+}
+
+func TestManagerGateAuthorize(t *testing.T) {
+	m := NewManager()
+
+	user := &mockUser{id: 1}
+	guard := &mockGuard{name: "web", user: user, checkVal: true}
+	m.RegisterGuard("web", guard)
+
+	m.Gate().Define("create-post", func(u Authenticatable, args ...interface{}) bool {
+		return true
+	})
+	m.Gate().Define("delete-post", func(u Authenticatable, args ...interface{}) bool {
+		return false
+	})
+
+	r := httptest.NewRequest("GET", "/", nil)
+
+	// Allowed ability should return nil
+	if err := m.GateAuthorize(r, "create-post"); err != nil {
+		t.Errorf("expected nil error for allowed ability, got %v", err)
+	}
+
+	// Denied ability should return ErrUnauthorized
+	if err := m.GateAuthorize(r, "delete-post"); err != ErrUnauthorized {
+		t.Errorf("expected ErrUnauthorized, got %v", err)
+	}
+}
+
+func TestManagerGateAuthorize_NoUser(t *testing.T) {
+	m := NewManager()
+
+	guard := &mockGuard{name: "web", user: nil, checkVal: false}
+	m.RegisterGuard("web", guard)
+
+	r := httptest.NewRequest("GET", "/", nil)
+
+	if err := m.GateAuthorize(r, "anything"); err != ErrUnauthorized {
+		t.Errorf("expected ErrUnauthorized when no user, got %v", err)
 	}
 }
 

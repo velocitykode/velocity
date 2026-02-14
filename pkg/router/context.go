@@ -26,6 +26,7 @@ import (
 	"github.com/velocitykode/velocity/pkg/mail"
 	"github.com/velocitykode/velocity/pkg/orm"
 	"github.com/velocitykode/velocity/pkg/queue"
+	"github.com/velocitykode/velocity/pkg/resource"
 	"github.com/velocitykode/velocity/pkg/scheduler"
 	"github.com/velocitykode/velocity/pkg/storage"
 	"github.com/velocitykode/velocity/pkg/validation"
@@ -254,6 +255,18 @@ func (c *Context) JSON(status int, data interface{}) error {
 	c.Response.Header().Set("Content-Type", "application/json")
 	c.Response.WriteHeader(status)
 	return json.NewEncoder(c.Response).Encode(data)
+}
+
+// Resource transforms a Resource into JSON and sends it with a 200 status.
+func (c *Context) Resource(r resource.Resource) error {
+	return c.JSON(http.StatusOK, r.ToResource())
+}
+
+// ResourceCollection sends a collection or paginated resource as JSON with a 200 status.
+// The data argument should be a []map[string]any (from NewCollection) or
+// a map[string]any (from NewPaginatedCollection).
+func (c *Context) ResourceCollection(data any) error {
+	return c.JSON(http.StatusOK, data)
 }
 
 // String sends a plain text response
@@ -542,6 +555,45 @@ func (c *Context) CSRF() any {
 // View returns the view engine (*view.Engine). Requires type assertion.
 func (c *Context) View() any {
 	return c.mustServices().View
+}
+
+// authGateChecker is a local interface satisfied by *auth.Manager to avoid
+// importing pkg/auth (which imports pkg/router).
+type authGateChecker interface {
+	GateAllows(r *http.Request, ability string, args ...interface{}) bool
+	GateAuthorize(r *http.Request, ability string, args ...interface{}) error
+}
+
+// Can returns true if the authenticated user is allowed to perform the given
+// ability. Returns false when auth is not configured or no user is logged in.
+func (c *Context) Can(ability string, args ...interface{}) bool {
+	if c.services == nil || c.services.Auth == nil {
+		return false
+	}
+	checker, ok := c.services.Auth.(authGateChecker)
+	if !ok {
+		return false
+	}
+	return checker.GateAllows(c.Request, ability, args...)
+}
+
+// Cannot returns true if the authenticated user is NOT allowed to perform the
+// given ability. Returns true when auth is not configured.
+func (c *Context) Cannot(ability string, args ...interface{}) bool {
+	return !c.Can(ability, args...)
+}
+
+// Authorize checks if the authenticated user can perform the given ability and
+// returns an error if denied or auth is not configured.
+func (c *Context) Authorize(ability string, args ...interface{}) error {
+	if c.services == nil || c.services.Auth == nil {
+		return NewHTTPError(http.StatusForbidden)
+	}
+	checker, ok := c.services.Auth.(authGateChecker)
+	if !ok {
+		return NewHTTPError(http.StatusForbidden)
+	}
+	return checker.GateAuthorize(c.Request, ability, args...)
 }
 
 // ---------------------------------------------------------------------------

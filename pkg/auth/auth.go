@@ -74,6 +74,7 @@ type Manager struct {
 	providers    map[string]UserProvider
 	defaultGuard string
 	hasher       Hasher
+	gate         *Gate
 	mu           sync.RWMutex
 }
 
@@ -83,6 +84,7 @@ func NewManager() *Manager {
 		guards:       make(map[string]Guard),
 		providers:    make(map[string]UserProvider),
 		defaultGuard: "web",
+		gate:         NewGate(),
 	}
 }
 
@@ -194,6 +196,32 @@ func (m *Manager) Logout(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	return guard.Logout(w, r)
+}
+
+// Gate returns the authorization gate.
+func (m *Manager) Gate() *Gate {
+	return m.gate
+}
+
+// GateAllows checks if the authenticated user (from the default guard) is
+// allowed to perform the given ability. Returns false when there is no
+// authenticated user.
+func (m *Manager) GateAllows(r *http.Request, ability string, args ...interface{}) bool {
+	user := m.User(r)
+	if user == nil {
+		return false
+	}
+	return m.gate.Allows(user, ability, args...)
+}
+
+// GateAuthorize checks if the authenticated user (from the default guard) is
+// allowed to perform the given ability. Returns ErrUnauthorized on denial or
+// when there is no authenticated user.
+func (m *Manager) GateAuthorize(r *http.Request, ability string, args ...interface{}) error {
+	if !m.GateAllows(r, ability, args...) {
+		return ErrUnauthorized
+	}
+	return nil
 }
 
 // Hash hashes a password using the manager's hasher.

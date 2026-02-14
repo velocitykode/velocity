@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/velocitykode/velocity/pkg/app"
 	"github.com/velocitykode/velocity/pkg/auth"
 	"github.com/velocitykode/velocity/pkg/crypto"
 	"github.com/velocitykode/velocity/pkg/log"
@@ -182,6 +183,14 @@ func WithWriteTimeout(d time.Duration) Option {
 func WithIdleTimeout(d time.Duration) Option {
 	return func(a *App) {
 		a.config.IdleTimeout = d
+	}
+}
+
+// WithProviders appends service providers to the application.
+// Providers are registered and booted in the order they are given.
+func WithProviders(providers ...app.ServiceProvider) Option {
+	return func(a *App) {
+		a.providers = append(a.providers, providers...)
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/pkg/app"
+	"github.com/velocitykode/velocity/pkg/resource"
 	"github.com/velocitykode/velocity/pkg/validation"
 )
 
@@ -1296,8 +1297,327 @@ func TestContext_Accepts(t *testing.T) {
 	}
 }
 
-// Ensure unused imports are referenced
-var (
-	_ = fmt.Sprintf
-	_ = (*app.Services)(nil)
-)
+// ---------------------------------------------------------------------------
+// Can / Cannot / Authorize tests
+// ---------------------------------------------------------------------------
+
+// mockAuthGateChecker satisfies the authGateChecker interface used by Context
+// without importing pkg/auth.
+type mockAuthGateChecker struct {
+	allows map[string]bool
+}
+
+func (m *mockAuthGateChecker) GateAllows(r *http.Request, ability string, args ...interface{}) bool {
+	if m.allows == nil {
+		return false
+	}
+	return m.allows[ability]
+}
+
+func (m *mockAuthGateChecker) GateAuthorize(r *http.Request, ability string, args ...interface{}) error {
+	if !m.GateAllows(r, ability, args...) {
+		return fmt.Errorf("unauthorized action")
+	}
+	return nil
+}
+
+func TestContext_Can(t *testing.T) {
+	tests := []struct {
+		name    string
+		auth    interface{}
+		ability string
+		want    bool
+	}{
+		{
+			name:    "allowed ability",
+			auth:    &mockAuthGateChecker{allows: map[string]bool{"edit": true}},
+			ability: "edit",
+			want:    true,
+		},
+		{
+			name:    "denied ability",
+			auth:    &mockAuthGateChecker{allows: map[string]bool{"edit": false}},
+			ability: "edit",
+			want:    false,
+		},
+		{
+			name:    "undefined ability",
+			auth:    &mockAuthGateChecker{allows: map[string]bool{}},
+			ability: "delete",
+			want:    false,
+		},
+		{
+			name:    "nil auth",
+			auth:    nil,
+			ability: "edit",
+			want:    false,
+		},
+		{
+			name:    "auth does not implement interface",
+			auth:    "not-a-gate-checker",
+			ability: "edit",
+			want:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/", nil)
+			w := httptest.NewRecorder()
+			c := NewContext(w, req)
+			c.services = &app.Services{Auth: tt.auth}
+
+			got := c.Can(tt.ability)
+			if got != tt.want {
+				t.Errorf("Can(%q) = %v, want %v", tt.ability, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestContext_Can_NoServices(t *testing.T) {
+	req := httptest.NewRequest("GET", "/", nil)
+	w := httptest.NewRecorder()
+	c := NewContext(w, req)
+	// services is nil by default
+
+	if c.Can("anything") {
+		t.Error("Can() should return false when services is nil")
+	}
+}
+
+func TestContext_Cannot(t *testing.T) {
+	req := httptest.NewRequest("GET", "/", nil)
+	w := httptest.NewRecorder()
+	c := NewContext(w, req)
+	c.services = &app.Services{
+		Auth: &mockAuthGateChecker{allows: map[string]bool{"edit": true, "delete": false}},
+	}
+
+	if c.Cannot("edit") {
+		t.Error("Cannot('edit') should return false for allowed ability")
+	}
+
+	if !c.Cannot("delete") {
+		t.Error("Cannot('delete') should return true for denied ability")
+	}
+
+	if !c.Cannot("unknown") {
+		t.Error("Cannot('unknown') should return true for undefined ability")
+	}
+}
+
+func TestContext_Authorize(t *testing.T) {
+	tests := []struct {
+		name     string
+		services *app.Services
+		ability  string
+		wantErr  bool
+		wantCode int
+	}{
+		{
+			name:     "allowed ability returns nil",
+			services: &app.Services{Auth: &mockAuthGateChecker{allows: map[string]bool{"edit": true}}},
+			ability:  "edit",
+			wantErr:  false,
+		},
+		{
+			name:     "denied ability returns error",
+			services: &app.Services{Auth: &mockAuthGateChecker{allows: map[string]bool{"delete": false}}},
+			ability:  "delete",
+			wantErr:  true,
+		},
+		{
+			name:     "nil auth returns 403",
+			services: &app.Services{Auth: nil},
+			ability:  "anything",
+			wantErr:  true,
+			wantCode: http.StatusForbidden,
+		},
+		{
+			name:     "auth not implementing interface returns 403",
+			services: &app.Services{Auth: "not-a-gate-checker"},
+			ability:  "edit",
+			wantErr:  true,
+			wantCode: http.StatusForbidden,
+		},
+		{
+			name:     "nil services returns 403",
+			services: nil,
+			ability:  "anything",
+			wantErr:  true,
+			wantCode: http.StatusForbidden,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/", nil)
+			w := httptest.NewRecorder()
+			c := NewContext(w, req)
+			c.services = tt.services
+
+			err := c.Authorize(tt.ability)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Authorize(%q) error = %v, wantErr %v", tt.ability, err, tt.wantErr)
+			}
+			if tt.wantCode != 0 {
+				httpErr, ok := err.(*HTTPError)
+				if !ok {
+					t.Fatalf("expected *HTTPError, got %T", err)
+				}
+				if httpErr.Code != tt.wantCode {
+					t.Errorf("expected status %d, got %d", tt.wantCode, httpErr.Code)
+				}
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Resource / ResourceCollection tests (end-to-end with pkg/resource)
+// ---------------------------------------------------------------------------
+
+// userResource wraps a user model and implements resource.Resource with
+// conditional fields, exercising the full transformation pipeline.
+type userResource struct {
+	ID      int
+	Name    string
+	Email   string
+	IsAdmin bool
+}
+
+func (u *userResource) ToResource() map[string]any {
+	m := map[string]any{
+		"id":   u.ID,
+		"name": u.Name,
+	}
+	resource.Merge(m, func(m map[string]any) {
+		if k, v, ok := resource.When(u.IsAdmin, "email", u.Email); ok {
+			m[k] = v
+		}
+	})
+	return m
+}
+
+func TestContext_Resource(t *testing.T) {
+	req := httptest.NewRequest("GET", "/", nil)
+	w := httptest.NewRecorder()
+	c := NewContext(w, req)
+
+	r := &userResource{ID: 1, Name: "Alice", Email: "alice@example.com", IsAdmin: true}
+	if err := c.Resource(r); err != nil {
+		t.Fatalf("Resource() error: %v", err)
+	}
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+	// Verify ToResource transformation ran (not just JSON passthrough)
+	if result["id"] != float64(1) {
+		t.Errorf("expected id=1, got %v", result["id"])
+	}
+	if result["email"] != "alice@example.com" {
+		t.Errorf("expected email included for admin, got %v", result["email"])
+	}
+
+	// Verify conditional exclusion: non-admin should omit email
+	w2 := httptest.NewRecorder()
+	c2 := NewContext(w2, httptest.NewRequest("GET", "/", nil))
+	r2 := &userResource{ID: 2, Name: "Bob", Email: "bob@example.com", IsAdmin: false}
+	c2.Resource(r2)
+
+	var result2 map[string]any
+	json.Unmarshal(w2.Body.Bytes(), &result2)
+	if _, exists := result2["email"]; exists {
+		t.Error("expected email excluded for non-admin")
+	}
+}
+
+func TestContext_ResourceCollection(t *testing.T) {
+	req := httptest.NewRequest("GET", "/", nil)
+	w := httptest.NewRecorder()
+	c := NewContext(w, req)
+
+	users := []*userResource{
+		{ID: 1, Name: "Alice", IsAdmin: true, Email: "alice@example.com"},
+		{ID: 2, Name: "Bob", IsAdmin: false, Email: "bob@example.com"},
+	}
+	// Use real resource.NewCollection — exercises the transformation pipeline
+	collection := resource.NewCollection(users)
+
+	if err := c.ResourceCollection(collection); err != nil {
+		t.Fatalf("ResourceCollection() error: %v", err)
+	}
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+
+	var result []map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(result))
+	}
+	// Alice is admin → email included
+	if result[0]["email"] != "alice@example.com" {
+		t.Errorf("expected Alice's email included, got %v", result[0]["email"])
+	}
+	// Bob is not admin → email excluded
+	if _, exists := result[1]["email"]; exists {
+		t.Error("expected Bob's email excluded")
+	}
+}
+
+func TestContext_ResourceCollection_Paginated(t *testing.T) {
+	req := httptest.NewRequest("GET", "/", nil)
+	w := httptest.NewRecorder()
+	c := NewContext(w, req)
+
+	users := []*userResource{
+		{ID: 1, Name: "Alice"},
+		{ID: 2, Name: "Bob"},
+	}
+	// Use real resource.NewPaginatedCollection — exercises LastPage auto-computation
+	paginated := resource.NewPaginatedCollection(users, resource.PaginationMeta{
+		Total:       11,
+		PerPage:     5,
+		CurrentPage: 1,
+	})
+
+	if err := c.ResourceCollection(paginated); err != nil {
+		t.Fatalf("ResourceCollection() error: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	meta, ok := result["meta"].(map[string]any)
+	if !ok {
+		t.Fatal("expected meta to be a map")
+	}
+	// LastPage should be auto-computed: ceil(11/5) = 3
+	if meta["last_page"] != float64(3) {
+		t.Errorf("expected last_page=3 (auto-computed), got %v", meta["last_page"])
+	}
+	if meta["total"] != float64(11) {
+		t.Errorf("expected total=11, got %v", meta["total"])
+	}
+
+	data, ok := result["data"].([]any)
+	if !ok {
+		t.Fatal("expected data to be an array")
+	}
+	if len(data) != 2 {
+		t.Errorf("expected 2 data items, got %d", len(data))
+	}
+}
