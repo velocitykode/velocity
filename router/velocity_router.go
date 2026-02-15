@@ -6,11 +6,15 @@ import (
 	"net/http"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/trace"
 )
+
+// compiledRouteMap is a type alias used with atomic.Pointer for lock-free reads.
+type compiledRouteMap = map[string]*MatchResult
 
 // VelocityRouterV2 is the tree-based router implementation
 // This replaces gorilla/mux with a custom radix tree
@@ -24,8 +28,9 @@ type VelocityRouterV2 struct {
 	staticFS      http.Handler
 	staticEnabled bool
 
-	// Compiled static routes for O(1) lookup (key: "METHOD /path")
-	compiledRoutes map[string]*MatchResult
+	// Compiled static routes for O(1) lookup (key: "METHOD /path").
+	// Uses atomic.Pointer for lock-free reads on the hot path.
+	compiledRoutes atomic.Pointer[compiledRouteMap]
 
 	// Deferred registration support
 	rootGroup *GroupDefinition
@@ -312,13 +317,14 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// 404 from static — fall through to route matching
 	}
 
-	// Match route — try compiled static routes first (O(1)), then fall back to tree
+	// Match route — try compiled static routes first (O(1)), then fall back to tree.
+	// compiledRoutes is read via atomic load so no lock is needed on the hot path.
 	path := req.URL.Path
 	var result *MatchResult
-	if r.compiledRoutes != nil {
-		result = r.compiledRoutes[req.Method+" "+path]
+	if compiled := r.compiledRoutes.Load(); compiled != nil {
+		result = (*compiled)[req.Method+" "+path]
 		if result == nil {
-			result = r.compiledRoutes["ANY "+path]
+			result = (*compiled)["ANY "+path]
 		}
 	}
 	if result == nil {
@@ -562,7 +568,8 @@ func (r *VelocityRouterV2) commitOnce() {
 	r.namedRoutes = r.tree.namedRoutes
 
 	// Compile static routes for O(1) lookup
-	r.compiledRoutes = r.tree.CompileStaticRoutes()
+	compiled := r.tree.CompileStaticRoutes()
+	r.compiledRoutes.Store(&compiled)
 
 	r.committed = true
 	r.frozen = true
@@ -571,9 +578,7 @@ func (r *VelocityRouterV2) commitOnce() {
 // ClearCompiledRoutes clears the compiled route cache.
 // Routes will be re-compiled from the tree on the next request.
 func (r *VelocityRouterV2) ClearCompiledRoutes() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.compiledRoutes = nil
+	r.compiledRoutes.Store(nil)
 }
 
 // ClearRoutes fully resets the router — tree, compiled cache, groups, and resources.
@@ -585,7 +590,7 @@ func (r *VelocityRouterV2) ClearRoutes() {
 	r.namedRoutes = make(map[string]*MatchResult)
 	r.rootGroup = NewGroupDefinition("", nil)
 	r.resources = nil
-	r.compiledRoutes = nil
+	r.compiledRoutes.Store(nil)
 	r.committed = false
 	r.frozen = false
 }

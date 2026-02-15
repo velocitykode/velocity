@@ -1309,7 +1309,7 @@ func TestVelocityRouterV2_CompiledRoutes(t *testing.T) {
 		})
 
 		// Before first request, compiled routes should be nil
-		if router.compiledRoutes != nil {
+		if router.compiledRoutes.Load() != nil {
 			t.Error("compiled routes should be nil before first request")
 		}
 
@@ -1318,14 +1318,15 @@ func TestVelocityRouterV2_CompiledRoutes(t *testing.T) {
 		router.ServeHTTP(w, req)
 
 		// After first request, compiled routes should be populated
-		if router.compiledRoutes == nil {
+		compiled := router.compiledRoutes.Load()
+		if compiled == nil {
 			t.Fatal("compiled routes should be populated after first request")
 		}
 
-		if _, ok := router.compiledRoutes["GET /users"]; !ok {
+		if _, ok := (*compiled)["GET /users"]; !ok {
 			t.Error("compiled routes should contain GET /users")
 		}
-		if _, ok := router.compiledRoutes["GET /posts"]; !ok {
+		if _, ok := (*compiled)["GET /posts"]; !ok {
 			t.Error("compiled routes should contain GET /posts")
 		}
 	})
@@ -1373,12 +1374,13 @@ func TestVelocityRouterV2_CompiledRoutes(t *testing.T) {
 		router.ServeHTTP(w, req)
 
 		// Static route should be compiled
-		if _, ok := router.compiledRoutes["GET /static-route"]; !ok {
+		compiled := router.compiledRoutes.Load()
+		if _, ok := (*compiled)["GET /static-route"]; !ok {
 			t.Error("static route should be compiled")
 		}
 
 		// Parameterized route should NOT be in compiled map
-		for key := range router.compiledRoutes {
+		for key := range *compiled {
 			if strings.Contains(key, "{id}") {
 				t.Error("parameterized route should not be compiled")
 			}
@@ -1409,7 +1411,8 @@ func TestVelocityRouterV2_CompiledRoutes(t *testing.T) {
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
 
-		if _, ok := router.compiledRoutes["GET /api/v1/status"]; !ok {
+		compiled := router.compiledRoutes.Load()
+		if _, ok := (*compiled)["GET /api/v1/status"]; !ok {
 			t.Error("grouped static route should be compiled")
 		}
 	})
@@ -1425,7 +1428,8 @@ func TestVelocityRouterV2_CompiledRoutes(t *testing.T) {
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
 
-		if _, ok := router.compiledRoutes["ANY /ping"]; !ok {
+		compiled := router.compiledRoutes.Load()
+		if _, ok := (*compiled)["ANY /ping"]; !ok {
 			t.Error("ANY route should be compiled")
 		}
 
@@ -1452,14 +1456,14 @@ func TestVelocityRouterV2_ClearCompiledRoutes(t *testing.T) {
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
 
-		if router.compiledRoutes == nil {
+		if router.compiledRoutes.Load() == nil {
 			t.Fatal("compiled routes should exist")
 		}
 
 		// Clear compiled routes
 		router.ClearCompiledRoutes()
 
-		if router.compiledRoutes != nil {
+		if router.compiledRoutes.Load() != nil {
 			t.Error("compiled routes should be nil after clear")
 		}
 
@@ -1522,7 +1526,7 @@ func TestVelocityRouterV2_ClearRoutes(t *testing.T) {
 		if router.committed {
 			t.Error("router should not be committed after ClearRoutes")
 		}
-		if router.compiledRoutes != nil {
+		if router.compiledRoutes.Load() != nil {
 			t.Error("compiled routes should be nil after ClearRoutes")
 		}
 
@@ -1605,14 +1609,14 @@ func TestVelocityRouterV2_ClearRoutes(t *testing.T) {
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
 
-		if router.compiledRoutes == nil {
+		if router.compiledRoutes.Load() == nil {
 			t.Fatal("compiled routes should exist")
 		}
 
 		// Clear compiled via group
 		group.ClearCompiledRoutes()
 
-		if router.compiledRoutes != nil {
+		if router.compiledRoutes.Load() != nil {
 			t.Error("compiled routes should be nil after group ClearCompiledRoutes")
 		}
 	})

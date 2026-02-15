@@ -228,7 +228,7 @@ func (n *Node) match(parts []string, method string, matchedValues []string) *Mat
 	// Priority 2: Regex constrained params (more specific than plain param)
 	for _, child := range n.regexChildren {
 		if child.segment.Match(part) {
-			newValues := append(matchedValues[:depth], part)
+			newValues := append(matchedValues[:depth:depth], part)
 			if result := child.match(remaining, method, newValues); result != nil {
 				return result
 			}
@@ -237,7 +237,7 @@ func (n *Node) match(parts []string, method string, matchedValues []string) *Mat
 
 	// Priority 3: Plain param
 	if n.paramChild != nil {
-		newValues := append(matchedValues[:depth], part)
+		newValues := append(matchedValues[:depth:depth], part)
 		if result := n.paramChild.match(remaining, method, newValues); result != nil {
 			return result
 		}
@@ -251,7 +251,7 @@ func (n *Node) match(parts []string, method string, matchedValues []string) *Mat
 		if decoded, err := url.PathUnescape(wildcardValue); err == nil {
 			wildcardValue = decoded
 		}
-		newValues := append(matchedValues[:depth], wildcardValue)
+		newValues := append(matchedValues[:depth:depth], wildcardValue)
 
 		if n.wildcardChild.handlers != nil {
 			if result, ok := n.wildcardChild.handlers[method]; ok {
