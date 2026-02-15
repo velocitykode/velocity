@@ -289,10 +289,7 @@ func (m *RetryMiddleware) GetAttempts(eventName string) int {
 	return m.attempts[eventName]
 }
 
-// Helper function to get event name
+// getEventNameFromEvent extracts the event name from an event value.
 func getEventNameFromEvent(event interface{}) string {
-	if e, ok := event.(Event); ok {
-		return e.Name()
-	}
-	return fmt.Sprintf("%T", event)
+	return resolveEventName(event)
 }

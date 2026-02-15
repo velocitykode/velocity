@@ -52,12 +52,9 @@ func (s *RedisStore) Close() error {
 	return s.client.Close()
 }
 
-// prefixedKey returns the key with prefix
+// prefixedKey returns the key with prefix.
 func (s *RedisStore) prefixedKey(key string) string {
-	if s.prefix == "" {
-		return key
-	}
-	return s.prefix + ":" + key
+	return PrefixKey(s.prefix, key)
 }
 
 // Get retrieves a value from the cache
@@ -217,32 +214,14 @@ func (s *RedisStore) PutMany(items map[string]interface{}, ttl time.Duration) er
 	return err
 }
 
-// Remember gets from cache or computes and stores
+// Remember gets from cache or computes and stores.
 func (s *RedisStore) Remember(key string, ttl time.Duration, callback func() interface{}) (interface{}, error) {
-	if val, found := s.Get(key); found {
-		return val, nil
-	}
-
-	value := callback()
-	if err := s.Put(key, value, ttl); err != nil {
-		return nil, err
-	}
-
-	return value, nil
+	return RememberFrom(s, s, key, ttl, callback)
 }
 
-// RememberForever gets from cache or computes and stores forever
+// RememberForever gets from cache or computes and stores forever.
 func (s *RedisStore) RememberForever(key string, callback func() interface{}) (interface{}, error) {
-	if val, found := s.Get(key); found {
-		return val, nil
-	}
-
-	value := callback()
-	if err := s.Forever(key, value); err != nil {
-		return nil, err
-	}
-
-	return value, nil
+	return RememberForeverFrom(s, s, key, callback)
 }
 
 // GetPrefix returns the cache prefix

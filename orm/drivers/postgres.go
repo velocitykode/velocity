@@ -1,7 +1,6 @@
 package drivers
 
 import (
-	"database/sql"
 	"fmt"
 	"strings"
 
@@ -26,8 +25,7 @@ func escapePgDSNValue(val string) string {
 
 // PostgresDriver implements the Driver interface for PostgreSQL
 type PostgresDriver struct {
-	db     *sql.DB
-	config ConnectionConfig
+	BaseDriver
 }
 
 // NewPostgresDriver creates a new PostgreSQL driver instance
@@ -37,7 +35,7 @@ func NewPostgresDriver() Driver {
 
 // Connect establishes a connection to PostgreSQL database
 func (d *PostgresDriver) Connect(config ConnectionConfig) error {
-	d.config = config
+	d.Config = config
 
 	// Build DSN (PostgreSQL connection string)
 	// Escape values to handle special characters (spaces, quotes, backslashes)
@@ -68,111 +66,21 @@ func (d *PostgresDriver) Connect(config ConnectionConfig) error {
 		dsn += " search_path=" + escapePgDSNValue(config.Schema)
 	}
 
-	db, err := sql.Open("postgres", dsn)
+	db, err := openAndPing("postgres", dsn)
 	if err != nil {
-		return fmt.Errorf("failed to open database: %w", err)
+		return err
 	}
 
-	// Test connection
-	if err := db.Ping(); err != nil {
-		return fmt.Errorf("failed to ping database: %w", err)
-	}
-
-	// Configure connection pool
-	if config.MaxIdleConns > 0 {
-		db.SetMaxIdleConns(config.MaxIdleConns)
-	}
-	if config.MaxOpenConns > 0 {
-		db.SetMaxOpenConns(config.MaxOpenConns)
-	}
-	if config.ConnMaxLifetime > 0 {
-		db.SetConnMaxLifetime(config.ConnMaxLifetime)
-	}
-	if config.ConnMaxIdleTime > 0 {
-		db.SetConnMaxIdleTime(config.ConnMaxIdleTime)
-	}
-
-	d.db = db
+	d.ConfigurePool(db)
+	d.DB_ = db
 	return nil
-}
-
-// Close closes the database connection
-func (d *PostgresDriver) Close() error {
-	if d.db != nil {
-		return d.db.Close()
-	}
-	return nil
-}
-
-// Ping verifies the connection to the database
-func (d *PostgresDriver) Ping() error {
-	if d.db == nil {
-		return fmt.Errorf("no database connection")
-	}
-	return d.db.Ping()
-}
-
-// DB returns the underlying *sql.DB instance
-func (d *PostgresDriver) DB() *sql.DB {
-	return d.db
-}
-
-// Query executes a query that returns rows
-func (d *PostgresDriver) Query(query string, args ...any) (*sql.Rows, error) {
-	if d.config.LogQueries {
-		fmt.Printf("SQL: %s\nArgs: [%d params]\n", query, len(args))
-	}
-	return d.db.Query(query, args...)
-}
-
-// QueryRow executes a query that returns at most one row
-func (d *PostgresDriver) QueryRow(query string, args ...any) *sql.Row {
-	if d.config.LogQueries {
-		fmt.Printf("SQL: %s\nArgs: [%d params]\n", query, len(args))
-	}
-	return d.db.QueryRow(query, args...)
-}
-
-// Exec executes a query that doesn't return rows
-func (d *PostgresDriver) Exec(query string, args ...any) (sql.Result, error) {
-	if d.config.LogQueries {
-		fmt.Printf("SQL: %s\nArgs: [%d params]\n", query, len(args))
-	}
-	return d.db.Exec(query, args...)
-}
-
-// Begin starts a transaction
-func (d *PostgresDriver) Begin() (*sql.Tx, error) {
-	return d.db.Begin()
-}
-
-// BeginTx starts a transaction with options
-func (d *PostgresDriver) BeginTx() (*sql.Tx, error) {
-	return d.db.Begin()
-}
-
-// CreateTable creates a new table
-func (d *PostgresDriver) CreateTable(name string, definition func(*Table)) error {
-	table := &Table{Name: name}
-	definition(table)
-
-	sql := d.Grammar().CompileCreateTable(name, table)
-	_, err := d.db.Exec(sql)
-	return err
-}
-
-// DropTable drops a table
-func (d *PostgresDriver) DropTable(name string) error {
-	sql := d.Grammar().CompileDropTable(name)
-	_, err := d.db.Exec(sql)
-	return err
 }
 
 // HasTable checks if a table exists
 func (d *PostgresDriver) HasTable(name string) bool {
 	sql := d.Grammar().CompileHasTable(name)
 	var exists bool
-	err := d.db.QueryRow(sql, name).Scan(&exists)
+	err := d.DB_.QueryRow(sql, name).Scan(&exists)
 	return err == nil && exists
 }
 
@@ -180,8 +88,18 @@ func (d *PostgresDriver) HasTable(name string) bool {
 func (d *PostgresDriver) HasColumn(table, column string) bool {
 	sql := d.Grammar().CompileHasColumn(table, column)
 	var count int
-	err := d.db.QueryRow(sql, table, column).Scan(&count)
+	err := d.DB_.QueryRow(sql, table, column).Scan(&count)
 	return err == nil && count > 0
+}
+
+// CreateTable creates a new table
+func (d *PostgresDriver) CreateTable(name string, definition func(*Table)) error {
+	return d.CreateTableWith(d.Grammar(), name, definition)
+}
+
+// DropTable drops a table
+func (d *PostgresDriver) DropTable(name string) error {
+	return d.DropTableWith(d.Grammar(), name)
 }
 
 // Grammar returns the PostgreSQL query grammar

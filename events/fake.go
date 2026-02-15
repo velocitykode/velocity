@@ -2,7 +2,6 @@ package events
 
 import (
 	"fmt"
-	"reflect"
 	"sync"
 	"time"
 )
@@ -164,26 +163,27 @@ func (f *FakeDispatcher) GetListeners(event interface{}) []Listener {
 	return listeners
 }
 
+// countMatchingEvents returns the number of dispatched events matching the given type.
+// Caller must hold at least an RLock on f.mu.
+func (f *FakeDispatcher) countMatchingEvents(eventType interface{}) (string, int) {
+	eventTypeName := resolveTypeName(eventType)
+	count := 0
+	for _, event := range f.events {
+		if resolveTypeName(event) == eventTypeName {
+			count++
+		}
+	}
+	return eventTypeName, count
+}
+
 // AssertDispatched asserts that an event was dispatched
 func (f *FakeDispatcher) AssertDispatched(eventType interface{}, callback func(interface{}) bool) error {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 
-	// Get the type name, handling both pointer and non-pointer types
-	eventTypeVal := reflect.TypeOf(eventType)
-	if eventTypeVal.Kind() == reflect.Ptr {
-		eventTypeVal = eventTypeVal.Elem()
-	}
-	eventTypeName := eventTypeVal.String()
-
+	eventTypeName := resolveTypeName(eventType)
 	for _, event := range f.events {
-		// Get dispatched event type
-		dispatchedType := reflect.TypeOf(event)
-		if dispatchedType.Kind() == reflect.Ptr {
-			dispatchedType = dispatchedType.Elem()
-		}
-
-		if dispatchedType.String() == eventTypeName {
+		if resolveTypeName(event) == eventTypeName {
 			if callback == nil || callback(event) {
 				return nil
 			}
@@ -198,30 +198,10 @@ func (f *FakeDispatcher) AssertDispatchedTimes(eventType interface{}, times int)
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 
-	// Get the type name, handling both pointer and non-pointer types
-	eventTypeVal := reflect.TypeOf(eventType)
-	if eventTypeVal.Kind() == reflect.Ptr {
-		eventTypeVal = eventTypeVal.Elem()
-	}
-	eventTypeName := eventTypeVal.String()
-
-	count := 0
-	for _, event := range f.events {
-		// Get dispatched event type
-		dispatchedType := reflect.TypeOf(event)
-		if dispatchedType.Kind() == reflect.Ptr {
-			dispatchedType = dispatchedType.Elem()
-		}
-
-		if dispatchedType.String() == eventTypeName {
-			count++
-		}
-	}
-
+	eventTypeName, count := f.countMatchingEvents(eventType)
 	if count != times {
 		return fmt.Errorf("event %s was dispatched %d times, expected %d", eventTypeName, count, times)
 	}
-
 	return nil
 }
 
@@ -230,25 +210,10 @@ func (f *FakeDispatcher) AssertNotDispatched(eventType interface{}) error {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 
-	// Get the type name, handling both pointer and non-pointer types
-	eventTypeVal := reflect.TypeOf(eventType)
-	if eventTypeVal.Kind() == reflect.Ptr {
-		eventTypeVal = eventTypeVal.Elem()
+	eventTypeName, count := f.countMatchingEvents(eventType)
+	if count > 0 {
+		return fmt.Errorf("event %s was dispatched but should not have been", eventTypeName)
 	}
-	eventTypeName := eventTypeVal.String()
-
-	for _, event := range f.events {
-		// Get dispatched event type
-		dispatchedType := reflect.TypeOf(event)
-		if dispatchedType.Kind() == reflect.Ptr {
-			dispatchedType = dispatchedType.Elem()
-		}
-
-		if dispatchedType.String() == eventTypeName {
-			return fmt.Errorf("event %s was dispatched but should not have been", eventTypeName)
-		}
-	}
-
 	return nil
 }
 
@@ -309,20 +274,7 @@ func (f *FakeDispatcher) executeListeners(event interface{}) error {
 	return nil
 }
 
-// getEventName extracts the event name from various types
+// getEventName extracts the event name from various types.
 func (f *FakeDispatcher) getEventName(event interface{}) string {
-	if e, ok := event.(Event); ok {
-		return e.Name()
-	}
-
-	if s, ok := event.(string); ok {
-		return s
-	}
-
-	t := reflect.TypeOf(event)
-	if t.Kind() == reflect.Ptr {
-		t = t.Elem()
-	}
-
-	return t.Name()
+	return resolveEventName(event)
 }

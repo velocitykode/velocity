@@ -439,20 +439,6 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 			// Write error response
 			r.handleError(ctx, rw, err)
-
-			// Dispatch handled event
-			r.dispatchInstanceEvent(&RequestHandled{
-				Context:      req.Context(),
-				RequestID:    requestID,
-				Method:       req.Method,
-				Path:         req.URL.Path,
-				Route:        result.Path,
-				StatusCode:   rw.Status(),
-				BytesWritten: rw.BytesWritten(),
-				Duration:     time.Since(startedAt),
-				TraceID:      traceID,
-				SpanID:       spanID,
-			})
 		} else if handlerErr != nil {
 			// Dispatch failed event for handler error
 			r.dispatchInstanceEvent(&RequestFailed{
@@ -465,35 +451,21 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				TraceID:   traceID,
 				SpanID:    spanID,
 			})
-
-			// Dispatch handled event
-			r.dispatchInstanceEvent(&RequestHandled{
-				Context:      req.Context(),
-				RequestID:    requestID,
-				Method:       req.Method,
-				Path:         req.URL.Path,
-				Route:        result.Path,
-				StatusCode:   rw.Status(),
-				BytesWritten: rw.BytesWritten(),
-				Duration:     time.Since(startedAt),
-				TraceID:      traceID,
-				SpanID:       spanID,
-			})
-		} else {
-			// Dispatch handled event for success
-			r.dispatchInstanceEvent(&RequestHandled{
-				Context:      req.Context(),
-				RequestID:    requestID,
-				Method:       req.Method,
-				Path:         req.URL.Path,
-				Route:        result.Path,
-				StatusCode:   rw.Status(),
-				BytesWritten: rw.BytesWritten(),
-				Duration:     time.Since(startedAt),
-				TraceID:      traceID,
-				SpanID:       spanID,
-			})
 		}
+
+		// Always dispatch the handled event (covers panic, error, and success)
+		r.dispatchInstanceEvent(&RequestHandled{
+			Context:      req.Context(),
+			RequestID:    requestID,
+			Method:       req.Method,
+			Path:         req.URL.Path,
+			Route:        result.Path,
+			StatusCode:   rw.Status(),
+			BytesWritten: rw.BytesWritten(),
+			Duration:     time.Since(startedAt),
+			TraceID:      traceID,
+			SpanID:       spanID,
+		})
 
 		// Return context to pool
 		ctx.reset()

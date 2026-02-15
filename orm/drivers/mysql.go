@@ -1,7 +1,6 @@
 package drivers
 
 import (
-	"database/sql"
 	"fmt"
 	"net/url"
 	"strings"
@@ -11,8 +10,7 @@ import (
 
 // MySQLDriver implements the Driver interface for MySQL
 type MySQLDriver struct {
-	db     *sql.DB
-	config ConnectionConfig
+	BaseDriver
 }
 
 // NewMySQLDriver creates a new MySQL driver instance
@@ -22,7 +20,7 @@ func NewMySQLDriver() Driver {
 
 // Connect establishes a connection to MySQL database
 func (d *MySQLDriver) Connect(config ConnectionConfig) error {
-	d.config = config
+	d.Config = config
 
 	// Build DSN: user:password@tcp(host:port)/dbname
 	// URL-encode username and password to handle special characters
@@ -62,111 +60,21 @@ func (d *MySQLDriver) Connect(config ConnectionConfig) error {
 
 	dsn += "?" + strings.Join(params, "&")
 
-	db, err := sql.Open("mysql", dsn)
+	db, err := openAndPing("mysql", dsn)
 	if err != nil {
-		return fmt.Errorf("failed to open database: %w", err)
+		return err
 	}
 
-	// Test connection
-	if err := db.Ping(); err != nil {
-		return fmt.Errorf("failed to ping database: %w", err)
-	}
-
-	// Configure connection pool
-	if config.MaxIdleConns > 0 {
-		db.SetMaxIdleConns(config.MaxIdleConns)
-	}
-	if config.MaxOpenConns > 0 {
-		db.SetMaxOpenConns(config.MaxOpenConns)
-	}
-	if config.ConnMaxLifetime > 0 {
-		db.SetConnMaxLifetime(config.ConnMaxLifetime)
-	}
-	if config.ConnMaxIdleTime > 0 {
-		db.SetConnMaxIdleTime(config.ConnMaxIdleTime)
-	}
-
-	d.db = db
+	d.ConfigurePool(db)
+	d.DB_ = db
 	return nil
-}
-
-// Close closes the database connection
-func (d *MySQLDriver) Close() error {
-	if d.db != nil {
-		return d.db.Close()
-	}
-	return nil
-}
-
-// Ping verifies the connection to the database
-func (d *MySQLDriver) Ping() error {
-	if d.db == nil {
-		return fmt.Errorf("no database connection")
-	}
-	return d.db.Ping()
-}
-
-// DB returns the underlying *sql.DB instance
-func (d *MySQLDriver) DB() *sql.DB {
-	return d.db
-}
-
-// Query executes a query that returns rows
-func (d *MySQLDriver) Query(query string, args ...any) (*sql.Rows, error) {
-	if d.config.LogQueries {
-		fmt.Printf("SQL: %s\nArgs: [%d params]\n", query, len(args))
-	}
-	return d.db.Query(query, args...)
-}
-
-// QueryRow executes a query that returns at most one row
-func (d *MySQLDriver) QueryRow(query string, args ...any) *sql.Row {
-	if d.config.LogQueries {
-		fmt.Printf("SQL: %s\nArgs: [%d params]\n", query, len(args))
-	}
-	return d.db.QueryRow(query, args...)
-}
-
-// Exec executes a query that doesn't return rows
-func (d *MySQLDriver) Exec(query string, args ...any) (sql.Result, error) {
-	if d.config.LogQueries {
-		fmt.Printf("SQL: %s\nArgs: [%d params]\n", query, len(args))
-	}
-	return d.db.Exec(query, args...)
-}
-
-// Begin starts a transaction
-func (d *MySQLDriver) Begin() (*sql.Tx, error) {
-	return d.db.Begin()
-}
-
-// BeginTx starts a transaction with options
-func (d *MySQLDriver) BeginTx() (*sql.Tx, error) {
-	return d.db.Begin()
-}
-
-// CreateTable creates a new table
-func (d *MySQLDriver) CreateTable(name string, definition func(*Table)) error {
-	table := &Table{Name: name}
-	definition(table)
-
-	sql := d.Grammar().CompileCreateTable(name, table)
-	_, err := d.db.Exec(sql)
-	return err
-}
-
-// DropTable drops a table
-func (d *MySQLDriver) DropTable(name string) error {
-	sql := d.Grammar().CompileDropTable(name)
-	_, err := d.db.Exec(sql)
-	return err
 }
 
 // HasTable checks if a table exists
 func (d *MySQLDriver) HasTable(name string) bool {
 	sql := d.Grammar().CompileHasTable(name)
 	var tableName string
-	err := d.db.QueryRow(sql, name).Scan(&tableName)
+	err := d.DB_.QueryRow(sql, name).Scan(&tableName)
 	return err == nil && tableName == name
 }
 
@@ -174,8 +82,18 @@ func (d *MySQLDriver) HasTable(name string) bool {
 func (d *MySQLDriver) HasColumn(table, column string) bool {
 	sql := d.Grammar().CompileHasColumn(table, column)
 	var count int
-	err := d.db.QueryRow(sql, d.config.Database, table, column).Scan(&count)
+	err := d.DB_.QueryRow(sql, d.Config.Database, table, column).Scan(&count)
 	return err == nil && count > 0
+}
+
+// CreateTable creates a new table
+func (d *MySQLDriver) CreateTable(name string, definition func(*Table)) error {
+	return d.CreateTableWith(d.Grammar(), name, definition)
+}
+
+// DropTable drops a table
+func (d *MySQLDriver) DropTable(name string) error {
+	return d.DropTableWith(d.Grammar(), name)
 }
 
 // Grammar returns the MySQL query grammar

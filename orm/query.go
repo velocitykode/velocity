@@ -7,10 +7,15 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/velocitykode/velocity/orm/drivers"
 )
+
+// softDeleteCache caches the result of modelHasSoftDelete per reflect.Type
+// to avoid repeated reflection on every newQuery call.
+var softDeleteCache sync.Map
 
 // validOperators is the allowlist of valid SQL operators
 var validOperators = map[string]bool{
@@ -71,7 +76,8 @@ func newQuery[T any]() *Query[T] {
 	return q
 }
 
-// modelHasSoftDelete checks if the model type T has a DeletedAt field (supports soft deletes)
+// modelHasSoftDelete checks if the model type T has a DeletedAt field (supports soft deletes).
+// Results are cached per type to avoid repeated reflection on every query.
 func modelHasSoftDelete[T any]() bool {
 	var model T
 	t := reflect.TypeOf(model)
@@ -81,7 +87,19 @@ func modelHasSoftDelete[T any]() bool {
 		t = t.Elem()
 	}
 
-	// Check all fields including embedded structs
+	// Check cache first
+	if cached, ok := softDeleteCache.Load(t); ok {
+		return cached.(bool)
+	}
+
+	// Compute and cache the result
+	result := checkSoftDelete(t)
+	softDeleteCache.Store(t, result)
+	return result
+}
+
+// checkSoftDelete performs the actual reflection check for soft-delete support.
+func checkSoftDelete(t reflect.Type) bool {
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 

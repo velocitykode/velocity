@@ -22,8 +22,7 @@ func hasDotDotTraversal(path string) bool {
 
 // SQLiteDriver implements the Driver interface for SQLite
 type SQLiteDriver struct {
-	db     *sql.DB
-	config ConnectionConfig
+	BaseDriver
 }
 
 // NewSQLiteDriver creates a new SQLite driver instance
@@ -33,7 +32,7 @@ func NewSQLiteDriver() Driver {
 
 // Connect establishes a connection to SQLite database
 func (d *SQLiteDriver) Connect(config ConnectionConfig) error {
-	d.config = config
+	d.Config = config
 
 	// Build DSN
 	dsn := config.Database
@@ -96,94 +95,22 @@ func (d *SQLiteDriver) Connect(config ConnectionConfig) error {
 		}
 	}
 
-	d.db = db
+	d.DB_ = db
 	return nil
-}
-
-// Close closes the database connection
-func (d *SQLiteDriver) Close() error {
-	if d.db != nil {
-		return d.db.Close()
-	}
-	return nil
-}
-
-// Ping verifies the connection to the database
-func (d *SQLiteDriver) Ping() error {
-	if d.db == nil {
-		return fmt.Errorf("no database connection")
-	}
-	return d.db.Ping()
-}
-
-// DB returns the underlying *sql.DB instance
-func (d *SQLiteDriver) DB() *sql.DB {
-	return d.db
-}
-
-// Query executes a query that returns rows
-func (d *SQLiteDriver) Query(query string, args ...any) (*sql.Rows, error) {
-	if d.config.LogQueries {
-		fmt.Printf("SQL: %s\nArgs: [%d params]\n", query, len(args))
-	}
-	return d.db.Query(query, args...)
-}
-
-// QueryRow executes a query that returns at most one row
-func (d *SQLiteDriver) QueryRow(query string, args ...any) *sql.Row {
-	if d.config.LogQueries {
-		fmt.Printf("SQL: %s\nArgs: [%d params]\n", query, len(args))
-	}
-	return d.db.QueryRow(query, args...)
-}
-
-// Exec executes a query that doesn't return rows
-func (d *SQLiteDriver) Exec(query string, args ...any) (sql.Result, error) {
-	if d.config.LogQueries {
-		fmt.Printf("SQL: %s\nArgs: [%d params]\n", query, len(args))
-	}
-	return d.db.Exec(query, args...)
-}
-
-// Begin starts a transaction
-func (d *SQLiteDriver) Begin() (*sql.Tx, error) {
-	return d.db.Begin()
-}
-
-// BeginTx starts a transaction with options
-func (d *SQLiteDriver) BeginTx() (*sql.Tx, error) {
-	return d.db.Begin()
-}
-
-// CreateTable creates a new table
-func (d *SQLiteDriver) CreateTable(name string, definition func(*Table)) error {
-	table := &Table{Name: name}
-	definition(table)
-
-	sql := d.Grammar().CompileCreateTable(name, table)
-	_, err := d.db.Exec(sql)
-	return err
-}
-
-// DropTable drops a table
-func (d *SQLiteDriver) DropTable(name string) error {
-	sql := d.Grammar().CompileDropTable(name)
-	_, err := d.db.Exec(sql)
-	return err
 }
 
 // HasTable checks if a table exists
 func (d *SQLiteDriver) HasTable(name string) bool {
 	sql := d.Grammar().CompileHasTable(name)
 	var count int
-	err := d.db.QueryRow(sql, name).Scan(&count)
+	err := d.DB_.QueryRow(sql, name).Scan(&count)
 	return err == nil && count > 0
 }
 
 // HasColumn checks if a column exists in a table
 func (d *SQLiteDriver) HasColumn(table, column string) bool {
 	sql := d.Grammar().CompileHasColumn(table, column)
-	rows, err := d.db.Query(sql, table)
+	rows, err := d.DB_.Query(sql, table)
 	if err != nil {
 		return false
 	}
@@ -206,6 +133,16 @@ func (d *SQLiteDriver) HasColumn(table, column string) bool {
 		}
 	}
 	return false
+}
+
+// CreateTable creates a new table
+func (d *SQLiteDriver) CreateTable(name string, definition func(*Table)) error {
+	return d.CreateTableWith(d.Grammar(), name, definition)
+}
+
+// DropTable drops a table
+func (d *SQLiteDriver) DropTable(name string) error {
+	return d.DropTableWith(d.Grammar(), name)
 }
 
 // Grammar returns the SQLite query grammar

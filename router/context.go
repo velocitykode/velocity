@@ -406,31 +406,28 @@ func (c *Context) Error(status int, message string) error {
 	})
 }
 
-// NotFound sends a 404 error response
-func (c *Context) NotFound(message ...string) error {
-	msg := "Not Found"
+// httpError is a shared helper for error response methods.
+func (c *Context) httpError(status int, defaultMsg string, message []string) error {
+	msg := defaultMsg
 	if len(message) > 0 {
 		msg = message[0]
 	}
-	return c.Error(http.StatusNotFound, msg)
+	return c.Error(status, msg)
+}
+
+// NotFound sends a 404 error response
+func (c *Context) NotFound(message ...string) error {
+	return c.httpError(http.StatusNotFound, "Not Found", message)
 }
 
 // BadRequest sends a 400 error response
 func (c *Context) BadRequest(message ...string) error {
-	msg := "Bad Request"
-	if len(message) > 0 {
-		msg = message[0]
-	}
-	return c.Error(http.StatusBadRequest, msg)
+	return c.httpError(http.StatusBadRequest, "Bad Request", message)
 }
 
 // Unauthorized sends a 401 error response
 func (c *Context) Unauthorized(message ...string) error {
-	msg := "Unauthorized"
-	if len(message) > 0 {
-		msg = message[0]
-	}
-	return c.Error(http.StatusUnauthorized, msg)
+	return c.httpError(http.StatusUnauthorized, "Unauthorized", message)
 }
 
 // sanitizeRedirectForHost validates a redirect URL to prevent open redirects.
@@ -452,11 +449,7 @@ func sanitizeRedirectForHost(target, host string) string {
 
 // Forbidden sends a 403 error response
 func (c *Context) Forbidden(message ...string) error {
-	msg := "Forbidden"
-	if len(message) > 0 {
-		msg = message[0]
-	}
-	return c.Error(http.StatusForbidden, msg)
+	return c.httpError(http.StatusForbidden, "Forbidden", message)
 }
 
 // SetServices sets the service container on this context and stashes it
@@ -753,22 +746,32 @@ func (c *Context) XML(status int, data interface{}) error {
 // File response methods
 // ---------------------------------------------------------------------------
 
+// validateFilePath rejects paths containing ".." to prevent directory traversal
+// and returns the cleaned path.
+func validateFilePath(path string) (string, error) {
+	if strings.Contains(path, "..") {
+		return "", fmt.Errorf("invalid file path")
+	}
+	return filepath.Clean(path), nil
+}
+
 // File serves a file from the given path.
 func (c *Context) File(path string) error {
-	if strings.Contains(path, "..") {
-		return fmt.Errorf("invalid file path")
+	path, err := validateFilePath(path)
+	if err != nil {
+		return err
 	}
-	path = filepath.Clean(path)
 	http.ServeFile(c.Response, c.Request, path)
 	return nil
 }
 
 // Download sends a file as an attachment with the given filename.
 func (c *Context) Download(path string, filename string) error {
-	if strings.Contains(path, "..") {
-		return fmt.Errorf("invalid file path")
+	var err error
+	path, err = validateFilePath(path)
+	if err != nil {
+		return err
 	}
-	path = filepath.Clean(path)
 	c.Response.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 	http.ServeFile(c.Response, c.Request, path)
 	return nil
@@ -827,10 +830,11 @@ func (c *Context) FormFile(key string) (*multipart.FileHeader, error) {
 // SaveFile saves an uploaded file to dst. The destination path must not
 // contain ".." to prevent directory traversal.
 func (c *Context) SaveFile(fh *multipart.FileHeader, dst string) error {
-	if strings.Contains(dst, "..") {
-		return fmt.Errorf("invalid destination path")
+	var err error
+	dst, err = validateFilePath(dst)
+	if err != nil {
+		return err
 	}
-	dst = filepath.Clean(dst)
 	src, err := fh.Open()
 	if err != nil {
 		return err

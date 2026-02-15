@@ -61,12 +61,9 @@ func (s *MemoryStore) Close() {
 	close(s.done)
 }
 
-// prefixedKey returns the key with prefix
+// prefixedKey returns the key with prefix.
 func (s *MemoryStore) prefixedKey(key string) string {
-	if s.prefix == "" {
-		return key
-	}
-	return s.prefix + ":" + key
+	return PrefixKey(s.prefix, key)
 }
 
 // Get retrieves a value from the cache
@@ -87,19 +84,9 @@ func (s *MemoryStore) Get(key string) (interface{}, bool) {
 	return item.value, true
 }
 
-// GetString retrieves a string value from the cache
+// GetString retrieves a string value from the cache.
 func (s *MemoryStore) GetString(key string) (string, bool) {
-	val, found := s.Get(key)
-	if !found {
-		return "", false
-	}
-
-	str, ok := val.(string)
-	if !ok {
-		return "", false
-	}
-
-	return str, true
+	return GetStringFrom(s, key)
 }
 
 // Put stores a value in the cache with a TTL
@@ -192,32 +179,14 @@ func (s *MemoryStore) Decrement(key string, value int64) (int64, error) {
 	return s.Increment(key, -value)
 }
 
-// Remember gets from cache or computes and stores
+// Remember gets from cache or computes and stores.
 func (s *MemoryStore) Remember(key string, ttl time.Duration, callback func() interface{}) (interface{}, error) {
-	if val, found := s.Get(key); found {
-		return val, nil
-	}
-
-	value := callback()
-	if err := s.Put(key, value, ttl); err != nil {
-		return nil, err
-	}
-
-	return value, nil
+	return RememberFrom(s, s, key, ttl, callback)
 }
 
-// RememberForever gets from cache or computes and stores forever
+// RememberForever gets from cache or computes and stores forever.
 func (s *MemoryStore) RememberForever(key string, callback func() interface{}) (interface{}, error) {
-	if val, found := s.Get(key); found {
-		return val, nil
-	}
-
-	value := callback()
-	if err := s.Forever(key, value); err != nil {
-		return nil, err
-	}
-
-	return value, nil
+	return RememberForeverFrom(s, s, key, callback)
 }
 
 // Many retrieves multiple values
@@ -225,7 +194,7 @@ func (s *MemoryStore) Many(keys []string) map[string]interface{} {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	result := make(map[string]interface{})
+	result := make(map[string]interface{}, len(keys))
 	now := time.Now()
 
 	for _, key := range keys {
@@ -254,10 +223,9 @@ func (s *MemoryStore) PutMany(items map[string]interface{}, ttl time.Duration) e
 	return nil
 }
 
-// Has checks if a key exists
+// Has checks if a key exists.
 func (s *MemoryStore) Has(key string) bool {
-	_, found := s.Get(key)
-	return found
+	return HasFrom(s, key)
 }
 
 // GetPrefix returns the cache prefix

@@ -2,7 +2,6 @@ package events
 
 import (
 	"fmt"
-	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -271,13 +270,23 @@ func (d *DefaultDispatcher) GetListeners(event interface{}) []Listener {
 	return d.getListenersForEvent(event)
 }
 
-// getListenersForEvent retrieves all listeners for an event
+// getListenersForEvent retrieves all listeners for an event.
+// Pre-allocates the result slice to avoid repeated grow-and-copy in hot paths.
 func (d *DefaultDispatcher) getListenersForEvent(event interface{}) []Listener {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
 	eventName := d.getEventName(event)
-	var result []Listener
+
+	// Pre-compute capacity to avoid repeated slice growth
+	capacity := len(d.listeners[eventName])
+	for pattern, entries := range d.wildcards {
+		if d.matchesPattern(eventName, pattern) {
+			capacity += len(entries)
+		}
+	}
+
+	result := make([]Listener, 0, capacity)
 
 	// Get exact match listeners
 	if entries, ok := d.listeners[eventName]; ok {
@@ -298,31 +307,9 @@ func (d *DefaultDispatcher) getListenersForEvent(event interface{}) []Listener {
 	return result
 }
 
-// getEventName extracts the event name from various types
+// getEventName extracts the event name from various types.
 func (d *DefaultDispatcher) getEventName(event interface{}) string {
-	// If it implements Event interface
-	if e, ok := event.(Event); ok {
-		return e.Name()
-	}
-
-	// If it's already a string
-	if s, ok := event.(string); ok {
-		return s
-	}
-
-	// Use type name as event name
-	t := reflect.TypeOf(event)
-	if t.Kind() == reflect.Ptr {
-		t = t.Elem()
-	}
-
-	// Convert struct name to event name (e.g., UserRegistered -> user.registered)
-	name := t.Name()
-	if name == "" {
-		name = t.String()
-	}
-
-	return camelToSnake(name)
+	return resolveEventName(event)
 }
 
 // matchesPattern checks if an event matches a wildcard pattern
@@ -368,14 +355,7 @@ func (d *DefaultDispatcher) processListener(event interface{}, listener Listener
 	return listener.Handle(event)
 }
 
-// camelToSnake converts CamelCase to snake.case
+// camelToSnake is kept as an alias for backward compatibility.
 func camelToSnake(s string) string {
-	var result strings.Builder
-	for i, r := range s {
-		if i > 0 && r >= 'A' && r <= 'Z' {
-			result.WriteRune('.')
-		}
-		result.WriteRune(r)
-	}
-	return strings.ToLower(result.String())
+	return camelToDot(s)
 }
