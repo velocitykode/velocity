@@ -9,7 +9,7 @@ import (
 // Embed this in concrete drivers to eliminate duplicated Close, Ping, DB,
 // Query, QueryRow, Exec, Begin, BeginTx, CreateTable, and DropTable methods.
 type BaseDriver struct {
-	db    *sql.DB
+	db     *sql.DB
 	Config ConnectionConfig
 }
 

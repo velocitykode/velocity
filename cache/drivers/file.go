@@ -13,10 +13,10 @@ import (
 
 // FileStore implements a file-based cache store
 type FileStore struct {
-	mu       sync.RWMutex
-	path     string
-	prefix   string
-	done     chan struct{}
+	mu        sync.RWMutex
+	path      string
+	prefix    string
+	done      chan struct{}
 	closeOnce sync.Once
 }
 

@@ -354,4 +354,3 @@ func (d *DefaultDispatcher) processListener(event interface{}, listener Listener
 	// Handle the event
 	return listener.Handle(event)
 }
-
