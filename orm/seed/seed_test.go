@@ -50,7 +50,7 @@ type mockSeeder struct {
 	runFunc func(*orm.Manager) error
 }
 
-func (s *mockSeeder) Name() string                    { return s.name }
+func (s *mockSeeder) Name() string                   { return s.name }
 func (s *mockSeeder) Run(manager *orm.Manager) error { return s.runFunc(manager) }
 
 func newMockSeeder(name string) *mockSeeder {
@@ -72,6 +72,15 @@ func newTestManager(t *testing.T) *orm.Manager {
 		t.Fatalf("failed to create ORM manager: %v", err)
 	}
 	return manager
+}
+
+func mustNewRunner(t *testing.T, manager *orm.Manager) *Runner {
+	t.Helper()
+	runner, err := NewRunner(manager)
+	if err != nil {
+		t.Fatalf("failed to create runner: %v", err)
+	}
+	return runner
 }
 
 func runMigrations(t *testing.T, manager *orm.Manager) {
@@ -204,13 +213,11 @@ func TestReset(t *testing.T) {
 
 // --- Runner tests ---
 
-func TestNewRunnerPanicsNilManager(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for nil manager")
-		}
-	}()
-	NewRunner(nil)
+func TestNewRunnerNilManager(t *testing.T) {
+	_, err := NewRunner(nil)
+	if err == nil {
+		t.Error("expected error for nil manager")
+	}
 }
 
 func TestRunnerRun(t *testing.T) {
@@ -230,7 +237,7 @@ func TestRunnerRun(t *testing.T) {
 		},
 	})
 
-	runner := NewRunner(manager)
+	runner := mustNewRunner(t, manager)
 	if err := runner.Run("RunTest"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -251,7 +258,7 @@ func TestRunnerRunNotFound(t *testing.T) {
 	manager := newTestManager(t)
 	defer manager.Close()
 
-	runner := NewRunner(manager)
+	runner := mustNewRunner(t, manager)
 	err := runner.Run("NonExistent")
 	if err == nil {
 		t.Error("expected error for non-existent seeder")
@@ -272,7 +279,7 @@ func TestRunnerRunError(t *testing.T) {
 		},
 	})
 
-	runner := NewRunner(manager)
+	runner := mustNewRunner(t, manager)
 	err := runner.Run("Failing")
 	if err == nil {
 		t.Error("expected error from failing seeder")
@@ -306,7 +313,7 @@ func TestRunnerRunAll(t *testing.T) {
 		},
 	})
 
-	runner := NewRunner(manager)
+	runner := mustNewRunner(t, manager)
 	if err := runner.RunAll(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -354,12 +361,15 @@ func TestRunnerRunAllWithDatabaseSeeder(t *testing.T) {
 	Register(&mockSeeder{
 		name: "DatabaseSeeder",
 		runFunc: func(m *orm.Manager) error {
-			r := NewRunner(m)
+			r, err := NewRunner(m)
+			if err != nil {
+				return err
+			}
 			return r.Call("UserSeeder", "PostSeeder")
 		},
 	})
 
-	runner := NewRunner(manager)
+	runner := mustNewRunner(t, manager)
 	if err := runner.RunAll(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -400,7 +410,7 @@ func TestRunnerCall(t *testing.T) {
 		runFunc: func(m *orm.Manager) error { order = append(order, "C"); return nil },
 	})
 
-	runner := NewRunner(manager)
+	runner := mustNewRunner(t, manager)
 	if err := runner.Call("C", "A", "B"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -437,7 +447,7 @@ func TestRunnerCallStopsOnError(t *testing.T) {
 		runFunc: func(m *orm.Manager) error { return nil },
 	})
 
-	runner := NewRunner(manager)
+	runner := mustNewRunner(t, manager)
 	err := runner.Call("OK", "Fail", "NeverReached")
 	if err == nil {
 		t.Error("expected error")
@@ -471,6 +481,13 @@ func TestSeed(t *testing.T) {
 
 	if !ran {
 		t.Error("expected seeder to run via Seed()")
+	}
+}
+
+func TestSeedNilManager(t *testing.T) {
+	err := Seed(nil)
+	if err == nil {
+		t.Error("expected error for nil manager")
 	}
 }
 
@@ -581,7 +598,11 @@ func TestIntegrationDatabaseSeederWithFactories(t *testing.T) {
 	Register(&mockSeeder{
 		name: "DatabaseSeeder",
 		runFunc: func(m *orm.Manager) error {
-			return NewRunner(m).Call("UserSeeder", "PostSeeder")
+			r, err := NewRunner(m)
+			if err != nil {
+				return err
+			}
+			return r.Call("UserSeeder", "PostSeeder")
 		},
 	})
 

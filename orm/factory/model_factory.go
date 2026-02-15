@@ -1,6 +1,7 @@
 package factory
 
 import (
+	"fmt"
 	"reflect"
 	"sync"
 
@@ -39,7 +40,8 @@ func NewModelFactory[T any](manager *orm.Manager, definition func() *T) *ModelFa
 	}
 }
 
-// Count sets the number of records to generate
+// Count sets the number of records to generate.
+// Panics if n <= 0 (programming error, caught at setup time).
 func (f *ModelFactory[T]) Count(n int) *ModelFactory[T] {
 	if n <= 0 {
 		panic("count must be greater than 0")
@@ -50,7 +52,8 @@ func (f *ModelFactory[T]) Count(n int) *ModelFactory[T] {
 	return f
 }
 
-// State applies a named state modifier to the factory
+// State applies a named state modifier to the factory.
+// Panics if the state has not been defined via DefineState (programming error).
 func (f *ModelFactory[T]) State(name string) *ModelFactory[T] {
 	if _, exists := f.states[name]; !exists {
 		panic("unknown state: " + name)
@@ -63,7 +66,9 @@ func (f *ModelFactory[T]) State(name string) *ModelFactory[T] {
 
 // DefineState registers a named state modifier
 func (f *ModelFactory[T]) DefineState(name string, modifier func(*T)) *ModelFactory[T] {
+	f.mu.Lock()
 	f.states[name] = modifier
+	f.mu.Unlock()
 	return f
 }
 
@@ -88,9 +93,10 @@ func (f *ModelFactory[T]) Make(overrides *T) any {
 	return results
 }
 
-// Create generates and persists model(s) to database
-// Returns *T for single, []*T for multiple (when Count > 1)
-func (f *ModelFactory[T]) Create(overrides *T) any {
+// Create generates and persists model(s) to database.
+// Returns *T for single, []*T for multiple (when Count > 1).
+// Returns an error if database persistence fails.
+func (f *ModelFactory[T]) Create(overrides *T) (any, error) {
 	f.mu.Lock()
 	count := f.count
 	activeState := f.activeState
@@ -99,18 +105,27 @@ func (f *ModelFactory[T]) Create(overrides *T) any {
 	f.mu.Unlock()
 
 	if count == 1 {
-		return f.createOne(activeState, overrides)
+		model, err := f.createOne(activeState, overrides)
+		if err != nil {
+			return nil, err
+		}
+		return model, nil
 	}
 
 	results := make([]*T, 0, count)
 	for i := 0; i < count; i++ {
-		results = append(results, f.createOne(activeState, overrides))
+		model, err := f.createOne(activeState, overrides)
+		if err != nil {
+			return results, err
+		}
+		results = append(results, model)
 	}
-	return results
+	return results, nil
 }
 
-// CreateOne is a convenience method that always returns *T (not any)
-func (f *ModelFactory[T]) CreateOne(overrides *T) *T {
+// CreateOne is a convenience method that always returns *T (not any).
+// Returns an error if database persistence fails.
+func (f *ModelFactory[T]) CreateOne(overrides *T) (*T, error) {
 	f.mu.Lock()
 	activeState := f.activeState
 	f.count = 1
@@ -120,8 +135,9 @@ func (f *ModelFactory[T]) CreateOne(overrides *T) *T {
 	return f.createOne(activeState, overrides)
 }
 
-// CreateMany is a convenience method that always returns []*T (not any)
-func (f *ModelFactory[T]) CreateMany(count int, overrides *T) []*T {
+// CreateMany is a convenience method that always returns []*T (not any).
+// Returns an error if database persistence fails.
+func (f *ModelFactory[T]) CreateMany(count int, overrides *T) ([]*T, error) {
 	if count <= 0 {
 		panic("count must be greater than 0")
 	}
@@ -134,9 +150,13 @@ func (f *ModelFactory[T]) CreateMany(count int, overrides *T) []*T {
 
 	results := make([]*T, 0, count)
 	for i := 0; i < count; i++ {
-		results = append(results, f.createOne(activeState, overrides))
+		model, err := f.createOne(activeState, overrides)
+		if err != nil {
+			return results, err
+		}
+		results = append(results, model)
 	}
-	return results
+	return results, nil
 }
 
 // MakeOne is a convenience method that always returns *T (not any)
@@ -170,14 +190,14 @@ func (f *ModelFactory[T]) makeOne(activeState string, overrides *T) *T {
 }
 
 // createOne generates and persists a single model
-func (f *ModelFactory[T]) createOne(activeState string, overrides *T) *T {
+func (f *ModelFactory[T]) createOne(activeState string, overrides *T) (*T, error) {
 	model := f.makeOne(activeState, overrides)
 
 	if err := orm.Save(f.manager, model); err != nil {
-		panic("failed to create model: " + err.Error())
+		return nil, fmt.Errorf("factory: failed to create model: %w", err)
 	}
 
-	return model
+	return model, nil
 }
 
 // mergeNonZero copies non-zero values from src to dst
@@ -202,20 +222,20 @@ func mergeNonZero[T any](dst, src *T) {
 	}
 }
 
+// ormPkgPath is the import path of the velocity orm package,
+// used to identify embedded orm.Model structs in isZeroValue.
+const ormPkgPath = "github.com/velocitykode/velocity/orm"
+
 // isZeroValue checks if a reflect.Value is the zero value for its type
 func isZeroValue(v reflect.Value) bool {
 	switch v.Kind() {
 	case reflect.Ptr, reflect.Interface, reflect.Slice, reflect.Map, reflect.Chan, reflect.Func:
 		return v.IsNil()
 	case reflect.Struct:
-		// For structs, check if all fields are zero
-		// But skip embedded orm.Model since it has non-zero timestamps
+		// Skip embedded orm.Model types to avoid overwriting base model fields
 		t := v.Type()
-		if t.Name() != "" && t.PkgPath() != "" {
-			// Named struct from a package - check if it looks like orm.Model
-			if t.Name() == "Model" || (t.NumField() > 0 && t.Field(0).Name == "ID") {
-				return true // Treat as zero to avoid overwriting base model
-			}
+		if t.PkgPath() == ormPkgPath {
+			return true
 		}
 		return reflect.DeepEqual(v.Interface(), reflect.Zero(v.Type()).Interface())
 	default:

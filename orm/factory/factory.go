@@ -2,13 +2,16 @@ package factory
 
 import (
 	"fmt"
+	"sort"
 	"strings"
+	"sync"
 
 	"github.com/velocitykode/velocity/orm"
 )
 
 // Factory represents a model factory for generating test data
 type Factory struct {
+	mu          sync.Mutex
 	manager     *orm.Manager
 	tableName   string
 	definition  func() map[string]interface{}
@@ -32,49 +35,69 @@ func NewFactory(manager *orm.Manager, tableName string, definition func() map[st
 	}
 }
 
-// Count sets the number of records to generate
+// Count sets the number of records to generate.
+// Returns an error if n <= 0.
 func (f *Factory) Count(n int) *Factory {
 	if n <= 0 {
 		panic("count must be greater than 0")
 	}
+	f.mu.Lock()
 	f.count = n
+	f.mu.Unlock()
 	return f
 }
 
-// State applies a named state to the factory
+// State applies a named state to the factory.
+// Panics if the state has not been defined via DefineState.
 func (f *Factory) State(name string) *Factory {
 	if _, exists := f.states[name]; !exists {
 		panic(fmt.Sprintf("unknown state: %s", name))
 	}
+	f.mu.Lock()
 	f.activeState = name
+	f.mu.Unlock()
 	return f
 }
 
 // Sequence defines a sequential value generator for a field
 func (f *Factory) Sequence(field string, generator func(int) interface{}) *Factory {
+	f.mu.Lock()
 	f.sequences[field] = generator
+	f.mu.Unlock()
 	return f
 }
 
 // DefineState defines a named attribute preset
 func (f *Factory) DefineState(name string, attributes map[string]interface{}) {
+	f.mu.Lock()
 	f.states[name] = attributes
+	f.mu.Unlock()
 }
 
 // Make generates data without persisting to database
 func (f *Factory) Make(overrides ...map[string]interface{}) interface{} {
-	if f.count == 1 {
-		return f.generateOne(0, overrides...)
+	f.mu.Lock()
+	count := f.count
+	activeState := f.activeState
+	f.count = 1
+	f.activeState = ""
+	f.mu.Unlock()
+
+	if count == 1 {
+		return f.generateOne(activeState, 0, overrides...)
 	}
 
-	results := make([]map[string]interface{}, 0, f.count)
-	for i := 0; i < f.count; i++ {
-		results = append(results, f.generateOne(i, overrides...))
+	results := make([]map[string]interface{}, 0, count)
+	for i := 0; i < count; i++ {
+		results = append(results, f.generateOne(activeState, i, overrides...))
 	}
 	return results
 }
 
-// Create generates data and persists to database
+// Create generates data and persists to database.
+// Returns the created record(s) as map[string]interface{} (single) or
+// []map[string]interface{} (multiple). Panics if the manager is nil or
+// the database connection is unavailable.
 func (f *Factory) Create(overrides ...map[string]interface{}) interface{} {
 	if f.manager == nil {
 		panic("ORM manager not set - pass *orm.Manager to NewFactory for database persistence")
@@ -90,34 +113,32 @@ func (f *Factory) Create(overrides ...map[string]interface{}) interface{} {
 		panic("cannot determine database driver")
 	}
 
-	// Capture count for this call
+	f.mu.Lock()
 	count := f.count
-
-	// Reset count and state for next call (defer to ensure reset even on panic)
-	defer func() {
-		f.count = 1
-		f.activeState = ""
-	}()
+	activeState := f.activeState
+	f.count = 1
+	f.activeState = ""
+	f.mu.Unlock()
 
 	if count == 1 {
-		return f.persistOne(exec, driver, 0, overrides...)
+		return f.persistOne(exec, driver, activeState, 0, overrides...)
 	}
 
 	results := make([]map[string]interface{}, 0, count)
 	for i := 0; i < count; i++ {
-		results = append(results, f.persistOne(exec, driver, i, overrides...))
+		results = append(results, f.persistOne(exec, driver, activeState, i, overrides...))
 	}
 	return results
 }
 
 // generateOne generates a single record's data
-func (f *Factory) generateOne(index int, overrides ...map[string]interface{}) map[string]interface{} {
+func (f *Factory) generateOne(activeState string, index int, overrides ...map[string]interface{}) map[string]interface{} {
 	// Start with definition
 	data := f.definition()
 
 	// Apply active state
-	if f.activeState != "" {
-		if state, exists := f.states[f.activeState]; exists {
+	if activeState != "" {
+		if state, exists := f.states[activeState]; exists {
 			for k, v := range state {
 				data[k] = v
 			}
@@ -140,8 +161,8 @@ func (f *Factory) generateOne(index int, overrides ...map[string]interface{}) ma
 }
 
 // persistOne generates and persists a single record
-func (f *Factory) persistOne(exec orm.QueryExecutor, driver string, index int, overrides ...map[string]interface{}) map[string]interface{} {
-	data := f.generateOne(index, overrides...)
+func (f *Factory) persistOne(exec orm.QueryExecutor, driver, activeState string, index int, overrides ...map[string]interface{}) map[string]interface{} {
+	data := f.generateOne(activeState, index, overrides...)
 
 	// Build INSERT query
 	query, values := buildInsertSQL(f.tableName, data, driver)
@@ -179,45 +200,38 @@ func quoteIdent(name, driver string) string {
 	}
 }
 
-// buildInsertSQL generates driver-specific INSERT statement
+// buildInsertSQL generates driver-specific INSERT statement.
+// Columns are sorted for deterministic query output.
 func buildInsertSQL(table string, data map[string]interface{}, driver string) (string, []interface{}) {
+	// Sort column names for deterministic ordering
+	keys := make([]string, 0, len(data))
+	for col := range data {
+		keys = append(keys, col)
+	}
+	sort.Strings(keys)
+
 	columns := make([]string, 0, len(data))
 	placeholders := make([]string, 0, len(data))
 	values := make([]interface{}, 0, len(data))
 
-	i := 1
-	for col, val := range data {
+	for i, col := range keys {
 		columns = append(columns, quoteIdent(col, driver))
 
 		if driver == "postgres" {
-			placeholders = append(placeholders, fmt.Sprintf("$%d", i))
+			placeholders = append(placeholders, fmt.Sprintf("$%d", i+1))
 		} else {
-			// MySQL and SQLite use ?
 			placeholders = append(placeholders, "?")
 		}
 
-		values = append(values, val)
-		i++
+		values = append(values, data[col])
 	}
 
 	query := fmt.Sprintf(
 		"INSERT INTO %s (%s) VALUES (%s)",
 		quoteIdent(table, driver),
-		joinStrings(columns, ", "),
-		joinStrings(placeholders, ", "),
+		strings.Join(columns, ", "),
+		strings.Join(placeholders, ", "),
 	)
 
 	return query, values
-}
-
-// joinStrings joins a slice of strings with a separator
-func joinStrings(arr []string, sep string) string {
-	if len(arr) == 0 {
-		return ""
-	}
-	result := arr[0]
-	for i := 1; i < len(arr); i++ {
-		result += sep + arr[i]
-	}
-	return result
 }

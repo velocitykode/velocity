@@ -164,7 +164,6 @@ func TestModelFactory_CreateMany(t *testing.T) {
 				t.Error("expected panic for count <= 0")
 			}
 		}()
-		// This would fail without a real DB, so just test the panic
 		factory.CreateMany(0, nil)
 	})
 }
@@ -269,6 +268,25 @@ func TestFactory_Make(t *testing.T) {
 			t.Errorf("expected 3 users, got %d", len(users))
 		}
 	})
+
+	t.Run("resets count after make", func(t *testing.T) {
+		f.Count(5).Make()
+		result := f.Make()
+		if _, ok := result.(map[string]interface{}); !ok {
+			t.Errorf("expected single map after reset, got %T", result)
+		}
+	})
+
+	t.Run("resets state after make", func(t *testing.T) {
+		f.DefineState("admin", map[string]interface{}{"role": "admin"})
+		f.State("admin").Make()
+		// After Make, activeState should be reset; next call should not apply "admin"
+		result := f.Make()
+		userMap := result.(map[string]interface{})
+		if userMap["role"] == "admin" {
+			t.Error("state should have been reset after Make()")
+		}
+	})
 }
 
 func TestFactory_State(t *testing.T) {
@@ -326,5 +344,26 @@ func TestFactory_Overrides(t *testing.T) {
 	}
 	if userMap["email"] != "default@test.com" {
 		t.Errorf("expected email %q, got %v", "default@test.com", userMap["email"])
+	}
+}
+
+func TestBuildInsertSQL_Deterministic(t *testing.T) {
+	data := map[string]interface{}{
+		"name":  "John",
+		"email": "john@test.com",
+		"age":   30,
+	}
+
+	q1, v1 := buildInsertSQL("users", data, "sqlite")
+	q2, v2 := buildInsertSQL("users", data, "sqlite")
+
+	if q1 != q2 {
+		t.Errorf("queries should be deterministic:\n  %s\n  %s", q1, q2)
+	}
+
+	for i := range v1 {
+		if v1[i] != v2[i] {
+			t.Errorf("values[%d] differ: %v vs %v", i, v1[i], v2[i])
+		}
 	}
 }

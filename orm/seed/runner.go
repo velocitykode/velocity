@@ -13,18 +13,19 @@ type Runner struct {
 }
 
 // NewRunner creates a new Runner instance.
-func NewRunner(manager *orm.Manager) *Runner {
+// Returns an error if manager is nil or has no active database connection.
+func NewRunner(manager *orm.Manager) (*Runner, error) {
 	if manager == nil {
-		panic("seed: manager cannot be nil")
+		return nil, fmt.Errorf("seed: manager cannot be nil")
 	}
 	if manager.DB() == nil {
-		panic("seed: manager has no active database connection")
+		return nil, fmt.Errorf("seed: manager has no active database connection")
 	}
 
 	return &Runner{
 		manager: manager,
 		ran:     make([]string, 0),
-	}
+	}, nil
 }
 
 // Run executes a single seeder by name from the global registry.
@@ -98,12 +99,18 @@ func (r *Runner) Ran() []string {
 //	    log.Fatal(err)
 //	}
 func Seed(manager *orm.Manager) error {
-	runner := NewRunner(manager)
+	runner, err := NewRunner(manager)
+	if err != nil {
+		return err
+	}
 	return runner.RunAll()
 }
 
 // SeedOne runs a single named seeder.
 func SeedOne(manager *orm.Manager, name string) error {
-	runner := NewRunner(manager)
+	runner, err := NewRunner(manager)
+	if err != nil {
+		return err
+	}
 	return runner.Run(name)
 }
