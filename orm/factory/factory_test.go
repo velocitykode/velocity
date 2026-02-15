@@ -1,4 +1,4 @@
-package testing
+package factory
 
 import (
 	"reflect"
@@ -25,7 +25,6 @@ func TestModelFactory_CreateOne(t *testing.T) {
 	})
 
 	t.Run("creates with defaults", func(t *testing.T) {
-		// Note: This would fail without a real DB, so we test Make instead
 		user := factory.makeOne("", nil)
 
 		if user.Name != "Default Name" {
@@ -137,6 +136,20 @@ func TestModelFactory_Count(t *testing.T) {
 	})
 }
 
+func TestModelFactory_MakeOne(t *testing.T) {
+	factory := NewModelFactory[TestUser](nil, func() *TestUser {
+		return &TestUser{
+			Name:  "Test",
+			Email: "test@example.com",
+		}
+	})
+
+	user := factory.MakeOne(nil)
+	if user.Name != "Test" {
+		t.Errorf("expected Name %q, got %q", "Test", user.Name)
+	}
+}
+
 func TestModelFactory_CreateMany(t *testing.T) {
 	factory := NewModelFactory[TestUser](nil, func() *TestUser {
 		return &TestUser{
@@ -151,7 +164,7 @@ func TestModelFactory_CreateMany(t *testing.T) {
 				t.Error("expected panic for count <= 0")
 			}
 		}()
-		// This would require DB, so just test the panic
+		// This would fail without a real DB, so just test the panic
 		factory.CreateMany(0, nil)
 	})
 }
@@ -221,5 +234,97 @@ func TestIsZeroValue(t *testing.T) {
 				t.Errorf("isZeroValue(%v) = %v, expected %v", tt.value, result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestFactory_Make(t *testing.T) {
+	f := NewFactory(nil, "users", func() map[string]interface{} {
+		return map[string]interface{}{
+			"name":  Faker().Name(),
+			"email": Faker().Email(),
+		}
+	})
+
+	t.Run("generates single record", func(t *testing.T) {
+		result := f.Make()
+		userMap, ok := result.(map[string]interface{})
+		if !ok {
+			t.Fatal("expected map[string]interface{}")
+		}
+		if userMap["name"] == nil {
+			t.Error("expected name to be set")
+		}
+		if userMap["email"] == nil {
+			t.Error("expected email to be set")
+		}
+	})
+
+	t.Run("generates multiple records", func(t *testing.T) {
+		result := f.Count(3).Make()
+		users, ok := result.([]map[string]interface{})
+		if !ok {
+			t.Fatalf("expected []map[string]interface{}, got %T", result)
+		}
+		if len(users) != 3 {
+			t.Errorf("expected 3 users, got %d", len(users))
+		}
+	})
+}
+
+func TestFactory_State(t *testing.T) {
+	f := NewFactory(nil, "users", func() map[string]interface{} {
+		return map[string]interface{}{
+			"name": "Default",
+			"role": "user",
+		}
+	})
+	f.DefineState("admin", map[string]interface{}{
+		"role": "admin",
+	})
+
+	result := f.State("admin").Make()
+	userMap := result.(map[string]interface{})
+
+	if userMap["role"] != "admin" {
+		t.Errorf("expected role %q, got %v", "admin", userMap["role"])
+	}
+}
+
+func TestFactory_Sequence(t *testing.T) {
+	f := NewFactory(nil, "users", func() map[string]interface{} {
+		return map[string]interface{}{
+			"name":  "Default",
+			"email": "default@test.com",
+		}
+	})
+
+	result := f.Count(3).Sequence("email", func(i int) interface{} {
+		return "user" + string(rune('0'+i)) + "@test.com"
+	}).Make()
+
+	users := result.([]map[string]interface{})
+	if len(users) != 3 {
+		t.Fatalf("expected 3 users, got %d", len(users))
+	}
+}
+
+func TestFactory_Overrides(t *testing.T) {
+	f := NewFactory(nil, "users", func() map[string]interface{} {
+		return map[string]interface{}{
+			"name":  "Default",
+			"email": "default@test.com",
+		}
+	})
+
+	result := f.Make(map[string]interface{}{
+		"name": "Custom",
+	})
+	userMap := result.(map[string]interface{})
+
+	if userMap["name"] != "Custom" {
+		t.Errorf("expected name %q, got %v", "Custom", userMap["name"])
+	}
+	if userMap["email"] != "default@test.com" {
+		t.Errorf("expected email %q, got %v", "default@test.com", userMap["email"])
 	}
 }
