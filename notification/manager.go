@@ -3,6 +3,7 @@ package notification
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 )
@@ -23,13 +24,27 @@ func NewManager() *Manager {
 
 // SetEventDispatcher sets the function used to dispatch events.
 func (m *Manager) SetEventDispatcher(fn func(event interface{}) error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.eventDispatcher = fn
 }
 
+// getEventDispatcher returns the current event dispatcher under the read lock.
+func (m *Manager) getEventDispatcher() func(event interface{}) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.eventDispatcher
+}
+
 // dispatchEvent dispatches an event if a dispatcher is configured.
+// Errors from the dispatcher are logged but do not interrupt notification delivery.
 func (m *Manager) dispatchEvent(event interface{}) {
-	if m.eventDispatcher != nil {
-		m.eventDispatcher(event)
+	dispatch := m.getEventDispatcher()
+	if dispatch == nil {
+		return
+	}
+	if err := dispatch(event); err != nil {
+		log.Printf("[notification] event dispatch error: %v", err)
 	}
 }
 
@@ -125,7 +140,7 @@ func (m *Manager) SendMany(ctx context.Context, notifiables []interface{}, notif
 func (m *Manager) sendViaChannel(ctx context.Context, channelName string, notifiable interface{}, notification Notification) error {
 	ch, err := m.Channel(channelName)
 	if err != nil {
-		dispatchNotificationFailed(m.dispatchEvent, ctx, notifiable, notification, channelName, err)
+		m.dispatchEvent(buildNotificationFailed(ctx, notifiable, notification, channelName, err))
 		return fmt.Errorf("notification: channel %q: %w", channelName, err)
 	}
 
@@ -134,10 +149,10 @@ func (m *Manager) sendViaChannel(ctx context.Context, channelName string, notifi
 	duration := time.Since(start)
 
 	if err != nil {
-		dispatchNotificationFailed(m.dispatchEvent, ctx, notifiable, notification, channelName, err)
+		m.dispatchEvent(buildNotificationFailed(ctx, notifiable, notification, channelName, err))
 		return fmt.Errorf("notification: channel %q: %w", channelName, err)
 	}
 
-	dispatchNotificationSent(m.dispatchEvent, ctx, notifiable, notification, channelName, duration)
+	m.dispatchEvent(buildNotificationSent(ctx, notifiable, notification, channelName, duration))
 	return nil
 }

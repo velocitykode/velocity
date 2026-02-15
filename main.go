@@ -153,7 +153,7 @@ func New(opts ...Option) (*App, error) {
 	}
 
 	// 13. Initialize notification manager
-	a.Notification = initNotification(a.Mail, sqlDB)
+	a.Notification = initNotification(a.Mail, sqlDB, a.config.DB.Connection)
 
 	// 14. Create router and inject services
 	a.Router = router.New()
@@ -462,7 +462,7 @@ func initQueue(config QueueConfig, db *sql.DB) queue.Driver {
 	}
 }
 
-func initNotification(mailer mail.Mailer, db *sql.DB) *notification.Manager {
+func initNotification(mailer mail.Mailer, db *sql.DB, dbDriver string) *notification.Manager {
 	mgr := notification.NewManager()
 
 	// Wire the mail channel with the framework's mailer
@@ -478,7 +478,7 @@ func initNotification(mailer mail.Mailer, db *sql.DB) *notification.Manager {
 	if db != nil {
 		if ch, err := mgr.Channel("database"); err == nil {
 			if dc, ok := ch.(*channels.DatabaseChannel); ok {
-				dc.SetDB(db)
+				dc.SetDB(db, dbDriver)
 			}
 		}
 	}

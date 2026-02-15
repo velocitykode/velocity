@@ -2,7 +2,6 @@ package notification
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/velocitykode/velocity/trace"
@@ -42,13 +41,10 @@ func (e *NotificationFailed) Name() string {
 	return "notification.failed"
 }
 
-// dispatchNotificationSent dispatches a NotificationSent event.
-func dispatchNotificationSent(dispatch func(interface{}), ctx context.Context, notifiable interface{}, n Notification, channel string, duration time.Duration) {
-	if dispatch == nil {
-		return
-	}
+// buildNotificationSent creates a NotificationSent event.
+func buildNotificationSent(ctx context.Context, notifiable interface{}, n Notification, channel string, duration time.Duration) *NotificationSent {
 	traceID, spanID, parentID := trace.GetTraceContext(ctx)
-	dispatch(&NotificationSent{
+	return &NotificationSent{
 		Context:      ctx,
 		Notifiable:   notifiable,
 		Notification: n,
@@ -57,20 +53,17 @@ func dispatchNotificationSent(dispatch func(interface{}), ctx context.Context, n
 		TraceID:      traceID,
 		SpanID:       spanID,
 		ParentID:     parentID,
-	})
+	}
 }
 
-// dispatchNotificationFailed dispatches a NotificationFailed event.
-func dispatchNotificationFailed(dispatch func(interface{}), ctx context.Context, notifiable interface{}, n Notification, channel string, err error) {
-	if dispatch == nil {
-		return
-	}
+// buildNotificationFailed creates a NotificationFailed event.
+func buildNotificationFailed(ctx context.Context, notifiable interface{}, n Notification, channel string, err error) *NotificationFailed {
 	traceID, spanID, parentID := trace.GetTraceContext(ctx)
 	errMsg := ""
 	if err != nil {
 		errMsg = err.Error()
 	}
-	dispatch(&NotificationFailed{
+	return &NotificationFailed{
 		Context:      ctx,
 		Notifiable:   notifiable,
 		Notification: n,
@@ -79,11 +72,5 @@ func dispatchNotificationFailed(dispatch func(interface{}), ctx context.Context,
 		TraceID:      traceID,
 		SpanID:       spanID,
 		ParentID:     parentID,
-	})
-}
-
-// notificationTypeName returns a human-readable type name for a notification.
-// Used internally for logging and event identification.
-func notificationTypeName(n Notification) string {
-	return fmt.Sprintf("%T", n)
+	}
 }

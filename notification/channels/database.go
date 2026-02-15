@@ -2,9 +2,12 @@ package channels
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/velocitykode/velocity/notification"
@@ -17,7 +20,8 @@ func init() {
 }
 
 // DatabaseChannel stores notifications in a database table.
-// The table schema is:
+//
+// Expected table schema (create via a migration):
 //
 //	CREATE TABLE notifications (
 //	  id            VARCHAR(36) PRIMARY KEY,
@@ -28,8 +32,11 @@ func init() {
 //	  created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 //	  updated_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 //	);
+//	CREATE INDEX idx_notifications_notifiable ON notifications (notifiable_id);
+//	CREATE INDEX idx_notifications_read_at ON notifications (read_at);
 type DatabaseChannel struct {
-	db *sql.DB
+	db     *sql.DB
+	driver string // "postgres", "mysql", or "sqlite"
 }
 
 // NewDatabaseChannel creates a new database notification channel.
@@ -37,9 +44,13 @@ func NewDatabaseChannel() *DatabaseChannel {
 	return &DatabaseChannel{}
 }
 
-// SetDB sets the database connection used to store notifications.
-func (c *DatabaseChannel) SetDB(db *sql.DB) {
+// SetDB sets the database connection and driver name used to store notifications.
+// The driver name determines placeholder syntax ("postgres" uses $1, others use ?).
+func (c *DatabaseChannel) SetDB(db *sql.DB, driver ...string) {
 	c.db = db
+	if len(driver) > 0 {
+		c.driver = driver[0]
+	}
 }
 
 // Send stores a notification in the database.
@@ -71,12 +82,13 @@ func (c *DatabaseChannel) Send(ctx context.Context, notifiable interface{}, n no
 	}
 
 	now := time.Now().UTC()
-
-	// Use a UUID-like ID based on timestamp and random bytes
 	id := generateNotificationID()
 
-	_, err = c.db.ExecContext(ctx,
-		"INSERT INTO notifications (id, type, notifiable_id, data, read_at, created_at, updated_at) VALUES ($1, $2, $3, $4, NULL, $5, $6)",
+	query := rebind(c.driver,
+		"INSERT INTO notifications (id, type, notifiable_id, data, read_at, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, ?, ?)",
+	)
+
+	_, err = c.db.ExecContext(ctx, query,
 		id, dbMsg.Type, notifiableID, string(dataJSON), now, now,
 	)
 	if err != nil {
@@ -86,7 +98,31 @@ func (c *DatabaseChannel) Send(ctx context.Context, notifiable interface{}, n no
 	return nil
 }
 
-// generateNotificationID generates a simple unique ID for a notification record.
+// generateNotificationID generates a cryptographically random 36-character hex ID.
 func generateNotificationID() string {
-	return fmt.Sprintf("%d", time.Now().UnixNano())
+	b := make([]byte, 18)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback: include timestamp to reduce collision risk
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
+// rebind converts ? placeholders to $1, $2, ... for PostgreSQL.
+// For all other drivers the query is returned unchanged.
+func rebind(driver, query string) string {
+	if driver != "postgres" {
+		return query
+	}
+	var buf strings.Builder
+	idx := 1
+	for i := 0; i < len(query); i++ {
+		if query[i] == '?' {
+			buf.WriteString(fmt.Sprintf("$%d", idx))
+			idx++
+		} else {
+			buf.WriteByte(query[i])
+		}
+	}
+	return buf.String()
 }

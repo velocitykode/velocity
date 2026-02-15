@@ -3,6 +3,7 @@ package channels
 import (
 	"context"
 	"fmt"
+	"html"
 	"strings"
 
 	"github.com/velocitykode/velocity/mail"
@@ -153,26 +154,27 @@ func renderMailText(m *notification.MailMessage) string {
 }
 
 // renderMailHTML renders a simple HTML body from the structured MailMessage fields.
+// All user-supplied content is escaped with html.EscapeString to prevent XSS.
 func renderMailHTML(m *notification.MailMessage) string {
 	var parts []string
 
 	if greeting := m.GetGreeting(); greeting != "" {
-		parts = append(parts, "<h1>"+greeting+"</h1>")
+		parts = append(parts, "<h1>"+html.EscapeString(greeting)+"</h1>")
 	}
 
 	for _, line := range m.GetLines() {
-		parts = append(parts, "<p>"+line+"</p>")
+		parts = append(parts, "<p>"+html.EscapeString(line)+"</p>")
 	}
 
 	if action := m.GetAction(); action != nil {
 		parts = append(parts, fmt.Sprintf(
 			`<p><a href="%s" style="display:inline-block;padding:10px 20px;background:#3490dc;color:#fff;text-decoration:none;border-radius:4px;">%s</a></p>`,
-			action.URL, action.Text,
+			html.EscapeString(action.URL), html.EscapeString(action.Text),
 		))
 	}
 
 	for _, line := range m.GetOutro() {
-		parts = append(parts, "<p>"+line+"</p>")
+		parts = append(parts, "<p>"+html.EscapeString(line)+"</p>")
 	}
 
 	if len(parts) == 0 {

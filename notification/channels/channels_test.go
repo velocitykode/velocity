@@ -289,6 +289,97 @@ func TestRenderMailEmptyMessage(t *testing.T) {
 	}
 }
 
+func TestRenderMailHTMLEscapesContent(t *testing.T) {
+	msg := notification.NewMailMessage().
+		Greeting(`<script>alert("xss")</script>`).
+		Line(`User input: <img src=x onerror=alert(1)>`).
+		Action(`Click "here"`, `https://example.com/a?b=1&c=2`).
+		Outro(`Thanks & goodbye <b>bold</b>`)
+
+	result := renderMailHTML(msg)
+
+	// Greeting should be escaped
+	if strings.Contains(result, "<script>") {
+		t.Error("greeting was not escaped — XSS vulnerability")
+	}
+	if !strings.Contains(result, "&lt;script&gt;") {
+		t.Error("expected escaped script tag in greeting")
+	}
+
+	// Line should be escaped
+	if strings.Contains(result, "<img ") {
+		t.Error("line was not escaped — XSS vulnerability")
+	}
+
+	// Action URL and text should be escaped
+	if strings.Contains(result, `"here"`) {
+		t.Error("action text was not escaped")
+	}
+	if !strings.Contains(result, "&#34;here&#34;") {
+		t.Error("expected escaped quotes in action text")
+	}
+
+	// Outro should be escaped
+	if strings.Contains(result, "<b>bold</b>") {
+		t.Error("outro was not escaped")
+	}
+	if !strings.Contains(result, "&amp; goodbye") {
+		t.Error("expected escaped ampersand in outro")
+	}
+}
+
+func TestRebindPostgres(t *testing.T) {
+	query := "INSERT INTO t (a, b, c) VALUES (?, ?, ?)"
+	result := rebind("postgres", query)
+	expected := "INSERT INTO t (a, b, c) VALUES ($1, $2, $3)"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestRebindMySQL(t *testing.T) {
+	query := "INSERT INTO t (a, b) VALUES (?, ?)"
+	result := rebind("mysql", query)
+	if result != query {
+		t.Errorf("expected unchanged query for mysql, got %q", result)
+	}
+}
+
+func TestRebindSQLite(t *testing.T) {
+	query := "INSERT INTO t (a) VALUES (?)"
+	result := rebind("sqlite", query)
+	if result != query {
+		t.Errorf("expected unchanged query for sqlite, got %q", result)
+	}
+}
+
+func TestRebindEmpty(t *testing.T) {
+	query := "INSERT INTO t (a) VALUES (?)"
+	result := rebind("", query)
+	if result != query {
+		t.Errorf("expected unchanged query for empty driver, got %q", result)
+	}
+}
+
+func TestGenerateNotificationIDUniqueness(t *testing.T) {
+	seen := make(map[string]bool)
+	for i := 0; i < 1000; i++ {
+		id := generateNotificationID()
+		if seen[id] {
+			t.Fatalf("duplicate notification ID generated: %s", id)
+		}
+		seen[id] = true
+	}
+}
+
+func TestGenerateNotificationIDLength(t *testing.T) {
+	id := generateNotificationID()
+	// 18 bytes = 36 hex characters
+	if len(id) != 36 {
+		t.Errorf("expected 36-char hex ID, got %d chars: %s", len(id), id)
+	}
+}
+
 // --- Channel Registration Tests ---
 
 func TestChannelRegistration(t *testing.T) {
