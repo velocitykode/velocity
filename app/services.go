@@ -7,6 +7,7 @@ import (
 	"github.com/velocitykode/velocity/exceptions"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
+	"github.com/velocitykode/velocity/notification"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/scheduler"
@@ -30,9 +31,10 @@ type Services struct {
 	Queue      queue.Driver
 	Storage    *storage.Manager
 	Scheduler  *scheduler.Scheduler
-	Mail       mail.Mailer
-	Exceptions *exceptions.Handler
-	Validator  validation.Validator
+	Mail          mail.Mailer
+	Notification  *notification.Manager
+	Exceptions    *exceptions.Handler
+	Validator     validation.Validator
 
 	// These use `any` to break import cycles (auth/csrf/view import router).
 	// Use typed accessors on velocity.App or router.Context.

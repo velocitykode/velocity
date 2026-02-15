@@ -20,6 +20,8 @@ import (
 	"github.com/velocitykode/velocity/exceptions"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
+	"github.com/velocitykode/velocity/notification"
+	"github.com/velocitykode/velocity/notification/channels"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/router"
@@ -150,17 +152,20 @@ func New(opts ...Option) (*App, error) {
 		}
 	}
 
-	// 13. Create router and inject services
+	// 13. Initialize notification manager
+	a.Notification = initNotification(a.Mail, sqlDB)
+
+	// 14. Create router and inject services
 	a.Router = router.New()
 	a.Router.SetServices(a.Services)
 
-	// 14. Initialize exception handler
+	// 15. Initialize exception handler
 	a.Exceptions = exceptions.NewHandler(
 		exceptions.WithDebug(a.config.Debug),
 		exceptions.WithEnvironment(a.config.Env),
 	)
 
-	// 15. Initialize validator
+	// 16. Initialize validator
 	a.Validator = validation.NewValidator()
 
 	// Wire event dispatchers into service instances
@@ -303,6 +308,9 @@ func wireInstanceEvents(a *App) {
 	}
 	if a.Cache != nil {
 		a.Cache.SetEventDispatcher(dispatch)
+	}
+	if a.Notification != nil {
+		a.Notification.SetEventDispatcher(dispatch)
 	}
 }
 
@@ -452,6 +460,30 @@ func initQueue(config QueueConfig, db *sql.DB) queue.Driver {
 	default:
 		return queue.NewMemoryDriver()
 	}
+}
+
+func initNotification(mailer mail.Mailer, db *sql.DB) *notification.Manager {
+	mgr := notification.NewManager()
+
+	// Wire the mail channel with the framework's mailer
+	if mailer != nil {
+		if ch, err := mgr.Channel("mail"); err == nil {
+			if mc, ok := ch.(*channels.MailChannel); ok {
+				mc.SetMailer(mailer)
+			}
+		}
+	}
+
+	// Wire the database channel with the framework's DB
+	if db != nil {
+		if ch, err := mgr.Channel("database"); err == nil {
+			if dc, ok := ch.(*channels.DatabaseChannel); ok {
+				dc.SetDB(db)
+			}
+		}
+	}
+
+	return mgr
 }
 
 // NewTestApp creates an App with in-memory services suitable for testing.

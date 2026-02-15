@@ -24,6 +24,7 @@ import (
 	"github.com/velocitykode/velocity/exceptions"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
+	"github.com/velocitykode/velocity/notification"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/resource"
@@ -508,6 +509,11 @@ func (c *Context) Storage() *storage.Manager {
 // Mail returns the mailer.
 func (c *Context) Mail() mail.Mailer {
 	return c.mustServices().Mail
+}
+
+// Notification returns the notification manager.
+func (c *Context) Notification() *notification.Manager {
+	return c.mustServices().Notification
 }
 
 // Events returns the event dispatcher.
