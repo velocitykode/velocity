@@ -9,29 +9,29 @@ import (
 // Embed this in concrete drivers to eliminate duplicated Close, Ping, DB,
 // Query, QueryRow, Exec, Begin, BeginTx, CreateTable, and DropTable methods.
 type BaseDriver struct {
-	DB_    *sql.DB
+	db    *sql.DB
 	Config ConnectionConfig
 }
 
 // Close closes the database connection.
 func (b *BaseDriver) Close() error {
-	if b.DB_ != nil {
-		return b.DB_.Close()
+	if b.db != nil {
+		return b.db.Close()
 	}
 	return nil
 }
 
 // Ping verifies the connection to the database.
 func (b *BaseDriver) Ping() error {
-	if b.DB_ == nil {
+	if b.db == nil {
 		return fmt.Errorf("no database connection")
 	}
-	return b.DB_.Ping()
+	return b.db.Ping()
 }
 
 // DB returns the underlying *sql.DB instance.
 func (b *BaseDriver) DB() *sql.DB {
-	return b.DB_
+	return b.db
 }
 
 // Query executes a query that returns rows, with optional query logging.
@@ -39,7 +39,7 @@ func (b *BaseDriver) Query(query string, args ...any) (*sql.Rows, error) {
 	if b.Config.LogQueries {
 		fmt.Printf("SQL: %s\nArgs: [%d params]\n", query, len(args))
 	}
-	return b.DB_.Query(query, args...)
+	return b.db.Query(query, args...)
 }
 
 // QueryRow executes a query that returns at most one row, with optional query logging.
@@ -47,7 +47,7 @@ func (b *BaseDriver) QueryRow(query string, args ...any) *sql.Row {
 	if b.Config.LogQueries {
 		fmt.Printf("SQL: %s\nArgs: [%d params]\n", query, len(args))
 	}
-	return b.DB_.QueryRow(query, args...)
+	return b.db.QueryRow(query, args...)
 }
 
 // Exec executes a query that doesn't return rows, with optional query logging.
@@ -55,17 +55,17 @@ func (b *BaseDriver) Exec(query string, args ...any) (sql.Result, error) {
 	if b.Config.LogQueries {
 		fmt.Printf("SQL: %s\nArgs: [%d params]\n", query, len(args))
 	}
-	return b.DB_.Exec(query, args...)
+	return b.db.Exec(query, args...)
 }
 
 // Begin starts a transaction.
 func (b *BaseDriver) Begin() (*sql.Tx, error) {
-	return b.DB_.Begin()
+	return b.db.Begin()
 }
 
 // BeginTx starts a transaction with options.
 func (b *BaseDriver) BeginTx() (*sql.Tx, error) {
-	return b.DB_.Begin()
+	return b.db.Begin()
 }
 
 // ConfigurePool sets connection pool parameters on the given db.
@@ -102,13 +102,13 @@ func (b *BaseDriver) CreateTableWith(grammar QueryGrammar, name string, definiti
 	definition(table)
 
 	sql := grammar.CompileCreateTable(name, table)
-	_, err := b.DB_.Exec(sql)
+	_, err := b.db.Exec(sql)
 	return err
 }
 
 // DropTableWith drops a table using the provided grammar.
 func (b *BaseDriver) DropTableWith(grammar QueryGrammar, name string) error {
 	sql := grammar.CompileDropTable(name)
-	_, err := b.DB_.Exec(sql)
+	_, err := b.db.Exec(sql)
 	return err
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 )
 
 // SubscriberDispatcher extends the base dispatcher with subscriber support
@@ -240,7 +241,7 @@ func (g *SubscriberGroup) Subscribe(dispatcher Dispatcher) {
 type QueuedMethodListener struct {
 	methodListener
 	queueName string
-	delay     int
+	delay     time.Duration
 	tries     int
 }
 
@@ -257,8 +258,8 @@ func (l *QueuedMethodListener) OnQueue() string {
 	return l.queueName
 }
 
-// WithDelay returns the delay in seconds
-func (l *QueuedMethodListener) WithDelay() int {
+// WithDelay returns the delay before processing
+func (l *QueuedMethodListener) WithDelay() time.Duration {
 	return l.delay
 }
 

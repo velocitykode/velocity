@@ -578,31 +578,6 @@ func (r *VelocityRouterV2) buildPath(path string) string {
 	return path
 }
 
-// NewContextV2 creates a new Context using the new param storage.
-// Inherits services from r.Context() if present.
-func NewContextV2(w http.ResponseWriter, r *http.Request) *Context {
-	var svc *app.Services
-	if s, ok := r.Context().Value(servicesCtxKey{}).(*app.Services); ok {
-		svc = s
-	}
-	// Convert map params from request context to []RouteParam
-	mapParams := GetParams(r)
-	var params []RouteParam
-	if len(mapParams) > 0 {
-		params = make([]RouteParam, 0, len(mapParams))
-		for k, v := range mapParams {
-			params = append(params, RouteParam{Key: k, Value: v})
-		}
-	}
-	return &Context{
-		Response: w,
-		Request:  r,
-		params:   params,
-		values:   make(map[string]interface{}),
-		services: svc,
-	}
-}
-
 // routeConfigV2 implements RouteConfig for the V2 router
 type routeConfigV2 struct {
 	route  *RouteDefinition

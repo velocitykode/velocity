@@ -20,7 +20,7 @@ func (m *mockQueueDispatcher) Push(event interface{}, listener Listener, delay t
 	return nil
 }
 
-func TestCamelToSnake(t *testing.T) {
+func TestCamelToDot(t *testing.T) {
 	tests := []struct {
 		input    string
 		expected string
@@ -36,9 +36,9 @@ func TestCamelToSnake(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		result := camelToSnake(test.input)
+		result := camelToDot(test.input)
 		if result != test.expected {
-			t.Errorf("camelToSnake(%s) = %s, expected %s", test.input, result, test.expected)
+			t.Errorf("camelToDot(%s) = %s, expected %s", test.input, result, test.expected)
 		}
 	}
 }

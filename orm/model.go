@@ -116,7 +116,7 @@ func (Model[T]) First() (*T, error) {
 	return &model, nil
 }
 
-// Last retrieves the last record
+// Last retrieves the last record (by id descending)
 func (Model[T]) Last() (*T, error) {
 	var model T
 	query := newQuery[T]()
@@ -169,8 +169,8 @@ func (Model[T]) With(relations ...string) *Query[T] {
 	return query.With(relations...)
 }
 
-// Create inserts a new record or multiple records.
-// Requires a *Manager — use orm.Save(manager, model) directly.
+// Create inserts a new record.
+// Accepts a map[string]any or a *T. Requires a *Manager — use orm.Save(manager, model) directly.
 func (Model[T]) Create(data any) (*T, error) {
 	switch v := data.(type) {
 	case map[string]any:
@@ -417,7 +417,8 @@ func (UUIDModel[T]) With(relations ...string) *Query[T] {
 	return query.With(relations...)
 }
 
-// Create inserts a new record or multiple records
+// Create inserts a new record.
+// Accepts a map[string]any or a *T.
 func (UUIDModel[T]) Create(data any) (*T, error) {
 	switch v := data.(type) {
 	case map[string]any:
@@ -610,7 +611,7 @@ func (SoftDeleteModel[T]) First() (*T, error) {
 	return &model, nil
 }
 
-// Last retrieves the last record
+// Last retrieves the last record (by id descending)
 func (SoftDeleteModel[T]) Last() (*T, error) {
 	var model T
 	query := newQuery[T]()

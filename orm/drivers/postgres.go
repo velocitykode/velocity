@@ -72,7 +72,7 @@ func (d *PostgresDriver) Connect(config ConnectionConfig) error {
 	}
 
 	d.ConfigurePool(db)
-	d.DB_ = db
+	d.db = db
 	return nil
 }
 
@@ -80,7 +80,7 @@ func (d *PostgresDriver) Connect(config ConnectionConfig) error {
 func (d *PostgresDriver) HasTable(name string) bool {
 	sql := d.Grammar().CompileHasTable(name)
 	var exists bool
-	err := d.DB_.QueryRow(sql, name).Scan(&exists)
+	err := d.db.QueryRow(sql, name).Scan(&exists)
 	return err == nil && exists
 }
 
@@ -88,7 +88,7 @@ func (d *PostgresDriver) HasTable(name string) bool {
 func (d *PostgresDriver) HasColumn(table, column string) bool {
 	sql := d.Grammar().CompileHasColumn(table, column)
 	var count int
-	err := d.DB_.QueryRow(sql, table, column).Scan(&count)
+	err := d.db.QueryRow(sql, table, column).Scan(&count)
 	return err == nil && count > 0
 }
 

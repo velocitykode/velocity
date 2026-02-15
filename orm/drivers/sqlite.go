@@ -95,7 +95,7 @@ func (d *SQLiteDriver) Connect(config ConnectionConfig) error {
 		}
 	}
 
-	d.DB_ = db
+	d.db = db
 	return nil
 }
 
@@ -103,14 +103,14 @@ func (d *SQLiteDriver) Connect(config ConnectionConfig) error {
 func (d *SQLiteDriver) HasTable(name string) bool {
 	sql := d.Grammar().CompileHasTable(name)
 	var count int
-	err := d.DB_.QueryRow(sql, name).Scan(&count)
+	err := d.db.QueryRow(sql, name).Scan(&count)
 	return err == nil && count > 0
 }
 
 // HasColumn checks if a column exists in a table
 func (d *SQLiteDriver) HasColumn(table, column string) bool {
 	sql := d.Grammar().CompileHasColumn(table, column)
-	rows, err := d.DB_.Query(sql, table)
+	rows, err := d.db.Query(sql, table)
 	if err != nil {
 		return false
 	}

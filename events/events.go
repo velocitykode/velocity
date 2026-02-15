@@ -118,37 +118,38 @@ type Observable interface {
 	GetObservers() []Observer
 }
 
-// Observer handles model lifecycle events
+// Observer handles model lifecycle events.
+// All methods return error for consistency with ModelObserver.
 type Observer interface {
 	// Creating is called before a model is created
 	Creating(model interface{}) error
 
 	// Created is called after a model is created
-	Created(model interface{})
+	Created(model interface{}) error
 
 	// Updating is called before a model is updated
 	Updating(model interface{}) error
 
 	// Updated is called after a model is updated
-	Updated(model interface{})
+	Updated(model interface{}) error
 
 	// Saving is called before a model is saved
 	Saving(model interface{}) error
 
 	// Saved is called after a model is saved
-	Saved(model interface{})
+	Saved(model interface{}) error
 
 	// Deleting is called before a model is deleted
 	Deleting(model interface{}) error
 
 	// Deleted is called after a model is deleted
-	Deleted(model interface{})
+	Deleted(model interface{}) error
 
 	// Restoring is called before a soft-deleted model is restored
 	Restoring(model interface{}) error
 
 	// Restored is called after a soft-deleted model is restored
-	Restored(model interface{})
+	Restored(model interface{}) error
 }
 
 // BaseEvent provides a base implementation of Event

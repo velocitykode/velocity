@@ -274,7 +274,10 @@ func (f *FakeDispatcher) executeListeners(event interface{}) error {
 	return nil
 }
 
-// getEventName extracts the event name from various types.
+// getEventName extracts the event name without camelToDot conversion.
+// FakeDispatcher preserves raw type names for non-Event/non-string types
+// (e.g., "NamedType" stays as "NamedType"), unlike DefaultDispatcher
+// which converts to dot notation (e.g., "named.type").
 func (f *FakeDispatcher) getEventName(event interface{}) string {
-	return resolveEventName(event)
+	return resolveEventNameRaw(event)
 }

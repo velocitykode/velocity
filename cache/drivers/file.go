@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"sync"
@@ -17,6 +16,7 @@ type FileStore struct {
 	mu     sync.RWMutex
 	path   string
 	prefix string
+	done   chan struct{}
 }
 
 // fileCacheItem represents a cached item stored in file
@@ -39,6 +39,7 @@ func NewFileStore(prefix, path string) (*FileStore, error) {
 	store := &FileStore{
 		path:   path,
 		prefix: prefix,
+		done:   make(chan struct{}),
 	}
 
 	// Start cleanup goroutine
@@ -47,37 +48,49 @@ func NewFileStore(prefix, path string) (*FileStore, error) {
 	return store, nil
 }
 
-// cleanupExpired removes expired cache files periodically
+// Close stops the background cleanup goroutine.
+func (s *FileStore) Close() error {
+	close(s.done)
+	return nil
+}
+
+// cleanupExpired removes expired cache files periodically.
+// It stops when the done channel is closed via Close().
 func (s *FileStore) cleanupExpired() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		s.mu.Lock()
-		filepath.Walk(s.path, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() {
+	for {
+		select {
+		case <-s.done:
+			return
+		case <-ticker.C:
+			s.mu.Lock()
+			filepath.Walk(s.path, func(path string, info os.FileInfo, err error) error {
+				if err != nil || info.IsDir() {
+					return nil
+				}
+
+				// Read file to check expiration
+				data, err := os.ReadFile(path)
+				if err != nil {
+					return nil
+				}
+
+				var item fileCacheItem
+				if err := json.Unmarshal(data, &item); err != nil {
+					return nil
+				}
+
+				// Remove if expired
+				if item.Expiration != nil && time.Now().After(*item.Expiration) {
+					os.Remove(path)
+				}
+
 				return nil
-			}
-
-			// Read file to check expiration
-			data, err := ioutil.ReadFile(path)
-			if err != nil {
-				return nil
-			}
-
-			var item fileCacheItem
-			if err := json.Unmarshal(data, &item); err != nil {
-				return nil
-			}
-
-			// Remove if expired
-			if item.Expiration != nil && time.Now().After(*item.Expiration) {
-				os.Remove(path)
-			}
-
-			return nil
-		})
-		s.mu.Unlock()
+			})
+			s.mu.Unlock()
+		}
 	}
 }
 
@@ -106,7 +119,7 @@ func (s *FileStore) Get(key string) (interface{}, bool) {
 	defer s.mu.RUnlock()
 
 	path := s.getCacheFilePath(key)
-	data, err := ioutil.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, false
 	}
@@ -161,7 +174,7 @@ func (s *FileStore) Put(key string, value interface{}, ttl time.Duration) error 
 
 	// Write to file
 	path := s.getCacheFilePath(key)
-	if err := ioutil.WriteFile(path, data, 0600); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write cache file: %w", err)
 	}
 
@@ -192,7 +205,7 @@ func (s *FileStore) Forever(key string, value interface{}) error {
 
 	// Write to file
 	path := s.getCacheFilePath(key)
-	if err := ioutil.WriteFile(path, data, 0600); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write cache file: %w", err)
 	}
 
@@ -239,7 +252,7 @@ func (s *FileStore) Increment(key string, value int64) (int64, error) {
 
 	// Try to get current value
 	path := s.getCacheFilePath(key)
-	if data, err := ioutil.ReadFile(path); err == nil {
+	if data, err := os.ReadFile(path); err == nil {
 		var item fileCacheItem
 		if err := json.Unmarshal(data, &item); err == nil {
 			// Check expiration
@@ -279,7 +292,7 @@ func (s *FileStore) Increment(key string, value int64) (int64, error) {
 		return 0, err
 	}
 
-	if err := ioutil.WriteFile(path, data, 0600); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		return 0, err
 	}
 

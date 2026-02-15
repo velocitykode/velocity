@@ -66,7 +66,7 @@ func (d *MySQLDriver) Connect(config ConnectionConfig) error {
 	}
 
 	d.ConfigurePool(db)
-	d.DB_ = db
+	d.db = db
 	return nil
 }
 
@@ -74,7 +74,7 @@ func (d *MySQLDriver) Connect(config ConnectionConfig) error {
 func (d *MySQLDriver) HasTable(name string) bool {
 	sql := d.Grammar().CompileHasTable(name)
 	var tableName string
-	err := d.DB_.QueryRow(sql, name).Scan(&tableName)
+	err := d.db.QueryRow(sql, name).Scan(&tableName)
 	return err == nil && tableName == name
 }
 
@@ -82,7 +82,7 @@ func (d *MySQLDriver) HasTable(name string) bool {
 func (d *MySQLDriver) HasColumn(table, column string) bool {
 	sql := d.Grammar().CompileHasColumn(table, column)
 	var count int
-	err := d.DB_.QueryRow(sql, d.Config.Database, table, column).Scan(&count)
+	err := d.db.QueryRow(sql, d.Config.Database, table, column).Scan(&count)
 	return err == nil && count > 0
 }
 

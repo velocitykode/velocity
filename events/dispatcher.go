@@ -355,7 +355,3 @@ func (d *DefaultDispatcher) processListener(event interface{}, listener Listener
 	return listener.Handle(event)
 }
 
-// camelToSnake is kept as an alias for backward compatibility.
-func camelToSnake(s string) string {
-	return camelToDot(s)
-}
