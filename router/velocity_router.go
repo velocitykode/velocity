@@ -19,7 +19,7 @@ type compiledRouteMap = map[string]*MatchResult
 // VelocityRouterV2 is the tree-based router implementation
 // This replaces gorilla/mux with a custom radix tree
 type VelocityRouterV2 struct {
-	tree          *Tree
+	tree          atomic.Pointer[Tree]
 	prefix        string
 	middlewares   []MiddlewareFunc
 	namedRoutes   map[string]*MatchResult
@@ -58,10 +58,10 @@ type VelocityRouterV2 struct {
 // NewV2 creates a new tree-based router instance
 func NewV2() *VelocityRouterV2 {
 	r := &VelocityRouterV2{
-		tree:        NewTree(),
 		namedRoutes: make(map[string]*MatchResult),
 		rootGroup:   NewGroupDefinition("", nil),
 	}
+	r.tree.Store(NewTree())
 	r.ctxPool.New = func() interface{} {
 		return &Context{
 			params: make([]RouteParam, 0, 8),
@@ -318,8 +318,10 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Match route — try compiled static routes first (O(1)), then fall back to tree.
-	// compiledRoutes is read via atomic load so no lock is needed on the hot path.
+	// Both compiledRoutes and tree are read via atomic load so no lock is needed
+	// on the hot path, and ClearRoutes can swap them safely mid-flight.
 	path := req.URL.Path
+	tree := r.tree.Load()
 	var result *MatchResult
 	if compiled := r.compiledRoutes.Load(); compiled != nil {
 		result = (*compiled)[req.Method+" "+path]
@@ -328,10 +330,10 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	if result == nil {
-		result = r.tree.Match(req.Method, path)
+		result = tree.Match(req.Method, path)
 	}
 	if result == nil {
-		result = r.tree.Match("ANY", path)
+		result = tree.Match("ANY", path)
 	}
 
 	if result == nil {
@@ -557,7 +559,8 @@ func (r *VelocityRouterV2) commitOnce() {
 	}
 
 	// Commit root group with global middleware
-	r.rootGroup.CommitToTree(r.tree, r.middlewares)
+	tree := r.tree.Load()
+	r.rootGroup.CommitToTree(tree, r.middlewares)
 
 	// Register resource routes with global middleware
 	for _, res := range r.resources {
@@ -565,10 +568,10 @@ func (r *VelocityRouterV2) commitOnce() {
 	}
 
 	// Copy named routes from tree to router for URL generation
-	r.namedRoutes = r.tree.namedRoutes
+	r.namedRoutes = tree.namedRoutes
 
 	// Compile static routes for O(1) lookup
-	compiled := r.tree.CompileStaticRoutes()
+	compiled := tree.CompileStaticRoutes()
 	r.compiledRoutes.Store(&compiled)
 
 	r.committed = true
@@ -586,7 +589,7 @@ func (r *VelocityRouterV2) ClearCompiledRoutes() {
 func (r *VelocityRouterV2) ClearRoutes() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.tree = NewTree()
+	r.tree.Store(NewTree())
 	r.namedRoutes = make(map[string]*MatchResult)
 	r.rootGroup = NewGroupDefinition("", nil)
 	r.resources = nil

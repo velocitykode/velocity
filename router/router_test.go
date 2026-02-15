@@ -14,7 +14,7 @@ func TestNew(t *testing.T) {
 	if r == nil {
 		t.Fatal("New() returned nil")
 	}
-	if r.tree == nil {
+	if r.tree.Load() == nil {
 		t.Fatal("New() router has nil tree")
 	}
 	if r.namedRoutes == nil {

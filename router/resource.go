@@ -66,7 +66,7 @@ func registerResourceRoutes(router *VelocityRouterV2, basePath string, controlle
 		fullPath := basePath + config.PathSuffix
 
 		// Register directly to tree
-		router.tree.Insert(config.HttpMethod, fullPath, finalHandler)
+		router.tree.Load().Insert(config.HttpMethod, fullPath, finalHandler)
 	}
 }
 
