@@ -392,6 +392,43 @@ func TestBuild(t *testing.T) {
 	}
 }
 
+func TestBuildMultiStage(t *testing.T) {
+	var order []string
+
+	a := Pipe[string](func(s string, next func(string) error) error {
+		order = append(order, "a")
+		return next(s)
+	})
+	b := Pipe[string](func(s string, next func(string) error) error {
+		order = append(order, "b")
+		return next(s)
+	})
+	c := Pipe[string](func(s string, next func(string) error) error {
+		order = append(order, "c")
+		return next(s)
+	})
+
+	compiled := New[string]().
+		Through(a, b, c).
+		Build(func(s string) error {
+			order = append(order, "dest:"+s)
+			return nil
+		})
+
+	// Invoke multiple times — chain must be stable across calls
+	for i := 0; i < 3; i++ {
+		order = nil
+		if err := compiled("run"); err != nil {
+			t.Fatalf("call %d: unexpected error: %v", i, err)
+		}
+		got := strings.Join(order, ",")
+		want := "a,b,c,dest:run"
+		if got != want {
+			t.Errorf("call %d: order = %q, want %q", i, got, want)
+		}
+	}
+}
+
 func TestBuildEmpty(t *testing.T) {
 	called := false
 	compiled := New[string]().Build(func(s string) error {

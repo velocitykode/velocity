@@ -49,6 +49,8 @@ func (p *Pipeline[T]) Add(stages ...Stage[T]) *Pipeline[T] {
 // Build compiles the pipeline into a single callable without executing it.
 // Use this to pre-compile a pipeline once and invoke it many times,
 // avoiding per-call chain construction overhead.
+// The passable set via Send is not used; the returned function accepts
+// its own argument.
 func (p *Pipeline[T]) Build(destination func(T) error) func(T) error {
 	h := destination
 	for i := len(p.pipes) - 1; i >= 0; i-- {

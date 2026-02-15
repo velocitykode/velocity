@@ -47,4 +47,12 @@
 //	    Then(func(o *Order) error {
 //	        return save(o)
 //	    })
+//
+// Pre-compiled pipeline (zero allocation per call):
+//
+//	compiled := pipeline.New[*Request]().
+//	    Through(&Auth{}, &RateLimit{}, &Logger{}).
+//	    Build(handler)
+//
+//	compiled(req) // invoke many times with no overhead
 package pipeline
