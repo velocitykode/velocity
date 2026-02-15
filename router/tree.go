@@ -290,7 +290,6 @@ func buildParams(segments []Segment, values []string) map[string]string {
 	return params
 }
 
-
 // CompileStaticRoutes builds a flat map of all fully static routes for O(1) lookup.
 // Only routes with no param, regex, or wildcard segments are included.
 func (t *Tree) CompileStaticRoutes() map[string]*MatchResult {
