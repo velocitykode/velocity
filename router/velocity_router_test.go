@@ -1298,6 +1298,326 @@ func TestContext_ParamSlice(t *testing.T) {
 	})
 }
 
+func TestVelocityRouterV2_CompiledRoutes(t *testing.T) {
+	t.Run("static routes are compiled after first request", func(t *testing.T) {
+		router := NewV2()
+		router.Get("/users", func(c *Context) error {
+			return c.String(http.StatusOK, "users")
+		})
+		router.Get("/posts", func(c *Context) error {
+			return c.String(http.StatusOK, "posts")
+		})
+
+		// Before first request, compiled routes should be nil
+		if router.compiledRoutes != nil {
+			t.Error("compiled routes should be nil before first request")
+		}
+
+		req := httptest.NewRequest("GET", "/users", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		// After first request, compiled routes should be populated
+		if router.compiledRoutes == nil {
+			t.Fatal("compiled routes should be populated after first request")
+		}
+
+		if _, ok := router.compiledRoutes["GET /users"]; !ok {
+			t.Error("compiled routes should contain GET /users")
+		}
+		if _, ok := router.compiledRoutes["GET /posts"]; !ok {
+			t.Error("compiled routes should contain GET /posts")
+		}
+	})
+
+	t.Run("compiled routes serve correct handlers", func(t *testing.T) {
+		router := NewV2()
+		router.Get("/health", func(c *Context) error {
+			return c.String(http.StatusOK, "ok")
+		})
+		router.Post("/submit", func(c *Context) error {
+			return c.String(http.StatusOK, "submitted")
+		})
+
+		// First request compiles routes
+		req := httptest.NewRequest("GET", "/health", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK || w.Body.String() != "ok" {
+			t.Errorf("expected 200/ok, got %d/%s", w.Code, w.Body.String())
+		}
+
+		// Second request should use compiled route
+		req = httptest.NewRequest("POST", "/submit", nil)
+		w = httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK || w.Body.String() != "submitted" {
+			t.Errorf("expected 200/submitted, got %d/%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("parameterized routes are not compiled", func(t *testing.T) {
+		router := NewV2()
+		router.Get("/users/{id}", func(c *Context) error {
+			return c.String(http.StatusOK, c.Param("id"))
+		})
+		router.Get("/static-route", func(c *Context) error {
+			return c.String(http.StatusOK, "static")
+		})
+
+		// Trigger compilation
+		req := httptest.NewRequest("GET", "/static-route", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		// Static route should be compiled
+		if _, ok := router.compiledRoutes["GET /static-route"]; !ok {
+			t.Error("static route should be compiled")
+		}
+
+		// Parameterized route should NOT be in compiled map
+		for key := range router.compiledRoutes {
+			if strings.Contains(key, "{id}") {
+				t.Error("parameterized route should not be compiled")
+			}
+		}
+
+		// But parameterized route should still work via tree
+		req = httptest.NewRequest("GET", "/users/42", nil)
+		w = httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK || w.Body.String() != "42" {
+			t.Errorf("expected 200/42, got %d/%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("grouped static routes are compiled", func(t *testing.T) {
+		router := NewV2()
+		router.Group("/api", func(api Router) {
+			api.Group("/v1", func(v1 Router) {
+				v1.Get("/status", func(c *Context) error {
+					return c.String(http.StatusOK, "ok")
+				})
+			})
+		})
+
+		// Trigger compilation
+		req := httptest.NewRequest("GET", "/api/v1/status", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if _, ok := router.compiledRoutes["GET /api/v1/status"]; !ok {
+			t.Error("grouped static route should be compiled")
+		}
+	})
+
+	t.Run("ANY routes are compiled and served", func(t *testing.T) {
+		router := NewV2()
+		router.Any("/ping", func(c *Context) error {
+			return c.String(http.StatusOK, "pong")
+		})
+
+		// Trigger compilation
+		req := httptest.NewRequest("GET", "/ping", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if _, ok := router.compiledRoutes["ANY /ping"]; !ok {
+			t.Error("ANY route should be compiled")
+		}
+
+		// Subsequent request with different method should also work
+		req = httptest.NewRequest("POST", "/ping", nil)
+		w = httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK || w.Body.String() != "pong" {
+			t.Errorf("expected 200/pong via compiled ANY, got %d/%s", w.Code, w.Body.String())
+		}
+	})
+}
+
+func TestVelocityRouterV2_ClearCompiledRoutes(t *testing.T) {
+	t.Run("clears compiled cache", func(t *testing.T) {
+		router := NewV2()
+		router.Get("/test", func(c *Context) error {
+			return c.String(http.StatusOK, "ok")
+		})
+
+		// Trigger compilation
+		req := httptest.NewRequest("GET", "/test", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if router.compiledRoutes == nil {
+			t.Fatal("compiled routes should exist")
+		}
+
+		// Clear compiled routes
+		router.ClearCompiledRoutes()
+
+		if router.compiledRoutes != nil {
+			t.Error("compiled routes should be nil after clear")
+		}
+
+		// Route should still work (falls back to tree, then recompiled on next commitOnce)
+		req = httptest.NewRequest("GET", "/test", nil)
+		w = httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK || w.Body.String() != "ok" {
+			t.Errorf("expected 200/ok after clear, got %d/%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("does not affect route definitions", func(t *testing.T) {
+		router := NewV2()
+		router.Get("/a", func(c *Context) error { return c.String(http.StatusOK, "a") })
+		router.Get("/b", func(c *Context) error { return c.String(http.StatusOK, "b") })
+
+		// Trigger compilation
+		req := httptest.NewRequest("GET", "/a", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		router.ClearCompiledRoutes()
+
+		// Both routes should still work via tree
+		for _, path := range []string{"/a", "/b"} {
+			req = httptest.NewRequest("GET", path, nil)
+			w = httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Errorf("GET %s: expected 200, got %d", path, w.Code)
+			}
+		}
+	})
+}
+
+func TestVelocityRouterV2_ClearRoutes(t *testing.T) {
+	t.Run("full reset allows re-registration", func(t *testing.T) {
+		router := NewV2()
+		router.Get("/old", func(c *Context) error {
+			return c.String(http.StatusOK, "old")
+		})
+
+		// Trigger compilation
+		req := httptest.NewRequest("GET", "/old", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 for /old, got %d", w.Code)
+		}
+
+		// Full reset
+		router.ClearRoutes()
+
+		if router.frozen {
+			t.Error("router should not be frozen after ClearRoutes")
+		}
+		if router.committed {
+			t.Error("router should not be committed after ClearRoutes")
+		}
+		if router.compiledRoutes != nil {
+			t.Error("compiled routes should be nil after ClearRoutes")
+		}
+
+		// Register new routes
+		router.Get("/new", func(c *Context) error {
+			return c.String(http.StatusOK, "new")
+		})
+
+		// Old route should 404
+		req = httptest.NewRequest("GET", "/old", nil)
+		w = httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusNotFound {
+			t.Errorf("expected 404 for /old after clear, got %d", w.Code)
+		}
+
+		// New route should work
+		req = httptest.NewRequest("GET", "/new", nil)
+		w = httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK || w.Body.String() != "new" {
+			t.Errorf("expected 200/new, got %d/%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("clears named routes", func(t *testing.T) {
+		router := NewV2()
+		router.Get("/users/{id}", func(c *Context) error { return nil }).Name("users.show")
+
+		// Trigger compilation
+		req := httptest.NewRequest("GET", "/users/1", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if len(router.namedRoutes) == 0 {
+			t.Fatal("expected named routes to be populated")
+		}
+
+		router.ClearRoutes()
+
+		if len(router.namedRoutes) != 0 {
+			t.Error("expected named routes to be empty after ClearRoutes")
+		}
+	})
+
+	t.Run("group ClearRoutes delegates to router", func(t *testing.T) {
+		router := NewV2()
+		var group Router
+
+		router.Get("/root", func(c *Context) error { return nil })
+		group = router.Group("/api", func(api Router) {
+			api.Get("/test", func(c *Context) error { return nil })
+		})
+
+		// Trigger compilation
+		req := httptest.NewRequest("GET", "/root", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		// Clear via group
+		group.ClearRoutes()
+
+		if router.committed {
+			t.Error("router should not be committed after group ClearRoutes")
+		}
+	})
+
+	t.Run("group ClearCompiledRoutes delegates to router", func(t *testing.T) {
+		router := NewV2()
+		var group Router
+
+		group = router.Group("/api", func(api Router) {
+			api.Get("/test", func(c *Context) error { return nil })
+		})
+
+		// Trigger compilation
+		req := httptest.NewRequest("GET", "/api/test", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if router.compiledRoutes == nil {
+			t.Fatal("compiled routes should exist")
+		}
+
+		// Clear compiled via group
+		group.ClearCompiledRoutes()
+
+		if router.compiledRoutes != nil {
+			t.Error("compiled routes should be nil after group ClearCompiledRoutes")
+		}
+	})
+}
+
 func TestContext_TrustedProxyIP(t *testing.T) {
 	t.Run("returns remote addr when no trusted proxies", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/test", nil)

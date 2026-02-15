@@ -24,6 +24,9 @@ type VelocityRouterV2 struct {
 	staticFS      http.Handler
 	staticEnabled bool
 
+	// Compiled static routes for O(1) lookup (key: "METHOD /path")
+	compiledRoutes map[string]*MatchResult
+
 	// Deferred registration support
 	rootGroup *GroupDefinition
 	resources []*resourceWrapperV2
@@ -309,11 +312,20 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// 404 from static — fall through to route matching
 	}
 
-	// Match route
-	result := r.tree.Match(req.Method, req.URL.Path)
+	// Match route — try compiled static routes first (O(1)), then fall back to tree
+	path := req.URL.Path
+	var result *MatchResult
+	if r.compiledRoutes != nil {
+		result = r.compiledRoutes[req.Method+" "+path]
+		if result == nil {
+			result = r.compiledRoutes["ANY "+path]
+		}
+	}
 	if result == nil {
-		// Try ANY method
-		result = r.tree.Match("ANY", req.URL.Path)
+		result = r.tree.Match(req.Method, path)
+	}
+	if result == nil {
+		result = r.tree.Match("ANY", path)
 	}
 
 	if result == nil {
@@ -549,8 +561,33 @@ func (r *VelocityRouterV2) commitOnce() {
 	// Copy named routes from tree to router for URL generation
 	r.namedRoutes = r.tree.namedRoutes
 
+	// Compile static routes for O(1) lookup
+	r.compiledRoutes = r.tree.CompileStaticRoutes()
+
 	r.committed = true
 	r.frozen = true
+}
+
+// ClearCompiledRoutes clears the compiled route cache.
+// Routes will be re-compiled from the tree on the next request.
+func (r *VelocityRouterV2) ClearCompiledRoutes() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.compiledRoutes = nil
+}
+
+// ClearRoutes fully resets the router — tree, compiled cache, groups, and resources.
+// After calling this, new routes can be registered and will be committed on the next request.
+func (r *VelocityRouterV2) ClearRoutes() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tree = NewTree()
+	r.namedRoutes = make(map[string]*MatchResult)
+	r.rootGroup = NewGroupDefinition("", nil)
+	r.resources = nil
+	r.compiledRoutes = nil
+	r.committed = false
+	r.frozen = false
 }
 
 // buildPath constructs the full path including any prefix
@@ -684,6 +721,14 @@ func (g *groupRouterV2) Resource(path string, controller interface{}) ResourceRo
 	// Add to router's resources for deferred registration
 	g.router.resources = append(g.router.resources, rr)
 	return rr
+}
+
+func (g *groupRouterV2) ClearCompiledRoutes() {
+	g.router.ClearCompiledRoutes()
+}
+
+func (g *groupRouterV2) ClearRoutes() {
+	g.router.ClearRoutes()
 }
 
 func (g *groupRouterV2) ServeHTTP(w http.ResponseWriter, r *http.Request) {

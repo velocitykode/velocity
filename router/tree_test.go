@@ -628,6 +628,124 @@ func TestTree_NamedRouteLookup(t *testing.T) {
 	})
 }
 
+func TestTree_CompileStaticRoutes(t *testing.T) {
+	t.Run("compiles only static routes", func(t *testing.T) {
+		tree := NewTree()
+		tree.Insert("GET", "/users", dummyHandler)
+		tree.Insert("POST", "/users", dummyHandler)
+		tree.Insert("GET", "/users/{id}", dummyHandler)
+		tree.Insert("GET", "/health", dummyHandler)
+
+		compiled := tree.CompileStaticRoutes()
+
+		if _, ok := compiled["GET /users"]; !ok {
+			t.Error("expected GET /users in compiled routes")
+		}
+		if _, ok := compiled["POST /users"]; !ok {
+			t.Error("expected POST /users in compiled routes")
+		}
+		if _, ok := compiled["GET /health"]; !ok {
+			t.Error("expected GET /health in compiled routes")
+		}
+
+		// Parameterized route should NOT be compiled
+		for key := range compiled {
+			if key == "GET /users/{id}" {
+				t.Error("parameterized route should not be compiled")
+			}
+		}
+	})
+
+	t.Run("compiles nested static routes", func(t *testing.T) {
+		tree := NewTree()
+		tree.Insert("GET", "/api/v1/status", dummyHandler)
+		tree.Insert("GET", "/api/v1/health", dummyHandler)
+
+		compiled := tree.CompileStaticRoutes()
+
+		if _, ok := compiled["GET /api/v1/status"]; !ok {
+			t.Error("expected GET /api/v1/status in compiled routes")
+		}
+		if _, ok := compiled["GET /api/v1/health"]; !ok {
+			t.Error("expected GET /api/v1/health in compiled routes")
+		}
+	})
+
+	t.Run("compiles root path", func(t *testing.T) {
+		tree := NewTree()
+		tree.Insert("GET", "/", dummyHandler)
+
+		compiled := tree.CompileStaticRoutes()
+
+		if _, ok := compiled["GET /"]; !ok {
+			t.Error("expected GET / in compiled routes")
+		}
+	})
+
+	t.Run("does not compile wildcard routes", func(t *testing.T) {
+		tree := NewTree()
+		tree.Insert("GET", "/files/{path:.*}", dummyHandler)
+		tree.Insert("GET", "/static", dummyHandler)
+
+		compiled := tree.CompileStaticRoutes()
+
+		if len(compiled) != 1 {
+			t.Errorf("expected 1 compiled route, got %d", len(compiled))
+		}
+		if _, ok := compiled["GET /static"]; !ok {
+			t.Error("expected GET /static in compiled routes")
+		}
+	})
+
+	t.Run("does not compile regex routes", func(t *testing.T) {
+		tree := NewTree()
+		tree.Insert("GET", "/users/{id:[0-9]+}", dummyHandler)
+		tree.Insert("GET", "/about", dummyHandler)
+
+		compiled := tree.CompileStaticRoutes()
+
+		if len(compiled) != 1 {
+			t.Errorf("expected 1 compiled route, got %d", len(compiled))
+		}
+		if _, ok := compiled["GET /about"]; !ok {
+			t.Error("expected GET /about in compiled routes")
+		}
+	})
+
+	t.Run("empty tree compiles to empty map", func(t *testing.T) {
+		tree := NewTree()
+
+		compiled := tree.CompileStaticRoutes()
+
+		if len(compiled) != 0 {
+			t.Errorf("expected 0 compiled routes, got %d", len(compiled))
+		}
+	})
+
+	t.Run("compiled handlers match tree handlers", func(t *testing.T) {
+		tree := NewTree()
+
+		var handlerA HandlerFunc = func(c *Context) error {
+			c.String(http.StatusOK, "a")
+			return nil
+		}
+		tree.InsertWithName("GET", "/test", handlerA, "test.route")
+
+		compiled := tree.CompileStaticRoutes()
+		result := compiled["GET /test"]
+
+		if result == nil {
+			t.Fatal("expected compiled result")
+		}
+		if result.Name != "test.route" {
+			t.Errorf("expected name=test.route, got %q", result.Name)
+		}
+		if result.Path != "/test" {
+			t.Errorf("expected path=/test, got %q", result.Path)
+		}
+	})
+}
+
 func TestTree_InsertErrors(t *testing.T) {
 	t.Run("returns error for invalid regex", func(t *testing.T) {
 		tree := NewTree()

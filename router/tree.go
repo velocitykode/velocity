@@ -151,22 +151,25 @@ func (t *Tree) Match(method, path string) *MatchResult {
 	}
 
 	parts := strings.Split(path, "/")
-	// Remove empty parts (from trailing slash)
-	cleanParts := make([]string, 0, len(parts))
+	// Remove empty parts (from trailing slash) — reuse the same slice
+	n := 0
 	for _, p := range parts {
 		if p != "" {
-			cleanParts = append(cleanParts, p)
+			parts[n] = p
+			n++
 		}
 	}
+	parts = parts[:n]
 
-	// Store matched values in order (will be mapped to param names at the end)
-	matchedValues := make([]string, 0)
+	// Pre-allocate matched values buffer with typical capacity
+	matchedValues := make([]string, 0, 4)
 
-	return t.root.match(cleanParts, method, matchedValues)
+	return t.root.match(parts, method, matchedValues)
 }
 
-// match recursively matches path parts against the tree
-// matchedValues collects parameter values in the order they appear
+// match recursively matches path parts against the tree.
+// matchedValues collects parameter values in the order they appear.
+// depth tracks the current param depth to allow slice reuse on backtrack.
 func (n *Node) match(parts []string, method string, matchedValues []string) *MatchResult {
 	if len(parts) == 0 {
 		// At potential leaf
@@ -174,13 +177,16 @@ func (n *Node) match(parts []string, method string, matchedValues []string) *Mat
 			if result, ok := n.handlers[method]; ok {
 				// Build params map using stored segments for param names
 				params := buildParams(result.segments, matchedValues)
+				// Snapshot matchedValues so the caller's slice isn't shared
+				snapshot := make([]string, len(matchedValues))
+				copy(snapshot, matchedValues)
 				return &MatchResult{
 					Handler:       result.Handler,
 					Params:        params,
 					Name:          result.Name,
 					Path:          result.Path,
 					segments:      result.segments,
-					matchedValues: matchedValues,
+					matchedValues: snapshot,
 				}
 			}
 		}
@@ -188,15 +194,17 @@ func (n *Node) match(parts []string, method string, matchedValues []string) *Mat
 		// Check if wildcard child can match empty
 		if n.wildcardChild != nil && n.wildcardChild.handlers != nil {
 			if result, ok := n.wildcardChild.handlers[method]; ok {
-				newValues := append(copyValues(matchedValues), "") // empty wildcard
+				newValues := append(matchedValues, "") // empty wildcard
 				params := buildParams(result.segments, newValues)
+				snapshot := make([]string, len(newValues))
+				copy(snapshot, newValues)
 				return &MatchResult{
 					Handler:       result.Handler,
 					Params:        params,
 					Name:          result.Name,
 					Path:          result.Path,
 					segments:      result.segments,
-					matchedValues: newValues,
+					matchedValues: snapshot,
 				}
 			}
 		}
@@ -206,6 +214,7 @@ func (n *Node) match(parts []string, method string, matchedValues []string) *Mat
 
 	part := parts[0]
 	remaining := parts[1:]
+	depth := len(matchedValues)
 
 	// Priority 1: Static children (most specific)
 	if n.staticChildren != nil {
@@ -219,7 +228,7 @@ func (n *Node) match(parts []string, method string, matchedValues []string) *Mat
 	// Priority 2: Regex constrained params (more specific than plain param)
 	for _, child := range n.regexChildren {
 		if child.segment.Match(part) {
-			newValues := append(copyValues(matchedValues), part)
+			newValues := append(matchedValues[:depth], part)
 			if result := child.match(remaining, method, newValues); result != nil {
 				return result
 			}
@@ -228,7 +237,7 @@ func (n *Node) match(parts []string, method string, matchedValues []string) *Mat
 
 	// Priority 3: Plain param
 	if n.paramChild != nil {
-		newValues := append(copyValues(matchedValues), part)
+		newValues := append(matchedValues[:depth], part)
 		if result := n.paramChild.match(remaining, method, newValues); result != nil {
 			return result
 		}
@@ -242,18 +251,20 @@ func (n *Node) match(parts []string, method string, matchedValues []string) *Mat
 		if decoded, err := url.PathUnescape(wildcardValue); err == nil {
 			wildcardValue = decoded
 		}
-		newValues := append(copyValues(matchedValues), wildcardValue)
+		newValues := append(matchedValues[:depth], wildcardValue)
 
 		if n.wildcardChild.handlers != nil {
 			if result, ok := n.wildcardChild.handlers[method]; ok {
 				params := buildParams(result.segments, newValues)
+				snapshot := make([]string, len(newValues))
+				copy(snapshot, newValues)
 				return &MatchResult{
 					Handler:       result.Handler,
 					Params:        params,
 					Name:          result.Name,
 					Path:          result.Path,
 					segments:      result.segments,
-					matchedValues: newValues,
+					matchedValues: snapshot,
 				}
 			}
 		}
@@ -279,11 +290,33 @@ func buildParams(segments []Segment, values []string) map[string]string {
 	return params
 }
 
-// copyValues creates a copy of the values slice
-func copyValues(values []string) []string {
-	result := make([]string, len(values))
-	copy(result, values)
-	return result
+
+// CompileStaticRoutes builds a flat map of all fully static routes for O(1) lookup.
+// Only routes with no param, regex, or wildcard segments are included.
+func (t *Tree) CompileStaticRoutes() map[string]*MatchResult {
+	compiled := make(map[string]*MatchResult)
+	// Root-level handlers (path "/")
+	if t.root.handlers != nil {
+		for method, result := range t.root.handlers {
+			compiled[method+" /"] = result
+		}
+	}
+	t.root.collectStaticRoutes("/", compiled)
+	return compiled
+}
+
+// collectStaticRoutes recursively collects static-only routes into the map.
+func (n *Node) collectStaticRoutes(prefix string, compiled map[string]*MatchResult) {
+	for value, child := range n.staticChildren {
+		path := prefix + value
+		if child.isLeaf && child.handlers != nil {
+			for method, result := range child.handlers {
+				compiled[method+" "+path] = result
+			}
+		}
+		// Recurse into static children only
+		child.collectStaticRoutes(path+"/", compiled)
+	}
 }
 
 // AllowedMethods returns all HTTP methods registered for a path

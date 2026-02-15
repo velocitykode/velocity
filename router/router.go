@@ -28,6 +28,12 @@ type Router interface {
 	// Middleware - Context-based
 	Use(middlewares ...MiddlewareFunc) Router
 
+	// Route Compilation
+	// ClearCompiledRoutes clears the compiled route cache without removing route definitions.
+	ClearCompiledRoutes()
+	// ClearRoutes fully resets the router, removing all routes, groups, and compiled cache.
+	ClearRoutes()
+
 	// Serving
 	ServeHTTP(w http.ResponseWriter, r *http.Request)
 	Handle() http.Handler
