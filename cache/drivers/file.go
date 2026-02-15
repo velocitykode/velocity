@@ -13,10 +13,11 @@ import (
 
 // FileStore implements a file-based cache store
 type FileStore struct {
-	mu     sync.RWMutex
-	path   string
-	prefix string
-	done   chan struct{}
+	mu       sync.RWMutex
+	path     string
+	prefix   string
+	done     chan struct{}
+	closeOnce sync.Once
 }
 
 // fileCacheItem represents a cached item stored in file
@@ -48,9 +49,11 @@ func NewFileStore(prefix, path string) (*FileStore, error) {
 	return store, nil
 }
 
-// Close stops the background cleanup goroutine.
+// Close stops the background cleanup goroutine. Safe to call multiple times.
 func (s *FileStore) Close() error {
-	close(s.done)
+	s.closeOnce.Do(func() {
+		close(s.done)
+	})
 	return nil
 }
 
