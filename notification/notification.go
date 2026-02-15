@@ -176,21 +176,21 @@ func (m *MailMessage) Header(key, value string) *MailMessage {
 
 // Getters for channel driver access.
 
-func (m *MailMessage) GetFrom() mail.Address    { return m.from }
-func (m *MailMessage) GetTo() []string           { return m.to }
-func (m *MailMessage) GetCC() []string           { return m.cc }
-func (m *MailMessage) GetBCC() []string          { return m.bcc }
-func (m *MailMessage) GetReplyTo() string        { return m.replyTo }
-func (m *MailMessage) GetSubject() string        { return m.subject }
-func (m *MailMessage) GetGreeting() string       { return m.greeting }
-func (m *MailMessage) GetLines() []string        { return m.lines }
-func (m *MailMessage) GetAction() *MailAction    { return m.action }
-func (m *MailMessage) GetOutro() []string        { return m.outro }
-func (m *MailMessage) GetTextBody() string       { return m.textBody }
-func (m *MailMessage) GetHTMLBody() string       { return m.htmlBody }
+func (m *MailMessage) GetFrom() mail.Address             { return m.from }
+func (m *MailMessage) GetTo() []string                   { return m.to }
+func (m *MailMessage) GetCC() []string                   { return m.cc }
+func (m *MailMessage) GetBCC() []string                  { return m.bcc }
+func (m *MailMessage) GetReplyTo() string                { return m.replyTo }
+func (m *MailMessage) GetSubject() string                { return m.subject }
+func (m *MailMessage) GetGreeting() string               { return m.greeting }
+func (m *MailMessage) GetLines() []string                { return m.lines }
+func (m *MailMessage) GetAction() *MailAction            { return m.action }
+func (m *MailMessage) GetOutro() []string                { return m.outro }
+func (m *MailMessage) GetTextBody() string               { return m.textBody }
+func (m *MailMessage) GetHTMLBody() string               { return m.htmlBody }
 func (m *MailMessage) GetAttachments() []mail.Attachment { return m.attachments }
-func (m *MailMessage) GetPriority() mail.Priority       { return m.priority }
-func (m *MailMessage) GetHeaders() map[string]string    { return m.headers }
+func (m *MailMessage) GetPriority() mail.Priority        { return m.priority }
+func (m *MailMessage) GetHeaders() map[string]string     { return m.headers }
 
 // DatabaseNotification is implemented by notifications that can be stored in a database.
 type DatabaseNotification interface {
@@ -274,13 +274,13 @@ type SlackMessage struct {
 
 // SlackAttachment represents a Slack message attachment.
 type SlackAttachment struct {
-	Color      string
-	Title      string
-	TitleLink  string
-	Text       string
-	Fields     []SlackField
-	Footer     string
-	Timestamp  int64
+	Color     string
+	Title     string
+	TitleLink string
+	Text      string
+	Fields    []SlackField
+	Footer    string
+	Timestamp int64
 }
 
 // SlackField represents a field in a Slack attachment.
