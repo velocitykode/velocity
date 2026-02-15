@@ -1,5 +1,7 @@
 package router
 
+import "github.com/velocitykode/velocity/pipeline"
+
 // RouteDefinition represents a route before it's committed to the tree
 type RouteDefinition struct {
 	Method      string
@@ -124,10 +126,23 @@ func applyMiddlewareChain(handler HandlerFunc, middlewares []MiddlewareFunc) Han
 		return handler
 	}
 
-	// Apply in reverse order: last middleware wraps first
-	h := handler
-	for i := len(middlewares) - 1; i >= 0; i-- {
-		h = middlewares[i](h)
+	pipes := make([]pipeline.Stage[*Context], len(middlewares))
+	for i, mw := range middlewares {
+		mw := mw
+		pipes[i] = pipeline.Pipe[*Context](func(c *Context, next func(*Context) error) error {
+			wrapped := mw(func(ctx *Context) error {
+				return next(ctx)
+			})
+			return wrapped(c)
+		})
 	}
-	return h
+
+	return func(c *Context) error {
+		return pipeline.New[*Context]().
+			Send(c).
+			Through(pipes...).
+			Then(func(ctx *Context) error {
+				return handler(ctx)
+			})
+	}
 }

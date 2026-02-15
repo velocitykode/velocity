@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/pipeline"
 )
 
 // EventMiddleware processes events before they reach listeners
@@ -54,21 +56,20 @@ func (d *MiddlewareDispatcher) Dispatch(event interface{}) error {
 	copy(middlewares, d.middlewares)
 	d.mu.RUnlock()
 
-	// Build middleware chain
-	handler := func(e interface{}) error {
-		return d.DefaultDispatcher.Dispatch(e)
+	pipes := make([]pipeline.Stage[interface{}], len(middlewares))
+	for i, mw := range middlewares {
+		mw := mw
+		pipes[i] = pipeline.Pipe[interface{}](func(event interface{}, next func(interface{}) error) error {
+			return mw.Handle(event, next)
+		})
 	}
 
-	// Wrap in middleware from last to first
-	for i := len(middlewares) - 1; i >= 0; i-- {
-		currentMiddleware := middlewares[i]
-		nextHandler := handler
-		handler = func(e interface{}) error {
-			return currentMiddleware.Handle(e, nextHandler)
-		}
-	}
-
-	return handler(event)
+	return pipeline.New[interface{}]().
+		Send(event).
+		Through(pipes...).
+		Then(func(e interface{}) error {
+			return d.DefaultDispatcher.Dispatch(e)
+		})
 }
 
 // GetMiddleware returns all registered middleware
