@@ -167,7 +167,7 @@ func TestThenReturn(t *testing.T) {
 	}
 }
 
-func TestPipeAppend(t *testing.T) {
+func TestAddAppend(t *testing.T) {
 	var order []string
 	makePipe := func(name string) Pipe[string] {
 		return func(s string, next func(string) error) error {
@@ -178,7 +178,7 @@ func TestPipeAppend(t *testing.T) {
 
 	err := New[string]().Send("x").
 		Through(makePipe("a"), makePipe("b")).
-		Pipe(makePipe("c")).
+		Add(makePipe("c")).
 		Then(func(s string) error {
 			order = append(order, "dest")
 			return nil
@@ -365,4 +365,119 @@ type appendStage struct {
 func (a *appendStage) Handle(s string, next func(string) error) error {
 	*a.order = append(*a.order, a.name)
 	return next(s)
+}
+
+// Build — pre-compile and reuse
+
+func TestBuild(t *testing.T) {
+	var calls int
+
+	counter := Pipe[string](func(s string, next func(string) error) error {
+		calls++
+		return next(s)
+	})
+
+	compiled := New[string]().
+		Through(counter).
+		Build(func(s string) error { return nil })
+
+	// Invoke the compiled chain multiple times
+	for i := 0; i < 5; i++ {
+		if err := compiled("hello"); err != nil {
+			t.Fatalf("call %d: unexpected error: %v", i, err)
+		}
+	}
+	if calls != 5 {
+		t.Errorf("calls = %d, want 5", calls)
+	}
+}
+
+func TestBuildEmpty(t *testing.T) {
+	called := false
+	compiled := New[string]().Build(func(s string) error {
+		called = true
+		if s != "hi" {
+			t.Errorf("passable = %q, want %q", s, "hi")
+		}
+		return nil
+	})
+
+	if err := compiled("hi"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("destination was not called")
+	}
+}
+
+// Through() replaces semantics
+
+func TestThroughReplaces(t *testing.T) {
+	var order []string
+	makePipe := func(name string) Pipe[string] {
+		return func(s string, next func(string) error) error {
+			order = append(order, name)
+			return next(s)
+		}
+	}
+
+	// Second Through replaces the first
+	err := New[string]().Send("x").
+		Through(makePipe("a"), makePipe("b")).
+		Through(makePipe("c")).
+		Then(func(s string) error {
+			order = append(order, "dest")
+			return nil
+		})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := strings.Join(order, ",")
+	want := "c,dest"
+	if got != want {
+		t.Errorf("order = %q, want %q (Through should replace, not append)", got, want)
+	}
+}
+
+// Nil passable
+
+func TestNilPassable(t *testing.T) {
+	type data struct{ value int }
+
+	stage := Pipe[*data](func(d *data, next func(*data) error) error {
+		if d == nil {
+			return errors.New("nil passable")
+		}
+		return next(d)
+	})
+
+	err := New[*data]().Send(nil).Through(stage).ThenReturn()
+	if err == nil {
+		t.Fatal("expected error for nil passable")
+	}
+	if err.Error() != "nil passable" {
+		t.Errorf("err = %q, want %q", err.Error(), "nil passable")
+	}
+}
+
+func TestNilPassableReachesDestination(t *testing.T) {
+	type data struct{ value int }
+
+	passthrough := Pipe[*data](func(d *data, next func(*data) error) error {
+		return next(d)
+	})
+
+	var received *data
+	err := New[*data]().Send(nil).Through(passthrough).Then(func(d *data) error {
+		received = d
+		return nil
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if received != nil {
+		t.Errorf("received = %v, want nil", received)
+	}
 }

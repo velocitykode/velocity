@@ -137,12 +137,12 @@ func applyMiddlewareChain(handler HandlerFunc, middlewares []MiddlewareFunc) Han
 		})
 	}
 
-	return func(c *Context) error {
-		return pipeline.New[*Context]().
-			Send(c).
-			Through(pipes...).
-			Then(func(ctx *Context) error {
-				return handler(ctx)
-			})
-	}
+	// Build the chain once at registration time — zero allocations per request.
+	compiled := pipeline.New[*Context]().
+		Through(pipes...).
+		Build(func(ctx *Context) error {
+			return handler(ctx)
+		})
+
+	return compiled
 }

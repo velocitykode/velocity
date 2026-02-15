@@ -2,6 +2,9 @@ package pipeline
 
 // Stage is a pipeline stage that processes a passable value.
 // Implement this interface on structs to create reusable, class-style pipes.
+//
+// Pipeline is not safe for concurrent use. Build or execute pipelines from
+// a single goroutine, or protect access externally.
 type Stage[T any] interface {
 	Handle(passable T, next func(T) error) error
 }
@@ -31,20 +34,22 @@ func (p *Pipeline[T]) Send(passable T) *Pipeline[T] {
 	return p
 }
 
-// Through sets the array of stages.
+// Through sets the stages, replacing any previously set.
 func (p *Pipeline[T]) Through(stages ...Stage[T]) *Pipeline[T] {
 	p.pipes = stages
 	return p
 }
 
-// Pipe appends additional stages.
-func (p *Pipeline[T]) Pipe(stages ...Stage[T]) *Pipeline[T] {
+// Add appends additional stages to the existing set.
+func (p *Pipeline[T]) Add(stages ...Stage[T]) *Pipeline[T] {
 	p.pipes = append(p.pipes, stages...)
 	return p
 }
 
-// Then runs the pipeline with a final destination handler.
-func (p *Pipeline[T]) Then(destination func(T) error) error {
+// Build compiles the pipeline into a single callable without executing it.
+// Use this to pre-compile a pipeline once and invoke it many times,
+// avoiding per-call chain construction overhead.
+func (p *Pipeline[T]) Build(destination func(T) error) func(T) error {
 	h := destination
 	for i := len(p.pipes) - 1; i >= 0; i-- {
 		current := p.pipes[i]
@@ -53,7 +58,12 @@ func (p *Pipeline[T]) Then(destination func(T) error) error {
 			return current.Handle(passable, nextH)
 		}
 	}
-	return h(p.passable)
+	return h
+}
+
+// Then runs the pipeline with a final destination handler.
+func (p *Pipeline[T]) Then(destination func(T) error) error {
+	return p.Build(destination)(p.passable)
 }
 
 // ThenReturn runs the pipeline with a no-op destination.
