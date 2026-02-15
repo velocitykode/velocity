@@ -51,6 +51,7 @@ func (m *Manager) dispatchEvent(event interface{}) {
 // Channel returns a registered channel driver by name, creating it from the
 // registry if not yet instantiated.
 func (m *Manager) Channel(name string) (Channel, error) {
+	// Fast path: check under read lock.
 	m.mu.RLock()
 	ch, exists := m.channels[name]
 	m.mu.RUnlock()
@@ -59,18 +60,19 @@ func (m *Manager) Channel(name string) (Channel, error) {
 		return ch, nil
 	}
 
-	// Create from registry
-	ch, err := createChannel(name)
-	if err != nil {
-		return nil, err
-	}
-
+	// Slow path: hold write lock for the entire create-and-store sequence
+	// so only one goroutine creates the channel instance.
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Double-check after acquiring write lock
-	if existing, ok := m.channels[name]; ok {
-		return existing, nil
+	// Re-check — another goroutine may have created it while we waited.
+	if ch, exists = m.channels[name]; exists {
+		return ch, nil
+	}
+
+	ch, err := createChannel(name)
+	if err != nil {
+		return nil, err
 	}
 
 	m.channels[name] = ch
