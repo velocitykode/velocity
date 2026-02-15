@@ -448,6 +448,80 @@ func TestNotificationEventNames(t *testing.T) {
 	}
 }
 
+func TestManagerEventDispatcherErrorDoesNotInterruptDelivery(t *testing.T) {
+	mgr := NewManager()
+	ch := &testChannel{}
+	mgr.SetChannel("test", ch)
+
+	mgr.SetEventDispatcher(func(event interface{}) error {
+		return errors.New("dispatcher exploded")
+	})
+
+	notifiable := &testNotifiable{email: "user@example.com", id: "1"}
+	notification := &testNotification{subject: "Should Still Arrive", channels: []string{"test"}}
+
+	err := mgr.Send(context.Background(), notifiable, notification)
+	if err != nil {
+		t.Fatalf("expected no error from Send, got %v", err)
+	}
+
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	if len(ch.sent) != 1 {
+		t.Fatalf("expected notification to be delivered despite dispatcher error, got %d sends", len(ch.sent))
+	}
+}
+
+func TestChannelLazyInitConcurrent(t *testing.T) {
+	var (
+		factoryCalls int
+		factoryMu    sync.Mutex
+	)
+
+	RegisterChannel("lazy-test", func() (Channel, error) {
+		factoryMu.Lock()
+		factoryCalls++
+		factoryMu.Unlock()
+		return &testChannel{}, nil
+	})
+
+	mgr := NewManager()
+
+	const goroutines = 50
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	results := make([]Channel, goroutines)
+	errs := make([]error, goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			results[idx], errs[idx] = mgr.Channel("lazy-test")
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d got error: %v", i, err)
+		}
+	}
+
+	// All goroutines must get the same channel instance.
+	for i := 1; i < goroutines; i++ {
+		if results[i] != results[0] {
+			t.Fatalf("goroutine %d got a different channel instance", i)
+		}
+	}
+
+	factoryMu.Lock()
+	defer factoryMu.Unlock()
+	if factoryCalls != 1 {
+		t.Errorf("expected factory called exactly once, got %d", factoryCalls)
+	}
+}
+
 func TestNotificationVia(t *testing.T) {
 	n := &testNotification{channels: []string{"mail", "database"}}
 	via := n.Via(nil)
