@@ -55,7 +55,9 @@ type App struct {
 // fails to initialize, New returns an error — it never panics.
 func New(opts ...Option) (*App, error) {
 	a := &App{
-		Services: &app.Services{},
+		Services: &app.Services{
+			Extensions: make(map[string]any),
+		},
 		version:  frameworkVersion,
 	}
 
@@ -311,6 +313,16 @@ func wireInstanceEvents(a *App) {
 	}
 	if a.Notification != nil {
 		a.Notification.SetEventDispatcher(dispatch)
+	}
+
+	// Wire events into any extension that supports it.
+	type eventDispatcherSetter interface {
+		SetEventDispatcher(func(event interface{}) error)
+	}
+	for _, ext := range a.Extensions {
+		if s, ok := ext.(eventDispatcherSetter); ok {
+			s.SetEventDispatcher(dispatch)
+		}
 	}
 }
 

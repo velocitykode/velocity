@@ -41,4 +41,9 @@ type Services struct {
 	Auth any // *auth.Manager
 	CSRF any // *csrf.CSRF
 	View any // *view.Engine
+
+	// Extensions holds optional first-party and third-party service instances.
+	// Packages register themselves here via ServiceProvider.Register() so that
+	// core never needs new fields for each additional package.
+	Extensions map[string]any
 }
