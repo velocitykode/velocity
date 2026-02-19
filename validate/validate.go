@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/validation"
 )
 
@@ -30,18 +31,30 @@ type Messages map[string]string
 // It extracts form values or JSON body from the request automatically.
 func Check(r *http.Request, rules Rules, messages ...Messages) *Errors {
 	data := extractRequestData(r)
-	return run(data, rules, messages...)
+	return run(data, rules, nil, messages...)
 }
 
 // CheckData validates a pre-extracted data map against rules.
 // Use this when you've already parsed the request body (e.g. via ctx.Bind).
 func CheckData(data map[string]interface{}, rules Rules, messages ...Messages) *Errors {
-	return run(data, rules, messages...)
+	return run(data, rules, nil, messages...)
+}
+
+// checkWithDB validates request data with database rules (unique, exists) available.
+func checkWithDB(r *http.Request, rules Rules, db *orm.Manager, messages ...Messages) *Errors {
+	data := extractRequestData(r)
+	return run(data, rules, db, messages...)
 }
 
 // run validates data against rules using the framework's validator.
-func run(data map[string]interface{}, rules Rules, messages ...Messages) *Errors {
+func run(data map[string]interface{}, rules Rules, db *orm.Manager, messages ...Messages) *Errors {
 	v := validation.NewValidator()
+
+	// Register database rules when DB is available
+	if db != nil {
+		v.RegisterRule("unique", uniqueRule(db))
+		v.RegisterRule("exists", existsRule(db))
+	}
 
 	// Convert []string rules to pipe-separated format
 	vRules := make(validation.Rules, len(rules))

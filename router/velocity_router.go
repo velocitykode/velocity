@@ -410,10 +410,6 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	var handlerErr error
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			// Validation abort — response already sent, skip error handling
-			if _, ok := recovered.(AbortValidation); ok {
-				return
-			}
 			// Capture stack trace
 			buf := make([]byte, 4096)
 			n := runtime.Stack(buf, false)

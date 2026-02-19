@@ -39,9 +39,10 @@ func (b *Bond) Middleware(next http.Handler) http.Handler {
 		defer func() {
 			if rec := recover(); rec != nil {
 				if _, ok := rec.(router.AbortValidation); ok {
-					bw.flush(w) // flush redirect response before panic propagates
+					bw.flush(w) // validation failed — flush the redirect and return normally
+					return       // no re-panic; response is complete
 				}
-				panic(rec) // re-panic for router recovery
+				panic(rec) // re-panic real panics for upstream recovery
 			}
 		}()
 		next.ServeHTTP(bw, r)
