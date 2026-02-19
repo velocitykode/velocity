@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"io"
 	"log"
 	"net/http"
 	"runtime"
@@ -261,6 +262,16 @@ func (w *statusCaptureWriter) Write(b []byte) (int, error) {
 		return len(b), nil // discard
 	}
 	return w.ResponseWriter.Write(b)
+}
+
+func (w *statusCaptureWriter) ReadFrom(r io.Reader) (int64, error) {
+	if !w.wrote {
+		w.WriteHeader(http.StatusOK)
+	}
+	if w.suppress {
+		return io.Copy(io.Discard, r)
+	}
+	return io.Copy(w.ResponseWriter, r)
 }
 
 // ServeHTTP implements http.Handler interface
