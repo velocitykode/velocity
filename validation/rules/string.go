@@ -45,7 +45,7 @@ func StringRule(field string, value interface{}, params []string, data map[strin
 	}
 
 	if _, ok := value.(string); !ok {
-		return fmt.Errorf("%s must be a string", field)
+		return fmt.Errorf("The %s field must be a string.", field)
 	}
 	return nil
 }
@@ -58,15 +58,15 @@ func EmailRule(field string, value interface{}, params []string, data map[string
 
 	str, ok := value.(string)
 	if !ok {
-		return fmt.Errorf("%s must be a string", field)
+		return fmt.Errorf("The %s field must be a string.", field)
 	}
 
 	if !emailRegex.MatchString(str) {
-		return fmt.Errorf("%s must be a valid email address", field)
+		return fmt.Errorf("The %s field must be a valid email address.", field)
 	}
 	// Additional validation via net/mail
 	if _, err := mail.ParseAddress(str); err != nil {
-		return fmt.Errorf("%s must be a valid email address", field)
+		return fmt.Errorf("The %s field must be a valid email address.", field)
 	}
 	return nil
 }
@@ -79,11 +79,11 @@ func URLRule(field string, value interface{}, params []string, data map[string]i
 
 	str, ok := value.(string)
 	if !ok {
-		return fmt.Errorf("%s must be a string", field)
+		return fmt.Errorf("The %s field must be a string.", field)
 	}
 
 	if !urlRegex.MatchString(str) {
-		return fmt.Errorf("%s must be a valid URL", field)
+		return fmt.Errorf("The %s field must be a valid URL.", field)
 	}
 	return nil
 }
@@ -97,28 +97,28 @@ func URLPublicRule(field string, value interface{}, params []string, data map[st
 
 	str, ok := value.(string)
 	if !ok {
-		return fmt.Errorf("%s must be a string", field)
+		return fmt.Errorf("The %s field must be a string.", field)
 	}
 
 	if !urlRegex.MatchString(str) {
-		return fmt.Errorf("%s must be a valid URL", field)
+		return fmt.Errorf("The %s field must be a valid URL.", field)
 	}
 
 	parsed, err := url.Parse(str)
 	if err != nil {
-		return fmt.Errorf("%s must be a valid URL", field)
+		return fmt.Errorf("The %s field must be a valid URL.", field)
 	}
 
 	host := parsed.Hostname()
 	ips, err := net.LookupIP(host)
 	if err != nil {
-		return fmt.Errorf("%s must resolve to a valid host", field)
+		return fmt.Errorf("The %s field must resolve to a valid host.", field)
 	}
 
 	for _, ip := range ips {
 		for _, network := range privateNetworks {
 			if network.Contains(ip) {
-				return fmt.Errorf("%s must not point to a private or internal address", field)
+				return fmt.Errorf("The %s field must not point to a private or internal address.", field)
 			}
 		}
 	}
@@ -134,11 +134,11 @@ func AlphaRule(field string, value interface{}, params []string, data map[string
 
 	str, ok := value.(string)
 	if !ok {
-		return fmt.Errorf("%s must be a string", field)
+		return fmt.Errorf("The %s field must be a string.", field)
 	}
 
 	if !alphaRegex.MatchString(str) {
-		return fmt.Errorf("%s must contain only alphabetic characters", field)
+		return fmt.Errorf("The %s field must contain only alphabetic characters.", field)
 	}
 	return nil
 }
@@ -151,11 +151,11 @@ func AlphaDashRule(field string, value interface{}, params []string, data map[st
 
 	str, ok := value.(string)
 	if !ok {
-		return fmt.Errorf("%s must be a string", field)
+		return fmt.Errorf("The %s field must be a string.", field)
 	}
 
 	if !alphaDashRegex.MatchString(str) {
-		return fmt.Errorf("%s must contain only letters, numbers, dashes, and underscores", field)
+		return fmt.Errorf("The %s field must contain only letters, numbers, dashes, and underscores.", field)
 	}
 	return nil
 }
@@ -168,11 +168,11 @@ func AlphaNumRule(field string, value interface{}, params []string, data map[str
 
 	str, ok := value.(string)
 	if !ok {
-		return fmt.Errorf("%s must be a string", field)
+		return fmt.Errorf("The %s field must be a string.", field)
 	}
 
 	if !alphaNumRegex.MatchString(str) {
-		return fmt.Errorf("%s must contain only letters and numbers", field)
+		return fmt.Errorf("The %s field must contain only letters and numbers.", field)
 	}
 	return nil
 }
@@ -184,37 +184,37 @@ func MinRule(field string, value interface{}, params []string, data map[string]i
 	}
 
 	if len(params) != 1 {
-		return fmt.Errorf("min rule requires 1 parameter")
+		return fmt.Errorf("The min rule requires 1 parameter.")
 	}
 
 	min, err := strconv.Atoi(params[0])
 	if err != nil {
-		return fmt.Errorf("min parameter must be a number")
+		return fmt.Errorf("The min parameter must be a number.")
 	}
 
 	switch v := value.(type) {
 	case string:
 		if len(v) < min {
-			return fmt.Errorf("%s must be at least %d characters", field, min)
+			return fmt.Errorf("The %s field must be at least %d characters.", field, min)
 		}
 	case int:
 		if v < min {
-			return fmt.Errorf("%s must be at least %d", field, min)
+			return fmt.Errorf("The %s field must be at least %d.", field, min)
 		}
 	case float64:
 		if v < float64(min) {
-			return fmt.Errorf("%s must be at least %d", field, min)
+			return fmt.Errorf("The %s field must be at least %d.", field, min)
 		}
 	case []interface{}:
 		if len(v) < min {
-			return fmt.Errorf("%s must have at least %d items", field, min)
+			return fmt.Errorf("The %s field must have at least %d items.", field, min)
 		}
 	case []string:
 		if len(v) < min {
-			return fmt.Errorf("%s must have at least %d items", field, min)
+			return fmt.Errorf("The %s field must have at least %d items.", field, min)
 		}
 	default:
-		return fmt.Errorf("%s type not supported for min rule", field)
+		return fmt.Errorf("The %s field type is not supported for the min rule.", field)
 	}
 
 	return nil
@@ -227,37 +227,37 @@ func MaxRule(field string, value interface{}, params []string, data map[string]i
 	}
 
 	if len(params) != 1 {
-		return fmt.Errorf("max rule requires 1 parameter")
+		return fmt.Errorf("The max rule requires 1 parameter.")
 	}
 
 	max, err := strconv.Atoi(params[0])
 	if err != nil {
-		return fmt.Errorf("max parameter must be a number")
+		return fmt.Errorf("The max parameter must be a number.")
 	}
 
 	switch v := value.(type) {
 	case string:
 		if len(v) > max {
-			return fmt.Errorf("%s must not exceed %d characters", field, max)
+			return fmt.Errorf("The %s field must not exceed %d characters.", field, max)
 		}
 	case int:
 		if v > max {
-			return fmt.Errorf("%s must not exceed %d", field, max)
+			return fmt.Errorf("The %s field must not exceed %d.", field, max)
 		}
 	case float64:
 		if v > float64(max) {
-			return fmt.Errorf("%s must not exceed %d", field, max)
+			return fmt.Errorf("The %s field must not exceed %d.", field, max)
 		}
 	case []interface{}:
 		if len(v) > max {
-			return fmt.Errorf("%s must not have more than %d items", field, max)
+			return fmt.Errorf("The %s field must not have more than %d items.", field, max)
 		}
 	case []string:
 		if len(v) > max {
-			return fmt.Errorf("%s must not have more than %d items", field, max)
+			return fmt.Errorf("The %s field must not have more than %d items.", field, max)
 		}
 	default:
-		return fmt.Errorf("%s type not supported for max rule", field)
+		return fmt.Errorf("The %s field type is not supported for the max rule.", field)
 	}
 
 	return nil
@@ -270,33 +270,33 @@ func SizeRule(field string, value interface{}, params []string, data map[string]
 	}
 
 	if len(params) != 1 {
-		return fmt.Errorf("size rule requires 1 parameter")
+		return fmt.Errorf("The size rule requires 1 parameter.")
 	}
 
 	size, err := strconv.Atoi(params[0])
 	if err != nil {
-		return fmt.Errorf("size parameter must be a number")
+		return fmt.Errorf("The size parameter must be a number.")
 	}
 
 	switch v := value.(type) {
 	case string:
 		if len(v) != size {
-			return fmt.Errorf("%s must be exactly %d characters", field, size)
+			return fmt.Errorf("The %s field must be exactly %d characters.", field, size)
 		}
 	case int:
 		if v != size {
-			return fmt.Errorf("%s must be exactly %d", field, size)
+			return fmt.Errorf("The %s field must be exactly %d.", field, size)
 		}
 	case []interface{}:
 		if len(v) != size {
-			return fmt.Errorf("%s must have exactly %d items", field, size)
+			return fmt.Errorf("The %s field must have exactly %d items.", field, size)
 		}
 	case []string:
 		if len(v) != size {
-			return fmt.Errorf("%s must have exactly %d items", field, size)
+			return fmt.Errorf("The %s field must have exactly %d items.", field, size)
 		}
 	default:
-		return fmt.Errorf("%s type not supported for size rule", field)
+		return fmt.Errorf("The %s field type is not supported for the size rule.", field)
 	}
 
 	return nil
@@ -309,13 +309,13 @@ func BetweenRule(field string, value interface{}, params []string, data map[stri
 	}
 
 	if len(params) != 2 {
-		return fmt.Errorf("between rule requires 2 parameters")
+		return fmt.Errorf("The between rule requires 2 parameters.")
 	}
 
 	min, err1 := strconv.Atoi(params[0])
 	max, err2 := strconv.Atoi(params[1])
 	if err1 != nil || err2 != nil {
-		return fmt.Errorf("between parameters must be numbers")
+		return fmt.Errorf("The between parameters must be numbers.")
 	}
 
 	switch v := value.(type) {
@@ -323,30 +323,30 @@ func BetweenRule(field string, value interface{}, params []string, data map[stri
 		// Try to convert string to int for numeric validation
 		if intVal, err := strconv.Atoi(v); err == nil {
 			if intVal < min || intVal > max {
-				return fmt.Errorf("%s must be between %d and %d", field, min, max)
+				return fmt.Errorf("The %s field must be between %d and %d.", field, min, max)
 			}
 		} else {
 			// If not a number, check string length
 			length := len(v)
 			if length < min || length > max {
-				return fmt.Errorf("%s must be between %d and %d characters", field, min, max)
+				return fmt.Errorf("The %s field must be between %d and %d characters.", field, min, max)
 			}
 		}
 	case int:
 		if v < min || v > max {
-			return fmt.Errorf("%s must be between %d and %d", field, min, max)
+			return fmt.Errorf("The %s field must be between %d and %d.", field, min, max)
 		}
 	case float64:
 		if v < float64(min) || v > float64(max) {
-			return fmt.Errorf("%s must be between %d and %d", field, min, max)
+			return fmt.Errorf("The %s field must be between %d and %d.", field, min, max)
 		}
 	case []interface{}:
 		length := len(v)
 		if length < min || length > max {
-			return fmt.Errorf("%s must have between %d and %d items", field, min, max)
+			return fmt.Errorf("The %s field must have between %d and %d items.", field, min, max)
 		}
 	default:
-		return fmt.Errorf("%s type not supported for between rule", field)
+		return fmt.Errorf("The %s field type is not supported for the between rule.", field)
 	}
 
 	return nil

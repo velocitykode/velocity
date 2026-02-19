@@ -13,17 +13,17 @@ func SameRule(field string, value interface{}, params []string, data map[string]
 	}
 
 	if len(params) != 1 {
-		return fmt.Errorf("same rule requires 1 parameter")
+		return fmt.Errorf("The same rule requires 1 parameter.")
 	}
 
 	otherField := params[0]
 	otherValue, exists := data[otherField]
 	if !exists {
-		return fmt.Errorf("%s must match %s", field, otherField)
+		return fmt.Errorf("The %s field must match %s.", field, otherField)
 	}
 
 	if !reflect.DeepEqual(value, otherValue) {
-		return fmt.Errorf("%s must match %s", field, otherField)
+		return fmt.Errorf("The %s field must match %s.", field, otherField)
 	}
 
 	return nil
@@ -36,7 +36,7 @@ func DifferentRule(field string, value interface{}, params []string, data map[st
 	}
 
 	if len(params) != 1 {
-		return fmt.Errorf("different rule requires 1 parameter")
+		return fmt.Errorf("The different rule requires 1 parameter.")
 	}
 
 	otherField := params[0]
@@ -46,7 +46,7 @@ func DifferentRule(field string, value interface{}, params []string, data map[st
 	}
 
 	if reflect.DeepEqual(value, otherValue) {
-		return fmt.Errorf("%s must be different from %s", field, otherField)
+		return fmt.Errorf("The %s field must be different from %s.", field, otherField)
 	}
 
 	return nil
@@ -59,7 +59,7 @@ func InRule(field string, value interface{}, params []string, data map[string]in
 	}
 
 	if len(params) == 0 {
-		return fmt.Errorf("in rule requires at least 1 parameter")
+		return fmt.Errorf("The in rule requires at least 1 parameter.")
 	}
 
 	valueStr := fmt.Sprintf("%v", value)
@@ -69,7 +69,7 @@ func InRule(field string, value interface{}, params []string, data map[string]in
 		}
 	}
 
-	return fmt.Errorf("%s must be one of: %s", field, strings.Join(params, ", "))
+	return fmt.Errorf("The selected %s is invalid.", field)
 }
 
 // NotInRule validates that a value is not in a list of values
@@ -79,13 +79,13 @@ func NotInRule(field string, value interface{}, params []string, data map[string
 	}
 
 	if len(params) == 0 {
-		return fmt.Errorf("not_in rule requires at least 1 parameter")
+		return fmt.Errorf("The not_in rule requires at least 1 parameter.")
 	}
 
 	valueStr := fmt.Sprintf("%v", value)
 	for _, disallowed := range params {
 		if valueStr == disallowed {
-			return fmt.Errorf("%s must not be one of: %s", field, strings.Join(params, ", "))
+			return fmt.Errorf("The selected %s is invalid.", field)
 		}
 	}
 
@@ -101,11 +101,11 @@ func ConfirmedRule(field string, value interface{}, params []string, data map[st
 	confirmField := field + "_confirmation"
 	confirmValue, exists := data[confirmField]
 	if !exists {
-		return fmt.Errorf("%s confirmation does not match", field)
+		return fmt.Errorf("The %s confirmation does not match.", field)
 	}
 
 	if !reflect.DeepEqual(value, confirmValue) {
-		return fmt.Errorf("%s confirmation does not match", field)
+		return fmt.Errorf("The %s confirmation does not match.", field)
 	}
 
 	return nil
@@ -114,13 +114,13 @@ func ConfirmedRule(field string, value interface{}, params []string, data map[st
 // AcceptedRule validates that a field is accepted (yes, on, 1, true)
 func AcceptedRule(field string, value interface{}, params []string, data map[string]interface{}) error {
 	if value == nil {
-		return fmt.Errorf("%s must be accepted", field)
+		return fmt.Errorf("The %s field must be accepted.", field)
 	}
 
 	switch v := value.(type) {
 	case bool:
 		if !v {
-			return fmt.Errorf("%s must be accepted", field)
+			return fmt.Errorf("The %s field must be accepted.", field)
 		}
 	case string:
 		accepted := []string{"yes", "on", "1", "true"}
@@ -130,13 +130,13 @@ func AcceptedRule(field string, value interface{}, params []string, data map[str
 				return nil
 			}
 		}
-		return fmt.Errorf("%s must be accepted", field)
+		return fmt.Errorf("The %s field must be accepted.", field)
 	case int:
 		if v != 1 {
-			return fmt.Errorf("%s must be accepted", field)
+			return fmt.Errorf("The %s field must be accepted.", field)
 		}
 	default:
-		return fmt.Errorf("%s must be accepted", field)
+		return fmt.Errorf("The %s field must be accepted.", field)
 	}
 
 	return nil

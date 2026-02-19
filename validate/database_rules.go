@@ -85,11 +85,11 @@ func uniqueRule(db *orm.Manager) validation.RuleHandler {
 
 		var count int64
 		if err := db.DB().QueryRow(query, args...).Scan(&count); err != nil {
-			return fmt.Errorf("unable to validate %s", field)
+			return fmt.Errorf("Unable to validate %s.", field)
 		}
 
 		if count > 0 {
-			return fmt.Errorf("the %s has already been taken", field)
+			return fmt.Errorf("The %s has already been taken.", field)
 		}
 		return nil
 	}
@@ -124,11 +124,11 @@ func existsRule(db *orm.Manager) validation.RuleHandler {
 
 		var count int64
 		if err := db.DB().QueryRow(query, value).Scan(&count); err != nil {
-			return fmt.Errorf("unable to validate %s", field)
+			return fmt.Errorf("Unable to validate %s.", field)
 		}
 
 		if count == 0 {
-			return fmt.Errorf("the selected %s is invalid", field)
+			return fmt.Errorf("The selected %s is invalid.", field)
 		}
 		return nil
 	}

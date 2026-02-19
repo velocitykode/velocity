@@ -66,21 +66,21 @@ func registerBuiltInRules(reg *RuleRegistry) {
 // requiredRule validates that a field is present and not empty
 func requiredRule(field string, value interface{}, params []string, data map[string]interface{}) error {
 	if value == nil {
-		return fmt.Errorf("%s is required", field)
+		return fmt.Errorf("The %s field is required.", field)
 	}
 
 	switch v := value.(type) {
 	case string:
 		if v == "" {
-			return fmt.Errorf("%s is required", field)
+			return fmt.Errorf("The %s field is required.", field)
 		}
 	case []interface{}:
 		if len(v) == 0 {
-			return fmt.Errorf("%s is required", field)
+			return fmt.Errorf("The %s field is required.", field)
 		}
 	case []string:
 		if len(v) == 0 {
-			return fmt.Errorf("%s is required", field)
+			return fmt.Errorf("The %s field is required.", field)
 		}
 	}
 
@@ -102,11 +102,11 @@ func filledRule(field string, value interface{}, params []string, data map[strin
 	switch v := value.(type) {
 	case string:
 		if v == "" {
-			return fmt.Errorf("%s must not be empty when present", field)
+			return fmt.Errorf("The %s field must not be empty when present.", field)
 		}
 	case []interface{}:
 		if len(v) == 0 {
-			return fmt.Errorf("%s must not be empty when present", field)
+			return fmt.Errorf("The %s field must not be empty when present.", field)
 		}
 	}
 
@@ -118,7 +118,7 @@ func presentRule(field string, value interface{}, params []string, data map[stri
 	// Check if field exists in data map
 	if data != nil {
 		if _, exists := data[field]; !exists {
-			return fmt.Errorf("%s must be present", field)
+			return fmt.Errorf("The %s field must be present.", field)
 		}
 	}
 	return nil

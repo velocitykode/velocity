@@ -21,18 +21,18 @@ func IntegerRule(field string, value interface{}, params []string, data map[stri
 		if v == float64(int64(v.(float64))) {
 			return nil
 		}
-		return fmt.Errorf("%s must be an integer", field)
+		return fmt.Errorf("The %s field must be an integer.", field)
 	case string:
 		// Try to parse string as integer
 		if v == "" {
-			return fmt.Errorf("%s must be an integer", field)
+			return fmt.Errorf("The %s field must be an integer.", field)
 		}
 		if _, err := strconv.ParseInt(v, 10, 64); err != nil {
-			return fmt.Errorf("%s must be an integer", field)
+			return fmt.Errorf("The %s field must be an integer.", field)
 		}
 		return nil
 	default:
-		return fmt.Errorf("%s must be an integer", field)
+		return fmt.Errorf("The %s field must be an integer.", field)
 	}
 }
 
@@ -52,11 +52,11 @@ func NumericRule(field string, value interface{}, params []string, data map[stri
 	case string:
 		// Try to parse string as number
 		if _, err := strconv.ParseFloat(v, 64); err != nil {
-			return fmt.Errorf("%s must be numeric", field)
+			return fmt.Errorf("The %s field must be numeric.", field)
 		}
 		return nil
 	default:
-		return fmt.Errorf("%s must be numeric", field)
+		return fmt.Errorf("The %s field must be numeric.", field)
 	}
 }
 
@@ -74,14 +74,14 @@ func BooleanRule(field string, value interface{}, params []string, data map[stri
 		if v == "true" || v == "false" || v == "1" || v == "0" || v == "yes" || v == "no" {
 			return nil
 		}
-		return fmt.Errorf("%s must be a boolean", field)
+		return fmt.Errorf("The %s field must be a boolean.", field)
 	case int:
 		if v == 0 || v == 1 {
 			return nil
 		}
-		return fmt.Errorf("%s must be a boolean", field)
+		return fmt.Errorf("The %s field must be a boolean.", field)
 	default:
-		return fmt.Errorf("%s must be a boolean", field)
+		return fmt.Errorf("The %s field must be a boolean.", field)
 	}
 }
 
@@ -95,6 +95,6 @@ func ArrayRule(field string, value interface{}, params []string, data map[string
 	case []interface{}, []string, []int, []float64:
 		return nil
 	default:
-		return fmt.Errorf("%s must be an array", field)
+		return fmt.Errorf("The %s field must be an array.", field)
 	}
 }
