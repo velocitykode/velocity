@@ -53,6 +53,10 @@ type VelocityRouterV2 struct {
 	// ErrorHandler is called when a handler returns an error or a panic occurs.
 	// If nil, the default behavior (HTTP 500) is used.
 	ErrorHandler func(*Context, error)
+
+	// validateFn is wired during app init to run validation with DB support.
+	validateFn func(c *Context, rules map[string][]string, messages ...map[string]string)
+
 }
 
 // NewV2 creates a new tree-based router instance
@@ -74,6 +78,11 @@ func NewV2() *VelocityRouterV2 {
 // SetServices sets the service container that will be injected into every Context.
 func (r *VelocityRouterV2) SetServices(s *app.Services) {
 	r.services = s
+}
+
+// SetValidator sets the validation function used by ctx.Validate().
+func (r *VelocityRouterV2) SetValidator(fn func(c *Context, rules map[string][]string, messages ...map[string]string)) {
+	r.validateFn = fn
 }
 
 // SetInstanceEventDispatcher sets the event dispatcher on this router instance.
@@ -391,6 +400,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	ctx.Request = req
 	ctx.services = r.services
 	ctx.trustedProxies = r.TrustedProxies
+	ctx.validateFn = r.validateFn
 
 	// Build params from match result
 	if result.segments != nil {

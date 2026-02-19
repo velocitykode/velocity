@@ -40,8 +40,8 @@ func CheckData(data map[string]interface{}, rules Rules, messages ...Messages) *
 	return run(data, rules, nil, messages...)
 }
 
-// checkWithDB validates request data with database rules (unique, exists) available.
-func checkWithDB(r *http.Request, rules Rules, db *orm.Manager, messages ...Messages) *Errors {
+// CheckWithDB validates request data with database rules (unique, exists) available.
+func CheckWithDB(r *http.Request, rules Rules, db *orm.Manager, messages ...Messages) *Errors {
 	data := extractRequestData(r)
 	return run(data, rules, db, messages...)
 }

@@ -33,7 +33,7 @@ func Form[T any](ctx *router.Context) *T {
 	}
 
 	// Validate raw request data (DB enables unique/exists rules)
-	errors := checkWithDB(ctx.Request, rules, ctx.DB(), msgs...)
+	errors := CheckWithDB(ctx.Request, rules, ctx.DB(), msgs...)
 	if !errors.HasErrors() {
 		// Valid — bind the struct and return
 		ctx.BindAuto(req)

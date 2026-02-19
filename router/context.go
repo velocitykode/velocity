@@ -65,6 +65,7 @@ type Context struct {
 	services       *app.Services
 	sseStarted     bool
 	trustedProxies []string
+	validateFn     func(c *Context, rules map[string][]string, messages ...map[string]string)
 }
 
 // NewContext creates a new Context from http.Request and http.ResponseWriter.
@@ -370,6 +371,7 @@ func (c *Context) reset() {
 	c.services = nil
 	c.sseStarted = false
 	c.trustedProxies = nil
+	c.validateFn = nil
 }
 
 // IsAjax returns true if the request is an AJAX request
@@ -904,6 +906,25 @@ func writeFlashCookie(w http.ResponseWriter, name string, value any) {
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 	})
+}
+
+// Validate checks the request against rules and automatically redirects back
+// with flashed errors and old input if validation fails. Panics with
+// AbortValidation to stop handler execution (caught by Bond middleware).
+//
+//	func (h *Handler) Store(ctx *router.Context) error {
+//	    ctx.Validate(map[string][]string{
+//	        "name":  {"required"},
+//	        "email": {"required", "email", "unique:users,email"},
+//	    })
+//	    // only reaches here if valid
+//	}
+func (c *Context) Validate(rules map[string][]string, messages ...map[string]string) {
+	if c.validateFn != nil {
+		c.validateFn(c, rules, messages...)
+		return
+	}
+	panic("ctx.Validate: validator not configured")
 }
 
 // ---------------------------------------------------------------------------

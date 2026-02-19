@@ -27,6 +27,7 @@ import (
 	"github.com/velocitykode/velocity/router"
 	"github.com/velocitykode/velocity/scheduler"
 	"github.com/velocitykode/velocity/storage"
+	"github.com/velocitykode/velocity/validate"
 	"github.com/velocitykode/velocity/validation"
 	"github.com/velocitykode/velocity/view"
 )
@@ -160,6 +161,25 @@ func New(opts ...Option) (*App, error) {
 	// 14. Create router and inject services
 	a.Router = router.New()
 	a.Router.SetServices(a.Services)
+	a.Router.SetValidator(func(c *router.Context, rules map[string][]string, messages ...map[string]string) {
+		var msgs []validate.Messages
+		for _, m := range messages {
+			msgs = append(msgs, validate.Messages(m))
+		}
+		errors := validate.CheckWithDB(c.Request, validate.Rules(rules), c.DB(), msgs...)
+		if !errors.HasErrors() {
+			return
+		}
+		c.WithErrors(errors.All())
+		c.WithInput(errors.Old())
+		type backer interface {
+			Back(http.ResponseWriter, *http.Request)
+		}
+		if v, ok := c.View().(backer); ok {
+			v.Back(c.Response, c.Request)
+		}
+		panic(router.AbortValidation{})
+	})
 
 	// 15. Initialize exception handler
 	a.Exceptions = exceptions.NewHandler(

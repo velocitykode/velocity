@@ -72,16 +72,19 @@ func (c *CSRF) RouterMiddleware() router.MiddlewareFunc {
 		return func(ctx *router.Context) error {
 			// Track whether the inner handler was called (CSRF passed)
 			var called bool
+			var handlerErr error
 			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				called = true
-				router.Wrap(next).ServeHTTP(w, r)
+				ctx.Response = w
+				ctx.Request = r
+				handlerErr = next(ctx)
 			})
 			c.Middleware(inner).ServeHTTP(ctx.Response, ctx.Request)
 			if !called {
 				log.Printf("csrf: request blocked for %s %s", ctx.Request.Method, ctx.Request.URL.Path)
 				return fmt.Errorf("csrf: request rejected for %s %s", ctx.Request.Method, ctx.Request.URL.Path)
 			}
-			return nil
+			return handlerErr
 		}
 	}
 }
