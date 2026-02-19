@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -863,6 +864,45 @@ func (c *Context) DeleteCookie(name string) {
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Flash data (validation errors + old input)
+// ---------------------------------------------------------------------------
+
+const (
+	// FlashErrorsCookie is the cookie name for flash validation errors.
+	FlashErrorsCookie = "_velocity_errors"
+	// FlashInputCookie is the cookie name for flash old input.
+	FlashInputCookie = "_velocity_old"
+)
+
+// WithErrors stashes validation errors as a flash cookie so they survive
+// a redirect and are available on the next request.
+func (c *Context) WithErrors(errors any) {
+	writeFlashCookie(c.Response, FlashErrorsCookie, errors)
+}
+
+// WithInput stashes old form input as a flash cookie so it survives
+// a redirect and is available on the next request.
+func (c *Context) WithInput(input any) {
+	writeFlashCookie(c.Response, FlashInputCookie, input)
+}
+
+// writeFlashCookie JSON-encodes value and sets it as a base64-encoded cookie.
+func writeFlashCookie(w http.ResponseWriter, name string, value any) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     name,
+		Value:    base64.URLEncoding.EncodeToString(data),
+		Path:     "/",
+		MaxAge:   300, // 5 minutes; cleared on read
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
 	})
 }
 

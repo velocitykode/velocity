@@ -450,8 +450,8 @@ func TestOptional(t *testing.T) {
 			}
 
 			// Verify returns correct bond type
-			if _, ok := interface{}(prop).(bond.OptionalProp); !ok {
-				t.Error("Optional did not return bond.OptionalProp type")
+			if _, ok := interface{}(prop).(*bond.OptionalProp); !ok {
+				t.Error("Optional did not return *bond.OptionalProp type")
 			}
 
 			// Verify Evaluate calls the wrapped function
@@ -551,7 +551,7 @@ func TestDefer(t *testing.T) {
 				return tt.fn()
 			}
 
-			var prop bond.DeferredProp
+			var prop *bond.DeferredProp
 			if tt.group == nil {
 				prop = Defer(wrappedFn)
 			} else {
@@ -563,8 +563,8 @@ func TestDefer(t *testing.T) {
 			}
 
 			// Verify returns correct bond type
-			if _, ok := interface{}(prop).(bond.DeferredProp); !ok {
-				t.Error("Defer did not return bond.DeferredProp type")
+			if _, ok := interface{}(prop).(*bond.DeferredProp); !ok {
+				t.Error("Defer did not return *bond.DeferredProp type")
 			}
 
 			// Verify group is set correctly
@@ -1046,8 +1046,8 @@ func TestLazyProp_Backward_Compatibility(t *testing.T) {
 			prop := LazyProp(tt.value)
 
 			// Verify returns correct bond type (OptionalProp)
-			if _, ok := interface{}(prop).(bond.OptionalProp); !ok {
-				t.Error("LazyProp did not return bond.OptionalProp type")
+			if _, ok := interface{}(prop).(*bond.OptionalProp); !ok {
+				t.Error("LazyProp did not return *bond.OptionalProp type")
 			}
 
 			// Verify Evaluate returns the wrapped value

@@ -22,16 +22,28 @@ func (b *Bond) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Check for version mismatch (pre-handler — skip wasted work)
-		clientVersion := r.Header.Get("X-Inertia-Version")
-		if clientVersion != "" && clientVersion != b.version {
-			w.Header().Set("X-Inertia-Location", r.URL.String())
-			w.WriteHeader(http.StatusConflict)
-			return
+		// Check for version mismatch — GET only.
+		// POST/PUT/PATCH/DELETE skip this to avoid discarding form data with a 409.
+		// The mutation processes normally, redirects, and the next GET catches it.
+		if r.Method == http.MethodGet {
+			clientVersion := r.Header.Get(HeaderVersion)
+			if clientVersion != "" && clientVersion != b.version {
+				w.Header().Set(HeaderLocation, r.URL.String())
+				w.WriteHeader(http.StatusConflict)
+				return
+			}
 		}
 
 		// Buffer the response so we can inspect/modify it after the handler
 		bw := newResponseBuffer(w)
+		defer func() {
+			if rec := recover(); rec != nil {
+				if _, ok := rec.(router.AbortValidation); ok {
+					bw.flush(w) // flush redirect response before panic propagates
+				}
+				panic(rec) // re-panic for router recovery
+			}
+		}()
 		next.ServeHTTP(bw, r)
 
 		// Empty 200 response — handler forgot to return anything, redirect back

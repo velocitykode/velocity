@@ -254,7 +254,7 @@ func TestMiddleware_POSTRequest(t *testing.T) {
 	}
 }
 
-func TestMiddleware_VersionMismatchOnPOST(t *testing.T) {
+func TestMiddleware_VersionMismatchOnPOST_Skipped(t *testing.T) {
 	b, _ := New(Config{
 		RootTemplate: validTemplate,
 		Version:      "v1",
@@ -263,6 +263,8 @@ func TestMiddleware_VersionMismatchOnPOST(t *testing.T) {
 	called := false
 	handler := b.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
+		// Simulate a redirect (typical POST handler behavior)
+		http.Redirect(w, r, "/submit", http.StatusSeeOther)
 	}))
 
 	w := httptest.NewRecorder()
@@ -272,11 +274,13 @@ func TestMiddleware_VersionMismatchOnPOST(t *testing.T) {
 
 	handler.ServeHTTP(w, r)
 
-	if called {
-		t.Error("expected handler NOT to be called on POST with version mismatch")
+	// POST with version mismatch should still process (not 409)
+	// to avoid discarding form data
+	if !called {
+		t.Error("expected handler to be called on POST even with version mismatch")
 	}
-	if w.Code != http.StatusConflict {
-		t.Errorf("expected status 409, got %d", w.Code)
+	if w.Code == http.StatusConflict {
+		t.Error("POST should not return 409 on version mismatch")
 	}
 }
 

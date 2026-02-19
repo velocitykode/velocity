@@ -752,3 +752,733 @@ func TestRender_HTML_WithUnmarshalableProps_ReturnsError(t *testing.T) {
 		t.Error("expected error for unmarshalable props in HTML render")
 	}
 }
+
+// --- MergeProp render tests ---
+
+func TestRender_MergeProp_IncludedOnInitialLoad(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+
+	b.Render(w, r, "Home", Props{
+		"items": Merge([]string{"a", "b"}),
+	})
+
+	var page Page
+	json.Unmarshal(w.Body.Bytes(), &page)
+
+	if page.Props["items"] == nil {
+		t.Error("merge prop should be included on initial load")
+	}
+	if !contains(page.MergeProps, "items") {
+		t.Error("expected items in mergeProps")
+	}
+}
+
+func TestRender_MergeProp_PrependTracked(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+
+	b.Render(w, r, "Home", Props{
+		"items": Merge([]string{"a"}).Prepend("rows"),
+	})
+
+	var page Page
+	json.Unmarshal(w.Body.Bytes(), &page)
+
+	if !contains(page.PrependProps, "items") {
+		t.Error("expected items in prependProps")
+	}
+}
+
+func TestRender_MergeProp_DeepMergeTracked(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+
+	b.Render(w, r, "Home", Props{
+		"settings": Merge(map[string]any{"theme": "dark"}).DeepMerge(),
+	})
+
+	var page Page
+	json.Unmarshal(w.Body.Bytes(), &page)
+
+	if !contains(page.MergeProps, "settings") {
+		t.Error("expected settings in mergeProps")
+	}
+	if !contains(page.DeepMergeProps, "settings") {
+		t.Error("expected settings in deepMergeProps")
+	}
+}
+
+func TestRender_MergeProp_MatchOnTracked(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+
+	b.Render(w, r, "Home", Props{
+		"items": Merge([]string{"a"}).MatchOn("id"),
+	})
+
+	var page Page
+	json.Unmarshal(w.Body.Bytes(), &page)
+
+	if page.MatchPropsOn == nil || len(page.MatchPropsOn["items"]) != 1 {
+		t.Error("expected matchPropsOn to contain items with 1 key")
+	}
+}
+
+func TestRender_MergeProp_OnPartialReload(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+	r.Header.Set("X-Inertia-Partial-Data", "items")
+	r.Header.Set("X-Inertia-Partial-Component", "Home")
+
+	b.Render(w, r, "Home", Props{
+		"items": Merge([]string{"c", "d"}),
+		"other": "excluded",
+	})
+
+	var page Page
+	json.Unmarshal(w.Body.Bytes(), &page)
+
+	if page.Props["items"] == nil {
+		t.Error("merge prop should be included in partial reload")
+	}
+	if _, ok := page.Props["other"]; ok {
+		t.Error("non-requested prop should be excluded")
+	}
+	if !contains(page.MergeProps, "items") {
+		t.Error("expected items in mergeProps")
+	}
+}
+
+func TestRender_MergeProp_Once_SkippedIfAlreadySeen(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+	r.Header.Set(HeaderExceptOnceProps, "items")
+
+	b.Render(w, r, "Home", Props{
+		"items": Merge([]string{"a"}).Once(),
+	})
+
+	var page Page
+	json.Unmarshal(w.Body.Bytes(), &page)
+
+	if _, ok := page.Props["items"]; ok {
+		t.Error("once merge prop should be skipped when already seen")
+	}
+}
+
+func TestRender_MergeProp_Error(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+
+	err := b.Render(w, r, "Home", Props{
+		"items": MergeFunc(func() (any, error) {
+			return nil, errors.New("merge eval failed")
+		}),
+	})
+
+	if err == nil {
+		t.Error("expected error from merge prop evaluation")
+	}
+}
+
+// --- OnceProp render tests ---
+
+func TestRender_OnceProp_IncludedOnInitialLoad(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+
+	b.Render(w, r, "Home", Props{
+		"token": Once(func() (any, error) { return "abc123", nil }),
+	})
+
+	var page Page
+	json.Unmarshal(w.Body.Bytes(), &page)
+
+	if page.Props["token"] != "abc123" {
+		t.Errorf("expected token 'abc123', got %v", page.Props["token"])
+	}
+	if page.OnceProps == nil || page.OnceProps["token"].Prop != "token" {
+		t.Error("expected token in onceProps")
+	}
+}
+
+func TestRender_OnceProp_SkippedIfAlreadySeen(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+	r.Header.Set(HeaderExceptOnceProps, "token")
+
+	b.Render(w, r, "Home", Props{
+		"token": Once(func() (any, error) { return "abc123", nil }),
+	})
+
+	var page Page
+	json.Unmarshal(w.Body.Bytes(), &page)
+
+	if _, ok := page.Props["token"]; ok {
+		t.Error("once prop should be skipped when client already has it")
+	}
+}
+
+func TestRender_OnceProp_CustomKey(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+	r.Header.Set(HeaderExceptOnceProps, "my-token")
+
+	b.Render(w, r, "Home", Props{
+		"token": Once(func() (any, error) { return "abc", nil }).As("my-token"),
+	})
+
+	var page Page
+	json.Unmarshal(w.Body.Bytes(), &page)
+
+	if _, ok := page.Props["token"]; ok {
+		t.Error("once prop with custom key should be skipped when key is in except list")
+	}
+}
+
+func TestRender_OnceProp_NotSkippedWithDifferentKey(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+	r.Header.Set(HeaderExceptOnceProps, "other-key")
+
+	b.Render(w, r, "Home", Props{
+		"token": Once(func() (any, error) { return "abc", nil }).As("my-token"),
+	})
+
+	var page Page
+	json.Unmarshal(w.Body.Bytes(), &page)
+
+	if page.Props["token"] != "abc" {
+		t.Error("once prop should be included when except key doesn't match")
+	}
+}
+
+func TestRender_OnceProp_OnPartialReload(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+	r.Header.Set("X-Inertia-Partial-Data", "token")
+	r.Header.Set("X-Inertia-Partial-Component", "Home")
+
+	b.Render(w, r, "Home", Props{
+		"token": Once(func() (any, error) { return "abc", nil }),
+		"other": "excluded",
+	})
+
+	var page Page
+	json.Unmarshal(w.Body.Bytes(), &page)
+
+	if page.Props["token"] != "abc" {
+		t.Error("once prop should be included in partial reload when requested")
+	}
+	if _, ok := page.Props["other"]; ok {
+		t.Error("non-requested prop should be excluded")
+	}
+}
+
+func TestRender_OnceProp_Error(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+
+	err := b.Render(w, r, "Home", Props{
+		"token": Once(func() (any, error) { return nil, errors.New("once failed") }),
+	})
+
+	if err == nil {
+		t.Error("expected error from once prop evaluation")
+	}
+}
+
+// --- ScrollProp render tests ---
+
+func TestRender_ScrollProp_IncludedOnInitialLoad(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+
+	b.Render(w, r, "Feed", Props{
+		"posts": Scroll([]string{"post1", "post2"}, "data"),
+	})
+
+	var page Page
+	json.Unmarshal(w.Body.Bytes(), &page)
+
+	if page.Props["posts"] == nil {
+		t.Error("scroll prop should be included on initial load")
+	}
+	if !contains(page.MergeProps, "posts") {
+		t.Error("expected posts in mergeProps (scroll defaults to append)")
+	}
+}
+
+func TestRender_ScrollProp_WithMetadata(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+
+	b.Render(w, r, "Feed", Props{
+		"posts": Scroll([]string{"post1"}, "data").WithMetadata(func() ScrollMeta {
+			return ScrollMeta{
+				PageName:    "page",
+				CurrentPage: 1,
+				NextPage:    2,
+			}
+		}),
+	})
+
+	var page Page
+	json.Unmarshal(w.Body.Bytes(), &page)
+
+	if page.ScrollProps == nil {
+		t.Fatal("expected scrollProps to be set")
+	}
+	meta, ok := page.ScrollProps["posts"]
+	if !ok {
+		t.Fatal("expected posts in scrollProps")
+	}
+	if meta.PageName != "page" {
+		t.Errorf("expected PageName 'page', got %s", meta.PageName)
+	}
+	if meta.CurrentPage != float64(1) {
+		t.Errorf("expected CurrentPage 1, got %v", meta.CurrentPage)
+	}
+}
+
+func TestRender_ScrollProp_Deferred_NotOnInitialLoad(t *testing.T) {
+	b := setupBond(t)
+
+	evaluated := false
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+
+	b.Render(w, r, "Feed", Props{
+		"posts": ScrollFunc(func() (any, error) {
+			evaluated = true
+			return "data", nil
+		}, "data").Defer(),
+	})
+
+	var page Page
+	json.Unmarshal(w.Body.Bytes(), &page)
+
+	if evaluated {
+		t.Error("deferred scroll prop should not be evaluated on initial load")
+	}
+	if _, ok := page.Props["posts"]; ok {
+		t.Error("deferred scroll prop should not be in response on initial load")
+	}
+}
+
+func TestRender_ScrollProp_Deferred_EvaluatedOnPartialReload(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+	r.Header.Set("X-Inertia-Partial-Data", "posts")
+	r.Header.Set("X-Inertia-Partial-Component", "Feed")
+
+	b.Render(w, r, "Feed", Props{
+		"posts": Scroll([]string{"post1"}, "data").Defer(),
+	})
+
+	var page Page
+	json.Unmarshal(w.Body.Bytes(), &page)
+
+	if page.Props["posts"] == nil {
+		t.Error("deferred scroll prop should be included on partial reload")
+	}
+	if !contains(page.MergeProps, "posts") {
+		t.Error("expected posts in mergeProps")
+	}
+}
+
+func TestRender_ScrollProp_PrependViaHeader(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+	r.Header.Set(HeaderInfiniteScrollIntent, "prepend")
+
+	b.Render(w, r, "Feed", Props{
+		"posts": Scroll([]string{"post1"}, "data"),
+	})
+
+	var page Page
+	json.Unmarshal(w.Body.Bytes(), &page)
+
+	if !contains(page.PrependProps, "posts") {
+		t.Error("expected posts in prependProps when header says prepend")
+	}
+}
+
+func TestRender_ScrollProp_AppendViaHeader(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+	r.Header.Set(HeaderInfiniteScrollIntent, "append")
+
+	// Prop says prepend but header overrides to append
+	b.Render(w, r, "Feed", Props{
+		"posts": Scroll([]string{"post1"}, "data").PrependData(),
+	})
+
+	var page Page
+	json.Unmarshal(w.Body.Bytes(), &page)
+
+	if !contains(page.MergeProps, "posts") {
+		t.Error("expected posts in mergeProps (header overrides to append)")
+	}
+	if contains(page.PrependProps, "posts") {
+		t.Error("posts should not be in prependProps when header says append")
+	}
+}
+
+func TestRender_ScrollProp_DeferredTrackedInDeferredGroups(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+
+	b.Render(w, r, "Feed", Props{
+		"posts": Scroll([]string{"a"}, "data").Defer("scroll"),
+	})
+
+	var page Page
+	json.Unmarshal(w.Body.Bytes(), &page)
+
+	if page.DeferredProps == nil {
+		t.Fatal("expected deferredProps to be set")
+	}
+	if !contains(page.DeferredProps["scroll"], "posts") {
+		t.Error("expected posts in scroll deferred group")
+	}
+}
+
+func TestRender_ScrollProp_Error(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+
+	err := b.Render(w, r, "Feed", Props{
+		"posts": ScrollFunc(func() (any, error) {
+			return nil, errors.New("scroll failed")
+		}, "data"),
+	})
+
+	if err == nil {
+		t.Error("expected error from scroll prop evaluation")
+	}
+}
+
+// --- DeferredProp merge render tests ---
+
+func TestRender_DeferredProp_WithMerge(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+	r.Header.Set("X-Inertia-Partial-Data", "items")
+	r.Header.Set("X-Inertia-Partial-Component", "List")
+
+	b.Render(w, r, "List", Props{
+		"items": Defer(func() (any, error) { return []int{1, 2}, nil }).Merge(),
+	})
+
+	var page Page
+	json.Unmarshal(w.Body.Bytes(), &page)
+
+	if page.Props["items"] == nil {
+		t.Error("deferred merge prop should be included in partial reload")
+	}
+	if !contains(page.MergeProps, "items") {
+		t.Error("expected items in mergeProps")
+	}
+}
+
+func TestRender_DeferredProp_WithOnce_SkippedIfSeen(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+	r.Header.Set("X-Inertia-Partial-Data", "items")
+	r.Header.Set("X-Inertia-Partial-Component", "List")
+	r.Header.Set(HeaderExceptOnceProps, "items")
+
+	b.Render(w, r, "List", Props{
+		"items": Defer(func() (any, error) { return []int{1}, nil }).Once(),
+	})
+
+	var page Page
+	json.Unmarshal(w.Body.Bytes(), &page)
+
+	if _, ok := page.Props["items"]; ok {
+		t.Error("deferred once prop should be skipped when already seen")
+	}
+}
+
+// --- OptionalProp once render tests ---
+
+func TestRender_OptionalProp_Once_SkippedIfSeen(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+	r.Header.Set("X-Inertia-Partial-Data", "extra")
+	r.Header.Set("X-Inertia-Partial-Component", "Home")
+	r.Header.Set(HeaderExceptOnceProps, "extra")
+
+	b.Render(w, r, "Home", Props{
+		"extra": Optional(func() (any, error) { return "val", nil }).Once(),
+	})
+
+	var page Page
+	json.Unmarshal(w.Body.Bytes(), &page)
+
+	if _, ok := page.Props["extra"]; ok {
+		t.Error("optional once prop should be skipped when already seen")
+	}
+}
+
+func TestRender_OptionalProp_Once_CustomKey(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+	r.Header.Set("X-Inertia-Partial-Data", "extra")
+	r.Header.Set("X-Inertia-Partial-Component", "Home")
+	r.Header.Set(HeaderExceptOnceProps, "my-extra")
+
+	b.Render(w, r, "Home", Props{
+		"extra": Optional(func() (any, error) { return "val", nil }).Once().As("my-extra"),
+	})
+
+	var page Page
+	json.Unmarshal(w.Body.Bytes(), &page)
+
+	if _, ok := page.Props["extra"]; ok {
+		t.Error("optional once prop with custom key should be skipped")
+	}
+}
+
+func TestRender_OptionalProp_Once_Included(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+	r.Header.Set("X-Inertia-Partial-Data", "extra")
+	r.Header.Set("X-Inertia-Partial-Component", "Home")
+
+	b.Render(w, r, "Home", Props{
+		"extra": Optional(func() (any, error) { return "val", nil }).Once(),
+	})
+
+	var page Page
+	json.Unmarshal(w.Body.Bytes(), &page)
+
+	if page.Props["extra"] != "val" {
+		t.Error("optional once prop should be included when not in except list")
+	}
+	if page.OnceProps == nil || page.OnceProps["extra"].Prop != "extra" {
+		t.Error("expected extra in onceProps")
+	}
+}
+
+// --- Reset header tests ---
+
+func TestRender_ResetHeader_ClearsMergeMetadata(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+	r.Header.Set("X-Inertia-Partial-Data", "items")
+	r.Header.Set("X-Inertia-Partial-Component", "List")
+	r.Header.Set(HeaderReset, "items")
+
+	b.Render(w, r, "List", Props{
+		"items": Merge([]string{"a", "b"}),
+	})
+
+	var page Page
+	json.Unmarshal(w.Body.Bytes(), &page)
+
+	if contains(page.MergeProps, "items") {
+		t.Error("items should be cleared from mergeProps on reset")
+	}
+}
+
+func TestRender_ResetHeader_OnlyAffectsSpecifiedKeys(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+	r.Header.Set("X-Inertia-Partial-Data", "items,other")
+	r.Header.Set("X-Inertia-Partial-Component", "List")
+	r.Header.Set(HeaderReset, "items")
+
+	b.Render(w, r, "List", Props{
+		"items": Merge([]string{"a"}),
+		"other": Merge([]string{"b"}),
+	})
+
+	var page Page
+	json.Unmarshal(w.Body.Bytes(), &page)
+
+	if contains(page.MergeProps, "items") {
+		t.Error("items should be cleared from mergeProps on reset")
+	}
+	if !contains(page.MergeProps, "other") {
+		t.Error("other should remain in mergeProps")
+	}
+}
+
+// --- Header constant tests ---
+
+func TestHeaderConstants(t *testing.T) {
+	tests := []struct {
+		name     string
+		constant string
+		expected string
+	}{
+		{"Inertia", HeaderInertia, "X-Inertia"},
+		{"Version", HeaderVersion, "X-Inertia-Version"},
+		{"Location", HeaderLocation, "X-Inertia-Location"},
+		{"PartialComponent", HeaderPartialComponent, "X-Inertia-Partial-Component"},
+		{"PartialOnly", HeaderPartialOnly, "X-Inertia-Partial-Data"},
+		{"PartialExcept", HeaderPartialExcept, "X-Inertia-Partial-Except"},
+		{"Reset", HeaderReset, "X-Inertia-Reset"},
+		{"ExceptOnceProps", HeaderExceptOnceProps, "X-Inertia-Except-Once-Props"},
+		{"InfiniteScrollIntent", HeaderInfiniteScrollIntent, "X-Inertia-Infinite-Scroll-Merge-Intent"},
+		{"ErrorBag", HeaderErrorBag, "X-Inertia-Error-Bag"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.constant != tt.expected {
+				t.Errorf("expected %s, got %s", tt.expected, tt.constant)
+			}
+		})
+	}
+}
+
+// --- Helper function tests ---
+
+func TestSplitHeader(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected int
+	}{
+		{"empty", "", 0},
+		{"single", "items", 1},
+		{"multiple", "a,b,c", 3},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := splitHeader(tt.input)
+			if tt.expected == 0 {
+				if result != nil {
+					t.Errorf("expected nil, got %v", result)
+				}
+			} else if len(result) != tt.expected {
+				t.Errorf("expected %d items, got %d", tt.expected, len(result))
+			}
+		})
+	}
+}
+
+func TestAppendUnique(t *testing.T) {
+	slice := []string{"a", "b"}
+
+	result := appendUnique(slice, "c")
+	if len(result) != 3 {
+		t.Errorf("expected 3 items, got %d", len(result))
+	}
+
+	result = appendUnique(result, "b")
+	if len(result) != 3 {
+		t.Errorf("expected 3 items (no dup), got %d", len(result))
+	}
+}
+
+func TestRemoveKeys(t *testing.T) {
+	slice := []string{"a", "b", "c"}
+
+	result := removeKeys(slice, []string{"b"})
+	if len(result) != 2 {
+		t.Errorf("expected 2 items, got %d", len(result))
+	}
+	if contains(result, "b") {
+		t.Error("expected b to be removed")
+	}
+
+	// Remove all
+	result = removeKeys(slice, []string{"a", "b", "c"})
+	if result != nil {
+		t.Errorf("expected nil when all removed, got %v", result)
+	}
+
+	// Empty keys
+	result = removeKeys(slice, nil)
+	if len(result) != 3 {
+		t.Errorf("expected 3 items when no keys to remove, got %d", len(result))
+	}
+}

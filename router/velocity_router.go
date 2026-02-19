@@ -410,6 +410,10 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	var handlerErr error
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			// Validation abort — response already sent, skip error handling
+			if _, ok := recovered.(AbortValidation); ok {
+				return
+			}
 			// Capture stack trace
 			buf := make([]byte, 4096)
 			n := runtime.Stack(buf, false)
@@ -494,6 +498,10 @@ func (r *VelocityRouterV2) handleError(ctx *Context, rw *responseWriter, err err
 
 	http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
 }
+
+// AbortValidation is a sentinel panic value used by validate.Form to stop
+// handler execution when validation fails (response already sent).
+type AbortValidation struct{}
 
 // panicError wraps a recovered panic value as an error
 type panicError struct {

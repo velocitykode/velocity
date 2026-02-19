@@ -26,7 +26,7 @@ func Lazy(fn func() (any, error)) bond.LazyProp {
 }
 
 // Optional creates an optional prop (alias for Lazy)
-func Optional(fn func() (any, error)) bond.OptionalProp {
+func Optional(fn func() (any, error)) *bond.OptionalProp {
 	return bond.Optional(fn)
 }
 
@@ -36,13 +36,13 @@ func Always(value any) bond.AlwaysProp {
 }
 
 // Defer creates a deferred prop that loads after the initial response
-func Defer(fn func() (any, error), group ...string) bond.DeferredProp {
+func Defer(fn func() (any, error), group ...string) *bond.DeferredProp {
 	return bond.Defer(fn, group...)
 }
 
 // LazyProp creates a lazy prop that only evaluates when needed
 // Note: This is an alias for Optional for backwards compatibility
-func LazyProp(value any) bond.OptionalProp {
+func LazyProp(value any) *bond.OptionalProp {
 	return bond.Optional(func() (any, error) {
 		return value, nil
 	})
