@@ -1,6 +1,7 @@
 package view
 
 import (
+	"fmt"
 	"net/http"
 	"os"
 
@@ -147,6 +148,15 @@ func (e *Engine) RenderWithErrors(w http.ResponseWriter, r *http.Request, compon
 		props["old"] = old
 	}
 	return e.bond.Render(w, r, component, props)
+}
+
+// Render renders an Inertia component using the view engine on the given context.
+func Render(ctx *router.Context, component string, props ...Props) error {
+	engine := FromContext(ctx)
+	if engine == nil {
+		return fmt.Errorf("view: engine not configured on context")
+	}
+	return engine.Render(ctx.Response, ctx.Request, component, props...)
 }
 
 // FromContext extracts the *Engine from a router.Context.

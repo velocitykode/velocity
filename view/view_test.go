@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -700,6 +701,41 @@ func TestLoadTemplateFromFile_Errors(t *testing.T) {
 				t.Errorf("LoadTemplateFromFile() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestRender_PackageLevel(t *testing.T) {
+	engine := newTestEngine(t)
+
+	ctx, rec := router.NewTestContext("GET", "/dashboard")
+	ctx.Request.Header.Set("X-Inertia", "true")
+	ctx.SetServices(&app.Services{View: engine})
+
+	err := Render(ctx, "Dashboard", Props{"title": "Home"})
+	if err != nil {
+		t.Fatalf("Render failed: %v", err)
+	}
+
+	var response map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to parse JSON: %v", err)
+	}
+	if response["component"] != "Dashboard" {
+		t.Errorf("component = %v, want Dashboard", response["component"])
+	}
+	props := response["props"].(map[string]interface{})
+	if props["title"] != "Home" {
+		t.Errorf("props.title = %v, want Home", props["title"])
+	}
+}
+
+func TestRender_PackageLevel_NoEngine(t *testing.T) {
+	ctx, _ := router.NewTestContext("GET", "/")
+	ctx.SetServices(&app.Services{})
+
+	err := Render(ctx, "Test")
+	if err == nil {
+		t.Fatal("Expected error when view engine is not configured")
 	}
 }
 
