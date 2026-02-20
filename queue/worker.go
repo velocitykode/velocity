@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -43,6 +44,8 @@ type Worker struct {
 	interval        time.Duration
 	timeout         time.Duration
 	maxRetries      int
+	backoff         BackoffStrategy
+	attempts        sync.Map // keyed by jobKey(job) → *int32
 	ctx             context.Context
 	cancel          context.CancelFunc
 	wg              sync.WaitGroup
@@ -97,6 +100,14 @@ func WithMaxRetries(n int) WorkerOption {
 	}
 }
 
+// WithBackoff sets the backoff strategy for job retries.
+// If not set, the worker uses ExponentialBackoff(1s, 5min).
+func WithBackoff(strategy BackoffStrategy) WorkerOption {
+	return func(w *Worker) {
+		w.backoff = strategy
+	}
+}
+
 // WithWorkerLogger sets the logger for the worker.
 // If not set, the worker uses Go's standard log package.
 func WithWorkerLogger(l WorkerLogger) WorkerOption {
@@ -122,6 +133,10 @@ func NewWorker(queue Driver, queueName string, handler func(Job) error, opts ...
 
 	for _, opt := range opts {
 		opt(w)
+	}
+
+	if w.backoff == nil {
+		w.backoff = ExponentialBackoff(time.Second, 5*time.Minute)
 	}
 
 	if w.logger == nil {
@@ -207,26 +222,101 @@ func (w *Worker) processJob() error {
 	case err := <-done:
 		duration := time.Since(startTime)
 		if err != nil {
-			// Dispatch job.failed event
-			dispatchJobFailed(w.dispatchEvent, jobCtx, jobType, w.queueName, err, duration)
-			// Handle job failure
-			if failErr := w.queue.Failed(job, err, w.queueName); failErr != nil {
-				w.logger.Error("Failed to mark job as failed", "error", failErr)
-			}
+			w.handleJobFailure(jobCtx, job, jobType, err, duration)
 			return fmt.Errorf("job failed: %w", err)
 		}
-		// Dispatch job.processed event
+		// Success — clean up attempt tracking
+		w.removeAttempts(job)
 		dispatchJobProcessed(w.dispatchEvent, jobCtx, jobType, w.queueName, duration)
 		return nil
 	case <-jobCtx.Done():
 		duration := time.Since(startTime)
-		// Job timed out
 		timeoutErr := fmt.Errorf("job timed out")
-		// Dispatch job.failed event
-		dispatchJobFailed(w.dispatchEvent, jobCtx, jobType, w.queueName, timeoutErr, duration)
-		if failErr := w.queue.Failed(job, timeoutErr, w.queueName); failErr != nil {
-			w.logger.Error("Failed to mark job as failed", "error", failErr)
-		}
+		w.handleJobFailure(jobCtx, job, jobType, timeoutErr, duration)
 		return timeoutErr
 	}
+}
+
+// handleJobFailure decides whether to retry a job or permanently fail it.
+func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, err error, duration time.Duration) {
+	maxAttempts := w.maxRetries
+	if ma, ok := job.(MaxAttempter); ok {
+		maxAttempts = ma.MaxAttempts()
+	}
+
+	attempt := w.incrementAttempts(job)
+
+	// Check if the job opts out of retrying this specific error
+	if rd, ok := job.(RetryDecider); ok {
+		if !rd.ShouldRetry(err) {
+			w.failJob(ctx, job, jobType, err, duration, attempt, maxAttempts)
+			return
+		}
+	}
+
+	// If we have retries remaining (attempt < maxAttempts means we haven't used all attempts)
+	if attempt < maxAttempts {
+		backoff := w.calculateBackoff(job, attempt)
+		w.logger.Info("Retrying job",
+			"type", jobType,
+			"attempt", attempt,
+			"max_attempts", maxAttempts,
+			"backoff_ms", backoff.Milliseconds(),
+			"error", err,
+		)
+		dispatchJobRetrying(w.dispatchEvent, ctx, jobType, w.queueName, attempt, maxAttempts, err, backoff)
+		if pushErr := w.queue.PushDelayed(job, backoff, w.queueName); pushErr != nil {
+			w.logger.Error("Failed to re-queue job for retry", "error", pushErr)
+			w.failJob(ctx, job, jobType, err, duration, attempt, maxAttempts)
+		}
+		return
+	}
+
+	w.failJob(ctx, job, jobType, err, duration, attempt, maxAttempts)
+}
+
+// failJob permanently fails a job after exhausting retries.
+func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error, duration time.Duration, attempt, maxAttempts int) {
+	w.removeAttempts(job)
+	dispatchJobFailed(w.dispatchEvent, ctx, jobType, w.queueName, err, duration)
+	if failErr := w.queue.Failed(job, err, w.queueName); failErr != nil {
+		w.logger.Error("Failed to mark job as failed", "error", failErr)
+	}
+}
+
+// calculateBackoff determines the delay before the next retry.
+func (w *Worker) calculateBackoff(job Job, attempt int) time.Duration {
+	if b, ok := job.(Backoffer); ok {
+		delays := b.Backoff()
+		if len(delays) > 0 {
+			idx := attempt - 1
+			if idx >= len(delays) {
+				idx = len(delays) - 1
+			}
+			return delays[idx]
+		}
+	}
+	return w.backoff(attempt)
+}
+
+// jobKey returns a stable key for attempt tracking.
+func (w *Worker) jobKey(job Job) interface{} {
+	if id, ok := job.(Identifiable); ok {
+		return id.JobID()
+	}
+	// Fallback to pointer identity (works for memory driver)
+	return job
+}
+
+// incrementAttempts atomically increments and returns the attempt count for a job.
+func (w *Worker) incrementAttempts(job Job) int {
+	key := w.jobKey(job)
+	val, _ := w.attempts.LoadOrStore(key, new(int32))
+	counter := val.(*int32)
+	return int(atomic.AddInt32(counter, 1))
+}
+
+// removeAttempts cleans up attempt tracking for a job.
+func (w *Worker) removeAttempts(job Job) {
+	w.attempts.Delete(w.jobKey(job))
 }

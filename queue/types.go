@@ -45,3 +45,53 @@ type Payload struct {
 	Signature  string          `json:"signature,omitempty"` // HMAC-SHA256 integrity signature
 	DatabaseID int64           `json:"-"`                   // Internal use for database driver
 }
+
+// MaxAttempter is an optional interface that jobs can implement to override
+// the worker's default max retry count.
+type MaxAttempter interface {
+	MaxAttempts() int
+}
+
+// Backoffer is an optional interface that jobs can implement to provide
+// explicit per-attempt backoff delays. The last value is reused for
+// subsequent attempts beyond the slice length.
+type Backoffer interface {
+	Backoff() []time.Duration
+}
+
+// RetryDecider is an optional interface that jobs can implement to
+// opt out of retries for specific errors.
+type RetryDecider interface {
+	ShouldRetry(err error) bool
+}
+
+// Identifiable is an optional interface that jobs can implement to provide
+// a stable key for attempt tracking across serialization boundaries
+// (e.g. Redis, database drivers).
+type Identifiable interface {
+	JobID() string
+}
+
+// OnQueuer is an optional interface that jobs can implement to specify
+// which queue they should be dispatched to. When a job implements this
+// interface and no explicit queue name is passed to Push/PushDelayed,
+// the value from OnQueue() is used.
+type OnQueuer interface {
+	OnQueue() string
+}
+
+// resolveQueueName returns the queue name for a job. Priority:
+// 1. Explicit queue name passed by caller
+// 2. Job's OnQueue() if it implements OnQueuer
+// 3. "default"
+func resolveQueueName(job Job, queueName ...string) string {
+	if len(queueName) > 0 && queueName[0] != "" {
+		return queueName[0]
+	}
+	if oq, ok := job.(OnQueuer); ok {
+		if name := oq.OnQueue(); name != "" {
+			return name
+		}
+	}
+	return "default"
+}

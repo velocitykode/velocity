@@ -79,7 +79,7 @@ func TestIntegrationMemoryDriver(t *testing.T) {
 		handler := func(job Job) error {
 			return job.Handle()
 		}
-		worker := NewWorker(driver, "process-queue", handler)
+		worker := NewWorker(driver, "process-queue", handler, WithMaxRetries(1))
 		go worker.Start()
 		defer worker.Stop()
 

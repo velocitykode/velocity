@@ -21,6 +21,7 @@ func TestEventNames(t *testing.T) {
 		{"JobProcessing", &JobProcessing{}, "job.processing"},
 		{"JobProcessed", &JobProcessed{}, "job.processed"},
 		{"JobFailed", &JobFailed{}, "job.failed"},
+		{"JobRetrying", &JobRetrying{}, "job.retrying"},
 	}
 
 	for _, tt := range tests {
@@ -400,6 +401,7 @@ func TestWorkerEventDispatching(t *testing.T) {
 	var processingEvents []*JobProcessing
 	var processedEvents []*JobProcessed
 	var failedEvents []*JobFailed
+	var retryingEvents []*JobRetrying
 	var mu sync.Mutex
 
 	dispatcher := func(event interface{}) error {
@@ -412,6 +414,8 @@ func TestWorkerEventDispatching(t *testing.T) {
 			processedEvents = append(processedEvents, e)
 		case *JobFailed:
 			failedEvents = append(failedEvents, e)
+		case *JobRetrying:
+			retryingEvents = append(retryingEvents, e)
 		}
 		return nil
 	}
@@ -420,6 +424,7 @@ func TestWorkerEventDispatching(t *testing.T) {
 		processingEvents = nil
 		processedEvents = nil
 		failedEvents = nil
+		retryingEvents = nil
 
 		q := NewMemoryDriver()
 		defer q.Close()
@@ -473,6 +478,7 @@ func TestWorkerEventDispatching(t *testing.T) {
 		processingEvents = nil
 		processedEvents = nil
 		failedEvents = nil
+		retryingEvents = nil
 		mu.Unlock()
 
 		q := NewMemoryDriver()
@@ -494,7 +500,7 @@ func TestWorkerEventDispatching(t *testing.T) {
 
 		worker := NewWorker(q, "fail-queue", func(j Job) error {
 			return j.Handle()
-		}, WithInterval(10*time.Millisecond))
+		}, WithInterval(10*time.Millisecond), WithMaxRetries(1))
 		worker.SetEventDispatcher(dispatcher)
 
 		worker.Start()
@@ -619,4 +625,83 @@ func TestJobFailedEventFields(t *testing.T) {
 	if e.DurationMs != 30000 {
 		t.Errorf("DurationMs = %d, want 30000", e.DurationMs)
 	}
+}
+
+func TestJobRetryingEventName(t *testing.T) {
+	e := &JobRetrying{
+		Context:     context.Background(),
+		JobType:     "*queue.TestJob",
+		Queue:       "default",
+		Attempt:     2,
+		MaxAttempts: 5,
+		Error:       "connection refused",
+		BackoffMs:   2000,
+		TraceID:     "trace-retry",
+		SpanID:      "span-retry",
+		ParentID:    "parent-retry",
+	}
+
+	if e.Name() != "job.retrying" {
+		t.Errorf("Name() = %q, want %q", e.Name(), "job.retrying")
+	}
+	if e.Attempt != 2 {
+		t.Errorf("Attempt = %d, want 2", e.Attempt)
+	}
+	if e.MaxAttempts != 5 {
+		t.Errorf("MaxAttempts = %d, want 5", e.MaxAttempts)
+	}
+	if e.Error != "connection refused" {
+		t.Errorf("Error = %q, want %q", e.Error, "connection refused")
+	}
+	if e.BackoffMs != 2000 {
+		t.Errorf("BackoffMs = %d, want 2000", e.BackoffMs)
+	}
+}
+
+func TestDispatchJobRetrying(t *testing.T) {
+	var captured *JobRetrying
+	dispatch := func(event interface{}) {
+		if e, ok := event.(*JobRetrying); ok {
+			captured = e
+		}
+	}
+
+	t.Run("basic dispatch", func(t *testing.T) {
+		captured = nil
+		ctx := context.Background()
+		err := errors.New("timeout")
+		dispatchJobRetrying(dispatch, ctx, "*queue.TestJob", "default", 2, 5, err, 4*time.Second)
+
+		if captured == nil {
+			t.Fatal("event was not dispatched")
+		}
+		if captured.Attempt != 2 {
+			t.Errorf("Attempt = %d, want 2", captured.Attempt)
+		}
+		if captured.MaxAttempts != 5 {
+			t.Errorf("MaxAttempts = %d, want 5", captured.MaxAttempts)
+		}
+		if captured.Error != "timeout" {
+			t.Errorf("Error = %q, want %q", captured.Error, "timeout")
+		}
+		if captured.BackoffMs != 4000 {
+			t.Errorf("BackoffMs = %d, want 4000", captured.BackoffMs)
+		}
+	})
+
+	t.Run("with nil dispatch", func(t *testing.T) {
+		// Should not panic
+		dispatchJobRetrying(nil, context.Background(), "*queue.TestJob", "default", 1, 3, errors.New("err"), time.Second)
+	})
+
+	t.Run("with nil error", func(t *testing.T) {
+		captured = nil
+		dispatchJobRetrying(dispatch, context.Background(), "*queue.TestJob", "default", 1, 3, nil, time.Second)
+		if captured == nil {
+			t.Fatal("event was not dispatched")
+		}
+		if captured.Error != "" {
+			t.Errorf("Error = %q, want empty", captured.Error)
+		}
+	})
 }

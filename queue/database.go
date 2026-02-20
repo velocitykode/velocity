@@ -79,10 +79,7 @@ func (d *DatabaseDriver) Push(job Job, queueName ...string) error {
 
 // PushDelayed adds a delayed job to the queue
 func (d *DatabaseDriver) PushDelayed(job Job, delay time.Duration, queueName ...string) error {
-	name := "default"
-	if len(queueName) > 0 && queueName[0] != "" {
-		name = queueName[0]
-	}
+	name := resolveQueueName(job, queueName...)
 
 	// Check if database is available
 	db := d.db

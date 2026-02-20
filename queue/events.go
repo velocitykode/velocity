@@ -72,6 +72,25 @@ func (e *JobFailed) Name() string {
 	return "job.failed"
 }
 
+// JobRetrying is dispatched when a failed job is being retried
+type JobRetrying struct {
+	Context     context.Context
+	JobType     string
+	Queue       string
+	Attempt     int
+	MaxAttempts int
+	Error       string
+	BackoffMs   int64
+	TraceID     string
+	SpanID      string
+	ParentID    string
+}
+
+// Name returns the event name
+func (e *JobRetrying) Name() string {
+	return "job.retrying"
+}
+
 // dispatchJobQueued dispatches a JobQueued event
 func dispatchJobQueued(dispatch func(interface{}), ctx context.Context, jobType, queue string, delayed bool, delay time.Duration) {
 	if dispatch == nil {
@@ -142,5 +161,29 @@ func dispatchJobFailed(dispatch func(interface{}), ctx context.Context, jobType,
 		TraceID:    traceID,
 		SpanID:     spanID,
 		ParentID:   parentID,
+	})
+}
+
+// dispatchJobRetrying dispatches a JobRetrying event
+func dispatchJobRetrying(dispatch func(interface{}), ctx context.Context, jobType, queue string, attempt, maxAttempts int, err error, backoff time.Duration) {
+	if dispatch == nil {
+		return
+	}
+	traceID, spanID, parentID := trace.GetTraceContext(ctx)
+	errMsg := ""
+	if err != nil {
+		errMsg = err.Error()
+	}
+	dispatch(&JobRetrying{
+		Context:     ctx,
+		JobType:     jobType,
+		Queue:       queue,
+		Attempt:     attempt,
+		MaxAttempts: maxAttempts,
+		Error:       errMsg,
+		BackoffMs:   backoff.Milliseconds(),
+		TraceID:     traceID,
+		SpanID:      spanID,
+		ParentID:    parentID,
 	})
 }

@@ -62,7 +62,7 @@ func (m *MemoryDriver) dispatchEvent(event interface{}) {
 
 // Push adds a job to the queue
 func (m *MemoryDriver) Push(job Job, queueName ...string) error {
-	name := m.getQueueName(queueName...)
+	name := resolveQueueName(job, queueName...)
 
 	wrapper, err := CreateJobWrapper(job, name)
 	if err != nil {
@@ -85,7 +85,7 @@ func (m *MemoryDriver) Push(job Job, queueName ...string) error {
 
 // PushDelayed adds a job to the queue with a delay
 func (m *MemoryDriver) PushDelayed(job Job, delay time.Duration, queueName ...string) error {
-	name := m.getQueueName(queueName...)
+	name := resolveQueueName(job, queueName...)
 
 	wrapper, err := CreateJobWrapper(job, name)
 	if err != nil {
