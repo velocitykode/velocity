@@ -749,13 +749,13 @@ func (c *Context) XML(status int, data interface{}) error {
 // File response methods
 // ---------------------------------------------------------------------------
 
-// validateFilePath rejects paths containing ".." to prevent directory traversal
-// and returns the cleaned path.
+// validateFilePath cleans the path and rejects directory traversal attempts.
 func validateFilePath(path string) (string, error) {
-	if strings.Contains(path, "..") {
+	cleaned := filepath.Clean(path)
+	if strings.Contains(cleaned, "..") {
 		return "", fmt.Errorf("invalid file path")
 	}
-	return filepath.Clean(path), nil
+	return cleaned, nil
 }
 
 // File serves a file from the given path.
@@ -775,7 +775,9 @@ func (c *Context) Download(path string, filename string) error {
 	if err != nil {
 		return err
 	}
-	c.Response.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	sanitized := filepath.Base(filename)
+	sanitized = strings.ReplaceAll(sanitized, `"`, `\"`)
+	c.Response.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, sanitized))
 	http.ServeFile(c.Response, c.Request, path)
 	return nil
 }
@@ -904,6 +906,7 @@ func writeFlashCookie(w http.ResponseWriter, name string, value any) {
 		Path:     "/",
 		MaxAge:   300, // 5 minutes; cleared on read
 		HttpOnly: true,
+		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 	})
 }

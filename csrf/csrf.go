@@ -191,7 +191,6 @@ func (c *CSRF) handleError(w http.ResponseWriter, r *http.Request, err error) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(419)
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"error":   err.Error(),
 			"code":    419,
 			"message": c.config.ErrorMessage,
 		})

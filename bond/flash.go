@@ -55,15 +55,21 @@ func readFlashCookie(r *http.Request, name string) (any, bool) {
 // clearFlashCookies expires the flash cookies so they are consumed only once.
 func clearFlashCookies(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
-		Name:   flashErrorsCookie,
-		Value:  "",
-		Path:   "/",
-		MaxAge: -1,
+		Name:     flashErrorsCookie,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
 	})
 	http.SetCookie(w, &http.Cookie{
-		Name:   flashInputCookie,
-		Value:  "",
-		Path:   "/",
-		MaxAge: -1,
+		Name:     flashInputCookie,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
 	})
 }

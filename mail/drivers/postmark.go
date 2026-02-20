@@ -194,8 +194,8 @@ func (d *PostmarkDriver) buildPayload(msg *mail.Message) map[string]interface{} 
 	headers := make([]map[string]string, 0)
 	for key, value := range msg.GetHeaders() {
 		headers = append(headers, map[string]string{
-			"Name":  key,
-			"Value": value,
+			"Name":  sanitizeHeader(key),
+			"Value": sanitizeHeader(value),
 		})
 	}
 	if len(headers) > 0 {

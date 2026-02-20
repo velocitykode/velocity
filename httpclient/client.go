@@ -6,11 +6,13 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 )
 
 // Client is an instrumented HTTP client that dispatches events for APM monitoring
 type Client struct {
+	mu              sync.RWMutex
 	client          *http.Client
 	baseURL         string
 	eventDispatcher func(event interface{}) error
@@ -138,13 +140,18 @@ func (c *Client) Patch(ctx context.Context, url string, contentType string, body
 
 // SetEventDispatcher sets the function used to dispatch events.
 func (c *Client) SetEventDispatcher(fn func(event interface{}) error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.eventDispatcher = fn
 }
 
 // dispatchEvent dispatches an event if a dispatcher is configured.
 func (c *Client) dispatchEvent(event interface{}) {
-	if c.eventDispatcher != nil {
-		c.eventDispatcher(event)
+	c.mu.RLock()
+	fn := c.eventDispatcher
+	c.mu.RUnlock()
+	if fn != nil {
+		fn(event)
 	}
 }
 

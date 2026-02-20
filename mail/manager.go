@@ -16,13 +16,18 @@ type Manager struct {
 
 // SetEventDispatcher sets the function used to dispatch events.
 func (m *Manager) SetEventDispatcher(fn func(event interface{}) error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.eventDispatcher = fn
 }
 
 // dispatchEvent dispatches an event if a dispatcher is configured.
 func (m *Manager) dispatchEvent(event interface{}) {
-	if m.eventDispatcher != nil {
-		m.eventDispatcher(event)
+	m.mu.RLock()
+	fn := m.eventDispatcher
+	m.mu.RUnlock()
+	if fn != nil {
+		fn(event)
 	}
 }
 

@@ -60,22 +60,29 @@ func (s *Server) LeaveGroup(clientID, groupName string) error {
 
 // LeaveAllGroups removes a client from all groups
 func (s *Server) LeaveAllGroups(clientID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+	// Phase 1: collect group names under s.mu only
+	s.mu.RLock()
 	client, ok := s.clients[clientID]
 	if !ok {
+		s.mu.RUnlock()
 		return
 	}
-
-	// Remove from all server groups
-	client.mu.RLock()
-	groups := make([]string, 0, len(client.Groups))
-	for groupName := range client.Groups {
-		groups = append(groups, groupName)
+	// Read group names from s.groups (avoids acquiring client.mu while holding s.mu)
+	groups := make([]string, 0)
+	for groupName, members := range s.groups {
+		if _, isMember := members[clientID]; isMember {
+			groups = append(groups, groupName)
+		}
 	}
-	client.mu.RUnlock()
+	s.mu.RUnlock()
 
+	// Phase 2: clear client's group set (only client.mu held)
+	client.mu.Lock()
+	client.Groups = make(map[string]bool)
+	client.mu.Unlock()
+
+	// Phase 3: remove from server groups (only s.mu held)
+	s.mu.Lock()
 	for _, groupName := range groups {
 		if group, ok := s.groups[groupName]; ok {
 			delete(group, clientID)
@@ -84,11 +91,7 @@ func (s *Server) LeaveAllGroups(clientID string) {
 			}
 		}
 	}
-
-	// Clear client groups
-	client.mu.Lock()
-	client.Groups = make(map[string]bool)
-	client.mu.Unlock()
+	s.mu.Unlock()
 }
 
 // GetGroupMembers returns all clients in a group

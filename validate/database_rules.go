@@ -10,8 +10,8 @@ import (
 	"github.com/velocitykode/velocity/validation"
 )
 
-// identifierRegex validates SQL table/column names.
-var identifierRegex = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+// identifierRegex validates SQL table/column names (allows dots for qualified names like table.column).
+var identifierRegex = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_.]*$`)
 
 func validateIdentifier(name string) error {
 	if !identifierRegex.MatchString(name) {

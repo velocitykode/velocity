@@ -231,10 +231,18 @@ func parseCondition(condition string, args []any) (column, operator string, valu
 	// Check for IS NULL / IS NOT NULL patterns (case-insensitive)
 	upperCond := strings.ToUpper(condition)
 	if idx := strings.Index(upperCond, " IS NOT NULL"); idx != -1 {
-		return strings.TrimSpace(condition[:idx]), "IS NOT NULL", nil
+		col := strings.TrimSpace(condition[:idx])
+		if err := validateIdentifier(col); err != nil {
+			panic(fmt.Sprintf("Where: %s", err))
+		}
+		return col, "IS NOT NULL", nil
 	}
 	if idx := strings.Index(upperCond, " IS NULL"); idx != -1 {
-		return strings.TrimSpace(condition[:idx]), "IS NULL", nil
+		col := strings.TrimSpace(condition[:idx])
+		if err := validateIdentifier(col); err != nil {
+			panic(fmt.Sprintf("Where: %s", err))
+		}
+		return col, "IS NULL", nil
 	}
 
 	// Split into parts: column, operator, rest
@@ -242,6 +250,9 @@ func parseCondition(condition string, args []any) (column, operator string, valu
 
 	if len(parts) == 1 {
 		// Only column provided, default to "="
+		if err := validateIdentifier(parts[0]); err != nil {
+			panic(fmt.Sprintf("Where: %s", err))
+		}
 		if len(args) > 0 {
 			return parts[0], "=", args[0]
 		}
@@ -251,6 +262,11 @@ func parseCondition(condition string, args []any) (column, operator string, valu
 	// Column and operator provided
 	column = parts[0]
 	operator = parts[1]
+
+	// Validate column name
+	if err := validateIdentifier(column); err != nil {
+		panic(fmt.Sprintf("Where: %s", err))
+	}
 
 	// Validate operator against allowlist
 	if !isValidOperator(operator) {
@@ -352,6 +368,15 @@ func (q *Query[T]) RightJoin(table, first, operator, second string) *Query[T] {
 
 // Select specifies columns to select
 func (q *Query[T]) Select(columns ...string) *Query[T] {
+	for _, col := range columns {
+		// Skip validation for raw expressions (e.g., "COUNT(*)", "SUM(amount)")
+		if strings.Contains(col, "(") {
+			continue
+		}
+		if err := validateIdentifier(col); err != nil {
+			panic(fmt.Sprintf("Select: %s", err))
+		}
+	}
 	q.columns = columns
 	return q
 }
@@ -548,6 +573,9 @@ func (q *Query[T]) Exists() bool {
 
 // Pluck retrieves values of a single column
 func (q *Query[T]) Pluck(column string) ([]any, error) {
+	if err := validateIdentifier(column); err != nil {
+		panic(fmt.Sprintf("Pluck: %s", err))
+	}
 	q.Select(column)
 
 	selectQuery := &drivers.SelectQuery{
@@ -623,6 +651,9 @@ func (q *Query[T]) InsertGetId(data map[string]any) (int64, error) {
 
 	i := 1
 	for col, val := range data {
+		if err := validateIdentifier(col); err != nil {
+			return 0, fmt.Errorf("InsertGetId: %w", err)
+		}
 		columns = append(columns, col)
 		values = append(values, val)
 		placeholders = append(placeholders, q.driver.Grammar().Placeholder(i))

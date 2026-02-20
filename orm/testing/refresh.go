@@ -46,7 +46,27 @@ func GetAllTables(db *sql.DB, driver string, dbName ...string) ([]string, error)
 		if !dbIdentifierRegex.MatchString(name) {
 			return nil, fmt.Errorf("invalid database name: %q", name)
 		}
-		query = fmt.Sprintf("SELECT table_name FROM information_schema.tables WHERE table_schema = '%s' ORDER BY table_name", name)
+		query = "SELECT table_name FROM information_schema.tables WHERE table_schema = ? ORDER BY table_name"
+		rows, err := db.Query(query, name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query tables: %w", err)
+		}
+		defer rows.Close()
+
+		tables := make([]string, 0)
+		for rows.Next() {
+			var table string
+			if err := rows.Scan(&table); err != nil {
+				return nil, fmt.Errorf("failed to scan table name: %w", err)
+			}
+			tables = append(tables, table)
+		}
+
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("error iterating tables: %w", err)
+		}
+
+		return tables, nil
 
 	case "postgres":
 		query = "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename"

@@ -196,7 +196,7 @@ func (d *MailgunDriver) addFields(writer *multipart.Writer, msg *mail.Message) e
 
 	// Custom headers
 	for key, value := range msg.GetHeaders() {
-		writer.WriteField(fmt.Sprintf("h:%s", key), value)
+		writer.WriteField(fmt.Sprintf("h:%s", sanitizeHeader(key)), sanitizeHeader(value))
 	}
 
 	return nil
