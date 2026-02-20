@@ -232,11 +232,16 @@ func (h *Handler) ShouldReport(err error) bool {
 }
 
 // Report reports an exception to all configured reporters.
+// Exceptions in the dontReport list are silently skipped.
 func (h *Handler) Report(err error, ctx *ExceptionContext) {
 	if !h.ShouldReport(err) {
 		return
 	}
+	h.reportToAll(err, ctx)
+}
 
+// reportToAll sends an error to every configured reporter unconditionally.
+func (h *Handler) reportToAll(err error, ctx *ExceptionContext) {
 	h.mu.RLock()
 	reporters := make([]Reporter, len(h.reporters))
 	copy(reporters, h.reporters)
@@ -348,15 +353,8 @@ func (h *Handler) HandlePanic(ctx RenderContext, recovered any) {
 	exCtx.URL = ctx.RequestPath()
 	exCtx.Method = ctx.RequestMethod()
 
-	// Always report panics
-	h.mu.RLock()
-	reporters := make([]Reporter, len(h.reporters))
-	copy(reporters, h.reporters)
-	h.mu.RUnlock()
-
-	for _, reporter := range reporters {
-		reporter.Report(err, exCtx)
-	}
+	// Always report panics (bypasses ShouldReport)
+	h.reportToAll(err, exCtx)
 
 	// Render as internal server error
 	h.Render(ctx, NewInternalServerErrorException(err.Error()).WithPrevious(err), exCtx)

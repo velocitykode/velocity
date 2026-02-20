@@ -133,79 +133,62 @@ func (d *DefaultDispatcher) Subscribe(subscriber Subscriber) {
 	subscriber.Subscribe(d)
 }
 
-// Dispatch fires an event to all registered listeners
+// Dispatch fires an event to all registered listeners.
+// Listeners that return true from ShouldQueue are dispatched via the queue;
+// all others are processed synchronously.
 func (d *DefaultDispatcher) Dispatch(event interface{}) error {
-	listeners := d.getListenersForEvent(event)
-
-	for _, listener := range listeners {
+	return d.dispatchToListeners(event, func(listener Listener) error {
 		if listener.ShouldQueue() && d.queue != nil {
-			// Queue the listener for async processing
 			if err := d.queue.Push(event, listener, 0); err != nil {
 				return fmt.Errorf("failed to queue listener: %w", err)
 			}
-		} else {
-			// Process synchronously
-			if err := d.processListener(event, listener); err != nil {
-				return err
-			}
+			return nil
 		}
-	}
-
-	return nil
+		return d.processListener(event, listener)
+	})
 }
 
-// DispatchNow fires an event synchronously
+// DispatchNow fires an event synchronously to all listeners.
 func (d *DefaultDispatcher) DispatchNow(event interface{}) error {
-	listeners := d.getListenersForEvent(event)
-
-	for _, listener := range listeners {
-		if err := d.processListener(event, listener); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return d.dispatchToListeners(event, func(listener Listener) error {
+		return d.processListener(event, listener)
+	})
 }
 
-// DispatchAsync fires an event asynchronously
+// DispatchAsync fires an event asynchronously via the queue.
+// Falls back to a goroutine if no queue is configured.
 func (d *DefaultDispatcher) DispatchAsync(event interface{}) error {
 	if d.queue == nil {
-		// Fallback to goroutine if no queue configured
 		go func() {
 			_ = d.DispatchNow(event)
 		}()
 		return nil
 	}
 
-	listeners := d.getListenersForEvent(event)
-
-	for _, listener := range listeners {
+	return d.dispatchToListeners(event, func(listener Listener) error {
 		if err := d.queue.Push(event, listener, 0); err != nil {
 			return fmt.Errorf("failed to queue listener: %w", err)
 		}
-	}
-
-	return nil
+		return nil
+	})
 }
 
-// DispatchAfter fires an event after a delay
+// DispatchAfter fires an event after a delay.
+// Falls back to a timer if no queue is configured.
 func (d *DefaultDispatcher) DispatchAfter(event interface{}, delay time.Duration) error {
-	if d.queue != nil {
-		listeners := d.getListenersForEvent(event)
-		for _, listener := range listeners {
-			if err := d.queue.Push(event, listener, delay); err != nil {
-				return fmt.Errorf("failed to queue delayed listener: %w", err)
-			}
-		}
+	if d.queue == nil {
+		time.AfterFunc(delay, func() {
+			_ = d.Dispatch(event)
+		})
 		return nil
 	}
 
-	// Fallback to timer if no queue configured
-	time.AfterFunc(delay, func() {
-		_ = d.Dispatch(event)
+	return d.dispatchToListeners(event, func(listener Listener) error {
+		if err := d.queue.Push(event, listener, delay); err != nil {
+			return fmt.Errorf("failed to queue delayed listener: %w", err)
+		}
+		return nil
 	})
-
-	return nil
 }
 
 // Until dispatches events until the first non-nil return
@@ -340,6 +323,16 @@ func (d *DefaultDispatcher) matchesPattern(event, pattern string) bool {
 	}
 
 	return event == pattern
+}
+
+// dispatchToListeners resolves listeners for an event and applies fn to each.
+func (d *DefaultDispatcher) dispatchToListeners(event interface{}, fn func(Listener) error) error {
+	for _, listener := range d.getListenersForEvent(event) {
+		if err := fn(listener); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // processListener executes a listener

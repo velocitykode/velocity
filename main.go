@@ -204,15 +204,8 @@ func New(opts ...Option) (*App, error) {
 	wireInstanceEvents(a)
 
 	// Run provider lifecycle: Register all, then Boot all
-	for _, p := range a.providers {
-		if err := p.Register(a.Services); err != nil {
-			return nil, fmt.Errorf("velocity: provider register failed: %w", err)
-		}
-	}
-	for _, p := range a.providers {
-		if err := p.Boot(a.Services); err != nil {
-			return nil, fmt.Errorf("velocity: provider boot failed: %w", err)
-		}
+	if err := runProviderLifecycle(a.providers, a.Services, "provider"); err != nil {
+		return nil, err
 	}
 
 	return a, nil
@@ -386,15 +379,8 @@ func (a *App) bootstrap() error {
 		a.chainProviders = reg.providers
 	}
 
-	for _, p := range a.chainProviders {
-		if err := p.Register(a.Services); err != nil {
-			return fmt.Errorf("velocity: chain provider register failed: %w", err)
-		}
-	}
-	for _, p := range a.chainProviders {
-		if err := p.Boot(a.Services); err != nil {
-			return fmt.Errorf("velocity: chain provider boot failed: %w", err)
-		}
+	if err := runProviderLifecycle(a.chainProviders, a.Services, "chain provider"); err != nil {
+		return err
 	}
 
 	// 2. Re-wire instance events (idempotent — safe to call again)
@@ -403,19 +389,12 @@ func (a *App) bootstrap() error {
 	// 3. Build middleware stack
 	mwStack := &MiddlewareStack{services: a.Services}
 
-	// Provider MiddlewareProvider callbacks first
-	for _, p := range a.chainProviders {
-		if mp, ok := p.(MiddlewareProvider); ok {
-			mp.Middleware(mwStack)
-		}
-	}
-
-	// App middleware callback
+	dispatchProviderCallback(a.chainProviders, func(mp MiddlewareProvider) {
+		mp.Middleware(mwStack)
+	})
 	if a.middlewareFn != nil {
 		a.middlewareFn(mwStack)
 	}
-
-	// Apply global middleware to router
 	if len(mwStack.global) > 0 {
 		a.Router.Use(mwStack.global...)
 	}
@@ -423,40 +402,25 @@ func (a *App) bootstrap() error {
 	// 4. Register routes
 	routing := &Routing{router: a.Router, middleware: mwStack}
 
-	// Provider RouteProvider callbacks first
-	for _, p := range a.chainProviders {
-		if rp, ok := p.(RouteProvider); ok {
-			rp.Routes(routing)
-		}
-	}
-
-	// App routes callback
+	dispatchProviderCallback(a.chainProviders, func(rp RouteProvider) {
+		rp.Routes(routing)
+	})
 	if a.routesFn != nil {
 		a.routesFn(routing)
 	}
 
 	// 5. Register events
-	// Provider EventProvider callbacks first
-	for _, p := range a.chainProviders {
-		if ep, ok := p.(EventProvider); ok {
-			ep.Events(a.Services.Events)
-		}
-	}
-
-	// App events callback
+	dispatchProviderCallback(a.chainProviders, func(ep EventProvider) {
+		ep.Events(a.Services.Events)
+	})
 	if a.eventsFn != nil {
 		a.eventsFn(a.Services.Events)
 	}
 
 	// 6. Register scheduled jobs
-	// Provider ScheduleProvider callbacks first
-	for _, p := range a.chainProviders {
-		if sp, ok := p.(ScheduleProvider); ok {
-			sp.Schedule(a.Services.Scheduler)
-		}
-	}
-
-	// App schedule callback
+	dispatchProviderCallback(a.chainProviders, func(sp ScheduleProvider) {
+		sp.Schedule(a.Services.Scheduler)
+	})
 	if a.scheduleFn != nil {
 		a.scheduleFn(a.Services.Scheduler)
 	}
@@ -673,6 +637,30 @@ func initNotification(mailer mail.Mailer, db *sql.DB, dbDriver string) *notifica
 	}
 
 	return mgr
+}
+
+// runProviderLifecycle runs the Register and Boot phases on a slice of providers.
+func runProviderLifecycle(providers []app.ServiceProvider, services *app.Services, label string) error {
+	for _, p := range providers {
+		if err := p.Register(services); err != nil {
+			return fmt.Errorf("velocity: %s register failed: %w", label, err)
+		}
+	}
+	for _, p := range providers {
+		if err := p.Boot(services); err != nil {
+			return fmt.Errorf("velocity: %s boot failed: %w", label, err)
+		}
+	}
+	return nil
+}
+
+// dispatchProviderCallback iterates providers and calls fn for those that implement T.
+func dispatchProviderCallback[T any](providers []app.ServiceProvider, fn func(T)) {
+	for _, p := range providers {
+		if t, ok := any(p).(T); ok {
+			fn(t)
+		}
+	}
 }
 
 // NewTestApp creates an App with in-memory services suitable for testing.
