@@ -11,6 +11,7 @@ import (
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/crypto"
+	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/view"
@@ -183,6 +184,29 @@ func WithWriteTimeout(d time.Duration) Option {
 func WithIdleTimeout(d time.Duration) Option {
 	return func(a *App) {
 		a.config.IdleTimeout = d
+	}
+}
+
+// WithoutEvents disables the event dispatcher entirely.
+// No framework events (request, query, cache, etc.) will be fired.
+// Useful in tests where events add overhead or cause side effects.
+func WithoutEvents() Option {
+	return func(a *App) {
+		a.noEvents = true
+	}
+}
+
+// WithFakeEvents replaces the event dispatcher with a fake that records
+// dispatched events without executing listeners. Use the returned
+// *events.FakeDispatcher for assertions:
+//
+//	fake := events.NewFakeDispatcher()
+//	app, _ := velocity.NewTestApp(velocity.WithFakeEvents(fake))
+//	// ... trigger actions ...
+//	fake.AssertDispatched(router.RequestHandled{}, nil)
+func WithFakeEvents(fake *events.FakeDispatcher) Option {
+	return func(a *App) {
+		a.Services.Events = fake
 	}
 }
 

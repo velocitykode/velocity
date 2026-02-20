@@ -48,6 +48,7 @@ type App struct {
 	config    *Config
 	server    *http.Server
 	version   string
+	noEvents  bool // skip event dispatcher initialization
 	providers []app.ServiceProvider
 
 	// Declarative bootstrap chain
@@ -143,8 +144,10 @@ func New(opts ...Option) (*App, error) {
 		a.View = viewEngine
 	}
 
-	// 8. Initialize events dispatcher
-	a.Services.Events = events.NewDispatcher()
+	// 8. Initialize events dispatcher (skip if WithoutEvents was used, keep if pre-set by WithFakeEvents)
+	if !a.noEvents && a.Services.Events == nil {
+		a.Services.Events = events.NewDispatcher()
+	}
 
 	// 9. Initialize queue — pass DB for database driver
 	a.Queue = initQueue(a.config.Queue, sqlDB)
