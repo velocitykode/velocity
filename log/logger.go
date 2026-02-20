@@ -2,6 +2,7 @@ package log
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/velocitykode/velocity/log/drivers"
 )
@@ -37,8 +38,29 @@ func NewLogger(config LogConfig) (Logger, error) {
 	return createDriver(config.Driver, config.Config)
 }
 
+// parseLevel converts a level string to its numeric value.
+func parseLevel(s string) int {
+	switch strings.ToLower(s) {
+	case "info":
+		return int(INFO)
+	case "warn", "warning":
+		return int(WARN)
+	case "error":
+		return int(ERROR)
+	case "fatal":
+		return int(FATAL)
+	default:
+		return int(DEBUG)
+	}
+}
+
 // createDriver creates a Logger from a driver name and config map.
 func createDriver(driver string, config map[string]any) (Logger, error) {
+	level := int(DEBUG)
+	if l, ok := config["level"].(string); ok {
+		level = parseLevel(l)
+	}
+
 	switch driver {
 	case "file", "daily":
 		path := "./storage/logs"
@@ -49,9 +71,9 @@ func createDriver(driver string, config map[string]any) (Logger, error) {
 		if d, ok := config["days"].(int); ok {
 			days = d
 		}
-		return drivers.NewFileLogger(path, days), nil
+		return drivers.NewFileLogger(path, days, level), nil
 	case "console":
-		return drivers.NewConsoleLogger(), nil
+		return drivers.NewConsoleLogger(level), nil
 	case "stack":
 		var channels []string
 		if ch, ok := config["stack"].([]string); ok {

@@ -11,20 +11,22 @@ import (
 // FileLogger writes log messages to daily rotating files.
 // Thread-safe with automatic date-based file rotation and optional retention cleanup.
 type FileLogger struct {
-	path string
-	days int // retention days; 0 means keep forever
-	mu   sync.Mutex
-	file *os.File
-	date string
+	path  string
+	days  int // retention days; 0 means keep forever
+	level int // minimum level: 0=debug, 1=info, 2=warn, 3=error, 4=fatal
+	mu    sync.Mutex
+	file  *os.File
+	date  string
 }
 
 // NewFileLogger creates a file logger that writes to the specified directory.
 // Log files are named velocity-YYYY-MM-DD.log and rotate daily.
-// Use days to set retention (0 = keep forever, default 14).
-func NewFileLogger(path string, days int) *FileLogger {
+// days sets retention (0 = keep forever). level sets minimum severity (0=debug .. 4=fatal).
+func NewFileLogger(path string, days int, level int) *FileLogger {
 	return &FileLogger{
-		path: path,
-		days: days,
+		path:  path,
+		days:  days,
+		level: level,
 	}
 }
 
@@ -97,21 +99,33 @@ func (f *FileLogger) log(level, msg string, kvs ...any) {
 
 // Debug logs a debug-level message to file
 func (f *FileLogger) Debug(msg string, kvs ...any) {
+	if f.level > 0 {
+		return
+	}
 	f.log("DEBUG", msg, kvs...)
 }
 
 // Info logs an info-level message to file
 func (f *FileLogger) Info(msg string, kvs ...any) {
+	if f.level > 1 {
+		return
+	}
 	f.log("INFO", msg, kvs...)
 }
 
 // Warn logs a warning-level message to file
 func (f *FileLogger) Warn(msg string, kvs ...any) {
+	if f.level > 2 {
+		return
+	}
 	f.log("WARN", msg, kvs...)
 }
 
 // Error logs an error-level message to file
 func (f *FileLogger) Error(msg string, kvs ...any) {
+	if f.level > 3 {
+		return
+	}
 	f.log("ERROR", msg, kvs...)
 }
 

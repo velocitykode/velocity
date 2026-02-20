@@ -308,6 +308,7 @@ func ConfigFromEnv() Config {
 		config.Log.Config["path"] = logPath
 	}
 	config.Log.Config["days"] = envIntOrDefault("LOG_DAYS", 14)
+	config.Log.Config["level"] = envOrDefault("LOG_LEVEL", "debug")
 	if stackStr := os.Getenv("LOG_STACK"); stackStr != "" {
 		var stack []string
 		for _, ch := range strings.Split(stackStr, ",") {

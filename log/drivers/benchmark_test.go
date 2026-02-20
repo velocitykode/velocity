@@ -6,7 +6,7 @@ import (
 
 func BenchmarkFileLogger_Info(b *testing.B) {
 	tempDir := b.TempDir()
-	logger := NewFileLogger(tempDir, 0)
+	logger := NewFileLogger(tempDir, 0, 0)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -15,7 +15,7 @@ func BenchmarkFileLogger_Info(b *testing.B) {
 }
 
 func BenchmarkConsoleLogger_Info(b *testing.B) {
-	logger := NewConsoleLogger()
+	logger := NewConsoleLogger(0)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -25,7 +25,7 @@ func BenchmarkConsoleLogger_Info(b *testing.B) {
 
 func BenchmarkFileLogger_Parallel(b *testing.B) {
 	tempDir := b.TempDir()
-	logger := NewFileLogger(tempDir, 0)
+	logger := NewFileLogger(tempDir, 0, 0)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -38,7 +38,7 @@ func BenchmarkFileLogger_Parallel(b *testing.B) {
 }
 
 func BenchmarkConsoleLogger_Parallel(b *testing.B) {
-	logger := NewConsoleLogger()
+	logger := NewConsoleLogger(0)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {

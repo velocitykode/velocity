@@ -9,14 +9,14 @@ import (
 )
 
 func TestNewConsoleLogger(t *testing.T) {
-	logger := NewConsoleLogger()
+	logger := NewConsoleLogger(0)
 	if logger == nil {
-		t.Error("NewConsoleLogger() returned nil")
+		t.Error("NewConsoleLogger(0) returned nil")
 	}
 }
 
 func TestConsoleLogger_formatMessage(t *testing.T) {
-	logger := NewConsoleLogger()
+	logger := NewConsoleLogger(0)
 
 	tests := []struct {
 		name     string
@@ -61,7 +61,7 @@ func TestConsoleLogger_formatMessage(t *testing.T) {
 }
 
 func TestConsoleLogger_LogMethods(t *testing.T) {
-	logger := NewConsoleLogger()
+	logger := NewConsoleLogger(0)
 
 	// Capture stdout
 	old := os.Stdout
@@ -110,7 +110,7 @@ func TestConsoleLogger_LogMethods(t *testing.T) {
 }
 
 func TestConsoleLogger_ConcurrentWrites(t *testing.T) {
-	logger := NewConsoleLogger()
+	logger := NewConsoleLogger(0)
 
 	// Capture stdout
 	old := os.Stdout
@@ -154,5 +154,35 @@ func TestConsoleLogger_ConcurrentWrites(t *testing.T) {
 		if !strings.Contains(line, "INFO:") || !strings.Contains(line, "concurrent") {
 			t.Errorf("Invalid log line format: %s", line)
 		}
+	}
+}
+
+func TestConsoleLogger_LevelFiltering(t *testing.T) {
+	// Level 1 = info: should suppress debug
+	logger := NewConsoleLogger(1)
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	logger.Debug("should not appear")
+	logger.Info("should appear")
+	logger.Warn("should appear")
+
+	w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	output := buf.String()
+
+	if strings.Contains(output, "should not appear") {
+		t.Error("Debug message should be filtered at info level")
+	}
+	if !strings.Contains(output, "INFO:") {
+		t.Error("Info message should appear at info level")
+	}
+	if !strings.Contains(output, "WARN:") {
+		t.Error("Warn message should appear at info level")
 	}
 }

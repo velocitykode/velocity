@@ -74,6 +74,8 @@ func (m *Manager) Default() (Logger, error) {
 // createLogger creates a logger instance based on the channel configuration.
 // Supports file, console, stack (multi-logger), and null drivers
 func (m *Manager) createLogger(cfg config.ChannelConfig) (Logger, error) {
+	level := parseLevel(cfg.Level)
+
 	switch cfg.Driver {
 	case "file", "daily":
 		path := cfg.Path
@@ -84,10 +86,10 @@ func (m *Manager) createLogger(cfg config.ChannelConfig) (Logger, error) {
 		if cfg.MaxAge > 0 {
 			days = cfg.MaxAge
 		}
-		return drivers.NewFileLogger(path, days), nil
+		return drivers.NewFileLogger(path, days, level), nil
 
 	case "console":
-		return drivers.NewConsoleLogger(), nil
+		return drivers.NewConsoleLogger(level), nil
 
 	case "stack":
 		// Stack driver logs to multiple channels

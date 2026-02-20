@@ -9,7 +9,7 @@ import (
 )
 
 func TestNewFileLogger(t *testing.T) {
-	logger := NewFileLogger("/tmp/test-logs", 0)
+	logger := NewFileLogger("/tmp/test-logs", 0, 0)
 	if logger == nil {
 		t.Fatal("NewFileLogger() returned nil")
 	}
@@ -20,7 +20,7 @@ func TestNewFileLogger(t *testing.T) {
 
 func TestFileLogger_ensureFile(t *testing.T) {
 	tempDir := t.TempDir()
-	logger := NewFileLogger(tempDir, 0)
+	logger := NewFileLogger(tempDir, 0, 0)
 
 	err := logger.ensureFile()
 	if err != nil {
@@ -45,7 +45,7 @@ func TestFileLogger_ensureFile(t *testing.T) {
 
 func TestFileLogger_LogMethods(t *testing.T) {
 	tempDir := t.TempDir()
-	logger := NewFileLogger(tempDir, 0)
+	logger := NewFileLogger(tempDir, 0, 0)
 
 	// Test each log level
 	logger.Debug("debug message", "key1", "value1")
@@ -87,7 +87,7 @@ func TestFileLogger_LogMethods(t *testing.T) {
 
 func TestFileLogger_DateRotation(t *testing.T) {
 	tempDir := t.TempDir()
-	logger := NewFileLogger(tempDir, 0)
+	logger := NewFileLogger(tempDir, 0, 0)
 
 	// Log something today
 	logger.Info("today's message")
@@ -127,7 +127,7 @@ func TestFileLogger_DateRotation(t *testing.T) {
 
 func TestFileLogger_ConcurrentWrites(t *testing.T) {
 	tempDir := t.TempDir()
-	logger := NewFileLogger(tempDir, 0)
+	logger := NewFileLogger(tempDir, 0, 0)
 
 	done := make(chan bool)
 
@@ -170,7 +170,7 @@ func TestFileLogger_ConcurrentWrites(t *testing.T) {
 
 func TestFileLogger_InvalidPath(t *testing.T) {
 	// Use an invalid path that can't be created
-	logger := NewFileLogger("/nonexistent/path/that/cannot/be/created", 0)
+	logger := NewFileLogger("/nonexistent/path/that/cannot/be/created", 0, 0)
 
 	// Try to log something - it should handle the error gracefully
 	logger.Info("test message")
@@ -194,7 +194,7 @@ func TestFileLogger_DirectoryCreationError(t *testing.T) {
 	file.Close()
 
 	// Try to use the blocking file path as a directory for logs
-	logger := NewFileLogger(filepath.Join(blockingFile, "logs"), 0)
+	logger := NewFileLogger(filepath.Join(blockingFile, "logs"), 0, 0)
 
 	// Try to log - should handle the mkdir error
 	logger.Info("test message")
@@ -207,7 +207,7 @@ func TestFileLogger_DirectoryCreationError(t *testing.T) {
 
 func TestFileLogger_FileWriteError(t *testing.T) {
 	tempDir := t.TempDir()
-	logger := NewFileLogger(tempDir, 0)
+	logger := NewFileLogger(tempDir, 0, 0)
 
 	// First ensure file is created
 	logger.Info("initial message")
@@ -228,7 +228,7 @@ func TestFileLogger_FileWriteError(t *testing.T) {
 
 func TestFileLogger_CloseError(t *testing.T) {
 	tempDir := t.TempDir()
-	logger := NewFileLogger(tempDir, 0)
+	logger := NewFileLogger(tempDir, 0, 0)
 
 	// Create initial log file
 	logger.Info("initial message")
@@ -273,7 +273,7 @@ func TestFileLogger_OpenFileError(t *testing.T) {
 	// Ensure we restore permissions for cleanup
 	defer os.Chmod(readOnlyDir, 0755)
 
-	logger := NewFileLogger(readOnlyDir, 0)
+	logger := NewFileLogger(readOnlyDir, 0, 0)
 
 	// Try to log - should fail to open file in read-only directory
 	logger.Info("test message")
@@ -281,6 +281,43 @@ func TestFileLogger_OpenFileError(t *testing.T) {
 	// File should be nil due to open error
 	if logger.file != nil {
 		t.Error("File should be nil when file cannot be opened in read-only directory")
+	}
+}
+
+func TestFileLogger_LevelFiltering(t *testing.T) {
+	tempDir := t.TempDir()
+	// Level 2 = warn: should suppress debug and info
+	logger := NewFileLogger(tempDir, 0, 2)
+
+	logger.Debug("debug filtered")
+	logger.Info("info filtered")
+	logger.Warn("warn visible")
+	logger.Error("error visible")
+
+	if logger.file != nil {
+		logger.file.Sync()
+		logger.file.Close()
+	}
+
+	logFile := filepath.Join(tempDir, "velocity-"+time.Now().Format("2006-01-02")+".log")
+	content, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("Failed to read log file: %v", err)
+	}
+
+	logContent := string(content)
+
+	if strings.Contains(logContent, "debug filtered") {
+		t.Error("Debug message should be filtered at warn level")
+	}
+	if strings.Contains(logContent, "info filtered") {
+		t.Error("Info message should be filtered at warn level")
+	}
+	if !strings.Contains(logContent, "warn visible") {
+		t.Error("Warn message should appear at warn level")
+	}
+	if !strings.Contains(logContent, "error visible") {
+		t.Error("Error message should appear at warn level")
 	}
 }
 
@@ -303,7 +340,7 @@ func TestFileLogger_Cleanup(t *testing.T) {
 	// Create a non-log file that should be ignored
 	os.WriteFile(filepath.Join(tempDir, "other.txt"), []byte("keep"), 0644)
 
-	logger := NewFileLogger(tempDir, 7)
+	logger := NewFileLogger(tempDir, 7, 0)
 	logger.cleanup()
 
 	entries, err := os.ReadDir(tempDir)
@@ -340,7 +377,7 @@ func TestFileLogger_Cleanup_ZeroDays(t *testing.T) {
 	// Create an old log file
 	os.WriteFile(filepath.Join(tempDir, "velocity-2020-01-01.log"), []byte("old"), 0644)
 
-	logger := NewFileLogger(tempDir, 0)
+	logger := NewFileLogger(tempDir, 0, 0)
 	logger.cleanup()
 
 	// With days=0, nothing should be deleted

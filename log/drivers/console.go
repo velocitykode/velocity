@@ -5,12 +5,15 @@ import (
 	"time"
 )
 
-// ConsoleLogger writes log messages to standard output with timestamps
-type ConsoleLogger struct{}
+// ConsoleLogger writes log messages to standard output with timestamps.
+type ConsoleLogger struct {
+	level int // minimum level: 0=debug, 1=info, 2=warn, 3=error, 4=fatal
+}
 
-// NewConsoleLogger creates a new console logger that outputs to stdout
-func NewConsoleLogger() *ConsoleLogger {
-	return &ConsoleLogger{}
+// NewConsoleLogger creates a new console logger that outputs to stdout.
+// level sets the minimum severity (0=debug .. 4=fatal).
+func NewConsoleLogger(level int) *ConsoleLogger {
+	return &ConsoleLogger{level: level}
 }
 
 // formatMessage creates a formatted log line with timestamp, level, and key-value pairs
@@ -33,21 +36,33 @@ func (c *ConsoleLogger) formatMessage(level, msg string, kvs ...any) string {
 
 // Debug logs a debug-level message to console
 func (c *ConsoleLogger) Debug(msg string, kvs ...any) {
+	if c.level > 0 {
+		return
+	}
 	fmt.Println(c.formatMessage("DEBUG", msg, kvs...))
 }
 
 // Info logs an info-level message to console
 func (c *ConsoleLogger) Info(msg string, kvs ...any) {
+	if c.level > 1 {
+		return
+	}
 	fmt.Println(c.formatMessage("INFO", msg, kvs...))
 }
 
 // Warn logs a warning-level message to console
 func (c *ConsoleLogger) Warn(msg string, kvs ...any) {
+	if c.level > 2 {
+		return
+	}
 	fmt.Println(c.formatMessage("WARN", msg, kvs...))
 }
 
 // Error logs an error-level message to console
 func (c *ConsoleLogger) Error(msg string, kvs ...any) {
+	if c.level > 3 {
+		return
+	}
 	fmt.Println(c.formatMessage("ERROR", msg, kvs...))
 }
 
