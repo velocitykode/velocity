@@ -9,19 +9,22 @@ import (
 )
 
 // FileLogger writes log messages to daily rotating files.
-// Thread-safe with automatic date-based file rotation
+// Thread-safe with automatic date-based file rotation and optional retention cleanup.
 type FileLogger struct {
 	path string
+	days int // retention days; 0 means keep forever
 	mu   sync.Mutex
 	file *os.File
 	date string
 }
 
 // NewFileLogger creates a file logger that writes to the specified directory.
-// Log files are named velocity-YYYY-MM-DD.log and rotate daily
-func NewFileLogger(path string) *FileLogger {
+// Log files are named velocity-YYYY-MM-DD.log and rotate daily.
+// Use days to set retention (0 = keep forever, default 14).
+func NewFileLogger(path string, days int) *FileLogger {
 	return &FileLogger{
 		path: path,
+		days: days,
 	}
 }
 
@@ -52,7 +55,14 @@ func (f *FileLogger) ensureFile() error {
 	}
 
 	f.file = file
+	oldDate := f.date
 	f.date = currentDate
+
+	// Clean up old log files on rotation (date changed)
+	if f.days > 0 && oldDate != currentDate {
+		go f.cleanup()
+	}
+
 	return nil
 }
 
@@ -108,6 +118,32 @@ func (f *FileLogger) Error(msg string, kvs ...any) {
 // Fatal logs a fatal-level message to file
 func (f *FileLogger) Fatal(msg string, kvs ...any) {
 	f.log("FATAL", msg, kvs...)
+}
+
+// cleanup removes log files older than the configured retention period.
+func (f *FileLogger) cleanup() {
+	if f.days <= 0 {
+		return
+	}
+	cutoff := time.Now().AddDate(0, 0, -f.days)
+	entries, err := os.ReadDir(f.path)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if len(name) < 23 || name[:9] != "velocity-" || name[len(name)-4:] != ".log" {
+			continue
+		}
+		dateStr := name[9 : len(name)-4] // extract YYYY-MM-DD
+		fileDate, err := time.Parse("2006-01-02", dateStr)
+		if err != nil {
+			continue
+		}
+		if fileDate.Before(cutoff) {
+			os.Remove(filepath.Join(f.path, name))
+		}
+	}
 }
 
 // Close closes the underlying file handle.

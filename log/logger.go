@@ -35,12 +35,16 @@ func NewLogger(config LogConfig) (Logger, error) {
 // createDriver creates a Logger from a driver name and config map.
 func createDriver(driver string, config map[string]any) (Logger, error) {
 	switch driver {
-	case "file":
+	case "file", "daily":
 		path := "./storage/logs"
 		if p, ok := config["path"].(string); ok {
 			path = p
 		}
-		return drivers.NewFileLogger(path), nil
+		days := 14
+		if d, ok := config["days"].(int); ok {
+			days = d
+		}
+		return drivers.NewFileLogger(path, days), nil
 	case "console":
 		return drivers.NewConsoleLogger(), nil
 	default:

@@ -307,6 +307,7 @@ func ConfigFromEnv() Config {
 	if logPath := os.Getenv("LOG_PATH"); logPath != "" {
 		config.Log.Config["path"] = logPath
 	}
+	config.Log.Config["days"] = envIntOrDefault("LOG_DAYS", 14)
 
 	// Crypto
 	cryptoKey := os.Getenv("CRYPTO_KEY")

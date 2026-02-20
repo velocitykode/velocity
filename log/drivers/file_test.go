@@ -9,7 +9,7 @@ import (
 )
 
 func TestNewFileLogger(t *testing.T) {
-	logger := NewFileLogger("/tmp/test-logs")
+	logger := NewFileLogger("/tmp/test-logs", 0)
 	if logger == nil {
 		t.Fatal("NewFileLogger() returned nil")
 	}
@@ -20,7 +20,7 @@ func TestNewFileLogger(t *testing.T) {
 
 func TestFileLogger_ensureFile(t *testing.T) {
 	tempDir := t.TempDir()
-	logger := NewFileLogger(tempDir)
+	logger := NewFileLogger(tempDir, 0)
 
 	err := logger.ensureFile()
 	if err != nil {
@@ -45,7 +45,7 @@ func TestFileLogger_ensureFile(t *testing.T) {
 
 func TestFileLogger_LogMethods(t *testing.T) {
 	tempDir := t.TempDir()
-	logger := NewFileLogger(tempDir)
+	logger := NewFileLogger(tempDir, 0)
 
 	// Test each log level
 	logger.Debug("debug message", "key1", "value1")
@@ -87,7 +87,7 @@ func TestFileLogger_LogMethods(t *testing.T) {
 
 func TestFileLogger_DateRotation(t *testing.T) {
 	tempDir := t.TempDir()
-	logger := NewFileLogger(tempDir)
+	logger := NewFileLogger(tempDir, 0)
 
 	// Log something today
 	logger.Info("today's message")
@@ -127,7 +127,7 @@ func TestFileLogger_DateRotation(t *testing.T) {
 
 func TestFileLogger_ConcurrentWrites(t *testing.T) {
 	tempDir := t.TempDir()
-	logger := NewFileLogger(tempDir)
+	logger := NewFileLogger(tempDir, 0)
 
 	done := make(chan bool)
 
@@ -170,7 +170,7 @@ func TestFileLogger_ConcurrentWrites(t *testing.T) {
 
 func TestFileLogger_InvalidPath(t *testing.T) {
 	// Use an invalid path that can't be created
-	logger := NewFileLogger("/nonexistent/path/that/cannot/be/created")
+	logger := NewFileLogger("/nonexistent/path/that/cannot/be/created", 0)
 
 	// Try to log something - it should handle the error gracefully
 	logger.Info("test message")
@@ -194,7 +194,7 @@ func TestFileLogger_DirectoryCreationError(t *testing.T) {
 	file.Close()
 
 	// Try to use the blocking file path as a directory for logs
-	logger := NewFileLogger(filepath.Join(blockingFile, "logs"))
+	logger := NewFileLogger(filepath.Join(blockingFile, "logs"), 0)
 
 	// Try to log - should handle the mkdir error
 	logger.Info("test message")
@@ -207,7 +207,7 @@ func TestFileLogger_DirectoryCreationError(t *testing.T) {
 
 func TestFileLogger_FileWriteError(t *testing.T) {
 	tempDir := t.TempDir()
-	logger := NewFileLogger(tempDir)
+	logger := NewFileLogger(tempDir, 0)
 
 	// First ensure file is created
 	logger.Info("initial message")
@@ -228,7 +228,7 @@ func TestFileLogger_FileWriteError(t *testing.T) {
 
 func TestFileLogger_CloseError(t *testing.T) {
 	tempDir := t.TempDir()
-	logger := NewFileLogger(tempDir)
+	logger := NewFileLogger(tempDir, 0)
 
 	// Create initial log file
 	logger.Info("initial message")
@@ -273,7 +273,7 @@ func TestFileLogger_OpenFileError(t *testing.T) {
 	// Ensure we restore permissions for cleanup
 	defer os.Chmod(readOnlyDir, 0755)
 
-	logger := NewFileLogger(readOnlyDir)
+	logger := NewFileLogger(readOnlyDir, 0)
 
 	// Try to log - should fail to open file in read-only directory
 	logger.Info("test message")
@@ -281,5 +281,74 @@ func TestFileLogger_OpenFileError(t *testing.T) {
 	// File should be nil due to open error
 	if logger.file != nil {
 		t.Error("File should be nil when file cannot be opened in read-only directory")
+	}
+}
+
+func TestFileLogger_Cleanup(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// Create fake old log files
+	old := []string{
+		"velocity-2020-01-01.log",
+		"velocity-2020-06-15.log",
+	}
+	for _, name := range old {
+		os.WriteFile(filepath.Join(tempDir, name), []byte("old"), 0644)
+	}
+
+	// Create a recent file (today)
+	today := time.Now().Format("2006-01-02")
+	os.WriteFile(filepath.Join(tempDir, "velocity-"+today+".log"), []byte("recent"), 0644)
+
+	// Create a non-log file that should be ignored
+	os.WriteFile(filepath.Join(tempDir, "other.txt"), []byte("keep"), 0644)
+
+	logger := NewFileLogger(tempDir, 7)
+	logger.cleanup()
+
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatalf("ReadDir error: %v", err)
+	}
+
+	remaining := make(map[string]bool)
+	for _, e := range entries {
+		remaining[e.Name()] = true
+	}
+
+	// Old files should be removed
+	for _, name := range old {
+		if remaining[name] {
+			t.Errorf("expected %s to be deleted", name)
+		}
+	}
+
+	// Today's file should remain
+	if !remaining["velocity-"+today+".log"] {
+		t.Error("today's log file should not be deleted")
+	}
+
+	// Non-log file should remain
+	if !remaining["other.txt"] {
+		t.Error("non-log file should not be deleted")
+	}
+}
+
+func TestFileLogger_Cleanup_ZeroDays(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// Create an old log file
+	os.WriteFile(filepath.Join(tempDir, "velocity-2020-01-01.log"), []byte("old"), 0644)
+
+	logger := NewFileLogger(tempDir, 0)
+	logger.cleanup()
+
+	// With days=0, nothing should be deleted
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatalf("ReadDir error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("expected 1 file, got %d", len(entries))
 	}
 }
