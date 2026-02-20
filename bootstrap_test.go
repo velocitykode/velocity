@@ -1,0 +1,651 @@
+package velocity
+
+import (
+	"context"
+	"errors"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/velocitykode/velocity/events"
+	"github.com/velocitykode/velocity/exceptions"
+	"github.com/velocitykode/velocity/router"
+	"github.com/velocitykode/velocity/scheduler"
+)
+
+// bootstrapTrackingProvider extends trackingProvider with optional bootstrap interfaces.
+type bootstrapTrackingProvider struct {
+	trackingProvider
+	routesCalled      bool
+	middlewareCalled   bool
+	eventsCalled      bool
+	scheduleCalled    bool
+}
+
+func (p *bootstrapTrackingProvider) Routes(r *Routing) {
+	*p.calls = append(*p.calls, p.name+":routes")
+	p.routesCalled = true
+}
+
+func (p *bootstrapTrackingProvider) Middleware(m *MiddlewareStack) {
+	*p.calls = append(*p.calls, p.name+":middleware")
+	p.middlewareCalled = true
+}
+
+func (p *bootstrapTrackingProvider) Events(d events.Dispatcher) {
+	*p.calls = append(*p.calls, p.name+":events")
+	p.eventsCalled = true
+}
+
+func (p *bootstrapTrackingProvider) Schedule(s *scheduler.Scheduler) {
+	*p.calls = append(*p.calls, p.name+":schedule")
+	p.scheduleCalled = true
+}
+
+// trackingMW returns middleware that sets a response header.
+func trackingMW(key, value string) router.MiddlewareFunc {
+	return func(next router.HandlerFunc) router.HandlerFunc {
+		return func(c *router.Context) error {
+			c.Response.Header().Set(key, value)
+			return next(c)
+		}
+	}
+}
+
+// testEvent is a simple event for testing.
+type testEvent struct{ name string }
+
+func (e testEvent) Name() string { return e.name }
+
+// testListener records whether it was called.
+type testListener struct {
+	events.BaseListener
+	called bool
+}
+
+func (l *testListener) Handle(event interface{}) error {
+	l.called = true
+	return nil
+}
+
+func TestBootstrap_FullChain(t *testing.T) {
+	a, err := NewTestApp()
+	if err != nil {
+		t.Fatalf("NewTestApp() error: %v", err)
+	}
+
+	var (
+		providersCalled   bool
+		middlewareCalled   bool
+		routesCalled      bool
+		eventsCalled      bool
+		scheduleCalled    bool
+		exceptionsCalled  bool
+	)
+
+	a.Providers(func(r *ProviderRegistry) {
+		providersCalled = true
+	}).Middleware(func(m *MiddlewareStack) {
+		middlewareCalled = true
+	}).Routes(func(r *Routing) {
+		routesCalled = true
+	}).Events(func(d events.Dispatcher) {
+		eventsCalled = true
+	}).Schedule(func(s *scheduler.Scheduler) {
+		scheduleCalled = true
+	}).Exceptions(func(h *exceptions.Handler) {
+		exceptionsCalled = true
+	})
+
+	if err := a.bootstrap(); err != nil {
+		t.Fatalf("bootstrap() error: %v", err)
+	}
+
+	if !providersCalled {
+		t.Error("Providers callback not called")
+	}
+	if !middlewareCalled {
+		t.Error("Middleware callback not called")
+	}
+	if !routesCalled {
+		t.Error("Routes callback not called")
+	}
+	if !eventsCalled {
+		t.Error("Events callback not called")
+	}
+	if !scheduleCalled {
+		t.Error("Schedule callback not called")
+	}
+	if !exceptionsCalled {
+		t.Error("Exceptions callback not called")
+	}
+}
+
+func TestBootstrap_ChainOrderIndependent(t *testing.T) {
+	a, err := NewTestApp()
+	if err != nil {
+		t.Fatalf("NewTestApp() error: %v", err)
+	}
+
+	var order []string
+
+	// Register in reverse order
+	a.Exceptions(func(h *exceptions.Handler) {
+		order = append(order, "exceptions")
+	}).Schedule(func(s *scheduler.Scheduler) {
+		order = append(order, "schedule")
+	}).Events(func(d events.Dispatcher) {
+		order = append(order, "events")
+	}).Routes(func(r *Routing) {
+		order = append(order, "routes")
+	}).Middleware(func(m *MiddlewareStack) {
+		order = append(order, "middleware")
+	}).Providers(func(r *ProviderRegistry) {
+		order = append(order, "providers")
+	})
+
+	if err := a.bootstrap(); err != nil {
+		t.Fatalf("bootstrap() error: %v", err)
+	}
+
+	// Execution order must be fixed regardless of registration order
+	want := []string{"providers", "middleware", "routes", "events", "schedule", "exceptions"}
+	if len(order) != len(want) {
+		t.Fatalf("got %d calls, want %d: %v", len(order), len(want), order)
+	}
+	for i, c := range order {
+		if c != want[i] {
+			t.Errorf("order[%d] = %q, want %q", i, c, want[i])
+		}
+	}
+}
+
+func TestBootstrap_ProviderLifecycle(t *testing.T) {
+	a, err := NewTestApp()
+	if err != nil {
+		t.Fatalf("NewTestApp() error: %v", err)
+	}
+
+	var calls []string
+	pA := &bootstrapTrackingProvider{trackingProvider: trackingProvider{name: "A", calls: &calls}}
+	pB := &bootstrapTrackingProvider{trackingProvider: trackingProvider{name: "B", calls: &calls}}
+
+	a.Providers(func(r *ProviderRegistry) {
+		r.Add(pA, pB)
+	})
+
+	if err := a.bootstrap(); err != nil {
+		t.Fatalf("bootstrap() error: %v", err)
+	}
+
+	want := []string{
+		"A:register", "B:register",
+		"A:boot", "B:boot",
+		"A:middleware", "B:middleware",
+		"A:routes", "B:routes",
+		"A:events", "B:events",
+		"A:schedule", "B:schedule",
+	}
+	if len(calls) != len(want) {
+		t.Fatalf("got %d calls, want %d:\n  got:  %v\n  want: %v", len(calls), len(want), calls, want)
+	}
+	for i, c := range calls {
+		if c != want[i] {
+			t.Errorf("call[%d] = %q, want %q", i, c, want[i])
+		}
+	}
+
+	if !pA.routesCalled || !pA.middlewareCalled || !pA.eventsCalled || !pA.scheduleCalled {
+		t.Error("provider A missing optional interface calls")
+	}
+	if !pB.routesCalled || !pB.middlewareCalled || !pB.eventsCalled || !pB.scheduleCalled {
+		t.Error("provider B missing optional interface calls")
+	}
+}
+
+func TestBootstrap_ShutdownOrder(t *testing.T) {
+	var calls []string
+	withA := &trackingProvider{name: "withA", calls: &calls}
+	withB := &trackingProvider{name: "withB", calls: &calls}
+
+	a, err := NewTestApp(WithProviders(withA, withB))
+	if err != nil {
+		t.Fatalf("NewTestApp() error: %v", err)
+	}
+
+	chainA := &trackingProvider{name: "chainA", calls: &calls}
+	chainB := &trackingProvider{name: "chainB", calls: &calls}
+
+	a.Providers(func(r *ProviderRegistry) {
+		r.Add(chainA, chainB)
+	})
+
+	if err := a.bootstrap(); err != nil {
+		t.Fatalf("bootstrap() error: %v", err)
+	}
+
+	// Clear register/boot calls, only track shutdown
+	calls = nil
+
+	if err := a.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown() error: %v", err)
+	}
+
+	// Chain providers shut down first (reverse), then WithProviders (reverse)
+	want := []string{"chainB:shutdown", "chainA:shutdown", "withB:shutdown", "withA:shutdown"}
+	if len(calls) != len(want) {
+		t.Fatalf("got %d shutdown calls, want %d: %v", len(calls), len(want), calls)
+	}
+	for i, c := range calls {
+		if c != want[i] {
+			t.Errorf("shutdown[%d] = %q, want %q", i, c, want[i])
+		}
+	}
+}
+
+func TestBootstrap_RegisterError(t *testing.T) {
+	a, err := NewTestApp()
+	if err != nil {
+		t.Fatalf("NewTestApp() error: %v", err)
+	}
+
+	wantErr := errors.New("register boom")
+	var calls []string
+	pA := &trackingProvider{name: "A", calls: &calls, registerErr: wantErr}
+
+	a.Providers(func(r *ProviderRegistry) {
+		r.Add(pA)
+	})
+
+	err = a.bootstrap()
+	if err == nil {
+		t.Fatal("expected error from register")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("expected wrapped register error, got: %v", err)
+	}
+}
+
+func TestBootstrap_BootError(t *testing.T) {
+	a, err := NewTestApp()
+	if err != nil {
+		t.Fatalf("NewTestApp() error: %v", err)
+	}
+
+	wantErr := errors.New("boot boom")
+	var calls []string
+	pA := &trackingProvider{name: "A", calls: &calls, bootErr: wantErr}
+
+	a.Providers(func(r *ProviderRegistry) {
+		r.Add(pA)
+	})
+
+	err = a.bootstrap()
+	if err == nil {
+		t.Fatal("expected error from boot")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("expected wrapped boot error, got: %v", err)
+	}
+}
+
+func TestBootstrap_NilCallbacks(t *testing.T) {
+	a, err := NewTestApp()
+	if err != nil {
+		t.Fatalf("NewTestApp() error: %v", err)
+	}
+
+	var calls []string
+	pA := &trackingProvider{name: "A", calls: &calls}
+
+	a.Providers(func(r *ProviderRegistry) {
+		r.Add(pA)
+	})
+
+	// Only Providers set, no other chain methods
+	if err := a.bootstrap(); err != nil {
+		t.Fatalf("bootstrap() should succeed with nil callbacks: %v", err)
+	}
+
+	// Provider register + boot should still run
+	want := []string{"A:register", "A:boot"}
+	if len(calls) != len(want) {
+		t.Fatalf("got %d calls, want %d: %v", len(calls), len(want), calls)
+	}
+	for i, c := range calls {
+		if c != want[i] {
+			t.Errorf("call[%d] = %q, want %q", i, c, want[i])
+		}
+	}
+}
+
+func TestBootstrap_NoChainMethods(t *testing.T) {
+	a, err := NewTestApp()
+	if err != nil {
+		t.Fatalf("NewTestApp() error: %v", err)
+	}
+
+	// No chain methods at all — backward compat
+	if err := a.bootstrap(); err != nil {
+		t.Fatalf("bootstrap() should succeed with no chain methods: %v", err)
+	}
+}
+
+func TestBootstrap_GlobalMiddlewareApplied(t *testing.T) {
+	a, err := NewTestApp()
+	if err != nil {
+		t.Fatalf("NewTestApp() error: %v", err)
+	}
+
+	a.Middleware(func(m *MiddlewareStack) {
+		m.Global(trackingMW("X-Global", "yes"))
+	}).Routes(func(r *Routing) {
+		r.Web(func(rt router.Router) {
+			rt.Get("/test", func(c *router.Context) error {
+				return c.String(200, "ok")
+			})
+		})
+	})
+
+	if err := a.bootstrap(); err != nil {
+		t.Fatalf("bootstrap() error: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/test", nil)
+	a.Router.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if got := w.Header().Get("X-Global"); got != "yes" {
+		t.Errorf("X-Global = %q, want %q", got, "yes")
+	}
+}
+
+func TestBootstrap_WebMiddlewareOnlyOnWeb(t *testing.T) {
+	a, err := NewTestApp()
+	if err != nil {
+		t.Fatalf("NewTestApp() error: %v", err)
+	}
+
+	a.Middleware(func(m *MiddlewareStack) {
+		m.Web(trackingMW("X-Web", "yes"))
+	}).Routes(func(r *Routing) {
+		r.Web(func(rt router.Router) {
+			rt.Get("/web-route", func(c *router.Context) error {
+				return c.String(200, "web")
+			})
+		})
+		r.API("/api", func(rt router.Router) {
+			rt.Get("/data", func(c *router.Context) error {
+				return c.String(200, "api")
+			})
+		})
+	})
+
+	if err := a.bootstrap(); err != nil {
+		t.Fatalf("bootstrap() error: %v", err)
+	}
+
+	// Web route should have X-Web header
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/web-route", nil)
+	a.Router.ServeHTTP(w, req)
+
+	if got := w.Header().Get("X-Web"); got != "yes" {
+		t.Errorf("web route: X-Web = %q, want %q", got, "yes")
+	}
+
+	// API route should NOT have X-Web header
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest("GET", "/api/data", nil)
+	a.Router.ServeHTTP(w, req)
+
+	if got := w.Header().Get("X-Web"); got != "" {
+		t.Errorf("api route: X-Web = %q, want empty", got)
+	}
+}
+
+func TestBootstrap_APIMiddlewareOnlyOnAPI(t *testing.T) {
+	a, err := NewTestApp()
+	if err != nil {
+		t.Fatalf("NewTestApp() error: %v", err)
+	}
+
+	a.Middleware(func(m *MiddlewareStack) {
+		m.API(trackingMW("X-API", "yes"))
+	}).Routes(func(r *Routing) {
+		r.Web(func(rt router.Router) {
+			rt.Get("/web-route", func(c *router.Context) error {
+				return c.String(200, "web")
+			})
+		})
+		r.API("/api", func(rt router.Router) {
+			rt.Get("/data", func(c *router.Context) error {
+				return c.String(200, "api")
+			})
+		})
+	})
+
+	if err := a.bootstrap(); err != nil {
+		t.Fatalf("bootstrap() error: %v", err)
+	}
+
+	// API route should have X-API header
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/data", nil)
+	a.Router.ServeHTTP(w, req)
+
+	if got := w.Header().Get("X-API"); got != "yes" {
+		t.Errorf("api route: X-API = %q, want %q", got, "yes")
+	}
+
+	// Web route should NOT have X-API header
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest("GET", "/web-route", nil)
+	a.Router.ServeHTTP(w, req)
+
+	if got := w.Header().Get("X-API"); got != "" {
+		t.Errorf("web route: X-API = %q, want empty", got)
+	}
+}
+
+func TestBootstrap_EventsRegistered(t *testing.T) {
+	a, err := NewTestApp()
+	if err != nil {
+		t.Fatalf("NewTestApp() error: %v", err)
+	}
+
+	listener := &testListener{}
+
+	a.Events(func(d events.Dispatcher) {
+		d.Listen("test.event", listener)
+	})
+
+	if err := a.bootstrap(); err != nil {
+		t.Fatalf("bootstrap() error: %v", err)
+	}
+
+	// Dispatch event and verify listener was called
+	if err := a.Services.Events.Dispatch(testEvent{name: "test.event"}); err != nil {
+		t.Fatalf("Dispatch() error: %v", err)
+	}
+
+	if !listener.called {
+		t.Error("listener was not called after dispatch")
+	}
+}
+
+func TestBootstrap_ScheduleRegistered(t *testing.T) {
+	a, err := NewTestApp()
+	if err != nil {
+		t.Fatalf("NewTestApp() error: %v", err)
+	}
+
+	a.Schedule(func(s *scheduler.Scheduler) {
+		s.Call(func() {}).EveryMinute()
+	})
+
+	if err := a.bootstrap(); err != nil {
+		t.Fatalf("bootstrap() error: %v", err)
+	}
+
+	jobs := a.Scheduler.Jobs()
+	if len(jobs) != 1 {
+		t.Errorf("got %d jobs, want 1", len(jobs))
+	}
+}
+
+func TestBootstrap_ExceptionsConfigured(t *testing.T) {
+	a, err := NewTestApp()
+	if err != nil {
+		t.Fatalf("NewTestApp() error: %v", err)
+	}
+
+	var handlerPtr *exceptions.Handler
+
+	a.Exceptions(func(h *exceptions.Handler) {
+		handlerPtr = h
+	})
+
+	if err := a.bootstrap(); err != nil {
+		t.Fatalf("bootstrap() error: %v", err)
+	}
+
+	if handlerPtr == nil {
+		t.Fatal("exceptions handler pointer is nil")
+	}
+	if handlerPtr != a.Services.Exceptions {
+		t.Error("exceptions handler pointer does not match a.Services.Exceptions")
+	}
+}
+
+func TestBootstrap_ChainReturnsSameApp(t *testing.T) {
+	a, err := NewTestApp()
+	if err != nil {
+		t.Fatalf("NewTestApp() error: %v", err)
+	}
+
+	got := a.Providers(func(*ProviderRegistry) {})
+	if got != a {
+		t.Error("Providers() did not return same *App")
+	}
+
+	got = a.Middleware(func(*MiddlewareStack) {})
+	if got != a {
+		t.Error("Middleware() did not return same *App")
+	}
+
+	got = a.Routes(func(*Routing) {})
+	if got != a {
+		t.Error("Routes() did not return same *App")
+	}
+
+	got = a.Events(func(events.Dispatcher) {})
+	if got != a {
+		t.Error("Events() did not return same *App")
+	}
+
+	got = a.Schedule(func(*scheduler.Scheduler) {})
+	if got != a {
+		t.Error("Schedule() did not return same *App")
+	}
+
+	got = a.Exceptions(func(*exceptions.Handler) {})
+	if got != a {
+		t.Error("Exceptions() did not return same *App")
+	}
+}
+
+func TestBootstrap_Idempotent(t *testing.T) {
+	a, err := NewTestApp()
+	if err != nil {
+		t.Fatalf("NewTestApp() error: %v", err)
+	}
+
+	callCount := 0
+	a.Routes(func(r *Routing) {
+		callCount++
+	})
+
+	if err := a.bootstrap(); err != nil {
+		t.Fatalf("first bootstrap() error: %v", err)
+	}
+	if err := a.bootstrap(); err != nil {
+		t.Fatalf("second bootstrap() error: %v", err)
+	}
+
+	if callCount != 1 {
+		t.Errorf("callback called %d times, want 1", callCount)
+	}
+}
+
+func TestBootstrap_BackwardCompat_RouterUse(t *testing.T) {
+	a, err := NewTestApp()
+	if err != nil {
+		t.Fatalf("NewTestApp() error: %v", err)
+	}
+
+	// Old-style: register directly on Router
+	a.Router.Use(trackingMW("X-Old", "yes"))
+	a.Router.Get("/old-route", func(c *router.Context) error {
+		return c.String(200, "old")
+	})
+
+	// No chain methods — backward compat
+	if err := a.bootstrap(); err != nil {
+		t.Fatalf("bootstrap() error: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/old-route", nil)
+	a.Router.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if got := w.Header().Get("X-Old"); got != "yes" {
+		t.Errorf("X-Old = %q, want %q", got, "yes")
+	}
+}
+
+func TestBootstrap_BackwardCompat_MixedOldNew(t *testing.T) {
+	a, err := NewTestApp()
+	if err != nil {
+		t.Fatalf("NewTestApp() error: %v", err)
+	}
+
+	// Old-style direct route
+	a.Router.Get("/old", func(c *router.Context) error {
+		return c.String(200, "old")
+	})
+
+	// New-style chain route
+	a.Routes(func(r *Routing) {
+		r.Web(func(rt router.Router) {
+			rt.Get("/new", func(c *router.Context) error {
+				return c.String(200, "new")
+			})
+		})
+	})
+
+	if err := a.bootstrap(); err != nil {
+		t.Fatalf("bootstrap() error: %v", err)
+	}
+
+	// Old route should work
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/old", nil)
+	a.Router.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Errorf("/old status = %d, want 200", w.Code)
+	}
+
+	// New route should also work
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest("GET", "/new", nil)
+	a.Router.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Errorf("/new status = %d, want 200", w.Code)
+	}
+}

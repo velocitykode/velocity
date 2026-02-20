@@ -49,6 +49,16 @@ type App struct {
 	server    *http.Server
 	version   string
 	providers []app.ServiceProvider
+
+	// Declarative bootstrap chain
+	providersFn    func(*ProviderRegistry)
+	chainProviders []app.ServiceProvider
+	middlewareFn   func(*MiddlewareStack)
+	routesFn       func(*Routing)
+	eventsFn       func(events.Dispatcher)
+	scheduleFn     func(*scheduler.Scheduler)
+	exceptionsFn   func(*exceptions.Handler)
+	bootstrapped   bool
 }
 
 // New creates a new Velocity application with all services initialized.
@@ -134,7 +144,7 @@ func New(opts ...Option) (*App, error) {
 	}
 
 	// 8. Initialize events dispatcher
-	a.Events = events.NewDispatcher()
+	a.Services.Events = events.NewDispatcher()
 
 	// 9. Initialize queue — pass DB for database driver
 	a.Queue = initQueue(a.config.Queue, sqlDB)
@@ -182,7 +192,7 @@ func New(opts ...Option) (*App, error) {
 	})
 
 	// 15. Initialize exception handler
-	a.Exceptions = exceptions.NewHandler(
+	a.Services.Exceptions = exceptions.NewHandler(
 		exceptions.WithDebug(a.config.Debug),
 		exceptions.WithEnvironment(a.config.Env),
 	)
@@ -210,6 +220,10 @@ func New(opts ...Option) (*App, error) {
 
 // Serve starts the HTTP server with signal handling and graceful shutdown.
 func (a *App) Serve() error {
+	if err := a.bootstrap(); err != nil {
+		return err
+	}
+
 	addr := ":" + a.config.Port
 	a.server = &http.Server{
 		Addr:         addr,
@@ -281,13 +295,17 @@ func (a *App) Shutdown(ctx context.Context) error {
 		orm.ResetDefault()
 	}
 
-	// 6. Shutdown providers in reverse registration order (before logger closes,
-	// so providers can log during teardown).
+	// 6. Shutdown chain providers in reverse order (before WithProviders providers)
+	for i := len(a.chainProviders) - 1; i >= 0; i-- {
+		setErr(a.chainProviders[i].Shutdown(ctx))
+	}
+
+	// 7. Shutdown WithProviders providers in reverse registration order
 	for i := len(a.providers) - 1; i >= 0; i-- {
 		setErr(a.providers[i].Shutdown(ctx))
 	}
 
-	// 7. Close logger if it supports it (e.g., file logger) — last, so all
+	// 8. Close logger if it supports it (e.g., file logger) — last, so all
 	// prior shutdown steps can still log.
 	if a.Log != nil {
 		if closer, ok := a.Log.(interface{ Close() error }); ok {
@@ -312,15 +330,154 @@ func (a *App) Run() {
 	fmt.Printf("Velocity v%s is running! (Local development mode)\n", a.version)
 }
 
+// --- Declarative bootstrap chain ---
+
+// Providers registers a callback that adds service providers to the application.
+// Providers registered here participate in the full bootstrap lifecycle including
+// optional interfaces (RouteProvider, MiddlewareProvider, EventProvider, ScheduleProvider).
+func (a *App) Providers(fn func(*ProviderRegistry)) *App {
+	a.providersFn = fn
+	return a
+}
+
+// Middleware registers a callback that configures the middleware stack.
+func (a *App) Middleware(fn func(*MiddlewareStack)) *App {
+	a.middlewareFn = fn
+	return a
+}
+
+// Routes registers a callback that defines application routes.
+func (a *App) Routes(fn func(*Routing)) *App {
+	a.routesFn = fn
+	return a
+}
+
+// Events registers a callback that configures event listeners.
+func (a *App) Events(fn func(events.Dispatcher)) *App {
+	a.eventsFn = fn
+	return a
+}
+
+// Schedule registers a callback that configures scheduled jobs.
+func (a *App) Schedule(fn func(*scheduler.Scheduler)) *App {
+	a.scheduleFn = fn
+	return a
+}
+
+// Exceptions registers a callback that configures the exception handler.
+func (a *App) Exceptions(fn func(*exceptions.Handler)) *App {
+	a.exceptionsFn = fn
+	return a
+}
+
+// bootstrap orchestrates the declarative chain in a fixed order.
+// It is called once at the start of Serve(). Safe to call multiple times
+// (guarded by bootstrapped flag).
+func (a *App) bootstrap() error {
+	if a.bootstrapped {
+		return nil
+	}
+	a.bootstrapped = true
+
+	// 1. Collect and run chain providers
+	if a.providersFn != nil {
+		reg := &ProviderRegistry{}
+		a.providersFn(reg)
+		a.chainProviders = reg.providers
+	}
+
+	for _, p := range a.chainProviders {
+		if err := p.Register(a.Services); err != nil {
+			return fmt.Errorf("velocity: chain provider register failed: %w", err)
+		}
+	}
+	for _, p := range a.chainProviders {
+		if err := p.Boot(a.Services); err != nil {
+			return fmt.Errorf("velocity: chain provider boot failed: %w", err)
+		}
+	}
+
+	// 2. Re-wire instance events (idempotent — safe to call again)
+	wireInstanceEvents(a)
+
+	// 3. Build middleware stack
+	mwStack := &MiddlewareStack{services: a.Services}
+
+	// Provider MiddlewareProvider callbacks first
+	for _, p := range a.chainProviders {
+		if mp, ok := p.(MiddlewareProvider); ok {
+			mp.Middleware(mwStack)
+		}
+	}
+
+	// App middleware callback
+	if a.middlewareFn != nil {
+		a.middlewareFn(mwStack)
+	}
+
+	// Apply global middleware to router
+	if len(mwStack.global) > 0 {
+		a.Router.Use(mwStack.global...)
+	}
+
+	// 4. Register routes
+	routing := &Routing{router: a.Router, middleware: mwStack}
+
+	// Provider RouteProvider callbacks first
+	for _, p := range a.chainProviders {
+		if rp, ok := p.(RouteProvider); ok {
+			rp.Routes(routing)
+		}
+	}
+
+	// App routes callback
+	if a.routesFn != nil {
+		a.routesFn(routing)
+	}
+
+	// 5. Register events
+	// Provider EventProvider callbacks first
+	for _, p := range a.chainProviders {
+		if ep, ok := p.(EventProvider); ok {
+			ep.Events(a.Services.Events)
+		}
+	}
+
+	// App events callback
+	if a.eventsFn != nil {
+		a.eventsFn(a.Services.Events)
+	}
+
+	// 6. Register scheduled jobs
+	// Provider ScheduleProvider callbacks first
+	for _, p := range a.chainProviders {
+		if sp, ok := p.(ScheduleProvider); ok {
+			sp.Schedule(a.Services.Scheduler)
+		}
+	}
+
+	// App schedule callback
+	if a.scheduleFn != nil {
+		a.scheduleFn(a.Services.Scheduler)
+	}
+
+	// 7. Configure exceptions
+	if a.exceptionsFn != nil {
+		a.exceptionsFn(a.Services.Exceptions)
+	}
+
+	return nil
+}
+
 // wireInstanceEvents wires the event dispatcher into service instances.
 // Each service that fires events gets the dispatcher set on its instance.
 func wireInstanceEvents(a *App) {
-	if a.Events == nil {
+	if a.Services.Events == nil {
 		return
 	}
 
 	dispatch := func(event interface{}) error {
-		return a.Events.Dispatch(event)
+		return a.Services.Events.Dispatch(event)
 	}
 
 	a.Router.SetInstanceEventDispatcher(dispatch)
