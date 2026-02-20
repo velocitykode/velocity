@@ -116,6 +116,99 @@ func (m *mockLogger) Fatal(msg string, kvs ...any) {
 	}
 }
 
+func TestNewLogger_NullDriver(t *testing.T) {
+	logger, err := NewLogger(LogConfig{
+		Driver: "null",
+		Config: map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("NewLogger(null) error = %v", err)
+	}
+	// Should not panic
+	logger.Debug("ignored")
+	logger.Info("ignored")
+}
+
+func TestNewLogger_StackDriver(t *testing.T) {
+	logger, err := NewLogger(LogConfig{
+		Driver: "stack",
+		Config: map[string]any{
+			"stack": []string{"console", "null"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewLogger(stack) error = %v", err)
+	}
+	// Should not panic
+	logger.Info("test message", "key", "value")
+}
+
+func TestNewLogger_StackDriver_DefaultChannels(t *testing.T) {
+	tempDir := t.TempDir()
+	logger, err := NewLogger(LogConfig{
+		Driver: "stack",
+		Config: map[string]any{
+			"path": tempDir,
+			"days": 0,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewLogger(stack) error = %v", err)
+	}
+	logger.Info("test default stack")
+}
+
+func TestNewLogger_StackDriver_SkipsRecursion(t *testing.T) {
+	logger, err := NewLogger(LogConfig{
+		Driver: "stack",
+		Config: map[string]any{
+			"stack": []string{"stack", "console"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewLogger(stack) error = %v", err)
+	}
+	logger.Info("no recursion")
+}
+
+func TestNewLogger_StackDriver_NoValidChannels(t *testing.T) {
+	_, err := NewLogger(LogConfig{
+		Driver: "stack",
+		Config: map[string]any{
+			"stack": []string{"stack"},
+		},
+	})
+	if err == nil {
+		t.Error("Expected error when all channels are invalid")
+	}
+}
+
+func TestStackLogger_Close(t *testing.T) {
+	closed := 0
+	mock1 := &mockCloser{onClose: func() error { closed++; return nil }}
+	mock2 := &mockCloser{onClose: func() error { closed++; return nil }}
+	stack := NewStackLogger(mock1, mock2)
+
+	if err := stack.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if closed != 2 {
+		t.Errorf("expected 2 Close calls, got %d", closed)
+	}
+}
+
+type mockCloser struct {
+	mockLogger
+	onClose func() error
+}
+
+func (m *mockCloser) Close() error {
+	if m.onClose != nil {
+		return m.onClose()
+	}
+	return nil
+}
+
 func TestLoggerLevels(t *testing.T) {
 	levels := []Level{DEBUG, INFO, WARN, ERROR, FATAL}
 	expected := []int{0, 1, 2, 3, 4}

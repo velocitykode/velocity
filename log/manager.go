@@ -161,6 +161,19 @@ func (s *StackLogger) Fatal(msg string, kvs ...any) {
 	}
 }
 
+// Close closes all underlying loggers that support it.
+func (s *StackLogger) Close() error {
+	var firstErr error
+	for _, l := range s.loggers {
+		if closer, ok := l.(Closer); ok {
+			if err := closer.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
+}
+
 // NullLogger discards all log messages without any output.
 // Useful for testing or disabling logging for specific channels
 type NullLogger struct{}

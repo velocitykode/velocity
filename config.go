@@ -308,6 +308,15 @@ func ConfigFromEnv() Config {
 		config.Log.Config["path"] = logPath
 	}
 	config.Log.Config["days"] = envIntOrDefault("LOG_DAYS", 14)
+	if stackStr := os.Getenv("LOG_STACK"); stackStr != "" {
+		var stack []string
+		for _, ch := range strings.Split(stackStr, ",") {
+			if ch = strings.TrimSpace(ch); ch != "" {
+				stack = append(stack, ch)
+			}
+		}
+		config.Log.Config["stack"] = stack
+	}
 
 	// Crypto
 	cryptoKey := os.Getenv("CRYPTO_KEY")

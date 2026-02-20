@@ -2,6 +2,8 @@ package log
 
 import (
 	"os"
+	"strconv"
+	"strings"
 )
 
 // getEnvOrDefault retrieves an environment variable or returns a default value if not set
@@ -28,12 +30,30 @@ func LogConfigFromEnv() LogConfig {
 		driver = "console"
 	}
 
+	days := 14
+	if v := os.Getenv("LOG_DAYS"); v != "" {
+		if d, err := strconv.Atoi(v); err == nil {
+			days = d
+		}
+	}
+
+	var stack []string
+	if s := os.Getenv("LOG_STACK"); s != "" {
+		for _, ch := range strings.Split(s, ",") {
+			if ch = strings.TrimSpace(ch); ch != "" {
+				stack = append(stack, ch)
+			}
+		}
+	}
+
 	return LogConfig{
 		Driver: driver,
 		Config: map[string]any{
 			"path":   getEnvOrDefault("LOG_PATH", "./storage/logs"),
 			"level":  getEnvOrDefault("LOG_LEVEL", "debug"),
 			"format": getEnvOrDefault("LOG_FORMAT", "text"),
+			"days":   days,
+			"stack":  stack,
 		},
 	}
 }

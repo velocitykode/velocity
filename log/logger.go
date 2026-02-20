@@ -6,6 +6,11 @@ import (
 	"github.com/velocitykode/velocity/log/drivers"
 )
 
+// Closer is an optional interface loggers may implement for graceful shutdown.
+type Closer interface {
+	Close() error
+}
+
 // Level represents the severity of a log message
 type Level int
 
@@ -47,6 +52,31 @@ func createDriver(driver string, config map[string]any) (Logger, error) {
 		return drivers.NewFileLogger(path, days), nil
 	case "console":
 		return drivers.NewConsoleLogger(), nil
+	case "stack":
+		var channels []string
+		if ch, ok := config["stack"].([]string); ok {
+			channels = ch
+		}
+		if len(channels) == 0 {
+			channels = []string{"console", "daily"}
+		}
+		var loggers []Logger
+		for _, name := range channels {
+			if name == "stack" {
+				continue // prevent recursion
+			}
+			l, err := createDriver(name, config)
+			if err != nil {
+				continue
+			}
+			loggers = append(loggers, l)
+		}
+		if len(loggers) == 0 {
+			return nil, fmt.Errorf("stack driver: no valid channels configured")
+		}
+		return NewStackLogger(loggers...), nil
+	case "null":
+		return NewNullLogger(), nil
 	default:
 		return nil, fmt.Errorf("unsupported logger driver: %s", driver)
 	}
