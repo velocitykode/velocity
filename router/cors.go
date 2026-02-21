@@ -29,8 +29,22 @@ type CORSConfig struct {
 	MaxAge time.Duration
 }
 
-// DefaultCORSConfig returns a CORSConfig with sensible defaults.
+// DefaultCORSConfig returns a CORSConfig with secure defaults. AllowedOrigins
+// is empty, which rejects all cross-origin requests until the developer
+// explicitly configures allowed origins. Use PermissiveCORSConfig for
+// development when you want to allow all origins.
 func DefaultCORSConfig() CORSConfig {
+	return CORSConfig{
+		AllowedMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowedHeaders: []string{"Accept", "Authorization", "Content-Type", "X-Requested-With"},
+		MaxAge:         12 * time.Hour,
+	}
+}
+
+// PermissiveCORSConfig returns a CORSConfig that allows all origins. This is
+// useful during development but should not be used in production without
+// careful consideration.
+func PermissiveCORSConfig() CORSConfig {
 	return CORSConfig{
 		AllowedOrigins: []string{"*"},
 		AllowedMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
