@@ -1,0 +1,135 @@
+package router
+
+import (
+	"fmt"
+	"mime/multipart"
+	"net/http"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"unicode/utf8"
+)
+
+// FileValidationOption configures file validation behavior.
+type FileValidationOption func(*fileValidationConfig)
+
+type fileValidationConfig struct {
+	maxSize    int64
+	extensions []string
+	mimeTypes  []string
+}
+
+// MaxFileSize constrains the uploaded file to the given number of bytes.
+func MaxFileSize(bytes int64) FileValidationOption {
+	return func(cfg *fileValidationConfig) {
+		cfg.maxSize = bytes
+	}
+}
+
+// AllowedExtensions restricts uploads to the listed extensions (case-insensitive).
+// Extensions should include the leading dot (e.g., ".jpg", ".png").
+func AllowedExtensions(exts ...string) FileValidationOption {
+	return func(cfg *fileValidationConfig) {
+		lower := make([]string, len(exts))
+		for i, e := range exts {
+			lower[i] = strings.ToLower(e)
+		}
+		cfg.extensions = lower
+	}
+}
+
+// AllowedMIMETypes restricts uploads to files whose detected content type
+// matches one of the given MIME types. Detection uses http.DetectContentType
+// on the first 512 bytes of the file content (not the user-supplied
+// Content-Type header).
+func AllowedMIMETypes(types ...string) FileValidationOption {
+	return func(cfg *fileValidationConfig) {
+		lower := make([]string, len(types))
+		for i, t := range types {
+			lower[i] = strings.ToLower(t)
+		}
+		cfg.mimeTypes = lower
+	}
+}
+
+// ValidateFile checks an uploaded file header against the provided constraints.
+// Returns nil if all checks pass, or an error describing the first failure.
+func (c *Context) ValidateFile(fh *multipart.FileHeader, opts ...FileValidationOption) error {
+	var cfg fileValidationConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	// Check file size
+	if cfg.maxSize > 0 && fh.Size > cfg.maxSize {
+		return fmt.Errorf("file size %d exceeds maximum allowed size %d", fh.Size, cfg.maxSize)
+	}
+
+	// Check extension
+	if len(cfg.extensions) > 0 {
+		ext := strings.ToLower(filepath.Ext(fh.Filename))
+		allowed := false
+		for _, e := range cfg.extensions {
+			if ext == e {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return fmt.Errorf("file extension %q is not allowed", ext)
+		}
+	}
+
+	// Check MIME type by reading file content
+	if len(cfg.mimeTypes) > 0 {
+		f, err := fh.Open()
+		if err != nil {
+			return fmt.Errorf("failed to open file for MIME detection: %w", err)
+		}
+		defer f.Close()
+
+		buf := make([]byte, 512)
+		n, _ := f.Read(buf)
+		detected := strings.ToLower(http.DetectContentType(buf[:n]))
+
+		allowed := false
+		for _, mt := range cfg.mimeTypes {
+			if detected == mt {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return fmt.Errorf("detected MIME type %q is not allowed", detected)
+		}
+	}
+
+	return nil
+}
+
+// safeFilenameRe matches characters that are NOT alphanumeric, dot, hyphen, or underscore.
+var safeFilenameRe = regexp.MustCompile(`[^a-zA-Z0-9._-]`)
+
+// SanitizeFilename cleans a filename for safe storage:
+//   - Strips directory components
+//   - Removes null bytes
+//   - Replaces non-alphanumeric characters (except . - _) with underscore
+//   - Limits total length to 255 characters
+func SanitizeFilename(name string) string {
+	// Strip directory components
+	name = filepath.Base(name)
+
+	// Remove null bytes
+	name = strings.ReplaceAll(name, "\x00", "")
+
+	// Replace unsafe characters
+	name = safeFilenameRe.ReplaceAllString(name, "_")
+
+	// Limit length to 255 characters
+	if utf8.RuneCountInString(name) > 255 {
+		runes := []rune(name)
+		name = string(runes[:255])
+	}
+
+	return name
+}

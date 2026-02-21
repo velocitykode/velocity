@@ -309,7 +309,9 @@ const DefaultMaxBodySize int64 = 10 * 1024 * 1024
 
 // Bind parses the request body as JSON into the given struct
 func (c *Context) Bind(v interface{}) error {
-	c.Request.Body = http.MaxBytesReader(c.Response, c.Request.Body, DefaultMaxBodySize)
+	if c.Get(bodyLimitKey) == nil {
+		c.Request.Body = http.MaxBytesReader(c.Response, c.Request.Body, DefaultMaxBodySize)
+	}
 	return json.NewDecoder(c.Request.Body).Decode(v)
 }
 
@@ -601,6 +603,11 @@ func (c *Context) Authorize(ability string, args ...interface{}) error {
 
 // BindForm parses form data and maps it to v using `form` struct tags.
 func (c *Context) BindForm(v interface{}) error {
+	limit := DefaultMaxBodySize
+	if l, ok := c.Get(bodyLimitKey).(int64); ok {
+		limit = l
+	}
+	c.Request.Body = http.MaxBytesReader(c.Response, c.Request.Body, limit)
 	if err := c.Request.ParseForm(); err != nil {
 		return err
 	}
@@ -614,7 +621,9 @@ func (c *Context) BindQuery(v interface{}) error {
 
 // BindXML parses the request body as XML into v (10 MB limit).
 func (c *Context) BindXML(v interface{}) error {
-	c.Request.Body = http.MaxBytesReader(c.Response, c.Request.Body, DefaultMaxBodySize)
+	if c.Get(bodyLimitKey) == nil {
+		c.Request.Body = http.MaxBytesReader(c.Response, c.Request.Body, DefaultMaxBodySize)
+	}
 	return xml.NewDecoder(c.Request.Body).Decode(v)
 }
 
@@ -825,7 +834,11 @@ func (c *Context) FormValue(key string) string {
 
 // FormFile returns the first file for the provided form key.
 func (c *Context) FormFile(key string) (*multipart.FileHeader, error) {
-	if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
+	limit := DefaultMaxBodySize
+	if l, ok := c.Get(bodyLimitKey).(int64); ok {
+		limit = l
+	}
+	if err := c.Request.ParseMultipartForm(limit); err != nil {
 		return nil, err
 	}
 	_, fh, err := c.Request.FormFile(key)
