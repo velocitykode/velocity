@@ -8,6 +8,11 @@ import (
 	"time"
 )
 
+func resetBatchStoreForTest(t *testing.T) {
+	t.Helper()
+	batchStore.reset()
+}
+
 // testBatchJob is a simple job that implements Batchable
 type testBatchJob struct {
 	batchID BatchID
@@ -93,6 +98,7 @@ func (d *memoryDriver) Clear(queue string) error {
 func (d *memoryDriver) Close() error { return nil }
 
 func TestBatch_SuccessfulCompletion(t *testing.T) {
+	resetBatchStoreForTest(t)
 	driver := newMemoryDriver()
 
 	var thenCalled atomic.Bool
@@ -153,6 +159,7 @@ func TestBatch_SuccessfulCompletion(t *testing.T) {
 }
 
 func TestBatch_WithFailures_AllowFailures(t *testing.T) {
+	resetBatchStoreForTest(t)
 	driver := newMemoryDriver()
 
 	var thenCalled atomic.Bool
@@ -212,6 +219,7 @@ func TestBatch_WithFailures_AllowFailures(t *testing.T) {
 }
 
 func TestBatch_WithFailures_NoAllowFailures(t *testing.T) {
+	resetBatchStoreForTest(t)
 	driver := newMemoryDriver()
 
 	jobs := make([]Job, 3)
@@ -233,6 +241,7 @@ func TestBatch_WithFailures_NoAllowFailures(t *testing.T) {
 }
 
 func TestBatch_Cancel(t *testing.T) {
+	resetBatchStoreForTest(t)
 	driver := newMemoryDriver()
 
 	jobs := make([]Job, 3)
@@ -259,6 +268,7 @@ func TestBatch_Cancel(t *testing.T) {
 }
 
 func TestBatch_Progress(t *testing.T) {
+	resetBatchStoreForTest(t)
 	driver := newMemoryDriver()
 
 	jobs := make([]Job, 4)
@@ -297,6 +307,7 @@ func TestBatch_Progress(t *testing.T) {
 }
 
 func TestBatch_FindBatch(t *testing.T) {
+	resetBatchStoreForTest(t)
 	driver := newMemoryDriver()
 
 	jobs := []Job{&testBatchJob{}}
@@ -321,6 +332,7 @@ func TestBatch_FindBatch(t *testing.T) {
 }
 
 func TestBatch_EmptyBatch(t *testing.T) {
+	resetBatchStoreForTest(t)
 	driver := newMemoryDriver()
 
 	_, err := NewBatch().Dispatch(driver)
@@ -333,6 +345,7 @@ func TestBatch_EmptyBatch(t *testing.T) {
 }
 
 func TestBatch_Events(t *testing.T) {
+	resetBatchStoreForTest(t)
 	driver := newMemoryDriver()
 
 	var events []string
@@ -386,6 +399,7 @@ func TestBatch_Events(t *testing.T) {
 }
 
 func TestBatch_CatchFiresOnce(t *testing.T) {
+	resetBatchStoreForTest(t)
 	driver := newMemoryDriver()
 
 	var catchCount atomic.Int32
@@ -415,6 +429,7 @@ func TestBatch_CatchFiresOnce(t *testing.T) {
 }
 
 func TestBatch_Concurrent(t *testing.T) {
+	resetBatchStoreForTest(t)
 	driver := newMemoryDriver()
 
 	const numJobs = 100
@@ -467,6 +482,7 @@ func TestBatch_Concurrent(t *testing.T) {
 }
 
 func TestBatch_BatchableJobsGetBatchID(t *testing.T) {
+	resetBatchStoreForTest(t)
 	driver := newMemoryDriver()
 
 	job1 := &testBatchJob{}
@@ -486,6 +502,7 @@ func TestBatch_BatchableJobsGetBatchID(t *testing.T) {
 }
 
 func TestBatch_OnQueue(t *testing.T) {
+	resetBatchStoreForTest(t)
 	driver := newMemoryDriver()
 
 	jobs := []Job{&testBatchJob{}}
@@ -507,6 +524,7 @@ func TestBatch_OnQueue(t *testing.T) {
 }
 
 func TestBatch_WorkerIntegration(t *testing.T) {
+	resetBatchStoreForTest(t)
 	driver := newMemoryDriver()
 
 	var finallyCalled atomic.Bool
@@ -557,15 +575,19 @@ func TestBatch_WorkerIntegration(t *testing.T) {
 }
 
 func TestBatch_CancelledJobSkipped(t *testing.T) {
+	resetBatchStoreForTest(t)
 	driver := newMemoryDriver()
 
 	var handled atomic.Bool
+	var finallyCalled atomic.Bool
 	job1 := &testBatchJob{handler: func() error {
 		handled.Store(true)
 		return nil
 	}}
 
-	batch, err := NewBatch(job1).Dispatch(driver)
+	batch, err := NewBatch(job1).
+		Finally(func(b *Batch) { finallyCalled.Store(true) }).
+		Dispatch(driver)
 	if err != nil {
 		t.Fatalf("Dispatch failed: %v", err)
 	}
@@ -584,6 +606,18 @@ func TestBatch_CancelledJobSkipped(t *testing.T) {
 	if handled.Load() {
 		t.Error("expected cancelled batch job to be skipped")
 	}
+	// Skipped jobs should decrement pendingJobs so batch reaches Finished
+	if !batch.Finished() {
+		t.Error("expected cancelled batch to reach Finished state")
+	}
+	if batch.PendingJobs() != 0 {
+		t.Errorf("expected 0 pending jobs after skip, got %d", batch.PendingJobs())
+	}
+	// Finally should still fire even when all jobs are skipped
+	time.Sleep(50 * time.Millisecond)
+	if !finallyCalled.Load() {
+		t.Error("expected Finally callback to fire for cancelled batch")
+	}
 }
 
 func TestBatch_ProgressEmptyBatch(t *testing.T) {
@@ -594,6 +628,7 @@ func TestBatch_ProgressEmptyBatch(t *testing.T) {
 }
 
 func TestBatch_AllowsFailures_DefaultFalse(t *testing.T) {
+	resetBatchStoreForTest(t)
 	driver := newMemoryDriver()
 
 	jobs := []Job{&testBatchJob{}}
@@ -607,6 +642,7 @@ func TestBatch_AllowsFailures_DefaultFalse(t *testing.T) {
 }
 
 func TestBatch_DispatchPushFailure(t *testing.T) {
+	resetBatchStoreForTest(t)
 	failDriver := &failingDriver{failOnNth: 2}
 
 	job1 := &testBatchJob{}
@@ -624,9 +660,18 @@ func TestBatch_DispatchPushFailure(t *testing.T) {
 	if failDriver.pushed != 2 {
 		t.Errorf("expected 2 push attempts (1 success + 1 failure), got %d", failDriver.pushed)
 	}
+	// Batch should be cancelled on partial push failure
+	if !batch.Cancelled() {
+		t.Error("expected batch to be cancelled after partial push failure")
+	}
+	// pendingJobs should be adjusted: only 1 job was actually pushed
+	if batch.PendingJobs() != 1 {
+		t.Errorf("expected 1 pending job (only 1 pushed), got %d", batch.PendingJobs())
+	}
 }
 
 func TestBatch_CancelledEvent(t *testing.T) {
+	resetBatchStoreForTest(t)
 	driver := newMemoryDriver()
 
 	var events []string
@@ -688,3 +733,41 @@ func (d *failingDriver) Size(string) (int64, error)                     { return
 func (d *failingDriver) Clear(string) error                             { return nil }
 func (d *failingDriver) Failed(Job, error, string) error                { return nil }
 func (d *failingDriver) Close() error                                   { return nil }
+
+// testOnQueuerJob implements both Batchable and OnQueuer
+type testOnQueuerJob struct {
+	testBatchJob
+	queue string
+}
+
+func (j *testOnQueuerJob) OnQueue() string { return j.queue }
+
+func TestBatch_JobOnQueuerOverridesBatchQueue(t *testing.T) {
+	resetBatchStoreForTest(t)
+	driver := newMemoryDriver()
+
+	regularJob := &testBatchJob{}
+	priorityJob := &testOnQueuerJob{queue: "priority"}
+
+	_, err := NewBatch(regularJob, priorityJob).OnQueue("default").Dispatch(driver)
+	if err != nil {
+		t.Fatalf("Dispatch failed: %v", err)
+	}
+
+	defaultSize, _ := driver.Size("default")
+	prioritySize, _ := driver.Size("priority")
+
+	if defaultSize != 1 {
+		t.Errorf("expected 1 job on 'default' queue, got %d", defaultSize)
+	}
+	if prioritySize != 1 {
+		t.Errorf("expected 1 job on 'priority' queue, got %d", prioritySize)
+	}
+}
+
+func TestBatchStore_Close(t *testing.T) {
+	s := newBatchStore()
+	s.close()
+	// Second close should not panic (idempotent)
+	s.close()
+}

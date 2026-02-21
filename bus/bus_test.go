@@ -562,3 +562,37 @@ func TestFormatType_Nil(t *testing.T) {
 		t.Fatalf("formatType(nil) = %q, want '<nil>'", result)
 	}
 }
+
+func TestCommandJob_Failed_FiresEvent(t *testing.T) {
+	b := New()
+
+	var events []string
+	b.SetEventDispatcher(func(event any) error {
+		switch e := event.(type) {
+		case *CommandFailed:
+			events = append(events, "failed:"+e.Error)
+		}
+		return nil
+	})
+
+	Register(b, func(cmd createUser) error {
+		return nil
+	})
+
+	job := &commandJob{cmd: createUser{Name: "Test"}, bus: b}
+	job.Failed(errors.New("queue timeout"))
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %v", len(events), events)
+	}
+	if events[0] != "failed:queue timeout" {
+		t.Fatalf("events[0] = %q, want 'failed:queue timeout'", events[0])
+	}
+}
+
+func TestCommandJob_Failed_NilDispatcher(t *testing.T) {
+	b := New()
+	job := &commandJob{cmd: createUser{}, bus: b}
+	// Should not panic when event dispatcher is nil
+	job.Failed(errors.New("test"))
+}

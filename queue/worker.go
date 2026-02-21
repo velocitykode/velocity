@@ -213,9 +213,15 @@ func (w *Worker) processJob() error {
 	dispatchJobProcessing(w.dispatchEvent, jobCtx, jobType, w.queueName)
 	startTime := time.Now()
 
-	// Check if this is a cancelled batch job — skip processing
+	// Check if this is a cancelled batch job — skip processing.
+	// Note: This is a best-effort check. A batch could be cancelled between this
+	// check and job execution (TOCTOU), so cancellation is not guaranteed to prevent
+	// a job from running. This is an acceptable trade-off for simplicity.
 	if bj, ok := job.(Batchable); ok {
 		if batch, found := FindBatch(bj.GetBatchID()); found && batch.Cancelled() {
+			// Decrement pending so the batch can still reach Finished state
+			batch.pendingJobs.Add(-1)
+			batch.checkFinished()
 			return nil
 		}
 	}

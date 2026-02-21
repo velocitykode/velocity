@@ -114,6 +114,8 @@ func (b *Bus) Dispatch(cmd Command) error {
 
 	cmdType := reflect.TypeOf(cmd).String()
 
+	// Event dispatch errors are intentionally ignored — events are best-effort
+	// and must not affect command execution flow.
 	if dispatchEvent != nil {
 		_ = dispatchEvent(&CommandDispatching{CommandType: cmdType})
 	}
@@ -172,9 +174,9 @@ func (b *Bus) resolveHandler(cmd Command) func(Command) error {
 		return h.(func(Command) error)
 	}
 
-	if sh, ok := cmd.(SelfHandling); ok {
-		return func(_ Command) error {
-			return sh.Handle()
+	if _, ok := cmd.(SelfHandling); ok {
+		return func(c Command) error {
+			return c.(SelfHandling).Handle()
 		}
 	}
 
@@ -201,4 +203,15 @@ func (j *commandJob) Handle() error {
 	return j.bus.Dispatch(j.cmd)
 }
 
-func (j *commandJob) Failed(err error) {}
+func (j *commandJob) Failed(err error) {
+	j.bus.mu.RLock()
+	dispatchEvent := j.bus.dispatchEvent
+	j.bus.mu.RUnlock()
+
+	if dispatchEvent != nil {
+		cmdType := reflect.TypeOf(j.cmd).String()
+		// Event dispatch errors are intentionally ignored — event dispatch is
+		// best-effort and must not interfere with queue worker error handling.
+		_ = dispatchEvent(&CommandFailed{CommandType: cmdType, Error: err.Error()})
+	}
+}

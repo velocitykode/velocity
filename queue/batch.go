@@ -24,30 +24,56 @@ type batchStoreMap struct {
 	mu      sync.RWMutex
 	batches map[BatchID]*Batch
 	seq     uint64
+	stop    chan struct{}
 }
 
 func newBatchStore() *batchStoreMap {
 	s := &batchStoreMap{
 		batches: make(map[BatchID]*Batch),
+		stop:    make(chan struct{}),
 	}
 	go s.periodicCleanup()
 	return s
 }
 
-// periodicCleanup removes finished batches older than 1 hour (same pattern as jobStore)
+// periodicCleanup removes finished batches older than 1 hour (same pattern as jobStore).
+// Exits when the stop channel is closed.
 func (s *batchStoreMap) periodicCleanup() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
-	for range ticker.C {
-		s.mu.Lock()
-		cutoff := time.Now().Add(-1 * time.Hour)
-		for id, b := range s.batches {
-			if b.finished.Load() && b.finishedAt.Before(cutoff) {
-				delete(s.batches, id)
+	for {
+		select {
+		case <-ticker.C:
+			s.mu.Lock()
+			cutoff := time.Now().Add(-1 * time.Hour)
+			for id, b := range s.batches {
+				if b.finished.Load() && b.finishedAt.Before(cutoff) {
+					delete(s.batches, id)
+				}
 			}
+			s.mu.Unlock()
+		case <-s.stop:
+			return
 		}
-		s.mu.Unlock()
 	}
+}
+
+// close stops the periodic cleanup goroutine.
+func (s *batchStoreMap) close() {
+	select {
+	case <-s.stop:
+		// already closed
+	default:
+		close(s.stop)
+	}
+}
+
+// reset clears all batches and resets the ID sequence. Used by tests.
+func (s *batchStoreMap) reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.batches = make(map[BatchID]*Batch)
+	s.seq = 0
 }
 
 func (s *batchStoreMap) store(b *Batch) {
@@ -310,6 +336,7 @@ func (pb *PendingBatch) Dispatch(driver Driver) (*Batch, error) {
 	batchStore.store(batch)
 
 	// Set BatchID on all Batchable jobs and push them
+	pushed := 0
 	for _, job := range pb.jobs {
 		if bj, ok := job.(Batchable); ok {
 			bj.SetBatchID(id)
@@ -319,8 +346,14 @@ func (pb *PendingBatch) Dispatch(driver Driver) (*Batch, error) {
 			queueName = oq.OnQueue()
 		}
 		if err := driver.Push(job, queueName); err != nil {
-			return batch, fmt.Errorf("batch: failed to push job: %w", err)
+			// Adjust pendingJobs to reflect only the jobs that were actually pushed,
+			// then cancel the batch so it can still reach Finished state.
+			unpushed := int32(len(pb.jobs) - pushed)
+			batch.pendingJobs.Add(-unpushed)
+			batch.Cancel()
+			return batch, fmt.Errorf("batch: failed to push job %d/%d: %w", pushed+1, len(pb.jobs), err)
 		}
+		pushed++
 	}
 
 	dispatchBatchEvent(pb.dispatchEvent, &BatchCreated{
