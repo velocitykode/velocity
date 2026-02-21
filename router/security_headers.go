@@ -65,6 +65,13 @@ func WithPermissionsPolicy(policy string) SecurityHeadersOption {
 	}
 }
 
+// WithHSTSIncludeSubDomains controls whether includeSubDomains is added to the HSTS header.
+func WithHSTSIncludeSubDomains(include bool) SecurityHeadersOption {
+	return func(cfg *SecurityHeadersConfig) {
+		cfg.HSTSIncludeSubDomains = include
+	}
+}
+
 // WithCrossDomainPolicies sets the X-Permitted-Cross-Domain-Policies header value.
 func WithCrossDomainPolicies(value string) SecurityHeadersOption {
 	return func(cfg *SecurityHeadersConfig) {
@@ -151,6 +158,9 @@ func WithHTTPSRedirectTrustedProxies(proxies []string) HTTPSRedirectOption {
 // Useful for health check endpoints that need to remain accessible over HTTP.
 func WithExcludePaths(paths ...string) HTTPSRedirectOption {
 	return func(cfg *httpsRedirectConfig) {
+		if cfg.excludePaths == nil {
+			cfg.excludePaths = make(map[string]bool)
+		}
 		for _, p := range paths {
 			cfg.excludePaths[p] = true
 		}

@@ -420,3 +420,33 @@ func TestSecurityHeaders_WithPermissionsPolicy(t *testing.T) {
 		t.Errorf("Permissions-Policy = %q, want %q", got, custom)
 	}
 }
+
+func TestSecurityHeaders_WithHSTSIncludeSubDomains(t *testing.T) {
+	mw := SecurityHeaders(WithHSTSIncludeSubDomains(false))
+	c, w := NewTestContext("GET", "/test")
+
+	if err := mw(func(c *Context) error { return nil })(c); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := w.Header().Get("Strict-Transport-Security")
+	want := "max-age=63072000"
+	if got != want {
+		t.Errorf("Strict-Transport-Security = %q, want %q (no includeSubDomains)", got, want)
+	}
+}
+
+func TestWithExcludePaths_NilMapSafe(t *testing.T) {
+	// WithExcludePaths must not panic when applied to a config with nil excludePaths.
+	// This tests the defensive nil-map initialization.
+	opt := WithExcludePaths("/health", "/ready")
+	cfg := &httpsRedirectConfig{} // excludePaths is nil
+	opt(cfg)                      // must not panic
+
+	if !cfg.excludePaths["/health"] {
+		t.Error("expected /health in excludePaths")
+	}
+	if !cfg.excludePaths["/ready"] {
+		t.Error("expected /ready in excludePaths")
+	}
+}

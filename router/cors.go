@@ -1,6 +1,7 @@
 package router
 
 import (
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -54,6 +55,12 @@ func PermissiveCORSConfig() CORSConfig {
 }
 
 // CORS creates a CORS middleware with the given configuration.
+//
+// WARNING: Using AllowedOrigins: ["*"] with AllowCredentials: true is dangerous.
+// The CORS spec forbids Access-Control-Allow-Origin: * with credentials, so the
+// middleware echoes back the request origin instead. This effectively allows any
+// site to make credentialed requests to your API. Only use this combination if
+// you fully understand the security implications. Prefer listing explicit origins.
 func CORS(config CORSConfig) MiddlewareFunc {
 	allowAll := false
 	for _, o := range config.AllowedOrigins {
@@ -61,6 +68,12 @@ func CORS(config CORSConfig) MiddlewareFunc {
 			allowAll = true
 			break
 		}
+	}
+
+	if allowAll && config.AllowCredentials {
+		log.Println("velocity/cors: WARNING: AllowedOrigins [\"*\"] with AllowCredentials is dangerous — " +
+			"the request origin will be echoed back, allowing any site to make credentialed requests. " +
+			"Use explicit origins instead.")
 	}
 
 	methods := strings.Join(config.AllowedMethods, ", ")

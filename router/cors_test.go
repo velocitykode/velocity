@@ -254,6 +254,33 @@ func TestCORS_DefaultConfig_RejectsPreflight(t *testing.T) {
 	}
 }
 
+func TestCORS_WildcardWithCredentials_EchoesOrigin(t *testing.T) {
+	// When AllowedOrigins is ["*"] with AllowCredentials, the middleware cannot
+	// send "Access-Control-Allow-Origin: *" (browsers reject it with credentials).
+	// Instead it echoes the request origin, effectively allowing any origin with cookies.
+	cfg := PermissiveCORSConfig()
+	cfg.AllowCredentials = true
+	handler := CORS(cfg)(func(c *Context) error { return nil })
+
+	ctx, rec := NewTestContext("GET", "/test")
+	ctx.Request.Header.Set("Origin", "https://attacker.com")
+
+	if err := handler(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Origin should be echoed back (not "*") when credentials are enabled
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://attacker.com" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want echoed origin", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
+		t.Errorf("Access-Control-Allow-Credentials = %q, want %q", got, "true")
+	}
+	if got := rec.Header().Get("Vary"); got != "Origin" {
+		t.Errorf("Vary = %q, want %q (must vary by origin when echoing)", got, "Origin")
+	}
+}
+
 func TestCORS_MultipleOrigins_SecondMatches(t *testing.T) {
 	cfg := DefaultCORSConfig()
 	cfg.AllowedOrigins = []string{"https://one.com", "https://two.com"}
