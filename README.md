@@ -52,6 +52,22 @@ func main() {
 }
 ```
 
+For larger apps, use the declarative bootstrap API:
+
+```go
+func main() {
+    v, _ := velocity.New()
+
+    v.Providers(app.Configure).
+        Middleware(app.Middleware).
+        Routes(routes.Register).
+        Events(app.Events(v.Log)).
+        Schedule(schedule.Configure).
+        Exceptions(exceptions.Configure).
+        Serve()
+}
+```
+
 ## Why Velocity
 
 ### Boot Once, Serve Forever
@@ -114,14 +130,29 @@ Every subsystem swaps via config, not code.
 | | Drivers |
 |---|---|
 | Database | PostgreSQL, MySQL, SQLite |
-| Cache | Memory, File, Redis |
+| Cache | Memory, File, Redis, Database |
 | Queue | Memory, Redis, Database |
 | Storage | Local, S3, Memory |
-| Mail | SMTP, Mailgun, SendGrid, SES |
+| Mail | Postmark, Mailgun, Log |
 | Auth | Session, JWT |
-| Broadcasting | Log, Redis |
+| Broadcasting | WebSocket |
 
 SQLite in dev, PostgreSQL in prod. One env var change.
+
+### Secure by Default
+
+Security headers, HTTPS redirect, CORS, CSRF — all built in with safe defaults and configurable via functional options.
+
+```go
+router.Use(SecurityHeaders(
+    WithCSP("default-src 'self'; script-src 'self' cdn.example.com"),
+))
+router.Use(HTTPSRedirect(
+    WithExcludePaths("/health"),
+))
+```
+
+CORS rejects all cross-origin requests by default — you opt in to what you allow.
 
 ### No Magic
 
@@ -136,15 +167,19 @@ app.Router.Get("/users/{id}", func(c *router.Context) error {
 
 ### And Everything Else
 
+- **Security middleware** — configurable security headers, HTTPS redirect, CORS, CSRF, rate limiting
 - **WebSocket server** — client management, rooms, broadcasting, built in
-- **Queue jobs** — zero-copy in-memory, typed deserialization for Redis/DB, job signing, automatic retries
+- **Queue jobs** — zero-copy in-memory, typed deserialization for Redis/DB, job signing, automatic retries with backoff
 - **Event system** — dispatcher with sync/async listeners, wildcard matching, queued listeners
 - **Task scheduler** — cron-based scheduling with callbacks
+- **Notifications** — multi-channel (mail, database, broadcast, Slack) with routing
+- **HTTP client** — instrumented with event dispatching for APM monitoring
 - **Graceful shutdown** — reverse-order teardown, 30-second grace period, nothing drops
-- **AES-256-GCM encryption** — authenticated encryption by default
+- **AES-256-GCM encryption** — authenticated encryption, key rotation
 - **CSRF protection** — session and cookie store drivers
-- **Validation** — rule engine with custom rules
+- **Validation** — rule engine with database-aware rules (`unique`, `exists`)
 - **Storage** — local filesystem, S3, memory with a unified API
+- **Distributed tracing** — trace context propagation for APM
 
 ## The Stack
 
