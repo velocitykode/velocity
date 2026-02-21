@@ -213,6 +213,13 @@ func (w *Worker) processJob() error {
 	dispatchJobProcessing(w.dispatchEvent, jobCtx, jobType, w.queueName)
 	startTime := time.Now()
 
+	// Check if this is a cancelled batch job — skip processing
+	if bj, ok := job.(Batchable); ok {
+		if batch, found := FindBatch(bj.GetBatchID()); found && batch.Cancelled() {
+			return nil
+		}
+	}
+
 	done := make(chan error, 1)
 	go func() {
 		done <- w.handler(job)
@@ -227,6 +234,12 @@ func (w *Worker) processJob() error {
 		}
 		// Success — clean up attempt tracking
 		w.removeAttempts(job)
+		// Record batch success
+		if bj, ok := job.(Batchable); ok {
+			if batch, found := FindBatch(bj.GetBatchID()); found {
+				batch.recordSuccess()
+			}
+		}
 		dispatchJobProcessed(w.dispatchEvent, jobCtx, jobType, w.queueName, duration)
 		return nil
 	case <-jobCtx.Done():
@@ -278,6 +291,12 @@ func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, 
 // failJob permanently fails a job after exhausting retries.
 func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error, duration time.Duration, attempt, maxAttempts int) {
 	w.removeAttempts(job)
+	// Record batch failure
+	if bj, ok := job.(Batchable); ok {
+		if batch, found := FindBatch(bj.GetBatchID()); found {
+			batch.recordFailure(err)
+		}
+	}
 	dispatchJobFailed(w.dispatchEvent, ctx, jobType, w.queueName, err, duration)
 	if failErr := w.queue.Failed(job, err, w.queueName); failErr != nil {
 		w.logger.Error("Failed to mark job as failed", "error", failErr)
