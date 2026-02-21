@@ -139,3 +139,21 @@ func TestFormFile_UsesBodyLimit(t *testing.T) {
 		t.Errorf("expected test.txt, got %s", fh.Filename)
 	}
 }
+
+func TestBodyLimit_PanicsOnZero(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for zero limit")
+		}
+	}()
+	BodyLimit(0)
+}
+
+func TestBodyLimit_PanicsOnNegative(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for negative limit")
+		}
+	}()
+	BodyLimit(-1)
+}

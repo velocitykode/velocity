@@ -88,7 +88,19 @@ func TestValidateFile_AllowedExtensions_Fail(t *testing.T) {
 }
 
 func TestValidateFile_AllowedMIMETypes_Pass(t *testing.T) {
-	// Plain text content will be detected as text/plain
+	// Plain text content will be detected as "text/plain; charset=utf-8"
+	// by http.DetectContentType. Passing just "text/plain" verifies that
+	// parameter stripping works correctly during comparison.
+	fh := createTestFileHeader(t, "file.txt", []byte("Hello, world!"))
+	c, _ := NewTestContext("POST", "/", nil)
+
+	if err := c.ValidateFile(fh, AllowedMIMETypes("text/plain")); err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestValidateFile_AllowedMIMETypes_WithParams(t *testing.T) {
+	// Passing "text/plain; charset=utf-8" should also match since params are stripped
 	fh := createTestFileHeader(t, "file.txt", []byte("Hello, world!"))
 	c, _ := NewTestContext("POST", "/", nil)
 

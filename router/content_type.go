@@ -38,15 +38,18 @@ func ContentType(allowed ...string) MiddlewareFunc {
 				return next(c)
 			}
 
-			// For DELETE, only check if there's actually a body
-			if method == http.MethodDelete && c.Request.ContentLength <= 0 {
+			// For DELETE, only check if there's actually a body.
+			// ContentLength is -1 for chunked/unknown encoding, which may
+			// carry a body, so we only skip when explicitly zero or no body.
+			if method == http.MethodDelete && c.Request.ContentLength == 0 {
 				return next(c)
 			}
 
-			// If content-length > 0 but no content-type, reject
+			// If there's a body but no Content-Type, reject.
+			// ContentLength is -1 for chunked encoding (body may exist).
 			ct := c.Request.Header.Get("Content-Type")
 			if ct == "" {
-				if c.Request.ContentLength > 0 {
+				if c.Request.ContentLength != 0 {
 					return c.JSON(http.StatusUnsupportedMediaType, Error{
 						Code:    http.StatusUnsupportedMediaType,
 						Message: "Unsupported Media Type",

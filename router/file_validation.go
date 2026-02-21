@@ -2,6 +2,7 @@ package router
 
 import (
 	"fmt"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"path/filepath"
@@ -41,14 +42,20 @@ func AllowedExtensions(exts ...string) FileValidationOption {
 // AllowedMIMETypes restricts uploads to files whose detected content type
 // matches one of the given MIME types. Detection uses http.DetectContentType
 // on the first 512 bytes of the file content (not the user-supplied
-// Content-Type header).
+// Content-Type header). Parameters like charset are ignored during matching,
+// so "text/plain" matches "text/plain; charset=utf-8".
 func AllowedMIMETypes(types ...string) FileValidationOption {
 	return func(cfg *fileValidationConfig) {
-		lower := make([]string, len(types))
-		for i, t := range types {
-			lower[i] = strings.ToLower(t)
+		normalized := make([]string, 0, len(types))
+		for _, t := range types {
+			mt, _, _ := mime.ParseMediaType(t)
+			if mt != "" {
+				normalized = append(normalized, strings.ToLower(mt))
+			} else {
+				normalized = append(normalized, strings.ToLower(strings.TrimSpace(t)))
+			}
 		}
-		cfg.mimeTypes = lower
+		cfg.mimeTypes = normalized
 	}
 }
 
@@ -90,7 +97,9 @@ func (c *Context) ValidateFile(fh *multipart.FileHeader, opts ...FileValidationO
 
 		buf := make([]byte, 512)
 		n, _ := f.Read(buf)
-		detected := strings.ToLower(http.DetectContentType(buf[:n]))
+		raw := http.DetectContentType(buf[:n])
+		detected, _, _ := mime.ParseMediaType(raw)
+		detected = strings.ToLower(detected)
 
 		allowed := false
 		for _, mt := range cfg.mimeTypes {

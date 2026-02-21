@@ -113,6 +113,23 @@ func TestContentType_ChecksDELETEWithBody(t *testing.T) {
 	}
 }
 
+func TestContentType_ChecksDELETEWithChunkedBody(t *testing.T) {
+	handler := ContentType("application/json")(func(c *Context) error {
+		return c.String(http.StatusOK, "ok")
+	})
+
+	c, w := NewTestContext("DELETE", "/test", strings.NewReader(`{"id": 1}`))
+	c.Request.Header.Set("Content-Type", "text/plain")
+	c.Request.ContentLength = -1 // chunked encoding
+
+	if err := handler(c); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if w.Code != http.StatusUnsupportedMediaType {
+		t.Errorf("expected 415, got %d", w.Code)
+	}
+}
+
 func TestContentType_NoContentTypeWithBody(t *testing.T) {
 	handler := ContentType("application/json")(func(c *Context) error {
 		return c.String(http.StatusOK, "ok")
