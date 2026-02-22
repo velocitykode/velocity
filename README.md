@@ -202,7 +202,7 @@ app.Router.Get("/users/{id}", func(c *router.Context) error {
 
 ## Documentation
 
-Full documentation at **[velocitykode.com/docs](https://velocitykode.com/docs)**
+Full documentation at **[velocity.velocitykode.com/docs](https://velocity.velocitykode.com/docs)**
 
 ## Community
 
