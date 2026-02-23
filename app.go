@@ -1,0 +1,282 @@
+package velocity
+
+import (
+	"database/sql"
+	"fmt"
+	"net/http"
+
+	"github.com/velocitykode/velocity/app"
+	"github.com/velocitykode/velocity/crypto"
+	"github.com/velocitykode/velocity/csrf"
+	"github.com/velocitykode/velocity/events"
+	"github.com/velocitykode/velocity/exceptions"
+	"github.com/velocitykode/velocity/log"
+	"github.com/velocitykode/velocity/mail"
+	"github.com/velocitykode/velocity/orm"
+	"github.com/velocitykode/velocity/router"
+	"github.com/velocitykode/velocity/scheduler"
+	"github.com/velocitykode/velocity/validate"
+	"github.com/velocitykode/velocity/validation"
+	"github.com/velocitykode/velocity/view"
+)
+
+const frameworkVersion = "0.1.0"
+
+// App represents the Velocity application container.
+// It owns all framework subsystem instances and provides them to the consumer.
+type App struct {
+	// Services contains all non-router services, shared with router.Context.
+	*app.Services
+
+	// Router is separate from Services because it creates contexts that
+	// reference Services — putting Router inside Services would be circular.
+	Router *router.VelocityRouterV2
+
+	// Internal
+	config    *Config
+	server    *http.Server
+	version   string
+	noEvents  bool // skip event dispatcher initialization
+	providers []app.ServiceProvider
+
+	// Declarative bootstrap chain
+	providersFn    func(*ProviderRegistry)
+	chainProviders []app.ServiceProvider
+	middlewareFn   func(*MiddlewareStack)
+	routesFn       func(*Routing)
+	eventsFn       func(events.Dispatcher)
+	scheduleFn     func(*scheduler.Scheduler)
+	exceptionsFn   func(*exceptions.Handler)
+	bootstrapped   bool
+}
+
+// New creates a new Velocity application with all services initialized.
+// Services are initialized in dependency order. If any required service
+// fails to initialize, New returns an error — it never panics.
+func New(opts ...Option) (*App, error) {
+	a := &App{
+		Services: &app.Services{
+			Extensions: make(map[string]any),
+		},
+		version:  frameworkVersion,
+	}
+
+	// Load config from env by default
+	config := ConfigFromEnv()
+	a.config = &config
+
+	// Apply options (may override config)
+	for _, opt := range opts {
+		opt(a)
+	}
+
+	// 1. Initialize logger first (everything else may need to log)
+	logger, err := log.NewLogger(a.config.Log)
+	if err != nil {
+		logger, _ = log.NewLogger(log.LogConfig{Driver: "console"})
+	}
+	a.Log = logger
+
+	// 2. Initialize crypto (auth/csrf may need it)
+	if a.config.Crypto.Key != "" {
+		enc, err := crypto.NewEncryptor(a.config.Crypto)
+		if err != nil {
+			return nil, fmt.Errorf("velocity: failed to initialize crypto: %w", err)
+		}
+		a.Crypto = enc
+	}
+
+	// 3. Initialize database connection
+	if a.config.DB.Connection != "" {
+		dbManager, err := orm.NewManager(orm.ManagerConfig{
+			Driver:          a.config.DB.Connection,
+			Host:            a.config.DB.Host,
+			Port:            a.config.DB.Port,
+			Database:        a.config.DB.Database,
+			Username:        a.config.DB.Username,
+			Password:        a.config.DB.Password,
+			Charset:         a.config.DB.Charset,
+			SSLMode:         a.config.DB.SSLMode,
+			MaxIdleConns:    a.config.DB.MaxIdleConns,
+			MaxOpenConns:    a.config.DB.MaxOpenConns,
+			ConnMaxLifetime: a.config.DB.ConnMaxLifetime,
+			LogQueries:      a.config.DB.LogQueries,
+			SlowThreshold:   a.config.DB.SlowThreshold,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("velocity: failed to initialize database: %w", err)
+		}
+		a.DB = dbManager
+		orm.SetDefault(dbManager)
+	}
+
+	// 4. Initialize auth manager — pass DB for ORM provider
+	var sqlDB *sql.DB
+	if a.DB != nil {
+		sqlDB = a.DB.DB()
+	}
+	a.Auth = initAuth(a.config.Auth, a.config.Session, a.Log, sqlDB, a.Crypto)
+
+	// 5. Initialize cache
+	a.Cache = initCache(a.config.Cache)
+
+	// 6. Initialize CSRF
+	a.CSRF = csrf.New(nil)
+
+	// 7. Initialize view/bond engine
+	if a.config.View.RootTemplate != "" {
+		viewEngine, err := view.NewEngine(a.config.View)
+		if err != nil {
+			return nil, fmt.Errorf("velocity: failed to initialize view engine: %w", err)
+		}
+		a.View = viewEngine
+	}
+
+	// 8. Initialize events dispatcher (skip if WithoutEvents was used, keep if pre-set by WithFakeEvents)
+	if !a.noEvents && a.Services.Events == nil {
+		a.Services.Events = events.NewDispatcher()
+	}
+
+	// 9. Initialize queue — pass DB for database driver
+	a.Queue = initQueue(a.config.Queue, sqlDB)
+
+	// 10. Initialize storage with disk drivers
+	a.Storage = initStorage(a.config.Storage, a.Log)
+
+	// 11. Initialize scheduler
+	a.Scheduler = scheduler.New()
+
+	// 12. Initialize mail
+	if a.config.Mail.Driver != "" {
+		mailer, err := mail.NewMailer(a.config.Mail)
+		if err != nil {
+			a.Log.Warn("Failed to initialize mailer", "error", err)
+		} else {
+			a.Mail = mailer
+		}
+	}
+
+	// 13. Initialize notification manager
+	a.Notification = initNotification(a.Mail, sqlDB, a.config.DB.Connection)
+
+	// 14. Create router and inject services
+	a.Router = router.New()
+	a.Router.SetServices(a.Services)
+	a.Router.SetValidator(func(c *router.Context, rules map[string][]string, messages ...map[string]string) {
+		var msgs []validate.Messages
+		for _, m := range messages {
+			msgs = append(msgs, validate.Messages(m))
+		}
+		errors := validate.CheckWithDB(c.Request, validate.Rules(rules), c.DB(), msgs...)
+		if !errors.HasErrors() {
+			return
+		}
+		c.WithErrors(errors.All())
+		c.WithInput(errors.Old())
+		type backer interface {
+			Back(http.ResponseWriter, *http.Request)
+		}
+		if v, ok := c.View().(backer); ok {
+			v.Back(c.Response, c.Request)
+		}
+		panic(router.AbortValidation{})
+	})
+
+	// 15. Initialize exception handler
+	a.Services.Exceptions = exceptions.NewHandler(
+		exceptions.WithDebug(a.config.Debug),
+		exceptions.WithEnvironment(a.config.Env),
+	)
+
+	// 16. Initialize validator
+	a.Validator = validation.NewValidator()
+
+	// Wire event dispatchers into service instances
+	wireInstanceEvents(a)
+
+	// Run provider lifecycle: Register all, then Boot all
+	if err := runProviderLifecycle(a.providers, a.Services, "provider"); err != nil {
+		return nil, err
+	}
+
+	return a, nil
+}
+
+// Version returns the framework version.
+func (a *App) Version() string {
+	return a.version
+}
+
+// Run starts the application.
+func (a *App) Run() {
+	fmt.Printf("Velocity v%s is running! (Local development mode)\n", a.version)
+}
+
+// --- Declarative bootstrap chain ---
+
+// Providers registers a callback that adds service providers to the application.
+// Providers registered here participate in the full bootstrap lifecycle including
+// optional interfaces (RouteProvider, MiddlewareProvider, EventProvider, ScheduleProvider).
+func (a *App) Providers(fn func(*ProviderRegistry)) *App {
+	a.providersFn = fn
+	return a
+}
+
+// Middleware registers a callback that configures the middleware stack.
+func (a *App) Middleware(fn func(*MiddlewareStack)) *App {
+	a.middlewareFn = fn
+	return a
+}
+
+// Routes registers a callback that defines application routes.
+func (a *App) Routes(fn func(*Routing)) *App {
+	a.routesFn = fn
+	return a
+}
+
+// Events registers a callback that configures event listeners.
+func (a *App) Events(fn func(events.Dispatcher)) *App {
+	a.eventsFn = fn
+	return a
+}
+
+// Schedule registers a callback that configures scheduled jobs.
+func (a *App) Schedule(fn func(*scheduler.Scheduler)) *App {
+	a.scheduleFn = fn
+	return a
+}
+
+// Exceptions registers a callback that configures the exception handler.
+func (a *App) Exceptions(fn func(*exceptions.Handler)) *App {
+	a.exceptionsFn = fn
+	return a
+}
+
+// NewTestApp creates an App with in-memory services suitable for testing.
+// Uses memory cache, memory queue, and console logger.
+func NewTestApp(opts ...Option) (*App, error) {
+	config := Config{
+		Name:  "Velocity Test",
+		Env:   "testing",
+		Debug: true,
+		Port:  "0",
+		Cache: CacheConfig{
+			Driver: "memory",
+			Prefix: "test_cache",
+		},
+		Log: LogConfig{
+			Driver: "console",
+			Config: make(map[string]any),
+		},
+		Queue: QueueConfig{
+			Driver: "memory",
+		},
+		Mail: MailConfig{
+			Driver: "log",
+		},
+	}
+
+	allOpts := []Option{WithConfig(config)}
+	allOpts = append(allOpts, opts...)
+	return New(allOpts...)
+}
