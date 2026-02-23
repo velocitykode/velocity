@@ -179,10 +179,7 @@ func New(opts ...Option) (*App, error) {
 		}
 		c.WithErrors(errors.All())
 		c.WithInput(errors.Old())
-		type backer interface {
-			Back(http.ResponseWriter, *http.Request)
-		}
-		if v, ok := c.View().(backer); ok {
+		if v := c.View(); v != nil {
 			v.Back(c.Response, c.Request)
 		}
 		panic(router.AbortValidation{})

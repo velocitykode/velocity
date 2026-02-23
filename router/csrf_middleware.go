@@ -2,24 +2,18 @@ package router
 
 import (
 	"net/http"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
-// csrfMiddlewarer is satisfied by *csrf.CSRF which exports Middleware() and
-// RouterMiddleware(). We use Middleware(http.Handler) to avoid importing csrf.
-type csrfMiddlewarer interface {
-	Middleware(next http.Handler) http.Handler
-}
-
 // CSRFMiddleware returns a MiddlewareFunc that delegates to the CSRF
-// instance's exported Middleware method. The csrfInstance must satisfy
-// the Middleware(http.Handler) http.Handler interface (e.g. *csrf.CSRF).
+// instance's exported Middleware method.
 //
 // Usage: router.Use(router.CSRFMiddleware(app.CSRF))
-func CSRFMiddleware(csrfInstance interface{}) MiddlewareFunc {
+func CSRFMiddleware(csrfInstance contract.CSRFProtector) MiddlewareFunc {
 	return func(next HandlerFunc) HandlerFunc {
 		return func(c *Context) error {
-			m, ok := csrfInstance.(csrfMiddlewarer)
-			if !ok {
+			if csrfInstance == nil {
 				return next(c)
 			}
 
@@ -40,7 +34,7 @@ func CSRFMiddleware(csrfInstance interface{}) MiddlewareFunc {
 				handlerErr = next(c)
 			})
 
-			m.Middleware(inner).ServeHTTP(c.Response, c.Request)
+			csrfInstance.Middleware(inner).ServeHTTP(c.Response, c.Request)
 
 			if !called {
 				// CSRF middleware rejected the request (already wrote 403)

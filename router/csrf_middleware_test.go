@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// mockCSRF implements csrfMiddlewarer for testing.
+// mockCSRF implements contract.CSRFProtector for testing.
 type mockCSRF struct {
 	rejectUnsafe bool // when true, reject non-safe methods with 403
 }
@@ -94,10 +94,9 @@ func TestCSRFMiddleware_UnsafeMethod_InvalidToken(t *testing.T) {
 	}
 }
 
-func TestCSRFMiddleware_InvalidInstance(t *testing.T) {
-	// Pass something that does not satisfy csrfMiddlewarer
+func TestCSRFMiddleware_NilInstance(t *testing.T) {
 	r := New()
-	r.Use(CSRFMiddleware("not-a-csrf"))
+	r.Use(CSRFMiddleware(nil))
 
 	r.Post("/submit", func(c *Context) error {
 		return c.String(http.StatusOK, "ok")

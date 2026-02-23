@@ -1,8 +1,6 @@
 package validate
 
 import (
-	"net/http"
-
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -44,10 +42,7 @@ func Form[T any](ctx *router.Context) *T {
 	ctx.WithErrors(errors.All())
 	ctx.WithInput(errors.Old())
 
-	type backer interface {
-		Back(http.ResponseWriter, *http.Request)
-	}
-	if v, ok := ctx.View().(backer); ok {
+	if v := ctx.View(); v != nil {
 		v.Back(ctx.Response, ctx.Request)
 	}
 

@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/velocitykode/velocity/app"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/events"
@@ -539,26 +540,19 @@ func (c *Context) Scheduler() *scheduler.Scheduler {
 	return c.mustServices().Scheduler
 }
 
-// Auth returns the auth manager (*auth.Manager). Requires type assertion.
-func (c *Context) Auth() any {
+// Auth returns the auth manager (*auth.Manager) as a contract.AuthManager.
+func (c *Context) Auth() contract.AuthManager {
 	return c.mustServices().Auth
 }
 
-// CSRF returns the CSRF protection instance (*csrf.CSRF). Requires type assertion.
-func (c *Context) CSRF() any {
+// CSRF returns the CSRF protection instance (*csrf.CSRF) as a contract.CSRFProtector.
+func (c *Context) CSRF() contract.CSRFProtector {
 	return c.mustServices().CSRF
 }
 
-// View returns the view engine (*view.Engine). Requires type assertion.
-func (c *Context) View() any {
+// View returns the view engine (*view.Engine) as a contract.ViewEngine.
+func (c *Context) View() contract.ViewEngine {
 	return c.mustServices().View
-}
-
-// authGateChecker is a local interface satisfied by *auth.Manager to avoid
-// importing pkg/auth (which imports pkg/router).
-type authGateChecker interface {
-	GateAllows(r *http.Request, ability string, args ...interface{}) bool
-	GateAuthorize(r *http.Request, ability string, args ...interface{}) error
 }
 
 // Can returns true if the authenticated user is allowed to perform the given
@@ -567,11 +561,7 @@ func (c *Context) Can(ability string, args ...interface{}) bool {
 	if c.services == nil || c.services.Auth == nil {
 		return false
 	}
-	checker, ok := c.services.Auth.(authGateChecker)
-	if !ok {
-		return false
-	}
-	return checker.GateAllows(c.Request, ability, args...)
+	return c.services.Auth.GateAllows(c.Request, ability, args...)
 }
 
 // Cannot returns true if the authenticated user is NOT allowed to perform the
@@ -587,11 +577,7 @@ func (c *Context) Authorize(ability string, args ...interface{}) error {
 	if c.services == nil || c.services.Auth == nil {
 		return NewHTTPError(http.StatusForbidden)
 	}
-	checker, ok := c.services.Auth.(authGateChecker)
-	if !ok {
-		return NewHTTPError(http.StatusForbidden)
-	}
-	if err := checker.GateAuthorize(c.Request, ability, args...); err != nil {
+	if err := c.services.Auth.GateAuthorize(c.Request, ability, args...); err != nil {
 		return NewHTTPError(http.StatusForbidden)
 	}
 	return nil

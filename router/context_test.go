@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/app"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/resource"
 	"github.com/velocitykode/velocity/validation"
 )
@@ -1301,7 +1302,7 @@ func TestContext_Accepts(t *testing.T) {
 // Can / Cannot / Authorize tests
 // ---------------------------------------------------------------------------
 
-// mockAuthGateChecker satisfies the authGateChecker interface used by Context
+// mockAuthGateChecker satisfies the contract.AuthManager interface used by Context
 // without importing pkg/auth.
 type mockAuthGateChecker struct {
 	allows map[string]bool
@@ -1324,7 +1325,7 @@ func (m *mockAuthGateChecker) GateAuthorize(r *http.Request, ability string, arg
 func TestContext_Can(t *testing.T) {
 	tests := []struct {
 		name    string
-		auth    interface{}
+		auth    contract.AuthManager
 		ability string
 		want    bool
 	}{
@@ -1349,12 +1350,6 @@ func TestContext_Can(t *testing.T) {
 		{
 			name:    "nil auth",
 			auth:    nil,
-			ability: "edit",
-			want:    false,
-		},
-		{
-			name:    "auth does not implement interface",
-			auth:    "not-a-gate-checker",
 			ability: "edit",
 			want:    false,
 		},
@@ -1432,13 +1427,6 @@ func TestContext_Authorize(t *testing.T) {
 			name:     "nil auth returns 403",
 			services: &app.Services{Auth: nil},
 			ability:  "anything",
-			wantErr:  true,
-			wantCode: http.StatusForbidden,
-		},
-		{
-			name:     "auth not implementing interface returns 403",
-			services: &app.Services{Auth: "not-a-gate-checker"},
-			ability:  "edit",
 			wantErr:  true,
 			wantCode: http.StatusForbidden,
 		},

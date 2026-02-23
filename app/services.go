@@ -2,6 +2,7 @@ package app
 
 import (
 	"github.com/velocitykode/velocity/cache"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/exceptions"
@@ -19,20 +20,17 @@ import (
 // Both the root velocity package and the router package import this
 // leaf package, avoiding import cycles.
 //
-// Fields typed as `any` break import cycles for packages that import
-// the router package (auth, csrf, view). The root velocity.App and
-// the router.Context provide typed accessors for these.
+// Auth, CSRF, and View are typed as contract interfaces (not concrete types)
+// because those packages import router. The contract package is a leaf that
+// both sides can import without cycles.
 type Services struct {
 	Log        log.Logger
 	Exceptions *exceptions.Handler
 	Crypto     crypto.Encryptor
 	DB         *orm.Manager
-
-	// These use `any` to break import cycles (auth/csrf/view import router).
-	// Use typed accessors on velocity.App or router.Context.
-	Auth any // *auth.Manager
-	CSRF any // *csrf.CSRF
-	View any // *view.Engine
+	Auth       contract.AuthManager
+	CSRF       contract.CSRFProtector
+	View       contract.ViewEngine
 
 	Cache        *cache.Manager
 	Events       events.Dispatcher
