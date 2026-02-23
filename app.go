@@ -77,7 +77,13 @@ func New(opts ...Option) (*App, error) {
 	}
 	a.Log = logger
 
-	// 2. Initialize crypto (auth/csrf may need it)
+	// 2. Initialize exception handler (available for all subsequent services)
+	a.Services.Exceptions = exceptions.NewHandler(
+		exceptions.WithDebug(a.config.Debug),
+		exceptions.WithEnvironment(a.config.Env),
+	)
+
+	// 3. Initialize crypto (auth/csrf may need it)
 	if a.config.Crypto.Key != "" {
 		enc, err := crypto.NewEncryptor(a.config.Crypto)
 		if err != nil {
@@ -86,7 +92,7 @@ func New(opts ...Option) (*App, error) {
 		a.Crypto = enc
 	}
 
-	// 3. Initialize database connection
+	// 4. Initialize database connection
 	if a.config.DB.Connection != "" {
 		dbManager, err := orm.NewManager(orm.ManagerConfig{
 			Driver:          a.config.DB.Connection,
@@ -110,20 +116,20 @@ func New(opts ...Option) (*App, error) {
 		orm.SetDefault(dbManager)
 	}
 
-	// 4. Initialize auth manager — pass DB for ORM provider
+	// 5. Initialize auth manager — pass DB for ORM provider
 	var sqlDB *sql.DB
 	if a.DB != nil {
 		sqlDB = a.DB.DB()
 	}
 	a.Auth = initAuth(a.config.Auth, a.config.Session, a.Log, sqlDB, a.Crypto)
 
-	// 5. Initialize cache
+	// 6. Initialize cache
 	a.Cache = initCache(a.config.Cache)
 
-	// 6. Initialize CSRF
+	// 7. Initialize CSRF
 	a.CSRF = csrf.New(nil)
 
-	// 7. Initialize view/bond engine
+	// 8. Initialize view/bond engine
 	if a.config.View.RootTemplate != "" {
 		viewEngine, err := view.NewEngine(a.config.View)
 		if err != nil {
@@ -132,21 +138,21 @@ func New(opts ...Option) (*App, error) {
 		a.View = viewEngine
 	}
 
-	// 8. Initialize events dispatcher (skip if WithoutEvents was used, keep if pre-set by WithFakeEvents)
+	// 9. Initialize events dispatcher (skip if WithoutEvents was used, keep if pre-set by WithFakeEvents)
 	if !a.noEvents && a.Services.Events == nil {
 		a.Services.Events = events.NewDispatcher()
 	}
 
-	// 9. Initialize queue — pass DB for database driver
+	// 10. Initialize queue — pass DB for database driver
 	a.Queue = initQueue(a.config.Queue, sqlDB)
 
-	// 10. Initialize storage with disk drivers
+	// 11. Initialize storage with disk drivers
 	a.Storage = initStorage(a.config.Storage, a.Log)
 
-	// 11. Initialize scheduler
+	// 12. Initialize scheduler
 	a.Scheduler = scheduler.New()
 
-	// 12. Initialize mail
+	// 13. Initialize mail
 	if a.config.Mail.Driver != "" {
 		mailer, err := mail.NewMailer(a.config.Mail)
 		if err != nil {
@@ -156,10 +162,10 @@ func New(opts ...Option) (*App, error) {
 		}
 	}
 
-	// 13. Initialize notification manager
+	// 14. Initialize notification manager
 	a.Notification = initNotification(a.Mail, sqlDB, a.config.DB.Connection)
 
-	// 14. Create router and inject services
+	// 15. Create router and inject services
 	a.Router = router.New()
 	a.Router.SetServices(a.Services)
 	a.Router.SetValidator(func(c *router.Context, rules map[string][]string, messages ...map[string]string) {
@@ -181,12 +187,6 @@ func New(opts ...Option) (*App, error) {
 		}
 		panic(router.AbortValidation{})
 	})
-
-	// 15. Initialize exception handler
-	a.Services.Exceptions = exceptions.NewHandler(
-		exceptions.WithDebug(a.config.Debug),
-		exceptions.WithEnvironment(a.config.Env),
-	)
 
 	// 16. Initialize validator
 	a.Validator = validation.NewValidator()

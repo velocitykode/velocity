@@ -23,24 +23,25 @@ import (
 // the router package (auth, csrf, view). The root velocity.App and
 // the router.Context provide typed accessors for these.
 type Services struct {
-	DB           *orm.Manager
-	Log          log.Logger
-	Cache        *cache.Manager
-	Crypto       crypto.Encryptor
-	Events       events.Dispatcher
-	Queue        queue.Driver
-	Storage      *storage.Manager
-	Scheduler    *scheduler.Scheduler
-	Mail         mail.Mailer
-	Notification *notification.Manager
-	Exceptions   *exceptions.Handler
-	Validator    validation.Validator
+	Log        log.Logger
+	Exceptions *exceptions.Handler
+	Crypto     crypto.Encryptor
+	DB         *orm.Manager
 
 	// These use `any` to break import cycles (auth/csrf/view import router).
 	// Use typed accessors on velocity.App or router.Context.
 	Auth any // *auth.Manager
 	CSRF any // *csrf.CSRF
 	View any // *view.Engine
+
+	Cache        *cache.Manager
+	Events       events.Dispatcher
+	Queue        queue.Driver
+	Storage      *storage.Manager
+	Scheduler    *scheduler.Scheduler
+	Mail         mail.Mailer
+	Notification *notification.Manager
+	Validator    validation.Validator
 
 	// Extensions holds optional first-party and third-party service instances.
 	// Packages register themselves here via ServiceProvider.Register() so that
