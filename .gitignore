@@ -41,3 +41,6 @@ coverage.html
 
 # Internal documentation (public docs at velocity-docs repo)
 /docs/
+
+# velocity binary
+velocity
