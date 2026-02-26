@@ -127,7 +127,7 @@ func New(opts ...Option) (*App, error) {
 	a.Cache = initCache(a.config.Cache)
 
 	// 7. Initialize CSRF
-	a.CSRF = csrf.New(nil)
+	a.CSRF = csrf.New(&a.config.CSRF)
 
 	// 8. Initialize view/bond engine
 	if a.config.View.RootTemplate != "" {

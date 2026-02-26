@@ -11,6 +11,7 @@ import (
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/crypto"
+	"github.com/velocitykode/velocity/csrf"
 	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
@@ -44,6 +45,9 @@ type Config struct {
 
 	// Storage
 	Storage StorageConfig
+
+	// CSRF
+	CSRF CSRFConfig
 
 	// Session
 	Session SessionConfig
@@ -96,6 +100,7 @@ type (
 	SessionConfig  = auth.SessionConfig
 	JWTConfig      = auth.JWTConfig
 	LogConfig      = log.LogConfig
+	CSRFConfig     = csrf.Config
 	CryptoConfig   = crypto.Config
 	ViewConfig     = view.Config
 	MailConfig     = mail.MailConfig
@@ -310,6 +315,20 @@ func ConfigFromEnv() Config {
 			Driver: "orm",
 			Model:  envOrDefault("AUTH_MODEL", "User"),
 		}
+	}
+
+	// CSRF
+	config.CSRF = CSRFConfig{
+		TokenLifetime:     envDurationOrDefault("CSRF_TOKEN_LIFETIME", 24*time.Hour),
+		HeaderName:        envOrDefault("CSRF_HEADER", "X-CSRF-Token"),
+		FormField:         envOrDefault("CSRF_FORM_FIELD", "_token"),
+		CookieName:        envOrDefault("CSRF_COOKIE_NAME", "csrf_token"),
+		SessionCookieName: envOrDefault("CSRF_SESSION_COOKIE", config.Session.Name),
+		SameSite:          parseSameSite(os.Getenv("CSRF_SAME_SITE")),
+		Secure:            os.Getenv("CSRF_SECURE") != "false",
+		HTTPOnly:          envOrDefault("CSRF_HTTP_ONLY", "true") == "true",
+		SingleUse:         os.Getenv("CSRF_SINGLE_USE") == "true",
+		ErrorMessage:      envOrDefault("CSRF_ERROR_MESSAGE", "CSRF token validation failed. Please refresh and try again."),
 	}
 
 	// Cache
