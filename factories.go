@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/auth/drivers/guards"
 	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/crypto"
@@ -145,6 +146,28 @@ func initAuth(authCfg AuthConfig, sessCfg SessionConfig, logger log.Logger, db *
 	}
 
 	return manager
+}
+
+// initDB creates the ORM manager from config. Returns nil if no connection is configured.
+func initDB(config DBConfig) (*orm.Manager, error) {
+	if config.Connection == "" {
+		return nil, nil
+	}
+	return orm.NewManager(orm.ManagerConfig{
+		Driver:          config.Connection,
+		Host:            config.Host,
+		Port:            config.Port,
+		Database:        config.Database,
+		Username:        config.Username,
+		Password:        config.Password,
+		Charset:         config.Charset,
+		SSLMode:         config.SSLMode,
+		MaxIdleConns:    config.MaxIdleConns,
+		MaxOpenConns:    config.MaxOpenConns,
+		ConnMaxLifetime: config.ConnMaxLifetime,
+		LogQueries:      config.LogQueries,
+		SlowThreshold:   config.SlowThreshold,
+	})
 }
 
 // initQueue selects the queue driver based on config. Falls back to memory if the

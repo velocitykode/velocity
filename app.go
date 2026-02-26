@@ -93,25 +93,11 @@ func New(opts ...Option) (*App, error) {
 	}
 
 	// 4. Initialize database connection
-	if a.config.DB.Connection != "" {
-		dbManager, err := orm.NewManager(orm.ManagerConfig{
-			Driver:          a.config.DB.Connection,
-			Host:            a.config.DB.Host,
-			Port:            a.config.DB.Port,
-			Database:        a.config.DB.Database,
-			Username:        a.config.DB.Username,
-			Password:        a.config.DB.Password,
-			Charset:         a.config.DB.Charset,
-			SSLMode:         a.config.DB.SSLMode,
-			MaxIdleConns:    a.config.DB.MaxIdleConns,
-			MaxOpenConns:    a.config.DB.MaxOpenConns,
-			ConnMaxLifetime: a.config.DB.ConnMaxLifetime,
-			LogQueries:      a.config.DB.LogQueries,
-			SlowThreshold:   a.config.DB.SlowThreshold,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("velocity: failed to initialize database: %w", err)
-		}
+	dbManager, err := initDB(a.config.DB)
+	if err != nil {
+		return nil, fmt.Errorf("velocity: failed to initialize database: %w", err)
+	}
+	if dbManager != nil {
 		a.DB = dbManager
 		orm.SetDefault(dbManager)
 	}
