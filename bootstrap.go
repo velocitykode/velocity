@@ -26,10 +26,7 @@ func (a *App) bootstrap() error {
 		return err
 	}
 
-	// 2. Re-wire instance events (idempotent — safe to call again)
-	wireInstanceEvents(a)
-
-	// 3. Build middleware stack
+	// 2. Build middleware stack
 	mwStack := &MiddlewareStack{services: a.Services}
 
 	dispatchProviderCallback(a.chainProviders, func(mp MiddlewareProvider) {
@@ -42,7 +39,7 @@ func (a *App) bootstrap() error {
 		a.Router.Use(mwStack.global...)
 	}
 
-	// 4. Register routes
+	// 3. Register routes
 	routing := &Routing{router: a.Router, middleware: mwStack}
 
 	dispatchProviderCallback(a.chainProviders, func(rp RouteProvider) {
@@ -52,7 +49,7 @@ func (a *App) bootstrap() error {
 		a.routesFn(routing)
 	}
 
-	// 5. Register events
+	// 4. Register events
 	dispatchProviderCallback(a.chainProviders, func(ep EventProvider) {
 		ep.Events(a.Services.Events)
 	})
@@ -60,7 +57,7 @@ func (a *App) bootstrap() error {
 		a.eventsFn(a.Services.Events)
 	}
 
-	// 6. Register scheduled jobs
+	// 5. Register scheduled jobs
 	dispatchProviderCallback(a.chainProviders, func(sp ScheduleProvider) {
 		sp.Schedule(a.Services.Scheduler)
 	})
@@ -68,7 +65,7 @@ func (a *App) bootstrap() error {
 		a.scheduleFn(a.Services.Scheduler)
 	}
 
-	// 7. Configure exceptions
+	// 6. Configure exceptions
 	if a.exceptionsFn != nil {
 		a.exceptionsFn(a.Services.Exceptions)
 	}
