@@ -1,0 +1,108 @@
+package drivers
+
+import (
+	"context"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
+)
+
+var releaseLockScript = redis.NewScript(`
+if redis.call("get", KEYS[1]) == ARGV[1] then
+    return redis.call("del", KEYS[1])
+else
+    return 0
+end
+`)
+
+// RedisLock implements a Redis-based distributed lock.
+type RedisLock struct {
+	client *redis.Client
+	key    string
+	owner  string
+	ttl    time.Duration
+}
+
+// NewRedisLock creates a new RedisLock instance.
+func NewRedisLock(client *redis.Client, key string, owner string, ttl time.Duration) *RedisLock {
+	return &RedisLock{
+		client: client,
+		key:    key,
+		owner:  owner,
+		ttl:    ttl,
+	}
+}
+
+// Get attempts to acquire the lock. Returns true if the lock was acquired.
+func (l *RedisLock) Get() bool {
+	result, err := l.client.SetNX(context.Background(), l.key, l.owner, l.ttl).Result()
+	return err == nil && result
+}
+
+// Release releases the lock only if the current instance is the owner.
+// Returns true if the lock was successfully released.
+func (l *RedisLock) Release() bool {
+	result, err := releaseLockScript.Run(context.Background(), l.client, []string{l.key}, l.owner).Int64()
+	return err == nil && result == 1
+}
+
+// Run acquires the lock, runs the callback, and releases the lock.
+// Returns ErrLockNotAcquired if the lock cannot be acquired.
+// If the callback panics, the lock is still released and the panic propagates.
+func (l *RedisLock) Run(callback func()) error {
+	if !l.Get() {
+		return ErrLockNotAcquired
+	}
+	defer l.Release()
+
+	callback()
+	return nil
+}
+
+// Block attempts to acquire the lock within the given timeout, retrying every 100ms.
+// Once acquired, it runs the callback and releases the lock.
+// Returns ErrLockTimeout if the lock cannot be acquired within the timeout.
+// If the callback panics, the lock is still released and the panic propagates.
+func (l *RedisLock) Block(timeout time.Duration, callback func()) error {
+	deadline := time.Now().Add(timeout)
+
+	for {
+		if l.Get() {
+			defer l.Release()
+			callback()
+			return nil
+		}
+
+		if time.Now().After(deadline) {
+			return ErrLockTimeout
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// Owner returns the owner identifier of this lock.
+func (l *RedisLock) Owner() string {
+	return l.owner
+}
+
+// ForceRelease deletes the lock key without checking the owner.
+func (l *RedisLock) ForceRelease() error {
+	return l.client.Del(context.Background(), l.key).Err()
+}
+
+// Lock creates a new lock for the given key with an optional TTL.
+func (s *RedisStore) Lock(key string, ttl ...time.Duration) Lock {
+	lockTTL := time.Duration(0)
+	if len(ttl) > 0 {
+		lockTTL = ttl[0]
+	}
+	owner := uuid.New().String()
+	return NewRedisLock(s.client, s.prefixedKey("lock:"+key), owner, lockTTL)
+}
+
+// RestoreLock restores a lock instance for the given key and owner without acquiring it.
+func (s *RedisStore) RestoreLock(key string, owner string) Lock {
+	return NewRedisLock(s.client, s.prefixedKey("lock:"+key), owner, 0)
+}

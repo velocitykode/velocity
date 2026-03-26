@@ -321,3 +321,32 @@ func (m *Manager) Has(key string) bool {
 	}
 	return store.Has(key)
 }
+
+// Lock creates a new lock for the given key on the default store.
+// An optional TTL auto-expires the lock to prevent deadlocks if the holder crashes.
+// Returns nil if the default store does not support locking.
+func (m *Manager) Lock(key string, ttl ...time.Duration) Lock {
+	store, err := m.DefaultStore()
+	if err != nil {
+		return nil
+	}
+
+	if locker, ok := store.(drivers.Locker); ok {
+		return locker.Lock(key, ttl...)
+	}
+	return nil
+}
+
+// RestoreLock restores an existing lock by key and owner token on the default store.
+// Returns nil if the default store does not support locking.
+func (m *Manager) RestoreLock(key string, owner string) Lock {
+	store, err := m.DefaultStore()
+	if err != nil {
+		return nil
+	}
+
+	if locker, ok := store.(drivers.Locker); ok {
+		return locker.RestoreLock(key, owner)
+	}
+	return nil
+}

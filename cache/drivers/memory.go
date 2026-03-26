@@ -8,11 +8,12 @@ import (
 
 // MemoryStore implements an in-memory cache store
 type MemoryStore struct {
-	mu     sync.RWMutex
-	items  map[string]*cacheItem
-	prefix string
-	ticker *time.Ticker
-	done   chan bool
+	mu        sync.RWMutex
+	items     map[string]*cacheItem
+	prefix    string
+	ticker    *time.Ticker
+	done      chan bool
+	lockStore *memoryLockStore
 }
 
 // cacheItem represents a cached item with expiration
@@ -24,9 +25,10 @@ type cacheItem struct {
 // NewMemoryStore creates a new memory cache store
 func NewMemoryStore(prefix string) *MemoryStore {
 	store := &MemoryStore{
-		items:  make(map[string]*cacheItem),
-		prefix: prefix,
-		done:   make(chan bool),
+		items:     make(map[string]*cacheItem),
+		prefix:    prefix,
+		done:      make(chan bool),
+		lockStore: newMemoryLockStore(),
 	}
 
 	// Start cleanup goroutine
