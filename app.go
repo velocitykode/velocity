@@ -58,7 +58,7 @@ func New(opts ...Option) (*App, error) {
 		Services: &app.Services{
 			Extensions: make(map[string]any),
 		},
-		version:  frameworkVersion,
+		version: frameworkVersion,
 	}
 
 	// Load config from env by default

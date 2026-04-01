@@ -14,5 +14,8 @@ type Handler[T any] func(cmd T) error
 // QueuePusher is satisfied by queue.Driver via structural typing.
 // This avoids importing the queue package directly.
 type QueuePusher interface {
-	Push(job interface{ Handle() error; Failed(error) }, queue ...string) error
+	Push(job interface {
+		Handle() error
+		Failed(error)
+	}, queue ...string) error
 }

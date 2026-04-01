@@ -23,7 +23,7 @@ func (g *mockGuardForMiddleware) User(*http.Request) Authenticatable {
 	return nil
 }
 func (g *mockGuardForMiddleware) ID(*http.Request) interface{} { return nil }
-func (g *mockGuardForMiddleware) SetProvider(UserProvider)      {}
+func (g *mockGuardForMiddleware) SetProvider(UserProvider)     {}
 func (g *mockGuardForMiddleware) Logout(http.ResponseWriter, *http.Request) error {
 	return nil
 }

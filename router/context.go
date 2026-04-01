@@ -19,8 +19,8 @@ import (
 	"strings"
 
 	"github.com/velocitykode/velocity/app"
-	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/cache"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/exceptions"

@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/velocitykode/velocity/auth"
-	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/auth/drivers/guards"
 	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/crypto"
@@ -13,6 +12,7 @@ import (
 	"github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/notification"
 	"github.com/velocitykode/velocity/notification/channels"
+	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/storage"
 )

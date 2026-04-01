@@ -45,4 +45,3 @@ type EventProvider interface {
 type ScheduleProvider interface {
 	Schedule(s *scheduler.Scheduler)
 }
-

@@ -15,10 +15,10 @@ import (
 // bootstrapTrackingProvider extends trackingProvider with optional bootstrap interfaces.
 type bootstrapTrackingProvider struct {
 	trackingProvider
-	routesCalled      bool
-	middlewareCalled   bool
-	eventsCalled      bool
-	scheduleCalled    bool
+	routesCalled     bool
+	middlewareCalled bool
+	eventsCalled     bool
+	scheduleCalled   bool
 }
 
 func (p *bootstrapTrackingProvider) Routes(r *Routing) {
@@ -74,12 +74,12 @@ func TestBootstrap_FullChain(t *testing.T) {
 	}
 
 	var (
-		providersCalled   bool
-		middlewareCalled   bool
-		routesCalled      bool
-		eventsCalled      bool
-		scheduleCalled    bool
-		exceptionsCalled  bool
+		providersCalled  bool
+		middlewareCalled bool
+		routesCalled     bool
+		eventsCalled     bool
+		scheduleCalled   bool
+		exceptionsCalled bool
 	)
 
 	a.Providers(func(r *ProviderRegistry) {

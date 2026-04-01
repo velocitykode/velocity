@@ -57,7 +57,6 @@ type VelocityRouterV2 struct {
 
 	// validateFn is wired during app init to run validation with DB support.
 	validateFn func(c *Context, rules map[string][]string, messages ...map[string]string)
-
 }
 
 // NewV2 creates a new tree-based router instance

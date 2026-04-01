@@ -208,4 +208,3 @@ func HTTPSRedirect(opts ...HTTPSRedirectOption) MiddlewareFunc {
 		}
 	}
 }
-
