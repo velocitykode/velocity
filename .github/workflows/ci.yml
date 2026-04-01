@@ -1,4 +1,4 @@
-name: CI
+name: CI/CD
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
       - "*.md"
 
 jobs:
-  release:
+  build-and-release:
     runs-on: ubuntu-latest
     permissions:
       contents: write
