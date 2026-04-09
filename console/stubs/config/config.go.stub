@@ -1,0 +1,52 @@
+package config
+
+import (
+	"os"
+
+	"github.com/velocitykode/velocity/log"
+)
+
+// Config holds application configuration
+type Config struct {
+	Port     string
+	AppName  string
+	AppEnv   string
+	AppDebug bool
+}
+
+// Load reads configuration from environment
+func Load() *Config {
+	cfg := &Config{
+		Port:     getEnv("PORT", "4000"),
+		AppName:  getEnv("APP_NAME", "{{.Name}}"),
+		AppEnv:   getEnv("APP_ENV", "development"),
+		AppDebug: getEnvBool("APP_DEBUG", true),
+	}
+
+	// Log configuration loaded
+	log.Info("Configuration loaded",
+		"app", cfg.AppName,
+		"env", cfg.AppEnv,
+		"port", cfg.Port,
+		"debug", cfg.AppDebug,
+	)
+
+	return cfg
+}
+
+// getEnv gets an environment variable with a fallback
+func getEnv(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+// getEnvBool gets a boolean environment variable with a fallback
+func getEnvBool(key string, fallback bool) bool {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	return value == "true" || value == "1" || value == "yes"
+}

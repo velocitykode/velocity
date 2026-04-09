@@ -190,10 +190,8 @@ func (a *App) Version() string {
 	return a.version
 }
 
-// Run starts the application.
-func (a *App) Run() {
-	fmt.Printf("Velocity v%s is running! (Local development mode)\n", a.version)
-}
+// Run dispatches CLI commands or starts the HTTP server.
+// Defined in run.go.
 
 // --- Declarative bootstrap chain ---
 

@@ -108,6 +108,26 @@ func buildReflectionHandler(controller reflect.Value, method reflect.Method) Han
 	}
 }
 
+// routeInfos returns RouteInfo entries for the resource's enabled routes.
+func (rr *resourceWrapperV2) routeInfos() []RouteInfo {
+	var infos []RouteInfo
+	controllerType := reflect.TypeOf(rr.controller)
+
+	for _, config := range DefaultResourceConfig() {
+		if !rr.methods[strings.ToLower(config.Action)] {
+			continue
+		}
+		if _, exists := controllerType.MethodByName(config.Action); !exists {
+			continue
+		}
+		infos = append(infos, RouteInfo{
+			Method: config.HttpMethod,
+			Path:   rr.path + config.PathSuffix,
+		})
+	}
+	return infos
+}
+
 // registerWithMiddlewares registers a resource with the given middleware chain
 func (rr *resourceWrapperV2) registerWithMiddlewares(middlewares []MiddlewareFunc) {
 	if rr.registered {

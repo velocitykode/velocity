@@ -6,9 +6,13 @@ import (
 	"github.com/velocitykode/velocity/app"
 )
 
-// bootstrap orchestrates the declarative chain in a fixed order.
-// It is called once at the start of Serve(). Safe to call multiple times
-// (guarded by bootstrapped flag).
+// Bootstrap runs the declarative chain (providers, middleware, routes, events,
+// schedule, exceptions) without starting the HTTP server. Safe to call multiple
+// times — subsequent calls are no-ops.
+func (a *App) Bootstrap() error {
+	return a.bootstrap()
+}
+
 func (a *App) bootstrap() error {
 	if a.bootstrapped {
 		return nil

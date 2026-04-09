@@ -1,0 +1,14 @@
+package routes
+
+import (
+	"{{.Module}}/internal/handlers"
+
+	"github.com/velocitykode/velocity"
+	"github.com/velocitykode/velocity/router"
+)
+
+func Register(v *velocity.App) {
+	r := v.Router
+
+	r.Get("/", handlers.Home)
+}

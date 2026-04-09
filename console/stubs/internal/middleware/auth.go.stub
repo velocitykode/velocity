@@ -1,0 +1,91 @@
+package middleware
+
+import (
+	"context"
+	"net/http"
+	"strings"
+)
+
+// AuthMiddleware checks for authentication
+func AuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check for auth header
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			// Check for session cookie
+			cookie, err := r.Cookie("session")
+			if err != nil || cookie.Value == "" {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+			authHeader = cookie.Value
+		}
+
+		// Validate token (simplified for demo)
+		if !isValidToken(authHeader) {
+			http.Error(w, "Invalid token", http.StatusUnauthorized)
+			return
+		}
+
+		// Extract user ID from token
+		userID := extractUserID(authHeader)
+
+		// Add user ID to context
+		ctx := context.WithValue(r.Context(), "userID", userID)
+		r = r.WithContext(ctx)
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// APIAuthMiddleware checks for API token authentication
+func APIAuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check for Bearer token
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			http.Error(w, "Missing Authorization header", http.StatusUnauthorized)
+			return
+		}
+
+		// Check if it's a Bearer token
+		parts := strings.Split(authHeader, " ")
+		if len(parts) != 2 || parts[0] != "Bearer" {
+			http.Error(w, "Invalid Authorization format", http.StatusUnauthorized)
+			return
+		}
+
+		token := parts[1]
+		if !isValidAPIToken(token) {
+			http.Error(w, "Invalid API token", http.StatusUnauthorized)
+			return
+		}
+
+		// Add API client info to context
+		ctx := context.WithValue(r.Context(), "apiClient", extractAPIClient(token))
+		r = r.WithContext(ctx)
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// Helper functions (simplified for demo)
+func isValidToken(token string) bool {
+	// In real app, validate against database or JWT
+	return token != "" && len(token) > 10
+}
+
+func isValidAPIToken(token string) bool {
+	// In real app, validate against API keys in database
+	return strings.HasPrefix(token, "api_") && len(token) > 20
+}
+
+func extractUserID(token string) string {
+	// In real app, decode JWT or lookup session
+	return "user123"
+}
+
+func extractAPIClient(token string) string {
+	// In real app, lookup API client from token
+	return "api-client-1"
+}

@@ -1,0 +1,45 @@
+package {{ .Package }}
+
+import (
+	"github.com/velocitykode/velocity/router"
+)
+{{ if .Resource }}
+// {{ .HandlerName }}Index displays a listing of the resource
+func {{ .HandlerName }}Index(ctx *router.Context) error {
+	{{ if .API }}return ctx.JSON(200, map[string]string{"message": "List all items"}){{ else }}return ctx.String(200, "List all items"){{ end }}
+}
+
+// {{ .HandlerName }}Create shows the form for creating a new resource
+func {{ .HandlerName }}Create(ctx *router.Context) error {
+	{{ if .API }}return ctx.String(405, "Method not allowed"){{ else }}return ctx.String(200, "Show create form"){{ end }}
+}
+
+// {{ .HandlerName }}Store saves a new resource
+func {{ .HandlerName }}Store(ctx *router.Context) error {
+	{{ if .API }}return ctx.JSON(200, map[string]string{"message": "Item created"}){{ else }}return ctx.String(200, "Store new item"){{ end }}
+}
+
+// {{ .HandlerName }}Show displays the specified resource
+func {{ .HandlerName }}Show(ctx *router.Context) error {
+	{{ if .API }}return ctx.JSON(200, map[string]string{"message": "Show item"}){{ else }}return ctx.String(200, "Show item"){{ end }}
+}
+
+// {{ .HandlerName }}Edit shows the form for editing the specified resource
+func {{ .HandlerName }}Edit(ctx *router.Context) error {
+	{{ if .API }}return ctx.String(405, "Method not allowed"){{ else }}return ctx.String(200, "Show edit form"){{ end }}
+}
+
+// {{ .HandlerName }}Update updates the specified resource
+func {{ .HandlerName }}Update(ctx *router.Context) error {
+	{{ if .API }}return ctx.JSON(200, map[string]string{"message": "Item updated"}){{ else }}return ctx.String(200, "Update item"){{ end }}
+}
+
+// {{ .HandlerName }}Destroy removes the specified resource
+func {{ .HandlerName }}Destroy(ctx *router.Context) error {
+	{{ if .API }}return ctx.String(204, ""){{ else }}return ctx.String(200, "Delete item"){{ end }}
+}
+{{ else }}
+func {{ .HandlerName }}(ctx *router.Context) error {
+	{{ if .API }}return ctx.JSON(200, map[string]string{"message": "{{ .HandlerName }}"}){{ else }}return ctx.String(200, "{{ .HandlerName }}"){{ end }}
+}
+{{ end }}

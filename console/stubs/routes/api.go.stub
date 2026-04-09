@@ -1,0 +1,60 @@
+package routes
+
+import (
+	"encoding/json"
+	"net/http"
+
+	"github.com/velocitykode/velocity"
+	"github.com/velocitykode/velocity/router"
+)
+
+func RegisterAPI(v *velocity.App) {
+	r := v.Router
+
+	// API v1 routes
+	api := r.Group("/api/v1")
+
+	// Public endpoints
+	api.Get("/health", healthCheck).Name("api.health")
+	api.Get("/status", statusCheck).Name("api.status")
+
+	// Resource endpoints
+	api.Get("/posts", listPosts).Name("api.posts.index")
+	api.Get("/posts/{id}", getPost).Name("api.posts.show")
+}
+
+// healthCheck returns API health status
+func healthCheck(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "healthy",
+		"service": "{{.Name}}",
+	})
+}
+
+// statusCheck returns detailed API status
+func statusCheck(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "online",
+		"version": "1.0.0",
+	})
+}
+
+// Example handlers (to be implemented)
+func listPosts(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode([]map[string]interface{}{
+		{"id": 1, "title": "First Post", "content": "Hello World"},
+		{"id": 2, "title": "Second Post", "content": "Velocity Framework"},
+	})
+}
+
+func getPost(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id": 1,
+		"title": "First Post",
+		"content": "Hello World",
+	})
+}

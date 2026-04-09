@@ -594,6 +594,38 @@ func (r *VelocityRouterV2) ClearRoutes() {
 	r.frozen = false
 }
 
+// RouteInfo represents a registered route for inspection/display.
+type RouteInfo struct {
+	Method string
+	Path   string
+	Name   string
+}
+
+// AllRoutes returns all registered routes by walking the group definition tree
+// and expanding resource routes.
+func (r *VelocityRouterV2) AllRoutes() []RouteInfo {
+	var routes []RouteInfo
+	collectGroupRoutes(r.rootGroup, &routes)
+	for _, res := range r.resources {
+		routes = append(routes, res.routeInfos()...)
+	}
+	return routes
+}
+
+func collectGroupRoutes(g *GroupDefinition, routes *[]RouteInfo) {
+	prefix := g.FullPrefix()
+	for _, route := range g.routes {
+		*routes = append(*routes, RouteInfo{
+			Method: route.Method,
+			Path:   prefix + route.Path,
+			Name:   route.Name,
+		})
+	}
+	for _, child := range g.children {
+		collectGroupRoutes(child, routes)
+	}
+}
+
 // buildPath constructs the full path including any prefix
 func (r *VelocityRouterV2) buildPath(path string) string {
 	if r.prefix != "" {

@@ -1622,6 +1622,69 @@ func TestVelocityRouterV2_ClearRoutes(t *testing.T) {
 	})
 }
 
+func TestVelocityRouterV2_AllRoutes(t *testing.T) {
+	t.Run("lists root-level routes", func(t *testing.T) {
+		router := NewV2()
+		router.Get("/", func(c *Context) error { return nil })
+		router.Post("/users", func(c *Context) error { return nil }).Name("users.store")
+
+		routes := router.AllRoutes()
+		if len(routes) != 2 {
+			t.Fatalf("expected 2 routes, got %d", len(routes))
+		}
+		if routes[0].Method != "GET" || routes[0].Path != "/" {
+			t.Errorf("unexpected route[0]: %+v", routes[0])
+		}
+		if routes[1].Method != "POST" || routes[1].Path != "/users" || routes[1].Name != "users.store" {
+			t.Errorf("unexpected route[1]: %+v", routes[1])
+		}
+	})
+
+	t.Run("lists grouped routes with full path", func(t *testing.T) {
+		router := NewV2()
+		router.Group("/api/v1", func(api Router) {
+			api.Get("/health", func(c *Context) error { return nil }).Name("api.health")
+			api.Get("/users", func(c *Context) error { return nil }).Name("api.users")
+		})
+
+		routes := router.AllRoutes()
+		if len(routes) != 2 {
+			t.Fatalf("expected 2 routes, got %d", len(routes))
+		}
+		if routes[0].Path != "/api/v1/health" || routes[0].Name != "api.health" {
+			t.Errorf("unexpected route[0]: %+v", routes[0])
+		}
+		if routes[1].Path != "/api/v1/users" || routes[1].Name != "api.users" {
+			t.Errorf("unexpected route[1]: %+v", routes[1])
+		}
+	})
+
+	t.Run("lists nested group routes", func(t *testing.T) {
+		router := NewV2()
+		router.Group("/api", func(api Router) {
+			api.Group("/v1", func(v1 Router) {
+				v1.Get("/posts", func(c *Context) error { return nil })
+			})
+		})
+
+		routes := router.AllRoutes()
+		if len(routes) != 1 {
+			t.Fatalf("expected 1 route, got %d", len(routes))
+		}
+		if routes[0].Path != "/api/v1/posts" {
+			t.Errorf("expected /api/v1/posts, got %s", routes[0].Path)
+		}
+	})
+
+	t.Run("returns empty for no routes", func(t *testing.T) {
+		router := NewV2()
+		routes := router.AllRoutes()
+		if len(routes) != 0 {
+			t.Errorf("expected 0 routes, got %d", len(routes))
+		}
+	})
+}
+
 func TestContext_TrustedProxyIP(t *testing.T) {
 	t.Run("returns remote addr when no trusted proxies", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/test", nil)
