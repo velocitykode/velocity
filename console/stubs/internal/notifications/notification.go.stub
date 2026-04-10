@@ -1,0 +1,28 @@
+package {{ .Package }}
+
+import (
+	"github.com/velocitykode/velocity/notification"
+)
+
+// {{ .Name }} notification
+type {{ .Name }} struct {
+	// Add notification data fields here
+}
+
+// Via returns the channels this notification should be delivered through.
+func (n {{ .Name }}) Via(notifiable interface{}) []string {
+	return []string{"mail"}
+}
+
+// ToMail builds the mail representation of the notification.
+func (n {{ .Name }}) ToMail(notifiable interface{}) *notification.MailMessage {
+	return notification.NewMailMessage().
+		Subject("{{ .Name }}").
+		Line("You have a new notification.")
+}
+
+// ToDatabase returns the data to store for this notification.
+// func (n {{ .Name }}) ToDatabase(notifiable interface{}) *notification.DatabaseMessage {
+// 	return notification.NewDatabaseMessage("{{ .Name }}").
+// 		Set("message", "You have a new notification.")
+// }

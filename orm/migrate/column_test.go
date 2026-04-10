@@ -345,3 +345,114 @@ func columnExists(t *testing.T, db *sql.DB, table, column string) bool {
 	}
 	return false
 }
+
+func TestMigrator_Table(t *testing.T) {
+	manager := newTestManager(t)
+	defer manager.Close()
+
+	db := manager.DB()
+	migrator := migrate.NewMigrator(db, manager.DriverName())
+
+	// Create initial table
+	err := migrator.CreateTable("articles", func(tb *migrate.TableBuilder) {
+		tb.ID()
+		tb.String("title")
+	})
+	if err != nil {
+		t.Fatalf("failed to create table: %v", err)
+	}
+	defer migrator.DropTable("articles")
+
+	// Use Table() to add multiple columns at once
+	err = migrator.Table("articles", func(tb *migrate.TableBuilder) {
+		tb.String("slug", 100).Nullable()
+		tb.Text("body").Nullable()
+		tb.Boolean("published").Nullable()
+	})
+	if err != nil {
+		t.Fatalf("Table() error = %v", err)
+	}
+
+	// Verify all columns were added
+	for _, col := range []string{"slug", "body", "published"} {
+		if !columnExists(t, db, "articles", col) {
+			t.Errorf("column %s was not added by Table()", col)
+		}
+	}
+
+	// Original columns should still exist
+	if !columnExists(t, db, "articles", "title") {
+		t.Error("original column title should still exist")
+	}
+}
+
+func TestMigrator_Table_EmptyCallback(t *testing.T) {
+	manager := newTestManager(t)
+	defer manager.Close()
+
+	db := manager.DB()
+	migrator := migrate.NewMigrator(db, manager.DriverName())
+
+	err := migrator.CreateTable("tags", func(tb *migrate.TableBuilder) {
+		tb.ID()
+		tb.String("name")
+	})
+	if err != nil {
+		t.Fatalf("failed to create table: %v", err)
+	}
+	defer migrator.DropTable("tags")
+
+	// Empty Table() call should be a no-op
+	err = migrator.Table("tags", func(tb *migrate.TableBuilder) {})
+	if err != nil {
+		t.Fatalf("Table() with empty callback should not error: %v", err)
+	}
+
+	// Verify table is unchanged — still only 2 columns
+	if !columnExists(t, db, "tags", "id") {
+		t.Error("column id should still exist")
+	}
+	if !columnExists(t, db, "tags", "name") {
+		t.Error("column name should still exist")
+	}
+}
+
+func TestMigrator_Table_RejectsPrimaryKey(t *testing.T) {
+	manager := newTestManager(t)
+	defer manager.Close()
+
+	db := manager.DB()
+	migrator := migrate.NewMigrator(db, manager.DriverName())
+
+	err := migrator.CreateTable("items", func(tb *migrate.TableBuilder) {
+		tb.ID()
+		tb.String("name")
+	})
+	if err != nil {
+		t.Fatalf("failed to create table: %v", err)
+	}
+	defer migrator.DropTable("items")
+
+	// Attempting to add a PK via Table() should error
+	err = migrator.Table("items", func(tb *migrate.TableBuilder) {
+		tb.ID()
+	})
+	if err == nil {
+		t.Error("expected error when adding primary key column via Table()")
+	}
+}
+
+func TestMigrator_Table_NonExistentTable(t *testing.T) {
+	manager := newTestManager(t)
+	defer manager.Close()
+
+	db := manager.DB()
+	migrator := migrate.NewMigrator(db, manager.DriverName())
+
+	err := migrator.Table("nonexistent", func(tb *migrate.TableBuilder) {
+		tb.String("name").Nullable()
+	})
+	if err == nil {
+		t.Error("expected error when altering non-existent table")
+	}
+}

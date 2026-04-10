@@ -1,0 +1,13 @@
+package {{ .Package }}
+
+// {{ .Name }}Resource transforms a {{ .Name }} into an API response.
+type {{ .Name }}Resource struct {
+	// TODO: add fields from the {{ .Name }} model
+}
+
+// ToResource returns the resource as a map for JSON serialization.
+func (r {{ .Name }}Resource) ToResource() map[string]any {
+	return map[string]any{
+		// TODO: map model fields to response keys
+	}
+}

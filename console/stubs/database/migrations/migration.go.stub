@@ -1,0 +1,26 @@
+package migrations
+
+import "github.com/velocitykode/velocity/orm/migrate"
+
+func init() {
+	migrate.Register(&migrate.Migration{
+		Version:     "{{ .Version }}",
+		Description: "{{ .Description }}",
+		Up: func(m *migrate.Migrator) error {
+			{{ if .CreateTable }}return m.CreateTable("{{ .TableName }}", func(t *migrate.TableBuilder) {
+				{{ if .UUID }}t.UUIDPrimary(){{ else }}t.ID(){{ end }}
+				t.Timestamps()
+				{{ if .SoftDeletes }}t.SoftDeletes(){{ end }}
+			}){{ else if .AlterTable }}return m.Table("{{ .TableName }}", func(t *migrate.TableBuilder) {
+				// t.String("column_name")
+			}){{ else }}// Write your migration here
+			return nil{{ end }}
+		},
+		Down: func(m *migrate.Migrator) error {
+			{{ if .CreateTable }}return m.DropTable("{{ .TableName }}"){{ else if .AlterTable }}// Reverse the changes
+			// m.DropColumn("{{ .TableName }}", "column_name")
+			return nil{{ else }}// Reverse the migration
+			return nil{{ end }}
+		},
+	})
+}

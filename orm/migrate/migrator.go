@@ -13,6 +13,8 @@ type Migrator struct {
 	db             *sql.DB
 	driver         string
 	migrationsPath string
+	pretend        bool
+	pretendLog     []string
 }
 
 // NewMigrator creates a new Migrator instance
@@ -33,6 +35,27 @@ func NewMigrator(db *sql.DB, driver string) *Migrator {
 }
 
 // SetMigrationsPath sets the path to migration files
+// SetPretend enables pretend mode — SQL is collected instead of executed.
+func (m *Migrator) SetPretend(pretend bool) {
+	m.pretend = pretend
+	m.pretendLog = nil
+}
+
+// PretendLog returns the collected SQL statements from pretend mode.
+func (m *Migrator) PretendLog() []string {
+	return m.pretendLog
+}
+
+// exec runs SQL or collects it in pretend mode.
+func (m *Migrator) exec(sql string) error {
+	if m.pretend {
+		m.pretendLog = append(m.pretendLog, sql)
+		return nil
+	}
+	_, err := m.db.Exec(sql)
+	return err
+}
+
 func (m *Migrator) SetMigrationsPath(path string) {
 	m.migrationsPath = path
 }
@@ -214,8 +237,7 @@ func (m *Migrator) CreateTable(name string, fn func(*TableBuilder)) error {
 	fn(builder)
 
 	sql := builder.ToSQL()
-	_, err := m.db.Exec(sql)
-	if err != nil {
+	if err := m.exec(sql); err != nil {
 		return fmt.Errorf("failed to create table %s: %w", name, err)
 	}
 
@@ -235,8 +257,7 @@ func (m *Migrator) DropTable(name string) error {
 		sql = "DROP TABLE IF EXISTS " + quoted
 	}
 
-	_, err := m.db.Exec(sql)
-	if err != nil {
+	if err := m.exec(sql); err != nil {
 		return fmt.Errorf("failed to drop table %s: %w", name, err)
 	}
 
@@ -249,10 +270,33 @@ func (m *Migrator) DropTable(name string) error {
 // preventing SQL injection by using parameterized queries with placeholder arguments.
 // Never concatenate user input directly into the sql string.
 func (m *Migrator) Raw(sql string) error {
-	_, err := m.db.Exec(sql)
-	if err != nil {
+	if err := m.exec(sql); err != nil {
 		return fmt.Errorf("failed to execute raw SQL: %w", err)
 	}
+	return nil
+}
+
+// Table modifies an existing table using the same TableBuilder API as CreateTable.
+// Each column added via the builder generates an ALTER TABLE ADD COLUMN statement.
+// Primary key columns (ID, UUIDPrimary) are rejected since they cannot be added to existing tables.
+func (m *Migrator) Table(name string, fn func(*TableBuilder)) error {
+	builder := newTableBuilder(name, m.driver)
+	fn(builder)
+
+	for _, col := range builder.columns {
+		if col.PrimaryKey {
+			return fmt.Errorf("cannot add primary key column %q to existing table %q via ALTER TABLE", col.Name, name)
+		}
+		if !ddlIdentifierRegex.MatchString(col.Name) {
+			return fmt.Errorf("invalid column name: %q", col.Name)
+		}
+		colSQL := columnToSQL(col, m.driver)
+		sql := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", quoteIdentifier(name, m.driver), colSQL)
+		if err := m.exec(sql); err != nil {
+			return fmt.Errorf("failed to alter table %s: %w", name, err)
+		}
+	}
+
 	return nil
 }
 
@@ -265,8 +309,7 @@ func (m *Migrator) AddColumn(table, column string, fn func(*ColumnBuilder)) erro
 	fn(builder)
 
 	sql := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", quoteIdentifier(table, m.driver), builder.ToSQL())
-	_, err := m.db.Exec(sql)
-	if err != nil {
+	if err := m.exec(sql); err != nil {
 		return fmt.Errorf("failed to add column %s to table %s: %w", column, table, err)
 	}
 	return nil
@@ -279,8 +322,7 @@ func (m *Migrator) DropColumn(table, column string) error {
 	quotedColumn := quoteIdentifier(column, m.driver)
 	sql := fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", quotedTable, quotedColumn)
 
-	_, err := m.db.Exec(sql)
-	if err != nil {
+	if err := m.exec(sql); err != nil {
 		return fmt.Errorf("failed to drop column %s from table %s: %w", column, table, err)
 	}
 	return nil
@@ -1054,6 +1096,156 @@ func (t *TableBuilder) toMySQLSyntax() string {
 
 	sql += ")"
 	return sql
+}
+
+// columnToSQL generates a driver-aware column definition SQL fragment from a Column struct.
+// Used by Table() to produce ALTER TABLE ADD COLUMN statements.
+// Column names are validated by the caller (Table()) before reaching this function.
+func columnToSQL(col Column, driver string) string {
+	var sql string
+	sql = quoteIdentifier(col.Name, driver) + " "
+
+	switch driver {
+	case "postgres":
+		sql += columnTypePostgres(col)
+	case "mysql":
+		sql += columnTypeMySQL(col)
+	default: // sqlite
+		sql += columnTypeSQLite(col)
+	}
+
+	// Skip constraints if already embedded in the type string (e.g. SERIAL PRIMARY KEY)
+	if col.PrimaryKey && col.AutoIncrement {
+		return sql
+	}
+	if col.PrimaryKey && col.Type == "uuid" {
+		return sql
+	}
+
+	if !col.Nullable {
+		sql += " NOT NULL"
+	}
+	if col.Unique && !col.PrimaryKey {
+		sql += " UNIQUE"
+	}
+	if col.Default != nil && col.Type != "timestamp" {
+		sql += " DEFAULT " + formatDefaultValue(col.Default, col.Type, driver)
+	}
+
+	return sql
+}
+
+func columnTypeSQLite(col Column) string {
+	switch col.Type {
+	case "integer":
+		if col.PrimaryKey && col.AutoIncrement {
+			return "INTEGER PRIMARY KEY AUTOINCREMENT"
+		}
+		return "INTEGER"
+	case "biginteger":
+		return "INTEGER"
+	case "string":
+		return fmt.Sprintf("VARCHAR(%d)", col.Length)
+	case "text":
+		return "TEXT"
+	case "boolean":
+		return "INTEGER"
+	case "timestamp":
+		s := "DATETIME"
+		if !col.Nullable {
+			s += " DEFAULT CURRENT_TIMESTAMP"
+		}
+		return s
+	case "date":
+		return "DATE"
+	case "uuid":
+		if col.PrimaryKey {
+			return "TEXT PRIMARY KEY"
+		}
+		return "TEXT"
+	case "decimal":
+		return fmt.Sprintf("NUMERIC(%d,%d)", col.Precision, col.Scale)
+	case "json", "jsonb":
+		return "TEXT"
+	default:
+		return "TEXT"
+	}
+}
+
+func columnTypePostgres(col Column) string {
+	switch col.Type {
+	case "integer":
+		if col.PrimaryKey && col.AutoIncrement {
+			return "SERIAL PRIMARY KEY"
+		}
+		return "INTEGER"
+	case "biginteger":
+		return "BIGINT"
+	case "string":
+		return fmt.Sprintf("VARCHAR(%d)", col.Length)
+	case "text":
+		return "TEXT"
+	case "boolean":
+		return "BOOLEAN"
+	case "timestamp":
+		s := "TIMESTAMP"
+		if !col.Nullable {
+			s += " DEFAULT NOW()"
+		}
+		return s
+	case "date":
+		return "DATE"
+	case "uuid":
+		if col.PrimaryKey {
+			return "UUID PRIMARY KEY DEFAULT gen_random_uuid()"
+		}
+		return "UUID"
+	case "decimal":
+		return fmt.Sprintf("NUMERIC(%d,%d)", col.Precision, col.Scale)
+	case "json":
+		return "JSON"
+	case "jsonb":
+		return "JSONB"
+	default:
+		return "TEXT"
+	}
+}
+
+func columnTypeMySQL(col Column) string {
+	switch col.Type {
+	case "integer":
+		if col.PrimaryKey && col.AutoIncrement {
+			return "INT AUTO_INCREMENT PRIMARY KEY"
+		}
+		return "INT"
+	case "biginteger":
+		return "BIGINT"
+	case "string":
+		return fmt.Sprintf("VARCHAR(%d)", col.Length)
+	case "text":
+		return "TEXT"
+	case "boolean":
+		return "BOOLEAN"
+	case "timestamp":
+		s := "TIMESTAMP"
+		if !col.Nullable {
+			s += " DEFAULT CURRENT_TIMESTAMP"
+		}
+		return s
+	case "date":
+		return "DATE"
+	case "uuid":
+		if col.PrimaryKey {
+			return "CHAR(36) PRIMARY KEY"
+		}
+		return "CHAR(36)"
+	case "decimal":
+		return fmt.Sprintf("DECIMAL(%d,%d)", col.Precision, col.Scale)
+	case "json", "jsonb":
+		return "JSON"
+	default:
+		return "TEXT"
+	}
 }
 
 func formatDefaultValue(value interface{}, colType string, driver string) string {

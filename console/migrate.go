@@ -8,11 +8,21 @@ import (
 	"github.com/velocitykode/velocity/orm/migrate"
 )
 
+// MigrateOptions holds flags for the migrate command.
+type MigrateOptions struct {
+	Pretend bool
+}
+
 // Migrate runs all pending database migrations.
-func Migrate(db *orm.Manager) error {
+func Migrate(db *orm.Manager, opts ...MigrateOptions) error {
 	if db == nil {
 		fmt.Println("No database configured (DB_CONNECTION not set), skipping migrations")
 		return nil
+	}
+
+	var opt MigrateOptions
+	if len(opts) > 0 {
+		opt = opts[0]
 	}
 
 	migrations := migrate.All()
@@ -33,6 +43,10 @@ func Migrate(db *orm.Manager) error {
 		return nil
 	}
 
+	if opt.Pretend {
+		return migratePretend(migrator, pending)
+	}
+
 	fmt.Println("Running migrations...")
 
 	if err := migrator.Up(); err != nil {
@@ -44,6 +58,25 @@ func Migrate(db *orm.Manager) error {
 	}
 
 	fmt.Println("\nDone")
+	return nil
+}
+
+func migratePretend(migrator *migrate.Migrator, pending []migrate.Migration) error {
+	migrator.SetPretend(true)
+
+	for _, m := range pending {
+		migrator.SetPretend(true) // reset log for each migration
+		if err := m.Up(migrator); err != nil {
+			return fmt.Errorf("pretend failed for %s: %w", m.Version, err)
+		}
+
+		fmt.Printf("  %s_%s:\n", m.Version, m.Description)
+		for _, sql := range migrator.PretendLog() {
+			fmt.Printf("    %s\n", sql)
+		}
+		fmt.Println()
+	}
+
 	return nil
 }
 

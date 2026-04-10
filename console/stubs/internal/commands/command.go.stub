@@ -1,0 +1,22 @@
+package {{ .Package }}
+
+import "fmt"
+
+// {{ .Name }}Command is a console command.
+type {{ .Name }}Command struct{}
+
+// Name returns the command name used to invoke it.
+func (c {{ .Name }}Command) Name() string {
+	return "{{ .CommandName }}"
+}
+
+// Description returns a short description of the command.
+func (c {{ .Name }}Command) Description() string {
+	return "TODO: describe {{ .CommandName }}"
+}
+
+// Handle executes the command logic.
+func (c {{ .Name }}Command) Handle() error {
+	fmt.Println("Executing {{ .CommandName }}...")
+	return nil
+}

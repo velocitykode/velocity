@@ -1,0 +1,76 @@
+package console
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"text/template"
+
+	"github.com/velocitykode/velocity/console/stubs"
+)
+
+// MakeMiddlewareOptions holds flags for the make:middleware command.
+type MakeMiddlewareOptions struct{}
+
+// MakeMiddleware generates a new middleware file from a stub template.
+func MakeMiddleware(name string, opts MakeMiddlewareOptions) error {
+	middlewareName := toMiddlewareName(name)
+
+	outputDir := "internal/middleware"
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	filename := toSnakeCase(middlewareName) + ".go"
+	outputPath := filepath.Join(outputDir, filename)
+
+	if _, err := os.Stat(outputPath); err == nil {
+		return fmt.Errorf("middleware already exists: %s", outputPath)
+	}
+
+	stubContent, err := stubs.Get("internal/middleware/generated.go.stub")
+	if err != nil {
+		stubContent = []byte(`package {{ .Package }}
+
+import "github.com/velocitykode/velocity/router"
+
+// {{ .Name }} middleware
+func {{ .Name }}(next router.HandlerFunc) router.HandlerFunc {
+	return func(ctx *router.Context) error {
+		// Before request
+		return next(ctx)
+	}
+}
+`)
+	}
+
+	tmpl, err := template.New("middleware").Parse(string(stubContent))
+	if err != nil {
+		return fmt.Errorf("failed to parse template: %w", err)
+	}
+
+	data := map[string]interface{}{
+		"Package": "middleware",
+		"Name":    middlewareName,
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return fmt.Errorf("failed to execute template: %w", err)
+	}
+
+	if err := os.WriteFile(outputPath, buf.Bytes(), 0644); err != nil {
+		return fmt.Errorf("failed to write file: %w", err)
+	}
+
+	fmt.Printf("Created: %s\n", outputPath)
+	return nil
+}
+
+func toMiddlewareName(name string) string {
+	name = strings.TrimSuffix(name, "Middleware")
+	name = strings.TrimSuffix(name, "middleware")
+	return toPascalCase(name)
+}

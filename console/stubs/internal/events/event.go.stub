@@ -1,0 +1,11 @@
+package {{ .Package }}
+
+// {{ .Name }} event
+type {{ .Name }} struct {
+	// Add event data fields here
+}
+
+// Name returns the event name
+func (e {{ .Name }}) Name() string {
+	return "{{ .EventName }}"
+}

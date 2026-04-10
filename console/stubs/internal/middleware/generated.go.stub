@@ -1,0 +1,11 @@
+package {{ .Package }}
+
+import "github.com/velocitykode/velocity/router"
+
+// {{ .Name }} middleware
+func {{ .Name }}(next router.HandlerFunc) router.HandlerFunc {
+	return func(ctx *router.Context) error {
+		// Before request
+		return next(ctx)
+	}
+}

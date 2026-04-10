@@ -1,0 +1,27 @@
+package {{ .Package }}
+
+// {{ .Name }} is a queue job.
+type {{ .Name }} struct {
+	// Add job data fields here
+}
+
+// Handle executes the job.
+func (j {{ .Name }}) Handle() error {
+	// Process the job
+	return nil
+}
+
+// Failed is called when the job has exceeded its max attempts.
+func (j {{ .Name }}) Failed(err error) {
+	// Handle the failure (e.g., send notification, log error)
+}
+
+// MaxAttempts returns the maximum number of times this job may be attempted.
+func (j {{ .Name }}) MaxAttempts() int {
+	return 3
+}
+
+// OnQueue returns the queue this job should be dispatched to.
+// func (j {{ .Name }}) OnQueue() string {
+// 	return "default"
+// }

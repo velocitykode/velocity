@@ -1,0 +1,7 @@
+package {{ .Package }}
+
+// {{ .Name }} handles an event
+func {{ .Name }}(event interface{}) error {
+	// Handle the event
+	return nil
+}

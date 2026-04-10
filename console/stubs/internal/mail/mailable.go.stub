@@ -1,0 +1,29 @@
+package {{ .Package }}
+
+import (
+	vm "github.com/velocitykode/velocity/mail"
+)
+
+// {{ .Name }} is a mailable.
+type {{ .Name }} struct {
+	// Add mailable data fields here
+}
+
+// Envelope returns the message envelope (from, to, subject).
+func (m {{ .Name }}) Envelope() *vm.Message {
+	return vm.NewMessage().
+		Subject("{{ .Name }}")
+}
+
+// Content returns the message body.
+func (m {{ .Name }}) Content() *vm.Message {
+	return vm.NewMessage().
+		TextBody("Hello from {{ .Name }}")
+}
+
+// Build constructs the full message to send.
+func (m {{ .Name }}) Build() *vm.Message {
+	return vm.NewMessage().
+		Subject("{{ .Name }}").
+		TextBody("Hello from {{ .Name }}")
+}

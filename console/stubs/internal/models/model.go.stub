@@ -1,0 +1,15 @@
+package models
+
+import (
+	"github.com/velocitykode/velocity/orm"
+)
+
+// {{ .ModelName }} model
+type {{ .ModelName }} struct {
+	{{ if and .UUID .SoftDeletes }}orm.SoftDeleteUUIDModel[{{ .ModelName }}]{{ else if .UUID }}orm.UUIDModel[{{ .ModelName }}]{{ else if .SoftDeletes }}orm.SoftDeleteModel[{{ .ModelName }}]{{ else }}orm.Model[{{ .ModelName }}]{{ end }}
+}
+
+// TableName specifies the table name for the {{ .ModelName }} model
+func ({{ .ModelName }}) TableName() string {
+	return "{{ .TableName }}"
+}
