@@ -7,7 +7,7 @@ import (
 )
 
 func TestMakeCommand_CreatesFile(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeCommand("SendEmails", MakeCommandOptions{}); err != nil {
 		t.Fatalf("MakeCommand() error = %v", err)
@@ -40,7 +40,7 @@ func TestMakeCommand_CreatesFile(t *testing.T) {
 }
 
 func TestMakeCommand_StripsSuffix(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeCommand("SendEmailsCommand", MakeCommandOptions{}); err != nil {
 		t.Fatalf("MakeCommand() error = %v", err)
@@ -52,7 +52,7 @@ func TestMakeCommand_StripsSuffix(t *testing.T) {
 }
 
 func TestMakeCommand_AlreadyExists(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	os.MkdirAll("internal/commands", 0755)
 	os.WriteFile("internal/commands/send_emails.go", []byte("existing"), 0644)
@@ -67,7 +67,7 @@ func TestMakeCommand_AlreadyExists(t *testing.T) {
 }
 
 func TestMakeCommand_VerifiesContent(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeCommand("PruneExpired", MakeCommandOptions{}); err != nil {
 		t.Fatalf("MakeCommand() error = %v", err)

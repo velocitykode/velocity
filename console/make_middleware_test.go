@@ -7,7 +7,7 @@ import (
 )
 
 func TestMakeMiddleware_CreatesFile(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeMiddleware("Auth", MakeMiddlewareOptions{}); err != nil {
 		t.Fatalf("MakeMiddleware() error = %v", err)
@@ -31,7 +31,7 @@ func TestMakeMiddleware_CreatesFile(t *testing.T) {
 }
 
 func TestMakeMiddleware_AlreadyExists(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	os.MkdirAll("internal/middleware", 0755)
 	os.WriteFile("internal/middleware/auth.go", []byte("existing"), 0644)
@@ -46,7 +46,7 @@ func TestMakeMiddleware_AlreadyExists(t *testing.T) {
 }
 
 func TestMakeMiddleware_StripsSuffix(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeMiddleware("AuthMiddleware", MakeMiddlewareOptions{}); err != nil {
 		t.Fatalf("MakeMiddleware() error = %v", err)
@@ -58,7 +58,7 @@ func TestMakeMiddleware_StripsSuffix(t *testing.T) {
 }
 
 func TestMakeMiddleware_VerifiesContent(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeMiddleware("RateLimit", MakeMiddlewareOptions{}); err != nil {
 		t.Fatalf("MakeMiddleware() error = %v", err)

@@ -7,7 +7,7 @@ import (
 )
 
 func TestMakeProvider_CreatesFile(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeProvider("Cache", MakeProviderOptions{}); err != nil {
 		t.Fatalf("MakeProvider() error = %v", err)
@@ -40,7 +40,7 @@ func TestMakeProvider_CreatesFile(t *testing.T) {
 }
 
 func TestMakeProvider_StripsSuffix(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeProvider("CacheProvider", MakeProviderOptions{}); err != nil {
 		t.Fatalf("MakeProvider() error = %v", err)
@@ -52,7 +52,7 @@ func TestMakeProvider_StripsSuffix(t *testing.T) {
 }
 
 func TestMakeProvider_StripsServiceProviderSuffix(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeProvider("CacheServiceProvider", MakeProviderOptions{}); err != nil {
 		t.Fatalf("MakeProvider() error = %v", err)
@@ -64,7 +64,7 @@ func TestMakeProvider_StripsServiceProviderSuffix(t *testing.T) {
 }
 
 func TestMakeProvider_AlreadyExists(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	os.MkdirAll("internal/providers", 0755)
 	os.WriteFile("internal/providers/cache.go", []byte("existing"), 0644)
@@ -79,7 +79,7 @@ func TestMakeProvider_AlreadyExists(t *testing.T) {
 }
 
 func TestMakeProvider_VerifiesContent(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeProvider("Payment", MakeProviderOptions{}); err != nil {
 		t.Fatalf("MakeProvider() error = %v", err)

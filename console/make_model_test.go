@@ -8,20 +8,8 @@ import (
 	"testing"
 )
 
-func chdir(t *testing.T, dir string) {
-	t.Helper()
-	original, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("failed to get working directory: %v", err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("failed to chdir: %v", err)
-	}
-	t.Cleanup(func() { os.Chdir(original) })
-}
-
 func TestMakeModel_CreatesFile(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeModel("User", MakeModelOptions{}); err != nil {
 		t.Fatalf("MakeModel() error = %v", err)
@@ -48,7 +36,7 @@ func TestMakeModel_CreatesFile(t *testing.T) {
 }
 
 func TestMakeModel_UUID(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeModel("Post", MakeModelOptions{UUID: true}); err != nil {
 		t.Fatalf("MakeModel() error = %v", err)
@@ -65,7 +53,7 @@ func TestMakeModel_UUID(t *testing.T) {
 }
 
 func TestMakeModel_SoftDeletes(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeModel("Comment", MakeModelOptions{SoftDeletes: true}); err != nil {
 		t.Fatalf("MakeModel() error = %v", err)
@@ -82,7 +70,7 @@ func TestMakeModel_SoftDeletes(t *testing.T) {
 }
 
 func TestMakeModel_UUIDAndSoftDeletes(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeModel("Order", MakeModelOptions{UUID: true, SoftDeletes: true}); err != nil {
 		t.Fatalf("MakeModel() error = %v", err)
@@ -99,7 +87,7 @@ func TestMakeModel_UUIDAndSoftDeletes(t *testing.T) {
 }
 
 func TestMakeModel_AlreadyExists(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	os.MkdirAll("internal/models", 0755)
 	os.WriteFile("internal/models/user.go", []byte("existing"), 0644)
@@ -114,7 +102,7 @@ func TestMakeModel_AlreadyExists(t *testing.T) {
 }
 
 func TestMakeModel_StripsSuffix(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeModel("UserModel", MakeModelOptions{}); err != nil {
 		t.Fatalf("MakeModel() error = %v", err)
@@ -126,7 +114,7 @@ func TestMakeModel_StripsSuffix(t *testing.T) {
 }
 
 func TestMakeModel_WithMigration(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeModel("Article", MakeModelOptions{Migration: true}); err != nil {
 		t.Fatalf("MakeModel() error = %v", err)
@@ -167,7 +155,7 @@ func TestMakeModel_WithMigration(t *testing.T) {
 }
 
 func TestMakeModel_WithMigrationUUIDSoftDeletes(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeModel("Product", MakeModelOptions{Migration: true, UUID: true, SoftDeletes: true}); err != nil {
 		t.Fatalf("MakeModel() error = %v", err)
@@ -215,7 +203,7 @@ func TestToTableName(t *testing.T) {
 }
 
 func TestMakeMigration_TimestampFormat(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeMigration("create_tags", MakeMigrationOptions{}); err != nil {
 		t.Fatalf("MakeMigration() error = %v", err)

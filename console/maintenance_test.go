@@ -8,7 +8,7 @@ import (
 )
 
 func TestDown_CreatesMarkerFile(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := Down(DownOptions{}); err != nil {
 		t.Fatalf("Down() error = %v", err)
@@ -21,7 +21,7 @@ func TestDown_CreatesMarkerFile(t *testing.T) {
 }
 
 func TestDown_WritesJSONPayload(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	opts := DownOptions{
 		Secret:     "bypass-secret",
@@ -53,7 +53,7 @@ func TestDown_WritesJSONPayload(t *testing.T) {
 }
 
 func TestDown_OmitsEmptyFields(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := Down(DownOptions{}); err != nil {
 		t.Fatalf("Down() error = %v", err)
@@ -78,7 +78,7 @@ func TestDown_OmitsEmptyFields(t *testing.T) {
 }
 
 func TestUp_RemovesMarkerFile(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	// Create the marker file first
 	if err := Down(DownOptions{}); err != nil {
@@ -96,7 +96,7 @@ func TestUp_RemovesMarkerFile(t *testing.T) {
 }
 
 func TestUp_NoErrorWhenFileDoesNotExist(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	err := Up()
 	if err != nil {

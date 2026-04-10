@@ -7,7 +7,7 @@ import (
 )
 
 func TestMakeEvent_CreatesFile(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeEvent("UserRegistered", MakeEventOptions{}); err != nil {
 		t.Fatalf("MakeEvent() error = %v", err)
@@ -34,7 +34,7 @@ func TestMakeEvent_CreatesFile(t *testing.T) {
 }
 
 func TestMakeEvent_AlreadyExists(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	os.MkdirAll("internal/events", 0755)
 	os.WriteFile("internal/events/user_registered.go", []byte("existing"), 0644)
@@ -49,7 +49,7 @@ func TestMakeEvent_AlreadyExists(t *testing.T) {
 }
 
 func TestMakeEvent_StripsSuffix(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeEvent("OrderPlacedEvent", MakeEventOptions{}); err != nil {
 		t.Fatalf("MakeEvent() error = %v", err)
@@ -61,7 +61,7 @@ func TestMakeEvent_StripsSuffix(t *testing.T) {
 }
 
 func TestMakeEvent_VerifiesContent(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeEvent("OrderPlaced", MakeEventOptions{}); err != nil {
 		t.Fatalf("MakeEvent() error = %v", err)

@@ -7,7 +7,7 @@ import (
 )
 
 func TestMakePolicy_CreatesFile(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakePolicy("Post", MakePolicyOptions{}); err != nil {
 		t.Fatalf("MakePolicy() error = %v", err)
@@ -43,7 +43,7 @@ func TestMakePolicy_CreatesFile(t *testing.T) {
 }
 
 func TestMakePolicy_StripsSuffix(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakePolicy("PostPolicy", MakePolicyOptions{}); err != nil {
 		t.Fatalf("MakePolicy() error = %v", err)
@@ -55,7 +55,7 @@ func TestMakePolicy_StripsSuffix(t *testing.T) {
 }
 
 func TestMakePolicy_AlreadyExists(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	os.MkdirAll("internal/policies", 0755)
 	os.WriteFile("internal/policies/post.go", []byte("existing"), 0644)
@@ -70,7 +70,7 @@ func TestMakePolicy_AlreadyExists(t *testing.T) {
 }
 
 func TestMakePolicy_VerifiesContent(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakePolicy("Comment", MakePolicyOptions{}); err != nil {
 		t.Fatalf("MakePolicy() error = %v", err)

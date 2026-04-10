@@ -9,7 +9,7 @@ import (
 )
 
 func TestMakeMigration_CreatesFile(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeMigration("create_posts", MakeMigrationOptions{}); err != nil {
 		t.Fatalf("MakeMigration() error = %v", err)
@@ -44,7 +44,7 @@ func TestMakeMigration_CreatesFile(t *testing.T) {
 }
 
 func TestMakeMigration_CreateTable(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	err := MakeMigration("create_users", MakeMigrationOptions{Create: "users"})
 	if err != nil {
@@ -73,7 +73,7 @@ func TestMakeMigration_CreateTable(t *testing.T) {
 }
 
 func TestMakeMigration_CreateTableUUID(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	err := MakeMigration("create_orders", MakeMigrationOptions{Create: "orders", UUID: true})
 	if err != nil {
@@ -99,7 +99,7 @@ func TestMakeMigration_CreateTableUUID(t *testing.T) {
 }
 
 func TestMakeMigration_CreateTableSoftDeletes(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	err := MakeMigration("create_posts", MakeMigrationOptions{Create: "posts", SoftDeletes: true})
 	if err != nil {
@@ -121,7 +121,7 @@ func TestMakeMigration_CreateTableSoftDeletes(t *testing.T) {
 }
 
 func TestMakeMigration_AlterTable(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	err := MakeMigration("add_slug_to_posts", MakeMigrationOptions{Table: "posts"})
 	if err != nil {
@@ -147,7 +147,7 @@ func TestMakeMigration_AlterTable(t *testing.T) {
 }
 
 func TestMakeMigration_AlreadyExists(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	// Create first migration
 	if err := MakeMigration("create_tags", MakeMigrationOptions{}); err != nil {

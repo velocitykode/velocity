@@ -8,8 +8,7 @@ import (
 )
 
 func TestMakeHandler_CreatesFile(t *testing.T) {
-	tmpDir := t.TempDir()
-	os.Chdir(tmpDir)
+	t.Chdir(t.TempDir())
 
 	if err := MakeHandler("User", MakeHandlerOptions{}); err != nil {
 		t.Fatalf("MakeHandler() error = %v", err)
@@ -29,8 +28,7 @@ func TestMakeHandler_CreatesFile(t *testing.T) {
 }
 
 func TestMakeHandler_NestedPath(t *testing.T) {
-	tmpDir := t.TempDir()
-	os.Chdir(tmpDir)
+	t.Chdir(t.TempDir())
 
 	if err := MakeHandler("Admin/Dashboard", MakeHandlerOptions{}); err != nil {
 		t.Fatalf("MakeHandler() error = %v", err)
@@ -43,8 +41,7 @@ func TestMakeHandler_NestedPath(t *testing.T) {
 }
 
 func TestMakeHandler_AlreadyExists(t *testing.T) {
-	tmpDir := t.TempDir()
-	os.Chdir(tmpDir)
+	t.Chdir(t.TempDir())
 
 	os.MkdirAll("internal/handlers", 0755)
 	os.WriteFile("internal/handlers/user.go", []byte("existing"), 0644)
@@ -56,8 +53,7 @@ func TestMakeHandler_AlreadyExists(t *testing.T) {
 }
 
 func TestMakeHandler_StripsSuffix(t *testing.T) {
-	tmpDir := t.TempDir()
-	os.Chdir(tmpDir)
+	t.Chdir(t.TempDir())
 
 	if err := MakeHandler("UserHandler", MakeHandlerOptions{}); err != nil {
 		t.Fatalf("MakeHandler() error = %v", err)

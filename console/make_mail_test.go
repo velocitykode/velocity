@@ -7,7 +7,7 @@ import (
 )
 
 func TestMakeMail_CreatesFile(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeMail("WelcomeEmail", MakeMailOptions{}); err != nil {
 		t.Fatalf("MakeMail() error = %v", err)
@@ -37,7 +37,7 @@ func TestMakeMail_CreatesFile(t *testing.T) {
 }
 
 func TestMakeMail_StripsSuffix(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeMail("OrderConfirmationMail", MakeMailOptions{}); err != nil {
 		t.Fatalf("MakeMail() error = %v", err)
@@ -58,7 +58,7 @@ func TestMakeMail_StripsSuffix(t *testing.T) {
 }
 
 func TestMakeMail_StripsMailableSuffix(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeMail("InvoiceMailable", MakeMailOptions{}); err != nil {
 		t.Fatalf("MakeMail() error = %v", err)
@@ -79,7 +79,7 @@ func TestMakeMail_StripsMailableSuffix(t *testing.T) {
 }
 
 func TestMakeMail_AlreadyExists(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	os.MkdirAll("internal/mail", 0755)
 	os.WriteFile("internal/mail/welcome_email.go", []byte("existing"), 0644)

@@ -7,7 +7,7 @@ import (
 )
 
 func TestMakeNotification_CreatesFile(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeNotification("InvoicePaid", MakeNotificationOptions{}); err != nil {
 		t.Fatalf("MakeNotification() error = %v", err)
@@ -34,7 +34,7 @@ func TestMakeNotification_CreatesFile(t *testing.T) {
 }
 
 func TestMakeNotification_StripsSuffix(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeNotification("OrderShippedNotification", MakeNotificationOptions{}); err != nil {
 		t.Fatalf("MakeNotification() error = %v", err)
@@ -55,7 +55,7 @@ func TestMakeNotification_StripsSuffix(t *testing.T) {
 }
 
 func TestMakeNotification_AlreadyExists(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	os.MkdirAll("internal/notifications", 0755)
 	os.WriteFile("internal/notifications/invoice_paid.go", []byte("existing"), 0644)

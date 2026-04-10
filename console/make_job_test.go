@@ -7,7 +7,7 @@ import (
 )
 
 func TestMakeJob_CreatesFile(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeJob("ProcessPayment", MakeJobOptions{}); err != nil {
 		t.Fatalf("MakeJob() error = %v", err)
@@ -37,7 +37,7 @@ func TestMakeJob_CreatesFile(t *testing.T) {
 }
 
 func TestMakeJob_StripsSuffix(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeJob("SendEmailJob", MakeJobOptions{}); err != nil {
 		t.Fatalf("MakeJob() error = %v", err)
@@ -58,7 +58,7 @@ func TestMakeJob_StripsSuffix(t *testing.T) {
 }
 
 func TestMakeJob_AlreadyExists(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	os.MkdirAll("internal/jobs", 0755)
 	os.WriteFile("internal/jobs/process_payment.go", []byte("existing"), 0644)

@@ -8,8 +8,7 @@ import (
 )
 
 func TestKeyGenerate_CreatesEnvFile(t *testing.T) {
-	tmpDir := t.TempDir()
-	os.Chdir(tmpDir)
+	t.Chdir(t.TempDir())
 
 	if err := KeyGenerate(); err != nil {
 		t.Fatalf("KeyGenerate() error = %v", err)
@@ -35,8 +34,7 @@ func TestKeyGenerate_CreatesEnvFile(t *testing.T) {
 }
 
 func TestKeyGenerate_UpdatesExistingKey(t *testing.T) {
-	tmpDir := t.TempDir()
-	os.Chdir(tmpDir)
+	t.Chdir(t.TempDir())
 
 	os.WriteFile(".env", []byte("DB_HOST=localhost\nAPP_KEY=old_key\nDB_PORT=5432\n"), 0644)
 
@@ -58,8 +56,7 @@ func TestKeyGenerate_UpdatesExistingKey(t *testing.T) {
 }
 
 func TestKeyGenerate_AddsKeyWhenMissing(t *testing.T) {
-	tmpDir := t.TempDir()
-	os.Chdir(tmpDir)
+	t.Chdir(t.TempDir())
 
 	os.WriteFile(".env", []byte("DB_HOST=localhost\n"), 0644)
 

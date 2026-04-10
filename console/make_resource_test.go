@@ -7,7 +7,7 @@ import (
 )
 
 func TestMakeResource_CreatesFile(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeResource("User", MakeResourceOptions{}); err != nil {
 		t.Fatalf("MakeResource() error = %v", err)
@@ -34,7 +34,7 @@ func TestMakeResource_CreatesFile(t *testing.T) {
 }
 
 func TestMakeResource_StripsSuffix(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeResource("UserResource", MakeResourceOptions{}); err != nil {
 		t.Fatalf("MakeResource() error = %v", err)
@@ -46,7 +46,7 @@ func TestMakeResource_StripsSuffix(t *testing.T) {
 }
 
 func TestMakeResource_AlreadyExists(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	os.MkdirAll("internal/resources", 0755)
 	os.WriteFile("internal/resources/user.go", []byte("existing"), 0644)
@@ -61,7 +61,7 @@ func TestMakeResource_AlreadyExists(t *testing.T) {
 }
 
 func TestMakeResource_VerifiesContent(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeResource("BlogPost", MakeResourceOptions{}); err != nil {
 		t.Fatalf("MakeResource() error = %v", err)

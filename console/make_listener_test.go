@@ -7,7 +7,7 @@ import (
 )
 
 func TestMakeListener_CreatesFile(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeListener("SendWelcomeEmail", MakeListenerOptions{}); err != nil {
 		t.Fatalf("MakeListener() error = %v", err)
@@ -28,7 +28,7 @@ func TestMakeListener_CreatesFile(t *testing.T) {
 }
 
 func TestMakeListener_AlreadyExists(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	os.MkdirAll("internal/listeners", 0755)
 	os.WriteFile("internal/listeners/send_welcome_email.go", []byte("existing"), 0644)
@@ -43,7 +43,7 @@ func TestMakeListener_AlreadyExists(t *testing.T) {
 }
 
 func TestMakeListener_StripsSuffix(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeListener("SendWelcomeEmailListener", MakeListenerOptions{}); err != nil {
 		t.Fatalf("MakeListener() error = %v", err)
@@ -55,7 +55,7 @@ func TestMakeListener_StripsSuffix(t *testing.T) {
 }
 
 func TestMakeListener_VerifiesContent(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	if err := MakeListener("NotifyAdmin", MakeListenerOptions{}); err != nil {
 		t.Fatalf("MakeListener() error = %v", err)
