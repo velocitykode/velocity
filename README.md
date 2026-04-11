@@ -15,7 +15,7 @@ Your application *is* the server.
 
 ## Requirements
 
-- Go 1.25 or higher
+- Go 1.26 or higher
 
 ## Quick Start
 
@@ -180,6 +180,7 @@ app.Router.Get("/users/{id}", func(c *router.Context) error {
 - **Validation** — rule engine with database-aware rules (`unique`, `exists`)
 - **Storage** — local filesystem, S3, memory with a unified API
 - **Distributed tracing** — trace context propagation for APM
+- **Collections** — generic, type-safe slice operations with fluent chaining
 
 ## The Stack
 
@@ -193,6 +194,8 @@ app.Router.Get("/users/{id}", func(c *router.Context) error {
 │  Cache      │   Queue     │  Storage     │    Mail      │
 ├─────────────┼─────────────┼──────────────┼──────────────┤
 │  Events     │  Scheduler  │  Validation  │    Async     │
+├─────────────┼─────────────┼──────────────┼──────────────┤
+│  Collections│  Strings    │  Pipeline    │    Crypto    │
 ├─────────────┴─────────────┴──────────────┴──────────────┤
 │       Service Providers (Register → Boot → Shutdown)     │
 ├─────────────────────────────────────────────────────────┤
