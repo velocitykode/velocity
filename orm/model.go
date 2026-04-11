@@ -215,6 +215,12 @@ func (Model[T]) Exists() bool {
 	return count > 0
 }
 
+// Paginate returns a paginated result for all records
+func (Model[T]) Paginate(page, perPage int) (*PaginatedResult[T], error) {
+	query := newQuery[T]()
+	return query.Paginate(page, perPage)
+}
+
 // Raw creates a raw SQL query builder for executing custom queries
 // Usage: Model{}.Raw("SELECT * FROM users WHERE id = ?", 1).First(&user)
 func (Model[T]) Raw(sql string, args ...any) *RawQuery[T] {
@@ -462,6 +468,12 @@ func (UUIDModel[T]) Exists() bool {
 	return count > 0
 }
 
+// Paginate returns a paginated result for all records
+func (UUIDModel[T]) Paginate(page, perPage int) (*PaginatedResult[T], error) {
+	query := newQuery[T]()
+	return query.Paginate(page, perPage)
+}
+
 // Raw creates a raw SQL query builder for executing custom queries
 // Usage: UUIDModel{}.Raw("SELECT * FROM users WHERE id = ?", 1).First(&user)
 func (UUIDModel[T]) Raw(sql string, args ...any) *RawQuery[T] {
@@ -706,6 +718,12 @@ func (SoftDeleteModel[T]) Count() (int, error) {
 func (SoftDeleteModel[T]) Exists() bool {
 	count, _ := SoftDeleteModel[T]{}.Count()
 	return count > 0
+}
+
+// Paginate returns a paginated result for all records
+func (SoftDeleteModel[T]) Paginate(page, perPage int) (*PaginatedResult[T], error) {
+	query := newQuery[T]()
+	return query.Paginate(page, perPage)
 }
 
 // Raw creates a raw SQL query builder for executing custom queries
@@ -1007,6 +1025,12 @@ func (SoftDeleteUUIDModel[T]) Count() (int, error) {
 func (SoftDeleteUUIDModel[T]) Exists() bool {
 	count, _ := SoftDeleteUUIDModel[T]{}.Count()
 	return count > 0
+}
+
+// Paginate returns a paginated result for all records
+func (SoftDeleteUUIDModel[T]) Paginate(page, perPage int) (*PaginatedResult[T], error) {
+	query := newQuery[T]()
+	return query.Paginate(page, perPage)
 }
 
 // Raw creates a raw SQL query builder for executing custom queries

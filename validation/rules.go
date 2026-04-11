@@ -61,6 +61,12 @@ func registerBuiltInRules(reg *RuleRegistry) {
 	reg.Register("not_in", rules.NotInRule)
 	reg.Register("confirmed", rules.ConfirmedRule)
 	reg.Register("accepted", rules.AcceptedRule)
+
+	// Conditional rules from rules package
+	reg.Register("required_if", rules.RequiredIfRule)
+	reg.Register("required_unless", rules.RequiredUnlessRule)
+	reg.Register("required_with", rules.RequiredWithRule)
+	reg.Register("required_without", rules.RequiredWithoutRule)
 }
 
 // requiredRule validates that a field is present and not empty
@@ -79,6 +85,10 @@ func requiredRule(field string, value interface{}, params []string, data map[str
 			return fmt.Errorf("The %s field is required.", field)
 		}
 	case []string:
+		if len(v) == 0 {
+			return fmt.Errorf("The %s field is required.", field)
+		}
+	case map[string]interface{}:
 		if len(v) == 0 {
 			return fmt.Errorf("The %s field is required.", field)
 		}

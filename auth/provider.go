@@ -47,6 +47,7 @@ func (p *ORMUserProvider) FindByID(id interface{}) (Authenticatable, error) {
 	if err != nil {
 		return nil, err
 	}
+	user.ID = normalizeID(user.ID)
 
 	return &user, nil
 }
@@ -71,6 +72,7 @@ func (p *ORMUserProvider) FindByCredentials(credentials map[string]interface{}) 
 	if err != nil {
 		return nil, err
 	}
+	user.ID = normalizeID(user.ID)
 
 	return &user, nil
 }
@@ -95,6 +97,29 @@ func (p *ORMUserProvider) UpdateRememberToken(user Authenticatable, token string
 
 	_, err := p.db.Exec("UPDATE users SET remember_token = $1 WHERE id = $2", token, user.GetAuthIdentifier())
 	return err
+}
+
+// normalizeID converts numeric ID values from database drivers into uint
+// so that GetAuthIdentifier() always returns a consistent type regardless
+// of the underlying database driver.
+func normalizeID(v interface{}) interface{} {
+	switch id := v.(type) {
+	case int64:
+		return uint(id)
+	case int:
+		return uint(id)
+	case int32:
+		return uint(id)
+	case float64:
+		return uint(id)
+	case uint:
+		return id
+	case uint64:
+		return uint(id)
+	default:
+		// String IDs (UUIDs) pass through unchanged
+		return v
+	}
 }
 
 // AuthUser represents an authenticated user

@@ -775,11 +775,7 @@ func (q *Query[T]) ToSQL() (string, []any) {
 
 // Helper methods
 
-func (q *Query[T]) loadRelations(models *[]T) error {
-	// This would handle eager loading of relationships
-	// Implementation depends on relationship definitions
-	return nil
-}
+// loadRelations is defined in relation.go
 
 // Helper functions
 
@@ -851,9 +847,9 @@ func scanIntoStruct(rows *sql.Rows, dest any) error {
 				continue
 			}
 
-			// Skip fields marked with orm:"-"
+			// Skip fields marked with orm:"-" or relation fields
 			tag := field.Tag.Get("orm")
-			if tag == "-" {
+			if tag == "-" || strings.Contains(tag, "relation:") {
 				continue
 			}
 
