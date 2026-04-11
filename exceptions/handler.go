@@ -56,7 +56,11 @@ func NewHandler(opts ...Option) *Handler {
 		opt(h)
 	}
 
-	if h.debug {
+	// Force-disable debug mode in production to prevent exposing stack traces and source code
+	if h.environment == "production" && h.debug {
+		h.debug = false
+		h.logger.Warn("APP_DEBUG=true is ignored in production — debug mode has been force-disabled to prevent exposing stack traces and source code in error responses")
+	} else if h.debug {
 		h.logger.Warn("Exception handler running in debug mode — stack traces and source code will be exposed in error responses. Ensure APP_DEBUG is not enabled in production.")
 	}
 
@@ -128,6 +132,10 @@ func WithAPIPrefixes(prefixes ...string) Option {
 func (h *Handler) SetDebug(debug bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if debug && h.environment == "production" {
+		log.Println("[WARN] Refusing to enable debug mode in production environment — stack traces and source code will not be exposed")
+		return
+	}
 	h.debug = debug
 	if debug {
 		log.Println("[WARN] Exception handler debug mode enabled — stack traces and source code will be exposed in error responses. Ensure this is not enabled in production.")

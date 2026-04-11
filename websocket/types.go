@@ -28,17 +28,19 @@ type Client struct {
 
 // Config holds WebSocket server configuration
 type Config struct {
-	Host            string
-	Port            int
-	Path            string
-	AllowedOrigins  []string
-	MaxConnections  int
-	ReadBufferSize  int
-	WriteBufferSize int
-	MaxMessageSize  int64
-	PingInterval    time.Duration
-	PongTimeout     time.Duration
-	WriteTimeout    time.Duration
+	Host             string
+	Port             int
+	Path             string
+	AllowedOrigins   []string
+	MaxConnections   int
+	ReadBufferSize   int
+	WriteBufferSize  int
+	MaxMessageSize   int64
+	PingInterval     time.Duration
+	PongTimeout      time.Duration
+	WriteTimeout     time.Duration
+	MessageRateLimit int // Max messages per second per client (0 = unlimited)
+	MessageBurstSize int // Max burst before rate limiting disconnects the client
 }
 
 // Stats holds server statistics

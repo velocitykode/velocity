@@ -120,7 +120,7 @@ func NewJWTManager(config JWTConfig) *JWTManager {
 	if store == nil {
 		store = NewInMemoryBlacklistStore()
 		if config.BlacklistEnabled {
-			log.Println("jwt: using in-memory token blacklist. Set a persistent BlacklistStore for production multi-instance deployments")
+			log.Println("[WARN] jwt: using in-memory token blacklist — revoked tokens will NOT be shared across instances. Set a persistent BlacklistStore (e.g., Redis) for production multi-instance deployments")
 		}
 	}
 

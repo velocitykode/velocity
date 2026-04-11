@@ -24,7 +24,7 @@ func KeyGenerate() error {
 	content, err := os.ReadFile(envPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			if err := os.WriteFile(envPath, []byte(fmt.Sprintf("APP_KEY=%s\n", encodedKey)), 0644); err != nil {
+			if err := os.WriteFile(envPath, []byte(fmt.Sprintf("APP_KEY=%s\n", encodedKey)), 0600); err != nil {
 				return fmt.Errorf("failed to create .env: %w", err)
 			}
 			cli.Success("Created .env with APP_KEY")
@@ -47,7 +47,7 @@ func KeyGenerate() error {
 		lines = append([]string{fmt.Sprintf("APP_KEY=%s", encodedKey)}, lines...)
 	}
 
-	if err := os.WriteFile(envPath, []byte(strings.Join(lines, "\n")), 0644); err != nil {
+	if err := os.WriteFile(envPath, []byte(strings.Join(lines, "\n")), 0600); err != nil {
 		return fmt.Errorf("failed to update .env: %w", err)
 	}
 

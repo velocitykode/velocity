@@ -4,6 +4,7 @@ package httpclient
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"sync"
@@ -47,6 +48,12 @@ func New(opts ...Option) *Client {
 	c := &Client{
 		client: &http.Client{
 			Timeout: 30 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 10 {
+					return fmt.Errorf("httpclient: stopped after %d redirects", len(via))
+				}
+				return nil
+			},
 		},
 	}
 

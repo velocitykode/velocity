@@ -153,5 +153,5 @@ func (u *AuthUser) SetRememberToken(token string) {
 
 // String returns string representation
 func (u *AuthUser) String() string {
-	return fmt.Sprintf("AuthUser<%v: %s>", u.ID, u.Email)
+	return fmt.Sprintf("AuthUser<%v>", u.ID)
 }

@@ -22,6 +22,18 @@ func (c *Client) readPump() {
 		return nil
 	})
 
+	// Rate limiting: track messages per second to prevent flooding
+	rateLimit := c.Server.config.MessageRateLimit
+	burstSize := c.Server.config.MessageBurstSize
+	if burstSize == 0 && rateLimit > 0 {
+		burstSize = rateLimit * 2 // default burst = 2x rate limit
+	}
+	var msgCount int
+	var windowStart time.Time
+	if rateLimit > 0 {
+		windowStart = time.Now()
+	}
+
 	for {
 		var msg Message
 		err := c.Conn.ReadJSON(&msg)
@@ -33,6 +45,24 @@ func (c *Client) readPump() {
 				log.Printf("websocket error: %v", err)
 			}
 			break
+		}
+
+		// Rate limiting: disconnect client if burst threshold exceeded
+		if rateLimit > 0 {
+			now := time.Now()
+			if now.Sub(windowStart) >= time.Second {
+				msgCount = 0
+				windowStart = now
+			}
+			msgCount++
+			if msgCount > burstSize {
+				log.Printf("websocket: client %s exceeded rate limit (%d msgs/s burst %d), disconnecting", c.ID, rateLimit, burstSize)
+				c.SendMessage(Message{
+					Type: "error",
+					Data: map[string]interface{}{"message": "rate limit exceeded"},
+				})
+				break
+			}
 		}
 
 		// Update stats

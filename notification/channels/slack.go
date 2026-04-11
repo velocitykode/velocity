@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/velocitykode/velocity/notification"
@@ -50,6 +52,11 @@ func (c *SlackChannel) Send(ctx context.Context, notifiable interface{}, n notif
 	}
 	if webhookURL == "" {
 		return fmt.Errorf("notification: no Slack webhook URL for notifiable")
+	}
+
+	// Validate webhook URL to prevent SSRF attacks
+	if err := validateWebhookURL(webhookURL); err != nil {
+		return err
 	}
 
 	// Build Slack API payload
@@ -140,4 +147,35 @@ func (c *SlackChannel) buildPayload(msg *notification.SlackMessage) map[string]i
 	}
 
 	return payload
+}
+
+// validateWebhookURL validates that a webhook URL is safe to call,
+// preventing SSRF attacks against internal/private networks.
+func validateWebhookURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("notification: invalid webhook URL: %w", err)
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return fmt.Errorf("notification: webhook URL must use http or https scheme")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("notification: webhook URL has no host")
+	}
+	// Block well-known localhost names
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "0.0.0.0" {
+		return fmt.Errorf("notification: webhook URL must not target localhost")
+	}
+	// Block private/internal IPs when host is an IP literal
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+			return fmt.Errorf("notification: webhook URL must not target private or internal addresses")
+		}
+	}
+	// Block AWS metadata endpoint
+	if host == "169.254.169.254" {
+		return fmt.Errorf("notification: webhook URL must not target cloud metadata endpoints")
+	}
+	return nil
 }

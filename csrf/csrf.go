@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/velocitykode/velocity/csrf/stores"
 	"github.com/velocitykode/velocity/router"
@@ -23,7 +24,8 @@ var (
 
 // CSRF provides CSRF protection functionality
 type CSRF struct {
-	config *Config
+	config      *Config
+	singleUseMu sync.Mutex // serializes validate+delete for single-use tokens
 }
 
 // New creates a new CSRF instance with the given configuration
@@ -102,6 +104,14 @@ func (c *CSRF) validateToken(r *http.Request) error {
 	if err != nil {
 		return err
 	}
+
+	// For single-use tokens, serialize validate+delete to prevent race conditions
+	// where concurrent requests could both validate the same token before deletion.
+	if c.config.SingleUse {
+		c.singleUseMu.Lock()
+		defer c.singleUseMu.Unlock()
+	}
+
 	expectedToken, err := c.config.Store.Get(sessionID)
 	if err != nil {
 		return ErrTokenInvalid

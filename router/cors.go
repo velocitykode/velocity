@@ -43,8 +43,11 @@ func DefaultCORSConfig() CORSConfig {
 }
 
 // PermissiveCORSConfig returns a CORSConfig that allows all origins. This is
-// useful during development but should not be used in production without
-// careful consideration.
+// useful during development but should not be used in production.
+//
+// Deprecated: PermissiveCORSConfig allows all origins. When combined with
+// AllowCredentials, the request origin is echoed back, allowing any site to
+// make credentialed requests. Use DefaultCORSConfig with explicit AllowedOrigins instead.
 func PermissiveCORSConfig() CORSConfig {
 	return CORSConfig{
 		AllowedOrigins: []string{"*"},

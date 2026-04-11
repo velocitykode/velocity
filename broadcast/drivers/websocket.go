@@ -2,16 +2,22 @@ package drivers
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/velocitykode/velocity/websocket"
 )
 
+// ChannelAuthorizer checks if a WebSocket client is allowed to join a channel.
+// Must be set for private- and presence- channels to be accessible.
+type ChannelAuthorizer func(client *websocket.Client, channel string) bool
+
 // WebSocketDriver adapts the existing WebSocket server for broadcasting
 type WebSocketDriver struct {
-	server   *websocket.Server
-	channels map[string]map[string]*websocket.Client // channel -> socketID -> client
-	mu       sync.RWMutex
+	server     *websocket.Server
+	channels   map[string]map[string]*websocket.Client // channel -> socketID -> client
+	authorizer ChannelAuthorizer
+	mu         sync.RWMutex
 }
 
 // NewWebSocketDriver creates a new WebSocket driver
@@ -146,6 +152,19 @@ func (d *WebSocketDriver) handleSubscribe(client *websocket.Client, msg websocke
 		return fmt.Errorf("channel not specified")
 	}
 
+	// Authorize private and presence channels
+	if strings.HasPrefix(channel, "private-") || strings.HasPrefix(channel, "presence-") {
+		d.mu.RLock()
+		auth := d.authorizer
+		d.mu.RUnlock()
+		if auth == nil {
+			return fmt.Errorf("no authorizer configured for channel %s", channel)
+		}
+		if !auth(client, channel) {
+			return fmt.Errorf("unauthorized to subscribe to channel %s", channel)
+		}
+	}
+
 	// Add client to channel
 	if err := d.Subscribe(channel, client); err != nil {
 		return err
@@ -199,6 +218,14 @@ func (d *WebSocketDriver) handleClientEvent(client *websocket.Client, msg websoc
 
 	// Broadcast to channel except sender
 	return d.BroadcastExcept([]string{channel}, "client-"+event, data["data"], client.ID)
+}
+
+// SetAuthorizer sets the channel authorizer for private/presence channels.
+// Without an authorizer, subscriptions to private- and presence- channels are rejected.
+func (d *WebSocketDriver) SetAuthorizer(fn ChannelAuthorizer) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.authorizer = fn
 }
 
 // GetServer returns the underlying WebSocket server

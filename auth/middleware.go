@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -20,6 +21,7 @@ func wantsJSON(r *http.Request) bool {
 // denyUnauthenticated returns a 401 JSON response for API requests or redirects
 // to /login for HTML requests. Shared by all auth-requiring middleware.
 func denyUnauthenticated(c *router.Context) error {
+	log.Printf("auth: authentication required for %s %s from %s", c.Request.Method, c.Request.URL.Path, c.Request.RemoteAddr)
 	if wantsJSON(c.Request) {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthenticated."})
 	}
@@ -34,6 +36,7 @@ func denyUnauthenticated(c *router.Context) error {
 // denyForbidden returns a 403 JSON response for API requests or a plain 403
 // status for HTML requests.
 func denyForbidden(c *router.Context) error {
+	log.Printf("auth: authorization denied for %s %s from %s", c.Request.Method, c.Request.URL.Path, c.Request.RemoteAddr)
 	if wantsJSON(c.Request) {
 		return c.JSON(http.StatusForbidden, map[string]string{"error": "Forbidden."})
 	}

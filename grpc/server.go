@@ -19,6 +19,7 @@ type Server struct {
 	listener         net.Listener
 	port             string
 	enableReflection bool
+	environment      string
 	running          bool
 	serverOptions    []grpc.ServerOption
 	logger           log.Logger
@@ -61,6 +62,14 @@ func NewServer(opts ...ServerOption) *Server {
 func WithPort(port string) ServerOption {
 	return func(s *Server) {
 		s.port = port
+	}
+}
+
+// WithEnvironment sets the deployment environment (e.g., "production", "staging").
+// When set to "production", gRPC reflection is automatically disabled for security.
+func WithEnvironment(env string) ServerOption {
+	return func(s *Server) {
+		s.environment = env
 	}
 }
 
@@ -187,10 +196,14 @@ func (s *Server) Build() error {
 		regFunc(s.grpcServer)
 	}
 
-	// Enable reflection if configured
+	// Enable reflection if configured (blocked in production)
 	if s.enableReflection {
-		s.logger.Warn("gRPC reflection is enabled — disable in production (GRPC_REFLECTION=false)")
-		reflection.Register(s.grpcServer)
+		if s.environment == "production" {
+			s.logger.Warn("gRPC reflection was requested but is blocked in production for security")
+		} else {
+			s.logger.Warn("gRPC reflection is enabled — disable in production (GRPC_REFLECTION=false)")
+			reflection.Register(s.grpcServer)
+		}
 	}
 
 	return nil

@@ -3,6 +3,7 @@ package bond
 import (
 	"encoding/json"
 	"html"
+	"strings"
 )
 
 // OnceMeta tracks a once-prop for the client so it knows which props
@@ -44,7 +45,11 @@ func (p Page) ToHTMLAttr() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Escape HTML entities and single quotes for safe embedding in data-page='...'
+	// Escape HTML entities for safe embedding in data-page='...'
+	// html.EscapeString handles <, >, &, " but NOT single quotes.
+	// Since we embed in a single-quoted attribute, also escape ' to prevent
+	// attribute breakout (e.g. prop values like "O'Brien").
 	escaped := html.EscapeString(jsonStr)
+	escaped = strings.ReplaceAll(escaped, "'", "&#39;")
 	return escaped, nil
 }

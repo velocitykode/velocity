@@ -331,7 +331,7 @@ func TestAuthUserMethods(t *testing.T) {
 
 	t.Run("String returns formatted representation", func(t *testing.T) {
 		user := &AuthUser{ID: 42, Email: "test@example.com"}
-		expected := "AuthUser<42: test@example.com>"
+		expected := "AuthUser<42>"
 		if got := user.String(); got != expected {
 			t.Errorf("String() = %v, want %v", got, expected)
 		}

@@ -71,16 +71,24 @@ func TestNewHandler_WithRenderers(t *testing.T) {
 }
 
 func TestHandler_SetDebug(t *testing.T) {
-	h := NewHandler()
+	// In non-production environment, SetDebug should work
+	h := NewHandler(WithEnvironment("local"))
 
 	h.SetDebug(true)
 	if !h.IsDebug() {
-		t.Error("SetDebug did not set debug to true")
+		t.Error("SetDebug did not set debug to true in non-production environment")
 	}
 
 	h.SetDebug(false)
 	if h.IsDebug() {
 		t.Error("SetDebug did not set debug to false")
+	}
+
+	// In production environment, SetDebug(true) should be refused
+	hp := NewHandler(WithEnvironment("production"))
+	hp.SetDebug(true)
+	if hp.IsDebug() {
+		t.Error("SetDebug should refuse debug mode in production")
 	}
 }
 

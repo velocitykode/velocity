@@ -34,7 +34,7 @@ type BcryptHasher struct {
 func NewBcryptHasher(cost int) *BcryptHasher {
 	if cost < minSecureBcryptCost {
 		if cost > 0 {
-			log.Printf("auth: bcrypt cost %d is below minimum secure cost %d, using %d", cost, minSecureBcryptCost, minSecureBcryptCost)
+			log.Printf("[WARN] auth: bcrypt cost %d is below minimum secure cost %d — using %d instead. Configure HASH_BCRYPT_COST >= %d", cost, minSecureBcryptCost, minSecureBcryptCost, minSecureBcryptCost)
 		}
 		cost = minSecureBcryptCost
 	}
