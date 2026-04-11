@@ -73,7 +73,7 @@ users, _ := User{}.Where("active = ?", true).
 
 Every subsystem uses pluggable drivers configured through environment variables.
 
-| | Drivers |
+| Subsystem | Drivers |
 |---|---|
 | Database | PostgreSQL, MySQL, SQLite |
 | Cache | Memory, File, Redis, Database |
@@ -95,7 +95,7 @@ No runtime reflection for dependency injection. No implicit model fetching. No h
 
 ## What's Included
 
-| | |
+| Category | Features |
 |---|---|
 | **Web** | Radix-tree router, middleware, security headers, CORS, HTTPS redirect, rate limiting |
 | **Data** | Generic ORM with query builder, migrations, eager loading, pagination |
