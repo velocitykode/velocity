@@ -476,6 +476,168 @@ func TestRegisterCustomRule(t *testing.T) {
 	}
 }
 
+func TestConditionalRules(t *testing.T) {
+	tests := []struct {
+		name        string
+		data        map[string]interface{}
+		rules       Rules
+		wantError   bool
+		errorFields []string
+	}{
+		{
+			name: "required_if passes when condition not met",
+			data: map[string]interface{}{
+				"contact_method": "email",
+			},
+			rules: Rules{
+				"phone": "required_if:contact_method,phone",
+			},
+			wantError: false,
+		},
+		{
+			name: "required_if fails when condition met and value missing",
+			data: map[string]interface{}{
+				"contact_method": "phone",
+			},
+			rules: Rules{
+				"phone": "required_if:contact_method,phone",
+			},
+			wantError:   true,
+			errorFields: []string{"phone"},
+		},
+		{
+			name: "required_if passes when condition met and value present",
+			data: map[string]interface{}{
+				"contact_method": "phone",
+				"phone":          "555-1234",
+			},
+			rules: Rules{
+				"phone": "required_if:contact_method,phone",
+			},
+			wantError: false,
+		},
+		{
+			name: "required_unless passes when other field has exempt value",
+			data: map[string]interface{}{
+				"role": "admin",
+			},
+			rules: Rules{
+				"reason": "required_unless:role,admin",
+			},
+			wantError: false,
+		},
+		{
+			name: "required_unless fails when other field does not have exempt value",
+			data: map[string]interface{}{
+				"role": "user",
+			},
+			rules: Rules{
+				"reason": "required_unless:role,admin",
+			},
+			wantError:   true,
+			errorFields: []string{"reason"},
+		},
+		{
+			name: "required_with passes when other field absent",
+			data: map[string]interface{}{},
+			rules: Rules{
+				"city": "required_with:address",
+			},
+			wantError: false,
+		},
+		{
+			name: "required_with fails when other field present and value missing",
+			data: map[string]interface{}{
+				"address": "123 Main St",
+			},
+			rules: Rules{
+				"city": "required_with:address",
+			},
+			wantError:   true,
+			errorFields: []string{"city"},
+		},
+		{
+			name: "required_with passes when other field present and value present",
+			data: map[string]interface{}{
+				"address": "123 Main St",
+				"city":    "New York",
+			},
+			rules: Rules{
+				"city": "required_with:address",
+			},
+			wantError: false,
+		},
+		{
+			name: "required_without passes when other field is present",
+			data: map[string]interface{}{
+				"email": "test@example.com",
+			},
+			rules: Rules{
+				"phone": "required_without:email",
+			},
+			wantError: false,
+		},
+		{
+			name: "required_without fails when other field absent and value missing",
+			data: map[string]interface{}{},
+			rules: Rules{
+				"phone": "required_without:email",
+			},
+			wantError:   true,
+			errorFields: []string{"phone"},
+		},
+		{
+			name: "required_without passes when other field absent and value present",
+			data: map[string]interface{}{
+				"phone": "555-1234",
+			},
+			rules: Rules{
+				"phone": "required_without:email",
+			},
+			wantError: false,
+		},
+		{
+			name: "conditional rules combined with other rules",
+			data: map[string]interface{}{
+				"type":  "business",
+				"phone": "555",
+			},
+			rules: Rules{
+				"phone": "required_if:type,business|min:7",
+			},
+			wantError:   true,
+			errorFields: []string{"phone"},
+		},
+	}
+
+	v := NewValidator()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := v.Validate(tt.data, tt.rules)
+
+			if tt.wantError {
+				if err == nil {
+					t.Error("Expected error but got none")
+				} else if validationErr, ok := err.(ValidationErrors); ok {
+					for _, field := range tt.errorFields {
+						if !validationErr.HasError(field) {
+							t.Errorf("Expected error for field %s", field)
+						}
+					}
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error: %v", err)
+				}
+				if result == nil {
+					t.Error("Expected result but got nil")
+				}
+			}
+		})
+	}
+}
+
 func BenchmarkValidation(b *testing.B) {
 	v := NewValidator()
 

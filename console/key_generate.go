@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	cli "github.com/velocitykode/velocity-cli"
 )
 
 // KeyGenerate generates a new APP_KEY and writes it to .env.
@@ -25,7 +27,7 @@ func KeyGenerate() error {
 			if err := os.WriteFile(envPath, []byte(fmt.Sprintf("APP_KEY=%s\n", encodedKey)), 0644); err != nil {
 				return fmt.Errorf("failed to create .env: %w", err)
 			}
-			fmt.Println("Created .env with APP_KEY")
+			cli.Success("Created .env with APP_KEY")
 			return nil
 		}
 		return fmt.Errorf("failed to read .env: %w", err)
@@ -49,6 +51,6 @@ func KeyGenerate() error {
 		return fmt.Errorf("failed to update .env: %w", err)
 	}
 
-	fmt.Println("Application key set successfully")
+	cli.Success("Application key set successfully")
 	return nil
 }

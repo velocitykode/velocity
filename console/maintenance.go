@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	cli "github.com/velocitykode/velocity-cli"
 )
 
 // DownOptions configures maintenance mode behavior.
@@ -44,7 +46,7 @@ func Down(opts DownOptions) error {
 		return fmt.Errorf("failed to write maintenance file: %w", err)
 	}
 
-	fmt.Println("Application is now in maintenance mode.")
+	cli.Success("Application is now in maintenance mode.")
 	return nil
 }
 
@@ -55,6 +57,6 @@ func Up() error {
 		return fmt.Errorf("failed to remove maintenance file: %w", err)
 	}
 
-	fmt.Println("Application is now live.")
+	cli.Success("Application is now live.")
 	return nil
 }

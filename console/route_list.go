@@ -1,9 +1,7 @@
 package console
 
 import (
-	"fmt"
-	"strings"
-
+	cli "github.com/velocitykode/velocity-cli"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -12,34 +10,16 @@ func RouteList(r *router.VelocityRouterV2) error {
 	routes := r.AllRoutes()
 
 	if len(routes) == 0 {
-		fmt.Println("No routes registered.")
+		cli.Info("No routes registered.")
 		return nil
 	}
 
-	// Calculate column widths
-	methodWidth := len("Method")
-	pathWidth := len("Path")
+	headers := []string{"Method", "Path", "Name"}
+	var rows [][]string
 	for _, route := range routes {
-		if len(route.Method) > methodWidth {
-			methodWidth = len(route.Method)
-		}
-		if len(route.Path) > pathWidth {
-			pathWidth = len(route.Path)
-		}
-	}
-	methodWidth += 3
-	pathWidth += 3
-
-	// Header
-	fmt.Println()
-	fmt.Printf("  %-*s %-*s %s\n", methodWidth, "Method", pathWidth, "Path", "Name")
-	fmt.Printf("  %s\n", strings.Repeat("─", methodWidth+pathWidth+20))
-
-	// Routes
-	for _, route := range routes {
-		fmt.Printf("  %-*s %-*s %s\n", methodWidth, route.Method, pathWidth, route.Path, route.Name)
+		rows = append(rows, []string{route.Method, route.Path, route.Name})
 	}
 
-	fmt.Printf("\n  Showing %d routes\n\n", len(routes))
+	cli.Table(headers, rows)
 	return nil
 }

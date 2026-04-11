@@ -2,22 +2,22 @@ package console
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 
+	cli "github.com/velocitykode/velocity-cli"
 	"github.com/velocitykode/velocity/scheduler"
 )
 
 // ScheduleWork starts the scheduler to run scheduled tasks.
 func ScheduleWork(s *scheduler.Scheduler) error {
 	if s == nil {
-		fmt.Println("No scheduler configured")
+		cli.Warning("No scheduler configured")
 		return nil
 	}
 
-	fmt.Println("Running scheduled tasks...")
+	cli.Info("Running scheduled tasks...")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -32,10 +32,10 @@ func ScheduleWork(s *scheduler.Scheduler) error {
 
 	select {
 	case <-quit:
-		fmt.Println("\nShutting down scheduler...")
+		cli.Info("Shutting down scheduler...")
 		cancel()
 		<-errCh
-		fmt.Println("Done")
+		cli.Success("Done")
 		return nil
 	case err := <-errCh:
 		return err

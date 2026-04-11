@@ -8,6 +8,7 @@ import (
 	"strings"
 	"text/template"
 
+	cli "github.com/velocitykode/velocity-cli"
 	"github.com/velocitykode/velocity/console/stubs"
 	"github.com/velocitykode/velocity/str"
 )
@@ -62,7 +63,7 @@ func MakeModel(name string, opts MakeModelOptions) error {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 
-	fmt.Printf("Created: %s\n", outputPath)
+	cli.Success(fmt.Sprintf("Created: %s", outputPath))
 
 	if opts.Migration {
 		migrationName := "create_" + tableName

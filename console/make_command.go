@@ -9,6 +9,7 @@ import (
 	"text/template"
 	"unicode"
 
+	cli "github.com/velocitykode/velocity-cli"
 	"github.com/velocitykode/velocity/console/stubs"
 )
 
@@ -79,7 +80,7 @@ func (c {{ .Name }}Command) Handle() error {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 
-	fmt.Printf("Created: %s\n", outputPath)
+	cli.Success(fmt.Sprintf("Created: %s", outputPath))
 	return nil
 }
 

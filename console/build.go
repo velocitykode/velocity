@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+
+	cli "github.com/velocitykode/velocity-cli"
 )
 
 // BuildOptions holds flags for the build command.
@@ -34,7 +36,7 @@ func Build(opts BuildOptions) error {
 		}
 	}
 
-	fmt.Printf("Building for %s/%s...\n", opts.OS, opts.Arch)
+	cli.Info(fmt.Sprintf("Building for %s/%s...", opts.OS, opts.Arch))
 
 	env := os.Environ()
 	env = append(env, fmt.Sprintf("GOOS=%s", opts.OS))
@@ -56,6 +58,6 @@ func Build(opts BuildOptions) error {
 		return fmt.Errorf("build failed: %w", err)
 	}
 
-	fmt.Printf("Built: %s\n", output)
+	cli.Success(fmt.Sprintf("Built: %s", output))
 	return nil
 }

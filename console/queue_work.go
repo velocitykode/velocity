@@ -7,6 +7,7 @@ import (
 	"syscall"
 	"time"
 
+	cli "github.com/velocitykode/velocity-cli"
 	"github.com/velocitykode/velocity/queue"
 )
 
@@ -20,7 +21,7 @@ type QueueWorkOptions struct {
 // QueueWork starts a queue worker that processes jobs from the given driver.
 func QueueWork(driver queue.Driver, opts QueueWorkOptions) error {
 	if driver == nil {
-		fmt.Println("No queue configured")
+		cli.Warning("No queue configured")
 		return nil
 	}
 
@@ -43,7 +44,7 @@ func QueueWork(driver queue.Driver, opts QueueWorkOptions) error {
 
 	w := queue.NewWorker(driver, queueName, handler, workerOpts...)
 
-	fmt.Printf("Processing jobs from queue: %s\n", queueName)
+	cli.Info(fmt.Sprintf("Processing jobs from queue: %s", queueName))
 
 	w.Start()
 
@@ -51,9 +52,9 @@ func QueueWork(driver queue.Driver, opts QueueWorkOptions) error {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	fmt.Println("\nShutting down worker...")
+	cli.Info("Shutting down worker...")
 	w.Stop()
-	fmt.Println("Done")
+	cli.Success("Done")
 
 	return nil
 }

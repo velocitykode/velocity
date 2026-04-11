@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	cli "github.com/velocitykode/velocity-cli"
 	"github.com/fsnotify/fsnotify"
 )
 
@@ -32,9 +33,9 @@ func Serve(opts ServeOptions) error {
 	}
 
 	if opts.Watch {
-		fmt.Printf("Starting on port %s with hot reload...\n", opts.Port)
+		cli.Info(fmt.Sprintf("Starting on port %s with hot reload...", opts.Port))
 	} else {
-		fmt.Printf("Starting on port %s...\n", opts.Port)
+		cli.Info(fmt.Sprintf("Starting on port %s...", opts.Port))
 	}
 
 	// Start Vite dev server if package.json exists
@@ -60,14 +61,14 @@ func startVite() *exec.Cmd {
 		}
 	}
 
-	fmt.Printf("Starting Vite (%s run dev)...\n", runner)
+	cli.Info(fmt.Sprintf("Starting Vite (%s run dev)...", runner))
 	cmd := exec.Command(runner, "run", "dev")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := cmd.Start(); err != nil {
-		fmt.Printf("Warning: Failed to start Vite: %v\n", err)
+		cli.Warning(fmt.Sprintf("Failed to start Vite: %v", err))
 		return nil
 	}
 	return cmd
@@ -79,7 +80,7 @@ func setupGracefulShutdown(viteCmd *exec.Cmd) {
 
 	go func() {
 		<-c
-		fmt.Println("\nShutting down...")
+		cli.Info("Shutting down...")
 		if viteCmd != nil && viteCmd.Process != nil {
 			syscall.Kill(-viteCmd.Process.Pid, syscall.SIGTERM)
 		}
@@ -142,7 +143,7 @@ func runWithWatcher(opts ServeOptions) error {
 			serverCmd.Wait()
 		}
 
-		fmt.Println("Building...")
+		cli.Info("Building...")
 		buildArgs := []string{"build", "-o", ".vel/tmp/server"}
 		if opts.BuildTags != "" {
 			buildArgs = append(buildArgs, "-tags", opts.BuildTags)
@@ -151,11 +152,11 @@ func runWithWatcher(opts ServeOptions) error {
 
 		buildCmd := exec.Command("go", buildArgs...)
 		if output, err := buildCmd.CombinedOutput(); err != nil {
-			fmt.Printf("Build failed:\n%s\n", string(output))
+			cli.Error(fmt.Sprintf("Build failed:\n%s", string(output)))
 			return err
 		}
 
-		fmt.Printf("Starting server on port %s...\n", opts.Port)
+		cli.Info(fmt.Sprintf("Starting server on port %s...", opts.Port))
 		serverCmd = exec.Command(".vel/tmp/server")
 		serverCmd.Stdout = os.Stdout
 		serverCmd.Stderr = os.Stderr
@@ -179,7 +180,7 @@ func runWithWatcher(opts ServeOptions) error {
 		case err := <-errChan:
 			return err
 		case <-rebuild:
-			fmt.Println("\nFile changed, reloading...")
+			cli.Warning("File changed, reloading...")
 			time.Sleep(100 * time.Millisecond)
 			startServer()
 		}
@@ -234,7 +235,7 @@ func watchFiles(rebuild chan bool) error {
 			if !ok {
 				return nil
 			}
-			fmt.Printf("Watcher error: %v\n", err)
+			cli.Error(fmt.Sprintf("Watcher error: %v", err))
 		}
 	}
 }

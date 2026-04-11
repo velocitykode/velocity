@@ -3,13 +3,14 @@ package console
 import (
 	"fmt"
 
+	cli "github.com/velocitykode/velocity-cli"
 	"github.com/velocitykode/velocity/cache"
 )
 
 // CacheClear flushes all items from the default cache store.
 func CacheClear(c *cache.Manager) error {
 	if c == nil {
-		fmt.Println("No cache configured")
+		cli.Warning("No cache configured")
 		return nil
 	}
 
@@ -17,6 +18,6 @@ func CacheClear(c *cache.Manager) error {
 		return fmt.Errorf("failed to clear cache: %w", err)
 	}
 
-	fmt.Println("Cache cleared successfully.")
+	cli.Success("Cache cleared")
 	return nil
 }

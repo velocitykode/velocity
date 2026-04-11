@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 
+	cli "github.com/velocitykode/velocity-cli"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/orm/migrate"
 )
@@ -16,7 +17,7 @@ type MigrateOptions struct {
 // Migrate runs all pending database migrations.
 func Migrate(db *orm.Manager, opts ...MigrateOptions) error {
 	if db == nil {
-		fmt.Println("No database configured (DB_CONNECTION not set), skipping migrations")
+		cli.Warning("No database configured (DB_CONNECTION not set), skipping migrations")
 		return nil
 	}
 
@@ -27,7 +28,7 @@ func Migrate(db *orm.Manager, opts ...MigrateOptions) error {
 
 	migrations := migrate.All()
 	if len(migrations) == 0 {
-		fmt.Println("No migrations found")
+		cli.Warning("No migrations found")
 		return nil
 	}
 
@@ -39,7 +40,7 @@ func Migrate(db *orm.Manager, opts ...MigrateOptions) error {
 	}
 
 	if len(pending) == 0 {
-		fmt.Println("Nothing to migrate")
+		cli.Info("Nothing to migrate")
 		return nil
 	}
 
@@ -47,17 +48,18 @@ func Migrate(db *orm.Manager, opts ...MigrateOptions) error {
 		return migratePretend(migrator, pending)
 	}
 
-	fmt.Println("Running migrations...")
+	cli.Info("Running migrations...")
 
 	if err := migrator.Up(); err != nil {
 		return fmt.Errorf("migration failed: %w", err)
 	}
 
 	for _, m := range pending {
-		fmt.Printf("  ✓ %s_%s\n", m.Version, m.Description)
+		cli.Success(fmt.Sprintf("%s_%s", m.Version, m.Description))
 	}
 
-	fmt.Println("\nDone")
+	cli.Newline()
+	cli.Success("Done")
 	return nil
 }
 
@@ -70,11 +72,11 @@ func migratePretend(migrator *migrate.Migrator, pending []migrate.Migration) err
 			return fmt.Errorf("pretend failed for %s: %w", m.Version, err)
 		}
 
-		fmt.Printf("  %s_%s:\n", m.Version, m.Description)
+		cli.Info(fmt.Sprintf("%s_%s:", m.Version, m.Description))
 		for _, sql := range migrator.PretendLog() {
-			fmt.Printf("    %s\n", sql)
+			cli.Muted(sql)
 		}
-		fmt.Println()
+		cli.Newline()
 	}
 
 	return nil
@@ -83,44 +85,45 @@ func migratePretend(migrator *migrate.Migrator, pending []migrate.Migration) err
 // MigrateFresh drops all tables and re-runs all migrations.
 func MigrateFresh(db *orm.Manager) error {
 	if db == nil {
-		fmt.Println("No database configured (DB_CONNECTION not set), skipping migrations")
+		cli.Warning("No database configured (DB_CONNECTION not set), skipping migrations")
 		return nil
 	}
 
 	migrations := migrate.All()
 	if len(migrations) == 0 {
-		fmt.Println("No migrations found")
+		cli.Warning("No migrations found")
 		return nil
 	}
 
 	migrator := migrate.NewMigrator(db.DB(), db.DriverName())
 
-	fmt.Println("Dropping all tables...")
+	cli.Info("Dropping all tables...")
 
 	if err := migrator.Fresh(); err != nil {
 		return fmt.Errorf("fresh migration failed: %w", err)
 	}
 
-	fmt.Println("Running migrations...")
+	cli.Info("Running migrations...")
 
 	for _, m := range migrations {
-		fmt.Printf("  ✓ %s_%s\n", m.Version, m.Description)
+		cli.Success(fmt.Sprintf("%s_%s", m.Version, m.Description))
 	}
 
-	fmt.Println("\nDone")
+	cli.Newline()
+	cli.Success("Done")
 	return nil
 }
 
 // MigrateRollback rolls back the last batch of migrations.
 func MigrateRollback(db *orm.Manager, steps int) error {
 	if db == nil {
-		fmt.Println("No database configured (DB_CONNECTION not set), skipping rollback")
+		cli.Warning("No database configured (DB_CONNECTION not set), skipping rollback")
 		return nil
 	}
 
 	migrations := migrate.All()
 	if len(migrations) == 0 {
-		fmt.Println("No migrations found")
+		cli.Warning("No migrations found")
 		return nil
 	}
 
@@ -132,21 +135,22 @@ func MigrateRollback(db *orm.Manager, steps int) error {
 	}
 
 	if len(rollbackVersions) == 0 {
-		fmt.Println("Nothing to rollback")
+		cli.Info("Nothing to rollback")
 		return nil
 	}
 
-	fmt.Println("Rolling back migrations...")
+	cli.Info("Rolling back migrations...")
 
 	if err := migrator.Down(steps); err != nil {
 		return fmt.Errorf("rollback failed: %w", err)
 	}
 
 	for _, version := range rollbackVersions {
-		fmt.Printf("  ✓ %s\n", version)
+		cli.Success(version)
 	}
 
-	fmt.Println("\nDone")
+	cli.Newline()
+	cli.Success("Done")
 	return nil
 }
 

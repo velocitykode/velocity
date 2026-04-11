@@ -3,6 +3,7 @@ package console
 import (
 	"fmt"
 
+	cli "github.com/velocitykode/velocity-cli"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/orm/migrate"
 )
@@ -10,7 +11,7 @@ import (
 // DBWipe drops all database tables without re-running migrations.
 func DBWipe(db *orm.Manager) error {
 	if db == nil {
-		fmt.Println("No database configured")
+		cli.Warning("No database configured")
 		return nil
 	}
 
@@ -21,7 +22,7 @@ func DBWipe(db *orm.Manager) error {
 	}
 
 	if len(tables) == 0 {
-		fmt.Println("No tables to drop")
+		cli.Info("No tables to drop")
 		return nil
 	}
 
@@ -33,7 +34,7 @@ func DBWipe(db *orm.Manager) error {
 		}
 	}
 
-	fmt.Println("All tables dropped successfully.")
+	cli.Success("All tables dropped successfully.")
 	return nil
 }
 
