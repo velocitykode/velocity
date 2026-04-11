@@ -85,8 +85,8 @@ func (r *VelocityRouterV2) SetValidator(fn func(c *Context, rules map[string][]s
 	r.validateFn = fn
 }
 
-// SetInstanceEventDispatcher sets the event dispatcher on this router instance.
-func (r *VelocityRouterV2) SetInstanceEventDispatcher(fn func(event interface{}) error) {
+// SetEventDispatcher sets the event dispatcher on this router instance.
+func (r *VelocityRouterV2) SetEventDispatcher(fn func(event interface{}) error) {
 	r.eventDispatcher = fn
 }
 

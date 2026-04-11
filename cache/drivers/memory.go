@@ -57,10 +57,11 @@ func (s *MemoryStore) cleanupExpired() {
 	}
 }
 
-// Close stops the cleanup goroutine
-func (s *MemoryStore) Close() {
+// Close stops the cleanup goroutine.
+func (s *MemoryStore) Close() error {
 	s.ticker.Stop()
 	close(s.done)
+	return nil
 }
 
 // prefixedKey returns the key with prefix.

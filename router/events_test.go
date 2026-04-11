@@ -56,7 +56,7 @@ func TestRequestEventsDispatch(t *testing.T) {
 	collector := newTestEventCollector()
 
 	router := NewV2()
-	router.SetInstanceEventDispatcher(collector.dispatch)
+	router.SetEventDispatcher(collector.dispatch)
 	router.Get("/users/{id}", func(c *Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"id": c.Param("id")})
 	})
@@ -104,7 +104,7 @@ func TestRequestEvents404(t *testing.T) {
 	collector := newTestEventCollector()
 
 	router := NewV2()
-	router.SetInstanceEventDispatcher(collector.dispatch)
+	router.SetEventDispatcher(collector.dispatch)
 	router.Get("/users", func(c *Context) error {
 		return c.JSON(http.StatusOK, nil)
 	})
@@ -141,7 +141,7 @@ func TestRequestEventsPanic(t *testing.T) {
 	collector := newTestEventCollector()
 
 	router := NewV2()
-	router.SetInstanceEventDispatcher(collector.dispatch)
+	router.SetEventDispatcher(collector.dispatch)
 	router.Get("/panic", func(c *Context) error {
 		panic("test panic")
 	})
@@ -172,7 +172,7 @@ func TestRequestEventsHandlerError(t *testing.T) {
 	collector := newTestEventCollector()
 
 	router := NewV2()
-	router.SetInstanceEventDispatcher(collector.dispatch)
+	router.SetEventDispatcher(collector.dispatch)
 	router.Get("/error", func(c *Context) error {
 		return http.ErrAbortHandler
 	})
@@ -198,7 +198,7 @@ func TestRequestEventsDuration(t *testing.T) {
 	collector := newTestEventCollector()
 
 	router := NewV2()
-	router.SetInstanceEventDispatcher(collector.dispatch)
+	router.SetEventDispatcher(collector.dispatch)
 	router.Get("/slow", func(c *Context) error {
 		time.Sleep(10 * time.Millisecond)
 		return c.String(http.StatusOK, "done")
@@ -225,7 +225,7 @@ func TestRequestEventsRequestID(t *testing.T) {
 	collector := newTestEventCollector()
 
 	router := NewV2()
-	router.SetInstanceEventDispatcher(collector.dispatch)
+	router.SetEventDispatcher(collector.dispatch)
 	var capturedRequestID string
 	router.Get("/test", func(c *Context) error {
 		capturedRequestID = GetRequestID(c.Request)
@@ -266,7 +266,7 @@ func TestResponseWriterCapture(t *testing.T) {
 	collector := newTestEventCollector()
 
 	router := NewV2()
-	router.SetInstanceEventDispatcher(collector.dispatch)
+	router.SetEventDispatcher(collector.dispatch)
 	router.Get("/content", func(c *Context) error {
 		return c.String(http.StatusCreated, "Hello, World!")
 	})

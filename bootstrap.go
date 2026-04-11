@@ -88,7 +88,7 @@ func wireInstanceEvents(a *App) {
 		return a.Services.Events.Dispatch(event)
 	}
 
-	a.Router.SetInstanceEventDispatcher(dispatch)
+	a.Router.SetEventDispatcher(dispatch)
 
 	if a.DB != nil {
 		a.DB.SetEventDispatcher(dispatch)
