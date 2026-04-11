@@ -3,12 +3,52 @@ package async
 import (
 	"context"
 	"fmt"
+	"log"
+	"sync"
 	"time"
 )
 
+// Logger is the logging interface for the async package.
+type Logger interface {
+	Error(msg string, kvs ...any)
+}
+
+var (
+	loggerMu sync.RWMutex
+	logger   Logger = &stdLogger{}
+)
+
+type stdLogger struct{}
+
+func (stdLogger) Error(msg string, kvs ...any) { log.Print("[ERROR] " + msg + fmtKVs(kvs)) }
+
+func fmtKVs(kvs []any) string {
+	if len(kvs) == 0 {
+		return ""
+	}
+	s := ""
+	for i := 0; i+1 < len(kvs); i += 2 {
+		s += fmt.Sprintf(" %v=%v", kvs[i], kvs[i+1])
+	}
+	return s
+}
+
+// SetLogger sets the package-level logger for panic recovery.
+func SetLogger(l Logger) {
+	loggerMu.Lock()
+	defer loggerMu.Unlock()
+	logger = l
+}
+
+func getLogger() Logger {
+	loggerMu.RLock()
+	defer loggerMu.RUnlock()
+	return logger
+}
+
 // handlePanic handles panics in goroutines
 func handlePanic(p any) {
-	fmt.Printf("async: panic recovered: %v\n", p)
+	getLogger().Error("async: panic recovered", "panic", p)
 }
 
 // Run executes function asynchronously

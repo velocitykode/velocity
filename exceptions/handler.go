@@ -8,6 +8,15 @@ import (
 	"sync"
 )
 
+// Logger is the logging interface for the exception handler.
+type Logger interface {
+	Warn(msg string, kvs ...any)
+}
+
+type stdLogger struct{}
+
+func (stdLogger) Warn(msg string, _ ...any) { log.Println("[WARN]", msg) }
+
 // Handler is the main exception handler.
 type Handler struct {
 	mu          sync.RWMutex
@@ -18,6 +27,7 @@ type Handler struct {
 	environment string
 	apiMode     bool     // When true, always respond with JSON
 	apiPrefixes []string // URL prefixes that indicate API routes
+	logger      Logger
 
 	// Custom handlers for specific exception types
 	customHandlers map[reflect.Type]func(RenderContext, error, *ExceptionContext)
@@ -35,6 +45,7 @@ func NewHandler(opts ...HandlerOption) *Handler {
 		customHandlers: make(map[reflect.Type]func(RenderContext, error, *ExceptionContext)),
 		debug:          false,
 		environment:    "production",
+		logger:         stdLogger{},
 	}
 
 	// Set default renderers
@@ -46,10 +57,17 @@ func NewHandler(opts ...HandlerOption) *Handler {
 	}
 
 	if h.debug {
-		log.Println("[WARN] Exception handler running in debug mode — stack traces and source code will be exposed in error responses. Ensure APP_DEBUG is not enabled in production.")
+		h.logger.Warn("Exception handler running in debug mode — stack traces and source code will be exposed in error responses. Ensure APP_DEBUG is not enabled in production.")
 	}
 
 	return h
+}
+
+// WithHandlerLogger sets the logger for the exception handler.
+func WithHandlerLogger(l Logger) HandlerOption {
+	return func(h *Handler) {
+		h.logger = l
+	}
 }
 
 // WithDebug enables or disables debug mode.

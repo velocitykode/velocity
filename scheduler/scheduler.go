@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -47,13 +48,24 @@ type Logger interface {
 type defaultLogger struct{}
 
 func (l *defaultLogger) Info(msg string, keysAndValues ...interface{}) {
-	log.Println("[INFO]", msg, keysAndValues)
+	log.Print("[INFO] " + msg + fmtKVs(keysAndValues))
 }
 func (l *defaultLogger) Error(msg string, keysAndValues ...interface{}) {
-	log.Println("[ERROR]", msg, keysAndValues)
+	log.Print("[ERROR] " + msg + fmtKVs(keysAndValues))
 }
 func (l *defaultLogger) Debug(msg string, keysAndValues ...interface{}) {
-	log.Println("[DEBUG]", msg, keysAndValues)
+	log.Print("[DEBUG] " + msg + fmtKVs(keysAndValues))
+}
+
+func fmtKVs(kvs []interface{}) string {
+	if len(kvs) == 0 {
+		return ""
+	}
+	s := ""
+	for i := 0; i+1 < len(kvs); i += 2 {
+		s += fmt.Sprintf(" %v=%v", kvs[i], kvs[i+1])
+	}
+	return s
 }
 
 // New creates a new scheduler instance
