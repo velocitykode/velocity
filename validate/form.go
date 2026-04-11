@@ -1,7 +1,10 @@
 package validate
 
 import (
+	"strings"
+
 	"github.com/velocitykode/velocity/router"
+	"github.com/velocitykode/velocity/validation"
 )
 
 // Form binds the request to T, validates using T.Rules(), and returns *T.
@@ -24,23 +27,29 @@ func Form[T any](ctx *router.Context) *T {
 
 	rules := fr.Rules()
 
+	// Convert []string rules to pipe-separated format
+	vRules := make(validation.Rules, len(rules))
+	for field, fieldRules := range rules {
+		vRules[field] = strings.Join(fieldRules, "|")
+	}
+
 	// Custom messages (optional)
-	var msgs []Messages
+	var msgs []validation.Messages
 	if wm, ok := any(req).(WithMessages); ok {
-		msgs = append(msgs, wm.ValidationMessages())
+		msgs = append(msgs, validation.Messages(wm.ValidationMessages()))
 	}
 
 	// Validate raw request data (DB enables unique/exists rules)
-	errors := CheckWithDB(ctx.Request, rules, ctx.DB(), msgs...)
-	if !errors.HasErrors() {
+	result := validation.CheckWithDB(ctx.Request, vRules, ctx.DB(), msgs...)
+	if !result.HasErrors() {
 		// Valid — bind the struct and return
 		ctx.BindAuto(req)
 		return req
 	}
 
 	// Flash errors + old input, redirect back, stop execution
-	ctx.WithErrors(errors.All())
-	ctx.WithInput(errors.Old())
+	ctx.WithErrors(result.All())
+	ctx.WithInput(result.Old())
 
 	if v := ctx.View(); v != nil {
 		v.Back(ctx.Response, ctx.Request)

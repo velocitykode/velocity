@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/crypto"
@@ -15,7 +16,6 @@ import (
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/router"
 	"github.com/velocitykode/velocity/scheduler"
-	"github.com/velocitykode/velocity/validate"
 	"github.com/velocitykode/velocity/validation"
 	"github.com/velocitykode/velocity/view"
 )
@@ -155,16 +155,21 @@ func New(opts ...Option) (*App, error) {
 	a.Router = router.New()
 	a.Router.SetServices(a.Services)
 	a.Router.SetValidator(func(c *router.Context, rules map[string][]string, messages ...map[string]string) {
-		var msgs []validate.Messages
-		for _, m := range messages {
-			msgs = append(msgs, validate.Messages(m))
+		// Convert []string rules to pipe-separated format for validation package
+		vRules := make(validation.Rules, len(rules))
+		for field, fieldRules := range rules {
+			vRules[field] = strings.Join(fieldRules, "|")
 		}
-		errors := validate.CheckWithDB(c.Request, validate.Rules(rules), c.DB(), msgs...)
-		if !errors.HasErrors() {
+		var msgs []validation.Messages
+		for _, m := range messages {
+			msgs = append(msgs, validation.Messages(m))
+		}
+		result := validation.CheckWithDB(c.Request, vRules, c.DB(), msgs...)
+		if !result.HasErrors() {
 			return
 		}
-		c.WithErrors(errors.All())
-		c.WithInput(errors.Old())
+		c.WithErrors(result.All())
+		c.WithInput(result.Old())
 		if v := c.View(); v != nil {
 			v.Back(c.Response, c.Request)
 		}
