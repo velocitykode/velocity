@@ -141,7 +141,10 @@ func (j *JWTManager) GenerateToken(user Authenticatable, customClaims ...map[str
 	expiresAt := now.Add(time.Duration(j.config.TTL) * time.Minute)
 
 	// Generate unique JWT ID
-	jti := generateJTI()
+	jti, err := generateJTI()
+	if err != nil {
+		return "", err
+	}
 
 	claims := Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -184,7 +187,10 @@ func (j *JWTManager) GenerateRefreshToken(user Authenticatable) (string, error) 
 	now := time.Now()
 	expiresAt := now.Add(time.Duration(j.config.RefreshTTL) * time.Minute)
 
-	jti := generateJTI()
+	jti, err := generateJTI()
+	if err != nil {
+		return "", err
+	}
 
 	claims := Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -310,13 +316,13 @@ func (j *JWTManager) getSigningMethod() jwt.SigningMethod {
 	}
 }
 
-// generateJTI generates a unique JWT ID
-func generateJTI() string {
+// generateJTI generates a unique JWT ID.
+func generateJTI() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		panic("auth: failed to generate JWT ID: " + err.Error())
+		return "", fmt.Errorf("auth: failed to generate JWT ID: %w", err)
 	}
-	return base64.URLEncoding.EncodeToString(b)
+	return base64.URLEncoding.EncodeToString(b), nil
 }
 
 // ParseTokenWithoutValidation parses a token WITHOUT verifying its signature.
