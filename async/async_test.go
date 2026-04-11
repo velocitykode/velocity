@@ -3,6 +3,7 @@ package async
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -298,45 +299,40 @@ func TestGoWithRecover(t *testing.T) {
 }
 
 func TestForEach(t *testing.T) {
-	t.Skip("TODO: fix race condition")
 	t.Run("processes all items", func(t *testing.T) {
 		items := []int{1, 2, 3, 4, 5}
-		results := make(chan int, len(items))
+		var sum atomic.Int64
 
 		ForEach(items, 2, func(item int) {
 			time.Sleep(10 * time.Millisecond)
-			results <- item * 2
+			sum.Add(int64(item * 2))
 		})
-		close(results)
 
-		sum := 0
-		for r := range results {
-			sum += r
-		}
-
-		expected := 2 + 4 + 6 + 8 + 10
-		if sum != expected {
-			t.Errorf("Expected sum %d, got %d", expected, sum)
+		expected := int64(2 + 4 + 6 + 8 + 10)
+		if sum.Load() != expected {
+			t.Errorf("Expected sum %d, got %d", expected, sum.Load())
 		}
 	})
 
 	t.Run("respects concurrency limit", func(t *testing.T) {
 		items := []int{1, 2, 3, 4}
-		active := make(chan int, 2)
-		maxActive := 0
+		var active atomic.Int32
+		var maxActive atomic.Int32
 
 		ForEach(items, 2, func(item int) {
-			active <- 1
-			current := len(active)
-			if current > maxActive {
-				maxActive = current
+			cur := active.Add(1)
+			for {
+				old := maxActive.Load()
+				if cur <= old || maxActive.CompareAndSwap(old, cur) {
+					break
+				}
 			}
 			time.Sleep(50 * time.Millisecond)
-			<-active
+			active.Add(-1)
 		})
 
-		if maxActive > 2 {
-			t.Errorf("Concurrency limit exceeded: %d > 2", maxActive)
+		if maxActive.Load() > 2 {
+			t.Errorf("Concurrency limit exceeded: %d > 2", maxActive.Load())
 		}
 	})
 }

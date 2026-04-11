@@ -126,15 +126,28 @@ func TestDispatcherWildcardVariations(t *testing.T) {
 }
 
 func TestDispatcherNilEvent(t *testing.T) {
-	// Skip nil test as it causes panic in getEventName
-	// This is expected behavior - events should not be nil
-	t.Skip("Nil events are not supported and will panic")
+	d := NewDispatcher()
+	err := d.Dispatch(nil)
+	if err == nil {
+		t.Fatal("expected error when dispatching nil event")
+	}
 }
 
 func TestDispatcherListenerPanic(t *testing.T) {
-	// Skip panic test - dispatcher doesn't recover from panics
-	t.Skip("Dispatcher doesn't recover from listener panics")
+	d := NewDispatcher()
+
+	d.Listen("test.panic", &panicListener{})
+
+	err := d.Dispatch("test.panic")
+	if err == nil {
+		t.Fatal("expected error from panicking listener")
+	}
 }
+
+type panicListener struct{}
+
+func (p *panicListener) Handle(event interface{}) error { panic("listener blew up") }
+func (p *panicListener) ShouldQueue() bool              { return false }
 
 func TestDispatcherConcurrentModification(t *testing.T) {
 	d := NewDispatcher()

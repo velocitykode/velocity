@@ -13,7 +13,6 @@ import (
 
 // TestDriverInterface tests that all drivers implement the interface correctly
 func TestDriverInterface(t *testing.T) {
-	t.Skip("TODO: fix timing sensitivity")
 	// Create test directory for local driver
 	testDir := filepath.Join(os.TempDir(), "velocity-storage-test")
 	os.RemoveAll(testDir)
@@ -175,9 +174,10 @@ func testDriver(t *testing.T, driver Driver) {
 
 	// Test LastModified
 	t.Run("LastModified", func(t *testing.T) {
-		before := time.Now()
+		// Add tolerance for filesystem timestamp precision (some FS have 1s resolution)
+		before := time.Now().Add(-1 * time.Second)
 		driver.Put("modified.txt", []byte("modified"))
-		after := time.Now()
+		after := time.Now().Add(1 * time.Second)
 
 		modified, err := driver.LastModified("modified.txt")
 		if err != nil {

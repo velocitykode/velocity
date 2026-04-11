@@ -2,6 +2,7 @@ package async
 
 import (
 	"context"
+	"sync"
 	"time"
 )
 
@@ -139,28 +140,26 @@ func ForEach[T any](items []T, concurrency int, fn func(T)) {
 		concurrency = len(items)
 	}
 
+	var wg sync.WaitGroup
 	semaphore := make(chan struct{}, concurrency)
-	done := make(chan struct{}, len(items))
 
 	for _, item := range items {
-		item := item            // capture for closure
+		item := item // capture for closure
+		wg.Add(1)
 		semaphore <- struct{}{} // Acquire
 		go func() {
 			defer func() {
-				<-semaphore // Release
-				done <- struct{}{}
 				if p := recover(); p != nil {
 					handlePanic(p)
 				}
+				<-semaphore // Release
+				wg.Done()
 			}()
 			fn(item)
 		}()
 	}
 
-	// Wait for all to complete
-	for range items {
-		<-done
-	}
+	wg.Wait()
 }
 
 // Map transforms items in parallel

@@ -135,8 +135,11 @@ func (d *DefaultDispatcher) Subscribe(subscriber Subscriber) {
 
 // Dispatch fires an event to all registered listeners.
 // Listeners that return true from ShouldQueue are dispatched via the queue;
-// all others are processed synchronously.
+// all others are processed synchronously. Returns an error if event is nil.
 func (d *DefaultDispatcher) Dispatch(event interface{}) error {
+	if event == nil {
+		return fmt.Errorf("events: cannot dispatch nil event")
+	}
 	return d.dispatchToListeners(event, func(listener Listener) error {
 		if listener.ShouldQueue() && d.queue != nil {
 			if err := d.queue.Push(event, listener, 0); err != nil {
@@ -335,8 +338,14 @@ func (d *DefaultDispatcher) dispatchToListeners(event interface{}, fn func(Liste
 	return nil
 }
 
-// processListener executes a listener
-func (d *DefaultDispatcher) processListener(event interface{}, listener Listener) error {
+// processListener executes a listener, recovering from panics.
+func (d *DefaultDispatcher) processListener(event interface{}, listener Listener) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("events: listener panicked: %v", p)
+		}
+	}()
+
 	// Check if listener should handle this event
 	if handler, ok := listener.(ShouldHandle); ok {
 		if !handler.ShouldHandle(event) {
