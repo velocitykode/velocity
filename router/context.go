@@ -239,8 +239,12 @@ func (c *Context) HeaderInt64(name string, defaultValue ...int64) int64 {
 	return i
 }
 
-// SetHeader sets a response header
+// SetHeader sets a response header.
+// Names and values containing \r or \n are rejected to prevent header injection.
 func (c *Context) SetHeader(name, value string) {
+	if strings.ContainsAny(name, "\r\n") || strings.ContainsAny(value, "\r\n") {
+		return
+	}
 	c.Response.Header().Set(name, value)
 }
 
@@ -772,6 +776,7 @@ func (c *Context) Download(path string, filename string) error {
 	}
 	sanitized := filepath.Base(filename)
 	sanitized = strings.ReplaceAll(sanitized, `"`, `\"`)
+	sanitized = strings.NewReplacer("\r", "", "\n", "").Replace(sanitized)
 	c.Response.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, sanitized))
 	http.ServeFile(c.Response, c.Request, path)
 	return nil

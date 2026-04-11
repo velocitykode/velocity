@@ -2,6 +2,7 @@ package velocity
 
 import (
 	"net/http"
+	stdlog "log"
 	"os"
 	"strconv"
 	"strings"
@@ -225,8 +226,12 @@ func WithProviders(providers ...app.ServiceProvider) Option {
 
 // ConfigFromEnv loads configuration from environment variables and .env file.
 func ConfigFromEnv() Config {
-	// Load .env file if present (ignore errors)
-	godotenv.Load()
+	// Load .env file if present; warn if it exists but fails to parse.
+	if err := godotenv.Load(); err != nil {
+		if _, statErr := os.Stat(".env"); statErr == nil {
+			stdlog.Println("[WARN] .env file exists but failed to parse:", err)
+		}
+	}
 
 	config := Config{
 		Name:  envOrDefault("APP_NAME", "Velocity"),
