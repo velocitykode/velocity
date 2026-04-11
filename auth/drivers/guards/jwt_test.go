@@ -79,6 +79,7 @@ func newTestJWTConfig() auth.JWTConfig {
 		TTL:              60,
 		RefreshTTL:       1440,
 		BlacklistEnabled: true,
+		BlacklistStore:   auth.NewInMemoryBlacklistStore(),
 	}
 }
 

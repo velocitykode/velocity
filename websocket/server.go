@@ -167,6 +167,14 @@ func (s *Server) HandleConnection(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.RUnlock()
 
+	// Authenticate before upgrading if an auth function is configured
+	if s.config.AuthFunc != nil {
+		if err := s.config.AuthFunc(r); err != nil {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
+
 	// Upgrade connection
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {

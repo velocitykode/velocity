@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"net/http"
 	"sync"
 	"time"
 
@@ -39,8 +40,9 @@ type Config struct {
 	PingInterval     time.Duration
 	PongTimeout      time.Duration
 	WriteTimeout     time.Duration
-	MessageRateLimit int // Max messages per second per client (0 = unlimited)
-	MessageBurstSize int // Max burst before rate limiting disconnects the client
+	MessageRateLimit int                         // Max messages per second per client (0 = unlimited)
+	MessageBurstSize int                         // Max burst before rate limiting disconnects the client
+	AuthFunc         func(r *http.Request) error // Pre-upgrade authentication; return non-nil to reject
 }
 
 // Stats holds server statistics

@@ -2,11 +2,17 @@ package migrate_test
 
 import (
 	"database/sql"
+	"regexp"
 	"testing"
 
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/orm/migrate"
 )
+
+// dbIdentifierRegex validates SQL identifiers to prevent injection when
+// identifiers must be interpolated (e.g. SQLite PRAGMA which doesn't
+// support parameterized identifiers).
+var dbIdentifierRegex = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 func newTestManager(t *testing.T) *orm.Manager {
 	t.Helper()
@@ -322,6 +328,9 @@ func TestColumnBuilder_ToSQL(t *testing.T) {
 func columnExists(t *testing.T, db *sql.DB, table, column string) bool {
 	t.Helper()
 
+	if !dbIdentifierRegex.MatchString(table) {
+		t.Fatalf("invalid table name: %q", table)
+	}
 	rows, err := db.Query("PRAGMA table_info(" + table + ")")
 	if err != nil {
 		t.Fatalf("failed to get table info: %v", err)

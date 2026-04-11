@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
@@ -118,10 +117,11 @@ func NewJWTManager(config JWTConfig) *JWTManager {
 
 	store := config.BlacklistStore
 	if store == nil {
-		store = NewInMemoryBlacklistStore()
 		if config.BlacklistEnabled {
-			log.Println("[WARN] jwt: using in-memory token blacklist — revoked tokens will NOT be shared across instances. Set a persistent BlacklistStore (e.g., Redis) for production multi-instance deployments")
+			panic("auth: BlacklistEnabled requires a persistent BlacklistStore (e.g., Redis). " +
+				"Set BlacklistStore in JWTConfig or disable blacklisting with BlacklistEnabled=false")
 		}
+		store = NewInMemoryBlacklistStore()
 	}
 
 	return &JWTManager{

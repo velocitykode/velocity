@@ -136,6 +136,7 @@ func TestJWTBlacklist(t *testing.T) {
 		Algorithm:        "HS256",
 		TTL:              60,
 		BlacklistEnabled: true,
+		BlacklistStore:   NewInMemoryBlacklistStore(),
 	}
 
 	manager := NewJWTManager(config)
