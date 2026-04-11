@@ -43,18 +43,25 @@ type localKV struct {
 	value any
 }
 
-// Error represents an HTTP error with status code
+// Error represents an HTTP error with status code.
 type Error struct {
-	Code    int
-	Message string
+	Code     int
+	Message  string
+	Internal error
 }
 
 func (e *Error) Error() string {
 	return e.Message
 }
 
-// NewError creates a new HTTP error
-func NewError(code int, message ...string) *Error {
+// Unwrap returns the internal error for errors.Is/As support.
+func (e *Error) Unwrap() error {
+	return e.Internal
+}
+
+// NewHTTPError creates a new HTTP error. If no message is provided,
+// the standard HTTP status text for the code is used.
+func NewHTTPError(code int, message ...string) *Error {
 	msg := http.StatusText(code)
 	if len(message) > 0 && message[0] != "" {
 		msg = message[0]
@@ -62,16 +69,23 @@ func NewError(code int, message ...string) *Error {
 	return &Error{Code: code, Message: msg}
 }
 
+// NewError is an alias for NewHTTPError.
+//
+// Deprecated: Use NewHTTPError for consistency across the framework.
+func NewError(code int, message ...string) *Error {
+	return NewHTTPError(code, message...)
+}
+
 // Predefined errors
 var (
-	ErrBadRequest          = NewError(400)
-	ErrUnauthorized        = NewError(401)
-	ErrForbidden           = NewError(403)
-	ErrNotFound            = NewError(404)
-	ErrMethodNotAllowed    = NewError(405)
-	ErrInternalServerError = NewError(500)
-	ErrBadGateway          = NewError(502)
-	ErrServiceUnavailable  = NewError(503)
+	ErrBadRequest          = NewHTTPError(400)
+	ErrUnauthorized        = NewHTTPError(401)
+	ErrForbidden           = NewHTTPError(403)
+	ErrNotFound            = NewHTTPError(404)
+	ErrMethodNotAllowed    = NewHTTPError(405)
+	ErrInternalServerError = NewHTTPError(500)
+	ErrBadGateway          = NewHTTPError(502)
+	ErrServiceUnavailable  = NewHTTPError(503)
 )
 
 type Route struct {

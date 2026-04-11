@@ -26,14 +26,28 @@ var (
 	ErrCancelled          = status.Error(codes.Canceled, "operation cancelled")
 )
 
-// NewError creates a new gRPC status error with the given code and message
-func NewError(code codes.Code, msg string) error {
+// NewGRPCError creates a new gRPC status error with the given code and message.
+func NewGRPCError(code codes.Code, msg string) error {
 	return status.Error(code, msg)
 }
 
-// NewErrorf creates a new gRPC status error with a formatted message
-func NewErrorf(code codes.Code, format string, args ...interface{}) error {
+// NewGRPCErrorf creates a new gRPC status error with a formatted message.
+func NewGRPCErrorf(code codes.Code, format string, args ...interface{}) error {
 	return status.Errorf(code, format, args...)
+}
+
+// NewError is an alias for NewGRPCError.
+//
+// Deprecated: Use NewGRPCError for consistency across the framework.
+func NewError(code codes.Code, msg string) error {
+	return NewGRPCError(code, msg)
+}
+
+// NewErrorf is an alias for NewGRPCErrorf.
+//
+// Deprecated: Use NewGRPCErrorf for consistency across the framework.
+func NewErrorf(code codes.Code, format string, args ...interface{}) error {
+	return NewGRPCErrorf(code, format, args...)
 }
 
 // Unauthenticated creates an unauthenticated error with a custom message
