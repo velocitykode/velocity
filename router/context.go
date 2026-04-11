@@ -209,10 +209,12 @@ func (c *Context) QueryFloat64(name string, defaultValue ...float64) float64 {
 	return f
 }
 
-// QueryBool returns a query parameter as bool (handles "true", "1", "yes")
+// QueryBool returns a query parameter as bool.
+// Uses strconv.ParseBool, which accepts "1", "t", "T", "TRUE", "true", "True",
+// "0", "f", "F", "FALSE", "false", "False". Returns false for unrecognized values.
 func (c *Context) QueryBool(name string) bool {
-	val := strings.ToLower(c.Query(name))
-	return val == "true" || val == "1" || val == "yes"
+	b, _ := strconv.ParseBool(c.Query(name))
+	return b
 }
 
 // Header returns a request header value
