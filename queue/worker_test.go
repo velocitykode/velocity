@@ -7,19 +7,33 @@ import (
 	"time"
 )
 
+// waitFor polls the condition function until it returns true or the timeout expires.
+func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		if condition() {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for condition")
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+}
+
 func TestWorker(t *testing.T) {
 	q := NewMemoryDriver()
 
 	t.Run("Basic Worker", func(t *testing.T) {
 		processed := int32(0)
 
-		// Create worker
 		worker := NewWorker(q, "worker-test", func(job Job) error {
 			atomic.AddInt32(&processed, 1)
 			return nil
 		})
 
-		// Push jobs
 		for i := 0; i < 5; i++ {
 			job := &TestJob{
 				ID:      "worker-" + string(rune(i)),
@@ -31,13 +45,10 @@ func TestWorker(t *testing.T) {
 			}
 		}
 
-		// Start worker
 		worker.Start()
-
-		// Wait for processing
-		time.Sleep(200 * time.Millisecond)
-
-		// Stop worker
+		waitFor(t, 5*time.Second, func() bool {
+			return atomic.LoadInt32(&processed) == 5
+		})
 		worker.Stop()
 
 		if atomic.LoadInt32(&processed) != 5 {
@@ -48,14 +59,12 @@ func TestWorker(t *testing.T) {
 	t.Run("Concurrent Workers", func(t *testing.T) {
 		processed := int32(0)
 
-		// Create worker with concurrency
 		worker := NewWorker(q, "concurrent-worker", func(job Job) error {
 			atomic.AddInt32(&processed, 1)
 			time.Sleep(10 * time.Millisecond) // Simulate work
 			return nil
 		}, WithConcurrency(3))
 
-		// Push jobs
 		for i := 0; i < 10; i++ {
 			job := &TestJob{
 				ID:      "concurrent-" + string(rune(i)),
@@ -67,13 +76,10 @@ func TestWorker(t *testing.T) {
 			}
 		}
 
-		// Start worker
 		worker.Start()
-
-		// Wait for processing
-		time.Sleep(500 * time.Millisecond)
-
-		// Stop worker
+		waitFor(t, 5*time.Second, func() bool {
+			return atomic.LoadInt32(&processed) == 10
+		})
 		worker.Stop()
 
 		if atomic.LoadInt32(&processed) != 10 {
@@ -85,7 +91,6 @@ func TestWorker(t *testing.T) {
 		processed := int32(0)
 		failed := int32(0)
 
-		// Create worker that fails every other job
 		worker := NewWorker(q, "fail-worker", func(job Job) error {
 			count := atomic.AddInt32(&processed, 1)
 			if count%2 == 0 {
@@ -94,7 +99,6 @@ func TestWorker(t *testing.T) {
 			return nil
 		}, WithMaxRetries(1))
 
-		// Track failed jobs
 		for i := 0; i < 6; i++ {
 			job := &TestJob{
 				ID:      "fail-" + string(rune(i)),
@@ -109,13 +113,10 @@ func TestWorker(t *testing.T) {
 			}
 		}
 
-		// Start worker
 		worker.Start()
-
-		// Wait for processing
-		time.Sleep(300 * time.Millisecond)
-
-		// Stop worker
+		waitFor(t, 5*time.Second, func() bool {
+			return atomic.LoadInt32(&processed) >= 6
+		})
 		worker.Stop()
 
 		if atomic.LoadInt32(&processed) != 6 {
@@ -130,12 +131,11 @@ func TestWorker(t *testing.T) {
 	t.Run("Worker Timeout", func(t *testing.T) {
 		timedOut := int32(0)
 
-		// Create a job that takes too long
 		job := &TestJob{
 			ID:      "timeout-1",
 			Message: "Timeout test",
 			Handler: func() error {
-				time.Sleep(5 * time.Second) // Longer than 2s timeout for test mode
+				time.Sleep(5 * time.Second) // Longer than 1s timeout
 				return nil
 			},
 			OnFail: func(err error) {
@@ -150,18 +150,14 @@ func TestWorker(t *testing.T) {
 			t.Fatalf("Failed to push job: %v", err)
 		}
 
-		// Create worker with short interval to trigger test mode timeout
 		worker := NewWorker(q, "timeout-worker", func(j Job) error {
 			return j.Handle()
-		}, WithInterval(50*time.Millisecond), WithMaxRetries(1))
+		}, WithInterval(50*time.Millisecond), WithMaxRetries(1), WithTimeout(1*time.Second))
 
-		// Start worker
 		worker.Start()
-
-		// Wait for timeout
-		time.Sleep(3 * time.Second)
-
-		// Stop worker
+		waitFor(t, 10*time.Second, func() bool {
+			return atomic.LoadInt32(&timedOut) == 1
+		})
 		worker.Stop()
 
 		if atomic.LoadInt32(&timedOut) != 1 {
@@ -175,7 +171,6 @@ func TestGlobalWorker(t *testing.T) {
 
 	processed := int32(0)
 
-	// Push jobs
 	for i := 0; i < 3; i++ {
 		job := &TestJob{
 			ID:      "global-worker-" + string(rune(i)),
@@ -187,17 +182,15 @@ func TestGlobalWorker(t *testing.T) {
 		}
 	}
 
-	// Start worker
 	worker := NewWorker(q, "global-worker", func(job Job) error {
 		atomic.AddInt32(&processed, 1)
 		return nil
 	}, WithConcurrency(2))
 	worker.Start()
 
-	// Wait for processing
-	time.Sleep(200 * time.Millisecond)
-
-	// Stop worker
+	waitFor(t, 5*time.Second, func() bool {
+		return atomic.LoadInt32(&processed) == 3
+	})
 	worker.Stop()
 
 	if atomic.LoadInt32(&processed) != 3 {
@@ -237,8 +230,9 @@ func TestWorker_RetryOnFailure(t *testing.T) {
 	)
 
 	worker.Start()
-	// Need to wait for: 1st attempt (immediate) + 1st retry delay (~1s ticker) + 2nd retry delay (~1s ticker)
-	time.Sleep(4 * time.Second)
+	waitFor(t, 10*time.Second, func() bool {
+		return atomic.LoadInt32(&attempts) >= 3
+	})
 	worker.Stop()
 
 	got := atomic.LoadInt32(&attempts)
@@ -280,8 +274,9 @@ func TestWorker_ExhaustsRetries(t *testing.T) {
 	)
 
 	worker.Start()
-	// 1st attempt + 2 retries, each needs ~1s for ticker
-	time.Sleep(5 * time.Second)
+	waitFor(t, 10*time.Second, func() bool {
+		return atomic.LoadInt32(&failed) >= 1
+	})
 	worker.Stop()
 
 	gotAttempts := atomic.LoadInt32(&attempts)
@@ -327,7 +322,9 @@ func TestWorker_NoRetryWhenMaxRetriesIsOne(t *testing.T) {
 	)
 
 	worker.Start()
-	time.Sleep(500 * time.Millisecond)
+	waitFor(t, 5*time.Second, func() bool {
+		return atomic.LoadInt32(&failed) >= 1
+	})
 	worker.Stop()
 
 	gotAttempts := atomic.LoadInt32(&attempts)
@@ -387,7 +384,9 @@ func TestWorker_RetryDeciderStopsRetry(t *testing.T) {
 	)
 
 	worker.Start()
-	time.Sleep(500 * time.Millisecond)
+	waitFor(t, 5*time.Second, func() bool {
+		return atomic.LoadInt32(&failed) >= 1
+	})
 	worker.Stop()
 
 	gotAttempts := atomic.LoadInt32(&attempts)
@@ -447,7 +446,9 @@ func TestWorker_MaxAttempterInterface(t *testing.T) {
 	)
 
 	worker.Start()
-	time.Sleep(4 * time.Second)
+	waitFor(t, 10*time.Second, func() bool {
+		return atomic.LoadInt32(&failed) >= 1
+	})
 	worker.Stop()
 
 	gotAttempts := atomic.LoadInt32(&attempts)
@@ -505,7 +506,9 @@ func TestWorker_BackofferInterface(t *testing.T) {
 	)
 
 	worker.Start()
-	time.Sleep(4 * time.Second)
+	waitFor(t, 10*time.Second, func() bool {
+		return atomic.LoadInt32(&attempts) >= 3
+	})
 	worker.Stop()
 
 	gotAttempts := atomic.LoadInt32(&attempts)
