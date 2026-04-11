@@ -33,11 +33,11 @@ type Handler struct {
 	customHandlers map[reflect.Type]func(RenderContext, error, *ExceptionContext)
 }
 
-// HandlerOption is a functional option for configuring the Handler.
-type HandlerOption func(*Handler)
+// Option is a functional option for configuring the Handler.
+type Option func(*Handler)
 
 // NewHandler creates a new exception handler.
-func NewHandler(opts ...HandlerOption) *Handler {
+func NewHandler(opts ...Option) *Handler {
 	h := &Handler{
 		reporters:      []Reporter{NewLogReporter()},
 		renderers:      make(map[string]Renderer),
@@ -64,35 +64,35 @@ func NewHandler(opts ...HandlerOption) *Handler {
 }
 
 // WithHandlerLogger sets the logger for the exception handler.
-func WithHandlerLogger(l Logger) HandlerOption {
+func WithHandlerLogger(l Logger) Option {
 	return func(h *Handler) {
 		h.logger = l
 	}
 }
 
 // WithDebug enables or disables debug mode.
-func WithDebug(debug bool) HandlerOption {
+func WithDebug(debug bool) Option {
 	return func(h *Handler) {
 		h.debug = debug
 	}
 }
 
 // WithEnvironment sets the environment name.
-func WithEnvironment(env string) HandlerOption {
+func WithEnvironment(env string) Option {
 	return func(h *Handler) {
 		h.environment = env
 	}
 }
 
 // WithReporters sets the reporters.
-func WithReporters(reporters ...Reporter) HandlerOption {
+func WithReporters(reporters ...Reporter) Option {
 	return func(h *Handler) {
 		h.reporters = reporters
 	}
 }
 
 // WithRenderers sets the renderers.
-func WithRenderers(renderers map[string]Renderer) HandlerOption {
+func WithRenderers(renderers map[string]Renderer) Option {
 	return func(h *Handler) {
 		for k, v := range renderers {
 			h.renderers[k] = v
@@ -101,7 +101,7 @@ func WithRenderers(renderers map[string]Renderer) HandlerOption {
 }
 
 // WithDontReport sets exception types that should not be reported.
-func WithDontReport(types ...string) HandlerOption {
+func WithDontReport(types ...string) Option {
 	return func(h *Handler) {
 		for _, t := range types {
 			h.dontReport[t] = true
@@ -110,7 +110,7 @@ func WithDontReport(types ...string) HandlerOption {
 }
 
 // WithAPIMode enables API mode where all responses are JSON.
-func WithAPIMode(enabled bool) HandlerOption {
+func WithAPIMode(enabled bool) Option {
 	return func(h *Handler) {
 		h.apiMode = enabled
 	}
@@ -118,7 +118,7 @@ func WithAPIMode(enabled bool) HandlerOption {
 
 // WithAPIPrefixes sets URL prefixes that indicate API routes.
 // Requests to these paths will always receive JSON responses.
-func WithAPIPrefixes(prefixes ...string) HandlerOption {
+func WithAPIPrefixes(prefixes ...string) Option {
 	return func(h *Handler) {
 		h.apiPrefixes = prefixes
 	}

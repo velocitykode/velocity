@@ -65,11 +65,11 @@ func (w *Worker) dispatchEvent(event interface{}) {
 	}
 }
 
-// WorkerOption configures a worker
-type WorkerOption func(*Worker)
+// Option configures a worker
+type Option func(*Worker)
 
 // WithConcurrency sets the number of concurrent workers
-func WithConcurrency(n int) WorkerOption {
+func WithConcurrency(n int) Option {
 	return func(w *Worker) {
 		if n > 0 {
 			w.concurrency = n
@@ -78,14 +78,14 @@ func WithConcurrency(n int) WorkerOption {
 }
 
 // WithInterval sets the polling interval
-func WithInterval(d time.Duration) WorkerOption {
+func WithInterval(d time.Duration) Option {
 	return func(w *Worker) {
 		w.interval = d
 	}
 }
 
 // WithTimeout sets the job processing timeout
-func WithTimeout(d time.Duration) WorkerOption {
+func WithTimeout(d time.Duration) Option {
 	return func(w *Worker) {
 		if d > 0 {
 			w.timeout = d
@@ -94,7 +94,7 @@ func WithTimeout(d time.Duration) WorkerOption {
 }
 
 // WithMaxRetries sets the maximum number of retries
-func WithMaxRetries(n int) WorkerOption {
+func WithMaxRetries(n int) Option {
 	return func(w *Worker) {
 		w.maxRetries = n
 	}
@@ -102,7 +102,7 @@ func WithMaxRetries(n int) WorkerOption {
 
 // WithBackoff sets the backoff strategy for job retries.
 // If not set, the worker uses ExponentialBackoff(1s, 5min).
-func WithBackoff(strategy BackoffStrategy) WorkerOption {
+func WithBackoff(strategy BackoffStrategy) Option {
 	return func(w *Worker) {
 		w.backoff = strategy
 	}
@@ -110,14 +110,14 @@ func WithBackoff(strategy BackoffStrategy) WorkerOption {
 
 // WithWorkerLogger sets the logger for the worker.
 // If not set, the worker uses Go's standard log package.
-func WithWorkerLogger(l WorkerLogger) WorkerOption {
+func WithWorkerLogger(l WorkerLogger) Option {
 	return func(w *Worker) {
 		w.logger = l
 	}
 }
 
 // NewWorker creates a new queue worker
-func NewWorker(queue Driver, queueName string, handler func(Job) error, opts ...WorkerOption) *Worker {
+func NewWorker(queue Driver, queueName string, handler func(Job) error, opts ...Option) *Worker {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	w := &Worker{

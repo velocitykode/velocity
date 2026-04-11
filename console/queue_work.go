@@ -34,7 +34,7 @@ func QueueWork(driver queue.Driver, opts QueueWorkOptions) error {
 		return job.Handle()
 	}
 
-	var workerOpts []queue.WorkerOption
+	var workerOpts []queue.Option
 	if opts.Tries > 0 {
 		workerOpts = append(workerOpts, queue.WithMaxRetries(opts.Tries))
 	}
