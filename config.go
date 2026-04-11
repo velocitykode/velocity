@@ -1,8 +1,8 @@
 package velocity
 
 import (
-	"net/http"
 	stdlog "log"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
