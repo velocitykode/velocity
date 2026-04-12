@@ -1,4 +1,4 @@
-package drivers
+package mail
 
 import (
 	"context"
@@ -6,35 +6,35 @@ import (
 	stdlog "log"
 	"strings"
 	"sync"
-
-	"github.com/velocitykode/velocity/mail"
 )
 
+// The log driver lives inside the mail package (rather than under
+// mail/drivers) so it's registered as soon as anything imports the
+// mail package. That matches the MAIL_DRIVER=log default — users who
+// never opt into a real provider still get a working, zero-dependency
+// mailer without needing blank imports in their main.go.
 func init() {
-	mail.RegisterDriver("log", func() (mail.Mailer, error) {
+	RegisterDriver("log", func() (Mailer, error) {
 		return NewLogDriver(), nil
 	})
 }
 
-// LogDriver logs emails instead of sending them (for development)
+// LogDriver logs emails instead of sending them (for development).
 type LogDriver struct {
 	mu  sync.Mutex
 	log []string
 }
 
-// NewLogDriver creates a new log driver
+// NewLogDriver creates a new log driver.
 func NewLogDriver() *LogDriver {
-	return &LogDriver{
-		log: make([]string, 0),
-	}
+	return &LogDriver{log: make([]string, 0)}
 }
 
-// Send logs the email instead of sending it
-func (d *LogDriver) Send(ctx context.Context, msg *mail.Message) error {
+// Send logs the email instead of sending it.
+func (d *LogDriver) Send(ctx context.Context, msg *Message) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// Build log entry
 	var parts []string
 
 	from := msg.GetFrom()
@@ -104,14 +104,11 @@ func (d *LogDriver) Send(ctx context.Context, msg *mail.Message) error {
 
 	logEntry := strings.Join(parts, " | ")
 	d.log = append(d.log, logEntry)
-
-	// Log to stdout for development visibility
 	stdlog.Printf("[MAIL] %s", logEntry)
-
 	return nil
 }
 
-// GetLog returns all logged emails (for testing)
+// GetLog returns all logged emails (for testing).
 func (d *LogDriver) GetLog() []string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -120,7 +117,7 @@ func (d *LogDriver) GetLog() []string {
 	return logCopy
 }
 
-// ClearLog clears the logged emails (for testing)
+// ClearLog clears the logged emails (for testing).
 func (d *LogDriver) ClearLog() {
 	d.mu.Lock()
 	defer d.mu.Unlock()

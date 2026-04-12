@@ -1,17 +1,15 @@
-package drivers
+package mail
 
 import (
 	"context"
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/velocitykode/velocity/mail"
 )
 
 func TestLogDriverSend(t *testing.T) {
 	driver := NewLogDriver()
-	msg := mail.NewMessage().
+	msg := NewMessage().
 		From("sender@example.com", "Sender").
 		To("recipient@example.com").
 		Subject("Test Subject").
@@ -41,7 +39,7 @@ func TestLogDriverSend(t *testing.T) {
 
 func TestLogDriverSendWithCC(t *testing.T) {
 	driver := NewLogDriver()
-	msg := mail.NewMessage().
+	msg := NewMessage().
 		To("to@example.com").
 		CC("cc@example.com").
 		Subject("Test")
@@ -58,7 +56,7 @@ func TestLogDriverSendWithCC(t *testing.T) {
 
 func TestLogDriverSendWithBCC(t *testing.T) {
 	driver := NewLogDriver()
-	msg := mail.NewMessage().
+	msg := NewMessage().
 		To("to@example.com").
 		BCC("bcc@example.com").
 		Subject("Test")
@@ -75,7 +73,7 @@ func TestLogDriverSendWithBCC(t *testing.T) {
 
 func TestLogDriverSendWithReplyTo(t *testing.T) {
 	driver := NewLogDriver()
-	msg := mail.NewMessage().
+	msg := NewMessage().
 		To("to@example.com").
 		ReplyTo("reply@example.com").
 		Subject("Test")
@@ -92,7 +90,7 @@ func TestLogDriverSendWithReplyTo(t *testing.T) {
 
 func TestLogDriverSendWithHTMLBody(t *testing.T) {
 	driver := NewLogDriver()
-	msg := mail.NewMessage().
+	msg := NewMessage().
 		To("to@example.com").
 		Subject("Test").
 		HTMLBody("<h1>HTML Content</h1>")
@@ -109,7 +107,7 @@ func TestLogDriverSendWithHTMLBody(t *testing.T) {
 
 func TestLogDriverSendWithAttachments(t *testing.T) {
 	driver := NewLogDriver()
-	msg := mail.NewMessage().
+	msg := NewMessage().
 		To("to@example.com").
 		Subject("Test").
 		Body("Body").
@@ -128,7 +126,7 @@ func TestLogDriverSendWithAttachments(t *testing.T) {
 
 func TestLogDriverSendMultipleRecipients(t *testing.T) {
 	driver := NewLogDriver()
-	msg := mail.NewMessage().
+	msg := NewMessage().
 		To("user1@example.com").
 		To("user2@example.com").
 		Subject("Test")
@@ -148,7 +146,7 @@ func TestLogDriverSendMultipleRecipients(t *testing.T) {
 
 func TestLogDriverClearLog(t *testing.T) {
 	driver := NewLogDriver()
-	msg := mail.NewMessage().
+	msg := NewMessage().
 		To("test@example.com").
 		Subject("Test")
 
@@ -168,9 +166,8 @@ func TestLogDriverClearLog(t *testing.T) {
 func TestLogDriverGetLog(t *testing.T) {
 	driver := NewLogDriver()
 
-	// Send multiple messages
 	for i := 0; i < 3; i++ {
-		msg := mail.NewMessage().
+		msg := NewMessage().
 			To("test@example.com").
 			Subject("Test")
 		driver.Send(context.Background(), msg)
@@ -181,7 +178,6 @@ func TestLogDriverGetLog(t *testing.T) {
 		t.Errorf("Expected 3 log entries, got %d", len(log))
 	}
 
-	// Verify it's a copy
 	log[0] = "modified"
 	log2 := driver.GetLog()
 	if log2[0] == "modified" {
@@ -193,12 +189,11 @@ func TestLogDriverConcurrency(t *testing.T) {
 	driver := NewLogDriver()
 	var wg sync.WaitGroup
 
-	// Send 100 messages concurrently
 	for i := 0; i < 100; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			msg := mail.NewMessage().
+			msg := NewMessage().
 				To("test@example.com").
 				Subject("Concurrent Test")
 			driver.Send(context.Background(), msg)
@@ -215,7 +210,7 @@ func TestLogDriverConcurrency(t *testing.T) {
 
 func TestLogDriverEmptyMessage(t *testing.T) {
 	driver := NewLogDriver()
-	msg := mail.NewMessage()
+	msg := NewMessage()
 
 	err := driver.Send(context.Background(), msg)
 	if err != nil {
@@ -230,7 +225,7 @@ func TestLogDriverEmptyMessage(t *testing.T) {
 
 func TestLogDriverFromWithName(t *testing.T) {
 	driver := NewLogDriver()
-	msg := mail.NewMessage().
+	msg := NewMessage().
 		From("sender@example.com", "Sender Name").
 		To("to@example.com").
 		Subject("Test")
