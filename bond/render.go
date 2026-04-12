@@ -1,6 +1,7 @@
 package bond
 
 import (
+	"context"
 	"encoding/json"
 	"html"
 	"html/template"
@@ -57,7 +58,7 @@ func (b *Bond) Render(w http.ResponseWriter, r *http.Request, component string, 
 	if isInertiaRequest(r) {
 		return b.renderJSON(w, page)
 	}
-	return b.renderHTML(w, page)
+	return b.renderHTML(r.Context(), w, page)
 }
 
 // pageMeta collects merge/once/scroll metadata during prop resolution.
@@ -106,8 +107,12 @@ func (pm *pageMeta) addOnce(key string, meta OnceMeta) {
 	pm.onceProps[key] = meta
 }
 
-// renderHTML renders a full HTML page with embedded Inertia data
-func (b *Bond) renderHTML(w http.ResponseWriter, page Page) error {
+// renderHTML renders a full HTML page with embedded Inertia data.
+// When an SSR gateway is configured, the page is pre-rendered and the
+// resulting HTML + head tags are spliced into the template. Any SSR
+// failure falls back transparently to the CSR path — users never see
+// a 500 because the renderer couldn't reach the SSR server.
+func (b *Bond) renderHTML(ctx context.Context, w http.ResponseWriter, page Page) error {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 	pageJSON, err := page.ToHTMLAttr()
@@ -115,9 +120,23 @@ func (b *Bond) renderHTML(w http.ResponseWriter, page Page) error {
 		return err
 	}
 
+	inertiaDiv := b.buildInertiaDiv(pageJSON)
+	inertiaHead := ""
+
+	b.mu.RLock()
+	gw := b.ssr
+	b.mu.RUnlock()
+
+	if gw != nil {
+		if ssrResp, _ := gw.Dispatch(ctx, page); ssrResp != nil {
+			inertiaDiv = b.buildSSRInertiaDiv(pageJSON, ssrResp.Body)
+			inertiaHead = strings.Join(ssrResp.Head, "\n")
+		}
+	}
+
 	data := map[string]any{
-		"inertia":     template.HTML(b.buildInertiaDiv(pageJSON)),
-		"inertiaHead": template.HTML(""), // Empty for CSR, populated for SSR
+		"inertia":     template.HTML(inertiaDiv),
+		"inertiaHead": template.HTML(inertiaHead),
 	}
 
 	return b.template.Execute(w, data)
@@ -135,6 +154,14 @@ func (b *Bond) renderJSON(w http.ResponseWriter, page Page) error {
 // buildInertiaDiv constructs the Inertia container div
 func (b *Bond) buildInertiaDiv(pageJSON string) string {
 	return `<div id="` + html.EscapeString(b.containerID) + `" data-page='` + pageJSON + `'></div>`
+}
+
+// buildSSRInertiaDiv constructs the Inertia container div with
+// server-rendered inner HTML embedded. The SSR body is trusted output
+// from the Node SSR server (same security posture as the root template
+// itself) — it's injected as template.HTML at the call site.
+func (b *Bond) buildSSRInertiaDiv(pageJSON, ssrBody string) string {
+	return `<div id="` + html.EscapeString(b.containerID) + `" data-page='` + pageJSON + `'>` + ssrBody + `</div>`
 }
 
 // isPartialReload checks if this is a partial reload for the given component

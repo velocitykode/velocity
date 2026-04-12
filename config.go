@@ -1,8 +1,8 @@
 package velocity
 
 import (
-	"net/http"
 	stdlog "log"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -415,6 +415,20 @@ func ConfigFromEnv() Config {
 	// Mail
 	config.Mail = MailConfig{
 		Driver: envOrDefault("MAIL_DRIVER", "log"),
+	}
+
+	// View / Inertia
+	config.View = ViewConfig{
+		SSREnabled: os.Getenv("INERTIA_SSR_ENABLED") == "true",
+		SSRURL:     envOrDefault("INERTIA_SSR_URL", "http://127.0.0.1:13714"),
+		SSRTimeout: envDurationOrDefault("INERTIA_SSR_TIMEOUT", 3*time.Second),
+	}
+	if except := os.Getenv("INERTIA_SSR_EXCEPT"); except != "" {
+		for _, p := range strings.Split(except, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				config.View.SSRExcept = append(config.View.SSRExcept, p)
+			}
+		}
 	}
 
 	// Server timeouts

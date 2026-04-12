@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"net/http"
 	"sync"
+	"time"
 )
 
 // Errors
@@ -20,6 +21,18 @@ type Config struct {
 	Version        string // Asset version for cache busting
 	ContainerID    string // Default: "app"
 	EncryptHistory bool   // Use pkg/crypto for history state encryption
+	SSR            SSRConfig
+}
+
+// SSRConfig configures server-side rendering. When Enabled is false
+// (the default) bond renders pages as plain CSR — the Inertia container
+// ships with an empty inner body and the client hydrates the page data
+// from the data-page attribute.
+type SSRConfig struct {
+	Enabled bool
+	URL     string        // Defaults to DefaultSSRURL when empty
+	Timeout time.Duration // Defaults to 3s
+	Except  []string      // URL prefixes excluded from SSR
 }
 
 // Bond is the main Inertia handler
@@ -38,6 +51,10 @@ type Bond struct {
 	sharedProps    Props
 	sharedFuncs    map[string]SharedPropFunc
 	sharePropsFunc func(r *http.Request) (Props, error) // Per-request props function
+
+	// Server-side rendering. When nil, renderHTML emits the standard
+	// CSR container. SetSSRGateway is safe to call after New.
+	ssr SSRGateway
 }
 
 // SetEncryptor sets the encryptor used for history state encryption.
@@ -71,14 +88,36 @@ func New(config Config) (*Bond, error) {
 		version = "1"
 	}
 
-	return &Bond{
+	b := &Bond{
 		template:       tmpl,
 		version:        version,
 		containerID:    containerID,
 		encryptHistory: config.EncryptHistory,
 		sharedProps:    make(Props),
 		sharedFuncs:    make(map[string]SharedPropFunc),
-	}, nil
+	}
+
+	if config.SSR.Enabled {
+		gw := NewHTTPGateway(config.SSR.URL)
+		if config.SSR.Timeout > 0 {
+			gw.Timeout = config.SSR.Timeout
+			gw.Client.Timeout = config.SSR.Timeout
+		}
+		if len(config.SSR.Except) > 0 {
+			gw.Except = config.SSR.Except
+		}
+		b.ssr = gw
+	}
+
+	return b, nil
+}
+
+// SetSSRGateway overrides the SSR gateway used for server-side rendering.
+// Pass nil to disable SSR. Intended for tests and custom gateways.
+func (b *Bond) SetSSRGateway(gw SSRGateway) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.ssr = gw
 }
 
 // Version returns the configured asset version

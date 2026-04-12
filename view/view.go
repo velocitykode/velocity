@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/velocitykode/velocity/bond"
 	"github.com/velocitykode/velocity/router"
@@ -16,8 +17,14 @@ type Props = bond.Props
 type Config struct {
 	RootTemplate string
 	Version      string
-	SSREnabled   bool // Future: SSR support
-	SSRURL       string
+
+	// Server-side rendering. When SSREnabled is true the view engine
+	// pre-renders every full-page response via a Node SSR server and
+	// gracefully falls back to CSR on any failure.
+	SSREnabled bool
+	SSRURL     string        // Defaults to http://127.0.0.1:13714
+	SSRTimeout time.Duration // Defaults to 3s
+	SSRExcept  []string      // URL prefixes to exclude from SSR
 }
 
 // SharePropsFunc is a function that returns props to be shared per request
@@ -41,6 +48,12 @@ func NewEngine(config Config) (*Engine, error) {
 		RootTemplate: config.RootTemplate,
 		Version:      config.Version,
 		ContainerID:  "app",
+		SSR: bond.SSRConfig{
+			Enabled: config.SSREnabled,
+			URL:     config.SSRURL,
+			Timeout: config.SSRTimeout,
+			Except:  config.SSRExcept,
+		},
 	})
 	if err != nil {
 		return nil, err
