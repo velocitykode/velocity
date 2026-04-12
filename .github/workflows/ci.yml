@@ -165,6 +165,6 @@ jobs:
       - name: Trigger velocity-installer release
         if: steps.check.outputs.skip == 'false'
         run: |
-          gh workflow run auto-release.yml --repo velocitykode/velocity-installer
+          gh workflow run ci.yml --repo velocitykode/velocity-installer
         env:
           GH_TOKEN: ${{ secrets.VELOCITY_TOKEN }}
