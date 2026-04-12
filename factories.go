@@ -173,6 +173,12 @@ func initDB(config DBConfig) (*orm.Manager, error) {
 // initQueue selects the queue driver based on config. Falls back to memory if the
 // redis connection fails or the database driver is requested without a DB connection.
 func initQueue(config QueueConfig, db *sql.DB) queue.Driver {
+	// Configure payload signing now that .env has been loaded. This used
+	// to run in queue's package init(), which fired before godotenv.Load
+	// had populated APP_KEY/QUEUE_SIGNING_KEY — so signing was always
+	// reported as disabled even when the key was present.
+	queue.ConfigureSigning()
+
 	switch config.Driver {
 	case "redis":
 		d, err := queue.NewRedisDriver(queue.RedisConfig{

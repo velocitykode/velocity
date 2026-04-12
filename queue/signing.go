@@ -19,13 +19,13 @@ var (
 	signingEnabled bool
 )
 
-func init() {
-	configureQueueSigning()
-}
-
-// configureQueueSigning reads signing config from environment.
-// Signing is always enabled when a key is available.
-func configureQueueSigning() {
+// ConfigureSigning reads signing config from the environment. Must be
+// called after .env has been loaded (i.e. from velocity.New() via the
+// queue factory) — not from package init, because env vars injected by
+// godotenv.Load aren't available until main() runs.
+//
+// Signing is enabled whenever QUEUE_SIGNING_KEY or APP_KEY is present.
+func ConfigureSigning() {
 	key := os.Getenv("QUEUE_SIGNING_KEY")
 	useAppKey := false
 	if key == "" {
