@@ -115,31 +115,45 @@ func (pm *pageMeta) addOnce(key string, meta OnceMeta) {
 func (b *Bond) renderHTML(ctx context.Context, w http.ResponseWriter, page Page) error {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
-	pageJSON, err := page.ToHTMLAttr()
-	if err != nil {
-		return err
-	}
-
-	inertiaDiv := b.buildInertiaDiv(pageJSON)
-	inertiaHead := ""
-
 	b.mu.RLock()
 	gw := b.ssr
 	b.mu.RUnlock()
 
 	if gw != nil {
-		if ssrResp, _ := gw.Dispatch(ctx, page); ssrResp != nil {
-			inertiaDiv = b.buildSSRInertiaDiv(pageJSON, ssrResp.Body)
-			inertiaHead = strings.Join(ssrResp.Head, "\n")
+		ssrResp, ssrErr := gw.Dispatch(ctx, page)
+		if ssrErr != nil {
+			// ThrowOnError mode: surface the SSR failure instead of
+			// silently rendering CSR. Used by E2E tests.
+			return ssrErr
+		}
+		if ssrResp != nil && ssrResp.Body != "" {
+			// v3 SSR bodies are self-contained — they include both the
+			// `<script data-page>` JSON payload and the `<div id="app">`
+			// container. Emit directly without re-wrapping to avoid
+			// nested id="app" elements.
+			return b.template.Execute(w, map[string]any{
+				"inertia":     template.HTML(ssrResp.Body),
+				"inertiaHead": template.HTML(strings.Join(ssrResp.Head, "\n")),
+			})
 		}
 	}
 
-	data := map[string]any{
-		"inertia":     template.HTML(inertiaDiv),
-		"inertiaHead": template.HTML(inertiaHead),
+	// CSR: emit the v3 dual-format so both the @inertiajs/vite plugin's
+	// auto-setup (reads <script data-page="app">) and the legacy
+	// data-page attribute path (reads the div) find the page data.
+	pageJSONRaw, err := page.ToJSON()
+	if err != nil {
+		return err
+	}
+	pageJSONAttr, err := page.ToHTMLAttr()
+	if err != nil {
+		return err
 	}
 
-	return b.template.Execute(w, data)
+	return b.template.Execute(w, map[string]any{
+		"inertia":     template.HTML(b.buildInertiaContainer(pageJSONRaw, pageJSONAttr)),
+		"inertiaHead": template.HTML(""),
+	})
 }
 
 // renderJSON renders a JSON response for Inertia XHR requests
@@ -151,17 +165,32 @@ func (b *Bond) renderJSON(w http.ResponseWriter, page Page) error {
 	return json.NewEncoder(w).Encode(page)
 }
 
-// buildInertiaDiv constructs the Inertia container div
+// buildInertiaDiv constructs the Inertia container div in the legacy
+// attribute-based format. Kept for tests and callers that need only
+// the container. Prefer buildInertiaContainer for renderHTML output.
 func (b *Bond) buildInertiaDiv(pageJSON string) string {
 	return `<div id="` + html.EscapeString(b.containerID) + `" data-page='` + pageJSON + `'></div>`
 }
 
-// buildSSRInertiaDiv constructs the Inertia container div with
-// server-rendered inner HTML embedded. The SSR body is trusted output
-// from the Node SSR server (same security posture as the root template
-// itself) — it's injected as template.HTML at the call site.
-func (b *Bond) buildSSRInertiaDiv(pageJSON, ssrBody string) string {
-	return `<div id="` + html.EscapeString(b.containerID) + `" data-page='` + pageJSON + `'>` + ssrBody + `</div>`
+// buildInertiaContainer emits the v3 dual-format container: a JSON
+// script tag (preferred by @inertiajs/vite's auto-setup) plus a div
+// with the legacy data-page attribute (preferred by older clients and
+// by custom setup callbacks that read from the DOM directly). The
+// script goes first so v3 clients find it before touching the div.
+//
+// pageJSONRaw is the unescaped JSON for embedding in a <script type=
+// "application/json"> block. pageJSONAttr is the HTML-attribute-safe
+// JSON for the legacy data-page attribute.
+func (b *Bond) buildInertiaContainer(pageJSONRaw, pageJSONAttr string) string {
+	id := html.EscapeString(b.containerID)
+	// The </script> closing tag inside JSON string values would break
+	// out of the script block — escape the forward slash in </script>
+	// to </scr\/ipt> as the Inertia protocol expects.
+	pageJSONRaw = strings.ReplaceAll(pageJSONRaw, "</script>", `<\/script>`)
+	return `<script id="` + id + `-page" type="application/json" data-page="` + id + `">` +
+		pageJSONRaw +
+		`</script>` +
+		`<div id="` + id + `" data-page='` + pageJSONAttr + `'></div>`
 }
 
 // isPartialReload checks if this is a partial reload for the given component

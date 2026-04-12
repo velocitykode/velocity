@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,30 +23,37 @@ type SSRResponse struct {
 
 // SSRGateway dispatches an Inertia Page to a rendering service and
 // returns server-rendered HTML. Implementations should return (nil, nil)
-// to signal "fall back to CSR" — only return a non-nil error for
-// programmer errors that callers must handle.
+// to signal "fall back to CSR". A non-nil error means the caller should
+// treat the failure as fatal (used for ThrowOnError mode in tests).
 type SSRGateway interface {
 	Dispatch(ctx context.Context, page Page) (*SSRResponse, error)
 }
 
 // HTTPGateway dispatches pages to a Node SSR server over HTTP.
-// It mirrors the design of inertia-laravel's HttpGateway:
+// Mirrors the design of inertia-laravel's HttpGateway:
 //   - Graceful fallback to CSR on any transport/parse failure
-//   - Configurable URL (the default 127.0.0.1:13714 matches the
-//     standard Inertia SSR port used by inertia-laravel and gonertia)
-//   - Configurable timeout — defaults to 3s so a slow SSR server
-//     cannot stall page rendering
+//   - Rich error payload parsing (type, hint, stack, sourceLocation,
+//     browserApi) surfaced as SSRRenderFailed events
+//   - Configurable URL — defaults to 127.0.0.1:13714/render, matching
+//     inertia-laravel and gonertia. Dev deployments should point at
+//     Vite's /__inertia_ssr hot endpoint instead
+//   - ThrowOnError for E2E tests that need failures to bubble up
 type HTTPGateway struct {
 	URL     string
 	Timeout time.Duration
 	Client  *http.Client
-	// OnFailure is called whenever a dispatch fails before falling back
-	// to CSR. Callers can use it to emit metrics or log. Never called
-	// when SSR is disabled or the page is excluded.
-	OnFailure func(page Page, err error)
+
 	// Except skips SSR for any request whose page URL starts with one
 	// of these prefixes. Matches Laravel's ExcludesSsrPaths concern.
 	Except []string
+
+	// ThrowOnError makes Dispatch return the transport or render error
+	// instead of swallowing it for CSR fallback. Matches Laravel's
+	// inertia.ssr.throw_on_error config flag.
+	ThrowOnError bool
+
+	mu              sync.RWMutex
+	eventDispatcher func(event interface{}) error
 }
 
 // DefaultSSRURL is the conventional Inertia SSR server address used by
@@ -55,6 +63,18 @@ type HTTPGateway struct {
 const DefaultSSRURL = "http://127.0.0.1:13714/render"
 
 const defaultSSRTimeout = 3 * time.Second
+
+// ssrServerError is the structured error payload an inertia-aware SSR
+// server returns in the response body on failure. Unknown fields are
+// tolerated — the SSR server controls this contract.
+type ssrServerError struct {
+	Error          string `json:"error"`
+	Type           string `json:"type"`
+	Hint           string `json:"hint"`
+	BrowserAPI     string `json:"browserApi"`
+	Stack          string `json:"stack"`
+	SourceLocation string `json:"sourceLocation"`
+}
 
 // NewHTTPGateway constructs a gateway that POSTs page JSON to url.
 // An empty url falls back to DefaultSSRURL. If url has no path, /render
@@ -77,9 +97,19 @@ func NewHTTPGateway(url string) *HTTPGateway {
 	}
 }
 
+// SetEventDispatcher wires the framework event bus so dispatch failures
+// flow out as SSRRenderFailed events. Safe to call from any goroutine.
+func (g *HTTPGateway) SetEventDispatcher(fn func(event interface{}) error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.eventDispatcher = fn
+}
+
 // Dispatch POSTs the page JSON to the SSR server and returns the
-// rendered response. Returns (nil, nil) on any failure after invoking
-// OnFailure — callers must treat nil as "render CSR".
+// rendered response. On any failure it emits an SSRRenderFailed event
+// and (unless ThrowOnError is set) returns (nil, nil) so renderHTML
+// falls back to CSR. When ThrowOnError is true the real error is
+// returned so callers can surface it — useful for E2E tests.
 func (g *HTTPGateway) Dispatch(ctx context.Context, page Page) (*SSRResponse, error) {
 	if g == nil || g.URL == "" {
 		return nil, nil
@@ -102,8 +132,10 @@ func (g *HTTPGateway) Dispatch(ctx context.Context, page Page) (*SSRResponse, er
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, g.URL, bytes.NewReader(body))
 	if err != nil {
-		g.notifyFailure(page, err)
-		return nil, nil
+		return g.handleFailure(page, ssrServerError{
+			Error: err.Error(),
+			Type:  string(SSRErrorConnection),
+		}, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
@@ -115,29 +147,44 @@ func (g *HTTPGateway) Dispatch(ctx context.Context, page Page) (*SSRResponse, er
 
 	resp, err := client.Do(req)
 	if err != nil {
-		g.notifyFailure(page, err)
-		return nil, nil
+		return g.handleFailure(page, ssrServerError{
+			Error: err.Error(),
+			Type:  string(SSRErrorConnection),
+		}, err)
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		g.notifyFailure(page, fmt.Errorf("ssr server returned %d", resp.StatusCode))
-		return nil, nil
-	}
 
 	// Cap at 10 MiB. A pre-rendered page that exceeds this is almost
 	// certainly an error or a misbehaving SSR server — CSR fallback
 	// is safer than ballooning memory.
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
-	if err != nil {
-		g.notifyFailure(page, err)
-		return nil, nil
+	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	if readErr != nil {
+		return g.handleFailure(page, ssrServerError{
+			Error: readErr.Error(),
+			Type:  string(SSRErrorConnection),
+		}, readErr)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// SSR server returned an error. It may have included a
+		// structured JSON payload describing what went wrong.
+		payload := ssrServerError{
+			Error: fmt.Sprintf("ssr server returned %d", resp.StatusCode),
+			Type:  string(SSRErrorUnknown),
+		}
+		var parsed ssrServerError
+		if json.Unmarshal(raw, &parsed) == nil && parsed.Error != "" {
+			payload = parsed
+		}
+		return g.handleFailure(page, payload, fmt.Errorf("%s", payload.Error))
 	}
 
 	var out SSRResponse
 	if err := json.Unmarshal(raw, &out); err != nil {
-		g.notifyFailure(page, err)
-		return nil, nil
+		return g.handleFailure(page, ssrServerError{
+			Error: err.Error(),
+			Type:  string(SSRErrorRender),
+		}, err)
 	}
 
 	return &out, nil
@@ -155,21 +202,7 @@ func (g *HTTPGateway) IsHealthy(ctx context.Context) (bool, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, g.Timeout)
 	defer cancel()
 
-	// Health endpoint is conventionally at /health on the SSR server root.
-	// Derive it from the base host (strip any path on URL).
-	base := g.URL
-	if i := strings.Index(strings.TrimPrefix(strings.TrimPrefix(base, "http://"), "https://"), "/"); i >= 0 {
-		scheme := ""
-		if strings.HasPrefix(base, "https://") {
-			scheme = "https://"
-			base = strings.TrimPrefix(base, "https://")
-		} else {
-			scheme = "http://"
-			base = strings.TrimPrefix(base, "http://")
-		}
-		base = scheme + base[:i]
-	}
-
+	base := healthBaseURL(g.URL)
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, base+"/health", nil)
 	if err != nil {
 		return false, err
@@ -188,6 +221,24 @@ func (g *HTTPGateway) IsHealthy(ctx context.Context) (bool, error) {
 	return resp.StatusCode >= 200 && resp.StatusCode < 300, nil
 }
 
+// healthBaseURL strips the render path from the gateway URL so the
+// health probe can hit /health on the same origin.
+func healthBaseURL(u string) string {
+	scheme := "http://"
+	rest := u
+	switch {
+	case strings.HasPrefix(rest, "https://"):
+		scheme = "https://"
+		rest = strings.TrimPrefix(rest, "https://")
+	case strings.HasPrefix(rest, "http://"):
+		rest = strings.TrimPrefix(rest, "http://")
+	}
+	if i := strings.Index(rest, "/"); i >= 0 {
+		rest = rest[:i]
+	}
+	return scheme + rest
+}
+
 func (g *HTTPGateway) excluded(pageURL string) bool {
 	if len(g.Except) == 0 || pageURL == "" {
 		return false
@@ -203,8 +254,32 @@ func (g *HTTPGateway) excluded(pageURL string) bool {
 	return false
 }
 
-func (g *HTTPGateway) notifyFailure(page Page, err error) {
-	if g.OnFailure != nil {
-		g.OnFailure(page, err)
+// handleFailure emits the SSRRenderFailed event and returns either
+// (nil, nil) for graceful CSR fallback, or (nil, err) when ThrowOnError
+// is set so callers can surface the failure.
+func (g *HTTPGateway) handleFailure(page Page, payload ssrServerError, err error) (*SSRResponse, error) {
+	g.mu.RLock()
+	dispatch := g.eventDispatcher
+	g.mu.RUnlock()
+
+	if dispatch != nil {
+		_ = dispatch(SSRRenderFailed{
+			Component:      page.Component,
+			URL:            page.URL,
+			Error:          payload.Error,
+			Type:           ParseSSRErrorType(payload.Type),
+			Hint:           payload.Hint,
+			BrowserAPI:     payload.BrowserAPI,
+			Stack:          payload.Stack,
+			SourceLocation: payload.SourceLocation,
+		})
 	}
+
+	if g.ThrowOnError {
+		if err == nil {
+			err = errors.New(payload.Error)
+		}
+		return nil, err
+	}
+	return nil, nil
 }

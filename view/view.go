@@ -95,6 +95,12 @@ func (e *Engine) SetSharePropsFunc(fn SharePropsFunc) {
 	e.bond.SetSharePropsFunc(fn)
 }
 
+// SetEventDispatcher wires the app event bus into the view engine so
+// SSR render failures surface as bond.SSRRenderFailed events.
+func (e *Engine) SetEventDispatcher(fn func(event interface{}) error) {
+	e.bond.SetEventDispatcher(fn)
+}
+
 // Redirect performs an SPA redirect (for internal navigation).
 func (e *Engine) Redirect(w http.ResponseWriter, r *http.Request, url string) {
 	e.bond.Redirect(w, r, url)

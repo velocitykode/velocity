@@ -99,6 +99,11 @@ func wireInstanceEvents(a *App) {
 	if a.Notification != nil {
 		a.Notification.SetEventDispatcher(dispatch)
 	}
+	if v, ok := a.View.(interface {
+		SetEventDispatcher(func(event interface{}) error)
+	}); ok && v != nil {
+		v.SetEventDispatcher(dispatch)
+	}
 
 	// Wire events into any extension that supports it.
 	type eventDispatcherSetter interface {

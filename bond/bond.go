@@ -33,6 +33,12 @@ type SSRConfig struct {
 	URL     string        // Defaults to DefaultSSRURL when empty
 	Timeout time.Duration // Defaults to 3s
 	Except  []string      // URL prefixes excluded from SSR
+
+	// ThrowOnError makes Dispatch return a real error on failure
+	// instead of silently falling back to CSR. Matches Laravel's
+	// inertia.ssr.throw_on_error — useful for E2E tests that need
+	// SSR failures to fail loudly rather than render CSR.
+	ThrowOnError bool
 }
 
 // Bond is the main Inertia handler
@@ -55,6 +61,11 @@ type Bond struct {
 	// Server-side rendering. When nil, renderHTML emits the standard
 	// CSR container. SetSSRGateway is safe to call after New.
 	ssr SSRGateway
+
+	// Event dispatcher — wired by the framework via SetEventDispatcher
+	// and propagated to the SSR gateway so failures surface through
+	// the app's event bus.
+	eventDispatcher func(event interface{}) error
 }
 
 // SetEncryptor sets the encryptor used for history state encryption.
@@ -106,6 +117,7 @@ func New(config Config) (*Bond, error) {
 		if len(config.SSR.Except) > 0 {
 			gw.Except = config.SSR.Except
 		}
+		gw.ThrowOnError = config.SSR.ThrowOnError
 		b.ssr = gw
 	}
 
@@ -118,6 +130,29 @@ func (b *Bond) SetSSRGateway(gw SSRGateway) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.ssr = gw
+	b.propagateEventDispatcher()
+}
+
+// SetEventDispatcher wires the framework event dispatcher into bond.
+// The dispatcher is propagated to the SSR gateway so render failures
+// flow through the app's event bus as SSRRenderFailed events.
+func (b *Bond) SetEventDispatcher(fn func(event interface{}) error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.eventDispatcher = fn
+	b.propagateEventDispatcher()
+}
+
+// propagateEventDispatcher pushes the current dispatcher into the
+// active gateway when the gateway supports it. Must be called with
+// b.mu held.
+func (b *Bond) propagateEventDispatcher() {
+	type eventAware interface {
+		SetEventDispatcher(func(event interface{}) error)
+	}
+	if aware, ok := b.ssr.(eventAware); ok {
+		aware.SetEventDispatcher(b.eventDispatcher)
+	}
 }
 
 // Version returns the configured asset version

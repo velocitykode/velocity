@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -63,36 +64,49 @@ func TestHTTPGateway_Dispatch_Success(t *testing.T) {
 }
 
 func TestHTTPGateway_Dispatch_ServerError_FallsBack(t *testing.T) {
-	var failures int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "boom", http.StatusInternalServerError)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, `{"error":"render blew up","type":"render","hint":"check the page component","sourceLocation":"Auth/Login.tsx:42"}`)
 	}))
 	defer server.Close()
 
 	gw := NewHTTPGateway(server.URL)
-	gw.OnFailure = func(page Page, err error) { atomic.AddInt32(&failures, 1) }
+	events := collectSSREvents(gw)
 
-	resp, err := gw.Dispatch(context.Background(), Page{Component: "Home"})
+	resp, err := gw.Dispatch(context.Background(), Page{Component: "Home", URL: "/login"})
 	if err != nil {
 		t.Fatalf("dispatch returned error, expected graceful fallback: %v", err)
 	}
 	if resp != nil {
 		t.Errorf("expected nil response on failure, got %+v", resp)
 	}
-	if atomic.LoadInt32(&failures) != 1 {
-		t.Errorf("expected OnFailure to be called once, got %d", failures)
+	got := events()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(got))
+	}
+	if got[0].Error != "render blew up" {
+		t.Errorf("error passthrough: got %q", got[0].Error)
+	}
+	if got[0].Type != SSRErrorRender {
+		t.Errorf("expected type render, got %q", got[0].Type)
+	}
+	if got[0].Hint != "check the page component" {
+		t.Errorf("hint passthrough: got %q", got[0].Hint)
+	}
+	if got[0].SourceLocation != "Auth/Login.tsx:42" {
+		t.Errorf("sourceLocation passthrough: got %q", got[0].SourceLocation)
+	}
+	if got[0].Component != "Home" || got[0].URL != "/login" {
+		t.Errorf("component/url not propagated: %+v", got[0])
 	}
 }
 
 func TestHTTPGateway_Dispatch_Unreachable_FallsBack(t *testing.T) {
-	// 127.0.0.1:1 is reserved and refuses connections fast enough to keep
-	// the test quick without depending on timeout behavior.
 	gw := NewHTTPGateway("http://127.0.0.1:1")
 	gw.Timeout = 500 * time.Millisecond
 	gw.Client.Timeout = 500 * time.Millisecond
-
-	called := false
-	gw.OnFailure = func(page Page, err error) { called = true }
+	events := collectSSREvents(gw)
 
 	resp, err := gw.Dispatch(context.Background(), Page{Component: "Home"})
 	if err != nil {
@@ -101,8 +115,53 @@ func TestHTTPGateway_Dispatch_Unreachable_FallsBack(t *testing.T) {
 	if resp != nil {
 		t.Error("expected nil response")
 	}
-	if !called {
-		t.Error("expected OnFailure to be invoked")
+	got := events()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(got))
+	}
+	if got[0].Type != SSRErrorConnection {
+		t.Errorf("expected connection error type, got %q", got[0].Type)
+	}
+}
+
+func TestHTTPGateway_Dispatch_ThrowOnError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	gw := NewHTTPGateway(server.URL)
+	gw.ThrowOnError = true
+
+	resp, err := gw.Dispatch(context.Background(), Page{Component: "Home"})
+	if err == nil {
+		t.Fatal("expected ThrowOnError to surface a non-nil error")
+	}
+	if resp != nil {
+		t.Error("expected nil response alongside error")
+	}
+}
+
+// collectSSREvents wires a test dispatcher onto gw and returns a
+// snapshot accessor. Safe for concurrent writes from the gateway and
+// test-thread reads.
+func collectSSREvents(gw *HTTPGateway) func() []SSRRenderFailed {
+	var (
+		mu     sync.Mutex
+		events []SSRRenderFailed
+	)
+	gw.SetEventDispatcher(func(evt interface{}) error {
+		if f, ok := evt.(SSRRenderFailed); ok {
+			mu.Lock()
+			events = append(events, f)
+			mu.Unlock()
+		}
+		return nil
+	})
+	return func() []SSRRenderFailed {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]SSRRenderFailed(nil), events...)
 	}
 }
 
@@ -224,10 +283,16 @@ func TestBond_RenderHTML_WithSSR_InjectsBodyAndHead(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
+	// v3 SSR bodies are self-contained: they ship the data-page JSON
+	// script tag alongside the rendered container. Bond must emit them
+	// as-is, not re-wrap them.
+	ssrBody := `<script data-page="app" type="application/json">{"component":"Home"}</script>` +
+		`<div data-server-rendered="true" id="app"><h1>SSR Hello</h1></div>`
+
 	b.SetSSRGateway(&fakeGateway{
 		resp: &SSRResponse{
 			Head: []string{"<title>Home</title>"},
-			Body: `<h1>SSR Hello</h1>`,
+			Body: ssrBody,
 		},
 	})
 
@@ -246,8 +311,13 @@ func TestBond_RenderHTML_WithSSR_InjectsBodyAndHead(t *testing.T) {
 	if !strings.Contains(body, "<title>Home</title>") {
 		t.Errorf("expected SSR head in output, got %q", body)
 	}
-	if !strings.Contains(body, `data-page='`) {
-		t.Error("expected data-page attribute preserved for hydration")
+	if !strings.Contains(body, `data-server-rendered="true"`) {
+		t.Error("expected SSR marker preserved")
+	}
+	// Guard against nested id="app" — bond must not wrap the self-
+	// contained SSR body in its own container div.
+	if strings.Count(body, `id="app"`) != 1 {
+		t.Errorf("expected exactly one id=\"app\" element, got %d in %q", strings.Count(body, `id="app"`), body)
 	}
 }
 
@@ -257,22 +327,43 @@ func TestBond_RenderHTML_SSRFailure_FallsBackToCSR(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	b.SetSSRGateway(&fakeGateway{err: errors.New("unreachable")})
+	// Gateway returning (nil, nil) models a graceful failure — the
+	// concrete HTTPGateway does this by default when ThrowOnError is
+	// off. renderHTML must then emit the CSR container.
+	b.SetSSRGateway(&fakeGateway{})
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	page := Page{Component: "Home", URL: "/", Version: "1"}
 
 	if err := b.renderHTML(r.Context(), w, page); err != nil {
-		t.Fatalf("renderHTML should not surface SSR error: %v", err)
+		t.Fatalf("renderHTML should not surface SSR fallback: %v", err)
 	}
 
 	body := w.Body.String()
 	if !strings.Contains(body, `<div id="app" data-page='`) {
-		t.Error("expected CSR container on SSR failure")
+		t.Error("expected CSR container on SSR fallback")
 	}
 	if strings.Contains(body, `<title>`) {
 		t.Error("expected no SSR head content on fallback")
+	}
+}
+
+func TestBond_RenderHTML_SSRThrowOnError(t *testing.T) {
+	b, err := New(Config{RootTemplate: testRootTemplate})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	boom := errors.New("ssr blew up")
+	b.SetSSRGateway(&fakeGateway{err: boom})
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	page := Page{Component: "Home", URL: "/"}
+
+	if err := b.renderHTML(r.Context(), w, page); err != boom {
+		t.Fatalf("expected ThrowOnError passthrough, got %v", err)
 	}
 }
 
