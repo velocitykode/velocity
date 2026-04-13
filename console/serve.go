@@ -108,7 +108,7 @@ func runServer(opts ServeOptions) error {
 		return fmt.Errorf("build failed: %w", err)
 	}
 
-	serverCmd := exec.Command(".vel/tmp/server")
+	serverCmd := exec.Command(".vel/tmp/server", "serve:run")
 	serverCmd.Stdout = os.Stdout
 	serverCmd.Stderr = os.Stderr
 	serverCmd.Env = os.Environ()
@@ -172,7 +172,7 @@ func runWithWatcher(opts ServeOptions) error {
 		}
 
 		cli.Info(fmt.Sprintf("Starting server on port %s...", opts.Port))
-		serverCmd = exec.Command(".vel/tmp/server")
+		serverCmd = exec.Command(".vel/tmp/server", "serve:run")
 		serverCmd.Stdout = os.Stdout
 		serverCmd.Stderr = os.Stderr
 		serverCmd.Env = append(os.Environ(),

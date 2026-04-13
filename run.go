@@ -374,6 +374,14 @@ func (a *App) runCommand(name string, args []string) error {
 		a.printHelp()
 		return nil
 
+	// Internal entry point used by console.Serve when spawning the
+	// .vel/tmp/server subprocess. Not user-facing — don't document in
+	// printHelp. The child must go straight to a.Serve() (which opens
+	// the HTTP listener and blocks); without this case the child falls
+	// through to printHelp and exits, leaving nothing on the port.
+	case "serve:run":
+		return a.Serve()
+
 	default:
 		cli.Error(fmt.Sprintf("Unknown command: %s", name))
 		cli.Newline()
