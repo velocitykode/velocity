@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	cli "github.com/velocitykode/velocity-cli"
 	"github.com/fsnotify/fsnotify"
+	cli "github.com/velocitykode/velocity-cli"
 )
 
 // ServeOptions holds flags for the serve command.
