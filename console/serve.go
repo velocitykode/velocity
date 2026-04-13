@@ -156,6 +156,21 @@ func runWithWatcher(opts ServeOptions) error {
 			return err
 		}
 
+		// Refresh the project's ./vel binary so one-shot CLI commands
+		// (route:list, migrate, make:*) in other terminals see current
+		// source while serve --watch is running. Go's build cache makes
+		// this ~100ms since the source was just compiled above. Failure
+		// here is non-fatal — the server itself rebuilt successfully,
+		// and the user keeps whatever ./vel snapshot they had.
+		velArgs := []string{"build", "-o", "./vel"}
+		if opts.BuildTags != "" {
+			velArgs = append(velArgs, "-tags", opts.BuildTags)
+		}
+		velArgs = append(velArgs, ".")
+		if output, err := exec.Command("go", velArgs...).CombinedOutput(); err != nil {
+			cli.Warning(fmt.Sprintf("./vel refresh failed (server keeps running on previous): %s", strings.TrimSpace(string(output))))
+		}
+
 		cli.Info(fmt.Sprintf("Starting server on port %s...", opts.Port))
 		serverCmd = exec.Command(".vel/tmp/server")
 		serverCmd.Stdout = os.Stdout
