@@ -57,9 +57,12 @@ func Race[T any](fns ...func() T) *Result[T] {
 	r := NewResult[T]()
 	ctx, cancel := context.WithCancel(context.Background())
 
+	var wg sync.WaitGroup
 	for _, fn := range fns {
 		fn := fn // capture for closure
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			defer func() {
 				if p := recover(); p != nil {
 					// Ignore panics in losing goroutines
@@ -81,6 +84,13 @@ func Race[T any](fns ...func() T) *Result[T] {
 			}
 		}()
 	}
+
+	// Guarantee the cancelCtx is released even if every fn panics or
+	// none reaches the send. Safe to call cancel twice.
+	go func() {
+		wg.Wait()
+		cancel()
+	}()
 
 	return r
 }

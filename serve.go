@@ -27,6 +27,10 @@ func (a *App) Serve() error {
 		IdleTimeout:  a.config.IdleTimeout,
 	}
 
+	// Pre-commit routes so the tree build and static-route compile do
+	// not land on the first request's latency path.
+	a.Router.Freeze()
+
 	// Start server in a goroutine
 	errCh := make(chan error, 1)
 	go func() {
@@ -68,38 +72,45 @@ func (a *App) Shutdown(ctx context.Context) error {
 		setErr(a.server.Shutdown(ctx))
 	}
 
-	// 2. Stop scheduler
+	// 2. Drain async event dispatcher workers (no-op if running sync).
+	// Done after server shutdown so any final RequestHandled/RequestFailed
+	// events from draining in-flight requests still enter the queue.
+	if a.Router != nil {
+		setErr(a.Router.ShutdownEventDispatcher(ctx))
+	}
+
+	// 3. Stop scheduler
 	if a.Scheduler != nil {
 		a.Scheduler.Stop()
 	}
 
-	// 3. Close queue driver
+	// 4. Close queue driver
 	if a.Queue != nil {
 		setErr(a.Queue.Close())
 	}
 
-	// 4. Close cache connections
+	// 5. Close cache connections
 	if a.Cache != nil {
 		setErr(a.Cache.Close())
 	}
 
-	// 5. Close database connections
+	// 6. Close database connections
 	if a.DB != nil {
 		setErr(a.DB.Close())
 		orm.ResetDefault()
 	}
 
-	// 6. Shutdown chain providers in reverse order (before WithProviders providers)
+	// 7. Shutdown chain providers in reverse order (before WithProviders providers)
 	for i := len(a.chainProviders) - 1; i >= 0; i-- {
 		setErr(a.chainProviders[i].Shutdown(ctx))
 	}
 
-	// 7. Shutdown WithProviders providers in reverse registration order
+	// 8. Shutdown WithProviders providers in reverse registration order
 	for i := len(a.providers) - 1; i >= 0; i-- {
 		setErr(a.providers[i].Shutdown(ctx))
 	}
 
-	// 8. Close logger if it supports it (e.g., file logger) — last, so all
+	// 9. Close logger if it supports it (e.g., file logger) — last, so all
 	// prior shutdown steps can still log.
 	if a.Log != nil {
 		if closer, ok := a.Log.(interface{ Close() error }); ok {

@@ -1527,3 +1527,53 @@ func TestContext_Resource(t *testing.T) {
 		t.Error("expected email excluded for non-admin")
 	}
 }
+
+// TestContext_reset_clearsAllFields is a regression gate against pooled
+// contexts leaking state from one request into the next (Gin CVE-2020-28483
+// shape). If a new field is added to Context, this test will fail unless
+// reset() clears it — add the corresponding assertion below.
+func TestContext_reset_clearsAllFields(t *testing.T) {
+	req := httptest.NewRequest("GET", "/sentinel", nil)
+	w := httptest.NewRecorder()
+
+	c := &Context{
+		Response:       w,
+		Request:        req,
+		params:         []RouteParam{{Key: "id", Value: "42"}},
+		values:         map[string]interface{}{"sentinel": "must-not-leak"},
+		services:       &app.Services{},
+		sseStarted:     true,
+		trustedProxies: []string{"10.0.0.0/8"},
+		validateFn:     func(c *Context, rules map[string][]string, messages ...map[string]string) {},
+	}
+
+	c.reset()
+
+	if c.Response != nil {
+		t.Error("reset did not clear Response")
+	}
+	if c.Request != nil {
+		t.Error("reset did not clear Request")
+	}
+	if len(c.params) != 0 {
+		t.Errorf("reset did not clear params: got %d entries", len(c.params))
+	}
+	if len(c.values) != 0 {
+		t.Errorf("reset did not clear values: got %d entries", len(c.values))
+	}
+	if _, leaked := c.values["sentinel"]; leaked {
+		t.Error("sentinel key leaked across reset — pool reuse is unsafe")
+	}
+	if c.services != nil {
+		t.Error("reset did not clear services")
+	}
+	if c.sseStarted {
+		t.Error("reset did not clear sseStarted")
+	}
+	if c.trustedProxies != nil {
+		t.Error("reset did not clear trustedProxies")
+	}
+	if c.validateFn != nil {
+		t.Error("reset did not clear validateFn")
+	}
+}

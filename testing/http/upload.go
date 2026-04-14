@@ -240,7 +240,7 @@ type UploadedFileResponse struct {
 }
 
 // TestUploadHandler creates a test handler that processes file uploads
-func TestUploadHandler(storage storageTesting.FakeStorage) http.HandlerFunc {
+func TestUploadHandler(storage *storageTesting.FakeStorage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseMultipartForm(10 << 20); err != nil {
 			http.Error(w, "Failed to parse form", http.StatusBadRequest)

@@ -502,7 +502,7 @@ func TestSaveUploadedFile_InvalidFilename(t *testing.T) {
 
 func TestTestUploadHandler(t *testing.T) {
 	storage := storageTesting.StorageFake()
-	handler := TestUploadHandler(*storage)
+	handler := TestUploadHandler(storage)
 
 	builder := NewUploadBuilder()
 	builder.AddRawFile("file", "test.txt", []byte("hello world"), "text/plain")
@@ -522,7 +522,7 @@ func TestTestUploadHandler(t *testing.T) {
 
 func TestTestUploadHandler_InvalidRequest(t *testing.T) {
 	storage := storageTesting.StorageFake()
-	handler := TestUploadHandler(*storage)
+	handler := TestUploadHandler(storage)
 
 	req := httptest.NewRequest("POST", "/upload", nil)
 	rec := httptest.NewRecorder()

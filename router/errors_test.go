@@ -3,6 +3,7 @@ package router
 import (
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -53,4 +54,60 @@ func TestNewHTTPError(t *testing.T) {
 			t.Error("expected nil Unwrap for no internal error")
 		}
 	})
+}
+
+func TestErrorHandlerMiddleware_AbsorbsError(t *testing.T) {
+	handlerErr := errors.New("boom")
+
+	var seen error
+	mw := ErrorHandlerMiddleware(func(c *Context, err error) {
+		seen = err
+		c.Response.WriteHeader(http.StatusTeapot)
+		_, _ = c.Response.Write([]byte("handled"))
+	})
+
+	final := mw(func(c *Context) error {
+		return handlerErr
+	})
+
+	w := httptest.NewRecorder()
+	c := NewContext(w, httptest.NewRequest("GET", "/", nil))
+
+	if ret := final(c); ret != nil {
+		t.Errorf("middleware returned %v, want nil (error must be absorbed)", ret)
+	}
+	if !errors.Is(seen, handlerErr) {
+		t.Errorf("fn saw err = %v, want %v", seen, handlerErr)
+	}
+	if w.Code != http.StatusTeapot {
+		t.Errorf("status = %d, want %d (handler fn must run)", w.Code, http.StatusTeapot)
+	}
+	if w.Body.String() != "handled" {
+		t.Errorf("body = %q, want %q", w.Body.String(), "handled")
+	}
+}
+
+func TestErrorHandlerMiddleware_PassesThroughSuccess(t *testing.T) {
+	called := false
+	mw := ErrorHandlerMiddleware(func(c *Context, err error) {
+		called = true
+	})
+
+	final := mw(func(c *Context) error {
+		c.Response.WriteHeader(http.StatusOK)
+		return nil
+	})
+
+	w := httptest.NewRecorder()
+	c := NewContext(w, httptest.NewRequest("GET", "/", nil))
+
+	if err := final(c); err != nil {
+		t.Errorf("middleware returned %v on success path, want nil", err)
+	}
+	if called {
+		t.Error("error fn must not run when handler succeeds")
+	}
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
 }

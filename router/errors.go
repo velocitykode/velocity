@@ -33,3 +33,28 @@ func NewHTTPError(code int, message ...string) *HTTPError {
 		Message: msg,
 	}
 }
+
+// ErrorHandlerMiddleware returns a middleware that routes errors from
+// downstream handlers to fn. Install it per-group for layered error
+// handling (JSON for /api, HTML for /, a tracing wrapper for all):
+//
+//	r.Group("/api", func(g router.Router) {
+//	    g.Use(router.ErrorHandlerMiddleware(jsonErrorResponder))
+//	    g.Get("/users", listUsers)
+//	})
+//
+// When this middleware is active on a route, it absorbs the error and
+// short-circuits the global Router.ErrorHandler for that route. fn is
+// responsible for writing the response. Return value from the middleware
+// is always nil so upstream middleware and the router's fallback do not
+// re-fire for an already-handled error.
+func ErrorHandlerMiddleware(fn func(c *Context, err error)) MiddlewareFunc {
+	return func(next HandlerFunc) HandlerFunc {
+		return func(c *Context) error {
+			if err := next(c); err != nil {
+				fn(c, err)
+			}
+			return nil
+		}
+	}
+}

@@ -45,6 +45,10 @@ type VelocityRouterV2 struct {
 	// Event dispatcher (instance-level, replaces package-level var)
 	eventDispatcher func(event interface{}) error
 
+	// Populated by SetAsyncEventDispatcher; nil for the default sync mode.
+	// Called by ShutdownEventDispatcher to drain workers.
+	stopEventDispatcher func(context.Context) error
+
 	// Context pool for reuse
 	ctxPool sync.Pool
 
@@ -543,6 +547,15 @@ func toString(v interface{}) string {
 // Handle returns the underlying http.Handler
 func (r *VelocityRouterV2) Handle() http.Handler {
 	return r
+}
+
+// Freeze commits all routes to the tree, compiles the static-route fast
+// path, and marks the router immutable. Called automatically on the first
+// request via commitOnce(), but serving code should call Freeze() before
+// ListenAndServe to move the commit cost off the first request's hot path.
+// Safe to call multiple times; subsequent calls are no-ops.
+func (r *VelocityRouterV2) Freeze() {
+	r.commitOnce()
 }
 
 // commitOnce commits all routes to the tree on first request
