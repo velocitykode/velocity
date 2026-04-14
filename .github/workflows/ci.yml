@@ -1,13 +1,92 @@
-name: CI/CD
+name: CI
+
+# Single pipeline for correctness gates + release automation.
+# On push/PR: go vet, staticcheck, -race tests, router benchmarks, govulncheck.
+# On push-to-main: if all correctness gates pass, auto-version/tag/release
+# and propagate to the template and installer repos.
+# On weekly schedule: govulncheck only (new CVEs in existing deps).
 
 on:
   push:
     branches: [main]
     paths-ignore:
       - "*.md"
+      - "docs/**"
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 0 * * 0" # Weekly on Sunday — govulncheck against current deps
 
 jobs:
-  build-and-release:
+  vet:
+    name: go vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - run: go vet ./...
+
+  staticcheck:
+    name: staticcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - name: Install staticcheck
+        run: go install honnef.co/go/tools/cmd/staticcheck@latest
+      - run: staticcheck ./...
+
+  race-tests:
+    name: go test -race
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - name: Run tests with race detector
+        run: go test -race -timeout 10m ./...
+
+  benchmarks:
+    name: router benchmarks (smoke)
+    runs-on: ubuntu-latest
+    # Skip on the weekly cron — benchmarks against an unchanged tree
+    # produce no new signal. Smoke only: ensures benchmarks still
+    # compile and run. A benchstat-based regression gate (compare PR
+    # HEAD vs main baseline) remains a follow-up.
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - name: Run router benchmarks
+        run: |
+          go test -run='^$' -bench='BenchmarkRouter_(StaticHit|DynamicHit|MissFallback)' \
+            -benchtime=5000x -benchmem ./router/
+
+  vulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: govulncheck ./...
+
+  release:
+    name: auto-release
+    # Release only on direct push to main. PRs and the weekly cron
+    # don't publish anything.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [vet, staticcheck, race-tests]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -80,7 +159,7 @@ jobs:
         if: steps.check.outputs.skip == 'false'
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26'
+          go-version: "1.26"
 
       - name: Auto-format
         if: steps.check.outputs.skip == 'false'
@@ -92,10 +171,6 @@ jobs:
             git add -A
             git commit -m "chore: auto-format with gofmt"
           fi
-
-      - name: Run tests
-        if: steps.check.outputs.skip == 'false'
-        run: go test ./... -short
 
       - name: Commit and tag
         if: steps.check.outputs.skip == 'false'
