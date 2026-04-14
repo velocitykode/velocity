@@ -285,10 +285,10 @@ func TestResult_Old_CaseInsensitiveSensitiveFields(t *testing.T) {
 		{
 			name: "lowercase sensitive fields",
 			input: map[string]interface{}{
-				"name":           "Ali",
-				"password":       "secret",
-				"api_token":      "tok",
-				"client_secret":  "sec",
+				"name":          "Ali",
+				"password":      "secret",
+				"api_token":     "tok",
+				"client_secret": "sec",
 			},
 			wantKeys:   []string{"name"},
 			rejectKeys: []string{"password", "api_token", "client_secret"},
@@ -296,10 +296,10 @@ func TestResult_Old_CaseInsensitiveSensitiveFields(t *testing.T) {
 		{
 			name: "uppercase sensitive fields",
 			input: map[string]interface{}{
-				"name":           "Ali",
-				"PASSWORD":       "secret",
-				"API_TOKEN":      "tok",
-				"CLIENT_SECRET":  "sec",
+				"name":          "Ali",
+				"PASSWORD":      "secret",
+				"API_TOKEN":     "tok",
+				"CLIENT_SECRET": "sec",
 			},
 			wantKeys:   []string{"name"},
 			rejectKeys: []string{"PASSWORD", "API_TOKEN", "CLIENT_SECRET"},
