@@ -1,15 +1,12 @@
 package crypto
 
 import (
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"io"
 	"strings"
 
 	"github.com/velocitykode/velocity/crypto/drivers"
-	"golang.org/x/crypto/hkdf"
 )
 
 // Errors
@@ -116,15 +113,6 @@ func parseKey(keyStr string) ([]byte, error) {
 
 	// Use raw key
 	return []byte(keyStr), nil
-}
-
-// deriveKey uses HKDF-SHA256 to derive an AES key of the required size from arbitrary key material.
-func deriveKey(password []byte, keySize int) []byte {
-	r := hkdf.New(sha256.New, password, []byte("velocity-framework-hkdf-salt-v1"), []byte("velocity-encryption"))
-	derived := make([]byte, keySize)
-	// HKDF with SHA-256 can always produce up to 255*32 bytes; keySize is 16 or 32.
-	io.ReadFull(r, derived)
-	return derived
 }
 
 // SerializePayload converts a payload to base64 JSON

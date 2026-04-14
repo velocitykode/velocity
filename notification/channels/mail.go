@@ -132,9 +132,7 @@ func renderMailText(m *notification.MailMessage) string {
 		parts = append(parts, "")
 	}
 
-	for _, line := range m.GetLines() {
-		parts = append(parts, line)
-	}
+	parts = append(parts, m.GetLines()...)
 
 	if action := m.GetAction(); action != nil {
 		parts = append(parts, "")
@@ -142,9 +140,7 @@ func renderMailText(m *notification.MailMessage) string {
 		parts = append(parts, "")
 	}
 
-	for _, line := range m.GetOutro() {
-		parts = append(parts, line)
-	}
+	parts = append(parts, m.GetOutro()...)
 
 	if len(parts) == 0 {
 		return ""

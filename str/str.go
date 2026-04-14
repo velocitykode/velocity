@@ -5,7 +5,12 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
+
+var titleCaser = cases.Title(language.Und)
 
 // After returns the substring after the first occurrence of the given value.
 // If the value doesn't exist, returns the entire string.
@@ -591,7 +596,7 @@ func Take(str string, limit int) string {
 
 // Title converts the string to title case.
 func Title(value string) string {
-	return strings.Title(strings.ToLower(value))
+	return titleCaser.String(strings.ToLower(value))
 }
 
 // Trim trims the string of the given characters.

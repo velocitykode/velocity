@@ -64,7 +64,7 @@ func (r *EventRegistry) DiscoverFromType(subscriber interface{}) map[string]stri
 	typeName := typ.Name()
 
 	// Check pointer receiver methods
-	ptrType := reflect.PtrTo(typ)
+	ptrType := reflect.PointerTo(typ)
 	for i := 0; i < ptrType.NumMethod(); i++ {
 		method := ptrType.Method(i)
 		if strings.HasPrefix(method.Name, "Handle") {

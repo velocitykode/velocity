@@ -309,13 +309,6 @@ func (r *RedisDriver) Close() error {
 }
 
 // Helper methods
-func (r *RedisDriver) getQueueName(queueName ...string) string {
-	if len(queueName) > 0 && queueName[0] != "" {
-		return queueName[0]
-	}
-	return "default"
-}
-
 func (r *RedisDriver) getQueueKey(name string) string {
 	return fmt.Sprintf("velocity:queue:%s", name)
 }

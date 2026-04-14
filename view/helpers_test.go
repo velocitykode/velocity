@@ -364,6 +364,7 @@ func TestLazy(t *testing.T) {
 			}
 
 			// Verify returns correct bond type
+			//lint:ignore SA1019 asserting the deprecation-shim return type
 			if _, ok := interface{}(prop).(bond.LazyProp); !ok {
 				t.Error("Lazy did not return bond.LazyProp type")
 			}
@@ -852,7 +853,7 @@ func TestSimpleValidationProvider_EdgeCases(t *testing.T) {
 			}
 
 			if tt.wantErrors == nil {
-				if errors != nil && len(errors) > 0 {
+				if len(errors) > 0 {
 					t.Errorf("GetValidationErrors returned %v, want nil/empty", errors)
 				}
 				return

@@ -20,7 +20,11 @@ func Error(w http.ResponseWriter, r *http.Request, message string, url string) {
 	http.Redirect(w, r, url, http.StatusSeeOther)
 }
 
-// Lazy creates a lazy prop that only evaluates when explicitly requested
+// Lazy creates a lazy prop that only evaluates when explicitly requested.
+//
+// Deprecated: This is a shim over bond.Lazy, which is itself deprecated
+// in favor of bond.Optional. New code should use view.Optional instead,
+// which provides the same behavior plus partial-reload capabilities.
 func Lazy(fn func() (any, error)) bond.LazyProp {
 	return bond.Lazy(fn)
 }

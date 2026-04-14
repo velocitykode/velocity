@@ -6,6 +6,8 @@ import (
 	"testing"
 )
 
+type testCtxKey string
+
 // testEventCollector collects dispatched events for testing
 type testEventCollector struct {
 	mu     sync.Mutex
@@ -29,14 +31,6 @@ func (c *testEventCollector) clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.events = make([]interface{}, 0)
-}
-
-func (c *testEventCollector) getEvents() []interface{} {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	result := make([]interface{}, len(c.events))
-	copy(result, c.events)
-	return result
 }
 
 func (c *testEventCollector) findEvent(predicate func(interface{}) bool) interface{} {
@@ -115,7 +109,7 @@ func TestQueryWithContext(t *testing.T) {
 		columns: []string{"*"},
 	}
 
-	ctx := context.WithValue(context.Background(), "test", "value")
+	ctx := context.WithValue(context.Background(), testCtxKey("test"), "value")
 	q.WithContext(ctx)
 
 	if q.ctx != ctx {
@@ -145,7 +139,7 @@ func TestManagerDispatchEventWithContext(t *testing.T) {
 	m := &Manager{}
 	m.SetEventDispatcher(collector.dispatch)
 
-	ctx := context.WithValue(context.Background(), "request_id", "test-123")
+	ctx := context.WithValue(context.Background(), testCtxKey("request_id"), "test-123")
 
 	m.dispatchEvent(&QueryExecuted{
 		Context:    ctx,
@@ -159,7 +153,7 @@ func TestManagerDispatchEventWithContext(t *testing.T) {
 			if q.Context == nil {
 				return false
 			}
-			val := q.Context.Value("request_id")
+			val := q.Context.Value(testCtxKey("request_id"))
 			return val == "test-123"
 		}
 		return false

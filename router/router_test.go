@@ -485,3 +485,61 @@ func TestStaticDisabled(t *testing.T) {
 		t.Error("Route handler was not called when static is disabled")
 	}
 }
+
+// BenchmarkRouter_StaticHit exercises the O(1) compiled static-route
+// fast path in ServeHTTP (velocity_router.go compiledRoutes).
+// Protect this number: a refactor that silently drops the static path
+// back to a tree walk will show up here as a large regression.
+func BenchmarkRouter_StaticHit(b *testing.B) {
+	r := New()
+	r.Get("/users", func(c *Context) error {
+		c.Response.WriteHeader(http.StatusOK)
+		return nil
+	})
+	r.Freeze()
+
+	req := httptest.NewRequest("GET", "/users", nil)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+	}
+}
+
+// BenchmarkRouter_DynamicHit exercises the tree walk for parameterized
+// routes (no static-map shortcut possible). This is the common case for
+// REST routes like /users/{id}.
+func BenchmarkRouter_DynamicHit(b *testing.B) {
+	r := New()
+	r.Get("/users/{id}/posts/{postID}", func(c *Context) error {
+		c.Response.WriteHeader(http.StatusOK)
+		return nil
+	})
+	r.Freeze()
+
+	req := httptest.NewRequest("GET", "/users/42/posts/7", nil)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+	}
+}
+
+// BenchmarkRouter_MissFallback exercises the 404 path: static-map miss,
+// tree walk miss, default not-found handler. Regressions here signal
+// a hot loop added to the miss path (e.g., allocating an error per miss).
+func BenchmarkRouter_MissFallback(b *testing.B) {
+	r := New()
+	r.Get("/users", func(c *Context) error { return nil })
+	r.Freeze()
+
+	req := httptest.NewRequest("GET", "/does-not-exist", nil)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+	}
+}

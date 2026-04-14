@@ -247,14 +247,6 @@ func (m *MemoryDriver) moveReadyJobs() {
 	}
 }
 
-// getQueueName returns the queue name or default
-func (m *MemoryDriver) getQueueName(queueName ...string) string {
-	if len(queueName) > 0 && queueName[0] != "" {
-		return queueName[0]
-	}
-	return "default"
-}
-
 // GenericJob is a wrapper for jobs in memory driver
 type GenericJob struct {
 	Payload *Payload

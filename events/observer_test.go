@@ -299,8 +299,6 @@ func TestModelEvent(t *testing.T) {
 // Test auto observer with custom type
 type CustomUserObserver struct {
 	creatingCalled bool
-	createdCalled  bool
-	updatingCalled bool
 }
 
 func (o *CustomUserObserver) Creating(model interface{}) error {

@@ -7,6 +7,10 @@ import (
 	"time"
 )
 
+type testCtxKey string
+
+const testRequestIDKey testCtxKey = "request_id"
+
 // testEventCollector collects dispatched events for testing
 type testEventCollector struct {
 	mu     sync.Mutex
@@ -30,14 +34,6 @@ func (c *testEventCollector) clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.events = make([]interface{}, 0)
-}
-
-func (c *testEventCollector) getEvents() []interface{} {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	result := make([]interface{}, len(c.events))
-	copy(result, c.events)
-	return result
 }
 
 func (c *testEventCollector) findEvent(predicate func(interface{}) bool) interface{} {
@@ -90,14 +86,14 @@ func TestDispatchCacheHit(t *testing.T) {
 	_ = manager.Put("user:1", "value", time.Minute)
 	collector.clear()
 
-	ctx := context.WithValue(context.Background(), "request_id", "test-123")
+	ctx := context.WithValue(context.Background(), testRequestIDKey, "test-123")
 	_, _ = manager.GetWithContext(ctx, "user:1")
 
 	event := collector.findEvent(func(e interface{}) bool {
 		if ch, ok := e.(*CacheHit); ok {
 			return ch.Key == "user:1" &&
 				ch.Store == "memory" &&
-				ch.Context.Value("request_id") == "test-123"
+				ch.Context.Value(testRequestIDKey) == "test-123"
 		}
 		return false
 	})
@@ -296,7 +292,7 @@ func TestManagerWithContextMethods(t *testing.T) {
 	collector := newTestEventCollector()
 	manager := newTestManager(collector)
 
-	ctx := context.WithValue(context.Background(), "request_id", "req-456")
+	ctx := context.WithValue(context.Background(), testRequestIDKey, "req-456")
 
 	// Test PutWithContext
 	err := manager.PutWithContext(ctx, "ctx:key", "value", time.Minute)
@@ -306,7 +302,7 @@ func TestManagerWithContextMethods(t *testing.T) {
 
 	event := collector.findEvent(func(e interface{}) bool {
 		if cw, ok := e.(*CacheWritten); ok {
-			return cw.Context.Value("request_id") == "req-456"
+			return cw.Context.Value(testRequestIDKey) == "req-456"
 		}
 		return false
 	})
@@ -320,7 +316,7 @@ func TestManagerWithContextMethods(t *testing.T) {
 	_, _ = manager.GetWithContext(ctx, "ctx:key")
 	event = collector.findEvent(func(e interface{}) bool {
 		if ch, ok := e.(*CacheHit); ok {
-			return ch.Context.Value("request_id") == "req-456"
+			return ch.Context.Value(testRequestIDKey) == "req-456"
 		}
 		return false
 	})
@@ -334,7 +330,7 @@ func TestManagerWithContextMethods(t *testing.T) {
 	_ = manager.ForgetWithContext(ctx, "ctx:key")
 	event = collector.findEvent(func(e interface{}) bool {
 		if cf, ok := e.(*CacheForgotten); ok {
-			return cf.Context.Value("request_id") == "req-456"
+			return cf.Context.Value(testRequestIDKey) == "req-456"
 		}
 		return false
 	})

@@ -376,7 +376,7 @@ func TestNew(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			b := New(tt.driver)
 			if b == nil {
-				t.Error("New() returned nil, want non-nil broadcaster")
+				t.Fatal("New() returned nil, want non-nil broadcaster")
 			}
 			if b.driver != tt.driver {
 				t.Error("New() did not set driver correctly")

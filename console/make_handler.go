@@ -95,7 +95,11 @@ func toHandlerName(name string) string {
 func toPascalCase(s string) string {
 	words := splitWords(s)
 	for i, word := range words {
-		words[i] = strings.Title(strings.ToLower(word))
+		word = strings.ToLower(word)
+		if word == "" {
+			continue
+		}
+		words[i] = strings.ToUpper(word[:1]) + word[1:]
 	}
 	return strings.Join(words, "")
 }

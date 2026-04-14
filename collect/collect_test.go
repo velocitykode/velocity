@@ -24,13 +24,6 @@ func assertSlice[T any](t *testing.T, got, want []T) {
 	}
 }
 
-func assertMap[K comparable, V any](t *testing.T, got, want map[K]V) {
-	t.Helper()
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("got %v; want %v", got, want)
-	}
-}
-
 // --- Filter -----------------------------------------------------------------
 
 func TestFilter(t *testing.T) {

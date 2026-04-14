@@ -92,7 +92,7 @@ func TestNewCookieStore(t *testing.T) {
 			wantErr: false,
 			checkResult: func(t *testing.T, store *CookieStore) {
 				if store == nil {
-					t.Error("expected store to be non-nil")
+					t.Fatal("expected store to be non-nil")
 				}
 				if store.encryptor == nil {
 					t.Error("expected encryptor to be set")

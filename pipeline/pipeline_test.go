@@ -480,7 +480,7 @@ func TestThroughReplaces(t *testing.T) {
 // Nil passable
 
 func TestNilPassable(t *testing.T) {
-	type data struct{ value int }
+	type data struct{}
 
 	stage := Pipe[*data](func(d *data, next func(*data) error) error {
 		if d == nil {
@@ -499,7 +499,7 @@ func TestNilPassable(t *testing.T) {
 }
 
 func TestNilPassableReachesDestination(t *testing.T) {
-	type data struct{ value int }
+	type data struct{}
 
 	passthrough := Pipe[*data](func(d *data, next func(*data) error) error {
 		return next(d)

@@ -179,7 +179,13 @@ func TestMemoryStore(t *testing.T) {
 		}
 
 		// Second call should use cache
-		val, err = store.RememberForever("remember-forever", callback)
+		val2, err2 := store.RememberForever("remember-forever", callback)
+		if err2 != nil {
+			t.Fatalf("Second RememberForever failed: %v", err2)
+		}
+		if val2 != "permanent" {
+			t.Fatalf("Expected cached permanent, got %v", val2)
+		}
 		if callCount != 1 {
 			t.Fatalf("Callback should only be called once")
 		}

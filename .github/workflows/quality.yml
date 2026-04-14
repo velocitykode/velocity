@@ -1,0 +1,66 @@
+name: Quality
+
+# Runs the core correctness gates on every PR and push to main:
+# go vet, staticcheck, the full test suite under the race detector,
+# and a smoke run of the router benchmarks.
+#
+# ci.yml stays focused on release automation. Keep signal lanes split.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "*.md"
+      - "docs/**"
+  pull_request:
+    branches: [main]
+
+jobs:
+  vet:
+    name: go vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - run: go vet ./...
+
+  staticcheck:
+    name: staticcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - name: Install staticcheck
+        run: go install honnef.co/go/tools/cmd/staticcheck@latest
+      - run: staticcheck ./...
+
+  race-tests:
+    name: go test -race
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - name: Run tests with race detector
+        run: go test -race -timeout 10m ./...
+
+  benchmarks:
+    name: router benchmarks (smoke)
+    runs-on: ubuntu-latest
+    # Smoke run only — confirms the benchmarks still compile and produce
+    # numbers. A proper benchstat-based regression gate (compare PR HEAD
+    # vs main baseline) is tracked as a Phase 1b follow-up.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - name: Run router benchmarks
+        run: |
+          go test -run='^$' -bench='BenchmarkRouter_(StaticHit|DynamicHit|MissFallback)' \
+            -benchtime=5000x -benchmem ./router/

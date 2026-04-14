@@ -9,7 +9,7 @@ func TestNewMessage(t *testing.T) {
 	msg := NewMessage()
 
 	if msg == nil {
-		t.Error("Expected message to be created")
+		t.Fatal("Expected message to be created")
 	}
 
 	if msg.priority != NormalPriority {

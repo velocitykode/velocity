@@ -1598,9 +1598,7 @@ func TestVelocityRouterV2_ClearRoutes(t *testing.T) {
 
 	t.Run("group ClearCompiledRoutes delegates to router", func(t *testing.T) {
 		router := NewV2()
-		var group Router
-
-		group = router.Group("/api", func(api Router) {
+		group := router.Group("/api", func(api Router) {
 			api.Get("/test", func(c *Context) error { return nil })
 		})
 

@@ -113,13 +113,15 @@ func TestTableBuilder_SoftDeletes_SQL(t *testing.T) {
 
 			// Use CreateTableSQL to get the SQL without executing
 			var generatedSQL string
-			err = migrator.CreateTable("soft_delete_test", func(tb *migrate.TableBuilder) {
+			if err := migrator.CreateTable("soft_delete_test", func(tb *migrate.TableBuilder) {
 				tb.ID()
 				tb.String("name")
 				tb.Timestamps()
 				tb.SoftDeletes()
 				generatedSQL = tb.ToSQL()
-			})
+			}); err != nil {
+				t.Fatalf("CreateTable failed: %v", err)
+			}
 
 			if !strings.Contains(generatedSQL, tt.contains) {
 				t.Errorf("expected SQL to contain %q, got:\n%s", tt.contains, generatedSQL)
@@ -536,12 +538,14 @@ func TestTableBuilder_JSON_SQL(t *testing.T) {
 			migrator := migrate.NewMigrator(db, manager.DriverName())
 
 			var generatedSQL string
-			err = migrator.CreateTable("json_sql_test", func(tb *migrate.TableBuilder) {
+			if err := migrator.CreateTable("json_sql_test", func(tb *migrate.TableBuilder) {
 				tb.ID()
 				tb.JSON("metadata")
 				tb.JSONB("settings").Nullable()
 				generatedSQL = tb.ToSQL()
-			})
+			}); err != nil {
+				t.Fatalf("CreateTable failed: %v", err)
+			}
 
 			if !strings.Contains(generatedSQL, tt.jsonContains) {
 				t.Errorf("expected SQL to contain %q, got:\n%s", tt.jsonContains, generatedSQL)
@@ -662,11 +666,13 @@ func TestTableBuilder_Decimal_SQL(t *testing.T) {
 			migrator := migrate.NewMigrator(db, manager.DriverName())
 
 			var generatedSQL string
-			err = migrator.CreateTable("decimal_test", func(tb *migrate.TableBuilder) {
+			if err := migrator.CreateTable("decimal_test", func(tb *migrate.TableBuilder) {
 				tb.ID()
 				tb.Decimal("cpu", 5, 2)
 				generatedSQL = tb.ToSQL()
-			})
+			}); err != nil {
+				t.Fatalf("CreateTable failed: %v", err)
+			}
 
 			if !strings.Contains(generatedSQL, tt.contains) {
 				t.Errorf("expected SQL to contain %q, got:\n%s", tt.contains, generatedSQL)

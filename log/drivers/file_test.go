@@ -169,6 +169,9 @@ func TestFileLogger_ConcurrentWrites(t *testing.T) {
 }
 
 func TestFileLogger_InvalidPath(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses filesystem permission checks; this test requires non-root")
+	}
 	// Use an invalid path that can't be created
 	logger := NewFileLogger("/nonexistent/path/that/cannot/be/created", 0, 0)
 
@@ -254,6 +257,9 @@ func TestFileLogger_CloseError(t *testing.T) {
 }
 
 func TestFileLogger_OpenFileError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses filesystem permission checks; this test requires non-root")
+	}
 	// Create a read-only directory to prevent file creation
 	tempDir := t.TempDir()
 	readOnlyDir := filepath.Join(tempDir, "readonly")

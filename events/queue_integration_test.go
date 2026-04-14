@@ -3,42 +3,8 @@ package events
 import (
 	"encoding/json"
 	"errors"
-	"sync"
 	"testing"
-	"time"
 )
-
-// Mock queue manager for testing
-type mockQueueManager struct {
-	mu         sync.Mutex
-	jobs       []interface{}
-	delays     []time.Duration
-	queueNames []string
-}
-
-func (m *mockQueueManager) Push(job interface{}, queueName string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.jobs = append(m.jobs, job)
-	m.queueNames = append(m.queueNames, queueName)
-	m.delays = append(m.delays, 0)
-	return nil
-}
-
-func (m *mockQueueManager) Later(delay time.Duration, job interface{}, queueName string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.jobs = append(m.jobs, job)
-	m.queueNames = append(m.queueNames, queueName)
-	m.delays = append(m.delays, delay)
-	return nil
-}
-
-func (m *mockQueueManager) GetJobs() []interface{} {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.jobs
-}
 
 // Test EventListenerJob
 func TestEventListenerJob(t *testing.T) {

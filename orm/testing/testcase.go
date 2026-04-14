@@ -10,10 +10,7 @@ import (
 	"github.com/velocitykode/velocity/orm/migrate"
 )
 
-var (
-	schemaRefreshed     bool
-	schemaRefreshedOnce sync.Once
-)
+var schemaRefreshedOnce sync.Once
 
 // TestCase provides test helpers for database testing
 type TestCase struct {
@@ -60,7 +57,6 @@ func (tc *TestCase) LazyRefreshDatabase() {
 		if err := migrator.Up(); err != nil {
 			tc.t.Fatalf("LazyRefreshDatabase: failed to run migrations: %v", err)
 		}
-		schemaRefreshed = true
 	})
 
 	// Truncate tables for each test (fast cleanup)
@@ -121,6 +117,5 @@ func (tc *TestCase) ensureSafeEnvironment() {
 
 // ResetSchemaRefresh resets the schema refresh flag (for testing the testing framework)
 func ResetSchemaRefresh() {
-	schemaRefreshed = false
 	schemaRefreshedOnce = sync.Once{}
 }

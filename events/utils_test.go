@@ -46,13 +46,6 @@ func TestCamelToDot(t *testing.T) {
 func TestDispatcherUntil(t *testing.T) {
 	d := NewDispatcher()
 
-	// Create a listener that returns a result
-	type ResultListener struct {
-		returnValue interface{}
-		returnError error
-		called      bool
-	}
-
 	listener1 := &TestListener{}
 	listener2 := &TestListener{}
 

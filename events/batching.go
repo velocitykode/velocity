@@ -10,7 +10,6 @@ import (
 // BatchingDispatcher batches events and dispatches them in groups
 type BatchingDispatcher struct {
 	*DefaultDispatcher
-	mu            sync.RWMutex
 	batchSize     int
 	flushInterval time.Duration
 	batch         []interface{}
@@ -106,12 +105,10 @@ func (d *BatchingDispatcher) GetBatchSize() int {
 // DebouncingDispatcher debounces events to prevent rapid firing
 type DebouncingDispatcher struct {
 	*DefaultDispatcher
-	mu       sync.RWMutex
 	debounce time.Duration
 	timers   map[string]*time.Timer
 	timersMu sync.RWMutex
 	stopCh   chan struct{}
-	wg       sync.WaitGroup
 }
 
 // NewDebouncingDispatcher creates a new debouncing dispatcher
@@ -182,7 +179,6 @@ func (d *DebouncingDispatcher) GetPendingCount() int {
 // ThrottlingDispatcher throttles event dispatching to a maximum rate
 type ThrottlingDispatcher struct {
 	*DefaultDispatcher
-	mu           sync.RWMutex
 	interval     time.Duration
 	lastDispatch map[string]time.Time
 	dispatchMu   sync.RWMutex
@@ -241,7 +237,6 @@ func (d *ThrottlingDispatcher) Reset(eventName string) {
 // RateLimitedDispatcher provides rate limiting for event dispatching
 type RateLimitedDispatcher struct {
 	*DefaultDispatcher
-	mu         sync.RWMutex
 	maxEvents  int
 	window     time.Duration
 	eventCount map[string][]time.Time
@@ -318,7 +313,6 @@ func (d *RateLimitedDispatcher) GetRemainingEvents(eventName string) int {
 // CoalescingDispatcher coalesces rapid identical events into a single dispatch
 type CoalescingDispatcher struct {
 	*DefaultDispatcher
-	mu        sync.RWMutex
 	coalesce  time.Duration
 	pending   map[string]*coalescedEvent
 	pendingMu sync.RWMutex

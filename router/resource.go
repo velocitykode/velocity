@@ -87,11 +87,7 @@ func isValidHandlerSignature(methodType reflect.Type) bool {
 
 	// Check output is error
 	errorType := reflect.TypeOf((*error)(nil)).Elem()
-	if !methodType.Out(0).Implements(errorType) {
-		return false
-	}
-
-	return true
+	return methodType.Out(0).Implements(errorType)
 }
 
 // buildReflectionHandler creates a HandlerFunc from a reflected method

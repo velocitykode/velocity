@@ -29,7 +29,6 @@ type Job struct {
 	// State
 	running   bool
 	lastRun   time.Time
-	nextRun   time.Time
 	scheduler *Scheduler
 	timezone  *time.Location
 

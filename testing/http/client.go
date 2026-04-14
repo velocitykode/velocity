@@ -365,10 +365,11 @@ func (r *TestResponse) AssertJSONCount(count int, key ...string) *TestResponse {
 		}
 		target = val
 	} else {
-		target = r.decodeJSONArray()
-		if target == nil {
+		arr := r.decodeJSONArray()
+		if arr == nil {
 			return r
 		}
+		target = arr
 	}
 
 	arr, ok := target.([]any)

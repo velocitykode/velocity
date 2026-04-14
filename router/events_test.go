@@ -27,12 +27,6 @@ func (c *testEventCollector) dispatch(event interface{}) error {
 	return nil
 }
 
-func (c *testEventCollector) clear() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.events = make([]interface{}, 0)
-}
-
 func (c *testEventCollector) getEvents() []interface{} {
 	c.mu.Lock()
 	defer c.mu.Unlock()

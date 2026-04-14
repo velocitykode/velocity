@@ -8,6 +8,8 @@ import (
 	"testing"
 )
 
+type testCtxKey string
+
 func TestRouterBasicRouting(t *testing.T) {
 	router := NewRouter()
 
@@ -826,11 +828,11 @@ func TestContextGetterSetter(t *testing.T) {
 		}
 
 		// Set new context
-		newCtx := context.WithValue(ctx, "key", "value")
+		newCtx := context.WithValue(ctx, testCtxKey("key"), "value")
 		c.SetContext(newCtx)
 
 		// Verify it was set
-		if c.Context().Value("key") != "value" {
+		if c.Context().Value(testCtxKey("key")) != "value" {
 			t.Error("Expected context value to be set")
 		}
 

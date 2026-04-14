@@ -18,7 +18,7 @@ func TestNewPostmarkDriver(t *testing.T) {
 	}
 
 	if driver == nil {
-		t.Error("Expected driver to be created")
+		t.Fatal("Expected driver to be created")
 	}
 
 	if driver.token != "test-token" {

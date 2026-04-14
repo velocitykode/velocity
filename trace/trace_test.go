@@ -217,13 +217,17 @@ func TestContinueTrace_NoExistingTrace(t *testing.T) {
 }
 
 func TestGettersWithNilContext(t *testing.T) {
-	// Should not panic with nil context
+	// Should not panic with nil context. The nil-ctx path is the
+	// subject under test — staticcheck SA1012 warnings are intentional here.
+	//lint:ignore SA1012 exercising the nil-context code path is the point of this test
 	if got := GetTraceID(nil); got != "" {
 		t.Errorf("Expected empty string for nil context, got %s", got)
 	}
+	//lint:ignore SA1012 exercising the nil-context code path is the point of this test
 	if got := GetSpanID(nil); got != "" {
 		t.Errorf("Expected empty string for nil context, got %s", got)
 	}
+	//lint:ignore SA1012 exercising the nil-context code path is the point of this test
 	if got := GetParentID(nil); got != "" {
 		t.Errorf("Expected empty string for nil context, got %s", got)
 	}
