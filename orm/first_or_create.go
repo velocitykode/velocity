@@ -163,7 +163,7 @@ type existenceSetter interface {
 	setExisting()
 }
 
-func (m *Model[T]) setExisting()              { m.IsExisting = true }
+func (m *Model[T]) setExisting()               { m.IsExisting = true }
 func (m *UUIDModel[T]) setExisting()           { m.IsExisting = true }
 func (m *SoftDeleteModel[T]) setExisting()     { m.IsExisting = true }
 func (m *SoftDeleteUUIDModel[T]) setExisting() { m.IsExisting = true }
