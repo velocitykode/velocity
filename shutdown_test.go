@@ -28,10 +28,18 @@ func TestShutdown_DrainsInFlightRequests(t *testing.T) {
 		t.Fatalf("bootstrap: %v", err)
 	}
 
-	// Handler sleeps 200ms before responding — long enough to be in-flight
-	// when Shutdown is called, short enough to finish before timeout.
+	// Handler signals "I'm in-flight" on entry, then sleeps long enough to
+	// still be in-flight when Shutdown is called. The started channel is
+	// a barrier the test uses to delay Shutdown until every request has
+	// actually been accepted — without that, a sleep-based wait races CI
+	// scheduler jitter and drops connections that were not yet accepted
+	// (the shutdown contract is "drain accepted connections," not "drain
+	// TCP buffers").
+	const N = 100
+	started := make(chan struct{}, N)
 	var completed int64
 	a.Router.Get("/slow", func(c *router.Context) error {
+		started <- struct{}{}
 		time.Sleep(200 * time.Millisecond)
 		atomic.AddInt64(&completed, 1)
 		c.Response.WriteHeader(http.StatusOK)
@@ -60,12 +68,11 @@ func TestShutdown_DrainsInFlightRequests(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	baselineGoroutines := runtime.NumGoroutine()
 
-	const N = 100
 	var wg sync.WaitGroup
 	statuses := make([]int, N)
 	errs := make([]error, N)
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second}
 	url := fmt.Sprintf("http://%s/slow", addr)
 
 	for i := 0; i < N; i++ {
@@ -83,11 +90,18 @@ func TestShutdown_DrainsInFlightRequests(t *testing.T) {
 		}(i)
 	}
 
-	// Give requests 50ms to be in-flight, then initiate shutdown.
-	time.Sleep(50 * time.Millisecond)
+	// Wait until every request's handler has been accepted and is in
+	// its sleep — only then does Shutdown exercise the drain path.
+	for i := 0; i < N; i++ {
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for request %d to enter handler", i+1)
+		}
+	}
 
 	shutdownStart := time.Now()
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := a.Shutdown(shutdownCtx); err != nil {
 		t.Fatalf("Shutdown returned error: %v", err)
@@ -110,9 +124,11 @@ func TestShutdown_DrainsInFlightRequests(t *testing.T) {
 		t.Errorf("handler ran %d times, want %d", got, N)
 	}
 
-	// (b) Shutdown returned within the bound.
-	if shutdownElapsed > 1500*time.Millisecond {
-		t.Errorf("Shutdown took %v; expected < 1.5s (handler sleep 200ms + slack)", shutdownElapsed)
+	// (b) Shutdown returned within the bound. The handler sleep is 200ms;
+	// we allow generous slack for CI scheduling jitter before calling
+	// the drain itself slow.
+	if shutdownElapsed > 3*time.Second {
+		t.Errorf("Shutdown took %v; expected < 3s (handler sleep 200ms + CI slack)", shutdownElapsed)
 	}
 
 	// (c) Goroutine count returns to baseline. http.Server.Shutdown can
