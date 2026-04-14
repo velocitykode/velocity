@@ -49,6 +49,19 @@ type VelocityRouterV2 struct {
 	// Called by ShutdownEventDispatcher to drain workers.
 	stopEventDispatcher func(context.Context) error
 
+	// OnEventDispatchError, if set, is invoked when the event dispatcher
+	// returns a non-nil error (most notably ErrEventBufferFull under an
+	// async dispatcher with a saturated buffer). If nil, the router
+	// increments DroppedEventCount and logs the first error at WARN via
+	// the services logger; subsequent errors are suppressed to avoid
+	// log spam. Set this to integrate with a metrics system — silent
+	// drops under saturation are the kind of failure mode that only
+	// surfaces during an incident.
+	OnEventDispatchError func(err error, event interface{})
+
+	droppedEvents   atomic.Uint64
+	firstDropLogged atomic.Bool
+
 	// Context pool for reuse
 	ctxPool sync.Pool
 
@@ -95,10 +108,44 @@ func (r *VelocityRouterV2) SetEventDispatcher(fn func(event interface{}) error) 
 }
 
 // dispatchInstanceEvent dispatches an event using the instance-level dispatcher.
+// Errors from the dispatcher (e.g. ErrEventBufferFull under an async dispatcher
+// with a saturated buffer) are routed to OnEventDispatchError if set, otherwise
+// counted via DroppedEventCount and logged once at WARN.
 func (r *VelocityRouterV2) dispatchInstanceEvent(event interface{}) {
-	if r.eventDispatcher != nil {
-		r.eventDispatcher(event)
+	if r.eventDispatcher == nil {
+		return
 	}
+	err := r.eventDispatcher(event)
+	if err == nil {
+		return
+	}
+
+	r.droppedEvents.Add(1)
+
+	if r.OnEventDispatchError != nil {
+		r.OnEventDispatchError(err, event)
+		return
+	}
+
+	// Default: log the first error only, to avoid spam. Operators who need
+	// ongoing visibility should either poll DroppedEventCount or install
+	// OnEventDispatchError.
+	if r.firstDropLogged.CompareAndSwap(false, true) &&
+		r.services != nil && r.services.Log != nil {
+		r.services.Log.Warn(
+			"velocity: event dispatch error (first occurrence; subsequent errors suppressed — poll Router.DroppedEventCount or set Router.OnEventDispatchError)",
+			"error", err.Error(),
+		)
+	}
+}
+
+// DroppedEventCount returns the total number of events for which the
+// dispatcher returned a non-nil error since the router started. Each
+// increment means an event did not reach its listener — under
+// SetAsyncEventDispatcher that almost always indicates buffer saturation.
+// Expose as a metric/gauge in production.
+func (r *VelocityRouterV2) DroppedEventCount() uint64 {
+	return r.droppedEvents.Load()
 }
 
 // Get registers a GET route

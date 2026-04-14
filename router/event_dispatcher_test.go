@@ -122,3 +122,51 @@ func TestShutdownEventDispatcher_SecondCallIsNoop(t *testing.T) {
 		t.Errorf("second shutdown: %v", err)
 	}
 }
+
+// TestDispatchInstanceEvent_DropsCountedAndCallbackInvoked verifies the
+// observability surface for dispatcher errors — the fix for the silent-drop
+// failure mode introduced by SetAsyncEventDispatcher.
+func TestDispatchInstanceEvent_DropsCountedAndCallbackInvoked(t *testing.T) {
+	r := NewV2()
+
+	// Install a dispatcher that always returns ErrEventBufferFull.
+	r.SetEventDispatcher(func(event interface{}) error {
+		return ErrEventBufferFull
+	})
+
+	var seen []interface{}
+	var seenErr error
+	r.OnEventDispatchError = func(err error, event interface{}) {
+		seenErr = err
+		seen = append(seen, event)
+	}
+
+	for i := 0; i < 7; i++ {
+		r.dispatchInstanceEvent(i)
+	}
+
+	if got, want := r.DroppedEventCount(), uint64(7); got != want {
+		t.Errorf("DroppedEventCount = %d, want %d", got, want)
+	}
+	if len(seen) != 7 {
+		t.Errorf("OnEventDispatchError invoked %d times, want 7", len(seen))
+	}
+	if !errors.Is(seenErr, ErrEventBufferFull) {
+		t.Errorf("callback err = %v, want ErrEventBufferFull", seenErr)
+	}
+}
+
+// TestDispatchInstanceEvent_NoCallbackDoesNotPanic ensures the default
+// (no OnEventDispatchError, no services.Log wired) still counts drops
+// and exits cleanly without a nil dereference.
+func TestDispatchInstanceEvent_NoCallbackDoesNotPanic(t *testing.T) {
+	r := NewV2()
+	r.SetEventDispatcher(func(event interface{}) error { return ErrEventBufferFull })
+
+	r.dispatchInstanceEvent("a")
+	r.dispatchInstanceEvent("b")
+
+	if got := r.DroppedEventCount(); got != 2 {
+		t.Errorf("DroppedEventCount = %d, want 2", got)
+	}
+}
