@@ -2,7 +2,7 @@ package validate
 
 // FormRequest defines validation rules for a request.
 // Implement this interface on a struct to create reusable, self-validating
-// request types — similar to Laravel's Form Request classes.
+// request types — the request struct itself owns its rules.
 //
 // Future usage:
 //

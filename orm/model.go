@@ -24,7 +24,7 @@ func validateIdentifier(name string) error {
 	return nil
 }
 
-// Model is the generic base model that provides Laravel-style static methods.
+// Model is the generic base model that provides static query methods on the type itself.
 // By default, models do NOT have soft deletes. Use SoftDeleteModel for soft delete support.
 type Model[T any] struct {
 	ID        uint      `orm:"primaryKey;autoIncrement" json:"id"`

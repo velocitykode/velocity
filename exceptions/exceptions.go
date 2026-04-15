@@ -1,4 +1,4 @@
-// Package exceptions provides Laravel-style exception handling for Velocity.
+// Package exceptions provides structured exception handling for Velocity.
 // It includes rich error pages in development and safe error responses in production.
 package exceptions
 

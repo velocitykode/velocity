@@ -7,7 +7,7 @@
 // inline functions using the [Pipe] adapter — both work interchangeably with
 // [Pipeline.Through].
 //
-// Struct-based stages (Laravel-style):
+// Struct-based stages:
 //
 //	type ValidateOrder struct{}
 //

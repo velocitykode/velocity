@@ -5,8 +5,8 @@ package bond
 const EventSSRRenderFailed = "bond.ssr.render.failed"
 
 // SSRErrorType classifies SSR render failures. Mirrors the categories
-// inertia-laravel emits so listeners/metrics built against Laravel's
-// enum can reuse the same labels.
+// emitted by the broader Inertia ecosystem so listeners/metrics built
+// against the standard enum can reuse the same labels.
 type SSRErrorType string
 
 const (
@@ -31,8 +31,8 @@ func ParseSSRErrorType(s string) SSRErrorType {
 
 // SSRRenderFailed is dispatched whenever the SSR gateway fails to
 // render a page and the renderer falls back to CSR. The payload mirrors
-// inertia-laravel's SsrRenderFailed event so listeners can emit the
-// same metrics/log shape across both stacks.
+// the Inertia SsrRenderFailed event shape so listeners can emit the
+// same metrics/log structure across stacks.
 type SSRRenderFailed struct {
 	// Component is the Inertia component name that failed to render.
 	Component string `json:"component"`

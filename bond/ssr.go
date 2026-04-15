@@ -30,13 +30,13 @@ type SSRGateway interface {
 }
 
 // HTTPGateway dispatches pages to a Node SSR server over HTTP.
-// Mirrors the design of inertia-laravel's HttpGateway:
+// Implements the standard Inertia HTTP SSR gateway contract:
 //   - Graceful fallback to CSR on any transport/parse failure
 //   - Rich error payload parsing (type, hint, stack, sourceLocation,
 //     browserApi) surfaced as SSRRenderFailed events
-//   - Configurable URL — defaults to 127.0.0.1:13714/render, matching
-//     inertia-laravel and gonertia. Dev deployments should point at
-//     Vite's /__inertia_ssr hot endpoint instead
+//   - Configurable URL — defaults to 127.0.0.1:13714/render, the
+//     conventional Inertia SSR address. Dev deployments should point
+//     at Vite's /__inertia_ssr hot endpoint instead
 //   - ThrowOnError for E2E tests that need failures to bubble up
 type HTTPGateway struct {
 	URL     string
@@ -44,22 +44,22 @@ type HTTPGateway struct {
 	Client  *http.Client
 
 	// Except skips SSR for any request whose page URL starts with one
-	// of these prefixes. Matches Laravel's ExcludesSsrPaths concern.
+	// of these prefixes. Equivalent to the Inertia ExcludesSsrPaths concern.
 	Except []string
 
 	// ThrowOnError makes Dispatch return the transport or render error
-	// instead of swallowing it for CSR fallback. Matches Laravel's
-	// inertia.ssr.throw_on_error config flag.
+	// instead of swallowing it for CSR fallback. Equivalent to the
+	// Inertia SSR `throw_on_error` config flag.
 	ThrowOnError bool
 
 	mu              sync.RWMutex
 	eventDispatcher func(event interface{}) error
 }
 
-// DefaultSSRURL is the conventional Inertia SSR server address used by
-// inertia-laravel and gonertia. Production SSR bundles (`node ssr.js`)
-// listen here by default. In dev, point at Vite's /__inertia_ssr hot
-// endpoint instead (e.g. http://127.0.0.1:5173/__inertia_ssr).
+// DefaultSSRURL is the conventional Inertia SSR server address.
+// Production SSR bundles (`node ssr.js`) listen here by default. In
+// dev, point at Vite's /__inertia_ssr hot endpoint instead
+// (e.g. http://127.0.0.1:5173/__inertia_ssr).
 const DefaultSSRURL = "http://127.0.0.1:13714/render"
 
 const defaultSSRTimeout = 3 * time.Second
@@ -78,8 +78,8 @@ type ssrServerError struct {
 
 // NewHTTPGateway constructs a gateway that POSTs page JSON to url.
 // An empty url falls back to DefaultSSRURL. If url has no path, /render
-// is appended to preserve the Laravel/gonertia default (users can
-// override with a full URL for dev endpoints like /__inertia_ssr).
+// is appended to preserve the conventional Inertia SSR endpoint (users
+// can override with a full URL for dev endpoints like /__inertia_ssr).
 func NewHTTPGateway(url string) *HTTPGateway {
 	if url == "" {
 		url = DefaultSSRURL

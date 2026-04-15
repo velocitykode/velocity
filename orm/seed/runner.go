@@ -48,7 +48,8 @@ func (r *Runner) Run(name string) error {
 // (it is responsible for calling other seeders via Call).
 // Otherwise, all registered seeders are run in registration order.
 func (r *Runner) RunAll() error {
-	// Check for DatabaseSeeder first (Laravel convention)
+	// "DatabaseSeeder" is the conventional aggregator name — when present
+	// it runs alone and is expected to dispatch the others via Call.
 	if _, err := globalRegistry.Find("DatabaseSeeder"); err == nil {
 		return r.Run("DatabaseSeeder")
 	}

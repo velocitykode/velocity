@@ -11,7 +11,6 @@ import (
 func ConfigFromEnv() (Config, bool) {
 	cryptoKey := os.Getenv("CRYPTO_KEY")
 	if cryptoKey == "" {
-		// Also check for APP_KEY (Laravel compatibility)
 		cryptoKey = os.Getenv("APP_KEY")
 		if cryptoKey == "" {
 			return Config{}, false

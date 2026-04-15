@@ -35,9 +35,9 @@ type SSRConfig struct {
 	Except  []string      // URL prefixes excluded from SSR
 
 	// ThrowOnError makes Dispatch return a real error on failure
-	// instead of silently falling back to CSR. Matches Laravel's
-	// inertia.ssr.throw_on_error — useful for E2E tests that need
-	// SSR failures to fail loudly rather than render CSR.
+	// instead of silently falling back to CSR. Equivalent to the
+	// Inertia SSR `throw_on_error` config flag — useful for E2E tests
+	// that need SSR failures to fail loudly rather than render CSR.
 	ThrowOnError bool
 }
 

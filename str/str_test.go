@@ -210,12 +210,12 @@ func TestSlug(t *testing.T) {
 		separator string
 		expected  string
 	}{
-		{"basic", "Laravel 5 Framework", "-", "laravel-5-framework"},
-		{"with dots", "Laravel 5.x Framework", "-", "laravel-5-x-framework"},
-		{"special chars", "Laravel @ Framework!", "-", "laravel-framework"},
-		{"custom separator", "Laravel Framework", "_", "laravel_framework"},
-		{"multiple spaces", "Laravel  Framework", "-", "laravel-framework"},
-		{"leading trailing spaces", "  Laravel Framework  ", "-", "laravel-framework"},
+		{"basic", "Velocity 1 Framework", "-", "velocity-1-framework"},
+		{"with dots", "Velocity 1.x Framework", "-", "velocity-1-x-framework"},
+		{"special chars", "Velocity @ Framework!", "-", "velocity-framework"},
+		{"custom separator", "Velocity Framework", "_", "velocity_framework"},
+		{"multiple spaces", "Velocity  Framework", "-", "velocity-framework"},
+		{"leading trailing spaces", "  Velocity Framework  ", "-", "velocity-framework"},
 	}
 
 	for _, tt := range tests {
@@ -467,11 +467,11 @@ func TestStringable(t *testing.T) {
 	})
 
 	t.Run("slug generation", func(t *testing.T) {
-		result := Of("Laravel 5 Framework!").
+		result := Of("Velocity 1 Framework!").
 			Slug("-").
 			String()
 
-		expected := "laravel-5-framework"
+		expected := "velocity-1-framework"
 		if result != expected {
 			t.Errorf("Slug = %q; want %q", result, expected)
 		}
@@ -527,10 +527,10 @@ func TestContainsAll(t *testing.T) {
 }
 
 func TestExactly(t *testing.T) {
-	if !Exactly("Laravel", "Laravel") {
+	if !Exactly("Velocity", "Velocity") {
 		t.Error("Exactly should return true for identical strings")
 	}
-	if Exactly("Laravel", "laravel") {
+	if Exactly("Velocity", "velocity") {
 		t.Error("Exactly should return false for different case")
 	}
 }
@@ -613,7 +613,7 @@ func TestIsUlid(t *testing.T) {
 }
 
 func TestIsUrl(t *testing.T) {
-	if !IsUrl("https://laravel.com") {
+	if !IsUrl("https://velocity.dev") {
 		t.Error("IsUrl should return true for valid URL")
 	}
 	if IsUrl("not a url") {
@@ -622,13 +622,13 @@ func TestIsUrl(t *testing.T) {
 }
 
 func TestLength(t *testing.T) {
-	if Length("Laravel") != 7 {
-		t.Error("Length should return 7")
+	if Length("Velocity") != 8 {
+		t.Error("Length should return 8")
 	}
 }
 
 func TestLower(t *testing.T) {
-	if Lower("LARAVEL") != "laravel" {
+	if Lower("VELOCITY") != "velocity" {
 		t.Error("Lower should convert to lowercase")
 	}
 }
@@ -657,7 +657,7 @@ func TestMatchAll(t *testing.T) {
 }
 
 func TestTest(t *testing.T) {
-	if !Test("^Laravel", "Laravel Framework") {
+	if !Test("^Velocity", "Velocity Framework") {
 		t.Error("Test should return true")
 	}
 }
@@ -711,23 +711,23 @@ func TestAscii(t *testing.T) {
 }
 
 func TestMarkdown(t *testing.T) {
-	result := Markdown("# Laravel")
-	if !Contains(result, "Laravel") {
-		t.Error("Markdown should contain 'Laravel'")
+	result := Markdown("# Velocity")
+	if !Contains(result, "Velocity") {
+		t.Error("Markdown should contain 'Velocity'")
 	}
 }
 
 func TestSquish(t *testing.T) {
-	result := Squish("   laravel   framework   ")
-	expected := "laravel framework"
+	result := Squish("   velocity   framework   ")
+	expected := "velocity framework"
 	if result != expected {
 		t.Errorf("Squish = %q; want %q", result, expected)
 	}
 }
 
 func TestSquishFast(t *testing.T) {
-	result := SquishFast("   laravel   framework   ")
-	expected := "laravel framework"
+	result := SquishFast("   velocity   framework   ")
+	expected := "velocity framework"
 	if result != expected {
 		t.Errorf("SquishFast = %q; want %q", result, expected)
 	}

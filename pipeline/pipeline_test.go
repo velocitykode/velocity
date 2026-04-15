@@ -248,7 +248,7 @@ func TestErrorPropagationThroughChain(t *testing.T) {
 	}
 }
 
-// Struct-based stages — the Laravel-style API
+// Struct-based stages
 
 type validateOrder struct{}
 
