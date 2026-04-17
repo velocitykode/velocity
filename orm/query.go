@@ -33,7 +33,25 @@ func isValidOperator(op string) bool {
 	return validOperators[strings.ToUpper(strings.TrimSpace(op))]
 }
 
-// Query represents a chainable query builder with generics
+// Query is a MUTABLE chainable query builder.
+//
+// Every chain step (Where, OrWhere, OrderBy, Limit, With, …) appends to the
+// shared underlying slices on the receiver. Chained calls return the same
+// *Query[T], so saving a handle mid-chain and continuing to chain off it
+// mutates the handle.
+//
+// If you need to fork a query — e.g. to build two variants off a shared
+// base — call Clone() to obtain an independent copy whose slices are not
+// aliased with the original. Without Clone(), appends in one branch leak
+// into the other.
+//
+// Clone() performs a shallow-deep copy: slice backing arrays are duplicated,
+// scalar fields are copied by value, and the driver reference is shared
+// (drivers are safe to share across goroutines).
+//
+// Callers who want a fluent-style "always fresh builder" API should wrap
+// queries in their own constructor rather than attempt to reuse a single
+// *Query[T] across requests.
 type Query[T any] struct {
 	driver        drivers.Driver
 	table         string
@@ -122,6 +140,70 @@ func checkSoftDelete(t reflect.Type) bool {
 	}
 
 	return false
+}
+
+// Clone returns an independent copy of the query. Slice fields are
+// duplicated so subsequent chain calls on the clone do not mutate the
+// source (and vice versa). The driver reference is shared because
+// drivers.Driver implementations are safe for concurrent use.
+//
+// Use Clone when forking a query into variants:
+//
+//	base := Model[User]{}.Where("tenant_id = ?", tid)
+//	active := base.Clone().Where("active = ?", true)
+//	trashed := base.Clone().OnlyTrashed()
+//
+// Without Clone, the subsequent Where/OnlyTrashed calls would leak into
+// the shared base and each other.
+func (q *Query[T]) Clone() *Query[T] {
+	if q == nil {
+		return nil
+	}
+	clone := &Query[T]{
+		driver:        q.driver,
+		table:         q.table,
+		distinct:      q.distinct,
+		withTrashed:   q.withTrashed,
+		onlyTrashed:   q.onlyTrashed,
+		lockForUpdate: q.lockForUpdate,
+		skipLocked:    q.skipLocked,
+		hasSoftDelete: q.hasSoftDelete,
+		ctx:           q.ctx,
+		lastSQL:       q.lastSQL,
+	}
+	if q.conditions != nil {
+		clone.conditions = append([]drivers.Condition(nil), q.conditions...)
+	}
+	if q.orders != nil {
+		clone.orders = append([]drivers.Order(nil), q.orders...)
+	}
+	if q.groups != nil {
+		clone.groups = append([]string(nil), q.groups...)
+	}
+	if q.having != nil {
+		clone.having = append([]drivers.Condition(nil), q.having...)
+	}
+	if q.joins != nil {
+		clone.joins = append([]drivers.Join(nil), q.joins...)
+	}
+	if q.columns != nil {
+		clone.columns = append([]string(nil), q.columns...)
+	}
+	if q.preloads != nil {
+		clone.preloads = append([]string(nil), q.preloads...)
+	}
+	if q.limit != nil {
+		n := *q.limit
+		clone.limit = &n
+	}
+	if q.offset != nil {
+		n := *q.offset
+		clone.offset = &n
+	}
+	if q.lastArgs != nil {
+		clone.lastArgs = append([]any(nil), q.lastArgs...)
+	}
+	return clone
 }
 
 // Where adds a WHERE condition
