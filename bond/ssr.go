@@ -91,6 +91,13 @@ const DefaultSSRURL = "http://127.0.0.1:13714/render"
 
 const defaultSSRTimeout = 3 * time.Second
 
+// ErrNoClient is returned by Dispatch/IsHealthy when the gateway's
+// Client field is nil. The zero-value HTTPGateway is not usable —
+// callers must construct via NewHTTPGateway, which installs a hardened
+// *http.Client. Falling back to http.DefaultClient would silently
+// bypass TLS, redirect, and SSRF hardening applied elsewhere.
+var ErrNoClient = errors.New("velocity/bond: ssr gateway client not configured; use NewHTTPGateway")
+
 // ssrServerError is the structured error payload an inertia-aware SSR
 // server returns in the response body on failure. Unknown fields are
 // tolerated — the SSR server controls this contract.
@@ -209,12 +216,14 @@ func (g *HTTPGateway) Dispatch(ctx context.Context, page Page) (*SSRResponse, er
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
-	client := g.Client
-	if client == nil {
-		client = http.DefaultClient
+	if g.Client == nil {
+		return g.handleFailure(page, ssrServerError{
+			Error: ErrNoClient.Error(),
+			Type:  string(SSRErrorConnection),
+		}, ErrNoClient)
 	}
 
-	resp, err := client.Do(req)
+	resp, err := g.Client.Do(req)
 	if err != nil {
 		return g.handleFailure(page, ssrServerError{
 			Error: err.Error(),
@@ -277,12 +286,11 @@ func (g *HTTPGateway) IsHealthy(ctx context.Context) (bool, error) {
 		return false, err
 	}
 
-	client := g.Client
-	if client == nil {
-		client = http.DefaultClient
+	if g.Client == nil {
+		return false, ErrNoClient
 	}
 
-	resp, err := client.Do(req)
+	resp, err := g.Client.Do(req)
 	if err != nil {
 		return false, nil
 	}
