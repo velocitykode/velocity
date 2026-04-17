@@ -6,6 +6,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // Notifier is the interface satisfied by *Manager. It covers the methods
@@ -135,8 +137,18 @@ func (m *Manager) SendMany(ctx context.Context, notifiables []interface{}, notif
 
 	for _, notifiable := range notifiables {
 		wg.Add(1)
+		// Recover from panics in Send so one bad notifiable does not
+		// tear down the fan-out; surface the failure as a
+		// NotificationFailed event and an error on errChan.
 		go func(n interface{}) {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					err := panicerr.FromRecovered(r)
+					m.dispatchEvent(buildNotificationFailed(ctx, n, notification, "", err))
+					errChan <- fmt.Errorf("velocity/notification: send many panic: %w", err)
+				}
+			}()
 			if err := m.Send(ctx, n, notification); err != nil {
 				errChan <- err
 			}
