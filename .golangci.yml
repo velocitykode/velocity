@@ -33,7 +33,11 @@ linters-settings:
       - p: 'errors\.New\("(?!velocity/)[a-zA-Z]'
         msg: 'error sentinels must use errors.New("velocity/<pkg>: lowercase msg")'
       # Raw `go func(` goroutines bypass panic recovery.
-      - p: "^go func\\("
+      # Matches the statement regardless of leading indentation, since Go
+      # code always indents goroutine sites inside a function body. The
+      # earlier `^go func\(` pattern (without \s*) matched nothing in real
+      # source — see the P0 re-review note.
+      - p: '(?m)^\s*go func\('
         msg: "use async.Go or an explicit defer recover() — see CONTRIBUTING.md 'Goroutines and panic recovery'"
     analyze-types: false
     exclude-godoc-examples: true
