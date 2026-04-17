@@ -418,17 +418,18 @@ func TestChannelBuilder_EmptyChannels(t *testing.T) {
 	}
 }
 
-func TestAuth_NoAuthorizer(t *testing.T) {
+func TestAuth_DefaultDenyAll(t *testing.T) {
 	tests := []struct {
-		name     string
-		channel  string
-		socketID string
-		user     interface{}
-		wantErr  bool
+		name       string
+		channel    string
+		socketID   string
+		user       interface{}
+		wantErr    error
+		wantResult bool // true = expect non-nil result
 	}{
-		{"returns nil when no authorizer set", "private-user.123", "socket-1", map[string]interface{}{"id": "123"}, false},
-		{"returns nil for presence channel without authorizer", "presence-room.1", "socket-1", nil, false},
-		{"returns nil for public channel without authorizer", "news", "socket-1", nil, false},
+		{"denies private channel with default authorizer", "private-user.123", "socket-1", map[string]interface{}{"id": "123"}, ErrUnauthorized, false},
+		{"denies presence channel with default authorizer", "presence-room.1", "socket-1", nil, ErrUnauthorized, false},
+		{"allows public channel without authorizer", "news", "socket-1", nil, nil, true},
 	}
 
 	for _, tt := range tests {
@@ -437,11 +438,14 @@ func TestAuth_NoAuthorizer(t *testing.T) {
 			b := New(driver)
 
 			result, err := b.Auth(tt.channel, tt.socketID, tt.user)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("Auth() error = %v, wantErr %v", err, tt.wantErr)
+			if err != tt.wantErr {
+				t.Errorf("Auth() error = %v, want %v", err, tt.wantErr)
 			}
-			if result != nil {
-				t.Errorf("Auth() result = %v, want nil when no authorizer", result)
+			if tt.wantResult && result == nil {
+				t.Errorf("Auth() result = nil, want non-nil")
+			}
+			if !tt.wantResult && result != nil {
+				t.Errorf("Auth() result = %v, want nil", result)
 			}
 		})
 	}
@@ -594,14 +598,15 @@ func TestSetAuthorizerAndPresenceData(t *testing.T) {
 			driver := NewMockDriver()
 			b := New(driver)
 
-			// Test SetAuthorizer
+			// Test SetAuthorizer — use a private channel so the authorizer is
+			// consulted (public channels bypass authorization).
 			authCalled := false
 			b.SetAuthorizer(func(channel string, user interface{}) bool {
 				authCalled = true
 				return true
 			})
 
-			_, _ = b.Auth("test", "socket", nil)
+			_, _ = b.Auth("private-test", "socket", nil)
 			if !authCalled {
 				t.Error("authorizer was not called after SetAuthorizer")
 			}

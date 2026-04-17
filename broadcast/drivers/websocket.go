@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/velocitykode/velocity/websocket"
 )
@@ -12,18 +14,58 @@ import (
 // Must be set for private- and presence- channels to be accessible.
 type ChannelAuthorizer func(client *websocket.Client, channel string) bool
 
-// WebSocketDriver adapts the existing WebSocket server for broadcasting
-type WebSocketDriver struct {
-	server     *websocket.Server
-	channels   map[string]map[string]*websocket.Client // channel -> socketID -> client
-	authorizer ChannelAuthorizer
-	mu         sync.RWMutex
+// denyAllChannelAuthorizer is the secure default: deny every subscription to
+// a private- or presence- channel. Applications must explicitly install an
+// authorizer via SetAuthorizer.
+func denyAllChannelAuthorizer(client *websocket.Client, channel string) bool {
+	return false
 }
 
-// NewWebSocketDriver creates a new WebSocket driver
-func NewWebSocketDriver(config websocket.Config) *WebSocketDriver {
+// WebSocketDriver adapts the existing WebSocket server for broadcasting
+type WebSocketDriver struct {
+	server         *websocket.Server
+	channels       map[string]map[string]*websocket.Client // channel -> socketID -> client
+	authorizer     ChannelAuthorizer
+	mu             sync.RWMutex
+	droppedCount   atomic.Uint64
+	blockingSendTO time.Duration // 0 means non-blocking (drop on full)
+	onDrop         func(clientID, channel, event string)
+}
+
+// DriverOption configures a WebSocketDriver.
+type DriverOption func(*WebSocketDriver)
+
+// WithBlockingSend returns an option that makes Broadcast and BroadcastExcept
+// block for up to the given duration when a client's send buffer is full,
+// rather than dropping immediately. A zero or negative duration disables
+// blocking and restores the drop-on-full default.
+func WithBlockingSend(timeout time.Duration) DriverOption {
+	return func(d *WebSocketDriver) {
+		d.blockingSendTO = timeout
+	}
+}
+
+// WithOnDrop installs a callback invoked whenever a message is dropped because
+// a client's Send buffer was full. Intended for metric/event dispatching; the
+// callback must not block the send path.
+func WithOnDrop(fn func(clientID, channel, event string)) DriverOption {
+	return func(d *WebSocketDriver) {
+		d.onDrop = fn
+	}
+}
+
+// NewWebSocketDriver creates a new WebSocket driver.
+// The default authorizer denies all requests to private- and presence-
+// channels. Callers must install an authorizer via SetAuthorizer to grant
+// access.
+func NewWebSocketDriver(config websocket.Config, opts ...DriverOption) *WebSocketDriver {
 	driver := &WebSocketDriver{
-		channels: make(map[string]map[string]*websocket.Client),
+		channels:   make(map[string]map[string]*websocket.Client),
+		authorizer: denyAllChannelAuthorizer,
+	}
+
+	for _, opt := range opts {
+		opt(driver)
 	}
 
 	// Create WebSocket server
@@ -41,7 +83,10 @@ func NewWebSocketDriver(config websocket.Config) *WebSocketDriver {
 	return driver
 }
 
-// Broadcast sends an event to channels
+// Broadcast sends an event to channels. If a client's Send buffer is full,
+// the message is either dropped (default) or the call blocks for up to
+// blockingSendTO (configured via WithBlockingSend). Dropped messages are
+// counted and the onDrop callback (if any) is invoked.
 func (d *WebSocketDriver) Broadcast(channels []string, event string, data interface{}) error {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -49,17 +94,7 @@ func (d *WebSocketDriver) Broadcast(channels []string, event string, data interf
 	for _, channel := range channels {
 		if clients, exists := d.channels[channel]; exists {
 			for _, client := range clients {
-				// Send message through client's channel
-				select {
-				case client.Send <- websocket.Message{
-					Type: event,
-					Data: data,
-				}:
-					// Message sent
-				default:
-					// Channel full, skip this client
-					fmt.Printf("Failed to send to client %s: channel full\n", client.ID)
-				}
+				d.sendOrDrop(client, channel, event, data)
 			}
 		}
 	}
@@ -76,23 +111,58 @@ func (d *WebSocketDriver) BroadcastExcept(channels []string, event string, data 
 		if clients, exists := d.channels[channel]; exists {
 			for id, client := range clients {
 				if id != socketID {
-					// Send message through client's channel
-					select {
-					case client.Send <- websocket.Message{
-						Type: event,
-						Data: data,
-					}:
-						// Message sent
-					default:
-						// Channel full, skip this client
-						fmt.Printf("Failed to send to client %s: channel full\n", client.ID)
-					}
+					d.sendOrDrop(client, channel, event, data)
 				}
 			}
 		}
 	}
 
 	return nil
+}
+
+// sendOrDrop attempts to deliver a message to client's Send channel. When a
+// blocking-send timeout is configured it waits up to that duration; otherwise
+// it drops immediately on full buffer. Drops increment droppedCount and
+// trigger the onDrop callback (if set).
+func (d *WebSocketDriver) sendOrDrop(client *websocket.Client, channel, event string, data interface{}) {
+	msg := websocket.Message{Type: event, Data: data}
+
+	if d.blockingSendTO <= 0 {
+		select {
+		case client.Send <- msg:
+			return
+		default:
+			d.recordDrop(client.ID, channel, event)
+			return
+		}
+	}
+
+	// Blocking path with timeout — uses a timer rather than time.After so the
+	// underlying resources are released promptly when the send succeeds.
+	t := time.NewTimer(d.blockingSendTO)
+	defer t.Stop()
+
+	select {
+	case client.Send <- msg:
+		return
+	case <-t.C:
+		d.recordDrop(client.ID, channel, event)
+	}
+}
+
+func (d *WebSocketDriver) recordDrop(clientID, channel, event string) {
+	d.droppedCount.Add(1)
+	if d.onDrop != nil {
+		d.onDrop(clientID, channel, event)
+		return
+	}
+	fmt.Printf("velocity/broadcast: dropped message to client %s on channel %s (event=%s)\n", clientID, channel, event)
+}
+
+// DroppedCount returns the total number of messages dropped due to full send
+// buffers across the lifetime of the driver. It is safe to call concurrently.
+func (d *WebSocketDriver) DroppedCount() uint64 {
+	return d.droppedCount.Load()
 }
 
 // GetClients returns clients in a channel
@@ -152,16 +222,17 @@ func (d *WebSocketDriver) handleSubscribe(client *websocket.Client, msg websocke
 		return fmt.Errorf("channel not specified")
 	}
 
-	// Authorize private and presence channels
+	// Authorize private and presence channels. The default authorizer is
+	// deny-all, so a missing setup fails closed rather than silently allowing.
 	if strings.HasPrefix(channel, "private-") || strings.HasPrefix(channel, "presence-") {
 		d.mu.RLock()
 		auth := d.authorizer
 		d.mu.RUnlock()
 		if auth == nil {
-			return fmt.Errorf("no authorizer configured for channel %s", channel)
+			auth = denyAllChannelAuthorizer
 		}
 		if !auth(client, channel) {
-			return fmt.Errorf("unauthorized to subscribe to channel %s", channel)
+			return fmt.Errorf("velocity/broadcast: unauthorized to subscribe to channel %s", channel)
 		}
 	}
 

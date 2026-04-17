@@ -250,9 +250,11 @@ func TestDispatcherErrorHandling(t *testing.T) {
 		t.Error("Expected error from listener")
 	}
 
-	// Error handling stops at first error, so second listener won't be called
-	if normalListener.WasHandled() {
-		t.Error("Listener should not be called after error")
+	// After aggregation: the dispatcher no longer short-circuits — every
+	// listener is invoked and errors are joined so one bad listener cannot
+	// silently prevent the rest from running.
+	if !normalListener.WasHandled() {
+		t.Error("Listener should still be called after another listener errors")
 	}
 }
 

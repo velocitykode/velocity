@@ -1,44 +1,88 @@
 package events
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
+	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // AsyncDispatcher handles asynchronous event dispatching
 type AsyncDispatcher struct {
-	// For now, we'll use goroutines instead of a queue system
-	// This can be replaced with actual queue integration later
+	// failureSinkMu guards failureSink so the sink can be reconfigured
+	// concurrently with Push() without races.
+	failureSinkMu sync.RWMutex
+	failureSink   func(event interface{}) error
 }
+
+// AsyncFailed is dispatched when a listener invoked through the async
+// dispatcher panics or returns an error. Applications can Listen("events.async_failed")
+// to observe async failures (e.g. for alerting or metrics).
+type AsyncFailed struct {
+	Context      context.Context
+	EventName    string
+	ListenerName string
+	Error        string
+}
+
+// Name returns the event name.
+func (e *AsyncFailed) Name() string { return "events.async_failed" }
 
 // NewAsyncDispatcher creates a new async dispatcher
 func NewAsyncDispatcher() *AsyncDispatcher {
 	return &AsyncDispatcher{}
 }
 
-// Push processes an event asynchronously.
-// Listener panics are recovered so one misbehaving listener does not
-// tear down the process.
+// SetFailureSink installs a sink that receives AsyncFailed events whenever a
+// listener panics or returns an error from a goroutine spawned by Push().
+// Passing nil disables failure dispatch.
+func (a *AsyncDispatcher) SetFailureSink(fn func(event interface{}) error) {
+	a.failureSinkMu.Lock()
+	defer a.failureSinkMu.Unlock()
+	a.failureSink = fn
+}
+
+// Push processes an event asynchronously in a panic-safe goroutine. Panics
+// from the listener are recovered and surfaced as an events.async_failed event
+// via the configured failure sink.
 func (a *AsyncDispatcher) Push(event interface{}, listener Listener, delay time.Duration) error {
-	safeHandle := func() {
+	run := func() {
 		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("velocity/events: async listener panic recovered: %v", panicerr.FromRecovered(r))
+			if p := recover(); p != nil {
+				a.dispatchFailure(event, listener, panicerr.FromRecovered(p))
 			}
 		}()
-		_ = listener.Handle(event)
+		if err := listener.Handle(event); err != nil {
+			a.dispatchFailure(event, listener, err)
+		}
 	}
+
 	if delay > 0 {
-		time.AfterFunc(delay, safeHandle)
+		time.AfterFunc(delay, func() { async.Go(run) })
 	} else {
-		go safeHandle()
+		async.Go(run)
 	}
 	return nil
+}
+
+func (a *AsyncDispatcher) dispatchFailure(event interface{}, listener Listener, err error) {
+	a.failureSinkMu.RLock()
+	sink := a.failureSink
+	a.failureSinkMu.RUnlock()
+	if sink == nil || err == nil {
+		return
+	}
+	// Best-effort — failure sink errors are intentionally ignored to avoid
+	// runaway recursion on a misbehaving sink.
+	_ = sink(&AsyncFailed{
+		EventName:    resolveEventName(event),
+		ListenerName: fmt.Sprintf("%T", listener),
+		Error:        err.Error(),
+	})
 }
 
 // EventJob represents a queued event job

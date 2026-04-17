@@ -1,12 +1,13 @@
 package events
 
 import (
+	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
@@ -168,19 +169,12 @@ func (d *DefaultDispatcher) DispatchNow(event interface{}) error {
 }
 
 // DispatchAsync fires an event asynchronously via the queue.
-// Falls back to a goroutine if no queue is configured. Panics in the
-// fallback goroutine are recovered so one bad listener does not tear
-// down the process.
+// Falls back to a panic-safe goroutine (async.Go) if no queue is configured.
 func (d *DefaultDispatcher) DispatchAsync(event interface{}) error {
 	if d.queue == nil {
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("velocity/events: dispatch async panic recovered: %v", panicerr.FromRecovered(r))
-				}
-			}()
+		async.Go(func() {
 			_ = d.DispatchNow(event)
-		}()
+		})
 		return nil
 	}
 
@@ -345,13 +339,17 @@ func (d *DefaultDispatcher) matchesPattern(event, pattern string) bool {
 }
 
 // dispatchToListeners resolves listeners for an event and applies fn to each.
+// Errors from individual listeners are aggregated with errors.Join so a single
+// failure does not mask subsequent problems and callers can inspect every
+// listener result.
 func (d *DefaultDispatcher) dispatchToListeners(event interface{}, fn func(Listener) error) error {
+	var errs []error
 	for _, listener := range d.getListenersForEvent(event) {
 		if err := fn(listener); err != nil {
-			return err
+			errs = append(errs, err)
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // processListener executes a listener, recovering from panics.

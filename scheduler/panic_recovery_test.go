@@ -62,6 +62,8 @@ func TestScheduler_RunDueJobs_RecoversPanic(t *testing.T) {
 
 	// Invoke runDueJobs directly — faster than starting the full loop.
 	s.runDueJobs()
+	// Jobs launch as goroutines; wait for them before asserting counters.
+	s.runWg.Wait()
 
 	if ran.Load() < 1 {
 		t.Fatalf("expected at least one job to run, got %d", ran.Load())
@@ -70,6 +72,7 @@ func TestScheduler_RunDueJobs_RecoversPanic(t *testing.T) {
 	// Calling a second time must still work — the outer recover kept
 	// runWg accounting consistent.
 	s.runDueJobs()
+	s.runWg.Wait()
 }
 
 // TestScheduler_Shutdown_AfterPanic verifies that Shutdown does not

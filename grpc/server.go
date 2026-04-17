@@ -163,6 +163,9 @@ func (s *Server) RegisterService(regFunc RegistrationFunc) *Server {
 
 // Build constructs the gRPC server with all configured options.
 // This is called automatically by Start() if not called explicitly.
+// Build returns an error if the logger is nil — a nil logger causes silent
+// NPEs later (reflection warning, start/stop messages, panic recovery
+// interceptor) so we fail fast.
 func (s *Server) Build() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -171,10 +174,14 @@ func (s *Server) Build() error {
 		return nil // Already built
 	}
 
+	if s.logger == nil {
+		return fmt.Errorf("velocity/grpc: logger is required — use WithLogger(...) or accept the default console logger")
+	}
+
 	// Create listener
 	lis, err := net.Listen("tcp", ":"+s.port)
 	if err != nil {
-		return fmt.Errorf("failed to listen on port %s: %w", s.port, err)
+		return fmt.Errorf("velocity/grpc: failed to listen on port %s: %w", s.port, err)
 	}
 	s.listener = lis
 
@@ -197,14 +204,15 @@ func (s *Server) Build() error {
 		regFunc(s.grpcServer)
 	}
 
-	// Enable reflection if configured (blocked in production)
+	// Enable reflection if configured. Hard-fail in production — silently
+	// downgrading to "reflection disabled" lets misconfigured deployments ship
+	// with a false sense of security (operators think reflection is on).
 	if s.enableReflection {
 		if s.environment == "production" {
-			s.logger.Warn("gRPC reflection was requested but is blocked in production for security")
-		} else {
-			s.logger.Warn("gRPC reflection is enabled — disable in production (GRPC_REFLECTION=false)")
-			reflection.Register(s.grpcServer)
+			return fmt.Errorf("velocity/grpc: reflection must not be enabled in production (set GRPC_REFLECTION=false or build without WithReflection(true))")
 		}
+		s.logger.Warn("gRPC reflection is enabled — disable in production (GRPC_REFLECTION=false)")
+		reflection.Register(s.grpcServer)
 	}
 
 	return nil

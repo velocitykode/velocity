@@ -114,11 +114,12 @@ func handlePanic(ctx context.Context, p interface{}, method string, cfg *Recover
 		logger.Error("gRPC panic recovered", fields...)
 	}
 
-	// Call custom handler if set
+	// Call custom handler if set. The custom handler ALWAYS wins — we return
+	// whatever it produces (including a nil error, which swallows the panic).
+	// Never silently fall through to the default 500 path on nil, because
+	// that would mask the application's explicit intent.
 	if cfg.PanicHandler != nil {
-		if err := cfg.PanicHandler(ctx, p); err != nil {
-			return err
-		}
+		return cfg.PanicHandler(ctx, p)
 	}
 
 	return status.Errorf(codes.Internal, "internal server error")

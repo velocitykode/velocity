@@ -2,6 +2,7 @@ package bus
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sync"
@@ -69,12 +70,22 @@ func New() *Bus {
 
 // Register registers a typed handler for a command type.
 // This is a package-level function due to Go generics limitations on methods.
-// Panics with *contract.RegistrationError if handler is nil or a handler for the
-// same command type is already registered.
+// Panics with *contract.RegistrationError if handler is nil, a handler for the
+// same command type is already registered, or the command type cannot be
+// JSON-marshalled (required for async dispatch over queues).
 func Register[T any](b *Bus, handler Handler[T]) {
 	if handler == nil {
 		panic(contract.NewRegistrationError("bus", fmt.Sprintf("nil handler for command type %s", reflect.TypeFor[T]().String())))
 	}
+
+	// Probe serializability at registration time so async dispatch cannot fail
+	// at runtime with an obscure marshal error. We construct a zero value of T
+	// and round-trip it through encoding/json.
+	var zero T
+	if _, err := json.Marshal(zero); err != nil {
+		panic(contract.NewRegistrationError("bus", fmt.Sprintf("command type %s is not json-serializable: %v", reflect.TypeFor[T]().String(), err)))
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -83,7 +94,11 @@ func Register[T any](b *Bus, handler Handler[T]) {
 		panic(contract.NewRegistrationError("bus", fmt.Sprintf("handler for command type %s already registered", cmdType.String())))
 	}
 	b.handlers[cmdType] = func(cmd Command) error {
-		return handler(cmd.(T))
+		typed, ok := cmd.(T)
+		if !ok {
+			return fmt.Errorf("velocity/bus: command type mismatch: got %T, want %s", cmd, cmdType.String())
+		}
+		return handler(typed)
 	}
 }
 
@@ -167,7 +182,7 @@ func (b *Bus) DispatchAsync(cmd Command) error {
 		return fmt.Errorf("bus: queue not configured for async dispatch")
 	}
 
-	job := &commandJob{cmd: cmd, bus: b}
+	job := &commandJob{cmd: cmd, bus: b, cmdType: reflect.TypeOf(cmd)}
 
 	var args []string
 	if queueName != "" {
@@ -224,11 +239,19 @@ func (b *Bus) copyMiddleware() []pipeline.Stage[Command] {
 
 // commandJob wraps a command as a queue job for async dispatch.
 type commandJob struct {
-	cmd Command
-	bus *Bus
+	cmd     Command
+	bus     *Bus
+	cmdType reflect.Type
 }
 
+// Handle dispatches the wrapped command. It verifies that the queue-decoded
+// command value still matches the expected type before invoking Dispatch —
+// this guards against queue-driver corruption or accidental swaps where the
+// serialized payload was restored into a different Go type.
 func (j *commandJob) Handle() error {
+	if j.cmdType != nil && reflect.TypeOf(j.cmd) != j.cmdType {
+		return fmt.Errorf("velocity/bus: command type mismatch in queued job: got %T, want %s", j.cmd, j.cmdType.String())
+	}
 	return j.bus.Dispatch(j.cmd)
 }
 

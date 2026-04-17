@@ -147,7 +147,21 @@ func makeRange(min, max, step int) []int {
 	return values
 }
 
-// IsDue checks if the expression matches the given time
+// IsDue checks if the expression matches the given time.
+//
+// DST / leap behaviour:
+//   - The caller is responsible for passing t in the scheduler's configured
+//     timezone (Scheduler.runDueJobs uses time.Now().In(tz)). Go's time.Time
+//     carries its own *time.Location and time.Time.In does not shift the
+//     underlying instant — only how Hour/Minute/Month/Day are reported. This
+//     matches cron(8) semantics.
+//   - During a spring-forward DST transition the hour 02:00 is skipped in the
+//     local representation, so a job scheduled exactly at 02:00 in that zone
+//     will not fire that day. During a fall-back transition the 01:00 hour
+//     repeats; the ticker will evaluate IsDue once per repeated minute and
+//     fire the job twice. This mirrors cron's behaviour and is intentional.
+//   - Leap seconds are transparent to time.Time — Go never surfaces them —
+//     so no special handling is required here.
 func (e *Expression) IsDue(t time.Time) bool {
 	// Check minute
 	if !contains(e.minute, t.Minute()) {
