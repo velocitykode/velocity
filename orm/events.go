@@ -7,6 +7,15 @@ import (
 	"time"
 )
 
+// Event is the typed contract every ORM event satisfies. Dispatchers receive
+// Event — not interface{} — so handlers can inspect the event name before
+// attempting a type assertion.
+//
+// Naming convention: package.snake_case (e.g. "query.executed", "query.failed").
+type Event interface {
+	EventName() string
+}
+
 // QueryExecuted is dispatched when a database query completes
 type QueryExecuted struct {
 	Context      context.Context
@@ -22,9 +31,17 @@ type QueryExecuted struct {
 	ParentID     string // Parent span ID for correlation
 }
 
-// Name returns the event name
-func (e *QueryExecuted) Name() string {
+// EventName returns the canonical event name.
+func (e *QueryExecuted) EventName() string {
 	return "query.executed"
+}
+
+// Name is retained for backward compatibility with consumers that predate the
+// Event interface. Prefer EventName.
+//
+// Deprecated: use EventName.
+func (e *QueryExecuted) Name() string {
+	return e.EventName()
 }
 
 // QueryFailed is dispatched when a database query fails
@@ -39,9 +56,17 @@ type QueryFailed struct {
 	ParentID   string // Parent span ID for correlation
 }
 
-// Name returns the event name
-func (e *QueryFailed) Name() string {
+// EventName returns the canonical event name.
+func (e *QueryFailed) EventName() string {
 	return "query.failed"
+}
+
+// Name is retained for backward compatibility with consumers that predate the
+// Event interface. Prefer EventName.
+//
+// Deprecated: use EventName.
+func (e *QueryFailed) Name() string {
+	return e.EventName()
 }
 
 // captureCallerInfo captures the file and line of the caller

@@ -70,7 +70,16 @@ type Database interface {
 	DefaultDriver() drivers.Driver
 	Connection(name string) (drivers.Driver, error)
 	AddConnection(name string, driver drivers.Driver)
+	// SetEventDispatcher wires an untyped dispatcher. Retained for
+	// compatibility with framework-level wiring that does not yet
+	// depend on the ORM package. Prefer SetTypedEventDispatcher.
+	//
+	// Deprecated: use SetTypedEventDispatcher.
 	SetEventDispatcher(fn func(event interface{}) error)
+	// SetTypedEventDispatcher wires a dispatcher that receives orm.Event
+	// directly so handlers can inspect the event name without a type
+	// assertion.
+	SetTypedEventDispatcher(fn func(event Event) error)
 }
 
 // Verify *Manager implements Database at compile time.
@@ -79,12 +88,15 @@ var _ Database = (*Manager)(nil)
 // Manager manages database connections. It is the instance-based alternative
 // to the package-level global functions.
 type Manager struct {
-	mu              sync.RWMutex
-	defaultDriver   drivers.Driver
-	connections     map[string]drivers.Driver
-	defaultName     string
-	databaseName    string
-	eventDispatcher func(event interface{}) error
+	mu            sync.RWMutex
+	defaultDriver drivers.Driver
+	connections   map[string]drivers.Driver
+	defaultName   string
+	databaseName  string
+	// eventDispatcher is the typed event handler invoked by dispatchEvent.
+	// SetEventDispatcher (deprecated, untyped) adapts the legacy signature
+	// into a typed call so internal event firing remains type-safe.
+	eventDispatcher func(event Event) error
 }
 
 // createDriver instantiates a database driver by name.
@@ -329,20 +341,39 @@ func (m *Manager) Stats() sql.DBStats {
 	return sql.DBStats{}
 }
 
-// SetEventDispatcher sets the function used to dispatch ORM events.
+// SetEventDispatcher wires an untyped dispatcher. The supplied function is
+// adapted into a typed dispatcher so orm.dispatchEvent can pass Event values
+// without losing static type information.
+//
+// Deprecated: use SetTypedEventDispatcher.
 func (m *Manager) SetEventDispatcher(fn func(event interface{}) error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if fn == nil {
+		m.eventDispatcher = nil
+		return
+	}
+	m.eventDispatcher = func(event Event) error {
+		return fn(event)
+	}
+}
+
+// SetTypedEventDispatcher wires a typed dispatcher. Prefer this over
+// SetEventDispatcher so handlers can call event.EventName() directly
+// without a type assertion.
+func (m *Manager) SetTypedEventDispatcher(fn func(event Event) error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.eventDispatcher = fn
 }
 
 // dispatchEvent dispatches an event if a dispatcher is configured.
-func (m *Manager) dispatchEvent(event interface{}) {
+func (m *Manager) dispatchEvent(event Event) {
 	m.mu.RLock()
 	fn := m.eventDispatcher
 	m.mu.RUnlock()
 	if fn != nil {
-		fn(event)
+		_ = fn(event)
 	}
 }
 
