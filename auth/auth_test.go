@@ -69,7 +69,10 @@ func TestJWTGeneration(t *testing.T) {
 		TTL:       60,
 	}
 
-	manager := NewJWTManager(config)
+	manager, err := NewJWTManager(config)
+	if err != nil {
+		t.Fatalf("NewJWTManager: %v", err)
+	}
 
 	// Create mock user
 	user := &AuthUser{
@@ -139,7 +142,10 @@ func TestJWTBlacklist(t *testing.T) {
 		BlacklistStore:   NewInMemoryBlacklistStore(),
 	}
 
-	manager := NewJWTManager(config)
+	manager, err := NewJWTManager(config)
+	if err != nil {
+		t.Fatalf("NewJWTManager: %v", err)
+	}
 
 	user := &AuthUser{ID: 1}
 	token, _ := manager.GenerateToken(user)
@@ -675,7 +681,10 @@ func BenchmarkJWTGeneration(b *testing.B) {
 		Algorithm: "HS256",
 		TTL:       60,
 	}
-	manager := NewJWTManager(config)
+	manager, err := NewJWTManager(config)
+	if err != nil {
+		b.Fatalf("NewJWTManager: %v", err)
+	}
 	user := &AuthUser{ID: 1}
 
 	b.ResetTimer()
@@ -690,7 +699,10 @@ func BenchmarkJWTValidation(b *testing.B) {
 		Algorithm: "HS256",
 		TTL:       60,
 	}
-	manager := NewJWTManager(config)
+	manager, err := NewJWTManager(config)
+	if err != nil {
+		b.Fatalf("NewJWTManager: %v", err)
+	}
 	user := &AuthUser{ID: 1}
 	token, _ := manager.GenerateToken(user)
 
@@ -818,7 +830,10 @@ func TestJWTAuthFlow(t *testing.T) {
 		Algorithm: "HS256",
 		TTL:       60,
 	}
-	jwtMgr := NewJWTManager(config)
+	jwtMgr, err := NewJWTManager(config)
+	if err != nil {
+		t.Fatalf("NewJWTManager: %v", err)
+	}
 
 	// Simulate login
 	credentials := map[string]interface{}{

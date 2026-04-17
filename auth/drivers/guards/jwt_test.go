@@ -83,6 +83,17 @@ func newTestJWTConfig() auth.JWTConfig {
 	}
 }
 
+// mustNewJWTGuard is a test helper that panics if NewJWTGuard returns an
+// error. Used to keep existing table-driven tests terse while NewJWTGuard's
+// signature changed to (*JWTGuard, error).
+func mustNewJWTGuard(provider auth.UserProvider, config auth.JWTConfig) *JWTGuard {
+	g, err := NewJWTGuard(provider, config)
+	if err != nil {
+		panic("mustNewJWTGuard: " + err.Error())
+	}
+	return g
+}
+
 func TestNewJWTGuard(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -113,7 +124,10 @@ func TestNewJWTGuard(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			guard := NewJWTGuard(tt.provider, tt.config)
+			guard, err := NewJWTGuard(tt.provider, tt.config)
+			if err != nil {
+				t.Fatalf("NewJWTGuard returned error: %v", err)
+			}
 			if guard == nil {
 				t.Error("NewJWTGuard returned nil")
 				return
@@ -138,7 +152,7 @@ func TestJWTGuard_Check(t *testing.T) {
 		{
 			name: "returns true for valid token with existing user",
 			setupGuard: func() *JWTGuard {
-				return NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+				return mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			},
 			setupReq: func(guard *JWTGuard) *http.Request {
 				user := &mockJWTUser{id: "user123"}
@@ -152,7 +166,7 @@ func TestJWTGuard_Check(t *testing.T) {
 		{
 			name: "returns false when no token in request",
 			setupGuard: func() *JWTGuard {
-				return NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+				return mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			},
 			setupReq: func(guard *JWTGuard) *http.Request {
 				return httptest.NewRequest("GET", "/", nil)
@@ -162,7 +176,7 @@ func TestJWTGuard_Check(t *testing.T) {
 		{
 			name: "returns false for invalid token",
 			setupGuard: func() *JWTGuard {
-				return NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+				return mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			},
 			setupReq: func(guard *JWTGuard) *http.Request {
 				req := httptest.NewRequest("GET", "/", nil)
@@ -179,7 +193,7 @@ func TestJWTGuard_Check(t *testing.T) {
 						return nil, errors.New("user not found")
 					},
 				}
-				return NewJWTGuard(provider, newTestJWTConfig())
+				return mustNewJWTGuard(provider, newTestJWTConfig())
 			},
 			setupReq: func(guard *JWTGuard) *http.Request {
 				user := &mockJWTUser{id: "nonexistent"}
@@ -198,7 +212,7 @@ func TestJWTGuard_Check(t *testing.T) {
 						return nil, nil
 					},
 				}
-				return NewJWTGuard(provider, newTestJWTConfig())
+				return mustNewJWTGuard(provider, newTestJWTConfig())
 			},
 			setupReq: func(guard *JWTGuard) *http.Request {
 				user := &mockJWTUser{id: "user123"}
@@ -222,7 +236,7 @@ func TestJWTGuard_Check(t *testing.T) {
 						return &mockJWTUser{id: id}, nil
 					},
 				}
-				return NewJWTGuard(provider, newTestJWTConfig())
+				return mustNewJWTGuard(provider, newTestJWTConfig())
 			},
 			setupReq: func(guard *JWTGuard) *http.Request {
 				user := &mockJWTUser{id: "user123"}
@@ -258,7 +272,7 @@ func TestJWTGuard_User(t *testing.T) {
 		{
 			name: "returns user for valid token",
 			setupGuard: func() *JWTGuard {
-				return NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+				return mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			},
 			setupReq: func(guard *JWTGuard) *http.Request {
 				user := &mockJWTUser{id: "user123"}
@@ -273,7 +287,7 @@ func TestJWTGuard_User(t *testing.T) {
 		{
 			name: "returns nil when no token",
 			setupGuard: func() *JWTGuard {
-				return NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+				return mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			},
 			setupReq: func(guard *JWTGuard) *http.Request {
 				return httptest.NewRequest("GET", "/", nil)
@@ -283,7 +297,7 @@ func TestJWTGuard_User(t *testing.T) {
 		{
 			name: "returns nil for invalid token",
 			setupGuard: func() *JWTGuard {
-				return NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+				return mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			},
 			setupReq: func(guard *JWTGuard) *http.Request {
 				req := httptest.NewRequest("GET", "/", nil)
@@ -300,7 +314,7 @@ func TestJWTGuard_User(t *testing.T) {
 						return nil, errors.New("database error")
 					},
 				}
-				return NewJWTGuard(provider, newTestJWTConfig())
+				return mustNewJWTGuard(provider, newTestJWTConfig())
 			},
 			setupReq: func(guard *JWTGuard) *http.Request {
 				user := &mockJWTUser{id: "user123"}
@@ -314,7 +328,7 @@ func TestJWTGuard_User(t *testing.T) {
 		{
 			name: "returns cached user on subsequent calls",
 			setupGuard: func() *JWTGuard {
-				guard := NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+				guard := mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 				// Pre-cache a user
 				guard.userCache["cached-token"] = cachedUser{user: &mockJWTUser{id: "cached-user"}, cachedAt: time.Now()}
 				return guard
@@ -362,7 +376,7 @@ func TestJWTGuard_ID(t *testing.T) {
 		{
 			name: "returns user ID for valid token",
 			setupGuard: func() *JWTGuard {
-				return NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+				return mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			},
 			setupReq: func(guard *JWTGuard) *http.Request {
 				user := &mockJWTUser{id: "user456"}
@@ -377,7 +391,7 @@ func TestJWTGuard_ID(t *testing.T) {
 		{
 			name: "returns nil when no token",
 			setupGuard: func() *JWTGuard {
-				return NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+				return mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			},
 			setupReq: func(guard *JWTGuard) *http.Request {
 				return httptest.NewRequest("GET", "/", nil)
@@ -387,7 +401,7 @@ func TestJWTGuard_ID(t *testing.T) {
 		{
 			name: "returns nil for invalid token",
 			setupGuard: func() *JWTGuard {
-				return NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+				return mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			},
 			setupReq: func(guard *JWTGuard) *http.Request {
 				req := httptest.NewRequest("GET", "/", nil)
@@ -404,7 +418,7 @@ func TestJWTGuard_ID(t *testing.T) {
 						return nil, errors.New("user deleted")
 					},
 				}
-				return NewJWTGuard(provider, newTestJWTConfig())
+				return mustNewJWTGuard(provider, newTestJWTConfig())
 			},
 			setupReq: func(guard *JWTGuard) *http.Request {
 				user := &mockJWTUser{id: "deleted-user"}
@@ -448,7 +462,7 @@ func TestJWTGuard_Login(t *testing.T) {
 		{
 			name: "generates token and sets X-Auth-Token header",
 			setupGuard: func() *JWTGuard {
-				return NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+				return mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			},
 			user:    &mockJWTUser{id: "user123"},
 			wantErr: false,
@@ -462,7 +476,7 @@ func TestJWTGuard_Login(t *testing.T) {
 		{
 			name: "generates refresh token when remember is true",
 			setupGuard: func() *JWTGuard {
-				return NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+				return mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			},
 			user:     &mockJWTUser{id: "user123"},
 			remember: []bool{true},
@@ -481,7 +495,7 @@ func TestJWTGuard_Login(t *testing.T) {
 		{
 			name: "does not generate refresh token when remember is false",
 			setupGuard: func() *JWTGuard {
-				return NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+				return mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			},
 			user:     &mockJWTUser{id: "user123"},
 			remember: []bool{false},
@@ -496,7 +510,7 @@ func TestJWTGuard_Login(t *testing.T) {
 		{
 			name: "does not generate refresh token when remember not provided",
 			setupGuard: func() *JWTGuard {
-				return NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+				return mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			},
 			user:    &mockJWTUser{id: "user123"},
 			wantErr: false,
@@ -538,7 +552,7 @@ func TestJWTGuard_LoginByID(t *testing.T) {
 		{
 			name: "logs in existing user by ID",
 			setupGuard: func() *JWTGuard {
-				return NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+				return mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			},
 			id:      "user123",
 			wantErr: false,
@@ -551,7 +565,7 @@ func TestJWTGuard_LoginByID(t *testing.T) {
 						return nil, errors.New("user not found")
 					},
 				}
-				return NewJWTGuard(provider, newTestJWTConfig())
+				return mustNewJWTGuard(provider, newTestJWTConfig())
 			},
 			id:      "nonexistent",
 			wantErr: true,
@@ -559,7 +573,7 @@ func TestJWTGuard_LoginByID(t *testing.T) {
 		{
 			name: "passes remember flag to Login",
 			setupGuard: func() *JWTGuard {
-				return NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+				return mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			},
 			id:       "user123",
 			remember: []bool{true},
@@ -593,7 +607,7 @@ func TestJWTGuard_Attempt(t *testing.T) {
 		{
 			name: "returns true for valid credentials",
 			setupGuard: func() *JWTGuard {
-				return NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+				return mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			},
 			credentials: map[string]interface{}{
 				"email":    "test@example.com",
@@ -610,7 +624,7 @@ func TestJWTGuard_Attempt(t *testing.T) {
 						return nil, errors.New("user not found")
 					},
 				}
-				return NewJWTGuard(provider, newTestJWTConfig())
+				return mustNewJWTGuard(provider, newTestJWTConfig())
 			},
 			credentials: map[string]interface{}{
 				"email":    "nonexistent@example.com",
@@ -622,7 +636,7 @@ func TestJWTGuard_Attempt(t *testing.T) {
 		{
 			name: "returns error when password not a string",
 			setupGuard: func() *JWTGuard {
-				return NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+				return mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			},
 			credentials: map[string]interface{}{
 				"email":    "test@example.com",
@@ -639,7 +653,7 @@ func TestJWTGuard_Attempt(t *testing.T) {
 						return false
 					},
 				}
-				return NewJWTGuard(provider, newTestJWTConfig())
+				return mustNewJWTGuard(provider, newTestJWTConfig())
 			},
 			credentials: map[string]interface{}{
 				"email":    "test@example.com",
@@ -651,7 +665,7 @@ func TestJWTGuard_Attempt(t *testing.T) {
 		{
 			name: "passes remember flag when authenticating",
 			setupGuard: func() *JWTGuard {
-				return NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+				return mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			},
 			credentials: map[string]interface{}{
 				"email":    "test@example.com",
@@ -691,7 +705,7 @@ func TestJWTGuard_Logout(t *testing.T) {
 		{
 			name: "revokes valid token and clears cache",
 			setupGuard: func() *JWTGuard {
-				return NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+				return mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			},
 			setupReq: func(guard *JWTGuard) *http.Request {
 				user := &mockJWTUser{id: "user123"}
@@ -707,7 +721,7 @@ func TestJWTGuard_Logout(t *testing.T) {
 		{
 			name: "returns nil when no token in request",
 			setupGuard: func() *JWTGuard {
-				return NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+				return mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			},
 			setupReq: func(guard *JWTGuard) *http.Request {
 				return httptest.NewRequest("POST", "/logout", nil)
@@ -717,7 +731,7 @@ func TestJWTGuard_Logout(t *testing.T) {
 		{
 			name: "returns nil for invalid token",
 			setupGuard: func() *JWTGuard {
-				return NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+				return mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			},
 			setupReq: func(guard *JWTGuard) *http.Request {
 				req := httptest.NewRequest("POST", "/logout", nil)
@@ -882,7 +896,7 @@ func TestJWTGuard_getTokenFromRequest(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			guard := NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+			guard := mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			req := tt.setupReq()
 			got := guard.getTokenFromRequest(req)
 			if got != tt.wantToken {
@@ -905,7 +919,7 @@ func TestJWTGuard_SetProvider(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			guard := NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+			guard := mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			guard.SetProvider(tt.newProvider)
 			if guard.provider != tt.newProvider {
 				t.Error("SetProvider() did not update provider")
@@ -938,7 +952,7 @@ func TestJWTGuard_GenerateToken(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			guard := NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+			guard := mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			token, err := guard.GenerateToken(tt.user, tt.customClaims...)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("GenerateToken() error = %v, wantErr %v", err, tt.wantErr)
@@ -966,7 +980,7 @@ func TestJWTGuard_GenerateRefreshToken(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			guard := NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+			guard := mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			token, err := guard.GenerateRefreshToken(tt.user)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("GenerateRefreshToken() error = %v, wantErr %v", err, tt.wantErr)
@@ -989,7 +1003,7 @@ func TestJWTGuard_RefreshToken(t *testing.T) {
 		{
 			name: "refreshes valid refresh token",
 			setupGuard: func() *JWTGuard {
-				return NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+				return mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			},
 			setupToken: func(guard *JWTGuard) string {
 				user := &mockJWTUser{id: "user123"}
@@ -1001,7 +1015,7 @@ func TestJWTGuard_RefreshToken(t *testing.T) {
 		{
 			name: "returns error for invalid refresh token",
 			setupGuard: func() *JWTGuard {
-				return NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+				return mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			},
 			setupToken: func(guard *JWTGuard) string {
 				return "invalid-refresh-token"
@@ -1016,7 +1030,7 @@ func TestJWTGuard_RefreshToken(t *testing.T) {
 						return nil, errors.New("user not found")
 					},
 				}
-				return NewJWTGuard(provider, newTestJWTConfig())
+				return mustNewJWTGuard(provider, newTestJWTConfig())
 			},
 			setupToken: func(guard *JWTGuard) string {
 				user := &mockJWTUser{id: "deleted-user"}
@@ -1054,7 +1068,7 @@ func TestJWTGuard_ValidateToken(t *testing.T) {
 		{
 			name: "validates valid token",
 			setupGuard: func() *JWTGuard {
-				return NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+				return mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			},
 			setupToken: func(guard *JWTGuard) string {
 				user := &mockJWTUser{id: "user123"}
@@ -1071,7 +1085,7 @@ func TestJWTGuard_ValidateToken(t *testing.T) {
 		{
 			name: "returns error for invalid token",
 			setupGuard: func() *JWTGuard {
-				return NewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+				return mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			},
 			setupToken: func(guard *JWTGuard) string {
 				return "invalid-token"

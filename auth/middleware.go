@@ -1,13 +1,71 @@
 package auth
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 
 	"github.com/velocitykode/velocity/router"
 )
+
+// auditSalt is a process-scoped random salt used to hash remote addresses
+// before they are logged. Regenerated on each process start so logs from
+// different runs cannot be correlated by IP.
+var (
+	auditSaltOnce sync.Once
+	auditSalt     []byte
+)
+
+// SetAuditSalt allows tests (or an operator with a fixed-salt requirement)
+// to install a deterministic salt for the PII hasher. In production, leave
+// this unset so a random salt is generated lazily.
+func SetAuditSalt(salt []byte) {
+	auditSaltOnce.Do(func() {}) // mark as initialized
+	auditSalt = append(auditSalt[:0], salt...)
+}
+
+func getAuditSalt() []byte {
+	auditSaltOnce.Do(func() {
+		if auditSalt != nil {
+			return
+		}
+		buf := make([]byte, 32)
+		if _, err := rand.Read(buf); err != nil {
+			// Degrade to an empty salt rather than panicking; the hash
+			// still provides some obfuscation and we refuse to crash
+			// because of log-line instrumentation.
+			buf = []byte{}
+		}
+		auditSalt = buf
+	})
+	return auditSalt
+}
+
+// hashRemoteAddr produces a short hex digest of the client IP using a
+// per-process salt. Returns an empty string for blank input. The digest is
+// stable within a process lifetime so correlated requests are still
+// recognisable in logs, but it is not reversible.
+func hashRemoteAddr(remote string) string {
+	if remote == "" {
+		return ""
+	}
+	// Strip the port if present so log lines aren't noisy.
+	host, _, err := net.SplitHostPort(remote)
+	if err != nil || host == "" {
+		host = remote
+	}
+	h := hmac.New(sha256.New, getAuditSalt())
+	h.Write([]byte(host))
+	sum := h.Sum(nil)
+	return hex.EncodeToString(sum[:8])
+}
 
 // wantsJSON returns true if the request expects a JSON response.
 func wantsJSON(r *http.Request) bool {
@@ -21,7 +79,7 @@ func wantsJSON(r *http.Request) bool {
 // denyUnauthenticated returns a 401 JSON response for API requests or redirects
 // to /login for HTML requests. Shared by all auth-requiring middleware.
 func denyUnauthenticated(c *router.Context) error {
-	log.Printf("auth: authentication required for %s %s from %s", c.Request.Method, c.Request.URL.Path, c.Request.RemoteAddr)
+	log.Printf("velocity/auth: authentication required for %s %s ip_hash=%s", c.Request.Method, c.Request.URL.Path, hashRemoteAddr(c.Request.RemoteAddr))
 	if wantsJSON(c.Request) {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthenticated."})
 	}
@@ -36,7 +94,7 @@ func denyUnauthenticated(c *router.Context) error {
 // denyForbidden returns a 403 JSON response for API requests or a plain 403
 // status for HTML requests.
 func denyForbidden(c *router.Context) error {
-	log.Printf("auth: authorization denied for %s %s from %s", c.Request.Method, c.Request.URL.Path, c.Request.RemoteAddr)
+	log.Printf("velocity/auth: authorization denied for %s %s ip_hash=%s", c.Request.Method, c.Request.URL.Path, hashRemoteAddr(c.Request.RemoteAddr))
 	if wantsJSON(c.Request) {
 		return c.JSON(http.StatusForbidden, map[string]string{"error": "Forbidden."})
 	}

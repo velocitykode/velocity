@@ -3,6 +3,7 @@ package csrf
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/velocitykode/velocity/csrf/stores"
 	"github.com/velocitykode/velocity/router"
@@ -27,6 +29,11 @@ var (
 type CSRF struct {
 	config      *Config
 	singleUseMu sync.Mutex // serializes validate+delete for single-use tokens
+
+	// eventDispatcher is optional; when set via SetEventDispatcher, the CSRF
+	// instance emits events such as csrf.session_fallback.
+	eventMu         sync.RWMutex
+	eventDispatcher func(event interface{}) error
 }
 
 // New creates a new CSRF instance with the given configuration.
@@ -71,6 +78,27 @@ func (c *CSRF) Shutdown(ctx context.Context) error {
 	return nil
 }
 
+// SetEventDispatcher wires an event dispatcher into the CSRF instance.
+// Safe to call before or after requests are served; mutex-protected.
+func (c *CSRF) SetEventDispatcher(fn func(event interface{}) error) {
+	c.eventMu.Lock()
+	c.eventDispatcher = fn
+	c.eventMu.Unlock()
+}
+
+// dispatchEvent fires an event if a dispatcher is configured. Failures
+// from the dispatcher are swallowed — CSRF validation must never fail
+// because of an event sink.
+func (c *CSRF) dispatchEvent(evt interface{}) {
+	c.eventMu.RLock()
+	fn := c.eventDispatcher
+	c.eventMu.RUnlock()
+	if fn == nil {
+		return
+	}
+	_ = fn(evt)
+}
+
 // Middleware returns HTTP middleware that validates CSRF tokens
 func (c *CSRF) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -112,7 +140,7 @@ func (c *CSRF) RouterMiddleware() router.MiddlewareFunc {
 			})
 			c.Middleware(inner).ServeHTTP(ctx.Response, ctx.Request)
 			if !called {
-				log.Printf("csrf: request blocked for %s %s", ctx.Request.Method, ctx.Request.URL.Path)
+				log.Printf("velocity/csrf: request blocked for %s %s", ctx.Request.Method, ctx.Request.URL.Path)
 				return fmt.Errorf("velocity/csrf: request rejected for %s %s", ctx.Request.Method, ctx.Request.URL.Path)
 			}
 			return handlerErr
@@ -146,7 +174,8 @@ func (c *CSRF) validateToken(r *http.Request) error {
 		return ErrTokenInvalid
 	}
 
-	// Validate tokens
+	// Validate tokens via constant-time comparison (ValidateToken uses
+	// crypto/subtle internally).
 	if !ValidateToken(requestToken, expectedToken) {
 		return ErrTokenInvalid
 	}
@@ -154,7 +183,7 @@ func (c *CSRF) validateToken(r *http.Request) error {
 	// Handle single-use tokens
 	if c.config.SingleUse {
 		if err := c.config.Store.Delete(sessionID); err != nil {
-			log.Printf("csrf: failed to delete single-use token for session %s: %v", sessionID, err)
+			log.Printf("velocity/csrf: failed to delete single-use token for session %s: %v", sessionID, err)
 		}
 	}
 
@@ -178,7 +207,10 @@ func (c *CSRF) getTokenFromRequest(r *http.Request) string {
 	return ""
 }
 
-// getSessionID extracts the session ID from the request
+// getSessionID extracts the session ID from the request.
+// When no session cookie is present, a one-shot ephemeral ID is generated
+// and a csrf.session_fallback event is dispatched so operators can see that
+// the session middleware is missing or misconfigured.
 func (c *CSRF) getSessionID(r *http.Request) (string, error) {
 	// Use configured session cookie name
 	cookieName := c.config.SessionCookieName
@@ -192,10 +224,19 @@ func (c *CSRF) getSessionID(r *http.Request) (string, error) {
 		return cookie.Value, nil
 	}
 
-	// Generate a random per-request identifier instead of using RemoteAddr
+	// Emit an event so operators can detect missing session middleware
+	// rather than silently relying on a new per-request ID.
+	c.dispatchEvent(&SessionFallback{
+		Context: r.Context(),
+		Path:    r.URL.Path,
+		Method:  r.Method,
+		At:      time.Now(),
+	})
+
+	// Generate a random per-request identifier instead of using RemoteAddr.
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("velocity/csrf: failed to generate session ID: %w", err)
+		return "", fmt.Errorf("velocity/csrf: failed to generate session id: %w", err)
 	}
 	return "temp-" + hex.EncodeToString(b), nil
 }
@@ -229,7 +270,7 @@ func (c *CSRF) handleError(w http.ResponseWriter, r *http.Request, err error) {
 	if isJSONRequest(r) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(419)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"code":    419,
 			"message": c.config.ErrorMessage,
 		})
@@ -264,7 +305,7 @@ func (c *CSRF) RefreshHandler() http.HandlerFunc {
 
 		// Return token as JSON
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
+		_ = json.NewEncoder(w).Encode(map[string]string{
 			"token": token,
 		})
 	}
@@ -323,4 +364,11 @@ func isJSONRequest(r *http.Request) bool {
 	accept := r.Header.Get("Accept")
 	return strings.Contains(contentType, "application/json") ||
 		strings.Contains(accept, "application/json")
+}
+
+// constantTimeEq is exposed here for package-local use; it simply wraps
+// subtle.ConstantTimeCompare for clarity. Tests rely on the underlying
+// behaviour directly via ValidateToken.
+func constantTimeEq(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }

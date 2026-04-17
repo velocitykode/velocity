@@ -3,17 +3,26 @@ package guards
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/session"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 )
+
+// rememberRandReader is the entropy source for remember-me tokens. Tests may
+// swap this out to simulate rand.Read failures.
+var rememberRandReader io.Reader = rand.Reader
 
 // sessionCtxKey is an unexported context key type to avoid collisions.
 type sessionCtxKey struct{}
@@ -37,6 +46,7 @@ type SessionGuard struct {
 	config    auth.SessionConfig
 	hasher    auth.Hasher
 	encryptor crypto.Encryptor
+	throttler contract.LoginThrottler
 }
 
 // NewSessionGuard creates a new session guard.
@@ -54,11 +64,23 @@ func NewSessionGuard(provider auth.UserProvider, config auth.SessionConfig, encr
 	}
 
 	return &SessionGuard{
-		provider: provider,
-		store:    store,
-		config:   config,
-		hasher:   auth.NewBcryptHasher(10),
+		provider:  provider,
+		store:     store,
+		config:    config,
+		hasher:    auth.NewBcryptHasher(10),
+		encryptor: enc,
+		throttler: auth.NoopLoginThrottler{},
 	}, nil
+}
+
+// SetLoginThrottler installs a rate-limiter for Attempt() calls. Passing nil
+// reverts to the no-op throttler.
+func (g *SessionGuard) SetLoginThrottler(t contract.LoginThrottler) {
+	if t == nil {
+		g.throttler = auth.NoopLoginThrottler{}
+		return
+	}
+	g.throttler = t
 }
 
 // Check if user is authenticated
@@ -159,21 +181,35 @@ func (g *SessionGuard) LoginByID(w http.ResponseWriter, r *http.Request, id inte
 	return g.Login(w, r, user, remember...)
 }
 
-// Attempt attempts to log in with credentials
+// Attempt attempts to log in with credentials. The configured LoginThrottler
+// is consulted before the credential check; failed attempts call
+// RecordFailure and successes call RecordSuccess.
 func (g *SessionGuard) Attempt(w http.ResponseWriter, r *http.Request, credentials map[string]interface{}, remember ...bool) (bool, error) {
+	throttler := g.throttler
+	if throttler == nil {
+		throttler = auth.NoopLoginThrottler{}
+	}
+	key := auth.ThrottleKey(r, credentials)
+	if !throttler.Allow(r, key) {
+		return false, auth.ErrLoginThrottled
+	}
+
 	// Find user by credentials
 	user, err := g.provider.FindByCredentials(credentials)
 	if err != nil {
+		throttler.RecordFailure(r, key)
 		return false, nil // User not found
 	}
 
 	// Validate password
 	password, ok := credentials["password"].(string)
 	if !ok {
+		throttler.RecordFailure(r, key)
 		return false, auth.ErrInvalidCredentials
 	}
 
 	if !g.provider.ValidateCredentials(user, map[string]interface{}{"password": password}) {
+		throttler.RecordFailure(r, key)
 		return false, nil // Invalid password
 	}
 
@@ -182,6 +218,7 @@ func (g *SessionGuard) Attempt(w http.ResponseWriter, r *http.Request, credentia
 		return false, err
 	}
 
+	throttler.RecordSuccess(r, key)
 	return true, nil
 }
 
@@ -262,36 +299,72 @@ func (g *SessionGuard) checkRememberCookie(r *http.Request) auth.Authenticatable
 		return nil
 	}
 
-	// Verify remember token with constant-time comparison
+	// Verify remember token with constant-time comparison.
+	// We hash the incoming token with SHA-256 and compare against the stored
+	// hash. Legacy rows that still hold a raw token continue to work because
+	// we fall through to a direct compare.
 	storedToken := user.GetRememberToken()
-	if storedToken == "" || subtle.ConstantTimeCompare([]byte(storedToken), []byte(token)) != 1 {
+	if storedToken == "" {
 		return nil
 	}
-
-	return user
+	candidateHash := hashRememberToken(token)
+	if subtle.ConstantTimeCompare([]byte(storedToken), []byte(candidateHash)) == 1 {
+		return user
+	}
+	if subtle.ConstantTimeCompare([]byte(storedToken), []byte(token)) == 1 {
+		return user
+	}
+	return nil
 }
 
-// setRememberCookie sets remember me cookie
-func (g *SessionGuard) setRememberCookie(w http.ResponseWriter, user auth.Authenticatable) error {
-	// Generate remember token
-	token := generateRememberToken()
+// rememberCookieLifetime returns the cookie TTL for remember-me:
+// min(session lifetime, remember-me default). Returns an error when the
+// session lifetime is zero so callers refuse to create the cookie.
+func (g *SessionGuard) rememberCookieLifetime() (time.Duration, error) {
+	const defaultRememberDuration = 30 * 24 * time.Hour
+	if g.config.Lifetime <= 0 {
+		return 0, errors.New("velocity/auth: session lifetime must be positive to enable remember-me")
+	}
+	sessionLifetime := time.Duration(g.config.Lifetime) * time.Minute
+	if sessionLifetime < defaultRememberDuration {
+		return sessionLifetime, nil
+	}
+	return defaultRememberDuration, nil
+}
 
-	// Update user's remember token
-	user.SetRememberToken(token)
-	if err := g.provider.UpdateRememberToken(user, token); err != nil {
+// setRememberCookie sets remember me cookie.
+// The raw token is encrypted into the cookie; only its SHA-256 hash is
+// persisted on the user record. Cookie TTL is min(session lifetime,
+// 30 days). Refuses to issue a cookie when the session lifetime is zero.
+func (g *SessionGuard) setRememberCookie(w http.ResponseWriter, user auth.Authenticatable) error {
+	ttl, err := g.rememberCookieLifetime()
+	if err != nil {
 		return err
 	}
 
-	// Create cookie value: userID|token
+	// Generate remember token.
+	token, err := generateRememberToken()
+	if err != nil {
+		return err
+	}
+
+	// Store only the hash of the token on the user record.
+	hashed := hashRememberToken(token)
+	user.SetRememberToken(hashed)
+	if err := g.provider.UpdateRememberToken(user, hashed); err != nil {
+		return err
+	}
+
+	// Create cookie value: userID|token (raw token; cookie is encrypted).
 	userID, ok := user.GetAuthIdentifier().(string)
 	if !ok {
-		return fmt.Errorf("auth: expected string user identifier, got %T", user.GetAuthIdentifier())
+		return fmt.Errorf("velocity/auth: expected string user identifier, got %T", user.GetAuthIdentifier())
 	}
 	value := userID + "|" + token
 
 	// Encrypt value
 	if g.encryptor == nil {
-		return fmt.Errorf("auth: encryptor not configured, cannot set remember cookie")
+		return errors.New("velocity/auth: encryptor not configured, cannot set remember cookie")
 	}
 	encrypted, err := g.encryptor.Encrypt(value)
 	if err != nil {
@@ -304,11 +377,11 @@ func (g *SessionGuard) setRememberCookie(w http.ResponseWriter, user auth.Authen
 		Value:    encrypted,
 		Path:     g.config.Path,
 		Domain:   g.config.Domain,
-		MaxAge:   30 * 24 * 60 * 60, // 30 days
+		MaxAge:   int(ttl.Seconds()),
 		HttpOnly: true,
 		Secure:   g.config.Secure,
 		SameSite: g.config.SameSite,
-		Expires:  time.Now().Add(30 * 24 * time.Hour),
+		Expires:  time.Now().Add(ttl),
 	})
 
 	return nil
@@ -328,11 +401,21 @@ func (g *SessionGuard) clearRememberCookie(w http.ResponseWriter) {
 	})
 }
 
-// generateRememberToken generates a random remember token
-func generateRememberToken() string {
+// generateRememberToken generates a random remember token.
+// Returns an error rather than panicking when the entropy source fails.
+func generateRememberToken() (string, error) {
 	token := make([]byte, 32)
-	if _, err := rand.Read(token); err != nil {
-		panic("auth: crypto/rand failure: " + err.Error())
+	if _, err := io.ReadFull(rememberRandReader, token); err != nil {
+		return "", fmt.Errorf("velocity/auth: failed to generate remember token: %w", err)
 	}
-	return base64.URLEncoding.EncodeToString(token)
+	return base64.URLEncoding.EncodeToString(token), nil
+}
+
+// hashRememberToken returns the hex-encoded SHA-256 digest of the raw
+// remember-me token. Only the hash is stored server-side; the raw token
+// lives in the user's cookie. This limits the blast radius if the users
+// table leaks.
+func hashRememberToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
