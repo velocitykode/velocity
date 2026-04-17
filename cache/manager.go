@@ -9,6 +9,46 @@ import (
 	"github.com/velocitykode/velocity/cache/drivers"
 )
 
+// CacheManager is the interface satisfied by *Manager. It covers the methods
+// used through app.Services and router.Context for cache operations,
+// store management, locking, and event wiring.
+type CacheManager interface {
+	// Basic operations on the default store.
+	Get(key string) (interface{}, bool)
+	GetWithContext(ctx context.Context, key string) (interface{}, bool)
+	GetString(key string) (string, bool)
+	Put(key string, value interface{}, ttl time.Duration) error
+	PutWithContext(ctx context.Context, key string, value interface{}, ttl time.Duration) error
+	Forever(key string, value interface{}) error
+	ForeverWithContext(ctx context.Context, key string, value interface{}) error
+	Forget(key string) error
+	ForgetWithContext(ctx context.Context, key string) error
+	Flush() error
+	Has(key string) bool
+	Increment(key string, value int64) (int64, error)
+	Decrement(key string, value int64) (int64, error)
+	Remember(key string, ttl time.Duration, callback func() interface{}) (interface{}, error)
+	RememberForever(key string, callback func() interface{}) (interface{}, error)
+	Many(keys []string) map[string]interface{}
+	PutMany(items map[string]interface{}, ttl time.Duration) error
+
+	// Store management.
+	Store(name string) (Store, error)
+	DefaultStore() (Store, error)
+	Shutdown(ctx context.Context) error
+	Close() error // Deprecated: use Shutdown(ctx) instead.
+
+	// Distributed locking.
+	Lock(key string, ttl ...time.Duration) Lock
+	RestoreLock(key string, owner string) Lock
+
+	// Event wiring.
+	SetEventDispatcher(fn func(event interface{}) error)
+}
+
+// Verify *Manager implements CacheManager at compile time.
+var _ CacheManager = (*Manager)(nil)
+
 // Manager manages multiple cache stores
 type Manager struct {
 	mu              sync.RWMutex
@@ -54,6 +94,32 @@ type StoreConfig struct {
 	Password string // For Redis driver
 	Database int    // For Redis driver
 	Table    string // For database driver
+	TLS      bool   // Enable TLS for Redis connections
+}
+
+// DefaultConfig returns a Config with sensible defaults (single in-memory store).
+func DefaultConfig() *Config {
+	return &Config{
+		Default: "default",
+		Prefix:  "velocity_cache",
+		Stores: map[string]StoreConfig{
+			"default": {Driver: "memory"},
+		},
+	}
+}
+
+// Validate checks that the Config is internally consistent.
+func (c *Config) Validate() error {
+	if c.Default == "" {
+		return fmt.Errorf("cache: default store name is required")
+	}
+	if len(c.Stores) == 0 {
+		return fmt.Errorf("cache: at least one store must be configured")
+	}
+	if _, exists := c.Stores[c.Default]; !exists {
+		return fmt.Errorf("cache: default store %q not found in configured stores", c.Default)
+	}
+	return nil
 }
 
 // NewManager creates a new cache manager with lazy store initialization.
@@ -63,21 +129,6 @@ func NewManager(config *Config) *Manager {
 		defaultStore: config.Default,
 		config:       config,
 	}
-}
-
-// NewManagerFromConfig creates a new cache manager and eagerly initializes
-// all configured stores, returning an error if any store fails to initialize.
-func NewManagerFromConfig(config *Config) (*Manager, error) {
-	m := NewManager(config)
-
-	// Eagerly create all configured stores to detect errors at startup
-	for name := range config.Stores {
-		if _, err := m.createStore(name); err != nil {
-			return nil, fmt.Errorf("failed to create cache store %q: %w", name, err)
-		}
-	}
-
-	return m, nil
 }
 
 // Store returns a cache store by name
@@ -106,7 +157,7 @@ func (m *Manager) createStore(name string) (Store, error) {
 
 	config, exists := m.config.Stores[name]
 	if !exists {
-		return nil, fmt.Errorf("cache store '%s' is not configured", name)
+		return nil, fmt.Errorf("velocity/cache: store %q not configured: %w", name, ErrStoreNotFound)
 	}
 
 	// Combine global and store-specific prefix
@@ -128,7 +179,7 @@ func (m *Manager) createStore(name string) (Store, error) {
 	case DriverFile:
 		store, err = drivers.NewFileStore(prefix, config.Path)
 	case DriverRedis:
-		store, err = drivers.NewRedisStore(prefix, config.Host, config.Port, config.Password, config.Database)
+		store, err = drivers.NewRedisStore(prefix, config.Host, config.Port, config.Password, config.Database, config.TLS)
 	case DriverDatabase:
 		// TODO: Implement database driver
 		return nil, fmt.Errorf("database driver not yet implemented")
@@ -140,6 +191,10 @@ func (m *Manager) createStore(name string) (Store, error) {
 		return nil, err
 	}
 
+	if starter, ok := store.(interface{ Start() }); ok {
+		starter.Start()
+	}
+
 	m.stores[name] = store
 	return store, nil
 }
@@ -149,20 +204,25 @@ func (m *Manager) DefaultStore() (Store, error) {
 	return m.Store(m.defaultStore)
 }
 
-// Close closes all cache stores
-func (m *Manager) Close() error {
+// Shutdown closes all cache stores, honoring the context deadline.
+func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	for _, store := range m.stores {
-		if memStore, ok := store.(*drivers.MemoryStore); ok {
-			memStore.Close()
+		if closer, ok := store.(interface{ Close() error }); ok {
+			closer.Close()
 		}
-		// Add close methods for other drivers as needed
 	}
 
 	m.stores = make(map[string]Store)
 	return nil
+}
+
+// Close closes all cache stores.
+// Deprecated: use Shutdown(ctx) instead.
+func (m *Manager) Close() error {
+	return m.Shutdown(context.Background())
 }
 
 // Implementation of Cache interface for default store

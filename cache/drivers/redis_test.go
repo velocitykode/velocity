@@ -18,7 +18,7 @@ func newTestRedisStore(t *testing.T, prefix string) (*RedisStore, *miniredis.Min
 		t.Fatalf("failed to start miniredis: %v", err)
 	}
 
-	store, err := NewRedisStore(prefix, mr.Host(), mr.Server().Addr().Port, "", 0)
+	store, err := NewRedisStore(prefix, mr.Host(), mr.Server().Addr().Port, "", 0, false)
 	if err != nil {
 		mr.Close()
 		t.Fatalf("NewRedisStore() error = %v", err)
@@ -46,7 +46,7 @@ func TestNewRedisStore(t *testing.T) {
 			}
 			defer mr.Close()
 
-			store, err := NewRedisStore(tt.prefix, mr.Host(), mr.Server().Addr().Port, "", 0)
+			store, err := NewRedisStore(tt.prefix, mr.Host(), mr.Server().Addr().Port, "", 0, false)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("NewRedisStore() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -63,7 +63,7 @@ func TestNewRedisStore(t *testing.T) {
 
 func TestNewRedisStore_ConnectionFailure(t *testing.T) {
 	t.Run("returns error when connection fails", func(t *testing.T) {
-		_, err := NewRedisStore("test", "invalid-host", 9999, "", 0)
+		_, err := NewRedisStore("test", "invalid-host", 9999, "", 0, false)
 		if err == nil {
 			t.Error("NewRedisStore() expected error for invalid connection")
 		}
@@ -927,13 +927,13 @@ func TestRedisStore_PrefixedKeys(t *testing.T) {
 		}
 		defer mr.Close()
 
-		store1, err := NewRedisStore("app1", mr.Host(), mr.Server().Addr().Port, "", 0)
+		store1, err := NewRedisStore("app1", mr.Host(), mr.Server().Addr().Port, "", 0, false)
 		if err != nil {
 			t.Fatalf("NewRedisStore() error = %v", err)
 		}
 		defer store1.Close()
 
-		store2, err := NewRedisStore("app2", mr.Host(), mr.Server().Addr().Port, "", 0)
+		store2, err := NewRedisStore("app2", mr.Host(), mr.Server().Addr().Port, "", 0, false)
 		if err != nil {
 			t.Fatalf("NewRedisStore() error = %v", err)
 		}

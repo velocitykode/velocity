@@ -3,6 +3,8 @@ package notification
 import (
 	"fmt"
 	"sync"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 var (
@@ -12,9 +14,17 @@ var (
 
 // RegisterChannel allows channel drivers to register themselves.
 // Typically called from an init() function in each channel driver package.
+// Panics with *contract.RegistrationError if factory is nil or the channel name
+// is already registered.
 func RegisterChannel(name string, factory func() (Channel, error)) {
+	if factory == nil {
+		panic(contract.NewRegistrationError("notification", fmt.Sprintf("nil factory for channel %q", name)))
+	}
 	channelMu.Lock()
 	defer channelMu.Unlock()
+	if _, exists := channelFactories[name]; exists {
+		panic(contract.NewRegistrationError("notification", fmt.Sprintf("channel %q already registered", name)))
+	}
 	channelFactories[name] = factory
 }
 

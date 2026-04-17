@@ -18,21 +18,23 @@ type BatchingDispatcher struct {
 	wg            sync.WaitGroup
 }
 
-// NewBatchingDispatcher creates a new batching dispatcher
+// NewBatchingDispatcher creates a new batching dispatcher.
+// Call Start() to begin the background flush goroutine.
 func NewBatchingDispatcher(batchSize int, flushInterval time.Duration) *BatchingDispatcher {
-	d := &BatchingDispatcher{
+	return &BatchingDispatcher{
 		DefaultDispatcher: NewDispatcher(),
 		batchSize:         batchSize,
 		flushInterval:     flushInterval,
 		batch:             make([]interface{}, 0, batchSize),
 		stopCh:            make(chan struct{}),
 	}
+}
 
-	// Start the flush ticker
+// Start begins the background goroutine that periodically flushes
+// batched events. Must be called after construction.
+func (d *BatchingDispatcher) Start() {
 	d.wg.Add(1)
 	go d.flushLoop()
-
-	return d
 }
 
 // flushLoop periodically flushes the batch

@@ -32,7 +32,7 @@ func (r *JobRegistry) Deserialize(payload *Payload) (Job, error) {
 	r.mu.RUnlock()
 
 	if !exists {
-		return nil, fmt.Errorf("no handler registered for job type: %s", payload.Type)
+		return nil, fmt.Errorf("velocity/queue: no handler registered for job type %s: %w", payload.Type, ErrJobNotFound)
 	}
 
 	return handler(payload.Data)

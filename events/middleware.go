@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/pipeline"
 )
 
@@ -260,7 +261,7 @@ func (m *RetryMiddleware) Handle(event interface{}, next func(interface{}) error
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					err = fmt.Errorf("panic: %v", r)
+					err = panicerr.FromRecovered(r)
 				}
 			}()
 			err = next(event)

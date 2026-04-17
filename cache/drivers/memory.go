@@ -22,20 +22,22 @@ type cacheItem struct {
 	expiration *time.Time
 }
 
-// NewMemoryStore creates a new memory cache store
+// NewMemoryStore creates a new memory cache store.
+// Call Start() to begin the background expired-item cleanup goroutine.
 func NewMemoryStore(prefix string) *MemoryStore {
-	store := &MemoryStore{
+	return &MemoryStore{
 		items:     make(map[string]*cacheItem),
 		prefix:    prefix,
 		done:      make(chan bool),
 		lockStore: newMemoryLockStore(),
 	}
+}
 
-	// Start cleanup goroutine
-	store.ticker = time.NewTicker(1 * time.Minute)
-	go store.cleanupExpired()
-
-	return store
+// Start begins the background goroutine that periodically removes expired
+// items from the store. Must be called after construction.
+func (s *MemoryStore) Start() {
+	s.ticker = time.NewTicker(1 * time.Minute)
+	go s.cleanupExpired()
 }
 
 // cleanupExpired removes expired items periodically
@@ -57,9 +59,11 @@ func (s *MemoryStore) cleanupExpired() {
 	}
 }
 
-// Close stops the cleanup goroutine.
+// Close stops the cleanup goroutine. Safe to call even if Start() was never called.
 func (s *MemoryStore) Close() error {
-	s.ticker.Stop()
+	if s.ticker != nil {
+		s.ticker.Stop()
+	}
 	close(s.done)
 	return nil
 }

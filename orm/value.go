@@ -13,7 +13,7 @@ import (
 // Returns ErrNotFound if no record matches.
 func (q *Query[T]) Value(column string) (any, error) {
 	if err := validateIdentifier(column); err != nil {
-		return nil, fmt.Errorf("Value: %w", err)
+		return nil, fmt.Errorf("velocity/orm: value: %w", err)
 	}
 
 	q.columns = []string{column}

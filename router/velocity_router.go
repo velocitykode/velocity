@@ -2,6 +2,8 @@ package router
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -11,8 +13,15 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/app"
+	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
+
+// ErrValidationAborted is returned when validation fails and the response
+// (typically a redirect with flashed errors) has already been written.
+// The router skips error handling for this sentinel.
+var ErrValidationAborted = errors.New("velocity/router: validation aborted, response already written")
 
 // compiledRouteMap is a type alias used with atomic.Pointer for lock-free reads.
 type compiledRouteMap = map[string]*MatchResult
@@ -73,7 +82,7 @@ type VelocityRouterV2 struct {
 	ErrorHandler func(*Context, error)
 
 	// validateFn is wired during app init to run validation with DB support.
-	validateFn func(c *Context, rules map[string][]string, messages ...map[string]string)
+	validateFn func(c *Context, rules map[string][]string, messages ...map[string]string) error
 }
 
 // NewV2 creates a new tree-based router instance
@@ -98,7 +107,7 @@ func (r *VelocityRouterV2) SetServices(s *app.Services) {
 }
 
 // SetValidator sets the validation function used by ctx.Validate().
-func (r *VelocityRouterV2) SetValidator(fn func(c *Context, rules map[string][]string, messages ...map[string]string)) {
+func (r *VelocityRouterV2) SetValidator(fn func(c *Context, rules map[string][]string, messages ...map[string]string) error) {
 	r.validateFn = fn
 }
 
@@ -197,8 +206,12 @@ func (r *VelocityRouterV2) Match(methods []string, path string, handler HandlerF
 	return lastConfig
 }
 
-// addRoute adds a route to the current group
+// addRoute adds a route to the current group.
+// Panics with *contract.RegistrationError if handler is nil.
 func (r *VelocityRouterV2) addRoute(method, path string, handler HandlerFunc) RouteConfig {
+	if handler == nil {
+		panic(contract.NewRegistrationError("router", fmt.Sprintf("nil handler for %s %s", method, path)))
+	}
 	if r.frozen {
 		log.Println("velocity: route registered after server start, this route will not be served")
 	}
@@ -233,8 +246,14 @@ func (r *VelocityRouterV2) Group(prefix string, fn ...func(Router)) Router {
 	return groupRouter
 }
 
-// Use adds middleware to the router
+// Use adds middleware to the router.
+// Panics with *contract.RegistrationError if any middleware is nil.
 func (r *VelocityRouterV2) Use(middlewares ...MiddlewareFunc) Router {
+	for i, mw := range middlewares {
+		if mw == nil {
+			panic(contract.NewRegistrationError("router", fmt.Sprintf("nil middleware at index %d", i)))
+		}
+	}
 	if r.frozen {
 		log.Println("velocity: middleware registered after server start, this middleware will not be applied")
 	}
@@ -487,13 +506,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			stack := string(buf[:n])
 
 			// Convert recovered value to error
-			var err error
-			switch v := recovered.(type) {
-			case error:
-				err = v
-			default:
-				err = &panicError{value: v}
-			}
+			err := panicerr.FromRecovered(recovered)
 
 			// Dispatch failed event
 			r.dispatchInstanceEvent(&RequestFailed{
@@ -510,8 +523,9 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 			// Write error response
 			r.handleError(ctx, rw, err)
-		} else if handlerErr != nil {
-			// Dispatch failed event for handler error
+		} else if handlerErr != nil && !errors.Is(handlerErr, ErrValidationAborted) {
+			// Dispatch failed event for handler error (skip validation abort —
+			// the response has already been written with flashed errors).
 			r.dispatchInstanceEvent(&RequestFailed{
 				Context:   req.Context(),
 				RequestID: requestID,
@@ -544,7 +558,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}()
 
 	handlerErr = result.Handler(ctx)
-	if handlerErr != nil {
+	if handlerErr != nil && !errors.Is(handlerErr, ErrValidationAborted) {
 		r.handleError(ctx, rw, handlerErr)
 	}
 }
@@ -566,30 +580,7 @@ func (r *VelocityRouterV2) handleError(ctx *Context, rw *responseWriter, err err
 	http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
 }
 
-// AbortValidation is a sentinel panic value used by validate.Form to stop
-// handler execution when validation fails (response already sent).
-type AbortValidation struct{}
-
-// panicError wraps a recovered panic value as an error
-type panicError struct {
-	value interface{}
-}
-
-func (e *panicError) Error() string {
-	return "panic: " + toString(e.value)
-}
-
-// toString converts an interface to string
-func toString(v interface{}) string {
-	switch val := v.(type) {
-	case string:
-		return val
-	case error:
-		return val.Error()
-	default:
-		return "unknown panic"
-	}
-}
+// (panicError and toString removed — use internal/panicerr.FromRecovered)
 
 // Handle returns the underlying http.Handler
 func (r *VelocityRouterV2) Handle() http.Handler {
@@ -745,6 +736,9 @@ func (g *groupRouterV2) Head(path string, handler HandlerFunc) RouteConfig {
 }
 
 func (g *groupRouterV2) addRoute(method, path string, handler HandlerFunc) RouteConfig {
+	if handler == nil {
+		panic(contract.NewRegistrationError("router", fmt.Sprintf("nil handler for %s %s", method, path)))
+	}
 	// Store relative path - full path is calculated during CommitToTree
 	route := g.group.AddRoute(method, path, handler)
 	return &routeConfigV2{route: route, router: g.router}

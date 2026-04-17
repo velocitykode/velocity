@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"sync"
 	"time"
 )
@@ -45,16 +44,19 @@ type DatabaseDriver struct {
 	mu              sync.RWMutex
 	db              *sql.DB
 	workerID        string
+	dbDriver        string // "postgres", "mysql", "sqlite"
 	eventDispatcher func(event interface{}) error
 }
 
 // NewDatabaseDriver creates a new database queue driver with an injected *sql.DB.
-func NewDatabaseDriver(db *sql.DB) *DatabaseDriver {
+// dbDriver specifies the database driver name ("postgres", "mysql", "sqlite").
+func NewDatabaseDriver(db *sql.DB, dbDriver string) *DatabaseDriver {
 	workerID := fmt.Sprintf("worker_%d_%d", time.Now().Unix(), time.Now().Nanosecond())
 
 	driver := &DatabaseDriver{
 		db:       db,
 		workerID: workerID,
+		dbDriver: dbDriver,
 	}
 
 	return driver
@@ -138,10 +140,9 @@ func (d *DatabaseDriver) Pop(queueName string) (Job, error) {
 	var jobRecord JobRecord
 
 	// Check which driver we're using
-	dbDriver := os.Getenv("DB_CONNECTION")
 	var sqlQuery string
 
-	if dbDriver == "postgres" {
+	if d.dbDriver == "postgres" {
 		// PostgreSQL with proper locking
 		sqlQuery = `SELECT * FROM jobs
 			WHERE queue = $1
@@ -285,10 +286,18 @@ func (d *DatabaseDriver) ProcessDelayedJobs(queueName string) error {
 	return nil
 }
 
+// Shutdown is a no-op for the database driver; the underlying DB connection
+// is owned by the ORM and closed separately.
+func (d *DatabaseDriver) Shutdown(ctx context.Context) error {
+	batchStore.close() // stop package-level batch cleanup goroutine (idempotent)
+	return nil
+}
+
 // Close is a no-op for the database driver; the underlying DB connection
 // is owned by the ORM and closed separately.
+// Deprecated: use Shutdown(ctx) instead.
 func (d *DatabaseDriver) Close() error {
-	return nil
+	return d.Shutdown(context.Background())
 }
 
 // scanJobRecord scans a database row into a JobRecord

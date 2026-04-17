@@ -2,17 +2,18 @@ package drivers
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/velocitykode/velocity/mail"
 )
 
 func TestNewPostmarkDriver(t *testing.T) {
-	os.Setenv("POSTMARK_TOKEN", "test-token")
-	os.Setenv("POSTMARK_MESSAGE_STREAM", "outbound")
+	config := mail.PostmarkConfig{
+		Token:         "test-token",
+		MessageStream: "outbound",
+	}
 
-	driver, err := NewPostmarkDriver()
+	driver, err := NewPostmarkDriver(config, "", "")
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
@@ -31,19 +32,20 @@ func TestNewPostmarkDriver(t *testing.T) {
 }
 
 func TestNewPostmarkDriverNoToken(t *testing.T) {
-	os.Unsetenv("POSTMARK_TOKEN")
+	config := mail.PostmarkConfig{}
 
-	_, err := NewPostmarkDriver()
+	_, err := NewPostmarkDriver(config, "", "")
 	if err == nil {
 		t.Error("Expected error when POSTMARK_TOKEN not set")
 	}
 }
 
 func TestNewPostmarkDriverDefaultStream(t *testing.T) {
-	os.Setenv("POSTMARK_TOKEN", "test-token")
-	os.Unsetenv("POSTMARK_MESSAGE_STREAM")
+	config := mail.PostmarkConfig{
+		Token: "test-token",
+	}
 
-	driver, err := NewPostmarkDriver()
+	driver, err := NewPostmarkDriver(config, "", "")
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
@@ -54,11 +56,11 @@ func TestNewPostmarkDriverDefaultStream(t *testing.T) {
 }
 
 func TestPostmarkDriverBuildPayload(t *testing.T) {
-	os.Setenv("POSTMARK_TOKEN", "test-token")
-	os.Setenv("MAIL_FROM_ADDRESS", "from@example.com")
-	os.Setenv("MAIL_FROM_NAME", "From Name")
+	config := mail.PostmarkConfig{
+		Token: "test-token",
+	}
 
-	driver, _ := NewPostmarkDriver()
+	driver, _ := NewPostmarkDriver(config, "from@example.com", "From Name")
 
 	msg := mail.NewMessage().
 		To("to@example.com", "To Name").
@@ -90,8 +92,11 @@ func TestPostmarkDriverBuildPayload(t *testing.T) {
 }
 
 func TestPostmarkDriverBuildPayloadMultipleRecipients(t *testing.T) {
-	os.Setenv("POSTMARK_TOKEN", "test-token")
-	driver, _ := NewPostmarkDriver()
+	config := mail.PostmarkConfig{
+		Token: "test-token",
+	}
+
+	driver, _ := NewPostmarkDriver(config, "", "")
 
 	msg := mail.NewMessage().
 		To("to1@example.com").
@@ -119,8 +124,11 @@ func TestPostmarkDriverBuildPayloadMultipleRecipients(t *testing.T) {
 }
 
 func TestPostmarkDriverBuildPayloadReplyTo(t *testing.T) {
-	os.Setenv("POSTMARK_TOKEN", "test-token")
-	driver, _ := NewPostmarkDriver()
+	config := mail.PostmarkConfig{
+		Token: "test-token",
+	}
+
+	driver, _ := NewPostmarkDriver(config, "", "")
 
 	msg := mail.NewMessage().
 		To("to@example.com").
@@ -135,8 +143,11 @@ func TestPostmarkDriverBuildPayloadReplyTo(t *testing.T) {
 }
 
 func TestPostmarkDriverBuildPayloadHeaders(t *testing.T) {
-	os.Setenv("POSTMARK_TOKEN", "test-token")
-	driver, _ := NewPostmarkDriver()
+	config := mail.PostmarkConfig{
+		Token: "test-token",
+	}
+
+	driver, _ := NewPostmarkDriver(config, "", "")
 
 	msg := mail.NewMessage().
 		To("to@example.com").
@@ -157,8 +168,11 @@ func TestPostmarkDriverBuildPayloadHeaders(t *testing.T) {
 }
 
 func TestPostmarkDriverBuildPayloadAttachments(t *testing.T) {
-	os.Setenv("POSTMARK_TOKEN", "test-token")
-	driver, _ := NewPostmarkDriver()
+	config := mail.PostmarkConfig{
+		Token: "test-token",
+	}
+
+	driver, _ := NewPostmarkDriver(config, "", "")
 
 	msg := mail.NewMessage().
 		To("to@example.com").
@@ -186,12 +200,12 @@ func TestPostmarkDriverBuildPayloadAttachments(t *testing.T) {
 	}
 }
 
-func TestPostmarkDriverBuildPayloadFromEnv(t *testing.T) {
-	os.Setenv("POSTMARK_TOKEN", "test-token")
-	os.Setenv("MAIL_FROM_ADDRESS", "default@example.com")
-	os.Setenv("MAIL_FROM_NAME", "Default")
+func TestPostmarkDriverBuildPayloadFromConfig(t *testing.T) {
+	config := mail.PostmarkConfig{
+		Token: "test-token",
+	}
 
-	driver, _ := NewPostmarkDriver()
+	driver, _ := NewPostmarkDriver(config, "default@example.com", "Default")
 
 	msg := mail.NewMessage().
 		To("to@example.com").
@@ -200,13 +214,16 @@ func TestPostmarkDriverBuildPayloadFromEnv(t *testing.T) {
 	payload := driver.buildPayload(msg)
 
 	if payload["From"] != "Default <default@example.com>" {
-		t.Errorf("Expected From from env, got %v", payload["From"])
+		t.Errorf("Expected From from config, got %v", payload["From"])
 	}
 }
 
 func TestPostmarkDriverSendInvalidRequest(t *testing.T) {
-	os.Setenv("POSTMARK_TOKEN", "test-token")
-	driver, _ := NewPostmarkDriver()
+	config := mail.PostmarkConfig{
+		Token: "test-token",
+	}
+
+	driver, _ := NewPostmarkDriver(config, "", "")
 
 	// Empty message
 	msg := mail.NewMessage()

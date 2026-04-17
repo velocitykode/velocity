@@ -21,14 +21,21 @@ func TestNewManager(t *testing.T) {
 func TestManagerChannel(t *testing.T) {
 	manager := NewManager()
 
-	// Get channel (should auto-create)
-	mailer := manager.Channel("test")
-	if mailer == nil {
-		t.Error("Expected mailer to be created")
+	// Unconfigured channel returns error
+	_, err := manager.Channel("test")
+	if err == nil {
+		t.Error("Expected error for unconfigured channel")
 	}
 
-	// Get same channel again (should return same instance)
-	mailer2 := manager.Channel("test")
+	// Configured channel returns the mailer
+	manager.SetChannel("test", NewLogDriver())
+	mailer, err := manager.Channel("test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Same channel returns same instance
+	mailer2, _ := manager.Channel("test")
 	if mailer != mailer2 {
 		t.Error("Expected same mailer instance for same channel")
 	}
@@ -40,7 +47,10 @@ func TestManagerSetChannel(t *testing.T) {
 
 	manager.SetChannel("custom", mock)
 
-	mailer := manager.Channel("custom")
+	mailer, err := manager.Channel("custom")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if mailer != mock {
 		t.Error("Expected custom mailer to be returned")
 	}
@@ -53,19 +63,19 @@ func TestManagerHasChannel(t *testing.T) {
 		t.Error("Expected channel to not exist")
 	}
 
-	manager.Channel("test")
+	manager.SetChannel("test", NewLogDriver())
 
 	if !manager.HasChannel("test") {
-		t.Error("Expected channel to exist after creation")
+		t.Error("Expected channel to exist after SetChannel")
 	}
 }
 
 func TestManagerGetChannels(t *testing.T) {
 	manager := NewManager()
 
-	manager.Channel("channel1")
-	manager.Channel("channel2")
-	manager.Channel("channel3")
+	manager.SetChannel("channel1", NewLogDriver())
+	manager.SetChannel("channel2", NewLogDriver())
+	manager.SetChannel("channel3", NewLogDriver())
 
 	channels := manager.GetChannels()
 	if len(channels) != 3 {
@@ -140,7 +150,7 @@ func TestManagerBroadcastError(t *testing.T) {
 
 func TestManagerRemoveChannel(t *testing.T) {
 	manager := NewManager()
-	manager.Channel("test")
+	manager.SetChannel("test", NewLogDriver())
 
 	if !manager.HasChannel("test") {
 		t.Error("Expected channel to exist")
@@ -155,9 +165,9 @@ func TestManagerRemoveChannel(t *testing.T) {
 
 func TestManagerClearChannels(t *testing.T) {
 	manager := NewManager()
-	manager.Channel("channel1")
-	manager.Channel("channel2")
-	manager.Channel("channel3")
+	manager.SetChannel("channel1", NewLogDriver())
+	manager.SetChannel("channel2", NewLogDriver())
+	manager.SetChannel("channel3", NewLogDriver())
 
 	if len(manager.GetChannels()) != 3 {
 		t.Error("Expected 3 channels before clear")
@@ -183,6 +193,8 @@ func TestManagerConcurrency(t *testing.T) {
 	manager := NewManager()
 	var wg sync.WaitGroup
 
+	manager.SetChannel("concurrent", NewLogDriver())
+
 	// Concurrent channel access
 	for i := 0; i < 50; i++ {
 		wg.Add(1)
@@ -194,7 +206,6 @@ func TestManagerConcurrency(t *testing.T) {
 
 	wg.Wait()
 
-	// Should only have created one channel
 	channels := manager.GetChannels()
 	if len(channels) != 1 {
 		t.Errorf("Expected 1 channel, got %d", len(channels))

@@ -135,7 +135,7 @@ func (d *QueueIntegratedDispatcher) ProcessEventListenerJob(data []byte) error {
 	// Get listener factory
 	factory, ok := d.listenerRegistry[job.ListenerType]
 	if !ok {
-		return fmt.Errorf("no factory registered for listener type: %s", job.ListenerType)
+		return fmt.Errorf("velocity/events: no factory registered for listener type %s: %w", job.ListenerType, ErrListenerNotFound)
 	}
 
 	// Create listener instance

@@ -1,9 +1,24 @@
 package storage
 
 import (
+	"context"
 	"fmt"
 	"sync"
 )
+
+// StorageManager is the interface satisfied by *Manager. It covers the
+// methods used through app.Services and router.Context for disk management.
+type StorageManager interface {
+	Disk(name string) (Driver, error)
+	Default() (Driver, error)
+	AddDisk(name string, driver Driver)
+	SetDefault(name string) error
+	Configure(config Config) error
+	Shutdown(ctx context.Context) error
+}
+
+// Verify *Manager implements StorageManager at compile time.
+var _ StorageManager = (*Manager)(nil)
 
 // Manager manages multiple storage disks
 type Manager struct {
@@ -42,20 +57,22 @@ func (m *Manager) Configure(config Config) error {
 	return nil
 }
 
-// Disk returns a specific disk driver
-func (m *Manager) Disk(name string) Driver {
+// Disk returns a specific disk driver.
+// Returns ErrDiskNotFound if the named disk has not been configured.
+func (m *Manager) Disk(name string) (Driver, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	if driver, ok := m.disks[name]; ok {
-		return driver
+		return driver, nil
 	}
 
-	return nil
+	return nil, fmt.Errorf("velocity/storage: disk %q not found: %w", name, ErrDiskNotFound)
 }
 
-// Default returns the default disk driver
-func (m *Manager) Default() Driver {
+// Default returns the default disk driver.
+// Returns ErrDiskNotFound if the default disk has not been configured.
+func (m *Manager) Default() (Driver, error) {
 	return m.Disk(m.defaultDisk)
 }
 
@@ -76,6 +93,12 @@ func (m *Manager) SetDefault(name string) error {
 	}
 
 	m.defaultDisk = name
+	return nil
+}
+
+// Shutdown is a no-op for the storage manager; individual disk drivers do not
+// hold long-lived connections that need draining.
+func (m *Manager) Shutdown(ctx context.Context) error {
 	return nil
 }
 

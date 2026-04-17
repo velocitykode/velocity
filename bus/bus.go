@@ -1,15 +1,19 @@
 package bus
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"sync"
 
+	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/pipeline"
 )
 
 // CommandDispatching is fired before a command is handled.
 type CommandDispatching struct {
+	Context     context.Context
 	CommandType string
 }
 
@@ -17,6 +21,7 @@ func (e *CommandDispatching) Name() string { return "command.dispatching" }
 
 // CommandCompleted is fired after a command is handled successfully.
 type CommandCompleted struct {
+	Context     context.Context
 	CommandType string
 }
 
@@ -24,6 +29,7 @@ func (e *CommandCompleted) Name() string { return "command.completed" }
 
 // CommandFailed is fired when a command handler returns an error.
 type CommandFailed struct {
+	Context     context.Context
 	CommandType string
 	Error       string
 }
@@ -32,6 +38,7 @@ func (e *CommandFailed) Name() string { return "command.failed" }
 
 // CommandQueued is fired when a command is pushed to the queue.
 type CommandQueued struct {
+	Context     context.Context
 	CommandType string
 }
 
@@ -62,11 +69,19 @@ func New() *Bus {
 
 // Register registers a typed handler for a command type.
 // This is a package-level function due to Go generics limitations on methods.
+// Panics with *contract.RegistrationError if handler is nil or a handler for the
+// same command type is already registered.
 func Register[T any](b *Bus, handler Handler[T]) {
+	if handler == nil {
+		panic(contract.NewRegistrationError("bus", fmt.Sprintf("nil handler for command type %s", reflect.TypeFor[T]().String())))
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	cmdType := reflect.TypeFor[T]()
+	if _, exists := b.handlers[cmdType]; exists {
+		panic(contract.NewRegistrationError("bus", fmt.Sprintf("handler for command type %s already registered", cmdType.String())))
+	}
 	b.handlers[cmdType] = func(cmd Command) error {
 		return handler(cmd.(T))
 	}
@@ -122,9 +137,13 @@ func (b *Bus) Dispatch(cmd Command) error {
 
 	var err error
 	if len(middleware) > 0 {
-		err = pipeline.New[Command]().Send(cmd).Through(middleware...).Then(handler)
+		err = b.safeExecute(func() error {
+			return pipeline.New[Command]().Send(cmd).Through(middleware...).Then(handler)
+		})
 	} else {
-		err = handler(cmd)
+		err = b.safeExecute(func() error {
+			return handler(cmd)
+		})
 	}
 
 	if dispatchEvent != nil {
@@ -165,6 +184,16 @@ func (b *Bus) DispatchAsync(cmd Command) error {
 	}
 
 	return nil
+}
+
+// safeExecute runs fn and converts any panic into a returned error.
+func (b *Bus) safeExecute(fn func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = panicerr.FromRecovered(r)
+		}
+	}()
+	return fn()
 }
 
 // resolveHandler finds the handler for a command. Must be called under RLock.

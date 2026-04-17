@@ -25,20 +25,20 @@ import (
 // both sides can import without cycles.
 type Services struct {
 	Log        log.Logger
-	Exceptions *exceptions.Handler
+	Exceptions exceptions.ExceptionHandler
 	Crypto     crypto.Encryptor
-	DB         *orm.Manager
+	DB         orm.Database
 	Auth       contract.AuthManager
 	CSRF       contract.CSRFProtector
 	View       contract.ViewEngine
 
-	Cache        *cache.Manager
+	Cache        cache.CacheManager
 	Events       events.Dispatcher
 	Queue        queue.Driver
-	Storage      *storage.Manager
-	Scheduler    *scheduler.Scheduler
+	Storage      storage.StorageManager
+	Scheduler    scheduler.TaskScheduler
 	Mail         mail.Mailer
-	Notification *notification.Manager
+	Notification notification.Notifier
 	Validator    validation.Validator
 
 	// Extensions holds optional first-party and third-party service instances.

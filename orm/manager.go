@@ -1,6 +1,7 @@
 package orm
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -28,6 +29,53 @@ type ManagerConfig struct {
 	SlowThreshold   time.Duration
 }
 
+// DefaultManagerConfig returns a ManagerConfig with sensible defaults.
+// Driver, Database, Username, and Password must still be set by the caller.
+func DefaultManagerConfig() ManagerConfig {
+	return ManagerConfig{
+		MaxIdleConns:    10,
+		MaxOpenConns:    100,
+		ConnMaxLifetime: 3600 * time.Second,
+	}
+}
+
+// Validate checks that the ManagerConfig has the required fields set.
+func (c ManagerConfig) Validate() error {
+	if c.Driver == "" {
+		return fmt.Errorf("orm: driver is required (sqlite, postgres, mysql)")
+	}
+	switch c.Driver {
+	case "sqlite", "sqlite3", "postgres", "mysql":
+	default:
+		return fmt.Errorf("orm: unsupported driver %q", c.Driver)
+	}
+	return nil
+}
+
+// Database is the interface satisfied by *Manager. It covers the methods used
+// through app.Services and router.Context for query execution, transactions,
+// connection management, and event wiring.
+type Database interface {
+	DB() *sql.DB
+	Raw(query string, args ...any) (*sql.Rows, error)
+	Exec(query string, args ...any) (sql.Result, error)
+	Transaction(fn func(tx *sql.Tx) error) error
+	Begin() (*sql.Tx, error)
+	Shutdown(ctx context.Context) error
+	Close() error // Deprecated: use Shutdown(ctx) instead.
+	Ping() error
+	DriverName() string
+	DatabaseName() string
+	Stats() sql.DBStats
+	DefaultDriver() drivers.Driver
+	Connection(name string) (drivers.Driver, error)
+	AddConnection(name string, driver drivers.Driver)
+	SetEventDispatcher(fn func(event interface{}) error)
+}
+
+// Verify *Manager implements Database at compile time.
+var _ Database = (*Manager)(nil)
+
 // Manager manages database connections. It is the instance-based alternative
 // to the package-level global functions.
 type Manager struct {
@@ -49,7 +97,7 @@ func createDriver(name string) (drivers.Driver, error) {
 	case "mysql":
 		return drivers.NewMySQLDriver(), nil
 	default:
-		return nil, fmt.Errorf("orm: driver %q not registered", name)
+		return nil, fmt.Errorf("velocity/orm: driver %q not registered: %w", name, ErrDriverNotFound)
 	}
 }
 
@@ -209,8 +257,9 @@ func (m *Manager) Begin() (*sql.Tx, error) {
 	return m.defaultDriver.Begin()
 }
 
-// Close closes the default database connection and all named connections.
-func (m *Manager) Close() error {
+// Shutdown closes the default database connection and all named connections,
+// honoring the context deadline.
+func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -230,6 +279,12 @@ func (m *Manager) Close() error {
 	}
 
 	return firstErr
+}
+
+// Close closes the default database connection and all named connections.
+// Deprecated: use Shutdown(ctx) instead.
+func (m *Manager) Close() error {
+	return m.Shutdown(context.Background())
 }
 
 // Ping verifies the default database connection.

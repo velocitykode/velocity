@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
 
@@ -110,7 +111,10 @@ func (j *Job) ShouldRun() bool {
 
 	// Check environment constraints
 	if len(j.environments) > 0 {
-		currentEnv := os.Getenv("APP_ENV")
+		currentEnv := ""
+		if j.scheduler != nil {
+			currentEnv = j.scheduler.appEnv
+		}
 		found := false
 		for _, env := range j.environments {
 			if env == currentEnv {
@@ -131,7 +135,7 @@ func (j *Job) Run() error {
 	j.mu.Lock()
 	if j.withoutOverlapping && j.running {
 		j.mu.Unlock()
-		return fmt.Errorf("job %s is already running", j.name)
+		return fmt.Errorf("velocity/scheduler: job %s: %w", j.name, ErrJobRunning)
 	}
 	j.running = true
 	j.lastRun = time.Now()
@@ -167,7 +171,7 @@ func (j *Job) Run() error {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					err = fmt.Errorf("job panic: %v", r)
+					err = panicerr.FromRecovered(r)
 				}
 			}()
 			j.callback()

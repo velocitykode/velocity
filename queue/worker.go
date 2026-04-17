@@ -2,11 +2,14 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // WorkerLogger is the logging interface used by Worker.
@@ -173,7 +176,7 @@ func (w *Worker) work(id int) {
 			return
 		default:
 			if err := w.processJob(); err != nil {
-				if err.Error() != "no job available" {
+				if !errors.Is(err, ErrNoJobAvailable) {
 					w.logger.Error("Worker error", "id", id, "error", err)
 				}
 				// Back off on errors
@@ -191,7 +194,7 @@ func (w *Worker) processJob() error {
 	}
 
 	if job == nil {
-		return fmt.Errorf("no job available")
+		return ErrNoJobAvailable
 	}
 
 	// Get job type for event dispatching
@@ -228,6 +231,11 @@ func (w *Worker) processJob() error {
 
 	done := make(chan error, 1)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				done <- panicerr.FromRecovered(r)
+			}
+		}()
 		done <- w.handler(job)
 	}()
 

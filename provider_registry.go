@@ -43,5 +43,5 @@ type EventProvider interface {
 // ScheduleProvider is an optional interface that service providers can implement
 // to register scheduled jobs during bootstrap.
 type ScheduleProvider interface {
-	Schedule(s *scheduler.Scheduler)
+	Schedule(s scheduler.TaskScheduler)
 }

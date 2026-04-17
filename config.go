@@ -92,8 +92,8 @@ type DBConfig struct {
 	SlowThreshold   time.Duration // DB_SLOW_QUERY_THRESHOLD
 }
 
-// Type aliases — these reuse the canonical package types to avoid duplication.
-// Consumers can use either velocity.AuthConfig or auth.Config interchangeably.
+// Deprecated type aliases — retained for one release so existing consumer code
+// compiles. Use the canonical package types (auth.Config, log.LogConfig, etc.) instead.
 type (
 	AuthConfig     = auth.Config
 	GuardConfig    = auth.GuardConfig
@@ -118,6 +118,7 @@ type CacheConfig struct {
 	RedisPort     int    // REDIS_PORT, default 6379
 	RedisPassword string // REDIS_PASSWORD
 	RedisDatabase int    // REDIS_DATABASE, default 0
+	RedisTLS      bool   // REDIS_TLS: enable TLS for Redis connections
 }
 
 // QueueConfig holds queue configuration.
@@ -129,6 +130,8 @@ type QueueConfig struct {
 	RedisPort     string // QUEUE_REDIS_PORT, default "6379"
 	RedisPassword string // QUEUE_REDIS_PASSWORD
 	RedisDB       string // QUEUE_REDIS_DB, default "0"
+	RedisTLS      bool   // REDIS_TLS: enable TLS for Redis connections
+	SigningKey    string // QUEUE_SIGNING_KEY: HMAC key for payload signing (SENSITIVE)
 }
 
 // StorageConfig holds storage configuration.
@@ -295,10 +298,15 @@ func ConfigFromEnv() Config {
 		}
 		config.Auth.Guards["session"] = config.Auth.Guards["web"]
 
-		// JWT/API guard
-		jwtTTL := envIntOrDefault("JWT_TTL", 60)
-		jwtRefreshTTL := envIntOrDefault("JWT_REFRESH_TTL", 20160)
-		jwtSecret := os.Getenv("JWT_SECRET")
+		// JWT/API guard — JWT_* deprecated in favor of AUTH_JWT_*
+		jwtTTL := envIntOrDefault("AUTH_JWT_TTL", envIntOrDefault("JWT_TTL", 60))
+		jwtRefreshTTL := envIntOrDefault("AUTH_JWT_REFRESH_TTL", envIntOrDefault("JWT_REFRESH_TTL", 20160))
+		jwtSecret := envWithDeprecated("AUTH_JWT_SECRET", "JWT_SECRET")
+		jwtAlgo := envWithDeprecated("AUTH_JWT_ALGO", "JWT_ALGO")
+		if jwtAlgo == "" {
+			jwtAlgo = "HS256"
+		}
+		jwtBlacklistRaw := envWithDeprecated("AUTH_JWT_BLACKLIST_ENABLED", "JWT_BLACKLIST_ENABLED")
 
 		config.Auth.Guards["api"] = GuardConfig{
 			Driver:   "jwt",
@@ -306,10 +314,10 @@ func ConfigFromEnv() Config {
 			Options: map[string]interface{}{
 				"jwt": JWTConfig{
 					Secret:           jwtSecret,
-					Algorithm:        envOrDefault("JWT_ALGO", "HS256"),
+					Algorithm:        jwtAlgo,
 					TTL:              jwtTTL,
 					RefreshTTL:       jwtRefreshTTL,
-					BlacklistEnabled: os.Getenv("JWT_BLACKLIST_ENABLED") != "false",
+					BlacklistEnabled: jwtBlacklistRaw != "false",
 				},
 			},
 		}
@@ -337,6 +345,7 @@ func ConfigFromEnv() Config {
 	}
 
 	// Cache
+	redisTLS := os.Getenv("REDIS_TLS") == "true"
 	config.Cache = CacheConfig{
 		Driver:        envOrDefault("CACHE_DRIVER", "memory"),
 		Prefix:        envOrDefault("CACHE_PREFIX", "velocity_cache"),
@@ -345,6 +354,7 @@ func ConfigFromEnv() Config {
 		RedisPort:     envIntOrDefault("REDIS_PORT", 6379),
 		RedisPassword: os.Getenv("REDIS_PASSWORD"),
 		RedisDatabase: envIntOrDefault("REDIS_DATABASE", 0),
+		RedisTLS:      redisTLS,
 	}
 
 	// Log
@@ -387,6 +397,8 @@ func ConfigFromEnv() Config {
 		RedisPort:     envOrDefault("QUEUE_REDIS_PORT", "6379"),
 		RedisPassword: os.Getenv("QUEUE_REDIS_PASSWORD"),
 		RedisDB:       envOrDefault("QUEUE_REDIS_DB", "0"),
+		RedisTLS:      redisTLS,
+		SigningKey:    os.Getenv("QUEUE_SIGNING_KEY"),
 	}
 
 	// Storage
@@ -414,16 +426,36 @@ func ConfigFromEnv() Config {
 
 	// Mail
 	config.Mail = MailConfig{
-		Driver: envOrDefault("MAIL_DRIVER", "log"),
+		Driver:      envOrDefault("MAIL_DRIVER", "log"),
+		FromAddress: os.Getenv("MAIL_FROM_ADDRESS"),
+		FromName:    os.Getenv("MAIL_FROM_NAME"),
+		Mailgun: mail.MailgunConfig{
+			Domain:            envWithDeprecated("MAIL_MAILGUN_DOMAIN", "MAILGUN_DOMAIN"),
+			Secret:            envWithDeprecated("MAIL_MAILGUN_SECRET", "MAILGUN_SECRET"),
+			Endpoint:          envWithDeprecated("MAIL_MAILGUN_ENDPOINT", "MAILGUN_ENDPOINT"),
+			WebhookSigningKey: envWithDeprecated("MAIL_MAILGUN_WEBHOOK_SIGNING_KEY", "MAILGUN_WEBHOOK_SIGNING_KEY"),
+		},
+		Postmark: mail.PostmarkConfig{
+			Token:         envWithDeprecated("MAIL_POSTMARK_TOKEN", "POSTMARK_TOKEN"),
+			MessageStream: envWithDeprecated("MAIL_POSTMARK_MESSAGE_STREAM", "POSTMARK_MESSAGE_STREAM"),
+		},
+		Local: mail.LocalConfig{
+			Host:         os.Getenv("MAIL_HOST"),
+			Port:         os.Getenv("MAIL_PORT"),
+			Username:     os.Getenv("MAIL_USERNAME"),
+			Password:     os.Getenv("MAIL_PASSWORD"),
+			Encryption:   os.Getenv("MAIL_ENCRYPTION"),
+			SendmailPath: os.Getenv("MAIL_SENDMAIL_PATH"),
+		},
 	}
 
-	// View / Inertia
+	// View / SSR — INERTIA_SSR_* deprecated in favor of VIEW_SSR_*
 	config.View = ViewConfig{
-		SSREnabled: os.Getenv("INERTIA_SSR_ENABLED") == "true",
-		SSRURL:     envOrDefault("INERTIA_SSR_URL", "http://127.0.0.1:13714"),
-		SSRTimeout: envDurationOrDefault("INERTIA_SSR_TIMEOUT", 3*time.Second),
+		SSREnabled: envWithDeprecated("VIEW_SSR_ENABLED", "INERTIA_SSR_ENABLED") == "true",
+		SSRURL:     envOrDefault("VIEW_SSR_URL", envOrDefault("INERTIA_SSR_URL", "http://127.0.0.1:13714")),
+		SSRTimeout: envDurationOrDefault("VIEW_SSR_TIMEOUT", envDurationOrDefault("INERTIA_SSR_TIMEOUT", 3*time.Second)),
 	}
-	if except := os.Getenv("INERTIA_SSR_EXCEPT"); except != "" {
+	if except := envWithDeprecated("VIEW_SSR_EXCEPT", "INERTIA_SSR_EXCEPT"); except != "" {
 		for _, p := range strings.Split(except, ",") {
 			if p = strings.TrimSpace(p); p != "" {
 				config.View.SSRExcept = append(config.View.SSRExcept, p)
@@ -440,6 +472,20 @@ func ConfigFromEnv() Config {
 }
 
 // Helper functions
+
+// envWithDeprecated reads the new env var name first; if unset, falls back to
+// the deprecated name and logs a warning. This allows a one-release migration
+// window for renamed environment variables.
+func envWithDeprecated(newKey, oldKey string) string {
+	if v := os.Getenv(newKey); v != "" {
+		return v
+	}
+	if v := os.Getenv(oldKey); v != "" {
+		stdlog.Printf("[WARN] env var %s is deprecated, use %s instead", oldKey, newKey)
+		return v
+	}
+	return ""
+}
 
 func envOrDefault(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {

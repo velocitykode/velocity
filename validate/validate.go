@@ -57,7 +57,7 @@ func CheckData(data map[string]interface{}, rules Rules, messages ...Messages) *
 // CheckWithDB validates request data with database rules available.
 //
 // Deprecated: Use validation.CheckWithDB with pipe-separated rules.
-func CheckWithDB(r *http.Request, rules Rules, db *orm.Manager, messages ...Messages) *Errors {
+func CheckWithDB(r *http.Request, rules Rules, db orm.Database, messages ...Messages) *Errors {
 	vRules := make(validation.Rules, len(rules))
 	for field, fieldRules := range rules {
 		vRules[field] = strings.Join(fieldRules, "|")

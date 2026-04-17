@@ -12,6 +12,7 @@ func TestBatchingDispatcher(t *testing.T) {
 	t.Run("batches events up to batch size", func(t *testing.T) {
 		var count int32
 		dispatcher := NewBatchingDispatcher(3, 100*time.Millisecond)
+		dispatcher.Start()
 		defer dispatcher.Stop()
 
 		dispatcher.Listen("test.event", &countingListener{counter: &count})
@@ -37,6 +38,7 @@ func TestBatchingDispatcher(t *testing.T) {
 	t.Run("flushes events on interval", func(t *testing.T) {
 		var count int32
 		dispatcher := NewBatchingDispatcher(10, 50*time.Millisecond)
+		dispatcher.Start()
 		defer dispatcher.Stop()
 
 		dispatcher.Listen("test.event", &countingListener{counter: &count})
@@ -55,6 +57,7 @@ func TestBatchingDispatcher(t *testing.T) {
 	t.Run("manual flush dispatches all pending events", func(t *testing.T) {
 		var count int32
 		dispatcher := NewBatchingDispatcher(10, 1*time.Second)
+		dispatcher.Start()
 		defer dispatcher.Stop()
 
 		dispatcher.Listen("test.event", &countingListener{counter: &count})
@@ -73,6 +76,7 @@ func TestBatchingDispatcher(t *testing.T) {
 
 	t.Run("get batch size returns current batch count", func(t *testing.T) {
 		dispatcher := NewBatchingDispatcher(10, 1*time.Second)
+		dispatcher.Start()
 		defer dispatcher.Stop()
 
 		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
@@ -347,6 +351,7 @@ func TestBatchingConcurrency(t *testing.T) {
 	t.Run("concurrent batching dispatches", func(t *testing.T) {
 		var count int32
 		dispatcher := NewBatchingDispatcher(10, 100*time.Millisecond)
+		dispatcher.Start()
 		defer dispatcher.Stop()
 
 		dispatcher.Listen("test.event", &countingListener{counter: &count})
@@ -418,6 +423,7 @@ func (e *simpleEvent) Name() string {
 // Benchmarks
 func BenchmarkBatchingDispatcher(b *testing.B) {
 	dispatcher := NewBatchingDispatcher(100, 100*time.Millisecond)
+	dispatcher.Start()
 	defer dispatcher.Stop()
 
 	b.ResetTimer()

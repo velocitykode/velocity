@@ -3,6 +3,7 @@ package validation
 import (
 	"fmt"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/validation/rules"
 )
 
@@ -14,8 +15,16 @@ type RuleRegistry struct {
 	rules map[string]RuleHandler
 }
 
-// Register registers a validation rule
+// Register registers a validation rule.
+// Panics with *contract.RegistrationError if handler is nil or a rule with the
+// same name is already registered.
 func (r *RuleRegistry) Register(name string, handler RuleHandler) {
+	if handler == nil {
+		panic(contract.NewRegistrationError("validation", fmt.Sprintf("nil handler for rule %q", name)))
+	}
+	if _, exists := r.rules[name]; exists {
+		panic(contract.NewRegistrationError("validation", fmt.Sprintf("rule %q already registered", name)))
+	}
 	r.rules[name] = handler
 }
 

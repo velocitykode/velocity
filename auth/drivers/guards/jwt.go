@@ -31,24 +31,27 @@ type JWTGuard struct {
 	stopCleanup chan struct{}
 }
 
-// NewJWTGuard creates a new JWT guard. An optional context.Context can be passed
-// to control the lifecycle of the background cache cleanup goroutine. When the
-// context is cancelled, the cleanup goroutine stops automatically. If no context
-// is provided, call StopCleanup() to stop the goroutine manually.
-func NewJWTGuard(provider auth.UserProvider, config auth.JWTConfig, ctx ...context.Context) *JWTGuard {
-	g := &JWTGuard{
+// NewJWTGuard creates a new JWT guard.
+// Call Start() to begin the background cache cleanup goroutine.
+func NewJWTGuard(provider auth.UserProvider, config auth.JWTConfig) *JWTGuard {
+	return &JWTGuard{
 		provider:    provider,
 		jwtManager:  auth.NewJWTManager(config),
 		config:      config,
 		userCache:   make(map[string]cachedUser),
 		stopCleanup: make(chan struct{}),
 	}
+}
+
+// Start begins the background cache cleanup goroutine. An optional
+// context.Context controls the goroutine lifetime; if none is provided,
+// use StopCleanup() to stop it.
+func (g *JWTGuard) Start(ctx ...context.Context) {
 	if len(ctx) > 0 && ctx[0] != nil {
 		go g.cleanupLoopWithContext(ctx[0])
 	} else {
 		go g.cleanupLoop()
 	}
-	return g
 }
 
 // StopCleanup stops the background cache cleanup goroutine.

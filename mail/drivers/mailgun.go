@@ -12,7 +12,6 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
-	"os"
 	"sync"
 	"time"
 
@@ -20,8 +19,8 @@ import (
 )
 
 func init() {
-	mail.RegisterDriver("mailgun", func() (mail.Mailer, error) {
-		return NewMailgunDriver()
+	mail.RegisterDriver("mailgun", func(cfg mail.MailConfig) (mail.Mailer, error) {
+		return NewMailgunDriver(cfg.Mailgun, cfg.FromAddress, cfg.FromName)
 	})
 }
 
@@ -32,6 +31,8 @@ type MailgunDriver struct {
 	apiKey            string // SENSITIVE: do not log
 	endpoint          string
 	webhookSigningKey string // SENSITIVE: do not log
+	fromAddr          string
+	fromName          string
 	client            *http.Client
 	mu                sync.Mutex
 }
@@ -41,30 +42,28 @@ func (d *MailgunDriver) String() string {
 	return fmt.Sprintf("MailgunDriver{Domain:%s, Endpoint:%s, APIKey:[REDACTED]}", d.domain, d.endpoint)
 }
 
-// NewMailgunDriver creates a new Mailgun driver
-func NewMailgunDriver() (*MailgunDriver, error) {
-	domain := os.Getenv("MAILGUN_DOMAIN")
-	if domain == "" {
+// NewMailgunDriver creates a new Mailgun driver from the provided config.
+func NewMailgunDriver(config mail.MailgunConfig, fromAddr, fromName string) (*MailgunDriver, error) {
+	if config.Domain == "" {
 		return nil, fmt.Errorf("mail: MAILGUN_DOMAIN is required for mailgun driver")
 	}
 
-	apiKey := os.Getenv("MAILGUN_SECRET")
-	if apiKey == "" {
+	if config.Secret == "" {
 		return nil, fmt.Errorf("mail: MAILGUN_SECRET is required for mailgun driver")
 	}
 
-	endpoint := os.Getenv("MAILGUN_ENDPOINT")
+	endpoint := config.Endpoint
 	if endpoint == "" {
 		endpoint = "https://api.mailgun.net/v3"
 	}
 
-	webhookSigningKey := os.Getenv("MAILGUN_WEBHOOK_SIGNING_KEY")
-
 	return &MailgunDriver{
-		domain:            domain,
-		apiKey:            apiKey,
+		domain:            config.Domain,
+		apiKey:            config.Secret,
 		endpoint:          endpoint,
-		webhookSigningKey: webhookSigningKey,
+		webhookSigningKey: config.WebhookSigningKey,
+		fromAddr:          fromAddr,
+		fromName:          fromName,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -123,8 +122,8 @@ func (d *MailgunDriver) addFields(writer *multipart.Writer, msg *mail.Message) e
 	// From
 	from := msg.GetFrom()
 	if from.Email == "" {
-		from.Email = os.Getenv("MAIL_FROM_ADDRESS")
-		from.Name = os.Getenv("MAIL_FROM_NAME")
+		from.Email = d.fromAddr
+		from.Name = d.fromName
 	}
 	if from.Name != "" {
 		writer.WriteField("from", fmt.Sprintf("%s <%s>", from.Name, from.Email))

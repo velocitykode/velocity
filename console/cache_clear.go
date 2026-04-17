@@ -8,7 +8,7 @@ import (
 )
 
 // CacheClear flushes all items from the default cache store.
-func CacheClear(c *cache.Manager) error {
+func CacheClear(c cache.CacheManager) error {
 	if c == nil {
 		cli.Warning("No cache configured")
 		return nil

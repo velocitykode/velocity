@@ -4,8 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"net/http"
-	"os"
-	"strconv"
 	"sync"
 	"time"
 )
@@ -250,60 +248,6 @@ type SessionConfig struct {
 	Secure   bool
 	HttpOnly bool
 	SameSite http.SameSite
-}
-
-// NewSessionConfigFromEnv creates a SessionConfig from environment variables
-func NewSessionConfigFromEnv() SessionConfig {
-	lifetime := 120 // Default 2 hours
-	if envLifetime := os.Getenv("SESSION_LIFETIME"); envLifetime != "" {
-		if parsed, err := strconv.Atoi(envLifetime); err == nil {
-			lifetime = parsed
-		}
-	}
-
-	secure := true
-	if os.Getenv("SESSION_SECURE") == "false" {
-		secure = false
-	}
-
-	httpOnly := true
-	if os.Getenv("SESSION_HTTP_ONLY") == "false" {
-		httpOnly = false
-	}
-
-	sameSite := http.SameSiteLaxMode
-	switch os.Getenv("SESSION_SAME_SITE") {
-	case "strict":
-		sameSite = http.SameSiteStrictMode
-	case "none":
-		sameSite = http.SameSiteNoneMode
-	}
-
-	driver := os.Getenv("SESSION_DRIVER")
-	if driver == "" {
-		driver = "cookie"
-	}
-
-	name := os.Getenv("SESSION_NAME")
-	if name == "" {
-		name = "velocity_session"
-	}
-
-	path := os.Getenv("SESSION_PATH")
-	if path == "" {
-		path = "/"
-	}
-
-	return SessionConfig{
-		Driver:   driver,
-		Name:     name,
-		Lifetime: lifetime,
-		Path:     path,
-		Domain:   os.Getenv("SESSION_DOMAIN"),
-		Secure:   secure,
-		HttpOnly: httpOnly,
-		SameSite: sameSite,
-	}
 }
 
 // GetSessionFromRequest gets session from request

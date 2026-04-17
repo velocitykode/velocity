@@ -1,7 +1,6 @@
 package grpc
 
 import (
-	"os"
 	"strconv"
 
 	"github.com/velocitykode/velocity/config"
@@ -40,7 +39,7 @@ func LoadConfig() *Config {
 
 // getEnvInt gets an integer from environment or returns default
 func getEnvInt(key string, defaultValue int) int {
-	if val := os.Getenv(key); val != "" {
+	if val := config.Get(key, ""); val != "" {
 		if i, err := strconv.Atoi(val); err == nil {
 			return i
 		}

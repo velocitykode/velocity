@@ -5,6 +5,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // DefaultDispatcher is the default event dispatcher implementation
@@ -44,9 +47,14 @@ func (d *DefaultDispatcher) SetQueueDispatcher(qd QueueDispatcher) {
 	d.queue = qd
 }
 
-// Listen registers a listener for one or more events and returns a listener ID.
-// The ID can be used with Off() to unregister the listener.
+// Listen adds a listener for the given events. Multiple listeners may be registered
+// for the same event (append semantics -- duplicates are intentional, not an error).
+// Returns a listener ID that can be used with Off() to unregister the listener.
+// Panics with *contract.RegistrationError if listener is nil.
 func (d *DefaultDispatcher) Listen(events interface{}, listener Listener) int {
+	if listener == nil {
+		panic(contract.NewRegistrationError("events", "nil listener"))
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -342,7 +350,7 @@ func (d *DefaultDispatcher) dispatchToListeners(event interface{}, fn func(Liste
 func (d *DefaultDispatcher) processListener(event interface{}, listener Listener) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			err = fmt.Errorf("events: listener panicked: %v", p)
+			err = panicerr.FromRecovered(p)
 		}
 	}()
 

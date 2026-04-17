@@ -72,7 +72,7 @@ func (w *EventWorker) Process(jobData string) error {
 	// Get the listener factory
 	factory, ok := w.listeners[job.ListenerType]
 	if !ok {
-		return fmt.Errorf("unknown listener type: %s", job.ListenerType)
+		return fmt.Errorf("velocity/events: unknown listener type %s: %w", job.ListenerType, ErrListenerNotFound)
 	}
 
 	// Create the listener instance

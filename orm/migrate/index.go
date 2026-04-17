@@ -211,7 +211,7 @@ func (m *Migrator) DropIndex(name string, table ...string) error {
 	case "mysql":
 		// MySQL requires table name
 		if len(table) == 0 {
-			return fmt.Errorf("MySQL requires table name to drop index")
+			return fmt.Errorf("velocity/orm: mysql requires table name to drop index")
 		}
 		sql = "DROP INDEX " + quotedName + " ON " + quoteIdentifier(table[0], m.driver)
 	case "sqlite":

@@ -1,6 +1,7 @@
 package view
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -25,6 +26,22 @@ type Config struct {
 	SSRURL     string        // Defaults to http://127.0.0.1:13714
 	SSRTimeout time.Duration // Defaults to 3s
 	SSRExcept  []string      // URL prefixes to exclude from SSR
+}
+
+// DefaultViewConfig returns a Config with sensible defaults.
+func DefaultViewConfig() Config {
+	return Config{
+		SSRURL:     "http://127.0.0.1:13714",
+		SSRTimeout: 3 * time.Second,
+	}
+}
+
+// Validate checks that the Config is internally consistent.
+func (c Config) Validate() error {
+	if c.SSREnabled && c.SSRURL == "" {
+		return fmt.Errorf("view: SSR URL is required when SSR is enabled")
+	}
+	return nil
 }
 
 // SharePropsFunc is a function that returns props to be shared per request
@@ -119,6 +136,12 @@ func (e *Engine) Back(w http.ResponseWriter, r *http.Request) {
 // Middleware returns the Inertia middleware as a router.MiddlewareFunc.
 func (e *Engine) Middleware() router.MiddlewareFunc {
 	return e.bond.MiddlewareFunc()
+}
+
+// Shutdown is a no-op for the view engine; it holds no long-lived resources
+// that need draining.
+func (e *Engine) Shutdown(ctx context.Context) error {
+	return nil
 }
 
 // Bond returns the underlying bond.Bond instance.

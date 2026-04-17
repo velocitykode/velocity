@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strconv"
 	"time"
 
@@ -19,6 +18,7 @@ type RedisConfig struct {
 	Port     string
 	Password string // SENSITIVE: do not log
 	DB       string
+	TLS      bool // Enable TLS connections
 }
 
 // String returns a safe representation with credentials redacted.
@@ -35,7 +35,6 @@ type RedisDriver struct {
 }
 
 // NewRedisDriver creates a new Redis queue driver.
-// Set REDIS_TLS=true environment variable to enable TLS connections.
 func NewRedisDriver(config RedisConfig) (*RedisDriver, error) {
 	db, err := strconv.Atoi(config.DB)
 	if err != nil {
@@ -49,7 +48,7 @@ func NewRedisDriver(config RedisConfig) (*RedisDriver, error) {
 	}
 
 	// Enable TLS if configured
-	if os.Getenv("REDIS_TLS") == "true" {
+	if config.TLS {
 		opts.TLSConfig = &tls.Config{
 			MinVersion: tls.VersionTLS12,
 		}
@@ -303,9 +302,16 @@ func (r *RedisDriver) moveDelayedJobs(queueName string) error {
 	}
 }
 
-// Close closes the Redis connection
-func (r *RedisDriver) Close() error {
+// Shutdown closes the Redis connection, honoring the context deadline.
+func (r *RedisDriver) Shutdown(ctx context.Context) error {
+	batchStore.close() // stop package-level batch cleanup goroutine (idempotent)
 	return r.client.Close()
+}
+
+// Close closes the Redis connection.
+// Deprecated: use Shutdown(ctx) instead.
+func (r *RedisDriver) Close() error {
+	return r.Shutdown(context.Background())
 }
 
 // Helper methods

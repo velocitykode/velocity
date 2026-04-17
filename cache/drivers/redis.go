@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -18,8 +17,8 @@ type RedisStore struct {
 }
 
 // NewRedisStore creates a new Redis cache store.
-// Set REDIS_TLS=true environment variable to enable TLS connections.
-func NewRedisStore(prefix string, host string, port int, password string, database int) (*RedisStore, error) {
+// Set tlsEnabled to true to enable TLS connections with a minimum of TLS 1.2.
+func NewRedisStore(prefix string, host string, port int, password string, database int, tlsEnabled bool) (*RedisStore, error) {
 	opts := &redis.Options{
 		Addr:     fmt.Sprintf("%s:%d", host, port),
 		Password: password,
@@ -27,7 +26,7 @@ func NewRedisStore(prefix string, host string, port int, password string, databa
 	}
 
 	// Enable TLS if configured
-	if os.Getenv("REDIS_TLS") == "true" {
+	if tlsEnabled {
 		opts.TLSConfig = &tls.Config{
 			MinVersion: tls.VersionTLS12,
 		}

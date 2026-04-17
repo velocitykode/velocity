@@ -6,7 +6,31 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
+
+// TaskScheduler is the interface satisfied by *Scheduler. It covers the
+// methods used through app.Services and router.Context for job scheduling
+// and lifecycle management.
+//
+// Configuration methods that return *Scheduler for chaining (SetTimezone,
+// SetLogger, MaintenanceMode, Before, After) are intentionally excluded --
+// they are only called on the concrete type during bootstrap.
+type TaskScheduler interface {
+	Add(job *Job) *Job
+	Call(callback func()) *Job
+	Command(command string, args ...string) *Job
+	Run(ctx context.Context) error
+	Shutdown(ctx context.Context) error
+	Stop() // Deprecated: use Shutdown(ctx) instead.
+	Jobs() []*Job
+	SetEventDispatcher(fn func(event interface{}) error)
+	SetEnv(env string)
+}
+
+// Verify *Scheduler implements TaskScheduler at compile time.
+var _ TaskScheduler = (*Scheduler)(nil)
 
 // Scheduler manages and executes scheduled jobs
 type Scheduler struct {
@@ -14,13 +38,16 @@ type Scheduler struct {
 	jobs            []*Job
 	ticker          *time.Ticker
 	stop            chan struct{}
+	stopped         chan struct{} // closed when Run() exits
 	running         bool
 	timezone        *time.Location
 	maintenanceMode bool
+	appEnv          string
 	beforeCallbacks []func()
 	afterCallbacks  []func()
 	logger          Logger
 	eventDispatcher func(event interface{}) error
+	runWg           sync.WaitGroup // tracks in-flight job goroutines
 }
 
 // SetEventDispatcher sets the function used to dispatch events.
@@ -73,9 +100,18 @@ func New() *Scheduler {
 	return &Scheduler{
 		jobs:     make([]*Job, 0),
 		stop:     make(chan struct{}),
+		stopped:  make(chan struct{}),
 		timezone: time.Local,
 		logger:   &defaultLogger{},
 	}
+}
+
+// SetEnv sets the application environment (e.g. "production", "staging") used by
+// jobs with environment constraints. Called during app initialization.
+func (s *Scheduler) SetEnv(env string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.appEnv = env
 }
 
 // SetTimezone sets the timezone for the scheduler
@@ -118,8 +154,13 @@ func (s *Scheduler) After(callback func()) *Scheduler {
 	return s
 }
 
-// Add registers a new job with the scheduler
+// Add registers a new job with the scheduler. Multiple jobs with the same name
+// may be added (append semantics -- duplicates are intentional, not an error).
+// Panics with *contract.RegistrationError if job is nil.
 func (s *Scheduler) Add(job *Job) *Job {
+	if job == nil {
+		panic(contract.NewRegistrationError("scheduler", "nil job"))
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	job.scheduler = s
@@ -178,13 +219,14 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 }
 
-// Stop stops the scheduler
-func (s *Scheduler) Stop() {
+// Shutdown stops the scheduler and waits for in-flight jobs to finish,
+// honoring the context deadline. Returns ctx.Err() if the context expires
+// before all jobs complete.
+func (s *Scheduler) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if !s.running {
-		return
+		s.mu.Unlock()
+		return nil
 	}
 
 	s.running = false
@@ -192,7 +234,30 @@ func (s *Scheduler) Stop() {
 		s.ticker.Stop()
 	}
 	close(s.stop)
-	s.logger.Info("Scheduler stopped")
+	s.mu.Unlock()
+
+	s.logger.Info("Scheduler shutting down")
+
+	// Wait for in-flight jobs with ctx deadline.
+	done := make(chan struct{})
+	go func() {
+		s.runWg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		s.logger.Info("Scheduler stopped")
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Stop stops the scheduler.
+// Deprecated: use Shutdown(ctx) instead.
+func (s *Scheduler) Stop() {
+	s.Shutdown(context.Background())
 }
 
 // runDueJobs executes all jobs that are due
@@ -216,19 +281,18 @@ func (s *Scheduler) runDueJobs() {
 	}
 
 	// Check and run each job
-	var wg sync.WaitGroup
 	for _, job := range jobs {
 		if job.IsDue(now) && job.ShouldRun() {
-			wg.Add(1)
+			s.runWg.Add(1)
 			go func(j *Job) {
-				defer wg.Done()
+				defer s.runWg.Done()
 				s.logger.Debug("Running job", "name", j.name)
 				j.Run()
 			}(job)
 		}
 	}
 
-	wg.Wait()
+	s.runWg.Wait()
 
 	// Run after callbacks
 	for _, callback := range afterCallbacks {

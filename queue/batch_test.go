@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -95,7 +96,8 @@ func (d *memoryDriver) Clear(queue string) error {
 	return nil
 }
 
-func (d *memoryDriver) Close() error { return nil }
+func (d *memoryDriver) Shutdown(ctx context.Context) error { return nil }
+func (d *memoryDriver) Close() error                       { return nil }
 
 func TestBatch_SuccessfulCompletion(t *testing.T) {
 	resetBatchStoreForTest(t)
@@ -732,6 +734,7 @@ func (d *failingDriver) Pop(string) (Job, error)                         { retur
 func (d *failingDriver) Size(string) (int64, error)                      { return 0, nil }
 func (d *failingDriver) Clear(string) error                              { return nil }
 func (d *failingDriver) Failed(Job, error, string) error                 { return nil }
+func (d *failingDriver) Shutdown(context.Context) error                  { return nil }
 func (d *failingDriver) Close() error                                    { return nil }
 
 // testOnQueuerJob implements both Batchable and OnQueuer

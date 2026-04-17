@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -160,8 +161,8 @@ func (f *FileLogger) cleanup() {
 	}
 }
 
-// Close closes the underlying file handle.
-func (f *FileLogger) Close() error {
+// Shutdown closes the underlying file handle, honoring the context deadline.
+func (f *FileLogger) Shutdown(ctx context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.file != nil {
@@ -170,4 +171,10 @@ func (f *FileLogger) Close() error {
 		return err
 	}
 	return nil
+}
+
+// Close closes the underlying file handle.
+// Deprecated: use Shutdown(ctx) instead.
+func (f *FileLogger) Close() error {
+	return f.Shutdown(context.Background())
 }

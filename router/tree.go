@@ -1,8 +1,11 @@
 package router
 
 import (
+	"fmt"
 	"net/url"
 	"strings"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // Tree is a radix tree for route matching
@@ -82,6 +85,9 @@ func (t *Tree) InsertWithName(method, path string, handler HandlerFunc, name str
 
 	// Store in named routes lookup if name provided
 	if name != "" {
+		if _, exists := t.namedRoutes[name]; exists {
+			panic(contract.NewRegistrationError("router", fmt.Sprintf("route name %q already registered", name)))
+		}
 		t.namedRoutes[name] = result
 	}
 

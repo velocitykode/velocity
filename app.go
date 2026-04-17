@@ -45,8 +45,8 @@ type App struct {
 	middlewareFn   func(*MiddlewareStack)
 	routesFn       func(*Routing)
 	eventsFn       func(events.Dispatcher)
-	scheduleFn     func(*scheduler.Scheduler)
-	exceptionsFn   func(*exceptions.Handler)
+	scheduleFn     func(scheduler.TaskScheduler)
+	exceptionsFn   func(exceptions.ExceptionHandler)
 	bootstrapped   bool
 }
 
@@ -130,13 +130,14 @@ func New(opts ...Option) (*App, error) {
 	}
 
 	// 10. Initialize queue — pass DB for database driver
-	a.Queue = initQueue(a.config.Queue, sqlDB)
+	a.Queue = initQueue(a.config.Queue, sqlDB, a.config.DB.Connection, a.config.Queue.SigningKey, a.config.Key)
 
 	// 11. Initialize storage with disk drivers
 	a.Storage = initStorage(a.config.Storage, a.Log)
 
 	// 12. Initialize scheduler
 	a.Scheduler = scheduler.New()
+	a.Scheduler.SetEnv(a.config.Env)
 
 	// 13. Initialize mail
 	if a.config.Mail.Driver != "" {
@@ -154,7 +155,7 @@ func New(opts ...Option) (*App, error) {
 	// 15. Create router and inject services
 	a.Router = router.New()
 	a.Router.SetServices(a.Services)
-	a.Router.SetValidator(func(c *router.Context, rules map[string][]string, messages ...map[string]string) {
+	a.Router.SetValidator(func(c *router.Context, rules map[string][]string, messages ...map[string]string) error {
 		// Convert []string rules to pipe-separated format for validation package
 		vRules := make(validation.Rules, len(rules))
 		for field, fieldRules := range rules {
@@ -166,14 +167,14 @@ func New(opts ...Option) (*App, error) {
 		}
 		result := validation.CheckWithDB(c.Request, vRules, c.DB(), msgs...)
 		if !result.HasErrors() {
-			return
+			return nil
 		}
 		c.WithErrors(result.All())
 		c.WithInput(result.Old())
 		if v := c.View(); v != nil {
 			v.Back(c.Response, c.Request)
 		}
-		panic(router.AbortValidation{})
+		return router.ErrValidationAborted
 	})
 
 	// 16. Initialize validator
@@ -227,13 +228,13 @@ func (a *App) Events(fn func(events.Dispatcher)) *App {
 }
 
 // Schedule registers a callback that configures scheduled jobs.
-func (a *App) Schedule(fn func(*scheduler.Scheduler)) *App {
+func (a *App) Schedule(fn func(scheduler.TaskScheduler)) *App {
 	a.scheduleFn = fn
 	return a
 }
 
 // Exceptions registers a callback that configures the exception handler.
-func (a *App) Exceptions(fn func(*exceptions.Handler)) *App {
+func (a *App) Exceptions(fn func(exceptions.ExceptionHandler)) *App {
 	a.exceptionsFn = fn
 	return a
 }

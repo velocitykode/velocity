@@ -15,6 +15,7 @@ import (
 // TestIntegrationMemoryDriver tests memory driver with real job processing
 func TestIntegrationMemoryDriver(t *testing.T) {
 	driver := NewMemoryDriver()
+	driver.Start()
 	defer driver.Close()
 
 	t.Run("ConfigurationPickup", func(t *testing.T) {
@@ -281,7 +282,7 @@ func TestIntegrationDatabaseDriver(t *testing.T) {
 	}()
 
 	// Create the driver with the db directly
-	driver := NewDatabaseDriver(db)
+	driver := NewDatabaseDriver(db, "postgres")
 
 	t.Run("DatabaseJobPersistence", func(t *testing.T) {
 		t.Skip("Database driver requires full ORM initialization")
@@ -601,6 +602,7 @@ func TestConfigurationFromEnvironment(t *testing.T) {
 	t.Run("MemoryDriver", func(t *testing.T) {
 		// Memory driver should always work
 		driver := NewMemoryDriver()
+		driver.Start()
 		defer driver.Close()
 
 		job := &TestJob{ID: "mem-env", Message: "test"}
@@ -635,6 +637,7 @@ func TestConfigurationFromEnvironment(t *testing.T) {
 func BenchmarkQueueOperations(b *testing.B) {
 	// Use memory driver for consistent benchmarks
 	driver := NewMemoryDriver()
+	driver.Start()
 	defer driver.Close()
 
 	b.Run("Push", func(b *testing.B) {

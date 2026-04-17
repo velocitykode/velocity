@@ -9,12 +9,12 @@ import (
 
 // Common errors
 var (
-	ErrFileNotFound  = errors.New("file not found")
-	ErrDiskNotFound  = errors.New("disk not found")
-	ErrInvalidPath   = errors.New("invalid file path")
-	ErrQuotaExceeded = errors.New("storage quota exceeded")
-	ErrAccessDenied  = errors.New("access denied")
-	ErrNotSupported  = errors.New("operation not supported by this driver")
+	ErrFileNotFound  = errors.New("velocity/storage: file not found")
+	ErrDiskNotFound  = errors.New("velocity/storage: disk not found")
+	ErrInvalidPath   = errors.New("velocity/storage: invalid file path")
+	ErrQuotaExceeded = errors.New("velocity/storage: quota exceeded")
+	ErrAccessDenied  = errors.New("velocity/storage: access denied")
+	ErrNotSupported  = errors.New("velocity/storage: operation not supported by this driver")
 )
 
 // Visibility defines file visibility

@@ -32,20 +32,22 @@ type failedJob struct {
 	failedAt time.Time
 }
 
-// NewMemoryDriver creates a new memory queue driver
+// NewMemoryDriver creates a new memory queue driver.
+// Call Start() to begin the background delayed-job processor.
 func NewMemoryDriver() *MemoryDriver {
-	m := &MemoryDriver{
+	return &MemoryDriver{
 		queues:   make(map[string]*list.List),
 		delayed:  make(map[string][]*delayedJob),
 		failed:   make(map[string][]*failedJob),
 		stopChan: make(chan struct{}),
 	}
+}
 
-	// Start background worker for delayed jobs
+// Start begins the background goroutine that moves delayed jobs to the
+// main queue when their delay has elapsed. Must be called after construction.
+func (m *MemoryDriver) Start() {
 	m.wg.Add(1)
 	go m.processDelayedJobs()
-
-	return m
 }
 
 // SetEventDispatcher sets the function used to dispatch events.
@@ -193,11 +195,31 @@ func (m *MemoryDriver) GetFailed(queueName string) ([]*failedJob, error) {
 	return []*failedJob{}, nil
 }
 
-// Close gracefully shuts down the driver
-func (m *MemoryDriver) Close() error {
+// Shutdown gracefully shuts down the driver, waiting for the background
+// goroutine to finish. Honors the context deadline: if ctx expires before
+// the goroutine exits, ctx.Err() is returned.
+func (m *MemoryDriver) Shutdown(ctx context.Context) error {
+	batchStore.close() // stop package-level batch cleanup goroutine (idempotent)
 	close(m.stopChan)
-	m.wg.Wait()
-	return nil
+
+	done := make(chan struct{})
+	go func() {
+		m.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Close gracefully shuts down the driver.
+// Deprecated: use Shutdown(ctx) instead.
+func (m *MemoryDriver) Close() error {
+	return m.Shutdown(context.Background())
 }
 
 // processDelayedJobs moves delayed jobs to main queue when ready

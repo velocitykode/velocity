@@ -73,7 +73,7 @@ func (q *Query[T]) Decrement(column string, amount ...int) error {
 // logic that differs per driver (e.g. ? vs $N).
 func (q *Query[T]) incrementOrDecrement(column, op string, amount ...int) error {
 	if err := validateIdentifier(column); err != nil {
-		return fmt.Errorf("Increment/Decrement: %w", err)
+		return fmt.Errorf("velocity/orm: increment/decrement: %w", err)
 	}
 
 	amt := 1

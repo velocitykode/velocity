@@ -225,13 +225,13 @@ func (d *AESDriver) decryptWithKeys(p *Payload, encKey, hmacKey []byte) ([]byte,
 func (d *AESDriver) decryptCBCWithKey(p *Payload, encKey, hmacKey []byte) ([]byte, error) {
 	// MAC is required for CBC decryption to ensure integrity
 	if p.MAC == "" {
-		return nil, errors.New("MAC required for CBC decryption")
+		return nil, errors.New("velocity/crypto: mac required for CBC decryption")
 	}
 
 	// Verify MAC using the dedicated HMAC key
 	expectedMAC := generateMACWith(p.Value, p.IV, hmacKey)
 	if !secureCompare(p.MAC, expectedMAC) {
-		return nil, errors.New("MAC verification failed")
+		return nil, errors.New("velocity/crypto: mac verification failed")
 	}
 
 	// Decode components

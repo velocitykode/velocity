@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"context"
 	"encoding/json"
 	"time"
 )
@@ -31,7 +32,11 @@ type Driver interface {
 	// Failed moves a job to the failed queue
 	Failed(job Job, err error, queue string) error
 
+	// Shutdown gracefully shuts down the driver, honoring the context deadline.
+	Shutdown(ctx context.Context) error
+
 	// Close gracefully shuts down the driver, releasing resources.
+	// Deprecated: use Shutdown(ctx) instead.
 	Close() error
 }
 

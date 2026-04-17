@@ -66,7 +66,7 @@ type Context struct {
 	services       *app.Services
 	sseStarted     bool
 	trustedProxies []string
-	validateFn     func(c *Context, rules map[string][]string, messages ...map[string]string)
+	validateFn     func(c *Context, rules map[string][]string, messages ...map[string]string) error
 }
 
 // NewContext creates a new Context from http.Request and http.ResponseWriter.
@@ -481,84 +481,123 @@ func (c *Context) mustServices() *app.Services {
 	return c.services
 }
 
+// requireService panics if the given service is nil (typed as any so it works
+// with both interface and pointer fields). The returned value is the same svc
+// — callers must type-assert.
+func requireService(c *Context, svc any, name string) {
+	if svc == nil {
+		panic(fmt.Sprintf("velocity: %s service not configured", name))
+	}
+}
+
 // Services returns the service container.
 func (c *Context) Services() *app.Services {
 	return c.mustServices()
 }
 
-// DB returns the ORM manager.
-func (c *Context) DB() *orm.Manager {
-	return c.mustServices().DB
+// DB returns the ORM database interface.
+func (c *Context) DB() orm.Database {
+	s := c.mustServices()
+	requireService(c, s.DB, "database")
+	return s.DB
 }
 
-// Cache returns the cache manager.
-func (c *Context) Cache() *cache.Manager {
-	return c.mustServices().Cache
+// Cache returns the cache manager interface.
+func (c *Context) Cache() cache.CacheManager {
+	s := c.mustServices()
+	requireService(c, s.Cache, "cache")
+	return s.Cache
 }
 
 // Log returns the logger.
 func (c *Context) Log() log.Logger {
-	return c.mustServices().Log
+	s := c.mustServices()
+	requireService(c, s.Log, "log")
+	return s.Log
 }
 
 // Queue returns the queue driver.
 func (c *Context) Queue() queue.Driver {
-	return c.mustServices().Queue
+	s := c.mustServices()
+	requireService(c, s.Queue, "queue")
+	return s.Queue
 }
 
-// Storage returns the storage manager.
-func (c *Context) Storage() *storage.Manager {
-	return c.mustServices().Storage
+// Storage returns the storage manager interface.
+func (c *Context) Storage() storage.StorageManager {
+	s := c.mustServices()
+	requireService(c, s.Storage, "storage")
+	return s.Storage
 }
 
 // Mail returns the mailer.
 func (c *Context) Mail() mail.Mailer {
-	return c.mustServices().Mail
+	s := c.mustServices()
+	requireService(c, s.Mail, "mail")
+	return s.Mail
 }
 
-// Notification returns the notification manager.
-func (c *Context) Notification() *notification.Manager {
-	return c.mustServices().Notification
+// Notification returns the notification interface.
+func (c *Context) Notification() notification.Notifier {
+	s := c.mustServices()
+	requireService(c, s.Notification, "notification")
+	return s.Notification
 }
 
 // Events returns the event dispatcher.
 func (c *Context) Events() events.Dispatcher {
-	return c.mustServices().Events
+	s := c.mustServices()
+	requireService(c, s.Events, "events")
+	return s.Events
 }
 
 // Crypto returns the encryptor.
 func (c *Context) Crypto() crypto.Encryptor {
-	return c.mustServices().Crypto
+	s := c.mustServices()
+	requireService(c, s.Crypto, "crypto")
+	return s.Crypto
 }
 
 // Validator returns the validator.
 func (c *Context) Validator() validation.Validator {
-	return c.mustServices().Validator
+	s := c.mustServices()
+	requireService(c, s.Validator, "validator")
+	return s.Validator
 }
 
-// Exceptions returns the exception handler.
-func (c *Context) Exceptions() *exceptions.Handler {
-	return c.mustServices().Exceptions
+// Exceptions returns the exception handler interface.
+func (c *Context) Exceptions() exceptions.ExceptionHandler {
+	s := c.mustServices()
+	requireService(c, s.Exceptions, "exceptions")
+	return s.Exceptions
 }
 
-// Scheduler returns the task scheduler.
-func (c *Context) Scheduler() *scheduler.Scheduler {
-	return c.mustServices().Scheduler
+// Scheduler returns the task scheduler interface.
+func (c *Context) Scheduler() scheduler.TaskScheduler {
+	s := c.mustServices()
+	requireService(c, s.Scheduler, "scheduler")
+	return s.Scheduler
 }
 
 // Auth returns the auth manager (*auth.Manager) as a contract.AuthManager.
 func (c *Context) Auth() contract.AuthManager {
-	return c.mustServices().Auth
+	s := c.mustServices()
+	requireService(c, s.Auth, "auth")
+	return s.Auth
 }
 
 // CSRF returns the CSRF protection instance (*csrf.CSRF) as a contract.CSRFProtector.
 func (c *Context) CSRF() contract.CSRFProtector {
-	return c.mustServices().CSRF
+	s := c.mustServices()
+	requireService(c, s.CSRF, "csrf")
+	return s.CSRF
 }
 
 // View returns the view engine (*view.Engine) as a contract.ViewEngine.
 func (c *Context) View() contract.ViewEngine {
-	return c.mustServices().View
+	s := c.mustServices()
+	requireService(c, s.View, "view")
+	return s.View
 }
 
 // Can returns true if the authenticated user is allowed to perform the given
@@ -640,16 +679,15 @@ type Validatable interface {
 }
 
 // BindValid binds JSON then validates using the struct's own rules (if any).
+// Panics if the validator service is not configured.
 func (c *Context) BindValid(v interface{}) error {
 	if err := c.Bind(v); err != nil {
 		return err
 	}
-	if c.services == nil || c.services.Validator == nil {
-		return nil
-	}
+	validator := c.Validator()
 	if val, ok := v.(Validatable); ok {
 		dataMap := structToMap(v)
-		_, err := c.services.Validator.Validate(dataMap, val.ValidationRules())
+		_, err := validator.Validate(dataMap, val.ValidationRules())
 		return err
 	}
 	return nil
@@ -918,22 +956,25 @@ func writeFlashCookie(w http.ResponseWriter, name string, value any) {
 }
 
 // Validate checks the request against rules and automatically redirects back
-// with flashed errors and old input if validation fails. Panics with
-// AbortValidation to stop handler execution (caught by Bond middleware).
+// with flashed errors and old input if validation fails. Returns
+// ErrValidationAborted when validation fails — the handler should return
+// this error to the router, which will skip error handling since the
+// redirect response has already been written.
 //
 //	func (h *Handler) Store(ctx *router.Context) error {
-//	    ctx.Validate(map[string][]string{
+//	    if err := ctx.Validate(map[string][]string{
 //	        "name":  {"required"},
 //	        "email": {"required", "email", "unique:users,email"},
-//	    })
+//	    }); err != nil {
+//	        return err
+//	    }
 //	    // only reaches here if valid
 //	}
-func (c *Context) Validate(rules map[string][]string, messages ...map[string]string) {
+func (c *Context) Validate(rules map[string][]string, messages ...map[string]string) error {
 	if c.validateFn != nil {
-		c.validateFn(c, rules, messages...)
-		return
+		return c.validateFn(c, rules, messages...)
 	}
-	panic("ctx.Validate: validator not configured")
+	panic("velocity/router: validator not configured")
 }
 
 // ---------------------------------------------------------------------------

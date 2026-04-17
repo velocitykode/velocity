@@ -38,33 +38,18 @@ func NewManager() *Manager {
 	}
 }
 
-// Channel gets or creates a mail channel
-func (m *Manager) Channel(name string) Mailer {
+// Channel returns the mailer for the named channel.
+// Returns an error if the channel has not been registered via SetChannel.
+func (m *Manager) Channel(name string) (Mailer, error) {
 	m.mu.RLock()
 	mailer, exists := m.channels[name]
 	m.mu.RUnlock()
 
 	if exists {
-		return mailer
+		return mailer, nil
 	}
 
-	// Create new channel with default driver
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// Double-check after acquiring write lock
-	if mailer, exists := m.channels[name]; exists {
-		return mailer
-	}
-
-	// Create new log driver for this channel using registry
-	mailer, err := createDriver("log")
-	if err != nil {
-		// This should never happen since log driver is always registered
-		panic(fmt.Sprintf("failed to create log driver for channel: %v", err))
-	}
-	m.channels[name] = mailer
-	return mailer
+	return nil, fmt.Errorf("velocity/mail: channel %q not configured: %w", name, ErrChannelNotFound)
 }
 
 // SetChannel sets a specific mailer for a channel
@@ -96,7 +81,10 @@ func (m *Manager) GetChannels() []string {
 
 // Send sends a message using a specific channel
 func (m *Manager) Send(ctx context.Context, channel string, msg *Message) error {
-	mailer := m.Channel(channel)
+	mailer, err := m.Channel(channel)
+	if err != nil {
+		return fmt.Errorf("velocity/mail: send via %q: %w", channel, err)
+	}
 
 	// Extract recipient emails for event dispatching
 	toAddresses := msg.GetTo()
@@ -107,7 +95,7 @@ func (m *Manager) Send(ctx context.Context, channel string, msg *Message) error 
 	subject := msg.GetSubject()
 
 	start := time.Now()
-	err := mailer.Send(ctx, msg)
+	err = mailer.Send(ctx, msg)
 	duration := time.Since(start)
 
 	if err != nil {

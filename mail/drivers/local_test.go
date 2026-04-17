@@ -2,7 +2,6 @@ package drivers
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 
@@ -10,15 +9,15 @@ import (
 )
 
 func TestNewLocalDriver(t *testing.T) {
-	// Test with SMTP configuration
-	os.Setenv("MAIL_HOST", "localhost")
-	os.Setenv("MAIL_PORT", "587")
-	os.Setenv("MAIL_USERNAME", "user")
-	os.Setenv("MAIL_PASSWORD", "pass")
-	os.Setenv("MAIL_ENCRYPTION", "tls")
-	os.Unsetenv("MAIL_SENDMAIL_PATH")
+	config := mail.LocalConfig{
+		Host:       "localhost",
+		Port:       "587",
+		Username:   "user",
+		Password:   "pass",
+		Encryption: "tls",
+	}
 
-	driver, err := NewLocalDriver()
+	driver, err := NewLocalDriver(config, "", "")
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
@@ -29,10 +28,11 @@ func TestNewLocalDriver(t *testing.T) {
 }
 
 func TestNewLocalDriverWithSendmail(t *testing.T) {
-	os.Setenv("MAIL_SENDMAIL_PATH", "/usr/sbin/sendmail")
-	os.Unsetenv("MAIL_HOST")
+	config := mail.LocalConfig{
+		SendmailPath: "/usr/sbin/sendmail",
+	}
 
-	driver, err := NewLocalDriver()
+	driver, err := NewLocalDriver(config, "", "")
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
@@ -47,21 +47,20 @@ func TestNewLocalDriverWithSendmail(t *testing.T) {
 }
 
 func TestNewLocalDriverNoConfig(t *testing.T) {
-	os.Unsetenv("MAIL_HOST")
-	os.Unsetenv("MAIL_SENDMAIL_PATH")
+	config := mail.LocalConfig{}
 
-	_, err := NewLocalDriver()
+	_, err := NewLocalDriver(config, "", "")
 	if err == nil {
 		t.Error("Expected error when no configuration is provided")
 	}
 }
 
 func TestNewLocalDriverDefaultPort(t *testing.T) {
-	os.Setenv("MAIL_HOST", "localhost")
-	os.Unsetenv("MAIL_PORT")
-	os.Unsetenv("MAIL_SENDMAIL_PATH")
+	config := mail.LocalConfig{
+		Host: "localhost",
+	}
 
-	driver, err := NewLocalDriver()
+	driver, err := NewLocalDriver(config, "", "")
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
@@ -72,11 +71,11 @@ func TestNewLocalDriverDefaultPort(t *testing.T) {
 }
 
 func TestLocalDriverBuildMessage(t *testing.T) {
-	os.Setenv("MAIL_HOST", "localhost")
-	os.Setenv("MAIL_FROM_ADDRESS", "from@example.com")
-	os.Setenv("MAIL_FROM_NAME", "From Name")
+	config := mail.LocalConfig{
+		Host: "localhost",
+	}
 
-	driver, _ := NewLocalDriver()
+	driver, _ := NewLocalDriver(config, "from@example.com", "From Name")
 
 	msg := mail.NewMessage().
 		To("to@example.com", "To Name").
@@ -104,8 +103,11 @@ func TestLocalDriverBuildMessage(t *testing.T) {
 }
 
 func TestLocalDriverBuildMessageWithCC(t *testing.T) {
-	os.Setenv("MAIL_HOST", "localhost")
-	driver, _ := NewLocalDriver()
+	config := mail.LocalConfig{
+		Host: "localhost",
+	}
+
+	driver, _ := NewLocalDriver(config, "", "")
 
 	msg := mail.NewMessage().
 		To("to@example.com").
@@ -121,8 +123,11 @@ func TestLocalDriverBuildMessageWithCC(t *testing.T) {
 }
 
 func TestLocalDriverBuildMessageWithReplyTo(t *testing.T) {
-	os.Setenv("MAIL_HOST", "localhost")
-	driver, _ := NewLocalDriver()
+	config := mail.LocalConfig{
+		Host: "localhost",
+	}
+
+	driver, _ := NewLocalDriver(config, "", "")
 
 	msg := mail.NewMessage().
 		To("to@example.com").
@@ -138,8 +143,11 @@ func TestLocalDriverBuildMessageWithReplyTo(t *testing.T) {
 }
 
 func TestLocalDriverBuildMessageWithPriority(t *testing.T) {
-	os.Setenv("MAIL_HOST", "localhost")
-	driver, _ := NewLocalDriver()
+	config := mail.LocalConfig{
+		Host: "localhost",
+	}
+
+	driver, _ := NewLocalDriver(config, "", "")
 
 	t.Run("high priority", func(t *testing.T) {
 		msg := mail.NewMessage().
@@ -171,8 +179,11 @@ func TestLocalDriverBuildMessageWithPriority(t *testing.T) {
 }
 
 func TestLocalDriverBuildMessageWithCustomHeaders(t *testing.T) {
-	os.Setenv("MAIL_HOST", "localhost")
-	driver, _ := NewLocalDriver()
+	config := mail.LocalConfig{
+		Host: "localhost",
+	}
+
+	driver, _ := NewLocalDriver(config, "", "")
 
 	msg := mail.NewMessage().
 		To("to@example.com").
@@ -188,8 +199,11 @@ func TestLocalDriverBuildMessageWithCustomHeaders(t *testing.T) {
 }
 
 func TestLocalDriverBuildMessageWithHTMLBody(t *testing.T) {
-	os.Setenv("MAIL_HOST", "localhost")
-	driver, _ := NewLocalDriver()
+	config := mail.LocalConfig{
+		Host: "localhost",
+	}
+
+	driver, _ := NewLocalDriver(config, "", "")
 
 	msg := mail.NewMessage().
 		To("to@example.com").
@@ -209,8 +223,11 @@ func TestLocalDriverBuildMessageWithHTMLBody(t *testing.T) {
 }
 
 func TestLocalDriverBuildMessageWithBothBodies(t *testing.T) {
-	os.Setenv("MAIL_HOST", "localhost")
-	driver, _ := NewLocalDriver()
+	config := mail.LocalConfig{
+		Host: "localhost",
+	}
+
+	driver, _ := NewLocalDriver(config, "", "")
 
 	msg := mail.NewMessage().
 		To("to@example.com").
@@ -235,8 +252,11 @@ func TestLocalDriverBuildMessageWithBothBodies(t *testing.T) {
 }
 
 func TestLocalDriverBuildMessageWithAttachments(t *testing.T) {
-	os.Setenv("MAIL_HOST", "localhost")
-	driver, _ := NewLocalDriver()
+	config := mail.LocalConfig{
+		Host: "localhost",
+	}
+
+	driver, _ := NewLocalDriver(config, "", "")
 
 	msg := mail.NewMessage().
 		To("to@example.com").
@@ -260,12 +280,12 @@ func TestLocalDriverBuildMessageWithAttachments(t *testing.T) {
 	}
 }
 
-func TestLocalDriverBuildMessageFromEnv(t *testing.T) {
-	os.Setenv("MAIL_HOST", "localhost")
-	os.Setenv("MAIL_FROM_ADDRESS", "default@example.com")
-	os.Setenv("MAIL_FROM_NAME", "Default Sender")
+func TestLocalDriverBuildMessageFromConfig(t *testing.T) {
+	config := mail.LocalConfig{
+		Host: "localhost",
+	}
 
-	driver, _ := NewLocalDriver()
+	driver, _ := NewLocalDriver(config, "default@example.com", "Default Sender")
 
 	// Message without explicit from
 	msg := mail.NewMessage().
@@ -276,13 +296,16 @@ func TestLocalDriverBuildMessageFromEnv(t *testing.T) {
 	bodyStr := string(body)
 
 	if !strings.Contains(bodyStr, "From: Default Sender <default@example.com>") {
-		t.Error("Expected default from address from environment")
+		t.Error("Expected default from address from config")
 	}
 }
 
 func TestLocalDriverSendViaSMTPNoRecipients(t *testing.T) {
-	os.Setenv("MAIL_HOST", "localhost")
-	driver, _ := NewLocalDriver()
+	config := mail.LocalConfig{
+		Host: "localhost",
+	}
+
+	driver, _ := NewLocalDriver(config, "", "")
 
 	msg := mail.NewMessage().Subject("Test")
 
@@ -297,9 +320,11 @@ func TestLocalDriverSendViaSMTPNoRecipients(t *testing.T) {
 }
 
 func TestLocalDriverSendViaSendmailNoRecipients(t *testing.T) {
-	os.Setenv("MAIL_SENDMAIL_PATH", "/usr/sbin/sendmail")
-	os.Unsetenv("MAIL_HOST")
-	driver, _ := NewLocalDriver()
+	config := mail.LocalConfig{
+		SendmailPath: "/usr/sbin/sendmail",
+	}
+
+	driver, _ := NewLocalDriver(config, "", "")
 
 	msg := mail.NewMessage().Subject("Test")
 

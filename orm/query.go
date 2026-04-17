@@ -652,7 +652,7 @@ func (q *Query[T]) InsertGetId(data map[string]any) (int64, error) {
 	i := 1
 	for col, val := range data {
 		if err := validateIdentifier(col); err != nil {
-			return 0, fmt.Errorf("InsertGetId: %w", err)
+			return 0, fmt.Errorf("velocity/orm: insertGetId: %w", err)
 		}
 		columns = append(columns, col)
 		values = append(values, val)

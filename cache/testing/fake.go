@@ -42,7 +42,7 @@ func FakeRedis(t testing.TB, prefix string) (*drivers.RedisStore, func()) {
 		t.Fatalf("failed to start miniredis: %v", err)
 	}
 
-	store, err := drivers.NewRedisStore(prefix, mr.Host(), mr.Server().Addr().Port, "", 0)
+	store, err := drivers.NewRedisStore(prefix, mr.Host(), mr.Server().Addr().Port, "", 0, false)
 	if err != nil {
 		mr.Close()
 		t.Fatalf("failed to create redis store: %v", err)
@@ -81,7 +81,7 @@ func FakeRedisWithServer(t testing.TB, prefix string) (*drivers.RedisStore, *min
 		t.Fatalf("failed to start miniredis: %v", err)
 	}
 
-	store, err := drivers.NewRedisStore(prefix, mr.Host(), mr.Server().Addr().Port, "", 0)
+	store, err := drivers.NewRedisStore(prefix, mr.Host(), mr.Server().Addr().Port, "", 0, false)
 	if err != nil {
 		mr.Close()
 		t.Fatalf("failed to create redis store: %v", err)
@@ -111,6 +111,7 @@ func FakeMemory(t testing.TB, prefix string) (*drivers.MemoryStore, func()) {
 	t.Helper()
 
 	store := drivers.NewMemoryStore(prefix)
+	store.Start()
 
 	cleanup := func() {
 		store.Close()

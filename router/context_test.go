@@ -830,20 +830,22 @@ func (v validatableStruct) ValidationRules() validation.Rules {
 	}
 }
 
-func TestContext_BindValid_NoServices(t *testing.T) {
+func TestContext_BindValid_NoServices_Panics(t *testing.T) {
 	body := `{"name":"John","email":"john@example.com"}`
 	req := httptest.NewRequest("POST", "/test", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	c := NewContext(w, req)
 
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic when validator service not configured")
+		}
+	}()
+
 	var data validatableStruct
-	if err := c.BindValid(&data); err != nil {
-		t.Fatalf("BindValid (no services) error: %v", err)
-	}
-	if data.Name != "John" {
-		t.Errorf("expected Name=John, got %s", data.Name)
-	}
+	c.BindValid(&data)
 }
 
 func TestContext_BindValid_WithValidator(t *testing.T) {
@@ -1544,7 +1546,7 @@ func TestContext_reset_clearsAllFields(t *testing.T) {
 		services:       &app.Services{},
 		sseStarted:     true,
 		trustedProxies: []string{"10.0.0.0/8"},
-		validateFn:     func(c *Context, rules map[string][]string, messages ...map[string]string) {},
+		validateFn:     func(c *Context, rules map[string][]string, messages ...map[string]string) error { return nil },
 	}
 
 	c.reset()

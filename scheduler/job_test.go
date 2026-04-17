@@ -1,7 +1,6 @@
 package scheduler
 
 import (
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -80,7 +79,9 @@ func TestJob(t *testing.T) {
 		}
 
 		// Test Environment constraint
-		os.Setenv("APP_ENV", "production")
+		sched := New()
+		sched.SetEnv("production")
+		job.scheduler = sched
 		job.Environments("development", "staging")
 		if job.ShouldRun() {
 			t.Error("expected job not to run in production")
