@@ -405,7 +405,7 @@ func (q *Query[T]) loadRelation(models *[]T, meta *relationMeta) error {
 	}
 
 	start := time.Now()
-	rows, err := q.driver.Query(relSQL, keys...)
+	rows, err := q.driver.QueryContext(q.getContext(), relSQL, keys...)
 	duration := time.Since(start)
 
 	if err != nil {

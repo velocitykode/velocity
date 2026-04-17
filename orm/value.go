@@ -35,7 +35,7 @@ func (q *Query[T]) Value(column string) (any, error) {
 
 	start := time.Now()
 	var result any
-	err := q.driver.QueryRow(sqlStr, args...).Scan(&result)
+	err := q.driver.QueryRowContext(q.getContext(), sqlStr, args...).Scan(&result)
 	dispatchQueryExecuted(q.getContext(), sqlStr, args, time.Since(start), 1, q.driver.DriverName(), 2)
 
 	if err != nil {

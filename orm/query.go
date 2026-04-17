@@ -480,7 +480,7 @@ func (q *Query[T]) Get() ([]T, error) {
 	// Track query timing
 	start := time.Now()
 
-	rows, err := q.driver.Query(sql, args...)
+	rows, err := q.driver.QueryContext(q.getContext(), sql, args...)
 
 	// Dispatch event regardless of error
 	duration := time.Since(start)
@@ -559,7 +559,7 @@ func (q *Query[T]) Count() (int, error) {
 
 	start := time.Now()
 	var count int64
-	err := q.driver.QueryRow(sql, args...).Scan(&count)
+	err := q.driver.QueryRowContext(q.getContext(), sql, args...).Scan(&count)
 	dispatchQueryExecuted(q.getContext(), sql, args, time.Since(start), 1, q.driver.DriverName(), 2)
 
 	return int(count), err
@@ -591,7 +591,7 @@ func (q *Query[T]) Pluck(column string) ([]any, error) {
 	sql, args := q.driver.Grammar().CompileSelect(selectQuery)
 
 	start := time.Now()
-	rows, err := q.driver.Query(sql, args...)
+	rows, err := q.driver.QueryContext(q.getContext(), sql, args...)
 	if err != nil {
 		dispatchQueryExecuted(q.getContext(), sql, args, time.Since(start), 0, q.driver.DriverName(), 2)
 		return nil, err
@@ -624,7 +624,7 @@ func (q *Query[T]) Update(updates map[string]any) (int64, error) {
 	sql, args := q.driver.Grammar().CompileUpdate(q.table, updates, q.conditions)
 
 	start := time.Now()
-	result, err := q.driver.Exec(sql, args...)
+	result, err := q.driver.ExecContext(q.getContext(), sql, args...)
 	duration := time.Since(start)
 
 	if err != nil {
@@ -673,7 +673,7 @@ func (q *Query[T]) InsertGetId(data map[string]any) (int64, error) {
 		)
 
 		start := time.Now()
-		result, err := q.driver.Exec(sql, values...)
+		result, err := q.driver.ExecContext(q.getContext(), sql, values...)
 		duration := time.Since(start)
 
 		if err != nil {
@@ -695,7 +695,7 @@ func (q *Query[T]) InsertGetId(data map[string]any) (int64, error) {
 
 		start := time.Now()
 		var lastID int64
-		err := q.driver.QueryRow(sql, values...).Scan(&lastID)
+		err := q.driver.QueryRowContext(q.getContext(), sql, values...).Scan(&lastID)
 		duration := time.Since(start)
 
 		if err != nil {
@@ -727,7 +727,7 @@ func (q *Query[T]) ForceDelete() (int64, error) {
 	sql, args := q.driver.Grammar().CompileDelete(q.table, q.conditions)
 
 	start := time.Now()
-	result, err := q.driver.Exec(sql, args...)
+	result, err := q.driver.ExecContext(q.getContext(), sql, args...)
 	duration := time.Since(start)
 
 	if err != nil {
@@ -962,7 +962,7 @@ func (r *RawQuery[T]) getContext() context.Context {
 // First executes the raw query and scans the first result into dest
 func (r *RawQuery[T]) First(dest *T) error {
 	start := time.Now()
-	rows, err := r.driver.Query(r.sql, r.args...)
+	rows, err := r.driver.QueryContext(r.getContext(), r.sql, r.args...)
 	duration := time.Since(start)
 
 	if err != nil {
@@ -988,7 +988,7 @@ func (r *RawQuery[T]) First(dest *T) error {
 // Get executes the raw query and returns all matching results
 func (r *RawQuery[T]) Get() ([]T, error) {
 	start := time.Now()
-	rows, err := r.driver.Query(r.sql, r.args...)
+	rows, err := r.driver.QueryContext(r.getContext(), r.sql, r.args...)
 	duration := time.Since(start)
 
 	if err != nil {
@@ -1015,7 +1015,7 @@ func (r *RawQuery[T]) Get() ([]T, error) {
 // Useful for queries that return scalar values or don't map to structs
 func (r *RawQuery[T]) Scan(dest ...any) error {
 	start := time.Now()
-	err := r.driver.QueryRow(r.sql, r.args...).Scan(dest...)
+	err := r.driver.QueryRowContext(r.getContext(), r.sql, r.args...).Scan(dest...)
 	duration := time.Since(start)
 
 	rowCount := int64(0)
@@ -1030,7 +1030,7 @@ func (r *RawQuery[T]) Scan(dest ...any) error {
 // Exec executes a raw SQL statement (INSERT, UPDATE, DELETE) and returns affected rows
 func (r *RawQuery[T]) Exec() (int64, error) {
 	start := time.Now()
-	result, err := r.driver.Exec(r.sql, r.args...)
+	result, err := r.driver.ExecContext(r.getContext(), r.sql, r.args...)
 	duration := time.Since(start)
 
 	if err != nil {

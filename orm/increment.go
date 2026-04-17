@@ -127,7 +127,7 @@ func (q *Query[T]) incrementOrDecrement(column, op string, amount ...int) error 
 	sqlStr := sqlBuilder.String()
 
 	start := time.Now()
-	_, err := q.driver.Exec(sqlStr, args...)
+	_, err := q.driver.ExecContext(q.getContext(), sqlStr, args...)
 	dispatchQueryExecuted(q.getContext(), sqlStr, args, time.Since(start), 0, q.driver.DriverName(), 2)
 
 	return err

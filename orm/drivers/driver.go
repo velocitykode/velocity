@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"database/sql"
 	"time"
 )
@@ -13,10 +14,20 @@ type Driver interface {
 	Ping() error
 	DB() *sql.DB
 
-	// Query execution
+	// Query execution.
+	//
+	// Deprecated: prefer the *Context variants below so cancellation and
+	// deadlines propagate end-to-end. The non-context methods forward to
+	// the *Context variants with context.TODO() and emit a one-time
+	// warning on first use.
 	Query(query string, args ...any) (*sql.Rows, error)
 	QueryRow(query string, args ...any) *sql.Row
 	Exec(query string, args ...any) (sql.Result, error)
+
+	// Context-aware query execution.
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 
 	// Transaction support
 	Begin() (*sql.Tx, error)
