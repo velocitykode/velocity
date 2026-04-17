@@ -729,14 +729,18 @@ func TestRender_PackageLevel(t *testing.T) {
 	}
 }
 
-func TestRender_PackageLevel_NoEngine(t *testing.T) {
+func TestRender_PackageLevel_NoEngine_Panics(t *testing.T) {
 	ctx, _ := router.NewTestContext("GET", "/")
 	ctx.SetServices(&app.Services{})
 
-	err := Render(ctx, "Test")
-	if err == nil {
-		t.Fatal("Expected error when view engine is not configured")
-	}
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic when view engine is not configured")
+		}
+	}()
+
+	Render(ctx, "Test")
 }
 
 func TestMiddleware_Integration(t *testing.T) {
