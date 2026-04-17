@@ -178,105 +178,108 @@ func (t *Tree) Match(method, path string) *MatchResult {
 // depth tracks the current param depth to allow slice reuse on backtrack.
 func (n *Node) match(parts []string, method string, matchedValues []string) *MatchResult {
 	if len(parts) == 0 {
-		// At potential leaf
-		if n.handlers != nil {
-			if result, ok := n.handlers[method]; ok {
-				// Build params map using stored segments for param names
-				params := buildParams(result.segments, matchedValues)
-				// Snapshot matchedValues so the caller's slice isn't shared
-				snapshot := make([]string, len(matchedValues))
-				copy(snapshot, matchedValues)
-				return &MatchResult{
-					Handler:       result.Handler,
-					Params:        params,
-					Name:          result.Name,
-					Path:          result.Path,
-					segments:      result.segments,
-					matchedValues: snapshot,
-				}
-			}
-		}
-
-		// Check if wildcard child can match empty
-		if n.wildcardChild != nil && n.wildcardChild.handlers != nil {
-			if result, ok := n.wildcardChild.handlers[method]; ok {
-				newValues := append(matchedValues, "") // empty wildcard
-				params := buildParams(result.segments, newValues)
-				snapshot := make([]string, len(newValues))
-				copy(snapshot, newValues)
-				return &MatchResult{
-					Handler:       result.Handler,
-					Params:        params,
-					Name:          result.Name,
-					Path:          result.Path,
-					segments:      result.segments,
-					matchedValues: snapshot,
-				}
-			}
-		}
-
-		return nil
+		return n.matchLeaf(method, matchedValues)
 	}
 
 	part := parts[0]
 	remaining := parts[1:]
 	depth := len(matchedValues)
 
-	// Priority 1: Static children (most specific)
-	if n.staticChildren != nil {
-		if child, ok := n.staticChildren[part]; ok {
-			if result := child.match(remaining, method, matchedValues); result != nil {
-				return result
-			}
+	if result := n.matchStatic(part, remaining, method, matchedValues); result != nil {
+		return result
+	}
+	if result := n.matchRegex(part, remaining, method, matchedValues, depth); result != nil {
+		return result
+	}
+	if result := n.matchParam(part, remaining, method, matchedValues, depth); result != nil {
+		return result
+	}
+	return n.matchWildcard(parts, method, matchedValues, depth)
+}
+
+// matchLeaf handles the terminal case where all path parts have been
+// consumed. Tries the direct handler, then an empty-wildcard handler.
+func (n *Node) matchLeaf(method string, matchedValues []string) *MatchResult {
+	if n.handlers != nil {
+		if result, ok := n.handlers[method]; ok {
+			return buildMatchResult(result, matchedValues)
 		}
 	}
+	if n.wildcardChild != nil && n.wildcardChild.handlers != nil {
+		if result, ok := n.wildcardChild.handlers[method]; ok {
+			return buildMatchResult(result, append(matchedValues, ""))
+		}
+	}
+	return nil
+}
 
-	// Priority 2: Regex constrained params (more specific than plain param)
+// matchStatic tries the static-children map for an exact-string match.
+func (n *Node) matchStatic(part string, remaining []string, method string, matchedValues []string) *MatchResult {
+	if n.staticChildren == nil {
+		return nil
+	}
+	child, ok := n.staticChildren[part]
+	if !ok {
+		return nil
+	}
+	return child.match(remaining, method, matchedValues)
+}
+
+// matchRegex walks the regex-constrained children.
+func (n *Node) matchRegex(part string, remaining []string, method string, matchedValues []string, depth int) *MatchResult {
 	for _, child := range n.regexChildren {
-		if child.segment.Match(part) {
-			newValues := append(matchedValues[:depth:depth], part)
-			if result := child.match(remaining, method, newValues); result != nil {
-				return result
-			}
+		if !child.segment.Match(part) {
+			continue
 		}
-	}
-
-	// Priority 3: Plain param
-	if n.paramChild != nil {
 		newValues := append(matchedValues[:depth:depth], part)
-		if result := n.paramChild.match(remaining, method, newValues); result != nil {
+		if result := child.match(remaining, method, newValues); result != nil {
 			return result
 		}
 	}
-
-	// Priority 4: Wildcard (consumes rest of path)
-	if n.wildcardChild != nil {
-		// Wildcard captures everything including the current part.
-		// URL-decode the value since URL path segments may be percent-encoded.
-		wildcardValue := strings.Join(parts, "/")
-		if decoded, err := url.PathUnescape(wildcardValue); err == nil {
-			wildcardValue = decoded
-		}
-		newValues := append(matchedValues[:depth:depth], wildcardValue)
-
-		if n.wildcardChild.handlers != nil {
-			if result, ok := n.wildcardChild.handlers[method]; ok {
-				params := buildParams(result.segments, newValues)
-				snapshot := make([]string, len(newValues))
-				copy(snapshot, newValues)
-				return &MatchResult{
-					Handler:       result.Handler,
-					Params:        params,
-					Name:          result.Name,
-					Path:          result.Path,
-					segments:      result.segments,
-					matchedValues: snapshot,
-				}
-			}
-		}
-	}
-
 	return nil
+}
+
+// matchParam tries the plain-param child, capturing the current part.
+func (n *Node) matchParam(part string, remaining []string, method string, matchedValues []string, depth int) *MatchResult {
+	if n.paramChild == nil {
+		return nil
+	}
+	newValues := append(matchedValues[:depth:depth], part)
+	return n.paramChild.match(remaining, method, newValues)
+}
+
+// matchWildcard captures the rest of the path. URL-decodes the captured
+// value so handlers see raw path segments instead of percent-encoded ones.
+func (n *Node) matchWildcard(parts []string, method string, matchedValues []string, depth int) *MatchResult {
+	if n.wildcardChild == nil || n.wildcardChild.handlers == nil {
+		return nil
+	}
+	result, ok := n.wildcardChild.handlers[method]
+	if !ok {
+		return nil
+	}
+	wildcardValue := strings.Join(parts, "/")
+	if decoded, err := url.PathUnescape(wildcardValue); err == nil {
+		wildcardValue = decoded
+	}
+	newValues := append(matchedValues[:depth:depth], wildcardValue)
+	return buildMatchResult(result, newValues)
+}
+
+// buildMatchResult constructs a MatchResult with params map built from
+// the registered segments and a defensive snapshot of matchedValues.
+func buildMatchResult(registered *MatchResult, matchedValues []string) *MatchResult {
+	params := buildParams(registered.segments, matchedValues)
+	snapshot := make([]string, len(matchedValues))
+	copy(snapshot, matchedValues)
+	return &MatchResult{
+		Handler:       registered.Handler,
+		Params:        params,
+		Name:          registered.Name,
+		Path:          registered.Path,
+		segments:      registered.segments,
+		matchedValues: snapshot,
+	}
 }
 
 // buildParams creates a params map from segments and matched values

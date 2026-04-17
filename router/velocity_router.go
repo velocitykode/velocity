@@ -29,14 +29,15 @@ type compiledRouteMap = map[string]*MatchResult
 // VelocityRouterV2 is the tree-based router implementation
 // This replaces gorilla/mux with a custom radix tree
 type VelocityRouterV2 struct {
-	tree          atomic.Pointer[Tree]
-	prefix        string
-	middlewares   []MiddlewareFunc
-	namedRoutes   map[string]*MatchResult
-	mu            sync.Mutex
-	staticDir     string
-	staticFS      http.Handler
-	staticEnabled bool
+	tree               atomic.Pointer[Tree]
+	prefix             string
+	middlewares        []MiddlewareFunc
+	namedRoutes        map[string]*MatchResult
+	mu                 sync.Mutex
+	staticDir          string
+	staticFS           http.Handler
+	staticEnabled      bool
+	staticFallbackOnly bool
 
 	// Compiled static routes for O(1) lookup (key: "METHOD /path").
 	// Uses atomic.Pointer for lock-free reads on the hot path.
@@ -66,7 +67,11 @@ type VelocityRouterV2 struct {
 	// log spam. Set this to integrate with a metrics system — silent
 	// drops under saturation are the kind of failure mode that only
 	// surfaces during an incident.
-	OnEventDispatchError func(err error, event interface{})
+	//
+	// The event parameter is typed as Event (instead of interface{}) so
+	// listener implementations can switch on concrete router events
+	// without a type assertion.
+	OnEventDispatchError func(err error, event Event)
 
 	droppedEvents   atomic.Uint64
 	firstDropLogged atomic.Bool
@@ -74,8 +79,19 @@ type VelocityRouterV2 struct {
 	// Context pool for reuse
 	ctxPool sync.Pool
 
-	// Trusted proxies for X-Forwarded-For support
+	// TrustedProxies is the raw list of IPs/CIDRs whose X-Forwarded-For
+	// headers should be honoured. Parsed lazily on first use via
+	// parsedTrustedProxies; validate up-front with Router.ValidateConfig.
 	TrustedProxies []string
+
+	// parsedTrustedProxies caches the parsed form. Populated by
+	// ValidateConfig or on first Freeze(); guarded by mu.
+	parsedTrustedProxies *TrustedProxies
+
+	// RedirectAllowedHosts, when non-empty, extends same-origin redirect
+	// validation to these hosts. Relative paths are always allowed.
+	// Cross-host redirects to hosts outside this list are rewritten to "/".
+	RedirectAllowedHosts []string
 
 	// ErrorHandler is called when a handler returns an error or a panic occurs.
 	// If nil, the default behavior (HTTP 500) is used.
@@ -120,7 +136,7 @@ func (r *VelocityRouterV2) SetEventDispatcher(fn func(event interface{}) error) 
 // Errors from the dispatcher (e.g. ErrEventBufferFull under an async dispatcher
 // with a saturated buffer) are routed to OnEventDispatchError if set, otherwise
 // counted via DroppedEventCount and logged once at WARN.
-func (r *VelocityRouterV2) dispatchInstanceEvent(event interface{}) {
+func (r *VelocityRouterV2) dispatchInstanceEvent(event Event) {
 	if r.eventDispatcher == nil {
 		return
 	}
@@ -128,17 +144,17 @@ func (r *VelocityRouterV2) dispatchInstanceEvent(event interface{}) {
 	if err == nil {
 		return
 	}
+	r.reportDispatchError(err, event)
+}
 
+// reportDispatchError increments the drop counter and invokes the
+// configured callback (or falls back to a once-logged WARN).
+func (r *VelocityRouterV2) reportDispatchError(err error, event Event) {
 	r.droppedEvents.Add(1)
-
 	if r.OnEventDispatchError != nil {
 		r.OnEventDispatchError(err, event)
 		return
 	}
-
-	// Default: log the first error only, to avoid spam. Operators who need
-	// ongoing visibility should either poll DroppedEventCount or install
-	// OnEventDispatchError.
 	if r.firstDropLogged.CompareAndSwap(false, true) &&
 		r.services != nil && r.services.Log != nil {
 		r.services.Log.Warn(
@@ -146,6 +162,42 @@ func (r *VelocityRouterV2) dispatchInstanceEvent(event interface{}) {
 			"error", err.Error(),
 		)
 	}
+}
+
+// ValidateConfig parses and validates router configuration that cannot
+// be checked at compile time — specifically TrustedProxies entries.
+// Call this at boot so a malformed CIDR fails startup rather than
+// being silently ignored at request time.
+//
+// Safe to call multiple times; each call re-parses.
+func (r *VelocityRouterV2) ValidateConfig() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	tp, err := ParseTrustedProxies(r.TrustedProxies)
+	if err != nil {
+		return fmt.Errorf("velocity/router: trusted proxies: %w", err)
+	}
+	r.parsedTrustedProxies = tp
+	return nil
+}
+
+// trustedProxiesOrParse returns the parsed TrustedProxies, parsing
+// lazily on first use if ValidateConfig has not been called. A parse
+// error yields an empty set (no proxies trusted) — operators who want
+// fail-fast should call ValidateConfig at boot.
+func (r *VelocityRouterV2) trustedProxiesOrParse() *TrustedProxies {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.parsedTrustedProxies != nil {
+		return r.parsedTrustedProxies
+	}
+	tp, err := ParseTrustedProxies(r.TrustedProxies)
+	if err != nil {
+		// Best-effort: never trust anything on misconfiguration.
+		tp = &TrustedProxies{}
+	}
+	r.parsedTrustedProxies = tp
+	return tp
 }
 
 // DroppedEventCount returns the total number of events for which the
@@ -291,13 +343,41 @@ func (r *VelocityRouterV2) Resource(path string, controller interface{}) Resourc
 }
 
 // Static serves static files from the specified directory.
-// Note: The underlying http.Dir follows symlinks by default. If this is a concern,
-// ensure the directory does not contain symlinks pointing outside the intended root,
-// or use a custom http.FileSystem that rejects symlinks.
+//
+// IMPORTANT: when the underlying http.FileServer responds with 404,
+// Velocity swallows that response and re-dispatches the request
+// through route matching so routes can take precedence over missing
+// files. That means:
+//
+//   - the FileServer will have fully consumed the (bounded-by-Go)
+//     response body into a discard sink before the router attempts
+//     the route match; and
+//   - any bytes the FileServer wrote to the internal capture buffer
+//     are thrown away.
+//
+// For a typical deployment (routes matched first, Static as last
+// resort) this is fine. If you need zero-consumption fallthrough
+// or want to guarantee routes always win, call StaticFallback
+// explicitly instead.
+//
+// The underlying http.Dir follows symlinks by default. Ensure the
+// directory does not contain symlinks pointing outside the intended
+// root, or use a custom http.FileSystem that rejects symlinks.
 func (r *VelocityRouterV2) Static(directory string) {
 	r.staticDir = directory
 	r.staticFS = http.FileServer(http.Dir(directory))
 	r.staticEnabled = true
+}
+
+// StaticFallback is an opt-in variant of Static that only serves a
+// file when no route matches the request path. Use this when routes
+// must always take precedence — e.g. an SPA where "/users" is both a
+// client route and a possible static directory listing.
+func (r *VelocityRouterV2) StaticFallback(directory string) {
+	r.staticDir = directory
+	r.staticFS = http.FileServer(http.Dir(directory))
+	r.staticEnabled = true
+	r.staticFallbackOnly = true
 }
 
 // statusCaptureWriter wraps http.ResponseWriter to capture the status code
@@ -343,151 +423,187 @@ func (w *statusCaptureWriter) ReadFrom(r io.Reader) (int64, error) {
 	return io.Copy(w.ResponseWriter, r)
 }
 
-// ServeHTTP implements http.Handler interface
+// requestMeta holds the per-request metadata that ServeHTTP threads
+// through its helper functions. Lifetime is the single request.
+type requestMeta struct {
+	id        string
+	startedAt time.Time
+	traceID   string
+	spanID    string
+}
+
+// ServeHTTP implements http.Handler interface.
 func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	// Commit routes on first request
 	r.commitOnce()
 
-	// Generate request ID and capture start time
-	requestID := generateRequestID()
-	startedAt := time.Now()
-
-	// Generate trace context
-	reqCtx, traceID, spanID := trace.StartTrace(req.Context())
-
-	// Add request ID to context
-	reqCtx = context.WithValue(reqCtx, RequestIDKey, requestID)
-	req = req.WithContext(reqCtx)
-
-	// Wrap response writer to capture metrics
+	meta, req := r.beginRequest(req)
 	rw := newResponseWriter(w)
 
-	// Dispatch RequestStarted event
 	r.dispatchInstanceEvent(&RequestStarted{
 		Context:    req.Context(),
 		Method:     req.Method,
 		Path:       req.URL.Path,
 		RemoteAddr: req.RemoteAddr,
 		UserAgent:  req.UserAgent(),
-		RequestID:  requestID,
-		StartedAt:  startedAt,
-		TraceID:    traceID,
-		SpanID:     spanID,
+		RequestID:  meta.id,
+		StartedAt:  meta.startedAt,
+		TraceID:    meta.traceID,
+		SpanID:     meta.spanID,
 	})
 
-	// Try to serve static file if enabled (single-stat via capture writer)
-	if r.staticEnabled {
-		cw := &statusCaptureWriter{ResponseWriter: rw}
-		// Dispatch routed event before serving (preserves original event ordering)
-		r.dispatchInstanceEvent(&RequestRouted{
-			Context:   req.Context(),
-			RequestID: requestID,
-			Route:     "[static]",
-			Matched:   true,
-		})
-
-		r.staticFS.ServeHTTP(cw, req)
-		if !cw.suppress {
-			// Static file was served successfully
-			r.dispatchInstanceEvent(&RequestHandled{
-				Context:      req.Context(),
-				RequestID:    requestID,
-				Method:       req.Method,
-				Path:         req.URL.Path,
-				Route:        "[static]",
-				StatusCode:   rw.Status(),
-				BytesWritten: rw.BytesWritten(),
-				Duration:     time.Since(startedAt),
-				TraceID:      traceID,
-				SpanID:       spanID,
-			})
+	// Static-first path (Static): FileServer gets a crack before route
+	// matching. Returns true if the file served the request.
+	if r.staticEnabled && !r.staticFallbackOnly {
+		if r.serveStatic(rw, req, meta) {
 			return
 		}
-		// 404 from static — fall through to route matching
 	}
 
-	// Match route — try compiled static routes first (O(1)), then fall back to tree.
-	// Both compiledRoutes and tree are read via atomic load so no lock is needed
-	// on the hot path, and ClearRoutes can swap them safely mid-flight.
-	path := req.URL.Path
-	tree := r.tree.Load()
-	var result *MatchResult
-	if compiled := r.compiledRoutes.Load(); compiled != nil {
-		result = (*compiled)[req.Method+" "+path]
-		if result == nil {
-			result = (*compiled)["ANY "+path]
+	result := r.matchRoute(req)
+	if result == nil {
+		// Last-chance static (StaticFallback): only try files if no route matched.
+		if r.staticEnabled && r.staticFallbackOnly {
+			if r.serveStatic(rw, req, meta) {
+				return
+			}
 		}
-	}
-	if result == nil {
-		result = tree.Match(req.Method, path)
-	}
-	if result == nil {
-		result = tree.Match("ANY", path)
-	}
-
-	if result == nil {
-		// Dispatch routed event for 404
-		r.dispatchInstanceEvent(&RequestRouted{
-			Context:   req.Context(),
-			RequestID: requestID,
-			Matched:   false,
-		})
-
-		http.NotFound(rw, req)
-
-		// Dispatch handled event for 404
-		r.dispatchInstanceEvent(&RequestHandled{
-			Context:      req.Context(),
-			RequestID:    requestID,
-			Method:       req.Method,
-			Path:         req.URL.Path,
-			StatusCode:   http.StatusNotFound,
-			BytesWritten: rw.BytesWritten(),
-			Duration:     time.Since(startedAt),
-			TraceID:      traceID,
-			SpanID:       spanID,
-		})
+		r.handleNotFound(rw, req, meta)
 		return
 	}
 
-	// Dispatch routed event for matched route
 	r.dispatchInstanceEvent(&RequestRouted{
 		Context:   req.Context(),
-		RequestID: requestID,
+		RequestID: meta.id,
 		Route:     result.Path,
 		RouteName: result.Name,
 		Params:    result.Params,
 		Matched:   true,
 	})
 
-	// Set params and route name in request context
+	req = r.enrichRequest(req, result)
+	ctx := r.acquireContext(rw, req, result)
+	r.invokeHandler(ctx, rw, req, result, meta)
+}
+
+// beginRequest generates the request ID, trace IDs, and threads them
+// onto the request context. Returns the populated metadata and the
+// updated request.
+func (r *VelocityRouterV2) beginRequest(req *http.Request) (requestMeta, *http.Request) {
+	reqCtx, traceID, spanID := trace.StartTrace(req.Context())
+	meta := requestMeta{
+		id:        generateRequestID(),
+		startedAt: time.Now(),
+		traceID:   traceID,
+		spanID:    spanID,
+	}
+	reqCtx = context.WithValue(reqCtx, RequestIDKey, meta.id)
+	return meta, req.WithContext(reqCtx)
+}
+
+// serveStatic attempts to serve a static file via the configured
+// FileServer. Returns true if the response was produced (success or
+// non-404 error); false when the FileServer returned 404 and the
+// router should fall through to route matching.
+func (r *VelocityRouterV2) serveStatic(rw *responseWriter, req *http.Request, meta requestMeta) bool {
+	cw := &statusCaptureWriter{ResponseWriter: rw}
+	r.dispatchInstanceEvent(&RequestRouted{
+		Context:   req.Context(),
+		RequestID: meta.id,
+		Route:     "[static]",
+		Matched:   true,
+	})
+	r.staticFS.ServeHTTP(cw, req)
+	if cw.suppress {
+		// 404 — FileServer already consumed + discarded its body;
+		// signal the caller to fall through to route matching.
+		return false
+	}
+	r.dispatchInstanceEvent(&RequestHandled{
+		Context:      req.Context(),
+		RequestID:    meta.id,
+		Method:       req.Method,
+		Path:         req.URL.Path,
+		Route:        "[static]",
+		StatusCode:   rw.Status(),
+		BytesWritten: rw.BytesWritten(),
+		Duration:     time.Since(meta.startedAt),
+		TraceID:      meta.traceID,
+		SpanID:       meta.spanID,
+	})
+	return true
+}
+
+// matchRoute tries the compiled fast-path, then the tree. Both reads
+// are lock-free via atomic.Pointer.
+func (r *VelocityRouterV2) matchRoute(req *http.Request) *MatchResult {
+	path := req.URL.Path
+	tree := r.tree.Load()
+	if compiled := r.compiledRoutes.Load(); compiled != nil {
+		if m := (*compiled)[req.Method+" "+path]; m != nil {
+			return m
+		}
+		if m := (*compiled)["ANY "+path]; m != nil {
+			return m
+		}
+	}
+	if m := tree.Match(req.Method, path); m != nil {
+		return m
+	}
+	return tree.Match("ANY", path)
+}
+
+// handleNotFound writes the 404 response and dispatches events.
+func (r *VelocityRouterV2) handleNotFound(rw *responseWriter, req *http.Request, meta requestMeta) {
+	r.dispatchInstanceEvent(&RequestRouted{
+		Context:   req.Context(),
+		RequestID: meta.id,
+		Matched:   false,
+	})
+	http.NotFound(rw, req)
+	r.dispatchInstanceEvent(&RequestHandled{
+		Context:      req.Context(),
+		RequestID:    meta.id,
+		Method:       req.Method,
+		Path:         req.URL.Path,
+		StatusCode:   http.StatusNotFound,
+		BytesWritten: rw.BytesWritten(),
+		Duration:     time.Since(meta.startedAt),
+		TraceID:      meta.traceID,
+		SpanID:       meta.spanID,
+	})
+}
+
+// enrichRequest attaches route params, name, pattern, and services to
+// the request context. Returns the updated request.
+func (r *VelocityRouterV2) enrichRequest(req *http.Request, result *MatchResult) *http.Request {
 	req = SetParams(req, result.Params)
 	if result.Name != "" {
 		req = SetRouteName(req, result.Name)
 	}
-	// Also store route pattern in context
-	reqCtx = context.WithValue(req.Context(), RoutePatternKey, result.Path)
-	req = req.WithContext(reqCtx)
-
-	// Stash services on the request context so Wrap/NewContext inherit them
+	req = req.WithContext(context.WithValue(req.Context(), RoutePatternKey, result.Path))
 	if r.services != nil {
 		req = WithServices(req, r.services)
 	}
+	return req
+}
 
-	// Acquire context from pool
+// acquireContext pulls a Context from the pool and populates it with
+// per-request wiring (services, trusted proxies, params).
+func (r *VelocityRouterV2) acquireContext(rw *responseWriter, req *http.Request, result *MatchResult) *Context {
 	ctx := r.ctxPool.Get().(*Context)
 	ctx.Response = rw
 	ctx.Request = req
 	ctx.services = r.services
-	ctx.trustedProxies = r.TrustedProxies
+	ctx.trustedProxies = r.trustedProxiesOrParse()
+	ctx.redirectAllowedHosts = r.RedirectAllowedHosts
 	ctx.validateFn = r.validateFn
 
-	// Build params from match result
 	if result.segments != nil {
 		ctx.params = ctx.params[:0]
 		valueIdx := 0
 		for _, seg := range result.segments {
-			if seg.Type == SegmentParam || seg.Type == SegmentRegex || seg.Type == SegmentWildcard {
+			switch seg.Type {
+			case SegmentParam, SegmentRegex, SegmentWildcard:
 				if valueIdx < len(result.matchedValues) {
 					ctx.params = append(ctx.params, RouteParam{Key: seg.Value, Value: result.matchedValues[valueIdx]})
 					valueIdx++
@@ -495,64 +611,41 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 	}
+	return ctx
+}
 
-	// Use defer for panic recovery, event dispatch, and context return to pool
+// invokeHandler runs the matched handler with panic recovery, event
+// dispatch, and pool return. Consolidates the single defer so the
+// happy path stays branch-light.
+func (r *VelocityRouterV2) invokeHandler(ctx *Context, rw *responseWriter, req *http.Request, result *MatchResult, meta requestMeta) {
 	var handlerErr error
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			// Capture stack trace
-			buf := make([]byte, 4096)
-			n := runtime.Stack(buf, false)
-			stack := string(buf[:n])
-
-			// Convert recovered value to error
-			err := panicerr.FromRecovered(recovered)
-
-			// Dispatch failed event
-			r.dispatchInstanceEvent(&RequestFailed{
-				Context:   req.Context(),
-				RequestID: requestID,
-				Method:    req.Method,
-				Path:      req.URL.Path,
-				Error:     err,
-				Stack:     stack,
-				Recovered: true,
-				TraceID:   traceID,
-				SpanID:    spanID,
-			})
-
-			// Write error response
-			r.handleError(ctx, rw, err)
+			r.onPanic(ctx, rw, req, meta, recovered)
 		} else if handlerErr != nil && !errors.Is(handlerErr, ErrValidationAborted) {
-			// Dispatch failed event for handler error (skip validation abort —
-			// the response has already been written with flashed errors).
 			r.dispatchInstanceEvent(&RequestFailed{
 				Context:   req.Context(),
-				RequestID: requestID,
+				RequestID: meta.id,
 				Method:    req.Method,
 				Path:      req.URL.Path,
 				Error:     handlerErr,
 				Recovered: false,
-				TraceID:   traceID,
-				SpanID:    spanID,
+				TraceID:   meta.traceID,
+				SpanID:    meta.spanID,
 			})
 		}
-
-		// Always dispatch the handled event (covers panic, error, and success)
 		r.dispatchInstanceEvent(&RequestHandled{
 			Context:      req.Context(),
-			RequestID:    requestID,
+			RequestID:    meta.id,
 			Method:       req.Method,
 			Path:         req.URL.Path,
 			Route:        result.Path,
 			StatusCode:   rw.Status(),
 			BytesWritten: rw.BytesWritten(),
-			Duration:     time.Since(startedAt),
-			TraceID:      traceID,
-			SpanID:       spanID,
+			Duration:     time.Since(meta.startedAt),
+			TraceID:      meta.traceID,
+			SpanID:       meta.spanID,
 		})
-
-		// Return context to pool
 		ctx.reset()
 		r.ctxPool.Put(ctx)
 	}()
@@ -561,6 +654,27 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if handlerErr != nil && !errors.Is(handlerErr, ErrValidationAborted) {
 		r.handleError(ctx, rw, handlerErr)
 	}
+}
+
+// onPanic converts a panic into a RequestFailed event, captures the
+// stack trace, and writes the error response.
+func (r *VelocityRouterV2) onPanic(ctx *Context, rw *responseWriter, req *http.Request, meta requestMeta, recovered interface{}) {
+	buf := make([]byte, 4096)
+	n := runtime.Stack(buf, false)
+	err := panicerr.FromRecovered(recovered)
+
+	r.dispatchInstanceEvent(&RequestFailed{
+		Context:   req.Context(),
+		RequestID: meta.id,
+		Method:    req.Method,
+		Path:      req.URL.Path,
+		Error:     err,
+		Stack:     string(buf[:n]),
+		Recovered: true,
+		TraceID:   meta.traceID,
+		SpanID:    meta.spanID,
+	})
+	r.handleError(ctx, rw, err)
 }
 
 // handleError writes an error response using the custom ErrorHandler if set,

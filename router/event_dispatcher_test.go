@@ -134,15 +134,15 @@ func TestDispatchInstanceEvent_DropsCountedAndCallbackInvoked(t *testing.T) {
 		return ErrEventBufferFull
 	})
 
-	var seen []interface{}
+	var seen []Event
 	var seenErr error
-	r.OnEventDispatchError = func(err error, event interface{}) {
+	r.OnEventDispatchError = func(err error, event Event) {
 		seenErr = err
 		seen = append(seen, event)
 	}
 
 	for i := 0; i < 7; i++ {
-		r.dispatchInstanceEvent(i)
+		r.dispatchInstanceEvent(&RequestRouted{RequestID: "id"})
 	}
 
 	if got, want := r.DroppedEventCount(), uint64(7); got != want {
@@ -163,8 +163,8 @@ func TestDispatchInstanceEvent_NoCallbackDoesNotPanic(t *testing.T) {
 	r := NewV2()
 	r.SetEventDispatcher(func(event interface{}) error { return ErrEventBufferFull })
 
-	r.dispatchInstanceEvent("a")
-	r.dispatchInstanceEvent("b")
+	r.dispatchInstanceEvent(&RequestStarted{})
+	r.dispatchInstanceEvent(&RequestHandled{})
 
 	if got := r.DroppedEventCount(); got != 2 {
 		t.Errorf("DroppedEventCount = %d, want 2", got)

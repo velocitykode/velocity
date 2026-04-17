@@ -3,7 +3,6 @@ package router
 import (
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -352,90 +351,72 @@ func RateLimitByKey(requests int, window time.Duration, keyFunc func(*Context) s
 // is configured (via WithTrustedProxies), it will trust X-Forwarded-For
 // and X-Real-IP headers only when the direct connection comes from a
 // trusted proxy.
+//
+// Returns a middleware that panics at first use if any TrustedProxies
+// entry is invalid. For fail-fast behaviour at boot use
+// RateLimitByIPE, which surfaces the parse error directly.
 func RateLimitByIP(requests int, window time.Duration, opts ...RateLimitOption) MiddlewareFunc {
+	mw, err := RateLimitByIPE(requests, window, opts...)
+	if err != nil {
+		panic(err)
+	}
+	return mw
+}
+
+// RateLimitByIPE is the error-returning variant of RateLimitByIP.
+// Use this in bootstrap code so an invalid TrustedProxies list fails
+// startup instead of deferring the panic to the first request.
+func RateLimitByIPE(requests int, window time.Duration, opts ...RateLimitOption) (MiddlewareFunc, error) {
 	// Pre-parse opts to extract trusted proxies for the key func closure
 	cfg := &RateLimitConfig{}
 	for _, opt := range opts {
 		opt(cfg)
 	}
-	trustedNets := parseTrustedProxies(cfg.TrustedProxies)
-
+	trusted, err := ParseTrustedProxies(cfg.TrustedProxies)
+	if err != nil {
+		return nil, fmt.Errorf("velocity/router: rate limit: %w", err)
+	}
 	return RateLimitByKey(requests, window, func(c *Context) string {
-		return extractIP(c, trustedNets)
-	}, opts...)
+		return extractIP(c, trusted)
+	}, opts...), nil
 }
 
-// parseTrustedProxies parses a list of IP/CIDR strings into net.IPNet entries.
-func parseTrustedProxies(proxies []string) []*net.IPNet {
-	var nets []*net.IPNet
-	for _, p := range proxies {
-		if strings.Contains(p, "/") {
-			_, ipNet, err := net.ParseCIDR(p)
-			if err == nil {
-				nets = append(nets, ipNet)
-			}
-		} else {
-			ip := net.ParseIP(p)
-			if ip != nil {
-				var mask net.IPMask
-				if ip.To4() != nil {
-					mask = net.CIDRMask(32, 32)
-				} else {
-					mask = net.CIDRMask(128, 128)
-				}
-				nets = append(nets, &net.IPNet{IP: ip, Mask: mask})
-			}
-		}
-	}
-	return nets
-}
-
-// isTrustedProxy checks if an IP is in the trusted proxies list.
-func isTrustedProxy(remoteIP string, trustedNets []*net.IPNet) bool {
-	ip := net.ParseIP(remoteIP)
-	if ip == nil {
-		return false
-	}
-	for _, n := range trustedNets {
-		if n.Contains(ip) {
-			return true
-		}
-	}
-	return false
+// parseTrustedProxies parses a list of IP/CIDR strings into net.IPNet entries,
+// returning a non-nil error if any entry is malformed.
+//
+// Deprecated: kept as a package-private thin wrapper for backward
+// compatibility; new code should use ParseTrustedProxies directly.
+func parseTrustedProxies(proxies []string) (*TrustedProxies, error) {
+	return ParseTrustedProxies(proxies)
 }
 
 // extractIP extracts the client IP address from the request.
 // Only trusts X-Forwarded-For and X-Real-IP when the direct connection
 // comes from a trusted proxy. Otherwise, uses RemoteAddr.
-func extractIP(c *Context, trustedNets []*net.IPNet) string {
-	remoteIP := stripPort(c.Request.RemoteAddr)
-
-	// Only trust forwarded headers when the direct connection is from a trusted proxy
-	if len(trustedNets) > 0 && isTrustedProxy(remoteIP, trustedNets) {
-		// Check X-Forwarded-For header — take the leftmost (client) IP
-		if xff := c.Header("X-Forwarded-For"); xff != "" {
-			if idx := strings.Index(xff, ","); idx != -1 {
-				return strings.TrimSpace(xff[:idx])
-			}
-			return strings.TrimSpace(xff)
-		}
-		// Check X-Real-IP header
-		if xri := c.Header("X-Real-IP"); xri != "" {
-			return strings.TrimSpace(xri)
-		}
+//
+// When the direct connection is trusted, X-Forwarded-For is honoured
+// using RFC 7239 right-most-trusted semantics.
+func extractIP(c *Context, trusted *TrustedProxies) string {
+	remoteIP := stripPortHost(c.Request.RemoteAddr)
+	if trusted == nil || trusted.Len() == 0 || !trusted.Contains(remoteIP) {
+		return remoteIP
 	}
 
+	if xff := c.Header("X-Forwarded-For"); xff != "" {
+		return trusted.ClientIP(remoteIP, xff)
+	}
+	if xri := c.Header("X-Real-IP"); xri != "" {
+		return strings.TrimSpace(xri)
+	}
 	return remoteIP
 }
 
 // stripPort removes the port from a RemoteAddr string.
+//
+// Deprecated: retained for existing call sites; prefer stripPortHost
+// in new code. Kept to avoid touching public-adjacent helpers.
 func stripPort(addr string) string {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		// No port or unparseable — return as-is
-		return addr
-	}
-	return host
+	return stripPortHost(addr)
 }
 
 // RateLimitStore is an interface for custom rate limit storage backends.

@@ -1538,6 +1538,7 @@ func TestContext_reset_clearsAllFields(t *testing.T) {
 	req := httptest.NewRequest("GET", "/sentinel", nil)
 	w := httptest.NewRecorder()
 
+	trusted, _ := ParseTrustedProxies([]string{"10.0.0.0/8"})
 	c := &Context{
 		Response:       w,
 		Request:        req,
@@ -1545,7 +1546,7 @@ func TestContext_reset_clearsAllFields(t *testing.T) {
 		values:         map[string]interface{}{"sentinel": "must-not-leak"},
 		services:       &app.Services{},
 		sseStarted:     true,
-		trustedProxies: []string{"10.0.0.0/8"},
+		trustedProxies: trusted,
 		validateFn:     func(c *Context, rules map[string][]string, messages ...map[string]string) error { return nil },
 	}
 

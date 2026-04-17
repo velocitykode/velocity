@@ -5,10 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -62,11 +62,17 @@ type Context struct {
 	Request  *http.Request
 	params   []RouteParam
 	// For storing values across middleware
-	values         map[string]interface{}
-	services       *app.Services
-	sseStarted     bool
-	trustedProxies []string
-	validateFn     func(c *Context, rules map[string][]string, messages ...map[string]string) error
+	values     map[string]interface{}
+	services   *app.Services
+	sseStarted bool
+	// trustedProxies is the parsed, immutable set of trusted proxy
+	// networks carried over from the router. May be nil when unset.
+	trustedProxies *TrustedProxies
+	// redirectAllowedHosts, when non-empty, extends same-origin redirect
+	// validation to this explicit allowlist. It is taken from the router
+	// when the context is acquired from the pool.
+	redirectAllowedHosts []string
+	validateFn           func(c *Context, rules map[string][]string, messages ...map[string]string) error
 }
 
 // NewContext creates a new Context from http.Request and http.ResponseWriter.
@@ -123,22 +129,50 @@ func (c *Context) Param(name string) string {
 	return ""
 }
 
-// ParamInt returns a route parameter as int
+// ErrParamNotFound indicates a route parameter by the given name is
+// not present on the context. Typically a programming error — the
+// handler referenced a name the route pattern does not declare.
+var ErrParamNotFound = errors.New("velocity/router: route param not found")
+
+// ErrParamParse indicates a route parameter existed on the context
+// but failed numeric parsing. Typically a client-supplied value that
+// does not fit the expected shape; the handler should map this to a
+// 400 Bad Request.
+var ErrParamParse = errors.New("velocity/router: route param parse error")
+
+// ParamInt returns a route parameter as int.
+//
+// Returns ErrParamNotFound (wrapped) when the parameter is missing,
+// or ErrParamParse (wrapped) when the parameter is present but not a
+// valid base-10 integer. The two sentinels let callers distinguish
+// a programming error from malformed input without string-matching.
 func (c *Context) ParamInt(name string) (int, error) {
 	val := c.Param(name)
 	if val == "" {
-		return 0, fmt.Errorf("param '%s' not found", name)
+		return 0, fmt.Errorf("%w: %q", ErrParamNotFound, name)
 	}
-	return strconv.Atoi(val)
+	n, err := strconv.Atoi(val)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %q=%q: %v", ErrParamParse, name, val, err)
+	}
+	return n, nil
 }
 
-// ParamInt64 returns a route parameter as int64
+// ParamInt64 returns a route parameter as int64.
+//
+// Returns ErrParamNotFound (wrapped) when the parameter is missing,
+// or ErrParamParse (wrapped) when the parameter is present but not a
+// valid base-10 signed 64-bit integer.
 func (c *Context) ParamInt64(name string) (int64, error) {
 	val := c.Param(name)
 	if val == "" {
-		return 0, fmt.Errorf("param '%s' not found", name)
+		return 0, fmt.Errorf("%w: %q", ErrParamNotFound, name)
 	}
-	return strconv.ParseInt(val, 10, 64)
+	n, err := strconv.ParseInt(val, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %q=%q: %v", ErrParamParse, name, val, err)
+	}
+	return n, nil
 }
 
 // Query returns a query parameter by name
@@ -292,9 +326,14 @@ func (c *Context) HTML(status int, html string) error {
 
 // Redirect redirects to a URL with the given status code.
 // The URL is validated to prevent open redirects: only relative paths and
-// same-host URLs are allowed. Absolute URLs to external domains redirect to "/".
+// hosts explicitly listed in Router.RedirectAllowedHosts are permitted.
+// Any other absolute URL is rewritten to "/".
+//
+// Defaulting to an empty allowlist (i.e. reject every cross-host target)
+// removes the footgun where a spoofed Host header tricked the router
+// into treating an attacker-supplied destination as "same-origin".
 func (c *Context) Redirect(status int, rawURL string) error {
-	rawURL = sanitizeRedirectForHost(rawURL, c.Request.Host)
+	rawURL = sanitizeRedirect(rawURL, c.redirectAllowedHosts)
 	http.Redirect(c.Response, c.Request, rawURL, status)
 	return nil
 }
@@ -333,40 +372,16 @@ func (c *Context) Path() string {
 }
 
 // IP returns the client IP address from RemoteAddr (with port stripped).
-// If trusted proxies are configured and the remote address is in the trusted
-// list, X-Forwarded-For is consulted and the first non-trusted IP is returned.
+// If trusted proxies are configured and the remote address is trusted,
+// X-Forwarded-For is consulted and the right-most untrusted hop is
+// returned per RFC 7239.
 func (c *Context) IP() string {
-	addr := c.Request.RemoteAddr
-	// Strip port
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		host = addr
+	host := stripPortHost(c.Request.RemoteAddr)
+	if c.trustedProxies == nil || c.trustedProxies.Len() == 0 {
+		return host
 	}
-
-	if len(c.trustedProxies) > 0 && c.isTrustedProxy(host) {
-		if xff := c.Request.Header.Get("X-Forwarded-For"); xff != "" {
-			ips := strings.Split(xff, ",")
-			// Walk from right to left, return first non-trusted IP
-			for i := len(ips) - 1; i >= 0; i-- {
-				ip := strings.TrimSpace(ips[i])
-				if ip != "" && !c.isTrustedProxy(ip) {
-					return ip
-				}
-			}
-		}
-	}
-
-	return host
-}
-
-// isTrustedProxy checks if the given IP is in the trusted proxies list.
-func (c *Context) isTrustedProxy(ip string) bool {
-	for _, trusted := range c.trustedProxies {
-		if trusted == ip {
-			return true
-		}
-	}
-	return false
+	xff := c.Request.Header.Get("X-Forwarded-For")
+	return c.trustedProxies.ClientIP(host, xff)
 }
 
 // reset clears the context for reuse by the sync.Pool.
@@ -380,6 +395,7 @@ func (c *Context) reset() {
 	c.services = nil
 	c.sseStarted = false
 	c.trustedProxies = nil
+	c.redirectAllowedHosts = nil
 	c.validateFn = nil
 }
 
@@ -442,9 +458,11 @@ func (c *Context) Unauthorized(message ...string) error {
 	return c.httpError(http.StatusUnauthorized, "Unauthorized", message)
 }
 
-// sanitizeRedirectForHost validates a redirect URL to prevent open redirects.
-// Allows relative paths and same-host URLs. Rejects absolute URLs to external domains.
-func sanitizeRedirectForHost(target, host string) string {
+// sanitizeRedirect validates a redirect URL against an explicit host
+// allowlist. Relative paths ("/foo", but not "//evil.com") are always
+// accepted. Absolute URLs are accepted only when the host matches one
+// of allowedHosts. Everything else is rewritten to "/".
+func sanitizeRedirect(target string, allowedHosts []string) string {
 	// Allow relative paths (but not protocol-relative //evil.com)
 	if strings.HasPrefix(target, "/") && !strings.HasPrefix(target, "//") {
 		return target
@@ -453,10 +471,16 @@ func sanitizeRedirectForHost(target, host string) string {
 	if err != nil {
 		return "/"
 	}
-	if u.Host != "" && u.Host != host {
-		return "/"
+	if u.Host == "" {
+		// Still relative — treat as safe.
+		return target
 	}
-	return target
+	for _, allowed := range allowedHosts {
+		if allowed != "" && u.Host == allowed {
+			return target
+		}
+	}
+	return "/"
 }
 
 // Forbidden sends a 403 error response
@@ -808,16 +832,19 @@ func (c *Context) File(path string) error {
 }
 
 // Download sends a file as an attachment with the given filename.
+//
+// The Content-Disposition header is emitted with both a legacy
+// quoted-ASCII fallback ("filename=") and an RFC 5987 / 2231 encoded
+// filename* parameter, so non-ASCII characters (e.g. "résumé.pdf")
+// round-trip to modern clients while pre-RFC 5987 clients still
+// receive a sensible ASCII name.
 func (c *Context) Download(path string, filename string) error {
 	var err error
 	path, err = validateFilePath(path)
 	if err != nil {
 		return err
 	}
-	sanitized := filepath.Base(filename)
-	sanitized = strings.ReplaceAll(sanitized, `"`, `\"`)
-	sanitized = strings.NewReplacer("\r", "", "\n", "").Replace(sanitized)
-	c.Response.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, sanitized))
+	c.Response.Header().Set("Content-Disposition", buildContentDisposition(filename))
 	http.ServeFile(c.Response, c.Request, path)
 	return nil
 }
@@ -825,6 +852,69 @@ func (c *Context) Download(path string, filename string) error {
 // Attachment is an alias for Download.
 func (c *Context) Attachment(path string, filename string) error {
 	return c.Download(path, filename)
+}
+
+// buildContentDisposition constructs an attachment Content-Disposition
+// header value that honours RFC 5987 (encoding of header parameters
+// with non-ASCII data) and RFC 6266 (fallback syntax).
+//
+// The legacy "filename=" parameter is stripped to ASCII and CRLF-safe.
+// The "filename*=" parameter carries the full original name in
+// UTF-8 percent-encoded form so conformant clients (all modern
+// browsers) render it verbatim.
+func buildContentDisposition(filename string) string {
+	base := filepath.Base(filename)
+	base = strings.NewReplacer("\r", "", "\n", "", "\x00", "").Replace(base)
+
+	// Legacy fallback: ASCII-only, quotes escaped.
+	fallback := asciiOnly(base)
+	fallback = strings.ReplaceAll(fallback, `\`, `\\`)
+	fallback = strings.ReplaceAll(fallback, `"`, `\"`)
+
+	// RFC 5987 encoded form. Percent-encode everything outside a
+	// conservative token set to stay on the right side of the spec.
+	encoded := rfc5987Encode(base)
+
+	return fmt.Sprintf(`attachment; filename="%s"; filename*=UTF-8''%s`, fallback, encoded)
+}
+
+// asciiOnly replaces every non-ASCII rune (and ASCII control chars)
+// with "_" so the result is a safe legacy filename= fallback.
+func asciiOnly(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f || r > 0x7e {
+			b.WriteByte('_')
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// rfc5987Encode percent-encodes a UTF-8 string per RFC 5987 §3.2.1
+// attr-char production. Only unreserved characters are left unescaped.
+func rfc5987Encode(s string) string {
+	// RFC 5987 attr-char = ALPHA / DIGIT / "!" / "#" / "$" / "&" / "+" /
+	//   "-" / "." / "^" / "_" / "`" / "|" / "~"
+	const safe = "!#$&+-.^_`|~"
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z',
+			c >= 'A' && c <= 'Z',
+			c >= '0' && c <= '9':
+			b.WriteByte(c)
+		case strings.IndexByte(safe, c) >= 0:
+			b.WriteByte(c)
+		default:
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return b.String()
 }
 
 // ---------------------------------------------------------------------------
@@ -981,8 +1071,18 @@ func (c *Context) Validate(rules map[string][]string, messages ...map[string]str
 // Content negotiation
 // ---------------------------------------------------------------------------
 
-// Accepts parses the Accept header and returns the first offered type that
-// the client accepts (ordered by quality value). Returns "" if no match.
+// acceptEntry is a single (media-type, q-value) pair parsed from an
+// Accept header.
+type acceptEntry struct {
+	mime string
+	q    float64
+}
+
+// Accepts parses the Accept header and returns the first offered type
+// that the client accepts, ordered by q-value.
+//
+// If no Accept header is set, the first offered type is returned as a
+// sensible default; if nothing matches, the empty string is returned.
 func (c *Context) Accepts(offered ...string) string {
 	accept := c.Request.Header.Get("Accept")
 	if accept == "" {
@@ -991,40 +1091,61 @@ func (c *Context) Accepts(offered ...string) string {
 		}
 		return ""
 	}
+	entries := parseAcceptHeader(accept)
+	return selectOffered(entries, offered)
+}
 
-	type entry struct {
-		mime string
-		q    float64
-	}
-
-	parts := strings.Split(accept, ",")
-	entries := make([]entry, 0, len(parts))
+// parseAcceptHeader splits an Accept header into (mime, q) pairs
+// sorted by descending q-value. Invalid or empty components are
+// dropped silently — same as net/http's behaviour.
+func parseAcceptHeader(header string) []acceptEntry {
+	parts := strings.Split(header, ",")
+	entries := make([]acceptEntry, 0, len(parts))
 	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
+		if e, ok := parseAcceptEntry(p); ok {
+			entries = append(entries, e)
 		}
-		mime := p
-		q := 1.0
-		if idx := strings.Index(p, ";"); idx != -1 {
-			mime = strings.TrimSpace(p[:idx])
-			params := p[idx+1:]
-			for _, param := range strings.Split(params, ";") {
-				param = strings.TrimSpace(param)
-				if strings.HasPrefix(param, "q=") {
-					if v, err := strconv.ParseFloat(strings.TrimPrefix(param, "q="), 64); err == nil {
-						q = v
-					}
-				}
-			}
-		}
-		entries = append(entries, entry{mime: mime, q: q})
 	}
-
 	sort.SliceStable(entries, func(i, j int) bool {
 		return entries[i].q > entries[j].q
 	})
+	return entries
+}
 
+// parseAcceptEntry parses a single Accept header component such as
+// "text/html;q=0.8". Returns false if the component is empty.
+func parseAcceptEntry(raw string) (acceptEntry, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return acceptEntry{}, false
+	}
+	mediaType := raw
+	q := 1.0
+	if idx := strings.Index(raw, ";"); idx != -1 {
+		mediaType = strings.TrimSpace(raw[:idx])
+		q = parseQValue(raw[idx+1:])
+	}
+	return acceptEntry{mime: mediaType, q: q}, true
+}
+
+// parseQValue walks a list of ";"-separated parameters looking for
+// q=<float>. Returns 1.0 on absence or parse failure.
+func parseQValue(params string) float64 {
+	for _, param := range strings.Split(params, ";") {
+		param = strings.TrimSpace(param)
+		if !strings.HasPrefix(param, "q=") {
+			continue
+		}
+		if v, err := strconv.ParseFloat(strings.TrimPrefix(param, "q="), 64); err == nil {
+			return v
+		}
+	}
+	return 1.0
+}
+
+// selectOffered walks the ranked Accept entries and returns the first
+// offered type that matches (exact or "*/*").
+func selectOffered(entries []acceptEntry, offered []string) string {
 	for _, e := range entries {
 		for _, o := range offered {
 			if e.mime == o || e.mime == "*/*" {

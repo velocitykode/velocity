@@ -2,7 +2,6 @@ package router
 
 import (
 	"fmt"
-	"net"
 	"net/http"
 )
 
@@ -139,8 +138,12 @@ func SecurityHeaders(opts ...SecurityHeadersOption) MiddlewareFunc {
 
 // httpsRedirectConfig holds configuration for the HTTPSRedirect middleware.
 type httpsRedirectConfig struct {
-	trustedProxies []*net.IPNet
-	excludePaths   map[string]bool
+	trustedProxies *TrustedProxies
+	// trustedProxyErr is carried from WithHTTPSRedirectTrustedProxies so
+	// HTTPSRedirect can fail-fast at construction rather than silently
+	// ignoring a malformed CIDR.
+	trustedProxyErr error
+	excludePaths    map[string]bool
 }
 
 // HTTPSRedirectOption is a functional option for configuring HTTPSRedirect.
@@ -148,9 +151,18 @@ type HTTPSRedirectOption func(*httpsRedirectConfig)
 
 // WithHTTPSRedirectTrustedProxies sets trusted proxy IPs/CIDRs for the HTTPS redirect middleware.
 // When configured, X-Forwarded-Proto headers are trusted only from these proxies.
+//
+// Invalid entries are retained on the config and surfaced when
+// HTTPSRedirect is constructed — which panics, matching the existing
+// contract for middleware-level configuration errors.
 func WithHTTPSRedirectTrustedProxies(proxies []string) HTTPSRedirectOption {
 	return func(cfg *httpsRedirectConfig) {
-		cfg.trustedProxies = parseTrustedProxies(proxies)
+		tp, err := ParseTrustedProxies(proxies)
+		if err != nil {
+			cfg.trustedProxyErr = err
+			return
+		}
+		cfg.trustedProxies = tp
 	}
 }
 
@@ -170,12 +182,19 @@ func WithExcludePaths(paths ...string) HTTPSRedirectOption {
 // HTTPSRedirect returns a middleware that redirects HTTP requests to HTTPS.
 // It checks X-Forwarded-Proto only when trusted proxies are configured and the
 // direct connection comes from a trusted proxy. Excluded paths skip the redirect.
+//
+// Panics with a wrapped ErrInvalidTrustedProxy if any
+// WithHTTPSRedirectTrustedProxies entry was malformed — boot-time
+// misconfiguration should not ship.
 func HTTPSRedirect(opts ...HTTPSRedirectOption) MiddlewareFunc {
 	cfg := &httpsRedirectConfig{
 		excludePaths: make(map[string]bool),
 	}
 	for _, opt := range opts {
 		opt(cfg)
+	}
+	if cfg.trustedProxyErr != nil {
+		panic(fmt.Errorf("velocity/router: https redirect: %w", cfg.trustedProxyErr))
 	}
 
 	return func(next HandlerFunc) HandlerFunc {
@@ -191,9 +210,9 @@ func HTTPSRedirect(opts ...HTTPSRedirectOption) MiddlewareFunc {
 			}
 
 			// Check X-Forwarded-Proto from trusted proxies
-			if len(cfg.trustedProxies) > 0 {
-				remoteIP := stripPort(c.Request.RemoteAddr)
-				if isTrustedProxy(remoteIP, cfg.trustedProxies) {
+			if cfg.trustedProxies != nil && cfg.trustedProxies.Len() > 0 {
+				remoteIP := stripPortHost(c.Request.RemoteAddr)
+				if cfg.trustedProxies.Contains(remoteIP) {
 					if c.Request.Header.Get("X-Forwarded-Proto") == "https" {
 						return next(c)
 					}
