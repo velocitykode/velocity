@@ -50,7 +50,7 @@ func New(opts ...Option) *Client {
 			Timeout: 30 * time.Second,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 10 {
-					return fmt.Errorf("httpclient: stopped after %d redirects", len(via))
+					return fmt.Errorf("velocity/httpclient: stopped after %d redirects", len(via))
 				}
 				return nil
 			},
@@ -143,6 +143,24 @@ func (c *Client) Patch(ctx context.Context, url string, contentType string, body
 	}
 	req.Header.Set("Content-Type", contentType)
 	return c.Do(ctx, req)
+}
+
+// Shutdown closes idle connections held by the underlying http.Client
+// transport and honours the context deadline. Requests already in
+// flight are not cancelled; callers should drive that through the
+// request context.
+func (c *Client) Shutdown(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if c.client != nil {
+		if t, ok := c.client.Transport.(interface{ CloseIdleConnections() }); ok {
+			t.CloseIdleConnections()
+		} else {
+			http.DefaultTransport.(*http.Transport).CloseIdleConnections()
+		}
+	}
+	return nil
 }
 
 // SetEventDispatcher sets the function used to dispatch events.
