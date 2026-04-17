@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 )
 
 const (
@@ -29,18 +30,35 @@ type JWTGuard struct {
 	mu          sync.RWMutex
 	userCache   map[string]cachedUser
 	stopCleanup chan struct{}
+	throttler   contract.LoginThrottler
+}
+
+// SetLoginThrottler installs a rate-limiter for Attempt() calls. Passing nil
+// reverts to the no-op throttler.
+func (g *JWTGuard) SetLoginThrottler(t contract.LoginThrottler) {
+	if t == nil {
+		g.throttler = auth.NoopLoginThrottler{}
+		return
+	}
+	g.throttler = t
 }
 
 // NewJWTGuard creates a new JWT guard.
 // Call Start() to begin the background cache cleanup goroutine.
-func NewJWTGuard(provider auth.UserProvider, config auth.JWTConfig) *JWTGuard {
+// Returns an error when the underlying JWTConfig fails validation.
+func NewJWTGuard(provider auth.UserProvider, config auth.JWTConfig) (*JWTGuard, error) {
+	manager, err := auth.NewJWTManager(config)
+	if err != nil {
+		return nil, err
+	}
 	return &JWTGuard{
 		provider:    provider,
-		jwtManager:  auth.NewJWTManager(config),
+		jwtManager:  manager,
 		config:      config,
 		userCache:   make(map[string]cachedUser),
 		stopCleanup: make(chan struct{}),
-	}
+		throttler:   auth.NoopLoginThrottler{},
+	}, nil
 }
 
 // Start begins the background cache cleanup goroutine. An optional
@@ -241,21 +259,35 @@ func (g *JWTGuard) LoginByID(w http.ResponseWriter, r *http.Request, id interfac
 	return g.Login(w, r, user, remember...)
 }
 
-// Attempt validates credentials and generates JWT if valid
+// Attempt validates credentials and generates JWT if valid.
+// The configured LoginThrottler is consulted before the credential check;
+// failures call RecordFailure, successes call RecordSuccess.
 func (g *JWTGuard) Attempt(w http.ResponseWriter, r *http.Request, credentials map[string]interface{}, remember ...bool) (bool, error) {
+	throttler := g.throttler
+	if throttler == nil {
+		throttler = auth.NoopLoginThrottler{}
+	}
+	key := auth.ThrottleKey(r, credentials)
+	if !throttler.Allow(r, key) {
+		return false, auth.ErrLoginThrottled
+	}
+
 	// Find user by credentials
 	user, err := g.provider.FindByCredentials(credentials)
 	if err != nil {
+		throttler.RecordFailure(r, key)
 		return false, nil // User not found
 	}
 
 	// Validate password
 	password, ok := credentials["password"].(string)
 	if !ok {
+		throttler.RecordFailure(r, key)
 		return false, auth.ErrInvalidCredentials
 	}
 
 	if !g.provider.ValidateCredentials(user, map[string]interface{}{"password": password}) {
+		throttler.RecordFailure(r, key)
 		return false, nil // Invalid password
 	}
 
@@ -264,6 +296,7 @@ func (g *JWTGuard) Attempt(w http.ResponseWriter, r *http.Request, credentials m
 		return false, err
 	}
 
+	throttler.RecordSuccess(r, key)
 	return true, nil
 }
 

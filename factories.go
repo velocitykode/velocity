@@ -141,7 +141,13 @@ func initAuth(authCfg AuthConfig, sessCfg SessionConfig, logger log.Logger, db *
 				}
 				continue
 			}
-			guard := guards.NewJWTGuard(provider, jwtCfg)
+			guard, err := guards.NewJWTGuard(provider, jwtCfg)
+			if err != nil {
+				if logger != nil {
+					logger.Warn("Failed to create JWT guard", "guard", name, "error", err)
+				}
+				continue
+			}
 			guard.Start()
 			manager.RegisterGuard(name, guard)
 		}

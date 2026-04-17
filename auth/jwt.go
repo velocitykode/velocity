@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
@@ -78,6 +79,71 @@ type JWTConfig struct {
 	Audience         string // Optional JWT audience (aud claim)
 	BlacklistEnabled bool
 	BlacklistStore   BlacklistStore // Optional persistent store; defaults to in-memory
+
+	// RSAPrivateKey / RSAPublicKey enable asymmetric signing (RS256/RS384/RS512).
+	// When RSA algorithms are selected, the HMAC Secret is ignored for signing/verification.
+	RSAPrivateKey interface{} // *rsa.PrivateKey — signing key for RSxxx algorithms
+	RSAPublicKey  interface{} // *rsa.PublicKey  — verification key for RSxxx algorithms
+}
+
+// allowedJWTAlgorithms is the allowlist of accepted JWT signing algorithms.
+// "none" is explicitly excluded.
+var allowedJWTAlgorithms = map[string]struct{}{
+	"HS256": {},
+	"HS384": {},
+	"HS512": {},
+	"RS256": {},
+	"RS384": {},
+	"RS512": {},
+}
+
+// isHMACAlgorithm reports whether alg is one of the supported HMAC algorithms.
+func isHMACAlgorithm(alg string) bool {
+	switch alg {
+	case "HS256", "HS384", "HS512":
+		return true
+	}
+	return false
+}
+
+// isRSAAlgorithm reports whether alg is one of the supported RSA algorithms.
+func isRSAAlgorithm(alg string) bool {
+	switch alg {
+	case "RS256", "RS384", "RS512":
+		return true
+	}
+	return false
+}
+
+// Validate checks the JWTConfig for required fields and rejects unsafe defaults.
+func (c JWTConfig) Validate() error {
+	alg := c.Algorithm
+	if alg == "" {
+		alg = "HS256"
+	}
+	if _, ok := allowedJWTAlgorithms[alg]; !ok {
+		return fmt.Errorf("velocity/auth: unsupported jwt algorithm %q", alg)
+	}
+	if c.TTL <= 0 {
+		return errors.New("velocity/auth: jwt ttl must be positive")
+	}
+	if isHMACAlgorithm(alg) {
+		if c.Secret == "" {
+			return errors.New("velocity/auth: jwt secret must not be empty for hmac algorithms")
+		}
+		if len(c.Secret) < 32 {
+			return errors.New("velocity/auth: jwt secret must be at least 32 bytes for hmac algorithms")
+		}
+	}
+	if isRSAAlgorithm(alg) {
+		if c.RSAPrivateKey == nil || c.RSAPublicKey == nil {
+			return errors.New("velocity/auth: jwt rsa key pair is required for rsa algorithms")
+		}
+	}
+	if c.BlacklistEnabled && c.BlacklistStore == nil {
+		return errors.New("velocity/auth: jwt blacklist enabled requires a persistent blacklist store")
+	}
+	return nil
 }
 
 // Claims represents JWT claims
@@ -96,15 +162,9 @@ type JWTManager struct {
 }
 
 // NewJWTManager creates a new JWT manager.
-// Panics if Secret is empty or shorter than 32 bytes.
-func NewJWTManager(config JWTConfig) *JWTManager {
-	if config.Secret == "" {
-		panic("auth: JWT secret must not be empty")
-	}
-	if len(config.Secret) < 32 {
-		panic("auth: JWT secret must be at least 32 bytes")
-	}
-
+// Returns an error when the config is incomplete (missing/too-short secret,
+// non-positive TTL, unsupported algorithm, or missing RSA keys for RS*).
+func NewJWTManager(config JWTConfig) (*JWTManager, error) {
 	if config.Algorithm == "" {
 		config.Algorithm = "HS256"
 	}
@@ -115,24 +175,40 @@ func NewJWTManager(config JWTConfig) *JWTManager {
 		config.RefreshTTL = 20160 // Default 2 weeks
 	}
 
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
+
 	store := config.BlacklistStore
 	if store == nil {
-		if config.BlacklistEnabled {
-			panic("auth: BlacklistEnabled requires a persistent BlacklistStore (e.g., Redis). " +
-				"Set BlacklistStore in JWTConfig or disable blacklisting with BlacklistEnabled=false")
-		}
 		store = NewInMemoryBlacklistStore()
 	}
 
 	return &JWTManager{
 		config:         config,
 		blacklistStore: store,
-	}
+	}, nil
 }
 
 // SetBlacklistStore replaces the blacklist store (e.g., swap in a Redis-backed store).
 func (j *JWTManager) SetBlacklistStore(store BlacklistStore) {
 	j.blacklistStore = store
+}
+
+// signingKey returns the key to pass to SignedString for the active algorithm.
+func (j *JWTManager) signingKey() interface{} {
+	if isRSAAlgorithm(j.config.Algorithm) {
+		return j.config.RSAPrivateKey
+	}
+	return []byte(j.config.Secret)
+}
+
+// verificationKey returns the key to use for signature verification.
+func (j *JWTManager) verificationKey() interface{} {
+	if isRSAAlgorithm(j.config.Algorithm) {
+		return j.config.RSAPublicKey
+	}
+	return []byte(j.config.Secret)
 }
 
 // GenerateToken generates a JWT token for a user
@@ -179,7 +255,7 @@ func (j *JWTManager) GenerateToken(user Authenticatable, customClaims ...map[str
 	}
 
 	token := jwt.NewWithClaims(j.getSigningMethod(), claims)
-	return token.SignedString([]byte(j.config.Secret))
+	return token.SignedString(j.signingKey())
 }
 
 // GenerateRefreshToken generates a refresh token
@@ -209,10 +285,13 @@ func (j *JWTManager) GenerateRefreshToken(user Authenticatable) (string, error) 
 	}
 
 	token := jwt.NewWithClaims(j.getSigningMethod(), claims)
-	return token.SignedString([]byte(j.config.Secret))
+	return token.SignedString(j.signingKey())
 }
 
-// ValidateToken validates a JWT token
+// ValidateToken validates a JWT token.
+// The algorithm allowlist is enforced BEFORE any signature verification.
+// "none" is rejected unconditionally. When the configured algorithm is an
+// HMAC variant, only HMAC tokens are accepted; when RSA, only RSA tokens.
 func (j *JWTManager) ValidateToken(tokenString string) (*Claims, error) {
 	var parserOpts []jwt.ParserOption
 	if j.config.Issuer != "" {
@@ -221,13 +300,33 @@ func (j *JWTManager) ValidateToken(tokenString string) (*Claims, error) {
 	if j.config.Audience != "" {
 		parserOpts = append(parserOpts, jwt.WithAudience(j.config.Audience))
 	}
+	// Explicit valid method allowlist — belt-and-suspenders alongside the
+	// keyFunc check below. Prevents the jwt library from ever calling the
+	// keyFunc with "none" or any unexpected algorithm.
+	parserOpts = append(parserOpts, jwt.WithValidMethods([]string{j.config.Algorithm}))
 
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
-		// Validate signing method
-		if token.Method.Alg() != j.config.Algorithm {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Method.Alg())
+		alg := token.Method.Alg()
+		// Reject "none" and anything outside the global allowlist.
+		if alg == "none" || alg == "" {
+			return nil, fmt.Errorf("velocity/auth: jwt algorithm %q is not permitted", alg)
 		}
-		return []byte(j.config.Secret), nil
+		if _, ok := allowedJWTAlgorithms[alg]; !ok {
+			return nil, fmt.Errorf("velocity/auth: jwt algorithm %q is not permitted", alg)
+		}
+		// Enforce the configured family: HMAC tokens only for HMAC configs,
+		// RSA tokens only for RSA configs. This is what prevents the classic
+		// HS256-signed-with-public-key confusion attack.
+		if isHMACAlgorithm(j.config.Algorithm) && !isHMACAlgorithm(alg) {
+			return nil, fmt.Errorf("velocity/auth: unexpected signing method %q (expected hmac)", alg)
+		}
+		if isRSAAlgorithm(j.config.Algorithm) && !isRSAAlgorithm(alg) {
+			return nil, fmt.Errorf("velocity/auth: unexpected signing method %q (expected rsa)", alg)
+		}
+		if alg != j.config.Algorithm {
+			return nil, fmt.Errorf("velocity/auth: unexpected signing method %q", alg)
+		}
+		return j.verificationKey(), nil
 	}, parserOpts...)
 
 	if err != nil {
@@ -236,12 +335,12 @@ func (j *JWTManager) ValidateToken(tokenString string) (*Claims, error) {
 
 	claims, ok := token.Claims.(*Claims)
 	if !ok || !token.Valid {
-		return nil, errors.New("invalid token")
+		return nil, errors.New("velocity/auth: invalid token")
 	}
 
 	// Check if token is blacklisted
 	if j.config.BlacklistEnabled && j.IsBlacklisted(claims.ID) {
-		return nil, errors.New("token has been revoked")
+		return nil, errors.New("velocity/auth: token has been revoked")
 	}
 
 	return claims, nil
@@ -257,7 +356,7 @@ func (j *JWTManager) RefreshToken(refreshTokenString string, provider UserProvid
 
 	// Ensure this is actually a refresh token
 	if claims.TokenType != "refresh" {
-		return "", errors.New("token is not a refresh token")
+		return "", errors.New("velocity/auth: token is not a refresh token")
 	}
 
 	// Get user
@@ -302,7 +401,9 @@ func (j *JWTManager) CleanupBlacklist() {
 	j.blacklistStore.Cleanup()
 }
 
-// getSigningMethod returns the signing method based on algorithm
+// getSigningMethod returns the signing method based on algorithm.
+// Returns nil for unsupported algorithms; callers must have validated
+// the algorithm before constructing/using the JWTManager.
 func (j *JWTManager) getSigningMethod() jwt.SigningMethod {
 	switch j.config.Algorithm {
 	case "HS256":
@@ -311,16 +412,33 @@ func (j *JWTManager) getSigningMethod() jwt.SigningMethod {
 		return jwt.SigningMethodHS384
 	case "HS512":
 		return jwt.SigningMethodHS512
+	case "RS256":
+		return jwt.SigningMethodRS256
+	case "RS384":
+		return jwt.SigningMethodRS384
+	case "RS512":
+		return jwt.SigningMethodRS512
 	default:
 		return jwt.SigningMethodHS256
 	}
 }
 
-// generateJTI generates a unique JWT ID.
+// randReader is the entropy source used by generateJTI. Tests may override it
+// temporarily to simulate crypto/rand failures; production code should never
+// reassign this variable.
+var randReader io.Reader = rand.Reader
+
+// generateJTI generates a unique JWT ID from the package-level rand source.
 func generateJTI() (string, error) {
+	return generateJTIWithReader(randReader)
+}
+
+// generateJTIWithReader allows callers (typically tests) to supply an
+// alternative reader so crypto/rand failures can be exercised deterministically.
+func generateJTIWithReader(r io.Reader) (string, error) {
 	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("auth: failed to generate JWT ID: %w", err)
+	if _, err := io.ReadFull(r, b); err != nil {
+		return "", fmt.Errorf("velocity/auth: failed to generate jwt id: %w", err)
 	}
 	return base64.URLEncoding.EncodeToString(b), nil
 }
@@ -340,7 +458,7 @@ func (j *JWTManager) ParseTokenWithoutValidation(tokenString string) (*Claims, e
 
 	claims, ok := token.Claims.(*Claims)
 	if !ok {
-		return nil, errors.New("invalid claims")
+		return nil, errors.New("velocity/auth: invalid claims")
 	}
 
 	return claims, nil
