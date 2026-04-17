@@ -6,12 +6,18 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/velocitykode/velocity/mail"
 )
+
+// postmarkErrorPreview caps how many bytes of an unexpected error response
+// body we surface in a returned error. The body is redacted from the returned
+// message to avoid leaking sensitive Postmark error text to clients.
+const postmarkErrorPreview = 256
 
 func init() {
 	mail.RegisterDriver("postmark", func(cfg mail.MailConfig) (mail.Mailer, error) {
@@ -36,14 +42,19 @@ func (d *PostmarkDriver) String() string {
 }
 
 // NewPostmarkDriver creates a new Postmark driver from the provided config.
+// If MessageStream is non-empty it is validated against the configured
+// allowlist (see mail.IsAllowedPostmarkStream).
 func NewPostmarkDriver(config mail.PostmarkConfig, fromAddr, fromName string) (*PostmarkDriver, error) {
 	if config.Token == "" {
-		return nil, fmt.Errorf("mail: POSTMARK_TOKEN is required for postmark driver")
+		return nil, fmt.Errorf("velocity/mail: POSTMARK_TOKEN is required for postmark driver")
 	}
 
 	messageStream := config.MessageStream
 	if messageStream == "" {
 		messageStream = "outbound"
+	}
+	if !mail.IsAllowedPostmarkStream(messageStream) {
+		return nil, fmt.Errorf("velocity/mail: postmark message stream %q is not allowed", messageStream)
 	}
 
 	return &PostmarkDriver{
@@ -84,139 +95,156 @@ func (d *PostmarkDriver) Send(ctx context.Context, msg *mail.Message) error {
 	// Send request
 	resp, err := d.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("mail: postmark request failed: %w", err)
+		return fmt.Errorf("velocity/mail: postmark request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Check response
+	// Check response. On non-200, we read up to postmarkErrorPreview bytes and
+	// attempt JSON decoding; both the raw body and decoded structure are
+	// redacted from the returned error — only the status code and Postmark
+	// ErrorCode (if present) are surfaced, to avoid leaking response content
+	// through to clients via wrapped errors.
 	if resp.StatusCode != http.StatusOK {
-		var errorResp map[string]interface{}
-		json.NewDecoder(resp.Body).Decode(&errorResp)
-		return fmt.Errorf("mail: postmark API error (status %d): %v", resp.StatusCode, errorResp)
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, postmarkErrorPreview+1))
+		if readErr != nil {
+			return fmt.Errorf("velocity/mail: postmark api error (status %d): read failed: %w", resp.StatusCode, readErr)
+		}
+		var errorResp struct {
+			ErrorCode int    `json:"ErrorCode"`
+			Message   string `json:"Message"`
+		}
+		if decodeErr := json.Unmarshal(body, &errorResp); decodeErr != nil {
+			// Decoder failed — we deliberately do NOT include the raw body in
+			// the error to avoid leaking response data.
+			return fmt.Errorf("velocity/mail: postmark api error (status %d): response not json: %w", resp.StatusCode, decodeErr)
+		}
+		if errorResp.ErrorCode != 0 {
+			return fmt.Errorf("velocity/mail: postmark api error (status %d, code %d)", resp.StatusCode, errorResp.ErrorCode)
+		}
+		return fmt.Errorf("velocity/mail: postmark api error (status %d)", resp.StatusCode)
 	}
 
 	return nil
 }
 
-// buildPayload builds the Postmark API payload
+// buildPayload builds the Postmark API payload.
+// The work is delegated to smaller helpers: addFrom / addRecipients /
+// addSubjectAndBody / addHeaders / addAttachments.
 func (d *PostmarkDriver) buildPayload(msg *mail.Message) map[string]interface{} {
 	payload := make(map[string]interface{})
 
-	// From
+	d.addFrom(payload, msg)
+	d.addRecipients(payload, msg)
+	d.addSubjectAndBody(payload, msg)
+	payload["MessageStream"] = d.messageStream
+	d.addHeaders(payload, msg)
+	d.addAttachments(payload, msg)
+
+	return payload
+}
+
+// formatPostmarkAddress formats an address for a Postmark address header.
+// addr.Name is sanitised to strip CRLF characters (header-injection defence).
+func formatPostmarkAddress(name, email string) string {
+	clean := sanitizeHeader(name)
+	if clean != "" {
+		return fmt.Sprintf("%s <%s>", clean, email)
+	}
+	return email
+}
+
+// addFrom sets the From field, applying driver defaults when unset.
+func (d *PostmarkDriver) addFrom(payload map[string]interface{}, msg *mail.Message) {
 	from := msg.GetFrom()
 	if from.Email == "" {
 		from.Email = d.fromAddr
 		from.Name = d.fromName
 	}
-	if from.Name != "" {
-		payload["From"] = fmt.Sprintf("%s <%s>", from.Name, from.Email)
-	} else {
-		payload["From"] = from.Email
-	}
+	payload["From"] = formatPostmarkAddress(from.Name, from.Email)
+}
 
-	// To
-	to := msg.GetTo()
-	if len(to) > 0 {
-		toAddrs := make([]string, len(to))
-		for i, addr := range to {
-			if addr.Name != "" {
-				toAddrs[i] = fmt.Sprintf("%s <%s>", addr.Name, addr.Email)
-			} else {
-				toAddrs[i] = addr.Email
-			}
+// addRecipients sets the To / Cc / Bcc / ReplyTo fields.
+func (d *PostmarkDriver) addRecipients(payload map[string]interface{}, msg *mail.Message) {
+	if to := msg.GetTo(); len(to) > 0 {
+		addrs := make([]string, len(to))
+		for i, a := range to {
+			addrs[i] = formatPostmarkAddress(a.Name, a.Email)
 		}
-		payload["To"] = toAddrs[0] // Postmark accepts single To or comma-separated
-		if len(toAddrs) > 1 {
-			payload["To"] = toAddrs
-		}
-	}
-
-	// CC
-	cc := msg.GetCC()
-	if len(cc) > 0 {
-		ccAddrs := make([]string, len(cc))
-		for i, addr := range cc {
-			if addr.Name != "" {
-				ccAddrs[i] = fmt.Sprintf("%s <%s>", addr.Name, addr.Email)
-			} else {
-				ccAddrs[i] = addr.Email
-			}
-		}
-		payload["Cc"] = ccAddrs[0]
-		if len(ccAddrs) > 1 {
-			payload["Cc"] = ccAddrs
-		}
-	}
-
-	// BCC
-	bcc := msg.GetBCC()
-	if len(bcc) > 0 {
-		bccAddrs := make([]string, len(bcc))
-		for i, addr := range bcc {
-			if addr.Name != "" {
-				bccAddrs[i] = fmt.Sprintf("%s <%s>", addr.Name, addr.Email)
-			} else {
-				bccAddrs[i] = addr.Email
-			}
-		}
-		payload["Bcc"] = bccAddrs[0]
-		if len(bccAddrs) > 1 {
-			payload["Bcc"] = bccAddrs
-		}
-	}
-
-	// Reply-To
-	replyTo := msg.GetReplyTo()
-	if len(replyTo) > 0 {
-		if replyTo[0].Name != "" {
-			payload["ReplyTo"] = fmt.Sprintf("%s <%s>", replyTo[0].Name, replyTo[0].Email)
+		if len(addrs) == 1 {
+			payload["To"] = addrs[0]
 		} else {
-			payload["ReplyTo"] = replyTo[0].Email
+			payload["To"] = addrs
 		}
 	}
+	if cc := msg.GetCC(); len(cc) > 0 {
+		addrs := make([]string, len(cc))
+		for i, a := range cc {
+			addrs[i] = formatPostmarkAddress(a.Name, a.Email)
+		}
+		if len(addrs) == 1 {
+			payload["Cc"] = addrs[0]
+		} else {
+			payload["Cc"] = addrs
+		}
+	}
+	if bcc := msg.GetBCC(); len(bcc) > 0 {
+		addrs := make([]string, len(bcc))
+		for i, a := range bcc {
+			addrs[i] = formatPostmarkAddress(a.Name, a.Email)
+		}
+		if len(addrs) == 1 {
+			payload["Bcc"] = addrs[0]
+		} else {
+			payload["Bcc"] = addrs
+		}
+	}
+	if reply := msg.GetReplyTo(); len(reply) > 0 {
+		payload["ReplyTo"] = formatPostmarkAddress(reply[0].Name, reply[0].Email)
+	}
+}
 
-	// Subject
+// addSubjectAndBody sets Subject, TextBody, and HtmlBody.
+func (d *PostmarkDriver) addSubjectAndBody(payload map[string]interface{}, msg *mail.Message) {
 	payload["Subject"] = msg.GetSubject()
-
-	// Body
-	textBody := msg.GetTextBody()
-	if textBody != "" {
+	if textBody := msg.GetTextBody(); textBody != "" {
 		payload["TextBody"] = textBody
 	}
-
-	htmlBody := msg.GetHTMLBody()
-	if htmlBody != "" {
+	if htmlBody := msg.GetHTMLBody(); htmlBody != "" {
 		payload["HtmlBody"] = htmlBody
 	}
+}
 
-	// Message stream
-	payload["MessageStream"] = d.messageStream
-
-	// Headers
-	headers := make([]map[string]string, 0)
-	for key, value := range msg.GetHeaders() {
+// addHeaders converts custom headers into Postmark's Name/Value slice form,
+// sanitising both the key and value for CRLF injection.
+func (d *PostmarkDriver) addHeaders(payload map[string]interface{}, msg *mail.Message) {
+	hs := msg.GetHeaders()
+	if len(hs) == 0 {
+		return
+	}
+	headers := make([]map[string]string, 0, len(hs))
+	for key, value := range hs {
 		headers = append(headers, map[string]string{
 			"Name":  sanitizeHeader(key),
 			"Value": sanitizeHeader(value),
 		})
 	}
-	if len(headers) > 0 {
-		payload["Headers"] = headers
-	}
+	payload["Headers"] = headers
+}
 
-	// Attachments
+// addAttachments adds attachments, base64-encoding content as required.
+// The attachment Name is sanitised to guard against filename injection.
+func (d *PostmarkDriver) addAttachments(payload map[string]interface{}, msg *mail.Message) {
 	attachments := msg.GetAttachments()
-	if len(attachments) > 0 {
-		postmarkAttachments := make([]map[string]interface{}, len(attachments))
-		for i, att := range attachments {
-			postmarkAttachments[i] = map[string]interface{}{
-				"Name":        att.Name,
-				"Content":     base64.StdEncoding.EncodeToString(att.Data),
-				"ContentType": att.ContentType,
-			}
-		}
-		payload["Attachments"] = postmarkAttachments
+	if len(attachments) == 0 {
+		return
 	}
-
-	return payload
+	postmarkAttachments := make([]map[string]interface{}, len(attachments))
+	for i, att := range attachments {
+		postmarkAttachments[i] = map[string]interface{}{
+			"Name":        sanitizeFilename(att.Name),
+			"Content":     base64.StdEncoding.EncodeToString(att.Data),
+			"ContentType": sanitizeHeader(att.ContentType),
+		}
+	}
+	payload["Attachments"] = postmarkAttachments
 }
