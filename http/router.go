@@ -479,7 +479,7 @@ func (route *Route) Name(name string) *Route {
 func (r *Router) URL(name string, params map[string]string) (string, error) {
 	route, ok := r.namedRoutes[name]
 	if !ok {
-		return "", fmt.Errorf("route with name '%s' not found", name)
+		return "", fmt.Errorf("velocity/http: route with name %q not found", name)
 	}
 
 	path := route.pattern
@@ -491,7 +491,7 @@ func (r *Router) URL(name string, params map[string]string) (string, error) {
 
 	// Check if any params are still unreplaced
 	if strings.Contains(path, "{") && strings.Contains(path, "}") {
-		return "", fmt.Errorf("missing required parameters for route '%s'", name)
+		return "", fmt.Errorf("velocity/http: missing required parameters for route %q", name)
 	}
 
 	return path, nil
@@ -668,7 +668,7 @@ func (ctx *Context) InternalServerError(message string) error {
 func (ctx *Context) ParamInt(key string) (int, error) {
 	val := ctx.Param(key)
 	if val == "" {
-		return 0, fmt.Errorf("param '%s' not found", key)
+		return 0, fmt.Errorf("velocity/http: param %q not found", key)
 	}
 	return strconv.Atoi(val)
 }

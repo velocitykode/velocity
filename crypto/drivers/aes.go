@@ -40,12 +40,12 @@ func NewAESDriver(key []byte, previousKeys [][]byte, cipher string) (*AESDriver,
 	case "AES-256-CBC", "AES-256-GCM":
 		d.keySize = 32
 	default:
-		return nil, fmt.Errorf("unsupported cipher: %s", cipher)
+		return nil, fmt.Errorf("velocity/crypto: unsupported cipher: %s", cipher)
 	}
 
 	// Reject empty or nil keys
 	if len(key) == 0 {
-		return nil, fmt.Errorf("invalid key size: key must not be empty")
+		return nil, fmt.Errorf("velocity/crypto: invalid key size: key must not be empty")
 	}
 
 	// Derive separate encryption and HMAC subkeys directly from the original key
@@ -53,11 +53,11 @@ func NewAESDriver(key []byte, previousKeys [][]byte, cipher string) (*AESDriver,
 	// no intermediate normalization step is needed.
 	encKey, err := deriveSubkey(key, d.keySize, []byte("encryption"))
 	if err != nil {
-		return nil, fmt.Errorf("failed to derive encryption key: %w", err)
+		return nil, fmt.Errorf("velocity/crypto: failed to derive encryption key: %w", err)
 	}
 	hmacKey, err := deriveSubkey(key, 32, []byte("hmac"))
 	if err != nil {
-		return nil, fmt.Errorf("failed to derive hmac key: %w", err)
+		return nil, fmt.Errorf("velocity/crypto: failed to derive hmac key: %w", err)
 	}
 
 	d.key = encKey
@@ -128,7 +128,7 @@ func (d *AESDriver) DecryptBytes(payload string) ([]byte, error) {
 		}
 	}
 
-	return nil, errors.New("decryption failed with all keys")
+	return nil, errors.New("velocity/crypto: decryption failed with all keys")
 }
 
 // GenerateKey generates a new encryption key
@@ -332,11 +332,11 @@ func pkcs7Pad(data []byte, blockSize int) []byte {
 // pkcs7Unpad removes PKCS#7 padding
 func pkcs7Unpad(data []byte) ([]byte, error) {
 	if len(data) == 0 {
-		return nil, errors.New("invalid padding")
+		return nil, errors.New("velocity/crypto: invalid padding")
 	}
 	padding := int(data[len(data)-1])
 	if padding == 0 || padding > aes.BlockSize || padding > len(data) {
-		return nil, errors.New("invalid padding")
+		return nil, errors.New("velocity/crypto: invalid padding")
 	}
 	// Verify all padding bytes match using constant-time comparison
 	expected := make([]byte, padding)
@@ -344,7 +344,7 @@ func pkcs7Unpad(data []byte) ([]byte, error) {
 		expected[i] = byte(padding)
 	}
 	if subtle.ConstantTimeCompare(data[len(data)-padding:], expected) != 1 {
-		return nil, errors.New("invalid padding")
+		return nil, errors.New("velocity/crypto: invalid padding")
 	}
 	return data[:len(data)-padding], nil
 }
@@ -378,13 +378,13 @@ func deserializePayload(encoded string) (*Payload, error) {
 	if err != nil {
 		data, err = base64.StdEncoding.DecodeString(encoded)
 		if err != nil {
-			return nil, errors.New("invalid payload format")
+			return nil, errors.New("velocity/crypto: invalid payload format")
 		}
 	}
 
 	var p Payload
 	if err := json.Unmarshal(data, &p); err != nil {
-		return nil, errors.New("invalid payload format")
+		return nil, errors.New("velocity/crypto: invalid payload format")
 	}
 
 	return &p, nil

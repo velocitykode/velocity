@@ -176,7 +176,7 @@ func (g *HTTPGateway) Dispatch(ctx context.Context, page Page) (*SSRResponse, er
 		if json.Unmarshal(raw, &parsed) == nil && parsed.Error != "" {
 			payload = parsed
 		}
-		return g.handleFailure(page, payload, fmt.Errorf("%s", payload.Error))
+		return g.handleFailure(page, payload, fmt.Errorf("velocity/bond: ssr server error: %s", payload.Error))
 	}
 
 	var out SSRResponse
@@ -196,7 +196,7 @@ func (g *HTTPGateway) Dispatch(ctx context.Context, page Page) (*SSRResponse, er
 // an unreachable server returns (false, nil).
 func (g *HTTPGateway) IsHealthy(ctx context.Context) (bool, error) {
 	if g == nil || g.URL == "" {
-		return false, errors.New("bond: ssr gateway url not configured")
+		return false, errors.New("velocity/bond: ssr gateway url not configured")
 	}
 
 	reqCtx, cancel := context.WithTimeout(ctx, g.Timeout)

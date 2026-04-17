@@ -20,7 +20,7 @@ var (
 	ErrTokenMissing = errors.New("velocity/csrf: token missing")
 	ErrTokenInvalid = errors.New("velocity/csrf: token invalid")
 	ErrTokenExpired = errors.New("velocity/csrf: token expired")
-	ErrNoStore      = errors.New("no token store configured")
+	ErrNoStore      = errors.New("velocity/csrf: no token store configured")
 )
 
 // CSRF provides CSRF protection functionality
@@ -88,7 +88,7 @@ func (c *CSRF) RouterMiddleware() router.MiddlewareFunc {
 			c.Middleware(inner).ServeHTTP(ctx.Response, ctx.Request)
 			if !called {
 				log.Printf("csrf: request blocked for %s %s", ctx.Request.Method, ctx.Request.URL.Path)
-				return fmt.Errorf("csrf: request rejected for %s %s", ctx.Request.Method, ctx.Request.URL.Path)
+				return fmt.Errorf("velocity/csrf: request rejected for %s %s", ctx.Request.Method, ctx.Request.URL.Path)
 			}
 			return handlerErr
 		}
@@ -170,7 +170,7 @@ func (c *CSRF) getSessionID(r *http.Request) (string, error) {
 	// Generate a random per-request identifier instead of using RemoteAddr
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("csrf: failed to generate session ID: %w", err)
+		return "", fmt.Errorf("velocity/csrf: failed to generate session ID: %w", err)
 	}
 	return "temp-" + hex.EncodeToString(b), nil
 }

@@ -188,12 +188,12 @@ func GatewayWithTLS(certFile string) GatewayOption {
 		if certFile != "" {
 			caCert, err := os.ReadFile(certFile)
 			if err != nil {
-				g.configErr = fmt.Errorf("failed to read TLS cert file for gateway: %w", err)
+				g.configErr = fmt.Errorf("velocity/grpc: failed to read tls cert file for gateway: %w", err)
 				return
 			}
 			pool := x509.NewCertPool()
 			if !pool.AppendCertsFromPEM(caCert) {
-				g.configErr = fmt.Errorf("failed to parse TLS cert for gateway: %s", certFile)
+				g.configErr = fmt.Errorf("velocity/grpc: failed to parse tls cert for gateway: %s", certFile)
 				return
 			}
 			tlsConfig.RootCAs = pool
@@ -245,7 +245,7 @@ func (g *Gateway) Build(ctx context.Context) error {
 
 	// Validate endpoint format (must be host:port)
 	if _, _, err := net.SplitHostPort(g.grpcEndpoint); err != nil {
-		return fmt.Errorf("invalid gRPC endpoint %q: expected host:port format: %w", g.grpcEndpoint, err)
+		return fmt.Errorf("velocity/grpc: invalid grpc endpoint %q: expected host:port format: %w", g.grpcEndpoint, err)
 	}
 
 	// Create mux with options
@@ -254,7 +254,7 @@ func (g *Gateway) Build(ctx context.Context) error {
 	// Register all handlers
 	for _, regFunc := range g.registrations {
 		if err := regFunc(ctx, g.mux, g.grpcEndpoint, g.dialOptions); err != nil {
-			return fmt.Errorf("failed to register gateway handler: %w", err)
+			return fmt.Errorf("velocity/grpc: failed to register gateway handler: %w", err)
 		}
 	}
 
