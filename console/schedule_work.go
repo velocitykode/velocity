@@ -7,6 +7,7 @@ import (
 	"syscall"
 
 	cli "github.com/velocitykode/velocity-cli"
+	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/scheduler"
 )
 
@@ -26,9 +27,11 @@ func ScheduleWork(s scheduler.TaskScheduler) error {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	errCh := make(chan error, 1)
-	go func() {
+	// async.Go recovers from any panic in Scheduler.Run so the CLI's
+	// signal loop always observes a terminal value on errCh.
+	async.Go(func() {
 		errCh <- s.Run(ctx)
-	}()
+	})
 
 	select {
 	case <-quit:

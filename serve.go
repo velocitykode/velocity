@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/orm"
 )
 
@@ -32,14 +33,15 @@ func (a *App) Serve() error {
 	// not land on the first request's latency path.
 	a.Router.Freeze()
 
-	// Start server in a goroutine
+	// Start server in a goroutine. async.Go recovers from any panic in
+	// ListenAndServe so the main goroutine's select is never starved.
 	errCh := make(chan error, 1)
-	go func() {
+	async.Go(func() {
 		a.Log.Info("Velocity server started", "version", a.version, "addr", addr)
 		if err := a.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
-	}()
+	})
 
 	// Wait for interrupt signal
 	quit := make(chan os.Signal, 1)
