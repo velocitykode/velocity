@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/async"
 )
 
 // JobWrapper wraps a job with its metadata for internal storage
@@ -33,7 +35,7 @@ func newJobStore() *jobStore {
 	s := &jobStore{
 		jobs: make(map[string]jobStoreEntry),
 	}
-	go s.periodicCleanup()
+	async.Go(func() { s.periodicCleanup() })
 	return s
 }
 

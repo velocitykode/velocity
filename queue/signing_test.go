@@ -110,7 +110,7 @@ func TestVerifyPayload(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error for empty signature when signing is enabled, got nil")
 		}
-		if err.Error() != "queue: payload signature missing" {
+		if err.Error() != "velocity/queue: payload signature missing" {
 			t.Errorf("unexpected error message: %v", err)
 		}
 	})
@@ -140,14 +140,19 @@ func TestSigningDisabled(t *testing.T) {
 		}
 	})
 
-	t.Run("verifyPayload accepts any payload when disabled", func(t *testing.T) {
+	t.Run("verifyPayload accepts unsigned payloads when disabled", func(t *testing.T) {
 		SetSigningKey(nil)
 
 		if err := verifyPayload([]byte(`anything`), ""); err != nil {
 			t.Fatalf("expected nil error when signing disabled, got: %v", err)
 		}
-		if err := verifyPayload([]byte(`anything`), "bogus-sig"); err != nil {
-			t.Fatalf("expected nil error when signing disabled (with bogus sig), got: %v", err)
+	})
+
+	t.Run("verifyPayload rejects signed payloads when disabled", func(t *testing.T) {
+		SetSigningKey(nil)
+
+		if err := verifyPayload([]byte(`anything`), "bogus-sig"); err == nil {
+			t.Fatal("expected error when verifying a signed payload while signing is disabled, got nil")
 		}
 	})
 

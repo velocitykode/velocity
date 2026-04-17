@@ -60,7 +60,7 @@ func NewRedisDriver(config RedisConfig) (*RedisDriver, error) {
 
 	// Test connection
 	if err := client.Ping(ctx).Err(); err != nil {
-		return nil, fmt.Errorf("failed to connect to Redis: %w", err)
+		return nil, fmt.Errorf("velocity/queue: failed to connect to redis: %w", err)
 	}
 
 	return &RedisDriver{
@@ -94,7 +94,7 @@ func (r *RedisDriver) Push(job Job, queueName ...string) error {
 
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("failed to marshal payload: %w", err)
+		return fmt.Errorf("velocity/queue: failed to marshal payload: %w", err)
 	}
 
 	// Sign the payload for integrity verification
@@ -103,7 +103,7 @@ func (r *RedisDriver) Push(job Job, queueName ...string) error {
 		// Re-marshal with the signature included
 		data, err = json.Marshal(payload)
 		if err != nil {
-			return fmt.Errorf("failed to marshal signed payload: %w", err)
+			return fmt.Errorf("velocity/queue: failed to marshal signed payload: %w", err)
 		}
 	}
 
@@ -128,7 +128,7 @@ func (r *RedisDriver) PushDelayed(job Job, delay time.Duration, queueName ...str
 
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("failed to marshal payload: %w", err)
+		return fmt.Errorf("velocity/queue: failed to marshal payload: %w", err)
 	}
 
 	// Sign the payload for integrity verification
@@ -136,7 +136,7 @@ func (r *RedisDriver) PushDelayed(job Job, delay time.Duration, queueName ...str
 		payload.Signature = sig
 		data, err = json.Marshal(payload)
 		if err != nil {
-			return fmt.Errorf("failed to marshal signed payload: %w", err)
+			return fmt.Errorf("velocity/queue: failed to marshal signed payload: %w", err)
 		}
 	}
 
@@ -177,21 +177,24 @@ func (r *RedisDriver) Pop(queueName string) (Job, error) {
 
 	var payload Payload
 	if err := json.Unmarshal([]byte(result[1]), &payload); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal payload: %w", err)
+		return nil, fmt.Errorf("velocity/queue: failed to unmarshal payload: %w", err)
 	}
 
-	// Verify payload integrity if signing is enabled
+	// Verify payload integrity if signing is enabled.
 	sig := payload.Signature
 	payload.Signature = "" // Remove signature before verification
-	verifyData, _ := json.Marshal(payload)
+	verifyData, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("velocity/queue: failed to marshal payload for verification: %w", err)
+	}
 	if err := verifyPayload(verifyData, sig); err != nil {
-		return nil, fmt.Errorf("queue integrity check failed: %w", err)
+		return nil, fmt.Errorf("velocity/queue: queue integrity check failed: %w", err)
 	}
 
 	// Deserialize the job using the registry
 	job, err := registry.Deserialize(&payload)
 	if err != nil {
-		return nil, fmt.Errorf("failed to deserialize job: %w", err)
+		return nil, fmt.Errorf("velocity/queue: failed to deserialize job: %w", err)
 	}
 	return job, nil
 }
@@ -249,7 +252,7 @@ func (r *RedisDriver) Failed(job Job, err error, queueName string) error {
 
 	data, merr := json.Marshal(failedData)
 	if merr != nil {
-		return fmt.Errorf("failed to marshal failed job: %w", merr)
+		return fmt.Errorf("velocity/queue: failed to marshal failed job: %w", merr)
 	}
 
 	// Store in failed queue

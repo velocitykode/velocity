@@ -9,8 +9,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
+
+// MaxWorkerConcurrency is the upper bound for WithConcurrency.
+// Values above this are clamped to prevent accidentally spawning an
+// unreasonable number of goroutines on mis-typed configuration.
+const MaxWorkerConcurrency = 10_000
 
 // WorkerLogger is the logging interface used by Worker.
 // It is intentionally minimal to avoid coupling the queue package to a
@@ -71,12 +77,18 @@ func (w *Worker) dispatchEvent(event interface{}) {
 // Option configures a worker
 type Option func(*Worker)
 
-// WithConcurrency sets the number of concurrent workers
+// WithConcurrency sets the number of concurrent workers.
+// Values <= 0 are ignored; values above MaxWorkerConcurrency are clamped
+// to MaxWorkerConcurrency to protect against misconfiguration.
 func WithConcurrency(n int) Option {
 	return func(w *Worker) {
-		if n > 0 {
-			w.concurrency = n
+		if n <= 0 {
+			return
 		}
+		if n > MaxWorkerConcurrency {
+			n = MaxWorkerConcurrency
+		}
+		w.concurrency = n
 	}
 }
 
@@ -149,11 +161,19 @@ func NewWorker(queue Driver, queueName string, handler func(Job) error, opts ...
 	return w
 }
 
-// Start begins processing jobs
+// Start begins processing jobs.
+//
+// Each pump goroutine is wrapped via async.Go so any unrecovered panic in
+// processJob or the handler is reported via the framework panic logger
+// instead of tearing down the process.
 func (w *Worker) Start() {
 	for i := 0; i < w.concurrency; i++ {
 		w.wg.Add(1)
-		go w.work(i)
+		id := i
+		async.Go(func() {
+			defer w.wg.Done()
+			w.work(id)
+		})
 	}
 }
 
@@ -163,10 +183,9 @@ func (w *Worker) Stop() {
 	w.wg.Wait()
 }
 
-// work is the main worker loop
+// work is the main worker loop. Caller is responsible for wg bookkeeping
+// via async.Go in Start().
 func (w *Worker) work(id int) {
-	defer w.wg.Done()
-
 	w.logger.Info("Worker started", "id", id, "queue", w.queueName)
 
 	for {
@@ -190,7 +209,7 @@ func (w *Worker) work(id int) {
 func (w *Worker) processJob() error {
 	job, err := w.queue.Pop(w.queueName)
 	if err != nil {
-		return fmt.Errorf("failed to pop job: %w", err)
+		return fmt.Errorf("velocity/queue: failed to pop job: %w", err)
 	}
 
 	if job == nil {
@@ -200,14 +219,13 @@ func (w *Worker) processJob() error {
 	// Get job type for event dispatching
 	jobType := fmt.Sprintf("%T", job)
 
-	// Process the job with timeout
+	// Process the job with timeout. Callers that need a different default
+	// for tests should inject their own timeout with WithTimeout, their own
+	// clock, or cancel the worker context directly — the driver no longer
+	// second-guesses the value based on polling interval.
 	timeout := w.timeout
 	if timeout == 0 {
 		timeout = 30 * time.Second
-		if w.interval < time.Second {
-			// For tests with short intervals, use shorter timeout
-			timeout = 5 * time.Second
-		}
 	}
 	jobCtx, cancel := context.WithTimeout(w.ctx, timeout)
 	defer cancel()
@@ -244,7 +262,7 @@ func (w *Worker) processJob() error {
 		duration := time.Since(startTime)
 		if err != nil {
 			w.handleJobFailure(jobCtx, job, jobType, err, duration)
-			return fmt.Errorf("job failed: %w", err)
+			return fmt.Errorf("velocity/queue: job failed: %w", err)
 		}
 		// Success — clean up attempt tracking
 		w.removeAttempts(job)
@@ -258,7 +276,7 @@ func (w *Worker) processJob() error {
 		return nil
 	case <-jobCtx.Done():
 		duration := time.Since(startTime)
-		timeoutErr := fmt.Errorf("job timed out")
+		timeoutErr := fmt.Errorf("velocity/queue: job timed out")
 		w.handleJobFailure(jobCtx, job, jobType, timeoutErr, duration)
 		return timeoutErr
 	}

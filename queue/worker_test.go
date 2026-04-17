@@ -140,7 +140,7 @@ func TestWorker(t *testing.T) {
 				return nil
 			},
 			OnFail: func(err error) {
-				if err.Error() == "job timed out" {
+				if err.Error() == "velocity/queue: job timed out" {
 					atomic.AddInt32(&timedOut, 1)
 				}
 			},
@@ -466,6 +466,35 @@ func TestWorker_MaxAttempterInterface(t *testing.T) {
 	gotFailed := atomic.LoadInt32(&failed)
 	if gotFailed != 1 {
 		t.Errorf("Expected Failed() called once, got %d", gotFailed)
+	}
+}
+
+// TestWorker_ConcurrencyCap verifies that WithConcurrency clamps values that
+// exceed MaxWorkerConcurrency so a mis-typed configuration can't spawn an
+// unreasonable number of goroutines.
+func TestWorker_ConcurrencyCap(t *testing.T) {
+	cases := []struct {
+		name string
+		in   int
+		want int
+	}{
+		{"zero leaves default", 0, 1},
+		{"negative leaves default", -5, 1},
+		{"one ok", 1, 1},
+		{"exactly at cap ok", MaxWorkerConcurrency, MaxWorkerConcurrency},
+		{"above cap clamps", MaxWorkerConcurrency + 1, MaxWorkerConcurrency},
+		{"very large clamps", 1_000_000, MaxWorkerConcurrency},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := NewMemoryDriver()
+			q.Start()
+			defer q.Close()
+			w := NewWorker(q, "cap", func(Job) error { return nil }, WithConcurrency(tc.in))
+			if w.concurrency != tc.want {
+				t.Errorf("concurrency = %d, want %d", w.concurrency, tc.want)
+			}
+		})
 	}
 }
 

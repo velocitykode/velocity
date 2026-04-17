@@ -130,7 +130,11 @@ func New(opts ...Option) (*App, error) {
 	}
 
 	// 10. Initialize queue — pass DB for database driver
-	a.Queue = initQueue(a.config.Queue, sqlDB, a.config.DB.Connection, a.config.Queue.SigningKey, a.config.Key)
+	queueDriver, err := initQueue(a.config.Queue, sqlDB, a.config.DB.Connection, a.config.Queue.SigningKey, a.config.Key)
+	if err != nil {
+		return nil, fmt.Errorf("velocity: failed to initialize queue: %w", err)
+	}
+	a.Queue = queueDriver
 
 	// 11. Initialize storage with disk drivers
 	a.Storage = initStorage(a.config.Storage, a.Log)

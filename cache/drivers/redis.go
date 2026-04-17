@@ -37,7 +37,7 @@ func NewRedisStore(prefix string, host string, port int, password string, databa
 	// Test the connection
 	ctx := context.Background()
 	if err := client.Ping(ctx).Err(); err != nil {
-		return nil, fmt.Errorf("failed to connect to redis: %w", err)
+		return nil, fmt.Errorf("velocity/cache: failed to connect to redis: %w", err)
 	}
 
 	return &RedisStore{
@@ -68,9 +68,8 @@ func (s *RedisStore) prefixedKey(key string) string {
 	return PrefixKey(s.prefix, key)
 }
 
-// Get retrieves a value from the cache
-func (s *RedisStore) Get(key string) (interface{}, bool) {
-	ctx := context.Background()
+// GetCtx retrieves a value from the cache using the provided context.
+func (s *RedisStore) GetCtx(ctx context.Context, key string) (interface{}, bool) {
 	data, err := s.client.Get(ctx, s.prefixedKey(key)).Bytes()
 	if err != nil {
 		return nil, false
@@ -84,9 +83,13 @@ func (s *RedisStore) Get(key string) (interface{}, bool) {
 	return value, true
 }
 
-// GetString retrieves a string value from the cache
-func (s *RedisStore) GetString(key string) (string, bool) {
-	ctx := context.Background()
+// Get retrieves a value from the cache.
+func (s *RedisStore) Get(key string) (interface{}, bool) {
+	return s.GetCtx(context.Background(), key)
+}
+
+// GetStringCtx retrieves a string value from the cache using the provided context.
+func (s *RedisStore) GetStringCtx(ctx context.Context, key string) (string, bool) {
 	val, err := s.client.Get(ctx, s.prefixedKey(key)).Result()
 	if err != nil {
 		return "", false
@@ -94,33 +97,55 @@ func (s *RedisStore) GetString(key string) (string, bool) {
 	return val, true
 }
 
-// Put stores a value in the cache with a TTL
-func (s *RedisStore) Put(key string, value interface{}, ttl time.Duration) error {
-	ctx := context.Background()
+// GetString retrieves a string value from the cache.
+func (s *RedisStore) GetString(key string) (string, bool) {
+	return s.GetStringCtx(context.Background(), key)
+}
 
+// PutCtx stores a value in the cache with a TTL using the provided context.
+func (s *RedisStore) PutCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
 	data, err := json.Marshal(value)
 	if err != nil {
-		return fmt.Errorf("failed to marshal value: %w", err)
+		return fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
 	}
 
-	return s.client.Set(ctx, s.prefixedKey(key), data, ttl).Err()
+	if err := s.client.Set(ctx, s.prefixedKey(key), data, ttl).Err(); err != nil {
+		return fmt.Errorf("velocity/cache: redis set failed: %w", err)
+	}
+	return nil
 }
 
-// Forever stores a value in the cache indefinitely
+// Put stores a value in the cache with a TTL.
+func (s *RedisStore) Put(key string, value interface{}, ttl time.Duration) error {
+	return s.PutCtx(context.Background(), key, value, ttl)
+}
+
+// ForeverCtx stores a value in the cache indefinitely using the provided context.
+func (s *RedisStore) ForeverCtx(ctx context.Context, key string, value interface{}) error {
+	return s.PutCtx(ctx, key, value, 0)
+}
+
+// Forever stores a value in the cache indefinitely.
 func (s *RedisStore) Forever(key string, value interface{}) error {
-	return s.Put(key, value, 0)
+	return s.ForeverCtx(context.Background(), key, value)
 }
 
-// Forget removes a value from the cache
+// ForgetCtx removes a value from the cache using the provided context.
+func (s *RedisStore) ForgetCtx(ctx context.Context, key string) error {
+	if err := s.client.Del(ctx, s.prefixedKey(key)).Err(); err != nil {
+		return fmt.Errorf("velocity/cache: redis del failed: %w", err)
+	}
+	return nil
+}
+
+// Forget removes a value from the cache.
 func (s *RedisStore) Forget(key string) error {
-	ctx := context.Background()
-	return s.client.Del(ctx, s.prefixedKey(key)).Err()
+	return s.ForgetCtx(context.Background(), key)
 }
 
-// Flush removes all cache keys matching the configured prefix.
+// FlushCtx removes all cache keys matching the configured prefix using the provided context.
 // Uses SCAN + DEL to avoid destroying the entire Redis database.
-func (s *RedisStore) Flush() error {
-	ctx := context.Background()
+func (s *RedisStore) FlushCtx(ctx context.Context) error {
 	pattern := s.prefix + ":*"
 	if s.prefix == "" {
 		pattern = "*"
@@ -130,11 +155,11 @@ func (s *RedisStore) Flush() error {
 	for {
 		keys, nextCursor, err := s.client.Scan(ctx, cursor, pattern, 100).Result()
 		if err != nil {
-			return fmt.Errorf("failed to scan cache keys: %w", err)
+			return fmt.Errorf("velocity/cache: failed to scan cache keys: %w", err)
 		}
 		if len(keys) > 0 {
 			if err := s.client.Del(ctx, keys...).Err(); err != nil {
-				return fmt.Errorf("failed to delete cache keys: %w", err)
+				return fmt.Errorf("velocity/cache: failed to delete cache keys: %w", err)
 			}
 		}
 		cursor = nextCursor
@@ -145,9 +170,13 @@ func (s *RedisStore) Flush() error {
 	return nil
 }
 
-// Has checks if a key exists in the cache
-func (s *RedisStore) Has(key string) bool {
-	ctx := context.Background()
+// Flush removes all cache keys matching the configured prefix.
+func (s *RedisStore) Flush() error {
+	return s.FlushCtx(context.Background())
+}
+
+// HasCtx checks if a key exists in the cache using the provided context.
+func (s *RedisStore) HasCtx(ctx context.Context, key string) bool {
 	result, err := s.client.Exists(ctx, s.prefixedKey(key)).Result()
 	if err != nil {
 		return false
@@ -155,21 +184,33 @@ func (s *RedisStore) Has(key string) bool {
 	return result > 0
 }
 
-// Increment increments a numeric value
-func (s *RedisStore) Increment(key string, value int64) (int64, error) {
-	ctx := context.Background()
+// Has checks if a key exists in the cache.
+func (s *RedisStore) Has(key string) bool {
+	return s.HasCtx(context.Background(), key)
+}
+
+// IncrementCtx increments a numeric value using the provided context.
+func (s *RedisStore) IncrementCtx(ctx context.Context, key string, value int64) (int64, error) {
 	return s.client.IncrBy(ctx, s.prefixedKey(key), value).Result()
 }
 
-// Decrement decrements a numeric value
-func (s *RedisStore) Decrement(key string, value int64) (int64, error) {
-	ctx := context.Background()
+// Increment increments a numeric value.
+func (s *RedisStore) Increment(key string, value int64) (int64, error) {
+	return s.IncrementCtx(context.Background(), key, value)
+}
+
+// DecrementCtx decrements a numeric value using the provided context.
+func (s *RedisStore) DecrementCtx(ctx context.Context, key string, value int64) (int64, error) {
 	return s.client.DecrBy(ctx, s.prefixedKey(key), value).Result()
 }
 
-// Many retrieves multiple values
-func (s *RedisStore) Many(keys []string) map[string]interface{} {
-	ctx := context.Background()
+// Decrement decrements a numeric value.
+func (s *RedisStore) Decrement(key string, value int64) (int64, error) {
+	return s.DecrementCtx(context.Background(), key, value)
+}
+
+// ManyCtx retrieves multiple values using the provided context.
+func (s *RedisStore) ManyCtx(ctx context.Context, keys []string) map[string]interface{} {
 	result := make(map[string]interface{})
 
 	if len(keys) == 0 {
@@ -208,21 +249,32 @@ func (s *RedisStore) Many(keys []string) map[string]interface{} {
 	return result
 }
 
-// PutMany stores multiple values using a pipeline
-func (s *RedisStore) PutMany(items map[string]interface{}, ttl time.Duration) error {
-	ctx := context.Background()
+// Many retrieves multiple values.
+func (s *RedisStore) Many(keys []string) map[string]interface{} {
+	return s.ManyCtx(context.Background(), keys)
+}
+
+// PutManyCtx stores multiple values using a pipeline and the provided context.
+func (s *RedisStore) PutManyCtx(ctx context.Context, items map[string]interface{}, ttl time.Duration) error {
 	pipe := s.client.Pipeline()
 
 	for key, value := range items {
 		data, err := json.Marshal(value)
 		if err != nil {
-			return fmt.Errorf("failed to marshal value for key %s: %w", key, err)
+			return fmt.Errorf("velocity/cache: failed to marshal value for key %s: %w", key, err)
 		}
 		pipe.Set(ctx, s.prefixedKey(key), data, ttl)
 	}
 
-	_, err := pipe.Exec(ctx)
-	return err
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("velocity/cache: redis pipeline exec failed: %w", err)
+	}
+	return nil
+}
+
+// PutMany stores multiple values using a pipeline.
+func (s *RedisStore) PutMany(items map[string]interface{}, ttl time.Duration) error {
+	return s.PutManyCtx(context.Background(), items, ttl)
 }
 
 // Remember gets from cache or computes and stores.

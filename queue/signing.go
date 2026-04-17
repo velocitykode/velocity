@@ -24,8 +24,11 @@ var (
 // If signingKey is empty, appKey is used with HKDF derivation.
 // Must be called from velocity.New() after config is loaded.
 //
-// Signing is enabled whenever signingKey or appKey is non-empty.
-func ConfigureSigning(rawSigningKey, appKey string) {
+// Signing is enabled whenever signingKey or appKey is non-empty. Returns an
+// error when HKDF derivation from APP_KEY fails so the boot sequence can
+// fail visibly instead of silently running without integrity protection.
+// Returns nil (and leaves signing disabled) when neither key is set.
+func ConfigureSigning(rawSigningKey, appKey string) error {
 	key := rawSigningKey
 	useAppKey := false
 	if key == "" {
@@ -37,25 +40,27 @@ func ConfigureSigning(rawSigningKey, appKey string) {
 	defer signingMu.Unlock()
 
 	if key == "" {
-		fmt.Fprintln(os.Stderr, "queue: no signing key found (QUEUE_SIGNING_KEY or APP_KEY), payload signing disabled")
-		return
+		fmt.Fprintln(os.Stderr, "velocity/queue: no signing key found (QUEUE_SIGNING_KEY or APP_KEY), payload signing disabled")
+		signingKey = nil
+		signingEnabled = false
+		return nil
 	}
 
 	if useAppKey {
-		fmt.Fprintln(os.Stderr, "queue: WARNING: using APP_KEY for queue signing. Set a dedicated QUEUE_SIGNING_KEY for production environments")
+		fmt.Fprintln(os.Stderr, "velocity/queue: WARNING: using APP_KEY for queue signing. Set a dedicated QUEUE_SIGNING_KEY for production environments")
 		// Derive a queue-specific key from APP_KEY using HKDF to avoid
 		// using the same key material for different purposes.
 		r := hkdf.New(sha256.New, []byte(key), nil, []byte("queue-signing"))
 		derived := make([]byte, 32)
 		if _, err := io.ReadFull(r, derived); err != nil {
-			fmt.Fprintf(os.Stderr, "queue: failed to derive signing key from APP_KEY: %v\n", err)
-			return
+			return fmt.Errorf("velocity/queue: failed to derive signing key from app_key: %w", err)
 		}
 		signingKey = derived
 	} else {
 		signingKey = []byte(key)
 	}
 	signingEnabled = true
+	return nil
 }
 
 // SetSigningKey configures the HMAC key for queue payload signing.
@@ -96,7 +101,10 @@ func signPayload(data []byte) string {
 }
 
 // verifyPayload checks the HMAC signature of the given data.
-// Returns nil if signing is disabled or if the signature is valid.
+// Returns nil if signing is disabled and the payload has no signature, or if the signature is valid.
+// Rejects payloads that carry a signature when signing is disabled — a present
+// signature indicates it came from a signed producer and must not be silently
+// accepted by a verifier that cannot validate it.
 func verifyPayload(data []byte, signature string) error {
 	signingMu.RLock()
 	enabled := signingEnabled
@@ -104,11 +112,14 @@ func verifyPayload(data []byte, signature string) error {
 	signingMu.RUnlock()
 
 	if !enabled || len(key) == 0 {
-		return nil // Signing disabled; accept any payload
+		if signature != "" {
+			return fmt.Errorf("velocity/queue: payload has signature but signing is disabled")
+		}
+		return nil // Signing disabled and payload is unsigned; accept.
 	}
 
 	if signature == "" {
-		return fmt.Errorf("queue: payload signature missing")
+		return fmt.Errorf("velocity/queue: payload signature missing")
 	}
 
 	mac := hmac.New(sha256.New, key)
@@ -116,7 +127,7 @@ func verifyPayload(data []byte, signature string) error {
 	expected := hex.EncodeToString(mac.Sum(nil))
 
 	if subtle.ConstantTimeCompare([]byte(expected), []byte(signature)) != 1 {
-		return fmt.Errorf("queue: payload signature verification failed")
+		return fmt.Errorf("velocity/queue: payload signature verification failed")
 	}
 
 	return nil
