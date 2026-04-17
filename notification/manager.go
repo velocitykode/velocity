@@ -2,10 +2,13 @@ package notification
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/async"
 )
 
 // Notifier is the interface satisfied by *Manager. It covers the methods
@@ -126,35 +129,39 @@ func (m *Manager) Send(ctx context.Context, notifiable interface{}, notification
 	return firstErr
 }
 
-// SendMany delivers a notification to multiple notifiables.
+// SendMany delivers a notification to multiple notifiables in parallel.
+// Goroutines are spawned via async.Go so panics are recovered and logged
+// instead of crashing the process. Failures from individual sends are
+// aggregated via errors.Join.
 func (m *Manager) SendMany(ctx context.Context, notifiables []interface{}, notification Notification) error {
+	if len(notifiables) == 0 {
+		return nil
+	}
+
 	var (
-		wg      sync.WaitGroup
-		errChan = make(chan error, len(notifiables))
+		wg     sync.WaitGroup
+		errsMu sync.Mutex
+		errs   []error
 	)
 
+	wg.Add(len(notifiables))
 	for _, notifiable := range notifiables {
-		wg.Add(1)
-		go func(n interface{}) {
+		n := notifiable
+		async.Go(func() {
 			defer wg.Done()
 			if err := m.Send(ctx, n, notification); err != nil {
-				errChan <- err
+				errsMu.Lock()
+				errs = append(errs, err)
+				errsMu.Unlock()
 			}
-		}(notifiable)
+		})
 	}
 
 	wg.Wait()
-	close(errChan)
 
-	var errors []error
-	for err := range errChan {
-		errors = append(errors, err)
+	if len(errs) > 0 {
+		return fmt.Errorf("velocity/notification: %d of %d sends failed: %w", len(errs), len(notifiables), errors.Join(errs...))
 	}
-
-	if len(errors) > 0 {
-		return fmt.Errorf("notification: %d of %d sends failed: %v", len(errors), len(notifiables), errors[0])
-	}
-
 	return nil
 }
 
