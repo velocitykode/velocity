@@ -1003,6 +1003,23 @@ func toSnakeCase(str string) string {
 }
 
 // RawQuery represents a raw SQL query that can be executed with First() or Get()
+//
+// RawQuery SOFT-DELETE BEHAVIOR:
+//
+// RawQuery does NOT apply the deleted_at IS NULL scope that the fluent
+// Query builder adds automatically for soft-delete models. The supplied SQL
+// is sent to the driver verbatim. If you pass a plain "SELECT * FROM users"
+// against a SoftDeleteModel[User] table, the result will include trashed
+// rows. Callers who expect scope-aware behavior should either:
+//
+//  1. Add "WHERE deleted_at IS NULL" to the query explicitly, or
+//  2. Use the fluent Query[T] builder via Model[T]{}.Where(...) instead, or
+//  3. Use NewRawQueryWithScopes which rewrites the SQL to enforce the
+//     deleted_at IS NULL predicate.
+//
+// This bypass is intentional — raw SQL is an escape hatch. Surfacing the
+// scope silently would make it impossible to query trashed records via raw
+// SQL, which is a legitimate use case (e.g. admin dashboards).
 type RawQuery[T any] struct {
 	driver drivers.Driver
 	sql    string
@@ -1015,6 +1032,9 @@ type RawQuery[T any] struct {
 // WARNING: This method executes raw SQL directly. The caller is responsible for
 // preventing SQL injection by using parameterized queries with placeholder arguments.
 // Never concatenate user input directly into the sql string.
+//
+// WARNING: Soft-delete scopes are NOT applied. See the RawQuery type
+// documentation for details. Use NewRawQueryWithScopes to opt in.
 func NewRawQuery[T any](sql string, args ...any) *RawQuery[T] {
 	var drv drivers.Driver
 	if m := Default(); m != nil {
@@ -1025,6 +1045,26 @@ func NewRawQuery[T any](sql string, args ...any) *RawQuery[T] {
 		sql:    sql,
 		args:   args,
 	}
+}
+
+// NewRawQueryWithScopes creates a raw query that enforces the same
+// deleted_at IS NULL predicate the fluent Query builder applies for
+// soft-delete models. The SQL is wrapped in an outer SELECT so we can
+// append the scope without attempting to parse or rewrite the caller's
+// query. For models that do not support soft deletes, this is a no-op
+// and the underlying SQL is executed as-is.
+//
+// This helper exists because RawQuery deliberately bypasses scopes (see
+// the RawQuery type doc). Callers who want the ergonomics of raw SQL
+// with the safety of scope enforcement should reach for this helper.
+func NewRawQueryWithScopes[T any](sql string, args ...any) *RawQuery[T] {
+	if modelHasSoftDelete[T]() {
+		// Wrap the user-supplied query in an outer SELECT. Using a
+		// subquery avoids any attempt to splice WHERE clauses into the
+		// original statement, which would be brittle and unsafe.
+		sql = "SELECT * FROM (" + sql + ") AS __orm_scoped WHERE deleted_at IS NULL"
+	}
+	return NewRawQuery[T](sql, args...)
 }
 
 // WithContext sets the context for the raw query
