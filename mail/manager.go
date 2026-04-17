@@ -117,7 +117,7 @@ func (m *Manager) Broadcast(ctx context.Context, channels []string, msg *Message
 		go func(ch string) {
 			defer wg.Done()
 			if err := m.Send(ctx, ch, msg); err != nil {
-				errChan <- fmt.Errorf("channel %s: %w", ch, err)
+				errChan <- fmt.Errorf("velocity/mail: channel %s: %w", ch, err)
 			}
 		}(channel)
 	}
@@ -132,9 +132,20 @@ func (m *Manager) Broadcast(ctx context.Context, channels []string, msg *Message
 	}
 
 	if len(errors) > 0 {
-		return fmt.Errorf("broadcast failed: %v", errors)
+		return fmt.Errorf("velocity/mail: broadcast failed: %v", errors)
 	}
 
+	return nil
+}
+
+// Shutdown releases any resources held by the mail manager. Mail
+// drivers do not hold long-lived connections that need draining, so
+// this is a no-op; the context is accepted for interface uniformity
+// with other ShutdownAware types.
+func (m *Manager) Shutdown(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return nil
 }
 
