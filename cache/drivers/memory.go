@@ -1,9 +1,12 @@
 package drivers
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/async"
 )
 
 // MemoryStore implements an in-memory cache store
@@ -13,6 +16,7 @@ type MemoryStore struct {
 	prefix    string
 	ticker    *time.Ticker
 	done      chan bool
+	closeOnce sync.Once
 	lockStore *memoryLockStore
 }
 
@@ -34,10 +38,12 @@ func NewMemoryStore(prefix string) *MemoryStore {
 }
 
 // Start begins the background goroutine that periodically removes expired
-// items from the store. Must be called after construction.
+// items from the store. Must be called after construction. The goroutine
+// is wrapped via async.Go so any panic in the sweep loop is recovered and
+// logged via the framework panic handler.
 func (s *MemoryStore) Start() {
 	s.ticker = time.NewTicker(1 * time.Minute)
-	go s.cleanupExpired()
+	async.Go(func() { s.cleanupExpired() })
 }
 
 // cleanupExpired removes expired items periodically
@@ -59,13 +65,22 @@ func (s *MemoryStore) cleanupExpired() {
 	}
 }
 
-// Close stops the cleanup goroutine. Safe to call even if Start() was never called.
+// Close stops the cleanup goroutine. Safe to call multiple times and even if
+// Start() was never called.
 func (s *MemoryStore) Close() error {
-	if s.ticker != nil {
-		s.ticker.Stop()
-	}
-	close(s.done)
+	s.closeOnce.Do(func() {
+		if s.ticker != nil {
+			s.ticker.Stop()
+		}
+		close(s.done)
+	})
 	return nil
+}
+
+// Shutdown is the context-aware stop hook. The memory store has no blocking
+// work to await, so Shutdown is equivalent to Close.
+func (s *MemoryStore) Shutdown(_ context.Context) error {
+	return s.Close()
 }
 
 // prefixedKey returns the key with prefix.
@@ -214,13 +229,19 @@ func (s *MemoryStore) Many(keys []string) map[string]interface{} {
 	return result
 }
 
-// PutMany stores multiple values
+// PutMany stores multiple values.
+// Computes expiration inside the per-item loop so each stored entry carries
+// a pointer to its own *time.Time. The previous implementation shared one
+// *time.Time across every item in the batch, which meant later Increment
+// calls (which preserve the pointer) could extend TTLs unexpectedly, and
+// produced surprising behaviour if the loop body grew to compute per-item
+// expirations.
 func (s *MemoryStore) PutMany(items map[string]interface{}, ttl time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	expiration := time.Now().Add(ttl)
 	for key, value := range items {
+		expiration := time.Now().Add(ttl)
 		s.items[s.prefixedKey(key)] = &cacheItem{
 			value:      value,
 			expiration: &expiration,
