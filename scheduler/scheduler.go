@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // TaskScheduler is the interface satisfied by *Scheduler. It covers the
@@ -238,11 +239,17 @@ func (s *Scheduler) Shutdown(ctx context.Context) error {
 
 	s.logger.Info("Scheduler shutting down")
 
-	// Wait for in-flight jobs with ctx deadline.
+	// Wait for in-flight jobs with ctx deadline. Recover from panics so
+	// Shutdown always signals completion via done.
 	done := make(chan struct{})
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				s.logger.Error("velocity/scheduler: shutdown wait panic recovered", "error", panicerr.FromRecovered(r))
+			}
+			close(done)
+		}()
 		s.runWg.Wait()
-		close(done)
 	}()
 
 	select {
@@ -280,12 +287,19 @@ func (s *Scheduler) runDueJobs() {
 		callback()
 	}
 
-	// Check and run each job
+	// Check and run each job. Job.Run already recovers internally, but
+	// we add an outer recover to protect against panics in logger.Debug
+	// or other surrounding calls so runWg.Done always fires.
 	for _, job := range jobs {
 		if job.IsDue(now) && job.ShouldRun() {
 			s.runWg.Add(1)
 			go func(j *Job) {
 				defer s.runWg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						s.logger.Error("velocity/scheduler: run due jobs panic recovered", "error", panicerr.FromRecovered(r))
+					}
+				}()
 				s.logger.Debug("Running job", "name", j.name)
 				j.Run()
 			}(job)

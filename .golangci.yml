@@ -1,10 +1,20 @@
-# golangci-lint configuration for velocity.
+# golangci-lint configuration for Velocity.
 #
-# Enforces framework conventions; in particular, error strings must use the
-# "velocity/<pkg>: " prefix and be lowercase (see docs/security-guidelines.md
-# and CLAUDE.md "Error wrapping" rules).
+# Enforces two framework conventions:
+#
+#   1. Error-string prefix (sweep/error-wrap-shutdown): every fmt.Errorf /
+#      errors.New message must begin with "velocity/<pkg>: " and be
+#      lowercase. See docs/security-guidelines.md and CLAUDE.md.
+#
+#   2. Panic-safe goroutines (sweep/panic-recovery): every goroutine
+#      spawned from library code must go through `async.Go` or include an
+#      explicit `defer recover()` that dispatches a `<pkg>.OperationFailed`
+#      event or logs via the manager's logger. See CONTRIBUTING.md
+#      ("Goroutines and panic recovery").
+
 run:
   timeout: 5m
+  tests: true
 
 linters:
   disable-all: true
@@ -12,28 +22,40 @@ linters:
     - forbidigo
     - govet
     - gofmt
+    - staticcheck
 
 linters-settings:
   forbidigo:
-    # Block error constructors whose message does not start with the
-    # required "velocity/<pkg>: " prefix. The validation/ package is the
-    # sole exemption — it surfaces user-facing messages.
     forbid:
+      # Error strings must use the velocity/<pkg>: lowercase format.
       - p: 'fmt\.Errorf\("(?!velocity/)[a-zA-Z]'
         msg: 'error strings must use fmt.Errorf("velocity/<pkg>: lowercase msg: %w", err)'
       - p: 'errors\.New\("(?!velocity/)[a-zA-Z]'
         msg: 'error sentinels must use errors.New("velocity/<pkg>: lowercase msg")'
+      # Raw `go func(` goroutines bypass panic recovery.
+      - p: "^go func\\("
+        msg: "use async.Go or an explicit defer recover() — see CONTRIBUTING.md 'Goroutines and panic recovery'"
     analyze-types: false
     exclude-godoc-examples: true
 
 issues:
   exclude-rules:
-    # The validation/ package emits user-facing messages, not framework errors.
+    # validation/ surfaces user-facing messages, not framework errors.
     - path: ^validation/
       linters:
         - forbidigo
-    # Tests may use descriptive error strings for assertions.
+    # Tests: descriptive error strings + free goroutine use are fine.
     - path: _test\.go
+      linters:
+        - forbidigo
+    # async/ is the canonical panic-safe implementation — its internals
+    # legitimately use `go func(` to implement async.Go, async.Run, etc.
+    - path: ^async/
+      linters:
+        - forbidigo
+    # router/event_dispatcher.go wraps listener invocation with
+    # safeInvokeListener (see that file for the recovery logic).
+    - path: ^router/event_dispatcher\.go
       linters:
         - forbidigo
   max-issues-per-linter: 0

@@ -2,6 +2,7 @@ package events
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -167,10 +168,17 @@ func (d *DefaultDispatcher) DispatchNow(event interface{}) error {
 }
 
 // DispatchAsync fires an event asynchronously via the queue.
-// Falls back to a goroutine if no queue is configured.
+// Falls back to a goroutine if no queue is configured. Panics in the
+// fallback goroutine are recovered so one bad listener does not tear
+// down the process.
 func (d *DefaultDispatcher) DispatchAsync(event interface{}) error {
 	if d.queue == nil {
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("velocity/events: dispatch async panic recovered: %v", panicerr.FromRecovered(r))
+				}
+			}()
 			_ = d.DispatchNow(event)
 		}()
 		return nil

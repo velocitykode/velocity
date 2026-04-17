@@ -9,6 +9,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
+	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/log"
 )
 
@@ -243,7 +244,18 @@ func (s *Server) StartAsync() error {
 	s.running = true
 	s.mu.Unlock()
 
+	// Recover from panics inside grpc.Serve so one crash does not tear
+	// down the process. Operators still see the error in the log and can
+	// restart the server.
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				s.logger.Error("gRPC server panic recovered", "error", panicerr.FromRecovered(r))
+				s.mu.Lock()
+				s.running = false
+				s.mu.Unlock()
+			}
+		}()
 		s.logger.Info("gRPC server starting", "address", s.listener.Addr().String())
 		if err := s.grpcServer.Serve(s.listener); err != nil {
 			s.logger.Error("gRPC server error", "error", err)
@@ -281,9 +293,16 @@ func (s *Server) GracefulStop() {
 func (s *Server) Shutdown(ctx context.Context) error {
 	done := make(chan struct{})
 
+	// Recover from panics in GracefulStop so the shutdown always
+	// signals completion to the select below.
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				s.logger.Error("gRPC graceful stop panic recovered", "error", panicerr.FromRecovered(r))
+			}
+			close(done)
+		}()
 		s.GracefulStop()
-		close(done)
 	}()
 
 	select {

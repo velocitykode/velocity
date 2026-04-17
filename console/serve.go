@@ -11,8 +11,9 @@ import (
 	"syscall"
 	"time"
 
-	cli "github.com/velocitykode/velocity-cli"
 	"github.com/fsnotify/fsnotify"
+	cli "github.com/velocitykode/velocity-cli"
+	"github.com/velocitykode/velocity/async"
 )
 
 // ServeOptions holds flags for the serve command.
@@ -78,14 +79,16 @@ func setupGracefulShutdown(viteCmd *exec.Cmd) {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 
-	go func() {
+	// async.Go recovers from any panic in the signal handler so a stray
+	// panic here does not leave the dev server with no shutdown path.
+	async.Go(func() {
 		<-c
 		cli.Info("Shutting down...")
 		if viteCmd != nil && viteCmd.Process != nil {
 			syscall.Kill(-viteCmd.Process.Pid, syscall.SIGTERM)
 		}
 		os.Exit(0)
-	}()
+	})
 }
 
 func runServer(opts ServeOptions) error {
@@ -125,11 +128,13 @@ func runWithWatcher(opts ServeOptions) error {
 	rebuild := make(chan bool, 1)
 	errChan := make(chan error, 1)
 
-	go func() {
+	// async.Go recovers from any panic inside the fsnotify watcher so a
+	// hot-reload crash does not tear down the dev server silently.
+	async.Go(func() {
 		if err := watchFiles(rebuild); err != nil {
 			errChan <- err
 		}
-	}()
+	})
 
 	var serverCmd *exec.Cmd
 	var mu sync.Mutex

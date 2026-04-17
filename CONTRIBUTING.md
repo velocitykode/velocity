@@ -305,6 +305,51 @@ func Get(key string) (interface{}, error) {
 - Profile before optimizing (`go test -bench=. -cpuprofile=cpu.prof`)
 - Document performance characteristics in godoc
 
+### Goroutines and panic recovery
+
+Every goroutine spawned from library code MUST either:
+
+1. Go through `async.Go` (from `github.com/velocitykode/velocity/async`),
+   which installs panic recovery and a default logger — the preferred
+   option when no custom recovery logic is needed; or
+2. Have an explicit `defer recover()` that both **logs** the panic via
+   the manager/component's logger **and** dispatches the relevant
+   `OperationFailed` event (e.g. `cache.CacheOperationFailed`,
+   `mail.MailFailed`, `notification.NotificationFailed`) so operators
+   observe it through the same channel as regular runtime failures.
+
+An unrecovered goroutine panic terminates the entire process. This is
+non-negotiable for long-running services.
+
+**Lint enforcement.** The `forbidigo` linter in `.golangci.yml` rejects
+raw `go func(` outside `async.Go`. Test files (`_test.go`) and the
+`async/` / `router/event_dispatcher.go` packages (which implement the
+panic-safe primitives themselves) are exempt. To add a legitimate
+exception, extend the `exclude-rules` block.
+
+Example of the acceptable patterns:
+
+```go
+// Preferred: async.Go handles recovery and logging.
+async.Go(func() {
+    if err := server.Run(ctx); err != nil {
+        log.Error("server exited", "error", err)
+    }
+})
+
+// When you need to dispatch a typed failure event on panic:
+go func(n interface{}) {
+    defer func() {
+        if r := recover(); r != nil {
+            err := panicerr.FromRecovered(r)
+            m.dispatchEvent(buildNotificationFailed(ctx, n, notification, "", err))
+            errChan <- fmt.Errorf("velocity/notification: send many panic: %w", err)
+        }
+    }()
+    // ... work ...
+}(notifiable)
+```
+
 ## Questions?
 
 - **GitHub Discussions**: For questions and general discussion
