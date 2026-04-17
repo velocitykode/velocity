@@ -339,7 +339,7 @@ func ConfigFromEnv() Config {
 		SessionCookieName: envOrDefault("CSRF_SESSION_COOKIE", config.Session.Name),
 		SameSite:          parseSameSite(os.Getenv("CSRF_SAME_SITE")),
 		Secure:            os.Getenv("CSRF_SECURE") != "false",
-		HTTPOnly:          envOrDefault("CSRF_HTTP_ONLY", "true") == "true",
+		HttpOnly:          envOrDefault("CSRF_HTTP_ONLY", "true") == "true",
 		SingleUse:         os.Getenv("CSRF_SINGLE_USE") == "true",
 		ErrorMessage:      envOrDefault("CSRF_ERROR_MESSAGE", "CSRF token validation failed. Please refresh and try again."),
 	}

@@ -1,7 +1,7 @@
 package csrf
 
 import (
-	"fmt"
+	"errors"
 	"net/http"
 	"time"
 )
@@ -16,9 +16,10 @@ type Config struct {
 	SessionCookieName string // Name of the session cookie to read session ID from
 
 	// Security settings
-	SameSite  http.SameSite
-	Secure    bool
-	HTTPOnly  bool
+	SameSite http.SameSite
+	Secure   bool
+	// HttpOnly matches the casing of net/http.Cookie.HttpOnly.
+	HttpOnly  bool
 	SingleUse bool
 
 	// Storage strategy
@@ -44,7 +45,7 @@ func DefaultConfig() *Config {
 		SessionCookieName: "session_id", // Default session cookie name
 		SameSite:          http.SameSiteLaxMode,
 		Secure:            true,
-		HTTPOnly:          true,
+		HttpOnly:          true,
 		SingleUse:         false,
 		ErrorMessage:      "CSRF token validation failed. Please refresh and try again.",
 	}
@@ -53,7 +54,7 @@ func DefaultConfig() *Config {
 // Validate checks that the Config is valid.
 func (c Config) Validate() error {
 	if c.TokenLifetime <= 0 {
-		return fmt.Errorf("csrf: token lifetime must be positive")
+		return errors.New("velocity/csrf: token lifetime must be positive")
 	}
 	return nil
 }
