@@ -3,10 +3,16 @@ package auth
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"fmt"
+	"io"
 	"net/http"
 	"sync"
 	"time"
 )
+
+// sessionRandReader is the entropy source for session IDs. Tests may swap
+// this for a failing reader to exercise rand.Read error paths.
+var sessionRandReader io.Reader = rand.Reader
 
 // Session represents a user session
 type Session interface {
@@ -70,17 +76,34 @@ type BaseSession struct {
 	mu        sync.RWMutex
 }
 
-// NewSession creates a new session
+// NewSession creates a new session. If id is empty, a random ID is generated;
+// when generation fails (which only happens if crypto/rand returns an error),
+// the zero-value *BaseSession is returned with empty id and the caller can
+// detect the failure via ID() == "". Most callers should prefer NewSessionWithError.
 func NewSession(id string) *BaseSession {
+	s, _ := NewSessionWithError(id)
+	return s
+}
+
+// NewSessionWithError creates a new session and returns any error from the
+// underlying crypto/rand call used to generate the session ID.
+func NewSessionWithError(id string) (*BaseSession, error) {
 	if id == "" {
-		id = generateSessionID()
+		generated, err := generateSessionID()
+		if err != nil {
+			return &BaseSession{
+				data:  make(map[string]interface{}),
+				flash: make(map[string]interface{}),
+			}, err
+		}
+		id = generated
 	}
 
 	return &BaseSession{
 		id:    id,
 		data:  make(map[string]interface{}),
 		flash: make(map[string]interface{}),
-	}
+	}, nil
 }
 
 // ID returns session ID
@@ -130,11 +153,16 @@ func (s *BaseSession) Clear() {
 	s.modified = true
 }
 
-// Regenerate regenerates session ID
+// Regenerate regenerates session ID. Returns an error if the underlying
+// crypto/rand call fails; in that case the session ID is left unchanged.
 func (s *BaseSession) Regenerate() error {
+	id, err := generateSessionID()
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.id = generateSessionID()
+	s.id = id
 	s.modified = true
 	return nil
 }
@@ -229,13 +257,14 @@ func (s *BaseSession) SetFlashData(flash map[string]interface{}) {
 	s.flash = flash
 }
 
-// generateSessionID generates a random session ID
-func generateSessionID() string {
+// generateSessionID generates a random session ID.
+// Returns an error when the entropy source fails rather than panicking.
+func generateSessionID() (string, error) {
 	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		panic("auth: failed to generate session ID: " + err.Error())
+	if _, err := io.ReadFull(sessionRandReader, b); err != nil {
+		return "", fmt.Errorf("velocity/auth: failed to generate session id: %w", err)
 	}
-	return base64.URLEncoding.EncodeToString(b)
+	return base64.URLEncoding.EncodeToString(b), nil
 }
 
 // SessionConfig holds session configuration
