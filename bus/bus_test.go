@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/pipeline"
 )
 
@@ -418,23 +419,30 @@ func TestBus_Through_Chainable(t *testing.T) {
 	}
 }
 
-func TestBus_RegisterOverwrite(t *testing.T) {
+func TestBus_RegisterDuplicate_Panics(t *testing.T) {
 	b := New()
 
-	var called string
 	Register(b, func(cmd createUser) error {
-		called = "first"
-		return nil
-	})
-	Register(b, func(cmd createUser) error {
-		called = "second"
 		return nil
 	})
 
-	_ = b.Dispatch(createUser{})
-	if called != "second" {
-		t.Fatalf("expected second handler to be called, got %q", called)
-	}
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic on duplicate registration")
+		}
+		regErr, ok := r.(*contract.RegistrationError)
+		if !ok {
+			t.Fatalf("expected *contract.RegistrationError, got %T: %v", r, r)
+		}
+		if regErr.Package != "bus" {
+			t.Errorf("expected package %q, got %q", "bus", regErr.Package)
+		}
+	}()
+
+	Register(b, func(cmd createUser) error {
+		return nil
+	})
 }
 
 func TestBus_Concurrent(t *testing.T) {

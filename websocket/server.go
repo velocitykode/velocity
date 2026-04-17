@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/velocitykode/velocity/contract"
 )
 
 // sanitizeForLog strips control characters and newlines from a string for safe logging.
@@ -303,8 +304,12 @@ func (s *Server) checkOrigin(r *http.Request) bool {
 	return false
 }
 
-// On registers a message handler
+// On registers a message handler.
+// Panics with *contract.RegistrationError if handler is nil.
 func (s *Server) On(messageType string, handler MessageHandler) {
+	if handler == nil {
+		panic(contract.NewRegistrationError("websocket", fmt.Sprintf("nil handler for message type %q", messageType)))
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -317,8 +322,12 @@ func (s *Server) On(messageType string, handler MessageHandler) {
 	s.handlers[messageType] = finalHandler
 }
 
-// Use adds middleware
+// Use adds middleware.
+// Panics with *contract.RegistrationError if middleware is nil.
 func (s *Server) Use(middleware Middleware) {
+	if middleware == nil {
+		panic(contract.NewRegistrationError("websocket", "nil middleware"))
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.middleware = append(s.middleware, middleware)

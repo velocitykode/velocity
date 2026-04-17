@@ -6,6 +6,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // Scheduler manages and executes scheduled jobs
@@ -127,8 +129,13 @@ func (s *Scheduler) After(callback func()) *Scheduler {
 	return s
 }
 
-// Add registers a new job with the scheduler
+// Add registers a new job with the scheduler. Multiple jobs with the same name
+// may be added (append semantics -- duplicates are intentional, not an error).
+// Panics with *contract.RegistrationError if job is nil.
 func (s *Scheduler) Add(job *Job) *Job {
+	if job == nil {
+		panic(contract.NewRegistrationError("scheduler", "nil job"))
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	job.scheduler = s

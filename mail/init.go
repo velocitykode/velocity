@@ -3,6 +3,8 @@ package mail
 import (
 	"fmt"
 	"sync"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 var (
@@ -97,8 +99,16 @@ func NewMailer(config MailConfig) (Mailer, error) {
 }
 
 // RegisterDriver allows drivers to register themselves.
+// Panics with *contract.RegistrationError if factory is nil or the driver name
+// is already registered.
 func RegisterDriver(name string, factory func(MailConfig) (Mailer, error)) {
+	if factory == nil {
+		panic(contract.NewRegistrationError("mail", fmt.Sprintf("nil factory for %q", name)))
+	}
 	driverMu.Lock()
 	defer driverMu.Unlock()
+	if _, exists := driverFactories[name]; exists {
+		panic(contract.NewRegistrationError("mail", fmt.Sprintf("driver %q already registered", name)))
+	}
 	driverFactories[name] = factory
 }

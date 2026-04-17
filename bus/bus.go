@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"sync"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/pipeline"
 )
 
@@ -62,11 +63,19 @@ func New() *Bus {
 
 // Register registers a typed handler for a command type.
 // This is a package-level function due to Go generics limitations on methods.
+// Panics with *contract.RegistrationError if handler is nil or a handler for the
+// same command type is already registered.
 func Register[T any](b *Bus, handler Handler[T]) {
+	if handler == nil {
+		panic(contract.NewRegistrationError("bus", fmt.Sprintf("nil handler for command type %s", reflect.TypeFor[T]().String())))
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	cmdType := reflect.TypeFor[T]()
+	if _, exists := b.handlers[cmdType]; exists {
+		panic(contract.NewRegistrationError("bus", fmt.Sprintf("handler for command type %s already registered", cmdType.String())))
+	}
 	b.handlers[cmdType] = func(cmd Command) error {
 		return handler(cmd.(T))
 	}

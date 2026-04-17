@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/app"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/trace"
 )
 
@@ -197,8 +199,12 @@ func (r *VelocityRouterV2) Match(methods []string, path string, handler HandlerF
 	return lastConfig
 }
 
-// addRoute adds a route to the current group
+// addRoute adds a route to the current group.
+// Panics with *contract.RegistrationError if handler is nil.
 func (r *VelocityRouterV2) addRoute(method, path string, handler HandlerFunc) RouteConfig {
+	if handler == nil {
+		panic(contract.NewRegistrationError("router", fmt.Sprintf("nil handler for %s %s", method, path)))
+	}
 	if r.frozen {
 		log.Println("velocity: route registered after server start, this route will not be served")
 	}
@@ -233,8 +239,14 @@ func (r *VelocityRouterV2) Group(prefix string, fn ...func(Router)) Router {
 	return groupRouter
 }
 
-// Use adds middleware to the router
+// Use adds middleware to the router.
+// Panics with *contract.RegistrationError if any middleware is nil.
 func (r *VelocityRouterV2) Use(middlewares ...MiddlewareFunc) Router {
+	for i, mw := range middlewares {
+		if mw == nil {
+			panic(contract.NewRegistrationError("router", fmt.Sprintf("nil middleware at index %d", i)))
+		}
+	}
 	if r.frozen {
 		log.Println("velocity: middleware registered after server start, this middleware will not be applied")
 	}
@@ -745,6 +757,9 @@ func (g *groupRouterV2) Head(path string, handler HandlerFunc) RouteConfig {
 }
 
 func (g *groupRouterV2) addRoute(method, path string, handler HandlerFunc) RouteConfig {
+	if handler == nil {
+		panic(contract.NewRegistrationError("router", fmt.Sprintf("nil handler for %s %s", method, path)))
+	}
 	// Store relative path - full path is calculated during CommitToTree
 	route := g.group.AddRoute(method, path, handler)
 	return &routeConfigV2{route: route, router: g.router}
