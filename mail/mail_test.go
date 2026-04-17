@@ -30,7 +30,7 @@ func TestManagerSetAndGetChannel(t *testing.T) {
 	mock := &mockMailer{sent: make([]*Message, 0)}
 	manager.SetChannel("default", mock)
 
-	mailer := manager.Channel("default")
+	mailer, _ := manager.Channel("default")
 	if mailer != mock {
 		t.Error("Expected channel mailer to be the mock")
 	}
