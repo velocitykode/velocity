@@ -302,9 +302,15 @@ func (r *RedisDriver) moveDelayedJobs(queueName string) error {
 	}
 }
 
-// Close closes the Redis connection
-func (r *RedisDriver) Close() error {
+// Shutdown closes the Redis connection, honoring the context deadline.
+func (r *RedisDriver) Shutdown(ctx context.Context) error {
 	return r.client.Close()
+}
+
+// Close closes the Redis connection.
+// Deprecated: use Shutdown(ctx) instead.
+func (r *RedisDriver) Close() error {
+	return r.Shutdown(context.Background())
 }
 
 // Helper methods

@@ -1,13 +1,20 @@
 package log
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/velocitykode/velocity/log/drivers"
 )
 
+// Shutdowner is an optional interface loggers may implement for graceful shutdown.
+type Shutdowner interface {
+	Shutdown(ctx context.Context) error
+}
+
 // Closer is an optional interface loggers may implement for graceful shutdown.
+// Deprecated: implement Shutdowner instead.
 type Closer interface {
 	Close() error
 }

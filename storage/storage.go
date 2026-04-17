@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"fmt"
 	"sync"
 )
@@ -13,6 +14,7 @@ type StorageManager interface {
 	AddDisk(name string, driver Driver)
 	SetDefault(name string) error
 	Configure(config Config) error
+	Shutdown(ctx context.Context) error
 }
 
 // Verify *Manager implements StorageManager at compile time.
@@ -89,6 +91,12 @@ func (m *Manager) SetDefault(name string) error {
 	}
 
 	m.defaultDisk = name
+	return nil
+}
+
+// Shutdown is a no-op for the storage manager; individual disk drivers do not
+// hold long-lived connections that need draining.
+func (m *Manager) Shutdown(ctx context.Context) error {
 	return nil
 }
 

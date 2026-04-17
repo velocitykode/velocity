@@ -286,10 +286,17 @@ func (d *DatabaseDriver) ProcessDelayedJobs(queueName string) error {
 	return nil
 }
 
+// Shutdown is a no-op for the database driver; the underlying DB connection
+// is owned by the ORM and closed separately.
+func (d *DatabaseDriver) Shutdown(ctx context.Context) error {
+	return nil
+}
+
 // Close is a no-op for the database driver; the underlying DB connection
 // is owned by the ORM and closed separately.
+// Deprecated: use Shutdown(ctx) instead.
 func (d *DatabaseDriver) Close() error {
-	return nil
+	return d.Shutdown(context.Background())
 }
 
 // scanJobRecord scans a database row into a JobRecord

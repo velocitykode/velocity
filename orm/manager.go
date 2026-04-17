@@ -1,6 +1,7 @@
 package orm
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -60,7 +61,8 @@ type Database interface {
 	Exec(query string, args ...any) (sql.Result, error)
 	Transaction(fn func(tx *sql.Tx) error) error
 	Begin() (*sql.Tx, error)
-	Close() error
+	Shutdown(ctx context.Context) error
+	Close() error // Deprecated: use Shutdown(ctx) instead.
 	Ping() error
 	DriverName() string
 	DatabaseName() string
@@ -255,8 +257,9 @@ func (m *Manager) Begin() (*sql.Tx, error) {
 	return m.defaultDriver.Begin()
 }
 
-// Close closes the default database connection and all named connections.
-func (m *Manager) Close() error {
+// Shutdown closes the default database connection and all named connections,
+// honoring the context deadline.
+func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -276,6 +279,12 @@ func (m *Manager) Close() error {
 	}
 
 	return firstErr
+}
+
+// Close closes the default database connection and all named connections.
+// Deprecated: use Shutdown(ctx) instead.
+func (m *Manager) Close() error {
+	return m.Shutdown(context.Background())
 }
 
 // Ping verifies the default database connection.

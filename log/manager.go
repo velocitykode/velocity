@@ -1,6 +1,7 @@
 package log
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
@@ -163,17 +164,28 @@ func (s *StackLogger) Fatal(msg string, kvs ...any) {
 	}
 }
 
-// Close closes all underlying loggers that support it.
-func (s *StackLogger) Close() error {
+// Shutdown closes all underlying loggers that support it, honoring the
+// context deadline.
+func (s *StackLogger) Shutdown(ctx context.Context) error {
 	var firstErr error
 	for _, l := range s.loggers {
-		if closer, ok := l.(Closer); ok {
+		if shutdowner, ok := l.(Shutdowner); ok {
+			if err := shutdowner.Shutdown(ctx); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		} else if closer, ok := l.(Closer); ok {
 			if err := closer.Close(); err != nil && firstErr == nil {
 				firstErr = err
 			}
 		}
 	}
 	return firstErr
+}
+
+// Close closes all underlying loggers that support it.
+// Deprecated: use Shutdown(ctx) instead.
+func (s *StackLogger) Close() error {
+	return s.Shutdown(context.Background())
 }
 
 // NullLogger discards all log messages without any output.

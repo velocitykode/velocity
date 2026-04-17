@@ -22,7 +22,8 @@ type TaskScheduler interface {
 	Call(callback func()) *Job
 	Command(command string, args ...string) *Job
 	Run(ctx context.Context) error
-	Stop()
+	Shutdown(ctx context.Context) error
+	Stop() // Deprecated: use Shutdown(ctx) instead.
 	Jobs() []*Job
 	SetEventDispatcher(fn func(event interface{}) error)
 	SetEnv(env string)
@@ -37,6 +38,7 @@ type Scheduler struct {
 	jobs            []*Job
 	ticker          *time.Ticker
 	stop            chan struct{}
+	stopped         chan struct{} // closed when Run() exits
 	running         bool
 	timezone        *time.Location
 	maintenanceMode bool
@@ -45,6 +47,7 @@ type Scheduler struct {
 	afterCallbacks  []func()
 	logger          Logger
 	eventDispatcher func(event interface{}) error
+	runWg           sync.WaitGroup // tracks in-flight job goroutines
 }
 
 // SetEventDispatcher sets the function used to dispatch events.
@@ -97,6 +100,7 @@ func New() *Scheduler {
 	return &Scheduler{
 		jobs:     make([]*Job, 0),
 		stop:     make(chan struct{}),
+		stopped:  make(chan struct{}),
 		timezone: time.Local,
 		logger:   &defaultLogger{},
 	}
@@ -215,13 +219,14 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 }
 
-// Stop stops the scheduler
-func (s *Scheduler) Stop() {
+// Shutdown stops the scheduler and waits for in-flight jobs to finish,
+// honoring the context deadline. Returns ctx.Err() if the context expires
+// before all jobs complete.
+func (s *Scheduler) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if !s.running {
-		return
+		s.mu.Unlock()
+		return nil
 	}
 
 	s.running = false
@@ -229,7 +234,30 @@ func (s *Scheduler) Stop() {
 		s.ticker.Stop()
 	}
 	close(s.stop)
-	s.logger.Info("Scheduler stopped")
+	s.mu.Unlock()
+
+	s.logger.Info("Scheduler shutting down")
+
+	// Wait for in-flight jobs with ctx deadline.
+	done := make(chan struct{})
+	go func() {
+		s.runWg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		s.logger.Info("Scheduler stopped")
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Stop stops the scheduler.
+// Deprecated: use Shutdown(ctx) instead.
+func (s *Scheduler) Stop() {
+	s.Shutdown(context.Background())
 }
 
 // runDueJobs executes all jobs that are due
@@ -253,19 +281,18 @@ func (s *Scheduler) runDueJobs() {
 	}
 
 	// Check and run each job
-	var wg sync.WaitGroup
 	for _, job := range jobs {
 		if job.IsDue(now) && job.ShouldRun() {
-			wg.Add(1)
+			s.runWg.Add(1)
 			go func(j *Job) {
-				defer wg.Done()
+				defer s.runWg.Done()
 				s.logger.Debug("Running job", "name", j.name)
 				j.Run()
 			}(job)
 		}
 	}
 
-	wg.Wait()
+	s.runWg.Wait()
 
 	// Run after callbacks
 	for _, callback := range afterCallbacks {

@@ -1,6 +1,7 @@
 package view
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -135,6 +136,12 @@ func (e *Engine) Back(w http.ResponseWriter, r *http.Request) {
 // Middleware returns the Inertia middleware as a router.MiddlewareFunc.
 func (e *Engine) Middleware() router.MiddlewareFunc {
 	return e.bond.MiddlewareFunc()
+}
+
+// Shutdown is a no-op for the view engine; it holds no long-lived resources
+// that need draining.
+func (e *Engine) Shutdown(ctx context.Context) error {
+	return nil
 }
 
 // Bond returns the underlying bond.Bond instance.

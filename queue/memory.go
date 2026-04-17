@@ -195,11 +195,30 @@ func (m *MemoryDriver) GetFailed(queueName string) ([]*failedJob, error) {
 	return []*failedJob{}, nil
 }
 
-// Close gracefully shuts down the driver
-func (m *MemoryDriver) Close() error {
+// Shutdown gracefully shuts down the driver, waiting for the background
+// goroutine to finish. Honors the context deadline: if ctx expires before
+// the goroutine exits, ctx.Err() is returned.
+func (m *MemoryDriver) Shutdown(ctx context.Context) error {
 	close(m.stopChan)
-	m.wg.Wait()
-	return nil
+
+	done := make(chan struct{})
+	go func() {
+		m.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Close gracefully shuts down the driver.
+// Deprecated: use Shutdown(ctx) instead.
+func (m *MemoryDriver) Close() error {
+	return m.Shutdown(context.Background())
 }
 
 // processDelayedJobs moves delayed jobs to main queue when ready

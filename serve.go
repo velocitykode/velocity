@@ -81,22 +81,22 @@ func (a *App) Shutdown(ctx context.Context) error {
 
 	// 3. Stop scheduler
 	if a.Scheduler != nil {
-		a.Scheduler.Stop()
+		setErr(a.Scheduler.Shutdown(ctx))
 	}
 
 	// 4. Close queue driver
 	if a.Queue != nil {
-		setErr(a.Queue.Close())
+		setErr(a.Queue.Shutdown(ctx))
 	}
 
 	// 5. Close cache connections
 	if a.Cache != nil {
-		setErr(a.Cache.Close())
+		setErr(a.Cache.Shutdown(ctx))
 	}
 
 	// 6. Close database connections
 	if a.DB != nil {
-		setErr(a.DB.Close())
+		setErr(a.DB.Shutdown(ctx))
 		orm.ResetDefault()
 	}
 
@@ -113,7 +113,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// 9. Close logger if it supports it (e.g., file logger) — last, so all
 	// prior shutdown steps can still log.
 	if a.Log != nil {
-		if closer, ok := a.Log.(interface{ Close() error }); ok {
+		if shutdowner, ok := a.Log.(interface{ Shutdown(context.Context) error }); ok {
+			setErr(shutdowner.Shutdown(ctx))
+		} else if closer, ok := a.Log.(interface{ Close() error }); ok {
 			setErr(closer.Close())
 		}
 	}

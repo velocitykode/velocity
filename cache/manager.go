@@ -35,7 +35,8 @@ type CacheManager interface {
 	// Store management.
 	Store(name string) (Store, error)
 	DefaultStore() (Store, error)
-	Close() error
+	Shutdown(ctx context.Context) error
+	Close() error // Deprecated: use Shutdown(ctx) instead.
 
 	// Distributed locking.
 	Lock(key string, ttl ...time.Duration) Lock
@@ -203,8 +204,8 @@ func (m *Manager) DefaultStore() (Store, error) {
 	return m.Store(m.defaultStore)
 }
 
-// Close closes all cache stores
-func (m *Manager) Close() error {
+// Shutdown closes all cache stores, honoring the context deadline.
+func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -216,6 +217,12 @@ func (m *Manager) Close() error {
 
 	m.stores = make(map[string]Store)
 	return nil
+}
+
+// Close closes all cache stores.
+// Deprecated: use Shutdown(ctx) instead.
+func (m *Manager) Close() error {
+	return m.Shutdown(context.Background())
 }
 
 // Implementation of Cache interface for default store

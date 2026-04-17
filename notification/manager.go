@@ -16,6 +16,7 @@ type Notifier interface {
 	Channel(name string) (Channel, error)
 	SetChannel(name string, ch Channel)
 	SetEventDispatcher(fn func(event interface{}) error)
+	Shutdown(ctx context.Context) error
 }
 
 // Verify *Manager implements Notifier at compile time.
@@ -59,6 +60,12 @@ func (m *Manager) dispatchEvent(event interface{}) {
 	if err := dispatch(event); err != nil {
 		log.Printf("[notification] event dispatch error: %v", err)
 	}
+}
+
+// Shutdown is a no-op for the notification manager; channel drivers do not
+// hold long-lived connections that need draining.
+func (m *Manager) Shutdown(ctx context.Context) error {
+	return nil
 }
 
 // Channel returns a registered channel driver by name, creating it from the
