@@ -1,21 +1,25 @@
 package queue
 
 import (
+	"container/heap"
 	"container/list"
 	"context"
 	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/async"
 )
 
 // MemoryDriver implements Queue interface using in-memory storage
 type MemoryDriver struct {
 	mu              sync.RWMutex
 	queues          map[string]*list.List
-	delayed         map[string][]*delayedJob
+	delayed         map[string]*delayedHeap
 	failed          map[string][]*failedJob
 	stopChan        chan struct{}
+	stopOnce        sync.Once
 	wg              sync.WaitGroup
 	eventDispatcher func(event interface{}) error
 }
@@ -23,6 +27,41 @@ type MemoryDriver struct {
 type delayedJob struct {
 	wrapper *JobWrapper
 	runAt   time.Time
+	index   int // heap position, maintained by container/heap
+}
+
+// delayedHeap is a min-heap of *delayedJob ordered by runAt.
+// Implements container/heap.Interface so ready jobs can be popped in O(log n).
+type delayedHeap struct {
+	items []*delayedJob
+}
+
+func (h *delayedHeap) Len() int { return len(h.items) }
+func (h *delayedHeap) Less(i, j int) bool {
+	return h.items[i].runAt.Before(h.items[j].runAt)
+}
+func (h *delayedHeap) Swap(i, j int) {
+	h.items[i], h.items[j] = h.items[j], h.items[i]
+	h.items[i].index = i
+	h.items[j].index = j
+}
+func (h *delayedHeap) Push(x any) {
+	j := x.(*delayedJob)
+	j.index = len(h.items)
+	h.items = append(h.items, j)
+}
+func (h *delayedHeap) Pop() any {
+	n := len(h.items)
+	j := h.items[n-1]
+	h.items = h.items[:n-1]
+	j.index = -1
+	return j
+}
+func (h *delayedHeap) peek() *delayedJob {
+	if len(h.items) == 0 {
+		return nil
+	}
+	return h.items[0]
 }
 
 type failedJob struct {
@@ -37,7 +76,7 @@ type failedJob struct {
 func NewMemoryDriver() *MemoryDriver {
 	return &MemoryDriver{
 		queues:   make(map[string]*list.List),
-		delayed:  make(map[string][]*delayedJob),
+		delayed:  make(map[string]*delayedHeap),
 		failed:   make(map[string][]*failedJob),
 		stopChan: make(chan struct{}),
 	}
@@ -45,9 +84,14 @@ func NewMemoryDriver() *MemoryDriver {
 
 // Start begins the background goroutine that moves delayed jobs to the
 // main queue when their delay has elapsed. Must be called after construction.
+// The goroutine runs via async.Go so any panic is caught and logged rather
+// than tearing down the process.
 func (m *MemoryDriver) Start() {
 	m.wg.Add(1)
-	go m.processDelayedJobs()
+	async.Go(func() {
+		defer m.wg.Done()
+		m.processDelayedJobs()
+	})
 }
 
 // SetEventDispatcher sets the function used to dispatch events.
@@ -85,7 +129,10 @@ func (m *MemoryDriver) Push(job Job, queueName ...string) error {
 	return nil
 }
 
-// PushDelayed adds a job to the queue with a delay
+// PushDelayed adds a job to the queue with a delay.
+// Delayed jobs are stored in a per-queue min-heap keyed by readyAt so the
+// cleanup loop can drain ready jobs in O(log n) instead of scanning the
+// full list every tick.
 func (m *MemoryDriver) PushDelayed(job Job, delay time.Duration, queueName ...string) error {
 	name := resolveQueueName(job, queueName...)
 
@@ -97,11 +144,13 @@ func (m *MemoryDriver) PushDelayed(job Job, delay time.Duration, queueName ...st
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if _, exists := m.delayed[name]; !exists {
-		m.delayed[name] = make([]*delayedJob, 0)
+	h, exists := m.delayed[name]
+	if !exists {
+		h = &delayedHeap{}
+		m.delayed[name] = h
 	}
 
-	m.delayed[name] = append(m.delayed[name], &delayedJob{
+	heap.Push(h, &delayedJob{
 		wrapper: wrapper,
 		runAt:   time.Now().Add(delay),
 	})
@@ -197,16 +246,17 @@ func (m *MemoryDriver) GetFailed(queueName string) ([]*failedJob, error) {
 
 // Shutdown gracefully shuts down the driver, waiting for the background
 // goroutine to finish. Honors the context deadline: if ctx expires before
-// the goroutine exits, ctx.Err() is returned.
+// the goroutine exits, ctx.Err() is returned. Idempotent — safe to call
+// multiple times.
 func (m *MemoryDriver) Shutdown(ctx context.Context) error {
 	batchStore.close() // stop package-level batch cleanup goroutine (idempotent)
-	close(m.stopChan)
+	m.stopOnce.Do(func() { close(m.stopChan) })
 
 	done := make(chan struct{})
-	go func() {
+	async.Go(func() {
 		m.wg.Wait()
 		close(done)
-	}()
+	})
 
 	select {
 	case <-done:
@@ -222,10 +272,9 @@ func (m *MemoryDriver) Close() error {
 	return m.Shutdown(context.Background())
 }
 
-// processDelayedJobs moves delayed jobs to main queue when ready
+// processDelayedJobs moves delayed jobs to main queue when ready.
+// Runs until stopChan is closed by Shutdown/Close. Caller decrements wg via Start().
 func (m *MemoryDriver) processDelayedJobs() {
-	defer m.wg.Done()
-
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
@@ -239,32 +288,33 @@ func (m *MemoryDriver) processDelayedJobs() {
 	}
 }
 
-// moveReadyJobs moves delayed jobs that are ready to the main queue
+// moveReadyJobs pops every ready delayed job from each per-queue heap and
+// appends it to the main queue. Uses heap.Pop so each promotion is O(log n);
+// the previous implementation rebuilt a slice on every tick which was O(n^2)
+// in the worst case.
 func (m *MemoryDriver) moveReadyJobs() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	now := time.Now()
 
-	for queueName, jobs := range m.delayed {
-		remaining := make([]*delayedJob, 0)
-
-		for _, job := range jobs {
-			if job.runAt.Before(now) || job.runAt.Equal(now) {
-				// Move to main queue
-				if _, exists := m.queues[queueName]; !exists {
-					m.queues[queueName] = list.New()
-				}
-				m.queues[queueName].PushBack(job.wrapper)
-			} else {
-				remaining = append(remaining, job)
+	for queueName, h := range m.delayed {
+		for h.Len() > 0 {
+			top := h.peek()
+			if top.runAt.After(now) {
+				break
 			}
+			job := heap.Pop(h).(*delayedJob)
+			q, exists := m.queues[queueName]
+			if !exists {
+				q = list.New()
+				m.queues[queueName] = q
+			}
+			q.PushBack(job.wrapper)
 		}
 
-		if len(remaining) == 0 {
+		if h.Len() == 0 {
 			delete(m.delayed, queueName)
-		} else {
-			m.delayed[queueName] = remaining
 		}
 	}
 }
