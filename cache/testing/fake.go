@@ -111,6 +111,7 @@ func FakeMemory(t testing.TB, prefix string) (*drivers.MemoryStore, func()) {
 	t.Helper()
 
 	store := drivers.NewMemoryStore(prefix)
+	store.Start()
 
 	cleanup := func() {
 		store.Close()

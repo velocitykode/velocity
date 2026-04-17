@@ -1,6 +1,7 @@
 package csrf
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -28,7 +29,8 @@ type CSRF struct {
 	singleUseMu sync.Mutex // serializes validate+delete for single-use tokens
 }
 
-// New creates a new CSRF instance with the given configuration
+// New creates a new CSRF instance with the given configuration.
+// Call Start() to begin any background goroutines required by the token store.
 func New(config *Config) *CSRF {
 	if config == nil {
 		config = DefaultConfig()
@@ -36,7 +38,9 @@ func New(config *Config) *CSRF {
 
 	// Set default store if none provided
 	if config.Store == nil {
-		config.Store = stores.NewSessionStore(config.TokenLifetime)
+		store := stores.NewSessionStore(config.TokenLifetime)
+		store.Start(context.Background())
+		config.Store = store
 	}
 
 	return &CSRF{config: config}

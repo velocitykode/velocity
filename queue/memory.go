@@ -32,20 +32,22 @@ type failedJob struct {
 	failedAt time.Time
 }
 
-// NewMemoryDriver creates a new memory queue driver
+// NewMemoryDriver creates a new memory queue driver.
+// Call Start() to begin the background delayed-job processor.
 func NewMemoryDriver() *MemoryDriver {
-	m := &MemoryDriver{
+	return &MemoryDriver{
 		queues:   make(map[string]*list.List),
 		delayed:  make(map[string][]*delayedJob),
 		failed:   make(map[string][]*failedJob),
 		stopChan: make(chan struct{}),
 	}
+}
 
-	// Start background worker for delayed jobs
+// Start begins the background goroutine that moves delayed jobs to the
+// main queue when their delay has elapsed. Must be called after construction.
+func (m *MemoryDriver) Start() {
 	m.wg.Add(1)
 	go m.processDelayedJobs()
-
-	return m
 }
 
 // SetEventDispatcher sets the function used to dispatch events.

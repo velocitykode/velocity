@@ -25,6 +25,7 @@ func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
 
 func TestWorker(t *testing.T) {
 	q := NewMemoryDriver()
+	q.Start()
 
 	t.Run("Basic Worker", func(t *testing.T) {
 		processed := int32(0)
@@ -168,6 +169,7 @@ func TestWorker(t *testing.T) {
 
 func TestGlobalWorker(t *testing.T) {
 	q := NewMemoryDriver()
+	q.Start()
 
 	processed := int32(0)
 
@@ -200,6 +202,7 @@ func TestGlobalWorker(t *testing.T) {
 
 func TestWorker_RetryOnFailure(t *testing.T) {
 	q := NewMemoryDriver()
+	q.Start()
 	defer q.Close()
 
 	attempts := int32(0)
@@ -243,6 +246,7 @@ func TestWorker_RetryOnFailure(t *testing.T) {
 
 func TestWorker_ExhaustsRetries(t *testing.T) {
 	q := NewMemoryDriver()
+	q.Start()
 	defer q.Close()
 
 	attempts := int32(0)
@@ -292,6 +296,7 @@ func TestWorker_ExhaustsRetries(t *testing.T) {
 
 func TestWorker_NoRetryWhenMaxRetriesIsOne(t *testing.T) {
 	q := NewMemoryDriver()
+	q.Start()
 	defer q.Close()
 
 	attempts := int32(0)
@@ -350,6 +355,7 @@ func (r *retryDeciderJob) ShouldRetry(_ error) bool {
 
 func TestWorker_RetryDeciderStopsRetry(t *testing.T) {
 	q := NewMemoryDriver()
+	q.Start()
 	defer q.Close()
 
 	attempts := int32(0)
@@ -412,6 +418,7 @@ func (m *maxAttempterJob) MaxAttempts() int {
 
 func TestWorker_MaxAttempterInterface(t *testing.T) {
 	q := NewMemoryDriver()
+	q.Start()
 	defer q.Close()
 
 	attempts := int32(0)
@@ -474,6 +481,7 @@ func (b *backofferJob) Backoff() []time.Duration {
 
 func TestWorker_BackofferInterface(t *testing.T) {
 	q := NewMemoryDriver()
+	q.Start()
 	defer q.Close()
 
 	attempts := int32(0)

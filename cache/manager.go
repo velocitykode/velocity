@@ -91,21 +91,6 @@ func NewManager(config *Config) *Manager {
 	}
 }
 
-// NewManagerFromConfig creates a new cache manager and eagerly initializes
-// all configured stores, returning an error if any store fails to initialize.
-func NewManagerFromConfig(config *Config) (*Manager, error) {
-	m := NewManager(config)
-
-	// Eagerly create all configured stores to detect errors at startup
-	for name := range config.Stores {
-		if _, err := m.createStore(name); err != nil {
-			return nil, fmt.Errorf("failed to create cache store %q: %w", name, err)
-		}
-	}
-
-	return m, nil
-}
-
 // Store returns a cache store by name
 func (m *Manager) Store(name string) (Store, error) {
 	m.mu.RLock()
@@ -166,6 +151,10 @@ func (m *Manager) createStore(name string) (Store, error) {
 		return nil, err
 	}
 
+	if starter, ok := store.(interface{ Start() }); ok {
+		starter.Start()
+	}
+
 	m.stores[name] = store
 	return store, nil
 }
@@ -181,10 +170,9 @@ func (m *Manager) Close() error {
 	defer m.mu.Unlock()
 
 	for _, store := range m.stores {
-		if memStore, ok := store.(*drivers.MemoryStore); ok {
-			memStore.Close()
+		if closer, ok := store.(interface{ Close() error }); ok {
+			closer.Close()
 		}
-		// Add close methods for other drivers as needed
 	}
 
 	m.stores = make(map[string]Store)

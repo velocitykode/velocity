@@ -21,6 +21,7 @@ func TestNewMemoryStore(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := NewMemoryStore(tt.prefix)
+			store.Start()
 			defer store.Close()
 
 			if got := store.GetPrefix(); got != tt.want {
@@ -69,6 +70,7 @@ func TestMemoryStore_Get(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := NewMemoryStore("")
+			store.Start()
 			defer store.Close()
 
 			tt.setup(store)
@@ -122,6 +124,7 @@ func TestMemoryStore_GetString(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := NewMemoryStore("")
+			store.Start()
 			defer store.Close()
 
 			tt.setup(store)
@@ -152,6 +155,7 @@ func TestMemoryStore_Put(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := NewMemoryStore("")
+			store.Start()
 			defer store.Close()
 
 			err := store.Put(tt.key, tt.value, tt.ttl)
@@ -183,6 +187,7 @@ func TestMemoryStore_Forever(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := NewMemoryStore("")
+			store.Start()
 			defer store.Close()
 
 			err := store.Forever(tt.key, tt.value)
@@ -224,6 +229,7 @@ func TestMemoryStore_Forget(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := NewMemoryStore("")
+			store.Start()
 			defer store.Close()
 
 			tt.setup(store)
@@ -243,6 +249,7 @@ func TestMemoryStore_Forget(t *testing.T) {
 func TestMemoryStore_Flush(t *testing.T) {
 	t.Run("removes all values", func(t *testing.T) {
 		store := NewMemoryStore("")
+		store.Start()
 		defer store.Close()
 
 		store.Put("key1", "value1", time.Hour)
@@ -329,6 +336,7 @@ func TestMemoryStore_Increment(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := NewMemoryStore("")
+			store.Start()
 			defer store.Close()
 
 			tt.setup(store)
@@ -351,6 +359,7 @@ func TestMemoryStore_Increment(t *testing.T) {
 func TestMemoryStore_Increment_PreservesExpiration(t *testing.T) {
 	t.Run("preserves expiration after increment", func(t *testing.T) {
 		store := NewMemoryStore("")
+		store.Start()
 		defer store.Close()
 
 		store.Put("counter", int64(10), 200*time.Millisecond)
@@ -397,6 +406,7 @@ func TestMemoryStore_Decrement(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := NewMemoryStore("")
+			store.Start()
 			defer store.Close()
 
 			tt.setup(store)
@@ -445,6 +455,7 @@ func TestMemoryStore_Remember(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := NewMemoryStore("")
+			store.Start()
 			defer store.Close()
 
 			tt.setup(store)
@@ -489,6 +500,7 @@ func TestMemoryStore_RememberForever(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := NewMemoryStore("")
+			store.Start()
 			defer store.Close()
 
 			tt.setup(store)
@@ -540,6 +552,7 @@ func TestMemoryStore_Many(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := NewMemoryStore("")
+			store.Start()
 			defer store.Close()
 
 			tt.setup(store)
@@ -555,6 +568,7 @@ func TestMemoryStore_Many(t *testing.T) {
 func TestMemoryStore_PutMany(t *testing.T) {
 	t.Run("stores multiple values", func(t *testing.T) {
 		store := NewMemoryStore("")
+		store.Start()
 		defer store.Close()
 
 		items := map[string]interface{}{
@@ -615,6 +629,7 @@ func TestMemoryStore_Has(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := NewMemoryStore("")
+			store.Start()
 			defer store.Close()
 
 			tt.setup(store)
@@ -639,6 +654,7 @@ func TestMemoryStore_GetPrefix(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := NewMemoryStore(tt.prefix)
+			store.Start()
 			defer store.Close()
 
 			if got := store.GetPrefix(); got != tt.want {
@@ -651,8 +667,10 @@ func TestMemoryStore_GetPrefix(t *testing.T) {
 func TestMemoryStore_PrefixedKeys(t *testing.T) {
 	t.Run("isolates keys with different prefixes", func(t *testing.T) {
 		store1 := NewMemoryStore("app1")
+		store1.Start()
 		defer store1.Close()
 		store2 := NewMemoryStore("app2")
+		store2.Start()
 		defer store2.Close()
 
 		store1.Put("key", "value1", time.Hour)
@@ -1483,6 +1501,7 @@ func TestFileStore_CacheFilePath(t *testing.T) {
 func TestMemoryStore_ConcurrentAccess(t *testing.T) {
 	t.Run("handles concurrent reads and writes safely", func(t *testing.T) {
 		store := NewMemoryStore("")
+		store.Start()
 		defer store.Close()
 
 		done := make(chan bool)
@@ -1518,6 +1537,7 @@ func TestMemoryStore_ConcurrentAccess(t *testing.T) {
 
 	t.Run("handles concurrent increment safely", func(t *testing.T) {
 		store := NewMemoryStore("")
+		store.Start()
 		defer store.Close()
 
 		store.Put("counter", int64(0), time.Hour)
@@ -1595,6 +1615,7 @@ func TestFileStore_ConcurrentAccess(t *testing.T) {
 func TestMemoryStore_Many_SkipsExpired(t *testing.T) {
 	t.Run("skips expired keys when retrieving many", func(t *testing.T) {
 		store := NewMemoryStore("")
+		store.Start()
 		defer store.Close()
 
 		store.Put("key1", "value1", time.Hour)
@@ -1643,6 +1664,7 @@ func TestFileStore_InvalidJSON(t *testing.T) {
 func TestMemoryStore_Forever_DoesNotExpire(t *testing.T) {
 	t.Run("value stored forever does not expire", func(t *testing.T) {
 		store := NewMemoryStore("")
+		store.Start()
 		defer store.Close()
 
 		store.Forever("key", "value")
@@ -1686,6 +1708,7 @@ func TestFileStore_Forever_DoesNotExpire(t *testing.T) {
 func TestMemoryStore_Increment_CreatesWithNoExpiration(t *testing.T) {
 	t.Run("creates new key with no expiration when key does not exist", func(t *testing.T) {
 		store := NewMemoryStore("")
+		store.Start()
 		defer store.Close()
 
 		_, err := store.Increment("newkey", 5)
@@ -1737,6 +1760,7 @@ func TestFileStore_Increment_PreservesNoExpiration(t *testing.T) {
 func TestMemoryStore_Forget_WithPrefix(t *testing.T) {
 	t.Run("removes correct key when prefix is set", func(t *testing.T) {
 		store := NewMemoryStore("myprefix")
+		store.Start()
 		defer store.Close()
 
 		store.Put("key1", "value1", time.Hour)

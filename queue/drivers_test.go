@@ -244,6 +244,7 @@ func TestAllDrivers(t *testing.T) {
 	// Test Memory Driver
 	t.Run("MemoryDriver", func(t *testing.T) {
 		driver := NewMemoryDriver()
+		driver.Start()
 		testDriver(t, driver, "Memory")
 	})
 
@@ -290,6 +291,7 @@ func TestDriverConfiguration(t *testing.T) {
 	t.Run("MemoryDriverConfig", func(t *testing.T) {
 		// Memory driver has no configuration
 		driver := NewMemoryDriver()
+		driver.Start()
 		if driver == nil {
 			t.Fatal("Failed to create memory driver")
 		}
@@ -326,6 +328,7 @@ func BenchmarkDrivers(b *testing.B) {
 	// Benchmark Memory Driver
 	b.Run("MemoryDriver", func(b *testing.B) {
 		driver := NewMemoryDriver()
+		driver.Start()
 		benchmarkDriver(b, driver)
 	})
 

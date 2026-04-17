@@ -142,6 +142,7 @@ func initAuth(authCfg AuthConfig, sessCfg SessionConfig, logger log.Logger, db *
 				continue
 			}
 			guard := guards.NewJWTGuard(provider, jwtCfg)
+			guard.Start()
 			manager.RegisterGuard(name, guard)
 		}
 	}
@@ -180,6 +181,12 @@ func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey strin
 	// reported as disabled even when the key was present.
 	queue.ConfigureSigning(signingKey, appKey)
 
+	newMemory := func() queue.Driver {
+		d := queue.NewMemoryDriver()
+		d.Start()
+		return d
+	}
+
 	switch config.Driver {
 	case "redis":
 		d, err := queue.NewRedisDriver(queue.RedisConfig{
@@ -190,16 +197,16 @@ func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey strin
 			TLS:      config.RedisTLS,
 		})
 		if err != nil {
-			return queue.NewMemoryDriver()
+			return newMemory()
 		}
 		return d
 	case "database":
 		if db == nil {
-			return queue.NewMemoryDriver()
+			return newMemory()
 		}
 		return queue.NewDatabaseDriver(db, dbDriver)
 	default:
-		return queue.NewMemoryDriver()
+		return newMemory()
 	}
 }
 

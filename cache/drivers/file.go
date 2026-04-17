@@ -26,7 +26,8 @@ type fileCacheItem struct {
 	Expiration *time.Time      `json:"expiration,omitempty"`
 }
 
-// NewFileStore creates a new file cache store
+// NewFileStore creates a new file cache store.
+// Call Start() to begin the background expired-item cleanup goroutine.
 func NewFileStore(prefix, path string) (*FileStore, error) {
 	if path == "" {
 		path = "storage/framework/cache/data"
@@ -37,16 +38,17 @@ func NewFileStore(prefix, path string) (*FileStore, error) {
 		return nil, fmt.Errorf("failed to create cache directory: %w", err)
 	}
 
-	store := &FileStore{
+	return &FileStore{
 		path:   path,
 		prefix: prefix,
 		done:   make(chan struct{}),
-	}
+	}, nil
+}
 
-	// Start cleanup goroutine
-	go store.cleanupExpired()
-
-	return store, nil
+// Start begins the background goroutine that periodically removes expired
+// cache files. Must be called after construction.
+func (s *FileStore) Start() {
+	go s.cleanupExpired()
 }
 
 // Close stops the background cleanup goroutine. Safe to call multiple times.

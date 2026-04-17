@@ -31,7 +31,9 @@ func NewQueue(config QueueConfig) (Driver, error) {
 
 	switch driver {
 	case "memory":
-		return NewMemoryDriver(), nil
+		d := NewMemoryDriver()
+		d.Start()
+		return d, nil
 	case "redis":
 		return NewRedisDriver(config.Redis)
 	case "database":

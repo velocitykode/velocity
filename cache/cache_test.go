@@ -13,6 +13,8 @@ import (
 
 func TestMemoryStore(t *testing.T) {
 	store := drivers.NewMemoryStore("test")
+	store.Start()
+	defer store.Close()
 
 	t.Run("GetSet", func(t *testing.T) {
 		// Test Put and Get
@@ -314,6 +316,8 @@ func TestFileStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create file store: %v", err)
 	}
+	store.Start()
+	defer store.Close()
 	defer os.RemoveAll("testdata")
 
 	t.Run("BasicOperations", func(t *testing.T) {

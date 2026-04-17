@@ -36,6 +36,7 @@ func TestEventNames(t *testing.T) {
 func TestDispatcher(t *testing.T) {
 	t.Run("SetEventDispatcher on MemoryDriver", func(t *testing.T) {
 		q := NewMemoryDriver()
+		q.Start()
 		defer q.Close()
 
 		q.SetEventDispatcher(nil)
@@ -59,6 +60,7 @@ func TestDispatcher(t *testing.T) {
 
 	t.Run("dispatchEvent with nil dispatcher", func(t *testing.T) {
 		q := NewMemoryDriver()
+		q.Start()
 		defer q.Close()
 		q.SetEventDispatcher(nil)
 
@@ -68,6 +70,7 @@ func TestDispatcher(t *testing.T) {
 
 	t.Run("dispatchEvent with error returning dispatcher", func(t *testing.T) {
 		q := NewMemoryDriver()
+		q.Start()
 		defer q.Close()
 		q.SetEventDispatcher(func(event interface{}) error {
 			return errors.New("dispatcher error")
@@ -325,6 +328,7 @@ func TestEventDispatchingIntegration(t *testing.T) {
 	var mu sync.Mutex
 
 	q := NewMemoryDriver()
+	q.Start()
 	defer q.Close()
 
 	q.SetEventDispatcher(func(event interface{}) error {
@@ -427,6 +431,7 @@ func TestWorkerEventDispatching(t *testing.T) {
 		retryingEvents = nil
 
 		q := NewMemoryDriver()
+		q.Start()
 		defer q.Close()
 		q.SetEventDispatcher(dispatcher)
 
@@ -482,6 +487,7 @@ func TestWorkerEventDispatching(t *testing.T) {
 		mu.Unlock()
 
 		q := NewMemoryDriver()
+		q.Start()
 		defer q.Close()
 		q.SetEventDispatcher(dispatcher)
 

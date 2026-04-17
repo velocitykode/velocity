@@ -39,6 +39,7 @@ func init() {
 
 func TestMemoryQueue(t *testing.T) {
 	q := NewMemoryDriver()
+	q.Start()
 
 	t.Run("Push and Pop", func(t *testing.T) {
 		job := &TestJob{
@@ -182,6 +183,7 @@ func TestMemoryQueue(t *testing.T) {
 
 func TestConcurrentAccess(t *testing.T) {
 	q := NewMemoryDriver()
+	q.Start()
 	var wg sync.WaitGroup
 	numWorkers := 10
 	numJobs := 100
@@ -248,6 +250,7 @@ func TestConcurrentAccess(t *testing.T) {
 
 func TestInstanceAPI(t *testing.T) {
 	q := NewMemoryDriver()
+	q.Start()
 
 	t.Run("Push and Pop", func(t *testing.T) {
 		job := &TestJob{

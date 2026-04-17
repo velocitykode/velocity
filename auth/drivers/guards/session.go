@@ -43,22 +43,12 @@ type SessionGuard struct {
 // The encryptor parameter is optional — pass nil if crypto is not configured
 // (session guard will still work if a non-cookie store is used later).
 func NewSessionGuard(provider auth.UserProvider, config auth.SessionConfig, encryptor ...crypto.Encryptor) (*SessionGuard, error) {
-	// Create session store based on driver
-	var store auth.SessionStore
-	var err error
-
 	var enc crypto.Encryptor
 	if len(encryptor) > 0 {
 		enc = encryptor[0]
 	}
 
-	switch config.Driver {
-	case "cookie", "":
-		store, err = session.NewCookieStore(config, enc)
-	default:
-		store, err = session.NewCookieStore(config, enc)
-	}
-
+	store, err := session.NewCookieStore(config, enc)
 	if err != nil {
 		return nil, err
 	}

@@ -25,48 +25,38 @@ type tokenEntry struct {
 }
 
 // NewSessionStore creates a new session-based token store.
-// The first argument is an optional context.Context used to control the
-// lifetime of the background cleanup goroutine. When the context is cancelled,
-// the goroutine stops automatically. If no context is provided (or nil),
-// context.Background() is used and Close() must be called manually.
+// Call Start() to begin the background cleanup goroutine.
 //
-// An optional lifetime duration can be provided after the context; defaults to
-// 24h if zero or omitted.
+// An optional lifetime duration can be provided; defaults to 24h if zero or omitted.
 //
 // Accepted call signatures:
 //
-//	NewSessionStore()                         // background ctx, 24h lifetime
-//	NewSessionStore(ctx)                      // caller ctx, 24h lifetime
-//	NewSessionStore(lifetime)                 // background ctx, custom lifetime (backward compat)
-//	NewSessionStore(ctx, lifetime)            // caller ctx, custom lifetime
+//	NewSessionStore()            // 24h lifetime
+//	NewSessionStore(lifetime)    // custom lifetime
 func NewSessionStore(args ...any) *SessionStore {
-	var parentCtx context.Context
 	ttl := 24 * time.Hour
 
 	for _, arg := range args {
-		switch v := arg.(type) {
-		case context.Context:
-			parentCtx = v
-		case time.Duration:
-			if v > 0 {
-				ttl = v
-			}
+		if v, ok := arg.(time.Duration); ok && v > 0 {
+			ttl = v
 		}
 	}
 
-	if parentCtx == nil {
-		parentCtx = context.Background()
-	}
-
-	ctx, cancel := context.WithCancel(parentCtx)
-	s := &SessionStore{
+	_, cancel := context.WithCancel(context.Background())
+	return &SessionStore{
 		tokens:   make(map[string]*tokenEntry),
 		lifetime: ttl,
 		cancel:   cancel,
 	}
-	// Start cleanup goroutine
-	go s.cleanup(ctx)
-	return s
+}
+
+// Start begins the background goroutine that periodically removes expired
+// tokens. The provided context controls the goroutine lifetime; pass
+// context.Background() if you intend to stop it via Close() instead.
+func (s *SessionStore) Start(ctx context.Context) {
+	innerCtx, cancel := context.WithCancel(ctx)
+	s.cancel = cancel
+	go s.cleanup(innerCtx)
 }
 
 // Close stops the background cleanup goroutine.
