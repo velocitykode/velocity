@@ -2,9 +2,12 @@ package router
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // Timeout returns a middleware that cancels the request context after the
@@ -21,7 +24,16 @@ func Timeout(duration time.Duration) MiddlewareFunc {
 			done := make(chan error, 1)
 			var once sync.Once
 
+			// Recover from panics inside the handler so the select below
+			// always observes a terminal value and the context pool entry
+			// is never leaked. The converted error flows through the
+			// normal error path.
 			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						done <- fmt.Errorf("velocity/router: timeout handler panic: %w", panicerr.FromRecovered(r))
+					}
+				}()
 				done <- next(c)
 			}()
 

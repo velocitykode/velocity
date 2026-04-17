@@ -2,6 +2,7 @@ package router
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"strconv"
@@ -11,6 +12,8 @@ import (
 	"time"
 
 	"golang.org/x/time/rate"
+
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // RateLimitConfig holds configuration for rate limiting middleware.
@@ -104,8 +107,17 @@ func newKeyedRateLimiter(requests int, window time.Duration, burst int, cleanupI
 		stopCh:   make(chan struct{}),
 	}
 
-	// Start cleanup goroutine
-	go krl.cleanup(cleanupInterval)
+	// Start cleanup goroutine. Recover from panics so a stray failure
+	// (e.g. inside the map iteration) does not leave stale entries
+	// accumulating forever.
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("velocity/router: rate limit cleanup panic recovered: %v", panicerr.FromRecovered(r))
+			}
+		}()
+		krl.cleanup(cleanupInterval)
+	}()
 
 	return krl
 }
