@@ -9,24 +9,46 @@ import (
 	"github.com/velocitykode/velocity/orm"
 )
 
-// identifierRegex validates SQL table/column names (allows dots for qualified names like table.column).
-var identifierRegex = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_.]*$`)
+// identifierRegex validates SQL table/column names. The regex allows dots so
+// callers can pass schema-qualified names like "public.users" or compound
+// references like "users.email"; validateIdentifier then relies on
+// quoteIdentifier to split on each dot and quote the parts individually so
+// that "schema.table" becomes `"schema"."table"` (or "`schema`.`table`" on
+// MySQL/SQLite) — not `"schema.table"`.
+var identifierRegex = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$`)
 
 func validateIdentifier(name string) error {
-	if !identifierRegex.MatchString(name) {
+	if name == "" || !identifierRegex.MatchString(name) {
 		return fmt.Errorf("invalid SQL identifier: %q", name)
 	}
 	return nil
 }
 
 // quoteIdentifier quotes a SQL identifier based on the database driver.
+//
+// Dotted identifiers such as "schema.table" or "table.column" are split on
+// `.` and each segment is quoted independently, producing:
+//
+//	postgres: "schema"."table"      or "table"."column"
+//	mysql:    `schema`.`table`      or `table`.`column`
+//	sqlite:   `schema`.`table`      or `table`.`column`
+//
+// Backticks/double-quotes embedded in an individual segment are escaped by
+// doubling them (standard SQL identifier-quoting rules). validateIdentifier
+// refuses any character outside [a-zA-Z0-9_.] so escaping here is
+// conservative — it exists to close the door on future inputs that might
+// relax the allowlist.
 func quoteIdentifier(name, driver string) string {
-	switch driver {
-	case "mysql", "sqlite":
-		return "`" + strings.ReplaceAll(name, "`", "``") + "`"
-	default: // postgres and others
-		return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+	parts := strings.Split(name, ".")
+	for i, p := range parts {
+		switch driver {
+		case "mysql", "sqlite":
+			parts[i] = "`" + strings.ReplaceAll(p, "`", "``") + "`"
+		default: // postgres and other ANSI-style quoters
+			parts[i] = `"` + strings.ReplaceAll(p, `"`, `""`) + `"`
+		}
 	}
+	return strings.Join(parts, ".")
 }
 
 // placeholder returns the correct parameter placeholder for the driver.

@@ -1,9 +1,20 @@
 package validation
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
+
+// ErrValidationFailed is the sentinel returned (wrapped) whenever a
+// validation.Result reports one or more field errors. Callers can use
+// errors.Is(err, validation.ErrValidationFailed) to branch on the generic
+// "validation failed" condition without inspecting per-field messages.
+//
+// Note: validation.Result.Err() returns an error that wraps this sentinel;
+// the sentinel itself does not carry field messages — that data lives on
+// Result/ValidationErrors.
+var ErrValidationFailed = errors.New("velocity/validation: validation failed")
 
 // ValidationErrors represents validation errors
 type ValidationErrors struct {

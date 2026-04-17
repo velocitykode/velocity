@@ -76,6 +76,38 @@ func registerBuiltInRules(reg *RuleRegistry) {
 	reg.Register("required_unless", rules.RequiredUnlessRule)
 	reg.Register("required_with", rules.RequiredWithRule)
 	reg.Register("required_without", rules.RequiredWithoutRule)
+
+	// Date and time rules
+	reg.Register("date", rules.DateRule)
+	reg.Register("date_format", rules.DateFormatRule)
+	reg.Register("timezone", rules.TimezoneRule)
+
+	// Network rules
+	reg.Register("ip", rules.IPRule)
+	reg.Register("ipv4", rules.IPv4Rule)
+	reg.Register("ipv6", rules.IPv6Rule)
+
+	// Format rules
+	reg.Register("regex", rules.RegexRule)
+	reg.Register("json", rules.JSONRule)
+	reg.Register("uuid", rules.UUIDRule)
+	reg.Register("ulid", rules.ULIDRule)
+
+	// String prefix/suffix/password rules
+	reg.Register("starts_with", rules.StartsWithRule)
+	reg.Register("ends_with", rules.EndsWithRule)
+	reg.Register("password", rules.PasswordRule)
+
+	// Numeric comparison rules
+	reg.Register("gt", rules.GtRule)
+	reg.Register("gte", rules.GteRule)
+	reg.Register("lt", rules.LtRule)
+	reg.Register("lte", rules.LteRule)
+
+	// File rules (require values to be *multipart.FileHeader or equivalent).
+	reg.Register("file", rules.FileRule)
+	reg.Register("mimes", rules.MimesRule)
+	reg.Register("image", rules.ImageRule)
 }
 
 // requiredRule validates that a field is present and not empty

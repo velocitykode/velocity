@@ -1,22 +1,40 @@
 package rules
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/mail"
 	"net/url"
 	"regexp"
 	"strconv"
+	"strings"
+	"time"
 )
 
-// Pre-compiled regexes to avoid recompilation on every call
+// Pre-compiled regexes to avoid recompilation on every call.
+//
+// Note: the previous hand-rolled emailRegex/urlRegex were removed — the
+// rules now rely on net/mail.ParseAddress and net/url.Parse respectively,
+// which match RFC 5322 / 3986 correctness far better than a regex ever can.
 var (
-	emailRegex     = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
-	urlRegex       = regexp.MustCompile(`^https?://[^\s]+$`)
 	alphaRegex     = regexp.MustCompile(`^[a-zA-Z]+$`)
 	alphaDashRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 	alphaNumRegex  = regexp.MustCompile(`^[a-zA-Z0-9]+$`)
 )
+
+// urlResolveTimeout caps the time URLPublicRule will spend resolving a host
+// via net.LookupIP. A previous implementation used the unbounded
+// net.LookupIP(host) which could block a handler indefinitely on a slow or
+// hostile resolver.
+const urlResolveTimeout = 5 * time.Second
+
+// urlAllowedSchemes enforces that only http/https are accepted by URLRule;
+// ftp, file, gopher, javascript, etc. are rejected.
+var urlAllowedSchemes = map[string]struct{}{
+	"http":  {},
+	"https": {},
+}
 
 // privateNetworks contains CIDR ranges considered private/internal
 var privateNetworks []*net.IPNet
@@ -50,7 +68,12 @@ func StringRule(field string, value interface{}, params []string, data map[strin
 	return nil
 }
 
-// EmailRule validates that a value is a valid email using both regex and net/mail.ParseAddress
+// EmailRule validates that a value is a valid email address.
+//
+// The rule delegates entirely to net/mail.ParseAddress — the hand-rolled
+// regex that used to gate this check was consistently wrong (it rejected
+// perfectly valid addresses like quoted local-parts and new TLDs) and has
+// been dropped. ParseAddress is the canonical RFC 5322 check.
 func EmailRule(field string, value interface{}, params []string, data map[string]interface{}) error {
 	if value == nil {
 		return nil
@@ -61,17 +84,37 @@ func EmailRule(field string, value interface{}, params []string, data map[string
 		return fmt.Errorf("The %s field must be a string.", field)
 	}
 
-	if !emailRegex.MatchString(str) {
+	if str == "" {
 		return fmt.Errorf("The %s field must be a valid email address.", field)
 	}
-	// Additional validation via net/mail
-	if _, err := mail.ParseAddress(str); err != nil {
+
+	addr, err := mail.ParseAddress(str)
+	if err != nil || addr.Address == "" {
 		return fmt.Errorf("The %s field must be a valid email address.", field)
 	}
+
+	// net/mail.ParseAddress accepts display-name wrappers like
+	// "Alice <alice@example.com>"; reject those — the raw value is meant to
+	// be just the address.
+	if addr.Address != str {
+		return fmt.Errorf("The %s field must be a valid email address.", field)
+	}
+
+	// Host must contain a dot — "user@localhost" is accepted by ParseAddress
+	// but not by any real mail server.
+	at := strings.LastIndex(str, "@")
+	if at == -1 || !strings.Contains(str[at+1:], ".") {
+		return fmt.Errorf("The %s field must be a valid email address.", field)
+	}
+
 	return nil
 }
 
-// URLRule validates that a value is a valid URL
+// URLRule validates that a value is an http(s) URL.
+//
+// Uses net/url.Parse + an explicit scheme allowlist rather than a regex —
+// the regex approach silently accepted things like `https:foo` (no //) and
+// rejected valid IPv6-bracketed hosts.
 func URLRule(field string, value interface{}, params []string, data map[string]interface{}) error {
 	if value == nil {
 		return nil
@@ -82,25 +125,7 @@ func URLRule(field string, value interface{}, params []string, data map[string]i
 		return fmt.Errorf("The %s field must be a string.", field)
 	}
 
-	if !urlRegex.MatchString(str) {
-		return fmt.Errorf("The %s field must be a valid URL.", field)
-	}
-	return nil
-}
-
-// URLPublicRule validates that a value is a valid URL pointing to a public (non-internal) host.
-// Rejects private/internal IPs (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, ::1, fc00::/7).
-func URLPublicRule(field string, value interface{}, params []string, data map[string]interface{}) error {
-	if value == nil {
-		return nil
-	}
-
-	str, ok := value.(string)
-	if !ok {
-		return fmt.Errorf("The %s field must be a string.", field)
-	}
-
-	if !urlRegex.MatchString(str) {
+	if str == "" {
 		return fmt.Errorf("The %s field must be a valid URL.", field)
 	}
 
@@ -108,16 +133,52 @@ func URLPublicRule(field string, value interface{}, params []string, data map[st
 	if err != nil {
 		return fmt.Errorf("The %s field must be a valid URL.", field)
 	}
+	if _, ok := urlAllowedSchemes[strings.ToLower(parsed.Scheme)]; !ok {
+		return fmt.Errorf("The %s field must be a valid URL.", field)
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("The %s field must be a valid URL.", field)
+	}
+	return nil
+}
+
+// URLPublicRule validates that a value is a valid URL pointing to a public
+// (non-internal) host. Rejects private/internal IPs: 127.0.0.0/8, 10.0.0.0/8,
+// 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, ::1, fc00::/7, fe80::/10.
+//
+// The DNS lookup is bounded by urlResolveTimeout (5s) to prevent a slow or
+// adversarial resolver from hanging the calling handler indefinitely.
+func URLPublicRule(field string, value interface{}, params []string, data map[string]interface{}) error {
+	if err := URLRule(field, value, params, data); err != nil {
+		return err
+	}
+	if value == nil {
+		return nil
+	}
+
+	str := value.(string)
+	parsed, err := url.Parse(str)
+	if err != nil {
+		return fmt.Errorf("The %s field must be a valid URL.", field)
+	}
 
 	host := parsed.Hostname()
-	ips, err := net.LookupIP(host)
+	if host == "" {
+		return fmt.Errorf("The %s field must be a valid URL.", field)
+	}
+
+	// Bound DNS resolution so a slow resolver cannot hang the request.
+	ctx, cancel := context.WithTimeout(context.Background(), urlResolveTimeout)
+	defer cancel()
+	resolver := net.DefaultResolver
+	ips, err := resolver.LookupIPAddr(ctx, host)
 	if err != nil {
 		return fmt.Errorf("The %s field must resolve to a valid host.", field)
 	}
 
 	for _, ip := range ips {
 		for _, network := range privateNetworks {
-			if network.Contains(ip) {
+			if network.Contains(ip.IP) {
 				return fmt.Errorf("The %s field must not point to a private or internal address.", field)
 			}
 		}

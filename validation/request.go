@@ -71,6 +71,35 @@ func (r *Result) Messages() map[string][]string {
 	return r.errors
 }
 
+// Err returns nil when validation passed, or an error wrapping
+// ErrValidationFailed when one or more fields failed. The returned error
+// also satisfies errors.As(&ValidationErrors{}) so callers can access the
+// per-field message map.
+func (r *Result) Err() error {
+	if r == nil || !r.HasErrors() {
+		return nil
+	}
+	ve := ValidationErrors{Errors: r.errors}
+	return &resultError{ve: ve}
+}
+
+// resultError wraps ValidationErrors and ErrValidationFailed so both
+// errors.Is(err, ErrValidationFailed) and errors.As(&ValidationErrors{})
+// succeed.
+type resultError struct {
+	ve ValidationErrors
+}
+
+func (e *resultError) Error() string { return e.ve.Error() }
+func (e *resultError) Unwrap() error { return ErrValidationFailed }
+func (e *resultError) As(target interface{}) bool {
+	if p, ok := target.(*ValidationErrors); ok {
+		*p = e.ve
+		return true
+	}
+	return false
+}
+
 // Old returns the original input data with sensitive fields removed.
 // Password, secret, and token fields are stripped automatically (case-insensitive).
 func (r *Result) Old() map[string]interface{} {
