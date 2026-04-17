@@ -36,7 +36,7 @@ func (p *bootstrapTrackingProvider) Events(d events.Dispatcher) {
 	p.eventsCalled = true
 }
 
-func (p *bootstrapTrackingProvider) Schedule(s *scheduler.Scheduler) {
+func (p *bootstrapTrackingProvider) Schedule(s scheduler.TaskScheduler) {
 	*p.calls = append(*p.calls, p.name+":schedule")
 	p.scheduleCalled = true
 }
@@ -90,9 +90,9 @@ func TestBootstrap_FullChain(t *testing.T) {
 		routesCalled = true
 	}).Events(func(d events.Dispatcher) {
 		eventsCalled = true
-	}).Schedule(func(s *scheduler.Scheduler) {
+	}).Schedule(func(s scheduler.TaskScheduler) {
 		scheduleCalled = true
-	}).Exceptions(func(h *exceptions.Handler) {
+	}).Exceptions(func(h exceptions.ExceptionHandler) {
 		exceptionsCalled = true
 	})
 
@@ -129,9 +129,9 @@ func TestBootstrap_ChainOrderIndependent(t *testing.T) {
 	var order []string
 
 	// Register in reverse order
-	a.Exceptions(func(h *exceptions.Handler) {
+	a.Exceptions(func(h exceptions.ExceptionHandler) {
 		order = append(order, "exceptions")
-	}).Schedule(func(s *scheduler.Scheduler) {
+	}).Schedule(func(s scheduler.TaskScheduler) {
 		order = append(order, "schedule")
 	}).Events(func(d events.Dispatcher) {
 		order = append(order, "events")
@@ -482,7 +482,7 @@ func TestBootstrap_ScheduleRegistered(t *testing.T) {
 		t.Fatalf("NewTestApp() error: %v", err)
 	}
 
-	a.Schedule(func(s *scheduler.Scheduler) {
+	a.Schedule(func(s scheduler.TaskScheduler) {
 		s.Call(func() {}).EveryMinute()
 	})
 
@@ -502,21 +502,21 @@ func TestBootstrap_ExceptionsConfigured(t *testing.T) {
 		t.Fatalf("NewTestApp() error: %v", err)
 	}
 
-	var handlerPtr *exceptions.Handler
+	var handlerRef exceptions.ExceptionHandler
 
-	a.Exceptions(func(h *exceptions.Handler) {
-		handlerPtr = h
+	a.Exceptions(func(h exceptions.ExceptionHandler) {
+		handlerRef = h
 	})
 
 	if err := a.bootstrap(); err != nil {
 		t.Fatalf("bootstrap() error: %v", err)
 	}
 
-	if handlerPtr == nil {
-		t.Fatal("exceptions handler pointer is nil")
+	if handlerRef == nil {
+		t.Fatal("exceptions handler is nil")
 	}
-	if handlerPtr != a.Services.Exceptions {
-		t.Error("exceptions handler pointer does not match a.Services.Exceptions")
+	if handlerRef != a.Services.Exceptions {
+		t.Error("exceptions handler does not match a.Services.Exceptions")
 	}
 }
 
@@ -546,12 +546,12 @@ func TestBootstrap_ChainReturnsSameApp(t *testing.T) {
 		t.Error("Events() did not return same *App")
 	}
 
-	got = a.Schedule(func(*scheduler.Scheduler) {})
+	got = a.Schedule(func(scheduler.TaskScheduler) {})
 	if got != a {
 		t.Error("Schedule() did not return same *App")
 	}
 
-	got = a.Exceptions(func(*exceptions.Handler) {})
+	got = a.Exceptions(func(exceptions.ExceptionHandler) {})
 	if got != a {
 		t.Error("Exceptions() did not return same *App")
 	}

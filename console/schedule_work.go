@@ -11,7 +11,7 @@ import (
 )
 
 // ScheduleWork starts the scheduler to run scheduled tasks.
-func ScheduleWork(s *scheduler.Scheduler) error {
+func ScheduleWork(s scheduler.TaskScheduler) error {
 	if s == nil {
 		cli.Warning("No scheduler configured")
 		return nil

@@ -9,6 +9,45 @@ import (
 	"github.com/velocitykode/velocity/cache/drivers"
 )
 
+// CacheManager is the interface satisfied by *Manager. It covers the methods
+// used through app.Services and router.Context for cache operations,
+// store management, locking, and event wiring.
+type CacheManager interface {
+	// Basic operations on the default store.
+	Get(key string) (interface{}, bool)
+	GetWithContext(ctx context.Context, key string) (interface{}, bool)
+	GetString(key string) (string, bool)
+	Put(key string, value interface{}, ttl time.Duration) error
+	PutWithContext(ctx context.Context, key string, value interface{}, ttl time.Duration) error
+	Forever(key string, value interface{}) error
+	ForeverWithContext(ctx context.Context, key string, value interface{}) error
+	Forget(key string) error
+	ForgetWithContext(ctx context.Context, key string) error
+	Flush() error
+	Has(key string) bool
+	Increment(key string, value int64) (int64, error)
+	Decrement(key string, value int64) (int64, error)
+	Remember(key string, ttl time.Duration, callback func() interface{}) (interface{}, error)
+	RememberForever(key string, callback func() interface{}) (interface{}, error)
+	Many(keys []string) map[string]interface{}
+	PutMany(items map[string]interface{}, ttl time.Duration) error
+
+	// Store management.
+	Store(name string) (Store, error)
+	DefaultStore() (Store, error)
+	Close() error
+
+	// Distributed locking.
+	Lock(key string, ttl ...time.Duration) Lock
+	RestoreLock(key string, owner string) Lock
+
+	// Event wiring.
+	SetEventDispatcher(fn func(event interface{}) error)
+}
+
+// Verify *Manager implements CacheManager at compile time.
+var _ CacheManager = (*Manager)(nil)
+
 // Manager manages multiple cache stores
 type Manager struct {
 	mu              sync.RWMutex

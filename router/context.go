@@ -495,15 +495,15 @@ func (c *Context) Services() *app.Services {
 	return c.mustServices()
 }
 
-// DB returns the ORM manager.
-func (c *Context) DB() *orm.Manager {
+// DB returns the ORM database interface.
+func (c *Context) DB() orm.Database {
 	s := c.mustServices()
 	requireService(c, s.DB, "database")
 	return s.DB
 }
 
-// Cache returns the cache manager.
-func (c *Context) Cache() *cache.Manager {
+// Cache returns the cache manager interface.
+func (c *Context) Cache() cache.CacheManager {
 	s := c.mustServices()
 	requireService(c, s.Cache, "cache")
 	return s.Cache
@@ -523,8 +523,8 @@ func (c *Context) Queue() queue.Driver {
 	return s.Queue
 }
 
-// Storage returns the storage manager.
-func (c *Context) Storage() *storage.Manager {
+// Storage returns the storage manager interface.
+func (c *Context) Storage() storage.StorageManager {
 	s := c.mustServices()
 	requireService(c, s.Storage, "storage")
 	return s.Storage
@@ -537,8 +537,8 @@ func (c *Context) Mail() mail.Mailer {
 	return s.Mail
 }
 
-// Notification returns the notification manager.
-func (c *Context) Notification() *notification.Manager {
+// Notification returns the notification interface.
+func (c *Context) Notification() notification.Notifier {
 	s := c.mustServices()
 	requireService(c, s.Notification, "notification")
 	return s.Notification
@@ -565,15 +565,15 @@ func (c *Context) Validator() validation.Validator {
 	return s.Validator
 }
 
-// Exceptions returns the exception handler.
-func (c *Context) Exceptions() *exceptions.Handler {
+// Exceptions returns the exception handler interface.
+func (c *Context) Exceptions() exceptions.ExceptionHandler {
 	s := c.mustServices()
 	requireService(c, s.Exceptions, "exceptions")
 	return s.Exceptions
 }
 
-// Scheduler returns the task scheduler.
-func (c *Context) Scheduler() *scheduler.Scheduler {
+// Scheduler returns the task scheduler interface.
+func (c *Context) Scheduler() scheduler.TaskScheduler {
 	s := c.mustServices()
 	requireService(c, s.Scheduler, "scheduler")
 	return s.Scheduler

@@ -45,8 +45,8 @@ type App struct {
 	middlewareFn   func(*MiddlewareStack)
 	routesFn       func(*Routing)
 	eventsFn       func(events.Dispatcher)
-	scheduleFn     func(*scheduler.Scheduler)
-	exceptionsFn   func(*exceptions.Handler)
+	scheduleFn     func(scheduler.TaskScheduler)
+	exceptionsFn   func(exceptions.ExceptionHandler)
 	bootstrapped   bool
 }
 
@@ -228,13 +228,13 @@ func (a *App) Events(fn func(events.Dispatcher)) *App {
 }
 
 // Schedule registers a callback that configures scheduled jobs.
-func (a *App) Schedule(fn func(*scheduler.Scheduler)) *App {
+func (a *App) Schedule(fn func(scheduler.TaskScheduler)) *App {
 	a.scheduleFn = fn
 	return a
 }
 
 // Exceptions registers a callback that configures the exception handler.
-func (a *App) Exceptions(fn func(*exceptions.Handler)) *App {
+func (a *App) Exceptions(fn func(exceptions.ExceptionHandler)) *App {
 	a.exceptionsFn = fn
 	return a
 }

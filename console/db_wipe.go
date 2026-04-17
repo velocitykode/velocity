@@ -9,7 +9,7 @@ import (
 )
 
 // DBWipe drops all database tables without re-running migrations.
-func DBWipe(db *orm.Manager) error {
+func DBWipe(db orm.Database) error {
 	if db == nil {
 		cli.Warning("No database configured")
 		return nil
@@ -39,7 +39,7 @@ func DBWipe(db *orm.Manager) error {
 }
 
 // listAllTables returns all user table names for the given driver.
-func listAllTables(db *orm.Manager, driver string) ([]string, error) {
+func listAllTables(db orm.Database, driver string) ([]string, error) {
 	var query string
 
 	switch driver {

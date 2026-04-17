@@ -23,13 +23,13 @@ func CheckData(data map[string]interface{}, rules Rules, messages ...Messages) *
 }
 
 // CheckWithDB validates request data with database rules (unique, exists) available.
-func CheckWithDB(r *http.Request, rules Rules, db *orm.Manager, messages ...Messages) *Result {
+func CheckWithDB(r *http.Request, rules Rules, db orm.Database, messages ...Messages) *Result {
 	data := ExtractRequestData(r)
 	return run(data, rules, db, messages...)
 }
 
 // CheckDataWithDB validates a data map with database rules available.
-func CheckDataWithDB(data map[string]interface{}, rules Rules, db *orm.Manager, messages ...Messages) *Result {
+func CheckDataWithDB(data map[string]interface{}, rules Rules, db orm.Database, messages ...Messages) *Result {
 	return run(data, rules, db, messages...)
 }
 
@@ -88,7 +88,7 @@ func (r *Result) Old() map[string]interface{} {
 }
 
 // run validates data against rules using a fresh validator.
-func run(data map[string]interface{}, rules Rules, db *orm.Manager, messages ...Messages) *Result {
+func run(data map[string]interface{}, rules Rules, db orm.Database, messages ...Messages) *Result {
 	v := NewValidator()
 
 	// Register database rules when DB is available

@@ -5,6 +5,19 @@ import (
 	"sync"
 )
 
+// StorageManager is the interface satisfied by *Manager. It covers the
+// methods used through app.Services and router.Context for disk management.
+type StorageManager interface {
+	Disk(name string) Driver
+	Default() Driver
+	AddDisk(name string, driver Driver)
+	SetDefault(name string) error
+	Configure(config Config) error
+}
+
+// Verify *Manager implements StorageManager at compile time.
+var _ StorageManager = (*Manager)(nil)
+
 // Manager manages multiple storage disks
 type Manager struct {
 	mu          sync.RWMutex

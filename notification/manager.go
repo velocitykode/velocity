@@ -8,6 +8,19 @@ import (
 	"time"
 )
 
+// Notifier is the interface satisfied by *Manager. It covers the methods
+// used through app.Services and router.Context for sending notifications.
+type Notifier interface {
+	Send(ctx context.Context, notifiable interface{}, notification Notification) error
+	SendMany(ctx context.Context, notifiables []interface{}, notification Notification) error
+	Channel(name string) (Channel, error)
+	SetChannel(name string, ch Channel)
+	SetEventDispatcher(fn func(event interface{}) error)
+}
+
+// Verify *Manager implements Notifier at compile time.
+var _ Notifier = (*Manager)(nil)
+
 // Manager orchestrates sending notifications across multiple channels.
 type Manager struct {
 	channels        map[string]Channel

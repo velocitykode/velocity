@@ -51,6 +51,29 @@ func (c ManagerConfig) Validate() error {
 	return nil
 }
 
+// Database is the interface satisfied by *Manager. It covers the methods used
+// through app.Services and router.Context for query execution, transactions,
+// connection management, and event wiring.
+type Database interface {
+	DB() *sql.DB
+	Raw(query string, args ...any) (*sql.Rows, error)
+	Exec(query string, args ...any) (sql.Result, error)
+	Transaction(fn func(tx *sql.Tx) error) error
+	Begin() (*sql.Tx, error)
+	Close() error
+	Ping() error
+	DriverName() string
+	DatabaseName() string
+	Stats() sql.DBStats
+	DefaultDriver() drivers.Driver
+	Connection(name string) (drivers.Driver, error)
+	AddConnection(name string, driver drivers.Driver)
+	SetEventDispatcher(fn func(event interface{}) error)
+}
+
+// Verify *Manager implements Database at compile time.
+var _ Database = (*Manager)(nil)
+
 // Manager manages database connections. It is the instance-based alternative
 // to the package-level global functions.
 type Manager struct {

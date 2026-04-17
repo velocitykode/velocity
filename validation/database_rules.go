@@ -45,7 +45,7 @@ func placeholder(driver string, n int) string {
 //	"email": "required|email|unique:users,email"
 //	"email": "required|email|unique:users,email,5"         // exclude id=5
 //	"email": "required|email|unique:users,email,5,user_id" // custom id column
-func UniqueRule(db *orm.Manager) RuleHandler {
+func UniqueRule(db orm.Database) RuleHandler {
 	driver := db.DriverName()
 	return func(field string, value interface{}, params []string, data map[string]interface{}) error {
 		if len(params) < 1 {
@@ -99,7 +99,7 @@ func UniqueRule(db *orm.Manager) RuleHandler {
 // Syntax: exists:table,column
 //
 //	"team_id": "required|exists:teams,id"
-func ExistsRule(db *orm.Manager) RuleHandler {
+func ExistsRule(db orm.Database) RuleHandler {
 	driver := db.DriverName()
 	return func(field string, value interface{}, params []string, data map[string]interface{}) error {
 		if len(params) < 1 {

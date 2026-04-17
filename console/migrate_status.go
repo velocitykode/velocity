@@ -9,7 +9,7 @@ import (
 )
 
 // MigrateStatus displays the status of all registered migrations.
-func MigrateStatus(db *orm.Manager) error {
+func MigrateStatus(db orm.Database) error {
 	if db == nil {
 		cli.Warning("No database configured")
 		return nil

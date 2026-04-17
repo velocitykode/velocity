@@ -10,6 +10,27 @@ import (
 	"github.com/velocitykode/velocity/contract"
 )
 
+// TaskScheduler is the interface satisfied by *Scheduler. It covers the
+// methods used through app.Services and router.Context for job scheduling
+// and lifecycle management.
+//
+// Configuration methods that return *Scheduler for chaining (SetTimezone,
+// SetLogger, MaintenanceMode, Before, After) are intentionally excluded --
+// they are only called on the concrete type during bootstrap.
+type TaskScheduler interface {
+	Add(job *Job) *Job
+	Call(callback func()) *Job
+	Command(command string, args ...string) *Job
+	Run(ctx context.Context) error
+	Stop()
+	Jobs() []*Job
+	SetEventDispatcher(fn func(event interface{}) error)
+	SetEnv(env string)
+}
+
+// Verify *Scheduler implements TaskScheduler at compile time.
+var _ TaskScheduler = (*Scheduler)(nil)
+
 // Scheduler manages and executes scheduled jobs
 type Scheduler struct {
 	mu              sync.RWMutex

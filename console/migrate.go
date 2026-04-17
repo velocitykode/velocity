@@ -15,7 +15,7 @@ type MigrateOptions struct {
 }
 
 // Migrate runs all pending database migrations.
-func Migrate(db *orm.Manager, opts ...MigrateOptions) error {
+func Migrate(db orm.Database, opts ...MigrateOptions) error {
 	if db == nil {
 		cli.Warning("No database configured (DB_CONNECTION not set), skipping migrations")
 		return nil
@@ -83,7 +83,7 @@ func migratePretend(migrator *migrate.Migrator, pending []migrate.Migration) err
 }
 
 // MigrateFresh drops all tables and re-runs all migrations.
-func MigrateFresh(db *orm.Manager) error {
+func MigrateFresh(db orm.Database) error {
 	if db == nil {
 		cli.Warning("No database configured (DB_CONNECTION not set), skipping migrations")
 		return nil
@@ -115,7 +115,7 @@ func MigrateFresh(db *orm.Manager) error {
 }
 
 // MigrateRollback rolls back the last batch of migrations.
-func MigrateRollback(db *orm.Manager, steps int) error {
+func MigrateRollback(db orm.Database, steps int) error {
 	if db == nil {
 		cli.Warning("No database configured (DB_CONNECTION not set), skipping rollback")
 		return nil
