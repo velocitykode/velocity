@@ -1437,6 +1437,10 @@ func mapToStruct(m map[string]any, s any) error {
 	return nil
 }
 
+// structToMap converts a model struct into a column-to-value map ready for
+// driver insert/update. Embedded ORM base types (Model, UUIDModel and their
+// soft-delete variants) are expanded via serializeEmbedded so each branch
+// stays focused on a single responsibility.
 func structToMap(s any) map[string]any {
 	result := make(map[string]any)
 	v := reflect.ValueOf(s)
@@ -1456,6 +1460,12 @@ func structToMap(s any) map[string]any {
 
 		// Skip slice/array fields (usually relations)
 		if v.Field(i).Kind() == reflect.Slice || v.Field(i).Kind() == reflect.Array {
+			continue
+		}
+
+		// Delegate embedded ORM base fields to a single helper so the
+		// main loop stays a straight pass over the declared columns.
+		if serializeEmbedded(field, v.Field(i), result) {
 			continue
 		}
 
@@ -1490,56 +1500,61 @@ func structToMap(s any) map[string]any {
 			}
 		}
 
-		// Handle Model[T] embedded field (no DeletedAt)
-		if strings.HasPrefix(field.Type.String(), "orm.Model[") {
-			modelValue := v.Field(i)
-			result["created_at"] = modelValue.FieldByName("CreatedAt").Interface()
-			result["updated_at"] = modelValue.FieldByName("UpdatedAt").Interface()
-			continue
-		}
-
-		// Handle UUIDModel[T] embedded field (no DeletedAt)
-		if strings.HasPrefix(field.Type.String(), "orm.UUIDModel[") {
-			modelValue := v.Field(i)
-			// Include ID for UUID models (it's set before insert)
-			if idVal := modelValue.FieldByName("ID").String(); idVal != "" {
-				result["id"] = idVal
-			}
-			result["created_at"] = modelValue.FieldByName("CreatedAt").Interface()
-			result["updated_at"] = modelValue.FieldByName("UpdatedAt").Interface()
-			continue
-		}
-
-		// Handle SoftDeleteModel[T] embedded field (with DeletedAt)
-		if strings.HasPrefix(field.Type.String(), "orm.SoftDeleteModel[") {
-			modelValue := v.Field(i)
-			result["created_at"] = modelValue.FieldByName("CreatedAt").Interface()
-			result["updated_at"] = modelValue.FieldByName("UpdatedAt").Interface()
-			if deletedAt := modelValue.FieldByName("DeletedAt"); !deletedAt.IsZero() && !deletedAt.IsNil() {
-				result["deleted_at"] = deletedAt.Interface()
-			}
-			continue
-		}
-
-		// Handle SoftDeleteUUIDModel[T] embedded field (with DeletedAt)
-		if strings.HasPrefix(field.Type.String(), "orm.SoftDeleteUUIDModel[") {
-			modelValue := v.Field(i)
-			// Include ID for UUID models (it's set before insert)
-			if idVal := modelValue.FieldByName("ID").String(); idVal != "" {
-				result["id"] = idVal
-			}
-			result["created_at"] = modelValue.FieldByName("CreatedAt").Interface()
-			result["updated_at"] = modelValue.FieldByName("UpdatedAt").Interface()
-			if deletedAt := modelValue.FieldByName("DeletedAt"); !deletedAt.IsZero() && !deletedAt.IsNil() {
-				result["deleted_at"] = deletedAt.Interface()
-			}
-			continue
-		}
-
 		result[columnName] = value
 	}
 
 	return result
+}
+
+// serializeEmbedded writes the columns contributed by an embedded ORM base
+// type into result and reports whether the field was handled. Returning
+// false signals the caller to fall through to the regular scalar-field
+// branch.
+//
+// The serialization rules mirror the original inline switch:
+//   - orm.Model[T]: writes created_at and updated_at.
+//   - orm.UUIDModel[T]: writes id (when non-empty), created_at, updated_at.
+//   - orm.SoftDeleteModel[T]: writes created_at, updated_at, deleted_at.
+//   - orm.SoftDeleteUUIDModel[T]: writes id, created_at, updated_at,
+//     deleted_at.
+func serializeEmbedded(field reflect.StructField, value reflect.Value, result map[string]any) bool {
+	typeName := field.Type.String()
+
+	switch {
+	case strings.HasPrefix(typeName, "orm.Model["):
+		result["created_at"] = value.FieldByName("CreatedAt").Interface()
+		result["updated_at"] = value.FieldByName("UpdatedAt").Interface()
+		return true
+
+	case strings.HasPrefix(typeName, "orm.UUIDModel["):
+		if id := value.FieldByName("ID").String(); id != "" {
+			result["id"] = id
+		}
+		result["created_at"] = value.FieldByName("CreatedAt").Interface()
+		result["updated_at"] = value.FieldByName("UpdatedAt").Interface()
+		return true
+
+	case strings.HasPrefix(typeName, "orm.SoftDeleteModel["):
+		result["created_at"] = value.FieldByName("CreatedAt").Interface()
+		result["updated_at"] = value.FieldByName("UpdatedAt").Interface()
+		if deletedAt := value.FieldByName("DeletedAt"); !deletedAt.IsZero() && !deletedAt.IsNil() {
+			result["deleted_at"] = deletedAt.Interface()
+		}
+		return true
+
+	case strings.HasPrefix(typeName, "orm.SoftDeleteUUIDModel["):
+		if id := value.FieldByName("ID").String(); id != "" {
+			result["id"] = id
+		}
+		result["created_at"] = value.FieldByName("CreatedAt").Interface()
+		result["updated_at"] = value.FieldByName("UpdatedAt").Interface()
+		if deletedAt := value.FieldByName("DeletedAt"); !deletedAt.IsZero() && !deletedAt.IsNil() {
+			result["deleted_at"] = deletedAt.Interface()
+		}
+		return true
+	}
+
+	return false
 }
 
 // Global convenience functions
