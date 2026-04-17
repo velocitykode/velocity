@@ -18,7 +18,7 @@ func DBWipe(db orm.Database) error {
 	driver := db.DriverName()
 	tables, err := listAllTables(db, driver)
 	if err != nil {
-		return fmt.Errorf("failed to list tables: %w", err)
+		return fmt.Errorf("velocity/console: failed to list tables: %w", err)
 	}
 
 	if len(tables) == 0 {
@@ -30,7 +30,7 @@ func DBWipe(db orm.Database) error {
 
 	for _, table := range tables {
 		if err := migrator.DropTable(table); err != nil {
-			return fmt.Errorf("failed to drop table %s: %w", table, err)
+			return fmt.Errorf("velocity/console: failed to drop table %s: %w", table, err)
 		}
 	}
 
@@ -50,12 +50,12 @@ func listAllTables(db orm.Database, driver string) ([]string, error) {
 	case "mysql":
 		query = "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE()"
 	default:
-		return nil, fmt.Errorf("unsupported driver: %s", driver)
+		return nil, fmt.Errorf("velocity/console: unsupported driver: %s", driver)
 	}
 
 	rows, err := db.Raw(query)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query tables: %w", err)
+		return nil, fmt.Errorf("velocity/console: failed to query tables: %w", err)
 	}
 	defer rows.Close()
 
@@ -63,13 +63,13 @@ func listAllTables(db orm.Database, driver string) ([]string, error) {
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
-			return nil, fmt.Errorf("failed to scan table name: %w", err)
+			return nil, fmt.Errorf("velocity/console: failed to scan table name: %w", err)
 		}
 		tables = append(tables, name)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating table rows: %w", err)
+		return nil, fmt.Errorf("velocity/console: error iterating table rows: %w", err)
 	}
 
 	return tables, nil

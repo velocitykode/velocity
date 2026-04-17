@@ -152,7 +152,7 @@ func (m *Manager) SendMany(ctx context.Context, notifiables []interface{}, notif
 	}
 
 	if len(errors) > 0 {
-		return fmt.Errorf("notification: %d of %d sends failed: %v", len(errors), len(notifiables), errors[0])
+		return fmt.Errorf("velocity/notification: %d of %d sends failed: %v", len(errors), len(notifiables), errors[0])
 	}
 
 	return nil
@@ -163,7 +163,7 @@ func (m *Manager) sendViaChannel(ctx context.Context, channelName string, notifi
 	ch, err := m.Channel(channelName)
 	if err != nil {
 		m.dispatchEvent(buildNotificationFailed(ctx, notifiable, notification, channelName, err))
-		return fmt.Errorf("notification: channel %q: %w", channelName, err)
+		return fmt.Errorf("velocity/notification: channel %q: %w", channelName, err)
 	}
 
 	start := time.Now()
@@ -172,7 +172,7 @@ func (m *Manager) sendViaChannel(ctx context.Context, channelName string, notifi
 
 	if err != nil {
 		m.dispatchEvent(buildNotificationFailed(ctx, notifiable, notification, channelName, err))
-		return fmt.Errorf("notification: channel %q: %w", channelName, err)
+		return fmt.Errorf("velocity/notification: channel %q: %w", channelName, err)
 	}
 
 	m.dispatchEvent(buildNotificationSent(ctx, notifiable, notification, channelName, duration))

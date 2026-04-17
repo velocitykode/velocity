@@ -20,7 +20,7 @@ var (
 	ErrTokenMissing = errors.New("velocity/csrf: token missing")
 	ErrTokenInvalid = errors.New("velocity/csrf: token invalid")
 	ErrTokenExpired = errors.New("velocity/csrf: token expired")
-	ErrNoStore      = errors.New("no token store configured")
+	ErrNoStore      = errors.New("velocity/csrf: no token store configured")
 )
 
 // CSRF provides CSRF protection functionality
@@ -44,6 +44,31 @@ func New(config *Config) *CSRF {
 	}
 
 	return &CSRF{config: config}
+}
+
+// Shutdown releases resources held by the CSRF token store. If the
+// underlying store implements contract.ShutdownAware (Shutdown(ctx) error)
+// or exposes a Close() method, it is invoked; otherwise Shutdown is a
+// no-op. The context deadline is honoured.
+func (c *CSRF) Shutdown(ctx context.Context) error {
+	if c == nil || c.config == nil || c.config.Store == nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return nil
+	}
+	if shutdowner, ok := c.config.Store.(interface {
+		Shutdown(context.Context) error
+	}); ok {
+		return shutdowner.Shutdown(ctx)
+	}
+	if closer, ok := c.config.Store.(interface{ Close() }); ok {
+		closer.Close()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Middleware returns HTTP middleware that validates CSRF tokens
@@ -88,7 +113,7 @@ func (c *CSRF) RouterMiddleware() router.MiddlewareFunc {
 			c.Middleware(inner).ServeHTTP(ctx.Response, ctx.Request)
 			if !called {
 				log.Printf("csrf: request blocked for %s %s", ctx.Request.Method, ctx.Request.URL.Path)
-				return fmt.Errorf("csrf: request rejected for %s %s", ctx.Request.Method, ctx.Request.URL.Path)
+				return fmt.Errorf("velocity/csrf: request rejected for %s %s", ctx.Request.Method, ctx.Request.URL.Path)
 			}
 			return handlerErr
 		}
@@ -170,7 +195,7 @@ func (c *CSRF) getSessionID(r *http.Request) (string, error) {
 	// Generate a random per-request identifier instead of using RemoteAddr
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("csrf: failed to generate session ID: %w", err)
+		return "", fmt.Errorf("velocity/csrf: failed to generate session ID: %w", err)
 	}
 	return "temp-" + hex.EncodeToString(b), nil
 }

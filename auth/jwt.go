@@ -225,7 +225,7 @@ func (j *JWTManager) ValidateToken(tokenString string) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
 		// Validate signing method
 		if token.Method.Alg() != j.config.Algorithm {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Method.Alg())
+			return nil, fmt.Errorf("velocity/auth: unexpected signing method: %v", token.Method.Alg())
 		}
 		return []byte(j.config.Secret), nil
 	}, parserOpts...)
@@ -236,12 +236,12 @@ func (j *JWTManager) ValidateToken(tokenString string) (*Claims, error) {
 
 	claims, ok := token.Claims.(*Claims)
 	if !ok || !token.Valid {
-		return nil, errors.New("invalid token")
+		return nil, errors.New("velocity/auth: invalid token")
 	}
 
 	// Check if token is blacklisted
 	if j.config.BlacklistEnabled && j.IsBlacklisted(claims.ID) {
-		return nil, errors.New("token has been revoked")
+		return nil, errors.New("velocity/auth: token has been revoked")
 	}
 
 	return claims, nil
@@ -257,7 +257,7 @@ func (j *JWTManager) RefreshToken(refreshTokenString string, provider UserProvid
 
 	// Ensure this is actually a refresh token
 	if claims.TokenType != "refresh" {
-		return "", errors.New("token is not a refresh token")
+		return "", errors.New("velocity/auth: token is not a refresh token")
 	}
 
 	// Get user
@@ -340,7 +340,7 @@ func (j *JWTManager) ParseTokenWithoutValidation(tokenString string) (*Claims, e
 
 	claims, ok := token.Claims.(*Claims)
 	if !ok {
-		return nil, errors.New("invalid claims")
+		return nil, errors.New("velocity/auth: invalid claims")
 	}
 
 	return claims, nil

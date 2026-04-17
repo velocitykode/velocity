@@ -205,13 +205,21 @@ func (m *Manager) DefaultStore() (Store, error) {
 }
 
 // Shutdown closes all cache stores, honoring the context deadline.
+// Prefers each store's Shutdown(ctx) (contract.ShutdownAware) and falls
+// back to a deprecated Close() for older drivers.
 func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	for _, store := range m.stores {
+		if shutdowner, ok := store.(interface {
+			Shutdown(context.Context) error
+		}); ok {
+			_ = shutdowner.Shutdown(ctx)
+			continue
+		}
 		if closer, ok := store.(interface{ Close() error }); ok {
-			closer.Close()
+			_ = closer.Close()
 		}
 	}
 

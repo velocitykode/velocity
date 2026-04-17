@@ -95,6 +95,42 @@ func (a *App) Shutdown(ctx context.Context) error {
 		collect(a.Cache.Shutdown(ctx))
 	}
 
+	// 5a. Close CSRF store (stops cleanup goroutine).
+	if a.CSRF != nil {
+		if shutdowner, ok := a.CSRF.(interface {
+			Shutdown(context.Context) error
+		}); ok {
+			collect(shutdowner.Shutdown(ctx))
+		}
+	}
+
+	// 5b. Shutdown mail manager.
+	if a.Mail != nil {
+		if shutdowner, ok := a.Mail.(interface {
+			Shutdown(context.Context) error
+		}); ok {
+			collect(shutdowner.Shutdown(ctx))
+		}
+	}
+
+	// 5c. Shutdown storage manager.
+	if a.Storage != nil {
+		if shutdowner, ok := a.Storage.(interface {
+			Shutdown(context.Context) error
+		}); ok {
+			collect(shutdowner.Shutdown(ctx))
+		}
+	}
+
+	// 5d. Shutdown notification manager.
+	if a.Notification != nil {
+		if shutdowner, ok := a.Notification.(interface {
+			Shutdown(context.Context) error
+		}); ok {
+			collect(shutdowner.Shutdown(ctx))
+		}
+	}
+
 	// 6. Close database connections
 	if a.DB != nil {
 		collect(a.DB.Shutdown(ctx))

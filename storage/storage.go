@@ -49,7 +49,7 @@ func (m *Manager) Configure(config Config) error {
 	for name, diskConfig := range config.Disks {
 		driver, err := createDriver(diskConfig)
 		if err != nil {
-			return fmt.Errorf("failed to create driver for disk %s: %w", name, err)
+			return fmt.Errorf("velocity/storage: failed to create driver for disk %s: %w", name, err)
 		}
 		m.disks[name] = driver
 	}
@@ -112,6 +112,6 @@ func createDriver(config DiskConfig) (Driver, error) {
 	case "memory":
 		return NewMemoryDriver(config), nil
 	default:
-		return nil, fmt.Errorf("unknown driver: %s", config.Driver)
+		return nil, fmt.Errorf("velocity/storage: unknown driver: %s", config.Driver)
 	}
 }

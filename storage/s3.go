@@ -57,7 +57,7 @@ func NewS3Driver(diskConfig DiskConfig) (*S3Driver, error) {
 	// Load AWS config
 	cfg, err := config.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load AWS config: %w", err)
+		return nil, fmt.Errorf("velocity/storage: failed to load aws config: %w", err)
 	}
 
 	// Create S3 client

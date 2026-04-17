@@ -36,7 +36,7 @@ func Migrate(db orm.Database, opts ...MigrateOptions) error {
 
 	pending, err := getPendingMigrations(db.DB(), migrations)
 	if err != nil {
-		return fmt.Errorf("failed to get pending migrations: %w", err)
+		return fmt.Errorf("velocity/console: failed to get pending migrations: %w", err)
 	}
 
 	if len(pending) == 0 {
@@ -51,7 +51,7 @@ func Migrate(db orm.Database, opts ...MigrateOptions) error {
 	cli.Info("Running migrations...")
 
 	if err := migrator.Up(); err != nil {
-		return fmt.Errorf("migration failed: %w", err)
+		return fmt.Errorf("velocity/console: migration failed: %w", err)
 	}
 
 	for _, m := range pending {
@@ -69,7 +69,7 @@ func migratePretend(migrator *migrate.Migrator, pending []migrate.Migration) err
 	for _, m := range pending {
 		migrator.SetPretend(true) // reset log for each migration
 		if err := m.Up(migrator); err != nil {
-			return fmt.Errorf("pretend failed for %s: %w", m.Version, err)
+			return fmt.Errorf("velocity/console: pretend failed for %s: %w", m.Version, err)
 		}
 
 		cli.Info(fmt.Sprintf("%s_%s:", m.Version, m.Description))
@@ -100,7 +100,7 @@ func MigrateFresh(db orm.Database) error {
 	cli.Info("Dropping all tables...")
 
 	if err := migrator.Fresh(); err != nil {
-		return fmt.Errorf("fresh migration failed: %w", err)
+		return fmt.Errorf("velocity/console: fresh migration failed: %w", err)
 	}
 
 	cli.Info("Running migrations...")
@@ -131,7 +131,7 @@ func MigrateRollback(db orm.Database, steps int) error {
 
 	rollbackVersions, err := getRollbackMigrations(db.DB(), steps)
 	if err != nil {
-		return fmt.Errorf("failed to get rollback migrations: %w", err)
+		return fmt.Errorf("velocity/console: failed to get rollback migrations: %w", err)
 	}
 
 	if len(rollbackVersions) == 0 {
@@ -142,7 +142,7 @@ func MigrateRollback(db orm.Database, steps int) error {
 	cli.Info("Rolling back migrations...")
 
 	if err := migrator.Down(steps); err != nil {
-		return fmt.Errorf("rollback failed: %w", err)
+		return fmt.Errorf("velocity/console: rollback failed: %w", err)
 	}
 
 	for _, version := range rollbackVersions {

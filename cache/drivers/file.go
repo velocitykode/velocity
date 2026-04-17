@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -51,12 +52,23 @@ func (s *FileStore) Start() {
 	go s.cleanupExpired()
 }
 
-// Close stops the background cleanup goroutine. Safe to call multiple times.
-func (s *FileStore) Close() error {
+// Shutdown stops the background cleanup goroutine. Safe to call multiple
+// times. Honours the context deadline for uniformity with other
+// ShutdownAware types.
+func (s *FileStore) Shutdown(ctx context.Context) error {
 	s.closeOnce.Do(func() {
 		close(s.done)
 	})
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return nil
+}
+
+// Close stops the background cleanup goroutine. Safe to call multiple times.
+// Deprecated: use Shutdown(ctx) instead.
+func (s *FileStore) Close() error {
+	return s.Shutdown(context.Background())
 }
 
 // cleanupExpired removes expired cache files periodically.
