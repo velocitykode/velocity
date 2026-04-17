@@ -155,7 +155,7 @@ func New(opts ...Option) (*App, error) {
 	// 15. Create router and inject services
 	a.Router = router.New()
 	a.Router.SetServices(a.Services)
-	a.Router.SetValidator(func(c *router.Context, rules map[string][]string, messages ...map[string]string) {
+	a.Router.SetValidator(func(c *router.Context, rules map[string][]string, messages ...map[string]string) error {
 		// Convert []string rules to pipe-separated format for validation package
 		vRules := make(validation.Rules, len(rules))
 		for field, fieldRules := range rules {
@@ -167,14 +167,14 @@ func New(opts ...Option) (*App, error) {
 		}
 		result := validation.CheckWithDB(c.Request, vRules, c.DB(), msgs...)
 		if !result.HasErrors() {
-			return
+			return nil
 		}
 		c.WithErrors(result.All())
 		c.WithInput(result.Old())
 		if v := c.View(); v != nil {
 			v.Back(c.Response, c.Request)
 		}
-		panic(router.AbortValidation{})
+		return router.ErrValidationAborted
 	})
 
 	// 16. Initialize validator

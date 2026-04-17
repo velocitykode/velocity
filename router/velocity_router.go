@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -16,6 +17,11 @@ import (
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
+
+// ErrValidationAborted is returned when validation fails and the response
+// (typically a redirect with flashed errors) has already been written.
+// The router skips error handling for this sentinel.
+var ErrValidationAborted = errors.New("velocity/router: validation aborted, response already written")
 
 // compiledRouteMap is a type alias used with atomic.Pointer for lock-free reads.
 type compiledRouteMap = map[string]*MatchResult
@@ -76,7 +82,7 @@ type VelocityRouterV2 struct {
 	ErrorHandler func(*Context, error)
 
 	// validateFn is wired during app init to run validation with DB support.
-	validateFn func(c *Context, rules map[string][]string, messages ...map[string]string)
+	validateFn func(c *Context, rules map[string][]string, messages ...map[string]string) error
 }
 
 // NewV2 creates a new tree-based router instance
@@ -101,7 +107,7 @@ func (r *VelocityRouterV2) SetServices(s *app.Services) {
 }
 
 // SetValidator sets the validation function used by ctx.Validate().
-func (r *VelocityRouterV2) SetValidator(fn func(c *Context, rules map[string][]string, messages ...map[string]string)) {
+func (r *VelocityRouterV2) SetValidator(fn func(c *Context, rules map[string][]string, messages ...map[string]string) error) {
 	r.validateFn = fn
 }
 
@@ -517,8 +523,9 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 			// Write error response
 			r.handleError(ctx, rw, err)
-		} else if handlerErr != nil {
-			// Dispatch failed event for handler error
+		} else if handlerErr != nil && !errors.Is(handlerErr, ErrValidationAborted) {
+			// Dispatch failed event for handler error (skip validation abort —
+			// the response has already been written with flashed errors).
 			r.dispatchInstanceEvent(&RequestFailed{
 				Context:   req.Context(),
 				RequestID: requestID,
@@ -551,7 +558,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}()
 
 	handlerErr = result.Handler(ctx)
-	if handlerErr != nil {
+	if handlerErr != nil && !errors.Is(handlerErr, ErrValidationAborted) {
 		r.handleError(ctx, rw, handlerErr)
 	}
 }
@@ -572,10 +579,6 @@ func (r *VelocityRouterV2) handleError(ctx *Context, rw *responseWriter, err err
 
 	http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
 }
-
-// AbortValidation is a sentinel panic value used by validate.Form to stop
-// handler execution when validation fails (response already sent).
-type AbortValidation struct{}
 
 // (panicError and toString removed — use internal/panicerr.FromRecovered)
 

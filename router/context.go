@@ -66,7 +66,7 @@ type Context struct {
 	services       *app.Services
 	sseStarted     bool
 	trustedProxies []string
-	validateFn     func(c *Context, rules map[string][]string, messages ...map[string]string)
+	validateFn     func(c *Context, rules map[string][]string, messages ...map[string]string) error
 }
 
 // NewContext creates a new Context from http.Request and http.ResponseWriter.
@@ -956,22 +956,25 @@ func writeFlashCookie(w http.ResponseWriter, name string, value any) {
 }
 
 // Validate checks the request against rules and automatically redirects back
-// with flashed errors and old input if validation fails. Panics with
-// AbortValidation to stop handler execution (caught by Bond middleware).
+// with flashed errors and old input if validation fails. Returns
+// ErrValidationAborted when validation fails — the handler should return
+// this error to the router, which will skip error handling since the
+// redirect response has already been written.
 //
 //	func (h *Handler) Store(ctx *router.Context) error {
-//	    ctx.Validate(map[string][]string{
+//	    if err := ctx.Validate(map[string][]string{
 //	        "name":  {"required"},
 //	        "email": {"required", "email", "unique:users,email"},
-//	    })
+//	    }); err != nil {
+//	        return err
+//	    }
 //	    // only reaches here if valid
 //	}
-func (c *Context) Validate(rules map[string][]string, messages ...map[string]string) {
+func (c *Context) Validate(rules map[string][]string, messages ...map[string]string) error {
 	if c.validateFn != nil {
-		c.validateFn(c, rules, messages...)
-		return
+		return c.validateFn(c, rules, messages...)
 	}
-	panic("ctx.Validate: validator not configured")
+	panic("velocity/router: validator not configured")
 }
 
 // ---------------------------------------------------------------------------

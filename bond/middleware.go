@@ -36,15 +36,6 @@ func (b *Bond) Middleware(next http.Handler) http.Handler {
 
 		// Buffer the response so we can inspect/modify it after the handler
 		bw := newResponseBuffer(w)
-		defer func() {
-			if rec := recover(); rec != nil {
-				if _, ok := rec.(router.AbortValidation); ok {
-					bw.flush(w) // validation failed — flush the redirect and return normally
-					return      // no re-panic; response is complete
-				}
-				panic(rec) // re-panic real panics for upstream recovery
-			}
-		}()
 		next.ServeHTTP(bw, r)
 
 		// Empty 200 response — handler forgot to return anything, redirect back

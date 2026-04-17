@@ -1546,7 +1546,7 @@ func TestContext_reset_clearsAllFields(t *testing.T) {
 		services:       &app.Services{},
 		sseStarted:     true,
 		trustedProxies: []string{"10.0.0.0/8"},
-		validateFn:     func(c *Context, rules map[string][]string, messages ...map[string]string) {},
+		validateFn:     func(c *Context, rules map[string][]string, messages ...map[string]string) error { return nil },
 	}
 
 	c.reset()
