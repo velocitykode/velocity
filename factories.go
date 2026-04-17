@@ -174,12 +174,17 @@ func initDB(config DBConfig) (*orm.Manager, error) {
 
 // initQueue selects the queue driver based on config. Falls back to memory if the
 // redis connection fails or the database driver is requested without a DB connection.
-func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey string, appKey string) queue.Driver {
+// Returns an error when payload signing configuration itself fails (e.g. HKDF
+// derivation from APP_KEY), so boot fails visibly rather than running without
+// integrity protection.
+func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey string, appKey string) (queue.Driver, error) {
 	// Configure payload signing now that .env has been loaded. This used
 	// to run in queue's package init(), which fired before godotenv.Load
 	// had populated APP_KEY/QUEUE_SIGNING_KEY — so signing was always
 	// reported as disabled even when the key was present.
-	queue.ConfigureSigning(signingKey, appKey)
+	if err := queue.ConfigureSigning(signingKey, appKey); err != nil {
+		return nil, err
+	}
 
 	newMemory := func() queue.Driver {
 		d := queue.NewMemoryDriver()
@@ -197,16 +202,16 @@ func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey strin
 			TLS:      config.RedisTLS,
 		})
 		if err != nil {
-			return newMemory()
+			return newMemory(), nil
 		}
-		return d
+		return d, nil
 	case "database":
 		if db == nil {
-			return newMemory()
+			return newMemory(), nil
 		}
-		return queue.NewDatabaseDriver(db, dbDriver)
+		return queue.NewDatabaseDriver(db, dbDriver), nil
 	default:
-		return newMemory()
+		return newMemory(), nil
 	}
 }
 
