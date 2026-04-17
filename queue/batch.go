@@ -5,6 +5,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/velocitykode/velocity/async"
 )
 
 // BatchID is a unique identifier for a batch
@@ -32,7 +34,7 @@ func newBatchStore() *batchStoreMap {
 		batches: make(map[BatchID]*Batch),
 		stop:    make(chan struct{}),
 	}
-	go s.periodicCleanup()
+	async.Go(func() { s.periodicCleanup() })
 	return s
 }
 
@@ -199,10 +201,14 @@ func (b *Batch) recordFailure(err error) {
 		Error:      err.Error(),
 	})
 
-	// Fire catch callback once on first failure
+	// Fire catch callback once on first failure. Wrap in async.Go so a panic
+	// inside user-supplied code is recovered and logged rather than crashing
+	// the worker process.
 	b.catchOnce.Do(func() {
 		if b.catchFn != nil {
-			go b.catchFn(b, err)
+			catchFn := b.catchFn
+			catchErr := err
+			async.Go(func() { catchFn(b, catchErr) })
 		}
 	})
 
@@ -230,14 +236,17 @@ func (b *Batch) checkFinished() {
 	finallyFn := b.finallyFn
 	b.mu.Unlock()
 
-	// Fire then callback if no failures
+	// Fire then callback if no failures. Wrap in async.Go so a panic inside
+	// user-supplied code is recovered and logged rather than crashing the process.
 	if !b.HasFailures() && thenFn != nil {
-		go thenFn(b)
+		fn := thenFn
+		async.Go(func() { fn(b) })
 	}
 
-	// Always fire finally
+	// Always fire finally, also wrapped for panic safety.
 	if finallyFn != nil {
-		go finallyFn(b)
+		fn := finallyFn
+		async.Go(func() { fn(b) })
 	}
 
 	dispatchBatchEvent(b.dispatchEvent, &BatchCompleted{
