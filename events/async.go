@@ -3,8 +3,11 @@ package events
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // AsyncDispatcher handles asynchronous event dispatching
@@ -18,17 +21,22 @@ func NewAsyncDispatcher() *AsyncDispatcher {
 	return &AsyncDispatcher{}
 }
 
-// Push processes an event asynchronously
+// Push processes an event asynchronously.
+// Listener panics are recovered so one misbehaving listener does not
+// tear down the process.
 func (a *AsyncDispatcher) Push(event interface{}, listener Listener, delay time.Duration) error {
-	// For now, use goroutines for async processing
-	if delay > 0 {
-		time.AfterFunc(delay, func() {
-			listener.Handle(event)
-		})
-	} else {
-		go func() {
-			listener.Handle(event)
+	safeHandle := func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("velocity/events: async listener panic recovered: %v", panicerr.FromRecovered(r))
+			}
 		}()
+		_ = listener.Handle(event)
+	}
+	if delay > 0 {
+		time.AfterFunc(delay, safeHandle)
+	} else {
+		go safeHandle()
 	}
 	return nil
 }
