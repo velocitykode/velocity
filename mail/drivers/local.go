@@ -241,11 +241,22 @@ func (d *LocalDriver) sendViaSendmail(ctx context.Context, msg *mail.Message) er
 	return nil
 }
 
-// sanitizeHeader strips CRLF characters to prevent header injection
+// sanitizeHeader drops every C0 control character (U+0000..U+001F) except
+// horizontal tab from a header value. The previous implementation stripped
+// only CR/LF, which let NUL and other C0 bytes through — NUL in particular
+// can truncate strings in downstream C parsers (e.g. sendmail, libesmtp)
+// and enable header-injection vectors a simple CRLF check misses.
+// DEL (U+007F) is dropped as well since several older MTAs choke on it.
 func sanitizeHeader(value string) string {
-	value = strings.ReplaceAll(value, "\r", "")
-	value = strings.ReplaceAll(value, "\n", "")
-	return value
+	return strings.Map(func(r rune) rune {
+		if r == '\t' {
+			return r
+		}
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, value)
 }
 
 // sanitizeFilename removes characters that could cause injection in MIME headers
