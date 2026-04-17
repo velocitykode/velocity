@@ -381,9 +381,9 @@ func TestManager(t *testing.T) {
 	}
 
 	// Test default disk
-	defaultDisk := manager.Default()
-	if defaultDisk == nil {
-		t.Fatal("Default disk is nil")
+	defaultDisk, err := manager.Default()
+	if err != nil {
+		t.Fatalf("Default disk error: %v", err)
 	}
 
 	// Write to default disk
@@ -393,9 +393,9 @@ func TestManager(t *testing.T) {
 	}
 
 	// Test specific disk
-	backupDisk := manager.Disk("backup")
-	if backupDisk == nil {
-		t.Fatal("Backup disk is nil")
+	backupDisk, err := manager.Disk("backup")
+	if err != nil {
+		t.Fatalf("Backup disk error: %v", err)
 	}
 
 	err = backupDisk.Put("backup.txt", []byte("backup disk"))
@@ -418,7 +418,10 @@ func TestManager(t *testing.T) {
 		t.Fatalf("Failed to set default: %v", err)
 	}
 
-	newDefault := manager.Default()
+	newDefault, err := manager.Default()
+	if err != nil {
+		t.Fatalf("Default disk error after SetDefault: %v", err)
+	}
 	err = newDefault.Put("memory.txt", []byte("memory disk"))
 	if err != nil {
 		t.Fatalf("Failed to write to memory disk: %v", err)
@@ -453,9 +456,9 @@ func TestManagerAPI(t *testing.T) {
 		t.Fatalf("Failed to configure storage: %v", err)
 	}
 
-	d := manager.Default()
-	if d == nil {
-		t.Fatal("Default disk is nil")
+	d, err := manager.Default()
+	if err != nil {
+		t.Fatalf("Default disk error: %v", err)
 	}
 
 	// Test Put
@@ -490,9 +493,9 @@ func TestManagerAPI(t *testing.T) {
 	}
 
 	// Test accessing specific disk
-	testDisk := manager.Disk("test")
-	if testDisk == nil {
-		t.Fatal("Test disk is nil")
+	testDisk, err := manager.Disk("test")
+	if err != nil {
+		t.Fatalf("Test disk error: %v", err)
 	}
 
 	err = testDisk.Put("disk.txt", []byte("disk content"))

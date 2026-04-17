@@ -157,7 +157,7 @@ func (m *Manager) createStore(name string) (Store, error) {
 
 	config, exists := m.config.Stores[name]
 	if !exists {
-		return nil, fmt.Errorf("cache store '%s' is not configured", name)
+		return nil, fmt.Errorf("velocity/cache: store %q not configured: %w", name, ErrStoreNotFound)
 	}
 
 	// Combine global and store-specific prefix

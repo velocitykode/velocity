@@ -49,7 +49,7 @@ func (m *Manager) Channel(name string) (Mailer, error) {
 		return mailer, nil
 	}
 
-	return nil, fmt.Errorf("velocity/mail: channel %q not configured", name)
+	return nil, fmt.Errorf("velocity/mail: channel %q not configured: %w", name, ErrChannelNotFound)
 }
 
 // SetChannel sets a specific mailer for a channel

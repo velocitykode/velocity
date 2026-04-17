@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -173,7 +174,7 @@ func (w *Worker) work(id int) {
 			return
 		default:
 			if err := w.processJob(); err != nil {
-				if err.Error() != "no job available" {
+				if !errors.Is(err, ErrNoJobAvailable) {
 					w.logger.Error("Worker error", "id", id, "error", err)
 				}
 				// Back off on errors
@@ -191,7 +192,7 @@ func (w *Worker) processJob() error {
 	}
 
 	if job == nil {
-		return fmt.Errorf("no job available")
+		return ErrNoJobAvailable
 	}
 
 	// Get job type for event dispatching

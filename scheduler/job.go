@@ -135,7 +135,7 @@ func (j *Job) Run() error {
 	j.mu.Lock()
 	if j.withoutOverlapping && j.running {
 		j.mu.Unlock()
-		return fmt.Errorf("job %s is already running", j.name)
+		return fmt.Errorf("velocity/scheduler: job %s: %w", j.name, ErrJobRunning)
 	}
 	j.running = true
 	j.lastRun = time.Now()

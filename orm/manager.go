@@ -97,7 +97,7 @@ func createDriver(name string) (drivers.Driver, error) {
 	case "mysql":
 		return drivers.NewMySQLDriver(), nil
 	default:
-		return nil, fmt.Errorf("orm: driver %q not registered", name)
+		return nil, fmt.Errorf("velocity/orm: driver %q not registered: %w", name, ErrDriverNotFound)
 	}
 }
 

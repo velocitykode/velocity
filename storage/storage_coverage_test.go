@@ -37,9 +37,9 @@ func TestManagerAPICompleteCoverage(t *testing.T) {
 		t.Fatalf("Failed to configure: %v", err)
 	}
 
-	d := manager.Default()
-	if d == nil {
-		t.Fatal("Default disk should not be nil")
+	d, err := manager.Default()
+	if err != nil {
+		t.Fatalf("Default disk error: %v", err)
 	}
 
 	// Test PutStream
@@ -193,11 +193,11 @@ func TestManagerAPICompleteCoverage(t *testing.T) {
 		_ = err
 	})
 
-	// Test Disk with nil return
+	// Test Disk with nonexistent name
 	t.Run("NilDisk", func(t *testing.T) {
-		disk := manager.Disk("nonexistent")
-		if disk != nil {
-			t.Error("Disk should return nil for nonexistent disk")
+		_, err := manager.Disk("nonexistent")
+		if !errors.Is(err, ErrDiskNotFound) {
+			t.Errorf("Disk should return ErrDiskNotFound, got: %v", err)
 		}
 	})
 }
@@ -229,9 +229,12 @@ func TestManagerAdditional(t *testing.T) {
 		})
 		manager.AddDisk("custom", memDriver)
 
-		disk := manager.Disk("custom")
+		disk, err := manager.Disk("custom")
+		if err != nil {
+			t.Errorf("AddDisk failed: %v", err)
+		}
 		if disk == nil {
-			t.Error("AddDisk failed to add disk")
+			t.Error("AddDisk returned nil driver")
 		}
 	})
 
@@ -245,9 +248,9 @@ func TestManagerAdditional(t *testing.T) {
 
 	// Test Disk with non-existent disk
 	t.Run("DiskNonExistent", func(t *testing.T) {
-		disk := manager.Disk("nonexistent")
-		if disk != nil {
-			t.Error("Disk should return nil for non-existent disk")
+		_, err := manager.Disk("nonexistent")
+		if !errors.Is(err, ErrDiskNotFound) {
+			t.Errorf("Disk should return ErrDiskNotFound, got: %v", err)
 		}
 	})
 }
