@@ -1,0 +1,54 @@
+# golangci-lint configuration for Velocity.
+#
+# Rationale: the framework's panic-recovery audit (sweep/panic-recovery)
+# standardized on `async.Go` (or an explicit `defer recover()` that
+# dispatches a `<pkg>.OperationFailed` event / logs via the manager's
+# logger) for every goroutine spawned from library code. To prevent
+# regressions, the forbidigo rule below flags raw `go func(` and bare
+# `go func()` usages. Test files (`_test.go`) and the `async/` package
+# itself are exempt.
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  disable-all: true
+  enable:
+    - forbidigo
+    - govet
+    - staticcheck
+
+linters-settings:
+  forbidigo:
+    forbid:
+      # Disallow anonymous-func goroutines outside async.Go to ensure
+      # panic recovery is never skipped. Use `async.Go(func(){...})` or
+      # an explicit `defer recover()` that logs/dispatches an
+      # OperationFailed event. See CONTRIBUTING.md for details.
+      - p: "^go func\\("
+        msg: "use async.Go or an explicit defer recover() — see CONTRIBUTING.md 'Goroutines and panic recovery'"
+    analyze-types: false
+
+issues:
+  exclude-rules:
+    # Tests may spawn goroutines freely — race detection + t.Fatal
+    # already catches test panics, and adding async.Go would obscure
+    # test intent.
+    - path: _test\.go
+      linters:
+        - forbidigo
+
+    # The async package itself is the canonical implementation of panic-
+    # safe goroutines; its internals legitimately use `go func(` to
+    # implement async.Go, async.Run, etc.
+    - path: ^async/
+      linters:
+        - forbidigo
+
+    # The router's event dispatcher pool wraps listener invocation with
+    # safeInvokeListener (a panic-safe call site); see
+    # router/event_dispatcher.go for the recovery logic.
+    - path: ^router/event_dispatcher\.go
+      linters:
+        - forbidigo
