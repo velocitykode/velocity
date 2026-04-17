@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"sync"
@@ -11,6 +12,7 @@ import (
 
 // CommandDispatching is fired before a command is handled.
 type CommandDispatching struct {
+	Context     context.Context
 	CommandType string
 }
 
@@ -18,6 +20,7 @@ func (e *CommandDispatching) Name() string { return "command.dispatching" }
 
 // CommandCompleted is fired after a command is handled successfully.
 type CommandCompleted struct {
+	Context     context.Context
 	CommandType string
 }
 
@@ -25,6 +28,7 @@ func (e *CommandCompleted) Name() string { return "command.completed" }
 
 // CommandFailed is fired when a command handler returns an error.
 type CommandFailed struct {
+	Context     context.Context
 	CommandType string
 	Error       string
 }
@@ -33,6 +37,7 @@ func (e *CommandFailed) Name() string { return "command.failed" }
 
 // CommandQueued is fired when a command is pushed to the queue.
 type CommandQueued struct {
+	Context     context.Context
 	CommandType string
 }
 

@@ -57,5 +57,5 @@ type SSRRenderFailed struct {
 	SourceLocation string `json:"sourceLocation,omitempty"`
 }
 
-// EventName returns the dispatcher name for this event.
-func (SSRRenderFailed) EventName() string { return EventSSRRenderFailed }
+// Name returns the dispatcher name for this event.
+func (SSRRenderFailed) Name() string { return EventSSRRenderFailed }
