@@ -2,6 +2,7 @@ package velocity
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -59,70 +60,65 @@ func (a *App) Serve() error {
 }
 
 // Shutdown gracefully shuts down all services in reverse initialization order.
+// Every subsystem's Shutdown is called even if an earlier one fails; all errors
+// are aggregated via errors.Join.
 func (a *App) Shutdown(ctx context.Context) error {
-	var firstErr error
-	setErr := func(err error) {
-		if err != nil && firstErr == nil {
-			firstErr = err
+	var errs []error
+	collect := func(err error) {
+		if err != nil {
+			errs = append(errs, err)
 		}
 	}
 
 	// 1. Stop accepting new connections
 	if a.server != nil {
-		setErr(a.server.Shutdown(ctx))
+		collect(a.server.Shutdown(ctx))
 	}
 
 	// 2. Drain async event dispatcher workers (no-op if running sync).
-	// Done after server shutdown so any final RequestHandled/RequestFailed
-	// events from draining in-flight requests still enter the queue.
 	if a.Router != nil {
-		setErr(a.Router.ShutdownEventDispatcher(ctx))
+		collect(a.Router.ShutdownEventDispatcher(ctx))
 	}
 
 	// 3. Stop scheduler
 	if a.Scheduler != nil {
-		setErr(a.Scheduler.Shutdown(ctx))
+		collect(a.Scheduler.Shutdown(ctx))
 	}
 
 	// 4. Close queue driver
 	if a.Queue != nil {
-		setErr(a.Queue.Shutdown(ctx))
+		collect(a.Queue.Shutdown(ctx))
 	}
 
 	// 5. Close cache connections
 	if a.Cache != nil {
-		setErr(a.Cache.Shutdown(ctx))
+		collect(a.Cache.Shutdown(ctx))
 	}
 
 	// 6. Close database connections
 	if a.DB != nil {
-		setErr(a.DB.Shutdown(ctx))
+		collect(a.DB.Shutdown(ctx))
 		orm.ResetDefault()
 	}
 
-	// 7. Shutdown chain providers in reverse order (before WithProviders providers)
+	// 7. Shutdown chain providers in reverse order
 	for i := len(a.chainProviders) - 1; i >= 0; i-- {
-		setErr(a.chainProviders[i].Shutdown(ctx))
+		collect(a.chainProviders[i].Shutdown(ctx))
 	}
 
 	// 8. Shutdown WithProviders providers in reverse registration order
 	for i := len(a.providers) - 1; i >= 0; i-- {
-		setErr(a.providers[i].Shutdown(ctx))
+		collect(a.providers[i].Shutdown(ctx))
 	}
 
-	// 9. Close logger if it supports it (e.g., file logger) — last, so all
-	// prior shutdown steps can still log.
+	// 9. Close logger last so all prior steps can still log.
 	if a.Log != nil {
 		if shutdowner, ok := a.Log.(interface{ Shutdown(context.Context) error }); ok {
-			setErr(shutdowner.Shutdown(ctx))
+			collect(shutdowner.Shutdown(ctx))
 		} else if closer, ok := a.Log.(interface{ Close() error }); ok {
-			setErr(closer.Close())
+			collect(closer.Close())
 		}
 	}
 
-	if firstErr != nil {
-		return fmt.Errorf("velocity: shutdown error: %w", firstErr)
-	}
-
-	return nil
+	return errors.Join(errs...)
 }
