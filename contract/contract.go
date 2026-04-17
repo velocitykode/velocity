@@ -1,6 +1,25 @@
 package contract
 
-import "net/http"
+import (
+	"context"
+	"net/http"
+)
+
+// ShutdownAware is the uniform interface for types that hold background
+// resources (goroutines, connections, file handles) and need to release
+// them during application shutdown.
+//
+// Implementations MUST:
+//   - honour the context deadline and return promptly when ctx is cancelled;
+//   - be safe to call more than once (idempotent);
+//   - return a non-nil error only when cleanup actually failed — a
+//     no-op Shutdown returns nil.
+//
+// The provider registry and App.Shutdown call Shutdown in reverse
+// registration order; see serve.go and app/provider.go.
+type ShutdownAware interface {
+	Shutdown(ctx context.Context) error
+}
 
 // AuthManager defines the contract for authorization checks.
 // Implemented by *auth.Manager.
