@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/encoding/protojson"
 
+	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/log"
 )
 
@@ -324,7 +325,7 @@ func (g *Gateway) StartAsyncWithContext(ctx context.Context) error {
 	g.running = true
 	g.mu.Unlock()
 
-	go func() {
+	async.Go(func() {
 		g.logger.Info("HTTP gateway starting",
 			"address", g.httpServer.Addr,
 			"grpc_endpoint", g.grpcEndpoint,
@@ -332,7 +333,7 @@ func (g *Gateway) StartAsyncWithContext(ctx context.Context) error {
 		if err := g.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			g.logger.Error("HTTP gateway error", "error", err)
 		}
-	}()
+	})
 
 	return nil
 }

@@ -200,9 +200,25 @@ func authenticate(ctx context.Context, method string, cfg *AuthConfig) (context.
 	return ContextWithClaims(ctx, claims), nil
 }
 
+// isPublicMethod decides whether method is in the allow-list. It deliberately
+// does NOT use a bare strings.HasPrefix — that would let an entry like
+// "/admin" match "/administrator/DoDangerous" and grant free access. The
+// contract is:
+//   - entries ending in "/" are treated as service-level prefixes: the method
+//     name must start with that exact string (service boundary intact).
+//   - entries without a trailing "/" must match the method exactly.
 func isPublicMethod(method string, publicMethods []string) bool {
-	for _, prefix := range publicMethods {
-		if strings.HasPrefix(method, prefix) {
+	for _, entry := range publicMethods {
+		if entry == "" {
+			continue
+		}
+		if strings.HasSuffix(entry, "/") {
+			if strings.HasPrefix(method, entry) {
+				return true
+			}
+			continue
+		}
+		if method == entry {
 			return true
 		}
 	}

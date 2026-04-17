@@ -5,7 +5,6 @@ import (
 	"strings"
 	"time"
 
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -94,6 +93,9 @@ func WithEventDispatcher(dispatcher grpcevents.EventDispatchFunc) LoggingOption 
 }
 
 // Logging creates a logging interceptor pair that logs all requests.
+// The unary variant lives in logging_unary.go and the stream variant in
+// logging_stream.go; this file holds the shared configuration, the
+// logRequest helper, event-dispatch plumbing, and request-ID context helpers.
 func Logging(opts ...LoggingOption) InterceptorPair {
 	cfg := &LoggingConfig{
 		SkipMethods:      make(map[string]bool),
@@ -107,68 +109,6 @@ func Logging(opts ...LoggingOption) InterceptorPair {
 	return InterceptorPair{
 		Unary:  loggingUnary(cfg),
 		Stream: loggingStream(cfg),
-	}
-}
-
-// LoggingInterceptor creates a unary logging interceptor.
-// This is a convenience function for when you only need the unary interceptor.
-func LoggingInterceptor(opts ...LoggingOption) grpc.UnaryServerInterceptor {
-	return Logging(opts...).Unary
-}
-
-// StreamLoggingInterceptor creates a stream logging interceptor.
-// This is a convenience function for when you only need the stream interceptor.
-func StreamLoggingInterceptor(opts ...LoggingOption) grpc.StreamServerInterceptor {
-	return Logging(opts...).Stream
-}
-
-func loggingUnary(cfg *LoggingConfig) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-		// Check if we should skip this method
-		if shouldSkip(info.FullMethod, cfg) {
-			return handler(ctx, req)
-		}
-
-		start := time.Now()
-
-		// Dispatch request started event
-		dispatchRequestStarted(ctx, info.FullMethod, start, cfg.EventDispatcher)
-
-		// Call handler
-		resp, err := handler(ctx, req)
-
-		// Log the request
-		logRequest(ctx, info.FullMethod, start, err, cfg)
-
-		// Dispatch completion event
-		dispatchRequestCompleted(ctx, info.FullMethod, start, err, cfg.EventDispatcher)
-
-		return resp, err
-	}
-}
-
-func loggingStream(cfg *LoggingConfig) grpc.StreamServerInterceptor {
-	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		// Check if we should skip this method
-		if shouldSkip(info.FullMethod, cfg) {
-			return handler(srv, ss)
-		}
-
-		start := time.Now()
-
-		// Dispatch stream started event
-		dispatchStreamStarted(ss.Context(), info.FullMethod, start, cfg.EventDispatcher)
-
-		// Call handler
-		err := handler(srv, ss)
-
-		// Log the request
-		logRequest(ss.Context(), info.FullMethod, start, err, cfg)
-
-		// Dispatch stream completion event
-		dispatchStreamCompleted(ss.Context(), info.FullMethod, start, err, cfg.EventDispatcher)
-
-		return err
 	}
 }
 
@@ -249,7 +189,7 @@ func logRequest(ctx context.Context, method string, start time.Time, err error, 
 	}
 }
 
-// Event dispatching helpers
+// Event dispatching helpers — shared between unary and stream variants.
 
 // redactMetadata returns a copy of md with sensitive headers redacted
 func redactMetadata(md map[string][]string) map[string][]string {
@@ -273,26 +213,6 @@ func dispatchEvent(dispatcher grpcevents.EventDispatchFunc, event interface{}) {
 	if dispatcher != nil {
 		_ = dispatcher(event)
 	}
-}
-
-func dispatchRequestStarted(ctx context.Context, method string, start time.Time, dispatcher grpcevents.EventDispatchFunc) {
-	if dispatcher == nil {
-		return
-	}
-
-	var md map[string][]string
-	protocol := detectProtocol(ctx)
-	if inMD, ok := metadata.FromIncomingContext(ctx); ok {
-		md = redactMetadata(inMD)
-	}
-
-	dispatchEvent(dispatcher, &grpcevents.RequestStarted{
-		Method:    method,
-		Protocol:  protocol,
-		StartTime: start,
-		Context:   ctx,
-		Metadata:  md,
-	})
 }
 
 // detectProtocol determines if the request came via HTTP gateway or direct gRPC
@@ -324,119 +244,6 @@ func detectProtocol(ctx context.Context) grpcevents.Protocol {
 	}
 
 	return grpcevents.ProtocolGRPC
-}
-
-func dispatchRequestCompleted(ctx context.Context, method string, start time.Time, err error, dispatcher grpcevents.EventDispatchFunc) {
-	if dispatcher == nil {
-		return
-	}
-
-	end := time.Now()
-	duration := end.Sub(start)
-	protocol := detectProtocol(ctx)
-
-	code := codes.OK
-	if err != nil {
-		if s, ok := status.FromError(err); ok {
-			code = s.Code()
-		} else {
-			code = codes.Unknown
-		}
-	}
-
-	var userID, teamID uint
-	if claims := ClaimsFromContext(ctx); claims != nil {
-		userID = claims.GetUserID()
-		teamID = claims.GetTeamID()
-	}
-
-	if err != nil {
-		dispatchEvent(dispatcher, &grpcevents.RequestFailed{
-			Method:     method,
-			Protocol:   protocol,
-			StartTime:  start,
-			EndTime:    end,
-			Duration:   duration,
-			StatusCode: code,
-			Error:      err,
-			Context:    ctx,
-			UserID:     userID,
-			TeamID:     teamID,
-		})
-	} else {
-		dispatchEvent(dispatcher, &grpcevents.RequestCompleted{
-			Method:     method,
-			Protocol:   protocol,
-			StartTime:  start,
-			EndTime:    end,
-			Duration:   duration,
-			StatusCode: code,
-			Context:    ctx,
-			UserID:     userID,
-			TeamID:     teamID,
-		})
-	}
-}
-
-func dispatchStreamStarted(ctx context.Context, method string, start time.Time, dispatcher grpcevents.EventDispatchFunc) {
-	if dispatcher == nil {
-		return
-	}
-
-	var md map[string][]string
-	protocol := detectProtocol(ctx)
-	if inMD, ok := metadata.FromIncomingContext(ctx); ok {
-		md = redactMetadata(inMD)
-	}
-
-	dispatchEvent(dispatcher, &grpcevents.StreamStarted{
-		Method:    method,
-		Protocol:  protocol,
-		StartTime: start,
-		Context:   ctx,
-		Metadata:  md,
-	})
-}
-
-func dispatchStreamCompleted(ctx context.Context, method string, start time.Time, err error, dispatcher grpcevents.EventDispatchFunc) {
-	if dispatcher == nil {
-		return
-	}
-
-	end := time.Now()
-	duration := end.Sub(start)
-	protocol := detectProtocol(ctx)
-
-	var userID, teamID uint
-	if claims := ClaimsFromContext(ctx); claims != nil {
-		userID = claims.GetUserID()
-		teamID = claims.GetTeamID()
-	}
-
-	if err != nil {
-		dispatchEvent(dispatcher, &grpcevents.StreamFailed{
-			Method:    method,
-			Protocol:  protocol,
-			StartTime: start,
-			EndTime:   end,
-			Duration:  duration,
-			Error:     err,
-			Context:   ctx,
-			UserID:    userID,
-			TeamID:    teamID,
-		})
-	} else {
-		dispatchEvent(dispatcher, &grpcevents.StreamCompleted{
-			Method:    method,
-			Protocol:  protocol,
-			StartTime: start,
-			EndTime:   end,
-			Duration:  duration,
-			Context:   ctx,
-			UserID:    userID,
-			TeamID:    teamID,
-		})
-	}
 }
 
 // Additional context helpers for logging
