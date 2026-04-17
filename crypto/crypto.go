@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/velocitykode/velocity/crypto/drivers"
@@ -12,11 +11,11 @@ import (
 
 // Errors
 var (
-	ErrInvalidKey       = errors.New("invalid encryption key")
-	ErrInvalidPayload   = errors.New("invalid payload format")
-	ErrDecryptionFailed = errors.New("decryption failed")
-	ErrInvalidCipher    = errors.New("unsupported cipher")
-	ErrNotInitialized   = errors.New("encryptor not initialized")
+	ErrInvalidKey       = errors.New("velocity/crypto: invalid encryption key")
+	ErrInvalidPayload   = errors.New("velocity/crypto: invalid payload format")
+	ErrDecryptionFailed = errors.New("velocity/crypto: decryption failed")
+	ErrInvalidCipher    = errors.New("velocity/crypto: unsupported cipher")
+	ErrNotInitialized   = errors.New("velocity/crypto: encryptor not initialized")
 )
 
 // Encryptor interface defines encryption operations
@@ -59,21 +58,35 @@ func DefaultConfig() Config {
 	}
 }
 
-// Validate checks that the Config is usable.
+// Validate checks that the Config is usable. Allowed ciphers are the AES
+// variants with 128/192/256-bit keys, in CBC or GCM mode.
+//
+// Returns ErrInvalidKey for empty keys and ErrInvalidCipher for unsupported
+// cipher names so callers can still use errors.Is for branching.
 func (c Config) Validate() error {
 	if c.Key == "" {
-		return fmt.Errorf("crypto: encryption key is required")
+		return ErrInvalidKey
 	}
-	switch c.Cipher {
-	case "AES-128-CBC", "AES-256-CBC", "AES-128-GCM", "AES-256-GCM":
+	cipher := strings.ToUpper(c.Cipher)
+	switch cipher {
+	case "AES-128-CBC", "AES-192-CBC", "AES-256-CBC",
+		"AES-128-GCM", "AES-192-GCM", "AES-256-GCM":
 	default:
-		return fmt.Errorf("crypto: unsupported cipher %q", c.Cipher)
+		return ErrInvalidCipher
 	}
 	return nil
 }
 
-// NewEncryptor creates a new encryptor with custom configuration
+// NewEncryptor creates a new encryptor with custom configuration.
+// The config is validated before constructing the driver; missing keys or
+// unsupported ciphers are rejected up-front.
 func NewEncryptor(config Config) (Encryptor, error) {
+	if config.Cipher == "" {
+		config.Cipher = "AES-256-GCM"
+	}
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
 	return newDriver(config)
 }
 
@@ -111,6 +124,8 @@ func newDriver(config Config) (Encryptor, error) {
 	switch cipher {
 	case "AES-128-CBC", "AES-128-GCM":
 		// 16-byte key
+	case "AES-192-CBC", "AES-192-GCM":
+		// 24-byte key
 	case "AES-256-CBC", "AES-256-GCM":
 		// 32-byte key
 	default:

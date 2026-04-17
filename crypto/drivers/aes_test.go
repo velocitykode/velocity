@@ -976,40 +976,24 @@ func TestGenerateKeyUniqueness(t *testing.T) {
 	}
 }
 
-func TestGenerateMAC(t *testing.T) {
+func TestComputeMAC(t *testing.T) {
 	key := []byte("0123456789abcdef")
 	driver, _ := NewAESDriver(key, nil, "AES-128-CBC")
 
 	tests := []struct {
-		name  string
-		value string
-		iv    string
+		name string
+		iv   []byte
+		ct   []byte
 	}{
-		{
-			name:  "generates MAC for typical values",
-			value: "encrypted_value_base64",
-			iv:    "iv_base64",
-		},
-		{
-			name:  "generates MAC for empty value",
-			value: "",
-			iv:    "iv_base64",
-		},
-		{
-			name:  "generates MAC for empty iv",
-			value: "encrypted_value",
-			iv:    "",
-		},
-		{
-			name:  "generates MAC for both empty",
-			value: "",
-			iv:    "",
-		},
+		{"typical values", []byte("iv_bytes_16______"), []byte("ciphertext_bytes")},
+		{"empty value", []byte("iv_bytes_16______"), []byte{}},
+		{"empty iv", []byte{}, []byte("ciphertext")},
+		{"both empty", []byte{}, []byte{}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mac := driver.generateMAC(tt.value, tt.iv)
+			mac := driver.computeMAC(tt.iv, tt.ct)
 
 			if mac == "" {
 				t.Error("MAC should not be empty")
@@ -1027,7 +1011,7 @@ func TestGenerateMAC(t *testing.T) {
 			}
 
 			// Verify determinism - same inputs should produce same MAC
-			mac2 := driver.generateMAC(tt.value, tt.iv)
+			mac2 := driver.computeMAC(tt.iv, tt.ct)
 			if mac != mac2 {
 				t.Error("MAC should be deterministic")
 			}
@@ -1035,12 +1019,12 @@ func TestGenerateMAC(t *testing.T) {
 	}
 }
 
-func TestGenerateMACWithKey(t *testing.T) {
+func TestComputeMACWith(t *testing.T) {
 	key1 := []byte("0123456789abcdef")
 	key2 := []byte("fedcba9876543210")
 
-	value := "test_value"
-	iv := "test_iv"
+	iv := []byte("iv_bytes_16______")
+	ct := []byte("ciphertext_raw")
 
 	tests := []struct {
 		name string
@@ -1052,15 +1036,17 @@ func TestGenerateMACWithKey(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mac := generateMACWith(value, iv, tt.key)
+			mac := computeMACWith(iv, ct, tt.key)
 
 			if mac == "" {
 				t.Error("MAC should not be empty")
 			}
 
-			// Verify by computing expected MAC manually
+			// Verify by computing expected MAC manually with domain prefix.
 			expectedMAC := hmac.New(sha256.New, tt.key)
-			expectedMAC.Write([]byte("base64:" + value + "." + iv))
+			expectedMAC.Write([]byte("velocity\x00"))
+			expectedMAC.Write(iv)
+			expectedMAC.Write(ct)
 			expected := base64.StdEncoding.EncodeToString(expectedMAC.Sum(nil))
 
 			if mac != expected {
@@ -1071,8 +1057,8 @@ func TestGenerateMACWithKey(t *testing.T) {
 
 	// Test that different keys produce different MACs
 	t.Run("different keys produce different MACs", func(t *testing.T) {
-		mac1 := generateMACWith(value, iv, key1)
-		mac2 := generateMACWith(value, iv, key2)
+		mac1 := computeMACWith(iv, ct, key1)
+		mac2 := computeMACWith(iv, ct, key2)
 
 		if mac1 == mac2 {
 			t.Error("different keys should produce different MACs")

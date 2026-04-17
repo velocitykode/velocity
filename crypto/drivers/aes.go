@@ -33,19 +33,21 @@ func NewAESDriver(key []byte, previousKeys [][]byte, cipher string) (*AESDriver,
 		cipher:       strings.ToUpper(cipher),
 	}
 
-	// Determine required key size
+	// Determine required key size. Only AES-128/192/256 are permitted.
 	switch d.cipher {
 	case "AES-128-CBC", "AES-128-GCM":
 		d.keySize = 16
+	case "AES-192-CBC", "AES-192-GCM":
+		d.keySize = 24
 	case "AES-256-CBC", "AES-256-GCM":
 		d.keySize = 32
 	default:
-		return nil, fmt.Errorf("unsupported cipher: %s", cipher)
+		return nil, fmt.Errorf("velocity/crypto: unsupported cipher: %s", cipher)
 	}
 
 	// Reject empty or nil keys
 	if len(key) == 0 {
-		return nil, fmt.Errorf("invalid key size: key must not be empty")
+		return nil, errors.New("velocity/crypto: invalid key size: key must not be empty")
 	}
 
 	// Derive separate encryption and HMAC subkeys directly from the original key
@@ -53,11 +55,11 @@ func NewAESDriver(key []byte, previousKeys [][]byte, cipher string) (*AESDriver,
 	// no intermediate normalization step is needed.
 	encKey, err := deriveSubkey(key, d.keySize, []byte("encryption"))
 	if err != nil {
-		return nil, fmt.Errorf("failed to derive encryption key: %w", err)
+		return nil, fmt.Errorf("velocity/crypto: failed to derive encryption key: %w", err)
 	}
 	hmacKey, err := deriveSubkey(key, 32, []byte("hmac"))
 	if err != nil {
-		return nil, fmt.Errorf("failed to derive hmac key: %w", err)
+		return nil, fmt.Errorf("velocity/crypto: failed to derive hmac key: %w", err)
 	}
 
 	d.key = encKey
@@ -145,13 +147,13 @@ func (d *AESDriver) encryptCBC(plaintext []byte) (string, error) {
 	// Create cipher block
 	block, err := aes.NewCipher(d.key)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("velocity/crypto: %w", err)
 	}
 
 	// Generate IV
 	iv := make([]byte, aes.BlockSize)
 	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
-		return "", err
+		return "", fmt.Errorf("velocity/crypto: failed to read iv: %w", err)
 	}
 
 	// Pad plaintext to block size
@@ -162,8 +164,9 @@ func (d *AESDriver) encryptCBC(plaintext []byte) (string, error) {
 	ciphertext := make([]byte, len(plaintext))
 	mode.CryptBlocks(ciphertext, plaintext)
 
-	// Generate MAC for integrity
-	mac := d.generateMAC(base64.StdEncoding.EncodeToString(ciphertext), base64.StdEncoding.EncodeToString(iv))
+	// Generate MAC for integrity over the raw (unencoded) IV and ciphertext,
+	// using domain-separated binary writes instead of string formatting.
+	mac := d.computeMAC(iv, ciphertext)
 
 	// Create payload
 	p := &Payload{
@@ -225,30 +228,30 @@ func (d *AESDriver) decryptWithKeys(p *Payload, encKey, hmacKey []byte) ([]byte,
 func (d *AESDriver) decryptCBCWithKey(p *Payload, encKey, hmacKey []byte) ([]byte, error) {
 	// MAC is required for CBC decryption to ensure integrity
 	if p.MAC == "" {
-		return nil, errors.New("velocity/crypto: mac required for CBC decryption")
+		return nil, errors.New("velocity/crypto: mac required for cbc decryption")
 	}
 
-	// Verify MAC using the dedicated HMAC key
-	expectedMAC := generateMACWith(p.Value, p.IV, hmacKey)
-	if !secureCompare(p.MAC, expectedMAC) {
-		return nil, errors.New("velocity/crypto: mac verification failed")
-	}
-
-	// Decode components
+	// Decode components BEFORE MAC verification so we can compute the MAC
+	// over the raw bytes (the wire format hashes raw IV+ciphertext with a
+	// domain-separation prefix).
 	iv, err := base64.StdEncoding.DecodeString(p.IV)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("velocity/crypto: invalid iv encoding: %w", err)
 	}
-
 	ciphertext, err := base64.StdEncoding.DecodeString(p.Value)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("velocity/crypto: invalid value encoding: %w", err)
+	}
+
+	expectedMAC := computeMACWith(iv, ciphertext, hmacKey)
+	if !secureCompare(p.MAC, expectedMAC) {
+		return nil, errors.New("velocity/crypto: mac verification failed")
 	}
 
 	// Create cipher block
 	block, err := aes.NewCipher(encKey)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("velocity/crypto: %w", err)
 	}
 
 	// Decrypt
@@ -307,15 +310,24 @@ func (d *AESDriver) decryptGCMWithKey(p *Payload, key []byte) ([]byte, error) {
 	return plaintext, nil
 }
 
-// generateMAC generates HMAC for CBC mode using the derived HMAC key
-func (d *AESDriver) generateMAC(value, iv string) string {
-	return generateMACWith(value, iv, d.hmacKey)
+// macDomainPrefix is a domain-separation tag bound to the framework and
+// the current wire-format version. The trailing NUL byte guarantees the
+// prefix is never confused with IV bytes in HMAC input.
+var macDomainPrefix = []byte("velocity\x00")
+
+// computeMAC generates HMAC for CBC mode using the derived HMAC key,
+// over domain-separated raw bytes: prefix || iv || ciphertext.
+func (d *AESDriver) computeMAC(iv, ct []byte) string {
+	return computeMACWith(iv, ct, d.hmacKey)
 }
 
-// generateMACWith generates HMAC with the provided HMAC key
-func generateMACWith(value, iv string, hmacKey []byte) string {
+// computeMACWith generates HMAC with the provided HMAC key, using
+// domain-separated writes rather than string concatenation.
+func computeMACWith(iv, ct, hmacKey []byte) string {
 	mac := hmac.New(sha256.New, hmacKey)
-	mac.Write([]byte(fmt.Sprintf("base64:%s.%s", value, iv)))
+	mac.Write(macDomainPrefix)
+	mac.Write(iv)
+	mac.Write(ct)
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
 
