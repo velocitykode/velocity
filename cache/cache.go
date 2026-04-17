@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"time"
 )
 
@@ -50,6 +51,30 @@ type Cache interface {
 type Store interface {
 	Cache
 	GetPrefix() string
+}
+
+// ContextStore is an optional extension of Store that threads the caller's
+// context.Context through to the underlying driver. Stores that implement
+// this interface allow the cache manager to cancel long-running operations
+// (e.g. Redis GETs across a slow network) when the request context is cancelled.
+//
+// The Manager uses contract assertions to call these methods when available
+// and falls back to the plain Store methods otherwise, so drivers may adopt
+// ContextStore incrementally.
+type ContextStore interface {
+	Store
+
+	GetCtx(ctx context.Context, key string) (interface{}, bool)
+	GetStringCtx(ctx context.Context, key string) (string, bool)
+	PutCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) error
+	ForeverCtx(ctx context.Context, key string, value interface{}) error
+	ForgetCtx(ctx context.Context, key string) error
+	FlushCtx(ctx context.Context) error
+	HasCtx(ctx context.Context, key string) bool
+	IncrementCtx(ctx context.Context, key string, value int64) (int64, error)
+	DecrementCtx(ctx context.Context, key string, value int64) (int64, error)
+	ManyCtx(ctx context.Context, keys []string) map[string]interface{}
+	PutManyCtx(ctx context.Context, items map[string]interface{}, ttl time.Duration) error
 }
 
 // Driver types
