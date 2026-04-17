@@ -3,10 +3,38 @@ package drivers
 import (
 	"fmt"
 	"net/url"
+	"os"
+	"regexp"
 	"strings"
 
 	_ "github.com/go-sql-driver/mysql"
 )
+
+// mysqlDSNPasswordRegex matches the password portion of a MySQL DSN between
+// the first ':' after the optional username and the '@' that starts the host
+// section. Password characters are URL-encoded so the capture ends at '@'.
+var mysqlDSNPasswordRegex = regexp.MustCompile(`^([^:@/]+):[^@]*@`)
+
+// redactMySQLDSN masks the password portion of a MySQL DSN so it can be
+// embedded in error messages and logs without leaking credentials.
+func redactMySQLDSN(dsn string) string {
+	return mysqlDSNPasswordRegex.ReplaceAllString(dsn, `$1:[REDACTED]@`)
+}
+
+// resolveMySQLTLS returns the effective tls= value for a MySQL connection.
+//
+// Precedence:
+//  1. DB_MYSQL_TLS env var, if set. Allows deployment-level opt-out.
+//  2. "preferred" — the secure default. Uses TLS if the server offers it,
+//     otherwise falls back to plaintext. Applications that require a strong
+//     guarantee should set DB_MYSQL_TLS=true (verified) or configure a named
+//     TLS profile via github.com/go-sql-driver/mysql RegisterTLSConfig.
+func resolveMySQLTLS() string {
+	if env := os.Getenv("DB_MYSQL_TLS"); env != "" {
+		return env
+	}
+	return "preferred"
+}
 
 // MySQLDriver implements the Driver interface for MySQL
 type MySQLDriver struct {
@@ -57,12 +85,14 @@ func (d *MySQLDriver) Connect(config ConnectionConfig) error {
 	if config.TimeZone != "" {
 		params = append(params, "loc="+config.TimeZone)
 	}
+	// tls defaults to preferred — secure by default.
+	params = append(params, "tls="+resolveMySQLTLS())
 
 	dsn += "?" + strings.Join(params, "&")
 
 	db, err := openAndPing("mysql", dsn)
 	if err != nil {
-		return err
+		return fmt.Errorf("velocity/orm: mysql connect failed (dsn=%q): %w", redactMySQLDSN(dsn), err)
 	}
 
 	d.ConfigurePool(db)
