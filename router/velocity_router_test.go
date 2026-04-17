@@ -1141,7 +1141,10 @@ func TestVelocityRouterV2_TrustedProxies(t *testing.T) {
 		}
 	})
 
-	t.Run("IP returns RemoteAddr when all XFF IPs are trusted", func(t *testing.T) {
+	t.Run("IP falls back to left-most XFF when every hop is trusted", func(t *testing.T) {
+		// RFC 7239 right-most-trusted: with no untrusted hop to return,
+		// the left-most entry is the best the router can do — that is
+		// the claimed originating client.
 		router := NewV2()
 		router.TrustedProxies = []string{"10.0.0.1", "10.0.0.2"}
 
@@ -1157,8 +1160,8 @@ func TestVelocityRouterV2_TrustedProxies(t *testing.T) {
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
 
-		if capturedIP != "10.0.0.1" {
-			t.Errorf("expected IP '10.0.0.1', got %q", capturedIP)
+		if capturedIP != "10.0.0.2" {
+			t.Errorf("expected IP '10.0.0.2', got %q", capturedIP)
 		}
 	})
 }
@@ -1205,13 +1208,14 @@ func TestContext_Reset(t *testing.T) {
 		req := httptest.NewRequest("GET", "/test", nil)
 		w := httptest.NewRecorder()
 
+		trusted, _ := ParseTrustedProxies([]string{"10.0.0.1"})
 		ctx := &Context{
 			Response:       w,
 			Request:        req,
 			params:         []RouteParam{{Key: "id", Value: "123"}},
 			values:         map[string]interface{}{"key": "value"},
 			sseStarted:     true,
-			trustedProxies: []string{"10.0.0.1"},
+			trustedProxies: trusted,
 		}
 
 		ctx.reset()
@@ -1698,13 +1702,14 @@ func TestContext_TrustedProxyIP(t *testing.T) {
 	})
 
 	t.Run("reads XFF when remote is trusted", func(t *testing.T) {
+		trusted, _ := ParseTrustedProxies([]string{"10.0.0.1"})
 		req := httptest.NewRequest("GET", "/test", nil)
 		req.RemoteAddr = "10.0.0.1:1234"
 		req.Header.Set("X-Forwarded-For", "8.8.8.8")
 		ctx := &Context{
 			Request:        req,
 			values:         make(map[string]interface{}),
-			trustedProxies: []string{"10.0.0.1"},
+			trustedProxies: trusted,
 		}
 
 		if ip := ctx.IP(); ip != "8.8.8.8" {
@@ -1713,13 +1718,14 @@ func TestContext_TrustedProxyIP(t *testing.T) {
 	})
 
 	t.Run("ignores XFF when remote is not trusted", func(t *testing.T) {
+		trusted, _ := ParseTrustedProxies([]string{"10.0.0.1"})
 		req := httptest.NewRequest("GET", "/test", nil)
 		req.RemoteAddr = "192.168.1.1:1234"
 		req.Header.Set("X-Forwarded-For", "8.8.8.8")
 		ctx := &Context{
 			Request:        req,
 			values:         make(map[string]interface{}),
-			trustedProxies: []string{"10.0.0.1"},
+			trustedProxies: trusted,
 		}
 
 		if ip := ctx.IP(); ip != "192.168.1.1" {
@@ -1728,13 +1734,14 @@ func TestContext_TrustedProxyIP(t *testing.T) {
 	})
 
 	t.Run("skips trusted IPs in XFF chain", func(t *testing.T) {
+		trusted, _ := ParseTrustedProxies([]string{"10.0.0.1", "10.0.0.2"})
 		req := httptest.NewRequest("GET", "/test", nil)
 		req.RemoteAddr = "10.0.0.1:1234"
 		req.Header.Set("X-Forwarded-For", "203.0.113.1, 10.0.0.2")
 		ctx := &Context{
 			Request:        req,
 			values:         make(map[string]interface{}),
-			trustedProxies: []string{"10.0.0.1", "10.0.0.2"},
+			trustedProxies: trusted,
 		}
 
 		if ip := ctx.IP(); ip != "203.0.113.1" {
