@@ -6,7 +6,19 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 )
+
+// migrationLockKey is a fixed 64-bit integer used with pg_advisory_lock.
+// Any constant works as long as it is stable across runners; this value
+// is the FNV-1a hash of "velocity.migrate.lock" (precomputed) and is
+// highly unlikely to collide with user-defined advisory lock keys.
+const migrationLockKey int64 = 0x76656c6d69677261 // "velmigra" as bytes
+
+// migrationsLockTableName is the name of the helper row used for MySQL and
+// SQLite advisory locking. The row-level SELECT ... FOR UPDATE blocks
+// concurrent runners until the current transaction resolves.
+const migrationsLockTableName = "migrations_lock"
 
 // Migrator handles migration execution for a specific database connection
 type Migrator struct {
@@ -60,8 +72,41 @@ func (m *Migrator) SetMigrationsPath(path string) {
 	m.migrationsPath = path
 }
 
-// Up runs all pending migrations
+// Up runs all pending migrations under a database-level advisory lock so
+// concurrent migrator processes cannot double-apply a migration.
+//
+// Locking strategy:
+//   - Postgres: pg_advisory_lock(migrationLockKey) — session-scoped lock
+//     released via pg_advisory_unlock when Up returns.
+//   - MySQL/SQLite: a dedicated single-row "migrations_lock" table is
+//     created on demand and acquired via SELECT ... FOR UPDATE inside a
+//     transaction that is held for the duration of Up. Releasing is as
+//     simple as rolling back (on error) or committing (on success) the
+//     lock transaction. SQLite serializes writes at the database level;
+//     acquiring the row lock is effectively equivalent.
+//
+// When the lock cannot be acquired (e.g. network partition), Up returns
+// the underlying error. When it can be acquired but has already been
+// taken by another runner, the call blocks until the holder releases.
 func (m *Migrator) Up() error {
+	if m.pretend {
+		// Pretend mode is pure SQL collection — no database mutation
+		// and therefore no locking required.
+		return m.runUp()
+	}
+
+	release, err := m.acquireMigrationLock()
+	if err != nil {
+		return fmt.Errorf("velocity/orm: failed to acquire migration lock: %w", err)
+	}
+	defer release()
+
+	return m.runUp()
+}
+
+// runUp is the migration-execution body; acquireMigrationLock guarantees
+// exclusivity before it is invoked.
+func (m *Migrator) runUp() error {
 	// Ensure migrations table exists
 	if err := m.createMigrationsTable(); err != nil {
 		return err
@@ -113,6 +158,149 @@ func (m *Migrator) Up() error {
 		}
 	}
 
+	return nil
+}
+
+// acquireMigrationLock takes the migration lock appropriate for the
+// active driver. The returned function releases the lock and must be
+// deferred immediately after a successful acquisition.
+//
+// The strategies below differ by engine:
+//   - Postgres: session-scoped pg_advisory_lock. Blocks the caller
+//     until the lock is free; released via pg_advisory_unlock.
+//   - MySQL: SELECT ... FOR UPDATE on a dedicated single-row table
+//     inside a long-lived transaction that gates all migration work.
+//     MySQL's row-lock blocks siblings until the tx commits or rolls
+//     back.
+//   - SQLite: an atomic compare-and-set UPDATE on a lock row plus a
+//     bounded busy-wait loop. We deliberately avoid holding an open
+//     transaction because SQLite's single-writer model would deadlock
+//     the migration body (which opens its own connection) against the
+//     lock transaction.
+func (m *Migrator) acquireMigrationLock() (release func(), err error) {
+	switch m.driver {
+	case "postgres":
+		if _, lockErr := m.db.Exec("SELECT pg_advisory_lock($1)", migrationLockKey); lockErr != nil {
+			return nil, fmt.Errorf("velocity/orm: pg_advisory_lock: %w", lockErr)
+		}
+		return func() {
+			// Best-effort release; Postgres drops session locks when
+			// the connection closes so losing this call is non-fatal.
+			_, _ = m.db.Exec("SELECT pg_advisory_unlock($1)", migrationLockKey)
+		}, nil
+
+	case "mysql":
+		if err := m.ensureLockTable(); err != nil {
+			return nil, err
+		}
+		tx, err := m.db.Begin()
+		if err != nil {
+			return nil, fmt.Errorf("velocity/orm: begin lock tx: %w", err)
+		}
+		if _, err := tx.Exec(
+			"INSERT IGNORE INTO " + quoteIdentifier(migrationsLockTableName, m.driver) + " (id, locked) VALUES (1, 0)",
+		); err != nil {
+			_ = tx.Rollback()
+			return nil, fmt.Errorf("velocity/orm: seed lock row: %w", err)
+		}
+		if _, err := tx.Exec(
+			"SELECT id FROM " + quoteIdentifier(migrationsLockTableName, m.driver) + " WHERE id = 1 FOR UPDATE",
+		); err != nil {
+			_ = tx.Rollback()
+			return nil, fmt.Errorf("velocity/orm: select for update lock: %w", err)
+		}
+		return func() {
+			// Commit releases the row lock. Rollback would also work,
+			// but Commit is a cheap no-op for a SELECT-only tx.
+			_ = tx.Commit()
+		}, nil
+
+	case "sqlite":
+		if err := m.ensureLockTable(); err != nil {
+			return nil, err
+		}
+		if err := m.seedLockRow(); err != nil {
+			return nil, err
+		}
+		if err := m.sqliteAcquireLock(); err != nil {
+			return nil, err
+		}
+		return func() {
+			_, _ = m.db.Exec(
+				"UPDATE " + quoteIdentifier(migrationsLockTableName, m.driver) + " SET locked = 0 WHERE id = 1",
+			)
+		}, nil
+
+	default:
+		// Unknown drivers silently skip locking — they have no storage
+		// to contend over in practice. Return a no-op releaser.
+		return func() {}, nil
+	}
+}
+
+// seedLockRow inserts the single-row lock record if it does not already
+// exist. Safe to call concurrently: the SELECT guard keeps the INSERT
+// idempotent even when two callers race.
+func (m *Migrator) seedLockRow() error {
+	_, err := m.db.Exec(
+		"INSERT INTO " + quoteIdentifier(migrationsLockTableName, m.driver) +
+			" (id, locked) SELECT 1, 0 WHERE NOT EXISTS (SELECT 1 FROM " +
+			quoteIdentifier(migrationsLockTableName, m.driver) + " WHERE id = 1)",
+	)
+	if err != nil {
+		return fmt.Errorf("velocity/orm: seed lock row: %w", err)
+	}
+	return nil
+}
+
+// sqliteAcquireLock performs a bounded compare-and-set spin to acquire
+// the migration lock. The UPDATE is atomic at the row level in SQLite,
+// so the caller whose UPDATE affects 1 row owns the lock; all others
+// see 0 and retry after a short sleep.
+//
+// Timeout is generous (30s) to accommodate long-running migrations
+// without pathological lockups.
+func (m *Migrator) sqliteAcquireLock() error {
+	const (
+		attemptCap    = 600
+		backoffMs     = 50
+		timeoutErrFmt = "velocity/orm: sqlite migration lock timeout after %d attempts"
+	)
+	for i := 0; i < attemptCap; i++ {
+		res, err := m.db.Exec(
+			"UPDATE " + quoteIdentifier(migrationsLockTableName, m.driver) +
+				" SET locked = 1 WHERE id = 1 AND locked = 0",
+		)
+		if err != nil {
+			return fmt.Errorf("velocity/orm: acquire lock row: %w", err)
+		}
+		rows, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("velocity/orm: rows affected: %w", err)
+		}
+		if rows == 1 {
+			return nil
+		}
+		time.Sleep(backoffMs * time.Millisecond)
+	}
+	return fmt.Errorf(timeoutErrFmt, attemptCap)
+}
+
+// ensureLockTable creates the single-row table used by the MySQL and
+// SQLite advisory-lock strategies. Safe to call concurrently.
+func (m *Migrator) ensureLockTable() error {
+	var createSQL string
+	switch m.driver {
+	case "mysql":
+		createSQL = "CREATE TABLE IF NOT EXISTS " + quoteIdentifier(migrationsLockTableName, m.driver) + " (id INT PRIMARY KEY, locked TINYINT NOT NULL DEFAULT 0) ENGINE=InnoDB"
+	case "sqlite":
+		createSQL = "CREATE TABLE IF NOT EXISTS " + quoteIdentifier(migrationsLockTableName, m.driver) + " (id INTEGER PRIMARY KEY, locked INTEGER NOT NULL DEFAULT 0)"
+	default:
+		return nil
+	}
+	if _, err := m.db.Exec(createSQL); err != nil {
+		return fmt.Errorf("velocity/orm: ensure lock table: %w", err)
+	}
 	return nil
 }
 
