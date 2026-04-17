@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,15 +10,22 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/async"
 )
+
+// DefaultFileCleanupInterval is the default period between expired-file sweeps.
+const DefaultFileCleanupInterval = 5 * time.Minute
 
 // FileStore implements a file-based cache store
 type FileStore struct {
-	mu        sync.RWMutex
-	path      string
-	prefix    string
-	done      chan struct{}
-	closeOnce sync.Once
+	mu              sync.RWMutex
+	path            string
+	prefix          string
+	cleanupInterval time.Duration
+	shardDirs       sync.Map // pre-created shard dirs so per-write MkdirAll is avoided
+	done            chan struct{}
+	closeOnce       sync.Once
 }
 
 // fileCacheItem represents a cached item stored in file
@@ -27,28 +35,46 @@ type fileCacheItem struct {
 }
 
 // NewFileStore creates a new file cache store.
-// Call Start() to begin the background expired-item cleanup goroutine.
+// The cache root directory is created up-front so individual Put calls don't
+// have to MkdirAll on every write. Call Start() to begin the background
+// expired-item cleanup goroutine.
 func NewFileStore(prefix, path string) (*FileStore, error) {
+	return NewFileStoreWithOptions(prefix, path, DefaultFileCleanupInterval)
+}
+
+// NewFileStoreWithOptions creates a new file cache store with a configurable
+// cleanup interval. Pass 0 to use DefaultFileCleanupInterval. This exists so
+// tests (and callers that want to tune memory/disk tradeoffs) don't have to
+// wait for the 5-minute default.
+func NewFileStoreWithOptions(prefix, path string, cleanupInterval time.Duration) (*FileStore, error) {
 	if path == "" {
 		path = "storage/framework/cache/data"
 	}
 
-	// Create cache directory if it doesn't exist
+	// Create cache root up-front. Callers that add new shard directories
+	// later (see getCacheFilePath) also MkdirAll, but the common case is
+	// covered here and avoids the system call on every Put.
 	if err := os.MkdirAll(path, 0700); err != nil {
-		return nil, fmt.Errorf("failed to create cache directory: %w", err)
+		return nil, fmt.Errorf("velocity/cache: failed to create cache directory: %w", err)
+	}
+
+	if cleanupInterval <= 0 {
+		cleanupInterval = DefaultFileCleanupInterval
 	}
 
 	return &FileStore{
-		path:   path,
-		prefix: prefix,
-		done:   make(chan struct{}),
+		path:            path,
+		prefix:          prefix,
+		cleanupInterval: cleanupInterval,
+		done:            make(chan struct{}),
 	}, nil
 }
 
 // Start begins the background goroutine that periodically removes expired
-// cache files. Must be called after construction.
+// cache files. Must be called after construction. Wrapped with async.Go so
+// any panic in the walker is recovered instead of tearing down the process.
 func (s *FileStore) Start() {
-	go s.cleanupExpired()
+	async.Go(func() { s.cleanupExpired() })
 }
 
 // Close stops the background cleanup goroutine. Safe to call multiple times.
@@ -59,10 +85,16 @@ func (s *FileStore) Close() error {
 	return nil
 }
 
+// Shutdown is the context-aware stop hook. The file store has no blocking
+// work to await, so Shutdown is equivalent to Close.
+func (s *FileStore) Shutdown(_ context.Context) error {
+	return s.Close()
+}
+
 // cleanupExpired removes expired cache files periodically.
 // It stops when the done channel is closed via Close().
 func (s *FileStore) cleanupExpired() {
-	ticker := time.NewTicker(5 * time.Minute)
+	ticker := time.NewTicker(s.cleanupInterval)
 	defer ticker.Stop()
 
 	for {
@@ -99,16 +131,23 @@ func (s *FileStore) cleanupExpired() {
 	}
 }
 
-// getCacheFilePath returns the file path for a cache key
+// getCacheFilePath returns the file path for a cache key.
+// A 2-char sharded directory is created lazily on first use and cached in
+// shardDirs so subsequent writes to the same shard skip the MkdirAll syscall.
 func (s *FileStore) getCacheFilePath(key string) string {
-	// Create a hash of the key for the filename
 	hasher := sha256.New()
 	hasher.Write([]byte(s.prefixedKey(key)))
 	hash := hex.EncodeToString(hasher.Sum(nil))
 
-	// Use first 2 characters for directory structure
-	dir := filepath.Join(s.path, hash[:2])
-	os.MkdirAll(dir, 0700)
+	shard := hash[:2]
+	dir := filepath.Join(s.path, shard)
+
+	if _, seen := s.shardDirs.Load(shard); !seen {
+		// Ignore error: subsequent writes will surface it if the dir is
+		// unusable. Cache the shard regardless to avoid repeated syscalls.
+		_ = os.MkdirAll(dir, 0700)
+		s.shardDirs.Store(shard, struct{}{})
+	}
 
 	return filepath.Join(dir, hash)
 }
@@ -162,7 +201,7 @@ func (s *FileStore) Put(key string, value interface{}, ttl time.Duration) error 
 	// Marshal the value
 	valueData, err := json.Marshal(value)
 	if err != nil {
-		return fmt.Errorf("failed to marshal value: %w", err)
+		return fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
 	}
 
 	expiration := time.Now().Add(ttl)
@@ -174,13 +213,13 @@ func (s *FileStore) Put(key string, value interface{}, ttl time.Duration) error 
 	// Marshal the cache item
 	data, err := json.Marshal(item)
 	if err != nil {
-		return fmt.Errorf("failed to marshal cache item: %w", err)
+		return fmt.Errorf("velocity/cache: failed to marshal cache item: %w", err)
 	}
 
 	// Write to file
 	path := s.getCacheFilePath(key)
 	if err := os.WriteFile(path, data, 0600); err != nil {
-		return fmt.Errorf("failed to write cache file: %w", err)
+		return fmt.Errorf("velocity/cache: failed to write cache file: %w", err)
 	}
 
 	return nil
@@ -194,7 +233,7 @@ func (s *FileStore) Forever(key string, value interface{}) error {
 	// Marshal the value
 	valueData, err := json.Marshal(value)
 	if err != nil {
-		return fmt.Errorf("failed to marshal value: %w", err)
+		return fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
 	}
 
 	item := fileCacheItem{
@@ -205,13 +244,13 @@ func (s *FileStore) Forever(key string, value interface{}) error {
 	// Marshal the cache item
 	data, err := json.Marshal(item)
 	if err != nil {
-		return fmt.Errorf("failed to marshal cache item: %w", err)
+		return fmt.Errorf("velocity/cache: failed to marshal cache item: %w", err)
 	}
 
 	// Write to file
 	path := s.getCacheFilePath(key)
 	if err := os.WriteFile(path, data, 0600); err != nil {
-		return fmt.Errorf("failed to write cache file: %w", err)
+		return fmt.Errorf("velocity/cache: failed to write cache file: %w", err)
 	}
 
 	return nil
