@@ -304,6 +304,7 @@ func (r *RedisDriver) moveDelayedJobs(queueName string) error {
 
 // Shutdown closes the Redis connection, honoring the context deadline.
 func (r *RedisDriver) Shutdown(ctx context.Context) error {
+	batchStore.close() // stop package-level batch cleanup goroutine (idempotent)
 	return r.client.Close()
 }
 

@@ -99,16 +99,18 @@ func wireInstanceEvents(a *App) {
 	if a.Notification != nil {
 		a.Notification.SetEventDispatcher(dispatch)
 	}
-	if v, ok := a.View.(interface {
-		SetEventDispatcher(func(event interface{}) error)
-	}); ok && v != nil {
-		v.SetEventDispatcher(dispatch)
-	}
-
-	// Wire events into any extension that supports it.
+	// Wire remaining subsystems via interface check (their interfaces
+	// don't mandate SetEventDispatcher, but the concrete types have it).
 	type eventDispatcherSetter interface {
 		SetEventDispatcher(func(event interface{}) error)
 	}
+	for _, svc := range []any{a.View, a.Mail, a.Queue, a.Scheduler, a.Auth} {
+		if s, ok := svc.(eventDispatcherSetter); ok && svc != nil {
+			s.SetEventDispatcher(dispatch)
+		}
+	}
+
+	// Wire events into any extension that supports it.
 	for _, ext := range a.Extensions {
 		if s, ok := ext.(eventDispatcherSetter); ok {
 			s.SetEventDispatcher(dispatch)

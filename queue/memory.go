@@ -199,6 +199,7 @@ func (m *MemoryDriver) GetFailed(queueName string) ([]*failedJob, error) {
 // goroutine to finish. Honors the context deadline: if ctx expires before
 // the goroutine exits, ctx.Err() is returned.
 func (m *MemoryDriver) Shutdown(ctx context.Context) error {
+	batchStore.close() // stop package-level batch cleanup goroutine (idempotent)
 	close(m.stopChan)
 
 	done := make(chan struct{})

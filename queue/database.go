@@ -289,6 +289,7 @@ func (d *DatabaseDriver) ProcessDelayedJobs(queueName string) error {
 // Shutdown is a no-op for the database driver; the underlying DB connection
 // is owned by the ORM and closed separately.
 func (d *DatabaseDriver) Shutdown(ctx context.Context) error {
+	batchStore.close() // stop package-level batch cleanup goroutine (idempotent)
 	return nil
 }
 
