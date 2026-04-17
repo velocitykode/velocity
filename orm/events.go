@@ -69,6 +69,22 @@ func (e *QueryFailed) Name() string {
 	return e.EventName()
 }
 
+// TxRecover is dispatched when the Manager.Transaction helper recovers from
+// a rollback failure. The event always names the recovery cause ("panic" or
+// "error") and includes both the rollback error and the originating
+// panic/error so observability pipelines can correlate the failure chain.
+type TxRecover struct {
+	Cause       string // "panic" or "error"
+	PanicValue  string // set when Cause == "panic"
+	OriginalErr string // set when Cause == "error"
+	RollbackErr string // the rollback failure message
+}
+
+// EventName returns the canonical event name.
+func (e *TxRecover) EventName() string {
+	return "orm.tx_recover"
+}
+
 // captureCallerInfo captures the file and line of the caller
 // skip specifies how many stack frames to skip (0 = captureCallerInfo itself)
 func captureCallerInfo(skip int) (file string, line int) {
