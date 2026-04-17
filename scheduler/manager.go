@@ -2,7 +2,10 @@ package scheduler
 
 import (
 	"context"
+	"log"
 	"sync"
+
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // Manager manages multiple schedulers
@@ -77,17 +80,33 @@ func (m *Manager) RunAll(ctx context.Context) error {
 
 	for _, s := range schedulers {
 		wg.Add(1)
+		// Recover from panics inside Scheduler.Run so one sub-scheduler
+		// crashing does not deadlock the fan-in on wg.Wait.
 		go func(scheduler *Scheduler) {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					err := panicerr.FromRecovered(r)
+					log.Printf("velocity/scheduler: run panic recovered: %v", err)
+					errChan <- err
+				}
+			}()
 			if err := scheduler.Run(ctx); err != nil {
 				errChan <- err
 			}
 		}(s)
 	}
 
+	// Recover from panics in wg.Wait so errChan always closes and the
+	// reader select below is never starved.
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("velocity/scheduler: manager wait panic recovered: %v", panicerr.FromRecovered(r))
+			}
+			close(errChan)
+		}()
 		wg.Wait()
-		close(errChan)
 	}()
 
 	// Return first error if any
