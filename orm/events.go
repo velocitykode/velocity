@@ -27,6 +27,23 @@ func (e *QueryExecuted) Name() string {
 	return "query.executed"
 }
 
+// QueryFailed is dispatched when a database query fails
+type QueryFailed struct {
+	Context    context.Context
+	Connection string
+	Query      string // parameterized form only, never bound values
+	Error      string
+	At         time.Time
+	TraceID    string // APM trace ID
+	SpanID     string // APM span ID
+	ParentID   string // Parent span ID for correlation
+}
+
+// Name returns the event name
+func (e *QueryFailed) Name() string {
+	return "query.failed"
+}
+
 // captureCallerInfo captures the file and line of the caller
 // skip specifies how many stack frames to skip (0 = captureCallerInfo itself)
 func captureCallerInfo(skip int) (file string, line int) {

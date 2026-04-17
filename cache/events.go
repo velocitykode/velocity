@@ -68,6 +68,24 @@ func (e *CacheForgotten) Name() string {
 	return "cache.forgotten"
 }
 
+// CacheOperationFailed is dispatched when a cache operation fails
+type CacheOperationFailed struct {
+	Context  context.Context
+	Store    string
+	Op       string // "get", "put", "forget", "flush"
+	Key      string
+	Error    string
+	At       time.Time
+	TraceID  string // APM trace ID
+	SpanID   string // APM span ID
+	ParentID string // Parent span ID for correlation
+}
+
+// Name returns the event name
+func (e *CacheOperationFailed) Name() string {
+	return "cache.operation.failed"
+}
+
 // dispatchCacheHit dispatches a CacheHit event
 func (m *Manager) dispatchCacheHit(ctx context.Context, key, store string) {
 	traceID, spanID, parentID := trace.GetTraceContext(ctx)
