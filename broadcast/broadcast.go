@@ -3,6 +3,10 @@
 package broadcast
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"sync"
 )
 
@@ -45,6 +49,7 @@ type BroadcastManager struct {
 	driver     Driver
 	authorizer Authorizer
 	presence   PresenceDataFunc
+	authSecret []byte
 	mu         sync.RWMutex
 }
 
@@ -66,11 +71,21 @@ type Authorizer func(channel string, user interface{}) bool
 // PresenceDataFunc returns presence data for a user
 type PresenceDataFunc func(channel string, user interface{}) interface{}
 
-// New creates a new broadcaster with the given driver
+// New creates a new broadcaster with the given driver.
+// The default authorizer denies all requests — callers must install one via
+// SetAuthorizer to enable access to private- or presence- channels.
 func New(driver Driver) *BroadcastManager {
 	return &BroadcastManager{
-		driver: driver,
+		driver:     driver,
+		authorizer: denyAllAuthorizer,
 	}
+}
+
+// denyAllAuthorizer is the secure default authorizer — rejects every request.
+// Applications must explicitly install an authorizer via SetAuthorizer to
+// permit access to private- or presence- channels.
+func denyAllAuthorizer(channel string, user interface{}) bool {
+	return false
 }
 
 // Channel returns a channel builder for the given channels
@@ -125,17 +140,22 @@ func (cb *ChannelBuilder) Emit(event string, data interface{}) error {
 	return cb.broadcaster.driver.Broadcast(cb.channels, event, data)
 }
 
-// Auth handles channel authorization
+// Auth handles channel authorization. Private- and presence- channels always
+// require an authorizer; the zero-value default denies every request.
+// Public channels bypass the authorizer entirely.
 func (b *BroadcastManager) Auth(channel string, socketID string, user interface{}) (interface{}, error) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
-	if b.authorizer == nil {
-		return nil, nil
-	}
+	isRestricted := isPrivateChannel(channel) || isPresenceChannel(channel)
 
-	if !b.authorizer(channel, user) {
-		return nil, ErrUnauthorized
+	if isRestricted {
+		if b.authorizer == nil {
+			return nil, ErrUnauthorized
+		}
+		if !b.authorizer(channel, user) {
+			return nil, ErrUnauthorized
+		}
 	}
 
 	// For presence channels, return user data
@@ -164,4 +184,55 @@ func (b *BroadcastManager) SetPresenceData(fn PresenceDataFunc) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.presence = fn
+}
+
+// SetAuthSecret installs the HMAC secret used to sign and verify private- and
+// presence- channel auth tokens. A copy of the secret is kept so subsequent
+// mutations to the input do not affect the manager.
+func (b *BroadcastManager) SetAuthSecret(secret []byte) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(secret) == 0 {
+		b.authSecret = nil
+		return
+	}
+	cp := make([]byte, len(secret))
+	copy(cp, secret)
+	b.authSecret = cp
+}
+
+// SignAuthToken returns the HMAC-SHA256 signature for (socketID:channel) encoded
+// as hex. Returns ErrUnauthorized if the auth secret has not been configured.
+func (b *BroadcastManager) SignAuthToken(socketID, channel string) (string, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if len(b.authSecret) == 0 {
+		return "", ErrUnauthorized
+	}
+	return computeAuthSignature(b.authSecret, socketID, channel), nil
+}
+
+// VerifyAuthToken checks a caller-supplied auth token for (socketID:channel).
+// The comparison is performed in constant time via crypto/subtle to avoid
+// timing side-channels that would leak the signature byte-by-byte.
+func (b *BroadcastManager) VerifyAuthToken(socketID, channel, token string) bool {
+	b.mu.RLock()
+	secret := b.authSecret
+	b.mu.RUnlock()
+
+	if len(secret) == 0 {
+		return false
+	}
+	expected := computeAuthSignature(secret, socketID, channel)
+	// subtle.ConstantTimeCompare returns 1 iff lengths match AND bytes are equal.
+	return subtle.ConstantTimeCompare([]byte(token), []byte(expected)) == 1
+}
+
+// computeAuthSignature returns hex(HMAC-SHA256(secret, socketID ":" channel)).
+func computeAuthSignature(secret []byte, socketID, channel string) string {
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(socketID))
+	mac.Write([]byte{':'})
+	mac.Write([]byte(channel))
+	return hex.EncodeToString(mac.Sum(nil))
 }
