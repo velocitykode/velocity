@@ -8,9 +8,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/neturl"
 )
 
 // SSRResponse is the payload returned by the Node SSR server after
@@ -38,6 +41,10 @@ type SSRGateway interface {
 //     conventional Inertia SSR address. Dev deployments should point
 //     at Vite's /__inertia_ssr hot endpoint instead
 //   - ThrowOnError for E2E tests that need failures to bubble up
+//   - SSRF protection: the target URL is validated against a private-IP
+//     deny list unless constructed with WithAllowPrivate(true). Responses
+//     are also capped at 10 MiB to avoid unbounded memory use if the SSR
+//     server misbehaves or is attacker-controlled.
 type HTTPGateway struct {
 	URL     string
 	Timeout time.Duration
@@ -52,8 +59,28 @@ type HTTPGateway struct {
 	// Inertia SSR `throw_on_error` config flag.
 	ThrowOnError bool
 
+	// allowPrivate disables the private-IP validation that would
+	// otherwise refuse targets like 127.0.0.1. Defaults to true because
+	// the typical production deployment runs the SSR server on the same
+	// host, but can be tightened via WithAllowPrivate(false).
+	allowPrivate bool
+
 	mu              sync.RWMutex
 	eventDispatcher func(event interface{}) error
+}
+
+// GatewayOption configures an HTTPGateway at construction time.
+type GatewayOption func(*HTTPGateway)
+
+// WithAllowPrivate controls whether the gateway accepts targets that
+// resolve to private, loopback, link-local, or cloud-metadata ranges.
+// Defaults to true because the conventional Inertia SSR deployment runs
+// the Node server on the same host as the Go app. Set to false when the
+// URL is expected to be public or caller-controlled.
+func WithAllowPrivate(allow bool) GatewayOption {
+	return func(g *HTTPGateway) {
+		g.allowPrivate = allow
+	}
 }
 
 // DefaultSSRURL is the conventional Inertia SSR server address.
@@ -76,25 +103,67 @@ type ssrServerError struct {
 	SourceLocation string `json:"sourceLocation"`
 }
 
-// NewHTTPGateway constructs a gateway that POSTs page JSON to url.
-// An empty url falls back to DefaultSSRURL. If url has no path, /render
-// is appended to preserve the conventional Inertia SSR endpoint (users
-// can override with a full URL for dev endpoints like /__inertia_ssr).
-func NewHTTPGateway(url string) *HTTPGateway {
-	if url == "" {
-		url = DefaultSSRURL
+// NewHTTPGateway constructs a gateway that POSTs page JSON to rawURL.
+// An empty rawURL falls back to DefaultSSRURL. If rawURL has no path,
+// /render is appended to preserve the conventional Inertia SSR endpoint
+// (users can override with a full URL for dev endpoints like
+// /__inertia_ssr).
+//
+// By default the target URL may resolve to private/loopback ranges —
+// the typical Inertia deployment runs the Node SSR server on the same
+// host. Pass WithAllowPrivate(false) to forbid private targets (useful
+// when SSR is hosted externally and the URL should never point inside
+// the VPC).
+func NewHTTPGateway(rawURL string, opts ...GatewayOption) *HTTPGateway {
+	if rawURL == "" {
+		rawURL = DefaultSSRURL
 	}
-	url = strings.TrimRight(url, "/")
-	if !strings.Contains(strings.TrimPrefix(strings.TrimPrefix(url, "http://"), "https://"), "/") {
-		url += "/render"
+	rawURL = strings.TrimRight(rawURL, "/")
+	if !strings.Contains(strings.TrimPrefix(strings.TrimPrefix(rawURL, "http://"), "https://"), "/") {
+		rawURL += "/render"
 	}
-	return &HTTPGateway{
-		URL:     url,
+	g := &HTTPGateway{
+		URL:     rawURL,
 		Timeout: defaultSSRTimeout,
 		Client: &http.Client{
 			Timeout: defaultSSRTimeout,
 		},
+		allowPrivate: true,
 	}
+	for _, opt := range opts {
+		opt(g)
+	}
+
+	// Validate target host unless private addresses are explicitly allowed.
+	// The SSR endpoint is config-driven, not user-driven, so a validation
+	// failure is a configuration bug — we zero the URL so Dispatch skips
+	// SSR (CSR fallback), and the misconfiguration surfaces on the first
+	// render via the SSRRenderFailed event stream or boot-time logs.
+	if !g.allowPrivate {
+		if err := validateSSRTarget(rawURL); err != nil {
+			g.URL = ""
+		}
+	}
+	return g
+}
+
+// validateSSRTarget parses target and rejects hosts that resolve to
+// private/internal ranges. Uses the shared neturl guard so the policy
+// stays consistent across httpclient and notification channels.
+func validateSSRTarget(target string) error {
+	u, err := url.Parse(target)
+	if err != nil {
+		return fmt.Errorf("bond: parse ssr url: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("bond: ssr url must be http or https")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := neturl.ValidateURLHost(ctx, nil, target); err != nil {
+		return fmt.Errorf("bond: ssr target rejected: %w", err)
+	}
+	return nil
 }
 
 // SetEventDispatcher wires the framework event bus so dispatch failures
@@ -176,7 +245,7 @@ func (g *HTTPGateway) Dispatch(ctx context.Context, page Page) (*SSRResponse, er
 		if json.Unmarshal(raw, &parsed) == nil && parsed.Error != "" {
 			payload = parsed
 		}
-		return g.handleFailure(page, payload, fmt.Errorf("velocity/bond: ssr server error: %s", payload.Error))
+		return g.handleFailure(page, payload, fmt.Errorf("velocity/bond: ssr server error: %w", errors.New(payload.Error)))
 	}
 
 	var out SSRResponse

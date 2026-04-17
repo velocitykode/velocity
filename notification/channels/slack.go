@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"net"
 	"net/http"
-	"net/url"
 	"time"
 
+	"github.com/velocitykode/velocity/internal/neturl"
 	"github.com/velocitykode/velocity/notification"
 )
 
@@ -150,32 +150,18 @@ func (c *SlackChannel) buildPayload(msg *notification.SlackMessage) map[string]i
 }
 
 // validateWebhookURL validates that a webhook URL is safe to call,
-// preventing SSRF attacks against internal/private networks.
+// preventing SSRF attacks against internal/private networks. DNS
+// hostnames are resolved and every resolved address is checked against
+// the shared private-range guard — so a public-looking name that
+// resolves to 127.0.0.1 or an RFC1918 address is still rejected.
 func validateWebhookURL(rawURL string) error {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return fmt.Errorf("notification: invalid webhook URL: %w", err)
-	}
-	if u.Scheme != "https" && u.Scheme != "http" {
-		return fmt.Errorf("notification: webhook URL must use http or https scheme")
-	}
-	host := u.Hostname()
-	if host == "" {
-		return fmt.Errorf("notification: webhook URL has no host")
-	}
-	// Block well-known localhost names
-	if host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "0.0.0.0" {
-		return fmt.Errorf("notification: webhook URL must not target localhost")
-	}
-	// Block private/internal IPs when host is an IP literal
-	if ip := net.ParseIP(host); ip != nil {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
-			return fmt.Errorf("notification: webhook URL must not target private or internal addresses")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := neturl.ValidateURLHost(ctx, nil, rawURL); err != nil {
+		if errors.Is(err, neturl.ErrPrivateHost) {
+			return fmt.Errorf("velocity/notification: webhook url must not target private or internal addresses: %w", err)
 		}
-	}
-	// Block AWS metadata endpoint
-	if host == "169.254.169.254" {
-		return fmt.Errorf("notification: webhook URL must not target cloud metadata endpoints")
+		return fmt.Errorf("velocity/notification: invalid webhook url: %w", err)
 	}
 	return nil
 }

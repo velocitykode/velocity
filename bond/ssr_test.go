@@ -404,3 +404,56 @@ func TestBond_New_NoSSRByDefault(t *testing.T) {
 		t.Error("expected no SSR gateway by default")
 	}
 }
+
+func TestHTTPGateway_RejectsPrivateTarget_WhenForbidden(t *testing.T) {
+	// With WithAllowPrivate(false), constructing a gateway against a
+	// loopback URL must zero out the URL so Dispatch skips SSR.
+	gw := NewHTTPGateway("http://127.0.0.1:13714/render", WithAllowPrivate(false))
+	if gw.URL != "" {
+		t.Errorf("expected URL cleared when private target forbidden, got %q", gw.URL)
+	}
+
+	resp, err := gw.Dispatch(context.Background(), Page{Component: "Home", URL: "/"})
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if resp != nil {
+		t.Error("expected nil response when URL is zeroed by private-target rejection")
+	}
+}
+
+func TestHTTPGateway_RejectsMetadataTarget_WhenForbidden(t *testing.T) {
+	gw := NewHTTPGateway("http://169.254.169.254/render", WithAllowPrivate(false))
+	if gw.URL != "" {
+		t.Errorf("expected URL cleared for metadata IP, got %q", gw.URL)
+	}
+}
+
+func TestHTTPGateway_AllowsPrivateTarget_ByDefault(t *testing.T) {
+	// Default behaviour preserves the conventional 127.0.0.1 SSR deployment.
+	gw := NewHTTPGateway("http://127.0.0.1:13714/render")
+	if gw.URL == "" {
+		t.Error("expected URL preserved when AllowPrivate defaults to true")
+	}
+}
+
+func TestBond_SSR_ForbidPrivateTarget(t *testing.T) {
+	b, err := New(Config{
+		RootTemplate: testRootTemplate,
+		SSR: SSRConfig{
+			Enabled:             true,
+			URL:                 "http://127.0.0.1:13714/render",
+			ForbidPrivateTarget: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw, ok := b.ssr.(*HTTPGateway)
+	if !ok {
+		t.Fatalf("expected *HTTPGateway, got %T", b.ssr)
+	}
+	if gw.URL != "" {
+		t.Errorf("expected private target rejected, got URL=%q", gw.URL)
+	}
+}

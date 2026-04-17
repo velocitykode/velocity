@@ -28,6 +28,11 @@ type Config struct {
 // (the default) bond renders pages as plain CSR — the Inertia container
 // ships with an empty inner body and the client hydrates the page data
 // from the data-page attribute.
+//
+// Responses from the SSR server are capped at 10 MiB. A pre-rendered
+// page larger than that is almost certainly a misbehaving or compromised
+// SSR server, so bond drops it and falls back to CSR rather than risk
+// unbounded memory growth.
 type SSRConfig struct {
 	Enabled bool
 	URL     string        // Defaults to DefaultSSRURL when empty
@@ -39,6 +44,22 @@ type SSRConfig struct {
 	// Inertia SSR `throw_on_error` config flag — useful for E2E tests
 	// that need SSR failures to fail loudly rather than render CSR.
 	ThrowOnError bool
+
+	// ForbidPrivateTarget rejects SSR targets that resolve to private,
+	// loopback, link-local, or cloud-metadata addresses. Default (false)
+	// matches the conventional Inertia deployment where the Node SSR
+	// server runs on 127.0.0.1 alongside the Go app. Set to true when
+	// the SSR host comes from an untrusted source or should never be
+	// internal.
+	ForbidPrivateTarget bool
+}
+
+// Logger is the minimal logging interface Bond uses for operational
+// warnings. It matches the shape of log.Logger so callers can wire the
+// framework logger directly via SetLogger.
+type Logger interface {
+	Warn(msg string, kvs ...any)
+	Error(msg string, kvs ...any)
 }
 
 // Bond is the main Inertia handler
@@ -48,6 +69,7 @@ type Bond struct {
 	version        string
 	containerID    string
 	encryptHistory bool
+	logger         Logger
 	encryptor      interface {
 		Encrypt(string) (string, error)
 		Decrypt(string) (string, error)
@@ -74,6 +96,15 @@ func (b *Bond) SetEncryptor(enc interface {
 	Decrypt(string) (string, error)
 }) {
 	b.encryptor = enc
+}
+
+// SetLogger wires a logger for operational warnings. When unset, Bond
+// silently swallows non-fatal errors like response-buffer flush
+// failures (which almost always indicate a closed client connection).
+func (b *Bond) SetLogger(l Logger) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.logger = l
 }
 
 // New creates a new Bond instance
@@ -109,7 +140,7 @@ func New(config Config) (*Bond, error) {
 	}
 
 	if config.SSR.Enabled {
-		gw := NewHTTPGateway(config.SSR.URL)
+		gw := NewHTTPGateway(config.SSR.URL, WithAllowPrivate(!config.SSR.ForbidPrivateTarget))
 		if config.SSR.Timeout > 0 {
 			gw.Timeout = config.SSR.Timeout
 			gw.Client.Timeout = config.SSR.Timeout
