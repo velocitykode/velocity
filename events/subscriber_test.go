@@ -145,7 +145,9 @@ func TestAutoSubscriber(t *testing.T) {
 }
 
 func TestAutoSubscriberEventNameExtraction(t *testing.T) {
-	autoSub := NewAutoSubscriber(nil, "Handle")
+	// extractEventName is pure string manipulation — any struct instance is
+	// fine for exercising it.
+	autoSub := NewAutoSubscriber(struct{}{}, "Handle")
 
 	tests := []struct {
 		methodName string

@@ -47,15 +47,41 @@ type AutoSubscriber struct {
 	prefix   string
 }
 
-// NewAutoSubscriber creates a subscriber that auto-registers based on method names
-// Methods should follow the pattern: HandleEventName(event interface{}) error
+// NewAutoSubscriber creates a subscriber that auto-registers based on method names.
+// Methods should follow the pattern: HandleEventName(event interface{}) error.
+// instance must be a struct or a pointer to a struct; other kinds (map, slice,
+// interface, func, chan, primitive) cause a panic because reflection-based
+// method discovery is meaningless on them.
 func NewAutoSubscriber(instance interface{}, prefix string) *AutoSubscriber {
 	if prefix == "" {
 		prefix = "Handle"
 	}
+	if err := ensureStructInstance(instance); err != nil {
+		panic(fmt.Errorf("velocity/events: NewAutoSubscriber: %w", err))
+	}
 	return &AutoSubscriber{
 		instance: instance,
 		prefix:   prefix,
+	}
+}
+
+// ensureStructInstance verifies that instance is a struct or *struct.
+// Returns a lowercase-message error when the kind is anything else.
+func ensureStructInstance(instance interface{}) error {
+	if instance == nil {
+		return fmt.Errorf("instance is nil")
+	}
+	t := reflect.TypeOf(instance)
+	switch t.Kind() {
+	case reflect.Struct:
+		return nil
+	case reflect.Pointer:
+		if t.Elem().Kind() != reflect.Struct {
+			return fmt.Errorf("instance kind *%s is not *struct", t.Elem().Kind())
+		}
+		return nil
+	default:
+		return fmt.Errorf("instance kind %s is not struct or *struct", t.Kind())
 	}
 }
 
@@ -170,8 +196,13 @@ type MappedSubscriber struct {
 	mappings EventMap
 }
 
-// NewMappedSubscriber creates a subscriber with explicit event mappings
+// NewMappedSubscriber creates a subscriber with explicit event mappings.
+// instance must be a struct or a pointer to a struct — see
+// NewAutoSubscriber for rationale.
 func NewMappedSubscriber(instance interface{}, mappings EventMap) *MappedSubscriber {
+	if err := ensureStructInstance(instance); err != nil {
+		panic(fmt.Errorf("velocity/events: NewMappedSubscriber: %w", err))
+	}
 	return &MappedSubscriber{
 		instance: instance,
 		mappings: mappings,
