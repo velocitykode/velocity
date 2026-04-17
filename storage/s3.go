@@ -3,8 +3,10 @@ package storage
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 	"time"
 
@@ -27,7 +29,15 @@ type s3API interface {
 	ListObjectsV2(ctx context.Context, params *s3.ListObjectsV2Input, optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
 }
 
-// S3Driver implements the Driver interface for AWS S3 storage
+// maxS3PresignExpiration caps S3 presigned URL lifetimes at 7 days, the maximum
+// supported by AWS Signature V4 (RFC 3339 / AWS signing spec).
+const maxS3PresignExpiration = 7 * 24 * time.Hour
+
+// S3Driver implements the Driver interface for AWS S3 storage.
+//
+// Methods defined by the Driver interface use context.Background() internally.
+// Use the *Ctx variants (PutCtx, GetCtx, etc.) to plumb a caller-provided
+// context through AWS SDK calls for cancellation and deadline propagation.
 type S3Driver struct {
 	client        s3API
 	presignClient *s3.PresignClient
@@ -39,9 +49,35 @@ type S3Driver struct {
 	visibility    Visibility
 }
 
-// NewS3Driver creates a new S3 storage driver
+// NewS3Driver creates a new S3 storage driver.
+//
+// Configuration is validated up front: Region and Bucket are required,
+// and any non-empty URL must parse as an http(s) endpoint.
+// Visibility defaults to Private; Public must be opted in explicitly
+// by setting DiskConfig.Visibility == "public".
 func NewS3Driver(diskConfig DiskConfig) (*S3Driver, error) {
-	ctx := context.Background()
+	return NewS3DriverWithContext(context.Background(), diskConfig)
+}
+
+// NewS3DriverWithContext is the context-aware variant of NewS3Driver.
+// The provided context governs AWS config loading and the HeadBucket call.
+func NewS3DriverWithContext(ctx context.Context, diskConfig DiskConfig) (*S3Driver, error) {
+	if strings.TrimSpace(diskConfig.Region) == "" {
+		return nil, fmt.Errorf("velocity/storage: s3 region is required")
+	}
+	if strings.TrimSpace(diskConfig.Bucket) == "" {
+		return nil, fmt.Errorf("velocity/storage: s3 bucket is required")
+	}
+
+	if diskConfig.URL != "" {
+		u, err := url.Parse(diskConfig.URL)
+		if err != nil {
+			return nil, fmt.Errorf("velocity/storage: s3 url is invalid: %w", err)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return nil, fmt.Errorf("velocity/storage: s3 url must use http or https scheme, got %q", u.Scheme)
+		}
+	}
 
 	// Build config options
 	var opts []func(*config.LoadOptions) error
@@ -57,7 +93,7 @@ func NewS3Driver(diskConfig DiskConfig) (*S3Driver, error) {
 	// Load AWS config
 	cfg, err := config.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load AWS config: %w", err)
+		return nil, fmt.Errorf("velocity/storage: failed to load aws config: %w", err)
 	}
 
 	// Create S3 client
@@ -68,12 +104,13 @@ func NewS3Driver(diskConfig DiskConfig) (*S3Driver, error) {
 		Bucket: aws.String(diskConfig.Bucket),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to access bucket %s: %w", diskConfig.Bucket, err)
+		return nil, fmt.Errorf("velocity/storage: failed to access bucket %s: %w", diskConfig.Bucket, err)
 	}
 
-	visibility := Public
-	if diskConfig.Visibility == "private" {
-		visibility = Private
+	// Default to Private. Public visibility must be opt-in.
+	visibility := Private
+	if diskConfig.Visibility == string(Public) {
+		visibility = Public
 	}
 
 	return &S3Driver{
@@ -88,18 +125,27 @@ func NewS3Driver(diskConfig DiskConfig) (*S3Driver, error) {
 	}, nil
 }
 
-// Put stores content at the given path
+// Put stores content at the given path (uses context.Background()).
+// Prefer PutCtx in code paths that have a request-scoped context.
 func (d *S3Driver) Put(path string, contents []byte) error {
-	reader := bytes.NewReader(contents)
-	return d.PutStream(path, reader)
+	return d.PutCtx(context.Background(), path, contents)
+}
+
+// PutCtx stores content at the given path using the caller-provided context.
+func (d *S3Driver) PutCtx(ctx context.Context, path string, contents []byte) error {
+	return d.PutStreamCtx(ctx, path, bytes.NewReader(contents))
 }
 
 // maxS3StreamSize is the default maximum stream size for S3 uploads (100MB)
 const maxS3StreamSize = 100 * 1024 * 1024
 
-// PutStream stores a stream at the given path
+// PutStream stores a stream at the given path (uses context.Background()).
 func (d *S3Driver) PutStream(path string, stream io.Reader) error {
-	ctx := context.Background()
+	return d.PutStreamCtx(context.Background(), path, stream)
+}
+
+// PutStreamCtx stores a stream at the given path using the caller-provided context.
+func (d *S3Driver) PutStreamCtx(ctx context.Context, path string, stream io.Reader) error {
 	var err error
 	path, err = d.cleanPath(path)
 	if err != nil {
@@ -110,10 +156,10 @@ func (d *S3Driver) PutStream(path string, stream io.Reader) error {
 	limited := io.LimitReader(stream, maxS3StreamSize+1)
 	content, err := io.ReadAll(limited)
 	if err != nil {
-		return fmt.Errorf("failed to read stream: %w", err)
+		return fmt.Errorf("velocity/storage: failed to read stream: %w", err)
 	}
 	if int64(len(content)) > maxS3StreamSize {
-		return fmt.Errorf("stream exceeds maximum size of %d bytes", maxS3StreamSize)
+		return fmt.Errorf("velocity/storage: stream exceeds maximum size of %d bytes", maxS3StreamSize)
 	}
 
 	input := &s3.PutObjectInput{
@@ -132,15 +178,20 @@ func (d *S3Driver) PutStream(path string, stream io.Reader) error {
 
 	_, err = d.uploader.Upload(ctx, input)
 	if err != nil {
-		return fmt.Errorf("failed to upload to S3: %w", err)
+		return fmt.Errorf("velocity/storage: failed to upload to s3: %w", err)
 	}
 
 	return nil
 }
 
-// Get retrieves content from the given path
+// Get retrieves content from the given path (uses context.Background()).
 func (d *S3Driver) Get(path string) ([]byte, error) {
-	stream, err := d.GetStream(path)
+	return d.GetCtx(context.Background(), path)
+}
+
+// GetCtx retrieves content using the caller-provided context.
+func (d *S3Driver) GetCtx(ctx context.Context, path string) ([]byte, error) {
+	stream, err := d.GetStreamCtx(ctx, path)
 	if err != nil {
 		return nil, err
 	}
@@ -148,15 +199,19 @@ func (d *S3Driver) Get(path string) ([]byte, error) {
 
 	buf := new(bytes.Buffer)
 	if _, err := io.Copy(buf, stream); err != nil {
-		return nil, fmt.Errorf("failed to read stream: %w", err)
+		return nil, fmt.Errorf("velocity/storage: failed to read stream: %w", err)
 	}
 
 	return buf.Bytes(), nil
 }
 
-// GetStream retrieves a stream from the given path
+// GetStream retrieves a stream from the given path (uses context.Background()).
 func (d *S3Driver) GetStream(path string) (io.ReadCloser, error) {
-	ctx := context.Background()
+	return d.GetStreamCtx(context.Background(), path)
+}
+
+// GetStreamCtx retrieves a stream using the caller-provided context.
+func (d *S3Driver) GetStreamCtx(ctx context.Context, path string) (io.ReadCloser, error) {
 	var err error
 	path, err = d.cleanPath(path)
 	if err != nil {
@@ -168,18 +223,25 @@ func (d *S3Driver) GetStream(path string) (io.ReadCloser, error) {
 		Key:    aws.String(path),
 	})
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
 		if isNotFoundError(err) {
 			return nil, ErrFileNotFound
 		}
-		return nil, fmt.Errorf("failed to get object from S3: %w", err)
+		return nil, fmt.Errorf("velocity/storage: failed to get object from s3: %w", err)
 	}
 
 	return result.Body, nil
 }
 
-// Exists checks if a file exists at the given path
+// Exists checks if a file exists at the given path (uses context.Background()).
 func (d *S3Driver) Exists(path string) bool {
-	ctx := context.Background()
+	return d.ExistsCtx(context.Background(), path)
+}
+
+// ExistsCtx checks existence using the caller-provided context.
+func (d *S3Driver) ExistsCtx(ctx context.Context, path string) bool {
 	var err error
 	path, err = d.cleanPath(path)
 	if err != nil {
@@ -194,13 +256,16 @@ func (d *S3Driver) Exists(path string) bool {
 	return err == nil
 }
 
-// Delete removes files at the given paths
+// Delete removes files at the given paths (uses context.Background()).
 func (d *S3Driver) Delete(paths ...string) error {
+	return d.DeleteCtx(context.Background(), paths...)
+}
+
+// DeleteCtx removes files using the caller-provided context.
+func (d *S3Driver) DeleteCtx(ctx context.Context, paths ...string) error {
 	if len(paths) == 0 {
 		return nil
 	}
-
-	ctx := context.Background()
 
 	// Build delete objects
 	objects := make([]types.ObjectIdentifier, len(paths))
@@ -224,15 +289,19 @@ func (d *S3Driver) Delete(paths ...string) error {
 	})
 
 	if err != nil {
-		return fmt.Errorf("failed to delete objects from S3: %w", err)
+		return fmt.Errorf("velocity/storage: failed to delete objects from s3: %w", err)
 	}
 
 	return nil
 }
 
-// Copy copies a file from one path to another
+// Copy copies a file from one path to another (uses context.Background()).
 func (d *S3Driver) Copy(from, to string) error {
-	ctx := context.Background()
+	return d.CopyCtx(context.Background(), from, to)
+}
+
+// CopyCtx copies a file using the caller-provided context.
+func (d *S3Driver) CopyCtx(ctx context.Context, from, to string) error {
 	var err error
 	from, err = d.cleanPath(from)
 	if err != nil {
@@ -257,24 +326,32 @@ func (d *S3Driver) Copy(from, to string) error {
 		if isNotFoundError(err) {
 			return ErrFileNotFound
 		}
-		return fmt.Errorf("failed to copy object in S3: %w", err)
+		return fmt.Errorf("velocity/storage: failed to copy object in s3: %w", err)
 	}
 
 	return nil
 }
 
-// Move moves a file from one path to another
+// Move moves a file from one path to another (uses context.Background()).
 func (d *S3Driver) Move(from, to string) error {
-	// Copy then delete
-	if err := d.Copy(from, to); err != nil {
-		return err
-	}
-	return d.Delete(from)
+	return d.MoveCtx(context.Background(), from, to)
 }
 
-// Size returns the size of a file at the given path
+// MoveCtx moves a file using the caller-provided context.
+func (d *S3Driver) MoveCtx(ctx context.Context, from, to string) error {
+	if err := d.CopyCtx(ctx, from, to); err != nil {
+		return err
+	}
+	return d.DeleteCtx(ctx, from)
+}
+
+// Size returns the size of a file at the given path (uses context.Background()).
 func (d *S3Driver) Size(path string) (int64, error) {
-	ctx := context.Background()
+	return d.SizeCtx(context.Background(), path)
+}
+
+// SizeCtx returns the size using the caller-provided context.
+func (d *S3Driver) SizeCtx(ctx context.Context, path string) (int64, error) {
 	var err error
 	path, err = d.cleanPath(path)
 	if err != nil {
@@ -290,15 +367,19 @@ func (d *S3Driver) Size(path string) (int64, error) {
 		if isNotFoundError(err) {
 			return 0, ErrFileNotFound
 		}
-		return 0, fmt.Errorf("failed to get object metadata from S3: %w", err)
+		return 0, fmt.Errorf("velocity/storage: failed to get object metadata from s3: %w", err)
 	}
 
 	return *result.ContentLength, nil
 }
 
-// LastModified returns the last modified time of a file
+// LastModified returns the last modified time of a file (uses context.Background()).
 func (d *S3Driver) LastModified(path string) (time.Time, error) {
-	ctx := context.Background()
+	return d.LastModifiedCtx(context.Background(), path)
+}
+
+// LastModifiedCtx returns the last modified time using the caller-provided context.
+func (d *S3Driver) LastModifiedCtx(ctx context.Context, path string) (time.Time, error) {
 	var err error
 	path, err = d.cleanPath(path)
 	if err != nil {
@@ -314,15 +395,19 @@ func (d *S3Driver) LastModified(path string) (time.Time, error) {
 		if isNotFoundError(err) {
 			return time.Time{}, ErrFileNotFound
 		}
-		return time.Time{}, fmt.Errorf("failed to get object metadata from S3: %w", err)
+		return time.Time{}, fmt.Errorf("velocity/storage: failed to get object metadata from s3: %w", err)
 	}
 
 	return *result.LastModified, nil
 }
 
-// MimeType returns the MIME type of a file
+// MimeType returns the MIME type of a file (uses context.Background()).
 func (d *S3Driver) MimeType(path string) (string, error) {
-	ctx := context.Background()
+	return d.MimeTypeCtx(context.Background(), path)
+}
+
+// MimeTypeCtx returns the MIME type using the caller-provided context.
+func (d *S3Driver) MimeTypeCtx(ctx context.Context, path string) (string, error) {
 	var err error
 	path, err = d.cleanPath(path)
 	if err != nil {
@@ -338,7 +423,7 @@ func (d *S3Driver) MimeType(path string) (string, error) {
 		if isNotFoundError(err) {
 			return "", ErrFileNotFound
 		}
-		return "", fmt.Errorf("failed to get object metadata from S3: %w", err)
+		return "", fmt.Errorf("velocity/storage: failed to get object metadata from s3: %w", err)
 	}
 
 	if result.ContentType != nil {
@@ -348,9 +433,13 @@ func (d *S3Driver) MimeType(path string) (string, error) {
 	return "application/octet-stream", nil
 }
 
-// Files lists files in a directory
+// Files lists files in a directory (uses context.Background()).
 func (d *S3Driver) Files(directory string) ([]string, error) {
-	ctx := context.Background()
+	return d.FilesCtx(context.Background(), directory)
+}
+
+// FilesCtx lists files in a directory using the caller-provided context.
+func (d *S3Driver) FilesCtx(ctx context.Context, directory string) ([]string, error) {
 	var err error
 	directory, err = d.cleanPath(directory)
 	if err != nil {
@@ -372,7 +461,7 @@ func (d *S3Driver) Files(directory string) ([]string, error) {
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("failed to list objects from S3: %w", err)
+			return nil, fmt.Errorf("velocity/storage: failed to list objects from s3: %w", err)
 		}
 
 		for _, obj := range page.Contents {
@@ -387,9 +476,13 @@ func (d *S3Driver) Files(directory string) ([]string, error) {
 	return files, nil
 }
 
-// AllFiles lists all files recursively in a directory
+// AllFiles lists all files recursively in a directory (uses context.Background()).
 func (d *S3Driver) AllFiles(directory string) ([]string, error) {
-	ctx := context.Background()
+	return d.AllFilesCtx(context.Background(), directory)
+}
+
+// AllFilesCtx lists all files recursively using the caller-provided context.
+func (d *S3Driver) AllFilesCtx(ctx context.Context, directory string) ([]string, error) {
 	var err error
 	directory, err = d.cleanPath(directory)
 	if err != nil {
@@ -410,7 +503,7 @@ func (d *S3Driver) AllFiles(directory string) ([]string, error) {
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("failed to list objects from S3: %w", err)
+			return nil, fmt.Errorf("velocity/storage: failed to list objects from s3: %w", err)
 		}
 
 		for _, obj := range page.Contents {
@@ -425,9 +518,13 @@ func (d *S3Driver) AllFiles(directory string) ([]string, error) {
 	return files, nil
 }
 
-// Directories lists directories
+// Directories lists directories (uses context.Background()).
 func (d *S3Driver) Directories(directory string) ([]string, error) {
-	ctx := context.Background()
+	return d.DirectoriesCtx(context.Background(), directory)
+}
+
+// DirectoriesCtx lists directories using the caller-provided context.
+func (d *S3Driver) DirectoriesCtx(ctx context.Context, directory string) ([]string, error) {
 	var err error
 	directory, err = d.cleanPath(directory)
 	if err != nil {
@@ -446,7 +543,7 @@ func (d *S3Driver) Directories(directory string) ([]string, error) {
 		Delimiter: aws.String("/"),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to list objects from S3: %w", err)
+		return nil, fmt.Errorf("velocity/storage: failed to list objects from s3: %w", err)
 	}
 
 	// Common prefixes represent "directories"
@@ -459,10 +556,15 @@ func (d *S3Driver) Directories(directory string) ([]string, error) {
 	return dirs, nil
 }
 
-// AllDirectories lists all directories recursively
+// AllDirectories lists all directories recursively (uses context.Background()).
 func (d *S3Driver) AllDirectories(directory string) ([]string, error) {
+	return d.AllDirectoriesCtx(context.Background(), directory)
+}
+
+// AllDirectoriesCtx lists all directories recursively using the caller-provided context.
+func (d *S3Driver) AllDirectoriesCtx(ctx context.Context, directory string) ([]string, error) {
 	// S3 doesn't have real directories, we need to infer from object keys
-	allFiles, err := d.AllFiles(directory)
+	allFiles, err := d.AllFilesCtx(ctx, directory)
 	if err != nil {
 		return nil, err
 	}
@@ -502,17 +604,22 @@ func (d *S3Driver) MakeDirectory(path string) error {
 	return nil
 }
 
-// DeleteDirectory deletes a directory and all its contents
+// DeleteDirectory deletes a directory and all its contents (uses context.Background()).
 func (d *S3Driver) DeleteDirectory(directory string) error {
+	return d.DeleteDirectoryCtx(context.Background(), directory)
+}
+
+// DeleteDirectoryCtx deletes a directory using the caller-provided context.
+func (d *S3Driver) DeleteDirectoryCtx(ctx context.Context, directory string) error {
 	// List all files in directory
-	files, err := d.AllFiles(directory)
+	files, err := d.AllFilesCtx(ctx, directory)
 	if err != nil {
 		return err
 	}
 
 	// Delete all files
 	if len(files) > 0 {
-		return d.Delete(files...)
+		return d.DeleteCtx(ctx, files...)
 	}
 
 	return nil
@@ -535,13 +642,26 @@ func (d *S3Driver) URL(path string) string {
 	return fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", d.bucket, d.region, path)
 }
 
-// TemporaryURL returns a temporary URL for a file
+// TemporaryURL returns a temporary presigned URL for a file (uses context.Background()).
+// Expirations greater than 7 days are clamped to 7 days (AWS SigV4 maximum).
 func (d *S3Driver) TemporaryURL(path string, expiration time.Duration) (string, error) {
-	ctx := context.Background()
+	return d.TemporaryURLCtx(context.Background(), path, expiration)
+}
+
+// TemporaryURLCtx returns a temporary presigned URL using the caller-provided context.
+// Expirations greater than 7 days are clamped to 7 days (AWS SigV4 maximum).
+func (d *S3Driver) TemporaryURLCtx(ctx context.Context, path string, expiration time.Duration) (string, error) {
 	var err error
 	path, err = d.cleanPath(path)
 	if err != nil {
 		return "", err
+	}
+
+	// Clamp to AWS SigV4 maximum of 7 days. Treat non-positive durations as
+	// caller error by defaulting to the cap rather than signing an already-
+	// expired URL.
+	if expiration > maxS3PresignExpiration || expiration <= 0 {
+		expiration = maxS3PresignExpiration
 	}
 
 	// Generate presigned URL
@@ -551,7 +671,7 @@ func (d *S3Driver) TemporaryURL(path string, expiration time.Duration) (string, 
 	}, s3.WithPresignExpires(expiration))
 
 	if err != nil {
-		return "", fmt.Errorf("failed to generate presigned URL: %w", err)
+		return "", fmt.Errorf("velocity/storage: failed to generate presigned url: %w", err)
 	}
 
 	return result.URL, nil
@@ -568,7 +688,7 @@ func (d *S3Driver) cleanPath(path string) (string, error) {
 	// Reject path traversal
 	for _, segment := range strings.Split(path, "/") {
 		if segment == ".." {
-			return "", fmt.Errorf("path traversal detected")
+			return "", fmt.Errorf("velocity/storage: path traversal detected")
 		}
 	}
 
