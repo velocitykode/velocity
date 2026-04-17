@@ -5,6 +5,21 @@ import (
 	"time"
 )
 
+// Event is the minimum contract for events emitted by the router.
+// Every router-owned event type (RequestStarted, RequestRouted,
+// RequestHandled, RequestFailed) implements Name() to return a stable
+// dot-separated identifier suitable for logging, metrics, and
+// dispatcher routing.
+//
+// Exposing a typed interface (rather than interface{}) makes the
+// OnEventDispatchError callback surface self-describing and removes
+// a silent class of mis-wired listener signatures. External callers
+// are still free to pass any value through SetEventDispatcher — the
+// router only emits values implementing Event.
+type Event interface {
+	Name() string
+}
+
 // RequestStarted is dispatched when an HTTP request begins processing
 type RequestStarted struct {
 	Context    context.Context

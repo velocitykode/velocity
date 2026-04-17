@@ -13,7 +13,7 @@ import (
 // channel cannot accept more events. Callers of the event dispatcher in
 // the router currently ignore the error; this sentinel is exposed so
 // consumer code that wraps the dispatcher can observe drops.
-var ErrEventBufferFull = errors.New("velocity: event buffer full, dropping event")
+var ErrEventBufferFull = errors.New("velocity/router: event buffer full, dropping event")
 
 // SetAsyncEventDispatcher wires an event dispatcher that delivers events
 // to fn from a pool of worker goroutines reading a buffered channel.
@@ -34,48 +34,82 @@ var ErrEventBufferFull = errors.New("velocity: event buffer full, dropping event
 // dispatcher. If a prior async dispatcher is running, it is stopped
 // first; any events still in its buffer are dropped.
 func (r *VelocityRouterV2) SetAsyncEventDispatcher(fn func(event interface{}) error, workers, bufferSize int) {
+	workers, bufferSize = normalizeAsyncSizing(workers, bufferSize)
+	r.stopPriorAsyncDispatcher()
+
+	ch := make(chan interface{}, bufferSize)
+	wg := r.startEventWorkers(ch, fn, workers)
+
+	r.eventDispatcher = makeNonBlockingEnqueuer(ch)
+	r.stopEventDispatcher = makeDrainCloser(ch, wg)
+}
+
+// normalizeAsyncSizing applies defaults for <=0 inputs.
+func normalizeAsyncSizing(workers, bufferSize int) (int, int) {
 	if workers <= 0 {
 		workers = runtime.NumCPU()
 	}
 	if bufferSize <= 0 {
 		bufferSize = 1024
 	}
+	return workers, bufferSize
+}
 
-	// Stop any previously-running async workers. We discard the error
-	// here because the caller is replacing the dispatcher wholesale.
+// stopPriorAsyncDispatcher tears down any previously-installed async
+// dispatcher. Errors are intentionally swallowed — the caller is
+// overwriting the dispatcher wholesale.
+func (r *VelocityRouterV2) stopPriorAsyncDispatcher() {
 	if r.stopEventDispatcher != nil {
 		_ = r.stopEventDispatcher(context.Background())
 	}
+}
 
-	ch := make(chan interface{}, bufferSize)
+// startEventWorkers spawns worker goroutines that consume events from
+// ch and invoke fn with panic recovery. Listener failures route through
+// the shared reporter so drops/panics surface via the same metrics.
+func (r *VelocityRouterV2) startEventWorkers(ch <-chan interface{}, fn func(event interface{}) error, workers int) *sync.WaitGroup {
 	var wg sync.WaitGroup
-
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for ev := range ch {
-				safeInvokeListener(fn, ev, func(err error, event interface{}) {
-					// Route listener errors through the same mechanism as dispatch errors:
-					// increment counter, invoke callback or log first occurrence.
-					r.droppedEvents.Add(1)
-					if r.OnEventDispatchError != nil {
-						r.OnEventDispatchError(err, event)
-						return
-					}
-					if r.firstDropLogged.CompareAndSwap(false, true) &&
-						r.services != nil && r.services.Log != nil {
-						r.services.Log.Warn(
-							"velocity: async listener error (first occurrence; poll Router.DroppedEventCount or set Router.OnEventDispatchError)",
-							"error", err.Error(),
-						)
-					}
-				})
-			}
+			r.runEventWorker(ch, fn)
 		}()
 	}
+	return &wg
+}
 
-	r.eventDispatcher = func(event interface{}) error {
+// runEventWorker drains a single channel until close.
+func (r *VelocityRouterV2) runEventWorker(ch <-chan interface{}, fn func(event interface{}) error) {
+	for ev := range ch {
+		safeInvokeListener(fn, ev, r.onListenerFailure)
+	}
+}
+
+// onListenerFailure is the error callback installed by the worker
+// pool. Shares the same drop-accounting as dispatchInstanceEvent so
+// metrics stay coherent across sync and async paths.
+func (r *VelocityRouterV2) onListenerFailure(err error, ev interface{}) {
+	r.droppedEvents.Add(1)
+	typedEvent, _ := ev.(Event)
+	if r.OnEventDispatchError != nil {
+		r.OnEventDispatchError(err, typedEvent)
+		return
+	}
+	if r.firstDropLogged.CompareAndSwap(false, true) &&
+		r.services != nil && r.services.Log != nil {
+		r.services.Log.Warn(
+			"velocity: async listener error (first occurrence; poll Router.DroppedEventCount or set Router.OnEventDispatchError)",
+			"error", err.Error(),
+		)
+	}
+}
+
+// makeNonBlockingEnqueuer returns a dispatcher that pushes events
+// without blocking; when the channel is full it returns
+// ErrEventBufferFull so the caller can account for the drop.
+func makeNonBlockingEnqueuer(ch chan<- interface{}) func(event interface{}) error {
+	return func(event interface{}) error {
 		select {
 		case ch <- event:
 			return nil
@@ -83,16 +117,27 @@ func (r *VelocityRouterV2) SetAsyncEventDispatcher(fn func(event interface{}) er
 			return ErrEventBufferFull
 		}
 	}
+}
 
-	var stopOnce sync.Once
-	var stopErr error
-	r.stopEventDispatcher = func(ctx context.Context) error {
+// makeDrainCloser closes the channel and waits for workers to finish,
+// respecting ctx cancellation. Subsequent calls return the cached
+// result so repeated Shutdown invocations are safe.
+func makeDrainCloser(ch chan interface{}, wg *sync.WaitGroup) func(context.Context) error {
+	var (
+		stopOnce sync.Once
+		stopErr  error
+	)
+	return func(ctx context.Context) error {
 		stopOnce.Do(func() {
 			close(ch)
 			done := make(chan struct{})
 			go func() {
+				defer func() {
+					// Workers finish draining even if we panic below.
+					_ = recover()
+					close(done)
+				}()
 				wg.Wait()
-				close(done)
 			}()
 			select {
 			case <-done:
