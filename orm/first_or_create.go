@@ -70,12 +70,12 @@ func firstOrCreate[T any](conditions map[string]any, values map[string]any) (*T,
 	// Validate all condition keys
 	for key := range conditions {
 		if err := validateIdentifier(key); err != nil {
-			return nil, fmt.Errorf("FirstOrCreate: %w", err)
+			return nil, fmt.Errorf("velocity/orm: firstOrCreate: %w", err)
 		}
 	}
 	for key := range values {
 		if err := validateIdentifier(key); err != nil {
-			return nil, fmt.Errorf("FirstOrCreate: %w", err)
+			return nil, fmt.Errorf("velocity/orm: firstOrCreate: %w", err)
 		}
 	}
 
@@ -112,12 +112,12 @@ func updateOrCreate[T any](conditions map[string]any, values map[string]any) (*T
 	// Validate all condition keys
 	for key := range conditions {
 		if err := validateIdentifier(key); err != nil {
-			return nil, fmt.Errorf("UpdateOrCreate: %w", err)
+			return nil, fmt.Errorf("velocity/orm: updateOrCreate: %w", err)
 		}
 	}
 	for key := range values {
 		if err := validateIdentifier(key); err != nil {
-			return nil, fmt.Errorf("UpdateOrCreate: %w", err)
+			return nil, fmt.Errorf("velocity/orm: updateOrCreate: %w", err)
 		}
 	}
 

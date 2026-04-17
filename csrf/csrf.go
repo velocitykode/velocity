@@ -17,9 +17,9 @@ import (
 )
 
 var (
-	ErrTokenMissing = errors.New("CSRF token missing")
-	ErrTokenInvalid = errors.New("CSRF token invalid")
-	ErrTokenExpired = errors.New("CSRF token expired")
+	ErrTokenMissing = errors.New("velocity/csrf: token missing")
+	ErrTokenInvalid = errors.New("velocity/csrf: token invalid")
+	ErrTokenExpired = errors.New("velocity/csrf: token expired")
 	ErrNoStore      = errors.New("no token store configured")
 )
 

@@ -153,15 +153,15 @@ func Pending(db *sql.DB, driver string) ([]Migration, error) {
 func Up() error {
 	// Import orm package at runtime to avoid circular dependency
 	// Users must ensure orm.Init() is called before migrate.Up()
-	return errors.New("Up() requires ORM integration - use migrator.Up() directly or call from orm package")
+	return errors.New("velocity/orm: up requires ORM integration - use migrator.Up() directly")
 }
 
 // Down rolls back the last N batches using the default ORM connection
 func Down(steps int) error {
-	return errors.New("Down() requires ORM integration - use migrator.Down() directly or call from orm package")
+	return errors.New("velocity/orm: down requires ORM integration - use migrator.Down() directly")
 }
 
 // Status returns migration status using the default ORM connection
 func Status() ([]MigrationStatus, error) {
-	return nil, errors.New("Status() requires ORM integration - use migrator.Status() directly or call from orm package")
+	return nil, errors.New("velocity/orm: status requires ORM integration - use migrator.Status() directly")
 }
