@@ -320,7 +320,7 @@ func TestMemoryStore_Increment(t *testing.T) {
 			value:     1,
 			want:      0,
 			wantErr:   true,
-			errString: "value is not numeric",
+			errString: "velocity/cache: value is not numeric",
 		},
 		{
 			name: "preserves expiration time",

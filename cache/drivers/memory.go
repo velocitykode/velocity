@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -13,6 +14,7 @@ type MemoryStore struct {
 	prefix    string
 	ticker    *time.Ticker
 	done      chan bool
+	closeOnce sync.Once
 	lockStore *memoryLockStore
 }
 
@@ -59,13 +61,31 @@ func (s *MemoryStore) cleanupExpired() {
 	}
 }
 
-// Close stops the cleanup goroutine. Safe to call even if Start() was never called.
-func (s *MemoryStore) Close() error {
-	if s.ticker != nil {
-		s.ticker.Stop()
+// Shutdown stops the background cleanup goroutine.
+// It is safe to call Shutdown more than once (idempotent) and before or
+// after Start(). The context is accepted for interface uniformity with
+// other ShutdownAware types; memory store cleanup completes promptly so
+// the deadline is only consulted when waiting for the ticker stop.
+func (s *MemoryStore) Shutdown(ctx context.Context) error {
+	s.closeOnce.Do(func() {
+		if s.ticker != nil {
+			s.ticker.Stop()
+		}
+		close(s.done)
+	})
+	// Honour the context deadline explicitly — callers may shutdown
+	// many drivers concurrently, and a cancelled ctx should be
+	// reflected.
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	close(s.done)
 	return nil
+}
+
+// Close stops the cleanup goroutine. Safe to call even if Start() was never called.
+// Deprecated: use Shutdown(ctx) instead.
+func (s *MemoryStore) Close() error {
+	return s.Shutdown(context.Background())
 }
 
 // prefixedKey returns the key with prefix.
@@ -159,7 +179,7 @@ func (s *MemoryStore) Increment(key string, value int64) (int64, error) {
 		case float64:
 			current = int64(v)
 		default:
-			return 0, fmt.Errorf("value is not numeric")
+			return 0, fmt.Errorf("velocity/cache: value is not numeric")
 		}
 	}
 

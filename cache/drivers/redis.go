@@ -46,9 +46,21 @@ func NewRedisStore(prefix string, host string, port int, password string, databa
 	}, nil
 }
 
-// Close closes the Redis client connection
-func (s *RedisStore) Close() error {
+// Shutdown closes the Redis client connection. The context is accepted
+// for interface uniformity with other ShutdownAware types; go-redis's
+// Close is synchronous, so the deadline is only consulted when it is
+// already cancelled.
+func (s *RedisStore) Shutdown(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return s.client.Close()
+}
+
+// Close closes the Redis client connection.
+// Deprecated: use Shutdown(ctx) instead.
+func (s *RedisStore) Close() error {
+	return s.Shutdown(context.Background())
 }
 
 // prefixedKey returns the key with prefix.
