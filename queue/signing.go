@@ -19,17 +19,17 @@ var (
 	signingEnabled bool
 )
 
-// ConfigureSigning reads signing config from the environment. Must be
-// called after .env has been loaded (i.e. from velocity.New() via the
-// queue factory) — not from package init, because env vars injected by
-// godotenv.Load aren't available until main() runs.
+// ConfigureSigning configures payload signing from the provided keys.
+// signingKey is the dedicated QUEUE_SIGNING_KEY; appKey is the fallback APP_KEY.
+// If signingKey is empty, appKey is used with HKDF derivation.
+// Must be called from velocity.New() after config is loaded.
 //
-// Signing is enabled whenever QUEUE_SIGNING_KEY or APP_KEY is present.
-func ConfigureSigning() {
-	key := os.Getenv("QUEUE_SIGNING_KEY")
+// Signing is enabled whenever signingKey or appKey is non-empty.
+func ConfigureSigning(rawSigningKey, appKey string) {
+	key := rawSigningKey
 	useAppKey := false
 	if key == "" {
-		key = os.Getenv("APP_KEY")
+		key = appKey
 		useAppKey = true
 	}
 

@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/smtp"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -16,8 +15,8 @@ import (
 )
 
 func init() {
-	mail.RegisterDriver("local", func() (mail.Mailer, error) {
-		return NewLocalDriver()
+	mail.RegisterDriver("local", func(cfg mail.MailConfig) (mail.Mailer, error) {
+		return NewLocalDriver(cfg.Local, cfg.FromAddress, cfg.FromName)
 	})
 }
 
@@ -30,6 +29,8 @@ type LocalDriver struct {
 	password   string // SENSITIVE: do not log
 	encryption string
 	sendmail   string
+	fromAddr   string
+	fromName   string
 	mu         sync.Mutex
 }
 
@@ -38,27 +39,27 @@ func (d *LocalDriver) String() string {
 	return fmt.Sprintf("LocalDriver{Host:%s, Port:%s, Username:[REDACTED], Password:[REDACTED]}", d.host, d.port)
 }
 
-// NewLocalDriver creates a new local SMTP/sendmail driver
-func NewLocalDriver() (*LocalDriver, error) {
-	driver := &LocalDriver{
-		host:       os.Getenv("MAIL_HOST"),
-		port:       os.Getenv("MAIL_PORT"),
-		username:   os.Getenv("MAIL_USERNAME"),
-		password:   os.Getenv("MAIL_PASSWORD"),
-		encryption: os.Getenv("MAIL_ENCRYPTION"),
-		sendmail:   os.Getenv("MAIL_SENDMAIL_PATH"),
-	}
-
-	// Validate configuration
-	if driver.sendmail == "" && driver.host == "" {
+// NewLocalDriver creates a new local SMTP/sendmail driver from the provided config.
+func NewLocalDriver(config mail.LocalConfig, fromAddr, fromName string) (*LocalDriver, error) {
+	if config.SendmailPath == "" && config.Host == "" {
 		return nil, fmt.Errorf("mail: MAIL_HOST or MAIL_SENDMAIL_PATH must be set for local driver")
 	}
 
-	if driver.port == "" && driver.host != "" {
-		driver.port = "587" // Default SMTP port
+	port := config.Port
+	if port == "" && config.Host != "" {
+		port = "587"
 	}
 
-	return driver, nil
+	return &LocalDriver{
+		host:       config.Host,
+		port:       port,
+		username:   config.Username,
+		password:   config.Password,
+		encryption: config.Encryption,
+		sendmail:   config.SendmailPath,
+		fromAddr:   fromAddr,
+		fromName:   fromName,
+	}, nil
 }
 
 // Send sends an email via SMTP or sendmail
@@ -103,7 +104,7 @@ func (d *LocalDriver) sendViaSMTP(ctx context.Context, msg *mail.Message) error 
 	addr := fmt.Sprintf("%s:%s", d.host, d.port)
 	from := msg.GetFrom().Email
 	if from == "" {
-		from = os.Getenv("MAIL_FROM_ADDRESS")
+		from = d.fromAddr
 	}
 
 	return smtp.SendMail(addr, auth, from, recipients, body)
@@ -176,8 +177,8 @@ func (d *LocalDriver) buildMessage(msg *mail.Message) []byte {
 	// From header
 	from := msg.GetFrom()
 	if from.Email == "" {
-		from.Email = os.Getenv("MAIL_FROM_ADDRESS")
-		from.Name = os.Getenv("MAIL_FROM_NAME")
+		from.Email = d.fromAddr
+		from.Name = d.fromName
 	}
 	buf.WriteString(fmt.Sprintf("From: %s\r\n", sanitizeHeader(from.String())))
 

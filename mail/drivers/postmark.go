@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"sync"
 	"time"
 
@@ -15,8 +14,8 @@ import (
 )
 
 func init() {
-	mail.RegisterDriver("postmark", func() (mail.Mailer, error) {
-		return NewPostmarkDriver()
+	mail.RegisterDriver("postmark", func(cfg mail.MailConfig) (mail.Mailer, error) {
+		return NewPostmarkDriver(cfg.Postmark, cfg.FromAddress, cfg.FromName)
 	})
 }
 
@@ -25,6 +24,8 @@ func init() {
 type PostmarkDriver struct {
 	token         string // SENSITIVE: do not log
 	messageStream string
+	fromAddr      string
+	fromName      string
 	client        *http.Client
 	mu            sync.Mutex
 }
@@ -34,21 +35,22 @@ func (d *PostmarkDriver) String() string {
 	return fmt.Sprintf("PostmarkDriver{MessageStream:%s, Token:[REDACTED]}", d.messageStream)
 }
 
-// NewPostmarkDriver creates a new Postmark driver
-func NewPostmarkDriver() (*PostmarkDriver, error) {
-	token := os.Getenv("POSTMARK_TOKEN")
-	if token == "" {
+// NewPostmarkDriver creates a new Postmark driver from the provided config.
+func NewPostmarkDriver(config mail.PostmarkConfig, fromAddr, fromName string) (*PostmarkDriver, error) {
+	if config.Token == "" {
 		return nil, fmt.Errorf("mail: POSTMARK_TOKEN is required for postmark driver")
 	}
 
-	messageStream := os.Getenv("POSTMARK_MESSAGE_STREAM")
+	messageStream := config.MessageStream
 	if messageStream == "" {
-		messageStream = "outbound" // Default stream
+		messageStream = "outbound"
 	}
 
 	return &PostmarkDriver{
-		token:         token,
+		token:         config.Token,
 		messageStream: messageStream,
+		fromAddr:      fromAddr,
+		fromName:      fromName,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -103,8 +105,8 @@ func (d *PostmarkDriver) buildPayload(msg *mail.Message) map[string]interface{} 
 	// From
 	from := msg.GetFrom()
 	if from.Email == "" {
-		from.Email = os.Getenv("MAIL_FROM_ADDRESS")
-		from.Name = os.Getenv("MAIL_FROM_NAME")
+		from.Email = d.fromAddr
+		from.Name = d.fromName
 	}
 	if from.Name != "" {
 		payload["From"] = fmt.Sprintf("%s <%s>", from.Name, from.Email)

@@ -39,6 +39,7 @@ func initCache(config CacheConfig) *cache.Manager {
 			Port:     config.RedisPort,
 			Password: config.RedisPassword,
 			Database: config.RedisDatabase,
+			TLS:      config.RedisTLS,
 		}
 	default:
 		cacheConfig.Stores["default"] = cache.StoreConfig{
@@ -172,12 +173,12 @@ func initDB(config DBConfig) (*orm.Manager, error) {
 
 // initQueue selects the queue driver based on config. Falls back to memory if the
 // redis connection fails or the database driver is requested without a DB connection.
-func initQueue(config QueueConfig, db *sql.DB) queue.Driver {
+func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey string, appKey string) queue.Driver {
 	// Configure payload signing now that .env has been loaded. This used
 	// to run in queue's package init(), which fired before godotenv.Load
 	// had populated APP_KEY/QUEUE_SIGNING_KEY — so signing was always
 	// reported as disabled even when the key was present.
-	queue.ConfigureSigning()
+	queue.ConfigureSigning(signingKey, appKey)
 
 	switch config.Driver {
 	case "redis":
@@ -186,6 +187,7 @@ func initQueue(config QueueConfig, db *sql.DB) queue.Driver {
 			Port:     config.RedisPort,
 			Password: config.RedisPassword,
 			DB:       config.RedisDB,
+			TLS:      config.RedisTLS,
 		})
 		if err != nil {
 			return queue.NewMemoryDriver()
@@ -195,7 +197,7 @@ func initQueue(config QueueConfig, db *sql.DB) queue.Driver {
 		if db == nil {
 			return queue.NewMemoryDriver()
 		}
-		return queue.NewDatabaseDriver(db)
+		return queue.NewDatabaseDriver(db, dbDriver)
 	default:
 		return queue.NewMemoryDriver()
 	}

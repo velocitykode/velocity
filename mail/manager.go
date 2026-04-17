@@ -57,12 +57,8 @@ func (m *Manager) Channel(name string) Mailer {
 		return mailer
 	}
 
-	// Create new log driver for this channel using registry
-	mailer, err := createDriver("log")
-	if err != nil {
-		// This should never happen since log driver is always registered
-		panic(fmt.Sprintf("failed to create log driver for channel: %v", err))
-	}
+	// Create new log driver for this channel (log driver has no config requirements)
+	mailer = NewLogDriver()
 	m.channels[name] = mailer
 	return mailer
 }

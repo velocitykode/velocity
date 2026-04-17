@@ -77,46 +77,58 @@ func NewGateway(opts ...GatewayOption) *Gateway {
 		g.logger, _ = log.NewLogger(log.LogConfig{Driver: "console", Config: map[string]interface{}{"level": "info"}})
 	}
 
-	// If no transport credentials were configured via options, configure from environment
+	// If no transport credentials were configured via options, default to insecure
+	// for backward compatibility. Users should use GatewayWithTLS() or
+	// GatewayWithTransportConfig() to configure TLS.
 	if len(g.dialOptions) == 0 {
-		opts, err := configureGatewayTransport()
-		g.dialOptions = opts
-		g.configErr = err
+		g.dialOptions = []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+		}
 	}
 
 	return g
 }
 
-// configureGatewayTransport configures gRPC dial credentials from environment variables.
-// Checks GRPC_GATEWAY_TLS_CERT and GRPC_GATEWAY_TLS_KEY for TLS configuration.
-// Falls back to insecure credentials only when GRPC_GATEWAY_INSECURE=true is explicitly set.
-// Returns an error if neither TLS nor explicit insecure mode is configured.
-func configureGatewayTransport() ([]grpc.DialOption, error) {
-	certFile := os.Getenv("GRPC_GATEWAY_TLS_CERT")
-	keyFile := os.Getenv("GRPC_GATEWAY_TLS_KEY")
+// GatewayTransportConfig holds TLS configuration for the gateway's connection
+// to the gRPC server.
+type GatewayTransportConfig struct {
+	// TLSCert is the path to the CA certificate file for verifying the gRPC server.
+	TLSCert string
+	// TLSKey is the path to the TLS key file.
+	TLSKey string
+	// Insecure disables TLS. Only use for local development.
+	Insecure bool
+}
 
-	if certFile != "" && keyFile != "" {
-		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
-		caCert, err := os.ReadFile(certFile)
-		if err == nil {
-			pool := x509.NewCertPool()
-			if pool.AppendCertsFromPEM(caCert) {
-				tlsConfig.RootCAs = pool
+// GatewayWithTransportConfig configures the gateway transport from a typed config.
+// If both TLSCert and TLSKey are set, TLS is enabled. If Insecure is true, insecure
+// credentials are used. Returns an error at Build() time if neither is configured.
+func GatewayWithTransportConfig(cfg GatewayTransportConfig) GatewayOption {
+	return func(g *Gateway) {
+		if cfg.TLSCert != "" && cfg.TLSKey != "" {
+			tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+			caCert, err := os.ReadFile(cfg.TLSCert)
+			if err == nil {
+				pool := x509.NewCertPool()
+				if pool.AppendCertsFromPEM(caCert) {
+					tlsConfig.RootCAs = pool
+				}
 			}
+			g.dialOptions = []grpc.DialOption{
+				grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
+			}
+			return
 		}
-		return []grpc.DialOption{
-			grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
-		}, nil
-	}
 
-	if os.Getenv("GRPC_GATEWAY_INSECURE") == "true" {
-		// Warning logged at gateway Build() time when logger is available
-		return []grpc.DialOption{
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
-		}, nil
-	}
+		if cfg.Insecure {
+			g.dialOptions = []grpc.DialOption{
+				grpc.WithTransportCredentials(insecure.NewCredentials()),
+			}
+			return
+		}
 
-	return nil, fmt.Errorf("gRPC gateway: TLS is required. Set GRPC_GATEWAY_TLS_CERT and GRPC_GATEWAY_TLS_KEY, or set GRPC_GATEWAY_INSECURE=true for local development")
+		g.configErr = fmt.Errorf("gRPC gateway: TLS is required. Set TLSCert and TLSKey, or set Insecure=true for local development")
+	}
 }
 
 // GatewayWithPort sets the port for the HTTP gateway

@@ -27,6 +27,22 @@ type Config struct {
 	SSRExcept  []string      // URL prefixes to exclude from SSR
 }
 
+// DefaultViewConfig returns a Config with sensible defaults.
+func DefaultViewConfig() Config {
+	return Config{
+		SSRURL:     "http://127.0.0.1:13714",
+		SSRTimeout: 3 * time.Second,
+	}
+}
+
+// Validate checks that the Config is internally consistent.
+func (c Config) Validate() error {
+	if c.SSREnabled && c.SSRURL == "" {
+		return fmt.Errorf("view: SSR URL is required when SSR is enabled")
+	}
+	return nil
+}
+
 // SharePropsFunc is a function that returns props to be shared per request
 type SharePropsFunc func(r *http.Request) (Props, error)
 

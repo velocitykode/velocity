@@ -17,6 +17,7 @@ type Scheduler struct {
 	running         bool
 	timezone        *time.Location
 	maintenanceMode bool
+	appEnv          string
 	beforeCallbacks []func()
 	afterCallbacks  []func()
 	logger          Logger
@@ -76,6 +77,14 @@ func New() *Scheduler {
 		timezone: time.Local,
 		logger:   &defaultLogger{},
 	}
+}
+
+// SetEnv sets the application environment (e.g. "production", "staging") used by
+// jobs with environment constraints. Called during app initialization.
+func (s *Scheduler) SetEnv(env string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.appEnv = env
 }
 
 // SetTimezone sets the timezone for the scheduler

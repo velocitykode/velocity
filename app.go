@@ -130,13 +130,14 @@ func New(opts ...Option) (*App, error) {
 	}
 
 	// 10. Initialize queue — pass DB for database driver
-	a.Queue = initQueue(a.config.Queue, sqlDB)
+	a.Queue = initQueue(a.config.Queue, sqlDB, a.config.DB.Connection, a.config.Queue.SigningKey, a.config.Key)
 
 	// 11. Initialize storage with disk drivers
 	a.Storage = initStorage(a.config.Storage, a.Log)
 
 	// 12. Initialize scheduler
 	a.Scheduler = scheduler.New()
+	a.Scheduler.SetEnv(a.config.Env)
 
 	// 13. Initialize mail
 	if a.config.Mail.Driver != "" {

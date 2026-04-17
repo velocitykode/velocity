@@ -16,6 +16,10 @@ type QueueConfig struct {
 
 	// DB holds a *sql.DB for the database driver. Required when Driver is "database".
 	DB *sql.DB
+
+	// DBDriver specifies the database driver name ("postgres", "mysql", "sqlite").
+	// Required when Driver is "database".
+	DBDriver string
 }
 
 // NewQueue creates a new queue driver from the given configuration.
@@ -34,7 +38,7 @@ func NewQueue(config QueueConfig) (Driver, error) {
 		if config.DB == nil {
 			return nil, fmt.Errorf("database queue driver requires a *sql.DB in QueueConfig.DB")
 		}
-		return NewDatabaseDriver(config.DB), nil
+		return NewDatabaseDriver(config.DB, config.DBDriver), nil
 	default:
 		return nil, fmt.Errorf("unknown queue driver: %s", driver)
 	}

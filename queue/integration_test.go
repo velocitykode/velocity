@@ -281,7 +281,7 @@ func TestIntegrationDatabaseDriver(t *testing.T) {
 	}()
 
 	// Create the driver with the db directly
-	driver := NewDatabaseDriver(db)
+	driver := NewDatabaseDriver(db, "postgres")
 
 	t.Run("DatabaseJobPersistence", func(t *testing.T) {
 		t.Skip("Database driver requires full ORM initialization")

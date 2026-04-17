@@ -297,7 +297,7 @@ func TestDriverConfiguration(t *testing.T) {
 
 	t.Run("DatabaseDriverConfig", func(t *testing.T) {
 		// Database driver uses ORM configuration
-		driver := NewDatabaseDriver(nil)
+		driver := NewDatabaseDriver(nil, "")
 		if driver == nil {
 			t.Fatal("Failed to create database driver")
 		}

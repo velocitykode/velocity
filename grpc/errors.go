@@ -2,12 +2,25 @@ package grpc
 
 import (
 	"errors"
-	"os"
-	"strings"
+	"sync"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+var (
+	debugMu   sync.RWMutex
+	debugMode bool
+)
+
+// SetDebugMode enables or disables debug mode for gRPC error handling.
+// When enabled, internal error messages are exposed to clients for developer convenience.
+// Must be called during application initialization.
+func SetDebugMode(v bool) {
+	debugMu.Lock()
+	defer debugMu.Unlock()
+	debugMode = v
+}
 
 // Common gRPC errors with standard messages
 var (
@@ -112,8 +125,9 @@ func Unavailable(msg string) error {
 
 // isDebugMode returns true when the application is running in debug mode
 func isDebugMode() bool {
-	v := strings.ToLower(os.Getenv("APP_DEBUG"))
-	return v == "true" || v == "1"
+	debugMu.RLock()
+	defer debugMu.RUnlock()
+	return debugMode
 }
 
 // WrapError wraps a Go error in a gRPC status error.

@@ -1,6 +1,7 @@
 package csrf
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 )
@@ -47,4 +48,12 @@ func DefaultConfig() *Config {
 		SingleUse:         false,
 		ErrorMessage:      "CSRF token validation failed. Please refresh and try again.",
 	}
+}
+
+// Validate checks that the Config is valid.
+func (c Config) Validate() error {
+	if c.TokenLifetime <= 0 {
+		return fmt.Errorf("csrf: token lifetime must be positive")
+	}
+	return nil
 }

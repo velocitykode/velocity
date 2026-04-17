@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/velocitykode/velocity/crypto/drivers"
@@ -49,6 +50,26 @@ type Config struct {
 	Key          string   // Primary encryption key
 	PreviousKeys []string // Previous keys for rotation
 	Cipher       string   // Cipher algorithm
+}
+
+// DefaultConfig returns a Config with sensible defaults.
+func DefaultConfig() Config {
+	return Config{
+		Cipher: "AES-256-GCM",
+	}
+}
+
+// Validate checks that the Config is usable.
+func (c Config) Validate() error {
+	if c.Key == "" {
+		return fmt.Errorf("crypto: encryption key is required")
+	}
+	switch c.Cipher {
+	case "AES-128-CBC", "AES-256-CBC", "AES-128-GCM", "AES-256-GCM":
+	default:
+		return fmt.Errorf("crypto: unsupported cipher %q", c.Cipher)
+	}
+	return nil
 }
 
 // NewEncryptor creates a new encryptor with custom configuration

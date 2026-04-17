@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"sync"
 	"time"
 )
@@ -45,16 +44,19 @@ type DatabaseDriver struct {
 	mu              sync.RWMutex
 	db              *sql.DB
 	workerID        string
+	dbDriver        string // "postgres", "mysql", "sqlite"
 	eventDispatcher func(event interface{}) error
 }
 
 // NewDatabaseDriver creates a new database queue driver with an injected *sql.DB.
-func NewDatabaseDriver(db *sql.DB) *DatabaseDriver {
+// dbDriver specifies the database driver name ("postgres", "mysql", "sqlite").
+func NewDatabaseDriver(db *sql.DB, dbDriver string) *DatabaseDriver {
 	workerID := fmt.Sprintf("worker_%d_%d", time.Now().Unix(), time.Now().Nanosecond())
 
 	driver := &DatabaseDriver{
 		db:       db,
 		workerID: workerID,
+		dbDriver: dbDriver,
 	}
 
 	return driver
@@ -138,10 +140,9 @@ func (d *DatabaseDriver) Pop(queueName string) (Job, error) {
 	var jobRecord JobRecord
 
 	// Check which driver we're using
-	dbDriver := os.Getenv("DB_CONNECTION")
 	var sqlQuery string
 
-	if dbDriver == "postgres" {
+	if d.dbDriver == "postgres" {
 		// PostgreSQL with proper locking
 		sqlQuery = `SELECT * FROM jobs
 			WHERE queue = $1

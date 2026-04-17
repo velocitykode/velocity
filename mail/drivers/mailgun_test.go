@@ -4,16 +4,19 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"os"
 	"testing"
+
+	"github.com/velocitykode/velocity/mail"
 )
 
 func TestNewMailgunDriver(t *testing.T) {
-	os.Setenv("MAILGUN_DOMAIN", "mg.example.com")
-	os.Setenv("MAILGUN_SECRET", "test-api-key")
-	os.Setenv("MAILGUN_ENDPOINT", "https://api.mailgun.net/v3")
+	config := mail.MailgunConfig{
+		Domain:   "mg.example.com",
+		Secret:   "test-api-key",
+		Endpoint: "https://api.mailgun.net/v3",
+	}
 
-	driver, err := NewMailgunDriver()
+	driver, err := NewMailgunDriver(config, "", "")
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
@@ -36,31 +39,34 @@ func TestNewMailgunDriver(t *testing.T) {
 }
 
 func TestNewMailgunDriverNoDomain(t *testing.T) {
-	os.Unsetenv("MAILGUN_DOMAIN")
-	os.Setenv("MAILGUN_SECRET", "test-api-key")
+	config := mail.MailgunConfig{
+		Secret: "test-api-key",
+	}
 
-	_, err := NewMailgunDriver()
+	_, err := NewMailgunDriver(config, "", "")
 	if err == nil {
 		t.Error("Expected error when MAILGUN_DOMAIN not set")
 	}
 }
 
 func TestNewMailgunDriverNoSecret(t *testing.T) {
-	os.Setenv("MAILGUN_DOMAIN", "mg.example.com")
-	os.Unsetenv("MAILGUN_SECRET")
+	config := mail.MailgunConfig{
+		Domain: "mg.example.com",
+	}
 
-	_, err := NewMailgunDriver()
+	_, err := NewMailgunDriver(config, "", "")
 	if err == nil {
 		t.Error("Expected error when MAILGUN_SECRET not set")
 	}
 }
 
 func TestNewMailgunDriverDefaultEndpoint(t *testing.T) {
-	os.Setenv("MAILGUN_DOMAIN", "mg.example.com")
-	os.Setenv("MAILGUN_SECRET", "test-api-key")
-	os.Unsetenv("MAILGUN_ENDPOINT")
+	config := mail.MailgunConfig{
+		Domain: "mg.example.com",
+		Secret: "test-api-key",
+	}
 
-	driver, err := NewMailgunDriver()
+	driver, err := NewMailgunDriver(config, "", "")
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
@@ -71,12 +77,13 @@ func TestNewMailgunDriverDefaultEndpoint(t *testing.T) {
 }
 
 func TestMailgunDriverVerifyWebhookSignature(t *testing.T) {
-	os.Setenv("MAILGUN_DOMAIN", "mg.example.com")
-	os.Setenv("MAILGUN_SECRET", "test-api-key")
-	os.Setenv("MAILGUN_WEBHOOK_SIGNING_KEY", "test-signing-key")
-	defer os.Unsetenv("MAILGUN_WEBHOOK_SIGNING_KEY")
+	config := mail.MailgunConfig{
+		Domain:            "mg.example.com",
+		Secret:            "test-api-key",
+		WebhookSigningKey: "test-signing-key",
+	}
 
-	driver, _ := NewMailgunDriver()
+	driver, _ := NewMailgunDriver(config, "", "")
 
 	// Compute valid HMAC-SHA256 signature
 	mac := hmac.New(sha256.New, []byte("test-signing-key"))
@@ -103,10 +110,12 @@ func TestMailgunDriverVerifyWebhookSignature(t *testing.T) {
 }
 
 func TestMailgunDriverParseWebhook(t *testing.T) {
-	os.Setenv("MAILGUN_DOMAIN", "mg.example.com")
-	os.Setenv("MAILGUN_SECRET", "test-api-key")
+	config := mail.MailgunConfig{
+		Domain: "mg.example.com",
+		Secret: "test-api-key",
+	}
 
-	driver, _ := NewMailgunDriver()
+	driver, _ := NewMailgunDriver(config, "", "")
 
 	jsonData := []byte(`{"event": "delivered", "message": {"headers": {"message-id": "test"}}}`)
 
@@ -125,10 +134,12 @@ func TestMailgunDriverParseWebhook(t *testing.T) {
 }
 
 func TestMailgunDriverParseWebhookInvalidJSON(t *testing.T) {
-	os.Setenv("MAILGUN_DOMAIN", "mg.example.com")
-	os.Setenv("MAILGUN_SECRET", "test-api-key")
+	config := mail.MailgunConfig{
+		Domain: "mg.example.com",
+		Secret: "test-api-key",
+	}
 
-	driver, _ := NewMailgunDriver()
+	driver, _ := NewMailgunDriver(config, "", "")
 
 	invalidJSON := []byte(`{invalid json}`)
 

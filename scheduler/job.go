@@ -110,7 +110,10 @@ func (j *Job) ShouldRun() bool {
 
 	// Check environment constraints
 	if len(j.environments) > 0 {
-		currentEnv := os.Getenv("APP_ENV")
+		currentEnv := ""
+		if j.scheduler != nil {
+			currentEnv = j.scheduler.appEnv
+		}
 		found := false
 		for _, env := range j.environments {
 			if env == currentEnv {

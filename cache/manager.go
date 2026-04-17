@@ -54,6 +54,32 @@ type StoreConfig struct {
 	Password string // For Redis driver
 	Database int    // For Redis driver
 	Table    string // For database driver
+	TLS      bool   // Enable TLS for Redis connections
+}
+
+// DefaultConfig returns a Config with sensible defaults (single in-memory store).
+func DefaultConfig() *Config {
+	return &Config{
+		Default: "default",
+		Prefix:  "velocity_cache",
+		Stores: map[string]StoreConfig{
+			"default": {Driver: "memory"},
+		},
+	}
+}
+
+// Validate checks that the Config is internally consistent.
+func (c *Config) Validate() error {
+	if c.Default == "" {
+		return fmt.Errorf("cache: default store name is required")
+	}
+	if len(c.Stores) == 0 {
+		return fmt.Errorf("cache: at least one store must be configured")
+	}
+	if _, exists := c.Stores[c.Default]; !exists {
+		return fmt.Errorf("cache: default store %q not found in configured stores", c.Default)
+	}
+	return nil
 }
 
 // NewManager creates a new cache manager with lazy store initialization.
@@ -128,7 +154,7 @@ func (m *Manager) createStore(name string) (Store, error) {
 	case DriverFile:
 		store, err = drivers.NewFileStore(prefix, config.Path)
 	case DriverRedis:
-		store, err = drivers.NewRedisStore(prefix, config.Host, config.Port, config.Password, config.Database)
+		store, err = drivers.NewRedisStore(prefix, config.Host, config.Port, config.Password, config.Database, config.TLS)
 	case DriverDatabase:
 		// TODO: Implement database driver
 		return nil, fmt.Errorf("database driver not yet implemented")
