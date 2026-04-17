@@ -260,7 +260,11 @@ func (s *Scheduler) Stop() {
 	s.Shutdown(context.Background())
 }
 
-// runDueJobs executes all jobs that are due
+// runDueJobs executes all jobs that are due. The timezone is snapshotted
+// under the read lock so it cannot be observed mid-swap with SetTimezone,
+// and runWg.Wait() is intentionally NOT invoked here — the ticker loop
+// must remain non-blocking so slow jobs cannot delay subsequent tick
+// evaluation. Shutdown() waits on runWg after the ticker has stopped.
 func (s *Scheduler) runDueJobs() {
 	s.mu.RLock()
 	if s.maintenanceMode {
@@ -271,30 +275,39 @@ func (s *Scheduler) runDueJobs() {
 	copy(jobs, s.jobs)
 	beforeCallbacks := s.beforeCallbacks
 	afterCallbacks := s.afterCallbacks
+	tz := s.timezone // snapshot under RLock — SetTimezone writes under full Lock
 	s.mu.RUnlock()
 
-	now := time.Now().In(s.timezone)
+	if tz == nil {
+		tz = time.Local
+	}
+	now := time.Now().In(tz)
 
 	// Run before callbacks
 	for _, callback := range beforeCallbacks {
 		callback()
 	}
 
-	// Check and run each job
+	// Check and run each job. runWg tracks in-flight goroutines so Shutdown()
+	// can wait for them; the loop itself must not block on runWg.Wait().
 	for _, job := range jobs {
 		if job.IsDue(now) && job.ShouldRun() {
 			s.runWg.Add(1)
 			go func(j *Job) {
 				defer s.runWg.Done()
+				defer func() {
+					if p := recover(); p != nil {
+						s.logger.Error("scheduler job panicked", "name", j.name, "panic", p)
+					}
+				}()
 				s.logger.Debug("Running job", "name", j.name)
-				j.Run()
+				_ = j.Run()
 			}(job)
 		}
 	}
 
-	s.runWg.Wait()
-
-	// Run after callbacks
+	// Run after callbacks — these fire per tick, not per job, and must not
+	// block on in-flight job goroutines (see docstring).
 	for _, callback := range afterCallbacks {
 		callback()
 	}

@@ -165,13 +165,19 @@ func (j *Job) Run() error {
 	}
 
 	// Execute the job
-	var err error
+	var (
+		err             error
+		panicDispatched bool
+	)
 	if j.callback != nil {
-		// Execute closure
+		// Execute closure. On panic, dispatch scheduled.failed eagerly so the
+		// event is fired before any later path has the chance to swallow err.
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
 					err = panicerr.FromRecovered(r)
+					dispatchScheduledTaskFailed(j.getDispatch(), ctx, jobName, err, time.Since(startTime))
+					panicDispatched = true
 				}
 			}()
 			j.callback()
@@ -214,7 +220,9 @@ func (j *Job) Run() error {
 		for _, callback := range onFailureCallbacks {
 			callback(err)
 		}
-		dispatchScheduledTaskFailed(j.getDispatch(), ctx, jobName, err, duration)
+		if !panicDispatched {
+			dispatchScheduledTaskFailed(j.getDispatch(), ctx, jobName, err, duration)
+		}
 	} else {
 		for _, callback := range onSuccessCallbacks {
 			callback()
