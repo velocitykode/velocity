@@ -13,6 +13,7 @@ import (
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
 
@@ -499,13 +500,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			stack := string(buf[:n])
 
 			// Convert recovered value to error
-			var err error
-			switch v := recovered.(type) {
-			case error:
-				err = v
-			default:
-				err = &panicError{value: v}
-			}
+			err := panicerr.FromRecovered(recovered)
 
 			// Dispatch failed event
 			r.dispatchInstanceEvent(&RequestFailed{
@@ -582,26 +577,7 @@ func (r *VelocityRouterV2) handleError(ctx *Context, rw *responseWriter, err err
 // handler execution when validation fails (response already sent).
 type AbortValidation struct{}
 
-// panicError wraps a recovered panic value as an error
-type panicError struct {
-	value interface{}
-}
-
-func (e *panicError) Error() string {
-	return "panic: " + toString(e.value)
-}
-
-// toString converts an interface to string
-func toString(v interface{}) string {
-	switch val := v.(type) {
-	case string:
-		return val
-	case error:
-		return val.Error()
-	default:
-		return "unknown panic"
-	}
-}
+// (panicError and toString removed — use internal/panicerr.FromRecovered)
 
 // Handle returns the underlying http.Handler
 func (r *VelocityRouterV2) Handle() http.Handler {

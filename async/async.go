@@ -6,6 +6,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // Logger is the logging interface for the async package.
@@ -59,7 +61,7 @@ func Run[T any](fn func() T) *Result[T] {
 		defer func() {
 			if p := recover(); p != nil {
 				handlePanic(p)
-				r.errorCh <- fmt.Errorf("panic: %v", p)
+				r.errorCh <- panicerr.FromRecovered(p)
 			}
 		}()
 		r.valueCh <- fn()
@@ -76,7 +78,7 @@ func RunWithTimeout[T any](timeout time.Duration, fn func() T) *Result[T] {
 		defer func() {
 			if p := recover(); p != nil {
 				handlePanic(p)
-				r.errorCh <- fmt.Errorf("panic: %v", p)
+				r.errorCh <- panicerr.FromRecovered(p)
 			}
 		}()
 
@@ -110,7 +112,7 @@ func RunWithContext[T any](ctx context.Context, fn func() T) *Result[T] {
 		defer func() {
 			if p := recover(); p != nil {
 				handlePanic(p)
-				r.errorCh <- fmt.Errorf("panic: %v", p)
+				r.errorCh <- panicerr.FromRecovered(p)
 			}
 		}()
 

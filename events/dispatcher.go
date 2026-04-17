@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // DefaultDispatcher is the default event dispatcher implementation
@@ -349,7 +350,7 @@ func (d *DefaultDispatcher) dispatchToListeners(event interface{}, fn func(Liste
 func (d *DefaultDispatcher) processListener(event interface{}, listener Listener) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			err = fmt.Errorf("events: listener panicked: %v", p)
+			err = panicerr.FromRecovered(p)
 		}
 	}()
 

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
 
@@ -170,7 +171,7 @@ func (j *Job) Run() error {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					err = fmt.Errorf("job panic: %v", r)
+					err = panicerr.FromRecovered(r)
 				}
 			}()
 			j.callback()
