@@ -1,0 +1,40 @@
+# golangci-lint configuration for velocity.
+#
+# Enforces framework conventions; in particular, error strings must use the
+# "velocity/<pkg>: " prefix and be lowercase (see docs/security-guidelines.md
+# and CLAUDE.md "Error wrapping" rules).
+run:
+  timeout: 5m
+
+linters:
+  disable-all: true
+  enable:
+    - forbidigo
+    - govet
+    - gofmt
+
+linters-settings:
+  forbidigo:
+    # Block error constructors whose message does not start with the
+    # required "velocity/<pkg>: " prefix. The validation/ package is the
+    # sole exemption — it surfaces user-facing messages.
+    forbid:
+      - p: 'fmt\.Errorf\("(?!velocity/)[a-zA-Z]'
+        msg: 'error strings must use fmt.Errorf("velocity/<pkg>: lowercase msg: %w", err)'
+      - p: 'errors\.New\("(?!velocity/)[a-zA-Z]'
+        msg: 'error sentinels must use errors.New("velocity/<pkg>: lowercase msg")'
+    analyze-types: false
+    exclude-godoc-examples: true
+
+issues:
+  exclude-rules:
+    # The validation/ package emits user-facing messages, not framework errors.
+    - path: ^validation/
+      linters:
+        - forbidigo
+    # Tests may use descriptive error strings for assertions.
+    - path: _test\.go
+      linters:
+        - forbidigo
+  max-issues-per-linter: 0
+  max-same-issues: 0
