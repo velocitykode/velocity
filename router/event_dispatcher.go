@@ -5,6 +5,8 @@ import (
 	"errors"
 	"runtime"
 	"sync"
+
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // ErrEventBufferFull is returned by an async dispatcher when the worker
@@ -53,7 +55,22 @@ func (r *VelocityRouterV2) SetAsyncEventDispatcher(fn func(event interface{}) er
 		go func() {
 			defer wg.Done()
 			for ev := range ch {
-				safeInvokeListener(fn, ev)
+				safeInvokeListener(fn, ev, func(err error, event interface{}) {
+					// Route listener errors through the same mechanism as dispatch errors:
+					// increment counter, invoke callback or log first occurrence.
+					r.droppedEvents.Add(1)
+					if r.OnEventDispatchError != nil {
+						r.OnEventDispatchError(err, event)
+						return
+					}
+					if r.firstDropLogged.CompareAndSwap(false, true) &&
+						r.services != nil && r.services.Log != nil {
+						r.services.Log.Warn(
+							"velocity: async listener error (first occurrence; poll Router.DroppedEventCount or set Router.OnEventDispatchError)",
+							"error", err.Error(),
+						)
+					}
+				})
 			}
 		}()
 	}
@@ -106,13 +123,18 @@ func (r *VelocityRouterV2) ShutdownEventDispatcher(ctx context.Context) error {
 	return r.stopEventDispatcher(ctx)
 }
 
-func safeInvokeListener(fn func(event interface{}) error, ev interface{}) {
+// safeInvokeListener executes a listener, recovering from panics. Listener
+// errors and panic-converted errors are reported via onErr if set.
+func safeInvokeListener(fn func(event interface{}) error, ev interface{}, onErr func(error, interface{})) {
+	var err error
 	defer func() {
 		if p := recover(); p != nil {
-			// Swallow — listener panics must not kill the worker pool.
-			// Users who want visibility should recover inside their own fn.
-			_ = p
+			// Listener panics must not kill the worker pool.
+			err = panicerr.FromRecovered(p)
+		}
+		if err != nil && onErr != nil {
+			onErr(err, ev)
 		}
 	}()
-	_ = fn(ev)
+	err = fn(ev)
 }
