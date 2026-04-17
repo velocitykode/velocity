@@ -8,7 +8,7 @@ import (
 )
 
 var (
-	ErrTokenNotFound = errors.New("token not found")
+	ErrTokenNotFound = errors.New("velocity/csrf: token not found")
 )
 
 // SessionStore implements in-memory session-based CSRF token storage
@@ -59,12 +59,22 @@ func (s *SessionStore) Start(ctx context.Context) {
 	go s.cleanup(innerCtx)
 }
 
-// Close stops the background cleanup goroutine.
-// It is safe to call Close() even if the parent context has already been
-// cancelled (it becomes a no-op in that case). Close is kept for backward
-// compatibility; prefer passing a cancellable context to NewSessionStore.
-func (s *SessionStore) Close() {
+// Shutdown stops the background cleanup goroutine. It is safe to call
+// more than once and honours the supplied context deadline for
+// uniformity with other ShutdownAware types. Stop is instantaneous —
+// the deadline is only consulted when it is already cancelled.
+func (s *SessionStore) Shutdown(ctx context.Context) error {
 	s.cancel()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// Close stops the background cleanup goroutine.
+// Deprecated: use Shutdown(ctx) instead.
+func (s *SessionStore) Close() {
+	_ = s.Shutdown(context.Background())
 }
 
 // Get retrieves a token for the given session ID
