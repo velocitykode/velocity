@@ -8,14 +8,17 @@ import (
 	"sync"
 )
 
-// Validator provides validation functionality
+// Validator provides validation functionality.
+//
+// Note: Velocity ships English-only messages. Historical SetLocale/Locale
+// fields were removed in the validation consolidation — use SetMessages to
+// override any message the built-in rules emit.
 type Validator interface {
 	Validate(data interface{}, rules Rules) (*ValidatedData, error)
 	ValidateRequest(r *http.Request, rules Rules) (*ValidatedData, error)
 	ValidateValue(value interface{}, rule string) error
 	RegisterRule(name string, handler RuleHandler)
 	SetMessages(messages Messages)
-	SetLocale(locale string)
 }
 
 // Rules defines validation rules for fields
@@ -87,7 +90,6 @@ func (v *ValidatedData) Errors() ValidationErrors {
 type defaultValidator struct {
 	registry *RuleRegistry
 	messages Messages
-	locale   string
 	mu       sync.RWMutex
 }
 
@@ -98,7 +100,6 @@ func NewValidator() Validator {
 			rules: make(map[string]RuleHandler),
 		},
 		messages: make(Messages),
-		locale:   "en",
 	}
 	registerBuiltInRules(v.registry)
 	return v
@@ -189,13 +190,6 @@ func (v *defaultValidator) SetMessages(messages Messages) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.messages = messages
-}
-
-// SetLocale sets the locale for error messages
-func (v *defaultValidator) SetLocale(locale string) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	v.locale = locale
 }
 
 // validateField validates a single field against a rule
