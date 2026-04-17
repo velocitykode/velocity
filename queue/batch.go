@@ -2,9 +2,12 @@ package queue
 
 import (
 	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // BatchID is a unique identifier for a batch
@@ -32,7 +35,16 @@ func newBatchStore() *batchStoreMap {
 		batches: make(map[BatchID]*Batch),
 		stop:    make(chan struct{}),
 	}
-	go s.periodicCleanup()
+	// Recover from panics so a stray failure inside the map iteration
+	// does not kill the cleanup goroutine permanently.
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("velocity/queue: batch cleanup panic recovered: %v", panicerr.FromRecovered(r))
+			}
+		}()
+		s.periodicCleanup()
+	}()
 	return s
 }
 
@@ -199,10 +211,19 @@ func (b *Batch) recordFailure(err error) {
 		Error:      err.Error(),
 	})
 
-	// Fire catch callback once on first failure
+	// Fire catch callback once on first failure. Recover from panics so
+	// user code cannot tear down the worker via catchFn.
 	b.catchOnce.Do(func() {
 		if b.catchFn != nil {
-			go b.catchFn(b, err)
+			catchFn := b.catchFn
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("velocity/queue: batch catch callback panic recovered: %v", panicerr.FromRecovered(r))
+					}
+				}()
+				catchFn(b, err)
+			}()
 		}
 	})
 
@@ -230,14 +251,30 @@ func (b *Batch) checkFinished() {
 	finallyFn := b.finallyFn
 	b.mu.Unlock()
 
-	// Fire then callback if no failures
+	// Fire then callback if no failures. Wrap in a recover so a panic in
+	// user code does not tear down the worker. On panic we also dispatch
+	// the same BatchCompleted event below and log the failure.
 	if !b.HasFailures() && thenFn != nil {
-		go thenFn(b)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("velocity/queue: batch then callback panic recovered: %v", panicerr.FromRecovered(r))
+				}
+			}()
+			thenFn(b)
+		}()
 	}
 
-	// Always fire finally
+	// Always fire finally. Same treatment as thenFn.
 	if finallyFn != nil {
-		go finallyFn(b)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("velocity/queue: batch finally callback panic recovered: %v", panicerr.FromRecovered(r))
+				}
+			}()
+			finallyFn(b)
+		}()
 	}
 
 	dispatchBatchEvent(b.dispatchEvent, &BatchCompleted{

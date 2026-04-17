@@ -5,8 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // MemoryDriver implements Queue interface using in-memory storage
@@ -203,9 +206,16 @@ func (m *MemoryDriver) Shutdown(ctx context.Context) error {
 	close(m.stopChan)
 
 	done := make(chan struct{})
+	// Recover so Shutdown always signals completion to the select below
+	// even if wg.Wait panics (e.g. negative wait-group counter).
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("velocity/queue: memory driver shutdown panic recovered: %v", panicerr.FromRecovered(r))
+			}
+			close(done)
+		}()
 		m.wg.Wait()
-		close(done)
 	}()
 
 	select {
