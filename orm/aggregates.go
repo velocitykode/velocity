@@ -52,7 +52,7 @@ func (q *Query[T]) aggregate(fn, column string) (float64, error) {
 
 	start := time.Now()
 	var result sql.NullFloat64
-	err := q.driver.QueryRow(sqlStr, args...).Scan(&result)
+	err := q.driver.QueryRowContext(q.getContext(), sqlStr, args...).Scan(&result)
 	dispatchQueryExecuted(q.getContext(), sqlStr, args, time.Since(start), 1, q.driver.DriverName(), 2)
 
 	if err != nil {

@@ -7,23 +7,23 @@ import (
 	"time"
 )
 
-// panicingListener panics on Handle — used to verify recovery in both
+// countingPanicListener panics on Handle — used to verify recovery in both
 // AsyncDispatcher.Push and DefaultDispatcher.DispatchAsync fallback.
-type panicingListener struct {
+type countingPanicListener struct {
 	handled atomic.Int32
 }
 
-func (p *panicingListener) Handle(event interface{}) error {
+func (p *countingPanicListener) Handle(event interface{}) error {
 	p.handled.Add(1)
 	panic("listener boom")
 }
-func (p *panicingListener) ShouldQueue() bool { return false }
+func (p *countingPanicListener) ShouldQueue() bool { return false }
 
 // TestAsyncDispatcher_Push_RecoversPanic verifies that a listener panic in
 // the async goroutine does not tear down the process.
 func TestAsyncDispatcher_Push_RecoversPanic(t *testing.T) {
 	ad := NewAsyncDispatcher()
-	listener := &panicingListener{}
+	listener := &countingPanicListener{}
 
 	// Immediate dispatch — no delay — goroutine path.
 	if err := ad.Push("event", listener, 0); err != nil {
@@ -44,7 +44,7 @@ func TestAsyncDispatcher_Push_RecoversPanic(t *testing.T) {
 	}
 
 	// Delayed dispatch — time.AfterFunc path.
-	listener2 := &panicingListener{}
+	listener2 := &countingPanicListener{}
 	if err := ad.Push("event", listener2, 10*time.Millisecond); err != nil {
 		t.Fatalf("push failed: %v", err)
 	}

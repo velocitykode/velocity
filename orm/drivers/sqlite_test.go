@@ -97,8 +97,8 @@ func TestSQLiteDriver_Ping_ReturnsErrorBeforeConnect(t *testing.T) {
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Ping() error = %v, wantErr %v", err, tt.wantErr)
 			}
-			if err != nil && err.Error() != "no database connection" {
-				t.Errorf("Ping() error = %q, want %q", err.Error(), "no database connection")
+			if err != nil && err.Error() != "velocity/orm: no database connection" {
+				t.Errorf("Ping() error = %q, want %q", err.Error(), "velocity/orm: no database connection")
 			}
 		})
 	}

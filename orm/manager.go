@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
 	"sync"
 	"time"
 
@@ -70,7 +69,16 @@ type Database interface {
 	DefaultDriver() drivers.Driver
 	Connection(name string) (drivers.Driver, error)
 	AddConnection(name string, driver drivers.Driver)
+	// SetEventDispatcher wires an untyped dispatcher. Retained for
+	// compatibility with framework-level wiring that does not yet
+	// depend on the ORM package. Prefer SetTypedEventDispatcher.
+	//
+	// Deprecated: use SetTypedEventDispatcher.
 	SetEventDispatcher(fn func(event interface{}) error)
+	// SetTypedEventDispatcher wires a dispatcher that receives orm.Event
+	// directly so handlers can inspect the event name without a type
+	// assertion.
+	SetTypedEventDispatcher(fn func(event Event) error)
 }
 
 // Verify *Manager implements Database at compile time.
@@ -79,12 +87,18 @@ var _ Database = (*Manager)(nil)
 // Manager manages database connections. It is the instance-based alternative
 // to the package-level global functions.
 type Manager struct {
-	mu              sync.RWMutex
-	defaultDriver   drivers.Driver
-	connections     map[string]drivers.Driver
-	defaultName     string
-	databaseName    string
-	eventDispatcher func(event interface{}) error
+	mu            sync.RWMutex
+	defaultDriver drivers.Driver
+	connections   map[string]drivers.Driver
+	defaultName   string
+	databaseName  string
+	// eventDispatcher is the typed event handler invoked by dispatchEvent.
+	// SetEventDispatcher (deprecated, untyped) adapts the legacy signature
+	// into a typed call so internal event firing remains type-safe.
+	eventDispatcher func(event Event) error
+	// logger receives warnings about runtime conditions (transaction
+	// rollback failures, recovered panics). nil until SetLogger is called.
+	logger eventLogger
 }
 
 // createDriver instantiates a database driver by name.
@@ -217,10 +231,11 @@ func (m *Manager) Exec(query string, args ...any) (sql.Result, error) {
 func (m *Manager) Transaction(fn func(tx *sql.Tx) error) error {
 	m.mu.RLock()
 	driver := m.defaultDriver
+	logger := m.logger
 	m.mu.RUnlock()
 
 	if driver == nil {
-		return errors.New("orm: no database connection")
+		return errors.New("velocity/orm: no database connection")
 	}
 
 	tx, err := driver.Begin()
@@ -231,7 +246,17 @@ func (m *Manager) Transaction(fn func(tx *sql.Tx) error) error {
 	defer func() {
 		if p := recover(); p != nil {
 			if rbErr := tx.Rollback(); rbErr != nil {
-				fmt.Fprintf(os.Stderr, "orm: rollback failed after panic: %v\n", rbErr)
+				// Surface rollback failure through the configured logger
+				// when available; otherwise fire a typed event so callers
+				// with a dispatcher wired up still observe the failure.
+				if logger != nil {
+					logger.Error("velocity/orm: rollback failed after panic", "error", rbErr, "panic", fmt.Sprint(p))
+				}
+				m.dispatchEvent(&TxRecover{
+					Cause:       "panic",
+					PanicValue:  fmt.Sprint(p),
+					RollbackErr: rbErr.Error(),
+				})
 			}
 			panic(p)
 		}
@@ -239,7 +264,14 @@ func (m *Manager) Transaction(fn func(tx *sql.Tx) error) error {
 
 	if err := fn(tx); err != nil {
 		if rbErr := tx.Rollback(); rbErr != nil {
-			fmt.Fprintf(os.Stderr, "orm: rollback failed: %v (original error: %v)\n", rbErr, err)
+			if logger != nil {
+				logger.Error("velocity/orm: rollback failed", "error", rbErr, "original_error", err)
+			}
+			m.dispatchEvent(&TxRecover{
+				Cause:       "error",
+				OriginalErr: err.Error(),
+				RollbackErr: rbErr.Error(),
+			})
 		}
 		return err
 	}
@@ -329,20 +361,56 @@ func (m *Manager) Stats() sql.DBStats {
 	return sql.DBStats{}
 }
 
-// SetEventDispatcher sets the function used to dispatch ORM events.
+// SetEventDispatcher wires an untyped dispatcher. The supplied function is
+// adapted into a typed dispatcher so orm.dispatchEvent can pass Event values
+// without losing static type information.
+//
+// Deprecated: use SetTypedEventDispatcher.
 func (m *Manager) SetEventDispatcher(fn func(event interface{}) error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if fn == nil {
+		m.eventDispatcher = nil
+		return
+	}
+	m.eventDispatcher = func(event Event) error {
+		return fn(event)
+	}
+}
+
+// SetTypedEventDispatcher wires a typed dispatcher. Prefer this over
+// SetEventDispatcher so handlers can call event.EventName() directly
+// without a type assertion.
+func (m *Manager) SetTypedEventDispatcher(fn func(event Event) error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.eventDispatcher = fn
 }
 
+// eventLogger is the minimal logger contract the manager uses to report
+// runtime conditions (e.g. failed rollback). It matches the shape of
+// log.Logger without importing the package, keeping orm a leaf dependency.
+type eventLogger interface {
+	Warn(msg string, kvs ...any)
+	Error(msg string, kvs ...any)
+}
+
+// SetLogger installs a logger that receives warnings about recovered
+// transaction panics and failed rollbacks. Callers may pass any value
+// satisfying the Warn/Error shape (typically log.Logger).
+func (m *Manager) SetLogger(logger eventLogger) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.logger = logger
+}
+
 // dispatchEvent dispatches an event if a dispatcher is configured.
-func (m *Manager) dispatchEvent(event interface{}) {
+func (m *Manager) dispatchEvent(event Event) {
 	m.mu.RLock()
 	fn := m.eventDispatcher
 	m.mu.RUnlock()
 	if fn != nil {
-		fn(event)
+		_ = fn(event)
 	}
 }
 

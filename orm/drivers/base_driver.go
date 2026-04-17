@@ -1,9 +1,18 @@
 package drivers
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"io"
+	"os"
+	"sync"
 )
+
+// osStderr is the stderr destination for deprecation warnings. It is a
+// package-level variable so tests can redirect output without touching
+// the global os.Stderr.
+var osStderr io.Writer = os.Stderr
 
 // BaseDriver provides shared implementations for common driver operations.
 // Embed this in concrete drivers to eliminate duplicated Close, Ping, DB,
@@ -11,6 +20,10 @@ import (
 type BaseDriver struct {
 	db     *sql.DB
 	Config ConnectionConfig
+	// deprecatedShimWarned guards a one-time warning printed the first time
+	// the legacy Query/QueryRow/Exec shims are invoked so callers are nudged
+	// to migrate to the *Context equivalents without spamming logs.
+	deprecatedShimWarned sync.Once
 }
 
 // Close closes the database connection.
@@ -24,7 +37,7 @@ func (b *BaseDriver) Close() error {
 // Ping verifies the connection to the database.
 func (b *BaseDriver) Ping() error {
 	if b.db == nil {
-		return fmt.Errorf("no database connection")
+		return fmt.Errorf("velocity/orm: no database connection")
 	}
 	return b.db.Ping()
 }
@@ -34,28 +47,71 @@ func (b *BaseDriver) DB() *sql.DB {
 	return b.db
 }
 
-// Query executes a query that returns rows, with optional query logging.
+// warnDeprecatedShim emits a one-time stderr warning advising callers that
+// the non-context-aware Query/QueryRow/Exec helpers are deprecated. The
+// *Context variants should be preferred so cancellation and deadlines
+// propagate end-to-end.
+func (b *BaseDriver) warnDeprecatedShim() {
+	b.deprecatedShimWarned.Do(func() {
+		fmt.Fprintf(osStderr, "velocity/orm: deprecated — drivers.Query/QueryRow/Exec without context. use QueryContext/QueryRowContext/ExecContext.\n")
+	})
+}
+
+// Query executes a query that returns rows.
+//
+// Deprecated: use QueryContext to propagate cancellation and deadlines.
+// This shim forwards to QueryContext with context.TODO() and emits a
+// one-time warning on first use.
 func (b *BaseDriver) Query(query string, args ...any) (*sql.Rows, error) {
-	if b.Config.LogQueries {
-		fmt.Printf("SQL: %s\nArgs: [%d params]\n", query, len(args))
-	}
-	return b.db.Query(query, args...)
+	b.warnDeprecatedShim()
+	return b.QueryContext(context.TODO(), query, args...)
 }
 
-// QueryRow executes a query that returns at most one row, with optional query logging.
+// QueryRow executes a query that returns at most one row.
+//
+// Deprecated: use QueryRowContext to propagate cancellation and deadlines.
+// This shim forwards to QueryRowContext with context.TODO() and emits a
+// one-time warning on first use.
 func (b *BaseDriver) QueryRow(query string, args ...any) *sql.Row {
-	if b.Config.LogQueries {
-		fmt.Printf("SQL: %s\nArgs: [%d params]\n", query, len(args))
-	}
-	return b.db.QueryRow(query, args...)
+	b.warnDeprecatedShim()
+	return b.QueryRowContext(context.TODO(), query, args...)
 }
 
-// Exec executes a query that doesn't return rows, with optional query logging.
+// Exec executes a query that doesn't return rows.
+//
+// Deprecated: use ExecContext to propagate cancellation and deadlines.
+// This shim forwards to ExecContext with context.TODO() and emits a
+// one-time warning on first use.
 func (b *BaseDriver) Exec(query string, args ...any) (sql.Result, error) {
+	b.warnDeprecatedShim()
+	return b.ExecContext(context.TODO(), query, args...)
+}
+
+// QueryContext executes a query that returns rows, honoring the context
+// for cancellation and deadlines.
+func (b *BaseDriver) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
 	if b.Config.LogQueries {
 		fmt.Printf("SQL: %s\nArgs: [%d params]\n", query, len(args))
 	}
-	return b.db.Exec(query, args...)
+	return b.db.QueryContext(ctx, query, args...)
+}
+
+// QueryRowContext executes a query that returns at most one row, honoring
+// the context for cancellation and deadlines.
+func (b *BaseDriver) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	if b.Config.LogQueries {
+		fmt.Printf("SQL: %s\nArgs: [%d params]\n", query, len(args))
+	}
+	return b.db.QueryRowContext(ctx, query, args...)
+}
+
+// ExecContext executes a query that doesn't return rows, honoring the
+// context for cancellation and deadlines.
+func (b *BaseDriver) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	if b.Config.LogQueries {
+		fmt.Printf("SQL: %s\nArgs: [%d params]\n", query, len(args))
+	}
+	return b.db.ExecContext(ctx, query, args...)
 }
 
 // Begin starts a transaction.
@@ -88,10 +144,10 @@ func (b *BaseDriver) ConfigurePool(db *sql.DB) {
 func openAndPing(driverName, dsn string) (*sql.DB, error) {
 	db, err := sql.Open(driverName, dsn)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open database: %w", err)
+		return nil, fmt.Errorf("velocity/orm: failed to open database: %w", err)
 	}
 	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("failed to ping database: %w", err)
+		return nil, fmt.Errorf("velocity/orm: failed to ping database: %w", err)
 	}
 	return db, nil
 }

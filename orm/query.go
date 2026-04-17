@@ -33,7 +33,25 @@ func isValidOperator(op string) bool {
 	return validOperators[strings.ToUpper(strings.TrimSpace(op))]
 }
 
-// Query represents a chainable query builder with generics
+// Query is a MUTABLE chainable query builder.
+//
+// Every chain step (Where, OrWhere, OrderBy, Limit, With, …) appends to the
+// shared underlying slices on the receiver. Chained calls return the same
+// *Query[T], so saving a handle mid-chain and continuing to chain off it
+// mutates the handle.
+//
+// If you need to fork a query — e.g. to build two variants off a shared
+// base — call Clone() to obtain an independent copy whose slices are not
+// aliased with the original. Without Clone(), appends in one branch leak
+// into the other.
+//
+// Clone() performs a shallow-deep copy: slice backing arrays are duplicated,
+// scalar fields are copied by value, and the driver reference is shared
+// (drivers are safe to share across goroutines).
+//
+// Callers who want a fluent-style "always fresh builder" API should wrap
+// queries in their own constructor rather than attempt to reuse a single
+// *Query[T] across requests.
 type Query[T any] struct {
 	driver        drivers.Driver
 	table         string
@@ -122,6 +140,70 @@ func checkSoftDelete(t reflect.Type) bool {
 	}
 
 	return false
+}
+
+// Clone returns an independent copy of the query. Slice fields are
+// duplicated so subsequent chain calls on the clone do not mutate the
+// source (and vice versa). The driver reference is shared because
+// drivers.Driver implementations are safe for concurrent use.
+//
+// Use Clone when forking a query into variants:
+//
+//	base := Model[User]{}.Where("tenant_id = ?", tid)
+//	active := base.Clone().Where("active = ?", true)
+//	trashed := base.Clone().OnlyTrashed()
+//
+// Without Clone, the subsequent Where/OnlyTrashed calls would leak into
+// the shared base and each other.
+func (q *Query[T]) Clone() *Query[T] {
+	if q == nil {
+		return nil
+	}
+	clone := &Query[T]{
+		driver:        q.driver,
+		table:         q.table,
+		distinct:      q.distinct,
+		withTrashed:   q.withTrashed,
+		onlyTrashed:   q.onlyTrashed,
+		lockForUpdate: q.lockForUpdate,
+		skipLocked:    q.skipLocked,
+		hasSoftDelete: q.hasSoftDelete,
+		ctx:           q.ctx,
+		lastSQL:       q.lastSQL,
+	}
+	if q.conditions != nil {
+		clone.conditions = append([]drivers.Condition(nil), q.conditions...)
+	}
+	if q.orders != nil {
+		clone.orders = append([]drivers.Order(nil), q.orders...)
+	}
+	if q.groups != nil {
+		clone.groups = append([]string(nil), q.groups...)
+	}
+	if q.having != nil {
+		clone.having = append([]drivers.Condition(nil), q.having...)
+	}
+	if q.joins != nil {
+		clone.joins = append([]drivers.Join(nil), q.joins...)
+	}
+	if q.columns != nil {
+		clone.columns = append([]string(nil), q.columns...)
+	}
+	if q.preloads != nil {
+		clone.preloads = append([]string(nil), q.preloads...)
+	}
+	if q.limit != nil {
+		n := *q.limit
+		clone.limit = &n
+	}
+	if q.offset != nil {
+		n := *q.offset
+		clone.offset = &n
+	}
+	if q.lastArgs != nil {
+		clone.lastArgs = append([]any(nil), q.lastArgs...)
+	}
+	return clone
 }
 
 // Where adds a WHERE condition
@@ -480,7 +562,7 @@ func (q *Query[T]) Get() ([]T, error) {
 	// Track query timing
 	start := time.Now()
 
-	rows, err := q.driver.Query(sql, args...)
+	rows, err := q.driver.QueryContext(q.getContext(), sql, args...)
 
 	// Dispatch event regardless of error
 	duration := time.Since(start)
@@ -559,7 +641,7 @@ func (q *Query[T]) Count() (int, error) {
 
 	start := time.Now()
 	var count int64
-	err := q.driver.QueryRow(sql, args...).Scan(&count)
+	err := q.driver.QueryRowContext(q.getContext(), sql, args...).Scan(&count)
 	dispatchQueryExecuted(q.getContext(), sql, args, time.Since(start), 1, q.driver.DriverName(), 2)
 
 	return int(count), err
@@ -591,7 +673,7 @@ func (q *Query[T]) Pluck(column string) ([]any, error) {
 	sql, args := q.driver.Grammar().CompileSelect(selectQuery)
 
 	start := time.Now()
-	rows, err := q.driver.Query(sql, args...)
+	rows, err := q.driver.QueryContext(q.getContext(), sql, args...)
 	if err != nil {
 		dispatchQueryExecuted(q.getContext(), sql, args, time.Since(start), 0, q.driver.DriverName(), 2)
 		return nil, err
@@ -624,7 +706,7 @@ func (q *Query[T]) Update(updates map[string]any) (int64, error) {
 	sql, args := q.driver.Grammar().CompileUpdate(q.table, updates, q.conditions)
 
 	start := time.Now()
-	result, err := q.driver.Exec(sql, args...)
+	result, err := q.driver.ExecContext(q.getContext(), sql, args...)
 	duration := time.Since(start)
 
 	if err != nil {
@@ -673,7 +755,7 @@ func (q *Query[T]) InsertGetId(data map[string]any) (int64, error) {
 		)
 
 		start := time.Now()
-		result, err := q.driver.Exec(sql, values...)
+		result, err := q.driver.ExecContext(q.getContext(), sql, values...)
 		duration := time.Since(start)
 
 		if err != nil {
@@ -695,7 +777,7 @@ func (q *Query[T]) InsertGetId(data map[string]any) (int64, error) {
 
 		start := time.Now()
 		var lastID int64
-		err := q.driver.QueryRow(sql, values...).Scan(&lastID)
+		err := q.driver.QueryRowContext(q.getContext(), sql, values...).Scan(&lastID)
 		duration := time.Since(start)
 
 		if err != nil {
@@ -727,7 +809,7 @@ func (q *Query[T]) ForceDelete() (int64, error) {
 	sql, args := q.driver.Grammar().CompileDelete(q.table, q.conditions)
 
 	start := time.Now()
-	result, err := q.driver.Exec(sql, args...)
+	result, err := q.driver.ExecContext(q.getContext(), sql, args...)
 	duration := time.Since(start)
 
 	if err != nil {
@@ -921,6 +1003,23 @@ func toSnakeCase(str string) string {
 }
 
 // RawQuery represents a raw SQL query that can be executed with First() or Get()
+//
+// RawQuery SOFT-DELETE BEHAVIOR:
+//
+// RawQuery does NOT apply the deleted_at IS NULL scope that the fluent
+// Query builder adds automatically for soft-delete models. The supplied SQL
+// is sent to the driver verbatim. If you pass a plain "SELECT * FROM users"
+// against a SoftDeleteModel[User] table, the result will include trashed
+// rows. Callers who expect scope-aware behavior should either:
+//
+//  1. Add "WHERE deleted_at IS NULL" to the query explicitly, or
+//  2. Use the fluent Query[T] builder via Model[T]{}.Where(...) instead, or
+//  3. Use NewRawQueryWithScopes which rewrites the SQL to enforce the
+//     deleted_at IS NULL predicate.
+//
+// This bypass is intentional — raw SQL is an escape hatch. Surfacing the
+// scope silently would make it impossible to query trashed records via raw
+// SQL, which is a legitimate use case (e.g. admin dashboards).
 type RawQuery[T any] struct {
 	driver drivers.Driver
 	sql    string
@@ -933,6 +1032,9 @@ type RawQuery[T any] struct {
 // WARNING: This method executes raw SQL directly. The caller is responsible for
 // preventing SQL injection by using parameterized queries with placeholder arguments.
 // Never concatenate user input directly into the sql string.
+//
+// WARNING: Soft-delete scopes are NOT applied. See the RawQuery type
+// documentation for details. Use NewRawQueryWithScopes to opt in.
 func NewRawQuery[T any](sql string, args ...any) *RawQuery[T] {
 	var drv drivers.Driver
 	if m := Default(); m != nil {
@@ -943,6 +1045,26 @@ func NewRawQuery[T any](sql string, args ...any) *RawQuery[T] {
 		sql:    sql,
 		args:   args,
 	}
+}
+
+// NewRawQueryWithScopes creates a raw query that enforces the same
+// deleted_at IS NULL predicate the fluent Query builder applies for
+// soft-delete models. The SQL is wrapped in an outer SELECT so we can
+// append the scope without attempting to parse or rewrite the caller's
+// query. For models that do not support soft deletes, this is a no-op
+// and the underlying SQL is executed as-is.
+//
+// This helper exists because RawQuery deliberately bypasses scopes (see
+// the RawQuery type doc). Callers who want the ergonomics of raw SQL
+// with the safety of scope enforcement should reach for this helper.
+func NewRawQueryWithScopes[T any](sql string, args ...any) *RawQuery[T] {
+	if modelHasSoftDelete[T]() {
+		// Wrap the user-supplied query in an outer SELECT. Using a
+		// subquery avoids any attempt to splice WHERE clauses into the
+		// original statement, which would be brittle and unsafe.
+		sql = "SELECT * FROM (" + sql + ") AS __orm_scoped WHERE deleted_at IS NULL"
+	}
+	return NewRawQuery[T](sql, args...)
 }
 
 // WithContext sets the context for the raw query
@@ -962,7 +1084,7 @@ func (r *RawQuery[T]) getContext() context.Context {
 // First executes the raw query and scans the first result into dest
 func (r *RawQuery[T]) First(dest *T) error {
 	start := time.Now()
-	rows, err := r.driver.Query(r.sql, r.args...)
+	rows, err := r.driver.QueryContext(r.getContext(), r.sql, r.args...)
 	duration := time.Since(start)
 
 	if err != nil {
@@ -988,7 +1110,7 @@ func (r *RawQuery[T]) First(dest *T) error {
 // Get executes the raw query and returns all matching results
 func (r *RawQuery[T]) Get() ([]T, error) {
 	start := time.Now()
-	rows, err := r.driver.Query(r.sql, r.args...)
+	rows, err := r.driver.QueryContext(r.getContext(), r.sql, r.args...)
 	duration := time.Since(start)
 
 	if err != nil {
@@ -1015,7 +1137,7 @@ func (r *RawQuery[T]) Get() ([]T, error) {
 // Useful for queries that return scalar values or don't map to structs
 func (r *RawQuery[T]) Scan(dest ...any) error {
 	start := time.Now()
-	err := r.driver.QueryRow(r.sql, r.args...).Scan(dest...)
+	err := r.driver.QueryRowContext(r.getContext(), r.sql, r.args...).Scan(dest...)
 	duration := time.Since(start)
 
 	rowCount := int64(0)
@@ -1030,7 +1152,7 @@ func (r *RawQuery[T]) Scan(dest ...any) error {
 // Exec executes a raw SQL statement (INSERT, UPDATE, DELETE) and returns affected rows
 func (r *RawQuery[T]) Exec() (int64, error) {
 	start := time.Now()
-	result, err := r.driver.Exec(r.sql, r.args...)
+	result, err := r.driver.ExecContext(r.getContext(), r.sql, r.args...)
 	duration := time.Since(start)
 
 	if err != nil {

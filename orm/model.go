@@ -183,6 +183,12 @@ func (Model[T]) Create(data any) (*T, error) {
 		}
 		return model, nil
 	case *T:
+		// Ensure fillable/guarded gates also apply to pre-constructed
+		// model pointers so mass-assignment protection cannot be
+		// bypassed by callers who build the struct manually.
+		if err := applyFillableToStruct(v); err != nil {
+			return nil, err
+		}
 		if err := Save(nil, v); err != nil {
 			return nil, err
 		}
@@ -437,6 +443,12 @@ func (UUIDModel[T]) Create(data any) (*T, error) {
 		}
 		return model, nil
 	case *T:
+		// Ensure fillable/guarded gates also apply to pre-constructed
+		// model pointers so mass-assignment protection cannot be
+		// bypassed by callers who build the struct manually.
+		if err := applyFillableToStruct(v); err != nil {
+			return nil, err
+		}
 		if err := Save(nil, v); err != nil {
 			return nil, err
 		}
@@ -689,6 +701,12 @@ func (SoftDeleteModel[T]) Create(data any) (*T, error) {
 		}
 		return model, nil
 	case *T:
+		// Ensure fillable/guarded gates also apply to pre-constructed
+		// model pointers so mass-assignment protection cannot be
+		// bypassed by callers who build the struct manually.
+		if err := applyFillableToStruct(v); err != nil {
+			return nil, err
+		}
 		if err := Save(nil, v); err != nil {
 			return nil, err
 		}
@@ -996,6 +1014,12 @@ func (SoftDeleteUUIDModel[T]) Create(data any) (*T, error) {
 		}
 		return model, nil
 	case *T:
+		// Ensure fillable/guarded gates also apply to pre-constructed
+		// model pointers so mass-assignment protection cannot be
+		// bypassed by callers who build the struct manually.
+		if err := applyFillableToStruct(v); err != nil {
+			return nil, err
+		}
 		if err := Save(nil, v); err != nil {
 			return nil, err
 		}
@@ -1269,6 +1293,91 @@ type Guarded interface {
 
 // Helper functions
 
+// applyFillableToStruct zeros out any guarded fields and any fields not in
+// the Fillable allowlist before the struct is persisted. This mirrors the
+// enforcement performed by mapToStruct so Create(*T) and Create(map) share
+// the same mass-assignment policy.
+//
+// Fields protected by the framework itself (ID, timestamps, embedded Model
+// bookkeeping) are always left intact — fillable/guarded only governs
+// fields the application explicitly manages.
+func applyFillableToStruct(s any) error {
+	fillable, hasFillable := anyFillableList(s)
+	guarded, hasGuarded := anyGuardedList(s)
+	if !hasFillable && !hasGuarded {
+		return nil
+	}
+
+	v := reflect.ValueOf(s)
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return nil
+	}
+	t := v.Type()
+
+	for i := 0; i < v.NumField(); i++ {
+		field := t.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		// Skip embedded ORM base models; their fields are framework-
+		// managed and must never be blanked by mass-assignment policy.
+		typStr := field.Type.String()
+		if field.Anonymous && (strings.HasPrefix(typStr, "orm.Model[") ||
+			strings.HasPrefix(typStr, "orm.UUIDModel[") ||
+			strings.HasPrefix(typStr, "orm.SoftDeleteModel[") ||
+			strings.HasPrefix(typStr, "orm.SoftDeleteUUIDModel[")) {
+			continue
+		}
+		// Skip ORM-internal bookkeeping fields that are tagged orm:"-".
+		if tag := field.Tag.Get("orm"); tag == "-" || strings.Contains(tag, "relation:") {
+			continue
+		}
+
+		name := toSnakeCase(field.Name)
+
+		var reject bool
+		if hasFillable && !fillable[name] {
+			reject = true
+		}
+		if hasGuarded && guarded[name] {
+			reject = true
+		}
+
+		if reject {
+			fv := v.Field(i)
+			if fv.CanSet() {
+				fv.Set(reflect.Zero(fv.Type()))
+			}
+		}
+	}
+	return nil
+}
+
+func anyFillableList(s any) (map[string]bool, bool) {
+	if f, ok := s.(Fillable); ok {
+		set := make(map[string]bool, len(f.Fillable()))
+		for _, name := range f.Fillable() {
+			set[name] = true
+		}
+		return set, true
+	}
+	return nil, false
+}
+
+func anyGuardedList(s any) (map[string]bool, bool) {
+	if g, ok := s.(Guarded); ok {
+		set := make(map[string]bool, len(g.Guarded()))
+		for _, name := range g.Guarded() {
+			set[name] = true
+		}
+		return set, true
+	}
+	return nil, false
+}
+
 func mapToStruct(m map[string]any, s any) error {
 	v := reflect.ValueOf(s)
 	if v.Kind() == reflect.Ptr {
@@ -1328,6 +1437,10 @@ func mapToStruct(m map[string]any, s any) error {
 	return nil
 }
 
+// structToMap converts a model struct into a column-to-value map ready for
+// driver insert/update. Embedded ORM base types (Model, UUIDModel and their
+// soft-delete variants) are expanded via serializeEmbedded so each branch
+// stays focused on a single responsibility.
 func structToMap(s any) map[string]any {
 	result := make(map[string]any)
 	v := reflect.ValueOf(s)
@@ -1347,6 +1460,12 @@ func structToMap(s any) map[string]any {
 
 		// Skip slice/array fields (usually relations)
 		if v.Field(i).Kind() == reflect.Slice || v.Field(i).Kind() == reflect.Array {
+			continue
+		}
+
+		// Delegate embedded ORM base fields to a single helper so the
+		// main loop stays a straight pass over the declared columns.
+		if serializeEmbedded(field, v.Field(i), result) {
 			continue
 		}
 
@@ -1381,56 +1500,61 @@ func structToMap(s any) map[string]any {
 			}
 		}
 
-		// Handle Model[T] embedded field (no DeletedAt)
-		if strings.HasPrefix(field.Type.String(), "orm.Model[") {
-			modelValue := v.Field(i)
-			result["created_at"] = modelValue.FieldByName("CreatedAt").Interface()
-			result["updated_at"] = modelValue.FieldByName("UpdatedAt").Interface()
-			continue
-		}
-
-		// Handle UUIDModel[T] embedded field (no DeletedAt)
-		if strings.HasPrefix(field.Type.String(), "orm.UUIDModel[") {
-			modelValue := v.Field(i)
-			// Include ID for UUID models (it's set before insert)
-			if idVal := modelValue.FieldByName("ID").String(); idVal != "" {
-				result["id"] = idVal
-			}
-			result["created_at"] = modelValue.FieldByName("CreatedAt").Interface()
-			result["updated_at"] = modelValue.FieldByName("UpdatedAt").Interface()
-			continue
-		}
-
-		// Handle SoftDeleteModel[T] embedded field (with DeletedAt)
-		if strings.HasPrefix(field.Type.String(), "orm.SoftDeleteModel[") {
-			modelValue := v.Field(i)
-			result["created_at"] = modelValue.FieldByName("CreatedAt").Interface()
-			result["updated_at"] = modelValue.FieldByName("UpdatedAt").Interface()
-			if deletedAt := modelValue.FieldByName("DeletedAt"); !deletedAt.IsZero() && !deletedAt.IsNil() {
-				result["deleted_at"] = deletedAt.Interface()
-			}
-			continue
-		}
-
-		// Handle SoftDeleteUUIDModel[T] embedded field (with DeletedAt)
-		if strings.HasPrefix(field.Type.String(), "orm.SoftDeleteUUIDModel[") {
-			modelValue := v.Field(i)
-			// Include ID for UUID models (it's set before insert)
-			if idVal := modelValue.FieldByName("ID").String(); idVal != "" {
-				result["id"] = idVal
-			}
-			result["created_at"] = modelValue.FieldByName("CreatedAt").Interface()
-			result["updated_at"] = modelValue.FieldByName("UpdatedAt").Interface()
-			if deletedAt := modelValue.FieldByName("DeletedAt"); !deletedAt.IsZero() && !deletedAt.IsNil() {
-				result["deleted_at"] = deletedAt.Interface()
-			}
-			continue
-		}
-
 		result[columnName] = value
 	}
 
 	return result
+}
+
+// serializeEmbedded writes the columns contributed by an embedded ORM base
+// type into result and reports whether the field was handled. Returning
+// false signals the caller to fall through to the regular scalar-field
+// branch.
+//
+// The serialization rules mirror the original inline switch:
+//   - orm.Model[T]: writes created_at and updated_at.
+//   - orm.UUIDModel[T]: writes id (when non-empty), created_at, updated_at.
+//   - orm.SoftDeleteModel[T]: writes created_at, updated_at, deleted_at.
+//   - orm.SoftDeleteUUIDModel[T]: writes id, created_at, updated_at,
+//     deleted_at.
+func serializeEmbedded(field reflect.StructField, value reflect.Value, result map[string]any) bool {
+	typeName := field.Type.String()
+
+	switch {
+	case strings.HasPrefix(typeName, "orm.Model["):
+		result["created_at"] = value.FieldByName("CreatedAt").Interface()
+		result["updated_at"] = value.FieldByName("UpdatedAt").Interface()
+		return true
+
+	case strings.HasPrefix(typeName, "orm.UUIDModel["):
+		if id := value.FieldByName("ID").String(); id != "" {
+			result["id"] = id
+		}
+		result["created_at"] = value.FieldByName("CreatedAt").Interface()
+		result["updated_at"] = value.FieldByName("UpdatedAt").Interface()
+		return true
+
+	case strings.HasPrefix(typeName, "orm.SoftDeleteModel["):
+		result["created_at"] = value.FieldByName("CreatedAt").Interface()
+		result["updated_at"] = value.FieldByName("UpdatedAt").Interface()
+		if deletedAt := value.FieldByName("DeletedAt"); !deletedAt.IsZero() && !deletedAt.IsNil() {
+			result["deleted_at"] = deletedAt.Interface()
+		}
+		return true
+
+	case strings.HasPrefix(typeName, "orm.SoftDeleteUUIDModel["):
+		if id := value.FieldByName("ID").String(); id != "" {
+			result["id"] = id
+		}
+		result["created_at"] = value.FieldByName("CreatedAt").Interface()
+		result["updated_at"] = value.FieldByName("UpdatedAt").Interface()
+		if deletedAt := value.FieldByName("DeletedAt"); !deletedAt.IsZero() && !deletedAt.IsNil() {
+			result["deleted_at"] = deletedAt.Interface()
+		}
+		return true
+	}
+
+	return false
 }
 
 // Global convenience functions
