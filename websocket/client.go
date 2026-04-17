@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // readPump pumps messages from the websocket connection to the server
@@ -13,6 +14,11 @@ func (c *Client) readPump() {
 	defer func() {
 		c.Server.unregister <- c
 		c.Conn.Close()
+	}()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("websocket readPump panic: %v", panicerr.FromRecovered(r))
+		}
 	}()
 
 	c.Conn.SetReadLimit(c.Server.config.MaxMessageSize)
@@ -82,6 +88,11 @@ func (c *Client) writePump() {
 	defer func() {
 		ticker.Stop()
 		c.Conn.Close()
+	}()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("websocket writePump panic: %v", panicerr.FromRecovered(r))
+		}
 	}()
 
 	for {

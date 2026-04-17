@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/pipeline"
 )
 
@@ -136,9 +137,13 @@ func (b *Bus) Dispatch(cmd Command) error {
 
 	var err error
 	if len(middleware) > 0 {
-		err = pipeline.New[Command]().Send(cmd).Through(middleware...).Then(handler)
+		err = b.safeExecute(func() error {
+			return pipeline.New[Command]().Send(cmd).Through(middleware...).Then(handler)
+		})
 	} else {
-		err = handler(cmd)
+		err = b.safeExecute(func() error {
+			return handler(cmd)
+		})
 	}
 
 	if dispatchEvent != nil {
@@ -179,6 +184,16 @@ func (b *Bus) DispatchAsync(cmd Command) error {
 	}
 
 	return nil
+}
+
+// safeExecute runs fn and converts any panic into a returned error.
+func (b *Bus) safeExecute(fn func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = panicerr.FromRecovered(r)
+		}
+	}()
+	return fn()
 }
 
 // resolveHandler finds the handler for a command. Must be called under RLock.

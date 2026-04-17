@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // WorkerLogger is the logging interface used by Worker.
@@ -229,6 +231,11 @@ func (w *Worker) processJob() error {
 
 	done := make(chan error, 1)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				done <- panicerr.FromRecovered(r)
+			}
+		}()
 		done <- w.handler(job)
 	}()
 
