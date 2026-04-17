@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // Manager manages multiple mail channels
@@ -114,8 +116,22 @@ func (m *Manager) Broadcast(ctx context.Context, channels []string, msg *Message
 
 	for _, channel := range channels {
 		wg.Add(1)
+		// Recover from panics in Send so one bad channel does not tear
+		// down the broadcast fan-out; surface as MailFailed event and
+		// an error on errChan.
 		go func(ch string) {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					err := panicerr.FromRecovered(r)
+					toEmails := make([]string, 0, len(msg.GetTo()))
+					for _, addr := range msg.GetTo() {
+						toEmails = append(toEmails, addr.Email)
+					}
+					dispatchMailFailed(m.dispatchEvent, ctx, toEmails, msg.GetSubject(), ch, err, 0)
+					errChan <- fmt.Errorf("velocity/mail: channel %s panic: %w", ch, err)
+				}
+			}()
 			if err := m.Send(ctx, ch, msg); err != nil {
 				errChan <- fmt.Errorf("channel %s: %w", ch, err)
 			}
