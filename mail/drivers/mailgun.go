@@ -12,11 +12,23 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/velocitykode/velocity/mail"
 )
+
+// formatAddress formats an Address for an email header, sanitising the name to
+// prevent header injection via CRLF.
+func formatAddress(name, email string) string {
+	clean := sanitizeHeader(name)
+	if clean != "" {
+		return fmt.Sprintf("%s <%s>", clean, email)
+	}
+	return email
+}
 
 func init() {
 	mail.RegisterDriver("mailgun", func(cfg mail.MailConfig) (mail.Mailer, error) {
@@ -43,18 +55,29 @@ func (d *MailgunDriver) String() string {
 }
 
 // NewMailgunDriver creates a new Mailgun driver from the provided config.
+//
+// Endpoints that use the http:// scheme are rejected: Mailgun credentials
+// must never be transmitted over cleartext.
 func NewMailgunDriver(config mail.MailgunConfig, fromAddr, fromName string) (*MailgunDriver, error) {
 	if config.Domain == "" {
-		return nil, fmt.Errorf("mail: MAILGUN_DOMAIN is required for mailgun driver")
+		return nil, fmt.Errorf("velocity/mail: MAILGUN_DOMAIN is required for mailgun driver")
 	}
 
 	if config.Secret == "" {
-		return nil, fmt.Errorf("mail: MAILGUN_SECRET is required for mailgun driver")
+		return nil, fmt.Errorf("velocity/mail: MAILGUN_SECRET is required for mailgun driver")
 	}
 
 	endpoint := config.Endpoint
 	if endpoint == "" {
 		endpoint = "https://api.mailgun.net/v3"
+	}
+
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("velocity/mail: mailgun endpoint is invalid: %w", err)
+	}
+	if !strings.EqualFold(u.Scheme, "https") {
+		return nil, fmt.Errorf("velocity/mail: mailgun endpoint must use https, got %q", u.Scheme)
 	}
 
 	return &MailgunDriver{
@@ -117,87 +140,97 @@ func (d *MailgunDriver) Send(ctx context.Context, msg *mail.Message) error {
 	return nil
 }
 
-// addFields adds form fields to the multipart writer
+// addFields adds form fields to the multipart writer.
+// The work is delegated to smaller helpers for recipients, body, priority, and custom headers.
 func (d *MailgunDriver) addFields(writer *multipart.Writer, msg *mail.Message) error {
-	// From
+	if err := d.writeFromField(writer, msg); err != nil {
+		return err
+	}
+	if err := d.writeRecipientFields(writer, msg); err != nil {
+		return err
+	}
+	if err := d.writeSubjectAndBody(writer, msg); err != nil {
+		return err
+	}
+	if err := d.writePriority(writer, msg); err != nil {
+		return err
+	}
+	return d.writeCustomHeaders(writer, msg)
+}
+
+// writeFromField writes the sender, applying driver defaults when unset.
+func (d *MailgunDriver) writeFromField(writer *multipart.Writer, msg *mail.Message) error {
 	from := msg.GetFrom()
 	if from.Email == "" {
 		from.Email = d.fromAddr
 		from.Name = d.fromName
 	}
-	if from.Name != "" {
-		writer.WriteField("from", fmt.Sprintf("%s <%s>", from.Name, from.Email))
-	} else {
-		writer.WriteField("from", from.Email)
-	}
+	return writer.WriteField("from", formatAddress(from.Name, from.Email))
+}
 
-	// To
-	to := msg.GetTo()
-	for _, addr := range to {
-		if addr.Name != "" {
-			writer.WriteField("to", fmt.Sprintf("%s <%s>", addr.Name, addr.Email))
-		} else {
-			writer.WriteField("to", addr.Email)
+// writeRecipientFields writes To / Cc / Bcc / Reply-To fields.
+// addr.Name values are sanitised to strip CRLF header-injection payloads.
+func (d *MailgunDriver) writeRecipientFields(writer *multipart.Writer, msg *mail.Message) error {
+	for _, addr := range msg.GetTo() {
+		if err := writer.WriteField("to", formatAddress(addr.Name, addr.Email)); err != nil {
+			return err
 		}
 	}
-
-	// CC
-	cc := msg.GetCC()
-	for _, addr := range cc {
-		if addr.Name != "" {
-			writer.WriteField("cc", fmt.Sprintf("%s <%s>", addr.Name, addr.Email))
-		} else {
-			writer.WriteField("cc", addr.Email)
+	for _, addr := range msg.GetCC() {
+		if err := writer.WriteField("cc", formatAddress(addr.Name, addr.Email)); err != nil {
+			return err
 		}
 	}
-
-	// BCC
-	bcc := msg.GetBCC()
-	for _, addr := range bcc {
-		if addr.Name != "" {
-			writer.WriteField("bcc", fmt.Sprintf("%s <%s>", addr.Name, addr.Email))
-		} else {
-			writer.WriteField("bcc", addr.Email)
+	for _, addr := range msg.GetBCC() {
+		if err := writer.WriteField("bcc", formatAddress(addr.Name, addr.Email)); err != nil {
+			return err
 		}
 	}
-
-	// Reply-To
 	replyTo := msg.GetReplyTo()
 	if len(replyTo) > 0 {
-		if replyTo[0].Name != "" {
-			writer.WriteField("h:Reply-To", fmt.Sprintf("%s <%s>", replyTo[0].Name, replyTo[0].Email))
-		} else {
-			writer.WriteField("h:Reply-To", replyTo[0].Email)
+		if err := writer.WriteField("h:Reply-To", formatAddress(replyTo[0].Name, replyTo[0].Email)); err != nil {
+			return err
 		}
 	}
+	return nil
+}
 
-	// Subject
-	writer.WriteField("subject", msg.GetSubject())
-
-	// Body
-	textBody := msg.GetTextBody()
-	if textBody != "" {
-		writer.WriteField("text", textBody)
+// writeSubjectAndBody writes subject and both text/html body fields.
+func (d *MailgunDriver) writeSubjectAndBody(writer *multipart.Writer, msg *mail.Message) error {
+	if err := writer.WriteField("subject", msg.GetSubject()); err != nil {
+		return err
 	}
-
-	htmlBody := msg.GetHTMLBody()
-	if htmlBody != "" {
-		writer.WriteField("html", htmlBody)
+	if textBody := msg.GetTextBody(); textBody != "" {
+		if err := writer.WriteField("text", textBody); err != nil {
+			return err
+		}
 	}
+	if htmlBody := msg.GetHTMLBody(); htmlBody != "" {
+		if err := writer.WriteField("html", htmlBody); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
-	// Priority
+// writePriority writes Mailgun's o:priority field when the message is not normal.
+func (d *MailgunDriver) writePriority(writer *multipart.Writer, msg *mail.Message) error {
 	switch msg.GetPriority() {
 	case mail.HighPriority:
-		writer.WriteField("o:priority", "high")
+		return writer.WriteField("o:priority", "high")
 	case mail.LowPriority:
-		writer.WriteField("o:priority", "low")
+		return writer.WriteField("o:priority", "low")
 	}
+	return nil
+}
 
-	// Custom headers
+// writeCustomHeaders writes user-supplied headers with CRLF sanitisation.
+func (d *MailgunDriver) writeCustomHeaders(writer *multipart.Writer, msg *mail.Message) error {
 	for key, value := range msg.GetHeaders() {
-		writer.WriteField(fmt.Sprintf("h:%s", sanitizeHeader(key)), sanitizeHeader(value))
+		if err := writer.WriteField(fmt.Sprintf("h:%s", sanitizeHeader(key)), sanitizeHeader(value)); err != nil {
+			return err
+		}
 	}
-
 	return nil
 }
 

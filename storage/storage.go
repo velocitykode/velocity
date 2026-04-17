@@ -39,6 +39,12 @@ func NewManager(config Config) *Manager {
 
 // Configure configures the storage manager with the given configuration
 func (m *Manager) Configure(config Config) error {
+	return m.ConfigureWithContext(context.Background(), config)
+}
+
+// ConfigureWithContext is the context-aware variant of Configure. The context
+// is used when bootstrapping context-aware drivers (e.g. s3).
+func (m *Manager) ConfigureWithContext(ctx context.Context, config Config) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -47,7 +53,7 @@ func (m *Manager) Configure(config Config) error {
 
 	// Initialize all configured disks
 	for name, diskConfig := range config.Disks {
-		driver, err := createDriver(diskConfig)
+		driver, err := createDriverWithContext(ctx, diskConfig)
 		if err != nil {
 			return fmt.Errorf("velocity/storage: failed to create driver for disk %s: %w", name, err)
 		}
@@ -102,13 +108,19 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// createDriver creates a driver based on configuration
+// createDriver creates a driver based on configuration using context.Background().
 func createDriver(config DiskConfig) (Driver, error) {
+	return createDriverWithContext(context.Background(), config)
+}
+
+// createDriverWithContext creates a driver using the provided context for
+// drivers that require network I/O during construction (e.g. s3).
+func createDriverWithContext(ctx context.Context, config DiskConfig) (Driver, error) {
 	switch config.Driver {
 	case "local":
 		return NewLocalDriver(config), nil
 	case "s3":
-		return NewS3Driver(config)
+		return NewS3DriverWithContext(ctx, config)
 	case "memory":
 		return NewMemoryDriver(config), nil
 	default:

@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"net"
 	"net/smtp"
 	"os/exec"
 	"strings"
@@ -14,11 +17,24 @@ import (
 	"github.com/velocitykode/velocity/mail"
 )
 
+// newContextDialer returns a dial function bound to ctx so TCP dials are
+// cancellable.
+func newContextDialer(ctx context.Context) func(network, addr string) (net.Conn, error) {
+	dialer := &net.Dialer{}
+	return func(network, addr string) (net.Conn, error) {
+		return dialer.DialContext(ctx, network, addr)
+	}
+}
+
 func init() {
 	mail.RegisterDriver("local", func(cfg mail.MailConfig) (mail.Mailer, error) {
 		return NewLocalDriver(cfg.Local, cfg.FromAddress, cfg.FromName)
 	})
 }
+
+// ErrPlainAuthRefused is returned when the configured SMTP server does not
+// advertise STARTTLS and PlainAuth would expose credentials in cleartext.
+var ErrPlainAuthRefused = errors.New("velocity/mail: plain-auth refused")
 
 // LocalDriver sends emails via SMTP or sendmail.
 // The username and password fields contain sensitive credentials and must not be logged.
@@ -42,7 +58,7 @@ func (d *LocalDriver) String() string {
 // NewLocalDriver creates a new local SMTP/sendmail driver from the provided config.
 func NewLocalDriver(config mail.LocalConfig, fromAddr, fromName string) (*LocalDriver, error) {
 	if config.SendmailPath == "" && config.Host == "" {
-		return nil, fmt.Errorf("mail: MAIL_HOST or MAIL_SENDMAIL_PATH must be set for local driver")
+		return nil, fmt.Errorf("velocity/mail: MAIL_HOST or MAIL_SENDMAIL_PATH must be set for local driver")
 	}
 
 	port := config.Port
@@ -73,12 +89,16 @@ func (d *LocalDriver) Send(ctx context.Context, msg *mail.Message) error {
 	return d.sendViaSMTP(ctx, msg)
 }
 
-// sendViaSMTP sends email via SMTP
+// sendViaSMTP sends email via SMTP.
+//
+// When a username is configured, the server is required to advertise STARTTLS
+// before PlainAuth is offered. If the encryption mode is "tls" (implicit TLS)
+// the connection itself is already encrypted and PlainAuth is safe. Any other
+// configuration in the presence of credentials returns ErrPlainAuthRefused to
+// prevent credential leakage over cleartext.
 func (d *LocalDriver) sendViaSMTP(ctx context.Context, msg *mail.Message) error {
-	// Build message
 	body := d.buildMessage(msg)
 
-	// Collect all recipients
 	recipients := make([]string, 0)
 	for _, addr := range msg.GetTo() {
 		recipients = append(recipients, addr.Email)
@@ -91,23 +111,101 @@ func (d *LocalDriver) sendViaSMTP(ctx context.Context, msg *mail.Message) error 
 	}
 
 	if len(recipients) == 0 {
-		return fmt.Errorf("mail: no recipients specified")
+		return fmt.Errorf("velocity/mail: no recipients specified")
 	}
 
-	// Setup authentication
-	var auth smtp.Auth
-	if d.username != "" {
-		auth = smtp.PlainAuth("", d.username, d.password, d.host)
-	}
-
-	// Send email
-	addr := fmt.Sprintf("%s:%s", d.host, d.port)
 	from := msg.GetFrom().Email
 	if from == "" {
 		from = d.fromAddr
 	}
+	addr := fmt.Sprintf("%s:%s", d.host, d.port)
 
-	return smtp.SendMail(addr, auth, from, recipients, body)
+	// No credentials → anonymous send, no auth concerns.
+	if d.username == "" {
+		return smtp.SendMail(addr, nil, from, recipients, body)
+	}
+
+	// Implicit TLS (SMTPS): entire connection is already encrypted; PlainAuth OK.
+	if strings.EqualFold(d.encryption, "tls") || strings.EqualFold(d.encryption, "ssl") {
+		return d.sendViaImplicitTLS(ctx, addr, from, recipients, body)
+	}
+
+	// Otherwise (plain or starttls): require the server to advertise STARTTLS
+	// and upgrade the connection before offering PlainAuth.
+	return d.sendViaStartTLS(ctx, addr, from, recipients, body)
+}
+
+// sendViaImplicitTLS dials a TLS connection and speaks SMTP on it.
+func (d *LocalDriver) sendViaImplicitTLS(ctx context.Context, addr, from string, recipients []string, body []byte) error {
+	dialer := &tls.Dialer{Config: &tls.Config{ServerName: d.host, MinVersion: tls.VersionTLS12}}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return fmt.Errorf("velocity/mail: failed to dial smtps: %w", err)
+	}
+	client, err := smtp.NewClient(conn, d.host)
+	if err != nil {
+		conn.Close()
+		return fmt.Errorf("velocity/mail: failed to create smtp client: %w", err)
+	}
+	defer client.Close()
+
+	auth := smtp.PlainAuth("", d.username, d.password, d.host)
+	return d.runSMTP(client, auth, from, recipients, body)
+}
+
+// sendViaStartTLS dials plaintext, requires STARTTLS, then runs PlainAuth.
+func (d *LocalDriver) sendViaStartTLS(ctx context.Context, addr, from string, recipients []string, body []byte) error {
+	dialer := newContextDialer(ctx)
+	conn, err := dialer("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("velocity/mail: failed to dial smtp: %w", err)
+	}
+	client, err := smtp.NewClient(conn, d.host)
+	if err != nil {
+		conn.Close()
+		return fmt.Errorf("velocity/mail: failed to create smtp client: %w", err)
+	}
+	defer client.Close()
+
+	ok, _ := client.Extension("STARTTLS")
+	if !ok {
+		return ErrPlainAuthRefused
+	}
+	if err := client.StartTLS(&tls.Config{ServerName: d.host, MinVersion: tls.VersionTLS12}); err != nil {
+		return fmt.Errorf("velocity/mail: starttls failed: %w", err)
+	}
+
+	auth := smtp.PlainAuth("", d.username, d.password, d.host)
+	return d.runSMTP(client, auth, from, recipients, body)
+}
+
+// runSMTP performs AUTH / MAIL / RCPT / DATA / QUIT against an active client.
+func (d *LocalDriver) runSMTP(client *smtp.Client, auth smtp.Auth, from string, recipients []string, body []byte) error {
+	if ok, _ := client.Extension("AUTH"); ok && auth != nil {
+		if err := client.Auth(auth); err != nil {
+			return fmt.Errorf("velocity/mail: smtp auth failed: %w", err)
+		}
+	}
+	if err := client.Mail(from); err != nil {
+		return fmt.Errorf("velocity/mail: mail from failed: %w", err)
+	}
+	for _, rcpt := range recipients {
+		if err := client.Rcpt(rcpt); err != nil {
+			return fmt.Errorf("velocity/mail: rcpt to failed: %w", err)
+		}
+	}
+	w, err := client.Data()
+	if err != nil {
+		return fmt.Errorf("velocity/mail: data failed: %w", err)
+	}
+	if _, err := w.Write(body); err != nil {
+		_ = w.Close()
+		return fmt.Errorf("velocity/mail: write body failed: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("velocity/mail: close body failed: %w", err)
+	}
+	return client.Quit()
 }
 
 // sendViaSendmail sends email via sendmail command
@@ -128,7 +226,7 @@ func (d *LocalDriver) sendViaSendmail(ctx context.Context, msg *mail.Message) er
 	}
 
 	if len(recipients) == 0 {
-		return fmt.Errorf("mail: no recipients specified")
+		return fmt.Errorf("velocity/mail: no recipients specified")
 	}
 
 	// Execute sendmail
@@ -137,7 +235,7 @@ func (d *LocalDriver) sendViaSendmail(ctx context.Context, msg *mail.Message) er
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("mail: sendmail failed: %w, output: %s", err, string(output))
+		return fmt.Errorf("velocity/mail: sendmail failed: %w, output: %s", err, string(output))
 	}
 
 	return nil
@@ -170,10 +268,36 @@ func generateBoundary() string {
 	return "----VelocityMail" + base64.RawURLEncoding.EncodeToString(b)
 }
 
-// buildMessage builds the RFC 822 email message
+// buildMessage builds the RFC 822 email message.
+// Composed from writeHeaders / writeBody / writeAttachments helpers.
 func (d *LocalDriver) buildMessage(msg *mail.Message) []byte {
 	var buf bytes.Buffer
 
+	d.writeHeaders(&buf, msg)
+
+	attachments := msg.GetAttachments()
+	if len(attachments) > 0 {
+		boundary := generateBoundary()
+		buf.WriteString(fmt.Sprintf("Content-Type: multipart/mixed; boundary=%s\r\n\r\n", boundary))
+
+		// Text/HTML part
+		buf.WriteString(fmt.Sprintf("--%s\r\n", boundary))
+		d.writeBody(&buf, msg)
+
+		d.writeAttachments(&buf, attachments, boundary)
+
+		buf.WriteString(fmt.Sprintf("\r\n--%s--\r\n", boundary))
+	} else {
+		d.writeBody(&buf, msg)
+	}
+
+	return buf.Bytes()
+}
+
+// writeHeaders writes the From/To/Cc/Reply-To/Subject/Priority/custom headers
+// and the MIME-Version line. Callers are expected to follow up with body
+// and (optional) attachment sections.
+func (d *LocalDriver) writeHeaders(buf *bytes.Buffer, msg *mail.Message) {
 	// From header
 	from := msg.GetFrom()
 	if from.Email == "" {
@@ -228,43 +352,7 @@ func (d *LocalDriver) buildMessage(msg *mail.Message) []byte {
 		buf.WriteString(fmt.Sprintf("%s: %s\r\n", sanitizeHeader(key), sanitizeHeader(value)))
 	}
 
-	// MIME headers
 	buf.WriteString("MIME-Version: 1.0\r\n")
-
-	attachments := msg.GetAttachments()
-	if len(attachments) > 0 {
-		boundary := generateBoundary()
-		buf.WriteString(fmt.Sprintf("Content-Type: multipart/mixed; boundary=%s\r\n\r\n", boundary))
-
-		// Text/HTML part
-		buf.WriteString(fmt.Sprintf("--%s\r\n", boundary))
-		d.writeBody(&buf, msg)
-
-		// Attachments
-		for _, att := range attachments {
-			safeName := sanitizeFilename(att.Name)
-			buf.WriteString(fmt.Sprintf("\r\n--%s\r\n", boundary))
-			buf.WriteString(fmt.Sprintf("Content-Type: %s; name=\"%s\"\r\n", sanitizeHeader(att.ContentType), safeName))
-			buf.WriteString("Content-Transfer-Encoding: base64\r\n")
-			buf.WriteString(fmt.Sprintf("Content-Disposition: attachment; filename=\"%s\"\r\n\r\n", safeName))
-
-			encoded := base64.StdEncoding.EncodeToString(att.Data)
-			// Split into 76 character lines
-			for i := 0; i < len(encoded); i += 76 {
-				end := i + 76
-				if end > len(encoded) {
-					end = len(encoded)
-				}
-				buf.WriteString(encoded[i:end] + "\r\n")
-			}
-		}
-
-		buf.WriteString(fmt.Sprintf("\r\n--%s--\r\n", boundary))
-	} else {
-		d.writeBody(&buf, msg)
-	}
-
-	return buf.Bytes()
 }
 
 // writeBody writes the text/HTML body
@@ -296,5 +384,26 @@ func (d *LocalDriver) writeBody(buf *bytes.Buffer, msg *mail.Message) {
 		// Text only
 		buf.WriteString("Content-Type: text/plain; charset=UTF-8\r\n\r\n")
 		buf.WriteString(textBody + "\r\n")
+	}
+}
+
+// writeAttachments writes the base64-encoded attachment parts.
+func (d *LocalDriver) writeAttachments(buf *bytes.Buffer, attachments []mail.Attachment, boundary string) {
+	for _, att := range attachments {
+		safeName := sanitizeFilename(att.Name)
+		buf.WriteString(fmt.Sprintf("\r\n--%s\r\n", boundary))
+		buf.WriteString(fmt.Sprintf("Content-Type: %s; name=\"%s\"\r\n", sanitizeHeader(att.ContentType), safeName))
+		buf.WriteString("Content-Transfer-Encoding: base64\r\n")
+		buf.WriteString(fmt.Sprintf("Content-Disposition: attachment; filename=\"%s\"\r\n\r\n", safeName))
+
+		encoded := base64.StdEncoding.EncodeToString(att.Data)
+		// Split into 76 character lines
+		for i := 0; i < len(encoded); i += 76 {
+			end := i + 76
+			if end > len(encoded) {
+				end = len(encoded)
+			}
+			buf.WriteString(encoded[i:end] + "\r\n")
+		}
 	}
 }

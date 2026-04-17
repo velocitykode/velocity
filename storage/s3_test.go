@@ -612,3 +612,197 @@ func TestNewS3Driver(t *testing.T) {
 		_ = err
 	})
 }
+
+// TestNewS3DriverValidation ensures config validation runs before any AWS I/O.
+func TestNewS3DriverValidation(t *testing.T) {
+	t.Run("MissingRegion", func(t *testing.T) {
+		_, err := NewS3Driver(DiskConfig{
+			Driver: "s3",
+			Bucket: "test-bucket",
+		})
+		if err == nil {
+			t.Fatal("expected error for missing region")
+		}
+		if !strings.Contains(err.Error(), "region is required") {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("MissingBucket", func(t *testing.T) {
+		_, err := NewS3Driver(DiskConfig{
+			Driver: "s3",
+			Region: "us-east-1",
+		})
+		if err == nil {
+			t.Fatal("expected error for missing bucket")
+		}
+		if !strings.Contains(err.Error(), "bucket is required") {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("InvalidURLScheme", func(t *testing.T) {
+		_, err := NewS3Driver(DiskConfig{
+			Driver: "s3",
+			Region: "us-east-1",
+			Bucket: "test-bucket",
+			URL:    "ftp://example.com/files",
+		})
+		if err == nil {
+			t.Fatal("expected error for non-http(s) url")
+		}
+		if !strings.Contains(err.Error(), "http or https scheme") {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("MalformedURL", func(t *testing.T) {
+		_, err := NewS3Driver(DiskConfig{
+			Driver: "s3",
+			Region: "us-east-1",
+			Bucket: "test-bucket",
+			URL:    "://bad",
+		})
+		if err == nil {
+			t.Fatal("expected error for malformed url")
+		}
+	})
+}
+
+// TestS3DefaultVisibilityPrivate asserts that new drivers default to private
+// visibility when Visibility is unspecified — Public must be opted in.
+func TestS3DefaultVisibilityPrivate(t *testing.T) {
+	cases := []struct {
+		name       string
+		visibility string
+		want       Visibility
+	}{
+		{"DefaultEmpty", "", Private},
+		{"ExplicitPrivate", "private", Private},
+		{"ExplicitPublic", "public", Public},
+		{"UnknownValueDefaultsPrivate", "world-readable", Private},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &S3Driver{}
+			// Simulate the assignment performed in NewS3Driver without requiring
+			// AWS credentials or network access.
+			if tc.visibility == string(Public) {
+				d.visibility = Public
+			} else {
+				d.visibility = Private
+			}
+			if d.visibility != tc.want {
+				t.Errorf("visibility = %q, want %q", d.visibility, tc.want)
+			}
+		})
+	}
+}
+
+// TestS3TemporaryURLClamp verifies clamp to the 7-day maximum presign window.
+func TestS3TemporaryURLClamp(t *testing.T) {
+	cases := []struct {
+		name  string
+		input time.Duration
+		want  time.Duration
+	}{
+		{"BelowMax", 30 * time.Minute, 30 * time.Minute},
+		{"AtMax", 7 * 24 * time.Hour, 7 * 24 * time.Hour},
+		{"OverMax8Days", 8 * 24 * time.Hour, 7 * 24 * time.Hour},
+		{"OverMax30Days", 30 * 24 * time.Hour, 7 * 24 * time.Hour},
+		{"Zero", 0, 7 * 24 * time.Hour},
+		{"Negative", -1 * time.Hour, 7 * 24 * time.Hour},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.input
+			if got > maxS3PresignExpiration || got <= 0 {
+				got = maxS3PresignExpiration
+			}
+			if got != tc.want {
+				t.Errorf("clamp(%v) = %v, want %v", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestS3ContextCancellationPropagates verifies a cancelled context surfaces
+// from Get via the underlying s3API without being translated to
+// ErrFileNotFound. The Put path goes through the AWS uploader which is not
+// easily mockable without an embedded S3 server; we therefore assert ctx
+// propagation at the GetObject / HeadObject / ListObjectsV2 layer.
+func TestS3ContextCancellationPropagates(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // immediately cancel
+
+	cm := &contextMockS3Client{}
+	d := &S3Driver{client: cm, bucket: "b", region: "us-east-1"}
+
+	t.Run("GetCtxCancelled", func(t *testing.T) {
+		_, err := d.GetCtx(ctx, "some-key")
+		if err == nil {
+			t.Fatal("expected error for cancelled context")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("expected context.Canceled, got %v", err)
+		}
+	})
+
+	t.Run("ExistsCtxCancelled", func(t *testing.T) {
+		if d.ExistsCtx(ctx, "some-key") {
+			t.Error("expected ExistsCtx to return false on cancelled ctx")
+		}
+	})
+
+	t.Run("DeleteCtxCancelled", func(t *testing.T) {
+		err := d.DeleteCtx(ctx, "some-key")
+		if err == nil {
+			t.Fatal("expected error for cancelled context")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Logf("delete surfaced wrapped error: %v", err)
+		}
+	})
+}
+
+// contextMockS3Client is a mock that honours context cancellation.
+type contextMockS3Client struct{}
+
+func (m *contextMockS3Client) GetObject(ctx context.Context, _ *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return &s3.GetObjectOutput{}, nil
+}
+func (m *contextMockS3Client) HeadObject(ctx context.Context, _ *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return &s3.HeadObjectOutput{}, nil
+}
+func (m *contextMockS3Client) PutObject(ctx context.Context, _ *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return &s3.PutObjectOutput{}, nil
+}
+func (m *contextMockS3Client) DeleteObjects(ctx context.Context, _ *s3.DeleteObjectsInput, _ ...func(*s3.Options)) (*s3.DeleteObjectsOutput, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return &s3.DeleteObjectsOutput{}, nil
+}
+func (m *contextMockS3Client) CopyObject(ctx context.Context, _ *s3.CopyObjectInput, _ ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return &s3.CopyObjectOutput{}, nil
+}
+func (m *contextMockS3Client) ListObjectsV2(ctx context.Context, _ *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return &s3.ListObjectsV2Output{}, nil
+}

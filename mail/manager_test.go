@@ -212,6 +212,49 @@ func TestManagerConcurrency(t *testing.T) {
 	}
 }
 
+// shutdownableMockMailer satisfies ShutdownableMailer for Shutdown tests.
+type shutdownableMockMailer struct {
+	mockMailer
+	shutdownCalled bool
+	shutdownErr    error
+}
+
+func (m *shutdownableMockMailer) Shutdown(ctx context.Context) error {
+	m.shutdownCalled = true
+	return m.shutdownErr
+}
+
+func TestManagerShutdown(t *testing.T) {
+	t.Run("clears channels and invokes ShutdownableMailer", func(t *testing.T) {
+		manager := NewManager()
+		sm := &shutdownableMockMailer{}
+		plain := &mockMailer{sent: make([]*Message, 0)}
+		manager.SetChannel("shut", sm)
+		manager.SetChannel("plain", plain)
+
+		if err := manager.Shutdown(context.Background()); err != nil {
+			t.Fatalf("shutdown: %v", err)
+		}
+		if !sm.shutdownCalled {
+			t.Error("expected ShutdownableMailer.Shutdown to be called")
+		}
+		if manager.HasChannel("shut") || manager.HasChannel("plain") {
+			t.Error("expected channels to be cleared after shutdown")
+		}
+	})
+
+	t.Run("returns first error", func(t *testing.T) {
+		manager := NewManager()
+		sm := &shutdownableMockMailer{shutdownErr: fmt.Errorf("boom")}
+		manager.SetChannel("broken", sm)
+
+		err := manager.Shutdown(context.Background())
+		if err == nil {
+			t.Fatal("expected error")
+		}
+	})
+}
+
 func TestManagerConcurrentBroadcast(t *testing.T) {
 	manager := NewManager()
 	mock1 := &mockMailer{sent: make([]*Message, 0)}
