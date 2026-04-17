@@ -2,25 +2,79 @@ package drivers
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	_ "github.com/lib/pq"
 )
 
 // escapePgDSNValue escapes a value for use in a PostgreSQL key=value DSN string.
-// Values containing spaces, single quotes, or backslashes must be single-quoted
-// with internal single quotes and backslashes escaped.
+//
+// lib/pq / libpq key=value DSNs quote values containing whitespace by wrapping
+// them in single quotes. Inside a single-quoted value, embedded single quotes
+// and backslashes must be escaped with a backslash. All other characters are
+// left intact. Empty values are emitted as empty single-quoted strings.
+//
+// References: https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-CONNSTRING
 func escapePgDSNValue(val string) string {
 	if val == "" {
 		return "''"
 	}
-	// If value contains special characters, wrap in single quotes with escaping
-	if strings.ContainsAny(val, ` '"\`) {
-		escaped := strings.ReplaceAll(val, `\`, `\\`)
-		escaped = strings.ReplaceAll(escaped, `'`, `\'`)
-		return "'" + escaped + "'"
+	// Quoting is required when the value contains whitespace, '\'', backslash,
+	// or the '=' used as the key/value separator.
+	needsQuoting := false
+	for _, r := range val {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\'' || r == '\\' || r == '=' {
+			needsQuoting = true
+			break
+		}
 	}
-	return val
+	if !needsQuoting {
+		return val
+	}
+	// Inside single-quoted values, escape backslash first, then single quote.
+	escaped := strings.ReplaceAll(val, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, `'`, `\'`)
+	return "'" + escaped + "'"
+}
+
+// redactDSNPassword replaces the password= value in a libpq key=value DSN
+// string with "[REDACTED]" so DSN contents can be safely included in error
+// messages and logs.
+func redactDSNPassword(dsn string) string {
+	// The DSN is a space-separated list of key=value pairs. The password
+	// value may or may not be single-quoted depending on its contents.
+	idx := strings.Index(dsn, "password=")
+	if idx == -1 {
+		return dsn
+	}
+	start := idx + len("password=")
+	if start >= len(dsn) {
+		return dsn[:start] + "[REDACTED]"
+	}
+	var end int
+	if dsn[start] == '\'' {
+		// Quoted value: scan past escape sequences until the closing quote.
+		end = start + 1
+		for end < len(dsn) {
+			if dsn[end] == '\\' && end+1 < len(dsn) {
+				end += 2
+				continue
+			}
+			if dsn[end] == '\'' {
+				end++
+				break
+			}
+			end++
+		}
+	} else {
+		// Unquoted value: read until the next whitespace.
+		end = start
+		for end < len(dsn) && dsn[end] != ' ' && dsn[end] != '\t' {
+			end++
+		}
+	}
+	return dsn[:idx] + "password=[REDACTED]" + dsn[end:]
 }
 
 // PostgresDriver implements the Driver interface for PostgreSQL
@@ -31,6 +85,26 @@ type PostgresDriver struct {
 // NewPostgresDriver creates a new PostgreSQL driver instance
 func NewPostgresDriver() Driver {
 	return &PostgresDriver{}
+}
+
+// resolveSSLMode returns the effective sslmode for a Postgres connection.
+//
+// Precedence:
+//  1. Config.SSLMode, if explicitly set by the caller.
+//  2. DB_SSL_MODE env var, if set. Allows deployment-level opt-out.
+//  3. "require" — the secure default. Applications must explicitly opt out
+//     if they need to connect to an unencrypted server.
+//
+// Callers that need to disable TLS for local development can set
+// DB_SSL_MODE=disable or Config.SSLMode="disable".
+func resolveSSLMode(configured string) string {
+	if configured != "" {
+		return configured
+	}
+	if env := os.Getenv("DB_SSL_MODE"); env != "" {
+		return env
+	}
+	return "require"
 }
 
 // Connect establishes a connection to PostgreSQL database
@@ -51,12 +125,8 @@ func (d *PostgresDriver) Connect(config ConnectionConfig) error {
 		dsn += " password=" + escapePgDSNValue(config.Password)
 	}
 
-	// Add optional parameters
-	if config.SSLMode != "" {
-		dsn += " sslmode=" + escapePgDSNValue(config.SSLMode)
-	} else {
-		dsn += " sslmode=disable" // Default to disable — lib/pq does not support "prefer"
-	}
+	// sslmode defaults to require — secure by default.
+	dsn += " sslmode=" + escapePgDSNValue(resolveSSLMode(config.SSLMode))
 
 	if config.TimeZone != "" {
 		dsn += " TimeZone=" + escapePgDSNValue(config.TimeZone)
@@ -68,7 +138,7 @@ func (d *PostgresDriver) Connect(config ConnectionConfig) error {
 
 	db, err := openAndPing("postgres", dsn)
 	if err != nil {
-		return err
+		return fmt.Errorf("velocity/orm: postgres connect failed (dsn=%q): %w", redactDSNPassword(dsn), err)
 	}
 
 	d.ConfigurePool(db)
