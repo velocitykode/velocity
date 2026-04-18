@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -188,11 +189,11 @@ func TestFileStore_Shutdown(t *testing.T) {
 	store.Start()
 
 	// First shutdown stops the goroutine.
-	if err := store.Shutdown(nil); err != nil {
+	if err := store.Shutdown(context.TODO()); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
 	// Second shutdown must be idempotent.
-	if err := store.Shutdown(nil); err != nil {
+	if err := store.Shutdown(context.TODO()); err != nil {
 		t.Errorf("second Shutdown: %v", err)
 	}
 	// Close after Shutdown must also be idempotent.

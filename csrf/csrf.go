@@ -3,7 +3,6 @@ package csrf
 import (
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -364,11 +363,4 @@ func isJSONRequest(r *http.Request) bool {
 	accept := r.Header.Get("Accept")
 	return strings.Contains(contentType, "application/json") ||
 		strings.Contains(accept, "application/json")
-}
-
-// constantTimeEq is exposed here for package-local use; it simply wraps
-// subtle.ConstantTimeCompare for clarity. Tests rely on the underlying
-// behaviour directly via ValidateToken.
-func constantTimeEq(a, b string) bool {
-	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }

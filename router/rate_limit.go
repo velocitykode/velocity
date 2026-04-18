@@ -411,14 +411,6 @@ func extractIP(c *Context, trusted *TrustedProxies) string {
 	return remoteIP
 }
 
-// stripPort removes the port from a RemoteAddr string.
-//
-// Deprecated: retained for existing call sites; prefer stripPortHost
-// in new code. Kept to avoid touching public-adjacent helpers.
-func stripPort(addr string) string {
-	return stripPortHost(addr)
-}
-
 // RateLimitStore is an interface for custom rate limit storage backends.
 type RateLimitStore interface {
 	// Allow checks if the request is allowed and records it.

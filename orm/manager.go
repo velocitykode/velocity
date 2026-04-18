@@ -207,7 +207,7 @@ func (m *Manager) Raw(query string, args ...any) (*sql.Rows, error) {
 	if m.defaultDriver == nil {
 		return nil, errors.New("orm: no database connection")
 	}
-	rows, err := m.defaultDriver.Query(query, args...)
+	rows, err := m.defaultDriver.QueryContext(context.TODO(), query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("orm: raw query failed: %w", err)
 	}
@@ -224,7 +224,7 @@ func (m *Manager) Exec(query string, args ...any) (sql.Result, error) {
 	if m.defaultDriver == nil {
 		return nil, errors.New("orm: no database connection")
 	}
-	return m.defaultDriver.Exec(query, args...)
+	return m.defaultDriver.ExecContext(context.TODO(), query, args...)
 }
 
 // Transaction executes a function within a database transaction.
