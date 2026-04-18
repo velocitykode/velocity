@@ -462,25 +462,47 @@ func (c *Context) Unauthorized(message ...string) error {
 // allowlist. Relative paths ("/foo", but not "//evil.com") are always
 // accepted. Absolute URLs are accepted only when the host matches one
 // of allowedHosts. Everything else is rewritten to "/".
+//
+// Subtle cases that FuzzSanitizeRedirect surfaced and this function must
+// keep rejecting:
+//   - "//evil", "///evil": protocol-relative URLs parse with empty Host
+//     in url.URL, so a bare Host!="" check wasn't enough.
+//   - "javascript:...", "data:...": opaque-scheme URLs have Host=="" but
+//     Scheme!="" and are live XSS vectors; they must be stripped.
+//   - "https://trusted@evil": url.Parse puts "evil" in Host, so the
+//     allowlist check catches this naturally.
 func sanitizeRedirect(target string, allowedHosts []string) string {
-	// Allow relative paths (but not protocol-relative //evil.com)
-	if strings.HasPrefix(target, "/") && !strings.HasPrefix(target, "//") {
+	if target == "" {
+		return "/"
+	}
+	// Protocol-relative URLs (//evil.com, ///evil) are unsafe even though
+	// they lack an explicit scheme — the browser resolves them against
+	// the current page's scheme and ends up on attacker-controlled host.
+	if strings.HasPrefix(target, "//") {
+		return "/"
+	}
+	if strings.HasPrefix(target, "/") {
 		return target
 	}
 	u, err := url.Parse(target)
 	if err != nil {
 		return "/"
 	}
-	if u.Host == "" {
-		// Still relative — treat as safe.
-		return target
-	}
-	for _, allowed := range allowedHosts {
-		if allowed != "" && u.Host == allowed {
-			return target
+	if u.Host != "" {
+		for _, allowed := range allowedHosts {
+			if allowed != "" && u.Host == allowed {
+				return target
+			}
 		}
+		return "/"
 	}
-	return "/"
+	// Scheme without host — javascript:, data:, file:, etc. All unsafe.
+	if u.Scheme != "" {
+		return "/"
+	}
+	// Schemeless, hostless: a bare relative reference like "foo.html".
+	// Same-origin by definition.
+	return target
 }
 
 // Forbidden sends a 403 error response
