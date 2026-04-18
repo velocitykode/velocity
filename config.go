@@ -33,13 +33,13 @@ type Config struct {
 	DB DBConfig
 
 	// Auth
-	Auth AuthConfig
+	Auth auth.Config
 
 	// Cache
 	Cache CacheConfig
 
 	// Log
-	Log LogConfig
+	Log log.LogConfig
 
 	// Queue
 	Queue QueueConfig
@@ -48,24 +48,25 @@ type Config struct {
 	Storage StorageConfig
 
 	// CSRF
-	CSRF CSRFConfig
+	CSRF csrf.Config
 
 	// Session
-	Session SessionConfig
+	Session auth.SessionConfig
 
 	// View
-	View ViewConfig
+	View view.Config
 
 	// Crypto
-	Crypto CryptoConfig
+	Crypto crypto.Config
 
 	// Mail
-	Mail MailConfig
+	Mail mail.MailConfig
 
 	// Server timeouts
-	ReadTimeout  time.Duration // SERVER_READ_TIMEOUT, default 30s
-	WriteTimeout time.Duration // SERVER_WRITE_TIMEOUT, default 30s
-	IdleTimeout  time.Duration // SERVER_IDLE_TIMEOUT, default 120s
+	ReadTimeout       time.Duration // SERVER_READ_TIMEOUT, default 30s
+	WriteTimeout      time.Duration // SERVER_WRITE_TIMEOUT, default 30s
+	IdleTimeout       time.Duration // SERVER_IDLE_TIMEOUT, default 120s
+	ReadHeaderTimeout time.Duration // SERVER_READ_HEADER_TIMEOUT, default 10s
 
 	// Scheduler (no config needed, created fresh)
 }
@@ -91,21 +92,6 @@ type DBConfig struct {
 	LogQueries      bool          // DB_LOG_QUERIES
 	SlowThreshold   time.Duration // DB_SLOW_QUERY_THRESHOLD
 }
-
-// Deprecated type aliases — retained for one release so existing consumer code
-// compiles. Use the canonical package types (auth.Config, log.LogConfig, etc.) instead.
-type (
-	AuthConfig     = auth.Config
-	GuardConfig    = auth.GuardConfig
-	ProviderConfig = auth.ProviderConfig
-	SessionConfig  = auth.SessionConfig
-	JWTConfig      = auth.JWTConfig
-	LogConfig      = log.LogConfig
-	CSRFConfig     = csrf.Config
-	CryptoConfig   = crypto.Config
-	ViewConfig     = view.Config
-	MailConfig     = mail.MailConfig
-)
 
 // CacheConfig holds cache configuration.
 // Kept as a root type because it uses a flat structure (single driver)
@@ -267,7 +253,7 @@ func ConfigFromEnv() Config {
 	}
 
 	// Session
-	config.Session = SessionConfig{
+	config.Session = auth.SessionConfig{
 		Driver:   envOrDefault("SESSION_DRIVER", "cookie"),
 		Name:     envOrDefault("SESSION_NAME", "velocity_session"),
 		Lifetime: envIntOrDefault("SESSION_LIFETIME", 120),
@@ -279,17 +265,17 @@ func ConfigFromEnv() Config {
 	}
 
 	// Auth
-	config.Auth = AuthConfig{
+	config.Auth = auth.Config{
 		DefaultGuard: os.Getenv("AUTH_GUARD"),
-		Guards:       make(map[string]GuardConfig),
-		Providers:    make(map[string]ProviderConfig),
+		Guards:       make(map[string]auth.GuardConfig),
+		Providers:    make(map[string]auth.ProviderConfig),
 		BcryptCost:   envIntOrDefault("HASH_BCRYPT_COST", 10),
 	}
 
 	// Configure guards if AUTH_GUARD is set
 	if config.Auth.DefaultGuard != "" {
 		// Session/web guard
-		config.Auth.Guards["web"] = GuardConfig{
+		config.Auth.Guards["web"] = auth.GuardConfig{
 			Driver:   "session",
 			Provider: "users",
 			Options: map[string]interface{}{
@@ -298,40 +284,36 @@ func ConfigFromEnv() Config {
 		}
 		config.Auth.Guards["session"] = config.Auth.Guards["web"]
 
-		// JWT/API guard — JWT_* deprecated in favor of AUTH_JWT_*
-		jwtTTL := envIntOrDefault("AUTH_JWT_TTL", envIntOrDefault("JWT_TTL", 60))
-		jwtRefreshTTL := envIntOrDefault("AUTH_JWT_REFRESH_TTL", envIntOrDefault("JWT_REFRESH_TTL", 20160))
-		jwtSecret := envWithDeprecated("AUTH_JWT_SECRET", "JWT_SECRET")
-		jwtAlgo := envWithDeprecated("AUTH_JWT_ALGO", "JWT_ALGO")
+		// JWT/API guard
+		jwtAlgo := os.Getenv("AUTH_JWT_ALGO")
 		if jwtAlgo == "" {
 			jwtAlgo = "HS256"
 		}
-		jwtBlacklistRaw := envWithDeprecated("AUTH_JWT_BLACKLIST_ENABLED", "JWT_BLACKLIST_ENABLED")
 
-		config.Auth.Guards["api"] = GuardConfig{
+		config.Auth.Guards["api"] = auth.GuardConfig{
 			Driver:   "jwt",
 			Provider: "users",
 			Options: map[string]interface{}{
-				"jwt": JWTConfig{
-					Secret:           jwtSecret,
+				"jwt": auth.JWTConfig{
+					Secret:           os.Getenv("AUTH_JWT_SECRET"),
 					Algorithm:        jwtAlgo,
-					TTL:              jwtTTL,
-					RefreshTTL:       jwtRefreshTTL,
-					BlacklistEnabled: jwtBlacklistRaw != "false",
+					TTL:              envIntOrDefault("AUTH_JWT_TTL", 60),
+					RefreshTTL:       envIntOrDefault("AUTH_JWT_REFRESH_TTL", 20160),
+					BlacklistEnabled: os.Getenv("AUTH_JWT_BLACKLIST_ENABLED") != "false",
 				},
 			},
 		}
 		config.Auth.Guards["jwt"] = config.Auth.Guards["api"]
 
 		// Default user provider
-		config.Auth.Providers["users"] = ProviderConfig{
+		config.Auth.Providers["users"] = auth.ProviderConfig{
 			Driver: "orm",
 			Model:  envOrDefault("AUTH_MODEL", "User"),
 		}
 	}
 
 	// CSRF
-	config.CSRF = CSRFConfig{
+	config.CSRF = csrf.Config{
 		TokenLifetime:     envDurationOrDefault("CSRF_TOKEN_LIFETIME", 24*time.Hour),
 		HeaderName:        envOrDefault("CSRF_HEADER", "X-CSRF-Token"),
 		FormField:         envOrDefault("CSRF_FORM_FIELD", "_token"),
@@ -358,7 +340,7 @@ func ConfigFromEnv() Config {
 	}
 
 	// Log
-	config.Log = LogConfig{
+	config.Log = log.LogConfig{
 		Driver: envOrDefault("LOG_DRIVER", "console"),
 		Config: make(map[string]any),
 	}
@@ -382,7 +364,7 @@ func ConfigFromEnv() Config {
 	if cryptoKey == "" {
 		cryptoKey = config.Key // Fall back to APP_KEY
 	}
-	config.Crypto = CryptoConfig{
+	config.Crypto = crypto.Config{
 		Key:    cryptoKey,
 		Cipher: envOrDefault("CRYPTO_CIPHER", "AES-256-GCM"),
 	}
@@ -425,19 +407,19 @@ func ConfigFromEnv() Config {
 	}
 
 	// Mail
-	config.Mail = MailConfig{
+	config.Mail = mail.MailConfig{
 		Driver:      envOrDefault("MAIL_DRIVER", "log"),
 		FromAddress: os.Getenv("MAIL_FROM_ADDRESS"),
 		FromName:    os.Getenv("MAIL_FROM_NAME"),
 		Mailgun: mail.MailgunConfig{
-			Domain:            envWithDeprecated("MAIL_MAILGUN_DOMAIN", "MAILGUN_DOMAIN"),
-			Secret:            envWithDeprecated("MAIL_MAILGUN_SECRET", "MAILGUN_SECRET"),
-			Endpoint:          envWithDeprecated("MAIL_MAILGUN_ENDPOINT", "MAILGUN_ENDPOINT"),
-			WebhookSigningKey: envWithDeprecated("MAIL_MAILGUN_WEBHOOK_SIGNING_KEY", "MAILGUN_WEBHOOK_SIGNING_KEY"),
+			Domain:            os.Getenv("MAIL_MAILGUN_DOMAIN"),
+			Secret:            os.Getenv("MAIL_MAILGUN_SECRET"),
+			Endpoint:          os.Getenv("MAIL_MAILGUN_ENDPOINT"),
+			WebhookSigningKey: os.Getenv("MAIL_MAILGUN_WEBHOOK_SIGNING_KEY"),
 		},
 		Postmark: mail.PostmarkConfig{
-			Token:         envWithDeprecated("MAIL_POSTMARK_TOKEN", "POSTMARK_TOKEN"),
-			MessageStream: envWithDeprecated("MAIL_POSTMARK_MESSAGE_STREAM", "POSTMARK_MESSAGE_STREAM"),
+			Token:         os.Getenv("MAIL_POSTMARK_TOKEN"),
+			MessageStream: os.Getenv("MAIL_POSTMARK_MESSAGE_STREAM"),
 		},
 		Local: mail.LocalConfig{
 			Host:         os.Getenv("MAIL_HOST"),
@@ -449,13 +431,13 @@ func ConfigFromEnv() Config {
 		},
 	}
 
-	// View / SSR — INERTIA_SSR_* deprecated in favor of VIEW_SSR_*
-	config.View = ViewConfig{
-		SSREnabled: envWithDeprecated("VIEW_SSR_ENABLED", "INERTIA_SSR_ENABLED") == "true",
-		SSRURL:     envOrDefault("VIEW_SSR_URL", envOrDefault("INERTIA_SSR_URL", "http://127.0.0.1:13714")),
-		SSRTimeout: envDurationOrDefault("VIEW_SSR_TIMEOUT", envDurationOrDefault("INERTIA_SSR_TIMEOUT", 3*time.Second)),
+	// View / SSR
+	config.View = view.Config{
+		SSREnabled: os.Getenv("VIEW_SSR_ENABLED") == "true",
+		SSRURL:     envOrDefault("VIEW_SSR_URL", "http://127.0.0.1:13714"),
+		SSRTimeout: envDurationOrDefault("VIEW_SSR_TIMEOUT", 3*time.Second),
 	}
-	if except := envWithDeprecated("VIEW_SSR_EXCEPT", "INERTIA_SSR_EXCEPT"); except != "" {
+	if except := os.Getenv("VIEW_SSR_EXCEPT"); except != "" {
 		for _, p := range strings.Split(except, ",") {
 			if p = strings.TrimSpace(p); p != "" {
 				config.View.SSRExcept = append(config.View.SSRExcept, p)
@@ -467,25 +449,12 @@ func ConfigFromEnv() Config {
 	config.ReadTimeout = envDurationOrDefault("SERVER_READ_TIMEOUT", 30*time.Second)
 	config.WriteTimeout = envDurationOrDefault("SERVER_WRITE_TIMEOUT", 30*time.Second)
 	config.IdleTimeout = envDurationOrDefault("SERVER_IDLE_TIMEOUT", 120*time.Second)
+	config.ReadHeaderTimeout = envDurationOrDefault("SERVER_READ_HEADER_TIMEOUT", 10*time.Second)
 
 	return config
 }
 
 // Helper functions
-
-// envWithDeprecated reads the new env var name first; if unset, falls back to
-// the deprecated name and logs a warning. This allows a one-release migration
-// window for renamed environment variables.
-func envWithDeprecated(newKey, oldKey string) string {
-	if v := os.Getenv(newKey); v != "" {
-		return v
-	}
-	if v := os.Getenv(oldKey); v != "" {
-		stdlog.Printf("[WARN] env var %s is deprecated, use %s instead", oldKey, newKey)
-		return v
-	}
-	return ""
-}
 
 func envOrDefault(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {

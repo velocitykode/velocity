@@ -165,7 +165,7 @@ const defaultTemplate = `<!DOCTYPE html>
 </body>
 </html>`
 
-// errorProvider is satisfied by *validate.Errors and any type that
+// errorProvider is satisfied by *validation.Result and any type that
 // exposes All() and Old() for validation error rendering.
 type errorProvider interface {
 	All() map[string]string
@@ -174,13 +174,6 @@ type errorProvider interface {
 
 // RenderWithErrors renders a component with validation errors and old input
 // merged into props. Errors are set as "errors" and old input as "old".
-//
-//	errors := validate.Check(ctx.Request, validate.Rules{...})
-//	if errors.HasErrors() {
-//	    view.FromContext(ctx).RenderWithErrors(ctx.Response, ctx.Request,
-//	        "Posts/Create", view.Props{}, errors)
-//	    return nil
-//	}
 func (e *Engine) RenderWithErrors(w http.ResponseWriter, r *http.Request, component string, props Props, errors errorProvider) error {
 	if props == nil {
 		props = Props{}

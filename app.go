@@ -264,14 +264,14 @@ func NewTestApp(opts ...Option) (*App, error) {
 			Driver: "memory",
 			Prefix: "test_cache",
 		},
-		Log: LogConfig{
+		Log: log.LogConfig{
 			Driver: "console",
 			Config: make(map[string]any),
 		},
 		Queue: QueueConfig{
 			Driver: "memory",
 		},
-		Mail: MailConfig{
+		Mail: mail.MailConfig{
 			Driver: "log",
 		},
 	}
