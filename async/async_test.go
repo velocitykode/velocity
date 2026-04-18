@@ -11,6 +11,7 @@ import (
 func TestRun(t *testing.T) {
 	t.Run("successful execution", func(t *testing.T) {
 		result := Run(func() int {
+			// orchestration: sleep is test input — the fake "work" Run wraps.
 			time.Sleep(50 * time.Millisecond)
 			return 42
 		})
@@ -50,6 +51,7 @@ func TestRun(t *testing.T) {
 func TestRunWithTimeout(t *testing.T) {
 	t.Run("completes before timeout", func(t *testing.T) {
 		result := RunWithTimeout(200*time.Millisecond, func() string {
+			// orchestration: sleep is test input — work that finishes before timeout.
 			time.Sleep(50 * time.Millisecond)
 			return "success"
 		})
@@ -68,6 +70,7 @@ func TestRunWithTimeout(t *testing.T) {
 
 	t.Run("times out", func(t *testing.T) {
 		result := RunWithTimeout(50*time.Millisecond, func() string {
+			// orchestration: sleep is test input — work that deliberately outlasts the timeout.
 			time.Sleep(200 * time.Millisecond)
 			return "too late"
 		})
@@ -88,6 +91,7 @@ func TestRunWithContext(t *testing.T) {
 		defer cancel()
 
 		result := RunWithContext(ctx, func() int {
+			// orchestration: sleep is test input — work that completes before ctx cancel.
 			time.Sleep(50 * time.Millisecond)
 			return 100
 		})
@@ -105,12 +109,14 @@ func TestRunWithContext(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 
 		result := RunWithContext(ctx, func() int {
+			// orchestration: sleep is test input — long-running work meant to be cancelled.
 			time.Sleep(200 * time.Millisecond)
 			return 100
 		})
 
 		// Cancel after short delay
 		go func() {
+			// orchestration: sleep is timing input — deliberate delay before cancel.
 			time.Sleep(50 * time.Millisecond)
 			cancel()
 		}()
@@ -128,6 +134,8 @@ func TestRunWithContext(t *testing.T) {
 func TestAll(t *testing.T) {
 	t.Run("parallel execution", func(t *testing.T) {
 		start := time.Now()
+		// orchestration: each closure's sleep is test input — the fake "work"
+		// All must run concurrently. Elapsed time is the assertion.
 		results := All(
 			func() int { time.Sleep(100 * time.Millisecond); return 1 },
 			func() int { time.Sleep(100 * time.Millisecond); return 2 },
@@ -150,6 +158,8 @@ func TestAll(t *testing.T) {
 	})
 
 	t.Run("preserves order", func(t *testing.T) {
+		// orchestration: staggered sleeps are test input so closures finish
+		// out of submission order; assertion checks output preserves index order.
 		results := All(
 			func() string { time.Sleep(100 * time.Millisecond); return "first" },
 			func() string { time.Sleep(50 * time.Millisecond); return "second" },
@@ -194,6 +204,8 @@ func TestAllWithError(t *testing.T) {
 
 func TestRace(t *testing.T) {
 	t.Run("fastest wins", func(t *testing.T) {
+		// orchestration: staggered sleeps are test input so Race sees a clear
+		// ordering and the assertion checks the fastest closure's value wins.
 		result := Race(
 			func() string { time.Sleep(200 * time.Millisecond); return "slow" },
 			func() string { time.Sleep(50 * time.Millisecond); return "fast" },
@@ -212,6 +224,8 @@ func TestRace(t *testing.T) {
 
 func TestRaceWithTimeout(t *testing.T) {
 	t.Run("completes before timeout", func(t *testing.T) {
+		// orchestration: closure sleeps are test input — work that finishes
+		// before the 200ms timeout so Race can pick a winner.
 		result := RaceWithTimeout(200*time.Millisecond,
 			func() int { time.Sleep(50 * time.Millisecond); return 1 },
 			func() int { time.Sleep(100 * time.Millisecond); return 2 },
@@ -230,6 +244,8 @@ func TestRaceWithTimeout(t *testing.T) {
 	})
 
 	t.Run("all timeout", func(t *testing.T) {
+		// orchestration: closure sleeps are test input — both deliberately
+		// outlast the 50ms timeout so Race must return the timeout error.
 		result := RaceWithTimeout(50*time.Millisecond,
 			func() int { time.Sleep(200 * time.Millisecond); return 1 },
 			func() int { time.Sleep(300 * time.Millisecond); return 2 },
@@ -249,6 +265,8 @@ func TestGo(t *testing.T) {
 	t.Run("executes without waiting", func(t *testing.T) {
 		done := make(chan bool, 1)
 		Go(func() {
+			// orchestration: sleep is test input — fake work so Go can be
+			// observed not to block the caller (checked via select below).
 			time.Sleep(50 * time.Millisecond)
 			done <- true
 		})
@@ -310,6 +328,7 @@ func TestForEach(t *testing.T) {
 		var sum atomic.Int64
 
 		ForEach(items, 2, func(item int) {
+			// orchestration: sleep is test input — fake per-item work.
 			time.Sleep(10 * time.Millisecond)
 			sum.Add(int64(item * 2))
 		})
@@ -333,6 +352,8 @@ func TestForEach(t *testing.T) {
 					break
 				}
 			}
+			// orchestration: sleep is test input — holds workers "active"
+			// long enough for the maxActive CAS loop to observe concurrency.
 			time.Sleep(50 * time.Millisecond)
 			active.Add(-1)
 		})
@@ -363,6 +384,8 @@ func TestMap(t *testing.T) {
 		start := time.Now()
 
 		Map(items, func(i int) int {
+			// orchestration: sleep is test input — fake per-item work; total
+			// elapsed is the assertion that Map runs closures in parallel.
 			time.Sleep(100 * time.Millisecond)
 			return i
 		})

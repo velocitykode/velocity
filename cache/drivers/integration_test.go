@@ -268,3 +268,129 @@ func TestParity_FlushClearsAll(t *testing.T) {
 		})
 	}
 }
+
+// TestParity_Increment_NonNumeric exercises the error path that happy-path
+// parity never sees: calling Increment on a key whose current value is a
+// string. Each driver's behavior is pinned below — the assertion is that no
+// driver silently treats the string as if it were a number and blends the
+// previous and new values, which would corrupt counters in prod.
+//
+// NOTE: drivers differ here today. Memory and Redis error out; File silently
+// treats non-numeric as zero and writes the delta. The test pins current
+// behavior so a future refactor doesn't change it unnoticed. Making all
+// three error uniformly is tracked separately — changing file.go here would
+// expand this PR beyond the review scope.
+func TestParity_Increment_NonNumeric(t *testing.T) {
+	for _, fx := range cacheFixtures(t) {
+		fx := fx
+		t.Run(fx.name, func(t *testing.T) {
+			t.Cleanup(fx.cleanup)
+
+			if err := fx.store.Put("counter", "not-a-number", time.Hour); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+
+			got, err := fx.store.Increment("counter", 5)
+			switch fx.name {
+			case "memory":
+				if err == nil {
+					t.Fatalf("memory must reject Increment on non-numeric; got %d", got)
+				}
+				if !strings.Contains(err.Error(), "not numeric") {
+					t.Errorf("memory error %q missing 'not numeric'", err)
+				}
+			case "redis":
+				// Redis IncrBy on a non-numeric string returns
+				// "ERR value is not an integer or out of range".
+				if err == nil {
+					t.Fatalf("redis must reject Increment on non-numeric; got %d", got)
+				}
+			case "file":
+				// Current behavior: file driver reads the string, fails to
+				// match the int/int64/float64 switch, falls through with
+				// current=0, and writes 0+delta. Pin it — if this changes to
+				// an error, that's a desirable fix but a breaking change and
+				// should be intentional.
+				if err != nil {
+					t.Fatalf("file Increment returned error (behavior changed?): %v", err)
+				}
+				if got != 5 {
+					t.Errorf("file Increment = %d, want 5 (zero baseline + 5)", got)
+				}
+			}
+		})
+	}
+}
+
+// TestError_Redis_OpsSurfaceAfterShutdown covers the mid-op failure mode
+// that in-memory cache contracts don't exhibit. After Shutdown() closes the
+// connection pool, every subsequent op must surface an error rather than
+// silently no-op (which would let a caller think the write succeeded).
+func TestError_Redis_OpsSurfaceAfterShutdown(t *testing.T) {
+	port, err := strconv.Atoi(os.Getenv("REDIS_PORT"))
+	if err != nil {
+		t.Fatalf("REDIS_PORT: %v", err)
+	}
+	redisPrefix := fmt.Sprintf("integration-test-shutdown-%d:", os.Getpid())
+	redis, err := NewRedisStore(
+		redisPrefix,
+		os.Getenv("REDIS_HOST"),
+		port,
+		os.Getenv("REDIS_PASSWORD"),
+		0,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("NewRedisStore: %v", err)
+	}
+
+	// Baseline: confirm the store works before we tear it down.
+	if err := redis.Put("pre", "alive", time.Hour); err != nil {
+		t.Fatalf("Put before shutdown: %v", err)
+	}
+	if _, ok := redis.Get("pre"); !ok {
+		t.Fatal("Get must succeed before shutdown")
+	}
+	_ = redis.Flush()
+
+	// Close the connection pool; every subsequent network op must error.
+	if err := redis.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	if err := redis.Put("post", "value", time.Hour); err == nil {
+		t.Error("Put after Shutdown must error (connection pool closed)")
+	}
+	if _, ok := redis.Get("post"); ok {
+		t.Error("Get after Shutdown must return found=false")
+	}
+	if _, err := redis.Increment("counter", 1); err == nil {
+		t.Error("Increment after Shutdown must error")
+	}
+	if err := redis.Flush(); err == nil {
+		t.Error("Flush after Shutdown must error (scan op needs an open pool)")
+	}
+}
+
+// TestError_Redis_UnreachableHost verifies that NewRedisStore fails fast
+// when the server is unreachable, rather than returning a store that looks
+// healthy until the first op. The mid-op parity above pins post-Shutdown
+// behavior; this pins the no-server-at-all path.
+func TestError_Redis_UnreachableHost(t *testing.T) {
+	// Port 1 is reserved by IANA and never a real Redis — a connection
+	// attempt fails immediately on Linux/macOS.
+	_, err := NewRedisStore(
+		"unreachable:",
+		"127.0.0.1",
+		1,
+		"",
+		0,
+		false,
+	)
+	if err == nil {
+		t.Fatal("NewRedisStore must fail fast when server is unreachable")
+	}
+	if !strings.Contains(err.Error(), "failed to connect") {
+		t.Errorf("error %q missing 'failed to connect'", err)
+	}
+}
