@@ -386,10 +386,9 @@ func TestHandleRaw_DoesNotRegisterClient(t *testing.T) {
 	}
 	defer ws.Close()
 
-	// Wait for connection to be established
-	time.Sleep(50 * time.Millisecond)
-
-	// Raw connections should NOT appear in managed clients or stats
+	// Raw connections bypass client management entirely — HandleRaw never
+	// adds to s.clients or bumps ConnectedClients — so this assertion
+	// holds regardless of timing. No sleep needed.
 	stats := s.GetStats()
 	if stats.ConnectedClients != 0 {
 		t.Errorf("Expected 0 connected clients for raw connection, got %d", stats.ConnectedClients)

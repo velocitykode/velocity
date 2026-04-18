@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	testsync "github.com/velocitykode/velocity/testing"
 )
 
 // TestNewFileStore_CreatesRootOnce asserts the root cache directory is
@@ -167,15 +169,11 @@ func TestFileStore_CleanupIntervalSweepsExpired(t *testing.T) {
 	}
 	path := store.getCacheFilePath("vanish")
 
-	// Give the sweep loop up to 2 seconds to run at least twice.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			return // sweep removed the expired file — success
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	t.Errorf("expected expired file %q to be removed by the cleanup sweep, but it still exists", path)
+	// The sweep loop runs on an interval; poll until the expired file is gone.
+	testsync.Eventually(t, func() bool {
+		_, err := os.Stat(path)
+		return os.IsNotExist(err)
+	}, 2*time.Second, "cleanup sweep removes expired file")
 }
 
 // TestFileStore_Shutdown asserts Shutdown(ctx) is wired and idempotent.

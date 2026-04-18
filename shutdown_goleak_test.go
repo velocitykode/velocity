@@ -2,6 +2,7 @@ package velocity
 
 import (
 	"context"
+	"runtime"
 	"testing"
 	"time"
 
@@ -39,7 +40,25 @@ func TestBootShutdown_NoGoroutineLeaks(t *testing.T) {
 		t.Fatalf("Shutdown: %v", err)
 	}
 
-	// Give async workers a moment to observe the shutdown signal and
-	// exit before goleak inspects the goroutine table.
-	time.Sleep(50 * time.Millisecond)
+	// Wait for the goroutine count to stabilize before goleak samples.
+	// Shutdown is mostly synchronous, but async.Go workers observe ctx.Done
+	// and unwind their own stacks — we poll until two consecutive samples
+	// agree, so a slow worker is detected as a leak rather than masked by
+	// a fixed sleep.
+	waitForGoroutinesToSettle(t, 2*time.Second)
+}
+
+func waitForGoroutinesToSettle(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	prev := runtime.NumGoroutine()
+	for time.Now().Before(deadline) {
+		runtime.Gosched()
+		time.Sleep(10 * time.Millisecond)
+		cur := runtime.NumGoroutine()
+		if cur == prev {
+			return
+		}
+		prev = cur
+	}
 }

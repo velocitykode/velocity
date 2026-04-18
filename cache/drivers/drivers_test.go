@@ -1669,9 +1669,9 @@ func TestMemoryStore_Forever_DoesNotExpire(t *testing.T) {
 
 		store.Forever("key", "value")
 
-		// Even after some time, the value should still exist
-		time.Sleep(100 * time.Millisecond)
-
+		// No sleep: Forever() sets expiration=nil and Get checks expiration
+		// lazily. The background sweeper runs on a 1-minute ticker so any
+		// sub-second sleep here would be cargo-culted, not exercising anything.
 		val, found := store.Get("key")
 		if !found {
 			t.Error("Forever() value should not expire")
@@ -1691,9 +1691,6 @@ func TestFileStore_Forever_DoesNotExpire(t *testing.T) {
 		}
 
 		store.Forever("key", "value")
-
-		// Even after some time, the value should still exist
-		time.Sleep(100 * time.Millisecond)
 
 		val, found := store.Get("key")
 		if !found {
@@ -1716,9 +1713,7 @@ func TestMemoryStore_Increment_CreatesWithNoExpiration(t *testing.T) {
 			t.Errorf("Increment() error = %v", err)
 		}
 
-		// Value should persist as it has no expiration
-		time.Sleep(100 * time.Millisecond)
-
+		// No sleep: expiration is nil, sweeper runs on 1-minute cadence.
 		val, found := store.Get("newkey")
 		if !found {
 			t.Error("Increment() created key should not expire")
@@ -1744,9 +1739,7 @@ func TestFileStore_Increment_PreservesNoExpiration(t *testing.T) {
 			t.Errorf("Increment() error = %v", err)
 		}
 
-		// Value should persist as it has no expiration
-		time.Sleep(100 * time.Millisecond)
-
+		// No sleep: FileStore checks expiration on Get, sweeper is 1-minute.
 		val, found := store.Get("counter")
 		if !found {
 			t.Error("Increment() should preserve no expiration")

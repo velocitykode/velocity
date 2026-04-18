@@ -2,6 +2,31 @@
 // relied on fixed time.Sleep calls. Polling helpers here return as soon as a
 // condition becomes true, so the common-case test runs fast while the timeout
 // protects against indefinite hangs when the condition never fires.
+//
+// # time.Sleep policy (tests only)
+//
+// Adding a new time.Sleep to a *_test.go file requires a comment explaining
+// why Eventually / channels / WaitGroups don't fit. Acceptable reasons:
+//
+//   - TTL MODELING: the feature under test is wall-clock based (cache
+//     expiration, rate-limit windows, delayed-job visibility) and a real
+//     duration must elapse for the assertion to mean anything.
+//   - ORCHESTRATION: the sleep sits inside a closure that the helper under
+//     test is supposed to run (the fake "work" for async.All, async.Race,
+//     queue Job.Handle, scheduler callback, etc) — the sleep is test input,
+//     not synchronization.
+//   - STABILITY WINDOW: the test makes a NEGATIVE assertion ("this should NOT
+//     have fired yet") and a small sleep gives any racing goroutine a chance
+//     to violate the invariant before we sample.
+//   - FIXTURE: benchmark timings, deliberate time-difference for UpdatedAt,
+//     simulated slow HTTP handler feeding duration histograms.
+//
+// Not acceptable: "wait for the goroutine to finish", "let registration
+// complete", "give the dispatcher a moment". Use Eventually or a channel.
+//
+// If a reviewer can't tell which bucket a sleep falls into from the
+// surrounding comment, the sleep is probably wait-and-hope and should be
+// replaced.
 package testsync
 
 import (
@@ -27,8 +52,8 @@ func Eventually(t testing.TB, cond func() bool, timeout time.Duration, msg strin
 	}
 }
 
-// EventuallyEqual is Eventually specialized for comparing an int32 to an
-// expected value — the most common use is an atomic counter that a worker
+// EventuallyEqual is Eventually specialized for comparing a value to an
+// expected one — the most common use is an atomic counter that a worker
 // pool increments.
 func EventuallyEqual[T comparable](t testing.TB, get func() T, want T, timeout time.Duration, msg string) {
 	t.Helper()

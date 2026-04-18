@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	testsync "github.com/velocitykode/velocity/testing"
 )
 
 func TestClientConnection(t *testing.T) {
@@ -64,13 +65,9 @@ func TestClientDisconnection(t *testing.T) {
 	// Close connection
 	ws.Close()
 
-	// Wait for disconnect processing
-	time.Sleep(100 * time.Millisecond)
-
-	stats := server.GetStats()
-	if stats.ConnectedClients != 0 {
-		t.Errorf("Expected 0 connected clients after disconnect, got %d", stats.ConnectedClients)
-	}
+	testsync.Eventually(t, func() bool {
+		return server.GetStats().ConnectedClients == 0
+	}, 2*time.Second, "server observes client disconnect")
 }
 
 func TestClientSendJSON(t *testing.T) {
@@ -164,17 +161,7 @@ func TestConcurrentClientMessages(t *testing.T) {
 		}
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if messageCount.Load() == int32(numMessages) {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	if got := messageCount.Load(); got != int32(numMessages) {
-		t.Errorf("Expected %d messages processed, got %d", numMessages, got)
-	}
+	testsync.EventuallyEqual(t, messageCount.Load, int32(numMessages), 2*time.Second, "all messages processed")
 }
 
 func TestClientIDGeneration(t *testing.T) {
