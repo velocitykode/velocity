@@ -13,13 +13,55 @@ import (
 	"unicode/utf8"
 )
 
-// ErrSymlinkEscape is returned by ValidateFilePathWithin when the path
-// is (or resolves through) a symlink that leaves the allowed root.
-var ErrSymlinkEscape = errors.New("velocity/router: file path escapes allowed root")
-
-// ErrPathOutsideRoot is returned by ValidateFilePathWithin when the
-// cleaned path, without following links, is not contained in root.
+// ErrPathOutsideRoot is returned by OpenFileIn when the requested path
+// escapes the root directory via traversal or symlink. The underlying
+// check is delegated to the kernel via os.Root, which on Linux uses
+// openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS) and on other platforms
+// uses the strongest equivalent the runtime can provide. This closes
+// the TOCTOU window that the previous user-space implementation had
+// between Lstat and Open.
 var ErrPathOutsideRoot = errors.New("velocity/router: file path outside allowed root")
+
+// ErrNilRoot is returned by OpenFileIn when the caller passes a nil
+// *os.Root. The framework never constructs a nil Root internally; a nil
+// value here indicates a caller bug (e.g. forgetting to run the service
+// provider that opens the root) and must not panic library code.
+var ErrNilRoot = errors.New("velocity/router: nil *os.Root")
+
+// OpenFileIn opens relative against root, returning the open handle.
+//
+// Containment is kernel-enforced via (*os.Root).Open — on Linux it uses
+// openat2 with RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS, and on other
+// platforms the Go runtime provides the strongest equivalent. The open
+// handle is returned so callers never re-resolve the path; re-opening
+// the file from its string name would re-introduce the TOCTOU window
+// that this API exists to eliminate.
+//
+// Error behaviour:
+//   - A nil root returns ErrNilRoot.
+//   - A path that escapes the root (traversal or symlink) is wrapped as
+//     "velocity/router: path %q escapes root: %w" around ErrPathOutsideRoot.
+//   - A nonexistent file returns the standard os error from os.Root.Open
+//     unwrapped, so errors.Is(err, os.ErrNotExist) works.
+//
+// Callers are responsible for closing the returned *os.File.
+func OpenFileIn(root *os.Root, relative string) (*os.File, error) {
+	if root == nil {
+		return nil, ErrNilRoot
+	}
+	f, err := root.Open(relative)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		// os.Root surfaces containment violations as *PathError wrapping
+		// syscall.EXDEV / ENOTDIR / a dedicated sentinel depending on
+		// platform. We fold all of them into ErrPathOutsideRoot so
+		// callers can switch on a single sentinel.
+		return nil, fmt.Errorf("velocity/router: path %q escapes root: %w", relative, errors.Join(ErrPathOutsideRoot, err))
+	}
+	return f, nil
+}
 
 // FileValidationOption configures file validation behavior.
 type FileValidationOption func(*fileValidationConfig)
@@ -151,93 +193,4 @@ func SanitizeFilename(name string) string {
 	}
 
 	return name
-}
-
-// ValidateFilePathWithin verifies that path is contained within the
-// root directory, both by lexical comparison and by resolving symlinks.
-// Returns the fully-resolved absolute path on success.
-//
-// Layered checks:
-//  1. Reject any ".." segment after Clean.
-//  2. Lexically ensure path is prefixed by root (filepath.Rel must not
-//     escape).
-//  3. os.Lstat the joined path to catch symlinks whose own metadata
-//     is fine, but whose target escapes root — we follow the symlink
-//     via filepath.EvalSymlinks and re-check containment.
-//
-// Callers should pass an absolute root. A relative root is resolved
-// via filepath.Abs against the current working directory.
-func ValidateFilePathWithin(path, root string) (string, error) {
-	if root == "" {
-		return "", fmt.Errorf("velocity/router: file validation: empty root")
-	}
-	absRoot, err := filepath.Abs(root)
-	if err != nil {
-		return "", fmt.Errorf("velocity/router: file validation: resolve root: %w", err)
-	}
-	absRoot = filepath.Clean(absRoot)
-
-	// Resolve root's own symlinks so EvalSymlinks of any child produces
-	// a path that can be meaningfully compared. macOS aliases /var to
-	// /private/var; automounters expose similar patterns elsewhere.
-	resolvedRoot := absRoot
-	if resolved, rerr := filepath.EvalSymlinks(absRoot); rerr == nil {
-		resolvedRoot = resolved
-	}
-
-	cleanedPath := filepath.Clean(path)
-	if strings.Contains(cleanedPath, "..") {
-		return "", fmt.Errorf("%w: contains '..': %q", ErrPathOutsideRoot, path)
-	}
-
-	joined := cleanedPath
-	if !filepath.IsAbs(joined) {
-		joined = filepath.Join(absRoot, cleanedPath)
-	}
-	joined = filepath.Clean(joined)
-
-	// Accept the path if it is contained in either the lexical or the
-	// resolved form of root. This keeps the helper usable on macOS
-	// where tempdirs live under /var -> /private/var.
-	if !pathWithinRoot(joined, absRoot) && !pathWithinRoot(joined, resolvedRoot) {
-		return "", fmt.Errorf("%w: %q", ErrPathOutsideRoot, path)
-	}
-
-	// Lstat to detect a symlink at the leaf. Intermediate symlinks are
-	// caught by EvalSymlinks below. If the path does not exist yet
-	// (e.g. a write target), only lexical containment is enforced.
-	info, err := os.Lstat(joined)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return joined, nil
-		}
-		return "", fmt.Errorf("velocity/router: file validation: lstat: %w", err)
-	}
-
-	if info.Mode()&os.ModeSymlink != 0 {
-		resolvedPath, resolveErr := filepath.EvalSymlinks(joined)
-		if resolveErr != nil {
-			return "", fmt.Errorf("%w: resolve: %v", ErrSymlinkEscape, resolveErr)
-		}
-		if !pathWithinRoot(resolvedPath, absRoot) && !pathWithinRoot(resolvedPath, resolvedRoot) {
-			return "", fmt.Errorf("%w: %q -> %q", ErrSymlinkEscape, path, resolvedPath)
-		}
-		return resolvedPath, nil
-	}
-
-	return joined, nil
-}
-
-// pathWithinRoot reports whether p is contained in (or equal to) root.
-// Uses filepath.Rel rather than strings.HasPrefix to avoid the classic
-// "/etc/passwd_evil" bypass on "/etc/passwd".
-func pathWithinRoot(p, root string) bool {
-	rel, err := filepath.Rel(root, p)
-	if err != nil {
-		return false
-	}
-	if rel == "." {
-		return true
-	}
-	return !strings.HasPrefix(rel, "..") && !strings.Contains(rel, string(filepath.Separator)+"..")
 }

@@ -102,10 +102,28 @@ func (m *Manager) SetDefault(name string) error {
 	return nil
 }
 
-// Shutdown is a no-op for the storage manager; individual disk drivers do not
-// hold long-lived connections that need draining.
+// Shutdown drains each configured disk driver. Drivers that implement
+// contract.ShutdownAware (e.g. LocalDriver, which holds an *os.Root
+// file descriptor) get their Shutdown called; drivers that don't are
+// skipped. The first non-nil error is returned, but every driver's
+// Shutdown is attempted first so resources never leak because of an
+// earlier failure.
 func (m *Manager) Shutdown(ctx context.Context) error {
-	return nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var firstErr error
+	for name, driver := range m.disks {
+		sd, ok := driver.(interface {
+			Shutdown(context.Context) error
+		})
+		if !ok {
+			continue
+		}
+		if err := sd.Shutdown(ctx); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("velocity/storage: shutdown disk %q: %w", name, err)
+		}
+	}
+	return firstErr
 }
 
 // createDriver creates a driver based on configuration using context.Background().
