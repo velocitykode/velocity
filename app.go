@@ -235,7 +235,7 @@ func (a *App) Version() string {
 }
 
 // Run dispatches CLI commands or starts the HTTP server.
-// Defined in run.go.
+// Defined in cmd.go.
 
 // --- Declarative bootstrap chain ---
 
