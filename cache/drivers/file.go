@@ -301,12 +301,19 @@ func (s *FileStore) Increment(key string, value int64) (int64, error) {
 	var current int64
 	var expiration *time.Time
 
-	// Try to get current value
+	// Try to get current value. An existing-but-non-numeric value is an
+	// error — silently coercing it to zero (the prior behavior) meant a
+	// caller who accidentally Put a string and then Increment'd would see
+	// the counter quietly reset, which is exactly the kind of silent
+	// corruption integration parity tests are supposed to catch. Match
+	// MemoryStore's error message so the parity test asserts one string
+	// across drivers.
 	path := s.getCacheFilePath(key)
 	if data, err := os.ReadFile(path); err == nil {
 		var item fileCacheItem
 		if err := json.Unmarshal(data, &item); err == nil {
-			// Check expiration
+			// Check expiration — expired entries fall through with current=0,
+			// same as nonexistent files. Both are legitimate "start from 0" paths.
 			if item.Expiration == nil || time.Now().Before(*item.Expiration) {
 				var val interface{}
 				if err := json.Unmarshal(item.Value, &val); err == nil {
@@ -317,6 +324,8 @@ func (s *FileStore) Increment(key string, value int64) (int64, error) {
 						current = v
 					case int:
 						current = int64(v)
+					default:
+						return 0, fmt.Errorf("velocity/cache: value is not numeric")
 					}
 				}
 				expiration = item.Expiration

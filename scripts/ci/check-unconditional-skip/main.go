@@ -89,15 +89,23 @@ func scan(path string) ([]string, error) {
 		if !ok || fn.Body == nil {
 			continue
 		}
-		collect(fset, fn.Body, fn.Body, &findings)
+		walkScope(fset, fn.Body, &findings)
 	}
 	return findings, nil
 }
 
-// collect walks `node` looking for skip calls and records unguarded ones.
-// `fnBody` is the enclosing function body used for scope comparisons.
-func collect(fset *token.FileSet, fnBody *ast.BlockStmt, node ast.Node, out *[]string) {
-	ast.Inspect(node, func(n ast.Node) bool {
+// walkScope evaluates `scope` as the enclosing function body for any
+// t.Skip calls found directly within. When the walk encounters a nested
+// *ast.FuncLit (subtest closure, t.Cleanup callback, goroutine), it
+// recurses with the closure's own body as the new scope — otherwise a
+// guard in the outer scope would spuriously satisfy a bare skip inside
+// the inner closure.
+func walkScope(fset *token.FileSet, scope *ast.BlockStmt, out *[]string) {
+	ast.Inspect(scope, func(n ast.Node) bool {
+		if lit, ok := n.(*ast.FuncLit); ok && lit.Body != nil {
+			walkScope(fset, lit.Body, out)
+			return false // skip inner ast.Inspect — walkScope handled it
+		}
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
@@ -105,7 +113,7 @@ func collect(fset *token.FileSet, fnBody *ast.BlockStmt, node ast.Node, out *[]s
 		if !isSkipCall(call) {
 			return true
 		}
-		if guarded(fnBody, call) {
+		if guarded(scope, call) {
 			return true
 		}
 		pos := fset.Position(call.Pos())

@@ -271,15 +271,13 @@ func TestParity_FlushClearsAll(t *testing.T) {
 
 // TestParity_Increment_NonNumeric exercises the error path that happy-path
 // parity never sees: calling Increment on a key whose current value is a
-// string. Each driver's behavior is pinned below — the assertion is that no
-// driver silently treats the string as if it were a number and blends the
-// previous and new values, which would corrupt counters in prod.
-//
-// NOTE: drivers differ here today. Memory and Redis error out; File silently
-// treats non-numeric as zero and writes the delta. The test pins current
-// behavior so a future refactor doesn't change it unnoticed. Making all
-// three error uniformly is tracked separately — changing file.go here would
-// expand this PR beyond the review scope.
+// string. All drivers must error — silent coercion to zero would let a
+// caller who accidentally Put a string quietly reset their counter, which
+// is the exact silent-corruption class integration parity is built to
+// catch. Driver-level error strings differ (Memory/File use the velocity/
+// cache prefix; Redis surfaces the upstream "ERR value is not an integer
+// or out of range"), so the assertion is "non-nil error" — the fact that
+// a non-numeric current value never silently becomes zero.
 func TestParity_Increment_NonNumeric(t *testing.T) {
 	for _, fx := range cacheFixtures(t) {
 		fx := fx
@@ -291,32 +289,34 @@ func TestParity_Increment_NonNumeric(t *testing.T) {
 			}
 
 			got, err := fx.store.Increment("counter", 5)
+			if err == nil {
+				t.Fatalf("%s must reject Increment on non-numeric; got %d", fx.name, got)
+			}
+
+			// For memory and file the error originates in-process, so we
+			// can pin the exact wording. Redis's error string is upstream-
+			// defined (and has changed between Redis versions), so we just
+			// require some mention of "integer" or "numeric".
+			msg := strings.ToLower(err.Error())
 			switch fx.name {
-			case "memory":
-				if err == nil {
-					t.Fatalf("memory must reject Increment on non-numeric; got %d", got)
-				}
-				if !strings.Contains(err.Error(), "not numeric") {
-					t.Errorf("memory error %q missing 'not numeric'", err)
+			case "memory", "file":
+				if !strings.Contains(msg, "not numeric") {
+					t.Errorf("%s error %q missing 'not numeric'", fx.name, err)
 				}
 			case "redis":
-				// Redis IncrBy on a non-numeric string returns
-				// "ERR value is not an integer or out of range".
-				if err == nil {
-					t.Fatalf("redis must reject Increment on non-numeric; got %d", got)
+				if !strings.Contains(msg, "integer") && !strings.Contains(msg, "numeric") {
+					t.Errorf("redis error %q missing 'integer'/'numeric'", err)
 				}
-			case "file":
-				// Current behavior: file driver reads the string, fails to
-				// match the int/int64/float64 switch, falls through with
-				// current=0, and writes 0+delta. Pin it — if this changes to
-				// an error, that's a desirable fix but a breaking change and
-				// should be intentional.
-				if err != nil {
-					t.Fatalf("file Increment returned error (behavior changed?): %v", err)
-				}
-				if got != 5 {
-					t.Errorf("file Increment = %d, want 5 (zero baseline + 5)", got)
-				}
+			}
+
+			// The write must NOT have occurred — a caller retrying after
+			// the error should see the original string value, not "5".
+			v, ok := fx.store.Get("counter")
+			if !ok {
+				t.Fatal("Get after failed Increment must still find the original value")
+			}
+			if v != "not-a-number" {
+				t.Errorf("Get after failed Increment = %v, want original string (write should not have occurred)", v)
 			}
 		})
 	}
