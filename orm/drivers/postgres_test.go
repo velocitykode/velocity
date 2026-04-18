@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -62,13 +63,13 @@ func TestPostgresDriver(t *testing.T) {
 	}
 
 	// Test insert
-	_, err = driver.Exec("INSERT INTO test_users (name, email) VALUES ($1, $2)", "John Doe", "john@example.com")
+	_, err = driver.ExecContext(context.Background(), "INSERT INTO test_users (name, email) VALUES ($1, $2)", "John Doe", "john@example.com")
 	if err != nil {
 		t.Errorf("Failed to insert: %v", err)
 	}
 
 	// Test query
-	rows, err := driver.Query("SELECT id, name, email FROM test_users WHERE email = $1", "john@example.com")
+	rows, err := driver.QueryContext(context.Background(), "SELECT id, name, email FROM test_users WHERE email = $1", "john@example.com")
 	if err != nil {
 		t.Errorf("Failed to query: %v", err)
 	}
@@ -90,7 +91,7 @@ func TestPostgresDriver(t *testing.T) {
 	}
 
 	// Test transaction
-	tx, err := driver.Begin()
+	tx, err := driver.BeginTx(context.Background(), nil)
 	if err != nil {
 		t.Errorf("Failed to begin transaction: %v", err)
 	}
@@ -281,7 +282,7 @@ func TestPostgresDriver_SQLInjectionPrevention(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Insert malicious input using parameterized query
-			row := driver.QueryRow("INSERT INTO injection_test (name, email) VALUES ($1, $2) RETURNING id", tt.maliciousInput, "test@example.com")
+			row := driver.QueryRowContext(context.Background(), "INSERT INTO injection_test (name, email) VALUES ($1, $2) RETURNING id", tt.maliciousInput, "test@example.com")
 			var id int
 			if err := row.Scan(&id); err != nil {
 				t.Fatalf("Insert failed: %v", err)
@@ -294,7 +295,7 @@ func TestPostgresDriver_SQLInjectionPrevention(t *testing.T) {
 
 			// Verify data was stored correctly (escaped, not executed)
 			var name string
-			queryRow := driver.QueryRow("SELECT name FROM injection_test WHERE id = $1", id)
+			queryRow := driver.QueryRowContext(context.Background(), "SELECT name FROM injection_test WHERE id = $1", id)
 			if err := queryRow.Scan(&name); err != nil {
 				t.Fatalf("Failed to retrieve inserted data: %v", err)
 			}
@@ -304,7 +305,7 @@ func TestPostgresDriver_SQLInjectionPrevention(t *testing.T) {
 			}
 
 			// Clean up for next test
-			driver.Exec("DELETE FROM injection_test WHERE id = $1", id)
+			driver.ExecContext(context.Background(), "DELETE FROM injection_test WHERE id = $1", id)
 		})
 	}
 }
@@ -343,8 +344,8 @@ func TestPostgresDriver_SQLInjectionInWhereClause(t *testing.T) {
 	}
 	defer driver.DropTable("auth_test")
 
-	driver.Exec("INSERT INTO auth_test (username, password) VALUES ($1, $2)", "admin", "secret123")
-	driver.Exec("INSERT INTO auth_test (username, password) VALUES ($1, $2)", "user1", "password1")
+	driver.ExecContext(context.Background(), "INSERT INTO auth_test (username, password) VALUES ($1, $2)", "admin", "secret123")
+	driver.ExecContext(context.Background(), "INSERT INTO auth_test (username, password) VALUES ($1, $2)", "user1", "password1")
 
 	tests := []struct {
 		name              string
@@ -370,7 +371,7 @@ func TestPostgresDriver_SQLInjectionInWhereClause(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rows, err := driver.Query("SELECT * FROM auth_test WHERE username = $1", tt.maliciousUsername)
+			rows, err := driver.QueryContext(context.Background(), "SELECT * FROM auth_test WHERE username = $1", tt.maliciousUsername)
 			if err != nil {
 				t.Fatalf("Query failed: %v", err)
 			}
@@ -455,13 +456,13 @@ func TestPostgresDriver_TransactionRollback(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Clear table
-			driver.Exec("DELETE FROM pg_accounts")
+			driver.ExecContext(context.Background(), "DELETE FROM pg_accounts")
 
 			// Setup initial state
-			driver.Exec("INSERT INTO pg_accounts (name, balance) VALUES ($1, $2)", "Initial", tt.setupBalance)
+			driver.ExecContext(context.Background(), "INSERT INTO pg_accounts (name, balance) VALUES ($1, $2)", "Initial", tt.setupBalance)
 
 			// Begin transaction
-			tx, err := driver.Begin()
+			tx, err := driver.BeginTx(context.Background(), nil)
 			if err != nil {
 				t.Fatalf("Begin() error = %v", err)
 			}
@@ -493,7 +494,7 @@ func TestPostgresDriver_TransactionRollback(t *testing.T) {
 
 			// Verify balance
 			var balance int
-			row := driver.QueryRow("SELECT balance FROM pg_accounts WHERE name = $1", "Initial")
+			row := driver.QueryRowContext(context.Background(), "SELECT balance FROM pg_accounts WHERE name = $1", "Initial")
 			if err := row.Scan(&balance); err != nil {
 				t.Fatalf("Failed to query balance: %v", err)
 			}
@@ -513,7 +514,7 @@ func TestPostgresDriver_TransactionRollback(t *testing.T) {
 
 			// Verify inserted row existence
 			var count int
-			row = driver.QueryRow("SELECT COUNT(*) FROM pg_accounts WHERE name = $1", tt.insertName)
+			row = driver.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM pg_accounts WHERE name = $1", tt.insertName)
 			row.Scan(&count)
 			rowExists := count > 0
 
@@ -587,8 +588,8 @@ func TestPostgresDriver_TransactionRollbackNestedOperations(t *testing.T) {
 	defer driver.DropTable("pg_inventory")
 
 	// Setup initial inventory
-	driver.Exec("INSERT INTO pg_inventory (product, stock) VALUES ($1, $2)", "Widget", 100)
-	driver.Exec("INSERT INTO pg_inventory (product, stock) VALUES ($1, $2)", "Gadget", 50)
+	driver.ExecContext(context.Background(), "INSERT INTO pg_inventory (product, stock) VALUES ($1, $2)", "Widget", 100)
+	driver.ExecContext(context.Background(), "INSERT INTO pg_inventory (product, stock) VALUES ($1, $2)", "Gadget", 50)
 
 	tests := []struct {
 		name            string
@@ -619,13 +620,13 @@ func TestPostgresDriver_TransactionRollbackNestedOperations(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Reset state
-			driver.Exec("DELETE FROM pg_order_items")
-			driver.Exec("DELETE FROM pg_orders")
-			driver.Exec("UPDATE pg_inventory SET stock = 100 WHERE product = $1", "Widget")
-			driver.Exec("UPDATE pg_inventory SET stock = 50 WHERE product = $1", "Gadget")
+			driver.ExecContext(context.Background(), "DELETE FROM pg_order_items")
+			driver.ExecContext(context.Background(), "DELETE FROM pg_orders")
+			driver.ExecContext(context.Background(), "UPDATE pg_inventory SET stock = 100 WHERE product = $1", "Widget")
+			driver.ExecContext(context.Background(), "UPDATE pg_inventory SET stock = 50 WHERE product = $1", "Gadget")
 
 			// Begin transaction
-			tx, err := driver.Begin()
+			tx, err := driver.BeginTx(context.Background(), nil)
 			if err != nil {
 				t.Fatalf("Begin() error = %v", err)
 			}
@@ -673,22 +674,22 @@ func TestPostgresDriver_TransactionRollbackNestedOperations(t *testing.T) {
 
 			// Verify order count
 			var orderCount int
-			driver.QueryRow("SELECT COUNT(*) FROM pg_orders").Scan(&orderCount)
+			driver.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM pg_orders").Scan(&orderCount)
 			if orderCount != tt.wantOrderCount {
 				t.Errorf("Order count = %d, want %d", orderCount, tt.wantOrderCount)
 			}
 
 			// Verify item count
 			var itemCount int
-			driver.QueryRow("SELECT COUNT(*) FROM pg_order_items").Scan(&itemCount)
+			driver.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM pg_order_items").Scan(&itemCount)
 			if itemCount != tt.wantItemCount {
 				t.Errorf("Item count = %d, want %d", itemCount, tt.wantItemCount)
 			}
 
 			// Verify inventory
 			var widgetStock, gadgetStock int
-			driver.QueryRow("SELECT stock FROM pg_inventory WHERE product = $1", "Widget").Scan(&widgetStock)
-			driver.QueryRow("SELECT stock FROM pg_inventory WHERE product = $1", "Gadget").Scan(&gadgetStock)
+			driver.QueryRowContext(context.Background(), "SELECT stock FROM pg_inventory WHERE product = $1", "Widget").Scan(&widgetStock)
+			driver.QueryRowContext(context.Background(), "SELECT stock FROM pg_inventory WHERE product = $1", "Gadget").Scan(&gadgetStock)
 
 			if widgetStock != tt.wantWidgetStock {
 				t.Errorf("Widget stock = %d, want %d", widgetStock, tt.wantWidgetStock)
@@ -948,7 +949,7 @@ func TestPostgresDriver_ConcurrentReads(t *testing.T) {
 
 	// Insert test data
 	for i := 1; i <= 100; i++ {
-		driver.Exec("INSERT INTO pg_products (name, price) VALUES ($1, $2)", fmt.Sprintf("Product %d", i), float64(i)*1.5)
+		driver.ExecContext(context.Background(), "INSERT INTO pg_products (name, price) VALUES ($1, $2)", fmt.Sprintf("Product %d", i), float64(i)*1.5)
 	}
 
 	tests := []struct {
@@ -979,7 +980,7 @@ func TestPostgresDriver_ConcurrentReads(t *testing.T) {
 					defer wg.Done()
 					for j := 0; j < tt.readsPerGo; j++ {
 						productID := (workerID*tt.readsPerGo+j)%100 + 1
-						row := driver.QueryRow("SELECT id, name, price FROM pg_products WHERE id = $1", productID)
+						row := driver.QueryRowContext(context.Background(), "SELECT id, name, price FROM pg_products WHERE id = $1", productID)
 						var id int
 						var name string
 						var price float64
@@ -1040,7 +1041,7 @@ func TestPostgresDriver_ConcurrentWrites(t *testing.T) {
 	defer driver.DropTable("pg_counters")
 
 	// Initialize counter
-	driver.Exec("INSERT INTO pg_counters (id, value) VALUES ($1, $2)", 1, 0)
+	driver.ExecContext(context.Background(), "INSERT INTO pg_counters (id, value) VALUES ($1, $2)", 1, 0)
 
 	tests := []struct {
 		name            string
@@ -1059,7 +1060,7 @@ func TestPostgresDriver_ConcurrentWrites(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Reset counter
-			driver.Exec("UPDATE pg_counters SET value = 0 WHERE id = 1")
+			driver.ExecContext(context.Background(), "UPDATE pg_counters SET value = 0 WHERE id = 1")
 
 			var wg sync.WaitGroup
 			errors := make(chan error, tt.goroutineCount)
@@ -1070,7 +1071,7 @@ func TestPostgresDriver_ConcurrentWrites(t *testing.T) {
 					defer wg.Done()
 					for j := 0; j < tt.incrementsPerGo; j++ {
 						// PostgreSQL handles concurrent writes better than SQLite
-						_, err := driver.Exec("UPDATE pg_counters SET value = value + 1 WHERE id = 1")
+						_, err := driver.ExecContext(context.Background(), "UPDATE pg_counters SET value = value + 1 WHERE id = 1")
 						if err != nil {
 							errors <- fmt.Errorf("worker %d increment %d: %v", workerID, j, err)
 							return
@@ -1088,7 +1089,7 @@ func TestPostgresDriver_ConcurrentWrites(t *testing.T) {
 
 			// Verify final value
 			var finalValue int
-			driver.QueryRow("SELECT value FROM pg_counters WHERE id = 1").Scan(&finalValue)
+			driver.QueryRowContext(context.Background(), "SELECT value FROM pg_counters WHERE id = 1").Scan(&finalValue)
 			if finalValue != tt.wantFinalValue {
 				t.Errorf("Final counter value = %d, want %d", finalValue, tt.wantFinalValue)
 			}
@@ -1131,8 +1132,8 @@ func TestPostgresDriver_ConcurrentTransactions(t *testing.T) {
 	defer driver.DropTable("pg_bank_accounts")
 
 	// Initialize accounts
-	driver.Exec("INSERT INTO pg_bank_accounts (id, balance) VALUES ($1, $2)", 1, 1000)
-	driver.Exec("INSERT INTO pg_bank_accounts (id, balance) VALUES ($1, $2)", 2, 1000)
+	driver.ExecContext(context.Background(), "INSERT INTO pg_bank_accounts (id, balance) VALUES ($1, $2)", 1, 1000)
+	driver.ExecContext(context.Background(), "INSERT INTO pg_bank_accounts (id, balance) VALUES ($1, $2)", 2, 1000)
 
 	tests := []struct {
 		name             string
@@ -1149,7 +1150,7 @@ func TestPostgresDriver_ConcurrentTransactions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Reset balances
-			driver.Exec("UPDATE pg_bank_accounts SET balance = 1000 WHERE id IN (1, 2)")
+			driver.ExecContext(context.Background(), "UPDATE pg_bank_accounts SET balance = 1000 WHERE id IN (1, 2)")
 
 			var wg sync.WaitGroup
 			errors := make(chan error, tt.transferCount)
@@ -1164,7 +1165,7 @@ func TestPostgresDriver_ConcurrentTransactions(t *testing.T) {
 					toID := 1 + ((transferID + 1) % 2)
 					amount := 10
 
-					tx, err := driver.Begin()
+					tx, err := driver.BeginTx(context.Background(), nil)
 					if err != nil {
 						errors <- fmt.Errorf("transfer %d: begin error: %v", transferID, err)
 						return
@@ -1202,7 +1203,7 @@ func TestPostgresDriver_ConcurrentTransactions(t *testing.T) {
 
 			// Verify total balance is preserved
 			var totalBalance int
-			driver.QueryRow("SELECT SUM(balance) FROM pg_bank_accounts").Scan(&totalBalance)
+			driver.QueryRowContext(context.Background(), "SELECT SUM(balance) FROM pg_bank_accounts").Scan(&totalBalance)
 			if totalBalance != tt.wantTotalBalance {
 				t.Errorf("Total balance = %d, want %d (money was created or destroyed)", totalBalance, tt.wantTotalBalance)
 			}

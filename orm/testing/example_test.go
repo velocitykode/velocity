@@ -1,6 +1,7 @@
 package testing_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/velocitykode/velocity/orm"
@@ -69,7 +70,7 @@ func TestFactoryMake(t *testing.T) {
 
 func TestFactoryCreate(t *testing.T) {
 	manager := newExampleTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	// Run migrations
 	migrator := migrate.NewMigrator(manager.DB(), manager.DriverName())
@@ -107,7 +108,7 @@ func TestFactoryCreate(t *testing.T) {
 
 func TestRefreshDatabase(t *testing.T) {
 	manager := newExampleTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	// Use RefreshDatabase
 	db := ormtesting.RefreshDatabase(t, manager)

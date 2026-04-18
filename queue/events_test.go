@@ -38,7 +38,7 @@ func TestDispatcher(t *testing.T) {
 	t.Run("SetEventDispatcher on MemoryDriver", func(t *testing.T) {
 		q := NewMemoryDriver()
 		q.Start()
-		defer q.Close()
+		defer q.Shutdown(context.Background())
 
 		q.SetEventDispatcher(nil)
 
@@ -50,7 +50,7 @@ func TestDispatcher(t *testing.T) {
 
 		// Dispatch an event by pushing a job
 		job := &TestJob{ID: "test", Message: "test"}
-		_ = q.Push(job, "test-queue")
+		_ = q.PushCtx(context.Background(), job, "test-queue")
 
 		if !called {
 			t.Error("dispatcher was not called")
@@ -62,7 +62,7 @@ func TestDispatcher(t *testing.T) {
 	t.Run("dispatchEvent with nil dispatcher", func(t *testing.T) {
 		q := NewMemoryDriver()
 		q.Start()
-		defer q.Close()
+		defer q.Shutdown(context.Background())
 		q.SetEventDispatcher(nil)
 
 		// Should not panic - dispatch function checks for nil
@@ -72,7 +72,7 @@ func TestDispatcher(t *testing.T) {
 	t.Run("dispatchEvent with error returning dispatcher", func(t *testing.T) {
 		q := NewMemoryDriver()
 		q.Start()
-		defer q.Close()
+		defer q.Shutdown(context.Background())
 		q.SetEventDispatcher(func(event interface{}) error {
 			return errors.New("dispatcher error")
 		})
@@ -330,7 +330,7 @@ func TestEventDispatchingIntegration(t *testing.T) {
 
 	q := NewMemoryDriver()
 	q.Start()
-	defer q.Close()
+	defer q.Shutdown(context.Background())
 
 	q.SetEventDispatcher(func(event interface{}) error {
 		mu.Lock()
@@ -343,7 +343,7 @@ func TestEventDispatchingIntegration(t *testing.T) {
 		events = nil
 		job := &TestJob{ID: "test-1", Message: "test"}
 
-		err := q.Push(job, "test-queue")
+		err := q.PushCtx(context.Background(), job, "test-queue")
 		if err != nil {
 			t.Fatalf("Push failed: %v", err)
 		}
@@ -374,7 +374,7 @@ func TestEventDispatchingIntegration(t *testing.T) {
 
 		job := &TestJob{ID: "test-2", Message: "delayed test"}
 
-		err := q.PushDelayed(job, 2*time.Second, "delayed-queue")
+		err := q.PushDelayedCtx(context.Background(), job, 2*time.Second, "delayed-queue")
 		if err != nil {
 			t.Fatalf("PushDelayed failed: %v", err)
 		}
@@ -433,7 +433,7 @@ func TestWorkerEventDispatching(t *testing.T) {
 
 		q := NewMemoryDriver()
 		q.Start()
-		defer q.Close()
+		defer q.Shutdown(context.Background())
 		q.SetEventDispatcher(dispatcher)
 
 		processed := int32(0)
@@ -447,7 +447,7 @@ func TestWorkerEventDispatching(t *testing.T) {
 			},
 		}
 
-		err := q.Push(job, "success-queue")
+		err := q.PushCtx(context.Background(), job, "success-queue")
 		if err != nil {
 			t.Fatalf("Push failed: %v", err)
 		}
@@ -494,7 +494,7 @@ func TestWorkerEventDispatching(t *testing.T) {
 
 		q := NewMemoryDriver()
 		q.Start()
-		defer q.Close()
+		defer q.Shutdown(context.Background())
 		q.SetEventDispatcher(dispatcher)
 
 		job := &TestJob{
@@ -505,7 +505,7 @@ func TestWorkerEventDispatching(t *testing.T) {
 			},
 		}
 
-		err := q.Push(job, "fail-queue")
+		err := q.PushCtx(context.Background(), job, "fail-queue")
 		if err != nil {
 			t.Fatalf("Push failed: %v", err)
 		}

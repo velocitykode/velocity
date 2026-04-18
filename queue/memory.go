@@ -134,12 +134,6 @@ func (m *MemoryDriver) PushCtx(ctx context.Context, job Job, queueName ...string
 	return nil
 }
 
-// Push adds a job to the queue.
-// Deprecated: use PushCtx so caller cancellation can abort the push.
-func (m *MemoryDriver) Push(job Job, queueName ...string) error {
-	return m.PushCtx(context.Background(), job, queueName...)
-}
-
 // PushDelayedCtx adds a job with a delay. Delayed jobs live in a per-queue
 // min-heap keyed by readyAt so the cleanup loop drains ready jobs in
 // O(log n) rather than scanning the full list every tick.
@@ -172,24 +166,12 @@ func (m *MemoryDriver) PushDelayedCtx(ctx context.Context, job Job, delay time.D
 	return nil
 }
 
-// PushDelayed adds a job to the queue with a delay.
-// Deprecated: use PushDelayedCtx.
-func (m *MemoryDriver) PushDelayed(job Job, delay time.Duration, queueName ...string) error {
-	return m.PushDelayedCtx(context.Background(), job, delay, queueName...)
-}
-
 // PopCtx retrieves and removes the next job. Returns (nil, ctx.Err()) if
 // ctx is already cancelled so worker loops exit cleanly on shutdown.
 func (m *MemoryDriver) PopCtx(ctx context.Context, queueName string) (Job, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return m.popLocked(queueName)
-}
-
-// Pop retrieves and removes the next job from the queue.
-// Deprecated: use PopCtx.
-func (m *MemoryDriver) Pop(queueName string) (Job, error) {
 	return m.popLocked(queueName)
 }
 
@@ -305,14 +287,8 @@ func (m *MemoryDriver) Shutdown(ctx context.Context) error {
 	}
 }
 
-// Close gracefully shuts down the driver.
-// Deprecated: use Shutdown(ctx) instead.
-func (m *MemoryDriver) Close() error {
-	return m.Shutdown(context.Background())
-}
-
 // processDelayedJobs moves delayed jobs to main queue when ready.
-// Runs until stopChan is closed by Shutdown/Close. Caller decrements wg via Start().
+// Runs until stopChan is closed by Shutdown. Caller decrements wg via Start().
 func (m *MemoryDriver) processDelayedJobs() {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()

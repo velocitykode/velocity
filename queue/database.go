@@ -107,12 +107,6 @@ func (d *DatabaseDriver) PushCtx(ctx context.Context, job Job, queueName ...stri
 	return d.PushDelayedCtx(ctx, job, 0, queueName...)
 }
 
-// Push adds a job to the queue.
-// Deprecated: use PushCtx.
-func (d *DatabaseDriver) Push(job Job, queueName ...string) error {
-	return d.PushDelayedCtx(context.Background(), job, 0, queueName...)
-}
-
 // PushDelayedCtx adds a delayed job, using ctx for the INSERT round-trip so
 // callers can abort mid-enqueue on shutdown or deadline.
 func (d *DatabaseDriver) PushDelayedCtx(ctx context.Context, job Job, delay time.Duration, queueName ...string) error {
@@ -174,13 +168,9 @@ func (d *DatabaseDriver) PushDelayedCtx(ctx context.Context, job Job, delay time
 	return nil
 }
 
-// PushDelayed adds a delayed job to the queue.
-// Deprecated: use PushDelayedCtx.
-func (d *DatabaseDriver) PushDelayed(job Job, delay time.Duration, queueName ...string) error {
-	return d.PushDelayedCtx(context.Background(), job, delay, queueName...)
-}
-
-// Pop retrieves and removes a job from the queue.
+// PopCtx retrieves and removes a job from the queue, using the caller's ctx
+// for every transactional round-trip so worker shutdown aborts a blocking
+// SELECT instead of waiting for the driver deadline.
 //
 // The read and delete run inside a single BEGIN/COMMIT transaction. On
 // PostgreSQL/MySQL 8+ the SELECT uses FOR UPDATE SKIP LOCKED so competing
@@ -189,13 +179,6 @@ func (d *DatabaseDriver) PushDelayed(job Job, delay time.Duration, queueName ...
 // BEFORE the DELETE so a tampered job is rejected without being removed from
 // the queue — the transaction is rolled back and the job stays reserved for
 // the next worker (or becomes visible again for inspection).
-func (d *DatabaseDriver) Pop(queueName string) (Job, error) {
-	return d.PopCtx(context.Background(), queueName)
-}
-
-// PopCtx retrieves and removes a job, using the caller's ctx for every
-// transactional round-trip so worker shutdown aborts a blocking SELECT
-// instead of waiting for the driver deadline.
 func (d *DatabaseDriver) PopCtx(ctx context.Context, queueName string) (Job, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -379,13 +362,6 @@ func (d *DatabaseDriver) ProcessDelayedJobs(queueName string) error {
 func (d *DatabaseDriver) Shutdown(ctx context.Context) error {
 	batchStore.close() // stop package-level batch cleanup goroutine (idempotent)
 	return nil
-}
-
-// Close is a no-op for the database driver; the underlying DB connection
-// is owned by the ORM and closed separately.
-// Deprecated: use Shutdown(ctx) instead.
-func (d *DatabaseDriver) Close() error {
-	return d.Shutdown(context.Background())
 }
 
 // scanJobRecord scans a database row into a JobRecord

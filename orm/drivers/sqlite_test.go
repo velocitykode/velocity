@@ -400,8 +400,8 @@ func TestSQLiteDriver_Query(t *testing.T) {
 		}
 	})
 
-	driver.Exec("INSERT INTO users (name) VALUES (?)", "Alice")
-	driver.Exec("INSERT INTO users (name) VALUES (?)", "Bob")
+	driver.ExecContext(context.Background(), "INSERT INTO users (name) VALUES (?)", "Alice")
+	driver.ExecContext(context.Background(), "INSERT INTO users (name) VALUES (?)", "Bob")
 
 	tests := []struct {
 		name      string
@@ -435,7 +435,7 @@ func TestSQLiteDriver_Query(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rows, err := driver.Query(tt.query, tt.args...)
+			rows, err := driver.QueryContext(context.Background(), tt.query, tt.args...)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Query() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -470,7 +470,7 @@ func TestSQLiteDriver_QueryRow(t *testing.T) {
 		}
 	})
 
-	driver.Exec("INSERT INTO users (name) VALUES (?)", "Alice")
+	driver.ExecContext(context.Background(), "INSERT INTO users (name) VALUES (?)", "Alice")
 
 	tests := []struct {
 		name     string
@@ -490,7 +490,7 @@ func TestSQLiteDriver_QueryRow(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			row := driver.QueryRow(tt.query, tt.args...)
+			row := driver.QueryRowContext(context.Background(), tt.query, tt.args...)
 			var name string
 			err := row.Scan(&name)
 			if (err != nil) != tt.wantErr {
@@ -536,7 +536,7 @@ func TestSQLiteDriver_Exec(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := driver.Exec(tt.query, tt.args...)
+			result, err := driver.ExecContext(context.Background(), tt.query, tt.args...)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Exec() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -566,7 +566,7 @@ func TestSQLiteDriver_Begin(t *testing.T) {
 			{Name: "value", Type: "INTEGER"},
 		}
 	})
-	driver.Exec("INSERT INTO counter (id, value) VALUES (1, 0)")
+	driver.ExecContext(context.Background(), "INSERT INTO counter (id, value) VALUES (1, 0)")
 
 	tests := []struct {
 		name      string
@@ -591,7 +591,7 @@ func TestSQLiteDriver_Begin(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tx, err := driver.Begin()
+			tx, err := driver.BeginTx(context.Background(), nil)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Begin() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -618,7 +618,7 @@ func TestSQLiteDriver_Begin(t *testing.T) {
 
 			// Verify value
 			var value int
-			row := driver.QueryRow("SELECT value FROM counter WHERE id = 1")
+			row := driver.QueryRowContext(context.Background(), "SELECT value FROM counter WHERE id = 1")
 			row.Scan(&value)
 			if value != tt.wantValue {
 				t.Errorf("value = %d, want %d", value, tt.wantValue)
@@ -934,9 +934,9 @@ func TestSQLiteDriver_LogQueries(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// These should not panic even with LogQueries enabled
-			_, _ = driver.Query("SELECT * FROM test_log")
-			_ = driver.QueryRow("SELECT * FROM test_log WHERE id = ?", 1)
-			_, _ = driver.Exec("INSERT INTO test_log (id) VALUES (?)", 1)
+			_, _ = driver.QueryContext(context.Background(), "SELECT * FROM test_log")
+			_ = driver.QueryRowContext(context.Background(), "SELECT * FROM test_log WHERE id = ?", 1)
+			_, _ = driver.ExecContext(context.Background(), "INSERT INTO test_log (id) VALUES (?)", 1)
 		})
 	}
 }
@@ -1011,7 +1011,7 @@ func TestSQLiteDriver_SQLInjectionPrevention(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Insert malicious input using parameterized query
-			result, err := driver.Exec("INSERT INTO users (name, email) VALUES (?, ?)", tt.maliciousInput, "test@example.com")
+			result, err := driver.ExecContext(context.Background(), "INSERT INTO users (name, email) VALUES (?, ?)", tt.maliciousInput, "test@example.com")
 			if err != nil {
 				t.Fatalf("Insert failed: %v", err)
 			}
@@ -1025,7 +1025,7 @@ func TestSQLiteDriver_SQLInjectionPrevention(t *testing.T) {
 
 			// Verify data was stored correctly (escaped, not executed)
 			var name string
-			row := driver.QueryRow("SELECT name FROM users WHERE id = ?", id)
+			row := driver.QueryRowContext(context.Background(), "SELECT name FROM users WHERE id = ?", id)
 			if err := row.Scan(&name); err != nil {
 				t.Fatalf("Failed to retrieve inserted data: %v", err)
 			}
@@ -1035,7 +1035,7 @@ func TestSQLiteDriver_SQLInjectionPrevention(t *testing.T) {
 			}
 
 			// Clean up for next test
-			driver.Exec("DELETE FROM users WHERE id = ?", id)
+			driver.ExecContext(context.Background(), "DELETE FROM users WHERE id = ?", id)
 		})
 	}
 }
@@ -1056,8 +1056,8 @@ func TestSQLiteDriver_SQLInjectionInWhereClause(t *testing.T) {
 		}
 	})
 
-	driver.Exec("INSERT INTO users (name, password) VALUES (?, ?)", "admin", "secret123")
-	driver.Exec("INSERT INTO users (name, password) VALUES (?, ?)", "user1", "password1")
+	driver.ExecContext(context.Background(), "INSERT INTO users (name, password) VALUES (?, ?)", "admin", "secret123")
+	driver.ExecContext(context.Background(), "INSERT INTO users (name, password) VALUES (?, ?)", "user1", "password1")
 
 	tests := []struct {
 		name          string
@@ -1083,7 +1083,7 @@ func TestSQLiteDriver_SQLInjectionInWhereClause(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rows, err := driver.Query("SELECT * FROM users WHERE name = ?", tt.maliciousName)
+			rows, err := driver.QueryContext(context.Background(), "SELECT * FROM users WHERE name = ?", tt.maliciousName)
 			if err != nil {
 				t.Fatalf("Query failed: %v", err)
 			}
@@ -1150,13 +1150,13 @@ func TestSQLiteDriver_TransactionRollback(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Clear table
-			driver.Exec("DELETE FROM accounts")
+			driver.ExecContext(context.Background(), "DELETE FROM accounts")
 
 			// Setup initial state
-			driver.Exec("INSERT INTO accounts (name, balance) VALUES (?, ?)", "Initial", tt.setupBalance)
+			driver.ExecContext(context.Background(), "INSERT INTO accounts (name, balance) VALUES (?, ?)", "Initial", tt.setupBalance)
 
 			// Begin transaction
-			tx, err := driver.Begin()
+			tx, err := driver.BeginTx(context.Background(), nil)
 			if err != nil {
 				t.Fatalf("Begin() error = %v", err)
 			}
@@ -1188,7 +1188,7 @@ func TestSQLiteDriver_TransactionRollback(t *testing.T) {
 
 			// Verify balance
 			var balance int
-			row := driver.QueryRow("SELECT balance FROM accounts WHERE name = ?", "Initial")
+			row := driver.QueryRowContext(context.Background(), "SELECT balance FROM accounts WHERE name = ?", "Initial")
 			if err := row.Scan(&balance); err != nil {
 				t.Fatalf("Failed to query balance: %v", err)
 			}
@@ -1208,7 +1208,7 @@ func TestSQLiteDriver_TransactionRollback(t *testing.T) {
 
 			// Verify inserted row existence
 			var count int
-			row = driver.QueryRow("SELECT COUNT(*) FROM accounts WHERE name = ?", tt.insertName)
+			row = driver.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM accounts WHERE name = ?", tt.insertName)
 			row.Scan(&count)
 			rowExists := count > 0
 
@@ -1253,8 +1253,8 @@ func TestSQLiteDriver_TransactionRollbackNestedOperations(t *testing.T) {
 	})
 
 	// Setup initial inventory
-	driver.Exec("INSERT INTO inventory (product, stock) VALUES (?, ?)", "Widget", 100)
-	driver.Exec("INSERT INTO inventory (product, stock) VALUES (?, ?)", "Gadget", 50)
+	driver.ExecContext(context.Background(), "INSERT INTO inventory (product, stock) VALUES (?, ?)", "Widget", 100)
+	driver.ExecContext(context.Background(), "INSERT INTO inventory (product, stock) VALUES (?, ?)", "Gadget", 50)
 
 	tests := []struct {
 		name            string
@@ -1285,13 +1285,13 @@ func TestSQLiteDriver_TransactionRollbackNestedOperations(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Reset state
-			driver.Exec("DELETE FROM orders")
-			driver.Exec("DELETE FROM order_items")
-			driver.Exec("UPDATE inventory SET stock = 100 WHERE product = ?", "Widget")
-			driver.Exec("UPDATE inventory SET stock = 50 WHERE product = ?", "Gadget")
+			driver.ExecContext(context.Background(), "DELETE FROM orders")
+			driver.ExecContext(context.Background(), "DELETE FROM order_items")
+			driver.ExecContext(context.Background(), "UPDATE inventory SET stock = 100 WHERE product = ?", "Widget")
+			driver.ExecContext(context.Background(), "UPDATE inventory SET stock = 50 WHERE product = ?", "Gadget")
 
 			// Begin transaction
-			tx, err := driver.Begin()
+			tx, err := driver.BeginTx(context.Background(), nil)
 			if err != nil {
 				t.Fatalf("Begin() error = %v", err)
 			}
@@ -1339,22 +1339,22 @@ func TestSQLiteDriver_TransactionRollbackNestedOperations(t *testing.T) {
 
 			// Verify order count
 			var orderCount int
-			driver.QueryRow("SELECT COUNT(*) FROM orders").Scan(&orderCount)
+			driver.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM orders").Scan(&orderCount)
 			if orderCount != tt.wantOrderCount {
 				t.Errorf("Order count = %d, want %d", orderCount, tt.wantOrderCount)
 			}
 
 			// Verify item count
 			var itemCount int
-			driver.QueryRow("SELECT COUNT(*) FROM order_items").Scan(&itemCount)
+			driver.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM order_items").Scan(&itemCount)
 			if itemCount != tt.wantItemCount {
 				t.Errorf("Item count = %d, want %d", itemCount, tt.wantItemCount)
 			}
 
 			// Verify inventory
 			var widgetStock, gadgetStock int
-			driver.QueryRow("SELECT stock FROM inventory WHERE product = ?", "Widget").Scan(&widgetStock)
-			driver.QueryRow("SELECT stock FROM inventory WHERE product = ?", "Gadget").Scan(&gadgetStock)
+			driver.QueryRowContext(context.Background(), "SELECT stock FROM inventory WHERE product = ?", "Widget").Scan(&widgetStock)
+			driver.QueryRowContext(context.Background(), "SELECT stock FROM inventory WHERE product = ?", "Gadget").Scan(&gadgetStock)
 
 			if widgetStock != tt.wantWidgetStock {
 				t.Errorf("Widget stock = %d, want %d", widgetStock, tt.wantWidgetStock)
@@ -1625,7 +1625,7 @@ func TestSQLiteDriver_ConcurrentReads(t *testing.T) {
 
 	// Insert test data
 	for i := 1; i <= 100; i++ {
-		driver.Exec("INSERT INTO products (name, price) VALUES (?, ?)", fmt.Sprintf("Product %d", i), float64(i)*1.5)
+		driver.ExecContext(context.Background(), "INSERT INTO products (name, price) VALUES (?, ?)", fmt.Sprintf("Product %d", i), float64(i)*1.5)
 	}
 
 	tests := []struct {
@@ -1656,7 +1656,7 @@ func TestSQLiteDriver_ConcurrentReads(t *testing.T) {
 					defer wg.Done()
 					for j := 0; j < tt.readsPerGo; j++ {
 						productID := (workerID*tt.readsPerGo+j)%100 + 1
-						row := driver.QueryRow("SELECT id, name, price FROM products WHERE id = ?", productID)
+						row := driver.QueryRowContext(context.Background(), "SELECT id, name, price FROM products WHERE id = ?", productID)
 						var id int
 						var name string
 						var price float64
@@ -1700,7 +1700,7 @@ func TestSQLiteDriver_ConcurrentWrites(t *testing.T) {
 	})
 
 	// Initialize counter
-	driver.Exec("INSERT INTO counters (id, value) VALUES (?, ?)", 1, 0)
+	driver.ExecContext(context.Background(), "INSERT INTO counters (id, value) VALUES (?, ?)", 1, 0)
 
 	tests := []struct {
 		name            string
@@ -1719,7 +1719,7 @@ func TestSQLiteDriver_ConcurrentWrites(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Reset counter
-			driver.Exec("UPDATE counters SET value = 0 WHERE id = 1")
+			driver.ExecContext(context.Background(), "UPDATE counters SET value = 0 WHERE id = 1")
 
 			var wg sync.WaitGroup
 			var mu sync.Mutex
@@ -1732,7 +1732,7 @@ func TestSQLiteDriver_ConcurrentWrites(t *testing.T) {
 					for j := 0; j < tt.incrementsPerGo; j++ {
 						// Use mutex for SQLite since it has limited concurrency for writes
 						mu.Lock()
-						_, err := driver.Exec("UPDATE counters SET value = value + 1 WHERE id = 1")
+						_, err := driver.ExecContext(context.Background(), "UPDATE counters SET value = value + 1 WHERE id = 1")
 						mu.Unlock()
 						if err != nil {
 							errors <- fmt.Errorf("worker %d increment %d: %v", workerID, j, err)
@@ -1751,7 +1751,7 @@ func TestSQLiteDriver_ConcurrentWrites(t *testing.T) {
 
 			// Verify final value
 			var finalValue int
-			driver.QueryRow("SELECT value FROM counters WHERE id = 1").Scan(&finalValue)
+			driver.QueryRowContext(context.Background(), "SELECT value FROM counters WHERE id = 1").Scan(&finalValue)
 			if finalValue != tt.wantFinalValue {
 				t.Errorf("Final counter value = %d, want %d", finalValue, tt.wantFinalValue)
 			}
@@ -1779,7 +1779,7 @@ func TestSQLiteDriver_ConcurrentReadWrite(t *testing.T) {
 
 	// Insert initial data
 	for i := 1; i <= 10; i++ {
-		driver.Exec("INSERT INTO items (name, updated_at) VALUES (?, ?)", fmt.Sprintf("Item %d", i), "initial")
+		driver.ExecContext(context.Background(), "INSERT INTO items (name, updated_at) VALUES (?, ?)", fmt.Sprintf("Item %d", i), "initial")
 	}
 
 	tests := []struct {
@@ -1809,7 +1809,7 @@ func TestSQLiteDriver_ConcurrentReadWrite(t *testing.T) {
 					defer wg.Done()
 					for j := 0; j < tt.iterations; j++ {
 						itemID := j%10 + 1
-						row := driver.QueryRow("SELECT name FROM items WHERE id = ?", itemID)
+						row := driver.QueryRowContext(context.Background(), "SELECT name FROM items WHERE id = ?", itemID)
 						var name string
 						if err := row.Scan(&name); err != nil {
 							errors <- fmt.Errorf("reader %d iteration %d: %v", readerID, j, err)
@@ -1826,7 +1826,7 @@ func TestSQLiteDriver_ConcurrentReadWrite(t *testing.T) {
 					for j := 0; j < tt.iterations; j++ {
 						itemID := j%10 + 1
 						mu.Lock()
-						_, err := driver.Exec("UPDATE items SET updated_at = ? WHERE id = ?",
+						_, err := driver.ExecContext(context.Background(), "UPDATE items SET updated_at = ? WHERE id = ?",
 							fmt.Sprintf("writer%d-iter%d", writerID, j), itemID)
 						mu.Unlock()
 						if err != nil {
@@ -1845,7 +1845,7 @@ func TestSQLiteDriver_ConcurrentReadWrite(t *testing.T) {
 
 			// Verify data integrity - all items should still exist
 			var count int
-			driver.QueryRow("SELECT COUNT(*) FROM items").Scan(&count)
+			driver.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM items").Scan(&count)
 			if count != 10 {
 				t.Errorf("Item count = %d, want 10 (data integrity violated)", count)
 			}
@@ -1871,8 +1871,8 @@ func TestSQLiteDriver_ConcurrentTransactions(t *testing.T) {
 	})
 
 	// Initialize accounts
-	driver.Exec("INSERT INTO bank_accounts (id, balance) VALUES (?, ?)", 1, 1000)
-	driver.Exec("INSERT INTO bank_accounts (id, balance) VALUES (?, ?)", 2, 1000)
+	driver.ExecContext(context.Background(), "INSERT INTO bank_accounts (id, balance) VALUES (?, ?)", 1, 1000)
+	driver.ExecContext(context.Background(), "INSERT INTO bank_accounts (id, balance) VALUES (?, ?)", 2, 1000)
 
 	tests := []struct {
 		name             string
@@ -1889,7 +1889,7 @@ func TestSQLiteDriver_ConcurrentTransactions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Reset balances
-			driver.Exec("UPDATE bank_accounts SET balance = 1000 WHERE id IN (1, 2)")
+			driver.ExecContext(context.Background(), "UPDATE bank_accounts SET balance = 1000 WHERE id IN (1, 2)")
 
 			var wg sync.WaitGroup
 			var mu sync.Mutex
@@ -1906,7 +1906,7 @@ func TestSQLiteDriver_ConcurrentTransactions(t *testing.T) {
 					amount := 10
 
 					mu.Lock()
-					tx, err := driver.Begin()
+					tx, err := driver.BeginTx(context.Background(), nil)
 					if err != nil {
 						mu.Unlock()
 						errors <- fmt.Errorf("transfer %d: begin error: %v", transferID, err)
@@ -1949,7 +1949,7 @@ func TestSQLiteDriver_ConcurrentTransactions(t *testing.T) {
 
 			// Verify total balance is preserved
 			var totalBalance int
-			driver.QueryRow("SELECT SUM(balance) FROM bank_accounts").Scan(&totalBalance)
+			driver.QueryRowContext(context.Background(), "SELECT SUM(balance) FROM bank_accounts").Scan(&totalBalance)
 			if totalBalance != tt.wantTotalBalance {
 				t.Errorf("Total balance = %d, want %d (money was created or destroyed)", totalBalance, tt.wantTotalBalance)
 			}

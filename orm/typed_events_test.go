@@ -23,17 +23,16 @@ func TestEventInterface_QueryFailed(t *testing.T) {
 	}
 }
 
-// TestManager_SetTypedEventDispatcher_ReceivesTypedEvent verifies the
-// typed dispatcher receives an orm.Event and can call EventName() without
-// a type assertion.
-func TestManager_SetTypedEventDispatcher_ReceivesTypedEvent(t *testing.T) {
+// TestManager_SetEventDispatcher_ReceivesEvent verifies the dispatcher
+// receives an orm.Event and can recover the typed payload via assertion.
+func TestManager_SetEventDispatcher_ReceivesEvent(t *testing.T) {
 	var (
 		mu       sync.Mutex
-		received Event
+		received any
 	)
 
 	m := &Manager{}
-	m.SetTypedEventDispatcher(func(e Event) error {
+	m.SetEventDispatcher(func(e any) error {
 		mu.Lock()
 		defer mu.Unlock()
 		received = e
@@ -49,40 +48,7 @@ func TestManager_SetTypedEventDispatcher_ReceivesTypedEvent(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if received == nil {
-		t.Fatal("typed dispatcher did not receive event")
-	}
-	if received.EventName() != "query.executed" {
-		t.Errorf("received.EventName() = %q, want %q", received.EventName(), "query.executed")
-	}
-}
-
-// TestManager_SetEventDispatcher_BackwardCompat verifies the deprecated
-// untyped setter still works; it must adapt the legacy
-// func(event interface{}) error shape to the typed dispatcher internally.
-func TestManager_SetEventDispatcher_BackwardCompat(t *testing.T) {
-	var (
-		mu       sync.Mutex
-		received interface{}
-	)
-
-	m := &Manager{}
-	m.SetEventDispatcher(func(e interface{}) error {
-		mu.Lock()
-		defer mu.Unlock()
-		received = e
-		return nil
-	})
-
-	m.dispatchEvent(&QueryExecuted{
-		Context:    context.Background(),
-		SQL:        "SELECT 1",
-		Connection: "sqlite",
-	})
-
-	mu.Lock()
-	defer mu.Unlock()
-	if received == nil {
-		t.Fatal("untyped dispatcher did not receive event")
+		t.Fatal("dispatcher did not receive event")
 	}
 	q, ok := received.(*QueryExecuted)
 	if !ok {
@@ -93,11 +59,11 @@ func TestManager_SetEventDispatcher_BackwardCompat(t *testing.T) {
 	}
 }
 
-// TestManager_SetEventDispatcher_NilClears verifies that passing nil to
-// the deprecated setter clears the dispatcher (no-op dispatch afterwards).
+// TestManager_SetEventDispatcher_NilClears verifies that passing nil clears
+// the dispatcher (no-op dispatch afterwards).
 func TestManager_SetEventDispatcher_NilClears(t *testing.T) {
 	m := &Manager{}
-	m.SetTypedEventDispatcher(func(Event) error { return nil })
+	m.SetEventDispatcher(func(any) error { return nil })
 	m.SetEventDispatcher(nil)
 	// Must not panic.
 	m.dispatchEvent(&QueryExecuted{SQL: "SELECT 1"})

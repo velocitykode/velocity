@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -323,7 +324,7 @@ func (pb *PendingBatch) WithEventDispatcher(fn func(event interface{})) *Pending
 }
 
 // Dispatch creates the batch, sets BatchID on Batchable jobs, and pushes all jobs to the driver.
-func (pb *PendingBatch) Dispatch(driver Driver) (*Batch, error) {
+func (pb *PendingBatch) Dispatch(ctx context.Context, driver Driver) (*Batch, error) {
 	if len(pb.jobs) == 0 {
 		return nil, fmt.Errorf("batch: cannot dispatch empty batch")
 	}
@@ -354,7 +355,7 @@ func (pb *PendingBatch) Dispatch(driver Driver) (*Batch, error) {
 		if oq, ok := job.(OnQueuer); ok {
 			queueName = oq.OnQueue()
 		}
-		if err := driver.Push(job, queueName); err != nil {
+		if err := driver.PushCtx(ctx, job, queueName); err != nil {
 			// Adjust pendingJobs to reflect only the jobs that were actually pushed,
 			// then cancel the batch so it can still reach Finished state.
 			unpushed := int32(len(pb.jobs) - pushed)

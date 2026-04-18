@@ -65,23 +65,11 @@ func (d *memoryDriver) PushCtx(ctx context.Context, job Job, queue ...string) er
 	return nil
 }
 
-func (d *memoryDriver) Push(job Job, queue ...string) error {
-	return d.PushCtx(context.Background(), job, queue...)
-}
-
 func (d *memoryDriver) PushDelayedCtx(ctx context.Context, job Job, delay time.Duration, queue ...string) error {
 	return d.PushCtx(ctx, job, queue...)
 }
 
-func (d *memoryDriver) PushDelayed(job Job, delay time.Duration, queue ...string) error {
-	return d.PushCtx(context.Background(), job, queue...)
-}
-
 func (d *memoryDriver) PopCtx(ctx context.Context, queue string) (Job, error) {
-	return d.Pop(queue)
-}
-
-func (d *memoryDriver) Pop(queue string) (Job, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	jobs := d.jobs[queue]
@@ -111,7 +99,6 @@ func (d *memoryDriver) Clear(queue string) error {
 }
 
 func (d *memoryDriver) Shutdown(ctx context.Context) error { return nil }
-func (d *memoryDriver) Close() error                       { return nil }
 
 func TestBatch_SuccessfulCompletion(t *testing.T) {
 	resetBatchStoreForTest(t)
@@ -130,7 +117,7 @@ func TestBatch_SuccessfulCompletion(t *testing.T) {
 		Then(func(b *Batch) { thenCalled.Store(true) }).
 		Catch(func(b *Batch, err error) { catchCalled.Store(true) }).
 		Finally(func(b *Batch) { finallyCalled.Store(true) }).
-		Dispatch(driver)
+		Dispatch(context.Background(), driver)
 
 	if err != nil {
 		t.Fatalf("Dispatch failed: %v", err)
@@ -192,7 +179,7 @@ func TestBatch_WithFailures_AllowFailures(t *testing.T) {
 		Then(func(b *Batch) { thenCalled.Store(true) }).
 		Catch(func(b *Batch, err error) { catchCalled.Store(true) }).
 		Finally(func(b *Batch) { finallyCalled.Store(true) }).
-		Dispatch(driver)
+		Dispatch(context.Background(), driver)
 
 	if err != nil {
 		t.Fatalf("Dispatch failed: %v", err)
@@ -244,7 +231,7 @@ func TestBatch_WithFailures_NoAllowFailures(t *testing.T) {
 		jobs[i] = &testBatchJob{}
 	}
 
-	batch, err := NewBatch(jobs...).Dispatch(driver)
+	batch, err := NewBatch(jobs...).Dispatch(context.Background(), driver)
 	if err != nil {
 		t.Fatalf("Dispatch failed: %v", err)
 	}
@@ -266,7 +253,7 @@ func TestBatch_Cancel(t *testing.T) {
 		jobs[i] = &testBatchJob{}
 	}
 
-	batch, err := NewBatch(jobs...).Dispatch(driver)
+	batch, err := NewBatch(jobs...).Dispatch(context.Background(), driver)
 	if err != nil {
 		t.Fatalf("Dispatch failed: %v", err)
 	}
@@ -293,7 +280,7 @@ func TestBatch_Progress(t *testing.T) {
 		jobs[i] = &testBatchJob{}
 	}
 
-	batch, err := NewBatch(jobs...).AllowFailures().Dispatch(driver)
+	batch, err := NewBatch(jobs...).AllowFailures().Dispatch(context.Background(), driver)
 	if err != nil {
 		t.Fatalf("Dispatch failed: %v", err)
 	}
@@ -328,7 +315,7 @@ func TestBatch_FindBatch(t *testing.T) {
 	driver := newMemoryDriver()
 
 	jobs := []Job{&testBatchJob{}}
-	batch, err := NewBatch(jobs...).Dispatch(driver)
+	batch, err := NewBatch(jobs...).Dispatch(context.Background(), driver)
 	if err != nil {
 		t.Fatalf("Dispatch failed: %v", err)
 	}
@@ -352,7 +339,7 @@ func TestBatch_EmptyBatch(t *testing.T) {
 	resetBatchStoreForTest(t)
 	driver := newMemoryDriver()
 
-	_, err := NewBatch().Dispatch(driver)
+	_, err := NewBatch().Dispatch(context.Background(), driver)
 	if err == nil {
 		t.Fatal("expected error for empty batch")
 	}
@@ -384,7 +371,7 @@ func TestBatch_Events(t *testing.T) {
 	batch, err := NewBatch(jobs...).
 		WithEventDispatcher(dispatcher).
 		AllowFailures().
-		Dispatch(driver)
+		Dispatch(context.Background(), driver)
 	if err != nil {
 		t.Fatalf("Dispatch failed: %v", err)
 	}
@@ -433,7 +420,7 @@ func TestBatch_CatchFiresOnce(t *testing.T) {
 	batch, err := NewBatch(jobs...).
 		AllowFailures().
 		Catch(func(b *Batch, err error) { catchCount.Add(1) }).
-		Dispatch(driver)
+		Dispatch(context.Background(), driver)
 	if err != nil {
 		t.Fatalf("Dispatch failed: %v", err)
 	}
@@ -469,7 +456,7 @@ func TestBatch_Concurrent(t *testing.T) {
 	batch, err := NewBatch(jobs...).
 		AllowFailures().
 		Finally(func(b *Batch) { finallyCalled.Store(true) }).
-		Dispatch(driver)
+		Dispatch(context.Background(), driver)
 	if err != nil {
 		t.Fatalf("Dispatch failed: %v", err)
 	}
@@ -511,7 +498,7 @@ func TestBatch_BatchableJobsGetBatchID(t *testing.T) {
 	job1 := &testBatchJob{}
 	job2 := &testBatchJob{}
 
-	batch, err := NewBatch(job1, job2).Dispatch(driver)
+	batch, err := NewBatch(job1, job2).Dispatch(context.Background(), driver)
 	if err != nil {
 		t.Fatalf("Dispatch failed: %v", err)
 	}
@@ -529,7 +516,7 @@ func TestBatch_OnQueue(t *testing.T) {
 	driver := newMemoryDriver()
 
 	jobs := []Job{&testBatchJob{}}
-	batch, err := NewBatch(jobs...).OnQueue("high").Dispatch(driver)
+	batch, err := NewBatch(jobs...).OnQueue("high").Dispatch(context.Background(), driver)
 	if err != nil {
 		t.Fatalf("Dispatch failed: %v", err)
 	}
@@ -559,7 +546,7 @@ func TestBatch_WorkerIntegration(t *testing.T) {
 	batch, err := NewBatch(job1, job2).
 		Then(func(b *Batch) { thenCalled.Store(true) }).
 		Finally(func(b *Batch) { finallyCalled.Store(true) }).
-		Dispatch(driver)
+		Dispatch(context.Background(), driver)
 	if err != nil {
 		t.Fatalf("Dispatch failed: %v", err)
 	}
@@ -592,7 +579,7 @@ func TestBatch_CancelledJobSkipped(t *testing.T) {
 
 	batch, err := NewBatch(job1).
 		Finally(func(b *Batch) { finallyCalled.Store(true) }).
-		Dispatch(driver)
+		Dispatch(context.Background(), driver)
 	if err != nil {
 		t.Fatalf("Dispatch failed: %v", err)
 	}
@@ -632,7 +619,7 @@ func TestBatch_AllowsFailures_DefaultFalse(t *testing.T) {
 	driver := newMemoryDriver()
 
 	jobs := []Job{&testBatchJob{}}
-	batch, err := NewBatch(jobs...).Dispatch(driver)
+	batch, err := NewBatch(jobs...).Dispatch(context.Background(), driver)
 	if err != nil {
 		t.Fatalf("Dispatch failed: %v", err)
 	}
@@ -649,7 +636,7 @@ func TestBatch_DispatchPushFailure(t *testing.T) {
 	job2 := &testBatchJob{}
 	job3 := &testBatchJob{}
 
-	batch, err := NewBatch(job1, job2, job3).Dispatch(failDriver)
+	batch, err := NewBatch(job1, job2, job3).Dispatch(context.Background(), failDriver)
 	if err == nil {
 		t.Fatal("expected error when driver.Push fails")
 	}
@@ -688,7 +675,7 @@ func TestBatch_CancelledEvent(t *testing.T) {
 	jobs := []Job{&testBatchJob{}}
 	batch, err := NewBatch(jobs...).
 		WithEventDispatcher(dispatcher).
-		Dispatch(driver)
+		Dispatch(context.Background(), driver)
 	if err != nil {
 		t.Fatalf("Dispatch failed: %v", err)
 	}
@@ -758,7 +745,7 @@ func TestBatch_JobOnQueuerOverridesBatchQueue(t *testing.T) {
 	regularJob := &testBatchJob{}
 	priorityJob := &testOnQueuerJob{queue: "priority"}
 
-	_, err := NewBatch(regularJob, priorityJob).OnQueue("default").Dispatch(driver)
+	_, err := NewBatch(regularJob, priorityJob).OnQueue("default").Dispatch(context.Background(), driver)
 	if err != nil {
 		t.Fatalf("Dispatch failed: %v", err)
 	}

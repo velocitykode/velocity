@@ -17,8 +17,8 @@ type Job interface {
 // The Ctx-suffixed methods are the primary API — they propagate the caller's
 // context through to the underlying store so workers can abort in flight
 // (shutdown, deadline) instead of blocking on a network round-trip. The
-// non-Ctx methods remain for backwards compatibility and simply forward to
-// their Ctx counterparts with context.Background().
+// All driver methods are context-aware; callers thread a context through so
+// cancellation flows down to the backing store.
 type Driver interface {
 	// PushCtx adds a job to the queue. Cancellation of ctx aborts the push
 	// before it reaches the backing store (e.g. during graceful shutdown).
@@ -32,20 +32,6 @@ type Driver interface {
 	// Pop returns a wrapped ctx.Err() and the worker loop exits cleanly.
 	PopCtx(ctx context.Context, queue string) (Job, error)
 
-	// Push adds a job to the queue.
-	// Deprecated: use PushCtx(ctx, job, queue...) so the caller's context
-	// flows through to the store.
-	Push(job Job, queue ...string) error
-
-	// PushDelayed adds a job to the queue with a delay.
-	// Deprecated: use PushDelayedCtx.
-	PushDelayed(job Job, delay time.Duration, queue ...string) error
-
-	// Pop retrieves and removes the next job from the queue.
-	// Deprecated: use PopCtx so worker shutdown can abort an in-flight
-	// pop instead of waiting for the blocking read to return.
-	Pop(queue string) (Job, error)
-
 	// Size returns the number of jobs in the queue
 	Size(queue string) (int64, error)
 
@@ -57,10 +43,6 @@ type Driver interface {
 
 	// Shutdown gracefully shuts down the driver, honoring the context deadline.
 	Shutdown(ctx context.Context) error
-
-	// Close gracefully shuts down the driver, releasing resources.
-	// Deprecated: use Shutdown(ctx) instead.
-	Close() error
 }
 
 // Payload represents a serialized job

@@ -1,6 +1,7 @@
 package orm
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -100,7 +101,7 @@ func setupSoftDeleteTable(t *testing.T, manager *Manager, count, deleteCount int
 
 func TestQueryPaginate(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	SetDefault(manager)
 	defer ResetDefault()
 
@@ -216,7 +217,7 @@ func TestQueryPaginate(t *testing.T) {
 
 func TestQueryPaginate_InputDefaults(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	SetDefault(manager)
 	defer ResetDefault()
 
@@ -254,7 +255,7 @@ func TestQueryPaginate_InputDefaults(t *testing.T) {
 
 func TestQueryPaginate_EmptyTable(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	SetDefault(manager)
 	defer ResetDefault()
 
@@ -281,7 +282,7 @@ func TestQueryPaginate_EmptyTable(t *testing.T) {
 
 func TestQueryPaginate_WithConditions(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	SetDefault(manager)
 	defer ResetDefault()
 
@@ -306,7 +307,7 @@ func TestQueryPaginate_WithConditions(t *testing.T) {
 
 func TestQueryPaginate_WithOrdering(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	SetDefault(manager)
 	defer ResetDefault()
 
@@ -336,7 +337,7 @@ func TestQueryPaginate_WithOrdering(t *testing.T) {
 
 func TestQueryPaginate_WithConditionsAndOrdering(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	SetDefault(manager)
 	defer ResetDefault()
 
@@ -369,7 +370,7 @@ func TestQueryPaginate_WithConditionsAndOrdering(t *testing.T) {
 
 func TestQueryPaginate_SoftDeleteExcludesDeleted(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	SetDefault(manager)
 	defer ResetDefault()
 
@@ -394,7 +395,7 @@ func TestQueryPaginate_SoftDeleteExcludesDeleted(t *testing.T) {
 
 func TestQueryPaginate_SoftDeleteWithTrashed(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	SetDefault(manager)
 	defer ResetDefault()
 
@@ -417,7 +418,7 @@ func TestQueryPaginate_SoftDeleteWithTrashed(t *testing.T) {
 
 func TestQueryPaginate_SoftDeleteOnlyTrashed(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	SetDefault(manager)
 	defer ResetDefault()
 
@@ -443,7 +444,7 @@ func TestQueryPaginate_SoftDeleteOnlyTrashed(t *testing.T) {
 
 func TestQueryPaginate_ErrorOnBadTable(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	SetDefault(manager)
 	defer ResetDefault()
 
@@ -456,7 +457,7 @@ func TestQueryPaginate_ErrorOnBadTable(t *testing.T) {
 
 func TestModelPaginate(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	SetDefault(manager)
 	defer ResetDefault()
 
@@ -486,7 +487,7 @@ func TestModelPaginate(t *testing.T) {
 
 func TestSoftDeleteModelPaginate(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	SetDefault(manager)
 	defer ResetDefault()
 
@@ -566,7 +567,7 @@ func TestPaginatedResult_LastPageCalculation(t *testing.T) {
 	}
 
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	SetDefault(manager)
 	defer ResetDefault()
 
@@ -593,7 +594,7 @@ func TestPaginatedResult_LastPageCalculation(t *testing.T) {
 
 func TestQueryPaginate_Concurrent(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	// SQLite in-memory: force single connection so all goroutines share
 	// the same database (each connection gets its own in-memory DB).
 	manager.DB().SetMaxOpenConns(1)

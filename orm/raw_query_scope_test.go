@@ -1,6 +1,7 @@
 package orm
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -23,7 +24,7 @@ func setupRawScopeTest(t *testing.T) *Manager {
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
-	t.Cleanup(func() { _ = m.Close() })
+	t.Cleanup(func() { _ = m.Shutdown(context.Background()) })
 
 	if _, err := m.DB().Exec(`
 		CREATE TABLE raw_scope_users (

@@ -1,6 +1,7 @@
 package console
 
 import (
+	"context"
 	"fmt"
 
 	cli "github.com/velocitykode/velocity-cli"
@@ -53,7 +54,7 @@ func listAllTables(db orm.Database, driver string) ([]string, error) {
 		return nil, fmt.Errorf("velocity/console: unsupported driver: %s", driver)
 	}
 
-	rows, err := db.Raw(query)
+	rows, err := db.Raw(context.Background(), query)
 	if err != nil {
 		return nil, fmt.Errorf("velocity/console: failed to query tables: %w", err)
 	}

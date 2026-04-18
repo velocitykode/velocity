@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"context"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -40,7 +41,7 @@ func TestWorker(t *testing.T) {
 				ID:      "worker-" + string(rune(i)),
 				Message: "Worker test",
 			}
-			err := q.Push(job, "worker-test")
+			err := q.PushCtx(context.Background(), job, "worker-test")
 			if err != nil {
 				t.Fatalf("Failed to push job: %v", err)
 			}
@@ -71,7 +72,7 @@ func TestWorker(t *testing.T) {
 				ID:      "concurrent-" + string(rune(i)),
 				Message: "Concurrent worker test",
 			}
-			err := q.Push(job, "concurrent-worker")
+			err := q.PushCtx(context.Background(), job, "concurrent-worker")
 			if err != nil {
 				t.Fatalf("Failed to push job: %v", err)
 			}
@@ -108,7 +109,7 @@ func TestWorker(t *testing.T) {
 					atomic.AddInt32(&failed, 1)
 				},
 			}
-			err := q.Push(job, "fail-worker")
+			err := q.PushCtx(context.Background(), job, "fail-worker")
 			if err != nil {
 				t.Fatalf("Failed to push job: %v", err)
 			}
@@ -146,7 +147,7 @@ func TestWorker(t *testing.T) {
 			},
 		}
 
-		err := q.Push(job, "timeout-worker")
+		err := q.PushCtx(context.Background(), job, "timeout-worker")
 		if err != nil {
 			t.Fatalf("Failed to push job: %v", err)
 		}
@@ -178,7 +179,7 @@ func TestGlobalWorker(t *testing.T) {
 			ID:      "global-worker-" + string(rune(i)),
 			Message: "Global worker test",
 		}
-		err := q.Push(job, "global-worker")
+		err := q.PushCtx(context.Background(), job, "global-worker")
 		if err != nil {
 			t.Fatalf("Failed to push job: %v", err)
 		}
@@ -203,7 +204,7 @@ func TestGlobalWorker(t *testing.T) {
 func TestWorker_RetryOnFailure(t *testing.T) {
 	q := NewMemoryDriver()
 	q.Start()
-	defer q.Close()
+	defer q.Shutdown(context.Background())
 
 	attempts := int32(0)
 
@@ -219,7 +220,7 @@ func TestWorker_RetryOnFailure(t *testing.T) {
 		},
 	}
 
-	err := q.Push(job, "retry-queue")
+	err := q.PushCtx(context.Background(), job, "retry-queue")
 	if err != nil {
 		t.Fatalf("Push failed: %v", err)
 	}
@@ -247,7 +248,7 @@ func TestWorker_RetryOnFailure(t *testing.T) {
 func TestWorker_ExhaustsRetries(t *testing.T) {
 	q := NewMemoryDriver()
 	q.Start()
-	defer q.Close()
+	defer q.Shutdown(context.Background())
 
 	attempts := int32(0)
 	failed := int32(0)
@@ -264,7 +265,7 @@ func TestWorker_ExhaustsRetries(t *testing.T) {
 		},
 	}
 
-	err := q.Push(job, "exhaust-queue")
+	err := q.PushCtx(context.Background(), job, "exhaust-queue")
 	if err != nil {
 		t.Fatalf("Push failed: %v", err)
 	}
@@ -297,7 +298,7 @@ func TestWorker_ExhaustsRetries(t *testing.T) {
 func TestWorker_NoRetryWhenMaxRetriesIsOne(t *testing.T) {
 	q := NewMemoryDriver()
 	q.Start()
-	defer q.Close()
+	defer q.Shutdown(context.Background())
 
 	attempts := int32(0)
 	failed := int32(0)
@@ -314,7 +315,7 @@ func TestWorker_NoRetryWhenMaxRetriesIsOne(t *testing.T) {
 		},
 	}
 
-	err := q.Push(job, "no-retry-queue")
+	err := q.PushCtx(context.Background(), job, "no-retry-queue")
 	if err != nil {
 		t.Fatalf("Push failed: %v", err)
 	}
@@ -356,7 +357,7 @@ func (r *retryDeciderJob) ShouldRetry(_ error) bool {
 func TestWorker_RetryDeciderStopsRetry(t *testing.T) {
 	q := NewMemoryDriver()
 	q.Start()
-	defer q.Close()
+	defer q.Shutdown(context.Background())
 
 	attempts := int32(0)
 	failed := int32(0)
@@ -376,7 +377,7 @@ func TestWorker_RetryDeciderStopsRetry(t *testing.T) {
 		shouldRetry: false,
 	}
 
-	err := q.Push(job, "decider-queue")
+	err := q.PushCtx(context.Background(), job, "decider-queue")
 	if err != nil {
 		t.Fatalf("Push failed: %v", err)
 	}
@@ -419,7 +420,7 @@ func (m *maxAttempterJob) MaxAttempts() int {
 func TestWorker_MaxAttempterInterface(t *testing.T) {
 	q := NewMemoryDriver()
 	q.Start()
-	defer q.Close()
+	defer q.Shutdown(context.Background())
 
 	attempts := int32(0)
 	failed := int32(0)
@@ -439,7 +440,7 @@ func TestWorker_MaxAttempterInterface(t *testing.T) {
 		maxAttempts: 2, // Override worker default of 3
 	}
 
-	err := q.Push(job, "max-attempter-queue")
+	err := q.PushCtx(context.Background(), job, "max-attempter-queue")
 	if err != nil {
 		t.Fatalf("Push failed: %v", err)
 	}
@@ -489,7 +490,7 @@ func TestWorker_ConcurrencyCap(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			q := NewMemoryDriver()
 			q.Start()
-			defer q.Close()
+			defer q.Shutdown(context.Background())
 			w := NewWorker(q, "cap", func(Job) error { return nil }, WithConcurrency(tc.in))
 			if w.concurrency != tc.want {
 				t.Errorf("concurrency = %d, want %d", w.concurrency, tc.want)
@@ -511,7 +512,7 @@ func (b *backofferJob) Backoff() []time.Duration {
 func TestWorker_BackofferInterface(t *testing.T) {
 	q := NewMemoryDriver()
 	q.Start()
-	defer q.Close()
+	defer q.Shutdown(context.Background())
 
 	attempts := int32(0)
 
@@ -530,7 +531,7 @@ func TestWorker_BackofferInterface(t *testing.T) {
 		delays: []time.Duration{0, 0}, // Zero delays for fast test
 	}
 
-	err := q.Push(job, "backoffer-queue")
+	err := q.PushCtx(context.Background(), job, "backoffer-queue")
 	if err != nil {
 		t.Fatalf("Push failed: %v", err)
 	}

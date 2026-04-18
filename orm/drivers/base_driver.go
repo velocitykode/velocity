@@ -4,26 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"io"
-	"os"
-	"sync"
 )
-
-// osStderr is the stderr destination for deprecation warnings. It is a
-// package-level variable so tests can redirect output without touching
-// the global os.Stderr.
-var osStderr io.Writer = os.Stderr
 
 // BaseDriver provides shared implementations for common driver operations.
 // Embed this in concrete drivers to eliminate duplicated Close, Ping, DB,
-// Query, QueryRow, Exec, Begin, BeginTx, CreateTable, and DropTable methods.
+// Query, BeginTx, CreateTable, and DropTable methods.
 type BaseDriver struct {
 	db     *sql.DB
 	Config ConnectionConfig
-	// deprecatedShimWarned guards a one-time warning printed the first time
-	// the legacy Query/QueryRow/Exec shims are invoked so callers are nudged
-	// to migrate to the *Context equivalents without spamming logs.
-	deprecatedShimWarned sync.Once
 }
 
 // Close closes the database connection.
@@ -45,46 +33,6 @@ func (b *BaseDriver) Ping() error {
 // DB returns the underlying *sql.DB instance.
 func (b *BaseDriver) DB() *sql.DB {
 	return b.db
-}
-
-// warnDeprecatedShim emits a one-time stderr warning advising callers that
-// the non-context-aware Query/QueryRow/Exec helpers are deprecated. The
-// *Context variants should be preferred so cancellation and deadlines
-// propagate end-to-end.
-func (b *BaseDriver) warnDeprecatedShim() {
-	b.deprecatedShimWarned.Do(func() {
-		fmt.Fprintf(osStderr, "velocity/orm: deprecated — drivers.Query/QueryRow/Exec without context. use QueryContext/QueryRowContext/ExecContext.\n")
-	})
-}
-
-// Query executes a query that returns rows.
-//
-// Deprecated: use QueryContext to propagate cancellation and deadlines.
-// This shim forwards to QueryContext with context.TODO() and emits a
-// one-time warning on first use.
-func (b *BaseDriver) Query(query string, args ...any) (*sql.Rows, error) {
-	b.warnDeprecatedShim()
-	return b.QueryContext(context.TODO(), query, args...)
-}
-
-// QueryRow executes a query that returns at most one row.
-//
-// Deprecated: use QueryRowContext to propagate cancellation and deadlines.
-// This shim forwards to QueryRowContext with context.TODO() and emits a
-// one-time warning on first use.
-func (b *BaseDriver) QueryRow(query string, args ...any) *sql.Row {
-	b.warnDeprecatedShim()
-	return b.QueryRowContext(context.TODO(), query, args...)
-}
-
-// Exec executes a query that doesn't return rows.
-//
-// Deprecated: use ExecContext to propagate cancellation and deadlines.
-// This shim forwards to ExecContext with context.TODO() and emits a
-// one-time warning on first use.
-func (b *BaseDriver) Exec(query string, args ...any) (sql.Result, error) {
-	b.warnDeprecatedShim()
-	return b.ExecContext(context.TODO(), query, args...)
 }
 
 // QueryContext executes a query that returns rows, honoring the context
@@ -114,14 +62,8 @@ func (b *BaseDriver) ExecContext(ctx context.Context, query string, args ...any)
 	return b.db.ExecContext(ctx, query, args...)
 }
 
-// Begin starts a transaction.
-func (b *BaseDriver) Begin() (*sql.Tx, error) {
-	return b.db.Begin()
-}
-
 // BeginTx starts a transaction with the given context and options. Pass
-// opts = nil to use the underlying driver's defaults; that is equivalent
-// to Begin but lets callers still flow a context through.
+// opts = nil to use the underlying driver's defaults.
 func (b *BaseDriver) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error) {
 	return b.db.BeginTx(ctx, opts)
 }

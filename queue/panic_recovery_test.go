@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"context"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,7 +23,7 @@ func TestBatch_ThenCallback_RecoversPanic(t *testing.T) {
 	batch, err := NewBatch(jobs...).
 		Then(func(b *Batch) { panic("then boom") }).
 		Finally(func(b *Batch) { finallyCalled.Store(true) }).
-		Dispatch(driver)
+		Dispatch(context.Background(), driver)
 	if err != nil {
 		t.Fatalf("Dispatch failed: %v", err)
 	}
@@ -47,7 +48,7 @@ func TestBatch_FinallyCallback_RecoversPanic(t *testing.T) {
 			finallyEntered.Store(true)
 			panic("finally boom")
 		}).
-		Dispatch(driver)
+		Dispatch(context.Background(), driver)
 	if err != nil {
 		t.Fatalf("Dispatch failed: %v", err)
 	}
@@ -73,7 +74,7 @@ func TestBatch_CatchCallback_RecoversPanic(t *testing.T) {
 		AllowFailures().
 		Catch(func(b *Batch, err error) { panic("catch boom") }).
 		Finally(func(b *Batch) { finallyCalled.Store(true) }).
-		Dispatch(driver)
+		Dispatch(context.Background(), driver)
 	if err != nil {
 		t.Fatalf("Dispatch failed: %v", err)
 	}

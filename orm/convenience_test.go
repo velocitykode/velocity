@@ -1,6 +1,7 @@
 package orm
 
 import (
+	"context"
 	"errors"
 	"testing"
 )
@@ -27,7 +28,7 @@ func setupConvenienceTests(t *testing.T) *Manager {
 	SetDefault(manager)
 	t.Cleanup(func() {
 		ResetDefault()
-		manager.Close()
+		manager.Shutdown(context.Background())
 	})
 	return manager
 }
@@ -707,7 +708,7 @@ func setupUUIDConvenienceTests(t *testing.T) *Manager {
 	SetDefault(manager)
 	t.Cleanup(func() {
 		ResetDefault()
-		manager.Close()
+		manager.Shutdown(context.Background())
 	})
 	return manager
 }
@@ -850,7 +851,7 @@ func setupSoftDeleteConvenienceTests(t *testing.T) *Manager {
 	SetDefault(manager)
 	t.Cleanup(func() {
 		ResetDefault()
-		manager.Close()
+		manager.Shutdown(context.Background())
 	})
 	return manager
 }

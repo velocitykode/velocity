@@ -1,7 +1,6 @@
 package drivers
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -94,47 +93,3 @@ func TestSQLiteDriver_QueryRowContextCancellation(t *testing.T) {
 	}
 }
 
-// TestBaseDriver_DeprecatedShimWarning asserts the legacy Query/QueryRow/
-// Exec methods emit a one-time warning on first call. Subsequent calls
-// must not write additional output so logs stay clean.
-func TestBaseDriver_DeprecatedShimWarning(t *testing.T) {
-	driver := NewSQLiteDriver()
-	if err := driver.Connect(ConnectionConfig{
-		Database: ":memory:",
-	}); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
-	defer driver.Close()
-
-	// Redirect osStderr for the duration of this test.
-	originalStderr := osStderr
-	buf := &bytes.Buffer{}
-	osStderr = buf
-	t.Cleanup(func() { osStderr = originalStderr })
-
-	// A trivial SELECT exercises the shim without requiring a schema.
-	// Rows MUST be closed to release the connection back to the pool;
-	// otherwise any pool with a bounded capacity will deadlock on the
-	// second call.
-	rows, err := driver.Query("SELECT 1")
-	if err != nil {
-		t.Fatalf("Query: %v", err)
-	}
-	_ = rows.Close()
-
-	first := buf.String()
-	if first == "" {
-		t.Fatal("expected deprecation warning on first call, got empty output")
-	}
-
-	// Second invocation should not emit a duplicate warning.
-	rows2, err := driver.Query("SELECT 1")
-	if err != nil {
-		t.Fatalf("Query: %v", err)
-	}
-	_ = rows2.Close()
-
-	if buf.String() != first {
-		t.Errorf("expected warning to be emitted once; got output: %q", buf.String())
-	}
-}

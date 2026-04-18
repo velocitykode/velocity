@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -451,7 +452,7 @@ func TestORMUserProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to initialize ORM: %v", err)
 	}
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	// Schema matches the columns ORMUserProvider expects to SELECT / UPDATE.
 	db := manager.DB()
@@ -723,7 +724,7 @@ func TestSessionAuthFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to initialize ORM: %v", err)
 	}
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	db := manager.DB()
 	_, err = db.Exec(`
@@ -794,7 +795,7 @@ func TestJWTAuthFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to initialize ORM: %v", err)
 	}
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	db := manager.DB()
 	_, err = db.Exec(`

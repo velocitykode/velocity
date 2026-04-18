@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sync"
@@ -20,7 +21,7 @@ func testDriver(t *testing.T, driver Driver, name string) {
 			}
 
 			// Push job
-			err := driver.Push(job, "test-queue")
+			err := driver.PushCtx(context.Background(), job, "test-queue")
 			if err != nil {
 				t.Fatalf("Failed to push job: %v", err)
 			}
@@ -35,7 +36,7 @@ func testDriver(t *testing.T, driver Driver, name string) {
 			}
 
 			// Pop job
-			poppedJob, err := driver.Pop("test-queue")
+			poppedJob, err := driver.PopCtx(context.Background(), "test-queue")
 			if err != nil {
 				t.Fatalf("Failed to pop job: %v", err)
 			}
@@ -60,13 +61,13 @@ func testDriver(t *testing.T, driver Driver, name string) {
 			}
 
 			// Push delayed job (1 second delay)
-			err := driver.PushDelayed(job, 1*time.Second, "delayed-queue")
+			err := driver.PushDelayedCtx(context.Background(), job, 1*time.Second, "delayed-queue")
 			if err != nil {
 				t.Fatalf("Failed to push delayed job: %v", err)
 			}
 
 			// Should not be available immediately
-			poppedJob, err := driver.Pop("delayed-queue")
+			poppedJob, err := driver.PopCtx(context.Background(), "delayed-queue")
 			if err != nil {
 				t.Fatalf("Failed to pop job: %v", err)
 			}
@@ -77,7 +78,7 @@ func testDriver(t *testing.T, driver Driver, name string) {
 			// Poll until the delay elapses and the job becomes visible.
 			var popErr error
 			testsync.Eventually(t, func() bool {
-				poppedJob, popErr = driver.Pop("delayed-queue")
+				poppedJob, popErr = driver.PopCtx(context.Background(), "delayed-queue")
 				return popErr == nil && poppedJob != nil
 			}, 3*time.Second, "delayed job becomes visible")
 			if popErr != nil {
@@ -93,12 +94,12 @@ func testDriver(t *testing.T, driver Driver, name string) {
 			job1 := &TestJob{ID: fmt.Sprintf("%s-q1", name), Message: "Queue 1"}
 			job2 := &TestJob{ID: fmt.Sprintf("%s-q2", name), Message: "Queue 2"}
 
-			err := driver.Push(job1, "queue1")
+			err := driver.PushCtx(context.Background(), job1, "queue1")
 			if err != nil {
 				t.Fatalf("Failed to push to queue1: %v", err)
 			}
 
-			err = driver.Push(job2, "queue2")
+			err = driver.PushCtx(context.Background(), job2, "queue2")
 			if err != nil {
 				t.Fatalf("Failed to push to queue2: %v", err)
 			}
@@ -112,7 +113,7 @@ func testDriver(t *testing.T, driver Driver, name string) {
 			}
 
 			// Pop from specific queue
-			popped1, _ := driver.Pop("queue1")
+			popped1, _ := driver.PopCtx(context.Background(), "queue1")
 			if popped1 == nil {
 				t.Error("Failed to pop from queue1")
 			}
@@ -136,7 +137,7 @@ func testDriver(t *testing.T, driver Driver, name string) {
 					ID:      fmt.Sprintf("%s-clear-%d", name, i),
 					Message: "Clear test",
 				}
-				err := driver.Push(job, "clear-queue")
+				err := driver.PushCtx(context.Background(), job, "clear-queue")
 				if err != nil {
 					t.Fatalf("Failed to push job: %v", err)
 				}
@@ -182,7 +183,7 @@ func testDriver(t *testing.T, driver Driver, name string) {
 							ID:      fmt.Sprintf("%s-concurrent-%d-%d", name, workerID, j),
 							Message: "Concurrent test",
 						}
-						if err := driver.Push(job, "concurrent"); err != nil {
+						if err := driver.PushCtx(context.Background(), job, "concurrent"); err != nil {
 							t.Errorf("Worker %d failed to push job %d: %v", workerID, j, err)
 						}
 					}
@@ -210,7 +211,7 @@ func testDriver(t *testing.T, driver Driver, name string) {
 				go func(workerID int) {
 					defer wg.Done()
 					for {
-						job, err := driver.Pop("concurrent")
+						job, err := driver.PopCtx(context.Background(), "concurrent")
 						if err != nil {
 							t.Errorf("Worker %d failed to pop: %v", workerID, err)
 							return
@@ -342,7 +343,7 @@ func benchmarkDriver(b *testing.B, driver Driver) {
 				ID:      fmt.Sprintf("bench-%d", i),
 				Message: "Benchmark",
 			}
-			_ = driver.Push(job, "bench-queue")
+			_ = driver.PushCtx(context.Background(), job, "bench-queue")
 		}
 		b.StopTimer()
 		driver.Clear("bench-queue")
@@ -355,12 +356,12 @@ func benchmarkDriver(b *testing.B, driver Driver) {
 				ID:      fmt.Sprintf("bench-%d", i),
 				Message: "Benchmark",
 			}
-			_ = driver.Push(job, "bench-queue")
+			_ = driver.PushCtx(context.Background(), job, "bench-queue")
 		}
 
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			_, _ = driver.Pop("bench-queue")
+			_, _ = driver.PopCtx(context.Background(), "bench-queue")
 		}
 		b.StopTimer()
 		driver.Clear("bench-queue")

@@ -1,6 +1,7 @@
 package testing
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"testing"
@@ -57,7 +58,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "failed to create ORM manager: %v\n", err)
 		os.Exit(1)
 	}
-	defer testManager.Close()
+	defer testManager.Shutdown(context.Background())
 
 	m.Run()
 }

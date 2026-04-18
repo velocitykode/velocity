@@ -1,6 +1,7 @@
 package seed
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -225,7 +226,7 @@ func TestRunnerRun(t *testing.T) {
 	defer Reset()
 
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	runMigrations(t, manager)
 
 	ran := false
@@ -256,7 +257,7 @@ func TestRunnerRunNotFound(t *testing.T) {
 	defer Reset()
 
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	runner := mustNewRunner(t, manager)
 	err := runner.Run("NonExistent")
@@ -270,7 +271,7 @@ func TestRunnerRunError(t *testing.T) {
 	defer Reset()
 
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	Register(&mockSeeder{
 		name: "Failing",
@@ -294,7 +295,7 @@ func TestRunnerRunAll(t *testing.T) {
 	defer Reset()
 
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	runMigrations(t, manager)
 
 	order := make([]string, 0)
@@ -335,7 +336,7 @@ func TestRunnerRunAllWithDatabaseSeeder(t *testing.T) {
 	defer Reset()
 
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	runMigrations(t, manager)
 
 	// Register individual seeders
@@ -393,7 +394,7 @@ func TestRunnerCall(t *testing.T) {
 	defer Reset()
 
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	runMigrations(t, manager)
 
 	order := make([]string, 0)
@@ -432,7 +433,7 @@ func TestRunnerCallStopsOnError(t *testing.T) {
 	defer Reset()
 
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	Register(&mockSeeder{
 		name:    "OK",
@@ -466,7 +467,7 @@ func TestSeed(t *testing.T) {
 	defer Reset()
 
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	runMigrations(t, manager)
 
 	ran := false
@@ -496,7 +497,7 @@ func TestSeedOne(t *testing.T) {
 	defer Reset()
 
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	runMigrations(t, manager)
 
 	ran := false
@@ -525,7 +526,7 @@ func TestIntegrationSeederWithFactory(t *testing.T) {
 	defer Reset()
 
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	runMigrations(t, manager)
 
 	// Register a seeder that uses the factory package
@@ -563,7 +564,7 @@ func TestIntegrationDatabaseSeederWithFactories(t *testing.T) {
 	defer Reset()
 
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	runMigrations(t, manager)
 
 	Register(&mockSeeder{
@@ -636,7 +637,7 @@ func TestIntegrationSeederWithSequence(t *testing.T) {
 	defer Reset()
 
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	runMigrations(t, manager)
 
 	Register(&mockSeeder{

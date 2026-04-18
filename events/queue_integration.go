@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -111,9 +112,9 @@ func (d *QueueIntegratedDispatcher) pushToQueue(event interface{}, listener List
 		return fmt.Errorf("queue driver not set on QueueIntegratedDispatcher")
 	}
 	if delay > 0 {
-		return d.queueDriver.PushDelayed(job, delay, queueName)
+		return d.queueDriver.PushDelayedCtx(context.Background(), job, delay, queueName)
 	}
-	return d.queueDriver.Push(job, queueName)
+	return d.queueDriver.PushCtx(context.Background(), job, queueName)
 }
 
 // getListenerType returns a string representation of the listener type

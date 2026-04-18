@@ -1,6 +1,7 @@
 package migrate_test
 
 import (
+	"context"
 	"database/sql"
 	"os"
 	"strings"
@@ -220,7 +221,7 @@ func TestIndexBuilder_SQLGeneration(t *testing.T) {
 
 func TestCreateIndex_SQLite(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	db := manager.DB()
 	migrator := migrate.NewMigrator(db, manager.DriverName())
@@ -287,7 +288,7 @@ func TestCreateIndex_SQLite(t *testing.T) {
 
 func TestDropIndex_SQLite(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	db := manager.DB()
 	migrator := migrate.NewMigrator(db, manager.DriverName())
@@ -324,7 +325,7 @@ func TestDropIndex_SQLite(t *testing.T) {
 
 func TestShorthandMethods_SQLite(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	db := manager.DB()
 	migrator := migrate.NewMigrator(db, manager.DriverName())
@@ -368,7 +369,7 @@ func TestCreateIndex_Postgres(t *testing.T) {
 	if manager == nil {
 		return
 	}
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	db := manager.DB()
 	migrator := migrate.NewMigrator(db, manager.DriverName())

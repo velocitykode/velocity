@@ -1,6 +1,7 @@
 package orm
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -20,7 +21,7 @@ func (TestUser) TableName() string {
 
 func TestModelSave(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	db := manager.DB()
 
@@ -117,7 +118,7 @@ func TestModelSave(t *testing.T) {
 
 func TestModelCreate(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	db := manager.DB()
 
@@ -227,7 +228,7 @@ func (TestProject) TableName() string {
 
 func TestUUIDModelSave(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	db := manager.DB()
 
@@ -324,7 +325,7 @@ func TestUUIDModelSave(t *testing.T) {
 
 func TestUUIDModelWithPresetID(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	db := manager.DB()
 
@@ -375,7 +376,7 @@ func TestUUIDModelWithPresetID(t *testing.T) {
 
 func TestUUIDModelCreate(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	db := manager.DB()
 

@@ -116,12 +116,6 @@ func (r *RedisDriver) PushCtx(ctx context.Context, job Job, queueName ...string)
 	return nil
 }
 
-// Push adds a job to the queue.
-// Deprecated: use PushCtx.
-func (r *RedisDriver) Push(job Job, queueName ...string) error {
-	return r.PushCtx(r.ctx, job, queueName...)
-}
-
 // PushDelayedCtx adds a delayed job using the caller's context.
 func (r *RedisDriver) PushDelayedCtx(ctx context.Context, job Job, delay time.Duration, queueName ...string) error {
 	if err := ctx.Err(); err != nil {
@@ -158,12 +152,6 @@ func (r *RedisDriver) PushDelayedCtx(ctx context.Context, job Job, delay time.Du
 
 	dispatchJobQueued(r.dispatchEvent, ctx, payload.Type, name, true, delay)
 	return nil
-}
-
-// PushDelayed adds a job to the queue with a delay.
-// Deprecated: use PushDelayedCtx.
-func (r *RedisDriver) PushDelayed(job Job, delay time.Duration, queueName ...string) error {
-	return r.PushDelayedCtx(r.ctx, job, delay, queueName...)
 }
 
 // PopCtx retrieves and removes the next job, honouring ctx cancellation on
@@ -215,12 +203,6 @@ func (r *RedisDriver) PopCtx(ctx context.Context, queueName string) (Job, error)
 		return nil, fmt.Errorf("velocity/queue: failed to deserialize job: %w", err)
 	}
 	return job, nil
-}
-
-// Pop retrieves and removes the next job from the queue.
-// Deprecated: use PopCtx so worker cancellation can unblock the BLPOP.
-func (r *RedisDriver) Pop(queueName string) (Job, error) {
-	return r.PopCtx(r.ctx, queueName)
 }
 
 // Size returns the number of jobs in the queue
@@ -333,12 +315,6 @@ func (r *RedisDriver) moveDelayedJobs(queueName string) error {
 func (r *RedisDriver) Shutdown(ctx context.Context) error {
 	batchStore.close() // stop package-level batch cleanup goroutine (idempotent)
 	return r.client.Close()
-}
-
-// Close closes the Redis connection.
-// Deprecated: use Shutdown(ctx) instead.
-func (r *RedisDriver) Close() error {
-	return r.Shutdown(context.Background())
 }
 
 // Helper methods

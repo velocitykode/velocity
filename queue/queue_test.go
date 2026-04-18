@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -50,7 +51,7 @@ func TestMemoryQueue(t *testing.T) {
 		}
 
 		// Push job
-		err := q.Push(job, "test-queue")
+		err := q.PushCtx(context.Background(), job, "test-queue")
 		if err != nil {
 			t.Fatalf("Failed to push job: %v", err)
 		}
@@ -65,7 +66,7 @@ func TestMemoryQueue(t *testing.T) {
 		}
 
 		// Pop job
-		poppedJob, err := q.Pop("test-queue")
+		poppedJob, err := q.PopCtx(context.Background(), "test-queue")
 		if err != nil {
 			t.Fatalf("Failed to pop job: %v", err)
 		}
@@ -90,13 +91,13 @@ func TestMemoryQueue(t *testing.T) {
 		}
 
 		// Push delayed job (use 1 second delay since the ticker runs every second)
-		err := q.PushDelayed(job, 1*time.Second, "delayed-queue")
+		err := q.PushDelayedCtx(context.Background(), job, 1*time.Second, "delayed-queue")
 		if err != nil {
 			t.Fatalf("Failed to push delayed job: %v", err)
 		}
 
 		// Should not be available immediately
-		poppedJob, err := q.Pop("delayed-queue")
+		poppedJob, err := q.PopCtx(context.Background(), "delayed-queue")
 		if err != nil {
 			t.Fatalf("Failed to pop job: %v", err)
 		}
@@ -107,7 +108,7 @@ func TestMemoryQueue(t *testing.T) {
 		// Poll until the delay elapses and the job becomes visible.
 		var popErr error
 		testsync.Eventually(t, func() bool {
-			poppedJob, popErr = q.Pop("delayed-queue")
+			poppedJob, popErr = q.PopCtx(context.Background(), "delayed-queue")
 			return popErr == nil && poppedJob != nil
 		}, 3*time.Second, "delayed job becomes visible")
 		if popErr != nil {
@@ -129,7 +130,7 @@ func TestMemoryQueue(t *testing.T) {
 		}
 
 		// Push job
-		err := q.Push(job, "fail-queue")
+		err := q.PushCtx(context.Background(), job, "fail-queue")
 		if err != nil {
 			t.Fatalf("Failed to push job: %v", err)
 		}
@@ -152,7 +153,7 @@ func TestMemoryQueue(t *testing.T) {
 				ID:      "clear-" + string(rune(i)),
 				Message: "Clear test",
 			}
-			err := q.Push(job, "clear-queue")
+			err := q.PushCtx(context.Background(), job, "clear-queue")
 			if err != nil {
 				t.Fatalf("Failed to push job: %v", err)
 			}
@@ -201,7 +202,7 @@ func TestConcurrentAccess(t *testing.T) {
 					ID:      string(rune(workerID)) + "-" + string(rune(j)),
 					Message: "Concurrent test",
 				}
-				if err := q.Push(job, "concurrent"); err != nil {
+				if err := q.PushCtx(context.Background(), job, "concurrent"); err != nil {
 					t.Errorf("Worker %d failed to push job %d: %v", workerID, j, err)
 				}
 			}
@@ -229,7 +230,7 @@ func TestConcurrentAccess(t *testing.T) {
 		go func(workerID int) {
 			defer wg.Done()
 			for {
-				job, err := q.Pop("concurrent")
+				job, err := q.PopCtx(context.Background(), "concurrent")
 				if err != nil {
 					t.Errorf("Worker %d failed to pop: %v", workerID, err)
 					return
@@ -262,7 +263,7 @@ func TestInstanceAPI(t *testing.T) {
 		}
 
 		// Push using instance API
-		err := q.Push(job, "instance-queue")
+		err := q.PushCtx(context.Background(), job, "instance-queue")
 		if err != nil {
 			t.Fatalf("Failed to push job: %v", err)
 		}
@@ -277,7 +278,7 @@ func TestInstanceAPI(t *testing.T) {
 		}
 
 		// Pop using instance API
-		poppedJob, err := q.Pop("instance-queue")
+		poppedJob, err := q.PopCtx(context.Background(), "instance-queue")
 		if err != nil {
 			t.Fatalf("Failed to pop job: %v", err)
 		}
@@ -293,7 +294,7 @@ func TestInstanceAPI(t *testing.T) {
 		}
 
 		// Push delayed using instance API (use 1 second delay for consistency)
-		err := q.PushDelayed(job, 1*time.Second, "instance-delayed")
+		err := q.PushDelayedCtx(context.Background(), job, 1*time.Second, "instance-delayed")
 		if err != nil {
 			t.Fatalf("Failed to push delayed job: %v", err)
 		}
@@ -301,7 +302,7 @@ func TestInstanceAPI(t *testing.T) {
 		var poppedJob Job
 		var popErr error
 		testsync.Eventually(t, func() bool {
-			poppedJob, popErr = q.Pop("instance-delayed")
+			poppedJob, popErr = q.PopCtx(context.Background(), "instance-delayed")
 			return popErr == nil && poppedJob != nil
 		}, 3*time.Second, "delayed job visible")
 		if popErr != nil {
@@ -319,7 +320,7 @@ func TestInstanceAPI(t *testing.T) {
 				ID:      "instance-clear-" + string(rune(i)),
 				Message: "Clear test",
 			}
-			err := q.Push(job, "instance-clear")
+			err := q.PushCtx(context.Background(), job, "instance-clear")
 			if err != nil {
 				t.Fatalf("Failed to push job: %v", err)
 			}

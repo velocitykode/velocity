@@ -1,6 +1,7 @@
 package orm
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"sync"
@@ -41,11 +42,11 @@ func TestManager_SetLogger_StoresLogger(t *testing.T) {
 	logger := &fakeLogger{}
 	m.SetLogger(logger)
 
-	// Fire a synthetic TxRecover event through the typed dispatcher
-	// to verify the event name matches the one documented.
+	// Fire a synthetic TxRecover event through the dispatcher to verify
+	// the event name matches the one documented.
 	var captured Event
-	m.SetTypedEventDispatcher(func(e Event) error {
-		captured = e
+	m.SetEventDispatcher(func(e any) error {
+		captured = e.(Event)
 		return nil
 	})
 	m.dispatchEvent(&TxRecover{
@@ -77,13 +78,13 @@ func TestManager_Transaction_DispatchesTxRecoverOnRollbackFailure(t *testing.T) 
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
-	defer m.Close()
+	defer m.Shutdown(context.Background())
 
 	logger := &fakeLogger{}
 	m.SetLogger(logger)
 
 	cbErr := errors.New("callback failure")
-	err = m.Transaction(func(tx *sql.Tx) error {
+	err = m.Transaction(context.Background(), func(tx *sql.Tx) error {
 		_ = tx
 		return cbErr
 	})

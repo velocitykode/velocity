@@ -1,6 +1,7 @@
 package orm
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"strings"
@@ -164,7 +165,7 @@ func withRelationDB(t *testing.T) func() {
 	SetDefault(manager)
 	return func() {
 		ResetDefault()
-		manager.Close()
+		manager.Shutdown(context.Background())
 	}
 }
 
@@ -1009,7 +1010,7 @@ func TestLoadRelations_NoPreloads(t *testing.T) {
 func TestLoadRelations_ParentWithZeroFK(t *testing.T) {
 	// Posts with user_id=0 should not trigger a query for user with id=0
 	manager := setupRelationTables(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	db := manager.DB()
 
 	// Insert a post with user_id=0 (orphan)
@@ -1054,7 +1055,7 @@ func TestLoadRelations_ErrorInvalidRelation(t *testing.T) {
 
 func TestLoadRelations_ErrorUnsafeIdentifier(t *testing.T) {
 	manager := setupRelationTables(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	SetDefault(manager)
 	defer ResetDefault()
 
@@ -1089,7 +1090,7 @@ func TestLoadRelations_ErrorUnsafeIdentifier(t *testing.T) {
 
 func TestLoadRelations_SoftDeleteFiltering(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	db := manager.DB()
 
 	for _, ddl := range []string{
@@ -1145,7 +1146,7 @@ func TestLoadRelations_SoftDeleteFiltering(t *testing.T) {
 
 func TestLoadRelations_Concurrent(t *testing.T) {
 	manager := setupRelationTables(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	// SQLite :memory: creates separate DBs per connection.
 	// Limit to 1 so concurrent goroutines share the same database.
 	manager.DB().SetMaxOpenConns(1)
@@ -1202,7 +1203,7 @@ func TestLoadRelations_Concurrent(t *testing.T) {
 
 func TestLoadRelations_ConcurrentBelongsTo(t *testing.T) {
 	manager := setupRelationTables(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 	manager.DB().SetMaxOpenConns(1)
 	seedRelationData(t, manager)
 	SetDefault(manager)

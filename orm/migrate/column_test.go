@@ -1,6 +1,7 @@
 package migrate_test
 
 import (
+	"context"
 	"database/sql"
 	"regexp"
 	"testing"
@@ -28,7 +29,7 @@ func newTestManager(t *testing.T) *orm.Manager {
 
 func TestMigrator_AddColumn(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	db := manager.DB()
 	migrator := migrate.NewMigrator(db, manager.DriverName())
@@ -142,7 +143,7 @@ func TestMigrator_AddColumn_Unique(t *testing.T) {
 	// Note: SQLite does not support adding a UNIQUE column with ALTER TABLE ADD COLUMN
 	// This test verifies the limitation is handled gracefully
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	db := manager.DB()
 	migrator := migrate.NewMigrator(db, manager.DriverName())
@@ -179,7 +180,7 @@ func TestMigrator_AddColumn_Unique(t *testing.T) {
 
 func TestMigrator_DropColumn(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	db := manager.DB()
 	migrator := migrate.NewMigrator(db, manager.DriverName())
@@ -223,7 +224,7 @@ func TestMigrator_DropColumn(t *testing.T) {
 
 func TestMigrator_DropColumn_NonExistent(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	db := manager.DB()
 	migrator := migrate.NewMigrator(db, manager.DriverName())
@@ -302,7 +303,7 @@ func TestColumnBuilder_ToSQL(t *testing.T) {
 			if err != nil {
 				t.Skip("driver not available")
 			}
-			defer manager.Close()
+			defer manager.Shutdown(context.Background())
 
 			db := manager.DB()
 			migrator := migrate.NewMigrator(db, manager.DriverName())
@@ -357,7 +358,7 @@ func columnExists(t *testing.T, db *sql.DB, table, column string) bool {
 
 func TestMigrator_Table(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	db := manager.DB()
 	migrator := migrate.NewMigrator(db, manager.DriverName())
@@ -397,7 +398,7 @@ func TestMigrator_Table(t *testing.T) {
 
 func TestMigrator_Table_EmptyCallback(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	db := manager.DB()
 	migrator := migrate.NewMigrator(db, manager.DriverName())
@@ -428,7 +429,7 @@ func TestMigrator_Table_EmptyCallback(t *testing.T) {
 
 func TestMigrator_Table_RejectsPrimaryKey(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	db := manager.DB()
 	migrator := migrate.NewMigrator(db, manager.DriverName())
@@ -453,7 +454,7 @@ func TestMigrator_Table_RejectsPrimaryKey(t *testing.T) {
 
 func TestMigrator_Table_NonExistentTable(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	db := manager.DB()
 	migrator := migrate.NewMigrator(db, manager.DriverName())

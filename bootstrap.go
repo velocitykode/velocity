@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/velocitykode/velocity/app"
-	"github.com/velocitykode/velocity/orm"
 )
 
 // Bootstrap runs the declarative chain (providers, middleware, routes, events,
@@ -101,9 +100,7 @@ func wireInstanceEvents(a *App) {
 	a.Router.SetEventDispatcher(dispatch)
 
 	if a.DB != nil {
-		a.DB.SetTypedEventDispatcher(func(event orm.Event) error {
-			return a.Services.Events.Dispatch(event)
-		})
+		a.DB.SetEventDispatcher(dispatch)
 	}
 	if a.Cache != nil {
 		a.Cache.SetEventDispatcher(dispatch)

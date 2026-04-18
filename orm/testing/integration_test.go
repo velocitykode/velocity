@@ -1,6 +1,7 @@
 package testing_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/velocitykode/velocity/orm"
@@ -43,7 +44,7 @@ func TestCrossDatabaseMigrations(t *testing.T) {
 			if err != nil {
 				t.Skipf("Failed to init %s (server may not be running): %v", d.name, err)
 			}
-			defer manager.Close()
+			defer manager.Shutdown(context.Background())
 
 			// Create migrator
 			migrator := migrate.NewMigrator(manager.DB(), manager.DriverName())
@@ -105,7 +106,7 @@ func TestCrossDatabaseFactories(t *testing.T) {
 			if err != nil {
 				t.Skipf("Failed to init %s: %v", d.name, err)
 			}
-			defer manager.Close()
+			defer manager.Shutdown(context.Background())
 
 			// Run migrations
 			migrator := migrate.NewMigrator(manager.DB(), manager.DriverName())
@@ -172,7 +173,7 @@ func TestCrossDatabaseRefresh(t *testing.T) {
 			if err != nil {
 				t.Skipf("Failed to init %s: %v", d.name, err)
 			}
-			defer manager.Close()
+			defer manager.Shutdown(context.Background())
 
 			// Use RefreshDatabase
 			db := ormtesting.RefreshDatabase(t, manager)
@@ -241,7 +242,7 @@ func TestCrossDatabasePlaceholders(t *testing.T) {
 			if err != nil {
 				t.Skipf("Failed to init %s: %v", d.name, err)
 			}
-			defer manager.Close()
+			defer manager.Shutdown(context.Background())
 
 			// Run migrations
 			migrator := migrate.NewMigrator(manager.DB(), manager.DriverName())

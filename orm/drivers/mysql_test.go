@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"os"
 	"testing"
 )
@@ -226,7 +227,7 @@ func TestMySQLDriver_Integration(t *testing.T) {
 		defer driver.DropTable(tableName)
 
 		// Insert record
-		result, err := driver.Exec("INSERT INTO `"+tableName+"` (name) VALUES (?)", "Test User")
+		result, err := driver.ExecContext(context.Background(), "INSERT INTO `"+tableName+"` (name) VALUES (?)", "Test User")
 		if err != nil {
 			t.Errorf("Exec() INSERT error = %v", err)
 		}
@@ -238,7 +239,7 @@ func TestMySQLDriver_Integration(t *testing.T) {
 		}
 
 		// Query record
-		rows, err := driver.Query("SELECT id, name FROM `"+tableName+"` WHERE name = ?", "Test User")
+		rows, err := driver.QueryContext(context.Background(), "SELECT id, name FROM `"+tableName+"` WHERE name = ?", "Test User")
 		if err != nil {
 			t.Errorf("Query() error = %v", err)
 		}
@@ -258,7 +259,7 @@ func TestMySQLDriver_Integration(t *testing.T) {
 		}
 
 		// QueryRow
-		row := driver.QueryRow("SELECT name FROM `"+tableName+"` WHERE id = ?", id)
+		row := driver.QueryRowContext(context.Background(), "SELECT name FROM `"+tableName+"` WHERE id = ?", id)
 		var queriedName string
 		if err := row.Scan(&queriedName); err != nil {
 			t.Errorf("QueryRow() Scan() error = %v", err)
@@ -289,7 +290,7 @@ func TestMySQLDriver_Integration(t *testing.T) {
 		defer driver.DropTable(tableName)
 
 		// Test successful transaction
-		tx, err := driver.Begin()
+		tx, err := driver.BeginTx(context.Background(), nil)
 		if err != nil {
 			t.Errorf("Begin() error = %v", err)
 		}
@@ -306,7 +307,7 @@ func TestMySQLDriver_Integration(t *testing.T) {
 
 		// Verify data was committed
 		var count int
-		row := driver.QueryRow("SELECT COUNT(*) FROM `" + tableName + "`")
+		row := driver.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM `" + tableName + "`")
 		if err := row.Scan(&count); err != nil {
 			t.Errorf("QueryRow() Scan() error = %v", err)
 		}
@@ -315,11 +316,11 @@ func TestMySQLDriver_Integration(t *testing.T) {
 		}
 
 		// Test rollback
-		tx2, _ := driver.Begin()
+		tx2, _ := driver.BeginTx(context.Background(), nil)
 		tx2.Exec("INSERT INTO `"+tableName+"` (value) VALUES (?)", 200)
 		tx2.Rollback()
 
-		row = driver.QueryRow("SELECT COUNT(*) FROM `" + tableName + "`")
+		row = driver.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM `" + tableName + "`")
 		row.Scan(&count)
 		if count != 1 {
 			t.Errorf("count after rollback = %d, want 1", count)

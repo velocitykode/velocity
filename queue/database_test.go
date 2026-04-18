@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -83,7 +84,7 @@ func TestDatabaseDriver_Pop_TwoWorkers_SingleJob(t *testing.T) {
 
 	// Push exactly one job.
 	job := &TestJob{ID: "only-one", Message: "race-me"}
-	if err := driver.Push(job, "pop-race"); err != nil {
+	if err := driver.PushCtx(context.Background(), job, "pop-race"); err != nil {
 		t.Fatalf("push: %v", err)
 	}
 
@@ -101,7 +102,7 @@ func TestDatabaseDriver_Pop_TwoWorkers_SingleJob(t *testing.T) {
 			<-start
 			// Each worker tries up to N times to Pop; at most one will succeed.
 			for attempt := 0; attempt < 5; attempt++ {
-				got, err := driver.Pop("pop-race")
+				got, err := driver.PopCtx(context.Background(), "pop-race")
 				if err != nil {
 					t.Errorf("pop error: %v", err)
 					return
@@ -141,7 +142,7 @@ func TestDatabaseDriver_Pop_RejectsTamperedPayload(t *testing.T) {
 	defer cleanup()
 
 	job := &TestJob{ID: "tamper-me", Message: "please"}
-	if err := driver.Push(job, "tamper-queue"); err != nil {
+	if err := driver.PushCtx(context.Background(), job, "tamper-queue"); err != nil {
 		t.Fatalf("push: %v", err)
 	}
 
@@ -171,7 +172,7 @@ func TestDatabaseDriver_Pop_RejectsTamperedPayload(t *testing.T) {
 		t.Fatalf("update: %v", err)
 	}
 
-	popped, err := driver.Pop("tamper-queue")
+	popped, err := driver.PopCtx(context.Background(), "tamper-queue")
 	if err == nil {
 		t.Fatalf("expected integrity error, got nil (job=%v)", popped)
 	}
@@ -198,7 +199,7 @@ func TestDatabaseDriver_Push_Size_Clear(t *testing.T) {
 	defer cleanup()
 
 	for i := 0; i < 3; i++ {
-		if err := driver.Push(&TestJob{ID: fmt.Sprintf("job-%d", i)}, "q"); err != nil {
+		if err := driver.PushCtx(context.Background(), &TestJob{ID: fmt.Sprintf("job-%d", i)}, "q"); err != nil {
 			t.Fatalf("push %d: %v", i, err)
 		}
 	}

@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -18,7 +19,7 @@ import (
 func TestIntegrationMemoryDriver(t *testing.T) {
 	driver := NewMemoryDriver()
 	driver.Start()
-	defer driver.Close()
+	defer driver.Shutdown(context.Background())
 
 	t.Run("ConfigurationPickup", func(t *testing.T) {
 		// Verify we're using memory driver
@@ -28,7 +29,7 @@ func TestIntegrationMemoryDriver(t *testing.T) {
 			Message: "Testing configuration",
 		}
 
-		err := driver.Push(job, "config-queue")
+		err := driver.PushCtx(context.Background(), job, "config-queue")
 		if err != nil {
 			t.Fatalf("Failed to push job: %v", err)
 		}
@@ -68,12 +69,12 @@ func TestIntegrationMemoryDriver(t *testing.T) {
 		}
 
 		// Dispatch jobs
-		err := driver.Push(successJob, "process-queue")
+		err := driver.PushCtx(context.Background(), successJob, "process-queue")
 		if err != nil {
 			t.Fatalf("Failed to push success job: %v", err)
 		}
 
-		err = driver.Push(failJob, "process-queue")
+		err = driver.PushCtx(context.Background(), failJob, "process-queue")
 		if err != nil {
 			t.Fatalf("Failed to push fail job: %v", err)
 		}
@@ -108,7 +109,7 @@ func TestIntegrationMemoryDriver(t *testing.T) {
 		}
 
 		// Push with 1 second delay
-		err := driver.PushDelayed(delayedJob, 1*time.Second, "delayed-queue")
+		err := driver.PushDelayedCtx(context.Background(), delayedJob, 1*time.Second, "delayed-queue")
 		if err != nil {
 			t.Fatalf("Failed to push delayed job: %v", err)
 		}
@@ -149,7 +150,7 @@ func TestIntegrationMemoryDriver(t *testing.T) {
 				},
 			}
 
-			err := driver.Push(job, "concurrent-queue")
+			err := driver.PushCtx(context.Background(), job, "concurrent-queue")
 			if err != nil {
 				t.Fatalf("Failed to push job %d: %v", i, err)
 			}
@@ -288,7 +289,7 @@ func TestIntegrationDatabaseDriver(t *testing.T) {
 			Message: "Database persistence test",
 		}
 
-		err := driver.Push(job, "db-queue")
+		err := driver.PushCtx(context.Background(), job, "db-queue")
 		if err != nil {
 			t.Fatalf("Failed to push job: %v", err)
 		}
@@ -305,7 +306,7 @@ func TestIntegrationDatabaseDriver(t *testing.T) {
 		}
 
 		// Pop the job
-		poppedJob, err := driver.Pop("db-queue")
+		poppedJob, err := driver.PopCtx(context.Background(), "db-queue")
 		if err != nil {
 			t.Fatalf("Failed to pop job: %v", err)
 		}
@@ -332,13 +333,13 @@ func TestIntegrationDatabaseDriver(t *testing.T) {
 			Message: "Database delayed test",
 		}
 
-		err := driver.PushDelayed(job, 2*time.Second, "db-delayed")
+		err := driver.PushDelayedCtx(context.Background(), job, 2*time.Second, "db-delayed")
 		if err != nil {
 			t.Fatalf("Failed to push delayed job: %v", err)
 		}
 
 		// Should not be available immediately
-		poppedJob, err := driver.Pop("db-delayed")
+		poppedJob, err := driver.PopCtx(context.Background(), "db-delayed")
 		if err != nil {
 			t.Fatalf("Failed to pop: %v", err)
 		}
@@ -349,7 +350,7 @@ func TestIntegrationDatabaseDriver(t *testing.T) {
 		// Poll until the delay elapses and the job becomes visible.
 		var visibleJob Job
 		testsync.Eventually(t, func() bool {
-			j, pErr := driver.Pop("db-delayed")
+			j, pErr := driver.PopCtx(context.Background(), "db-delayed")
 			if pErr != nil {
 				return false
 			}
@@ -372,7 +373,7 @@ func TestIntegrationDatabaseDriver(t *testing.T) {
 				ID:      fmt.Sprintf("db-concurrent-%d", i),
 				Message: "Concurrent database test",
 			}
-			err := driver.Push(job, "db-concurrent")
+			err := driver.PushCtx(context.Background(), job, "db-concurrent")
 			if err != nil {
 				t.Fatalf("Failed to push job %d: %v", i, err)
 			}
@@ -398,7 +399,7 @@ func TestIntegrationDatabaseDriver(t *testing.T) {
 			go func(workerID int) {
 				defer wg.Done()
 				for {
-					job, err := driver.Pop("db-concurrent")
+					job, err := driver.PopCtx(context.Background(), "db-concurrent")
 					if err != nil {
 						t.Errorf("Worker %d error: %v", workerID, err)
 						return
@@ -466,7 +467,7 @@ func TestIntegrationRedisDriver(t *testing.T) {
 			Message: "Redis test",
 		}
 
-		err := driver.Push(job, "redis-test")
+		err := driver.PushCtx(context.Background(), job, "redis-test")
 		if err != nil {
 			t.Fatalf("Failed to push job: %v", err)
 		}
@@ -481,7 +482,7 @@ func TestIntegrationRedisDriver(t *testing.T) {
 		}
 
 		// Pop the job
-		poppedJob, err := driver.Pop("redis-test")
+		poppedJob, err := driver.PopCtx(context.Background(), "redis-test")
 		if err != nil {
 			t.Fatalf("Failed to pop job: %v", err)
 		}
@@ -506,13 +507,13 @@ func TestIntegrationRedisDriver(t *testing.T) {
 		}
 
 		// Push with delay
-		err := driver.PushDelayed(job, 1*time.Second, "redis-delayed")
+		err := driver.PushDelayedCtx(context.Background(), job, 1*time.Second, "redis-delayed")
 		if err != nil {
 			t.Fatalf("Failed to push delayed job: %v", err)
 		}
 
 		// Should not be available immediately
-		poppedJob, err := driver.Pop("redis-delayed")
+		poppedJob, err := driver.PopCtx(context.Background(), "redis-delayed")
 		if err != nil {
 			t.Fatalf("Failed to pop: %v", err)
 		}
@@ -523,7 +524,7 @@ func TestIntegrationRedisDriver(t *testing.T) {
 		// Poll until the delay elapses and the job becomes visible.
 		var visibleJob Job
 		testsync.Eventually(t, func() bool {
-			j, pErr := driver.Pop("redis-delayed")
+			j, pErr := driver.PopCtx(context.Background(), "redis-delayed")
 			if pErr != nil {
 				return false
 			}
@@ -546,7 +547,7 @@ func TestIntegrationRedisDriver(t *testing.T) {
 				ID:      fmt.Sprintf("redis-concurrent-%d", i),
 				Message: "Redis concurrent test",
 			}
-			err := driver.Push(job, "redis-concurrent")
+			err := driver.PushCtx(context.Background(), job, "redis-concurrent")
 			if err != nil {
 				t.Fatalf("Failed to push job %d: %v", i, err)
 			}
@@ -562,7 +563,7 @@ func TestIntegrationRedisDriver(t *testing.T) {
 			go func(workerID int) {
 				defer wg.Done()
 				for {
-					job, err := driver.Pop("redis-concurrent")
+					job, err := driver.PopCtx(context.Background(), "redis-concurrent")
 					if err != nil {
 						t.Errorf("Worker %d error: %v", workerID, err)
 						return
@@ -601,10 +602,10 @@ func TestConfigurationFromEnvironment(t *testing.T) {
 		// Memory driver should always work
 		driver := NewMemoryDriver()
 		driver.Start()
-		defer driver.Close()
+		defer driver.Shutdown(context.Background())
 
 		job := &TestJob{ID: "mem-env", Message: "test"}
-		err := driver.Push(job, "env-test")
+		err := driver.PushCtx(context.Background(), job, "env-test")
 		if err != nil {
 			t.Errorf("Failed to push with memory driver: %v", err)
 		}
@@ -626,7 +627,7 @@ func TestConfigurationFromEnvironment(t *testing.T) {
 		}
 
 		job := &TestJob{ID: "redis-env", Message: "test"}
-		_ = driver.Push(job, "env-test")
+		_ = driver.PushCtx(context.Background(), job, "env-test")
 		driver.Clear("env-test")
 	})
 }
@@ -636,7 +637,7 @@ func BenchmarkQueueOperations(b *testing.B) {
 	// Use memory driver for consistent benchmarks
 	driver := NewMemoryDriver()
 	driver.Start()
-	defer driver.Close()
+	defer driver.Shutdown(context.Background())
 
 	b.Run("Push", func(b *testing.B) {
 		b.ResetTimer()
@@ -645,7 +646,7 @@ func BenchmarkQueueOperations(b *testing.B) {
 				ID:      fmt.Sprintf("bench-%d", i),
 				Message: "Benchmark",
 			}
-			driver.Push(job, "bench-queue")
+			driver.PushCtx(context.Background(), job, "bench-queue")
 		}
 		b.StopTimer()
 		driver.Clear("bench-queue")
@@ -658,8 +659,8 @@ func BenchmarkQueueOperations(b *testing.B) {
 				ID:      fmt.Sprintf("bench-%d", i),
 				Message: "Benchmark",
 			}
-			driver.Push(job, "bench-queue")
-			driver.Pop("bench-queue")
+			driver.PushCtx(context.Background(), job, "bench-queue")
+			driver.PopCtx(context.Background(), "bench-queue")
 		}
 	})
 
@@ -671,7 +672,7 @@ func BenchmarkQueueOperations(b *testing.B) {
 					ID:      fmt.Sprintf("bench-parallel-%d", i),
 					Message: "Benchmark",
 				}
-				driver.Push(job, "bench-parallel")
+				driver.PushCtx(context.Background(), job, "bench-parallel")
 				i++
 			}
 		})

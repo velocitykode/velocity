@@ -1,6 +1,7 @@
 package migrate_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -26,7 +27,7 @@ func TestTableBuilder_SoftDeletes(t *testing.T) {
 			}
 
 			manager := newTestManager(t)
-			defer manager.Close()
+			defer manager.Shutdown(context.Background())
 
 			db := manager.DB()
 			migrator := migrate.NewMigrator(db, manager.DriverName())
@@ -106,7 +107,7 @@ func TestTableBuilder_SoftDeletes_SQL(t *testing.T) {
 			if err != nil {
 				t.Skip("driver not available")
 			}
-			defer manager.Close()
+			defer manager.Shutdown(context.Background())
 
 			db := manager.DB()
 			migrator := migrate.NewMigrator(db, manager.DriverName())
@@ -135,7 +136,7 @@ func TestTableBuilder_SoftDeletes_SQL(t *testing.T) {
 
 func TestTableBuilder_AllColumns(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	db := manager.DB()
 	migrator := migrate.NewMigrator(db, manager.DriverName())
@@ -211,7 +212,7 @@ func TestTableBuilder_AllColumns(t *testing.T) {
 
 func TestTableBuilder_NewColumnTypes(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	db := manager.DB()
 	migrator := migrate.NewMigrator(db, manager.DriverName())
@@ -383,7 +384,7 @@ func TestTableBuilder_NewColumnTypes(t *testing.T) {
 
 func TestTableBuilder_IP(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	db := manager.DB()
 	migrator := migrate.NewMigrator(db, manager.DriverName())
@@ -426,7 +427,7 @@ func TestTableBuilder_IP(t *testing.T) {
 
 func TestTableBuilder_Decimal(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	db := manager.DB()
 	migrator := migrate.NewMigrator(db, manager.DriverName())
@@ -466,7 +467,7 @@ func TestTableBuilder_Decimal(t *testing.T) {
 
 func TestTableBuilder_JSON(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	db := manager.DB()
 	migrator := migrate.NewMigrator(db, manager.DriverName())
@@ -532,7 +533,7 @@ func TestTableBuilder_JSON_SQL(t *testing.T) {
 			if err != nil {
 				t.Skip("driver not available")
 			}
-			defer manager.Close()
+			defer manager.Shutdown(context.Background())
 
 			db := manager.DB()
 			migrator := migrate.NewMigrator(db, manager.DriverName())
@@ -561,7 +562,7 @@ func TestTableBuilder_JSON_SQL(t *testing.T) {
 
 func TestTableBuilder_CompositePrimaryKey(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	db := manager.DB()
 	migrator := migrate.NewMigrator(db, manager.DriverName())
@@ -603,7 +604,7 @@ func TestTableBuilder_CompositePrimaryKey(t *testing.T) {
 
 func TestTableBuilder_Primary(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Close()
+	defer manager.Shutdown(context.Background())
 
 	db := manager.DB()
 	migrator := migrate.NewMigrator(db, manager.DriverName())
@@ -660,7 +661,7 @@ func TestTableBuilder_Decimal_SQL(t *testing.T) {
 			if err != nil {
 				t.Skip("driver not available")
 			}
-			defer manager.Close()
+			defer manager.Shutdown(context.Background())
 
 			db := manager.DB()
 			migrator := migrate.NewMigrator(db, manager.DriverName())

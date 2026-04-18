@@ -1,6 +1,7 @@
 package migrate_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/velocitykode/velocity/orm"
@@ -39,7 +40,7 @@ func newTestORM(t *testing.T) *orm.Manager {
 
 func TestMigrationBasic(t *testing.T) {
 	m := newTestORM(t)
-	defer m.Close()
+	defer m.Shutdown(context.Background())
 
 	// Create migrator
 	migrator := migrate.NewMigrator(m.DB(), m.DriverName())

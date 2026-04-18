@@ -1,6 +1,7 @@
 package orm
 
 import (
+	"context"
 	"os"
 	"testing"
 
@@ -152,7 +153,7 @@ func setupRawQueryTestDB(t *testing.T, driverName string) (*rawQueryTestEnv, fun
 
 	return env, func() {
 		_, _ = m.DB().Exec("DROP TABLE IF EXISTS raw_query_users")
-		m.Close()
+		m.Shutdown(context.Background())
 	}
 }
 

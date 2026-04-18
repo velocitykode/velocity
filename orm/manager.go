@@ -56,12 +56,11 @@ func (c ManagerConfig) Validate() error {
 // connection management, and event wiring.
 type Database interface {
 	DB() *sql.DB
-	Raw(query string, args ...any) (*sql.Rows, error)
-	Exec(query string, args ...any) (sql.Result, error)
-	Transaction(fn func(tx *sql.Tx) error) error
-	Begin() (*sql.Tx, error)
+	Raw(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	Exec(ctx context.Context, query string, args ...any) (sql.Result, error)
+	Transaction(ctx context.Context, fn func(tx *sql.Tx) error) error
+	Begin(ctx context.Context) (*sql.Tx, error)
 	Shutdown(ctx context.Context) error
-	Close() error // Deprecated: use Shutdown(ctx) instead.
 	Ping() error
 	DriverName() string
 	DatabaseName() string
@@ -69,16 +68,9 @@ type Database interface {
 	DefaultDriver() drivers.Driver
 	Connection(name string) (drivers.Driver, error)
 	AddConnection(name string, driver drivers.Driver)
-	// SetEventDispatcher wires an untyped dispatcher. Retained for
-	// compatibility with framework-level wiring that does not yet
-	// depend on the ORM package. Prefer SetTypedEventDispatcher.
-	//
-	// Deprecated: use SetTypedEventDispatcher.
-	SetEventDispatcher(fn func(event interface{}) error)
-	// SetTypedEventDispatcher wires a dispatcher that receives orm.Event
-	// directly so handlers can inspect the event name without a type
-	// assertion.
-	SetTypedEventDispatcher(fn func(event Event) error)
+	// SetEventDispatcher wires the event dispatcher used by ORM internals
+	// to surface query and transaction lifecycle events.
+	SetEventDispatcher(fn func(event any) error)
 }
 
 // Verify *Manager implements Database at compile time.
@@ -201,13 +193,13 @@ func (m *Manager) AddConnection(name string, driver drivers.Driver) {
 //
 // WARNING: The caller is responsible for preventing SQL injection by using
 // parameterized queries. Never concatenate user input into the query string.
-func (m *Manager) Raw(query string, args ...any) (*sql.Rows, error) {
+func (m *Manager) Raw(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if m.defaultDriver == nil {
 		return nil, errors.New("orm: no database connection")
 	}
-	rows, err := m.defaultDriver.QueryContext(context.TODO(), query, args...)
+	rows, err := m.defaultDriver.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("orm: raw query failed: %w", err)
 	}
@@ -218,17 +210,17 @@ func (m *Manager) Raw(query string, args ...any) (*sql.Rows, error) {
 //
 // WARNING: The caller is responsible for preventing SQL injection by using
 // parameterized queries. Never concatenate user input into the query string.
-func (m *Manager) Exec(query string, args ...any) (sql.Result, error) {
+func (m *Manager) Exec(ctx context.Context, query string, args ...any) (sql.Result, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if m.defaultDriver == nil {
 		return nil, errors.New("orm: no database connection")
 	}
-	return m.defaultDriver.ExecContext(context.TODO(), query, args...)
+	return m.defaultDriver.ExecContext(ctx, query, args...)
 }
 
 // Transaction executes a function within a database transaction.
-func (m *Manager) Transaction(fn func(tx *sql.Tx) error) error {
+func (m *Manager) Transaction(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	m.mu.RLock()
 	driver := m.defaultDriver
 	logger := m.logger
@@ -238,7 +230,7 @@ func (m *Manager) Transaction(fn func(tx *sql.Tx) error) error {
 		return errors.New("velocity/orm: no database connection")
 	}
 
-	tx, err := driver.Begin()
+	tx, err := driver.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -280,13 +272,13 @@ func (m *Manager) Transaction(fn func(tx *sql.Tx) error) error {
 }
 
 // Begin starts a new transaction.
-func (m *Manager) Begin() (*sql.Tx, error) {
+func (m *Manager) Begin(ctx context.Context) (*sql.Tx, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if m.defaultDriver == nil {
 		return nil, errors.New("orm: no database connection")
 	}
-	return m.defaultDriver.Begin()
+	return m.defaultDriver.BeginTx(ctx, nil)
 }
 
 // Shutdown closes the default database connection and all named connections,
@@ -311,12 +303,6 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	}
 
 	return firstErr
-}
-
-// Close closes the default database connection and all named connections.
-// Deprecated: use Shutdown(ctx) instead.
-func (m *Manager) Close() error {
-	return m.Shutdown(context.Background())
 }
 
 // Ping verifies the default database connection.
@@ -361,12 +347,11 @@ func (m *Manager) Stats() sql.DBStats {
 	return sql.DBStats{}
 }
 
-// SetEventDispatcher wires an untyped dispatcher. The supplied function is
-// adapted into a typed dispatcher so orm.dispatchEvent can pass Event values
-// without losing static type information.
-//
-// Deprecated: use SetTypedEventDispatcher.
-func (m *Manager) SetEventDispatcher(fn func(event interface{}) error) {
+// SetEventDispatcher wires the dispatcher used by ORM internals to surface
+// query and transaction lifecycle events. The supplied function is adapted
+// into a typed dispatcher so orm.dispatchEvent can pass Event values without
+// losing static type information.
+func (m *Manager) SetEventDispatcher(fn func(event any) error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if fn == nil {
@@ -376,15 +361,6 @@ func (m *Manager) SetEventDispatcher(fn func(event interface{}) error) {
 	m.eventDispatcher = func(event Event) error {
 		return fn(event)
 	}
-}
-
-// SetTypedEventDispatcher wires a typed dispatcher. Prefer this over
-// SetEventDispatcher so handlers can call event.EventName() directly
-// without a type assertion.
-func (m *Manager) SetTypedEventDispatcher(fn func(event Event) error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.eventDispatcher = fn
 }
 
 // eventLogger is the minimal logger contract the manager uses to report

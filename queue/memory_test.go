@@ -2,6 +2,7 @@ package queue
 
 import (
 	"container/heap"
+	"context"
 	"testing"
 	"time"
 )
@@ -52,7 +53,7 @@ func TestMemoryDriver_MoveReadyJobs_HeapOrdering(t *testing.T) {
 	// Insert out-of-order: runAt descending ensures the heap reorders.
 	for i, id := range []string{want[2], want[0], want[1]} {
 		offset := time.Duration(i) * time.Millisecond
-		_ = d.PushDelayed(&TestJob{ID: id}, -time.Second+offset, "queue")
+		_ = d.PushDelayedCtx(context.Background(), &TestJob{ID: id}, -time.Second+offset, "queue")
 	}
 
 	// Rewrite each delayedJob's runAt to a known deterministic value so
@@ -107,9 +108,9 @@ func TestMemoryDriver_MoveReadyJobs_HeapOrdering(t *testing.T) {
 func TestMemoryDriver_MoveReadyJobs_PartiallyReady(t *testing.T) {
 	d := NewMemoryDriver()
 
-	_ = d.PushDelayed(&TestJob{ID: "ready-1"}, -time.Second, "q")
-	_ = d.PushDelayed(&TestJob{ID: "future-1"}, time.Hour, "q")
-	_ = d.PushDelayed(&TestJob{ID: "ready-2"}, -2*time.Second, "q")
+	_ = d.PushDelayedCtx(context.Background(), &TestJob{ID: "ready-1"}, -time.Second, "q")
+	_ = d.PushDelayedCtx(context.Background(), &TestJob{ID: "future-1"}, time.Hour, "q")
+	_ = d.PushDelayedCtx(context.Background(), &TestJob{ID: "ready-2"}, -2*time.Second, "q")
 
 	d.moveReadyJobs()
 
