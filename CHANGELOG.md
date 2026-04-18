@@ -55,7 +55,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **auth/session**: replace `crypto/rand` panics in session ID and remember-token generation with propagated errors; mirror of jti fix.
 - **auth/session**: remember-me cookies now store a SHA-256 hash server-side (raw token only lives in the encrypted cookie); cookie TTL is clamped to `min(session lifetime, 30d)`; refuses creation when `Lifetime == 0`.
 - **csrf**: replace silent session-ID generation with a `csrf.session_fallback` event; token comparison stays on `subtle.ConstantTimeCompare`; rename `Config.HTTPOnly` → `Config.HttpOnly` to match `net/http.Cookie.HttpOnly`.
-- **crypto/aes**: replace `fmt.Sprintf("base64:%s.%s", ...)` MAC concatenation with domain-separated HMAC writes (`"velocity\x00" || iv || ct`). **Wire-format break**: existing CBC payloads produced before this change cannot be decrypted. GCM is unaffected.
+- **crypto/aes**: replace `fmt.Sprintf("base64:%s.%s", ...)` MAC concatenation with domain-separated HMAC writes (`"velocity\x00" || iv || ct`).
+- **crypto/aes wire format versioning (dual-read window)**: payloads now carry a
+  `v1:` sentinel prefix that selects the domain-separated MAC path. Decrypt
+  transparently accepts both formats for one release cycle:
+  - **On encrypt:** emit `v1:` only. No operator action required at install.
+  - **On decrypt:** `v1:` → domain-separated MAC; no prefix → legacy (pre-sweep)
+    `HMAC-SHA256(hmacKey, "base64:"+valueB64+"."+ivB64)`. Operators who upgraded
+    before this release and produced a mix of v0 (pre-sweep) and v1 payloads
+    get a zero-downtime rollforward.
+  - **Operator signal:** every successful v0 decrypt dispatches a
+    `crypto.legacy_decrypt` event; a one-shot WARN (`velocity/crypto: legacy
+    v0 payload decrypted, rotate before v2.0`) logs once per Encryptor
+    instance. Monitor the event stream to gauge how much pre-versioned
+    ciphertext remains.
+  - **Sunset:** v0 decrypt is deprecated in this release and **removed in
+    v2.0**. Before upgrading to v2.0, operators must rotate session cookies
+    and re-encrypt any stored ciphertext (encrypted DB columns, signed URLs,
+    remember-me tokens) so that nothing produced before this release lingers.
+  - GCM-mode payloads also carry the `v1:` sentinel for format uniformity;
+    v0 GCM envelopes remain decryptable since GCM integrity is cipher-provided.
 - **crypto**: `NewEncryptor` now calls `Config.Validate()` up-front. Only AES-128/192/256 key sizes are accepted; `Validate()` returns `ErrInvalidKey` / `ErrInvalidCipher` sentinels.
 - **auth/middleware**: stop logging raw `RemoteAddr`; hash the client IP with a per-process salt (new `auth.SetAuditSalt` lets operators pin the salt for correlated log pipelines).
 
