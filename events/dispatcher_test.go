@@ -4,6 +4,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	testsync "github.com/velocitykode/velocity/testing"
 )
 
 func TestDispatcherFlush(t *testing.T) {
@@ -229,7 +231,7 @@ func TestDispatcherQueuedListener(t *testing.T) {
 		t.Errorf("Expected no error, got %v", err)
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	testsync.Eventually(t, listener.WasHandled, time.Second, "queued listener handled via goroutine")
 
 	if !listener.WasHandled() {
 		t.Error("Expected queued listener to be handled via goroutine")

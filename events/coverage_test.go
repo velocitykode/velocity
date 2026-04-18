@@ -3,8 +3,11 @@ package events
 import (
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	testsync "github.com/velocitykode/velocity/testing"
 )
 
 // Test helper types for complete coverage
@@ -162,19 +165,14 @@ func TestAsyncDispatcherFullCoverage(t *testing.T) {
 		t.Errorf("Push failed: %v", err)
 	}
 
-	time.Sleep(50 * time.Millisecond)
-	if !listener.WasHandled() {
-		t.Error("Event should be handled")
-	}
+	testsync.Eventually(t, listener.WasHandled, time.Second, "async listener handles event")
 
-	// Test Push with error
+	// Test Push with error — just verify it doesn't leak the error up.
 	errorListener := &TestListener{shouldErr: true}
-	err = dispatcher.Push("error", errorListener, 0)
-	if err != nil {
+	if err := dispatcher.Push("error", errorListener, 0); err != nil {
 		t.Error("Push should not return listener errors")
 	}
-
-	time.Sleep(50 * time.Millisecond)
+	testsync.Eventually(t, errorListener.WasHandled, time.Second, "error listener handled")
 }
 
 // Test EventWorker full coverage
@@ -552,9 +550,9 @@ func TestAsyncEventBusCoverage(t *testing.T) {
 	factory := func() Listener { return listener }
 
 	bus.RegisterQueuedListener("test", listener, factory)
-	bus.ProcessQueuedEvent("test")
-
-	time.Sleep(100 * time.Millisecond)
+	// "test" is not valid job JSON so Process errors out — this is purely a
+	// smoke test that the call doesn't panic when given garbage input.
+	_ = bus.ProcessQueuedEvent("test")
 }
 
 // Test FakeDispatcher uncovered methods
@@ -629,29 +627,21 @@ func TestDispatchAsyncAfterWithoutQueue(t *testing.T) {
 	d.Listen("test", listener)
 
 	// DispatchAsync without queue (should use goroutine)
-	err := d.DispatchAsync("test")
-	if err != nil {
+	if err := d.DispatchAsync("test"); err != nil {
 		t.Errorf("DispatchAsync failed: %v", err)
 	}
 
-	time.Sleep(50 * time.Millisecond)
-	if !listener.WasHandled() {
-		t.Error("Event should be handled async")
-	}
+	testsync.Eventually(t, listener.WasHandled, time.Second, "async goroutine handles event")
 
 	// DispatchAfter without queue
 	listener2 := &TestListener{}
 	d.Listen("delayed", listener2)
 
-	err = d.DispatchAfter("delayed", 10*time.Millisecond)
-	if err != nil {
+	if err := d.DispatchAfter("delayed", 10*time.Millisecond); err != nil {
 		t.Errorf("DispatchAfter failed: %v", err)
 	}
 
-	time.Sleep(50 * time.Millisecond)
-	if !listener2.WasHandled() {
-		t.Error("Event should be handled after delay")
-	}
+	testsync.Eventually(t, listener2.WasHandled, time.Second, "delayed listener handles event")
 }
 
 // Test matchParts edge case for remaining coverage
@@ -708,12 +698,21 @@ func TestGetEventNameEdgeCases(t *testing.T) {
 
 // Test helpers
 type TestFullQueuedListener struct {
+	mu      sync.Mutex
 	handled bool
 }
 
 func (l *TestFullQueuedListener) Handle(event interface{}) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.handled = true
 	return nil
+}
+
+func (l *TestFullQueuedListener) WasHandled() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.handled
 }
 
 func (l *TestFullQueuedListener) ShouldQueue() bool {

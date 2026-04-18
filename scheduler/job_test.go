@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -194,34 +195,35 @@ func TestJob(t *testing.T) {
 			mutex:              &sync.Mutex{},
 		}
 
-		executed := 0
-		var mu sync.Mutex
+		var executed atomic.Int32
+		started := make(chan struct{})
+		release := make(chan struct{})
 
 		job.callback = func() {
-			mu.Lock()
-			executed++
-			mu.Unlock()
-			time.Sleep(100 * time.Millisecond)
+			if executed.Add(1) == 1 {
+				close(started) // first run is in the callback
+				<-release      // hold it there until the test releases
+			}
 		}
 
-		// Start first execution
-		go job.Run()
-		time.Sleep(10 * time.Millisecond)
+		firstDone := make(chan struct{})
+		go func() {
+			_ = job.Run()
+			close(firstDone)
+		}()
 
-		// Try to run again while first is still running
-		err := job.Run()
-		if err == nil {
+		<-started // guarantees first Run() is actively executing the callback
+
+		if err := job.Run(); err == nil {
 			t.Error("expected error when job is already running")
 		}
 
-		// Wait for first to complete
-		time.Sleep(150 * time.Millisecond)
+		close(release)
+		<-firstDone
 
-		mu.Lock()
-		if executed != 1 {
-			t.Errorf("expected 1 execution, got %d", executed)
+		if n := executed.Load(); n != 1 {
+			t.Errorf("expected 1 execution, got %d", n)
 		}
-		mu.Unlock()
 	})
 
 	t.Run("Name", func(t *testing.T) {

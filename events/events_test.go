@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	testsync "github.com/velocitykode/velocity/testing"
 )
 
 // Test event types
@@ -279,8 +281,7 @@ func TestDispatchAsync(t *testing.T) {
 		t.Errorf("Expected no error, got %v", err)
 	}
 
-	// Wait a bit for async execution
-	time.Sleep(100 * time.Millisecond)
+	testsync.Eventually(t, listener.WasHandled, time.Second, "async listener handled")
 
 	if !listener.WasHandled() {
 		t.Error("Expected listener to handle async event")
@@ -296,8 +297,7 @@ func TestDispatchAfter(t *testing.T) {
 	start := time.Now()
 	dispatcher.DispatchAfter("test.event", 100*time.Millisecond)
 
-	// Wait for delayed execution
-	time.Sleep(200 * time.Millisecond)
+	testsync.Eventually(t, listener.WasHandled, time.Second, "delayed listener handled")
 
 	if !listener.WasHandled() {
 		t.Error("Expected listener to handle delayed event")

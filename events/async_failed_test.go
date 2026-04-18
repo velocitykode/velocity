@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	testsync "github.com/velocitykode/velocity/testing"
 )
 
 // panicingListener panics the first time Handle is invoked.
@@ -50,17 +52,11 @@ func TestAsyncDispatcher_PanicRecovered(t *testing.T) {
 		t.Fatalf("Push: %v", err)
 	}
 
-	// Allow the goroutine to run and report.
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
+	testsync.Eventually(t, func() bool {
 		mu.Lock()
-		ok := len(events) == 1
-		mu.Unlock()
-		if ok {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		defer mu.Unlock()
+		return len(events) == 1
+	}, time.Second, "AsyncFailed event reported")
 
 	mu.Lock()
 	defer mu.Unlock()

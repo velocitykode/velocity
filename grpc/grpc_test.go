@@ -11,6 +11,7 @@ import (
 
 	"github.com/velocitykode/velocity/grpc"
 	"github.com/velocitykode/velocity/grpc/converters"
+	testsync "github.com/velocitykode/velocity/testing"
 )
 
 func TestServerOptions(t *testing.T) {
@@ -81,34 +82,17 @@ func TestServerLifecycle(t *testing.T) {
 		t.Fatalf("StartAsync() error = %v", err)
 	}
 
-	// Give it time to start
-	time.Sleep(100 * time.Millisecond)
+	testsync.Eventually(t, server.IsRunning, 2*time.Second, "server reports running")
 
-	// Should be running now
-	if !server.IsRunning() {
-		t.Error("Server should be running after StartAsync()")
-	}
-
-	// Address should be set
 	if server.Address() == "" {
 		t.Error("Address() should not be empty after Start()")
 	}
-
-	// GRPCServer should be available
 	if server.GRPCServer() == nil {
 		t.Error("GRPCServer() should not be nil after Build()")
 	}
 
-	// Stop the server
 	server.Stop()
-
-	// Give it time to stop
-	time.Sleep(100 * time.Millisecond)
-
-	// Should not be running
-	if server.IsRunning() {
-		t.Error("Server should not be running after Stop()")
-	}
+	testsync.Eventually(t, func() bool { return !server.IsRunning() }, 2*time.Second, "server stops reporting running")
 }
 
 func TestServerDoubleStart(t *testing.T) {
@@ -119,7 +103,7 @@ func TestServerDoubleStart(t *testing.T) {
 	}
 	defer server.Stop()
 
-	time.Sleep(50 * time.Millisecond)
+	testsync.Eventually(t, server.IsRunning, 2*time.Second, "first server is running")
 
 	// Second start should fail
 	err := server.StartAsync()

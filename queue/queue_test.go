@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	testsync "github.com/velocitykode/velocity/testing"
 )
 
 // TestJob is a simple job implementation for testing
@@ -102,13 +104,14 @@ func TestMemoryQueue(t *testing.T) {
 			t.Error("Job should not be available immediately")
 		}
 
-		// Wait for delay plus processing time
-		time.Sleep(2 * time.Second)
-
-		// Should be available now
-		poppedJob, err = q.Pop("delayed-queue")
-		if err != nil {
-			t.Fatalf("Failed to pop job after delay: %v", err)
+		// Poll until the delay elapses and the job becomes visible.
+		var popErr error
+		testsync.Eventually(t, func() bool {
+			poppedJob, popErr = q.Pop("delayed-queue")
+			return popErr == nil && poppedJob != nil
+		}, 3*time.Second, "delayed job becomes visible")
+		if popErr != nil {
+			t.Fatalf("Failed to pop job after delay: %v", popErr)
 		}
 		if poppedJob == nil {
 			t.Error("Job should be available after delay")
@@ -295,12 +298,14 @@ func TestInstanceAPI(t *testing.T) {
 			t.Fatalf("Failed to push delayed job: %v", err)
 		}
 
-		// Wait and pop
-		time.Sleep(2 * time.Second)
-
-		poppedJob, err := q.Pop("instance-delayed")
-		if err != nil {
-			t.Fatalf("Failed to pop job: %v", err)
+		var poppedJob Job
+		var popErr error
+		testsync.Eventually(t, func() bool {
+			poppedJob, popErr = q.Pop("instance-delayed")
+			return popErr == nil && poppedJob != nil
+		}, 3*time.Second, "delayed job visible")
+		if popErr != nil {
+			t.Fatalf("Failed to pop job: %v", popErr)
 		}
 		if poppedJob == nil {
 			t.Fatal("Expected job after delay, got nil")

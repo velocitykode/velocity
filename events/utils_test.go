@@ -3,6 +3,8 @@ package events
 import (
 	"testing"
 	"time"
+
+	testsync "github.com/velocitykode/velocity/testing"
 )
 
 // Mock queue dispatcher for testing
@@ -105,11 +107,7 @@ func TestDispatcherSetQueueDispatcher(t *testing.T) {
 		t.Errorf("Expected no error, got %v", err)
 	}
 
-	// Check event was queued
-	time.Sleep(100 * time.Millisecond)
-	if !listener.WasHandled() {
-		t.Error("Queued event should have been processed")
-	}
+	testsync.Eventually(t, listener.WasHandled, time.Second, "queued event processed")
 }
 
 func TestDispatcherCreation(t *testing.T) {

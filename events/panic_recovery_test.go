@@ -5,6 +5,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	testsync "github.com/velocitykode/velocity/testing"
 )
 
 // countingPanicListener panics on Handle — used to verify recovery in both
@@ -30,34 +32,14 @@ func TestAsyncDispatcher_Push_RecoversPanic(t *testing.T) {
 		t.Fatalf("push failed: %v", err)
 	}
 
-	// Wait for the goroutine to schedule and panic.
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if listener.handled.Load() > 0 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-
-	if listener.handled.Load() == 0 {
-		t.Fatal("expected listener to have been called")
-	}
+	testsync.Eventually(t, func() bool { return listener.handled.Load() > 0 }, time.Second, "immediate listener invoked")
 
 	// Delayed dispatch — time.AfterFunc path.
 	listener2 := &countingPanicListener{}
 	if err := ad.Push("event", listener2, 10*time.Millisecond); err != nil {
 		t.Fatalf("push failed: %v", err)
 	}
-	deadline = time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if listener2.handled.Load() > 0 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if listener2.handled.Load() == 0 {
-		t.Fatal("expected delayed listener to have been called")
-	}
+	testsync.Eventually(t, func() bool { return listener2.handled.Load() > 0 }, time.Second, "delayed listener invoked")
 }
 
 // TestDispatcher_DispatchAsync_Fallback_RecoversPanic verifies that when
@@ -80,17 +62,7 @@ func TestDispatcher_DispatchAsync_Fallback_RecoversPanic(t *testing.T) {
 		t.Fatalf("DispatchAsync failed: %v", err)
 	}
 
-	// Wait for the goroutine to run.
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if ran.Load() > 0 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if ran.Load() == 0 {
-		t.Fatal("expected listener to have been invoked")
-	}
+	testsync.Eventually(t, func() bool { return ran.Load() > 0 }, time.Second, "fallback listener invoked")
 
 	// Dispatcher must remain usable.
 	var followup atomic.Int32
