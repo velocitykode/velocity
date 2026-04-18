@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -283,6 +284,155 @@ func (f failingRandReader) Read(p []byte) (int, error) { return 0, f.err }
 //
 // NOTE: generateJTI calls rand.Read which uses the package-level Reader,
 // so this test swaps it out via the exported package variable.
+// TestValidateToken_ErrorPaths covers the common ways a real-world token can
+// be invalid, beyond the algorithm-confusion matrix above. Each row builds a
+// token that differs from a valid one in exactly one dimension and asserts
+// ValidateToken rejects it.
+func TestValidateToken_ErrorPaths(t *testing.T) {
+	const hmacSecret = "super-secret-key-for-tests-at-least-32"
+	mgr, err := NewJWTManager(JWTConfig{
+		Secret:    hmacSecret,
+		Algorithm: "HS256",
+		TTL:       60,
+		Issuer:    "velocity-test",
+	})
+	if err != nil {
+		t.Fatalf("NewJWTManager: %v", err)
+	}
+
+	type tokenBuilder func() string
+
+	validFutureDate := func(offset time.Duration) *jwt.NumericDate {
+		return jwt.NewNumericDate(time.Now().Add(offset))
+	}
+
+	cases := []struct {
+		name    string
+		build   tokenBuilder
+		wantSub string
+	}{
+		{
+			name: "expired",
+			build: func() string {
+				c := Claims{
+					RegisteredClaims: jwt.RegisteredClaims{
+						Subject:   "1",
+						Issuer:    "velocity-test",
+						IssuedAt:  jwt.NewNumericDate(time.Now().Add(-2 * time.Hour)),
+						ExpiresAt: jwt.NewNumericDate(time.Now().Add(-1 * time.Hour)),
+					},
+					UserID:    1,
+					TokenType: "access",
+				}
+				tok := jwt.NewWithClaims(jwt.SigningMethodHS256, c)
+				s, _ := tok.SignedString([]byte(hmacSecret))
+				return s
+			},
+			wantSub: "expired",
+		},
+		{
+			name: "bad signature",
+			build: func() string {
+				c := Claims{
+					RegisteredClaims: jwt.RegisteredClaims{
+						Subject:   "1",
+						Issuer:    "velocity-test",
+						IssuedAt:  jwt.NewNumericDate(time.Now()),
+						ExpiresAt: validFutureDate(time.Hour),
+					},
+					UserID:    1,
+					TokenType: "access",
+				}
+				tok := jwt.NewWithClaims(jwt.SigningMethodHS256, c)
+				s, _ := tok.SignedString([]byte("a-different-but-equally-long-secret-"))
+				return s
+			},
+			wantSub: "signature",
+		},
+		{
+			name: "alg=none",
+			build: func() string {
+				return forgeUnsignedToken(t, "none", map[string]interface{}{
+					"uid": 1,
+					"sub": "1",
+					"iss": "velocity-test",
+					"exp": time.Now().Add(time.Hour).Unix(),
+				})
+			},
+			// jwt/v5 rejects alg=none before our keyFunc runs; the error
+			// message comes from the library. "invalid" is the common
+			// substring across versions.
+			wantSub: "none",
+		},
+		{
+			name: "future nbf",
+			build: func() string {
+				c := Claims{
+					RegisteredClaims: jwt.RegisteredClaims{
+						Subject:   "1",
+						Issuer:    "velocity-test",
+						IssuedAt:  jwt.NewNumericDate(time.Now()),
+						NotBefore: validFutureDate(time.Hour), // not valid yet
+						ExpiresAt: validFutureDate(2 * time.Hour),
+					},
+					UserID:    1,
+					TokenType: "access",
+				}
+				tok := jwt.NewWithClaims(jwt.SigningMethodHS256, c)
+				s, _ := tok.SignedString([]byte(hmacSecret))
+				return s
+			},
+			wantSub: "valid",
+		},
+		{
+			name: "wrong issuer",
+			build: func() string {
+				c := Claims{
+					RegisteredClaims: jwt.RegisteredClaims{
+						Subject:   "1",
+						Issuer:    "someone-else",
+						IssuedAt:  jwt.NewNumericDate(time.Now()),
+						ExpiresAt: validFutureDate(time.Hour),
+					},
+					UserID:    1,
+					TokenType: "access",
+				}
+				tok := jwt.NewWithClaims(jwt.SigningMethodHS256, c)
+				s, _ := tok.SignedString([]byte(hmacSecret))
+				return s
+			},
+			wantSub: "issuer",
+		},
+		{
+			name: "malformed — missing segment",
+			build: func() string {
+				return "abc.def" // only two segments
+			},
+			wantSub: "",
+		},
+		{
+			name: "malformed — empty string",
+			build: func() string {
+				return ""
+			},
+			wantSub: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tok := tc.build()
+			claims, err := mgr.ValidateToken(tok)
+			if err == nil {
+				t.Fatalf("ValidateToken(%q) returned nil error; claims=%+v", tc.name, claims)
+			}
+			if tc.wantSub != "" && !strings.Contains(strings.ToLower(err.Error()), tc.wantSub) {
+				t.Errorf("error %q missing substring %q", err, tc.wantSub)
+			}
+		})
+	}
+}
+
 func TestGenerateJTI_RandFailure(t *testing.T) {
 	// Verify the happy path first.
 	got, err := generateJTI()
