@@ -207,7 +207,7 @@ func (w *Worker) work(id int) {
 
 // processJob processes a single job
 func (w *Worker) processJob() error {
-	job, err := w.queue.Pop(w.queueName)
+	job, err := w.queue.PopCtx(w.ctx, w.queueName)
 	if err != nil {
 		return fmt.Errorf("velocity/queue: failed to pop job: %w", err)
 	}
@@ -310,7 +310,7 @@ func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, 
 			"error", err,
 		)
 		dispatchJobRetrying(w.dispatchEvent, ctx, jobType, w.queueName, attempt, maxAttempts, err, backoff)
-		if pushErr := w.queue.PushDelayed(job, backoff, w.queueName); pushErr != nil {
+		if pushErr := w.queue.PushDelayedCtx(w.ctx, job, backoff, w.queueName); pushErr != nil {
 			w.logger.Error("Failed to re-queue job for retry", "error", pushErr)
 			w.failJob(ctx, job, jobType, err, duration, attempt, maxAttempts)
 		}

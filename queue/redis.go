@@ -82,8 +82,11 @@ func (r *RedisDriver) dispatchEvent(event interface{}) {
 	}
 }
 
-// Push adds a job to the queue
-func (r *RedisDriver) Push(job Job, queueName ...string) error {
+// PushCtx adds a job to the queue using the caller's context.
+func (r *RedisDriver) PushCtx(ctx context.Context, job Job, queueName ...string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	name := resolveQueueName(job, queueName...)
 	queueKey := r.getQueueKey(name)
 
@@ -97,27 +100,33 @@ func (r *RedisDriver) Push(job Job, queueName ...string) error {
 		return fmt.Errorf("velocity/queue: failed to marshal payload: %w", err)
 	}
 
-	// Sign the payload for integrity verification
 	if sig := signPayload(data); sig != "" {
 		payload.Signature = sig
-		// Re-marshal with the signature included
 		data, err = json.Marshal(payload)
 		if err != nil {
 			return fmt.Errorf("velocity/queue: failed to marshal signed payload: %w", err)
 		}
 	}
 
-	if err := r.client.RPush(r.ctx, queueKey, data).Err(); err != nil {
+	if err := r.client.RPush(ctx, queueKey, data).Err(); err != nil {
 		return err
 	}
 
-	// Dispatch job.queued event
-	dispatchJobQueued(r.dispatchEvent, r.ctx, payload.Type, name, false, 0)
+	dispatchJobQueued(r.dispatchEvent, ctx, payload.Type, name, false, 0)
 	return nil
 }
 
-// PushDelayed adds a job to the queue with a delay
-func (r *RedisDriver) PushDelayed(job Job, delay time.Duration, queueName ...string) error {
+// Push adds a job to the queue.
+// Deprecated: use PushCtx.
+func (r *RedisDriver) Push(job Job, queueName ...string) error {
+	return r.PushCtx(r.ctx, job, queueName...)
+}
+
+// PushDelayedCtx adds a delayed job using the caller's context.
+func (r *RedisDriver) PushDelayedCtx(ctx context.Context, job Job, delay time.Duration, queueName ...string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	name := resolveQueueName(job, queueName...)
 	delayedKey := r.getDelayedKey(name)
 
@@ -131,7 +140,6 @@ func (r *RedisDriver) PushDelayed(job Job, delay time.Duration, queueName ...str
 		return fmt.Errorf("velocity/queue: failed to marshal payload: %w", err)
 	}
 
-	// Sign the payload for integrity verification
 	if sig := signPayload(data); sig != "" {
 		payload.Signature = sig
 		data, err = json.Marshal(payload)
@@ -141,20 +149,30 @@ func (r *RedisDriver) PushDelayed(job Job, delay time.Duration, queueName ...str
 	}
 
 	score := float64(time.Now().Add(delay).Unix())
-	if err := r.client.ZAdd(r.ctx, delayedKey, redis.Z{
+	if err := r.client.ZAdd(ctx, delayedKey, redis.Z{
 		Score:  score,
 		Member: data,
 	}).Err(); err != nil {
 		return err
 	}
 
-	// Dispatch job.queued event with delay info
-	dispatchJobQueued(r.dispatchEvent, r.ctx, payload.Type, name, true, delay)
+	dispatchJobQueued(r.dispatchEvent, ctx, payload.Type, name, true, delay)
 	return nil
 }
 
-// Pop retrieves and removes the next job from the queue
-func (r *RedisDriver) Pop(queueName string) (Job, error) {
+// PushDelayed adds a job to the queue with a delay.
+// Deprecated: use PushDelayedCtx.
+func (r *RedisDriver) PushDelayed(job Job, delay time.Duration, queueName ...string) error {
+	return r.PushDelayedCtx(r.ctx, job, delay, queueName...)
+}
+
+// PopCtx retrieves and removes the next job, honouring ctx cancellation on
+// the BLPOP round-trip so worker shutdown aborts without waiting the full
+// BLPOP timeout.
+func (r *RedisDriver) PopCtx(ctx context.Context, queueName string) (Job, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	// First, move any ready delayed jobs to the main queue
 	if err := r.moveDelayedJobs(queueName); err != nil {
 		return nil, err
@@ -163,7 +181,7 @@ func (r *RedisDriver) Pop(queueName string) (Job, error) {
 	queueKey := r.getQueueKey(queueName)
 
 	// Use BLPOP with a 1 second timeout for non-blocking behavior
-	result, err := r.client.BLPop(r.ctx, 1*time.Second, queueKey).Result()
+	result, err := r.client.BLPop(ctx, 1*time.Second, queueKey).Result()
 	if err != nil {
 		if err == redis.Nil {
 			return nil, nil // No jobs available
@@ -197,6 +215,12 @@ func (r *RedisDriver) Pop(queueName string) (Job, error) {
 		return nil, fmt.Errorf("velocity/queue: failed to deserialize job: %w", err)
 	}
 	return job, nil
+}
+
+// Pop retrieves and removes the next job from the queue.
+// Deprecated: use PopCtx so worker cancellation can unblock the BLPOP.
+func (r *RedisDriver) Pop(queueName string) (Job, error) {
+	return r.PopCtx(r.ctx, queueName)
 }
 
 // Size returns the number of jobs in the queue

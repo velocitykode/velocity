@@ -52,7 +52,7 @@ func newMemoryDriver() *memoryDriver {
 	return &memoryDriver{jobs: make(map[string][]Job)}
 }
 
-func (d *memoryDriver) Push(job Job, queue ...string) error {
+func (d *memoryDriver) PushCtx(ctx context.Context, job Job, queue ...string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	q := "default"
@@ -63,8 +63,20 @@ func (d *memoryDriver) Push(job Job, queue ...string) error {
 	return nil
 }
 
+func (d *memoryDriver) Push(job Job, queue ...string) error {
+	return d.PushCtx(context.Background(), job, queue...)
+}
+
+func (d *memoryDriver) PushDelayedCtx(ctx context.Context, job Job, delay time.Duration, queue ...string) error {
+	return d.PushCtx(ctx, job, queue...)
+}
+
 func (d *memoryDriver) PushDelayed(job Job, delay time.Duration, queue ...string) error {
-	return d.Push(job, queue...)
+	return d.PushCtx(context.Background(), job, queue...)
+}
+
+func (d *memoryDriver) PopCtx(ctx context.Context, queue string) (Job, error) {
+	return d.Pop(queue)
 }
 
 func (d *memoryDriver) Pop(queue string) (Job, error) {
@@ -719,7 +731,7 @@ type failingDriver struct {
 	mu        sync.Mutex
 }
 
-func (d *failingDriver) Push(job Job, queue ...string) error {
+func (d *failingDriver) PushCtx(_ context.Context, job Job, queue ...string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.pushed++
@@ -729,7 +741,15 @@ func (d *failingDriver) Push(job Job, queue ...string) error {
 	return nil
 }
 
+func (d *failingDriver) Push(job Job, queue ...string) error {
+	return d.PushCtx(context.Background(), job, queue...)
+}
+
+func (d *failingDriver) PushDelayedCtx(context.Context, Job, time.Duration, ...string) error {
+	return nil
+}
 func (d *failingDriver) PushDelayed(Job, time.Duration, ...string) error { return nil }
+func (d *failingDriver) PopCtx(context.Context, string) (Job, error)     { return nil, nil }
 func (d *failingDriver) Pop(string) (Job, error)                         { return nil, nil }
 func (d *failingDriver) Size(string) (int64, error)                      { return 0, nil }
 func (d *failingDriver) Clear(string) error                              { return nil }

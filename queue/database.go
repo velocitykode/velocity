@@ -102,34 +102,40 @@ func (d *DatabaseDriver) dispatchEvent(event interface{}) {
 	}
 }
 
-// Push adds a job to the queue
-func (d *DatabaseDriver) Push(job Job, queueName ...string) error {
-	return d.PushDelayed(job, 0, queueName...)
+// PushCtx adds a job to the queue.
+func (d *DatabaseDriver) PushCtx(ctx context.Context, job Job, queueName ...string) error {
+	return d.PushDelayedCtx(ctx, job, 0, queueName...)
 }
 
-// PushDelayed adds a delayed job to the queue
-func (d *DatabaseDriver) PushDelayed(job Job, delay time.Duration, queueName ...string) error {
+// Push adds a job to the queue.
+// Deprecated: use PushCtx.
+func (d *DatabaseDriver) Push(job Job, queueName ...string) error {
+	return d.PushDelayedCtx(context.Background(), job, 0, queueName...)
+}
+
+// PushDelayedCtx adds a delayed job, using ctx for the INSERT round-trip so
+// callers can abort mid-enqueue on shutdown or deadline.
+func (d *DatabaseDriver) PushDelayedCtx(ctx context.Context, job Job, delay time.Duration, queueName ...string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	name := resolveQueueName(job, queueName...)
 
-	// Check if database is available
 	db := d.db
 	if db == nil {
 		return fmt.Errorf("velocity/queue: database not initialized")
 	}
 
-	// Create job wrapper to maintain type information
 	wrapper, err := CreateJobWrapper(job, name)
 	if err != nil {
 		return fmt.Errorf("velocity/queue: failed to create job wrapper: %w", err)
 	}
 
-	// Serialize the wrapper
 	payload, err := json.Marshal(wrapper)
 	if err != nil {
 		return fmt.Errorf("velocity/queue: failed to serialize job: %w", err)
 	}
 
-	// Sign the payload for integrity verification
 	if sig := signPayload(payload); sig != "" {
 		wrapper.Payload.Signature = sig
 		payload, err = json.Marshal(wrapper)
@@ -143,20 +149,18 @@ func (d *DatabaseDriver) PushDelayed(job Job, delay time.Duration, queueName ...
 		scheduledAt = scheduledAt.Add(delay)
 	}
 
-	// Insert directly using SQL since ORM might not be fully ready.
-	// Postgres supports RETURNING id; MySQL/SQLite use LastInsertId via Exec.
 	now := time.Now()
 	var jobID uint
 	if d.dbDriver == "postgres" {
 		query := d.rewriteQuery(`INSERT INTO jobs (queue, payload, attempts, scheduled_at, created_at, updated_at)
 		          VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`)
-		if err := db.QueryRow(query, name, string(payload), 0, scheduledAt, now, now).Scan(&jobID); err != nil {
+		if err := db.QueryRowContext(ctx, query, name, string(payload), 0, scheduledAt, now, now).Scan(&jobID); err != nil {
 			return fmt.Errorf("velocity/queue: failed to insert job: %w", err)
 		}
 	} else {
 		query := d.rewriteQuery(`INSERT INTO jobs (queue, payload, attempts, scheduled_at, created_at, updated_at)
 		          VALUES ($1, $2, $3, $4, $5, $6)`)
-		res, err := db.Exec(query, name, string(payload), 0, scheduledAt, now, now)
+		res, err := db.ExecContext(ctx, query, name, string(payload), 0, scheduledAt, now, now)
 		if err != nil {
 			return fmt.Errorf("velocity/queue: failed to insert job: %w", err)
 		}
@@ -166,9 +170,14 @@ func (d *DatabaseDriver) PushDelayed(job Job, delay time.Duration, queueName ...
 	}
 	_ = jobID
 
-	// Dispatch job.queued event
-	dispatchJobQueued(d.dispatchEvent, context.Background(), wrapper.Payload.Type, name, delay > 0, delay)
+	dispatchJobQueued(d.dispatchEvent, ctx, wrapper.Payload.Type, name, delay > 0, delay)
 	return nil
+}
+
+// PushDelayed adds a delayed job to the queue.
+// Deprecated: use PushDelayedCtx.
+func (d *DatabaseDriver) PushDelayed(job Job, delay time.Duration, queueName ...string) error {
+	return d.PushDelayedCtx(context.Background(), job, delay, queueName...)
 }
 
 // Pop retrieves and removes a job from the queue.
@@ -181,10 +190,18 @@ func (d *DatabaseDriver) PushDelayed(job Job, delay time.Duration, queueName ...
 // the queue — the transaction is rolled back and the job stays reserved for
 // the next worker (or becomes visible again for inspection).
 func (d *DatabaseDriver) Pop(queueName string) (Job, error) {
+	return d.PopCtx(context.Background(), queueName)
+}
+
+// PopCtx retrieves and removes a job, using the caller's ctx for every
+// transactional round-trip so worker shutdown aborts a blocking SELECT
+// instead of waiting for the driver deadline.
+func (d *DatabaseDriver) PopCtx(ctx context.Context, queueName string) (Job, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-
-	ctx := context.Background()
 
 	// Use Serializable on SQLite since it lacks FOR UPDATE SKIP LOCKED;
 	// default isolation elsewhere (the row lock provides mutual exclusion).

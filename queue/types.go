@@ -12,15 +12,38 @@ type Job interface {
 	Failed(error)
 }
 
-// Driver defines the interface for queue drivers
+// Driver defines the interface for queue drivers.
+//
+// The Ctx-suffixed methods are the primary API — they propagate the caller's
+// context through to the underlying store so workers can abort in flight
+// (shutdown, deadline) instead of blocking on a network round-trip. The
+// non-Ctx methods remain for backwards compatibility and simply forward to
+// their Ctx counterparts with context.Background().
 type Driver interface {
-	// Push adds a job to the queue
+	// PushCtx adds a job to the queue. Cancellation of ctx aborts the push
+	// before it reaches the backing store (e.g. during graceful shutdown).
+	PushCtx(ctx context.Context, job Job, queue ...string) error
+
+	// PushDelayedCtx adds a job to the queue with a delay.
+	PushDelayedCtx(ctx context.Context, job Job, delay time.Duration, queue ...string) error
+
+	// PopCtx retrieves and removes the next job from the queue. Callers
+	// typically pass a ctx tied to the worker's lifetime; when it cancels,
+	// Pop returns a wrapped ctx.Err() and the worker loop exits cleanly.
+	PopCtx(ctx context.Context, queue string) (Job, error)
+
+	// Push adds a job to the queue.
+	// Deprecated: use PushCtx(ctx, job, queue...) so the caller's context
+	// flows through to the store.
 	Push(job Job, queue ...string) error
 
-	// PushDelayed adds a job to the queue with a delay
+	// PushDelayed adds a job to the queue with a delay.
+	// Deprecated: use PushDelayedCtx.
 	PushDelayed(job Job, delay time.Duration, queue ...string) error
 
-	// Pop retrieves and removes the next job from the queue
+	// Pop retrieves and removes the next job from the queue.
+	// Deprecated: use PopCtx so worker shutdown can abort an in-flight
+	// pop instead of waiting for the blocking read to return.
 	Pop(queue string) (Job, error)
 
 	// Size returns the number of jobs in the queue
