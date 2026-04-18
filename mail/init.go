@@ -14,7 +14,7 @@ import (
 // Callers that use custom broadcast streams can configure AllowedPostmarkStreams
 // via ConfigureAllowedPostmarkStreams.
 var (
-	allowedPostmarkStreams   = map[string]struct{}{"outbound": {}, "broadcast": {}, "transactional": {}}
+	allowedPostmarkStreams   = map[string]struct{}{"outbound": {}, "broadcast": {}, "transactional": {}, "inbound": {}}
 	allowedPostmarkStreamsMu sync.RWMutex
 )
 
@@ -24,7 +24,7 @@ func ConfigureAllowedPostmarkStreams(streams []string) {
 	allowedPostmarkStreamsMu.Lock()
 	defer allowedPostmarkStreamsMu.Unlock()
 	if len(streams) == 0 {
-		allowedPostmarkStreams = map[string]struct{}{"outbound": {}, "broadcast": {}, "transactional": {}}
+		allowedPostmarkStreams = map[string]struct{}{"outbound": {}, "broadcast": {}, "transactional": {}, "inbound": {}}
 		return
 	}
 	next := make(map[string]struct{}, len(streams))
