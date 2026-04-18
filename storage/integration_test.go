@@ -148,9 +148,9 @@ func (p prefixedDriver) key(path string) string { return p.prefix + strings.Trim
 func (p prefixedDriver) Put(path string, contents []byte) error {
 	return p.Driver.Put(p.key(path), contents)
 }
-func (p prefixedDriver) Get(path string) ([]byte, error)  { return p.Driver.Get(p.key(path)) }
-func (p prefixedDriver) Exists(path string) bool          { return p.Driver.Exists(p.key(path)) }
-func (p prefixedDriver) Size(path string) (int64, error)  { return p.Driver.Size(p.key(path)) }
+func (p prefixedDriver) Get(path string) ([]byte, error) { return p.Driver.Get(p.key(path)) }
+func (p prefixedDriver) Exists(path string) bool         { return p.Driver.Exists(p.key(path)) }
+func (p prefixedDriver) Size(path string) (int64, error) { return p.Driver.Size(p.key(path)) }
 func (p prefixedDriver) Delete(paths ...string) error {
 	keyed := make([]string, len(paths))
 	for i, path := range paths {

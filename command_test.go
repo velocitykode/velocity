@@ -15,7 +15,7 @@ type stubCommand struct {
 }
 
 func (c *stubCommand) Name() string        { return c.name }
-func (c *stubCommand) Description() string  { return c.description }
+func (c *stubCommand) Description() string { return c.description }
 func (c *stubCommand) Handle(s *app.Services, args []string) error {
 	if c.handleFn != nil {
 		return c.handleFn(s, args)

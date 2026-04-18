@@ -280,4 +280,3 @@ func (a *App) Exceptions(fn func(exceptions.ExceptionHandler)) *App {
 	a.exceptionsFn = fn
 	return a
 }
-
