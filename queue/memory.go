@@ -108,8 +108,13 @@ func (m *MemoryDriver) dispatchEvent(event interface{}) {
 	}
 }
 
-// Push adds a job to the queue
-func (m *MemoryDriver) Push(job Job, queueName ...string) error {
+// PushCtx adds a job to the queue. Honours ctx cancellation before the
+// lock is acquired so a graceful-shutdown cancel on the caller doesn't
+// queue new work.
+func (m *MemoryDriver) PushCtx(ctx context.Context, job Job, queueName ...string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	name := resolveQueueName(job, queueName...)
 
 	wrapper, err := CreateJobWrapper(job, name)
@@ -125,17 +130,23 @@ func (m *MemoryDriver) Push(job Job, queueName ...string) error {
 	}
 
 	m.queues[name].PushBack(wrapper)
-
-	// Dispatch job.queued event
-	dispatchJobQueued(m.dispatchEvent, context.Background(), wrapper.Payload.Type, name, false, 0)
+	dispatchJobQueued(m.dispatchEvent, ctx, wrapper.Payload.Type, name, false, 0)
 	return nil
 }
 
-// PushDelayed adds a job to the queue with a delay.
-// Delayed jobs are stored in a per-queue min-heap keyed by readyAt so the
-// cleanup loop can drain ready jobs in O(log n) instead of scanning the
-// full list every tick.
-func (m *MemoryDriver) PushDelayed(job Job, delay time.Duration, queueName ...string) error {
+// Push adds a job to the queue.
+// Deprecated: use PushCtx so caller cancellation can abort the push.
+func (m *MemoryDriver) Push(job Job, queueName ...string) error {
+	return m.PushCtx(context.Background(), job, queueName...)
+}
+
+// PushDelayedCtx adds a job with a delay. Delayed jobs live in a per-queue
+// min-heap keyed by readyAt so the cleanup loop drains ready jobs in
+// O(log n) rather than scanning the full list every tick.
+func (m *MemoryDriver) PushDelayedCtx(ctx context.Context, job Job, delay time.Duration, queueName ...string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	name := resolveQueueName(job, queueName...)
 
 	wrapper, err := CreateJobWrapper(job, name)
@@ -157,13 +168,32 @@ func (m *MemoryDriver) PushDelayed(job Job, delay time.Duration, queueName ...st
 		runAt:   time.Now().Add(delay),
 	})
 
-	// Dispatch job.queued event with delay info
-	dispatchJobQueued(m.dispatchEvent, context.Background(), wrapper.Payload.Type, name, true, delay)
+	dispatchJobQueued(m.dispatchEvent, ctx, wrapper.Payload.Type, name, true, delay)
 	return nil
 }
 
-// Pop retrieves and removes the next job from the queue
+// PushDelayed adds a job to the queue with a delay.
+// Deprecated: use PushDelayedCtx.
+func (m *MemoryDriver) PushDelayed(job Job, delay time.Duration, queueName ...string) error {
+	return m.PushDelayedCtx(context.Background(), job, delay, queueName...)
+}
+
+// PopCtx retrieves and removes the next job. Returns (nil, ctx.Err()) if
+// ctx is already cancelled so worker loops exit cleanly on shutdown.
+func (m *MemoryDriver) PopCtx(ctx context.Context, queueName string) (Job, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return m.popLocked(queueName)
+}
+
+// Pop retrieves and removes the next job from the queue.
+// Deprecated: use PopCtx.
 func (m *MemoryDriver) Pop(queueName string) (Job, error) {
+	return m.popLocked(queueName)
+}
+
+func (m *MemoryDriver) popLocked(queueName string) (Job, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

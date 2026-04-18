@@ -7,6 +7,21 @@ import (
 	"github.com/velocitykode/velocity/trace"
 )
 
+// Event is the typed surface for scheduler events. Matches router.Event
+// (Name() string) so dispatchers can accept both packages' events through
+// the same interface. The orm package uses EventName() for historical
+// reasons; its types still expose Name() so they satisfy this shape too.
+type Event interface {
+	Name() string
+}
+
+// Compile-time assertions that every scheduler event implements Event.
+var (
+	_ Event = (*ScheduledTaskStarting)(nil)
+	_ Event = (*ScheduledTaskFinished)(nil)
+	_ Event = (*ScheduledTaskFailed)(nil)
+)
+
 // ScheduledTaskStarting is dispatched when a scheduled task begins
 type ScheduledTaskStarting struct {
 	Context  context.Context
