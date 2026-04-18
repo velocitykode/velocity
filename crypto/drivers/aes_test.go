@@ -557,6 +557,18 @@ func TestDecryptBytesWithKeyRotation(t *testing.T) {
 	}
 }
 
+// stripV1 removes the v1 sentinel from a payload so existing tampering
+// helpers that base64-decode the whole string still work.
+func stripV1(payload string) string {
+	return strings.TrimPrefix(payload, "v1:")
+}
+
+// wrapV1 re-applies the v1 sentinel after tampering helpers rebuild the
+// envelope as base64 URL.
+func wrapV1(envelope string) string {
+	return "v1:" + envelope
+}
+
 func TestTamperDetectionCBC(t *testing.T) {
 	key := []byte("0123456789abcdef")
 	driver, _ := NewAESDriver(key, nil, "AES-128-CBC")
@@ -573,7 +585,7 @@ func TestTamperDetectionCBC(t *testing.T) {
 		{
 			name: "fails when ciphertext is modified",
 			tamperFunc: func(payload string) string {
-				data, _ := base64.URLEncoding.DecodeString(payload)
+				data, _ := base64.URLEncoding.DecodeString(stripV1(payload))
 				var p Payload
 				json.Unmarshal(data, &p)
 
@@ -585,13 +597,13 @@ func TestTamperDetectionCBC(t *testing.T) {
 				p.Value = base64.StdEncoding.EncodeToString(ciphertext)
 
 				modified, _ := json.Marshal(p)
-				return base64.URLEncoding.EncodeToString(modified)
+				return wrapV1(base64.URLEncoding.EncodeToString(modified))
 			},
 		},
 		{
 			name: "fails when IV is modified",
 			tamperFunc: func(payload string) string {
-				data, _ := base64.URLEncoding.DecodeString(payload)
+				data, _ := base64.URLEncoding.DecodeString(stripV1(payload))
 				var p Payload
 				json.Unmarshal(data, &p)
 
@@ -603,13 +615,13 @@ func TestTamperDetectionCBC(t *testing.T) {
 				p.IV = base64.StdEncoding.EncodeToString(iv)
 
 				modified, _ := json.Marshal(p)
-				return base64.URLEncoding.EncodeToString(modified)
+				return wrapV1(base64.URLEncoding.EncodeToString(modified))
 			},
 		},
 		{
 			name: "fails when MAC is modified",
 			tamperFunc: func(payload string) string {
-				data, _ := base64.URLEncoding.DecodeString(payload)
+				data, _ := base64.URLEncoding.DecodeString(stripV1(payload))
 				var p Payload
 				json.Unmarshal(data, &p)
 
@@ -617,13 +629,13 @@ func TestTamperDetectionCBC(t *testing.T) {
 				p.MAC = "invalid_mac_value"
 
 				modified, _ := json.Marshal(p)
-				return base64.URLEncoding.EncodeToString(modified)
+				return wrapV1(base64.URLEncoding.EncodeToString(modified))
 			},
 		},
 		{
 			name: "fails when MAC is removed",
 			tamperFunc: func(payload string) string {
-				data, _ := base64.URLEncoding.DecodeString(payload)
+				data, _ := base64.URLEncoding.DecodeString(stripV1(payload))
 				var p Payload
 				json.Unmarshal(data, &p)
 
@@ -637,7 +649,7 @@ func TestTamperDetectionCBC(t *testing.T) {
 				p.Value = base64.StdEncoding.EncodeToString(ciphertext)
 
 				modified, _ := json.Marshal(p)
-				return base64.URLEncoding.EncodeToString(modified)
+				return wrapV1(base64.URLEncoding.EncodeToString(modified))
 			},
 		},
 	}
@@ -669,7 +681,7 @@ func TestTamperDetectionGCM(t *testing.T) {
 		{
 			name: "fails when ciphertext is modified",
 			tamperFunc: func(payload string) string {
-				data, _ := base64.URLEncoding.DecodeString(payload)
+				data, _ := base64.URLEncoding.DecodeString(stripV1(payload))
 				var p Payload
 				json.Unmarshal(data, &p)
 
@@ -680,13 +692,13 @@ func TestTamperDetectionGCM(t *testing.T) {
 				p.Value = base64.StdEncoding.EncodeToString(ciphertext)
 
 				modified, _ := json.Marshal(p)
-				return base64.URLEncoding.EncodeToString(modified)
+				return wrapV1(base64.URLEncoding.EncodeToString(modified))
 			},
 		},
 		{
 			name: "fails when nonce is modified",
 			tamperFunc: func(payload string) string {
-				data, _ := base64.URLEncoding.DecodeString(payload)
+				data, _ := base64.URLEncoding.DecodeString(stripV1(payload))
 				var p Payload
 				json.Unmarshal(data, &p)
 
@@ -697,13 +709,13 @@ func TestTamperDetectionGCM(t *testing.T) {
 				p.IV = base64.StdEncoding.EncodeToString(nonce)
 
 				modified, _ := json.Marshal(p)
-				return base64.URLEncoding.EncodeToString(modified)
+				return wrapV1(base64.URLEncoding.EncodeToString(modified))
 			},
 		},
 		{
 			name: "fails when tag is modified",
 			tamperFunc: func(payload string) string {
-				data, _ := base64.URLEncoding.DecodeString(payload)
+				data, _ := base64.URLEncoding.DecodeString(stripV1(payload))
 				var p Payload
 				json.Unmarshal(data, &p)
 
@@ -714,13 +726,13 @@ func TestTamperDetectionGCM(t *testing.T) {
 				p.Tag = base64.StdEncoding.EncodeToString(tag)
 
 				modified, _ := json.Marshal(p)
-				return base64.URLEncoding.EncodeToString(modified)
+				return wrapV1(base64.URLEncoding.EncodeToString(modified))
 			},
 		},
 		{
 			name: "fails when tag is truncated",
 			tamperFunc: func(payload string) string {
-				data, _ := base64.URLEncoding.DecodeString(payload)
+				data, _ := base64.URLEncoding.DecodeString(stripV1(payload))
 				var p Payload
 				json.Unmarshal(data, &p)
 
@@ -731,7 +743,7 @@ func TestTamperDetectionGCM(t *testing.T) {
 				p.Tag = base64.StdEncoding.EncodeToString(tag)
 
 				modified, _ := json.Marshal(p)
-				return base64.URLEncoding.EncodeToString(modified)
+				return wrapV1(base64.URLEncoding.EncodeToString(modified))
 			},
 		},
 	}

@@ -1,3 +1,34 @@
+// Package drivers implements the AES encryption wire format used by
+// velocity's crypto.Encryptor.
+//
+// # Wire format versioning
+//
+// Encrypted payloads are emitted in one of two versions. The version is
+// determined by a literal sentinel on the outer serialized string:
+//
+//	v1 (current): "v1:" + base64url(JSON{iv, value, mac|tag})
+//	v0 (legacy):              base64url(JSON{iv, value, mac|tag})
+//
+// The colon character is not part of either the standard or URL base64
+// alphabet, so a legacy v0 payload can never begin with the v1 sentinel.
+// This keeps the two formats unambiguously distinguishable on decrypt.
+//
+// v1 and v0 differ only in how the CBC MAC is computed:
+//
+//	v1 MAC: HMAC-SHA256(hmacKey, "velocity\x00" || iv || ciphertext)
+//	v0 MAC: HMAC-SHA256(hmacKey, "base64:"+base64(ciphertext)+"."+base64(iv))
+//
+// GCM-mode payloads share the same outer sentinel plumbing but the
+// authenticated tag is cipher-provided, so v0 and v1 are decoded the same
+// way once the sentinel is stripped. Adding the sentinel to GCM payloads
+// keeps every ciphertext produced by this package self-describing under a
+// single format rule.
+//
+// All payloads emitted by this package are v1. v0 is accepted on decrypt
+// for one release cycle and will be removed in v2.0. When a v0 payload is
+// decrypted successfully, a one-shot WARN is logged and a
+// crypto.legacy_decrypt event is dispatched so operators can track the
+// rotation window.
 package drivers
 
 import (
@@ -12,10 +43,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"strings"
+	"sync"
+	"time"
 
 	"golang.org/x/crypto/hkdf"
 )
+
+// v1Sentinel marks payloads produced by the current (domain-separated MAC)
+// wire format. The colon is unreachable in base64 output, so it can never
+// collide with a legacy v0 payload.
+const v1Sentinel = "v1:"
 
 // AESDriver implements AES encryption with CBC and GCM modes
 type AESDriver struct {
@@ -24,6 +63,12 @@ type AESDriver struct {
 	previousKeys [][]byte // Previous keys for rotation
 	cipher       string   // Cipher mode (AES-128-CBC, AES-256-CBC, AES-128-GCM, AES-256-GCM)
 	keySize      int      // Key size in bytes
+
+	// Event dispatcher wiring (mirrors the cache/queue/mail pattern).
+	// mu guards eventDispatcher and legacyWarned.
+	mu              sync.RWMutex
+	eventDispatcher func(event interface{}) error
+	legacyWarnOnce  sync.Once
 }
 
 // NewAESDriver creates a new AES driver
@@ -81,6 +126,29 @@ func deriveSubkey(master []byte, size int, info []byte) ([]byte, error) {
 	return out, nil
 }
 
+// SetEventDispatcher sets the function used to dispatch events. Mirrors the
+// cache/mail/queue pattern so bootstrap wiring can plug velocity's events
+// package in without the crypto package importing it.
+func (d *AESDriver) SetEventDispatcher(fn func(event interface{}) error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.eventDispatcher = fn
+}
+
+// dispatchEvent dispatches an event if a dispatcher is configured.
+func (d *AESDriver) dispatchEvent(event interface{}) {
+	d.mu.RLock()
+	fn := d.eventDispatcher
+	d.mu.RUnlock()
+	if fn == nil {
+		return
+	}
+	// Dispatcher is called inline; mirrors the cache package which does
+	// not spawn a goroutine here. Listeners that need async behaviour can
+	// opt in via queued listeners.
+	_ = fn(event)
+}
+
 // Encrypt encrypts plaintext
 func (d *AESDriver) Encrypt(plaintext string) (string, error) {
 	return d.EncryptBytes([]byte(plaintext))
@@ -103,17 +171,25 @@ func (d *AESDriver) Decrypt(payload string) (string, error) {
 	return string(data), nil
 }
 
-// DecryptBytes decrypts a payload to bytes
+// DecryptBytes decrypts a payload to bytes. Accepts both v1 (current
+// domain-separated MAC) and v0 (legacy fmt-concatenated MAC) payloads.
 func (d *AESDriver) DecryptBytes(payload string) ([]byte, error) {
-	// Parse the payload
-	p, err := deserializePayload(payload)
+	if payload == "" {
+		return nil, errors.New("velocity/crypto: invalid payload format")
+	}
+
+	version, envelope := splitVersion(payload)
+
+	// Parse the inner base64+JSON envelope.
+	p, err := deserializePayload(envelope)
 	if err != nil {
 		return nil, err
 	}
 
 	// Try current key first (already-derived enc + hmac subkeys)
-	plaintext, err := d.decryptWithKeys(p, d.key, d.hmacKey)
+	plaintext, err := d.decryptWithKeys(p, d.key, d.hmacKey, version)
 	if err == nil {
+		d.noteLegacyIfV0(version)
 		return plaintext, nil
 	}
 
@@ -124,14 +200,55 @@ func (d *AESDriver) DecryptBytes(payload string) ([]byte, error) {
 		if ekErr != nil || hkErr != nil {
 			continue
 		}
-		plaintext, err = d.decryptWithKeys(p, encKey, hk)
+		plaintext, err = d.decryptWithKeys(p, encKey, hk, version)
 		if err == nil {
+			d.noteLegacyIfV0(version)
 			return plaintext, nil
 		}
 	}
 
 	return nil, errors.New("velocity/crypto: decryption failed with all keys")
 }
+
+// splitVersion peeks the payload's leading sentinel and returns (version,
+// inner envelope). The version byte / sentinel is not secret, so direct
+// branching is fine (and preferable to feeding attacker-controlled prefix
+// bytes into the MAC path).
+func splitVersion(payload string) (version int, envelope string) {
+	if strings.HasPrefix(payload, v1Sentinel) {
+		return 1, payload[len(v1Sentinel):]
+	}
+	return 0, payload
+}
+
+// noteLegacyIfV0 emits the one-shot WARN log and the crypto.legacy_decrypt
+// event the first time a v0 payload successfully decrypts. Only fires once
+// per Encryptor instance regardless of how many v0 payloads flow through.
+func (d *AESDriver) noteLegacyIfV0(version int) {
+	if version != 0 {
+		return
+	}
+	d.legacyWarnOnce.Do(func() {
+		log.Print("velocity/crypto: legacy v0 payload decrypted, rotate before v2.0")
+	})
+	// Dispatch every time so operators can count/alert on the stream.
+	// The once-per-instance log is about noise, not signal.
+	d.dispatchEvent(&LegacyDecryptEvent{
+		Cipher: d.cipher,
+		At:     time.Now().UTC(),
+	})
+}
+
+// LegacyDecryptEvent is dispatched each time a v0 payload is decrypted.
+// Operators can count these to gauge how much pre-versioned ciphertext
+// remains before upgrading to v2.0 (which drops v0 support).
+type LegacyDecryptEvent struct {
+	Cipher string    // e.g. "AES-256-CBC"
+	At     time.Time // when the decrypt happened (UTC)
+}
+
+// Name returns the event name.
+func (e *LegacyDecryptEvent) Name() string { return "crypto.legacy_decrypt" }
 
 // GenerateKey generates a new encryption key
 func (d *AESDriver) GenerateKey() (string, error) {
@@ -142,7 +259,7 @@ func (d *AESDriver) GenerateKey() (string, error) {
 	return "base64:" + base64.StdEncoding.EncodeToString(key), nil
 }
 
-// encryptCBC encrypts using CBC mode
+// encryptCBC encrypts using CBC mode (v1 wire format).
 func (d *AESDriver) encryptCBC(plaintext []byte) (string, error) {
 	// Create cipher block
 	block, err := aes.NewCipher(d.key)
@@ -175,10 +292,14 @@ func (d *AESDriver) encryptCBC(plaintext []byte) (string, error) {
 		MAC:   mac,
 	}
 
-	return serializePayload(p)
+	env, err := serializePayload(p)
+	if err != nil {
+		return "", err
+	}
+	return v1Sentinel + env, nil
 }
 
-// encryptGCM encrypts using GCM mode
+// encryptGCM encrypts using GCM mode (v1 wire format).
 func (d *AESDriver) encryptGCM(plaintext []byte) (string, error) {
 	// Create cipher block
 	block, err := aes.NewCipher(d.key)
@@ -213,27 +334,35 @@ func (d *AESDriver) encryptGCM(plaintext []byte) (string, error) {
 		Tag:   base64.StdEncoding.EncodeToString(tag),
 	}
 
-	return serializePayload(p)
+	env, err := serializePayload(p)
+	if err != nil {
+		return "", err
+	}
+	return v1Sentinel + env, nil
 }
 
 // decryptWithKeys attempts to decrypt with specific encryption and HMAC keys.
-func (d *AESDriver) decryptWithKeys(p *Payload, encKey, hmacKey []byte) ([]byte, error) {
+// The version selects which MAC framing to verify for CBC; GCM is
+// version-independent (its tag is cipher-provided).
+func (d *AESDriver) decryptWithKeys(p *Payload, encKey, hmacKey []byte, version int) ([]byte, error) {
 	if strings.Contains(d.cipher, "GCM") {
 		return d.decryptGCMWithKey(p, encKey)
 	}
-	return d.decryptCBCWithKey(p, encKey, hmacKey)
+	return d.decryptCBCWithKey(p, encKey, hmacKey, version)
 }
 
-// decryptCBCWithKey decrypts CBC mode with separate encryption and HMAC keys
-func (d *AESDriver) decryptCBCWithKey(p *Payload, encKey, hmacKey []byte) ([]byte, error) {
+// decryptCBCWithKey decrypts CBC mode with separate encryption and HMAC keys.
+// version == 1 uses the domain-separated MAC; version == 0 uses the
+// pre-sweep fmt-concatenated MAC for backwards compatibility.
+func (d *AESDriver) decryptCBCWithKey(p *Payload, encKey, hmacKey []byte, version int) ([]byte, error) {
 	// MAC is required for CBC decryption to ensure integrity
 	if p.MAC == "" {
 		return nil, errors.New("velocity/crypto: mac required for cbc decryption")
 	}
 
 	// Decode components BEFORE MAC verification so we can compute the MAC
-	// over the raw bytes (the wire format hashes raw IV+ciphertext with a
-	// domain-separation prefix).
+	// over the raw bytes (the v1 wire format hashes raw IV+ciphertext with a
+	// domain-separation prefix; v0 hashes the base64 strings).
 	iv, err := base64.StdEncoding.DecodeString(p.IV)
 	if err != nil {
 		return nil, fmt.Errorf("velocity/crypto: invalid iv encoding: %w", err)
@@ -243,7 +372,15 @@ func (d *AESDriver) decryptCBCWithKey(p *Payload, encKey, hmacKey []byte) ([]byt
 		return nil, fmt.Errorf("velocity/crypto: invalid value encoding: %w", err)
 	}
 
-	expectedMAC := computeMACWith(iv, ciphertext, hmacKey)
+	var expectedMAC string
+	switch version {
+	case 1:
+		expectedMAC = computeMACWith(iv, ciphertext, hmacKey)
+	case 0:
+		expectedMAC = computeLegacyMACWith(p.Value, p.IV, hmacKey)
+	default:
+		return nil, errors.New("velocity/crypto: unsupported payload version")
+	}
 	if !secureCompare(p.MAC, expectedMAC) {
 		return nil, errors.New("velocity/crypto: mac verification failed")
 	}
@@ -321,13 +458,34 @@ func (d *AESDriver) computeMAC(iv, ct []byte) string {
 	return computeMACWith(iv, ct, d.hmacKey)
 }
 
-// computeMACWith generates HMAC with the provided HMAC key, using
+// computeMACWith generates the v1 HMAC with the provided HMAC key, using
 // domain-separated writes rather than string concatenation.
 func computeMACWith(iv, ct, hmacKey []byte) string {
 	mac := hmac.New(sha256.New, hmacKey)
 	mac.Write(macDomainPrefix)
 	mac.Write(iv)
 	mac.Write(ct)
+	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// computeLegacyMACWith reproduces the pre-sweep MAC computation so that
+// existing v0 ciphertexts (cookies, signed URLs, encrypted DB columns) can
+// still be decrypted during the migration window. The format is
+// HMAC-SHA256(hmacKey, "base64:"+valueB64+"."+ivB64), matching the
+// fmt.Sprintf("base64:%s.%s", value, iv) concatenation used before the
+// domain-separated sweep.
+//
+// This path MUST be kept in sync with the pre-sweep code exactly: value
+// comes first, then iv. See git history for crypto/drivers/aes.go prior
+// to commit 03152c3 for the original implementation.
+func computeLegacyMACWith(valueB64, ivB64 string, hmacKey []byte) string {
+	mac := hmac.New(sha256.New, hmacKey)
+	// Equivalent to fmt.Sprintf("base64:%s.%s", value, iv) but without the
+	// fmt package; value is written before iv to match the legacy order.
+	mac.Write([]byte("base64:"))
+	mac.Write([]byte(valueB64))
+	mac.Write([]byte("."))
+	mac.Write([]byte(ivB64))
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
 
@@ -383,8 +541,13 @@ func serializePayload(p *Payload) (string, error) {
 	return base64.URLEncoding.EncodeToString(data), nil
 }
 
-// deserializePayload converts base64 JSON to a payload
+// deserializePayload converts base64 JSON to a payload. Accepts both v1
+// ("v1:"-prefixed) and v0 (bare base64) envelopes. The inner parser does
+// not need to know which version it is; that information is used by the
+// caller to select the correct MAC verifier.
 func deserializePayload(encoded string) (*Payload, error) {
+	encoded = strings.TrimPrefix(encoded, v1Sentinel)
+
 	// Try URL encoding first, then standard encoding
 	data, err := base64.URLEncoding.DecodeString(encoded)
 	if err != nil {
