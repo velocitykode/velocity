@@ -281,31 +281,3 @@ func (a *App) Exceptions(fn func(exceptions.ExceptionHandler)) *App {
 	return a
 }
 
-// NewTestApp creates an App with in-memory services suitable for testing.
-// Uses memory cache, memory queue, and console logger.
-func NewTestApp(opts ...Option) (*App, error) {
-	config := Config{
-		Name:  "Velocity Test",
-		Env:   "testing",
-		Debug: true,
-		Port:  "0",
-		Cache: CacheConfig{
-			Driver: "memory",
-			Prefix: "test_cache",
-		},
-		Log: log.LogConfig{
-			Driver: "console",
-			Config: make(map[string]any),
-		},
-		Queue: QueueConfig{
-			Driver: "memory",
-		},
-		Mail: mail.MailConfig{
-			Driver: "log",
-		},
-	}
-
-	allOpts := []Option{WithConfig(config)}
-	allOpts = append(allOpts, opts...)
-	return New(allOpts...)
-}

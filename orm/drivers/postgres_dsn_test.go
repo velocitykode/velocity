@@ -2,36 +2,24 @@ package drivers
 
 import (
 	"bytes"
-	"os"
 	"strings"
 	"testing"
 )
 
 // TestResolveSSLMode_DefaultsToRequire verifies that callers who do not
-// pin an explicit SSLMode and do not set DB_SSL_MODE land on the secure
-// "require" default. Regression guard for the previous "disable" default.
+// pin an explicit SSLMode land on the secure "require" default.
+// Regression guard for the previous "disable" default.
 func TestResolveSSLMode_DefaultsToRequire(t *testing.T) {
-	t.Setenv("DB_SSL_MODE", "")
 	if got := resolveSSLMode(""); got != "require" {
 		t.Fatalf("resolveSSLMode(\"\") = %q, want %q", got, "require")
 	}
 }
 
-// TestResolveSSLMode_ConfigOverridesEnv verifies the documented precedence:
-// Config.SSLMode wins over DB_SSL_MODE.
-func TestResolveSSLMode_ConfigOverridesEnv(t *testing.T) {
-	t.Setenv("DB_SSL_MODE", "verify-full")
+// TestResolveSSLMode_ConfigOverride verifies a configured value wins over
+// the default.
+func TestResolveSSLMode_ConfigOverride(t *testing.T) {
 	if got := resolveSSLMode("disable"); got != "disable" {
 		t.Fatalf("resolveSSLMode(\"disable\") = %q, want %q", got, "disable")
-	}
-}
-
-// TestResolveSSLMode_EnvOptsOut verifies DB_SSL_MODE can be used to opt
-// into a looser setting (e.g. local dev) without code changes.
-func TestResolveSSLMode_EnvOptsOut(t *testing.T) {
-	t.Setenv("DB_SSL_MODE", "disable")
-	if got := resolveSSLMode(""); got != "disable" {
-		t.Fatalf("resolveSSLMode(\"\") with env = %q, want %q", got, "disable")
 	}
 }
 
@@ -41,9 +29,6 @@ func TestResolveSSLMode_EnvOptsOut(t *testing.T) {
 // openAndPing through a mock substitution is overkill; instead we build
 // the DSN the same way Connect does and assert the expected substring.
 func TestPostgresDriver_DSNIncludesRequireByDefault(t *testing.T) {
-	// Ensure a clean env.
-	_ = os.Unsetenv("DB_SSL_MODE")
-
 	cfg := ConnectionConfig{
 		Host:     "db.example.com",
 		Port:     "5432",

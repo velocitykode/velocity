@@ -1,24 +1,21 @@
 package drivers
 
 import (
-	"os"
 	"strings"
 	"testing"
 )
 
 // TestResolveMySQLTLS_DefaultsToPreferred asserts MySQL connections pick
-// tls=preferred when the operator provides no override.
+// tls=preferred when the configured value is empty.
 func TestResolveMySQLTLS_DefaultsToPreferred(t *testing.T) {
-	t.Setenv("DB_MYSQL_TLS", "")
-	if got := resolveMySQLTLS(); got != "preferred" {
+	if got := resolveMySQLTLS(""); got != "preferred" {
 		t.Fatalf("resolveMySQLTLS = %q, want %q", got, "preferred")
 	}
 }
 
-// TestResolveMySQLTLS_EnvOverride verifies DB_MYSQL_TLS takes precedence.
-func TestResolveMySQLTLS_EnvOverride(t *testing.T) {
-	t.Setenv("DB_MYSQL_TLS", "false")
-	if got := resolveMySQLTLS(); got != "false" {
+// TestResolveMySQLTLS_Override verifies the configured value wins.
+func TestResolveMySQLTLS_Override(t *testing.T) {
+	if got := resolveMySQLTLS("false"); got != "false" {
 		t.Fatalf("resolveMySQLTLS = %q, want %q", got, "false")
 	}
 }
@@ -59,7 +56,6 @@ func TestRedactMySQLDSN(t *testing.T) {
 // TestMySQLDriver_DSNParamsIncludeTLSDefault verifies Connect wires the
 // default tls=preferred into the query string portion of the DSN.
 func TestMySQLDriver_DSNParamsIncludeTLSDefault(t *testing.T) {
-	_ = os.Unsetenv("DB_MYSQL_TLS")
 	params := buildMySQLParamsForTest(ConnectionConfig{})
 	if !strings.Contains(params, "tls=preferred") {
 		t.Errorf("expected params to contain tls=preferred, got %q", params)
@@ -82,6 +78,6 @@ func buildMySQLParamsForTest(config ConnectionConfig) string {
 	if config.TimeZone != "" {
 		params = append(params, "loc="+config.TimeZone)
 	}
-	params = append(params, "tls="+resolveMySQLTLS())
+	params = append(params, "tls="+resolveMySQLTLS(config.TLS))
 	return strings.Join(params, "&")
 }

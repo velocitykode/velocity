@@ -1,6 +1,8 @@
 package app
 
 import (
+	"fmt"
+
 	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
@@ -44,5 +46,38 @@ type Services struct {
 	// Extensions holds optional first-party and third-party service instances.
 	// Packages register themselves here via ServiceProvider.Register() so that
 	// core never needs new fields for each additional package.
+	//
+	// Prefer RegisterExtension / ExtensionAs over direct map access — the
+	// generic helpers give you duplicate-key detection and type-safe reads.
 	Extensions map[string]any
+}
+
+// RegisterExtension stores an instance under the given key. Returns an error
+// if the key is already registered (duplicate registration usually means a
+// provider ran twice or two packages clashed on the same key).
+func RegisterExtension[T any](s *Services, key string, v T) error {
+	if s.Extensions == nil {
+		s.Extensions = make(map[string]any)
+	}
+	if _, exists := s.Extensions[key]; exists {
+		return fmt.Errorf("velocity/app: extension %q already registered", key)
+	}
+	s.Extensions[key] = v
+	return nil
+}
+
+// ExtensionAs retrieves the extension registered under key and asserts it to
+// type T. Returns a wrapped error when the key is missing or the stored
+// instance does not satisfy T so callers can distinguish the two cases.
+func ExtensionAs[T any](s *Services, key string) (T, error) {
+	var zero T
+	v, ok := s.Extensions[key]
+	if !ok {
+		return zero, fmt.Errorf("velocity/app: extension %q not registered", key)
+	}
+	typed, ok := v.(T)
+	if !ok {
+		return zero, fmt.Errorf("velocity/app: extension %q is %T, not %T", key, v, zero)
+	}
+	return typed, nil
 }

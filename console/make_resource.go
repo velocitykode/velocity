@@ -36,15 +36,14 @@ func MakeResource(name string, opts MakeResourceOptions) error {
 		stubContent = []byte(`package {{ .Package }}
 
 // {{ .Name }}Resource transforms a {{ .Name }} into an API response.
+// Add fields from the {{ .Name }} model to control what gets serialized.
 type {{ .Name }}Resource struct {
-	// TODO: add fields from the {{ .Name }} model
 }
 
 // ToResource returns the resource as a map for JSON serialization.
+// Map the model's fields into this response body.
 func (r {{ .Name }}Resource) ToResource() map[string]any {
-	return map[string]any{
-		// TODO: map model fields to response keys
-	}
+	return map[string]any{}
 }
 `)
 	}

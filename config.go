@@ -84,7 +84,8 @@ type DBConfig struct {
 	Collation       string        // DB_COLLATION
 	Prefix          string        // DB_PREFIX
 	Schema          string        // DB_SCHEMA
-	SSLMode         string        // DB_SSL_MODE
+	SSLMode         string        // DB_SSL_MODE (postgres)
+	TLS             string        // DB_MYSQL_TLS (mysql: true/false/skip-verify/preferred)
 	Timezone        string        // DB_TIMEZONE
 	MaxIdleConns    int           // DB_MAX_IDLE_CONNS, default 10
 	MaxOpenConns    int           // DB_MAX_OPEN_CONNS, default 100
@@ -196,7 +197,7 @@ func WithoutEvents() Option {
 // *events.FakeDispatcher for assertions:
 //
 //	fake := events.NewFakeDispatcher()
-//	app, _ := velocity.NewTestApp(velocity.WithFakeEvents(fake))
+//	app, _ := velocitytest.NewApp(velocity.WithFakeEvents(fake))
 //	// ... trigger actions ...
 //	fake.AssertDispatched(router.RequestHandled{}, nil)
 func WithFakeEvents(fake *events.FakeDispatcher) Option {
@@ -244,6 +245,7 @@ func ConfigFromEnv() Config {
 		Prefix:          os.Getenv("DB_PREFIX"),
 		Schema:          os.Getenv("DB_SCHEMA"),
 		SSLMode:         os.Getenv("DB_SSL_MODE"),
+		TLS:             os.Getenv("DB_MYSQL_TLS"),
 		Timezone:        os.Getenv("DB_TIMEZONE"),
 		MaxIdleConns:    envIntOrDefault("DB_MAX_IDLE_CONNS", 10),
 		MaxOpenConns:    envIntOrDefault("DB_MAX_OPEN_CONNS", 100),

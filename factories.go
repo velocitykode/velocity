@@ -170,6 +170,7 @@ func initDB(config DBConfig) (*orm.Manager, error) {
 		Password:        config.Password,
 		Charset:         config.Charset,
 		SSLMode:         config.SSLMode,
+		TLS:             config.TLS,
 		MaxIdleConns:    config.MaxIdleConns,
 		MaxOpenConns:    config.MaxOpenConns,
 		ConnMaxLifetime: config.ConnMaxLifetime,

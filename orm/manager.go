@@ -20,7 +20,8 @@ type ManagerConfig struct {
 	Username        string
 	Password        string
 	Charset         string
-	SSLMode         string
+	SSLMode         string // postgres
+	TLS             string // mysql
 	MaxIdleConns    int
 	MaxOpenConns    int
 	ConnMaxLifetime time.Duration
@@ -123,6 +124,7 @@ func NewManager(config ManagerConfig) (*Manager, error) {
 		Password: config.Password,
 		Charset:  stringOrDefault(config.Charset, "utf8mb4"),
 		SSLMode:  config.SSLMode,
+		TLS:      config.TLS,
 	}
 
 	if config.MaxIdleConns > 0 {

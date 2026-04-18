@@ -56,7 +56,7 @@ func (c {{ .Name }}Command) Name() string {
 
 // Description returns a short description of the command.
 func (c {{ .Name }}Command) Description() string {
-	return "TODO: describe {{ .CommandName }}"
+	return "{{ .CommandName }} command (update this description)"
 }
 
 // Handle executes the command logic.

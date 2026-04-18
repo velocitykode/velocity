@@ -3,7 +3,6 @@ package drivers
 import (
 	"fmt"
 	"net/url"
-	"os"
 	"regexp"
 	"strings"
 
@@ -24,14 +23,14 @@ func redactMySQLDSN(dsn string) string {
 // resolveMySQLTLS returns the effective tls= value for a MySQL connection.
 //
 // Precedence:
-//  1. DB_MYSQL_TLS env var, if set. Allows deployment-level opt-out.
+//  1. Config.TLS, if set. Applications may pass "true", "skip-verify",
+//     "preferred", or a named TLS profile registered via
+//     github.com/go-sql-driver/mysql RegisterTLSConfig.
 //  2. "preferred" — the secure default. Uses TLS if the server offers it,
-//     otherwise falls back to plaintext. Applications that require a strong
-//     guarantee should set DB_MYSQL_TLS=true (verified) or configure a named
-//     TLS profile via github.com/go-sql-driver/mysql RegisterTLSConfig.
-func resolveMySQLTLS() string {
-	if env := os.Getenv("DB_MYSQL_TLS"); env != "" {
-		return env
+//     otherwise falls back to plaintext.
+func resolveMySQLTLS(configured string) string {
+	if configured != "" {
+		return configured
 	}
 	return "preferred"
 }
@@ -86,7 +85,7 @@ func (d *MySQLDriver) Connect(config ConnectionConfig) error {
 		params = append(params, "loc="+config.TimeZone)
 	}
 	// tls defaults to preferred — secure by default.
-	params = append(params, "tls="+resolveMySQLTLS())
+	params = append(params, "tls="+resolveMySQLTLS(config.TLS))
 
 	dsn += "?" + strings.Join(params, "&")
 

@@ -5,7 +5,47 @@ All notable changes to Velocity will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0-rc.1] - 2026-04-18
+
+### Migration from 0.x
+
+**Breaking changes on the 1.0 API surface. Update every item below before upgrading.**
+
+- **Deleted `http/` package.** The legacy router was superseded by `router/`. Remove any import of `github.com/velocitykode/velocity/http`.
+- **Deleted `validate/` package.** Use `github.com/velocitykode/velocity/validation` for rules/data/request validation. The request-binding helper `validate.Form[T]` is now `github.com/velocitykode/velocity/validation/vform.Form[T]`.
+- **Deleted root-package type aliases.** `velocity.AuthConfig`, `GuardConfig`, `ProviderConfig`, `SessionConfig`, `JWTConfig`, `LogConfig`, `CSRFConfig`, `CryptoConfig`, `ViewConfig`, `MailConfig` are gone. Use the canonical package types: `auth.Config`, `auth.GuardConfig`, `log.LogConfig`, `csrf.Config`, `crypto.Config`, `view.Config`, `mail.MailConfig`, …
+- **Removed deprecated env-var fallbacks.** Only the new names are read:
+  - `AUTH_JWT_SECRET`, `AUTH_JWT_ALGO`, `AUTH_JWT_TTL`, `AUTH_JWT_REFRESH_TTL`, `AUTH_JWT_BLACKLIST_ENABLED` (old: `JWT_*`)
+  - `VIEW_SSR_ENABLED`, `VIEW_SSR_URL`, `VIEW_SSR_TIMEOUT`, `VIEW_SSR_EXCEPT` (old: `INERTIA_SSR_*`)
+  - `MAIL_MAILGUN_DOMAIN`, `MAIL_MAILGUN_SECRET`, `MAIL_MAILGUN_ENDPOINT`, `MAIL_MAILGUN_WEBHOOK_SIGNING_KEY` (old: `MAILGUN_*`)
+  - `MAIL_POSTMARK_TOKEN`, `MAIL_POSTMARK_MESSAGE_STREAM` (old: `POSTMARK_*`)
+  - `DB_MYSQL_TLS` is still read, but now via `ConfigFromEnv` → `DBConfig.TLS`; the mysql driver no longer reaches for `os.Getenv`.
+  - `DB_SSL_MODE` is still read, but now via `ConfigFromEnv` → `DBConfig.SSLMode`; the postgres driver no longer reaches for `os.Getenv`.
+- **`APP_KEY` is mandatory outside `APP_ENV=testing`.** `velocity.New` returns `velocity.ErrNoAppKey` when the key is missing. Generate one with `vel key:generate`.
+- **Queue driver startup never falls back silently.** `QUEUE_DRIVER=redis` with an unreachable Redis, or `QUEUE_DRIVER=database` without a DB connection, now fail app boot. To keep the in-memory driver, set `QUEUE_DRIVER=memory` explicitly.
+- **ORM query builder returns errors instead of panicking.** Every chain step (`Where`, `WhereIn`, `OrderBy`, `GroupBy`, `Having`, `Select`, `Pluck`, …) captures its first validation error into `Query[T].err`. Terminal methods (`Get`, `First`, `Count`, `Update`, `Delete`, `ForceDelete`, `Pluck`, `InsertGetId`) return `q.err` ahead of executing. Call `q.Err()` for mid-chain inspection. Tests that used `require.Panics` on malformed identifiers must switch to asserting an error return.
+- **ORM `Manager` methods now take a `context.Context`.** `Raw`, `Exec`, `Begin`, `Transaction` are context-aware. Pass `ctx` from the request handler or `context.Background()` from startup code. `Manager.Close()` is removed — use `Shutdown(ctx)`.
+- **ORM `Database` interface slimmed.** `SetTypedEventDispatcher` is gone; `SetEventDispatcher(func(any) error)` is the sole event wiring API and matches `contract.EventDispatcherAware`.
+- **ORM driver interface simplified.** Non-Context `Query`/`QueryRow`/`Exec`/`Begin` removed. Use `QueryContext`/`QueryRowContext`/`ExecContext`/`BeginTx(ctx, opts)`.
+- **Queue driver interface slimmed.** Non-Context `Push`/`PushDelayed`/`Pop`/`Close` removed. Use `PushCtx`/`PushDelayedCtx`/`PopCtx`/`Shutdown(ctx)`.
+- **`queue.PendingBatch.Dispatch` now takes a context.** Call sites: `.Dispatch(ctx, driver)` instead of `.Dispatch(driver)`.
+- **`velocity.NewTestApp` moved.** The public constructor is now `velocitytest.NewApp` (in `github.com/velocitykode/velocity/velocitytest`). The old name remains only as a test-only internal helper and does not ship in production binaries.
+
+### Added
+
+- **`velocity.BuildInfo`** — single source of truth for version metadata (`Version`, `Commit`, `Date`). Populated at build time via `-ldflags` from the `Makefile` `build` target and `console.Build`. Defaults to `"1.0.0-rc.1"`/`"devel"`/`"unknown"` for `go run` / tests.
+- **`velocity.ErrNoAppKey`** — sentinel returned by `New` when `APP_KEY`/`CRYPTO_KEY` is unset outside `APP_ENV=testing`.
+- **`contract.EventDispatcherAware`** — uniform `SetEventDispatcher(func(any) error)` interface. Every subsystem (cache, queue, scheduler, router, ORM, mail, csrf, view/bond, crypto, notification) implements it; bootstrap wires them all via a single interface assertion. A new `event_dispatcher_aware.go` holds compile-time `var _ contract.EventDispatcherAware = (*X)(nil)` checks so signature drift fails the build.
+- **`app.RegisterExtension[T]` / `app.ExtensionAs[T]`** — generic typed accessors for `Services.Extensions`. `RegisterExtension` errors on duplicate keys; `ExtensionAs` returns a wrapped error for missing keys or type mismatches. The underlying `map[string]any` is still accessible but callers are encouraged to use the helpers.
+- **`SERVER_READ_HEADER_TIMEOUT`** (default 10s) controls `http.Server.ReadHeaderTimeout`. `BaseContext` now returns the app-level shutdown context so handlers observe graceful shutdown.
+- **`validation/vform.Form[T]`** — replacement for `validate.Form[T]`; lives in its own leaf package so `validation` stays router-free.
+- **`orm.DBConfig.TLS`** — typed MySQL `tls=` value (mirrors `DBConfig.SSLMode` for postgres).
+
+### Changed
+
+- **Logger init failures now fail boot.** `log.NewLogger` errors from `velocity.New` propagate up instead of being swallowed by a console fallback.
+- **`frameworkVersion` constant removed** — the version is now a variable on `velocity.BuildInfo` injected at link time.
+- **`ConfigFromEnv` cleanup.** Reads `DB_MYSQL_TLS` once at config time instead of leaking to drivers; removes stdlib-log warnings on deprecated env names (those env names are no longer read at all).
 
 ### Security — Kernel-enforced file-path containment (`os.Root`)
 - **Removed** `router.ValidateFilePathWithin(path, root string) (string, error)` along
@@ -127,6 +167,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Driver-based architecture for all packages
 - Environment-based configuration
 - Inertia.js integration for React frontend
-- GORM-based ORM with migrations
+- Custom query-builder ORM with migrations, soft deletes, and relations (not GORM)
 - Background job processing
 - Real-time features with WebSockets
+
+[1.0.0-rc.1]: https://github.com/velocitykode/velocity/releases/tag/v1.0.0-rc.1

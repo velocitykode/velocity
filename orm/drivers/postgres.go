@@ -2,7 +2,6 @@ package drivers
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	_ "github.com/lib/pq"
@@ -95,14 +94,12 @@ func NewPostgresDriver() Driver {
 //  3. "require" — the secure default. Applications must explicitly opt out
 //     if they need to connect to an unencrypted server.
 //
-// Callers that need to disable TLS for local development can set
-// DB_SSL_MODE=disable or Config.SSLMode="disable".
+// Callers that need to disable TLS for local development must set
+// Config.SSLMode="disable" (DB_SSL_MODE is read at config time in
+// ConfigFromEnv, not by the driver).
 func resolveSSLMode(configured string) string {
 	if configured != "" {
 		return configured
-	}
-	if env := os.Getenv("DB_SSL_MODE"); env != "" {
-		return env
 	}
 	return "require"
 }

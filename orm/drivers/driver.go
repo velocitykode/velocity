@@ -47,7 +47,8 @@ type ConnectionConfig struct {
 	Collation          string
 	Prefix             string
 	Schema             string
-	SSLMode            string
+	SSLMode            string // postgres: sslmode (disable/prefer/require/verify-ca/verify-full)
+	TLS                string // mysql: tls= value (true/false/skip-verify/preferred/named-profile)
 	TimeZone           string
 	MaxIdleConns       int
 	MaxOpenConns       int

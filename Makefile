@@ -12,7 +12,19 @@
 # service in CI. A silent skip turns "MinIO sidecar failed to start"
 # into a green build — the exact signal-drop we're trying to avoid.
 
-.PHONY: test test-integration test-all
+.PHONY: test test-integration test-all build
+
+# Version metadata baked in via -ldflags. CI overrides VERSION/COMMIT/DATE.
+VERSION ?= 1.0.0-rc.1
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo devel)
+DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS := -X 'github.com/velocitykode/velocity.BuildInfo.Version=$(VERSION)' \
+           -X 'github.com/velocitykode/velocity.BuildInfo.Commit=$(COMMIT)' \
+           -X 'github.com/velocitykode/velocity.BuildInfo.Date=$(DATE)'
+
+# Build the entire framework with version metadata injected.
+build:
+	go build -ldflags "$(LDFLAGS)" ./...
 
 # Default: run the fast, hermetic suite with the race detector.
 test:
