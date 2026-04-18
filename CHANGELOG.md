@@ -68,6 +68,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Logger init failures now fail boot.** `log.NewLogger` errors from `velocity.New` propagate up instead of being swallowed by a console fallback.
 - **`frameworkVersion` constant removed** — the version is now a variable on `velocity.BuildInfo` injected at link time.
 - **`ConfigFromEnv` cleanup.** Reads `DB_MYSQL_TLS` once at config time instead of leaking to drivers; removes stdlib-log warnings on deprecated env names (those env names are no longer read at all).
+- **Route diagnostic logs in websocket / auth / broadcast / scheduler / queue through `log.Logger`.** Replaced ad-hoc `fmt.Printf`/`fmt.Fprintln(os.Stderr)`/`log.Printf` calls and the package-local stdlib-log adapters (`scheduler.defaultLogger`, `queue.stdlibLogger`) with a framework-logger injection. Each package now exposes a narrow `Logger` interface and a `SetLogger` setter (wired from `velocity.New` via `Scheduler.SetLogger`, `auth.Manager.SetLogger`, `queue.MemoryDriver.SetLogger`, and `queue.SetSigningLogger`; `websocket.Server` and `broadcast/drivers.WebSocketDriver` expose `SetLogger` for consumer wiring). Loggers are stored atomically (`atomic.Value`) so request/drop hot paths that hold other locks can read them without deadlock. When no logger is installed, packages fall back to silent null loggers rather than emitting through Go's standard `log`.
 
 ### Security — Kernel-enforced file-path containment (`os.Root`)
 - **Removed** `router.ValidateFilePathWithin(path, root string) (string, error)` along

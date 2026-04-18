@@ -2,7 +2,6 @@ package websocket
 
 import (
 	"fmt"
-	"log"
 	"sync/atomic"
 )
 
@@ -27,7 +26,7 @@ func (s *Server) JoinGroup(clientID, groupName string) error {
 	client.Groups[groupName] = true
 	client.mu.Unlock()
 
-	log.Printf("Client %s joined group %s", sanitizeForLog(clientID), sanitizeForLog(groupName))
+	s.logInfo("Client joined group", "client_id", sanitizeForLog(clientID), "group", sanitizeForLog(groupName))
 	return nil
 }
 
@@ -54,7 +53,7 @@ func (s *Server) LeaveGroup(clientID, groupName string) error {
 	delete(client.Groups, groupName)
 	client.mu.Unlock()
 
-	log.Printf("Client %s left group %s", sanitizeForLog(clientID), sanitizeForLog(groupName))
+	s.logInfo("Client left group", "client_id", sanitizeForLog(clientID), "group", sanitizeForLog(groupName))
 	return nil
 }
 
@@ -151,7 +150,7 @@ func (s *Server) BroadcastToGroup(groupName string, message Message) error {
 		case client.Send <- message:
 			sent++
 		default:
-			log.Printf("Client %s send channel full, skipping message", client.ID)
+			s.logWarn("Client send channel full, skipping message", "client_id", client.ID)
 		}
 	}
 
@@ -189,7 +188,7 @@ func (s *Server) SendToOthersInGroup(groupName, senderID string, message Message
 		case client.Send <- message:
 			sent++
 		default:
-			log.Printf("Client %s send channel full, skipping message", client.ID)
+			s.logWarn("Client send channel full, skipping message", "client_id", client.ID)
 		}
 	}
 

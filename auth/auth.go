@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"sync/atomic"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -69,6 +70,17 @@ type Guard interface {
 	SetProvider(provider UserProvider)
 }
 
+// Logger is the minimal logging interface the auth package uses for
+// operational events (authentication failures, authorization denials,
+// bcrypt cost clamping). The framework's log.Logger satisfies this
+// interface; keeping the contract local avoids importing log/ and
+// preserves auth's leaf status for log-adjacent packages.
+type Logger interface {
+	Info(msg string, kvs ...any)
+	Warn(msg string, kvs ...any)
+	Error(msg string, kvs ...any)
+}
+
 // Manager manages multiple authentication guards
 type Manager struct {
 	guards       map[string]Guard
@@ -76,8 +88,17 @@ type Manager struct {
 	defaultGuard string
 	hasher       Hasher
 	gate         *Gate
-	mu           sync.RWMutex
+
+	// logger is stored atomically so middleware request paths can read
+	// the current logger without contending with the RWMutex protecting
+	// the guard/provider maps.
+	logger atomic.Value // holds authLoggerHolder{Logger}
+
+	mu sync.RWMutex
 }
+
+// authLoggerHolder wraps a Logger so atomic.Value stores a single type.
+type authLoggerHolder struct{ Logger }
 
 // NewManager creates a new auth manager
 func NewManager() *Manager {
@@ -235,11 +256,50 @@ func (m *Manager) Verify(password string, hash string) bool {
 	return m.GetHasher().Verify(password, hash)
 }
 
-// SetHasher sets the hasher on the manager.
+// SetHasher sets the hasher on the manager. When a logger has already been
+// installed via SetLogger and the hasher is a *BcryptHasher, the logger is
+// propagated so hasher warnings surface through the framework logger.
 func (m *Manager) SetHasher(h Hasher) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.hasher = h
+	m.mu.Unlock()
+
+	if logger := m.log(); logger != nil {
+		if bh, ok := h.(*BcryptHasher); ok {
+			bh.SetLogger(logger)
+		}
+	}
+}
+
+// SetLogger installs a logger for auth operational events (authentication
+// required denials, authorization rejections, hasher configuration warnings).
+// Nil disables logging. Safe to call concurrently.
+func (m *Manager) SetLogger(l Logger) {
+	m.logger.Store(authLoggerHolder{Logger: l})
+
+	m.mu.RLock()
+	hasher := m.hasher
+	m.mu.RUnlock()
+
+	if bh, ok := hasher.(*BcryptHasher); ok {
+		bh.SetLogger(l)
+	}
+}
+
+// log returns the installed logger, or nil when SetLogger has not been called.
+func (m *Manager) log() Logger {
+	v := m.logger.Load()
+	if v == nil {
+		return nil
+	}
+	return v.(authLoggerHolder).Logger
+}
+
+// logWarn emits a warn event when a logger is configured.
+func (m *Manager) logWarn(msg string, kvs ...any) {
+	if l := m.log(); l != nil {
+		l.Warn(msg, kvs...)
+	}
 }
 
 // GetHasher returns the manager's hasher, falling back to a default bcrypt hasher.

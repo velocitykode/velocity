@@ -2,8 +2,8 @@ package scheduler
 
 import (
 	"context"
-	"log"
 	"sync"
+	"sync/atomic"
 
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
@@ -13,7 +13,14 @@ type Manager struct {
 	mu         sync.RWMutex
 	schedulers map[string]*Scheduler
 	default_   string
+
+	// logger is stored atomically so recover() paths in RunAll can read
+	// it without acquiring m.mu (some callers may already hold it).
+	logger atomic.Value // holds mgrLoggerHolder{Logger}
 }
+
+// mgrLoggerHolder wraps a Logger so atomic.Value stores a single type.
+type mgrLoggerHolder struct{ Logger }
 
 // NewManager creates a new scheduler manager
 func NewManager() *Manager {
@@ -23,11 +30,50 @@ func NewManager() *Manager {
 	}
 }
 
+// SetLogger installs a logger for manager-level events (recovered panics
+// from individual schedulers running under RunAll, wait panics). The same
+// logger is also propagated to every Scheduler the Manager owns so child
+// schedulers log through the same pipeline. Nil disables logging.
+func (m *Manager) SetLogger(l Logger) {
+	m.logger.Store(mgrLoggerHolder{Logger: l})
+
+	m.mu.RLock()
+	schedulers := make([]*Scheduler, 0, len(m.schedulers))
+	for _, s := range m.schedulers {
+		schedulers = append(schedulers, s)
+	}
+	m.mu.RUnlock()
+
+	for _, s := range schedulers {
+		s.SetLogger(l)
+	}
+}
+
+// log returns the installed logger, or nil when SetLogger has not been called.
+func (m *Manager) log() Logger {
+	v := m.logger.Load()
+	if v == nil {
+		return nil
+	}
+	return v.(mgrLoggerHolder).Logger
+}
+
+// logError emits an error event when a logger is configured.
+func (m *Manager) logError(msg string, kvs ...any) {
+	if l := m.log(); l != nil {
+		l.Error(msg, kvs...)
+	}
+}
+
 // Add adds a scheduler to the manager
 func (m *Manager) Add(name string, scheduler *Scheduler) *Manager {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.schedulers[name] = scheduler
+	m.mu.Unlock()
+
+	if l := m.log(); l != nil {
+		scheduler.SetLogger(l)
+	}
 	return m
 }
 
@@ -42,19 +88,24 @@ func (m *Manager) Get(name string) (*Scheduler, bool) {
 // Default returns the default scheduler
 func (m *Manager) Default() *Scheduler {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
 	if s, ok := m.schedulers[m.default_]; ok {
+		m.mu.RUnlock()
 		return s
 	}
 	// Create default scheduler if it doesn't exist
 	m.mu.RUnlock()
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if s, ok := m.schedulers[m.default_]; ok {
+		m.mu.Unlock()
 		return s
 	}
 	s := New()
 	m.schedulers[m.default_] = s
+	m.mu.Unlock()
+
+	if l := m.log(); l != nil {
+		s.SetLogger(l)
+	}
 	return s
 }
 
@@ -87,7 +138,7 @@ func (m *Manager) RunAll(ctx context.Context) error {
 			defer func() {
 				if r := recover(); r != nil {
 					err := panicerr.FromRecovered(r)
-					log.Printf("velocity/scheduler: run panic recovered: %v", err)
+					m.logError("velocity/scheduler: run panic recovered", "error", err)
 					errChan <- err
 				}
 			}()
@@ -102,7 +153,7 @@ func (m *Manager) RunAll(ctx context.Context) error {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("velocity/scheduler: manager wait panic recovered: %v", panicerr.FromRecovered(r))
+				m.logError("velocity/scheduler: manager wait panic recovered", "error", panicerr.FromRecovered(r))
 			}
 			close(errChan)
 		}()

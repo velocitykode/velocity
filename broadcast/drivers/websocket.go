@@ -10,6 +10,15 @@ import (
 	"github.com/velocitykode/velocity/websocket"
 )
 
+// Logger is the minimal logging interface used by the broadcast WebSocket
+// driver. The framework's log.Logger satisfies this interface; keeping the
+// contract local keeps broadcast/ free of a log/ dependency.
+type Logger interface {
+	Info(msg string, kvs ...any)
+	Warn(msg string, kvs ...any)
+	Error(msg string, kvs ...any)
+}
+
 // ChannelAuthorizer checks if a WebSocket client is allowed to join a channel.
 // Must be set for private- and presence- channels to be accessible.
 type ChannelAuthorizer func(client *websocket.Client, channel string) bool
@@ -30,6 +39,30 @@ type WebSocketDriver struct {
 	droppedCount   atomic.Uint64
 	blockingSendTO time.Duration // 0 means non-blocking (drop on full)
 	onDrop         func(clientID, channel, event string)
+
+	// logger is stored via atomic.Value so drop-path logging can read it
+	// without contending with the channel-membership lock held by
+	// Broadcast/BroadcastExcept.
+	logger atomic.Value // holds loggerHolder{Logger}
+}
+
+// loggerHolder wraps a Logger so atomic.Value stores a single concrete type.
+type loggerHolder struct{ Logger }
+
+// SetLogger installs a logger for operational events (e.g. dropped broadcast
+// messages when no onDrop callback is configured). Nil disables logging.
+// Safe to call concurrently.
+func (d *WebSocketDriver) SetLogger(l Logger) {
+	d.logger.Store(loggerHolder{Logger: l})
+}
+
+// log returns the installed logger, or nil when SetLogger has not been called.
+func (d *WebSocketDriver) log() Logger {
+	v := d.logger.Load()
+	if v == nil {
+		return nil
+	}
+	return v.(loggerHolder).Logger
 }
 
 // DriverOption configures a WebSocketDriver.
@@ -156,7 +189,9 @@ func (d *WebSocketDriver) recordDrop(clientID, channel, event string) {
 		d.onDrop(clientID, channel, event)
 		return
 	}
-	fmt.Printf("velocity/broadcast: dropped message to client %s on channel %s (event=%s)\n", clientID, channel, event)
+	if logger := d.log(); logger != nil {
+		logger.Warn("velocity/broadcast: dropped message", "client_id", clientID, "channel", channel, "event", event)
+	}
 }
 
 // DroppedCount returns the total number of messages dropped due to full send

@@ -6,8 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/velocitykode/velocity/async"
@@ -24,6 +24,30 @@ type MemoryDriver struct {
 	stopOnce        sync.Once
 	wg              sync.WaitGroup
 	eventDispatcher func(event interface{}) error
+
+	// logger is stored in an atomic.Value so the shutdown panic-recovery
+	// path can read it without acquiring the main lock (the goroutine
+	// that observes a panic may be fired under arbitrary locking
+	// conditions).
+	logger atomic.Value // holds memLoggerHolder{Logger}
+}
+
+// memLoggerHolder wraps a Logger so atomic.Value stores a single concrete type.
+type memLoggerHolder struct{ Logger }
+
+// SetLogger installs a logger for operational events (shutdown-time
+// panic recovery). Nil disables logging. Safe to call concurrently.
+func (m *MemoryDriver) SetLogger(l Logger) {
+	m.logger.Store(memLoggerHolder{Logger: l})
+}
+
+// log returns the installed logger, or nil when SetLogger has not been called.
+func (m *MemoryDriver) log() Logger {
+	v := m.logger.Load()
+	if v == nil {
+		return nil
+	}
+	return v.(memLoggerHolder).Logger
 }
 
 type delayedJob struct {
@@ -272,7 +296,9 @@ func (m *MemoryDriver) Shutdown(ctx context.Context) error {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("velocity/queue: memory driver shutdown panic recovered: %v", panicerr.FromRecovered(r))
+				if logger := m.log(); logger != nil {
+					logger.Error("velocity/queue: memory driver shutdown panic recovered", "error", panicerr.FromRecovered(r))
+				}
 			}
 			close(done)
 		}()

@@ -2,9 +2,8 @@ package scheduler
 
 import (
 	"context"
-	"fmt"
-	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
@@ -46,10 +45,17 @@ type Scheduler struct {
 	appEnv          string
 	beforeCallbacks []func()
 	afterCallbacks  []func()
-	logger          Logger
+
+	// logger is stored via atomic.Value so the Run/runDueJobs hot paths
+	// can read it lock-free and SetLogger doesn't contend with s.mu.
+	logger atomic.Value // holds schedLoggerHolder{Logger}
+
 	eventDispatcher func(event interface{}) error
 	runWg           sync.WaitGroup // tracks in-flight job goroutines
 }
+
+// schedLoggerHolder wraps a Logger so atomic.Value stores a single type.
+type schedLoggerHolder struct{ Logger }
 
 // SetEventDispatcher sets the function used to dispatch events.
 func (s *Scheduler) SetEventDispatcher(fn func(event interface{}) error) {
@@ -65,46 +71,47 @@ func (s *Scheduler) dispatchEvent(event interface{}) {
 	}
 }
 
-// Logger interface for scheduler logging
+// Logger is the minimal logging interface used by the scheduler. The
+// framework's log.Logger satisfies this shape; keeping the contract local
+// allows scheduler/ to remain a log-free leaf.
 type Logger interface {
 	Info(msg string, keysAndValues ...interface{})
 	Error(msg string, keysAndValues ...interface{})
 	Debug(msg string, keysAndValues ...interface{})
 }
 
-// defaultLogger implements a simple logger
-type defaultLogger struct{}
+// nullLogger is the silent default when SetLogger has not been called.
+// It is deliberately inert so the scheduler never emits log output
+// through stdlib log — all diagnostic logging flows through the
+// framework logger installed at boot.
+type nullLogger struct{}
 
-func (l *defaultLogger) Info(msg string, keysAndValues ...interface{}) {
-	log.Print("[INFO] " + msg + fmtKVs(keysAndValues))
-}
-func (l *defaultLogger) Error(msg string, keysAndValues ...interface{}) {
-	log.Print("[ERROR] " + msg + fmtKVs(keysAndValues))
-}
-func (l *defaultLogger) Debug(msg string, keysAndValues ...interface{}) {
-	log.Print("[DEBUG] " + msg + fmtKVs(keysAndValues))
-}
-
-func fmtKVs(kvs []interface{}) string {
-	if len(kvs) == 0 {
-		return ""
-	}
-	s := ""
-	for i := 0; i+1 < len(kvs); i += 2 {
-		s += fmt.Sprintf(" %v=%v", kvs[i], kvs[i+1])
-	}
-	return s
-}
+func (nullLogger) Info(string, ...interface{})  {}
+func (nullLogger) Error(string, ...interface{}) {}
+func (nullLogger) Debug(string, ...interface{}) {}
 
 // New creates a new scheduler instance
 func New() *Scheduler {
-	return &Scheduler{
+	s := &Scheduler{
 		jobs:     make([]*Job, 0),
 		stop:     make(chan struct{}),
 		stopped:  make(chan struct{}),
 		timezone: time.Local,
-		logger:   &defaultLogger{},
 	}
+	s.logger.Store(schedLoggerHolder{Logger: nullLogger{}})
+	return s
+}
+
+// log returns the installed logger. Always non-nil after New().
+func (s *Scheduler) log() Logger {
+	v := s.logger.Load()
+	if v == nil {
+		return nullLogger{}
+	}
+	if l := v.(schedLoggerHolder).Logger; l != nil {
+		return l
+	}
+	return nullLogger{}
 }
 
 // SetEnv sets the application environment (e.g. "production", "staging") used by
@@ -125,9 +132,11 @@ func (s *Scheduler) SetTimezone(tz *time.Location) *Scheduler {
 
 // SetLogger sets a custom logger
 func (s *Scheduler) SetLogger(logger Logger) *Scheduler {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.logger = logger
+	if logger == nil {
+		s.logger.Store(schedLoggerHolder{Logger: nullLogger{}})
+	} else {
+		s.logger.Store(schedLoggerHolder{Logger: logger})
+	}
 	return s
 }
 
@@ -202,7 +211,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	s.ticker = time.NewTicker(1 * time.Minute) // Check every minute
 	s.mu.Unlock()
 
-	s.logger.Info("Scheduler started")
+	s.log().Info("Scheduler started")
 
 	// Run immediately on start
 	s.runDueJobs()
@@ -237,7 +246,7 @@ func (s *Scheduler) Shutdown(ctx context.Context) error {
 	close(s.stop)
 	s.mu.Unlock()
 
-	s.logger.Info("Scheduler shutting down")
+	s.log().Info("Scheduler shutting down")
 
 	// Wait for in-flight jobs with ctx deadline. Recover from panics so
 	// Shutdown always signals completion via done.
@@ -245,7 +254,7 @@ func (s *Scheduler) Shutdown(ctx context.Context) error {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				s.logger.Error("velocity/scheduler: shutdown wait panic recovered", "error", panicerr.FromRecovered(r))
+				s.log().Error("velocity/scheduler: shutdown wait panic recovered", "error", panicerr.FromRecovered(r))
 			}
 			close(done)
 		}()
@@ -254,7 +263,7 @@ func (s *Scheduler) Shutdown(ctx context.Context) error {
 
 	select {
 	case <-done:
-		s.logger.Info("Scheduler stopped")
+		s.log().Info("Scheduler stopped")
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -307,10 +316,10 @@ func (s *Scheduler) runDueJobs() {
 				defer s.runWg.Done()
 				defer func() {
 					if r := recover(); r != nil {
-						s.logger.Error("velocity/scheduler: run due jobs panic recovered", "name", j.name, "error", panicerr.FromRecovered(r))
+						s.log().Error("velocity/scheduler: run due jobs panic recovered", "name", j.name, "error", panicerr.FromRecovered(r))
 					}
 				}()
-				s.logger.Debug("Running job", "name", j.name)
+				s.log().Debug("Running job", "name", j.name)
 				_ = j.Run()
 			}(job)
 		}
