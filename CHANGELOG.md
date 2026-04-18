@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security — Kernel-enforced file-path containment (`os.Root`)
+- **Removed** `router.ValidateFilePathWithin(path, root string) (string, error)` along
+  with its companion sentinel `router.ErrSymlinkEscape`. The previous implementation
+  performed containment via `os.Lstat` + `filepath.EvalSymlinks` + prefix comparison,
+  which left a TOCTOU window: an attacker could swap a symlink target between the
+  validation call and the caller's subsequent `os.Open`. The predicate-only shape
+  also encouraged callers to re-resolve the path, re-introducing the same race.
+- **Added** `router.OpenFileIn(root *os.Root, relative string) (*os.File, error)`
+  which returns an already-opened handle from the kernel-enforced root. On Linux
+  this delegates to `openat2` with `RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS`; other
+  platforms use the strongest equivalent the Go runtime provides. Callers never
+  re-resolve the path, so there is no window left for an attacker to race.
+- **Added** sentinels `router.ErrPathOutsideRoot` (traversal / symlink escape) and
+  `router.ErrNilRoot` (nil `*os.Root` argument). Missing files pass through
+  unwrapped so `errors.Is(err, os.ErrNotExist)` continues to work.
+- **Migration:**
+  ```go
+  // Before (TOCTOU + user-space containment):
+  if _, err := router.ValidateFilePathWithin(req.Filename, uploadDir); err != nil {
+      return err
+  }
+  f, err := os.Open(filepath.Join(uploadDir, req.Filename))
+
+  // After (kernel-enforced, no re-resolve):
+  root, err := os.OpenRoot(uploadDir)   // once at startup; persist on your driver
+  if err != nil { return err }
+  defer root.Close()
+  f, err := router.OpenFileIn(root, req.Filename)
+  ```
+  `os.Root` and `os.OpenRoot` shipped in Go 1.24; Velocity already requires Go 1.26.
+- **storage/local**: `LocalDriver` now holds an `*os.Root` opened at construction
+  and performs every Put/Get/Delete/Move/Copy/list/stat through it. The driver
+  implements `contract.ShutdownAware`, and `storage.Manager.Shutdown(ctx)` walks
+  each disk so the file descriptor is released during app shutdown.
+- **storage/local**: absolute paths (`/etc/passwd`) are now explicitly rejected by
+  `normalizeRelative` with `ErrInvalidPath`, in addition to the kernel-level
+  rejection the root would produce anyway. This gives callers a clearer error.
+
 ### Changed — Validation consolidation
 - The `validate` package is now a deprecated thin shim that forwards every call to
   `validation`. Every exported symbol (`Rules`, `Messages`, `Check`, `CheckData`,
