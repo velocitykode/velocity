@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/velocitykode/velocity/trace"
 	testsync "github.com/velocitykode/velocity/testing"
+	"github.com/velocitykode/velocity/trace"
 )
 
 func TestEventNames(t *testing.T) {
