@@ -33,6 +33,18 @@ type s3API interface {
 // supported by AWS Signature V4 (RFC 3339 / AWS signing spec).
 const maxS3PresignExpiration = 7 * 24 * time.Hour
 
+// ErrExpirationTooLong is returned by TemporaryURL / TemporaryURLCtx when
+// the requested expiration exceeds AWS SigV4's 7-day cap. Callers that
+// previously relied on silent clamping should cap their own values; the
+// framework no longer sign URLs that are guaranteed to expire sooner than
+// the caller requested.
+var ErrExpirationTooLong = errors.New("velocity/storage: temporary url expiration exceeds aws sigv4 7-day cap")
+
+// ErrExpirationNonPositive is returned when the requested expiration is
+// zero or negative — signing an already-expired URL is almost certainly a
+// bug, not intent.
+var ErrExpirationNonPositive = errors.New("velocity/storage: temporary url expiration must be positive")
+
 // S3Driver implements the Driver interface for AWS S3 storage.
 //
 // Methods defined by the Driver interface use context.Background() internally.
@@ -643,25 +655,28 @@ func (d *S3Driver) URL(path string) string {
 }
 
 // TemporaryURL returns a temporary presigned URL for a file (uses context.Background()).
-// Expirations greater than 7 days are clamped to 7 days (AWS SigV4 maximum).
+// Returns ErrExpirationTooLong if expiration > 7 days (AWS SigV4 cap) or
+// ErrExpirationNonPositive if expiration <= 0. Operators who previously
+// passed 30-day durations and relied on silent 7-day clamping now get a
+// loud failure — cap the value at your call site before invoking.
 func (d *S3Driver) TemporaryURL(path string, expiration time.Duration) (string, error) {
 	return d.TemporaryURLCtx(context.Background(), path, expiration)
 }
 
 // TemporaryURLCtx returns a temporary presigned URL using the caller-provided context.
-// Expirations greater than 7 days are clamped to 7 days (AWS SigV4 maximum).
+// See TemporaryURL for error semantics.
 func (d *S3Driver) TemporaryURLCtx(ctx context.Context, path string, expiration time.Duration) (string, error) {
+	if expiration <= 0 {
+		return "", ErrExpirationNonPositive
+	}
+	if expiration > maxS3PresignExpiration {
+		return "", ErrExpirationTooLong
+	}
+
 	var err error
 	path, err = d.cleanPath(path)
 	if err != nil {
 		return "", err
-	}
-
-	// Clamp to AWS SigV4 maximum of 7 days. Treat non-positive durations as
-	// caller error by defaulting to the cap rather than signing an already-
-	// expired URL.
-	if expiration > maxS3PresignExpiration || expiration <= 0 {
-		expiration = maxS3PresignExpiration
 	}
 
 	// Generate presigned URL
