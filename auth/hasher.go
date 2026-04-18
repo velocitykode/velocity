@@ -3,7 +3,6 @@ package auth
 import (
 	"errors"
 	"fmt"
-	"log"
 	"sync"
 
 	"golang.org/x/crypto/bcrypt"
@@ -25,25 +24,59 @@ type Hasher interface {
 
 // BcryptHasher implements Hasher using bcrypt
 type BcryptHasher struct {
-	cost int
-	mu   sync.RWMutex
+	cost            int
+	requestedCost   int  // original value passed to NewBcryptHasher / SetCost
+	clampedAtInit   bool // true when the constructor had to raise cost to the secure minimum
+	logger          Logger
+	mu              sync.RWMutex
 }
 
 // NewBcryptHasher creates a new bcrypt hasher.
 // Minimum cost is 10 for security; lower values are overridden with a warning.
+// The warning is emitted once a framework logger is installed via SetLogger.
+// Callers constructing a hasher directly may install one via SetLogger.
 func NewBcryptHasher(cost int) *BcryptHasher {
+	effective, belowMin := clampBcryptCost(cost)
+	return &BcryptHasher{
+		cost:          effective,
+		requestedCost: cost,
+		clampedAtInit: belowMin,
+	}
+}
+
+// clampBcryptCost coerces cost into the safe bcrypt range. Returns the
+// effective cost and a boolean indicating whether the input was below the
+// secure minimum (so callers can emit a warning when a logger is available).
+func clampBcryptCost(cost int) (int, bool) {
+	belowMin := cost > 0 && cost < minSecureBcryptCost
 	if cost < minSecureBcryptCost {
-		if cost > 0 {
-			log.Printf("[WARN] auth: bcrypt cost %d is below minimum secure cost %d — using %d instead. Configure HASH_BCRYPT_COST >= %d", cost, minSecureBcryptCost, minSecureBcryptCost, minSecureBcryptCost)
-		}
 		cost = minSecureBcryptCost
 	}
 	if cost > bcrypt.MaxCost {
 		cost = bcrypt.MaxCost
 	}
+	return cost, belowMin
+}
 
-	return &BcryptHasher{
-		cost: cost,
+// SetLogger installs a logger used to warn about bcrypt cost clamping when
+// SetCost is called with a value below the secure minimum. If the hasher
+// was constructed with a sub-minimum cost, a one-shot warning is emitted
+// now (and the pending flag cleared) so the event is surfaced through the
+// framework logger rather than being lost before wiring completed. Nil
+// disables logging.
+func (h *BcryptHasher) SetLogger(l Logger) {
+	h.mu.Lock()
+	h.logger = l
+	pending := h.clampedAtInit && l != nil
+	requested := h.requestedCost
+	effective := h.cost
+	if pending {
+		h.clampedAtInit = false
+	}
+	h.mu.Unlock()
+
+	if pending {
+		l.Warn("auth: bcrypt cost below secure minimum, clamped", "requested", requested, "minimum", minSecureBcryptCost, "using", effective)
 	}
 }
 
@@ -99,17 +132,15 @@ func (h *BcryptHasher) NeedsRehash(hash string) bool {
 
 // SetCost updates the bcrypt cost factor
 func (h *BcryptHasher) SetCost(cost int) {
-	if cost < minSecureBcryptCost {
-		if cost > 0 {
-			log.Printf("auth: bcrypt cost %d is below minimum secure cost %d, using %d", cost, minSecureBcryptCost, minSecureBcryptCost)
-		}
-		cost = minSecureBcryptCost
-	}
-	if cost > bcrypt.MaxCost {
-		cost = bcrypt.MaxCost
-	}
+	effective, belowMin := clampBcryptCost(cost)
 
 	h.mu.Lock()
-	h.cost = cost
+	h.cost = effective
+	h.requestedCost = cost
+	logger := h.logger
 	h.mu.Unlock()
+
+	if belowMin && logger != nil {
+		logger.Warn("auth: bcrypt cost below secure minimum, clamped", "requested", cost, "minimum", minSecureBcryptCost, "using", effective)
+	}
 }

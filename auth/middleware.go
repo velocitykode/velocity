@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -78,8 +77,9 @@ func wantsJSON(r *http.Request) bool {
 
 // denyUnauthenticated returns a 401 JSON response for API requests or redirects
 // to /login for HTML requests. Shared by all auth-requiring middleware.
-func denyUnauthenticated(c *router.Context) error {
-	log.Printf("velocity/auth: authentication required for %s %s ip_hash=%s", c.Request.Method, c.Request.URL.Path, hashRemoteAddr(c.Request.RemoteAddr))
+// The manager's logger records the denial when installed.
+func denyUnauthenticated(manager *Manager, c *router.Context) error {
+	manager.logWarn("velocity/auth: authentication required", "method", c.Request.Method, "path", c.Request.URL.Path, "ip_hash", hashRemoteAddr(c.Request.RemoteAddr))
 	if wantsJSON(c.Request) {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthenticated."})
 	}
@@ -92,9 +92,10 @@ func denyUnauthenticated(c *router.Context) error {
 }
 
 // denyForbidden returns a 403 JSON response for API requests or a plain 403
-// status for HTML requests.
-func denyForbidden(c *router.Context) error {
-	log.Printf("velocity/auth: authorization denied for %s %s ip_hash=%s", c.Request.Method, c.Request.URL.Path, hashRemoteAddr(c.Request.RemoteAddr))
+// status for HTML requests. The manager's logger records the denial when
+// installed.
+func denyForbidden(manager *Manager, c *router.Context) error {
+	manager.logWarn("velocity/auth: authorization denied", "method", c.Request.Method, "path", c.Request.URL.Path, "ip_hash", hashRemoteAddr(c.Request.RemoteAddr))
 	if wantsJSON(c.Request) {
 		return c.JSON(http.StatusForbidden, map[string]string{"error": "Forbidden."})
 	}
@@ -115,7 +116,7 @@ func AuthMiddleware(manager *Manager) router.MiddlewareFunc {
 	return func(next router.HandlerFunc) router.HandlerFunc {
 		return func(c *router.Context) error {
 			if !manager.Check(c.Request) {
-				return denyUnauthenticated(c)
+				return denyUnauthenticated(manager, c)
 			}
 			return next(c)
 		}
@@ -128,11 +129,11 @@ func RequireRole(manager *Manager, role string) router.MiddlewareFunc {
 	return func(next router.HandlerFunc) router.HandlerFunc {
 		return func(c *router.Context) error {
 			if !manager.Check(c.Request) {
-				return denyUnauthenticated(c)
+				return denyUnauthenticated(manager, c)
 			}
 			user := manager.User(c.Request)
 			if !manager.Gate().HasRole(user, role) {
-				return denyForbidden(c)
+				return denyForbidden(manager, c)
 			}
 			return next(c)
 		}
@@ -146,11 +147,11 @@ func RequireAnyRole(manager *Manager, roles ...string) router.MiddlewareFunc {
 	return func(next router.HandlerFunc) router.HandlerFunc {
 		return func(c *router.Context) error {
 			if !manager.Check(c.Request) {
-				return denyUnauthenticated(c)
+				return denyUnauthenticated(manager, c)
 			}
 			user := manager.User(c.Request)
 			if !manager.Gate().HasAnyRole(user, roles...) {
-				return denyForbidden(c)
+				return denyForbidden(manager, c)
 			}
 			return next(c)
 		}
@@ -164,11 +165,11 @@ func RequireAllRoles(manager *Manager, roles ...string) router.MiddlewareFunc {
 	return func(next router.HandlerFunc) router.HandlerFunc {
 		return func(c *router.Context) error {
 			if !manager.Check(c.Request) {
-				return denyUnauthenticated(c)
+				return denyUnauthenticated(manager, c)
 			}
 			user := manager.User(c.Request)
 			if !manager.Gate().HasAllRoles(user, roles...) {
-				return denyForbidden(c)
+				return denyForbidden(manager, c)
 			}
 			return next(c)
 		}
@@ -183,7 +184,7 @@ func AuthorizeMiddleware(manager *Manager, ability string, resourceFunc ...func(
 	return func(next router.HandlerFunc) router.HandlerFunc {
 		return func(c *router.Context) error {
 			if !manager.Check(c.Request) {
-				return denyUnauthenticated(c)
+				return denyUnauthenticated(manager, c)
 			}
 			user := manager.User(c.Request)
 			var allowed bool
@@ -194,7 +195,7 @@ func AuthorizeMiddleware(manager *Manager, ability string, resourceFunc ...func(
 				allowed = manager.Gate().Allows(user, ability)
 			}
 			if !allowed {
-				return denyForbidden(c)
+				return denyForbidden(manager, c)
 			}
 			return next(c)
 		}

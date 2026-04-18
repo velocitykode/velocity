@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"os"
 	"sync"
 
 	"golang.org/x/crypto/hkdf"
@@ -17,7 +16,17 @@ var (
 	signingMu      sync.RWMutex
 	signingKey     []byte
 	signingEnabled bool
+	signingLogger  Logger
 )
+
+// SetSigningLogger installs a package-level logger used by
+// ConfigureSigning to report signing-key diagnostics. Nil disables
+// logging. Safe to call concurrently.
+func SetSigningLogger(l Logger) {
+	signingMu.Lock()
+	defer signingMu.Unlock()
+	signingLogger = l
+}
 
 // ConfigureSigning configures payload signing from the provided keys.
 // signingKey is the dedicated QUEUE_SIGNING_KEY; appKey is the fallback APP_KEY.
@@ -40,14 +49,18 @@ func ConfigureSigning(rawSigningKey, appKey string) error {
 	defer signingMu.Unlock()
 
 	if key == "" {
-		fmt.Fprintln(os.Stderr, "velocity/queue: no signing key found (QUEUE_SIGNING_KEY or APP_KEY), payload signing disabled")
+		if signingLogger != nil {
+			signingLogger.Warn("velocity/queue: no signing key found (QUEUE_SIGNING_KEY or APP_KEY), payload signing disabled")
+		}
 		signingKey = nil
 		signingEnabled = false
 		return nil
 	}
 
 	if useAppKey {
-		fmt.Fprintln(os.Stderr, "velocity/queue: WARNING: using APP_KEY for queue signing. Set a dedicated QUEUE_SIGNING_KEY for production environments")
+		if signingLogger != nil {
+			signingLogger.Warn("velocity/queue: using APP_KEY for queue signing. Set a dedicated QUEUE_SIGNING_KEY for production environments")
+		}
 		// Derive a queue-specific key from APP_KEY using HKDF to avoid
 		// using the same key material for different purposes.
 		r := hkdf.New(sha256.New, []byte(key), nil, []byte("queue-signing"))

@@ -2,7 +2,6 @@ package websocket
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -12,6 +11,15 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/velocitykode/velocity/contract"
 )
+
+// Logger is the minimal logging interface used by the WebSocket server.
+// The framework's log.Logger satisfies this shape; the package stays
+// decoupled from the log/ package to preserve its leaf status.
+type Logger interface {
+	Info(msg string, kvs ...any)
+	Warn(msg string, kvs ...any)
+	Error(msg string, kvs ...any)
+}
 
 // sanitizeForLog strips control characters and newlines from a string for safe logging.
 func sanitizeForLog(s string) string {
@@ -48,6 +56,52 @@ type Server struct {
 	mu       sync.RWMutex
 	running  bool
 	stopChan chan struct{}
+
+	// logger is stored in an atomic.Value so it can be read from paths
+	// that already hold s.mu (e.g. JoinGroup) without risking deadlock
+	// via re-entrant locking.
+	logger atomic.Value // holds loggerHolder{Logger}
+}
+
+// loggerHolder wraps a Logger so atomic.Value stores a single concrete type.
+type loggerHolder struct{ Logger }
+
+// SetLogger installs a logger for operational events (connects, disconnects,
+// rate-limit violations, recovered panics). Nil disables logging. Safe to
+// call concurrently.
+func (s *Server) SetLogger(l Logger) {
+	s.logger.Store(loggerHolder{Logger: l})
+}
+
+// log returns the installed logger, or nil when SetLogger has not been called
+// (or was called with nil).
+func (s *Server) log() Logger {
+	v := s.logger.Load()
+	if v == nil {
+		return nil
+	}
+	return v.(loggerHolder).Logger
+}
+
+// logInfo emits an info-level event when a logger is configured.
+func (s *Server) logInfo(msg string, kvs ...any) {
+	if l := s.log(); l != nil {
+		l.Info(msg, kvs...)
+	}
+}
+
+// logWarn emits a warn-level event when a logger is configured.
+func (s *Server) logWarn(msg string, kvs ...any) {
+	if l := s.log(); l != nil {
+		l.Warn(msg, kvs...)
+	}
+}
+
+// logError emits an error-level event when a logger is configured.
+func (s *Server) logError(msg string, kvs ...any) {
+	if l := s.log(); l != nil {
+		l.Error(msg, kvs...)
+	}
 }
 
 // New creates a new WebSocket server
@@ -105,7 +159,7 @@ func (s *Server) Start() error {
 	s.running = true
 	s.mu.Unlock()
 
-	log.Printf("WebSocket server starting on %s:%d%s", s.config.Host, s.config.Port, s.config.Path)
+	s.logInfo("WebSocket server starting", "host", s.config.Host, "port", s.config.Port, "path", s.config.Path)
 
 	go s.run()
 	return nil
@@ -179,7 +233,7 @@ func (s *Server) HandleConnection(w http.ResponseWriter, r *http.Request) {
 	// Upgrade connection
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("Failed to upgrade connection: %v", err)
+		s.logError("Failed to upgrade connection", "error", err)
 		return
 	}
 
@@ -215,7 +269,7 @@ func (s *Server) handleRegister(client *Client) {
 	s.clients[client.ID] = client
 	s.mu.Unlock()
 
-	log.Printf("Client connected: %s", client.ID)
+	s.logInfo("Client connected", "client_id", client.ID)
 
 	// Send welcome message
 	client.Send <- Message{
@@ -247,7 +301,7 @@ func (s *Server) handleUnregister(client *Client) {
 	}
 	s.mu.Unlock()
 
-	log.Printf("Client disconnected: %s", client.ID)
+	s.logInfo("Client disconnected", "client_id", client.ID)
 
 	// Call disconnect callback
 	if s.onDisconnect != nil {
@@ -268,7 +322,7 @@ func (s *Server) handleBroadcast(message Message) {
 		case client.Send <- message:
 		default:
 			// Client's send channel is full, skip
-			log.Printf("Client %s send channel full, skipping message", client.ID)
+			s.logWarn("Client send channel full, skipping message", "client_id", client.ID)
 		}
 	}
 

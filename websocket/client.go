@@ -1,7 +1,6 @@
 package websocket
 
 import (
-	"log"
 	"sync/atomic"
 	"time"
 
@@ -17,7 +16,7 @@ func (c *Client) readPump() {
 	}()
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("websocket readPump panic: %v", panicerr.FromRecovered(r))
+			c.Server.logError("websocket readPump panic recovered", "error", panicerr.FromRecovered(r))
 		}
 	}()
 
@@ -48,7 +47,7 @@ func (c *Client) readPump() {
 				websocket.CloseGoingAway,
 				websocket.CloseAbnormalClosure,
 				websocket.CloseNormalClosure) {
-				log.Printf("websocket error: %v", err)
+				c.Server.logError("websocket error", "error", err)
 			}
 			break
 		}
@@ -62,7 +61,7 @@ func (c *Client) readPump() {
 			}
 			msgCount++
 			if msgCount > burstSize {
-				log.Printf("websocket: client %s exceeded rate limit (%d msgs/s burst %d), disconnecting", c.ID, rateLimit, burstSize)
+				c.Server.logWarn("websocket client exceeded rate limit, disconnecting", "client_id", c.ID, "rate_limit", rateLimit, "burst_size", burstSize)
 				c.SendMessage(Message{
 					Type: "error",
 					Data: map[string]interface{}{"message": "rate limit exceeded"},
@@ -91,7 +90,7 @@ func (c *Client) writePump() {
 	}()
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("websocket writePump panic: %v", panicerr.FromRecovered(r))
+			c.Server.logError("websocket writePump panic recovered", "error", panicerr.FromRecovered(r))
 		}
 	}()
 

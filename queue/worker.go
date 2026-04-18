@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,31 +17,31 @@ import (
 // unreasonable number of goroutines on mis-typed configuration.
 const MaxWorkerConcurrency = 10_000
 
-// WorkerLogger is the logging interface used by Worker.
-// It is intentionally minimal to avoid coupling the queue package to a
-// specific logging implementation. Any structured logger (e.g. velocity's
-// log.Logger) satisfies this interface.
+// Logger is the minimal logging interface used by queue internals
+// (workers, memory driver). The framework's log.Logger satisfies this
+// shape; keeping the contract local lets queue/ remain a log-free leaf.
+type Logger interface {
+	Info(msg string, kvs ...any)
+	Warn(msg string, kvs ...any)
+	Error(msg string, kvs ...any)
+}
+
+// WorkerLogger retains its historical two-method shape for the Worker's
+// consumer-facing option. Any Logger satisfies it.
 type WorkerLogger interface {
 	Info(msg string, kvs ...any)
 	Error(msg string, kvs ...any)
 }
 
-// stdlibLogger adapts Go's standard log package to WorkerLogger.
-type stdlibLogger struct{}
+// nullLogger is the silent fallback when no logger has been installed.
+// It replaces the former stdlib-log adapter so queue internals never
+// emit through Go's standard log package — all diagnostic logging is
+// expected to flow through the framework logger wired at boot.
+type nullLogger struct{}
 
-func (stdlibLogger) Info(msg string, kvs ...any)  { log.Print("[INFO] " + msg + fmtKVs(kvs)) }
-func (stdlibLogger) Error(msg string, kvs ...any) { log.Print("[ERROR] " + msg + fmtKVs(kvs)) }
-
-func fmtKVs(kvs []any) string {
-	if len(kvs) == 0 {
-		return ""
-	}
-	s := ""
-	for i := 0; i+1 < len(kvs); i += 2 {
-		s += fmt.Sprintf(" %v=%v", kvs[i], kvs[i+1])
-	}
-	return s
-}
+func (nullLogger) Info(string, ...any)  {}
+func (nullLogger) Warn(string, ...any)  {}
+func (nullLogger) Error(string, ...any) {}
 
 // Worker processes jobs from a queue
 type Worker struct {
@@ -155,7 +154,7 @@ func NewWorker(queue Driver, queueName string, handler func(Job) error, opts ...
 	}
 
 	if w.logger == nil {
-		w.logger = stdlibLogger{}
+		w.logger = nullLogger{}
 	}
 
 	return w

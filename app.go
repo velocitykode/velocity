@@ -161,7 +161,7 @@ func New(opts ...Option) (*App, error) {
 	}
 
 	// 10. Initialize queue — pass DB for database driver
-	queueDriver, err := initQueue(a.config.Queue, sqlDB, a.config.DB.Connection, a.config.Queue.SigningKey, a.config.Key)
+	queueDriver, err := initQueue(a.config.Queue, sqlDB, a.config.DB.Connection, a.config.Queue.SigningKey, a.config.Key, a.Log)
 	if err != nil {
 		return nil, fmt.Errorf("velocity: failed to initialize queue: %w", err)
 	}
@@ -171,8 +171,10 @@ func New(opts ...Option) (*App, error) {
 	a.Storage = initStorage(a.config.Storage, a.Log)
 
 	// 12. Initialize scheduler
-	a.Scheduler = scheduler.New()
-	a.Scheduler.SetEnv(a.config.Env)
+	sched := scheduler.New()
+	sched.SetEnv(a.config.Env)
+	sched.SetLogger(a.Log)
+	a.Scheduler = sched
 
 	// 13. Initialize mail
 	if a.config.Mail.Driver != "" {

@@ -86,6 +86,10 @@ func initStorage(config StorageConfig, logger log.Logger) *storage.Manager {
 func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger log.Logger, db *sql.DB, enc crypto.Encryptor) *auth.Manager {
 	manager := auth.NewManager()
 
+	// Route auth diagnostics (authentication/authorization denials, hasher
+	// warnings) through the framework logger. Safe to pass nil.
+	manager.SetLogger(logger)
+
 	if authCfg.DefaultGuard != "" {
 		manager.SetDefaultGuard(authCfg.DefaultGuard)
 	}
@@ -183,7 +187,11 @@ func initDB(config DBConfig) (*orm.Manager, error) {
 // payload-signing setup, Redis connect, or a missing DB for the database
 // driver prevents the requested driver from starting — boot fails loudly
 // rather than silently downgrading to the in-memory driver.
-func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey string, appKey string) (queue.Driver, error) {
+func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey string, appKey string, logger log.Logger) (queue.Driver, error) {
+	// Route queue-signing diagnostics through the framework logger before
+	// configuring so missing/APP_KEY fallbacks are surfaced consistently.
+	queue.SetSigningLogger(logger)
+
 	// Configure payload signing now that .env has been loaded. This used
 	// to run in queue's package init(), which fired before godotenv.Load
 	// had populated APP_KEY/QUEUE_SIGNING_KEY — so signing was always
@@ -212,6 +220,7 @@ func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey strin
 		return queue.NewDatabaseDriver(db, dbDriver), nil
 	case "memory", "":
 		d := queue.NewMemoryDriver()
+		d.SetLogger(logger)
 		d.Start()
 		return d, nil
 	default:
