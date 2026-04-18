@@ -700,29 +700,27 @@ func TestS3DefaultVisibilityPrivate(t *testing.T) {
 	}
 }
 
-// TestS3TemporaryURLClamp verifies clamp to the 7-day maximum presign window.
-func TestS3TemporaryURLClamp(t *testing.T) {
+// TestS3TemporaryURLExpirationBounds verifies that expirations outside the
+// AWS SigV4 7-day window return a sentinel error rather than silently
+// clamping — operators relying on clamping would get URLs that expire
+// sooner than they asked for, which is a surprising failure mode.
+func TestS3TemporaryURLExpirationBounds(t *testing.T) {
+	d := &S3Driver{bucket: "b", region: "us-east-1"}
 	cases := []struct {
 		name  string
 		input time.Duration
-		want  time.Duration
+		want  error
 	}{
-		{"BelowMax", 30 * time.Minute, 30 * time.Minute},
-		{"AtMax", 7 * 24 * time.Hour, 7 * 24 * time.Hour},
-		{"OverMax8Days", 8 * 24 * time.Hour, 7 * 24 * time.Hour},
-		{"OverMax30Days", 30 * 24 * time.Hour, 7 * 24 * time.Hour},
-		{"Zero", 0, 7 * 24 * time.Hour},
-		{"Negative", -1 * time.Hour, 7 * 24 * time.Hour},
+		{"Zero", 0, ErrExpirationNonPositive},
+		{"Negative", -1 * time.Hour, ErrExpirationNonPositive},
+		{"OverMax8Days", 8 * 24 * time.Hour, ErrExpirationTooLong},
+		{"OverMax30Days", 30 * 24 * time.Hour, ErrExpirationTooLong},
 	}
-
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := tc.input
-			if got > maxS3PresignExpiration || got <= 0 {
-				got = maxS3PresignExpiration
-			}
-			if got != tc.want {
-				t.Errorf("clamp(%v) = %v, want %v", tc.input, got, tc.want)
+			_, err := d.TemporaryURLCtx(context.Background(), "a.txt", tc.input)
+			if !errors.Is(err, tc.want) {
+				t.Errorf("TemporaryURLCtx(%v): err = %v, want %v", tc.input, err, tc.want)
 			}
 		})
 	}

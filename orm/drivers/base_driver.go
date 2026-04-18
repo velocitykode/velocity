@@ -119,9 +119,11 @@ func (b *BaseDriver) Begin() (*sql.Tx, error) {
 	return b.db.Begin()
 }
 
-// BeginTx starts a transaction with options.
-func (b *BaseDriver) BeginTx() (*sql.Tx, error) {
-	return b.db.Begin()
+// BeginTx starts a transaction with the given context and options. Pass
+// opts = nil to use the underlying driver's defaults; that is equivalent
+// to Begin but lets callers still flow a context through.
+func (b *BaseDriver) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error) {
+	return b.db.BeginTx(ctx, opts)
 }
 
 // ConfigurePool sets connection pool parameters on the given db.

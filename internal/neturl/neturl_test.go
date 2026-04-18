@@ -24,6 +24,10 @@ func TestIsPrivateOrInternal(t *testing.T) {
 		{"metadata v4", "169.254.169.254", true},
 		{"cgnat", "100.64.1.1", true},
 		{"fc00", "fc00::1", true},
+		{"teredo low", "2001::1", true},
+		{"teredo mid", "2001:0:4136:e378:8000:63bf:3fff:fdd2", true},
+		{"teredo high boundary", "2001::ffff:ffff:ffff:ffff:ffff:ffff", true},
+		{"just outside teredo", "2001:1::1", false},
 		{"public v4", "8.8.8.8", false},
 		{"public v6", "2606:4700:4700::1111", false},
 	}

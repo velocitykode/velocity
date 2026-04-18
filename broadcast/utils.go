@@ -1,9 +1,22 @@
 package broadcast
 
 import (
+	"crypto/subtle"
 	"errors"
 	"strings"
 )
+
+// SecureCompareToken compares two private/presence channel tokens in
+// constant time so custom Authorizer implementations can avoid rolling
+// their own equality check (a plain `==` leaks a timing oracle that
+// shrinks the brute-force horizon for HMAC-style tokens).
+//
+// Returns true iff the two byte sequences are identical. Length mismatch
+// short-circuits to false without consulting the bytes, which is the
+// intended subtle.ConstantTimeCompare behaviour.
+func SecureCompareToken(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
 
 var (
 	// ErrUnauthorized is returned when channel authorization fails
