@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/velocitykode/velocity/app"
+	"github.com/velocitykode/velocity/contract"
 )
 
 // Bootstrap runs the declarative chain (providers, middleware, routes, events,
@@ -86,42 +87,34 @@ func (a *App) bootstrap() error {
 	return nil
 }
 
-// wireInstanceEvents wires the event dispatcher into service instances.
-// Each service that fires events gets the dispatcher set on its instance.
+// wireInstanceEvents wires the event dispatcher into every subsystem that
+// implements contract.EventDispatcherAware. Each service that fires events
+// gets the dispatcher set on its instance; subsystems that don't implement
+// the contract are skipped silently (e.g. when a feature is disabled).
 func wireInstanceEvents(a *App) {
 	if a.Services.Events == nil {
 		return
 	}
 
-	dispatch := func(event interface{}) error {
+	dispatch := func(event any) error {
 		return a.Services.Events.Dispatch(event)
 	}
 
 	a.Router.SetEventDispatcher(dispatch)
 
-	if a.DB != nil {
-		a.DB.SetEventDispatcher(dispatch)
-	}
-	if a.Cache != nil {
-		a.Cache.SetEventDispatcher(dispatch)
-	}
-	if a.Notification != nil {
-		a.Notification.SetEventDispatcher(dispatch)
-	}
-	// Wire remaining subsystems via interface check (their interfaces
-	// don't mandate SetEventDispatcher, but the concrete types have it).
-	type eventDispatcherSetter interface {
-		SetEventDispatcher(func(event interface{}) error)
-	}
-	for _, svc := range []any{a.View, a.Mail, a.Queue, a.Scheduler, a.Auth, a.Crypto} {
-		if s, ok := svc.(eventDispatcherSetter); ok && svc != nil {
+	candidates := []any{a.DB, a.Cache, a.Notification, a.View, a.Mail, a.Queue, a.Scheduler, a.Auth, a.Crypto}
+	for _, svc := range candidates {
+		if svc == nil {
+			continue
+		}
+		if s, ok := svc.(contract.EventDispatcherAware); ok {
 			s.SetEventDispatcher(dispatch)
 		}
 	}
 
 	// Wire events into any extension that supports it.
 	for _, ext := range a.Extensions {
-		if s, ok := ext.(eventDispatcherSetter); ok {
+		if s, ok := ext.(contract.EventDispatcherAware); ok {
 			s.SetEventDispatcher(dispatch)
 		}
 	}

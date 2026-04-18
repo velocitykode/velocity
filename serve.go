@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -31,11 +32,13 @@ func (a *App) Serve() error {
 
 	addr := ":" + a.config.Port
 	a.server = &http.Server{
-		Addr:         addr,
-		Handler:      a.Router,
-		ReadTimeout:  a.config.ReadTimeout,
-		WriteTimeout: a.config.WriteTimeout,
-		IdleTimeout:  a.config.IdleTimeout,
+		Addr:              addr,
+		Handler:           a.Router,
+		ReadTimeout:       a.config.ReadTimeout,
+		ReadHeaderTimeout: a.config.ReadHeaderTimeout,
+		WriteTimeout:      a.config.WriteTimeout,
+		IdleTimeout:       a.config.IdleTimeout,
+		BaseContext:       func(net.Listener) context.Context { return a.shutdownCtx },
 	}
 
 	// Pre-commit routes so the tree build and static-route compile do
@@ -74,6 +77,13 @@ func (a *App) Serve() error {
 // Every subsystem's Shutdown is called even if an earlier one fails; all errors
 // are aggregated via errors.Join.
 func (a *App) Shutdown(ctx context.Context) error {
+	// Cancel the app-wide shutdown context first so any in-flight request
+	// handler or background worker observing it (via BaseContext or
+	// context.Value from router.Context) can exit promptly.
+	if a.shutdownCancel != nil {
+		a.shutdownCancel()
+	}
+
 	var errs []error
 	collect := func(err error) {
 		if err != nil {

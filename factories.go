@@ -178,11 +178,10 @@ func initDB(config DBConfig) (*orm.Manager, error) {
 	})
 }
 
-// initQueue selects the queue driver based on config. Falls back to memory if the
-// redis connection fails or the database driver is requested without a DB connection.
-// Returns an error when payload signing configuration itself fails (e.g. HKDF
-// derivation from APP_KEY), so boot fails visibly rather than running without
-// integrity protection.
+// initQueue selects the queue driver based on config. Returns an error when
+// payload-signing setup, Redis connect, or a missing DB for the database
+// driver prevents the requested driver from starting — boot fails loudly
+// rather than silently downgrading to the in-memory driver.
 func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey string, appKey string) (queue.Driver, error) {
 	// Configure payload signing now that .env has been loaded. This used
 	// to run in queue's package init(), which fired before godotenv.Load
@@ -190,12 +189,6 @@ func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey strin
 	// reported as disabled even when the key was present.
 	if err := queue.ConfigureSigning(signingKey, appKey); err != nil {
 		return nil, err
-	}
-
-	newMemory := func() queue.Driver {
-		d := queue.NewMemoryDriver()
-		d.Start()
-		return d
 	}
 
 	switch config.Driver {
@@ -208,16 +201,20 @@ func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey strin
 			TLS:      config.RedisTLS,
 		})
 		if err != nil {
-			return newMemory(), nil
+			return nil, fmt.Errorf("velocity/queue: redis driver: %w", err)
 		}
 		return d, nil
 	case "database":
 		if db == nil {
-			return newMemory(), nil
+			return nil, fmt.Errorf("velocity/queue: database driver requested but no DB connection configured (set DB_CONNECTION or switch QUEUE_DRIVER to memory/redis)")
 		}
 		return queue.NewDatabaseDriver(db, dbDriver), nil
+	case "memory", "":
+		d := queue.NewMemoryDriver()
+		d.Start()
+		return d, nil
 	default:
-		return newMemory(), nil
+		return nil, fmt.Errorf("velocity/queue: unknown QUEUE_DRIVER %q (expected memory, redis, or database)", config.Driver)
 	}
 }
 

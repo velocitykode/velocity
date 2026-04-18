@@ -5,6 +5,18 @@ import (
 	"net/http"
 )
 
+// EventDispatcherAware is the uniform interface for types that surface events
+// to the framework-level dispatcher. Every subsystem (cache, queue, scheduler,
+// router, ORM, auth, view, mail, crypto) that emits events implements this so
+// bootstrap wiring can thread a single dispatcher through every subsystem.
+//
+// The func(any) error signature is the shared lowest common denominator: each
+// subsystem emits its own concrete event types, so the dispatcher parameter
+// is type-erased. Receivers type-assert back to the concrete event type.
+type EventDispatcherAware interface {
+	SetEventDispatcher(fn func(event any) error)
+}
+
 // ShutdownAware is the uniform interface for types that hold background
 // resources (goroutines, connections, file handles) and need to release
 // them during application shutdown.

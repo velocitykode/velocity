@@ -1,7 +1,9 @@
 package velocity
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -20,7 +22,22 @@ import (
 	"github.com/velocitykode/velocity/view"
 )
 
-const frameworkVersion = "0.1.0"
+// BuildInfo carries version metadata baked in via -ldflags. See the Makefile
+// build target for the ldflag incantation; defaults below apply to `go run`.
+var BuildInfo = struct {
+	Version string
+	Commit  string
+	Date    string
+}{
+	Version: "1.0.0-rc.1",
+	Commit:  "devel",
+	Date:    "unknown",
+}
+
+// ErrNoAppKey is returned from New when APP_KEY (or CRYPTO_KEY) is unset in
+// a non-testing environment. The fix is to generate one via `vel key:generate`
+// and set it in the environment before boot.
+var ErrNoAppKey = errors.New("velocity: APP_KEY is required in non-testing environments (run `vel key:generate`)")
 
 // App represents the Velocity application container.
 // It owns all framework subsystem instances and provides them to the consumer.
@@ -33,11 +50,13 @@ type App struct {
 	Router *router.VelocityRouterV2
 
 	// Internal
-	config    *Config
-	server    *http.Server
-	version   string
-	noEvents  bool // skip event dispatcher initialization
-	providers []app.ServiceProvider
+	config         *Config
+	server         *http.Server
+	version        string
+	noEvents       bool // skip event dispatcher initialization
+	providers      []app.ServiceProvider
+	shutdownCtx    context.Context
+	shutdownCancel context.CancelFunc
 
 	// Declarative bootstrap chain
 	providersFn    func(*ProviderRegistry)
@@ -56,11 +75,14 @@ type App struct {
 // Services are initialized in dependency order. If any required service
 // fails to initialize, New returns an error — it never panics.
 func New(opts ...Option) (*App, error) {
+	ctx, cancel := context.WithCancel(context.Background())
 	a := &App{
 		Services: &app.Services{
 			Extensions: make(map[string]any),
 		},
-		version: frameworkVersion,
+		version:        BuildInfo.Version,
+		shutdownCtx:    ctx,
+		shutdownCancel: cancel,
 	}
 
 	// Load config from env by default
@@ -75,7 +97,8 @@ func New(opts ...Option) (*App, error) {
 	// 1. Initialize logger first (everything else may need to log)
 	logger, err := log.NewLogger(a.config.Log)
 	if err != nil {
-		logger, _ = log.NewLogger(log.LogConfig{Driver: "console"})
+		cancel()
+		return nil, fmt.Errorf("velocity: failed to initialize logger: %w", err)
 	}
 	a.Log = logger
 
@@ -86,9 +109,15 @@ func New(opts ...Option) (*App, error) {
 	)
 
 	// 3. Initialize crypto (auth/csrf may need it)
-	if a.config.Crypto.Key != "" {
+	if a.config.Crypto.Key == "" {
+		if a.config.Env != "testing" {
+			cancel()
+			return nil, ErrNoAppKey
+		}
+	} else {
 		enc, err := crypto.NewEncryptor(a.config.Crypto)
 		if err != nil {
+			cancel()
 			return nil, fmt.Errorf("velocity: failed to initialize crypto: %w", err)
 		}
 		a.Crypto = enc

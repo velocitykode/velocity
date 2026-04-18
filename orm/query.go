@@ -74,9 +74,29 @@ type Query[T any] struct {
 	// Context for event propagation
 	ctx context.Context
 
+	// Deferred error state. Chain builders capture the first validation
+	// error here; terminal methods (Get, First, Count, Update, Delete, …)
+	// return it before issuing any SQL.
+	err error
+
 	// Query state
 	lastSQL  string
 	lastArgs []any
+}
+
+// setErr records the first error hit during query construction. Subsequent
+// setters no-op; terminal methods check this before executing.
+func (q *Query[T]) setErr(op string, err error) {
+	if q.err == nil && err != nil {
+		q.err = fmt.Errorf("orm: %s: %w", op, err)
+	}
+}
+
+// Err returns the first error captured during chain construction, or nil
+// if none. Useful for mid-chain inspection; terminal methods also return
+// this error ahead of executing.
+func (q *Query[T]) Err() error {
+	return q.err
 }
 
 // newQuery creates a new query builder for type T
@@ -169,6 +189,7 @@ func (q *Query[T]) Clone() *Query[T] {
 		skipLocked:    q.skipLocked,
 		hasSoftDelete: q.hasSoftDelete,
 		ctx:           q.ctx,
+		err:           q.err,
 		lastSQL:       q.lastSQL,
 	}
 	if q.conditions != nil {
@@ -208,7 +229,11 @@ func (q *Query[T]) Clone() *Query[T] {
 
 // Where adds a WHERE condition
 func (q *Query[T]) Where(condition string, args ...any) *Query[T] {
-	col, op, val := parseCondition(condition, args)
+	col, op, val, err := parseCondition(condition, args)
+	if err != nil {
+		q.setErr("Where", err)
+		return q
+	}
 	q.conditions = append(q.conditions, drivers.Condition{
 		Column:   col,
 		Operator: op,
@@ -220,7 +245,11 @@ func (q *Query[T]) Where(condition string, args ...any) *Query[T] {
 
 // OrWhere adds an OR WHERE condition
 func (q *Query[T]) OrWhere(condition string, args ...any) *Query[T] {
-	col, op, val := parseCondition(condition, args)
+	col, op, val, err := parseCondition(condition, args)
+	if err != nil {
+		q.setErr("OrWhere", err)
+		return q
+	}
 	q.conditions = append(q.conditions, drivers.Condition{
 		Column:   col,
 		Operator: op,
@@ -233,7 +262,8 @@ func (q *Query[T]) OrWhere(condition string, args ...any) *Query[T] {
 // WhereIn adds a WHERE IN condition
 func (q *Query[T]) WhereIn(field string, values []any) *Query[T] {
 	if err := validateIdentifier(field); err != nil {
-		panic(fmt.Sprintf("WhereIn: %s", err))
+		q.setErr("WhereIn", err)
+		return q
 	}
 	q.conditions = append(q.conditions, drivers.Condition{
 		Column:   field,
@@ -247,7 +277,8 @@ func (q *Query[T]) WhereIn(field string, values []any) *Query[T] {
 // WhereNotIn adds a WHERE NOT IN condition
 func (q *Query[T]) WhereNotIn(field string, values []any) *Query[T] {
 	if err := validateIdentifier(field); err != nil {
-		panic(fmt.Sprintf("WhereNotIn: %s", err))
+		q.setErr("WhereNotIn", err)
+		return q
 	}
 	q.conditions = append(q.conditions, drivers.Condition{
 		Column:   field,
@@ -261,7 +292,8 @@ func (q *Query[T]) WhereNotIn(field string, values []any) *Query[T] {
 // WhereNull adds a WHERE IS NULL condition
 func (q *Query[T]) WhereNull(field string) *Query[T] {
 	if err := validateIdentifier(field); err != nil {
-		panic(fmt.Sprintf("WhereNull: %s", err))
+		q.setErr("WhereNull", err)
+		return q
 	}
 	q.conditions = append(q.conditions, drivers.Condition{
 		Column:   field,
@@ -275,7 +307,8 @@ func (q *Query[T]) WhereNull(field string) *Query[T] {
 // WhereNotNull adds a WHERE IS NOT NULL condition
 func (q *Query[T]) WhereNotNull(field string) *Query[T] {
 	if err := validateIdentifier(field); err != nil {
-		panic(fmt.Sprintf("WhereNotNull: %s", err))
+		q.setErr("WhereNotNull", err)
+		return q
 	}
 	q.conditions = append(q.conditions, drivers.Condition{
 		Column:   field,
@@ -289,7 +322,8 @@ func (q *Query[T]) WhereNotNull(field string) *Query[T] {
 // WhereBetween adds a WHERE BETWEEN condition
 func (q *Query[T]) WhereBetween(field string, start, end any) *Query[T] {
 	if err := validateIdentifier(field); err != nil {
-		panic(fmt.Sprintf("WhereBetween: %s", err))
+		q.setErr("WhereBetween", err)
+		return q
 	}
 	q.conditions = append(q.conditions, drivers.Condition{
 		Column:   field,
@@ -307,7 +341,7 @@ func (q *Query[T]) WhereBetween(field string, start, end any) *Query[T] {
 //   - "col IS NULL"         -> col, "IS NULL", nil
 //   - "col IS NOT NULL"     -> col, "IS NOT NULL", nil
 //   - "col > ?", val        -> col, ">", val
-func parseCondition(condition string, args []any) (column, operator string, value any) {
+func parseCondition(condition string, args []any) (column, operator string, value any, err error) {
 	condition = strings.TrimSpace(condition)
 
 	// Check for IS NULL / IS NOT NULL patterns (case-insensitive)
@@ -315,16 +349,16 @@ func parseCondition(condition string, args []any) (column, operator string, valu
 	if idx := strings.Index(upperCond, " IS NOT NULL"); idx != -1 {
 		col := strings.TrimSpace(condition[:idx])
 		if err := validateIdentifier(col); err != nil {
-			panic(fmt.Sprintf("Where: %s", err))
+			return "", "", nil, err
 		}
-		return col, "IS NOT NULL", nil
+		return col, "IS NOT NULL", nil, nil
 	}
 	if idx := strings.Index(upperCond, " IS NULL"); idx != -1 {
 		col := strings.TrimSpace(condition[:idx])
 		if err := validateIdentifier(col); err != nil {
-			panic(fmt.Sprintf("Where: %s", err))
+			return "", "", nil, err
 		}
-		return col, "IS NULL", nil
+		return col, "IS NULL", nil, nil
 	}
 
 	// Split into parts: column, operator, rest
@@ -333,12 +367,12 @@ func parseCondition(condition string, args []any) (column, operator string, valu
 	if len(parts) == 1 {
 		// Only column provided, default to "="
 		if err := validateIdentifier(parts[0]); err != nil {
-			panic(fmt.Sprintf("Where: %s", err))
+			return "", "", nil, err
 		}
 		if len(args) > 0 {
-			return parts[0], "=", args[0]
+			return parts[0], "=", args[0], nil
 		}
-		return parts[0], "=", nil
+		return parts[0], "=", nil, nil
 	}
 
 	// Column and operator provided
@@ -347,25 +381,26 @@ func parseCondition(condition string, args []any) (column, operator string, valu
 
 	// Validate column name
 	if err := validateIdentifier(column); err != nil {
-		panic(fmt.Sprintf("Where: %s", err))
+		return "", "", nil, err
 	}
 
 	// Validate operator against allowlist
 	if !isValidOperator(operator) {
-		panic(fmt.Sprintf("invalid SQL operator: %q", operator))
+		return "", "", nil, fmt.Errorf("invalid SQL operator: %q", operator)
 	}
 
 	if len(args) > 0 {
 		value = args[0]
 	}
 
-	return column, operator, value
+	return column, operator, value, nil
 }
 
 // OrderBy adds an ORDER BY clause
 func (q *Query[T]) OrderBy(column, direction string) *Query[T] {
 	if err := validateIdentifier(column); err != nil {
-		panic(fmt.Sprintf("OrderBy: %s", err))
+		q.setErr("OrderBy", err)
+		return q
 	}
 	dir := strings.ToUpper(strings.TrimSpace(direction))
 	if dir != "ASC" && dir != "DESC" {
@@ -387,7 +422,8 @@ func (q *Query[T]) OrderByDesc(column string) *Query[T] {
 func (q *Query[T]) GroupBy(columns ...string) *Query[T] {
 	for _, col := range columns {
 		if err := validateIdentifier(col); err != nil {
-			panic(fmt.Sprintf("GroupBy: %s", err))
+			q.setErr("GroupBy", err)
+			return q
 		}
 	}
 	q.groups = append(q.groups, columns...)
@@ -396,9 +432,14 @@ func (q *Query[T]) GroupBy(columns ...string) *Query[T] {
 
 // Having adds a HAVING condition
 func (q *Query[T]) Having(condition string, args ...any) *Query[T] {
-	col, op, val := parseCondition(condition, args)
+	col, op, val, err := parseCondition(condition, args)
+	if err != nil {
+		q.setErr("Having", err)
+		return q
+	}
 	if err := validateIdentifier(col); err != nil {
-		panic(fmt.Sprintf("Having: %s", err))
+		q.setErr("Having", err)
+		return q
 	}
 	q.having = append(q.having, drivers.Condition{
 		Column:   col,
@@ -409,41 +450,58 @@ func (q *Query[T]) Having(condition string, args ...any) *Query[T] {
 	return q
 }
 
-// buildJoinOn safely builds a JOIN ON clause with validated identifiers and operator
-func (q *Query[T]) buildJoinOn(first, operator, second string) string {
+// buildJoinOn safely builds a JOIN ON clause with validated identifiers and operator.
+// Returns the built clause and a validation error if either identifier or
+// operator is invalid; callers funnel the error into q.err via setErr.
+func (q *Query[T]) buildJoinOn(first, operator, second string) (string, error) {
 	if !isValidOperator(operator) {
-		panic(fmt.Sprintf("invalid JOIN operator: %q", operator))
+		return "", fmt.Errorf("invalid JOIN operator: %q", operator)
 	}
 	grammar := q.driver.Grammar()
-	return fmt.Sprintf("%s %s %s", grammar.QuoteIdentifier(first), operator, grammar.QuoteIdentifier(second))
+	return fmt.Sprintf("%s %s %s", grammar.QuoteIdentifier(first), operator, grammar.QuoteIdentifier(second)), nil
 }
 
 // Join adds an INNER JOIN
 func (q *Query[T]) Join(table, first, operator, second string) *Query[T] {
+	on, err := q.buildJoinOn(first, operator, second)
+	if err != nil {
+		q.setErr("Join", err)
+		return q
+	}
 	q.joins = append(q.joins, drivers.Join{
 		Type:  "INNER",
 		Table: table,
-		On:    q.buildJoinOn(first, operator, second),
+		On:    on,
 	})
 	return q
 }
 
 // LeftJoin adds a LEFT JOIN
 func (q *Query[T]) LeftJoin(table, first, operator, second string) *Query[T] {
+	on, err := q.buildJoinOn(first, operator, second)
+	if err != nil {
+		q.setErr("LeftJoin", err)
+		return q
+	}
 	q.joins = append(q.joins, drivers.Join{
 		Type:  "LEFT",
 		Table: table,
-		On:    q.buildJoinOn(first, operator, second),
+		On:    on,
 	})
 	return q
 }
 
 // RightJoin adds a RIGHT JOIN
 func (q *Query[T]) RightJoin(table, first, operator, second string) *Query[T] {
+	on, err := q.buildJoinOn(first, operator, second)
+	if err != nil {
+		q.setErr("RightJoin", err)
+		return q
+	}
 	q.joins = append(q.joins, drivers.Join{
 		Type:  "RIGHT",
 		Table: table,
-		On:    q.buildJoinOn(first, operator, second),
+		On:    on,
 	})
 	return q
 }
@@ -456,7 +514,8 @@ func (q *Query[T]) Select(columns ...string) *Query[T] {
 			continue
 		}
 		if err := validateIdentifier(col); err != nil {
-			panic(fmt.Sprintf("Select: %s", err))
+			q.setErr("Select", err)
+			return q
 		}
 	}
 	q.columns = columns
@@ -530,6 +589,9 @@ func (q *Query[T]) getContext() context.Context {
 
 // Get retrieves all matching records
 func (q *Query[T]) Get() ([]T, error) {
+	if q.err != nil {
+		return nil, q.err
+	}
 	// Apply soft delete filtering only if model supports soft deletes
 	if q.hasSoftDelete {
 		if !q.withTrashed {
@@ -627,6 +689,9 @@ func (q *Query[T]) Find(id any, dest *T) error {
 
 // Count returns the number of matching records
 func (q *Query[T]) Count() (int, error) {
+	if q.err != nil {
+		return 0, q.err
+	}
 	q.columns = []string{"COUNT(*) as count"}
 
 	selectQuery := &drivers.SelectQuery{
@@ -656,7 +721,10 @@ func (q *Query[T]) Exists() bool {
 // Pluck retrieves values of a single column
 func (q *Query[T]) Pluck(column string) ([]any, error) {
 	if err := validateIdentifier(column); err != nil {
-		panic(fmt.Sprintf("Pluck: %s", err))
+		q.setErr("Pluck", err)
+	}
+	if q.err != nil {
+		return nil, q.err
 	}
 	q.Select(column)
 
@@ -696,6 +764,9 @@ func (q *Query[T]) Pluck(column string) ([]any, error) {
 
 // Update updates matching records
 func (q *Query[T]) Update(updates map[string]any) (int64, error) {
+	if q.err != nil {
+		return 0, q.err
+	}
 	if len(updates) == 0 {
 		return 0, errors.New("no updates provided")
 	}
@@ -722,6 +793,9 @@ func (q *Query[T]) Update(updates map[string]any) (int64, error) {
 
 // InsertGetId inserts a record and returns the ID
 func (q *Query[T]) InsertGetId(data map[string]any) (int64, error) {
+	if q.err != nil {
+		return 0, q.err
+	}
 	if len(data) == 0 {
 		return 0, errors.New("no data provided for insert")
 	}
@@ -792,6 +866,9 @@ func (q *Query[T]) InsertGetId(data map[string]any) (int64, error) {
 
 // Delete soft deletes matching records (if model supports soft deletes) or hard deletes
 func (q *Query[T]) Delete() (int64, error) {
+	if q.err != nil {
+		return 0, q.err
+	}
 	// Check if model has soft deletes
 	if q.hasSoftDelete {
 		// Soft delete
@@ -806,6 +883,9 @@ func (q *Query[T]) Delete() (int64, error) {
 
 // ForceDelete permanently deletes matching records
 func (q *Query[T]) ForceDelete() (int64, error) {
+	if q.err != nil {
+		return 0, q.err
+	}
 	sql, args := q.driver.Grammar().CompileDelete(q.table, q.conditions)
 
 	start := time.Now()
