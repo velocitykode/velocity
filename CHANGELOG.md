@@ -70,6 +70,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`ConfigFromEnv` cleanup.** Reads `DB_MYSQL_TLS` once at config time instead of leaking to drivers; removes stdlib-log warnings on deprecated env names (those env names are no longer read at all).
 - **Route diagnostic logs in websocket / auth / broadcast / scheduler / queue through `log.Logger`.** Replaced ad-hoc `fmt.Printf`/`fmt.Fprintln(os.Stderr)`/`log.Printf` calls and the package-local stdlib-log adapters (`scheduler.defaultLogger`, `queue.stdlibLogger`) with a framework-logger injection. Each package now exposes a narrow `Logger` interface and a `SetLogger` setter (wired from `velocity.New` via `Scheduler.SetLogger`, `auth.Manager.SetLogger`, `queue.MemoryDriver.SetLogger`, and `queue.SetSigningLogger`; `websocket.Server` and `broadcast/drivers.WebSocketDriver` expose `SetLogger` for consumer wiring). Loggers are stored atomically (`atomic.Value`) so request/drop hot paths that hold other locks can read them without deadlock. When no logger is installed, packages fall back to silent null loggers rather than emitting through Go's standard `log`.
 - **Refactor CLI dispatcher into `command` interface — no external-API change.** The 489-line `run.go` switch was split into an internal `command` interface (`name()`, `description()`, `run(*App, []string) error`) with a per-command type and a `newCommandRegistry()` built-in map. Each previous case lives in its own file (`cmd_migrate.go`, `cmd_make.go`, `cmd_ops.go`, `cmd.go`). `App.Run()`, `App.printHelp()`, `App.printUserCommands()`, the custom-command `run` path (chain.Commands), and the internal `serve:run` subprocess entry all preserve byte-identical behavior.
+- **`view/` / `bond/` deduplication.** `view/` is now a thin façade over `bond/` with no overlapping types. Deleted:
+  - `view.Props` type alias (use `bond.Props`).
+  - `view.SharePropsFunc` type alias (use `func(*http.Request) (bond.Props, error)` inline, or call `(*view.Engine).SetSharePropsFunc` directly).
+  - `view.Lazy`, `view.Optional`, `view.Always`, `view.Defer`, `view.LazyProp` — all were shims re-exporting bond helpers. Import `bond` and call `bond.Lazy` / `bond.Optional` / `bond.Always` / `bond.Defer` directly.
+  - `view.SimpleFlashProvider`, `view.SimpleValidationProvider` — in-memory scaffolding that was never wired to production code; cookie-based flash (`ctx.WithErrors` / `ctx.WithInput` + `bond/flash.go`) is the supported flow.
+  - `view.Success`, `view.Error` — placeholder helpers that only called `http.Redirect`. Use `http.Redirect` or `(*view.Engine).Redirect` directly.
+  - `view.LoadTemplateFromFile` — a two-line `os.ReadFile` wrapper. Call `os.ReadFile` at startup.
+  - `view.DefaultViewConfig`, `view.Config.Validate` — unused helpers.
+  - `(*view.Engine).RenderWithErrors` — unused; build a `bond.Props` with `"errors"`/`"old"` keys and call `Render` directly, or rely on the automatic flash-cookie injection in `bond.Render`.
+
+  The `view/helpers.go` + `view/helpers_test.go` files are gone; prop-type assertions in tests should import `bond` directly.
 
 ### Security — Kernel-enforced file-path containment (`os.Root`)
 - **Removed** `router.ValidateFilePathWithin(path, root string) (string, error)` along
