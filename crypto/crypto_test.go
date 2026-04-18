@@ -38,9 +38,12 @@ func TestEncryptDecrypt(t *testing.T) {
 				t.Fatalf("Failed to encrypt: %v", err)
 			}
 
-			// Verify it's base64 encoded
-			if _, err := base64.URLEncoding.DecodeString(encrypted); err != nil {
-				t.Errorf("Encrypted payload is not base64 URL encoded")
+			// Verify wire format is v1-prefixed + base64 URL encoded.
+			if !strings.HasPrefix(encrypted, "v1:") {
+				t.Errorf("encrypted payload missing v1 sentinel: %q", encrypted)
+			}
+			if _, err := base64.URLEncoding.DecodeString(strings.TrimPrefix(encrypted, "v1:")); err != nil {
+				t.Errorf("Encrypted payload envelope is not base64 URL encoded")
 			}
 
 			// Decrypt

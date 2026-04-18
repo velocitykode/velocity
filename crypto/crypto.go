@@ -160,8 +160,13 @@ func SerializePayload(p *Payload) (string, error) {
 	return base64.URLEncoding.EncodeToString(data), nil
 }
 
-// DeserializePayload converts base64 JSON to a payload
+// DeserializePayload converts base64 JSON to a payload. Accepts both v1
+// ("v1:"-prefixed) and v0 (bare base64) envelopes so tooling that inspects
+// stored ciphertexts does not need to know the wire version.
 func DeserializePayload(encoded string) (*Payload, error) {
+	// Strip the v1 sentinel if present; legacy v0 payloads are bare base64.
+	encoded = strings.TrimPrefix(encoded, "v1:")
+
 	// Try URL encoding first, then standard encoding
 	data, err := base64.URLEncoding.DecodeString(encoded)
 	if err != nil {
