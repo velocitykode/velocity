@@ -80,21 +80,73 @@ func TestTransaction(t *testing.T) {
 	m := newTestManager(t)
 	defer m.Close()
 
-	// Test transaction
-	err := m.Transaction(func(tx *sql.Tx) error {
-		return nil
-	})
-	if err != nil {
-		t.Errorf("Transaction failed: %v", err)
+	if _, err := m.Exec(`CREATE TABLE widgets (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)`); err != nil {
+		t.Fatalf("create table: %v", err)
 	}
 
-	// Test transaction rollback
-	err = m.Transaction(func(tx *sql.Tx) error {
-		return ErrTransaction
-	})
-	if err != ErrTransaction {
-		t.Error("Expected transaction to rollback with error")
+	countWidgets := func(t *testing.T) int {
+		t.Helper()
+		var n int
+		if err := m.DB().QueryRow(`SELECT COUNT(*) FROM widgets`).Scan(&n); err != nil {
+			t.Fatalf("count widgets: %v", err)
+		}
+		return n
 	}
+
+	t.Run("commit persists writes", func(t *testing.T) {
+		if _, err := m.Exec(`DELETE FROM widgets`); err != nil {
+			t.Fatalf("reset: %v", err)
+		}
+		err := m.Transaction(func(tx *sql.Tx) error {
+			_, err := tx.Exec(`INSERT INTO widgets (name) VALUES (?)`, "kept")
+			return err
+		})
+		if err != nil {
+			t.Fatalf("Transaction returned error: %v", err)
+		}
+		if got := countWidgets(t); got != 1 {
+			t.Errorf("post-commit row count = %d, want 1", got)
+		}
+	})
+
+	t.Run("callback error rolls back writes", func(t *testing.T) {
+		if _, err := m.Exec(`DELETE FROM widgets`); err != nil {
+			t.Fatalf("reset: %v", err)
+		}
+		err := m.Transaction(func(tx *sql.Tx) error {
+			if _, err := tx.Exec(`INSERT INTO widgets (name) VALUES (?)`, "ghost"); err != nil {
+				return err
+			}
+			return ErrTransaction // trigger rollback
+		})
+		if err != ErrTransaction {
+			t.Errorf("Transaction returned %v, want ErrTransaction", err)
+		}
+		// The real assertion: nothing survived. A mutation that swallows
+		// the callback error (e.g. `if err != nil { err = nil }`) would
+		// commit the ghost row and this count would be 1.
+		if got := countWidgets(t); got != 0 {
+			t.Errorf("post-rollback row count = %d, want 0", got)
+		}
+	})
+
+	t.Run("panic also rolls back", func(t *testing.T) {
+		if _, err := m.Exec(`DELETE FROM widgets`); err != nil {
+			t.Fatalf("reset: %v", err)
+		}
+		func() {
+			defer func() { _ = recover() }()
+			_ = m.Transaction(func(tx *sql.Tx) error {
+				if _, err := tx.Exec(`INSERT INTO widgets (name) VALUES (?)`, "panicked"); err != nil {
+					t.Fatalf("insert: %v", err)
+				}
+				panic("boom")
+			})
+		}()
+		if got := countWidgets(t); got != 0 {
+			t.Errorf("post-panic row count = %d, want 0 (panic must rollback)", got)
+		}
+	})
 }
 
 func TestManagerExec(t *testing.T) {

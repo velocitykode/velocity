@@ -117,7 +117,10 @@ func (v *defaultValidator) Validate(data interface{}, rules Rules) (*ValidatedDa
 
 	validated := &ValidatedData{
 		data:   make(map[string]interface{}),
-		errors: ValidationErrors{Errors: make(map[string][]string)},
+		errors: ValidationErrors{
+			Errors:       make(map[string][]string),
+			RulesByField: make(map[string][]string),
+		},
 	}
 
 	// Convert data to map
@@ -133,7 +136,7 @@ func (v *defaultValidator) Validate(data interface{}, rules Rules) (*ValidatedDa
 
 		for _, rule := range fieldRules {
 			if err := v.validateField(field, value, rule, dataMap); err != nil {
-				validated.errors.addError(field, err.Error())
+				validated.errors.addError(field, err.Error(), rule.name)
 				break // Stop on first error for this field
 			}
 		}
