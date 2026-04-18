@@ -41,6 +41,12 @@ const MetadataIPv6 = "fd00:ec2::254"
 // frequently reachable from inside cloud VPCs.
 var cgnatNet = mustCIDR("100.64.0.0/10")
 
+// teredoNet is 2001::/32 — RFC 4380 Teredo tunneling. Rarely seen on the
+// modern internet, but an attacker-supplied Teredo target encodes an
+// arbitrary IPv4 (including private ranges) inside an IPv6 address. Treat
+// any Teredo destination as internal to avoid that escape hatch.
+var teredoNet = mustCIDR("2001::/32")
+
 func mustCIDR(s string) *net.IPNet {
 	_, n, err := net.ParseCIDR(s)
 	if err != nil {
@@ -77,6 +83,9 @@ func IsPrivateOrInternal(ip net.IP) bool {
 		return true
 	}
 	if v4 := ip.To4(); v4 != nil && cgnatNet.Contains(v4) {
+		return true
+	}
+	if teredoNet.Contains(ip) {
 		return true
 	}
 	if IsMetadataIP(ip) {
