@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/encoding/protojson"
 
+	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/log"
 )
@@ -325,18 +326,11 @@ func (g *Gateway) StartAsyncWithContext(ctx context.Context) error {
 	g.running = true
 	g.mu.Unlock()
 
-	// Recover from panics so one crash in the HTTP gateway does not tear
-	// down the process — the operator still gets the error in the log and
-	// the server can be restarted.
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				g.logger.Error("HTTP gateway panic recovered", "error", panicerr.FromRecovered(r))
-				g.mu.Lock()
-				g.running = false
-				g.mu.Unlock()
-			}
-		}()
+	// Run through async.GoWithRecover so the recover path flows through
+	// the canonical async package (and trips the forbidigo rule only if
+	// someone regresses to `go func`). The custom recovery handler resets
+	// the running flag so the gateway can be restarted after a crash.
+	async.GoWithRecover(func() {
 		g.logger.Info("HTTP gateway starting",
 			"address", g.httpServer.Addr,
 			"grpc_endpoint", g.grpcEndpoint,
@@ -344,7 +338,12 @@ func (g *Gateway) StartAsyncWithContext(ctx context.Context) error {
 		if err := g.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			g.logger.Error("HTTP gateway error", "error", err)
 		}
-	}()
+	}, func(r any) {
+		g.logger.Error("HTTP gateway panic recovered", "error", panicerr.FromRecovered(r))
+		g.mu.Lock()
+		g.running = false
+		g.mu.Unlock()
+	})
 
 	return nil
 }
