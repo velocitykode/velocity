@@ -211,10 +211,13 @@ func TestIntegrationMemoryDriver(t *testing.T) {
 	})
 }
 
-// TestIntegrationDatabaseDriver tests database driver with PostgreSQL
+// TestIntegrationDatabaseDriver tests database driver with PostgreSQL.
+// Requires TEST_POSTGRES_QUEUE=1 and a reachable PostgreSQL instance.
 func TestIntegrationDatabaseDriver(t *testing.T) {
-	t.Skip("TODO: fix test")
-	// Check if we can connect to PostgreSQL
+	if os.Getenv("TEST_POSTGRES_QUEUE") != "1" {
+		t.Skip("set TEST_POSTGRES_QUEUE=1 to run PostgreSQL queue integration tests")
+	}
+
 	dbHost := os.Getenv("DB_HOST")
 	if dbHost == "" {
 		dbHost = "localhost"
@@ -222,7 +225,7 @@ func TestIntegrationDatabaseDriver(t *testing.T) {
 
 	dbUser := os.Getenv("DB_USERNAME")
 	if dbUser == "" {
-		dbUser = "ali"
+		dbUser = "postgres"
 	}
 
 	dbName := os.Getenv("DB_DATABASE")
@@ -233,9 +236,13 @@ func TestIntegrationDatabaseDriver(t *testing.T) {
 	dsn := fmt.Sprintf("host=%s user=%s dbname=%s sslmode=disable", dbHost, dbUser, dbName)
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
-		t.Skip("Cannot connect to PostgreSQL, skipping database driver tests")
+		t.Skipf("cannot open PostgreSQL DSN: %v", err)
 	}
 	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		t.Skipf("cannot reach PostgreSQL at %s: %v", dbHost, err)
+	}
 
 	// Ensure tables exist
 	createTables := `
@@ -285,8 +292,6 @@ func TestIntegrationDatabaseDriver(t *testing.T) {
 	driver := NewDatabaseDriver(db, "postgres")
 
 	t.Run("DatabaseJobPersistence", func(t *testing.T) {
-		t.Skip("Database driver requires full ORM initialization")
-
 		// Push a job
 		job := &TestJob{
 			ID:      "db-persist-1",
@@ -331,8 +336,6 @@ func TestIntegrationDatabaseDriver(t *testing.T) {
 	})
 
 	t.Run("DatabaseDelayedJobs", func(t *testing.T) {
-		t.Skip("Database driver requires full ORM initialization")
-
 		// Push delayed job
 		job := &TestJob{
 			ID:      "db-delayed-1",
@@ -367,8 +370,6 @@ func TestIntegrationDatabaseDriver(t *testing.T) {
 	})
 
 	t.Run("DatabaseConcurrentProcessing", func(t *testing.T) {
-		t.Skip("Database driver requires full ORM initialization")
-
 		// Push multiple jobs
 		numJobs := 20
 		for i := 0; i < numJobs; i++ {

@@ -2,9 +2,6 @@ package broadcast
 
 import (
 	"testing"
-	"time"
-
-	"github.com/velocitykode/velocity/websocket"
 )
 
 // MockDriver is a test driver for broadcasting
@@ -229,28 +226,6 @@ func TestPresenceData(t *testing.T) {
 	} else {
 		t.Error("Expected presence data to be a map")
 	}
-}
-
-func TestWebSocketDriverIntegration(t *testing.T) {
-	// This test would require a running WebSocket server
-	// Skipping for unit tests, but included for completeness
-	t.Skip("Integration test requires WebSocket server")
-
-	config := websocket.DefaultConfig()
-	config.Port = 6002 // Use different port for testing
-
-	// Would need to import drivers package for real test
-	// driver := drivers.NewWebSocketDriver(config)
-	// b := New(driver)
-
-	// Test would continue with actual WebSocket connections
-	// err := b.Channel("test").Emit("message", "Hello World")
-	// if err != nil {
-	// 	t.Fatalf("Failed to broadcast: %v", err)
-	// }
-
-	// Give some time for message to be processed
-	time.Sleep(100 * time.Millisecond)
 }
 
 // Tests for utils.go helper functions

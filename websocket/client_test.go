@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -123,13 +124,12 @@ func TestClientSendJSON(t *testing.T) {
 }
 
 func TestConcurrentClientMessages(t *testing.T) {
-	t.Skip("TODO: fix race condition")
 	config := DefaultConfig()
 	server := New(config)
 
-	messageCount := 0
+	var messageCount atomic.Int32
 	server.On("test", func(client *Client, msg Message) error {
-		messageCount++
+		messageCount.Add(1)
 		return nil
 	})
 
@@ -150,24 +150,30 @@ func TestConcurrentClientMessages(t *testing.T) {
 	var welcome Message
 	ws.ReadJSON(&welcome)
 
-	// Send multiple messages sequentially (websocket doesn't support concurrent writes)
+	// Send messages sequentially (gorilla/websocket forbids concurrent writes
+	// on one conn). "Concurrent" here refers to the server dispatching each
+	// message through its handler goroutine while the test reads back.
 	numMessages := 10
 	for i := 0; i < numMessages; i++ {
 		msg := Message{
 			Type: "test",
 			Data: i,
 		}
-		err := ws.WriteJSON(msg)
-		if err != nil {
+		if err := ws.WriteJSON(msg); err != nil {
 			t.Fatalf("Failed to send message %d: %v", i, err)
 		}
 	}
 
-	// Wait for processing
-	time.Sleep(200 * time.Millisecond)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if messageCount.Load() == int32(numMessages) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
-	if messageCount != numMessages {
-		t.Errorf("Expected %d messages processed, got %d", numMessages, messageCount)
+	if got := messageCount.Load(); got != int32(numMessages) {
+		t.Errorf("Expected %d messages processed, got %d", numMessages, got)
 	}
 }
 

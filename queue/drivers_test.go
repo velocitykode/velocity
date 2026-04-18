@@ -248,12 +248,7 @@ func TestAllDrivers(t *testing.T) {
 		testDriver(t, driver, "Memory")
 	})
 
-	// Test Database Driver (if database is available)
-	t.Run("DatabaseDriver", func(t *testing.T) {
-		// For now, skip database driver tests as they need ORM to be initialized
-		// These tests would run in a consumer app with proper database setup
-		t.Skip("Database driver tests require full ORM initialization")
-	})
+	// Database driver is covered by TestIntegrationDatabaseDriver (PostgreSQL-gated).
 
 	// Test Redis Driver (if Redis is available)
 	t.Run("RedisDriver", func(t *testing.T) {
