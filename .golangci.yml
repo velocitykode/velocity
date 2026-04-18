@@ -4,7 +4,7 @@
 #
 #   1. Error-string prefix (sweep/error-wrap-shutdown): every fmt.Errorf /
 #      errors.New message must begin with "velocity/<pkg>: " and be
-#      lowercase. See docs/security-guidelines.md and CLAUDE.md.
+#      lowercase. See CLAUDE.md "Security Rules (MANDATORY)".
 #
 #   2. Panic-safe goroutines (sweep/panic-recovery): every goroutine
 #      spawned from library code must go through `async.Go` or include an
