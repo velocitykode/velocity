@@ -104,7 +104,7 @@ func wireInstanceEvents(a *App) {
 	type eventDispatcherSetter interface {
 		SetEventDispatcher(func(event interface{}) error)
 	}
-	for _, svc := range []any{a.View, a.Mail, a.Queue, a.Scheduler, a.Auth} {
+	for _, svc := range []any{a.View, a.Mail, a.Queue, a.Scheduler, a.Auth, a.Crypto} {
 		if s, ok := svc.(eventDispatcherSetter); ok && svc != nil {
 			s.SetEventDispatcher(dispatch)
 		}
