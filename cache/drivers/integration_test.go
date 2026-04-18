@@ -48,8 +48,8 @@ func TestMain(m *testing.M) {
 // cacheFixture pairs a cache Store with a cleanup hook. Every fixture
 // starts empty so the parity suite can't leak state between subtests.
 type cacheFixture struct {
-	name    string
-	store   interface {
+	name  string
+	store interface {
 		Put(key string, value interface{}, ttl time.Duration) error
 		Get(key string) (interface{}, bool)
 		Forever(key string, value interface{}) error
