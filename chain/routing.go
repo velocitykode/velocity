@@ -1,4 +1,4 @@
-package velocity
+package chain
 
 import (
 	"net/http"
@@ -12,6 +12,12 @@ import (
 type Routing struct {
 	router     *router.VelocityRouterV2
 	middleware *MiddlewareStack
+}
+
+// NewRouting constructs a Routing bound to the given router and middleware
+// stack. Called from the root velocity package during bootstrap.
+func NewRouting(r *router.VelocityRouterV2, m *MiddlewareStack) *Routing {
+	return &Routing{router: r, middleware: m}
 }
 
 // Web creates a route group with web middleware applied.

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/velocitykode/velocity/chain"
 	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/exceptions"
 	"github.com/velocitykode/velocity/router"
@@ -22,12 +23,12 @@ type bootstrapTrackingProvider struct {
 	commandsCalled   bool
 }
 
-func (p *bootstrapTrackingProvider) Routes(r *Routing) {
+func (p *bootstrapTrackingProvider) Routes(r *chain.Routing) {
 	*p.calls = append(*p.calls, p.name+":routes")
 	p.routesCalled = true
 }
 
-func (p *bootstrapTrackingProvider) Middleware(m *MiddlewareStack) {
+func (p *bootstrapTrackingProvider) Middleware(m *chain.MiddlewareStack) {
 	*p.calls = append(*p.calls, p.name+":middleware")
 	p.middlewareCalled = true
 }
@@ -42,7 +43,7 @@ func (p *bootstrapTrackingProvider) Schedule(s scheduler.TaskScheduler) {
 	p.scheduleCalled = true
 }
 
-func (p *bootstrapTrackingProvider) Commands(r *Commands) {
+func (p *bootstrapTrackingProvider) Commands(r *chain.Commands) {
 	*p.calls = append(*p.calls, p.name+":commands")
 	p.commandsCalled = true
 }
@@ -89,17 +90,17 @@ func TestBootstrap_FullChain(t *testing.T) {
 		exceptionsCalled bool
 	)
 
-	a.Providers(func(r *ProviderRegistry) {
+	a.Providers(func(r *chain.ProviderRegistry) {
 		providersCalled = true
-	}).Middleware(func(m *MiddlewareStack) {
+	}).Middleware(func(m *chain.MiddlewareStack) {
 		middlewareCalled = true
-	}).Routes(func(r *Routing) {
+	}).Routes(func(r *chain.Routing) {
 		routesCalled = true
 	}).Events(func(d events.Dispatcher) {
 		eventsCalled = true
 	}).Schedule(func(s scheduler.TaskScheduler) {
 		scheduleCalled = true
-	}).Commands(func(r *Commands) {
+	}).Commands(func(r *chain.Commands) {
 		commandsCalled = true
 	}).Exceptions(func(h exceptions.ExceptionHandler) {
 		exceptionsCalled = true
@@ -143,17 +144,17 @@ func TestBootstrap_ChainOrderIndependent(t *testing.T) {
 	// Register in reverse order
 	a.Exceptions(func(h exceptions.ExceptionHandler) {
 		order = append(order, "exceptions")
-	}).Commands(func(r *Commands) {
+	}).Commands(func(r *chain.Commands) {
 		order = append(order, "commands")
 	}).Schedule(func(s scheduler.TaskScheduler) {
 		order = append(order, "schedule")
 	}).Events(func(d events.Dispatcher) {
 		order = append(order, "events")
-	}).Routes(func(r *Routing) {
+	}).Routes(func(r *chain.Routing) {
 		order = append(order, "routes")
-	}).Middleware(func(m *MiddlewareStack) {
+	}).Middleware(func(m *chain.MiddlewareStack) {
 		order = append(order, "middleware")
-	}).Providers(func(r *ProviderRegistry) {
+	}).Providers(func(r *chain.ProviderRegistry) {
 		order = append(order, "providers")
 	})
 
@@ -183,7 +184,7 @@ func TestBootstrap_ProviderLifecycle(t *testing.T) {
 	pA := &bootstrapTrackingProvider{trackingProvider: trackingProvider{name: "A", calls: &calls}}
 	pB := &bootstrapTrackingProvider{trackingProvider: trackingProvider{name: "B", calls: &calls}}
 
-	a.Providers(func(r *ProviderRegistry) {
+	a.Providers(func(r *chain.ProviderRegistry) {
 		r.Add(pA, pB)
 	})
 
@@ -230,7 +231,7 @@ func TestBootstrap_ShutdownOrder(t *testing.T) {
 	chainA := &trackingProvider{name: "chainA", calls: &calls}
 	chainB := &trackingProvider{name: "chainB", calls: &calls}
 
-	a.Providers(func(r *ProviderRegistry) {
+	a.Providers(func(r *chain.ProviderRegistry) {
 		r.Add(chainA, chainB)
 	})
 
@@ -267,7 +268,7 @@ func TestBootstrap_RegisterError(t *testing.T) {
 	var calls []string
 	pA := &trackingProvider{name: "A", calls: &calls, registerErr: wantErr}
 
-	a.Providers(func(r *ProviderRegistry) {
+	a.Providers(func(r *chain.ProviderRegistry) {
 		r.Add(pA)
 	})
 
@@ -290,7 +291,7 @@ func TestBootstrap_BootError(t *testing.T) {
 	var calls []string
 	pA := &trackingProvider{name: "A", calls: &calls, bootErr: wantErr}
 
-	a.Providers(func(r *ProviderRegistry) {
+	a.Providers(func(r *chain.ProviderRegistry) {
 		r.Add(pA)
 	})
 
@@ -312,7 +313,7 @@ func TestBootstrap_NilCallbacks(t *testing.T) {
 	var calls []string
 	pA := &trackingProvider{name: "A", calls: &calls}
 
-	a.Providers(func(r *ProviderRegistry) {
+	a.Providers(func(r *chain.ProviderRegistry) {
 		r.Add(pA)
 	})
 
@@ -351,9 +352,9 @@ func TestBootstrap_GlobalMiddlewareApplied(t *testing.T) {
 		t.Fatalf("NewTestApp() error: %v", err)
 	}
 
-	a.Middleware(func(m *MiddlewareStack) {
+	a.Middleware(func(m *chain.MiddlewareStack) {
 		m.Global(trackingMW("X-Global", "yes"))
-	}).Routes(func(r *Routing) {
+	}).Routes(func(r *chain.Routing) {
 		r.Web(func(rt router.Router) {
 			rt.Get("/test", func(c *router.Context) error {
 				return c.String(200, "ok")
@@ -383,9 +384,9 @@ func TestBootstrap_WebMiddlewareOnlyOnWeb(t *testing.T) {
 		t.Fatalf("NewTestApp() error: %v", err)
 	}
 
-	a.Middleware(func(m *MiddlewareStack) {
+	a.Middleware(func(m *chain.MiddlewareStack) {
 		m.Web(trackingMW("X-Web", "yes"))
-	}).Routes(func(r *Routing) {
+	}).Routes(func(r *chain.Routing) {
 		r.Web(func(rt router.Router) {
 			rt.Get("/web-route", func(c *router.Context) error {
 				return c.String(200, "web")
@@ -427,9 +428,9 @@ func TestBootstrap_APIMiddlewareOnlyOnAPI(t *testing.T) {
 		t.Fatalf("NewTestApp() error: %v", err)
 	}
 
-	a.Middleware(func(m *MiddlewareStack) {
+	a.Middleware(func(m *chain.MiddlewareStack) {
 		m.API(trackingMW("X-API", "yes"))
-	}).Routes(func(r *Routing) {
+	}).Routes(func(r *chain.Routing) {
 		r.Web(func(rt router.Router) {
 			rt.Get("/web-route", func(c *router.Context) error {
 				return c.String(200, "web")
@@ -541,17 +542,17 @@ func TestBootstrap_ChainReturnsSameApp(t *testing.T) {
 		t.Fatalf("NewTestApp() error: %v", err)
 	}
 
-	got := a.Providers(func(*ProviderRegistry) {})
+	got := a.Providers(func(*chain.ProviderRegistry) {})
 	if got != a {
 		t.Error("Providers() did not return same *App")
 	}
 
-	got = a.Middleware(func(*MiddlewareStack) {})
+	got = a.Middleware(func(*chain.MiddlewareStack) {})
 	if got != a {
 		t.Error("Middleware() did not return same *App")
 	}
 
-	got = a.Routes(func(*Routing) {})
+	got = a.Routes(func(*chain.Routing) {})
 	if got != a {
 		t.Error("Routes() did not return same *App")
 	}
@@ -566,7 +567,7 @@ func TestBootstrap_ChainReturnsSameApp(t *testing.T) {
 		t.Error("Schedule() did not return same *App")
 	}
 
-	got = a.Commands(func(*Commands) {})
+	got = a.Commands(func(*chain.Commands) {})
 	if got != a {
 		t.Error("Commands() did not return same *App")
 	}
@@ -584,7 +585,7 @@ func TestBootstrap_Idempotent(t *testing.T) {
 	}
 
 	callCount := 0
-	a.Routes(func(r *Routing) {
+	a.Routes(func(r *chain.Routing) {
 		callCount++
 	})
 
@@ -641,7 +642,7 @@ func TestBootstrap_BackwardCompat_MixedOldNew(t *testing.T) {
 	})
 
 	// New-style chain route
-	a.Routes(func(r *Routing) {
+	a.Routes(func(r *chain.Routing) {
 		r.Web(func(rt router.Router) {
 			rt.Get("/new", func(c *router.Context) error {
 				return c.String(200, "new")

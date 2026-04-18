@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/velocitykode/velocity/app"
+	"github.com/velocitykode/velocity/chain"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/csrf"
 	"github.com/velocitykode/velocity/events"
@@ -59,14 +60,14 @@ type App struct {
 	shutdownCancel context.CancelFunc
 
 	// Declarative bootstrap chain
-	providersFn    func(*ProviderRegistry)
+	providersFn    func(*chain.ProviderRegistry)
 	chainProviders []app.ServiceProvider
-	middlewareFn   func(*MiddlewareStack)
-	routesFn       func(*Routing)
+	middlewareFn   func(*chain.MiddlewareStack)
+	routesFn       func(*chain.Routing)
 	eventsFn       func(events.Dispatcher)
 	scheduleFn     func(scheduler.TaskScheduler)
-	commandsFn     func(*Commands)
-	commands       *Commands
+	commandsFn     func(*chain.Commands)
+	commands       *chain.Commands
 	exceptionsFn   func(exceptions.ExceptionHandler)
 	bootstrapped   bool
 }
@@ -238,20 +239,21 @@ func (a *App) Version() string {
 
 // Providers registers a callback that adds service providers to the application.
 // Providers registered here participate in the full bootstrap lifecycle including
-// optional interfaces (RouteProvider, MiddlewareProvider, EventProvider, ScheduleProvider).
-func (a *App) Providers(fn func(*ProviderRegistry)) *App {
+// optional interfaces (chain.RouteProvider, chain.MiddlewareProvider,
+// chain.EventProvider, chain.ScheduleProvider, chain.CommandProvider).
+func (a *App) Providers(fn func(*chain.ProviderRegistry)) *App {
 	a.providersFn = fn
 	return a
 }
 
 // Middleware registers a callback that configures the middleware stack.
-func (a *App) Middleware(fn func(*MiddlewareStack)) *App {
+func (a *App) Middleware(fn func(*chain.MiddlewareStack)) *App {
 	a.middlewareFn = fn
 	return a
 }
 
 // Routes registers a callback that defines application routes.
-func (a *App) Routes(fn func(*Routing)) *App {
+func (a *App) Routes(fn func(*chain.Routing)) *App {
 	a.routesFn = fn
 	return a
 }
@@ -270,7 +272,7 @@ func (a *App) Schedule(fn func(scheduler.TaskScheduler)) *App {
 
 // Commands registers a callback that adds custom commands to the application.
 // Commands are invokable via `vel run <name>`.
-func (a *App) Commands(fn func(*Commands)) *App {
+func (a *App) Commands(fn func(*chain.Commands)) *App {
 	a.commandsFn = fn
 	return a
 }
@@ -280,4 +282,3 @@ func (a *App) Exceptions(fn func(exceptions.ExceptionHandler)) *App {
 	a.exceptionsFn = fn
 	return a
 }
-

@@ -1,4 +1,4 @@
-package velocity
+package chain
 
 import (
 	"github.com/velocitykode/velocity/app"
@@ -26,8 +26,9 @@ type Commands struct {
 	ordered  []Command // preserves insertion order for help output
 }
 
-// newCommands creates an empty Commands registry.
-func newCommands() *Commands {
+// NewCommands creates an empty Commands registry.
+// Called from the root velocity package during bootstrap.
+func NewCommands() *Commands {
 	return &Commands{
 		commands: make(map[string]Command),
 	}
@@ -60,10 +61,4 @@ func (r *Commands) All() []Command {
 	result := make([]Command, len(r.ordered))
 	copy(result, r.ordered)
 	return result
-}
-
-// CommandProvider is an optional interface that service providers can implement
-// to register custom commands during bootstrap.
-type CommandProvider interface {
-	Commands(r *Commands)
 }

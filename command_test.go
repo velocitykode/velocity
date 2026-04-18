@@ -4,10 +4,11 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/app"
+	"github.com/velocitykode/velocity/chain"
 	"github.com/velocitykode/velocity/contract"
 )
 
-// stubCommand is a test implementation of the Command interface.
+// stubCommand is a test implementation of the chain.Command interface.
 type stubCommand struct {
 	name        string
 	description string
@@ -15,7 +16,7 @@ type stubCommand struct {
 }
 
 func (c *stubCommand) Name() string        { return c.name }
-func (c *stubCommand) Description() string  { return c.description }
+func (c *stubCommand) Description() string { return c.description }
 func (c *stubCommand) Handle(s *app.Services, args []string) error {
 	if c.handleFn != nil {
 		return c.handleFn(s, args)
@@ -24,7 +25,7 @@ func (c *stubCommand) Handle(s *app.Services, args []string) error {
 }
 
 func TestCommands_Add_Valid(t *testing.T) {
-	cmds := newCommands()
+	cmds := chain.NewCommands()
 	cmd := &stubCommand{name: "seed", description: "Seed the database"}
 
 	cmds.Add(cmd)
@@ -39,7 +40,7 @@ func TestCommands_Add_Valid(t *testing.T) {
 }
 
 func TestCommands_Add_Multiple(t *testing.T) {
-	cmds := newCommands()
+	cmds := chain.NewCommands()
 	cmdA := &stubCommand{name: "seed", description: "Seed the database"}
 	cmdB := &stubCommand{name: "cleanup", description: "Clean up old data"}
 
@@ -54,7 +55,7 @@ func TestCommands_Add_Multiple(t *testing.T) {
 }
 
 func TestCommands_Add_PanicsOnNil(t *testing.T) {
-	cmds := newCommands()
+	cmds := chain.NewCommands()
 
 	defer func() {
 		r := recover()
@@ -74,7 +75,7 @@ func TestCommands_Add_PanicsOnNil(t *testing.T) {
 }
 
 func TestCommands_Add_PanicsOnDuplicate(t *testing.T) {
-	cmds := newCommands()
+	cmds := chain.NewCommands()
 	cmdA := &stubCommand{name: "seed", description: "Seed v1"}
 	cmdB := &stubCommand{name: "seed", description: "Seed v2"}
 
@@ -98,7 +99,7 @@ func TestCommands_Add_PanicsOnDuplicate(t *testing.T) {
 }
 
 func TestCommands_Get_NotFound(t *testing.T) {
-	cmds := newCommands()
+	cmds := chain.NewCommands()
 
 	_, ok := cmds.Get("nonexistent")
 	if ok {
@@ -107,7 +108,7 @@ func TestCommands_Get_NotFound(t *testing.T) {
 }
 
 func TestCommands_All_ReturnsAll(t *testing.T) {
-	cmds := newCommands()
+	cmds := chain.NewCommands()
 	cmdA := &stubCommand{name: "seed", description: "Seed the database"}
 	cmdB := &stubCommand{name: "cleanup", description: "Clean up old data"}
 
@@ -127,7 +128,7 @@ func TestCommands_All_ReturnsAll(t *testing.T) {
 }
 
 func TestCommands_All_ReturnsCopy(t *testing.T) {
-	cmds := newCommands()
+	cmds := chain.NewCommands()
 	cmds.Add(&stubCommand{name: "seed", description: "Seed"})
 
 	all := cmds.All()
@@ -146,7 +147,7 @@ func TestCommands_ChainStep(t *testing.T) {
 		t.Fatalf("NewTestApp() error: %v", err)
 	}
 
-	got := a.Commands(func(r *Commands) {})
+	got := a.Commands(func(r *chain.Commands) {})
 	if got != a {
 		t.Error("Commands() did not return same *App")
 	}
@@ -159,7 +160,7 @@ func TestCommands_CalledDuringBootstrap(t *testing.T) {
 	}
 
 	var called bool
-	a.Commands(func(r *Commands) {
+	a.Commands(func(r *chain.Commands) {
 		called = true
 		r.Add(&stubCommand{name: "seed", description: "Seed the database"})
 	})
@@ -182,13 +183,13 @@ func TestCommands_CalledDuringBootstrap(t *testing.T) {
 	}
 }
 
-// commandTrackingProvider is a provider that implements CommandProvider.
+// commandTrackingProvider is a provider that implements chain.CommandProvider.
 type commandTrackingProvider struct {
 	trackingProvider
 	commandsCalled bool
 }
 
-func (p *commandTrackingProvider) Commands(r *Commands) {
+func (p *commandTrackingProvider) Commands(r *chain.Commands) {
 	*p.calls = append(*p.calls, p.name+":commands")
 	p.commandsCalled = true
 	r.Add(&stubCommand{name: "provider-cmd", description: "From provider"})
@@ -203,7 +204,7 @@ func TestBootstrap_CommandProvider(t *testing.T) {
 	var calls []string
 	pA := &commandTrackingProvider{trackingProvider: trackingProvider{name: "A", calls: &calls}}
 
-	a.Providers(func(r *ProviderRegistry) {
+	a.Providers(func(r *chain.ProviderRegistry) {
 		r.Add(pA)
 	})
 
@@ -232,9 +233,9 @@ func TestBootstrap_CommandsOrder(t *testing.T) {
 
 	var order []string
 
-	a.Routes(func(r *Routing) {
+	a.Routes(func(r *chain.Routing) {
 		order = append(order, "routes")
-	}).Commands(func(r *Commands) {
+	}).Commands(func(r *chain.Commands) {
 		order = append(order, "commands")
 	})
 
@@ -255,7 +256,7 @@ func TestBootstrap_CommandsOrder(t *testing.T) {
 }
 
 func TestCommands_HandleReceivesArgs(t *testing.T) {
-	cmds := newCommands()
+	cmds := chain.NewCommands()
 	var receivedArgs []string
 
 	cmds.Add(&stubCommand{

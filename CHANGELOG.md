@@ -30,6 +30,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Queue driver interface slimmed.** Non-Context `Push`/`PushDelayed`/`Pop`/`Close` removed. Use `PushCtx`/`PushDelayedCtx`/`PopCtx`/`Shutdown(ctx)`.
 - **`queue.PendingBatch.Dispatch` now takes a context.** Call sites: `.Dispatch(ctx, driver)` instead of `.Dispatch(driver)`.
 - **`velocity.NewTestApp` moved.** The public constructor is now `velocitytest.NewApp` (in `github.com/velocitykode/velocity/velocitytest`). The old name remains only as a test-only internal helper and does not ship in production binaries.
+- **Declarative bootstrap types moved to `chain/`.** `velocity.ProviderRegistry`, `velocity.MiddlewareStack`, `velocity.Routing`, and `velocity.Commands` are now `chain.ProviderRegistry`, `chain.MiddlewareStack`, `chain.Routing`, and `chain.Commands`. The optional provider interfaces moved with them: `chain.RouteProvider`, `chain.MiddlewareProvider`, `chain.EventProvider`, `chain.ScheduleProvider`, `chain.CommandProvider`. The root `App.Providers(fn)`, `App.Middleware(fn)`, `App.Routes(fn)`, `App.Commands(fn)` methods keep their names — only the callback parameter types changed.
+  **Migration:**
+  ```go
+  // Before:
+  import "github.com/velocitykode/velocity"
+  v.Providers(func(r *velocity.ProviderRegistry) { ... })
+     .Middleware(func(m *velocity.MiddlewareStack) { ... })
+     .Routes(func(r *velocity.Routing) { ... })
+     .Commands(func(c *velocity.Commands) { ... })
+
+  // After:
+  import (
+      "github.com/velocitykode/velocity"
+      "github.com/velocitykode/velocity/chain"
+  )
+  v.Providers(func(r *chain.ProviderRegistry) { ... })
+     .Middleware(func(m *chain.MiddlewareStack) { ... })
+     .Routes(func(r *chain.Routing) { ... })
+     .Commands(func(c *chain.Commands) { ... })
+  ```
+  Consumer `CommandProvider`, `RouteProvider`, `MiddlewareProvider`, `EventProvider`, and `ScheduleProvider` implementations move their parameter types from `velocity.*` to `chain.*` the same way. `App.Exceptions(fn)` is unchanged — `exceptions.ExceptionHandler` already lives in the leaf `exceptions/` package.
+- **Dropped root-package type aliases `velocity.ServiceProvider` and `velocity.Services`.** Use `app.ServiceProvider` and `app.Services` directly.
 
 ### Added
 

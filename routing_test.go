@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/velocitykode/velocity/chain"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -44,10 +45,10 @@ func TestRouting_Web(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mwStack := &MiddlewareStack{services: a.Services}
+	mwStack := chain.NewMiddlewareStack(a.Services)
 	mwStack.Web(trackingMiddleware("X-Web", "true"))
 
-	routing := &Routing{router: a.Router, middleware: mwStack}
+	routing := chain.NewRouting(a.Router, mwStack)
 	routing.Web(func(r router.Router) {
 		r.Get("/home", okHandler)
 	})
@@ -70,10 +71,10 @@ func TestRouting_Web_MultipleRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mwStack := &MiddlewareStack{services: a.Services}
+	mwStack := chain.NewMiddlewareStack(a.Services)
 	mwStack.Web(trackingMiddleware("X-Web", "multi"))
 
-	routing := &Routing{router: a.Router, middleware: mwStack}
+	routing := chain.NewRouting(a.Router, mwStack)
 	routing.Web(func(r router.Router) {
 		r.Get("/page1", okHandler)
 		r.Get("/page2", okHandler)
@@ -99,10 +100,10 @@ func TestRouting_API(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mwStack := &MiddlewareStack{services: a.Services}
+	mwStack := chain.NewMiddlewareStack(a.Services)
 	mwStack.API(trackingMiddleware("X-API", "true"))
 
-	routing := &Routing{router: a.Router, middleware: mwStack}
+	routing := chain.NewRouting(a.Router, mwStack)
 	routing.API("/api", func(r router.Router) {
 		r.Get("/users", okHandler)
 	})
@@ -125,10 +126,10 @@ func TestRouting_API_CustomPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mwStack := &MiddlewareStack{services: a.Services}
+	mwStack := chain.NewMiddlewareStack(a.Services)
 	mwStack.API(trackingMiddleware("X-V2", "true"))
 
-	routing := &Routing{router: a.Router, middleware: mwStack}
+	routing := chain.NewRouting(a.Router, mwStack)
 	routing.API("/v2", func(r router.Router) {
 		r.Get("/items", okHandler)
 	})
@@ -151,8 +152,8 @@ func TestRouting_Health(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mwStack := &MiddlewareStack{services: a.Services}
-	routing := &Routing{router: a.Router, middleware: mwStack}
+	mwStack := chain.NewMiddlewareStack(a.Services)
+	routing := chain.NewRouting(a.Router, mwStack)
 	routing.Health("/health")
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -173,8 +174,8 @@ func TestRouting_Services(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mwStack := &MiddlewareStack{services: a.Services}
-	routing := &Routing{router: a.Router, middleware: mwStack}
+	mwStack := chain.NewMiddlewareStack(a.Services)
+	routing := chain.NewRouting(a.Router, mwStack)
 
 	if got := routing.Services(); got != a.Services {
 		t.Fatal("Services() did not return the expected services pointer")
@@ -187,8 +188,8 @@ func TestRouting_Router(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mwStack := &MiddlewareStack{services: a.Services}
-	routing := &Routing{router: a.Router, middleware: mwStack}
+	mwStack := chain.NewMiddlewareStack(a.Services)
+	routing := chain.NewRouting(a.Router, mwStack)
 
 	if got := routing.Router(); got != a.Router {
 		t.Fatal("Router() did not return the expected router pointer")
@@ -201,9 +202,9 @@ func TestRouting_EmptyMiddleware(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mwStack := &MiddlewareStack{services: a.Services}
+	mwStack := chain.NewMiddlewareStack(a.Services)
 	// No middleware added — empty web and api stacks.
-	routing := &Routing{router: a.Router, middleware: mwStack}
+	routing := chain.NewRouting(a.Router, mwStack)
 
 	routing.Web(func(r router.Router) {
 		r.Get("/web-empty", okHandler)
@@ -229,10 +230,10 @@ func TestRouting_MultipleWebCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mwStack := &MiddlewareStack{services: a.Services}
+	mwStack := chain.NewMiddlewareStack(a.Services)
 	mwStack.Web(trackingMiddleware("X-Web", "yes"))
 
-	routing := &Routing{router: a.Router, middleware: mwStack}
+	routing := chain.NewRouting(a.Router, mwStack)
 
 	routing.Web(func(r router.Router) {
 		r.Get("/first", okHandler)
@@ -261,10 +262,10 @@ func TestRouting_MultipleAPICalls(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mwStack := &MiddlewareStack{services: a.Services}
+	mwStack := chain.NewMiddlewareStack(a.Services)
 	mwStack.API(trackingMiddleware("X-API", "multi"))
 
-	routing := &Routing{router: a.Router, middleware: mwStack}
+	routing := chain.NewRouting(a.Router, mwStack)
 
 	routing.API("/v1", func(r router.Router) {
 		r.Get("/data", okHandler)
@@ -293,14 +294,14 @@ func TestRouting_MiddlewareExecutionOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mwStack := &MiddlewareStack{services: a.Services}
+	mwStack := chain.NewMiddlewareStack(a.Services)
 	mwStack.Web(
 		orderTrackingMiddleware("X-Order", "first"),
 		orderTrackingMiddleware("X-Order", "second"),
 		orderTrackingMiddleware("X-Order", "third"),
 	)
 
-	routing := &Routing{router: a.Router, middleware: mwStack}
+	routing := chain.NewRouting(a.Router, mwStack)
 	routing.Web(func(r router.Router) {
 		r.Get("/ordered", okHandler)
 	})

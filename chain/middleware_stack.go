@@ -1,4 +1,4 @@
-package velocity
+package chain
 
 import (
 	"github.com/velocitykode/velocity/app"
@@ -12,6 +12,13 @@ type MiddlewareStack struct {
 	web      []router.MiddlewareFunc
 	api      []router.MiddlewareFunc
 	services *app.Services
+}
+
+// NewMiddlewareStack constructs a MiddlewareStack bound to the given services.
+// Callers inside the root velocity package build this during bootstrap; user
+// code never constructs one directly.
+func NewMiddlewareStack(services *app.Services) *MiddlewareStack {
+	return &MiddlewareStack{services: services}
 }
 
 // Global appends middleware that runs on every request.
@@ -32,4 +39,10 @@ func (m *MiddlewareStack) API(mw ...router.MiddlewareFunc) {
 // Services returns the application services for accessing auth, CSRF, view, etc.
 func (m *MiddlewareStack) Services() *app.Services {
 	return m.services
+}
+
+// GlobalMiddleware returns the registered global middleware.
+// The root package reads this during bootstrap to install globals on the router.
+func (m *MiddlewareStack) GlobalMiddleware() []router.MiddlewareFunc {
+	return m.global
 }

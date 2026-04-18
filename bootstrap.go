@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/velocitykode/velocity/app"
+	"github.com/velocitykode/velocity/chain"
 	"github.com/velocitykode/velocity/contract"
 )
 
@@ -22,9 +23,9 @@ func (a *App) bootstrap() error {
 
 	// 1. Collect and run chain providers
 	if a.providersFn != nil {
-		reg := &ProviderRegistry{}
+		reg := &chain.ProviderRegistry{}
 		a.providersFn(reg)
-		a.chainProviders = reg.providers
+		a.chainProviders = reg.Providers()
 	}
 
 	if err := runProviderLifecycle(a.chainProviders, a.Services, "chain provider"); err != nil {
@@ -32,22 +33,22 @@ func (a *App) bootstrap() error {
 	}
 
 	// 2. Build middleware stack
-	mwStack := &MiddlewareStack{services: a.Services}
+	mwStack := chain.NewMiddlewareStack(a.Services)
 
-	dispatchProviderCallback(a.chainProviders, func(mp MiddlewareProvider) {
+	dispatchProviderCallback(a.chainProviders, func(mp chain.MiddlewareProvider) {
 		mp.Middleware(mwStack)
 	})
 	if a.middlewareFn != nil {
 		a.middlewareFn(mwStack)
 	}
-	if len(mwStack.global) > 0 {
-		a.Router.Use(mwStack.global...)
+	if global := mwStack.GlobalMiddleware(); len(global) > 0 {
+		a.Router.Use(global...)
 	}
 
 	// 3. Register routes
-	routing := &Routing{router: a.Router, middleware: mwStack}
+	routing := chain.NewRouting(a.Router, mwStack)
 
-	dispatchProviderCallback(a.chainProviders, func(rp RouteProvider) {
+	dispatchProviderCallback(a.chainProviders, func(rp chain.RouteProvider) {
 		rp.Routes(routing)
 	})
 	if a.routesFn != nil {
@@ -55,7 +56,7 @@ func (a *App) bootstrap() error {
 	}
 
 	// 4. Register events
-	dispatchProviderCallback(a.chainProviders, func(ep EventProvider) {
+	dispatchProviderCallback(a.chainProviders, func(ep chain.EventProvider) {
 		ep.Events(a.Services.Events)
 	})
 	if a.eventsFn != nil {
@@ -63,7 +64,7 @@ func (a *App) bootstrap() error {
 	}
 
 	// 5. Register scheduled jobs
-	dispatchProviderCallback(a.chainProviders, func(sp ScheduleProvider) {
+	dispatchProviderCallback(a.chainProviders, func(sp chain.ScheduleProvider) {
 		sp.Schedule(a.Services.Scheduler)
 	})
 	if a.scheduleFn != nil {
@@ -71,8 +72,8 @@ func (a *App) bootstrap() error {
 	}
 
 	// 6. Register custom commands
-	a.commands = newCommands()
-	dispatchProviderCallback(a.chainProviders, func(cp CommandProvider) {
+	a.commands = chain.NewCommands()
+	dispatchProviderCallback(a.chainProviders, func(cp chain.CommandProvider) {
 		cp.Commands(a.commands)
 	})
 	if a.commandsFn != nil {
@@ -139,8 +140,9 @@ func runProviderLifecycle(providers []app.ServiceProvider, services *app.Service
 }
 
 // dispatchProviderCallback invokes fn on each provider that implements the optional
-// interface T (e.g., RouteProvider, EventProvider). This lets providers opt into
-// lifecycle hooks without requiring every provider to implement every interface.
+// interface T (e.g., chain.RouteProvider, chain.EventProvider). This lets providers
+// opt into lifecycle hooks without requiring every provider to implement every
+// interface.
 func dispatchProviderCallback[T any](providers []app.ServiceProvider, fn func(T)) {
 	for _, p := range providers {
 		if t, ok := any(p).(T); ok {
