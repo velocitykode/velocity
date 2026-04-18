@@ -46,6 +46,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Logger init failures now fail boot.** `log.NewLogger` errors from `velocity.New` propagate up instead of being swallowed by a console fallback.
 - **`frameworkVersion` constant removed** — the version is now a variable on `velocity.BuildInfo` injected at link time.
 - **`ConfigFromEnv` cleanup.** Reads `DB_MYSQL_TLS` once at config time instead of leaking to drivers; removes stdlib-log warnings on deprecated env names (those env names are no longer read at all).
+- **`view/` / `bond/` deduplication.** `view/` is now a thin façade over `bond/` with no overlapping types. Deleted:
+  - `view.Props` type alias (use `bond.Props`).
+  - `view.SharePropsFunc` type alias (use `func(*http.Request) (bond.Props, error)` inline, or call `(*view.Engine).SetSharePropsFunc` directly).
+  - `view.Lazy`, `view.Optional`, `view.Always`, `view.Defer`, `view.LazyProp` — all were shims re-exporting bond helpers. Import `bond` and call `bond.Lazy` / `bond.Optional` / `bond.Always` / `bond.Defer` directly.
+  - `view.SimpleFlashProvider`, `view.SimpleValidationProvider` — in-memory scaffolding that was never wired to production code; cookie-based flash (`ctx.WithErrors` / `ctx.WithInput` + `bond/flash.go`) is the supported flow.
+  - `view.Success`, `view.Error` — placeholder helpers that only called `http.Redirect`. Use `http.Redirect` or `(*view.Engine).Redirect` directly.
+  - `view.LoadTemplateFromFile` — a two-line `os.ReadFile` wrapper. Call `os.ReadFile` at startup.
+  - `view.DefaultViewConfig`, `view.Config.Validate` — unused helpers.
+  - `(*view.Engine).RenderWithErrors` — unused; build a `bond.Props` with `"errors"`/`"old"` keys and call `Render` directly, or rely on the automatic flash-cookie injection in `bond.Render`.
+
+  The `view/helpers.go` + `view/helpers_test.go` files are gone; prop-type assertions in tests should import `bond` directly.
 
 ### Security — Kernel-enforced file-path containment (`os.Root`)
 - **Removed** `router.ValidateFilePathWithin(path, root string) (string, error)` along

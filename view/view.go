@@ -1,20 +1,23 @@
+// Package view is the framework's view layer — a thin façade over bond/ that
+// translates framework configuration into an Inertia adapter and implements
+// contract.ViewEngine for router.Context.
+//
+// Prop helpers (Always, Lazy, Optional, Defer, Merge, Once, Scroll) live in
+// bond/ — the Inertia protocol package. Import bond directly when you need
+// them in handler code; view does not re-export them.
 package view
 
 import (
 	"context"
 	"fmt"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/velocitykode/velocity/bond"
 	"github.com/velocitykode/velocity/router"
 )
 
-// Props is a type alias for bond.Props
-type Props = bond.Props
-
-// Config holds view configuration
+// Config holds view configuration.
 type Config struct {
 	RootTemplate string
 	Version      string
@@ -27,25 +30,6 @@ type Config struct {
 	SSRTimeout time.Duration // Defaults to 3s
 	SSRExcept  []string      // URL prefixes to exclude from SSR
 }
-
-// DefaultViewConfig returns a Config with sensible defaults.
-func DefaultViewConfig() Config {
-	return Config{
-		SSRURL:     "http://127.0.0.1:13714",
-		SSRTimeout: 3 * time.Second,
-	}
-}
-
-// Validate checks that the Config is internally consistent.
-func (c Config) Validate() error {
-	if c.SSREnabled && c.SSRURL == "" {
-		return fmt.Errorf("view: SSR URL is required when SSR is enabled")
-	}
-	return nil
-}
-
-// SharePropsFunc is a function that returns props to be shared per request
-type SharePropsFunc func(r *http.Request) (Props, error)
 
 // Engine wraps a bond.Bond instance and provides the view layer API.
 type Engine struct {
@@ -80,8 +64,8 @@ func NewEngine(config Config) (*Engine, error) {
 }
 
 // Render renders a component with optional props.
-func (e *Engine) Render(w http.ResponseWriter, r *http.Request, component string, props ...Props) error {
-	var p Props
+func (e *Engine) Render(w http.ResponseWriter, r *http.Request, component string, props ...bond.Props) error {
+	var p bond.Props
 	if len(props) > 0 && props[0] != nil {
 		p = props[0]
 	}
@@ -101,14 +85,14 @@ func (e *Engine) ShareFunc(key string, fn func(r *http.Request) (interface{}, er
 }
 
 // ShareMultiple adds multiple static shared props.
-func (e *Engine) ShareMultiple(props Props) {
+func (e *Engine) ShareMultiple(props bond.Props) {
 	for k, v := range props {
 		e.bond.Share(k, v)
 	}
 }
 
 // SetSharePropsFunc sets a function that returns props to be shared per request.
-func (e *Engine) SetSharePropsFunc(fn SharePropsFunc) {
+func (e *Engine) SetSharePropsFunc(fn func(r *http.Request) (bond.Props, error)) {
 	e.bond.SetSharePropsFunc(fn)
 }
 
@@ -165,28 +149,8 @@ const defaultTemplate = `<!DOCTYPE html>
 </body>
 </html>`
 
-// errorProvider is satisfied by *validation.Result and any type that
-// exposes All() and Old() for validation error rendering.
-type errorProvider interface {
-	All() map[string]string
-	Old() map[string]interface{}
-}
-
-// RenderWithErrors renders a component with validation errors and old input
-// merged into props. Errors are set as "errors" and old input as "old".
-func (e *Engine) RenderWithErrors(w http.ResponseWriter, r *http.Request, component string, props Props, errors errorProvider) error {
-	if props == nil {
-		props = Props{}
-	}
-	props["errors"] = errors.All()
-	if old := errors.Old(); len(old) > 0 {
-		props["old"] = old
-	}
-	return e.bond.Render(w, r, component, props)
-}
-
 // Render renders an Inertia component using the view engine on the given context.
-func Render(ctx *router.Context, component string, props ...Props) error {
+func Render(ctx *router.Context, component string, props ...bond.Props) error {
 	engine := FromContext(ctx)
 	if engine == nil {
 		return fmt.Errorf("view: engine not configured on context")
@@ -199,13 +163,4 @@ func Render(ctx *router.Context, component string, props ...Props) error {
 func FromContext(ctx *router.Context) *Engine {
 	e, _ := ctx.View().(*Engine)
 	return e
-}
-
-// LoadTemplateFromFile loads the root template from a file
-func LoadTemplateFromFile(path string) (string, error) {
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	return string(content), nil
 }

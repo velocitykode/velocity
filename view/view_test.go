@@ -4,11 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/velocitykode/velocity/app"
+	"github.com/velocitykode/velocity/bond"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -64,7 +64,7 @@ func TestRender_HTMLResponse(t *testing.T) {
 	req := httptest.NewRequest("GET", "/users", nil)
 	rec := httptest.NewRecorder()
 
-	props := Props{
+	props := bond.Props{
 		"users": []map[string]interface{}{
 			{"id": 1, "name": "John"},
 			{"id": 2, "name": "Jane"},
@@ -98,7 +98,7 @@ func TestRender_JSONResponse(t *testing.T) {
 	req.Header.Set("X-Inertia", "true")
 	rec := httptest.NewRecorder()
 
-	props := Props{
+	props := bond.Props{
 		"users": []map[string]interface{}{
 			{"id": 1, "name": "John"},
 		},
@@ -142,7 +142,7 @@ func TestShare(t *testing.T) {
 	req.Header.Set("X-Inertia", "true")
 	rec := httptest.NewRecorder()
 
-	err := engine.Render(rec, req, "Dashboard", Props{
+	err := engine.Render(rec, req, "Dashboard", bond.Props{
 		"stats": "some stats",
 	})
 	if err != nil {
@@ -171,7 +171,7 @@ func TestShare(t *testing.T) {
 	}
 }
 
-func TestWithErrors(t *testing.T) {
+func TestRender_WithErrorsProp(t *testing.T) {
 	engine := newTestEngine(t)
 
 	req := httptest.NewRequest("POST", "/users", nil)
@@ -183,7 +183,7 @@ func TestWithErrors(t *testing.T) {
 		"name":  "Name is too short",
 	}
 
-	renderProps := Props{
+	renderProps := bond.Props{
 		"form":   "empty",
 		"errors": errors,
 	}
@@ -204,122 +204,6 @@ func TestWithErrors(t *testing.T) {
 
 	if props["errors"] == nil {
 		t.Error("Expected errors prop to be included")
-	}
-}
-
-func TestOptionalAndAlwaysProps(t *testing.T) {
-	engine := newTestEngine(t)
-
-	req := httptest.NewRequest("GET", "/users", nil)
-	req.Header.Set("X-Inertia", "true")
-	rec := httptest.NewRecorder()
-
-	props := Props{
-		"required": "always included",
-		"always":   Always("always included even on partial"),
-	}
-
-	err := engine.Render(rec, req, "Users/Index", props)
-	if err != nil {
-		t.Fatalf("Render failed: %v", err)
-	}
-
-	var response map[string]interface{}
-	json.Unmarshal(rec.Body.Bytes(), &response)
-
-	responseProps := response["props"].(map[string]interface{})
-
-	if responseProps["required"] != "always included" {
-		t.Error("Expected required prop to be included")
-	}
-
-	if responseProps["always"] != "always included even on partial" {
-		t.Error("Expected always prop to be included")
-	}
-}
-
-func TestLazyProp(t *testing.T) {
-	engine := newTestEngine(t)
-
-	req := httptest.NewRequest("GET", "/users", nil)
-	req.Header.Set("X-Inertia", "true")
-	rec := httptest.NewRecorder()
-
-	props := Props{
-		"lazy": LazyProp("lazy value"),
-	}
-
-	err := engine.Render(rec, req, "Users/Index", props)
-	if err != nil {
-		t.Fatalf("Render failed: %v", err)
-	}
-
-	// LazyProp should not be included on initial load
-	var response map[string]interface{}
-	json.Unmarshal(rec.Body.Bytes(), &response)
-
-	responseProps := response["props"].(map[string]interface{})
-
-	// Lazy props are excluded on initial load
-	if _, ok := responseProps["lazy"]; ok {
-		t.Error("Lazy prop should not be included on initial load")
-	}
-}
-
-func TestSimpleFlashProvider(t *testing.T) {
-	provider := NewSimpleFlashProvider()
-
-	provider.Set("success", "Operation successful")
-	provider.Set("warning", "Be careful")
-
-	req := httptest.NewRequest("GET", "/", nil)
-
-	flash, err := provider.GetFlashData(req)
-	if err != nil {
-		t.Fatalf("GetFlashData failed: %v", err)
-	}
-
-	if flash["success"] != "Operation successful" {
-		t.Error("Expected success flash message")
-	}
-
-	if flash["warning"] != "Be careful" {
-		t.Error("Expected warning flash message")
-	}
-
-	flash2, _ := provider.GetFlashData(req)
-	if len(flash2) != 0 {
-		t.Error("Expected flash to be cleared after reading")
-	}
-}
-
-func TestSimpleValidationProvider(t *testing.T) {
-	provider := NewSimpleValidationProvider()
-
-	errors := map[string]interface{}{
-		"email": "Invalid email format",
-		"age":   "Must be 18 or older",
-	}
-	provider.Set(errors)
-
-	req := httptest.NewRequest("POST", "/", nil)
-
-	gotErrors, err := provider.GetValidationErrors(req)
-	if err != nil {
-		t.Fatalf("GetValidationErrors failed: %v", err)
-	}
-
-	if gotErrors["email"] != "Invalid email format" {
-		t.Error("Expected email error")
-	}
-
-	if gotErrors["age"] != "Must be 18 or older" {
-		t.Error("Expected age error")
-	}
-
-	errors2, _ := provider.GetValidationErrors(req)
-	if len(errors2) != 0 {
-		t.Error("Expected errors to be cleared after reading")
 	}
 }
 
@@ -423,15 +307,6 @@ func TestBack(t *testing.T) {
 	}
 }
 
-func TestLoadTemplateFromFile(t *testing.T) {
-	// This test would need a temporary file to be complete
-	// For now, we just verify the function exists and can be called
-	_, err := LoadTemplateFromFile("/nonexistent/file.html")
-	if err == nil {
-		t.Error("Expected error for nonexistent file")
-	}
-}
-
 func TestMiddleware(t *testing.T) {
 	engine := newTestEngine(t)
 
@@ -445,9 +320,9 @@ func TestSetSharePropsFunc(t *testing.T) {
 	engine := newTestEngine(t)
 
 	called := false
-	engine.SetSharePropsFunc(func(r *http.Request) (Props, error) {
+	engine.SetSharePropsFunc(func(r *http.Request) (bond.Props, error) {
 		called = true
-		return Props{
+		return bond.Props{
 			"auth": map[string]string{"user": "Ali"},
 		}, nil
 	})
@@ -456,7 +331,7 @@ func TestSetSharePropsFunc(t *testing.T) {
 	req.Header.Set("X-Inertia", "true")
 	rec := httptest.NewRecorder()
 
-	engine.Render(rec, req, "Test", Props{})
+	engine.Render(rec, req, "Test", bond.Props{})
 
 	if !called {
 		t.Error("Expected SharePropsFunc to be called")
@@ -474,7 +349,7 @@ func TestShareFunc(t *testing.T) {
 	req.Header.Set("X-Inertia", "true")
 	rec := httptest.NewRecorder()
 
-	engine.Render(rec, req, "Test", Props{})
+	engine.Render(rec, req, "Test", bond.Props{})
 
 	var response map[string]interface{}
 	json.Unmarshal(rec.Body.Bytes(), &response)
@@ -489,7 +364,7 @@ func TestShareFunc(t *testing.T) {
 func TestShareMultiple(t *testing.T) {
 	engine := newTestEngine(t)
 
-	engine.ShareMultiple(Props{
+	engine.ShareMultiple(bond.Props{
 		"a": 1,
 		"b": 2,
 	})
@@ -498,7 +373,7 @@ func TestShareMultiple(t *testing.T) {
 	req.Header.Set("X-Inertia", "true")
 	rec := httptest.NewRecorder()
 
-	engine.Render(rec, req, "Test", Props{})
+	engine.Render(rec, req, "Test", bond.Props{})
 
 	var response map[string]interface{}
 	json.Unmarshal(rec.Body.Bytes(), &response)
@@ -556,7 +431,7 @@ func TestRender_WithVariousProps(t *testing.T) {
 	tests := []struct {
 		name      string
 		component string
-		props     []Props
+		props     []bond.Props
 		wantProps bool
 	}{
 		{
@@ -568,25 +443,25 @@ func TestRender_WithVariousProps(t *testing.T) {
 		{
 			name:      "renders with empty props slice",
 			component: "Test/Component",
-			props:     []Props{},
+			props:     []bond.Props{},
 			wantProps: false,
 		},
 		{
 			name:      "renders with nil props in slice",
 			component: "Test/Component",
-			props:     []Props{nil},
+			props:     []bond.Props{nil},
 			wantProps: false,
 		},
 		{
 			name:      "renders with empty props map",
 			component: "Test/Component",
-			props:     []Props{{}},
+			props:     []bond.Props{{}},
 			wantProps: true,
 		},
 		{
 			name:      "renders with populated props",
 			component: "Test/Component",
-			props:     []Props{{"key": "value"}},
+			props:     []bond.Props{{"key": "value"}},
 			wantProps: true,
 		},
 	}
@@ -622,88 +497,6 @@ func TestRender_WithVariousProps(t *testing.T) {
 	}
 }
 
-func TestLoadTemplateFromFile_ValidFile(t *testing.T) {
-	tests := []struct {
-		name        string
-		content     string
-		wantContent string
-		wantErr     bool
-	}{
-		{
-			name:        "loads simple template",
-			content:     `<html><body>{{ .inertia }}</body></html>`,
-			wantContent: `<html><body>{{ .inertia }}</body></html>`,
-			wantErr:     false,
-		},
-		{
-			name:        "loads template with multiple placeholders",
-			content:     `<!DOCTYPE html><html><head>{{ .inertiaHead }}</head><body>{{ .inertia }}</body></html>`,
-			wantContent: `<!DOCTYPE html><html><head>{{ .inertiaHead }}</head><body>{{ .inertia }}</body></html>`,
-			wantErr:     false,
-		},
-		{
-			name:        "loads empty file",
-			content:     "",
-			wantContent: "",
-			wantErr:     false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Create temp file
-			tmpFile, err := os.CreateTemp("", "template-*.html")
-			if err != nil {
-				t.Fatalf("Failed to create temp file: %v", err)
-			}
-			defer os.Remove(tmpFile.Name())
-
-			if _, err := tmpFile.WriteString(tt.content); err != nil {
-				t.Fatalf("Failed to write to temp file: %v", err)
-			}
-			tmpFile.Close()
-
-			got, err := LoadTemplateFromFile(tmpFile.Name())
-			if (err != nil) != tt.wantErr {
-				t.Errorf("LoadTemplateFromFile() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-
-			if got != tt.wantContent {
-				t.Errorf("LoadTemplateFromFile() = %v, want %v", got, tt.wantContent)
-			}
-		})
-	}
-}
-
-func TestLoadTemplateFromFile_Errors(t *testing.T) {
-	tests := []struct {
-		name    string
-		path    string
-		wantErr bool
-	}{
-		{
-			name:    "returns error for nonexistent file",
-			path:    "/nonexistent/path/template.html",
-			wantErr: true,
-		},
-		{
-			name:    "returns error for empty path",
-			path:    "",
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := LoadTemplateFromFile(tt.path)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("LoadTemplateFromFile() error = %v, wantErr %v", err, tt.wantErr)
-			}
-		})
-	}
-}
-
 func TestRender_PackageLevel(t *testing.T) {
 	engine := newTestEngine(t)
 
@@ -711,7 +504,7 @@ func TestRender_PackageLevel(t *testing.T) {
 	ctx.Request.Header.Set("X-Inertia", "true")
 	ctx.SetServices(&app.Services{View: engine})
 
-	err := Render(ctx, "Dashboard", Props{"title": "Home"})
+	err := Render(ctx, "Dashboard", bond.Props{"title": "Home"})
 	if err != nil {
 		t.Fatalf("Render failed: %v", err)
 	}
@@ -859,7 +652,7 @@ func TestRedirect_TableDriven(t *testing.T) {
 
 			location := rec.Header().Get("Location")
 			if location != tt.wantLocation {
-				t.Errorf("Location header = %s, want %s", location, tt.wantLocation)
+				t.Errorf("Location header = %s, want %s", tt.wantLocation, location)
 			}
 		})
 	}
