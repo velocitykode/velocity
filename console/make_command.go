@@ -37,9 +37,16 @@ func MakeCommand(name string, opts MakeCommandOptions) error {
 	if err != nil {
 		stubContent = []byte(`package {{ .Package }}
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/velocitykode/velocity/app"
+)
 
 // {{ .Name }}Command is a console command.
+//
+// Register this command in internal/commands/kernel.go:
+//   r.Add(&{{ .Name }}Command{})
 type {{ .Name }}Command struct{}
 
 // Name returns the command name used to invoke it.
@@ -53,7 +60,7 @@ func (c {{ .Name }}Command) Description() string {
 }
 
 // Handle executes the command logic.
-func (c {{ .Name }}Command) Handle() error {
+func (c {{ .Name }}Command) Handle(s *app.Services, args []string) error {
 	fmt.Println("Executing {{ .CommandName }}...")
 	return nil
 }

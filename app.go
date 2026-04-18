@@ -46,6 +46,8 @@ type App struct {
 	routesFn       func(*Routing)
 	eventsFn       func(events.Dispatcher)
 	scheduleFn     func(scheduler.TaskScheduler)
+	commandsFn     func(*Commands)
+	commands       *Commands
 	exceptionsFn   func(exceptions.ExceptionHandler)
 	bootstrapped   bool
 }
@@ -234,6 +236,13 @@ func (a *App) Events(fn func(events.Dispatcher)) *App {
 // Schedule registers a callback that configures scheduled jobs.
 func (a *App) Schedule(fn func(scheduler.TaskScheduler)) *App {
 	a.scheduleFn = fn
+	return a
+}
+
+// Commands registers a callback that adds custom commands to the application.
+// Commands are invokable via `vel run <name>`.
+func (a *App) Commands(fn func(*Commands)) *App {
+	a.commandsFn = fn
 	return a
 }
 

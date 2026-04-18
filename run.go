@@ -370,6 +370,24 @@ func (a *App) runCommand(name string, args []string) error {
 		}
 		return console.Build(opts)
 
+	case "run":
+		if err := a.Bootstrap(); err != nil {
+			return err
+		}
+		if len(args) == 0 {
+			a.printUserCommands()
+			return nil
+		}
+		cmdName := args[0]
+		cmd, ok := a.commands.Get(cmdName)
+		if !ok {
+			cli.Error(fmt.Sprintf("Unknown command: %s", cmdName))
+			cli.Newline()
+			a.printUserCommands()
+			os.Exit(1)
+		}
+		return cmd.Handle(a.Services, args[1:])
+
 	case "help", "--help", "-h":
 		a.printHelp()
 		return nil
@@ -439,8 +457,33 @@ func (a *App) printHelp() {
 	cli.Muted("  make:command       Create a new command")
 	cli.Newline()
 
+	cli.Info("Custom Commands")
+	cli.Muted("  run <command>      Run a custom command")
+	cli.Newline()
+
 	cli.Info("Other")
 	cli.Muted("  route:list         List all registered routes")
 	cli.Muted("  key:generate       Generate a new application key")
+	cli.Newline()
+}
+
+// printUserCommands lists all registered user commands with their descriptions.
+func (a *App) printUserCommands() {
+	if a.commands == nil || len(a.commands.All()) == 0 {
+		cli.Newline()
+		cli.Muted("No custom commands registered.")
+		cli.Newline()
+		cli.Muted("Create one with: vel make:command <Name>")
+		cli.Newline()
+		return
+	}
+
+	cli.Newline()
+	cli.Bold("  Custom Commands")
+	cli.Newline()
+
+	for _, cmd := range a.commands.All() {
+		cli.Muted(fmt.Sprintf("  %-20s%s", cmd.Name(), cmd.Description()))
+	}
 	cli.Newline()
 }

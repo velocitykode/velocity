@@ -69,7 +69,16 @@ func (a *App) bootstrap() error {
 		a.scheduleFn(a.Services.Scheduler)
 	}
 
-	// 6. Configure exceptions
+	// 6. Register custom commands
+	a.commands = newCommands()
+	dispatchProviderCallback(a.chainProviders, func(cp CommandProvider) {
+		cp.Commands(a.commands)
+	})
+	if a.commandsFn != nil {
+		a.commandsFn(a.commands)
+	}
+
+	// 7. Configure exceptions
 	if a.exceptionsFn != nil {
 		a.exceptionsFn(a.Services.Exceptions)
 	}

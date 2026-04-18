@@ -14,8 +14,17 @@ import (
 	"github.com/velocitykode/velocity/orm"
 )
 
-// Serve starts the HTTP server with signal handling and graceful shutdown.
+// Serve is the single entry point for a Velocity application. If os.Args
+// contains a CLI command (len > 1), it delegates to Run() for command dispatch.
+// Otherwise it boots the application and starts the HTTP server with signal
+// handling and graceful shutdown.
 func (a *App) Serve() error {
+	// If CLI arguments are present, delegate to the command dispatcher.
+	// This allows main.go to be a single call: v.Providers(...).Routes(...).Serve()
+	if len(os.Args) > 1 {
+		return a.Run()
+	}
+
 	if err := a.bootstrap(); err != nil {
 		return err
 	}

@@ -19,6 +19,7 @@ type bootstrapTrackingProvider struct {
 	middlewareCalled bool
 	eventsCalled     bool
 	scheduleCalled   bool
+	commandsCalled   bool
 }
 
 func (p *bootstrapTrackingProvider) Routes(r *Routing) {
@@ -39,6 +40,11 @@ func (p *bootstrapTrackingProvider) Events(d events.Dispatcher) {
 func (p *bootstrapTrackingProvider) Schedule(s scheduler.TaskScheduler) {
 	*p.calls = append(*p.calls, p.name+":schedule")
 	p.scheduleCalled = true
+}
+
+func (p *bootstrapTrackingProvider) Commands(r *Commands) {
+	*p.calls = append(*p.calls, p.name+":commands")
+	p.commandsCalled = true
 }
 
 // trackingMW returns middleware that sets a response header.
@@ -79,6 +85,7 @@ func TestBootstrap_FullChain(t *testing.T) {
 		routesCalled     bool
 		eventsCalled     bool
 		scheduleCalled   bool
+		commandsCalled   bool
 		exceptionsCalled bool
 	)
 
@@ -92,6 +99,8 @@ func TestBootstrap_FullChain(t *testing.T) {
 		eventsCalled = true
 	}).Schedule(func(s scheduler.TaskScheduler) {
 		scheduleCalled = true
+	}).Commands(func(r *Commands) {
+		commandsCalled = true
 	}).Exceptions(func(h exceptions.ExceptionHandler) {
 		exceptionsCalled = true
 	})
@@ -115,6 +124,9 @@ func TestBootstrap_FullChain(t *testing.T) {
 	if !scheduleCalled {
 		t.Error("Schedule callback not called")
 	}
+	if !commandsCalled {
+		t.Error("Commands callback not called")
+	}
 	if !exceptionsCalled {
 		t.Error("Exceptions callback not called")
 	}
@@ -131,6 +143,8 @@ func TestBootstrap_ChainOrderIndependent(t *testing.T) {
 	// Register in reverse order
 	a.Exceptions(func(h exceptions.ExceptionHandler) {
 		order = append(order, "exceptions")
+	}).Commands(func(r *Commands) {
+		order = append(order, "commands")
 	}).Schedule(func(s scheduler.TaskScheduler) {
 		order = append(order, "schedule")
 	}).Events(func(d events.Dispatcher) {
@@ -148,7 +162,7 @@ func TestBootstrap_ChainOrderIndependent(t *testing.T) {
 	}
 
 	// Execution order must be fixed regardless of registration order
-	want := []string{"providers", "middleware", "routes", "events", "schedule", "exceptions"}
+	want := []string{"providers", "middleware", "routes", "events", "schedule", "commands", "exceptions"}
 	if len(order) != len(want) {
 		t.Fatalf("got %d calls, want %d: %v", len(order), len(want), order)
 	}
@@ -184,6 +198,7 @@ func TestBootstrap_ProviderLifecycle(t *testing.T) {
 		"A:routes", "B:routes",
 		"A:events", "B:events",
 		"A:schedule", "B:schedule",
+		"A:commands", "B:commands",
 	}
 	if len(calls) != len(want) {
 		t.Fatalf("got %d calls, want %d:\n  got:  %v\n  want: %v", len(calls), len(want), calls, want)
@@ -194,10 +209,10 @@ func TestBootstrap_ProviderLifecycle(t *testing.T) {
 		}
 	}
 
-	if !pA.routesCalled || !pA.middlewareCalled || !pA.eventsCalled || !pA.scheduleCalled {
+	if !pA.routesCalled || !pA.middlewareCalled || !pA.eventsCalled || !pA.scheduleCalled || !pA.commandsCalled {
 		t.Error("provider A missing optional interface calls")
 	}
-	if !pB.routesCalled || !pB.middlewareCalled || !pB.eventsCalled || !pB.scheduleCalled {
+	if !pB.routesCalled || !pB.middlewareCalled || !pB.eventsCalled || !pB.scheduleCalled || !pB.commandsCalled {
 		t.Error("provider B missing optional interface calls")
 	}
 }
@@ -549,6 +564,11 @@ func TestBootstrap_ChainReturnsSameApp(t *testing.T) {
 	got = a.Schedule(func(scheduler.TaskScheduler) {})
 	if got != a {
 		t.Error("Schedule() did not return same *App")
+	}
+
+	got = a.Commands(func(*Commands) {})
+	if got != a {
+		t.Error("Commands() did not return same *App")
 	}
 
 	got = a.Exceptions(func(exceptions.ExceptionHandler) {})
