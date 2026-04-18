@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	testsync "github.com/velocitykode/velocity/testing"
 )
 
 func resetBatchStoreForTest(t *testing.T) {
@@ -146,8 +148,8 @@ func TestBatch_SuccessfulCompletion(t *testing.T) {
 	batch.recordSuccess()
 	batch.recordSuccess()
 
-	// Allow callbacks to fire (they run in goroutines)
-	time.Sleep(50 * time.Millisecond)
+	// Wait for the Then/Finally callbacks (fired in goroutines) to run
+	testsync.Eventually(t, func() bool { return thenCalled.Load() && finallyCalled.Load() }, time.Second, "then+finally callbacks")
 
 	if !batch.Finished() {
 		t.Error("expected batch to be finished")
@@ -201,7 +203,8 @@ func TestBatch_WithFailures_AllowFailures(t *testing.T) {
 	batch.recordFailure(errors.New("job error"))
 	batch.recordSuccess()
 
-	time.Sleep(50 * time.Millisecond)
+	// AllowFailures: Catch + Finally should fire, Then should not.
+	testsync.Eventually(t, func() bool { return catchCalled.Load() && finallyCalled.Load() }, time.Second, "catch+finally callbacks")
 
 	if !batch.Finished() {
 		t.Error("expected batch to be finished")
@@ -389,7 +392,11 @@ func TestBatch_Events(t *testing.T) {
 	batch.recordSuccess()
 	batch.recordFailure(errors.New("fail"))
 
-	time.Sleep(50 * time.Millisecond)
+	testsync.Eventually(t, func() bool {
+		eventsMu.Lock()
+		defer eventsMu.Unlock()
+		return len(events) >= 4
+	}, time.Second, "all batch events dispatched")
 
 	eventsMu.Lock()
 	defer eventsMu.Unlock()
@@ -435,8 +442,13 @@ func TestBatch_CatchFiresOnce(t *testing.T) {
 	batch.recordFailure(errors.New("error 2"))
 	batch.recordFailure(errors.New("error 3"))
 
-	time.Sleep(50 * time.Millisecond)
+	// Catch fires on first failure; give goroutine time to run before we
+	// assert "fired exactly once". Poll until >=1, then sample again below.
+	testsync.EventuallyEqual(t, catchCount.Load, int32(1), time.Second, "catch fires at least once")
 
+	// Stability window — if Catch were firing multiple times the second
+	// read would be >1. Short sleep is intentional here (negative assertion).
+	time.Sleep(50 * time.Millisecond)
 	if catchCount.Load() != 1 {
 		t.Errorf("expected Catch to fire once, fired %d times", catchCount.Load())
 	}
@@ -477,13 +489,10 @@ func TestBatch_Concurrent(t *testing.T) {
 	}
 	wg.Wait()
 
-	time.Sleep(50 * time.Millisecond)
+	testsync.Eventually(t, finallyCalled.Load, time.Second, "finally callback")
 
 	if !batch.Finished() {
 		t.Error("expected batch to be finished")
-	}
-	if !finallyCalled.Load() {
-		t.Error("expected Finally to fire")
 	}
 
 	total := batch.CompletedJobs() + batch.FailedJobs()
@@ -560,31 +569,13 @@ func TestBatch_WorkerIntegration(t *testing.T) {
 	}, WithInterval(10*time.Millisecond), WithMaxRetries(0))
 
 	worker.Start()
+	defer worker.Stop()
 
-	// Wait for jobs to be processed
-	deadline := time.After(2 * time.Second)
-	for {
-		select {
-		case <-deadline:
-			worker.Stop()
-			t.Fatal("timed out waiting for batch to finish")
-		default:
-			if batch.Finished() {
-				worker.Stop()
-				time.Sleep(50 * time.Millisecond)
-				if !thenCalled.Load() {
-					t.Error("expected Then callback to fire")
-				}
-				if !finallyCalled.Load() {
-					t.Error("expected Finally callback to fire")
-				}
-				if batch.CompletedJobs() != 2 {
-					t.Errorf("expected 2 completed, got %d", batch.CompletedJobs())
-				}
-				return
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
+	testsync.Eventually(t, batch.Finished, 2*time.Second, "batch jobs processed")
+	testsync.Eventually(t, func() bool { return thenCalled.Load() && finallyCalled.Load() }, time.Second, "then+finally callbacks")
+
+	if batch.CompletedJobs() != 2 {
+		t.Errorf("expected 2 completed, got %d", batch.CompletedJobs())
 	}
 }
 
@@ -614,23 +605,18 @@ func TestBatch_CancelledJobSkipped(t *testing.T) {
 	}, WithInterval(10*time.Millisecond))
 
 	worker.Start()
-	time.Sleep(200 * time.Millisecond)
-	worker.Stop()
+	defer worker.Stop()
+
+	// Skipped jobs should decrement pendingJobs so batch reaches Finished,
+	// and Finally should fire even when every job was skipped.
+	testsync.Eventually(t, batch.Finished, 2*time.Second, "cancelled batch finishes after skips")
+	testsync.Eventually(t, finallyCalled.Load, time.Second, "finally callback fires for cancelled batch")
 
 	if handled.Load() {
 		t.Error("expected cancelled batch job to be skipped")
 	}
-	// Skipped jobs should decrement pendingJobs so batch reaches Finished
-	if !batch.Finished() {
-		t.Error("expected cancelled batch to reach Finished state")
-	}
 	if batch.PendingJobs() != 0 {
 		t.Errorf("expected 0 pending jobs after skip, got %d", batch.PendingJobs())
-	}
-	// Finally should still fire even when all jobs are skipped
-	time.Sleep(50 * time.Millisecond)
-	if !finallyCalled.Load() {
-		t.Error("expected Finally callback to fire for cancelled batch")
 	}
 }
 

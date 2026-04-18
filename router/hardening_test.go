@@ -50,6 +50,19 @@ func TestRedirect_ExplicitAllowlist(t *testing.T) {
 	}
 }
 
+// Catches the mutation "&& → ||" in sanitizeRedirect's allowlist loop, which
+// would let any host through as long as some allowlist entry is non-empty.
+func TestRedirect_AllowlistDoesNotLeakToOtherHosts(t *testing.T) {
+	c, rec := NewTestContext("GET", "/")
+	c.redirectAllowedHosts = []string{"trusted.example"}
+	if err := c.Redirect(http.StatusFound, "https://evil.com/pwned"); err != nil {
+		t.Fatal(err)
+	}
+	if got := rec.Header().Get("Location"); got != "/" {
+		t.Errorf("Location = %q, want / (allowlist matches trusted.example only, not evil.com)", got)
+	}
+}
+
 func TestRedirect_ProtocolRelativeRejected(t *testing.T) {
 	c, rec := NewTestContext("GET", "/")
 	if err := c.Redirect(http.StatusFound, "//evil.com/pwned"); err != nil {
@@ -477,6 +490,89 @@ func TestSanitizeRedirect_PassthroughReturnsURL(t *testing.T) {
 	if err != nil || u.Host != "trusted.example" {
 		t.Fatalf("got %q, err %v", got, err)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Reflected-XSS defence-in-depth
+//
+// A route that echoes a query parameter is a classic reflected-XSS sink.
+// The framework's defence is layered: SecurityHeaders ships nosniff +
+// X-Frame-Options + CSP, c.String fixes Content-Type to text/plain, and
+// c.JSON round-trips through encoding/json which escapes <, >, &, and
+// quotes. This test locks in all of those at once so a regression in any
+// layer is caught by a single failure.
+// ---------------------------------------------------------------------------
+
+func TestReflectedXSS_DefensiveHeadersAndEncoding(t *testing.T) {
+	payload := `<script>alert("xss")</script>`
+
+	r := NewV2()
+	r.Use(SecurityHeaders())
+
+	r.Get("/echo-string", func(c *Context) error {
+		return c.String(http.StatusOK, c.Request.URL.Query().Get("q"))
+	})
+	r.Get("/echo-json", func(c *Context) error {
+		return c.JSON(http.StatusOK, map[string]string{"q": c.Request.URL.Query().Get("q")})
+	})
+
+	expectHeaders := map[string]string{
+		"X-Content-Type-Options":    "nosniff",
+		"X-Frame-Options":           "DENY",
+		"Referrer-Policy":           "strict-origin-when-cross-origin",
+		"Content-Security-Policy":   "default-src 'self'",
+		"Strict-Transport-Security": "max-age=63072000; includeSubDomains",
+	}
+
+	t.Run("c.String keeps text/plain and does not reflect as HTML", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/echo-string?q="+url.QueryEscape(payload), nil)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		for k, want := range expectHeaders {
+			if got := rec.Header().Get(k); got != want {
+				t.Errorf("header %s = %q, want %q", k, got, want)
+			}
+		}
+		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+			t.Errorf("Content-Type = %q, want text/plain (nosniff + text/plain neutralises the payload)", ct)
+		}
+		// The body can legitimately contain the raw bytes — what matters
+		// is that the browser won't render them as HTML. That's enforced
+		// by Content-Type + nosniff, which the header assertions above
+		// already pin.
+	})
+
+	t.Run("c.JSON escapes HTML-sensitive runes", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/echo-json?q="+url.QueryEscape(payload), nil)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		for k, want := range expectHeaders {
+			if got := rec.Header().Get(k); got != want {
+				t.Errorf("header %s = %q, want %q", k, got, want)
+			}
+		}
+		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+			t.Errorf("Content-Type = %q, want application/json", ct)
+		}
+		body := rec.Body.String()
+		// encoding/json escapes < > & by default (SetEscapeHTML(true)).
+		// A mutation that turns this off would reflect the raw <script>
+		// and this assertion would catch it.
+		if strings.Contains(body, "<script>") {
+			t.Errorf("JSON body contains unescaped <script>: %s", body)
+		}
+		if !strings.Contains(body, `\u003cscript\u003e`) {
+			t.Errorf("JSON body missing unicode-escaped <script>: %s", body)
+		}
+	})
 }
 
 // Smoke-test that the Download path sets Content-Disposition.

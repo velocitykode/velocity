@@ -16,9 +16,18 @@ import (
 // Result/ValidationErrors.
 var ErrValidationFailed = errors.New("velocity/validation: validation failed")
 
-// ValidationErrors represents validation errors
+// ValidationErrors represents validation errors.
+//
+// Errors maps field -> message(s) and is the user-facing shape carried into
+// flash cookies, JSON responses, and view data.
+//
+// RulesByField is a parallel index mapping field -> rule-name(s) that
+// produced each error, in the same order as Errors[field]. Tests should
+// prefer this over substring-matching the message. It is populated whenever
+// addError is called with a non-empty rule name.
 type ValidationErrors struct {
-	Errors map[string][]string
+	Errors       map[string][]string
+	RulesByField map[string][]string
 }
 
 // Error implements the error interface
@@ -65,12 +74,33 @@ func (e ValidationErrors) IsEmpty() bool {
 	return len(e.Errors) == 0
 }
 
-// addError adds an error message for a field
-func (e *ValidationErrors) addError(field, message string) {
+// addError adds an error message for a field. rule names the rule that
+// failed; pass "" when the source has no rule (Merge, external input).
+func (e *ValidationErrors) addError(field, message, rule string) {
 	if e.Errors == nil {
 		e.Errors = make(map[string][]string)
 	}
+	if e.RulesByField == nil {
+		e.RulesByField = make(map[string][]string)
+	}
 	e.Errors[field] = append(e.Errors[field], message)
+	e.RulesByField[field] = append(e.RulesByField[field], rule)
+}
+
+// HasRule reports whether field failed the named rule.
+func (e ValidationErrors) HasRule(field, rule string) bool {
+	for _, r := range e.RulesByField[field] {
+		if r == rule {
+			return true
+		}
+	}
+	return false
+}
+
+// RulesFor returns the rule names that produced errors for field, in the
+// same order as Errors[field].
+func (e ValidationErrors) RulesFor(field string) []string {
+	return append([]string(nil), e.RulesByField[field]...)
 }
 
 // Merge merges another ValidationErrors into this one
@@ -78,7 +108,13 @@ func (e *ValidationErrors) Merge(other ValidationErrors) {
 	if e.Errors == nil {
 		e.Errors = make(map[string][]string)
 	}
+	if e.RulesByField == nil {
+		e.RulesByField = make(map[string][]string)
+	}
 	for field, messages := range other.Errors {
 		e.Errors[field] = append(e.Errors[field], messages...)
+	}
+	for field, rules := range other.RulesByField {
+		e.RulesByField[field] = append(e.RulesByField[field], rules...)
 	}
 }

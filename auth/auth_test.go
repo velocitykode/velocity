@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -442,7 +443,6 @@ func TestManagerConcurrency(t *testing.T) {
 }
 
 func TestORMUserProvider(t *testing.T) {
-	t.Skip("TODO: fix ORM user provider test")
 	// Initialize SQLite in-memory database for testing
 	manager, err := orm.NewManager(orm.ManagerConfig{
 		Driver:   "sqlite",
@@ -453,26 +453,27 @@ func TestORMUserProvider(t *testing.T) {
 	}
 	defer manager.Close()
 
-	// Create users table
+	// Schema matches the columns ORMUserProvider expects to SELECT / UPDATE.
 	db := manager.DB()
 	_, err = db.Exec(`
 		CREATE TABLE users (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL DEFAULT '',
 			email TEXT UNIQUE NOT NULL,
-			password TEXT NOT NULL
+			password TEXT NOT NULL,
+			remember_token TEXT
 		)
 	`)
 	if err != nil {
 		t.Fatalf("Failed to create users table: %v", err)
 	}
 
-	// Insert test user with bcrypt hashed password
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.DefaultCost)
 	if err != nil {
 		t.Fatalf("Failed to hash password: %v", err)
 	}
 
-	_, err = db.Exec("INSERT INTO users (email, password) VALUES (?, ?)", "test@example.com", string(hashedPassword))
+	_, err = db.Exec("INSERT INTO users (name, email, password) VALUES ($1, $2, $3)", "Test User", "test@example.com", string(hashedPassword))
 	if err != nil {
 		t.Fatalf("Failed to insert test user: %v", err)
 	}
@@ -712,10 +713,9 @@ func BenchmarkJWTValidation(b *testing.B) {
 	}
 }
 
-// Integration test for session-based auth flow
+// Integration test for session-based auth flow: provider lookup, password
+// verification, session put/has, and invalidate.
 func TestSessionAuthFlow(t *testing.T) {
-	t.Skip("TODO: fix test")
-	// Initialize SQLite in-memory database for testing
 	manager, err := orm.NewManager(orm.ManagerConfig{
 		Driver:   "sqlite",
 		Database: ":memory:",
@@ -725,61 +725,58 @@ func TestSessionAuthFlow(t *testing.T) {
 	}
 	defer manager.Close()
 
-	// Create users table
 	db := manager.DB()
 	_, err = db.Exec(`
 		CREATE TABLE users (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL DEFAULT '',
 			email TEXT UNIQUE NOT NULL,
-			password TEXT NOT NULL
+			password TEXT NOT NULL,
+			remember_token TEXT
 		)
 	`)
 	if err != nil {
 		t.Fatalf("Failed to create users table: %v", err)
 	}
 
-	// Insert test user with bcrypt hashed password
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.DefaultCost)
 	if err != nil {
 		t.Fatalf("Failed to hash password: %v", err)
 	}
 
-	_, err = db.Exec("INSERT INTO users (email, password) VALUES (?, ?)", "test@example.com", string(hashedPassword))
+	_, err = db.Exec("INSERT INTO users (name, email, password) VALUES ($1, $2, $3)", "Test User", "test@example.com", string(hashedPassword))
 	if err != nil {
 		t.Fatalf("Failed to insert test user: %v", err)
 	}
 
-	// This would be a more complete test with actual HTTP handlers
-	// For now, we test the components
-
 	provider := NewORMUserProvider(db, "User", nil)
 
-	// Simulate login attempt
 	credentials := map[string]interface{}{
 		"email":    "test@example.com",
 		"password": "password",
 	}
 
-	// Find user
 	user, err := provider.FindByCredentials(credentials)
 	if err != nil {
 		t.Fatalf("Failed to find user: %v", err)
 	}
 
-	// Validate credentials
-	// Note: This will fail with mock data since the hash isn't a real bcrypt hash
-	_ = provider.ValidateCredentials(user, credentials)
+	if !provider.ValidateCredentials(user, credentials) {
+		t.Fatal("ValidateCredentials should succeed with correct password")
+	}
 
-	// Create session
+	wrongCreds := map[string]interface{}{"password": "wrong-password"}
+	if provider.ValidateCredentials(user, wrongCreds) {
+		t.Error("ValidateCredentials should fail with wrong password")
+	}
+
 	session := NewSession("")
 	session.Put("user_id", user.GetAuthIdentifier())
 
-	// Verify user is "logged in"
 	if !session.Has("user_id") {
 		t.Error("User ID should be in session")
 	}
 
-	// Simulate logout
 	session.Invalidate()
 
 	if session.Has("user_id") {
@@ -787,10 +784,9 @@ func TestSessionAuthFlow(t *testing.T) {
 	}
 }
 
-// Integration test for JWT auth flow
+// Integration test for JWT auth flow: provider lookup, password verification,
+// token generation, and Bearer header round-trip with claims verification.
 func TestJWTAuthFlow(t *testing.T) {
-	t.Skip("TODO: fix test")
-	// Initialize SQLite in-memory database for testing
 	manager, err := orm.NewManager(orm.ManagerConfig{
 		Driver:   "sqlite",
 		Database: ":memory:",
@@ -800,26 +796,26 @@ func TestJWTAuthFlow(t *testing.T) {
 	}
 	defer manager.Close()
 
-	// Create users table
 	db := manager.DB()
 	_, err = db.Exec(`
 		CREATE TABLE users (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL DEFAULT '',
 			email TEXT UNIQUE NOT NULL,
-			password TEXT NOT NULL
+			password TEXT NOT NULL,
+			remember_token TEXT
 		)
 	`)
 	if err != nil {
 		t.Fatalf("Failed to create users table: %v", err)
 	}
 
-	// Insert test user with bcrypt hashed password
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.DefaultCost)
 	if err != nil {
 		t.Fatalf("Failed to hash password: %v", err)
 	}
 
-	_, err = db.Exec("INSERT INTO users (email, password) VALUES (?, ?)", "test@example.com", string(hashedPassword))
+	_, err = db.Exec("INSERT INTO users (name, email, password) VALUES ($1, $2, $3)", "Test User", "test@example.com", string(hashedPassword))
 	if err != nil {
 		t.Fatalf("Failed to insert test user: %v", err)
 	}
@@ -835,44 +831,39 @@ func TestJWTAuthFlow(t *testing.T) {
 		t.Fatalf("NewJWTManager: %v", err)
 	}
 
-	// Simulate login
 	credentials := map[string]interface{}{
 		"email":    "test@example.com",
 		"password": "password",
 	}
 
-	// Find and validate user
-	user, _ := provider.FindByCredentials(credentials)
-	// Note: This will fail with mock data since the hash isn't a real bcrypt hash
-	_ = provider.ValidateCredentials(user, credentials)
+	user, err := provider.FindByCredentials(credentials)
+	if err != nil {
+		t.Fatalf("FindByCredentials: %v", err)
+	}
+	if !provider.ValidateCredentials(user, credentials) {
+		t.Fatal("ValidateCredentials should succeed with correct password")
+	}
 
-	// Generate token
 	token, err := jwtMgr.GenerateToken(user)
 	if err != nil {
 		t.Fatalf("Failed to generate token: %v", err)
 	}
 
-	// Simulate API request with token
 	req := httptest.NewRequest("GET", "/api/user", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	// Validate token from request
 	authHeader := req.Header.Get("Authorization")
-	if authHeader == "" {
-		t.Error("Should have Authorization header")
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		t.Fatalf("expected Bearer header, got %q", authHeader)
 	}
+	tokenFromHeader := strings.TrimPrefix(authHeader, "Bearer ")
 
-	// Extract token (remove "Bearer " prefix)
-	tokenFromHeader := authHeader[7:]
-
-	// Validate token
 	claims, err := jwtMgr.ValidateToken(tokenFromHeader)
 	if err != nil {
 		t.Fatalf("Failed to validate token from header: %v", err)
 	}
 
-	// Verify user ID in claims
 	if fmt.Sprintf("%v", claims.UserID) != fmt.Sprintf("%v", user.GetAuthIdentifier()) {
-		t.Error("User ID mismatch in claims")
+		t.Errorf("User ID mismatch: claims=%v user=%v", claims.UserID, user.GetAuthIdentifier())
 	}
 }

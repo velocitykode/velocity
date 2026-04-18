@@ -15,6 +15,11 @@ func TestValidate(t *testing.T) {
 		rules       Rules
 		wantError   bool
 		errorFields []string
+		// errorRules maps field -> expected rule name that should have
+		// failed. When non-nil, assertions verify the specific rule name,
+		// not just the presence of any error on that field. Empty map means
+		// "don't assert rule name" (legacy cases still covered by errorFields).
+		errorRules map[string]string
 	}{
 		{
 			name: "valid required fields",
@@ -39,6 +44,7 @@ func TestValidate(t *testing.T) {
 			},
 			wantError:   true,
 			errorFields: []string{"email"},
+			errorRules:  map[string]string{"email": "required"},
 		},
 		{
 			name: "invalid email",
@@ -50,6 +56,7 @@ func TestValidate(t *testing.T) {
 			},
 			wantError:   true,
 			errorFields: []string{"email"},
+			errorRules:  map[string]string{"email": "email"},
 		},
 		{
 			name: "string validation",
@@ -61,6 +68,8 @@ func TestValidate(t *testing.T) {
 			},
 			wantError:   true,
 			errorFields: []string{"name"},
+			// string passes; min is what fails
+			errorRules: map[string]string{"name": "min"},
 		},
 		{
 			name: "numeric validation",
@@ -102,6 +111,7 @@ func TestValidate(t *testing.T) {
 			},
 			wantError:   true,
 			errorFields: []string{"username"},
+			errorRules:  map[string]string{"username": "not_in"},
 		},
 		{
 			name: "confirmed validation",
@@ -125,6 +135,7 @@ func TestValidate(t *testing.T) {
 			},
 			wantError:   true,
 			errorFields: []string{"password"},
+			errorRules:  map[string]string{"password": "confirmed"},
 		},
 		{
 			name: "accepted validation",
@@ -258,6 +269,7 @@ func TestValidate(t *testing.T) {
 			},
 			wantError:   true,
 			errorFields: []string{"optional"},
+			errorRules:  map[string]string{"optional": "filled"},
 		},
 	}
 
@@ -274,6 +286,12 @@ func TestValidate(t *testing.T) {
 					for _, field := range tt.errorFields {
 						if !validationErr.HasError(field) {
 							t.Errorf("Expected error for field %s", field)
+						}
+					}
+					for field, rule := range tt.errorRules {
+						if !validationErr.HasRule(field, rule) {
+							t.Errorf("field %q failed rules %v, expected %q",
+								field, validationErr.RulesFor(field), rule)
 						}
 					}
 				}
@@ -393,6 +411,70 @@ func TestCustomMessages(t *testing.T) {
 
 	// Note: Custom message functionality needs to be fully implemented
 	// This test demonstrates the expected API
+}
+
+// TestBuiltInRuleMessages pins the user-facing copy of the rules that
+// consumer apps most often surface directly (login forms, account setup).
+// These are not exhaustive — just the assertions that would fail on a
+// regression that made messages less informative.
+func TestBuiltInRuleMessages(t *testing.T) {
+	v := NewValidator()
+
+	cases := []struct {
+		name      string
+		data      map[string]interface{}
+		rules     Rules
+		field     string
+		mustMatch []string
+	}{
+		{
+			name:      "required mentions the field",
+			data:      map[string]interface{}{},
+			rules:     Rules{"email": "required"},
+			field:     "email",
+			mustMatch: []string{"email", "required"},
+		},
+		{
+			name:      "email says invalid",
+			data:      map[string]interface{}{"email": "nope"},
+			rules:     Rules{"email": "email"},
+			field:     "email",
+			mustMatch: []string{"email"},
+		},
+		{
+			name:      "min reports the threshold",
+			data:      map[string]interface{}{"name": "Jo"},
+			rules:     Rules{"name": "min:3"},
+			field:     "name",
+			mustMatch: []string{"name", "3"},
+		},
+		{
+			name:      "confirmed names the field",
+			data:      map[string]interface{}{"password": "secret", "password_confirmation": "nope"},
+			rules:     Rules{"password": "confirmed"},
+			field:     "password",
+			mustMatch: []string{"password"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := v.Validate(tc.data, tc.rules)
+			verr, ok := err.(ValidationErrors)
+			if !ok {
+				t.Fatalf("expected ValidationErrors, got %T: %v", err, err)
+			}
+			msg := verr.First(tc.field)
+			if msg == "" {
+				t.Fatalf("no error message for field %q", tc.field)
+			}
+			for _, want := range tc.mustMatch {
+				if !strings.Contains(strings.ToLower(msg), strings.ToLower(want)) {
+					t.Errorf("message %q missing substring %q", msg, want)
+				}
+			}
+		})
+	}
 }
 
 func TestValidationErrors(t *testing.T) {

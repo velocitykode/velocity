@@ -270,12 +270,18 @@ func TestGo(t *testing.T) {
 	})
 
 	t.Run("recovers from panic", func(t *testing.T) {
-		// Should not crash the test
+		// Test passes if this doesn't crash the process. The inner closure's
+		// deferred close runs during panic unwind, before Go's own recover.
+		done := make(chan struct{})
 		Go(func() {
+			defer close(done)
 			panic("test panic")
 		})
-		time.Sleep(10 * time.Millisecond) // Give time for panic to occur
-		// Test passes if we reach here
+		select {
+		case <-done:
+		case <-time.After(500 * time.Millisecond):
+			t.Fatal("panicking goroutine didn't run its defer")
+		}
 	})
 }
 

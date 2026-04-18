@@ -324,12 +324,13 @@ func TestConcurrentAccess(t *testing.T) {
 		}(i)
 	}
 
-	// Concurrent reads
+	// Concurrent reads. No sleep to let writes "win" first — we're exercising
+	// concurrent safety, not ordering. Reads that arrive before any matching
+	// write just miss and drop the err (they're already ignored below).
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			time.Sleep(10 * time.Millisecond) // Let some writes happen first
 			for j := 0; j < 10; j++ {
 				path := filepath.Join("concurrent", string(rune('0'+id)), "file.txt")
 				driver.Get(path) // Ignore errors for non-existent files

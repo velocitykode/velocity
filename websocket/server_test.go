@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	testsync "github.com/velocitykode/velocity/testing"
 )
 
 func TestNewServer(t *testing.T) {
@@ -170,8 +171,8 @@ func TestGroups(t *testing.T) {
 	}
 	defer ws2.Close()
 
-	// Wait for both clients to be registered
-	time.Sleep(100 * time.Millisecond)
+	// Poll until both clients are registered on the server side
+	testsync.Eventually(t, func() bool { return s.GetStats().ConnectedClients == 2 }, 2*time.Second, "both clients registered")
 
 	// Get client IDs from welcome messages
 	var welcome1, welcome2 Message
@@ -260,8 +261,8 @@ func TestBroadcast(t *testing.T) {
 		ws.ReadJSON(&welcome)
 	}
 
-	// Wait for all clients to be registered
-	time.Sleep(100 * time.Millisecond)
+	// Poll until all 3 clients are registered
+	testsync.Eventually(t, func() bool { return s.GetStats().ConnectedClients == 3 }, 2*time.Second, "all clients registered")
 
 	// Broadcast message
 	s.Broadcast(Message{
@@ -385,10 +386,9 @@ func TestHandleRaw_DoesNotRegisterClient(t *testing.T) {
 	}
 	defer ws.Close()
 
-	// Wait for connection to be established
-	time.Sleep(50 * time.Millisecond)
-
-	// Raw connections should NOT appear in managed clients or stats
+	// Raw connections bypass client management entirely — HandleRaw never
+	// adds to s.clients or bumps ConnectedClients — so this assertion
+	// holds regardless of timing. No sleep needed.
 	stats := s.GetStats()
 	if stats.ConnectedClients != 0 {
 		t.Errorf("Expected 0 connected clients for raw connection, got %d", stats.ConnectedClients)
@@ -454,8 +454,8 @@ func TestConnectionLimit(t *testing.T) {
 	}
 	defer ws2.Close()
 
-	// Wait for registrations
-	time.Sleep(100 * time.Millisecond)
+	// Poll until both clients are registered so the limit check is meaningful
+	testsync.Eventually(t, func() bool { return s.GetStats().ConnectedClients == 2 }, 2*time.Second, "two clients registered before testing limit")
 
 	// Connect third client (should fail due to limit)
 	ws3, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)

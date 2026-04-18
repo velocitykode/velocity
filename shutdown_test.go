@@ -64,8 +64,9 @@ func TestShutdown_DrainsInFlightRequests(t *testing.T) {
 		close(serveErr)
 	}()
 
-	// Baseline goroutines AFTER server is running.
-	time.Sleep(20 * time.Millisecond)
+	// Baseline goroutines AFTER the server's Serve goroutine and its
+	// acceptors have spawned and stabilized.
+	waitForGoroutinesToSettle(t, time.Second)
 	baselineGoroutines := runtime.NumGoroutine()
 
 	var wg sync.WaitGroup
@@ -132,9 +133,9 @@ func TestShutdown_DrainsInFlightRequests(t *testing.T) {
 	}
 
 	// (c) Goroutine count returns to baseline. http.Server.Shutdown can
-	// leave transient goroutines for a beat; allow generous slack to
-	// avoid flakes, but fail on real leaks.
-	time.Sleep(50 * time.Millisecond)
+	// leave transient goroutines for a beat; poll until the count settles,
+	// then compare against baseline with generous slack for CI jitter.
+	waitForGoroutinesToSettle(t, time.Second)
 	finalGoroutines := runtime.NumGoroutine()
 	if delta := finalGoroutines - baselineGoroutines; delta > 5 {
 		t.Errorf("goroutine leak: baseline=%d final=%d delta=%d",

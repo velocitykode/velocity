@@ -4,6 +4,8 @@
 package testing
 
 import (
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/velocitykode/velocity/validation"
@@ -43,4 +45,43 @@ func RuleAssertion(t *testing.T, rule string, input map[string]interface{}, expe
 		t.Fatalf("RuleAssertion(%q, %+v): want err=%v, got err=%v (%v)",
 			rule, input, expectedErr, gotErr, err)
 	}
+}
+
+// AssertErrorRule fails the test unless err is a validation.ValidationErrors
+// that contains an error on field produced by the named rule.
+//
+// Prefer this over HasError(field) in rule-specific tests: HasError only
+// tells you "something failed", so a test that expects "required" would still
+// pass if "email" failed instead. AssertErrorRule catches that kind of
+// mutation.
+func AssertErrorRule(t testing.TB, err error, field, rule string) {
+	t.Helper()
+	var verr validation.ValidationErrors
+	if !errors.As(err, &verr) {
+		t.Fatalf("AssertErrorRule(%q, %q): expected validation.ValidationErrors, got %T: %v", field, rule, err, err)
+	}
+	if !verr.HasError(field) {
+		t.Fatalf("AssertErrorRule(%q, %q): field has no errors; got %v", field, rule, verr.All())
+	}
+	if !verr.HasRule(field, rule) {
+		t.Fatalf("AssertErrorRule(%q, %q): field failed rules %v, not %q", field, rule, verr.RulesFor(field), rule)
+	}
+}
+
+// AssertErrorMessage fails the test unless the error on field contains the
+// given substring. Use for rules that produce user-facing copy where the
+// wording is load-bearing (payment flows, auth messaging) — otherwise prefer
+// AssertErrorRule so tests don't break on copy edits.
+func AssertErrorMessage(t testing.TB, err error, field, substring string) {
+	t.Helper()
+	var verr validation.ValidationErrors
+	if !errors.As(err, &verr) {
+		t.Fatalf("AssertErrorMessage(%q, %q): expected validation.ValidationErrors, got %T: %v", field, substring, err, err)
+	}
+	for _, msg := range verr.All()[field] {
+		if strings.Contains(msg, substring) {
+			return
+		}
+	}
+	t.Fatalf("AssertErrorMessage(%q, %q): no message containing substring; got %v", field, substring, verr.All()[field])
 }

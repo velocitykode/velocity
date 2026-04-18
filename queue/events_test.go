@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/trace"
+	testsync "github.com/velocitykode/velocity/testing"
 )
 
 func TestEventNames(t *testing.T) {
@@ -457,8 +458,13 @@ func TestWorkerEventDispatching(t *testing.T) {
 		worker.SetEventDispatcher(dispatcher)
 
 		worker.Start()
-		time.Sleep(100 * time.Millisecond)
-		worker.Stop()
+		defer worker.Stop()
+
+		testsync.Eventually(t, func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return len(processedEvents) == 1
+		}, 2*time.Second, "success job processed event")
 
 		mu.Lock()
 		defer mu.Unlock()
@@ -510,8 +516,13 @@ func TestWorkerEventDispatching(t *testing.T) {
 		worker.SetEventDispatcher(dispatcher)
 
 		worker.Start()
-		time.Sleep(100 * time.Millisecond)
-		worker.Stop()
+		defer worker.Stop()
+
+		testsync.Eventually(t, func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return len(failedEvents) == 1
+		}, 2*time.Second, "failed job dispatches failed event")
 
 		mu.Lock()
 		defer mu.Unlock()

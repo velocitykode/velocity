@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	testsync "github.com/velocitykode/velocity/testing"
 )
 
 // TestDriver runs common tests for any queue driver
@@ -72,13 +74,14 @@ func testDriver(t *testing.T, driver Driver, name string) {
 				t.Error("Job should not be available immediately")
 			}
 
-			// Wait for delay plus processing time
-			time.Sleep(2 * time.Second)
-
-			// Should be available now
-			poppedJob, err = driver.Pop("delayed-queue")
-			if err != nil {
-				t.Fatalf("Failed to pop job after delay: %v", err)
+			// Poll until the delay elapses and the job becomes visible.
+			var popErr error
+			testsync.Eventually(t, func() bool {
+				poppedJob, popErr = driver.Pop("delayed-queue")
+				return popErr == nil && poppedJob != nil
+			}, 3*time.Second, "delayed job becomes visible")
+			if popErr != nil {
+				t.Fatalf("Failed to pop job after delay: %v", popErr)
 			}
 			if poppedJob == nil {
 				t.Error("Job should be available after delay")
@@ -248,12 +251,7 @@ func TestAllDrivers(t *testing.T) {
 		testDriver(t, driver, "Memory")
 	})
 
-	// Test Database Driver (if database is available)
-	t.Run("DatabaseDriver", func(t *testing.T) {
-		// For now, skip database driver tests as they need ORM to be initialized
-		// These tests would run in a consumer app with proper database setup
-		t.Skip("Database driver tests require full ORM initialization")
-	})
+	// Database driver is covered by TestIntegrationDatabaseDriver (PostgreSQL-gated).
 
 	// Test Redis Driver (if Redis is available)
 	t.Run("RedisDriver", func(t *testing.T) {

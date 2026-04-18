@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	testsync "github.com/velocitykode/velocity/testing"
 )
 
 func TestScheduler(t *testing.T) {
@@ -94,52 +96,42 @@ func TestScheduler(t *testing.T) {
 		// Manually trigger job execution
 		s.runDueJobs()
 
-		// Wait a bit for goroutine to complete
-		time.Sleep(50 * time.Millisecond)
-
-		if atomic.LoadInt32(&executed) != 1 {
-			t.Error("expected job to be executed once")
-		}
+		testsync.EventuallyEqual(t, func() int32 { return atomic.LoadInt32(&executed) }, int32(1), time.Second, "job executed once")
 	})
 
 	t.Run("BeforeAfterCallbacks", func(t *testing.T) {
 		s := New()
-		var beforeCalled, afterCalled bool
+		var beforeCalled, afterCalled atomic.Bool
 
 		s.Before(func() {
-			beforeCalled = true
+			beforeCalled.Store(true)
 		})
 
 		s.After(func() {
-			afterCalled = true
+			afterCalled.Store(true)
 		})
 
 		s.Call(func() {}).Cron(fmt.Sprintf("%d * * * *", time.Now().Minute()))
 		s.runDueJobs()
 
-		time.Sleep(50 * time.Millisecond)
-
-		if !beforeCalled {
-			t.Error("expected before callback to be called")
-		}
-		if !afterCalled {
-			t.Error("expected after callback to be called")
-		}
+		testsync.Eventually(t, func() bool { return beforeCalled.Load() && afterCalled.Load() }, time.Second, "before+after callbacks")
 	})
 
 	t.Run("MaintenanceModePreventExecution", func(t *testing.T) {
 		s := New()
-		var executed bool
+		var executed atomic.Bool
 
 		s.MaintenanceMode(true)
 		s.Call(func() {
-			executed = true
+			executed.Store(true)
 		}).Cron(fmt.Sprintf("%d * * * *", time.Now().Minute()))
 
 		s.runDueJobs()
+		// Negative assertion: give any scheduled goroutine a chance to race
+		// against the maintenance gate before we sample.
 		time.Sleep(50 * time.Millisecond)
 
-		if executed {
+		if executed.Load() {
 			t.Error("expected job not to execute in maintenance mode")
 		}
 	})

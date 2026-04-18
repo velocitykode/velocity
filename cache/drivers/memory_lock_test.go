@@ -290,8 +290,9 @@ func TestMemoryLock(t *testing.T) {
 			t.Fatal("expected Get() to succeed")
 		}
 
-		time.Sleep(100 * time.Millisecond)
-
+		// No sleep: a lock without TTL is held indefinitely by stored state,
+		// there is no sweeper or timer path that would release it — a sleep
+		// here would be placebo.
 		lock2 := store.Lock("no-ttl")
 		if lock2.Get() {
 			lock2.ForceRelease()

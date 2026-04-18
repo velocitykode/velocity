@@ -51,6 +51,70 @@ jobs:
       - name: Run tests with race detector
         run: go test -race -timeout 10m ./...
 
+  # Short fuzz run per-PR. Each FuzzXxx target gets a fixed time budget so
+  # the PR signal stays predictable — any corpus-regression (seed failure)
+  # also fires in race-tests, so this job's job is to exercise NEW input.
+  # Full-depth fuzzing is nightly/manual, not per-PR.
+  fuzz-smoke:
+    name: fuzz (30s per target)
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - name: Fuzz JWT validate
+        run: go test -run=^$ -fuzz=FuzzJWTValidate -fuzztime=30s ./auth/
+      - name: Fuzz redirect sanitizer
+        run: go test -run=^$ -fuzz=FuzzSanitizeRedirect -fuzztime=30s ./router/
+      - name: Fuzz rule parser
+        run: go test -run=^$ -fuzz=FuzzParseRules -fuzztime=30s ./validation/
+      - name: Fuzz flash cookie decode
+        run: go test -run=^$ -fuzz=FuzzReadFlashCookie -fuzztime=30s ./bond/
+      - name: Fuzz CSRF token validate
+        run: go test -run=^$ -fuzz=FuzzValidateToken_CRLFInput -fuzztime=30s ./csrf/
+
+  # Greps for unconditional t.Skip — they silently erase test coverage.
+  # Conditional skips (runtime/env/root checks) are fine; this job enforces
+  # the "delete it or gate it" rule from Phase 1.1.
+  skip-lint:
+    name: t.Skip lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Grep for unconditional t.Skip
+        run: |
+          # A skip is conditional if it appears inside an `if` block or
+          # is preceded by runtime.GOOS/os.Geteuid/t.Short() on the lines
+          # above. We grep for plain `t.Skip(` that is NOT inside a conditional.
+          # The allowlist below names specific skips that are known-gated;
+          # any new skip must either be gated, explicitly allowlisted, or
+          # the test removed.
+          set -e
+          OFFENDERS=$(scripts/ci/check-unconditional-skip.sh) || true
+          if [ -n "$OFFENDERS" ]; then
+            echo "::error::unconditional t.Skip found — gate it on a condition or delete the test:"
+            echo "$OFFENDERS"
+            exit 1
+          fi
+
+  # Coverage floors for packages where we've invested in deep test coverage.
+  # New code under these packages can't drop below these numbers without
+  # a companion lift. The thresholds are intentionally below the current
+  # measurement — they guard the floor, not the ceiling.
+  coverage-floors:
+    name: coverage floors
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - name: Enforce per-package coverage floors
+        run: scripts/ci/check-coverage-floors.sh
+
   benchmarks:
     name: router benchmarks (smoke)
     runs-on: ubuntu-latest
@@ -86,7 +150,7 @@ jobs:
     # Release only on direct push to main. PRs and the weekly cron
     # don't publish anything.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [vet, staticcheck, race-tests]
+    needs: [vet, staticcheck, race-tests, skip-lint, coverage-floors]
     runs-on: ubuntu-latest
     permissions:
       contents: write

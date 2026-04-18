@@ -10,6 +10,8 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
+
+	testsync "github.com/velocitykode/velocity/testing"
 )
 
 // TestIntegrationMemoryDriver tests memory driver with real job processing
@@ -84,23 +86,13 @@ func TestIntegrationMemoryDriver(t *testing.T) {
 		go worker.Start()
 		defer worker.Stop()
 
-		// Wait for processing
-		time.Sleep(500 * time.Millisecond)
+		testsync.EventuallyEqual(t, func() int32 { return atomic.LoadInt32(&processed) }, int32(1), 3*time.Second, "success job processed")
+		testsync.EventuallyEqual(t, func() int32 { return atomic.LoadInt32(&failedCount) }, int32(1), 3*time.Second, "fail job processed")
 
-		// Verify processing
-		if atomic.LoadInt32(&processed) != 1 {
-			t.Errorf("Expected 1 job processed, got %d", processed)
-		}
-
-		if atomic.LoadInt32(&failedCount) != 1 {
-			t.Errorf("Expected 1 job failed, got %d", failedCount)
-		}
-
-		// Queue should be empty
-		size, _ := driver.Size("process-queue")
-		if size != 0 {
-			t.Errorf("Expected empty queue after processing, got size %d", size)
-		}
+		testsync.Eventually(t, func() bool {
+			size, _ := driver.Size("process-queue")
+			return size == 0
+		}, 2*time.Second, "queue drained")
 	})
 
 	t.Run("DelayedJobProcessing", func(t *testing.T) {
@@ -129,17 +121,15 @@ func TestIntegrationMemoryDriver(t *testing.T) {
 		go worker.Start()
 		defer worker.Stop()
 
-		// Should not process immediately
+		// Stability window — if the delay weren't honored, count would go to 1
+		// well before the 1s delay elapses. 500ms is intentionally less than the
+		// 1s delay so this is a negative assertion.
 		time.Sleep(500 * time.Millisecond)
 		if atomic.LoadInt32(&processed) != 0 {
 			t.Error("Job processed too early")
 		}
 
-		// Should process after delay
-		time.Sleep(1500 * time.Millisecond)
-		if atomic.LoadInt32(&processed) != 1 {
-			t.Error("Delayed job not processed")
-		}
+		testsync.EventuallyEqual(t, func() int32 { return atomic.LoadInt32(&processed) }, int32(1), 2*time.Second, "delayed job processed after delay")
 	})
 
 	t.Run("ConcurrentWorkers", func(t *testing.T) {
@@ -211,10 +201,13 @@ func TestIntegrationMemoryDriver(t *testing.T) {
 	})
 }
 
-// TestIntegrationDatabaseDriver tests database driver with PostgreSQL
+// TestIntegrationDatabaseDriver tests database driver with PostgreSQL.
+// Requires TEST_POSTGRES_QUEUE=1 and a reachable PostgreSQL instance.
 func TestIntegrationDatabaseDriver(t *testing.T) {
-	t.Skip("TODO: fix test")
-	// Check if we can connect to PostgreSQL
+	if os.Getenv("TEST_POSTGRES_QUEUE") != "1" {
+		t.Skip("set TEST_POSTGRES_QUEUE=1 to run PostgreSQL queue integration tests")
+	}
+
 	dbHost := os.Getenv("DB_HOST")
 	if dbHost == "" {
 		dbHost = "localhost"
@@ -222,7 +215,7 @@ func TestIntegrationDatabaseDriver(t *testing.T) {
 
 	dbUser := os.Getenv("DB_USERNAME")
 	if dbUser == "" {
-		dbUser = "ali"
+		dbUser = "postgres"
 	}
 
 	dbName := os.Getenv("DB_DATABASE")
@@ -233,9 +226,13 @@ func TestIntegrationDatabaseDriver(t *testing.T) {
 	dsn := fmt.Sprintf("host=%s user=%s dbname=%s sslmode=disable", dbHost, dbUser, dbName)
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
-		t.Skip("Cannot connect to PostgreSQL, skipping database driver tests")
+		t.Skipf("cannot open PostgreSQL DSN: %v", err)
 	}
 	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		t.Skipf("cannot reach PostgreSQL at %s: %v", dbHost, err)
+	}
 
 	// Ensure tables exist
 	createTables := `
@@ -285,8 +282,6 @@ func TestIntegrationDatabaseDriver(t *testing.T) {
 	driver := NewDatabaseDriver(db, "postgres")
 
 	t.Run("DatabaseJobPersistence", func(t *testing.T) {
-		t.Skip("Database driver requires full ORM initialization")
-
 		// Push a job
 		job := &TestJob{
 			ID:      "db-persist-1",
@@ -331,8 +326,6 @@ func TestIntegrationDatabaseDriver(t *testing.T) {
 	})
 
 	t.Run("DatabaseDelayedJobs", func(t *testing.T) {
-		t.Skip("Database driver requires full ORM initialization")
-
 		// Push delayed job
 		job := &TestJob{
 			ID:      "db-delayed-1",
@@ -353,22 +346,25 @@ func TestIntegrationDatabaseDriver(t *testing.T) {
 			t.Error("Job should not be available immediately")
 		}
 
-		// Wait for delay
-		time.Sleep(2100 * time.Millisecond)
-
-		// Should be available now
-		poppedJob, err = driver.Pop("db-delayed")
-		if err != nil {
-			t.Fatalf("Failed to pop after delay: %v", err)
-		}
-		if poppedJob == nil {
+		// Poll until the delay elapses and the job becomes visible.
+		var visibleJob Job
+		testsync.Eventually(t, func() bool {
+			j, pErr := driver.Pop("db-delayed")
+			if pErr != nil {
+				return false
+			}
+			if j != nil {
+				visibleJob = j
+				return true
+			}
+			return false
+		}, 3*time.Second, "delayed job becomes visible")
+		if visibleJob == nil {
 			t.Error("Job should be available after delay")
 		}
 	})
 
 	t.Run("DatabaseConcurrentProcessing", func(t *testing.T) {
-		t.Skip("Database driver requires full ORM initialization")
-
 		// Push multiple jobs
 		numJobs := 20
 		for i := 0; i < numJobs; i++ {
@@ -524,18 +520,20 @@ func TestIntegrationRedisDriver(t *testing.T) {
 			t.Error("Job should not be available immediately")
 		}
 
-		// Wait and process delayed jobs
-		time.Sleep(1100 * time.Millisecond)
-
-		// For Redis, process delayed jobs (normally done automatically)
-		// The driver handles this internally
-
-		// Should be available now
-		poppedJob, err = driver.Pop("redis-delayed")
-		if err != nil {
-			t.Fatalf("Failed to pop after delay: %v", err)
-		}
-		if poppedJob == nil {
+		// Poll until the delay elapses and the job becomes visible.
+		var visibleJob Job
+		testsync.Eventually(t, func() bool {
+			j, pErr := driver.Pop("redis-delayed")
+			if pErr != nil {
+				return false
+			}
+			if j != nil {
+				visibleJob = j
+				return true
+			}
+			return false
+		}, 2*time.Second, "delayed job becomes visible")
+		if visibleJob == nil {
 			t.Error("Job should be available after delay")
 		}
 	})

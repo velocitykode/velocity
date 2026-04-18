@@ -4,10 +4,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
+	testsync "github.com/velocitykode/velocity/testing"
 )
 
 func TestClientConnection(t *testing.T) {
@@ -63,13 +65,9 @@ func TestClientDisconnection(t *testing.T) {
 	// Close connection
 	ws.Close()
 
-	// Wait for disconnect processing
-	time.Sleep(100 * time.Millisecond)
-
-	stats := server.GetStats()
-	if stats.ConnectedClients != 0 {
-		t.Errorf("Expected 0 connected clients after disconnect, got %d", stats.ConnectedClients)
-	}
+	testsync.Eventually(t, func() bool {
+		return server.GetStats().ConnectedClients == 0
+	}, 2*time.Second, "server observes client disconnect")
 }
 
 func TestClientSendJSON(t *testing.T) {
@@ -123,13 +121,12 @@ func TestClientSendJSON(t *testing.T) {
 }
 
 func TestConcurrentClientMessages(t *testing.T) {
-	t.Skip("TODO: fix race condition")
 	config := DefaultConfig()
 	server := New(config)
 
-	messageCount := 0
+	var messageCount atomic.Int32
 	server.On("test", func(client *Client, msg Message) error {
-		messageCount++
+		messageCount.Add(1)
 		return nil
 	})
 
@@ -150,25 +147,21 @@ func TestConcurrentClientMessages(t *testing.T) {
 	var welcome Message
 	ws.ReadJSON(&welcome)
 
-	// Send multiple messages sequentially (websocket doesn't support concurrent writes)
+	// Send messages sequentially (gorilla/websocket forbids concurrent writes
+	// on one conn). "Concurrent" here refers to the server dispatching each
+	// message through its handler goroutine while the test reads back.
 	numMessages := 10
 	for i := 0; i < numMessages; i++ {
 		msg := Message{
 			Type: "test",
 			Data: i,
 		}
-		err := ws.WriteJSON(msg)
-		if err != nil {
+		if err := ws.WriteJSON(msg); err != nil {
 			t.Fatalf("Failed to send message %d: %v", i, err)
 		}
 	}
 
-	// Wait for processing
-	time.Sleep(200 * time.Millisecond)
-
-	if messageCount != numMessages {
-		t.Errorf("Expected %d messages processed, got %d", numMessages, messageCount)
-	}
+	testsync.EventuallyEqual(t, messageCount.Load, int32(numMessages), 2*time.Second, "all messages processed")
 }
 
 func TestClientIDGeneration(t *testing.T) {

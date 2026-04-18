@@ -5,6 +5,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	testsync "github.com/velocitykode/velocity/testing"
 )
 
 // Test Batching Dispatcher
@@ -29,10 +31,7 @@ func TestBatchingDispatcher(t *testing.T) {
 		// Dispatch 3rd event (reaches batch size)
 		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
 
-		time.Sleep(10 * time.Millisecond)
-		if atomic.LoadInt32(&count) != 3 {
-			t.Errorf("Expected 3 events dispatched, got %d", atomic.LoadInt32(&count))
-		}
+		testsync.EventuallyEqual(t, func() int32 { return atomic.LoadInt32(&count) }, int32(3), time.Second, "batch size reached")
 	})
 
 	t.Run("flushes events on interval", func(t *testing.T) {
@@ -46,12 +45,8 @@ func TestBatchingDispatcher(t *testing.T) {
 		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
 		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
 
-		// Wait for flush interval
-		time.Sleep(70 * time.Millisecond)
-
-		if atomic.LoadInt32(&count) != 2 {
-			t.Errorf("Expected 2 events dispatched after interval, got %d", atomic.LoadInt32(&count))
-		}
+		// Wait for flush interval (50ms) to fire
+		testsync.EventuallyEqual(t, func() int32 { return atomic.LoadInt32(&count) }, int32(2), time.Second, "flush interval")
 	})
 
 	t.Run("manual flush dispatches all pending events", func(t *testing.T) {
@@ -104,13 +99,8 @@ func TestDebouncingDispatcher(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 
-		// Wait for debounce
-		time.Sleep(100 * time.Millisecond)
-
-		// Should only dispatch once (the last one)
-		if atomic.LoadInt32(&count) != 1 {
-			t.Errorf("Expected 1 event after debounce, got %d", atomic.LoadInt32(&count))
-		}
+		// Wait for debounce to fire
+		testsync.EventuallyEqual(t, func() int32 { return atomic.LoadInt32(&count) }, int32(1), time.Second, "debounce flushes once")
 	})
 
 	t.Run("dispatch now bypasses debounce", func(t *testing.T) {
@@ -123,11 +113,7 @@ func TestDebouncingDispatcher(t *testing.T) {
 		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
 		dispatcher.DispatchNow(&simpleEvent{name: "test.event"})
 
-		time.Sleep(10 * time.Millisecond)
-
-		if atomic.LoadInt32(&count) != 1 {
-			t.Errorf("Expected 1 event from DispatchNow, got %d", atomic.LoadInt32(&count))
-		}
+		testsync.EventuallyEqual(t, func() int32 { return atomic.LoadInt32(&count) }, int32(1), 500*time.Millisecond, "DispatchNow fires immediately")
 	})
 
 	t.Run("get pending count returns debounced events", func(t *testing.T) {
@@ -163,15 +149,11 @@ func TestThrottlingDispatcher(t *testing.T) {
 			t.Errorf("Expected 1 event during throttle window, got %d", atomic.LoadInt32(&count))
 		}
 
-		// Wait for throttle to expire
+		// Wait past throttle window (50ms), then the next dispatch should fire
 		time.Sleep(60 * time.Millisecond)
 
 		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
-		time.Sleep(10 * time.Millisecond)
-
-		if atomic.LoadInt32(&count) != 2 {
-			t.Errorf("Expected 2 events after throttle expires, got %d", atomic.LoadInt32(&count))
-		}
+		testsync.EventuallyEqual(t, func() int32 { return atomic.LoadInt32(&count) }, int32(2), 500*time.Millisecond, "throttle releases")
 	})
 
 	t.Run("can dispatch checks throttle state", func(t *testing.T) {
@@ -302,13 +284,8 @@ func TestCoalescingDispatcher(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 
-		// Wait for coalesce
-		time.Sleep(100 * time.Millisecond)
-
-		// Should only dispatch once (coalesced)
-		if atomic.LoadInt32(&count) != 1 {
-			t.Errorf("Expected 1 coalesced event, got %d", atomic.LoadInt32(&count))
-		}
+		// Wait for coalesce to fire
+		testsync.EventuallyEqual(t, func() int32 { return atomic.LoadInt32(&count) }, int32(1), time.Second, "coalesce fires once")
 	})
 
 	t.Run("different events not coalesced", func(t *testing.T) {
@@ -322,11 +299,7 @@ func TestCoalescingDispatcher(t *testing.T) {
 		dispatcher.Dispatch(&simpleEvent{name: "test.event1"})
 		dispatcher.Dispatch(&simpleEvent{name: "test.event2"})
 
-		time.Sleep(100 * time.Millisecond)
-
-		if atomic.LoadInt32(&count) != 2 {
-			t.Errorf("Expected 2 events (different types), got %d", atomic.LoadInt32(&count))
-		}
+		testsync.EventuallyEqual(t, func() int32 { return atomic.LoadInt32(&count) }, int32(2), time.Second, "different events both fire")
 	})
 
 	t.Run("get coalesced count tracks coalescence", func(t *testing.T) {

@@ -125,59 +125,6 @@ func TestMultipleFileUploads(t *testing.T) {
 	})
 }
 
-// Example: Testing file validation
-func TestFileValidation(t *testing.T) {
-	t.Skip("TODO: fix multipart form parsing timeout")
-	storage := storageTesting.StorageFake()
-
-	// Create a file that's too large
-	largeFile := storageTesting.Fake().Create("large.txt", 11*1024*1024) // 11MB
-
-	builder := httpTesting.NewUploadBuilder()
-	builder.AddFile("file", largeFile)
-	req, _ := builder.Build("POST", "/upload")
-
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Limit to 10MB
-		if err := r.ParseMultipartForm(10 << 20); err != nil {
-			http.Error(w, "File too large", http.StatusRequestEntityTooLarge)
-			return
-		}
-
-		file, header, _ := r.FormFile("file")
-		defer file.Close()
-
-		// Check file size
-		if header.Size > 10*1024*1024 {
-			http.Error(w, "File exceeds 10MB limit", http.StatusBadRequest)
-			return
-		}
-
-		// Check file type
-		if header.Header.Get("Content-Type") != "text/plain" {
-			http.Error(w, "Invalid file type", http.StatusBadRequest)
-			return
-		}
-
-		content := make([]byte, header.Size)
-		file.Read(content)
-		storage.Put("uploads/"+header.Filename, content)
-
-		w.WriteHeader(http.StatusOK)
-	})
-
-	rr := httptest.NewRecorder()
-	handler.ServeHTTP(rr, req)
-
-	// Should fail validation
-	if rr.Code != http.StatusRequestEntityTooLarge {
-		t.Errorf("Expected status %d, got %d", http.StatusRequestEntityTooLarge, rr.Code)
-	}
-
-	// File should not be stored
-	storage.Assert(t).AssertNothingStored()
-}
-
 // Example: Testing image upload with resizing simulation
 func TestImageUploadWithProcessing(t *testing.T) {
 	storage := storageTesting.StorageFake()
