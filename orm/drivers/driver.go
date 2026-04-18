@@ -29,9 +29,12 @@ type Driver interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 
-	// Transaction support
+	// Transaction support. Begin uses the driver's defaults; BeginTx takes
+	// a context and explicit options (isolation level, read-only) so
+	// callers can stream those through the driver interface instead of
+	// reaching around it via sql.DB.BeginTx.
 	Begin() (*sql.Tx, error)
-	BeginTx() (*sql.Tx, error)
+	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
 
 	// Schema operations
 	CreateTable(name string, definition func(*Table)) error
