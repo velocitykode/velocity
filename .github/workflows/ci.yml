@@ -22,8 +22,8 @@ jobs:
     name: go vet
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
       - run: go vet ./...
@@ -32,8 +32,8 @@ jobs:
     name: staticcheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
       - name: Install staticcheck
@@ -44,8 +44,8 @@ jobs:
     name: go test -race
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
       - name: Run tests with race detector
@@ -60,8 +60,8 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
       - name: Fuzz JWT validate
@@ -82,7 +82,7 @@ jobs:
     name: t.Skip lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Grep for unconditional t.Skip
         run: |
           # A skip is conditional if it appears inside an `if` block or
@@ -108,8 +108,8 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
       - name: Enforce per-package coverage floors
@@ -124,8 +124,8 @@ jobs:
     # HEAD vs main baseline) remains a follow-up.
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
       - name: Run router benchmarks
@@ -137,8 +137,8 @@ jobs:
     name: govulncheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
       - name: Install govulncheck
@@ -156,7 +156,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
           token: ${{ secrets.VELOCITY_TOKEN }}
@@ -221,7 +221,7 @@ jobs:
 
       - name: Set up Go
         if: steps.check.outputs.skip == 'false'
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.26"
 
@@ -249,7 +249,7 @@ jobs:
 
       - name: Create GitHub Release
         if: steps.check.outputs.skip == 'false'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ steps.version.outputs.new }}
           generate_release_notes: true
