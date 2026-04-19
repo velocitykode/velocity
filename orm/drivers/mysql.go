@@ -338,8 +338,9 @@ func (g *MySQLGrammar) CompileUpdate(table string, values map[string]any, condit
 		}
 		sql.WriteString(g.QuoteIdentifier(column))
 
-		if strVal, ok := value.(string); ok && strVal == "NOW()" {
-			sql.WriteString(" = NOW()")
+		if rawVal, ok := value.(RawSQL); ok {
+			sql.WriteString(" = ")
+			sql.WriteString(string(rawVal))
 		} else {
 			sql.WriteString(" = ?")
 			args = append(args, value)

@@ -716,16 +716,28 @@ func TestMySQLGrammar_CompileUpdate(t *testing.T) {
 			wantArgLen: 2,
 		},
 		{
-			name:  "update with NOW() special value",
+			name:  "update with RawSQL NOW() sentinel emits verbatim",
 			table: "users",
 			values: map[string]any{
-				"updated_at": "NOW()",
+				"updated_at": RawSQL("NOW()"),
 			},
 			conditions: []Condition{
 				{Column: "id", Operator: "=", Value: 1, Type: "and"},
 			},
 			wantParts:  []string{"UPDATE `users` SET", "`updated_at` = NOW()", "WHERE `id` = ?"},
 			wantArgLen: 1,
+		},
+		{
+			name:  "update with plain string value equal to NOW() is bound as a parameter",
+			table: "users",
+			values: map[string]any{
+				"comment": "NOW()",
+			},
+			conditions: []Condition{
+				{Column: "id", Operator: "=", Value: 1, Type: "and"},
+			},
+			wantParts:  []string{"UPDATE `users` SET", "`comment` = ?", "WHERE `id` = ?"},
+			wantArgLen: 2,
 		},
 	}
 
@@ -1205,16 +1217,28 @@ func TestPostgresGrammar_CompileUpdate(t *testing.T) {
 			wantArgLen: 2,
 		},
 		{
-			name:  "update with NOW() special value",
+			name:  "update with RawSQL NOW() sentinel emits verbatim",
 			table: "users",
 			values: map[string]any{
-				"updated_at": "NOW()",
+				"updated_at": RawSQL("NOW()"),
 			},
 			conditions: []Condition{
 				{Column: "id", Operator: "=", Value: 1, Type: "and"},
 			},
 			wantParts:  []string{`UPDATE "users" SET`, `"updated_at" = NOW()`, `WHERE "id" =`},
 			wantArgLen: 1,
+		},
+		{
+			name:  "update with plain string value equal to NOW() is bound as a parameter",
+			table: "users",
+			values: map[string]any{
+				"comment": "NOW()",
+			},
+			conditions: []Condition{
+				{Column: "id", Operator: "=", Value: 1, Type: "and"},
+			},
+			wantParts:  []string{`UPDATE "users" SET`, `"comment" = $1`, `WHERE "id" = $2`},
+			wantArgLen: 2,
 		},
 	}
 

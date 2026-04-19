@@ -336,8 +336,16 @@ func (g *SQLiteGrammar) CompileUpdate(table string, values map[string]any, condi
 			sql.WriteString(", ")
 		}
 		sql.WriteString(g.QuoteIdentifier(column))
-		sql.WriteString(" = ?")
-		args = append(args, value)
+
+		// Raw SQL values (e.g. CURRENT_TIMESTAMP) emit verbatim; all
+		// other values bind as parameters.
+		if rawVal, ok := value.(RawSQL); ok {
+			sql.WriteString(" = ")
+			sql.WriteString(string(rawVal))
+		} else {
+			sql.WriteString(" = ?")
+			args = append(args, value)
+		}
 		i++
 	}
 

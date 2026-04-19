@@ -13,6 +13,45 @@ import (
 	"github.com/velocitykode/velocity/orm/drivers"
 )
 
+// RawSQL marks a value in an Update or Insert map as raw SQL rather than
+// a bound parameter. Values of this type are emitted verbatim into the
+// generated statement; every other value — including plain strings that
+// happen to look like SQL — is bound as a parameter.
+//
+// Use [NOW] for the common "set column to the database's current timestamp"
+// case. Construct [RawSQL] values directly only when the string is trusted,
+// server-generated SQL. Never construct a [RawSQL] value from
+// user-controlled input: doing so is a SQL-injection vector by design.
+//
+// This is a type alias for the driver-level marker so the ORM and its
+// grammars see the same underlying type without importing each other.
+type RawSQL = drivers.RawSQL
+
+// NOW is a [RawSQL] sentinel for the database's current-timestamp function
+// on MySQL/MariaDB and PostgreSQL. Pass it as a value in an Update or Insert
+// map to have the grammar emit `NOW()` verbatim rather than bind the
+// literal string `"NOW()"` as a parameter.
+//
+// For SQLite, which does not expose a NOW() function, use
+// [CurrentTimestamp]. The ORM's built-in timestamp injection in Update
+// automatically picks the driver-appropriate sentinel.
+const NOW RawSQL = "NOW()"
+
+// CurrentTimestamp is a [RawSQL] sentinel for the database's
+// current-timestamp keyword. It is supported on all three drivers
+// (MySQL, PostgreSQL, SQLite) and is the portable counterpart to [NOW].
+const CurrentTimestamp RawSQL = "CURRENT_TIMESTAMP"
+
+// currentTimestampSentinel returns the driver-appropriate [RawSQL] value
+// for "set this column to the database's current timestamp". MySQL and
+// PostgreSQL use NOW(); SQLite uses CURRENT_TIMESTAMP.
+func currentTimestampSentinel(driverName string) RawSQL {
+	if driverName == "sqlite" {
+		return CurrentTimestamp
+	}
+	return NOW
+}
+
 // softDeleteCache caches the result of modelHasSoftDelete per reflect.Type
 // to avoid repeated reflection on every newQuery call.
 var softDeleteCache sync.Map
@@ -762,7 +801,13 @@ func (q *Query[T]) Pluck(column string) ([]any, error) {
 	return results, nil
 }
 
-// Update updates matching records
+// Update updates matching records.
+//
+// The input map is never mutated: Update copies it internally before
+// injecting the updated_at timestamp. Values of type [RawSQL] (including
+// the package-level [NOW] sentinel) are emitted verbatim into the
+// generated statement; all other values — including plain string values
+// that happen to look like SQL — are bound as parameters.
 func (q *Query[T]) Update(updates map[string]any) (int64, error) {
 	if q.err != nil {
 		return 0, q.err
@@ -771,10 +816,22 @@ func (q *Query[T]) Update(updates map[string]any) (int64, error) {
 		return 0, errors.New("no updates provided")
 	}
 
-	// Add updated_at if model has it
-	updates["updated_at"] = "NOW()"
+	// Copy the caller's map before mutation. Update must not have
+	// visible side effects on the passed-in map (thread safety, idempotent
+	// re-dispatch, and least-surprise for callers).
+	copyOfUpdates := make(map[string]any, len(updates)+1)
+	for k, v := range updates {
+		copyOfUpdates[k] = v
+	}
 
-	sql, args := q.driver.Grammar().CompileUpdate(q.table, updates, q.conditions)
+	// Inject the driver-appropriate "current timestamp" sentinel for
+	// updated_at. Using the typed [RawSQL] marker (not a raw string)
+	// means the grammar emits it verbatim without pattern-matching
+	// string contents — closing the SQL-injection vector that the old
+	// "NOW()" string sentinel opened.
+	copyOfUpdates["updated_at"] = currentTimestampSentinel(q.driver.DriverName())
+
+	sql, args := q.driver.Grammar().CompileUpdate(q.table, copyOfUpdates, q.conditions)
 
 	start := time.Now()
 	result, err := q.driver.ExecContext(q.getContext(), sql, args...)
@@ -871,9 +928,10 @@ func (q *Query[T]) Delete() (int64, error) {
 	}
 	// Check if model has soft deletes
 	if q.hasSoftDelete {
-		// Soft delete
+		// Soft delete — use the driver-appropriate RawSQL sentinel so the
+		// grammar emits it verbatim (not as a bound parameter).
 		return q.Update(map[string]any{
-			"deleted_at": "NOW()",
+			"deleted_at": currentTimestampSentinel(q.driver.DriverName()),
 		})
 	}
 

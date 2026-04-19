@@ -394,9 +394,10 @@ func (g *PostgresGrammar) CompileUpdate(table string, values map[string]any, con
 		}
 		sql.WriteString(g.QuoteIdentifier(column))
 
-		// Handle special values
-		if strVal, ok := value.(string); ok && strVal == "NOW()" {
-			sql.WriteString(" = NOW()")
+		// Raw SQL values (e.g. orm.NOW) emit verbatim; all other values bind.
+		if rawVal, ok := value.(RawSQL); ok {
+			sql.WriteString(" = ")
+			sql.WriteString(string(rawVal))
 		} else {
 			sql.WriteString(fmt.Sprintf(" = $%d", argIndex))
 			args = append(args, value)
