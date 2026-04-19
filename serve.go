@@ -25,6 +25,20 @@ func (a *App) Serve() error {
 	if len(os.Args) > 1 {
 		return a.Run()
 	}
+	return a.serveHTTP()
+}
+
+// serveHTTP boots the application and starts the HTTP server. It is called
+// from Serve() when no CLI args are present, and directly from serveRunCmd
+// when the hot-reload subprocess entry point ("serve:run") is invoked —
+// bypassing Run()'s args-dispatch so the "serve:run" argument does not
+// re-enter Serve() → Run() → runCommand → serveRunCmd.run indefinitely.
+func (a *App) serveHTTP() error {
+	// Test-only fast path: if a hook is installed, short-circuit before
+	// touching services or the network. See App.serveHTTPHook.
+	if a.serveHTTPHook != nil {
+		return a.serveHTTPHook()
+	}
 
 	if err := a.bootstrap(); err != nil {
 		return err

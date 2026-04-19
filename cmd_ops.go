@@ -244,13 +244,14 @@ func (h helpCmd) run(a *App, args []string) error {
 
 // serveRunCmd is the internal entry point used by console.Serve when
 // spawning the .vel/tmp/server subprocess. Not user-facing — don't document
-// in printHelp. The child must go straight to a.Serve() (which opens the
-// HTTP listener and blocks); without this case the child falls through to
-// printHelp and exits, leaving nothing on the port.
+// in printHelp. The child must go straight to a.serveHTTP() (which opens
+// the HTTP listener and blocks); calling a.Serve() would re-enter the
+// args-dispatch path (Serve → Run → runCommand("serve:run") → this method)
+// and recurse until the goroutine stack overflows.
 type serveRunCmd struct{}
 
 func (serveRunCmd) name() string        { return "serve:run" }
 func (serveRunCmd) description() string { return "" }
 func (serveRunCmd) run(a *App, args []string) error {
-	return a.Serve()
+	return a.serveHTTP()
 }

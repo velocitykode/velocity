@@ -160,6 +160,15 @@ Everything else — the Close()/Stop() shims, legacy env-var fallbacks, ORM `Eve
   `RuleAssertion(t, rule, input, expected)` for table-driven tests of custom
   rules.
 
+### Fixed
+- **`Serve()` recursion in hot-reload subprocess.** `./vel serve` spawns a
+  `serve:run` subprocess; that subprocess previously recursed Serve() → Run() →
+  runCommand("serve:run") → serveRunCmd.run() → Serve() until the goroutine stack
+  hit 1 GB and the process crashed with `fatal error: stack overflow`. Split
+  `Serve()` into a public dispatcher (args-check + delegate to Run() or serveHTTP)
+  and a private `serveHTTP()` helper; `serveRunCmd.run` now calls `serveHTTP()`
+  directly, bypassing Run() dispatch. No public API change.
+
 ### Fixed — Validation correctness
 - `email` no longer gates on a hand-rolled regex; the rule now defers to
   `net/mail.ParseAddress` which is the canonical RFC 5322 check.

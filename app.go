@@ -70,6 +70,14 @@ type App struct {
 	commands       *chain.Commands
 	exceptionsFn   func(exceptions.ExceptionHandler)
 	bootstrapped   bool
+
+	// serveHTTPHook is a test-only seam used by the regression test for
+	// the serveRunCmd → Serve() recursion bug. When non-nil, serveHTTP()
+	// invokes the hook and returns its result instead of booting services
+	// and blocking on the HTTP listener. The field is unexported, has no
+	// setter on the public surface, and is never assigned by production
+	// code; tests in this package assign to it directly.
+	serveHTTPHook func() error
 }
 
 // New creates a new Velocity application with all services initialized.
