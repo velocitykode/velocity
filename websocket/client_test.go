@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,7 +17,7 @@ func TestClientConnection(t *testing.T) {
 	config := DefaultConfig()
 	server := New(config)
 	server.Start()
-	defer server.Stop()
+	defer server.Shutdown(context.Background())
 
 	// Create test server
 	ts := httptest.NewServer(http.HandlerFunc(server.HandleConnection))
@@ -51,7 +52,7 @@ func TestClientDisconnection(t *testing.T) {
 	config := DefaultConfig()
 	server := New(config)
 	server.Start()
-	defer server.Stop()
+	defer server.Shutdown(context.Background())
 
 	ts := httptest.NewServer(http.HandlerFunc(server.HandleConnection))
 	defer ts.Close()
@@ -80,7 +81,7 @@ func TestClientSendJSON(t *testing.T) {
 	})
 
 	server.Start()
-	defer server.Stop()
+	defer server.Shutdown(context.Background())
 
 	ts := httptest.NewServer(http.HandlerFunc(server.HandleConnection))
 	defer ts.Close()
@@ -131,7 +132,7 @@ func TestConcurrentClientMessages(t *testing.T) {
 	})
 
 	server.Start()
-	defer server.Stop()
+	defer server.Shutdown(context.Background())
 
 	ts := httptest.NewServer(http.HandlerFunc(server.HandleConnection))
 	defer ts.Close()
@@ -168,7 +169,7 @@ func TestClientIDGeneration(t *testing.T) {
 	config := DefaultConfig()
 	server := New(config)
 	server.Start()
-	defer server.Stop()
+	defer server.Shutdown(context.Background())
 
 	ts := httptest.NewServer(http.HandlerFunc(server.HandleConnection))
 	defer ts.Close()

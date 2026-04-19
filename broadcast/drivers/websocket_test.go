@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"sync"
 	"testing"
 
@@ -66,7 +67,7 @@ func TestNewWebSocketDriverInitialization(t *testing.T) {
 			}
 
 			// Clean up
-			driver.server.Stop()
+			driver.server.Shutdown(context.Background())
 		})
 	}
 }
@@ -983,7 +984,7 @@ func TestWebSocketDriver_GetServer(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			config := websocket.DefaultConfig()
 			driver := NewWebSocketDriver(config)
-			defer driver.server.Stop()
+			defer driver.server.Shutdown(context.Background())
 
 			server := driver.GetServer()
 

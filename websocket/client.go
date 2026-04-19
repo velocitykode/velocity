@@ -126,6 +126,13 @@ func (c *Client) writePump() {
 			if err := c.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}
+
+		case <-c.Server.stopChan:
+			// Server is shutting down — send close frame and exit
+			// without waiting for the ping ticker.
+			c.Conn.SetWriteDeadline(time.Now().Add(c.Server.config.WriteTimeout))
+			c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
+			return
 		}
 	}
 }
