@@ -1,6 +1,7 @@
 package mail
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -52,6 +53,13 @@ type MailConfig struct {
 	FromAddress string
 	FromName    string
 
+	// MaxAttachmentSize is the maximum per-attachment size in bytes accepted
+	// by Message.AttachFile / Message.AttachData. A zero (or negative) value
+	// means "use DefaultMaxAttachmentSize" — it does NOT mean "unlimited".
+	// The default (25 MiB) matches common SMTP provider limits: SES 40 MB,
+	// SendGrid 30 MB, Postmark 10 MB, Mailgun 25 MB.
+	MaxAttachmentSize int64
+
 	Mailgun  MailgunConfig
 	Postmark PostmarkConfig
 	Local    LocalConfig
@@ -83,6 +91,11 @@ type LocalConfig struct {
 
 // NewMailer creates a new Mailer from the given configuration.
 // Drivers must be registered via RegisterDriver before calling this function.
+//
+// As a side-effect, NewMailer promotes config.MaxAttachmentSize (or the
+// DefaultMaxAttachmentSize when zero/negative) to the package-level default
+// used by NewMessage. This means freshly-constructed *Message values inherit
+// the limit configured for the app without having to thread it explicitly.
 func NewMailer(config MailConfig) (Mailer, error) {
 	driver := config.Driver
 	if driver == "" {
@@ -97,7 +110,39 @@ func NewMailer(config MailConfig) (Mailer, error) {
 		return nil, fmt.Errorf("unsupported mail driver: %s (driver not registered)", driver)
 	}
 
-	return factory(config)
+	// Promote config limit to the package default so NewMessage() picks it up.
+	SetDefaultMaxAttachmentSize(config.MaxAttachmentSize)
+
+	m, err := factory(config)
+	if err != nil {
+		return nil, err
+	}
+	return &checkedMailer{inner: m}, nil
+}
+
+// checkedMailer wraps a Mailer so that any deferred error accumulated on a
+// *Message (from AttachFile, AttachData, Header, Subject, To, etc.) is
+// surfaced from Send before the driver ever sees the message. This is the
+// backstop for callers that ignore the fluent setters' errors.
+type checkedMailer struct {
+	inner Mailer
+}
+
+func (cm *checkedMailer) Send(ctx context.Context, msg *Message) error {
+	if msg != nil {
+		if err := msg.Err(); err != nil {
+			return err
+		}
+	}
+	return cm.inner.Send(ctx, msg)
+}
+
+// Shutdown forwards to the inner mailer when it implements ShutdownableMailer.
+func (cm *checkedMailer) Shutdown(ctx context.Context) error {
+	if sd, ok := cm.inner.(ShutdownableMailer); ok {
+		return sd.Shutdown(ctx)
+	}
+	return nil
 }
 
 // RegisterDriver allows drivers to register themselves.

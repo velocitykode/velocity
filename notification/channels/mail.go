@@ -115,9 +115,17 @@ func (c *MailChannel) Send(ctx context.Context, notifiable interface{}, n notifi
 	// Priority
 	msg.Priority(mailMsg.GetPriority())
 
-	// Headers
+	// Headers — Message.Header records a deferred error on the *Message
+	// when it detects CRLF injection or an invalid header name, so we do
+	// not interrupt the loop. We surface the error immediately after,
+	// before handing the message to the mailer. This is the enforcement
+	// point for CRLF-injected notification headers.
 	for key, value := range mailMsg.GetHeaders() {
 		msg.Header(key, value)
+	}
+
+	if err := msg.Err(); err != nil {
+		return err
 	}
 
 	return c.mailer.Send(ctx, msg)

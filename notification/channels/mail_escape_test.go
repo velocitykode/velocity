@@ -2,9 +2,11 @@ package channels
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/notification"
 )
 
@@ -52,5 +54,37 @@ func TestMailChannel_ActionHTMLEscaped(t *testing.T) {
 	}
 	if !strings.Contains(html, "&#34;/&gt;&lt;img") {
 		t.Errorf("expected escaped break-out chars, got %q", html)
+	}
+}
+
+// crlfHeaderNotification emits a MailMessage whose Header() carries a CRLF
+// payload — the canonical SMTP header-injection attack. The notification
+// channel must surface this as an ErrInvalidHeader and must NOT deliver the
+// message to the mailer.
+type crlfHeaderNotification struct{}
+
+func (n *crlfHeaderNotification) Via(interface{}) []string { return []string{"mail"} }
+
+func (n *crlfHeaderNotification) ToMail(interface{}) *notification.MailMessage {
+	return notification.NewMailMessage().
+		Subject("hi").
+		Line("hello").
+		Header("X-Injected", "good\r\nBcc: attacker@evil.com")
+}
+
+func TestMailChannel_RejectsCRLFInjectedHeaders(t *testing.T) {
+	m := &testMailer{}
+	ch := NewMailChannel()
+	ch.SetMailer(m)
+
+	err := ch.Send(context.Background(), &testNotifiable{email: "u@e.com"}, &crlfHeaderNotification{})
+	if err == nil {
+		t.Fatal("expected CRLF-injected header to be rejected, got nil")
+	}
+	if !errors.Is(err, mail.ErrInvalidHeader) {
+		t.Errorf("expected ErrInvalidHeader, got %v", err)
+	}
+	if len(m.sent) != 0 {
+		t.Errorf("mailer must not receive a CRLF-injected message, got %d sends", len(m.sent))
 	}
 }
