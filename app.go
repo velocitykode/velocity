@@ -10,6 +10,7 @@ import (
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/chain"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/csrf"
 	"github.com/velocitykode/velocity/events"
@@ -83,6 +84,13 @@ type App struct {
 // New creates a new Velocity application with all services initialized.
 // Services are initialized in dependency order. If any required service
 // fails to initialize, New returns an error — it never panics.
+//
+// If an early stage succeeds and a later stage fails, every already-opened
+// resource is closed via a deferred cleanup stack (logger file handles,
+// DB pool, cache goroutines, queue workers, …). The cleanup stack runs in
+// reverse registration order and every cleanup is best-effort — cleanup
+// failures are logged (where a logger is available) but do not replace the
+// original error returned to the caller.
 func New(opts ...Option) (*App, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &App{
@@ -103,13 +111,38 @@ func New(opts ...Option) (*App, error) {
 		opt(a)
 	}
 
+	// cleanups is the deferred teardown stack for the failure path.
+	// Each successful resource init appends a closure that shuts the
+	// resource down. On success — right before `return a, nil` — we
+	// assign cleanups = nil so the deferred closure is a no-op. On
+	// failure, the deferred closure walks the stack in reverse so
+	// later resources are torn down before earlier ones (same order
+	// as App.Shutdown).
+	var cleanups []func()
+	defer func() {
+		for i := len(cleanups) - 1; i >= 0; i-- {
+			cleanups[i]()
+		}
+	}()
+	// The shutdown context must always be cancelled on the failure path
+	// so any goroutine observing shutdownCtx.Done() (e.g. a BaseContext
+	// consumer spawned by a provider) unwinds promptly. On the success
+	// path, Shutdown() cancels it.
+	cleanups = append(cleanups, func() { cancel() })
+
 	// 1. Initialize logger first (everything else may need to log)
 	logger, err := log.NewLogger(a.config.Log)
 	if err != nil {
-		cancel()
 		return nil, fmt.Errorf("velocity: failed to initialize logger: %w", err)
 	}
 	a.Log = logger
+	cleanups = append(cleanups, func() {
+		if sd, ok := a.Log.(contract.ShutdownAware); ok {
+			_ = sd.Shutdown(context.Background())
+		} else if closer, ok := a.Log.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+	})
 
 	// 2. Initialize exception handler (available for all subsequent services)
 	a.Services.Exceptions = exceptions.NewHandler(
@@ -117,7 +150,8 @@ func New(opts ...Option) (*App, error) {
 		exceptions.WithEnvironment(a.config.Env),
 	)
 
-	// 3. Initialize crypto (auth/csrf may need it)
+	// 3. Initialize crypto (auth/csrf may need it). Crypto is stateless
+	// after construction — no cleanup needed.
 	if a.config.Crypto.Key == "" {
 		switch a.config.Env {
 		case "testing":
@@ -125,13 +159,11 @@ func New(opts ...Option) (*App, error) {
 		case "development":
 			a.Log.Warn("APP_KEY is unset — crypto subsystem disabled. Run `vel key:generate` before exercising auth/csrf/session flows.")
 		default:
-			cancel()
 			return nil, ErrNoAppKey
 		}
 	} else {
 		enc, err := crypto.NewEncryptor(a.config.Crypto)
 		if err != nil {
-			cancel()
 			return nil, fmt.Errorf("velocity: failed to initialize crypto: %w", err)
 		}
 		a.Crypto = enc
@@ -145,9 +177,15 @@ func New(opts ...Option) (*App, error) {
 	if dbManager != nil {
 		a.DB = dbManager
 		orm.SetDefault(dbManager)
+		cleanups = append(cleanups, func() {
+			_ = a.DB.Shutdown(context.Background())
+			orm.ResetDefault()
+		})
 	}
 
-	// 5. Initialize auth manager — pass DB for ORM provider
+	// 5. Initialize auth manager — pass DB for ORM provider. No cleanup
+	// registration: *auth.Manager does not currently expose Shutdown.
+	// JWT guard cleanup goroutines are tied to the process lifetime.
 	var sqlDB *sql.DB
 	if a.DB != nil {
 		sqlDB = a.DB.DB()
@@ -156,9 +194,19 @@ func New(opts ...Option) (*App, error) {
 
 	// 6. Initialize cache
 	a.Cache = initCache(a.config.Cache)
+	cleanups = append(cleanups, func() {
+		if a.Cache != nil {
+			_ = a.Cache.Shutdown(context.Background())
+		}
+	})
 
 	// 7. Initialize CSRF
 	a.CSRF = csrf.New(&a.config.CSRF)
+	cleanups = append(cleanups, func() {
+		if sd, ok := a.CSRF.(contract.ShutdownAware); ok {
+			_ = sd.Shutdown(context.Background())
+		}
+	})
 
 	// 8. Initialize view/bond engine
 	if a.config.View.RootTemplate != "" {
@@ -167,9 +215,16 @@ func New(opts ...Option) (*App, error) {
 			return nil, fmt.Errorf("velocity: failed to initialize view engine: %w", err)
 		}
 		a.View = viewEngine
+		cleanups = append(cleanups, func() {
+			if sd, ok := a.View.(contract.ShutdownAware); ok {
+				_ = sd.Shutdown(context.Background())
+			}
+		})
 	}
 
-	// 9. Initialize events dispatcher (skip if WithoutEvents was used, keep if pre-set by WithFakeEvents)
+	// 9. Initialize events dispatcher (skip if WithoutEvents was used, keep if pre-set by WithFakeEvents).
+	// The dispatcher itself has no Shutdown today; the router drains async
+	// workers via ShutdownEventDispatcher once wired (see wireInstanceEvents).
 	if !a.noEvents && a.Services.Events == nil {
 		a.Services.Events = events.NewDispatcher()
 	}
@@ -180,15 +235,30 @@ func New(opts ...Option) (*App, error) {
 		return nil, fmt.Errorf("velocity: failed to initialize queue: %w", err)
 	}
 	a.Queue = queueDriver
+	cleanups = append(cleanups, func() {
+		if a.Queue != nil {
+			_ = a.Queue.Shutdown(context.Background())
+		}
+	})
 
 	// 11. Initialize storage with disk drivers
 	a.Storage = initStorage(a.config.Storage, a.Log)
+	cleanups = append(cleanups, func() {
+		if sd, ok := a.Storage.(contract.ShutdownAware); ok {
+			_ = sd.Shutdown(context.Background())
+		}
+	})
 
 	// 12. Initialize scheduler
 	sched := scheduler.New()
 	sched.SetEnv(a.config.Env)
 	sched.SetLogger(a.Log)
 	a.Scheduler = sched
+	cleanups = append(cleanups, func() {
+		if a.Scheduler != nil {
+			_ = a.Scheduler.Shutdown(context.Background())
+		}
+	})
 
 	// 13. Initialize mail
 	if a.config.Mail.Driver != "" {
@@ -197,13 +267,24 @@ func New(opts ...Option) (*App, error) {
 			a.Log.Warn("Failed to initialize mailer", "error", err)
 		} else {
 			a.Mail = mailer
+			cleanups = append(cleanups, func() {
+				if sd, ok := a.Mail.(contract.ShutdownAware); ok {
+					_ = sd.Shutdown(context.Background())
+				}
+			})
 		}
 	}
 
 	// 14. Initialize notification manager
 	a.Notification = initNotification(a.Mail, sqlDB, a.config.DB.Connection)
+	cleanups = append(cleanups, func() {
+		if sd, ok := a.Notification.(contract.ShutdownAware); ok {
+			_ = sd.Shutdown(context.Background())
+		}
+	})
 
-	// 15. Create router and inject services
+	// 15. Create router and inject services. The router has no external
+	// resources at this point (no listener bound) so no cleanup is needed.
 	a.Router = router.New()
 	a.Router.SetServices(a.Services)
 	a.Router.SetValidator(func(c *router.Context, rules map[string][]string, messages ...map[string]string) error {
@@ -234,11 +315,23 @@ func New(opts ...Option) (*App, error) {
 	// Wire event dispatchers into service instances
 	wireInstanceEvents(a)
 
-	// Run provider lifecycle: Register all, then Boot all
+	// Run provider lifecycle: Register all, then Boot all. On failure,
+	// providers that already completed Register/Boot will be unwound by
+	// calling Shutdown in reverse registration order — same behaviour as
+	// App.Shutdown so consumers see a single, consistent teardown.
 	if err := runProviderLifecycle(a.providers, a.Services, "provider"); err != nil {
+		cleanups = append(cleanups, func() {
+			shutdownCtx := context.Background()
+			for i := len(a.providers) - 1; i >= 0; i-- {
+				_ = a.providers[i].Shutdown(shutdownCtx)
+			}
+		})
 		return nil, err
 	}
 
+	// Success path: disarm the cleanup stack. From here on, resources are
+	// owned by the *App and released via Shutdown().
+	cleanups = nil
 	return a, nil
 }
 
