@@ -30,6 +30,8 @@ type SharePropsFunc = func(r *http.Request) (bond.Props, error)
 // LazyProp is evaluated only when explicitly requested via partial reload.
 //
 // Deprecated: use OptionalProp — mirrors Inertia.js's own Inertia::lazy() sunset.
+//
+//lint:ignore SA1019 facade re-export of deprecated bond.LazyProp; view.LazyProp carries its own mirrored Deprecated marker.
 type LazyProp = bond.LazyProp
 
 // OptionalProp is excluded from the first visit unless explicitly requested.
