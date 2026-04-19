@@ -13,6 +13,7 @@ import (
 	"github.com/velocitykode/velocity/router"
 	"github.com/velocitykode/velocity/scheduler"
 	"github.com/velocitykode/velocity/view"
+	"github.com/velocitykode/velocity/websocket"
 )
 
 // Compile-time checks that every subsystem exposing SetEventDispatcher
@@ -33,4 +34,11 @@ var (
 	_ contract.EventDispatcherAware = (*router.VelocityRouterV2)(nil)
 	_ contract.EventDispatcherAware = (*scheduler.Scheduler)(nil)
 	_ contract.EventDispatcherAware = (*view.Engine)(nil)
+)
+
+// Compile-time checks that subsystems holding background goroutines or
+// connections implement contract.ShutdownAware so App.Shutdown can thread
+// its deadline through every layer.
+var (
+	_ contract.ShutdownAware = (*websocket.Server)(nil)
 )

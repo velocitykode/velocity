@@ -1,9 +1,12 @@
 package websocket
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -50,7 +53,9 @@ func TestServerStartStop(t *testing.T) {
 		t.Error("Expected error when starting already running server")
 	}
 
-	s.Stop()
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown failed: %v", err)
+	}
 
 	if s.running {
 		t.Error("Expected server to be stopped")
@@ -60,7 +65,7 @@ func TestServerStartStop(t *testing.T) {
 func TestHandleConnection(t *testing.T) {
 	s := New(DefaultConfig())
 	s.Start()
-	defer s.Stop()
+	defer s.Shutdown(context.Background())
 
 	// Create test server
 	ts := httptest.NewServer(http.HandlerFunc(s.HandleConnection))
@@ -95,7 +100,7 @@ func TestHandleConnection(t *testing.T) {
 func TestMessageHandler(t *testing.T) {
 	s := New(DefaultConfig())
 	s.Start()
-	defer s.Stop()
+	defer s.Shutdown(context.Background())
 
 	// Register echo handler
 	s.On("echo", func(client *Client, msg Message) error {
@@ -149,7 +154,7 @@ func TestMessageHandler(t *testing.T) {
 func TestGroups(t *testing.T) {
 	s := New(DefaultConfig())
 	s.Start()
-	defer s.Stop()
+	defer s.Shutdown(context.Background())
 
 	// Create test clients
 	ts := httptest.NewServer(http.HandlerFunc(s.HandleConnection))
@@ -239,7 +244,7 @@ func TestGroups(t *testing.T) {
 func TestBroadcast(t *testing.T) {
 	s := New(DefaultConfig())
 	s.Start()
-	defer s.Stop()
+	defer s.Shutdown(context.Background())
 
 	ts := httptest.NewServer(http.HandlerFunc(s.HandleConnection))
 	defer ts.Close()
@@ -363,7 +368,7 @@ func TestHandleRaw(t *testing.T) {
 func TestHandleRaw_DoesNotRegisterClient(t *testing.T) {
 	s := New(DefaultConfig())
 	s.Start()
-	defer s.Stop()
+	defer s.Shutdown(context.Background())
 
 	// Create test server using HandleRaw
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -433,7 +438,7 @@ func TestConnectionLimit(t *testing.T) {
 	config.MaxConnections = 2
 	s := New(config)
 	s.Start()
-	defer s.Stop()
+	defer s.Shutdown(context.Background())
 
 	ts := httptest.NewServer(http.HandlerFunc(s.HandleConnection))
 	defer ts.Close()
@@ -467,4 +472,118 @@ func TestConnectionLimit(t *testing.T) {
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("Expected status 503, got %d", resp.StatusCode)
 	}
+}
+
+// TestServer_ShutdownWaitsForRunGoroutine verifies that Shutdown drains the
+// run-loop goroutine before returning and leaves no goroutine behind.
+func TestServer_ShutdownWaitsForRunGoroutine(t *testing.T) {
+	s := New(DefaultConfig())
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Baseline after Start so runtime/test infra goroutines are already
+	// accounted for; only the run loop should still be outstanding.
+	baseline := runtime.NumGoroutine()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := s.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown returned error: %v", err)
+	}
+
+	// After Shutdown the run goroutine must be gone. Poll briefly because
+	// the scheduler may not have parked the returning goroutine yet.
+	testsync.Eventually(t, func() bool {
+		return runtime.NumGoroutine() <= baseline-1
+	}, 2*time.Second, "run goroutine exited")
+
+	// Second call is a no-op and must return nil.
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("second Shutdown returned error: %v", err)
+	}
+}
+
+// TestServer_ShutdownWaitsForClientPumps verifies that Shutdown waits for
+// every per-client read/write pump to exit before returning.
+func TestServer_ShutdownWaitsForClientPumps(t *testing.T) {
+	s := New(DefaultConfig())
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(s.HandleConnection))
+	defer ts.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
+
+	// Two long-lived clients, each with a read/write pump on the server.
+	ws1, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial 1: %v", err)
+	}
+	defer ws1.Close()
+	ws2, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial 2: %v", err)
+	}
+	defer ws2.Close()
+
+	testsync.Eventually(t, func() bool { return s.GetStats().ConnectedClients == 2 },
+		2*time.Second, "both clients registered")
+
+	baseline := runtime.NumGoroutine()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown returned error: %v", err)
+	}
+
+	// run + 2 read + 2 write = 5 tracked goroutines must have exited.
+	testsync.Eventually(t, func() bool {
+		return runtime.NumGoroutine() <= baseline-5
+	}, 2*time.Second, "all tracked goroutines exited")
+}
+
+// TestServer_ShutdownRespectsCtxDeadline verifies that Shutdown honours the
+// caller's deadline when a tracked goroutine refuses to exit. We register a
+// synthetic goroutine on the server WaitGroup that blocks until the test
+// releases it, then assert Shutdown returns context.DeadlineExceeded rather
+// than hanging.
+func TestServer_ShutdownRespectsCtxDeadline(t *testing.T) {
+	s := New(DefaultConfig())
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Simulate an uncooperative tracked goroutine. Because server_test.go
+	// lives in package websocket, we can register directly on s.wg.
+	release := make(chan struct{})
+	var released sync.WaitGroup
+	released.Add(1)
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		defer released.Done()
+		<-release
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err := s.Shutdown(ctx)
+	elapsed := time.Since(start)
+
+	if err != context.DeadlineExceeded {
+		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("Shutdown hung for %s; should have returned near the 50ms deadline", elapsed)
+	}
+
+	// Release the stuck goroutine so the test exits cleanly.
+	close(release)
+	released.Wait()
 }

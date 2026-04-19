@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -56,6 +57,11 @@ type Server struct {
 	mu       sync.RWMutex
 	running  bool
 	stopChan chan struct{}
+
+	// wg tracks the run-loop goroutine and every per-client read/write
+	// pump so Shutdown can wait for them to drain within a caller-supplied
+	// deadline.
+	wg sync.WaitGroup
 
 	// logger is stored in an atomic.Value so it can be read from paths
 	// that already hold s.mu (e.g. JoinGroup) without risking deadlock
@@ -161,28 +167,53 @@ func (s *Server) Start() error {
 
 	s.logInfo("WebSocket server starting", "host", s.config.Host, "port", s.config.Port, "path", s.config.Path)
 
-	go s.run()
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.run()
+	}()
 	return nil
 }
 
-// Stop gracefully shuts down the server
-func (s *Server) Stop() {
+// Shutdown gracefully stops the server and waits for the run-loop goroutine
+// and every per-client read/write pump to drain, bounded by ctx.
+//
+// It closes the stop channel (which both the run loop and every writePump
+// select on) and every live client connection (which unblocks readPump's
+// ReadJSON), then waits on the server's WaitGroup. If ctx fires before the
+// goroutines finish, Shutdown returns ctx.Err(); otherwise it returns nil.
+// Shutdown is safe to call more than once — subsequent calls are no-ops that
+// return nil.
+func (s *Server) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
 	if !s.running {
 		s.mu.Unlock()
-		return
+		return nil
 	}
 	s.running = false
+	close(s.stopChan)
 	s.mu.Unlock()
 
-	close(s.stopChan)
-
-	// Close all client connections
+	// Close each live connection so readPump's blocked ReadJSON fails and
+	// returns. writePump independently observes stopChan being closed.
 	s.mu.RLock()
 	for _, client := range s.clients {
 		client.Conn.Close()
 	}
 	s.mu.RUnlock()
+
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // run is the main event loop
@@ -250,9 +281,17 @@ func (s *Server) HandleConnection(w http.ResponseWriter, r *http.Request) {
 	// Register client
 	s.register <- client
 
-	// Start client goroutines
-	go client.writePump()
-	go client.readPump()
+	// Start client goroutines. Track them on the server WaitGroup so
+	// Shutdown can wait for every pump to drain within its deadline.
+	s.wg.Add(2)
+	go func() {
+		defer s.wg.Done()
+		client.writePump()
+	}()
+	go func() {
+		defer s.wg.Done()
+		client.readPump()
+	}()
 
 	// Call connect callback
 	if s.onConnect != nil {
