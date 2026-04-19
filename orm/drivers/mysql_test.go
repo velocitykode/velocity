@@ -307,7 +307,7 @@ func TestMySQLDriver_Integration(t *testing.T) {
 
 		// Verify data was committed
 		var count int
-		row := driver.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM `" + tableName + "`")
+		row := driver.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM `"+tableName+"`")
 		if err := row.Scan(&count); err != nil {
 			t.Errorf("QueryRow() Scan() error = %v", err)
 		}
@@ -320,7 +320,7 @@ func TestMySQLDriver_Integration(t *testing.T) {
 		tx2.Exec("INSERT INTO `"+tableName+"` (value) VALUES (?)", 200)
 		tx2.Rollback()
 
-		row = driver.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM `" + tableName + "`")
+		row = driver.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM `"+tableName+"`")
 		row.Scan(&count)
 		if count != 1 {
 			t.Errorf("count after rollback = %d, want 1", count)
