@@ -21,6 +21,14 @@ import (
 // Otherwise it boots the application and starts the HTTP server with signal
 // handling and graceful shutdown.
 func (a *App) Serve() error {
+	// Guarantee the App's shutdown context is cancelled on every exit
+	// path from Serve — including the CLI-dispatch path (a.Run) which
+	// otherwise would leak the context goroutine created in New().
+	// Shutdown() also calls shutdownCancel; double-cancel is a no-op.
+	if a.shutdownCancel != nil {
+		defer a.shutdownCancel()
+	}
+
 	// If CLI arguments are present, delegate to the command dispatcher.
 	// This allows main.go to be a single call: v.Providers(...).Routes(...).Serve()
 	if len(os.Args) > 1 {
@@ -42,6 +50,16 @@ func (a *App) serveHTTP() error {
 	}
 
 	if err := a.bootstrap(); err != nil {
+		// Bootstrap may have partially wired subsystems (chain providers
+		// Register/Boot, middleware, event listeners). Shutdown unwinds
+		// every subsystem idempotently, so run it here before returning
+		// so nothing is left dangling. Its error is joined onto the
+		// bootstrap error so the caller sees both failures.
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if sdErr := a.Shutdown(shutdownCtx); sdErr != nil {
+			return errors.Join(err, sdErr)
+		}
 		return err
 	}
 
@@ -70,9 +88,14 @@ func (a *App) serveHTTP() error {
 		}
 	})
 
-	// Wait for interrupt signal
+	// Wait for interrupt signal. Pair Notify with Stop so the signal
+	// subscription does not leak across in-process restarts (e.g. tests
+	// that invoke serveHTTP repeatedly in the same process). Without
+	// this, every restart accumulates another subscriber on SIGINT/
+	// SIGTERM and the associated goroutine stays resident until exit.
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(quit)
 
 	select {
 	case err := <-errCh:
