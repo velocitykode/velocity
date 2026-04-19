@@ -1,9 +1,3 @@
-// Package chain provides the declarative bootstrap types consumer apps use
-// inside their Providers / Middleware / Routes / Commands callbacks.
-//
-// These types live here (not in the root velocity package) so user code can
-// import a narrow, leaf-like package instead of pulling the whole framework
-// into every callback signature.
 package chain
 
 import (

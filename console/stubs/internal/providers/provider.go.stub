@@ -3,19 +3,19 @@ package {{ .Package }}
 import (
 	"context"
 
-	"github.com/velocitykode/velocity/app"
+	"github.com/velocitykode/velocity"
 )
 
 // {{ .Name }}ServiceProvider registers and boots the {{ .Name }} service.
 type {{ .Name }}ServiceProvider struct{}
 
 // Register binds services into the container.
-func (p *{{ .Name }}ServiceProvider) Register(s *app.Services) error {
+func (p *{{ .Name }}ServiceProvider) Register(s *velocity.Services) error {
 	return nil
 }
 
 // Boot is called after all providers have been registered.
-func (p *{{ .Name }}ServiceProvider) Boot(s *app.Services) error {
+func (p *{{ .Name }}ServiceProvider) Boot(s *velocity.Services) error {
 	return nil
 }
 

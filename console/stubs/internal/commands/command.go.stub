@@ -3,7 +3,7 @@ package {{ .Package }}
 import (
 	"fmt"
 
-	"github.com/velocitykode/velocity/app"
+	"github.com/velocitykode/velocity"
 )
 
 // {{ .Name }}Command is a console command.
@@ -23,7 +23,7 @@ func (c {{ .Name }}Command) Description() string {
 }
 
 // Handle executes the command logic.
-func (c {{ .Name }}Command) Handle(s *app.Services, args []string) error {
+func (c {{ .Name }}Command) Handle(s *velocity.Services, args []string) error {
 	fmt.Println("Executing {{ .CommandName }}...")
 	return nil
 }

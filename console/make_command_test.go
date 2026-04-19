@@ -34,11 +34,11 @@ func TestMakeCommand_CreatesFile(t *testing.T) {
 	if !strings.Contains(s, "Description() string") {
 		t.Error("expected Description method")
 	}
-	if !strings.Contains(s, "Handle(s *app.Services, args []string) error") {
+	if !strings.Contains(s, "Handle(s *velocity.Services, args []string) error") {
 		t.Error("expected Handle method with Services and args parameters")
 	}
-	if !strings.Contains(s, `"github.com/velocitykode/velocity/app"`) {
-		t.Error("expected app import")
+	if !strings.Contains(s, `"github.com/velocitykode/velocity"`) {
+		t.Error("expected velocity import")
 	}
 	if !strings.Contains(s, "Register this command in internal/commands/kernel.go") {
 		t.Error("expected registration hint comment")

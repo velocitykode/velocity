@@ -10,7 +10,7 @@ import (
 )
 
 func main() {
-	v, err := velocity.Default()
+	v, err := velocity.New()
 	if err != nil {
 		log.Fatal(err)
 	}
