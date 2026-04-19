@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/cache/drivers"
+	"github.com/velocitykode/velocity/contract"
 )
 
 // CacheManager is the interface satisfied by *Manager. It covers the methods
@@ -218,10 +219,8 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	defer m.mu.Unlock()
 
 	for _, store := range m.stores {
-		if shutdowner, ok := store.(interface {
-			Shutdown(context.Context) error
-		}); ok {
-			_ = shutdowner.Shutdown(ctx)
+		if sd, ok := store.(contract.ShutdownAware); ok {
+			_ = sd.Shutdown(ctx)
 		}
 	}
 

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/csrf/stores"
 	"github.com/velocitykode/velocity/router"
 )
@@ -63,10 +64,8 @@ func (c *CSRF) Shutdown(ctx context.Context) error {
 		}
 		return nil
 	}
-	if shutdowner, ok := c.config.Store.(interface {
-		Shutdown(context.Context) error
-	}); ok {
-		return shutdowner.Shutdown(ctx)
+	if sd, ok := c.config.Store.(contract.ShutdownAware); ok {
+		return sd.Shutdown(ctx)
 	}
 	if err := ctx.Err(); err != nil {
 		return err

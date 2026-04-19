@@ -224,6 +224,9 @@ Deleted nine deprecated `Close()`/`Stop()` shims and one internal compat wrapper
 - **Private `router.parseTrustedProxies`** (unexported compat wrapper) → exported `router.ParseTrustedProxies`.
 - **Scheduler stop chain**: `scheduler.Scheduler.Stop()`, `scheduler.Manager.StopAll()`, `scheduler.Kernel.Stop()`, and the `Stop()` member of the `scheduler.TaskScheduler` interface → `Scheduler.Shutdown(ctx)`. Internal `Run()`'s `<-ctx.Done()` branch now calls `Shutdown(ctx)` directly.
 
+### Changed — Shutdown contract consolidation
+- Every ad-hoc `interface{ Shutdown(context.Context) error }` assertion in `serve.go` (5 sites), `csrf/csrf.go`, `cache/manager.go`, and `storage/storage.go` now uses `contract.ShutdownAware` directly. The contract already existed (see Added for 1.0.0-rc.1); it's just the single source of truth now rather than a parallel inline pattern. No behavioural change — type-asserting against `contract.ShutdownAware` is identical at runtime to the inline form. The benefit is that future subsystem additions only have to look at one place to know the shape, and signature drift fails at compile time instead of silently failing the type assertion.
+
 ## [0.0.3] - 2025-12-29
 
 ### Added

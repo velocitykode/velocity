@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"sync"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // StorageManager is the interface satisfied by *Manager. It covers the
@@ -113,9 +115,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	defer m.mu.Unlock()
 	var firstErr error
 	for name, driver := range m.disks {
-		sd, ok := driver.(interface {
-			Shutdown(context.Context) error
-		})
+		sd, ok := driver.(contract.ShutdownAware)
 		if !ok {
 			continue
 		}

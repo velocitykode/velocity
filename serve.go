@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/async"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/orm"
 )
 
@@ -132,37 +133,29 @@ func (a *App) Shutdown(ctx context.Context) error {
 
 	// 5a. Close CSRF store (stops cleanup goroutine).
 	if a.CSRF != nil {
-		if shutdowner, ok := a.CSRF.(interface {
-			Shutdown(context.Context) error
-		}); ok {
-			collect(shutdowner.Shutdown(ctx))
+		if sd, ok := a.CSRF.(contract.ShutdownAware); ok {
+			collect(sd.Shutdown(ctx))
 		}
 	}
 
 	// 5b. Shutdown mail manager.
 	if a.Mail != nil {
-		if shutdowner, ok := a.Mail.(interface {
-			Shutdown(context.Context) error
-		}); ok {
-			collect(shutdowner.Shutdown(ctx))
+		if sd, ok := a.Mail.(contract.ShutdownAware); ok {
+			collect(sd.Shutdown(ctx))
 		}
 	}
 
 	// 5c. Shutdown storage manager.
 	if a.Storage != nil {
-		if shutdowner, ok := a.Storage.(interface {
-			Shutdown(context.Context) error
-		}); ok {
-			collect(shutdowner.Shutdown(ctx))
+		if sd, ok := a.Storage.(contract.ShutdownAware); ok {
+			collect(sd.Shutdown(ctx))
 		}
 	}
 
 	// 5d. Shutdown notification manager.
 	if a.Notification != nil {
-		if shutdowner, ok := a.Notification.(interface {
-			Shutdown(context.Context) error
-		}); ok {
-			collect(shutdowner.Shutdown(ctx))
+		if sd, ok := a.Notification.(contract.ShutdownAware); ok {
+			collect(sd.Shutdown(ctx))
 		}
 	}
 
@@ -184,8 +177,8 @@ func (a *App) Shutdown(ctx context.Context) error {
 
 	// 9. Close logger last so all prior steps can still log.
 	if a.Log != nil {
-		if shutdowner, ok := a.Log.(interface{ Shutdown(context.Context) error }); ok {
-			collect(shutdowner.Shutdown(ctx))
+		if sd, ok := a.Log.(contract.ShutdownAware); ok {
+			collect(sd.Shutdown(ctx))
 		} else if closer, ok := a.Log.(interface{ Close() error }); ok {
 			collect(closer.Close())
 		}
