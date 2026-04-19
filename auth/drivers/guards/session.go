@@ -154,8 +154,12 @@ func (g *SessionGuard) Login(w http.ResponseWriter, r *http.Request, user auth.A
 		}
 	}
 
-	// Regenerate session ID for security
-	session.Regenerate()
+	// Regenerate session ID for security. A failure here must abort the
+	// login — proceeding with the old session ID opens a session-fixation
+	// window (an attacker who planted the cookie keeps access).
+	if err := session.Regenerate(); err != nil {
+		return fmt.Errorf("velocity/auth: login aborted: session regenerate failed: %w", err)
+	}
 
 	// Store user ID in session
 	session.Put("user_id", user.GetAuthIdentifier())

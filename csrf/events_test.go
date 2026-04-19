@@ -20,9 +20,11 @@ func TestSessionFallback_DispatchedWhenNoSessionCookie(t *testing.T) {
 	})
 
 	r := httptest.NewRequest("POST", "/submit", nil)
-	// No session cookie set — should trigger fallback event.
-	if _, err := c.getSessionID(r); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// No session cookie set — should trigger fallback event and return
+	// ErrNoSession. The old code generated an ephemeral ID here (the
+	// security bug being fixed); the event is kept for operator visibility.
+	if _, err := c.getSessionID(r); err != ErrNoSession {
+		t.Fatalf("expected ErrNoSession, got %v", err)
 	}
 
 	mu.Lock()

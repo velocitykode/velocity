@@ -2,8 +2,6 @@ package csrf
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +21,12 @@ var (
 	ErrTokenInvalid = errors.New("velocity/csrf: token invalid")
 	ErrTokenExpired = errors.New("velocity/csrf: token expired")
 	ErrNoStore      = errors.New("velocity/csrf: no token store configured")
+	// ErrNoSession is returned when ModeSession is active but the request
+	// carries no session cookie. Previously the middleware generated a
+	// per-request ephemeral ID here, which let an attacker bind a CSRF
+	// token to any self-chosen session ID and replay it. The middleware
+	// now refuses to issue or validate tokens without a real session.
+	ErrNoSession = errors.New("velocity/csrf: session cookie required for ModeSession")
 )
 
 // CSRF provides CSRF protection functionality
@@ -38,9 +42,32 @@ type CSRF struct {
 
 // New creates a new CSRF instance with the given configuration.
 // Call Start() to begin any background goroutines required by the token store.
+//
+// New rejects Mode values other than ModeSession at construction time;
+// ModeDoubleSubmit is reserved for a future implementation. Use NewE for
+// fail-fast boot-time validation of the full Config.
 func New(config *Config) *CSRF {
+	c, err := NewE(config)
+	if err != nil {
+		// Preserve existing callers' expectation of a non-nil *CSRF;
+		// panic on unsupported modes (unrecoverable startup config).
+		panic(err)
+	}
+	return c
+}
+
+// NewE is the error-returning constructor. Prefer this in app bootstrap
+// so mis-set Config.Mode surfaces as a return error rather than a panic.
+func NewE(config *Config) (*CSRF, error) {
 	if config == nil {
 		config = DefaultConfig()
+	}
+
+	// Only ModeSession is currently implemented. Silently accepting
+	// ModeDoubleSubmit would be worse than rejecting it — apps would
+	// believe they had CSRF protection that was never wired.
+	if config.Mode != ModeSession {
+		return nil, fmt.Errorf("%w: Mode=%s is not yet implemented; use ModeSession", ErrInsecureCSRFConfig, config.Mode)
 	}
 
 	// Set default store if none provided
@@ -50,7 +77,7 @@ func New(config *Config) *CSRF {
 		config.Store = store
 	}
 
-	return &CSRF{config: config}
+	return &CSRF{config: config}, nil
 }
 
 // Shutdown releases resources held by the CSRF token store. If the
@@ -202,10 +229,13 @@ func (c *CSRF) getTokenFromRequest(r *http.Request) string {
 	return ""
 }
 
-// getSessionID extracts the session ID from the request.
-// When no session cookie is present, a one-shot ephemeral ID is generated
-// and a csrf.session_fallback event is dispatched so operators can see that
-// the session middleware is missing or misconfigured.
+// getSessionID extracts the session ID from the request for ModeSession.
+// Returns ErrNoSession when no session cookie is present. The middleware
+// used to generate a per-request ephemeral ID and dispatch a fallback
+// event; that behaviour silently bound CSRF tokens to attacker-chosen IDs
+// (the attacker could request a token for a self-minted session and
+// replay it). A csrf.session_fallback event is still dispatched here for
+// observability so operators can detect missing session middleware.
 func (c *CSRF) getSessionID(r *http.Request) (string, error) {
 	// Use configured session cookie name
 	cookieName := c.config.SessionCookieName
@@ -216,11 +246,19 @@ func (c *CSRF) getSessionID(r *http.Request) (string, error) {
 	// Try to get session ID from cookie
 	cookie, err := r.Cookie(cookieName)
 	if err == nil {
+		if cookie.Value == "" {
+			c.dispatchEvent(&SessionFallback{
+				Context: r.Context(),
+				Path:    r.URL.Path,
+				Method:  r.Method,
+				At:      time.Now(),
+			})
+			return "", ErrNoSession
+		}
 		return cookie.Value, nil
 	}
 
-	// Emit an event so operators can detect missing session middleware
-	// rather than silently relying on a new per-request ID.
+	// Emit an event so operators can detect missing session middleware.
 	c.dispatchEvent(&SessionFallback{
 		Context: r.Context(),
 		Path:    r.URL.Path,
@@ -228,12 +266,7 @@ func (c *CSRF) getSessionID(r *http.Request) (string, error) {
 		At:      time.Now(),
 	})
 
-	// Generate a random per-request identifier instead of using RemoteAddr.
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("velocity/csrf: failed to generate session id: %w", err)
-	}
-	return "temp-" + hex.EncodeToString(b), nil
+	return "", ErrNoSession
 }
 
 // isExcluded checks if the request should be excluded from CSRF protection
@@ -281,6 +314,13 @@ func (c *CSRF) RefreshHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sessionID, err := c.getSessionID(r)
 		if err != nil {
+			// ErrNoSession means the request has no session cookie, so no
+			// token can be bound. Return 400 (client misconfiguration),
+			// not 500 (server error) — the server is behaving correctly.
+			if errors.Is(err, ErrNoSession) {
+				http.Error(w, "session required to issue CSRF token", http.StatusBadRequest)
+				return
+			}
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}

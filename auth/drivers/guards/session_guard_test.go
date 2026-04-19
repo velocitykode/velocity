@@ -1445,3 +1445,57 @@ func TestSessionGuard_SessionInvalidation(t *testing.T) {
 		})
 	}
 }
+
+// TestLogin_RegenerateErrorFailsLogin pins the regression for the bug
+// where Login() ignored session.Regenerate()'s error and proceeded with
+// the OLD session ID — opening a session-fixation window. The injected
+// session returns a regenerate error; Login must surface it (wrapped)
+// and must NOT write user_id into the session.
+func TestLogin_RegenerateErrorFailsLogin(t *testing.T) {
+	originalID := "fixation-attacker-chose-this-id"
+	session := newMockSessionGuardSession(originalID)
+	session.regenerateError = errors.New("store I/O failure")
+
+	store := &mockSessionGuardStore{
+		getFunc: func(r *http.Request, id string) (auth.Session, error) {
+			return session, nil
+		},
+		createFunc: func(id string) (auth.Session, error) {
+			return session, nil
+		},
+	}
+	guard := &SessionGuard{
+		provider: &mockSessionGuardUserProvider{},
+		store:    store,
+		config:   newTestSessionConfig(),
+		hasher:   auth.NewBcryptHasher(10),
+	}
+
+	req := httptest.NewRequest("POST", "/login", nil)
+	req.AddCookie(&http.Cookie{Name: "test_session", Value: originalID})
+	w := httptest.NewRecorder()
+	user := &mockSessionGuardUser{id: "victim123"}
+
+	err := guard.Login(w, req, user)
+	if err == nil {
+		t.Fatal("expected Login to fail when Regenerate fails")
+	}
+	if !errors.Is(err, session.regenerateError) {
+		t.Errorf("expected wrapped regenerate error, got %v", err)
+	}
+
+	// CRITICAL: the old session ID must not now be bound to the user —
+	// that would be the session-fixation bug.
+	if got := session.Get("user_id"); got != nil {
+		t.Errorf("session.user_id set despite Regenerate failure: %v (session-fixation leak)", got)
+	}
+	// Regenerate was attempted; the ID is unchanged because our mock's
+	// Regenerate doesn't mutate on error, mirroring BaseSession behaviour.
+	if session.id != originalID {
+		t.Errorf("session id mutated despite regenerate error: before=%q after=%q", originalID, session.id)
+	}
+	// And we must not have called Save (would have persisted empty session data).
+	if w.Result().Cookies() != nil && len(w.Result().Cookies()) > 0 {
+		t.Errorf("no cookie should be written when Login fails pre-Save")
+	}
+}

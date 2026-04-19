@@ -453,3 +453,101 @@ func TestGenerateJTI_RandFailure(t *testing.T) {
 		t.Fatalf("error missing prefix: %v", err)
 	}
 }
+
+// TestGetSigningMethod_UnknownAlgReturnsError verifies that an algorithm
+// which is not in the switch table returns ErrUnsupportedSigningMethod
+// instead of silently falling through to HS256. Regression test for the
+// default-case fallthrough in getSigningMethod().
+func TestGetSigningMethod_UnknownAlgReturnsError(t *testing.T) {
+	// Build a JWTManager by hand so we can set an unsupported Algorithm
+	// — NewJWTManager would reject it up-front via Validate(), which is
+	// the belt; this is the suspenders.
+	mgr := &JWTManager{
+		config: JWTConfig{
+			Algorithm: "ES256", // allowlist-rejected, not in switch
+			Secret:    "super-secret-key-for-tests-at-least-32",
+			TTL:       60,
+		},
+	}
+	method, err := mgr.getSigningMethod()
+	if err == nil {
+		t.Fatal("expected error for unsupported algorithm")
+	}
+	if !errors.Is(err, ErrUnsupportedSigningMethod) {
+		t.Fatalf("expected ErrUnsupportedSigningMethod, got %v", err)
+	}
+	if method != nil {
+		t.Errorf("expected nil method on error, got %T", method)
+	}
+
+	// Also verify a totally bogus algorithm string fails with no HS256 fallback.
+	mgr.config.Algorithm = "bogus-alg"
+	if _, err := mgr.getSigningMethod(); !errors.Is(err, ErrUnsupportedSigningMethod) {
+		t.Fatalf("expected ErrUnsupportedSigningMethod for bogus-alg, got %v", err)
+	}
+
+	// And the empty string (treat as unsupported, not a silent HS256).
+	mgr.config.Algorithm = ""
+	if _, err := mgr.getSigningMethod(); !errors.Is(err, ErrUnsupportedSigningMethod) {
+		t.Fatalf("expected ErrUnsupportedSigningMethod for empty alg, got %v", err)
+	}
+}
+
+// TestJWTSign_RefusesUnsupportedAlg confirms GenerateToken and
+// GenerateRefreshToken surface the unsupported-algorithm error instead of
+// returning a token silently signed with HS256.
+func TestJWTSign_RefusesUnsupportedAlg(t *testing.T) {
+	mgr := &JWTManager{
+		config: JWTConfig{
+			Algorithm: "ES256",
+			Secret:    "super-secret-key-for-tests-at-least-32",
+			TTL:       60,
+		},
+		blacklistStore: NewInMemoryBlacklistStore(),
+	}
+	user := &AuthUser{ID: 42, Email: "u@test.com"}
+
+	if _, err := mgr.GenerateToken(user); !errors.Is(err, ErrUnsupportedSigningMethod) {
+		t.Fatalf("GenerateToken: expected ErrUnsupportedSigningMethod, got %v", err)
+	}
+	if _, err := mgr.GenerateRefreshToken(user); !errors.Is(err, ErrUnsupportedSigningMethod) {
+		t.Fatalf("GenerateRefreshToken: expected ErrUnsupportedSigningMethod, got %v", err)
+	}
+}
+
+// TestJWTVerify_RefusesUnsupportedAlg verifies that ValidateToken refuses a
+// token whose configured algorithm is unsupported. The existing validator
+// already enforces the allowlist via jwt.WithValidMethods, but this test
+// pins the behaviour in place so a regression in the allowlist wiring
+// won't silently accept HS256-signed tokens when the operator mis-set the
+// algorithm to e.g. "ES256".
+func TestJWTVerify_RefusesUnsupportedAlg(t *testing.T) {
+	// Generate a valid HS256 token via a healthy manager.
+	healthy, err := NewJWTManager(JWTConfig{
+		Algorithm: "HS256",
+		Secret:    "super-secret-key-for-tests-at-least-32",
+		TTL:       60,
+	})
+	if err != nil {
+		t.Fatalf("NewJWTManager: %v", err)
+	}
+	user := &AuthUser{ID: 1, Email: "u@test.com"}
+	tok, err := healthy.GenerateToken(user)
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+
+	// Hand-construct a manager with a non-allowlisted Algorithm and feed
+	// the HS256 token to it. Validation must reject.
+	rejecting := &JWTManager{
+		config: JWTConfig{
+			Algorithm: "ES256",
+			Secret:    "super-secret-key-for-tests-at-least-32",
+			TTL:       60,
+		},
+		blacklistStore: NewInMemoryBlacklistStore(),
+	}
+	if _, err := rejecting.ValidateToken(tok); err == nil {
+		t.Fatal("expected validation error for mismatched algorithm")
+	}
+}

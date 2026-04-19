@@ -3,6 +3,7 @@ package router
 import (
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -387,6 +388,10 @@ func RateLimitByIPE(requests int, window time.Duration, opts ...RateLimitOption)
 //
 // When the direct connection is trusted, X-Forwarded-For is honoured
 // using RFC 7239 right-most-trusted semantics.
+//
+// X-Real-IP is a single-value header and is parsed with net.ParseIP; any
+// value containing whitespace-separated or comma-separated entries is
+// rejected to prevent throttle-key spoofing via injected headers.
 func extractIP(c *Context, trusted *TrustedProxies) string {
 	remoteIP := stripPortHost(c.Request.RemoteAddr)
 	if trusted == nil || trusted.Len() == 0 || !trusted.Contains(remoteIP) {
@@ -397,9 +402,33 @@ func extractIP(c *Context, trusted *TrustedProxies) string {
 		return trusted.ClientIP(remoteIP, xff)
 	}
 	if xri := c.Header("X-Real-IP"); xri != "" {
-		return strings.TrimSpace(xri)
+		if parsed := parseSingleIP(xri); parsed != "" {
+			return parsed
+		}
 	}
 	return remoteIP
+}
+
+// parseSingleIP validates that the given header value is a single IP address.
+// Returns the canonical string form when valid, "" when the value contains a
+// comma, whitespace, or is otherwise not a single well-formed IP. X-Real-IP
+// is spec'd as a single value — rejecting multi-value input closes a
+// throttle-key spoofing vector where an attacker sends
+// `X-Real-IP: 1.2.3.4, 5.6.7.8`.
+func parseSingleIP(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	// Reject any separator that would make this a multi-value header.
+	if strings.ContainsAny(trimmed, ", \t") {
+		return ""
+	}
+	ip := net.ParseIP(trimmed)
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
 }
 
 // RateLimitStore is an interface for custom rate limit storage backends.
