@@ -16,7 +16,6 @@ import (
 // options are layered on top and may override these defaults.
 func NewApp(opts ...velocity.Option) (*velocity.App, error) {
 	config := velocity.Config{
-		Name:  "Velocity Test",
 		Env:   "testing",
 		Debug: true,
 		Port:  "0",

@@ -8,14 +8,11 @@ type LoggingConfig struct {
 
 // ChannelConfig defines configuration for a specific log channel
 type ChannelConfig struct {
-	Driver     string                 `json:"driver"`
-	Level      string                 `json:"level"`
-	Path       string                 `json:"path,omitempty"`
-	MaxSize    int                    `json:"max_size,omitempty"`    // MB
-	MaxAge     int                    `json:"max_age,omitempty"`     // days
-	MaxBackups int                    `json:"max_backups,omitempty"` // number of old files
-	Format     string                 `json:"format,omitempty"`      // json, text
-	Options    map[string]interface{} `json:"options,omitempty"`     // driver-specific options
+	Driver  string                 `json:"driver"`
+	Level   string                 `json:"level"`
+	Path    string                 `json:"path,omitempty"`
+	MaxAge  int                    `json:"max_age,omitempty"` // days
+	Options map[string]interface{} `json:"options,omitempty"` // driver-specific options
 }
 
 // GetChannel returns a specific channel configuration

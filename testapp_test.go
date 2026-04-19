@@ -11,7 +11,6 @@ import (
 // a production binary. Keep velocitytest.NewApp in sync with this config.
 func NewTestApp(opts ...Option) (*App, error) {
 	config := Config{
-		Name:  "Velocity Test",
 		Env:   "testing",
 		Debug: true,
 		Port:  "0",

@@ -51,13 +51,6 @@ type Config struct {
 	Cipher       string   // Cipher algorithm
 }
 
-// DefaultConfig returns a Config with sensible defaults.
-func DefaultConfig() Config {
-	return Config{
-		Cipher: "AES-256-GCM",
-	}
-}
-
 // Validate checks that the Config is usable. Allowed ciphers are the AES
 // variants with 128/192/256-bit keys, in CBC or GCM mode.
 //

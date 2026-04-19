@@ -174,7 +174,6 @@ func TestSessionGuard_LoginThenCheckThenLogout(t *testing.T) {
 	}
 
 	guard, err := guards.NewSessionGuard(provider, auth.SessionConfig{
-		Driver:   "cookie",
 		Name:     "velocity_session",
 		Lifetime: 60,
 		Path:     "/",
@@ -253,7 +252,7 @@ func TestSessionGuard_BadCredentialsRejected(t *testing.T) {
 		Key: strings.Repeat("k", 32), Cipher: "AES-256-GCM",
 	})
 	guard, err := guards.NewSessionGuard(provider, auth.SessionConfig{
-		Driver: "cookie", Name: "velocity_session", Lifetime: 60, Path: "/",
+		Name: "velocity_session", Lifetime: 60, Path: "/",
 	}, enc)
 	if err != nil {
 		t.Fatalf("NewSessionGuard: %v", err)
@@ -359,7 +358,7 @@ func TestSessionGuard_TamperedCookieRejected(t *testing.T) {
 		Key: strings.Repeat("k", 32), Cipher: "AES-256-GCM",
 	})
 	guard, err := guards.NewSessionGuard(provider, auth.SessionConfig{
-		Driver: "cookie", Name: "velocity_session", Lifetime: 60, Path: "/",
+		Name: "velocity_session", Lifetime: 60, Path: "/",
 	}, enc)
 	if err != nil {
 		t.Fatalf("NewSessionGuard: %v", err)

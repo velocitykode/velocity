@@ -23,7 +23,6 @@ import (
 // It replaces the scattered os.Getenv() calls across packages.
 type Config struct {
 	// App
-	Name  string // APP_NAME, default "Velocity"
 	Env   string // APP_ENV, default "development"
 	Debug bool   // APP_DEBUG, default false
 	Port  string // PORT, default "4000"
@@ -71,8 +70,8 @@ type Config struct {
 	// Scheduler (no config needed, created fresh)
 }
 
-// DBConfig holds database configuration.
-// Kept as a root type because it differs structurally from orm.ManagerConfig.
+// DBConfig holds database configuration. Maps the DB_* env vars onto the
+// fields forwarded into orm.ManagerConfig via initDB.
 type DBConfig struct {
 	Connection      string        // DB_CONNECTION: sqlite, postgres, mysql
 	Host            string        // DB_HOST, default "127.0.0.1"
@@ -81,12 +80,8 @@ type DBConfig struct {
 	Username        string        // DB_USERNAME
 	Password        string        // DB_PASSWORD
 	Charset         string        // DB_CHARSET
-	Collation       string        // DB_COLLATION
-	Prefix          string        // DB_PREFIX
-	Schema          string        // DB_SCHEMA
 	SSLMode         string        // DB_SSL_MODE (postgres)
 	TLS             string        // DB_MYSQL_TLS (mysql: true/false/skip-verify/preferred)
-	Timezone        string        // DB_TIMEZONE
 	MaxIdleConns    int           // DB_MAX_IDLE_CONNS, default 10
 	MaxOpenConns    int           // DB_MAX_OPEN_CONNS, default 100
 	ConnMaxLifetime time.Duration // DB_CONN_MAX_LIFETIME, default 3600s
@@ -122,8 +117,8 @@ type QueueConfig struct {
 }
 
 // StorageConfig holds storage configuration.
-// Kept as a root type because the DiskConfig fields differ slightly
-// from storage.DiskConfig (Endpoint field).
+// Kept as a root type because the DiskConfig fields mirror the env-var
+// layout rather than the storage package's internal driver config.
 type StorageConfig struct {
 	Default string                // STORAGE_DRIVER, default "local"
 	Disks   map[string]DiskConfig // Disk configurations
@@ -136,11 +131,10 @@ type DiskConfig struct {
 	URL        string // Base URL for file access
 	Visibility string // Default visibility (public/private)
 	// S3 fields
-	Bucket   string
-	Region   string
-	Key      string
-	Secret   string
-	Endpoint string
+	Bucket string
+	Region string
+	Key    string
+	Secret string
 	// Memory driver
 	MaxSize int64 // Maximum memory usage in bytes
 }
@@ -224,7 +218,6 @@ func ConfigFromEnv() Config {
 	}
 
 	config := Config{
-		Name:  envOrDefault("APP_NAME", "Velocity"),
 		Env:   envOrDefault("APP_ENV", "development"),
 		Debug: envOrDefault("APP_DEBUG", "false") == "true",
 		Port:  envOrDefault("PORT", "4000"),
@@ -241,12 +234,8 @@ func ConfigFromEnv() Config {
 		Username:        os.Getenv("DB_USERNAME"),
 		Password:        os.Getenv("DB_PASSWORD"),
 		Charset:         os.Getenv("DB_CHARSET"),
-		Collation:       os.Getenv("DB_COLLATION"),
-		Prefix:          os.Getenv("DB_PREFIX"),
-		Schema:          os.Getenv("DB_SCHEMA"),
 		SSLMode:         os.Getenv("DB_SSL_MODE"),
 		TLS:             os.Getenv("DB_MYSQL_TLS"),
-		Timezone:        os.Getenv("DB_TIMEZONE"),
 		MaxIdleConns:    envIntOrDefault("DB_MAX_IDLE_CONNS", 10),
 		MaxOpenConns:    envIntOrDefault("DB_MAX_OPEN_CONNS", 100),
 		ConnMaxLifetime: time.Duration(envIntOrDefault("DB_CONN_MAX_LIFETIME", 3600)) * time.Second,
@@ -256,7 +245,6 @@ func ConfigFromEnv() Config {
 
 	// Session
 	config.Session = auth.SessionConfig{
-		Driver:   envOrDefault("SESSION_DRIVER", "cookie"),
 		Name:     envOrDefault("SESSION_NAME", "velocity_session"),
 		Lifetime: envIntOrDefault("SESSION_LIFETIME", 120),
 		Path:     envOrDefault("SESSION_PATH", "/"),

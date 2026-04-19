@@ -2,7 +2,6 @@ package auth
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -336,24 +335,6 @@ type Config struct {
 	BcryptCost   int // Bcrypt cost for password hashing. 0 uses the default.
 }
 
-// DefaultConfig returns a Config with initialized maps and no guards configured.
-func DefaultConfig() Config {
-	return Config{
-		Guards:    make(map[string]GuardConfig),
-		Providers: make(map[string]ProviderConfig),
-	}
-}
-
-// Validate checks that the configuration is internally consistent.
-func (c Config) Validate() error {
-	if c.DefaultGuard != "" {
-		if _, exists := c.Guards[c.DefaultGuard]; !exists {
-			return fmt.Errorf("auth: default guard %q not found in configured guards", c.DefaultGuard)
-		}
-	}
-	return nil
-}
-
 // GuardConfig holds guard configuration
 type GuardConfig struct {
 	Driver   string
@@ -363,7 +344,6 @@ type GuardConfig struct {
 
 // ProviderConfig holds provider configuration
 type ProviderConfig struct {
-	Driver  string
-	Model   string
-	Options map[string]interface{}
+	Driver string
+	Model  string
 }

@@ -1,7 +1,6 @@
 package csrf
 
 import (
-	"errors"
 	"net/http"
 	"time"
 )
@@ -30,9 +29,8 @@ type Config struct {
 	ExcludeFunc  func(*http.Request) bool
 
 	// Error handling
-	ErrorTemplate string
-	ErrorMessage  string
-	ErrorHandler  func(http.ResponseWriter, *http.Request, error)
+	ErrorMessage string
+	ErrorHandler func(http.ResponseWriter, *http.Request, error)
 }
 
 // DefaultConfig returns the default CSRF configuration
@@ -49,12 +47,4 @@ func DefaultConfig() *Config {
 		SingleUse:         false,
 		ErrorMessage:      "CSRF token validation failed. Please refresh and try again.",
 	}
-}
-
-// Validate checks that the Config is valid.
-func (c Config) Validate() error {
-	if c.TokenLifetime <= 0 {
-		return errors.New("velocity/csrf: token lifetime must be positive")
-	}
-	return nil
 }

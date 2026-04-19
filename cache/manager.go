@@ -97,40 +97,7 @@ type StoreConfig struct {
 	Port     int    // For Redis driver
 	Password string // For Redis driver
 	Database int    // For Redis driver
-	Table    string // For database driver
 	TLS      bool   // Enable TLS for Redis connections
-}
-
-// DefaultConfig returns a Config with sensible defaults (single in-memory store).
-func DefaultConfig() *Config {
-	return &Config{
-		Default: "default",
-		Prefix:  "velocity_cache",
-		Stores: map[string]StoreConfig{
-			"default": {Driver: "memory"},
-		},
-	}
-}
-
-// Validate checks that the Config is internally consistent, including each
-// per-store configuration (driver recognised, driver-specific required
-// fields present).
-func (c *Config) Validate() error {
-	if c.Default == "" {
-		return fmt.Errorf("velocity/cache: default store name is required")
-	}
-	if len(c.Stores) == 0 {
-		return fmt.Errorf("velocity/cache: at least one store must be configured")
-	}
-	if _, exists := c.Stores[c.Default]; !exists {
-		return fmt.Errorf("velocity/cache: default store %q not found in configured stores", c.Default)
-	}
-	for name, sc := range c.Stores {
-		if err := sc.Validate(); err != nil {
-			return fmt.Errorf("velocity/cache: store %q: %w", name, err)
-		}
-	}
-	return nil
 }
 
 // Validate checks the per-store configuration for a known driver and the

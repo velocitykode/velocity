@@ -29,29 +29,6 @@ type ManagerConfig struct {
 	SlowThreshold   time.Duration
 }
 
-// DefaultManagerConfig returns a ManagerConfig with sensible defaults.
-// Driver, Database, Username, and Password must still be set by the caller.
-func DefaultManagerConfig() ManagerConfig {
-	return ManagerConfig{
-		MaxIdleConns:    10,
-		MaxOpenConns:    100,
-		ConnMaxLifetime: 3600 * time.Second,
-	}
-}
-
-// Validate checks that the ManagerConfig has the required fields set.
-func (c ManagerConfig) Validate() error {
-	if c.Driver == "" {
-		return fmt.Errorf("orm: driver is required (sqlite, postgres, mysql)")
-	}
-	switch c.Driver {
-	case "sqlite", "sqlite3", "postgres", "mysql":
-	default:
-		return fmt.Errorf("orm: unsupported driver %q", c.Driver)
-	}
-	return nil
-}
-
 // Database is the interface satisfied by *Manager. It covers the methods used
 // through app.Services and router.Context for query execution, transactions,
 // connection management, and event wiring.

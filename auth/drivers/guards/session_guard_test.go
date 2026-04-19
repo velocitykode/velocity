@@ -163,7 +163,6 @@ func (s *mockSessionGuardStore) GarbageCollect(maxLifetime time.Duration) error 
 
 func newTestSessionConfig() auth.SessionConfig {
 	return auth.SessionConfig{
-		Driver:   "cookie",
 		Name:     "test_session",
 		Lifetime: 120,
 		Path:     "/",
@@ -190,29 +189,10 @@ func TestNewSessionGuard(t *testing.T) {
 		wantErr  bool
 	}{
 		{
-			name:     "creates guard with cookie driver",
+			name:     "creates guard with cookie store",
 			provider: &mockSessionGuardUserProvider{},
 			config: auth.SessionConfig{
-				Driver: "cookie",
-				Name:   "test_session",
-			},
-			wantErr: false,
-		},
-		{
-			name:     "creates guard with empty driver defaults to cookie",
-			provider: &mockSessionGuardUserProvider{},
-			config: auth.SessionConfig{
-				Driver: "",
-				Name:   "test_session",
-			},
-			wantErr: false,
-		},
-		{
-			name:     "creates guard with unknown driver defaults to cookie",
-			provider: &mockSessionGuardUserProvider{},
-			config: auth.SessionConfig{
-				Driver: "unknown",
-				Name:   "test_session",
+				Name: "test_session",
 			},
 			wantErr: false,
 		},

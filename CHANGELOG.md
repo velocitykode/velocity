@@ -70,6 +70,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`ConfigFromEnv` cleanup.** Reads `DB_MYSQL_TLS` once at config time instead of leaking to drivers; removes stdlib-log warnings on deprecated env names (those env names are no longer read at all).
 - **Route diagnostic logs in websocket / auth / broadcast / scheduler / queue through `log.Logger`.** Replaced ad-hoc `fmt.Printf`/`fmt.Fprintln(os.Stderr)`/`log.Printf` calls and the package-local stdlib-log adapters (`scheduler.defaultLogger`, `queue.stdlibLogger`) with a framework-logger injection. Each package now exposes a narrow `Logger` interface and a `SetLogger` setter (wired from `velocity.New` via `Scheduler.SetLogger`, `auth.Manager.SetLogger`, `queue.MemoryDriver.SetLogger`, and `queue.SetSigningLogger`; `websocket.Server` and `broadcast/drivers.WebSocketDriver` expose `SetLogger` for consumer wiring). Loggers are stored atomically (`atomic.Value`) so request/drop hot paths that hold other locks can read them without deadlock. When no logger is installed, packages fall back to silent null loggers rather than emitting through Go's standard `log`.
 - **Refactor CLI dispatcher into `command` interface — no external-API change.** The 489-line `run.go` switch was split into an internal `command` interface (`name()`, `description()`, `run(*App, []string) error`) with a per-command type and a `newCommandRegistry()` built-in map. Each previous case lives in its own file (`cmd_migrate.go`, `cmd_make.go`, `cmd_ops.go`, `cmd.go`). `App.Run()`, `App.printHelp()`, `App.printUserCommands()`, the custom-command `run` path (chain.Commands), and the internal `serve:run` subprocess entry all preserve byte-identical behavior.
+- **Config struct hygiene sweep.** Dropped config fields, `DefaultConfig` helpers, and `Validate` methods that had zero readers after the chain/, bond/view, CLI, and logger-routing refactors. All removals are pure dead code — no observable behavior changes:
+  - **Removed:** `velocity.Config.Name` (APP_NAME was loaded into it but never read; consumer apps read APP_NAME via `config.Get`).
+  - **Removed:** `velocity.DBConfig.Collation`, `.Prefix`, `.Schema`, `.Timezone` — populated from env but never forwarded to `orm.ManagerConfig`, so they never reached the driver. `DB_COLLATION` / `DB_PREFIX` / `DB_SCHEMA` / `DB_TIMEZONE` are no longer read by `ConfigFromEnv`.
+  - **Removed:** `velocity.DiskConfig.Endpoint` — never read; `initStorage` does not forward it and `storage.DiskConfig` has no corresponding field.
+  - **Removed:** `auth.SessionConfig.Driver` — stored but never read; the cookie store is the only session driver and it's selected unconditionally by `guards.NewSessionGuard`. `SESSION_DRIVER` is no longer read.
+  - **Removed:** `auth.DefaultConfig()`, `auth.Config.Validate()` — never called.
+  - **Removed:** `auth.ProviderConfig.Options` — never read.
+  - **Removed:** `csrf.Config.ErrorTemplate` — never read.
+  - **Removed:** `csrf.Config.Validate()` — never called.
+  - **Removed:** `crypto.DefaultConfig()` — never called.
+  - **Removed:** `mail.DefaultConfig()`, `mail.MailConfig.Validate()` — never called. The associated helpers `validateLocalPort`, `validateLocalEncryption`, `validateMailgunEndpoint`, `validatePostmarkStream`, and the `allowedLocalEncryptions` / `allowedMailgunSchemes` tables are gone with them. `mail.IsAllowedPostmarkStream` / `mail.ConfigureAllowedPostmarkStreams` stay — the postmark driver uses them at send time.
+  - **Removed:** `log.DefaultLogConfig()`, `log.LogConfig.Validate()` — never called.
+  - **Removed:** `orm.DefaultManagerConfig()`, `orm.ManagerConfig.Validate()` — never called.
+  - **Removed:** `cache.DefaultConfig()`, `cache.Config.Validate()` — never called. `cache.StoreConfig.Validate()` stays; it's called from `Manager.createStore`.
+  - **Removed:** `cache.StoreConfig.Table` — reserved for a never-implemented database driver and never read.
+  - **Removed:** `config.ChannelConfig.MaxSize`, `.MaxBackups`, `.Format` — never read; `log.Manager.createLogger` reads Driver/Level/Path/MaxAge/Options only.
 - **`view/` / `bond/` deduplication.** `view/` is now a thin façade over `bond/` with no overlapping types. Deleted:
   - `view.Props` type alias (use `bond.Props`).
   - `view.SharePropsFunc` type alias (use `func(*http.Request) (bond.Props, error)` inline, or call `(*view.Engine).SetSharePropsFunc` directly).

@@ -269,7 +269,6 @@ func generateSessionID() (string, error) {
 
 // SessionConfig holds session configuration
 type SessionConfig struct {
-	Driver   string
 	Name     string
 	Lifetime int // Minutes
 	Path     string
