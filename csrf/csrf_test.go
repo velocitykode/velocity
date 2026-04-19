@@ -1,6 +1,7 @@
 package csrf
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -363,5 +364,70 @@ func BenchmarkMiddleware_ValidToken(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, req)
+	}
+}
+
+// TestCSRF_RefusesEphemeralSession pins the regression for the bug where,
+// in the absence of a session cookie, the middleware silently generated
+// an ephemeral session ID and bound a fresh CSRF token to it. That
+// allowed an attacker to mint their own session+token pair and replay
+// the token against the victim's session (or a cookie-less victim).
+// The middleware must now refuse to issue or validate tokens without a
+// real session cookie.
+func TestCSRF_RefusesEphemeralSession(t *testing.T) {
+	c := New(DefaultConfig())
+
+	t.Run("getSessionID returns ErrNoSession", func(t *testing.T) {
+		r := httptest.NewRequest("POST", "/submit", nil)
+		id, err := c.getSessionID(r)
+		if err == nil {
+			t.Fatalf("expected error, got id=%q", id)
+		}
+		if !errors.Is(err, ErrNoSession) {
+			t.Errorf("expected ErrNoSession, got %v", err)
+		}
+		if strings.HasPrefix(id, "temp-") {
+			t.Errorf("ephemeral ID leaked: %q", id)
+		}
+	})
+
+	t.Run("middleware blocks unsafe request without session", func(t *testing.T) {
+		handler := c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Fatal("inner handler must not be called")
+		}))
+		req := httptest.NewRequest("POST", "/submit", nil)
+		req.Header.Set("X-CSRF-Token", "anything")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != 419 {
+			t.Errorf("expected 419, got %d", w.Code)
+		}
+	})
+
+	t.Run("refresh handler returns 400 without session", func(t *testing.T) {
+		h := c.RefreshHandler()
+		req := httptest.NewRequest("GET", "/csrf-token", nil)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("expected 400, got %d", w.Code)
+		}
+	})
+}
+
+// TestNewE_RejectsUnsupportedMode confirms NewE returns an error rather
+// than silently accepting ModeDoubleSubmit (reserved, not yet implemented).
+// Without the rejection, an operator setting Mode=ModeDoubleSubmit would
+// believe they have CSRF protection when in fact the double-submit path
+// is not wired.
+func TestNewE_RejectsUnsupportedMode(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Mode = ModeDoubleSubmit
+	_, err := NewE(cfg)
+	if err == nil {
+		t.Fatal("expected error for ModeDoubleSubmit")
+	}
+	if !errors.Is(err, ErrInsecureCSRFConfig) {
+		t.Errorf("expected ErrInsecureCSRFConfig, got %v", err)
 	}
 }

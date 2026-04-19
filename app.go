@@ -147,18 +147,49 @@ func New(opts ...Option) (*App, error) {
 		orm.SetDefault(dbManager)
 	}
 
-	// 5. Initialize auth manager — pass DB for ORM provider
+	// 5. Validate cookie-related configs (session, CSRF). Fail-loud in
+	// production; warn in development. Testing env is permissive so
+	// bare-minimum test setups keep working.
+	if err := a.config.Session.Validate(a.config.Env); err != nil {
+		switch a.config.Env {
+		case "development":
+			a.Log.Warn("Insecure session cookie config (dev only — will fail in production)", "error", err)
+		case "testing":
+			// silent
+		default:
+			cancel()
+			return nil, fmt.Errorf("velocity: %w", err)
+		}
+	}
+	if err := a.config.CSRF.Validate(a.config.Env); err != nil {
+		switch a.config.Env {
+		case "development":
+			a.Log.Warn("Insecure CSRF cookie config (dev only — will fail in production)", "error", err)
+		case "testing":
+			// silent
+		default:
+			cancel()
+			return nil, fmt.Errorf("velocity: %w", err)
+		}
+	}
+
+	// 6. Initialize auth manager — pass DB for ORM provider
 	var sqlDB *sql.DB
 	if a.DB != nil {
 		sqlDB = a.DB.DB()
 	}
 	a.Auth = initAuth(a.config.Auth, a.config.Session, a.Log, sqlDB, a.Crypto)
 
-	// 6. Initialize cache
+	// 7. Initialize cache
 	a.Cache = initCache(a.config.Cache)
 
-	// 7. Initialize CSRF
-	a.CSRF = csrf.New(&a.config.CSRF)
+	// 8. Initialize CSRF
+	csrfInstance, err := csrf.NewE(&a.config.CSRF)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("velocity: failed to initialize csrf: %w", err)
+	}
+	a.CSRF = csrfInstance
 
 	// 8. Initialize view/bond engine
 	if a.config.View.RootTemplate != "" {

@@ -12,6 +12,13 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+// ErrUnsupportedSigningMethod is returned when the configured JWT algorithm
+// cannot be mapped to a concrete jwt.SigningMethod. Callers must refuse to
+// sign or verify tokens when this error is returned — there is no safe
+// fallback because silently downgrading to HS256 would allow an attacker to
+// substitute any algorithm name in config or tokens.
+var ErrUnsupportedSigningMethod = errors.New("velocity/auth: unsupported jwt signing method")
+
 // BlacklistStore defines the interface for JWT token blacklist storage.
 // Implement with Redis or another persistent store for production use.
 type BlacklistStore interface {
@@ -254,7 +261,11 @@ func (j *JWTManager) GenerateToken(user Authenticatable, customClaims ...map[str
 		}
 	}
 
-	token := jwt.NewWithClaims(j.getSigningMethod(), claims)
+	method, err := j.getSigningMethod()
+	if err != nil {
+		return "", err
+	}
+	token := jwt.NewWithClaims(method, claims)
 	return token.SignedString(j.signingKey())
 }
 
@@ -284,7 +295,11 @@ func (j *JWTManager) GenerateRefreshToken(user Authenticatable) (string, error) 
 		claims.Audience = jwt.ClaimStrings{j.config.Audience}
 	}
 
-	token := jwt.NewWithClaims(j.getSigningMethod(), claims)
+	method, err := j.getSigningMethod()
+	if err != nil {
+		return "", err
+	}
+	token := jwt.NewWithClaims(method, claims)
 	return token.SignedString(j.signingKey())
 }
 
@@ -401,25 +416,27 @@ func (j *JWTManager) CleanupBlacklist() {
 	j.blacklistStore.Cleanup()
 }
 
-// getSigningMethod returns the signing method based on algorithm.
-// Returns nil for unsupported algorithms; callers must have validated
-// the algorithm before constructing/using the JWTManager.
-func (j *JWTManager) getSigningMethod() jwt.SigningMethod {
+// getSigningMethod returns the signing method for the configured algorithm.
+// Unknown algorithms return (nil, ErrUnsupportedSigningMethod); callers must
+// refuse to sign or verify — there is NO HS256 fallback. The default-case
+// fallback previously permitted any allowlisted-but-typo'd or future
+// algorithm string to silently sign with HS256.
+func (j *JWTManager) getSigningMethod() (jwt.SigningMethod, error) {
 	switch j.config.Algorithm {
 	case "HS256":
-		return jwt.SigningMethodHS256
+		return jwt.SigningMethodHS256, nil
 	case "HS384":
-		return jwt.SigningMethodHS384
+		return jwt.SigningMethodHS384, nil
 	case "HS512":
-		return jwt.SigningMethodHS512
+		return jwt.SigningMethodHS512, nil
 	case "RS256":
-		return jwt.SigningMethodRS256
+		return jwt.SigningMethodRS256, nil
 	case "RS384":
-		return jwt.SigningMethodRS384
+		return jwt.SigningMethodRS384, nil
 	case "RS512":
-		return jwt.SigningMethodRS512
+		return jwt.SigningMethodRS512, nil
 	default:
-		return jwt.SigningMethodHS256
+		return nil, fmt.Errorf("%w: %q", ErrUnsupportedSigningMethod, j.config.Algorithm)
 	}
 }
 

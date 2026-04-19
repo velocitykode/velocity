@@ -3,12 +3,20 @@ package auth
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"sync"
 	"time"
 )
+
+// ErrInsecureSessionConfig is returned from SessionConfig.Validate when the
+// configuration would ship insecure cookie defaults to production (e.g.,
+// Secure=false, HttpOnly=false without opt-in, zero SameSite, or
+// SameSite=None without Secure). A separate error type makes it trivial
+// for bootstrap code to log-then-continue in dev and fail-fast in prod.
+var ErrInsecureSessionConfig = errors.New("velocity/auth: insecure session config")
 
 // sessionRandReader is the entropy source for session IDs. Tests may swap
 // this for a failing reader to exercise rand.Read error paths.
@@ -276,6 +284,49 @@ type SessionConfig struct {
 	Secure   bool
 	HttpOnly bool
 	SameSite http.SameSite
+
+	// AllowJSAccess opts in to HttpOnly=false. Without this flag the
+	// session cookie MUST be HttpOnly — otherwise JavaScript (and any
+	// injected script) can steal the session ID. Name is intentionally
+	// loud so reviewers notice.
+	AllowJSAccess bool
+}
+
+// Validate checks the SessionConfig for insecure defaults. Pass env to
+// enable environment-aware rules: Secure=false is permitted when env is
+// "testing" or "development", rejected otherwise. An empty env is treated
+// as production for strict validation.
+//
+// Rules:
+//   - HttpOnly must be true unless AllowJSAccess is set
+//   - Secure must be true outside testing/development
+//   - SameSite must be set (non-zero value)
+//   - SameSite=None requires Secure=true
+func (c SessionConfig) Validate(env string) error {
+	if !c.HttpOnly && !c.AllowJSAccess {
+		return fmt.Errorf("%w: HttpOnly=false requires AllowJSAccess=true opt-in", ErrInsecureSessionConfig)
+	}
+	if !c.Secure && !isNonProdEnvSession(env) {
+		return fmt.Errorf("%w: Secure=false is not permitted in %q env (set APP_ENV=testing or development to allow)", ErrInsecureSessionConfig, env)
+	}
+	if c.SameSite == http.SameSiteDefaultMode {
+		return fmt.Errorf("%w: SameSite must be set to Lax, Strict, or None (got default/zero)", ErrInsecureSessionConfig)
+	}
+	if c.SameSite == http.SameSiteNoneMode && !c.Secure {
+		return fmt.Errorf("%w: SameSite=None requires Secure=true", ErrInsecureSessionConfig)
+	}
+	return nil
+}
+
+// isNonProdEnvSession reports whether env is a non-production environment
+// that may relax the Secure cookie requirement. Mirrors the csrf helper but
+// kept package-local to avoid an import cycle.
+func isNonProdEnvSession(env string) bool {
+	switch env {
+	case "testing", "development":
+		return true
+	}
+	return false
 }
 
 // GetSessionFromRequest gets session from request

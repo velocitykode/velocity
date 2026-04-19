@@ -38,7 +38,9 @@ func FuzzValidateToken_CRLFInput(f *testing.F) {
 // TestGetSessionID_StripsCRLFFromCookies verifies that a cookie value is
 // never interpreted in a way that allows CRLF smuggling. Go's net/http
 // already refuses to parse cookies containing CR/LF, but we document the
-// behaviour here.
+// behaviour here. Returns ErrNoSession if the parser rejects the value —
+// that is an acceptable outcome (no CSRF token is issued when no usable
+// session cookie is present).
 func TestGetSessionID_StripsCRLFFromCookies(t *testing.T) {
 	c := New(DefaultConfig())
 	r := httptest.NewRequest("POST", "/", nil)
@@ -47,7 +49,7 @@ func TestGetSessionID_StripsCRLFFromCookies(t *testing.T) {
 	r.Header.Set("Cookie", "session_id=abc\r\nX-Evil: 1")
 
 	id, err := c.getSessionID(r)
-	if err != nil {
+	if err != nil && err != ErrNoSession {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if strings.ContainsAny(id, "\r\n") {

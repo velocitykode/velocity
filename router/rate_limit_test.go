@@ -949,3 +949,69 @@ func TestRateLimit_HeadersOnBlockedRequest(t *testing.T) {
 		t.Error("Expected Retry-After to be set")
 	}
 }
+
+// TestExtractIP_RejectsCommaInjectedXRealIP pins the regression for the
+// bug where X-Real-IP was accepted without sanitisation while
+// X-Forwarded-For was strictly parsed. A client that gets past the
+// trusted-proxy check (or an attacker inside the trust boundary) could
+// send "X-Real-IP: 1.2.3.4, 5.6.7.8" to spoof the throttle key. We now
+// reject anything that isn't a single well-formed IP and fall back to
+// the direct-connection address.
+func TestExtractIP_RejectsCommaInjectedXRealIP(t *testing.T) {
+	trusted, err := ParseTrustedProxies([]string{"192.0.2.1"})
+	if err != nil {
+		t.Fatalf("ParseTrustedProxies: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		header string
+	}{
+		{"comma separated", "1.2.3.4, 5.6.7.8"},
+		{"comma with no space", "1.2.3.4,5.6.7.8"},
+		{"trailing comma", "1.2.3.4,"},
+		{"whitespace separated", "1.2.3.4 5.6.7.8"},
+		{"tab separated", "1.2.3.4\t5.6.7.8"},
+		{"not an ip", "not-an-ip"},
+		{"empty after trim", "   "},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, _ := createTestContext("GET", "/", map[string]string{"X-Real-IP": tt.header})
+			ip := extractIP(ctx, trusted)
+			// Spoof was ignored — fell back to RemoteAddr (httptest default 192.0.2.1).
+			if ip != "192.0.2.1" {
+				t.Errorf("expected fallback to remoteAddr 192.0.2.1, got %q (spoofed header was honoured)", ip)
+			}
+		})
+	}
+
+	// Sanity: a valid single IP is still accepted.
+	ctx, _ := createTestContext("GET", "/", map[string]string{"X-Real-IP": "10.0.0.9"})
+	if ip := extractIP(ctx, trusted); ip != "10.0.0.9" {
+		t.Errorf("valid single IP rejected: got %q, want 10.0.0.9", ip)
+	}
+}
+
+// TestExtractIP_IgnoresXRealIPFromUntrustedPeer confirms that X-Real-IP is
+// still ignored entirely when the direct peer is not a trusted proxy —
+// the sanitisation is additive to the existing trust check, not a
+// replacement for it.
+func TestExtractIP_IgnoresXRealIPFromUntrustedPeer(t *testing.T) {
+	ctx, _ := createTestContext("GET", "/", map[string]string{"X-Real-IP": "10.0.0.1"})
+	// Untrusted: either nil or a different CIDR.
+	ip := extractIP(ctx, nil)
+	if ip != "192.0.2.1" {
+		t.Errorf("untrusted peer: expected RemoteAddr 192.0.2.1, got %q", ip)
+	}
+
+	// Now with a trusted set that does NOT include httptest's default peer.
+	otherTrusted, err := ParseTrustedProxies([]string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("ParseTrustedProxies: %v", err)
+	}
+	ctx2, _ := createTestContext("GET", "/", map[string]string{"X-Real-IP": "203.0.113.9"})
+	if ip := extractIP(ctx2, otherTrusted); ip != "192.0.2.1" {
+		t.Errorf("peer outside trust: expected RemoteAddr 192.0.2.1, got %q", ip)
+	}
+}
