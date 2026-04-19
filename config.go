@@ -398,9 +398,10 @@ func ConfigFromEnv() Config {
 
 	// Mail
 	config.Mail = mail.MailConfig{
-		Driver:      envOrDefault("MAIL_DRIVER", "log"),
-		FromAddress: os.Getenv("MAIL_FROM_ADDRESS"),
-		FromName:    os.Getenv("MAIL_FROM_NAME"),
+		Driver:            envOrDefault("MAIL_DRIVER", "log"),
+		FromAddress:       os.Getenv("MAIL_FROM_ADDRESS"),
+		FromName:          os.Getenv("MAIL_FROM_NAME"),
+		MaxAttachmentSize: envInt64OrDefault("MAIL_MAX_ATTACHMENT_SIZE", mail.DefaultMaxAttachmentSize),
 		Mailgun: mail.MailgunConfig{
 			Domain:            os.Getenv("MAIL_MAILGUN_DOMAIN"),
 			Secret:            os.Getenv("MAIL_MAILGUN_SECRET"),
@@ -456,6 +457,18 @@ func envOrDefault(key, defaultValue string) string {
 func envIntOrDefault(key string, defaultValue int) int {
 	if value := os.Getenv(key); value != "" {
 		if v, err := strconv.Atoi(value); err == nil {
+			return v
+		}
+	}
+	return defaultValue
+}
+
+// envInt64OrDefault reads an int64 from the environment (raw bytes, no
+// K/M/G suffix parsing — the codebase has no precedent for that today).
+// Falls back to defaultValue on empty or unparseable input.
+func envInt64OrDefault(key string, defaultValue int64) int64 {
+	if value := os.Getenv(key); value != "" {
+		if v, err := strconv.ParseInt(value, 10, 64); err == nil {
 			return v
 		}
 	}

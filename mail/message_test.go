@@ -1,7 +1,10 @@
 package mail
 
 import (
+	"context"
+	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -312,5 +315,289 @@ func TestMessageTemplateRejectsTraversal(t *testing.T) {
 	_, err := NewMessage().Template("../../etc/passwd", nil)
 	if err == nil {
 		t.Error("Expected error for path traversal in template name")
+	}
+}
+
+// --- Attachment size regression tests ----------------------------------------
+
+// largeFile creates a temp file of exactly size bytes. It is created with a
+// seek-then-single-byte trick to keep the test fast even at 25 MiB.
+func largeFile(t *testing.T, size int64) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "mail-attach-*.bin")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	defer f.Close()
+	if size > 0 {
+		if _, err := f.Seek(size-1, 0); err != nil {
+			t.Fatalf("Seek: %v", err)
+		}
+		if _, err := f.Write([]byte{0}); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+	}
+	return f.Name()
+}
+
+func TestAttachFile_RejectsOversized(t *testing.T) {
+	path := largeFile(t, DefaultMaxAttachmentSize+1)
+	_, err := NewMessage().AttachFile(path)
+	if err == nil {
+		t.Fatal("expected ErrAttachmentTooLarge, got nil")
+	}
+	if !errors.Is(err, ErrAttachmentTooLarge) {
+		t.Errorf("expected ErrAttachmentTooLarge, got %v", err)
+	}
+}
+
+func TestAttachFile_AcceptsAtLimit(t *testing.T) {
+	path := largeFile(t, DefaultMaxAttachmentSize)
+	msg, err := NewMessage().AttachFile(path)
+	if err != nil {
+		t.Fatalf("expected no error at exact limit, got %v", err)
+	}
+	if got := len(msg.GetAttachments()); got != 1 {
+		t.Errorf("expected 1 attachment, got %d", got)
+	}
+}
+
+func TestAttachData_RejectsOversized(t *testing.T) {
+	data := make([]byte, DefaultMaxAttachmentSize+1)
+	msg := NewMessage().AttachData(data, "big.bin", "application/octet-stream")
+	if err := msg.Err(); err == nil {
+		t.Fatal("expected deferred ErrAttachmentTooLarge on message, got nil")
+	} else if !errors.Is(err, ErrAttachmentTooLarge) {
+		t.Errorf("expected ErrAttachmentTooLarge, got %v", err)
+	}
+	if len(msg.GetAttachments()) != 0 {
+		t.Errorf("oversized attachment must not be appended, got %d", len(msg.GetAttachments()))
+	}
+}
+
+func TestAttachData_AcceptsAtLimit(t *testing.T) {
+	data := make([]byte, DefaultMaxAttachmentSize)
+	msg := NewMessage().AttachData(data, "big.bin", "application/octet-stream")
+	if err := msg.Err(); err != nil {
+		t.Fatalf("expected no error at exact limit, got %v", err)
+	}
+	if len(msg.GetAttachments()) != 1 {
+		t.Errorf("expected 1 attachment, got %d", len(msg.GetAttachments()))
+	}
+}
+
+func TestMaxAttachmentSize_ConfigDefault(t *testing.T) {
+	// Zero-value MailConfig must yield DefaultMaxAttachmentSize, NOT "unlimited".
+	prev := GetDefaultMaxAttachmentSize()
+	t.Cleanup(func() { SetDefaultMaxAttachmentSize(prev) })
+
+	SetDefaultMaxAttachmentSize(0) // simulate zero-value config
+	if got := GetDefaultMaxAttachmentSize(); got != DefaultMaxAttachmentSize {
+		t.Errorf("zero value should resolve to DefaultMaxAttachmentSize=%d, got %d",
+			DefaultMaxAttachmentSize, got)
+	}
+	if got := NewMessage().MaxAttachmentSize(); got != DefaultMaxAttachmentSize {
+		t.Errorf("NewMessage().MaxAttachmentSize() = %d, want %d",
+			got, DefaultMaxAttachmentSize)
+	}
+}
+
+func TestWithMaxAttachmentSize_OverridesDefault(t *testing.T) {
+	msg := NewMessage().WithMaxAttachmentSize(1024)
+	if got := msg.MaxAttachmentSize(); got != 1024 {
+		t.Errorf("expected 1024, got %d", got)
+	}
+	// Zero or negative resets to default.
+	msg.WithMaxAttachmentSize(0)
+	if got := msg.MaxAttachmentSize(); got != DefaultMaxAttachmentSize {
+		t.Errorf("expected DefaultMaxAttachmentSize after 0, got %d", got)
+	}
+}
+
+func TestAttachFile_HonoursPerMessageLimit(t *testing.T) {
+	// Create a 2 KiB file, cap the message at 1 KiB.
+	path := largeFile(t, 2048)
+	_, err := NewMessage().WithMaxAttachmentSize(1024).AttachFile(path)
+	if !errors.Is(err, ErrAttachmentTooLarge) {
+		t.Fatalf("expected ErrAttachmentTooLarge, got %v", err)
+	}
+}
+
+// --- Header / Subject / Address CRLF regression tests -----------------------
+
+func TestHeader_RejectsCRLFInValue(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{"crlf_plus_bcc", "foo\r\nBcc: attacker@evil.com"},
+		{"lf_plus_header", "foo\nX-Injected: true"},
+		{"cr_only", "foo\rBcc: attacker@evil.com"},
+		{"nul_byte", "foo\x00bar"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := NewMessage().Header("X-Test", tc.value)
+			if !errors.Is(msg.Err(), ErrInvalidHeader) {
+				t.Fatalf("expected ErrInvalidHeader, got %v", msg.Err())
+			}
+			if _, ok := msg.GetHeaders()["X-Test"]; ok {
+				t.Error("header must not be stored when validation fails")
+			}
+		})
+	}
+}
+
+func TestHeader_RejectsCRLFInKey(t *testing.T) {
+	cases := []string{
+		"X-Foo\r\n",
+		"X-Foo\n",
+		"X-Foo\r",
+		"X-Foo: bar", // colon terminates the field name
+		"X Foo",      // space inside a token is illegal
+		"",           // empty name
+	}
+	for _, k := range cases {
+		t.Run(k, func(t *testing.T) {
+			msg := NewMessage().Header(k, "value")
+			if !errors.Is(msg.Err(), ErrInvalidHeader) {
+				t.Errorf("key %q: expected ErrInvalidHeader, got %v", k, msg.Err())
+			}
+		})
+	}
+}
+
+func TestHeader_RejectsControlChars(t *testing.T) {
+	// NUL in value
+	m1 := NewMessage().Header("X-Test", "foo\x00bar")
+	if !errors.Is(m1.Err(), ErrInvalidHeader) {
+		t.Errorf("NUL in value: expected ErrInvalidHeader, got %v", m1.Err())
+	}
+	// DEL in value
+	m2 := NewMessage().Header("X-Test", "foo\x7fbar")
+	if !errors.Is(m2.Err(), ErrInvalidHeader) {
+		t.Errorf("DEL in value: expected ErrInvalidHeader, got %v", m2.Err())
+	}
+	// ESC in value
+	m3 := NewMessage().Header("X-Test", "foo\x1bbar")
+	if !errors.Is(m3.Err(), ErrInvalidHeader) {
+		t.Errorf("ESC in value: expected ErrInvalidHeader, got %v", m3.Err())
+	}
+}
+
+func TestSubject_RejectsCRLF(t *testing.T) {
+	msg := NewMessage().Subject("Hello\r\nBcc: attacker@evil.com")
+	if !errors.Is(msg.Err(), ErrInvalidHeader) {
+		t.Fatalf("expected ErrInvalidHeader, got %v", msg.Err())
+	}
+	if msg.GetSubject() != "" {
+		t.Errorf("bad subject must not be stored, got %q", msg.GetSubject())
+	}
+}
+
+func TestTo_RejectsCRLF(t *testing.T) {
+	// CRLF in email
+	msg1 := NewMessage().To("victim@example.com\r\nBcc: evil@evil.com")
+	if !errors.Is(msg1.Err(), ErrInvalidHeader) {
+		t.Errorf("CRLF in email: expected ErrInvalidHeader, got %v", msg1.Err())
+	}
+	if len(msg1.GetTo()) != 0 {
+		t.Error("oversize rejected To must not be appended")
+	}
+	// CRLF in display name
+	msg2 := NewMessage().To("victim@example.com", "Bob\r\nBcc: evil@evil.com")
+	if !errors.Is(msg2.Err(), ErrInvalidHeader) {
+		t.Errorf("CRLF in name: expected ErrInvalidHeader, got %v", msg2.Err())
+	}
+}
+
+func TestFromCCBccReplyTo_RejectsCRLF(t *testing.T) {
+	t.Run("From_email", func(t *testing.T) {
+		msg := NewMessage().From("sender@example.com\r\nBcc: evil@x.com")
+		if !errors.Is(msg.Err(), ErrInvalidHeader) {
+			t.Fatalf("got %v", msg.Err())
+		}
+		if msg.GetFrom().Email != "" {
+			t.Error("rejected From must not be stored")
+		}
+	})
+	t.Run("From_name", func(t *testing.T) {
+		msg := NewMessage().From("sender@example.com", "Evil\r\nX-Injected: 1")
+		if !errors.Is(msg.Err(), ErrInvalidHeader) {
+			t.Fatalf("got %v", msg.Err())
+		}
+	})
+	t.Run("CC", func(t *testing.T) {
+		msg := NewMessage().CC("cc@example.com\nBcc: evil@x.com")
+		if !errors.Is(msg.Err(), ErrInvalidHeader) {
+			t.Fatalf("got %v", msg.Err())
+		}
+	})
+	t.Run("BCC", func(t *testing.T) {
+		msg := NewMessage().BCC("bcc@example.com\r\nBcc: evil@x.com")
+		if !errors.Is(msg.Err(), ErrInvalidHeader) {
+			t.Fatalf("got %v", msg.Err())
+		}
+	})
+	t.Run("ReplyTo", func(t *testing.T) {
+		msg := NewMessage().ReplyTo("r@example.com\r\nBcc: evil@x.com")
+		if !errors.Is(msg.Err(), ErrInvalidHeader) {
+			t.Fatalf("got %v", msg.Err())
+		}
+	})
+}
+
+// --- Error-surfacing tests --------------------------------------------------
+
+func TestManagerSend_RejectsMessageWithSetterError(t *testing.T) {
+	mgr := NewManager()
+	mock := &mockMailer{sent: make([]*Message, 0)}
+	mgr.SetChannel("default", mock)
+
+	msg := NewMessage().
+		To("user@example.com").
+		Subject("hi\r\nBcc: attacker@evil.com"). // bad: accumulates err
+		Body("body")
+
+	err := mgr.Send(context.Background(), "default", msg)
+	if !errors.Is(err, ErrInvalidHeader) {
+		t.Fatalf("Manager.Send must surface msg.Err(); got %v", err)
+	}
+	if mock.SentCount() != 0 {
+		t.Errorf("driver must not be called for a bad message, got %d sends", mock.SentCount())
+	}
+}
+
+func TestCheckedMailer_RejectsMessageWithSetterError(t *testing.T) {
+	mock := &mockMailer{sent: make([]*Message, 0)}
+	cm := &checkedMailer{inner: mock}
+
+	oversized := make([]byte, DefaultMaxAttachmentSize+1)
+	msg := NewMessage().AttachData(oversized, "big.bin", "application/octet-stream")
+
+	err := cm.Send(context.Background(), msg)
+	if !errors.Is(err, ErrAttachmentTooLarge) {
+		t.Fatalf("expected ErrAttachmentTooLarge from checkedMailer.Send, got %v", err)
+	}
+	if mock.SentCount() != 0 {
+		t.Error("inner mailer must not be invoked on deferred error")
+	}
+}
+
+// --- Path coverage: AttachFile happy path with per-message limit ------------
+
+func TestAttachFile_ReadsViaLimitReader(t *testing.T) {
+	// 1 KiB file, 1 MiB limit; succeeds cleanly.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ok.bin")
+	if err := os.WriteFile(path, make([]byte, 1024), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	msg, err := NewMessage().WithMaxAttachmentSize(1 << 20).AttachFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := len(msg.GetAttachments()[0].Data); got != 1024 {
+		t.Errorf("expected 1024 bytes, got %d", got)
 	}
 }
