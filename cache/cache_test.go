@@ -1,6 +1,7 @@
 package cache_test
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sync"
@@ -14,7 +15,7 @@ import (
 func TestMemoryStore(t *testing.T) {
 	store := drivers.NewMemoryStore("test")
 	store.Start()
-	defer store.Close()
+	defer func() { _ = store.Shutdown(context.Background()) }()
 
 	t.Run("GetSet", func(t *testing.T) {
 		// Test Put and Get
@@ -317,7 +318,7 @@ func TestFileStore(t *testing.T) {
 		t.Fatalf("Failed to create file store: %v", err)
 	}
 	store.Start()
-	defer store.Close()
+	defer func() { _ = store.Shutdown(context.Background()) }()
 	defer os.RemoveAll("testdata")
 
 	t.Run("BasicOperations", func(t *testing.T) {
@@ -414,7 +415,7 @@ func TestManager(t *testing.T) {
 	}
 
 	manager := cache.NewManager(config)
-	defer manager.Close()
+	defer func() { _ = manager.Shutdown(context.Background()) }()
 	defer os.RemoveAll("testdata")
 
 	t.Run("DefaultStore", func(t *testing.T) {
@@ -476,7 +477,7 @@ func newTestManager() *cache.Manager {
 
 func TestManagerConvenienceMethods(t *testing.T) {
 	m := newTestManager()
-	defer m.Close()
+	defer func() { _ = m.Shutdown(context.Background()) }()
 
 	t.Run("PutGetHasForget", func(t *testing.T) {
 		err := m.Put("global-key", "global-value", 1*time.Hour)
@@ -530,7 +531,7 @@ func TestManagerConvenienceMethods(t *testing.T) {
 
 func TestManagerGetString(t *testing.T) {
 	m := newTestManager()
-	defer m.Close()
+	defer func() { _ = m.Shutdown(context.Background()) }()
 
 	m.Put("test_str", "hello", 1*time.Hour)
 
@@ -542,7 +543,7 @@ func TestManagerGetString(t *testing.T) {
 
 func TestManagerForever(t *testing.T) {
 	m := newTestManager()
-	defer m.Close()
+	defer func() { _ = m.Shutdown(context.Background()) }()
 
 	err := m.Forever("forever_key", "forever_value")
 	if err != nil {
@@ -557,7 +558,7 @@ func TestManagerForever(t *testing.T) {
 
 func TestManagerFlush(t *testing.T) {
 	m := newTestManager()
-	defer m.Close()
+	defer func() { _ = m.Shutdown(context.Background()) }()
 
 	m.Put("key1", "val1", 1*time.Hour)
 	m.Put("key2", "val2", 1*time.Hour)
@@ -575,7 +576,7 @@ func TestManagerFlush(t *testing.T) {
 
 func TestManagerIncrement(t *testing.T) {
 	m := newTestManager()
-	defer m.Close()
+	defer func() { _ = m.Shutdown(context.Background()) }()
 
 	m.Put("counter", 10, 1*time.Hour)
 
@@ -590,7 +591,7 @@ func TestManagerIncrement(t *testing.T) {
 
 func TestManagerDecrement(t *testing.T) {
 	m := newTestManager()
-	defer m.Close()
+	defer func() { _ = m.Shutdown(context.Background()) }()
 
 	m.Put("counter", 20, 1*time.Hour)
 
@@ -605,7 +606,7 @@ func TestManagerDecrement(t *testing.T) {
 
 func TestManagerRememberForever(t *testing.T) {
 	m := newTestManager()
-	defer m.Close()
+	defer func() { _ = m.Shutdown(context.Background()) }()
 
 	val, err := m.RememberForever("remember_forever_key", func() interface{} {
 		return "computed_value"
@@ -626,7 +627,7 @@ func TestManagerRememberForever(t *testing.T) {
 
 func TestManagerMany(t *testing.T) {
 	m := newTestManager()
-	defer m.Close()
+	defer func() { _ = m.Shutdown(context.Background()) }()
 
 	m.Put("key1", "val1", 1*time.Hour)
 	m.Put("key2", "val2", 1*time.Hour)
@@ -645,7 +646,7 @@ func TestManagerMany(t *testing.T) {
 
 func TestManagerPutMany(t *testing.T) {
 	m := newTestManager()
-	defer m.Close()
+	defer func() { _ = m.Shutdown(context.Background()) }()
 
 	values := map[string]interface{}{
 		"k1": "v1",
@@ -664,7 +665,7 @@ func TestManagerPutMany(t *testing.T) {
 
 func TestManagerGetStore(t *testing.T) {
 	m := newTestManager()
-	defer m.Close()
+	defer func() { _ = m.Shutdown(context.Background()) }()
 
 	store, err := m.Store("memory")
 	if err != nil {

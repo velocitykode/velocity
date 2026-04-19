@@ -86,12 +86,6 @@ func (s *MemoryStore) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// Close stops the cleanup goroutine. Safe to call even if Start() was never called.
-// Deprecated: use Shutdown(ctx) instead.
-func (s *MemoryStore) Close() error {
-	return s.Shutdown(context.Background())
-}
-
 // prefixedKey returns the key with prefix.
 func (s *MemoryStore) prefixedKey(key string) string {
 	return PrefixKey(s.prefix, key)

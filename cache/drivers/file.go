@@ -92,14 +92,8 @@ func (s *FileStore) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// Close stops the background cleanup goroutine. Safe to call multiple times.
-// Deprecated: use Shutdown(ctx) instead.
-func (s *FileStore) Close() error {
-	return s.Shutdown(context.Background())
-}
-
 // cleanupExpired removes expired cache files periodically.
-// It stops when the done channel is closed via Close().
+// It stops when the done channel is closed via Shutdown().
 func (s *FileStore) cleanupExpired() {
 	ticker := time.NewTicker(s.cleanupInterval)
 	defer ticker.Stop()

@@ -1,6 +1,7 @@
 package log
 
 import (
+	"context"
 	"testing"
 )
 
@@ -183,28 +184,28 @@ func TestNewLogger_StackDriver_NoValidChannels(t *testing.T) {
 	}
 }
 
-func TestStackLogger_Close(t *testing.T) {
+func TestStackLogger_Shutdown(t *testing.T) {
 	closed := 0
-	mock1 := &mockCloser{onClose: func() error { closed++; return nil }}
-	mock2 := &mockCloser{onClose: func() error { closed++; return nil }}
+	mock1 := &mockShutdowner{onShutdown: func() error { closed++; return nil }}
+	mock2 := &mockShutdowner{onShutdown: func() error { closed++; return nil }}
 	stack := NewStackLogger(mock1, mock2)
 
-	if err := stack.Close(); err != nil {
-		t.Fatalf("Close() error = %v", err)
+	if err := stack.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
 	}
 	if closed != 2 {
-		t.Errorf("expected 2 Close calls, got %d", closed)
+		t.Errorf("expected 2 Shutdown calls, got %d", closed)
 	}
 }
 
-type mockCloser struct {
+type mockShutdowner struct {
 	mockLogger
-	onClose func() error
+	onShutdown func() error
 }
 
-func (m *mockCloser) Close() error {
-	if m.onClose != nil {
-		return m.onClose()
+func (m *mockShutdowner) Shutdown(_ context.Context) error {
+	if m.onShutdown != nil {
+		return m.onShutdown()
 	}
 	return nil
 }

@@ -169,13 +169,3 @@ func (m *Manager) RunAll(ctx context.Context) error {
 
 	return nil
 }
-
-// StopAll stops all schedulers
-func (m *Manager) StopAll() {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	for _, s := range m.schedulers {
-		s.Stop()
-	}
-}

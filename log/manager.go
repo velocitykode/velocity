@@ -173,19 +173,9 @@ func (s *StackLogger) Shutdown(ctx context.Context) error {
 			if err := shutdowner.Shutdown(ctx); err != nil && firstErr == nil {
 				firstErr = err
 			}
-		} else if closer, ok := l.(Closer); ok {
-			if err := closer.Close(); err != nil && firstErr == nil {
-				firstErr = err
-			}
 		}
 	}
 	return firstErr
-}
-
-// Close closes all underlying loggers that support it.
-// Deprecated: use Shutdown(ctx) instead.
-func (s *StackLogger) Close() error {
-	return s.Shutdown(context.Background())
 }
 
 // NullLogger discards all log messages without any output.

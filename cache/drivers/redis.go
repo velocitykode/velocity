@@ -57,12 +57,6 @@ func (s *RedisStore) Shutdown(ctx context.Context) error {
 	return s.client.Close()
 }
 
-// Close closes the Redis client connection.
-// Deprecated: use Shutdown(ctx) instead.
-func (s *RedisStore) Close() error {
-	return s.Shutdown(context.Background())
-}
-
 // prefixedKey returns the key with prefix.
 func (s *RedisStore) prefixedKey(key string) string {
 	return PrefixKey(s.prefix, key)

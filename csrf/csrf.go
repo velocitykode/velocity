@@ -54,8 +54,8 @@ func New(config *Config) *CSRF {
 
 // Shutdown releases resources held by the CSRF token store. If the
 // underlying store implements contract.ShutdownAware (Shutdown(ctx) error)
-// or exposes a Close() method, it is invoked; otherwise Shutdown is a
-// no-op. The context deadline is honoured.
+// it is invoked; otherwise Shutdown is a no-op. The context deadline is
+// honoured.
 func (c *CSRF) Shutdown(ctx context.Context) error {
 	if c == nil || c.config == nil || c.config.Store == nil {
 		if err := ctx.Err(); err != nil {
@@ -67,9 +67,6 @@ func (c *CSRF) Shutdown(ctx context.Context) error {
 		Shutdown(context.Context) error
 	}); ok {
 		return shutdowner.Shutdown(ctx)
-	}
-	if closer, ok := c.config.Store.(interface{ Close() }); ok {
-		closer.Close()
 	}
 	if err := ctx.Err(); err != nil {
 		return err

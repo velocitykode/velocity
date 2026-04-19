@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"reflect"
 	"sync"
 	"testing"
@@ -52,7 +53,7 @@ func TestNewRedisStore(t *testing.T) {
 				return
 			}
 			if store != nil {
-				defer store.Close()
+				defer func() { _ = store.Shutdown(context.Background()) }()
 				if got := store.GetPrefix(); got != tt.prefix {
 					t.Errorf("GetPrefix() = %v, want %v", got, tt.prefix)
 				}
@@ -145,7 +146,7 @@ func TestRedisStore_Get(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store, mr := newTestRedisStore(t, "")
 			defer mr.Close()
-			defer store.Close()
+			defer func() { _ = store.Shutdown(context.Background()) }()
 
 			tt.setup(store)
 
@@ -164,7 +165,7 @@ func TestRedisStore_Get_Expiration(t *testing.T) {
 	t.Run("returns false when key is expired", func(t *testing.T) {
 		store, mr := newTestRedisStore(t, "")
 		defer mr.Close()
-		defer store.Close()
+		defer func() { _ = store.Shutdown(context.Background()) }()
 
 		store.Put("expired", "value", 100*time.Millisecond)
 
@@ -218,7 +219,7 @@ func TestRedisStore_GetString(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store, mr := newTestRedisStore(t, "")
 			defer mr.Close()
-			defer store.Close()
+			defer func() { _ = store.Shutdown(context.Background()) }()
 
 			tt.setup(store, mr)
 
@@ -255,7 +256,7 @@ func TestRedisStore_Put(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store, mr := newTestRedisStore(t, "")
 			defer mr.Close()
-			defer store.Close()
+			defer func() { _ = store.Shutdown(context.Background()) }()
 
 			err := store.Put(tt.key, tt.value, tt.ttl)
 			if (err != nil) != tt.wantErr {
@@ -276,7 +277,7 @@ func TestRedisStore_Put_MarshalFailure(t *testing.T) {
 	t.Run("returns error when value cannot be marshaled", func(t *testing.T) {
 		store, mr := newTestRedisStore(t, "")
 		defer mr.Close()
-		defer store.Close()
+		defer func() { _ = store.Shutdown(context.Background()) }()
 
 		// Channels cannot be marshaled to JSON
 		ch := make(chan int)
@@ -291,7 +292,7 @@ func TestRedisStore_Put_Overwrites(t *testing.T) {
 	t.Run("overwrites existing value", func(t *testing.T) {
 		store, mr := newTestRedisStore(t, "")
 		defer mr.Close()
-		defer store.Close()
+		defer func() { _ = store.Shutdown(context.Background()) }()
 
 		store.Put("key", "original", time.Hour)
 		store.Put("key", "updated", time.Hour)
@@ -322,7 +323,7 @@ func TestRedisStore_Forever(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store, mr := newTestRedisStore(t, "")
 			defer mr.Close()
-			defer store.Close()
+			defer func() { _ = store.Shutdown(context.Background()) }()
 
 			err := store.Forever(tt.key, tt.value)
 			if (err != nil) != tt.wantErr {
@@ -341,7 +342,7 @@ func TestRedisStore_Forever_DoesNotExpire(t *testing.T) {
 	t.Run("value stored forever does not expire", func(t *testing.T) {
 		store, mr := newTestRedisStore(t, "")
 		defer mr.Close()
-		defer store.Close()
+		defer func() { _ = store.Shutdown(context.Background()) }()
 
 		store.Forever("key", "value")
 
@@ -362,7 +363,7 @@ func TestRedisStore_Forever_MarshalFailure(t *testing.T) {
 	t.Run("returns error when value cannot be marshaled", func(t *testing.T) {
 		store, mr := newTestRedisStore(t, "")
 		defer mr.Close()
-		defer store.Close()
+		defer func() { _ = store.Shutdown(context.Background()) }()
 
 		ch := make(chan int)
 		err := store.Forever("key", ch)
@@ -396,7 +397,7 @@ func TestRedisStore_Forget(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store, mr := newTestRedisStore(t, "")
 			defer mr.Close()
-			defer store.Close()
+			defer func() { _ = store.Shutdown(context.Background()) }()
 
 			tt.setup(store)
 
@@ -416,7 +417,7 @@ func TestRedisStore_Forget_WithPrefix(t *testing.T) {
 	t.Run("removes correct key when prefix is set", func(t *testing.T) {
 		store, mr := newTestRedisStore(t, "myprefix")
 		defer mr.Close()
-		defer store.Close()
+		defer func() { _ = store.Shutdown(context.Background()) }()
 
 		store.Put("key1", "value1", time.Hour)
 		store.Put("key2", "value2", time.Hour)
@@ -439,7 +440,7 @@ func TestRedisStore_Flush(t *testing.T) {
 	t.Run("removes all values", func(t *testing.T) {
 		store, mr := newTestRedisStore(t, "")
 		defer mr.Close()
-		defer store.Close()
+		defer func() { _ = store.Shutdown(context.Background()) }()
 
 		store.Put("key1", "value1", time.Hour)
 		store.Put("key2", "value2", time.Hour)
@@ -492,7 +493,7 @@ func TestRedisStore_Has(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store, mr := newTestRedisStore(t, "")
 			defer mr.Close()
-			defer store.Close()
+			defer func() { _ = store.Shutdown(context.Background()) }()
 
 			tt.setup(store, mr)
 
@@ -552,7 +553,7 @@ func TestRedisStore_Increment(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store, mr := newTestRedisStore(t, "")
 			defer mr.Close()
-			defer store.Close()
+			defer func() { _ = store.Shutdown(context.Background()) }()
 
 			tt.setup(store, mr)
 
@@ -607,7 +608,7 @@ func TestRedisStore_Decrement(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store, mr := newTestRedisStore(t, "")
 			defer mr.Close()
-			defer store.Close()
+			defer func() { _ = store.Shutdown(context.Background()) }()
 
 			tt.setup(store, mr)
 
@@ -656,7 +657,7 @@ func TestRedisStore_Remember(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store, mr := newTestRedisStore(t, "")
 			defer mr.Close()
-			defer store.Close()
+			defer func() { _ = store.Shutdown(context.Background()) }()
 
 			tt.setup(store)
 
@@ -684,7 +685,7 @@ func TestRedisStore_Remember_StoresValue(t *testing.T) {
 	t.Run("stores computed value for subsequent calls", func(t *testing.T) {
 		store, mr := newTestRedisStore(t, "")
 		defer mr.Close()
-		defer store.Close()
+		defer func() { _ = store.Shutdown(context.Background()) }()
 
 		callCount := 0
 		callback := func() interface{} {
@@ -736,7 +737,7 @@ func TestRedisStore_RememberForever(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store, mr := newTestRedisStore(t, "")
 			defer mr.Close()
-			defer store.Close()
+			defer func() { _ = store.Shutdown(context.Background()) }()
 
 			tt.setup(store)
 
@@ -804,7 +805,7 @@ func TestRedisStore_Many(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store, mr := newTestRedisStore(t, "")
 			defer mr.Close()
-			defer store.Close()
+			defer func() { _ = store.Shutdown(context.Background()) }()
 
 			tt.setup(store)
 
@@ -820,7 +821,7 @@ func TestRedisStore_Many_WithPrefix(t *testing.T) {
 	t.Run("retrieves values with prefix correctly", func(t *testing.T) {
 		store, mr := newTestRedisStore(t, "myapp")
 		defer mr.Close()
-		defer store.Close()
+		defer func() { _ = store.Shutdown(context.Background()) }()
 
 		store.Put("key1", "value1", time.Hour)
 		store.Put("key2", "value2", time.Hour)
@@ -838,7 +839,7 @@ func TestRedisStore_PutMany(t *testing.T) {
 	t.Run("stores multiple values", func(t *testing.T) {
 		store, mr := newTestRedisStore(t, "")
 		defer mr.Close()
-		defer store.Close()
+		defer func() { _ = store.Shutdown(context.Background()) }()
 
 		items := map[string]interface{}{
 			"key1": "value1",
@@ -867,7 +868,7 @@ func TestRedisStore_PutMany_EmptyMap(t *testing.T) {
 	t.Run("handles empty map", func(t *testing.T) {
 		store, mr := newTestRedisStore(t, "")
 		defer mr.Close()
-		defer store.Close()
+		defer func() { _ = store.Shutdown(context.Background()) }()
 
 		err := store.PutMany(map[string]interface{}{}, time.Hour)
 		if err != nil {
@@ -880,7 +881,7 @@ func TestRedisStore_PutMany_MarshalFailure(t *testing.T) {
 	t.Run("returns error when any value cannot be marshaled", func(t *testing.T) {
 		store, mr := newTestRedisStore(t, "")
 		defer mr.Close()
-		defer store.Close()
+		defer func() { _ = store.Shutdown(context.Background()) }()
 
 		ch := make(chan int)
 		items := map[string]interface{}{
@@ -910,7 +911,7 @@ func TestRedisStore_GetPrefix(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store, mr := newTestRedisStore(t, tt.prefix)
 			defer mr.Close()
-			defer store.Close()
+			defer func() { _ = store.Shutdown(context.Background()) }()
 
 			if got := store.GetPrefix(); got != tt.want {
 				t.Errorf("GetPrefix() = %v, want %v", got, tt.want)
@@ -931,13 +932,13 @@ func TestRedisStore_PrefixedKeys(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewRedisStore() error = %v", err)
 		}
-		defer store1.Close()
+		defer func() { _ = store1.Shutdown(context.Background()) }()
 
 		store2, err := NewRedisStore("app2", mr.Host(), mr.Server().Addr().Port, "", 0, false)
 		if err != nil {
 			t.Fatalf("NewRedisStore() error = %v", err)
 		}
-		defer store2.Close()
+		defer func() { _ = store2.Shutdown(context.Background()) }()
 
 		store1.Put("key", "value1", time.Hour)
 		store2.Put("key", "value2", time.Hour)
@@ -954,14 +955,14 @@ func TestRedisStore_PrefixedKeys(t *testing.T) {
 	})
 }
 
-func TestRedisStore_Close(t *testing.T) {
+func TestRedisStore_Shutdown(t *testing.T) {
 	t.Run("closes connection successfully", func(t *testing.T) {
 		store, mr := newTestRedisStore(t, "")
 		defer mr.Close()
 
-		err := store.Close()
+		err := store.Shutdown(context.Background())
 		if err != nil {
-			t.Errorf("Close() error = %v", err)
+			t.Errorf("Shutdown() error = %v", err)
 		}
 	})
 }
@@ -970,7 +971,7 @@ func TestRedisStore_ConcurrentAccess(t *testing.T) {
 	t.Run("handles concurrent reads and writes safely", func(t *testing.T) {
 		store, mr := newTestRedisStore(t, "")
 		defer mr.Close()
-		defer store.Close()
+		defer func() { _ = store.Shutdown(context.Background()) }()
 
 		var wg sync.WaitGroup
 		numGoroutines := 10
@@ -1005,7 +1006,7 @@ func TestRedisStore_ConcurrentAccess(t *testing.T) {
 	t.Run("handles concurrent increment safely", func(t *testing.T) {
 		store, mr := newTestRedisStore(t, "")
 		defer mr.Close()
-		defer store.Close()
+		defer func() { _ = store.Shutdown(context.Background()) }()
 
 		mr.Set(store.prefixedKey("counter"), "0")
 
@@ -1047,7 +1048,7 @@ func TestRedisStore_StructValue(t *testing.T) {
 	t.Run("stores and retrieves struct value", func(t *testing.T) {
 		store, mr := newTestRedisStore(t, "")
 		defer mr.Close()
-		defer store.Close()
+		defer func() { _ = store.Shutdown(context.Background()) }()
 
 		original := TestStruct{Name: "test", Count: 42}
 		err := store.Put("struct", original, time.Hour)
@@ -1079,7 +1080,7 @@ func TestRedisStore_NilValue(t *testing.T) {
 	t.Run("stores and retrieves nil value", func(t *testing.T) {
 		store, mr := newTestRedisStore(t, "")
 		defer mr.Close()
-		defer store.Close()
+		defer func() { _ = store.Shutdown(context.Background()) }()
 
 		err := store.Put("nilkey", nil, time.Hour)
 		if err != nil {
@@ -1100,7 +1101,7 @@ func TestRedisStore_EmptyStringKey(t *testing.T) {
 	t.Run("handles empty string key", func(t *testing.T) {
 		store, mr := newTestRedisStore(t, "prefix")
 		defer mr.Close()
-		defer store.Close()
+		defer func() { _ = store.Shutdown(context.Background()) }()
 
 		err := store.Put("", "value", time.Hour)
 		if err != nil {
@@ -1132,7 +1133,7 @@ func TestRedisStore_SpecialCharactersInKey(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store, mr := newTestRedisStore(t, "")
 			defer mr.Close()
-			defer store.Close()
+			defer func() { _ = store.Shutdown(context.Background()) }()
 
 			err := store.Put(tt.key, "value", time.Hour)
 			if err != nil {
@@ -1154,7 +1155,7 @@ func TestRedisStore_LargeValue(t *testing.T) {
 	t.Run("handles large values", func(t *testing.T) {
 		store, mr := newTestRedisStore(t, "")
 		defer mr.Close()
-		defer store.Close()
+		defer func() { _ = store.Shutdown(context.Background()) }()
 
 		// Create a large string (1MB)
 		largeValue := make([]byte, 1024*1024)

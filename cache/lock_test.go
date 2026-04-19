@@ -1,6 +1,7 @@
 package cache_test
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -35,7 +36,7 @@ func newRedisTestManager(t *testing.T) (*cache.Manager, *miniredis.Miniredis) {
 func TestManagerLock_Memory(t *testing.T) {
 	t.Parallel()
 	m := newTestManager()
-	defer m.Close()
+	defer func() { _ = m.Shutdown(context.Background()) }()
 
 	t.Run("GetAndRelease", func(t *testing.T) {
 		t.Parallel()
@@ -223,7 +224,7 @@ func TestManagerLock_Redis(t *testing.T) {
 	t.Parallel()
 	m, mr := newRedisTestManager(t)
 	defer mr.Close()
-	defer m.Close()
+	defer func() { _ = m.Shutdown(context.Background()) }()
 
 	t.Run("GetAndRelease", func(t *testing.T) {
 		lock := m.Lock("redis-get-release")
@@ -394,7 +395,7 @@ func TestManagerLock_UnsupportedDriver(t *testing.T) {
 		},
 	}
 	m := cache.NewManager(config)
-	defer m.Close()
+	defer func() { _ = m.Shutdown(context.Background()) }()
 
 	if m.Lock("key") != nil {
 		t.Fatal("expected nil lock for file store")
@@ -412,7 +413,7 @@ func TestManagerLock_InvalidDefaultStore(t *testing.T) {
 		Stores:  map[string]cache.StoreConfig{},
 	}
 	m := cache.NewManager(config)
-	defer m.Close()
+	defer func() { _ = m.Shutdown(context.Background()) }()
 
 	if m.Lock("key") != nil {
 		t.Fatal("expected nil lock when default store errors")

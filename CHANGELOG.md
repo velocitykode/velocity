@@ -210,6 +210,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **contract.LoginThrottler**: new interface for rate-limiting login attempts. Default implementation is `auth.NoopLoginThrottler`. Wire into session/JWT guards via `SetLoginThrottler`; `Attempt()` now consults the throttler before credential checks and emits `auth.ErrLoginThrottled`.
 
+### Removed — Compat sweep
+Deleted nine deprecated `Close()`/`Stop()` shims and one internal compat wrapper that slipped past the 1.0 audit. No replacements are provided — each call site must migrate to the listed successor. Drivers and manager fallbacks that branched on the now-removed `Close()` interface are simplified to the single `Shutdown(ctx)` path.
+
+- **`cache.Manager.Close()`** and the `Close() error` member of `cache.CacheManager` → `cache.Manager.Shutdown(ctx)`.
+- **`cache/drivers.MemoryStore.Close()`, `FileStore.Close()`, `RedisStore.Close()`** → `Shutdown(ctx)` on each. The `Manager.Shutdown` fallback that re-tried `Close()` on unknown stores is gone; every built-in store implements `ShutdownAware`.
+- **`log.Closer` interface** and the `else if closer, ok := l.(Closer)` branch in `StackLogger.Shutdown` → implement `Shutdowner` (`Shutdown(ctx) error`).
+- **`log.StackLogger.Close()`** → `Shutdown(ctx)`.
+- **`log/drivers.FileLogger.Close()`** → `Shutdown(ctx)`.
+- **`csrf/stores.SessionStore.Close()`** and the `Close()`-shape fallback inside `csrf.CSRF.Shutdown` → `SessionStore.Shutdown(ctx)`.
+- **`grpc.NewError` and `grpc.NewErrorf`** → `grpc.NewGRPCError` / `grpc.NewGRPCErrorf`.
+- **Private `router.parseTrustedProxies`** (unexported compat wrapper) → exported `router.ParseTrustedProxies`.
+- **Scheduler stop chain**: `scheduler.Scheduler.Stop()`, `scheduler.Manager.StopAll()`, `scheduler.Kernel.Stop()`, and the `Stop()` member of the `scheduler.TaskScheduler` interface → `Scheduler.Shutdown(ctx)`. Internal `Run()`'s `<-ctx.Done()` branch now calls `Shutdown(ctx)` directly.
+
 ## [0.0.3] - 2025-12-29
 
 ### Added

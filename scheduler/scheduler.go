@@ -23,7 +23,6 @@ type TaskScheduler interface {
 	Command(command string, args ...string) *Job
 	Run(ctx context.Context) error
 	Shutdown(ctx context.Context) error
-	Stop() // Deprecated: use Shutdown(ctx) instead.
 	Jobs() []*Job
 	SetEventDispatcher(fn func(event interface{}) error)
 	SetEnv(env string)
@@ -219,7 +218,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			s.Stop()
+			_ = s.Shutdown(ctx)
 			return ctx.Err()
 		case <-s.stop:
 			return nil
@@ -268,12 +267,6 @@ func (s *Scheduler) Shutdown(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-}
-
-// Stop stops the scheduler.
-// Deprecated: use Shutdown(ctx) instead.
-func (s *Scheduler) Stop() {
-	s.Shutdown(context.Background())
 }
 
 // runDueJobs executes all jobs that are due. The timezone is snapshotted

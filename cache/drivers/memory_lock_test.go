@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -10,7 +11,7 @@ import (
 func TestMemoryLock(t *testing.T) {
 	store := NewMemoryStore("test_lock")
 	store.Start()
-	defer store.Close()
+	defer func() { _ = store.Shutdown(context.Background()) }()
 
 	t.Run("GetAndRelease", func(t *testing.T) {
 		lock := store.Lock("get-release")
@@ -413,7 +414,7 @@ func TestMemoryLock(t *testing.T) {
 	t.Run("InstanceIsolation", func(t *testing.T) {
 		store2 := NewMemoryStore("test_lock_2")
 		store2.Start()
-		defer store2.Close()
+		defer func() { _ = store2.Shutdown(context.Background()) }()
 
 		lock1 := store.Lock("isolated-key")
 		defer lock1.ForceRelease()

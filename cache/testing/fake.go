@@ -14,6 +14,7 @@
 package testing
 
 import (
+	"context"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
@@ -49,7 +50,7 @@ func FakeRedis(t testing.TB, prefix string) (*drivers.RedisStore, func()) {
 	}
 
 	cleanup := func() {
-		store.Close()
+		_ = store.Shutdown(context.Background())
 		mr.Close()
 	}
 
@@ -88,7 +89,7 @@ func FakeRedisWithServer(t testing.TB, prefix string) (*drivers.RedisStore, *min
 	}
 
 	cleanup := func() {
-		store.Close()
+		_ = store.Shutdown(context.Background())
 		mr.Close()
 	}
 
@@ -114,7 +115,7 @@ func FakeMemory(t testing.TB, prefix string) (*drivers.MemoryStore, func()) {
 	store.Start()
 
 	cleanup := func() {
-		store.Close()
+		_ = store.Shutdown(context.Background())
 	}
 
 	return store, cleanup
@@ -160,7 +161,7 @@ func FakeManager(t testing.TB, prefix string) (*cache.Manager, func()) {
 	manager := cache.NewManager(config)
 
 	cleanup := func() {
-		manager.Close()
+		_ = manager.Shutdown(context.Background())
 		mr.Close()
 	}
 
@@ -195,7 +196,7 @@ func FakeManagerMemory(t testing.TB, prefix string) (*cache.Manager, func()) {
 	manager := cache.NewManager(config)
 
 	cleanup := func() {
-		manager.Close()
+		_ = manager.Shutdown(context.Background())
 	}
 
 	return manager, cleanup

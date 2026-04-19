@@ -71,12 +71,6 @@ func (s *SessionStore) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// Close stops the background cleanup goroutine.
-// Deprecated: use Shutdown(ctx) instead.
-func (s *SessionStore) Close() {
-	_ = s.Shutdown(context.Background())
-}
-
 // Get retrieves a token for the given session ID
 func (s *SessionStore) Get(id string) (string, error) {
 	s.mu.RLock()

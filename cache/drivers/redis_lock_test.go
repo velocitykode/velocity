@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -21,7 +22,7 @@ func setupRedisForLock(t *testing.T) (*RedisStore, *miniredis.Miniredis, func())
 		t.Fatalf("failed to create redis store: %v", err)
 	}
 	cleanup := func() {
-		store.Close()
+		_ = store.Shutdown(context.Background())
 		mr.Close()
 	}
 	return store, mr, cleanup

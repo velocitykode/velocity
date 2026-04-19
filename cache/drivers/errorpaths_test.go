@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -19,7 +20,7 @@ import (
 func TestMemoryStore_ForgetDuringRemember(t *testing.T) {
 	store := NewMemoryStore("")
 	store.Start()
-	defer store.Close()
+	defer func() { _ = store.Shutdown(context.Background()) }()
 
 	const iters = 200
 	var wg sync.WaitGroup
@@ -109,7 +110,7 @@ func TestFileStore_PermissionDeniedPut(t *testing.T) {
 func TestMemoryStore_ConcurrentIncrement(t *testing.T) {
 	store := NewMemoryStore("")
 	store.Start()
-	defer store.Close()
+	defer func() { _ = store.Shutdown(context.Background()) }()
 
 	const workers = 8
 	const iters = 50

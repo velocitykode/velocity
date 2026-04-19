@@ -13,12 +13,6 @@ type Shutdowner interface {
 	Shutdown(ctx context.Context) error
 }
 
-// Closer is an optional interface loggers may implement for graceful shutdown.
-// Deprecated: implement Shutdowner instead.
-type Closer interface {
-	Close() error
-}
-
 // Level represents the severity of a log message
 type Level int
 

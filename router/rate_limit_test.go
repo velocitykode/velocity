@@ -301,9 +301,9 @@ func TestRateLimit_WithMessage(t *testing.T) {
 
 func TestExtractIP_XForwardedFor(t *testing.T) {
 	// Trust headers only when proxy is trusted — httptest default RemoteAddr is 192.0.2.1:1234
-	trusted, err := parseTrustedProxies([]string{"192.0.2.1"})
+	trusted, err := ParseTrustedProxies([]string{"192.0.2.1"})
 	if err != nil {
-		t.Fatalf("parseTrustedProxies: %v", err)
+		t.Fatalf("ParseTrustedProxies: %v", err)
 	}
 
 	// The rewrite now follows RFC 7239 right-most-trusted semantics:
@@ -340,9 +340,9 @@ func TestExtractIP_XForwardedFor_UntrustedProxy(t *testing.T) {
 }
 
 func TestExtractIP_XRealIP(t *testing.T) {
-	trusted, err := parseTrustedProxies([]string{"192.0.2.1"})
+	trusted, err := ParseTrustedProxies([]string{"192.0.2.1"})
 	if err != nil {
-		t.Fatalf("parseTrustedProxies: %v", err)
+		t.Fatalf("ParseTrustedProxies: %v", err)
 	}
 	ctx, _ := createTestContext("GET", "/", map[string]string{"X-Real-IP": "10.0.0.1"})
 	ip := extractIP(ctx, trusted)
@@ -377,9 +377,9 @@ func TestExtractIP_IPv6WithPort(t *testing.T) {
 
 func TestExtractIP_XForwardedForPriority(t *testing.T) {
 	// X-Forwarded-For should take priority over X-Real-IP when proxy is trusted
-	trusted, err := parseTrustedProxies([]string{"192.0.2.1"})
+	trusted, err := ParseTrustedProxies([]string{"192.0.2.1"})
 	if err != nil {
-		t.Fatalf("parseTrustedProxies: %v", err)
+		t.Fatalf("ParseTrustedProxies: %v", err)
 	}
 	ctx, _ := createTestContext("GET", "/", map[string]string{
 		"X-Forwarded-For": "192.168.1.1",

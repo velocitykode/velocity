@@ -381,15 +381,6 @@ func RateLimitByIPE(requests int, window time.Duration, opts ...RateLimitOption)
 	}, opts...), nil
 }
 
-// parseTrustedProxies parses a list of IP/CIDR strings into net.IPNet entries,
-// returning a non-nil error if any entry is malformed.
-//
-// Deprecated: kept as a package-private thin wrapper for backward
-// compatibility; new code should use ParseTrustedProxies directly.
-func parseTrustedProxies(proxies []string) (*TrustedProxies, error) {
-	return ParseTrustedProxies(proxies)
-}
-
 // extractIP extracts the client IP address from the request.
 // Only trusts X-Forwarded-For and X-Real-IP when the direct connection
 // comes from a trusted proxy. Otherwise, uses RemoteAddr.

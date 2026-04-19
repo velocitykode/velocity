@@ -52,11 +52,6 @@ func (k *Kernel) Run(ctx context.Context) error {
 	return k.scheduler.Run(ctx)
 }
 
-// Stop stops the scheduler
-func (k *Kernel) Stop() {
-	k.scheduler.Stop()
-}
-
 // Jobs returns all scheduled jobs
 func (k *Kernel) Jobs() []*Job {
 	return k.scheduler.Jobs()

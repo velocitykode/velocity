@@ -26,7 +26,7 @@ func TestNewFileStore_CreatesRootOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFileStore: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Shutdown(context.Background()) }()
 
 	// Construction should have created the root.
 	info, err := os.Stat(root)
@@ -49,7 +49,7 @@ func TestFileStore_GetCacheFilePath_CachesShardDirs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFileStore: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Shutdown(context.Background()) }()
 
 	// Call twice with the same key — shardDirs must only hold one entry
 	// for that shard.
@@ -100,7 +100,7 @@ func TestFileStore_GetCacheFilePath_CreatesShardOnDisk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFileStore: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Shutdown(context.Background()) }()
 
 	path := store.getCacheFilePath("some-key")
 	shardDir := filepath.Dir(path)
@@ -142,7 +142,7 @@ func TestNewFileStoreWithOptions_ConfigurableInterval(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewFileStoreWithOptions: %v", err)
 			}
-			defer store.Close()
+			defer func() { _ = store.Shutdown(context.Background()) }()
 			if store.cleanupInterval != tc.want {
 				t.Errorf("cleanupInterval = %v, want %v", store.cleanupInterval, tc.want)
 			}
@@ -162,7 +162,7 @@ func TestFileStore_CleanupIntervalSweepsExpired(t *testing.T) {
 		t.Fatalf("NewFileStoreWithOptions: %v", err)
 	}
 	store.Start()
-	defer store.Close()
+	defer func() { _ = store.Shutdown(context.Background()) }()
 
 	// Put an item that expires almost immediately.
 	if err := store.Put("vanish", "value", 20*time.Millisecond); err != nil {
@@ -196,8 +196,8 @@ func TestFileStore_Shutdown(t *testing.T) {
 	if err := store.Shutdown(context.TODO()); err != nil {
 		t.Errorf("second Shutdown: %v", err)
 	}
-	// Close after Shutdown must also be idempotent.
-	if err := store.Close(); err != nil {
-		t.Errorf("Close after Shutdown: %v", err)
+	// Third shutdown must also be idempotent.
+	if err := store.Shutdown(context.TODO()); err != nil {
+		t.Errorf("third Shutdown: %v", err)
 	}
 }

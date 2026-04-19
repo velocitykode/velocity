@@ -49,20 +49,6 @@ func NewGRPCErrorf(code codes.Code, format string, args ...interface{}) error {
 	return status.Errorf(code, format, args...)
 }
 
-// NewError is an alias for NewGRPCError.
-//
-// Deprecated: Use NewGRPCError for consistency across the framework.
-func NewError(code codes.Code, msg string) error {
-	return NewGRPCError(code, msg)
-}
-
-// NewErrorf is an alias for NewGRPCErrorf.
-//
-// Deprecated: Use NewGRPCErrorf for consistency across the framework.
-func NewErrorf(code codes.Code, format string, args ...interface{}) error {
-	return NewGRPCErrorf(code, format, args...)
-}
-
 // Unauthenticated creates an unauthenticated error with a custom message
 func Unauthenticated(msg string) error {
 	return status.Error(codes.Unauthenticated, msg)

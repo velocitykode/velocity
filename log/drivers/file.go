@@ -172,9 +172,3 @@ func (f *FileLogger) Shutdown(ctx context.Context) error {
 	}
 	return nil
 }
-
-// Close closes the underlying file handle.
-// Deprecated: use Shutdown(ctx) instead.
-func (f *FileLogger) Close() error {
-	return f.Shutdown(context.Background())
-}
