@@ -43,6 +43,12 @@ func (nullLogger) Info(string, ...any)  {}
 func (nullLogger) Warn(string, ...any)  {}
 func (nullLogger) Error(string, ...any) {}
 
+// retryPushTimeout bounds how long the worker will wait when re-queueing
+// a failed job for retry. It is intentionally short so that a slow driver
+// (e.g. Redis partition, DB lock) cannot hold shutdown open. If the retry
+// push exceeds this budget the job is marked failed instead of requeued.
+const retryPushTimeout = 5 * time.Second
+
 // Worker processes jobs from a queue
 type Worker struct {
 	queue           Driver
@@ -130,10 +136,11 @@ func WithWorkerLogger(l WorkerLogger) Option {
 	}
 }
 
-// NewWorker creates a new queue worker
+// NewWorker creates a new queue worker. The worker is inert until Start is
+// called — no background goroutines are spawned and no context is bound
+// until then, so callers are free to construct a Worker and wire it into a
+// bootstrap sequence without creating an orphaned context.
 func NewWorker(queue Driver, queueName string, handler func(Job) error, opts ...Option) *Worker {
-	ctx, cancel := context.WithCancel(context.Background())
-
 	w := &Worker{
 		queue:       queue,
 		queueName:   queueName,
@@ -141,8 +148,6 @@ func NewWorker(queue Driver, queueName string, handler func(Job) error, opts ...
 		concurrency: 1,
 		interval:    100 * time.Millisecond,
 		maxRetries:  3,
-		ctx:         ctx,
-		cancel:      cancel,
 	}
 
 	for _, opt := range opts {
@@ -160,12 +165,31 @@ func NewWorker(queue Driver, queueName string, handler func(Job) error, opts ...
 	return w
 }
 
-// Start begins processing jobs.
+// Start begins processing jobs. The parent context controls the worker's
+// lifecycle: when it cancels, all pump goroutines observe cancellation
+// through the internal worker context and drain via Stop-style semantics.
+// This lets application-level shutdown contexts (e.g. App.Shutdown) flow
+// through to job-execution contexts without requiring a separate Stop call.
+//
+// Passing a nil context is equivalent to context.Background() — the worker
+// then only exits when Stop is invoked.
 //
 // Each pump goroutine is wrapped via async.Go so any unrecovered panic in
 // processJob or the handler is reported via the framework panic logger
 // instead of tearing down the process.
-func (w *Worker) Start() {
+//
+// Start is idempotent: a second call while the worker is already running
+// is a no-op.
+func (w *Worker) Start(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if w.ctx != nil {
+		// Already started — do not spawn additional pumps.
+		return
+	}
+	w.ctx, w.cancel = context.WithCancel(ctx)
+
 	for i := 0; i < w.concurrency; i++ {
 		w.wg.Add(1)
 		id := i
@@ -176,9 +200,12 @@ func (w *Worker) Start() {
 	}
 }
 
-// Stop gracefully stops the worker
+// Stop gracefully stops the worker. Safe to call before Start (no-op) or
+// multiple times.
 func (w *Worker) Stop() {
-	w.cancel()
+	if w.cancel != nil {
+		w.cancel()
+	}
 	w.wg.Wait()
 }
 
@@ -309,7 +336,14 @@ func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, 
 			"error", err,
 		)
 		dispatchJobRetrying(w.dispatchEvent, ctx, jobType, w.queueName, attempt, maxAttempts, err, backoff)
-		if pushErr := w.queue.PushDelayedCtx(w.ctx, job, backoff, w.queueName); pushErr != nil {
+		// Use a detached context with a short timeout for the retry push so a
+		// slow driver (Redis partition, DB lock wait) cannot hold shutdown open
+		// past its deadline. If the push exceeds the timeout the job is marked
+		// failed — losing the retry is preferable to hanging the shutdown path.
+		pushCtx, pushCancel := context.WithTimeout(context.Background(), retryPushTimeout)
+		pushErr := w.queue.PushDelayedCtx(pushCtx, job, backoff, w.queueName)
+		pushCancel()
+		if pushErr != nil {
 			w.logger.Error("Failed to re-queue job for retry", "error", pushErr)
 			w.failJob(ctx, job, jobType, err, duration, attempt, maxAttempts)
 		}
