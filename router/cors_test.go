@@ -13,8 +13,8 @@ func TestDefaultCORSConfig_EmptyOrigins(t *testing.T) {
 	}
 }
 
-func TestPermissiveCORSConfig_WildcardOrigins(t *testing.T) {
-	cfg := PermissiveCORSConfig()
+func TestInsecureAllowAllCORS_WildcardOrigins(t *testing.T) {
+	cfg := InsecureAllowAllCORS()
 
 	if len(cfg.AllowedOrigins) != 1 || cfg.AllowedOrigins[0] != "*" {
 		t.Errorf("expected AllowedOrigins [\"*\"], got %v", cfg.AllowedOrigins)
@@ -47,7 +47,7 @@ func TestCORS_DefaultConfig_RejectsCrossOrigin(t *testing.T) {
 }
 
 func TestCORS_PermissiveConfig_AllowsAllOrigins(t *testing.T) {
-	middleware := CORS(PermissiveCORSConfig())
+	middleware := CORS(InsecureAllowAllCORS())
 
 	handler := middleware(func(c *Context) error {
 		return nil
@@ -66,7 +66,7 @@ func TestCORS_PermissiveConfig_AllowsAllOrigins(t *testing.T) {
 }
 
 func TestCORS_PermissiveConfig_Preflight(t *testing.T) {
-	middleware := CORS(PermissiveCORSConfig())
+	middleware := CORS(InsecureAllowAllCORS())
 
 	handler := middleware(func(c *Context) error {
 		t.Error("next handler should not be called for preflight")
@@ -139,7 +139,7 @@ func TestCORS_SpecificOrigins(t *testing.T) {
 }
 
 func TestCORS_NoOriginHeader_PassesThrough(t *testing.T) {
-	middleware := CORS(PermissiveCORSConfig())
+	middleware := CORS(InsecureAllowAllCORS())
 
 	nextCalled := false
 	handler := middleware(func(c *Context) error {
@@ -222,7 +222,7 @@ func TestCORS_AllowCredentials_Preflight(t *testing.T) {
 }
 
 func TestCORS_ExposedHeaders(t *testing.T) {
-	cfg := PermissiveCORSConfig()
+	cfg := InsecureAllowAllCORS()
 	cfg.ExposedHeaders = []string{"X-Custom-Header", "X-Request-Id"}
 	handler := CORS(cfg)(func(c *Context) error { return nil })
 
@@ -258,7 +258,7 @@ func TestCORS_WildcardWithCredentials_EchoesOrigin(t *testing.T) {
 	// When AllowedOrigins is ["*"] with AllowCredentials, the middleware cannot
 	// send "Access-Control-Allow-Origin: *" (browsers reject it with credentials).
 	// Instead it echoes the request origin, effectively allowing any origin with cookies.
-	cfg := PermissiveCORSConfig()
+	cfg := InsecureAllowAllCORS()
 	cfg.AllowCredentials = true
 	handler := CORS(cfg)(func(c *Context) error { return nil })
 

@@ -32,7 +32,7 @@ type CORSConfig struct {
 
 // DefaultCORSConfig returns a CORSConfig with secure defaults. AllowedOrigins
 // is empty, which rejects all cross-origin requests until the developer
-// explicitly configures allowed origins. Use PermissiveCORSConfig for
+// explicitly configures allowed origins. Use InsecureAllowAllCORS for
 // development when you want to allow all origins.
 func DefaultCORSConfig() CORSConfig {
 	return CORSConfig{
@@ -42,13 +42,13 @@ func DefaultCORSConfig() CORSConfig {
 	}
 }
 
-// PermissiveCORSConfig returns a CORSConfig that allows all origins. This is
-// useful during development but should not be used in production.
-//
-// Deprecated: PermissiveCORSConfig allows all origins. When combined with
-// AllowCredentials, the request origin is echoed back, allowing any site to
-// make credentialed requests. Use DefaultCORSConfig with explicit AllowedOrigins instead.
-func PermissiveCORSConfig() CORSConfig {
+// InsecureAllowAllCORS returns a CORSConfig that allows all origins via a
+// wildcard AllowedOrigins. The name carries the warning: this configuration
+// is intended for development only. When combined with AllowCredentials the
+// middleware echoes the request origin back, which permits any site to make
+// credentialed requests against the API. Production traffic should use
+// DefaultCORSConfig with an explicit AllowedOrigins allowlist.
+func InsecureAllowAllCORS() CORSConfig {
 	return CORSConfig{
 		AllowedOrigins: []string{"*"},
 		AllowedMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},

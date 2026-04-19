@@ -95,6 +95,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Files removed: `view/helpers.go`, `view/helpers_test.go`.
 
+- **Renamed — `router.PermissiveCORSConfig()` → `router.InsecureAllowAllCORS()`.** Zero external callers; deprecation marker dropped. The new name carries the warning the old one relied on a doc comment to communicate: combined with `AllowCredentials`, wildcard origins echo the request origin back, allowing any site to make credentialed requests. Production traffic should use `DefaultCORSConfig` with an explicit allowlist.
+
 - **Clarified — `view/` is the public rendering surface.** `view/` stays the stable façade; `bond/` is the Inertia.js protocol implementation and is not intended for direct import by application code. `view/` re-exposes the prop API so consumers never need to import `bond`:
   - Types: `view.Props`, `view.SharePropsFunc`, `view.LazyProp` (deprecated — use `view.OptionalProp`), `view.OptionalProp`, `view.AlwaysProp`, `view.DeferProp` — identity-preserving type aliases over the `bond` types.
   - Helpers: `view.Lazy` (deprecated — use `view.Optional`), `view.Optional`, `view.Always`, `view.Defer` — forwarding functions with mirrored deprecation guidance.
