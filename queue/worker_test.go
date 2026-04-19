@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -47,7 +48,7 @@ func TestWorker(t *testing.T) {
 			}
 		}
 
-		worker.Start()
+		worker.Start(context.Background())
 		waitFor(t, 5*time.Second, func() bool {
 			return atomic.LoadInt32(&processed) == 5
 		})
@@ -78,7 +79,7 @@ func TestWorker(t *testing.T) {
 			}
 		}
 
-		worker.Start()
+		worker.Start(context.Background())
 		waitFor(t, 5*time.Second, func() bool {
 			return atomic.LoadInt32(&processed) == 10
 		})
@@ -115,7 +116,7 @@ func TestWorker(t *testing.T) {
 			}
 		}
 
-		worker.Start()
+		worker.Start(context.Background())
 		waitFor(t, 5*time.Second, func() bool {
 			return atomic.LoadInt32(&processed) >= 6
 		})
@@ -156,7 +157,7 @@ func TestWorker(t *testing.T) {
 			return j.Handle()
 		}, WithInterval(50*time.Millisecond), WithMaxRetries(1), WithTimeout(1*time.Second))
 
-		worker.Start()
+		worker.Start(context.Background())
 		waitFor(t, 10*time.Second, func() bool {
 			return atomic.LoadInt32(&timedOut) == 1
 		})
@@ -189,7 +190,7 @@ func TestGlobalWorker(t *testing.T) {
 		atomic.AddInt32(&processed, 1)
 		return nil
 	}, WithConcurrency(2))
-	worker.Start()
+	worker.Start(context.Background())
 
 	waitFor(t, 5*time.Second, func() bool {
 		return atomic.LoadInt32(&processed) == 3
@@ -233,7 +234,7 @@ func TestWorker_RetryOnFailure(t *testing.T) {
 		WithBackoff(FixedBackoff(0)),
 	)
 
-	worker.Start()
+	worker.Start(context.Background())
 	waitFor(t, 10*time.Second, func() bool {
 		return atomic.LoadInt32(&attempts) >= 3
 	})
@@ -278,7 +279,7 @@ func TestWorker_ExhaustsRetries(t *testing.T) {
 		WithBackoff(FixedBackoff(0)),
 	)
 
-	worker.Start()
+	worker.Start(context.Background())
 	waitFor(t, 10*time.Second, func() bool {
 		return atomic.LoadInt32(&failed) >= 1
 	})
@@ -327,7 +328,7 @@ func TestWorker_NoRetryWhenMaxRetriesIsOne(t *testing.T) {
 		WithMaxRetries(1),
 	)
 
-	worker.Start()
+	worker.Start(context.Background())
 	waitFor(t, 5*time.Second, func() bool {
 		return atomic.LoadInt32(&failed) >= 1
 	})
@@ -390,7 +391,7 @@ func TestWorker_RetryDeciderStopsRetry(t *testing.T) {
 		WithBackoff(FixedBackoff(0)),
 	)
 
-	worker.Start()
+	worker.Start(context.Background())
 	waitFor(t, 5*time.Second, func() bool {
 		return atomic.LoadInt32(&failed) >= 1
 	})
@@ -453,7 +454,7 @@ func TestWorker_MaxAttempterInterface(t *testing.T) {
 		WithBackoff(FixedBackoff(0)),
 	)
 
-	worker.Start()
+	worker.Start(context.Background())
 	waitFor(t, 10*time.Second, func() bool {
 		return atomic.LoadInt32(&failed) >= 1
 	})
@@ -543,7 +544,7 @@ func TestWorker_BackofferInterface(t *testing.T) {
 		WithMaxRetries(5),
 	)
 
-	worker.Start()
+	worker.Start(context.Background())
 	waitFor(t, 10*time.Second, func() bool {
 		return atomic.LoadInt32(&attempts) >= 3
 	})
@@ -552,5 +553,199 @@ func TestWorker_BackofferInterface(t *testing.T) {
 	gotAttempts := atomic.LoadInt32(&attempts)
 	if gotAttempts != 3 {
 		t.Errorf("Expected 3 attempts (2 failures with Backoffer delays + 1 success), got %d", gotAttempts)
+	}
+}
+
+// TestWorker_CtxCancelPropagatesToJobExecution verifies that cancelling the
+// context passed to Worker.Start propagates down into the per-job context
+// observed by the job-execution select in processJob. This guards against
+// the regression where the worker previously owned a context derived from
+// context.Background() and ignored the parent context entirely, so
+// application-level shutdown deadlines could not abort an in-flight job.
+//
+// The handler blocks on time.Sleep. Before the fix, cancelling the parent
+// ctx had no effect: the worker's internal ctx was rooted at Background(),
+// so Stop() was the only way to abort. After the fix, cancelling parent
+// ctx cancels worker ctx, which cancels jobCtx, which makes processJob's
+// select observe <-jobCtx.Done() and return, letting Stop() complete.
+func TestWorker_CtxCancelPropagatesToJobExecution(t *testing.T) {
+	q := NewMemoryDriver()
+	q.Start()
+	defer q.Shutdown(context.Background())
+
+	handlerStarted := make(chan struct{})
+	var once sync.Once
+
+	// Handler blocks far longer than any test deadline; it will only unblock
+	// when abandoned by the worker on ctx cancel (processJob's select returns
+	// via <-jobCtx.Done() and the handler's goroutine leaks briefly).
+	job := &TestJob{
+		ID:      "ctx-propagation",
+		Message: "blocks until abandoned",
+		Handler: func() error {
+			once.Do(func() { close(handlerStarted) })
+			time.Sleep(60 * time.Second)
+			return nil
+		},
+	}
+
+	if err := q.PushCtx(context.Background(), job, "ctx-prop-queue"); err != nil {
+		t.Fatalf("Push failed: %v", err)
+	}
+
+	parentCtx, parentCancel := context.WithCancel(context.Background())
+	defer parentCancel()
+
+	worker := NewWorker(q, "ctx-prop-queue", func(j Job) error {
+		return j.Handle()
+	}, WithInterval(10*time.Millisecond), WithMaxRetries(1), WithTimeout(60*time.Second))
+
+	worker.Start(parentCtx)
+
+	// Wait for the handler to actually start processing the job.
+	select {
+	case <-handlerStarted:
+	case <-time.After(2 * time.Second):
+		worker.Stop()
+		t.Fatal("handler never started; worker did not pick up job")
+	}
+
+	// Cancel the parent context. If ctx propagation is wired correctly,
+	// this alone cancels worker.ctx → jobCtx, which makes processJob's
+	// select observe <-jobCtx.Done() and return. The pump goroutines then
+	// observe <-w.ctx.Done() on their next loop iteration and exit.
+	//
+	// We intentionally do NOT call worker.Stop() to force exit; the test
+	// relies purely on parent ctx propagation to drive shutdown. Waiting
+	// on the worker's internal WaitGroup directly verifies that the pumps
+	// exited on their own.
+	parentCancel()
+
+	done := make(chan struct{})
+	go func() {
+		worker.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		// Last-ditch cleanup to avoid leaked goroutines confusing later tests.
+		worker.Stop()
+		t.Fatal("worker pumps did not exit after parent ctx cancel within 3s " +
+			"(ctx propagation bug — worker ctx is not derived from parent)")
+	}
+}
+
+// slowPushDriver wraps MemoryDriver so PushDelayedCtx blocks until the
+// driver's unblock channel is closed (or the test's timeout fires). This
+// models a Redis partition or DB lock wait during a retry-requeue.
+type slowPushDriver struct {
+	*MemoryDriver
+	unblock     chan struct{}
+	pushEntered chan struct{}
+	once        sync.Once
+	enteredOnce sync.Once
+}
+
+func newSlowPushDriver() *slowPushDriver {
+	return &slowPushDriver{
+		MemoryDriver: NewMemoryDriver(),
+		unblock:      make(chan struct{}),
+		pushEntered:  make(chan struct{}),
+	}
+}
+
+func (d *slowPushDriver) PushDelayedCtx(ctx context.Context, job Job, delay time.Duration, queue ...string) error {
+	d.enteredOnce.Do(func() { close(d.pushEntered) })
+	// Model a Redis network partition or DB lock wait: the driver's
+	// underlying network call is unresponsive to ctx cancellation until
+	// some external unblock happens. This forces the worker to use a
+	// separate bounded context so it can move on even when the driver is
+	// genuinely stuck. We deliberately do NOT select on <-ctx.Done() here —
+	// if the worker passed its own w.ctx and relied on Stop() cancelling
+	// it, this push would still hang. The fix under test supplies a
+	// short-timeout detached ctx that fires its own Done() regardless.
+	deadline, hasDeadline := ctx.Deadline()
+	if !hasDeadline {
+		// The worker is not using a bounded ctx — this is the buggy case.
+		// Block forever until explicitly unblocked by the test.
+		<-d.unblock
+		return d.MemoryDriver.PushDelayedCtx(ctx, job, delay, queue...)
+	}
+	// Bounded ctx — wait for its deadline (simulates driver still hanging
+	// on its network call until the worker's timeout fires).
+	select {
+	case <-d.unblock:
+		return d.MemoryDriver.PushDelayedCtx(ctx, job, delay, queue...)
+	case <-time.After(time.Until(deadline) + 50*time.Millisecond):
+		return context.DeadlineExceeded
+	}
+}
+
+func (d *slowPushDriver) release() {
+	d.once.Do(func() { close(d.unblock) })
+}
+
+// TestWorker_RetryPushBoundedDuringShutdown verifies that a slow
+// PushDelayedCtx (simulating a Redis partition or DB lock) does not hold
+// the worker's Stop() call open past the retry-push timeout. The retry
+// push runs on a detached context with a short timeout; shutdown must
+// complete within that budget plus slack.
+func TestWorker_RetryPushBoundedDuringShutdown(t *testing.T) {
+	driver := newSlowPushDriver()
+	driver.Start()
+	defer driver.Shutdown(context.Background())
+	defer driver.release() // ensure test cleanup even on failure
+
+	// Push a job that will fail, triggering the retry path that pushes back.
+	job := &TestJob{
+		ID:      "retry-bounded",
+		Message: "fail once to trigger retry push",
+		Handler: func() error {
+			return errors.New("force retry")
+		},
+	}
+	if err := driver.PushCtx(context.Background(), job, "retry-bound-queue"); err != nil {
+		t.Fatalf("Push failed: %v", err)
+	}
+
+	worker := NewWorker(driver, "retry-bound-queue", func(j Job) error {
+		return j.Handle()
+	},
+		WithInterval(10*time.Millisecond),
+		WithMaxRetries(5), // ensure retry branch is taken, not failJob
+		WithBackoff(FixedBackoff(0)),
+	)
+
+	worker.Start(context.Background())
+
+	// Wait until the retry push is in-flight (blocked on the slow driver).
+	select {
+	case <-driver.pushEntered:
+	case <-time.After(5 * time.Second):
+		worker.Stop()
+		t.Fatal("PushDelayedCtx never entered; worker did not reach retry path")
+	}
+
+	// Shutdown must complete within retryPushTimeout + slack, not hang forever.
+	done := make(chan struct{})
+	start := time.Now()
+	go func() {
+		worker.Stop()
+		close(done)
+	}()
+
+	maxWait := retryPushTimeout + 3*time.Second
+	select {
+	case <-done:
+		elapsed := time.Since(start)
+		if elapsed > maxWait {
+			t.Errorf("Stop took %v, expected <= %v", elapsed, maxWait)
+		}
+	case <-time.After(maxWait):
+		driver.release() // unblock the driver so the goroutine can exit
+		<-done
+		t.Fatalf("Stop did not complete within %v (retry push hung)", maxWait)
 	}
 }

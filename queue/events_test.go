@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/velocitykode/velocity/trace"
 	testsync "github.com/velocitykode/velocity/testing"
+	"github.com/velocitykode/velocity/trace"
 )
 
 func TestEventNames(t *testing.T) {
@@ -457,7 +457,7 @@ func TestWorkerEventDispatching(t *testing.T) {
 		}, WithInterval(10*time.Millisecond))
 		worker.SetEventDispatcher(dispatcher)
 
-		worker.Start()
+		worker.Start(context.Background())
 		defer worker.Stop()
 
 		testsync.Eventually(t, func() bool {
@@ -515,7 +515,7 @@ func TestWorkerEventDispatching(t *testing.T) {
 		}, WithInterval(10*time.Millisecond), WithMaxRetries(1))
 		worker.SetEventDispatcher(dispatcher)
 
-		worker.Start()
+		worker.Start(context.Background())
 		defer worker.Stop()
 
 		testsync.Eventually(t, func() bool {

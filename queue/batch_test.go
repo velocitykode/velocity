@@ -555,7 +555,7 @@ func TestBatch_WorkerIntegration(t *testing.T) {
 		return job.Handle()
 	}, WithInterval(10*time.Millisecond), WithMaxRetries(0))
 
-	worker.Start()
+	worker.Start(context.Background())
 	defer worker.Stop()
 
 	testsync.Eventually(t, batch.Finished, 2*time.Second, "batch jobs processed")
@@ -591,7 +591,7 @@ func TestBatch_CancelledJobSkipped(t *testing.T) {
 		return job.Handle()
 	}, WithInterval(10*time.Millisecond))
 
-	worker.Start()
+	worker.Start(context.Background())
 	defer worker.Stop()
 
 	// Skipped jobs should decrement pendingJobs so batch reaches Finished,
