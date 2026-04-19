@@ -1,6 +1,7 @@
 package console
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -46,13 +47,16 @@ func QueueWork(driver queue.Driver, opts QueueWorkOptions) error {
 
 	cli.Info(fmt.Sprintf("Processing jobs from queue: %s", queueName))
 
-	w.Start()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w.Start(ctx)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
 	cli.Info("Shutting down worker...")
+	cancel()
 	w.Stop()
 	cli.Success("Done")
 
