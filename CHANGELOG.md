@@ -21,10 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `MAIL_POSTMARK_TOKEN`, `MAIL_POSTMARK_MESSAGE_STREAM` (old: `POSTMARK_*`)
   - `DB_MYSQL_TLS` is still read, but now via `ConfigFromEnv` → `DBConfig.TLS`; the mysql driver no longer reaches for `os.Getenv`.
   - `DB_SSL_MODE` is still read, but now via `ConfigFromEnv` → `DBConfig.SSLMode`; the postgres driver no longer reaches for `os.Getenv`.
-- **`APP_KEY` is mandatory outside `APP_ENV=testing`.** `velocity.New` returns `velocity.ErrNoAppKey` when the key is missing. Generate one with `vel key:generate`.
+- **`APP_KEY` is mandatory outside `APP_ENV=testing` and `APP_ENV=development`.** `velocity.New` returns `velocity.ErrNoAppKey` when the key is missing in any other environment (including unset `APP_ENV`, which most production deployments have). `APP_ENV=testing` bypasses the check silently; `APP_ENV=development` bypasses it with a boot-time `a.Log.Warn(...)` so developers see that crypto is disabled without being blocked. Generate a key with `vel key:generate`.
 - **Queue driver startup never falls back silently.** `QUEUE_DRIVER=redis` with an unreachable Redis, or `QUEUE_DRIVER=database` without a DB connection, now fail app boot. To keep the in-memory driver, set `QUEUE_DRIVER=memory` explicitly.
 - **ORM query builder returns errors instead of panicking.** Every chain step (`Where`, `WhereIn`, `OrderBy`, `GroupBy`, `Having`, `Select`, `Pluck`, …) captures its first validation error into `Query[T].err`. Terminal methods (`Get`, `First`, `Count`, `Update`, `Delete`, `ForceDelete`, `Pluck`, `InsertGetId`) return `q.err` ahead of executing. Call `q.Err()` for mid-chain inspection. Tests that used `require.Panics` on malformed identifiers must switch to asserting an error return.
-- **ORM `Manager` methods now take a `context.Context`.** `Raw`, `Exec`, `Begin`, `Transaction` are context-aware. Pass `ctx` from the request handler or `context.Background()` from startup code. `Manager.Close()` is removed — use `Shutdown(ctx)`.
+- **ORM `Manager` methods now take a `context.Context`.** `Raw`, `Exec`, `Begin`, `Transaction` are context-aware. Pass `ctx` from the request handler or `context.Background()` from startup code. `Manager.Close()` is removed — use `Shutdown(ctx)`. Note: the query builder (`orm.Query[T]`) remains permissive — it falls back to `context.Background()` when `.WithContext(ctx)` is not called. For cancellation in request handlers, call `.WithContext(ctx)` explicitly; the tighter `Manager`-level context discipline does not propagate into the builder chain automatically.
 - **ORM `Database` interface slimmed.** `SetTypedEventDispatcher` is gone; `SetEventDispatcher(func(any) error)` is the sole event wiring API and matches `contract.EventDispatcherAware`.
 - **ORM driver interface simplified.** Non-Context `Query`/`QueryRow`/`Exec`/`Begin` removed. Use `QueryContext`/`QueryRowContext`/`ExecContext`/`BeginTx(ctx, opts)`.
 - **Queue driver interface slimmed.** Non-Context `Push`/`PushDelayed`/`Pop`/`Close` removed. Use `PushCtx`/`PushDelayedCtx`/`PopCtx`/`Shutdown(ctx)`.
@@ -34,10 +34,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   The canonical path for application code is `velocity.X`. `chain.X` and `app.X` are implementation homes — imported by framework internals and by third-party service providers that need to embed or reference those types, not by application code. The `velocity-cli` generators and `velocity-template`/`velocity-template-api` starters emit `*velocity.Routing`, `*velocity.Commands`, and so on; the chain paths are not recommended for new code.
 
+### Intentional deprecations (scoped)
+
+The 1.0 API surface ships with **no backward-compat shims** — every 0.x name that was marked `Deprecated:` has been deleted or renamed. Two deliberate exceptions, both scoped and signposted:
+
+- **`view.Lazy` / `view.LazyProp` → `view.Optional` / `view.OptionalProp`.** Mirrors Inertia.js's own `Inertia::lazy()` sunset. The type aliases and forwarding functions exist so application code that had already adopted the 0.x names does not break at the type-check step; migration is a mechanical rename. No removal target — tracks upstream Inertia.js.
+- **Crypto v0 wire-format dual-read.** `crypto.Decrypt` accepts both the new `v1:` sentinel envelope and legacy pre-sweep payloads for one release cycle. Every v0 decrypt dispatches `crypto.legacy_decrypt` and logs a one-shot WARN. **Removed in v2.0** — operators must rotate session cookies and re-encrypt stored ciphertext before upgrading. This is the transition window the crypto sweep needs; without it, a 1.0 upgrade would invalidate every existing session cookie the moment it deploys.
+
+Everything else — the Close()/Stop() shims, legacy env-var fallbacks, ORM `EventName()`, router `PermissiveCORSConfig`, the `validate/` package, etc. — is deleted outright, with migration notes in the sections below.
+
 ### Added
 
 - **`velocity.BuildInfo`** — single source of truth for version metadata (`Version`, `Commit`, `Date`). Populated at build time via `-ldflags` from the `Makefile` `build` target and `console.Build`. Defaults to `"1.0.0-rc.1"`/`"devel"`/`"unknown"` for `go run` / tests.
-- **`velocity.ErrNoAppKey`** — sentinel returned by `New` when `APP_KEY`/`CRYPTO_KEY` is unset outside `APP_ENV=testing`.
+- **`velocity.ErrNoAppKey`** — sentinel returned by `New` when `APP_KEY`/`CRYPTO_KEY` is unset outside `APP_ENV=testing` / `APP_ENV=development` (the dev bypass logs a boot-time WARN instead of erroring, so local workflows aren't blocked).
 - **`contract.EventDispatcherAware`** — uniform `SetEventDispatcher(func(any) error)` interface. Every subsystem (cache, queue, scheduler, router, ORM, mail, csrf, view/bond, crypto, notification) implements it; bootstrap wires them all via a single interface assertion. A new `event_dispatcher_aware.go` holds compile-time `var _ contract.EventDispatcherAware = (*X)(nil)` checks so signature drift fails the build.
 - **`app.RegisterExtension[T]` / `app.ExtensionAs[T]`** — generic typed accessors for `Services.Extensions`. `RegisterExtension` errors on duplicate keys; `ExtensionAs` returns a wrapped error for missing keys or type mismatches. The underlying `map[string]any` is still accessible but callers are encouraged to use the helpers.
 - **`SERVER_READ_HEADER_TIMEOUT`** (default 10s) controls `http.Server.ReadHeaderTimeout`. `BaseContext` now returns the app-level shutdown context so handlers observe graceful shutdown.
@@ -128,17 +137,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rejection the root would produce anyway. This gives callers a clearer error.
 
 ### Changed — Validation consolidation
-- The `validate` package is now a deprecated thin shim that forwards every call to
-  `validation`. Every exported symbol (`Rules`, `Messages`, `Check`, `CheckData`,
-  `CheckWithDB`, `Errors`, `FormRequest`, `WithMessages`, `WithAuthorization`, and
-  `Form[T]`) is annotated `// Deprecated:` with a one-line migration hint.
-  **Migration:** replace `validate.Check(r, validate.Rules{...})` (map of slices)
-  with `validation.Check(r, validation.Rules{...})` using pipe-separated strings
-  (`"required|min:3"`). `validate.Form[T](ctx)` is still the only entry point that
-  needs `router.Context` and remains supported as a shim.
-- `validation.Result` is the single error-carrying type. Callers get it directly
-  from `validation.Check*`; the shim still returns `*validate.Errors` with the
-  same shape for backwards compatibility.
+- `validation.Result` is the single error-carrying type returned from
+  `validation.Check*`. (The `validate/` package — which previously wrapped
+  `validation` — has been deleted entirely; see Migration from 0.x above.)
 - Added sentinel `validation.ErrValidationFailed` for `errors.Is` checks. The
   existing `router.ErrValidationAborted` (introduced in ebc9168) is unchanged and
   remains the signal that a redirect response has already been written.

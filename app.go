@@ -36,9 +36,9 @@ var BuildInfo = struct {
 }
 
 // ErrNoAppKey is returned from New when APP_KEY (or CRYPTO_KEY) is unset in
-// a non-testing environment. The fix is to generate one via `vel key:generate`
-// and set it in the environment before boot.
-var ErrNoAppKey = errors.New("velocity: APP_KEY is required in non-testing environments (run `vel key:generate`)")
+// a non-testing, non-development environment. The fix is to generate one
+// via `vel key:generate` and set it in the environment before boot.
+var ErrNoAppKey = errors.New("velocity: APP_KEY is required outside APP_ENV=testing or APP_ENV=development (run `vel key:generate`)")
 
 // App represents the Velocity application container.
 // It owns all framework subsystem instances and provides them to the consumer.
@@ -111,7 +111,12 @@ func New(opts ...Option) (*App, error) {
 
 	// 3. Initialize crypto (auth/csrf may need it)
 	if a.config.Crypto.Key == "" {
-		if a.config.Env != "testing" {
+		switch a.config.Env {
+		case "testing":
+			// Silent bypass — test harness wires its own keys as needed.
+		case "development":
+			a.Log.Warn("APP_KEY is unset — crypto subsystem disabled. Run `vel key:generate` before exercising auth/csrf/session flows.")
+		default:
 			cancel()
 			return nil, ErrNoAppKey
 		}
