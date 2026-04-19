@@ -76,6 +76,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Files removed: `view/helpers.go`, `view/helpers_test.go`.
 
+- **Unified event naming on `Name() string` across `orm`, `events`, `scheduler`, `router`.** `orm.QueryExecuted.EventName()`, `orm.QueryFailed.EventName()`, and `orm.TxRecover.EventName()` are removed; the canonical method is `Name() string` (matching `events.Event`, `scheduler.Event`, and `router.Event`). The `orm.Event` interface now requires `Name() string` instead of `EventName() string`. The previous `Deprecated:` markers on the `Name()` shims are gone with the `EventName()` originals. Migration: rename any `e.EventName()` call to `e.Name()`.
+
 - **Renamed — `router.PermissiveCORSConfig()` → `router.InsecureAllowAllCORS()`.** Zero external callers; deprecation marker dropped. The new name carries the warning the old one relied on a doc comment to communicate: combined with `AllowCredentials`, wildcard origins echo the request origin back, allowing any site to make credentialed requests. Production traffic should use `DefaultCORSConfig` with an explicit allowlist.
 
 - **Clarified — `view/` is the public rendering surface.** `view/` stays the stable façade; `bond/` is the Inertia.js protocol implementation and is not intended for direct import by application code. `view/` re-exposes the prop API so consumers never need to import `bond`:

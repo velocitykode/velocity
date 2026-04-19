@@ -12,8 +12,8 @@ import (
 // interface and returns the documented "orm.tx_recover" name.
 func TestEventInterface_TxRecover(t *testing.T) {
 	var e Event = &TxRecover{}
-	if got := e.EventName(); got != "orm.tx_recover" {
-		t.Fatalf("TxRecover.EventName = %q, want %q", got, "orm.tx_recover")
+	if got := e.Name(); got != "orm.tx_recover" {
+		t.Fatalf("TxRecover.Name = %q, want %q", got, "orm.tx_recover")
 	}
 }
 
@@ -58,8 +58,8 @@ func TestManager_SetLogger_StoresLogger(t *testing.T) {
 	if captured == nil {
 		t.Fatal("typed dispatcher did not receive TxRecover event")
 	}
-	if captured.EventName() != "orm.tx_recover" {
-		t.Errorf("TxRecover.EventName = %q, want %q", captured.EventName(), "orm.tx_recover")
+	if captured.Name() != "orm.tx_recover" {
+		t.Errorf("TxRecover.Name = %q, want %q", captured.Name(), "orm.tx_recover")
 	}
 }
 

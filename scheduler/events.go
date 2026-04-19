@@ -7,10 +7,9 @@ import (
 	"github.com/velocitykode/velocity/trace"
 )
 
-// Event is the typed surface for scheduler events. Matches router.Event
-// (Name() string) so dispatchers can accept both packages' events through
-// the same interface. The orm package uses EventName() for historical
-// reasons; its types still expose Name() so they satisfy this shape too.
+// Event is the typed surface for scheduler events. Matches the shape of
+// events.Event, orm.Event, and router.Event so dispatchers can accept
+// events from any package through a single interface.
 type Event interface {
 	Name() string
 }

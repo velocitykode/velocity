@@ -44,7 +44,7 @@ func (c *testEventCollector) findEvent(predicate func(interface{}) bool) interfa
 	return nil
 }
 
-func TestQueryExecutedEventName(t *testing.T) {
+func TestQueryExecutedName(t *testing.T) {
 	event := &QueryExecuted{}
 	if got := event.Name(); got != "query.executed" {
 		t.Errorf("QueryExecuted.Name() = %v, want %v", got, "query.executed")

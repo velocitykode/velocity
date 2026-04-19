@@ -10,16 +10,16 @@ import (
 // new Event interface and returns the documented event name.
 func TestEventInterface_QueryExecuted(t *testing.T) {
 	var e Event = &QueryExecuted{}
-	if got := e.EventName(); got != "query.executed" {
-		t.Fatalf("QueryExecuted.EventName = %q, want %q", got, "query.executed")
+	if got := e.Name(); got != "query.executed" {
+		t.Fatalf("QueryExecuted.Name = %q, want %q", got, "query.executed")
 	}
 }
 
 // TestEventInterface_QueryFailed ensures QueryFailed satisfies Event.
 func TestEventInterface_QueryFailed(t *testing.T) {
 	var e Event = &QueryFailed{}
-	if got := e.EventName(); got != "query.failed" {
-		t.Fatalf("QueryFailed.EventName = %q, want %q", got, "query.failed")
+	if got := e.Name(); got != "query.failed" {
+		t.Fatalf("QueryFailed.Name = %q, want %q", got, "query.failed")
 	}
 }
 
@@ -54,8 +54,8 @@ func TestManager_SetEventDispatcher_ReceivesEvent(t *testing.T) {
 	if !ok {
 		t.Fatalf("received event is not *QueryExecuted: %T", received)
 	}
-	if q.EventName() != "query.executed" {
-		t.Errorf("EventName = %q, want %q", q.EventName(), "query.executed")
+	if q.Name() != "query.executed" {
+		t.Errorf("Name = %q, want %q", q.Name(), "query.executed")
 	}
 }
 

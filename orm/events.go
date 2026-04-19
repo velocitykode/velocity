@@ -7,13 +7,13 @@ import (
 	"time"
 )
 
-// Event is the typed contract every ORM event satisfies. Dispatchers receive
-// Event — not interface{} — so handlers can inspect the event name before
-// attempting a type assertion.
+// Event is the typed contract every ORM event satisfies. Matches the shape of
+// events.Event and scheduler.Event so dispatchers can accept events from any
+// package through a single interface.
 //
 // Naming convention: package.snake_case (e.g. "query.executed", "query.failed").
 type Event interface {
-	EventName() string
+	Name() string
 }
 
 // QueryExecuted is dispatched when a database query completes
@@ -31,17 +31,9 @@ type QueryExecuted struct {
 	ParentID     string // Parent span ID for correlation
 }
 
-// EventName returns the canonical event name.
-func (e *QueryExecuted) EventName() string {
-	return "query.executed"
-}
-
-// Name is retained for backward compatibility with consumers that predate the
-// Event interface. Prefer EventName.
-//
-// Deprecated: use EventName.
+// Name returns the canonical event name.
 func (e *QueryExecuted) Name() string {
-	return e.EventName()
+	return "query.executed"
 }
 
 // QueryFailed is dispatched when a database query fails
@@ -56,17 +48,9 @@ type QueryFailed struct {
 	ParentID   string // Parent span ID for correlation
 }
 
-// EventName returns the canonical event name.
-func (e *QueryFailed) EventName() string {
-	return "query.failed"
-}
-
-// Name is retained for backward compatibility with consumers that predate the
-// Event interface. Prefer EventName.
-//
-// Deprecated: use EventName.
+// Name returns the canonical event name.
 func (e *QueryFailed) Name() string {
-	return e.EventName()
+	return "query.failed"
 }
 
 // TxRecover is dispatched when the Manager.Transaction helper recovers from
@@ -80,8 +64,8 @@ type TxRecover struct {
 	RollbackErr string // the rollback failure message
 }
 
-// EventName returns the canonical event name.
-func (e *TxRecover) EventName() string {
+// Name returns the canonical event name.
+func (e *TxRecover) Name() string {
 	return "orm.tx_recover"
 }
 
