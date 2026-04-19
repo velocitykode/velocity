@@ -117,11 +117,12 @@ func (a *App) runCommand(name string, args []string) error {
 	if cmd, ok := reg.get(name); ok {
 		return cmd.run(a, args)
 	}
-	cli.Error(fmt.Sprintf("Unknown command: %s", name))
-	cli.Newline()
+	// Return the error instead of os.Exit(1) so deferred cleanup (notably
+	// Serve()'s shutdownCancel and any caller-installed defers) gets a chance
+	// to run. The top-level caller (main.go via Serve() → Run()) is
+	// responsible for converting the returned error into a non-zero exit code.
 	a.printHelp()
-	os.Exit(1)
-	return nil
+	return fmt.Errorf("vel: unknown command %q", name)
 }
 
 func (a *App) printHelp() {

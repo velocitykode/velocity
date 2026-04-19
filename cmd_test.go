@@ -1,6 +1,7 @@
 package velocity
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -142,6 +143,63 @@ func TestRunCmd_NoArgsListsUserCommands(t *testing.T) {
 	cmd, _ := newCommandRegistry().get("run")
 	if err := cmd.run(a, nil); err != nil {
 		t.Errorf("run cmd with no args returned error: %v", err)
+	}
+}
+
+// TestApp_RunUnknownCommand_ReturnsError asserts that dispatching an unknown
+// CLI token returns an error instead of calling os.Exit(1). The os.Exit
+// path would bypass Serve()'s deferred shutdownCancel and any caller-
+// installed defers; returning the error lets those run. If this test
+// completes at all (instead of terminating the test binary) we know
+// os.Exit was not invoked.
+func TestApp_RunUnknownCommand_ReturnsError(t *testing.T) {
+	a, err := NewTestApp()
+	if err != nil {
+		t.Fatalf("NewTestApp: %v", err)
+	}
+
+	saved := os.Args
+	os.Args = []string{"vel", "nonexistent"}
+	t.Cleanup(func() { os.Args = saved })
+
+	err = a.Run()
+	if err == nil {
+		t.Fatal("Run() with unknown command returned nil error, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "nonexistent") {
+		t.Errorf("Run() error = %q, want message containing %q", err.Error(), "nonexistent")
+	}
+}
+
+// TestRunCommand_UnknownCustomCommand_ReturnsError covers the same
+// regression for the "vel run <name>" dispatcher inside runCmd. The
+// unknown-custom-command branch also previously called os.Exit(1); it
+// must return an error instead so Serve()'s shutdownCancel can fire.
+func TestRunCommand_UnknownCustomCommand_ReturnsError(t *testing.T) {
+	a, err := NewTestApp()
+	if err != nil {
+		t.Fatalf("NewTestApp: %v", err)
+	}
+
+	cmd, _ := newCommandRegistry().get("run")
+	err = cmd.run(a, []string{"no-such-chain-command"})
+	if err == nil {
+		t.Fatal("run cmd with unknown chain command returned nil error, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "no-such-chain-command") {
+		t.Errorf("run cmd error = %q, want message containing %q", err.Error(), "no-such-chain-command")
+	}
+}
+
+// TestRequireMakeName_ReturnsErrorWhenEmpty asserts the shared helper used
+// by make:* commands returns an error (rather than os.Exit) when the
+// required name argument is missing. Exits would skip deferred cleanup.
+func TestRequireMakeName_ReturnsErrorWhenEmpty(t *testing.T) {
+	if err := requireMakeName(nil, "Middleware", "make:middleware"); err == nil {
+		t.Fatal("requireMakeName(nil) returned nil error, want non-nil")
+	}
+	if err := requireMakeName([]string{"Foo"}, "Middleware", "make:middleware"); err != nil {
+		t.Errorf("requireMakeName with arg returned error %v, want nil", err)
 	}
 }
 

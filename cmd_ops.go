@@ -2,11 +2,9 @@ package velocity
 
 import (
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 
-	cli "github.com/velocitykode/velocity-cli"
 	"github.com/velocitykode/velocity/console"
 )
 
@@ -217,10 +215,8 @@ func (runCmd) run(a *App, args []string) error {
 	cmdName := args[0]
 	cmd, ok := a.commands.Get(cmdName)
 	if !ok {
-		cli.Error(fmt.Sprintf("Unknown command: %s", cmdName))
-		cli.Newline()
 		a.printUserCommands()
-		os.Exit(1)
+		return fmt.Errorf("vel: unknown command %q", cmdName)
 	}
 	return cmd.Handle(a.Services, args[1:])
 }
