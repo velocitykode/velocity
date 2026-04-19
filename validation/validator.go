@@ -116,7 +116,7 @@ func (v *defaultValidator) Validate(data interface{}, rules Rules) (*ValidatedDa
 	defer v.mu.RUnlock()
 
 	validated := &ValidatedData{
-		data:   make(map[string]interface{}),
+		data: make(map[string]interface{}),
 		errors: ValidationErrors{
 			Errors:       make(map[string][]string),
 			RulesByField: make(map[string][]string),

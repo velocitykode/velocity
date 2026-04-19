@@ -24,11 +24,11 @@ type Hasher interface {
 
 // BcryptHasher implements Hasher using bcrypt
 type BcryptHasher struct {
-	cost            int
-	requestedCost   int  // original value passed to NewBcryptHasher / SetCost
-	clampedAtInit   bool // true when the constructor had to raise cost to the secure minimum
-	logger          Logger
-	mu              sync.RWMutex
+	cost          int
+	requestedCost int  // original value passed to NewBcryptHasher / SetCost
+	clampedAtInit bool // true when the constructor had to raise cost to the secure minimum
+	logger        Logger
+	mu            sync.RWMutex
 }
 
 // NewBcryptHasher creates a new bcrypt hasher.
