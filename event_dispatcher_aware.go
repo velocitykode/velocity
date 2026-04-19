@@ -6,6 +6,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	cryptodrv "github.com/velocitykode/velocity/crypto/drivers"
 	"github.com/velocitykode/velocity/csrf"
+	velgrpc "github.com/velocitykode/velocity/grpc"
 	"github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/notification"
 	"github.com/velocitykode/velocity/orm"
@@ -32,5 +33,13 @@ var (
 	_ contract.EventDispatcherAware = (*queue.Worker)(nil)
 	_ contract.EventDispatcherAware = (*router.VelocityRouterV2)(nil)
 	_ contract.EventDispatcherAware = (*scheduler.Scheduler)(nil)
+	_ contract.EventDispatcherAware = (*velgrpc.Server)(nil)
 	_ contract.EventDispatcherAware = (*view.Engine)(nil)
+)
+
+// Compile-time checks that subsystems holding background goroutines or
+// connections implement contract.ShutdownAware so App.Shutdown can thread
+// its deadline through every layer.
+var (
+	_ contract.ShutdownAware = (*velgrpc.Server)(nil)
 )

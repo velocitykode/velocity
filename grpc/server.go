@@ -32,6 +32,12 @@ type Server struct {
 
 	// Registration functions to call after server is built
 	registrations []RegistrationFunc
+
+	// eventDispatcher is optional; when set via SetEventDispatcher, the
+	// Server emits events to the framework dispatcher. Guarded by eventMu
+	// so framework wiring and event-firing hot paths never race.
+	eventMu         sync.RWMutex
+	eventDispatcher func(event any) error
 }
 
 // ServerOption configures the Server
@@ -318,6 +324,31 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		s.Stop()
 		return ctx.Err()
 	}
+}
+
+// SetEventDispatcher wires an event dispatcher into the Server. Safe to
+// call before or after Start/StartAsync; mutex-protected so framework
+// bootstrap can re-wire the dispatcher without racing the request path.
+//
+// Passing a nil fn clears the dispatcher and reverts the Server to a
+// no-op emission state.
+func (s *Server) SetEventDispatcher(fn func(event any) error) {
+	s.eventMu.Lock()
+	s.eventDispatcher = fn
+	s.eventMu.Unlock()
+}
+
+// dispatchEvent fires an event if a dispatcher is configured. Failures
+// from the dispatcher are swallowed — the gRPC request path must never
+// fail because of an event sink.
+func (s *Server) dispatchEvent(evt any) {
+	s.eventMu.RLock()
+	fn := s.eventDispatcher
+	s.eventMu.RUnlock()
+	if fn == nil {
+		return
+	}
+	_ = fn(evt)
 }
 
 // Address returns the address the server is listening on.
