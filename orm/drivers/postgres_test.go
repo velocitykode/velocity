@@ -169,7 +169,7 @@ func TestPostgresGrammar(t *testing.T) {
 			"users",
 			map[string]any{
 				"name":       "Updated Name",
-				"updated_at": "NOW()",
+				"updated_at": RawSQL("NOW()"),
 			},
 			[]Condition{
 				{Column: "id", Operator: "=", Value: 1, Type: "and"},
@@ -181,8 +181,10 @@ func TestPostgresGrammar(t *testing.T) {
 			t.Errorf("SQL missing expected parts: %s", sql)
 		}
 
-		// Note: map iteration order is not guaranteed
-		if len(args) != 2 { // name and id (updated_at uses NOW())
+		// Note: map iteration order is not guaranteed.
+		// name is bound; updated_at is a RawSQL sentinel (emitted verbatim);
+		// id is bound.
+		if len(args) != 2 {
 			t.Errorf("Expected 2 args, got %d", len(args))
 		}
 	})
