@@ -86,17 +86,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Removed:** `cache.DefaultConfig()`, `cache.Config.Validate()` — never called. `cache.StoreConfig.Validate()` stays; it's called from `Manager.createStore`.
   - **Removed:** `cache.StoreConfig.Table` — reserved for a never-implemented database driver and never read.
   - **Removed:** `config.ChannelConfig.MaxSize`, `.MaxBackups`, `.Format` — never read; `log.Manager.createLogger` reads Driver/Level/Path/MaxAge/Options only.
-- **`view/` / `bond/` deduplication.** `view/` is now a thin façade over `bond/` with no overlapping types. Deleted:
-  - `view.Props` type alias (use `bond.Props`).
-  - `view.SharePropsFunc` type alias (use `func(*http.Request) (bond.Props, error)` inline, or call `(*view.Engine).SetSharePropsFunc` directly).
-  - `view.Lazy`, `view.Optional`, `view.Always`, `view.Defer`, `view.LazyProp` — all were shims re-exporting bond helpers. Import `bond` and call `bond.Lazy` / `bond.Optional` / `bond.Always` / `bond.Defer` directly.
-  - `view.SimpleFlashProvider`, `view.SimpleValidationProvider` — in-memory scaffolding that was never wired to production code; cookie-based flash (`ctx.WithErrors` / `ctx.WithInput` + `bond/flash.go`) is the supported flow.
-  - `view.Success`, `view.Error` — placeholder helpers that only called `http.Redirect`. Use `http.Redirect` or `(*view.Engine).Redirect` directly.
-  - `view.LoadTemplateFromFile` — a two-line `os.ReadFile` wrapper. Call `os.ReadFile` at startup.
-  - `view.DefaultViewConfig`, `view.Config.Validate` — unused helpers.
-  - `(*view.Engine).RenderWithErrors` — unused; build a `bond.Props` with `"errors"`/`"old"` keys and call `Render` directly, or rely on the automatic flash-cookie injection in `bond.Render`.
+- **`view/` dead-code cleanup.** Deleted from `view/`:
+  - `view.SimpleFlashProvider`, `view.SimpleValidationProvider` — in-memory scaffolding never wired to production; cookie-based flash (`ctx.WithErrors` / `ctx.WithInput` + `bond/flash.go`) is the supported flow.
+  - `view.Success`, `view.Error` — placeholder helpers that only called `http.Redirect`. Call `http.Redirect` or `(*view.Engine).Redirect` directly.
+  - `view.LoadTemplateFromFile` — a two-line `os.ReadFile` wrapper.
+  - `view.DefaultViewConfig`, `view.Config.Validate` — unused.
+  - `(*view.Engine).RenderWithErrors` — unused; cookie-flash injection handles the flow at render time.
 
-  The `view/helpers.go` + `view/helpers_test.go` files are gone; prop-type assertions in tests should import `bond` directly.
+  Files removed: `view/helpers.go`, `view/helpers_test.go`.
+
+- **Clarified — `view/` is the public rendering surface.** `view/` stays the stable façade; `bond/` is the Inertia.js protocol implementation and is not intended for direct import by application code. `view/` re-exposes the prop API so consumers never need to import `bond`:
+  - Types: `view.Props`, `view.SharePropsFunc`, `view.LazyProp` (deprecated — use `view.OptionalProp`), `view.OptionalProp`, `view.AlwaysProp`, `view.DeferProp` — identity-preserving type aliases over the `bond` types.
+  - Helpers: `view.Lazy` (deprecated — use `view.Optional`), `view.Optional`, `view.Always`, `view.Defer` — forwarding functions with mirrored deprecation guidance.
+  - The `Deprecated: use Optional` marker on `view.Lazy` / `view.LazyProp` mirrors the same marker on `bond.Lazy` / `bond.LazyProp` so consumers see the Inertia.js sunset guidance at the facade layer without having to chase through protocol docs.
+
+  Upgrade: if your app imports `bond` directly (`import "github.com/velocitykode/velocity/bond"`), swap the import for `view` and rename `bond.X` → `view.X`. Because the types are aliases (not fresh definitions), `view.Props{}` and `bond.Props{}` are the same Go type at runtime — no conversion needed for gradual migration.
 
 ### Security — Kernel-enforced file-path containment (`os.Root`)
 - **Removed** `router.ValidateFilePathWithin(path, root string) (string, error)` along

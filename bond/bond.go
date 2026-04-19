@@ -1,3 +1,8 @@
+// Package bond implements the Inertia.js protocol for Velocity's view layer.
+//
+// Application code should import "velocity/view" instead; bond's types are
+// exported for framework-internal use and for adapters that need protocol-
+// level access.
 package bond
 
 import (

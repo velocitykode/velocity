@@ -1,10 +1,13 @@
-// Package view is the framework's view layer — a thin façade over bond/ that
-// translates framework configuration into an Inertia adapter and implements
-// contract.ViewEngine for router.Context.
+// Package view is the Velocity framework's rendering layer.
 //
-// Prop helpers (Always, Lazy, Optional, Defer, Merge, Once, Scroll) live in
-// bond/ — the Inertia protocol package. Import bond directly when you need
-// them in handler code; view does not re-export them.
+// Consumer code should import view, not bond: view exposes the stable public
+// surface (Props, prop helpers, Engine, Render, Redirect) and delegates to an
+// underlying protocol implementation. Today that implementation is bond,
+// which speaks the Inertia.js wire format; a future release may swap or
+// add adapters without changing the view API.
+//
+// The short version: write view.Props, view.Optional, (*view.Engine).Render —
+// never reach into bond directly from application code.
 package view
 
 import (
@@ -16,6 +19,44 @@ import (
 	"github.com/velocitykode/velocity/bond"
 	"github.com/velocitykode/velocity/router"
 )
+
+// Props holds component properties passed to the rendering layer.
+type Props = bond.Props
+
+// SharePropsFunc returns props shared across every request (typically user
+// identity, flash messages, locale). Registered via (*Engine).SetSharePropsFunc.
+type SharePropsFunc = func(r *http.Request) (bond.Props, error)
+
+// LazyProp is evaluated only when explicitly requested via partial reload.
+//
+// Deprecated: use OptionalProp — mirrors Inertia.js's own Inertia::lazy() sunset.
+type LazyProp = bond.LazyProp
+
+// OptionalProp is excluded from the first visit unless explicitly requested.
+type OptionalProp = bond.OptionalProp
+
+// AlwaysProp is always included in responses, even during partial reloads.
+type AlwaysProp = bond.AlwaysProp
+
+// DeferProp is loaded after the initial page render by the client.
+type DeferProp = bond.DeferredProp
+
+// Lazy wraps a value producer that is only evaluated on partial reloads.
+//
+// Deprecated: use Optional — mirrors Inertia.js's own Inertia::lazy() sunset.
+func Lazy(fn func() (any, error)) LazyProp { return bond.Lazy(fn) }
+
+// Optional wraps a value producer that is evaluated only on partial reloads
+// where the caller explicitly requests the key.
+func Optional(fn func() (any, error)) *OptionalProp { return bond.Optional(fn) }
+
+// Always wraps a value that is included on every render, even during partial
+// reloads that would otherwise strip unrelated props.
+func Always(value any) AlwaysProp { return bond.Always(value) }
+
+// Defer wraps a value producer evaluated after the initial render; the client
+// fetches deferred props once the first paint has committed.
+func Defer(fn func() (any, error), group ...string) *DeferProp { return bond.Defer(fn, group...) }
 
 // Config holds view configuration.
 type Config struct {
@@ -64,8 +105,8 @@ func NewEngine(config Config) (*Engine, error) {
 }
 
 // Render renders a component with optional props.
-func (e *Engine) Render(w http.ResponseWriter, r *http.Request, component string, props ...bond.Props) error {
-	var p bond.Props
+func (e *Engine) Render(w http.ResponseWriter, r *http.Request, component string, props ...Props) error {
+	var p Props
 	if len(props) > 0 && props[0] != nil {
 		p = props[0]
 	}
@@ -85,14 +126,14 @@ func (e *Engine) ShareFunc(key string, fn func(r *http.Request) (interface{}, er
 }
 
 // ShareMultiple adds multiple static shared props.
-func (e *Engine) ShareMultiple(props bond.Props) {
+func (e *Engine) ShareMultiple(props Props) {
 	for k, v := range props {
 		e.bond.Share(k, v)
 	}
 }
 
 // SetSharePropsFunc sets a function that returns props to be shared per request.
-func (e *Engine) SetSharePropsFunc(fn func(r *http.Request) (bond.Props, error)) {
+func (e *Engine) SetSharePropsFunc(fn SharePropsFunc) {
 	e.bond.SetSharePropsFunc(fn)
 }
 
@@ -149,8 +190,8 @@ const defaultTemplate = `<!DOCTYPE html>
 </body>
 </html>`
 
-// Render renders an Inertia component using the view engine on the given context.
-func Render(ctx *router.Context, component string, props ...bond.Props) error {
+// Render renders a component using the view engine on the given context.
+func Render(ctx *router.Context, component string, props ...Props) error {
 	engine := FromContext(ctx)
 	if engine == nil {
 		return fmt.Errorf("view: engine not configured on context")
