@@ -229,6 +229,25 @@ Deleted nine deprecated `Close()`/`Stop()` shims and one internal compat wrapper
 - **Private `router.parseTrustedProxies`** (unexported compat wrapper) → exported `router.ParseTrustedProxies`.
 - **Scheduler stop chain**: `scheduler.Scheduler.Stop()`, `scheduler.Manager.StopAll()`, `scheduler.Kernel.Stop()`, and the `Stop()` member of the `scheduler.TaskScheduler` interface → `Scheduler.Shutdown(ctx)`. Internal `Run()`'s `<-ctx.Done()` branch now calls `Shutdown(ctx)` directly.
 
+### Fixed — Final pre-1.0 sweep (wave 2)
+
+A second re-review surfaced five remaining MUST FIX items. All landed in one batch.
+
+**WebSocket (`websocket/server.go`, `websocket/client.go`)**
+- `Server.Shutdown(ctx)` replaces `Server.Stop()` (deleted). The run-loop goroutine and every per-client read/write pump are tracked on an internal `sync.WaitGroup`; `Shutdown` waits for them to drain bounded by the caller's context, returning `ctx.Err()` on timeout. `writePump` now observes the server stop channel directly so it exits without waiting for the ping ticker.
+- Compile-time `var _ contract.ShutdownAware = (*websocket.Server)(nil)` assertion in `event_dispatcher_aware.go`.
+- **Migration:** every `server.Stop()` call becomes `server.Shutdown(context.Background())` (or a bounded ctx for graceful drain).
+
+**Mail (`mail/message.go`, `mail/init.go`, `notification/channels/mail.go`)**
+- Attachment DoS cap: `AttachFile` / `AttachData` now reject payloads larger than `MailConfig.MaxAttachmentSize` (default 25 MiB, tunable via `MAIL_MAX_ATTACHMENT_SIZE`). New `ErrAttachmentTooLarge` typed error. Zero-value config resolves to the default — "unlimited" is not expressible through config.
+- SMTP header injection: `Header`, `Subject`, `From`, `To`, `CC`, `BCC`, `ReplyTo` now reject CR, LF, NUL, and C0 control characters in any value. `Header` additionally enforces RFC 5322 §3.2.3 name grammar. Violations are stored as a deferred error on `*Message` and surfaced from `Manager.Send`, the `NewMailer`-returned `checkedMailer`, and the notification mail channel before any driver sees the message. New `ErrInvalidHeader` typed error and `Message.Err()` accessor. No RFC 5322 folding support in 1.0 (conservative stance).
+
+**gRPC (`grpc/server.go`)**
+- `*grpc.Server` now implements `contract.EventDispatcherAware` via `SetEventDispatcher(func(any) error)` (mutex-guarded, nil-safe). Compile-time assertions for both `EventDispatcherAware` and `ShutdownAware` pinned in `event_dispatcher_aware.go`. No events are dispatched yet — `grpc.request.completed` / `grpc.request.failed` will land in a follow-up. Consumers registering `*grpc.Server` under `Services.Extensions` are auto-wired by the existing `wireInstanceEvents` extensions loop.
+
+**CLI (`cmd.go`, `cmd_make.go`, `cmd_ops.go`)**
+- Unknown-command handlers return errors instead of calling `os.Exit(1)`. Previously bypassed `Serve()`'s deferred `shutdownCancel` (and any caller-installed defers), preventing in-flight work from draining. Scope covers six sites: `runCommand` unknown-built-in, `runCmd.run` unknown-custom, `requireMakeName` missing-name, and three inline `make:*` paths. The top-level `Serve()` / `Run()` caller is responsible for converting errors to exit codes.
+
 ### Fixed — Release-blocker sweep
 
 A pre-1.0 review surfaced five MUST FIX clusters across bootstrap, ORM, queue, cache, and security. All landed in one batch before tagging.
