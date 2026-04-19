@@ -1,9 +1,8 @@
 package grpc
 
 import (
+	"os"
 	"strconv"
-
-	"github.com/velocitykode/velocity/config"
 )
 
 // Config holds gRPC configuration loaded from environment
@@ -28,19 +27,27 @@ type Config struct {
 //   - GRPC_ENDPOINT: gRPC endpoint for gateway (default: localhost:50051)
 func LoadConfig() *Config {
 	return &Config{
-		ServerPort:       config.Get("GRPC_PORT", "50051"),
-		EnableReflection: config.Get("GRPC_REFLECTION", "false") == "true",
-		MaxRecvMsgSize:   getEnvInt("GRPC_MAX_RECV_SIZE", 4*1024*1024),
-		MaxSendMsgSize:   getEnvInt("GRPC_MAX_SEND_SIZE", 4*1024*1024),
-		GatewayPort:      config.Get("GATEWAY_PORT", "8080"),
-		GRPCEndpoint:     config.Get("GRPC_ENDPOINT", "localhost:50051"),
+		ServerPort:       envOr("GRPC_PORT", "50051"),
+		EnableReflection: envOr("GRPC_REFLECTION", "false") == "true",
+		MaxRecvMsgSize:   envInt("GRPC_MAX_RECV_SIZE", 4*1024*1024),
+		MaxSendMsgSize:   envInt("GRPC_MAX_SEND_SIZE", 4*1024*1024),
+		GatewayPort:      envOr("GATEWAY_PORT", "8080"),
+		GRPCEndpoint:     envOr("GRPC_ENDPOINT", "localhost:50051"),
 	}
 }
 
-// getEnvInt gets an integer from environment or returns default
-func getEnvInt(key string, defaultValue int) int {
-	if val := config.Get(key, ""); val != "" {
-		if i, err := strconv.Atoi(val); err == nil {
+// envOr returns os.Getenv(key) when non-empty, otherwise fallback.
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+// envInt parses an environment variable as int with a default fallback.
+func envInt(key string, defaultValue int) int {
+	if v := os.Getenv(key); v != "" {
+		if i, err := strconv.Atoi(v); err == nil {
 			return i
 		}
 	}

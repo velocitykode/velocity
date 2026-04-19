@@ -1,4 +1,4 @@
-package config
+package log
 
 // LoggingConfig defines the logging configuration structure
 type LoggingConfig struct {
@@ -8,11 +8,11 @@ type LoggingConfig struct {
 
 // ChannelConfig defines configuration for a specific log channel
 type ChannelConfig struct {
-	Driver  string                 `json:"driver"`
-	Level   string                 `json:"level"`
-	Path    string                 `json:"path,omitempty"`
-	MaxAge  int                    `json:"max_age,omitempty"` // days
-	Options map[string]interface{} `json:"options,omitempty"` // driver-specific options
+	Driver  string         `json:"driver"`
+	Level   string         `json:"level"`
+	Path    string         `json:"path,omitempty"`
+	MaxAge  int            `json:"max_age,omitempty"` // days
+	Options map[string]any `json:"options,omitempty"` // driver-specific options
 }
 
 // GetChannel returns a specific channel configuration

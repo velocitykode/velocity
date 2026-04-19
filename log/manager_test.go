@@ -3,13 +3,12 @@ package log
 import (
 	"testing"
 
-	"github.com/velocitykode/velocity/config"
 )
 
 func TestNewManager(t *testing.T) {
-	cfg := config.LoggingConfig{
+	cfg := LoggingConfig{
 		Default: "console",
-		Channels: map[string]config.ChannelConfig{
+		Channels: map[string]ChannelConfig{
 			"console": {
 				Driver: "console",
 				Level:  "debug",
@@ -27,9 +26,9 @@ func TestNewManager(t *testing.T) {
 }
 
 func TestManager_Channel(t *testing.T) {
-	cfg := config.LoggingConfig{
+	cfg := LoggingConfig{
 		Default: "console",
-		Channels: map[string]config.ChannelConfig{
+		Channels: map[string]ChannelConfig{
 			"console": {
 				Driver: "console",
 				Level:  "debug",
@@ -82,9 +81,9 @@ func TestManager_Channel(t *testing.T) {
 }
 
 func TestManager_Default(t *testing.T) {
-	cfg := config.LoggingConfig{
+	cfg := LoggingConfig{
 		Default: "console",
-		Channels: map[string]config.ChannelConfig{
+		Channels: map[string]ChannelConfig{
 			"console": {
 				Driver: "console",
 				Level:  "debug",
@@ -104,9 +103,9 @@ func TestManager_Default(t *testing.T) {
 }
 
 func TestManager_ConcurrentAccess(t *testing.T) {
-	cfg := config.LoggingConfig{
+	cfg := LoggingConfig{
 		Default: "console",
-		Channels: map[string]config.ChannelConfig{
+		Channels: map[string]ChannelConfig{
 			"console": {
 				Driver: "console",
 				Level:  "debug",
@@ -176,9 +175,9 @@ func TestNullLogger(t *testing.T) {
 }
 
 func TestManager_StackDriverWithChannels(t *testing.T) {
-	cfg := config.LoggingConfig{
+	cfg := LoggingConfig{
 		Default: "stack",
-		Channels: map[string]config.ChannelConfig{
+		Channels: map[string]ChannelConfig{
 			"console": {
 				Driver: "console",
 			},
@@ -215,9 +214,9 @@ func TestManager_StackDriverWithChannels(t *testing.T) {
 }
 
 func TestManager_StackDriverWithoutChannels(t *testing.T) {
-	cfg := config.LoggingConfig{
+	cfg := LoggingConfig{
 		Default: "stack",
-		Channels: map[string]config.ChannelConfig{
+		Channels: map[string]ChannelConfig{
 			"stack": {
 				Driver: "stack",
 			},
@@ -233,9 +232,9 @@ func TestManager_StackDriverWithoutChannels(t *testing.T) {
 }
 
 func TestManager_StackDriverEmptyChannels(t *testing.T) {
-	cfg := config.LoggingConfig{
+	cfg := LoggingConfig{
 		Default: "stack",
-		Channels: map[string]config.ChannelConfig{
+		Channels: map[string]ChannelConfig{
 			"stack": {
 				Driver: "stack",
 				Options: map[string]any{
@@ -254,9 +253,9 @@ func TestManager_StackDriverEmptyChannels(t *testing.T) {
 }
 
 func TestManager_StackDriverInvalidChannel(t *testing.T) {
-	cfg := config.LoggingConfig{
+	cfg := LoggingConfig{
 		Default: "stack",
-		Channels: map[string]config.ChannelConfig{
+		Channels: map[string]ChannelConfig{
 			"stack": {
 				Driver: "stack",
 				Options: map[string]any{
@@ -275,9 +274,9 @@ func TestManager_StackDriverInvalidChannel(t *testing.T) {
 }
 
 func TestManager_FileDriverDefaultPath(t *testing.T) {
-	cfg := config.LoggingConfig{
+	cfg := LoggingConfig{
 		Default: "file",
-		Channels: map[string]config.ChannelConfig{
+		Channels: map[string]ChannelConfig{
 			"file": {
 				Driver: "file",
 				// No path specified, should use default
@@ -297,9 +296,9 @@ func TestManager_FileDriverDefaultPath(t *testing.T) {
 }
 
 func TestManager_UnsupportedDriver(t *testing.T) {
-	cfg := config.LoggingConfig{
+	cfg := LoggingConfig{
 		Default: "unsupported",
-		Channels: map[string]config.ChannelConfig{
+		Channels: map[string]ChannelConfig{
 			"unsupported": {
 				Driver: "unsupported",
 			},
@@ -315,9 +314,9 @@ func TestManager_UnsupportedDriver(t *testing.T) {
 }
 
 func TestManager_RaceConditionCoverage(t *testing.T) {
-	cfg := config.LoggingConfig{
+	cfg := LoggingConfig{
 		Default: "console",
-		Channels: map[string]config.ChannelConfig{
+		Channels: map[string]ChannelConfig{
 			"test": {
 				Driver: "console",
 			},

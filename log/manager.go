@@ -5,21 +5,20 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/velocitykode/velocity/config"
 	"github.com/velocitykode/velocity/log/drivers"
 )
 
 // Manager handles multiple logger channels for advanced logging scenarios.
 // Each channel can have its own driver configuration (file, console, stack, null)
 type Manager struct {
-	config   config.LoggingConfig
+	config   LoggingConfig
 	channels map[string]Logger
 	mu       sync.RWMutex
 }
 
 // NewManager creates a new logger manager with the given configuration.
 // The manager allows different log channels with independent drivers and settings
-func NewManager(cfg config.LoggingConfig) *Manager {
+func NewManager(cfg LoggingConfig) *Manager {
 	return &Manager{
 		config:   cfg,
 		channels: make(map[string]Logger),
@@ -74,7 +73,7 @@ func (m *Manager) Default() (Logger, error) {
 
 // createLogger creates a logger instance based on the channel configuration.
 // Supports file, console, stack (multi-logger), and null drivers
-func (m *Manager) createLogger(cfg config.ChannelConfig) (Logger, error) {
+func (m *Manager) createLogger(cfg ChannelConfig) (Logger, error) {
 	level := parseLevel(cfg.Level)
 
 	switch cfg.Driver {

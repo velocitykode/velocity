@@ -1,8 +1,6 @@
-package config
+package log
 
-import (
-	"testing"
-)
+import "testing"
 
 func TestLoggingConfig_GetChannel(t *testing.T) {
 	config := LoggingConfig{
@@ -20,30 +18,10 @@ func TestLoggingConfig_GetChannel(t *testing.T) {
 		wantExists bool
 		wantDriver string
 	}{
-		{
-			name:       "returns stack channel when exists",
-			channel:    "stack",
-			wantExists: true,
-			wantDriver: "stack",
-		},
-		{
-			name:       "returns console channel when exists",
-			channel:    "console",
-			wantExists: true,
-			wantDriver: "console",
-		},
-		{
-			name:       "returns null channel when exists",
-			channel:    "null",
-			wantExists: true,
-			wantDriver: "null",
-		},
-		{
-			name:       "returns false for non-existent channel",
-			channel:    "nonexistent",
-			wantExists: false,
-			wantDriver: "",
-		},
+		{name: "returns stack channel when exists", channel: "stack", wantExists: true, wantDriver: "stack"},
+		{name: "returns console channel when exists", channel: "console", wantExists: true, wantDriver: "console"},
+		{name: "returns null channel when exists", channel: "null", wantExists: true, wantDriver: "null"},
+		{name: "returns false for non-existent channel", channel: "nonexistent", wantExists: false, wantDriver: ""},
 	}
 
 	for _, tt := range tests {
@@ -69,10 +47,8 @@ func TestLoggingConfig_GetDefaultChannel(t *testing.T) {
 		{
 			name: "returns default channel when exists",
 			config: LoggingConfig{
-				Default: "console",
-				Channels: map[string]ChannelConfig{
-					"console": {Driver: "console"},
-				},
+				Default:  "console",
+				Channels: map[string]ChannelConfig{"console": {Driver: "console"}},
 			},
 			wantExists: true,
 			wantDriver: "console",
