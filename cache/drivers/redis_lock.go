@@ -35,26 +35,32 @@ func NewRedisLock(client *redis.Client, key string, owner string, ttl time.Durat
 }
 
 // Get attempts to acquire the lock. Returns true if the lock was acquired.
-func (l *RedisLock) Get() bool {
-	result, err := l.client.SetNX(context.Background(), l.key, l.owner, l.ttl).Result()
+// The caller's ctx is propagated to the underlying Redis call so cancellation
+// aborts the SETNX in-flight rather than blocking on a slow network.
+func (l *RedisLock) Get(ctx context.Context) bool {
+	result, err := l.client.SetNX(ctx, l.key, l.owner, l.ttl).Result()
 	return err == nil && result
 }
 
 // Release releases the lock only if the current instance is the owner.
 // Returns true if the lock was successfully released.
-func (l *RedisLock) Release() bool {
-	result, err := releaseLockScript.Run(context.Background(), l.client, []string{l.key}, l.owner).Int64()
+// The caller's ctx is propagated to the underlying Redis EVAL.
+func (l *RedisLock) Release(ctx context.Context) bool {
+	result, err := releaseLockScript.Run(ctx, l.client, []string{l.key}, l.owner).Int64()
 	return err == nil && result == 1
 }
 
 // Run acquires the lock, runs the callback, and releases the lock.
 // Returns ErrLockNotAcquired if the lock cannot be acquired.
 // If the callback panics, the lock is still released and the panic propagates.
-func (l *RedisLock) Run(callback func()) error {
-	if !l.Get() {
+func (l *RedisLock) Run(ctx context.Context, callback func()) error {
+	if !l.Get(ctx) {
 		return ErrLockNotAcquired
 	}
-	defer l.Release()
+	// Release always runs, even on panic. We deliberately re-use the caller's
+	// ctx — if they cancelled it, releasing through a dead ctx is acceptable
+	// because the lock will eventually expire on its TTL.
+	defer l.Release(ctx)
 
 	callback()
 	return nil
@@ -62,14 +68,19 @@ func (l *RedisLock) Run(callback func()) error {
 
 // Block attempts to acquire the lock within the given timeout, retrying every 100ms.
 // Once acquired, it runs the callback and releases the lock.
-// Returns ErrLockTimeout if the lock cannot be acquired within the timeout.
+// Returns ErrLockTimeout if the lock cannot be acquired within the timeout,
+// or ctx.Err() if ctx is cancelled before acquisition.
 // If the callback panics, the lock is still released and the panic propagates.
-func (l *RedisLock) Block(timeout time.Duration, callback func()) error {
+func (l *RedisLock) Block(ctx context.Context, timeout time.Duration, callback func()) error {
 	deadline := time.Now().Add(timeout)
 
 	for {
-		if l.Get() {
-			defer l.Release()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		if l.Get(ctx) {
+			defer l.Release(ctx)
 			callback()
 			return nil
 		}
@@ -78,7 +89,12 @@ func (l *RedisLock) Block(timeout time.Duration, callback func()) error {
 			return ErrLockTimeout
 		}
 
-		time.Sleep(100 * time.Millisecond)
+		// Sleep but wake early if ctx is cancelled so Block honors ctx promptly.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 }
 
@@ -88,8 +104,9 @@ func (l *RedisLock) Owner() string {
 }
 
 // ForceRelease deletes the lock key without checking the owner.
-func (l *RedisLock) ForceRelease() error {
-	return l.client.Del(context.Background(), l.key).Err()
+// The caller's ctx is propagated to the underlying Redis DEL.
+func (l *RedisLock) ForceRelease(ctx context.Context) error {
+	return l.client.Del(ctx, l.key).Err()
 }
 
 // Lock creates a new lock for the given key with an optional TTL.
