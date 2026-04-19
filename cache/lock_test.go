@@ -38,16 +38,18 @@ func TestManagerLock_Memory(t *testing.T) {
 	m := newTestManager()
 	defer func() { _ = m.Shutdown(context.Background()) }()
 
+	ctx := context.Background()
+
 	t.Run("GetAndRelease", func(t *testing.T) {
 		t.Parallel()
 		lock := m.Lock("mem-get-release")
 		if lock == nil {
 			t.Fatal("Lock returned nil for memory store")
 		}
-		if !lock.Get() {
+		if !lock.Get(ctx) {
 			t.Fatal("failed to acquire lock")
 		}
-		if !lock.Release() {
+		if !lock.Release(ctx) {
 			t.Fatal("failed to release lock")
 		}
 	})
@@ -57,7 +59,7 @@ func TestManagerLock_Memory(t *testing.T) {
 		lock := m.Lock("mem-run")
 
 		called := false
-		err := lock.Run(func() { called = true })
+		err := lock.Run(ctx, func() { called = true })
 		if err != nil {
 			t.Fatalf("Run failed: %v", err)
 		}
@@ -67,22 +69,22 @@ func TestManagerLock_Memory(t *testing.T) {
 
 		// Lock should be released after Run
 		lock2 := m.Lock("mem-run")
-		if !lock2.Get() {
+		if !lock2.Get(ctx) {
 			t.Fatal("failed to re-acquire lock after Run")
 		}
-		lock2.Release()
+		lock2.Release(ctx)
 	})
 
 	t.Run("RunNotAcquired", func(t *testing.T) {
 		t.Parallel()
 		lock1 := m.Lock("mem-run-held")
-		if !lock1.Get() {
+		if !lock1.Get(ctx) {
 			t.Fatal("failed to acquire lock")
 		}
-		defer lock1.Release()
+		defer lock1.Release(ctx)
 
 		lock2 := m.Lock("mem-run-held")
-		err := lock2.Run(func() { t.Fatal("callback should not be called") })
+		err := lock2.Run(ctx, func() { t.Fatal("callback should not be called") })
 		if err != cache.ErrLockNotAcquired {
 			t.Fatalf("expected ErrLockNotAcquired, got %v", err)
 		}
@@ -93,7 +95,7 @@ func TestManagerLock_Memory(t *testing.T) {
 		lock := m.Lock("mem-block")
 
 		called := false
-		err := lock.Block(time.Second, func() { called = true })
+		err := lock.Block(ctx, time.Second, func() { called = true })
 		if err != nil {
 			t.Fatalf("Block failed: %v", err)
 		}
@@ -105,13 +107,13 @@ func TestManagerLock_Memory(t *testing.T) {
 	t.Run("BlockTimeout", func(t *testing.T) {
 		t.Parallel()
 		lock1 := m.Lock("mem-block-timeout")
-		if !lock1.Get() {
+		if !lock1.Get(ctx) {
 			t.Fatal("failed to acquire lock")
 		}
-		defer lock1.Release()
+		defer lock1.Release(ctx)
 
 		lock2 := m.Lock("mem-block-timeout")
-		err := lock2.Block(200*time.Millisecond, func() {
+		err := lock2.Block(ctx, 200*time.Millisecond, func() {
 			t.Fatal("callback should not be called")
 		})
 		if err != cache.ErrLockTimeout {
@@ -122,7 +124,7 @@ func TestManagerLock_Memory(t *testing.T) {
 	t.Run("RestoreLock", func(t *testing.T) {
 		t.Parallel()
 		lock := m.Lock("mem-restore")
-		if !lock.Get() {
+		if !lock.Get(ctx) {
 			t.Fatal("failed to acquire lock")
 		}
 
@@ -130,55 +132,55 @@ func TestManagerLock_Memory(t *testing.T) {
 		if restored == nil {
 			t.Fatal("RestoreLock returned nil")
 		}
-		if !restored.Release() {
+		if !restored.Release(ctx) {
 			t.Fatal("failed to release restored lock")
 		}
 
 		// Should be available now
 		lock2 := m.Lock("mem-restore")
-		if !lock2.Get() {
+		if !lock2.Get(ctx) {
 			t.Fatal("lock should be available after restored release")
 		}
-		lock2.Release()
+		lock2.Release(ctx)
 	})
 
 	t.Run("ForceRelease", func(t *testing.T) {
 		t.Parallel()
 		lock := m.Lock("mem-force")
-		if !lock.Get() {
+		if !lock.Get(ctx) {
 			t.Fatal("failed to acquire lock")
 		}
 
-		if err := lock.ForceRelease(); err != nil {
+		if err := lock.ForceRelease(ctx); err != nil {
 			t.Fatalf("ForceRelease failed: %v", err)
 		}
 
 		lock2 := m.Lock("mem-force")
-		if !lock2.Get() {
+		if !lock2.Get(ctx) {
 			t.Fatal("lock should be available after ForceRelease")
 		}
-		lock2.Release()
+		lock2.Release(ctx)
 	})
 
 	t.Run("TTL", func(t *testing.T) {
 		lock := m.Lock("mem-ttl", 200*time.Millisecond)
-		if !lock.Get() {
+		if !lock.Get(ctx) {
 			t.Fatal("failed to acquire lock with TTL")
 		}
 
 		lock2 := m.Lock("mem-ttl")
-		if lock2.Get() {
-			lock2.Release()
+		if lock2.Get(ctx) {
+			lock2.Release(ctx)
 			t.Fatal("should not acquire while TTL lock is held")
 		}
 
 		time.Sleep(250 * time.Millisecond)
 
 		lock3 := m.Lock("mem-ttl")
-		if !lock3.Get() {
+		if !lock3.Get(ctx) {
 			t.Fatal("lock should be available after TTL expired")
 		}
-		lock3.Release()
+		lock3.Release(ctx)
 	})
 
 	t.Run("Owner", func(t *testing.T) {
@@ -205,10 +207,10 @@ func TestManagerLock_Memory(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				lock := m.Lock("mem-concurrent")
-				if lock.Get() {
+				if lock.Get(ctx) {
 					atomic.AddInt32(&acquired, 1)
 					time.Sleep(5 * time.Millisecond)
-					lock.Release()
+					lock.Release(ctx)
 				}
 			}()
 		}
@@ -226,15 +228,17 @@ func TestManagerLock_Redis(t *testing.T) {
 	defer mr.Close()
 	defer func() { _ = m.Shutdown(context.Background()) }()
 
+	ctx := context.Background()
+
 	t.Run("GetAndRelease", func(t *testing.T) {
 		lock := m.Lock("redis-get-release")
 		if lock == nil {
 			t.Fatal("Lock returned nil for redis store")
 		}
-		if !lock.Get() {
+		if !lock.Get(ctx) {
 			t.Fatal("failed to acquire redis lock")
 		}
-		if !lock.Release() {
+		if !lock.Release(ctx) {
 			t.Fatal("failed to release redis lock")
 		}
 	})
@@ -243,7 +247,7 @@ func TestManagerLock_Redis(t *testing.T) {
 		lock := m.Lock("redis-run")
 
 		called := false
-		err := lock.Run(func() { called = true })
+		err := lock.Run(ctx, func() { called = true })
 		if err != nil {
 			t.Fatalf("Run failed: %v", err)
 		}
@@ -252,21 +256,21 @@ func TestManagerLock_Redis(t *testing.T) {
 		}
 
 		lock2 := m.Lock("redis-run")
-		if !lock2.Get() {
+		if !lock2.Get(ctx) {
 			t.Fatal("failed to re-acquire lock after Run")
 		}
-		lock2.Release()
+		lock2.Release(ctx)
 	})
 
 	t.Run("RunNotAcquired", func(t *testing.T) {
 		lock1 := m.Lock("redis-run-held")
-		if !lock1.Get() {
+		if !lock1.Get(ctx) {
 			t.Fatal("failed to acquire lock")
 		}
-		defer lock1.Release()
+		defer lock1.Release(ctx)
 
 		lock2 := m.Lock("redis-run-held")
-		err := lock2.Run(func() { t.Fatal("callback should not be called") })
+		err := lock2.Run(ctx, func() { t.Fatal("callback should not be called") })
 		if err != cache.ErrLockNotAcquired {
 			t.Fatalf("expected ErrLockNotAcquired, got %v", err)
 		}
@@ -276,7 +280,7 @@ func TestManagerLock_Redis(t *testing.T) {
 		lock := m.Lock("redis-block")
 
 		called := false
-		err := lock.Block(time.Second, func() { called = true })
+		err := lock.Block(ctx, time.Second, func() { called = true })
 		if err != nil {
 			t.Fatalf("Block failed: %v", err)
 		}
@@ -287,13 +291,13 @@ func TestManagerLock_Redis(t *testing.T) {
 
 	t.Run("BlockTimeout", func(t *testing.T) {
 		lock1 := m.Lock("redis-block-timeout")
-		if !lock1.Get() {
+		if !lock1.Get(ctx) {
 			t.Fatal("failed to acquire lock")
 		}
-		defer lock1.Release()
+		defer lock1.Release(ctx)
 
 		lock2 := m.Lock("redis-block-timeout")
-		err := lock2.Block(200*time.Millisecond, func() {
+		err := lock2.Block(ctx, 200*time.Millisecond, func() {
 			t.Fatal("callback should not be called")
 		})
 		if err != cache.ErrLockTimeout {
@@ -303,7 +307,7 @@ func TestManagerLock_Redis(t *testing.T) {
 
 	t.Run("RestoreLock", func(t *testing.T) {
 		lock := m.Lock("redis-restore")
-		if !lock.Get() {
+		if !lock.Get(ctx) {
 			t.Fatal("failed to acquire lock")
 		}
 
@@ -311,53 +315,53 @@ func TestManagerLock_Redis(t *testing.T) {
 		if restored == nil {
 			t.Fatal("RestoreLock returned nil")
 		}
-		if !restored.Release() {
+		if !restored.Release(ctx) {
 			t.Fatal("failed to release restored lock")
 		}
 
 		lock2 := m.Lock("redis-restore")
-		if !lock2.Get() {
+		if !lock2.Get(ctx) {
 			t.Fatal("lock should be available after restored release")
 		}
-		lock2.Release()
+		lock2.Release(ctx)
 	})
 
 	t.Run("ForceRelease", func(t *testing.T) {
 		lock := m.Lock("redis-force")
-		if !lock.Get() {
+		if !lock.Get(ctx) {
 			t.Fatal("failed to acquire lock")
 		}
 
-		if err := lock.ForceRelease(); err != nil {
+		if err := lock.ForceRelease(ctx); err != nil {
 			t.Fatalf("ForceRelease failed: %v", err)
 		}
 
 		lock2 := m.Lock("redis-force")
-		if !lock2.Get() {
+		if !lock2.Get(ctx) {
 			t.Fatal("lock should be available after ForceRelease")
 		}
-		lock2.Release()
+		lock2.Release(ctx)
 	})
 
 	t.Run("TTL", func(t *testing.T) {
 		lock := m.Lock("redis-ttl", 2*time.Second)
-		if !lock.Get() {
+		if !lock.Get(ctx) {
 			t.Fatal("failed to acquire lock with TTL")
 		}
 
 		lock2 := m.Lock("redis-ttl")
-		if lock2.Get() {
-			lock2.Release()
+		if lock2.Get(ctx) {
+			lock2.Release(ctx)
 			t.Fatal("should not acquire while TTL lock is held")
 		}
 
 		mr.FastForward(3 * time.Second)
 
 		lock3 := m.Lock("redis-ttl")
-		if !lock3.Get() {
+		if !lock3.Get(ctx) {
 			t.Fatal("lock should be available after TTL expired")
 		}
-		lock3.Release()
+		lock3.Release(ctx)
 	})
 
 	t.Run("ConcurrentAccess", func(t *testing.T) {
@@ -370,10 +374,10 @@ func TestManagerLock_Redis(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				lock := m.Lock("redis-concurrent")
-				if lock.Get() {
+				if lock.Get(ctx) {
 					atomic.AddInt32(&acquired, 1)
 					time.Sleep(5 * time.Millisecond)
-					lock.Release()
+					lock.Release(ctx)
 				}
 			}()
 		}

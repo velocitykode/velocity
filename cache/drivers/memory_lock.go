@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -91,24 +92,37 @@ func NewMemoryLock(store *memoryLockStore, key string, owner string, ttl time.Du
 }
 
 // Get attempts to acquire the lock. Returns true if the lock was acquired.
-func (l *MemoryLock) Get() bool {
+// ctx is accepted for interface uniformity with RedisLock; because acquisition
+// is an in-process map update it never blocks, but a pre-cancelled ctx is
+// respected (returns false).
+func (l *MemoryLock) Get(ctx context.Context) bool {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return false
+		}
+	}
 	return l.store.acquire(l.key, l.owner, l.ttl)
 }
 
 // Release releases the lock only if the current instance is the owner.
 // Returns true if the lock was successfully released.
-func (l *MemoryLock) Release() bool {
+func (l *MemoryLock) Release(ctx context.Context) bool {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return false
+		}
+	}
 	return l.store.release(l.key, l.owner)
 }
 
 // Run acquires the lock, runs the callback, and releases the lock.
 // Returns ErrLockNotAcquired if the lock cannot be acquired.
 // If the callback panics, the lock is still released and the panic propagates.
-func (l *MemoryLock) Run(callback func()) error {
-	if !l.Get() {
+func (l *MemoryLock) Run(ctx context.Context, callback func()) error {
+	if !l.Get(ctx) {
 		return ErrLockNotAcquired
 	}
-	defer l.Release()
+	defer l.Release(ctx)
 
 	callback()
 	return nil
@@ -116,14 +130,21 @@ func (l *MemoryLock) Run(callback func()) error {
 
 // Block attempts to acquire the lock within the given timeout, retrying every 100ms.
 // Once acquired, it runs the callback and releases the lock.
-// Returns ErrLockTimeout if the lock cannot be acquired within the timeout.
+// Returns ErrLockTimeout if the lock cannot be acquired within the timeout,
+// or ctx.Err() if ctx is cancelled before acquisition.
 // If the callback panics, the lock is still released and the panic propagates.
-func (l *MemoryLock) Block(timeout time.Duration, callback func()) error {
+func (l *MemoryLock) Block(ctx context.Context, timeout time.Duration, callback func()) error {
 	deadline := time.Now().Add(timeout)
 
 	for {
-		if l.Get() {
-			defer l.Release()
+		if ctx != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
+
+		if l.Get(ctx) {
+			defer l.Release(ctx)
 			callback()
 			return nil
 		}
@@ -132,7 +153,16 @@ func (l *MemoryLock) Block(timeout time.Duration, callback func()) error {
 			return ErrLockTimeout
 		}
 
-		time.Sleep(100 * time.Millisecond)
+		// Sleep but wake early on ctx cancellation so Block returns promptly.
+		if ctx != nil {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
+		} else {
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
 }
 
@@ -142,7 +172,12 @@ func (l *MemoryLock) Owner() string {
 }
 
 // ForceRelease deletes the lock key without checking the owner.
-func (l *MemoryLock) ForceRelease() error {
+func (l *MemoryLock) ForceRelease(ctx context.Context) error {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
 	return l.store.forceRelease(l.key)
 }
 
