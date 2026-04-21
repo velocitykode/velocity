@@ -50,7 +50,7 @@ Everything else — the Close()/Stop() shims, legacy env-var fallbacks, ORM `Eve
 
 ### Added
 
-- **`velocity.BuildInfo`** — single source of truth for version metadata (`Version`, `Commit`, `Date`). Populated at build time via `-ldflags` from the `Makefile` `build` target and `console.Build`. Defaults to `"1.0.0-rc.1"`/`"devel"`/`"unknown"` for `go run` / tests.
+- **`velocity.BuildInfo`** — single source of truth for version metadata (`Version`, `Commit`, `Date`). Populated at build time via `-ldflags` from the `Makefile` `build` target and `console.Build`. Defaults to `"devel"`/`"devel"`/`"unknown"` for `go run` / tests.
 - **`velocity.ErrNoAppKey`** — sentinel returned by `New` when `APP_KEY`/`CRYPTO_KEY` is unset outside `APP_ENV=testing` / `APP_ENV=development` (the dev bypass logs a boot-time WARN instead of erroring, so local workflows aren't blocked).
 - **`contract.EventDispatcherAware`** — uniform `SetEventDispatcher(func(any) error)` interface. Every subsystem (cache, queue, scheduler, router, ORM, mail, csrf, view/bond, crypto, notification) implements it; bootstrap wires them all via a single interface assertion. A new `event_dispatcher_aware.go` holds compile-time `var _ contract.EventDispatcherAware = (*X)(nil)` checks so signature drift fails the build.
 - **`app.RegisterExtension[T]` / `app.ExtensionAs[T]`** — generic typed accessors for `Services.Extensions`. `RegisterExtension` errors on duplicate keys; `ExtensionAs` returns a wrapped error for missing keys or type mismatches. The underlying `map[string]any` is still accessible but callers are encouraged to use the helpers.

@@ -15,7 +15,7 @@
 .PHONY: test test-integration test-all build
 
 # Version metadata baked in via -ldflags. CI overrides VERSION/COMMIT/DATE.
-VERSION ?= 1.0.0-rc.1
+VERSION ?= devel
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo devel)
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -X 'github.com/velocitykode/velocity.BuildInfo.Version=$(VERSION)' \

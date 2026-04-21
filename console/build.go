@@ -55,7 +55,7 @@ func Build(opts BuildOptions) error {
 	}
 	version := opts.Version
 	if version == "" {
-		version = "1.0.0-rc.1"
+		version = "devel"
 	}
 	date := time.Now().UTC().Format(time.RFC3339)
 
