@@ -4,9 +4,9 @@ import "testing"
 
 func TestSanitizeHeader_DropsC0Controls(t *testing.T) {
 	tests := []struct {
-		name  string
-		in    string
-		want  string
+		name string
+		in   string
+		want string
 	}{
 		{"plain", "Subject: hello", "Subject: hello"},
 		{"cr", "a\rb", "ab"},
