@@ -24,7 +24,7 @@ velocity new myapp && cd myapp && vel serve
 Or add to an existing project:
 
 ```bash
-go get github.com/velocitykode/velocity
+go get github.com/velocitykode/velocity@latest
 ```
 
 ```go
