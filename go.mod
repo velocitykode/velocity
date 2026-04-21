@@ -3,8 +3,8 @@ module github.com/velocitykode/velocity
 go 1.26.1
 
 retract (
-	v1.0.0 // accidentally tagged
-	v0.1.1 // accidentally tagged
+	v1.0.0 // Published by mistake. Velocity has not reached a stable v1 release; use the latest v0.x.y.
+	v0.1.1 // Tagged in error during early development; use v0.1.2 or later.
 )
 
 require (
