@@ -250,13 +250,6 @@ jobs:
           git tag "v$NEW_VERSION"
           git push origin "v$NEW_VERSION"
 
-      - name: Create GitHub Release
-        if: steps.check.outputs.skip == 'false'
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: v${{ steps.version.outputs.new }}
-          generate_release_notes: true
-
       - name: Notify Go Module Proxy
         if: steps.check.outputs.skip == 'false'
         run: |
