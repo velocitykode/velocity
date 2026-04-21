@@ -2,6 +2,17 @@
 
 This document describes how Velocity is versioned, released, and supported.
 
+## Status: Pre-1.0
+
+Velocity is currently in the `v0.x.y` phase. **Nothing in this document's stability promises applies yet.** During the pre-1.0 phase:
+
+- Breaking changes may occur between any two minor releases (`v0.32 → v0.33`).
+- The `BuildInfo.Version` default is `"devel"` — a release build requires explicit `-ldflags`.
+- `go get github.com/velocitykode/velocity@latest` resolves to the latest `v0.x.y` tag, skipping the retracted `v1.0.0` accidentally published in December 2025.
+- The v1-forever policy below **activates at `v1.0.0`**, not before.
+
+Promotion to `v1.0.0` is a deliberate, manual decision — not triggered by any commit prefix. When the API is stable enough to commit to v1-forever, the path is: `v1.0.0-rc.1` → (testing window) → `v1.0.0`.
+
 ## Versioning Scheme
 
 Velocity follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html), with one deliberate constraint:
