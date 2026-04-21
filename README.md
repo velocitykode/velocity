@@ -6,8 +6,10 @@ Everything you need to build, ship, and run web applications — routing,
 ORM, authentication, cache, queues, mail, storage, real-time, and more.
 One binary. No external runtime. No Docker required for development.
 
-> **Status:** Pre-1.0 (currently v0.1.x). API is stabilizing toward
-> `v1.0.0`. See the [CHANGELOG](CHANGELOG.md) for breaking changes.
+> **Status:** Pre-1.0 (currently v0.32.x). API is still in flux — breaking
+> changes may occur between minor releases. See [RELEASES.md](RELEASES.md)
+> for the versioning policy and [CHANGELOG.md](CHANGELOG.md) for per-release
+> breaking-change notes.
 
 ## Get Started
 
