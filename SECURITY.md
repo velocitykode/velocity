@@ -63,7 +63,7 @@ Velocity follows a **coordinated disclosure** model:
 **Out of scope:**
 
 - Third-party dependencies — report those upstream.
-- Sibling projects (velocity-cli, velocity-installer, veldeploy.com, velwatch.com) — they have their own `SECURITY.md`.
+- Sibling projects (velocity-cli, velocity-installer) — they have their own `SECURITY.md`.
 - Demo applications and example code in `docs/`.
 - Issues requiring the attacker to already have application-admin access.
 - Denial of service via pathological input alone, unless it crashes or corrupts state.
