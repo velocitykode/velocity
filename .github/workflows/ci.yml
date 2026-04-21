@@ -164,11 +164,30 @@ jobs:
       - name: Check if release needed
         id: check
         run: |
+          # Guard 1: avoid auto-release loops on the bot's own bump commits.
           LAST_MSG=$(git log -1 --pretty=%B)
           if echo "$LAST_MSG" | grep -q "^Bump version"; then
             echo "skip=true" >> $GITHUB_OUTPUT
-          else
+            echo "Skipping: last commit is a version bump."
+            exit 0
+          fi
+
+          # Guard 2: only cut a tag when there's a user-visible change since the
+          # last release. Housekeeping commits (chore/ci/docs/refactor/style/
+          # test/build) land on main without producing a tag or triggering the
+          # downstream template/installer cascade. Releasable prefixes:
+          #   feat / fix / perf / add   → user-visible
+          #   BREAKING: or `!:`         → user-visible (guarded to minor on v0)
+          LAST_TAG=$(git tag --sort=-v:refname | head -1)
+          LAST_TAG=${LAST_TAG:-v0.0.0}
+          COMMITS=$(git log ${LAST_TAG}..HEAD --pretty=format:"%s" 2>/dev/null || git log --pretty=format:"%s")
+
+          if echo "$COMMITS" | grep -qiE "^feat|^fix|^perf|^add|BREAKING|!:"; then
             echo "skip=false" >> $GITHUB_OUTPUT
+            echo "Releasable commits found since $LAST_TAG — proceeding."
+          else
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "No feat/fix/perf/BREAKING commits since $LAST_TAG — skipping release."
           fi
 
       - name: Calculate version
