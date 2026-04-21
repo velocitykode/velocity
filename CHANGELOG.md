@@ -5,7 +5,7 @@ All notable changes to Velocity will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0-rc.1] - 2026-04-18
+## [0.32.0] - 2026-04-19
 
 ### Migration from 0.x
 
@@ -278,7 +278,7 @@ A pre-1.0 review surfaced five MUST FIX clusters across bootstrap, ORM, queue, c
 - **Cookie config**: `auth.SessionConfig` and `csrf.Config` now carry `Validate(env string) error` methods enforcing `HttpOnly=true` (unless `AllowJSAccess=true` opt-in), `Secure=true` outside testing/development, non-zero `SameSite`, and `SameSite=None ⇒ Secure=true`. Wired into `velocity.New()` — production boot fails on violation, development logs a warning, testing is silent. See Migration.
 
 ### Changed — Shutdown contract consolidation
-- Every ad-hoc `interface{ Shutdown(context.Context) error }` assertion in `serve.go` (5 sites), `csrf/csrf.go`, `cache/manager.go`, and `storage/storage.go` now uses `contract.ShutdownAware` directly. The contract already existed (see Added for 1.0.0-rc.1); it's just the single source of truth now rather than a parallel inline pattern. No behavioural change — type-asserting against `contract.ShutdownAware` is identical at runtime to the inline form. The benefit is that future subsystem additions only have to look at one place to know the shape, and signature drift fails at compile time instead of silently failing the type assertion.
+- Every ad-hoc `interface{ Shutdown(context.Context) error }` assertion in `serve.go` (5 sites), `csrf/csrf.go`, `cache/manager.go`, and `storage/storage.go` now uses `contract.ShutdownAware` directly. The contract already existed (see Added for 0.32.0); it's just the single source of truth now rather than a parallel inline pattern. No behavioural change — type-asserting against `contract.ShutdownAware` is identical at runtime to the inline form. The benefit is that future subsystem additions only have to look at one place to know the shape, and signature drift fails at compile time instead of silently failing the type assertion.
 
 ## [0.0.3] - 2025-12-29
 
@@ -292,4 +292,4 @@ A pre-1.0 review surfaced five MUST FIX clusters across bootstrap, ORM, queue, c
 - Background job processing
 - Real-time features with WebSockets
 
-[1.0.0-rc.1]: https://github.com/velocitykode/velocity/releases/tag/v1.0.0-rc.1
+[0.32.0]: https://github.com/velocitykode/velocity/releases/tag/v0.32.0
