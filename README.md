@@ -111,11 +111,6 @@ messaging (mail, events, notifications, WebSockets, gRPC), and ops
 all designed to work together. No hunting for compatible third-party
 packages.
 
-### One Binary Deployment
-
-`go build` produces a single binary. No runtime, no containers
-required, no config files to sync. Copy it to your server and run it.
-
 ### Type-Safe ORM
 
 Generic models return `[]User`, not `[]interface{}`. Queries are
