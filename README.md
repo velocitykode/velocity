@@ -159,27 +159,28 @@ says.
 
 ## What's Included
 
-| Category                | Features                                                                                  |
-| ----------------------- | ----------------------------------------------------------------------------------------- |
-| **Web**                 | Radix-tree router, middleware, security headers, CORS, HTTPS redirect, rate limiting     |
-| **Data**                | Generic ORM with query builder, migrations, eager loading, pagination                     |
-| **Auth**                | Session and JWT guards, gates, policies                                                   |
-| **Cache**               | Memory, file, Redis, and database drivers                                                 |
-| **Queue**               | Background jobs with retries, batching, and signing                                       |
-| **Bus**                 | Typed command bus with middleware and async dispatch via the queue                        |
-| **Events**              | Sync and async listeners, wildcard matching, queued listeners                             |
-| **Mail**                | Postmark, Mailgun, and local drivers with templates                                       |
-| **Storage**             | Local filesystem, S3, and memory with a unified API                                       |
-| **Real-time**           | WebSocket server with groups and broadcasting, gRPC with HTTP gateway                     |
-| **Frontend**            | Inertia.js adapter (Vue/React/Svelte) with optional SSR via the `bond` package            |
-| **Scheduling**          | Cron-based task scheduling with callbacks                                                 |
-| **Notifications**       | Multi-channel delivery: mail, database, broadcast, Slack                                  |
-| **Validation**          | Rule engine with database-aware rules and form-request structs                            |
-| **Security**            | AES-256-GCM encryption, CSRF protection, key rotation                                     |
-| **Observability**       | Distributed tracing, instrumented HTTP client, structured exceptions with debug pages     |
-| **Operations**          | Maintenance mode (`vel down` / `vel up`), graceful shutdown                               |
-| **Developer Experience**| `vel make:*` scaffolding (handler, model, migration, middleware, job, mail, …), live reload |
-| **Utilities**           | Collections, string helpers, async primitives, pipeline processing                        |
+All major services ship as pluggable drivers — switch backends via
+config, no code changes.
+
+| Pluggable    | Drivers                          |
+| ------------ | -------------------------------- |
+| **Database** | MySQL, Postgres, SQLite          |
+| **Cache**    | Memory, file, Redis, database    |
+| **Queue**    | Memory, Redis, database          |
+| **Log**      | Console, file, stack, null       |
+| **Storage**  | Local, S3                        |
+| **Mail**     | Postmark, Mailgun, log           |
+
+Also included: radix-tree HTTP router with middleware, generic ORM
+with migrations and eager loading, auth (session/JWT guards, gates,
+policies), validation with database-aware rules, events and typed
+command bus, task scheduler, multi-channel notifications
+(mail/database/broadcast/Slack), WebSocket broadcasting, gRPC with
+HTTP gateway, Inertia.js adapter with optional SSR, AES-256-GCM
+encryption with key rotation, CSRF protection, distributed tracing,
+structured exceptions with debug pages, maintenance mode, graceful
+shutdown, live reload, `vel make:*` scaffolding, and a standard
+library of collections, string, async, and pipeline helpers.
 
 ## Requirements
 
