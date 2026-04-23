@@ -157,20 +157,6 @@ No runtime reflection for dependency injection. No implicit model
 fetching. No hidden interceptors. Every line of code does what it
 says.
 
-## Velocity vs Gin/Fiber
-
-Velocity is a full-stack application framework. Gin and Fiber are HTTP
-routers.
-
-Use Gin/Fiber if you want to hand-pick an ORM, cache library, queue,
-session store, mailer, and storage backend, then wire them together
-yourself.
-
-Use Velocity if you want those decisions made for you with pluggable
-drivers and a consistent API — the way Rails and Django make them.
-
-Both approaches are valid. They serve different teams.
-
 ## What's Included
 
 | Category                | Features                                                                                  |
