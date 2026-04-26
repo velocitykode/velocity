@@ -1,5 +1,5 @@
 <p align="center">
-  <img src=".github/assets/logo.png" alt="Velocity" width="120" />
+  <img src=".github/assets/logo.png" alt="Velocity" width="480" />
 </p>
 
 # Velocity
