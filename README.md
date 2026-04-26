@@ -1,3 +1,7 @@
+<p align="center">
+  <img src=".github/assets/logo.png" alt="Velocity — full-stack Go framework" width="560" />
+</p>
+
 # Velocity
 
 **Full-stack Go framework.**
