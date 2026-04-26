@@ -1,8 +1,9 @@
 <p align="center">
-  <img src=".github/assets/logo.png" alt="Velocity" width="480" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/logo-dark.png">
+    <img src=".github/assets/logo-light.png" alt="Velocity" width="320">
+  </picture>
 </p>
-
-# Velocity
 
 **Full-stack Go framework.**
 
