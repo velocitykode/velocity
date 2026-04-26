@@ -1,5 +1,5 @@
 <p align="center">
-  <img src=".github/assets/logo.png" alt="Velocity — full-stack Go framework" width="560" />
+  <img src=".github/assets/logo.png" alt="Velocity" width="120" />
 </p>
 
 # Velocity
