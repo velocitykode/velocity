@@ -2,7 +2,6 @@ package log
 
 import (
 	"testing"
-
 )
 
 func TestNewManager(t *testing.T) {
