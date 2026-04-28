@@ -36,13 +36,16 @@ import (
 	"sync"
 )
 
-// Default file/directory names. Match Laravel + the @inertiajs/vite plugin.
+// Default file/directory names matching the @velocitykode/velocity-vite-plugin
+// emission layout: manifest at <publicPath>/<buildDirectory>/manifest.json
+// (no `.vite/` subdir — the plugin sets `build.manifest: 'manifest.json'`
+// rather than letting Vite use its `.vite/manifest.json` default).
 const (
 	DefaultPublicPath       = "public"
 	DefaultBuildDirectory   = "build"
 	DefaultHotFile          = "hot"
 	DefaultManifestFilename = "manifest.json"
-	DefaultManifestSubdir   = ".vite"
+	DefaultManifestSubdir   = ""
 )
 
 // ErrManifestNotFound is returned when the Vite manifest is missing in

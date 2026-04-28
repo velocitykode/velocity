@@ -9,11 +9,12 @@ import (
 	"time"
 )
 
-// writeManifest creates a minimal but realistic Vite 5 manifest at
-// public/build/.vite/manifest.json beneath dir.
+// writeManifest creates a minimal Vite manifest at the path the
+// @velocitykode/velocity-vite-plugin emits — public/build/manifest.json
+// directly, no `.vite/` subdir.
 func writeManifest(t *testing.T, dir string, body string) {
 	t.Helper()
-	mdir := filepath.Join(dir, "public", "build", ".vite")
+	mdir := filepath.Join(dir, "public", "build")
 	if err := os.MkdirAll(mdir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +174,7 @@ func TestManifest_RefreshOnMtimeChange(t *testing.T) {
 
 	// Bump mtime forward so the cache invalidates regardless of how
 	// fast this test runs.
-	mpath := filepath.Join(dir, "public", "build", ".vite", "manifest.json")
+	mpath := filepath.Join(dir, "public", "build", "manifest.json")
 	future := mustFutureMtime(t, mpath)
 	if err := os.WriteFile(mpath, []byte(`{
 	  "resources/js/app.tsx": {"file": "assets/v2.js", "isEntry": true}
