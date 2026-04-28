@@ -13,6 +13,7 @@ package view
 import (
 	"context"
 	"fmt"
+	"html/template"
 	"net/http"
 	"time"
 
@@ -72,6 +73,15 @@ type Config struct {
 	SSRURL     string        // Defaults to http://127.0.0.1:13714
 	SSRTimeout time.Duration // Defaults to 3s
 	SSRExcept  []string      // URL prefixes to exclude from SSR
+
+	// Funcs registers template helpers callable from RootTemplate. The
+	// canonical use is the bond/vite helper:
+	//
+	//   helper := vite.New()
+	//   cfg.Funcs = template.FuncMap{"vite": helper.Tags}
+	//
+	// Then app.go.html says {{ vite "resources/js/app.tsx" }}.
+	Funcs template.FuncMap
 }
 
 // Engine wraps a bond.Bond instance and provides the view layer API.
@@ -92,6 +102,7 @@ func NewEngine(config Config) (*Engine, error) {
 		RootTemplate: config.RootTemplate,
 		Version:      config.Version,
 		ContainerID:  "app",
+		Funcs:        config.Funcs,
 		SSR: bond.SSRConfig{
 			Enabled: config.SSREnabled,
 			URL:     config.SSRURL,

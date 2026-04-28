@@ -72,6 +72,11 @@ func startVite() *exec.Cmd {
 		cli.Warning(fmt.Sprintf("Failed to start Vite: %v", err))
 		return nil
 	}
+
+	// public/hot is managed by the @velocitykode/velocity-vite-plugin
+	// inside Vite's lifecycle — only the plugin knows the resolved
+	// dev origin (HMR overrides, IPv6, custom port). Doing it here
+	// from the spawning process would have to guess.
 	return cmd
 }
 
@@ -85,6 +90,10 @@ func setupGracefulShutdown(viteCmd *exec.Cmd) {
 		<-c
 		cli.Info("Shutting down...")
 		if viteCmd != nil && viteCmd.Process != nil {
+			// SIGTERM the Vite process group; the velocity vite
+			// plugin's own SIGINT/SIGTERM/SIGHUP handlers remove
+			// public/hot before exit so a later `vel build` + run
+			// does not start in dev mode by accident.
 			syscall.Kill(-viteCmd.Process.Pid, syscall.SIGTERM)
 		}
 		os.Exit(0)

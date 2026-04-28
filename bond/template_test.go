@@ -3,8 +3,47 @@ package bond
 import (
 	"bytes"
 	"html/template"
+	"strings"
 	"testing"
 )
+
+func TestParseTemplateWithFuncs_RegistersFunc(t *testing.T) {
+	tmpl, err := parseTemplateWithFuncs(
+		`<html><body>{{ shout "hi" }} {{ .inertia }}</body></html>`,
+		template.FuncMap{
+			"shout": func(s string) string { return s + "!" },
+		},
+	)
+	if err != nil {
+		t.Fatalf("parseTemplateWithFuncs failed: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, map[string]any{"inertia": ""}); err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if got := buf.String(); !strings.Contains(got, "hi!") {
+		t.Errorf("expected output to contain 'hi!', got: %s", got)
+	}
+}
+
+func TestNew_PropagatesFuncsIntoTemplate(t *testing.T) {
+	b, err := New(Config{
+		RootTemplate: `<html><body>{{ shout "hi" }} {{ .inertia }}</body></html>`,
+		Funcs: template.FuncMap{
+			"shout": func(s string) string { return s + "!" },
+		},
+	})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := b.template.Execute(&buf, map[string]any{"inertia": ""}); err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if got := buf.String(); !strings.Contains(got, "hi!") {
+		t.Errorf("expected output to contain 'hi!', got: %s", got)
+	}
+}
 
 func TestParseTemplate_Valid(t *testing.T) {
 	tmpl, err := parseTemplate(`<!DOCTYPE html>
