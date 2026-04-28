@@ -27,6 +27,12 @@ type Config struct {
 	ContainerID    string // Default: "app"
 	EncryptHistory bool   // Use pkg/crypto for history state encryption
 	SSR            SSRConfig
+
+	// Funcs registers template helpers available inside RootTemplate.
+	// Typical use: bond/vite emits {{ vite "resources/js/app.tsx" }}
+	// which expands to <link>/<script> tags appropriate for the
+	// current dev/prod mode. nil means no custom helpers.
+	Funcs template.FuncMap
 }
 
 // SSRConfig configures server-side rendering. When Enabled is false
@@ -119,7 +125,7 @@ func New(config Config) (*Bond, error) {
 	}
 
 	// Parse the template
-	tmpl, err := parseTemplate(config.RootTemplate)
+	tmpl, err := parseTemplateWithFuncs(config.RootTemplate, config.Funcs)
 	if err != nil {
 		return nil, err
 	}

@@ -5,8 +5,15 @@ import (
 	"strings"
 )
 
-// parseTemplate parses and validates the root HTML template
+// parseTemplate parses and validates the root HTML template.
 func parseTemplate(templateStr string) (*template.Template, error) {
+	return parseTemplateWithFuncs(templateStr, nil)
+}
+
+// parseTemplateWithFuncs is parseTemplate plus a FuncMap registered
+// before parsing so the template can call helpers like
+// {{ vite "..." }}. funcs may be nil.
+func parseTemplateWithFuncs(templateStr string, funcs template.FuncMap) (*template.Template, error) {
 	if templateStr == "" {
 		return nil, ErrTemplateRequired
 	}
@@ -16,7 +23,11 @@ func parseTemplate(templateStr string) (*template.Template, error) {
 		return nil, ErrInvalidTemplate
 	}
 
-	return template.New("root").Parse(templateStr)
+	tmpl := template.New("root")
+	if funcs != nil {
+		tmpl = tmpl.Funcs(funcs)
+	}
+	return tmpl.Parse(templateStr)
 }
 
 // TemplateData holds data passed to the root HTML template
