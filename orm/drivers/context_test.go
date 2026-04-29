@@ -92,4 +92,3 @@ func TestSQLiteDriver_QueryRowContextCancellation(t *testing.T) {
 		t.Errorf("expected context.Canceled, got %v", err)
 	}
 }
-
