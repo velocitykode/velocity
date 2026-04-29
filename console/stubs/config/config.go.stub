@@ -17,7 +17,7 @@ type Config struct {
 // Load reads configuration from environment
 func Load() *Config {
 	cfg := &Config{
-		Port:     getEnv("PORT", "4000"),
+		Port:     getEnv("APP_PORT", "4000"),
 		AppName:  getEnv("APP_NAME", "{{.Name}}"),
 		AppEnv:   getEnv("APP_ENV", "development"),
 		AppDebug: getEnvBool("APP_DEBUG", true),

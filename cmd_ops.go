@@ -2,9 +2,11 @@ package velocity
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
+	"github.com/joho/godotenv"
 	"github.com/velocitykode/velocity/console"
 )
 
@@ -136,9 +138,22 @@ type serveCmd struct{}
 func (serveCmd) name() string        { return "serve" }
 func (serveCmd) description() string { return "Start the development server" }
 func (serveCmd) run(a *App, args []string) error {
+	// Load .env so APP_PORT/APP_ENV from the project's env file are
+	// honored before defaulting. godotenv.Load() does not override
+	// existing env.
+	_ = godotenv.Load()
+
+	port := os.Getenv("APP_PORT")
+	if port == "" {
+		port = "4000"
+	}
+	env := os.Getenv("APP_ENV")
+	if env == "" {
+		env = "development"
+	}
 	opts := console.ServeOptions{
-		Port:  "4000",
-		Env:   "development",
+		Port:  port,
+		Env:   env,
 		Watch: true,
 	}
 	for i := 0; i < len(args); i++ {
@@ -225,7 +240,7 @@ func (runCmd) run(a *App, args []string) error {
 
 // helpCmd handles "help", "--help", and "-h". It's instantiated three times
 // by the registry (one per alias) with the same description. Description is
-// empty so help doesn't appear in the main command list — it's already the
+// empty so help doesn't appear in the main command list - it's already the
 // default output and printing "help" inside help is noise.
 type helpCmd struct{ name_ string }
 
@@ -239,7 +254,7 @@ func (h helpCmd) run(a *App, args []string) error {
 // --- Internal subprocess entry ---
 
 // serveRunCmd is the internal entry point used by console.Serve when
-// spawning the .vel/tmp/server subprocess. Not user-facing — don't document
+// spawning the .vel/tmp/server subprocess. Not user-facing - don't document
 // in printHelp. The child must go straight to a.serveHTTP() (which opens
 // the HTTP listener and blocks); calling a.Serve() would re-enter the
 // args-dispatch path (Serve → Run → runCommand("serve:run") → this method)

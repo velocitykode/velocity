@@ -25,7 +25,7 @@ type Config struct {
 	// App
 	Env   string // APP_ENV, default "development"
 	Debug bool   // APP_DEBUG, default false
-	Port  string // PORT, default "4000"
+	Port  string // APP_PORT, default "4000"
 	Key   string // APP_KEY (used for crypto)
 
 	// Database
@@ -220,7 +220,7 @@ func ConfigFromEnv() Config {
 	config := Config{
 		Env:   envOrDefault("APP_ENV", "development"),
 		Debug: envOrDefault("APP_DEBUG", "false") == "true",
-		Port:  envOrDefault("PORT", "4000"),
+		Port:  envOrDefault("APP_PORT", "4000"),
 		Key:   os.Getenv("APP_KEY"),
 	}
 
@@ -464,7 +464,7 @@ func envIntOrDefault(key string, defaultValue int) int {
 }
 
 // envInt64OrDefault reads an int64 from the environment (raw bytes, no
-// K/M/G suffix parsing — the codebase has no precedent for that today).
+// K/M/G suffix parsing - the codebase has no precedent for that today).
 // Falls back to defaultValue on empty or unparseable input.
 func envInt64OrDefault(key string, defaultValue int64) int64 {
 	if value := os.Getenv(key); value != "" {
