@@ -45,5 +45,5 @@ type mockT struct {
 	failed bool
 }
 
-func (m *mockT) Helper()                          {}
+func (m *mockT) Helper()                           {}
 func (m *mockT) Fatalf(format string, args ...any) { m.failed = true }
