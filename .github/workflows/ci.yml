@@ -15,7 +15,7 @@ on:
   pull_request:
     branches: [main]
   schedule:
-    - cron: "0 0 * * 0" # Weekly on Sunday — govulncheck against current deps
+    - cron: "0 0 * * 0" # Weekly on Sunday - govulncheck against current deps
 
 jobs:
   vet:
@@ -52,7 +52,7 @@ jobs:
         run: go test -race -timeout 10m ./...
 
   # Short fuzz run per-PR. Each FuzzXxx target gets a fixed time budget so
-  # the PR signal stays predictable — any corpus-regression (seed failure)
+  # the PR signal stays predictable - any corpus-regression (seed failure)
   # also fires in race-tests, so this job's job is to exercise NEW input.
   # Full-depth fuzzing is nightly/manual, not per-PR.
   fuzz-smoke:
@@ -75,7 +75,7 @@ jobs:
       - name: Fuzz CSRF token validate
         run: go test -run=^$ -fuzz=FuzzValidateToken_CRLFInput -fuzztime=30s ./csrf/
 
-  # Greps for unconditional t.Skip — they silently erase test coverage.
+  # Greps for unconditional t.Skip - they silently erase test coverage.
   # Conditional skips (runtime/env/root checks) are fine; this job enforces
   # the "delete it or gate it" rule from Phase 1.1.
   skip-lint:
@@ -94,7 +94,7 @@ jobs:
           set -e
           OFFENDERS=$(scripts/ci/check-unconditional-skip.sh) || true
           if [ -n "$OFFENDERS" ]; then
-            echo "::error::unconditional t.Skip found — gate it on a condition or delete the test:"
+            echo "::error::unconditional t.Skip found - gate it on a condition or delete the test:"
             echo "$OFFENDERS"
             exit 1
           fi
@@ -102,7 +102,7 @@ jobs:
   # Coverage floors for packages where we've invested in deep test coverage.
   # New code under these packages can't drop below these numbers without
   # a companion lift. The thresholds are intentionally below the current
-  # measurement — they guard the floor, not the ceiling.
+  # measurement - they guard the floor, not the ceiling.
   coverage-floors:
     name: coverage floors
     runs-on: ubuntu-latest
@@ -118,7 +118,7 @@ jobs:
   benchmarks:
     name: router benchmarks (smoke)
     runs-on: ubuntu-latest
-    # Skip on the weekly cron — benchmarks against an unchanged tree
+    # Skip on the weekly cron - benchmarks against an unchanged tree
     # produce no new signal. Smoke only: ensures benchmarks still
     # compile and run. A benchstat-based regression gate (compare PR
     # HEAD vs main baseline) remains a follow-up.
@@ -184,10 +184,10 @@ jobs:
 
           if echo "$COMMITS" | grep -qiE "^feat|^fix|^perf|^add|BREAKING|!:"; then
             echo "skip=false" >> $GITHUB_OUTPUT
-            echo "Releasable commits found since $LAST_TAG — proceeding."
+            echo "Releasable commits found since $LAST_TAG - proceeding."
           else
             echo "skip=true" >> $GITHUB_OUTPUT
-            echo "No feat/fix/perf/BREAKING commits since $LAST_TAG — skipping release."
+            echo "No feat/fix/perf/BREAKING commits since $LAST_TAG - skipping release."
           fi
 
       - name: Calculate version
@@ -223,7 +223,7 @@ jobs:
           done <<< "$COMMITS"
 
           # Calculate new version.
-          # While on v0.x, BREAKING bumps the minor, not the major — promotion
+          # While on v0.x, BREAKING bumps the minor, not the major - promotion
           # to v1.0.0 is a deliberate, manual tag (see RELEASES.md). This guard
           # prevents a stray `BREAKING:` commit from accidentally publishing v1.
           if [ "$HAS_BREAKING" = true ] && [ "$MAJOR" != "0" ]; then
@@ -276,12 +276,12 @@ jobs:
           curl -sf "https://proxy.golang.org/github.com/velocitykode/velocity/@v/${VERSION}.info" || true
           echo "Go module proxy notified for ${VERSION}"
 
-      - name: Update velocity-template
+      - name: Update velocity-template-react
         if: steps.check.outputs.skip == 'false'
         run: |
           VERSION=v${{ steps.version.outputs.new }}
-          git clone https://x-access-token:${{ secrets.VELOCITY_TOKEN }}@github.com/velocitykode/velocity-template.git
-          cd velocity-template
+          git clone https://x-access-token:${{ secrets.VELOCITY_TOKEN }}@github.com/velocitykode/velocity-template-react.git
+          cd velocity-template-react
 
           # Update velocity version in go.mod
           sed -i "s|github.com/velocitykode/velocity v[0-9.]*|github.com/velocitykode/velocity ${VERSION}|" go.mod
