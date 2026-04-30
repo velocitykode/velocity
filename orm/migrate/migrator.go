@@ -424,6 +424,17 @@ func (m *Migrator) CreateTable(name string, fn func(*TableBuilder)) error {
 	builder := newTableBuilder(name, m.driver)
 	fn(builder)
 
+	for _, col := range builder.columns {
+		if !ddlIdentifierRegex.MatchString(col.Name) {
+			return fmt.Errorf("invalid column name: %q", col.Name)
+		}
+	}
+	for _, col := range builder.compositePrimaryKey {
+		if !ddlIdentifierRegex.MatchString(col) {
+			return fmt.Errorf("invalid primary key column name: %q", col)
+		}
+	}
+
 	sql := builder.ToSQL()
 	if err := m.exec(sql); err != nil {
 		return fmt.Errorf("failed to create table %s: %w", name, err)
@@ -490,6 +501,9 @@ func (m *Migrator) Table(name string, fn func(*TableBuilder)) error {
 
 // AddColumn adds a column to an existing table
 func (m *Migrator) AddColumn(table, column string, fn func(*ColumnBuilder)) error {
+	if !ddlIdentifierRegex.MatchString(column) {
+		return fmt.Errorf("invalid column name: %q", column)
+	}
 	builder := &ColumnBuilder{
 		name:   column,
 		driver: m.driver,
@@ -630,7 +644,7 @@ func (c *ColumnBuilder) ToSQL() string {
 	var sql string
 
 	// Column name
-	sql = c.name + " "
+	sql = quoteIdentifier(c.name, c.driver) + " "
 
 	// Type mapping based on driver
 	switch c.driver {
@@ -1048,7 +1062,7 @@ func (t *TableBuilder) toSQLiteSyntax() string {
 	sql := "CREATE TABLE " + quoteIdentifier(t.tableName, t.driver) + " (\n"
 
 	for i, col := range t.columns {
-		sql += "  " + col.Name + " "
+		sql += "  " + quoteIdentifier(col.Name, t.driver) + " "
 
 		// Type mapping
 		switch col.Type {
@@ -1113,7 +1127,7 @@ func (t *TableBuilder) toSQLiteSyntax() string {
 			if i > 0 {
 				sql += ", "
 			}
-			sql += col
+			sql += quoteIdentifier(col, t.driver)
 		}
 		sql += ")\n"
 	}
@@ -1126,7 +1140,7 @@ func (t *TableBuilder) toPostgresSyntax() string {
 	sql := "CREATE TABLE " + quoteIdentifier(t.tableName, t.driver) + " (\n"
 
 	for i, col := range t.columns {
-		sql += "  " + col.Name + " "
+		sql += "  " + quoteIdentifier(col.Name, t.driver) + " "
 
 		// Type mapping
 		switch col.Type {
@@ -1196,7 +1210,7 @@ func (t *TableBuilder) toPostgresSyntax() string {
 			if i > 0 {
 				sql += ", "
 			}
-			sql += col
+			sql += quoteIdentifier(col, t.driver)
 		}
 		sql += ")\n"
 	}
@@ -1209,7 +1223,7 @@ func (t *TableBuilder) toMySQLSyntax() string {
 	sql := "CREATE TABLE " + quoteIdentifier(t.tableName, t.driver) + " (\n"
 
 	for i, col := range t.columns {
-		sql += "  " + col.Name + " "
+		sql += "  " + quoteIdentifier(col.Name, t.driver) + " "
 
 		// Type mapping
 		switch col.Type {
@@ -1277,7 +1291,7 @@ func (t *TableBuilder) toMySQLSyntax() string {
 			if i > 0 {
 				sql += ", "
 			}
-			sql += col
+			sql += quoteIdentifier(col, t.driver)
 		}
 		sql += ")\n"
 	}

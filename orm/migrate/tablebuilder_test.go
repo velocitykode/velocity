@@ -90,9 +90,9 @@ func TestTableBuilder_SoftDeletes_SQL(t *testing.T) {
 		driver   string
 		contains string
 	}{
-		{"sqlite", "sqlite", "deleted_at DATETIME"},
-		{"postgres", "postgres", "deleted_at TIMESTAMP"},
-		{"mysql", "mysql", "deleted_at TIMESTAMP"},
+		{"sqlite", "sqlite", "`deleted_at` DATETIME"},
+		{"postgres", "postgres", `"deleted_at" TIMESTAMP`},
+		{"mysql", "mysql", "`deleted_at` TIMESTAMP"},
 	}
 
 	for _, tt := range tests {
@@ -402,7 +402,7 @@ func TestTableBuilder_IP(t *testing.T) {
 	defer migrator.DropTable("servers")
 
 	// IP should be VARCHAR(45) to support IPv6
-	if !strings.Contains(generatedSQL, "ip_address VARCHAR(45)") {
+	if !strings.Contains(generatedSQL, "`ip_address` VARCHAR(45)") {
 		t.Errorf("expected VARCHAR(45) for IP column, got:\n%s", generatedSQL)
 	}
 
@@ -445,7 +445,7 @@ func TestTableBuilder_Decimal(t *testing.T) {
 	defer migrator.DropTable("metrics")
 
 	// Decimal should be NUMERIC(precision, scale)
-	if !strings.Contains(generatedSQL, "cpu_percent NUMERIC(5,2)") {
+	if !strings.Contains(generatedSQL, "`cpu_percent` NUMERIC(5,2)") {
 		t.Errorf("expected NUMERIC(5,2) for decimal column, got:\n%s", generatedSQL)
 	}
 
@@ -485,10 +485,10 @@ func TestTableBuilder_JSON(t *testing.T) {
 	defer migrator.DropTable("json_test")
 
 	// SQLite maps JSON/JSONB to TEXT
-	if !strings.Contains(generatedSQL, "metadata TEXT") {
+	if !strings.Contains(generatedSQL, "`metadata` TEXT") {
 		t.Errorf("expected TEXT for JSON column in SQLite, got:\n%s", generatedSQL)
 	}
-	if !strings.Contains(generatedSQL, "settings TEXT") {
+	if !strings.Contains(generatedSQL, "`settings` TEXT") {
 		t.Errorf("expected TEXT for JSONB column in SQLite, got:\n%s", generatedSQL)
 	}
 
@@ -516,9 +516,9 @@ func TestTableBuilder_JSON_SQL(t *testing.T) {
 		jsonContains  string
 		jsonbContains string
 	}{
-		{"sqlite", "sqlite", "metadata TEXT", "settings TEXT"},
-		{"postgres", "postgres", "metadata JSON", "settings JSONB"},
-		{"mysql", "mysql", "metadata JSON", "settings JSON"},
+		{"sqlite", "sqlite", "`metadata` TEXT", "`settings` TEXT"},
+		{"postgres", "postgres", `"metadata" JSON`, `"settings" JSONB`},
+		{"mysql", "mysql", "`metadata` JSON", "`settings` JSON"},
 	}
 
 	for _, tt := range tests {
@@ -581,7 +581,7 @@ func TestTableBuilder_CompositePrimaryKey(t *testing.T) {
 	defer migrator.DropTable("server_ssh_keys")
 
 	// Should have composite primary key
-	if !strings.Contains(generatedSQL, "PRIMARY KEY (server_id, ssh_key_id)") {
+	if !strings.Contains(generatedSQL, "PRIMARY KEY (`server_id`, `ssh_key_id`)") {
 		t.Errorf("expected composite PRIMARY KEY, got:\n%s", generatedSQL)
 	}
 
@@ -621,7 +621,7 @@ func TestTableBuilder_Primary(t *testing.T) {
 	defer migrator.DropTable("user_two_factor")
 
 	// Should have PRIMARY KEY on user_id
-	if !strings.Contains(generatedSQL, "user_id INTEGER PRIMARY KEY") {
+	if !strings.Contains(generatedSQL, "`user_id` INTEGER PRIMARY KEY") {
 		t.Errorf("expected PRIMARY KEY on user_id, got:\n%s", generatedSQL)
 	}
 
@@ -644,9 +644,9 @@ func TestTableBuilder_Decimal_SQL(t *testing.T) {
 		driver   string
 		contains string
 	}{
-		{"sqlite", "sqlite", "cpu NUMERIC(5,2)"},
-		{"postgres", "postgres", "cpu NUMERIC(5,2)"},
-		{"mysql", "mysql", "cpu DECIMAL(5,2)"},
+		{"sqlite", "sqlite", "`cpu` NUMERIC(5,2)"},
+		{"postgres", "postgres", `"cpu" NUMERIC(5,2)`},
+		{"mysql", "mysql", "`cpu` DECIMAL(5,2)"},
 	}
 
 	for _, tt := range tests {
