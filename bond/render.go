@@ -107,10 +107,39 @@ func (pm *pageMeta) addOnce(key string, meta OnceMeta) {
 	pm.onceProps[key] = meta
 }
 
+// templateDataKey is the context key for per-request root-template variables
+// (e.g. CSP nonce, CSRF token). Middleware sets entries via WithTemplateData;
+// renderHTML merges them into the template Execute map.
+type templateDataKey struct{}
+
+// WithTemplateData returns a context that carries an additional root-template
+// variable. Calls compose: each WithTemplateData adds its key to a map shared
+// across the request. Middleware uses this to publish per-request data
+// (cspNonce, csrfToken) so app.go.html can stamp them onto inline tags.
+func WithTemplateData(ctx context.Context, key string, value any) context.Context {
+	existing, _ := ctx.Value(templateDataKey{}).(map[string]any)
+	merged := make(map[string]any, len(existing)+1)
+	for k, v := range existing {
+		merged[k] = v
+	}
+	merged[key] = value
+	return context.WithValue(ctx, templateDataKey{}, merged)
+}
+
+// templateDataFromContext returns the template variables published via
+// WithTemplateData on this request's context, or nil when none are set.
+func templateDataFromContext(ctx context.Context) map[string]any {
+	if ctx == nil {
+		return nil
+	}
+	m, _ := ctx.Value(templateDataKey{}).(map[string]any)
+	return m
+}
+
 // renderHTML renders a full HTML page with embedded Inertia data.
 // When an SSR gateway is configured, the page is pre-rendered and the
 // resulting HTML + head tags are spliced into the template. Any SSR
-// failure falls back transparently to the CSR path — users never see
+// failure falls back transparently to the CSR path, users never see
 // a 500 because the renderer couldn't reach the SSR server.
 func (b *Bond) renderHTML(ctx context.Context, w http.ResponseWriter, page Page) error {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -127,14 +156,14 @@ func (b *Bond) renderHTML(ctx context.Context, w http.ResponseWriter, page Page)
 			return ssrErr
 		}
 		if ssrResp != nil && ssrResp.Body != "" {
-			// v3 SSR bodies are self-contained — they include both the
+			// v3 SSR bodies are self-contained, they include both the
 			// `<script data-page>` JSON payload and the `<div id="app">`
 			// container. Emit directly without re-wrapping to avoid
 			// nested id="app" elements.
-			return b.template.Execute(w, map[string]any{
+			return b.template.Execute(w, buildTemplateData(ctx, map[string]any{
 				"inertia":     template.HTML(ssrResp.Body),
 				"inertiaHead": template.HTML(strings.Join(ssrResp.Head, "\n")),
-			})
+			}))
 		}
 	}
 
@@ -150,10 +179,50 @@ func (b *Bond) renderHTML(ctx context.Context, w http.ResponseWriter, page Page)
 		return err
 	}
 
-	return b.template.Execute(w, map[string]any{
-		"inertia":     template.HTML(b.buildInertiaContainer(pageJSONRaw, pageJSONAttr)),
+	return b.template.Execute(w, buildTemplateData(ctx, map[string]any{
+		"inertia":     template.HTML(b.buildInertiaContainer(pageJSONRaw, pageJSONAttr, cspNonceFromContext(ctx))),
 		"inertiaHead": template.HTML(""),
-	})
+	}))
+}
+
+// CSPNonceKey is the conventional template-data / context key under which
+// callers publish the request's Content-Security-Policy nonce. Bond reads
+// it to stamp `nonce="..."` onto the inline page-data script tag so a
+// strict, nonce-bound script-src (the CSP3 default for production) does
+// not block Inertia's bootstrap data.
+//
+// Apps that want a different key should set it via WithTemplateData under
+// CSPNonceKey explicitly to keep bond and the root template in agreement.
+const CSPNonceKey = "cspNonce"
+
+// cspNonceFromContext returns the cspNonce template-data value, or empty.
+// Empty means caller did not publish a nonce; bond emits the page-data
+// script without a nonce attribute and the policy must not require one.
+func cspNonceFromContext(ctx context.Context) string {
+	data := templateDataFromContext(ctx)
+	if data == nil {
+		return ""
+	}
+	v, _ := data[CSPNonceKey].(string)
+	return v
+}
+
+// buildTemplateData merges per-request template variables (set via
+// WithTemplateData) under the renderer's static keys. Static keys win on
+// collision so middleware cannot accidentally clobber `inertia` itself.
+func buildTemplateData(ctx context.Context, base map[string]any) map[string]any {
+	extras := templateDataFromContext(ctx)
+	if len(extras) == 0 {
+		return base
+	}
+	out := make(map[string]any, len(base)+len(extras))
+	for k, v := range extras {
+		out[k] = v
+	}
+	for k, v := range base {
+		out[k] = v
+	}
+	return out
 }
 
 // renderJSON renders a JSON response for Inertia XHR requests
@@ -181,13 +250,17 @@ func (b *Bond) buildInertiaDiv(pageJSON string) string {
 // pageJSONRaw is the unescaped JSON for embedding in a <script type=
 // "application/json"> block. pageJSONAttr is the HTML-attribute-safe
 // JSON for the legacy data-page attribute.
-func (b *Bond) buildInertiaContainer(pageJSONRaw, pageJSONAttr string) string {
+func (b *Bond) buildInertiaContainer(pageJSONRaw, pageJSONAttr, nonce string) string {
 	id := html.EscapeString(b.containerID)
 	// The </script> closing tag inside JSON string values would break
-	// out of the script block — escape the forward slash in </script>
+	// out of the script block; escape the forward slash in </script>
 	// to </scr\/ipt> as the Inertia protocol expects.
 	pageJSONRaw = strings.ReplaceAll(pageJSONRaw, "</script>", `<\/script>`)
-	return `<script id="` + id + `-page" type="application/json" data-page="` + id + `">` +
+	nonceAttr := ""
+	if nonce != "" {
+		nonceAttr = ` nonce="` + html.EscapeString(nonce) + `"`
+	}
+	return `<script id="` + id + `-page" type="application/json" data-page="` + id + `"` + nonceAttr + `>` +
 		pageJSONRaw +
 		`</script>` +
 		`<div id="` + id + `" data-page='` + pageJSONAttr + `'></div>`
@@ -384,7 +457,7 @@ func (b *Bond) resolveProps(r *http.Request, props Props, isPartial bool) (Props
 		case *ScrollProp:
 			// ScrollProp: merge behavior + optional defer
 			if v.deferred {
-				// Behaves like deferred — only evaluate on partial request
+				// Behaves like deferred, only evaluate on partial request
 				if isPartial && contains(onlyProps, key) {
 					val, err := v.Evaluate()
 					if err != nil {
@@ -394,7 +467,7 @@ func (b *Bond) resolveProps(r *http.Request, props Props, isPartial bool) (Props
 					collectScrollMeta(key, v, scrollIntent, &meta)
 				}
 			} else {
-				// Not deferred — include like a regular prop with merge
+				// Not deferred, include like a regular prop with merge
 				if !isPartial {
 					val, err := v.Evaluate()
 					if err != nil {
