@@ -27,7 +27,7 @@ func FuzzReadFlashCookie(f *testing.F) {
 		"////",
 		"\x00\x01\x02",
 		"AAAA",
-		"e30",  // base64("{}")
+		"e30",    // base64("{}")
 		"bnVsbA", // base64("null")
 	}
 	for _, s := range seeds {
