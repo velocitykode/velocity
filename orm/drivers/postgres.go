@@ -419,9 +419,11 @@ func (g *PostgresGrammar) CompileUpdate(table string, values map[string]any, con
 			sql.WriteString(g.QuoteIdentifier(cond.Column))
 			sql.WriteString(" ")
 			sql.WriteString(cond.Operator)
-			sql.WriteString(fmt.Sprintf(" $%d", argIndex))
-			args = append(args, cond.Value)
-			argIndex++
+			if cond.Operator != "IS NULL" && cond.Operator != "IS NOT NULL" {
+				sql.WriteString(fmt.Sprintf(" $%d", argIndex))
+				args = append(args, cond.Value)
+				argIndex++
+			}
 		}
 	}
 
@@ -450,9 +452,11 @@ func (g *PostgresGrammar) CompileDelete(table string, conditions []Condition) (s
 			sql.WriteString(g.QuoteIdentifier(cond.Column))
 			sql.WriteString(" ")
 			sql.WriteString(cond.Operator)
-			sql.WriteString(fmt.Sprintf(" $%d", argIndex))
-			args = append(args, cond.Value)
-			argIndex++
+			if cond.Operator != "IS NULL" && cond.Operator != "IS NOT NULL" {
+				sql.WriteString(fmt.Sprintf(" $%d", argIndex))
+				args = append(args, cond.Value)
+				argIndex++
+			}
 		}
 	}
 

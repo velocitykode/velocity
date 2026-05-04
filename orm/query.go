@@ -626,19 +626,35 @@ func (q *Query[T]) getContext() context.Context {
 
 // Execution methods
 
+// applySoftDeleteScope injects the deleted_at predicate that all read,
+// aggregate, and mutate terminals share when the model supports soft
+// deletes. Default scope hides soft-deleted rows (deleted_at IS NULL);
+// WithTrashed returns to the unscoped result set; OnlyTrashed flips to
+// the trashed-only view.
+//
+// Idempotency: this method appends the predicate every call. Terminals
+// must invoke it exactly once per execution. Outer terminals that
+// delegate to inner terminals (e.g. Exists to Count, First to Get) must
+// NOT also call this; the inner invocation is sufficient.
+func (q *Query[T]) applySoftDeleteScope() {
+	if !q.hasSoftDelete {
+		return
+	}
+	if q.withTrashed {
+		if q.onlyTrashed {
+			q.WhereNotNull("deleted_at")
+		}
+		return
+	}
+	q.WhereNull("deleted_at")
+}
+
 // Get retrieves all matching records
 func (q *Query[T]) Get() ([]T, error) {
 	if q.err != nil {
 		return nil, q.err
 	}
-	// Apply soft delete filtering only if model supports soft deletes
-	if q.hasSoftDelete {
-		if !q.withTrashed {
-			q.WhereNull("deleted_at")
-		} else if q.onlyTrashed {
-			q.WhereNotNull("deleted_at")
-		}
-	}
+	q.applySoftDeleteScope()
 
 	// Build SELECT query
 	selectQuery := &drivers.SelectQuery{
@@ -731,6 +747,7 @@ func (q *Query[T]) Count() (int, error) {
 	if q.err != nil {
 		return 0, q.err
 	}
+	q.applySoftDeleteScope()
 	q.columns = []string{"COUNT(*) as count"}
 
 	selectQuery := &drivers.SelectQuery{
@@ -765,6 +782,7 @@ func (q *Query[T]) Pluck(column string) ([]any, error) {
 	if q.err != nil {
 		return nil, q.err
 	}
+	q.applySoftDeleteScope()
 	q.Select(column)
 
 	selectQuery := &drivers.SelectQuery{
@@ -815,6 +833,12 @@ func (q *Query[T]) Update(updates map[string]any) (int64, error) {
 	if len(updates) == 0 {
 		return 0, errors.New("no updates provided")
 	}
+	// Soft-delete scope: an Update on a soft-deletable model must not touch
+	// already-trashed rows unless the caller explicitly opted in via
+	// WithTrashed / OnlyTrashed. Delete delegates here for the soft-delete
+	// path, so the same predicate also prevents double-stamping deleted_at
+	// on already-trashed rows.
+	q.applySoftDeleteScope()
 
 	// Copy the caller's map before mutation. Update must not have
 	// visible side effects on the passed-in map (thread safety, idempotent

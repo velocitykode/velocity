@@ -362,8 +362,10 @@ func (g *SQLiteGrammar) CompileUpdate(table string, values map[string]any, condi
 			sql.WriteString(g.QuoteIdentifier(cond.Column))
 			sql.WriteString(" ")
 			sql.WriteString(cond.Operator)
-			sql.WriteString(" ?")
-			args = append(args, cond.Value)
+			if cond.Operator != "IS NULL" && cond.Operator != "IS NOT NULL" {
+				sql.WriteString(" ?")
+				args = append(args, cond.Value)
+			}
 		}
 	}
 
@@ -391,8 +393,10 @@ func (g *SQLiteGrammar) CompileDelete(table string, conditions []Condition) (str
 			sql.WriteString(g.QuoteIdentifier(cond.Column))
 			sql.WriteString(" ")
 			sql.WriteString(cond.Operator)
-			sql.WriteString(" ?")
-			args = append(args, cond.Value)
+			if cond.Operator != "IS NULL" && cond.Operator != "IS NOT NULL" {
+				sql.WriteString(" ?")
+				args = append(args, cond.Value)
+			}
 		}
 	}
 

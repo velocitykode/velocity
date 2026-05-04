@@ -932,6 +932,116 @@ func TestSoftDeleteModel_DoesntExist(t *testing.T) {
 	}
 }
 
+// trashSoftDeleteUser stamps deleted_at directly via raw SQL so the test
+// fixture stays decoupled from the framework's Delete pathway. Returns the
+// row id for assertions.
+func trashSoftDeleteUser(t *testing.T, m *Manager, id int64) {
+	t.Helper()
+	if _, err := m.DB().Exec(
+		"UPDATE soft_delete_users SET deleted_at = datetime('now') WHERE id = ?",
+		id,
+	); err != nil {
+		t.Fatalf("trash soft delete user: %v", err)
+	}
+}
+
+// TestSoftDeleteModel_Count_HidesTrashed pins the soft-delete scope for the
+// Count terminal. Regression: previously Count bypassed the deleted_at
+// predicate that Get applied, so paginated lists reported a total that
+// included trashed rows even though the visible page hid them.
+func TestSoftDeleteModel_Count_HidesTrashed(t *testing.T) {
+	setupSoftDeleteConvenienceTests(t)
+	m := Default()
+	live := seedSoftDeleteUser(t, m, "Live", "live@sd.com", 30)
+	trashed := seedSoftDeleteUser(t, m, "Trashed", "trashed@sd.com", 31)
+	trashSoftDeleteUser(t, m, trashed)
+
+	got, err := SoftDeleteModel[SoftDeleteUser]{}.Where("id > ?", 0).Count()
+	if err != nil {
+		t.Fatalf("Count: %v", err)
+	}
+	if got != 1 {
+		t.Errorf("default scope: Count() = %d, want 1 (excludes trashed); live id=%d trashed id=%d", got, live, trashed)
+	}
+
+	withTrashed, err := SoftDeleteModel[SoftDeleteUser]{}.Where("id > ?", 0).WithTrashed().Count()
+	if err != nil {
+		t.Fatalf("Count WithTrashed: %v", err)
+	}
+	if withTrashed != 2 {
+		t.Errorf("WithTrashed: Count() = %d, want 2", withTrashed)
+	}
+
+	onlyTrashed, err := SoftDeleteModel[SoftDeleteUser]{}.Where("id > ?", 0).OnlyTrashed().Count()
+	if err != nil {
+		t.Fatalf("Count OnlyTrashed: %v", err)
+	}
+	if onlyTrashed != 1 {
+		t.Errorf("OnlyTrashed: Count() = %d, want 1", onlyTrashed)
+	}
+}
+
+// TestSoftDeleteModel_Pluck_HidesTrashed pins the soft-delete scope for the
+// Pluck terminal so callers selecting a single column do not leak trashed
+// values.
+func TestSoftDeleteModel_Pluck_HidesTrashed(t *testing.T) {
+	setupSoftDeleteConvenienceTests(t)
+	m := Default()
+	seedSoftDeleteUser(t, m, "Live", "live@sd.com", 30)
+	trashed := seedSoftDeleteUser(t, m, "Trashed", "trashed@sd.com", 31)
+	trashSoftDeleteUser(t, m, trashed)
+
+	emails, err := SoftDeleteModel[SoftDeleteUser]{}.Where("id > ?", 0).Pluck("email")
+	if err != nil {
+		t.Fatalf("Pluck: %v", err)
+	}
+	if len(emails) != 1 {
+		t.Fatalf("default scope: Pluck returned %d rows, want 1", len(emails))
+	}
+	if got, _ := emails[0].(string); got != "live@sd.com" {
+		t.Errorf("Pluck returned %v, want live@sd.com", emails[0])
+	}
+}
+
+// TestSoftDeleteModel_Update_HidesTrashed pins the soft-delete scope for
+// the Update terminal so a mass update via the fluent builder does not
+// silently revive or mutate trashed rows.
+func TestSoftDeleteModel_Update_HidesTrashed(t *testing.T) {
+	setupSoftDeleteConvenienceTests(t)
+	m := Default()
+	live := seedSoftDeleteUser(t, m, "Live", "live@sd.com", 30)
+	trashed := seedSoftDeleteUser(t, m, "Trashed", "trashed@sd.com", 31)
+	trashSoftDeleteUser(t, m, trashed)
+
+	affected, err := SoftDeleteModel[SoftDeleteUser]{}.Where("id > ?", 0).Update(map[string]any{"age": 99})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if affected != 1 {
+		t.Errorf("default scope: Update affected %d rows, want 1", affected)
+	}
+
+	var trashedRow SoftDeleteUser
+	if err := m.DB().QueryRow(
+		"SELECT age FROM soft_delete_users WHERE id = ?", trashed,
+	).Scan(&trashedRow.Age); err != nil {
+		t.Fatalf("read trashed row: %v", err)
+	}
+	if trashedRow.Age == 99 {
+		t.Errorf("trashed row was mutated by default-scope Update (id=%d)", trashed)
+	}
+
+	var liveRow SoftDeleteUser
+	if err := m.DB().QueryRow(
+		"SELECT age FROM soft_delete_users WHERE id = ?", live,
+	).Scan(&liveRow.Age); err != nil {
+		t.Fatalf("read live row: %v", err)
+	}
+	if liveRow.Age != 99 {
+		t.Errorf("live row was not mutated (id=%d, age=%d)", live, liveRow.Age)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Additional error path tests
 // ---------------------------------------------------------------------------

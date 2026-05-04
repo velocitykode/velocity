@@ -361,8 +361,10 @@ func (g *MySQLGrammar) CompileUpdate(table string, values map[string]any, condit
 			sql.WriteString(g.QuoteIdentifier(cond.Column))
 			sql.WriteString(" ")
 			sql.WriteString(cond.Operator)
-			sql.WriteString(" ?")
-			args = append(args, cond.Value)
+			if cond.Operator != "IS NULL" && cond.Operator != "IS NOT NULL" {
+				sql.WriteString(" ?")
+				args = append(args, cond.Value)
+			}
 		}
 	}
 
@@ -390,8 +392,10 @@ func (g *MySQLGrammar) CompileDelete(table string, conditions []Condition) (stri
 			sql.WriteString(g.QuoteIdentifier(cond.Column))
 			sql.WriteString(" ")
 			sql.WriteString(cond.Operator)
-			sql.WriteString(" ?")
-			args = append(args, cond.Value)
+			if cond.Operator != "IS NULL" && cond.Operator != "IS NOT NULL" {
+				sql.WriteString(" ?")
+				args = append(args, cond.Value)
+			}
 		}
 	}
 
