@@ -1041,8 +1041,15 @@ func TestContext_SSE(t *testing.T) {
 	if w.Header().Get("Cache-Control") != "no-cache" {
 		t.Errorf("expected no-cache, got %s", w.Header().Get("Cache-Control"))
 	}
-	if w.Header().Get("Connection") != "keep-alive" {
-		t.Errorf("expected keep-alive, got %s", w.Header().Get("Connection"))
+	// Connection: keep-alive is intentionally NOT emitted; it is the HTTP/1.1
+	// default and forbidden hop-by-hop in HTTP/2 (RFC 7540 §8.1.2.2).
+	if got := w.Header().Get("Connection"); got != "" {
+		t.Errorf("Connection header should be unset, got %q", got)
+	}
+	// X-Accel-Buffering: no disables proxy buffering so frames are pushed
+	// to the client immediately under reverse proxies that honor it.
+	if got := w.Header().Get("X-Accel-Buffering"); got != "no" {
+		t.Errorf("expected X-Accel-Buffering=no, got %q", got)
 	}
 
 	body := w.Body.String()
@@ -1051,6 +1058,41 @@ func TestContext_SSE(t *testing.T) {
 	}
 	if !strings.Contains(body, `"text":"hello"`) {
 		t.Error("expected JSON data in body")
+	}
+}
+
+func TestContext_PrepareStream(t *testing.T) {
+	req := httptest.NewRequest("GET", "/stream", nil)
+	w := httptest.NewRecorder()
+	c := NewContext(w, req)
+
+	c.PrepareStream()
+	if got := w.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Errorf("Content-Type=%q, want text/event-stream", got)
+	}
+	if got := w.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("Cache-Control=%q, want no-cache", got)
+	}
+	if got := w.Header().Get("X-Accel-Buffering"); got != "no" {
+		t.Errorf("X-Accel-Buffering=%q, want no", got)
+	}
+	if got := w.Header().Get("Connection"); got != "" {
+		t.Errorf("Connection=%q, want empty (forbidden in HTTP/2)", got)
+	}
+
+	// Idempotent: a second call must not change anything or panic.
+	c.PrepareStream()
+	if got := w.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Errorf("after second call, Content-Type=%q", got)
+	}
+
+	// SSE called after PrepareStream must NOT re-set headers (sseStarted
+	// already true) and must successfully append a frame.
+	if err := c.SSE("hello", "world"); err != nil {
+		t.Fatalf("SSE after PrepareStream errored: %v", err)
+	}
+	if !strings.Contains(w.Body.String(), "event: hello") {
+		t.Errorf("frame missing from body: %q", w.Body.String())
 	}
 }
 
@@ -1533,7 +1575,7 @@ func TestContext_Resource(t *testing.T) {
 // TestContext_reset_clearsAllFields is a regression gate against pooled
 // contexts leaking state from one request into the next (Gin CVE-2020-28483
 // shape). If a new field is added to Context, this test will fail unless
-// reset() clears it — add the corresponding assertion below.
+// reset() clears it; add the corresponding assertion below.
 func TestContext_reset_clearsAllFields(t *testing.T) {
 	req := httptest.NewRequest("GET", "/sentinel", nil)
 	w := httptest.NewRecorder()
@@ -1565,7 +1607,7 @@ func TestContext_reset_clearsAllFields(t *testing.T) {
 		t.Errorf("reset did not clear values: got %d entries", len(c.values))
 	}
 	if _, leaked := c.values["sentinel"]; leaked {
-		t.Error("sentinel key leaked across reset — pool reuse is unsafe")
+		t.Error("sentinel key leaked across reset, pool reuse is unsafe")
 	}
 	if c.services != nil {
 		t.Error("reset did not clear services")

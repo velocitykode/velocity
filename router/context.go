@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/cache"
@@ -944,12 +945,22 @@ func rfc5987Encode(s string) string {
 // ---------------------------------------------------------------------------
 
 // SSE sends a Server-Sent Event. On the first call it sets the appropriate
-// headers (Content-Type, Cache-Control, Connection) and flushes.
+// SSE headers and clears the per-request write deadline so a long-lived
+// stream isn't truncated by http.Server.WriteTimeout (Velocity defaults that
+// to 30s as a slow-client guard, which is correct for normal endpoints but
+// would tear an SSE stream every 30s, surfacing as ERR_HTTP2_PROTOCOL_ERROR
+// on the browser when fronted by an HTTP/2 proxy).
+//
+// We deliberately do NOT emit a Connection: keep-alive header. It is the
+// HTTP/1.1 default, hop-by-hop, and forbidden in HTTP/2 (RFC 7540 §8.1.2.2),
+// so emitting it adds noise on h1 and breaks h2 deployments.
+//
+// Bounded session length should be implemented at the handler level (a
+// ticker that returns a clean nil) rather than via a write deadline, which
+// would cut bytes mid-frame and surface as a corrupt stream to the client.
 func (c *Context) SSE(event string, data interface{}) error {
 	if !c.sseStarted {
-		c.Response.Header().Set("Content-Type", "text/event-stream")
-		c.Response.Header().Set("Cache-Control", "no-cache")
-		c.Response.Header().Set("Connection", "keep-alive")
+		PrepareStreamHeaders(c.Response)
 		c.sseStarted = true
 	}
 	jsonData, err := json.Marshal(data)
@@ -964,6 +975,60 @@ func (c *Context) SSE(event string, data interface{}) error {
 		f.Flush()
 	}
 	return nil
+}
+
+// PrepareStream readies the response for a long-lived streaming body
+// (Server-Sent Events, custom event streams, NDJSON, etc.). It sets the
+// standard SSE headers (Content-Type: text/event-stream, Cache-Control:
+// no-cache, X-Accel-Buffering: no) and clears the per-request write
+// deadline so http.Server.WriteTimeout does not truncate the stream.
+//
+// Use this when the handler builds frames manually (fmt.Fprint /
+// json.Encoder) instead of going through Context.SSE. After the call the
+// handler is free to write directly to c.Response and Flush as needed.
+//
+// Idempotent: safe to call multiple times. Stream session bounding should
+// be implemented via the request context or an in-handler ticker, NOT a
+// write deadline (which cuts bytes mid-frame).
+//
+// SECURITY: clearing the write deadline removes the http.Server Slowloris
+// guard for this connection. Handlers MUST defend against stuck-reader
+// clients themselves:
+//
+//  1. Watch c.Request.Context().Done() and exit when the client TCP
+//     connection drops.
+//  2. Emit periodic heartbeat frames (e.g. "\n:keepalive\n\n" every 30s).
+//     A blocked write on a dead-but-not-yet-RST socket will eventually
+//     surface as an error once OS-level TCP keepalive declares the conn
+//     dead, letting the handler clean up.
+//  3. Apply per-route auth + body-size + rate limits at the router level
+//     so an unauthenticated or hostile client cannot pin connections.
+//
+// Without these, a slow or hostile reader could hold an SSE stream open
+// indefinitely, pinning a goroutine and leaking memory through the write
+// buffer. PrepareStream itself does not enforce any of these; it only
+// removes the deadline that would otherwise interfere with normal SSE.
+func (c *Context) PrepareStream() {
+	if !c.sseStarted {
+		PrepareStreamHeaders(c.Response)
+		c.sseStarted = true
+	}
+}
+
+// PrepareStreamHeaders sets the standard streaming headers on w and clears
+// the per-request write deadline. Exported so non-Context handlers (raw
+// http.HandlerFunc shims, tests, etc.) can opt in to the same setup.
+//
+// The write-deadline clear uses http.NewResponseController so it propagates
+// through Velocity's response wrappers (Unwrap is implemented in
+// response_writer.go).
+func PrepareStreamHeaders(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	if rc := http.NewResponseController(w); rc != nil {
+		_ = rc.SetWriteDeadline(time.Time{})
+	}
 }
 
 // ---------------------------------------------------------------------------
