@@ -182,7 +182,7 @@ func (s *Server) Start() error {
 // select on) and every live client connection (which unblocks readPump's
 // ReadJSON), then waits on the server's WaitGroup. If ctx fires before the
 // goroutines finish, Shutdown returns ctx.Err(); otherwise it returns nil.
-// Shutdown is safe to call more than once — subsequent calls are no-ops that
+// Shutdown is safe to call more than once - subsequent calls are no-ops that
 // return nil.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
@@ -237,25 +237,28 @@ func (s *Server) run() {
 
 // HandleConnection upgrades HTTP connection to WebSocket
 func (s *Server) HandleConnection(w http.ResponseWriter, r *http.Request) {
-	// Check if server is running
+	// Reserve pump slots on the WaitGroup while still holding the running
+	// check, so a concurrent Shutdown (which acquires the write lock before
+	// spawning its wg.Wait goroutine) cannot observe a zero counter and
+	// race the Add. The slots are released below if upgrade or auth fails.
 	s.mu.RLock()
 	if !s.running {
 		s.mu.RUnlock()
 		http.Error(w, "Server not running", http.StatusServiceUnavailable)
 		return
 	}
-
-	// Check connection limit
 	if len(s.clients) >= s.config.MaxConnections {
 		s.mu.RUnlock()
 		http.Error(w, "Connection limit reached", http.StatusServiceUnavailable)
 		return
 	}
+	s.wg.Add(2)
 	s.mu.RUnlock()
 
 	// Authenticate before upgrading if an auth function is configured
 	if s.config.AuthFunc != nil {
 		if err := s.config.AuthFunc(r); err != nil {
+			s.wg.Add(-2)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -264,6 +267,7 @@ func (s *Server) HandleConnection(w http.ResponseWriter, r *http.Request) {
 	// Upgrade connection
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		s.wg.Add(-2)
 		s.logError("Failed to upgrade connection", "error", err)
 		return
 	}
@@ -281,9 +285,8 @@ func (s *Server) HandleConnection(w http.ResponseWriter, r *http.Request) {
 	// Register client
 	s.register <- client
 
-	// Start client goroutines. Track them on the server WaitGroup so
-	// Shutdown can wait for every pump to drain within its deadline.
-	s.wg.Add(2)
+	// Start client goroutines. Pump slots already reserved on the WaitGroup
+	// above so Shutdown can wait for them to drain.
 	go func() {
 		defer s.wg.Done()
 		client.writePump()
