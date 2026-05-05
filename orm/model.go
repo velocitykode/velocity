@@ -170,7 +170,7 @@ func (Model[T]) With(relations ...string) *Query[T] {
 }
 
 // Create inserts a new record.
-// Accepts a map[string]any or a *T. Requires a *Manager — use orm.Save(manager, model) directly.
+// Accepts a map[string]any or a *T. Requires a *Manager - use orm.Save(manager, model) directly.
 func (Model[T]) Create(data any) (*T, error) {
 	switch v := data.(type) {
 	case map[string]any:
@@ -199,7 +199,7 @@ func (Model[T]) Create(data any) (*T, error) {
 }
 
 // CreateMany inserts multiple records.
-// Requires a *Manager — use orm.Save(manager, model) directly.
+// Requires a *Manager - use orm.Save(manager, model) directly.
 func (Model[T]) CreateMany(records []T) error {
 	for _, record := range records {
 		if err := Save(nil, &record); err != nil {
@@ -1299,7 +1299,7 @@ type Guarded interface {
 // the same mass-assignment policy.
 //
 // Fields protected by the framework itself (ID, timestamps, embedded Model
-// bookkeeping) are always left intact — fillable/guarded only governs
+// bookkeeping) are always left intact - fillable/guarded only governs
 // fields the application explicitly manages.
 func applyFillableToStruct(s any) error {
 	fillable, hasFillable := anyFillableList(s)
@@ -1437,6 +1437,57 @@ func mapToStruct(m map[string]any, s any) error {
 	return nil
 }
 
+// ormTagType extracts the "type:" value from an orm struct tag, splitting on
+// ';' so substrings inside other directives don't trigger false matches.
+// Returns "" when no type directive is present.
+func ormTagType(tag string) string {
+	if tag == "" {
+		return ""
+	}
+	for _, part := range strings.Split(tag, ";") {
+		if strings.HasPrefix(part, "type:") {
+			return strings.TrimPrefix(part, "type:")
+		}
+	}
+	return ""
+}
+
+// isJSONColumn reports whether an orm tag declares the column as a JSON or
+// JSONB type. Exact match on the type directive, so variants like
+// "jsonb_packed" do not qualify.
+func isJSONColumn(tag string) bool {
+	t := ormTagType(tag)
+	return t == "json" || t == "jsonb"
+}
+
+// isJSONZeroValue reports whether v should be treated as "absent" for a
+// JSON/JSONB column. Empty Go strings are never valid JSON on Postgres/MySQL
+// and are silently invalid on SQLite, so the framework omits them so the DB
+// default (or NOT NULL constraint) can apply.
+//
+// Per-kind rules:
+//   - string: "" is zero
+//   - pointer / interface: nil is zero
+//   - []byte: nil OR len == 0 is zero
+//   - other slices: only nil is zero (empty slice = explicit user intent)
+//   - map: only nil is zero (empty map = explicit user intent, '{}')
+func isJSONZeroValue(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.String:
+		return v.Len() == 0
+	case reflect.Ptr, reflect.Interface:
+		return v.IsNil()
+	case reflect.Slice:
+		if v.Type().Elem().Kind() == reflect.Uint8 {
+			return v.IsNil() || v.Len() == 0
+		}
+		return v.IsNil()
+	case reflect.Map:
+		return v.IsNil()
+	}
+	return false
+}
+
 // structToMap converts a model struct into a column-to-value map ready for
 // driver insert/update. Embedded ORM base types (Model, UUIDModel and their
 // soft-delete variants) are expanded via serializeEmbedded so each branch
@@ -1458,8 +1509,13 @@ func structToMap(s any) map[string]any {
 			continue
 		}
 
-		// Skip slice/array fields (usually relations)
-		if v.Field(i).Kind() == reflect.Slice || v.Field(i).Kind() == reflect.Array {
+		isJSON := isJSONColumn(tag)
+
+		// Skip slice/array fields (usually relations) unless the field is
+		// JSON-tagged. JSON columns may legitimately be backed by []byte,
+		// []any, or map types and need to flow through to the driver.
+		kind := v.Field(i).Kind()
+		if (kind == reflect.Slice || kind == reflect.Array) && !isJSON {
 			continue
 		}
 
@@ -1484,6 +1540,13 @@ func structToMap(s any) map[string]any {
 		// Convert field name to snake_case if no column specified
 		if columnName == field.Name {
 			columnName = toSnakeCase(field.Name)
+		}
+
+		// JSON/JSONB columns: omit zero values so DB defaults can apply.
+		// Empty string is never valid JSON on Postgres/MySQL; SQLite would
+		// store "" as literal text and break downstream json.Unmarshal.
+		if isJSON && isJSONZeroValue(v.Field(i)) {
+			continue
 		}
 
 		value := v.Field(i).Interface()
@@ -1564,7 +1627,7 @@ func Save[T any](m *Manager, model *T) error {
 		m = Default()
 	}
 	if m == nil {
-		return errors.New("orm: no default manager set — call SetDefault or pass a *Manager")
+		return errors.New("orm: no default manager set - call SetDefault or pass a *Manager")
 	}
 	drv := m.DefaultDriver()
 	if drv == nil {
