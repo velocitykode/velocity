@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,30 +20,79 @@ import (
 const MaxWorkerConcurrency = 10_000
 
 // Logger is the minimal logging interface used by queue internals
-// (workers, memory driver). The framework's log.Logger satisfies this
-// shape; keeping the contract local lets queue/ remain a log-free leaf.
+// (workers, memory driver, signing). The framework's log.Logger satisfies
+// this shape; keeping the contract local lets queue/ remain a log-free leaf.
 type Logger interface {
 	Info(msg string, kvs ...any)
 	Warn(msg string, kvs ...any)
 	Error(msg string, kvs ...any)
 }
 
-// WorkerLogger retains its historical two-method shape for the Worker's
-// consumer-facing option. Any Logger satisfies it.
-type WorkerLogger interface {
-	Info(msg string, kvs ...any)
-	Error(msg string, kvs ...any)
-}
+// WorkerLogger is the consumer-facing alias used by WithWorkerLogger.
+// Identical to Logger so that worker code, fallback impls, and external
+// adapters share one method set (Info/Warn/Error). The framework's
+// *log.Logger satisfies it directly.
+type WorkerLogger = Logger
 
-// nullLogger is the silent fallback when no logger has been installed.
-// It replaces the former stdlib-log adapter so queue internals never
-// emit through Go's standard log package — all diagnostic logging is
-// expected to flow through the framework logger wired at boot.
+// nullLogger is an explicit silent sink. It is only installed when a caller
+// explicitly opts in via WithWorkerLogger(nullLogger{}); the implicit fallback
+// in NewWorker uses stderrLogger so that worker errors are never invisible.
 type nullLogger struct{}
 
 func (nullLogger) Info(string, ...any)  {}
 func (nullLogger) Warn(string, ...any)  {}
 func (nullLogger) Error(string, ...any) {}
+
+// stderrFallback holds the io.Writer used by stderrLogger and the
+// construction warning. It is wrapped in an atomic.Value so test code that
+// redirects output cannot race with concurrent writeStderr readers.
+var stderrFallback atomic.Value // holds stderrWriter
+
+type stderrWriter struct{ io.Writer }
+
+func init() {
+	stderrFallback.Store(stderrWriter{Writer: os.Stderr})
+}
+
+func stderrFallbackWriter() io.Writer {
+	return stderrFallback.Load().(stderrWriter).Writer
+}
+
+// stderrLogger is the implicit fallback installed by NewWorker when no
+// WorkerLogger option is supplied. It writes structured key/value lines to
+// stderrFallback so that operators always see worker errors even when no
+// framework logger has been wired. Library code printing to stderr on
+// catastrophic-silent-loss paths is preferable to dropping jobs in silence.
+type stderrLogger struct{}
+
+func (stderrLogger) Info(msg string, kvs ...any)  { writeStderr("INFO", msg, kvs) }
+func (stderrLogger) Warn(msg string, kvs ...any)  { writeStderr("WARN", msg, kvs) }
+func (stderrLogger) Error(msg string, kvs ...any) { writeStderr("ERROR", msg, kvs) }
+
+// stderrWriteMu serializes writeStderr emission so concurrent pump goroutines
+// cannot interleave bytes within a single line. os.Stderr offers per-syscall
+// atomicity on POSIX but not line-atomicity, and a redirected *bytes.Buffer
+// offers neither. Errors are rare; the lock cost is negligible.
+var stderrWriteMu sync.Mutex
+
+func writeStderr(level, msg string, kvs []any) {
+	var b []byte
+	b = append(b, "velocity/queue ["...)
+	b = append(b, level...)
+	b = append(b, "] "...)
+	b = append(b, msg...)
+	for i := 0; i+1 < len(kvs); i += 2 {
+		b = append(b, ' ')
+		b = fmt.Appendf(b, "%v=%v", kvs[i], kvs[i+1])
+	}
+	if len(kvs)%2 == 1 {
+		b = fmt.Appendf(b, " %v=MISSING", kvs[len(kvs)-1])
+	}
+	b = append(b, '\n')
+	stderrWriteMu.Lock()
+	_, _ = stderrFallbackWriter().Write(b)
+	stderrWriteMu.Unlock()
+}
 
 // retryPushTimeout bounds how long the worker will wait when re-queueing
 // a failed job for retry. It is intentionally short so that a slow driver
@@ -51,31 +102,45 @@ const retryPushTimeout = 5 * time.Second
 
 // Worker processes jobs from a queue
 type Worker struct {
-	queue           Driver
-	queueName       string
-	handler         func(Job) error
-	concurrency     int
-	interval        time.Duration
-	timeout         time.Duration
-	maxRetries      int
-	backoff         BackoffStrategy
-	attempts        sync.Map // keyed by jobKey(job) → *int32
-	ctx             context.Context
-	cancel          context.CancelFunc
-	wg              sync.WaitGroup
-	logger          WorkerLogger
+	queue       Driver
+	queueName   string
+	handler     func(Job) error
+	concurrency int
+	interval    time.Duration
+	timeout     time.Duration
+	maxRetries  int
+	backoff     BackoffStrategy
+	attempts    sync.Map // keyed by jobKey(job) → *int32
+	ctx         context.Context
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	logger      WorkerLogger
+
+	// mu guards eventDispatcher. The setter is exposed publicly via
+	// SetEventDispatcher and may be called concurrently with pump goroutines
+	// that read the dispatcher to fire job lifecycle events. Without this
+	// guard the read/write race is reachable any time wireInstanceEvents
+	// runs after Start, and in tests that reassign the dispatcher between
+	// fixtures.
+	mu              sync.RWMutex
 	eventDispatcher func(event interface{}) error
 }
 
-// SetEventDispatcher sets the function used to dispatch events.
+// SetEventDispatcher sets the function used to dispatch events. Safe to
+// call concurrently with running pump goroutines.
 func (w *Worker) SetEventDispatcher(fn func(event interface{}) error) {
+	w.mu.Lock()
 	w.eventDispatcher = fn
+	w.mu.Unlock()
 }
 
 // dispatchEvent dispatches an event if a dispatcher is configured.
 func (w *Worker) dispatchEvent(event interface{}) {
-	if w.eventDispatcher != nil {
-		w.eventDispatcher(event)
+	w.mu.RLock()
+	fn := w.eventDispatcher
+	w.mu.RUnlock()
+	if fn != nil {
+		fn(event)
 	}
 }
 
@@ -128,8 +193,10 @@ func WithBackoff(strategy BackoffStrategy) Option {
 	}
 }
 
-// WithWorkerLogger sets the logger for the worker.
-// If not set, the worker uses Go's standard log package.
+// WithWorkerLogger sets the logger for the worker. When not set, NewWorker
+// installs stderrLogger as the implicit fallback and emits a per-construction
+// warning to stderr, so internal worker errors are never invisible. Pass
+// WithWorkerLogger(nullLogger{}) to opt into silence explicitly.
 func WithWorkerLogger(l WorkerLogger) Option {
 	return func(w *Worker) {
 		w.logger = l
@@ -137,7 +204,7 @@ func WithWorkerLogger(l WorkerLogger) Option {
 }
 
 // NewWorker creates a new queue worker. The worker is inert until Start is
-// called — no background goroutines are spawned and no context is bound
+// called: no background goroutines are spawned and no context is bound
 // until then, so callers are free to construct a Worker and wire it into a
 // bootstrap sequence without creating an orphaned context.
 func NewWorker(queue Driver, queueName string, handler func(Job) error, opts ...Option) *Worker {
@@ -159,7 +226,12 @@ func NewWorker(queue Driver, queueName string, handler func(Job) error, opts ...
 	}
 
 	if w.logger == nil {
-		w.logger = nullLogger{}
+		fmt.Fprintf(stderrFallbackWriter(),
+			"velocity/queue: NewWorker(queue=%s) constructed without WithWorkerLogger; "+
+				"falling back to stderr. Pass queue.WithWorkerLogger(s.Log) to route "+
+				"worker errors through the framework logger.\n",
+			queueName)
+		w.logger = stderrLogger{}
 	}
 
 	return w
@@ -171,7 +243,7 @@ func NewWorker(queue Driver, queueName string, handler func(Job) error, opts ...
 // This lets application-level shutdown contexts (e.g. App.Shutdown) flow
 // through to job-execution contexts without requiring a separate Stop call.
 //
-// Passing a nil context is equivalent to context.Background() — the worker
+// Passing a nil context is equivalent to context.Background(); the worker
 // then only exits when Stop is invoked.
 //
 // Each pump goroutine is wrapped via async.Go so any unrecovered panic in
@@ -185,7 +257,7 @@ func (w *Worker) Start(ctx context.Context) {
 		ctx = context.Background()
 	}
 	if w.ctx != nil {
-		// Already started — do not spawn additional pumps.
+		// Already started: do not spawn additional pumps.
 		return
 	}
 	w.ctx, w.cancel = context.WithCancel(ctx)
@@ -242,12 +314,14 @@ func (w *Worker) processJob() error {
 		return ErrNoJobAvailable
 	}
 
-	// Get job type for event dispatching
-	jobType := fmt.Sprintf("%T", job)
+	// Get job type for event dispatching. Normalized to match the registry
+	// key and persisted Payload.Type so observability across drivers, events,
+	// and registry lookups all reference the same identifier.
+	jobType := normalizeJobType(fmt.Sprintf("%T", job))
 
 	// Process the job with timeout. Callers that need a different default
 	// for tests should inject their own timeout with WithTimeout, their own
-	// clock, or cancel the worker context directly — the driver no longer
+	// clock, or cancel the worker context directly; the driver no longer
 	// second-guesses the value based on polling interval.
 	timeout := w.timeout
 	if timeout == 0 {
@@ -260,7 +334,7 @@ func (w *Worker) processJob() error {
 	dispatchJobProcessing(w.dispatchEvent, jobCtx, jobType, w.queueName)
 	startTime := time.Now()
 
-	// Check if this is a cancelled batch job — skip processing.
+	// Check if this is a cancelled batch job, skip processing.
 	// Note: This is a best-effort check. A batch could be cancelled between this
 	// check and job execution (TOCTOU), so cancellation is not guaranteed to prevent
 	// a job from running. This is an acceptable trade-off for simplicity.
@@ -290,7 +364,7 @@ func (w *Worker) processJob() error {
 			w.handleJobFailure(jobCtx, job, jobType, err, duration)
 			return fmt.Errorf("velocity/queue: job failed: %w", err)
 		}
-		// Success — clean up attempt tracking
+		// Success: clean up attempt tracking
 		w.removeAttempts(job)
 		// Record batch success
 		if bj, ok := job.(Batchable); ok {
@@ -339,7 +413,7 @@ func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, 
 		// Use a detached context with a short timeout for the retry push so a
 		// slow driver (Redis partition, DB lock wait) cannot hold shutdown open
 		// past its deadline. If the push exceeds the timeout the job is marked
-		// failed — losing the retry is preferable to hanging the shutdown path.
+		// failed: losing the retry is preferable to hanging the shutdown path.
 		pushCtx, pushCancel := context.WithTimeout(context.Background(), retryPushTimeout)
 		pushErr := w.queue.PushDelayedCtx(pushCtx, job, backoff, w.queueName)
 		pushCancel()

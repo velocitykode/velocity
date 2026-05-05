@@ -17,6 +17,12 @@ type QueueWorkOptions struct {
 	Queue   string
 	Tries   int
 	Timeout int
+	// Logger is the WorkerLogger that internal worker errors are routed to.
+	// When nil, the worker falls back to stderr and emits a per-construction
+	// warning. Wire the framework's log.Logger (the interface returned by
+	// log.NewLogger) here so worker errors flow through the configured log
+	// driver.
+	Logger queue.WorkerLogger
 }
 
 // QueueWork starts a queue worker that processes jobs from the given driver.
@@ -41,6 +47,9 @@ func QueueWork(driver queue.Driver, opts QueueWorkOptions) error {
 	}
 	if opts.Timeout > 0 {
 		workerOpts = append(workerOpts, queue.WithTimeout(time.Duration(opts.Timeout)*time.Second))
+	}
+	if opts.Logger != nil {
+		workerOpts = append(workerOpts, queue.WithWorkerLogger(opts.Logger))
 	}
 
 	w := queue.NewWorker(driver, queueName, handler, workerOpts...)

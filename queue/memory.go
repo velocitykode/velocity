@@ -284,7 +284,7 @@ func (m *MemoryDriver) GetFailed(queueName string) ([]*failedJob, error) {
 
 // Shutdown gracefully shuts down the driver, waiting for the background
 // goroutine to finish. Honors the context deadline: if ctx expires before
-// the goroutine exits, ctx.Err() is returned. Idempotent — safe to call
+// the goroutine exits, ctx.Err() is returned. Idempotent, safe to call
 // multiple times.
 func (m *MemoryDriver) Shutdown(ctx context.Context) error {
 	batchStore.close() // stop package-level batch cleanup goroutine (idempotent)
@@ -393,7 +393,7 @@ func SerializeJob(job Job, queueName string) (*Payload, error) {
 		data = []byte(fmt.Sprintf(`{"type":"%T"}`, job))
 	}
 
-	jobType := fmt.Sprintf("%T", job)
+	jobType := normalizeJobType(fmt.Sprintf("%T", job))
 
 	return &Payload{
 		Type:      jobType,

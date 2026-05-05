@@ -47,6 +47,9 @@ func (queueWorkCmd) run(a *App, args []string) error {
 		return err
 	}
 	opts := console.QueueWorkOptions{}
+	if a.Log != nil {
+		opts.Logger = a.Log
+	}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--queue", "-q":

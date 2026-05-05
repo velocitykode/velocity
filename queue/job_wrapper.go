@@ -88,9 +88,11 @@ func CreateJobWrapper(job Job, queueName string) (*JobWrapper, error) {
 	// Store the job instance
 	jobID := store.Store(job)
 
-	// Create payload with job ID
+	// Create payload with job ID. The Type field is normalized to the bare
+	// type name so that pointer / package-qualified / bare Register calls all
+	// resolve to the same key on the worker side.
 	payload := &Payload{
-		Type:      fmt.Sprintf("%T", job),
+		Type:      normalizeJobType(fmt.Sprintf("%T", job)),
 		Data:      []byte(fmt.Sprintf(`{"job_id":"%s"}`, jobID)),
 		Queue:     queueName,
 		Attempts:  0,
