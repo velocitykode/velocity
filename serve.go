@@ -78,6 +78,23 @@ func (a *App) serveHTTP() error {
 	// not land on the first request's latency path.
 	a.Router.Freeze()
 
+	// Start the scheduler in-process if WithSchedulerInProcess() was set.
+	// The loop runs against context.Background() and is brought down by
+	// App.Shutdown -> a.Scheduler.Shutdown(ctx), which closes the stop
+	// channel and waits on runWg for in-flight jobs. Tying scheduler.Run
+	// directly to a.shutdownCtx would race: a.Shutdown cancels
+	// shutdownCtx first, scheduler.Run then calls its own Shutdown with
+	// the cancelled ctx and returns immediately without draining
+	// runWg, leaving in-flight jobs orphaned.
+	if a.runScheduler && a.Scheduler != nil {
+		async.Go(func() {
+			a.Log.Info("Scheduler started in-process")
+			if err := a.Scheduler.Run(context.Background()); err != nil && err != context.Canceled {
+				a.Log.Error("Scheduler exited with error", "error", err)
+			}
+		})
+	}
+
 	// Start server in a goroutine. async.Go recovers from any panic in
 	// ListenAndServe so the main goroutine's select is never starved.
 	errCh := make(chan error, 1)

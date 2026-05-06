@@ -56,6 +56,7 @@ type App struct {
 	server         *http.Server
 	version        string
 	noEvents       bool // skip event dispatcher initialization
+	runScheduler   bool // start scheduler in-process under Serve() (WithSchedulerInProcess)
 	providers      []app.ServiceProvider
 	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
