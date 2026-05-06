@@ -149,16 +149,22 @@ func (ImmutableModel[T]) Pluck(column string) ([]any, error) {
 	return newQuery[T]().Pluck(column)
 }
 
-// Save inserts the model. ImmutableModel does not support updates: if
-// the receiver is already persisted (IsExisting=true), Save returns
-// ErrImmutableModelUpdate. New records flow through orm.Save().
+// Save is decorative on the embedded *ImmutableModel[T] receiver and
+// always returns an error. This receiver cannot resolve the parent
+// struct, table name, or hooks via reflection; persisting an immutable
+// record requires the package-level helper:
+//
+//	err := orm.Save(manager, &record)
+//
+// On an already-persisted record, Save returns ErrImmutableModelUpdate
+// (immutable models are append-only). On a new record it returns an
+// error directing callers to orm.Save. The same trap exists on the
+// regular Model[T].Save(); the package-level orm.Save is the one true
+// path for both.
 func (m *ImmutableModel[T]) Save() error {
 	if m.IsExisting {
 		return ErrImmutableModelUpdate
 	}
-	// Defer to the global Save which knows how to find embedded
-	// ImmutableModel via reflection. The global path handles table-
-	// name resolution, hooks, and event dispatch consistently.
 	return errors.New("orm: ImmutableModel.Save requires the parent struct; call orm.Save(manager, &record)")
 }
 
@@ -259,8 +265,11 @@ func (ImmutableUUIDModel[T]) Count() (int, error) {
 	return newQuery[T]().Count()
 }
 
-// Save inserts the model. Returns ErrImmutableModelUpdate if the
-// receiver is already persisted.
+// Save is decorative on the embedded *ImmutableUUIDModel[T] receiver
+// and always returns an error. Use orm.Save(manager, &record), the
+// package-level helper is the one true path. On a persisted record,
+// Save returns ErrImmutableModelUpdate (immutable models are
+// append-only). See *ImmutableModel[T].Save for the longer note.
 func (m *ImmutableUUIDModel[T]) Save() error {
 	if m.IsExisting {
 		return ErrImmutableModelUpdate
