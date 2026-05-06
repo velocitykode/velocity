@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/velocitykode/velocity/internal/panicerr"
@@ -28,6 +29,8 @@ func FromRecovered(r any) error { return panicerr.FromRecovered(r) }
 var (
 	loggerMu sync.RWMutex
 	logger   Logger = &stdLogger{}
+
+	panicHook atomic.Pointer[func(any)]
 )
 
 type stdLogger struct{}
@@ -52,15 +55,50 @@ func SetLogger(l Logger) {
 	logger = l
 }
 
+// GetLogger returns the current package-level logger. Safe for concurrent
+// reads. Named GetLogger (not Logger) because the package already exports a
+// Logger interface type, and Go disallows a function and type sharing a name.
+//
+// Callers can use the returned logger to emit messages tagged with the same
+// sink the async package uses for panic logs.
+func GetLogger() Logger {
+	return getLogger()
+}
+
 func getLogger() Logger {
 	loggerMu.RLock()
 	defer loggerMu.RUnlock()
 	return logger
 }
 
+// SetPanicHook installs a non-logging interceptor invoked for every panic
+// recovered by the async package's helpers (Run, RunWithTimeout,
+// RunWithContext, Go, GoCtx, GoWithRecover, GoWithRecoverE, GoWithLogger,
+// ForEach, GoForEach, TryForEach). Pass nil to clear. The hook runs in
+// addition to logging, not in place of it. The hook itself is panic-safe:
+// if it panics, the panic is swallowed.
+func SetPanicHook(hook func(any)) {
+	if hook == nil {
+		panicHook.Store(nil)
+		return
+	}
+	safe := func(p any) {
+		defer func() { _ = recover() }()
+		hook(p)
+	}
+	panicHook.Store(&safe)
+}
+
+func runPanicHook(p any) {
+	if h := panicHook.Load(); h != nil && *h != nil {
+		(*h)(p)
+	}
+}
+
 // handlePanic handles panics in goroutines
 func handlePanic(p any) {
 	getLogger().Error("async: panic recovered", "panic", p)
+	runPanicHook(p)
 }
 
 // Run executes function asynchronously
@@ -204,6 +242,10 @@ func GoCtx(ctx context.Context, fn func(ctx context.Context)) {
 // If recoverFn is nil, panics fall back to the package-level handler (same
 // path Go uses), so callers can supply nil to opt out of custom handling.
 // A panic raised inside recoverFn itself is also recovered and logged.
+//
+// SetPanicHook observers see every panic regardless of whether recoverFn is
+// supplied, so metrics/telemetry sinks don't go dark when a caller installs
+// custom handling.
 func GoWithRecover(fn func(), recoverFn func(any)) {
 	go func() {
 		defer func() {
@@ -217,6 +259,7 @@ func GoWithRecover(fn func(), recoverFn func(any)) {
 						}()
 						recoverFn(p)
 					}()
+					runPanicHook(p)
 				} else {
 					handlePanic(p)
 				}
@@ -242,6 +285,7 @@ func GoWithRecoverE(fn func(), recoverFn func(*PanicError)) {
 						}()
 						recoverFn(panicerr.New(p))
 					}()
+					runPanicHook(p)
 				} else {
 					handlePanic(p)
 				}
@@ -264,6 +308,7 @@ func GoWithLogger(l Logger, name string, fn func()) {
 					logTo = getLogger()
 				}
 				logTo.Error("async: panic recovered", "name", name, "panic", p)
+				runPanicHook(p)
 			}
 		}()
 		fn()

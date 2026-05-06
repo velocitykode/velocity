@@ -691,3 +691,174 @@ func TestPanicError_NilReceiverSafe(t *testing.T) {
 		t.Fatal("nil receiver Unwrap() should be nil")
 	}
 }
+
+// ---------- Item 12: GetLogger + SetPanicHook ----------
+
+func TestGetLogger_ReturnsCurrentLogger(t *testing.T) {
+	prev := GetLogger()
+	defer SetLogger(prev)
+
+	cap := &captureLogger{}
+	SetLogger(cap)
+	if GetLogger() != cap {
+		t.Fatalf("GetLogger returned %T, want *captureLogger", GetLogger())
+	}
+	GetLogger().Error("hi")
+	if entries := cap.snapshot(); len(entries) != 1 || entries[0].msg != "hi" {
+		t.Fatalf("expected 1 entry msg=hi, got %+v", entries)
+	}
+}
+
+func TestGetLogger_ReadsLatestAfterSetLogger(t *testing.T) {
+	prev := GetLogger()
+	defer SetLogger(prev)
+
+	a := &captureLogger{}
+	b := &captureLogger{}
+
+	SetLogger(a)
+	if got := GetLogger(); got != a {
+		t.Fatalf("after SetLogger(a), got %T", got)
+	}
+	SetLogger(b)
+	if got := GetLogger(); got != b {
+		t.Fatalf("after SetLogger(b), got %T", got)
+	}
+}
+
+func TestGetLogger_ConcurrentReadsAndWrites(t *testing.T) {
+	prev := GetLogger()
+	defer SetLogger(prev)
+
+	const N = 50
+	var wg sync.WaitGroup
+	wg.Add(2 * N)
+	for i := 0; i < N; i++ {
+		go func() {
+			defer wg.Done()
+			SetLogger(&captureLogger{})
+		}()
+		go func() {
+			defer wg.Done()
+			_ = GetLogger()
+		}()
+	}
+	wg.Wait()
+}
+
+func TestSetPanicHook_FiresOnEveryHelperPanic(t *testing.T) {
+	withLogger(t) // silence the std logger
+
+	var calls atomic.Int32
+	SetPanicHook(func(any) { calls.Add(1) })
+	t.Cleanup(func() { SetPanicHook(nil) })
+
+	// Each helper panics in turn; we tally 1 call per helper.
+	helpers := []func(){
+		func() {
+			done := make(chan struct{})
+			Go(func() { defer close(done); panic("a") })
+			<-done
+		},
+		func() {
+			done := make(chan struct{})
+			GoWithRecover(func() { defer close(done); panic("b") }, nil)
+			<-done
+		},
+		func() {
+			done := make(chan struct{})
+			GoWithRecover(func() { defer close(done); panic("b2") }, func(any) {})
+			<-done
+		},
+		func() {
+			done := make(chan struct{})
+			GoWithRecoverE(func() { defer close(done); panic("c") }, nil)
+			<-done
+		},
+		func() {
+			done := make(chan struct{})
+			GoWithRecoverE(func() { defer close(done); panic("c2") }, func(*PanicError) {})
+			<-done
+		},
+		func() {
+			done := make(chan struct{})
+			GoWithLogger(nil, "h", func() { defer close(done); panic("d") })
+			<-done
+		},
+		func() {
+			TryForEach([]int{0}, 1, func(int) error { panic("e") })
+		},
+	}
+	for _, h := range helpers {
+		h()
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if calls.Load() >= int32(len(helpers)) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := calls.Load(); got < int32(len(helpers)) {
+		t.Fatalf("hook fired %d times, want >= %d", got, len(helpers))
+	}
+}
+
+func TestSetPanicHook_ClearedByNil(t *testing.T) {
+	withLogger(t)
+
+	var calls atomic.Int32
+	SetPanicHook(func(any) { calls.Add(1) })
+	SetPanicHook(nil) // clear
+
+	done := make(chan struct{})
+	Go(func() { defer close(done); panic("after-clear") })
+	<-done
+	time.Sleep(50 * time.Millisecond)
+	if calls.Load() != 0 {
+		t.Fatalf("hook should have been cleared, fired %d times", calls.Load())
+	}
+}
+
+func TestSetPanicHook_PanicInsideHookSwallowed(t *testing.T) {
+	withLogger(t)
+
+	SetPanicHook(func(any) { panic("hook itself panics") })
+	t.Cleanup(func() { SetPanicHook(nil) })
+
+	done := make(chan struct{})
+	Go(func() { defer close(done); panic("outer") })
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Go() goroutine never closed done")
+	}
+}
+
+func TestSetPanicHook_ConcurrentSetAndFire(t *testing.T) {
+	withLogger(t)
+
+	var fires atomic.Int32
+	t.Cleanup(func() { SetPanicHook(nil) })
+
+	const N = 30
+	var wg sync.WaitGroup
+	wg.Add(2 * N)
+	for i := 0; i < N; i++ {
+		go func() {
+			defer wg.Done()
+			SetPanicHook(func(any) { fires.Add(1) })
+		}()
+		go func() {
+			defer wg.Done()
+			done := make(chan struct{})
+			Go(func() { defer close(done); panic("racer") })
+			<-done
+		}()
+	}
+	wg.Wait()
+	// We can't assert exact fire count under the race because some panics
+	// land before SetPanicHook installs; we just need to ensure no race
+	// detector failures and no crashes. Test passes by completing.
+}
