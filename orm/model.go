@@ -1,6 +1,7 @@
 package orm
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -79,6 +80,25 @@ type SoftDeleteUUIDModel[T any] struct {
 }
 
 // Static-like methods that return the actual type
+
+// WithContext returns a *Query[T] bound to ctx so static-like helpers
+// chained off it (Where, OrderBy, First, Get, Count, Pluck, ...) propagate
+// the context to the driver. This is the chain entry point for callers
+// who want to attach a request/transaction context to the Find/All/etc.
+// helpers exposed on Model[T] (which are context-blind by themselves).
+//
+// Example:
+//
+//	var u User
+//	if err := orm.Model[User]{}.WithContext(ctx).Where("id = ?", id).First(&u); err != nil {
+//	    return err
+//	}
+//
+// Returns *Query[T] rather than Model[T] so the rest of the chain has the
+// full builder API (Where, GroupBy, Limit, ...) available.
+func (Model[T]) WithContext(ctx context.Context) *Query[T] {
+	return newQuery[T]().WithContext(ctx)
+}
 
 // Find retrieves a record by primary key
 func (Model[T]) Find(id any) (*T, error) {
@@ -340,6 +360,12 @@ func (m *Model[T]) IsClean() bool {
 
 // UUIDModel static methods
 
+// WithContext returns a *Query[T] bound to ctx so static-like helpers
+// chained off it propagate context to the driver. See Model[T].WithContext.
+func (UUIDModel[T]) WithContext(ctx context.Context) *Query[T] {
+	return newQuery[T]().WithContext(ctx)
+}
+
 // Find retrieves a record by UUID primary key
 func (UUIDModel[T]) Find(id string) (*T, error) {
 	var model T
@@ -598,6 +624,12 @@ func (m *UUIDModel[T]) IsClean() bool {
 }
 
 // SoftDeleteModel static methods
+
+// WithContext returns a *Query[T] bound to ctx so static-like helpers
+// chained off it propagate context to the driver. See Model[T].WithContext.
+func (SoftDeleteModel[T]) WithContext(ctx context.Context) *Query[T] {
+	return newQuery[T]().WithContext(ctx)
+}
 
 // Find retrieves a record by primary key
 func (SoftDeleteModel[T]) Find(id any) (*T, error) {
@@ -911,6 +943,12 @@ func (m *SoftDeleteModel[T]) update() error {
 }
 
 // SoftDeleteUUIDModel static methods
+
+// WithContext returns a *Query[T] bound to ctx so static-like helpers
+// chained off it propagate context to the driver. See Model[T].WithContext.
+func (SoftDeleteUUIDModel[T]) WithContext(ctx context.Context) *Query[T] {
+	return newQuery[T]().WithContext(ctx)
+}
 
 // Find retrieves a record by UUID primary key
 func (SoftDeleteUUIDModel[T]) Find(id string) (*T, error) {
