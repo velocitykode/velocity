@@ -183,3 +183,81 @@ func keysOf(m map[string]any) []string {
 	}
 	return out
 }
+
+// TestPluck_HonorsDistinct is the regression test for the bug where
+// Query.Pluck silently dropped the Distinct flag when forwarding to the
+// grammar, causing facet/lookup queries to return duplicates instead of
+// distinct values.
+//
+// We assert at three layers:
+//   - end-to-end: Distinct().Pluck(col) returns deduped values
+//   - SQL emission: the captured SQL contains "DISTINCT"
+//   - all three grammars: SelectQuery{Distinct: true} emits SELECT DISTINCT
+//
+// The grammar layer is dialect-specific and shipped on every driver, so we
+// table-test all three rather than rely on the SQLite path alone.
+func TestPluck_HonorsDistinct(t *testing.T) {
+	setupConvenienceTests(t)
+	m := Default()
+
+	// Seed with duplicate names: pluck of "name" with Distinct should
+	// dedupe to the unique set.
+	seedUser(t, m, "Alice", "alice1@example.com", 30)
+	seedUser(t, m, "Alice", "alice2@example.com", 31)
+	seedUser(t, m, "Bob", "bob@example.com", 25)
+
+	// Without Distinct: 3 rows.
+	all, err := Model[TestUser]{}.Pluck("name")
+	if err != nil {
+		t.Fatalf("Pluck without Distinct returned error: %v", err)
+	}
+	if len(all) != 3 {
+		t.Errorf("non-distinct pluck: got %d rows, want 3 (seeded values)", len(all))
+	}
+
+	// With Distinct: 2 rows.
+	q := newQuery[TestUser]()
+	q.Distinct()
+	got, err := q.Pluck("name")
+	if err != nil {
+		t.Fatalf("Distinct().Pluck returned error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("Distinct().Pluck returned %d rows, want 2 (Alice, Bob); rows=%v", len(got), got)
+	}
+
+	// Verify the emitted SQL contained DISTINCT, the grammar-level proof
+	// that the Distinct flag actually flowed through Pluck's SelectQuery.
+	sql, _ := q.ToSQL()
+	if !strings.Contains(strings.ToUpper(sql), "SELECT DISTINCT") {
+		t.Errorf("Pluck SQL missing DISTINCT keyword: %q", sql)
+	}
+}
+
+// TestPluck_DistinctEmitsSQL_AllDrivers verifies SelectQuery.Distinct flows
+// to SELECT DISTINCT on each shipped grammar. This is a grammar-level guard
+// so the regression cannot recur on a non-SQLite driver.
+func TestPluck_DistinctEmitsSQL_AllDrivers(t *testing.T) {
+	tests := []struct {
+		name    string
+		grammar drivers.QueryGrammar
+	}{
+		{"sqlite", &drivers.SQLiteGrammar{}},
+		{"mysql", &drivers.MySQLGrammar{}},
+		{"postgres", &drivers.PostgresGrammar{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sql, _ := tt.grammar.CompileSelect(&drivers.SelectQuery{
+				Table:    "users",
+				Columns:  []string{"role"},
+				Distinct: true,
+			})
+			if !strings.Contains(strings.ToUpper(sql), "SELECT DISTINCT") {
+				t.Errorf("%s: CompileSelect with Distinct=true did not emit SELECT DISTINCT, got %q",
+					tt.name, sql)
+			}
+		})
+	}
+}

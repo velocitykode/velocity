@@ -793,9 +793,12 @@ func (q *Query[T]) Pluck(column string) ([]any, error) {
 		Joins:      q.joins,
 		Limit:      q.limit,
 		Offset:     q.offset,
+		Distinct:   q.distinct,
 	}
 
 	sql, args := q.driver.Grammar().CompileSelect(selectQuery)
+	q.lastSQL = sql
+	q.lastArgs = args
 
 	start := time.Now()
 	rows, err := q.driver.QueryContext(q.getContext(), sql, args...)
