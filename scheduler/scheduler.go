@@ -87,7 +87,7 @@ type Logger interface {
 
 // nullLogger is the silent default when SetLogger has not been called.
 // It is deliberately inert so the scheduler never emits log output
-// through stdlib log — all diagnostic logging flows through the
+// through stdlib log, all diagnostic logging flows through the
 // framework logger installed at boot.
 type nullLogger struct{}
 
@@ -394,7 +394,7 @@ func (s *Scheduler) Shutdown(ctx context.Context) error {
 
 // runDueJobs executes all jobs that are due. The timezone is snapshotted
 // under the read lock so it cannot be observed mid-swap with SetTimezone,
-// and runWg.Wait() is intentionally NOT invoked here — the ticker loop
+// and runWg.Wait() is intentionally NOT invoked here, the ticker loop
 // must remain non-blocking so slow jobs cannot delay subsequent tick
 // evaluation. Shutdown() waits on runWg after the ticker has stopped.
 func (s *Scheduler) runDueJobs() {
@@ -407,7 +407,7 @@ func (s *Scheduler) runDueJobs() {
 	copy(jobs, s.jobs)
 	beforeCallbacks := s.beforeCallbacks
 	afterCallbacks := s.afterCallbacks
-	tz := s.timezone // snapshot under RLock — SetTimezone writes under full Lock
+	tz := s.timezone // snapshot under RLock, SetTimezone writes under full Lock
 	s.mu.RUnlock()
 
 	if tz == nil {
@@ -441,7 +441,7 @@ func (s *Scheduler) runDueJobs() {
 		}
 	}
 
-	// Run after callbacks — these fire per tick, not per job, and must not
+	// Run after callbacks, these fire per tick, not per job, and must not
 	// block on in-flight job goroutines (see docstring).
 	for _, callback := range afterCallbacks {
 		callback()

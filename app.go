@@ -47,7 +47,7 @@ type App struct {
 	*app.Services
 
 	// Router is separate from Services because it creates contexts that
-	// reference Services — putting Router inside Services would be circular.
+	// reference Services, putting Router inside Services would be circular.
 	Router *router.VelocityRouterV2
 
 	// Internal
@@ -83,12 +83,12 @@ type App struct {
 
 // New creates a new Velocity application with all services initialized.
 // Services are initialized in dependency order. If any required service
-// fails to initialize, New returns an error — it never panics.
+// fails to initialize, New returns an error, it never panics.
 //
 // If an early stage succeeds and a later stage fails, every already-opened
 // resource is closed via a deferred cleanup stack (logger file handles,
 // DB pool, cache goroutines, queue workers, …). The cleanup stack runs in
-// reverse registration order and every cleanup is best-effort — cleanup
+// reverse registration order and every cleanup is best-effort, cleanup
 // failures are logged (where a logger is available) but do not replace the
 // original error returned to the caller.
 func New(opts ...Option) (*App, error) {
@@ -113,7 +113,7 @@ func New(opts ...Option) (*App, error) {
 
 	// cleanups is the deferred teardown stack for the failure path.
 	// Each successful resource init appends a closure that shuts the
-	// resource down. On success — right before `return a, nil` — we
+	// resource down. On success, right before `return a, nil`, we
 	// assign cleanups = nil so the deferred closure is a no-op. On
 	// failure, the deferred closure walks the stack in reverse so
 	// later resources are torn down before earlier ones (same order
@@ -151,13 +151,13 @@ func New(opts ...Option) (*App, error) {
 	)
 
 	// 3. Initialize crypto (auth/csrf may need it). Crypto is stateless
-	// after construction — no cleanup needed.
+	// after construction, no cleanup needed.
 	if a.config.Crypto.Key == "" {
 		switch a.config.Env {
 		case "testing":
-			// Silent bypass — test harness wires its own keys as needed.
+			// Silent bypass, test harness wires its own keys as needed.
 		case "development":
-			a.Log.Warn("APP_KEY is unset — crypto subsystem disabled. Run `vel key:generate` before exercising auth/csrf/session flows.")
+			a.Log.Warn("APP_KEY is unset, crypto subsystem disabled. Run `vel key:generate` before exercising auth/csrf/session flows.")
 		default:
 			return nil, ErrNoAppKey
 		}
@@ -189,7 +189,7 @@ func New(opts ...Option) (*App, error) {
 	if err := a.config.Session.Validate(a.config.Env); err != nil {
 		switch a.config.Env {
 		case "development":
-			a.Log.Warn("Insecure session cookie config (dev only — will fail in production)", "error", err)
+			a.Log.Warn("Insecure session cookie config (dev only, will fail in production)", "error", err)
 		case "testing":
 			// silent
 		default:
@@ -200,7 +200,7 @@ func New(opts ...Option) (*App, error) {
 	if err := a.config.CSRF.Validate(a.config.Env); err != nil {
 		switch a.config.Env {
 		case "development":
-			a.Log.Warn("Insecure CSRF cookie config (dev only — will fail in production)", "error", err)
+			a.Log.Warn("Insecure CSRF cookie config (dev only, will fail in production)", "error", err)
 		case "testing":
 			// silent
 		default:
@@ -209,7 +209,7 @@ func New(opts ...Option) (*App, error) {
 		}
 	}
 
-	// 6. Initialize auth manager — pass DB for ORM provider. No cleanup
+	// 6. Initialize auth manager, pass DB for ORM provider. No cleanup
 	// registration: *auth.Manager does not currently expose Shutdown.
 	// JWT guard cleanup goroutines are tied to the process lifetime.
 	var sqlDB *sql.DB
@@ -260,7 +260,7 @@ func New(opts ...Option) (*App, error) {
 		a.Services.Events = events.NewDispatcher()
 	}
 
-	// 10. Initialize queue — pass DB for database driver
+	// 10. Initialize queue, pass DB for database driver
 	queueDriver, err := initQueue(a.config.Queue, sqlDB, a.config.DB.Connection, a.config.Queue.SigningKey, a.config.Key, a.Log)
 	if err != nil {
 		return nil, fmt.Errorf("velocity: failed to initialize queue: %w", err)
@@ -344,7 +344,7 @@ func New(opts ...Option) (*App, error) {
 
 	// Run provider lifecycle: Register all, then Boot all. On failure,
 	// providers that already completed Register/Boot will be unwound by
-	// calling Shutdown in reverse registration order — same behaviour as
+	// calling Shutdown in reverse registration order, same behaviour as
 	// App.Shutdown so consumers see a single, consistent teardown.
 	if err := runProviderLifecycle(a.providers, a.Services, "provider"); err != nil {
 		cleanups = append(cleanups, func() {

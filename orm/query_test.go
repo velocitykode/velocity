@@ -16,7 +16,7 @@ func TestUpdate_DoesNotMutateCallerMap(t *testing.T) {
 	setupConvenienceTests(t)
 	id := seedUser(t, Default(), "Alice", "alice@example.com", 30)
 
-	// Caller's map — we snapshot it before the call and compare afterwards.
+	// Caller's map, we snapshot it before the call and compare afterwards.
 	updates := map[string]any{
 		"name": "Alice Updated",
 		"age":  31,
@@ -95,7 +95,7 @@ func TestUpdate_RawSQLMarkerEmitsLiteral(t *testing.T) {
 			}
 
 			// The bound-parameter slice must not contain the literal string
-			// form of the sentinel — if it did, the grammar bound it as
+			// form of the sentinel, if it did, the grammar bound it as
 			// a parameter (the pre-fix bug).
 			for i, a := range args {
 				if s, ok := a.(string); ok && s == tt.wantLiteral {
@@ -161,7 +161,7 @@ func TestUpdate_StringValueNOW_IsBoundParameter(t *testing.T) {
 			}
 
 			// The literal string "NOW()" must appear in the bound args
-			// slice — that's the whole point of the fix.
+			// slice, that's the whole point of the fix.
 			found := false
 			for _, a := range args {
 				if s, ok := a.(string); ok && s == "NOW()" {

@@ -91,7 +91,7 @@ func NewPostgresDriver() Driver {
 // Precedence:
 //  1. Config.SSLMode, if explicitly set by the caller.
 //  2. DB_SSL_MODE env var, if set. Allows deployment-level opt-out.
-//  3. "require" — the secure default. Applications must explicitly opt out
+//  3. "require", the secure default. Applications must explicitly opt out
 //     if they need to connect to an unencrypted server.
 //
 // Callers that need to disable TLS for local development must set
@@ -122,7 +122,7 @@ func (d *PostgresDriver) Connect(config ConnectionConfig) error {
 		dsn += " password=" + escapePgDSNValue(config.Password)
 	}
 
-	// sslmode defaults to require — secure by default.
+	// sslmode defaults to require, secure by default.
 	dsn += " sslmode=" + escapePgDSNValue(resolveSSLMode(config.SSLMode))
 
 	if config.TimeZone != "" {

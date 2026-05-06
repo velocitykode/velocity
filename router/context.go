@@ -131,7 +131,7 @@ func (c *Context) Param(name string) string {
 }
 
 // ErrParamNotFound indicates a route parameter by the given name is
-// not present on the context. Typically a programming error — the
+// not present on the context. Typically a programming error, the
 // handler referenced a name the route pattern does not declare.
 var ErrParamNotFound = errors.New("velocity/router: route param not found")
 
@@ -477,7 +477,7 @@ func sanitizeRedirect(target string, allowedHosts []string) string {
 		return "/"
 	}
 	// Protocol-relative URLs (//evil.com, ///evil) are unsafe even though
-	// they lack an explicit scheme — the browser resolves them against
+	// they lack an explicit scheme, the browser resolves them against
 	// the current page's scheme and ends up on attacker-controlled host.
 	if strings.HasPrefix(target, "//") {
 		return "/"
@@ -497,7 +497,7 @@ func sanitizeRedirect(target string, allowedHosts []string) string {
 		}
 		return "/"
 	}
-	// Scheme without host — javascript:, data:, file:, etc. All unsafe.
+	// Scheme without host, javascript:, data:, file:, etc. All unsafe.
 	if u.Scheme != "" {
 		return "/"
 	}
@@ -523,14 +523,14 @@ func (c *Context) SetServices(s *app.Services) {
 // mustServices returns the service container or panics if it is nil.
 func (c *Context) mustServices() *app.Services {
 	if c.services == nil {
-		panic("velocity: router.Context has no services — create the router via velocity.New()")
+		panic("velocity: router.Context has no services, create the router via velocity.New()")
 	}
 	return c.services
 }
 
 // requireService panics if the given service is nil (typed as any so it works
-// with both interface and pointer fields). The returned value is the same svc
-// — callers must type-assert.
+// with both interface and pointer fields). The returned value is the same svc;
+// callers must type-assert.
 func requireService(c *Context, svc any, name string) {
 	if svc == nil {
 		panic(fmt.Sprintf("velocity: %s service not configured", name))
@@ -1142,7 +1142,7 @@ func writeFlashCookie(w http.ResponseWriter, name string, value any) {
 
 // Validate checks the request against rules and automatically redirects back
 // with flashed errors and old input if validation fails. Returns
-// ErrValidationAborted when validation fails — the handler should return
+// ErrValidationAborted when validation fails, the handler should return
 // this error to the router, which will skip error handling since the
 // redirect response has already been written.
 //
@@ -1192,7 +1192,7 @@ func (c *Context) Accepts(offered ...string) string {
 
 // parseAcceptHeader splits an Accept header into (mime, q) pairs
 // sorted by descending q-value. Invalid or empty components are
-// dropped silently — same as net/http's behaviour.
+// dropped silently, same as net/http's behaviour.
 func parseAcceptHeader(header string) []acceptEntry {
 	parts := strings.Split(header, ",")
 	entries := make([]acceptEntry, 0, len(parts))

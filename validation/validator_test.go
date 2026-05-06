@@ -415,7 +415,7 @@ func TestCustomMessages(t *testing.T) {
 
 // TestBuiltInRuleMessages pins the user-facing copy of the rules that
 // consumer apps most often surface directly (login forms, account setup).
-// These are not exhaustive — just the assertions that would fail on a
+// These are not exhaustive, just the assertions that would fail on a
 // regression that made messages less informative.
 func TestBuiltInRuleMessages(t *testing.T) {
 	v := NewValidator()

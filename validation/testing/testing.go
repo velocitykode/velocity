@@ -20,8 +20,8 @@ func NewTestValidator() validation.Validator {
 
 // RuleAssertion runs a single built-in rule against input and fails the
 // test when the observed outcome (error or no error) disagrees with
-// expected. expected is a pipe-separated rule string — the same format the
-// validation package accepts — so callers can express composite rules like
+// expected. expected is a pipe-separated rule string, the same format the
+// validation package accepts, so callers can express composite rules like
 // "required|min:3".
 //
 // Example:
@@ -72,7 +72,7 @@ func AssertErrorRule(t testing.TB, err error, field, rule string) {
 
 // AssertErrorMessage fails the test unless the error on field contains the
 // given substring. Use for rules that produce user-facing copy where the
-// wording is load-bearing (payment flows, auth messaging) — otherwise prefer
+// wording is load-bearing (payment flows, auth messaging), otherwise prefer
 // AssertErrorRule so tests don't break on copy edits.
 func AssertErrorMessage(t testing.TB, err error, field, substring string) {
 	t.Helper()

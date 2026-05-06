@@ -135,7 +135,7 @@ func TestCheckData_Invalid(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// CheckWithDB() — without a real DB (nil), only non-DB rules are tested
+// CheckWithDB(), without a real DB (nil), only non-DB rules are tested
 // ---------------------------------------------------------------------------
 
 func TestCheckWithDB_NilDB(t *testing.T) {

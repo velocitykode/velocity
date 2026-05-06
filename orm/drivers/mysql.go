@@ -26,7 +26,7 @@ func redactMySQLDSN(dsn string) string {
 //  1. Config.TLS, if set. Applications may pass "true", "skip-verify",
 //     "preferred", or a named TLS profile registered via
 //     github.com/go-sql-driver/mysql RegisterTLSConfig.
-//  2. "preferred" — the secure default. Uses TLS if the server offers it,
+//  2. "preferred", the secure default. Uses TLS if the server offers it,
 //     otherwise falls back to plaintext.
 func resolveMySQLTLS(configured string) string {
 	if configured != "" {
@@ -84,7 +84,7 @@ func (d *MySQLDriver) Connect(config ConnectionConfig) error {
 	if config.TimeZone != "" {
 		params = append(params, "loc="+config.TimeZone)
 	}
-	// tls defaults to preferred — secure by default.
+	// tls defaults to preferred, secure by default.
 	params = append(params, "tls="+resolveMySQLTLS(config.TLS))
 
 	dsn += "?" + strings.Join(params, "&")

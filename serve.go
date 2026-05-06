@@ -22,7 +22,7 @@ import (
 // handling and graceful shutdown.
 func (a *App) Serve() error {
 	// Guarantee the App's shutdown context is cancelled on every exit
-	// path from Serve — including the CLI-dispatch path (a.Run) which
+	// path from Serve, including the CLI-dispatch path (a.Run) which
 	// otherwise would leak the context goroutine created in New().
 	// Shutdown() also calls shutdownCancel; double-cancel is a no-op.
 	if a.shutdownCancel != nil {
@@ -39,7 +39,7 @@ func (a *App) Serve() error {
 
 // serveHTTP boots the application and starts the HTTP server. It is called
 // from Serve() when no CLI args are present, and directly from serveRunCmd
-// when the hot-reload subprocess entry point ("serve:run") is invoked —
+// when the hot-reload subprocess entry point ("serve:run") is invoked,
 // bypassing Run()'s args-dispatch so the "serve:run" argument does not
 // re-enter Serve() → Run() → runCommand → serveRunCmd.run indefinitely.
 func (a *App) serveHTTP() error {

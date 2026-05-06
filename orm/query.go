@@ -15,8 +15,8 @@ import (
 
 // RawSQL marks a value in an Update or Insert map as raw SQL rather than
 // a bound parameter. Values of this type are emitted verbatim into the
-// generated statement; every other value — including plain strings that
-// happen to look like SQL — is bound as a parameter.
+// generated statement; every other value, including plain strings that
+// happen to look like SQL, is bound as a parameter.
 //
 // Use [NOW] for the common "set column to the database's current timestamp"
 // case. Construct [RawSQL] values directly only when the string is trusted,
@@ -79,8 +79,8 @@ func isValidOperator(op string) bool {
 // *Query[T], so saving a handle mid-chain and continuing to chain off it
 // mutates the handle.
 //
-// If you need to fork a query — e.g. to build two variants off a shared
-// base — call Clone() to obtain an independent copy whose slices are not
+// If you need to fork a query, e.g. to build two variants off a shared
+// base, call Clone() to obtain an independent copy whose slices are not
 // aliased with the original. Without Clone(), appends in one branch leak
 // into the other.
 //
@@ -941,8 +941,8 @@ func (q *Query[T]) Pluck(column string) ([]any, error) {
 // The input map is never mutated: Update copies it internally before
 // injecting the updated_at timestamp. Values of type [RawSQL] (including
 // the package-level [NOW] sentinel) are emitted verbatim into the
-// generated statement; all other values — including plain string values
-// that happen to look like SQL — are bound as parameters.
+// generated statement; all other values, including plain string values
+// that happen to look like SQL, are bound as parameters.
 func (q *Query[T]) Update(updates map[string]any) (int64, error) {
 	if q.err != nil {
 		return 0, q.err
@@ -1077,7 +1077,7 @@ func (q *Query[T]) Delete() (int64, error) {
 	}
 	// Check if model has soft deletes
 	if q.hasSoftDelete {
-		// Soft delete — use the driver-appropriate RawSQL sentinel so the
+		// Soft delete, use the driver-appropriate RawSQL sentinel so the
 		// grammar emits it verbatim (not as a bound parameter).
 		return q.Update(map[string]any{
 			"deleted_at": currentTimestampSentinel(q.driver.DriverName()),
@@ -1304,7 +1304,7 @@ func toSnakeCase(str string) string {
 //  3. Use NewRawQueryWithScopes which rewrites the SQL to enforce the
 //     deleted_at IS NULL predicate.
 //
-// This bypass is intentional — raw SQL is an escape hatch. Surfacing the
+// This bypass is intentional, raw SQL is an escape hatch. Surfacing the
 // scope silently would make it impossible to query trashed records via raw
 // SQL, which is a legitimate use case (e.g. admin dashboards).
 type RawQuery[T any] struct {
