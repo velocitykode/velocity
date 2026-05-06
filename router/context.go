@@ -542,6 +542,14 @@ func (c *Context) Services() *app.Services {
 	return c.mustServices()
 }
 
+// ServicesIfSet returns the service container without panicking. Returns nil
+// when services have not been wired (e.g. raw NewContext in unit tests, or
+// helpers running before velocity.New() injects them). Use this from utility
+// packages that want to degrade gracefully instead of crashing the request.
+func (c *Context) ServicesIfSet() *app.Services {
+	return c.services
+}
+
 // DB returns the ORM database interface.
 func (c *Context) DB() orm.Database {
 	s := c.mustServices()

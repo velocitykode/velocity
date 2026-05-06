@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/chain"
@@ -319,16 +318,12 @@ func New(opts ...Option) (*App, error) {
 	a.Router = router.New()
 	a.Router.SetServices(a.Services)
 	a.Router.SetValidator(func(c *router.Context, rules map[string][]string, messages ...map[string]string) error {
-		// Convert []string rules to pipe-separated format for validation package
-		vRules := make(validation.Rules, len(rules))
-		for field, fieldRules := range rules {
-			vRules[field] = strings.Join(fieldRules, "|")
-		}
+		// rules is the canonical Rules slice form; pass through directly.
 		var msgs []validation.Messages
 		for _, m := range messages {
 			msgs = append(msgs, validation.Messages(m))
 		}
-		result := validation.CheckWithDB(c.Request, vRules, c.DB(), msgs...)
+		result := validation.CheckWithDB(c.Request, validation.Rules(rules), c.DB(), msgs...)
 		if !result.HasErrors() {
 			return nil
 		}
