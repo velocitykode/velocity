@@ -29,7 +29,9 @@ type CacheManager interface {
 	Increment(key string, value int64) (int64, error)
 	Decrement(key string, value int64) (int64, error)
 	Remember(key string, ttl time.Duration, callback func() interface{}) (interface{}, error)
+	RememberE(key string, ttl time.Duration, callback func() (interface{}, error)) (interface{}, error)
 	RememberForever(key string, callback func() interface{}) (interface{}, error)
+	RememberForeverE(key string, callback func() (interface{}, error)) (interface{}, error)
 	Many(keys []string) map[string]interface{}
 	PutMany(items map[string]interface{}, ttl time.Duration) error
 
@@ -372,7 +374,10 @@ func (m *Manager) Decrement(key string, value int64) (int64, error) {
 	return store.Decrement(key, value)
 }
 
-// Remember gets from default cache or computes and stores
+// Remember gets from default cache or computes and stores. The callback has
+// no error return; on upstream failures the caller must use RememberE
+// instead so the framework can skip the Put rather than poison the cache
+// slot with a nil/zero value.
 func (m *Manager) Remember(key string, ttl time.Duration, callback func() interface{}) (interface{}, error) {
 	store, err := m.DefaultStore()
 	if err != nil {
@@ -381,13 +386,66 @@ func (m *Manager) Remember(key string, ttl time.Duration, callback func() interf
 	return store.Remember(key, ttl, callback)
 }
 
-// RememberForever gets from default cache or computes and stores forever
+// RememberE is the error-aware variant of Remember. When the callback returns
+// a non-nil error, the value is NOT written to the cache and the error is
+// returned to the caller. This prevents transient upstream failures from
+// pinning a nil/zero value for the full TTL.
+func (m *Manager) RememberE(key string, ttl time.Duration, callback func() (interface{}, error)) (interface{}, error) {
+	store, err := m.DefaultStore()
+	if err != nil {
+		return nil, err
+	}
+	if val, found := store.Get(key); found {
+		m.dispatchCacheHit(context.Background(), key, m.defaultStore)
+		return val, nil
+	}
+	m.dispatchCacheMiss(context.Background(), key, m.defaultStore)
+
+	value, cbErr := callback()
+	if cbErr != nil {
+		return nil, cbErr
+	}
+	if err := store.Put(key, value, ttl); err != nil {
+		return nil, err
+	}
+	m.dispatchCacheWritten(context.Background(), key, m.defaultStore, ttl)
+	return value, nil
+}
+
+// RememberForever gets from default cache or computes and stores forever. See
+// Remember for the error-handling caveat; use RememberForeverE for the
+// error-aware variant.
 func (m *Manager) RememberForever(key string, callback func() interface{}) (interface{}, error) {
 	store, err := m.DefaultStore()
 	if err != nil {
 		return nil, err
 	}
 	return store.RememberForever(key, callback)
+}
+
+// RememberForeverE is the error-aware variant of RememberForever. When the
+// callback returns a non-nil error the value is NOT written to the cache and
+// the error is returned to the caller.
+func (m *Manager) RememberForeverE(key string, callback func() (interface{}, error)) (interface{}, error) {
+	store, err := m.DefaultStore()
+	if err != nil {
+		return nil, err
+	}
+	if val, found := store.Get(key); found {
+		m.dispatchCacheHit(context.Background(), key, m.defaultStore)
+		return val, nil
+	}
+	m.dispatchCacheMiss(context.Background(), key, m.defaultStore)
+
+	value, cbErr := callback()
+	if cbErr != nil {
+		return nil, cbErr
+	}
+	if err := store.Forever(key, value); err != nil {
+		return nil, err
+	}
+	m.dispatchCacheWritten(context.Background(), key, m.defaultStore, 0)
+	return value, nil
 }
 
 // Many retrieves multiple values from the default cache store

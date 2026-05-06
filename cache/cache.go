@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -84,3 +85,46 @@ const (
 	DriverRedis    = "redis"
 	DriverDatabase = "database"
 )
+
+// RememberEable is the minimal surface RememberT needs from a cache target.
+// *Manager satisfies it through its RememberE method.
+type RememberEable interface {
+	RememberE(key string, ttl time.Duration, callback func() (interface{}, error)) (interface{}, error)
+}
+
+// RememberT is a typed-generic shim over RememberE that returns T directly,
+// avoiding the interface{} cast at every call site. Go 1.26 method generics
+// have not shipped, so this is a package-level function rather than a
+// Manager method.
+//
+// Usage:
+//
+//	region, err := cache.RememberT[Region](app.Cache, "regions", 5*time.Minute, func() (Region, error) {
+//	    return upstream.FetchRegion()
+//	})
+//
+// On callback error nothing is cached and the error is returned. On a type
+// mismatch (cache contained a different type than T) the function returns the
+// zero value of T and an error so callers can detect the corruption.
+func RememberT[T any](mgr RememberEable, key string, ttl time.Duration, callback func() (T, error)) (T, error) {
+	var zero T
+	val, err := mgr.RememberE(key, ttl, func() (interface{}, error) {
+		v, err := callback()
+		if err != nil {
+			return nil, err
+		}
+		return v, nil
+	})
+	if err != nil {
+		return zero, err
+	}
+	if val == nil {
+		// Callback may legitimately return zero value; coerce to zero T.
+		return zero, nil
+	}
+	typed, ok := val.(T)
+	if !ok {
+		return zero, fmt.Errorf("velocity/cache: cache slot %q holds %T, want %T", key, val, zero)
+	}
+	return typed, nil
+}
