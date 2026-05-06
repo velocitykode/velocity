@@ -203,6 +203,7 @@ func TestBuffer_InstallBufferNoHolderStandalone(t *testing.T) {
 
 // TestBuffer_InstallBufferNilCtx verifies the nil-ctx defensive path.
 func TestBuffer_InstallBufferNilCtx(t *testing.T) {
+	//lint:ignore SA1012 deliberate nil-ctx safety check.
 	buf, release := InstallBuffer(nil, nil)
 	defer release()
 	if buf == nil {
@@ -329,13 +330,16 @@ func TestBuffer_NilEventIgnored(t *testing.T) {
 
 // TestBuffer_NilCtxStandalone exercises the nil-ctx defensive path.
 func TestBuffer_NilCtxStandalone(t *testing.T) {
+	//lint:ignore SA1012 deliberate nil-ctx safety check.
 	buf := Buffer(nil)
 	if buf == nil {
 		t.Fatal("Buffer(nil) returned nil")
 	}
+	//lint:ignore SA1012 deliberate nil-ctx safety check.
 	if HasBuffer(nil) {
 		t.Fatal("HasBuffer(nil) returned true")
 	}
+	//lint:ignore SA1012 deliberate nil-ctx safety check.
 	_, child := WithBuffer(nil, nil)
 	if child == nil {
 		t.Fatal("WithBuffer(nil) returned nil")

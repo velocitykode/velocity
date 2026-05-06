@@ -70,7 +70,7 @@ func TestEnabled_NoProvider_FalseSafe(t *testing.T) {
 		t.Fatalf("expected false when no provider is configured")
 	}
 	// nil context must also be handled gracefully.
-	//nolint:staticcheck // SA1012: deliberate nil-ctx safety check.
+	//lint:ignore SA1012 deliberate nil-ctx safety check.
 	if Enabled(nil, "anything") {
 		t.Fatalf("expected false on nil context with no default")
 	}
@@ -91,7 +91,7 @@ func TestWithProvider_NilContext(t *testing.T) {
 	// WithProvider must not panic on a nil context; it should normalize to
 	// context.Background() and still attach the provider.
 	prov := &stubProvider{on: map[string]bool{"x": true}}
-	//nolint:staticcheck // SA1012: deliberate nil-ctx safety check.
+	//lint:ignore SA1012 deliberate nil-ctx safety check.
 	ctx := WithProvider(nil, prov)
 	if ctx == nil {
 		t.Fatalf("expected non-nil context")
