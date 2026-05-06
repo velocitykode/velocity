@@ -46,10 +46,50 @@ func normalizeJobType(s string) string {
 // or pointer-qualified ("*auth.SendMailJob"). All are normalized to the bare
 // name so push-side fmt.Sprintf("%T", &v) and consumer-side Register calls
 // converge on the same key.
+//
+// Deprecated: prefer the generic [RegisterJob], which derives the registry key
+// from the job type itself, eliminating typo footguns. Register accepts any
+// string and silently succeeds at boot if the name does not match a real job
+// type. The mismatch is only surfaced at runtime as ErrJobNotFound when a
+// payload arrives. RegisterJob[T] keeps producer (push) and consumer (decode)
+// keys symmetric by construction.
 func Register(jobType string, handler func([]byte) (Job, error)) {
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
 	registry.handlers[normalizeJobType(jobType)] = handler
+}
+
+// RegisterJob registers a typed factory for a job type. The registry key is
+// derived from T via the same normalization the producer side uses on
+// fmt.Sprintf("%T", &v), so producer and consumer keys are guaranteed to
+// match by construction, with no string literal and no typo class.
+//
+// Use this in preference to [Register]. The string-keyed form is retained
+// only for backward compatibility.
+//
+//	queue.RegisterJob(func(data []byte) (*SendMailJob, error) {
+//	    j := &SendMailJob{}
+//	    return j, json.Unmarshal(data, j)
+//	})
+//
+// T is typically a pointer type (e.g. *SendMailJob), matching how jobs are
+// dispatched (`q.Push(&SendMailJob{...})`). The factory's typed return is
+// adapted to the registry's `func([]byte) (Job, error)` shape internally.
+func RegisterJob[T Job](factory func([]byte) (T, error)) {
+	// Derive the key from a zero T. For pointer types this is a typed nil,
+	// which is sufficient for fmt's reflection to emit "*pkg.Foo".
+	var zero T
+	key := normalizeJobType(fmt.Sprintf("%T", zero))
+
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	registry.handlers[key] = func(data []byte) (Job, error) {
+		j, err := factory(data)
+		if err != nil {
+			return nil, err
+		}
+		return j, nil
+	}
 }
 
 // Deserialize converts a payload back to a Job
