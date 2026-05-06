@@ -205,3 +205,103 @@ func TestGoCtx_TableDriven(t *testing.T) {
 		})
 	}
 }
+
+// ---------- Item 9: GoWithRecover nil guard + GoWithLogger ----------
+
+func TestGoWithRecover_NilRecoverFnFallsBackToHandler(t *testing.T) {
+	cap := withLogger(t)
+
+	// Nil recoverFn used to nil-panic the goroutine; now it should route
+	// through handlePanic. The test passes if (a) we don't crash and (b)
+	// the package logger sees the panic.
+	GoWithRecover(func() {
+		panic("nil-guarded boom")
+	}, nil)
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, e := range cap.snapshot() {
+			if e.msg == "async: panic recovered" {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("expected handlePanic log; got: %+v", cap.snapshot())
+}
+
+func TestGoWithRecover_CustomRecoverFnStillCalled(t *testing.T) {
+	got := make(chan any, 1)
+	GoWithRecover(func() { panic("x") }, func(p any) { got <- p })
+	select {
+	case p := <-got:
+		if p != "x" {
+			t.Fatalf("got %v", p)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("recoverFn never called")
+	}
+}
+
+func TestGoWithRecover_PanicInsideRecoverFnDoesNotCrash(t *testing.T) {
+	cap := withLogger(t)
+	GoWithRecover(func() { panic("outer") }, func(p any) {
+		panic("inner")
+	})
+	// Test passes if we don't crash; we expect at least one log entry from
+	// the outer-recover catching the inner panic.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if len(cap.snapshot()) > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("expected at least one panic log")
+}
+
+func TestGoWithLogger_RoutesPanicWithName(t *testing.T) {
+	cap := &captureLogger{}
+	done := make(chan struct{})
+
+	GoWithLogger(cap, "worker-7", func() {
+		defer close(done)
+		panic("scoped panic")
+	})
+
+	<-done
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, e := range cap.snapshot() {
+			if e.msg == "async: panic recovered" {
+				foundName := false
+				for i := 0; i+1 < len(e.kvs); i += 2 {
+					if k, ok := e.kvs[i].(string); ok && k == "name" {
+						if v, ok := e.kvs[i+1].(string); ok && v == "worker-7" {
+							foundName = true
+						}
+					}
+				}
+				if !foundName {
+					t.Fatalf("expected name=worker-7 in kvs, got %+v", e.kvs)
+				}
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("expected panic log; got %+v", cap.snapshot())
+}
+
+func TestGoWithLogger_NilLoggerFallsBackToPackageLogger(t *testing.T) {
+	cap := withLogger(t)
+	GoWithLogger(nil, "fallback", func() { panic("p") })
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if len(cap.snapshot()) > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("expected package logger to receive panic")
+}

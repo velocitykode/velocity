@@ -190,12 +190,45 @@ func GoCtx(ctx context.Context, fn func(ctx context.Context)) {
 	}()
 }
 
-// GoWithRecover executes with custom panic handler
+// GoWithRecover executes fn in a goroutine and routes any panic to recoverFn.
+// If recoverFn is nil, panics fall back to the package-level handler (same
+// path Go uses), so callers can supply nil to opt out of custom handling.
+// A panic raised inside recoverFn itself is also recovered and logged.
 func GoWithRecover(fn func(), recoverFn func(any)) {
 	go func() {
 		defer func() {
 			if p := recover(); p != nil {
-				recoverFn(p)
+				if recoverFn != nil {
+					func() {
+						defer func() {
+							if p2 := recover(); p2 != nil {
+								handlePanic(p2)
+							}
+						}()
+						recoverFn(p)
+					}()
+				} else {
+					handlePanic(p)
+				}
+			}
+		}()
+		fn()
+	}()
+}
+
+// GoWithLogger runs fn in a panic-recovered goroutine and routes panics to
+// the supplied logger with structured fields (`name`, `panic`). If l is nil,
+// the package logger is used. Convenient for adopters that already carry a
+// scoped logger and want panics tagged with a callsite name.
+func GoWithLogger(l Logger, name string, fn func()) {
+	go func() {
+		defer func() {
+			if p := recover(); p != nil {
+				logTo := l
+				if logTo == nil {
+					logTo = getLogger()
+				}
+				logTo.Error("async: panic recovered", "name", name, "panic", p)
 			}
 		}()
 		fn()
