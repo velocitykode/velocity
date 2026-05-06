@@ -10,8 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
@@ -28,8 +30,14 @@ var rememberRandReader io.Reader = rand.Reader
 type sessionCtxKey struct{}
 
 // sessionHolder is a mutable container for session data stored in request context.
+// It also caches the result of the server-side session store lookup so that
+// multiple guard methods invoked on the same request (Check, then User, then
+// ID) only pay the Redis round-trip once.
 type sessionHolder struct {
-	session auth.Session
+	session   auth.Session
+	storeOnce bool
+	storeRec  *auth.StoredSession
+	storeErr  error
 }
 
 // WithSessionContext returns a new request with a session cache attached to its context.
@@ -39,14 +47,24 @@ func WithSessionContext(r *http.Request) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), sessionCtxKey{}, &sessionHolder{}))
 }
 
+// lastSeenDebounce is the minimum interval between LastSeenAt write-backs
+// for a given session. Reads happen on every authenticated request to honor
+// revocation; writes are debounced so a chatty client does not generate one
+// extra Redis Put per request. 60s gives the "active sessions" UI accurate
+// timestamps without amplifying write volume.
+const lastSeenDebounce = 60 * time.Second
+
 // SessionGuard implements session-based authentication
 type SessionGuard struct {
-	provider  auth.UserProvider
-	store     auth.SessionStore
-	config    auth.SessionConfig
-	hasher    auth.Hasher
-	encryptor crypto.Encryptor
-	throttler contract.LoginThrottler
+	provider    auth.UserProvider
+	store       auth.SessionStore
+	config      auth.SessionConfig
+	hasher      auth.Hasher
+	encryptor   crypto.Encryptor
+	throttler   contract.LoginThrottler
+	mu          sync.RWMutex
+	serverStore auth.ServerSessionStore
+	logger      auth.Logger
 }
 
 // NewSessionGuard creates a new session guard.
@@ -83,26 +101,101 @@ func (g *SessionGuard) SetLoginThrottler(t contract.LoginThrottler) {
 	g.throttler = t
 }
 
-// Check if user is authenticated
-func (g *SessionGuard) Check(r *http.Request) bool {
-	session := g.getSession(r)
-	if session == nil {
-		return false
-	}
-
-	// Check if user ID exists in session
-	userID := session.Get("user_id")
-	if userID == nil {
-		// Check remember cookie
-		return g.checkRememberCookie(r) != nil
-	}
-
-	// Validate user still exists
-	user, err := g.provider.FindByID(userID)
-	return err == nil && user != nil
+// SetServerSessionStore installs (or removes when nil) a server-side session
+// store. When set, the guard records sessions on Login, looks them up on
+// Check/User to honor administrative revocations, and deletes them on
+// Logout. Cookie-only behavior is preserved when the store is nil.
+//
+// Manager.SetServerSessionStore propagates to every registered guard via
+// the auth.ServerSessionStoreReceiver interface, so consumers normally do
+// not need to call this directly.
+func (g *SessionGuard) SetServerSessionStore(store auth.ServerSessionStore) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.serverStore = store
 }
 
-// User returns the authenticated user
+// SetLogger installs a logger used for non-fatal store errors (e.g. Redis
+// transient failure on Put). Nil disables logging.
+func (g *SessionGuard) SetLogger(l auth.Logger) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.logger = l
+}
+
+// getServerStore returns the installed server-side session store, or nil
+// when none has been configured.
+func (g *SessionGuard) getServerStore() auth.ServerSessionStore {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.serverStore
+}
+
+// logWarn emits a warn event when a logger is configured. Safe to call
+// when no logger has been installed.
+func (g *SessionGuard) logWarn(msg string, kvs ...any) {
+	g.mu.RLock()
+	l := g.logger
+	g.mu.RUnlock()
+	if l != nil {
+		l.Warn(msg, kvs...)
+	}
+}
+
+// Check reports whether the request is authenticated. When a server-side
+// session store has been installed, it is consulted on every call: a
+// revoked or expired record causes Check to return false even though the
+// cookie itself is still valid. Errors (including ErrSessionRevoked) are
+// swallowed; callers that need to distinguish causes should use
+// CheckWithError instead.
+func (g *SessionGuard) Check(r *http.Request) bool {
+	ok, _ := g.CheckWithError(r)
+	return ok
+}
+
+// CheckWithError reports whether the request is authenticated and, when not,
+// returns the reason. The returned error is one of:
+//
+//   - nil: request is unauthenticated for ordinary reasons (no cookie, bad
+//     cookie, missing user_id, user no longer exists)
+//   - auth.ErrSessionRevoked: cookie is valid but the matching server-side
+//     session record was deleted or expired (e.g. via Manager.RevokeSession)
+//   - any other error: server-side store lookup failed; fail-closed
+//     (returns false). The underlying error is logged when a logger is
+//     configured.
+//
+// Use this from middleware to deliver a "your session was signed out
+// remotely" UX without breaking the Guard interface.
+func (g *SessionGuard) CheckWithError(r *http.Request) (bool, error) {
+	session := g.getSession(r)
+	if session == nil {
+		return false, nil
+	}
+
+	userID := session.Get("user_id")
+	if userID == nil {
+		// Remember-cookie fallback bypasses the server store: the
+		// derived session is not registered there, and the path is
+		// already considered a re-auth (a fresh Login should follow
+		// to anchor the session in the store).
+		return g.checkRememberCookie(r) != nil, nil
+	}
+
+	user, err := g.provider.FindByID(userID)
+	if err != nil || user == nil {
+		return false, nil
+	}
+
+	if err := g.consultServerStore(r, session); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// User returns the authenticated user, or nil when the request is not
+// authenticated. When a server-side session store is configured, a revoked
+// or missing record causes User to return nil even when the cookie is
+// otherwise valid.
 func (g *SessionGuard) User(r *http.Request) auth.Authenticatable {
 	session := g.getSession(r)
 	if session == nil {
@@ -126,6 +219,9 @@ func (g *SessionGuard) User(r *http.Request) auth.Authenticatable {
 		return nil
 	}
 
+	if err := g.consultServerStore(r, session); err != nil {
+		return nil
+	}
 	return user
 }
 
@@ -155,7 +251,7 @@ func (g *SessionGuard) Login(w http.ResponseWriter, r *http.Request, user auth.A
 	}
 
 	// Regenerate session ID for security. A failure here must abort the
-	// login — proceeding with the old session ID opens a session-fixation
+	// login: proceeding with the old session ID opens a session-fixation
 	// window (an attacker who planted the cookie keeps access).
 	if err := session.Regenerate(); err != nil {
 		return fmt.Errorf("velocity/auth: login aborted: session regenerate failed: %w", err)
@@ -172,7 +268,12 @@ func (g *SessionGuard) Login(w http.ResponseWriter, r *http.Request, user auth.A
 	}
 
 	// Save session
-	return session.Save(w)
+	if err := session.Save(w); err != nil {
+		return err
+	}
+
+	g.recordServerSession(r, session, user)
+	return nil
 }
 
 // LoginByID logs in a user by ID
@@ -233,6 +334,11 @@ func (g *SessionGuard) Logout(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 
+	// Capture the session ID before Invalidate so we can also tear down
+	// the server-side record. BaseSession.Invalidate currently leaves id
+	// intact, but capturing here is robust against future changes.
+	sessionID := session.ID()
+
 	// Clear remember cookie
 	g.clearRememberCookie(w)
 
@@ -242,7 +348,16 @@ func (g *SessionGuard) Logout(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	// Save invalidated session (will delete cookie)
-	return session.Save(w)
+	if err := session.Save(w); err != nil {
+		return err
+	}
+
+	if store := g.getServerStore(); store != nil && sessionID != "" {
+		if err := store.Delete(r.Context(), sessionID); err != nil {
+			g.logWarn("velocity/auth: server session store delete (logout) failed", "session_id", sessionID, "error", err)
+		}
+	}
+	return nil
 }
 
 // SetProvider sets the user provider
@@ -269,6 +384,155 @@ func (g *SessionGuard) getSession(r *http.Request) auth.Session {
 	}
 
 	return session
+}
+
+// consultServerStore enforces server-side session revocation. When a store
+// has been installed, every authenticated request looks up the session by
+// id; a missing or expired record returns ErrSessionRevoked. The Get result
+// is cached on the request-scoped sessionHolder so multiple guard methods
+// in the same request only pay one round-trip. LastSeenAt is refreshed on
+// the underlying store at most once per lastSeenDebounce interval.
+//
+// Returns nil when no store is configured (cookie-only mode preserved).
+func (g *SessionGuard) consultServerStore(r *http.Request, session auth.Session) error {
+	store := g.getServerStore()
+	if store == nil {
+		return nil
+	}
+
+	holder, _ := r.Context().Value(sessionCtxKey{}).(*sessionHolder)
+	if holder != nil && holder.storeOnce {
+		return holder.storeErr
+	}
+
+	sessionID := session.ID()
+	if sessionID == "" {
+		// A session with no id cannot be looked up; treat as revoked
+		// (the cookie cannot have come from a successful Login).
+		if holder != nil {
+			holder.storeOnce = true
+			holder.storeErr = auth.ErrSessionRevoked
+		}
+		return auth.ErrSessionRevoked
+	}
+
+	rec, err := store.Get(r.Context(), sessionID)
+	if err != nil {
+		var resolved error
+		if errors.Is(err, auth.ErrSessionNotFound) || errors.Is(err, auth.ErrSessionExpired) {
+			resolved = auth.ErrSessionRevoked
+		} else {
+			g.logWarn("velocity/auth: server session store get failed", "session_id", sessionID, "error", err)
+			resolved = fmt.Errorf("velocity/auth: server session store get: %w", err)
+		}
+		if holder != nil {
+			holder.storeOnce = true
+			holder.storeErr = resolved
+		}
+		return resolved
+	}
+
+	if holder != nil {
+		holder.storeOnce = true
+		holder.storeRec = rec
+	}
+
+	g.maybeRefreshLastSeen(r.Context(), store, rec)
+	return nil
+}
+
+// maybeRefreshLastSeen writes a debounced LastSeenAt update back to the
+// store. The debounce keeps the read on every request (mandatory for
+// revocation) without doubling the round-trips.
+func (g *SessionGuard) maybeRefreshLastSeen(ctx context.Context, store auth.ServerSessionStore, rec *auth.StoredSession) {
+	if rec == nil {
+		return
+	}
+	if time.Since(rec.LastSeenAt) < lastSeenDebounce {
+		return
+	}
+	updated := *rec
+	updated.LastSeenAt = time.Now()
+	if err := store.Put(ctx, &updated); err != nil {
+		g.logWarn("velocity/auth: server session store put (lastseen) failed", "session_id", rec.ID, "error", err)
+	}
+}
+
+// recordServerSession writes the freshly-issued session to the server-side
+// store on Login. Failures are logged and swallowed so a transient store
+// outage does not break login (the cookie is already issued; the user is
+// authenticated for this request and subsequent reads will fail-closed).
+//
+// Note on re-Login (e.g. password change followed by re-issue on the same
+// request): session.Regenerate() inside Login already produced a fresh id,
+// so this writes a brand-new record. The previous row is left for the
+// MemoryStore sweep / Redis TTL to reap; the "active sessions" listing
+// may briefly show two rows for the same user. Acceptable trade-off vs.
+// tracking the prior id across the regenerate boundary.
+func (g *SessionGuard) recordServerSession(r *http.Request, session auth.Session, user auth.Authenticatable) {
+	store := g.getServerStore()
+	if store == nil {
+		return
+	}
+	sessionID := session.ID()
+	if sessionID == "" {
+		g.logWarn("velocity/auth: server session store skipped (empty session id)")
+		return
+	}
+	userID, ok := user.GetAuthIdentifier().(string)
+	if !ok {
+		userID = fmt.Sprintf("%v", user.GetAuthIdentifier())
+	}
+	now := time.Now()
+	ttl := time.Duration(g.config.Lifetime) * time.Minute
+	if ttl <= 0 {
+		ttl = 24 * time.Hour
+	}
+	rec := &auth.StoredSession{
+		ID:         sessionID,
+		UserID:     userID,
+		CreatedAt:  now,
+		LastSeenAt: now,
+		ExpiresAt:  now.Add(ttl),
+		IPAddress:  clientIP(r),
+		UserAgent:  r.Header.Get("User-Agent"),
+	}
+	if err := store.Put(r.Context(), rec); err != nil {
+		g.logWarn("velocity/auth: server session store put (login) failed", "session_id", sessionID, "error", err)
+	}
+}
+
+// ClearRememberTokensForUser implements auth.RememberTokenClearer. It
+// resets the user's persistent remember-me token via the configured
+// UserProvider so a "sign out everywhere" admin action also invalidates
+// the remember cookie path. A missing user is treated as a no-op (the
+// remember credential cannot resurrect what does not exist), so the
+// caller (Manager.RevokeAllSessions) does not surface a confusing error
+// for already-deleted accounts.
+//
+// Note: remember tokens are per-user, not per-session. This nukes the
+// token across every device, which is the intended behavior for
+// RevokeAllSessions but is why Manager.RevokeSession (single-session)
+// deliberately does NOT call this method.
+func (g *SessionGuard) ClearRememberTokensForUser(ctx context.Context, userID string) error {
+	user, err := g.provider.FindByID(userID)
+	if err != nil || user == nil {
+		return nil
+	}
+	return g.provider.UpdateRememberToken(user, "")
+}
+
+// clientIP returns the host portion of r.RemoteAddr, stripping any
+// :port suffix so administrative listings show clean addresses.
+// X-Forwarded-For / trusted-proxy resolution is intentionally not done
+// here; that needs its own design (trusted proxy list, header validation)
+// and is tracked separately.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 // checkRememberCookie checks and validates remember cookie.

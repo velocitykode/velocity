@@ -17,6 +17,14 @@ var (
 	// stored session record has passed its ExpiresAt deadline.
 	ErrSessionExpired = errors.New("velocity/auth: session expired")
 
+	// ErrSessionRevoked is returned by SessionGuard.CheckWithError when
+	// the request carries a valid cookie but the corresponding server-side
+	// session record has been deleted (e.g. via Manager.RevokeSession or
+	// RevokeAllSessions). Distinct from ErrSessionExpired: expired means
+	// the cookie TTL passed; revoked means an administrative action removed
+	// the session while the cookie was still in flight.
+	ErrSessionRevoked = errors.New("velocity/auth: session revoked")
+
 	// ErrNoServerSessionStore is returned by Manager.RevokeSession,
 	// RevokeAllSessions, and ListActiveSessions when no server-side
 	// session store has been installed via SetServerSessionStore.
@@ -100,6 +108,31 @@ type ServerSessionStore interface {
 	// ListForUser returns SessionMeta for every non-expired session
 	// belonging to userID. The Data field is intentionally omitted.
 	ListForUser(ctx context.Context, userID string) ([]*SessionMeta, error)
+}
+
+// ServerSessionStoreReceiver is the optional interface a Guard implements
+// to opt into server-side session revocation. Manager.SetServerSessionStore
+// walks all registered guards and propagates the store to every guard that
+// implements this interface; guards that do not implement it (e.g. JWT) are
+// skipped without error.
+type ServerSessionStoreReceiver interface {
+	SetServerSessionStore(store ServerSessionStore)
+}
+
+// RememberTokenClearer is the optional interface a Guard implements to
+// invalidate persistent "remember me" credentials for a user.
+// Manager.RevokeAllSessions walks every registered guard and invokes
+// ClearRememberTokensForUser so a "sign out everywhere" admin action also
+// kills the remember cookie path; without this hook, a revoked browser
+// could resurrect via its remember cookie on the next request.
+//
+// Implementations must be best-effort: a failure here does not undo the
+// store-side session deletion, so callers should log + continue.
+//
+// userID is passed as the string form (matching DeleteAllForUser);
+// providers keyed by other types convert in their own FindByID.
+type RememberTokenClearer interface {
+	ClearRememberTokensForUser(ctx context.Context, userID string) error
 }
 
 // ToMeta returns the listing-only projection of a StoredSession.

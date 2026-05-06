@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -18,6 +19,14 @@ var (
 	ErrGuardNotFound      = errors.New("guard not found")
 	ErrNotInitialized     = errors.New("auth manager not initialized")
 	ErrInvalidSession     = errors.New("invalid session")
+
+	// ErrRememberClearPartial is returned (wrapped, with errors.Join'd
+	// causes) by Manager.RevokeAllSessions when the server-side session
+	// deletion succeeded but one or more guards' RememberTokenClearer
+	// implementations failed. The load-bearing security action (revoking
+	// active sessions) has succeeded; callers can decide whether to retry
+	// the clear, surface a degraded status to admins, or ignore.
+	ErrRememberClearPartial = errors.New("velocity/auth: remember token clear partially failed")
 )
 
 // Authenticatable represents a user that can be authenticated
@@ -115,11 +124,22 @@ func NewManager() *Manager {
 	}
 }
 
-// RegisterGuard registers an authentication guard
+// RegisterGuard registers an authentication guard. If a server-side
+// session store is already installed and the guard implements
+// ServerSessionStoreReceiver, the store is propagated immediately so
+// registration order does not matter.
 func (m *Manager) RegisterGuard(name string, guard Guard) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.guards[name] = guard
+	store := m.serverSessions
+	m.mu.Unlock()
+
+	if store == nil {
+		return
+	}
+	if r, ok := guard.(ServerSessionStoreReceiver); ok {
+		r.SetServerSessionStore(store)
+	}
 }
 
 // RegisterProvider registers a user provider
@@ -356,10 +376,24 @@ type ProviderConfig struct {
 
 // SetServerSessionStore installs a server-side session store. Pass nil to
 // remove a previously installed store. Safe for concurrent use.
+//
+// Every registered guard that implements ServerSessionStoreReceiver is
+// notified so it can consult the store on Login/Check/Logout. Guards that
+// do not implement the interface (e.g. JWT) are silently skipped.
 func (m *Manager) SetServerSessionStore(store ServerSessionStore) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.serverSessions = store
+	receivers := make([]ServerSessionStoreReceiver, 0, len(m.guards))
+	for _, g := range m.guards {
+		if r, ok := g.(ServerSessionStoreReceiver); ok {
+			receivers = append(receivers, r)
+		}
+	}
+	m.mu.Unlock()
+
+	for _, r := range receivers {
+		r.SetServerSessionStore(store)
+	}
 }
 
 // ServerSessionStore returns the installed server-side session store, or
@@ -372,6 +406,14 @@ func (m *Manager) ServerSessionStore() ServerSessionStore {
 
 // RevokeSession deletes a single server-side session by id. Returns
 // ErrNoServerSessionStore when no store has been configured.
+//
+// Caveat: this does NOT clear the user's remember-me token. The revoked
+// browser's session cookie is dead, but if it also holds a remember
+// cookie that cookie can resurrect a fresh session on the next request.
+// This is intentional: remember tokens are per-user, so wiping one would
+// also log the user out on every other device. To prevent resurrection
+// across devices, call RevokeAllSessions instead. (Per-device remember
+// tokens are out of scope for 0.x.)
 func (m *Manager) RevokeSession(ctx context.Context, sessionID string) error {
 	store := m.ServerSessionStore()
 	if store == nil {
@@ -381,14 +423,44 @@ func (m *Manager) RevokeSession(ctx context.Context, sessionID string) error {
 }
 
 // RevokeAllSessions deletes every server-side session belonging to
-// userID. Returns ErrNoServerSessionStore when no store has been
-// configured.
+// userID and clears the user's remember-me token on every registered
+// guard that implements RememberTokenClearer. Returns
+// ErrNoServerSessionStore when no store has been configured.
+//
+// Remember-token clearing is best-effort: failures are logged but do not
+// undo the store-side session deletion, since the load-bearing security
+// action (revoking active sessions) has already succeeded.
 func (m *Manager) RevokeAllSessions(ctx context.Context, userID string) error {
 	store := m.ServerSessionStore()
 	if store == nil {
 		return ErrNoServerSessionStore
 	}
-	return store.DeleteAllForUser(ctx, userID)
+	if err := store.DeleteAllForUser(ctx, userID); err != nil {
+		return err
+	}
+
+	m.mu.RLock()
+	names := make([]string, 0, len(m.guards))
+	clearers := make([]RememberTokenClearer, 0, len(m.guards))
+	for name, g := range m.guards {
+		if c, ok := g.(RememberTokenClearer); ok {
+			names = append(names, name)
+			clearers = append(clearers, c)
+		}
+	}
+	m.mu.RUnlock()
+
+	var clearerErrs []error
+	for i, c := range clearers {
+		if err := c.ClearRememberTokensForUser(ctx, userID); err != nil {
+			m.logWarn("velocity/auth: clear remember token failed", "guard", names[i], "user_id", userID, "error", err)
+			clearerErrs = append(clearerErrs, fmt.Errorf("guard %q: %w", names[i], err))
+		}
+	}
+	if len(clearerErrs) > 0 {
+		return fmt.Errorf("%w: %w", ErrRememberClearPartial, errors.Join(clearerErrs...))
+	}
+	return nil
 }
 
 // ListActiveSessions returns metadata for every non-expired server-side
