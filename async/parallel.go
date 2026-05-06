@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // All runs functions in parallel, waits for all
@@ -170,6 +172,87 @@ func ForEach[T any](items []T, concurrency int, fn func(T)) {
 	}
 
 	wg.Wait()
+}
+
+// GoForEach is a fire-and-forget bounded fan-out. It returns immediately
+// while a supervisor goroutine dispatches workers capped at `concurrency`.
+// Panics in fn are routed to the package panic handler.
+//
+// Returns immediately. Callers that need to know when all items have been
+// processed should use ForEach (blocking) or wire their own coordination.
+// The input slice is snapshotted so the caller can safely mutate it after
+// GoForEach returns.
+func GoForEach[T any](items []T, concurrency int, fn func(T)) {
+	if len(items) == 0 {
+		return
+	}
+	if concurrency <= 0 {
+		concurrency = len(items)
+	}
+	snapshot := make([]T, len(items))
+	copy(snapshot, items)
+	go func() {
+		defer func() {
+			if p := recover(); p != nil {
+				handlePanic(p)
+			}
+		}()
+		var wg sync.WaitGroup
+		semaphore := make(chan struct{}, concurrency)
+		for _, item := range snapshot {
+			item := item
+			wg.Add(1)
+			semaphore <- struct{}{}
+			go func() {
+				defer func() {
+					if p := recover(); p != nil {
+						handlePanic(p)
+					}
+					<-semaphore
+					wg.Done()
+				}()
+				fn(item)
+			}()
+		}
+		wg.Wait()
+	}()
+}
+
+// TryForEach runs fn for every item with bounded concurrency and collects a
+// per-item error slice. The returned slice has length == len(items); index i
+// is fn's result for items[i], or nil on success. Panics inside fn are
+// converted to an error (via panicerr.FromRecovered) and surfaced in the
+// matching slot.
+//
+// Blocking: returns once all items finish.
+func TryForEach[T any](items []T, concurrency int, fn func(T) error) []error {
+	errs := make([]error, len(items))
+	if len(items) == 0 {
+		return errs
+	}
+	if concurrency <= 0 {
+		concurrency = len(items)
+	}
+	var wg sync.WaitGroup
+	semaphore := make(chan struct{}, concurrency)
+	for i, item := range items {
+		i, item := i, item
+		wg.Add(1)
+		semaphore <- struct{}{}
+		go func() {
+			defer func() {
+				if p := recover(); p != nil {
+					handlePanic(p)
+					errs[i] = panicerr.FromRecovered(p)
+				}
+				<-semaphore
+				wg.Done()
+			}()
+			errs[i] = fn(item)
+		}()
+	}
+	wg.Wait()
+	return errs
 }
 
 // Map transforms items in parallel

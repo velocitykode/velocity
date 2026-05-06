@@ -2,7 +2,11 @@ package async
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"sort"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -304,4 +308,275 @@ func TestGoWithLogger_NilLoggerFallsBackToPackageLogger(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("expected package logger to receive panic")
+}
+
+// ---------- Item 10: GoForEach + TryForEach ----------
+
+func TestGoForEach_ReturnsImmediatelyAndRunsAllItems(t *testing.T) {
+	items := []int{1, 2, 3, 4, 5}
+	var sum atomic.Int64
+	var done atomic.Int32
+
+	start := time.Now()
+	GoForEach(items, 2, func(i int) {
+		// orchestration: sleep is test input. work that outlasts the
+		// "did GoForEach return immediately?" assertion below.
+		time.Sleep(50 * time.Millisecond)
+		sum.Add(int64(i))
+		done.Add(1)
+	})
+	returned := time.Since(start)
+	if returned > 30*time.Millisecond {
+		t.Fatalf("GoForEach should return immediately, took %v", returned)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if done.Load() == int32(len(items)) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if done.Load() != int32(len(items)) {
+		t.Fatalf("expected %d done, got %d", len(items), done.Load())
+	}
+	if sum.Load() != 15 {
+		t.Fatalf("sum mismatch: got %d, want 15", sum.Load())
+	}
+}
+
+func TestGoForEach_RespectsConcurrencyLimit(t *testing.T) {
+	items := []int{1, 2, 3, 4, 5, 6}
+	var active atomic.Int32
+	var maxActive atomic.Int32
+	done := make(chan struct{}, len(items))
+
+	GoForEach(items, 2, func(int) {
+		cur := active.Add(1)
+		for {
+			old := maxActive.Load()
+			if cur <= old || maxActive.CompareAndSwap(old, cur) {
+				break
+			}
+		}
+		// orchestration: sleep is test input. holds workers active so the
+		// concurrency-limit assertion has a window to observe.
+		time.Sleep(40 * time.Millisecond)
+		active.Add(-1)
+		done <- struct{}{}
+	})
+	for i := 0; i < len(items); i++ {
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("worker stalled")
+		}
+	}
+	if got := maxActive.Load(); got > 2 {
+		t.Fatalf("concurrency limit violated: max active = %d", got)
+	}
+}
+
+func TestGoForEach_EmptySliceIsNoop(t *testing.T) {
+	GoForEach([]int{}, 2, func(int) { t.Fatal("should not be called") })
+	GoForEach[int](nil, 2, func(int) { t.Fatal("should not be called") })
+}
+
+func TestGoForEach_CallerCanMutateInputAfterReturn(t *testing.T) {
+	items := []int{1, 2, 3}
+	var seen sync.Map
+	var done atomic.Int32
+
+	GoForEach(items, 1, func(i int) {
+		seen.Store(i, true)
+		done.Add(1)
+	})
+	// Mutate the original slice immediately. GoForEach must have snapshotted.
+	for i := range items {
+		items[i] = -1
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if done.Load() == 3 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	for _, want := range []int{1, 2, 3} {
+		if _, ok := seen.Load(want); !ok {
+			t.Fatalf("missing %d in seen set", want)
+		}
+	}
+}
+
+func TestGoForEach_PanicInItemRecovered(t *testing.T) {
+	cap := withLogger(t)
+	items := []int{1, 2, 3}
+	var done atomic.Int32
+
+	GoForEach(items, 2, func(i int) {
+		defer done.Add(1)
+		if i == 2 {
+			panic("item-2 explosion")
+		}
+	})
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if done.Load() == 3 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if done.Load() != 3 {
+		t.Fatalf("expected all items to attempt; got %d (logs=%+v)", done.Load(), cap.snapshot())
+	}
+	// Panic must have been logged.
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, e := range cap.snapshot() {
+			if e.msg == "async: panic recovered" {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("expected panic log; got %+v", cap.snapshot())
+}
+
+func TestTryForEach_CollectsErrorsInOrder(t *testing.T) {
+	items := []string{"ok", "boom", "ok", "boom", "ok"}
+	errs := TryForEach(items, 3, func(s string) error {
+		if s == "boom" {
+			return fmt.Errorf("err for %s", s)
+		}
+		return nil
+	})
+	if len(errs) != len(items) {
+		t.Fatalf("len(errs)=%d, want %d", len(errs), len(items))
+	}
+	for i, want := range []bool{false, true, false, true, false} {
+		got := errs[i] != nil
+		if got != want {
+			t.Errorf("errs[%d]: got err=%v, want err=%v (%v)", i, got, want, errs[i])
+		}
+	}
+}
+
+func TestTryForEach_AllSucceedReturnsAllNil(t *testing.T) {
+	items := []int{1, 2, 3, 4}
+	errs := TryForEach(items, 2, func(int) error { return nil })
+	if len(errs) != 4 {
+		t.Fatalf("unexpected length: %d", len(errs))
+	}
+	for i, e := range errs {
+		if e != nil {
+			t.Errorf("errs[%d] = %v, want nil", i, e)
+		}
+	}
+}
+
+func TestTryForEach_EmptySliceReturnsEmptySlice(t *testing.T) {
+	errs := TryForEach([]int{}, 1, func(int) error { return errors.New("never") })
+	if errs == nil {
+		t.Fatal("errs should be non-nil")
+	}
+	if len(errs) != 0 {
+		t.Fatalf("expected len 0, got %d", len(errs))
+	}
+}
+
+func TestTryForEach_PanicSurfacedAsError(t *testing.T) {
+	cap := withLogger(t)
+	items := []int{0, 1, 2}
+	errs := TryForEach(items, 2, func(i int) error {
+		if i == 1 {
+			panic("panic at index 1")
+		}
+		return nil
+	})
+	if errs[0] != nil || errs[2] != nil {
+		t.Fatalf("non-panic items should have nil errs, got %v / %v", errs[0], errs[2])
+	}
+	if errs[1] == nil {
+		t.Fatalf("expected panic surfaced as error at index 1; logs=%+v", cap.snapshot())
+	}
+	if errs[1].Error() == "" {
+		t.Fatalf("error message should be non-empty: %v", errs[1])
+	}
+}
+
+func TestTryForEach_RespectsConcurrency(t *testing.T) {
+	items := []int{1, 2, 3, 4, 5, 6}
+	var active atomic.Int32
+	var maxActive atomic.Int32
+	_ = TryForEach(items, 2, func(int) error {
+		cur := active.Add(1)
+		for {
+			old := maxActive.Load()
+			if cur <= old || maxActive.CompareAndSwap(old, cur) {
+				break
+			}
+		}
+		time.Sleep(30 * time.Millisecond)
+		active.Add(-1)
+		return nil
+	})
+	if got := maxActive.Load(); got > 2 {
+		t.Fatalf("concurrency violated: max=%d", got)
+	}
+}
+
+func TestGoForEach_TryForEach_ConcurrentInvocations(t *testing.T) {
+	withLogger(t) // silence
+
+	const calls = 8
+	var wg sync.WaitGroup
+	var collected sync.Map
+
+	for i := 0; i < calls; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			items := []int{i*10 + 1, i*10 + 2, i*10 + 3}
+			errs := TryForEach(items, 2, func(v int) error {
+				collected.Store(v, true)
+				return nil
+			})
+			if len(errs) != 3 {
+				t.Errorf("invocation %d: len=%d", i, len(errs))
+			}
+		}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			items := []int{i*100 + 1, i*100 + 2}
+			done := make(chan struct{}, len(items))
+			GoForEach(items, 2, func(v int) {
+				collected.Store(-v, true)
+				done <- struct{}{}
+			})
+			for range items {
+				select {
+				case <-done:
+				case <-time.After(2 * time.Second):
+					t.Errorf("invocation %d: GoForEach worker stalled", i)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	var saw []int
+	collected.Range(func(k, _ any) bool {
+		saw = append(saw, k.(int))
+		return true
+	})
+	sort.Ints(saw)
+	if len(saw) < calls*5 {
+		t.Fatalf("expected at least %d unique items, saw %d (%v)", calls*5, len(saw), saw)
+	}
 }
