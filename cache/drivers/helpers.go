@@ -62,6 +62,41 @@ func RememberForeverFrom(store CacheGetter, putter CachePutter, key string, call
 	return value, nil
 }
 
+// RememberFromE is the error-aware variant of RememberFrom. When the callback
+// returns a non-nil error the value is NOT written to the cache and the error
+// is returned to the caller, preventing nil/zero values from poisoning the
+// slot for the full TTL window.
+func RememberFromE(store CacheGetter, putter CachePutter, key string, ttl time.Duration, callback func() (interface{}, error)) (interface{}, error) {
+	if val, found := store.Get(key); found {
+		return val, nil
+	}
+	value, err := callback()
+	if err != nil {
+		return nil, err
+	}
+	if err := putter.Put(key, value, ttl); err != nil {
+		return nil, err
+	}
+	return value, nil
+}
+
+// RememberForeverFromE is the error-aware variant of RememberForeverFrom.
+// When the callback returns a non-nil error the value is NOT written to the
+// cache and the error is returned to the caller.
+func RememberForeverFromE(store CacheGetter, putter CachePutter, key string, callback func() (interface{}, error)) (interface{}, error) {
+	if val, found := store.Get(key); found {
+		return val, nil
+	}
+	value, err := callback()
+	if err != nil {
+		return nil, err
+	}
+	if err := putter.Forever(key, value); err != nil {
+		return nil, err
+	}
+	return value, nil
+}
+
 // HasFrom checks if a key exists in any CacheGetter.
 func HasFrom(store CacheGetter, key string) bool {
 	_, found := store.Get(key)
