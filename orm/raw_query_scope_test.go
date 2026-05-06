@@ -8,7 +8,7 @@ import (
 
 // RawScopeUser is a soft-delete model used to exercise the intentional
 // scope-bypass behaviour of RawQuery and the opt-in behaviour of
-// NewRawQueryWithScopes.
+// NewRawQuerySoftDeleteOnly.
 type RawScopeUser struct {
 	SoftDeleteModel[RawScopeUser]
 	Name string `orm:"column:name"`
@@ -88,7 +88,7 @@ func TestRawQuery_BypassesSoftDeleteScope(t *testing.T) {
 func TestRawQueryWithScopes_AppliesSoftDeleteScope(t *testing.T) {
 	m := setupRawScopeTest(t)
 
-	rq := NewRawQueryWithScopes[RawScopeUser]("SELECT id, name, created_at, updated_at, deleted_at FROM raw_scope_users ORDER BY id")
+	rq := NewRawQuerySoftDeleteOnly[RawScopeUser]("SELECT id, name, created_at, updated_at, deleted_at FROM raw_scope_users ORDER BY id")
 	rq.driver = m.DefaultDriver()
 
 	users, err := rq.Get()
@@ -96,7 +96,7 @@ func TestRawQueryWithScopes_AppliesSoftDeleteScope(t *testing.T) {
 		t.Fatalf("rq.Get: %v", err)
 	}
 	if len(users) != 1 {
-		t.Fatalf("NewRawQueryWithScopes returned %d rows; want 1 live row", len(users))
+		t.Fatalf("NewRawQuerySoftDeleteOnly returned %d rows; want 1 live row", len(users))
 	}
 	if users[0].Name != "alive" {
 		t.Errorf("expected only the live row; got %q", users[0].Name)

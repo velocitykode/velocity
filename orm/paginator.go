@@ -57,18 +57,12 @@ func (q *Query[T]) Paginate(page, perPage int) (*PaginatedResult[T], error) {
 		perPage = 15
 	}
 
-	// Apply soft delete filters (mirrors Get() logic) so the count and data
-	// queries use identical conditions. Then clear hasSoftDelete so Get()
-	// does not duplicate the filter. This is safe because Paginate is a
-	// terminal method — the query is not reused afterward.
-	if q.hasSoftDelete {
-		if !q.withTrashed {
-			q.WhereNull("deleted_at")
-		} else if q.onlyTrashed {
-			q.WhereNotNull("deleted_at")
-		}
-		q.hasSoftDelete = false
-	}
+	// Apply global scopes once on q so the count and data queries use
+	// identical conditions. The countQ inherits globalScopesApplied=true
+	// so Count() does not re-apply (which would duplicate predicates).
+	// This is safe because Paginate is a terminal method, the query is
+	// not reused afterward.
+	q.applyGlobalScopes()
 
 	// Copy conditions for the count query so Count()'s column mutation
 	// does not affect the data query.
@@ -76,15 +70,16 @@ func (q *Query[T]) Paginate(page, perPage int) (*PaginatedResult[T], error) {
 	copy(countConditions, q.conditions)
 
 	countQ := &Query[T]{
-		driver:     q.driver,
-		table:      q.table,
-		conditions: countConditions,
-		joins:      q.joins,
-		groups:     q.groups,
-		having:     q.having,
-		distinct:   q.distinct,
-		columns:    []string{"*"},
-		ctx:        q.ctx,
+		driver:              q.driver,
+		table:               q.table,
+		conditions:          countConditions,
+		joins:               q.joins,
+		groups:              q.groups,
+		having:              q.having,
+		distinct:            q.distinct,
+		columns:             []string{"*"},
+		ctx:                 q.ctx,
+		globalScopesApplied: true,
 	}
 
 	total, err := countQ.Count()

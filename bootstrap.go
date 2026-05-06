@@ -6,6 +6,7 @@ import (
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/chain"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/orm"
 )
 
 // Bootstrap runs the declarative chain (providers, middleware, routes, events,
@@ -111,6 +112,13 @@ func wireInstanceEvents(a *App) {
 		if s, ok := svc.(contract.EventDispatcherAware); ok {
 			s.SetEventDispatcher(dispatch)
 		}
+	}
+
+	// Wire the kind-aware bus into orm so per-transaction buffered
+	// events can route DispatchAsync / DispatchAfter / Until back through
+	// the matching dispatcher method instead of collapsing onto Dispatch.
+	if mgr, ok := a.DB.(*orm.Manager); ok {
+		mgr.SetTxEventBus(a.Services.Events)
 	}
 
 	// Wire events into any extension that supports it.

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/orm/drivers"
 )
 
@@ -66,6 +67,17 @@ type Manager struct {
 	// SetEventDispatcher (deprecated, untyped) adapts the legacy signature
 	// into a typed call so internal event firing remains type-safe.
 	eventDispatcher func(event Event) error
+	// rawEventDispatcher is the untyped dispatcher set via SetEventDispatcher.
+	// It is the legacy flush sink for KindDispatch / KindDispatchNow buffered
+	// entries; richer kinds (Async / After / Until) prefer txEventBus when
+	// it is wired so listener semantics like ShouldQueue and the original
+	// delay are preserved across the transactional buffer boundary.
+	rawEventDispatcher func(event any) error
+	// txEventBus, when non-nil, is the kind-aware sink for buffered
+	// entries flushed at commit. It is wired by velocity.bootstrap so the
+	// per-transaction events.BufferedDispatcher can route entries back
+	// through the matching method on the underlying dispatcher.
+	txEventBus events.Dispatcher
 	// logger receives warnings about runtime conditions (transaction
 	// rollback failures, recovered panics). nil until SetLogger is called.
 	logger eventLogger
@@ -199,10 +211,20 @@ func (m *Manager) Exec(ctx context.Context, query string, args ...any) (sql.Resu
 }
 
 // Transaction executes a function within a database transaction.
+//
+// A per-transaction events.BufferedDispatcher is attached to the ctx
+// passed into fn so callers can record domain events via
+// events.Buffer(ctx).Dispatch(...) and have them fire only on commit.
+// Rollback (whether triggered by fn returning an error, or a panic)
+// drops the buffered events. Nested Transaction calls reuse the
+// outermost buffer (savepoint semantics): inner rollback drops only
+// events emitted within the inner scope, outer commit flushes the rest.
 func (m *Manager) Transaction(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	m.mu.RLock()
 	driver := m.defaultDriver
 	logger := m.logger
+	rawDispatcher := m.rawEventDispatcher
+	bus := m.txEventBus
 	m.mu.RUnlock()
 
 	if driver == nil {
@@ -214,8 +236,29 @@ func (m *Manager) Transaction(ctx context.Context, fn func(tx *sql.Tx) error) er
 		return err
 	}
 
+	// Attach a per-transaction buffer so user code can record domain
+	// events that fire only on commit. The buffer slot is reachable from
+	// the caller's incoming ctx when events.PrepareBuffer(ctx) was used
+	// to create it, so events.Buffer(ctx) inside fn finds it without
+	// requiring fn to receive a derived ctx (the fn signature stays the
+	// same). Nested Transaction calls reuse the outermost buffer (see
+	// events.InstallBuffer for nested savepoint semantics).
+	//
+	// The flush callback routes each entry through the dispatcher method
+	// the caller originally requested (Dispatch / DispatchNow /
+	// DispatchAsync / DispatchAfter / Until) so listener semantics like
+	// ShouldQueue and the recorded delay survive the buffer boundary.
+	// When a richer events.Dispatcher is wired (the production path) we
+	// dispatch through it; otherwise we fall back to the untyped legacy
+	// sink, which collapses every kind onto Dispatch.
+	buffer, releaseBuffer := events.InstallBuffer(ctx, func(entry events.BufferedEvent) error {
+		return flushBufferedEntry(entry, bus, rawDispatcher)
+	})
+	defer releaseBuffer()
+
 	defer func() {
 		if p := recover(); p != nil {
+			buffer.Drop()
 			if rbErr := tx.Rollback(); rbErr != nil {
 				// Surface rollback failure through the configured logger
 				// when available; otherwise fire a typed event so callers
@@ -234,6 +277,7 @@ func (m *Manager) Transaction(ctx context.Context, fn func(tx *sql.Tx) error) er
 	}()
 
 	if err := fn(tx); err != nil {
+		buffer.Drop()
 		if rbErr := tx.Rollback(); rbErr != nil {
 			if logger != nil {
 				logger.Error("velocity/orm: rollback failed", "error", rbErr, "original_error", err)
@@ -247,7 +291,11 @@ func (m *Manager) Transaction(ctx context.Context, fn func(tx *sql.Tx) error) er
 		return err
 	}
 
-	return tx.Commit()
+	if cmErr := tx.Commit(); cmErr != nil {
+		buffer.Drop()
+		return cmErr
+	}
+	return buffer.Flush()
 }
 
 // Begin starts a new transaction.
@@ -335,11 +383,56 @@ func (m *Manager) SetEventDispatcher(fn func(event any) error) {
 	defer m.mu.Unlock()
 	if fn == nil {
 		m.eventDispatcher = nil
+		m.rawEventDispatcher = nil
 		return
 	}
+	m.rawEventDispatcher = fn
 	m.eventDispatcher = func(event Event) error {
 		return fn(event)
 	}
+}
+
+// SetTxEventBus wires a kind-aware events.Dispatcher used to drain the
+// per-transaction events.BufferedDispatcher on commit. With this set, a
+// buffered DispatchAsync / DispatchAfter / Until call routes through the
+// matching method on bus instead of collapsing onto Dispatch via the
+// legacy untyped dispatcher set by SetEventDispatcher.
+//
+// Pass nil to clear the binding (the buffered flush then falls back to
+// rawEventDispatcher, if any).
+func (m *Manager) SetTxEventBus(bus events.Dispatcher) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.txEventBus = bus
+}
+
+// flushBufferedEntry routes one buffered entry to the underlying
+// dispatcher, preferring the kind-aware bus and falling back to the
+// untyped legacy sink so existing wirings (tests, partial bootstraps)
+// continue to work. It is exported only via the closure passed to
+// events.InstallBuffer; outside callers should not need it.
+func flushBufferedEntry(entry events.BufferedEvent, bus events.Dispatcher, raw func(any) error) error {
+	if bus != nil {
+		switch entry.Kind() {
+		case events.KindDispatch:
+			return bus.Dispatch(entry.Event())
+		case events.KindDispatchNow:
+			return bus.DispatchNow(entry.Event())
+		case events.KindDispatchAsync:
+			return bus.DispatchAsync(entry.Event())
+		case events.KindDispatchAfter:
+			return bus.DispatchAfter(entry.Event(), entry.Delay())
+		case events.KindUntil:
+			_, err := bus.Until(entry.Event())
+			return err
+		default:
+			return bus.Dispatch(entry.Event())
+		}
+	}
+	if raw != nil {
+		return raw(entry.Event())
+	}
+	return nil
 }
 
 // eventLogger is the minimal logger contract the manager uses to report

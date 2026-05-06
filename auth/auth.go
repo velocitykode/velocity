@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"sync"
@@ -92,6 +93,11 @@ type Manager struct {
 	// the current logger without contending with the RWMutex protecting
 	// the guard/provider maps.
 	logger atomic.Value // holds authLoggerHolder{Logger}
+
+	// serverSessions holds an optional server-side session store used by
+	// administrative operations (RevokeSession, RevokeAllSessions,
+	// ListActiveSessions). Nil disables those operations.
+	serverSessions ServerSessionStore
 
 	mu sync.RWMutex
 }
@@ -346,4 +352,52 @@ type GuardConfig struct {
 type ProviderConfig struct {
 	Driver string
 	Model  string
+}
+
+// SetServerSessionStore installs a server-side session store. Pass nil to
+// remove a previously installed store. Safe for concurrent use.
+func (m *Manager) SetServerSessionStore(store ServerSessionStore) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.serverSessions = store
+}
+
+// ServerSessionStore returns the installed server-side session store, or
+// nil when none has been configured.
+func (m *Manager) ServerSessionStore() ServerSessionStore {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.serverSessions
+}
+
+// RevokeSession deletes a single server-side session by id. Returns
+// ErrNoServerSessionStore when no store has been configured.
+func (m *Manager) RevokeSession(ctx context.Context, sessionID string) error {
+	store := m.ServerSessionStore()
+	if store == nil {
+		return ErrNoServerSessionStore
+	}
+	return store.Delete(ctx, sessionID)
+}
+
+// RevokeAllSessions deletes every server-side session belonging to
+// userID. Returns ErrNoServerSessionStore when no store has been
+// configured.
+func (m *Manager) RevokeAllSessions(ctx context.Context, userID string) error {
+	store := m.ServerSessionStore()
+	if store == nil {
+		return ErrNoServerSessionStore
+	}
+	return store.DeleteAllForUser(ctx, userID)
+}
+
+// ListActiveSessions returns metadata for every non-expired server-side
+// session belonging to userID. Returns ErrNoServerSessionStore when no
+// store has been configured.
+func (m *Manager) ListActiveSessions(ctx context.Context, userID string) ([]*SessionMeta, error) {
+	store := m.ServerSessionStore()
+	if store == nil {
+		return nil, ErrNoServerSessionStore
+	}
+	return store.ListForUser(ctx, userID)
 }

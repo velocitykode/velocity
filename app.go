@@ -72,6 +72,11 @@ type App struct {
 	exceptionsFn   func(exceptions.ExceptionHandler)
 	bootstrapped   bool
 
+	// outboxRelay is an optional ORM transactional-outbox relay registered
+	// via UseOutboxRelay. Shutdown stops it before tearing down the queue
+	// and database so in-flight dispatches can complete.
+	outboxRelay *orm.Relay
+
 	// serveHTTPHook is a test-only seam used by the regression test for
 	// the serveRunCmd → Serve() recursion bug. When non-nil, serveHTTP()
 	// invokes the hook and returns its result instead of booting services
@@ -415,5 +420,13 @@ func (a *App) Commands(fn func(*chain.Commands)) *App {
 // Exceptions registers a callback that configures the exception handler.
 func (a *App) Exceptions(fn func(exceptions.ExceptionHandler)) *App {
 	a.exceptionsFn = fn
+	return a
+}
+
+// UseOutboxRelay registers an ORM transactional-outbox relay that will be
+// stopped during App.Shutdown. Auto-start is the caller's responsibility
+// (call relay.Start before Serve); this only wires teardown.
+func (a *App) UseOutboxRelay(r *orm.Relay) *App {
+	a.outboxRelay = r
 	return a
 }

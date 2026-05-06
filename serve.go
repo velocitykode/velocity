@@ -161,6 +161,12 @@ func (a *App) Shutdown(ctx context.Context) error {
 		collect(a.Scheduler.Shutdown(ctx))
 	}
 
+	// 3a. Stop outbox relay (must run before queue/DB teardown so in-flight
+	// dispatches reach the queue and DB before they close).
+	if a.outboxRelay != nil {
+		collect(a.outboxRelay.Stop(ctx))
+	}
+
 	// 4. Close queue driver
 	if a.Queue != nil {
 		collect(a.Queue.Shutdown(ctx))

@@ -111,6 +111,15 @@ type Query[T any] struct {
 	hasSoftDelete bool // Whether the model supports soft deletes
 	hasUpdatedAt  bool // Whether the model has an UpdatedAt column (skip injection on Update for immutable models)
 
+	// disabledScopes records the global scope names this query opts out
+	// of. nil when no opt-outs have been set (no allocation in the
+	// common case).
+	disabledScopes map[string]bool
+
+	// globalScopesApplied guards applyGlobalScopes against double-apply
+	// when one terminal delegates to another (e.g. First -> Get).
+	globalScopesApplied bool
+
 	// Context for event propagation
 	ctx context.Context
 
@@ -151,6 +160,9 @@ func newQuery[T any]() *Query[T] {
 		columns:       []string{"*"},
 		hasSoftDelete: modelHasSoftDelete[T](),
 		hasUpdatedAt:  modelHasUpdatedAt[T](),
+	}
+	if q.hasSoftDelete {
+		registerSoftDeleteScopeOnce[T]()
 	}
 	return q
 }
@@ -275,18 +287,25 @@ func (q *Query[T]) Clone() *Query[T] {
 		return nil
 	}
 	clone := &Query[T]{
-		driver:        q.driver,
-		table:         q.table,
-		distinct:      q.distinct,
-		withTrashed:   q.withTrashed,
-		onlyTrashed:   q.onlyTrashed,
-		lockForUpdate: q.lockForUpdate,
-		skipLocked:    q.skipLocked,
-		hasSoftDelete: q.hasSoftDelete,
-		hasUpdatedAt:  q.hasUpdatedAt,
-		ctx:           q.ctx,
-		err:           q.err,
-		lastSQL:       q.lastSQL,
+		driver:              q.driver,
+		table:               q.table,
+		distinct:            q.distinct,
+		withTrashed:         q.withTrashed,
+		onlyTrashed:         q.onlyTrashed,
+		lockForUpdate:       q.lockForUpdate,
+		skipLocked:          q.skipLocked,
+		hasSoftDelete:       q.hasSoftDelete,
+		hasUpdatedAt:        q.hasUpdatedAt,
+		globalScopesApplied: q.globalScopesApplied,
+		ctx:                 q.ctx,
+		err:                 q.err,
+		lastSQL:             q.lastSQL,
+	}
+	if q.disabledScopes != nil {
+		clone.disabledScopes = make(map[string]bool, len(q.disabledScopes))
+		for k, v := range q.disabledScopes {
+			clone.disabledScopes[k] = v
+		}
 	}
 	if q.conditions != nil {
 		clone.conditions = append([]drivers.Condition(nil), q.conditions...)
@@ -740,27 +759,17 @@ func (q *Query[T]) getContext() context.Context {
 
 // Execution methods
 
-// applySoftDeleteScope injects the deleted_at predicate that all read,
-// aggregate, and mutate terminals share when the model supports soft
-// deletes. Default scope hides soft-deleted rows (deleted_at IS NULL);
-// WithTrashed returns to the unscoped result set; OnlyTrashed flips to
-// the trashed-only view.
+// applySoftDeleteScope is a thin wrapper that delegates to
+// applyGlobalScopes. The soft-delete predicate is now itself a
+// registered global scope (auto-installed by newQuery for soft-delete
+// models); this wrapper is preserved as a single entry point so the
+// existing terminal call sites stay unchanged.
 //
-// Idempotency: this method appends the predicate every call. Terminals
-// must invoke it exactly once per execution. Outer terminals that
-// delegate to inner terminals (e.g. Exists to Count, First to Get) must
-// NOT also call this; the inner invocation is sufficient.
+// Idempotency: applyGlobalScopes guards against double-apply, so an
+// outer terminal that delegates to an inner terminal (Exists -> Count,
+// First -> Get) is safe to call this method.
 func (q *Query[T]) applySoftDeleteScope() {
-	if !q.hasSoftDelete {
-		return
-	}
-	if q.withTrashed {
-		if q.onlyTrashed {
-			q.WhereNotNull("deleted_at")
-		}
-		return
-	}
-	q.WhereNull("deleted_at")
+	q.applyGlobalScopes()
 }
 
 // Get retrieves all matching records
@@ -1222,6 +1231,30 @@ func scanIntoStruct(rows *sql.Rows, dest any) error {
 				continue
 			}
 
+			// Many-to-many fields are virtual (loaded via separate pivot
+			// query); never scanned from the parent SELECT.
+			if extractManyToManyValue(tag) != "" {
+				continue
+			}
+
+			// Polymorphic morph fields span two columns. Map type_col
+			// onto Morph.TypeName and id_col onto Morph.ID so a regular
+			// SELECT can populate the discriminator/id pair.
+			if pv := extractPolymorphicValue(tag); pv != "" {
+				if typeCol, idCol, perr := parsePolymorphicTag(pv); perr == nil {
+					morphType := field.Type
+					if morphType.Kind() == reflect.Struct {
+						if tnf, ok := morphType.FieldByName("TypeName"); ok {
+							fieldMap[typeCol] = fieldInfo{path: append(append([]int{}, currentPath...), tnf.Index...)}
+						}
+						if idf, ok := morphType.FieldByName("ID"); ok {
+							fieldMap[idCol] = fieldInfo{path: append(append([]int{}, currentPath...), idf.Index...)}
+						}
+					}
+				}
+				continue
+			}
+
 			// Get the column name from the struct tag or field name
 			columnName := field.Name
 			if tag != "" {
@@ -1301,7 +1334,7 @@ func toSnakeCase(str string) string {
 //
 //  1. Add "WHERE deleted_at IS NULL" to the query explicitly, or
 //  2. Use the fluent Query[T] builder via Model[T]{}.Where(...) instead, or
-//  3. Use NewRawQueryWithScopes which rewrites the SQL to enforce the
+//  3. Use NewRawQuerySoftDeleteOnly which rewrites the SQL to enforce the
 //     deleted_at IS NULL predicate.
 //
 // This bypass is intentional, raw SQL is an escape hatch. Surfacing the
@@ -1321,7 +1354,7 @@ type RawQuery[T any] struct {
 // Never concatenate user input directly into the sql string.
 //
 // WARNING: Soft-delete scopes are NOT applied. See the RawQuery type
-// documentation for details. Use NewRawQueryWithScopes to opt in.
+// documentation for details. Use NewRawQuerySoftDeleteOnly to opt in.
 func NewRawQuery[T any](sql string, args ...any) *RawQuery[T] {
 	var drv drivers.Driver
 	if m := Default(); m != nil {
@@ -1334,17 +1367,22 @@ func NewRawQuery[T any](sql string, args ...any) *RawQuery[T] {
 	}
 }
 
-// NewRawQueryWithScopes creates a raw query that enforces the same
+// NewRawQuerySoftDeleteOnly creates a raw query that enforces the
 // deleted_at IS NULL predicate the fluent Query builder applies for
 // soft-delete models. The SQL is wrapped in an outer SELECT so we can
 // append the scope without attempting to parse or rewrite the caller's
 // query. For models that do not support soft deletes, this is a no-op
 // and the underlying SQL is executed as-is.
 //
-// This helper exists because RawQuery deliberately bypasses scopes (see
-// the RawQuery type doc). Callers who want the ergonomics of raw SQL
-// with the safety of scope enforcement should reach for this helper.
-func NewRawQueryWithScopes[T any](sql string, args ...any) *RawQuery[T] {
+// Only the soft-delete scope is enforced. User-registered global scopes
+// via orm.AddGlobalScope are NOT applied. Raw SQL cannot have arbitrary
+// predicates appended generically. If your model has any other global
+// scope (multi-tenant, region, archive, etc.), prefer the fluent
+// Query[T] builder so all scopes run, or extend the SQL by hand to
+// include every required predicate. Calling this against a model with
+// non-soft-delete scopes registered is a cross-tenant leak waiting to
+// happen, hence the explicit name.
+func NewRawQuerySoftDeleteOnly[T any](sql string, args ...any) *RawQuery[T] {
 	if modelHasSoftDelete[T]() {
 		// Wrap the user-supplied query in an outer SELECT. Using a
 		// subquery avoids any attempt to splice WHERE clauses into the

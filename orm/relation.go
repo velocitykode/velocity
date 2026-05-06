@@ -324,6 +324,11 @@ func markIsExisting(v reflect.Value) {
 
 // loadRelations implements eager loading for preloaded relationships.
 // Called by Query[T].Get() after the primary query results are loaded.
+//
+// Dispatches by tag prefix on the named field:
+//   - relation:    -> hasOne/hasMany/belongsTo via loadRelation
+//   - manyToMany:  -> many-to-many pivot via loadM2M
+//   - polymorphic: -> morph batched per type via loadPolymorphic
 func (q *Query[T]) loadRelations(models *[]T) error {
 	if len(*models) == 0 {
 		return nil
@@ -335,16 +340,65 @@ func (q *Query[T]) loadRelations(models *[]T) error {
 	}
 
 	for _, preload := range q.preloads {
+		// Probe for the field once and dispatch to the correct loader.
+		if field, ok := lookupTaggedField(modelType, preload); ok {
+			tag := field.Tag.Get("orm")
+			switch {
+			case extractManyToManyValue(tag) != "":
+				meta, err := resolveManyToManyMeta(modelType, preload)
+				if err != nil {
+					return err
+				}
+				if err := q.loadM2M(models, meta); err != nil {
+					return err
+				}
+				continue
+			case extractPolymorphicValue(tag) != "":
+				meta, err := resolvePolymorphicMeta(modelType, preload)
+				if err != nil {
+					return err
+				}
+				if err := q.loadPolymorphic(models, meta); err != nil {
+					return err
+				}
+				continue
+			}
+		}
+		// Fall through to the legacy "relation:" loader.
 		meta, err := resolveRelationMeta(modelType, preload)
 		if err != nil {
 			return err
 		}
-
 		if err := q.loadRelation(models, meta); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// lookupTaggedField returns a struct field by name (exact then case-insensitive)
+// that carries any of the relation-style orm tags (relation:, manyToMany:,
+// polymorphic:). Returns ok=false when no matching field is present.
+func lookupTaggedField(modelType reflect.Type, name string) (reflect.StructField, bool) {
+	hasRel := func(tag string) bool {
+		return strings.Contains(tag, "relation:") ||
+			extractManyToManyValue(tag) != "" ||
+			extractPolymorphicValue(tag) != ""
+	}
+	for i := 0; i < modelType.NumField(); i++ {
+		f := modelType.Field(i)
+		if f.Name == name && hasRel(f.Tag.Get("orm")) {
+			return f, true
+		}
+	}
+	lower := strings.ToLower(name)
+	for i := 0; i < modelType.NumField(); i++ {
+		f := modelType.Field(i)
+		if strings.ToLower(f.Name) == lower && hasRel(f.Tag.Get("orm")) {
+			return f, true
+		}
+	}
+	return reflect.StructField{}, false
 }
 
 // loadRelation loads a single relationship for all parent models using a single IN query.

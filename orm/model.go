@@ -1397,7 +1397,10 @@ func applyFillableToStruct(s any) error {
 			continue
 		}
 		// Skip ORM-internal bookkeeping fields that are tagged orm:"-".
-		if tag := field.Tag.Get("orm"); tag == "-" || strings.Contains(tag, "relation:") {
+		if tag := field.Tag.Get("orm"); tag == "-" ||
+			strings.Contains(tag, "relation:") ||
+			extractManyToManyValue(tag) != "" ||
+			extractPolymorphicValue(tag) != "" {
 			continue
 		}
 
@@ -1571,6 +1574,32 @@ func structToMap(s any) map[string]any {
 
 		// Skip fields marked with "-" or relations
 		if tag == "-" || strings.Contains(tag, "relation:") {
+			continue
+		}
+
+		// Many-to-many fields are virtual; never persisted from the parent.
+		if extractManyToManyValue(tag) != "" {
+			continue
+		}
+
+		// Polymorphic morph fields write the (type_col, id_col) pair
+		// derived from the embedded Morph value rather than serializing
+		// the struct itself.
+		if pv := extractPolymorphicValue(tag); pv != "" {
+			if typeCol, idCol, perr := parsePolymorphicTag(pv); perr == nil {
+				fv := v.Field(i)
+				if fv.Kind() == reflect.Struct {
+					if tn := fv.FieldByName("TypeName"); tn.IsValid() && tn.Kind() == reflect.String && tn.String() != "" {
+						result[typeCol] = tn.String()
+					}
+					if id := fv.FieldByName("ID"); id.IsValid() && id.CanInterface() {
+						idVal := id.Interface()
+						if idVal != nil && !isZeroKey(normalizeKey(idVal)) {
+							result[idCol] = idVal
+						}
+					}
+				}
+			}
 			continue
 		}
 
