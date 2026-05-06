@@ -155,9 +155,18 @@ func EventJobFactory(data []byte) (queue.Job, error) {
 	return &job, nil
 }
 
-// Initialize queue integration by registering the event job type
+// Initialize queue integration by registering the event job type. Uses
+// the generic RegisterJob form so the registry key is derived from the
+// concrete job type, eliminating the typo footgun the deprecated string-keyed
+// queue.Register had.
 func InitializeQueueIntegration() {
-	queue.Register("EventListenerJob", EventJobFactory)
+	queue.RegisterJob(func(data []byte) (*EventListenerJob, error) {
+		var job EventListenerJob
+		if err := json.Unmarshal(data, &job); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal event listener job: %w", err)
+		}
+		return &job, nil
+	})
 }
 
 // PriorityListener extends Listener with priority support

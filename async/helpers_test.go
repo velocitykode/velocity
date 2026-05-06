@@ -123,6 +123,10 @@ func TestGoCtx_PanicRecovered(t *testing.T) {
 
 func TestGoCtx_NilContextDefaultsToBackground(t *testing.T) {
 	done := make(chan struct{})
+	// GoCtx documents nil-tolerance: a nil ctx is normalized to
+	// context.Background() inside the helper. This test exercises that
+	// contract intentionally, so the SA1012 lint is suppressed here.
+	//lint:ignore SA1012 deliberately testing nil-ctx normalization
 	GoCtx(nil, func(ctx context.Context) {
 		if ctx == nil {
 			t.Error("ctx should be non-nil inside fn")
