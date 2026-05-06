@@ -208,6 +208,24 @@ func WithProviders(providers ...app.ServiceProvider) Option {
 	}
 }
 
+// WithSchedulerInProcess starts the scheduler loop inside the same process
+// as the HTTP server. By default the scheduler is constructed but never
+// run under Serve(); only the `vel schedule:work` CLI invokes Run(ctx).
+// Use this for single-process deployments that don't want to manage a
+// separate scheduler worker. Multi-process deployments (where a dedicated
+// `vel schedule:work` worker runs alongside `vel serve`) should leave it
+// off so jobs are not duplicated.
+//
+// The scheduler is started after Router.Freeze() and before
+// http.Server.ListenAndServe; it is bound to the App's shutdownCtx so
+// signal-driven shutdown stops the loop and Shutdown() drains in-flight
+// jobs through the existing scheduler.Shutdown teardown.
+func WithSchedulerInProcess() Option {
+	return func(a *App) {
+		a.runScheduler = true
+	}
+}
+
 // ConfigFromEnv loads configuration from environment variables and .env file.
 func ConfigFromEnv() Config {
 	// Load .env file if present; warn if it exists but fails to parse.

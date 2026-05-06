@@ -14,12 +14,23 @@ import (
 
 // Job represents a scheduled task
 type Job struct {
-	mu       sync.RWMutex
-	name     string
-	callback func()
-	command  string
-	args     []string
-	schedule *Schedule
+	mu sync.RWMutex
+	// nameExplicit is true once Name() has been called by the consumer. Used
+	// to distinguish a default name (e.g. the "closure" auto-name set by
+	// Scheduler.Call) from a user-chosen name. WithoutOverlapping uses this
+	// to surface a collision warning when multiple unnamed closures all
+	// share the default name.
+	nameExplicit bool
+	name         string
+	callback     func()
+	// errCallback is the error-returning variant of callback. When set, it
+	// takes precedence: Run() invokes errCallback and feeds its returned
+	// error into OnFailure callbacks and the scheduled.failed event. This
+	// is the path Scheduler.CallE / Scheduler.NamedE construct.
+	errCallback func() error
+	command     string
+	args        []string
+	schedule    *Schedule
 
 	// Execution control
 	withoutOverlapping    bool
@@ -169,7 +180,22 @@ func (j *Job) Run() error {
 		err             error
 		panicDispatched bool
 	)
-	if j.callback != nil {
+	switch {
+	case j.errCallback != nil:
+		// Error-returning closure. Capture both panic-recovered errors AND
+		// the closure's returned err so OnFailure / scheduled.failed fire
+		// for normal-error paths, not just panics.
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					err = panicerr.FromRecovered(r)
+					dispatchScheduledTaskFailed(j.getDispatch(), ctx, jobName, err, time.Since(startTime))
+					panicDispatched = true
+				}
+			}()
+			err = j.errCallback()
+		}()
+	case j.callback != nil:
 		// Execute closure. On panic, dispatch scheduled.failed eagerly so the
 		// event is fired before any later path has the chance to swallow err.
 		func() {
@@ -182,7 +208,7 @@ func (j *Job) Run() error {
 			}()
 			j.callback()
 		}()
-	} else if j.command != "" {
+	case j.command != "":
 		// Execute command
 		cmd := exec.Command(j.command, j.args...)
 
@@ -384,7 +410,13 @@ func (j *Job) Saturdays() *Job {
 
 // Constraint methods
 
-// WithoutOverlapping prevents job overlap
+// WithoutOverlapping prevents job overlap. The overlap guard keys on the
+// job name, so an unnamed closure (e.g. one registered via Scheduler.Call
+// without a follow-up .Name(...) call) can collide with every other
+// unnamed closure in the same scheduler. The collision-hazard warning
+// fires at scheduler start (Run / ValidateJobs), not here, so chains like
+// s.Call(fn).WithoutOverlapping().Name("nightly") settle before being
+// inspected.
 func (j *Job) WithoutOverlapping() *Job {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -521,11 +553,14 @@ func (j *Job) EmailOutputTo(email string) *Job {
 	return j
 }
 
-// Name sets the job name
+// Name sets the job name. Marking the name as explicitly set silences
+// the WithoutOverlapping collision warning (the warning only fires when a
+// closure registered via Call() / CallE() retains its default auto-name).
 func (j *Job) Name(name string) *Job {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.name = name
+	j.nameExplicit = true
 	return j
 }
 
