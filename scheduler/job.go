@@ -413,21 +413,16 @@ func (j *Job) Saturdays() *Job {
 // WithoutOverlapping prevents job overlap. The overlap guard keys on the
 // job name, so an unnamed closure (e.g. one registered via Scheduler.Call
 // without a follow-up .Name(...) call) can collide with every other
-// unnamed closure in the same scheduler. When the name is still the
-// auto-default, log a warning so the collision hazard is surfaced at
-// registration time rather than discovered later as silent skipped runs.
+// unnamed closure in the same scheduler. The collision-hazard warning
+// fires at scheduler start (Run / ValidateJobs), not here, so chains like
+// s.Call(fn).WithoutOverlapping().Name("nightly") settle before being
+// inspected.
 func (j *Job) WithoutOverlapping() *Job {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.withoutOverlapping = true
 	if j.mutex == nil {
 		j.mutex = &sync.Mutex{}
-	}
-	if !j.nameExplicit && j.scheduler != nil {
-		j.scheduler.log().Error(
-			"velocity/scheduler: WithoutOverlapping on job with default name; overlap guard keys on name, so multiple unnamed closures will collide. Use Scheduler.Named(name, fn) or chain .Name(\"...\") to disambiguate.",
-			"name", j.name,
-		)
 	}
 	return j
 }

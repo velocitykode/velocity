@@ -254,36 +254,69 @@ func TestScheduler_NamedAndNamedE(t *testing.T) {
 		}
 	})
 
-	t.Run("WithoutOverlapping warns when name is default", func(t *testing.T) {
+	t.Run("ValidateJobs warns when WithoutOverlapping on default name", func(t *testing.T) {
 		s := New()
 		log := &captureLogger{}
 		s.SetLogger(log)
 
 		s.Call(func() {}).WithoutOverlapping()
+		s.ValidateJobs()
 
 		if !log.hasError("WithoutOverlapping") {
 			t.Errorf("expected WithoutOverlapping warning, got: %v", log.errors())
 		}
 	})
 
-	t.Run("WithoutOverlapping silent for explicit name", func(t *testing.T) {
+	t.Run("WithoutOverlapping silent at registration even on default name", func(t *testing.T) {
+		s := New()
+		log := &captureLogger{}
+		s.SetLogger(log)
+
+		// Warning must defer to ValidateJobs / Run so chains where
+		// .Name() arrives after .WithoutOverlapping() do not emit a
+		// false positive.
+		s.Call(func() {}).WithoutOverlapping()
+
+		if log.hasError("WithoutOverlapping") {
+			t.Errorf("WithoutOverlapping fired warning at registration: %v", log.errors())
+		}
+	})
+
+	t.Run("ValidateJobs silent for explicit name", func(t *testing.T) {
 		s := New()
 		log := &captureLogger{}
 		s.SetLogger(log)
 
 		s.Named("explicit-name", func() {}).WithoutOverlapping()
+		s.ValidateJobs()
 
 		if log.hasError("WithoutOverlapping") {
 			t.Errorf("WithoutOverlapping warning fired despite explicit name: %v", log.errors())
 		}
 	})
 
-	t.Run("WithoutOverlapping silent after .Name() chain", func(t *testing.T) {
+	t.Run("ValidateJobs silent when .Name() arrives after .WithoutOverlapping()", func(t *testing.T) {
+		s := New()
+		log := &captureLogger{}
+		s.SetLogger(log)
+
+		// Order-dependency regression: .Name() lands after .WithoutOverlapping().
+		// Warning must respect the final post-chain state.
+		s.Call(func() {}).WithoutOverlapping().Name("renamed")
+		s.ValidateJobs()
+
+		if log.hasError("WithoutOverlapping") {
+			t.Errorf("WithoutOverlapping warning fired despite later .Name() chain: %v", log.errors())
+		}
+	})
+
+	t.Run("ValidateJobs silent for .Name() before .WithoutOverlapping()", func(t *testing.T) {
 		s := New()
 		log := &captureLogger{}
 		s.SetLogger(log)
 
 		s.Call(func() {}).Name("renamed").WithoutOverlapping()
+		s.ValidateJobs()
 
 		if log.hasError("WithoutOverlapping") {
 			t.Errorf("WithoutOverlapping warning fired despite .Name() chain: %v", log.errors())

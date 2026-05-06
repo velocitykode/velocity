@@ -302,6 +302,8 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	s.ticker = time.NewTicker(1 * time.Minute) // Check every minute
 	s.mu.Unlock()
 
+	s.ValidateJobs()
+
 	s.log().Info("Scheduler started")
 
 	// Run immediately on start
@@ -317,6 +319,35 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		case <-s.ticker.C:
 			s.runDueJobs()
 		}
+	}
+}
+
+// ValidateJobs scans registered jobs and logs warnings for hazards that
+// can only be assessed once the registration chain has settled. Today it
+// surfaces WithoutOverlapping on default-named (auto-derived) jobs, where
+// multiple unnamed closures would collide on the same overlap-guard key
+// and skip silently. Called automatically at the top of Run; callers can
+// invoke it earlier (e.g. during boot) to fail-fast.
+func (s *Scheduler) ValidateJobs() {
+	s.mu.RLock()
+	jobs := make([]*Job, len(s.jobs))
+	copy(jobs, s.jobs)
+	s.mu.RUnlock()
+
+	collisions := make(map[string]int)
+	for _, j := range jobs {
+		j.mu.RLock()
+		if j.withoutOverlapping && !j.nameExplicit {
+			collisions[j.name]++
+		}
+		j.mu.RUnlock()
+	}
+	for name, count := range collisions {
+		s.log().Error(
+			"velocity/scheduler: WithoutOverlapping on job with default name; overlap guard keys on name, so unnamed closures will collide. Use Scheduler.Named(name, fn) or chain .Name(\"...\") to disambiguate.",
+			"name", name,
+			"count", count,
+		)
 	}
 }
 
