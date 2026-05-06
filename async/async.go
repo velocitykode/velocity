@@ -149,6 +149,47 @@ func Go(fn func()) {
 	}()
 }
 
+// GoCtx runs fn in a panic-recovered goroutine bound to ctx. The supervisor
+// returns when ctx is canceled or fn returns, whichever comes first. The
+// helper logs `ctx.Err()` on cancellation via the package logger so adopters
+// can trace early termination.
+//
+// fn receives ctx so it can wire its own select on `ctx.Done()` if it needs
+// to interrupt mid-flight; without that, fn runs to completion even after
+// cancellation (Go offers no goroutine preemption).
+func GoCtx(ctx context.Context, fn func(ctx context.Context)) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	go func() {
+		defer func() {
+			if p := recover(); p != nil {
+				handlePanic(p)
+			}
+		}()
+		done := make(chan struct{})
+		go func() {
+			defer func() {
+				if p := recover(); p != nil {
+					handlePanic(p)
+				}
+				close(done)
+			}()
+			fn(ctx)
+		}()
+		select {
+		case <-done:
+			// fn returned on its own; no log.
+		case <-ctx.Done():
+			// fn may still be running. We log and return; the responsibility
+			// for fn returning rests with fn (it should respect ctx).
+			if err := ctx.Err(); err != nil {
+				getLogger().Error("async: GoCtx context done", "error", err)
+			}
+		}
+	}()
+}
+
 // GoWithRecover executes with custom panic handler
 func GoWithRecover(fn func(), recoverFn func(any)) {
 	go func() {
