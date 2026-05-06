@@ -1606,11 +1606,21 @@ func structToMap(s any) map[string]any {
 		isJSON := isJSONColumn(tag)
 
 		// Skip slice/array fields (usually relations) unless the field is
-		// JSON-tagged. JSON columns may legitimately be backed by []byte,
-		// []any, or map types and need to flow through to the driver.
+		// JSON-tagged or a byte sequence. Byte slices/arrays are binary
+		// scalars (bytea/BLOB, hash digests like [32]byte) and must reach
+		// the driver; non-byte slices are relation collections (HasMany,
+		// BelongsToMany) that don't belong in the row payload.
 		kind := v.Field(i).Kind()
-		if (kind == reflect.Slice || kind == reflect.Array) && !isJSON {
-			continue
+		if kind == reflect.Slice || kind == reflect.Array {
+			isByteSeq := v.Field(i).Type().Elem().Kind() == reflect.Uint8
+			if !isJSON && !isByteSeq {
+				continue
+			}
+			// nil byte slice on a non-JSON column: omit so DB default applies.
+			// JSON columns keep their existing zero handling below.
+			if isByteSeq && !isJSON && kind == reflect.Slice && v.Field(i).IsNil() {
+				continue
+			}
 		}
 
 		// Delegate embedded ORM base fields to a single helper so the
