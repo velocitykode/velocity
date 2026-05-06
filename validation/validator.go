@@ -11,7 +11,7 @@ import (
 // Validator provides validation functionality.
 //
 // Note: Velocity ships English-only messages. Historical SetLocale/Locale
-// fields were removed in the validation consolidation — use SetMessages to
+// fields were removed in the validation consolidation, use SetMessages to
 // override any message the built-in rules emit.
 type Validator interface {
 	Validate(data interface{}, rules Rules) (*ValidatedData, error)
@@ -21,8 +21,64 @@ type Validator interface {
 	SetMessages(messages Messages)
 }
 
-// Rules defines validation rules for fields
-type Rules map[string]string
+// Rules defines validation rules per field. Rules is the canonical adopter
+// facing type and matches the shape returned by vform.FormRequest.Rules():
+// each field maps to a slice of individual rule strings.
+//
+//	rules := validation.Rules{
+//	    "email":    {"required", "email"},
+//	    "password": {"required", "min:8", "confirmed"},
+//	}
+//
+// Authoring rules in pipe-string form (e.g. "required|email") is still
+// supported via PipeRules and the NewRules() helper, which converts a
+// PipeRules value into the canonical Rules type:
+//
+//	rules := validation.NewRules(validation.PipeRules{
+//	    "email": "required|email",
+//	})
+//
+// Pipe-delimited tokens inside a single slice element are accepted for
+// backward compatibility; the validator splits on '|' before evaluating.
+type Rules map[string][]string
+
+// PipeRules is the legacy pipe-string form of validation rules. Each field
+// maps to a single string of '|'-delimited rule tokens. Convert to the
+// canonical Rules type with NewRules() before passing to a validator.
+type PipeRules map[string]string
+
+// NewRules converts a PipeRules (legacy "required|email" form) into the
+// canonical slice-of-rules Rules type. Empty tokens are dropped.
+func NewRules(p PipeRules) Rules {
+	if p == nil {
+		return nil
+	}
+	out := make(Rules, len(p))
+	for field, pipe := range p {
+		out[field] = splitPipe(pipe)
+	}
+	return out
+}
+
+// splitPipe splits a "required|min:3" string into ["required", "min:3"],
+// trimming whitespace and dropping empty tokens. Exposed as a package-private
+// helper so both NewRules() and the validator's internal rule parser share
+// one implementation.
+func splitPipe(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, "|")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
 
 // Messages defines custom error messages
 type Messages map[string]string
@@ -116,7 +172,7 @@ func (v *defaultValidator) Validate(data interface{}, rules Rules) (*ValidatedDa
 	defer v.mu.RUnlock()
 
 	validated := &ValidatedData{
-		data:   make(map[string]interface{}),
+		data: make(map[string]interface{}),
 		errors: ValidationErrors{
 			Errors:       make(map[string][]string),
 			RulesByField: make(map[string][]string),
@@ -129,10 +185,13 @@ func (v *defaultValidator) Validate(data interface{}, rules Rules) (*ValidatedDa
 		return nil, fmt.Errorf("failed to convert data to map: %w", err)
 	}
 
-	// Validate each field
-	for field, ruleString := range rules {
+	// Validate each field. Rules is map[string][]string; each slice element
+	// may itself be a pipe-delimited string ("required|min:3") for backward
+	// compatibility with the legacy PipeRules form. parseRuleSlice flattens
+	// both shapes into a single ordered list of parsedRule values.
+	for field, fieldRuleStrings := range rules {
 		value := getFieldValue(dataMap, field)
-		fieldRules := parseRules(ruleString)
+		fieldRules := parseRuleSlice(fieldRuleStrings)
 
 		for _, rule := range fieldRules {
 			if err := v.validateField(field, value, rule, dataMap); err != nil {
@@ -214,28 +273,33 @@ func (v *defaultValidator) validateField(field string, value interface{}, rule p
 	return nil
 }
 
-// parseRules parses a rule string into individual rules
+// parseRules parses a single pipe-delimited rule string into parsedRule
+// values. Retained for ValidateValue and any internal callers that still
+// receive a single string. New code should prefer parseRuleSlice which
+// accepts the canonical Rules slice form.
 func parseRules(ruleString string) []parsedRule {
+	return parseRuleSlice(splitPipe(ruleString))
+}
+
+// parseRuleSlice parses an ordered slice of rule tokens into parsedRule
+// values. Each token may itself contain '|' (legacy pipe-string form) and
+// is re-split before parsing. Empty / whitespace-only tokens are dropped.
+func parseRuleSlice(tokens []string) []parsedRule {
 	var rules []parsedRule
-	parts := strings.Split(ruleString, "|")
-
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-
-		colonIndex := strings.Index(part, ":")
-		if colonIndex == -1 {
-			rules = append(rules, parsedRule{name: part})
-		} else {
+	for _, raw := range tokens {
+		// Each slice element may itself be a pipe-delimited compound rule.
+		for _, part := range splitPipe(raw) {
+			colonIndex := strings.Index(part, ":")
+			if colonIndex == -1 {
+				rules = append(rules, parsedRule{name: part})
+				continue
+			}
 			name := part[:colonIndex]
 			paramString := part[colonIndex+1:]
 			params := strings.Split(paramString, ",")
 			rules = append(rules, parsedRule{name: name, params: params})
 		}
 	}
-
 	return rules
 }
 

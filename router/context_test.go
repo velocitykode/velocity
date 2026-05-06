@@ -825,8 +825,8 @@ type validatableStruct struct {
 
 func (v validatableStruct) ValidationRules() validation.Rules {
 	return validation.Rules{
-		"name":  "required",
-		"email": "required|email",
+		"name":  {"required"},
+		"email": {"required", "email"},
 	}
 }
 

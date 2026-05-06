@@ -35,9 +35,11 @@ func RuleAssertion(t *testing.T, rule string, input map[string]interface{}, expe
 	v := NewTestValidator()
 	rules := validation.Rules{}
 	// Apply the same rule to every key in the input so callers only need
-	// to supply the rule string once.
+	// to supply the rule string once. The pipe-string is wrapped in a
+	// single-element slice; the validator splits on '|' internally for
+	// backward compatibility with the legacy PipeRules form.
 	for k := range input {
-		rules[k] = rule
+		rules[k] = []string{rule}
 	}
 	_, err := v.Validate(input, rules)
 	gotErr := err != nil

@@ -28,8 +28,8 @@ func TestValidate(t *testing.T) {
 				"email": "john@example.com",
 			},
 			rules: Rules{
-				"name":  "required|string",
-				"email": "required|email",
+				"name":  {"required|string"},
+				"email": {"required|email"},
 			},
 			wantError: false,
 		},
@@ -39,8 +39,8 @@ func TestValidate(t *testing.T) {
 				"name": "John",
 			},
 			rules: Rules{
-				"name":  "required",
-				"email": "required",
+				"name":  {"required"},
+				"email": {"required"},
 			},
 			wantError:   true,
 			errorFields: []string{"email"},
@@ -52,7 +52,7 @@ func TestValidate(t *testing.T) {
 				"email": "not-an-email",
 			},
 			rules: Rules{
-				"email": "email",
+				"email": {"email"},
 			},
 			wantError:   true,
 			errorFields: []string{"email"},
@@ -64,7 +64,7 @@ func TestValidate(t *testing.T) {
 				"name": "Jo",
 			},
 			rules: Rules{
-				"name": "string|min:3",
+				"name": {"string|min:3"},
 			},
 			wantError:   true,
 			errorFields: []string{"name"},
@@ -77,7 +77,7 @@ func TestValidate(t *testing.T) {
 				"age": 25,
 			},
 			rules: Rules{
-				"age": "numeric|min:18|max:65",
+				"age": {"numeric|min:18|max:65"},
 			},
 			wantError: false,
 		},
@@ -87,7 +87,7 @@ func TestValidate(t *testing.T) {
 				"score": 75,
 			},
 			rules: Rules{
-				"score": "numeric|between:0,100",
+				"score": {"numeric|between:0,100"},
 			},
 			wantError: false,
 		},
@@ -97,7 +97,7 @@ func TestValidate(t *testing.T) {
 				"role": "admin",
 			},
 			rules: Rules{
-				"role": "in:admin,user,guest",
+				"role": {"in:admin,user,guest"},
 			},
 			wantError: false,
 		},
@@ -107,7 +107,7 @@ func TestValidate(t *testing.T) {
 				"username": "admin",
 			},
 			rules: Rules{
-				"username": "not_in:admin,root,system",
+				"username": {"not_in:admin,root,system"},
 			},
 			wantError:   true,
 			errorFields: []string{"username"},
@@ -120,7 +120,7 @@ func TestValidate(t *testing.T) {
 				"password_confirmation": "secret123",
 			},
 			rules: Rules{
-				"password": "required|min:8|confirmed",
+				"password": {"required|min:8|confirmed"},
 			},
 			wantError: false,
 		},
@@ -131,7 +131,7 @@ func TestValidate(t *testing.T) {
 				"password_confirmation": "different",
 			},
 			rules: Rules{
-				"password": "confirmed",
+				"password": {"confirmed"},
 			},
 			wantError:   true,
 			errorFields: []string{"password"},
@@ -143,7 +143,7 @@ func TestValidate(t *testing.T) {
 				"terms": "yes",
 			},
 			rules: Rules{
-				"terms": "accepted",
+				"terms": {"accepted"},
 			},
 			wantError: false,
 		},
@@ -153,7 +153,7 @@ func TestValidate(t *testing.T) {
 				"bio": nil,
 			},
 			rules: Rules{
-				"bio": "nullable|string",
+				"bio": {"nullable|string"},
 			},
 			wantError: false,
 		},
@@ -163,7 +163,7 @@ func TestValidate(t *testing.T) {
 				"name": "JohnDoe",
 			},
 			rules: Rules{
-				"name": "alpha",
+				"name": {"alpha"},
 			},
 			wantError: false,
 		},
@@ -173,7 +173,7 @@ func TestValidate(t *testing.T) {
 				"code": "ABC123",
 			},
 			rules: Rules{
-				"code": "alpha_num",
+				"code": {"alpha_num"},
 			},
 			wantError: false,
 		},
@@ -183,7 +183,7 @@ func TestValidate(t *testing.T) {
 				"username": "john_doe-123",
 			},
 			rules: Rules{
-				"username": "alpha_dash",
+				"username": {"alpha_dash"},
 			},
 			wantError: false,
 		},
@@ -193,7 +193,7 @@ func TestValidate(t *testing.T) {
 				"tags": []string{"go", "web", "framework"},
 			},
 			rules: Rules{
-				"tags": "array|min:1|max:5",
+				"tags": {"array|min:1|max:5"},
 			},
 			wantError: false,
 		},
@@ -203,7 +203,7 @@ func TestValidate(t *testing.T) {
 				"active": true,
 			},
 			rules: Rules{
-				"active": "boolean",
+				"active": {"boolean"},
 			},
 			wantError: false,
 		},
@@ -213,7 +213,7 @@ func TestValidate(t *testing.T) {
 				"count": 42,
 			},
 			rules: Rules{
-				"count": "integer",
+				"count": {"integer"},
 			},
 			wantError: false,
 		},
@@ -223,7 +223,7 @@ func TestValidate(t *testing.T) {
 				"code": "123456",
 			},
 			rules: Rules{
-				"code": "size:6",
+				"code": {"size:6"},
 			},
 			wantError: false,
 		},
@@ -234,7 +234,7 @@ func TestValidate(t *testing.T) {
 				"confirm_password": "secret",
 			},
 			rules: Rules{
-				"confirm_password": "same:password",
+				"confirm_password": {"same:password"},
 			},
 			wantError: false,
 		},
@@ -245,7 +245,7 @@ func TestValidate(t *testing.T) {
 				"new_email": "new@example.com",
 			},
 			rules: Rules{
-				"new_email": "different:old_email",
+				"new_email": {"different:old_email"},
 			},
 			wantError: false,
 		},
@@ -255,7 +255,7 @@ func TestValidate(t *testing.T) {
 				"website": "https://example.com",
 			},
 			rules: Rules{
-				"website": "url",
+				"website": {"url"},
 			},
 			wantError: false,
 		},
@@ -265,7 +265,7 @@ func TestValidate(t *testing.T) {
 				"optional": "",
 			},
 			rules: Rules{
-				"optional": "filled",
+				"optional": {"filled"},
 			},
 			wantError:   true,
 			errorFields: []string{"optional"},
@@ -314,9 +314,9 @@ func TestValidateRequest(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	rules := Rules{
-		"name":  "required|string",
-		"email": "required|email",
-		"age":   "required|numeric",
+		"name":  {"required|string"},
+		"email": {"required|email"},
+		"age":   {"required|numeric"},
 	}
 
 	v := NewValidator()
@@ -401,7 +401,7 @@ func TestCustomMessages(t *testing.T) {
 	}
 
 	rules := Rules{
-		"email": "required|email",
+		"email": {"required|email"},
 	}
 
 	_, err := validator.Validate(data, rules)
@@ -430,28 +430,28 @@ func TestBuiltInRuleMessages(t *testing.T) {
 		{
 			name:      "required mentions the field",
 			data:      map[string]interface{}{},
-			rules:     Rules{"email": "required"},
+			rules:     Rules{"email": {"required"}},
 			field:     "email",
 			mustMatch: []string{"email", "required"},
 		},
 		{
 			name:      "email says invalid",
 			data:      map[string]interface{}{"email": "nope"},
-			rules:     Rules{"email": "email"},
+			rules:     Rules{"email": {"email"}},
 			field:     "email",
 			mustMatch: []string{"email"},
 		},
 		{
 			name:      "min reports the threshold",
 			data:      map[string]interface{}{"name": "Jo"},
-			rules:     Rules{"name": "min:3"},
+			rules:     Rules{"name": {"min:3"}},
 			field:     "name",
 			mustMatch: []string{"name", "3"},
 		},
 		{
 			name:      "confirmed names the field",
 			data:      map[string]interface{}{"password": "secret", "password_confirmation": "nope"},
-			rules:     Rules{"password": "confirmed"},
+			rules:     Rules{"password": {"confirmed"}},
 			field:     "password",
 			mustMatch: []string{"password"},
 		},
@@ -542,7 +542,7 @@ func TestRegisterCustomRule(t *testing.T) {
 	}
 
 	rules := Rules{
-		"code": "uppercase",
+		"code": {"uppercase"},
 	}
 
 	_, err := v.Validate(data, rules)
@@ -572,7 +572,7 @@ func TestConditionalRules(t *testing.T) {
 				"contact_method": "email",
 			},
 			rules: Rules{
-				"phone": "required_if:contact_method,phone",
+				"phone": {"required_if:contact_method,phone"},
 			},
 			wantError: false,
 		},
@@ -582,7 +582,7 @@ func TestConditionalRules(t *testing.T) {
 				"contact_method": "phone",
 			},
 			rules: Rules{
-				"phone": "required_if:contact_method,phone",
+				"phone": {"required_if:contact_method,phone"},
 			},
 			wantError:   true,
 			errorFields: []string{"phone"},
@@ -594,7 +594,7 @@ func TestConditionalRules(t *testing.T) {
 				"phone":          "555-1234",
 			},
 			rules: Rules{
-				"phone": "required_if:contact_method,phone",
+				"phone": {"required_if:contact_method,phone"},
 			},
 			wantError: false,
 		},
@@ -604,7 +604,7 @@ func TestConditionalRules(t *testing.T) {
 				"role": "admin",
 			},
 			rules: Rules{
-				"reason": "required_unless:role,admin",
+				"reason": {"required_unless:role,admin"},
 			},
 			wantError: false,
 		},
@@ -614,7 +614,7 @@ func TestConditionalRules(t *testing.T) {
 				"role": "user",
 			},
 			rules: Rules{
-				"reason": "required_unless:role,admin",
+				"reason": {"required_unless:role,admin"},
 			},
 			wantError:   true,
 			errorFields: []string{"reason"},
@@ -623,7 +623,7 @@ func TestConditionalRules(t *testing.T) {
 			name: "required_with passes when other field absent",
 			data: map[string]interface{}{},
 			rules: Rules{
-				"city": "required_with:address",
+				"city": {"required_with:address"},
 			},
 			wantError: false,
 		},
@@ -633,7 +633,7 @@ func TestConditionalRules(t *testing.T) {
 				"address": "123 Main St",
 			},
 			rules: Rules{
-				"city": "required_with:address",
+				"city": {"required_with:address"},
 			},
 			wantError:   true,
 			errorFields: []string{"city"},
@@ -645,7 +645,7 @@ func TestConditionalRules(t *testing.T) {
 				"city":    "New York",
 			},
 			rules: Rules{
-				"city": "required_with:address",
+				"city": {"required_with:address"},
 			},
 			wantError: false,
 		},
@@ -655,7 +655,7 @@ func TestConditionalRules(t *testing.T) {
 				"email": "test@example.com",
 			},
 			rules: Rules{
-				"phone": "required_without:email",
+				"phone": {"required_without:email"},
 			},
 			wantError: false,
 		},
@@ -663,7 +663,7 @@ func TestConditionalRules(t *testing.T) {
 			name: "required_without fails when other field absent and value missing",
 			data: map[string]interface{}{},
 			rules: Rules{
-				"phone": "required_without:email",
+				"phone": {"required_without:email"},
 			},
 			wantError:   true,
 			errorFields: []string{"phone"},
@@ -674,7 +674,7 @@ func TestConditionalRules(t *testing.T) {
 				"phone": "555-1234",
 			},
 			rules: Rules{
-				"phone": "required_without:email",
+				"phone": {"required_without:email"},
 			},
 			wantError: false,
 		},
@@ -685,7 +685,7 @@ func TestConditionalRules(t *testing.T) {
 				"phone": "555",
 			},
 			rules: Rules{
-				"phone": "required_if:type,business|min:7",
+				"phone": {"required_if:type,business|min:7"},
 			},
 			wantError:   true,
 			errorFields: []string{"phone"},
@@ -732,11 +732,11 @@ func BenchmarkValidation(b *testing.B) {
 	}
 
 	rules := Rules{
-		"name":     "required|string|min:3|max:255",
-		"email":    "required|email",
-		"age":      "required|integer|min:18|max:100",
-		"password": "required|string|min:8",
-		"role":     "required|in:admin,user,guest",
+		"name":     {"required|string|min:3|max:255"},
+		"email":    {"required|email"},
+		"age":      {"required|integer|min:18|max:100"},
+		"password": {"required|string|min:8"},
+		"role":     {"required|in:admin,user,guest"},
 	}
 
 	b.ResetTimer()

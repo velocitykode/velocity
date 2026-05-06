@@ -5,17 +5,20 @@ package vform
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/velocitykode/velocity/router"
 	"github.com/velocitykode/velocity/validation"
 )
 
 // FormRequest defines validation rules for a request. Implement this on a
-// struct to make it self-validating; rules use the same []string-per-field
-// shape as Laravel-style validators.
+// struct to make it self-validating; rules use the canonical
+// validation.Rules type (map[string][]string).
+//
+// The return type is validation.Rules so the same value can be passed
+// straight into validation.Check / CheckWithDB without intermediate
+// conversion.
 type FormRequest interface {
-	Rules() map[string][]string
+	Rules() validation.Rules
 }
 
 // WithMessages can be implemented alongside FormRequest to provide custom
@@ -41,17 +44,13 @@ func Form[T any](ctx *router.Context) (*T, error) {
 	}
 
 	rules := fr.Rules()
-	vRules := make(validation.Rules, len(rules))
-	for field, fieldRules := range rules {
-		vRules[field] = strings.Join(fieldRules, "|")
-	}
 
 	var msgs []validation.Messages
 	if wm, ok := any(req).(WithMessages); ok {
 		msgs = append(msgs, validation.Messages(wm.ValidationMessages()))
 	}
 
-	result := validation.CheckWithDB(ctx.Request, vRules, ctx.DB(), msgs...)
+	result := validation.CheckWithDB(ctx.Request, rules, ctx.DB(), msgs...)
 	if !result.HasErrors() {
 		if err := ctx.BindAuto(req); err != nil {
 			return nil, fmt.Errorf("velocity/vform: bind failed: %w", err)

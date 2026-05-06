@@ -22,8 +22,8 @@ func TestCheck_FormDataValid(t *testing.T) {
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	result := Check(r, Rules{
-		"name":  "required|min:3",
-		"email": "required|email",
+		"name":  {"required|min:3"},
+		"email": {"required|email"},
 	})
 
 	if result.HasErrors() {
@@ -40,8 +40,8 @@ func TestCheck_FormDataInvalid(t *testing.T) {
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	result := Check(r, Rules{
-		"name":  "required|min:3",
-		"email": "required|email",
+		"name":  {"required|min:3"},
+		"email": {"required|email"},
 	})
 
 	if !result.HasErrors() {
@@ -61,8 +61,8 @@ func TestCheck_JSONBody(t *testing.T) {
 	r.Header.Set("Content-Type", "application/json")
 
 	result := Check(r, Rules{
-		"name":  "required",
-		"email": "required|email",
+		"name":  {"required"},
+		"email": {"required|email"},
 	})
 
 	if !result.HasErrors() {
@@ -82,7 +82,7 @@ func TestCheck_CustomMessages(t *testing.T) {
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	result := Check(r, Rules{
-		"title": "required",
+		"title": {"required"},
 	}, Messages{
 		"title.required": "A title is mandatory",
 	})
@@ -106,8 +106,8 @@ func TestCheckData_Valid(t *testing.T) {
 	}
 
 	result := CheckData(data, Rules{
-		"name":  "required",
-		"email": "required|email",
+		"name":  {"required"},
+		"email": {"required|email"},
 	})
 
 	if result.HasErrors() {
@@ -122,8 +122,8 @@ func TestCheckData_Invalid(t *testing.T) {
 	}
 
 	result := CheckData(data, Rules{
-		"name":  "required",
-		"email": "required|email",
+		"name":  {"required"},
+		"email": {"required|email"},
 	})
 
 	if !result.HasErrors() {
@@ -147,8 +147,8 @@ func TestCheckWithDB_NilDB(t *testing.T) {
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	result := CheckWithDB(r, Rules{
-		"name":  "required",
-		"email": "required|email",
+		"name":  {"required"},
+		"email": {"required|email"},
 	}, nil)
 
 	if result.HasErrors() {
@@ -164,8 +164,8 @@ func TestCheckWithDB_NilDB_Invalid(t *testing.T) {
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	result := CheckWithDB(r, Rules{
-		"name":  "required",
-		"email": "required|email",
+		"name":  {"required"},
+		"email": {"required|email"},
 	}, nil)
 
 	if !result.HasErrors() {
@@ -183,7 +183,7 @@ func TestCheckDataWithDB_NilDB_Valid(t *testing.T) {
 	}
 
 	result := CheckDataWithDB(data, Rules{
-		"name": "required|min:3",
+		"name": {"required|min:3"},
 	}, nil)
 
 	if result.HasErrors() {
@@ -197,7 +197,7 @@ func TestCheckDataWithDB_NilDB_Invalid(t *testing.T) {
 	}
 
 	result := CheckDataWithDB(data, Rules{
-		"name": "required|min:3",
+		"name": {"required|min:3"},
 	}, nil)
 
 	if !result.HasErrors() {
