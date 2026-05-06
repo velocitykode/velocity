@@ -298,6 +298,62 @@ func (q *Query[T]) OrWhere(condition string, args ...any) *Query[T] {
 	return q
 }
 
+// WhereGroup adds a parenthesized AND-group of WHERE conditions. The
+// closure receives a fresh sub-builder; predicates added to it are
+// emitted inside parentheses so AND/OR precedence binds correctly.
+//
+// Example:
+//
+//	Where("team_id = ?", t).WhereGroup(func(q *Query[User]) {
+//	    q.Where("name ILIKE ?", x).OrWhere("email ILIKE ?", x)
+//	})
+//
+// emits "team_id = ? AND (name ILIKE ? OR email ILIKE ?)" rather than
+// the misbinding "team_id = ? AND name ILIKE ? OR email ILIKE ?" that a
+// flat chain would produce.
+//
+// The first error captured by the inner builder propagates to q so
+// terminal methods surface it before issuing SQL. Empty groups are
+// dropped (no parentheses emitted) to keep the SQL clean.
+func (q *Query[T]) WhereGroup(fn func(*Query[T])) *Query[T] {
+	return q.appendGroup("and", fn)
+}
+
+// OrWhereGroup adds a parenthesized OR-group of WHERE conditions.
+// Behaviour mirrors WhereGroup but the group itself is OR'd against
+// the surrounding predicates.
+func (q *Query[T]) OrWhereGroup(fn func(*Query[T])) *Query[T] {
+	return q.appendGroup("or", fn)
+}
+
+// appendGroup runs the closure against a fresh sub-builder, captures
+// the resulting conditions, and appends them as a single grouped
+// Condition. Errors from the sub-builder propagate up; empty groups
+// are skipped.
+func (q *Query[T]) appendGroup(joinType string, fn func(*Query[T])) *Query[T] {
+	if fn == nil {
+		return q
+	}
+	sub := &Query[T]{
+		driver:        q.driver,
+		table:         q.table,
+		hasSoftDelete: q.hasSoftDelete,
+	}
+	fn(sub)
+	if sub.err != nil {
+		q.setErr("WhereGroup", sub.err)
+		return q
+	}
+	if len(sub.conditions) == 0 {
+		return q
+	}
+	q.conditions = append(q.conditions, drivers.Condition{
+		Type:  joinType,
+		Group: sub.conditions,
+	})
+	return q
+}
+
 // WhereIn adds a WHERE IN condition
 func (q *Query[T]) WhereIn(field string, values []any) *Query[T] {
 	if err := validateIdentifier(field); err != nil {

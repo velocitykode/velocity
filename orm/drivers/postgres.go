@@ -228,45 +228,8 @@ func (g *PostgresGrammar) CompileSelect(query *SelectQuery) (string, []any) {
 	if len(query.Conditions) > 0 {
 		sql.WriteString(" WHERE ")
 		argIndex := 1
-		for i, cond := range query.Conditions {
-			if i > 0 {
-				sql.WriteString(" ")
-				sql.WriteString(strings.ToUpper(cond.Type))
-				sql.WriteString(" ")
-			}
-
-			sql.WriteString(g.QuoteIdentifier(cond.Column))
-			sql.WriteString(" ")
-			sql.WriteString(cond.Operator)
-
-			switch cond.Operator {
-			case "IS NULL", "IS NOT NULL":
-				// No placeholder needed
-			case "IN", "NOT IN":
-				if values, ok := cond.Value.([]any); ok {
-					sql.WriteString(" (")
-					for j := range values {
-						if j > 0 {
-							sql.WriteString(", ")
-						}
-						sql.WriteString(fmt.Sprintf("$%d", argIndex))
-						argIndex++
-						args = append(args, values[j])
-					}
-					sql.WriteString(")")
-				}
-			case "BETWEEN":
-				if values, ok := cond.Value.([]any); ok && len(values) == 2 {
-					sql.WriteString(fmt.Sprintf(" $%d AND $%d", argIndex, argIndex+1))
-					args = append(args, values[0], values[1])
-					argIndex += 2
-				}
-			default:
-				sql.WriteString(fmt.Sprintf(" $%d", argIndex))
-				args = append(args, cond.Value)
-				argIndex++
-			}
-		}
+		argIndex = g.compileConditions(&sql, &args, query.Conditions, argIndex)
+		_ = argIndex
 	}
 
 	// GROUP BY
@@ -409,22 +372,8 @@ func (g *PostgresGrammar) CompileUpdate(table string, values map[string]any, con
 	// WHERE
 	if len(conditions) > 0 {
 		sql.WriteString(" WHERE ")
-		for i, cond := range conditions {
-			if i > 0 {
-				sql.WriteString(" ")
-				sql.WriteString(strings.ToUpper(cond.Type))
-				sql.WriteString(" ")
-			}
-
-			sql.WriteString(g.QuoteIdentifier(cond.Column))
-			sql.WriteString(" ")
-			sql.WriteString(cond.Operator)
-			if cond.Operator != "IS NULL" && cond.Operator != "IS NOT NULL" {
-				sql.WriteString(fmt.Sprintf(" $%d", argIndex))
-				args = append(args, cond.Value)
-				argIndex++
-			}
-		}
+		argIndex = g.compileConditions(&sql, &args, conditions, argIndex)
+		_ = argIndex
 	}
 
 	return sql.String(), args
@@ -442,25 +391,70 @@ func (g *PostgresGrammar) CompileDelete(table string, conditions []Condition) (s
 	if len(conditions) > 0 {
 		sql.WriteString(" WHERE ")
 		argIndex := 1
-		for i, cond := range conditions {
-			if i > 0 {
-				sql.WriteString(" ")
-				sql.WriteString(strings.ToUpper(cond.Type))
-				sql.WriteString(" ")
-			}
-
-			sql.WriteString(g.QuoteIdentifier(cond.Column))
-			sql.WriteString(" ")
-			sql.WriteString(cond.Operator)
-			if cond.Operator != "IS NULL" && cond.Operator != "IS NOT NULL" {
-				sql.WriteString(fmt.Sprintf(" $%d", argIndex))
-				args = append(args, cond.Value)
-				argIndex++
-			}
-		}
+		argIndex = g.compileConditions(&sql, &args, conditions, argIndex)
+		_ = argIndex
 	}
 
 	return sql.String(), args
+}
+
+// compileConditions renders a list of WHERE/HAVING conditions into sql,
+// appending bound parameters to args. argIndex is the next 1-based
+// PostgreSQL placeholder ($N) to allocate; the returned int is the next
+// free placeholder after this list.
+//
+// Conditions with non-empty Group are rendered as parenthesized
+// sub-groups, recursively. The conjunction (AND/OR) for a sub-group is
+// taken from cond.Type, identical to the leaf-condition behaviour.
+func (g *PostgresGrammar) compileConditions(sql *strings.Builder, args *[]any, conditions []Condition, argIndex int) int {
+	for i, cond := range conditions {
+		if i > 0 {
+			sql.WriteString(" ")
+			sql.WriteString(strings.ToUpper(cond.Type))
+			sql.WriteString(" ")
+		}
+
+		// Sub-group: emit (<inner>) recursively.
+		if len(cond.Group) > 0 {
+			sql.WriteString("(")
+			argIndex = g.compileConditions(sql, args, cond.Group, argIndex)
+			sql.WriteString(")")
+			continue
+		}
+
+		sql.WriteString(g.QuoteIdentifier(cond.Column))
+		sql.WriteString(" ")
+		sql.WriteString(cond.Operator)
+
+		switch cond.Operator {
+		case "IS NULL", "IS NOT NULL":
+			// No placeholder needed
+		case "IN", "NOT IN":
+			if values, ok := cond.Value.([]any); ok {
+				sql.WriteString(" (")
+				for j := range values {
+					if j > 0 {
+						sql.WriteString(", ")
+					}
+					sql.WriteString(fmt.Sprintf("$%d", argIndex))
+					argIndex++
+					*args = append(*args, values[j])
+				}
+				sql.WriteString(")")
+			}
+		case "BETWEEN":
+			if values, ok := cond.Value.([]any); ok && len(values) == 2 {
+				sql.WriteString(fmt.Sprintf(" $%d AND $%d", argIndex, argIndex+1))
+				*args = append(*args, values[0], values[1])
+				argIndex += 2
+			}
+		default:
+			sql.WriteString(fmt.Sprintf(" $%d", argIndex))
+			*args = append(*args, cond.Value)
+			argIndex++
+		}
+	}
+	return argIndex
 }
 
 // CompileCreateTable compiles a CREATE TABLE query for PostgreSQL
