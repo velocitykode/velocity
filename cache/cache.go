@@ -92,6 +92,12 @@ type RememberEable interface {
 	RememberE(key string, ttl time.Duration, callback func() (interface{}, error)) (interface{}, error)
 }
 
+// RememberEContextable is the ctx-aware counterpart of RememberEable.
+// *Manager satisfies it through its RememberEWithContext method.
+type RememberEContextable interface {
+	RememberEWithContext(ctx context.Context, key string, ttl time.Duration, callback func() (interface{}, error)) (interface{}, error)
+}
+
 // RememberT is a typed-generic shim over RememberE that returns T directly,
 // avoiding the interface{} cast at every call site. Go 1.26 method generics
 // have not shipped, so this is a package-level function rather than a
@@ -120,6 +126,36 @@ func RememberT[T any](mgr RememberEable, key string, ttl time.Duration, callback
 	}
 	if val == nil {
 		// Callback may legitimately return zero value; coerce to zero T.
+		return zero, nil
+	}
+	typed, ok := val.(T)
+	if !ok {
+		return zero, fmt.Errorf("velocity/cache: cache slot %q holds %T, want %T", key, val, zero)
+	}
+	return typed, nil
+}
+
+// RememberTWithContext is the ctx-aware counterpart of RememberT, threading
+// ctx through to the underlying store via RememberEWithContext.
+//
+// Usage:
+//
+//	region, err := cache.RememberTWithContext[Region](app.Cache, ctx, "regions", 5*time.Minute, func() (Region, error) {
+//	    return upstream.FetchRegion(ctx)
+//	})
+func RememberTWithContext[T any](mgr RememberEContextable, ctx context.Context, key string, ttl time.Duration, callback func() (T, error)) (T, error) {
+	var zero T
+	val, err := mgr.RememberEWithContext(ctx, key, ttl, func() (interface{}, error) {
+		v, err := callback()
+		if err != nil {
+			return nil, err
+		}
+		return v, nil
+	})
+	if err != nil {
+		return zero, err
+	}
+	if val == nil {
 		return zero, nil
 	}
 	typed, ok := val.(T)

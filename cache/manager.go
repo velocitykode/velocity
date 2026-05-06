@@ -29,9 +29,13 @@ type CacheManager interface {
 	Increment(key string, value int64) (int64, error)
 	Decrement(key string, value int64) (int64, error)
 	Remember(key string, ttl time.Duration, callback func() interface{}) (interface{}, error)
+	RememberWithContext(ctx context.Context, key string, ttl time.Duration, callback func() interface{}) (interface{}, error)
 	RememberE(key string, ttl time.Duration, callback func() (interface{}, error)) (interface{}, error)
+	RememberEWithContext(ctx context.Context, key string, ttl time.Duration, callback func() (interface{}, error)) (interface{}, error)
 	RememberForever(key string, callback func() interface{}) (interface{}, error)
+	RememberForeverWithContext(ctx context.Context, key string, callback func() interface{}) (interface{}, error)
 	RememberForeverE(key string, callback func() (interface{}, error)) (interface{}, error)
+	RememberForeverEWithContext(ctx context.Context, key string, callback func() (interface{}, error)) (interface{}, error)
 	Many(keys []string) map[string]interface{}
 	PutMany(items map[string]interface{}, ttl time.Duration) error
 
@@ -379,11 +383,16 @@ func (m *Manager) Decrement(key string, value int64) (int64, error) {
 // instead so the framework can skip the Put rather than poison the cache
 // slot with a nil/zero value.
 func (m *Manager) Remember(key string, ttl time.Duration, callback func() interface{}) (interface{}, error) {
-	store, err := m.DefaultStore()
-	if err != nil {
-		return nil, err
-	}
-	return store.Remember(key, ttl, callback)
+	return m.RememberWithContext(context.Background(), key, ttl, callback)
+}
+
+// RememberWithContext gets from default cache or computes and stores, threading
+// ctx through to the underlying store when it implements ContextStore. Cache
+// reads and writes become cancellable when the request context is cancelled.
+func (m *Manager) RememberWithContext(ctx context.Context, key string, ttl time.Duration, callback func() interface{}) (interface{}, error) {
+	return m.RememberEWithContext(ctx, key, ttl, func() (interface{}, error) {
+		return callback(), nil
+	})
 }
 
 // RememberE is the error-aware variant of Remember. When the callback returns
@@ -391,24 +400,46 @@ func (m *Manager) Remember(key string, ttl time.Duration, callback func() interf
 // returned to the caller. This prevents transient upstream failures from
 // pinning a nil/zero value for the full TTL.
 func (m *Manager) RememberE(key string, ttl time.Duration, callback func() (interface{}, error)) (interface{}, error) {
+	return m.RememberEWithContext(context.Background(), key, ttl, callback)
+}
+
+// RememberEWithContext is the ctx + error-aware variant of Remember. Threads
+// ctx through to the underlying ContextStore when available, and skips the
+// cache Put when the callback returns an error.
+func (m *Manager) RememberEWithContext(ctx context.Context, key string, ttl time.Duration, callback func() (interface{}, error)) (interface{}, error) {
 	store, err := m.DefaultStore()
 	if err != nil {
 		return nil, err
 	}
-	if val, found := store.Get(key); found {
-		m.dispatchCacheHit(context.Background(), key, m.defaultStore)
-		return val, nil
+	cs, hasCtx := store.(ContextStore)
+
+	if hasCtx {
+		if val, found := cs.GetCtx(ctx, key); found {
+			m.dispatchCacheHit(ctx, key, m.defaultStore)
+			return val, nil
+		}
+	} else {
+		if val, found := store.Get(key); found {
+			m.dispatchCacheHit(ctx, key, m.defaultStore)
+			return val, nil
+		}
 	}
-	m.dispatchCacheMiss(context.Background(), key, m.defaultStore)
+	m.dispatchCacheMiss(ctx, key, m.defaultStore)
 
 	value, cbErr := callback()
 	if cbErr != nil {
 		return nil, cbErr
 	}
-	if err := store.Put(key, value, ttl); err != nil {
-		return nil, err
+	if hasCtx {
+		if err := cs.PutCtx(ctx, key, value, ttl); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := store.Put(key, value, ttl); err != nil {
+			return nil, err
+		}
 	}
-	m.dispatchCacheWritten(context.Background(), key, m.defaultStore, ttl)
+	m.dispatchCacheWritten(ctx, key, m.defaultStore, ttl)
 	return value, nil
 }
 
@@ -416,35 +447,60 @@ func (m *Manager) RememberE(key string, ttl time.Duration, callback func() (inte
 // Remember for the error-handling caveat; use RememberForeverE for the
 // error-aware variant.
 func (m *Manager) RememberForever(key string, callback func() interface{}) (interface{}, error) {
-	store, err := m.DefaultStore()
-	if err != nil {
-		return nil, err
-	}
-	return store.RememberForever(key, callback)
+	return m.RememberForeverWithContext(context.Background(), key, callback)
+}
+
+// RememberForeverWithContext gets from default cache or computes and stores
+// forever, threading ctx through to the underlying ContextStore.
+func (m *Manager) RememberForeverWithContext(ctx context.Context, key string, callback func() interface{}) (interface{}, error) {
+	return m.RememberForeverEWithContext(ctx, key, func() (interface{}, error) {
+		return callback(), nil
+	})
 }
 
 // RememberForeverE is the error-aware variant of RememberForever. When the
 // callback returns a non-nil error the value is NOT written to the cache and
 // the error is returned to the caller.
 func (m *Manager) RememberForeverE(key string, callback func() (interface{}, error)) (interface{}, error) {
+	return m.RememberForeverEWithContext(context.Background(), key, callback)
+}
+
+// RememberForeverEWithContext is the ctx + error-aware variant of
+// RememberForever.
+func (m *Manager) RememberForeverEWithContext(ctx context.Context, key string, callback func() (interface{}, error)) (interface{}, error) {
 	store, err := m.DefaultStore()
 	if err != nil {
 		return nil, err
 	}
-	if val, found := store.Get(key); found {
-		m.dispatchCacheHit(context.Background(), key, m.defaultStore)
-		return val, nil
+	cs, hasCtx := store.(ContextStore)
+
+	if hasCtx {
+		if val, found := cs.GetCtx(ctx, key); found {
+			m.dispatchCacheHit(ctx, key, m.defaultStore)
+			return val, nil
+		}
+	} else {
+		if val, found := store.Get(key); found {
+			m.dispatchCacheHit(ctx, key, m.defaultStore)
+			return val, nil
+		}
 	}
-	m.dispatchCacheMiss(context.Background(), key, m.defaultStore)
+	m.dispatchCacheMiss(ctx, key, m.defaultStore)
 
 	value, cbErr := callback()
 	if cbErr != nil {
 		return nil, cbErr
 	}
-	if err := store.Forever(key, value); err != nil {
-		return nil, err
+	if hasCtx {
+		if err := cs.ForeverCtx(ctx, key, value); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := store.Forever(key, value); err != nil {
+			return nil, err
+		}
 	}
-	m.dispatchCacheWritten(context.Background(), key, m.defaultStore, 0)
+	m.dispatchCacheWritten(ctx, key, m.defaultStore, 0)
 	return value, nil
 }
 
