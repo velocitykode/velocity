@@ -94,12 +94,26 @@ type SelectQuery struct {
 	SkipLocked    bool
 }
 
-// Condition represents a WHERE condition
+// Condition represents a WHERE condition.
+//
+// A Condition is either a leaf predicate (Column/Operator/Value populated)
+// or a parenthesized sub-group of conditions (Group populated). Type is
+// "and" or "or" and applies to the relationship between this condition and
+// the previous one in the same list. When Group is non-empty, Column,
+// Operator, and Value are ignored and grammars must emit "(<sub>)" with
+// the sub-conditions joined by their own Type fields. The first condition
+// inside a Group always emits without a leading conjunction; the Type on
+// later items inside the Group decides AND vs OR within the parens.
 type Condition struct {
 	Column   string
 	Operator string
 	Value    any
 	Type     string // "and" or "or"
+
+	// Group, when non-empty, marks this Condition as a parenthesized
+	// sub-group. Grammars emit "(<grouped>)" instead of a leaf predicate.
+	// Nesting is supported recursively.
+	Group []Condition
 }
 
 // Order represents an ORDER BY clause

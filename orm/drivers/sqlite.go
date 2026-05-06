@@ -203,22 +203,7 @@ func (g *SQLiteGrammar) CompileSelect(query *SelectQuery) (string, []any) {
 	// WHERE
 	if len(query.Conditions) > 0 {
 		sql.WriteString(" WHERE ")
-		for i, cond := range query.Conditions {
-			if i > 0 {
-				sql.WriteString(" ")
-				sql.WriteString(strings.ToUpper(cond.Type))
-				sql.WriteString(" ")
-			}
-
-			sql.WriteString(g.QuoteIdentifier(cond.Column))
-			sql.WriteString(" ")
-			sql.WriteString(cond.Operator)
-
-			if cond.Operator != "IS NULL" && cond.Operator != "IS NOT NULL" {
-				sql.WriteString(" ?")
-				args = append(args, cond.Value)
-			}
-		}
+		g.compileConditions(&sql, &args, query.Conditions)
 	}
 
 	// GROUP BY
@@ -352,21 +337,7 @@ func (g *SQLiteGrammar) CompileUpdate(table string, values map[string]any, condi
 	// WHERE
 	if len(conditions) > 0 {
 		sql.WriteString(" WHERE ")
-		for i, cond := range conditions {
-			if i > 0 {
-				sql.WriteString(" ")
-				sql.WriteString(strings.ToUpper(cond.Type))
-				sql.WriteString(" ")
-			}
-
-			sql.WriteString(g.QuoteIdentifier(cond.Column))
-			sql.WriteString(" ")
-			sql.WriteString(cond.Operator)
-			if cond.Operator != "IS NULL" && cond.Operator != "IS NOT NULL" {
-				sql.WriteString(" ?")
-				args = append(args, cond.Value)
-			}
-		}
+		g.compileConditions(&sql, &args, conditions)
 	}
 
 	return sql.String(), args
@@ -383,24 +354,43 @@ func (g *SQLiteGrammar) CompileDelete(table string, conditions []Condition) (str
 	// WHERE
 	if len(conditions) > 0 {
 		sql.WriteString(" WHERE ")
-		for i, cond := range conditions {
-			if i > 0 {
-				sql.WriteString(" ")
-				sql.WriteString(strings.ToUpper(cond.Type))
-				sql.WriteString(" ")
-			}
-
-			sql.WriteString(g.QuoteIdentifier(cond.Column))
-			sql.WriteString(" ")
-			sql.WriteString(cond.Operator)
-			if cond.Operator != "IS NULL" && cond.Operator != "IS NOT NULL" {
-				sql.WriteString(" ?")
-				args = append(args, cond.Value)
-			}
-		}
+		g.compileConditions(&sql, &args, conditions)
 	}
 
 	return sql.String(), args
+}
+
+// compileConditions renders a list of WHERE/HAVING conditions into sql,
+// appending bound parameters to args. SQLite uses positional `?`
+// placeholders; no index threading is required.
+//
+// Conditions with non-empty Group are rendered as parenthesized
+// sub-groups, recursively. The conjunction (AND/OR) for a sub-group is
+// taken from cond.Type, identical to the leaf-condition behaviour.
+func (g *SQLiteGrammar) compileConditions(sql *strings.Builder, args *[]any, conditions []Condition) {
+	for i, cond := range conditions {
+		if i > 0 {
+			sql.WriteString(" ")
+			sql.WriteString(strings.ToUpper(cond.Type))
+			sql.WriteString(" ")
+		}
+
+		// Sub-group: emit (<inner>) recursively.
+		if len(cond.Group) > 0 {
+			sql.WriteString("(")
+			g.compileConditions(sql, args, cond.Group)
+			sql.WriteString(")")
+			continue
+		}
+
+		sql.WriteString(g.QuoteIdentifier(cond.Column))
+		sql.WriteString(" ")
+		sql.WriteString(cond.Operator)
+		if cond.Operator != "IS NULL" && cond.Operator != "IS NOT NULL" {
+			sql.WriteString(" ?")
+			*args = append(*args, cond.Value)
+		}
+	}
 }
 
 // CompileCreateTable compiles a CREATE TABLE query

@@ -109,6 +109,7 @@ type Query[T any] struct {
 	lockForUpdate bool // For pessimistic locking
 	skipLocked    bool // For SKIP LOCKED clause
 	hasSoftDelete bool // Whether the model supports soft deletes
+	hasUpdatedAt  bool // Whether the model has an UpdatedAt column (skip injection on Update for immutable models)
 
 	// Context for event propagation
 	ctx context.Context
@@ -149,8 +150,63 @@ func newQuery[T any]() *Query[T] {
 		table:         getTableName[T](),
 		columns:       []string{"*"},
 		hasSoftDelete: modelHasSoftDelete[T](),
+		hasUpdatedAt:  modelHasUpdatedAt[T](),
 	}
 	return q
+}
+
+// updatedAtCache caches modelHasUpdatedAt results per reflect.Type.
+var updatedAtCache sync.Map
+
+// modelHasUpdatedAt reports whether T (or its embedded ORM base type) has
+// an UpdatedAt column. ImmutableModel/ImmutableUUIDModel return false; all
+// other built-in base types return true. Custom direct UpdatedAt fields
+// also return true. Result is cached per type.
+func modelHasUpdatedAt[T any]() bool {
+	var model T
+	t := reflect.TypeOf(model)
+	if t == nil {
+		return false
+	}
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	if cached, ok := updatedAtCache.Load(t); ok {
+		return cached.(bool)
+	}
+	result := checkUpdatedAt(t)
+	updatedAtCache.Store(t, result)
+	return result
+}
+
+// checkUpdatedAt walks the immediate fields of t looking for an embedded
+// ORM base type or a direct UpdatedAt field.
+func checkUpdatedAt(t reflect.Type) bool {
+	if t.Kind() != reflect.Struct {
+		return false
+	}
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		typStr := field.Type.String()
+
+		// Immutable variants explicitly opt out of UpdatedAt.
+		if strings.HasPrefix(typStr, "orm.ImmutableModel[") ||
+			strings.HasPrefix(typStr, "orm.ImmutableUUIDModel[") {
+			return false
+		}
+		// All other built-in base types include UpdatedAt.
+		if strings.HasPrefix(typStr, "orm.Model[") ||
+			strings.HasPrefix(typStr, "orm.UUIDModel[") ||
+			strings.HasPrefix(typStr, "orm.SoftDeleteModel[") ||
+			strings.HasPrefix(typStr, "orm.SoftDeleteUUIDModel[") {
+			return true
+		}
+		// Direct UpdatedAt field on a custom model.
+		if field.Name == "UpdatedAt" {
+			return true
+		}
+	}
+	return false
 }
 
 // modelHasSoftDelete checks if the model type T has a DeletedAt field (supports soft deletes).
@@ -227,6 +283,7 @@ func (q *Query[T]) Clone() *Query[T] {
 		lockForUpdate: q.lockForUpdate,
 		skipLocked:    q.skipLocked,
 		hasSoftDelete: q.hasSoftDelete,
+		hasUpdatedAt:  q.hasUpdatedAt,
 		ctx:           q.ctx,
 		err:           q.err,
 		lastSQL:       q.lastSQL,
@@ -294,6 +351,63 @@ func (q *Query[T]) OrWhere(condition string, args ...any) *Query[T] {
 		Operator: op,
 		Value:    val,
 		Type:     "or",
+	})
+	return q
+}
+
+// WhereGroup adds a parenthesized AND-group of WHERE conditions. The
+// closure receives a fresh sub-builder; predicates added to it are
+// emitted inside parentheses so AND/OR precedence binds correctly.
+//
+// Example:
+//
+//	Where("team_id = ?", t).WhereGroup(func(q *Query[User]) {
+//	    q.Where("name ILIKE ?", x).OrWhere("email ILIKE ?", x)
+//	})
+//
+// emits "team_id = ? AND (name ILIKE ? OR email ILIKE ?)" rather than
+// the misbinding "team_id = ? AND name ILIKE ? OR email ILIKE ?" that a
+// flat chain would produce.
+//
+// The first error captured by the inner builder propagates to q so
+// terminal methods surface it before issuing SQL. Empty groups are
+// dropped (no parentheses emitted) to keep the SQL clean.
+func (q *Query[T]) WhereGroup(fn func(*Query[T])) *Query[T] {
+	return q.appendGroup("and", fn)
+}
+
+// OrWhereGroup adds a parenthesized OR-group of WHERE conditions.
+// Behaviour mirrors WhereGroup but the group itself is OR'd against
+// the surrounding predicates.
+func (q *Query[T]) OrWhereGroup(fn func(*Query[T])) *Query[T] {
+	return q.appendGroup("or", fn)
+}
+
+// appendGroup runs the closure against a fresh sub-builder, captures
+// the resulting conditions, and appends them as a single grouped
+// Condition. Errors from the sub-builder propagate up; empty groups
+// are skipped.
+func (q *Query[T]) appendGroup(joinType string, fn func(*Query[T])) *Query[T] {
+	if fn == nil {
+		return q
+	}
+	sub := &Query[T]{
+		driver:        q.driver,
+		table:         q.table,
+		hasSoftDelete: q.hasSoftDelete,
+		hasUpdatedAt:  q.hasUpdatedAt,
+	}
+	fn(sub)
+	if sub.err != nil {
+		q.setErr("WhereGroup", sub.err)
+		return q
+	}
+	if len(sub.conditions) == 0 {
+		return q
+	}
+	q.conditions = append(q.conditions, drivers.Condition{
+		Type:  joinType,
+		Group: sub.conditions,
 	})
 	return q
 }
@@ -793,9 +907,12 @@ func (q *Query[T]) Pluck(column string) ([]any, error) {
 		Joins:      q.joins,
 		Limit:      q.limit,
 		Offset:     q.offset,
+		Distinct:   q.distinct,
 	}
 
 	sql, args := q.driver.Grammar().CompileSelect(selectQuery)
+	q.lastSQL = sql
+	q.lastArgs = args
 
 	start := time.Now()
 	rows, err := q.driver.QueryContext(q.getContext(), sql, args...)
@@ -851,11 +968,19 @@ func (q *Query[T]) Update(updates map[string]any) (int64, error) {
 	// Inject the driver-appropriate "current timestamp" sentinel for
 	// updated_at. Using the typed [RawSQL] marker (not a raw string)
 	// means the grammar emits it verbatim without pattern-matching
-	// string contents — closing the SQL-injection vector that the old
+	// string contents, closing the SQL-injection vector that the old
 	// "NOW()" string sentinel opened.
-	copyOfUpdates["updated_at"] = currentTimestampSentinel(q.driver.DriverName())
+	//
+	// Skip the injection when the model has no UpdatedAt column
+	// (ImmutableModel/ImmutableUUIDModel) so the generated UPDATE does
+	// not target a non-existent column.
+	if q.hasUpdatedAt {
+		copyOfUpdates["updated_at"] = currentTimestampSentinel(q.driver.DriverName())
+	}
 
 	sql, args := q.driver.Grammar().CompileUpdate(q.table, copyOfUpdates, q.conditions)
+	q.lastSQL = sql
+	q.lastArgs = args
 
 	start := time.Now()
 	result, err := q.driver.ExecContext(q.getContext(), sql, args...)

@@ -182,42 +182,7 @@ func (g *MySQLGrammar) CompileSelect(query *SelectQuery) (string, []any) {
 	// WHERE
 	if len(query.Conditions) > 0 {
 		sql.WriteString(" WHERE ")
-		for i, cond := range query.Conditions {
-			if i > 0 {
-				sql.WriteString(" ")
-				sql.WriteString(strings.ToUpper(cond.Type))
-				sql.WriteString(" ")
-			}
-
-			sql.WriteString(g.QuoteIdentifier(cond.Column))
-			sql.WriteString(" ")
-			sql.WriteString(cond.Operator)
-
-			switch cond.Operator {
-			case "IS NULL", "IS NOT NULL":
-				// No placeholder needed
-			case "IN", "NOT IN":
-				if values, ok := cond.Value.([]any); ok {
-					sql.WriteString(" (")
-					for j := range values {
-						if j > 0 {
-							sql.WriteString(", ")
-						}
-						sql.WriteString("?")
-						args = append(args, values[j])
-					}
-					sql.WriteString(")")
-				}
-			case "BETWEEN":
-				if values, ok := cond.Value.([]any); ok && len(values) == 2 {
-					sql.WriteString(" ? AND ?")
-					args = append(args, values[0], values[1])
-				}
-			default:
-				sql.WriteString(" ?")
-				args = append(args, cond.Value)
-			}
-		}
+		g.compileConditions(&sql, &args, query.Conditions)
 	}
 
 	// GROUP BY
@@ -351,21 +316,7 @@ func (g *MySQLGrammar) CompileUpdate(table string, values map[string]any, condit
 	// WHERE
 	if len(conditions) > 0 {
 		sql.WriteString(" WHERE ")
-		for i, cond := range conditions {
-			if i > 0 {
-				sql.WriteString(" ")
-				sql.WriteString(strings.ToUpper(cond.Type))
-				sql.WriteString(" ")
-			}
-
-			sql.WriteString(g.QuoteIdentifier(cond.Column))
-			sql.WriteString(" ")
-			sql.WriteString(cond.Operator)
-			if cond.Operator != "IS NULL" && cond.Operator != "IS NOT NULL" {
-				sql.WriteString(" ?")
-				args = append(args, cond.Value)
-			}
-		}
+		g.compileConditions(&sql, &args, conditions)
 	}
 
 	return sql.String(), args
@@ -382,24 +333,64 @@ func (g *MySQLGrammar) CompileDelete(table string, conditions []Condition) (stri
 	// WHERE
 	if len(conditions) > 0 {
 		sql.WriteString(" WHERE ")
-		for i, cond := range conditions {
-			if i > 0 {
-				sql.WriteString(" ")
-				sql.WriteString(strings.ToUpper(cond.Type))
-				sql.WriteString(" ")
-			}
-
-			sql.WriteString(g.QuoteIdentifier(cond.Column))
-			sql.WriteString(" ")
-			sql.WriteString(cond.Operator)
-			if cond.Operator != "IS NULL" && cond.Operator != "IS NOT NULL" {
-				sql.WriteString(" ?")
-				args = append(args, cond.Value)
-			}
-		}
+		g.compileConditions(&sql, &args, conditions)
 	}
 
 	return sql.String(), args
+}
+
+// compileConditions renders a list of WHERE/HAVING conditions into sql,
+// appending bound parameters to args. MySQL uses positional `?`
+// placeholders; no index threading is required.
+//
+// Conditions with non-empty Group are rendered as parenthesized
+// sub-groups, recursively. The conjunction (AND/OR) for a sub-group is
+// taken from cond.Type, identical to the leaf-condition behaviour.
+func (g *MySQLGrammar) compileConditions(sql *strings.Builder, args *[]any, conditions []Condition) {
+	for i, cond := range conditions {
+		if i > 0 {
+			sql.WriteString(" ")
+			sql.WriteString(strings.ToUpper(cond.Type))
+			sql.WriteString(" ")
+		}
+
+		// Sub-group: emit (<inner>) recursively.
+		if len(cond.Group) > 0 {
+			sql.WriteString("(")
+			g.compileConditions(sql, args, cond.Group)
+			sql.WriteString(")")
+			continue
+		}
+
+		sql.WriteString(g.QuoteIdentifier(cond.Column))
+		sql.WriteString(" ")
+		sql.WriteString(cond.Operator)
+
+		switch cond.Operator {
+		case "IS NULL", "IS NOT NULL":
+			// No placeholder needed
+		case "IN", "NOT IN":
+			if values, ok := cond.Value.([]any); ok {
+				sql.WriteString(" (")
+				for j := range values {
+					if j > 0 {
+						sql.WriteString(", ")
+					}
+					sql.WriteString("?")
+					*args = append(*args, values[j])
+				}
+				sql.WriteString(")")
+			}
+		case "BETWEEN":
+			if values, ok := cond.Value.([]any); ok && len(values) == 2 {
+				sql.WriteString(" ? AND ?")
+				*args = append(*args, values[0], values[1])
+			}
+		default:
+			sql.WriteString(" ?")
+			*args = append(*args, cond.Value)
+		}
+	}
 }
 
 // CompileCreateTable compiles a CREATE TABLE query for MySQL

@@ -5,6 +5,21 @@ All notable changes to Velocity will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`orm.Model[T].WithContext(ctx)`** on Model, UUIDModel, SoftDeleteModel, SoftDeleteUUIDModel, ImmutableModel, ImmutableUUIDModel. Returns `*Query[T]` so the static-helper entry points (`Find`, `FindBy`, `First`, `Last`, `All`, `Create`, etc.) can carry a context without rewriting to the verbose chain form. Example: `User{}.WithContext(ctx).Where("id=?", id).First(&u)`.
+- **`orm.Query[T].WhereGroup(func(*Query[T]))` / `OrWhereGroup(...)`**: emits parenthesized AND/OR sub-conditions. Replaces the previous flat `Where(...).Where(...).OrWhere(...)` chain that bound `OR` against the wrong predicate. Implemented via a new `Condition.Group` field plus a shared recursive `compileConditions` in the postgres/mysql/sqlite grammars.
+- **`orm.ImmutableModel[T]` / `orm.ImmutableUUIDModel[T]`**: append-only base models for tables without an `updated_at` column (e.g. `audit_logs`). Provides the same static helpers as `Model[T]` minus the update path. Save on a persisted record returns `orm.ErrImmutableModelUpdate`. Use `orm.Save(manager, &record)` for inserts.
+
+### Fixed
+
+- **`Pluck()` now honors `Distinct()`**. Previously the `SelectQuery{}` literal in `Pluck` omitted `Distinct`, so `Model[User]{}.Distinct().Pluck("role")` silently returned duplicates. Asserted across all three driver grammars.
+- **WHERE compilation no longer mis-binds nested AND/OR**. The flat-slice condition compiler is replaced by a recursive walk that emits parens around grouped predicates.
+- **Side fix in postgres `CompileUpdate` / `CompileDelete`**: `WhereIn(...).Update(...)` and `WhereIn(...).Delete()` previously emitted `col IN $1` and bound the slice as a single param, producing a runtime driver error or silent corruption. The shared `compileConditions` helper now expands `IN` / `NOT IN` / `BETWEEN` / `NOT BETWEEN` correctly in UPDATE and DELETE WHERE clauses on every driver. Adopters who routed those queries through `NewRawQuery` to work around the breakage can drop the workaround.
+- **`Model[T]` no longer mandates an `updated_at` column for read paths**. The `query.Update` injection of `updated_at` is now gated on the model actually having that field (cached reflection lookup), so embedding `Model[T]` in a struct without a `UpdatedAt` field no longer breaks `Update`. Tables that genuinely need append-only semantics should still use `ImmutableModel[T]` for the API guarantees.
+
 ## [0.32.0] - 2026-04-19
 
 ### Migration from 0.x

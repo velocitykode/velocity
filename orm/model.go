@@ -1,6 +1,7 @@
 package orm
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -78,7 +79,53 @@ type SoftDeleteUUIDModel[T any] struct {
 	Changed    map[string]bool `orm:"-" json:"-"`
 }
 
+// ImmutableModel is an append-only base model. It has CreatedAt but no
+// UpdatedAt and exposes no Update/Save-as-update path, so embedded
+// structs can read and create rows but cannot mutate them. Tables like
+// audit_logs that have no `updated_at` column should embed this rather
+// than Model[T] (whose Save/Update unconditionally stamp updated_at and
+// fail at the driver against missing columns).
+//
+// The static helpers (Find, FindBy, First, Last, All, Where, ...) and
+// the Save() instance method (insert-only) are provided. Update,
+// DeleteWhere, and the soft-delete primitives are intentionally omitted.
+type ImmutableModel[T any] struct {
+	ID        uint      `orm:"primaryKey;autoIncrement" json:"id"`
+	CreatedAt time.Time `orm:"autoCreateTime" json:"created_at"`
+
+	// Internal fields (not persisted)
+	IsExisting bool `orm:"-" json:"-"`
+}
+
+// ImmutableUUIDModel is the UUID-keyed counterpart of ImmutableModel.
+type ImmutableUUIDModel[T any] struct {
+	ID        string    `orm:"primaryKey;type:uuid" json:"id"`
+	CreatedAt time.Time `orm:"autoCreateTime" json:"created_at"`
+
+	// Internal fields (not persisted)
+	IsExisting bool `orm:"-" json:"-"`
+}
+
 // Static-like methods that return the actual type
+
+// WithContext returns a *Query[T] bound to ctx so static-like helpers
+// chained off it (Where, OrderBy, First, Get, Count, Pluck, ...) propagate
+// the context to the driver. This is the chain entry point for callers
+// who want to attach a request/transaction context to the Find/All/etc.
+// helpers exposed on Model[T] (which are context-blind by themselves).
+//
+// Example:
+//
+//	var u User
+//	if err := orm.Model[User]{}.WithContext(ctx).Where("id = ?", id).First(&u); err != nil {
+//	    return err
+//	}
+//
+// Returns *Query[T] rather than Model[T] so the rest of the chain has the
+// full builder API (Where, GroupBy, Limit, ...) available.
+func (Model[T]) WithContext(ctx context.Context) *Query[T] {
+	return newQuery[T]().WithContext(ctx)
+}
 
 // Find retrieves a record by primary key
 func (Model[T]) Find(id any) (*T, error) {
@@ -340,6 +387,12 @@ func (m *Model[T]) IsClean() bool {
 
 // UUIDModel static methods
 
+// WithContext returns a *Query[T] bound to ctx so static-like helpers
+// chained off it propagate context to the driver. See Model[T].WithContext.
+func (UUIDModel[T]) WithContext(ctx context.Context) *Query[T] {
+	return newQuery[T]().WithContext(ctx)
+}
+
 // Find retrieves a record by UUID primary key
 func (UUIDModel[T]) Find(id string) (*T, error) {
 	var model T
@@ -598,6 +651,12 @@ func (m *UUIDModel[T]) IsClean() bool {
 }
 
 // SoftDeleteModel static methods
+
+// WithContext returns a *Query[T] bound to ctx so static-like helpers
+// chained off it propagate context to the driver. See Model[T].WithContext.
+func (SoftDeleteModel[T]) WithContext(ctx context.Context) *Query[T] {
+	return newQuery[T]().WithContext(ctx)
+}
 
 // Find retrieves a record by primary key
 func (SoftDeleteModel[T]) Find(id any) (*T, error) {
@@ -911,6 +970,12 @@ func (m *SoftDeleteModel[T]) update() error {
 }
 
 // SoftDeleteUUIDModel static methods
+
+// WithContext returns a *Query[T] bound to ctx so static-like helpers
+// chained off it propagate context to the driver. See Model[T].WithContext.
+func (SoftDeleteUUIDModel[T]) WithContext(ctx context.Context) *Query[T] {
+	return newQuery[T]().WithContext(ctx)
+}
 
 // Find retrieves a record by UUID primary key
 func (SoftDeleteUUIDModel[T]) Find(id string) (*T, error) {
@@ -1615,6 +1680,18 @@ func serializeEmbedded(field reflect.StructField, value reflect.Value, result ma
 			result["deleted_at"] = deletedAt.Interface()
 		}
 		return true
+
+	case strings.HasPrefix(typeName, "orm.ImmutableModel["):
+		// Append-only: no updated_at column.
+		result["created_at"] = value.FieldByName("CreatedAt").Interface()
+		return true
+
+	case strings.HasPrefix(typeName, "orm.ImmutableUUIDModel["):
+		if id := value.FieldByName("ID").String(); id != "" {
+			result["id"] = id
+		}
+		result["created_at"] = value.FieldByName("CreatedAt").Interface()
+		return true
 	}
 
 	return false
@@ -1637,34 +1714,53 @@ func Save[T any](m *Manager, model *T) error {
 	v := reflect.ValueOf(model).Elem()
 	t := v.Type()
 
-	// Find the embedded Model, UUIDModel, SoftDeleteModel, or SoftDeleteUUIDModel field
+	// Find the embedded base model field. Order matters: more-specific
+	// types (SoftDeleteUUIDModel, ImmutableUUIDModel) must be checked
+	// before the type-prefix match for the simpler variants would also
+	// satisfy a substring check (which it doesn't here, but the explicit
+	// ordering documents intent).
 	var modelField reflect.Value
 	var isUUIDModel bool
 	var isSoftDeleteModel bool
+	var isImmutable bool
 	var found bool
 
 	for i := 0; i < v.NumField(); i++ {
 		field := t.Field(i)
-		if strings.HasPrefix(field.Type.String(), "orm.SoftDeleteUUIDModel[") {
+		typeName := field.Type.String()
+		if strings.HasPrefix(typeName, "orm.SoftDeleteUUIDModel[") {
 			modelField = v.Field(i)
 			isUUIDModel = true
 			isSoftDeleteModel = true
 			found = true
 			break
 		}
-		if strings.HasPrefix(field.Type.String(), "orm.UUIDModel[") {
+		if strings.HasPrefix(typeName, "orm.ImmutableUUIDModel[") {
+			modelField = v.Field(i)
+			isUUIDModel = true
+			isImmutable = true
+			found = true
+			break
+		}
+		if strings.HasPrefix(typeName, "orm.UUIDModel[") {
 			modelField = v.Field(i)
 			isUUIDModel = true
 			found = true
 			break
 		}
-		if strings.HasPrefix(field.Type.String(), "orm.SoftDeleteModel[") {
+		if strings.HasPrefix(typeName, "orm.SoftDeleteModel[") {
 			modelField = v.Field(i)
 			isSoftDeleteModel = true
 			found = true
 			break
 		}
-		if strings.HasPrefix(field.Type.String(), "orm.Model[") {
+		if strings.HasPrefix(typeName, "orm.ImmutableModel[") {
+			modelField = v.Field(i)
+			isImmutable = true
+			found = true
+			break
+		}
+		if strings.HasPrefix(typeName, "orm.Model[") {
 			modelField = v.Field(i)
 			found = true
 			break
@@ -1672,7 +1768,7 @@ func Save[T any](m *Manager, model *T) error {
 	}
 
 	if !found {
-		return errors.New("model does not embed orm.Model, orm.UUIDModel, orm.SoftDeleteModel, or orm.SoftDeleteUUIDModel")
+		return errors.New("model does not embed orm.Model, orm.UUIDModel, orm.SoftDeleteModel, orm.SoftDeleteUUIDModel, orm.ImmutableModel, or orm.ImmutableUUIDModel")
 	}
 
 	_ = isSoftDeleteModel // Used for future optimizations if needed
@@ -1688,6 +1784,12 @@ func Save[T any](m *Manager, model *T) error {
 	existsField := modelField.FieldByName("IsExisting")
 	isInsert := !existsField.Bool()
 
+	if isImmutable {
+		if isUUIDModel {
+			return saveImmutableUUIDModel(drv, model, modelField, idField, existsField, tableName, isInsert)
+		}
+		return saveImmutableModel(drv, model, modelField, idField, existsField, tableName, isInsert)
+	}
 	if isUUIDModel {
 		return saveUUIDModel(drv, model, modelField, idField, existsField, tableName, isInsert)
 	}
