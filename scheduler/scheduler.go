@@ -2,6 +2,9 @@ package scheduler
 
 import (
 	"context"
+	"reflect"
+	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,6 +23,9 @@ import (
 type TaskScheduler interface {
 	Add(job *Job) *Job
 	Call(callback func()) *Job
+	CallE(callback func() error) *Job
+	Named(name string, callback func()) *Job
+	NamedE(name string, callback func() error) *Job
 	Command(command string, args ...string) *Job
 	Run(ctx context.Context) error
 	Shutdown(ctx context.Context) error
@@ -178,14 +184,100 @@ func (s *Scheduler) Add(job *Job) *Job {
 	return job
 }
 
-// Call creates a new job that executes a closure
+// Call creates a new job that executes a closure. The job's name is best-
+// effort derived from runtime.FuncForPC so distinct closures registered via
+// Call get distinct default names; unresolvable closures fall back to
+// "closure". Note: the auto-derived name is treated as a default (not an
+// explicitly-set name) so WithoutOverlapping still surfaces a warning when
+// the consumer relies on it without calling .Name(). Use Named(name, fn)
+// when you need a stable, human-readable identifier.
 func (s *Scheduler) Call(callback func()) *Job {
 	job := &Job{
-		name:     "closure",
+		name:     deriveClosureName(callback),
 		callback: callback,
 		schedule: &Schedule{},
 	}
 	return s.Add(job)
+}
+
+// CallE creates a new job that executes an error-returning closure. Unlike
+// Call (whose closure has no error return), the returned err feeds the
+// OnFailure callbacks and the scheduled.failed event, so per-task error
+// alerting works without forcing the closure to panic. Naming follows the
+// same heuristic as Call.
+func (s *Scheduler) CallE(callback func() error) *Job {
+	job := &Job{
+		name:        deriveErrCallbackName(callback),
+		errCallback: callback,
+		schedule:    &Schedule{},
+	}
+	return s.Add(job)
+}
+
+// Named creates a new job that executes a closure with the given explicit
+// name. Prefer this over Call when WithoutOverlapping will be used: the
+// overlap guard keys on the job name, so unnamed closures collide with
+// each other and silently skip executions.
+func (s *Scheduler) Named(name string, callback func()) *Job {
+	job := &Job{
+		name:         name,
+		nameExplicit: true,
+		callback:     callback,
+		schedule:     &Schedule{},
+	}
+	return s.Add(job)
+}
+
+// NamedE is the error-returning sibling of Named. Combines an explicit
+// name (suitable for WithoutOverlapping) with an error-returning closure
+// whose returned err feeds OnFailure and scheduled.failed.
+func (s *Scheduler) NamedE(name string, callback func() error) *Job {
+	job := &Job{
+		name:         name,
+		nameExplicit: true,
+		errCallback:  callback,
+		schedule:     &Schedule{},
+	}
+	return s.Add(job)
+}
+
+// deriveClosureName returns a best-effort name for a func() closure using
+// runtime.FuncForPC. Anonymous funcs get names like "pkg.funcName.func1",
+// which is more useful than a literal "closure" but still not stable
+// across builds; consumers who care about stable names should use Named.
+func deriveClosureName(fn func()) string {
+	if fn == nil {
+		return "closure"
+	}
+	return funcNameForPC(reflect.ValueOf(fn).Pointer())
+}
+
+// deriveErrCallbackName is the func() error variant of deriveClosureName.
+func deriveErrCallbackName(fn func() error) string {
+	if fn == nil {
+		return "closure"
+	}
+	return funcNameForPC(reflect.ValueOf(fn).Pointer())
+}
+
+// funcNameForPC resolves a function pointer to a human-readable name,
+// falling back to "closure" when the symbol is not available.
+func funcNameForPC(pc uintptr) string {
+	f := runtime.FuncForPC(pc)
+	if f == nil {
+		return "closure"
+	}
+	name := f.Name()
+	if name == "" {
+		return "closure"
+	}
+	// Trim the package path so the name is short enough to be a useful
+	// log/event field; full path is rarely needed and Laravel's scheduler
+	// also uses short names.
+	if idx := strings.LastIndex(name, "/"); idx >= 0 {
+		name = name[idx+1:]
+	}
+	return name
 }
 
 // Command creates a new job that executes a command
