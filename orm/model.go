@@ -79,6 +79,33 @@ type SoftDeleteUUIDModel[T any] struct {
 	Changed    map[string]bool `orm:"-" json:"-"`
 }
 
+// ImmutableModel is an append-only base model. It has CreatedAt but no
+// UpdatedAt and exposes no Update/Save-as-update path, so embedded
+// structs can read and create rows but cannot mutate them. Tables like
+// audit_logs that have no `updated_at` column should embed this rather
+// than Model[T] (whose Save/Update unconditionally stamp updated_at and
+// fail at the driver against missing columns).
+//
+// The static helpers (Find, FindBy, First, Last, All, Where, ...) and
+// the Save() instance method (insert-only) are provided. Update,
+// DeleteWhere, and the soft-delete primitives are intentionally omitted.
+type ImmutableModel[T any] struct {
+	ID        uint      `orm:"primaryKey;autoIncrement" json:"id"`
+	CreatedAt time.Time `orm:"autoCreateTime" json:"created_at"`
+
+	// Internal fields (not persisted)
+	IsExisting bool `orm:"-" json:"-"`
+}
+
+// ImmutableUUIDModel is the UUID-keyed counterpart of ImmutableModel.
+type ImmutableUUIDModel[T any] struct {
+	ID        string    `orm:"primaryKey;type:uuid" json:"id"`
+	CreatedAt time.Time `orm:"autoCreateTime" json:"created_at"`
+
+	// Internal fields (not persisted)
+	IsExisting bool `orm:"-" json:"-"`
+}
+
 // Static-like methods that return the actual type
 
 // WithContext returns a *Query[T] bound to ctx so static-like helpers
@@ -1653,6 +1680,18 @@ func serializeEmbedded(field reflect.StructField, value reflect.Value, result ma
 			result["deleted_at"] = deletedAt.Interface()
 		}
 		return true
+
+	case strings.HasPrefix(typeName, "orm.ImmutableModel["):
+		// Append-only: no updated_at column.
+		result["created_at"] = value.FieldByName("CreatedAt").Interface()
+		return true
+
+	case strings.HasPrefix(typeName, "orm.ImmutableUUIDModel["):
+		if id := value.FieldByName("ID").String(); id != "" {
+			result["id"] = id
+		}
+		result["created_at"] = value.FieldByName("CreatedAt").Interface()
+		return true
 	}
 
 	return false
@@ -1675,34 +1714,53 @@ func Save[T any](m *Manager, model *T) error {
 	v := reflect.ValueOf(model).Elem()
 	t := v.Type()
 
-	// Find the embedded Model, UUIDModel, SoftDeleteModel, or SoftDeleteUUIDModel field
+	// Find the embedded base model field. Order matters: more-specific
+	// types (SoftDeleteUUIDModel, ImmutableUUIDModel) must be checked
+	// before the type-prefix match for the simpler variants would also
+	// satisfy a substring check (which it doesn't here, but the explicit
+	// ordering documents intent).
 	var modelField reflect.Value
 	var isUUIDModel bool
 	var isSoftDeleteModel bool
+	var isImmutable bool
 	var found bool
 
 	for i := 0; i < v.NumField(); i++ {
 		field := t.Field(i)
-		if strings.HasPrefix(field.Type.String(), "orm.SoftDeleteUUIDModel[") {
+		typeName := field.Type.String()
+		if strings.HasPrefix(typeName, "orm.SoftDeleteUUIDModel[") {
 			modelField = v.Field(i)
 			isUUIDModel = true
 			isSoftDeleteModel = true
 			found = true
 			break
 		}
-		if strings.HasPrefix(field.Type.String(), "orm.UUIDModel[") {
+		if strings.HasPrefix(typeName, "orm.ImmutableUUIDModel[") {
+			modelField = v.Field(i)
+			isUUIDModel = true
+			isImmutable = true
+			found = true
+			break
+		}
+		if strings.HasPrefix(typeName, "orm.UUIDModel[") {
 			modelField = v.Field(i)
 			isUUIDModel = true
 			found = true
 			break
 		}
-		if strings.HasPrefix(field.Type.String(), "orm.SoftDeleteModel[") {
+		if strings.HasPrefix(typeName, "orm.SoftDeleteModel[") {
 			modelField = v.Field(i)
 			isSoftDeleteModel = true
 			found = true
 			break
 		}
-		if strings.HasPrefix(field.Type.String(), "orm.Model[") {
+		if strings.HasPrefix(typeName, "orm.ImmutableModel[") {
+			modelField = v.Field(i)
+			isImmutable = true
+			found = true
+			break
+		}
+		if strings.HasPrefix(typeName, "orm.Model[") {
 			modelField = v.Field(i)
 			found = true
 			break
@@ -1710,7 +1768,7 @@ func Save[T any](m *Manager, model *T) error {
 	}
 
 	if !found {
-		return errors.New("model does not embed orm.Model, orm.UUIDModel, orm.SoftDeleteModel, or orm.SoftDeleteUUIDModel")
+		return errors.New("model does not embed orm.Model, orm.UUIDModel, orm.SoftDeleteModel, orm.SoftDeleteUUIDModel, orm.ImmutableModel, or orm.ImmutableUUIDModel")
 	}
 
 	_ = isSoftDeleteModel // Used for future optimizations if needed
@@ -1726,6 +1784,12 @@ func Save[T any](m *Manager, model *T) error {
 	existsField := modelField.FieldByName("IsExisting")
 	isInsert := !existsField.Bool()
 
+	if isImmutable {
+		if isUUIDModel {
+			return saveImmutableUUIDModel(drv, model, modelField, idField, existsField, tableName, isInsert)
+		}
+		return saveImmutableModel(drv, model, modelField, idField, existsField, tableName, isInsert)
+	}
 	if isUUIDModel {
 		return saveUUIDModel(drv, model, modelField, idField, existsField, tableName, isInsert)
 	}
