@@ -15,6 +15,16 @@ type Logger interface {
 	Error(msg string, kvs ...any)
 }
 
+// PanicError is the typed recovered-panic error surfaced by GoWithRecoverE
+// and the async helpers. It is a re-export of internal/panicerr.Error so
+// adopters do not need to depend on the internal package.
+type PanicError = panicerr.Error
+
+// FromRecovered converts a recovered panic value into a *PanicError typed as
+// `error`. Re-exported so adopters can match the framework's panic-to-error
+// shape without importing the internal helper.
+func FromRecovered(r any) error { return panicerr.FromRecovered(r) }
+
 var (
 	loggerMu sync.RWMutex
 	logger   Logger = &stdLogger{}
@@ -206,6 +216,31 @@ func GoWithRecover(fn func(), recoverFn func(any)) {
 							}
 						}()
 						recoverFn(p)
+					}()
+				} else {
+					handlePanic(p)
+				}
+			}
+		}()
+		fn()
+	}()
+}
+
+// GoWithRecoverE is the typed sibling of GoWithRecover. recoverFn receives a
+// *PanicError so callers don't have to type-assert `any`. If recoverFn is
+// nil, panics fall back to the package-level handler.
+func GoWithRecoverE(fn func(), recoverFn func(*PanicError)) {
+	go func() {
+		defer func() {
+			if p := recover(); p != nil {
+				if recoverFn != nil {
+					func() {
+						defer func() {
+							if p2 := recover(); p2 != nil {
+								handlePanic(p2)
+							}
+						}()
+						recoverFn(panicerr.New(p))
 					}()
 				} else {
 					handlePanic(p)

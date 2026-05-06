@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // captureLogger records every Error() call so tests can assert that the
@@ -578,5 +580,114 @@ func TestGoForEach_TryForEach_ConcurrentInvocations(t *testing.T) {
 	sort.Ints(saw)
 	if len(saw) < calls*5 {
 		t.Fatalf("expected at least %d unique items, saw %d (%v)", calls*5, len(saw), saw)
+	}
+}
+
+// ---------- Item 11: typed PanicError + GoWithRecoverE ----------
+
+func TestPanicError_WrapsErrorValue(t *testing.T) {
+	sentinel := errors.New("upstream failed")
+	pe := panicerr.New(sentinel)
+	if pe == nil {
+		t.Fatal("New should not return nil for non-nil value")
+	}
+	if !errors.Is(pe, sentinel) {
+		t.Fatalf("errors.Is should walk the chain to sentinel; got: %v", pe)
+	}
+	if pe.Recovered() != sentinel {
+		t.Fatalf("Recovered() mismatch")
+	}
+	if got := pe.Error(); got != "panic: upstream failed" {
+		t.Fatalf("Error()=%q", got)
+	}
+}
+
+func TestPanicError_WrapsStringValue(t *testing.T) {
+	pe := panicerr.New("plain string panic")
+	if pe == nil {
+		t.Fatal("expected non-nil")
+	}
+	if pe.Recovered() != "plain string panic" {
+		t.Fatalf("Recovered=%v", pe.Recovered())
+	}
+	if pe.Unwrap() != nil {
+		t.Fatal("Unwrap should be nil for non-error panic value")
+	}
+}
+
+func TestPanicError_NilValueReturnsNil(t *testing.T) {
+	if pe := panicerr.New(nil); pe != nil {
+		t.Fatalf("expected nil from New(nil); got %v", pe)
+	}
+	if e := panicerr.FromRecovered(nil); e != nil {
+		t.Fatalf("expected nil from FromRecovered(nil); got %v", e)
+	}
+}
+
+func TestPanicError_AsTyped(t *testing.T) {
+	wrapped := fmt.Errorf("outer: %w", panicerr.New("inner panic"))
+	pe := panicerr.AsTyped(wrapped)
+	if pe == nil {
+		t.Fatal("expected to find *PanicError via errors.As")
+	}
+	if pe.Recovered() != "inner panic" {
+		t.Fatalf("recovered=%v", pe.Recovered())
+	}
+}
+
+func TestGoWithRecoverE_TypedPanic(t *testing.T) {
+	got := make(chan *PanicError, 1)
+	GoWithRecoverE(func() { panic(errors.New("typed boom")) }, func(p *PanicError) {
+		got <- p
+	})
+	select {
+	case p := <-got:
+		if p == nil {
+			t.Fatal("nil *PanicError")
+		}
+		if p.Recovered() == nil {
+			t.Fatal("expected non-nil recovered")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("recoverFn never called")
+	}
+}
+
+func TestGoWithRecoverE_NilRecoverFnFallsBack(t *testing.T) {
+	cap := withLogger(t)
+	GoWithRecoverE(func() { panic("e nil") }, nil)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, e := range cap.snapshot() {
+			if e.msg == "async: panic recovered" {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("expected panic log; got %+v", cap.snapshot())
+}
+
+func TestAsyncFromRecovered_ReExportMatchesInternal(t *testing.T) {
+	a := FromRecovered("xyz")
+	b := panicerr.FromRecovered("xyz")
+	if a == nil || b == nil {
+		t.Fatal("both should be non-nil")
+	}
+	if a.Error() != b.Error() {
+		t.Fatalf("re-export mismatch: %q vs %q", a.Error(), b.Error())
+	}
+}
+
+func TestPanicError_NilReceiverSafe(t *testing.T) {
+	var pe *PanicError
+	if pe.Error() != "" {
+		t.Fatal("nil receiver Error() should return empty string")
+	}
+	if pe.Recovered() != nil {
+		t.Fatal("nil receiver Recovered() should be nil")
+	}
+	if pe.Unwrap() != nil {
+		t.Fatal("nil receiver Unwrap() should be nil")
 	}
 }
