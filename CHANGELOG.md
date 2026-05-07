@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **`orm.ToSnakeCase` (and the auto-derived table/column names that flow from it) now splits acronym->word and digit->word boundaries.** Previously consecutive uppercase letters collapsed into a single token, so `SSHKey` mapped to table `sshkey` (and pluralized to `sshkeys`), `URLPath` mapped to column `urlpath`, `OAuthID` to `oauthid`, `Field1Name` to `field1name`. The new mapping is `ssh_key` / `url_path` / `o_auth_id` / `field1_name` respectively. Apps with acronym-named or digit-bearing model types that relied on the previous mapping must either override `TableName()` on the model to pin the legacy name, or run a migration to rename the table/column to the new convention. The `console` scaffolder (`vel make:model`, `vel make:migration`, etc.) now uses the same algorithm via `orm.ToSnakeCase`, so newly generated migrations match the runtime ORM.
+
 ### Added
 
 - **`orm.Model[T].WithContext(ctx)`** on Model, UUIDModel, SoftDeleteModel, SoftDeleteUUIDModel, ImmutableModel, ImmutableUUIDModel. Returns `*Query[T]` so the static-helper entry points (`Find`, `FindBy`, `First`, `Last`, `All`, `Create`, etc.) can carry a context without rewriting to the verbose chain form. Example: `User{}.WithContext(ctx).Where("id=?", id).First(&u)`.
