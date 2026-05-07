@@ -92,7 +92,25 @@ func NotInRule(field string, value interface{}, params []string, data map[string
 	return nil
 }
 
-// ConfirmedRule validates that a field has a matching _confirmation field
+// ConfirmedRule validates that a field has a matching sibling field named
+// "<field>_confirmation". For example, applying `confirmed` to "password"
+// requires "password_confirmation" to be present in the input data and to
+// hold the same value (compared via reflect.DeepEqual).
+//
+// Error attribution: when the values do not match (or the confirmation
+// field is missing), the returned error is attached by the validator to
+// the ORIGINAL field key (e.g. "password"), NOT to the sibling
+// "<field>_confirmation". This intentionally matches Laravel's behavior
+// (https://laravel.com/docs/validation#rule-confirmed) so frontends
+// migrated from Laravel can keep their existing error-binding logic.
+//
+// In practice, a failing `confirmed` rule on "password" produces an
+// errors map shaped like:
+//
+//	{ "password": ["The password confirmation does not match."] }
+//
+// The frontend should bind/display this message on the primary input
+// (e.g. the "password" field), not on the "password_confirmation" input.
 func ConfirmedRule(field string, value interface{}, params []string, data map[string]interface{}) error {
 	if value == nil {
 		return nil
