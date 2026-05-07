@@ -12,6 +12,21 @@ type Job interface {
 	Failed(error)
 }
 
+// HandleCtxer is an optional interface jobs can implement to receive
+// the worker's context. When implemented, the worker calls HandleCtx(ctx)
+// instead of Handle(). Cancellation of ctx (worker shutdown, per-job
+// timeout) flows into the handler so long-running jobs can abort cleanly.
+// If the worker's parent context carries values (deadlines, request-scoped
+// values), those propagate to the handler.
+//
+// IMPORTANT: the handler goroutine is NOT forcibly terminated. If
+// HandleCtx ignores ctx and blocks, the goroutine leaks until the process
+// exits. Implementations MUST honor ctx.Done() and return promptly when
+// the context is cancelled.
+type HandleCtxer interface {
+	HandleCtx(ctx context.Context) error
+}
+
 // Driver defines the interface for queue drivers.
 //
 // The Ctx-suffixed methods are the primary API — they propagate the caller's

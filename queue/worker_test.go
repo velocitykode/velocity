@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -569,6 +570,14 @@ func TestWorker_BackofferInterface(t *testing.T) {
 // ctx cancels worker ctx, which cancels jobCtx, which makes processJob's
 // select observe <-jobCtx.Done() and return, letting Stop() complete.
 func TestWorker_CtxCancelPropagatesToJobExecution(t *testing.T) {
+	// Shrink the handler kill ceiling for this test: the handler ignores
+	// ctx and sleeps 60s, so drainHandler in processJob would otherwise
+	// wait the production-default 5s before letting the pump return.
+	// Restored on cleanup so other tests run at the production value.
+	prev := defaultHandlerKillCeiling
+	defaultHandlerKillCeiling = 200 * time.Millisecond
+	t.Cleanup(func() { defaultHandlerKillCeiling = prev })
+
 	q := NewMemoryDriver()
 	q.Start()
 	defer q.Shutdown(context.Background())
@@ -627,13 +636,17 @@ func TestWorker_CtxCancelPropagatesToJobExecution(t *testing.T) {
 		close(done)
 	}()
 
+	// Bound: kill ceiling (drainHandler) + pump-loop slack. If propagation
+	// is wired correctly the pumps exit promptly once jobCtx fires and
+	// drainHandler returns.
+	maxWait := defaultHandlerKillCeiling + 3*time.Second
 	select {
 	case <-done:
-	case <-time.After(3 * time.Second):
+	case <-time.After(maxWait):
 		// Last-ditch cleanup to avoid leaked goroutines confusing later tests.
 		worker.Stop()
-		t.Fatal("worker pumps did not exit after parent ctx cancel within 3s " +
-			"(ctx propagation bug — worker ctx is not derived from parent)")
+		t.Fatalf("worker pumps did not exit after parent ctx cancel within %v "+
+			"(ctx propagation bug: worker ctx is not derived from parent)", maxWait)
 	}
 }
 
@@ -747,5 +760,379 @@ func TestWorker_RetryPushBoundedDuringShutdown(t *testing.T) {
 		driver.release() // unblock the driver so the goroutine can exit
 		<-done
 		t.Fatalf("Stop did not complete within %v (retry push hung)", maxWait)
+	}
+}
+
+// ctxAwareJob implements HandleCtxer and blocks on ctx.Done(), recording the
+// observed ctx.Err() so the test can assert cancellation propagated into the
+// handler.
+type ctxAwareJob struct {
+	ID         string
+	started    chan struct{}
+	observed   atomic.Value // error
+	failedWith atomic.Value // error
+}
+
+func (j *ctxAwareJob) Handle() error {
+	// Should never be called when HandleCtxer is implemented.
+	return errors.New("ctxAwareJob.Handle called instead of HandleCtx")
+}
+
+func (j *ctxAwareJob) HandleCtx(ctx context.Context) error {
+	close(j.started)
+	<-ctx.Done()
+	j.observed.Store(ctx.Err())
+	return ctx.Err()
+}
+
+func (j *ctxAwareJob) Failed(err error) {
+	j.failedWith.Store(err)
+}
+
+// JobID gives a stable key so the worker's attempt tracker doesn't fall back
+// to pointer identity (irrelevant here but mirrors real-world usage).
+func (j *ctxAwareJob) JobID() string { return j.ID }
+
+func TestWorker_HandleCtxerReceivesCancellation(t *testing.T) {
+	q := NewMemoryDriver()
+	q.Start()
+	defer q.Shutdown(context.Background())
+
+	job := &ctxAwareJob{
+		ID:      "ctx-aware-1",
+		started: make(chan struct{}),
+	}
+
+	if err := q.PushCtx(context.Background(), job, "ctx-queue"); err != nil {
+		t.Fatalf("Push failed: %v", err)
+	}
+
+	// User-supplied handler should NOT be invoked when the job implements
+	// HandleCtxer; track that here as a regression guard.
+	handlerCalls := int32(0)
+	worker := NewWorker(q, "ctx-queue", func(j Job) error {
+		atomic.AddInt32(&handlerCalls, 1)
+		return j.Handle()
+	},
+		WithInterval(25*time.Millisecond),
+		WithMaxRetries(1),
+		WithTimeout(30*time.Second), // long enough that ctx is cancelled by Stop, not timeout
+	)
+
+	worker.Start(context.Background())
+
+	// Wait for the handler to actually start before cancelling.
+	select {
+	case <-job.started:
+	case <-time.After(5 * time.Second):
+		worker.Stop()
+		t.Fatalf("HandleCtx never started")
+	}
+
+	// Cancel the worker's lifecycle ctx; the per-job ctx is derived from it
+	// and must observe cancellation.
+	worker.Stop()
+
+	// Stop() only waits for the worker's pump goroutines; the handler
+	// goroutine running HandleCtx is detached and may not have written
+	// observed yet. Poll until it does (or fail).
+	waitFor(t, 5*time.Second, func() bool {
+		return job.observed.Load() != nil
+	})
+
+	got, ok := job.observed.Load().(error)
+	if !ok || got == nil {
+		t.Fatalf("HandleCtx did not observe cancellation; observed=%v", got)
+	}
+	if !errors.Is(got, context.Canceled) && !errors.Is(got, context.DeadlineExceeded) {
+		t.Fatalf("expected ctx.Canceled or DeadlineExceeded, got %v", got)
+	}
+	if atomic.LoadInt32(&handlerCalls) != 0 {
+		t.Errorf("user handler should not run for HandleCtxer jobs; got %d calls", handlerCalls)
+	}
+}
+
+func TestWorker_HandleOnlyJobStillRuns(t *testing.T) {
+	q := NewMemoryDriver()
+	q.Start()
+	defer q.Shutdown(context.Background())
+
+	processed := int32(0)
+	job := &TestJob{
+		ID:      "legacy-1",
+		Message: "legacy job (Handle only)",
+		Handler: func() error {
+			atomic.AddInt32(&processed, 1)
+			return nil
+		},
+	}
+
+	if err := q.PushCtx(context.Background(), job, "legacy-queue"); err != nil {
+		t.Fatalf("Push failed: %v", err)
+	}
+
+	worker := NewWorker(q, "legacy-queue", func(j Job) error {
+		return j.Handle()
+	}, WithInterval(25*time.Millisecond), WithMaxRetries(1))
+
+	worker.Start(context.Background())
+	waitFor(t, 5*time.Second, func() bool {
+		return atomic.LoadInt32(&processed) == 1
+	})
+	worker.Stop()
+
+	if got := atomic.LoadInt32(&processed); got != 1 {
+		t.Errorf("expected legacy job to run once, got %d", got)
+	}
+}
+
+// TestWorker_ShutdownCancelledJobNotRetriedOrFailed asserts that when a
+// HandleCtxer job is interrupted by worker shutdown (not by a per-job
+// timeout), the worker treats it as a clean abort: the job is NOT routed
+// through handleJobFailure, so:
+//   - Job.Failed() is never called (failedWith stays nil).
+//   - The driver's failed-job list remains empty.
+//   - No JobFailed or JobRetrying events are dispatched.
+//   - No retry is pushed (queue size stays 0 after the original Pop).
+func TestWorker_ShutdownCancelledJobNotRetriedOrFailed(t *testing.T) {
+	q := NewMemoryDriver()
+	q.Start()
+	defer q.Shutdown(context.Background())
+
+	job := &ctxAwareJob{
+		ID:      "shutdown-abort-1",
+		started: make(chan struct{}),
+	}
+
+	if err := q.PushCtx(context.Background(), job, "shutdown-queue"); err != nil {
+		t.Fatalf("Push failed: %v", err)
+	}
+
+	// Track lifecycle events. JobFailed/JobRetrying must not fire.
+	var (
+		failedEvents   int32
+		retryingEvents int32
+	)
+	worker := NewWorker(q, "shutdown-queue", func(j Job) error {
+		return j.Handle()
+	},
+		WithInterval(25*time.Millisecond),
+		WithMaxRetries(5), // plenty of retries available; we assert none are used
+		WithBackoff(FixedBackoff(0)),
+		WithTimeout(30*time.Second), // long enough that job-timeout cannot fire first
+	)
+	worker.SetEventDispatcher(func(ev interface{}) error {
+		switch ev.(type) {
+		case *JobFailed:
+			atomic.AddInt32(&failedEvents, 1)
+		case *JobRetrying:
+			atomic.AddInt32(&retryingEvents, 1)
+		}
+		return nil
+	})
+
+	worker.Start(context.Background())
+
+	// Wait for the handler to actually start before shutting down, otherwise
+	// we could race past the job and the test would be vacuous.
+	select {
+	case <-job.started:
+	case <-time.After(5 * time.Second):
+		worker.Stop()
+		t.Fatalf("HandleCtx never started")
+	}
+
+	worker.Stop()
+
+	// Confirm cancellation actually reached the handler (sanity: otherwise
+	// the rest of the assertions are meaningless). The handler goroutine
+	// is detached from Stop(), so poll briefly.
+	waitFor(t, 5*time.Second, func() bool {
+		return job.observed.Load() != nil
+	})
+	gotErr, _ := job.observed.Load().(error)
+	if gotErr == nil {
+		t.Fatalf("HandleCtx did not observe cancellation")
+	}
+
+	// Brief settle time for any (unwanted) async failure paths to fire.
+	// If retries/Failed were going to happen, they'd happen well within
+	// this window. We're asserting they don't.
+	time.Sleep(100 * time.Millisecond)
+
+	// No Failed() call on the job.
+	if v := job.failedWith.Load(); v != nil {
+		t.Errorf("Job.Failed() was called with %v on shutdown-cancelled job; expected no call", v)
+	}
+
+	// Driver's failed list stays empty.
+	failed, err := q.GetFailed("shutdown-queue")
+	if err != nil {
+		t.Fatalf("GetFailed: %v", err)
+	}
+	if len(failed) != 0 {
+		t.Errorf("expected 0 failed jobs after shutdown-cancellation, got %d", len(failed))
+	}
+
+	// No JobFailed / JobRetrying events fired.
+	if n := atomic.LoadInt32(&failedEvents); n != 0 {
+		t.Errorf("expected 0 JobFailed events, got %d", n)
+	}
+	if n := atomic.LoadInt32(&retryingEvents); n != 0 {
+		t.Errorf("expected 0 JobRetrying events, got %d", n)
+	}
+
+	// Queue is empty (original Pop removed it; no retry was pushed).
+	size, err := q.Size("shutdown-queue")
+	if err != nil {
+		t.Fatalf("Size: %v", err)
+	}
+	if size != 0 {
+		t.Errorf("expected queue size 0 (no retry pushed), got %d", size)
+	}
+}
+
+// recordingLogger captures WorkerLogger calls for assertion. Safe for
+// concurrent use; pump goroutines and the test goroutine both call into
+// it.
+type recordingLogger struct {
+	mu    sync.Mutex
+	infos []string
+	warns []string
+	errs  []string
+}
+
+func (r *recordingLogger) Info(msg string, _ ...any) {
+	r.mu.Lock()
+	r.infos = append(r.infos, msg)
+	r.mu.Unlock()
+}
+
+func (r *recordingLogger) Warn(msg string, _ ...any) {
+	r.mu.Lock()
+	r.warns = append(r.warns, msg)
+	r.mu.Unlock()
+}
+
+func (r *recordingLogger) Error(msg string, _ ...any) {
+	r.mu.Lock()
+	r.errs = append(r.errs, msg)
+	r.mu.Unlock()
+}
+
+func (r *recordingLogger) warnCount(substr string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, m := range r.warns {
+		if strings.Contains(m, substr) {
+			n++
+		}
+	}
+	return n
+}
+
+// ctxIgnoringJob deliberately ignores ctx and blocks on an internal
+// release channel. Used to simulate a misbehaving handler that does not
+// honor ctx.Done(); the worker must NOT hang on it.
+type ctxIgnoringJob struct {
+	ID      string
+	started chan struct{}
+	release chan struct{}
+}
+
+func (j *ctxIgnoringJob) Handle() error {
+	return errors.New("ctxIgnoringJob.Handle called instead of HandleCtx")
+}
+
+func (j *ctxIgnoringJob) HandleCtx(_ context.Context) error {
+	close(j.started)
+	<-j.release // ignore ctx entirely
+	return nil
+}
+
+func (j *ctxIgnoringJob) Failed(error)  {}
+func (j *ctxIgnoringJob) JobID() string { return j.ID }
+
+// TestWorker_HandlerKillCeilingPreventsHang asserts the goroutine-leak
+// fix from worker.go's drainHandler: when a HandleCtxer ignores ctx, the
+// per-job timeout fires, the handler goroutine does NOT return, and the
+// worker should NOT hang. Instead processJob returns once the kill
+// ceiling expires and a WARN is logged. Stop() must complete promptly.
+func TestWorker_HandlerKillCeilingPreventsHang(t *testing.T) {
+	// Shrink the kill ceiling so the test runs in <1s instead of waiting
+	// the production-default 5s. Restore on exit.
+	prev := defaultHandlerKillCeiling
+	defaultHandlerKillCeiling = 200 * time.Millisecond
+	t.Cleanup(func() { defaultHandlerKillCeiling = prev })
+
+	q := NewMemoryDriver()
+	q.Start()
+	defer q.Shutdown(context.Background())
+
+	job := &ctxIgnoringJob{
+		ID:      "leaky-1",
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	// Ensure the goroutine eventually exits so the test process is clean.
+	// sync.Once guards against double-close from both this cleanup AND the
+	// timeout-branch below.
+	var releaseOnce sync.Once
+	releaseJob := func() { releaseOnce.Do(func() { close(job.release) }) }
+	t.Cleanup(releaseJob)
+
+	if err := q.PushCtx(context.Background(), job, "leak-queue"); err != nil {
+		t.Fatalf("Push failed: %v", err)
+	}
+
+	rec := &recordingLogger{}
+	worker := NewWorker(q, "leak-queue", func(j Job) error {
+		return j.Handle()
+	},
+		WithInterval(25*time.Millisecond),
+		WithMaxRetries(0), // no retries; we want one shot
+		WithBackoff(FixedBackoff(0)),
+		WithTimeout(50*time.Millisecond), // per-job timeout < kill ceiling
+		WithWorkerLogger(rec),
+	)
+
+	worker.Start(context.Background())
+
+	// Wait for handler to actually start; otherwise we'd race past it.
+	select {
+	case <-job.started:
+	case <-time.After(5 * time.Second):
+		worker.Stop()
+		t.Fatalf("HandleCtx never started")
+	}
+
+	// Stop() must return promptly: bounded by kill ceiling + slack, NOT
+	// blocked indefinitely on the stuck handler. If drainHandler is broken
+	// or w.wg waits on the handler goroutine, this assertion fails.
+	stopDone := make(chan struct{})
+	stopStart := time.Now()
+	go func() {
+		worker.Stop()
+		close(stopDone)
+	}()
+
+	maxWait := defaultHandlerKillCeiling + 2*time.Second
+	select {
+	case <-stopDone:
+		if elapsed := time.Since(stopStart); elapsed > maxWait {
+			t.Errorf("Stop took %v, expected <= %v", elapsed, maxWait)
+		}
+	case <-time.After(maxWait):
+		// Release the stuck job so the goroutine can exit before we abort
+		// the test, otherwise it leaks for the rest of the run.
+		releaseJob()
+		<-stopDone
+		t.Fatalf("Stop did not complete within %v; drainHandler likely hung", maxWait)
+	}
+
+	// The kill-ceiling WARN must have fired at least once for this job.
+	if n := rec.warnCount("Handler goroutine did not return"); n < 1 {
+		t.Errorf("expected at least one kill-ceiling WARN, got %d (warns=%v)", n, rec.warns)
 	}
 }
