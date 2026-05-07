@@ -744,6 +744,85 @@ func (q *Query[T]) SkipLocked() *Query[T] {
 }
 
 // WithContext sets the context for the query (for event propagation)
+// WithTx binds the query to a *sql.Tx so subsequent reads and writes
+// (Get, First, Update, Delete, InsertGetId, Save, Create) execute on
+// the supplied transaction instead of the connection pool. Use this
+// inside a Manager.Transaction closure so ORM helpers participate in
+// the caller's tx instead of escaping it.
+//
+// The wrapped driver still supplies dialect grammar, driver name, and
+// schema introspection; only data-plane ops route through the tx.
+// Passing nil leaves the query unchanged so callers can chain WithTx
+// unconditionally without nil-guarding at every call site.
+func (q *Query[T]) WithTx(tx *sql.Tx) *Query[T] {
+	if tx == nil {
+		return q
+	}
+	base := q.driver
+	if base == nil {
+		if m := Default(); m != nil {
+			base = m.DefaultDriver()
+		}
+	}
+	if base == nil {
+		return q
+	}
+	q.driver = &txDriver{Driver: base, tx: tx}
+	return q
+}
+
+// Save persists model through the query's bound driver. Unlike the
+// package-level Save, which resolves the driver from a *Manager, this
+// method uses q.driver so a tx-bound query (via WithTx) writes inside
+// the caller's transaction. Hooks (BeforeCreate/AfterCreate/...) and
+// timestamp stamping fire identically to Save.
+func (q *Query[T]) Save(model *T) error {
+	if q.err != nil {
+		return q.err
+	}
+	if q.driver == nil {
+		return errors.New("orm: no database connection")
+	}
+	return saveWithDriver(q.driver, model)
+}
+
+// Create inserts a new record through the query's bound driver,
+// mirroring Model[T].Create but routing through q.driver so the write
+// participates in a tx bound via WithTx. Accepts a map[string]any for
+// fillable assignment or a *T already populated by the caller.
+func (q *Query[T]) Create(data any) (*T, error) {
+	if q.err != nil {
+		return nil, q.err
+	}
+	if q.driver == nil {
+		return nil, errors.New("orm: no database connection")
+	}
+	switch v := data.(type) {
+	case map[string]any:
+		model := new(T)
+		if err := mapToStruct(v, model); err != nil {
+			return nil, err
+		}
+		if err := saveWithDriver(q.driver, model); err != nil {
+			return nil, err
+		}
+		return model, nil
+	case *T:
+		// Mirror Model[T].Create: fillable/guarded gates apply to
+		// pre-built struct pointers so mass-assignment protection is
+		// not bypassed by callers who construct the model manually.
+		if err := applyFillableToStruct(v); err != nil {
+			return nil, err
+		}
+		if err := saveWithDriver(q.driver, v); err != nil {
+			return nil, err
+		}
+		return v, nil
+	default:
+		return nil, errors.New("unsupported data type for create")
+	}
+}
+
 func (q *Query[T]) WithContext(ctx context.Context) *Query[T] {
 	q.ctx = ctx
 	return q

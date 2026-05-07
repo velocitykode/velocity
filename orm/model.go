@@ -127,6 +127,18 @@ func (Model[T]) WithContext(ctx context.Context) *Query[T] {
 	return newQuery[T]().WithContext(ctx)
 }
 
+// WithTx returns a *Query[T] whose driver routes through tx so chained
+// helpers (Where, First, Get, Update, Delete, Save, Create) participate
+// in the caller's transaction. Pair with Manager.Transaction:
+//
+//	m.Transaction(ctx, func(tx *sql.Tx) error {
+//	    _, err := User{}.WithTx(tx).Create(map[string]any{...})
+//	    return err
+//	})
+func (Model[T]) WithTx(tx *sql.Tx) *Query[T] {
+	return newQuery[T]().WithTx(tx)
+}
+
 // Find retrieves a record by primary key
 func (Model[T]) Find(id any) (*T, error) {
 	var model T
@@ -393,6 +405,11 @@ func (UUIDModel[T]) WithContext(ctx context.Context) *Query[T] {
 	return newQuery[T]().WithContext(ctx)
 }
 
+// WithTx binds the query chain to tx. See Model[T].WithTx.
+func (UUIDModel[T]) WithTx(tx *sql.Tx) *Query[T] {
+	return newQuery[T]().WithTx(tx)
+}
+
 // Find retrieves a record by UUID primary key
 func (UUIDModel[T]) Find(id string) (*T, error) {
 	var model T
@@ -656,6 +673,11 @@ func (m *UUIDModel[T]) IsClean() bool {
 // chained off it propagate context to the driver. See Model[T].WithContext.
 func (SoftDeleteModel[T]) WithContext(ctx context.Context) *Query[T] {
 	return newQuery[T]().WithContext(ctx)
+}
+
+// WithTx binds the query chain to tx. See Model[T].WithTx.
+func (SoftDeleteModel[T]) WithTx(tx *sql.Tx) *Query[T] {
+	return newQuery[T]().WithTx(tx)
 }
 
 // Find retrieves a record by primary key
@@ -975,6 +997,11 @@ func (m *SoftDeleteModel[T]) update() error {
 // chained off it propagate context to the driver. See Model[T].WithContext.
 func (SoftDeleteUUIDModel[T]) WithContext(ctx context.Context) *Query[T] {
 	return newQuery[T]().WithContext(ctx)
+}
+
+// WithTx binds the query chain to tx. See Model[T].WithTx.
+func (SoftDeleteUUIDModel[T]) WithTx(tx *sql.Tx) *Query[T] {
+	return newQuery[T]().WithTx(tx)
 }
 
 // Find retrieves a record by UUID primary key
@@ -1749,7 +1776,14 @@ func Save[T any](m *Manager, model *T) error {
 	if drv == nil {
 		return errors.New("orm: no database connection")
 	}
+	return saveWithDriver(drv, model)
+}
 
+// saveWithDriver is the driver-bound persistence entry. It carries the
+// reflection + dispatch logic of Save; the public Save resolves the
+// driver from a *Manager, while Query.Save / Query.Create reach this
+// helper directly using their own (possibly tx-bound) q.driver.
+func saveWithDriver[T any](drv drivers.Driver, model *T) error {
 	v := reflect.ValueOf(model).Elem()
 	t := v.Type()
 

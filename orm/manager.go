@@ -298,6 +298,53 @@ func (m *Manager) Transaction(ctx context.Context, fn func(tx *sql.Tx) error) er
 	return buffer.Flush()
 }
 
+// WithTx returns a Manager whose default driver routes data-plane ops
+// (Save/Update/Delete and Query reads) through tx instead of the
+// connection pool. Use this inside a Transaction closure so ORM writes
+// participate in the caller's transaction:
+//
+//	m.Transaction(ctx, func(tx *sql.Tx) error {
+//	    txm := m.WithTx(tx)
+//	    return orm.Save(txm, &user)
+//	})
+//
+// Or chain off a model to keep the call site terse:
+//
+//	User{}.WithTx(tx).Create(map[string]any{...})
+//
+// The returned Manager shares connections, dispatchers, and logger with
+// the receiver so events fired during the tx still flow through the
+// configured sinks. Schema and connection-management calls on the
+// returned Manager fall back to the wrapped driver, except BeginTx
+// which is disabled (use savepoints on the underlying *sql.Tx instead).
+func (m *Manager) WithTx(tx *sql.Tx) *Manager {
+	m.mu.RLock()
+	defaultDriver := m.defaultDriver
+	connections := m.connections
+	defaultName := m.defaultName
+	databaseName := m.databaseName
+	eventDispatcher := m.eventDispatcher
+	rawEventDispatcher := m.rawEventDispatcher
+	bus := m.txEventBus
+	logger := m.logger
+	m.mu.RUnlock()
+
+	if defaultDriver == nil || tx == nil {
+		return m
+	}
+
+	return &Manager{
+		defaultDriver:      &txDriver{Driver: defaultDriver, tx: tx},
+		connections:        connections,
+		defaultName:        defaultName,
+		databaseName:       databaseName,
+		eventDispatcher:    eventDispatcher,
+		rawEventDispatcher: rawEventDispatcher,
+		txEventBus:         bus,
+		logger:             logger,
+	}
+}
+
 // Begin starts a new transaction.
 func (m *Manager) Begin(ctx context.Context) (*sql.Tx, error) {
 	m.mu.RLock()
