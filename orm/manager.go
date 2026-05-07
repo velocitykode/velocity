@@ -315,8 +315,29 @@ func (m *Manager) Transaction(ctx context.Context, fn func(tx *sql.Tx) error) er
 // The returned Manager shares connections, dispatchers, and logger with
 // the receiver so events fired during the tx still flow through the
 // configured sinks. Schema and connection-management calls on the
-// returned Manager fall back to the wrapped driver, except BeginTx
-// which is disabled (use savepoints on the underlying *sql.Tx instead).
+// returned Manager fall back to the wrapped driver, except BeginTx,
+// Close, and DB which are disabled on the tx-bound driver:
+//   - BeginTx: nesting a transaction is a savepoint; issue SAVEPOINT
+//     on the underlying *sql.Tx directly.
+//   - Close: would tear down the parent pool that other goroutines
+//     still depend on.
+//   - DB: returning the parent pool would let callers silently bypass
+//     the bound transaction.
+//
+// Concurrency: *sql.Tx is single-threaded by stdlib contract, and this
+// wrapper adds no guard. All ORM calls made via the returned Manager
+// (or via Model[T].WithTx / Query[T].WithTx) must originate from the
+// same goroutine that owns the transaction. Fanout inside the
+// Transaction closure must serialize back to one goroutine before
+// touching tx-bound helpers.
+//
+// Snapshot semantics: the returned Manager captures a snapshot of the
+// receiver's drivers, dispatchers, and logger at call time. Subsequent
+// AddConnection / SetEventDispatcher / SetTxEventBus / SetLogger calls
+// on the parent are not observed by the child. Tx scopes are
+// short-lived in practice, so this matches the expected lifecycle;
+// callers who need late binding should derive WithTx after the parent
+// is fully configured.
 func (m *Manager) WithTx(tx *sql.Tx) *Manager {
 	m.mu.RLock()
 	defaultDriver := m.defaultDriver

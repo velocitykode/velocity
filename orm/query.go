@@ -743,17 +743,28 @@ func (q *Query[T]) SkipLocked() *Query[T] {
 	return q
 }
 
-// WithContext sets the context for the query (for event propagation)
 // WithTx binds the query to a *sql.Tx so subsequent reads and writes
-// (Get, First, Update, Delete, InsertGetId, Save, Create) execute on
-// the supplied transaction instead of the connection pool. Use this
-// inside a Manager.Transaction closure so ORM helpers participate in
-// the caller's tx instead of escaping it.
+// (Get, First, Update, Delete, InsertGetId, Save, Create, CreateMany,
+// FirstOrCreate, UpdateOrCreate) execute on the supplied transaction
+// instead of the connection pool. Use this inside a Manager.Transaction
+// closure so ORM helpers participate in the caller's tx instead of
+// escaping it.
 //
 // The wrapped driver still supplies dialect grammar, driver name, and
 // schema introspection; only data-plane ops route through the tx.
 // Passing nil leaves the query unchanged so callers can chain WithTx
 // unconditionally without nil-guarding at every call site.
+//
+// Concurrency: *sql.Tx is single-threaded by stdlib contract; the
+// returned Query and any handle derived from it (Where, OrderBy, ...)
+// must be used from the same goroutine that owns the transaction.
+// Fanout inside the Transaction closure must serialize back to one
+// goroutine before calling tx-bound helpers.
+//
+// Re-binding: a second WithTx call on a chain that is already
+// tx-bound rebinds against the original pool driver instead of
+// stacking another wrapper, so middleware that defensively re-applies
+// WithTx is safe.
 func (q *Query[T]) WithTx(tx *sql.Tx) *Query[T] {
 	if tx == nil {
 		return q
@@ -766,6 +777,14 @@ func (q *Query[T]) WithTx(tx *sql.Tx) *Query[T] {
 	}
 	if base == nil {
 		return q
+	}
+	// If the chain is already tx-bound (an earlier WithTx call),
+	// rebind to the new tx against the original pool driver instead of
+	// nesting txDriver wrappers. Stacking would still resolve to the
+	// outer tx but leaves the inner Driver methods double-shadowed,
+	// which is harder to reason about.
+	if outer, ok := base.(*txDriver); ok {
+		base = outer.Driver
 	}
 	q.driver = &txDriver{Driver: base, tx: tx}
 	return q
@@ -784,6 +803,59 @@ func (q *Query[T]) Save(model *T) error {
 		return errors.New("orm: no database connection")
 	}
 	return saveWithDriver(q.driver, model)
+}
+
+// CreateMany inserts multiple records through the query's bound driver
+// so a tx-bound query (via WithTx) writes the entire batch inside the
+// caller's transaction. The static-like Model[T].CreateMany helpers
+// still resolve the default manager and auto-commit; this method is
+// the tx-aware counterpart used by outbox emitters and saga steps.
+//
+// Iteration is sequential: the first error short-circuits and any
+// preceding rows are part of the in-flight tx, so the caller's
+// Transaction closure can return the error to roll back the partial
+// batch.
+func (q *Query[T]) CreateMany(records []T) error {
+	if q.err != nil {
+		return q.err
+	}
+	if q.driver == nil {
+		return errors.New("orm: no database connection")
+	}
+	for i := range records {
+		if err := saveWithDriver(q.driver, &records[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// FirstOrCreate routes through the query's bound driver so the
+// "find-or-insert" pattern participates in a tx bound via WithTx.
+// Mirrors Model[T].FirstOrCreate semantics; arguments and merging
+// behavior are identical.
+func (q *Query[T]) FirstOrCreate(conditions map[string]any, values map[string]any) (*T, error) {
+	if q.err != nil {
+		return nil, q.err
+	}
+	if q.driver == nil {
+		return nil, errors.New("orm: no database connection")
+	}
+	return firstOrCreateWithDriver[T](q.driver, conditions, values)
+}
+
+// UpdateOrCreate routes through the query's bound driver so the
+// "idempotency-then-write" pattern (the canonical motivating case for
+// tx-aware ORM helpers) participates in a tx bound via WithTx. Mirrors
+// Model[T].UpdateOrCreate semantics.
+func (q *Query[T]) UpdateOrCreate(conditions map[string]any, values map[string]any) (*T, error) {
+	if q.err != nil {
+		return nil, q.err
+	}
+	if q.driver == nil {
+		return nil, errors.New("orm: no database connection")
+	}
+	return updateOrCreateWithDriver[T](q.driver, conditions, values)
 }
 
 // Create inserts a new record through the query's bound driver,
@@ -823,6 +895,7 @@ func (q *Query[T]) Create(data any) (*T, error) {
 	}
 }
 
+// WithContext sets the context for the query (for event propagation).
 func (q *Query[T]) WithContext(ctx context.Context) *Query[T] {
 	q.ctx = ctx
 	return q

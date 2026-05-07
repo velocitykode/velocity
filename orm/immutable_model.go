@@ -2,6 +2,7 @@ package orm
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"reflect"
 	"strings"
@@ -23,6 +24,15 @@ var ErrImmutableModelUpdate = errors.New("orm: cannot update an immutable model 
 // WithContext returns a *Query[T] bound to ctx. See Model[T].WithContext.
 func (ImmutableModel[T]) WithContext(ctx context.Context) *Query[T] {
 	return newQuery[T]().WithContext(ctx)
+}
+
+// WithTx binds the query chain to tx so Create participates in the
+// caller's transaction. Append-only audit-log workflows are the
+// motivating case: an audit row hashed against its predecessor must
+// land in the same tx as the writes it describes, otherwise the chain
+// breaks under concurrent producers.
+func (ImmutableModel[T]) WithTx(tx *sql.Tx) *Query[T] {
+	return newQuery[T]().WithTx(tx)
 }
 
 // Find retrieves a record by primary key.
@@ -175,6 +185,11 @@ func (m *ImmutableModel[T]) Save() error {
 // WithContext returns a *Query[T] bound to ctx.
 func (ImmutableUUIDModel[T]) WithContext(ctx context.Context) *Query[T] {
 	return newQuery[T]().WithContext(ctx)
+}
+
+// WithTx binds the query chain to tx. See ImmutableModel[T].WithTx.
+func (ImmutableUUIDModel[T]) WithTx(tx *sql.Tx) *Query[T] {
+	return newQuery[T]().WithTx(tx)
 }
 
 // Find retrieves a record by UUID primary key.

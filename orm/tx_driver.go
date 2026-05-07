@@ -47,3 +47,22 @@ func (d *txDriver) ExecContext(ctx context.Context, query string, args ...any) (
 func (d *txDriver) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error) {
 	return nil, errors.New("velocity/orm: cannot BeginTx on a tx-bound driver; use savepoints on the underlying *sql.Tx")
 }
+
+// Close is intentionally disabled. The wrapped driver owns the
+// connection pool that other goroutines (and the caller's parent
+// Manager) still depend on, so a tx-bound clone must not close it.
+// Callers who reach Manager.Shutdown via a derived manager would
+// otherwise tear down the parent pool mid-request.
+func (d *txDriver) Close() error {
+	return errors.New("velocity/orm: cannot Close a tx-bound driver; close the parent Manager instead")
+}
+
+// DB returns nil so callers cannot accidentally bypass the bound
+// transaction by issuing queries on the parent pool's *sql.DB.
+// Reaching Manager.WithTx(tx).DB() and then calling QueryRow on the
+// result would silently escape the tx, defeating the whole point of
+// the tx-bound manager. Tests that need pool-level access should
+// reach for the original Manager, not the WithTx clone.
+func (d *txDriver) DB() *sql.DB {
+	return nil
+}
