@@ -812,3 +812,259 @@ func TestSaveAndFind_HonorsColumnTag(t *testing.T) {
 		t.Errorf("legacy_xyz column should hold %q, got %q", "persisted", got)
 	}
 }
+
+// ============================================================
+// serializeEmbedded: column tag honoring on embedded base fields
+// ============================================================
+
+// stockModel embeds the unmodified Model[T]; the timestamps must come
+// out as the canonical "created_at" / "updated_at" columns.
+type stockModel struct {
+	Model[stockModel]
+	Name string
+}
+
+func (stockModel) TableName() string { return "stock_models" }
+
+// stockUUIDModel verifies UUIDModel[T] keeps "id"/"created_at"/"updated_at"
+// when ID is set.
+type stockUUIDModel struct {
+	UUIDModel[stockUUIDModel]
+	Name string
+}
+
+func (stockUUIDModel) TableName() string { return "stock_uuid_models" }
+
+// stockSoftDeleteModel verifies SoftDeleteModel[T] keeps the
+// "deleted_at" column emission when the pointer is non-nil.
+type stockSoftDeleteModel struct {
+	SoftDeleteModel[stockSoftDeleteModel]
+	Name string
+}
+
+func (stockSoftDeleteModel) TableName() string { return "stock_soft_delete_models" }
+
+// stockSoftDeleteUUIDModel covers the UUID + soft delete variant.
+type stockSoftDeleteUUIDModel struct {
+	SoftDeleteUUIDModel[stockSoftDeleteUUIDModel]
+	Name string
+}
+
+func (stockSoftDeleteUUIDModel) TableName() string { return "stock_sd_uuid_models" }
+
+// stockImmutableModel verifies ImmutableModel[T] emits only created_at
+// (no updated_at) by default.
+type stockImmutableModel struct {
+	ImmutableModel[stockImmutableModel]
+	Name string
+}
+
+func (stockImmutableModel) TableName() string { return "stock_immutable_models" }
+
+// stockImmutableUUIDModel covers ImmutableUUIDModel[T].
+type stockImmutableUUIDModel struct {
+	ImmutableUUIDModel[stockImmutableUUIDModel]
+	Name string
+}
+
+func (stockImmutableUUIDModel) TableName() string { return "stock_imm_uuid_models" }
+
+// TestSerializeEmbedded_DefaultColumnNamesUnchanged is a regression
+// guard: after the fix, models that embed the stock base types must
+// still produce the canonical column keys (created_at, updated_at,
+// deleted_at, id) because fieldColumnName falls back to snake_case of
+// the field name when the orm tag carries no column directive.
+func TestSerializeEmbedded_DefaultColumnNamesUnchanged(t *testing.T) {
+	now := time.Now()
+	deleted := now.Add(-time.Hour)
+
+	t.Run("Model", func(t *testing.T) {
+		m := &stockModel{Name: "x"}
+		m.Model.CreatedAt = now
+		m.Model.UpdatedAt = now
+		data := structToMap(m)
+		if _, ok := data["created_at"]; !ok {
+			t.Errorf("Model: expected created_at, got %v", data)
+		}
+		if _, ok := data["updated_at"]; !ok {
+			t.Errorf("Model: expected updated_at, got %v", data)
+		}
+	})
+
+	t.Run("UUIDModel", func(t *testing.T) {
+		m := &stockUUIDModel{Name: "x"}
+		m.UUIDModel.ID = "uuid-1"
+		m.UUIDModel.CreatedAt = now
+		m.UUIDModel.UpdatedAt = now
+		data := structToMap(m)
+		if data["id"] != "uuid-1" {
+			t.Errorf("UUIDModel: expected id=uuid-1, got %v", data["id"])
+		}
+		if _, ok := data["created_at"]; !ok {
+			t.Errorf("UUIDModel: expected created_at, got %v", data)
+		}
+		if _, ok := data["updated_at"]; !ok {
+			t.Errorf("UUIDModel: expected updated_at, got %v", data)
+		}
+	})
+
+	t.Run("SoftDeleteModel", func(t *testing.T) {
+		m := &stockSoftDeleteModel{Name: "x"}
+		m.SoftDeleteModel.CreatedAt = now
+		m.SoftDeleteModel.UpdatedAt = now
+		m.SoftDeleteModel.DeletedAt = &deleted
+		data := structToMap(m)
+		if _, ok := data["created_at"]; !ok {
+			t.Errorf("SoftDeleteModel: expected created_at, got %v", data)
+		}
+		if _, ok := data["updated_at"]; !ok {
+			t.Errorf("SoftDeleteModel: expected updated_at, got %v", data)
+		}
+		if _, ok := data["deleted_at"]; !ok {
+			t.Errorf("SoftDeleteModel: expected deleted_at when set, got %v", data)
+		}
+	})
+
+	t.Run("SoftDeleteModel_NilDeletedAt", func(t *testing.T) {
+		m := &stockSoftDeleteModel{Name: "x"}
+		m.SoftDeleteModel.CreatedAt = now
+		m.SoftDeleteModel.UpdatedAt = now
+		// DeletedAt left nil
+		data := structToMap(m)
+		if _, ok := data["deleted_at"]; ok {
+			t.Errorf("SoftDeleteModel: nil DeletedAt must NOT emit deleted_at, got %v", data)
+		}
+	})
+
+	t.Run("SoftDeleteUUIDModel", func(t *testing.T) {
+		m := &stockSoftDeleteUUIDModel{Name: "x"}
+		m.SoftDeleteUUIDModel.ID = "uuid-2"
+		m.SoftDeleteUUIDModel.CreatedAt = now
+		m.SoftDeleteUUIDModel.UpdatedAt = now
+		m.SoftDeleteUUIDModel.DeletedAt = &deleted
+		data := structToMap(m)
+		if data["id"] != "uuid-2" {
+			t.Errorf("SoftDeleteUUIDModel: expected id=uuid-2, got %v", data["id"])
+		}
+		if _, ok := data["created_at"]; !ok {
+			t.Errorf("SoftDeleteUUIDModel: expected created_at, got %v", data)
+		}
+		if _, ok := data["updated_at"]; !ok {
+			t.Errorf("SoftDeleteUUIDModel: expected updated_at, got %v", data)
+		}
+		if _, ok := data["deleted_at"]; !ok {
+			t.Errorf("SoftDeleteUUIDModel: expected deleted_at, got %v", data)
+		}
+	})
+
+	t.Run("ImmutableModel", func(t *testing.T) {
+		m := &stockImmutableModel{Name: "x"}
+		m.ImmutableModel.CreatedAt = now
+		data := structToMap(m)
+		if _, ok := data["created_at"]; !ok {
+			t.Errorf("ImmutableModel: expected created_at, got %v", data)
+		}
+		if _, ok := data["updated_at"]; ok {
+			t.Errorf("ImmutableModel: must NOT emit updated_at, got %v", data)
+		}
+	})
+
+	t.Run("ImmutableUUIDModel", func(t *testing.T) {
+		m := &stockImmutableUUIDModel{Name: "x"}
+		m.ImmutableUUIDModel.ID = "uuid-3"
+		m.ImmutableUUIDModel.CreatedAt = now
+		data := structToMap(m)
+		if data["id"] != "uuid-3" {
+			t.Errorf("ImmutableUUIDModel: expected id=uuid-3, got %v", data["id"])
+		}
+		if _, ok := data["created_at"]; !ok {
+			t.Errorf("ImmutableUUIDModel: expected created_at, got %v", data)
+		}
+		if _, ok := data["updated_at"]; ok {
+			t.Errorf("ImmutableUUIDModel: must NOT emit updated_at, got %v", data)
+		}
+	})
+}
+
+// enqueuedOutbox is the bug repro: a downstream model whose timestamp
+// column is named enqueued_at, not created_at. The user shadows
+// Model[T].CreatedAt with a same-named field carrying a column tag.
+// Go field promotion gives the outer field precedence; serializeEmbedded
+// must respect the shadow and skip the embedded base's CreatedAt so
+// only the tagged column reaches the row.
+type enqueuedOutbox struct {
+	Model[enqueuedOutbox]
+	CreatedAt time.Time `orm:"column:enqueued_at"`
+	Payload   string    `orm:"column:payload"`
+}
+
+func (enqueuedOutbox) TableName() string { return "agent_command_outbox" }
+
+// TestSerializeEmbedded_HonorsColumnTagOnEmbeddedBase asserts that the
+// escape hatch for renaming the timestamp column actually works:
+// structToMap emits "enqueued_at" (from the shadowing field's tag) and
+// must NOT also emit "created_at" (which would be a duplicate write
+// against a non-existent column).
+func TestSerializeEmbedded_HonorsColumnTagOnEmbeddedBase(t *testing.T) {
+	now := time.Now()
+	row := &enqueuedOutbox{
+		CreatedAt: now,
+		Payload:   "{}",
+	}
+	row.Model.UpdatedAt = now
+
+	data := structToMap(row)
+
+	if _, ok := data["enqueued_at"]; !ok {
+		t.Errorf("expected enqueued_at column from shadowing field tag, got map=%v", data)
+	}
+	if _, ok := data["created_at"]; ok {
+		t.Errorf("created_at must NOT be emitted when shadowed by tagged outer field; got map=%v", data)
+	}
+	// updated_at on Model[T] is not shadowed and must still be emitted.
+	if _, ok := data["updated_at"]; !ok {
+		t.Errorf("non-shadowed embedded fields must still be emitted; got map=%v", data)
+	}
+	if data["payload"] != "{}" {
+		t.Errorf("expected payload column, got %v", data["payload"])
+	}
+}
+
+// dashTaggedOutbox demonstrates that an outer field with orm:"-"
+// suppresses the corresponding embedded base column entirely. The
+// outer CreatedAt is non-persistent (orm:"-"), and the embedded
+// Model[T].CreatedAt is shadowed, so the resulting map carries no
+// created_at key at all.
+type dashTaggedOutbox struct {
+	Model[dashTaggedOutbox]
+	CreatedAt time.Time `orm:"-"`
+	Name      string
+}
+
+func (dashTaggedOutbox) TableName() string { return "dash_tagged_outboxes" }
+
+// TestSerializeEmbedded_DashTagSkipsField confirms the orm:"-" escape
+// hatch on a shadowing outer field cleanly suppresses the embedded
+// base's same-named column. Combined with the shadow-detection logic,
+// this lets downstream apps drop a column entirely (e.g. tables with
+// no created_at at all).
+func TestSerializeEmbedded_DashTagSkipsField(t *testing.T) {
+	row := &dashTaggedOutbox{
+		CreatedAt: time.Now(),
+		Name:      "x",
+	}
+	row.Model.UpdatedAt = time.Now()
+
+	data := structToMap(row)
+
+	if _, ok := data["created_at"]; ok {
+		t.Errorf("orm:\"-\" on shadowing outer field must suppress embedded created_at; got map=%v", data)
+	}
+	// Sanity: other columns still flow through.
+	if _, ok := data["updated_at"]; !ok {
+		t.Errorf("unrelated embedded fields must still emit; got map=%v", data)
+	}
+	if data["name"] != "x" {
+		t.Errorf("non-shadowed outer fields must still emit; got map=%v", data)
+	}
+}

@@ -1631,6 +1631,20 @@ func structToMap(s any) map[string]any {
 	}
 	t := v.Type()
 
+	// Pre-compute the outer struct's directly-declared (non-anonymous)
+	// exported field names. serializeEmbedded uses this to honor Go's
+	// field-promotion shadowing: if the parent declares a CreatedAt
+	// (with a custom column tag) alongside an embedded Model[T], the
+	// embedded base's CreatedAt must NOT also be emitted, otherwise
+	// the row carries both columns.
+	outerFieldNames := make(map[string]bool, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.IsExported() && !f.Anonymous {
+			outerFieldNames[f.Name] = true
+		}
+	}
+
 	for i := 0; i < v.NumField(); i++ {
 		field := t.Field(i)
 		tag := field.Tag.Get("orm")
@@ -1688,7 +1702,10 @@ func structToMap(s any) map[string]any {
 
 		// Delegate embedded ORM base fields to a single helper so the
 		// main loop stays a straight pass over the declared columns.
-		if serializeEmbedded(field, v.Field(i), result) {
+		// outerFieldNames carries the parent's directly-declared field
+		// names so the helper can suppress shadowed embedded fields
+		// (the parent's emission wins). See structToMap setup above.
+		if serializeEmbedded(field, v.Field(i), result, outerFieldNames) {
 			continue
 		}
 
@@ -1728,67 +1745,119 @@ func structToMap(s any) map[string]any {
 	return result
 }
 
+// embeddedBaseTypePrefixes enumerates the embedded ORM base types whose
+// fields serializeEmbedded expands into the parent column map. Keeping
+// the recognition table separate from the walk lets one generic loop
+// drive every variant. The field set differs (UpdatedAt absent on
+// Immutable*, DeletedAt only on SoftDelete*) but each is just an
+// exported struct field whose column name is derived via the same
+// helper used by structToMap (fieldColumnName), so escape hatches like
+// orm:"column:enqueued_at" on a custom embedded base now work
+// uniformly.
+var embeddedBaseTypePrefixes = []string{
+	"orm.Model[",
+	"orm.UUIDModel[",
+	"orm.SoftDeleteModel[",
+	"orm.SoftDeleteUUIDModel[",
+	"orm.ImmutableModel[",
+	"orm.ImmutableUUIDModel[",
+}
+
 // serializeEmbedded writes the columns contributed by an embedded ORM base
 // type into result and reports whether the field was handled. Returning
 // false signals the caller to fall through to the regular scalar-field
 // branch.
 //
-// The serialization rules mirror the original inline switch:
-//   - orm.Model[T]: writes created_at and updated_at.
-//   - orm.UUIDModel[T]: writes id (when non-empty), created_at, updated_at.
-//   - orm.SoftDeleteModel[T]: writes created_at, updated_at, deleted_at.
-//   - orm.SoftDeleteUUIDModel[T]: writes id, created_at, updated_at,
-//     deleted_at.
-func serializeEmbedded(field reflect.StructField, value reflect.Value, result map[string]any) bool {
+// Column names are resolved via fieldColumnName so an `orm:"column:..."`
+// tag on the embedded base type's field overrides the snake_case
+// default. This is the symmetric write-side counterpart of mapToStruct
+// (which already honors the column tag via the same helper). Without
+// this, a downstream model that embeds a custom base type with e.g.
+// `orm:"column:enqueued_at"` on CreatedAt would silently emit
+// "created_at" instead, breaking inserts against tables whose timestamp
+// column is named differently.
+//
+// Default column names (created_at, updated_at, deleted_at, id) are
+// preserved: the stock base types declare e.g. `orm:"autoCreateTime"`
+// without a column directive, so fieldColumnName falls back to
+// toSnakeCase(field.Name) which is identical to the previous
+// hardcoded literals.
+//
+// Zero-value skip rules mirror the original inline switch and the
+// top-level structToMap loop:
+//   - ID: skip when uint==0 (auto-increment) or string=="" (UUID not yet
+//     generated). The DB default or driver-side UUID hook fills it in.
+//   - Pointer fields (e.g. *time.Time on SoftDelete*'s DeletedAt): skip
+//     when nil so the column keeps its DB default and soft-delete
+//     queries can still NULL-test it.
+//   - Fields tagged `orm:"-"` (IsExisting, Original, Changed) are skipped
+//     because fieldColumnName returns "" for them.
+func serializeEmbedded(field reflect.StructField, value reflect.Value, result map[string]any, shadowedByOuter map[string]bool) bool {
 	typeName := field.Type.String()
-
-	switch {
-	case strings.HasPrefix(typeName, "orm.Model["):
-		result["created_at"] = value.FieldByName("CreatedAt").Interface()
-		result["updated_at"] = value.FieldByName("UpdatedAt").Interface()
-		return true
-
-	case strings.HasPrefix(typeName, "orm.UUIDModel["):
-		if id := value.FieldByName("ID").String(); id != "" {
-			result["id"] = id
+	matched := false
+	for _, prefix := range embeddedBaseTypePrefixes {
+		if strings.HasPrefix(typeName, prefix) {
+			matched = true
+			break
 		}
-		result["created_at"] = value.FieldByName("CreatedAt").Interface()
-		result["updated_at"] = value.FieldByName("UpdatedAt").Interface()
-		return true
-
-	case strings.HasPrefix(typeName, "orm.SoftDeleteModel["):
-		result["created_at"] = value.FieldByName("CreatedAt").Interface()
-		result["updated_at"] = value.FieldByName("UpdatedAt").Interface()
-		if deletedAt := value.FieldByName("DeletedAt"); !deletedAt.IsZero() && !deletedAt.IsNil() {
-			result["deleted_at"] = deletedAt.Interface()
-		}
-		return true
-
-	case strings.HasPrefix(typeName, "orm.SoftDeleteUUIDModel["):
-		if id := value.FieldByName("ID").String(); id != "" {
-			result["id"] = id
-		}
-		result["created_at"] = value.FieldByName("CreatedAt").Interface()
-		result["updated_at"] = value.FieldByName("UpdatedAt").Interface()
-		if deletedAt := value.FieldByName("DeletedAt"); !deletedAt.IsZero() && !deletedAt.IsNil() {
-			result["deleted_at"] = deletedAt.Interface()
-		}
-		return true
-
-	case strings.HasPrefix(typeName, "orm.ImmutableModel["):
-		// Append-only: no updated_at column.
-		result["created_at"] = value.FieldByName("CreatedAt").Interface()
-		return true
-
-	case strings.HasPrefix(typeName, "orm.ImmutableUUIDModel["):
-		if id := value.FieldByName("ID").String(); id != "" {
-			result["id"] = id
-		}
-		result["created_at"] = value.FieldByName("CreatedAt").Interface()
-		return true
+	}
+	if !matched {
+		return false
 	}
 
-	return false
+	embeddedType := field.Type
+	for i := 0; i < embeddedType.NumField(); i++ {
+		f := embeddedType.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+
+		// If the outer struct declares a same-named field, Go's field
+		// promotion makes the outer one win. The outer loop in
+		// structToMap will emit that field with its own column tag, so
+		// skip the embedded copy here to avoid double-writing.
+		if shadowedByOuter[f.Name] {
+			continue
+		}
+
+		columnName := fieldColumnName(f)
+		if columnName == "" {
+			// orm:"-" on the embedded base's internal bookkeeping
+			// (IsExisting, Original, Changed) lands here.
+			continue
+		}
+
+		fv := value.FieldByName(f.Name)
+		if !fv.IsValid() {
+			continue
+		}
+
+		// Skip auto-generated primary keys when not yet assigned so the
+		// driver's auto-increment or UUID generation can run. This
+		// matches the top-level structToMap behavior for ID fields.
+		if f.Name == "ID" {
+			switch fv.Kind() {
+			case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+				if fv.Uint() == 0 {
+					continue
+				}
+			case reflect.String:
+				if fv.String() == "" {
+					continue
+				}
+			}
+		}
+
+		// Pointer fields default to NULL when nil; emit only when set.
+		// Covers DeletedAt (*time.Time) on SoftDelete* variants.
+		if fv.Kind() == reflect.Ptr && fv.IsNil() {
+			continue
+		}
+
+		result[columnName] = fv.Interface()
+	}
+
+	return true
 }
 
 // Global convenience functions
