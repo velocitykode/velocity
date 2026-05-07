@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // AuditLog is an append-only ImmutableModel-backed model used to exercise
@@ -251,4 +252,93 @@ func TestImmutableUUIDModel_CreateAndRead(t *testing.T) {
 // the signal; this test is a noop kept for documentation.
 func TestImmutableModel_NoUpdateMethod_CompileGuard(t *testing.T) {
 	// No assertion; documentation only. See comment.
+}
+
+// TestImmutableModel_RespectsCallerCreatedAt verifies that the
+// auto-increment ImmutableModel save path does not clobber a caller-set
+// CreatedAt and stamps it when zero.
+func TestImmutableModel_RespectsCallerCreatedAt(t *testing.T) {
+	manager := setupImmutableTests(t)
+	db := manager.DB()
+
+	preset := time.Date(2019, 11, 5, 9, 30, 0, 0, time.UTC)
+	r1 := &AuditLog{Action: "user.import", Subject: "legacy"}
+	r1.CreatedAt = preset
+	if err := Save(nil, r1); err != nil {
+		t.Fatalf("Save with preset CreatedAt: %v", err)
+	}
+	if !r1.CreatedAt.Equal(preset) {
+		t.Errorf("in-memory CreatedAt was clobbered: got %v, want %v", r1.CreatedAt, preset)
+	}
+	// Re-read from DB to defeat any serialization-layer bug.
+	var dbCreated time.Time
+	if err := db.QueryRow("SELECT created_at FROM audit_logs WHERE id = ?", r1.ID).Scan(&dbCreated); err != nil {
+		t.Fatalf("read back r1 row: %v", err)
+	}
+	if !dbCreated.Equal(preset) {
+		t.Errorf("persisted created_at != preset: got %v, want %v", dbCreated, preset)
+	}
+
+	r2 := &AuditLog{Action: "user.create", Subject: "alice"}
+	before := time.Now()
+	if err := Save(nil, r2); err != nil {
+		t.Fatalf("Save with zero CreatedAt: %v", err)
+	}
+	after := time.Now()
+	if r2.CreatedAt.IsZero() {
+		t.Fatal("Expected in-memory CreatedAt to be auto-stamped")
+	}
+	if r2.CreatedAt.Before(before.Add(-time.Second)) || r2.CreatedAt.After(after.Add(time.Second)) {
+		t.Errorf("in-memory CreatedAt %v not within 1s of now [%v, %v]", r2.CreatedAt, before, after)
+	}
+	if err := db.QueryRow("SELECT created_at FROM audit_logs WHERE id = ?", r2.ID).Scan(&dbCreated); err != nil {
+		t.Fatalf("read back r2 row: %v", err)
+	}
+	if dbCreated.Before(before.Add(-2*time.Second)) || dbCreated.After(after.Add(2*time.Second)) {
+		t.Errorf("persisted created_at %v not within 2s of now [%v, %v]", dbCreated, before, after)
+	}
+}
+
+// TestImmutableUUIDModel_RespectsCallerCreatedAt mirrors the above for
+// the UUID-keyed immutable save path.
+func TestImmutableUUIDModel_RespectsCallerCreatedAt(t *testing.T) {
+	manager := setupImmutableTests(t)
+	db := manager.DB()
+
+	preset := time.Date(2018, 4, 1, 0, 0, 0, 0, time.UTC)
+	r1 := &AuditLogUUID{Action: "system.boot"}
+	r1.CreatedAt = preset
+	if err := Save(nil, r1); err != nil {
+		t.Fatalf("Save with preset CreatedAt: %v", err)
+	}
+	if !r1.CreatedAt.Equal(preset) {
+		t.Errorf("in-memory CreatedAt was clobbered: got %v, want %v", r1.CreatedAt, preset)
+	}
+	// Re-read from DB to defeat any serialization-layer bug.
+	var dbCreated time.Time
+	if err := db.QueryRow("SELECT created_at FROM audit_log_uuids WHERE id = ?", r1.ID).Scan(&dbCreated); err != nil {
+		t.Fatalf("read back r1 row: %v", err)
+	}
+	if !dbCreated.Equal(preset) {
+		t.Errorf("persisted created_at != preset: got %v, want %v", dbCreated, preset)
+	}
+
+	r2 := &AuditLogUUID{Action: "system.shutdown"}
+	before := time.Now()
+	if err := Save(nil, r2); err != nil {
+		t.Fatalf("Save with zero CreatedAt: %v", err)
+	}
+	after := time.Now()
+	if r2.CreatedAt.IsZero() {
+		t.Fatal("Expected in-memory CreatedAt to be auto-stamped")
+	}
+	if r2.CreatedAt.Before(before.Add(-time.Second)) || r2.CreatedAt.After(after.Add(time.Second)) {
+		t.Errorf("in-memory CreatedAt %v not within 1s of now [%v, %v]", r2.CreatedAt, before, after)
+	}
+	if err := db.QueryRow("SELECT created_at FROM audit_log_uuids WHERE id = ?", r2.ID).Scan(&dbCreated); err != nil {
+		t.Fatalf("read back r2 row: %v", err)
+	}
+	if dbCreated.Before(before.Add(-2*time.Second)) || dbCreated.After(after.Add(2*time.Second)) {
+		t.Errorf("persisted created_at %v not within 2s of now [%v, %v]", dbCreated, before, after)
+	}
 }

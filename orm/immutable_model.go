@@ -304,7 +304,11 @@ func saveImmutableModel[T any](drv drivers.Driver, model *T, modelField, idField
 		return ErrImmutableModelUpdate
 	}
 
-	modelField.FieldByName("CreatedAt").Set(reflect.ValueOf(time.Now()))
+	// Respect caller-set CreatedAt; only stamp when zero.
+	createdAtField := modelField.FieldByName("CreatedAt")
+	if createdAtField.Interface().(time.Time).IsZero() {
+		createdAtField.Set(reflect.ValueOf(time.Now()))
+	}
 
 	if hook, ok := any(model).(BeforeCreateHook); ok {
 		if err := hook.BeforeCreate(); err != nil {
@@ -345,7 +349,11 @@ func saveImmutableUUIDModel[T any](drv drivers.Driver, model *T, modelField, idF
 	if idField.String() == "" {
 		idField.SetString(uuid.New().String())
 	}
-	modelField.FieldByName("CreatedAt").Set(reflect.ValueOf(time.Now()))
+	// Respect caller-set CreatedAt; only stamp when zero.
+	createdAtField := modelField.FieldByName("CreatedAt")
+	if createdAtField.Interface().(time.Time).IsZero() {
+		createdAtField.Set(reflect.ValueOf(time.Now()))
+	}
 
 	if hook, ok := any(model).(BeforeCreateHook); ok {
 		if err := hook.BeforeCreate(); err != nil {
