@@ -462,3 +462,151 @@ func TestUUIDStructToMap(t *testing.T) {
 		t.Error("Expected updated_at to be in map")
 	}
 }
+
+// TestModelSave_RespectsCallerCreatedAt verifies that Save() does not
+// clobber a caller-set CreatedAt on insert, but stamps it (and UpdatedAt
+// to match) when CreatedAt is zero.
+func TestModelSave_RespectsCallerCreatedAt(t *testing.T) {
+	manager := newTestManager(t)
+	defer manager.Shutdown(context.Background())
+
+	if _, err := manager.DB().Exec(`
+		CREATE TABLE test_users (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			email TEXT UNIQUE NOT NULL,
+			age INTEGER,
+			is_active BOOLEAN,
+			created_at DATETIME,
+			updated_at DATETIME,
+			deleted_at DATETIME
+		)
+	`); err != nil {
+		t.Fatalf("Failed to create test table: %v", err)
+	}
+
+	db := manager.DB()
+
+	// Case 1: caller-set CreatedAt is preserved end-to-end (in struct AND in DB).
+	preset := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	u1 := &TestUser{Name: "Backfill", Email: "backfill@example.com"}
+	u1.Model.CreatedAt = preset
+	if err := Save(manager, u1); err != nil {
+		t.Fatalf("Save with preset CreatedAt: %v", err)
+	}
+	if !u1.Model.CreatedAt.Equal(preset) {
+		t.Errorf("in-memory CreatedAt was clobbered: got %v, want %v", u1.Model.CreatedAt, preset)
+	}
+	if !u1.Model.UpdatedAt.Equal(preset) {
+		t.Errorf("in-memory UpdatedAt should mirror caller CreatedAt on insert: got %v, want %v", u1.Model.UpdatedAt, preset)
+	}
+	// Re-read from the database via raw SQL: this is what catches a serialization
+	// or driver-level bug that silently drops the preset and writes time.Now().
+	var dbCreated, dbUpdated time.Time
+	if err := db.QueryRow("SELECT created_at, updated_at FROM test_users WHERE id = ?", u1.Model.ID).Scan(&dbCreated, &dbUpdated); err != nil {
+		t.Fatalf("read back u1 row: %v", err)
+	}
+	if !dbCreated.Equal(preset) {
+		t.Errorf("persisted created_at != preset: got %v, want %v", dbCreated, preset)
+	}
+	if !dbUpdated.Equal(preset) {
+		t.Errorf("persisted updated_at should mirror preset created_at on insert: got %v, want %v", dbUpdated, preset)
+	}
+
+	// Case 2: zero CreatedAt is auto-stamped near now (in struct AND in DB).
+	u2 := &TestUser{Name: "Fresh", Email: "fresh@example.com"}
+	before := time.Now()
+	if err := Save(manager, u2); err != nil {
+		t.Fatalf("Save with zero CreatedAt: %v", err)
+	}
+	after := time.Now()
+	if u2.Model.CreatedAt.IsZero() {
+		t.Fatal("Expected in-memory CreatedAt to be auto-stamped")
+	}
+	if u2.Model.CreatedAt.Before(before.Add(-time.Second)) || u2.Model.CreatedAt.After(after.Add(time.Second)) {
+		t.Errorf("in-memory CreatedAt %v not within 1s of now [%v, %v]", u2.Model.CreatedAt, before, after)
+	}
+	if !u2.Model.UpdatedAt.Equal(u2.Model.CreatedAt) {
+		t.Errorf("in-memory UpdatedAt should equal CreatedAt on insert: got %v vs %v", u2.Model.UpdatedAt, u2.Model.CreatedAt)
+	}
+	if err := db.QueryRow("SELECT created_at, updated_at FROM test_users WHERE id = ?", u2.Model.ID).Scan(&dbCreated, &dbUpdated); err != nil {
+		t.Fatalf("read back u2 row: %v", err)
+	}
+	if dbCreated.Before(before.Add(-2*time.Second)) || dbCreated.After(after.Add(2*time.Second)) {
+		t.Errorf("persisted created_at %v not within 2s of now [%v, %v]", dbCreated, before, after)
+	}
+	if !dbUpdated.Equal(dbCreated) {
+		t.Errorf("persisted updated_at should equal created_at on insert: got %v vs %v", dbUpdated, dbCreated)
+	}
+}
+
+// TestUUIDModelSave_RespectsCallerCreatedAt mirrors the auto-increment
+// case for the UUID-keyed save path.
+func TestUUIDModelSave_RespectsCallerCreatedAt(t *testing.T) {
+	manager := newTestManager(t)
+	defer manager.Shutdown(context.Background())
+
+	if _, err := manager.DB().Exec(`
+		CREATE TABLE test_projects (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			description TEXT,
+			created_at DATETIME,
+			updated_at DATETIME,
+			deleted_at DATETIME
+		)
+	`); err != nil {
+		t.Fatalf("Failed to create test table: %v", err)
+	}
+
+	db := manager.DB()
+
+	preset := time.Date(2020, 6, 15, 12, 0, 0, 0, time.UTC)
+	p1 := &TestProject{Name: "Imported", Description: "from legacy"}
+	p1.UUIDModel.CreatedAt = preset
+	if err := Save(manager, p1); err != nil {
+		t.Fatalf("Save with preset CreatedAt: %v", err)
+	}
+	if !p1.UUIDModel.CreatedAt.Equal(preset) {
+		t.Errorf("in-memory CreatedAt was clobbered: got %v, want %v", p1.UUIDModel.CreatedAt, preset)
+	}
+	if !p1.UUIDModel.UpdatedAt.Equal(preset) {
+		t.Errorf("in-memory UpdatedAt should mirror caller CreatedAt on insert: got %v, want %v", p1.UUIDModel.UpdatedAt, preset)
+	}
+	// Re-read from DB to defeat any serialization-layer bug.
+	var dbCreated, dbUpdated time.Time
+	if err := db.QueryRow("SELECT created_at, updated_at FROM test_projects WHERE id = ?", p1.UUIDModel.ID).Scan(&dbCreated, &dbUpdated); err != nil {
+		t.Fatalf("read back p1 row: %v", err)
+	}
+	if !dbCreated.Equal(preset) {
+		t.Errorf("persisted created_at != preset: got %v, want %v", dbCreated, preset)
+	}
+	if !dbUpdated.Equal(preset) {
+		t.Errorf("persisted updated_at should mirror preset created_at on insert: got %v, want %v", dbUpdated, preset)
+	}
+
+	p2 := &TestProject{Name: "Fresh", Description: "new"}
+	before := time.Now()
+	if err := Save(manager, p2); err != nil {
+		t.Fatalf("Save with zero CreatedAt: %v", err)
+	}
+	after := time.Now()
+	if p2.UUIDModel.CreatedAt.IsZero() {
+		t.Fatal("Expected in-memory CreatedAt to be auto-stamped")
+	}
+	if p2.UUIDModel.CreatedAt.Before(before.Add(-time.Second)) || p2.UUIDModel.CreatedAt.After(after.Add(time.Second)) {
+		t.Errorf("in-memory CreatedAt %v not within 1s of now [%v, %v]", p2.UUIDModel.CreatedAt, before, after)
+	}
+	if !p2.UUIDModel.UpdatedAt.Equal(p2.UUIDModel.CreatedAt) {
+		t.Errorf("in-memory UpdatedAt should equal CreatedAt on insert: got %v vs %v", p2.UUIDModel.UpdatedAt, p2.UUIDModel.CreatedAt)
+	}
+	if err := db.QueryRow("SELECT created_at, updated_at FROM test_projects WHERE id = ?", p2.UUIDModel.ID).Scan(&dbCreated, &dbUpdated); err != nil {
+		t.Fatalf("read back p2 row: %v", err)
+	}
+	if dbCreated.Before(before.Add(-2*time.Second)) || dbCreated.After(after.Add(2*time.Second)) {
+		t.Errorf("persisted created_at %v not within 2s of now [%v, %v]", dbCreated, before, after)
+	}
+	if !dbUpdated.Equal(dbCreated) {
+		t.Errorf("persisted updated_at should equal created_at on insert: got %v vs %v", dbUpdated, dbCreated)
+	}
+}

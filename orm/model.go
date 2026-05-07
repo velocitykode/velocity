@@ -1872,9 +1872,18 @@ func saveWithDriver[T any](drv drivers.Driver, model *T) error {
 // saveModel handles saving for auto-increment ID models
 func saveModel[T any](drv drivers.Driver, model *T, modelField, idField, existsField reflect.Value, tableName string, isInsert bool) error {
 	if isInsert {
-		// Set timestamps
-		modelField.FieldByName("CreatedAt").Set(reflect.ValueOf(time.Now()))
-		modelField.FieldByName("UpdatedAt").Set(reflect.ValueOf(time.Now()))
+		// Set timestamps: respect caller-set CreatedAt; only stamp when zero.
+		// UpdatedAt mirrors CreatedAt on insert for consistency.
+		createdAtField := modelField.FieldByName("CreatedAt")
+		updatedAtField := modelField.FieldByName("UpdatedAt")
+		createdAt := createdAtField.Interface().(time.Time)
+		if createdAt.IsZero() {
+			createdAt = time.Now()
+			createdAtField.Set(reflect.ValueOf(createdAt))
+		}
+		if updatedAtField.Interface().(time.Time).IsZero() {
+			updatedAtField.Set(reflect.ValueOf(createdAt))
+		}
 
 		// Call BeforeCreate hook if exists
 		if hook, ok := any(model).(BeforeCreateHook); ok {
@@ -1952,9 +1961,18 @@ func saveUUIDModel[T any](drv drivers.Driver, model *T, modelField, idField, exi
 			idField.SetString(uuid.New().String())
 		}
 
-		// Set timestamps
-		modelField.FieldByName("CreatedAt").Set(reflect.ValueOf(time.Now()))
-		modelField.FieldByName("UpdatedAt").Set(reflect.ValueOf(time.Now()))
+		// Set timestamps: respect caller-set CreatedAt; only stamp when zero.
+		// UpdatedAt mirrors CreatedAt on insert for consistency.
+		createdAtField := modelField.FieldByName("CreatedAt")
+		updatedAtField := modelField.FieldByName("UpdatedAt")
+		createdAt := createdAtField.Interface().(time.Time)
+		if createdAt.IsZero() {
+			createdAt = time.Now()
+			createdAtField.Set(reflect.ValueOf(createdAt))
+		}
+		if updatedAtField.Interface().(time.Time).IsZero() {
+			updatedAtField.Set(reflect.ValueOf(createdAt))
+		}
 
 		// Call BeforeCreate hook if exists
 		if hook, ok := any(model).(BeforeCreateHook); ok {
