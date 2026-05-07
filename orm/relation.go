@@ -242,15 +242,17 @@ func getFieldValueByColumn(v reflect.Value, columnName string) (any, bool) {
 	return nil, false
 }
 
-// resolveColumnName determines the database column name for a struct field.
+// resolveColumnName determines the database column name for a struct field,
+// with relation-aware semantics: returns "" for orm:"-" (skip) and "id" for
+// fields tagged primaryKey when no explicit column directive precedes it.
+// Otherwise delegates to fieldColumnName (shared column tag / snake_case).
 func resolveColumnName(field reflect.StructField) string {
 	tag := field.Tag.Get("orm")
 	if tag == "-" {
 		return ""
 	}
 	if tag != "" {
-		parts := strings.Split(tag, ";")
-		for _, part := range parts {
+		for _, part := range strings.Split(tag, ";") {
 			part = strings.TrimSpace(part)
 			if strings.HasPrefix(part, "column:") {
 				return strings.TrimPrefix(part, "column:")
@@ -260,7 +262,7 @@ func resolveColumnName(field reflect.StructField) string {
 			}
 		}
 	}
-	return toSnakeCase(field.Name)
+	return fieldColumnName(field)
 }
 
 // normalizeKey converts numeric types to int64 for consistent map key comparison.

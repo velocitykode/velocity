@@ -462,3 +462,70 @@ func TestUUIDStructToMap(t *testing.T) {
 		t.Error("Expected updated_at to be in map")
 	}
 }
+
+// legacyColumnModel exercises the asymmetric-column-tag bug: Go field name
+// "RenamedField" but DB column is "legacy_xyz". structToMap honors the tag
+// (writes to legacy_xyz); mapToStruct must honor it on the read path too.
+type legacyColumnModel struct {
+	Model[legacyColumnModel]
+	RenamedField string `orm:"column:legacy_xyz"`
+	Plain        string
+}
+
+func (legacyColumnModel) TableName() string { return "legacy_column_models" }
+
+func TestMapToStruct_HonorsColumnTag(t *testing.T) {
+	var dst legacyColumnModel
+	src := map[string]any{
+		"legacy_xyz": "abc",
+		"plain":      "ok",
+	}
+	if err := mapToStruct(src, &dst); err != nil {
+		t.Fatalf("mapToStruct: %v", err)
+	}
+	if dst.RenamedField != "abc" {
+		t.Errorf("RenamedField: expected %q from column:legacy_xyz, got %q", "abc", dst.RenamedField)
+	}
+	if dst.Plain != "ok" {
+		t.Errorf("Plain: expected %q, got %q", "ok", dst.Plain)
+	}
+}
+
+func TestMapToStruct_IgnoresFieldNameWhenColumnTagPresent(t *testing.T) {
+	// With an explicit column tag, only the explicit column key should
+	// populate the field. The snake_case'd Go field name must not.
+	var dst legacyColumnModel
+	src := map[string]any{
+		"renamed_field": "wrong",
+	}
+	if err := mapToStruct(src, &dst); err != nil {
+		t.Fatalf("mapToStruct: %v", err)
+	}
+	if dst.RenamedField != "" {
+		t.Errorf("RenamedField should be empty when only renamed_field key is supplied; got %q", dst.RenamedField)
+	}
+}
+
+func TestStructToMap_MapToStruct_RoundTrip(t *testing.T) {
+	original := legacyColumnModel{
+		RenamedField: "round-trip",
+		Plain:        "value",
+	}
+	encoded := structToMap(&original)
+
+	// structToMap must use the column tag.
+	if v, ok := encoded["legacy_xyz"]; !ok || v != "round-trip" {
+		t.Fatalf("structToMap should write legacy_xyz=%q, got map=%v", "round-trip", encoded)
+	}
+
+	var decoded legacyColumnModel
+	if err := mapToStruct(encoded, &decoded); err != nil {
+		t.Fatalf("mapToStruct: %v", err)
+	}
+	if decoded.RenamedField != original.RenamedField {
+		t.Errorf("RenamedField round-trip mismatch: got %q want %q", decoded.RenamedField, original.RenamedField)
+	}
+	if decoded.Plain != original.Plain {
+		t.Errorf("Plain round-trip mismatch: got %q want %q", decoded.Plain, original.Plain)
+	}
+}
