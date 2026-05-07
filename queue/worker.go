@@ -100,6 +100,22 @@ func writeStderr(level, msg string, kvs []any) {
 // push exceeds this budget the job is marked failed instead of requeued.
 const retryPushTimeout = 5 * time.Second
 
+// defaultHandlerKillCeiling bounds how long processJob will wait, after
+// the per-job ctx fires, for the detached handler goroutine to return
+// cooperatively. Once jobCtx.Done() fires, the goroutine is no longer
+// tracked by w.wg, so without this drain Stop() returns before timed-out
+// handlers complete and the goroutines accumulate unbounded.
+//
+// 5s mirrors retryPushTimeout: long enough for a well-behaved handler to
+// observe ctx.Done() and unwind, short enough that Stop() does not hang
+// on a misbehaving handler. If the ceiling is exceeded, we log a WARN
+// and accept the leak; a job that ignores ctx is a bug in the handler.
+//
+// A var (not a const) so tests can shrink it without waiting 5s, and so a
+// future worker option can override per-instance. There is no public
+// setter today; consumers must rely on the default.
+var defaultHandlerKillCeiling = 5 * time.Second
+
 // Worker processes jobs from a queue
 type Worker struct {
 	queue       Driver
@@ -386,6 +402,24 @@ func (w *Worker) processJob() error {
 				)
 				return nil
 			}
+			// Real (non-ctx) error returned during shutdown. Routing through
+			// handleJobFailure is risky: the driver is tearing down, the
+			// retry push goes through a detached short-timeout context, and
+			// the event dispatcher may already be closed. Log the error so
+			// it is diagnosable, then abort. The driver's own shutdown path
+			// (or the next worker on a durable queue) is responsible for
+			// reclaiming the job. Without this log, real bugs that race
+			// shutdown would vanish silently.
+			if w.ctx.Err() != nil {
+				w.logger.Warn("Job error swallowed during worker shutdown",
+					"type", jobType,
+					"queue", w.queueName,
+					"job_id", jobIDOf(job),
+					"error", err,
+					"duration_ms", duration.Milliseconds(),
+				)
+				return nil
+			}
 			w.handleJobFailure(jobCtx, job, jobType, err, duration)
 			return fmt.Errorf("velocity/queue: job failed: %w", err)
 		}
@@ -401,14 +435,23 @@ func (w *Worker) processJob() error {
 		return nil
 	case <-jobCtx.Done():
 		duration := time.Since(startTime)
-		// Distinguish worker shutdown from a real per-job timeout. jobCtx is
-		// derived from w.ctx, so a worker Stop() cancels jobCtx as well; in
-		// that case the job is not failing, the worker is leaving. Same
-		// reasoning as the err-branch above: do not call handleJobFailure,
-		// do not retry, do not mark Failed. The handler goroutine will be
-		// allowed to finish on its own (it MUST honor ctx.Done(); see
-		// HandleCtxer godoc).
+		// jobCtx fired: either the worker is shutting down (w.ctx cancelled,
+		// which propagates to jobCtx) or the per-job timeout expired. In
+		// both cases the handler goroutine is still running and is NOT
+		// tracked by w.wg, so without an explicit drain it leaks past
+		// Stop() and accumulates unbounded over time.
+		//
+		// Wait up to defaultHandlerKillCeiling for the handler to observe
+		// ctx.Done() and return cooperatively. If it does not, we log a
+		// WARN and accept the leak: a handler that ignores ctx is a bug,
+		// and blocking Stop() forever is worse for ops than leaking one
+		// goroutine.
+		w.drainHandler(done, job, jobType)
+
 		if w.ctx.Err() != nil {
+			// Worker shutdown, not a real per-job timeout. Same reasoning
+			// as the err-branch above: do not call handleJobFailure, do
+			// not retry, do not mark Failed.
 			w.logger.Info("Job aborted by worker shutdown",
 				"type", jobType,
 				"queue", w.queueName,
@@ -420,6 +463,34 @@ func (w *Worker) processJob() error {
 		w.handleJobFailure(jobCtx, job, jobType, timeoutErr, duration)
 		return timeoutErr
 	}
+}
+
+// drainHandler waits for the detached handler goroutine to write to done
+// after jobCtx fired. Bounded by defaultHandlerKillCeiling so a misbehaving
+// handler that ignores ctx cannot hang Stop() forever; in that case we log
+// a warning and let the goroutine leak.
+func (w *Worker) drainHandler(done <-chan error, job Job, jobType string) {
+	select {
+	case <-done:
+		// handler returned cooperatively
+	case <-time.After(defaultHandlerKillCeiling):
+		w.logger.Warn("Handler goroutine did not return after ctx cancellation; leaking",
+			"type", jobType,
+			"queue", w.queueName,
+			"job_id", jobIDOf(job),
+			"kill_ceiling_ms", defaultHandlerKillCeiling.Milliseconds(),
+		)
+	}
+}
+
+// jobIDOf returns the job's stable ID if it implements Identifiable, or
+// an empty string otherwise. Used purely for diagnostic logging; do not
+// rely on this for attempt tracking (see Worker.jobKey).
+func jobIDOf(job Job) string {
+	if id, ok := job.(Identifiable); ok {
+		return id.JobID()
+	}
+	return ""
 }
 
 // handleJobFailure decides whether to retry a job or permanently fail it.
