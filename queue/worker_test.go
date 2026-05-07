@@ -820,6 +820,13 @@ func TestWorker_HandleCtxerReceivesCancellation(t *testing.T) {
 	// and must observe cancellation.
 	worker.Stop()
 
+	// Stop() only waits for the worker's pump goroutines; the handler
+	// goroutine running HandleCtx is detached and may not have written
+	// observed yet. Poll until it does (or fail).
+	waitFor(t, 5*time.Second, func() bool {
+		return job.observed.Load() != nil
+	})
+
 	got, ok := job.observed.Load().(error)
 	if !ok || got == nil {
 		t.Fatalf("HandleCtx did not observe cancellation; observed=%v", got)
@@ -863,5 +870,111 @@ func TestWorker_HandleOnlyJobStillRuns(t *testing.T) {
 
 	if got := atomic.LoadInt32(&processed); got != 1 {
 		t.Errorf("expected legacy job to run once, got %d", got)
+	}
+}
+
+// TestWorker_ShutdownCancelledJobNotRetriedOrFailed asserts that when a
+// HandleCtxer job is interrupted by worker shutdown (not by a per-job
+// timeout), the worker treats it as a clean abort: the job is NOT routed
+// through handleJobFailure, so:
+//   - Job.Failed() is never called (failedWith stays nil).
+//   - The driver's failed-job list remains empty.
+//   - No JobFailed or JobRetrying events are dispatched.
+//   - No retry is pushed (queue size stays 0 after the original Pop).
+func TestWorker_ShutdownCancelledJobNotRetriedOrFailed(t *testing.T) {
+	q := NewMemoryDriver()
+	q.Start()
+	defer q.Shutdown(context.Background())
+
+	job := &ctxAwareJob{
+		ID:      "shutdown-abort-1",
+		started: make(chan struct{}),
+	}
+
+	if err := q.PushCtx(context.Background(), job, "shutdown-queue"); err != nil {
+		t.Fatalf("Push failed: %v", err)
+	}
+
+	// Track lifecycle events. JobFailed/JobRetrying must not fire.
+	var (
+		failedEvents   int32
+		retryingEvents int32
+	)
+	worker := NewWorker(q, "shutdown-queue", func(j Job) error {
+		return j.Handle()
+	},
+		WithInterval(25*time.Millisecond),
+		WithMaxRetries(5), // plenty of retries available; we assert none are used
+		WithBackoff(FixedBackoff(0)),
+		WithTimeout(30*time.Second), // long enough that job-timeout cannot fire first
+	)
+	worker.SetEventDispatcher(func(ev interface{}) error {
+		switch ev.(type) {
+		case *JobFailed:
+			atomic.AddInt32(&failedEvents, 1)
+		case *JobRetrying:
+			atomic.AddInt32(&retryingEvents, 1)
+		}
+		return nil
+	})
+
+	worker.Start(context.Background())
+
+	// Wait for the handler to actually start before shutting down, otherwise
+	// we could race past the job and the test would be vacuous.
+	select {
+	case <-job.started:
+	case <-time.After(5 * time.Second):
+		worker.Stop()
+		t.Fatalf("HandleCtx never started")
+	}
+
+	worker.Stop()
+
+	// Confirm cancellation actually reached the handler (sanity: otherwise
+	// the rest of the assertions are meaningless). The handler goroutine
+	// is detached from Stop(), so poll briefly.
+	waitFor(t, 5*time.Second, func() bool {
+		return job.observed.Load() != nil
+	})
+	gotErr, _ := job.observed.Load().(error)
+	if gotErr == nil {
+		t.Fatalf("HandleCtx did not observe cancellation")
+	}
+
+	// Brief settle time for any (unwanted) async failure paths to fire.
+	// If retries/Failed were going to happen, they'd happen well within
+	// this window. We're asserting they don't.
+	time.Sleep(100 * time.Millisecond)
+
+	// No Failed() call on the job.
+	if v := job.failedWith.Load(); v != nil {
+		t.Errorf("Job.Failed() was called with %v on shutdown-cancelled job; expected no call", v)
+	}
+
+	// Driver's failed list stays empty.
+	failed, err := q.GetFailed("shutdown-queue")
+	if err != nil {
+		t.Fatalf("GetFailed: %v", err)
+	}
+	if len(failed) != 0 {
+		t.Errorf("expected 0 failed jobs after shutdown-cancellation, got %d", len(failed))
+	}
+
+	// No JobFailed / JobRetrying events fired.
+	if n := atomic.LoadInt32(&failedEvents); n != 0 {
+		t.Errorf("expected 0 JobFailed events, got %d", n)
+	}
+	if n := atomic.LoadInt32(&retryingEvents); n != 0 {
+		t.Errorf("expected 0 JobRetrying events, got %d", n)
+	}
+
+	// Queue is empty (original Pop removed it; no retry was pushed).
+	size, err := q.Size("shutdown-queue")
+	if err != nil {
+		t.Fatalf("Size: %v", err)
+	}
+	if size != 0 {
+		t.Errorf("expected queue size 0 (no retry pushed), got %d", size)
 	}
 }

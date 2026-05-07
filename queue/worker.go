@@ -355,8 +355,8 @@ func (w *Worker) processJob() error {
 			}
 		}()
 		// If the job implements HandleCtxer, invoke it directly with the
-		// worker's per-job context so cancellation (shutdown, timeout) and
-		// trace spans flow into the handler. Otherwise fall back to the
+		// worker's per-job context so cancellation (worker shutdown, per-job
+		// timeout) flows into the handler. Otherwise fall back to the
 		// user-supplied handler, which typically calls job.Handle().
 		if hc, ok := job.(HandleCtxer); ok {
 			done <- hc.HandleCtx(jobCtx)
@@ -369,6 +369,23 @@ func (w *Worker) processJob() error {
 	case err := <-done:
 		duration := time.Since(startTime)
 		if err != nil {
+			// If the worker itself is shutting down and the handler returned
+			// a context error, treat this as a clean abort rather than a job
+			// failure: the worker asked the job to stop, the job didn't fail.
+			// We discriminate against jobCtx.Done() (per-job timeout) by
+			// checking w.ctx.Err(): only the parent worker context being
+			// done counts as shutdown. The job is not retried, not marked
+			// failed, and not routed through Failed(); it stays "in flight"
+			// from the driver's perspective and a future worker will pick it
+			// up (or the driver's own shutdown path handles it).
+			if (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) && w.ctx.Err() != nil {
+				w.logger.Info("Job aborted by worker shutdown",
+					"type", jobType,
+					"queue", w.queueName,
+					"duration_ms", duration.Milliseconds(),
+				)
+				return nil
+			}
 			w.handleJobFailure(jobCtx, job, jobType, err, duration)
 			return fmt.Errorf("velocity/queue: job failed: %w", err)
 		}
@@ -384,6 +401,21 @@ func (w *Worker) processJob() error {
 		return nil
 	case <-jobCtx.Done():
 		duration := time.Since(startTime)
+		// Distinguish worker shutdown from a real per-job timeout. jobCtx is
+		// derived from w.ctx, so a worker Stop() cancels jobCtx as well; in
+		// that case the job is not failing, the worker is leaving. Same
+		// reasoning as the err-branch above: do not call handleJobFailure,
+		// do not retry, do not mark Failed. The handler goroutine will be
+		// allowed to finish on its own (it MUST honor ctx.Done(); see
+		// HandleCtxer godoc).
+		if w.ctx.Err() != nil {
+			w.logger.Info("Job aborted by worker shutdown",
+				"type", jobType,
+				"queue", w.queueName,
+				"duration_ms", duration.Milliseconds(),
+			)
+			return nil
+		}
 		timeoutErr := fmt.Errorf("velocity/queue: job timed out")
 		w.handleJobFailure(jobCtx, job, jobType, timeoutErr, duration)
 		return timeoutErr
