@@ -527,4 +527,3 @@ func jsonEqual(expected, actual any) bool {
 	// Fallback to reflect.DeepEqual
 	return reflect.DeepEqual(expected, actual)
 }
-
