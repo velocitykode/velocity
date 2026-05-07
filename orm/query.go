@@ -904,10 +904,13 @@ func (q *Query[T]) Get() ([]T, error) {
 			return nil, err
 		}
 
-		// Mark as existing
-		if m, ok := any(&model).(*Model[T]); ok {
-			m.IsExisting = true
-		}
+		// Mark as existing so a subsequent Save routes through UPDATE
+		// (with BeforeUpdate/AfterUpdate hooks) instead of re-inserting.
+		// The dynamic type of &model is *T (the embedding struct), not
+		// *Model[T], so a direct type assertion always fails. Routing
+		// through the existenceSetter interface lets method promotion
+		// resolve to the embedded base type's setExisting.
+		markExisting(&model)
 
 		results = append(results, model)
 	}
@@ -1507,6 +1510,12 @@ func (r *RawQuery[T]) First(dest *T) error {
 		return err
 	}
 
+	// Mirror Query[T].Get: rows scanned through a raw query are still
+	// existing rows from the caller's perspective, so a downstream
+	// Save must take the UPDATE path. existenceSetter is a no-op on
+	// Immutable* (correct, no UPDATE branch exists for them).
+	markExisting(dest)
+
 	dispatchQueryExecuted(r.getContext(), r.sql, r.args, duration, 1, r.driver.DriverName(), 2)
 	return nil
 }
@@ -1530,6 +1539,9 @@ func (r *RawQuery[T]) Get() ([]T, error) {
 			dispatchQueryExecuted(r.getContext(), r.sql, r.args, duration, int64(len(results)), r.driver.DriverName(), 2)
 			return nil, err
 		}
+		// Same reasoning as Query[T].Get: mark each scanned row as
+		// existing so a subsequent Save updates instead of duplicating.
+		markExisting(&model)
 		results = append(results, model)
 	}
 

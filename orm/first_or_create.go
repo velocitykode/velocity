@@ -130,7 +130,9 @@ func updateOrCreate[T any](conditions map[string]any, values map[string]any) (*T
 	var found T
 	err := q.First(&found)
 	if err == nil {
-		// Found — mark as existing so Save performs UPDATE, not INSERT
+		// Belt-and-suspenders: Query.First already marks IsExisting on
+		// scan, but a redundant call is idempotent and survives any
+		// future refactor of the read path that forgets to mark.
 		markExisting(&found)
 
 		// Apply values and save
@@ -158,7 +160,11 @@ func updateOrCreate[T any](conditions map[string]any, values map[string]any) (*T
 	return model, nil
 }
 
-// existenceSetter is implemented by all 4 model base types.
+// existenceSetter is implemented by every base model type. Immutable
+// variants opt in deliberately: leaving them unmarked would let a
+// read-then-Save round trip silently re-INSERT the row (auto-inc PK)
+// or fail with a raw DB unique-key error (UUID PK), instead of the
+// loud, intended ErrImmutableModelUpdate.
 type existenceSetter interface {
 	setExisting()
 }
@@ -167,6 +173,8 @@ func (m *Model[T]) setExisting()               { m.IsExisting = true }
 func (m *UUIDModel[T]) setExisting()           { m.IsExisting = true }
 func (m *SoftDeleteModel[T]) setExisting()     { m.IsExisting = true }
 func (m *SoftDeleteUUIDModel[T]) setExisting() { m.IsExisting = true }
+func (m *ImmutableModel[T]) setExisting()      { m.IsExisting = true }
+func (m *ImmutableUUIDModel[T]) setExisting()  { m.IsExisting = true }
 
 // markExisting sets the IsExisting flag via the existenceSetter interface.
 // This avoids fragile reflection-based type string matching.
