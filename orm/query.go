@@ -1470,21 +1470,74 @@ func scanIntoStruct(rows *sql.Rows, dest any) error {
 	return rows.Scan(valuePtrs...)
 }
 
-// toSnakeCase converts a string from CamelCase to snake_case
-// Handles consecutive capitals: ProviderID -> provider_id, not provider_i_d
-func toSnakeCase(str string) string {
+// ToSnakeCase converts a CamelCase / acronym-cased identifier to snake_case.
+//
+// BREAKING: as of this version, consecutive uppercase letters are split at
+// the acronym->word boundary, and digit->upper transitions also insert an
+// underscore. Previously these collapsed:
+//
+//	SSHKey       -> ssh_key       (was sshkey)
+//	URLPath      -> url_path      (was urlpath)
+//	OAuthID      -> o_auth_id     (was oauthid)
+//	Field1Name   -> field1_name   (was field1name)
+//
+// Apps with acronym-named or digit-bearing model types that relied on the
+// previous mapping for auto-derived table/column names must either override
+// TableName() on the model to pin the legacy name, or run a migration to
+// rename the table/column to the new convention.
+//
+// Exported so other packages (e.g. console scaffolders) can share a single
+// canonical implementation, keeping migration table names aligned with the
+// runtime ORM's column/table inference.
+//
+// Handles acronym->word boundaries so consecutive capitals split correctly:
+//   - ProviderID      -> provider_id
+//   - SSHKeyID        -> ssh_key_id
+//   - URLPath         -> url_path
+//   - HTTPSConnection -> https_connection
+//
+// Also splits at digit->upper boundaries so embedded numbers don't fuse the
+// next word onto the digit run:
+//   - Field1Name      -> field1_name
+//   - OAuth2Token     -> o_auth2_token
+//   - Zone1AConfig    -> zone1_a_config
+//
+// An underscore is inserted before an uppercase letter when ANY of:
+//  1. the previous char is lowercase (camelCase boundary), OR
+//  2. the previous char is uppercase AND the next char is lowercase
+//     (acronym->word boundary, e.g. the "K" in "SSHKey"), OR
+//  3. the previous char is a digit (digit->word boundary).
+//
+// Non-ASCII runes are lowercased via strings.ToLower and emitted as their
+// full UTF-8 byte sequence (no truncation to a single byte).
+func ToSnakeCase(str string) string {
 	var result []byte
-	for i, r := range str {
+	runes := []rune(str)
+	for i, r := range runes {
 		if i > 0 && r >= 'A' && r <= 'Z' {
-			// Only add underscore if previous char in ORIGINAL string is lowercase
-			prevChar := str[i-1]
-			if prevChar >= 'a' && prevChar <= 'z' {
+			prev := runes[i-1]
+			prevLower := prev >= 'a' && prev <= 'z'
+			prevUpper := prev >= 'A' && prev <= 'Z'
+			prevDigit := prev >= '0' && prev <= '9'
+			nextLower := i+1 < len(runes) && runes[i+1] >= 'a' && runes[i+1] <= 'z'
+			if prevLower || (prevUpper && nextLower) || prevDigit {
 				result = append(result, '_')
 			}
 		}
-		result = append(result, byte(strings.ToLower(string(r))[0]))
+		// Append the full lowercased UTF-8 sequence rather than just the
+		// first byte. A multi-byte rune's lowercase form may itself be
+		// multi-byte (e.g. some Unicode case folds), and truncating to
+		// byte 0 corrupts the output.
+		result = append(result, []byte(strings.ToLower(string(r)))...)
 	}
 	return string(result)
+}
+
+// toSnakeCase is the legacy package-private alias kept so internal callers
+// in this package don't have to change. New cross-package callers should use
+// ToSnakeCase.
+func toSnakeCase(str string) string {
+	return ToSnakeCase(str)
 }
 
 // RawQuery represents a raw SQL query that can be executed with First() or Get()

@@ -11,6 +11,7 @@ import (
 
 	cli "github.com/velocitykode/velocity-cli"
 	"github.com/velocitykode/velocity/console/stubs"
+	"github.com/velocitykode/velocity/orm"
 )
 
 // MakeHandlerOptions holds flags for the make:handler command.
@@ -104,15 +105,14 @@ func toPascalCase(s string) string {
 	return strings.Join(words, "")
 }
 
+// toSnakeCase delegates to orm.ToSnakeCase so the scaffolder and the
+// runtime ORM agree on column/table name derivation. Previously this had
+// its own naive implementation that inserted an underscore before every
+// uppercase letter, which produced different filenames from the table
+// names the ORM would query at runtime (e.g. "SSHKey" -> "s_s_h_key" here
+// vs "ssh_key" in the ORM).
 func toSnakeCase(s string) string {
-	var result []rune
-	for i, r := range s {
-		if unicode.IsUpper(r) && i > 0 {
-			result = append(result, '_')
-		}
-		result = append(result, unicode.ToLower(r))
-	}
-	return string(result)
+	return orm.ToSnakeCase(s)
 }
 
 func splitWords(s string) []string {
