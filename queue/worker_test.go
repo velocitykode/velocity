@@ -749,3 +749,119 @@ func TestWorker_RetryPushBoundedDuringShutdown(t *testing.T) {
 		t.Fatalf("Stop did not complete within %v (retry push hung)", maxWait)
 	}
 }
+
+// ctxAwareJob implements HandleCtxer and blocks on ctx.Done(), recording the
+// observed ctx.Err() so the test can assert cancellation propagated into the
+// handler.
+type ctxAwareJob struct {
+	ID         string
+	started    chan struct{}
+	observed   atomic.Value // error
+	failedWith atomic.Value // error
+}
+
+func (j *ctxAwareJob) Handle() error {
+	// Should never be called when HandleCtxer is implemented.
+	return errors.New("ctxAwareJob.Handle called instead of HandleCtx")
+}
+
+func (j *ctxAwareJob) HandleCtx(ctx context.Context) error {
+	close(j.started)
+	<-ctx.Done()
+	j.observed.Store(ctx.Err())
+	return ctx.Err()
+}
+
+func (j *ctxAwareJob) Failed(err error) {
+	j.failedWith.Store(err)
+}
+
+// JobID gives a stable key so the worker's attempt tracker doesn't fall back
+// to pointer identity (irrelevant here but mirrors real-world usage).
+func (j *ctxAwareJob) JobID() string { return j.ID }
+
+func TestWorker_HandleCtxerReceivesCancellation(t *testing.T) {
+	q := NewMemoryDriver()
+	q.Start()
+	defer q.Shutdown(context.Background())
+
+	job := &ctxAwareJob{
+		ID:      "ctx-aware-1",
+		started: make(chan struct{}),
+	}
+
+	if err := q.PushCtx(context.Background(), job, "ctx-queue"); err != nil {
+		t.Fatalf("Push failed: %v", err)
+	}
+
+	// User-supplied handler should NOT be invoked when the job implements
+	// HandleCtxer; track that here as a regression guard.
+	handlerCalls := int32(0)
+	worker := NewWorker(q, "ctx-queue", func(j Job) error {
+		atomic.AddInt32(&handlerCalls, 1)
+		return j.Handle()
+	},
+		WithInterval(25*time.Millisecond),
+		WithMaxRetries(1),
+		WithTimeout(30*time.Second), // long enough that ctx is cancelled by Stop, not timeout
+	)
+
+	worker.Start(context.Background())
+
+	// Wait for the handler to actually start before cancelling.
+	select {
+	case <-job.started:
+	case <-time.After(5 * time.Second):
+		worker.Stop()
+		t.Fatalf("HandleCtx never started")
+	}
+
+	// Cancel the worker's lifecycle ctx; the per-job ctx is derived from it
+	// and must observe cancellation.
+	worker.Stop()
+
+	got, ok := job.observed.Load().(error)
+	if !ok || got == nil {
+		t.Fatalf("HandleCtx did not observe cancellation; observed=%v", got)
+	}
+	if !errors.Is(got, context.Canceled) && !errors.Is(got, context.DeadlineExceeded) {
+		t.Fatalf("expected ctx.Canceled or DeadlineExceeded, got %v", got)
+	}
+	if atomic.LoadInt32(&handlerCalls) != 0 {
+		t.Errorf("user handler should not run for HandleCtxer jobs; got %d calls", handlerCalls)
+	}
+}
+
+func TestWorker_HandleOnlyJobStillRuns(t *testing.T) {
+	q := NewMemoryDriver()
+	q.Start()
+	defer q.Shutdown(context.Background())
+
+	processed := int32(0)
+	job := &TestJob{
+		ID:      "legacy-1",
+		Message: "legacy job (Handle only)",
+		Handler: func() error {
+			atomic.AddInt32(&processed, 1)
+			return nil
+		},
+	}
+
+	if err := q.PushCtx(context.Background(), job, "legacy-queue"); err != nil {
+		t.Fatalf("Push failed: %v", err)
+	}
+
+	worker := NewWorker(q, "legacy-queue", func(j Job) error {
+		return j.Handle()
+	}, WithInterval(25*time.Millisecond), WithMaxRetries(1))
+
+	worker.Start(context.Background())
+	waitFor(t, 5*time.Second, func() bool {
+		return atomic.LoadInt32(&processed) == 1
+	})
+	worker.Stop()
+
+	if got := atomic.LoadInt32(&processed); got != 1 {
+		t.Errorf("expected legacy job to run once, got %d", got)
+	}
+}

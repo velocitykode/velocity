@@ -354,6 +354,14 @@ func (w *Worker) processJob() error {
 				done <- panicerr.FromRecovered(r)
 			}
 		}()
+		// If the job implements HandleCtxer, invoke it directly with the
+		// worker's per-job context so cancellation (shutdown, timeout) and
+		// trace spans flow into the handler. Otherwise fall back to the
+		// user-supplied handler, which typically calls job.Handle().
+		if hc, ok := job.(HandleCtxer); ok {
+			done <- hc.HandleCtx(jobCtx)
+			return
+		}
 		done <- w.handler(job)
 	}()
 
