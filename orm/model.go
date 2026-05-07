@@ -1473,6 +1473,27 @@ func anyGuardedList(s any) (map[string]bool, bool) {
 	return nil, false
 }
 
+// fieldColumnName returns the database column name for a struct field. It
+// honors the explicit `orm:"column:..."` tag when present, otherwise falls
+// back to snake_case of the Go field name. Returns "" for fields tagged
+// `orm:"-"` so callers can skip them defensively (matches resolveColumnName).
+// This is the canonical helper used by both structToMap (write path) and
+// mapToStruct (read path) so the two directions stay symmetric.
+func fieldColumnName(field reflect.StructField) string {
+	tag := field.Tag.Get("orm")
+	if tag == "-" {
+		return ""
+	}
+	if tag != "" {
+		for _, part := range strings.Split(tag, ";") {
+			if strings.HasPrefix(part, "column:") {
+				return strings.TrimPrefix(part, "column:")
+			}
+		}
+	}
+	return toSnakeCase(field.Name)
+}
+
 func mapToStruct(m map[string]any, s any) error {
 	v := reflect.ValueOf(s)
 	if v.Kind() == reflect.Ptr {
@@ -1499,15 +1520,30 @@ func mapToStruct(m map[string]any, s any) error {
 
 	for i := 0; i < v.NumField(); i++ {
 		field := t.Field(i)
-		fieldName := toSnakeCase(field.Name)
+
+		// Two distinct keys:
+		//   columnKey:    DB column name; honors orm:"column:..." tag.
+		//                 Used to look up the value in the source map so
+		//                 mapToStruct stays symmetric with structToMap.
+		//   fieldNameKey: snake_case of the Go field name. Used for
+		//                 Fillable/Guarded set lookup so mass-assignment
+		//                 policy stays consistent with applyFillableToStruct
+		//                 and the user-facing Fillable()/Guarded() contract,
+		//                 which key on the field name (not the column).
+		columnKey := fieldColumnName(field)
+		if columnKey == "" {
+			// orm:"-" or otherwise non-persistent field; skip.
+			continue
+		}
+		fieldNameKey := toSnakeCase(field.Name)
 
 		// Check if field value exists in map
-		if val, ok := m[fieldName]; ok {
-			// Mass assignment protection
-			if fillableSet != nil && !fillableSet[fieldName] {
+		if val, ok := m[columnKey]; ok {
+			// Mass assignment protection (keyed on field name, not column).
+			if fillableSet != nil && !fillableSet[fieldNameKey] {
 				continue
 			}
-			if guardedSet != nil && guardedSet[fieldName] {
+			if guardedSet != nil && guardedSet[fieldNameKey] {
 				continue
 			}
 
@@ -1656,21 +1692,13 @@ func structToMap(s any) map[string]any {
 			continue
 		}
 
-		// Get column name from tag or use field name
-		columnName := field.Name
-		if tag != "" {
-			parts := strings.Split(tag, ";")
-			for _, part := range parts {
-				if strings.HasPrefix(part, "column:") {
-					columnName = strings.TrimPrefix(part, "column:")
-					break
-				}
-			}
-		}
-
-		// Convert field name to snake_case if no column specified
-		if columnName == field.Name {
-			columnName = toSnakeCase(field.Name)
+		// Resolve column name (orm:"column:..." or snake_case fallback).
+		// Shared with mapToStruct so write/read directions stay symmetric.
+		// Defensive: skip empty (orm:"-" already handled above, but the
+		// helper also returns "" for skip-tagged fields).
+		columnName := fieldColumnName(field)
+		if columnName == "" {
+			continue
 		}
 
 		// JSON/JSONB columns: omit zero values so DB defaults can apply.

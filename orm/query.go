@@ -1410,7 +1410,17 @@ func scanIntoStruct(rows *sql.Rows, dest any) error {
 				continue
 			}
 
-			// Get the column name from the struct tag or field name
+			// Get the column name from the struct tag or field name.
+			//
+			// TODO(orm): Unify with fieldColumnName (orm/model.go). This
+			// path diverges in two ways: (1) it re-applies toSnakeCase to
+			// the resolved column name, mangling tags like
+			// orm:"column:LegacyXYZ" into legacy_x_y_z, and (2) it has a
+			// bare `primaryKey` shortcut that the model-side helpers
+			// don't share. Reconciling these requires care because
+			// scanIntoStruct is on the SELECT row-scan hot path and
+			// existing schemas may rely on the snake-case-of-column
+			// behavior. Tracked as a follow-up.
 			columnName := field.Name
 			if tag != "" {
 				// Parse the tag to get column name

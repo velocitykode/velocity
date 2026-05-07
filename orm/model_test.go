@@ -2,6 +2,7 @@ package orm
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -608,5 +609,206 @@ func TestUUIDModelSave_RespectsCallerCreatedAt(t *testing.T) {
 	}
 	if !dbUpdated.Equal(dbCreated) {
 		t.Errorf("persisted updated_at should equal created_at on insert: got %v vs %v", dbUpdated, dbCreated)
+	}
+}
+
+// legacyColumnModel exercises the asymmetric-column-tag bug: Go field name
+// "RenamedField" but DB column is "legacy_xyz". structToMap honors the tag
+// (writes to legacy_xyz); mapToStruct must honor it on the read path too.
+type legacyColumnModel struct {
+	Model[legacyColumnModel]
+	RenamedField string `orm:"column:legacy_xyz"`
+	Plain        string
+}
+
+func (legacyColumnModel) TableName() string { return "legacy_column_models" }
+
+func TestMapToStruct_HonorsColumnTag(t *testing.T) {
+	var dst legacyColumnModel
+	src := map[string]any{
+		"legacy_xyz": "abc",
+		"plain":      "ok",
+	}
+	if err := mapToStruct(src, &dst); err != nil {
+		t.Fatalf("mapToStruct: %v", err)
+	}
+	if dst.RenamedField != "abc" {
+		t.Errorf("RenamedField: expected %q from column:legacy_xyz, got %q", "abc", dst.RenamedField)
+	}
+	if dst.Plain != "ok" {
+		t.Errorf("Plain: expected %q, got %q", "ok", dst.Plain)
+	}
+}
+
+func TestMapToStruct_IgnoresFieldNameWhenColumnTagPresent(t *testing.T) {
+	// With an explicit column tag, only the explicit column key should
+	// populate the field. The snake_case'd Go field name must not.
+	var dst legacyColumnModel
+	src := map[string]any{
+		"renamed_field": "wrong",
+	}
+	if err := mapToStruct(src, &dst); err != nil {
+		t.Fatalf("mapToStruct: %v", err)
+	}
+	if dst.RenamedField != "" {
+		t.Errorf("RenamedField should be empty when only renamed_field key is supplied; got %q", dst.RenamedField)
+	}
+}
+
+func TestStructToMap_MapToStruct_RoundTrip(t *testing.T) {
+	original := legacyColumnModel{
+		RenamedField: "round-trip",
+		Plain:        "value",
+	}
+	encoded := structToMap(&original)
+
+	// structToMap must use the column tag.
+	if v, ok := encoded["legacy_xyz"]; !ok || v != "round-trip" {
+		t.Fatalf("structToMap should write legacy_xyz=%q, got map=%v", "round-trip", encoded)
+	}
+
+	var decoded legacyColumnModel
+	if err := mapToStruct(encoded, &decoded); err != nil {
+		t.Fatalf("mapToStruct: %v", err)
+	}
+	if decoded.RenamedField != original.RenamedField {
+		t.Errorf("RenamedField round-trip mismatch: got %q want %q", decoded.RenamedField, original.RenamedField)
+	}
+	if decoded.Plain != original.Plain {
+		t.Errorf("Plain round-trip mismatch: got %q want %q", decoded.Plain, original.Plain)
+	}
+}
+
+// guardedLegacyColumnModel pairs a column-tagged field with a Guarded()
+// denylist keyed on the snake_case'd Go FIELD NAME (the user-facing
+// contract), not the column name. Used to verify mass-assignment protection
+// stays consistent regardless of column-tag renaming.
+type guardedLegacyColumnModel struct {
+	Model[guardedLegacyColumnModel]
+	RenamedField string `orm:"column:legacy_xyz"`
+	Plain        string
+}
+
+func (guardedLegacyColumnModel) TableName() string { return "guarded_legacy_column_models" }
+func (guardedLegacyColumnModel) Guarded() []string {
+	// Users protect by Go field name (snake_case), not by column.
+	return []string{"renamed_field"}
+}
+
+// TestMapToStruct_GuardedHonorsFieldNameNotColumn is the regression test for
+// the reviewer-flagged bug: mapToStruct must look up fillable/guarded sets
+// by the snake_case'd Go field name (consistent with applyFillableToStruct
+// and the user-facing Fillable()/Guarded() contract), even when the field
+// is column-tagged. Otherwise an attacker could bypass guards by submitting
+// the column key.
+func TestMapToStruct_GuardedHonorsFieldNameNotColumn(t *testing.T) {
+	var dst guardedLegacyColumnModel
+	src := map[string]any{
+		"legacy_xyz": "evil", // column key (would slip past column-keyed guard)
+		"plain":      "ok",
+	}
+	if err := mapToStruct(src, &dst); err != nil {
+		t.Fatalf("mapToStruct: %v", err)
+	}
+	if dst.RenamedField != "" {
+		t.Errorf("RenamedField must remain empty: Guarded()=[\"renamed_field\"] should block legacy_xyz too; got %q", dst.RenamedField)
+	}
+	if dst.Plain != "ok" {
+		t.Errorf("Plain (not guarded) should be set; got %q", dst.Plain)
+	}
+}
+
+// fillableLegacyColumnModel is the Fillable counterpart: the allowlist is
+// keyed on the field name. mapToStruct must respect that even though the
+// map uses the column key.
+type fillableLegacyColumnModel struct {
+	Model[fillableLegacyColumnModel]
+	RenamedField string `orm:"column:legacy_xyz"`
+	Plain        string
+}
+
+func (fillableLegacyColumnModel) TableName() string { return "fillable_legacy_column_models" }
+func (fillableLegacyColumnModel) Fillable() []string {
+	// Only "plain" is fillable; "renamed_field" is NOT in the allowlist.
+	return []string{"plain"}
+}
+
+func TestMapToStruct_FillableHonorsFieldNameNotColumn(t *testing.T) {
+	var dst fillableLegacyColumnModel
+	src := map[string]any{
+		"legacy_xyz": "evil",
+		"plain":      "ok",
+	}
+	if err := mapToStruct(src, &dst); err != nil {
+		t.Fatalf("mapToStruct: %v", err)
+	}
+	if dst.RenamedField != "" {
+		t.Errorf("RenamedField must remain empty: Fillable()=[\"plain\"] should reject legacy_xyz; got %q", dst.RenamedField)
+	}
+	if dst.Plain != "ok" {
+		t.Errorf("Plain (fillable) should be set; got %q", dst.Plain)
+	}
+}
+
+// TestFieldColumnName_DashTagReturnsEmpty verifies the defensive `orm:"-"`
+// short-circuit so callers can use empty-string column name as a uniform
+// "skip this field" signal (matches resolveColumnName).
+func TestFieldColumnName_DashTagReturnsEmpty(t *testing.T) {
+	type sample struct {
+		Skip string `orm:"-"`
+		Keep string
+	}
+	tt := reflect.TypeOf(sample{})
+	if got := fieldColumnName(tt.Field(0)); got != "" {
+		t.Errorf("orm:\"-\" should yield empty column name, got %q", got)
+	}
+	if got := fieldColumnName(tt.Field(1)); got != "keep" {
+		t.Errorf("untagged field: expected snake_case fallback %q, got %q", "keep", got)
+	}
+}
+
+// TestSaveAndFind_HonorsColumnTag is a DB roundtrip smoke test. Save writes
+// via structToMap (which honors the column tag); Find reads via
+// scanIntoStruct (NOT in scope for this fix). Documented here as a
+// follow-up: see TODO below.
+//
+// NOTE: scanIntoStruct in orm/query.go (~line 1413) re-applies toSnakeCase
+// to the resolved column name and has subtly different tag-parsing
+// semantics than fieldColumnName. Unifying it onto the helper is a
+// follow-up; for now this test only asserts the WRITE side reaches the DB.
+// When scanIntoStruct is unified, extend this test to assert the read-back
+// value flows through Find as well.
+func TestSaveAndFind_HonorsColumnTag(t *testing.T) {
+	manager := newTestManager(t)
+	defer manager.Shutdown(context.Background())
+
+	db := manager.DB()
+	if _, err := db.Exec(`CREATE TABLE legacy_column_models (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		legacy_xyz TEXT,
+		plain TEXT,
+		created_at DATETIME,
+		updated_at DATETIME
+	)`); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	SetDefault(manager)
+	t.Cleanup(ResetDefault)
+
+	row := &legacyColumnModel{
+		RenamedField: "persisted",
+		Plain:        "p",
+	}
+	if err := Save(manager, row); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Verify the value reached the DB under the column-tagged name.
+	var got string
+	if err := db.QueryRow("SELECT legacy_xyz FROM legacy_column_models WHERE id = ?", row.Model.ID).Scan(&got); err != nil {
+		t.Fatalf("query legacy_xyz: %v", err)
+	}
+	if got != "persisted" {
+		t.Errorf("legacy_xyz column should hold %q, got %q", "persisted", got)
 	}
 }
