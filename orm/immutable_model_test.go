@@ -224,12 +224,19 @@ func TestImmutableUUIDModel_CreateAndRead(t *testing.T) {
 		t.Errorf("got Action %q", got.Action)
 	}
 
-	// Re-Save the original (which has IsExisting=true from the first
-	// insert). Find() does not currently round-trip IsExisting on
-	// embedded UUIDModel variants, so we re-use the freshly-saved
-	// pointer instead.
+	// The Find result must round-trip IsExisting so a re-Save hits
+	// the immutable-update guard loudly instead of silently producing
+	// a duplicate (auto-inc) or a raw DB unique-key error (UUID).
+	if !got.IsExisting {
+		t.Fatal("Find did not mark IsExisting on Immutable variant")
+	}
+	if err := Save(nil, got); !errors.Is(err, ErrImmutableModelUpdate) {
+		t.Errorf("re-Save via Find result error = %v, want ErrImmutableModelUpdate", err)
+	}
+	// The freshly-Created pointer must also fail the same way; it has
+	// IsExisting=true set by saveImmutableUUIDModel after insert.
 	if err := Save(nil, rec); !errors.Is(err, ErrImmutableModelUpdate) {
-		t.Errorf("re-Save error = %v, want ErrImmutableModelUpdate", err)
+		t.Errorf("re-Save via Created pointer error = %v, want ErrImmutableModelUpdate", err)
 	}
 }
 

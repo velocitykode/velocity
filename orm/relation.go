@@ -307,18 +307,24 @@ func isZeroKey(v any) bool {
 	}
 }
 
-// markIsExisting sets the IsExisting flag on a model's embedded base type.
+// markIsExisting sets the IsExisting flag on a model's embedded base
+// type. It dispatches through the existenceSetter interface so the
+// predicate matches markExisting (the typed helper used on Query/
+// RawQuery scans): a row read via an eager-loaded relation and a row
+// read directly produce the same IsExisting value, regardless of
+// whether the embedded base is mutable or immutable. Both helpers
+// gate on opt-in via setExisting; types that deliberately don't
+// implement it (none today) stay unmarked everywhere.
+//
+// v must be addressable (callers all derive it from reflect.New
+// followed by .Elem()) so the pointer receiver method on the embedded
+// base resolves via promotion.
 func markIsExisting(v reflect.Value) {
-	t := v.Type()
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
-		if field.Anonymous && field.Type.Kind() == reflect.Struct {
-			existsField := v.Field(i).FieldByName("IsExisting")
-			if existsField.IsValid() && existsField.CanSet() && existsField.Kind() == reflect.Bool {
-				existsField.SetBool(true)
-				return
-			}
-		}
+	if !v.CanAddr() {
+		return
+	}
+	if s, ok := v.Addr().Interface().(existenceSetter); ok {
+		s.setExisting()
 	}
 }
 
