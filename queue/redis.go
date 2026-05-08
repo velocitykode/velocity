@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/velocitykode/velocity/trace"
 )
 
 // RedisConfig holds Redis connection configuration.
@@ -99,6 +101,7 @@ func (r *RedisDriver) PushCtx(ctx context.Context, job Job, queueName ...string)
 	if err != nil {
 		return err
 	}
+	payload.TraceID, payload.SpanID, payload.ParentID = trace.GetTraceContext(ctx)
 
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -133,6 +136,7 @@ func (r *RedisDriver) PushDelayedCtx(ctx context.Context, job Job, delay time.Du
 	if err != nil {
 		return err
 	}
+	payload.TraceID, payload.SpanID, payload.ParentID = trace.GetTraceContext(ctx)
 
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -163,12 +167,20 @@ func (r *RedisDriver) PushDelayedCtx(ctx context.Context, job Job, delay time.Du
 // the BLPOP round-trip so worker shutdown aborts without waiting the full
 // BLPOP timeout.
 func (r *RedisDriver) PopCtx(ctx context.Context, queueName string) (Job, error) {
+	job, _, err := r.PopCtxWithTrace(ctx, queueName)
+	return job, err
+}
+
+// PopCtxWithTrace returns the popped job along with the producer-side trace
+// context recovered from the persisted payload. Implements TraceAwareDriver.
+func (r *RedisDriver) PopCtxWithTrace(ctx context.Context, queueName string) (Job, TraceContext, error) {
+	var tc TraceContext
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, tc, err
 	}
 	// First, move any ready delayed jobs to the main queue
 	if err := r.moveDelayedJobs(queueName); err != nil {
-		return nil, err
+		return nil, tc, err
 	}
 
 	queueKey := r.getQueueKey(queueName)
@@ -177,18 +189,18 @@ func (r *RedisDriver) PopCtx(ctx context.Context, queueName string) (Job, error)
 	result, err := r.client.BLPop(ctx, 1*time.Second, queueKey).Result()
 	if err != nil {
 		if err == redis.Nil {
-			return nil, nil // No jobs available
+			return nil, tc, nil // No jobs available
 		}
-		return nil, err
+		return nil, tc, err
 	}
 
 	if len(result) < 2 {
-		return nil, nil
+		return nil, tc, nil
 	}
 
 	var payload Payload
 	if err := json.Unmarshal([]byte(result[1]), &payload); err != nil {
-		return nil, fmt.Errorf("velocity/queue: failed to unmarshal payload: %w", err)
+		return nil, tc, fmt.Errorf("velocity/queue: failed to unmarshal payload: %w", err)
 	}
 
 	// Verify payload integrity if signing is enabled.
@@ -196,18 +208,20 @@ func (r *RedisDriver) PopCtx(ctx context.Context, queueName string) (Job, error)
 	payload.Signature = "" // Remove signature before verification
 	verifyData, err := json.Marshal(payload)
 	if err != nil {
-		return nil, fmt.Errorf("velocity/queue: failed to marshal payload for verification: %w", err)
+		return nil, tc, fmt.Errorf("velocity/queue: failed to marshal payload for verification: %w", err)
 	}
 	if err := verifyPayload(verifyData, sig); err != nil {
-		return nil, fmt.Errorf("velocity/queue: queue integrity check failed: %w", err)
+		return nil, tc, fmt.Errorf("velocity/queue: queue integrity check failed: %w", err)
 	}
+
+	tc = TraceContext{TraceID: payload.TraceID, SpanID: payload.SpanID, ParentID: payload.ParentID}
 
 	// Deserialize the job using the registry
 	job, err := registry.Deserialize(&payload)
 	if err != nil {
-		return nil, fmt.Errorf("velocity/queue: failed to deserialize job: %w", err)
+		return nil, tc, fmt.Errorf("velocity/queue: failed to deserialize job: %w", err)
 	}
-	return job, nil
+	return job, tc, nil
 }
 
 // Size returns the number of jobs in the queue

@@ -12,6 +12,7 @@ import (
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/internal/panicerr"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // MemoryDriver implements Queue interface using in-memory storage
@@ -150,6 +151,7 @@ func (m *MemoryDriver) PushCtx(ctx context.Context, job Job, queueName ...string
 	if err != nil {
 		return err
 	}
+	wrapper.Payload.TraceID, wrapper.Payload.SpanID, wrapper.Payload.ParentID = trace.GetTraceContext(ctx)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -176,6 +178,7 @@ func (m *MemoryDriver) PushDelayedCtx(ctx context.Context, job Job, delay time.D
 	if err != nil {
 		return err
 	}
+	wrapper.Payload.TraceID, wrapper.Payload.SpanID, wrapper.Payload.ParentID = trace.GetTraceContext(ctx)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -198,19 +201,26 @@ func (m *MemoryDriver) PushDelayedCtx(ctx context.Context, job Job, delay time.D
 // PopCtx retrieves and removes the next job. Returns (nil, ctx.Err()) if
 // ctx is already cancelled so worker loops exit cleanly on shutdown.
 func (m *MemoryDriver) PopCtx(ctx context.Context, queueName string) (Job, error) {
+	job, _, err := m.PopCtxWithTrace(ctx, queueName)
+	return job, err
+}
+
+// PopCtxWithTrace returns the popped job along with the producer-side trace
+// context recovered from the in-memory wrapper. Implements TraceAwareDriver.
+func (m *MemoryDriver) PopCtxWithTrace(ctx context.Context, queueName string) (Job, TraceContext, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, TraceContext{}, err
 	}
 	return m.popLocked(queueName)
 }
 
-func (m *MemoryDriver) popLocked(queueName string) (Job, error) {
+func (m *MemoryDriver) popLocked(queueName string) (Job, TraceContext, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	q, exists := m.queues[queueName]
 	if !exists || q.Len() == 0 {
-		return nil, nil // No jobs available
+		return nil, TraceContext{}, nil // No jobs available
 	}
 
 	element := q.Front()
@@ -218,11 +228,18 @@ func (m *MemoryDriver) popLocked(queueName string) (Job, error) {
 
 	wrapper, ok := element.Value.(*JobWrapper)
 	if !ok {
-		return nil, fmt.Errorf("invalid wrapper type")
+		return nil, TraceContext{}, fmt.Errorf("invalid wrapper type")
+	}
+
+	tc := TraceContext{}
+	if wrapper.Payload != nil {
+		tc.TraceID = wrapper.Payload.TraceID
+		tc.SpanID = wrapper.Payload.SpanID
+		tc.ParentID = wrapper.Payload.ParentID
 	}
 
 	// Return the actual job instance
-	return GetJobFromWrapper(wrapper), nil
+	return GetJobFromWrapper(wrapper), tc, nil
 }
 
 // Size returns the number of jobs in the queue

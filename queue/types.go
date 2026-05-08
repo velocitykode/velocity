@@ -67,8 +67,28 @@ type Payload struct {
 	Queue      string          `json:"queue"`
 	Attempts   int             `json:"attempts"`
 	CreatedAt  time.Time       `json:"created_at"`
+	TraceID    string          `json:"trace_id,omitempty"`  // Producer-side APM trace ID
+	SpanID     string          `json:"span_id,omitempty"`   // Producer-side APM span ID
+	ParentID   string          `json:"parent_id,omitempty"` // Producer-side parent span ID
 	Signature  string          `json:"signature,omitempty"` // HMAC-SHA256 integrity signature
 	DatabaseID int64           `json:"-"`                   // Internal use for database driver
+}
+
+// TraceContext carries the producer-side APM trace ids associated with a
+// popped job. Drivers that persist trace ids on the wire return this from
+// PopCtxWithTrace so workers can rebuild the trace ctx on the consumer side.
+type TraceContext struct {
+	TraceID  string
+	SpanID   string
+	ParentID string
+}
+
+// TraceAwareDriver is an optional driver capability. Drivers that persist
+// trace ids on the wire implement this so the worker can rebuild trace
+// context for the per-job ctx, restoring correlation across the queue
+// boundary. Workers fall back to PopCtx when a driver does not implement it.
+type TraceAwareDriver interface {
+	PopCtxWithTrace(ctx context.Context, queue string) (Job, TraceContext, error)
 }
 
 // MaxAttempter is an optional interface that jobs can implement to override

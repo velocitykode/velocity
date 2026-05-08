@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/trace"
 )
 
 // rewriteQuery expands `$N`-style placeholders in a query template into the
@@ -130,6 +132,8 @@ func (d *DatabaseDriver) PushDelayedCtx(ctx context.Context, job Job, delay time
 		return fmt.Errorf("velocity/queue: failed to create job wrapper: %w", err)
 	}
 
+	wrapper.Payload.TraceID, wrapper.Payload.SpanID, wrapper.Payload.ParentID = trace.GetTraceContext(ctx)
+
 	payload, err := json.Marshal(wrapper)
 	if err != nil {
 		return fmt.Errorf("velocity/queue: failed to serialize job: %w", err)
@@ -185,8 +189,18 @@ func (d *DatabaseDriver) PushDelayedCtx(ctx context.Context, job Job, delay time
 // the queue — the transaction is rolled back and the job stays reserved for
 // the next worker (or becomes visible again for inspection).
 func (d *DatabaseDriver) PopCtx(ctx context.Context, queueName string) (Job, error) {
+	job, _, err := d.PopCtxWithTrace(ctx, queueName)
+	return job, err
+}
+
+// PopCtxWithTrace is the trace-aware variant of PopCtx. It returns the
+// producer-side trace context recovered from the persisted payload so the
+// worker can rebuild ctx for downstream events and HandleCtxer handlers.
+// Implements TraceAwareDriver.
+func (d *DatabaseDriver) PopCtxWithTrace(ctx context.Context, queueName string) (Job, TraceContext, error) {
+	var tc TraceContext
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, tc, err
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -199,7 +213,7 @@ func (d *DatabaseDriver) PopCtx(ctx context.Context, queueName string) (Job, err
 	}
 	tx, err := d.db.BeginTx(ctx, txOpts)
 	if err != nil {
-		return nil, fmt.Errorf("velocity/queue: failed to begin transaction: %w", err)
+		return nil, tc, fmt.Errorf("velocity/queue: failed to begin transaction: %w", err)
 	}
 	// Rollback is a no-op if Commit already succeeded.
 	defer func() { _ = tx.Rollback() }()
@@ -233,9 +247,9 @@ func (d *DatabaseDriver) PopCtx(ctx context.Context, queueName string) (Job, err
 	row := tx.QueryRowContext(ctx, selectQuery, queueName, time.Now())
 	if err := scanJobRecord(row, &jobRecord); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil // No jobs available
+			return nil, tc, nil // No jobs available
 		}
-		return nil, fmt.Errorf("velocity/queue: failed to fetch job: %w", err)
+		return nil, tc, fmt.Errorf("velocity/queue: failed to fetch job: %w", err)
 	}
 
 	// Deserialize and verify the payload BEFORE delete. If verification
@@ -243,7 +257,7 @@ func (d *DatabaseDriver) PopCtx(ctx context.Context, queueName string) (Job, err
 	// releases the row lock and leaves the job in place.
 	var wrapper JobWrapper
 	if err := json.Unmarshal([]byte(jobRecord.Payload), &wrapper); err != nil {
-		return nil, fmt.Errorf("velocity/queue: failed to deserialize job: %w", err)
+		return nil, tc, fmt.Errorf("velocity/queue: failed to deserialize job: %w", err)
 	}
 
 	if wrapper.Payload != nil {
@@ -251,10 +265,15 @@ func (d *DatabaseDriver) PopCtx(ctx context.Context, queueName string) (Job, err
 		wrapper.Payload.Signature = "" // Remove signature before verification
 		verifyData, marshalErr := json.Marshal(wrapper)
 		if marshalErr != nil {
-			return nil, fmt.Errorf("velocity/queue: failed to marshal payload for verification: %w", marshalErr)
+			return nil, tc, fmt.Errorf("velocity/queue: failed to marshal payload for verification: %w", marshalErr)
 		}
 		if err := verifyPayload(verifyData, sig); err != nil {
-			return nil, fmt.Errorf("velocity/queue: queue integrity check failed: %w", err)
+			return nil, tc, fmt.Errorf("velocity/queue: queue integrity check failed: %w", err)
+		}
+		tc = TraceContext{
+			TraceID:  wrapper.Payload.TraceID,
+			SpanID:   wrapper.Payload.SpanID,
+			ParentID: wrapper.Payload.ParentID,
 		}
 	}
 
@@ -262,20 +281,20 @@ func (d *DatabaseDriver) PopCtx(ctx context.Context, queueName string) (Job, err
 	// failure also avoids deleting the row.
 	job := GetJobFromWrapper(&wrapper)
 	if job == nil {
-		return nil, fmt.Errorf("velocity/queue: failed to restore job from wrapper")
+		return nil, tc, fmt.Errorf("velocity/queue: failed to restore job from wrapper")
 	}
 
 	// Signature verified — safe to delete.
 	deleteQuery := d.rewriteQuery("DELETE FROM jobs WHERE id = $1")
 	if _, err := tx.ExecContext(ctx, deleteQuery, jobRecord.ID); err != nil {
-		return nil, fmt.Errorf("velocity/queue: failed to delete job: %w", err)
+		return nil, tc, fmt.Errorf("velocity/queue: failed to delete job: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("velocity/queue: failed to commit pop transaction: %w", err)
+		return nil, tc, fmt.Errorf("velocity/queue: failed to commit pop transaction: %w", err)
 	}
 
-	return job, nil
+	return job, tc, nil
 }
 
 // Size returns the number of jobs in the queue

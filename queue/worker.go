@@ -12,6 +12,7 @@ import (
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/internal/panicerr"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // MaxWorkerConcurrency is the upper bound for WithConcurrency.
@@ -326,7 +327,16 @@ func (w *Worker) work(id int) {
 
 // processJob processes a single job
 func (w *Worker) processJob() error {
-	job, err := w.queue.PopCtx(w.ctx, w.queueName)
+	var (
+		job        Job
+		producerTC TraceContext
+		err        error
+	)
+	if tad, ok := w.queue.(TraceAwareDriver); ok {
+		job, producerTC, err = tad.PopCtxWithTrace(w.ctx, w.queueName)
+	} else {
+		job, err = w.queue.PopCtx(w.ctx, w.queueName)
+	}
 	if err != nil {
 		return fmt.Errorf("velocity/queue: failed to pop job: %w", err)
 	}
@@ -350,6 +360,13 @@ func (w *Worker) processJob() error {
 	}
 	jobCtx, cancel := context.WithTimeout(w.ctx, timeout)
 	defer cancel()
+
+	// Restore the producer's trace ids so per-job events and HandleCtxer
+	// callers see the same trace as the originating request. Empty strings
+	// produce a no-op trace context, leaving legacy rows unaffected.
+	if producerTC.TraceID != "" || producerTC.SpanID != "" || producerTC.ParentID != "" {
+		jobCtx = trace.WithFullContext(jobCtx, producerTC.TraceID, producerTC.SpanID, producerTC.ParentID)
+	}
 
 	// Dispatch job.processing event
 	dispatchJobProcessing(w.dispatchEvent, jobCtx, jobType, w.queueName)
