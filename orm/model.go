@@ -25,85 +25,49 @@ func validateIdentifier(name string) error {
 	return nil
 }
 
-// Model is the generic base model that provides static query methods on the type itself.
-// By default, models do NOT have soft deletes. Use SoftDeleteModel for soft delete support.
+// Model is a convenience composition: integer PK + Timestamps.
+// Custom shapes that don't match this exactly should compose traits
+// directly (orm.IDInt[T] + orm.Timestamps + ...) rather than embedding
+// Model[T] - use orm.IsExisting / orm.Track / orm.IsDirty / orm.HasChanged for
+// per-instance state inspection - those operate on the side-channel.
 type Model[T any] struct {
-	ID        uint      `orm:"primaryKey;autoIncrement" json:"id"`
-	CreatedAt time.Time `orm:"autoCreateTime" json:"created_at"`
-	UpdatedAt time.Time `orm:"autoUpdateTime" json:"updated_at"`
-
-	// Internal fields (not persisted)
-	IsExisting bool            `orm:"-" json:"-"`
-	Original   map[string]any  `orm:"-" json:"-"`
-	Changed    map[string]bool `orm:"-" json:"-"`
+	IDInt[T]
+	Timestamps
 }
 
-// UUIDModel is a generic base model with UUID primary key for distributed systems
-// and external-facing APIs where sequential IDs pose security risks.
-// By default, models do NOT have soft deletes. Use SoftDeleteUUIDModel for soft delete support.
+// UUIDModel is a convenience composition: UUID PK + Timestamps.
 type UUIDModel[T any] struct {
-	ID        string    `orm:"primaryKey;type:uuid" json:"id"`
-	CreatedAt time.Time `orm:"autoCreateTime" json:"created_at"`
-	UpdatedAt time.Time `orm:"autoUpdateTime" json:"updated_at"`
-
-	// Internal fields (not persisted)
-	IsExisting bool            `orm:"-" json:"-"`
-	Original   map[string]any  `orm:"-" json:"-"`
-	Changed    map[string]bool `orm:"-" json:"-"`
+	IDUUID[T]
+	Timestamps
 }
 
-// SoftDeleteModel is a base model WITH soft delete support.
-// Use this when you need to keep deleted records (e.g., users, orders, audit trails).
+// SoftDeleteModel is a convenience composition: integer PK + Timestamps + SoftDeletes.
 type SoftDeleteModel[T any] struct {
-	ID        uint       `orm:"primaryKey;autoIncrement" json:"id"`
-	CreatedAt time.Time  `orm:"autoCreateTime" json:"created_at"`
-	UpdatedAt time.Time  `orm:"autoUpdateTime" json:"updated_at"`
-	DeletedAt *time.Time `orm:"index" json:"deleted_at,omitempty"`
-
-	// Internal fields (not persisted)
-	IsExisting bool            `orm:"-" json:"-"`
-	Original   map[string]any  `orm:"-" json:"-"`
-	Changed    map[string]bool `orm:"-" json:"-"`
+	IDInt[T]
+	Timestamps
+	SoftDeletes[T]
 }
 
-// SoftDeleteUUIDModel is a UUID primary key model WITH soft delete support.
+// SoftDeleteUUIDModel is a convenience composition: UUID PK + Timestamps + SoftDeletes.
 type SoftDeleteUUIDModel[T any] struct {
-	ID        string     `orm:"primaryKey;type:uuid" json:"id"`
-	CreatedAt time.Time  `orm:"autoCreateTime" json:"created_at"`
-	UpdatedAt time.Time  `orm:"autoUpdateTime" json:"updated_at"`
-	DeletedAt *time.Time `orm:"index" json:"deleted_at,omitempty"`
-
-	// Internal fields (not persisted)
-	IsExisting bool            `orm:"-" json:"-"`
-	Original   map[string]any  `orm:"-" json:"-"`
-	Changed    map[string]bool `orm:"-" json:"-"`
+	IDUUID[T]
+	Timestamps
+	SoftDeletes[T]
 }
 
-// ImmutableModel is an append-only base model. It has CreatedAt but no
-// UpdatedAt and exposes no Update/Save-as-update path, so embedded
-// structs can read and create rows but cannot mutate them. Tables like
-// audit_logs that have no `updated_at` column should embed this rather
-// than Model[T] (whose Save/Update unconditionally stamp updated_at and
-// fail at the driver against missing columns).
-//
-// The static helpers (Find, FindBy, First, Last, All, Where, ...) and
-// the Save() instance method (insert-only) are provided. Update,
-// DeleteWhere, and the soft-delete primitives are intentionally omitted.
+// ImmutableModel is a convenience composition: integer PK + CreatedAtOnly + AppendOnly.
+// Save returns ErrImmutableModelUpdate on a row that already exists.
 type ImmutableModel[T any] struct {
-	ID        uint      `orm:"primaryKey;autoIncrement" json:"id"`
-	CreatedAt time.Time `orm:"autoCreateTime" json:"created_at"`
-
-	// Internal fields (not persisted)
-	IsExisting bool `orm:"-" json:"-"`
+	IDInt[T]
+	CreatedAtOnly
+	AppendOnly
 }
 
-// ImmutableUUIDModel is the UUID-keyed counterpart of ImmutableModel.
+// ImmutableUUIDModel is a convenience composition: UUID PK + CreatedAtOnly + AppendOnly.
 type ImmutableUUIDModel[T any] struct {
-	ID        string    `orm:"primaryKey;type:uuid" json:"id"`
-	CreatedAt time.Time `orm:"autoCreateTime" json:"created_at"`
-
-	// Internal fields (not persisted)
-	IsExisting bool `orm:"-" json:"-"`
+	IDUUID[T]
+	CreatedAtOnly
+	AppendOnly
 }
 
 // Static-like methods that return the actual type
@@ -305,87 +269,6 @@ func (Model[T]) DeleteWhere(ctx context.Context, conditions map[string]any) (int
 
 // Instance methods
 
-// Save inserts or updates the model. The receiver-style helper cannot
-// resolve the embedding parent's reflection metadata, so callers must
-// reach the package-level Save(ctx, manager, model) entry point. This
-// stub is preserved as a no-op error to surface a clear compile-time
-// signal: the form `model.Save()` is no longer supported because it
-// would silently auto-commit outside any in-flight transaction.
-func (m *Model[T]) Save() error {
-	if m.IsExisting {
-		return m.update()
-	}
-	return m.insert()
-}
-
-// Delete permanently deletes the model by primary key. Takes ctx as
-// the first argument so transaction enrollment is mandatory and
-// explicit.
-func (m *Model[T]) Delete(ctx context.Context) error {
-	if !m.IsExisting {
-		return errors.New("cannot delete non-existent model")
-	}
-
-	query := newQuery[T]()
-	_, err := query.Where("id = ?", m.ID).ForceDelete(ctx)
-	return err
-}
-
-// Refresh reloads the model from database. Takes ctx as the first
-// argument so the read participates in the caller's transaction when
-// ctx carries one.
-func (m *Model[T]) Refresh(ctx context.Context) error {
-	if !m.IsExisting {
-		return errors.New("cannot refresh non-existent model")
-	}
-	fresh, err := Model[T]{}.Find(ctx, m.ID)
-	if err != nil {
-		return err
-	}
-
-	// Copy fresh data to current model
-	reflect.ValueOf(m).Elem().Set(reflect.ValueOf(fresh).Elem())
-	return nil
-}
-
-// HasChanged checks if a field has changed
-func (m *Model[T]) HasChanged(field string) bool {
-	if m.Changed == nil {
-		return false
-	}
-	return m.Changed[field]
-}
-
-// GetChanges returns all changed fields
-func (m *Model[T]) GetChanges() map[string]any {
-	changes := make(map[string]any)
-	if m.Changed == nil {
-		return changes
-	}
-
-	v := reflect.ValueOf(m).Elem()
-	t := v.Type()
-
-	for i := 0; i < v.NumField(); i++ {
-		field := t.Field(i)
-		if m.Changed[field.Name] {
-			changes[field.Name] = v.Field(i).Interface()
-		}
-	}
-
-	return changes
-}
-
-// IsDirty checks if the model has any unsaved changes
-func (m *Model[T]) IsDirty() bool {
-	return len(m.Changed) > 0
-}
-
-// IsClean checks if the model has no unsaved changes
-func (m *Model[T]) IsClean() bool {
-	return !m.IsDirty()
-}
-
 // UUIDModel static methods
 
 // Find retrieves a record by UUID primary key. Takes ctx as the first
@@ -581,83 +464,6 @@ func (UUIDModel[T]) DeleteWhere(ctx context.Context, conditions map[string]any) 
 }
 
 // UUIDModel instance methods
-
-// Save delegates to the package-level Save; the legacy zero-arg form
-// is preserved as a no-op shim that returns the canonical error.
-func (m *UUIDModel[T]) Save() error {
-	if m.IsExisting {
-		return m.update()
-	}
-	return m.insert()
-}
-
-// Delete permanently deletes the model by primary key. Takes ctx as
-// the first argument so transaction enrollment is mandatory and
-// explicit.
-func (m *UUIDModel[T]) Delete(ctx context.Context) error {
-	if !m.IsExisting {
-		return errors.New("cannot delete non-existent model")
-	}
-
-	query := newQuery[T]()
-	_, err := query.Where("id = ?", m.ID).ForceDelete(ctx)
-	return err
-}
-
-// Refresh reloads the model from database. Takes ctx as the first
-// argument so the read participates in the caller's transaction when
-// ctx carries one.
-func (m *UUIDModel[T]) Refresh(ctx context.Context) error {
-	if !m.IsExisting {
-		return errors.New("cannot refresh non-existent model")
-	}
-	fresh, err := UUIDModel[T]{}.Find(ctx, m.ID)
-	if err != nil {
-		return err
-	}
-
-	// Copy fresh data to current model
-	reflect.ValueOf(m).Elem().Set(reflect.ValueOf(fresh).Elem())
-	return nil
-}
-
-// HasChanged checks if a field has changed
-func (m *UUIDModel[T]) HasChanged(field string) bool {
-	if m.Changed == nil {
-		return false
-	}
-	return m.Changed[field]
-}
-
-// GetChanges returns all changed fields
-func (m *UUIDModel[T]) GetChanges() map[string]any {
-	changes := make(map[string]any)
-	if m.Changed == nil {
-		return changes
-	}
-
-	v := reflect.ValueOf(m).Elem()
-	t := v.Type()
-
-	for i := 0; i < v.NumField(); i++ {
-		field := t.Field(i)
-		if m.Changed[field.Name] {
-			changes[field.Name] = v.Field(i).Interface()
-		}
-	}
-
-	return changes
-}
-
-// IsDirty checks if the model has any unsaved changes
-func (m *UUIDModel[T]) IsDirty() bool {
-	return len(m.Changed) > 0
-}
-
-// IsClean checks if the model has no unsaved changes
-func (m *UUIDModel[T]) IsClean() bool {
-	return !m.IsDirty()
-}
 
 // SoftDeleteModel static methods
 
@@ -879,124 +685,6 @@ func (SoftDeleteModel[T]) WithTrashed() *Query[T] {
 
 // SoftDeleteModel instance methods
 
-// Save (zero-arg) is a legacy stub that returns the canonical
-// "use orm.Save" error so callers can grep for the migration.
-func (m *SoftDeleteModel[T]) Save() error {
-	if m.IsExisting {
-		return m.update()
-	}
-	return m.insert()
-}
-
-// Delete soft deletes the model by setting DeletedAt. Takes ctx as
-// the first argument so transaction enrollment is mandatory and
-// explicit.
-func (m *SoftDeleteModel[T]) Delete(ctx context.Context) error {
-	if !m.IsExisting {
-		return errors.New("cannot delete non-existent model")
-	}
-
-	query := newQuery[T]()
-	_, err := query.Where("id = ?", m.ID).Delete(ctx)
-	if err == nil {
-		now := time.Now()
-		m.DeletedAt = &now
-	}
-	return err
-}
-
-// ForceDelete permanently deletes the model. Takes ctx as the first
-// argument so transaction enrollment is mandatory and explicit.
-func (m *SoftDeleteModel[T]) ForceDelete(ctx context.Context) error {
-	if !m.IsExisting {
-		return errors.New("cannot delete non-existent model")
-	}
-
-	query := newQuery[T]()
-	_, err := query.Where("id = ?", m.ID).ForceDelete(ctx)
-	return err
-}
-
-// Restore restores a soft deleted model by clearing DeletedAt. Takes
-// ctx as the first argument.
-func (m *SoftDeleteModel[T]) Restore(ctx context.Context) error {
-	if !m.IsExisting {
-		return errors.New("cannot restore non-existent model")
-	}
-
-	query := newQuery[T]()
-	_, err := query.WithTrashed().Where("id = ?", m.ID).Update(ctx, map[string]any{"deleted_at": nil})
-	if err == nil {
-		m.DeletedAt = nil
-	}
-	return err
-}
-
-// Refresh reloads the model from database. Takes ctx as the first
-// argument so the read participates in the caller's transaction when
-// ctx carries one.
-func (m *SoftDeleteModel[T]) Refresh(ctx context.Context) error {
-	if !m.IsExisting {
-		return errors.New("cannot refresh non-existent model")
-	}
-	fresh, err := SoftDeleteModel[T]{}.Find(ctx, m.ID)
-	if err != nil {
-		return err
-	}
-
-	reflect.ValueOf(m).Elem().Set(reflect.ValueOf(fresh).Elem())
-	return nil
-}
-
-// HasChanged checks if a field has changed
-func (m *SoftDeleteModel[T]) HasChanged(field string) bool {
-	if m.Changed == nil {
-		return false
-	}
-	return m.Changed[field]
-}
-
-// GetChanges returns all changed fields
-func (m *SoftDeleteModel[T]) GetChanges() map[string]any {
-	changes := make(map[string]any)
-	if m.Changed == nil {
-		return changes
-	}
-
-	v := reflect.ValueOf(m).Elem()
-	t := v.Type()
-
-	for i := 0; i < v.NumField(); i++ {
-		field := t.Field(i)
-		if m.Changed[field.Name] {
-			changes[field.Name] = v.Field(i).Interface()
-		}
-	}
-
-	return changes
-}
-
-// IsDirty checks if the model has any unsaved changes
-func (m *SoftDeleteModel[T]) IsDirty() bool {
-	return len(m.Changed) > 0
-}
-
-// IsClean checks if the model has no unsaved changes
-func (m *SoftDeleteModel[T]) IsClean() bool {
-	return !m.IsDirty()
-}
-
-func (m *SoftDeleteModel[T]) insert() error {
-	m.CreatedAt = time.Now()
-	m.UpdatedAt = time.Now()
-	return errors.New("direct insert on SoftDeleteModel not supported - use orm.Save()")
-}
-
-func (m *SoftDeleteModel[T]) update() error {
-	m.UpdatedAt = time.Now()
-	return errors.New("direct update on SoftDeleteModel not supported - use orm.Save()")
-}
-
 // SoftDeleteUUIDModel static methods
 
 // Find retrieves a record by UUID primary key. Takes ctx as the first
@@ -1215,152 +903,9 @@ func (SoftDeleteUUIDModel[T]) WithTrashed() *Query[T] {
 
 // SoftDeleteUUIDModel instance methods
 
-// Save (zero-arg) is a legacy stub that returns the canonical
-// "use orm.Save" error so callers can grep for the migration.
-func (m *SoftDeleteUUIDModel[T]) Save() error {
-	if m.IsExisting {
-		return m.update()
-	}
-	return m.insert()
-}
-
-// Delete soft deletes the model. Takes ctx as the first argument.
-func (m *SoftDeleteUUIDModel[T]) Delete(ctx context.Context) error {
-	if !m.IsExisting {
-		return errors.New("cannot delete non-existent model")
-	}
-
-	query := newQuery[T]()
-	_, err := query.Where("id = ?", m.ID).Delete(ctx)
-	if err == nil {
-		now := time.Now()
-		m.DeletedAt = &now
-	}
-	return err
-}
-
-// ForceDelete permanently deletes the model. Takes ctx as the first
-// argument.
-func (m *SoftDeleteUUIDModel[T]) ForceDelete(ctx context.Context) error {
-	if !m.IsExisting {
-		return errors.New("cannot delete non-existent model")
-	}
-
-	query := newQuery[T]()
-	_, err := query.Where("id = ?", m.ID).ForceDelete(ctx)
-	return err
-}
-
-// Restore restores a soft deleted model. Takes ctx as the first
-// argument.
-func (m *SoftDeleteUUIDModel[T]) Restore(ctx context.Context) error {
-	if !m.IsExisting {
-		return errors.New("cannot restore non-existent model")
-	}
-
-	query := newQuery[T]()
-	_, err := query.WithTrashed().Where("id = ?", m.ID).Update(ctx, map[string]any{"deleted_at": nil})
-	if err == nil {
-		m.DeletedAt = nil
-	}
-	return err
-}
-
-// Refresh reloads the model from database. Takes ctx as the first
-// argument.
-func (m *SoftDeleteUUIDModel[T]) Refresh(ctx context.Context) error {
-	if !m.IsExisting {
-		return errors.New("cannot refresh non-existent model")
-	}
-	fresh, err := SoftDeleteUUIDModel[T]{}.Find(ctx, m.ID)
-	if err != nil {
-		return err
-	}
-
-	reflect.ValueOf(m).Elem().Set(reflect.ValueOf(fresh).Elem())
-	return nil
-}
-
-// HasChanged checks if a field has changed
-func (m *SoftDeleteUUIDModel[T]) HasChanged(field string) bool {
-	if m.Changed == nil {
-		return false
-	}
-	return m.Changed[field]
-}
-
-// GetChanges returns all changed fields
-func (m *SoftDeleteUUIDModel[T]) GetChanges() map[string]any {
-	changes := make(map[string]any)
-	if m.Changed == nil {
-		return changes
-	}
-
-	v := reflect.ValueOf(m).Elem()
-	t := v.Type()
-
-	for i := 0; i < v.NumField(); i++ {
-		field := t.Field(i)
-		if m.Changed[field.Name] {
-			changes[field.Name] = v.Field(i).Interface()
-		}
-	}
-
-	return changes
-}
-
-// IsDirty checks if the model has any unsaved changes
-func (m *SoftDeleteUUIDModel[T]) IsDirty() bool {
-	return len(m.Changed) > 0
-}
-
-// IsClean checks if the model has no unsaved changes
-func (m *SoftDeleteUUIDModel[T]) IsClean() bool {
-	return !m.IsDirty()
-}
-
-func (m *SoftDeleteUUIDModel[T]) insert() error {
-	m.CreatedAt = time.Now()
-	m.UpdatedAt = time.Now()
-	return errors.New("direct insert on SoftDeleteUUIDModel not supported - use orm.Save()")
-}
-
-func (m *SoftDeleteUUIDModel[T]) update() error {
-	m.UpdatedAt = time.Now()
-	return errors.New("direct update on SoftDeleteUUIDModel not supported - use orm.Save()")
-}
-
 // UUIDModel private methods
 
-func (m *UUIDModel[T]) insert() error {
-	m.CreatedAt = time.Now()
-	m.UpdatedAt = time.Now()
-	return errors.New("direct insert on UUIDModel not supported - use orm.Save()")
-}
-
-func (m *UUIDModel[T]) update() error {
-	m.UpdatedAt = time.Now()
-	return errors.New("direct update on UUIDModel not supported - use orm.Save()")
-}
-
 // Private methods
-
-func (m *Model[T]) insert() error {
-	m.CreatedAt = time.Now()
-	m.UpdatedAt = time.Now()
-
-	// For embedded generics, we can't directly get the parent struct
-	// This method should be overridden or use the global Save function
-	return errors.New("direct insert on Model not supported - use the model's Save method or orm.Save()")
-}
-
-func (m *Model[T]) update() error {
-	m.UpdatedAt = time.Now()
-
-	// For embedded generics, we can't directly get the parent struct
-	// This method should be overridden or use the global Save function
-	return errors.New("direct update on Model not supported - use the model's Save method or orm.Save()")
-}
 
 // Hooks interfaces
 
@@ -1721,9 +1266,9 @@ func Save[T any](ctx context.Context, m *Manager, model *T) error {
 	if tx, ok := TxFromContext(ctx); ok {
 		drv = &txDriver{Driver: drv, tx: tx}
 	}
-	// Stamp Manager's TxRecover dispatcher onto ctx so an inline
+	// Stamp the Manager's TxRecover dispatcher onto ctx so an inline
 	// AfterCommit-hook panic surfaces a TxRecover event identical to
-	// the in-Transaction path. Without this stamping, a panic in an
+	// the in-Transaction path. Without this, a panic in an
 	// AfterCommit hook fired through the auto-commit branch would
 	// only land on os.Stderr.
 	ctx = withTxRecoverDispatcher(ctx, func(ev *TxRecover) { m.dispatchEvent(ctx, ev) })
@@ -1734,114 +1279,94 @@ func Save[T any](ctx context.Context, m *Manager, model *T) error {
 // reflection + dispatch logic of Save; the public Save resolves the
 // driver from a *Manager, while Query.Save / Query.Create reach this
 // helper directly using their own (possibly tx-bound) q.driver.
+//
+// Dispatch routes by trait fingerprint (composition.go), not by
+// type-name prefix, so any composition of orm.IDInt[T] / orm.IDUUID[T]
+// + Timestamps / CreatedAtOnly + SoftDeletes / AppendOnly + Existence
+// participates correctly.
 func saveWithDriver[T any](ctx context.Context, drv drivers.Driver, model *T) error {
 	v := reflect.ValueOf(model).Elem()
 	t := v.Type()
 
-	// Find the embedded base model field. Order matters: more-specific
-	// types (SoftDeleteUUIDModel, ImmutableUUIDModel) must be checked
-	// before the type-prefix match for the simpler variants would also
-	// satisfy a substring check (which it doesn't here, but the explicit
-	// ordering documents intent).
-	var modelField reflect.Value
-	var isUUIDModel bool
-	var isSoftDeleteModel bool
-	var isImmutable bool
-	var found bool
-
-	for i := 0; i < v.NumField(); i++ {
-		field := t.Field(i)
-		typeName := field.Type.String()
-		if strings.HasPrefix(typeName, "orm.SoftDeleteUUIDModel[") {
-			modelField = v.Field(i)
-			isUUIDModel = true
-			isSoftDeleteModel = true
-			found = true
-			break
-		}
-		if strings.HasPrefix(typeName, "orm.ImmutableUUIDModel[") {
-			modelField = v.Field(i)
-			isUUIDModel = true
-			isImmutable = true
-			found = true
-			break
-		}
-		if strings.HasPrefix(typeName, "orm.UUIDModel[") {
-			modelField = v.Field(i)
-			isUUIDModel = true
-			found = true
-			break
-		}
-		if strings.HasPrefix(typeName, "orm.SoftDeleteModel[") {
-			modelField = v.Field(i)
-			isSoftDeleteModel = true
-			found = true
-			break
-		}
-		if strings.HasPrefix(typeName, "orm.ImmutableModel[") {
-			modelField = v.Field(i)
-			isImmutable = true
-			found = true
-			break
-		}
-		if strings.HasPrefix(typeName, "orm.Model[") {
-			modelField = v.Field(i)
-			found = true
-			break
-		}
+	feats, err := featuresFor(t)
+	if err != nil {
+		return err
+	}
+	if !feats.hasPK() {
+		return errors.New("orm: model does not embed a primary-key trait (orm.IDInt[T] or orm.IDUUID[T]); compose one of the canonical bases (Model/UUIDModel/SoftDeleteModel/SoftDeleteUUIDModel/ImmutableModel/ImmutableUUIDModel) or embed the trait directly")
 	}
 
-	if !found {
-		return errors.New("model does not embed orm.Model, orm.UUIDModel, orm.SoftDeleteModel, orm.SoftDeleteUUIDModel, orm.ImmutableModel, or orm.ImmutableUUIDModel")
-	}
+	// modelField points at the embedded sub-struct that holds ID and
+	// (when present) the Existence trait. With the trait fingerprint we
+	// can locate the PK trait directly: walk anonymous embedded fields
+	// looking for the one whose first field is the PK sentinel. The
+	// outer-struct's reflect.Value.FieldByName resolves promoted fields
+	// (ID / IsExisting) recursively, so we just need a reflect.Value
+	// rooted at the trait composition wrapper; the simplest correct
+	// pick is v itself (the outer struct) - FieldByName will reach
+	// through any nesting depth.
+	modelField := v
 
-	_ = isSoftDeleteModel // Used for future optimizations if needed
-
-	// Get the table name
-	tableName := toSnakeCase(t.Name()) + "s" // pluralize
+	tableName := toSnakeCase(t.Name()) + "s"
 	if tableNamer, ok := any(model).(interface{ TableName() string }); ok {
 		tableName = tableNamer.TableName()
 	}
 
-	// Check if it's insert or update
 	idField := modelField.FieldByName("ID")
 	existsField := modelField.FieldByName("IsExisting")
-	isInsert := !existsField.Bool()
+	isInsert := !isModelExisting(model)
 
-	var err error
-	switch {
-	case isImmutable && isUUIDModel:
-		err = saveImmutableUUIDModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert)
-	case isImmutable:
-		err = saveImmutableModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert)
-	case isUUIDModel:
-		err = saveUUIDModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert)
-	default:
-		err = saveModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert)
+	// AppendOnly: an existing-row Save is rejected outright. The
+	// tombstone update path on AppendOnly+SoftDeletes goes through
+	// Query.Update(deleted_at=...), not through Save - that path
+	// performs its own gating in query.go.
+	if feats.appendOnly && !isInsert {
+		return ErrImmutableModelUpdate
 	}
-	if err == nil {
-		// Wire model AfterCommit / AfterRollback hooks. Inside a
-		// surrounding Manager.Transaction the registration accumulates
-		// against the active TxCallbacks list; outside one, AfterCommit
-		// fires inline because the auto-commit already happened.
+
+	var saveErr error
+	switch {
+	case feats.appendOnly && feats.hasUUIDPK:
+		saveErr = saveImmutableUUIDModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert)
+	case feats.appendOnly:
+		saveErr = saveImmutableModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert)
+	case feats.hasUUIDPK:
+		saveErr = saveUUIDModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert)
+	default:
+		saveErr = saveModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert)
+	}
+	if saveErr == nil {
+		// Wire model AfterCommit / AfterRollback hooks against the
+		// surrounding TxCallbacks list when there is one; outside a
+		// Transaction the AfterCommit hook fires inline because the
+		// auto-commit already happened.
 		registerModelAfterCommit(ctx, model)
 	}
-	return err
+	return saveErr
 }
 
 // saveModel handles saving for auto-increment ID models
 func saveModel[T any](ctx context.Context, drv drivers.Driver, model *T, modelField, idField, existsField reflect.Value, tableName string, isInsert bool) error {
 	if isInsert {
 		// Set timestamps: respect caller-set CreatedAt; only stamp when zero.
-		// UpdatedAt mirrors CreatedAt on insert for consistency.
+		// UpdatedAt mirrors CreatedAt on insert for consistency. Both fields
+		// are optional (CreatedAtOnly composition has CreatedAt but not
+		// UpdatedAt; some custom shapes may have neither) so each is gated
+		// on validity.
 		createdAtField := modelField.FieldByName("CreatedAt")
 		updatedAtField := modelField.FieldByName("UpdatedAt")
-		createdAt := createdAtField.Interface().(time.Time)
-		if createdAt.IsZero() {
-			createdAt = time.Now()
-			createdAtField.Set(reflect.ValueOf(createdAt))
+		var createdAt time.Time
+		if createdAtField.IsValid() {
+			createdAt = createdAtField.Interface().(time.Time)
+			if createdAt.IsZero() {
+				createdAt = time.Now()
+				createdAtField.Set(reflect.ValueOf(createdAt))
+			}
 		}
-		if updatedAtField.Interface().(time.Time).IsZero() {
+		if updatedAtField.IsValid() && updatedAtField.Interface().(time.Time).IsZero() {
+			if createdAt.IsZero() {
+				createdAt = time.Now()
+			}
 			updatedAtField.Set(reflect.ValueOf(createdAt))
 		}
 
@@ -1869,7 +1394,7 @@ func saveModel[T any](ctx context.Context, drv drivers.Driver, model *T, modelFi
 
 		// Update ID and exists flag
 		idField.SetUint(uint64(lastID))
-		existsField.SetBool(true)
+		markModelExisting(model)
 
 		// Call AfterCreate hook if exists
 		if hook, ok := any(model).(AfterCreateHook); ok {
@@ -1878,8 +1403,11 @@ func saveModel[T any](ctx context.Context, drv drivers.Driver, model *T, modelFi
 			}
 		}
 	} else {
-		// Update existing record
-		modelField.FieldByName("UpdatedAt").Set(reflect.ValueOf(time.Now()))
+		// Update existing record. UpdatedAt is optional (CreatedAtOnly
+		// without AppendOnly composes here too).
+		if updatedAtField := modelField.FieldByName("UpdatedAt"); updatedAtField.IsValid() {
+			updatedAtField.Set(reflect.ValueOf(time.Now()))
+		}
 
 		// Call BeforeUpdate hook if exists
 		if hook, ok := any(model).(BeforeUpdateHook); ok {
@@ -1925,15 +1453,22 @@ func saveUUIDModel[T any](ctx context.Context, drv drivers.Driver, model *T, mod
 		}
 
 		// Set timestamps: respect caller-set CreatedAt; only stamp when zero.
-		// UpdatedAt mirrors CreatedAt on insert for consistency.
+		// UpdatedAt mirrors CreatedAt on insert for consistency. Both fields
+		// are optional (custom compositions may omit one or both).
 		createdAtField := modelField.FieldByName("CreatedAt")
 		updatedAtField := modelField.FieldByName("UpdatedAt")
-		createdAt := createdAtField.Interface().(time.Time)
-		if createdAt.IsZero() {
-			createdAt = time.Now()
-			createdAtField.Set(reflect.ValueOf(createdAt))
+		var createdAt time.Time
+		if createdAtField.IsValid() {
+			createdAt = createdAtField.Interface().(time.Time)
+			if createdAt.IsZero() {
+				createdAt = time.Now()
+				createdAtField.Set(reflect.ValueOf(createdAt))
+			}
 		}
-		if updatedAtField.Interface().(time.Time).IsZero() {
+		if updatedAtField.IsValid() && updatedAtField.Interface().(time.Time).IsZero() {
+			if createdAt.IsZero() {
+				createdAt = time.Now()
+			}
 			updatedAtField.Set(reflect.ValueOf(createdAt))
 		}
 
@@ -1958,7 +1493,7 @@ func saveUUIDModel[T any](ctx context.Context, drv drivers.Driver, model *T, mod
 			return err
 		}
 
-		existsField.SetBool(true)
+		markModelExisting(model)
 
 		// Call AfterCreate hook if exists
 		if hook, ok := any(model).(AfterCreateHook); ok {
@@ -1967,8 +1502,10 @@ func saveUUIDModel[T any](ctx context.Context, drv drivers.Driver, model *T, mod
 			}
 		}
 	} else {
-		// Update existing record
-		modelField.FieldByName("UpdatedAt").Set(reflect.ValueOf(time.Now()))
+		// Update existing record. UpdatedAt is optional.
+		if updatedAtField := modelField.FieldByName("UpdatedAt"); updatedAtField.IsValid() {
+			updatedAtField.Set(reflect.ValueOf(time.Now()))
+		}
 
 		// Call BeforeUpdate hook if exists
 		if hook, ok := any(model).(BeforeUpdateHook); ok {

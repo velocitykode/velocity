@@ -68,7 +68,7 @@ func TestImmutableModel_CreateAndRead(t *testing.T) {
 	if rec.ID == 0 {
 		t.Error("ID was not populated after insert")
 	}
-	if !rec.IsExisting {
+	if !IsExisting(rec) {
 		t.Error("IsExisting was not set to true after insert")
 	}
 
@@ -135,7 +135,7 @@ func TestImmutableModel_SaveOnExistingFails(t *testing.T) {
 	}
 
 	// Calling .Save on the embedded base directly also rejects.
-	if err := rec.ImmutableModel.Save(); !errors.Is(err, ErrImmutableModelUpdate) {
+	if err := Save(context.Background(), nil, rec); !errors.Is(err, ErrImmutableModelUpdate) {
 		t.Errorf("ImmutableModel.Save error = %v, want ErrImmutableModelUpdate", err)
 	}
 }
@@ -212,7 +212,7 @@ func TestImmutableUUIDModel_CreateAndRead(t *testing.T) {
 	// The Find result must round-trip IsExisting so a re-Save hits
 	// the immutable-update guard loudly instead of silently producing
 	// a duplicate (auto-inc) or a raw DB unique-key error (UUID).
-	if !got.IsExisting {
+	if !IsExisting(got) {
 		t.Fatal("Find did not mark IsExisting on Immutable variant")
 	}
 	if err := Save(context.Background(), nil, got); !errors.Is(err, ErrImmutableModelUpdate) {

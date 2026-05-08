@@ -132,7 +132,7 @@ func TestQuery_FirstMarksIsExisting(t *testing.T) {
 		t.Fatalf("First returned error: %v", err)
 	}
 
-	if !u.Model.IsExisting {
+	if !IsExisting(&u) {
 		t.Fatalf("First did not mark IsExisting=true; subsequent Save would re-insert")
 	}
 
@@ -178,7 +178,7 @@ func TestImmutableModel_FindThenSaveReturnsImmutableErr(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Find: %v", err)
 	}
-	if !got.IsExisting {
+	if !IsExisting(got) {
 		t.Fatal("Find did not mark IsExisting on ImmutableModel; re-Save would silently duplicate")
 	}
 	if err := Save(context.Background(), m, got); !errors.Is(err, ErrImmutableModelUpdate) {
@@ -230,7 +230,7 @@ func TestSoftDeleteModel_FirstMarksIsExisting(t *testing.T) {
 	if err := (roundTripSoftUser{}).Where("id = ?", rec.ID).First(context.Background(), &got); err != nil {
 		t.Fatalf("First: %v", err)
 	}
-	if !got.IsExisting {
+	if !IsExisting(&got) {
 		t.Fatal("First did not mark IsExisting on SoftDeleteModel")
 	}
 	got.Name = "renamed"
@@ -334,7 +334,7 @@ func TestUUIDModel_FirstMarksIsExisting(t *testing.T) {
 	if err := (roundTripUUIDUser{}).Where("id = ?", rec.ID).First(context.Background(), &got); err != nil {
 		t.Fatalf("First: %v", err)
 	}
-	if !got.IsExisting {
+	if !IsExisting(&got) {
 		t.Fatal("First did not mark IsExisting on UUIDModel")
 	}
 	got.Name = "renamed"
@@ -383,7 +383,7 @@ func TestSoftDeleteUUIDModel_FirstMarksIsExisting(t *testing.T) {
 	if err := (roundTripSoftUUIDUser{}).Where("id = ?", rec.ID).First(context.Background(), &got); err != nil {
 		t.Fatalf("First: %v", err)
 	}
-	if !got.IsExisting {
+	if !IsExisting(&got) {
 		t.Fatal("First did not mark IsExisting on SoftDeleteUUIDModel")
 	}
 }
@@ -396,11 +396,11 @@ func TestSoftDeleteUUIDModel_FirstMarksIsExisting(t *testing.T) {
 // extended to walk nested embeds, this test continues to hold.
 func TestNestedEmbedding_MarkExistingPromotes(t *testing.T) {
 	rec := &nestedUser{Name: "x"}
-	if rec.IsExisting {
+	if IsExisting(rec) {
 		t.Fatal("zero value should have IsExisting=false")
 	}
 	markExisting(rec)
-	if !rec.IsExisting {
+	if !IsExisting(rec) {
 		t.Fatal("markExisting did not promote setExisting through nested embedding")
 	}
 }
@@ -427,7 +427,7 @@ func TestFirstOrCreate_HitBranchUpdatesNotDuplicates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hit FirstOrCreate: %v", err)
 	}
-	if !got.Model.IsExisting {
+	if !IsExisting(got) {
 		t.Fatal("FirstOrCreate hit branch did not return IsExisting=true")
 	}
 
@@ -464,7 +464,7 @@ func TestRawQuery_FirstMarksIsExisting(t *testing.T) {
 	if err := rq.First(context.Background(), &u); err != nil {
 		t.Fatalf("RawQuery.First: %v", err)
 	}
-	if !u.Model.IsExisting {
+	if !IsExisting(&u) {
 		t.Fatalf("RawQuery.First did not mark IsExisting=true; subsequent Save would re-insert")
 	}
 
@@ -506,9 +506,9 @@ func TestRawQuery_GetMarksIsExisting(t *testing.T) {
 	if len(results) != len(seed) {
 		t.Fatalf("expected %d results, got %d", len(seed), len(results))
 	}
-	for i, r := range results {
-		if !r.Model.IsExisting {
-			t.Errorf("result[%d] (%s): IsExisting should be true", i, r.Email)
+	for i := range results {
+		if !IsExisting(&results[i]) {
+			t.Errorf("result[%d] (%s): IsExisting should be true", i, results[i].Email)
 		}
 	}
 }
@@ -539,9 +539,9 @@ func TestQuery_GetMarksIsExisting(t *testing.T) {
 	if len(results) != len(seed) {
 		t.Fatalf("expected %d results, got %d", len(seed), len(results))
 	}
-	for i, r := range results {
-		if !r.Model.IsExisting {
-			t.Errorf("result[%d] (%s): IsExisting should be true", i, r.Email)
+	for i := range results {
+		if !IsExisting(&results[i]) {
+			t.Errorf("result[%d] (%s): IsExisting should be true", i, results[i].Email)
 		}
 	}
 }

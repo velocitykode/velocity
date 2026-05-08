@@ -56,6 +56,25 @@ func currentTimestampSentinel(driverName string) RawSQL {
 // to avoid repeated reflection on every newQuery call.
 var softDeleteCache sync.Map
 
+// isSoftDeleteTombstoneUpdate reports whether updates is the kind of
+// map a soft-delete-via-Update emits: deleted_at being set (with or
+// without the auto-injected updated_at companion). Used to exempt the
+// tombstone path from the AppendOnly write-block. A pure mutation
+// payload that touches deleted_at AND any other content column is NOT
+// a tombstone and is rejected.
+func isSoftDeleteTombstoneUpdate(updates map[string]any) bool {
+	if len(updates) == 0 {
+		return false
+	}
+	for k := range updates {
+		if k != "deleted_at" && k != "updated_at" {
+			return false
+		}
+	}
+	_, hasDeletedAt := updates["deleted_at"]
+	return hasDeletedAt
+}
+
 // validOperators is the allowlist of valid SQL operators
 var validOperators = map[string]bool{
 	"=": true, "!=": true, "<>": true,
@@ -164,106 +183,48 @@ func newQuery[T any]() *Query[T] {
 	return q
 }
 
-// updatedAtCache caches modelHasUpdatedAt results per reflect.Type.
-var updatedAtCache sync.Map
-
-// modelHasUpdatedAt reports whether T (or its embedded ORM base type) has
-// an UpdatedAt column. ImmutableModel/ImmutableUUIDModel return false; all
-// other built-in base types return true. Custom direct UpdatedAt fields
-// also return true. Result is cached per type.
+// modelHasUpdatedAt reports whether T should auto-stamp UpdatedAt on
+// updates. AppendOnly suppresses UpdatedAt injection regardless.
 func modelHasUpdatedAt[T any]() bool {
-	var model T
-	t := reflect.TypeOf(model)
-	if t == nil {
+	feats, err := featuresForT[T]()
+	if err != nil {
 		return false
 	}
-	if t.Kind() == reflect.Ptr {
-		t = t.Elem()
-	}
-	if cached, ok := updatedAtCache.Load(t); ok {
-		return cached.(bool)
-	}
-	result := checkUpdatedAt(t)
-	updatedAtCache.Store(t, result)
-	return result
-}
-
-// checkUpdatedAt walks the immediate fields of t looking for an embedded
-// ORM base type or a direct UpdatedAt field.
-func checkUpdatedAt(t reflect.Type) bool {
-	if t.Kind() != reflect.Struct {
+	if feats.appendOnly {
 		return false
 	}
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
-		typStr := field.Type.String()
-
-		// Immutable variants explicitly opt out of UpdatedAt.
-		if strings.HasPrefix(typStr, "orm.ImmutableModel[") ||
-			strings.HasPrefix(typStr, "orm.ImmutableUUIDModel[") {
-			return false
-		}
-		// All other built-in base types include UpdatedAt.
-		if strings.HasPrefix(typStr, "orm.Model[") ||
-			strings.HasPrefix(typStr, "orm.UUIDModel[") ||
-			strings.HasPrefix(typStr, "orm.SoftDeleteModel[") ||
-			strings.HasPrefix(typStr, "orm.SoftDeleteUUIDModel[") {
-			return true
-		}
-		// Direct UpdatedAt field on a custom model.
-		if field.Name == "UpdatedAt" {
-			return true
-		}
-	}
-	return false
+	return feats.hasUpdatedAt
 }
 
-// modelHasSoftDelete checks if the model type T has a DeletedAt field (supports soft deletes).
-// Results are cached per type to avoid repeated reflection on every query.
+// modelHasSoftDelete reports whether T embeds a SoftDeletes trait.
+// Routes through the trait fingerprint cache.
 func modelHasSoftDelete[T any]() bool {
-	var model T
-	t := reflect.TypeOf(model)
-
-	// Handle pointer types
-	if t.Kind() == reflect.Ptr {
-		t = t.Elem()
+	feats, err := featuresForT[T]()
+	if err != nil {
+		return false
 	}
-
-	// Check cache first
-	if cached, ok := softDeleteCache.Load(t); ok {
-		return cached.(bool)
-	}
-
-	// Compute and cache the result
-	result := checkSoftDelete(t)
-	softDeleteCache.Store(t, result)
-	return result
+	return feats.hasDeletedAt
 }
 
-// checkSoftDelete performs the actual reflection check for soft-delete support.
+// checkSoftDelete is the reflective counterpart to modelHasSoftDelete.
+// Used by relation loaders that have a reflect.Type but no compile-time T.
 func checkSoftDelete(t reflect.Type) bool {
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
-
-		// Check for embedded SoftDeleteModel or SoftDeleteUUIDModel (which HAVE DeletedAt)
-		if strings.HasPrefix(field.Type.String(), "orm.SoftDeleteModel[") ||
-			strings.HasPrefix(field.Type.String(), "orm.SoftDeleteUUIDModel[") {
-			return true
-		}
-
-		// Check for embedded Model or UUIDModel (which do NOT have DeletedAt)
-		if strings.HasPrefix(field.Type.String(), "orm.Model[") ||
-			strings.HasPrefix(field.Type.String(), "orm.UUIDModel[") {
-			return false
-		}
-
-		// Direct DeletedAt field check (for custom models)
-		if field.Name == "DeletedAt" {
-			return true
-		}
+	feats, err := featuresFor(t)
+	if err != nil {
+		return false
 	}
+	return feats.hasDeletedAt
+}
 
-	return false
+// modelIsAppendOnly reports whether T embeds the AppendOnly marker
+// trait. Used by the save path to gate the "block update" behavior;
+// the soft-delete tombstone update is exempted (see saveAppendOnlyAllowed).
+func modelIsAppendOnly[T any]() bool {
+	feats, err := featuresForT[T]()
+	if err != nil {
+		return false
+	}
+	return feats.appendOnly
 }
 
 // Clone returns an independent copy of the query. Slice fields are
@@ -990,16 +951,14 @@ func (q *Query[T]) Get(ctx context.Context) ([]T, error) {
 			dispatchQueryExecuted(ctx, sql, args, duration, int64(len(results)), q.driver.DriverName(), 2)
 			return nil, err
 		}
-
-		// Mark as existing so a subsequent Save routes through UPDATE
-		// (with BeforeUpdate/AfterUpdate hooks) instead of re-inserting.
-		// The dynamic type of &model is *T (the embedding struct), not
-		// *Model[T], so a direct type assertion always fails. Routing
-		// through the existenceSetter interface lets method promotion
-		// resolve to the embedded base type's setExisting.
-		markExisting(&model)
-
 		results = append(results, model)
+	}
+	// Side-channel existence is keyed by pointer. Mark each slice
+	// element AFTER all appends so the slice's backing array is final
+	// (a mid-loop append could grow the slice, invalidating
+	// element-address marks taken before the grow).
+	for i := range results {
+		markExisting(&results[i])
 	}
 
 	rowCount = int64(len(results))
@@ -1028,6 +987,10 @@ func (q *Query[T]) First(ctx context.Context, dest *T) error {
 		return ErrRecordNotFound
 	}
 	*dest = results[0]
+	// Side-channel existence is keyed by pointer; the value-copy above
+	// loses the per-instance mark from results[0]. Re-mark dest so the
+	// caller's pointer participates in the existence store.
+	markExisting(dest)
 	return nil
 }
 
@@ -1729,10 +1692,12 @@ func (r *RawQuery[T]) Get(ctx context.Context) ([]T, error) {
 			dispatchQueryExecuted(ctx, r.sql, r.args, duration, int64(len(results)), r.driver.DriverName(), 2)
 			return nil, err
 		}
-		// Same reasoning as Query[T].Get: mark each scanned row as
-		// existing so a subsequent Save updates instead of duplicating.
-		markExisting(&model)
 		results = append(results, model)
+	}
+	// Mark each slice element AFTER all appends so the backing array
+	// is final - same reasoning as Query[T].Get above.
+	for i := range results {
+		markExisting(&results[i])
 	}
 
 	dispatchQueryExecuted(ctx, r.sql, r.args, duration, int64(len(results)), r.driver.DriverName(), 2)

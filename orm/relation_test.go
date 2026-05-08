@@ -613,7 +613,7 @@ func TestMarkIsExisting(t *testing.T) {
 		user := RelUser{}
 		v := reflect.ValueOf(&user).Elem()
 		markIsExisting(v)
-		if !user.Model.IsExisting {
+		if !IsExisting(&user) {
 			t.Error("expected IsExisting = true")
 		}
 	})
@@ -712,9 +712,10 @@ func TestLoadRelations_HasMany_IsExistingSet(t *testing.T) {
 		t.Fatalf("query failed: %v", err)
 	}
 
-	for _, user := range users {
-		for i, post := range user.Posts {
-			if !post.Model.IsExisting {
+	for ui := range users {
+		user := &users[ui]
+		for i := range user.Posts {
+			if !IsExisting(&user.Posts[i]) {
 				t.Errorf("user %q post[%d]: IsExisting should be true", user.Name, i)
 			}
 		}
@@ -790,8 +791,8 @@ func TestLoadRelations_HasOne(t *testing.T) {
 			if user.Profile.UserID != user.Model.ID {
 				t.Errorf("profile.UserID = %d, want %d", user.Profile.UserID, user.Model.ID)
 			}
-			if !user.Profile.Model.IsExisting {
-				t.Error("profile.IsExisting should be true")
+			if !IsExisting(user.Profile) {
+				t.Error("IsExisting(profile) should be true")
 			}
 		})
 	}
@@ -814,15 +815,16 @@ func TestLoadRelations_BelongsTo(t *testing.T) {
 		t.Fatalf("expected 3 posts, got %d", len(posts))
 	}
 
-	for _, post := range posts {
+	for pi := range posts {
+		post := &posts[pi]
 		if post.User == nil {
 			t.Fatalf("post %q: user should not be nil", post.Title)
 		}
 		if post.User.Model.ID != post.UserID {
 			t.Errorf("post %q: user.ID=%d, post.UserID=%d", post.Title, post.User.Model.ID, post.UserID)
 		}
-		if !post.User.Model.IsExisting {
-			t.Errorf("post %q: user.IsExisting should be true", post.Title)
+		if !IsExisting(post.User) {
+			t.Errorf("post %q: IsExisting(user) should be true", post.Title)
 		}
 	}
 }

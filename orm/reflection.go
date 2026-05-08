@@ -221,35 +221,18 @@ func (m *ModelMeta) ColumnByField(fieldName string) (ColumnDef, bool) {
 // Builder
 // ----------------------------------------------------------------------------
 
-// embeddedBasePrefixSet is the canonical set of embedded ORM base type
-// prefixes. Mirrors embeddedBaseTypePrefixes (model.go) so the meta
-// builder and serializeEmbedded agree on what counts as an embedded
-// base. Storing both is intentional: the resolver is the new source of
-// truth, but until the legacy path is fully migrated they must stay in
-// sync. Adding a new base type? Add it here too.
-var embeddedBasePrefixSet = []string{
-	"orm.Model[",
-	"orm.UUIDModel[",
-	"orm.SoftDeleteModel[",
-	"orm.SoftDeleteUUIDModel[",
-	"orm.ImmutableModel[",
-	"orm.ImmutableUUIDModel[",
-}
-
-// isEmbeddedBaseType reports whether the field is an embedded ORM base
-// type. A field qualifies when it's anonymous and its type string starts
-// with one of the recognised generic prefixes.
+// isEmbeddedBaseType reports whether the field is an embedded ORM
+// trait or convenience composition. A field qualifies when it's
+// anonymous and its type lives in this package. The prior
+// prefix-string match locked the framework to a hardcoded list of six
+// type names; pkg-path comparison via isFrameworkType (composition.go)
+// lets arbitrary trait compositions (orm.IDInt[T] + orm.Timestamps + ...)
+// participate as embedded base fields without code changes.
 func isEmbeddedBaseType(field reflect.StructField) bool {
 	if !field.Anonymous {
 		return false
 	}
-	typeName := field.Type.String()
-	for _, prefix := range embeddedBasePrefixSet {
-		if strings.HasPrefix(typeName, prefix) {
-			return true
-		}
-	}
-	return false
+	return isFrameworkType(field.Type)
 }
 
 // buildMeta walks t once and produces a ModelMeta. Pure function: no I/O,
@@ -330,11 +313,13 @@ func (m *ModelMeta) appendColumn(col ColumnDef) {
 	}
 }
 
-// appendEmbedded walks an embedded ORM base type and registers each of
-// its exported fields as a column with FromEmbedded=true. Honors field
-// shadowing: any embedded field whose name appears in shadowedByOuter
-// is skipped because Go's field promotion gives the outer declaration
-// priority and the outer pass already emitted the right column.
+// appendEmbedded walks an embedded ORM base type (or trait composition)
+// and registers each of its exported fields as a column with
+// FromEmbedded=true. Anonymous embedded sub-fields (e.g. Model[T] embeds
+// IDInt[T]+Timestamps+Existence) are recursed into so traits at any
+// nesting depth contribute their columns. Honors field shadowing: any
+// embedded field whose name appears in shadowedByOuter is skipped
+// because Go's field promotion gives the outer declaration priority.
 func (m *ModelMeta) appendEmbedded(parent reflect.StructField, parentPath []int, shadowedByOuter map[string]bool) {
 	embeddedType := parent.Type
 	if embeddedType.Kind() == reflect.Ptr {
@@ -352,6 +337,18 @@ func (m *ModelMeta) appendEmbedded(parent reflect.StructField, parentPath []int,
 			continue
 		}
 		path := append(append([]int{}, parentPath...), i)
+
+		// Recurse into anonymous embeds so trait compositions
+		// (Model[T] embeds IDInt[T]+Timestamps+Existence) flatten.
+		if f.Anonymous && f.Type.Kind() == reflect.Struct && f.Type.String() != "time.Time" {
+			if isFrameworkType(f.Type) {
+				m.appendEmbedded(f, path, shadowedByOuter)
+			} else {
+				m.appendAnonymous(f, path, shadowedByOuter)
+			}
+			continue
+		}
+
 		col := buildColumnDef(f, path, true)
 		if col.Column == "" {
 			continue
@@ -599,15 +596,11 @@ func (p FillablePolicy) Allows(fieldNameKey string) bool {
 // Existence flag (IsExisting)
 // ----------------------------------------------------------------------------
 
-// MarkExists sets the IsExisting flag on a model's embedded base type
-// so a subsequent Save routes through UPDATE instead of re-inserting.
-// Dispatches through the existenceSetter interface (defined in
-// first_or_create.go) which is implemented by all six base types.
-//
-// model must be a non-nil pointer to a struct that embeds (directly or
-// transitively) one of the framework's base model types. Passing any
-// other value is a silent no-op so the helper is safe to call from
-// generic scan paths that don't know the concrete type.
+// MarkExists sets the IsExisting flag for a freshly-loaded model so a
+// subsequent Save routes through UPDATE instead of re-inserting.
+// Routes through the package-level side-channel (existence.go); the
+// previous typed-receiver interface (existenceSetter) is gone with the
+// Existence trait drop.
 //
 // This is the canonical entry point for read paths: Query[T].Get,
 // RawQuery.First/Get, relation eager-load, polymorphic eager-load,
@@ -616,22 +609,17 @@ func MarkExists[T any](model *T) {
 	if model == nil {
 		return
 	}
-	if s, ok := any(model).(existenceSetter); ok {
-		s.setExisting()
-	}
+	markModelExisting(model)
 }
 
 // MarkExistsValue is the reflect.Value variant for callers (relation
 // eager-load, M2M, polymorphic) that don't have a typed *T handle.
-// v must be addressable; non-addressable values are silently ignored
-// so the caller's hot path doesn't need a guard.
+// v must be addressable; non-addressable values are silently ignored.
 func MarkExistsValue(v reflect.Value) {
 	if !v.IsValid() || !v.CanAddr() {
 		return
 	}
-	if s, ok := v.Addr().Interface().(existenceSetter); ok {
-		s.setExisting()
-	}
+	storeExistenceBitFromAny(v.Addr().Interface())
 }
 
 // IsExistingValue reports whether the IsExisting flag is set on a

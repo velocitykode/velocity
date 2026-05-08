@@ -320,25 +320,18 @@ func isZeroKey(v any) bool {
 	}
 }
 
-// markIsExisting sets the IsExisting flag on a model's embedded base
-// type. It dispatches through the existenceSetter interface so the
-// predicate matches markExisting (the typed helper used on Query/
-// RawQuery scans): a row read via an eager-loaded relation and a row
-// read directly produce the same IsExisting value, regardless of
-// whether the embedded base is mutable or immutable. Both helpers
-// gate on opt-in via setExisting; types that deliberately don't
-// implement it (none today) stay unmarked everywhere.
+// markIsExisting sets the IsExisting flag for a freshly-loaded model
+// via the package-level side-channel (existence.go). A row read via an
+// eager-loaded relation and a row read directly produce the same
+// IsExisting value, regardless of the trait composition.
 //
 // v must be addressable (callers all derive it from reflect.New
-// followed by .Elem()) so the pointer receiver method on the embedded
-// base resolves via promotion.
+// followed by .Elem()).
 func markIsExisting(v reflect.Value) {
 	if !v.CanAddr() {
 		return
 	}
-	if s, ok := v.Addr().Interface().(existenceSetter); ok {
-		s.setExisting()
-	}
+	storeExistenceBitFromAny(v.Addr().Interface())
 }
 
 // loadRelations implements eager loading for preloaded relationships.
@@ -536,6 +529,9 @@ func (q *Query[T]) loadRelation(ctx context.Context, models *[]T, meta *relation
 }
 
 // assignSlice sets a slice field (HasMany) from matched related models.
+// Re-marks each final slice element so the side-channel existence
+// store sees the caller-visible pointer (slice element address for
+// value-type slices, the held pointer for pointer-type slices).
 func assignSlice(field reflect.Value, matches []reflect.Value, meta *relationMeta) {
 	if len(matches) == 0 {
 		return
@@ -551,9 +547,25 @@ func assignSlice(field reflect.Value, matches []reflect.Value, meta *relationMet
 		}
 	}
 	field.Set(slice)
+	// Mark final addresses now that the slice is in place. For value
+	// slices, use field.Index(j) which is addressable in the parent
+	// struct; for pointer slices, dereference the stored pointer.
+	for j := 0; j < field.Len(); j++ {
+		elem := field.Index(j)
+		if meta.isPtr {
+			if elem.IsNil() {
+				continue
+			}
+			storeExistenceBitFromAny(elem.Interface())
+		} else if elem.CanAddr() {
+			storeExistenceBitFromAny(elem.Addr().Interface())
+		}
+	}
 }
 
 // assignSingle sets a single-value field (HasOne/BelongsTo) from the first match.
+// Re-marks the final destination so the caller-visible pointer
+// participates in the existence store.
 func assignSingle(field reflect.Value, matches []reflect.Value, meta *relationMeta) {
 	if len(matches) == 0 {
 		return
@@ -562,7 +574,11 @@ func assignSingle(field reflect.Value, matches []reflect.Value, meta *relationMe
 		ptr := reflect.New(meta.relatedType)
 		ptr.Elem().Set(matches[0])
 		field.Set(ptr)
+		storeExistenceBitFromAny(ptr.Interface())
 	} else {
 		field.Set(matches[0])
+		if field.CanAddr() {
+			storeExistenceBitFromAny(field.Addr().Interface())
+		}
 	}
 }

@@ -209,28 +209,13 @@ func defaultDriverOrErr(op string) (drivers.Driver, error) {
 	return drv, nil
 }
 
-// existenceSetter is implemented by every base model type. Immutable
-// variants opt in deliberately: leaving them unmarked would let a
-// read-then-Save round trip silently re-INSERT the row (auto-inc PK)
-// or fail with a raw DB unique-key error (UUID PK), instead of the
-// loud, intended ErrImmutableModelUpdate.
-type existenceSetter interface {
-	setExisting()
-}
-
-func (m *Model[T]) setExisting()               { m.IsExisting = true }
-func (m *UUIDModel[T]) setExisting()           { m.IsExisting = true }
-func (m *SoftDeleteModel[T]) setExisting()     { m.IsExisting = true }
-func (m *SoftDeleteUUIDModel[T]) setExisting() { m.IsExisting = true }
-func (m *ImmutableModel[T]) setExisting()      { m.IsExisting = true }
-func (m *ImmutableUUIDModel[T]) setExisting()  { m.IsExisting = true }
-
-// markExisting sets the IsExisting flag via the existenceSetter interface.
-// This avoids fragile reflection-based type string matching.
+// markExisting sets the IsExisting flag for model via the side-channel
+// existence store (see existence.go). The previous typed-receiver
+// interface (existenceSetter) is gone with the Existence trait drop;
+// the side-channel is now the single source of truth so no type-by-type
+// receivers are needed.
 func markExisting[T any](model *T) {
-	if s, ok := any(model).(existenceSetter); ok {
-		s.setExisting()
-	}
+	markModelExisting(model)
 }
 
 // mergeConditionsAndValues creates a new map with conditions as base and values overlaid.

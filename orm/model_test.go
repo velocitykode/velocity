@@ -71,7 +71,7 @@ func TestModelSave(t *testing.T) {
 	}
 
 	// Check that exists flag was set
-	if !user.Model.IsExisting {
+	if !IsExisting(user) {
 		t.Error("Expected IsExisting flag to be true after save")
 	}
 
@@ -279,7 +279,7 @@ func TestUUIDModelSave(t *testing.T) {
 	}
 
 	// Check that exists flag was set
-	if !project.UUIDModel.IsExisting {
+	if !IsExisting(project) {
 		t.Error("Expected IsExisting flag to be true after save")
 	}
 

@@ -151,25 +151,6 @@ func (ImmutableModel[T]) Pluck(ctx context.Context, column string) ([]any, error
 	return newQuery[T]().Pluck(ctx, column)
 }
 
-// Save is decorative on the embedded *ImmutableModel[T] receiver and
-// always returns an error. This receiver cannot resolve the parent
-// struct, table name, or hooks via reflection; persisting an immutable
-// record requires the package-level helper:
-//
-//	err := orm.Save(manager, &record)
-//
-// On an already-persisted record, Save returns ErrImmutableModelUpdate
-// (immutable models are append-only). On a new record it returns an
-// error directing callers to orm.Save. The same trap exists on the
-// regular Model[T].Save(); the package-level orm.Save is the one true
-// path for both.
-func (m *ImmutableModel[T]) Save() error {
-	if m.IsExisting {
-		return ErrImmutableModelUpdate
-	}
-	return errors.New("orm: ImmutableModel.Save requires the parent struct; call orm.Save(manager, &record)")
-}
-
 // ---------------------------------------------------------------------------
 // ImmutableUUIDModel[T] static helpers
 // ---------------------------------------------------------------------------
@@ -265,18 +246,6 @@ func (ImmutableUUIDModel[T]) Count(ctx context.Context) (int, error) {
 	return newQuery[T]().Count(ctx)
 }
 
-// Save is decorative on the embedded *ImmutableUUIDModel[T] receiver
-// and always returns an error. Use orm.Save(manager, &record), the
-// package-level helper is the one true path. On a persisted record,
-// Save returns ErrImmutableModelUpdate (immutable models are
-// append-only). See *ImmutableModel[T].Save for the longer note.
-func (m *ImmutableUUIDModel[T]) Save() error {
-	if m.IsExisting {
-		return ErrImmutableModelUpdate
-	}
-	return errors.New("orm: ImmutableUUIDModel.Save requires the parent struct; call orm.Save(manager, &record)")
-}
-
 // ---------------------------------------------------------------------------
 // Save-side wiring: insert-only path for embedded ImmutableModel variants.
 // ---------------------------------------------------------------------------
@@ -289,10 +258,14 @@ func saveImmutableModel[T any](ctx context.Context, drv drivers.Driver, model *T
 		return ErrImmutableModelUpdate
 	}
 
-	// Respect caller-set CreatedAt; only stamp when zero.
-	createdAtField := modelField.FieldByName("CreatedAt")
-	if createdAtField.Interface().(time.Time).IsZero() {
-		createdAtField.Set(reflect.ValueOf(time.Now()))
+	// Respect caller-set CreatedAt; only stamp when zero. The field is
+	// optional (AppendOnly without CreatedAtOnly is a valid composition,
+	// e.g. a model that wants no auto-managed timestamp at all) so each
+	// access is gated on validity.
+	if createdAtField := modelField.FieldByName("CreatedAt"); createdAtField.IsValid() {
+		if createdAtField.Interface().(time.Time).IsZero() {
+			createdAtField.Set(reflect.ValueOf(time.Now()))
+		}
 	}
 
 	if hook, ok := any(model).(BeforeCreateHook); ok {
@@ -315,7 +288,7 @@ func saveImmutableModel[T any](ctx context.Context, drv drivers.Driver, model *T
 	}
 
 	idField.SetUint(uint64(lastID))
-	existsField.SetBool(true)
+	markModelExisting(model)
 
 	if hook, ok := any(model).(AfterCreateHook); ok {
 		if err := hook.AfterCreate(); err != nil {
@@ -334,10 +307,12 @@ func saveImmutableUUIDModel[T any](ctx context.Context, drv drivers.Driver, mode
 	if idField.String() == "" {
 		idField.SetString(uuid.New().String())
 	}
-	// Respect caller-set CreatedAt; only stamp when zero.
-	createdAtField := modelField.FieldByName("CreatedAt")
-	if createdAtField.Interface().(time.Time).IsZero() {
-		createdAtField.Set(reflect.ValueOf(time.Now()))
+	// Respect caller-set CreatedAt; only stamp when zero. Optional field
+	// per the trait composition rules (see saveImmutableModel).
+	if createdAtField := modelField.FieldByName("CreatedAt"); createdAtField.IsValid() {
+		if createdAtField.Interface().(time.Time).IsZero() {
+			createdAtField.Set(reflect.ValueOf(time.Now()))
+		}
 	}
 
 	if hook, ok := any(model).(BeforeCreateHook); ok {
@@ -357,7 +332,7 @@ func saveImmutableUUIDModel[T any](ctx context.Context, drv drivers.Driver, mode
 		return err
 	}
 
-	existsField.SetBool(true)
+	markModelExisting(model)
 
 	if hook, ok := any(model).(AfterCreateHook); ok {
 		if err := hook.AfterCreate(); err != nil {
