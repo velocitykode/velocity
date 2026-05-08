@@ -106,6 +106,7 @@ type Query[T any] struct {
 	hasSoftDelete bool // Whether the model supports soft deletes
 	hasUpdatedAt  bool // Whether the model has an UpdatedAt column (skip injection on Update for immutable models)
 	withRowHooks  bool // When true, bulk Update/Delete/ForceDelete fan out per-row AfterCommit/AfterRollback hooks (Tier C). Suppresses BulkAfterCommitHook.
+	withBulkLock  bool // When true, the pre-SELECT issued by bulk hook capture is compiled with FOR UPDATE. No-op on the atomic ReturningGrammar path.
 
 	// disabledScopes records the global scope names this query opts out
 	// of. nil when no opt-outs have been set (no allocation in the
@@ -221,6 +222,7 @@ func (q *Query[T]) Clone() *Query[T] {
 		hasSoftDelete:       q.hasSoftDelete,
 		hasUpdatedAt:        q.hasUpdatedAt,
 		withRowHooks:        q.withRowHooks,
+		withBulkLock:        q.withBulkLock,
 		globalScopesApplied: q.globalScopesApplied,
 		err:                 q.err,
 		lastSQL:             q.lastSQL,
@@ -687,6 +689,37 @@ func (q *Query[T]) SkipLocked() *Query[T] {
 // fans out per-row hooks for soft-deletable models.
 func (q *Query[T]) WithRowHooks() *Query[T] {
 	q.withRowHooks = true
+	return q
+}
+
+// WithBulkLock adds FOR UPDATE to the pre-SELECT issued by bulk hook
+// capture, so concurrent writers block on the captured rows until
+// the surrounding transaction commits or rolls back. Only meaningful
+// inside [Manager.Transaction]: outside a transaction the auto-commit
+// ends the lock immediately, making the call a no-op for any practical
+// purpose.
+//
+// The flag is a no-op on the atomic ReturningGrammar path (PostgreSQL
+// today, plus any adapter that opts in via [drivers.ReturningGrammar])
+// because RETURNING captures the affected primary keys atomically with
+// the write itself; there is no pre-SELECT to lock.
+//
+// On SQLite the flag is also a no-op at the storage layer: the SQLite
+// grammar accepts the LockForUpdate flag but never emits FOR UPDATE
+// because SQLite does not implement row-level locking. The chain
+// therefore costs nothing on SQLite but also buys nothing.
+//
+// Use when exact fidelity between captured ids and committed rows
+// matters more than throughput. The trade-off is lock contention
+// against concurrent writers that touch the same rows for the
+// duration of the transaction.
+//
+// The flag propagates through [Query.Clone] and through the
+// soft-delete Delete -> Update delegation, so
+// q.WithBulkLock().Delete(ctx) locks the pre-SELECT for soft-deletable
+// models on the pre-SELECT path.
+func (q *Query[T]) WithBulkLock() *Query[T] {
+	q.withBulkLock = true
 	return q
 }
 

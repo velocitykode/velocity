@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"reflect"
+	"time"
 
 	"github.com/velocitykode/velocity/orm/drivers"
 )
@@ -55,6 +56,15 @@ const (
 //     QueryExecuted events on these drivers: the pre-capture SELECT
 //     and the actual write. Listeners that count queries should
 //     filter on op or SQL prefix if double-counting matters.
+//
+// Pair with [Query.WithBulkLock] to lock the captured rows for the
+// transaction's duration on drivers that take the pre-SELECT capture
+// path (MySQL, SQLite without the RETURNING wrapper). The flag is a
+// no-op on the atomic RETURNING branch (PostgreSQL) because the write
+// IS the capture, and a no-op outside a transaction because auto-commit
+// releases the lock immediately. SQLite has no row-level locking and
+// its grammar never emits FOR UPDATE, so the flag is also a no-op
+// there.
 //
 // Tier C ([Query.WithRowHooks]) always uses the pre-SELECT path on
 // every driver because it needs full row hydration, which RETURNING
@@ -124,18 +134,27 @@ func modelBulkAfterCommitHook[T any]() (BulkAfterCommitHook, bool) {
 // returns a nil slice. The query is built through the driver's
 // grammar so identifier quoting and placeholder dialects match the
 // surrounding write statement.
-func selectPrimaryKeys(ctx context.Context, drv drivers.Driver, table, pkCol string, conditions []drivers.Condition) ([]any, error) {
+//
+// lockForUpdate, when true, asks the grammar to emit FOR UPDATE so
+// concurrent writers block on the captured rows for the duration of
+// the surrounding transaction. The flag is plumbed through to
+// [drivers.SelectQuery.LockForUpdate] verbatim; grammars that do not
+// support row-level locking (SQLite) silently ignore it.
+func selectPrimaryKeys(ctx context.Context, drv drivers.Driver, table, pkCol string, conditions []drivers.Condition, lockForUpdate bool) ([]any, error) {
 	if drv == nil {
 		return nil, fmt.Errorf("velocity/orm: bulk: nil driver")
 	}
 	sel := &drivers.SelectQuery{
-		Table:      table,
-		Columns:    []string{pkCol},
-		Conditions: conditions,
+		Table:         table,
+		Columns:       []string{pkCol},
+		Conditions:    conditions,
+		LockForUpdate: lockForUpdate,
 	}
-	sql, args := drv.Grammar().CompileSelect(sel)
-	rows, err := drv.QueryContext(ctx, sql, args...)
+	sqlStr, args := drv.Grammar().CompileSelect(sel)
+	start := time.Now()
+	rows, err := drv.QueryContext(ctx, sqlStr, args...)
 	if err != nil {
+		dispatchQueryExecuted(ctx, sqlStr, args, time.Since(start), 0, drv.DriverName(), 2)
 		return nil, err
 	}
 	defer rows.Close()
@@ -144,13 +163,16 @@ func selectPrimaryKeys(ctx context.Context, drv drivers.Driver, table, pkCol str
 	for rows.Next() {
 		var id any
 		if err := rows.Scan(&id); err != nil {
+			dispatchQueryExecuted(ctx, sqlStr, args, time.Since(start), int64(len(ids)), drv.DriverName(), 2)
 			return nil, err
 		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
+		dispatchQueryExecuted(ctx, sqlStr, args, time.Since(start), int64(len(ids)), drv.DriverName(), 2)
 		return nil, err
 	}
+	dispatchQueryExecuted(ctx, sqlStr, args, time.Since(start), int64(len(ids)), drv.DriverName(), 2)
 	return ids, nil
 }
 
@@ -256,6 +278,14 @@ func (q *Query[T]) bulkPrepareHooks(ctx context.Context, op BulkOp) (bulkHookPla
 		clone.limit = nil
 		clone.offset = nil
 		clone.columns = []string{"*"}
+		// WithBulkLock opts the row-hydration SELECT into FOR UPDATE.
+		// Clone() already propagated withBulkLock, but the lock is
+		// applied via lockForUpdate (the storage-layer flag consumed by
+		// Get); flipping it here keeps the two surfaces decoupled while
+		// honouring the caller's intent on the pre-SELECT path.
+		if q.withBulkLock {
+			clone.LockForUpdate()
+		}
 		rows, fetchErr := clone.Get(ctx)
 		if fetchErr != nil {
 			return bulkHookPlan{}, fetchErr
@@ -297,7 +327,10 @@ func (q *Query[T]) bulkPrepareHooks(ctx context.Context, op BulkOp) (bulkHookPla
 	// Pre-SELECT fallback for drivers without RETURNING support on
 	// UPDATE/DELETE (currently MySQL and SQLite without the wrapper).
 	// Documented race window applies; see BulkAfterCommitHook godoc.
-	ids, selErr := selectPrimaryKeys(ctx, q.driver, q.table, pkCol, q.conditions)
+	// WithBulkLock opts the pre-SELECT into FOR UPDATE so the captured
+	// row set is held for the rest of the surrounding transaction; the
+	// flag is silently ignored on the atomic RETURNING branch above.
+	ids, selErr := selectPrimaryKeys(ctx, q.driver, q.table, pkCol, q.conditions, q.withBulkLock)
 	if selErr != nil {
 		return bulkHookPlan{}, selErr
 	}
