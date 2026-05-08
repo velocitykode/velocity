@@ -2,10 +2,9 @@ package log
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
-
-	"github.com/velocitykode/velocity/log/drivers"
 )
 
 // Manager handles multiple logger channels for advanced logging scenarios.
@@ -72,48 +71,60 @@ func (m *Manager) Default() (Logger, error) {
 }
 
 // createLogger creates a logger instance based on the channel configuration.
-// Supports file, console, stack (multi-logger), and null drivers
+// The Manager wires its multi-channel "stack" semantics differently from
+// the standalone log.NewLogger stack: stack channels here resolve other
+// Manager channels by name (so a stack can reference a registered
+// "single" or "daily" channel without re-deriving the file path), whereas
+// NewLogger's stack constructs siblings ad hoc from cfg.Config["stack"].
+//
+// Non-stack drivers delegate to the canonical driver registry. Channel
+// configuration (level, path, max-age) is forwarded through LogConfig so
+// the registered factory uses the same fields as standalone NewLogger.
 func (m *Manager) createLogger(cfg ChannelConfig) (Logger, error) {
-	level := parseLevel(cfg.Level)
-
-	switch cfg.Driver {
-	case "file", "daily":
-		path := cfg.Path
-		if path == "" {
-			path = "./storage/logs"
+	if cfg.Driver == "stack" {
+		channelNames, ok := cfg.Options["channels"].([]string)
+		if !ok {
+			return nil, fmt.Errorf("velocity/log: stack driver requires options.channels []string")
 		}
-		days := 14
-		if cfg.MaxAge > 0 {
-			days = cfg.MaxAge
-		}
-		return drivers.NewFileLogger(path, days, level), nil
-
-	case "console":
-		return drivers.NewConsoleLogger(level), nil
-
-	case "stack":
-		// Stack driver logs to multiple channels
-		if channelNames, ok := cfg.Options["channels"].([]string); ok {
-			var loggers []Logger
-			for _, channelName := range channelNames {
-				logger, err := m.Channel(channelName)
-				if err != nil {
-					continue // Skip failed channels
-				}
-				loggers = append(loggers, logger)
+		// Aggregate every child-resolve failure with errors.Join so a typo
+		// or missing channel in ANY entry takes the whole stack down at
+		// boot rather than silently shrinking the fan-out. A degraded
+		// stack is a config bug that should surface loudly, not be papered
+		// over by surviving children.
+		var (
+			loggers   []Logger
+			childErrs []error
+		)
+		for _, channelName := range channelNames {
+			logger, err := m.Channel(channelName)
+			if err != nil {
+				childErrs = append(childErrs, fmt.Errorf("velocity/log: stack driver: child %q: %w", channelName, err))
+				continue
 			}
-			if len(loggers) > 0 {
-				return NewStackLogger(loggers...), nil
-			}
+			loggers = append(loggers, logger)
 		}
-		return nil, fmt.Errorf("stack driver requires channels option")
-
-	case "null":
-		return NewNullLogger(), nil
-
-	default:
-		return nil, fmt.Errorf("unsupported logger driver: %s", cfg.Driver)
+		if len(childErrs) > 0 {
+			return nil, errors.Join(childErrs...)
+		}
+		if len(loggers) == 0 {
+			return nil, fmt.Errorf("velocity/log: stack driver: no valid channels configured")
+		}
+		return NewStackLogger(loggers...), nil
 	}
+
+	driverConfig := map[string]any{
+		"level": cfg.Level,
+	}
+	if cfg.Path != "" {
+		driverConfig["path"] = cfg.Path
+	}
+	if cfg.MaxAge > 0 {
+		driverConfig["days"] = cfg.MaxAge
+	}
+	for k, v := range cfg.Options {
+		driverConfig[k] = v
+	}
+	return driverRegistry.Resolve(context.Background(), cfg.Driver, LogConfig{Driver: cfg.Driver, Config: driverConfig})
 }
 
 // StackLogger logs to multiple loggers simultaneously.

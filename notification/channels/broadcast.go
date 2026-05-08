@@ -9,7 +9,7 @@ import (
 )
 
 func init() {
-	notification.RegisterChannel("broadcast", func() (notification.Channel, error) {
+	notification.Drivers().Register("broadcast", func(_ context.Context, _ notification.ChannelConfig) (notification.Channel, error) {
 		return NewBroadcastChannel(), nil
 	})
 }

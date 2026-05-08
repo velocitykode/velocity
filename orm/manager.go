@@ -92,27 +92,18 @@ type Manager struct {
 	logger eventLogger
 }
 
-// createDriver instantiates a database driver by name.
-func createDriver(name string) (drivers.Driver, error) {
-	switch name {
-	case "sqlite", "sqlite3":
-		return drivers.NewSQLiteDriver(), nil
-	case "postgres":
-		return drivers.NewPostgresDriver(), nil
-	case "mysql":
-		return drivers.NewMySQLDriver(), nil
-	default:
-		return nil, fmt.Errorf("velocity/orm: driver %q not registered: %w", name, ErrDriverNotFound)
-	}
+// NewManager creates a new ORM Manager with a connected database driver.
+// The driver name is resolved through the canonical driver registry; any
+// third-party driver registered via orm.Drivers().Register is available
+// alongside the built-in sqlite, postgres, and mysql backends.
+func NewManager(config ManagerConfig) (*Manager, error) {
+	return NewManagerWithContext(context.Background(), config)
 }
 
-// NewManager creates a new ORM Manager with a connected database driver.
-func NewManager(config ManagerConfig) (*Manager, error) {
-	driver, err := createDriver(config.Driver)
-	if err != nil {
-		return nil, err
-	}
-
+// NewManagerWithContext is the context-aware variant of NewManager. The
+// ctx is forwarded to the driver factory so drivers performing network
+// I/O during Connect can honour deadlines.
+func NewManagerWithContext(ctx context.Context, config ManagerConfig) (*Manager, error) {
 	connConfig := drivers.ConnectionConfig{
 		Driver:   config.Driver,
 		Host:     stringOrDefault(config.Host, "localhost"),
@@ -146,8 +137,9 @@ func NewManager(config ManagerConfig) (*Manager, error) {
 	connConfig.LogQueries = config.LogQueries
 	connConfig.SlowQueryThreshold = config.SlowThreshold
 
-	if err := driver.Connect(connConfig); err != nil {
-		return nil, fmt.Errorf("orm: failed to connect to database: %w", err)
+	driver, err := driverRegistry.Resolve(ctx, config.Driver, connConfig)
+	if err != nil {
+		return nil, fmt.Errorf("velocity/orm: %w", err)
 	}
 
 	m := &Manager{

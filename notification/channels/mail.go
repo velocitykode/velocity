@@ -11,7 +11,7 @@ import (
 )
 
 func init() {
-	notification.RegisterChannel("mail", func() (notification.Channel, error) {
+	notification.Drivers().Register("mail", func(_ context.Context, _ notification.ChannelConfig) (notification.Channel, error) {
 		return NewMailChannel(), nil
 	})
 }

@@ -8,7 +8,24 @@ import (
 
 	"github.com/velocitykode/velocity/cache/drivers"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/driverregistry"
 )
+
+// driverRegistry is the canonical Velocity driver registry for cache
+// stores. Built-in drivers (memory, file, redis) self-register from
+// cache/init.go; third-party stores can register additional factories.
+var driverRegistry = driverregistry.New[Store, StoreConfig]("cache")
+
+// Drivers returns the registry that cache store factories register
+// themselves into. Use this from a driver package's init() to install a
+// factory:
+//
+//	func init() {
+//	    cache.Drivers().Register("dragonfly", func(ctx context.Context, cfg cache.StoreConfig) (cache.Store, error) {
+//	        return newDragonflyStore(cfg), nil
+//	    })
+//	}
+func Drivers() *driverregistry.Registry[Store, StoreConfig] { return driverRegistry }
 
 // CacheManager is the interface satisfied by *Manager. It covers the methods
 // used through app.Services and router.Context for cache operations,
@@ -41,7 +58,9 @@ type CacheManager interface {
 
 	// Store management.
 	Store(name string) (Store, error)
+	StoreWithContext(ctx context.Context, name string) (Store, error)
 	DefaultStore() (Store, error)
+	DefaultStoreWithContext(ctx context.Context) (Store, error)
 	Shutdown(ctx context.Context) error
 
 	// Distributed locking.
@@ -106,27 +125,20 @@ type StoreConfig struct {
 	TLS      bool   // Enable TLS for Redis connections
 }
 
-// Validate checks the per-store configuration for a known driver and the
-// minimal fields that driver requires.
+// Validate checks that a driver name is present. Per-driver field validation
+// (host/port for redis, path for file, ...) lives in each driver's factory so
+// third-party drivers registered via Drivers().Register can enforce their own
+// invariants without StoreConfig.Validate having to know about them.
+//
+// Validate intentionally does NOT consult Drivers().Names() to verify the
+// driver is registered: Validate runs at config-load time, and a driver
+// package whose init() registers a factory may not have been imported yet at
+// that point. Driver-name lookup is the registry's job; Resolve returns a
+// typed *driverregistry.NotFoundError if the name is unknown when the store
+// is actually constructed.
 func (sc StoreConfig) Validate() error {
-	switch sc.Driver {
-	case "":
-		return fmt.Errorf("velocity/cache: driver is required")
-	case DriverMemory:
-		// no required fields
-	case DriverFile:
-		// path is optional (defaults to storage/framework/cache/data)
-	case DriverRedis:
-		if sc.Host == "" {
-			return fmt.Errorf("velocity/cache: redis driver requires host")
-		}
-		if sc.Port <= 0 {
-			return fmt.Errorf("velocity/cache: redis driver requires positive port")
-		}
-	case DriverDatabase:
-		// TODO(database): Implement database driver configuration validation.
-	default:
-		return fmt.Errorf("velocity/cache: unsupported driver %q", sc.Driver)
+	if sc.Driver == "" {
+		return fmt.Errorf("velocity/cache: driver name required")
 	}
 	return nil
 }
@@ -140,8 +152,19 @@ func NewManager(config *Config) *Manager {
 	}
 }
 
-// Store returns a cache store by name
+// Store returns a cache store by name. If the store has not yet been
+// instantiated this falls back to context.Background; callers that need to
+// honour a request deadline during the driver's connect step (e.g. Redis
+// dial) should use StoreWithContext instead.
 func (m *Manager) Store(name string) (Store, error) {
+	return m.StoreWithContext(context.Background(), name)
+}
+
+// StoreWithContext returns a cache store by name, threading the caller's
+// ctx through to the driver factory the first time the store is created.
+// Subsequent calls hit the cached instance and ignore ctx (the dial has
+// already happened); callers do not need to pass the same ctx every time.
+func (m *Manager) StoreWithContext(ctx context.Context, name string) (Store, error) {
 	m.mu.RLock()
 	store, exists := m.stores[name]
 	m.mu.RUnlock()
@@ -151,13 +174,15 @@ func (m *Manager) Store(name string) (Store, error) {
 	}
 
 	// Create store if it doesn't exist
-	return m.createStore(name)
+	return m.createStore(ctx, name)
 }
 
 // createStore creates a new cache store, validating its per-store config
 // before instantiation so misconfigurations fail fast rather than surfacing
-// as opaque connection errors later.
-func (m *Manager) createStore(name string) (Store, error) {
+// as opaque connection errors later. ctx is forwarded to the driver factory
+// so a misconfigured remote driver (e.g. unreachable Redis) fails under the
+// caller's deadline rather than a hardcoded background context.
+func (m *Manager) createStore(ctx context.Context, name string) (Store, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -175,7 +200,10 @@ func (m *Manager) createStore(name string) (Store, error) {
 		return nil, fmt.Errorf("velocity/cache: store %q invalid: %w", name, err)
 	}
 
-	// Combine global and store-specific prefix
+	// Combine global and store-specific prefix; mutate a copy of the
+	// per-store config so the registry-resolved factory sees the merged
+	// prefix without the manager mutating the user-supplied Config.
+	resolved := config
 	prefix := m.config.Prefix
 	if config.Prefix != "" {
 		if prefix != "" {
@@ -184,25 +212,11 @@ func (m *Manager) createStore(name string) (Store, error) {
 			prefix = config.Prefix
 		}
 	}
+	resolved.Prefix = prefix
 
-	var store Store
-	var err error
-
-	switch config.Driver {
-	case DriverMemory:
-		store = drivers.NewMemoryStore(prefix)
-	case DriverFile:
-		store, err = drivers.NewFileStore(prefix, config.Path)
-	case DriverRedis:
-		store, err = drivers.NewRedisStore(prefix, config.Host, config.Port, config.Password, config.Database, config.TLS)
-	case DriverDatabase:
-		return nil, fmt.Errorf("velocity/cache: database driver not yet implemented")
-	default:
-		return nil, fmt.Errorf("velocity/cache: unsupported cache driver %q", config.Driver)
-	}
-
+	store, err := driverRegistry.Resolve(ctx, config.Driver, resolved)
 	if err != nil {
-		return nil, fmt.Errorf("velocity/cache: failed to create store %q: %w", name, err)
+		return nil, fmt.Errorf("velocity/cache: store %q: %w", name, err)
 	}
 
 	if starter, ok := store.(interface{ Start() }); ok {
@@ -213,9 +227,17 @@ func (m *Manager) createStore(name string) (Store, error) {
 	return store, nil
 }
 
-// DefaultStore returns the default cache store
+// DefaultStore returns the default cache store. See Store for the ctx
+// caveat: callers that need to honour a request deadline during first
+// instantiation should use DefaultStoreWithContext.
 func (m *Manager) DefaultStore() (Store, error) {
-	return m.Store(m.defaultStore)
+	return m.StoreWithContext(context.Background(), m.defaultStore)
+}
+
+// DefaultStoreWithContext returns the default cache store, threading ctx
+// through to the driver factory the first time the store is created.
+func (m *Manager) DefaultStoreWithContext(ctx context.Context) (Store, error) {
+	return m.StoreWithContext(ctx, m.defaultStore)
 }
 
 // Shutdown closes all cache stores, honoring the context deadline. All
@@ -246,7 +268,7 @@ func (m *Manager) Get(key string) (interface{}, bool) {
 // to the driver so remote lookups (e.g. Redis) can be cancelled on request
 // cancellation; otherwise falls back to the plain Get.
 func (m *Manager) GetWithContext(ctx context.Context, key string) (interface{}, bool) {
-	store, err := m.DefaultStore()
+	store, err := m.DefaultStoreWithContext(ctx)
 	if err != nil {
 		return nil, false
 	}
@@ -284,7 +306,7 @@ func (m *Manager) Put(key string, value interface{}, ttl time.Duration) error {
 // PutWithContext stores a value in the default cache store with context.
 // Threads ctx through when the underlying store implements ContextStore.
 func (m *Manager) PutWithContext(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
-	store, err := m.DefaultStore()
+	store, err := m.DefaultStoreWithContext(ctx)
 	if err != nil {
 		return err
 	}
@@ -309,7 +331,7 @@ func (m *Manager) Forever(key string, value interface{}) error {
 // ForeverWithContext stores a value in the default cache store indefinitely with context.
 // Threads ctx through when the underlying store implements ContextStore.
 func (m *Manager) ForeverWithContext(ctx context.Context, key string, value interface{}) error {
-	store, err := m.DefaultStore()
+	store, err := m.DefaultStoreWithContext(ctx)
 	if err != nil {
 		return err
 	}
@@ -334,7 +356,7 @@ func (m *Manager) Forget(key string) error {
 // ForgetWithContext removes a value from the default cache store with context.
 // Threads ctx through when the underlying store implements ContextStore.
 func (m *Manager) ForgetWithContext(ctx context.Context, key string) error {
-	store, err := m.DefaultStore()
+	store, err := m.DefaultStoreWithContext(ctx)
 	if err != nil {
 		return err
 	}
@@ -407,7 +429,7 @@ func (m *Manager) RememberE(key string, ttl time.Duration, callback func() (inte
 // ctx through to the underlying ContextStore when available, and skips the
 // cache Put when the callback returns an error.
 func (m *Manager) RememberEWithContext(ctx context.Context, key string, ttl time.Duration, callback func() (interface{}, error)) (interface{}, error) {
-	store, err := m.DefaultStore()
+	store, err := m.DefaultStoreWithContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -468,7 +490,7 @@ func (m *Manager) RememberForeverE(key string, callback func() (interface{}, err
 // RememberForeverEWithContext is the ctx + error-aware variant of
 // RememberForever.
 func (m *Manager) RememberForeverEWithContext(ctx context.Context, key string, callback func() (interface{}, error)) (interface{}, error) {
-	store, err := m.DefaultStore()
+	store, err := m.DefaultStoreWithContext(ctx)
 	if err != nil {
 		return nil, err
 	}

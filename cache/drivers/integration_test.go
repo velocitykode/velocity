@@ -48,8 +48,8 @@ func TestMain(m *testing.M) {
 // cacheFixture pairs a cache Store with a cleanup hook. Every fixture
 // starts empty so the parity suite can't leak state between subtests.
 type cacheFixture struct {
-	name    string
-	store   interface {
+	name  string
+	store interface {
 		Put(key string, value interface{}, ttl time.Duration) error
 		Get(key string) (interface{}, bool)
 		Forever(key string, value interface{}) error
@@ -86,6 +86,7 @@ func cacheFixtures(t *testing.T) []cacheFixture {
 	}
 	redisPrefix := fmt.Sprintf("integration-test-%d:", os.Getpid())
 	redis, err := NewRedisStore(
+		context.Background(),
 		redisPrefix,
 		os.Getenv("REDIS_HOST"),
 		port,
@@ -333,6 +334,7 @@ func TestError_Redis_OpsSurfaceAfterShutdown(t *testing.T) {
 	}
 	redisPrefix := fmt.Sprintf("integration-test-shutdown-%d:", os.Getpid())
 	redis, err := NewRedisStore(
+		context.Background(),
 		redisPrefix,
 		os.Getenv("REDIS_HOST"),
 		port,
@@ -380,6 +382,7 @@ func TestError_Redis_UnreachableHost(t *testing.T) {
 	// Port 1 is reserved by IANA and never a real Redis — a connection
 	// attempt fails immediately on Linux/macOS.
 	_, err := NewRedisStore(
+		context.Background(),
 		"unreachable:",
 		"127.0.0.1",
 		1,

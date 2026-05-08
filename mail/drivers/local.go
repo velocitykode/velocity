@@ -27,7 +27,7 @@ func newContextDialer(ctx context.Context) func(network, addr string) (net.Conn,
 }
 
 func init() {
-	mail.RegisterDriver("local", func(cfg mail.MailConfig) (mail.Mailer, error) {
+	mail.Drivers().Register("local", func(_ context.Context, cfg mail.MailConfig) (mail.Mailer, error) {
 		return NewLocalDriver(cfg.Local, cfg.FromAddress, cfg.FromName)
 	})
 }

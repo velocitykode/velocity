@@ -19,7 +19,7 @@ func newTestRedisStore(t *testing.T, prefix string) (*RedisStore, *miniredis.Min
 		t.Fatalf("failed to start miniredis: %v", err)
 	}
 
-	store, err := NewRedisStore(prefix, mr.Host(), mr.Server().Addr().Port, "", 0, false)
+	store, err := NewRedisStore(context.Background(), prefix, mr.Host(), mr.Server().Addr().Port, "", 0, false)
 	if err != nil {
 		mr.Close()
 		t.Fatalf("NewRedisStore() error = %v", err)
@@ -47,7 +47,7 @@ func TestNewRedisStore(t *testing.T) {
 			}
 			defer mr.Close()
 
-			store, err := NewRedisStore(tt.prefix, mr.Host(), mr.Server().Addr().Port, "", 0, false)
+			store, err := NewRedisStore(context.Background(), tt.prefix, mr.Host(), mr.Server().Addr().Port, "", 0, false)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("NewRedisStore() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -64,7 +64,7 @@ func TestNewRedisStore(t *testing.T) {
 
 func TestNewRedisStore_ConnectionFailure(t *testing.T) {
 	t.Run("returns error when connection fails", func(t *testing.T) {
-		_, err := NewRedisStore("test", "invalid-host", 9999, "", 0, false)
+		_, err := NewRedisStore(context.Background(), "test", "invalid-host", 9999, "", 0, false)
 		if err == nil {
 			t.Error("NewRedisStore() expected error for invalid connection")
 		}
@@ -928,13 +928,13 @@ func TestRedisStore_PrefixedKeys(t *testing.T) {
 		}
 		defer mr.Close()
 
-		store1, err := NewRedisStore("app1", mr.Host(), mr.Server().Addr().Port, "", 0, false)
+		store1, err := NewRedisStore(context.Background(), "app1", mr.Host(), mr.Server().Addr().Port, "", 0, false)
 		if err != nil {
 			t.Fatalf("NewRedisStore() error = %v", err)
 		}
 		defer func() { _ = store1.Shutdown(context.Background()) }()
 
-		store2, err := NewRedisStore("app2", mr.Host(), mr.Server().Addr().Port, "", 0, false)
+		store2, err := NewRedisStore(context.Background(), "app2", mr.Host(), mr.Server().Addr().Port, "", 0, false)
 		if err != nil {
 			t.Fatalf("NewRedisStore() error = %v", err)
 		}

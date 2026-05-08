@@ -6,7 +6,22 @@ import (
 	"sync"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/driverregistry"
 )
+
+// drivers is the canonical Velocity driver registry for storage. Disk
+// drivers register themselves via Drivers().Register from an init().
+var drivers = driverregistry.New[Driver, DiskConfig]("storage")
+
+// Drivers returns the registry that storage drivers register themselves
+// into. Use this from a driver package's init() to install a factory:
+//
+//	func init() {
+//	    storage.Drivers().Register("local", func(_ context.Context, cfg storage.DiskConfig) (storage.Driver, error) {
+//	        return storage.NewLocalDriver(cfg), nil
+//	    })
+//	}
+func Drivers() *driverregistry.Registry[Driver, DiskConfig] { return drivers }
 
 // StorageManager is the interface satisfied by *Manager. It covers the
 // methods used through app.Services and router.Context for disk management.
@@ -126,22 +141,12 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	return firstErr
 }
 
-// createDriver creates a driver based on configuration using context.Background().
-func createDriver(config DiskConfig) (Driver, error) {
-	return createDriverWithContext(context.Background(), config)
-}
-
 // createDriverWithContext creates a driver using the provided context for
 // drivers that require network I/O during construction (e.g. s3).
 func createDriverWithContext(ctx context.Context, config DiskConfig) (Driver, error) {
-	switch config.Driver {
-	case "local":
-		return NewLocalDriver(config), nil
-	case "s3":
-		return NewS3DriverWithContext(ctx, config)
-	case "memory":
-		return NewMemoryDriver(config), nil
-	default:
-		return nil, fmt.Errorf("velocity/storage: unknown driver: %s", config.Driver)
+	d, err := drivers.Resolve(ctx, config.Driver, config)
+	if err != nil {
+		return nil, fmt.Errorf("velocity/storage: %w", err)
 	}
+	return d, nil
 }

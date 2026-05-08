@@ -42,18 +42,18 @@ func TestNewManager(t *testing.T) {
 }
 
 func TestDriverCreation(t *testing.T) {
-	// Verify that known drivers can be created
-	for _, name := range []string{"sqlite", "postgres", "mysql"} {
-		_, err := createDriver(name)
-		if err != nil {
-			t.Errorf("Failed to create driver %q: %v", name, err)
+	// Verify that known drivers are registered. The registry holds factories,
+	// not constructed drivers, so the assertion is on Has rather than calling
+	// the factory (which would require a working database connection for
+	// postgres / mysql).
+	for _, name := range []string{"sqlite", "sqlite3", "postgres", "mysql"} {
+		if !Drivers().Has(name) {
+			t.Errorf("Expected built-in driver %q to be registered", name)
 		}
 	}
 
-	// Unknown driver should error
-	_, err := createDriver("unknown")
-	if err == nil {
-		t.Error("Expected error for unknown driver")
+	if Drivers().Has("unknown") {
+		t.Error("Expected unknown driver to NOT be registered")
 	}
 }
 

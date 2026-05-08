@@ -16,7 +16,7 @@ func setupRedisForLock(t *testing.T) (*RedisStore, *miniredis.Miniredis, func())
 	if err != nil {
 		t.Fatalf("failed to start miniredis: %v", err)
 	}
-	store, err := NewRedisStore("test_lock", mr.Host(), mr.Server().Addr().Port, "", 0, false)
+	store, err := NewRedisStore(context.Background(), "test_lock", mr.Host(), mr.Server().Addr().Port, "", 0, false)
 	if err != nil {
 		mr.Close()
 		t.Fatalf("failed to create redis store: %v", err)

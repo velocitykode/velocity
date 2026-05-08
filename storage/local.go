@@ -19,6 +19,12 @@ import (
 // defaultMaxFileSize is the default maximum file size for local storage (100MB)
 const defaultMaxFileSize = 100 * 1024 * 1024
 
+func init() {
+	Drivers().Register("local", func(_ context.Context, cfg DiskConfig) (Driver, error) {
+		return NewLocalDriver(cfg), nil
+	})
+}
+
 // LocalDriver implements the Driver interface for local filesystem storage.
 //
 // Containment is enforced by an *os.Root opened at driver construction.

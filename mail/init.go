@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/driverregistry"
 )
 
 // allowedPostmarkStreams enumerates the Message Streams recognised by default.
@@ -41,10 +41,20 @@ func IsAllowedPostmarkStream(name string) bool {
 	return ok
 }
 
-var (
-	driverFactories = make(map[string]func(MailConfig) (Mailer, error))
-	driverMu        sync.RWMutex
-)
+// drivers is the canonical Velocity driver registry for mail. Driver
+// authors call Drivers().Register("name", factory) from an init(). The
+// resolver in NewMailer reads through this registry.
+var drivers = driverregistry.New[Mailer, MailConfig]("mail")
+
+// Drivers returns the registry that mail drivers register themselves into.
+// Use this from a driver package's init() to install a factory:
+//
+//	func init() {
+//	    mail.Drivers().Register("postmark", func(ctx context.Context, cfg mail.MailConfig) (mail.Mailer, error) {
+//	        return NewPostmarkDriver(cfg.Postmark, cfg.FromAddress, cfg.FromName)
+//	    })
+//	}
+func Drivers() *driverregistry.Registry[Mailer, MailConfig] { return drivers }
 
 // MailConfig holds configuration for creating a mailer.
 type MailConfig struct {
@@ -55,7 +65,7 @@ type MailConfig struct {
 
 	// MaxAttachmentSize is the maximum per-attachment size in bytes accepted
 	// by Message.AttachFile / Message.AttachData. A zero (or negative) value
-	// means "use DefaultMaxAttachmentSize" — it does NOT mean "unlimited".
+	// means "use DefaultMaxAttachmentSize"; it does NOT mean "unlimited".
 	// The default (25 MiB) matches common SMTP provider limits: SES 40 MB,
 	// SendGrid 30 MB, Postmark 10 MB, Mailgun 25 MB.
 	MaxAttachmentSize int64
@@ -90,32 +100,32 @@ type LocalConfig struct {
 }
 
 // NewMailer creates a new Mailer from the given configuration.
-// Drivers must be registered via RegisterDriver before calling this function.
+// Drivers must be registered via Drivers().Register before calling this
+// function (typically through a blank import of mail/alldrivers).
 //
 // As a side-effect, NewMailer promotes config.MaxAttachmentSize (or the
 // DefaultMaxAttachmentSize when zero/negative) to the package-level default
 // used by NewMessage. This means freshly-constructed *Message values inherit
 // the limit configured for the app without having to thread it explicitly.
 func NewMailer(config MailConfig) (Mailer, error) {
+	return NewMailerWithContext(context.Background(), config)
+}
+
+// NewMailerWithContext is the context-aware variant of NewMailer. The ctx
+// is forwarded to the driver factory so drivers that perform network I/O
+// during construction can honour deadlines.
+func NewMailerWithContext(ctx context.Context, config MailConfig) (Mailer, error) {
 	driver := config.Driver
 	if driver == "" {
 		driver = "log"
 	}
 
-	driverMu.RLock()
-	factory, exists := driverFactories[driver]
-	driverMu.RUnlock()
-
-	if !exists {
-		return nil, fmt.Errorf("unsupported mail driver: %s (driver not registered)", driver)
-	}
-
 	// Promote config limit to the package default so NewMessage() picks it up.
 	SetDefaultMaxAttachmentSize(config.MaxAttachmentSize)
 
-	m, err := factory(config)
+	m, err := drivers.Resolve(ctx, driver, config)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("velocity/mail: %w", err)
 	}
 	return &checkedMailer{inner: m}, nil
 }
@@ -143,19 +153,4 @@ func (cm *checkedMailer) Shutdown(ctx context.Context) error {
 		return sd.Shutdown(ctx)
 	}
 	return nil
-}
-
-// RegisterDriver allows drivers to register themselves.
-// Panics with *contract.RegistrationError if factory is nil or the driver name
-// is already registered.
-func RegisterDriver(name string, factory func(MailConfig) (Mailer, error)) {
-	if factory == nil {
-		panic(contract.NewRegistrationError("mail", fmt.Sprintf("nil factory for %q", name)))
-	}
-	driverMu.Lock()
-	defer driverMu.Unlock()
-	if _, exists := driverFactories[name]; exists {
-		panic(contract.NewRegistrationError("mail", fmt.Sprintf("driver %q already registered", name)))
-	}
-	driverFactories[name] = factory
 }

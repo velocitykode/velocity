@@ -2,6 +2,7 @@ package storage
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -9,6 +10,12 @@ import (
 	"sync"
 	"time"
 )
+
+func init() {
+	Drivers().Register("memory", func(_ context.Context, cfg DiskConfig) (Driver, error) {
+		return NewMemoryDriver(cfg), nil
+	})
+}
 
 // MemoryFile represents a file in memory
 type MemoryFile struct {

@@ -33,6 +33,12 @@ type s3API interface {
 // supported by AWS Signature V4 (RFC 3339 / AWS signing spec).
 const maxS3PresignExpiration = 7 * 24 * time.Hour
 
+func init() {
+	Drivers().Register("s3", func(ctx context.Context, cfg DiskConfig) (Driver, error) {
+		return NewS3DriverWithContext(ctx, cfg)
+	})
+}
+
 // ErrExpirationTooLong is returned by TemporaryURL / TemporaryURLCtx when
 // the requested expiration exceeds AWS SigV4's 7-day cap. Callers that
 // previously relied on silent clamping should cap their own values; the

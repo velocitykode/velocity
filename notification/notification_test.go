@@ -419,7 +419,7 @@ func TestManagerEventDispatchingOnFailure(t *testing.T) {
 }
 
 func TestChannelRegistry(t *testing.T) {
-	RegisterChannel("test-channel", func() (Channel, error) {
+	Drivers().Register("test-channel", func(_ context.Context, _ ChannelConfig) (Channel, error) {
 		return &testChannel{}, nil
 	})
 
@@ -478,7 +478,7 @@ func TestChannelLazyInitConcurrent(t *testing.T) {
 		factoryMu    sync.Mutex
 	)
 
-	RegisterChannel("lazy-test", func() (Channel, error) {
+	Drivers().Register("lazy-test", func(_ context.Context, _ ChannelConfig) (Channel, error) {
 		factoryMu.Lock()
 		factoryCalls++
 		factoryMu.Unlock()

@@ -20,7 +20,7 @@ import (
 const postmarkErrorPreview = 256
 
 func init() {
-	mail.RegisterDriver("postmark", func(cfg mail.MailConfig) (mail.Mailer, error) {
+	mail.Drivers().Register("postmark", func(_ context.Context, cfg mail.MailConfig) (mail.Mailer, error) {
 		return NewPostmarkDriver(cfg.Postmark, cfg.FromAddress, cfg.FromName)
 	})
 }

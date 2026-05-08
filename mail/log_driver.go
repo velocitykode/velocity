@@ -14,7 +14,7 @@ import (
 // never opt into a real provider still get a working, zero-dependency
 // mailer without needing blank imports in their main.go.
 func init() {
-	RegisterDriver("log", func(cfg MailConfig) (Mailer, error) {
+	Drivers().Register("log", func(_ context.Context, cfg MailConfig) (Mailer, error) {
 		return NewLogDriver(), nil
 	})
 }

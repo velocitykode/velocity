@@ -465,6 +465,97 @@ func TestManager(t *testing.T) {
 	})
 }
 
+// TestStoreConfigValidate_AcceptsThirdPartyDrivers pins the contract that
+// StoreConfig.Validate does NOT reject driver names outside the built-in
+// set. The previous allowlist meant a user who called
+// cache.Drivers().Register("dragonfly", ...) hit a validation error before
+// resolution, killing the registry's extensibility. Validate now only
+// requires a non-empty driver name.
+func TestStoreConfigValidate_AcceptsThirdPartyDrivers(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     cache.StoreConfig
+		wantErr bool
+	}{
+		{"empty driver rejected", cache.StoreConfig{}, true},
+		{"third-party driver accepted", cache.StoreConfig{Driver: "dragonfly"}, false},
+		{"redis with no host accepted at validate (factory enforces)", cache.StoreConfig{Driver: cache.DriverRedis}, false},
+		{"memory accepted", cache.StoreConfig{Driver: cache.DriverMemory}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Errorf("Validate() error = %v, wantErr = %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestManager_ResolvesThirdPartyDriver verifies that a driver registered
+// via Drivers().Register can be resolved end-to-end, including the
+// per-store config validation step that previously rejected unknown
+// driver names.
+func TestManager_ResolvesThirdPartyDriver(t *testing.T) {
+	const name = "test-third-party"
+	prev := cache.Drivers().Override(name, func(_ context.Context, cfg cache.StoreConfig) (cache.Store, error) {
+		// Reuse the in-memory store so the test does not need a real backend.
+		return drivers.NewMemoryStore(cfg.Prefix), nil
+	})
+	t.Cleanup(func() { cache.Drivers().Override(name, prev) })
+
+	manager := cache.NewManager(&cache.Config{
+		Default: "third",
+		Stores: map[string]cache.StoreConfig{
+			"third": {Driver: name},
+		},
+	})
+	defer func() { _ = manager.Shutdown(context.Background()) }()
+
+	if err := manager.Put("k", "v", time.Hour); err != nil {
+		t.Fatalf("Put on third-party-driver-backed store: %v", err)
+	}
+	if v, ok := manager.Get("k"); !ok || v != "v" {
+		t.Fatalf("Get returned (%v, %v); want (v, true)", v, ok)
+	}
+}
+
+// TestManager_StoreWithContext_RespectsCallerDeadline verifies that the
+// caller's ctx is threaded into the driver factory the first time a
+// store is materialised. We use a custom driver factory that observes
+// the ctx to confirm it is NOT context.Background.
+func TestManager_StoreWithContext_RespectsCallerDeadline(t *testing.T) {
+	const name = "test-ctx-observer"
+	type ctxKey struct{}
+	wantKey := ctxKey{}
+
+	var observed context.Context
+	prev := cache.Drivers().Override(name, func(ctx context.Context, cfg cache.StoreConfig) (cache.Store, error) {
+		observed = ctx
+		return drivers.NewMemoryStore(cfg.Prefix), nil
+	})
+	t.Cleanup(func() { cache.Drivers().Override(name, prev) })
+
+	manager := cache.NewManager(&cache.Config{
+		Default: "obs",
+		Stores: map[string]cache.StoreConfig{
+			"obs": {Driver: name},
+		},
+	})
+	defer func() { _ = manager.Shutdown(context.Background()) }()
+
+	ctx := context.WithValue(context.Background(), wantKey, "yes")
+	if _, err := manager.StoreWithContext(ctx, "obs"); err != nil {
+		t.Fatalf("StoreWithContext error = %v", err)
+	}
+	if observed == nil {
+		t.Fatal("factory did not observe a ctx")
+	}
+	if got, _ := observed.Value(wantKey).(string); got != "yes" {
+		t.Errorf("factory ctx value = %q; want caller ctx threaded through", got)
+	}
+}
+
 func newTestManager() *cache.Manager {
 	return cache.NewManager(&cache.Config{
 		Default: "memory",

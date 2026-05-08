@@ -14,7 +14,7 @@ import (
 )
 
 func init() {
-	notification.RegisterChannel("database", func() (notification.Channel, error) {
+	notification.Drivers().Register("database", func(_ context.Context, _ notification.ChannelConfig) (notification.Channel, error) {
 		return NewDatabaseChannel(), nil
 	})
 }

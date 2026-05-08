@@ -1,8 +1,8 @@
 package log
 
 import (
+	"strings"
 	"testing"
-
 )
 
 func TestNewManager(t *testing.T) {
@@ -270,6 +270,43 @@ func TestManager_StackDriverInvalidChannel(t *testing.T) {
 	_, err := manager.Channel("stack")
 	if err == nil {
 		t.Error("Channel(stack) with only invalid channels should return error")
+	}
+}
+
+// TestManager_StackDriverPartialInvalidChildErrors pins the contract that
+// a stack channel surfaces ANY child-resolve failure, not just the case
+// where every child fails. A typo in a child name silently degraded the
+// stack before; aggregation via errors.Join makes config errors loud at
+// boot.
+func TestManager_StackDriverPartialInvalidChildErrors(t *testing.T) {
+	cfg := LoggingConfig{
+		Default: "stack",
+		Channels: map[string]ChannelConfig{
+			"console": {
+				Driver: "console",
+			},
+			"stack": {
+				Driver: "stack",
+				Options: map[string]any{
+					"channels": []string{"console", "typo"},
+				},
+			},
+		},
+	}
+
+	manager := NewManager(cfg)
+
+	// Pre-create the valid child so its absence cannot be the failure cause.
+	if _, err := manager.Channel("console"); err != nil {
+		t.Fatalf("Channel(console) error = %v", err)
+	}
+
+	_, err := manager.Channel("stack")
+	if err == nil {
+		t.Fatal("Channel(stack) with one invalid child must error, not degrade silently")
+	}
+	if !strings.Contains(err.Error(), "typo") {
+		t.Errorf("error %q must name the failing child", err)
 	}
 }
 

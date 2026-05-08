@@ -14,7 +14,7 @@ import (
 )
 
 func init() {
-	notification.RegisterChannel("slack", func() (notification.Channel, error) {
+	notification.Drivers().Register("slack", func(_ context.Context, _ notification.ChannelConfig) (notification.Channel, error) {
 		return NewSlackChannel(), nil
 	})
 }

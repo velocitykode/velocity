@@ -18,7 +18,24 @@ type RedisStore struct {
 
 // NewRedisStore creates a new Redis cache store.
 // Set tlsEnabled to true to enable TLS connections with a minimum of TLS 1.2.
-func NewRedisStore(prefix string, host string, port int, password string, database int, tlsEnabled bool) (*RedisStore, error) {
+//
+// The caller's ctx is used for the initial Ping so a misconfigured Redis
+// fails fast under the caller's deadline instead of hanging on a default
+// dial timeout. Pass context.Background only when no caller ctx is
+// available (e.g. tests).
+//
+// Field validation that StoreConfig.Validate previously enforced (host
+// non-empty, port positive) lives here so third-party cache drivers can
+// register their own factories without StoreConfig.Validate having to know
+// about every driver's required fields.
+func NewRedisStore(ctx context.Context, prefix string, host string, port int, password string, database int, tlsEnabled bool) (*RedisStore, error) {
+	if host == "" {
+		return nil, fmt.Errorf("velocity/cache: redis driver requires host")
+	}
+	if port <= 0 {
+		return nil, fmt.Errorf("velocity/cache: redis driver requires positive port")
+	}
+
 	opts := &redis.Options{
 		Addr:     fmt.Sprintf("%s:%d", host, port),
 		Password: password,
@@ -34,9 +51,9 @@ func NewRedisStore(prefix string, host string, port int, password string, databa
 
 	client := redis.NewClient(opts)
 
-	// Test the connection
-	ctx := context.Background()
+	// Test the connection under the caller's deadline.
 	if err := client.Ping(ctx).Err(); err != nil {
+		_ = client.Close()
 		return nil, fmt.Errorf("velocity/cache: failed to connect to redis: %w", err)
 	}
 

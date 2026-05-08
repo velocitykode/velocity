@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -569,17 +570,17 @@ func (r *failingReader) Read(p []byte) (n int, err error) {
 func TestConfigurationDriver(t *testing.T) {
 	// Test unknown driver
 	t.Run("UnknownDriver", func(t *testing.T) {
-		_, err := createDriver(DiskConfig{
+		_, err := createDriverWithContext(context.Background(), DiskConfig{
 			Driver: "unknown",
 		})
 		if err == nil {
-			t.Error("createDriver should fail for unknown driver")
+			t.Error("createDriverWithContext should fail for unknown driver")
 		}
 	})
 
 	// Test S3 driver creation (will fail without credentials)
 	t.Run("S3Driver", func(t *testing.T) {
-		_, err := createDriver(DiskConfig{
+		_, err := createDriverWithContext(context.Background(), DiskConfig{
 			Driver: "s3",
 			Key:    "test",
 			Secret: "test",

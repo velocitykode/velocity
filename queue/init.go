@@ -1,9 +1,11 @@
 package queue
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
-	"strings"
+
+	"github.com/velocitykode/velocity/driverregistry"
 )
 
 // QueueConfig holds configuration for creating a queue driver.
@@ -22,26 +24,63 @@ type QueueConfig struct {
 	DBDriver string
 }
 
-// NewQueue creates a new queue driver from the given configuration.
-func NewQueue(config QueueConfig) (Driver, error) {
-	driver := strings.ToLower(config.Driver)
-	if driver == "" {
-		driver = "memory"
-	}
+// drivers is the canonical Velocity driver registry for queues. Built-in
+// drivers (memory, redis, database) self-register from this file's init();
+// third-party queue backends can register additional factories.
+var drivers = driverregistry.New[Driver, QueueConfig]("queue")
 
-	switch driver {
-	case "memory":
+// Drivers returns the registry that queue drivers register themselves
+// into. Use this from a driver package's init() to install a factory:
+//
+//	func init() {
+//	    queue.Drivers().Register("kafka", func(ctx context.Context, cfg queue.QueueConfig) (queue.Driver, error) {
+//	        return newKafkaDriver(cfg), nil
+//	    })
+//	}
+func Drivers() *driverregistry.Registry[Driver, QueueConfig] { return drivers }
+
+func init() {
+	Drivers().Register("memory", func(_ context.Context, _ QueueConfig) (Driver, error) {
 		d := NewMemoryDriver()
 		d.Start()
 		return d, nil
-	case "redis":
-		return NewRedisDriver(config.Redis)
-	case "database":
-		if config.DB == nil {
-			return nil, fmt.Errorf("database queue driver requires a *sql.DB in QueueConfig.DB")
+	})
+
+	Drivers().Register("redis", func(_ context.Context, cfg QueueConfig) (Driver, error) {
+		return NewRedisDriver(cfg.Redis)
+	})
+
+	Drivers().Register("database", func(_ context.Context, cfg QueueConfig) (Driver, error) {
+		if cfg.DB == nil {
+			return nil, fmt.Errorf("velocity/queue: database driver requires a *sql.DB in QueueConfig.DB")
 		}
-		return NewDatabaseDriver(config.DB, config.DBDriver), nil
-	default:
-		return nil, fmt.Errorf("unknown queue driver: %s", driver)
+		return NewDatabaseDriver(cfg.DB, cfg.DBDriver), nil
+	})
+}
+
+// NewQueue creates a new queue driver from the given configuration. The
+// driver name is resolved through the canonical driver registry, so
+// third-party drivers registered via Drivers().Register are available
+// alongside the built-in memory / redis / database backends.
+//
+// An empty Driver field defaults to "memory" so zero-value configs work
+// for tests and quick-start scenarios without surfacing a not-found
+// error.
+func NewQueue(config QueueConfig) (Driver, error) {
+	return NewQueueWithContext(context.Background(), config)
+}
+
+// NewQueueWithContext is the context-aware variant of NewQueue. The ctx
+// is forwarded to the driver factory so drivers performing network I/O
+// at construction can honour deadlines.
+func NewQueueWithContext(ctx context.Context, config QueueConfig) (Driver, error) {
+	driver := config.Driver
+	if driver == "" {
+		driver = "memory"
 	}
+	d, err := drivers.Resolve(ctx, driver, config)
+	if err != nil {
+		return nil, fmt.Errorf("velocity/queue: %w", err)
+	}
+	return d, nil
 }

@@ -1,54 +1,43 @@
 package notification
 
 import (
-	"fmt"
-	"sync"
+	"context"
 
-	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/driverregistry"
 )
 
-var (
-	channelFactories = make(map[string]func() (Channel, error))
-	channelMu        sync.RWMutex
-)
+// ChannelConfig is the configuration handed to a channel factory. It is
+// currently empty because notification channels are constructed without
+// per-channel parameters and are wired with their dependencies (mailer,
+// db, ...) after construction (see initNotification in factories.go).
+//
+// Keeping a typed config here (instead of struct{} or any) reserves room
+// for future channel-specific configuration without churning every driver
+// signature.
+type ChannelConfig struct{}
 
-// RegisterChannel allows channel drivers to register themselves.
-// Typically called from an init() function in each channel driver package.
-// Panics with *contract.RegistrationError if factory is nil or the channel name
-// is already registered.
-func RegisterChannel(name string, factory func() (Channel, error)) {
-	if factory == nil {
-		panic(contract.NewRegistrationError("notification", fmt.Sprintf("nil factory for channel %q", name)))
-	}
-	channelMu.Lock()
-	defer channelMu.Unlock()
-	if _, exists := channelFactories[name]; exists {
-		panic(contract.NewRegistrationError("notification", fmt.Sprintf("channel %q already registered", name)))
-	}
-	channelFactories[name] = factory
-}
+// drivers is the canonical Velocity driver registry for notification
+// channels. Channel authors call Drivers().Register("name", factory) from
+// an init().
+var drivers = driverregistry.New[Channel, ChannelConfig]("notification")
 
-// createChannel creates a channel driver by name from the registry.
+// Drivers returns the registry that channel drivers register themselves
+// into. Use this from a channel package's init() to install a factory:
+//
+//	func init() {
+//	    notification.Drivers().Register("slack", func(_ context.Context, _ notification.ChannelConfig) (notification.Channel, error) {
+//	        return NewSlackChannel(), nil
+//	    })
+//	}
+func Drivers() *driverregistry.Registry[Channel, ChannelConfig] { return drivers }
+
+// createChannel resolves a channel by name from the registry.
 func createChannel(name string) (Channel, error) {
-	channelMu.RLock()
-	factory, exists := channelFactories[name]
-	channelMu.RUnlock()
-
-	if !exists {
-		return nil, fmt.Errorf("notification: unsupported channel %q (not registered)", name)
-	}
-
-	return factory()
+	return drivers.Resolve(context.Background(), name, ChannelConfig{})
 }
 
 // RegisteredChannels returns the names of all registered channel drivers.
+// Provided for diagnostics and the "did you mean?" hint paths.
 func RegisteredChannels() []string {
-	channelMu.RLock()
-	defer channelMu.RUnlock()
-
-	names := make([]string, 0, len(channelFactories))
-	for name := range channelFactories {
-		names = append(names, name)
-	}
-	return names
+	return drivers.Names()
 }

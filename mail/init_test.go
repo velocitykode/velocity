@@ -48,7 +48,7 @@ func (m *mockMailer) Send(ctx context.Context, msg *mail.Message) error {
 }
 
 func TestRegisterDriver(t *testing.T) {
-	mail.RegisterDriver("custom", func(cfg mail.MailConfig) (mail.Mailer, error) {
+	mail.Drivers().Register("custom", func(_ context.Context, cfg mail.MailConfig) (mail.Mailer, error) {
 		return &mockMailer{}, nil
 	})
 

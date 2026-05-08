@@ -183,10 +183,14 @@ func initDB(config DBConfig) (*orm.Manager, error) {
 	})
 }
 
-// initQueue selects the queue driver based on config. Returns an error when
-// payload-signing setup, Redis connect, or a missing DB for the database
-// driver prevents the requested driver from starting — boot fails loudly
-// rather than silently downgrading to the in-memory driver.
+// initQueue selects the queue driver based on config, delegating to the
+// canonical queue.NewQueue resolver so the driver registry is the single
+// integration point.
+//
+// Returns an error when payload-signing setup, Redis connect, or a missing
+// DB for the database driver prevents the requested driver from starting,
+// so boot fails loudly rather than silently downgrading to the in-memory
+// driver.
 func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey string, appKey string, logger log.Logger) (queue.Driver, error) {
 	// Route queue-signing diagnostics through the framework logger before
 	// configuring so missing/APP_KEY fallbacks are surfaced consistently.
@@ -194,38 +198,35 @@ func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey strin
 
 	// Configure payload signing now that .env has been loaded. This used
 	// to run in queue's package init(), which fired before godotenv.Load
-	// had populated APP_KEY/QUEUE_SIGNING_KEY — so signing was always
+	// had populated APP_KEY/QUEUE_SIGNING_KEY, so signing was always
 	// reported as disabled even when the key was present.
 	if err := queue.ConfigureSigning(signingKey, appKey); err != nil {
 		return nil, err
 	}
 
-	switch config.Driver {
-	case "redis":
-		d, err := queue.NewRedisDriver(queue.RedisConfig{
+	d, err := queue.NewQueue(queue.QueueConfig{
+		Driver: config.Driver,
+		Redis: queue.RedisConfig{
 			Host:     config.RedisHost,
 			Port:     config.RedisPort,
 			Password: config.RedisPassword,
 			DB:       config.RedisDB,
 			TLS:      config.RedisTLS,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("velocity/queue: redis driver: %w", err)
-		}
-		return d, nil
-	case "database":
-		if db == nil {
-			return nil, fmt.Errorf("velocity/queue: database driver requested but no DB connection configured (set DB_CONNECTION or switch QUEUE_DRIVER to memory/redis)")
-		}
-		return queue.NewDatabaseDriver(db, dbDriver), nil
-	case "memory", "":
-		d := queue.NewMemoryDriver()
-		d.SetLogger(logger)
-		d.Start()
-		return d, nil
-	default:
-		return nil, fmt.Errorf("velocity/queue: unknown QUEUE_DRIVER %q (expected memory, redis, or database)", config.Driver)
+		},
+		DB:       db,
+		DBDriver: dbDriver,
+	})
+	if err != nil {
+		return nil, err
 	}
+
+	// The memory driver wants a logger so worker diagnostics route through
+	// the framework log; setting it here keeps the registry factories
+	// dependency-free.
+	if mem, ok := d.(*queue.MemoryDriver); ok {
+		mem.SetLogger(logger)
+	}
+	return d, nil
 }
 
 // initNotification creates the notification manager and wires the mail and database
