@@ -1174,7 +1174,7 @@ func (q *Query[T]) bulkUpdate(ctx context.Context, updates map[string]any, op Bu
 	// us to capture ids atomically via RETURNING (no pre-SELECT, no
 	// race window); otherwise the plan has either pre-captured the
 	// ids/rows or has no hook work at all.
-	plan, err := q.bulkPrepareHooks(ctx, op)
+	plan, err := q.bulkPrepareHooks(ctx, op, callerSkipBulkUpdate)
 	if err != nil {
 		return 0, err
 	}
@@ -1354,7 +1354,7 @@ func (q *Query[T]) ForceDelete(ctx context.Context) (int64, error) {
 	}
 	q.bindTxFromContextValue(ctx)
 
-	plan, err := q.bulkPrepareHooks(ctx, BulkOpForceDelete)
+	plan, err := q.bulkPrepareHooks(ctx, BulkOpForceDelete, callerSkipForceDelete)
 	if err != nil {
 		return 0, err
 	}

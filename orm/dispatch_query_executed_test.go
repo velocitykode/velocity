@@ -84,3 +84,56 @@ func TestDispatchQueryExecuted_FiresOnBulkUpdate(t *testing.T) {
 		t.Errorf("caller frame stuck at framework: file=%q", found.File)
 	}
 }
+
+// TestDispatchQueryExecuted_PreSelectCallerFrame locks in the
+// caller-info skip threading on the bulk-hook pre-SELECT. The
+// pre-SELECT runs from inside selectPrimaryKeys (called by
+// bulkPrepareHooks, called by bulkUpdate, called by Update).
+// Without correctly threaded callerSkip the captured File/Line
+// would point at bulkPrepareHooks (velocity-internal) instead of
+// the application test source.
+func TestDispatchQueryExecuted_PreSelectCallerFrame(t *testing.T) {
+	manager := setupBulkTestSchema(t)
+	rec := &bulkHookRecorder{}
+	setBulkHookRecorder(rec)
+	t.Cleanup(func() { setBulkHookRecorder(nil) })
+
+	var (
+		mu   sync.Mutex
+		seen []*QueryExecuted
+	)
+	manager.SetEventDispatcher(func(_ context.Context, ev any) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if q, ok := ev.(*QueryExecuted); ok {
+			seen = append(seen, q)
+		}
+		return nil
+	})
+
+	_, uerr := Model[BulkUser]{}.Where("age > ?", 0).Update(context.Background(), map[string]any{
+		"age": 88,
+	})
+	if uerr != nil {
+		t.Fatalf("Update: %v", uerr)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var preSelect *QueryExecuted
+	for _, q := range seen {
+		if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(q.SQL)), "SELECT") {
+			preSelect = q
+			break
+		}
+	}
+	if preSelect == nil {
+		t.Fatalf("no SELECT QueryExecuted captured; saw %d events", len(seen))
+	}
+	if !strings.HasSuffix(preSelect.File, "_test.go") {
+		t.Errorf("pre-SELECT caller frame did not unwind to the test: file=%q (expected suffix _test.go)", preSelect.File)
+	}
+	if strings.Contains(preSelect.File, "bulk.go") || strings.Contains(preSelect.File, "query.go") {
+		t.Errorf("pre-SELECT caller frame stuck at framework: file=%q", preSelect.File)
+	}
+}
