@@ -4,6 +4,7 @@ import (
 	"context"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/velocitykode/velocity/trace"
@@ -71,6 +72,67 @@ func (e *TxRecover) Name() string {
 	return "orm.tx_recover"
 }
 
+// TransactionExecuted is dispatched at the end of a Manager.Transaction body,
+// on commit or rollback. It groups a tx into a single APM node by giving the
+// exporter the tx span itself plus a count of statements that ran under it.
+// Error is empty on commit and populated on rollback (closure error, panic,
+// or commit failure).
+type TransactionExecuted struct {
+	Context    context.Context
+	Connection string        // Database driver name
+	Duration   time.Duration // Wall time from BeginTx success to Commit / Rollback resolution
+	Statements int           // Number of QueryExecuted events emitted under this tx span
+	Error      string        // Empty on commit, populated on rollback / panic / commit failure
+	TraceID    string        // APM trace ID
+	SpanID     string        // The tx span ID; per-statement events under this tx report it as ParentID
+	ParentID   string        // The span that opened this tx (caller's prior span)
+}
+
+// Name returns the canonical event name.
+func (e *TransactionExecuted) Name() string {
+	return "transaction.executed"
+}
+
+// txStatementCounterKey scopes a per-tx atomic counter onto the ctx that
+// dispatchQueryExecuted increments for each emitted event. The counter lives
+// only for the duration of one Manager.Transaction call so a TransactionExecuted
+// event can report the exact number of statements that ran under its span.
+type txStatementCounterKey struct{}
+
+// withTxStatementCounter installs a fresh counter on ctx. dispatchQueryExecuted
+// reads it via txStatementCounter to bump on every emitted QueryExecuted event.
+func withTxStatementCounter(ctx context.Context, c *atomic.Int32) context.Context {
+	return context.WithValue(ctx, txStatementCounterKey{}, c)
+}
+
+// txStatementCounter returns the per-tx counter installed by Manager.Transaction,
+// or nil when ctx is not running inside a tx body.
+func txStatementCounter(ctx context.Context) *atomic.Int32 {
+	if ctx == nil {
+		return nil
+	}
+	c, _ := ctx.Value(txStatementCounterKey{}).(*atomic.Int32)
+	return c
+}
+
+// txSpanIDKey scopes the surrounding tx span ID onto ctx so a nested
+// Manager.Transaction call can parent its own tx span under the outer one.
+// Without this, the inner call would read trace.GetSpanID(ctx), which points
+// at the outer tx body's stmt-root span (not the outer tx span itself).
+type txSpanIDKey struct{}
+
+func withTxSpanID(ctx context.Context, txSpanID string) context.Context {
+	return context.WithValue(ctx, txSpanIDKey{}, txSpanID)
+}
+
+func txSpanIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	s, _ := ctx.Value(txSpanIDKey{}).(string)
+	return s
+}
+
 // captureCallerInfo captures the file and line of the caller
 // skip specifies how many stack frames to skip (0 = captureCallerInfo itself)
 func captureCallerInfo(skip int) (file string, line int) {
@@ -106,6 +168,9 @@ func dispatchQueryExecuted(ctx context.Context, sql string, args []any, dur time
 		return
 	}
 	file, line := captureCallerInfo(skip + 1)
+	if c := txStatementCounter(ctx); c != nil {
+		c.Add(1)
+	}
 	m.dispatchEvent(ctx, &QueryExecuted{
 		Context:      ctx,
 		SQL:          sql,

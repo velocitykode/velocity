@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/orm/drivers"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // ManagerConfig holds typed configuration for creating an ORM Manager.
@@ -276,6 +278,33 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 		return err
 	}
 
+	// Mint a fresh span for the tx body so every QueryExecuted event running
+	// under fn parents under this span. The pre-existing tx span (if any)
+	// becomes the ParentID for nested Transaction calls, letting an APM
+	// exporter render nested transactions as a tree. For top-level calls the
+	// caller's span is the parent. Per-statement events read parentID from
+	// txCtx, so we install txSpanID as the parent on the body ctx and a fresh
+	// stmtRoot as the body's own span.
+	//
+	// Statements emitted under txTraceCtx increment txStmtCounter via
+	// dispatchQueryExecuted; the count ships on the TransactionExecuted event.
+	parentSpanID := txSpanIDFromContext(ctx)
+	if parentSpanID == "" {
+		parentSpanID = trace.GetSpanID(ctx)
+	}
+	txTrace := trace.GetTraceID(ctx)
+	if txTrace == "" {
+		txTrace = trace.GenerateTraceID()
+	}
+	txSpanID := trace.GenerateSpanID()
+	stmtRootSpan := trace.GenerateSpanID()
+	txTraceCtx := trace.WithFullContext(ctx, txTrace, stmtRootSpan, txSpanID)
+	txTraceCtx = withTxSpanID(txTraceCtx, txSpanID)
+	txStmtCounter := &atomic.Int32{}
+	txTraceCtx = withTxStatementCounter(txTraceCtx, txStmtCounter)
+	txStart := time.Now()
+	connName := driver.DriverName()
+
 	// Attach a per-transaction buffer so user code can record domain
 	// events that fire only on commit. The buffer slot is reachable from
 	// the caller's incoming ctx when events.PrepareBuffer(ctx) was used
@@ -345,7 +374,22 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 
 	// Derive the per-tx ctx that fn receives. Calls inside fn that
 	// observe this ctx auto-enroll in tx via bindTxFromContextValue.
-	txCtx := WithTxContext(ctx, tx)
+	// txTraceCtx already carries the fresh tx span and statement counter,
+	// so per-statement events under fn parent under the tx span.
+	txCtx := WithTxContext(txTraceCtx, tx)
+
+	dispatchTxExecuted := func(errMsg string) {
+		m.dispatchEvent(ctx, &TransactionExecuted{
+			Context:    ctx,
+			Connection: connName,
+			Duration:   time.Since(txStart),
+			Statements: int(txStmtCounter.Load()),
+			Error:      errMsg,
+			TraceID:    txTrace,
+			SpanID:     txSpanID,
+			ParentID:   parentSpanID,
+		})
+	}
 
 	defer func() {
 		if p := recover(); p != nil {
@@ -363,6 +407,7 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 					RollbackErr: rbErr.Error(),
 				})
 			}
+			dispatchTxExecuted(fmt.Sprintf("panic: %v", p))
 			// Drain rollback callbacks before re-panicking. Each
 			// callback runs under its own recover so a misbehaving
 			// callback cannot mask the original panic value we
@@ -384,6 +429,7 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 				RollbackErr: rbErr.Error(),
 			})
 		}
+		dispatchTxExecuted(err.Error())
 		drainOnRollback()
 		return err
 	}
@@ -398,6 +444,7 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 		// for changes that DID land. Drain ONLY commit-failure
 		// callbacks, which receive the commit error so they can
 		// branch on driver-specific error codes.
+		dispatchTxExecuted(cmErr.Error())
 		drainOnCommitFailure(cmErr)
 		return cmErr
 	}
@@ -406,9 +453,11 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 		// drain commit callbacks so outbox / cache invalidation runs:
 		// the row IS durable, only the in-memory event delivery
 		// failed. Surface flushErr to the caller.
+		dispatchTxExecuted("")
 		drainOnCommit()
 		return flushErr
 	}
+	dispatchTxExecuted("")
 	drainOnCommit()
 	return nil
 }
