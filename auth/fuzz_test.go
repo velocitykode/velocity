@@ -30,7 +30,7 @@ func FuzzJWTValidate(f *testing.F) {
 		".",
 		"..",
 		"a.b.c",
-		"eyJhbGciOiJub25lIn0..",  // alg=none header
+		"eyJhbGciOiJub25lIn0..", // alg=none header
 		"eyJhbGciOiJIUzI1NiJ9.eyJ1aWQiOjF9.",
 		"eyJhbGciOiJIUzI1NiJ9.eyJ1aWQiOjF9.AAAA",
 		"\x00\x00\x00",

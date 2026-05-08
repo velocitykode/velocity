@@ -106,27 +106,6 @@ func isModelExisting[T any](model *T) bool {
 	return true
 }
 
-// clearModelExisting resets the IsExisting flag (and any tracking
-// state). Used by the rare path that wants to force-reinsert.
-func clearModelExisting[T any](model *T) {
-	if model == nil {
-		return
-	}
-	existenceStore.Delete(pointerKeyTyped(model))
-}
-
-// markExistingFromValue is the reflective entry used by relation
-// loaders that only have a reflect.Value. Routes through the *byte
-// view path; alive() check on read still detects address-reuse
-// correctly. v must be addressable.
-func markExistingFromValue(v reflect.Value) {
-	if !v.CanAddr() {
-		return
-	}
-	addr := v.Addr().Interface()
-	storeExistenceBitFromAny(addr)
-}
-
 // storeExistenceBitTyped is the typed-pointer entry. The alive() closure
 // captures a typed weak.Pointer so the read path can detect address-reuse.
 //
@@ -185,18 +164,9 @@ func storeExistenceBitFromAny(addr any) {
 	startSweep()
 }
 
-// pointerKey returns the address of the struct pointed to by model.
+// pointerKeyTyped returns the address of the struct pointed to by model.
 // Returns 0 (sentinel) for any input that doesn't fit the "non-nil
 // pointer" contract.
-func pointerKey(model any) existenceKey {
-	v := reflect.ValueOf(model)
-	if v.Kind() != reflect.Ptr || v.IsNil() {
-		return 0
-	}
-	return existenceKey(v.Pointer())
-}
-
-// pointerKeyTyped is the typed counterpart of pointerKey.
 func pointerKeyTyped[T any](model *T) existenceKey {
 	if model == nil {
 		return 0

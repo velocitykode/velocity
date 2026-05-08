@@ -49,6 +49,16 @@ func (a *App) serveHTTP() error {
 		return a.serveHTTPHook()
 	}
 
+	// Wire signal handling before bootstrap. A SIGINT/SIGTERM that
+	// arrives during boot is held in the cap-1 buffer until the select
+	// below; without this, the signal is delivered to the default
+	// handler and terminates the process mid-bootstrap. defer
+	// signal.Stop releases the subscription so repeated serveHTTP
+	// invocations in the same process do not accumulate subscribers.
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(quit)
+
 	if err := a.bootstrap(); err != nil {
 		// Bootstrap may have partially wired subsystems (chain providers
 		// Register/Boot, middleware, event listeners). Shutdown unwinds
@@ -104,15 +114,6 @@ func (a *App) serveHTTP() error {
 			errCh <- err
 		}
 	})
-
-	// Wait for interrupt signal. Pair Notify with Stop so the signal
-	// subscription does not leak across in-process restarts (e.g. tests
-	// that invoke serveHTTP repeatedly in the same process). Without
-	// this, every restart accumulates another subscriber on SIGINT/
-	// SIGTERM and the associated goroutine stays resident until exit.
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(quit)
 
 	select {
 	case err := <-errCh:

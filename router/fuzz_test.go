@@ -16,7 +16,7 @@ import (
 //  2. The output is one of:
 //     a. "/"  (safe fallback)
 //     b. a same-origin reference: starts with "/" and NOT "//", OR
-//        parses to Scheme="" Host="" (e.g. "foo.html", "0")
+//     parses to Scheme="" Host="" (e.g. "foo.html", "0")
 //     c. an absolute URL whose Host is in the allowlist
 //  3. When the output is in category (b) or (c), it equals the input —
 //     the sanitizer does not silently rewrite legitimate redirects.

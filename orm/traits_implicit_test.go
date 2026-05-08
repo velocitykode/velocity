@@ -8,11 +8,7 @@ import (
 	"time"
 )
 
-// ============================================================================
-// Fix 1: implicit Existence (no need to embed orm.Existence on custom shapes)
-// ============================================================================
-
-// CustomAudit is a minimal trait composition deliberately WITHOUT an
+// CustomAudit is a minimal trait composition deliberately without an
 // embedded Existence trait. The save layer must auto-attach existence
 // tracking through the side-channel store so a second Save UPDATEs
 // rather than INSERTs a duplicate row.
@@ -42,13 +38,10 @@ func setupCustomAuditTable(t *testing.T) *Manager {
 	return m
 }
 
-// TestImplicitExistence_InsertSetsFlagSecondSaveBlocks asserts that the
-// side-channel existence store fires for a custom composition with no
-// explicit Existence trait. The model has CreatedAtOnly (no UpdatedAt)
-// so a second Save would normally INSERT again, producing a duplicate.
-// With implicit existence the second Save sees IsExisting=true and -
-// because CreatedAtOnly implies append-only-ish semantics here - returns
-// without writing a duplicate.
+// TestImplicitExistence_InsertSetsFlag asserts that the side-channel
+// existence store fires for a custom composition with no explicit
+// Existence trait: a Save populates the flag so a follow-up dispatch
+// can pick the UPDATE branch.
 func TestImplicitExistence_InsertSetsFlag(t *testing.T) {
 	setupCustomAuditTable(t)
 
@@ -60,19 +53,14 @@ func TestImplicitExistence_InsertSetsFlag(t *testing.T) {
 		t.Fatal("ID not populated after first Save")
 	}
 
-	// Without implicit Existence, the second Save would INSERT again.
-	// With it, isModelExisting(rec) is true; saveModel will UPDATE
-	// (which CreatedAtOnly actually allows since AppendOnly is not
-	// in this composition). The point of this test is that the
-	// existence side-channel correctly flips the flag.
 	if !isModelExisting(rec) {
 		t.Errorf("isModelExisting(rec) = false, want true after first Save")
 	}
 }
 
-// CustomAuditAppendOnly adds AppendOnly so the second-Save path
-// observably blocks (returning ErrImmutableModelUpdate). Used to
-// verify the flag flip end-to-end through the save dispatcher.
+// CustomAuditAppendOnly composes AppendOnly so a re-Save returns
+// ErrImmutableModelUpdate when the existence flag is set, exercising
+// the side-channel end-to-end through the save dispatcher.
 type CustomAuditAppendOnly struct {
 	IDInt[CustomAuditAppendOnly]
 	CreatedAtOnly
@@ -100,11 +88,10 @@ func setupCustomAuditAppendOnly(t *testing.T) *Manager {
 	return m
 }
 
-// TestImplicitExistence_SecondSaveBlocksOnAppendOnly asserts the
-// implicit-existence side-channel works end-to-end: a custom AppendOnly
-// composition with NO Existence trait still rejects a re-Save with
-// ErrImmutableModelUpdate, because saveWithDriver consults
-// isModelExisting(model) instead of a struct field.
+// TestImplicitExistence_SecondSaveBlocksOnAppendOnly verifies a
+// re-Save on an AppendOnly composition returns ErrImmutableModelUpdate
+// without an explicit Existence trait: saveWithDriver consults
+// isModelExisting(model) rather than a struct field.
 func TestImplicitExistence_SecondSaveBlocksOnAppendOnly(t *testing.T) {
 	setupCustomAuditAppendOnly(t)
 
@@ -121,22 +108,35 @@ func TestImplicitExistence_SecondSaveBlocksOnAppendOnly(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// Fix 2: panics → errors (CLAUDE.md library rule #10)
-// ============================================================================
+// Sentinel-only stubs whose Field(0) carries the canonical trait
+// sentinel. classifyTrait reads only Field(0).Type, so embedding these
+// drives detection without surfacing the json-tagged ID / CreatedAt
+// columns the real traits expose - useful for dual-trait conflict tests
+// where the real traits would clash on duplicate json tags.
+//
+//lint:ignore U1000 sentinel-only stub trait
+type dualTraitIDInt struct{ _ ormTraitIDInt }
+
+//lint:ignore U1000 sentinel-only stub trait
+type dualTraitIDUUID struct{ _ ormTraitIDUUID }
+
+//lint:ignore U1000 sentinel-only stub trait
+type dualTraitTimestamps struct{ _ ormTraitTimestamps }
+
+//lint:ignore U1000 sentinel-only stub trait
+type dualTraitCreatedAtOnly struct{ _ ormTraitCreatedAtOnly }
 
 type DualPK struct {
-	IDInt[DualPK]
-	IDUUID[DualPK]
-	Name string
+	dualTraitIDInt  //lint:ignore U1000 sentinel-driven embed
+	dualTraitIDUUID //lint:ignore U1000 sentinel-driven embed
+	Name            string
 }
 
 func (DualPK) TableName() string { return "dual_pks" }
 
-// TestDualPK_ReturnsFeaturesError asserts that mutually-exclusive
-// trait composition surfaces as a *FeaturesError from featuresFor /
-// MetaFor / save path - NOT a panic. Library code is forbidden from
-// panicking on runtime trait-detection failures (CLAUDE.md rule 10).
+// TestDualPK_ReturnsFeaturesError asserts mutually-exclusive trait
+// composition surfaces as a *FeaturesError from featuresFor / MetaFor /
+// save path. Library code must not panic on detection failure.
 func TestDualPK_ReturnsFeaturesError(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -158,10 +158,10 @@ func TestDualPK_ReturnsFeaturesError(t *testing.T) {
 }
 
 type DualTimestamps struct {
-	IDInt[DualTimestamps]
-	Timestamps
-	CreatedAtOnly
-	Note string
+	dualTraitIDInt         //lint:ignore U1000 sentinel-driven embed
+	dualTraitTimestamps    //lint:ignore U1000 sentinel-driven embed
+	dualTraitCreatedAtOnly //lint:ignore U1000 sentinel-driven embed
+	Note                   string
 }
 
 func TestDualTimestamps_ReturnsFeaturesError(t *testing.T) {
@@ -175,7 +175,7 @@ func TestDualTimestamps_ReturnsFeaturesError(t *testing.T) {
 }
 
 // TestRegisterModel_StartupValidationOK asserts the opt-in eager
-// validation succeeds on a valid composition.
+// validator succeeds on a valid composition.
 func TestRegisterModel_StartupValidationOK(t *testing.T) {
 	type Good struct {
 		IDInt[Good]
@@ -188,7 +188,7 @@ func TestRegisterModel_StartupValidationOK(t *testing.T) {
 }
 
 // TestRegisterModel_StartupValidationFails asserts the opt-in eager
-// validation surfaces *FeaturesError so a provider Boot() can fail
+// validator surfaces *FeaturesError so a provider Boot() can fail
 // loudly at startup rather than waiting for the first request.
 func TestRegisterModel_StartupValidationFails(t *testing.T) {
 	if err := RegisterModel[DualPK](); err == nil {
@@ -196,16 +196,11 @@ func TestRegisterModel_StartupValidationFails(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// Fix 3 + 4: weak-pointer race-safe + bounded existence store
-// ============================================================================
-
-// TestExistenceStore_DetectsStaleEntryAfterGC is a soft witness for the
-// race fix. Marking a model existing then dropping the reference and
-// triggering GC must allow the existence entry to be reclaimed; an
-// isModelExisting call that lands at the same address (very rare in a
-// test harness, simulated here by allocating a new model after the
-// previous is unreachable) must NOT inherit the stale "true".
+// TestExistenceStore_DetectsStaleEntryAfterGC asserts that an
+// existence entry whose original model has gone unreachable does not
+// classify a fresh allocation at the same address as existing: the
+// alive() closure observes its weak.Pointer going nil and the entry
+// is treated as stale.
 func TestExistenceStore_DetectsStaleEntryAfterGC(t *testing.T) {
 	type Tiny struct {
 		IDInt[Tiny]
@@ -232,14 +227,9 @@ func TestExistenceStore_DetectsStaleEntryAfterGC(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// Fix 5: AppendOnly + SoftDeletes composes correctly
-// ============================================================================
-
-// TombstoneAudit composes AppendOnly with SoftDeletes - the headline
-// case the trait system was designed to enable. Save on existing must
-// fail (append-only contract). Soft-delete via Query.Delete must
-// succeed (the tombstone-update is exempted).
+// TombstoneAudit composes AppendOnly with SoftDeletes. A re-Save must
+// fail (append-only contract); a soft-delete via Query.Delete must
+// succeed (the tombstone-update is exempted from the AppendOnly block).
 type TombstoneAudit struct {
 	IDInt[TombstoneAudit]
 	CreatedAtOnly
@@ -269,9 +259,9 @@ func setupTombstoneAudit(t *testing.T) *Manager {
 	return m
 }
 
-// TestAppendOnlyPlusSoftDeletes_TombstoneAllowed verifies the headline
-// composition: a soft-delete UPDATE that writes only deleted_at on an
-// AppendOnly row succeeds, while a content-mutation Save is rejected.
+// TestAppendOnlyPlusSoftDeletes_TombstoneAllowed verifies a soft-delete
+// UPDATE that writes only deleted_at on an AppendOnly row succeeds
+// while a content-mutation Save is rejected.
 func TestAppendOnlyPlusSoftDeletes_TombstoneAllowed(t *testing.T) {
 	setupTombstoneAudit(t)
 

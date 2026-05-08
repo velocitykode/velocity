@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/velocitykode/velocity/orm/drivers"
@@ -50,29 +49,6 @@ func currentTimestampSentinel(driverName string) RawSQL {
 		return CurrentTimestamp
 	}
 	return NOW
-}
-
-// softDeleteCache caches the result of modelHasSoftDelete per reflect.Type
-// to avoid repeated reflection on every newQuery call.
-var softDeleteCache sync.Map
-
-// isSoftDeleteTombstoneUpdate reports whether updates is the kind of
-// map a soft-delete-via-Update emits: deleted_at being set (with or
-// without the auto-injected updated_at companion). Used to exempt the
-// tombstone path from the AppendOnly write-block. A pure mutation
-// payload that touches deleted_at AND any other content column is NOT
-// a tombstone and is rejected.
-func isSoftDeleteTombstoneUpdate(updates map[string]any) bool {
-	if len(updates) == 0 {
-		return false
-	}
-	for k := range updates {
-		if k != "deleted_at" && k != "updated_at" {
-			return false
-		}
-	}
-	_, hasDeletedAt := updates["deleted_at"]
-	return hasDeletedAt
 }
 
 // validOperators is the allowlist of valid SQL operators
@@ -214,17 +190,6 @@ func checkSoftDelete(t reflect.Type) bool {
 		return false
 	}
 	return feats.hasDeletedAt
-}
-
-// modelIsAppendOnly reports whether T embeds the AppendOnly marker
-// trait. Used by the save path to gate the "block update" behavior;
-// the soft-delete tombstone update is exempted (see saveAppendOnlyAllowed).
-func modelIsAppendOnly[T any]() bool {
-	feats, err := featuresForT[T]()
-	if err != nil {
-		return false
-	}
-	return feats.appendOnly
 }
 
 // Clone returns an independent copy of the query. Slice fields are

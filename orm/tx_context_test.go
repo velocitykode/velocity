@@ -474,6 +474,7 @@ func TestWithTxContext_RoundTrip(t *testing.T) {
 	}
 
 	// Nil ctx is normalised to Background.
+	//lint:ignore SA1012 testing the nil-input contract of the helper
 	if got := WithTxContext(nil, nil); got == nil {
 		t.Error("WithTxContext(nil, nil) returned nil; want non-nil ctx")
 	}
@@ -518,6 +519,7 @@ func TestTransaction_BindIdempotent(t *testing.T) {
 
 // TestTxFromContext_Nil safely returns (nil, false).
 func TestTxFromContext_Nil(t *testing.T) {
+	//lint:ignore SA1012 testing the nil-input contract of the helper
 	tx, ok := TxFromContext(nil)
 	if ok || tx != nil {
 		t.Errorf("TxFromContext(nil) = (%v, %v), want (nil, false)", tx, ok)

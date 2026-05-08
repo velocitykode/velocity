@@ -26,11 +26,6 @@ type modelFeatures struct {
 	hasAnyTrait bool
 }
 
-// hasSoftDelete is true when the row supports soft-delete - i.e. has
-// a DeletedAt column. The "deleted_at IS NULL" global scope is
-// auto-installed for such rows by newQuery.
-func (f modelFeatures) hasSoftDelete() bool { return f.hasDeletedAt }
-
 // hasPK reports whether the model carries an ID column managed by a
 // PK trait. A custom struct that declares ID directly (without a PK
 // trait) is NOT detected as a PK here.
