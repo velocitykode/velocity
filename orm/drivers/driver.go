@@ -79,16 +79,23 @@ type QueryGrammar interface {
 }
 
 // ReturningGrammar is implemented by grammars whose dialect supports
-// RETURNING on UPDATE / DELETE statements (currently PostgreSQL).
+// RETURNING on UPDATE / DELETE statements (currently PostgreSQL; SQLite
+// 3.35+ and MariaDB 10.5+ are additional candidates).
 //
 // The ORM's bulk-hook surface uses this capability to capture affected
 // primary keys atomically with the write, eliminating the pre-SELECT race
-// window that drivers without RETURNING (MySQL, SQLite) must accept.
+// window that drivers without RETURNING must accept.
+//
+// Implementing this interface is a contract: the grammar guarantees that
+// the compiled statement returns one row per affected row containing the
+// primary-key column, atomically with the write. Implementations whose
+// dialect does NOT actually deliver atomic capture must NOT implement
+// the interface, regardless of whether they happen to support a
+// RETURNING-like syntax. The bulk-hook path treats the assertion as
+// authoritative and skips the pre-SELECT fallback.
 //
 // Grammars that do not implement ReturningGrammar fall back to the
-// pre-SELECT path. Adding a new RETURNING-capable dialect (e.g. SQLite
-// 3.35+, MariaDB 10.5+) is a matter of implementing this interface on
-// the corresponding grammar.
+// pre-SELECT path.
 type ReturningGrammar interface {
 	CompileUpdateReturning(table string, values map[string]any, conditions []Condition, pkCol string) (string, []any)
 	CompileDeleteReturning(table string, conditions []Condition, pkCol string) (string, []any)

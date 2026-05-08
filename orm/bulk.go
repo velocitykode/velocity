@@ -278,10 +278,14 @@ func (q *Query[T]) bulkPrepareHooks(ctx context.Context, op BulkOp) (bulkHookPla
 		return bulkHookPlan{}, pkErr
 	}
 
-	// Postgres path: defer id capture to the write itself via RETURNING
-	// pk. No pre-SELECT, no race window, exactly one statement and one
+	// Atomic-capture path: any grammar that implements ReturningGrammar
+	// claims atomic ID capture as part of the interface contract (see
+	// drivers.ReturningGrammar godoc). We treat the capability assertion
+	// as authoritative, no driver-name double-check, so SQLite 3.35+ /
+	// MariaDB 10.5+ adapters can opt in by implementing the interface.
+	// No pre-SELECT, no race window, exactly one statement and one
 	// QueryExecuted event per bulk write.
-	if _, hasReturning := q.driver.Grammar().(drivers.ReturningGrammar); hasReturning && q.driver.DriverName() == "postgres" {
+	if _, hasReturning := q.driver.Grammar().(drivers.ReturningGrammar); hasReturning {
 		return bulkHookPlan{
 			ReturningPK: pkCol,
 			afterFn: func(ids []any) {
@@ -291,8 +295,8 @@ func (q *Query[T]) bulkPrepareHooks(ctx context.Context, op BulkOp) (bulkHookPla
 	}
 
 	// Pre-SELECT fallback for drivers without RETURNING support on
-	// UPDATE/DELETE (currently MySQL and SQLite). Documented race
-	// window applies; see BulkAfterCommitHook godoc.
+	// UPDATE/DELETE (currently MySQL and SQLite without the wrapper).
+	// Documented race window applies; see BulkAfterCommitHook godoc.
 	ids, selErr := selectPrimaryKeys(ctx, q.driver, q.table, pkCol, q.conditions)
 	if selErr != nil {
 		return bulkHookPlan{}, selErr
