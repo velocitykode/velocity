@@ -296,10 +296,55 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 	})
 	defer releaseBuffer()
 
+	// Install per-tx callbacks holder so OnCommit / OnRollback /
+	// OnCommitFailure registrations made inside fn (or by model
+	// AfterCommit hooks during nested Saves) accumulate against this
+	// transaction.
+	//
+	// owner is true only for the outermost Transaction in a nested
+	// chain. Nested calls reuse the outer's callbacks list and
+	// defer the drain to the outer wrapper. When ctx has no holder,
+	// installTxCallbacks returns a standalone list with owner=true
+	// and a no-op release so the contract works even when callers
+	// forget PrepareTxCallbacks.
+	callbacks, owner, releaseCallbacks := installTxCallbacks(ctx)
+	defer releaseCallbacks()
+
+	// Wire the dispatcher so a hook panic surfaces a TxRecover event
+	// even when no logger is configured. Only the owner sets this:
+	// the outer Transaction owns the drain and therefore owns the
+	// dispatcher binding for the entire callback list lifecycle.
+	dispatcher := func(ev *TxRecover) { m.dispatchEvent(ctx, ev) }
+	if owner {
+		callbacks.setDispatcher(dispatcher)
+	}
+	// Stamp the dispatcher onto ctx so registerModelAfterCommit's
+	// inline (auto-commit) branch can route hook panics through the
+	// same TxRecover stream.
+	ctx = withTxRecoverDispatcher(ctx, dispatcher)
+
+	// drainOnRollback / drainOnCommit / drainOnCommitFailure are
+	// no-ops on nested Transactions: the inner closure does not own
+	// the callbacks list, so its commit / rollback boundary is not
+	// the boundary the application observes.
+	drainOnRollback := func() {
+		if owner {
+			callbacks.runRollback(ctx, logger)
+		}
+	}
+	drainOnCommit := func() {
+		if owner {
+			callbacks.runCommit(ctx, logger)
+		}
+	}
+	drainOnCommitFailure := func(commitErr error) {
+		if owner {
+			callbacks.runCommitFailure(ctx, logger, commitErr)
+		}
+	}
+
 	// Derive the per-tx ctx that fn receives. Calls inside fn that
-	// observe this ctx (by passing it as the first positional arg to
-	// any ORM terminal) auto-enroll in tx through
-	// Query[T].bindTxFromContextValue.
+	// observe this ctx auto-enroll in tx via bindTxFromContextValue.
 	txCtx := WithTxContext(ctx, tx)
 
 	defer func() {
@@ -318,6 +363,11 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 					RollbackErr: rbErr.Error(),
 				})
 			}
+			// Drain rollback callbacks before re-panicking. Each
+			// callback runs under its own recover so a misbehaving
+			// callback cannot mask the original panic value we
+			// re-raise below.
+			drainOnRollback()
 			panic(p)
 		}
 	}()
@@ -334,14 +384,33 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 				RollbackErr: rbErr.Error(),
 			})
 		}
+		drainOnRollback()
 		return err
 	}
 
 	if cmErr := tx.Commit(); cmErr != nil {
 		buffer.Drop()
+		// Commit failed: the tx is in an AMBIGUOUS state. The database
+		// may have committed but the network failed before the client
+		// received the OK, OR the commit may have been outright
+		// rejected. Running rollback hooks here would corrupt outboxes
+		// (re-enqueue jobs that already fired) or invalidate caches
+		// for changes that DID land. Drain ONLY commit-failure
+		// callbacks, which receive the commit error so they can
+		// branch on driver-specific error codes.
+		drainOnCommitFailure(cmErr)
 		return cmErr
 	}
-	return buffer.Flush()
+	if flushErr := buffer.Flush(); flushErr != nil {
+		// The tx itself committed; buffered-event flush failed. Still
+		// drain commit callbacks so outbox / cache invalidation runs:
+		// the row IS durable, only the in-memory event delivery
+		// failed. Surface flushErr to the caller.
+		drainOnCommit()
+		return flushErr
+	}
+	drainOnCommit()
+	return nil
 }
 
 // Begin starts a new transaction.

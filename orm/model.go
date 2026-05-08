@@ -1721,6 +1721,12 @@ func Save[T any](ctx context.Context, m *Manager, model *T) error {
 	if tx, ok := TxFromContext(ctx); ok {
 		drv = &txDriver{Driver: drv, tx: tx}
 	}
+	// Stamp Manager's TxRecover dispatcher onto ctx so an inline
+	// AfterCommit-hook panic surfaces a TxRecover event identical to
+	// the in-Transaction path. Without this stamping, a panic in an
+	// AfterCommit hook fired through the auto-commit branch would
+	// only land on os.Stderr.
+	ctx = withTxRecoverDispatcher(ctx, func(ev *TxRecover) { m.dispatchEvent(ctx, ev) })
 	return saveWithDriver(ctx, drv, model)
 }
 
@@ -1802,16 +1808,25 @@ func saveWithDriver[T any](ctx context.Context, drv drivers.Driver, model *T) er
 	existsField := modelField.FieldByName("IsExisting")
 	isInsert := !existsField.Bool()
 
-	if isImmutable {
-		if isUUIDModel {
-			return saveImmutableUUIDModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert)
-		}
-		return saveImmutableModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert)
+	var err error
+	switch {
+	case isImmutable && isUUIDModel:
+		err = saveImmutableUUIDModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert)
+	case isImmutable:
+		err = saveImmutableModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert)
+	case isUUIDModel:
+		err = saveUUIDModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert)
+	default:
+		err = saveModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert)
 	}
-	if isUUIDModel {
-		return saveUUIDModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert)
+	if err == nil {
+		// Wire model AfterCommit / AfterRollback hooks. Inside a
+		// surrounding Manager.Transaction the registration accumulates
+		// against the active TxCallbacks list; outside one, AfterCommit
+		// fires inline because the auto-commit already happened.
+		registerModelAfterCommit(ctx, model)
 	}
-	return saveModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert)
+	return err
 }
 
 // saveModel handles saving for auto-increment ID models
