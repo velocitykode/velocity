@@ -47,6 +47,19 @@ func WithTrace(ctx context.Context, traceID, spanID string) context.Context {
 	return ctx
 }
 
+// WithFullContext returns a new context with the given trace ID, span ID,
+// and parent ID. Use to restore trace context from a persisted payload
+// (queue worker, redis-stream subscriber, RPC entry) where all three
+// fields were captured at the producer side. Empty strings are stored
+// verbatim; callers that want a "no trace" outcome should pass empty
+// strings or skip the call.
+func WithFullContext(ctx context.Context, traceID, spanID, parentID string) context.Context {
+	ctx = context.WithValue(ctx, traceIDKey, traceID)
+	ctx = context.WithValue(ctx, spanIDKey, spanID)
+	ctx = context.WithValue(ctx, parentIDKey, parentID)
+	return ctx
+}
+
 // WithSpan returns a new context with a new span ID, preserving the trace ID.
 // The current span ID becomes the parent ID for child span correlation.
 func WithSpan(ctx context.Context, spanID string) context.Context {

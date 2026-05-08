@@ -31,6 +31,7 @@ type RequestStarted struct {
 	StartedAt  time.Time
 	TraceID    string // APM trace ID
 	SpanID     string // APM span ID
+	ParentID   string // Parent span ID for correlation
 }
 
 // Name returns the event name
@@ -65,6 +66,7 @@ type RequestHandled struct {
 	Duration     time.Duration
 	TraceID      string // APM trace ID
 	SpanID       string // APM span ID
+	ParentID     string // Parent span ID for correlation
 }
 
 // Name returns the event name
@@ -83,6 +85,7 @@ type RequestFailed struct {
 	Recovered bool   // true if recovered from panic
 	TraceID   string // APM trace ID
 	SpanID    string // APM span ID
+	ParentID  string // Parent span ID for correlation
 }
 
 // Name returns the event name

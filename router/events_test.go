@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/trace"
 )
 
 // testEventCollector collects dispatched events for testing
@@ -280,6 +282,53 @@ func TestResponseWriterCapture(t *testing.T) {
 	})
 	if handled == nil {
 		t.Error("Response metrics not captured correctly")
+	}
+}
+
+func TestRequestEvents_ParentIDPropagated(t *testing.T) {
+	collector := newTestEventCollector()
+
+	router := NewV2()
+	router.SetEventDispatcher(collector.dispatch)
+	router.Get("/p", func(c *Context) error {
+		return c.String(http.StatusOK, "ok")
+	})
+	router.Get("/boom", func(c *Context) error {
+		return &HTTPError{Code: http.StatusInternalServerError, Message: "boom"}
+	})
+
+	parentSpan := "parent7890123456"
+	mkReq := func(path string) *http.Request {
+		ctx := trace.WithTrace(context.Background(), "trace12345678901234567890123456", parentSpan)
+		ctx = trace.WithSpan(ctx, "child567890123456")
+		return httptest.NewRequest(http.MethodGet, path, nil).WithContext(ctx)
+	}
+
+	router.ServeHTTP(httptest.NewRecorder(), mkReq("/p"))
+	router.ServeHTTP(httptest.NewRecorder(), mkReq("/boom"))
+
+	var sawStarted, sawHandled, sawFailed bool
+	for _, e := range collector.getEvents() {
+		switch ev := e.(type) {
+		case *RequestStarted:
+			sawStarted = true
+			if ev.ParentID != parentSpan {
+				t.Errorf("RequestStarted ParentID: got %q, want %q", ev.ParentID, parentSpan)
+			}
+		case *RequestHandled:
+			sawHandled = true
+			if ev.ParentID != parentSpan {
+				t.Errorf("RequestHandled ParentID: got %q, want %q", ev.ParentID, parentSpan)
+			}
+		case *RequestFailed:
+			sawFailed = true
+			if ev.ParentID != parentSpan {
+				t.Errorf("RequestFailed ParentID: got %q, want %q", ev.ParentID, parentSpan)
+			}
+		}
+	}
+	if !sawStarted || !sawHandled || !sawFailed {
+		t.Errorf("missing event coverage: started=%v handled=%v failed=%v", sawStarted, sawHandled, sawFailed)
 	}
 }
 

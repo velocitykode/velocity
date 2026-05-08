@@ -435,6 +435,7 @@ type requestMeta struct {
 	startedAt time.Time
 	traceID   string
 	spanID    string
+	parentID  string
 }
 
 // ServeHTTP implements http.Handler interface.
@@ -454,6 +455,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		StartedAt:  meta.startedAt,
 		TraceID:    meta.traceID,
 		SpanID:     meta.spanID,
+		ParentID:   meta.parentID,
 	})
 
 	// Static-first path (Static): FileServer gets a crack before route
@@ -500,6 +502,7 @@ func (r *VelocityRouterV2) beginRequest(req *http.Request) (requestMeta, *http.R
 		startedAt: time.Now(),
 		traceID:   traceID,
 		spanID:    spanID,
+		parentID:  trace.GetParentID(reqCtx),
 	}
 	reqCtx = context.WithValue(reqCtx, RequestIDKey, meta.id)
 	return meta, req.WithContext(reqCtx)
@@ -534,6 +537,7 @@ func (r *VelocityRouterV2) serveStatic(rw *responseWriter, req *http.Request, me
 		Duration:     time.Since(meta.startedAt),
 		TraceID:      meta.traceID,
 		SpanID:       meta.spanID,
+		ParentID:     meta.parentID,
 	})
 	return true
 }
@@ -575,6 +579,7 @@ func (r *VelocityRouterV2) handleNotFound(rw *responseWriter, req *http.Request,
 		Duration:     time.Since(meta.startedAt),
 		TraceID:      meta.traceID,
 		SpanID:       meta.spanID,
+		ParentID:     meta.parentID,
 	})
 }
 
@@ -637,6 +642,7 @@ func (r *VelocityRouterV2) invokeHandler(ctx *Context, rw *responseWriter, req *
 				Recovered: false,
 				TraceID:   meta.traceID,
 				SpanID:    meta.spanID,
+				ParentID:  meta.parentID,
 			})
 		}
 		r.dispatchInstanceEvent(req.Context(), &RequestHandled{
@@ -650,6 +656,7 @@ func (r *VelocityRouterV2) invokeHandler(ctx *Context, rw *responseWriter, req *
 			Duration:     time.Since(meta.startedAt),
 			TraceID:      meta.traceID,
 			SpanID:       meta.spanID,
+			ParentID:     meta.parentID,
 		})
 		ctx.reset()
 		r.ctxPool.Put(ctx)
@@ -678,6 +685,7 @@ func (r *VelocityRouterV2) onPanic(ctx *Context, rw *responseWriter, req *http.R
 		Recovered: true,
 		TraceID:   meta.traceID,
 		SpanID:    meta.spanID,
+		ParentID:  meta.parentID,
 	})
 	r.handleError(ctx, rw, err)
 }

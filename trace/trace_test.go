@@ -281,3 +281,40 @@ func TestNestedSpans(t *testing.T) {
 		seen[span] = true
 	}
 }
+
+func TestWithFullContext_RoundTrip(t *testing.T) {
+	ctx := context.Background()
+	traceID := "trace12345678901234567890123456"
+	spanID := "span1234567890ab"
+	parentID := "parent7890123456"
+
+	ctx = WithFullContext(ctx, traceID, spanID, parentID)
+
+	gotTrace, gotSpan, gotParent := GetTraceContext(ctx)
+	if gotTrace != traceID {
+		t.Errorf("trace: got %s, want %s", gotTrace, traceID)
+	}
+	if gotSpan != spanID {
+		t.Errorf("span: got %s, want %s", gotSpan, spanID)
+	}
+	if gotParent != parentID {
+		t.Errorf("parent: got %s, want %s", gotParent, parentID)
+	}
+}
+
+func TestWithFullContext_EmptyStringsStoredVerbatim(t *testing.T) {
+	ctx := WithTrace(context.Background(), "old-trace", "old-span")
+	ctx = WithSpan(ctx, "old-child")
+
+	ctx = WithFullContext(ctx, "", "", "")
+
+	if got := GetTraceID(ctx); got != "" {
+		t.Errorf("trace: got %s, want empty", got)
+	}
+	if got := GetSpanID(ctx); got != "" {
+		t.Errorf("span: got %s, want empty", got)
+	}
+	if got := GetParentID(ctx); got != "" {
+		t.Errorf("parent: got %s, want empty", got)
+	}
+}
