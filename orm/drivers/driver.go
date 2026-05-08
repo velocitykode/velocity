@@ -33,6 +33,12 @@ type Driver interface {
 	// Driver-specific
 	Grammar() QueryGrammar
 	DriverName() string
+
+	// OperatorRegistry returns dialect-specific operators (JSONB, FTS,
+	// array overlap, ...) that the typed Where chain admits in addition
+	// to the built-in scalar allowlist. Returns nil when the driver
+	// declares no extension operators; built-in scalars work either way.
+	OperatorRegistry() map[string]OperatorSpec
 }
 
 // ConnectionConfig holds database connection settings
@@ -137,6 +143,11 @@ type Condition struct {
 	// sub-group. Grammars emit "(<grouped>)" instead of a leaf predicate.
 	// Nesting is supported recursively.
 	Group []Condition
+
+	// Spec, when non-nil, names a driver-registered OperatorSpec. The
+	// grammar emits Spec.Template instead of the built-in operator switch.
+	// Nil for built-in scalar operators (=, <>, IN, BETWEEN, ...).
+	Spec *OperatorSpec
 }
 
 // Order represents an ORDER BY clause

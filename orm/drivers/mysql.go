@@ -135,6 +135,12 @@ func (d *MySQLDriver) DriverName() string {
 	return "mysql"
 }
 
+// OperatorRegistry returns nil. MySQL gains no extension operators in this
+// release; the seam is in place for JSON_CONTAINS / JSON_OVERLAPS follow-ups.
+func (d *MySQLDriver) OperatorRegistry() map[string]OperatorSpec {
+	return nil
+}
+
 // MySQLGrammar implements QueryGrammar for MySQL
 type MySQLGrammar struct{}
 
@@ -359,6 +365,16 @@ func (g *MySQLGrammar) compileConditions(sql *strings.Builder, args *[]any, cond
 			sql.WriteString("(")
 			g.compileConditions(sql, args, cond.Group)
 			sql.WriteString(")")
+			continue
+		}
+
+		// Driver-registered operator: render Spec.Template instead of the
+		// built-in switch. MySQL's OperatorRegistry returns nil today so
+		// this branch is dead, but the seam stays in place for the
+		// JSON_CONTAINS / JSON_OVERLAPS follow-ups.
+		if cond.Spec != nil {
+			fragment, _ := renderOperatorTemplate(g, cond, 0, args, "?")
+			sql.WriteString(fragment)
 			continue
 		}
 

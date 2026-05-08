@@ -655,3 +655,6 @@ func (d *countingDriver) HasTable(name string) bool     { return d.inner.HasTabl
 func (d *countingDriver) HasColumn(t, c string) bool    { return d.inner.HasColumn(t, c) }
 func (d *countingDriver) Grammar() drivers.QueryGrammar { return d.inner.Grammar() }
 func (d *countingDriver) DriverName() string            { return d.inner.DriverName() }
+func (d *countingDriver) OperatorRegistry() map[string]drivers.OperatorSpec {
+	return d.inner.OperatorRegistry()
+}

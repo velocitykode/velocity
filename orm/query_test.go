@@ -474,6 +474,7 @@ func (d *nopDriver) HasTable(string) bool                                     { 
 func (d *nopDriver) HasColumn(string, string) bool                            { return false }
 func (d *nopDriver) Grammar() drivers.QueryGrammar                            { return d.grammar }
 func (d *nopDriver) DriverName() string                                       { return "sqlite" }
+func (d *nopDriver) OperatorRegistry() map[string]drivers.OperatorSpec        { return nil }
 
 // TestPluck_DistinctEmitsSQL_AllDrivers verifies SelectQuery.Distinct flows
 // to SELECT DISTINCT on each shipped grammar. This is a grammar-level guard
@@ -500,5 +501,88 @@ func TestPluck_DistinctEmitsSQL_AllDrivers(t *testing.T) {
 					tt.name, sql)
 			}
 		})
+	}
+}
+
+// stubRegistryDriver wraps nopDriver with a custom OperatorRegistry so
+// query-side tests can exercise resolveOperator without needing the full
+// postgres surface.
+type stubRegistryDriver struct {
+	nopDriver
+	registry map[string]drivers.OperatorSpec
+}
+
+func (d *stubRegistryDriver) OperatorRegistry() map[string]drivers.OperatorSpec {
+	return d.registry
+}
+
+// TestWhere_UnregisteredOperatorRejected confirms an operator absent from
+// both the built-in scalar allowlist and the active driver's registry
+// surfaces the existing "invalid SQL operator" error unchanged.
+func TestWhere_UnregisteredOperatorRejected(t *testing.T) {
+	q := Model[TestUser]{}.Where("id ## ?", 5)
+	if q.err == nil {
+		t.Fatal("expected error for unregistered operator '##'")
+	}
+	if !strings.Contains(q.err.Error(), "invalid SQL operator") {
+		t.Errorf("error: got %q, want containing 'invalid SQL operator'", q.err.Error())
+	}
+}
+
+// withStubRegistryDriver swaps Default to a Manager backed by a stub driver
+// so test code can exercise the public chain (Model[T]{}.Where(...)) without
+// reaching into Query's struct internals. Returns the restore closure.
+func withStubRegistryDriver(t *testing.T, registry map[string]drivers.OperatorSpec) func() {
+	t.Helper()
+	d := &stubRegistryDriver{
+		nopDriver: nopDriver{grammar: &drivers.PostgresGrammar{}},
+		registry:  registry,
+	}
+	m := &Manager{defaultDriver: d, defaultName: "stub", connections: map[string]drivers.Driver{}}
+	prev := Default()
+	SetDefault(m)
+	return func() { SetDefault(prev) }
+}
+
+// TestWhere_RegisteredOperatorRoundTrips confirms a driver-registered
+// operator flows through resolveOperator, lands a non-nil Spec on the
+// Condition, and survives parseCondition without rejection. Goes through
+// the public Model[T]{}.Where chain so a future construction-time
+// validation on Query would still catch this test.
+func TestWhere_RegisteredOperatorRoundTrips(t *testing.T) {
+	defer withStubRegistryDriver(t, map[string]drivers.OperatorSpec{
+		"@>": {Op: "@>", Arity: 1, ParamShape: drivers.ParamJSON, Template: "{{lhs}} @> {{rhs}}::jsonb"},
+	})()
+
+	q := Model[TestUser]{}.Where("processes @> ?", `{"key":"value"}`)
+	if q.err != nil {
+		t.Fatalf("Where rejected registered operator: %v", q.err)
+	}
+	if len(q.conditions) != 1 {
+		t.Fatalf("conditions: got %d, want 1", len(q.conditions))
+	}
+	cond := q.conditions[0]
+	if cond.Spec == nil {
+		t.Fatal("Condition.Spec is nil; resolveOperator did not stash registry hit")
+	}
+	if cond.Spec.Op != "@>" {
+		t.Errorf("Spec.Op: got %q, want %q", cond.Spec.Op, "@>")
+	}
+}
+
+// TestWhere_RegisteredOperatorParamShapeMismatch confirms cond.Value is
+// validated against the spec's ParamShape at parse time, not at execute
+// time. A JSONB op given a struct value must reject up front.
+func TestWhere_RegisteredOperatorParamShapeMismatch(t *testing.T) {
+	defer withStubRegistryDriver(t, map[string]drivers.OperatorSpec{
+		"@>": {Op: "@>", Arity: 1, ParamShape: drivers.ParamJSON, Template: "{{lhs}} @> {{rhs}}::jsonb"},
+	})()
+
+	q := Model[TestUser]{}.Where("processes @> ?", struct{ X int }{X: 1})
+	if q.err == nil {
+		t.Fatal("expected error for ParamJSON op given struct value")
+	}
+	if !strings.Contains(q.err.Error(), "JSON") {
+		t.Errorf("error: got %q, want containing 'JSON'", q.err.Error())
 	}
 }

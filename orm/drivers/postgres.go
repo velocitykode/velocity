@@ -179,6 +179,34 @@ func (d *PostgresDriver) DriverName() string {
 	return "postgres"
 }
 
+// postgresOperators registers the JSONB, full-text-search, and array overlap
+// operators that the built-in scalar allowlist rejects. Postgres callers can
+// chain `Where("col @> ?", json)` without falling back to Raw.
+//
+// JSONB ops cast the bound parameter to jsonb in the template so the user
+// supplies raw JSON text and the cast lives next to the operator that needs
+// it. The full-text-search `@@` op casts both sides for tsvector / tsquery
+// pairing and accepts a raw text query (the cast is in the template). Array
+// `&&` overlap takes a slice and renders one placeholder per element with
+// ARRAY[...] bracketing.
+var postgresOperators = map[string]OperatorSpec{
+	"@>": {Op: "@>", Arity: 1, ParamShape: ParamJSON, Template: "{{lhs}} @> {{rhs}}::jsonb"},
+	"<@": {Op: "<@", Arity: 1, ParamShape: ParamJSON, Template: "{{lhs}} <@ {{rhs}}::jsonb"},
+	"?":  {Op: "?", Arity: 1, ParamShape: ParamScalar, Template: "{{lhs}} ? {{rhs}}"},
+	"?|": {Op: "?|", Arity: 1, ParamShape: ParamArray, Template: "{{lhs}} ?| {{rhs}}"},
+	"?&": {Op: "?&", Arity: 1, ParamShape: ParamArray, Template: "{{lhs}} ?& {{rhs}}"},
+	"@@": {Op: "@@", Arity: 1, ParamShape: ParamScalar, Template: "{{lhs}} @@ to_tsquery({{rhs}})"},
+	"&&": {Op: "&&", Arity: 1, ParamShape: ParamArray, Template: "{{lhs}} && {{rhs}}"},
+}
+
+// OperatorRegistry returns the postgres-specific operator extensions: JSONB
+// containment / key existence, full-text search, and array overlap. Built-in
+// scalar operators are unaffected; this set is consulted only when the
+// allowlist misses.
+func (d *PostgresDriver) OperatorRegistry() map[string]OperatorSpec {
+	return postgresOperators
+}
+
 // PostgresGrammar implements QueryGrammar for PostgreSQL
 type PostgresGrammar struct{}
 
@@ -445,6 +473,17 @@ func (g *PostgresGrammar) compileConditions(sql *strings.Builder, args *[]any, c
 			sql.WriteString("(")
 			argIndex = g.compileConditions(sql, args, cond.Group, argIndex)
 			sql.WriteString(")")
+			continue
+		}
+
+		// Driver-registered operator: render Spec.Template instead of the
+		// built-in switch. Placeholders ({{lhs}}, {{op}}, {{rhs}}) absorb
+		// the column, operator literal, and bound-parameter form so dialect
+		// quirks (e.g. JSONB cast) live in the template, not the call site.
+		if cond.Spec != nil {
+			fragment, newIdx := renderOperatorTemplate(g, cond, argIndex, args, "$%d")
+			sql.WriteString(fragment)
+			argIndex = newIdx
 			continue
 		}
 

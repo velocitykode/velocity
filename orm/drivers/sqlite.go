@@ -155,6 +155,12 @@ func (d *SQLiteDriver) DriverName() string {
 	return "sqlite"
 }
 
+// OperatorRegistry returns nil. SQLite gains no extension operators in this
+// release; the seam is in place for json1 / fts5 follow-ups.
+func (d *SQLiteDriver) OperatorRegistry() map[string]OperatorSpec {
+	return nil
+}
+
 // SQLiteGrammar implements QueryGrammar for SQLite
 type SQLiteGrammar struct{}
 
@@ -380,6 +386,16 @@ func (g *SQLiteGrammar) compileConditions(sql *strings.Builder, args *[]any, con
 			sql.WriteString("(")
 			g.compileConditions(sql, args, cond.Group)
 			sql.WriteString(")")
+			continue
+		}
+
+		// Driver-registered operator: render Spec.Template instead of the
+		// built-in switch. SQLite's OperatorRegistry returns nil today so
+		// this branch is dead, but the seam stays in place for json1 / fts5
+		// follow-ups that need the same template machinery.
+		if cond.Spec != nil {
+			fragment, _ := renderOperatorTemplate(g, cond, 0, args, "?")
+			sql.WriteString(fragment)
 			continue
 		}
 

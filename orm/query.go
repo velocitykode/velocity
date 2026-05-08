@@ -3,6 +3,7 @@ package orm
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -275,11 +276,17 @@ func (q *Query[T]) Where(condition string, args ...any) *Query[T] {
 		q.setErr("Where", err)
 		return q
 	}
+	spec, err := q.resolveOperator(op, val)
+	if err != nil {
+		q.setErr("Where", err)
+		return q
+	}
 	q.conditions = append(q.conditions, drivers.Condition{
 		Column:   col,
 		Operator: op,
 		Value:    val,
 		Type:     "and",
+		Spec:     spec,
 	})
 	return q
 }
@@ -291,11 +298,17 @@ func (q *Query[T]) OrWhere(condition string, args ...any) *Query[T] {
 		q.setErr("OrWhere", err)
 		return q
 	}
+	spec, err := q.resolveOperator(op, val)
+	if err != nil {
+		q.setErr("OrWhere", err)
+		return q
+	}
 	q.conditions = append(q.conditions, drivers.Condition{
 		Column:   col,
 		Operator: op,
 		Value:    val,
 		Type:     "or",
+		Spec:     spec,
 	})
 	return q
 }
@@ -482,16 +495,71 @@ func parseCondition(condition string, args []any) (column, operator string, valu
 		return "", "", nil, err
 	}
 
-	// Validate operator against allowlist
-	if !isValidOperator(operator) {
-		return "", "", nil, fmt.Errorf("invalid SQL operator: %q", operator)
-	}
+	// Operator validation is intentionally deferred to the caller, which
+	// has the active driver in hand and can consult its OperatorRegistry
+	// before rejecting the operator. parseCondition only normalises the
+	// surface shape (column, operator, value); the caller decides whether
+	// the operator is admissible.
 
 	if len(args) > 0 {
 		value = args[0]
 	}
 
 	return column, operator, value, nil
+}
+
+// resolveOperator decides whether an operator is admissible. Built-in scalar
+// operators return (nil, nil). Driver-registered operators return their
+// OperatorSpec with cond.Value validated against ParamShape. Unknown
+// operators return the existing "invalid SQL operator" error so the
+// rejection surface stays unchanged for callers that don't extend it.
+func (q *Query[T]) resolveOperator(op string, val any) (*drivers.OperatorSpec, error) {
+	if isValidOperator(op) {
+		return nil, nil
+	}
+	if q.driver == nil {
+		return nil, fmt.Errorf("invalid SQL operator: %q", op)
+	}
+	registry := q.driver.OperatorRegistry()
+	if registry == nil {
+		return nil, fmt.Errorf("invalid SQL operator: %q", op)
+	}
+	spec, ok := registry[strings.ToUpper(strings.TrimSpace(op))]
+	if !ok {
+		spec, ok = registry[strings.TrimSpace(op)]
+	}
+	if !ok {
+		return nil, fmt.Errorf("invalid SQL operator: %q", op)
+	}
+	if err := validateOperatorValue(&spec, val); err != nil {
+		return nil, err
+	}
+	return &spec, nil
+}
+
+// validateOperatorValue rejects a cond.Value that does not match the spec's
+// ParamShape. Catches misuse at parse time so a SQL syntax error never
+// leaks to execute time.
+func validateOperatorValue(spec *drivers.OperatorSpec, val any) error {
+	switch spec.ParamShape {
+	case drivers.ParamScalar:
+		// Any single value is acceptable; nil is rejected because every
+		// registered scalar op consumes one bound parameter.
+		if val == nil {
+			return fmt.Errorf("operator %q requires a non-nil value", spec.Op)
+		}
+	case drivers.ParamSlice, drivers.ParamArray:
+		if _, ok := val.([]any); !ok {
+			return fmt.Errorf("operator %q requires []any, got %T", spec.Op, val)
+		}
+	case drivers.ParamJSON:
+		switch val.(type) {
+		case string, []byte, json.RawMessage:
+		default:
+			return fmt.Errorf("operator %q requires JSON (string, []byte, or json.RawMessage), got %T", spec.Op, val)
+		}
+	}
+	return nil
 }
 
 // OrderBy adds an ORDER BY clause
@@ -539,11 +607,17 @@ func (q *Query[T]) Having(condition string, args ...any) *Query[T] {
 		q.setErr("Having", err)
 		return q
 	}
+	spec, err := q.resolveOperator(op, val)
+	if err != nil {
+		q.setErr("Having", err)
+		return q
+	}
 	q.having = append(q.having, drivers.Condition{
 		Column:   col,
 		Operator: op,
 		Value:    val,
 		Type:     "and",
+		Spec:     spec,
 	})
 	return q
 }
