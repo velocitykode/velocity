@@ -191,7 +191,7 @@ func TestQueryPaginate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := newQuery[TestUser]().Paginate(tt.page, tt.perPage)
+			result, err := newQuery[TestUser]().Paginate(context.Background(), tt.page, tt.perPage)
 			if err != nil {
 				t.Fatalf("Paginate(%d, %d) error: %v", tt.page, tt.perPage, err)
 			}
@@ -239,7 +239,7 @@ func TestQueryPaginate_InputDefaults(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := newQuery[TestUser]().Paginate(tt.page, tt.perPage)
+			result, err := newQuery[TestUser]().Paginate(context.Background(), tt.page, tt.perPage)
 			if err != nil {
 				t.Fatalf("Paginate(%d, %d) error: %v", tt.page, tt.perPage, err)
 			}
@@ -261,7 +261,7 @@ func TestQueryPaginate_EmptyTable(t *testing.T) {
 
 	setupPaginationTable(t, manager, 0)
 
-	result, err := newQuery[TestUser]().Paginate(1, 10)
+	result, err := newQuery[TestUser]().Paginate(context.Background(), 1, 10)
 	if err != nil {
 		t.Fatalf("Paginate error: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestQueryPaginate_WithConditions(t *testing.T) {
 	setupPaginationTable(t, manager, 20)
 
 	// Only active users (even IDs → 10 users)
-	result, err := TestUser{}.Where("is_active = ?", true).Paginate(1, 5)
+	result, err := TestUser{}.Where("is_active = ?", true).Paginate(context.Background(), 1, 5)
 	if err != nil {
 		t.Fatalf("Paginate error: %v", err)
 	}
@@ -313,7 +313,7 @@ func TestQueryPaginate_WithOrdering(t *testing.T) {
 
 	setupPaginationTable(t, manager, 10)
 
-	result, err := TestUser{}.OrderBy("age", "DESC").Paginate(1, 3)
+	result, err := TestUser{}.OrderBy("age", "DESC").Paginate(context.Background(), 1, 3)
 	if err != nil {
 		t.Fatalf("Paginate error: %v", err)
 	}
@@ -346,7 +346,7 @@ func TestQueryPaginate_WithConditionsAndOrdering(t *testing.T) {
 	// Active users ordered by age descending, page 2 of 3-per-page
 	result, err := TestUser{}.Where("is_active = ?", true).
 		OrderBy("age", "DESC").
-		Paginate(2, 3)
+		Paginate(context.Background(), 2, 3)
 	if err != nil {
 		t.Fatalf("Paginate error: %v", err)
 	}
@@ -377,7 +377,7 @@ func TestQueryPaginate_SoftDeleteExcludesDeleted(t *testing.T) {
 	// 20 total, 5 soft-deleted → 15 visible
 	setupSoftDeleteTable(t, manager, 20, 5)
 
-	result, err := SoftDeleteTestUser{}.Paginate(1, 10)
+	result, err := SoftDeleteTestUser{}.Paginate(context.Background(), 1, 10)
 	if err != nil {
 		t.Fatalf("Paginate error: %v", err)
 	}
@@ -403,7 +403,7 @@ func TestQueryPaginate_SoftDeleteWithTrashed(t *testing.T) {
 	setupSoftDeleteTable(t, manager, 20, 5)
 
 	// WithTrashed should include all 20
-	result, err := SoftDeleteTestUser{}.WithTrashed().Paginate(1, 10)
+	result, err := SoftDeleteTestUser{}.WithTrashed().Paginate(context.Background(), 1, 10)
 	if err != nil {
 		t.Fatalf("Paginate error: %v", err)
 	}
@@ -426,7 +426,7 @@ func TestQueryPaginate_SoftDeleteOnlyTrashed(t *testing.T) {
 	setupSoftDeleteTable(t, manager, 20, 5)
 
 	// OnlyTrashed should return only the 5 deleted
-	result, err := SoftDeleteTestUser{}.OnlyTrashed().Paginate(1, 10)
+	result, err := SoftDeleteTestUser{}.OnlyTrashed().Paginate(context.Background(), 1, 10)
 	if err != nil {
 		t.Fatalf("Paginate error: %v", err)
 	}
@@ -449,7 +449,7 @@ func TestQueryPaginate_ErrorOnBadTable(t *testing.T) {
 	defer ResetDefault()
 
 	// No table created — query should fail
-	_, err := newQuery[TestUser]().Paginate(1, 10)
+	_, err := newQuery[TestUser]().Paginate(context.Background(), 1, 10)
 	if err == nil {
 		t.Fatal("expected error when paginating non-existent table, got nil")
 	}
@@ -463,7 +463,7 @@ func TestModelPaginate(t *testing.T) {
 
 	setupPaginationTable(t, manager, 15)
 
-	result, err := TestUser{}.Paginate(2, 5)
+	result, err := TestUser{}.Paginate(context.Background(), 2, 5)
 	if err != nil {
 		t.Fatalf("Model.Paginate error: %v", err)
 	}
@@ -494,7 +494,7 @@ func TestSoftDeleteModelPaginate(t *testing.T) {
 	// 10 total, 3 soft-deleted → 7 visible
 	setupSoftDeleteTable(t, manager, 10, 3)
 
-	result, err := SoftDeleteTestUser{}.Paginate(1, 5)
+	result, err := SoftDeleteTestUser{}.Paginate(context.Background(), 1, 5)
 	if err != nil {
 		t.Fatalf("SoftDeleteModel.Paginate error: %v", err)
 	}
@@ -579,7 +579,7 @@ func TestPaginatedResult_LastPageCalculation(t *testing.T) {
 			db.Exec(`DROP TABLE IF EXISTS test_users`)
 			setupPaginationTable(t, manager, tt.total)
 
-			result, err := newQuery[TestUser]().Paginate(1, tt.perPage)
+			result, err := newQuery[TestUser]().Paginate(context.Background(), 1, tt.perPage)
 			if err != nil {
 				t.Fatalf("Paginate(1, %d) error: %v", tt.perPage, err)
 			}
@@ -610,7 +610,7 @@ func TestQueryPaginate_Concurrent(t *testing.T) {
 		wg.Add(1)
 		go func(page int) {
 			defer wg.Done()
-			result, err := TestUser{}.Paginate(page, 5)
+			result, err := TestUser{}.Paginate(context.Background(), page, 5)
 			if err != nil {
 				errs <- fmt.Errorf("page %d: %w", page, err)
 				return

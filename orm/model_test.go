@@ -52,7 +52,7 @@ func TestModelSave(t *testing.T) {
 	}
 
 	// Save the user
-	err = Save(manager, user)
+	err = Save(context.Background(), manager, user)
 	if err != nil {
 		t.Fatalf("Failed to save user: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestModelSave(t *testing.T) {
 	user.Name = "Jane Doe"
 	user.Age = 31
 
-	err = Save(manager, user)
+	err = Save(context.Background(), manager, user)
 	if err != nil {
 		t.Fatalf("Failed to update user: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestModelCreate(t *testing.T) {
 	defer ResetDefault()
 
 	// Test Create with map - should return created model
-	user, err := TestUser{}.Create(map[string]any{
+	user, err := TestUser{}.Create(context.Background(), map[string]any{
 		"name":      "Alice",
 		"email":     "alice@example.com",
 		"age":       25,
@@ -255,7 +255,7 @@ func TestUUIDModelSave(t *testing.T) {
 	}
 
 	// Save the project
-	err = Save(manager, project)
+	err = Save(context.Background(), manager, project)
 	if err != nil {
 		t.Fatalf("Failed to save project: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestUUIDModelSave(t *testing.T) {
 	project.Name = "Updated Project"
 	project.Description = "Updated description"
 
-	err = Save(manager, project)
+	err = Save(context.Background(), manager, project)
 	if err != nil {
 		t.Fatalf("Failed to update project: %v", err)
 	}
@@ -354,7 +354,7 @@ func TestUUIDModelWithPresetID(t *testing.T) {
 	project.UUIDModel.ID = presetID
 
 	// Save the project
-	err = Save(manager, project)
+	err = Save(context.Background(), manager, project)
 	if err != nil {
 		t.Fatalf("Failed to save project with preset ID: %v", err)
 	}
@@ -401,7 +401,7 @@ func TestUUIDModelCreate(t *testing.T) {
 	defer ResetDefault()
 
 	// Test Create with map - should return created model with auto-generated UUID
-	project, err := TestProject{}.Create(map[string]any{
+	project, err := TestProject{}.Create(context.Background(), map[string]any{
 		"name":        "Created Project",
 		"description": "Created via map",
 	})
@@ -492,7 +492,7 @@ func TestModelSave_RespectsCallerCreatedAt(t *testing.T) {
 	preset := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
 	u1 := &TestUser{Name: "Backfill", Email: "backfill@example.com"}
 	u1.Model.CreatedAt = preset
-	if err := Save(manager, u1); err != nil {
+	if err := Save(context.Background(), manager, u1); err != nil {
 		t.Fatalf("Save with preset CreatedAt: %v", err)
 	}
 	if !u1.Model.CreatedAt.Equal(preset) {
@@ -517,7 +517,7 @@ func TestModelSave_RespectsCallerCreatedAt(t *testing.T) {
 	// Case 2: zero CreatedAt is auto-stamped near now (in struct AND in DB).
 	u2 := &TestUser{Name: "Fresh", Email: "fresh@example.com"}
 	before := time.Now()
-	if err := Save(manager, u2); err != nil {
+	if err := Save(context.Background(), manager, u2); err != nil {
 		t.Fatalf("Save with zero CreatedAt: %v", err)
 	}
 	after := time.Now()
@@ -565,7 +565,7 @@ func TestUUIDModelSave_RespectsCallerCreatedAt(t *testing.T) {
 	preset := time.Date(2020, 6, 15, 12, 0, 0, 0, time.UTC)
 	p1 := &TestProject{Name: "Imported", Description: "from legacy"}
 	p1.UUIDModel.CreatedAt = preset
-	if err := Save(manager, p1); err != nil {
+	if err := Save(context.Background(), manager, p1); err != nil {
 		t.Fatalf("Save with preset CreatedAt: %v", err)
 	}
 	if !p1.UUIDModel.CreatedAt.Equal(preset) {
@@ -588,7 +588,7 @@ func TestUUIDModelSave_RespectsCallerCreatedAt(t *testing.T) {
 
 	p2 := &TestProject{Name: "Fresh", Description: "new"}
 	before := time.Now()
-	if err := Save(manager, p2); err != nil {
+	if err := Save(context.Background(), manager, p2); err != nil {
 		t.Fatalf("Save with zero CreatedAt: %v", err)
 	}
 	after := time.Now()
@@ -799,7 +799,7 @@ func TestSaveAndFind_HonorsColumnTag(t *testing.T) {
 		RenamedField: "persisted",
 		Plain:        "p",
 	}
-	if err := Save(manager, row); err != nil {
+	if err := Save(context.Background(), manager, row); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 

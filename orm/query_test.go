@@ -25,7 +25,7 @@ func TestUpdate_DoesNotMutateCallerMap(t *testing.T) {
 	originalName := updates["name"]
 	originalAge := updates["age"]
 
-	affected, err := Model[TestUser]{}.Where("id = ?", id).Update(updates)
+	affected, err := Model[TestUser]{}.Where("id = ?", id).Update(context.Background(), updates)
 	if err != nil {
 		t.Fatalf("Update returned error: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestPluck_HonorsDistinct(t *testing.T) {
 	seedUser(t, m, "Bob", "bob@example.com", 25)
 
 	// Without Distinct: 3 rows.
-	all, err := Model[TestUser]{}.Pluck("name")
+	all, err := Model[TestUser]{}.Pluck(context.Background(), "name")
 	if err != nil {
 		t.Fatalf("Pluck without Distinct returned error: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestPluck_HonorsDistinct(t *testing.T) {
 	// With Distinct: 2 rows.
 	q := newQuery[TestUser]()
 	q.Distinct()
-	got, err := q.Pluck("name")
+	got, err := q.Pluck(context.Background(), "name")
 	if err != nil {
 		t.Fatalf("Distinct().Pluck returned error: %v", err)
 	}
@@ -323,7 +323,7 @@ func TestQuery_WhereGroup_EndToEnd(t *testing.T) {
 	q.Where("team_id = ?", 1).WhereGroup(func(sub *Query[TestUser]) {
 		sub.Where("name LIKE ?", "%Al%").OrWhere("email LIKE ?", "%Al%")
 	})
-	got, err := q.Get()
+	got, err := q.Get(context.Background())
 	if err != nil {
 		t.Fatalf("Get returned error: %v", err)
 	}

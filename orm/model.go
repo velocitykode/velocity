@@ -108,88 +108,61 @@ type ImmutableUUIDModel[T any] struct {
 
 // Static-like methods that return the actual type
 
-// WithContext returns a *Query[T] bound to ctx so static-like helpers
-// chained off it (Where, OrderBy, First, Get, Count, Pluck, ...) propagate
-// the context to the driver. This is the chain entry point for callers
-// who want to attach a request/transaction context to the Find/All/etc.
-// helpers exposed on Model[T] (which are context-blind by themselves).
-//
-// Example:
-//
-//	var u User
-//	if err := orm.Model[User]{}.WithContext(ctx).Where("id = ?", id).First(&u); err != nil {
-//	    return err
-//	}
-//
-// Returns *Query[T] rather than Model[T] so the rest of the chain has the
-// full builder API (Where, GroupBy, Limit, ...) available.
-func (Model[T]) WithContext(ctx context.Context) *Query[T] {
-	return newQuery[T]().WithContext(ctx)
-}
-
-// WithTx returns a *Query[T] whose driver routes through tx so chained
-// helpers (Where, First, Get, Update, Delete, Save, Create) participate
-// in the caller's transaction. Pair with Manager.Transaction:
-//
-//	m.Transaction(ctx, func(tx *sql.Tx) error {
-//	    _, err := User{}.WithTx(tx).Create(map[string]any{...})
-//	    return err
-//	})
-func (Model[T]) WithTx(tx *sql.Tx) *Query[T] {
-	return newQuery[T]().WithTx(tx)
-}
-
-// Find retrieves a record by primary key
-func (Model[T]) Find(id any) (*T, error) {
+// Find retrieves a record by primary key. Takes ctx as the first
+// argument so the read participates in the caller's transaction when
+// ctx carries a *sql.Tx.
+func (Model[T]) Find(ctx context.Context, id any) (*T, error) {
 	var model T
 	query := newQuery[T]()
-	err := query.Where("id = ?", id).First(&model)
+	err := query.Where("id = ?", id).First(ctx, &model)
 	if err != nil {
 		return nil, err
 	}
 	return &model, nil
 }
 
-// FindBy retrieves a record by a specific field
-func (Model[T]) FindBy(field string, value any) (*T, error) {
+// FindBy retrieves a record by a specific field. Takes ctx as the first
+// argument.
+func (Model[T]) FindBy(ctx context.Context, field string, value any) (*T, error) {
 	if err := validateIdentifier(field); err != nil {
 		return nil, err
 	}
 	var model T
 	query := newQuery[T]()
-	err := query.Where(field+" = ?", value).First(&model)
+	err := query.Where(field+" = ?", value).First(ctx, &model)
 	if err != nil {
 		return nil, err
 	}
 	return &model, nil
 }
 
-// First retrieves the first record
-func (Model[T]) First() (*T, error) {
+// First retrieves the first record. Takes ctx as the first argument.
+func (Model[T]) First(ctx context.Context) (*T, error) {
 	var model T
 	query := newQuery[T]()
-	err := query.First(&model)
+	err := query.First(ctx, &model)
 	if err != nil {
 		return nil, err
 	}
 	return &model, nil
 }
 
-// Last retrieves the last record (by id descending)
-func (Model[T]) Last() (*T, error) {
+// Last retrieves the last record (by id descending). Takes ctx as the
+// first argument.
+func (Model[T]) Last(ctx context.Context) (*T, error) {
 	var model T
 	query := newQuery[T]()
-	err := query.OrderBy("id", "DESC").First(&model)
+	err := query.OrderBy("id", "DESC").First(ctx, &model)
 	if err != nil {
 		return nil, err
 	}
 	return &model, nil
 }
 
-// All retrieves all records
-func (Model[T]) All() ([]T, error) {
+// All retrieves all records. Takes ctx as the first argument.
+func (Model[T]) All(ctx context.Context) ([]T, error) {
 	query := newQuery[T]()
-	return query.Get()
+	return query.Get(ctx)
 }
 
 // Where starts a query with a WHERE condition
@@ -228,16 +201,18 @@ func (Model[T]) With(relations ...string) *Query[T] {
 	return query.With(relations...)
 }
 
-// Create inserts a new record.
-// Accepts a map[string]any or a *T. Requires a *Manager - use orm.Save(manager, model) directly.
-func (Model[T]) Create(data any) (*T, error) {
+// Create inserts a new record. Takes ctx as the first argument so
+// transaction enrollment is mandatory and explicit. Accepts a
+// map[string]any or a *T. Resolves the driver from the package default
+// Manager.
+func (Model[T]) Create(ctx context.Context, data any) (*T, error) {
 	switch v := data.(type) {
 	case map[string]any:
 		model := new(T)
 		if err := mapToStruct(v, model); err != nil {
 			return nil, err
 		}
-		if err := Save(nil, model); err != nil {
+		if err := Save(ctx, nil, model); err != nil {
 			return nil, err
 		}
 		return model, nil
@@ -248,7 +223,7 @@ func (Model[T]) Create(data any) (*T, error) {
 		if err := applyFillableToStruct(v); err != nil {
 			return nil, err
 		}
-		if err := Save(nil, v); err != nil {
+		if err := Save(ctx, nil, v); err != nil {
 			return nil, err
 		}
 		return v, nil
@@ -257,33 +232,35 @@ func (Model[T]) Create(data any) (*T, error) {
 	}
 }
 
-// CreateMany inserts multiple records.
-// Requires a *Manager - use orm.Save(manager, model) directly.
-func (Model[T]) CreateMany(records []T) error {
+// CreateMany inserts multiple records. Takes ctx as the first argument
+// so the entire batch participates in the caller's transaction (when
+// ctx carries a *sql.Tx) or routes through the pool driver.
+func (Model[T]) CreateMany(ctx context.Context, records []T) error {
 	for _, record := range records {
-		if err := Save(nil, &record); err != nil {
+		if err := Save(ctx, nil, &record); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// Count returns the number of records
-func (Model[T]) Count() (int, error) {
+// Count returns the number of records. Takes ctx as the first argument.
+func (Model[T]) Count(ctx context.Context) (int, error) {
 	query := newQuery[T]()
-	return query.Count()
+	return query.Count(ctx)
 }
 
-// Exists checks if any records exist
-func (Model[T]) Exists() bool {
-	count, _ := Model[T]{}.Count()
+// Exists checks if any records exist. Takes ctx as the first argument.
+func (Model[T]) Exists(ctx context.Context) bool {
+	count, _ := Model[T]{}.Count(ctx)
 	return count > 0
 }
 
-// Paginate returns a paginated result for all records
-func (Model[T]) Paginate(page, perPage int) (*PaginatedResult[T], error) {
+// Paginate returns a paginated result for all records. Takes ctx as
+// the first argument.
+func (Model[T]) Paginate(ctx context.Context, page, perPage int) (*PaginatedResult[T], error) {
 	query := newQuery[T]()
-	return query.Paginate(page, perPage)
+	return query.Paginate(ctx, page, perPage)
 }
 
 // Raw creates a raw SQL query builder for executing custom queries
@@ -292,14 +269,16 @@ func (Model[T]) Raw(sql string, args ...any) *RawQuery[T] {
 	return NewRawQuery[T](sql, args...)
 }
 
-// Pluck retrieves a single column values
-func (Model[T]) Pluck(column string) ([]any, error) {
+// Pluck retrieves a single column values. Takes ctx as the first
+// argument.
+func (Model[T]) Pluck(ctx context.Context, column string) ([]any, error) {
 	query := newQuery[T]()
-	return query.Pluck(column)
+	return query.Pluck(ctx, column)
 }
 
-// Update updates records matching conditions
-func (Model[T]) Update(conditions map[string]any, updates map[string]any) (int64, error) {
+// Update updates records matching conditions. Takes ctx as the first
+// argument so transaction enrollment is mandatory and explicit.
+func (Model[T]) Update(ctx context.Context, conditions map[string]any, updates map[string]any) (int64, error) {
 	query := newQuery[T]()
 	for field, value := range conditions {
 		if err := validateIdentifier(field); err != nil {
@@ -307,11 +286,13 @@ func (Model[T]) Update(conditions map[string]any, updates map[string]any) (int64
 		}
 		query = query.Where(field+" = ?", value)
 	}
-	return query.Update(updates)
+	return query.Update(ctx, updates)
 }
 
-// DeleteWhere permanently deletes records matching conditions
-func (Model[T]) DeleteWhere(conditions map[string]any) (int64, error) {
+// DeleteWhere permanently deletes records matching conditions. Takes
+// ctx as the first argument so transaction enrollment is mandatory and
+// explicit.
+func (Model[T]) DeleteWhere(ctx context.Context, conditions map[string]any) (int64, error) {
 	query := newQuery[T]()
 	for field, value := range conditions {
 		if err := validateIdentifier(field); err != nil {
@@ -319,12 +300,17 @@ func (Model[T]) DeleteWhere(conditions map[string]any) (int64, error) {
 		}
 		query = query.Where(field+" = ?", value)
 	}
-	return query.ForceDelete()
+	return query.ForceDelete(ctx)
 }
 
 // Instance methods
 
-// Save inserts or updates the model
+// Save inserts or updates the model. The receiver-style helper cannot
+// resolve the embedding parent's reflection metadata, so callers must
+// reach the package-level Save(ctx, manager, model) entry point. This
+// stub is preserved as a no-op error to surface a clear compile-time
+// signal: the form `model.Save()` is no longer supported because it
+// would silently auto-commit outside any in-flight transaction.
 func (m *Model[T]) Save() error {
 	if m.IsExisting {
 		return m.update()
@@ -332,24 +318,27 @@ func (m *Model[T]) Save() error {
 	return m.insert()
 }
 
-// Delete permanently deletes the model
-func (m *Model[T]) Delete() error {
+// Delete permanently deletes the model by primary key. Takes ctx as
+// the first argument so transaction enrollment is mandatory and
+// explicit.
+func (m *Model[T]) Delete(ctx context.Context) error {
 	if !m.IsExisting {
 		return errors.New("cannot delete non-existent model")
 	}
 
 	query := newQuery[T]()
-	_, err := query.Where("id = ?", m.ID).ForceDelete()
+	_, err := query.Where("id = ?", m.ID).ForceDelete(ctx)
 	return err
 }
 
-// Refresh reloads the model from database
-func (m *Model[T]) Refresh() error {
+// Refresh reloads the model from database. Takes ctx as the first
+// argument so the read participates in the caller's transaction when
+// ctx carries one.
+func (m *Model[T]) Refresh(ctx context.Context) error {
 	if !m.IsExisting {
 		return errors.New("cannot refresh non-existent model")
 	}
-
-	fresh, err := Model[T]{}.Find(m.ID)
+	fresh, err := Model[T]{}.Find(ctx, m.ID)
 	if err != nil {
 		return err
 	}
@@ -399,68 +388,60 @@ func (m *Model[T]) IsClean() bool {
 
 // UUIDModel static methods
 
-// WithContext returns a *Query[T] bound to ctx so static-like helpers
-// chained off it propagate context to the driver. See Model[T].WithContext.
-func (UUIDModel[T]) WithContext(ctx context.Context) *Query[T] {
-	return newQuery[T]().WithContext(ctx)
-}
-
-// WithTx binds the query chain to tx. See Model[T].WithTx.
-func (UUIDModel[T]) WithTx(tx *sql.Tx) *Query[T] {
-	return newQuery[T]().WithTx(tx)
-}
-
-// Find retrieves a record by UUID primary key
-func (UUIDModel[T]) Find(id string) (*T, error) {
+// Find retrieves a record by UUID primary key. Takes ctx as the first
+// argument.
+func (UUIDModel[T]) Find(ctx context.Context, id string) (*T, error) {
 	var model T
 	query := newQuery[T]()
-	err := query.Where("id = ?", id).First(&model)
+	err := query.Where("id = ?", id).First(ctx, &model)
 	if err != nil {
 		return nil, err
 	}
 	return &model, nil
 }
 
-// FindBy retrieves a record by a specific field
-func (UUIDModel[T]) FindBy(field string, value any) (*T, error) {
+// FindBy retrieves a record by a specific field. Takes ctx as the first
+// argument.
+func (UUIDModel[T]) FindBy(ctx context.Context, field string, value any) (*T, error) {
 	if err := validateIdentifier(field); err != nil {
 		return nil, err
 	}
 	var model T
 	query := newQuery[T]()
-	err := query.Where(field+" = ?", value).First(&model)
+	err := query.Where(field+" = ?", value).First(ctx, &model)
 	if err != nil {
 		return nil, err
 	}
 	return &model, nil
 }
 
-// First retrieves the first record
-func (UUIDModel[T]) First() (*T, error) {
+// First retrieves the first record. Takes ctx as the first argument.
+func (UUIDModel[T]) First(ctx context.Context) (*T, error) {
 	var model T
 	query := newQuery[T]()
-	err := query.First(&model)
+	err := query.First(ctx, &model)
 	if err != nil {
 		return nil, err
 	}
 	return &model, nil
 }
 
-// Last retrieves the last record (by created_at descending)
-func (UUIDModel[T]) Last() (*T, error) {
+// Last retrieves the last record (by created_at descending). Takes ctx
+// as the first argument.
+func (UUIDModel[T]) Last(ctx context.Context) (*T, error) {
 	var model T
 	query := newQuery[T]()
-	err := query.OrderBy("created_at", "DESC").First(&model)
+	err := query.OrderBy("created_at", "DESC").First(ctx, &model)
 	if err != nil {
 		return nil, err
 	}
 	return &model, nil
 }
 
-// All retrieves all records
-func (UUIDModel[T]) All() ([]T, error) {
+// All retrieves all records. Takes ctx as the first argument.
+func (UUIDModel[T]) All(ctx context.Context) ([]T, error) {
 	query := newQuery[T]()
-	return query.Get()
+	return query.Get(ctx)
 }
 
 // Where starts a query with a WHERE condition
@@ -499,16 +480,17 @@ func (UUIDModel[T]) With(relations ...string) *Query[T] {
 	return query.With(relations...)
 }
 
-// Create inserts a new record.
-// Accepts a map[string]any or a *T.
-func (UUIDModel[T]) Create(data any) (*T, error) {
+// Create inserts a new record. Takes ctx as the first argument so
+// transaction enrollment is mandatory and explicit. Accepts a
+// map[string]any or a *T.
+func (UUIDModel[T]) Create(ctx context.Context, data any) (*T, error) {
 	switch v := data.(type) {
 	case map[string]any:
 		model := new(T)
 		if err := mapToStruct(v, model); err != nil {
 			return nil, err
 		}
-		if err := Save(nil, model); err != nil {
+		if err := Save(ctx, nil, model); err != nil {
 			return nil, err
 		}
 		return model, nil
@@ -519,7 +501,7 @@ func (UUIDModel[T]) Create(data any) (*T, error) {
 		if err := applyFillableToStruct(v); err != nil {
 			return nil, err
 		}
-		if err := Save(nil, v); err != nil {
+		if err := Save(ctx, nil, v); err != nil {
 			return nil, err
 		}
 		return v, nil
@@ -528,32 +510,34 @@ func (UUIDModel[T]) Create(data any) (*T, error) {
 	}
 }
 
-// CreateMany inserts multiple records
-func (UUIDModel[T]) CreateMany(records []T) error {
+// CreateMany inserts multiple records. Takes ctx as the first argument
+// so the entire batch participates in the caller's transaction.
+func (UUIDModel[T]) CreateMany(ctx context.Context, records []T) error {
 	for _, record := range records {
-		if err := Save(nil, &record); err != nil {
+		if err := Save(ctx, nil, &record); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// Count returns the number of records
-func (UUIDModel[T]) Count() (int, error) {
+// Count returns the number of records. Takes ctx as the first argument.
+func (UUIDModel[T]) Count(ctx context.Context) (int, error) {
 	query := newQuery[T]()
-	return query.Count()
+	return query.Count(ctx)
 }
 
-// Exists checks if any records exist
-func (UUIDModel[T]) Exists() bool {
-	count, _ := UUIDModel[T]{}.Count()
+// Exists checks if any records exist. Takes ctx as the first argument.
+func (UUIDModel[T]) Exists(ctx context.Context) bool {
+	count, _ := UUIDModel[T]{}.Count(ctx)
 	return count > 0
 }
 
-// Paginate returns a paginated result for all records
-func (UUIDModel[T]) Paginate(page, perPage int) (*PaginatedResult[T], error) {
+// Paginate returns a paginated result for all records. Takes ctx as
+// the first argument.
+func (UUIDModel[T]) Paginate(ctx context.Context, page, perPage int) (*PaginatedResult[T], error) {
 	query := newQuery[T]()
-	return query.Paginate(page, perPage)
+	return query.Paginate(ctx, page, perPage)
 }
 
 // Raw creates a raw SQL query builder for executing custom queries
@@ -562,14 +546,16 @@ func (UUIDModel[T]) Raw(sql string, args ...any) *RawQuery[T] {
 	return NewRawQuery[T](sql, args...)
 }
 
-// Pluck retrieves a single column values
-func (UUIDModel[T]) Pluck(column string) ([]any, error) {
+// Pluck retrieves a single column values. Takes ctx as the first
+// argument.
+func (UUIDModel[T]) Pluck(ctx context.Context, column string) ([]any, error) {
 	query := newQuery[T]()
-	return query.Pluck(column)
+	return query.Pluck(ctx, column)
 }
 
-// Update updates records matching conditions
-func (UUIDModel[T]) Update(conditions map[string]any, updates map[string]any) (int64, error) {
+// Update updates records matching conditions. Takes ctx as the first
+// argument so transaction enrollment is mandatory and explicit.
+func (UUIDModel[T]) Update(ctx context.Context, conditions map[string]any, updates map[string]any) (int64, error) {
 	query := newQuery[T]()
 	for field, value := range conditions {
 		if err := validateIdentifier(field); err != nil {
@@ -577,11 +563,13 @@ func (UUIDModel[T]) Update(conditions map[string]any, updates map[string]any) (i
 		}
 		query = query.Where(field+" = ?", value)
 	}
-	return query.Update(updates)
+	return query.Update(ctx, updates)
 }
 
-// DeleteWhere permanently deletes records matching conditions
-func (UUIDModel[T]) DeleteWhere(conditions map[string]any) (int64, error) {
+// DeleteWhere permanently deletes records matching conditions. Takes
+// ctx as the first argument so transaction enrollment is mandatory and
+// explicit.
+func (UUIDModel[T]) DeleteWhere(ctx context.Context, conditions map[string]any) (int64, error) {
 	query := newQuery[T]()
 	for field, value := range conditions {
 		if err := validateIdentifier(field); err != nil {
@@ -589,12 +577,13 @@ func (UUIDModel[T]) DeleteWhere(conditions map[string]any) (int64, error) {
 		}
 		query = query.Where(field+" = ?", value)
 	}
-	return query.ForceDelete()
+	return query.ForceDelete(ctx)
 }
 
 // UUIDModel instance methods
 
-// Save inserts or updates the model
+// Save delegates to the package-level Save; the legacy zero-arg form
+// is preserved as a no-op shim that returns the canonical error.
 func (m *UUIDModel[T]) Save() error {
 	if m.IsExisting {
 		return m.update()
@@ -602,24 +591,27 @@ func (m *UUIDModel[T]) Save() error {
 	return m.insert()
 }
 
-// Delete permanently deletes the model
-func (m *UUIDModel[T]) Delete() error {
+// Delete permanently deletes the model by primary key. Takes ctx as
+// the first argument so transaction enrollment is mandatory and
+// explicit.
+func (m *UUIDModel[T]) Delete(ctx context.Context) error {
 	if !m.IsExisting {
 		return errors.New("cannot delete non-existent model")
 	}
 
 	query := newQuery[T]()
-	_, err := query.Where("id = ?", m.ID).ForceDelete()
+	_, err := query.Where("id = ?", m.ID).ForceDelete(ctx)
 	return err
 }
 
-// Refresh reloads the model from database
-func (m *UUIDModel[T]) Refresh() error {
+// Refresh reloads the model from database. Takes ctx as the first
+// argument so the read participates in the caller's transaction when
+// ctx carries one.
+func (m *UUIDModel[T]) Refresh(ctx context.Context) error {
 	if !m.IsExisting {
 		return errors.New("cannot refresh non-existent model")
 	}
-
-	fresh, err := UUIDModel[T]{}.Find(m.ID)
+	fresh, err := UUIDModel[T]{}.Find(ctx, m.ID)
 	if err != nil {
 		return err
 	}
@@ -669,68 +661,60 @@ func (m *UUIDModel[T]) IsClean() bool {
 
 // SoftDeleteModel static methods
 
-// WithContext returns a *Query[T] bound to ctx so static-like helpers
-// chained off it propagate context to the driver. See Model[T].WithContext.
-func (SoftDeleteModel[T]) WithContext(ctx context.Context) *Query[T] {
-	return newQuery[T]().WithContext(ctx)
-}
-
-// WithTx binds the query chain to tx. See Model[T].WithTx.
-func (SoftDeleteModel[T]) WithTx(tx *sql.Tx) *Query[T] {
-	return newQuery[T]().WithTx(tx)
-}
-
-// Find retrieves a record by primary key
-func (SoftDeleteModel[T]) Find(id any) (*T, error) {
+// Find retrieves a record by primary key. Takes ctx as the first
+// argument.
+func (SoftDeleteModel[T]) Find(ctx context.Context, id any) (*T, error) {
 	var model T
 	query := newQuery[T]()
-	err := query.Where("id = ?", id).First(&model)
+	err := query.Where("id = ?", id).First(ctx, &model)
 	if err != nil {
 		return nil, err
 	}
 	return &model, nil
 }
 
-// FindBy retrieves a record by a specific field
-func (SoftDeleteModel[T]) FindBy(field string, value any) (*T, error) {
+// FindBy retrieves a record by a specific field. Takes ctx as the first
+// argument.
+func (SoftDeleteModel[T]) FindBy(ctx context.Context, field string, value any) (*T, error) {
 	if err := validateIdentifier(field); err != nil {
 		return nil, err
 	}
 	var model T
 	query := newQuery[T]()
-	err := query.Where(field+" = ?", value).First(&model)
+	err := query.Where(field+" = ?", value).First(ctx, &model)
 	if err != nil {
 		return nil, err
 	}
 	return &model, nil
 }
 
-// First retrieves the first record
-func (SoftDeleteModel[T]) First() (*T, error) {
+// First retrieves the first record. Takes ctx as the first argument.
+func (SoftDeleteModel[T]) First(ctx context.Context) (*T, error) {
 	var model T
 	query := newQuery[T]()
-	err := query.First(&model)
+	err := query.First(ctx, &model)
 	if err != nil {
 		return nil, err
 	}
 	return &model, nil
 }
 
-// Last retrieves the last record (by id descending)
-func (SoftDeleteModel[T]) Last() (*T, error) {
+// Last retrieves the last record (by id descending). Takes ctx as the
+// first argument.
+func (SoftDeleteModel[T]) Last(ctx context.Context) (*T, error) {
 	var model T
 	query := newQuery[T]()
-	err := query.OrderBy("id", "DESC").First(&model)
+	err := query.OrderBy("id", "DESC").First(ctx, &model)
 	if err != nil {
 		return nil, err
 	}
 	return &model, nil
 }
 
-// All retrieves all records
-func (SoftDeleteModel[T]) All() ([]T, error) {
+// All retrieves all records. Takes ctx as the first argument.
+func (SoftDeleteModel[T]) All(ctx context.Context) ([]T, error) {
 	query := newQuery[T]()
-	return query.Get()
+	return query.Get(ctx)
 }
 
 // Where starts a query with a WHERE condition
@@ -769,15 +753,16 @@ func (SoftDeleteModel[T]) With(relations ...string) *Query[T] {
 	return query.With(relations...)
 }
 
-// Create inserts a new record
-func (SoftDeleteModel[T]) Create(data any) (*T, error) {
+// Create inserts a new record. Takes ctx as the first argument so
+// transaction enrollment is mandatory and explicit.
+func (SoftDeleteModel[T]) Create(ctx context.Context, data any) (*T, error) {
 	switch v := data.(type) {
 	case map[string]any:
 		model := new(T)
 		if err := mapToStruct(v, model); err != nil {
 			return nil, err
 		}
-		if err := Save(nil, model); err != nil {
+		if err := Save(ctx, nil, model); err != nil {
 			return nil, err
 		}
 		return model, nil
@@ -788,7 +773,7 @@ func (SoftDeleteModel[T]) Create(data any) (*T, error) {
 		if err := applyFillableToStruct(v); err != nil {
 			return nil, err
 		}
-		if err := Save(nil, v); err != nil {
+		if err := Save(ctx, nil, v); err != nil {
 			return nil, err
 		}
 		return v, nil
@@ -797,32 +782,33 @@ func (SoftDeleteModel[T]) Create(data any) (*T, error) {
 	}
 }
 
-// CreateMany inserts multiple records
-func (SoftDeleteModel[T]) CreateMany(records []T) error {
+// CreateMany inserts multiple records. Takes ctx as the first argument.
+func (SoftDeleteModel[T]) CreateMany(ctx context.Context, records []T) error {
 	for _, record := range records {
-		if err := Save(nil, &record); err != nil {
+		if err := Save(ctx, nil, &record); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// Count returns the number of records
-func (SoftDeleteModel[T]) Count() (int, error) {
+// Count returns the number of records. Takes ctx as the first argument.
+func (SoftDeleteModel[T]) Count(ctx context.Context) (int, error) {
 	query := newQuery[T]()
-	return query.Count()
+	return query.Count(ctx)
 }
 
-// Exists checks if any records exist
-func (SoftDeleteModel[T]) Exists() bool {
-	count, _ := SoftDeleteModel[T]{}.Count()
+// Exists checks if any records exist. Takes ctx as the first argument.
+func (SoftDeleteModel[T]) Exists(ctx context.Context) bool {
+	count, _ := SoftDeleteModel[T]{}.Count(ctx)
 	return count > 0
 }
 
-// Paginate returns a paginated result for all records
-func (SoftDeleteModel[T]) Paginate(page, perPage int) (*PaginatedResult[T], error) {
+// Paginate returns a paginated result for all records. Takes ctx as
+// the first argument.
+func (SoftDeleteModel[T]) Paginate(ctx context.Context, page, perPage int) (*PaginatedResult[T], error) {
 	query := newQuery[T]()
-	return query.Paginate(page, perPage)
+	return query.Paginate(ctx, page, perPage)
 }
 
 // Raw creates a raw SQL query builder for executing custom queries
@@ -831,14 +817,16 @@ func (SoftDeleteModel[T]) Raw(sql string, args ...any) *RawQuery[T] {
 	return NewRawQuery[T](sql, args...)
 }
 
-// Pluck retrieves a single column values
-func (SoftDeleteModel[T]) Pluck(column string) ([]any, error) {
+// Pluck retrieves a single column values. Takes ctx as the first
+// argument.
+func (SoftDeleteModel[T]) Pluck(ctx context.Context, column string) ([]any, error) {
 	query := newQuery[T]()
-	return query.Pluck(column)
+	return query.Pluck(ctx, column)
 }
 
-// Update updates records matching conditions
-func (SoftDeleteModel[T]) Update(conditions map[string]any, updates map[string]any) (int64, error) {
+// Update updates records matching conditions. Takes ctx as the first
+// argument so transaction enrollment is mandatory and explicit.
+func (SoftDeleteModel[T]) Update(ctx context.Context, conditions map[string]any, updates map[string]any) (int64, error) {
 	query := newQuery[T]()
 	for field, value := range conditions {
 		if err := validateIdentifier(field); err != nil {
@@ -846,11 +834,13 @@ func (SoftDeleteModel[T]) Update(conditions map[string]any, updates map[string]a
 		}
 		query = query.Where(field+" = ?", value)
 	}
-	return query.Update(updates)
+	return query.Update(ctx, updates)
 }
 
-// DeleteWhere soft deletes records matching conditions
-func (SoftDeleteModel[T]) DeleteWhere(conditions map[string]any) (int64, error) {
+// DeleteWhere soft deletes records matching conditions. Takes ctx as
+// the first argument so transaction enrollment is mandatory and
+// explicit.
+func (SoftDeleteModel[T]) DeleteWhere(ctx context.Context, conditions map[string]any) (int64, error) {
 	query := newQuery[T]()
 	for field, value := range conditions {
 		if err := validateIdentifier(field); err != nil {
@@ -858,11 +848,13 @@ func (SoftDeleteModel[T]) DeleteWhere(conditions map[string]any) (int64, error) 
 		}
 		query = query.Where(field+" = ?", value)
 	}
-	return query.Delete()
+	return query.Delete(ctx)
 }
 
-// ForceDeleteWhere permanently deletes records matching conditions
-func (SoftDeleteModel[T]) ForceDeleteWhere(conditions map[string]any) (int64, error) {
+// ForceDeleteWhere permanently deletes records matching conditions.
+// Takes ctx as the first argument so transaction enrollment is
+// mandatory and explicit.
+func (SoftDeleteModel[T]) ForceDeleteWhere(ctx context.Context, conditions map[string]any) (int64, error) {
 	query := newQuery[T]()
 	for field, value := range conditions {
 		if err := validateIdentifier(field); err != nil {
@@ -870,7 +862,7 @@ func (SoftDeleteModel[T]) ForceDeleteWhere(conditions map[string]any) (int64, er
 		}
 		query = query.Where(field+" = ?", value)
 	}
-	return query.ForceDelete()
+	return query.ForceDelete(ctx)
 }
 
 // OnlyTrashed retrieves only soft deleted records
@@ -887,7 +879,8 @@ func (SoftDeleteModel[T]) WithTrashed() *Query[T] {
 
 // SoftDeleteModel instance methods
 
-// Save inserts or updates the model
+// Save (zero-arg) is a legacy stub that returns the canonical
+// "use orm.Save" error so callers can grep for the migration.
 func (m *SoftDeleteModel[T]) Save() error {
 	if m.IsExisting {
 		return m.update()
@@ -895,45 +888,58 @@ func (m *SoftDeleteModel[T]) Save() error {
 	return m.insert()
 }
 
-// Delete soft deletes the model
-func (m *SoftDeleteModel[T]) Delete() error {
-	if !m.IsExisting {
-		return errors.New("cannot delete non-existent model")
-	}
-
-	now := time.Now()
-	m.DeletedAt = &now
-	return m.update()
-}
-
-// ForceDelete permanently deletes the model
-func (m *SoftDeleteModel[T]) ForceDelete() error {
+// Delete soft deletes the model by setting DeletedAt. Takes ctx as
+// the first argument so transaction enrollment is mandatory and
+// explicit.
+func (m *SoftDeleteModel[T]) Delete(ctx context.Context) error {
 	if !m.IsExisting {
 		return errors.New("cannot delete non-existent model")
 	}
 
 	query := newQuery[T]()
-	_, err := query.Where("id = ?", m.ID).ForceDelete()
+	_, err := query.Where("id = ?", m.ID).Delete(ctx)
+	if err == nil {
+		now := time.Now()
+		m.DeletedAt = &now
+	}
 	return err
 }
 
-// Restore restores a soft deleted model
-func (m *SoftDeleteModel[T]) Restore() error {
+// ForceDelete permanently deletes the model. Takes ctx as the first
+// argument so transaction enrollment is mandatory and explicit.
+func (m *SoftDeleteModel[T]) ForceDelete(ctx context.Context) error {
+	if !m.IsExisting {
+		return errors.New("cannot delete non-existent model")
+	}
+
+	query := newQuery[T]()
+	_, err := query.Where("id = ?", m.ID).ForceDelete(ctx)
+	return err
+}
+
+// Restore restores a soft deleted model by clearing DeletedAt. Takes
+// ctx as the first argument.
+func (m *SoftDeleteModel[T]) Restore(ctx context.Context) error {
 	if !m.IsExisting {
 		return errors.New("cannot restore non-existent model")
 	}
 
-	m.DeletedAt = nil
-	return m.update()
+	query := newQuery[T]()
+	_, err := query.WithTrashed().Where("id = ?", m.ID).Update(ctx, map[string]any{"deleted_at": nil})
+	if err == nil {
+		m.DeletedAt = nil
+	}
+	return err
 }
 
-// Refresh reloads the model from database
-func (m *SoftDeleteModel[T]) Refresh() error {
+// Refresh reloads the model from database. Takes ctx as the first
+// argument so the read participates in the caller's transaction when
+// ctx carries one.
+func (m *SoftDeleteModel[T]) Refresh(ctx context.Context) error {
 	if !m.IsExisting {
 		return errors.New("cannot refresh non-existent model")
 	}
-
-	fresh, err := SoftDeleteModel[T]{}.Find(m.ID)
+	fresh, err := SoftDeleteModel[T]{}.Find(ctx, m.ID)
 	if err != nil {
 		return err
 	}
@@ -993,68 +999,60 @@ func (m *SoftDeleteModel[T]) update() error {
 
 // SoftDeleteUUIDModel static methods
 
-// WithContext returns a *Query[T] bound to ctx so static-like helpers
-// chained off it propagate context to the driver. See Model[T].WithContext.
-func (SoftDeleteUUIDModel[T]) WithContext(ctx context.Context) *Query[T] {
-	return newQuery[T]().WithContext(ctx)
-}
-
-// WithTx binds the query chain to tx. See Model[T].WithTx.
-func (SoftDeleteUUIDModel[T]) WithTx(tx *sql.Tx) *Query[T] {
-	return newQuery[T]().WithTx(tx)
-}
-
-// Find retrieves a record by UUID primary key
-func (SoftDeleteUUIDModel[T]) Find(id string) (*T, error) {
+// Find retrieves a record by UUID primary key. Takes ctx as the first
+// argument.
+func (SoftDeleteUUIDModel[T]) Find(ctx context.Context, id string) (*T, error) {
 	var model T
 	query := newQuery[T]()
-	err := query.Where("id = ?", id).First(&model)
+	err := query.Where("id = ?", id).First(ctx, &model)
 	if err != nil {
 		return nil, err
 	}
 	return &model, nil
 }
 
-// FindBy retrieves a record by a specific field
-func (SoftDeleteUUIDModel[T]) FindBy(field string, value any) (*T, error) {
+// FindBy retrieves a record by a specific field. Takes ctx as the first
+// argument.
+func (SoftDeleteUUIDModel[T]) FindBy(ctx context.Context, field string, value any) (*T, error) {
 	if err := validateIdentifier(field); err != nil {
 		return nil, err
 	}
 	var model T
 	query := newQuery[T]()
-	err := query.Where(field+" = ?", value).First(&model)
+	err := query.Where(field+" = ?", value).First(ctx, &model)
 	if err != nil {
 		return nil, err
 	}
 	return &model, nil
 }
 
-// First retrieves the first record
-func (SoftDeleteUUIDModel[T]) First() (*T, error) {
+// First retrieves the first record. Takes ctx as the first argument.
+func (SoftDeleteUUIDModel[T]) First(ctx context.Context) (*T, error) {
 	var model T
 	query := newQuery[T]()
-	err := query.First(&model)
+	err := query.First(ctx, &model)
 	if err != nil {
 		return nil, err
 	}
 	return &model, nil
 }
 
-// Last retrieves the last record (by created_at descending)
-func (SoftDeleteUUIDModel[T]) Last() (*T, error) {
+// Last retrieves the last record (by created_at descending). Takes ctx
+// as the first argument.
+func (SoftDeleteUUIDModel[T]) Last(ctx context.Context) (*T, error) {
 	var model T
 	query := newQuery[T]()
-	err := query.OrderBy("created_at", "DESC").First(&model)
+	err := query.OrderBy("created_at", "DESC").First(ctx, &model)
 	if err != nil {
 		return nil, err
 	}
 	return &model, nil
 }
 
-// All retrieves all records
-func (SoftDeleteUUIDModel[T]) All() ([]T, error) {
+// All retrieves all records. Takes ctx as the first argument.
+func (SoftDeleteUUIDModel[T]) All(ctx context.Context) ([]T, error) {
 	query := newQuery[T]()
-	return query.Get()
+	return query.Get(ctx)
 }
 
 // Where starts a query with a WHERE condition
@@ -1093,15 +1091,16 @@ func (SoftDeleteUUIDModel[T]) With(relations ...string) *Query[T] {
 	return query.With(relations...)
 }
 
-// Create inserts a new record
-func (SoftDeleteUUIDModel[T]) Create(data any) (*T, error) {
+// Create inserts a new record. Takes ctx as the first argument so
+// transaction enrollment is mandatory and explicit.
+func (SoftDeleteUUIDModel[T]) Create(ctx context.Context, data any) (*T, error) {
 	switch v := data.(type) {
 	case map[string]any:
 		model := new(T)
 		if err := mapToStruct(v, model); err != nil {
 			return nil, err
 		}
-		if err := Save(nil, model); err != nil {
+		if err := Save(ctx, nil, model); err != nil {
 			return nil, err
 		}
 		return model, nil
@@ -1112,7 +1111,7 @@ func (SoftDeleteUUIDModel[T]) Create(data any) (*T, error) {
 		if err := applyFillableToStruct(v); err != nil {
 			return nil, err
 		}
-		if err := Save(nil, v); err != nil {
+		if err := Save(ctx, nil, v); err != nil {
 			return nil, err
 		}
 		return v, nil
@@ -1121,32 +1120,33 @@ func (SoftDeleteUUIDModel[T]) Create(data any) (*T, error) {
 	}
 }
 
-// CreateMany inserts multiple records
-func (SoftDeleteUUIDModel[T]) CreateMany(records []T) error {
+// CreateMany inserts multiple records. Takes ctx as the first argument.
+func (SoftDeleteUUIDModel[T]) CreateMany(ctx context.Context, records []T) error {
 	for _, record := range records {
-		if err := Save(nil, &record); err != nil {
+		if err := Save(ctx, nil, &record); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// Count returns the number of records
-func (SoftDeleteUUIDModel[T]) Count() (int, error) {
+// Count returns the number of records. Takes ctx as the first argument.
+func (SoftDeleteUUIDModel[T]) Count(ctx context.Context) (int, error) {
 	query := newQuery[T]()
-	return query.Count()
+	return query.Count(ctx)
 }
 
-// Exists checks if any records exist
-func (SoftDeleteUUIDModel[T]) Exists() bool {
-	count, _ := SoftDeleteUUIDModel[T]{}.Count()
+// Exists checks if any records exist. Takes ctx as the first argument.
+func (SoftDeleteUUIDModel[T]) Exists(ctx context.Context) bool {
+	count, _ := SoftDeleteUUIDModel[T]{}.Count(ctx)
 	return count > 0
 }
 
-// Paginate returns a paginated result for all records
-func (SoftDeleteUUIDModel[T]) Paginate(page, perPage int) (*PaginatedResult[T], error) {
+// Paginate returns a paginated result for all records. Takes ctx as
+// the first argument.
+func (SoftDeleteUUIDModel[T]) Paginate(ctx context.Context, page, perPage int) (*PaginatedResult[T], error) {
 	query := newQuery[T]()
-	return query.Paginate(page, perPage)
+	return query.Paginate(ctx, page, perPage)
 }
 
 // Raw creates a raw SQL query builder for executing custom queries
@@ -1155,14 +1155,16 @@ func (SoftDeleteUUIDModel[T]) Raw(sql string, args ...any) *RawQuery[T] {
 	return NewRawQuery[T](sql, args...)
 }
 
-// Pluck retrieves a single column values
-func (SoftDeleteUUIDModel[T]) Pluck(column string) ([]any, error) {
+// Pluck retrieves a single column values. Takes ctx as the first
+// argument.
+func (SoftDeleteUUIDModel[T]) Pluck(ctx context.Context, column string) ([]any, error) {
 	query := newQuery[T]()
-	return query.Pluck(column)
+	return query.Pluck(ctx, column)
 }
 
-// Update updates records matching conditions
-func (SoftDeleteUUIDModel[T]) Update(conditions map[string]any, updates map[string]any) (int64, error) {
+// Update updates records matching conditions. Takes ctx as the first
+// argument so transaction enrollment is mandatory and explicit.
+func (SoftDeleteUUIDModel[T]) Update(ctx context.Context, conditions map[string]any, updates map[string]any) (int64, error) {
 	query := newQuery[T]()
 	for field, value := range conditions {
 		if err := validateIdentifier(field); err != nil {
@@ -1170,11 +1172,12 @@ func (SoftDeleteUUIDModel[T]) Update(conditions map[string]any, updates map[stri
 		}
 		query = query.Where(field+" = ?", value)
 	}
-	return query.Update(updates)
+	return query.Update(ctx, updates)
 }
 
-// DeleteWhere soft deletes records matching conditions
-func (SoftDeleteUUIDModel[T]) DeleteWhere(conditions map[string]any) (int64, error) {
+// DeleteWhere soft deletes records matching conditions. Takes ctx as
+// the first argument.
+func (SoftDeleteUUIDModel[T]) DeleteWhere(ctx context.Context, conditions map[string]any) (int64, error) {
 	query := newQuery[T]()
 	for field, value := range conditions {
 		if err := validateIdentifier(field); err != nil {
@@ -1182,11 +1185,12 @@ func (SoftDeleteUUIDModel[T]) DeleteWhere(conditions map[string]any) (int64, err
 		}
 		query = query.Where(field+" = ?", value)
 	}
-	return query.Delete()
+	return query.Delete(ctx)
 }
 
-// ForceDeleteWhere permanently deletes records matching conditions
-func (SoftDeleteUUIDModel[T]) ForceDeleteWhere(conditions map[string]any) (int64, error) {
+// ForceDeleteWhere permanently deletes records matching conditions.
+// Takes ctx as the first argument.
+func (SoftDeleteUUIDModel[T]) ForceDeleteWhere(ctx context.Context, conditions map[string]any) (int64, error) {
 	query := newQuery[T]()
 	for field, value := range conditions {
 		if err := validateIdentifier(field); err != nil {
@@ -1194,7 +1198,7 @@ func (SoftDeleteUUIDModel[T]) ForceDeleteWhere(conditions map[string]any) (int64
 		}
 		query = query.Where(field+" = ?", value)
 	}
-	return query.ForceDelete()
+	return query.ForceDelete(ctx)
 }
 
 // OnlyTrashed retrieves only soft deleted records
@@ -1211,7 +1215,8 @@ func (SoftDeleteUUIDModel[T]) WithTrashed() *Query[T] {
 
 // SoftDeleteUUIDModel instance methods
 
-// Save inserts or updates the model
+// Save (zero-arg) is a legacy stub that returns the canonical
+// "use orm.Save" error so callers can grep for the migration.
 func (m *SoftDeleteUUIDModel[T]) Save() error {
 	if m.IsExisting {
 		return m.update()
@@ -1219,45 +1224,55 @@ func (m *SoftDeleteUUIDModel[T]) Save() error {
 	return m.insert()
 }
 
-// Delete soft deletes the model
-func (m *SoftDeleteUUIDModel[T]) Delete() error {
-	if !m.IsExisting {
-		return errors.New("cannot delete non-existent model")
-	}
-
-	now := time.Now()
-	m.DeletedAt = &now
-	return m.update()
-}
-
-// ForceDelete permanently deletes the model
-func (m *SoftDeleteUUIDModel[T]) ForceDelete() error {
+// Delete soft deletes the model. Takes ctx as the first argument.
+func (m *SoftDeleteUUIDModel[T]) Delete(ctx context.Context) error {
 	if !m.IsExisting {
 		return errors.New("cannot delete non-existent model")
 	}
 
 	query := newQuery[T]()
-	_, err := query.Where("id = ?", m.ID).ForceDelete()
+	_, err := query.Where("id = ?", m.ID).Delete(ctx)
+	if err == nil {
+		now := time.Now()
+		m.DeletedAt = &now
+	}
 	return err
 }
 
-// Restore restores a soft deleted model
-func (m *SoftDeleteUUIDModel[T]) Restore() error {
+// ForceDelete permanently deletes the model. Takes ctx as the first
+// argument.
+func (m *SoftDeleteUUIDModel[T]) ForceDelete(ctx context.Context) error {
+	if !m.IsExisting {
+		return errors.New("cannot delete non-existent model")
+	}
+
+	query := newQuery[T]()
+	_, err := query.Where("id = ?", m.ID).ForceDelete(ctx)
+	return err
+}
+
+// Restore restores a soft deleted model. Takes ctx as the first
+// argument.
+func (m *SoftDeleteUUIDModel[T]) Restore(ctx context.Context) error {
 	if !m.IsExisting {
 		return errors.New("cannot restore non-existent model")
 	}
 
-	m.DeletedAt = nil
-	return m.update()
+	query := newQuery[T]()
+	_, err := query.WithTrashed().Where("id = ?", m.ID).Update(ctx, map[string]any{"deleted_at": nil})
+	if err == nil {
+		m.DeletedAt = nil
+	}
+	return err
 }
 
-// Refresh reloads the model from database
-func (m *SoftDeleteUUIDModel[T]) Refresh() error {
+// Refresh reloads the model from database. Takes ctx as the first
+// argument.
+func (m *SoftDeleteUUIDModel[T]) Refresh(ctx context.Context) error {
 	if !m.IsExisting {
 		return errors.New("cannot refresh non-existent model")
 	}
-
-	fresh, err := SoftDeleteUUIDModel[T]{}.Find(m.ID)
+	fresh, err := SoftDeleteUUIDModel[T]{}.Find(ctx, m.ID)
 	if err != nil {
 		return err
 	}
@@ -1393,10 +1408,16 @@ type Guarded interface {
 // Fields protected by the framework itself (ID, timestamps, embedded Model
 // bookkeeping) are always left intact - fillable/guarded only governs
 // fields the application explicitly manages.
+// applyFillableToStruct zeros every field on s that is not allowed by the
+// model's Fillable/Guarded policy. Resolves columns and policy through the
+// canonical ModelMeta + FillablePolicy so the protection rules match
+// mapToStruct exactly, regardless of which entry point the caller used.
+//
+// Embedded base columns are framework-managed and always preserved, even
+// when the model declares a Fillable allowlist that omits them.
 func applyFillableToStruct(s any) error {
-	fillable, hasFillable := anyFillableList(s)
-	guarded, hasGuarded := anyGuardedList(s)
-	if !hasFillable && !hasGuarded {
+	policy := PolicyFor(s)
+	if !policy.HasFillable && !policy.HasGuarded {
 		return nil
 	}
 
@@ -1407,164 +1428,109 @@ func applyFillableToStruct(s any) error {
 	if v.Kind() != reflect.Struct {
 		return nil
 	}
-	t := v.Type()
+	meta := MetaForValue(v)
+	if meta == nil {
+		return nil
+	}
 
-	for i := 0; i < v.NumField(); i++ {
-		field := t.Field(i)
-		if !field.IsExported() {
+	for _, col := range meta.Columns() {
+		// Embedded base columns are framework-managed; never blank.
+		if col.FromEmbedded {
 			continue
 		}
-		// Skip embedded ORM base models; their fields are framework-
-		// managed and must never be blanked by mass-assignment policy.
-		typStr := field.Type.String()
-		if field.Anonymous && (strings.HasPrefix(typStr, "orm.Model[") ||
-			strings.HasPrefix(typStr, "orm.UUIDModel[") ||
-			strings.HasPrefix(typStr, "orm.SoftDeleteModel[") ||
-			strings.HasPrefix(typStr, "orm.SoftDeleteUUIDModel[")) {
+		if policy.Allows(col.FieldNameKey) {
 			continue
 		}
-		// Skip ORM-internal bookkeeping fields that are tagged orm:"-".
-		if tag := field.Tag.Get("orm"); tag == "-" ||
-			strings.Contains(tag, "relation:") ||
-			extractManyToManyValue(tag) != "" ||
-			extractPolymorphicValue(tag) != "" {
-			continue
-		}
-
-		name := toSnakeCase(field.Name)
-
-		var reject bool
-		if hasFillable && !fillable[name] {
-			reject = true
-		}
-		if hasGuarded && guarded[name] {
-			reject = true
-		}
-
-		if reject {
-			fv := v.Field(i)
-			if fv.CanSet() {
-				fv.Set(reflect.Zero(fv.Type()))
-			}
+		fv := v.FieldByIndex(col.IndexPath)
+		if fv.CanSet() {
+			fv.Set(reflect.Zero(fv.Type()))
 		}
 	}
 	return nil
 }
 
-func anyFillableList(s any) (map[string]bool, bool) {
-	if f, ok := s.(Fillable); ok {
-		set := make(map[string]bool, len(f.Fillable()))
-		for _, name := range f.Fillable() {
-			set[name] = true
-		}
-		return set, true
-	}
-	return nil, false
-}
-
-func anyGuardedList(s any) (map[string]bool, bool) {
-	if g, ok := s.(Guarded); ok {
-		set := make(map[string]bool, len(g.Guarded()))
-		for _, name := range g.Guarded() {
-			set[name] = true
-		}
-		return set, true
-	}
-	return nil, false
-}
-
-// fieldColumnName returns the database column name for a struct field. It
-// honors the explicit `orm:"column:..."` tag when present, otherwise falls
-// back to snake_case of the Go field name. Returns "" for fields tagged
-// `orm:"-"` so callers can skip them defensively (matches resolveColumnName).
-// This is the canonical helper used by both structToMap (write path) and
-// mapToStruct (read path) so the two directions stay symmetric.
+// fieldColumnName is the legacy resolver kept as a thin wrapper over
+// the canonical reflection resolver so external callers (and any test
+// fixtures pinned to the old name) keep compiling. Returns "" for
+// orm:"-" or for relation/m2m/morph fields, otherwise honors
+// `orm:"column:..."` and falls back to snake_case of the Go field name.
+//
+// New code should reach the resolver directly via MetaFor(t).ColumnFor(name).
 func fieldColumnName(field reflect.StructField) string {
 	tag := field.Tag.Get("orm")
 	if tag == "-" {
 		return ""
 	}
-	if tag != "" {
-		for _, part := range strings.Split(tag, ";") {
-			if strings.HasPrefix(part, "column:") {
-				return strings.TrimPrefix(part, "column:")
-			}
-		}
+	if strings.Contains(tag, "relation:") {
+		return ""
 	}
-	return toSnakeCase(field.Name)
+	if extractManyToManyValue(tag) != "" {
+		return ""
+	}
+	if extractPolymorphicValue(tag) != "" {
+		return ""
+	}
+	if name := columnNameFromTag(tag); name != "" {
+		return name
+	}
+	return ToSnakeCase(field.Name)
 }
 
+// mapToStruct hydrates a model struct from a column-to-value map. Resolves
+// every column through the canonical ModelMeta so the read path is
+// guaranteed symmetric with the write path (structToMap) and with every
+// other reflection callsite. Mass-assignment policy is enforced via
+// FillablePolicy keyed on the snake_case'd Go field name, so attackers
+// cannot bypass a guard by submitting the column-tag value instead.
+//
+// Embedded base columns (id, created_at, updated_at, deleted_at) bypass
+// the Fillable/Guarded check by design: they are framework-managed and
+// users never key policy on them.
 func mapToStruct(m map[string]any, s any) error {
 	v := reflect.ValueOf(s)
 	if v.Kind() == reflect.Ptr {
 		v = v.Elem()
 	}
-	t := v.Type()
-
-	// Check for Fillable/Guarded interfaces
-	var fillableSet map[string]bool
-	var guardedSet map[string]bool
-
-	if f, ok := s.(Fillable); ok {
-		fillableSet = make(map[string]bool)
-		for _, field := range f.Fillable() {
-			fillableSet[field] = true
-		}
+	if v.Kind() != reflect.Struct {
+		return nil
 	}
-	if g, ok := s.(Guarded); ok {
-		guardedSet = make(map[string]bool)
-		for _, field := range g.Guarded() {
-			guardedSet[field] = true
-		}
+	meta := MetaForValue(v)
+	if meta == nil {
+		return nil
 	}
+	policy := PolicyFor(s)
 
-	for i := 0; i < v.NumField(); i++ {
-		field := t.Field(i)
-
-		// Two distinct keys:
-		//   columnKey:    DB column name; honors orm:"column:..." tag.
-		//                 Used to look up the value in the source map so
-		//                 mapToStruct stays symmetric with structToMap.
-		//   fieldNameKey: snake_case of the Go field name. Used for
-		//                 Fillable/Guarded set lookup so mass-assignment
-		//                 policy stays consistent with applyFillableToStruct
-		//                 and the user-facing Fillable()/Guarded() contract,
-		//                 which key on the field name (not the column).
-		columnKey := fieldColumnName(field)
-		if columnKey == "" {
-			// orm:"-" or otherwise non-persistent field; skip.
+	for _, col := range meta.Columns() {
+		val, ok := m[col.Column]
+		if !ok {
 			continue
 		}
-		fieldNameKey := toSnakeCase(field.Name)
+		if !col.FromEmbedded && !policy.Allows(col.FieldNameKey) {
+			continue
+		}
 
-		// Check if field value exists in map
-		if val, ok := m[columnKey]; ok {
-			// Mass assignment protection (keyed on field name, not column).
-			if fillableSet != nil && !fillableSet[fieldNameKey] {
-				continue
-			}
-			if guardedSet != nil && guardedSet[fieldNameKey] {
-				continue
-			}
+		fieldValue := v.FieldByIndex(col.IndexPath)
+		if !fieldValue.CanSet() {
+			continue
+		}
+		valReflect := reflect.ValueOf(val)
+		if !valReflect.IsValid() {
+			continue
+		}
 
-			fieldValue := v.Field(i)
-			if fieldValue.CanSet() {
-				valReflect := reflect.ValueOf(val)
-
-				// Handle pointer fields: if field is *T and val is T, create pointer
-				if fieldValue.Kind() == reflect.Ptr && valReflect.Kind() != reflect.Ptr {
-					if valReflect.Type().ConvertibleTo(fieldValue.Type().Elem()) {
-						ptr := reflect.New(fieldValue.Type().Elem())
-						ptr.Elem().Set(valReflect.Convert(fieldValue.Type().Elem()))
-						fieldValue.Set(ptr)
-					}
-				} else if valReflect.Type().ConvertibleTo(fieldValue.Type()) {
-					fieldValue.Set(valReflect.Convert(fieldValue.Type()))
-				}
+		// Pointer field receiving a scalar: allocate and set the elem.
+		if fieldValue.Kind() == reflect.Ptr && valReflect.Kind() != reflect.Ptr {
+			if valReflect.Type().ConvertibleTo(fieldValue.Type().Elem()) {
+				ptr := reflect.New(fieldValue.Type().Elem())
+				ptr.Elem().Set(valReflect.Convert(fieldValue.Type().Elem()))
+				fieldValue.Set(ptr)
 			}
+			continue
+		}
+		if valReflect.Type().ConvertibleTo(fieldValue.Type()) {
+			fieldValue.Set(valReflect.Convert(fieldValue.Type()))
 		}
 	}
-
 	return nil
 }
 
@@ -1631,211 +1597,76 @@ func structToMap(s any) map[string]any {
 	}
 	t := v.Type()
 
-	// Pre-compute the outer struct's directly-declared (non-anonymous)
-	// exported field names. serializeEmbedded uses this to honor Go's
-	// field-promotion shadowing: if the parent declares a CreatedAt
-	// (with a custom column tag) alongside an embedded Model[T], the
-	// embedded base's CreatedAt must NOT also be emitted, otherwise
-	// the row carries both columns.
-	outerFieldNames := make(map[string]bool, t.NumField())
+	// Polymorphic morph fields emit a (type_col, id_col) pair sourced
+	// from the Morph struct value, not the field itself. ModelMeta
+	// excludes them from Columns(), so handle here before the canonical
+	// loop. The emission rule is the same in both directions: TypeName
+	// when non-empty, ID when not the zero key.
 	for i := 0; i < t.NumField(); i++ {
-		f := t.Field(i)
-		if f.IsExported() && !f.Anonymous {
-			outerFieldNames[f.Name] = true
-		}
-	}
-
-	for i := 0; i < v.NumField(); i++ {
 		field := t.Field(i)
 		tag := field.Tag.Get("orm")
-
-		// Skip fields marked with "-" or relations
-		if tag == "-" || strings.Contains(tag, "relation:") {
+		pv := extractPolymorphicValue(tag)
+		if pv == "" {
 			continue
 		}
-
-		// Many-to-many fields are virtual; never persisted from the parent.
-		if extractManyToManyValue(tag) != "" {
+		typeCol, idCol, perr := parsePolymorphicTag(pv)
+		if perr != nil {
 			continue
 		}
-
-		// Polymorphic morph fields write the (type_col, id_col) pair
-		// derived from the embedded Morph value rather than serializing
-		// the struct itself.
-		if pv := extractPolymorphicValue(tag); pv != "" {
-			if typeCol, idCol, perr := parsePolymorphicTag(pv); perr == nil {
-				fv := v.Field(i)
-				if fv.Kind() == reflect.Struct {
-					if tn := fv.FieldByName("TypeName"); tn.IsValid() && tn.Kind() == reflect.String && tn.String() != "" {
-						result[typeCol] = tn.String()
-					}
-					if id := fv.FieldByName("ID"); id.IsValid() && id.CanInterface() {
-						idVal := id.Interface()
-						if idVal != nil && !isZeroKey(normalizeKey(idVal)) {
-							result[idCol] = idVal
-						}
-					}
-				}
-			}
+		fv := v.Field(i)
+		if fv.Kind() != reflect.Struct {
 			continue
 		}
-
-		isJSON := isJSONColumn(tag)
-
-		// Skip slice/array fields (usually relations) unless the field is
-		// JSON-tagged or a byte sequence. Byte slices/arrays are binary
-		// scalars (bytea/BLOB, hash digests like [32]byte) and must reach
-		// the driver; non-byte slices are relation collections (HasMany,
-		// BelongsToMany) that don't belong in the row payload.
-		kind := v.Field(i).Kind()
-		if kind == reflect.Slice || kind == reflect.Array {
-			isByteSeq := v.Field(i).Type().Elem().Kind() == reflect.Uint8
-			if !isJSON && !isByteSeq {
-				continue
-			}
-			// nil byte slice on a non-JSON column: omit so DB default applies.
-			// JSON columns keep their existing zero handling below.
-			if isByteSeq && !isJSON && kind == reflect.Slice && v.Field(i).IsNil() {
-				continue
+		if tn := fv.FieldByName("TypeName"); tn.IsValid() && tn.Kind() == reflect.String && tn.String() != "" {
+			result[typeCol] = tn.String()
+		}
+		if id := fv.FieldByName("ID"); id.IsValid() && id.CanInterface() {
+			idVal := id.Interface()
+			if idVal != nil && !isZeroKey(normalizeKey(idVal)) {
+				result[idCol] = idVal
 			}
 		}
-
-		// Delegate embedded ORM base fields to a single helper so the
-		// main loop stays a straight pass over the declared columns.
-		// outerFieldNames carries the parent's directly-declared field
-		// names so the helper can suppress shadowed embedded fields
-		// (the parent's emission wins). See structToMap setup above.
-		if serializeEmbedded(field, v.Field(i), result, outerFieldNames) {
-			continue
-		}
-
-		// Resolve column name (orm:"column:..." or snake_case fallback).
-		// Shared with mapToStruct so write/read directions stay symmetric.
-		// Defensive: skip empty (orm:"-" already handled above, but the
-		// helper also returns "" for skip-tagged fields).
-		columnName := fieldColumnName(field)
-		if columnName == "" {
-			continue
-		}
-
-		// JSON/JSONB columns: omit zero values so DB defaults can apply.
-		// Empty string is never valid JSON on Postgres/MySQL; SQLite would
-		// store "" as literal text and break downstream json.Unmarshal.
-		if isJSON && isJSONZeroValue(v.Field(i)) {
-			continue
-		}
-
-		value := v.Field(i).Interface()
-
-		// Skip zero values for certain types
-		if field.Name == "ID" {
-			// For uint ID (Model[T]), skip if 0
-			if v.Field(i).Kind() == reflect.Uint && v.Field(i).Uint() == 0 {
-				continue
-			}
-			// For string ID (UUIDModel[T]), skip if empty
-			if v.Field(i).Kind() == reflect.String && v.Field(i).String() == "" {
-				continue
-			}
-		}
-
-		result[columnName] = value
 	}
 
-	return result
-}
-
-// embeddedBaseTypePrefixes enumerates the embedded ORM base types whose
-// fields serializeEmbedded expands into the parent column map. Keeping
-// the recognition table separate from the walk lets one generic loop
-// drive every variant. The field set differs (UpdatedAt absent on
-// Immutable*, DeletedAt only on SoftDelete*) but each is just an
-// exported struct field whose column name is derived via the same
-// helper used by structToMap (fieldColumnName), so escape hatches like
-// orm:"column:enqueued_at" on a custom embedded base now work
-// uniformly.
-var embeddedBaseTypePrefixes = []string{
-	"orm.Model[",
-	"orm.UUIDModel[",
-	"orm.SoftDeleteModel[",
-	"orm.SoftDeleteUUIDModel[",
-	"orm.ImmutableModel[",
-	"orm.ImmutableUUIDModel[",
-}
-
-// serializeEmbedded writes the columns contributed by an embedded ORM base
-// type into result and reports whether the field was handled. Returning
-// false signals the caller to fall through to the regular scalar-field
-// branch.
-//
-// Column names are resolved via fieldColumnName so an `orm:"column:..."`
-// tag on the embedded base type's field overrides the snake_case
-// default. This is the symmetric write-side counterpart of mapToStruct
-// (which already honors the column tag via the same helper). Without
-// this, a downstream model that embeds a custom base type with e.g.
-// `orm:"column:enqueued_at"` on CreatedAt would silently emit
-// "created_at" instead, breaking inserts against tables whose timestamp
-// column is named differently.
-//
-// Default column names (created_at, updated_at, deleted_at, id) are
-// preserved: the stock base types declare e.g. `orm:"autoCreateTime"`
-// without a column directive, so fieldColumnName falls back to
-// toSnakeCase(field.Name) which is identical to the previous
-// hardcoded literals.
-//
-// Zero-value skip rules mirror the original inline switch and the
-// top-level structToMap loop:
-//   - ID: skip when uint==0 (auto-increment) or string=="" (UUID not yet
-//     generated). The DB default or driver-side UUID hook fills it in.
-//   - Pointer fields (e.g. *time.Time on SoftDelete*'s DeletedAt): skip
-//     when nil so the column keeps its DB default and soft-delete
-//     queries can still NULL-test it.
-//   - Fields tagged `orm:"-"` (IsExisting, Original, Changed) are skipped
-//     because fieldColumnName returns "" for them.
-func serializeEmbedded(field reflect.StructField, value reflect.Value, result map[string]any, shadowedByOuter map[string]bool) bool {
-	typeName := field.Type.String()
-	matched := false
-	for _, prefix := range embeddedBaseTypePrefixes {
-		if strings.HasPrefix(typeName, prefix) {
-			matched = true
-			break
-		}
-	}
-	if !matched {
-		return false
+	meta := MetaForValue(v)
+	if meta == nil {
+		return result
 	}
 
-	embeddedType := field.Type
-	for i := 0; i < embeddedType.NumField(); i++ {
-		f := embeddedType.Field(i)
-		if !f.IsExported() {
-			continue
-		}
-
-		// If the outer struct declares a same-named field, Go's field
-		// promotion makes the outer one win. The outer loop in
-		// structToMap will emit that field with its own column tag, so
-		// skip the embedded copy here to avoid double-writing.
-		if shadowedByOuter[f.Name] {
-			continue
-		}
-
-		columnName := fieldColumnName(f)
-		if columnName == "" {
-			// orm:"-" on the embedded base's internal bookkeeping
-			// (IsExisting, Original, Changed) lands here.
-			continue
-		}
-
-		fv := value.FieldByName(f.Name)
+	for _, col := range meta.Columns() {
+		fv := v.FieldByIndex(col.IndexPath)
 		if !fv.IsValid() {
 			continue
 		}
 
-		// Skip auto-generated primary keys when not yet assigned so the
-		// driver's auto-increment or UUID generation can run. This
-		// matches the top-level structToMap behavior for ID fields.
-		if f.Name == "ID" {
+		// Slice/array gating. Non-byte slices are relation payloads
+		// and never persist; byte slices/arrays are scalars (bytea,
+		// hashes) unless tagged JSON. A nil byte slice on a non-JSON
+		// column is dropped so the DB default applies.
+		switch fv.Kind() {
+		case reflect.Slice, reflect.Array:
+			isByteSeq := fv.Type().Elem().Kind() == reflect.Uint8
+			if !col.IsJSON && !isByteSeq {
+				continue
+			}
+			if isByteSeq && !col.IsJSON && fv.Kind() == reflect.Slice && fv.IsNil() {
+				continue
+			}
+		}
+
+		// JSON zero-value: omit so the DB default can apply. "" is
+		// never valid JSON on Postgres/MySQL; SQLite would store it
+		// as literal text and break downstream json.Unmarshal.
+		if col.IsJSON && isJSONZeroValue(fv) {
+			continue
+		}
+
+		// Auto-managed primary key: skip when not yet assigned so the
+		// driver's auto-increment or UUID hook can run on insert. The
+		// save path also explicitly delete()s "id" before update, so
+		// this rule covers the insert side for both Model[T] (uint)
+		// and UUIDModel[T] (string).
+		if col.FieldName == "ID" {
 			switch fv.Kind() {
 			case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 				if fv.Uint() == 0 {
@@ -1848,21 +1679,32 @@ func serializeEmbedded(field reflect.StructField, value reflect.Value, result ma
 			}
 		}
 
-		// Pointer fields default to NULL when nil; emit only when set.
-		// Covers DeletedAt (*time.Time) on SoftDelete* variants.
+		// Pointer fields (notably DeletedAt *time.Time) become NULL
+		// when nil; emit only when set so the DB default sticks and
+		// soft-delete queries keep working.
 		if fv.Kind() == reflect.Ptr && fv.IsNil() {
 			continue
 		}
 
-		result[columnName] = fv.Interface()
+		result[col.Column] = fv.Interface()
 	}
 
-	return true
+	return result
 }
 
 // Global convenience functions
 
-func Save[T any](m *Manager, model *T) error {
+// Save persists model through manager m. The first argument is a
+// context.Context: when ctx carries a *sql.Tx (set by
+// Manager.Transaction or WithTxContext) the write enrolls in the
+// caller's transaction; otherwise it routes through the manager's
+// pool driver. Passing nil for m falls back to the package default
+// Manager (SetDefault).
+//
+// Forgetting ctx is a compile error - the only way to get an unscoped
+// auto-commit is to explicitly pass context.Background() or a ctx
+// that does not carry a *sql.Tx.
+func Save[T any](ctx context.Context, m *Manager, model *T) error {
 	if m == nil {
 		m = Default()
 	}
@@ -1873,14 +1715,20 @@ func Save[T any](m *Manager, model *T) error {
 	if drv == nil {
 		return errors.New("orm: no database connection")
 	}
-	return saveWithDriver(drv, model)
+	// Honor a tx slot in ctx so the manager-routed Save and
+	// Query[T].Save behave identically: both enroll in the tx when ctx
+	// carries one, both route through the pool when it does not.
+	if tx, ok := TxFromContext(ctx); ok {
+		drv = &txDriver{Driver: drv, tx: tx}
+	}
+	return saveWithDriver(ctx, drv, model)
 }
 
 // saveWithDriver is the driver-bound persistence entry. It carries the
 // reflection + dispatch logic of Save; the public Save resolves the
 // driver from a *Manager, while Query.Save / Query.Create reach this
 // helper directly using their own (possibly tx-bound) q.driver.
-func saveWithDriver[T any](drv drivers.Driver, model *T) error {
+func saveWithDriver[T any](ctx context.Context, drv drivers.Driver, model *T) error {
 	v := reflect.ValueOf(model).Elem()
 	t := v.Type()
 
@@ -1956,18 +1804,18 @@ func saveWithDriver[T any](drv drivers.Driver, model *T) error {
 
 	if isImmutable {
 		if isUUIDModel {
-			return saveImmutableUUIDModel(drv, model, modelField, idField, existsField, tableName, isInsert)
+			return saveImmutableUUIDModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert)
 		}
-		return saveImmutableModel(drv, model, modelField, idField, existsField, tableName, isInsert)
+		return saveImmutableModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert)
 	}
 	if isUUIDModel {
-		return saveUUIDModel(drv, model, modelField, idField, existsField, tableName, isInsert)
+		return saveUUIDModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert)
 	}
-	return saveModel(drv, model, modelField, idField, existsField, tableName, isInsert)
+	return saveModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert)
 }
 
 // saveModel handles saving for auto-increment ID models
-func saveModel[T any](drv drivers.Driver, model *T, modelField, idField, existsField reflect.Value, tableName string, isInsert bool) error {
+func saveModel[T any](ctx context.Context, drv drivers.Driver, model *T, modelField, idField, existsField reflect.Value, tableName string, isInsert bool) error {
 	if isInsert {
 		// Set timestamps: respect caller-set CreatedAt; only stamp when zero.
 		// UpdatedAt mirrors CreatedAt on insert for consistency.
@@ -1999,7 +1847,7 @@ func saveModel[T any](drv drivers.Driver, model *T, modelField, idField, existsF
 			driver: drv,
 		}
 
-		lastID, err := query.InsertGetId(data)
+		lastID, err := query.InsertGetId(ctx, data)
 		if err != nil {
 			return err
 		}
@@ -2029,13 +1877,16 @@ func saveModel[T any](drv drivers.Driver, model *T, modelField, idField, existsF
 		data := structToMap(model)
 		delete(data, "id") // Remove ID from updates
 
-		// Create query and update
+		// Create query and update. hasUpdatedAt=false because the
+		// updated_at column is already present in `data` (we set it on
+		// modelField above and structToMap emitted it), so we do NOT
+		// want Update's grammar-level injection to add a second copy.
 		query := &Query[T]{
 			table:  tableName,
 			driver: drv,
 		}
 
-		_, err := query.Where("id = ?", idField.Uint()).Update(data)
+		_, err := query.Where("id = ?", idField.Uint()).Update(ctx, data)
 		if err != nil {
 			return err
 		}
@@ -2051,7 +1902,7 @@ func saveModel[T any](drv drivers.Driver, model *T, modelField, idField, existsF
 }
 
 // saveUUIDModel handles saving for UUID primary key models
-func saveUUIDModel[T any](drv drivers.Driver, model *T, modelField, idField, existsField reflect.Value, tableName string, isInsert bool) error {
+func saveUUIDModel[T any](ctx context.Context, drv drivers.Driver, model *T, modelField, idField, existsField reflect.Value, tableName string, isInsert bool) error {
 	if isInsert {
 		// Generate UUID if not already set
 		if idField.String() == "" {
@@ -2087,7 +1938,7 @@ func saveUUIDModel[T any](drv drivers.Driver, model *T, modelField, idField, exi
 			driver: drv,
 		}
 
-		_, err := query.InsertGetId(data)
+		_, err := query.InsertGetId(ctx, data)
 		if err != nil {
 			return err
 		}
@@ -2121,7 +1972,7 @@ func saveUUIDModel[T any](drv drivers.Driver, model *T, modelField, idField, exi
 			driver: drv,
 		}
 
-		_, err := query.Where("id = ?", idField.String()).Update(data)
+		_, err := query.Where("id = ?", idField.String()).Update(ctx, data)
 		if err != nil {
 			return err
 		}
@@ -2137,9 +1988,13 @@ func saveUUIDModel[T any](drv drivers.Driver, model *T, modelField, idField, exi
 	return nil
 }
 
-func CreateMany[T any](records []T) error {
+// CreateMany inserts each record sequentially through the package
+// default Manager. Takes ctx as the first argument so the entire batch
+// participates in the caller's transaction (when ctx carries a *sql.Tx)
+// or routes through the pool driver. The first error short-circuits.
+func CreateMany[T any](ctx context.Context, records []T) error {
 	for i := range records {
-		if err := Save(nil, &records[i]); err != nil {
+		if err := Save(ctx, nil, &records[i]); err != nil {
 			return err
 		}
 	}

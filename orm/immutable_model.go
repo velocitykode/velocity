@@ -2,7 +2,6 @@ package orm
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"reflect"
 	"strings"
@@ -21,66 +20,55 @@ var ErrImmutableModelUpdate = errors.New("orm: cannot update an immutable model 
 // ImmutableModel[T] static helpers
 // ---------------------------------------------------------------------------
 
-// WithContext returns a *Query[T] bound to ctx. See Model[T].WithContext.
-func (ImmutableModel[T]) WithContext(ctx context.Context) *Query[T] {
-	return newQuery[T]().WithContext(ctx)
-}
-
-// WithTx binds the query chain to tx so Create participates in the
-// caller's transaction. Append-only audit-log workflows are the
-// motivating case: an audit row hashed against its predecessor must
-// land in the same tx as the writes it describes, otherwise the chain
-// breaks under concurrent producers.
-func (ImmutableModel[T]) WithTx(tx *sql.Tx) *Query[T] {
-	return newQuery[T]().WithTx(tx)
-}
-
-// Find retrieves a record by primary key.
-func (ImmutableModel[T]) Find(id any) (*T, error) {
+// Find retrieves a record by primary key. Takes ctx as the first
+// argument.
+func (ImmutableModel[T]) Find(ctx context.Context, id any) (*T, error) {
 	var model T
 	q := newQuery[T]()
-	if err := q.Where("id = ?", id).First(&model); err != nil {
+	if err := q.Where("id = ?", id).First(ctx, &model); err != nil {
 		return nil, err
 	}
 	return &model, nil
 }
 
-// FindBy retrieves a record by a specific field.
-func (ImmutableModel[T]) FindBy(field string, value any) (*T, error) {
+// FindBy retrieves a record by a specific field. Takes ctx as the first
+// argument.
+func (ImmutableModel[T]) FindBy(ctx context.Context, field string, value any) (*T, error) {
 	if err := validateIdentifier(field); err != nil {
 		return nil, err
 	}
 	var model T
 	q := newQuery[T]()
-	if err := q.Where(field+" = ?", value).First(&model); err != nil {
+	if err := q.Where(field+" = ?", value).First(ctx, &model); err != nil {
 		return nil, err
 	}
 	return &model, nil
 }
 
-// First retrieves the first record.
-func (ImmutableModel[T]) First() (*T, error) {
+// First retrieves the first record. Takes ctx as the first argument.
+func (ImmutableModel[T]) First(ctx context.Context) (*T, error) {
 	var model T
 	q := newQuery[T]()
-	if err := q.First(&model); err != nil {
+	if err := q.First(ctx, &model); err != nil {
 		return nil, err
 	}
 	return &model, nil
 }
 
-// Last retrieves the last record (by id descending).
-func (ImmutableModel[T]) Last() (*T, error) {
+// Last retrieves the last record (by id descending). Takes ctx as the
+// first argument.
+func (ImmutableModel[T]) Last(ctx context.Context) (*T, error) {
 	var model T
 	q := newQuery[T]()
-	if err := q.OrderBy("id", "DESC").First(&model); err != nil {
+	if err := q.OrderBy("id", "DESC").First(ctx, &model); err != nil {
 		return nil, err
 	}
 	return &model, nil
 }
 
-// All retrieves all records.
-func (ImmutableModel[T]) All() ([]T, error) {
-	return newQuery[T]().Get()
+// All retrieves all records. Takes ctx as the first argument.
+func (ImmutableModel[T]) All(ctx context.Context) ([]T, error) {
+	return newQuery[T]().Get(ctx)
 }
 
 // Where starts a query with a WHERE condition.
@@ -103,15 +91,17 @@ func (ImmutableModel[T]) With(relations ...string) *Query[T] {
 	return newQuery[T]().With(relations...)
 }
 
-// Create inserts a new record. Accepts a map[string]any or a *T.
-func (ImmutableModel[T]) Create(data any) (*T, error) {
+// Create inserts a new record. Takes ctx as the first argument so
+// transaction enrollment is mandatory and explicit. Accepts a
+// map[string]any or a *T.
+func (ImmutableModel[T]) Create(ctx context.Context, data any) (*T, error) {
 	switch v := data.(type) {
 	case map[string]any:
 		model := new(T)
 		if err := mapToStruct(v, model); err != nil {
 			return nil, err
 		}
-		if err := Save(nil, model); err != nil {
+		if err := Save(ctx, nil, model); err != nil {
 			return nil, err
 		}
 		return model, nil
@@ -119,7 +109,7 @@ func (ImmutableModel[T]) Create(data any) (*T, error) {
 		if err := applyFillableToStruct(v); err != nil {
 			return nil, err
 		}
-		if err := Save(nil, v); err != nil {
+		if err := Save(ctx, nil, v); err != nil {
 			return nil, err
 		}
 		return v, nil
@@ -128,35 +118,37 @@ func (ImmutableModel[T]) Create(data any) (*T, error) {
 	}
 }
 
-// CreateMany inserts multiple records.
-func (ImmutableModel[T]) CreateMany(records []T) error {
+// CreateMany inserts multiple records. Takes ctx as the first argument.
+func (ImmutableModel[T]) CreateMany(ctx context.Context, records []T) error {
 	for i := range records {
-		if err := Save(nil, &records[i]); err != nil {
+		if err := Save(ctx, nil, &records[i]); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// Count returns the number of records.
-func (ImmutableModel[T]) Count() (int, error) {
-	return newQuery[T]().Count()
+// Count returns the number of records. Takes ctx as the first argument.
+func (ImmutableModel[T]) Count(ctx context.Context) (int, error) {
+	return newQuery[T]().Count(ctx)
 }
 
-// Exists checks if any records exist.
-func (ImmutableModel[T]) Exists() bool {
-	count, _ := newQuery[T]().Count()
+// Exists checks if any records exist. Takes ctx as the first argument.
+func (ImmutableModel[T]) Exists(ctx context.Context) bool {
+	count, _ := newQuery[T]().Count(ctx)
 	return count > 0
 }
 
-// Paginate returns a paginated result for all records.
-func (ImmutableModel[T]) Paginate(page, perPage int) (*PaginatedResult[T], error) {
-	return newQuery[T]().Paginate(page, perPage)
+// Paginate returns a paginated result for all records. Takes ctx as
+// the first argument.
+func (ImmutableModel[T]) Paginate(ctx context.Context, page, perPage int) (*PaginatedResult[T], error) {
+	return newQuery[T]().Paginate(ctx, page, perPage)
 }
 
-// Pluck retrieves a single column's values.
-func (ImmutableModel[T]) Pluck(column string) ([]any, error) {
-	return newQuery[T]().Pluck(column)
+// Pluck retrieves a single column's values. Takes ctx as the first
+// argument.
+func (ImmutableModel[T]) Pluck(ctx context.Context, column string) ([]any, error) {
+	return newQuery[T]().Pluck(ctx, column)
 }
 
 // Save is decorative on the embedded *ImmutableModel[T] receiver and
@@ -182,52 +174,44 @@ func (m *ImmutableModel[T]) Save() error {
 // ImmutableUUIDModel[T] static helpers
 // ---------------------------------------------------------------------------
 
-// WithContext returns a *Query[T] bound to ctx.
-func (ImmutableUUIDModel[T]) WithContext(ctx context.Context) *Query[T] {
-	return newQuery[T]().WithContext(ctx)
-}
-
-// WithTx binds the query chain to tx. See ImmutableModel[T].WithTx.
-func (ImmutableUUIDModel[T]) WithTx(tx *sql.Tx) *Query[T] {
-	return newQuery[T]().WithTx(tx)
-}
-
-// Find retrieves a record by UUID primary key.
-func (ImmutableUUIDModel[T]) Find(id string) (*T, error) {
+// Find retrieves a record by UUID primary key. Takes ctx as the first
+// argument.
+func (ImmutableUUIDModel[T]) Find(ctx context.Context, id string) (*T, error) {
 	var model T
 	q := newQuery[T]()
-	if err := q.Where("id = ?", id).First(&model); err != nil {
+	if err := q.Where("id = ?", id).First(ctx, &model); err != nil {
 		return nil, err
 	}
 	return &model, nil
 }
 
-// FindBy retrieves a record by a specific field.
-func (ImmutableUUIDModel[T]) FindBy(field string, value any) (*T, error) {
+// FindBy retrieves a record by a specific field. Takes ctx as the first
+// argument.
+func (ImmutableUUIDModel[T]) FindBy(ctx context.Context, field string, value any) (*T, error) {
 	if err := validateIdentifier(field); err != nil {
 		return nil, err
 	}
 	var model T
 	q := newQuery[T]()
-	if err := q.Where(field+" = ?", value).First(&model); err != nil {
+	if err := q.Where(field+" = ?", value).First(ctx, &model); err != nil {
 		return nil, err
 	}
 	return &model, nil
 }
 
-// First retrieves the first record.
-func (ImmutableUUIDModel[T]) First() (*T, error) {
+// First retrieves the first record. Takes ctx as the first argument.
+func (ImmutableUUIDModel[T]) First(ctx context.Context) (*T, error) {
 	var model T
 	q := newQuery[T]()
-	if err := q.First(&model); err != nil {
+	if err := q.First(ctx, &model); err != nil {
 		return nil, err
 	}
 	return &model, nil
 }
 
-// All retrieves all records.
-func (ImmutableUUIDModel[T]) All() ([]T, error) {
-	return newQuery[T]().Get()
+// All retrieves all records. Takes ctx as the first argument.
+func (ImmutableUUIDModel[T]) All(ctx context.Context) ([]T, error) {
+	return newQuery[T]().Get(ctx)
 }
 
 // Where starts a query with a WHERE condition.
@@ -240,15 +224,16 @@ func (ImmutableUUIDModel[T]) OrderBy(column, direction string) *Query[T] {
 	return newQuery[T]().OrderBy(column, direction)
 }
 
-// Create inserts a new record. Accepts a map[string]any or a *T.
-func (ImmutableUUIDModel[T]) Create(data any) (*T, error) {
+// Create inserts a new record. Takes ctx as the first argument.
+// Accepts a map[string]any or a *T.
+func (ImmutableUUIDModel[T]) Create(ctx context.Context, data any) (*T, error) {
 	switch v := data.(type) {
 	case map[string]any:
 		model := new(T)
 		if err := mapToStruct(v, model); err != nil {
 			return nil, err
 		}
-		if err := Save(nil, model); err != nil {
+		if err := Save(ctx, nil, model); err != nil {
 			return nil, err
 		}
 		return model, nil
@@ -256,7 +241,7 @@ func (ImmutableUUIDModel[T]) Create(data any) (*T, error) {
 		if err := applyFillableToStruct(v); err != nil {
 			return nil, err
 		}
-		if err := Save(nil, v); err != nil {
+		if err := Save(ctx, nil, v); err != nil {
 			return nil, err
 		}
 		return v, nil
@@ -265,19 +250,19 @@ func (ImmutableUUIDModel[T]) Create(data any) (*T, error) {
 	}
 }
 
-// CreateMany inserts multiple records.
-func (ImmutableUUIDModel[T]) CreateMany(records []T) error {
+// CreateMany inserts multiple records. Takes ctx as the first argument.
+func (ImmutableUUIDModel[T]) CreateMany(ctx context.Context, records []T) error {
 	for i := range records {
-		if err := Save(nil, &records[i]); err != nil {
+		if err := Save(ctx, nil, &records[i]); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// Count returns the number of records.
-func (ImmutableUUIDModel[T]) Count() (int, error) {
-	return newQuery[T]().Count()
+// Count returns the number of records. Takes ctx as the first argument.
+func (ImmutableUUIDModel[T]) Count(ctx context.Context) (int, error) {
+	return newQuery[T]().Count(ctx)
 }
 
 // Save is decorative on the embedded *ImmutableUUIDModel[T] receiver
@@ -299,7 +284,7 @@ func (m *ImmutableUUIDModel[T]) Save() error {
 // saveImmutableModel handles auto-increment-id immutable inserts. There
 // is no update branch: callers reaching here with isInsert=false get
 // ErrImmutableModelUpdate.
-func saveImmutableModel[T any](drv drivers.Driver, model *T, modelField, idField, existsField reflect.Value, tableName string, isInsert bool) error {
+func saveImmutableModel[T any](ctx context.Context, drv drivers.Driver, model *T, modelField, idField, existsField reflect.Value, tableName string, isInsert bool) error {
 	if !isInsert {
 		return ErrImmutableModelUpdate
 	}
@@ -324,7 +309,7 @@ func saveImmutableModel[T any](drv drivers.Driver, model *T, modelField, idField
 		driver:       drv,
 		hasUpdatedAt: false,
 	}
-	lastID, err := q.InsertGetId(data)
+	lastID, err := q.InsertGetId(ctx, data)
 	if err != nil {
 		return err
 	}
@@ -341,7 +326,7 @@ func saveImmutableModel[T any](drv drivers.Driver, model *T, modelField, idField
 }
 
 // saveImmutableUUIDModel handles UUID-keyed immutable inserts.
-func saveImmutableUUIDModel[T any](drv drivers.Driver, model *T, modelField, idField, existsField reflect.Value, tableName string, isInsert bool) error {
+func saveImmutableUUIDModel[T any](ctx context.Context, drv drivers.Driver, model *T, modelField, idField, existsField reflect.Value, tableName string, isInsert bool) error {
 	if !isInsert {
 		return ErrImmutableModelUpdate
 	}
@@ -368,7 +353,7 @@ func saveImmutableUUIDModel[T any](drv drivers.Driver, model *T, modelField, idF
 		driver:       drv,
 		hasUpdatedAt: false,
 	}
-	if _, err := q.InsertGetId(data); err != nil {
+	if _, err := q.InsertGetId(ctx, data); err != nil {
 		return err
 	}
 

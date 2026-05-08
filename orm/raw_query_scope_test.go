@@ -62,7 +62,7 @@ func TestRawQuery_BypassesSoftDeleteScope(t *testing.T) {
 	rq := NewRawQuery[RawScopeUser]("SELECT id, name, created_at, updated_at, deleted_at FROM raw_scope_users ORDER BY id")
 	rq.driver = m.DefaultDriver()
 
-	users, err := rq.Get()
+	users, err := rq.Get(context.Background())
 	if err != nil {
 		t.Fatalf("rq.Get: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestRawQueryWithScopes_AppliesSoftDeleteScope(t *testing.T) {
 	rq := NewRawQuerySoftDeleteOnly[RawScopeUser]("SELECT id, name, created_at, updated_at, deleted_at FROM raw_scope_users ORDER BY id")
 	rq.driver = m.DefaultDriver()
 
-	users, err := rq.Get()
+	users, err := rq.Get(context.Background())
 	if err != nil {
 		t.Fatalf("rq.Get: %v", err)
 	}

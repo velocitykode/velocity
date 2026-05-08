@@ -1,6 +1,7 @@
 package orm
 
 import (
+	"context"
 	"reflect"
 	"sync"
 )
@@ -15,9 +16,9 @@ const softDeleteScopeName = "soft_delete"
 const SoftDeleteScopeName = softDeleteScopeName
 
 // scopeApplier is a type-erased scope function stored in the registry.
-// It receives the *Query[T] as `any` and is recovered to its concrete
-// generic type by the per-T helper that registered it.
-type scopeApplier = func(q any)
+// It receives the ctx and *Query[T] as `any` and is recovered to its
+// concrete generic type by the per-T helper that registered it.
+type scopeApplier = func(ctx context.Context, q any)
 
 // scopeEntry holds a single named scope plus the order in which it
 // was registered. Order is preserved so callers see deterministic
@@ -72,14 +73,17 @@ func modelTypeFor[T any]() reflect.Type {
 // The scope runs on every read, count, update and delete unless the
 // caller opts out via WithoutGlobalScope(name) or WithoutGlobalScopes().
 //
-// The scope fn MUST mutate q in place (q.Where(...) etc.). It does not
-// return the query: a returned replacement pointer would be silently
-// dropped, which is a footgun. This matches Eloquent's
-// addGlobalScope(Scope) shape, where Scope::apply returns void.
+// The scope fn receives the per-call ctx and the *Query[T]; it MUST
+// mutate q in place (q.Where(...) etc.). It does not return the query:
+// a returned replacement pointer would be silently dropped, which is a
+// footgun. This matches Eloquent's addGlobalScope(Scope) shape, where
+// Scope::apply returns void. ctx is the same context.Context passed to
+// the terminal that triggered the apply, so scopes can read tenant /
+// actor / locale values plumbed through ctx.
 //
 // Re-registering an existing name replaces the prior function. Pass a
 // nil fn to remove a scope.
-func AddGlobalScope[T any](name string, fn func(*Query[T])) {
+func AddGlobalScope[T any](name string, fn func(ctx context.Context, q *Query[T])) {
 	if name == "" {
 		return
 	}
@@ -94,12 +98,12 @@ func AddGlobalScope[T any](name string, fn func(*Query[T])) {
 		delete(reg.entries, name)
 		return
 	}
-	apply := func(q any) {
+	apply := func(ctx context.Context, q any) {
 		typed, ok := q.(*Query[T])
 		if !ok {
 			return
 		}
-		fn(typed)
+		fn(ctx, typed)
 	}
 	// Replace the entry rather than mutate it so concurrent readers
 	// holding a snapshot of *scopeEntry pointers see immutable values.
@@ -149,8 +153,10 @@ func (r *scopeRegistry) snapshotScopes() []*scopeEntry {
 // applyGlobalScopes runs every registered scope for type T against q,
 // skipping scopes whose name appears in q.disabledScopes. Idempotent
 // per query: a Query[T] applies its scopes at most once, even if a
-// terminal calls another terminal that also invokes apply.
-func (q *Query[T]) applyGlobalScopes() {
+// terminal calls another terminal that also invokes apply. ctx is
+// forwarded to each scope so callers can read tenant / actor / locale
+// values plumbed through it.
+func (q *Query[T]) applyGlobalScopes(ctx context.Context) {
 	if q == nil || q.globalScopesApplied {
 		return
 	}
@@ -165,7 +171,7 @@ func (q *Query[T]) applyGlobalScopes() {
 		if q.disabledScopes[entry.name] {
 			continue
 		}
-		entry.apply(q)
+		entry.apply(ctx, q)
 	}
 }
 
@@ -215,7 +221,7 @@ func registerSoftDeleteScopeOnce[T any]() {
 	if _, done := softDeleteScopeRegistered.Load(t); done {
 		return
 	}
-	AddGlobalScope[T](softDeleteScopeName, func(q *Query[T]) {
+	AddGlobalScope[T](softDeleteScopeName, func(_ context.Context, q *Query[T]) {
 		if q.withTrashed {
 			if q.onlyTrashed {
 				q.WhereNotNull("deleted_at")

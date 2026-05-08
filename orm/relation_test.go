@@ -661,7 +661,7 @@ func TestLoadRelations_HasMany(t *testing.T) {
 	cleanup := withRelationDB(t)
 	defer cleanup()
 
-	users, err := RelUser{}.With("Posts").Get()
+	users, err := RelUser{}.With("Posts").Get(context.Background())
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -688,7 +688,7 @@ func TestLoadRelations_HasMany_ForeignKeyIntegrity(t *testing.T) {
 	cleanup := withRelationDB(t)
 	defer cleanup()
 
-	users, err := RelUser{}.With("Posts").Get()
+	users, err := RelUser{}.With("Posts").Get(context.Background())
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -707,7 +707,7 @@ func TestLoadRelations_HasMany_IsExistingSet(t *testing.T) {
 	cleanup := withRelationDB(t)
 	defer cleanup()
 
-	users, err := RelUser{}.With("Posts").Get()
+	users, err := RelUser{}.With("Posts").Get(context.Background())
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -725,7 +725,7 @@ func TestLoadRelations_HasMany_PointerSlice(t *testing.T) {
 	cleanup := withRelationDB(t)
 	defer cleanup()
 
-	users, err := RelUserPtrSlice{}.With("Posts").Get()
+	users, err := RelUserPtrSlice{}.With("Posts").Get(context.Background())
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -754,7 +754,7 @@ func TestLoadRelations_HasOne(t *testing.T) {
 	cleanup := withRelationDB(t)
 	defer cleanup()
 
-	users, err := RelUser{}.With("Profile").Get()
+	users, err := RelUser{}.With("Profile").Get(context.Background())
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -805,7 +805,7 @@ func TestLoadRelations_BelongsTo(t *testing.T) {
 	cleanup := withRelationDB(t)
 	defer cleanup()
 
-	posts, err := RelPost{}.With("User").Get()
+	posts, err := RelPost{}.With("User").Get(context.Background())
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -833,7 +833,7 @@ func TestLoadRelations_BelongsTo_SharedParentDeduplication(t *testing.T) {
 	cleanup := withRelationDB(t)
 	defer cleanup()
 
-	posts, err := RelPost{}.With("User").Get()
+	posts, err := RelPost{}.With("User").Get(context.Background())
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -859,7 +859,7 @@ func TestLoadRelations_BelongsTo_CorrectUserAssignment(t *testing.T) {
 	cleanup := withRelationDB(t)
 	defer cleanup()
 
-	posts, err := RelPost{}.With("User").Get()
+	posts, err := RelPost{}.With("User").Get(context.Background())
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -881,7 +881,7 @@ func TestLoadRelations_MultipleWith(t *testing.T) {
 	cleanup := withRelationDB(t)
 	defer cleanup()
 
-	users, err := RelUser{}.With("Profile", "Posts").Get()
+	users, err := RelUser{}.With("Profile", "Posts").Get(context.Background())
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -914,7 +914,7 @@ func TestLoadRelations_ChainedWithCalls(t *testing.T) {
 	defer cleanup()
 
 	// With().With() should accumulate preloads, not replace
-	users, err := RelUser{}.With("Profile").With("Posts").Get()
+	users, err := RelUser{}.With("Profile").With("Posts").Get(context.Background())
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -936,7 +936,7 @@ func TestLoadRelations_WithFirst(t *testing.T) {
 	defer cleanup()
 
 	var user RelUser
-	err := RelUser{}.With("Posts").Where("name = ?", "Alice").First(&user)
+	err := RelUser{}.With("Posts").Where("name = ?", "Alice").First(context.Background(), &user)
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -954,7 +954,7 @@ func TestLoadRelations_CaseInsensitive(t *testing.T) {
 	defer cleanup()
 
 	// lowercase "posts" should find the "Posts" field
-	users, err := RelUser{}.With("posts").Get()
+	users, err := RelUser{}.With("posts").Get(context.Background())
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -977,7 +977,7 @@ func TestLoadRelations_EmptyParentResults(t *testing.T) {
 	defer cleanup()
 
 	// Query returns 0 parents — loadRelations should be a no-op
-	users, err := RelUser{}.With("Posts").Where("name = ?", "Nonexistent").Get()
+	users, err := RelUser{}.With("Posts").Where("name = ?", "Nonexistent").Get(context.Background())
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -991,7 +991,7 @@ func TestLoadRelations_NoPreloads(t *testing.T) {
 	defer cleanup()
 
 	// No With() — relations should remain zero-valued
-	users, err := RelUser{}.Where("id = ?", 1).Get()
+	users, err := RelUser{}.Where("id = ?", 1).Get(context.Background())
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -1023,7 +1023,7 @@ func TestLoadRelations_ParentWithZeroFK(t *testing.T) {
 	SetDefault(manager)
 	defer ResetDefault()
 
-	posts, err := RelPost{}.With("User").Get()
+	posts, err := RelPost{}.With("User").Get(context.Background())
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -1044,7 +1044,7 @@ func TestLoadRelations_ErrorInvalidRelation(t *testing.T) {
 	cleanup := withRelationDB(t)
 	defer cleanup()
 
-	_, err := RelUser{}.With("NonExistent").Get()
+	_, err := RelUser{}.With("NonExistent").Get(context.Background())
 	if err == nil {
 		t.Fatal("expected error for non-existent relation")
 	}
@@ -1075,7 +1075,7 @@ func TestLoadRelations_ErrorUnsafeIdentifier(t *testing.T) {
 	}
 
 	// UnsafeTagModel has a SQL-injection-like FK identifier — resolveRelationMeta should reject it
-	_, err = UnsafeTagModel{}.With("Items").Get()
+	_, err = UnsafeTagModel{}.With("Items").Get(context.Background())
 	if err == nil {
 		t.Fatal("expected error for unsafe identifier in relation tag")
 	}
@@ -1122,7 +1122,7 @@ func TestLoadRelations_SoftDeleteFiltering(t *testing.T) {
 	SetDefault(manager)
 	defer ResetDefault()
 
-	users, err := SoftUser{}.With("Posts").Get()
+	users, err := SoftUser{}.With("Posts").Get(context.Background())
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -1163,7 +1163,7 @@ func TestLoadRelations_Concurrent(t *testing.T) {
 		go func() {
 			defer wg.Done()
 
-			users, err := RelUser{}.With("Posts", "Profile").Get()
+			users, err := RelUser{}.With("Posts", "Profile").Get(context.Background())
 			if err != nil {
 				errCh <- fmt.Errorf("Get: %w", err)
 				return
@@ -1218,7 +1218,7 @@ func TestLoadRelations_ConcurrentBelongsTo(t *testing.T) {
 		go func() {
 			defer wg.Done()
 
-			posts, err := RelPost{}.With("User").Get()
+			posts, err := RelPost{}.With("User").Get(context.Background())
 			if err != nil {
 				errCh <- fmt.Errorf("Get: %w", err)
 				return

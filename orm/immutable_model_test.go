@@ -62,7 +62,7 @@ func TestImmutableModel_CreateAndRead(t *testing.T) {
 	setupImmutableTests(t)
 
 	rec := &AuditLog{Action: "user.login", Subject: "alice@example.com"}
-	if err := Save(nil, rec); err != nil {
+	if err := Save(context.Background(), nil, rec); err != nil {
 		t.Fatalf("Save returned error: %v", err)
 	}
 	if rec.ID == 0 {
@@ -72,7 +72,7 @@ func TestImmutableModel_CreateAndRead(t *testing.T) {
 		t.Error("IsExisting was not set to true after insert")
 	}
 
-	got, err := Model[AuditLog]{}.Find(int(rec.ID))
+	got, err := Model[AuditLog]{}.Find(context.Background(), int(rec.ID))
 	if err != nil {
 		t.Fatalf("Find returned error: %v", err)
 	}
@@ -88,12 +88,12 @@ func TestImmutableModel_StaticHelpers(t *testing.T) {
 
 	for i, action := range []string{"a", "b", "c"} {
 		rec := &AuditLog{Action: action, Subject: "subj"}
-		if err := Save(nil, rec); err != nil {
+		if err := Save(context.Background(), nil, rec); err != nil {
 			t.Fatalf("seed[%d]: %v", i, err)
 		}
 	}
 
-	all, err := ImmutableModel[AuditLog]{}.All()
+	all, err := ImmutableModel[AuditLog]{}.All(context.Background())
 	if err != nil {
 		t.Fatalf("All: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestImmutableModel_StaticHelpers(t *testing.T) {
 		t.Errorf("All returned %d, want 3", len(all))
 	}
 
-	cnt, err := ImmutableModel[AuditLog]{}.Count()
+	cnt, err := ImmutableModel[AuditLog]{}.Count(context.Background())
 	if err != nil {
 		t.Fatalf("Count: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestImmutableModel_StaticHelpers(t *testing.T) {
 		t.Errorf("Count = %d, want 3", cnt)
 	}
 
-	actions, err := ImmutableModel[AuditLog]{}.Pluck("action")
+	actions, err := ImmutableModel[AuditLog]{}.Pluck(context.Background(), "action")
 	if err != nil {
 		t.Fatalf("Pluck: %v", err)
 	}
@@ -126,11 +126,11 @@ func TestImmutableModel_SaveOnExistingFails(t *testing.T) {
 	setupImmutableTests(t)
 
 	rec := &AuditLog{Action: "a", Subject: "s"}
-	if err := Save(nil, rec); err != nil {
+	if err := Save(context.Background(), nil, rec); err != nil {
 		t.Fatalf("initial Save: %v", err)
 	}
 	// Record is now existing; second Save must reject.
-	if err := Save(nil, rec); !errors.Is(err, ErrImmutableModelUpdate) {
+	if err := Save(context.Background(), nil, rec); !errors.Is(err, ErrImmutableModelUpdate) {
 		t.Errorf("second Save error = %v, want ErrImmutableModelUpdate", err)
 	}
 
@@ -149,7 +149,7 @@ func TestImmutableModel_QueryUpdateSkipsUpdatedAt(t *testing.T) {
 	setupImmutableTests(t)
 
 	rec := &AuditLog{Action: "a", Subject: "s"}
-	if err := Save(nil, rec); err != nil {
+	if err := Save(context.Background(), nil, rec); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -157,7 +157,7 @@ func TestImmutableModel_QueryUpdateSkipsUpdatedAt(t *testing.T) {
 	// injection. Update the action column; if injection were active
 	// SQLite would error with "no such column: updated_at".
 	q := newQuery[AuditLog]()
-	affected, err := q.Where("id = ?", int(rec.ID)).Update(map[string]any{"action": "a-updated"})
+	affected, err := q.Where("id = ?", int(rec.ID)).Update(context.Background(), map[string]any{"action": "a-updated"})
 	if err != nil {
 		t.Fatalf("Update returned error (likely updated_at injection): %v", err)
 	}
@@ -180,7 +180,7 @@ func TestModel_QueryUpdateStillInjectsUpdatedAt(t *testing.T) {
 	id := seedUser(t, Default(), "Alice", "alice@example.com", 30)
 
 	q := newQuery[TestUser]()
-	if _, err := q.Where("id = ?", id).Update(map[string]any{"name": "Alice2"}); err != nil {
+	if _, err := q.Where("id = ?", id).Update(context.Background(), map[string]any{"name": "Alice2"}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	sql, _ := q.ToSQL()
@@ -189,35 +189,19 @@ func TestModel_QueryUpdateStillInjectsUpdatedAt(t *testing.T) {
 	}
 }
 
-// TestImmutableModel_WithContext verifies WithContext on ImmutableModel
-// returns a *Query[T] bound to ctx (matches the Item 3 wiring).
-func TestImmutableModel_WithContext(t *testing.T) {
-	type ctxKey string
-	const k ctxKey = "tracer"
-	ctx := context.WithValue(context.Background(), k, "v")
-
-	q := ImmutableModel[AuditLog]{}.WithContext(ctx)
-	if q == nil || q.ctx == nil {
-		t.Fatal("WithContext returned nil or unbound ctx")
-	}
-	if got := q.ctx.Value(k); got != "v" {
-		t.Errorf("ctx not propagated: got %v", got)
-	}
-}
-
 // TestImmutableUUIDModel_CreateAndRead exercises the UUID-keyed variant.
 func TestImmutableUUIDModel_CreateAndRead(t *testing.T) {
 	setupImmutableTests(t)
 
 	rec := &AuditLogUUID{Action: "uuid-test"}
-	if err := Save(nil, rec); err != nil {
+	if err := Save(context.Background(), nil, rec); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	if rec.ID == "" {
 		t.Error("UUID ID was not populated after insert")
 	}
 
-	got, err := ImmutableUUIDModel[AuditLogUUID]{}.Find(rec.ID)
+	got, err := ImmutableUUIDModel[AuditLogUUID]{}.Find(context.Background(), rec.ID)
 	if err != nil {
 		t.Fatalf("Find: %v", err)
 	}
@@ -231,12 +215,12 @@ func TestImmutableUUIDModel_CreateAndRead(t *testing.T) {
 	if !got.IsExisting {
 		t.Fatal("Find did not mark IsExisting on Immutable variant")
 	}
-	if err := Save(nil, got); !errors.Is(err, ErrImmutableModelUpdate) {
+	if err := Save(context.Background(), nil, got); !errors.Is(err, ErrImmutableModelUpdate) {
 		t.Errorf("re-Save via Find result error = %v, want ErrImmutableModelUpdate", err)
 	}
 	// The freshly-Created pointer must also fail the same way; it has
 	// IsExisting=true set by saveImmutableUUIDModel after insert.
-	if err := Save(nil, rec); !errors.Is(err, ErrImmutableModelUpdate) {
+	if err := Save(context.Background(), nil, rec); !errors.Is(err, ErrImmutableModelUpdate) {
 		t.Errorf("re-Save via Created pointer error = %v, want ErrImmutableModelUpdate", err)
 	}
 }
@@ -264,7 +248,7 @@ func TestImmutableModel_RespectsCallerCreatedAt(t *testing.T) {
 	preset := time.Date(2019, 11, 5, 9, 30, 0, 0, time.UTC)
 	r1 := &AuditLog{Action: "user.import", Subject: "legacy"}
 	r1.CreatedAt = preset
-	if err := Save(nil, r1); err != nil {
+	if err := Save(context.Background(), nil, r1); err != nil {
 		t.Fatalf("Save with preset CreatedAt: %v", err)
 	}
 	if !r1.CreatedAt.Equal(preset) {
@@ -281,7 +265,7 @@ func TestImmutableModel_RespectsCallerCreatedAt(t *testing.T) {
 
 	r2 := &AuditLog{Action: "user.create", Subject: "alice"}
 	before := time.Now()
-	if err := Save(nil, r2); err != nil {
+	if err := Save(context.Background(), nil, r2); err != nil {
 		t.Fatalf("Save with zero CreatedAt: %v", err)
 	}
 	after := time.Now()
@@ -308,7 +292,7 @@ func TestImmutableUUIDModel_RespectsCallerCreatedAt(t *testing.T) {
 	preset := time.Date(2018, 4, 1, 0, 0, 0, 0, time.UTC)
 	r1 := &AuditLogUUID{Action: "system.boot"}
 	r1.CreatedAt = preset
-	if err := Save(nil, r1); err != nil {
+	if err := Save(context.Background(), nil, r1); err != nil {
 		t.Fatalf("Save with preset CreatedAt: %v", err)
 	}
 	if !r1.CreatedAt.Equal(preset) {
@@ -325,7 +309,7 @@ func TestImmutableUUIDModel_RespectsCallerCreatedAt(t *testing.T) {
 
 	r2 := &AuditLogUUID{Action: "system.shutdown"}
 	before := time.Now()
-	if err := Save(nil, r2); err != nil {
+	if err := Save(context.Background(), nil, r2); err != nil {
 		t.Fatalf("Save with zero CreatedAt: %v", err)
 	}
 	after := time.Now()

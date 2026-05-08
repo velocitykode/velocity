@@ -1,6 +1,8 @@
 package orm
 
 import (
+	"context"
+
 	"github.com/velocitykode/velocity/orm/drivers"
 )
 
@@ -48,21 +50,24 @@ func (p *PaginatedResult[T]) Items() any {
 // Paginate executes the query with pagination, returning a PaginatedResult
 // containing the items for the requested page and pagination metadata.
 // Page numbers start at 1. If page < 1, it defaults to 1.
-// If perPage < 1, it defaults to 15.
-func (q *Query[T]) Paginate(page, perPage int) (*PaginatedResult[T], error) {
+// If perPage < 1, it defaults to 15. Takes ctx as the first argument
+// so reads participate in the caller's transaction when ctx carries a
+// *sql.Tx.
+func (q *Query[T]) Paginate(ctx context.Context, page, perPage int) (*PaginatedResult[T], error) {
 	if page < 1 {
 		page = 1
 	}
 	if perPage < 1 {
 		perPage = 15
 	}
+	q.bindTxFromContextValue(ctx)
 
 	// Apply global scopes once on q so the count and data queries use
 	// identical conditions. The countQ inherits globalScopesApplied=true
 	// so Count() does not re-apply (which would duplicate predicates).
 	// This is safe because Paginate is a terminal method, the query is
 	// not reused afterward.
-	q.applyGlobalScopes()
+	q.applyGlobalScopes(ctx)
 
 	// Copy conditions for the count query so Count()'s column mutation
 	// does not affect the data query.
@@ -78,11 +83,10 @@ func (q *Query[T]) Paginate(page, perPage int) (*PaginatedResult[T], error) {
 		having:              q.having,
 		distinct:            q.distinct,
 		columns:             []string{"*"},
-		ctx:                 q.ctx,
 		globalScopesApplied: true,
 	}
 
-	total, err := countQ.Count()
+	total, err := countQ.Count(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +100,7 @@ func (q *Query[T]) Paginate(page, perPage int) (*PaginatedResult[T], error) {
 	offset := (page - 1) * perPage
 	q.Limit(perPage).Offset(offset)
 
-	items, err := q.Get()
+	items, err := q.Get(ctx)
 	if err != nil {
 		return nil, err
 	}

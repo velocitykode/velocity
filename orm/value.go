@@ -1,6 +1,7 @@
 package orm
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -10,11 +11,13 @@ import (
 )
 
 // Value retrieves a single column value from the first matching record.
-// Returns ErrNotFound if no record matches.
-func (q *Query[T]) Value(column string) (any, error) {
+// Returns ErrNotFound if no record matches. Takes ctx as the first
+// argument.
+func (q *Query[T]) Value(ctx context.Context, column string) (any, error) {
 	if err := validateIdentifier(column); err != nil {
 		return nil, fmt.Errorf("velocity/orm: value: %w", err)
 	}
+	q.bindTxFromContextValue(ctx)
 
 	q.columns = []string{column}
 	one := 1
@@ -35,8 +38,8 @@ func (q *Query[T]) Value(column string) (any, error) {
 
 	start := time.Now()
 	var result any
-	err := q.driver.QueryRowContext(q.getContext(), sqlStr, args...).Scan(&result)
-	dispatchQueryExecuted(q.getContext(), sqlStr, args, time.Since(start), 1, q.driver.DriverName(), 2)
+	err := q.driver.QueryRowContext(ctx, sqlStr, args...).Scan(&result)
+	dispatchQueryExecuted(ctx, sqlStr, args, time.Since(start), 1, q.driver.DriverName(), 2)
 
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

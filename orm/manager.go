@@ -33,11 +33,20 @@ type ManagerConfig struct {
 // Database is the interface satisfied by *Manager. It covers the methods used
 // through app.Services and router.Context for query execution, transactions,
 // connection management, and event wiring.
+//
+// Transaction takes a closure that receives the per-tx context. The
+// returned ctx carries a *sql.Tx that any ORM terminal which observes
+// it (every read and write entry point takes ctx as its first
+// positional argument) automatically participates in. There is no
+// per-call WithTx decoration; mixing tx-aware and tx-unaware writes
+// inside a single closure is impossible without the caller explicitly
+// opting out by passing a non-tx ctx. Callers who need the raw
+// *sql.Tx (e.g. for SAVEPOINT issuance) extract it via TxFromContext.
 type Database interface {
 	DB() *sql.DB
 	Raw(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 	Exec(ctx context.Context, query string, args ...any) (sql.Result, error)
-	Transaction(ctx context.Context, fn func(tx *sql.Tx) error) error
+	Transaction(ctx context.Context, fn func(ctx context.Context) error) error
 	Begin(ctx context.Context) (*sql.Tx, error)
 	Shutdown(ctx context.Context) error
 	Ping() error
@@ -210,16 +219,54 @@ func (m *Manager) Exec(ctx context.Context, query string, args ...any) (sql.Resu
 	return m.defaultDriver.ExecContext(ctx, query, args...)
 }
 
-// Transaction executes a function within a database transaction.
+// Transaction executes fn inside a database transaction with the
+// per-tx context propagated to the closure.
 //
-// A per-transaction events.BufferedDispatcher is attached to the ctx
-// passed into fn so callers can record domain events via
+// The ctx passed into fn carries a *sql.Tx that any ORM terminal which
+// observes it (every read and write entry point on Query[T] and
+// Model[T]/UUIDModel[T]/etc takes ctx as its first positional argument)
+// automatically participates in. There is no per-call WithTx
+// decoration; mixing tx-aware and tx-unaware ORM writes inside a
+// single closure is impossible without the caller explicitly opting
+// out by passing a non-tx ctx.
+//
+// Example:
+//
+//	err := m.Transaction(ctx, func(ctx context.Context) error {
+//	    if _, err := (User{}).Create(ctx, map[string]any{
+//	        "name": "alice",
+//	    }); err != nil {
+//	        return err
+//	    }
+//	    return Save(ctx, nil, &Audit{Message: "created"})
+//	})
+//
+// Callers who need raw *sql.Tx access (e.g. for SAVEPOINT issuance,
+// or to integrate non-ORM SQL helpers) extract it inside the closure
+// via TxFromContext(ctx).
+//
+// Lifecycle:
+//   - fn returning a non-nil error rolls back and returns the error.
+//   - fn panicking rolls back and re-panics; rollback failures are
+//     logged and surfaced via TxRecover events.
+//   - fn returning nil commits and flushes any per-tx event buffer.
+//
+// A per-transaction events.BufferedDispatcher is installed on the
+// incoming ctx so callers can record domain events via
 // events.Buffer(ctx).Dispatch(...) and have them fire only on commit.
-// Rollback (whether triggered by fn returning an error, or a panic)
-// drops the buffered events. Nested Transaction calls reuse the
-// outermost buffer (savepoint semantics): inner rollback drops only
-// events emitted within the inner scope, outer commit flushes the rest.
-func (m *Manager) Transaction(ctx context.Context, fn func(tx *sql.Tx) error) error {
+// Nested Transaction calls reuse the outermost buffer (savepoint
+// semantics): inner rollback drops only events emitted within the
+// inner scope, outer commit flushes the rest.
+//
+// Concurrency: *sql.Tx is single-threaded by stdlib contract; the ctx
+// (and any chain rooted in it) must be used from the goroutine that
+// owns the tx. Fanout inside fn must serialize back to one goroutine
+// before touching tx-aware ORM helpers.
+func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) error) error {
+	if fn == nil {
+		return nil
+	}
+
 	m.mu.RLock()
 	driver := m.defaultDriver
 	logger := m.logger
@@ -240,8 +287,8 @@ func (m *Manager) Transaction(ctx context.Context, fn func(tx *sql.Tx) error) er
 	// events that fire only on commit. The buffer slot is reachable from
 	// the caller's incoming ctx when events.PrepareBuffer(ctx) was used
 	// to create it, so events.Buffer(ctx) inside fn finds it without
-	// requiring fn to receive a derived ctx (the fn signature stays the
-	// same). Nested Transaction calls reuse the outermost buffer (see
+	// requiring fn to receive a derived ctx for that purpose. Nested
+	// Transaction calls reuse the outermost buffer (see
 	// events.InstallBuffer for nested savepoint semantics).
 	//
 	// The flush callback routes each entry through the dispatcher method
@@ -255,6 +302,12 @@ func (m *Manager) Transaction(ctx context.Context, fn func(tx *sql.Tx) error) er
 		return flushBufferedEntry(entry, bus, rawDispatcher)
 	})
 	defer releaseBuffer()
+
+	// Derive the per-tx ctx that fn receives. Calls inside fn that
+	// observe this ctx (by passing it as the first positional arg to
+	// any ORM terminal) auto-enroll in tx through
+	// Query[T].bindTxFromContextValue.
+	txCtx := WithTxContext(ctx, tx)
 
 	defer func() {
 		if p := recover(); p != nil {
@@ -276,7 +329,7 @@ func (m *Manager) Transaction(ctx context.Context, fn func(tx *sql.Tx) error) er
 		}
 	}()
 
-	if err := fn(tx); err != nil {
+	if err := fn(txCtx); err != nil {
 		buffer.Drop()
 		if rbErr := tx.Rollback(); rbErr != nil {
 			if logger != nil {
@@ -296,74 +349,6 @@ func (m *Manager) Transaction(ctx context.Context, fn func(tx *sql.Tx) error) er
 		return cmErr
 	}
 	return buffer.Flush()
-}
-
-// WithTx returns a Manager whose default driver routes data-plane ops
-// (Save/Update/Delete and Query reads) through tx instead of the
-// connection pool. Use this inside a Transaction closure so ORM writes
-// participate in the caller's transaction:
-//
-//	m.Transaction(ctx, func(tx *sql.Tx) error {
-//	    txm := m.WithTx(tx)
-//	    return orm.Save(txm, &user)
-//	})
-//
-// Or chain off a model to keep the call site terse:
-//
-//	User{}.WithTx(tx).Create(map[string]any{...})
-//
-// The returned Manager shares connections, dispatchers, and logger with
-// the receiver so events fired during the tx still flow through the
-// configured sinks. Schema and connection-management calls on the
-// returned Manager fall back to the wrapped driver, except BeginTx,
-// Close, and DB which are disabled on the tx-bound driver:
-//   - BeginTx: nesting a transaction is a savepoint; issue SAVEPOINT
-//     on the underlying *sql.Tx directly.
-//   - Close: would tear down the parent pool that other goroutines
-//     still depend on.
-//   - DB: returning the parent pool would let callers silently bypass
-//     the bound transaction.
-//
-// Concurrency: *sql.Tx is single-threaded by stdlib contract, and this
-// wrapper adds no guard. All ORM calls made via the returned Manager
-// (or via Model[T].WithTx / Query[T].WithTx) must originate from the
-// same goroutine that owns the transaction. Fanout inside the
-// Transaction closure must serialize back to one goroutine before
-// touching tx-bound helpers.
-//
-// Snapshot semantics: the returned Manager captures a snapshot of the
-// receiver's drivers, dispatchers, and logger at call time. Subsequent
-// AddConnection / SetEventDispatcher / SetTxEventBus / SetLogger calls
-// on the parent are not observed by the child. Tx scopes are
-// short-lived in practice, so this matches the expected lifecycle;
-// callers who need late binding should derive WithTx after the parent
-// is fully configured.
-func (m *Manager) WithTx(tx *sql.Tx) *Manager {
-	m.mu.RLock()
-	defaultDriver := m.defaultDriver
-	connections := m.connections
-	defaultName := m.defaultName
-	databaseName := m.databaseName
-	eventDispatcher := m.eventDispatcher
-	rawEventDispatcher := m.rawEventDispatcher
-	bus := m.txEventBus
-	logger := m.logger
-	m.mu.RUnlock()
-
-	if defaultDriver == nil || tx == nil {
-		return m
-	}
-
-	return &Manager{
-		defaultDriver:      &txDriver{Driver: defaultDriver, tx: tx},
-		connections:        connections,
-		defaultName:        defaultName,
-		databaseName:       databaseName,
-		eventDispatcher:    eventDispatcher,
-		rawEventDispatcher: rawEventDispatcher,
-		txEventBus:         bus,
-		logger:             logger,
-	}
 }
 
 // Begin starts a new transaction.

@@ -120,9 +120,6 @@ type Query[T any] struct {
 	// when one terminal delegates to another (e.g. First -> Get).
 	globalScopesApplied bool
 
-	// Context for event propagation
-	ctx context.Context
-
 	// Deferred error state. Chain builders capture the first validation
 	// error here; terminal methods (Get, First, Count, Update, Delete, …)
 	// return it before issuing any SQL.
@@ -297,7 +294,6 @@ func (q *Query[T]) Clone() *Query[T] {
 		hasSoftDelete:       q.hasSoftDelete,
 		hasUpdatedAt:        q.hasUpdatedAt,
 		globalScopesApplied: q.globalScopesApplied,
-		ctx:                 q.ctx,
 		err:                 q.err,
 		lastSQL:             q.lastSQL,
 	}
@@ -743,129 +739,90 @@ func (q *Query[T]) SkipLocked() *Query[T] {
 	return q
 }
 
-// WithTx binds the query to a *sql.Tx so subsequent reads and writes
-// (Get, First, Update, Delete, InsertGetId, Save, Create, CreateMany,
-// FirstOrCreate, UpdateOrCreate) execute on the supplied transaction
-// instead of the connection pool. Use this inside a Manager.Transaction
-// closure so ORM helpers participate in the caller's tx instead of
-// escaping it.
-//
-// The wrapped driver still supplies dialect grammar, driver name, and
-// schema introspection; only data-plane ops route through the tx.
-// Passing nil leaves the query unchanged so callers can chain WithTx
-// unconditionally without nil-guarding at every call site.
-//
-// Concurrency: *sql.Tx is single-threaded by stdlib contract; the
-// returned Query and any handle derived from it (Where, OrderBy, ...)
-// must be used from the same goroutine that owns the transaction.
-// Fanout inside the Transaction closure must serialize back to one
-// goroutine before calling tx-bound helpers.
-//
-// Re-binding: a second WithTx call on a chain that is already
-// tx-bound rebinds against the original pool driver instead of
-// stacking another wrapper, so middleware that defensively re-applies
-// WithTx is safe.
-func (q *Query[T]) WithTx(tx *sql.Tx) *Query[T] {
-	if tx == nil {
-		return q
-	}
-	base := q.driver
-	if base == nil {
-		if m := Default(); m != nil {
-			base = m.DefaultDriver()
-		}
-	}
-	if base == nil {
-		return q
-	}
-	// If the chain is already tx-bound (an earlier WithTx call),
-	// rebind to the new tx against the original pool driver instead of
-	// nesting txDriver wrappers. Stacking would still resolve to the
-	// outer tx but leaves the inner Driver methods double-shadowed,
-	// which is harder to reason about.
-	if outer, ok := base.(*txDriver); ok {
-		base = outer.Driver
-	}
-	q.driver = &txDriver{Driver: base, tx: tx}
-	return q
-}
-
-// Save persists model through the query's bound driver. Unlike the
-// package-level Save, which resolves the driver from a *Manager, this
-// method uses q.driver so a tx-bound query (via WithTx) writes inside
-// the caller's transaction. Hooks (BeforeCreate/AfterCreate/...) and
-// timestamp stamping fire identically to Save.
-func (q *Query[T]) Save(model *T) error {
+// Save persists model through the query's bound driver. Takes ctx as
+// the first argument so transaction enrollment is mandatory and
+// explicit: passing a ctx returned by Manager.Transaction routes the
+// write inside the caller's transaction; passing context.Background()
+// uses the pool driver. There is no "forget the ctx and silently
+// auto-commit" code path. Hooks (BeforeCreate/AfterCreate/...) and
+// timestamp stamping fire identically to the package-level Save.
+func (q *Query[T]) Save(ctx context.Context, model *T) error {
 	if q.err != nil {
 		return q.err
 	}
+	q.bindTxFromContextValue(ctx)
 	if q.driver == nil {
 		return errors.New("orm: no database connection")
 	}
-	return saveWithDriver(q.driver, model)
+	return saveWithDriver(ctx, q.driver, model)
 }
 
-// CreateMany inserts multiple records through the query's bound driver
-// so a tx-bound query (via WithTx) writes the entire batch inside the
-// caller's transaction. The static-like Model[T].CreateMany helpers
-// still resolve the default manager and auto-commit; this method is
-// the tx-aware counterpart used by outbox emitters and saga steps.
+// CreateMany inserts multiple records through the query's bound
+// driver. Takes ctx as the first argument: a ctx returned by
+// Manager.Transaction enrolls the entire batch in the caller's
+// transaction; context.Background() routes through the pool.
 //
 // Iteration is sequential: the first error short-circuits and any
 // preceding rows are part of the in-flight tx, so the caller's
 // Transaction closure can return the error to roll back the partial
 // batch.
-func (q *Query[T]) CreateMany(records []T) error {
+func (q *Query[T]) CreateMany(ctx context.Context, records []T) error {
 	if q.err != nil {
 		return q.err
 	}
+	q.bindTxFromContextValue(ctx)
 	if q.driver == nil {
 		return errors.New("orm: no database connection")
 	}
 	for i := range records {
-		if err := saveWithDriver(q.driver, &records[i]); err != nil {
+		if err := saveWithDriver(ctx, q.driver, &records[i]); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// FirstOrCreate routes through the query's bound driver so the
-// "find-or-insert" pattern participates in a tx bound via WithTx.
-// Mirrors Model[T].FirstOrCreate semantics; arguments and merging
-// behavior are identical.
-func (q *Query[T]) FirstOrCreate(conditions map[string]any, values map[string]any) (*T, error) {
+// FirstOrCreate runs the find-or-insert pattern through the query's
+// bound driver. Takes ctx as the first argument: a ctx returned by
+// Manager.Transaction enrolls the lookup and the write in the caller's
+// transaction. Mirrors Model[T].FirstOrCreate semantics; arguments and
+// merging behavior are identical.
+func (q *Query[T]) FirstOrCreate(ctx context.Context, conditions map[string]any, values map[string]any) (*T, error) {
 	if q.err != nil {
 		return nil, q.err
 	}
+	q.bindTxFromContextValue(ctx)
 	if q.driver == nil {
 		return nil, errors.New("orm: no database connection")
 	}
-	return firstOrCreateWithDriver[T](q.driver, conditions, values)
+	return firstOrCreateWithDriver[T](ctx, q.driver, conditions, values)
 }
 
-// UpdateOrCreate routes through the query's bound driver so the
-// "idempotency-then-write" pattern (the canonical motivating case for
-// tx-aware ORM helpers) participates in a tx bound via WithTx. Mirrors
-// Model[T].UpdateOrCreate semantics.
-func (q *Query[T]) UpdateOrCreate(conditions map[string]any, values map[string]any) (*T, error) {
+// UpdateOrCreate runs the idempotency-then-write pattern through the
+// query's bound driver. Takes ctx as the first argument: a ctx returned
+// by Manager.Transaction enrolls the lookup, the update branch, and the
+// insert branch in the caller's transaction.
+func (q *Query[T]) UpdateOrCreate(ctx context.Context, conditions map[string]any, values map[string]any) (*T, error) {
 	if q.err != nil {
 		return nil, q.err
 	}
+	q.bindTxFromContextValue(ctx)
 	if q.driver == nil {
 		return nil, errors.New("orm: no database connection")
 	}
-	return updateOrCreateWithDriver[T](q.driver, conditions, values)
+	return updateOrCreateWithDriver[T](ctx, q.driver, conditions, values)
 }
 
-// Create inserts a new record through the query's bound driver,
-// mirroring Model[T].Create but routing through q.driver so the write
-// participates in a tx bound via WithTx. Accepts a map[string]any for
-// fillable assignment or a *T already populated by the caller.
-func (q *Query[T]) Create(data any) (*T, error) {
+// Create inserts a new record through the query's bound driver. Takes
+// ctx as the first argument: a ctx returned by Manager.Transaction
+// enrolls the write in the caller's transaction. Accepts a
+// map[string]any for fillable assignment or a *T already populated by
+// the caller.
+func (q *Query[T]) Create(ctx context.Context, data any) (*T, error) {
 	if q.err != nil {
 		return nil, q.err
 	}
+	q.bindTxFromContextValue(ctx)
 	if q.driver == nil {
 		return nil, errors.New("orm: no database connection")
 	}
@@ -875,7 +832,7 @@ func (q *Query[T]) Create(data any) (*T, error) {
 		if err := mapToStruct(v, model); err != nil {
 			return nil, err
 		}
-		if err := saveWithDriver(q.driver, model); err != nil {
+		if err := saveWithDriver(ctx, q.driver, model); err != nil {
 			return nil, err
 		}
 		return model, nil
@@ -886,7 +843,7 @@ func (q *Query[T]) Create(data any) (*T, error) {
 		if err := applyFillableToStruct(v); err != nil {
 			return nil, err
 		}
-		if err := saveWithDriver(q.driver, v); err != nil {
+		if err := saveWithDriver(ctx, q.driver, v); err != nil {
 			return nil, err
 		}
 		return v, nil
@@ -895,18 +852,65 @@ func (q *Query[T]) Create(data any) (*T, error) {
 	}
 }
 
-// WithContext sets the context for the query (for event propagation).
-func (q *Query[T]) WithContext(ctx context.Context) *Query[T] {
-	q.ctx = ctx
-	return q
-}
-
-// getContext returns the query context, or a background context if none set
-func (q *Query[T]) getContext() context.Context {
-	if q.ctx != nil {
-		return q.ctx
+// bindTxFromContextValue is the single binding chokepoint used by
+// every read and write terminal on Query[T]. Each terminal funnels
+// through this helper using its explicit ctx argument so:
+//
+//   - A ctx carrying a *sql.Tx (typically from Manager.Transaction)
+//     enrolls the call in the caller's transaction.
+//   - A plain ctx (e.g. context.Background()) routes the call through
+//     the pool driver. If the chain was previously bound to a tx, the
+//     wrapper is unwrapped so the explicit opt-out path is honored.
+//
+// Forgetting to pass ctx to a terminal is a compile error because ctx
+// is a required positional argument; there is no silent
+// auto-commit-outside-tx code path and no out-of-band chain ctx.
+//
+// Re-binding rules:
+//   - q.driver already wraps the same tx: no-op.
+//   - q.driver wraps a different tx: rebind against the original
+//     pool driver instead of stacking another wrapper, so a nested
+//     Transaction whose ctx carries a different tx switches cleanly.
+//   - q.driver is the pool driver and ctx has a tx: wrap it.
+//
+// Concurrency: q.driver is mutated in place. *sql.Tx is single-threaded
+// by stdlib contract, so callers who fan out a tx-bound query across
+// goroutines were already broken; this helper does not change that.
+func (q *Query[T]) bindTxFromContextValue(ctx context.Context) {
+	if q == nil {
+		return
 	}
-	return context.Background()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	tx, ok := TxFromContext(ctx)
+	if !ok {
+		// No tx in ctx: unwrap any prior tx binding so the call hits
+		// the pool driver. This implements the explicit opt-out
+		// pattern: pass a non-tx ctx (the original ctx captured before
+		// Manager.Transaction) and the call escapes the auto-enrolled
+		// tx.
+		if outer, isTx := q.driver.(*txDriver); isTx {
+			q.driver = outer.Driver
+		}
+		return
+	}
+	base := q.driver
+	if outer, isTx := base.(*txDriver); isTx {
+		if outer.tx == tx {
+			return
+		}
+		base = outer.Driver
+	}
+	if base == nil {
+		if m := Default(); m != nil {
+			base = m.DefaultDriver()
+		}
+	}
+	if base == nil {
+		return
+	}
+	q.driver = &txDriver{Driver: base, tx: tx}
 }
 
 // Execution methods
@@ -920,16 +924,26 @@ func (q *Query[T]) getContext() context.Context {
 // Idempotency: applyGlobalScopes guards against double-apply, so an
 // outer terminal that delegates to an inner terminal (Exists -> Count,
 // First -> Get) is safe to call this method.
-func (q *Query[T]) applySoftDeleteScope() {
-	q.applyGlobalScopes()
+//
+// Tx auto-enrollment: every read and write terminal calls
+// bindTxFromContextValue with its explicit ctx argument before this
+// helper, so the driver in scope already reflects ctx by the time
+// global scopes apply. ctx is forwarded to each scope so consumer-set
+// scopes can read request-scoped values from it.
+func (q *Query[T]) applySoftDeleteScope(ctx context.Context) {
+	q.applyGlobalScopes(ctx)
 }
 
-// Get retrieves all matching records
-func (q *Query[T]) Get() ([]T, error) {
+// Get retrieves all matching records. Takes ctx as the first argument
+// so reads participate in the caller's transaction when ctx carries a
+// *sql.Tx, mirroring the explicit-ctx contract of every write
+// terminal. context.Background() routes through the pool driver.
+func (q *Query[T]) Get(ctx context.Context) ([]T, error) {
 	if q.err != nil {
 		return nil, q.err
 	}
-	q.applySoftDeleteScope()
+	q.bindTxFromContextValue(ctx)
+	q.applySoftDeleteScope(ctx)
 
 	// Build SELECT query
 	selectQuery := &drivers.SelectQuery{
@@ -954,7 +968,7 @@ func (q *Query[T]) Get() ([]T, error) {
 	// Track query timing
 	start := time.Now()
 
-	rows, err := q.driver.QueryContext(q.getContext(), sql, args...)
+	rows, err := q.driver.QueryContext(ctx, sql, args...)
 
 	// Dispatch event regardless of error
 	duration := time.Since(start)
@@ -964,7 +978,7 @@ func (q *Query[T]) Get() ([]T, error) {
 	}
 
 	if err != nil {
-		dispatchQueryExecuted(q.getContext(), sql, args, duration, 0, q.driver.DriverName(), 2)
+		dispatchQueryExecuted(ctx, sql, args, duration, 0, q.driver.DriverName(), 2)
 		return nil, err
 	}
 	defer rows.Close()
@@ -973,7 +987,7 @@ func (q *Query[T]) Get() ([]T, error) {
 	for rows.Next() {
 		var model T
 		if err := scanIntoStruct(rows, &model); err != nil {
-			dispatchQueryExecuted(q.getContext(), sql, args, duration, int64(len(results)), q.driver.DriverName(), 2)
+			dispatchQueryExecuted(ctx, sql, args, duration, int64(len(results)), q.driver.DriverName(), 2)
 			return nil, err
 		}
 
@@ -989,11 +1003,11 @@ func (q *Query[T]) Get() ([]T, error) {
 	}
 
 	rowCount = int64(len(results))
-	dispatchQueryExecuted(q.getContext(), sql, args, time.Since(start), rowCount, q.driver.DriverName(), 2)
+	dispatchQueryExecuted(ctx, sql, args, time.Since(start), rowCount, q.driver.DriverName(), 2)
 
 	// Handle eager loading
 	if len(q.preloads) > 0 {
-		if err := q.loadRelations(&results); err != nil {
+		if err := q.loadRelations(ctx, &results); err != nil {
 			return nil, err
 		}
 	}
@@ -1001,10 +1015,12 @@ func (q *Query[T]) Get() ([]T, error) {
 	return results, nil
 }
 
-// First retrieves the first matching record
-func (q *Query[T]) First(dest *T) error {
+// First retrieves the first matching record. Takes ctx as the first
+// argument so reads participate in the caller's transaction when ctx
+// carries a *sql.Tx.
+func (q *Query[T]) First(ctx context.Context, dest *T) error {
 	q.Limit(1)
-	results, err := q.Get()
+	results, err := q.Get(ctx)
 	if err != nil {
 		return err
 	}
@@ -1015,17 +1031,21 @@ func (q *Query[T]) First(dest *T) error {
 	return nil
 }
 
-// Find retrieves a record by primary key
-func (q *Query[T]) Find(id any, dest *T) error {
-	return q.Where("id = ?", id).First(dest)
+// Find retrieves a record by primary key. Takes ctx as the first
+// argument so reads participate in the caller's transaction when ctx
+// carries a *sql.Tx.
+func (q *Query[T]) Find(ctx context.Context, id any, dest *T) error {
+	return q.Where("id = ?", id).First(ctx, dest)
 }
 
-// Count returns the number of matching records
-func (q *Query[T]) Count() (int, error) {
+// Count returns the number of matching records. Takes ctx as the first
+// argument.
+func (q *Query[T]) Count(ctx context.Context) (int, error) {
 	if q.err != nil {
 		return 0, q.err
 	}
-	q.applySoftDeleteScope()
+	q.bindTxFromContextValue(ctx)
+	q.applySoftDeleteScope(ctx)
 	q.columns = []string{"COUNT(*) as count"}
 
 	selectQuery := &drivers.SelectQuery{
@@ -1040,27 +1060,29 @@ func (q *Query[T]) Count() (int, error) {
 
 	start := time.Now()
 	var count int64
-	err := q.driver.QueryRowContext(q.getContext(), sql, args...).Scan(&count)
-	dispatchQueryExecuted(q.getContext(), sql, args, time.Since(start), 1, q.driver.DriverName(), 2)
+	err := q.driver.QueryRowContext(ctx, sql, args...).Scan(&count)
+	dispatchQueryExecuted(ctx, sql, args, time.Since(start), 1, q.driver.DriverName(), 2)
 
 	return int(count), err
 }
 
-// Exists checks if any records match
-func (q *Query[T]) Exists() bool {
-	count, _ := q.Count()
+// Exists checks if any records match. Takes ctx as the first argument.
+func (q *Query[T]) Exists(ctx context.Context) bool {
+	count, _ := q.Count(ctx)
 	return count > 0
 }
 
-// Pluck retrieves values of a single column
-func (q *Query[T]) Pluck(column string) ([]any, error) {
+// Pluck retrieves values of a single column. Takes ctx as the first
+// argument.
+func (q *Query[T]) Pluck(ctx context.Context, column string) ([]any, error) {
 	if err := validateIdentifier(column); err != nil {
 		q.setErr("Pluck", err)
 	}
 	if q.err != nil {
 		return nil, q.err
 	}
-	q.applySoftDeleteScope()
+	q.bindTxFromContextValue(ctx)
+	q.applySoftDeleteScope(ctx)
 	q.Select(column)
 
 	selectQuery := &drivers.SelectQuery{
@@ -1079,9 +1101,9 @@ func (q *Query[T]) Pluck(column string) ([]any, error) {
 	q.lastArgs = args
 
 	start := time.Now()
-	rows, err := q.driver.QueryContext(q.getContext(), sql, args...)
+	rows, err := q.driver.QueryContext(ctx, sql, args...)
 	if err != nil {
-		dispatchQueryExecuted(q.getContext(), sql, args, time.Since(start), 0, q.driver.DriverName(), 2)
+		dispatchQueryExecuted(ctx, sql, args, time.Since(start), 0, q.driver.DriverName(), 2)
 		return nil, err
 	}
 	defer rows.Close()
@@ -1090,36 +1112,40 @@ func (q *Query[T]) Pluck(column string) ([]any, error) {
 	for rows.Next() {
 		var value any
 		if err := rows.Scan(&value); err != nil {
-			dispatchQueryExecuted(q.getContext(), sql, args, time.Since(start), int64(len(results)), q.driver.DriverName(), 2)
+			dispatchQueryExecuted(ctx, sql, args, time.Since(start), int64(len(results)), q.driver.DriverName(), 2)
 			return nil, err
 		}
 		results = append(results, value)
 	}
 
-	dispatchQueryExecuted(q.getContext(), sql, args, time.Since(start), int64(len(results)), q.driver.DriverName(), 2)
+	dispatchQueryExecuted(ctx, sql, args, time.Since(start), int64(len(results)), q.driver.DriverName(), 2)
 	return results, nil
 }
 
-// Update updates matching records.
+// Update updates matching records. Takes ctx as the first argument so
+// transaction enrollment is mandatory and explicit: passing a ctx
+// returned by Manager.Transaction enrolls the UPDATE in the caller's
+// transaction; context.Background() routes through the pool.
 //
 // The input map is never mutated: Update copies it internally before
 // injecting the updated_at timestamp. Values of type [RawSQL] (including
 // the package-level [NOW] sentinel) are emitted verbatim into the
 // generated statement; all other values, including plain string values
 // that happen to look like SQL, are bound as parameters.
-func (q *Query[T]) Update(updates map[string]any) (int64, error) {
+func (q *Query[T]) Update(ctx context.Context, updates map[string]any) (int64, error) {
 	if q.err != nil {
 		return 0, q.err
 	}
 	if len(updates) == 0 {
 		return 0, errors.New("no updates provided")
 	}
+	q.bindTxFromContextValue(ctx)
 	// Soft-delete scope: an Update on a soft-deletable model must not touch
 	// already-trashed rows unless the caller explicitly opted in via
 	// WithTrashed / OnlyTrashed. Delete delegates here for the soft-delete
 	// path, so the same predicate also prevents double-stamping deleted_at
 	// on already-trashed rows.
-	q.applySoftDeleteScope()
+	q.applyGlobalScopes(ctx)
 
 	// Copy the caller's map before mutation. Update must not have
 	// visible side effects on the passed-in map (thread safety, idempotent
@@ -1147,25 +1173,28 @@ func (q *Query[T]) Update(updates map[string]any) (int64, error) {
 	q.lastArgs = args
 
 	start := time.Now()
-	result, err := q.driver.ExecContext(q.getContext(), sql, args...)
+	result, err := q.driver.ExecContext(ctx, sql, args...)
 	duration := time.Since(start)
 
 	if err != nil {
-		dispatchQueryExecuted(q.getContext(), sql, args, duration, 0, q.driver.DriverName(), 2)
+		dispatchQueryExecuted(ctx, sql, args, duration, 0, q.driver.DriverName(), 2)
 		return 0, err
 	}
 
 	rowsAffected, _ := result.RowsAffected()
-	dispatchQueryExecuted(q.getContext(), sql, args, duration, rowsAffected, q.driver.DriverName(), 2)
+	dispatchQueryExecuted(ctx, sql, args, duration, rowsAffected, q.driver.DriverName(), 2)
 
 	return rowsAffected, nil
 }
 
-// InsertGetId inserts a record and returns the ID
-func (q *Query[T]) InsertGetId(data map[string]any) (int64, error) {
+// InsertGetId inserts a record and returns the ID. Takes ctx as the
+// first argument so transaction enrollment is mandatory and explicit;
+// see Query.Save for the rationale.
+func (q *Query[T]) InsertGetId(ctx context.Context, data map[string]any) (int64, error) {
 	if q.err != nil {
 		return 0, q.err
 	}
+	q.bindTxFromContextValue(ctx)
 	if len(data) == 0 {
 		return 0, errors.New("no data provided for insert")
 	}
@@ -1199,16 +1228,16 @@ func (q *Query[T]) InsertGetId(data map[string]any) (int64, error) {
 		)
 
 		start := time.Now()
-		result, err := q.driver.ExecContext(q.getContext(), sql, values...)
+		result, err := q.driver.ExecContext(ctx, sql, values...)
 		duration := time.Since(start)
 
 		if err != nil {
-			dispatchQueryExecuted(q.getContext(), sql, values, duration, 0, driverName, 2)
+			dispatchQueryExecuted(ctx, sql, values, duration, 0, driverName, 2)
 			return 0, err
 		}
 
 		lastID, _ := result.LastInsertId()
-		dispatchQueryExecuted(q.getContext(), sql, values, duration, 1, driverName, 2)
+		dispatchQueryExecuted(ctx, sql, values, duration, 1, driverName, 2)
 		return lastID, nil
 	} else {
 		// PostgreSQL: Use RETURNING id clause
@@ -1221,21 +1250,23 @@ func (q *Query[T]) InsertGetId(data map[string]any) (int64, error) {
 
 		start := time.Now()
 		var lastID int64
-		err := q.driver.QueryRowContext(q.getContext(), sql, values...).Scan(&lastID)
+		err := q.driver.QueryRowContext(ctx, sql, values...).Scan(&lastID)
 		duration := time.Since(start)
 
 		if err != nil {
-			dispatchQueryExecuted(q.getContext(), sql, values, duration, 0, driverName, 2)
+			dispatchQueryExecuted(ctx, sql, values, duration, 0, driverName, 2)
 			return 0, err
 		}
 
-		dispatchQueryExecuted(q.getContext(), sql, values, duration, 1, driverName, 2)
+		dispatchQueryExecuted(ctx, sql, values, duration, 1, driverName, 2)
 		return lastID, nil
 	}
 }
 
-// Delete soft deletes matching records (if model supports soft deletes) or hard deletes
-func (q *Query[T]) Delete() (int64, error) {
+// Delete soft deletes matching records (if model supports soft
+// deletes) or hard deletes. Takes ctx as the first argument so
+// transaction enrollment is mandatory and explicit.
+func (q *Query[T]) Delete(ctx context.Context) (int64, error) {
 	if q.err != nil {
 		return 0, q.err
 	}
@@ -1243,43 +1274,47 @@ func (q *Query[T]) Delete() (int64, error) {
 	if q.hasSoftDelete {
 		// Soft delete, use the driver-appropriate RawSQL sentinel so the
 		// grammar emits it verbatim (not as a bound parameter).
-		return q.Update(map[string]any{
+		// Bind via Update so the same ctx threads through to ExecContext.
+		q.bindTxFromContextValue(ctx)
+		return q.Update(ctx, map[string]any{
 			"deleted_at": currentTimestampSentinel(q.driver.DriverName()),
 		})
 	}
 
 	// Hard delete for models without soft delete support
-	return q.ForceDelete()
+	return q.ForceDelete(ctx)
 }
 
-// ForceDelete permanently deletes matching records
-func (q *Query[T]) ForceDelete() (int64, error) {
+// ForceDelete permanently deletes matching records. Takes ctx as the
+// first argument so transaction enrollment is mandatory and explicit.
+func (q *Query[T]) ForceDelete(ctx context.Context) (int64, error) {
 	if q.err != nil {
 		return 0, q.err
 	}
+	q.bindTxFromContextValue(ctx)
 	sql, args := q.driver.Grammar().CompileDelete(q.table, q.conditions)
 
 	start := time.Now()
-	result, err := q.driver.ExecContext(q.getContext(), sql, args...)
+	result, err := q.driver.ExecContext(ctx, sql, args...)
 	duration := time.Since(start)
 
 	if err != nil {
-		dispatchQueryExecuted(q.getContext(), sql, args, duration, 0, q.driver.DriverName(), 2)
+		dispatchQueryExecuted(ctx, sql, args, duration, 0, q.driver.DriverName(), 2)
 		return 0, err
 	}
 
 	rowsAffected, _ := result.RowsAffected()
-	dispatchQueryExecuted(q.getContext(), sql, args, duration, rowsAffected, q.driver.DriverName(), 2)
+	dispatchQueryExecuted(ctx, sql, args, duration, rowsAffected, q.driver.DriverName(), 2)
 
 	return rowsAffected, nil
 }
 
-// Chunk processes results in chunks
-func (q *Query[T]) Chunk(size int, callback func([]T) error) error {
+// Chunk processes results in chunks. Takes ctx as the first argument.
+func (q *Query[T]) Chunk(ctx context.Context, size int, callback func([]T) error) error {
 	page := 0
 	for {
 		q.Limit(size).Offset(page * size)
-		results, err := q.Get()
+		results, err := q.Get(ctx)
 		if err != nil {
 			return err
 		}
@@ -1341,132 +1376,94 @@ func getTableName[T any]() string {
 	return strings.ToLower(name) + "s"
 }
 
+// scanIntoStruct hydrates dest from the next row of rows. Resolves columns
+// through the canonical ModelMeta so the read path is symmetric with
+// structToMap (write) and applyFillableToStruct (policy). Before the
+// resolver landed, this path independently parsed tags AND re-applied
+// toSnakeCase to the resolved column name, which mangled `column:LegacyXYZ`
+// into legacy_x_y_z and silently broke read-back of column-tagged fields
+// (the corresponding write path honored the tag verbatim).
+//
+// Polymorphic morph fields are not registered as columns in ModelMeta
+// because they span a (type, id) pair on a single Morph value. They are
+// resolved in a small pre-pass here so a SELECT * can populate the pair.
+//
+// Columns the model doesn't declare are scanned into a throwaway slot so
+// the driver doesn't error on extra columns from joins or wildcards.
 func scanIntoStruct(rows *sql.Rows, dest any) error {
-	// Get column names
 	columns, err := rows.Columns()
 	if err != nil {
 		return err
 	}
 
-	// Create a slice of interface{} to hold the values
-	values := make([]interface{}, len(columns))
-	valuePtrs := make([]interface{}, len(columns))
+	values := make([]any, len(columns))
+	valuePtrs := make([]any, len(columns))
 
-	// Get the type and value of the destination struct
 	destValue := reflect.ValueOf(dest).Elem()
-	destType := destValue.Type()
-
-	// Create a map of column names to field paths (for embedded structs)
-	type fieldInfo struct {
-		path []int
+	if destValue.Kind() != reflect.Struct {
+		// Non-struct destination: send everything to discard slots so
+		// the driver doesn't panic. Callers that need scalar scans use
+		// RawQuery.Scan, not scanIntoStruct, but the guard keeps the
+		// helper honest.
+		for i := range columns {
+			valuePtrs[i] = &values[i]
+		}
+		return rows.Scan(valuePtrs...)
 	}
-	fieldMap := make(map[string]fieldInfo)
 
-	var mapFields func(typ reflect.Type, path []int)
-	mapFields = func(typ reflect.Type, path []int) {
-		for i := 0; i < typ.NumField(); i++ {
-			field := typ.Field(i)
-			currentPath := append(append([]int{}, path...), i)
+	meta := MetaForValue(destValue)
 
-			// Skip unexported fields
-			if !field.IsExported() {
-				continue
-			}
-
-			// Check if this is an embedded struct (but not time.Time)
-			if field.Anonymous && field.Type.Kind() == reflect.Struct && field.Type.String() != "time.Time" {
-				// Recursively map embedded struct fields
-				mapFields(field.Type, currentPath)
-				continue
-			}
-
-			// Skip fields marked with orm:"-" or relation fields
-			tag := field.Tag.Get("orm")
-			if tag == "-" || strings.Contains(tag, "relation:") {
-				continue
-			}
-
-			// Many-to-many fields are virtual (loaded via separate pivot
-			// query); never scanned from the parent SELECT.
-			if extractManyToManyValue(tag) != "" {
-				continue
-			}
-
-			// Polymorphic morph fields span two columns. Map type_col
-			// onto Morph.TypeName and id_col onto Morph.ID so a regular
-			// SELECT can populate the discriminator/id pair.
-			if pv := extractPolymorphicValue(tag); pv != "" {
-				if typeCol, idCol, perr := parsePolymorphicTag(pv); perr == nil {
-					morphType := field.Type
-					if morphType.Kind() == reflect.Struct {
-						if tnf, ok := morphType.FieldByName("TypeName"); ok {
-							fieldMap[typeCol] = fieldInfo{path: append(append([]int{}, currentPath...), tnf.Index...)}
-						}
-						if idf, ok := morphType.FieldByName("ID"); ok {
-							fieldMap[idCol] = fieldInfo{path: append(append([]int{}, currentPath...), idf.Index...)}
-						}
-					}
-				}
-				continue
-			}
-
-			// Get the column name from the struct tag or field name.
-			//
-			// TODO(orm): Unify with fieldColumnName (orm/model.go). This
-			// path diverges in two ways: (1) it re-applies toSnakeCase to
-			// the resolved column name, mangling tags like
-			// orm:"column:LegacyXYZ" into legacy_x_y_z, and (2) it has a
-			// bare `primaryKey` shortcut that the model-side helpers
-			// don't share. Reconciling these requires care because
-			// scanIntoStruct is on the SELECT row-scan hot path and
-			// existing schemas may rely on the snake-case-of-column
-			// behavior. Tracked as a follow-up.
-			columnName := field.Name
-			if tag != "" {
-				// Parse the tag to get column name
-				parts := strings.Split(tag, ";")
-				for _, part := range parts {
-					if strings.HasPrefix(part, "column:") {
-						columnName = strings.TrimPrefix(part, "column:")
-						break
-					}
-					// Special handling for primaryKey tag
-					if part == "primaryKey" {
-						columnName = "id"
-						break
-					}
-				}
-			}
-
-			// Convert to snake_case if needed
-			columnName = toSnakeCase(columnName)
-			fieldMap[columnName] = fieldInfo{path: currentPath}
+	// Polymorphic morph fields contribute two columns (type, id) sourced
+	// from a single Morph struct field. ModelMeta excludes them, so
+	// build a small (column -> path) override map from the top-level
+	// struct fields. Morph values are conventionally declared at the
+	// outer model level, not promoted through embedded bases.
+	morphPaths := map[string][]int{}
+	destType := destValue.Type()
+	for i := 0; i < destType.NumField(); i++ {
+		field := destType.Field(i)
+		tag := field.Tag.Get("orm")
+		pv := extractPolymorphicValue(tag)
+		if pv == "" {
+			continue
+		}
+		typeCol, idCol, perr := parsePolymorphicTag(pv)
+		if perr != nil {
+			continue
+		}
+		morphType := field.Type
+		if morphType.Kind() != reflect.Struct {
+			continue
+		}
+		if tnf, ok := morphType.FieldByName("TypeName"); ok {
+			morphPaths[typeCol] = append(append([]int{}, i), tnf.Index...)
+		}
+		if idf, ok := morphType.FieldByName("ID"); ok {
+			morphPaths[idCol] = append(append([]int{}, i), idf.Index...)
 		}
 	}
 
-	mapFields(destType, []int{})
-
-	// Map columns to struct fields
 	for i, column := range columns {
-		if fieldInfo, ok := fieldMap[column]; ok {
-			// Navigate to the field using the path
-			field := destValue
-			for _, index := range fieldInfo.path {
-				field = field.Field(index)
+		var path []int
+		if mp, ok := morphPaths[column]; ok {
+			path = mp
+		} else if meta != nil {
+			if col, ok := meta.ColumnByName(column); ok {
+				path = col.IndexPath
 			}
-
-			if field.CanSet() {
-				valuePtrs[i] = field.Addr().Interface()
-			} else {
-				valuePtrs[i] = &values[i]
-			}
+		}
+		if path == nil {
+			valuePtrs[i] = &values[i]
+			continue
+		}
+		field := destValue.FieldByIndex(path)
+		if field.CanSet() {
+			valuePtrs[i] = field.Addr().Interface()
 		} else {
-			// Column doesn't map to a field, use a dummy value
 			valuePtrs[i] = &values[i]
 		}
 	}
 
-	// Scan the row
 	return rows.Scan(valuePtrs...)
 }
 
@@ -1562,7 +1559,6 @@ type RawQuery[T any] struct {
 	driver drivers.Driver
 	sql    string
 	args   []any
-	ctx    context.Context
 }
 
 // NewRawQuery creates a new raw query builder.
@@ -1573,6 +1569,13 @@ type RawQuery[T any] struct {
 //
 // WARNING: Soft-delete scopes are NOT applied. See the RawQuery type
 // documentation for details. Use NewRawQuerySoftDeleteOnly to opt in.
+//
+// Tx enrollment: every terminal (First, Get, Scan, Exec) takes ctx as its
+// first positional argument and funnels through bindTxFromContextValue,
+// so a ctx carrying a *sql.Tx (e.g. from Manager.Transaction) routes the
+// raw statement through that tx automatically. Pass a non-tx ctx
+// (typically the original ctx captured before Manager.Transaction) to
+// the terminal to opt out and execute against the pool driver instead.
 func NewRawQuery[T any](sql string, args ...any) *RawQuery[T] {
 	var drv drivers.Driver
 	if m := Default(); m != nil {
@@ -1610,39 +1613,84 @@ func NewRawQuerySoftDeleteOnly[T any](sql string, args ...any) *RawQuery[T] {
 	return NewRawQuery[T](sql, args...)
 }
 
-// WithContext sets the context for the raw query
-func (r *RawQuery[T]) WithContext(ctx context.Context) *RawQuery[T] {
-	r.ctx = ctx
-	return r
-}
-
-// getContext returns the query context, or a background context if none set
-func (r *RawQuery[T]) getContext() context.Context {
-	if r.ctx != nil {
-		return r.ctx
+// bindTxFromContextValue mirrors Query[T].bindTxFromContextValue for the
+// raw-SQL escape hatch. Each RawQuery terminal funnels through this
+// helper using its explicit ctx argument so:
+//
+//   - A ctx carrying a *sql.Tx (typically from Manager.Transaction)
+//     enrolls the raw statement in the caller's transaction.
+//   - A plain ctx (e.g. context.Background() or the caller's pre-tx ctx)
+//     routes the call through the pool driver. If a prior terminal had
+//     bound the chain to a tx, the wrapper is unwrapped so the explicit
+//     opt-out path is honored.
+//
+// Re-binding rules match Query[T]: same tx is a no-op, a different tx
+// rebinds against the original pool driver instead of stacking another
+// wrapper, and a pool driver with a tx in ctx gets wrapped.
+//
+// Concurrency: r.driver is mutated in place. *sql.Tx is single-threaded
+// by stdlib contract, so callers who fan out a tx-bound raw query across
+// goroutines were already broken; this helper does not change that.
+func (r *RawQuery[T]) bindTxFromContextValue(ctx context.Context) {
+	if r == nil {
+		return
 	}
-	return context.Background()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	tx, ok := TxFromContext(ctx)
+	if !ok {
+		if outer, isTx := r.driver.(*txDriver); isTx {
+			r.driver = outer.Driver
+		}
+		return
+	}
+	base := r.driver
+	if outer, isTx := base.(*txDriver); isTx {
+		if outer.tx == tx {
+			return
+		}
+		base = outer.Driver
+	}
+	if base == nil {
+		if m := Default(); m != nil {
+			base = m.DefaultDriver()
+		}
+	}
+	if base == nil {
+		return
+	}
+	r.driver = &txDriver{Driver: base, tx: tx}
 }
 
-// First executes the raw query and scans the first result into dest
-func (r *RawQuery[T]) First(dest *T) error {
+// First executes the raw query and scans the first result into dest.
+// ctx is the first positional argument; pass a tx-bound ctx (e.g. the
+// one received inside Manager.Transaction's closure) to enroll the
+// statement in that tx, or a plain ctx to opt out and route through the
+// pool driver.
+func (r *RawQuery[T]) First(ctx context.Context, dest *T) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	r.bindTxFromContextValue(ctx)
+
 	start := time.Now()
-	rows, err := r.driver.QueryContext(r.getContext(), r.sql, r.args...)
+	rows, err := r.driver.QueryContext(ctx, r.sql, r.args...)
 	duration := time.Since(start)
 
 	if err != nil {
-		dispatchQueryExecuted(r.getContext(), r.sql, r.args, duration, 0, r.driver.DriverName(), 2)
+		dispatchQueryExecuted(ctx, r.sql, r.args, duration, 0, r.driver.DriverName(), 2)
 		return err
 	}
 	defer rows.Close()
 
 	if !rows.Next() {
-		dispatchQueryExecuted(r.getContext(), r.sql, r.args, duration, 0, r.driver.DriverName(), 2)
+		dispatchQueryExecuted(ctx, r.sql, r.args, duration, 0, r.driver.DriverName(), 2)
 		return ErrRecordNotFound
 	}
 
 	if err := scanIntoStruct(rows, dest); err != nil {
-		dispatchQueryExecuted(r.getContext(), r.sql, r.args, duration, 0, r.driver.DriverName(), 2)
+		dispatchQueryExecuted(ctx, r.sql, r.args, duration, 0, r.driver.DriverName(), 2)
 		return err
 	}
 
@@ -1652,18 +1700,24 @@ func (r *RawQuery[T]) First(dest *T) error {
 	// Immutable* (correct, no UPDATE branch exists for them).
 	markExisting(dest)
 
-	dispatchQueryExecuted(r.getContext(), r.sql, r.args, duration, 1, r.driver.DriverName(), 2)
+	dispatchQueryExecuted(ctx, r.sql, r.args, duration, 1, r.driver.DriverName(), 2)
 	return nil
 }
 
-// Get executes the raw query and returns all matching results
-func (r *RawQuery[T]) Get() ([]T, error) {
+// Get executes the raw query and returns all matching results. ctx is
+// the first positional argument; same tx-binding semantics as First.
+func (r *RawQuery[T]) Get(ctx context.Context) ([]T, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	r.bindTxFromContextValue(ctx)
+
 	start := time.Now()
-	rows, err := r.driver.QueryContext(r.getContext(), r.sql, r.args...)
+	rows, err := r.driver.QueryContext(ctx, r.sql, r.args...)
 	duration := time.Since(start)
 
 	if err != nil {
-		dispatchQueryExecuted(r.getContext(), r.sql, r.args, duration, 0, r.driver.DriverName(), 2)
+		dispatchQueryExecuted(ctx, r.sql, r.args, duration, 0, r.driver.DriverName(), 2)
 		return nil, err
 	}
 	defer rows.Close()
@@ -1672,7 +1726,7 @@ func (r *RawQuery[T]) Get() ([]T, error) {
 	for rows.Next() {
 		var model T
 		if err := scanIntoStruct(rows, &model); err != nil {
-			dispatchQueryExecuted(r.getContext(), r.sql, r.args, duration, int64(len(results)), r.driver.DriverName(), 2)
+			dispatchQueryExecuted(ctx, r.sql, r.args, duration, int64(len(results)), r.driver.DriverName(), 2)
 			return nil, err
 		}
 		// Same reasoning as Query[T].Get: mark each scanned row as
@@ -1681,39 +1735,62 @@ func (r *RawQuery[T]) Get() ([]T, error) {
 		results = append(results, model)
 	}
 
-	dispatchQueryExecuted(r.getContext(), r.sql, r.args, duration, int64(len(results)), r.driver.DriverName(), 2)
+	dispatchQueryExecuted(ctx, r.sql, r.args, duration, int64(len(results)), r.driver.DriverName(), 2)
 	return results, nil
 }
 
-// Scan executes the raw query and scans into custom destination pointers
-// Useful for queries that return scalar values or don't map to structs
-func (r *RawQuery[T]) Scan(dest ...any) error {
+// Scan executes the raw query and scans into custom destination pointers.
+// Useful for queries that return scalar values or don't map to structs.
+// ctx is the first positional argument; same tx-binding semantics as
+// First.
+func (r *RawQuery[T]) Scan(ctx context.Context, dest ...any) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	r.bindTxFromContextValue(ctx)
+
 	start := time.Now()
-	err := r.driver.QueryRowContext(r.getContext(), r.sql, r.args...).Scan(dest...)
+	err := r.driver.QueryRowContext(ctx, r.sql, r.args...).Scan(dest...)
 	duration := time.Since(start)
 
 	rowCount := int64(0)
 	if err == nil {
 		rowCount = 1
 	}
-	dispatchQueryExecuted(r.getContext(), r.sql, r.args, duration, rowCount, r.driver.DriverName(), 2)
+	dispatchQueryExecuted(ctx, r.sql, r.args, duration, rowCount, r.driver.DriverName(), 2)
 
 	return err
 }
 
-// Exec executes a raw SQL statement (INSERT, UPDATE, DELETE) and returns affected rows
-func (r *RawQuery[T]) Exec() (int64, error) {
+// Exec executes a raw SQL statement (INSERT, UPDATE, DELETE) and returns
+// the underlying sql.Result so callers can inspect both RowsAffected and
+// LastInsertId via the standard database/sql helpers. ctx is the first
+// positional argument; pass a tx-bound ctx to enroll the write in the
+// caller's transaction (so a rollback inside Manager.Transaction undoes
+// the raw write), or a non-tx ctx to execute against the pool driver and
+// escape the surrounding tx.
+//
+// Use result.RowsAffected() for the affected row count and
+// result.LastInsertId() for the inserted primary key (driver-dependent;
+// some drivers return -1 when unavailable, which is why the bare int64
+// flavor of this method was removed).
+func (r *RawQuery[T]) Exec(ctx context.Context) (sql.Result, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	r.bindTxFromContextValue(ctx)
+
 	start := time.Now()
-	result, err := r.driver.ExecContext(r.getContext(), r.sql, r.args...)
+	result, err := r.driver.ExecContext(ctx, r.sql, r.args...)
 	duration := time.Since(start)
 
 	if err != nil {
-		dispatchQueryExecuted(r.getContext(), r.sql, r.args, duration, 0, r.driver.DriverName(), 2)
-		return 0, err
+		dispatchQueryExecuted(ctx, r.sql, r.args, duration, 0, r.driver.DriverName(), 2)
+		return nil, err
 	}
 
 	rowsAffected, _ := result.RowsAffected()
-	dispatchQueryExecuted(r.getContext(), r.sql, r.args, duration, rowsAffected, r.driver.DriverName(), 2)
+	dispatchQueryExecuted(ctx, r.sql, r.args, duration, rowsAffected, r.driver.DriverName(), 2)
 
-	return rowsAffected, nil
+	return result, nil
 }

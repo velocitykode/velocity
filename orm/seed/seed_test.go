@@ -539,7 +539,7 @@ func TestIntegrationSeederWithFactory(t *testing.T) {
 					"email": factory.F().Email(),
 				}
 			})
-			f.Count(5).Create()
+			f.Count(5).Create(context.Background())
 			return nil
 		},
 	})
@@ -576,7 +576,7 @@ func TestIntegrationDatabaseSeederWithFactories(t *testing.T) {
 					"email": factory.F().Email(),
 				}
 			})
-			f.Count(3).Create()
+			f.Count(3).Create(context.Background())
 			return nil
 		},
 	})
@@ -591,7 +591,7 @@ func TestIntegrationDatabaseSeederWithFactories(t *testing.T) {
 					"user_id": 1,
 				}
 			})
-			f.Count(10).Create()
+			f.Count(10).Create(context.Background())
 			return nil
 		},
 	})
@@ -651,7 +651,7 @@ func TestIntegrationSeederWithSequence(t *testing.T) {
 			})
 			f.Count(3).Sequence("email", func(i int) interface{} {
 				return fmt.Sprintf("user%d@test.com", i)
-			}).Create()
+			}).Create(context.Background())
 			return nil
 		},
 	})

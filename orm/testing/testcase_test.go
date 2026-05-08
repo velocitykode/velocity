@@ -68,7 +68,7 @@ func TestTestCaseLazyRefresh(t *testing.T) {
 	tc.LazyRefreshDatabase()
 
 	// Use factory to create test data
-	user := UserFactory(testManager).Create()
+	user := UserFactory(testManager).Create(context.Background())
 	if user == nil {
 		t.Fatal("factory returned nil")
 	}
@@ -109,7 +109,7 @@ func TestTestCaseLazyRefreshIsolation(t *testing.T) {
 	}
 
 	// Create multiple users with factory
-	UserFactory(testManager).Count(5).Create()
+	UserFactory(testManager).Count(5).Create(context.Background())
 
 	// Verify count
 	err = tc.DB().QueryRow("SELECT COUNT(*) FROM test_users").Scan(&count)
@@ -126,7 +126,7 @@ func TestTestCaseRefreshDatabase(t *testing.T) {
 	tc.RefreshDatabase()
 
 	// Create users with factory
-	users := UserFactory(testManager).Count(3).Create()
+	users := UserFactory(testManager).Count(3).Create(context.Background())
 	usersSlice := users.([]map[string]interface{})
 	if len(usersSlice) != 3 {
 		t.Errorf("expected 3 users from factory, got %d", len(usersSlice))
@@ -154,7 +154,7 @@ func TestTestCaseWithStates(t *testing.T) {
 	})
 
 	// Create admin user
-	admin := factory.State("admin").Create()
+	admin := factory.State("admin").Create(context.Background())
 	adminData := admin.(map[string]interface{})
 
 	if adminData["name"] != "Admin User" {
@@ -172,7 +172,7 @@ func TestTestCaseWithSequence(t *testing.T) {
 		Sequence("email", func(i int) interface{} {
 			return fmt.Sprintf("user%d@test.com", i)
 		}).
-		Create()
+		Create(context.Background())
 
 	usersSlice := users.([]map[string]interface{})
 	if len(usersSlice) != 3 {

@@ -1,6 +1,7 @@
 package orm
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"strings"
@@ -208,8 +209,15 @@ func resolveTableNameReflect(t reflect.Type) string {
 	return strings.ToLower(name) + "s"
 }
 
-// getFieldValueByColumn extracts the value of a struct field matching the given column name.
-// Walks into embedded structs to access base model fields (ID, CreatedAt, etc.).
+// getFieldValueByColumn extracts the value of a struct field matching the
+// given column name, walking into embedded structs (notably the framework
+// base types) so the eager-load helpers can address columns like "id" or
+// "created_at" that live on Model[T] rather than the outer struct.
+//
+// Implemented on top of the canonical ModelMeta so the column resolution
+// matches structToMap/mapToStruct exactly. Without this, an eager-load
+// that joins on a column-tagged field (orm:"column:legacy_xyz") would
+// look up the wrong column and silently return zero matches.
 func getFieldValueByColumn(v reflect.Value, columnName string) (any, bool) {
 	if v.Kind() == reflect.Ptr {
 		if v.IsNil() {
@@ -217,52 +225,55 @@ func getFieldValueByColumn(v reflect.Value, columnName string) (any, bool) {
 		}
 		v = v.Elem()
 	}
-	t := v.Type()
-
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
-
-		if !field.IsExported() {
-			continue
-		}
-
-		// Recurse into embedded (anonymous) structs, except time.Time
-		if field.Anonymous && field.Type.Kind() == reflect.Struct && field.Type != reflect.TypeOf(time.Time{}) {
-			if val, ok := getFieldValueByColumn(v.Field(i), columnName); ok {
-				return val, true
-			}
-			continue
-		}
-
-		col := resolveColumnName(field)
-		if col == columnName {
-			return v.Field(i).Interface(), true
-		}
+	if v.Kind() != reflect.Struct {
+		return nil, false
 	}
-	return nil, false
+	meta := MetaForValue(v)
+	if meta == nil {
+		return nil, false
+	}
+	col, ok := meta.ColumnByName(columnName)
+	if !ok {
+		return nil, false
+	}
+	fv := v.FieldByIndex(col.IndexPath)
+	if !fv.IsValid() {
+		return nil, false
+	}
+	return fv.Interface(), true
 }
 
-// resolveColumnName determines the database column name for a struct field,
-// with relation-aware semantics: returns "" for orm:"-" (skip) and "id" for
-// fields tagged primaryKey when no explicit column directive precedes it.
-// Otherwise delegates to fieldColumnName (shared column tag / snake_case).
+// resolveColumnName determines the database column name for a struct field.
+// Thin shim over the canonical reflection resolver kept for the relation
+// package's tests and for any external callers; new code should reach the
+// resolver directly via MetaFor(t).ColumnFor(field.Name) or buildColumnDef.
+//
+// Honors orm:"-" (returns ""), orm:"column:..." (verbatim), and the
+// primaryKey-without-column shortcut (returns "id"). Falls back to
+// snake_case of the Go field name. Identical semantics to the inline
+// handling in buildColumnDef so this wrapper can be retired once callers
+// migrate.
 func resolveColumnName(field reflect.StructField) string {
 	tag := field.Tag.Get("orm")
 	if tag == "-" {
 		return ""
 	}
-	if tag != "" {
-		for _, part := range strings.Split(tag, ";") {
-			part = strings.TrimSpace(part)
-			if strings.HasPrefix(part, "column:") {
-				return strings.TrimPrefix(part, "column:")
-			}
-			if part == "primaryKey" || strings.HasPrefix(part, "primaryKey;") {
-				return "id"
-			}
-		}
+	if strings.Contains(tag, "relation:") {
+		return ""
 	}
-	return fieldColumnName(field)
+	if extractManyToManyValue(tag) != "" {
+		return ""
+	}
+	if extractPolymorphicValue(tag) != "" {
+		return ""
+	}
+	if name := columnNameFromTag(tag); name != "" {
+		return name
+	}
+	if hasTagPart(tag, "primaryKey") {
+		return "id"
+	}
+	return ToSnakeCase(field.Name)
 }
 
 // normalizeKey converts numeric types to int64 for consistent map key comparison.
@@ -337,7 +348,7 @@ func markIsExisting(v reflect.Value) {
 //   - relation:    -> hasOne/hasMany/belongsTo via loadRelation
 //   - manyToMany:  -> many-to-many pivot via loadM2M
 //   - polymorphic: -> morph batched per type via loadPolymorphic
-func (q *Query[T]) loadRelations(models *[]T) error {
+func (q *Query[T]) loadRelations(ctx context.Context, models *[]T) error {
 	if len(*models) == 0 {
 		return nil
 	}
@@ -357,7 +368,7 @@ func (q *Query[T]) loadRelations(models *[]T) error {
 				if err != nil {
 					return err
 				}
-				if err := q.loadM2M(models, meta); err != nil {
+				if err := q.loadM2M(ctx, models, meta); err != nil {
 					return err
 				}
 				continue
@@ -366,7 +377,7 @@ func (q *Query[T]) loadRelations(models *[]T) error {
 				if err != nil {
 					return err
 				}
-				if err := q.loadPolymorphic(models, meta); err != nil {
+				if err := q.loadPolymorphic(ctx, models, meta); err != nil {
 					return err
 				}
 				continue
@@ -377,7 +388,7 @@ func (q *Query[T]) loadRelations(models *[]T) error {
 		if err != nil {
 			return err
 		}
-		if err := q.loadRelation(models, meta); err != nil {
+		if err := q.loadRelation(ctx, models, meta); err != nil {
 			return err
 		}
 	}
@@ -410,7 +421,7 @@ func lookupTaggedField(modelType reflect.Type, name string) (reflect.StructField
 }
 
 // loadRelation loads a single relationship for all parent models using a single IN query.
-func (q *Query[T]) loadRelation(models *[]T, meta *relationMeta) error {
+func (q *Query[T]) loadRelation(ctx context.Context, models *[]T, meta *relationMeta) error {
 	// Determine which column to collect from parents and which to query on the related table.
 	// HasOne/HasMany: collect parent's localKey, query related's foreignKey
 	// BelongsTo: collect parent's foreignKey, query related's localKey
@@ -467,11 +478,11 @@ func (q *Query[T]) loadRelation(models *[]T, meta *relationMeta) error {
 	}
 
 	start := time.Now()
-	rows, err := q.driver.QueryContext(q.getContext(), relSQL, keys...)
+	rows, err := q.driver.QueryContext(ctx, relSQL, keys...)
 	duration := time.Since(start)
 
 	if err != nil {
-		dispatchQueryExecuted(q.getContext(), relSQL, keys, duration, 0, q.driver.DriverName(), 2)
+		dispatchQueryExecuted(ctx, relSQL, keys, duration, 0, q.driver.DriverName(), 2)
 		return fmt.Errorf("orm: failed to load relation %q: %w", meta.fieldName, err)
 	}
 	defer rows.Close()
@@ -499,7 +510,7 @@ func (q *Query[T]) loadRelation(models *[]T, meta *relationMeta) error {
 		return fmt.Errorf("orm: error iterating relation %q results: %w", meta.fieldName, err)
 	}
 
-	dispatchQueryExecuted(q.getContext(), relSQL, keys, duration, rowCount, q.driver.DriverName(), 2)
+	dispatchQueryExecuted(ctx, relSQL, keys, duration, rowCount, q.driver.DriverName(), 2)
 
 	// 4. Assign results back to parent models
 	for i := range *models {

@@ -1,6 +1,7 @@
 package factory
 
 import (
+	"context"
 	"reflect"
 	"testing"
 )
@@ -164,7 +165,7 @@ func TestModelFactory_CreateMany(t *testing.T) {
 				t.Error("expected panic for count <= 0")
 			}
 		}()
-		factory.CreateMany(0, nil)
+		factory.CreateMany(context.Background(), 0, nil)
 	})
 }
 

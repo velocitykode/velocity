@@ -1,6 +1,7 @@
 package factory
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"sync"
@@ -93,10 +94,11 @@ func (f *ModelFactory[T]) Make(overrides *T) any {
 	return results
 }
 
-// Create generates and persists model(s) to database.
-// Returns *T for single, []*T for multiple (when Count > 1).
-// Returns an error if database persistence fails.
-func (f *ModelFactory[T]) Create(overrides *T) (any, error) {
+// Create generates and persists model(s) to database. Takes ctx as the
+// first argument so writes participate in the caller's transaction
+// when ctx carries a *sql.Tx. Returns *T for single, []*T for multiple
+// (when Count > 1). Returns an error if database persistence fails.
+func (f *ModelFactory[T]) Create(ctx context.Context, overrides *T) (any, error) {
 	f.mu.Lock()
 	count := f.count
 	activeState := f.activeState
@@ -105,7 +107,7 @@ func (f *ModelFactory[T]) Create(overrides *T) (any, error) {
 	f.mu.Unlock()
 
 	if count == 1 {
-		model, err := f.createOne(activeState, overrides)
+		model, err := f.createOne(ctx, activeState, overrides)
 		if err != nil {
 			return nil, err
 		}
@@ -114,7 +116,7 @@ func (f *ModelFactory[T]) Create(overrides *T) (any, error) {
 
 	results := make([]*T, 0, count)
 	for i := 0; i < count; i++ {
-		model, err := f.createOne(activeState, overrides)
+		model, err := f.createOne(ctx, activeState, overrides)
 		if err != nil {
 			return results, err
 		}
@@ -124,20 +126,22 @@ func (f *ModelFactory[T]) Create(overrides *T) (any, error) {
 }
 
 // CreateOne is a convenience method that always returns *T (not any).
-// Returns an error if database persistence fails.
-func (f *ModelFactory[T]) CreateOne(overrides *T) (*T, error) {
+// Takes ctx as the first argument. Returns an error if database
+// persistence fails.
+func (f *ModelFactory[T]) CreateOne(ctx context.Context, overrides *T) (*T, error) {
 	f.mu.Lock()
 	activeState := f.activeState
 	f.count = 1
 	f.activeState = ""
 	f.mu.Unlock()
 
-	return f.createOne(activeState, overrides)
+	return f.createOne(ctx, activeState, overrides)
 }
 
 // CreateMany is a convenience method that always returns []*T (not any).
-// Returns an error if database persistence fails.
-func (f *ModelFactory[T]) CreateMany(count int, overrides *T) ([]*T, error) {
+// Takes ctx as the first argument. Returns an error if database
+// persistence fails.
+func (f *ModelFactory[T]) CreateMany(ctx context.Context, count int, overrides *T) ([]*T, error) {
 	if count <= 0 {
 		panic("count must be greater than 0")
 	}
@@ -150,7 +154,7 @@ func (f *ModelFactory[T]) CreateMany(count int, overrides *T) ([]*T, error) {
 
 	results := make([]*T, 0, count)
 	for i := 0; i < count; i++ {
-		model, err := f.createOne(activeState, overrides)
+		model, err := f.createOne(ctx, activeState, overrides)
 		if err != nil {
 			return results, err
 		}
@@ -189,11 +193,13 @@ func (f *ModelFactory[T]) makeOne(activeState string, overrides *T) *T {
 	return model
 }
 
-// createOne generates and persists a single model
-func (f *ModelFactory[T]) createOne(activeState string, overrides *T) (*T, error) {
+// createOne generates and persists a single model. Threads ctx
+// through orm.Save so a caller-supplied *sql.Tx in ctx enrolls the
+// insert in the surrounding transaction.
+func (f *ModelFactory[T]) createOne(ctx context.Context, activeState string, overrides *T) (*T, error) {
 	model := f.makeOne(activeState, overrides)
 
-	if err := orm.Save(f.manager, model); err != nil {
+	if err := orm.Save(ctx, f.manager, model); err != nil {
 		return nil, fmt.Errorf("factory: failed to create model: %w", err)
 	}
 

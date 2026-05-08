@@ -120,7 +120,7 @@ func TestQuery_FirstMarksIsExisting(t *testing.T) {
 	m := setupIsExistingTest(t)
 
 	original := &User{Name: "Alice", Email: "alice@example.com", Age: 30}
-	if err := Save(m, original); err != nil {
+	if err := Save(context.Background(), m, original); err != nil {
 		t.Fatalf("seed Save: %v", err)
 	}
 	if original.Model.ID == 0 {
@@ -128,7 +128,7 @@ func TestQuery_FirstMarksIsExisting(t *testing.T) {
 	}
 
 	var u User
-	if err := (User{}).Where("id = ?", original.Model.ID).First(&u); err != nil {
+	if err := (User{}).Where("id = ?", original.Model.ID).First(context.Background(), &u); err != nil {
 		t.Fatalf("First returned error: %v", err)
 	}
 
@@ -139,7 +139,7 @@ func TestQuery_FirstMarksIsExisting(t *testing.T) {
 	// Mutating and saving must UPDATE the existing row, not insert a
 	// duplicate. Pre-fix this would yield COUNT(*) = 2.
 	u.Name = "Alice Renamed"
-	if err := Save(m, &u); err != nil {
+	if err := Save(context.Background(), m, &u); err != nil {
 		t.Fatalf("Save after First: %v", err)
 	}
 
@@ -170,18 +170,18 @@ func TestImmutableModel_FindThenSaveReturnsImmutableErr(t *testing.T) {
 	m := setupImmutableTests(t)
 
 	rec := &AuditLog{Action: "seed"}
-	if err := Save(m, rec); err != nil {
+	if err := Save(context.Background(), m, rec); err != nil {
 		t.Fatalf("seed Save: %v", err)
 	}
 
-	got, err := ImmutableModel[AuditLog]{}.Find(rec.ID)
+	got, err := ImmutableModel[AuditLog]{}.Find(context.Background(), rec.ID)
 	if err != nil {
 		t.Fatalf("Find: %v", err)
 	}
 	if !got.IsExisting {
 		t.Fatal("Find did not mark IsExisting on ImmutableModel; re-Save would silently duplicate")
 	}
-	if err := Save(m, got); !errors.Is(err, ErrImmutableModelUpdate) {
+	if err := Save(context.Background(), m, got); !errors.Is(err, ErrImmutableModelUpdate) {
 		t.Errorf("re-Save via Find result error = %v, want ErrImmutableModelUpdate", err)
 	}
 
@@ -222,19 +222,19 @@ func TestSoftDeleteModel_FirstMarksIsExisting(t *testing.T) {
 	})
 
 	rec := &roundTripSoftUser{Name: "seed"}
-	if err := Save(m, rec); err != nil {
+	if err := Save(context.Background(), m, rec); err != nil {
 		t.Fatalf("seed Save: %v", err)
 	}
 
 	var got roundTripSoftUser
-	if err := (roundTripSoftUser{}).Where("id = ?", rec.ID).First(&got); err != nil {
+	if err := (roundTripSoftUser{}).Where("id = ?", rec.ID).First(context.Background(), &got); err != nil {
 		t.Fatalf("First: %v", err)
 	}
 	if !got.IsExisting {
 		t.Fatal("First did not mark IsExisting on SoftDeleteModel")
 	}
 	got.Name = "renamed"
-	if err := Save(m, &got); err != nil {
+	if err := Save(context.Background(), m, &got); err != nil {
 		t.Fatalf("Save after First: %v", err)
 	}
 
@@ -273,7 +273,7 @@ func TestModel_FirstThenSaveFiresUpdateHooks(t *testing.T) {
 	})
 
 	rec := &updateHookUser{Name: "v1"}
-	if err := Save(m, rec); err != nil {
+	if err := Save(context.Background(), m, rec); err != nil {
 		t.Fatalf("seed Save: %v", err)
 	}
 
@@ -281,11 +281,11 @@ func TestModel_FirstThenSaveFiresUpdateHooks(t *testing.T) {
 	vanillaUpdateHooks.afterUpdate = false
 
 	var got updateHookUser
-	if err := (updateHookUser{}).Where("id = ?", rec.ID).First(&got); err != nil {
+	if err := (updateHookUser{}).Where("id = ?", rec.ID).First(context.Background(), &got); err != nil {
 		t.Fatalf("First: %v", err)
 	}
 	got.Name = "v2"
-	if err := Save(m, &got); err != nil {
+	if err := Save(context.Background(), m, &got); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
@@ -323,7 +323,7 @@ func TestUUIDModel_FirstMarksIsExisting(t *testing.T) {
 	})
 
 	rec := &roundTripUUIDUser{Name: "seed"}
-	if err := Save(m, rec); err != nil {
+	if err := Save(context.Background(), m, rec); err != nil {
 		t.Fatalf("seed Save: %v", err)
 	}
 	if rec.ID == "" {
@@ -331,14 +331,14 @@ func TestUUIDModel_FirstMarksIsExisting(t *testing.T) {
 	}
 
 	var got roundTripUUIDUser
-	if err := (roundTripUUIDUser{}).Where("id = ?", rec.ID).First(&got); err != nil {
+	if err := (roundTripUUIDUser{}).Where("id = ?", rec.ID).First(context.Background(), &got); err != nil {
 		t.Fatalf("First: %v", err)
 	}
 	if !got.IsExisting {
 		t.Fatal("First did not mark IsExisting on UUIDModel")
 	}
 	got.Name = "renamed"
-	if err := Save(m, &got); err != nil {
+	if err := Save(context.Background(), m, &got); err != nil {
 		t.Fatalf("Save after First: %v", err)
 	}
 	var count int
@@ -375,12 +375,12 @@ func TestSoftDeleteUUIDModel_FirstMarksIsExisting(t *testing.T) {
 	})
 
 	rec := &roundTripSoftUUIDUser{Name: "seed"}
-	if err := Save(m, rec); err != nil {
+	if err := Save(context.Background(), m, rec); err != nil {
 		t.Fatalf("seed Save: %v", err)
 	}
 
 	var got roundTripSoftUUIDUser
-	if err := (roundTripSoftUUIDUser{}).Where("id = ?", rec.ID).First(&got); err != nil {
+	if err := (roundTripSoftUUIDUser{}).Where("id = ?", rec.ID).First(context.Background(), &got); err != nil {
 		t.Fatalf("First: %v", err)
 	}
 	if !got.IsExisting {
@@ -413,14 +413,14 @@ func TestNestedEmbedding_MarkExistingPromotes(t *testing.T) {
 func TestFirstOrCreate_HitBranchUpdatesNotDuplicates(t *testing.T) {
 	m := setupIsExistingTest(t)
 
-	if _, err := (User{}).FirstOrCreate(
+	if _, err := (User{}).FirstOrCreate(context.Background(),
 		map[string]any{"email": "alice@example.com"},
 		map[string]any{"name": "Alice", "age": 30},
 	); err != nil {
 		t.Fatalf("seed FirstOrCreate: %v", err)
 	}
 
-	got, err := (User{}).FirstOrCreate(
+	got, err := (User{}).FirstOrCreate(context.Background(),
 		map[string]any{"email": "alice@example.com"},
 		map[string]any{"name": "ignored", "age": 99},
 	)
@@ -432,7 +432,7 @@ func TestFirstOrCreate_HitBranchUpdatesNotDuplicates(t *testing.T) {
 	}
 
 	got.Name = "Renamed"
-	if err := Save(m, got); err != nil {
+	if err := Save(context.Background(), m, got); err != nil {
 		t.Fatalf("Save after hit: %v", err)
 	}
 
@@ -453,7 +453,7 @@ func TestRawQuery_FirstMarksIsExisting(t *testing.T) {
 	m := setupIsExistingTest(t)
 
 	original := &User{Name: "Alice", Email: "alice@example.com", Age: 30}
-	if err := Save(m, original); err != nil {
+	if err := Save(context.Background(), m, original); err != nil {
 		t.Fatalf("seed Save: %v", err)
 	}
 
@@ -461,7 +461,7 @@ func TestRawQuery_FirstMarksIsExisting(t *testing.T) {
 	rq.driver = m.DefaultDriver()
 
 	var u User
-	if err := rq.First(&u); err != nil {
+	if err := rq.First(context.Background(), &u); err != nil {
 		t.Fatalf("RawQuery.First: %v", err)
 	}
 	if !u.Model.IsExisting {
@@ -469,7 +469,7 @@ func TestRawQuery_FirstMarksIsExisting(t *testing.T) {
 	}
 
 	u.Name = "Alice Renamed"
-	if err := Save(m, &u); err != nil {
+	if err := Save(context.Background(), m, &u); err != nil {
 		t.Fatalf("Save after RawQuery.First: %v", err)
 	}
 
@@ -491,7 +491,7 @@ func TestRawQuery_GetMarksIsExisting(t *testing.T) {
 		{Name: "Bob", Email: "bob@example.com", Age: 25},
 	}
 	for i := range seed {
-		if err := Save(m, &seed[i]); err != nil {
+		if err := Save(context.Background(), m, &seed[i]); err != nil {
 			t.Fatalf("seed Save[%d]: %v", i, err)
 		}
 	}
@@ -499,7 +499,7 @@ func TestRawQuery_GetMarksIsExisting(t *testing.T) {
 	rq := NewRawQuery[User](`SELECT * FROM users ORDER BY id`)
 	rq.driver = m.DefaultDriver()
 
-	results, err := rq.Get()
+	results, err := rq.Get(context.Background())
 	if err != nil {
 		t.Fatalf("RawQuery.Get: %v", err)
 	}
@@ -526,13 +526,13 @@ func TestQuery_GetMarksIsExisting(t *testing.T) {
 		{Name: "Carol", Email: "carol@example.com", Age: 40},
 	}
 	for i := range seed {
-		if err := Save(m, &seed[i]); err != nil {
+		if err := Save(context.Background(), m, &seed[i]); err != nil {
 			t.Fatalf("seed Save[%d]: %v", i, err)
 		}
 	}
 
 	q := newQuery[User]().Where("age > ?", 20)
-	results, err := q.Get()
+	results, err := q.Get(context.Background())
 	if err != nil {
 		t.Fatalf("Get returned error: %v", err)
 	}

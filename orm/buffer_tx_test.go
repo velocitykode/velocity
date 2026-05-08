@@ -2,7 +2,6 @@ package orm
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"strconv"
 	"sync"
@@ -31,7 +30,7 @@ func TestBuffer_CommitFlushes(t *testing.T) {
 	})
 
 	ctx := events.PrepareBuffer(context.Background())
-	err := m.Transaction(ctx, func(tx *sql.Tx) error {
+	err := m.Transaction(ctx, func(ctx context.Context) error {
 		// In-tx the buffer should be reachable and fired events
 		// must NOT have flushed yet.
 		if !events.HasBuffer(ctx) {
@@ -88,7 +87,7 @@ func TestBuffer_RollbackDrops(t *testing.T) {
 
 	rollbackErr := errors.New("rollback please")
 	ctx := events.PrepareBuffer(context.Background())
-	err := m.Transaction(ctx, func(tx *sql.Tx) error {
+	err := m.Transaction(ctx, func(ctx context.Context) error {
 		_ = events.Buffer(ctx).Dispatch(&txDomainEvent{Tag: "drop-me"})
 		return rollbackErr
 	})
@@ -121,7 +120,7 @@ func TestBuffer_PanicDrops(t *testing.T) {
 				t.Fatal("expected panic to propagate from Transaction")
 			}
 		}()
-		_ = m.Transaction(ctx, func(tx *sql.Tx) error {
+		_ = m.Transaction(ctx, func(ctx context.Context) error {
 			_ = events.Buffer(ctx).Dispatch(&txDomainEvent{Tag: "panic-drop"})
 			panic("kaboom")
 		})
@@ -149,11 +148,11 @@ func TestBuffer_Nested(t *testing.T) {
 
 	innerErr := errors.New("inner rollback")
 	ctx := events.PrepareBuffer(context.Background())
-	err := m.Transaction(ctx, func(tx *sql.Tx) error {
+	err := m.Transaction(ctx, func(ctx context.Context) error {
 		_ = events.Buffer(ctx).Dispatch(&txDomainEvent{Tag: "outer-1"})
 
 		// Nested transaction that fails -- only inner events should drop.
-		nestedErr := m.Transaction(ctx, func(_ *sql.Tx) error {
+		nestedErr := m.Transaction(ctx, func(ctx context.Context) error {
 			_ = events.Buffer(ctx).Dispatch(&txDomainEvent{Tag: "inner-1"})
 			return innerErr
 		})
@@ -196,7 +195,7 @@ func TestBuffer_PanicInListenerAfterFlush(t *testing.T) {
 	ctx := events.PrepareBuffer(context.Background())
 	func() {
 		defer func() { _ = recover() }()
-		_ = m.Transaction(ctx, func(tx *sql.Tx) error {
+		_ = m.Transaction(ctx, func(ctx context.Context) error {
 			_ = events.Buffer(ctx).Dispatch(&txDomainEvent{Tag: "x"})
 			return nil
 		})
@@ -238,7 +237,7 @@ func TestBuffer_Concurrent(t *testing.T) {
 		go func(g int) {
 			defer wg.Done()
 			ctx := events.PrepareBuffer(context.Background())
-			err := m.Transaction(ctx, func(tx *sql.Tx) error {
+			err := m.Transaction(ctx, func(ctx context.Context) error {
 				for i := 0; i < perTx; i++ {
 					_ = events.Buffer(ctx).Dispatch(&txDomainEventID{GID: g})
 				}
@@ -279,7 +278,7 @@ func TestBuffer_FakeDispatcher_Integration(t *testing.T) {
 	})
 
 	ctx := events.PrepareBuffer(context.Background())
-	err := m.Transaction(ctx, func(tx *sql.Tx) error {
+	err := m.Transaction(ctx, func(ctx context.Context) error {
 		_ = events.Buffer(ctx).Dispatch(&txDomainEvent{Tag: "fake-1"})
 		// Pre-flush, fake should not contain the domain event.
 		if err := fake.AssertNotDispatched(&txDomainEvent{}); err != nil {
@@ -306,7 +305,7 @@ func TestBuffer_NoEventDispatcher(t *testing.T) {
 	defer m.Shutdown(context.Background())
 
 	ctx := events.PrepareBuffer(context.Background())
-	err := m.Transaction(ctx, func(tx *sql.Tx) error {
+	err := m.Transaction(ctx, func(ctx context.Context) error {
 		_ = events.Buffer(ctx).Dispatch(&txDomainEvent{Tag: "no-sink"})
 		return nil
 	})
@@ -327,7 +326,7 @@ func TestBuffer_TxEventBusKindRouting(t *testing.T) {
 	m.SetTxEventBus(bus)
 
 	ctx := events.PrepareBuffer(context.Background())
-	err := m.Transaction(ctx, func(tx *sql.Tx) error {
+	err := m.Transaction(ctx, func(ctx context.Context) error {
 		_ = events.Buffer(ctx).Dispatch(&txDomainEvent{Tag: "sync"})
 		_ = events.Buffer(ctx).DispatchNow(&txDomainEvent{Tag: "now"})
 		_ = events.Buffer(ctx).DispatchAsync(&txDomainEvent{Tag: "async"})
@@ -423,7 +422,7 @@ func TestBuffer_NoPrepareIsSafeNoOp(t *testing.T) {
 	})
 
 	ctx := context.Background() // no PrepareBuffer
-	err := m.Transaction(ctx, func(tx *sql.Tx) error {
+	err := m.Transaction(ctx, func(ctx context.Context) error {
 		// Buffer(ctx) returns a standalone buffer; dispatching to it
 		// is a no-op as far as the orm is concerned.
 		_ = events.Buffer(ctx).Dispatch(&txDomainEvent{Tag: "lost"})

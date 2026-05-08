@@ -103,37 +103,6 @@ func TestManagerDispatchEvent(t *testing.T) {
 	}
 }
 
-func TestQueryWithContext(t *testing.T) {
-	q := &Query[struct{}]{
-		table:   "test",
-		columns: []string{"*"},
-	}
-
-	ctx := context.WithValue(context.Background(), testCtxKey("test"), "value")
-	q.WithContext(ctx)
-
-	if q.ctx != ctx {
-		t.Error("Context was not set correctly")
-	}
-
-	gotCtx := q.getContext()
-	if gotCtx != ctx {
-		t.Error("getContext did not return the set context")
-	}
-}
-
-func TestQueryGetContextDefault(t *testing.T) {
-	q := &Query[struct{}]{
-		table:   "test",
-		columns: []string{"*"},
-	}
-
-	ctx := q.getContext()
-	if ctx == nil {
-		t.Error("getContext should never return nil")
-	}
-}
-
 func TestManagerDispatchEventWithContext(t *testing.T) {
 	collector := newTestEventCollector()
 	m := &Manager{}

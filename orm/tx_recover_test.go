@@ -2,7 +2,6 @@ package orm
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"sync"
 	"testing"
@@ -84,8 +83,8 @@ func TestManager_Transaction_DispatchesTxRecoverOnRollbackFailure(t *testing.T) 
 	m.SetLogger(logger)
 
 	cbErr := errors.New("callback failure")
-	err = m.Transaction(context.Background(), func(tx *sql.Tx) error {
-		_ = tx
+	err = m.Transaction(context.Background(), func(ctx context.Context) error {
+		_ = ctx
 		return cbErr
 	})
 	if !errors.Is(err, cbErr) {

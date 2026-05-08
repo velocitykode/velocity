@@ -1,6 +1,7 @@
 package orm
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -8,35 +9,37 @@ import (
 	"github.com/velocitykode/velocity/orm/drivers"
 )
 
-// Sum returns the sum of a column for matching records.
-// Returns 0 for empty result sets.
-func (q *Query[T]) Sum(column string) (float64, error) {
-	return q.aggregate("SUM", column)
+// Sum returns the sum of a column for matching records. Takes ctx as
+// the first argument so reads participate in the caller's transaction
+// when ctx carries a *sql.Tx. Returns 0 for empty result sets.
+func (q *Query[T]) Sum(ctx context.Context, column string) (float64, error) {
+	return q.aggregate(ctx, "SUM", column)
 }
 
-// Avg returns the average of a column for matching records.
-// Returns 0 for empty result sets.
-func (q *Query[T]) Avg(column string) (float64, error) {
-	return q.aggregate("AVG", column)
+// Avg returns the average of a column for matching records. Takes ctx
+// as the first argument. Returns 0 for empty result sets.
+func (q *Query[T]) Avg(ctx context.Context, column string) (float64, error) {
+	return q.aggregate(ctx, "AVG", column)
 }
 
 // Min returns the minimum value of a column for matching records.
-// Returns 0 for empty result sets.
-func (q *Query[T]) Min(column string) (float64, error) {
-	return q.aggregate("MIN", column)
+// Takes ctx as the first argument. Returns 0 for empty result sets.
+func (q *Query[T]) Min(ctx context.Context, column string) (float64, error) {
+	return q.aggregate(ctx, "MIN", column)
 }
 
 // Max returns the maximum value of a column for matching records.
-// Returns 0 for empty result sets.
-func (q *Query[T]) Max(column string) (float64, error) {
-	return q.aggregate("MAX", column)
+// Takes ctx as the first argument. Returns 0 for empty result sets.
+func (q *Query[T]) Max(ctx context.Context, column string) (float64, error) {
+	return q.aggregate(ctx, "MAX", column)
 }
 
 // aggregate executes an aggregate function on a column and returns the result.
-func (q *Query[T]) aggregate(fn, column string) (float64, error) {
+func (q *Query[T]) aggregate(ctx context.Context, fn, column string) (float64, error) {
 	if err := validateIdentifier(column); err != nil {
 		return 0, fmt.Errorf("%s: %w", fn, err)
 	}
+	q.bindTxFromContextValue(ctx)
 
 	q.columns = []string{fmt.Sprintf("%s(%s) as agg", fn, q.driver.Grammar().QuoteIdentifier(column))}
 
@@ -52,8 +55,8 @@ func (q *Query[T]) aggregate(fn, column string) (float64, error) {
 
 	start := time.Now()
 	var result sql.NullFloat64
-	err := q.driver.QueryRowContext(q.getContext(), sqlStr, args...).Scan(&result)
-	dispatchQueryExecuted(q.getContext(), sqlStr, args, time.Since(start), 1, q.driver.DriverName(), 2)
+	err := q.driver.QueryRowContext(ctx, sqlStr, args...).Scan(&result)
+	dispatchQueryExecuted(ctx, sqlStr, args, time.Since(start), 1, q.driver.DriverName(), 2)
 
 	if err != nil {
 		return 0, err

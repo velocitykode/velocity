@@ -55,7 +55,7 @@ func TestFindOrFail_Found(t *testing.T) {
 	setupConvenienceTests(t)
 	id := seedUser(t, Default(), "Alice", "alice@example.com", 30)
 
-	user, err := Model[TestUser]{}.FindOrFail(id)
+	user, err := Model[TestUser]{}.FindOrFail(context.Background(), id)
 	if err != nil {
 		t.Fatalf("FindOrFail returned unexpected error: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestFindOrFail_Found(t *testing.T) {
 func TestFindOrFail_NotFound(t *testing.T) {
 	setupConvenienceTests(t)
 
-	_, err := Model[TestUser]{}.FindOrFail(999)
+	_, err := Model[TestUser]{}.FindOrFail(context.Background(), 999)
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -77,7 +77,7 @@ func TestFirstOrFail_Found(t *testing.T) {
 	setupConvenienceTests(t)
 	seedUser(t, Default(), "Bob", "bob@example.com", 25)
 
-	user, err := Model[TestUser]{}.FirstOrFail()
+	user, err := Model[TestUser]{}.FirstOrFail(context.Background())
 	if err != nil {
 		t.Fatalf("FirstOrFail returned unexpected error: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestFirstOrFail_Found(t *testing.T) {
 func TestFirstOrFail_EmptyTable(t *testing.T) {
 	setupConvenienceTests(t)
 
-	_, err := Model[TestUser]{}.FirstOrFail()
+	_, err := Model[TestUser]{}.FirstOrFail(context.Background())
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound on empty table, got %v", err)
 	}
@@ -100,7 +100,7 @@ func TestQueryFirstOrFail_Found(t *testing.T) {
 	seedUser(t, Default(), "Carol", "carol@example.com", 28)
 
 	var user TestUser
-	err := Model[TestUser]{}.Where("name = ?", "Carol").FirstOrFail(&user)
+	err := Model[TestUser]{}.Where("name = ?", "Carol").FirstOrFail(context.Background(), &user)
 	if err != nil {
 		t.Fatalf("Query.FirstOrFail returned unexpected error: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestQueryFirstOrFail_NotFound(t *testing.T) {
 	setupConvenienceTests(t)
 
 	var user TestUser
-	err := Model[TestUser]{}.Where("name = ?", "nobody").FirstOrFail(&user)
+	err := Model[TestUser]{}.Where("name = ?", "nobody").FirstOrFail(context.Background(), &user)
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -126,7 +126,7 @@ func TestQueryFirstOrFail_NotFound(t *testing.T) {
 func TestFirstOrCreate_Creates(t *testing.T) {
 	setupConvenienceTests(t)
 
-	user, err := Model[TestUser]{}.FirstOrCreate(
+	user, err := Model[TestUser]{}.FirstOrCreate(context.Background(),
 		map[string]any{"email": "new@example.com"},
 		map[string]any{"name": "New User", "age": 20},
 	)
@@ -148,7 +148,7 @@ func TestFirstOrCreate_FindsExisting(t *testing.T) {
 	setupConvenienceTests(t)
 	seedUser(t, Default(), "Existing", "existing@example.com", 40)
 
-	user, err := Model[TestUser]{}.FirstOrCreate(
+	user, err := Model[TestUser]{}.FirstOrCreate(context.Background(),
 		map[string]any{"email": "existing@example.com"},
 		map[string]any{"name": "Should Not Be Used", "age": 99},
 	)
@@ -167,7 +167,7 @@ func TestFirstOrCreate_FindsExisting(t *testing.T) {
 func TestFirstOrCreate_InvalidIdentifier(t *testing.T) {
 	setupConvenienceTests(t)
 
-	_, err := Model[TestUser]{}.FirstOrCreate(
+	_, err := Model[TestUser]{}.FirstOrCreate(context.Background(),
 		map[string]any{"email; DROP TABLE": "evil"},
 		map[string]any{},
 	)
@@ -179,7 +179,7 @@ func TestFirstOrCreate_InvalidIdentifier(t *testing.T) {
 func TestUpdateOrCreate_Creates(t *testing.T) {
 	setupConvenienceTests(t)
 
-	user, err := Model[TestUser]{}.UpdateOrCreate(
+	user, err := Model[TestUser]{}.UpdateOrCreate(context.Background(),
 		map[string]any{"email": "brand-new@example.com"},
 		map[string]any{"name": "Brand New", "age": 18},
 	)
@@ -195,7 +195,7 @@ func TestUpdateOrCreate_Updates(t *testing.T) {
 	setupConvenienceTests(t)
 	seedUser(t, Default(), "Old Name", "update@example.com", 30)
 
-	user, err := Model[TestUser]{}.UpdateOrCreate(
+	user, err := Model[TestUser]{}.UpdateOrCreate(context.Background(),
 		map[string]any{"email": "update@example.com"},
 		map[string]any{"name": "Updated Name", "age": 31},
 	)
@@ -210,7 +210,7 @@ func TestUpdateOrCreate_Updates(t *testing.T) {
 	}
 
 	// Verify only one record exists
-	count, err := Model[TestUser]{}.Count()
+	count, err := Model[TestUser]{}.Count(context.Background())
 	if err != nil {
 		t.Fatalf("Count returned error: %v", err)
 	}
@@ -227,12 +227,12 @@ func TestIncrement_Default(t *testing.T) {
 	setupConvenienceTests(t)
 	seedUser(t, Default(), "Inc", "inc@example.com", 10)
 
-	err := Model[TestUser]{}.Where("email = ?", "inc@example.com").Increment("age")
+	err := Model[TestUser]{}.Where("email = ?", "inc@example.com").Increment(context.Background(), "age")
 	if err != nil {
 		t.Fatalf("Increment returned error: %v", err)
 	}
 
-	user, err := Model[TestUser]{}.FindBy("email", "inc@example.com")
+	user, err := Model[TestUser]{}.FindBy(context.Background(), "email", "inc@example.com")
 	if err != nil {
 		t.Fatalf("FindBy returned error: %v", err)
 	}
@@ -245,12 +245,12 @@ func TestIncrement_CustomAmount(t *testing.T) {
 	setupConvenienceTests(t)
 	seedUser(t, Default(), "Inc5", "inc5@example.com", 10)
 
-	err := Model[TestUser]{}.Where("email = ?", "inc5@example.com").Increment("age", 5)
+	err := Model[TestUser]{}.Where("email = ?", "inc5@example.com").Increment(context.Background(), "age", 5)
 	if err != nil {
 		t.Fatalf("Increment returned error: %v", err)
 	}
 
-	user, err := Model[TestUser]{}.FindBy("email", "inc5@example.com")
+	user, err := Model[TestUser]{}.FindBy(context.Background(), "email", "inc5@example.com")
 	if err != nil {
 		t.Fatalf("FindBy returned error: %v", err)
 	}
@@ -263,12 +263,12 @@ func TestDecrement_Default(t *testing.T) {
 	setupConvenienceTests(t)
 	seedUser(t, Default(), "Dec", "dec@example.com", 10)
 
-	err := Model[TestUser]{}.Where("email = ?", "dec@example.com").Decrement("age")
+	err := Model[TestUser]{}.Where("email = ?", "dec@example.com").Decrement(context.Background(), "age")
 	if err != nil {
 		t.Fatalf("Decrement returned error: %v", err)
 	}
 
-	user, err := Model[TestUser]{}.FindBy("email", "dec@example.com")
+	user, err := Model[TestUser]{}.FindBy(context.Background(), "email", "dec@example.com")
 	if err != nil {
 		t.Fatalf("FindBy returned error: %v", err)
 	}
@@ -281,12 +281,12 @@ func TestDecrement_CustomAmount(t *testing.T) {
 	setupConvenienceTests(t)
 	seedUser(t, Default(), "Dec3", "dec3@example.com", 10)
 
-	err := Model[TestUser]{}.Where("email = ?", "dec3@example.com").Decrement("age", 3)
+	err := Model[TestUser]{}.Where("email = ?", "dec3@example.com").Decrement(context.Background(), "age", 3)
 	if err != nil {
 		t.Fatalf("Decrement returned error: %v", err)
 	}
 
-	user, err := Model[TestUser]{}.FindBy("email", "dec3@example.com")
+	user, err := Model[TestUser]{}.FindBy(context.Background(), "email", "dec3@example.com")
 	if err != nil {
 		t.Fatalf("FindBy returned error: %v", err)
 	}
@@ -301,13 +301,13 @@ func TestIncrement_WithConditions(t *testing.T) {
 	seedUser(t, Default(), "B", "b@example.com", 20)
 
 	// Only increment A
-	err := Model[TestUser]{}.Where("name = ?", "A").Increment("age", 100)
+	err := Model[TestUser]{}.Where("name = ?", "A").Increment(context.Background(), "age", 100)
 	if err != nil {
 		t.Fatalf("Increment returned error: %v", err)
 	}
 
-	userA, _ := Model[TestUser]{}.FindBy("email", "a@example.com")
-	userB, _ := Model[TestUser]{}.FindBy("email", "b@example.com")
+	userA, _ := Model[TestUser]{}.FindBy(context.Background(), "email", "a@example.com")
+	userB, _ := Model[TestUser]{}.FindBy(context.Background(), "email", "b@example.com")
 
 	if userA.Age != 110 {
 		t.Errorf("expected A age 110, got %d", userA.Age)
@@ -320,7 +320,7 @@ func TestIncrement_WithConditions(t *testing.T) {
 func TestIncrement_InvalidColumn(t *testing.T) {
 	setupConvenienceTests(t)
 
-	err := Model[TestUser]{}.Where("id = ?", 1).Increment("bad column!")
+	err := Model[TestUser]{}.Where("id = ?", 1).Increment(context.Background(), "bad column!")
 	if err == nil {
 		t.Error("expected error for invalid column, got nil")
 	}
@@ -336,7 +336,7 @@ func TestSum_WithData(t *testing.T) {
 	seedUser(t, Default(), "B", "b@example.com", 20)
 	seedUser(t, Default(), "C", "c@example.com", 30)
 
-	sum, err := newQuery[TestUser]().Sum("age")
+	sum, err := newQuery[TestUser]().Sum(context.Background(), "age")
 	if err != nil {
 		t.Fatalf("Sum returned error: %v", err)
 	}
@@ -348,7 +348,7 @@ func TestSum_WithData(t *testing.T) {
 func TestSum_EmptyTable(t *testing.T) {
 	setupConvenienceTests(t)
 
-	sum, err := newQuery[TestUser]().Sum("age")
+	sum, err := newQuery[TestUser]().Sum(context.Background(), "age")
 	if err != nil {
 		t.Fatalf("Sum returned error: %v", err)
 	}
@@ -362,7 +362,7 @@ func TestSum_WithConditions(t *testing.T) {
 	seedUser(t, Default(), "A", "a@example.com", 10)
 	seedUser(t, Default(), "B", "b@example.com", 20)
 
-	sum, err := newQuery[TestUser]().Where("name = ?", "A").Sum("age")
+	sum, err := newQuery[TestUser]().Where("name = ?", "A").Sum(context.Background(), "age")
 	if err != nil {
 		t.Fatalf("Sum returned error: %v", err)
 	}
@@ -376,7 +376,7 @@ func TestAvg_WithData(t *testing.T) {
 	seedUser(t, Default(), "A", "a@example.com", 10)
 	seedUser(t, Default(), "B", "b@example.com", 20)
 
-	avg, err := newQuery[TestUser]().Avg("age")
+	avg, err := newQuery[TestUser]().Avg(context.Background(), "age")
 	if err != nil {
 		t.Fatalf("Avg returned error: %v", err)
 	}
@@ -388,7 +388,7 @@ func TestAvg_WithData(t *testing.T) {
 func TestAvg_EmptyTable(t *testing.T) {
 	setupConvenienceTests(t)
 
-	avg, err := newQuery[TestUser]().Avg("age")
+	avg, err := newQuery[TestUser]().Avg(context.Background(), "age")
 	if err != nil {
 		t.Fatalf("Avg returned error: %v", err)
 	}
@@ -403,7 +403,7 @@ func TestMin_WithData(t *testing.T) {
 	seedUser(t, Default(), "B", "b@example.com", 15)
 	seedUser(t, Default(), "C", "c@example.com", 25)
 
-	min, err := newQuery[TestUser]().Min("age")
+	min, err := newQuery[TestUser]().Min(context.Background(), "age")
 	if err != nil {
 		t.Fatalf("Min returned error: %v", err)
 	}
@@ -415,7 +415,7 @@ func TestMin_WithData(t *testing.T) {
 func TestMin_EmptyTable(t *testing.T) {
 	setupConvenienceTests(t)
 
-	min, err := newQuery[TestUser]().Min("age")
+	min, err := newQuery[TestUser]().Min(context.Background(), "age")
 	if err != nil {
 		t.Fatalf("Min returned error: %v", err)
 	}
@@ -430,7 +430,7 @@ func TestMax_WithData(t *testing.T) {
 	seedUser(t, Default(), "B", "b@example.com", 15)
 	seedUser(t, Default(), "C", "c@example.com", 25)
 
-	max, err := newQuery[TestUser]().Max("age")
+	max, err := newQuery[TestUser]().Max(context.Background(), "age")
 	if err != nil {
 		t.Fatalf("Max returned error: %v", err)
 	}
@@ -442,7 +442,7 @@ func TestMax_WithData(t *testing.T) {
 func TestMax_EmptyTable(t *testing.T) {
 	setupConvenienceTests(t)
 
-	max, err := newQuery[TestUser]().Max("age")
+	max, err := newQuery[TestUser]().Max(context.Background(), "age")
 	if err != nil {
 		t.Fatalf("Max returned error: %v", err)
 	}
@@ -454,22 +454,22 @@ func TestMax_EmptyTable(t *testing.T) {
 func TestAggregate_InvalidColumn(t *testing.T) {
 	setupConvenienceTests(t)
 
-	_, err := newQuery[TestUser]().Sum("invalid column!")
+	_, err := newQuery[TestUser]().Sum(context.Background(), "invalid column!")
 	if err == nil {
 		t.Error("expected error for invalid column in Sum, got nil")
 	}
 
-	_, err = newQuery[TestUser]().Avg("invalid column!")
+	_, err = newQuery[TestUser]().Avg(context.Background(), "invalid column!")
 	if err == nil {
 		t.Error("expected error for invalid column in Avg, got nil")
 	}
 
-	_, err = newQuery[TestUser]().Min("invalid column!")
+	_, err = newQuery[TestUser]().Min(context.Background(), "invalid column!")
 	if err == nil {
 		t.Error("expected error for invalid column in Min, got nil")
 	}
 
-	_, err = newQuery[TestUser]().Max("invalid column!")
+	_, err = newQuery[TestUser]().Max(context.Background(), "invalid column!")
 	if err == nil {
 		t.Error("expected error for invalid column in Max, got nil")
 	}
@@ -487,7 +487,7 @@ func TestWhen_TrueApplies(t *testing.T) {
 	users, err := newQuery[TestUser]().
 		When(true, func(q *Query[TestUser]) *Query[TestUser] {
 			return q.OrderBy("age", "ASC")
-		}).Get()
+		}).Get(context.Background())
 	if err != nil {
 		t.Fatalf("When(true) returned error: %v", err)
 	}
@@ -509,7 +509,7 @@ func TestWhen_FalseSkips(t *testing.T) {
 	users, err := newQuery[TestUser]().
 		When(false, func(q *Query[TestUser]) *Query[TestUser] {
 			return q.OrderBy("age", "ASC")
-		}).Get()
+		}).Get(context.Background())
 	if err != nil {
 		t.Fatalf("When(false) returned error: %v", err)
 	}
@@ -535,7 +535,7 @@ func TestWhen_Chaining(t *testing.T) {
 		When(false, func(q *Query[TestUser]) *Query[TestUser] {
 			return q.Where("age >= ?", 200) // should NOT apply
 		}).
-		Sum("age")
+		Sum(context.Background(), "age")
 	if err != nil {
 		t.Fatalf("Chained When returned error: %v", err)
 	}
@@ -551,11 +551,11 @@ func TestWhen_Chaining(t *testing.T) {
 func TestDoesntExist_EmptyTable(t *testing.T) {
 	setupConvenienceTests(t)
 
-	if !newQuery[TestUser]().DoesntExist() {
+	if !newQuery[TestUser]().DoesntExist(context.Background()) {
 		t.Error("expected DoesntExist() = true for empty table")
 	}
 	m := Model[TestUser]{}
-	if !m.DoesntExist() {
+	if !m.DoesntExist(context.Background()) {
 		t.Error("expected Model.DoesntExist() = true for empty table")
 	}
 }
@@ -564,11 +564,11 @@ func TestDoesntExist_NonEmptyTable(t *testing.T) {
 	setupConvenienceTests(t)
 	seedUser(t, Default(), "Exists", "exists@example.com", 25)
 
-	if newQuery[TestUser]().DoesntExist() {
+	if newQuery[TestUser]().DoesntExist(context.Background()) {
 		t.Error("expected DoesntExist() = false for non-empty table")
 	}
 	m2 := Model[TestUser]{}
-	if m2.DoesntExist() {
+	if m2.DoesntExist(context.Background()) {
 		t.Error("expected Model.DoesntExist() = false for non-empty table")
 	}
 }
@@ -578,12 +578,12 @@ func TestDoesntExist_WithConditions(t *testing.T) {
 	seedUser(t, Default(), "Present", "present@example.com", 25)
 
 	// Condition that matches no rows
-	if !newQuery[TestUser]().Where("name = ?", "ghost").DoesntExist() {
+	if !newQuery[TestUser]().Where("name = ?", "ghost").DoesntExist(context.Background()) {
 		t.Error("expected DoesntExist() = true for non-matching condition")
 	}
 
 	// Condition that matches
-	if newQuery[TestUser]().Where("name = ?", "Present").DoesntExist() {
+	if newQuery[TestUser]().Where("name = ?", "Present").DoesntExist(context.Background()) {
 		t.Error("expected DoesntExist() = false for matching condition")
 	}
 }
@@ -596,7 +596,7 @@ func TestValue_Found(t *testing.T) {
 	setupConvenienceTests(t)
 	seedUser(t, Default(), "ValUser", "val@example.com", 42)
 
-	val, err := newQuery[TestUser]().Where("email = ?", "val@example.com").Value("name")
+	val, err := newQuery[TestUser]().Where("email = ?", "val@example.com").Value(context.Background(), "name")
 	if err != nil {
 		t.Fatalf("Value returned error: %v", err)
 	}
@@ -613,7 +613,7 @@ func TestValue_Found(t *testing.T) {
 func TestValue_NotFound(t *testing.T) {
 	setupConvenienceTests(t)
 
-	_, err := newQuery[TestUser]().Where("email = ?", "nobody@example.com").Value("name")
+	_, err := newQuery[TestUser]().Where("email = ?", "nobody@example.com").Value(context.Background(), "name")
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -622,7 +622,7 @@ func TestValue_NotFound(t *testing.T) {
 func TestValue_InvalidColumn(t *testing.T) {
 	setupConvenienceTests(t)
 
-	_, err := newQuery[TestUser]().Value("bad column!")
+	_, err := newQuery[TestUser]().Value(context.Background(), "bad column!")
 	if err == nil {
 		t.Error("expected error for invalid column, got nil")
 	}
@@ -632,7 +632,7 @@ func TestValue_NumericColumn(t *testing.T) {
 	setupConvenienceTests(t)
 	seedUser(t, Default(), "NumUser", "num@example.com", 77)
 
-	val, err := newQuery[TestUser]().Where("email = ?", "num@example.com").Value("age")
+	val, err := newQuery[TestUser]().Where("email = ?", "num@example.com").Value(context.Background(), "age")
 	if err != nil {
 		t.Fatalf("Value returned error: %v", err)
 	}
@@ -655,12 +655,12 @@ func TestModelStaticIncrement(t *testing.T) {
 	seedUser(t, Default(), "StaticInc", "static-inc@example.com", 50)
 
 	// Increment all records
-	err := Model[TestUser]{}.Increment("age", 10)
+	err := Model[TestUser]{}.Increment(context.Background(), "age", 10)
 	if err != nil {
 		t.Fatalf("Model.Increment returned error: %v", err)
 	}
 
-	user, err := Model[TestUser]{}.FindBy("email", "static-inc@example.com")
+	user, err := Model[TestUser]{}.FindBy(context.Background(), "email", "static-inc@example.com")
 	if err != nil {
 		t.Fatalf("FindBy returned error: %v", err)
 	}
@@ -673,12 +673,12 @@ func TestModelStaticDecrement(t *testing.T) {
 	setupConvenienceTests(t)
 	seedUser(t, Default(), "StaticDec", "static-dec@example.com", 50)
 
-	err := Model[TestUser]{}.Decrement("age", 10)
+	err := Model[TestUser]{}.Decrement(context.Background(), "age", 10)
 	if err != nil {
 		t.Fatalf("Model.Decrement returned error: %v", err)
 	}
 
-	user, err := Model[TestUser]{}.FindBy("email", "static-dec@example.com")
+	user, err := Model[TestUser]{}.FindBy(context.Background(), "email", "static-dec@example.com")
 	if err != nil {
 		t.Fatalf("FindBy returned error: %v", err)
 	}
@@ -728,7 +728,7 @@ func TestUUIDModel_FindOrFail_Found(t *testing.T) {
 	setupUUIDConvenienceTests(t)
 	seedProject(t, Default(), "uuid-1", "Project A", "Desc A")
 
-	proj, err := UUIDModel[TestProject]{}.FindOrFail("uuid-1")
+	proj, err := UUIDModel[TestProject]{}.FindOrFail(context.Background(), "uuid-1")
 	if err != nil {
 		t.Fatalf("FindOrFail returned unexpected error: %v", err)
 	}
@@ -740,7 +740,7 @@ func TestUUIDModel_FindOrFail_Found(t *testing.T) {
 func TestUUIDModel_FindOrFail_NotFound(t *testing.T) {
 	setupUUIDConvenienceTests(t)
 
-	_, err := UUIDModel[TestProject]{}.FindOrFail("nonexistent-uuid")
+	_, err := UUIDModel[TestProject]{}.FindOrFail(context.Background(), "nonexistent-uuid")
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -754,7 +754,7 @@ func TestUUIDModel_FirstOrFail_Found(t *testing.T) {
 	setupUUIDConvenienceTests(t)
 	seedProject(t, Default(), "uuid-2", "First Project", "Description")
 
-	proj, err := UUIDModel[TestProject]{}.FirstOrFail()
+	proj, err := UUIDModel[TestProject]{}.FirstOrFail(context.Background())
 	if err != nil {
 		t.Fatalf("FirstOrFail returned unexpected error: %v", err)
 	}
@@ -766,7 +766,7 @@ func TestUUIDModel_FirstOrFail_Found(t *testing.T) {
 func TestUUIDModel_FirstOrCreate(t *testing.T) {
 	setupUUIDConvenienceTests(t)
 
-	proj, err := UUIDModel[TestProject]{}.FirstOrCreate(
+	proj, err := UUIDModel[TestProject]{}.FirstOrCreate(context.Background(),
 		map[string]any{"name": "New Project"},
 		map[string]any{"description": "Auto-created"},
 	)
@@ -785,7 +785,7 @@ func TestUUIDModel_UpdateOrCreate(t *testing.T) {
 	setupUUIDConvenienceTests(t)
 	seedProject(t, Default(), "uuid-up", "Old Name", "Old Desc")
 
-	proj, err := UUIDModel[TestProject]{}.UpdateOrCreate(
+	proj, err := UUIDModel[TestProject]{}.UpdateOrCreate(context.Background(),
 		map[string]any{"name": "Old Name"},
 		map[string]any{"description": "Updated Desc"},
 	)
@@ -796,7 +796,7 @@ func TestUUIDModel_UpdateOrCreate(t *testing.T) {
 		t.Errorf("expected description 'Updated Desc', got %q", proj.Description)
 	}
 
-	count, _ := UUIDModel[TestProject]{}.Count()
+	count, _ := UUIDModel[TestProject]{}.Count(context.Background())
 	if count != 1 {
 		t.Errorf("expected 1 record after UpdateOrCreate, got %d", count)
 	}
@@ -805,13 +805,13 @@ func TestUUIDModel_UpdateOrCreate(t *testing.T) {
 func TestUUIDModel_DoesntExist(t *testing.T) {
 	setupUUIDConvenienceTests(t)
 
-	if !(UUIDModel[TestProject]{}).DoesntExist() {
+	if !(UUIDModel[TestProject]{}).DoesntExist(context.Background()) {
 		t.Error("expected DoesntExist() = true for empty table")
 	}
 
 	seedProject(t, Default(), "uuid-ex", "Exists", "yes")
 
-	if (UUIDModel[TestProject]{}).DoesntExist() {
+	if (UUIDModel[TestProject]{}).DoesntExist(context.Background()) {
 		t.Error("expected DoesntExist() = false after seeding")
 	}
 }
@@ -873,7 +873,7 @@ func TestSoftDeleteModel_FindOrFail_Found(t *testing.T) {
 	setupSoftDeleteConvenienceTests(t)
 	id := seedSoftDeleteUser(t, Default(), "Alice", "alice@sd.com", 30)
 
-	user, err := SoftDeleteModel[SoftDeleteUser]{}.FindOrFail(id)
+	user, err := SoftDeleteModel[SoftDeleteUser]{}.FindOrFail(context.Background(), id)
 	if err != nil {
 		t.Fatalf("FindOrFail returned unexpected error: %v", err)
 	}
@@ -885,7 +885,7 @@ func TestSoftDeleteModel_FindOrFail_Found(t *testing.T) {
 func TestSoftDeleteModel_FindOrFail_NotFound(t *testing.T) {
 	setupSoftDeleteConvenienceTests(t)
 
-	_, err := SoftDeleteModel[SoftDeleteUser]{}.FindOrFail(999)
+	_, err := SoftDeleteModel[SoftDeleteUser]{}.FindOrFail(context.Background(), 999)
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -894,7 +894,7 @@ func TestSoftDeleteModel_FindOrFail_NotFound(t *testing.T) {
 func TestSoftDeleteModel_FirstOrCreate(t *testing.T) {
 	setupSoftDeleteConvenienceTests(t)
 
-	user, err := SoftDeleteModel[SoftDeleteUser]{}.FirstOrCreate(
+	user, err := SoftDeleteModel[SoftDeleteUser]{}.FirstOrCreate(context.Background(),
 		map[string]any{"email": "new@sd.com"},
 		map[string]any{"name": "New SD User", "age": 25},
 	)
@@ -910,12 +910,12 @@ func TestSoftDeleteModel_Increment(t *testing.T) {
 	setupSoftDeleteConvenienceTests(t)
 	seedSoftDeleteUser(t, Default(), "Inc", "inc@sd.com", 10)
 
-	err := SoftDeleteModel[SoftDeleteUser]{}.Increment("age", 5)
+	err := SoftDeleteModel[SoftDeleteUser]{}.Increment(context.Background(), "age", 5)
 	if err != nil {
 		t.Fatalf("Increment returned error: %v", err)
 	}
 
-	user, err := SoftDeleteModel[SoftDeleteUser]{}.FindBy("email", "inc@sd.com")
+	user, err := SoftDeleteModel[SoftDeleteUser]{}.FindBy(context.Background(), "email", "inc@sd.com")
 	if err != nil {
 		t.Fatalf("FindBy returned error: %v", err)
 	}
@@ -927,7 +927,7 @@ func TestSoftDeleteModel_Increment(t *testing.T) {
 func TestSoftDeleteModel_DoesntExist(t *testing.T) {
 	setupSoftDeleteConvenienceTests(t)
 
-	if !(SoftDeleteModel[SoftDeleteUser]{}).DoesntExist() {
+	if !(SoftDeleteModel[SoftDeleteUser]{}).DoesntExist(context.Background()) {
 		t.Error("expected DoesntExist() = true for empty table")
 	}
 }
@@ -956,7 +956,7 @@ func TestSoftDeleteModel_Count_HidesTrashed(t *testing.T) {
 	trashed := seedSoftDeleteUser(t, m, "Trashed", "trashed@sd.com", 31)
 	trashSoftDeleteUser(t, m, trashed)
 
-	got, err := SoftDeleteModel[SoftDeleteUser]{}.Where("id > ?", 0).Count()
+	got, err := SoftDeleteModel[SoftDeleteUser]{}.Where("id > ?", 0).Count(context.Background())
 	if err != nil {
 		t.Fatalf("Count: %v", err)
 	}
@@ -964,7 +964,7 @@ func TestSoftDeleteModel_Count_HidesTrashed(t *testing.T) {
 		t.Errorf("default scope: Count() = %d, want 1 (excludes trashed); live id=%d trashed id=%d", got, live, trashed)
 	}
 
-	withTrashed, err := SoftDeleteModel[SoftDeleteUser]{}.Where("id > ?", 0).WithTrashed().Count()
+	withTrashed, err := SoftDeleteModel[SoftDeleteUser]{}.Where("id > ?", 0).WithTrashed().Count(context.Background())
 	if err != nil {
 		t.Fatalf("Count WithTrashed: %v", err)
 	}
@@ -972,7 +972,7 @@ func TestSoftDeleteModel_Count_HidesTrashed(t *testing.T) {
 		t.Errorf("WithTrashed: Count() = %d, want 2", withTrashed)
 	}
 
-	onlyTrashed, err := SoftDeleteModel[SoftDeleteUser]{}.Where("id > ?", 0).OnlyTrashed().Count()
+	onlyTrashed, err := SoftDeleteModel[SoftDeleteUser]{}.Where("id > ?", 0).OnlyTrashed().Count(context.Background())
 	if err != nil {
 		t.Fatalf("Count OnlyTrashed: %v", err)
 	}
@@ -991,7 +991,7 @@ func TestSoftDeleteModel_Pluck_HidesTrashed(t *testing.T) {
 	trashed := seedSoftDeleteUser(t, m, "Trashed", "trashed@sd.com", 31)
 	trashSoftDeleteUser(t, m, trashed)
 
-	emails, err := SoftDeleteModel[SoftDeleteUser]{}.Where("id > ?", 0).Pluck("email")
+	emails, err := SoftDeleteModel[SoftDeleteUser]{}.Where("id > ?", 0).Pluck(context.Background(), "email")
 	if err != nil {
 		t.Fatalf("Pluck: %v", err)
 	}
@@ -1013,7 +1013,7 @@ func TestSoftDeleteModel_Update_HidesTrashed(t *testing.T) {
 	trashed := seedSoftDeleteUser(t, m, "Trashed", "trashed@sd.com", 31)
 	trashSoftDeleteUser(t, m, trashed)
 
-	affected, err := SoftDeleteModel[SoftDeleteUser]{}.Where("id > ?", 0).Update(map[string]any{"age": 99})
+	affected, err := SoftDeleteModel[SoftDeleteUser]{}.Where("id > ?", 0).Update(context.Background(), map[string]any{"age": 99})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
@@ -1049,7 +1049,7 @@ func TestSoftDeleteModel_Update_HidesTrashed(t *testing.T) {
 func TestUpdateOrCreate_InvalidIdentifier(t *testing.T) {
 	setupConvenienceTests(t)
 
-	_, err := Model[TestUser]{}.UpdateOrCreate(
+	_, err := Model[TestUser]{}.UpdateOrCreate(context.Background(),
 		map[string]any{"email; DROP TABLE": "evil"},
 		map[string]any{},
 	)
@@ -1057,7 +1057,7 @@ func TestUpdateOrCreate_InvalidIdentifier(t *testing.T) {
 		t.Error("expected error for invalid identifier in conditions, got nil")
 	}
 
-	_, err = Model[TestUser]{}.UpdateOrCreate(
+	_, err = Model[TestUser]{}.UpdateOrCreate(context.Background(),
 		map[string]any{"email": "ok@test.com"},
 		map[string]any{"bad column!": "value"},
 	)
@@ -1069,7 +1069,7 @@ func TestUpdateOrCreate_InvalidIdentifier(t *testing.T) {
 func TestDecrement_InvalidColumn(t *testing.T) {
 	setupConvenienceTests(t)
 
-	err := Model[TestUser]{}.Where("id = ?", 1).Decrement("bad column!")
+	err := Model[TestUser]{}.Where("id = ?", 1).Decrement(context.Background(), "bad column!")
 	if err == nil {
 		t.Error("expected error for invalid column in Decrement, got nil")
 	}
@@ -1082,7 +1082,7 @@ func TestFirstOrCreate_ConstraintViolation(t *testing.T) {
 	// Try to create with a unique email that already exists but different conditions
 	// The conditions don't match (name != "Different"), so it tries to create,
 	// which should fail on the unique email constraint.
-	_, err := Model[TestUser]{}.FirstOrCreate(
+	_, err := Model[TestUser]{}.FirstOrCreate(context.Background(),
 		map[string]any{"name": "Different"},
 		map[string]any{"email": "dup@example.com", "age": 25},
 	)

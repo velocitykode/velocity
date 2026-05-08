@@ -97,7 +97,7 @@ func resolvePolymorphicMeta(modelType reflect.Type, preloadName string) (*polymo
 // loadPolymorphic eagerly loads a polymorphic relation onto each parent in
 // models. Issues at most K queries, where K is the number of distinct type
 // names present across the parents (one IN query per type).
-func (q *Query[T]) loadPolymorphic(models *[]T, meta *polymorphicMeta) error {
+func (q *Query[T]) loadPolymorphic(ctx context.Context, models *[]T, meta *polymorphicMeta) error {
 	if len(*models) == 0 {
 		return nil
 	}
@@ -156,7 +156,7 @@ func (q *Query[T]) loadPolymorphic(models *[]T, meta *polymorphicMeta) error {
 			idToModelIdxs[n] = append(idToModelIdxs[n], it.modelIdx)
 		}
 
-		loaded, err := loadByIDs(q.driver, q.getContext(), relatedType, uniqueIDs)
+		loaded, err := loadByIDs(q.driver, ctx, relatedType, uniqueIDs)
 		if err != nil {
 			return fmt.Errorf("orm: failed to eager-load polymorphic %q (%s): %w", meta.fieldName, tName, err)
 		}

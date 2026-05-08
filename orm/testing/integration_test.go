@@ -115,7 +115,7 @@ func TestCrossDatabaseFactories(t *testing.T) {
 			}
 
 			// Create user via factory
-			user := UserFactory(manager).Create()
+			user := UserFactory(manager).Create(context.Background())
 			userMap := user.(map[string]interface{})
 
 			if userMap["id"] == nil {
@@ -179,7 +179,7 @@ func TestCrossDatabaseRefresh(t *testing.T) {
 			db := ormtesting.RefreshDatabase(t, manager)
 
 			// Create some data
-			UserFactory(manager).Count(5).Create()
+			UserFactory(manager).Count(5).Create(context.Background())
 
 			// Verify data exists
 			var count int
@@ -256,7 +256,7 @@ func TestCrossDatabasePlaceholders(t *testing.T) {
 				Sequence("email", func(i int) interface{} {
 					return "user" + string(rune(i)) + "@test.com"
 				}).
-				Create()
+				Create(context.Background())
 
 			userList := users.([]map[string]interface{})
 			if len(userList) != 10 {

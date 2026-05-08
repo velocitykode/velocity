@@ -1,6 +1,7 @@
 package orm
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -9,61 +10,71 @@ import (
 // --- Model[T] ---
 
 // Increment atomically increments a column by amount (default 1) for all records of this type.
-func (Model[T]) Increment(column string, amount ...int) error {
-	return newQuery[T]().Increment(column, amount...)
+// Takes ctx as the first argument so transaction enrollment is mandatory and explicit.
+func (Model[T]) Increment(ctx context.Context, column string, amount ...int) error {
+	return newQuery[T]().Increment(ctx, column, amount...)
 }
 
 // Decrement atomically decrements a column by amount (default 1) for all records of this type.
-func (Model[T]) Decrement(column string, amount ...int) error {
-	return newQuery[T]().Decrement(column, amount...)
+// Takes ctx as the first argument.
+func (Model[T]) Decrement(ctx context.Context, column string, amount ...int) error {
+	return newQuery[T]().Decrement(ctx, column, amount...)
 }
 
 // --- UUIDModel[T] ---
 
 // Increment atomically increments a column by amount (default 1) for all records of this type.
-func (UUIDModel[T]) Increment(column string, amount ...int) error {
-	return newQuery[T]().Increment(column, amount...)
+// Takes ctx as the first argument.
+func (UUIDModel[T]) Increment(ctx context.Context, column string, amount ...int) error {
+	return newQuery[T]().Increment(ctx, column, amount...)
 }
 
 // Decrement atomically decrements a column by amount (default 1) for all records of this type.
-func (UUIDModel[T]) Decrement(column string, amount ...int) error {
-	return newQuery[T]().Decrement(column, amount...)
+// Takes ctx as the first argument.
+func (UUIDModel[T]) Decrement(ctx context.Context, column string, amount ...int) error {
+	return newQuery[T]().Decrement(ctx, column, amount...)
 }
 
 // --- SoftDeleteModel[T] ---
 
 // Increment atomically increments a column by amount (default 1) for all records of this type.
-func (SoftDeleteModel[T]) Increment(column string, amount ...int) error {
-	return newQuery[T]().Increment(column, amount...)
+// Takes ctx as the first argument.
+func (SoftDeleteModel[T]) Increment(ctx context.Context, column string, amount ...int) error {
+	return newQuery[T]().Increment(ctx, column, amount...)
 }
 
 // Decrement atomically decrements a column by amount (default 1) for all records of this type.
-func (SoftDeleteModel[T]) Decrement(column string, amount ...int) error {
-	return newQuery[T]().Decrement(column, amount...)
+// Takes ctx as the first argument.
+func (SoftDeleteModel[T]) Decrement(ctx context.Context, column string, amount ...int) error {
+	return newQuery[T]().Decrement(ctx, column, amount...)
 }
 
 // --- SoftDeleteUUIDModel[T] ---
 
 // Increment atomically increments a column by amount (default 1) for all records of this type.
-func (SoftDeleteUUIDModel[T]) Increment(column string, amount ...int) error {
-	return newQuery[T]().Increment(column, amount...)
+// Takes ctx as the first argument.
+func (SoftDeleteUUIDModel[T]) Increment(ctx context.Context, column string, amount ...int) error {
+	return newQuery[T]().Increment(ctx, column, amount...)
 }
 
 // Decrement atomically decrements a column by amount (default 1) for all records of this type.
-func (SoftDeleteUUIDModel[T]) Decrement(column string, amount ...int) error {
-	return newQuery[T]().Decrement(column, amount...)
+// Takes ctx as the first argument.
+func (SoftDeleteUUIDModel[T]) Decrement(ctx context.Context, column string, amount ...int) error {
+	return newQuery[T]().Decrement(ctx, column, amount...)
 }
 
 // --- Query[T] ---
 
 // Increment atomically increments a column by amount (default 1) for matching records.
-func (q *Query[T]) Increment(column string, amount ...int) error {
-	return q.incrementOrDecrement(column, "+", amount...)
+// Takes ctx as the first argument so transaction enrollment is mandatory and explicit.
+func (q *Query[T]) Increment(ctx context.Context, column string, amount ...int) error {
+	return q.incrementOrDecrement(ctx, column, "+", amount...)
 }
 
 // Decrement atomically decrements a column by amount (default 1) for matching records.
-func (q *Query[T]) Decrement(column string, amount ...int) error {
-	return q.incrementOrDecrement(column, "-", amount...)
+// Takes ctx as the first argument.
+func (q *Query[T]) Decrement(ctx context.Context, column string, amount ...int) error {
+	return q.incrementOrDecrement(ctx, column, "-", amount...)
 }
 
 // incrementOrDecrement builds and executes an UPDATE SET col = col +/- ? query.
@@ -71,10 +82,11 @@ func (q *Query[T]) Decrement(column string, amount ...int) error {
 // It delegates the WHERE clause to the grammar's CompileDelete (which compiles
 // conditions identically to CompileUpdate) to avoid hand-rolling placeholder
 // logic that differs per driver (e.g. ? vs $N).
-func (q *Query[T]) incrementOrDecrement(column, op string, amount ...int) error {
+func (q *Query[T]) incrementOrDecrement(ctx context.Context, column, op string, amount ...int) error {
 	if err := validateIdentifier(column); err != nil {
 		return fmt.Errorf("velocity/orm: increment/decrement: %w", err)
 	}
+	q.bindTxFromContextValue(ctx)
 
 	amt := 1
 	if len(amount) > 0 {
@@ -127,8 +139,8 @@ func (q *Query[T]) incrementOrDecrement(column, op string, amount ...int) error 
 	sqlStr := sqlBuilder.String()
 
 	start := time.Now()
-	_, err := q.driver.ExecContext(q.getContext(), sqlStr, args...)
-	dispatchQueryExecuted(q.getContext(), sqlStr, args, time.Since(start), 0, q.driver.DriverName(), 2)
+	_, err := q.driver.ExecContext(ctx, sqlStr, args...)
+	dispatchQueryExecuted(ctx, sqlStr, args, time.Since(start), 0, q.driver.DriverName(), 2)
 
 	return err
 }

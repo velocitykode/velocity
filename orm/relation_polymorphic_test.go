@@ -330,7 +330,7 @@ func TestPolymorphic_EagerLoad_BatchesByType(t *testing.T) {
 		mgr.mu.Unlock()
 	}()
 
-	logs, err := MorphAudit{}.With("Resource").Get()
+	logs, err := MorphAudit{}.With("Resource").Get(context.Background())
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -380,7 +380,7 @@ func TestPolymorphic_EagerLoad_UnknownType(t *testing.T) {
 	// Only register one type to ensure 'unknown_type' is missing.
 	RegisterMorph("comment", reflect.TypeOf(MComment{}))
 
-	_, err := MorphAudit{}.With("Resource").Get()
+	_, err := MorphAudit{}.With("Resource").Get(context.Background())
 	if err == nil {
 		t.Fatal("expected error for unknown morph type")
 	}
@@ -425,7 +425,7 @@ func TestPolymorphic_UnknownTypeName_NonStrict_LogsAndSkips(t *testing.T) {
 		t.Fatal("default MorphStrict() should be false")
 	}
 
-	logs, getErr := MorphAudit{}.With("Resource").Get()
+	logs, getErr := MorphAudit{}.With("Resource").Get(context.Background())
 
 	if getErr != nil {
 		t.Fatalf("Get returned error in non-strict mode: %v", getErr)
@@ -482,7 +482,7 @@ func TestPolymorphic_UnknownTypeName_Strict_Errors(t *testing.T) {
 	SetMorphStrict(true)
 	t.Cleanup(func() { SetMorphStrict(false) })
 
-	if _, err := (MorphAudit{}.With("Resource")).Get(); err == nil {
+	if _, err := (MorphAudit{}.With("Resource")).Get(context.Background()); err == nil {
 		t.Fatal("expected error in strict mode")
 	} else if !strings.Contains(err.Error(), "unknown_type") {
 		t.Errorf("error should mention the unknown type name: %v", err)
@@ -541,7 +541,7 @@ func TestMorph_Resolve_NilReceiver(t *testing.T) {
 func TestPolymorphic_EagerLoad_NoMatchingRows(t *testing.T) {
 	cleanup := withPolymorphicDB(t)
 	defer cleanup()
-	logs, err := MorphAudit{}.With("Resource").Where("id < 0").Get()
+	logs, err := MorphAudit{}.With("Resource").Where("id < 0").Get(context.Background())
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -560,7 +560,7 @@ func TestPolymorphic_EagerLoad_NoTypeName(t *testing.T) {
 	defer ResetDefault()
 	ResetMorphRegistry()
 	defer ResetMorphRegistry()
-	logs, err := MorphAudit{}.With("Resource").Get()
+	logs, err := MorphAudit{}.With("Resource").Get(context.Background())
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}

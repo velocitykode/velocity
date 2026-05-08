@@ -74,11 +74,11 @@ func clearGlobalScopes[T any]() {
 func TestAddGlobalScope(t *testing.T) {
 	setupScopeTests(t)
 
-	AddGlobalScope[ScopeUser]("tenant", func(q *Query[ScopeUser]) {
+	AddGlobalScope[ScopeUser]("tenant", func(_ context.Context, q *Query[ScopeUser]) {
 		q.Where("tenant_id = ?", 1)
 	})
 
-	users, err := Model[ScopeUser]{}.All()
+	users, err := Model[ScopeUser]{}.All(context.Background())
 	if err != nil {
 		t.Fatalf("All: %v", err)
 	}
@@ -97,15 +97,15 @@ func TestAddGlobalScope(t *testing.T) {
 func TestWithoutGlobalScope(t *testing.T) {
 	setupScopeTests(t)
 
-	AddGlobalScope[ScopeUser]("tenant", func(q *Query[ScopeUser]) {
+	AddGlobalScope[ScopeUser]("tenant", func(_ context.Context, q *Query[ScopeUser]) {
 		q.Where("tenant_id = ?", 1)
 	})
-	AddGlobalScope[ScopeUser]("active", func(q *Query[ScopeUser]) {
+	AddGlobalScope[ScopeUser]("active", func(_ context.Context, q *Query[ScopeUser]) {
 		q.Where("active = ?", true)
 	})
 
 	// With both scopes active, only alice (tenant 1, active) is visible.
-	users, err := Model[ScopeUser]{}.All()
+	users, err := Model[ScopeUser]{}.All(context.Background())
 	if err != nil {
 		t.Fatalf("baseline All: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestWithoutGlobalScope(t *testing.T) {
 
 	// Opt out of "tenant" only: active scope still applies, both
 	// active users (alice + carol) come back.
-	relaxed, err := newQuery[ScopeUser]().WithoutGlobalScope("tenant").Get()
+	relaxed, err := newQuery[ScopeUser]().WithoutGlobalScope("tenant").Get(context.Background())
 	if err != nil {
 		t.Fatalf("relaxed Get: %v", err)
 	}
@@ -134,14 +134,14 @@ func TestWithoutGlobalScope(t *testing.T) {
 func TestWithoutGlobalScopes(t *testing.T) {
 	setupScopeTests(t)
 
-	AddGlobalScope[ScopeUser]("tenant", func(q *Query[ScopeUser]) {
+	AddGlobalScope[ScopeUser]("tenant", func(_ context.Context, q *Query[ScopeUser]) {
 		q.Where("tenant_id = ?", 1)
 	})
-	AddGlobalScope[ScopeUser]("active", func(q *Query[ScopeUser]) {
+	AddGlobalScope[ScopeUser]("active", func(_ context.Context, q *Query[ScopeUser]) {
 		q.Where("active = ?", true)
 	})
 
-	all, err := newQuery[ScopeUser]().WithoutGlobalScopes().Get()
+	all, err := newQuery[ScopeUser]().WithoutGlobalScopes().Get(context.Background())
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -156,16 +156,16 @@ func TestAddGlobalScope_Compose(t *testing.T) {
 	setupScopeTests(t)
 
 	var order []string
-	AddGlobalScope[ScopeUser]("first", func(q *Query[ScopeUser]) {
+	AddGlobalScope[ScopeUser]("first", func(_ context.Context, q *Query[ScopeUser]) {
 		order = append(order, "first")
 		q.Where("tenant_id = ?", 1)
 	})
-	AddGlobalScope[ScopeUser]("second", func(q *Query[ScopeUser]) {
+	AddGlobalScope[ScopeUser]("second", func(_ context.Context, q *Query[ScopeUser]) {
 		order = append(order, "second")
 		q.Where("active = ?", true)
 	})
 
-	users, err := Model[ScopeUser]{}.All()
+	users, err := Model[ScopeUser]{}.All(context.Background())
 	if err != nil {
 		t.Fatalf("All: %v", err)
 	}
@@ -181,13 +181,14 @@ func TestAddGlobalScope_Compose(t *testing.T) {
 type tenantKey struct{}
 
 // TestAddGlobalScope_FromContext confirms a scope can read its
-// predicate value from the query's context.Context, the consumer's
-// chosen mechanism for plumbing tenant / actor / locale data.
+// predicate value from the per-call ctx forwarded by applyGlobalScopes,
+// the consumer's chosen mechanism for plumbing tenant / actor / locale
+// data. The ctx is the same context.Context the caller passed to the
+// terminal that triggered the scope.
 func TestAddGlobalScope_FromContext(t *testing.T) {
 	setupScopeTests(t)
 
-	AddGlobalScope[ScopeUser]("tenant_from_ctx", func(q *Query[ScopeUser]) {
-		ctx := q.getContext()
+	AddGlobalScope[ScopeUser]("tenant_from_ctx", func(ctx context.Context, q *Query[ScopeUser]) {
 		if v, ok := ctx.Value(tenantKey{}).(int); ok {
 			q.Where("tenant_id = ?", v)
 		}
@@ -195,7 +196,7 @@ func TestAddGlobalScope_FromContext(t *testing.T) {
 
 	// Tenant 2: should yield carol + dave (regardless of active).
 	ctx := context.WithValue(context.Background(), tenantKey{}, 2)
-	users, err := newQuery[ScopeUser]().WithContext(ctx).Get()
+	users, err := newQuery[ScopeUser]().Get(ctx)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -209,7 +210,7 @@ func TestAddGlobalScope_FromContext(t *testing.T) {
 	}
 
 	// Without the ctx value, the scope is a no-op and all rows return.
-	all, err := newQuery[ScopeUser]().Get()
+	all, err := newQuery[ScopeUser]().Get(context.Background())
 	if err != nil {
 		t.Fatalf("no-ctx Get: %v", err)
 	}
@@ -226,12 +227,12 @@ func TestAddGlobalScope_LeakRegression(t *testing.T) {
 	setupScopeTests(t)
 
 	const callerTenant = 1
-	AddGlobalScope[ScopeUser]("tenant", func(q *Query[ScopeUser]) {
+	AddGlobalScope[ScopeUser]("tenant", func(_ context.Context, q *Query[ScopeUser]) {
 		q.Where("tenant_id = ?", callerTenant)
 	})
 
 	// Caller forgot to scope explicitly; framework must enforce.
-	usersAll, err := Model[ScopeUser]{}.All()
+	usersAll, err := Model[ScopeUser]{}.All(context.Background())
 	if err != nil {
 		t.Fatalf("All: %v", err)
 	}
@@ -243,7 +244,7 @@ func TestAddGlobalScope_LeakRegression(t *testing.T) {
 	}
 
 	// Even Count, Pluck, and Where must enforce.
-	count, err := Model[ScopeUser]{}.Count()
+	count, err := Model[ScopeUser]{}.Count(context.Background())
 	if err != nil {
 		t.Fatalf("Count: %v", err)
 	}
@@ -251,7 +252,7 @@ func TestAddGlobalScope_LeakRegression(t *testing.T) {
 		t.Errorf("Count = %d, want 2 (scope must enforce)", count)
 	}
 
-	names, err := Model[ScopeUser]{}.Pluck("name")
+	names, err := Model[ScopeUser]{}.Pluck(context.Background(), "name")
 	if err != nil {
 		t.Fatalf("Pluck: %v", err)
 	}
@@ -260,7 +261,7 @@ func TestAddGlobalScope_LeakRegression(t *testing.T) {
 	}
 
 	// Caller's own Where must AND with the scope, not replace it.
-	mixed, err := Model[ScopeUser]{}.Where("active = ?", true).Get()
+	mixed, err := Model[ScopeUser]{}.Where("active = ?", true).Get(context.Background())
 	if err != nil {
 		t.Fatalf("Where Get: %v", err)
 	}
@@ -272,7 +273,7 @@ func TestAddGlobalScope_LeakRegression(t *testing.T) {
 
 	// Update must respect the scope: an unfiltered Update must not
 	// touch other tenants' rows.
-	affected, err := newQuery[ScopeUser]().Update(map[string]any{"name": "renamed"})
+	affected, err := newQuery[ScopeUser]().Update(context.Background(), map[string]any{"name": "renamed"})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
@@ -280,7 +281,7 @@ func TestAddGlobalScope_LeakRegression(t *testing.T) {
 		t.Errorf("Update affected = %d, want 2 (scope must enforce)", affected)
 	}
 	// Confirm tenant 2 names are intact.
-	other, err := newQuery[ScopeUser]().WithoutGlobalScopes().Where("tenant_id = ?", 2).Get()
+	other, err := newQuery[ScopeUser]().WithoutGlobalScopes().Where("tenant_id = ?", 2).Get(context.Background())
 	if err != nil {
 		t.Fatalf("verify tenant 2: %v", err)
 	}
@@ -330,7 +331,7 @@ func TestAddGlobalScope_Concurrent(t *testing.T) {
 	clearGlobalScopes[ScopeUser]()
 
 	// Pre-register one scope so every concurrent query has work to do.
-	AddGlobalScope[ScopeUser]("tenant", func(q *Query[ScopeUser]) {
+	AddGlobalScope[ScopeUser]("tenant", func(_ context.Context, q *Query[ScopeUser]) {
 		q.Where("tenant_id = ?", 1)
 	})
 
@@ -349,14 +350,14 @@ func TestAddGlobalScope_Concurrent(t *testing.T) {
 				// (mutating the registry) and querying (reading it).
 				name := fmt.Sprintf("ephemeral_%d", id)
 				if i%5 == 0 {
-					AddGlobalScope[ScopeUser](name, func(q *Query[ScopeUser]) {
+					AddGlobalScope[ScopeUser](name, func(_ context.Context, q *Query[ScopeUser]) {
 						q.Where("active = ?", true)
 					})
 				}
 				if i%7 == 0 {
 					RemoveGlobalScope[ScopeUser](name)
 				}
-				users, err := Model[ScopeUser]{}.All()
+				users, err := Model[ScopeUser]{}.All(context.Background())
 				if err != nil {
 					failures.Add(1)
 					return
@@ -389,7 +390,7 @@ func TestSoftDelete_IsRegisteredAsGlobalScope(t *testing.T) {
 	_ = newQuery[RawScopeUser]()
 
 	// Default-scoped: trashed row hidden.
-	users, err := Model[RawScopeUser]{}.All()
+	users, err := Model[RawScopeUser]{}.All(context.Background())
 	if err != nil {
 		t.Fatalf("All: %v", err)
 	}
@@ -398,7 +399,7 @@ func TestSoftDelete_IsRegisteredAsGlobalScope(t *testing.T) {
 	}
 
 	// Opt-out by name: trashed row visible again.
-	all, err := newQuery[RawScopeUser]().WithoutGlobalScope(SoftDeleteScopeName).Get()
+	all, err := newQuery[RawScopeUser]().WithoutGlobalScope(SoftDeleteScopeName).Get(context.Background())
 	if err != nil {
 		t.Fatalf("WithoutGlobalScope Get: %v", err)
 	}
@@ -413,7 +414,7 @@ func TestSoftDelete_IsRegisteredAsGlobalScope(t *testing.T) {
 func TestClone_PropagatesScopeDisableState(t *testing.T) {
 	setupScopeTests(t)
 
-	AddGlobalScope[ScopeUser]("tenant", func(q *Query[ScopeUser]) {
+	AddGlobalScope[ScopeUser]("tenant", func(_ context.Context, q *Query[ScopeUser]) {
 		q.Where("tenant_id = ?", 1)
 	})
 

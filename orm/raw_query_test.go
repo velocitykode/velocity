@@ -162,7 +162,7 @@ func TestRawQuery_First_SQLite(t *testing.T) {
 	defer cleanup()
 
 	var user RawQueryUser
-	err := env.newRawQuery("SELECT id, name, email FROM raw_query_users WHERE name = ?", "Alice").First(&user)
+	err := env.newRawQuery("SELECT id, name, email FROM raw_query_users WHERE name = ?", "Alice").First(context.Background(), &user)
 	if err != nil {
 		t.Fatalf("RawQuery.First() failed: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestRawQuery_First_NotFound_SQLite(t *testing.T) {
 	defer cleanup()
 
 	var user RawQueryUser
-	err := env.newRawQuery("SELECT id, name, email FROM raw_query_users WHERE name = ?", "NonExistent").First(&user)
+	err := env.newRawQuery("SELECT id, name, email FROM raw_query_users WHERE name = ?", "NonExistent").First(context.Background(), &user)
 	if err != ErrRecordNotFound {
 		t.Errorf("Expected ErrRecordNotFound, got %v", err)
 	}
@@ -192,7 +192,7 @@ func TestRawQuery_Get_SQLite(t *testing.T) {
 
 	rq := NewRawQuery[RawQueryUser]("SELECT id, name, email FROM raw_query_users ORDER BY name")
 	rq.driver = env.driver
-	users, err := rq.Get()
+	users, err := rq.Get(context.Background())
 	if err != nil {
 		t.Fatalf("RawQuery.Get() failed: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestRawQuery_Get_Empty_SQLite(t *testing.T) {
 
 	rq := NewRawQuery[RawQueryUser]("SELECT id, name, email FROM raw_query_users WHERE age > ?", 100)
 	rq.driver = env.driver
-	users, err := rq.Get()
+	users, err := rq.Get(context.Background())
 	if err != nil {
 		t.Fatalf("RawQuery.Get() failed: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestRawQuery_Scan_SQLite(t *testing.T) {
 	rq := NewRawQuery[RawQueryUser]("SELECT COUNT(*) FROM raw_query_users")
 	rq.driver = env.driver
 	var count int
-	err := rq.Scan(&count)
+	err := rq.Scan(context.Background(), &count)
 	if err != nil {
 		t.Fatalf("RawQuery.Scan() failed: %v", err)
 	}
@@ -248,11 +248,15 @@ func TestRawQuery_Exec_SQLite(t *testing.T) {
 
 	rq := NewRawQuery[RawQueryUser]("UPDATE raw_query_users SET age = ? WHERE name = ?", 26, "Alice")
 	rq.driver = env.driver
-	affected, err := rq.Exec()
+	result, err := rq.Exec(context.Background())
 	if err != nil {
 		t.Fatalf("RawQuery.Exec() failed: %v", err)
 	}
 
+	affected, err := result.RowsAffected()
+	if err != nil {
+		t.Fatalf("RowsAffected() failed: %v", err)
+	}
 	if affected != 1 {
 		t.Errorf("Expected 1 row affected, got %d", affected)
 	}
@@ -274,7 +278,7 @@ func TestRawQuery_PartialStruct_SQLite(t *testing.T) {
 
 	// Test with partial struct (no ID field)
 	var user RawQueryUserPartial
-	err := env.newRawQueryPartial("SELECT name, email FROM raw_query_users WHERE name = ?", "Bob").First(&user)
+	err := env.newRawQueryPartial("SELECT name, email FROM raw_query_users WHERE name = ?", "Bob").First(context.Background(), &user)
 	if err != nil {
 		t.Fatalf("RawQuery.First() with partial struct failed: %v", err)
 	}
@@ -296,7 +300,7 @@ func TestRawQuery_WithPlaceholders_SQLite(t *testing.T) {
 		25, 30,
 	)
 	rq.driver = env.driver
-	users, err := rq.Get()
+	users, err := rq.Get(context.Background())
 	if err != nil {
 		t.Fatalf("RawQuery.Get() with multiple placeholders failed: %v", err)
 	}
@@ -316,7 +320,7 @@ func TestRawQuery_First_Postgres(t *testing.T) {
 	defer cleanup()
 
 	var user RawQueryUser
-	err := env.newRawQuery("SELECT id, name, email FROM raw_query_users WHERE name = $1", "Alice").First(&user)
+	err := env.newRawQuery("SELECT id, name, email FROM raw_query_users WHERE name = $1", "Alice").First(context.Background(), &user)
 	if err != nil {
 		t.Fatalf("RawQuery.First() failed: %v", err)
 	}
@@ -336,7 +340,7 @@ func TestRawQuery_Get_Postgres(t *testing.T) {
 
 	rq := NewRawQuery[RawQueryUser]("SELECT id, name, email FROM raw_query_users ORDER BY name")
 	rq.driver = env.driver
-	users, err := rq.Get()
+	users, err := rq.Get(context.Background())
 	if err != nil {
 		t.Fatalf("RawQuery.Get() failed: %v", err)
 	}
@@ -357,7 +361,7 @@ func TestRawQuery_Scan_Postgres(t *testing.T) {
 	rq := NewRawQuery[RawQueryUser]("SELECT COUNT(*) FROM raw_query_users")
 	rq.driver = env.driver
 	var count int
-	err := rq.Scan(&count)
+	err := rq.Scan(context.Background(), &count)
 	if err != nil {
 		t.Fatalf("RawQuery.Scan() failed: %v", err)
 	}
@@ -376,7 +380,7 @@ func TestModel_Raw_SQLite(t *testing.T) {
 	rq := Model[RawQueryUser]{}.Raw("SELECT id, name, email FROM raw_query_users WHERE name = ?", "Charlie")
 	rq.driver = env.driver
 	var user RawQueryUser
-	err := rq.First(&user)
+	err := rq.First(context.Background(), &user)
 	if err != nil {
 		t.Fatalf("Model.Raw().First() failed: %v", err)
 	}
@@ -393,9 +397,9 @@ func TestModel_Raw_Get_SQLite(t *testing.T) {
 
 	rq := Model[RawQueryUser]{}.Raw("SELECT id, name, email FROM raw_query_users WHERE age < ?", 35)
 	rq.driver = env.driver
-	users, err := rq.Get()
+	users, err := rq.Get(context.Background())
 	if err != nil {
-		t.Fatalf("Model.Raw().Get() failed: %v", err)
+		t.Fatalf("Model.Raw().Get(context.Background()) failed: %v", err)
 	}
 
 	if len(users) != 2 {

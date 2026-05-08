@@ -1,6 +1,7 @@
 package orm
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -11,57 +12,62 @@ import (
 // --- Model[T] (uint ID) ---
 
 // FirstOrCreate finds the first record matching conditions, or creates one
-// by merging conditions and values.
-func (Model[T]) FirstOrCreate(conditions map[string]any, values map[string]any) (*T, error) {
-	return firstOrCreate[T](conditions, values)
+// by merging conditions and values. Takes ctx as the first argument so
+// transaction enrollment is mandatory and explicit.
+func (Model[T]) FirstOrCreate(ctx context.Context, conditions map[string]any, values map[string]any) (*T, error) {
+	return firstOrCreate[T](ctx, conditions, values)
 }
 
 // UpdateOrCreate finds the first record matching conditions and updates it
 // with values, or creates a new record by merging conditions and values.
-func (Model[T]) UpdateOrCreate(conditions map[string]any, values map[string]any) (*T, error) {
-	return updateOrCreate[T](conditions, values)
+// Takes ctx as the first argument.
+func (Model[T]) UpdateOrCreate(ctx context.Context, conditions map[string]any, values map[string]any) (*T, error) {
+	return updateOrCreate[T](ctx, conditions, values)
 }
 
 // --- UUIDModel[T] (string ID) ---
 
 // FirstOrCreate finds the first record matching conditions, or creates one
-// by merging conditions and values.
-func (UUIDModel[T]) FirstOrCreate(conditions map[string]any, values map[string]any) (*T, error) {
-	return firstOrCreate[T](conditions, values)
+// by merging conditions and values. Takes ctx as the first argument.
+func (UUIDModel[T]) FirstOrCreate(ctx context.Context, conditions map[string]any, values map[string]any) (*T, error) {
+	return firstOrCreate[T](ctx, conditions, values)
 }
 
 // UpdateOrCreate finds the first record matching conditions and updates it
 // with values, or creates a new record by merging conditions and values.
-func (UUIDModel[T]) UpdateOrCreate(conditions map[string]any, values map[string]any) (*T, error) {
-	return updateOrCreate[T](conditions, values)
+// Takes ctx as the first argument.
+func (UUIDModel[T]) UpdateOrCreate(ctx context.Context, conditions map[string]any, values map[string]any) (*T, error) {
+	return updateOrCreate[T](ctx, conditions, values)
 }
 
 // --- SoftDeleteModel[T] (uint ID) ---
 
 // FirstOrCreate finds the first record matching conditions, or creates one
-// by merging conditions and values.
-func (SoftDeleteModel[T]) FirstOrCreate(conditions map[string]any, values map[string]any) (*T, error) {
-	return firstOrCreate[T](conditions, values)
+// by merging conditions and values. Takes ctx as the first argument.
+func (SoftDeleteModel[T]) FirstOrCreate(ctx context.Context, conditions map[string]any, values map[string]any) (*T, error) {
+	return firstOrCreate[T](ctx, conditions, values)
 }
 
 // UpdateOrCreate finds the first record matching conditions and updates it
 // with values, or creates a new record by merging conditions and values.
-func (SoftDeleteModel[T]) UpdateOrCreate(conditions map[string]any, values map[string]any) (*T, error) {
-	return updateOrCreate[T](conditions, values)
+// Takes ctx as the first argument.
+func (SoftDeleteModel[T]) UpdateOrCreate(ctx context.Context, conditions map[string]any, values map[string]any) (*T, error) {
+	return updateOrCreate[T](ctx, conditions, values)
 }
 
 // --- SoftDeleteUUIDModel[T] (string ID) ---
 
 // FirstOrCreate finds the first record matching conditions, or creates one
-// by merging conditions and values.
-func (SoftDeleteUUIDModel[T]) FirstOrCreate(conditions map[string]any, values map[string]any) (*T, error) {
-	return firstOrCreate[T](conditions, values)
+// by merging conditions and values. Takes ctx as the first argument.
+func (SoftDeleteUUIDModel[T]) FirstOrCreate(ctx context.Context, conditions map[string]any, values map[string]any) (*T, error) {
+	return firstOrCreate[T](ctx, conditions, values)
 }
 
 // UpdateOrCreate finds the first record matching conditions and updates it
 // with values, or creates a new record by merging conditions and values.
-func (SoftDeleteUUIDModel[T]) UpdateOrCreate(conditions map[string]any, values map[string]any) (*T, error) {
-	return updateOrCreate[T](conditions, values)
+// Takes ctx as the first argument.
+func (SoftDeleteUUIDModel[T]) UpdateOrCreate(ctx context.Context, conditions map[string]any, values map[string]any) (*T, error) {
+	return updateOrCreate[T](ctx, conditions, values)
 }
 
 // --- internal helpers ---
@@ -69,13 +75,17 @@ func (SoftDeleteUUIDModel[T]) UpdateOrCreate(conditions map[string]any, values m
 // firstOrCreate is the static-helper entry. It resolves the driver
 // from the package default Manager and delegates to the driver-bound
 // implementation so Query[T].FirstOrCreate (tx-aware) shares the same
-// logic.
-func firstOrCreate[T any](conditions map[string]any, values map[string]any) (*T, error) {
+// logic. ctx threads through so a tx slot in ctx enrolls the entire
+// round trip in the caller's transaction.
+func firstOrCreate[T any](ctx context.Context, conditions map[string]any, values map[string]any) (*T, error) {
 	drv, err := defaultDriverOrErr("firstOrCreate")
 	if err != nil {
 		return nil, err
 	}
-	return firstOrCreateWithDriver[T](drv, conditions, values)
+	if tx, ok := TxFromContext(ctx); ok {
+		drv = &txDriver{Driver: drv, tx: tx}
+	}
+	return firstOrCreateWithDriver[T](ctx, drv, conditions, values)
 }
 
 // firstOrCreateWithDriver finds a row matching conditions and returns
@@ -83,7 +93,7 @@ func firstOrCreate[T any](conditions map[string]any, values map[string]any) (*T,
 // returns that. drv is used for both the lookup query and the Save so
 // callers (notably the tx-aware Query[T].FirstOrCreate) keep the
 // entire round trip on a single connection.
-func firstOrCreateWithDriver[T any](drv drivers.Driver, conditions map[string]any, values map[string]any) (*T, error) {
+func firstOrCreateWithDriver[T any](ctx context.Context, drv drivers.Driver, conditions map[string]any, values map[string]any) (*T, error) {
 	for key := range conditions {
 		if err := validateIdentifier(key); err != nil {
 			return nil, fmt.Errorf("velocity/orm: firstOrCreate: %w", err)
@@ -102,7 +112,7 @@ func firstOrCreateWithDriver[T any](drv drivers.Driver, conditions map[string]an
 	}
 
 	var found T
-	err := q.First(&found)
+	err := q.First(ctx, &found)
 	if err == nil {
 		return &found, nil
 	}
@@ -115,25 +125,28 @@ func firstOrCreateWithDriver[T any](drv drivers.Driver, conditions map[string]an
 	if err := mapToStruct(merged, model); err != nil {
 		return nil, err
 	}
-	if err := saveWithDriver(drv, model); err != nil {
+	if err := saveWithDriver(ctx, drv, model); err != nil {
 		return nil, err
 	}
 	return model, nil
 }
 
 // updateOrCreate is the static-helper entry. See firstOrCreate.
-func updateOrCreate[T any](conditions map[string]any, values map[string]any) (*T, error) {
+func updateOrCreate[T any](ctx context.Context, conditions map[string]any, values map[string]any) (*T, error) {
 	drv, err := defaultDriverOrErr("updateOrCreate")
 	if err != nil {
 		return nil, err
 	}
-	return updateOrCreateWithDriver[T](drv, conditions, values)
+	if tx, ok := TxFromContext(ctx); ok {
+		drv = &txDriver{Driver: drv, tx: tx}
+	}
+	return updateOrCreateWithDriver[T](ctx, drv, conditions, values)
 }
 
 // updateOrCreateWithDriver runs the lookup, update-on-hit / insert-on-miss
-// flow against drv. Pair with Query[T].WithTx(tx).UpdateOrCreate to make
-// the idempotent write atomic with whatever else the closure does.
-func updateOrCreateWithDriver[T any](drv drivers.Driver, conditions map[string]any, values map[string]any) (*T, error) {
+// flow against drv. ctx threads through so a tx slot in ctx enrolls the
+// entire round trip in the caller's transaction.
+func updateOrCreateWithDriver[T any](ctx context.Context, drv drivers.Driver, conditions map[string]any, values map[string]any) (*T, error) {
 	for key := range conditions {
 		if err := validateIdentifier(key); err != nil {
 			return nil, fmt.Errorf("velocity/orm: updateOrCreate: %w", err)
@@ -152,7 +165,7 @@ func updateOrCreateWithDriver[T any](drv drivers.Driver, conditions map[string]a
 	}
 
 	var found T
-	err := q.First(&found)
+	err := q.First(ctx, &found)
 	if err == nil {
 		// Belt-and-suspenders: Query.First already marks IsExisting on
 		// scan, but a redundant call is idempotent and survives any
@@ -161,7 +174,7 @@ func updateOrCreateWithDriver[T any](drv drivers.Driver, conditions map[string]a
 		if err := mapToStruct(values, &found); err != nil {
 			return nil, err
 		}
-		if err := saveWithDriver(drv, &found); err != nil {
+		if err := saveWithDriver(ctx, drv, &found); err != nil {
 			return nil, err
 		}
 		return &found, nil
@@ -175,7 +188,7 @@ func updateOrCreateWithDriver[T any](drv drivers.Driver, conditions map[string]a
 	if err := mapToStruct(merged, model); err != nil {
 		return nil, err
 	}
-	if err := saveWithDriver(drv, model); err != nil {
+	if err := saveWithDriver(ctx, drv, model); err != nil {
 		return nil, err
 	}
 	return model, nil

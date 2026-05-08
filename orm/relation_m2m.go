@@ -139,7 +139,7 @@ func resolveManyToManyMeta(modelType reflect.Type, preloadName string) (*m2mMeta
 
 // loadM2M eager-loads a many-to-many relation onto each parent in models using
 // at most two SQL queries: one against the pivot, one against the related table.
-func (q *Query[T]) loadM2M(models *[]T, meta *m2mMeta) error {
+func (q *Query[T]) loadM2M(ctx context.Context, models *[]T, meta *m2mMeta) error {
 	if len(*models) == 0 {
 		return nil
 	}
@@ -167,11 +167,11 @@ func (q *Query[T]) loadM2M(models *[]T, meta *m2mMeta) error {
 	}
 
 	// Discover pivot column names so we can group non-FK columns into Pivot maps.
-	pivotCols, err := discoverPivotColumns(q.driver, q.getContext(), meta.pivotTable)
+	pivotCols, err := discoverPivotColumns(q.driver, ctx, meta.pivotTable)
 	if err != nil {
 		return fmt.Errorf("orm: failed to inspect pivot table %q: %w", meta.pivotTable, err)
 	}
-	pivotRows, relatedIDs, err := queryPivotRows(q.driver, q.getContext(), meta, parentIDs, pivotCols)
+	pivotRows, relatedIDs, err := queryPivotRows(q.driver, ctx, meta, parentIDs, pivotCols)
 	if err != nil {
 		return err
 	}
@@ -180,7 +180,7 @@ func (q *Query[T]) loadM2M(models *[]T, meta *m2mMeta) error {
 	}
 
 	// Load related rows.
-	related, err := queryRelatedRows(q.driver, q.getContext(), meta, relatedIDs)
+	related, err := queryRelatedRows(q.driver, ctx, meta, relatedIDs)
 	if err != nil {
 		return err
 	}

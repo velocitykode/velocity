@@ -1,6 +1,8 @@
 package factory
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"sort"
 	"strings"
@@ -94,11 +96,14 @@ func (f *Factory) Make(overrides ...map[string]interface{}) interface{} {
 	return results
 }
 
-// Create generates data and persists to database.
+// Create generates data and persists to database. Takes ctx as the
+// first argument so writes participate in the caller's transaction
+// when ctx carries a *sql.Tx.
+//
 // Returns the created record(s) as map[string]interface{} (single) or
 // []map[string]interface{} (multiple). Panics if the manager is nil or
 // the database connection is unavailable.
-func (f *Factory) Create(overrides ...map[string]interface{}) interface{} {
+func (f *Factory) Create(ctx context.Context, overrides ...map[string]interface{}) interface{} {
 	if f.manager == nil {
 		panic("ORM manager not set - pass *orm.Manager to NewFactory for database persistence")
 	}
@@ -121,12 +126,12 @@ func (f *Factory) Create(overrides ...map[string]interface{}) interface{} {
 	f.mu.Unlock()
 
 	if count == 1 {
-		return f.persistOne(exec, driver, activeState, 0, overrides...)
+		return f.persistOne(ctx, exec, driver, activeState, 0, overrides...)
 	}
 
 	results := make([]map[string]interface{}, 0, count)
 	for i := 0; i < count; i++ {
-		results = append(results, f.persistOne(exec, driver, activeState, i, overrides...))
+		results = append(results, f.persistOne(ctx, exec, driver, activeState, i, overrides...))
 	}
 	return results
 }
@@ -160,8 +165,11 @@ func (f *Factory) generateOne(activeState string, index int, overrides ...map[st
 	return data
 }
 
-// persistOne generates and persists a single record
-func (f *Factory) persistOne(exec orm.QueryExecutor, driver, activeState string, index int, overrides ...map[string]interface{}) map[string]interface{} {
+// persistOne generates and persists a single record. ctx threads
+// through the underlying ExecContext / QueryRowContext call so a
+// caller-supplied *sql.Tx in ctx enrolls the insert in the surrounding
+// transaction.
+func (f *Factory) persistOne(ctx context.Context, exec *sql.DB, driver, activeState string, index int, overrides ...map[string]interface{}) map[string]interface{} {
 	data := f.generateOne(activeState, index, overrides...)
 
 	// Build INSERT query
@@ -171,13 +179,13 @@ func (f *Factory) persistOne(exec orm.QueryExecutor, driver, activeState string,
 	if driver == "postgres" {
 		query += " RETURNING id"
 		var id int64
-		err := exec.QueryRow(query, values...).Scan(&id)
+		err := exec.QueryRowContext(ctx, query, values...).Scan(&id)
 		if err != nil {
 			panic(fmt.Sprintf("failed to create %s: %v", f.tableName, err))
 		}
 		data["id"] = id
 	} else {
-		result, err := exec.Exec(query, values...)
+		result, err := exec.ExecContext(ctx, query, values...)
 		if err != nil {
 			panic(fmt.Sprintf("failed to create %s: %v", f.tableName, err))
 		}

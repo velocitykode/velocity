@@ -94,11 +94,25 @@ func TestTransaction(t *testing.T) {
 		return n
 	}
 
+	// txFromCtx asserts and returns the raw *sql.Tx attached to ctx by
+	// Manager.Transaction. Used here to keep these tests at the raw-SQL
+	// level (the ORM helpers have their own dedicated tests in
+	// tx_context_test.go).
+	txFromCtx := func(t *testing.T, ctx context.Context) *sql.Tx {
+		t.Helper()
+		tx, ok := TxFromContext(ctx)
+		if !ok || tx == nil {
+			t.Fatal("TxFromContext returned no tx; Manager.Transaction did not enroll ctx")
+		}
+		return tx
+	}
+
 	t.Run("commit persists writes", func(t *testing.T) {
 		if _, err := m.Exec(context.Background(), `DELETE FROM widgets`); err != nil {
 			t.Fatalf("reset: %v", err)
 		}
-		err := m.Transaction(context.Background(), func(tx *sql.Tx) error {
+		err := m.Transaction(context.Background(), func(ctx context.Context) error {
+			tx := txFromCtx(t, ctx)
 			_, err := tx.Exec(`INSERT INTO widgets (name) VALUES (?)`, "kept")
 			return err
 		})
@@ -114,7 +128,8 @@ func TestTransaction(t *testing.T) {
 		if _, err := m.Exec(context.Background(), `DELETE FROM widgets`); err != nil {
 			t.Fatalf("reset: %v", err)
 		}
-		err := m.Transaction(context.Background(), func(tx *sql.Tx) error {
+		err := m.Transaction(context.Background(), func(ctx context.Context) error {
+			tx := txFromCtx(t, ctx)
 			if _, err := tx.Exec(`INSERT INTO widgets (name) VALUES (?)`, "ghost"); err != nil {
 				return err
 			}
@@ -137,7 +152,8 @@ func TestTransaction(t *testing.T) {
 		}
 		func() {
 			defer func() { _ = recover() }()
-			_ = m.Transaction(context.Background(), func(tx *sql.Tx) error {
+			_ = m.Transaction(context.Background(), func(ctx context.Context) error {
+				tx := txFromCtx(t, ctx)
 				if _, err := tx.Exec(`INSERT INTO widgets (name) VALUES (?)`, "panicked"); err != nil {
 					t.Fatalf("insert: %v", err)
 				}

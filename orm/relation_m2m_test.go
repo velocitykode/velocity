@@ -198,7 +198,7 @@ func TestManyToMany_Read(t *testing.T) {
 	cleanup := withM2MDB(t)
 	defer cleanup()
 
-	teams, err := Team{}.With("Members").Get()
+	teams, err := Team{}.With("Members").Get(context.Background())
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestManyToMany_Read_PtrSlice(t *testing.T) {
 	cleanup := withM2MDB(t)
 	defer cleanup()
 
-	teams, err := TeamPtrMembers{}.With("Members").Get()
+	teams, err := TeamPtrMembers{}.With("Members").Get(context.Background())
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestManyToMany_PivotColumns(t *testing.T) {
 	cleanup := withM2MDB(t)
 	defer cleanup()
 
-	team, err := Team{}.Find(uint(1))
+	team, err := Team{}.Find(context.Background(), uint(1))
 	if err != nil {
 		t.Fatalf("find: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestManyToMany_PivotColumns_NoPivotData(t *testing.T) {
 	cleanup := withM2MDB(t)
 	defer cleanup()
 
-	team, err := Team{}.Find(uint(3)) // empty team
+	team, err := Team{}.Find(context.Background(), uint(3)) // empty team
 	if err != nil {
 		t.Fatalf("find: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestManyToMany_PivotColumns_NoPivotData(t *testing.T) {
 func TestManyToMany_PivotColumns_TypeMismatch(t *testing.T) {
 	cleanup := withM2MDB(t)
 	defer cleanup()
-	team, _ := Team{}.Find(uint(1))
+	team, _ := Team{}.Find(context.Background(), uint(1))
 	_, err := LoadManyToManyWithPivot[Team, Team](team, "Members")
 	if err == nil {
 		t.Fatal("expected type mismatch error")
@@ -320,7 +320,7 @@ func TestManyToMany_AttachDetachSync(t *testing.T) {
 	defer cleanup()
 
 	// Use empty team (id=3) for clean state.
-	team, err := Team{}.Find(uint(3))
+	team, err := Team{}.Find(context.Background(), uint(3))
 	if err != nil {
 		t.Fatalf("find: %v", err)
 	}
@@ -389,7 +389,7 @@ func TestManyToMany_AttachDetachSync(t *testing.T) {
 func TestManyToMany_Sync_Empty(t *testing.T) {
 	cleanup := withM2MDB(t)
 	defer cleanup()
-	team, _ := Team{}.Find(uint(1)) // has 3 members
+	team, _ := Team{}.Find(context.Background(), uint(1)) // has 3 members
 	acc, err := M2M(team, "Members")
 	if err != nil {
 		t.Fatalf("M2M: %v", err)
@@ -436,7 +436,7 @@ func TestManyToMany_Concurrent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			teams, err := Team{}.With("Members").Get()
+			teams, err := Team{}.With("Members").Get(context.Background())
 			if err != nil {
 				errCh <- fmt.Errorf("read: %w", err)
 				return
@@ -453,7 +453,7 @@ func TestManyToMany_Concurrent(t *testing.T) {
 		wg.Add(1)
 		go func(round int) {
 			defer wg.Done()
-			team, _ := Team{}.Find(uint(3))
+			team, _ := Team{}.Find(context.Background(), uint(3))
 			acc, err := M2M(team, "Members")
 			if err != nil {
 				errCh <- fmt.Errorf("M2M: %w", err)

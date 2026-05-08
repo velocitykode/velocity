@@ -80,7 +80,7 @@ func TestFactoryCreate(t *testing.T) {
 	}
 
 	// Create user via factory
-	user := UserFactory(manager).Create()
+	user := UserFactory(manager).Create(context.Background())
 
 	userMap, ok := user.(map[string]interface{})
 	if !ok {
@@ -117,7 +117,7 @@ func TestRefreshDatabase(t *testing.T) {
 	}
 
 	// Create a user
-	UserFactory(manager).Create()
+	UserFactory(manager).Create(context.Background())
 
 	// Verify table exists and has data
 	var count int
