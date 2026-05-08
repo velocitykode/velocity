@@ -2,6 +2,7 @@ package orm
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"reflect"
 
@@ -29,7 +30,7 @@ const (
 // bulk Update / Delete / ForceDelete writes once the surrounding
 // transaction commits. Unlike per-row [AfterCommitHook], this hook
 // fires exactly once per bulk statement and carries the affected
-// primary-key set captured by a SELECT issued before the write.
+// primary-key set.
 //
 // The receiver is the zero value of the model type and must not be
 // accessed; this hook is invoked once per bulk statement, not once
@@ -40,17 +41,24 @@ const (
 // [Query.WithRowHooks] instead, which materialises rows and falls
 // back to the per-row [AfterCommitHook] contract.
 //
-// Race window: ids are captured by a SELECT issued before the
-// UPDATE/DELETE. Rows may shift between the SELECT and the write
-// under concurrent traffic, so the id set is a snapshot, not a
-// guarantee. Wrap the call in a Transaction with appropriate
-// isolation when exact fidelity matters.
+// ID-capture strategy is driver-dependent:
 //
-// Observability side effect: tables whose model implements this hook
-// emit two QueryExecuted events per bulk Update / Delete /
-// ForceDelete: the pre-capture SELECT and the actual write.
-// Listeners that count queries should filter on op or SQL prefix if
-// double-counting matters.
+//   - PostgreSQL: ids are captured atomically by appending RETURNING
+//     <pk> to the UPDATE/DELETE itself. There is no race window and
+//     no extra round trip; the bulk path emits exactly one
+//     QueryExecuted event per statement.
+//   - MySQL / SQLite: ids are captured by a SELECT issued before the
+//     write. Rows may shift between the SELECT and the write under
+//     concurrent traffic, so the id set is a snapshot, not a
+//     guarantee. Wrap the call in a Transaction with appropriate
+//     isolation when exact fidelity matters. The bulk path emits two
+//     QueryExecuted events on these drivers: the pre-capture SELECT
+//     and the actual write. Listeners that count queries should
+//     filter on op or SQL prefix if double-counting matters.
+//
+// Tier C ([Query.WithRowHooks]) always uses the pre-SELECT path on
+// every driver because it needs full row hydration, which RETURNING
+// pk-only cannot provide.
 //
 // Zero-row contract: BulkAfterCommit fires once per bulk statement
 // even when no rows matched the WHERE; the ids slice is empty in
@@ -168,10 +176,53 @@ func dispatchBulkAfterCommit(ctx context.Context, hook BulkAfterCommitHook, ids 
 	})
 }
 
-// bulkPrepareHooks captures whatever the bulk-write hook surface needs
-// BEFORE the write and returns a closure that should be invoked after a
-// successful write. Returns (nil, nil) when the call has no hook work
-// to do, in which case the caller must skip the post-write invocation.
+// bulkHookPlan describes how the bulk-write path must capture affected
+// primary keys (or row snapshots) and dispatch the matching hook surface.
+//
+// On most drivers the plan is fully resolved BEFORE the write: ids are
+// SELECTed up front and afterFn closes over them. On PostgreSQL the
+// plan defers id capture to the write itself: ReturningPK is non-empty,
+// the caller appends RETURNING <pk> to the UPDATE/DELETE, executes via
+// QueryContext, and feeds the scanned ids into afterFn. The two paths
+// share the same dispatcher contract: afterFn is the only thing the
+// caller has to invoke once the write succeeds.
+type bulkHookPlan struct {
+	// afterFn fires the appropriate hook (Tier B BulkAfterCommitHook
+	// dispatch, or Tier C per-row registration). For non-Returning
+	// plans the ids argument is ignored; the closure already holds
+	// the pre-captured set. For Returning plans the caller scans the
+	// statement's RETURNING rowset and passes the ids in.
+	afterFn func(ids []any)
+	// ReturningPK is the quoted-once-by-grammar primary key column
+	// to append after RETURNING when the caller compiles its UPDATE
+	// or DELETE. Empty when the plan does not use RETURNING (Tier C
+	// always, plus Tier B on non-Postgres drivers, plus the no-hook
+	// no-op case).
+	ReturningPK string
+}
+
+// useReturning reports whether the caller must compile the UPDATE/DELETE
+// with the RETURNING clause and execute it via QueryContext to scan the
+// returned primary keys.
+func (p *bulkHookPlan) useReturning() bool {
+	return p != nil && p.ReturningPK != ""
+}
+
+// invoke fires afterFn with the supplied ids, ignoring the call when
+// there is no hook work to do (zero-value plan or no-hook fast path).
+// ids is the rowset captured from RETURNING on Postgres, or nil on
+// non-Returning plans (the closure ignores its argument and uses the
+// pre-captured set).
+func (p *bulkHookPlan) invoke(ids []any) {
+	if p == nil || p.afterFn == nil {
+		return
+	}
+	p.afterFn(ids)
+}
+
+// bulkPrepareHooks resolves the hook plan for a bulk write. Returns a
+// zero-value plan (afterFn == nil) when the call has no hook work to do,
+// in which case the caller must skip the post-write invocation.
 //
 // Two hook surfaces are handled:
 //
@@ -179,20 +230,24 @@ func dispatchBulkAfterCommit(ctx context.Context, hook BulkAfterCommitHook, ids 
 //     hydrated into []T immediately. The returned closure wires per-row
 //     [AfterCommitHook] / [AfterRollbackHook] against the active
 //     [TxCallbacks] (or fires inline on auto-commit). Suppresses Tier B
-//     even if the model also implements [BulkAfterCommitHook].
+//     even if the model also implements [BulkAfterCommitHook]. RETURNING
+//     pk-only cannot rehydrate full rows, so this tier always uses the
+//     pre-SELECT path regardless of driver.
 //   - Tier B ([BulkAfterCommitHook]): the matching primary keys are
-//     SELECTed into []any. The returned closure dispatches one event
-//     per bulk statement carrying the captured ids and the supplied op.
+//     captured and dispatched once per statement. On PostgreSQL the plan
+//     opts in to RETURNING, deferring capture to the write itself; the
+//     caller compiles RETURNING pk into the UPDATE/DELETE and feeds the
+//     scanned ids into the plan. On other drivers the ids are SELECTed
+//     up front and the closure closes over them, with the documented
+//     race-window caveat.
 //
-// Pre-fetch order matters: the SELECT runs before the write so the
-// captured set reflects what the write WILL touch (an Update that flips
-// a predicate column would mask its own effect on a post-fetch).
-//
-// The returned closure is safe to invoke even when no callbacks were
-// registered (no-ops on empty hook state).
-func (q *Query[T]) bulkPrepareHooks(ctx context.Context, op BulkOp) (afterFn func(), err error) {
+// Pre-fetch order matters on the SELECT path: the SELECT runs before
+// the write so the captured set reflects what the write WILL touch (an
+// Update that flips a predicate column would mask its own effect on a
+// post-fetch).
+func (q *Query[T]) bulkPrepareHooks(ctx context.Context, op BulkOp) (bulkHookPlan, error) {
 	if q == nil || q.driver == nil {
-		return nil, nil
+		return bulkHookPlan{}, nil
 	}
 
 	if q.withRowHooks {
@@ -203,28 +258,68 @@ func (q *Query[T]) bulkPrepareHooks(ctx context.Context, op BulkOp) (afterFn fun
 		clone.columns = []string{"*"}
 		rows, fetchErr := clone.Get(ctx)
 		if fetchErr != nil {
-			return nil, fetchErr
+			return bulkHookPlan{}, fetchErr
 		}
-		return func() {
-			for i := range rows {
-				registerModelAfterCommit(ctx, &rows[i])
-			}
+		return bulkHookPlan{
+			afterFn: func(_ []any) {
+				for i := range rows {
+					registerModelAfterCommit(ctx, &rows[i])
+				}
+			},
 		}, nil
 	}
 
 	hook, ok := modelBulkAfterCommitHook[T]()
 	if !ok {
-		return nil, nil
+		return bulkHookPlan{}, nil
 	}
 	pkCol, pkErr := pkColumnFor[T]()
 	if pkErr != nil {
-		return nil, pkErr
+		return bulkHookPlan{}, pkErr
 	}
+
+	// Postgres path: defer id capture to the write itself via RETURNING
+	// pk. No pre-SELECT, no race window, exactly one statement and one
+	// QueryExecuted event per bulk write.
+	if _, hasReturning := q.driver.Grammar().(drivers.ReturningGrammar); hasReturning && q.driver.DriverName() == "postgres" {
+		return bulkHookPlan{
+			ReturningPK: pkCol,
+			afterFn: func(ids []any) {
+				dispatchBulkAfterCommit(ctx, hook, ids, op)
+			},
+		}, nil
+	}
+
+	// Pre-SELECT fallback for drivers without RETURNING support on
+	// UPDATE/DELETE (currently MySQL and SQLite). Documented race
+	// window applies; see BulkAfterCommitHook godoc.
 	ids, selErr := selectPrimaryKeys(ctx, q.driver, q.table, pkCol, q.conditions)
 	if selErr != nil {
-		return nil, selErr
+		return bulkHookPlan{}, selErr
 	}
-	return func() {
-		dispatchBulkAfterCommit(ctx, hook, ids, op)
+	return bulkHookPlan{
+		afterFn: func(_ []any) {
+			dispatchBulkAfterCommit(ctx, hook, ids, op)
+		},
 	}, nil
+}
+
+// scanReturnedIDs reads a primary-key-only rowset from a RETURNING-
+// augmented UPDATE/DELETE into a slice of ids. Always closes the
+// rowset; returns whatever it scanned alongside any error so the
+// caller can still surface partial captures if it wants to.
+func scanReturnedIDs(rows *sql.Rows) ([]any, error) {
+	defer rows.Close()
+	var ids []any
+	for rows.Next() {
+		var id any
+		if err := rows.Scan(&id); err != nil {
+			return ids, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return ids, err
+	}
+	return ids, nil
 }

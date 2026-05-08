@@ -1137,37 +1137,69 @@ func (q *Query[T]) bulkUpdate(ctx context.Context, updates map[string]any, op Bu
 		copyOfUpdates["updated_at"] = currentTimestampSentinel(q.driver.DriverName())
 	}
 
-	// Pre-capture for bulk hooks runs BEFORE the write so the affected
-	// row set (Tier B IDs / Tier C model snapshots) is captured against
-	// the conditions as the caller sees them. Returns a deferred closure
-	// that fires after a successful write.
-	afterFn, err := q.bulkPrepareHooks(ctx, op)
+	// Resolve the bulk hook plan. On Postgres + Tier B the plan asks
+	// us to capture ids atomically via RETURNING (no pre-SELECT, no
+	// race window); otherwise the plan has either pre-captured the
+	// ids/rows or has no hook work at all.
+	plan, err := q.bulkPrepareHooks(ctx, op)
 	if err != nil {
 		return 0, err
 	}
 
-	sql, args := q.driver.Grammar().CompileUpdate(q.table, copyOfUpdates, q.conditions)
-	q.lastSQL = sql
+	driverName := q.driver.DriverName()
+	grammar := q.driver.Grammar()
+
+	var (
+		sqlStr  string
+		args    []any
+		retIDs  []any
+		retRows *sql.Rows
+	)
+
+	if plan.useReturning() {
+		// Postgres atomic capture path. CompileUpdateReturning is only
+		// reachable when the grammar already type-asserts to
+		// drivers.ReturningGrammar (verified inside bulkPrepareHooks).
+		rg := grammar.(drivers.ReturningGrammar)
+		sqlStr, args = rg.CompileUpdateReturning(q.table, copyOfUpdates, q.conditions, plan.ReturningPK)
+	} else {
+		sqlStr, args = grammar.CompileUpdate(q.table, copyOfUpdates, q.conditions)
+	}
+	q.lastSQL = sqlStr
 	q.lastArgs = args
 
 	start := time.Now()
-	result, err := q.driver.ExecContext(ctx, sql, args...)
+	var (
+		rowsAffected int64
+		execErr      error
+	)
+	if plan.useReturning() {
+		retRows, execErr = q.driver.QueryContext(ctx, sqlStr, args...)
+		if execErr == nil {
+			retIDs, execErr = scanReturnedIDs(retRows)
+			rowsAffected = int64(len(retIDs))
+		}
+	} else {
+		var result sql.Result
+		result, execErr = q.driver.ExecContext(ctx, sqlStr, args...)
+		if execErr == nil {
+			rowsAffected, _ = result.RowsAffected()
+		}
+	}
 	duration := time.Since(start)
 
 	// skip=3 because bulkUpdate is always reached through Update or
 	// Delete (one extra frame above bulkUpdate compared to the
 	// inline-emitter terminals like Get / Count / ForceDelete).
-	if err != nil {
-		dispatchQueryExecuted(ctx, sql, args, duration, 0, q.driver.DriverName(), 3)
-		return 0, err
+	// Exactly one event per bulk statement on every driver: the
+	// Postgres RETURNING path counts as a single statement.
+	if execErr != nil {
+		dispatchQueryExecuted(ctx, sqlStr, args, duration, 0, driverName, 3)
+		return 0, execErr
 	}
+	dispatchQueryExecuted(ctx, sqlStr, args, duration, rowsAffected, driverName, 3)
 
-	rowsAffected, _ := result.RowsAffected()
-	dispatchQueryExecuted(ctx, sql, args, duration, rowsAffected, q.driver.DriverName(), 3)
-
-	if afterFn != nil {
-		afterFn()
-	}
+	plan.invoke(retIDs)
 
 	return rowsAffected, nil
 }
@@ -1289,28 +1321,55 @@ func (q *Query[T]) ForceDelete(ctx context.Context) (int64, error) {
 	}
 	q.bindTxFromContextValue(ctx)
 
-	afterFn, err := q.bulkPrepareHooks(ctx, BulkOpForceDelete)
+	plan, err := q.bulkPrepareHooks(ctx, BulkOpForceDelete)
 	if err != nil {
 		return 0, err
 	}
 
-	sql, args := q.driver.Grammar().CompileDelete(q.table, q.conditions)
+	driverName := q.driver.DriverName()
+	grammar := q.driver.Grammar()
+
+	var (
+		sqlStr  string
+		args    []any
+		retIDs  []any
+		retRows *sql.Rows
+	)
+
+	if plan.useReturning() {
+		rg := grammar.(drivers.ReturningGrammar)
+		sqlStr, args = rg.CompileDeleteReturning(q.table, q.conditions, plan.ReturningPK)
+	} else {
+		sqlStr, args = grammar.CompileDelete(q.table, q.conditions)
+	}
 
 	start := time.Now()
-	result, err := q.driver.ExecContext(ctx, sql, args...)
+	var (
+		rowsAffected int64
+		execErr      error
+	)
+	if plan.useReturning() {
+		retRows, execErr = q.driver.QueryContext(ctx, sqlStr, args...)
+		if execErr == nil {
+			retIDs, execErr = scanReturnedIDs(retRows)
+			rowsAffected = int64(len(retIDs))
+		}
+	} else {
+		var result sql.Result
+		result, execErr = q.driver.ExecContext(ctx, sqlStr, args...)
+		if execErr == nil {
+			rowsAffected, _ = result.RowsAffected()
+		}
+	}
 	duration := time.Since(start)
 
-	if err != nil {
-		dispatchQueryExecuted(ctx, sql, args, duration, 0, q.driver.DriverName(), 2)
-		return 0, err
+	if execErr != nil {
+		dispatchQueryExecuted(ctx, sqlStr, args, duration, 0, driverName, 2)
+		return 0, execErr
 	}
+	dispatchQueryExecuted(ctx, sqlStr, args, duration, rowsAffected, driverName, 2)
 
-	rowsAffected, _ := result.RowsAffected()
-	dispatchQueryExecuted(ctx, sql, args, duration, rowsAffected, q.driver.DriverName(), 2)
-
-	if afterFn != nil {
-		afterFn()
-	}
+	plan.invoke(retIDs)
 
 	return rowsAffected, nil
 }

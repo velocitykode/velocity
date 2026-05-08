@@ -398,6 +398,32 @@ func (g *PostgresGrammar) CompileDelete(table string, conditions []Condition) (s
 	return sql.String(), args
 }
 
+// CompileUpdateReturning compiles an UPDATE that appends RETURNING <pkCol>
+// to the statement so the affected primary keys can be captured atomically
+// alongside the write. Used by the ORM's bulk-hook surface to eliminate
+// the pre-SELECT race window that the SQLite/MySQL path still relies on.
+//
+// pkCol is quoted through the grammar's identifier quoter; callers must
+// have validated it as a real column name first (the ORM resolves it from
+// model meta, not user input).
+//
+// The returned SQL/args are otherwise identical to CompileUpdate, so the
+// caller switches Exec vs Query based on whether they need to scan the
+// RETURNING rowset.
+func (g *PostgresGrammar) CompileUpdateReturning(table string, values map[string]any, conditions []Condition, pkCol string) (string, []any) {
+	sql, args := g.CompileUpdate(table, values, conditions)
+	return sql + " RETURNING " + g.QuoteIdentifier(pkCol), args
+}
+
+// CompileDeleteReturning compiles a DELETE that appends RETURNING <pkCol>
+// to the statement so the deleted primary keys can be captured atomically
+// alongside the write. Counterpart to CompileUpdateReturning; see that
+// method for the full rationale.
+func (g *PostgresGrammar) CompileDeleteReturning(table string, conditions []Condition, pkCol string) (string, []any) {
+	sql, args := g.CompileDelete(table, conditions)
+	return sql + " RETURNING " + g.QuoteIdentifier(pkCol), args
+}
+
 // compileConditions renders a list of WHERE/HAVING conditions into sql,
 // appending bound parameters to args. argIndex is the next 1-based
 // PostgreSQL placeholder ($N) to allocate; the returned int is the next

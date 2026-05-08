@@ -1298,6 +1298,172 @@ func TestPostgresGrammar_CompileDelete(t *testing.T) {
 	}
 }
 
+// TestPostgresGrammar_CompileUpdateReturning locks in the SQL surface
+// the bulk-hook plan relies on for atomic id capture. The augmenter
+// MUST preserve the underlying CompileUpdate output verbatim and append
+// RETURNING <quoted-pk> at the tail; any drift breaks the no-race
+// guarantee documented on BulkAfterCommitHook.
+func TestPostgresGrammar_CompileUpdateReturning(t *testing.T) {
+	grammar := &PostgresGrammar{}
+
+	tests := []struct {
+		name       string
+		table      string
+		values     map[string]any
+		conditions []Condition
+		pkCol      string
+		wantParts  []string
+		wantSuffix string
+		wantArgLen int
+	}{
+		{
+			name:  "update with conditions returns id",
+			table: "users",
+			values: map[string]any{
+				"name": "alice",
+			},
+			conditions: []Condition{
+				{Column: "active", Operator: "=", Value: true, Type: "and"},
+			},
+			pkCol:      "id",
+			wantParts:  []string{`UPDATE "users" SET`, `"name" = $1`, `WHERE "active" = $2`},
+			wantSuffix: ` RETURNING "id"`,
+			wantArgLen: 2,
+		},
+		{
+			name:  "update without conditions returns id",
+			table: "users",
+			values: map[string]any{
+				"name": "bob",
+			},
+			conditions: nil,
+			pkCol:      "id",
+			wantParts:  []string{`UPDATE "users" SET`, `"name" = $1`},
+			wantSuffix: ` RETURNING "id"`,
+			wantArgLen: 1,
+		},
+		{
+			name:  "RawSQL value passes through with RETURNING appended",
+			table: "users",
+			values: map[string]any{
+				"updated_at": RawSQL("NOW()"),
+			},
+			conditions: []Condition{
+				{Column: "id", Operator: "=", Value: 1, Type: "and"},
+			},
+			pkCol:      "id",
+			wantParts:  []string{`UPDATE "users" SET`, `"updated_at" = NOW()`, `WHERE "id" = $1`},
+			wantSuffix: ` RETURNING "id"`,
+			wantArgLen: 1,
+		},
+		{
+			name:       "non-default pk column is quoted",
+			table:      "events",
+			values:     map[string]any{"status": "done"},
+			conditions: nil,
+			pkCol:      "event_uuid",
+			wantParts:  []string{`UPDATE "events" SET`, `"status" = $1`},
+			wantSuffix: ` RETURNING "event_uuid"`,
+			wantArgLen: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotSQL, gotArgs := grammar.CompileUpdateReturning(tt.table, tt.values, tt.conditions, tt.pkCol)
+			for _, part := range tt.wantParts {
+				if !strings.Contains(gotSQL, part) {
+					t.Errorf("CompileUpdateReturning() SQL missing part %q, got %q", part, gotSQL)
+				}
+			}
+			if !strings.HasSuffix(gotSQL, tt.wantSuffix) {
+				t.Errorf("CompileUpdateReturning() SQL = %q, want suffix %q", gotSQL, tt.wantSuffix)
+			}
+			if len(gotArgs) != tt.wantArgLen {
+				t.Errorf("CompileUpdateReturning() args count = %d, want %d", len(gotArgs), tt.wantArgLen)
+			}
+		})
+	}
+}
+
+// TestPostgresGrammar_CompileDeleteReturning is the DELETE counterpart
+// to TestPostgresGrammar_CompileUpdateReturning. Same contract: the
+// underlying CompileDelete output is preserved verbatim and RETURNING
+// <quoted-pk> is appended at the tail.
+func TestPostgresGrammar_CompileDeleteReturning(t *testing.T) {
+	grammar := &PostgresGrammar{}
+
+	tests := []struct {
+		name       string
+		table      string
+		conditions []Condition
+		pkCol      string
+		wantSQL    string
+		wantArgs   []any
+	}{
+		{
+			name:       "delete without conditions returns id",
+			table:      "users",
+			conditions: nil,
+			pkCol:      "id",
+			wantSQL:    `DELETE FROM "users" RETURNING "id"`,
+			wantArgs:   nil,
+		},
+		{
+			name:  "delete with conditions returns id",
+			table: "users",
+			conditions: []Condition{
+				{Column: "active", Operator: "=", Value: false, Type: "and"},
+			},
+			pkCol:    "id",
+			wantSQL:  `DELETE FROM "users" WHERE "active" = $1 RETURNING "id"`,
+			wantArgs: []any{false},
+		},
+		{
+			name:       "non-default pk column is quoted",
+			table:      "events",
+			conditions: nil,
+			pkCol:      "event_uuid",
+			wantSQL:    `DELETE FROM "events" RETURNING "event_uuid"`,
+			wantArgs:   nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotSQL, gotArgs := grammar.CompileDeleteReturning(tt.table, tt.conditions, tt.pkCol)
+			if gotSQL != tt.wantSQL {
+				t.Errorf("CompileDeleteReturning() SQL = %q, want %q", gotSQL, tt.wantSQL)
+			}
+			if !reflect.DeepEqual(gotArgs, tt.wantArgs) {
+				t.Errorf("CompileDeleteReturning() args = %v, want %v", gotArgs, tt.wantArgs)
+			}
+		})
+	}
+}
+
+// TestPostgresGrammar_ImplementsReturningGrammar is a compile-time
+// guard wrapped in a runtime check: PostgresGrammar must satisfy
+// drivers.ReturningGrammar so the ORM's bulk-hook plan can opt in to
+// atomic id capture on Postgres.
+func TestPostgresGrammar_ImplementsReturningGrammar(t *testing.T) {
+	var _ ReturningGrammar = (*PostgresGrammar)(nil)
+}
+
+// TestSQLiteGrammar_DoesNotImplementReturningGrammar locks in the
+// fallback contract: SQLite's bulk-hook path must use the pre-SELECT
+// branch because the grammar does not opt in to RETURNING. Same for
+// MySQL. If a future SQLite/MariaDB grammar adds RETURNING support,
+// drop the negative assertion and update bulkPrepareHooks accordingly.
+func TestSQLiteAndMySQLGrammar_DoNotImplementReturningGrammar(t *testing.T) {
+	if _, ok := any(&SQLiteGrammar{}).(ReturningGrammar); ok {
+		t.Errorf("SQLiteGrammar must not satisfy ReturningGrammar in v1; bulk-hook fallback path depends on the negative case")
+	}
+	if _, ok := any(&MySQLGrammar{}).(ReturningGrammar); ok {
+		t.Errorf("MySQLGrammar must not satisfy ReturningGrammar in v1; bulk-hook fallback path depends on the negative case")
+	}
+}
+
 func TestPostgresGrammar_CompileCreateTable(t *testing.T) {
 	grammar := &PostgresGrammar{}
 
