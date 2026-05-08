@@ -1,6 +1,7 @@
 package csrf
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -12,7 +13,7 @@ func TestSessionFallback_DispatchedWhenNoSessionCookie(t *testing.T) {
 
 	var mu sync.Mutex
 	var events []interface{}
-	c.SetEventDispatcher(func(event interface{}) error {
+	c.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		mu.Lock()
 		events = append(events, event)
 		mu.Unlock()
@@ -47,7 +48,7 @@ func TestSessionFallback_DispatchedWhenNoSessionCookie(t *testing.T) {
 func TestSessionFallback_NotDispatchedWithCookie(t *testing.T) {
 	c := New(DefaultConfig())
 	var count int
-	c.SetEventDispatcher(func(event interface{}) error {
+	c.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		count++
 		return nil
 	})

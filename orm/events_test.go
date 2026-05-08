@@ -20,7 +20,7 @@ func newTestEventCollector() *testEventCollector {
 	}
 }
 
-func (c *testEventCollector) dispatch(event interface{}) error {
+func (c *testEventCollector) dispatch(_ context.Context, event interface{}) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.events = append(c.events, event)
@@ -76,7 +76,7 @@ func TestManagerDispatchEvent(t *testing.T) {
 	sql := "SELECT * FROM users WHERE id = ?"
 	bindings := []any{1}
 
-	m.dispatchEvent(&QueryExecuted{
+	m.dispatchEvent(context.Background(), &QueryExecuted{
 		Context:      ctx,
 		SQL:          sql,
 		Bindings:     bindings,
@@ -110,7 +110,7 @@ func TestManagerDispatchEventWithContext(t *testing.T) {
 
 	ctx := context.WithValue(context.Background(), testCtxKey("request_id"), "test-123")
 
-	m.dispatchEvent(&QueryExecuted{
+	m.dispatchEvent(context.Background(), &QueryExecuted{
 		Context:    ctx,
 		SQL:        "SELECT 1",
 		Connection: "sqlite",
@@ -138,7 +138,7 @@ func TestManagerDispatchEventBindings(t *testing.T) {
 	m.SetEventDispatcher(collector.dispatch)
 
 	bindings := []any{1, "test", true, 3.14}
-	m.dispatchEvent(&QueryExecuted{
+	m.dispatchEvent(context.Background(), &QueryExecuted{
 		Context:    context.Background(),
 		SQL:        "INSERT INTO test",
 		Bindings:   bindings,
@@ -172,7 +172,7 @@ func TestManagerDispatchEventConnection(t *testing.T) {
 
 	for _, conn := range testCases {
 		collector.clear()
-		m.dispatchEvent(&QueryExecuted{
+		m.dispatchEvent(context.Background(), &QueryExecuted{
 			Context:    context.Background(),
 			SQL:        "SELECT 1",
 			Connection: conn,
@@ -193,7 +193,7 @@ func TestManagerDispatchEventConnection(t *testing.T) {
 func TestManagerDispatchEventNilDispatcher(t *testing.T) {
 	m := &Manager{}
 	// No dispatcher set - should not panic
-	m.dispatchEvent(&QueryExecuted{
+	m.dispatchEvent(context.Background(), &QueryExecuted{
 		Context: context.Background(),
 		SQL:     "SELECT 1",
 	})

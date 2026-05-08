@@ -122,7 +122,7 @@ type Batch struct {
 	finallyFn func(b *Batch)
 	catchOnce sync.Once
 
-	dispatchEvent func(event interface{})
+	dispatchEvent func(ctx context.Context, event interface{})
 
 	mu sync.Mutex // protects finishedAt and callback execution
 }
@@ -166,9 +166,16 @@ func (b *Batch) HasFailures() bool { return b.failedJobs.Load() > 0 }
 func (b *Batch) AllowsFailures() bool { return b.allowFailures }
 
 // Cancel cancels the batch, preventing remaining jobs from being processed.
+// Callers that have a real ctx in scope should prefer CancelCtx.
 func (b *Batch) Cancel() {
+	b.CancelCtx(context.Background())
+}
+
+// CancelCtx is the context-aware variant of Cancel. The supplied ctx is
+// propagated to listeners observing the BatchCancelled event.
+func (b *Batch) CancelCtx(ctx context.Context) {
 	if b.cancelled.CompareAndSwap(false, true) {
-		dispatchBatchEvent(b.dispatchEvent, &BatchCancelled{
+		dispatchBatchEvent(ctx, b.dispatchEvent, &BatchCancelled{
 			BatchID:    string(b.id),
 			FailedJobs: b.FailedJobs(),
 		})
@@ -176,26 +183,26 @@ func (b *Batch) Cancel() {
 }
 
 // recordSuccess is called by the worker when a batch job completes successfully
-func (b *Batch) recordSuccess() {
+func (b *Batch) recordSuccess(ctx context.Context) {
 	b.pendingJobs.Add(-1)
 	completed := b.completedJobs.Add(1)
 
-	dispatchBatchEvent(b.dispatchEvent, &BatchJobCompleted{
+	dispatchBatchEvent(ctx, b.dispatchEvent, &BatchJobCompleted{
 		BatchID:       string(b.id),
 		CompletedJobs: int(completed),
 		TotalJobs:     b.totalJobs,
 		Progress:      b.Progress(),
 	})
 
-	b.checkFinished()
+	b.checkFinished(ctx)
 }
 
 // recordFailure is called by the worker when a batch job fails permanently
-func (b *Batch) recordFailure(err error) {
+func (b *Batch) recordFailure(ctx context.Context, err error) {
 	b.pendingJobs.Add(-1)
 	failed := b.failedJobs.Add(1)
 
-	dispatchBatchEvent(b.dispatchEvent, &BatchJobFailed{
+	dispatchBatchEvent(ctx, b.dispatchEvent, &BatchJobFailed{
 		BatchID:    string(b.id),
 		FailedJobs: int(failed),
 		TotalJobs:  b.totalJobs,
@@ -215,14 +222,14 @@ func (b *Batch) recordFailure(err error) {
 
 	// Auto-cancel if failures not allowed
 	if !b.allowFailures {
-		b.Cancel()
+		b.CancelCtx(ctx)
 	}
 
-	b.checkFinished()
+	b.checkFinished(ctx)
 }
 
 // checkFinished checks if all jobs have been processed and fires callbacks
-func (b *Batch) checkFinished() {
+func (b *Batch) checkFinished(ctx context.Context) {
 	if b.pendingJobs.Load() > 0 {
 		return
 	}
@@ -250,7 +257,7 @@ func (b *Batch) checkFinished() {
 		async.Go(func() { fn(b) })
 	}
 
-	dispatchBatchEvent(b.dispatchEvent, &BatchCompleted{
+	dispatchBatchEvent(ctx, b.dispatchEvent, &BatchCompleted{
 		BatchID:       string(b.id),
 		TotalJobs:     b.totalJobs,
 		CompletedJobs: b.CompletedJobs(),
@@ -260,11 +267,14 @@ func (b *Batch) checkFinished() {
 }
 
 // dispatchBatchEvent dispatches a batch event (nil-safe like other dispatch helpers)
-func dispatchBatchEvent(dispatch func(interface{}), event interface{}) {
+func dispatchBatchEvent(ctx context.Context, dispatch func(context.Context, interface{}), event interface{}) {
 	if dispatch == nil {
 		return
 	}
-	dispatch(event)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	dispatch(ctx, event)
 }
 
 // PendingBatch is a fluent builder for creating and dispatching a batch
@@ -275,7 +285,7 @@ type PendingBatch struct {
 	finallyFn     func(b *Batch)
 	allowFailures bool
 	queue         string
-	dispatchEvent func(event interface{})
+	dispatchEvent func(ctx context.Context, event interface{})
 }
 
 // NewBatch creates a new PendingBatch with the given jobs.
@@ -317,8 +327,9 @@ func (pb *PendingBatch) OnQueue(queue string) *PendingBatch {
 	return pb
 }
 
-// WithEventDispatcher sets the event dispatcher for the batch
-func (pb *PendingBatch) WithEventDispatcher(fn func(event interface{})) *PendingBatch {
+// WithEventDispatcher sets the event dispatcher for the batch. The fn
+// receives a context.Context so listeners observe per-job scoped values.
+func (pb *PendingBatch) WithEventDispatcher(fn func(ctx context.Context, event interface{})) *PendingBatch {
 	pb.dispatchEvent = fn
 	return pb
 }
@@ -360,13 +371,13 @@ func (pb *PendingBatch) Dispatch(ctx context.Context, driver Driver) (*Batch, er
 			// then cancel the batch so it can still reach Finished state.
 			unpushed := int32(len(pb.jobs) - pushed)
 			batch.pendingJobs.Add(-unpushed)
-			batch.Cancel()
+			batch.CancelCtx(ctx)
 			return batch, fmt.Errorf("batch: failed to push job %d/%d: %w", pushed+1, len(pb.jobs), err)
 		}
 		pushed++
 	}
 
-	dispatchBatchEvent(pb.dispatchEvent, &BatchCreated{
+	dispatchBatchEvent(ctx, pb.dispatchEvent, &BatchCreated{
 		BatchID:   string(id),
 		TotalJobs: len(pb.jobs),
 		Queue:     pb.queue,

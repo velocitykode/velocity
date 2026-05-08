@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -37,7 +38,7 @@ type TestListener struct {
 	shouldErr bool
 }
 
-func (l *TestListener) Handle(event interface{}) error {
+func (l *TestListener) Handle(ctx context.Context, event interface{}) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.handled = true
@@ -69,7 +70,7 @@ type CountingListener struct {
 	counter *int32
 }
 
-func (l *CountingListener) Handle(event interface{}) error {
+func (l *CountingListener) Handle(ctx context.Context, event interface{}) error {
 	atomic.AddInt32(l.counter, 1)
 	return nil
 }
@@ -106,7 +107,7 @@ func TestBasicEventDispatching(t *testing.T) {
 
 	// Dispatch event
 	event := UserRegistered{UserID: 1, Email: "test@example.com"}
-	err := dispatcher.Dispatch(event)
+	err := dispatcher.Dispatch(context.Background(), event)
 
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
@@ -132,7 +133,7 @@ func TestMultipleListeners(t *testing.T) {
 
 	// Dispatch event
 	event := UserRegistered{UserID: 1, Email: "test@example.com"}
-	err := dispatcher.Dispatch(event)
+	err := dispatcher.Dispatch(context.Background(), event)
 
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
@@ -154,8 +155,8 @@ func TestEventSubscriber(t *testing.T) {
 	userEvent := UserRegistered{UserID: 1, Email: "test@example.com"}
 	orderEvent := OrderPlaced{OrderID: 100, Amount: 99.99}
 
-	dispatcher.Dispatch(userEvent)
-	dispatcher.Dispatch(orderEvent)
+	dispatcher.Dispatch(context.Background(), userEvent)
+	dispatcher.Dispatch(context.Background(), orderEvent)
 
 	if !subscriber.listeners["user.registered"].WasHandled() {
 		t.Error("Expected user.registered listener to handle event")
@@ -177,7 +178,7 @@ func TestWildcardListeners(t *testing.T) {
 
 	// Dispatch event
 	event := UserRegistered{UserID: 1, Email: "test@example.com"}
-	dispatcher.Dispatch(event)
+	dispatcher.Dispatch(context.Background(), event)
 
 	if !wildcardListener.WasHandled() {
 		t.Error("Expected wildcard listener to handle event")
@@ -222,7 +223,7 @@ func TestForgetListeners(t *testing.T) {
 
 	// Dispatch should not trigger listener
 	event := UserRegistered{UserID: 1, Email: "test@example.com"}
-	dispatcher.Dispatch(event)
+	dispatcher.Dispatch(context.Background(), event)
 
 	if listener.WasHandled() {
 		t.Error("Expected listener not to handle event after forget")
@@ -246,7 +247,7 @@ func TestConcurrentDispatching(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			dispatcher.Dispatch("test.event")
+			dispatcher.Dispatch(context.Background(), "test.event")
 		}()
 	}
 
@@ -263,7 +264,7 @@ func TestListenerError(t *testing.T) {
 
 	dispatcher.Listen("test.event", listener)
 
-	err := dispatcher.Dispatch("test.event")
+	err := dispatcher.Dispatch(context.Background(), "test.event")
 	if err == nil {
 		t.Error("Expected error from listener")
 	}
@@ -276,7 +277,7 @@ func TestDispatchAsync(t *testing.T) {
 	dispatcher.Listen("test.event", listener)
 
 	// Dispatch async (will use goroutine since no queue configured)
-	err := dispatcher.DispatchAsync("test.event")
+	err := dispatcher.DispatchAsync(context.Background(), "test.event")
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
@@ -295,7 +296,7 @@ func TestDispatchAfter(t *testing.T) {
 	dispatcher.Listen("test.event", listener)
 
 	start := time.Now()
-	dispatcher.DispatchAfter("test.event", 100*time.Millisecond)
+	dispatcher.DispatchAfter(context.Background(), "test.event", 100*time.Millisecond)
 
 	testsync.Eventually(t, listener.WasHandled, time.Second, "delayed listener handled")
 
@@ -320,7 +321,7 @@ func TestDispatcherWithInstance(t *testing.T) {
 		t.Error("Expected dispatcher to have listeners")
 	}
 
-	dispatcher.Dispatch("test.event")
+	dispatcher.Dispatch(context.Background(), "test.event")
 
 	if !listener.WasHandled() {
 		t.Error("Expected listener to handle event")
@@ -346,9 +347,9 @@ func TestFakeDispatcher(t *testing.T) {
 	event2 := UserRegistered{UserID: 2, Email: "test2@example.com"}
 	event3 := OrderPlaced{OrderID: 100, Amount: 99.99}
 
-	fake.Dispatch(event1)
-	fake.Dispatch(event2)
-	fake.Dispatch(event3)
+	fake.Dispatch(context.Background(), event1)
+	fake.Dispatch(context.Background(), event2)
+	fake.Dispatch(context.Background(), event3)
 
 	// Assert events were dispatched
 	err := fake.AssertDispatched(&UserRegistered{}, func(e interface{}) bool {
@@ -423,7 +424,7 @@ func TestOffRemovesListener(t *testing.T) {
 	}
 
 	// Dispatch should not trigger listener
-	dispatcher.Dispatch("test.event")
+	dispatcher.Dispatch(context.Background(), "test.event")
 	if listener.WasHandled() {
 		t.Error("Expected listener not to be called after Off")
 	}
@@ -452,7 +453,7 @@ func TestOffRemovesOnlySpecificListener(t *testing.T) {
 	dispatcher.Off(id1)
 
 	// Dispatch event
-	dispatcher.Dispatch("test.event")
+	dispatcher.Dispatch(context.Background(), "test.event")
 
 	// Only listener2 should be called
 	if listener1.WasHandled() {
@@ -498,7 +499,7 @@ func TestListenOffReturnsID(t *testing.T) {
 	}
 
 	// Verify it works
-	dispatcher.Dispatch("test.event")
+	dispatcher.Dispatch(context.Background(), "test.event")
 	if !listener.WasHandled() {
 		t.Error("Expected handler to be called")
 	}
@@ -512,7 +513,7 @@ func TestListenOffReturnsID(t *testing.T) {
 	// Register a new listener to verify the old one isn't called
 	newListener := &TestListener{}
 	dispatcher.Listen("test.event", newListener)
-	dispatcher.Dispatch("test.event")
+	dispatcher.Dispatch(context.Background(), "test.event")
 	if !newListener.WasHandled() {
 		t.Error("Expected new listener to be called")
 	}

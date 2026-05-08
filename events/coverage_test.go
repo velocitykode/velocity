@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -20,12 +21,12 @@ func (e *SimpleEvent) Name() string {
 }
 
 type SimpleListener struct {
-	HandleFunc func(event interface{}) error
+	HandleFunc func(ctx context.Context, event interface{}) error
 }
 
-func (l *SimpleListener) Handle(event interface{}) error {
+func (l *SimpleListener) Handle(ctx context.Context, event interface{}) error {
 	if l.HandleFunc != nil {
-		return l.HandleFunc(event)
+		return l.HandleFunc(ctx, event)
 	}
 	return nil
 }
@@ -35,16 +36,16 @@ func (l *SimpleListener) ShouldQueue() bool {
 }
 
 type SimpleQueuedListener struct {
-	HandleFunc     func(event interface{}) error
+	HandleFunc     func(ctx context.Context, event interface{}) error
 	ConnectionName string
 	QueueName      string
 	DelayDuration  time.Duration
 	MaxTries       int
 }
 
-func (l *SimpleQueuedListener) Handle(event interface{}) error {
+func (l *SimpleQueuedListener) Handle(ctx context.Context, event interface{}) error {
 	if l.HandleFunc != nil {
-		return l.HandleFunc(event)
+		return l.HandleFunc(ctx, event)
 	}
 	return nil
 }
@@ -89,7 +90,7 @@ func TestBaseListenerComplete(t *testing.T) {
 	listener := &BaseListener{}
 
 	// Test Handle
-	err := listener.Handle("any event")
+	err := listener.Handle(context.Background(), "any event")
 	if err != nil {
 		t.Errorf("Handle should return nil, got %v", err)
 	}
@@ -160,7 +161,7 @@ func TestAsyncDispatcherFullCoverage(t *testing.T) {
 	listener := &TestListener{}
 
 	// Test Push
-	err := dispatcher.Push("test", listener, 10*time.Millisecond)
+	err := dispatcher.Push(context.Background(), "test", listener, 10*time.Millisecond)
 	if err != nil {
 		t.Errorf("Push failed: %v", err)
 	}
@@ -169,7 +170,7 @@ func TestAsyncDispatcherFullCoverage(t *testing.T) {
 
 	// Test Push with error — just verify it doesn't leak the error up.
 	errorListener := &TestListener{shouldErr: true}
-	if err := dispatcher.Push("error", errorListener, 0); err != nil {
+	if err := dispatcher.Push(context.Background(), "error", errorListener, 0); err != nil {
 		t.Error("Push should not return listener errors")
 	}
 	testsync.Eventually(t, errorListener.WasHandled, time.Second, "error listener handled")
@@ -185,7 +186,7 @@ func TestEventWorkerFullCoverage(t *testing.T) {
 	factory := func() Listener {
 		counter++
 		return &SimpleListener{
-			HandleFunc: func(event interface{}) error {
+			HandleFunc: func(ctx context.Context, event interface{}) error {
 				return nil
 			},
 		}
@@ -195,7 +196,7 @@ func TestEventWorkerFullCoverage(t *testing.T) {
 
 	// Process with proper JSON
 	jobJSON := `{"listener_type":"test","event":{"data":"test"}}`
-	err := worker.Process(jobJSON)
+	err := worker.Process(context.Background(), jobJSON)
 	if err != nil {
 		t.Errorf("Process failed: %v", err)
 	}
@@ -205,13 +206,13 @@ func TestEventWorkerFullCoverage(t *testing.T) {
 	}
 
 	// Test with invalid JSON
-	err = worker.Process("invalid json")
+	err = worker.Process(context.Background(), "invalid json")
 	if err == nil {
 		t.Error("Expected error for invalid JSON")
 	}
 
 	// Test with unknown listener type
-	err = worker.Process(`{"listener_type":"unknown","event":{}}`)
+	err = worker.Process(context.Background(), `{"listener_type":"unknown","event":{}}`)
 	if err == nil {
 		t.Error("Expected error for unknown listener type")
 	}
@@ -222,7 +223,7 @@ func TestEventWorkerFullCoverage(t *testing.T) {
 	}
 	worker.RegisterListener("error", errorFactory)
 
-	err = worker.Process(`{"listener_type":"error","event":{}}`)
+	err = worker.Process(context.Background(), `{"listener_type":"error","event":{}}`)
 	if err == nil {
 		t.Error("Expected error from listener Handle")
 	}
@@ -238,7 +239,7 @@ func TestDispatcherQueueError(t *testing.T) {
 	d.Listen("queued", queuedListener)
 
 	// Dispatch should return error when queue Push fails
-	err := d.Dispatch("queued")
+	err := d.Dispatch(context.Background(), "queued")
 	if err == nil {
 		t.Error("Expected error from queue Push")
 	}
@@ -264,14 +265,14 @@ func TestProcessListenerShouldHandle(t *testing.T) {
 	listener := &shouldHandleListener{shouldHandle: false}
 
 	// Should return nil when ShouldHandle returns false
-	err := d.processListener("event", listener)
+	err := d.processListener(context.Background(), "event", listener)
 	if err != nil {
 		t.Errorf("Expected nil when ShouldHandle is false, got %v", err)
 	}
 
 	// Test with ShouldHandle returning true
 	listener.shouldHandle = true
-	err = d.processListener("event", listener)
+	err = d.processListener(context.Background(), "event", listener)
 	if err != nil {
 		t.Errorf("Expected nil when handling succeeds, got %v", err)
 	}
@@ -286,9 +287,9 @@ func TestFakeDispatcherFullCoverage(t *testing.T) {
 	fake.Listen([]string{"event1", "event2", "event3"}, listener)
 
 	// Verify all events are registered
-	fake.Dispatch("event1")
-	fake.Dispatch("event2")
-	fake.Dispatch("event3")
+	fake.Dispatch(context.Background(), "event1")
+	fake.Dispatch(context.Background(), "event2")
+	fake.Dispatch(context.Background(), "event3")
 
 	if len(fake.GetDispatchedEvents()) != 3 {
 		t.Errorf("Expected 3 events, got %d", len(fake.GetDispatchedEvents()))
@@ -297,19 +298,19 @@ func TestFakeDispatcherFullCoverage(t *testing.T) {
 	// Test with Event interface
 	event := &UserRegistered{UserID: 1}
 	fake.Listen(event, listener)
-	fake.Dispatch(event)
+	fake.Dispatch(context.Background(), event)
 
 	// Test StartFaking and StopFaking
 	fake.StopFaking()
 	handled := false
 	testListener := &SimpleListener{
-		HandleFunc: func(event interface{}) error {
+		HandleFunc: func(ctx context.Context, event interface{}) error {
 			handled = true
 			return nil
 		},
 	}
 	fake.Listen("real", testListener)
-	fake.Dispatch("real")
+	fake.Dispatch(context.Background(), "real")
 
 	if !handled {
 		t.Error("Listener should be executed when not faking")
@@ -317,7 +318,7 @@ func TestFakeDispatcherFullCoverage(t *testing.T) {
 
 	fake.StartFaking()
 	handled = false
-	fake.Dispatch("real2")
+	fake.Dispatch(context.Background(), "real2")
 
 	if handled {
 		t.Error("Listener should not be executed when faking")
@@ -327,7 +328,7 @@ func TestFakeDispatcherFullCoverage(t *testing.T) {
 	fake.StopFaking()
 	errorListener := &TestListener{shouldErr: true}
 	fake.Listen("error.event", errorListener)
-	fake.executeListeners("error.event")
+	fake.executeListeners(context.Background(), "error.event")
 }
 
 // Test FakeDispatcher getEventName paths
@@ -367,8 +368,8 @@ func TestFakeDispatcherAssertMethods(t *testing.T) {
 	fake := NewFakeDispatcher()
 
 	// Dispatch some events
-	fake.Dispatch("test.event")
-	fake.Dispatch(UserRegistered{UserID: 1})
+	fake.Dispatch(context.Background(), "test.event")
+	fake.Dispatch(context.Background(), UserRegistered{UserID: 1})
 
 	// Test AssertDispatched with callback
 	err := fake.AssertDispatched("test.event", func(event interface{}) bool {
@@ -420,7 +421,7 @@ func TestFakeDispatcherAssertMethods(t *testing.T) {
 
 	// Test with string type for coverage
 	fake3 := NewFakeDispatcher()
-	fake3.Dispatch("string.event")
+	fake3.Dispatch(context.Background(), "string.event")
 	err = fake3.AssertDispatched("string", nil)
 	if err != nil {
 		t.Errorf("Should find string event: %v", err)
@@ -444,7 +445,9 @@ func TestTransactionalDispatcherFullCoverage(t *testing.T) {
 	txDispatcher.BeginTransaction()
 
 	// Dispatch after commit
-	txDispatcher.DispatchAfterCommit("tx")
+	if err := txDispatcher.DispatchAfterCommit(context.Background(), "tx"); err != nil {
+		t.Fatalf("DispatchAfterCommit in tx returned error: %v", err)
+	}
 
 	// Should not be handled yet
 	if listener.WasHandled() {
@@ -452,7 +455,7 @@ func TestTransactionalDispatcherFullCoverage(t *testing.T) {
 	}
 
 	// Commit
-	txDispatcher.Commit()
+	txDispatcher.Commit(context.Background())
 
 	// Should be handled now
 	if !listener.WasHandled() {
@@ -464,7 +467,9 @@ func TestTransactionalDispatcherFullCoverage(t *testing.T) {
 	baseDispatcher.Listen("rollback", listener2)
 
 	txDispatcher.BeginTransaction()
-	txDispatcher.DispatchAfterCommit("rollback")
+	if err := txDispatcher.DispatchAfterCommit(context.Background(), "rollback"); err != nil {
+		t.Fatalf("DispatchAfterCommit in tx returned error: %v", err)
+	}
 	txDispatcher.Rollback()
 
 	if listener2.WasHandled() {
@@ -475,7 +480,9 @@ func TestTransactionalDispatcherFullCoverage(t *testing.T) {
 	listener3 := &TestListener{}
 	baseDispatcher.Listen("direct", listener3)
 
-	txDispatcher.DispatchAfterCommit("direct")
+	if err := txDispatcher.DispatchAfterCommit(context.Background(), "direct"); err != nil {
+		t.Fatalf("DispatchAfterCommit without tx returned error: %v", err)
+	}
 
 	if !listener3.WasHandled() {
 		t.Error("Should be handled immediately without transaction")
@@ -484,8 +491,43 @@ func TestTransactionalDispatcherFullCoverage(t *testing.T) {
 	// Test commit with error
 	baseDispatcher.Listen("error", &TestListener{shouldErr: true})
 	txDispatcher.BeginTransaction()
-	txDispatcher.DispatchAfterCommit("error")
-	txDispatcher.Commit() // Should handle error gracefully
+	if err := txDispatcher.DispatchAfterCommit(context.Background(), "error"); err != nil {
+		t.Fatalf("DispatchAfterCommit in tx returned error: %v", err)
+	}
+	txDispatcher.Commit(context.Background()) // Should handle error gracefully
+}
+
+// TestDispatchAfterCommit_NonTxBranchSurfacesError pins the contract that
+// DispatchAfterCommit returns the dispatcher's error when it falls through
+// to direct dispatch (no active transaction). The earlier signature
+// returned nothing, which silently swallowed listener errors outside a tx.
+func TestDispatchAfterCommit_NonTxBranchSurfacesError(t *testing.T) {
+	baseDispatcher := NewDispatcher()
+	txDispatcher := NewTransactionalDispatcher(baseDispatcher)
+
+	// Listener returns an error so Dispatch surfaces a non-nil err.
+	baseDispatcher.Listen("boom", &TestListener{shouldErr: true})
+
+	// No active transaction -> falls through to direct dispatch.
+	err := txDispatcher.DispatchAfterCommit(context.Background(), "boom")
+	if err == nil {
+		t.Fatal("expected DispatchAfterCommit to surface dispatcher error outside a tx")
+	}
+}
+
+// TestDispatchAfterCommit_TxBranchReturnsNil verifies the in-tx branch
+// always returns nil (events are queued, not dispatched).
+func TestDispatchAfterCommit_TxBranchReturnsNil(t *testing.T) {
+	baseDispatcher := NewDispatcher()
+	txDispatcher := NewTransactionalDispatcher(baseDispatcher)
+	baseDispatcher.Listen("queued", &TestListener{shouldErr: true})
+
+	txDispatcher.BeginTransaction()
+	defer txDispatcher.Rollback()
+
+	if err := txDispatcher.DispatchAfterCommit(context.Background(), "queued"); err != nil {
+		t.Fatalf("expected nil from in-tx DispatchAfterCommit, got %v", err)
+	}
 }
 
 // Test dispatcher error paths
@@ -498,19 +540,19 @@ func TestDispatcherErrorPaths(t *testing.T) {
 	d.Listen("mixed", &TestListener{})
 
 	// Should return first error encountered
-	err := d.Dispatch("mixed")
+	err := d.Dispatch(context.Background(), "mixed")
 	if err == nil {
 		t.Error("Expected error from failing listener")
 	}
 
 	// Test DispatchNow with error
-	err = d.DispatchNow("mixed")
+	err = d.DispatchNow(context.Background(), "mixed")
 	if err == nil {
 		t.Error("Expected error from DispatchNow")
 	}
 
 	// Test Until with error
-	_, err = d.Until("mixed")
+	_, err = d.Until(context.Background(), "mixed")
 	if err == nil {
 		t.Error("Expected error from Until")
 	}
@@ -519,7 +561,7 @@ func TestDispatcherErrorPaths(t *testing.T) {
 	listener := &resultListener{result: "test-result"}
 	d.Listen("result", listener)
 
-	result, err := d.Until("result")
+	result, err := d.Until(context.Background(), "result")
 	if err != nil {
 		t.Errorf("Until failed: %v", err)
 	}
@@ -532,7 +574,7 @@ func TestDispatcherErrorPaths(t *testing.T) {
 	errorListener := &resultListener{resultErr: errors.New("result error")}
 	d.Listen("result.error", errorListener)
 
-	_, err = d.Until("result.error")
+	_, err = d.Until(context.Background(), "result.error")
 	if err == nil {
 		t.Error("Expected error from Until")
 	}
@@ -552,7 +594,7 @@ func TestAsyncEventBusCoverage(t *testing.T) {
 	bus.RegisterQueuedListener("test", listener, factory)
 	// "test" is not valid job JSON so Process errors out — this is purely a
 	// smoke test that the call doesn't panic when given garbage input.
-	_ = bus.ProcessQueuedEvent("test")
+	_ = bus.ProcessQueuedEvent(context.Background(), "test")
 }
 
 // Test FakeDispatcher uncovered methods
@@ -560,25 +602,25 @@ func TestFakeDispatcherUncoveredMethods(t *testing.T) {
 	fake := NewFakeDispatcher()
 
 	// Test DispatchNow
-	err := fake.DispatchNow("test.event")
+	err := fake.DispatchNow(context.Background(), "test.event")
 	if err != nil {
 		t.Errorf("DispatchNow failed: %v", err)
 	}
 
 	// Test DispatchAsync
-	err = fake.DispatchAsync("async.event")
+	err = fake.DispatchAsync(context.Background(), "async.event")
 	if err != nil {
 		t.Errorf("DispatchAsync failed: %v", err)
 	}
 
 	// Test DispatchAfter
-	err = fake.DispatchAfter("delayed.event", 10*time.Millisecond)
+	err = fake.DispatchAfter(context.Background(), "delayed.event", 10*time.Millisecond)
 	if err != nil {
 		t.Errorf("DispatchAfter failed: %v", err)
 	}
 
 	// Test Until
-	result, err := fake.Until("until.event")
+	result, err := fake.Until(context.Background(), "until.event")
 	if err != nil {
 		t.Errorf("Until failed: %v", err)
 	}
@@ -592,13 +634,13 @@ func TestDispatcherDispatchNowAndUntil(t *testing.T) {
 	d := NewDispatcher()
 
 	// Test DispatchNow
-	err := d.DispatchNow("test.event")
+	err := d.DispatchNow(context.Background(), "test.event")
 	if err != nil {
 		t.Errorf("DispatchNow failed: %v", err)
 	}
 
 	// Test Until
-	result, err := d.Until("test.event")
+	result, err := d.Until(context.Background(), "test.event")
 	if err != nil {
 		t.Errorf("Until failed: %v", err)
 	}
@@ -616,8 +658,8 @@ func TestListenWildcard(t *testing.T) {
 	d.Listen("user.*", listener)
 
 	// Dispatch should match
-	d.Dispatch("user.created")
-	d.Dispatch("user.updated")
+	d.Dispatch(context.Background(), "user.created")
+	d.Dispatch(context.Background(), "user.updated")
 }
 
 // Test DispatchAsync and DispatchAfter without queue
@@ -627,7 +669,7 @@ func TestDispatchAsyncAfterWithoutQueue(t *testing.T) {
 	d.Listen("test", listener)
 
 	// DispatchAsync without queue (should use goroutine)
-	if err := d.DispatchAsync("test"); err != nil {
+	if err := d.DispatchAsync(context.Background(), "test"); err != nil {
 		t.Errorf("DispatchAsync failed: %v", err)
 	}
 
@@ -637,7 +679,7 @@ func TestDispatchAsyncAfterWithoutQueue(t *testing.T) {
 	listener2 := &TestListener{}
 	d.Listen("delayed", listener2)
 
-	if err := d.DispatchAfter("delayed", 10*time.Millisecond); err != nil {
+	if err := d.DispatchAfter(context.Background(), "delayed", 10*time.Millisecond); err != nil {
 		t.Errorf("DispatchAfter failed: %v", err)
 	}
 
@@ -702,7 +744,7 @@ type TestFullQueuedListener struct {
 	handled bool
 }
 
-func (l *TestFullQueuedListener) Handle(event interface{}) error {
+func (l *TestFullQueuedListener) Handle(ctx context.Context, event interface{}) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.handled = true
@@ -737,7 +779,7 @@ func (l *TestFullQueuedListener) Tries() int {
 
 type testQueueError struct{}
 
-func (q *testQueueError) Push(event interface{}, listener Listener, delay time.Duration) error {
+func (q *testQueueError) Push(ctx context.Context, event interface{}, listener Listener, delay time.Duration) error {
 	return errors.New("queue push failed")
 }
 
@@ -746,7 +788,7 @@ type shouldHandleListener struct {
 	handled      bool
 }
 
-func (l *shouldHandleListener) Handle(event interface{}) error {
+func (l *shouldHandleListener) Handle(ctx context.Context, event interface{}) error {
 	l.handled = true
 	return nil
 }
@@ -764,7 +806,7 @@ type resultListener struct {
 	resultErr error
 }
 
-func (l *resultListener) Handle(event interface{}) error {
+func (l *resultListener) Handle(ctx context.Context, event interface{}) error {
 	return nil
 }
 
@@ -772,6 +814,6 @@ func (l *resultListener) ShouldQueue() bool {
 	return false
 }
 
-func (l *resultListener) HandleWithResult(event interface{}) (interface{}, error) {
+func (l *resultListener) HandleWithResult(ctx context.Context, event interface{}) (interface{}, error) {
 	return l.result, l.resultErr
 }

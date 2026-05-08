@@ -23,7 +23,7 @@ func TestManagerBroadcast_RecoversPanic(t *testing.T) {
 	m.SetChannel("ok", &mockMailer{sent: make([]*Message, 0)})
 
 	var failedCount atomic.Int32
-	m.SetEventDispatcher(func(event interface{}) error {
+	m.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		if _, ok := event.(*MailFailed); ok {
 			failedCount.Add(1)
 		}

@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -23,7 +24,7 @@ func TestMiddlewareDispatcher(t *testing.T) {
 			handled = true
 		}})
 
-		err := dispatcher.Dispatch(&middlewareTestEvent{})
+		err := dispatcher.Dispatch(context.Background(), &middlewareTestEvent{})
 		if err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
@@ -36,13 +37,13 @@ func TestMiddlewareDispatcher(t *testing.T) {
 		dispatcher := NewMiddlewareDispatcher()
 		middlewareRan := false
 
-		dispatcher.UseFunc(func(event interface{}, next func(interface{}) error) error {
+		dispatcher.UseFunc(func(ctx context.Context, event interface{}, next func(context.Context, interface{}) error) error {
 			middlewareRan = true
-			return next(event)
+			return next(ctx, event)
 		})
 
 		dispatcher.Listen("test.event", &middlewareTestListener{})
-		dispatcher.Dispatch(&middlewareTestEvent{})
+		dispatcher.Dispatch(context.Background(), &middlewareTestEvent{})
 
 		if !middlewareRan {
 			t.Error("Middleware should have run")
@@ -54,22 +55,22 @@ func TestMiddlewareDispatcher(t *testing.T) {
 		order := []int{}
 		mu := sync.Mutex{}
 
-		dispatcher.UseFunc(func(event interface{}, next func(interface{}) error) error {
+		dispatcher.UseFunc(func(ctx context.Context, event interface{}, next func(context.Context, interface{}) error) error {
 			mu.Lock()
 			order = append(order, 1)
 			mu.Unlock()
-			return next(event)
+			return next(ctx, event)
 		})
 
-		dispatcher.UseFunc(func(event interface{}, next func(interface{}) error) error {
+		dispatcher.UseFunc(func(ctx context.Context, event interface{}, next func(context.Context, interface{}) error) error {
 			mu.Lock()
 			order = append(order, 2)
 			mu.Unlock()
-			return next(event)
+			return next(ctx, event)
 		})
 
 		dispatcher.Listen("test.event", &middlewareTestListener{})
-		dispatcher.Dispatch(&middlewareTestEvent{})
+		dispatcher.Dispatch(context.Background(), &middlewareTestEvent{})
 
 		mu.Lock()
 		if len(order) != 2 || order[0] != 1 || order[1] != 2 {
@@ -80,8 +81,8 @@ func TestMiddlewareDispatcher(t *testing.T) {
 
 	t.Run("get and clear middleware", func(t *testing.T) {
 		dispatcher := NewMiddlewareDispatcher()
-		dispatcher.UseFunc(func(event interface{}, next func(interface{}) error) error {
-			return next(event)
+		dispatcher.UseFunc(func(ctx context.Context, event interface{}, next func(context.Context, interface{}) error) error {
+			return next(ctx, event)
 		})
 
 		middlewares := dispatcher.GetMiddleware()
@@ -104,7 +105,7 @@ func TestLoggingMiddleware(t *testing.T) {
 
 		dispatcher.Use(logger)
 		dispatcher.Listen("test.event", &middlewareTestListener{})
-		dispatcher.Dispatch(&middlewareTestEvent{})
+		dispatcher.Dispatch(context.Background(), &middlewareTestEvent{})
 
 		log := logger.GetLog()
 		if len(log) != 1 {
@@ -127,7 +128,7 @@ func TestLoggingMiddleware(t *testing.T) {
 func TestValidationMiddleware(t *testing.T) {
 	t.Run("validates events", func(t *testing.T) {
 		dispatcher := NewMiddlewareDispatcher()
-		validator := NewValidationMiddleware(func(event interface{}) error {
+		validator := NewValidationMiddleware(func(ctx context.Context, event interface{}) error {
 			if _, ok := event.(*middlewareTestEvent); !ok {
 				return fmt.Errorf("invalid event type")
 			}
@@ -137,7 +138,7 @@ func TestValidationMiddleware(t *testing.T) {
 		dispatcher.Use(validator)
 		dispatcher.Listen("test.event", &middlewareTestListener{})
 
-		err := dispatcher.Dispatch(&middlewareTestEvent{})
+		err := dispatcher.Dispatch(context.Background(), &middlewareTestEvent{})
 		if err != nil {
 			t.Errorf("Valid event should pass: %v", err)
 		}
@@ -145,12 +146,12 @@ func TestValidationMiddleware(t *testing.T) {
 
 	t.Run("rejects invalid events", func(t *testing.T) {
 		dispatcher := NewMiddlewareDispatcher()
-		validator := NewValidationMiddleware(func(event interface{}) error {
+		validator := NewValidationMiddleware(func(ctx context.Context, event interface{}) error {
 			return fmt.Errorf("validation failed")
 		})
 
 		dispatcher.Use(validator)
-		err := dispatcher.Dispatch(&middlewareTestEvent{})
+		err := dispatcher.Dispatch(context.Background(), &middlewareTestEvent{})
 
 		if err == nil {
 			t.Error("Expected validation error")
@@ -163,7 +164,7 @@ func TestTransformMiddleware(t *testing.T) {
 		dispatcher := NewMiddlewareDispatcher()
 		var receivedEvent interface{}
 
-		transformer := NewTransformMiddleware(func(event interface{}) interface{} {
+		transformer := NewTransformMiddleware(func(ctx context.Context, event interface{}) interface{} {
 			if e, ok := event.(*middlewareTestEvent); ok {
 				// Transform by creating a modified copy
 				transformed := &middlewareTestEvent{name: "test.event"}
@@ -180,7 +181,7 @@ func TestTransformMiddleware(t *testing.T) {
 			receivedEvent = "handled"
 		}})
 
-		dispatcher.Dispatch(&middlewareTestEvent{})
+		dispatcher.Dispatch(context.Background(), &middlewareTestEvent{})
 
 		if receivedEvent == nil {
 			t.Error("Event should have been transformed and handled")
@@ -202,7 +203,7 @@ func TestFilterMiddleware(t *testing.T) {
 			handled = true
 		}})
 
-		dispatcher.Dispatch(&middlewareTestEvent{})
+		dispatcher.Dispatch(context.Background(), &middlewareTestEvent{})
 
 		if handled {
 			t.Error("Filtered event should not be handled")
@@ -222,7 +223,7 @@ func TestFilterMiddleware(t *testing.T) {
 			handled = true
 		}})
 
-		dispatcher.Dispatch(&middlewareTestEvent{})
+		dispatcher.Dispatch(context.Background(), &middlewareTestEvent{})
 
 		if !handled {
 			t.Error("Allowed event should be handled")
@@ -237,7 +238,7 @@ func TestTimingMiddleware(t *testing.T) {
 
 		dispatcher.Use(timer)
 		dispatcher.Listen("test.event", &middlewareTestListener{})
-		dispatcher.Dispatch(&middlewareTestEvent{})
+		dispatcher.Dispatch(context.Background(), &middlewareTestEvent{})
 
 		timing := timer.GetTiming("test.event")
 		if timing == 0 {
@@ -253,8 +254,8 @@ func TestTimingMiddleware(t *testing.T) {
 		dispatcher.Listen("test.event1", &middlewareTestListener{})
 		dispatcher.Listen("test.event2", &middlewareTestListener{})
 
-		dispatcher.Dispatch(&middlewareTestEvent{name: "test.event1"})
-		dispatcher.Dispatch(&middlewareTestEvent{name: "test.event2"})
+		dispatcher.Dispatch(context.Background(), &middlewareTestEvent{name: "test.event1"})
+		dispatcher.Dispatch(context.Background(), &middlewareTestEvent{name: "test.event2"})
 
 		timings := timer.GetAllTimings()
 		if len(timings) != 2 {
@@ -278,7 +279,7 @@ func TestRetryMiddleware(t *testing.T) {
 			}
 		}})
 
-		dispatcher.Dispatch(&middlewareTestEvent{})
+		dispatcher.Dispatch(context.Background(), &middlewareTestEvent{})
 
 		if attempts != 3 {
 			t.Errorf("Expected 3 attempts, got %d", attempts)
@@ -295,7 +296,7 @@ func TestRetryMiddleware(t *testing.T) {
 			panic("always fail")
 		}})
 
-		err := dispatcher.Dispatch(&middlewareTestEvent{})
+		err := dispatcher.Dispatch(context.Background(), &middlewareTestEvent{})
 
 		if err == nil {
 			t.Error("Expected error after max retries")
@@ -311,7 +312,7 @@ func TestRetryMiddleware(t *testing.T) {
 			panic("fail")
 		}})
 
-		dispatcher.Dispatch(&middlewareTestEvent{})
+		dispatcher.Dispatch(context.Background(), &middlewareTestEvent{})
 
 		attempts := retry.GetAttempts("test.event")
 		if attempts != 4 { // Initial attempt + 3 retries
@@ -333,7 +334,7 @@ func TestMiddlewareConcurrency(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				dispatcher.Dispatch(&middlewareTestEvent{})
+				dispatcher.Dispatch(context.Background(), &middlewareTestEvent{})
 			}()
 		}
 
@@ -353,8 +354,8 @@ func TestMiddlewareConcurrency(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				dispatcher.UseFunc(func(event interface{}, next func(interface{}) error) error {
-					return next(event)
+				dispatcher.UseFunc(func(ctx context.Context, event interface{}, next func(context.Context, interface{}) error) error {
+					return next(ctx, event)
 				})
 			}()
 		}
@@ -373,7 +374,7 @@ type middlewareTestListener struct {
 	onHandle func()
 }
 
-func (l *middlewareTestListener) Handle(event interface{}) error {
+func (l *middlewareTestListener) Handle(ctx context.Context, event interface{}) error {
 	if l.onHandle != nil {
 		l.onHandle()
 	}
@@ -398,14 +399,14 @@ func (e *middlewareTestEvent) Name() string {
 // Benchmarks
 func BenchmarkMiddlewareDispatch(b *testing.B) {
 	dispatcher := NewMiddlewareDispatcher()
-	dispatcher.UseFunc(func(event interface{}, next func(interface{}) error) error {
-		return next(event)
+	dispatcher.UseFunc(func(ctx context.Context, event interface{}, next func(context.Context, interface{}) error) error {
+		return next(ctx, event)
 	})
 	dispatcher.Listen("test.event", &middlewareTestListener{})
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		dispatcher.Dispatch(&middlewareTestEvent{})
+		dispatcher.Dispatch(context.Background(), &middlewareTestEvent{})
 	}
 }
 
@@ -414,8 +415,8 @@ func BenchmarkMiddlewareChain(b *testing.B) {
 
 	// Add 5 middlewares
 	for i := 0; i < 5; i++ {
-		dispatcher.UseFunc(func(event interface{}, next func(interface{}) error) error {
-			return next(event)
+		dispatcher.UseFunc(func(ctx context.Context, event interface{}, next func(context.Context, interface{}) error) error {
+			return next(ctx, event)
 		})
 	}
 
@@ -423,6 +424,6 @@ func BenchmarkMiddlewareChain(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		dispatcher.Dispatch(&middlewareTestEvent{})
+		dispatcher.Dispatch(context.Background(), &middlewareTestEvent{})
 	}
 }

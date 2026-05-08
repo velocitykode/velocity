@@ -23,7 +23,7 @@ func TestSendMany_RecoversPanic(t *testing.T) {
 	m.SetChannel("panic", panicChannel{})
 
 	var failedCount atomic.Int32
-	m.SetEventDispatcher(func(event interface{}) error {
+	m.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		if _, ok := event.(*NotificationFailed); ok {
 			failedCount.Add(1)
 		}

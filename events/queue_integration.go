@@ -20,12 +20,18 @@ type EventListenerJob struct {
 	listener     Listener    `json:"-"` // Not serialized, set when processing
 }
 
-// Handle processes the event listener job
+// Handle processes the event listener job. Implements queue.Job.
 func (j *EventListenerJob) Handle() error {
+	return j.HandleCtx(context.Background())
+}
+
+// HandleCtx processes the event listener job with the worker-supplied ctx.
+// Implements queue.HandleCtxer so the listener receives the worker context.
+func (j *EventListenerJob) HandleCtx(ctx context.Context) error {
 	if j.listener == nil {
 		return fmt.Errorf("listener not set for job")
 	}
-	return j.listener.Handle(j.Event)
+	return j.listener.Handle(ctx, j.Event)
 }
 
 // Failed handles job failure
@@ -60,18 +66,21 @@ func (d *QueueIntegratedDispatcher) RegisterListenerFactory(listenerType string,
 }
 
 // Dispatch fires an event to all registered listeners with enhanced queue support
-func (d *QueueIntegratedDispatcher) Dispatch(event interface{}) error {
+func (d *QueueIntegratedDispatcher) Dispatch(ctx context.Context, event interface{}) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	listeners := d.getListenersForEvent(event)
 
 	for _, listener := range listeners {
 		if listener.ShouldQueue() {
 			// Enhanced queue integration
-			if err := d.pushToQueue(event, listener); err != nil {
+			if err := d.pushToQueue(ctx, event, listener); err != nil {
 				return fmt.Errorf("failed to queue listener: %w", err)
 			}
 		} else {
 			// Process synchronously
-			if err := d.processListener(event, listener); err != nil {
+			if err := d.processListener(ctx, event, listener); err != nil {
 				return err
 			}
 		}
@@ -81,7 +90,7 @@ func (d *QueueIntegratedDispatcher) Dispatch(event interface{}) error {
 }
 
 // pushToQueue pushes a listener to the queue with proper event serialization
-func (d *QueueIntegratedDispatcher) pushToQueue(event interface{}, listener Listener) error {
+func (d *QueueIntegratedDispatcher) pushToQueue(ctx context.Context, event interface{}, listener Listener) error {
 	// Create the job
 	job := &EventListenerJob{
 		Event:        event,
@@ -112,9 +121,9 @@ func (d *QueueIntegratedDispatcher) pushToQueue(event interface{}, listener List
 		return fmt.Errorf("queue driver not set on QueueIntegratedDispatcher")
 	}
 	if delay > 0 {
-		return d.queueDriver.PushDelayedCtx(context.Background(), job, delay, queueName)
+		return d.queueDriver.PushDelayedCtx(ctx, job, delay, queueName)
 	}
-	return d.queueDriver.PushCtx(context.Background(), job, queueName)
+	return d.queueDriver.PushCtx(ctx, job, queueName)
 }
 
 // getListenerType returns a string representation of the listener type
@@ -127,7 +136,10 @@ func (d *QueueIntegratedDispatcher) getListenerType(listener Listener) string {
 }
 
 // ProcessEventListenerJob processes an event listener job from the queue
-func (d *QueueIntegratedDispatcher) ProcessEventListenerJob(data []byte) error {
+func (d *QueueIntegratedDispatcher) ProcessEventListenerJob(ctx context.Context, data []byte) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var job EventListenerJob
 	if err := json.Unmarshal(data, &job); err != nil {
 		return fmt.Errorf("failed to unmarshal event listener job: %w", err)
@@ -143,7 +155,7 @@ func (d *QueueIntegratedDispatcher) ProcessEventListenerJob(data []byte) error {
 	job.listener = factory()
 
 	// Process the job
-	return job.Handle()
+	return job.HandleCtx(ctx)
 }
 
 // EventJobFactory creates EventListenerJob instances for queue deserialization
@@ -251,7 +263,10 @@ func NewStoppablePropagationDispatcher() *StoppablePropagationDispatcher {
 }
 
 // Dispatch fires an event with support for stopping propagation
-func (d *StoppablePropagationDispatcher) Dispatch(event interface{}) error {
+func (d *StoppablePropagationDispatcher) Dispatch(ctx context.Context, event interface{}) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	listeners := d.getListenersForEvent(event)
 
 	for _, listener := range listeners {
@@ -264,12 +279,12 @@ func (d *StoppablePropagationDispatcher) Dispatch(event interface{}) error {
 
 		if listener.ShouldQueue() {
 			// For queued listeners, we don't stop propagation since they're async
-			if err := d.pushToQueue(event, listener); err != nil {
+			if err := d.pushToQueue(ctx, event, listener); err != nil {
 				return fmt.Errorf("failed to queue listener: %w", err)
 			}
 		} else {
 			// Process synchronously
-			if err := d.processListener(event, listener); err != nil {
+			if err := d.processListener(ctx, event, listener); err != nil {
 				return err
 			}
 		}
@@ -282,11 +297,11 @@ func (d *StoppablePropagationDispatcher) Dispatch(event interface{}) error {
 type StoppablePropagationListener interface {
 	Listener
 	// HandleWithPropagation processes the event and can stop propagation
-	HandleWithPropagation(event interface{}) (stopPropagation bool, err error)
+	HandleWithPropagation(ctx context.Context, event interface{}) (stopPropagation bool, err error)
 }
 
 // processListener executes a listener with enhanced propagation control
-func (d *StoppablePropagationDispatcher) processListener(event interface{}, listener Listener) error {
+func (d *StoppablePropagationDispatcher) processListener(ctx context.Context, event interface{}, listener Listener) error {
 	// Check if listener should handle this event
 	if handler, ok := listener.(ShouldHandle); ok {
 		if !handler.ShouldHandle(event) {
@@ -296,7 +311,7 @@ func (d *StoppablePropagationDispatcher) processListener(event interface{}, list
 
 	// Check if listener can control propagation
 	if propagationListener, ok := listener.(StoppablePropagationListener); ok {
-		stopPropagation, err := propagationListener.HandleWithPropagation(event)
+		stopPropagation, err := propagationListener.HandleWithPropagation(ctx, event)
 		if err != nil {
 			return err
 		}
@@ -311,5 +326,5 @@ func (d *StoppablePropagationDispatcher) processListener(event interface{}, list
 	}
 
 	// Regular listener handling
-	return listener.Handle(event)
+	return listener.Handle(ctx, event)
 }

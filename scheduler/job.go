@@ -66,8 +66,10 @@ type Job struct {
 	mutex *sync.Mutex
 }
 
-// getDispatch returns the event dispatch function from the parent scheduler, or nil.
-func (j *Job) getDispatch() func(interface{}) {
+// getDispatch returns the event dispatch function from the parent scheduler,
+// or nil. The returned closure captures the scheduler's dispatchEvent method so
+// callers pass the per-job ctx through to listeners.
+func (j *Job) getDispatch() func(context.Context, interface{}) {
 	if j.scheduler != nil {
 		return j.scheduler.dispatchEvent
 	}

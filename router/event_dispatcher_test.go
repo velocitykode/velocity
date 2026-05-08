@@ -14,7 +14,7 @@ func TestAsyncEventDispatcher_DeliversAllEvents(t *testing.T) {
 
 	var mu sync.Mutex
 	var received []string
-	r.SetAsyncEventDispatcher(func(event interface{}) error {
+	r.SetAsyncEventDispatcher(func(_ context.Context, event interface{}) error {
 		mu.Lock()
 		received = append(received, event.(string))
 		mu.Unlock()
@@ -22,7 +22,7 @@ func TestAsyncEventDispatcher_DeliversAllEvents(t *testing.T) {
 	}, 4, 64)
 
 	for i := 0; i < 50; i++ {
-		if err := r.eventDispatcher("evt"); err != nil {
+		if err := r.eventDispatcher(context.Background(), "evt"); err != nil {
 			t.Fatalf("dispatch[%d] returned %v", i, err)
 		}
 	}
@@ -44,7 +44,7 @@ func TestAsyncEventDispatcher_DoesNotBlockCaller(t *testing.T) {
 
 	// Listener blocks until released — guarantees the buffer fills.
 	release := make(chan struct{})
-	r.SetAsyncEventDispatcher(func(event interface{}) error {
+	r.SetAsyncEventDispatcher(func(_ context.Context, event interface{}) error {
 		<-release
 		return nil
 	}, 1, 4)
@@ -56,7 +56,7 @@ func TestAsyncEventDispatcher_DoesNotBlockCaller(t *testing.T) {
 	var dropped int
 	start := time.Now()
 	for i := 0; i < N; i++ {
-		if err := r.eventDispatcher(i); errors.Is(err, ErrEventBufferFull) {
+		if err := r.eventDispatcher(context.Background(), i); errors.Is(err, ErrEventBufferFull) {
 			dropped++
 		}
 	}
@@ -80,7 +80,7 @@ func TestAsyncEventDispatcher_RecoversListenerPanics(t *testing.T) {
 	r := NewV2()
 
 	var processed int64
-	r.SetAsyncEventDispatcher(func(event interface{}) error {
+	r.SetAsyncEventDispatcher(func(_ context.Context, event interface{}) error {
 		atomic.AddInt64(&processed, 1)
 		if event.(int)%2 == 0 {
 			panic("boom")
@@ -89,7 +89,7 @@ func TestAsyncEventDispatcher_RecoversListenerPanics(t *testing.T) {
 	}, 2, 16)
 
 	for i := 0; i < 10; i++ {
-		_ = r.eventDispatcher(i)
+		_ = r.eventDispatcher(context.Background(), i)
 	}
 
 	if err := r.ShutdownEventDispatcher(context.Background()); err != nil {
@@ -112,7 +112,7 @@ func TestShutdownEventDispatcher_NoopWhenSync(t *testing.T) {
 
 func TestShutdownEventDispatcher_SecondCallIsNoop(t *testing.T) {
 	r := NewV2()
-	r.SetAsyncEventDispatcher(func(event interface{}) error { return nil }, 1, 4)
+	r.SetAsyncEventDispatcher(func(_ context.Context, event interface{}) error { return nil }, 1, 4)
 
 	if err := r.ShutdownEventDispatcher(context.Background()); err != nil {
 		t.Fatalf("first shutdown: %v", err)
@@ -130,7 +130,7 @@ func TestDispatchInstanceEvent_DropsCountedAndCallbackInvoked(t *testing.T) {
 	r := NewV2()
 
 	// Install a dispatcher that always returns ErrEventBufferFull.
-	r.SetEventDispatcher(func(event interface{}) error {
+	r.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		return ErrEventBufferFull
 	})
 
@@ -142,7 +142,7 @@ func TestDispatchInstanceEvent_DropsCountedAndCallbackInvoked(t *testing.T) {
 	}
 
 	for i := 0; i < 7; i++ {
-		r.dispatchInstanceEvent(&RequestRouted{RequestID: "id"})
+		r.dispatchInstanceEvent(context.Background(), &RequestRouted{RequestID: "id"})
 	}
 
 	if got, want := r.DroppedEventCount(), uint64(7); got != want {
@@ -161,10 +161,10 @@ func TestDispatchInstanceEvent_DropsCountedAndCallbackInvoked(t *testing.T) {
 // and exits cleanly without a nil dereference.
 func TestDispatchInstanceEvent_NoCallbackDoesNotPanic(t *testing.T) {
 	r := NewV2()
-	r.SetEventDispatcher(func(event interface{}) error { return ErrEventBufferFull })
+	r.SetEventDispatcher(func(_ context.Context, event interface{}) error { return ErrEventBufferFull })
 
-	r.dispatchInstanceEvent(&RequestStarted{})
-	r.dispatchInstanceEvent(&RequestHandled{})
+	r.dispatchInstanceEvent(context.Background(), &RequestStarted{})
+	r.dispatchInstanceEvent(context.Background(), &RequestHandled{})
 
 	if got := r.DroppedEventCount(); got != 2 {
 		t.Errorf("DroppedEventCount = %d, want 2", got)

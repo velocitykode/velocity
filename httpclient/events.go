@@ -46,7 +46,7 @@ func (e *RequestFailed) Name() string {
 // dispatchRequestSent dispatches a RequestSent event
 func (c *Client) dispatchRequestSent(ctx context.Context, method, url string, statusCode int, duration time.Duration, requestSize, responseSize int64) {
 	traceID, spanID, parentID := trace.GetTraceContext(ctx)
-	c.dispatchEvent(&RequestSent{
+	c.dispatchEvent(ctx, &RequestSent{
 		Context:      ctx,
 		Method:       method,
 		URL:          url,
@@ -67,7 +67,7 @@ func (c *Client) dispatchRequestFailed(ctx context.Context, method, url string, 
 	if err != nil {
 		errMsg = err.Error()
 	}
-	c.dispatchEvent(&RequestFailed{
+	c.dispatchEvent(ctx, &RequestFailed{
 		Context:    ctx,
 		Method:     method,
 		URL:        url,

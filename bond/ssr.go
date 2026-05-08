@@ -66,7 +66,7 @@ type HTTPGateway struct {
 	allowPrivate bool
 
 	mu              sync.RWMutex
-	eventDispatcher func(event interface{}) error
+	eventDispatcher func(ctx context.Context, event interface{}) error
 }
 
 // GatewayOption configures an HTTPGateway at construction time.
@@ -175,7 +175,7 @@ func validateSSRTarget(target string) error {
 
 // SetEventDispatcher wires the framework event bus so dispatch failures
 // flow out as SSRRenderFailed events. Safe to call from any goroutine.
-func (g *HTTPGateway) SetEventDispatcher(fn func(event interface{}) error) {
+func (g *HTTPGateway) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.eventDispatcher = fn
@@ -208,7 +208,7 @@ func (g *HTTPGateway) Dispatch(ctx context.Context, page Page) (*SSRResponse, er
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, g.URL, bytes.NewReader(body))
 	if err != nil {
-		return g.handleFailure(page, ssrServerError{
+		return g.handleFailure(ctx, page, ssrServerError{
 			Error: err.Error(),
 			Type:  string(SSRErrorConnection),
 		}, err)
@@ -217,7 +217,7 @@ func (g *HTTPGateway) Dispatch(ctx context.Context, page Page) (*SSRResponse, er
 	req.Header.Set("Accept", "application/json")
 
 	if g.Client == nil {
-		return g.handleFailure(page, ssrServerError{
+		return g.handleFailure(ctx, page, ssrServerError{
 			Error: ErrNoClient.Error(),
 			Type:  string(SSRErrorConnection),
 		}, ErrNoClient)
@@ -225,7 +225,7 @@ func (g *HTTPGateway) Dispatch(ctx context.Context, page Page) (*SSRResponse, er
 
 	resp, err := g.Client.Do(req)
 	if err != nil {
-		return g.handleFailure(page, ssrServerError{
+		return g.handleFailure(ctx, page, ssrServerError{
 			Error: err.Error(),
 			Type:  string(SSRErrorConnection),
 		}, err)
@@ -237,7 +237,7 @@ func (g *HTTPGateway) Dispatch(ctx context.Context, page Page) (*SSRResponse, er
 	// is safer than ballooning memory.
 	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	if readErr != nil {
-		return g.handleFailure(page, ssrServerError{
+		return g.handleFailure(ctx, page, ssrServerError{
 			Error: readErr.Error(),
 			Type:  string(SSRErrorConnection),
 		}, readErr)
@@ -254,12 +254,12 @@ func (g *HTTPGateway) Dispatch(ctx context.Context, page Page) (*SSRResponse, er
 		if json.Unmarshal(raw, &parsed) == nil && parsed.Error != "" {
 			payload = parsed
 		}
-		return g.handleFailure(page, payload, fmt.Errorf("velocity/bond: ssr server error: %w", errors.New(payload.Error)))
+		return g.handleFailure(ctx, page, payload, fmt.Errorf("velocity/bond: ssr server error: %w", errors.New(payload.Error)))
 	}
 
 	var out SSRResponse
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return g.handleFailure(page, ssrServerError{
+		return g.handleFailure(ctx, page, ssrServerError{
 			Error: err.Error(),
 			Type:  string(SSRErrorRender),
 		}, err)
@@ -334,13 +334,16 @@ func (g *HTTPGateway) excluded(pageURL string) bool {
 // handleFailure emits the SSRRenderFailed event and returns either
 // (nil, nil) for graceful CSR fallback, or (nil, err) when ThrowOnError
 // is set so callers can surface the failure.
-func (g *HTTPGateway) handleFailure(page Page, payload ssrServerError, err error) (*SSRResponse, error) {
+func (g *HTTPGateway) handleFailure(ctx context.Context, page Page, payload ssrServerError, err error) (*SSRResponse, error) {
 	g.mu.RLock()
 	dispatch := g.eventDispatcher
 	g.mu.RUnlock()
 
 	if dispatch != nil {
-		_ = dispatch(SSRRenderFailed{
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		_ = dispatch(ctx, SSRRenderFailed{
 			Component:      page.Component,
 			URL:            page.URL,
 			Error:          payload.Error,

@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -109,7 +110,7 @@ func TestV0LegacyRoundTrip_CBC(t *testing.T) {
 
 	var mu sync.Mutex
 	var seen []string
-	d.SetEventDispatcher(func(event interface{}) error {
+	d.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		if e, ok := event.(*LegacyDecryptEvent); ok {
 			mu.Lock()
 			seen = append(seen, e.Name())
@@ -256,7 +257,7 @@ func TestLegacyEventFiresWithMultipleCalls(t *testing.T) {
 	d, _ := NewAESDriver([]byte("0123456789abcdef"), nil, "AES-128-CBC")
 
 	var count int32
-	d.SetEventDispatcher(func(event interface{}) error {
+	d.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		atomic.AddInt32(&count, 1)
 		return nil
 	})
@@ -299,7 +300,7 @@ func TestV1NoLegacyEvent(t *testing.T) {
 	d, _ := NewAESDriver([]byte("0123456789abcdef"), nil, "AES-128-CBC")
 
 	var count int32
-	d.SetEventDispatcher(func(event interface{}) error {
+	d.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		atomic.AddInt32(&count, 1)
 		return nil
 	})

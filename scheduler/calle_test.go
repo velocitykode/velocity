@@ -56,7 +56,7 @@ func TestJob_CallE_FiresOnFailureForReturnedError(t *testing.T) {
 			mu     sync.Mutex
 			events []interface{}
 		)
-		s.SetEventDispatcher(func(e interface{}) error {
+		s.SetEventDispatcher(func(_ context.Context, e interface{}) error {
 			mu.Lock()
 			defer mu.Unlock()
 			events = append(events, e)
@@ -125,7 +125,7 @@ func TestJob_CallE_FiresOnFailureForReturnedError(t *testing.T) {
 			mu     sync.Mutex
 			events []interface{}
 		)
-		s.SetEventDispatcher(func(e interface{}) error {
+		s.SetEventDispatcher(func(_ context.Context, e interface{}) error {
 			mu.Lock()
 			defer mu.Unlock()
 			events = append(events, e)

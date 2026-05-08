@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"time"
 )
 
@@ -10,10 +11,13 @@ type Event interface {
 	Name() string
 }
 
-// Listener handles events when they are dispatched
+// Listener handles events when they are dispatched. Implementations receive
+// the caller-supplied context as the first argument so deadlines, trace IDs,
+// and tx scopes flow through to listener bodies; listeners that block on I/O
+// should honor ctx.Done().
 type Listener interface {
 	// Handle processes the event
-	Handle(event interface{}) error
+	Handle(ctx context.Context, event interface{}) error
 
 	// ShouldQueue determines if this listener should be queued
 	ShouldQueue() bool
@@ -42,7 +46,9 @@ type Subscriber interface {
 	Subscribe(dispatcher Dispatcher)
 }
 
-// Dispatcher manages event dispatching to listeners
+// Dispatcher manages event dispatching to listeners. All dispatch methods
+// accept a context.Context so request-scoped values (transactions, trace IDs,
+// deadlines) propagate to every listener.
 type Dispatcher interface {
 	// Listen registers a listener for one or more events and returns a listener ID.
 	// The ID can be used with Off() to unregister the specific listener.
@@ -56,19 +62,49 @@ type Dispatcher interface {
 	Subscribe(subscriber Subscriber)
 
 	// Dispatch fires an event to all registered listeners
-	Dispatch(event interface{}) error
+	Dispatch(ctx context.Context, event interface{}) error
 
 	// DispatchNow fires an event synchronously
-	DispatchNow(event interface{}) error
+	DispatchNow(ctx context.Context, event interface{}) error
 
-	// DispatchAsync fires an event asynchronously
-	DispatchAsync(event interface{}) error
+	// DispatchAsync fires an event asynchronously.
+	//
+	// Context semantics: the ctx passed to listeners is derived from the
+	// caller's ctx via context.WithoutCancel. This means request-scoped
+	// values (trace IDs, tenant IDs, anything stored via context.WithValue)
+	// flow through to listeners, but the caller's cancellation and deadline
+	// do NOT. A listener invoked through DispatchAsync may outlive the
+	// caller. For example, an async listener will keep running after the
+	// originating HTTP request has returned to the client.
+	//
+	// Callers who need cancellation to propagate (e.g. background workers
+	// that must abort when their parent ctx is cancelled) should not use
+	// DispatchAsync. Use Dispatch instead and have the listener perform its
+	// own backgrounding (e.g. spawn a goroutine that observes ctx.Done()),
+	// or push a job onto the queue directly with the cancellation contract
+	// you want.
+	DispatchAsync(ctx context.Context, event interface{}) error
 
-	// DispatchAfter fires an event after a delay
-	DispatchAfter(event interface{}, delay time.Duration) error
+	// DispatchAfter fires an event after a delay.
+	//
+	// Context semantics: the ctx passed to listeners is derived from the
+	// caller's ctx via context.WithoutCancel. Request-scoped values (trace
+	// IDs, tenant IDs, anything stored via context.WithValue) flow through
+	// to listeners, but the caller's cancellation and deadline do NOT. The
+	// listener fires after delay has elapsed and will routinely outlive
+	// the caller. For example, a 30s delayed listener kicked off from an
+	// HTTP request will keep running long after the response has flushed.
+	//
+	// Callers who need cancellation to propagate (e.g. background workers
+	// that must abort when their parent ctx is cancelled) should not use
+	// DispatchAfter. Use Dispatch instead and have the listener perform its
+	// own backgrounding (e.g. spawn a goroutine that observes ctx.Done()),
+	// or push a job onto the queue directly with the cancellation contract
+	// you want.
+	DispatchAfter(ctx context.Context, event interface{}, delay time.Duration) error
 
 	// Until dispatches events until the first non-nil return
-	Until(event interface{}) (interface{}, error)
+	Until(ctx context.Context, event interface{}) (interface{}, error)
 
 	// Flush removes all listeners for an event
 	Flush(event string)
@@ -118,38 +154,39 @@ type Observable interface {
 	GetObservers() []Observer
 }
 
-// Observer handles model lifecycle events.
-// All methods return error for consistency with ModelObserver.
+// Observer handles model lifecycle events. Every callback receives the
+// caller-supplied context.Context so deadlines and tx scopes flow through to
+// observer bodies. All methods return error for consistency with ModelObserver.
 type Observer interface {
 	// Creating is called before a model is created
-	Creating(model interface{}) error
+	Creating(ctx context.Context, model interface{}) error
 
 	// Created is called after a model is created
-	Created(model interface{}) error
+	Created(ctx context.Context, model interface{}) error
 
 	// Updating is called before a model is updated
-	Updating(model interface{}) error
+	Updating(ctx context.Context, model interface{}) error
 
 	// Updated is called after a model is updated
-	Updated(model interface{}) error
+	Updated(ctx context.Context, model interface{}) error
 
 	// Saving is called before a model is saved
-	Saving(model interface{}) error
+	Saving(ctx context.Context, model interface{}) error
 
 	// Saved is called after a model is saved
-	Saved(model interface{}) error
+	Saved(ctx context.Context, model interface{}) error
 
 	// Deleting is called before a model is deleted
-	Deleting(model interface{}) error
+	Deleting(ctx context.Context, model interface{}) error
 
 	// Deleted is called after a model is deleted
-	Deleted(model interface{}) error
+	Deleted(ctx context.Context, model interface{}) error
 
 	// Restoring is called before a soft-deleted model is restored
-	Restoring(model interface{}) error
+	Restoring(ctx context.Context, model interface{}) error
 
 	// Restored is called after a soft-deleted model is restored
-	Restored(model interface{}) error
+	Restored(ctx context.Context, model interface{}) error
 }
 
 // BaseEvent provides a base implementation of Event
@@ -169,7 +206,7 @@ func (e *BaseEvent) Name() string {
 type BaseListener struct{}
 
 // Handle processes the event (override in implementations)
-func (l *BaseListener) Handle(event interface{}) error {
+func (l *BaseListener) Handle(ctx context.Context, event interface{}) error {
 	return nil
 }
 

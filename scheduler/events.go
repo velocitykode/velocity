@@ -67,12 +67,12 @@ func (e *ScheduledTaskFailed) Name() string {
 }
 
 // dispatchScheduledTaskStarting dispatches a ScheduledTaskStarting event
-func dispatchScheduledTaskStarting(dispatch func(interface{}), ctx context.Context, name string) {
+func dispatchScheduledTaskStarting(dispatch func(context.Context, interface{}), ctx context.Context, name string) {
 	if dispatch == nil {
 		return
 	}
 	traceID, spanID, parentID := trace.GetTraceContext(ctx)
-	dispatch(&ScheduledTaskStarting{
+	dispatch(ctx, &ScheduledTaskStarting{
 		Context:  ctx,
 		TaskName: name,
 		TraceID:  traceID,
@@ -82,12 +82,12 @@ func dispatchScheduledTaskStarting(dispatch func(interface{}), ctx context.Conte
 }
 
 // dispatchScheduledTaskFinished dispatches a ScheduledTaskFinished event
-func dispatchScheduledTaskFinished(dispatch func(interface{}), ctx context.Context, name string, duration time.Duration) {
+func dispatchScheduledTaskFinished(dispatch func(context.Context, interface{}), ctx context.Context, name string, duration time.Duration) {
 	if dispatch == nil {
 		return
 	}
 	traceID, spanID, parentID := trace.GetTraceContext(ctx)
-	dispatch(&ScheduledTaskFinished{
+	dispatch(ctx, &ScheduledTaskFinished{
 		Context:    ctx,
 		TaskName:   name,
 		DurationMs: duration.Milliseconds(),
@@ -98,7 +98,7 @@ func dispatchScheduledTaskFinished(dispatch func(interface{}), ctx context.Conte
 }
 
 // dispatchScheduledTaskFailed dispatches a ScheduledTaskFailed event
-func dispatchScheduledTaskFailed(dispatch func(interface{}), ctx context.Context, name string, err error, duration time.Duration) {
+func dispatchScheduledTaskFailed(dispatch func(context.Context, interface{}), ctx context.Context, name string, err error, duration time.Duration) {
 	if dispatch == nil {
 		return
 	}
@@ -107,7 +107,7 @@ func dispatchScheduledTaskFailed(dispatch func(interface{}), ctx context.Context
 	if err != nil {
 		errMsg = err.Error()
 	}
-	dispatch(&ScheduledTaskFailed{
+	dispatch(ctx, &ScheduledTaskFailed{
 		Context:    ctx,
 		TaskName:   name,
 		Error:      errMsg,

@@ -19,7 +19,7 @@ type Notifier interface {
 	SendMany(ctx context.Context, notifiables []interface{}, notification Notification) error
 	Channel(name string) (Channel, error)
 	SetChannel(name string, ch Channel)
-	SetEventDispatcher(fn func(event interface{}) error)
+	SetEventDispatcher(fn func(ctx context.Context, event interface{}) error)
 	Shutdown(ctx context.Context) error
 }
 
@@ -30,7 +30,7 @@ var _ Notifier = (*Manager)(nil)
 type Manager struct {
 	channels        map[string]Channel
 	mu              sync.RWMutex
-	eventDispatcher func(event interface{}) error
+	eventDispatcher func(ctx context.Context, event interface{}) error
 }
 
 // NewManager creates a new notification manager.
@@ -41,27 +41,32 @@ func NewManager() *Manager {
 }
 
 // SetEventDispatcher sets the function used to dispatch events.
-func (m *Manager) SetEventDispatcher(fn func(event interface{}) error) {
+func (m *Manager) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.eventDispatcher = fn
 }
 
 // getEventDispatcher returns the current event dispatcher under the read lock.
-func (m *Manager) getEventDispatcher() func(event interface{}) error {
+func (m *Manager) getEventDispatcher() func(ctx context.Context, event interface{}) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.eventDispatcher
 }
 
-// dispatchEvent dispatches an event if a dispatcher is configured.
-// Errors from the dispatcher are logged but do not interrupt notification delivery.
-func (m *Manager) dispatchEvent(event interface{}) {
+// dispatchEvent dispatches an event if a dispatcher is configured. The
+// caller-supplied ctx is propagated so listeners observe request-scoped
+// values. Errors from the dispatcher are logged but do not interrupt
+// notification delivery.
+func (m *Manager) dispatchEvent(ctx context.Context, event interface{}) {
 	dispatch := m.getEventDispatcher()
 	if dispatch == nil {
 		return
 	}
-	if err := dispatch(event); err != nil {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := dispatch(ctx, event); err != nil {
 		log.Printf("[notification] event dispatch error: %v", err)
 	}
 }
@@ -156,7 +161,7 @@ func (m *Manager) SendMany(ctx context.Context, notifiables []interface{}, notif
 			defer func() {
 				if r := recover(); r != nil {
 					err := panicerr.FromRecovered(r)
-					m.dispatchEvent(buildNotificationFailed(ctx, n, notification, "", err))
+					m.dispatchEvent(ctx, buildNotificationFailed(ctx, n, notification, "", err))
 					errsMu.Lock()
 					errs = append(errs, fmt.Errorf("velocity/notification: send many panic: %w", err))
 					errsMu.Unlock()
@@ -182,7 +187,7 @@ func (m *Manager) SendMany(ctx context.Context, notifiables []interface{}, notif
 func (m *Manager) sendViaChannel(ctx context.Context, channelName string, notifiable interface{}, notification Notification) error {
 	ch, err := m.Channel(channelName)
 	if err != nil {
-		m.dispatchEvent(buildNotificationFailed(ctx, notifiable, notification, channelName, err))
+		m.dispatchEvent(ctx, buildNotificationFailed(ctx, notifiable, notification, channelName, err))
 		return fmt.Errorf("velocity/notification: channel %q: %w", channelName, err)
 	}
 
@@ -191,10 +196,10 @@ func (m *Manager) sendViaChannel(ctx context.Context, channelName string, notifi
 	duration := time.Since(start)
 
 	if err != nil {
-		m.dispatchEvent(buildNotificationFailed(ctx, notifiable, notification, channelName, err))
+		m.dispatchEvent(ctx, buildNotificationFailed(ctx, notifiable, notification, channelName, err))
 		return fmt.Errorf("velocity/notification: channel %q: %w", channelName, err)
 	}
 
-	m.dispatchEvent(buildNotificationSent(ctx, notifiable, notification, channelName, duration))
+	m.dispatchEvent(ctx, buildNotificationSent(ctx, notifiable, notification, channelName, duration))
 	return nil
 }

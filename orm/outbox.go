@@ -253,7 +253,7 @@ func (m *Manager) TransactionWithOutbox(ctx context.Context, fn func(tx *sql.Tx,
 				if logger != nil {
 					logger.Error("velocity/orm: rollback failed after panic in outbox tx", "error", rbErr, "panic", fmt.Sprint(r))
 				}
-				m.dispatchEvent(&TxRecover{
+				m.dispatchEvent(ctx, &TxRecover{
 					Cause:       "panic",
 					PanicValue:  fmt.Sprint(r),
 					RollbackErr: rbErr.Error(),
@@ -272,7 +272,7 @@ func (m *Manager) TransactionWithOutbox(ctx context.Context, fn func(tx *sql.Tx,
 			if logger != nil {
 				logger.Error("velocity/orm: rollback failed in outbox tx", "error", rbErr, "original_error", err)
 			}
-			m.dispatchEvent(&TxRecover{
+			m.dispatchEvent(ctx, &TxRecover{
 				Cause:       "error",
 				OriginalErr: err.Error(),
 				RollbackErr: rbErr.Error(),

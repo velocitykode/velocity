@@ -53,7 +53,7 @@ type VelocityRouterV2 struct {
 	services *app.Services
 
 	// Event dispatcher (instance-level, replaces package-level var)
-	eventDispatcher func(event interface{}) error
+	eventDispatcher func(ctx context.Context, event interface{}) error
 
 	// Populated by SetAsyncEventDispatcher; nil for the default sync mode.
 	// Called by ShutdownEventDispatcher to drain workers.
@@ -128,19 +128,24 @@ func (r *VelocityRouterV2) SetValidator(fn func(c *Context, rules map[string][]s
 }
 
 // SetEventDispatcher sets the event dispatcher on this router instance.
-func (r *VelocityRouterV2) SetEventDispatcher(fn func(event interface{}) error) {
+func (r *VelocityRouterV2) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
 	r.eventDispatcher = fn
 }
 
 // dispatchInstanceEvent dispatches an event using the instance-level dispatcher.
 // Errors from the dispatcher (e.g. ErrEventBufferFull under an async dispatcher
 // with a saturated buffer) are routed to OnEventDispatchError if set, otherwise
-// counted via DroppedEventCount and logged once at WARN.
-func (r *VelocityRouterV2) dispatchInstanceEvent(event Event) {
+// counted via DroppedEventCount and logged once at WARN. The ctx is propagated
+// to the dispatcher so listeners observe the request-scoped values that ctx
+// already carries (request ID, trace IDs).
+func (r *VelocityRouterV2) dispatchInstanceEvent(ctx context.Context, event Event) {
 	if r.eventDispatcher == nil {
 		return
 	}
-	err := r.eventDispatcher(event)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	err := r.eventDispatcher(ctx, event)
 	if err == nil {
 		return
 	}
@@ -439,7 +444,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	meta, req := r.beginRequest(req)
 	rw := newResponseWriter(w)
 
-	r.dispatchInstanceEvent(&RequestStarted{
+	r.dispatchInstanceEvent(req.Context(), &RequestStarted{
 		Context:    req.Context(),
 		Method:     req.Method,
 		Path:       req.URL.Path,
@@ -471,7 +476,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	r.dispatchInstanceEvent(&RequestRouted{
+	r.dispatchInstanceEvent(req.Context(), &RequestRouted{
 		Context:   req.Context(),
 		RequestID: meta.id,
 		Route:     result.Path,
@@ -506,7 +511,7 @@ func (r *VelocityRouterV2) beginRequest(req *http.Request) (requestMeta, *http.R
 // router should fall through to route matching.
 func (r *VelocityRouterV2) serveStatic(rw *responseWriter, req *http.Request, meta requestMeta) bool {
 	cw := &statusCaptureWriter{ResponseWriter: rw}
-	r.dispatchInstanceEvent(&RequestRouted{
+	r.dispatchInstanceEvent(req.Context(), &RequestRouted{
 		Context:   req.Context(),
 		RequestID: meta.id,
 		Route:     "[static]",
@@ -518,7 +523,7 @@ func (r *VelocityRouterV2) serveStatic(rw *responseWriter, req *http.Request, me
 		// signal the caller to fall through to route matching.
 		return false
 	}
-	r.dispatchInstanceEvent(&RequestHandled{
+	r.dispatchInstanceEvent(req.Context(), &RequestHandled{
 		Context:      req.Context(),
 		RequestID:    meta.id,
 		Method:       req.Method,
@@ -554,13 +559,13 @@ func (r *VelocityRouterV2) matchRoute(req *http.Request) *MatchResult {
 
 // handleNotFound writes the 404 response and dispatches events.
 func (r *VelocityRouterV2) handleNotFound(rw *responseWriter, req *http.Request, meta requestMeta) {
-	r.dispatchInstanceEvent(&RequestRouted{
+	r.dispatchInstanceEvent(req.Context(), &RequestRouted{
 		Context:   req.Context(),
 		RequestID: meta.id,
 		Matched:   false,
 	})
 	http.NotFound(rw, req)
-	r.dispatchInstanceEvent(&RequestHandled{
+	r.dispatchInstanceEvent(req.Context(), &RequestHandled{
 		Context:      req.Context(),
 		RequestID:    meta.id,
 		Method:       req.Method,
@@ -623,7 +628,7 @@ func (r *VelocityRouterV2) invokeHandler(ctx *Context, rw *responseWriter, req *
 		if recovered := recover(); recovered != nil {
 			r.onPanic(ctx, rw, req, meta, recovered)
 		} else if handlerErr != nil && !errors.Is(handlerErr, ErrValidationAborted) {
-			r.dispatchInstanceEvent(&RequestFailed{
+			r.dispatchInstanceEvent(req.Context(), &RequestFailed{
 				Context:   req.Context(),
 				RequestID: meta.id,
 				Method:    req.Method,
@@ -634,7 +639,7 @@ func (r *VelocityRouterV2) invokeHandler(ctx *Context, rw *responseWriter, req *
 				SpanID:    meta.spanID,
 			})
 		}
-		r.dispatchInstanceEvent(&RequestHandled{
+		r.dispatchInstanceEvent(req.Context(), &RequestHandled{
 			Context:      req.Context(),
 			RequestID:    meta.id,
 			Method:       req.Method,
@@ -663,7 +668,7 @@ func (r *VelocityRouterV2) onPanic(ctx *Context, rw *responseWriter, req *http.R
 	n := runtime.Stack(buf, false)
 	err := panicerr.FromRecovered(recovered)
 
-	r.dispatchInstanceEvent(&RequestFailed{
+	r.dispatchInstanceEvent(req.Context(), &RequestFailed{
 		Context:   req.Context(),
 		RequestID: meta.id,
 		Method:    req.Method,

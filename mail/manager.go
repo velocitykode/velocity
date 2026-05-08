@@ -13,23 +13,28 @@ import (
 type Manager struct {
 	channels        map[string]Mailer
 	mu              sync.RWMutex
-	eventDispatcher func(event interface{}) error
+	eventDispatcher func(ctx context.Context, event interface{}) error
 }
 
 // SetEventDispatcher sets the function used to dispatch events.
-func (m *Manager) SetEventDispatcher(fn func(event interface{}) error) {
+func (m *Manager) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.eventDispatcher = fn
 }
 
-// dispatchEvent dispatches an event if a dispatcher is configured.
-func (m *Manager) dispatchEvent(event interface{}) {
+// dispatchEvent dispatches an event if a dispatcher is configured. The
+// caller-supplied ctx is propagated so listeners observe request-scoped
+// values.
+func (m *Manager) dispatchEvent(ctx context.Context, event interface{}) {
 	m.mu.RLock()
 	fn := m.eventDispatcher
 	m.mu.RUnlock()
 	if fn != nil {
-		fn(event)
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		fn(ctx, event)
 	}
 }
 
@@ -212,7 +217,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("velocity/mail: shutdown channel %q: %w", name, err)
 			}
-			m.dispatchEvent(fmt.Errorf("velocity/mail: shutdown channel %q: %w", name, err))
+			m.dispatchEvent(ctx, fmt.Errorf("velocity/mail: shutdown channel %q: %w", name, err))
 		}
 	}
 	return firstErr

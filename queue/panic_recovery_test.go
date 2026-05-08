@@ -28,8 +28,8 @@ func TestBatch_ThenCallback_RecoversPanic(t *testing.T) {
 		t.Fatalf("Dispatch failed: %v", err)
 	}
 
-	batch.recordSuccess()
-	batch.recordSuccess()
+	batch.recordSuccess(context.Background())
+	batch.recordSuccess(context.Background())
 
 	testsync.Eventually(t, finallyCalled.Load, time.Second, "Finally runs even after Then panics")
 }
@@ -53,7 +53,7 @@ func TestBatch_FinallyCallback_RecoversPanic(t *testing.T) {
 		t.Fatalf("Dispatch failed: %v", err)
 	}
 
-	batch.recordSuccess()
+	batch.recordSuccess(context.Background())
 
 	// Wait until Finally has been entered. If recover is broken the process
 	// dies before Eventually returns; surviving = recovery works.
@@ -79,7 +79,7 @@ func TestBatch_CatchCallback_RecoversPanic(t *testing.T) {
 		t.Fatalf("Dispatch failed: %v", err)
 	}
 
-	batch.recordFailure(errFailure)
+	batch.recordFailure(context.Background(), errFailure)
 
 	testsync.Eventually(t, finallyCalled.Load, time.Second, "Finally runs even after Catch panics")
 }

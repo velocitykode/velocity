@@ -34,12 +34,12 @@ func TestDispatcher(t *testing.T) {
 		client.SetEventDispatcher(nil)
 
 		called := false
-		client.SetEventDispatcher(func(event interface{}) error {
+		client.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 			called = true
 			return nil
 		})
 
-		client.dispatchEvent(&RequestSent{})
+		client.dispatchEvent(context.Background(), &RequestSent{})
 
 		if !called {
 			t.Error("dispatcher was not called")
@@ -52,17 +52,17 @@ func TestDispatcher(t *testing.T) {
 		client := New()
 		client.SetEventDispatcher(nil)
 		// Should not panic
-		client.dispatchEvent(&RequestSent{})
+		client.dispatchEvent(context.Background(), &RequestSent{})
 	})
 
 	t.Run("dispatchEvent with error returning dispatcher", func(t *testing.T) {
 		client := New()
-		client.SetEventDispatcher(func(event interface{}) error {
+		client.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 			return errors.New("dispatcher error")
 		})
 
 		// Should not panic
-		client.dispatchEvent(&RequestSent{})
+		client.dispatchEvent(context.Background(), &RequestSent{})
 
 		client.SetEventDispatcher(nil)
 	})
@@ -71,7 +71,7 @@ func TestDispatcher(t *testing.T) {
 func TestDispatchRequestSent(t *testing.T) {
 	var captured *RequestSent
 	client := New()
-	client.SetEventDispatcher(func(event interface{}) error {
+	client.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		if e, ok := event.(*RequestSent); ok {
 			captured = e
 		}
@@ -130,7 +130,7 @@ func TestDispatchRequestSent(t *testing.T) {
 func TestDispatchRequestFailed(t *testing.T) {
 	var captured *RequestFailed
 	client := New()
-	client.SetEventDispatcher(func(event interface{}) error {
+	client.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		if e, ok := event.(*RequestFailed); ok {
 			captured = e
 		}

@@ -32,7 +32,7 @@ func ReportException(ctx context.Context, d Dispatcher, err error) {
 	traceID, spanID, _ := GetTraceContext(ctx)
 	stack := captureStack(3) // Skip ReportException and runtime.Callers
 
-	d.Dispatch(&ExceptionReported{
+	d.Dispatch(ctx, &ExceptionReported{
 		Context:    ctx,
 		Type:       getErrorType(err),
 		Message:    err.Error(),
@@ -51,7 +51,7 @@ func ReportExceptionWithStack(ctx context.Context, d Dispatcher, err error, stac
 
 	traceID, spanID, _ := GetTraceContext(ctx)
 
-	d.Dispatch(&ExceptionReported{
+	d.Dispatch(ctx, &ExceptionReported{
 		Context:    ctx,
 		Type:       getErrorType(err),
 		Message:    err.Error(),
@@ -83,7 +83,7 @@ func ReportPanic(ctx context.Context, d Dispatcher, recovered interface{}, stack
 		message = toString(v)
 	}
 
-	d.Dispatch(&ExceptionReported{
+	d.Dispatch(ctx, &ExceptionReported{
 		Context:    ctx,
 		Type:       typeName,
 		Message:    message,

@@ -49,15 +49,27 @@ func (a *AsyncDispatcher) SetFailureSink(fn func(event interface{}) error) {
 // Push processes an event asynchronously in a panic-safe goroutine. Panics
 // from the listener are recovered and surfaced as an events.async_failed event
 // via the configured failure sink.
-func (a *AsyncDispatcher) Push(event interface{}, listener Listener, delay time.Duration) error {
+//
+// Context semantics: the ctx passed to the listener is derived from the
+// caller's ctx via context.WithoutCancel. Request-scoped values (trace IDs,
+// tenant IDs, etc.) flow through, but cancellation and deadlines do NOT.
+// The spawned goroutine can and will outlive the caller. Callers that need
+// cancellation to propagate to the listener should not use Push; either run
+// the listener synchronously or push to a queue with a cancellation contract
+// of your own.
+func (a *AsyncDispatcher) Push(ctx context.Context, event interface{}, listener Listener, delay time.Duration) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	bgCtx := context.WithoutCancel(ctx)
 	run := func() {
 		defer func() {
 			if p := recover(); p != nil {
-				a.dispatchFailure(event, listener, panicerr.FromRecovered(p))
+				a.dispatchFailure(bgCtx, event, listener, panicerr.FromRecovered(p))
 			}
 		}()
-		if err := listener.Handle(event); err != nil {
-			a.dispatchFailure(event, listener, err)
+		if err := listener.Handle(bgCtx, event); err != nil {
+			a.dispatchFailure(bgCtx, event, listener, err)
 		}
 	}
 
@@ -69,16 +81,17 @@ func (a *AsyncDispatcher) Push(event interface{}, listener Listener, delay time.
 	return nil
 }
 
-func (a *AsyncDispatcher) dispatchFailure(event interface{}, listener Listener, err error) {
+func (a *AsyncDispatcher) dispatchFailure(ctx context.Context, event interface{}, listener Listener, err error) {
 	a.failureSinkMu.RLock()
 	sink := a.failureSink
 	a.failureSinkMu.RUnlock()
 	if sink == nil || err == nil {
 		return
 	}
-	// Best-effort — failure sink errors are intentionally ignored to avoid
+	// Best-effort: failure sink errors are intentionally ignored to avoid
 	// runaway recursion on a misbehaving sink.
 	_ = sink(&AsyncFailed{
+		Context:      ctx,
 		EventName:    resolveEventName(event),
 		ListenerName: fmt.Sprintf("%T", listener),
 		Error:        err.Error(),
@@ -114,7 +127,10 @@ func (w *EventWorker) RegisterListener(listenerType string, factory func() Liste
 }
 
 // Process processes a queued event job
-func (w *EventWorker) Process(jobData string) error {
+func (w *EventWorker) Process(ctx context.Context, jobData string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// Unmarshal the job
 	var job EventJob
 	if err := json.Unmarshal([]byte(jobData), &job); err != nil {
@@ -131,7 +147,7 @@ func (w *EventWorker) Process(jobData string) error {
 	listener := factory()
 
 	// Handle the event
-	return listener.Handle(job.Event)
+	return listener.Handle(ctx, job.Event)
 }
 
 // AsyncEventBus combines sync and async dispatching
@@ -168,8 +184,8 @@ func (b *AsyncEventBus) RegisterQueuedListener(event string, listener QueuedList
 }
 
 // ProcessQueuedEvent processes a queued event (called by queue workers)
-func (b *AsyncEventBus) ProcessQueuedEvent(jobData string) error {
-	return b.worker.Process(jobData)
+func (b *AsyncEventBus) ProcessQueuedEvent(ctx context.Context, jobData string) error {
+	return b.worker.Process(ctx, jobData)
 }
 
 // PendingEvents tracks events that should be dispatched after database commit
@@ -232,14 +248,17 @@ func (t *TransactionalDispatcher) BeginTransaction() {
 }
 
 // Commit commits the transaction and dispatches pending events
-func (t *TransactionalDispatcher) Commit() error {
+func (t *TransactionalDispatcher) Commit(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	t.mu.Lock()
 	t.inTransaction = false
 	t.mu.Unlock()
 
 	// Dispatch all pending events
 	for _, event := range t.pending.Flush() {
-		if err := t.Dispatcher.Dispatch(event); err != nil {
+		if err := t.Dispatcher.Dispatch(ctx, event); err != nil {
 			return err
 		}
 	}
@@ -254,16 +273,28 @@ func (t *TransactionalDispatcher) Rollback() {
 	t.pending.Clear()
 }
 
-// DispatchAfterCommit dispatches an event after the current transaction commits
-func (t *TransactionalDispatcher) DispatchAfterCommit(event interface{}) {
+// DispatchAfterCommit dispatches an event after the current transaction
+// commits. When invoked inside a tx, the event is queued and only fires on
+// Commit; when invoked outside a tx, the event is dispatched immediately
+// and any error from the underlying dispatcher is returned to the caller.
+//
+// Returning the error matters: previously this method swallowed dispatcher
+// failures on the non-tx branch, which made the contract silently weaker
+// outside a tx than inside one. Callers that explicitly want fire-and-
+// forget semantics should wrap the call with `_ = ...`.
+func (t *TransactionalDispatcher) DispatchAfterCommit(ctx context.Context, event interface{}) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	t.mu.RLock()
 	inTx := t.inTransaction
 	t.mu.RUnlock()
 
 	if inTx {
 		t.pending.Add(event)
-	} else {
-		// Not in transaction, dispatch immediately
-		t.Dispatcher.Dispatch(event)
+		return nil
 	}
+	// Not in transaction, dispatch immediately. Surface the error so
+	// the caller can react instead of silently swallowing it.
+	return t.Dispatcher.Dispatch(ctx, event)
 }

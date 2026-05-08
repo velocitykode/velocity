@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -9,18 +10,20 @@ import (
 	"github.com/velocitykode/velocity/pipeline"
 )
 
-// EventMiddleware processes events before they reach listeners
+// EventMiddleware processes events before they reach listeners. Implementations
+// receive the caller-supplied ctx so deadlines and trace context propagate
+// through the pipeline; passing ctx through to next() preserves the chain.
 type EventMiddleware interface {
 	// Handle processes the event and calls the next middleware
-	Handle(event interface{}, next func(interface{}) error) error
+	Handle(ctx context.Context, event interface{}, next func(context.Context, interface{}) error) error
 }
 
 // MiddlewareFunc adapts a function to the EventMiddleware interface
-type MiddlewareFunc func(event interface{}, next func(interface{}) error) error
+type MiddlewareFunc func(ctx context.Context, event interface{}, next func(context.Context, interface{}) error) error
 
 // Handle implements EventMiddleware
-func (f MiddlewareFunc) Handle(event interface{}, next func(interface{}) error) error {
-	return f(event, next)
+func (f MiddlewareFunc) Handle(ctx context.Context, event interface{}, next func(context.Context, interface{}) error) error {
+	return f(ctx, event, next)
 }
 
 // MiddlewareDispatcher wraps a dispatcher with middleware support
@@ -46,30 +49,42 @@ func (d *MiddlewareDispatcher) Use(middleware EventMiddleware) {
 }
 
 // UseFunc adds a middleware function
-func (d *MiddlewareDispatcher) UseFunc(fn func(event interface{}, next func(interface{}) error) error) {
+func (d *MiddlewareDispatcher) UseFunc(fn func(ctx context.Context, event interface{}, next func(context.Context, interface{}) error) error) {
 	d.Use(MiddlewareFunc(fn))
 }
 
+// mwFrame bundles the request ctx with the event so the pipeline.Stage[T]
+// shape (which carries a single T) can pass both through middleware.
+type mwFrame struct {
+	ctx   context.Context
+	event interface{}
+}
+
 // Dispatch dispatches an event through middleware chain
-func (d *MiddlewareDispatcher) Dispatch(event interface{}) error {
+func (d *MiddlewareDispatcher) Dispatch(ctx context.Context, event interface{}) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	d.mu.RLock()
 	middlewares := make([]EventMiddleware, len(d.middlewares))
 	copy(middlewares, d.middlewares)
 	d.mu.RUnlock()
 
-	pipes := make([]pipeline.Stage[interface{}], len(middlewares))
+	pipes := make([]pipeline.Stage[mwFrame], len(middlewares))
 	for i, mw := range middlewares {
 		mw := mw
-		pipes[i] = pipeline.Pipe[interface{}](func(event interface{}, next func(interface{}) error) error {
-			return mw.Handle(event, next)
+		pipes[i] = pipeline.Pipe[mwFrame](func(frame mwFrame, next func(mwFrame) error) error {
+			return mw.Handle(frame.ctx, frame.event, func(c context.Context, e interface{}) error {
+				return next(mwFrame{ctx: c, event: e})
+			})
 		})
 	}
 
-	return pipeline.New[interface{}]().
-		Send(event).
+	return pipeline.New[mwFrame]().
+		Send(mwFrame{ctx: ctx, event: event}).
 		Through(pipes...).
-		Then(func(e interface{}) error {
-			return d.DefaultDispatcher.Dispatch(e)
+		Then(func(f mwFrame) error {
+			return d.DefaultDispatcher.Dispatch(f.ctx, f.event)
 		})
 }
 
@@ -105,14 +120,14 @@ func NewLoggingMiddleware() *LoggingMiddleware {
 }
 
 // Handle logs the event
-func (m *LoggingMiddleware) Handle(event interface{}, next func(interface{}) error) error {
+func (m *LoggingMiddleware) Handle(ctx context.Context, event interface{}, next func(context.Context, interface{}) error) error {
 	m.mu.Lock()
 	eventName := getEventNameFromEvent(event)
 	timestamp := time.Now().Format("15:04:05.000")
 	m.log = append(m.log, fmt.Sprintf("[%s] Event dispatched: %s", timestamp, eventName))
 	m.mu.Unlock()
 
-	return next(event)
+	return next(ctx, event)
 }
 
 // GetLog returns the event log
@@ -133,40 +148,40 @@ func (m *LoggingMiddleware) ClearLog() {
 
 // ValidationMiddleware validates events before dispatching
 type ValidationMiddleware struct {
-	validator func(interface{}) error
+	validator func(context.Context, interface{}) error
 }
 
 // NewValidationMiddleware creates a new validation middleware
-func NewValidationMiddleware(validator func(interface{}) error) *ValidationMiddleware {
+func NewValidationMiddleware(validator func(context.Context, interface{}) error) *ValidationMiddleware {
 	return &ValidationMiddleware{
 		validator: validator,
 	}
 }
 
 // Handle validates the event
-func (m *ValidationMiddleware) Handle(event interface{}, next func(interface{}) error) error {
-	if err := m.validator(event); err != nil {
+func (m *ValidationMiddleware) Handle(ctx context.Context, event interface{}, next func(context.Context, interface{}) error) error {
+	if err := m.validator(ctx, event); err != nil {
 		return fmt.Errorf("event validation failed: %w", err)
 	}
-	return next(event)
+	return next(ctx, event)
 }
 
 // TransformMiddleware transforms events before dispatching
 type TransformMiddleware struct {
-	transformer func(interface{}) interface{}
+	transformer func(context.Context, interface{}) interface{}
 }
 
 // NewTransformMiddleware creates a new transform middleware
-func NewTransformMiddleware(transformer func(interface{}) interface{}) *TransformMiddleware {
+func NewTransformMiddleware(transformer func(context.Context, interface{}) interface{}) *TransformMiddleware {
 	return &TransformMiddleware{
 		transformer: transformer,
 	}
 }
 
 // Handle transforms the event
-func (m *TransformMiddleware) Handle(event interface{}, next func(interface{}) error) error {
-	transformed := m.transformer(event)
-	return next(transformed)
+func (m *TransformMiddleware) Handle(ctx context.Context, event interface{}, next func(context.Context, interface{}) error) error {
+	transformed := m.transformer(ctx, event)
+	return next(ctx, transformed)
 }
 
 // FilterMiddleware filters events based on condition
@@ -182,11 +197,11 @@ func NewFilterMiddleware(condition func(interface{}) bool) *FilterMiddleware {
 }
 
 // Handle filters the event
-func (m *FilterMiddleware) Handle(event interface{}, next func(interface{}) error) error {
+func (m *FilterMiddleware) Handle(ctx context.Context, event interface{}, next func(context.Context, interface{}) error) error {
 	if !m.condition(event) {
 		return nil // Skip event
 	}
-	return next(event)
+	return next(ctx, event)
 }
 
 // TimingMiddleware measures event dispatch time
@@ -203,9 +218,9 @@ func NewTimingMiddleware() *TimingMiddleware {
 }
 
 // Handle measures dispatch time
-func (m *TimingMiddleware) Handle(event interface{}, next func(interface{}) error) error {
+func (m *TimingMiddleware) Handle(ctx context.Context, event interface{}, next func(context.Context, interface{}) error) error {
 	start := time.Now()
-	err := next(event)
+	err := next(ctx, event)
 	duration := time.Since(start)
 
 	eventName := getEventNameFromEvent(event)
@@ -252,7 +267,7 @@ func NewRetryMiddleware(maxRetries int, delay time.Duration) *RetryMiddleware {
 }
 
 // Handle retries failed dispatches
-func (m *RetryMiddleware) Handle(event interface{}, next func(interface{}) error) error {
+func (m *RetryMiddleware) Handle(ctx context.Context, event interface{}, next func(context.Context, interface{}) error) error {
 	eventName := getEventNameFromEvent(event)
 	var err error
 
@@ -264,7 +279,7 @@ func (m *RetryMiddleware) Handle(event interface{}, next func(interface{}) error
 					err = panicerr.FromRecovered(r)
 				}
 			}()
-			err = next(event)
+			err = next(ctx, event)
 		}()
 
 		if err == nil {
@@ -276,7 +291,12 @@ func (m *RetryMiddleware) Handle(event interface{}, next func(interface{}) error
 		m.mu.Unlock()
 
 		if i < m.maxRetries {
-			time.Sleep(m.delay)
+			// Honour ctx cancellation while sleeping for the next retry.
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(m.delay):
+			}
 		}
 	}
 

@@ -1,50 +1,53 @@
 package events
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"strings"
 	"sync"
 )
 
-// ModelObserver interface for observing model lifecycle events
+// ModelObserver interface for observing model lifecycle events. Each callback
+// receives the caller-supplied ctx so observers see request-scoped values
+// (transactions, trace IDs, deadlines) without the model carrying them.
 type ModelObserver interface {
 	// Creating is called before a model is created
-	Creating(model interface{}) error
+	Creating(ctx context.Context, model interface{}) error
 	// Created is called after a model is created
-	Created(model interface{}) error
+	Created(ctx context.Context, model interface{}) error
 	// Updating is called before a model is updated
-	Updating(model interface{}) error
+	Updating(ctx context.Context, model interface{}) error
 	// Updated is called after a model is updated
-	Updated(model interface{}) error
+	Updated(ctx context.Context, model interface{}) error
 	// Saving is called before a model is saved (create or update)
-	Saving(model interface{}) error
+	Saving(ctx context.Context, model interface{}) error
 	// Saved is called after a model is saved (create or update)
-	Saved(model interface{}) error
+	Saved(ctx context.Context, model interface{}) error
 	// Deleting is called before a model is deleted
-	Deleting(model interface{}) error
+	Deleting(ctx context.Context, model interface{}) error
 	// Deleted is called after a model is deleted
-	Deleted(model interface{}) error
+	Deleted(ctx context.Context, model interface{}) error
 	// Restoring is called before a soft-deleted model is restored
-	Restoring(model interface{}) error
+	Restoring(ctx context.Context, model interface{}) error
 	// Restored is called after a soft-deleted model is restored
-	Restored(model interface{}) error
+	Restored(ctx context.Context, model interface{}) error
 }
 
 // BaseObserver provides a default implementation of ModelObserver
 // Embed this in your observer to only override the methods you need
 type BaseObserver struct{}
 
-func (o *BaseObserver) Creating(model interface{}) error  { return nil }
-func (o *BaseObserver) Created(model interface{}) error   { return nil }
-func (o *BaseObserver) Updating(model interface{}) error  { return nil }
-func (o *BaseObserver) Updated(model interface{}) error   { return nil }
-func (o *BaseObserver) Saving(model interface{}) error    { return nil }
-func (o *BaseObserver) Saved(model interface{}) error     { return nil }
-func (o *BaseObserver) Deleting(model interface{}) error  { return nil }
-func (o *BaseObserver) Deleted(model interface{}) error   { return nil }
-func (o *BaseObserver) Restoring(model interface{}) error { return nil }
-func (o *BaseObserver) Restored(model interface{}) error  { return nil }
+func (o *BaseObserver) Creating(ctx context.Context, model interface{}) error  { return nil }
+func (o *BaseObserver) Created(ctx context.Context, model interface{}) error   { return nil }
+func (o *BaseObserver) Updating(ctx context.Context, model interface{}) error  { return nil }
+func (o *BaseObserver) Updated(ctx context.Context, model interface{}) error   { return nil }
+func (o *BaseObserver) Saving(ctx context.Context, model interface{}) error    { return nil }
+func (o *BaseObserver) Saved(ctx context.Context, model interface{}) error     { return nil }
+func (o *BaseObserver) Deleting(ctx context.Context, model interface{}) error  { return nil }
+func (o *BaseObserver) Deleted(ctx context.Context, model interface{}) error   { return nil }
+func (o *BaseObserver) Restoring(ctx context.Context, model interface{}) error { return nil }
+func (o *BaseObserver) Restored(ctx context.Context, model interface{}) error  { return nil }
 
 // ObserverRegistry manages model observers
 type ObserverRegistry struct {
@@ -85,12 +88,15 @@ func (r *ObserverRegistry) GetObservers(modelType string) []ModelObserver {
 }
 
 // Fire fires a model event to all registered observers
-func (r *ObserverRegistry) Fire(event string, model interface{}) error {
+func (r *ObserverRegistry) Fire(ctx context.Context, event string, model interface{}) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	modelType := r.getModelType(model)
 	observers := r.GetObservers(modelType)
 
 	for _, observer := range observers {
-		if err := r.fireEvent(observer, event, model); err != nil {
+		if err := r.fireEvent(ctx, observer, event, model); err != nil {
 			return err
 		}
 	}
@@ -99,28 +105,28 @@ func (r *ObserverRegistry) Fire(event string, model interface{}) error {
 }
 
 // fireEvent fires a specific event on an observer
-func (r *ObserverRegistry) fireEvent(observer ModelObserver, event string, model interface{}) error {
+func (r *ObserverRegistry) fireEvent(ctx context.Context, observer ModelObserver, event string, model interface{}) error {
 	switch strings.ToLower(event) {
 	case "creating":
-		return observer.Creating(model)
+		return observer.Creating(ctx, model)
 	case "created":
-		return observer.Created(model)
+		return observer.Created(ctx, model)
 	case "updating":
-		return observer.Updating(model)
+		return observer.Updating(ctx, model)
 	case "updated":
-		return observer.Updated(model)
+		return observer.Updated(ctx, model)
 	case "saving":
-		return observer.Saving(model)
+		return observer.Saving(ctx, model)
 	case "saved":
-		return observer.Saved(model)
+		return observer.Saved(ctx, model)
 	case "deleting":
-		return observer.Deleting(model)
+		return observer.Deleting(ctx, model)
 	case "deleted":
-		return observer.Deleted(model)
+		return observer.Deleted(ctx, model)
 	case "restoring":
-		return observer.Restoring(model)
+		return observer.Restoring(ctx, model)
 	case "restored":
-		return observer.Restored(model)
+		return observer.Restored(ctx, model)
 	default:
 		return fmt.Errorf("unknown model event: %s", event)
 	}
@@ -149,12 +155,14 @@ func (r *ObserverRegistry) ClearAll() {
 	r.observers = make(map[string][]ModelObserver)
 }
 
-// ObservableModel interface for models that can be observed
+// ObservableModel is the interface for models that can be observed.
+// Implementations should plumb the supplied ctx through to observers so
+// request/tx-scoped values (deadlines, trace IDs) reach lifecycle hooks.
 type ObservableModel interface {
 	// GetModelName returns the model type name
 	GetModelName() string
-	// FireEvent fires an event for this model
-	FireEvent(event string) error
+	// FireEvent fires an event for this model with the caller-supplied ctx.
+	FireEvent(ctx context.Context, event string) error
 }
 
 // ObservableDispatcher integrates model observers with the event dispatcher
@@ -182,9 +190,12 @@ func (d *ObservableDispatcher) ObserveModel(model interface{}, observer ModelObs
 }
 
 // FireModelEvent fires a model lifecycle event
-func (d *ObservableDispatcher) FireModelEvent(event string, model interface{}) error {
+func (d *ObservableDispatcher) FireModelEvent(ctx context.Context, event string, model interface{}) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// Fire to model observers
-	if err := d.registry.Fire(event, model); err != nil {
+	if err := d.registry.Fire(ctx, event, model); err != nil {
 		return err
 	}
 
@@ -192,7 +203,7 @@ func (d *ObservableDispatcher) FireModelEvent(event string, model interface{}) e
 	modelType := d.registry.getModelType(model)
 	eventName := fmt.Sprintf("%s.%s", strings.ToLower(modelType), event)
 
-	return d.Dispatch(&ModelEvent{
+	return d.Dispatch(ctx, &ModelEvent{
 		BaseEvent: BaseEvent{EventName: eventName},
 		Model:     model,
 		Action:    event,
@@ -222,57 +233,59 @@ func NewAutoObserver(instance interface{}) *AutoObserver {
 }
 
 // Creating calls the Creating method if it exists
-func (o *AutoObserver) Creating(model interface{}) error {
-	return o.callMethod("Creating", model)
+func (o *AutoObserver) Creating(ctx context.Context, model interface{}) error {
+	return o.callMethod(ctx, "Creating", model)
 }
 
 // Created calls the Created method if it exists
-func (o *AutoObserver) Created(model interface{}) error {
-	return o.callMethod("Created", model)
+func (o *AutoObserver) Created(ctx context.Context, model interface{}) error {
+	return o.callMethod(ctx, "Created", model)
 }
 
 // Updating calls the Updating method if it exists
-func (o *AutoObserver) Updating(model interface{}) error {
-	return o.callMethod("Updating", model)
+func (o *AutoObserver) Updating(ctx context.Context, model interface{}) error {
+	return o.callMethod(ctx, "Updating", model)
 }
 
 // Updated calls the Updated method if it exists
-func (o *AutoObserver) Updated(model interface{}) error {
-	return o.callMethod("Updated", model)
+func (o *AutoObserver) Updated(ctx context.Context, model interface{}) error {
+	return o.callMethod(ctx, "Updated", model)
 }
 
 // Saving calls the Saving method if it exists
-func (o *AutoObserver) Saving(model interface{}) error {
-	return o.callMethod("Saving", model)
+func (o *AutoObserver) Saving(ctx context.Context, model interface{}) error {
+	return o.callMethod(ctx, "Saving", model)
 }
 
 // Saved calls the Saved method if it exists
-func (o *AutoObserver) Saved(model interface{}) error {
-	return o.callMethod("Saved", model)
+func (o *AutoObserver) Saved(ctx context.Context, model interface{}) error {
+	return o.callMethod(ctx, "Saved", model)
 }
 
 // Deleting calls the Deleting method if it exists
-func (o *AutoObserver) Deleting(model interface{}) error {
-	return o.callMethod("Deleting", model)
+func (o *AutoObserver) Deleting(ctx context.Context, model interface{}) error {
+	return o.callMethod(ctx, "Deleting", model)
 }
 
 // Deleted calls the Deleted method if it exists
-func (o *AutoObserver) Deleted(model interface{}) error {
-	return o.callMethod("Deleted", model)
+func (o *AutoObserver) Deleted(ctx context.Context, model interface{}) error {
+	return o.callMethod(ctx, "Deleted", model)
 }
 
 // Restoring calls the Restoring method if it exists
-func (o *AutoObserver) Restoring(model interface{}) error {
-	return o.callMethod("Restoring", model)
+func (o *AutoObserver) Restoring(ctx context.Context, model interface{}) error {
+	return o.callMethod(ctx, "Restoring", model)
 }
 
 // Restored calls the Restored method if it exists
-func (o *AutoObserver) Restored(model interface{}) error {
-	return o.callMethod("Restored", model)
+func (o *AutoObserver) Restored(ctx context.Context, model interface{}) error {
+	return o.callMethod(ctx, "Restored", model)
 }
 
-// callMethod dynamically calls a method on the instance
-func (o *AutoObserver) callMethod(methodName string, model interface{}) error {
+// callMethod dynamically calls a method on the instance. The method may
+// optionally accept (ctx, model) as its arguments; methods that only accept
+// (model) are still supported for legacy implementations.
+func (o *AutoObserver) callMethod(ctx context.Context, methodName string, model interface{}) error {
 	instanceValue := reflect.ValueOf(o.instance)
 	method := instanceValue.MethodByName(methodName)
 
@@ -281,8 +294,19 @@ func (o *AutoObserver) callMethod(methodName string, model interface{}) error {
 		return nil
 	}
 
+	mt := method.Type()
+	var args []reflect.Value
+	switch mt.NumIn() {
+	case 1:
+		args = []reflect.Value{reflect.ValueOf(model)}
+	case 2:
+		args = []reflect.Value{reflect.ValueOf(ctx), reflect.ValueOf(model)}
+	default:
+		return fmt.Errorf("velocity/events: AutoObserver method %s expected 1 or 2 args, got %d", methodName, mt.NumIn())
+	}
+
 	// Call the method
-	results := method.Call([]reflect.Value{reflect.ValueOf(model)})
+	results := method.Call(args)
 
 	// Check for error return
 	if len(results) > 0 && !results[0].IsNil() {
@@ -296,11 +320,11 @@ func (o *AutoObserver) callMethod(methodName string, model interface{}) error {
 type ConditionalObserver struct {
 	BaseObserver
 	observer  ModelObserver
-	condition func(event string, model interface{}) bool
+	condition func(ctx context.Context, event string, model interface{}) bool
 }
 
 // NewConditionalObserver creates an observer that only fires when condition is true
-func NewConditionalObserver(observer ModelObserver, condition func(string, interface{}) bool) *ConditionalObserver {
+func NewConditionalObserver(observer ModelObserver, condition func(context.Context, string, interface{}) bool) *ConditionalObserver {
 	return &ConditionalObserver{
 		observer:  observer,
 		condition: condition,
@@ -308,81 +332,81 @@ func NewConditionalObserver(observer ModelObserver, condition func(string, inter
 }
 
 // Creating conditionally calls the wrapped observer
-func (o *ConditionalObserver) Creating(model interface{}) error {
-	if o.condition("creating", model) {
-		return o.observer.Creating(model)
+func (o *ConditionalObserver) Creating(ctx context.Context, model interface{}) error {
+	if o.condition(ctx, "creating", model) {
+		return o.observer.Creating(ctx, model)
 	}
 	return nil
 }
 
 // Created conditionally calls the wrapped observer
-func (o *ConditionalObserver) Created(model interface{}) error {
-	if o.condition("created", model) {
-		return o.observer.Created(model)
+func (o *ConditionalObserver) Created(ctx context.Context, model interface{}) error {
+	if o.condition(ctx, "created", model) {
+		return o.observer.Created(ctx, model)
 	}
 	return nil
 }
 
 // Updating conditionally calls the wrapped observer
-func (o *ConditionalObserver) Updating(model interface{}) error {
-	if o.condition("updating", model) {
-		return o.observer.Updating(model)
+func (o *ConditionalObserver) Updating(ctx context.Context, model interface{}) error {
+	if o.condition(ctx, "updating", model) {
+		return o.observer.Updating(ctx, model)
 	}
 	return nil
 }
 
 // Updated conditionally calls the wrapped observer
-func (o *ConditionalObserver) Updated(model interface{}) error {
-	if o.condition("updated", model) {
-		return o.observer.Updated(model)
+func (o *ConditionalObserver) Updated(ctx context.Context, model interface{}) error {
+	if o.condition(ctx, "updated", model) {
+		return o.observer.Updated(ctx, model)
 	}
 	return nil
 }
 
 // Saving conditionally calls the wrapped observer
-func (o *ConditionalObserver) Saving(model interface{}) error {
-	if o.condition("saving", model) {
-		return o.observer.Saving(model)
+func (o *ConditionalObserver) Saving(ctx context.Context, model interface{}) error {
+	if o.condition(ctx, "saving", model) {
+		return o.observer.Saving(ctx, model)
 	}
 	return nil
 }
 
 // Saved conditionally calls the wrapped observer
-func (o *ConditionalObserver) Saved(model interface{}) error {
-	if o.condition("saved", model) {
-		return o.observer.Saved(model)
+func (o *ConditionalObserver) Saved(ctx context.Context, model interface{}) error {
+	if o.condition(ctx, "saved", model) {
+		return o.observer.Saved(ctx, model)
 	}
 	return nil
 }
 
 // Deleting conditionally calls the wrapped observer
-func (o *ConditionalObserver) Deleting(model interface{}) error {
-	if o.condition("deleting", model) {
-		return o.observer.Deleting(model)
+func (o *ConditionalObserver) Deleting(ctx context.Context, model interface{}) error {
+	if o.condition(ctx, "deleting", model) {
+		return o.observer.Deleting(ctx, model)
 	}
 	return nil
 }
 
 // Deleted conditionally calls the wrapped observer
-func (o *ConditionalObserver) Deleted(model interface{}) error {
-	if o.condition("deleted", model) {
-		return o.observer.Deleted(model)
+func (o *ConditionalObserver) Deleted(ctx context.Context, model interface{}) error {
+	if o.condition(ctx, "deleted", model) {
+		return o.observer.Deleted(ctx, model)
 	}
 	return nil
 }
 
 // Restoring conditionally calls the wrapped observer
-func (o *ConditionalObserver) Restoring(model interface{}) error {
-	if o.condition("restoring", model) {
-		return o.observer.Restoring(model)
+func (o *ConditionalObserver) Restoring(ctx context.Context, model interface{}) error {
+	if o.condition(ctx, "restoring", model) {
+		return o.observer.Restoring(ctx, model)
 	}
 	return nil
 }
 
 // Restored conditionally calls the wrapped observer
-func (o *ConditionalObserver) Restored(model interface{}) error {
-	if o.condition("restored", model) {
-		return o.observer.Restored(model)
+func (o *ConditionalObserver) Restored(ctx context.Context, model interface{}) error {
+	if o.condition(ctx, "restored", model) {
+		return o.observer.Restored(ctx, model)
 	}
 	return nil
 }

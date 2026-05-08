@@ -44,11 +44,11 @@ func TestManager_SetLogger_StoresLogger(t *testing.T) {
 	// Fire a synthetic TxRecover event through the dispatcher to verify
 	// the event name matches the one documented.
 	var captured Event
-	m.SetEventDispatcher(func(e any) error {
+	m.SetEventDispatcher(func(_ context.Context, e any) error {
 		captured = e.(Event)
 		return nil
 	})
-	m.dispatchEvent(&TxRecover{
+	m.dispatchEvent(context.Background(), &TxRecover{
 		Cause:       "error",
 		OriginalErr: "boom",
 		RollbackErr: "rollback failed",

@@ -57,8 +57,9 @@ type Database interface {
 	Connection(name string) (drivers.Driver, error)
 	AddConnection(name string, driver drivers.Driver)
 	// SetEventDispatcher wires the event dispatcher used by ORM internals
-	// to surface query and transaction lifecycle events.
-	SetEventDispatcher(fn func(event any) error)
+	// to surface query and transaction lifecycle events. The fn receives
+	// ctx so listeners observe request- / tx-scoped values.
+	SetEventDispatcher(fn func(ctx context.Context, event any) error)
 }
 
 // Verify *Manager implements Database at compile time.
@@ -75,13 +76,13 @@ type Manager struct {
 	// eventDispatcher is the typed event handler invoked by dispatchEvent.
 	// SetEventDispatcher (deprecated, untyped) adapts the legacy signature
 	// into a typed call so internal event firing remains type-safe.
-	eventDispatcher func(event Event) error
+	eventDispatcher func(ctx context.Context, event Event) error
 	// rawEventDispatcher is the untyped dispatcher set via SetEventDispatcher.
 	// It is the legacy flush sink for KindDispatch / KindDispatchNow buffered
 	// entries; richer kinds (Async / After / Until) prefer txEventBus when
 	// it is wired so listener semantics like ShouldQueue and the original
 	// delay are preserved across the transactional buffer boundary.
-	rawEventDispatcher func(event any) error
+	rawEventDispatcher func(ctx context.Context, event any) error
 	// txEventBus, when non-nil, is the kind-aware sink for buffered
 	// entries flushed at commit. It is wired by velocity.bootstrap so the
 	// per-transaction events.BufferedDispatcher can route entries back
@@ -291,7 +292,7 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 	// dispatch through it; otherwise we fall back to the untyped legacy
 	// sink, which collapses every kind onto Dispatch.
 	buffer, releaseBuffer := events.InstallBuffer(ctx, func(entry events.BufferedEvent) error {
-		return flushBufferedEntry(entry, bus, rawDispatcher)
+		return flushBufferedEntry(ctx, entry, bus, rawDispatcher)
 	})
 	defer releaseBuffer()
 
@@ -311,7 +312,7 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 				if logger != nil {
 					logger.Error("velocity/orm: rollback failed after panic", "error", rbErr, "panic", fmt.Sprint(p))
 				}
-				m.dispatchEvent(&TxRecover{
+				m.dispatchEvent(ctx, &TxRecover{
 					Cause:       "panic",
 					PanicValue:  fmt.Sprint(p),
 					RollbackErr: rbErr.Error(),
@@ -327,7 +328,7 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 			if logger != nil {
 				logger.Error("velocity/orm: rollback failed", "error", rbErr, "original_error", err)
 			}
-			m.dispatchEvent(&TxRecover{
+			m.dispatchEvent(ctx, &TxRecover{
 				Cause:       "error",
 				OriginalErr: err.Error(),
 				RollbackErr: rbErr.Error(),
@@ -420,10 +421,10 @@ func (m *Manager) Stats() sql.DBStats {
 }
 
 // SetEventDispatcher wires the dispatcher used by ORM internals to surface
-// query and transaction lifecycle events. The supplied function is adapted
-// into a typed dispatcher so orm.dispatchEvent can pass Event values without
-// losing static type information.
-func (m *Manager) SetEventDispatcher(fn func(event any) error) {
+// query and transaction lifecycle events. The supplied function receives
+// ctx so listeners observe request- / tx-scoped values (trace IDs,
+// auth, deadlines).
+func (m *Manager) SetEventDispatcher(fn func(ctx context.Context, event any) error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if fn == nil {
@@ -432,8 +433,8 @@ func (m *Manager) SetEventDispatcher(fn func(event any) error) {
 		return
 	}
 	m.rawEventDispatcher = fn
-	m.eventDispatcher = func(event Event) error {
-		return fn(event)
+	m.eventDispatcher = func(ctx context.Context, event Event) error {
+		return fn(ctx, event)
 	}
 }
 
@@ -456,26 +457,26 @@ func (m *Manager) SetTxEventBus(bus events.Dispatcher) {
 // untyped legacy sink so existing wirings (tests, partial bootstraps)
 // continue to work. It is exported only via the closure passed to
 // events.InstallBuffer; outside callers should not need it.
-func flushBufferedEntry(entry events.BufferedEvent, bus events.Dispatcher, raw func(any) error) error {
+func flushBufferedEntry(ctx context.Context, entry events.BufferedEvent, bus events.Dispatcher, raw func(context.Context, any) error) error {
 	if bus != nil {
 		switch entry.Kind() {
 		case events.KindDispatch:
-			return bus.Dispatch(entry.Event())
+			return bus.Dispatch(ctx, entry.Event())
 		case events.KindDispatchNow:
-			return bus.DispatchNow(entry.Event())
+			return bus.DispatchNow(ctx, entry.Event())
 		case events.KindDispatchAsync:
-			return bus.DispatchAsync(entry.Event())
+			return bus.DispatchAsync(ctx, entry.Event())
 		case events.KindDispatchAfter:
-			return bus.DispatchAfter(entry.Event(), entry.Delay())
+			return bus.DispatchAfter(ctx, entry.Event(), entry.Delay())
 		case events.KindUntil:
-			_, err := bus.Until(entry.Event())
+			_, err := bus.Until(ctx, entry.Event())
 			return err
 		default:
-			return bus.Dispatch(entry.Event())
+			return bus.Dispatch(ctx, entry.Event())
 		}
 	}
 	if raw != nil {
-		return raw(entry.Event())
+		return raw(ctx, entry.Event())
 	}
 	return nil
 }
@@ -497,13 +498,15 @@ func (m *Manager) SetLogger(logger eventLogger) {
 	m.logger = logger
 }
 
-// dispatchEvent dispatches an event if a dispatcher is configured.
-func (m *Manager) dispatchEvent(event Event) {
+// dispatchEvent dispatches an event if a dispatcher is configured. ctx
+// reaches every listener so trace IDs and request-scoped values flow
+// through; cancellation/deadline behavior depends on the dispatcher.
+func (m *Manager) dispatchEvent(ctx context.Context, event Event) {
 	m.mu.RLock()
 	fn := m.eventDispatcher
 	m.mu.RUnlock()
 	if fn != nil {
-		_ = fn(event)
+		_ = fn(ctx, event)
 	}
 }
 

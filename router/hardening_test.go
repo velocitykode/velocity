@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"errors"
 	"mime"
 	"net/http"
@@ -466,7 +467,7 @@ func TestStaticFallback_FilesServedWhenNoRoute(t *testing.T) {
 
 func TestTypedEvent_OnEventDispatchError(t *testing.T) {
 	r := NewV2()
-	r.SetEventDispatcher(func(event interface{}) error { return ErrEventBufferFull })
+	r.SetEventDispatcher(func(_ context.Context, event interface{}) error { return ErrEventBufferFull })
 
 	var seenName string
 	r.OnEventDispatchError = func(err error, event Event) {
@@ -475,7 +476,7 @@ func TestTypedEvent_OnEventDispatchError(t *testing.T) {
 		}
 	}
 
-	r.dispatchInstanceEvent(&RequestStarted{RequestID: "abc"})
+	r.dispatchInstanceEvent(context.Background(), &RequestStarted{RequestID: "abc"})
 
 	if seenName != "request.started" {
 		t.Errorf("event.Name = %q, want request.started", seenName)

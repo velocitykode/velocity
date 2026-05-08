@@ -69,7 +69,7 @@ type testListener struct {
 	called bool
 }
 
-func (l *testListener) Handle(event interface{}) error {
+func (l *testListener) Handle(ctx context.Context, event interface{}) error {
 	l.called = true
 	return nil
 }
@@ -483,7 +483,7 @@ func TestBootstrap_EventsRegistered(t *testing.T) {
 	}
 
 	// Dispatch event and verify listener was called
-	if err := a.Services.Events.Dispatch(testEvent{name: "test.event"}); err != nil {
+	if err := a.Services.Events.Dispatch(context.Background(), testEvent{name: "test.event"}); err != nil {
 		t.Fatalf("Dispatch() error: %v", err)
 	}
 

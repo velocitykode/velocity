@@ -7,12 +7,19 @@ import (
 	"time"
 )
 
+// batchEntry pairs a buffered event with the ctx that originally dispatched
+// it so the eventual fan-out preserves request-scoped values.
+type batchEntry struct {
+	ctx   context.Context
+	event interface{}
+}
+
 // BatchingDispatcher batches events and dispatches them in groups
 type BatchingDispatcher struct {
 	*DefaultDispatcher
 	batchSize     int
 	flushInterval time.Duration
-	batch         []interface{}
+	batch         []batchEntry
 	batchMu       sync.Mutex
 	stopCh        chan struct{}
 	wg            sync.WaitGroup
@@ -25,7 +32,7 @@ func NewBatchingDispatcher(batchSize int, flushInterval time.Duration) *Batching
 		DefaultDispatcher: NewDispatcher(),
 		batchSize:         batchSize,
 		flushInterval:     flushInterval,
-		batch:             make([]interface{}, 0, batchSize),
+		batch:             make([]batchEntry, 0, batchSize),
 		stopCh:            make(chan struct{}),
 	}
 }
@@ -54,10 +61,27 @@ func (d *BatchingDispatcher) flushLoop() {
 	}
 }
 
-// Dispatch adds an event to the batch
-func (d *BatchingDispatcher) Dispatch(event interface{}) error {
+// Dispatch adds an event to the batch.
+//
+// Context semantics: the ctx is captured per-entry but stripped of
+// cancellation and deadline via context.WithoutCancel before being stored,
+// because the actual fan-out to listeners happens later (either when the
+// batch fills or on the background flush goroutine after the request
+// returns). Request-scoped values like trace IDs survive; the caller's
+// cancellation does NOT propagate to listeners.
+//
+// Callers that need cancellation to propagate should not use the batching
+// dispatcher; dispatch synchronously via DefaultDispatcher.Dispatch and let
+// the listener choose its own backgrounding.
+func (d *BatchingDispatcher) Dispatch(ctx context.Context, event interface{}) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	d.batchMu.Lock()
-	d.batch = append(d.batch, event)
+	// Detach ctx from request lifetime: the actual fan-out may happen on the
+	// background flush goroutine after the request returns, but values like
+	// trace IDs should survive.
+	d.batch = append(d.batch, batchEntry{ctx: context.WithoutCancel(ctx), event: event})
 	shouldFlush := len(d.batch) >= d.batchSize
 	d.batchMu.Unlock()
 
@@ -76,14 +100,14 @@ func (d *BatchingDispatcher) Flush() error {
 		return nil
 	}
 
-	events := make([]interface{}, len(d.batch))
-	copy(events, d.batch)
+	entries := make([]batchEntry, len(d.batch))
+	copy(entries, d.batch)
 	d.batch = d.batch[:0]
 	d.batchMu.Unlock()
 
 	// Dispatch all events
-	for _, event := range events {
-		if err := d.DefaultDispatcher.Dispatch(event); err != nil {
+	for _, entry := range entries {
+		if err := d.DefaultDispatcher.Dispatch(entry.ctx, entry.event); err != nil {
 			return err
 		}
 	}
@@ -123,8 +147,25 @@ func NewDebouncingDispatcher(debounce time.Duration) *DebouncingDispatcher {
 	}
 }
 
-// Dispatch debounces event dispatching
-func (d *DebouncingDispatcher) Dispatch(event interface{}) error {
+// Dispatch debounces event dispatching. Rapid calls with the same event name
+// reset a timer, and the actual fan-out happens on a background goroutine
+// after the debounce window elapses without further activity.
+//
+// Context semantics: the ctx is captured but stripped of cancellation and
+// deadline via context.WithoutCancel before being held by the debounce
+// timer, because the underlying dispatch fires on a background goroutine
+// that may run long after the caller has returned. Request-scoped values
+// like trace IDs survive; the caller's cancellation does NOT propagate to
+// listeners. A canceled parent ctx will not stop the pending dispatch.
+//
+// Callers who need cancellation to propagate should not use the debouncing
+// dispatcher; dispatch synchronously via DefaultDispatcher.Dispatch and let
+// the listener choose its own backgrounding.
+func (d *DebouncingDispatcher) Dispatch(ctx context.Context, event interface{}) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	bgCtx := context.WithoutCancel(ctx)
 	eventName := d.getEventName(event)
 
 	d.timersMu.Lock()
@@ -137,7 +178,7 @@ func (d *DebouncingDispatcher) Dispatch(event interface{}) error {
 
 	// Create new timer
 	d.timers[eventName] = time.AfterFunc(d.debounce, func() {
-		d.DefaultDispatcher.Dispatch(event)
+		d.DefaultDispatcher.Dispatch(bgCtx, event)
 		d.timersMu.Lock()
 		delete(d.timers, eventName)
 		d.timersMu.Unlock()
@@ -147,7 +188,10 @@ func (d *DebouncingDispatcher) Dispatch(event interface{}) error {
 }
 
 // DispatchNow immediately dispatches an event, bypassing debounce
-func (d *DebouncingDispatcher) DispatchNow(event interface{}) error {
+func (d *DebouncingDispatcher) DispatchNow(ctx context.Context, event interface{}) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	eventName := d.getEventName(event)
 
 	d.timersMu.Lock()
@@ -157,7 +201,7 @@ func (d *DebouncingDispatcher) DispatchNow(event interface{}) error {
 	}
 	d.timersMu.Unlock()
 
-	return d.DefaultDispatcher.Dispatch(event)
+	return d.DefaultDispatcher.Dispatch(ctx, event)
 }
 
 // Stop stops all debounce timers
@@ -196,7 +240,10 @@ func NewThrottlingDispatcher(interval time.Duration) *ThrottlingDispatcher {
 }
 
 // Dispatch throttles event dispatching
-func (d *ThrottlingDispatcher) Dispatch(event interface{}) error {
+func (d *ThrottlingDispatcher) Dispatch(ctx context.Context, event interface{}) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	eventName := d.getEventName(event)
 
 	d.dispatchMu.Lock()
@@ -211,7 +258,7 @@ func (d *ThrottlingDispatcher) Dispatch(event interface{}) error {
 	d.lastDispatch[eventName] = now
 	d.dispatchMu.Unlock()
 
-	return d.DefaultDispatcher.Dispatch(event)
+	return d.DefaultDispatcher.Dispatch(ctx, event)
 }
 
 // CanDispatch checks if an event can be dispatched now
@@ -256,7 +303,10 @@ func NewRateLimitedDispatcher(maxEvents int, window time.Duration) *RateLimitedD
 }
 
 // Dispatch dispatches events with rate limiting
-func (d *RateLimitedDispatcher) Dispatch(event interface{}) error {
+func (d *RateLimitedDispatcher) Dispatch(ctx context.Context, event interface{}) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	eventName := d.getEventName(event)
 
 	d.countMu.Lock()
@@ -285,7 +335,7 @@ func (d *RateLimitedDispatcher) Dispatch(event interface{}) error {
 	validTimestamps = append(validTimestamps, now)
 	d.eventCount[eventName] = validTimestamps
 
-	return d.DefaultDispatcher.Dispatch(event)
+	return d.DefaultDispatcher.Dispatch(ctx, event)
 }
 
 // GetRemainingEvents returns the number of events that can still be dispatched
@@ -324,6 +374,7 @@ type CoalescingDispatcher struct {
 }
 
 type coalescedEvent struct {
+	ctx   context.Context
 	event interface{}
 	timer *time.Timer
 	count int
@@ -341,8 +392,28 @@ func NewCoalescingDispatcher(coalesce time.Duration) *CoalescingDispatcher {
 	}
 }
 
-// Dispatch coalesces events before dispatching
-func (d *CoalescingDispatcher) Dispatch(event interface{}) error {
+// Dispatch coalesces events before dispatching. Rapid calls with the same
+// event name collapse into a single eventual dispatch using the most recent
+// event payload and ctx, fired on a background goroutine after the coalesce
+// window elapses.
+//
+// Context semantics: the ctx is captured per pending event but stripped of
+// cancellation and deadline via context.WithoutCancel before being stored,
+// because the actual dispatch fires on a background goroutine that may run
+// long after the caller has returned. Request-scoped values like trace IDs
+// survive; the caller's cancellation does NOT propagate to listeners. A
+// canceled parent ctx will not stop the pending dispatch, and because
+// later calls overwrite the stored ctx, listeners only ever see the values
+// from the most recent caller.
+//
+// Callers who need cancellation to propagate should not use the coalescing
+// dispatcher; dispatch synchronously via DefaultDispatcher.Dispatch and let
+// the listener choose its own backgrounding.
+func (d *CoalescingDispatcher) Dispatch(ctx context.Context, event interface{}) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	bgCtx := context.WithoutCancel(ctx)
 	eventName := d.getEventName(event)
 
 	d.pendingMu.Lock()
@@ -351,6 +422,7 @@ func (d *CoalescingDispatcher) Dispatch(event interface{}) error {
 	// Check if event is already pending
 	if ce, exists := d.pending[eventName]; exists {
 		ce.timer.Stop()
+		ce.ctx = bgCtx
 		ce.event = event // Update to latest
 		ce.count++
 		ce.timer = time.AfterFunc(d.coalesce, func() {
@@ -361,6 +433,7 @@ func (d *CoalescingDispatcher) Dispatch(event interface{}) error {
 
 	// Create new pending event
 	ce := &coalescedEvent{
+		ctx:   bgCtx,
 		event: event,
 		count: 1,
 	}
@@ -383,7 +456,7 @@ func (d *CoalescingDispatcher) dispatchCoalesced(eventName string) {
 	delete(d.pending, eventName)
 	d.pendingMu.Unlock()
 
-	d.DefaultDispatcher.Dispatch(ce.event)
+	d.DefaultDispatcher.Dispatch(ce.ctx, ce.event)
 }
 
 // GetCoalescedCount returns how many times an event has been coalesced

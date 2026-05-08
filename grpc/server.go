@@ -37,7 +37,7 @@ type Server struct {
 	// Server emits events to the framework dispatcher. Guarded by eventMu
 	// so framework wiring and event-firing hot paths never race.
 	eventMu         sync.RWMutex
-	eventDispatcher func(event any) error
+	eventDispatcher func(ctx context.Context, event any) error
 }
 
 // ServerOption configures the Server
@@ -332,23 +332,27 @@ func (s *Server) Shutdown(ctx context.Context) error {
 //
 // Passing a nil fn clears the dispatcher and reverts the Server to a
 // no-op emission state.
-func (s *Server) SetEventDispatcher(fn func(event any) error) {
+func (s *Server) SetEventDispatcher(fn func(ctx context.Context, event any) error) {
 	s.eventMu.Lock()
 	s.eventDispatcher = fn
 	s.eventMu.Unlock()
 }
 
-// dispatchEvent fires an event if a dispatcher is configured. Failures
-// from the dispatcher are swallowed — the gRPC request path must never
-// fail because of an event sink.
-func (s *Server) dispatchEvent(evt any) {
+// dispatchEvent fires an event if a dispatcher is configured. The
+// caller-supplied ctx is propagated so listeners observe request-scoped
+// values. Failures from the dispatcher are swallowed: the gRPC request
+// path must never fail because of an event sink.
+func (s *Server) dispatchEvent(ctx context.Context, evt any) {
 	s.eventMu.RLock()
 	fn := s.eventDispatcher
 	s.eventMu.RUnlock()
 	if fn == nil {
 		return
 	}
-	_ = fn(evt)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_ = fn(ctx, evt)
 }
 
 // Address returns the address the server is listening on.

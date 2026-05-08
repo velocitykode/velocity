@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -34,7 +35,7 @@ func TestDispatcherStringEvent(t *testing.T) {
 
 	d.Listen("string.event", listener)
 
-	err := d.Dispatch("string.event")
+	err := d.Dispatch(context.Background(), "string.event")
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
@@ -114,7 +115,7 @@ func TestDispatcherWildcardVariations(t *testing.T) {
 		listener := &TestListener{}
 		d.Listen(test.pattern, listener)
 
-		d.Dispatch(test.event)
+		d.Dispatch(context.Background(), test.event)
 
 		if test.should && !listener.WasHandled() {
 			t.Errorf("Pattern %s should match %s", test.pattern, test.event)
@@ -129,7 +130,7 @@ func TestDispatcherWildcardVariations(t *testing.T) {
 
 func TestDispatcherNilEvent(t *testing.T) {
 	d := NewDispatcher()
-	err := d.Dispatch(nil)
+	err := d.Dispatch(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error when dispatching nil event")
 	}
@@ -140,7 +141,7 @@ func TestDispatcherListenerPanic(t *testing.T) {
 
 	d.Listen("test.panic", &panicListener{})
 
-	err := d.Dispatch("test.panic")
+	err := d.Dispatch(context.Background(), "test.panic")
 	if err == nil {
 		t.Fatal("expected error from panicking listener")
 	}
@@ -148,8 +149,10 @@ func TestDispatcherListenerPanic(t *testing.T) {
 
 type panicListener struct{}
 
-func (p *panicListener) Handle(event interface{}) error { panic("listener blew up") }
-func (p *panicListener) ShouldQueue() bool              { return false }
+func (p *panicListener) Handle(ctx context.Context, event interface{}) error {
+	panic("listener blew up")
+}
+func (p *panicListener) ShouldQueue() bool { return false }
 
 func TestDispatcherConcurrentModification(t *testing.T) {
 	d := NewDispatcher()
@@ -170,7 +173,7 @@ func TestDispatcherConcurrentModification(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			d.Dispatch("event")
+			d.Dispatch(context.Background(), "event")
 		}()
 	}
 
@@ -188,7 +191,7 @@ func TestDispatcherConcurrentModification(t *testing.T) {
 // PanicListener for testing panic recovery
 type PanicListener struct{}
 
-func (l *PanicListener) Handle(event interface{}) error {
+func (l *PanicListener) Handle(ctx context.Context, event interface{}) error {
 	panic("listener panic")
 }
 
@@ -202,7 +205,7 @@ type TestQueuedListener struct {
 	mu      sync.Mutex
 }
 
-func (l *TestQueuedListener) Handle(event interface{}) error {
+func (l *TestQueuedListener) Handle(ctx context.Context, event interface{}) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.handled = true
@@ -226,7 +229,7 @@ func TestDispatcherQueuedListener(t *testing.T) {
 	d.Listen("test.event", listener)
 
 	// Without queue, should still handle via goroutine
-	err := d.Dispatch("test.event")
+	err := d.Dispatch(context.Background(), "test.event")
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
@@ -247,7 +250,7 @@ func TestDispatcherErrorHandling(t *testing.T) {
 	d.Listen("test.event", errorListener)
 	d.Listen("test.event", normalListener)
 
-	err := d.Dispatch("test.event")
+	err := d.Dispatch(context.Background(), "test.event")
 	if err == nil {
 		t.Error("Expected error from listener")
 	}

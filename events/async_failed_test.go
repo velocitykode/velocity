@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"testing"
@@ -12,7 +13,7 @@ import (
 // panicingListener panics the first time Handle is invoked.
 type panicingListener struct{}
 
-func (l *panicingListener) Handle(event interface{}) error {
+func (l *panicingListener) Handle(ctx context.Context, event interface{}) error {
 	panic("boom")
 }
 func (l *panicingListener) ShouldQueue() bool { return false }
@@ -20,8 +21,8 @@ func (l *panicingListener) ShouldQueue() bool { return false }
 // erroringListener returns a non-nil error.
 type erroringListener struct{ msg string }
 
-func (l *erroringListener) Handle(event interface{}) error { return fmtErr(l.msg) }
-func (l *erroringListener) ShouldQueue() bool              { return false }
+func (l *erroringListener) Handle(ctx context.Context, event interface{}) error { return fmtErr(l.msg) }
+func (l *erroringListener) ShouldQueue() bool                                   { return false }
 
 type fmtErrType string
 
@@ -48,7 +49,7 @@ func TestAsyncDispatcher_PanicRecovered(t *testing.T) {
 		return nil
 	})
 
-	if err := a.Push("evt", &panicingListener{}, 0); err != nil {
+	if err := a.Push(context.Background(), "evt", &panicingListener{}, 0); err != nil {
 		t.Fatalf("Push: %v", err)
 	}
 
@@ -84,7 +85,7 @@ func TestAsyncDispatcher_ErrorReported(t *testing.T) {
 		return nil
 	})
 
-	_ = a.Push("evt", &erroringListener{msg: "velocity/test: bad"}, 0)
+	_ = a.Push(context.Background(), "evt", &erroringListener{msg: "velocity/test: bad"}, 0)
 
 	select {
 	case ev := <-ch:

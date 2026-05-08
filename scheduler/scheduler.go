@@ -30,7 +30,7 @@ type TaskScheduler interface {
 	Run(ctx context.Context) error
 	Shutdown(ctx context.Context) error
 	Jobs() []*Job
-	SetEventDispatcher(fn func(event interface{}) error)
+	SetEventDispatcher(fn func(ctx context.Context, event interface{}) error)
 	SetEnv(env string)
 }
 
@@ -55,7 +55,7 @@ type Scheduler struct {
 	// can read it lock-free and SetLogger doesn't contend with s.mu.
 	logger atomic.Value // holds schedLoggerHolder{Logger}
 
-	eventDispatcher func(event interface{}) error
+	eventDispatcher func(ctx context.Context, event interface{}) error
 	runWg           sync.WaitGroup // tracks in-flight job goroutines
 }
 
@@ -63,16 +63,21 @@ type Scheduler struct {
 type schedLoggerHolder struct{ Logger }
 
 // SetEventDispatcher sets the function used to dispatch events.
-func (s *Scheduler) SetEventDispatcher(fn func(event interface{}) error) {
+func (s *Scheduler) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.eventDispatcher = fn
 }
 
-// dispatchEvent dispatches an event if a dispatcher is configured.
-func (s *Scheduler) dispatchEvent(event interface{}) {
+// dispatchEvent dispatches an event if a dispatcher is configured. The
+// caller-supplied ctx is propagated so listeners observe scheduler-job
+// scoped values.
+func (s *Scheduler) dispatchEvent(ctx context.Context, event interface{}) {
 	if s.eventDispatcher != nil {
-		s.eventDispatcher(event)
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		s.eventDispatcher(ctx, event)
 	}
 }
 

@@ -360,7 +360,7 @@ func TestManagerEventDispatching(t *testing.T) {
 	mgr.SetChannel("test", ch)
 
 	var dispatched []interface{}
-	mgr.SetEventDispatcher(func(event interface{}) error {
+	mgr.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		dispatched = append(dispatched, event)
 		return nil
 	})
@@ -392,7 +392,7 @@ func TestManagerEventDispatchingOnFailure(t *testing.T) {
 	mgr.SetChannel("test", ch)
 
 	var dispatched []interface{}
-	mgr.SetEventDispatcher(func(event interface{}) error {
+	mgr.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		dispatched = append(dispatched, event)
 		return nil
 	})
@@ -453,7 +453,7 @@ func TestManagerEventDispatcherErrorDoesNotInterruptDelivery(t *testing.T) {
 	ch := &testChannel{}
 	mgr.SetChannel("test", ch)
 
-	mgr.SetEventDispatcher(func(event interface{}) error {
+	mgr.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		return errors.New("dispatcher exploded")
 	})
 

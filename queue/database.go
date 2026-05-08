@@ -73,7 +73,7 @@ type DatabaseDriver struct {
 	db              *sql.DB
 	workerID        string
 	dbDriver        string // "postgres", "mysql", "sqlite"
-	eventDispatcher func(event interface{}) error
+	eventDispatcher func(ctx context.Context, event interface{}) error
 }
 
 // NewDatabaseDriver creates a new database queue driver with an injected *sql.DB.
@@ -91,14 +91,19 @@ func NewDatabaseDriver(db *sql.DB, dbDriver string) *DatabaseDriver {
 }
 
 // SetEventDispatcher sets the function used to dispatch events.
-func (d *DatabaseDriver) SetEventDispatcher(fn func(event interface{}) error) {
+func (d *DatabaseDriver) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
 	d.eventDispatcher = fn
 }
 
-// dispatchEvent dispatches an event if a dispatcher is configured.
-func (d *DatabaseDriver) dispatchEvent(event interface{}) {
+// dispatchEvent dispatches an event if a dispatcher is configured. The
+// caller-supplied ctx is propagated so listeners observe request-scoped
+// values.
+func (d *DatabaseDriver) dispatchEvent(ctx context.Context, event interface{}) {
 	if d.eventDispatcher != nil {
-		d.eventDispatcher(event)
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		d.eventDispatcher(ctx, event)
 	}
 }
 

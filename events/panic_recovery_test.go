@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,7 +16,7 @@ type countingPanicListener struct {
 	handled atomic.Int32
 }
 
-func (p *countingPanicListener) Handle(event interface{}) error {
+func (p *countingPanicListener) Handle(ctx context.Context, event interface{}) error {
 	p.handled.Add(1)
 	panic("listener boom")
 }
@@ -28,7 +29,7 @@ func TestAsyncDispatcher_Push_RecoversPanic(t *testing.T) {
 	listener := &countingPanicListener{}
 
 	// Immediate dispatch — no delay — goroutine path.
-	if err := ad.Push("event", listener, 0); err != nil {
+	if err := ad.Push(context.Background(), "event", listener, 0); err != nil {
 		t.Fatalf("push failed: %v", err)
 	}
 
@@ -36,7 +37,7 @@ func TestAsyncDispatcher_Push_RecoversPanic(t *testing.T) {
 
 	// Delayed dispatch — time.AfterFunc path.
 	listener2 := &countingPanicListener{}
-	if err := ad.Push("event", listener2, 10*time.Millisecond); err != nil {
+	if err := ad.Push(context.Background(), "event", listener2, 10*time.Millisecond); err != nil {
 		t.Fatalf("push failed: %v", err)
 	}
 	testsync.Eventually(t, func() bool { return listener2.handled.Load() > 0 }, time.Second, "delayed listener invoked")
@@ -53,12 +54,12 @@ func TestDispatcher_DispatchAsync_Fallback_RecoversPanic(t *testing.T) {
 	}
 
 	var ran atomic.Int32
-	d.Listen("fallback.boom", listenerFunc(func(event interface{}) error {
+	d.Listen("fallback.boom", listenerFunc(func(ctx context.Context, event interface{}) error {
 		ran.Add(1)
 		panic("fallback listener boom")
 	}))
 
-	if err := d.DispatchAsync("fallback.boom"); err != nil {
+	if err := d.DispatchAsync(context.Background(), "fallback.boom"); err != nil {
 		t.Fatalf("DispatchAsync failed: %v", err)
 	}
 
@@ -66,11 +67,11 @@ func TestDispatcher_DispatchAsync_Fallback_RecoversPanic(t *testing.T) {
 
 	// Dispatcher must remain usable.
 	var followup atomic.Int32
-	d.Listen("followup", listenerFunc(func(event interface{}) error {
+	d.Listen("followup", listenerFunc(func(ctx context.Context, event interface{}) error {
 		followup.Add(1)
 		return nil
 	}))
-	if err := d.Dispatch("followup"); err != nil {
+	if err := d.Dispatch(context.Background(), "followup"); err != nil {
 		t.Fatalf("Dispatch failed after panic: %v", err)
 	}
 	if followup.Load() != 1 {
@@ -79,10 +80,10 @@ func TestDispatcher_DispatchAsync_Fallback_RecoversPanic(t *testing.T) {
 }
 
 // listenerFunc adapts a func to the Listener interface.
-type listenerFunc func(event interface{}) error
+type listenerFunc func(ctx context.Context, event interface{}) error
 
-func (f listenerFunc) Handle(event interface{}) error { return f(event) }
-func (f listenerFunc) ShouldQueue() bool              { return false }
+func (f listenerFunc) Handle(ctx context.Context, event interface{}) error { return f(ctx, event) }
+func (f listenerFunc) ShouldQueue() bool                                   { return false }
 
 // Guard against accidentally shadowing stdlib sync.
 var _ sync.Locker = (*sync.Mutex)(nil)

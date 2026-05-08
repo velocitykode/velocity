@@ -37,7 +37,7 @@ type CSRF struct {
 	// eventDispatcher is optional; when set via SetEventDispatcher, the CSRF
 	// instance emits events such as csrf.session_fallback.
 	eventMu         sync.RWMutex
-	eventDispatcher func(event interface{}) error
+	eventDispatcher func(ctx context.Context, event interface{}) error
 }
 
 // New creates a new CSRF instance with the given configuration.
@@ -102,23 +102,27 @@ func (c *CSRF) Shutdown(ctx context.Context) error {
 
 // SetEventDispatcher wires an event dispatcher into the CSRF instance.
 // Safe to call before or after requests are served; mutex-protected.
-func (c *CSRF) SetEventDispatcher(fn func(event interface{}) error) {
+func (c *CSRF) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
 	c.eventMu.Lock()
 	c.eventDispatcher = fn
 	c.eventMu.Unlock()
 }
 
-// dispatchEvent fires an event if a dispatcher is configured. Failures
-// from the dispatcher are swallowed — CSRF validation must never fail
-// because of an event sink.
-func (c *CSRF) dispatchEvent(evt interface{}) {
+// dispatchEvent fires an event if a dispatcher is configured. The
+// caller-supplied ctx is propagated so listeners observe request-scoped
+// values. Failures from the dispatcher are swallowed: CSRF validation
+// must never fail because of an event sink.
+func (c *CSRF) dispatchEvent(ctx context.Context, evt interface{}) {
 	c.eventMu.RLock()
 	fn := c.eventDispatcher
 	c.eventMu.RUnlock()
 	if fn == nil {
 		return
 	}
-	_ = fn(evt)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_ = fn(ctx, evt)
 }
 
 // Middleware returns HTTP middleware that validates CSRF tokens
@@ -247,7 +251,7 @@ func (c *CSRF) getSessionID(r *http.Request) (string, error) {
 	cookie, err := r.Cookie(cookieName)
 	if err == nil {
 		if cookie.Value == "" {
-			c.dispatchEvent(&SessionFallback{
+			c.dispatchEvent(r.Context(), &SessionFallback{
 				Context: r.Context(),
 				Path:    r.URL.Path,
 				Method:  r.Method,
@@ -259,7 +263,7 @@ func (c *CSRF) getSessionID(r *http.Request) (string, error) {
 	}
 
 	// Emit an event so operators can detect missing session middleware.
-	c.dispatchEvent(&SessionFallback{
+	c.dispatchEvent(r.Context(), &SessionFallback{
 		Context: r.Context(),
 		Path:    r.URL.Path,
 		Method:  r.Method,

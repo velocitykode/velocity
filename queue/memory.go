@@ -23,7 +23,7 @@ type MemoryDriver struct {
 	stopChan        chan struct{}
 	stopOnce        sync.Once
 	wg              sync.WaitGroup
-	eventDispatcher func(event interface{}) error
+	eventDispatcher func(ctx context.Context, event interface{}) error
 
 	// logger is stored in an atomic.Value so the shutdown panic-recovery
 	// path can read it without acquiring the main lock (the goroutine
@@ -121,14 +121,19 @@ func (m *MemoryDriver) Start() {
 }
 
 // SetEventDispatcher sets the function used to dispatch events.
-func (m *MemoryDriver) SetEventDispatcher(fn func(event interface{}) error) {
+func (m *MemoryDriver) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
 	m.eventDispatcher = fn
 }
 
-// dispatchEvent dispatches an event if a dispatcher is configured.
-func (m *MemoryDriver) dispatchEvent(event interface{}) {
+// dispatchEvent dispatches an event if a dispatcher is configured. The
+// caller-supplied ctx is propagated so listeners observe request-scoped
+// values.
+func (m *MemoryDriver) dispatchEvent(ctx context.Context, event interface{}) {
 	if m.eventDispatcher != nil {
-		m.eventDispatcher(event)
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		m.eventDispatcher(ctx, event)
 	}
 }
 

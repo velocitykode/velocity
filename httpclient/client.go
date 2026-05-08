@@ -41,7 +41,7 @@ type Client struct {
 	mu              sync.RWMutex
 	client          *http.Client
 	baseURL         string
-	eventDispatcher func(event interface{}) error
+	eventDispatcher func(ctx context.Context, event interface{}) error
 
 	// Security options (configured via Option funcs).
 	minTLSVersion   uint16
@@ -351,19 +351,24 @@ func (c *Client) Shutdown(ctx context.Context) error {
 }
 
 // SetEventDispatcher sets the function used to dispatch events.
-func (c *Client) SetEventDispatcher(fn func(event interface{}) error) {
+func (c *Client) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.eventDispatcher = fn
 }
 
-// dispatchEvent dispatches an event if a dispatcher is configured.
-func (c *Client) dispatchEvent(event interface{}) {
+// dispatchEvent dispatches an event if a dispatcher is configured. The
+// caller-supplied ctx is propagated so listeners observe request-scoped
+// values.
+func (c *Client) dispatchEvent(ctx context.Context, event interface{}) {
 	c.mu.RLock()
 	fn := c.eventDispatcher
 	c.mu.RUnlock()
 	if fn != nil {
-		fn(event)
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		fn(ctx, event)
 	}
 }
 

@@ -150,7 +150,7 @@ func collectSSREvents(gw *HTTPGateway) func() []SSRRenderFailed {
 		mu     sync.Mutex
 		events []SSRRenderFailed
 	)
-	gw.SetEventDispatcher(func(evt interface{}) error {
+	gw.SetEventDispatcher(func(_ context.Context, evt interface{}) error {
 		if f, ok := evt.(SSRRenderFailed); ok {
 			mu.Lock()
 			events = append(events, f)

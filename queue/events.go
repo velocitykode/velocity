@@ -92,12 +92,12 @@ func (e *JobRetrying) Name() string {
 }
 
 // dispatchJobQueued dispatches a JobQueued event
-func dispatchJobQueued(dispatch func(interface{}), ctx context.Context, jobType, queue string, delayed bool, delay time.Duration) {
+func dispatchJobQueued(dispatch func(context.Context, interface{}), ctx context.Context, jobType, queue string, delayed bool, delay time.Duration) {
 	if dispatch == nil {
 		return
 	}
 	traceID, spanID, parentID := trace.GetTraceContext(ctx)
-	dispatch(&JobQueued{
+	dispatch(ctx, &JobQueued{
 		Context:  ctx,
 		JobType:  jobType,
 		Queue:    queue,
@@ -110,12 +110,12 @@ func dispatchJobQueued(dispatch func(interface{}), ctx context.Context, jobType,
 }
 
 // dispatchJobProcessing dispatches a JobProcessing event
-func dispatchJobProcessing(dispatch func(interface{}), ctx context.Context, jobType, queue string) {
+func dispatchJobProcessing(dispatch func(context.Context, interface{}), ctx context.Context, jobType, queue string) {
 	if dispatch == nil {
 		return
 	}
 	traceID, spanID, parentID := trace.GetTraceContext(ctx)
-	dispatch(&JobProcessing{
+	dispatch(ctx, &JobProcessing{
 		Context:  ctx,
 		JobType:  jobType,
 		Queue:    queue,
@@ -126,12 +126,12 @@ func dispatchJobProcessing(dispatch func(interface{}), ctx context.Context, jobT
 }
 
 // dispatchJobProcessed dispatches a JobProcessed event
-func dispatchJobProcessed(dispatch func(interface{}), ctx context.Context, jobType, queue string, duration time.Duration) {
+func dispatchJobProcessed(dispatch func(context.Context, interface{}), ctx context.Context, jobType, queue string, duration time.Duration) {
 	if dispatch == nil {
 		return
 	}
 	traceID, spanID, parentID := trace.GetTraceContext(ctx)
-	dispatch(&JobProcessed{
+	dispatch(ctx, &JobProcessed{
 		Context:    ctx,
 		JobType:    jobType,
 		Queue:      queue,
@@ -143,7 +143,7 @@ func dispatchJobProcessed(dispatch func(interface{}), ctx context.Context, jobTy
 }
 
 // dispatchJobFailed dispatches a JobFailed event
-func dispatchJobFailed(dispatch func(interface{}), ctx context.Context, jobType, queue string, err error, duration time.Duration) {
+func dispatchJobFailed(dispatch func(context.Context, interface{}), ctx context.Context, jobType, queue string, err error, duration time.Duration) {
 	if dispatch == nil {
 		return
 	}
@@ -152,7 +152,7 @@ func dispatchJobFailed(dispatch func(interface{}), ctx context.Context, jobType,
 	if err != nil {
 		errMsg = err.Error()
 	}
-	dispatch(&JobFailed{
+	dispatch(ctx, &JobFailed{
 		Context:    ctx,
 		JobType:    jobType,
 		Queue:      queue,
@@ -165,7 +165,7 @@ func dispatchJobFailed(dispatch func(interface{}), ctx context.Context, jobType,
 }
 
 // dispatchJobRetrying dispatches a JobRetrying event
-func dispatchJobRetrying(dispatch func(interface{}), ctx context.Context, jobType, queue string, attempt, maxAttempts int, err error, backoff time.Duration) {
+func dispatchJobRetrying(dispatch func(context.Context, interface{}), ctx context.Context, jobType, queue string, attempt, maxAttempts int, err error, backoff time.Duration) {
 	if dispatch == nil {
 		return
 	}
@@ -174,7 +174,7 @@ func dispatchJobRetrying(dispatch func(interface{}), ctx context.Context, jobTyp
 	if err != nil {
 		errMsg = err.Error()
 	}
-	dispatch(&JobRetrying{
+	dispatch(ctx, &JobRetrying{
 		Context:     ctx,
 		JobType:     jobType,
 		Queue:       queue,

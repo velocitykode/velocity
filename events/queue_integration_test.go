@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -22,7 +23,7 @@ func TestEventListenerJob(t *testing.T) {
 	// Test with valid listener
 	handled := false
 	listener := &SimpleListener{
-		HandleFunc: func(event interface{}) error {
+		HandleFunc: func(ctx context.Context, event interface{}) error {
 			handled = true
 			return nil
 		},
@@ -39,7 +40,7 @@ func TestEventListenerJob(t *testing.T) {
 
 	// Test with listener that returns error
 	errorListener := &SimpleListener{
-		HandleFunc: func(event interface{}) error {
+		HandleFunc: func(ctx context.Context, event interface{}) error {
 			return errors.New("listener error")
 		},
 	}
@@ -115,7 +116,7 @@ func TestProcessEventListenerJob(t *testing.T) {
 	dispatcher := NewQueueIntegratedDispatcher()
 
 	// Test with invalid JSON
-	err := dispatcher.ProcessEventListenerJob([]byte("invalid json"))
+	err := dispatcher.ProcessEventListenerJob(context.Background(), []byte("invalid json"))
 	if err == nil {
 		t.Error("Expected error for invalid JSON")
 	}
@@ -128,7 +129,7 @@ func TestProcessEventListenerJob(t *testing.T) {
 	}
 
 	jobData, _ := json.Marshal(job)
-	err = dispatcher.ProcessEventListenerJob(jobData)
+	err = dispatcher.ProcessEventListenerJob(context.Background(), jobData)
 	if err == nil {
 		t.Error("Expected error for unregistered listener type")
 	}
@@ -137,7 +138,7 @@ func TestProcessEventListenerJob(t *testing.T) {
 	handled := false
 	factory := func() Listener {
 		return &SimpleListener{
-			HandleFunc: func(event interface{}) error {
+			HandleFunc: func(ctx context.Context, event interface{}) error {
 				handled = true
 				return nil
 			},
@@ -148,7 +149,7 @@ func TestProcessEventListenerJob(t *testing.T) {
 
 	job.ListenerType = "test.listener"
 	jobData, _ = json.Marshal(job)
-	err = dispatcher.ProcessEventListenerJob(jobData)
+	err = dispatcher.ProcessEventListenerJob(context.Background(), jobData)
 
 	if err != nil {
 		t.Errorf("ProcessEventListenerJob failed: %v", err)
@@ -160,7 +161,7 @@ func TestProcessEventListenerJob(t *testing.T) {
 	// Test with listener that returns error
 	errorFactory := func() Listener {
 		return &SimpleListener{
-			HandleFunc: func(event interface{}) error {
+			HandleFunc: func(ctx context.Context, event interface{}) error {
 				return errors.New("processing error")
 			},
 		}
@@ -169,7 +170,7 @@ func TestProcessEventListenerJob(t *testing.T) {
 	dispatcher.RegisterListenerFactory("error.listener", errorFactory)
 	job.ListenerType = "error.listener"
 	jobData, _ = json.Marshal(job)
-	err = dispatcher.ProcessEventListenerJob(jobData)
+	err = dispatcher.ProcessEventListenerJob(context.Background(), jobData)
 
 	if err == nil {
 		t.Error("Expected error from listener")
@@ -224,21 +225,21 @@ func TestPriorityDispatcher(t *testing.T) {
 	// Create listeners with different priorities
 	highPriority := &priorityTestListener{
 		priority: 100,
-		handleFunc: func(event interface{}) error {
+		handleFunc: func(ctx context.Context, event interface{}) error {
 			return nil
 		},
 	}
 
 	medPriority := &priorityTestListener{
 		priority: 50,
-		handleFunc: func(event interface{}) error {
+		handleFunc: func(ctx context.Context, event interface{}) error {
 			return nil
 		},
 	}
 
 	lowPriority := &priorityTestListener{
 		priority: 10,
-		handleFunc: func(event interface{}) error {
+		handleFunc: func(ctx context.Context, event interface{}) error {
 			// Track execution order
 			return nil
 		},
@@ -303,11 +304,11 @@ func TestStoppablePropagationDispatcher(t *testing.T) {
 	listener3Called := false
 
 	listener1 := &stoppablePropagationTestListener{
-		handleFunc: func(event interface{}) error {
+		handleFunc: func(ctx context.Context, event interface{}) error {
 			listener1Called = true
 			return nil
 		},
-		handleWithPropagationFunc: func(event interface{}) (bool, error) {
+		handleWithPropagationFunc: func(ctx context.Context, event interface{}) (bool, error) {
 			listener1Called = true
 			// Return true to stop propagation
 			return true, nil
@@ -315,14 +316,14 @@ func TestStoppablePropagationDispatcher(t *testing.T) {
 	}
 
 	listener2 := &SimpleListener{
-		HandleFunc: func(event interface{}) error {
+		HandleFunc: func(ctx context.Context, event interface{}) error {
 			listener2Called = true
 			return nil
 		},
 	}
 
 	listener3 := &SimpleListener{
-		HandleFunc: func(event interface{}) error {
+		HandleFunc: func(ctx context.Context, event interface{}) error {
 			listener3Called = true
 			return nil
 		},
@@ -338,7 +339,7 @@ func TestStoppablePropagationDispatcher(t *testing.T) {
 		},
 	}
 
-	err := dispatcher.Dispatch(stoppableEvent)
+	err := dispatcher.Dispatch(context.Background(), stoppableEvent)
 	if err != nil {
 		t.Errorf("Dispatch failed: %v", err)
 	}
@@ -364,7 +365,7 @@ func TestStoppablePropagationListenerProcessing(t *testing.T) {
 	// Test StoppablePropagationListener
 	stopPropagation := false
 	propagationListener := &stoppablePropagationTestListener{
-		handleWithPropagationFunc: func(event interface{}) (bool, error) {
+		handleWithPropagationFunc: func(ctx context.Context, event interface{}) (bool, error) {
 			return stopPropagation, nil
 		},
 	}
@@ -376,7 +377,7 @@ func TestStoppablePropagationListenerProcessing(t *testing.T) {
 	}
 
 	// Test without stopping propagation
-	err := dispatcher.processListener(event, propagationListener)
+	err := dispatcher.processListener(context.Background(), event, propagationListener)
 	if err != nil {
 		t.Errorf("processListener failed: %v", err)
 	}
@@ -392,7 +393,7 @@ func TestStoppablePropagationListenerProcessing(t *testing.T) {
 		},
 	}
 
-	err = dispatcher.processListener(event, propagationListener)
+	err = dispatcher.processListener(context.Background(), event, propagationListener)
 	if err != nil {
 		t.Errorf("processListener failed: %v", err)
 	}
@@ -402,12 +403,12 @@ func TestStoppablePropagationListenerProcessing(t *testing.T) {
 
 	// Test with error from listener
 	errorListener := &stoppablePropagationTestListener{
-		handleWithPropagationFunc: func(event interface{}) (bool, error) {
+		handleWithPropagationFunc: func(ctx context.Context, event interface{}) (bool, error) {
 			return false, errors.New("listener error")
 		},
 	}
 
-	err = dispatcher.processListener(event, errorListener)
+	err = dispatcher.processListener(context.Background(), event, errorListener)
 	if err == nil {
 		t.Error("Expected error from listener")
 	}
@@ -426,14 +427,14 @@ func TestQueueIntegratedDispatcherDispatch(t *testing.T) {
 	// Test with non-queued listener
 	handled := false
 	listener := &SimpleListener{
-		HandleFunc: func(event interface{}) error {
+		HandleFunc: func(ctx context.Context, event interface{}) error {
 			handled = true
 			return nil
 		},
 	}
 
 	dispatcher.Listen("test.event", listener)
-	err := dispatcher.Dispatch("test.event")
+	err := dispatcher.Dispatch(context.Background(), "test.event")
 	if err != nil {
 		t.Errorf("Dispatch failed: %v", err)
 	}
@@ -443,13 +444,13 @@ func TestQueueIntegratedDispatcherDispatch(t *testing.T) {
 
 	// Test with listener that returns error
 	errorListener := &SimpleListener{
-		HandleFunc: func(event interface{}) error {
+		HandleFunc: func(ctx context.Context, event interface{}) error {
 			return errors.New("handler error")
 		},
 	}
 
 	dispatcher.Listen("error.event", errorListener)
-	err = dispatcher.Dispatch("error.event")
+	err = dispatcher.Dispatch(context.Background(), "error.event")
 	if err == nil {
 		t.Error("Expected error from listener")
 	}
@@ -465,7 +466,7 @@ func TestQueueIntegratedProcessListener(t *testing.T) {
 	}
 
 	event := "test.event"
-	err := dispatcher.processListener(event, listener)
+	err := dispatcher.processListener(context.Background(), event, listener)
 	if err != nil {
 		t.Errorf("processListener failed: %v", err)
 	}
@@ -480,7 +481,7 @@ func TestQueueIntegratedProcessListener(t *testing.T) {
 		shouldHandle: true,
 	}
 
-	err = dispatcher.processListener(event, listener2)
+	err = dispatcher.processListener(context.Background(), event, listener2)
 	if err != nil {
 		t.Errorf("processListener failed: %v", err)
 	}
@@ -499,7 +500,7 @@ func TestStoppablePropagationDispatcherWithQueued(t *testing.T) {
 	// but we can test that the method doesn't panic and handles the flow
 	queuedListener := &TestFullQueuedListener{}
 	regularListener := &SimpleListener{
-		HandleFunc: func(event interface{}) error {
+		HandleFunc: func(ctx context.Context, event interface{}) error {
 			return nil
 		},
 	}
@@ -513,7 +514,7 @@ func TestStoppablePropagationDispatcherWithQueued(t *testing.T) {
 
 	// This will fail to queue but should not panic
 	// We just ensure no panic occurs
-	_ = dispatcher.Dispatch(event)
+	_ = dispatcher.Dispatch(context.Background(), event)
 }
 
 // TestShouldHandleListener for testing ShouldHandle interface
@@ -522,7 +523,7 @@ type TestShouldHandleListener struct {
 	handleCalled bool
 }
 
-func (l *TestShouldHandleListener) Handle(event interface{}) error {
+func (l *TestShouldHandleListener) Handle(ctx context.Context, event interface{}) error {
 	l.handleCalled = true
 	return nil
 }
@@ -538,12 +539,12 @@ func (l *TestShouldHandleListener) ShouldHandle(event interface{}) bool {
 // Helper types for testing
 type priorityTestListener struct {
 	priority   int
-	handleFunc func(interface{}) error
+	handleFunc func(ctx context.Context, event interface{}) error
 }
 
-func (l *priorityTestListener) Handle(event interface{}) error {
+func (l *priorityTestListener) Handle(ctx context.Context, event interface{}) error {
 	if l.handleFunc != nil {
-		return l.handleFunc(event)
+		return l.handleFunc(ctx, event)
 	}
 	return nil
 }
@@ -565,14 +566,14 @@ func (e *testStoppableEvent) Name() string {
 }
 
 type stoppablePropagationTestListener struct {
-	handleFunc                func(interface{}) error
-	handleWithPropagationFunc func(interface{}) (bool, error)
+	handleFunc                func(ctx context.Context, event interface{}) error
+	handleWithPropagationFunc func(ctx context.Context, event interface{}) (bool, error)
 	shouldHandle              bool
 }
 
-func (l *stoppablePropagationTestListener) Handle(event interface{}) error {
+func (l *stoppablePropagationTestListener) Handle(ctx context.Context, event interface{}) error {
 	if l.handleFunc != nil {
-		return l.handleFunc(event)
+		return l.handleFunc(ctx, event)
 	}
 	return nil
 }
@@ -581,9 +582,9 @@ func (l *stoppablePropagationTestListener) ShouldQueue() bool {
 	return false
 }
 
-func (l *stoppablePropagationTestListener) HandleWithPropagation(event interface{}) (bool, error) {
+func (l *stoppablePropagationTestListener) HandleWithPropagation(ctx context.Context, event interface{}) (bool, error) {
 	if l.handleWithPropagationFunc != nil {
-		return l.handleWithPropagationFunc(event)
+		return l.handleWithPropagationFunc(ctx, event)
 	}
 	return false, nil
 }

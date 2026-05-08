@@ -43,7 +43,7 @@ func TestDispatcher(t *testing.T) {
 		q.SetEventDispatcher(nil)
 
 		called := false
-		q.SetEventDispatcher(func(event interface{}) error {
+		q.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 			called = true
 			return nil
 		})
@@ -66,19 +66,19 @@ func TestDispatcher(t *testing.T) {
 		q.SetEventDispatcher(nil)
 
 		// Should not panic - dispatch function checks for nil
-		q.dispatchEvent(&JobQueued{})
+		q.dispatchEvent(context.Background(), &JobQueued{})
 	})
 
 	t.Run("dispatchEvent with error returning dispatcher", func(t *testing.T) {
 		q := NewMemoryDriver()
 		q.Start()
 		defer q.Shutdown(context.Background())
-		q.SetEventDispatcher(func(event interface{}) error {
+		q.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 			return errors.New("dispatcher error")
 		})
 
 		// Should not panic, errors are ignored
-		q.dispatchEvent(&JobQueued{})
+		q.dispatchEvent(context.Background(), &JobQueued{})
 
 		q.SetEventDispatcher(nil)
 	})
@@ -86,7 +86,7 @@ func TestDispatcher(t *testing.T) {
 
 func TestDispatchJobQueued(t *testing.T) {
 	var captured *JobQueued
-	dispatch := func(event interface{}) {
+	dispatch := func(_ context.Context, event interface{}) {
 		if e, ok := event.(*JobQueued); ok {
 			captured = e
 		}
@@ -166,7 +166,7 @@ func TestDispatchJobQueued(t *testing.T) {
 
 func TestDispatchJobProcessing(t *testing.T) {
 	var captured *JobProcessing
-	dispatch := func(event interface{}) {
+	dispatch := func(_ context.Context, event interface{}) {
 		if e, ok := event.(*JobProcessing); ok {
 			captured = e
 		}
@@ -211,7 +211,7 @@ func TestDispatchJobProcessing(t *testing.T) {
 
 func TestDispatchJobProcessed(t *testing.T) {
 	var captured *JobProcessed
-	dispatch := func(event interface{}) {
+	dispatch := func(_ context.Context, event interface{}) {
 		if e, ok := event.(*JobProcessed); ok {
 			captured = e
 		}
@@ -259,7 +259,7 @@ func TestDispatchJobProcessed(t *testing.T) {
 
 func TestDispatchJobFailed(t *testing.T) {
 	var captured *JobFailed
-	dispatch := func(event interface{}) {
+	dispatch := func(_ context.Context, event interface{}) {
 		if e, ok := event.(*JobFailed); ok {
 			captured = e
 		}
@@ -332,7 +332,7 @@ func TestEventDispatchingIntegration(t *testing.T) {
 	q.Start()
 	defer q.Shutdown(context.Background())
 
-	q.SetEventDispatcher(func(event interface{}) error {
+	q.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		mu.Lock()
 		events = append(events, event)
 		mu.Unlock()
@@ -409,7 +409,7 @@ func TestWorkerEventDispatching(t *testing.T) {
 	var retryingEvents []*JobRetrying
 	var mu sync.Mutex
 
-	dispatcher := func(event interface{}) error {
+	dispatcher := func(_ context.Context, event interface{}) error {
 		mu.Lock()
 		defer mu.Unlock()
 		switch e := event.(type) {
@@ -677,7 +677,7 @@ func TestJobRetryingEventName(t *testing.T) {
 
 func TestDispatchJobRetrying(t *testing.T) {
 	var captured *JobRetrying
-	dispatch := func(event interface{}) {
+	dispatch := func(_ context.Context, event interface{}) {
 		if e, ok := event.(*JobRetrying); ok {
 			captured = e
 		}

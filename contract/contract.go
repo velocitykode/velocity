@@ -10,11 +10,14 @@ import (
 // router, ORM, auth, view, mail, crypto) that emits events implements this so
 // bootstrap wiring can thread a single dispatcher through every subsystem.
 //
-// The func(any) error signature is the shared lowest common denominator: each
-// subsystem emits its own concrete event types, so the dispatcher parameter
-// is type-erased. Receivers type-assert back to the concrete event type.
+// The fn parameter receives a context.Context so listeners can observe
+// request-scoped values (transactions, trace IDs, deadlines). Subsystems that
+// emit events MUST pass the most-relevant ctx in scope (request ctx, tx ctx,
+// scheduler-job ctx) instead of dropping to context.Background(). The event
+// parameter is type-erased so each subsystem can emit its own concrete event
+// types; receivers type-assert back to the concrete type.
 type EventDispatcherAware interface {
-	SetEventDispatcher(fn func(event any) error)
+	SetEventDispatcher(fn func(ctx context.Context, event any) error)
 }
 
 // ShutdownAware is the uniform interface for types that hold background

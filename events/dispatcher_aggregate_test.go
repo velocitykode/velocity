@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"errors"
 	"testing"
 )
@@ -11,7 +12,7 @@ type aggCountListener struct {
 	err   error
 }
 
-func (l *aggCountListener) Handle(event interface{}) error {
+func (l *aggCountListener) Handle(ctx context.Context, event interface{}) error {
 	l.calls++
 	return l.err
 }
@@ -33,7 +34,7 @@ func TestDispatch_AggregatesListenerErrors(t *testing.T) {
 	d.Listen("my.event", l2)
 	d.Listen("my.event", l3)
 
-	err := d.Dispatch("my.event")
+	err := d.Dispatch(context.Background(), "my.event")
 	if err == nil {
 		t.Fatal("expected aggregated error, got nil")
 	}

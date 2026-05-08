@@ -1,6 +1,7 @@
 package grpc
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -28,18 +29,18 @@ func TestServer_SetEventDispatcher_SafeToRecall(t *testing.T) {
 	s := NewServer()
 
 	// Calling twice on a fresh server must not panic.
-	s.SetEventDispatcher(func(event any) error { return nil })
+	s.SetEventDispatcher(func(_ context.Context, event any) error { return nil })
 	s.SetEventDispatcher(nil)
-	s.SetEventDispatcher(func(event any) error { return nil })
+	s.SetEventDispatcher(func(_ context.Context, event any) error { return nil })
 
 	// dispatchEvent with nil-cleared dispatcher must be a no-op (no panic).
 	s.SetEventDispatcher(nil)
-	s.dispatchEvent("noop")
+	s.dispatchEvent(context.Background(), "noop")
 
 	// Concurrent recalls + reads via dispatchEvent. The race detector
 	// catches a missing lock on either side.
 	var seen atomic.Int64
-	dispatcher := func(event any) error {
+	dispatcher := func(_ context.Context, event any) error {
 		seen.Add(1)
 		return nil
 	}
@@ -61,7 +62,7 @@ func TestServer_SetEventDispatcher_SafeToRecall(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range iters {
-				s.dispatchEvent("probe")
+				s.dispatchEvent(context.Background(), "probe")
 			}
 		}()
 	}
@@ -70,7 +71,7 @@ func TestServer_SetEventDispatcher_SafeToRecall(t *testing.T) {
 	// Final state: a non-nil dispatcher should still be able to fire.
 	s.SetEventDispatcher(dispatcher)
 	before := seen.Load()
-	s.dispatchEvent("final")
+	s.dispatchEvent(context.Background(), "final")
 	if seen.Load() != before+1 {
 		t.Fatalf("dispatchEvent did not invoke dispatcher: before=%d after=%d", before, seen.Load())
 	}

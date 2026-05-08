@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,8 +21,8 @@ func TestBatchingDispatcher(t *testing.T) {
 		dispatcher.Listen("test.event", &countingListener{counter: &count})
 
 		// Dispatch 2 events (under batch size)
-		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
-		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
+		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
+		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
 
 		time.Sleep(10 * time.Millisecond)
 		if atomic.LoadInt32(&count) != 0 {
@@ -29,7 +30,7 @@ func TestBatchingDispatcher(t *testing.T) {
 		}
 
 		// Dispatch 3rd event (reaches batch size)
-		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
+		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
 
 		testsync.EventuallyEqual(t, func() int32 { return atomic.LoadInt32(&count) }, int32(3), time.Second, "batch size reached")
 	})
@@ -42,8 +43,8 @@ func TestBatchingDispatcher(t *testing.T) {
 
 		dispatcher.Listen("test.event", &countingListener{counter: &count})
 
-		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
-		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
+		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
+		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
 
 		// Wait for flush interval (50ms) to fire
 		testsync.EventuallyEqual(t, func() int32 { return atomic.LoadInt32(&count) }, int32(2), time.Second, "flush interval")
@@ -57,8 +58,8 @@ func TestBatchingDispatcher(t *testing.T) {
 
 		dispatcher.Listen("test.event", &countingListener{counter: &count})
 
-		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
-		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
+		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
+		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
 
 		if err := dispatcher.Flush(); err != nil {
 			t.Errorf("Flush failed: %v", err)
@@ -74,8 +75,8 @@ func TestBatchingDispatcher(t *testing.T) {
 		dispatcher.Start()
 		defer dispatcher.Stop()
 
-		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
-		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
+		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
+		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
 
 		size := dispatcher.GetBatchSize()
 		if size != 2 {
@@ -95,7 +96,7 @@ func TestDebouncingDispatcher(t *testing.T) {
 
 		// Dispatch rapidly
 		for i := 0; i < 10; i++ {
-			dispatcher.Dispatch(&simpleEvent{name: "test.event"})
+			dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
 			time.Sleep(10 * time.Millisecond)
 		}
 
@@ -110,8 +111,8 @@ func TestDebouncingDispatcher(t *testing.T) {
 
 		dispatcher.Listen("test.event", &countingListener{counter: &count})
 
-		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
-		dispatcher.DispatchNow(&simpleEvent{name: "test.event"})
+		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
+		dispatcher.DispatchNow(context.Background(), &simpleEvent{name: "test.event"})
 
 		testsync.EventuallyEqual(t, func() int32 { return atomic.LoadInt32(&count) }, int32(1), 500*time.Millisecond, "DispatchNow fires immediately")
 	})
@@ -120,8 +121,8 @@ func TestDebouncingDispatcher(t *testing.T) {
 		dispatcher := NewDebouncingDispatcher(100 * time.Millisecond)
 		defer dispatcher.Stop()
 
-		dispatcher.Dispatch(&simpleEvent{name: "test.event1"})
-		dispatcher.Dispatch(&simpleEvent{name: "test.event2"})
+		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event1"})
+		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event2"})
 
 		count := dispatcher.GetPendingCount()
 		if count != 2 {
@@ -140,7 +141,7 @@ func TestThrottlingDispatcher(t *testing.T) {
 
 		// Dispatch rapidly
 		for i := 0; i < 5; i++ {
-			dispatcher.Dispatch(&simpleEvent{name: "test.event"})
+			dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
 			time.Sleep(10 * time.Millisecond)
 		}
 
@@ -152,7 +153,7 @@ func TestThrottlingDispatcher(t *testing.T) {
 		// Wait past throttle window (50ms), then the next dispatch should fire
 		time.Sleep(60 * time.Millisecond)
 
-		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
+		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
 		testsync.EventuallyEqual(t, func() int32 { return atomic.LoadInt32(&count) }, int32(2), 500*time.Millisecond, "throttle releases")
 	})
 
@@ -164,7 +165,7 @@ func TestThrottlingDispatcher(t *testing.T) {
 			t.Error("Should be able to dispatch initially")
 		}
 
-		dispatcher.Dispatch(event)
+		dispatcher.Dispatch(context.Background(), event)
 
 		if dispatcher.CanDispatch(event) {
 			t.Error("Should not be able to dispatch immediately after")
@@ -181,7 +182,7 @@ func TestThrottlingDispatcher(t *testing.T) {
 		dispatcher := NewThrottlingDispatcher(50 * time.Millisecond)
 		event := &simpleEvent{name: "test.event"}
 
-		dispatcher.Dispatch(event)
+		dispatcher.Dispatch(context.Background(), event)
 
 		if dispatcher.CanDispatch(event) {
 			t.Error("Should not be able to dispatch immediately after")
@@ -205,7 +206,7 @@ func TestRateLimitedDispatcher(t *testing.T) {
 
 		// Dispatch up to limit
 		for i := 0; i < 3; i++ {
-			if err := dispatcher.Dispatch(&simpleEvent{name: "test.event"}); err != nil {
+			if err := dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"}); err != nil {
 				t.Errorf("Unexpected error: %v", err)
 			}
 		}
@@ -215,7 +216,7 @@ func TestRateLimitedDispatcher(t *testing.T) {
 		}
 
 		// Next dispatch should fail
-		err := dispatcher.Dispatch(&simpleEvent{name: "test.event"})
+		err := dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
 		if err != ErrRateLimitExceeded {
 			t.Error("Expected rate limit exceeded error")
 		}
@@ -228,11 +229,11 @@ func TestRateLimitedDispatcher(t *testing.T) {
 		dispatcher.Listen("test.event", &countingListener{counter: &count})
 
 		// Fill the limit
-		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
-		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
+		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
+		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
 
 		// Should fail
-		err := dispatcher.Dispatch(&simpleEvent{name: "test.event"})
+		err := dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
 		if err != ErrRateLimitExceeded {
 			t.Error("Expected rate limit exceeded error")
 		}
@@ -241,7 +242,7 @@ func TestRateLimitedDispatcher(t *testing.T) {
 		time.Sleep(60 * time.Millisecond)
 
 		// Should succeed now
-		err = dispatcher.Dispatch(&simpleEvent{name: "test.event"})
+		err = dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
 		if err != nil {
 			t.Errorf("Unexpected error after window: %v", err)
 		}
@@ -259,8 +260,8 @@ func TestRateLimitedDispatcher(t *testing.T) {
 			t.Errorf("Expected 5 remaining, got %d", remaining)
 		}
 
-		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
-		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
+		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
+		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
 
 		remaining = dispatcher.GetRemainingEvents("test.event")
 		if remaining != 3 {
@@ -280,7 +281,7 @@ func TestCoalescingDispatcher(t *testing.T) {
 
 		// Dispatch same event rapidly
 		for i := 0; i < 10; i++ {
-			dispatcher.Dispatch(&simpleEvent{name: "test.event"})
+			dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
 			time.Sleep(10 * time.Millisecond)
 		}
 
@@ -296,8 +297,8 @@ func TestCoalescingDispatcher(t *testing.T) {
 		dispatcher.Listen("test.event1", &countingListener{counter: &count})
 		dispatcher.Listen("test.event2", &countingListener{counter: &count})
 
-		dispatcher.Dispatch(&simpleEvent{name: "test.event1"})
-		dispatcher.Dispatch(&simpleEvent{name: "test.event2"})
+		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event1"})
+		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event2"})
 
 		testsync.EventuallyEqual(t, func() int32 { return atomic.LoadInt32(&count) }, int32(2), time.Second, "different events both fire")
 	})
@@ -306,9 +307,9 @@ func TestCoalescingDispatcher(t *testing.T) {
 		dispatcher := NewCoalescingDispatcher(100 * time.Millisecond)
 		defer dispatcher.Stop()
 
-		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
-		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
-		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
+		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
+		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
+		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
 
 		time.Sleep(10 * time.Millisecond)
 
@@ -334,7 +335,7 @@ func TestBatchingConcurrency(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				dispatcher.Dispatch(&simpleEvent{name: "test.event"})
+				dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
 			}()
 		}
 
@@ -357,7 +358,7 @@ func TestBatchingConcurrency(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				dispatcher.Dispatch(&simpleEvent{name: "test.event"})
+				dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
 			}()
 		}
 
@@ -376,7 +377,7 @@ type countingListener struct {
 	counter *int32
 }
 
-func (l *countingListener) Handle(event interface{}) error {
+func (l *countingListener) Handle(ctx context.Context, event interface{}) error {
 	atomic.AddInt32(l.counter, 1)
 	return nil
 }
@@ -401,7 +402,7 @@ func BenchmarkBatchingDispatcher(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
+		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
 	}
 	dispatcher.Flush()
 }
@@ -412,7 +413,7 @@ func BenchmarkDebouncingDispatcher(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
+		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
 	}
 }
 
@@ -421,7 +422,7 @@ func BenchmarkThrottlingDispatcher(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
+		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
 	}
 }
 
@@ -430,7 +431,7 @@ func BenchmarkRateLimitedDispatcher(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
+		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
 	}
 }
 
@@ -440,6 +441,6 @@ func BenchmarkCoalescingDispatcher(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		dispatcher.Dispatch(&simpleEvent{name: "test.event"})
+		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
 	}
 }

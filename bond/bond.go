@@ -6,6 +6,7 @@
 package bond
 
 import (
+	"context"
 	"errors"
 	"html/template"
 	"net/http"
@@ -98,7 +99,7 @@ type Bond struct {
 	// Event dispatcher — wired by the framework via SetEventDispatcher
 	// and propagated to the SSR gateway so failures surface through
 	// the app's event bus.
-	eventDispatcher func(event interface{}) error
+	eventDispatcher func(ctx context.Context, event interface{}) error
 }
 
 // SetEncryptor sets the encryptor used for history state encryption.
@@ -178,7 +179,7 @@ func (b *Bond) SetSSRGateway(gw SSRGateway) {
 // SetEventDispatcher wires the framework event dispatcher into bond.
 // The dispatcher is propagated to the SSR gateway so render failures
 // flow through the app's event bus as SSRRenderFailed events.
-func (b *Bond) SetEventDispatcher(fn func(event interface{}) error) {
+func (b *Bond) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.eventDispatcher = fn
@@ -190,7 +191,7 @@ func (b *Bond) SetEventDispatcher(fn func(event interface{}) error) {
 // b.mu held.
 func (b *Bond) propagateEventDispatcher() {
 	type eventAware interface {
-		SetEventDispatcher(func(event interface{}) error)
+		SetEventDispatcher(func(ctx context.Context, event interface{}) error)
 	}
 	if aware, ok := b.ssr.(eventAware); ok {
 		aware.SetEventDispatcher(b.eventDispatcher)

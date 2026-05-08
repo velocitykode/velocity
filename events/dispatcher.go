@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -30,7 +31,7 @@ type listenerEntry struct {
 
 // QueueDispatcher handles queued event dispatching
 type QueueDispatcher interface {
-	Push(event interface{}, listener Listener, delay time.Duration) error
+	Push(ctx context.Context, event interface{}, listener Listener, delay time.Duration) error
 }
 
 // NewDispatcher creates a new event dispatcher
@@ -146,40 +147,52 @@ func (d *DefaultDispatcher) Subscribe(subscriber Subscriber) {
 // Dispatch fires an event to all registered listeners.
 // Listeners that return true from ShouldQueue are dispatched via the queue;
 // all others are processed synchronously. Returns an error if event is nil.
-func (d *DefaultDispatcher) Dispatch(event interface{}) error {
+func (d *DefaultDispatcher) Dispatch(ctx context.Context, event interface{}) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if event == nil {
 		return fmt.Errorf("events: cannot dispatch nil event")
 	}
 	return d.dispatchToListeners(event, func(listener Listener) error {
 		if listener.ShouldQueue() && d.queue != nil {
-			if err := d.queue.Push(event, listener, 0); err != nil {
+			if err := d.queue.Push(ctx, event, listener, 0); err != nil {
 				return fmt.Errorf("failed to queue listener: %w", err)
 			}
 			return nil
 		}
-		return d.processListener(event, listener)
+		return d.processListener(ctx, event, listener)
 	})
 }
 
 // DispatchNow fires an event synchronously to all listeners.
-func (d *DefaultDispatcher) DispatchNow(event interface{}) error {
+func (d *DefaultDispatcher) DispatchNow(ctx context.Context, event interface{}) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return d.dispatchToListeners(event, func(listener Listener) error {
-		return d.processListener(event, listener)
+		return d.processListener(ctx, event, listener)
 	})
 }
 
 // DispatchAsync fires an event asynchronously via the queue.
 // Falls back to a panic-safe goroutine (async.Go) if no queue is configured.
-func (d *DefaultDispatcher) DispatchAsync(event interface{}) error {
+func (d *DefaultDispatcher) DispatchAsync(ctx context.Context, event interface{}) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if d.queue == nil {
+		// Detach from request lifetime so the goroutine can outlive the
+		// caller, while still preserving values via context.WithoutCancel.
+		bgCtx := context.WithoutCancel(ctx)
 		async.Go(func() {
-			_ = d.DispatchNow(event)
+			_ = d.DispatchNow(bgCtx, event)
 		})
 		return nil
 	}
 
 	return d.dispatchToListeners(event, func(listener Listener) error {
-		if err := d.queue.Push(event, listener, 0); err != nil {
+		if err := d.queue.Push(ctx, event, listener, 0); err != nil {
 			return fmt.Errorf("failed to queue listener: %w", err)
 		}
 		return nil
@@ -188,16 +201,20 @@ func (d *DefaultDispatcher) DispatchAsync(event interface{}) error {
 
 // DispatchAfter fires an event after a delay.
 // Falls back to a timer if no queue is configured.
-func (d *DefaultDispatcher) DispatchAfter(event interface{}, delay time.Duration) error {
+func (d *DefaultDispatcher) DispatchAfter(ctx context.Context, event interface{}, delay time.Duration) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if d.queue == nil {
+		bgCtx := context.WithoutCancel(ctx)
 		time.AfterFunc(delay, func() {
-			_ = d.Dispatch(event)
+			_ = d.Dispatch(bgCtx, event)
 		})
 		return nil
 	}
 
 	return d.dispatchToListeners(event, func(listener Listener) error {
-		if err := d.queue.Push(event, listener, delay); err != nil {
+		if err := d.queue.Push(ctx, event, listener, delay); err != nil {
 			return fmt.Errorf("failed to queue delayed listener: %w", err)
 		}
 		return nil
@@ -205,20 +222,23 @@ func (d *DefaultDispatcher) DispatchAfter(event interface{}, delay time.Duration
 }
 
 // Until dispatches events until the first non-nil return
-func (d *DefaultDispatcher) Until(event interface{}) (interface{}, error) {
+func (d *DefaultDispatcher) Until(ctx context.Context, event interface{}) (interface{}, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	listeners := d.getListenersForEvent(event)
 
 	for _, listener := range listeners {
 		// For Until, we need a special listener type that returns a value
 		if handler, ok := listener.(interface {
-			HandleWithResult(event interface{}) (interface{}, error)
+			HandleWithResult(ctx context.Context, event interface{}) (interface{}, error)
 		}); ok {
-			if result, err := handler.HandleWithResult(event); err != nil || result != nil {
+			if result, err := handler.HandleWithResult(ctx, event); err != nil || result != nil {
 				return result, err
 			}
 		} else {
 			// Regular listener, just check for error
-			if err := listener.Handle(event); err != nil {
+			if err := listener.Handle(ctx, event); err != nil {
 				return nil, err
 			}
 		}
@@ -353,7 +373,7 @@ func (d *DefaultDispatcher) dispatchToListeners(event interface{}, fn func(Liste
 }
 
 // processListener executes a listener, recovering from panics.
-func (d *DefaultDispatcher) processListener(event interface{}, listener Listener) (err error) {
+func (d *DefaultDispatcher) processListener(ctx context.Context, event interface{}, listener Listener) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			err = panicerr.FromRecovered(p)
@@ -368,5 +388,5 @@ func (d *DefaultDispatcher) processListener(event interface{}, listener Listener
 	}
 
 	// Handle the event
-	return listener.Handle(event)
+	return listener.Handle(ctx, event)
 }

@@ -1,6 +1,7 @@
 package velocity
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/velocitykode/velocity/app"
@@ -98,8 +99,11 @@ func wireInstanceEvents(a *App) {
 		return
 	}
 
-	dispatch := func(event any) error {
-		return a.Services.Events.Dispatch(event)
+	dispatch := func(ctx context.Context, event any) error {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		return a.Services.Events.Dispatch(ctx, event)
 	}
 
 	a.Router.SetEventDispatcher(dispatch)

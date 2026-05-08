@@ -131,9 +131,9 @@ func TestBatch_SuccessfulCompletion(t *testing.T) {
 	}
 
 	// Simulate all jobs completing
-	batch.recordSuccess()
-	batch.recordSuccess()
-	batch.recordSuccess()
+	batch.recordSuccess(context.Background())
+	batch.recordSuccess(context.Background())
+	batch.recordSuccess(context.Background())
 
 	// Wait for the Then/Finally callbacks (fired in goroutines) to run
 	testsync.Eventually(t, func() bool { return thenCalled.Load() && finallyCalled.Load() }, time.Second, "then+finally callbacks")
@@ -186,9 +186,9 @@ func TestBatch_WithFailures_AllowFailures(t *testing.T) {
 	}
 
 	// One fails, two succeed
-	batch.recordSuccess()
-	batch.recordFailure(errors.New("job error"))
-	batch.recordSuccess()
+	batch.recordSuccess(context.Background())
+	batch.recordFailure(context.Background(), errors.New("job error"))
+	batch.recordSuccess(context.Background())
 
 	// AllowFailures: Catch + Finally should fire, Then should not.
 	testsync.Eventually(t, func() bool { return catchCalled.Load() && finallyCalled.Load() }, time.Second, "catch+finally callbacks")
@@ -237,7 +237,7 @@ func TestBatch_WithFailures_NoAllowFailures(t *testing.T) {
 	}
 
 	// First failure should auto-cancel
-	batch.recordFailure(errors.New("job error"))
+	batch.recordFailure(context.Background(), errors.New("job error"))
 
 	if !batch.Cancelled() {
 		t.Error("expected batch to be cancelled after failure without AllowFailures")
@@ -289,22 +289,22 @@ func TestBatch_Progress(t *testing.T) {
 		t.Errorf("expected 0%% progress, got %.1f%%", batch.Progress())
 	}
 
-	batch.recordSuccess()
+	batch.recordSuccess(context.Background())
 	if batch.Progress() != 25.0 {
 		t.Errorf("expected 25%% progress, got %.1f%%", batch.Progress())
 	}
 
-	batch.recordFailure(errors.New("fail"))
+	batch.recordFailure(context.Background(), errors.New("fail"))
 	if batch.Progress() != 50.0 {
 		t.Errorf("expected 50%% progress, got %.1f%%", batch.Progress())
 	}
 
-	batch.recordSuccess()
+	batch.recordSuccess(context.Background())
 	if batch.Progress() != 75.0 {
 		t.Errorf("expected 75%% progress, got %.1f%%", batch.Progress())
 	}
 
-	batch.recordSuccess()
+	batch.recordSuccess(context.Background())
 	if batch.Progress() != 100.0 {
 		t.Errorf("expected 100%% progress, got %.1f%%", batch.Progress())
 	}
@@ -354,7 +354,7 @@ func TestBatch_Events(t *testing.T) {
 
 	var events []string
 	var eventsMu sync.Mutex
-	dispatcher := func(event interface{}) {
+	dispatcher := func(_ context.Context, event interface{}) {
 		type namer interface{ Name() string }
 		if e, ok := event.(namer); ok {
 			eventsMu.Lock()
@@ -376,8 +376,8 @@ func TestBatch_Events(t *testing.T) {
 		t.Fatalf("Dispatch failed: %v", err)
 	}
 
-	batch.recordSuccess()
-	batch.recordFailure(errors.New("fail"))
+	batch.recordSuccess(context.Background())
+	batch.recordFailure(context.Background(), errors.New("fail"))
 
 	testsync.Eventually(t, func() bool {
 		eventsMu.Lock()
@@ -425,9 +425,9 @@ func TestBatch_CatchFiresOnce(t *testing.T) {
 		t.Fatalf("Dispatch failed: %v", err)
 	}
 
-	batch.recordFailure(errors.New("error 1"))
-	batch.recordFailure(errors.New("error 2"))
-	batch.recordFailure(errors.New("error 3"))
+	batch.recordFailure(context.Background(), errors.New("error 1"))
+	batch.recordFailure(context.Background(), errors.New("error 2"))
+	batch.recordFailure(context.Background(), errors.New("error 3"))
 
 	// Catch fires on first failure; give goroutine time to run before we
 	// assert "fired exactly once". Poll until >=1, then sample again below.
@@ -468,9 +468,9 @@ func TestBatch_Concurrent(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			if i%3 == 0 {
-				batch.recordFailure(errors.New("fail"))
+				batch.recordFailure(context.Background(), errors.New("fail"))
 			} else {
-				batch.recordSuccess()
+				batch.recordSuccess(context.Background())
 			}
 		}(i)
 	}
@@ -663,7 +663,7 @@ func TestBatch_CancelledEvent(t *testing.T) {
 
 	var events []string
 	var eventsMu sync.Mutex
-	dispatcher := func(event interface{}) {
+	dispatcher := func(_ context.Context, event interface{}) {
 		type namer interface{ Name() string }
 		if e, ok := event.(namer); ok {
 			eventsMu.Lock()

@@ -33,15 +33,23 @@ var ErrEventBufferFull = errors.New("velocity/router: event buffer full, droppin
 // Calling SetAsyncEventDispatcher replaces any previously installed
 // dispatcher. If a prior async dispatcher is running, it is stopped
 // first; any events still in its buffer are dropped.
-func (r *VelocityRouterV2) SetAsyncEventDispatcher(fn func(event interface{}) error, workers, bufferSize int) {
+func (r *VelocityRouterV2) SetAsyncEventDispatcher(fn func(ctx context.Context, event interface{}) error, workers, bufferSize int) {
 	workers, bufferSize = normalizeAsyncSizing(workers, bufferSize)
 	r.stopPriorAsyncDispatcher()
 
-	ch := make(chan interface{}, bufferSize)
+	ch := make(chan asyncDispatchItem, bufferSize)
 	wg := r.startEventWorkers(ch, fn, workers)
 
 	r.eventDispatcher = makeNonBlockingEnqueuer(ch)
 	r.stopEventDispatcher = makeDrainCloser(ch, wg)
+}
+
+// asyncDispatchItem couples a buffered event with the ctx that was in
+// scope when it was enqueued so worker goroutines deliver listeners the
+// originating request/job ctx instead of context.Background.
+type asyncDispatchItem struct {
+	ctx   context.Context
+	event interface{}
 }
 
 // normalizeAsyncSizing applies defaults for <=0 inputs.
@@ -67,7 +75,7 @@ func (r *VelocityRouterV2) stopPriorAsyncDispatcher() {
 // startEventWorkers spawns worker goroutines that consume events from
 // ch and invoke fn with panic recovery. Listener failures route through
 // the shared reporter so drops/panics surface via the same metrics.
-func (r *VelocityRouterV2) startEventWorkers(ch <-chan interface{}, fn func(event interface{}) error, workers int) *sync.WaitGroup {
+func (r *VelocityRouterV2) startEventWorkers(ch <-chan asyncDispatchItem, fn func(ctx context.Context, event interface{}) error, workers int) *sync.WaitGroup {
 	var wg sync.WaitGroup
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
@@ -80,9 +88,9 @@ func (r *VelocityRouterV2) startEventWorkers(ch <-chan interface{}, fn func(even
 }
 
 // runEventWorker drains a single channel until close.
-func (r *VelocityRouterV2) runEventWorker(ch <-chan interface{}, fn func(event interface{}) error) {
-	for ev := range ch {
-		safeInvokeListener(fn, ev, r.onListenerFailure)
+func (r *VelocityRouterV2) runEventWorker(ch <-chan asyncDispatchItem, fn func(ctx context.Context, event interface{}) error) {
+	for item := range ch {
+		safeInvokeListener(fn, item.ctx, item.event, r.onListenerFailure)
 	}
 }
 
@@ -107,11 +115,16 @@ func (r *VelocityRouterV2) onListenerFailure(err error, ev interface{}) {
 
 // makeNonBlockingEnqueuer returns a dispatcher that pushes events
 // without blocking; when the channel is full it returns
-// ErrEventBufferFull so the caller can account for the drop.
-func makeNonBlockingEnqueuer(ch chan<- interface{}) func(event interface{}) error {
-	return func(event interface{}) error {
+// ErrEventBufferFull so the caller can account for the drop. The ctx
+// passed by the caller is captured alongside the event so the worker
+// goroutine delivers it to listeners.
+func makeNonBlockingEnqueuer(ch chan<- asyncDispatchItem) func(ctx context.Context, event interface{}) error {
+	return func(ctx context.Context, event interface{}) error {
+		if ctx == nil {
+			ctx = context.Background()
+		}
 		select {
-		case ch <- event:
+		case ch <- asyncDispatchItem{ctx: ctx, event: event}:
 			return nil
 		default:
 			return ErrEventBufferFull
@@ -122,7 +135,7 @@ func makeNonBlockingEnqueuer(ch chan<- interface{}) func(event interface{}) erro
 // makeDrainCloser closes the channel and waits for workers to finish,
 // respecting ctx cancellation. Subsequent calls return the cached
 // result so repeated Shutdown invocations are safe.
-func makeDrainCloser(ch chan interface{}, wg *sync.WaitGroup) func(context.Context) error {
+func makeDrainCloser(ch chan asyncDispatchItem, wg *sync.WaitGroup) func(context.Context) error {
 	var (
 		stopOnce sync.Once
 		stopErr  error
@@ -170,7 +183,7 @@ func (r *VelocityRouterV2) ShutdownEventDispatcher(ctx context.Context) error {
 
 // safeInvokeListener executes a listener, recovering from panics. Listener
 // errors and panic-converted errors are reported via onErr if set.
-func safeInvokeListener(fn func(event interface{}) error, ev interface{}, onErr func(error, interface{})) {
+func safeInvokeListener(fn func(ctx context.Context, event interface{}) error, ctx context.Context, ev interface{}, onErr func(error, interface{})) {
 	var err error
 	defer func() {
 		if p := recover(); p != nil {
@@ -181,5 +194,8 @@ func safeInvokeListener(fn func(event interface{}) error, ev interface{}, onErr 
 			onErr(err, ev)
 		}
 	}()
-	err = fn(ev)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	err = fn(ctx, ev)
 }

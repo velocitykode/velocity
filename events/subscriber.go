@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"strings"
@@ -105,16 +106,25 @@ func (s *AutoSubscriber) Subscribe(dispatcher Dispatcher) {
 			continue
 		}
 
-		// Verify method signature: func(event interface{}) error
-		if !s.isValidHandlerSignature(method.Type) {
+		// Verify method signature: func(ctx, event interface{}) error or
+		// the legacy func(event interface{}) error.
+		methodType := method.Type
+		isCtxAware, ok := s.classifyHandlerSignature(methodType)
+		if !ok {
 			continue
 		}
 
 		// Create a listener wrapper for this method
 		methodValue := instanceValue.Method(i)
 		listener := &methodListener{
-			handler: func(event interface{}) error {
-				results := methodValue.Call([]reflect.Value{reflect.ValueOf(event)})
+			handler: func(ctx context.Context, event interface{}) error {
+				var args []reflect.Value
+				if isCtxAware {
+					args = []reflect.Value{reflect.ValueOf(ctx), reflect.ValueOf(event)}
+				} else {
+					args = []reflect.Value{reflect.ValueOf(event)}
+				}
+				results := methodValue.Call(args)
 				if len(results) > 0 && !results[0].IsNil() {
 					return results[0].Interface().(error)
 				}
@@ -153,34 +163,42 @@ func (s *AutoSubscriber) extractEventName(methodName string) string {
 	return strings.ToLower(result.String())
 }
 
-// isValidHandlerSignature checks if method has correct signature
-func (s *AutoSubscriber) isValidHandlerSignature(methodType reflect.Type) bool {
-	// Should have exactly 2 params (receiver + event)
-	if methodType.NumIn() != 2 {
-		return false
-	}
-
-	// Second param should be interface{} or a concrete type
-	// We accept any type since events can be strongly typed
-
-	// Should return exactly 1 value (error)
+// classifyHandlerSignature checks if the method has a supported signature and
+// reports whether the first user param is ctx. Supported shapes:
+//   - func(receiver, event) error              (legacy, isCtxAware=false)
+//   - func(receiver, ctx, event) error         (preferred, isCtxAware=true)
+func (s *AutoSubscriber) classifyHandlerSignature(methodType reflect.Type) (isCtxAware, ok bool) {
 	if methodType.NumOut() != 1 {
-		return false
+		return false, false
 	}
-
-	// Return type should be error
 	errorType := reflect.TypeOf((*error)(nil)).Elem()
-	return methodType.Out(0) == errorType
+	if methodType.Out(0) != errorType {
+		return false, false
+	}
+	ctxType := reflect.TypeOf((*context.Context)(nil)).Elem()
+	switch methodType.NumIn() {
+	case 2:
+		// (receiver, event)
+		return false, true
+	case 3:
+		// (receiver, ctx, event)
+		if methodType.In(1) == ctxType || methodType.In(1).Implements(ctxType) {
+			return true, true
+		}
+		return false, false
+	default:
+		return false, false
+	}
 }
 
 // methodListener wraps a method as a Listener
 type methodListener struct {
-	handler func(interface{}) error
+	handler func(ctx context.Context, event interface{}) error
 	name    string
 }
 
-func (l *methodListener) Handle(event interface{}) error {
-	return l.handler(event)
+func (l *methodListener) Handle(ctx context.Context, event interface{}) error {
+	return l.handler(ctx, event)
 }
 
 func (l *methodListener) ShouldQueue() bool {
@@ -214,6 +232,7 @@ func (s *MappedSubscriber) Subscribe(dispatcher Dispatcher) {
 	instanceType := reflect.TypeOf(s.instance)
 	instanceValue := reflect.ValueOf(s.instance)
 
+	auto := AutoSubscriber{} // borrow signature classifier
 	for methodName, eventName := range s.mappings {
 		// Find the method
 		method, ok := instanceType.MethodByName(methodName)
@@ -228,9 +247,20 @@ func (s *MappedSubscriber) Subscribe(dispatcher Dispatcher) {
 			continue
 		}
 
+		isCtxAware, ok := auto.classifyHandlerSignature(method.Type)
+		if !ok {
+			continue
+		}
+
 		listener := &methodListener{
-			handler: func(event interface{}) error {
-				results := methodValue.Call([]reflect.Value{reflect.ValueOf(event)})
+			handler: func(ctx context.Context, event interface{}) error {
+				var args []reflect.Value
+				if isCtxAware {
+					args = []reflect.Value{reflect.ValueOf(ctx), reflect.ValueOf(event)}
+				} else {
+					args = []reflect.Value{reflect.ValueOf(event)}
+				}
+				results := methodValue.Call(args)
 				if len(results) > 0 && !results[0].IsNil() {
 					return results[0].Interface().(error)
 				}
@@ -313,46 +343,65 @@ func (e *SubscriberError) Error() string {
 	return fmt.Sprintf("subscriber %s method %s: %v", e.Subscriber, e.Method, e.Err)
 }
 
-// ValidateSubscriber validates that a subscriber has valid method signatures
+// ValidateSubscriber validates that a subscriber has valid Handle*-prefixed
+// method signatures. Both the legacy form (receiver, event) and the
+// preferred ctx-aware form (receiver, ctx, event) are accepted, mirroring
+// AutoSubscriber.classifyHandlerSignature so a subscriber that ships the
+// ctx-aware methods is no longer flagged as invalid.
 func ValidateSubscriber(subscriber interface{}) []error {
-	var errors []error
+	var errs []error
 	subscriberType := reflect.TypeOf(subscriber)
+	errorType := reflect.TypeOf((*error)(nil)).Elem()
+	ctxType := reflect.TypeOf((*context.Context)(nil)).Elem()
 
-	// Check for Handle* methods
 	for i := 0; i < subscriberType.NumMethod(); i++ {
 		method := subscriberType.Method(i)
+		if !strings.HasPrefix(method.Name, "Handle") {
+			continue
+		}
 
-		if strings.HasPrefix(method.Name, "Handle") {
-			// Validate signature
-			if method.Type.NumIn() != 2 {
-				errors = append(errors, &SubscriberError{
+		mt := method.Type
+		// Accept either:
+		//   func(receiver, event) error              (legacy, NumIn==2)
+		//   func(receiver, ctx, event) error         (preferred, NumIn==3)
+		switch mt.NumIn() {
+		case 2:
+			// legacy shape, no further structural check.
+		case 3:
+			if mt.In(1) != ctxType && !mt.In(1).Implements(ctxType) {
+				errs = append(errs, &SubscriberError{
 					Subscriber: subscriberType.Name(),
 					Method:     method.Name,
-					Err:        fmt.Errorf("invalid parameter count: expected 2, got %d", method.Type.NumIn()),
+					Err:        fmt.Errorf("invalid first parameter: expected context.Context, got %v", mt.In(1)),
 				})
 				continue
 			}
+		default:
+			errs = append(errs, &SubscriberError{
+				Subscriber: subscriberType.Name(),
+				Method:     method.Name,
+				Err:        fmt.Errorf("invalid parameter count: expected 2 or 3 (with ctx), got %d", mt.NumIn()),
+			})
+			continue
+		}
 
-			if method.Type.NumOut() != 1 {
-				errors = append(errors, &SubscriberError{
-					Subscriber: subscriberType.Name(),
-					Method:     method.Name,
-					Err:        fmt.Errorf("invalid return count: expected 1, got %d", method.Type.NumOut()),
-				})
-				continue
-			}
+		if mt.NumOut() != 1 {
+			errs = append(errs, &SubscriberError{
+				Subscriber: subscriberType.Name(),
+				Method:     method.Name,
+				Err:        fmt.Errorf("invalid return count: expected 1, got %d", mt.NumOut()),
+			})
+			continue
+		}
 
-			// Check return type is error
-			errorType := reflect.TypeOf((*error)(nil)).Elem()
-			if method.Type.Out(0) != errorType {
-				errors = append(errors, &SubscriberError{
-					Subscriber: subscriberType.Name(),
-					Method:     method.Name,
-					Err:        fmt.Errorf("invalid return type: expected error, got %v", method.Type.Out(0)),
-				})
-			}
+		if mt.Out(0) != errorType {
+			errs = append(errs, &SubscriberError{
+				Subscriber: subscriberType.Name(),
+				Method:     method.Name,
+				Err:        fmt.Errorf("invalid return type: expected error, got %v", mt.Out(0)),
+			})
 		}
 	}
 
-	return errors
+	return errs
 }

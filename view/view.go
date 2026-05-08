@@ -152,7 +152,7 @@ func (e *Engine) SetSharePropsFunc(fn SharePropsFunc) {
 
 // SetEventDispatcher wires the app event bus into the view engine so
 // SSR render failures surface as bond.SSRRenderFailed events.
-func (e *Engine) SetEventDispatcher(fn func(event interface{}) error) {
+func (e *Engine) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
 	e.bond.SetEventDispatcher(fn)
 }
 

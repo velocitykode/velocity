@@ -14,7 +14,7 @@ import (
 func TestBuffer_StandaloneDispatchDiscardsOnFlush(t *testing.T) {
 	ctx := context.Background()
 	buf := Buffer(ctx)
-	if err := buf.Dispatch("event1"); err != nil {
+	if err := buf.Dispatch(context.Background(), "event1"); err != nil {
 		t.Fatalf("Dispatch returned %v", err)
 	}
 	if got := buf.Pending(); got != 1 {
@@ -47,7 +47,7 @@ func TestBuffer_WithBufferAttachesAndFlushesInOrder(t *testing.T) {
 	}
 
 	for _, e := range []string{"a", "b", "c"} {
-		if err := Buffer(ctx).Dispatch(e); err != nil {
+		if err := Buffer(ctx).Dispatch(context.Background(), e); err != nil {
 			t.Fatalf("Dispatch %q: %v", e, err)
 		}
 	}
@@ -74,7 +74,7 @@ func TestBuffer_FlushStopsOnFirstError(t *testing.T) {
 	}
 	_, buf := WithBuffer(context.Background(), flushFn)
 	for _, e := range []string{"ok1", "fail", "ok2"} {
-		_ = buf.Dispatch(e)
+		_ = buf.Dispatch(context.Background(), e)
 	}
 	err := buf.Flush()
 	if !errors.Is(err, bang) {
@@ -109,7 +109,7 @@ func TestFlush_PartialFailure_Resumable(t *testing.T) {
 	}
 	_, buf := WithBuffer(context.Background(), flushFn)
 	for _, e := range []string{"ok1", "fail", "ok2"} {
-		_ = buf.Dispatch(e)
+		_ = buf.Dispatch(context.Background(), e)
 	}
 
 	// First Flush: stops at "fail".
@@ -141,14 +141,14 @@ func TestBuffer_DropDiscards(t *testing.T) {
 	flushed := 0
 	flushFn := func(e BufferedEvent) error { flushed++; return nil }
 	_, buf := WithBuffer(context.Background(), flushFn)
-	_ = buf.Dispatch("a")
-	_ = buf.Dispatch("b")
+	_ = buf.Dispatch(context.Background(), "a")
+	_ = buf.Dispatch(context.Background(), "b")
 	buf.Drop()
 	if got := buf.Pending(); got != 0 {
 		t.Fatalf("Pending after Drop = %d, want 0", got)
 	}
 	// Subsequent Dispatch must not record.
-	_ = buf.Dispatch("c")
+	_ = buf.Dispatch(context.Background(), "c")
 	if got := buf.Pending(); got != 0 {
 		t.Fatalf("Pending after post-drop Dispatch = %d, want 0", got)
 	}
@@ -221,12 +221,12 @@ func TestBuffer_NestedInnerDropOuterFlush(t *testing.T) {
 		flushed = append(flushed, e.Event())
 		return nil
 	})
-	_ = Buffer(outerCtx).Dispatch("outer-1")
+	_ = Buffer(outerCtx).Dispatch(context.Background(), "outer-1")
 
 	// Open a nested handle on the same ctx.
 	_, inner := WithBuffer(outerCtx, nil)
-	_ = Buffer(outerCtx).Dispatch("inner-1")
-	_ = Buffer(outerCtx).Dispatch("inner-2")
+	_ = Buffer(outerCtx).Dispatch(context.Background(), "inner-1")
+	_ = Buffer(outerCtx).Dispatch(context.Background(), "inner-2")
 	if outer.Pending() != 3 {
 		t.Fatalf("outer.Pending = %d, want 3", outer.Pending())
 	}
@@ -259,9 +259,9 @@ func TestBuffer_NestedInnerCommitOuterRollback(t *testing.T) {
 		flushed = append(flushed, e.Event())
 		return nil
 	})
-	_ = Buffer(outerCtx).Dispatch("outer-1")
+	_ = Buffer(outerCtx).Dispatch(context.Background(), "outer-1")
 	_, inner := WithBuffer(outerCtx, nil)
-	_ = Buffer(outerCtx).Dispatch("inner-1")
+	_ = Buffer(outerCtx).Dispatch(context.Background(), "inner-1")
 	if err := inner.Flush(); err != nil { // no-op
 		t.Fatalf("inner.Flush: %v", err)
 	}
@@ -285,7 +285,7 @@ func TestBuffer_FlushIdempotent(t *testing.T) {
 		calls++
 		return nil
 	})
-	_ = buf.Dispatch("a")
+	_ = buf.Dispatch(context.Background(), "a")
 	if err := buf.Flush(); err != nil {
 		t.Fatalf("Flush #1: %v", err)
 	}
@@ -306,9 +306,9 @@ func TestBuffer_DispatchAfterFlushNoOp(t *testing.T) {
 		calls++
 		return nil
 	})
-	_ = buf.Dispatch("first")
+	_ = buf.Dispatch(context.Background(), "first")
 	_ = buf.Flush()
-	_ = buf.Dispatch("after-flush")
+	_ = buf.Dispatch(context.Background(), "after-flush")
 	if buf.Pending() != 0 {
 		t.Fatalf("Pending after post-flush Dispatch = %d, want 0", buf.Pending())
 	}
@@ -322,7 +322,7 @@ func TestBuffer_DispatchAfterFlushNoOp(t *testing.T) {
 // surfacing an error from a buffered call).
 func TestBuffer_NilEventIgnored(t *testing.T) {
 	_, buf := WithBuffer(context.Background(), func(e BufferedEvent) error { return nil })
-	_ = buf.Dispatch(nil)
+	_ = buf.Dispatch(context.Background(), nil)
 	if got := buf.Pending(); got != 0 {
 		t.Fatalf("Pending = %d after nil dispatch, want 0", got)
 	}
@@ -350,11 +350,11 @@ func TestBuffer_NilCtxStandalone(t *testing.T) {
 // DispatchAsync/DispatchAfter/Until all funnel into the same buffer.
 func TestBuffer_DispatchVariantsAllRecord(t *testing.T) {
 	_, buf := WithBuffer(context.Background(), func(e BufferedEvent) error { return nil })
-	_ = buf.Dispatch("a")
-	_ = buf.DispatchNow("b")
-	_ = buf.DispatchAsync("c")
-	_ = buf.DispatchAfter("d", 1*time.Second)
-	if _, err := buf.Until("e"); err != nil {
+	_ = buf.Dispatch(context.Background(), "a")
+	_ = buf.DispatchNow(context.Background(), "b")
+	_ = buf.DispatchAsync(context.Background(), "c")
+	_ = buf.DispatchAfter(context.Background(), "d", 1*time.Second)
+	if _, err := buf.Until(context.Background(), "e"); err != nil {
 		t.Fatalf("Until: %v", err)
 	}
 	if got := buf.Pending(); got != 5 {
@@ -372,7 +372,7 @@ func TestDispatchAfter_DelayPreserved(t *testing.T) {
 		entries = append(entries, e)
 		return nil
 	})
-	_ = buf.DispatchAfter("delayed", 5*time.Second)
+	_ = buf.DispatchAfter(context.Background(), "delayed", 5*time.Second)
 	if err := buf.Flush(); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
@@ -401,11 +401,11 @@ func TestDispatchAsync_KindPreserved(t *testing.T) {
 		kinds = append(kinds, e.Kind())
 		return nil
 	})
-	_ = buf.Dispatch("a")
-	_ = buf.DispatchNow("b")
-	_ = buf.DispatchAsync("c")
-	_ = buf.DispatchAfter("d", time.Second)
-	if _, err := buf.Until("e"); err != nil {
+	_ = buf.Dispatch(context.Background(), "a")
+	_ = buf.DispatchNow(context.Background(), "b")
+	_ = buf.DispatchAsync(context.Background(), "c")
+	_ = buf.DispatchAfter(context.Background(), "d", time.Second)
+	if _, err := buf.Until(context.Background(), "e"); err != nil {
 		t.Fatalf("Until: %v", err)
 	}
 	if err := buf.Flush(); err != nil {
@@ -437,8 +437,8 @@ func TestBuffer_FlushReentrantNoOp(t *testing.T) {
 		return nil
 	})
 	inner = buf
-	_ = buf.Dispatch("a")
-	_ = buf.Dispatch("b")
+	_ = buf.Dispatch(context.Background(), "a")
+	_ = buf.Dispatch(context.Background(), "b")
 	if err := buf.Flush(); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
@@ -451,7 +451,7 @@ func TestBuffer_FlushReentrantNoOp(t *testing.T) {
 // with a nil sink discards entries on Flush and transitions to flushed.
 func TestBuffer_FlushNoSink(t *testing.T) {
 	_, buf := WithBuffer(context.Background(), nil)
-	_ = buf.Dispatch("dropped")
+	_ = buf.Dispatch(context.Background(), "dropped")
 	if err := buf.Flush(); err != nil {
 		t.Fatalf("Flush with nil sink: %v", err)
 	}
@@ -459,7 +459,7 @@ func TestBuffer_FlushNoSink(t *testing.T) {
 		t.Fatalf("Pending after nil-sink Flush = %d, want 0", buf.Pending())
 	}
 	// Subsequent Dispatch is a no-op (flushed).
-	_ = buf.Dispatch("after")
+	_ = buf.Dispatch(context.Background(), "after")
 	if buf.Pending() != 0 {
 		t.Fatalf("Pending after post-flush Dispatch = %d, want 0", buf.Pending())
 	}
@@ -502,8 +502,8 @@ func TestBuffer_InstallBufferNestedReturnsChild(t *testing.T) {
 	if Buffer(ctx) != parent {
 		t.Fatal("Buffer(ctx) lookup did not return parent during nested scope")
 	}
-	_ = Buffer(ctx).Dispatch("a")
-	_ = Buffer(ctx).Dispatch("b")
+	_ = Buffer(ctx).Dispatch(context.Background(), "a")
+	_ = Buffer(ctx).Dispatch(context.Background(), "b")
 	child.Drop() // savepoint rollback
 	if parent.Pending() != 0 {
 		t.Fatalf("parent.Pending after child Drop = %d, want 0", parent.Pending())
@@ -516,9 +516,9 @@ func TestBuffer_InstallBufferNestedReturnsChild(t *testing.T) {
 func TestBuffer_FakeDispatcher_Integration(t *testing.T) {
 	fake := NewFakeDispatcher()
 	_, buf := WithBuffer(context.Background(), func(e BufferedEvent) error {
-		return fake.Dispatch(e.Event())
+		return fake.Dispatch(context.Background(), e.Event())
 	})
-	_ = buf.Dispatch(&BaseEvent{EventName: "thing.happened"})
+	_ = buf.Dispatch(context.Background(), &BaseEvent{EventName: "thing.happened"})
 	// Pre-flush the fake should have nothing.
 	if err := fake.AssertNothingDispatched(); err != nil {
 		t.Fatalf("fake had events before flush: %v", err)
@@ -551,7 +551,7 @@ func TestBuffer_Concurrent(t *testing.T) {
 			})
 			defer release()
 			for i := 0; i < eventsPer; i++ {
-				_ = Buffer(ctx).Dispatch(i)
+				_ = Buffer(ctx).Dispatch(context.Background(), i)
 			}
 			if buf.Pending() != eventsPer {
 				t.Errorf("g=%d Pending = %d, want %d", g, buf.Pending(), eventsPer)
@@ -579,7 +579,7 @@ func TestBuffer_PanicInListenerAfterFlush(t *testing.T) {
 		calls++
 		panic("listener boom")
 	})
-	_ = buf.Dispatch("a")
+	_ = buf.Dispatch(context.Background(), "a")
 
 	func() {
 		defer func() { _ = recover() }()

@@ -51,7 +51,7 @@ func TestClientDo(t *testing.T) {
 	var mu sync.Mutex
 
 	client := New()
-	client.SetEventDispatcher(func(event interface{}) error {
+	client.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		mu.Lock()
 		defer mu.Unlock()
 		switch e := event.(type) {
@@ -111,7 +111,7 @@ func TestClientDo(t *testing.T) {
 		mu.Unlock()
 
 		failClient := New(WithTimeout(100 * time.Millisecond))
-		failClient.SetEventDispatcher(func(event interface{}) error {
+		failClient.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 			mu.Lock()
 			defer mu.Unlock()
 			switch e := event.(type) {
@@ -153,7 +153,7 @@ func TestClientGet(t *testing.T) {
 	var mu sync.Mutex
 
 	client := New()
-	client.SetEventDispatcher(func(event interface{}) error {
+	client.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		mu.Lock()
 		defer mu.Unlock()
 		if e, ok := event.(*RequestSent); ok {
@@ -193,7 +193,7 @@ func TestClientPost(t *testing.T) {
 	var mu sync.Mutex
 
 	client := New()
-	client.SetEventDispatcher(func(event interface{}) error {
+	client.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		mu.Lock()
 		defer mu.Unlock()
 		if e, ok := event.(*RequestSent); ok {
@@ -243,7 +243,7 @@ func TestClientPut(t *testing.T) {
 	var mu sync.Mutex
 
 	client := New()
-	client.SetEventDispatcher(func(event interface{}) error {
+	client.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		mu.Lock()
 		defer mu.Unlock()
 		if e, ok := event.(*RequestSent); ok {
@@ -283,7 +283,7 @@ func TestClientDelete(t *testing.T) {
 	var mu sync.Mutex
 
 	client := New()
-	client.SetEventDispatcher(func(event interface{}) error {
+	client.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		mu.Lock()
 		defer mu.Unlock()
 		if e, ok := event.(*RequestSent); ok {
@@ -326,7 +326,7 @@ func TestClientPatch(t *testing.T) {
 	var mu sync.Mutex
 
 	client := New()
-	client.SetEventDispatcher(func(event interface{}) error {
+	client.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		mu.Lock()
 		defer mu.Unlock()
 		if e, ok := event.(*RequestSent); ok {
@@ -397,7 +397,7 @@ func TestResolveURL(t *testing.T) {
 
 func TestClientMethods(t *testing.T) {
 	client := New()
-	client.SetEventDispatcher(func(event interface{}) error {
+	client.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		return nil
 	})
 

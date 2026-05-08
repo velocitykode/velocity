@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -12,12 +13,12 @@ type mockQueueDispatcher struct {
 	pushed []interface{}
 }
 
-func (m *mockQueueDispatcher) Push(event interface{}, listener Listener, delay time.Duration) error {
+func (m *mockQueueDispatcher) Push(ctx context.Context, event interface{}, listener Listener, delay time.Duration) error {
 	m.pushed = append(m.pushed, event)
 	// Simulate async execution
 	go func() {
 		time.Sleep(delay)
-		listener.Handle(event)
+		listener.Handle(context.Background(), event)
 	}()
 	return nil
 }
@@ -55,7 +56,7 @@ func TestDispatcherUntil(t *testing.T) {
 	d.Listen("test.event", listener2)
 
 	// Until should process all listeners since they don't return values
-	result, err := d.Until("test.event")
+	result, err := d.Until(context.Background(), "test.event")
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
@@ -74,7 +75,7 @@ func TestDispatcherDispatchNow(t *testing.T) {
 
 	d.Listen("sync.event", listener)
 
-	err := d.DispatchNow("sync.event")
+	err := d.DispatchNow(context.Background(), "sync.event")
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
@@ -102,7 +103,7 @@ func TestDispatcherSetQueueDispatcher(t *testing.T) {
 	listener := &TestQueuedListener{}
 	d.Listen("queued.event", listener)
 
-	err := d.Dispatch("queued.event")
+	err := d.Dispatch(context.Background(), "queued.event")
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}

@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -20,7 +21,7 @@ func newTestEventCollector() *testEventCollector {
 	}
 }
 
-func (c *testEventCollector) dispatch(event interface{}) error {
+func (c *testEventCollector) dispatch(_ context.Context, event interface{}) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.events = append(c.events, event)

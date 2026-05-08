@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -43,35 +44,35 @@ func (o *TestUserObserver) recordEvent(event string, model interface{}) error {
 	return nil
 }
 
-func (o *TestUserObserver) Creating(model interface{}) error {
+func (o *TestUserObserver) Creating(ctx context.Context, model interface{}) error {
 	return o.recordEvent("creating", model)
 }
 
-func (o *TestUserObserver) Created(model interface{}) error {
+func (o *TestUserObserver) Created(ctx context.Context, model interface{}) error {
 	return o.recordEvent("created", model)
 }
 
-func (o *TestUserObserver) Updating(model interface{}) error {
+func (o *TestUserObserver) Updating(ctx context.Context, model interface{}) error {
 	return o.recordEvent("updating", model)
 }
 
-func (o *TestUserObserver) Updated(model interface{}) error {
+func (o *TestUserObserver) Updated(ctx context.Context, model interface{}) error {
 	return o.recordEvent("updated", model)
 }
 
-func (o *TestUserObserver) Saving(model interface{}) error {
+func (o *TestUserObserver) Saving(ctx context.Context, model interface{}) error {
 	return o.recordEvent("saving", model)
 }
 
-func (o *TestUserObserver) Saved(model interface{}) error {
+func (o *TestUserObserver) Saved(ctx context.Context, model interface{}) error {
 	return o.recordEvent("saved", model)
 }
 
-func (o *TestUserObserver) Deleting(model interface{}) error {
+func (o *TestUserObserver) Deleting(ctx context.Context, model interface{}) error {
 	return o.recordEvent("deleting", model)
 }
 
-func (o *TestUserObserver) Deleted(model interface{}) error {
+func (o *TestUserObserver) Deleted(ctx context.Context, model interface{}) error {
 	return o.recordEvent("deleted", model)
 }
 
@@ -84,7 +85,7 @@ func TestObserverRegistry(t *testing.T) {
 
 	// Fire creating event
 	user := &TestUser{ID: 1, Name: "John", Email: "john@example.com"}
-	err := registry.Fire("creating", user)
+	err := registry.Fire(context.Background(), "creating", user)
 	if err != nil {
 		t.Errorf("Fire failed: %v", err)
 	}
@@ -98,9 +99,9 @@ func TestObserverRegistry(t *testing.T) {
 	}
 
 	// Test multiple events
-	registry.Fire("created", user)
-	registry.Fire("updating", user)
-	registry.Fire("updated", user)
+	registry.Fire(context.Background(), "created", user)
+	registry.Fire(context.Background(), "updating", user)
+	registry.Fire(context.Background(), "updated", user)
 
 	if len(observer.events) != 4 {
 		t.Errorf("Expected 4 events, got %d", len(observer.events))
@@ -118,7 +119,7 @@ func TestObserverRegistryWithMultipleObservers(t *testing.T) {
 
 	// Fire event
 	user := &TestUser{ID: 1}
-	registry.Fire("creating", user)
+	registry.Fire(context.Background(), "creating", user)
 
 	// Both observers should receive the event
 	if len(observer1.events) != 1 {
@@ -138,7 +139,7 @@ func TestObserverRegistryError(t *testing.T) {
 
 	// Fire event that will error
 	user := &TestUser{ID: 1}
-	err := registry.Fire("creating", user)
+	err := registry.Fire(context.Background(), "creating", user)
 
 	if err == nil {
 		t.Error("Expected error from observer")
@@ -151,7 +152,7 @@ func TestObserverRegistryUnknownEvent(t *testing.T) {
 	registry.Observe("TestUser", observer)
 
 	user := &TestUser{ID: 1}
-	err := registry.Fire("unknown", user)
+	err := registry.Fire(context.Background(), "unknown", user)
 
 	if err == nil {
 		t.Error("Expected error for unknown event")
@@ -167,7 +168,7 @@ func TestObserverRegistryModelTypeExtraction(t *testing.T) {
 	registry.ObserveModel(user, observer)
 
 	// Fire event
-	registry.Fire("creating", user)
+	registry.Fire(context.Background(), "creating", user)
 
 	if len(observer.events) != 1 {
 		t.Error("Observer was not called")
@@ -185,7 +186,7 @@ func TestObserverRegistryClear(t *testing.T) {
 
 	// Fire event - should not be received
 	user := &TestUser{}
-	registry.Fire("creating", user)
+	registry.Fire(context.Background(), "creating", user)
 
 	if len(observer.events) != 0 {
 		t.Error("Observer should not have received event after clear")
@@ -205,7 +206,7 @@ func TestObserverRegistryClearAll(t *testing.T) {
 
 	// Fire events - should not be received
 	user := &TestUser{}
-	registry.Fire("creating", user)
+	registry.Fire(context.Background(), "creating", user)
 
 	if len(observer1.events) != 0 || len(observer2.events) != 0 {
 		t.Error("Observers should not have received events after clear all")
@@ -217,34 +218,34 @@ func TestBaseObserver(t *testing.T) {
 	user := &TestUser{}
 
 	// All methods should return nil
-	if observer.Creating(user) != nil {
+	if observer.Creating(context.Background(), user) != nil {
 		t.Error("BaseObserver.Creating should return nil")
 	}
-	if observer.Created(user) != nil {
+	if observer.Created(context.Background(), user) != nil {
 		t.Error("BaseObserver.Created should return nil")
 	}
-	if observer.Updating(user) != nil {
+	if observer.Updating(context.Background(), user) != nil {
 		t.Error("BaseObserver.Updating should return nil")
 	}
-	if observer.Updated(user) != nil {
+	if observer.Updated(context.Background(), user) != nil {
 		t.Error("BaseObserver.Updated should return nil")
 	}
-	if observer.Saving(user) != nil {
+	if observer.Saving(context.Background(), user) != nil {
 		t.Error("BaseObserver.Saving should return nil")
 	}
-	if observer.Saved(user) != nil {
+	if observer.Saved(context.Background(), user) != nil {
 		t.Error("BaseObserver.Saved should return nil")
 	}
-	if observer.Deleting(user) != nil {
+	if observer.Deleting(context.Background(), user) != nil {
 		t.Error("BaseObserver.Deleting should return nil")
 	}
-	if observer.Deleted(user) != nil {
+	if observer.Deleted(context.Background(), user) != nil {
 		t.Error("BaseObserver.Deleted should return nil")
 	}
-	if observer.Restoring(user) != nil {
+	if observer.Restoring(context.Background(), user) != nil {
 		t.Error("BaseObserver.Restoring should return nil")
 	}
-	if observer.Restored(user) != nil {
+	if observer.Restored(context.Background(), user) != nil {
 		t.Error("BaseObserver.Restored should return nil")
 	}
 }
@@ -259,7 +260,7 @@ func TestObservableDispatcher(t *testing.T) {
 	// Also register a regular event listener
 	var regularEventFired bool
 	dispatcher.Listen("testuser.created", &SimpleListener{
-		HandleFunc: func(event interface{}) error {
+		HandleFunc: func(ctx context.Context, event interface{}) error {
 			regularEventFired = true
 			return nil
 		},
@@ -267,7 +268,7 @@ func TestObservableDispatcher(t *testing.T) {
 
 	// Fire model event
 	user := &TestUser{ID: 1, Name: "John"}
-	err := dispatcher.FireModelEvent("created", user)
+	err := dispatcher.FireModelEvent(context.Background(), "created", user)
 	if err != nil {
 		t.Errorf("FireModelEvent failed: %v", err)
 	}
@@ -301,12 +302,12 @@ type CustomUserObserver struct {
 	creatingCalled bool
 }
 
-func (o *CustomUserObserver) Creating(model interface{}) error {
+func (o *CustomUserObserver) Creating(ctx context.Context, model interface{}) error {
 	o.creatingCalled = true
 	return nil
 }
 
-func (o *CustomUserObserver) Updated(model interface{}) error {
+func (o *CustomUserObserver) Updated(ctx context.Context, model interface{}) error {
 	// Intentionally not implementing Created but implementing Updated
 	return errors.New("updated error")
 }
@@ -318,7 +319,7 @@ func TestAutoObserver(t *testing.T) {
 	user := &TestUser{}
 
 	// Call Creating - should work
-	err := autoObserver.Creating(user)
+	err := autoObserver.Creating(context.Background(), user)
 	if err != nil {
 		t.Errorf("Creating failed: %v", err)
 	}
@@ -327,19 +328,19 @@ func TestAutoObserver(t *testing.T) {
 	}
 
 	// Call Created - should use base implementation (no error)
-	err = autoObserver.Created(user)
+	err = autoObserver.Created(context.Background(), user)
 	if err != nil {
 		t.Errorf("Created failed: %v", err)
 	}
 
 	// Call Updated - should return error
-	err = autoObserver.Updated(user)
+	err = autoObserver.Updated(context.Background(), user)
 	if err == nil {
 		t.Error("Expected error from Updated")
 	}
 
 	// Call method that doesn't exist - should use base
-	err = autoObserver.Deleting(user)
+	err = autoObserver.Deleting(context.Background(), user)
 	if err != nil {
 		t.Error("Deleting should use base implementation")
 	}
@@ -349,7 +350,7 @@ func TestConditionalObserver(t *testing.T) {
 	innerObserver := NewTestUserObserver()
 
 	// Only fire for creating and created events
-	condition := func(event string, model interface{}) bool {
+	condition := func(ctx context.Context, event string, model interface{}) bool {
 		return event == "creating" || event == "created"
 	}
 
@@ -358,13 +359,13 @@ func TestConditionalObserver(t *testing.T) {
 	user := &TestUser{}
 
 	// These should fire
-	observer.Creating(user)
-	observer.Created(user)
+	observer.Creating(context.Background(), user)
+	observer.Created(context.Background(), user)
 
 	// These should not fire
-	observer.Updating(user)
-	observer.Updated(user)
-	observer.Deleting(user)
+	observer.Updating(context.Background(), user)
+	observer.Updated(context.Background(), user)
+	observer.Deleting(context.Background(), user)
 
 	// Check only 2 events were recorded
 	if len(innerObserver.events) != 2 {
@@ -386,7 +387,7 @@ func TestObserverWithInstance(t *testing.T) {
 
 	// Fire event
 	user := &TestUser{ID: 1}
-	err := registry.Fire("creating", user)
+	err := registry.Fire(context.Background(), "creating", user)
 	if err != nil {
 		t.Errorf("Fire failed: %v", err)
 	}
@@ -412,7 +413,7 @@ func TestObserverConcurrency(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			user := &TestUser{ID: id}
-			registry.Fire("creating", user)
+			registry.Fire(context.Background(), "creating", user)
 		}(i)
 	}
 
@@ -434,7 +435,7 @@ func BenchmarkObserverFire(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		registry.Fire("creating", user)
+		registry.Fire(context.Background(), "creating", user)
 	}
 }
 
@@ -446,13 +447,13 @@ func BenchmarkAutoObserver(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		autoObserver.Creating(user)
+		autoObserver.Creating(context.Background(), user)
 	}
 }
 
 func BenchmarkConditionalObserver(b *testing.B) {
 	innerObserver := &BaseObserver{}
-	condition := func(event string, model interface{}) bool {
+	condition := func(ctx context.Context, event string, model interface{}) bool {
 		return event == "creating"
 	}
 	observer := NewConditionalObserver(innerObserver, condition)
@@ -461,6 +462,43 @@ func BenchmarkConditionalObserver(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		observer.Creating(user)
+		observer.Creating(context.Background(), user)
+	}
+}
+
+// ctxAwareModel implements ObservableModel with a ctx-aware FireEvent.
+// Locking the contract here catches accidental signature drift.
+type ctxAwareModel struct {
+	lastCtx   context.Context
+	lastEvent string
+}
+
+func (m *ctxAwareModel) GetModelName() string { return "ctxAwareModel" }
+func (m *ctxAwareModel) FireEvent(ctx context.Context, event string) error {
+	m.lastCtx = ctx
+	m.lastEvent = event
+	return nil
+}
+
+// TestObservableModel_FireEventReceivesCtx verifies the FireEvent contract
+// after the ctx-on-Subscribe sweep: implementations must accept and honour
+// the caller-supplied context.Context. Compile-time assertion plus a
+// run-time round-trip catches both interface drift and silently-dropped ctx.
+func TestObservableModel_FireEventReceivesCtx(t *testing.T) {
+	var _ ObservableModel = (*ctxAwareModel)(nil)
+
+	type ctxKey string
+	const probe ctxKey = "probe"
+	ctx := context.WithValue(context.Background(), probe, "value")
+
+	m := &ctxAwareModel{}
+	if err := m.FireEvent(ctx, "saving"); err != nil {
+		t.Fatalf("FireEvent: %v", err)
+	}
+	if m.lastEvent != "saving" {
+		t.Errorf("event = %q, want %q", m.lastEvent, "saving")
+	}
+	if got := m.lastCtx.Value(probe); got != "value" {
+		t.Errorf("ctx value = %v, want %q", got, "value")
 	}
 }

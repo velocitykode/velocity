@@ -34,12 +34,12 @@ func TestMailDispatcher(t *testing.T) {
 		manager.SetEventDispatcher(nil)
 
 		called := false
-		manager.SetEventDispatcher(func(event interface{}) error {
+		manager.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 			called = true
 			return nil
 		})
 
-		manager.dispatchEvent(&MailSent{})
+		manager.dispatchEvent(context.Background(), &MailSent{})
 
 		if !called {
 			t.Error("dispatcher was not called")
@@ -52,17 +52,17 @@ func TestMailDispatcher(t *testing.T) {
 		manager := NewManager()
 		manager.SetEventDispatcher(nil)
 		// Should not panic
-		manager.dispatchEvent(&MailSent{})
+		manager.dispatchEvent(context.Background(), &MailSent{})
 	})
 
 	t.Run("dispatchEvent with error returning dispatcher", func(t *testing.T) {
 		manager := NewManager()
-		manager.SetEventDispatcher(func(event interface{}) error {
+		manager.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 			return errors.New("dispatcher error")
 		})
 
 		// Should not panic
-		manager.dispatchEvent(&MailSent{})
+		manager.dispatchEvent(context.Background(), &MailSent{})
 
 		manager.SetEventDispatcher(nil)
 	})
@@ -70,7 +70,7 @@ func TestMailDispatcher(t *testing.T) {
 
 func TestDispatchMailSent(t *testing.T) {
 	var captured *MailSent
-	dispatch := func(event interface{}) {
+	dispatch := func(_ context.Context, event interface{}) {
 		if e, ok := event.(*MailSent); ok {
 			captured = e
 		}
@@ -130,7 +130,7 @@ func TestDispatchMailSent(t *testing.T) {
 
 func TestDispatchMailFailed(t *testing.T) {
 	var captured *MailFailed
-	dispatch := func(event interface{}) {
+	dispatch := func(_ context.Context, event interface{}) {
 		if e, ok := event.(*MailFailed); ok {
 			captured = e
 		}

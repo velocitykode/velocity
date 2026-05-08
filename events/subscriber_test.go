@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -85,7 +86,7 @@ func TestSubscriberDispatcher(t *testing.T) {
 	subscriber := NewManualSubscriber()
 	handled := false
 	subscriber.listeners["test.event"] = &SimpleListener{
-		HandleFunc: func(event interface{}) error {
+		HandleFunc: func(ctx context.Context, event interface{}) error {
 			handled = true
 			return nil
 		},
@@ -95,7 +96,7 @@ func TestSubscriberDispatcher(t *testing.T) {
 	dispatcher.Subscribe(subscriber)
 
 	// Dispatch event
-	err := dispatcher.Dispatch("test.event")
+	err := dispatcher.Dispatch(context.Background(), "test.event")
 	if err != nil {
 		t.Errorf("Dispatch failed: %v", err)
 	}
@@ -122,9 +123,9 @@ func TestAutoSubscriber(t *testing.T) {
 	autoSub.Subscribe(dispatcher)
 
 	// Dispatch events
-	dispatcher.Dispatch("order.placed")
-	dispatcher.Dispatch("order.shipped")
-	dispatcher.Dispatch("order.cancelled")
+	dispatcher.Dispatch(context.Background(), "order.placed")
+	dispatcher.Dispatch(context.Background(), "order.shipped")
+	dispatcher.Dispatch(context.Background(), "order.cancelled")
 
 	// Check handlers were called
 	subscriber.mu.Lock()
@@ -188,9 +189,9 @@ func TestMappedSubscriber(t *testing.T) {
 	mappedSub.Subscribe(dispatcher)
 
 	// Dispatch with custom event names
-	dispatcher.Dispatch("custom.order.new")
-	dispatcher.Dispatch("custom.order.sent")
-	dispatcher.Dispatch("custom.order.void")
+	dispatcher.Dispatch(context.Background(), "custom.order.new")
+	dispatcher.Dispatch(context.Background(), "custom.order.sent")
+	dispatcher.Dispatch(context.Background(), "custom.order.void")
 
 	// Check handlers were called
 	subscriber.mu.Lock()
@@ -214,7 +215,7 @@ func TestSubscriberGroup(t *testing.T) {
 	sub1 := NewManualSubscriber()
 	handled1 := false
 	sub1.listeners["event1"] = &SimpleListener{
-		HandleFunc: func(event interface{}) error {
+		HandleFunc: func(ctx context.Context, event interface{}) error {
 			handled1 = true
 			return nil
 		},
@@ -223,7 +224,7 @@ func TestSubscriberGroup(t *testing.T) {
 	sub2 := NewManualSubscriber()
 	handled2 := false
 	sub2.listeners["event2"] = &SimpleListener{
-		HandleFunc: func(event interface{}) error {
+		HandleFunc: func(ctx context.Context, event interface{}) error {
 			handled2 = true
 			return nil
 		},
@@ -236,7 +237,7 @@ func TestSubscriberGroup(t *testing.T) {
 	sub3 := NewManualSubscriber()
 	handled3 := false
 	sub3.listeners["event3"] = &SimpleListener{
-		HandleFunc: func(event interface{}) error {
+		HandleFunc: func(ctx context.Context, event interface{}) error {
 			handled3 = true
 			return nil
 		},
@@ -247,9 +248,9 @@ func TestSubscriberGroup(t *testing.T) {
 	group.Subscribe(dispatcher)
 
 	// Dispatch events
-	dispatcher.Dispatch("event1")
-	dispatcher.Dispatch("event2")
-	dispatcher.Dispatch("event3")
+	dispatcher.Dispatch(context.Background(), "event1")
+	dispatcher.Dispatch(context.Background(), "event2")
+	dispatcher.Dispatch(context.Background(), "event3")
 
 	// Check all were called
 	if !handled1 {
@@ -288,6 +289,48 @@ func TestValidateSubscriber(t *testing.T) {
 	}
 }
 
+// ctxAwareSubscriber declares Handle* methods that accept ctx as the first
+// parameter, the preferred shape after the ctx-on-Subscribe sweep.
+type ctxAwareSubscriber struct{}
+
+func (ctxAwareSubscriber) HandleUserRegistered(ctx context.Context, event interface{}) error {
+	return nil
+}
+
+func (ctxAwareSubscriber) HandleOrderPlaced(ctx context.Context, event interface{}) error {
+	return nil
+}
+
+// invalidCtxSubscriber declares a 3-arg method whose first parameter is not
+// context.Context, which must be flagged.
+type invalidCtxSubscriber struct{}
+
+func (invalidCtxSubscriber) HandleBadCtx(notCtx string, event interface{}) error { return nil }
+
+// TestValidateSubscriber_AcceptsCtxAwareMethods locks in the post-sweep
+// behaviour: Handle* methods declared as (ctx, event) error must validate
+// without errors. Before the fix, ValidateSubscriber accepted only the
+// legacy 2-arg shape, which would have produced spurious errors here.
+func TestValidateSubscriber_AcceptsCtxAwareMethods(t *testing.T) {
+	if errs := ValidateSubscriber(ctxAwareSubscriber{}); len(errs) != 0 {
+		t.Errorf("ctx-aware subscriber should validate cleanly, got %d errors: %v", len(errs), errs)
+	}
+}
+
+// TestValidateSubscriber_RejectsNonCtxFirstArg ensures a 3-arg method whose
+// first parameter is not context.Context is still flagged so accidental
+// signatures don't slip through.
+func TestValidateSubscriber_RejectsNonCtxFirstArg(t *testing.T) {
+	errs := ValidateSubscriber(invalidCtxSubscriber{})
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error for non-ctx first arg, got %d: %v", len(errs), errs)
+	}
+	subErr, ok := errs[0].(*SubscriberError)
+	if !ok || subErr.Method != "HandleBadCtx" {
+		t.Errorf("expected SubscriberError for HandleBadCtx, got %v", errs[0])
+	}
+}
+
 // Test subscriber with error
 type ErrorSubscriber struct {
 	shouldError bool
@@ -311,7 +354,7 @@ func TestAutoSubscriberWithError(t *testing.T) {
 	autoSub.Subscribe(dispatcher)
 
 	// Dispatch event - should return error
-	err := dispatcher.Dispatch("event")
+	err := dispatcher.Dispatch(context.Background(), "event")
 	if err == nil {
 		t.Error("Expected error from handler")
 	}
@@ -322,7 +365,7 @@ func TestMethodListener(t *testing.T) {
 	var receivedEvent interface{}
 
 	listener := &methodListener{
-		handler: func(event interface{}) error {
+		handler: func(ctx context.Context, event interface{}) error {
 			called = true
 			receivedEvent = event
 			return nil
@@ -332,7 +375,7 @@ func TestMethodListener(t *testing.T) {
 
 	// Test Handle
 	event := "test event"
-	err := listener.Handle(event)
+	err := listener.Handle(context.Background(), event)
 	if err != nil {
 		t.Errorf("Handle failed: %v", err)
 	}
@@ -354,7 +397,7 @@ func TestMethodListener(t *testing.T) {
 func TestQueuedMethodListener(t *testing.T) {
 	listener := &QueuedMethodListener{
 		methodListener: methodListener{
-			handler: func(event interface{}) error {
+			handler: func(ctx context.Context, event interface{}) error {
 				return nil
 			},
 			name: "TestMethod",
@@ -416,7 +459,7 @@ func BenchmarkAutoSubscriber(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		dispatcher.Dispatch("order.placed")
+		dispatcher.Dispatch(context.Background(), "order.placed")
 	}
 }
 
@@ -432,6 +475,6 @@ func BenchmarkMappedSubscriber(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		dispatcher.Dispatch("order.placed")
+		dispatcher.Dispatch(context.Background(), "order.placed")
 	}
 }

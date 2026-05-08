@@ -139,24 +139,29 @@ type Worker struct {
 	// runs after Start, and in tests that reassign the dispatcher between
 	// fixtures.
 	mu              sync.RWMutex
-	eventDispatcher func(event interface{}) error
+	eventDispatcher func(ctx context.Context, event interface{}) error
 }
 
 // SetEventDispatcher sets the function used to dispatch events. Safe to
 // call concurrently with running pump goroutines.
-func (w *Worker) SetEventDispatcher(fn func(event interface{}) error) {
+func (w *Worker) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
 	w.mu.Lock()
 	w.eventDispatcher = fn
 	w.mu.Unlock()
 }
 
-// dispatchEvent dispatches an event if a dispatcher is configured.
-func (w *Worker) dispatchEvent(event interface{}) {
+// dispatchEvent dispatches an event if a dispatcher is configured. The
+// caller-supplied ctx is propagated so listeners observe per-job scoped
+// values (deadline, trace ID).
+func (w *Worker) dispatchEvent(ctx context.Context, event interface{}) {
 	w.mu.RLock()
 	fn := w.eventDispatcher
 	w.mu.RUnlock()
 	if fn != nil {
-		fn(event)
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		fn(ctx, event)
 	}
 }
 
@@ -358,7 +363,7 @@ func (w *Worker) processJob() error {
 		if batch, found := FindBatch(bj.GetBatchID()); found && batch.Cancelled() {
 			// Decrement pending so the batch can still reach Finished state
 			batch.pendingJobs.Add(-1)
-			batch.checkFinished()
+			batch.checkFinished(jobCtx)
 			return nil
 		}
 	}
@@ -428,7 +433,7 @@ func (w *Worker) processJob() error {
 		// Record batch success
 		if bj, ok := job.(Batchable); ok {
 			if batch, found := FindBatch(bj.GetBatchID()); found {
-				batch.recordSuccess()
+				batch.recordSuccess(jobCtx)
 			}
 		}
 		dispatchJobProcessed(w.dispatchEvent, jobCtx, jobType, w.queueName, duration)
@@ -544,7 +549,7 @@ func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error
 	// Record batch failure
 	if bj, ok := job.(Batchable); ok {
 		if batch, found := FindBatch(bj.GetBatchID()); found {
-			batch.recordFailure(err)
+			batch.recordFailure(ctx, err)
 		}
 	}
 	dispatchJobFailed(w.dispatchEvent, ctx, jobType, w.queueName, err, duration)

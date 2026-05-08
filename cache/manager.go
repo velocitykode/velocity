@@ -68,7 +68,7 @@ type CacheManager interface {
 	RestoreLock(key string, owner string) Lock
 
 	// Event wiring.
-	SetEventDispatcher(fn func(event interface{}) error)
+	SetEventDispatcher(fn func(ctx context.Context, event interface{}) error)
 }
 
 // Verify *Manager implements CacheManager at compile time.
@@ -84,24 +84,29 @@ type Manager struct {
 	stores          map[string]Store
 	defaultStore    string
 	config          *Config
-	eventDispatcher func(event interface{}) error
+	eventDispatcher func(ctx context.Context, event interface{}) error
 }
 
 // SetEventDispatcher sets the function used to dispatch events.
 // This is called by the events package to wire up event dispatching.
-func (m *Manager) SetEventDispatcher(fn func(event interface{}) error) {
+func (m *Manager) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.eventDispatcher = fn
 }
 
-// dispatchEvent dispatches an event if a dispatcher is configured.
-func (m *Manager) dispatchEvent(event interface{}) {
+// dispatchEvent dispatches an event if a dispatcher is configured. The
+// caller-supplied ctx is propagated so listeners observe request-scoped
+// values.
+func (m *Manager) dispatchEvent(ctx context.Context, event interface{}) {
 	m.mu.RLock()
 	fn := m.eventDispatcher
 	m.mu.RUnlock()
 	if fn != nil {
-		fn(event)
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		fn(ctx, event)
 	}
 }
 

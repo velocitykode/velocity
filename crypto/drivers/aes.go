@@ -32,6 +32,7 @@
 package drivers
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
@@ -67,7 +68,7 @@ type AESDriver struct {
 	// Event dispatcher wiring (mirrors the cache/queue/mail pattern).
 	// mu guards eventDispatcher and legacyWarned.
 	mu              sync.RWMutex
-	eventDispatcher func(event interface{}) error
+	eventDispatcher func(ctx context.Context, event interface{}) error
 	legacyWarnOnce  sync.Once
 }
 
@@ -129,13 +130,16 @@ func deriveSubkey(master []byte, size int, info []byte) ([]byte, error) {
 // SetEventDispatcher sets the function used to dispatch events. Mirrors the
 // cache/mail/queue pattern so bootstrap wiring can plug velocity's events
 // package in without the crypto package importing it.
-func (d *AESDriver) SetEventDispatcher(fn func(event interface{}) error) {
+func (d *AESDriver) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.eventDispatcher = fn
 }
 
 // dispatchEvent dispatches an event if a dispatcher is configured.
+// Crypto operations operate without a request-scoped ctx (encryption is
+// CPU-bound and not request-bound), so callers pass context.Background()
+// here. Listeners that need a real ctx should plumb their own.
 func (d *AESDriver) dispatchEvent(event interface{}) {
 	d.mu.RLock()
 	fn := d.eventDispatcher
@@ -146,7 +150,7 @@ func (d *AESDriver) dispatchEvent(event interface{}) {
 	// Dispatcher is called inline; mirrors the cache package which does
 	// not spawn a goroutine here. Listeners that need async behaviour can
 	// opt in via queued listeners.
-	_ = fn(event)
+	_ = fn(context.Background(), event)
 }
 
 // Encrypt encrypts plaintext

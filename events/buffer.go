@@ -419,22 +419,27 @@ func (b *BufferedDispatcher) Pending() int {
 }
 
 // Dispatch records the event in the buffer for later flush as a
-// KindDispatch entry.
-func (b *BufferedDispatcher) Dispatch(event interface{}) error {
+// KindDispatch entry. The ctx is intentionally ignored at record time:
+// the recorded entry will be re-dispatched at Flush() with whatever ctx
+// the flush callback supplies.
+func (b *BufferedDispatcher) Dispatch(ctx context.Context, event interface{}) error {
+	_ = ctx
 	b.recordKind(event, KindDispatch, 0)
 	return nil
 }
 
 // DispatchNow records the event in the buffer for later flush as a
 // KindDispatchNow entry.
-func (b *BufferedDispatcher) DispatchNow(event interface{}) error {
+func (b *BufferedDispatcher) DispatchNow(ctx context.Context, event interface{}) error {
+	_ = ctx
 	b.recordKind(event, KindDispatchNow, 0)
 	return nil
 }
 
 // DispatchAsync records the event in the buffer for later flush as a
 // KindDispatchAsync entry.
-func (b *BufferedDispatcher) DispatchAsync(event interface{}) error {
+func (b *BufferedDispatcher) DispatchAsync(ctx context.Context, event interface{}) error {
+	_ = ctx
 	b.recordKind(event, KindDispatchAsync, 0)
 	return nil
 }
@@ -443,7 +448,8 @@ func (b *BufferedDispatcher) DispatchAsync(event interface{}) error {
 // KindDispatchAfter entry. The delay is preserved on the entry and
 // applied by FlushFunc when the buffer drains; it is NOT a wall-clock
 // delay starting at the time of Dispatch.
-func (b *BufferedDispatcher) DispatchAfter(event interface{}, delay time.Duration) error {
+func (b *BufferedDispatcher) DispatchAfter(ctx context.Context, event interface{}, delay time.Duration) error {
+	_ = ctx
 	b.recordKind(event, KindDispatchAfter, delay)
 	return nil
 }
@@ -453,7 +459,8 @@ func (b *BufferedDispatcher) DispatchAfter(event interface{}, delay time.Duratio
 // from inside a transaction (no listener has run yet), so the buffered
 // call always returns (nil, nil); FlushFunc is responsible for routing
 // the entry through Dispatcher.Until on flush.
-func (b *BufferedDispatcher) Until(event interface{}) (interface{}, error) {
+func (b *BufferedDispatcher) Until(ctx context.Context, event interface{}) (interface{}, error) {
+	_ = ctx
 	b.recordKind(event, KindUntil, 0)
 	return nil, nil
 }

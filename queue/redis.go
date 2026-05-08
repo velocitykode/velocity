@@ -31,7 +31,7 @@ type RedisDriver struct {
 	client          *redis.Client
 	ctx             context.Context
 	config          RedisConfig
-	eventDispatcher func(event interface{}) error
+	eventDispatcher func(ctx context.Context, event interface{}) error
 }
 
 // NewRedisDriver creates a new Redis queue driver.
@@ -71,14 +71,19 @@ func NewRedisDriver(config RedisConfig) (*RedisDriver, error) {
 }
 
 // SetEventDispatcher sets the function used to dispatch events.
-func (r *RedisDriver) SetEventDispatcher(fn func(event interface{}) error) {
+func (r *RedisDriver) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
 	r.eventDispatcher = fn
 }
 
-// dispatchEvent dispatches an event if a dispatcher is configured.
-func (r *RedisDriver) dispatchEvent(event interface{}) {
+// dispatchEvent dispatches an event if a dispatcher is configured. The
+// caller-supplied ctx is propagated so listeners observe request-scoped
+// values.
+func (r *RedisDriver) dispatchEvent(ctx context.Context, event interface{}) {
 	if r.eventDispatcher != nil {
-		r.eventDispatcher(event)
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		r.eventDispatcher(ctx, event)
 	}
 }
 

@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -86,7 +87,10 @@ func (f *FakeDispatcher) Subscribe(subscriber Subscriber) {
 }
 
 // Dispatch records the event without executing listeners
-func (f *FakeDispatcher) Dispatch(event interface{}) error {
+func (f *FakeDispatcher) Dispatch(ctx context.Context, event interface{}) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -96,27 +100,27 @@ func (f *FakeDispatcher) Dispatch(event interface{}) error {
 	}
 
 	// If not faking, execute listeners
-	return f.executeListeners(event)
+	return f.executeListeners(ctx, event)
 }
 
 // DispatchNow records the event synchronously
-func (f *FakeDispatcher) DispatchNow(event interface{}) error {
-	return f.Dispatch(event)
+func (f *FakeDispatcher) DispatchNow(ctx context.Context, event interface{}) error {
+	return f.Dispatch(ctx, event)
 }
 
 // DispatchAsync records the event asynchronously
-func (f *FakeDispatcher) DispatchAsync(event interface{}) error {
-	return f.Dispatch(event)
+func (f *FakeDispatcher) DispatchAsync(ctx context.Context, event interface{}) error {
+	return f.Dispatch(ctx, event)
 }
 
 // DispatchAfter records the event with delay
-func (f *FakeDispatcher) DispatchAfter(event interface{}, delay time.Duration) error {
-	return f.Dispatch(event)
+func (f *FakeDispatcher) DispatchAfter(ctx context.Context, event interface{}, delay time.Duration) error {
+	return f.Dispatch(ctx, event)
 }
 
 // Until dispatches events until the first non-nil return
-func (f *FakeDispatcher) Until(event interface{}) (interface{}, error) {
-	f.Dispatch(event)
+func (f *FakeDispatcher) Until(ctx context.Context, event interface{}) (interface{}, error) {
+	f.Dispatch(ctx, event)
 	return nil, nil
 }
 
@@ -261,12 +265,12 @@ func (f *FakeDispatcher) StartFaking() {
 }
 
 // executeListeners executes listeners for an event (when not faking)
-func (f *FakeDispatcher) executeListeners(event interface{}) error {
+func (f *FakeDispatcher) executeListeners(ctx context.Context, event interface{}) error {
 	eventName := f.getEventName(event)
 	entries := f.listeners[eventName]
 
 	for _, entry := range entries {
-		if err := entry.listener.Handle(event); err != nil {
+		if err := entry.listener.Handle(ctx, event); err != nil {
 			return err
 		}
 	}

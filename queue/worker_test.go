@@ -921,7 +921,7 @@ func TestWorker_ShutdownCancelledJobNotRetriedOrFailed(t *testing.T) {
 		WithBackoff(FixedBackoff(0)),
 		WithTimeout(30*time.Second), // long enough that job-timeout cannot fire first
 	)
-	worker.SetEventDispatcher(func(ev interface{}) error {
+	worker.SetEventDispatcher(func(_ context.Context, ev interface{}) error {
 		switch ev.(type) {
 		case *JobFailed:
 			atomic.AddInt32(&failedEvents, 1)

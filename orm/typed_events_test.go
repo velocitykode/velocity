@@ -32,14 +32,14 @@ func TestManager_SetEventDispatcher_ReceivesEvent(t *testing.T) {
 	)
 
 	m := &Manager{}
-	m.SetEventDispatcher(func(e any) error {
+	m.SetEventDispatcher(func(_ context.Context, e any) error {
 		mu.Lock()
 		defer mu.Unlock()
 		received = e
 		return nil
 	})
 
-	m.dispatchEvent(&QueryExecuted{
+	m.dispatchEvent(context.Background(), &QueryExecuted{
 		Context:    context.Background(),
 		SQL:        "SELECT 1",
 		Connection: "sqlite",
@@ -63,8 +63,8 @@ func TestManager_SetEventDispatcher_ReceivesEvent(t *testing.T) {
 // the dispatcher (no-op dispatch afterwards).
 func TestManager_SetEventDispatcher_NilClears(t *testing.T) {
 	m := &Manager{}
-	m.SetEventDispatcher(func(any) error { return nil })
+	m.SetEventDispatcher(func(context.Context, any) error { return nil })
 	m.SetEventDispatcher(nil)
 	// Must not panic.
-	m.dispatchEvent(&QueryExecuted{SQL: "SELECT 1"})
+	m.dispatchEvent(context.Background(), &QueryExecuted{SQL: "SELECT 1"})
 }

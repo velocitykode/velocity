@@ -35,12 +35,12 @@ func TestSchedulerDispatcher(t *testing.T) {
 		s.SetEventDispatcher(nil)
 
 		called := false
-		s.SetEventDispatcher(func(event interface{}) error {
+		s.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 			called = true
 			return nil
 		})
 
-		s.dispatchEvent(&ScheduledTaskStarting{})
+		s.dispatchEvent(context.Background(), &ScheduledTaskStarting{})
 
 		if !called {
 			t.Error("dispatcher was not called")
@@ -53,17 +53,17 @@ func TestSchedulerDispatcher(t *testing.T) {
 		s := New()
 		s.SetEventDispatcher(nil)
 		// Should not panic
-		s.dispatchEvent(&ScheduledTaskStarting{})
+		s.dispatchEvent(context.Background(), &ScheduledTaskStarting{})
 	})
 
 	t.Run("dispatchEvent with error returning dispatcher", func(t *testing.T) {
 		s := New()
-		s.SetEventDispatcher(func(event interface{}) error {
+		s.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 			return errors.New("dispatcher error")
 		})
 
 		// Should not panic
-		s.dispatchEvent(&ScheduledTaskStarting{})
+		s.dispatchEvent(context.Background(), &ScheduledTaskStarting{})
 
 		s.SetEventDispatcher(nil)
 	})
@@ -71,7 +71,7 @@ func TestSchedulerDispatcher(t *testing.T) {
 
 func TestDispatchScheduledTaskStarting(t *testing.T) {
 	var captured *ScheduledTaskStarting
-	dispatch := func(event interface{}) {
+	dispatch := func(_ context.Context, event interface{}) {
 		if e, ok := event.(*ScheduledTaskStarting); ok {
 			captured = e
 		}
@@ -118,7 +118,7 @@ func TestDispatchScheduledTaskStarting(t *testing.T) {
 
 func TestDispatchScheduledTaskFinished(t *testing.T) {
 	var captured *ScheduledTaskFinished
-	dispatch := func(event interface{}) {
+	dispatch := func(_ context.Context, event interface{}) {
 		if e, ok := event.(*ScheduledTaskFinished); ok {
 			captured = e
 		}
@@ -160,7 +160,7 @@ func TestDispatchScheduledTaskFinished(t *testing.T) {
 
 func TestDispatchScheduledTaskFailed(t *testing.T) {
 	var captured *ScheduledTaskFailed
-	dispatch := func(event interface{}) {
+	dispatch := func(_ context.Context, event interface{}) {
 		if e, ok := event.(*ScheduledTaskFailed); ok {
 			captured = e
 		}

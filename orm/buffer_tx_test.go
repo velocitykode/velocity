@@ -24,7 +24,7 @@ func TestBuffer_CommitFlushes(t *testing.T) {
 	defer m.Shutdown(context.Background())
 
 	var fired []any
-	m.SetEventDispatcher(func(e any) error {
+	m.SetEventDispatcher(func(_ context.Context, e any) error {
 		fired = append(fired, e)
 		return nil
 	})
@@ -36,10 +36,10 @@ func TestBuffer_CommitFlushes(t *testing.T) {
 		if !events.HasBuffer(ctx) {
 			t.Fatal("HasBuffer returned false inside Transaction")
 		}
-		if err := events.Buffer(ctx).Dispatch(&txDomainEvent{Tag: "e1"}); err != nil {
+		if err := events.Buffer(ctx).Dispatch(ctx, &txDomainEvent{Tag: "e1"}); err != nil {
 			t.Fatalf("Dispatch e1: %v", err)
 		}
-		if err := events.Buffer(ctx).Dispatch(&txDomainEvent{Tag: "e2"}); err != nil {
+		if err := events.Buffer(ctx).Dispatch(ctx, &txDomainEvent{Tag: "e2"}); err != nil {
 			t.Fatalf("Dispatch e2: %v", err)
 		}
 		// Buffered events must not have reached the dispatcher yet
@@ -80,7 +80,7 @@ func TestBuffer_RollbackDrops(t *testing.T) {
 	defer m.Shutdown(context.Background())
 
 	var fired []any
-	m.SetEventDispatcher(func(e any) error {
+	m.SetEventDispatcher(func(_ context.Context, e any) error {
 		fired = append(fired, e)
 		return nil
 	})
@@ -88,7 +88,7 @@ func TestBuffer_RollbackDrops(t *testing.T) {
 	rollbackErr := errors.New("rollback please")
 	ctx := events.PrepareBuffer(context.Background())
 	err := m.Transaction(ctx, func(ctx context.Context) error {
-		_ = events.Buffer(ctx).Dispatch(&txDomainEvent{Tag: "drop-me"})
+		_ = events.Buffer(ctx).Dispatch(ctx, &txDomainEvent{Tag: "drop-me"})
 		return rollbackErr
 	})
 	if !errors.Is(err, rollbackErr) {
@@ -108,7 +108,7 @@ func TestBuffer_PanicDrops(t *testing.T) {
 	defer m.Shutdown(context.Background())
 
 	var fired []any
-	m.SetEventDispatcher(func(e any) error {
+	m.SetEventDispatcher(func(_ context.Context, e any) error {
 		fired = append(fired, e)
 		return nil
 	})
@@ -121,7 +121,7 @@ func TestBuffer_PanicDrops(t *testing.T) {
 			}
 		}()
 		_ = m.Transaction(ctx, func(ctx context.Context) error {
-			_ = events.Buffer(ctx).Dispatch(&txDomainEvent{Tag: "panic-drop"})
+			_ = events.Buffer(ctx).Dispatch(ctx, &txDomainEvent{Tag: "panic-drop"})
 			panic("kaboom")
 		})
 	}()
@@ -139,7 +139,7 @@ func TestBuffer_Nested(t *testing.T) {
 	defer m.Shutdown(context.Background())
 
 	var fired []*txDomainEvent
-	m.SetEventDispatcher(func(e any) error {
+	m.SetEventDispatcher(func(_ context.Context, e any) error {
 		if d, ok := e.(*txDomainEvent); ok {
 			fired = append(fired, d)
 		}
@@ -149,18 +149,18 @@ func TestBuffer_Nested(t *testing.T) {
 	innerErr := errors.New("inner rollback")
 	ctx := events.PrepareBuffer(context.Background())
 	err := m.Transaction(ctx, func(ctx context.Context) error {
-		_ = events.Buffer(ctx).Dispatch(&txDomainEvent{Tag: "outer-1"})
+		_ = events.Buffer(ctx).Dispatch(ctx, &txDomainEvent{Tag: "outer-1"})
 
 		// Nested transaction that fails -- only inner events should drop.
 		nestedErr := m.Transaction(ctx, func(ctx context.Context) error {
-			_ = events.Buffer(ctx).Dispatch(&txDomainEvent{Tag: "inner-1"})
+			_ = events.Buffer(ctx).Dispatch(ctx, &txDomainEvent{Tag: "inner-1"})
 			return innerErr
 		})
 		if !errors.Is(nestedErr, innerErr) {
 			t.Fatalf("nested Transaction err = %v, want %v", nestedErr, innerErr)
 		}
 
-		_ = events.Buffer(ctx).Dispatch(&txDomainEvent{Tag: "outer-2"})
+		_ = events.Buffer(ctx).Dispatch(ctx, &txDomainEvent{Tag: "outer-2"})
 		return nil
 	})
 	if err != nil {
@@ -184,7 +184,7 @@ func TestBuffer_PanicInListenerAfterFlush(t *testing.T) {
 	defer m.Shutdown(context.Background())
 
 	var calls atomic.Int32
-	m.SetEventDispatcher(func(e any) error {
+	m.SetEventDispatcher(func(_ context.Context, e any) error {
 		if _, ok := e.(*txDomainEvent); ok {
 			calls.Add(1)
 			panic("listener boom")
@@ -196,7 +196,7 @@ func TestBuffer_PanicInListenerAfterFlush(t *testing.T) {
 	func() {
 		defer func() { _ = recover() }()
 		_ = m.Transaction(ctx, func(ctx context.Context) error {
-			_ = events.Buffer(ctx).Dispatch(&txDomainEvent{Tag: "x"})
+			_ = events.Buffer(ctx).Dispatch(ctx, &txDomainEvent{Tag: "x"})
 			return nil
 		})
 	}()
@@ -222,7 +222,7 @@ func TestBuffer_Concurrent(t *testing.T) {
 		mu    sync.Mutex
 		fired = make(map[int]int) // gID -> count
 	)
-	m.SetEventDispatcher(func(e any) error {
+	m.SetEventDispatcher(func(_ context.Context, e any) error {
 		if d, ok := e.(*txDomainEventID); ok {
 			mu.Lock()
 			fired[d.GID]++
@@ -239,7 +239,7 @@ func TestBuffer_Concurrent(t *testing.T) {
 			ctx := events.PrepareBuffer(context.Background())
 			err := m.Transaction(ctx, func(ctx context.Context) error {
 				for i := 0; i < perTx; i++ {
-					_ = events.Buffer(ctx).Dispatch(&txDomainEventID{GID: g})
+					_ = events.Buffer(ctx).Dispatch(ctx, &txDomainEventID{GID: g})
 				}
 				return nil
 			})
@@ -273,13 +273,13 @@ func TestBuffer_FakeDispatcher_Integration(t *testing.T) {
 	defer m.Shutdown(context.Background())
 
 	fake := events.NewFakeDispatcher()
-	m.SetEventDispatcher(func(e any) error {
-		return fake.Dispatch(e)
+	m.SetEventDispatcher(func(_ context.Context, e any) error {
+		return fake.Dispatch(context.Background(), e)
 	})
 
 	ctx := events.PrepareBuffer(context.Background())
 	err := m.Transaction(ctx, func(ctx context.Context) error {
-		_ = events.Buffer(ctx).Dispatch(&txDomainEvent{Tag: "fake-1"})
+		_ = events.Buffer(ctx).Dispatch(ctx, &txDomainEvent{Tag: "fake-1"})
 		// Pre-flush, fake should not contain the domain event.
 		if err := fake.AssertNotDispatched(&txDomainEvent{}); err != nil {
 			t.Fatalf("domain event reached fake before commit: %v", err)
@@ -306,7 +306,7 @@ func TestBuffer_NoEventDispatcher(t *testing.T) {
 
 	ctx := events.PrepareBuffer(context.Background())
 	err := m.Transaction(ctx, func(ctx context.Context) error {
-		_ = events.Buffer(ctx).Dispatch(&txDomainEvent{Tag: "no-sink"})
+		_ = events.Buffer(ctx).Dispatch(ctx, &txDomainEvent{Tag: "no-sink"})
 		return nil
 	})
 	if err != nil {
@@ -327,11 +327,11 @@ func TestBuffer_TxEventBusKindRouting(t *testing.T) {
 
 	ctx := events.PrepareBuffer(context.Background())
 	err := m.Transaction(ctx, func(ctx context.Context) error {
-		_ = events.Buffer(ctx).Dispatch(&txDomainEvent{Tag: "sync"})
-		_ = events.Buffer(ctx).DispatchNow(&txDomainEvent{Tag: "now"})
-		_ = events.Buffer(ctx).DispatchAsync(&txDomainEvent{Tag: "async"})
-		_ = events.Buffer(ctx).DispatchAfter(&txDomainEvent{Tag: "after"}, 7)
-		if _, err := events.Buffer(ctx).Until(&txDomainEvent{Tag: "until"}); err != nil {
+		_ = events.Buffer(ctx).Dispatch(ctx, &txDomainEvent{Tag: "sync"})
+		_ = events.Buffer(ctx).DispatchNow(ctx, &txDomainEvent{Tag: "now"})
+		_ = events.Buffer(ctx).DispatchAsync(ctx, &txDomainEvent{Tag: "async"})
+		_ = events.Buffer(ctx).DispatchAfter(ctx, &txDomainEvent{Tag: "after"}, 7)
+		if _, err := events.Buffer(ctx).Until(ctx, &txDomainEvent{Tag: "until"}); err != nil {
 			t.Fatalf("Until: %v", err)
 		}
 		// Pre-flush: nothing should have hit the bus.
@@ -363,35 +363,35 @@ type recordingDispatcher struct {
 	calls []string
 }
 
-func (r *recordingDispatcher) Dispatch(e interface{}) error {
+func (r *recordingDispatcher) Dispatch(_ context.Context, e interface{}) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	d := e.(*txDomainEvent)
 	r.calls = append(r.calls, "Dispatch:"+d.Tag)
 	return nil
 }
-func (r *recordingDispatcher) DispatchNow(e interface{}) error {
+func (r *recordingDispatcher) DispatchNow(_ context.Context, e interface{}) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	d := e.(*txDomainEvent)
 	r.calls = append(r.calls, "DispatchNow:"+d.Tag)
 	return nil
 }
-func (r *recordingDispatcher) DispatchAsync(e interface{}) error {
+func (r *recordingDispatcher) DispatchAsync(_ context.Context, e interface{}) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	d := e.(*txDomainEvent)
 	r.calls = append(r.calls, "DispatchAsync:"+d.Tag)
 	return nil
 }
-func (r *recordingDispatcher) DispatchAfter(e interface{}, delay time.Duration) error {
+func (r *recordingDispatcher) DispatchAfter(_ context.Context, e interface{}, delay time.Duration) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	d := e.(*txDomainEvent)
 	r.calls = append(r.calls, "DispatchAfter:"+d.Tag+":"+strconv.FormatInt(int64(delay), 10))
 	return nil
 }
-func (r *recordingDispatcher) Until(e interface{}) (interface{}, error) {
+func (r *recordingDispatcher) Until(_ context.Context, e interface{}) (interface{}, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	d := e.(*txDomainEvent)
@@ -416,7 +416,7 @@ func TestBuffer_NoPrepareIsSafeNoOp(t *testing.T) {
 	defer m.Shutdown(context.Background())
 
 	var fired []any
-	m.SetEventDispatcher(func(e any) error {
+	m.SetEventDispatcher(func(_ context.Context, e any) error {
 		fired = append(fired, e)
 		return nil
 	})
@@ -425,7 +425,7 @@ func TestBuffer_NoPrepareIsSafeNoOp(t *testing.T) {
 	err := m.Transaction(ctx, func(ctx context.Context) error {
 		// Buffer(ctx) returns a standalone buffer; dispatching to it
 		// is a no-op as far as the orm is concerned.
-		_ = events.Buffer(ctx).Dispatch(&txDomainEvent{Tag: "lost"})
+		_ = events.Buffer(ctx).Dispatch(ctx, &txDomainEvent{Tag: "lost"})
 		return nil
 	})
 	if err != nil {
