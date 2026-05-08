@@ -10,6 +10,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/velocitykode/velocity/grpc/grpcevents"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // LoggingInterceptor creates a unary logging interceptor.
@@ -25,6 +26,7 @@ func loggingUnary(cfg *LoggingConfig) grpc.UnaryServerInterceptor {
 			return handler(ctx, req)
 		}
 
+		ctx = ensureTrace(ctx)
 		start := time.Now()
 
 		// Dispatch request started event
@@ -43,6 +45,18 @@ func loggingUnary(cfg *LoggingConfig) grpc.UnaryServerInterceptor {
 	}
 }
 
+// ensureTrace mints a fresh trace when none is attached, or rotates a child
+// span when an upstream trace already exists. Used by both unary and stream
+// logging interceptors so per-RPC events carry trace ids end-to-end.
+func ensureTrace(ctx context.Context) context.Context {
+	if trace.GetTraceID(ctx) == "" {
+		newCtx, _, _ := trace.StartTrace(ctx)
+		return newCtx
+	}
+	newCtx, _ := trace.WithNewSpan(ctx)
+	return newCtx
+}
+
 func dispatchRequestStarted(ctx context.Context, method string, start time.Time, dispatcher grpcevents.EventDispatchFunc) {
 	if dispatcher == nil {
 		return
@@ -54,12 +68,16 @@ func dispatchRequestStarted(ctx context.Context, method string, start time.Time,
 		md = redactMetadata(inMD)
 	}
 
+	traceID, spanID, parentID := trace.GetTraceContext(ctx)
 	dispatchEvent(dispatcher, &grpcevents.RequestStarted{
 		Method:    method,
 		Protocol:  protocol,
 		StartTime: start,
 		Context:   ctx,
 		Metadata:  md,
+		TraceID:   traceID,
+		SpanID:    spanID,
+		ParentID:  parentID,
 	})
 }
 
@@ -87,6 +105,7 @@ func dispatchRequestCompleted(ctx context.Context, method string, start time.Tim
 		teamID = claims.GetTeamID()
 	}
 
+	traceID, spanID, parentID := trace.GetTraceContext(ctx)
 	if err != nil {
 		dispatchEvent(dispatcher, &grpcevents.RequestFailed{
 			Method:     method,
@@ -99,6 +118,9 @@ func dispatchRequestCompleted(ctx context.Context, method string, start time.Tim
 			Context:    ctx,
 			UserID:     userID,
 			TeamID:     teamID,
+			TraceID:    traceID,
+			SpanID:     spanID,
+			ParentID:   parentID,
 		})
 	} else {
 		dispatchEvent(dispatcher, &grpcevents.RequestCompleted{
@@ -111,6 +133,9 @@ func dispatchRequestCompleted(ctx context.Context, method string, start time.Tim
 			Context:    ctx,
 			UserID:     userID,
 			TeamID:     teamID,
+			TraceID:    traceID,
+			SpanID:     spanID,
+			ParentID:   parentID,
 		})
 	}
 }

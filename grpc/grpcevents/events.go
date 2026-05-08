@@ -29,6 +29,9 @@ type RequestStarted struct {
 	StartTime time.Time
 	Context   context.Context
 	Metadata  map[string][]string
+	TraceID   string // APM trace ID
+	SpanID    string // APM span ID
+	ParentID  string // Parent span ID for correlation
 }
 
 // Name returns the event name
@@ -47,6 +50,9 @@ type RequestCompleted struct {
 	Context    context.Context
 	UserID     uint
 	TeamID     uint
+	TraceID    string // APM trace ID
+	SpanID     string // APM span ID
+	ParentID   string // Parent span ID for correlation
 }
 
 // Name returns the event name
@@ -66,6 +72,9 @@ type RequestFailed struct {
 	Context    context.Context
 	UserID     uint
 	TeamID     uint
+	TraceID    string // APM trace ID
+	SpanID     string // APM span ID
+	ParentID   string // Parent span ID for correlation
 }
 
 // Name returns the event name
@@ -80,6 +89,9 @@ type StreamStarted struct {
 	StartTime time.Time
 	Context   context.Context
 	Metadata  map[string][]string
+	TraceID   string // APM trace ID
+	SpanID    string // APM span ID
+	ParentID  string // Parent span ID for correlation
 }
 
 // Name returns the event name
@@ -99,6 +111,9 @@ type StreamCompleted struct {
 	Context      context.Context
 	UserID       uint
 	TeamID       uint
+	TraceID      string // APM trace ID
+	SpanID       string // APM span ID
+	ParentID     string // Parent span ID for correlation
 }
 
 // Name returns the event name
@@ -119,6 +134,9 @@ type StreamFailed struct {
 	Context      context.Context
 	UserID       uint
 	TeamID       uint
+	TraceID      string // APM trace ID
+	SpanID       string // APM span ID
+	ParentID     string // Parent span ID for correlation
 }
 
 // Name returns the event name
@@ -180,6 +198,9 @@ type PanicRecovered struct {
 	StackTrace string
 	Time       time.Time
 	Context    context.Context
+	TraceID    string // APM trace ID
+	SpanID     string // APM span ID
+	ParentID   string // Parent span ID for correlation
 }
 
 // Name returns the event name
@@ -189,11 +210,14 @@ func (e *PanicRecovered) Name() string {
 
 // AuthFailed is dispatched when authentication fails
 type AuthFailed struct {
-	Method  string
-	Token   string // Masked token (first/last few chars)
-	Reason  string
-	Time    time.Time
-	Context context.Context
+	Method   string
+	Token    string // Masked token (first/last few chars)
+	Reason   string
+	Time     time.Time
+	Context  context.Context
+	TraceID  string // APM trace ID
+	SpanID   string // APM span ID
+	ParentID string // Parent span ID for correlation
 }
 
 // Name returns the event name

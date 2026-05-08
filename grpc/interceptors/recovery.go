@@ -3,12 +3,15 @@ package interceptors
 import (
 	"context"
 	"runtime/debug"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/velocitykode/velocity/grpc/grpcevents"
 	"github.com/velocitykode/velocity/log"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // RecoveryConfig configures the recovery interceptor
@@ -23,6 +26,9 @@ type RecoveryConfig struct {
 	// If set, it's called before the standard error response is returned.
 	// Return an error to override the default internal error response.
 	PanicHandler func(ctx context.Context, p interface{}) error
+
+	// EventDispatcher routes grpcevents.PanicRecovered to a listener.
+	EventDispatcher grpcevents.EventDispatchFunc
 }
 
 // RecoveryOption configures recovery behavior
@@ -46,6 +52,14 @@ func WithStackTrace(enabled bool) RecoveryOption {
 func WithPanicHandler(handler func(ctx context.Context, p interface{}) error) RecoveryOption {
 	return func(c *RecoveryConfig) {
 		c.PanicHandler = handler
+	}
+}
+
+// WithRecoveryEventDispatcher routes grpcevents.PanicRecovered to a dispatcher
+// when the recovery interceptor catches a panic.
+func WithRecoveryEventDispatcher(dispatcher grpcevents.EventDispatchFunc) RecoveryOption {
+	return func(c *RecoveryConfig) {
+		c.EventDispatcher = dispatcher
 	}
 }
 
@@ -100,6 +114,11 @@ func recoveryStream(cfg *RecoveryConfig) grpc.StreamServerInterceptor {
 }
 
 func handlePanic(ctx context.Context, p interface{}, method string, cfg *RecoveryConfig) error {
+	stack := ""
+	if cfg.EnableStackTrace {
+		stack = string(debug.Stack())
+	}
+
 	// Log if logger is available
 	if logger := cfg.Logger; logger != nil {
 		fields := []interface{}{
@@ -107,11 +126,25 @@ func handlePanic(ctx context.Context, p interface{}, method string, cfg *Recover
 			"panic", p,
 		}
 
-		if cfg.EnableStackTrace {
-			fields = append(fields, "stack", string(debug.Stack()))
+		if stack != "" {
+			fields = append(fields, "stack", stack)
 		}
 
 		logger.Error("gRPC panic recovered", fields...)
+	}
+
+	if cfg.EventDispatcher != nil {
+		traceID, spanID, parentID := trace.GetTraceContext(ctx)
+		dispatchEvent(cfg.EventDispatcher, &grpcevents.PanicRecovered{
+			Method:     method,
+			Panic:      p,
+			StackTrace: stack,
+			Time:       time.Now(),
+			Context:    ctx,
+			TraceID:    traceID,
+			SpanID:     spanID,
+			ParentID:   parentID,
+		})
 	}
 
 	// Call custom handler if set. The custom handler ALWAYS wins — we return

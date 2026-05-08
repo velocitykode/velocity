@@ -3,11 +3,15 @@ package interceptors
 import (
 	"context"
 	"strings"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+
+	"github.com/velocitykode/velocity/grpc/grpcevents"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // Claims represents authenticated user claims.
@@ -77,6 +81,10 @@ type AuthConfig struct {
 	// OnAuthError is called when authentication fails.
 	// Can be used for logging or custom error responses.
 	OnAuthError func(ctx context.Context, method string, err error)
+
+	// EventDispatcher routes grpcevents.AuthFailed to a listener when
+	// token extraction or validation fails.
+	EventDispatcher grpcevents.EventDispatchFunc
 }
 
 // AuthOption configures auth behavior
@@ -100,6 +108,14 @@ func WithTokenExtractor(extractor func(ctx context.Context) (string, error)) Aut
 func WithOnAuthError(handler func(ctx context.Context, method string, err error)) AuthOption {
 	return func(c *AuthConfig) {
 		c.OnAuthError = handler
+	}
+}
+
+// WithAuthEventDispatcher routes grpcevents.AuthFailed to a dispatcher when
+// token extraction or validation fails.
+func WithAuthEventDispatcher(dispatcher grpcevents.EventDispatchFunc) AuthOption {
+	return func(c *AuthConfig) {
+		c.EventDispatcher = dispatcher
 	}
 }
 
@@ -184,6 +200,7 @@ func authenticate(ctx context.Context, method string, cfg *AuthConfig) (context.
 		if cfg.OnAuthError != nil {
 			cfg.OnAuthError(ctx, method, err)
 		}
+		dispatchAuthFailed(ctx, method, "", err, cfg)
 		return nil, err
 	}
 
@@ -193,11 +210,40 @@ func authenticate(ctx context.Context, method string, cfg *AuthConfig) (context.
 		if cfg.OnAuthError != nil {
 			cfg.OnAuthError(ctx, method, err)
 		}
+		dispatchAuthFailed(ctx, method, token, err, cfg)
 		return nil, status.Error(codes.Unauthenticated, "invalid token")
 	}
 
 	// Add claims to context
 	return ContextWithClaims(ctx, claims), nil
+}
+
+// dispatchAuthFailed emits grpcevents.AuthFailed with masked token and trace
+// context. No-op when no dispatcher is configured.
+func dispatchAuthFailed(ctx context.Context, method, token string, err error, cfg *AuthConfig) {
+	if cfg.EventDispatcher == nil {
+		return
+	}
+	traceID, spanID, parentID := trace.GetTraceContext(ctx)
+	dispatchEvent(cfg.EventDispatcher, &grpcevents.AuthFailed{
+		Method:   method,
+		Token:    maskToken(token),
+		Reason:   err.Error(),
+		Time:     time.Now(),
+		Context:  ctx,
+		TraceID:  traceID,
+		SpanID:   spanID,
+		ParentID: parentID,
+	})
+}
+
+// maskToken returns a redacted form: first 4 + last 4 characters when long
+// enough, else the empty string. Avoids leaking full tokens to event sinks.
+func maskToken(token string) string {
+	if len(token) < 12 {
+		return ""
+	}
+	return token[:4] + "..." + token[len(token)-4:]
 }
 
 // isPublicMethod decides whether method is in the allow-list. It deliberately
