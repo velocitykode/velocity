@@ -575,6 +575,16 @@ func OnCommitFailure(ctx context.Context, fn TxCommitFailureCallback) error {
 // Errors returned by AfterCommit are logged but never propagated to
 // the original caller. By the time AfterCommit runs, the tx has
 // already committed and the row is durable.
+//
+// Bulk write asymmetry: this hook is per-row. The bulk paths
+// Query.Update, Query.Delete, and Query.ForceDelete translate to a
+// single UPDATE/DELETE statement and do NOT fire AfterCommit per
+// affected row (matches GORM, Bun, ent, Eloquent). Two opt-ins:
+//   - Implement BulkAfterCommitHook for one event per bulk statement
+//     carrying the affected primary-key set.
+//   - Call Query.WithRowHooks() to pre-select the rows, hydrate them,
+//     and fan out per-row hooks at the cost of an extra SELECT and
+//     N model allocations.
 type AfterCommitHook interface {
 	AfterCommit(ctx context.Context) error
 }
@@ -589,6 +599,11 @@ type AfterCommitHook interface {
 // fire on commit-error: that path is ambiguous; install an
 // OnCommitFailure callback when commit-failure observability is
 // required.
+//
+// Bulk write asymmetry: see AfterCommitHook docs. Bulk Update /
+// Delete / ForceDelete skip per-row AfterRollback. Use
+// BulkAfterCommitHook (with an OnRollback callback registered on the
+// active TxCallbacks) or Query.WithRowHooks() to opt in.
 type AfterRollbackHook interface {
 	AfterRollback(ctx context.Context) error
 }

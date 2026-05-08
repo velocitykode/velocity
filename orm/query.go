@@ -105,6 +105,7 @@ type Query[T any] struct {
 	skipLocked    bool // For SKIP LOCKED clause
 	hasSoftDelete bool // Whether the model supports soft deletes
 	hasUpdatedAt  bool // Whether the model has an UpdatedAt column (skip injection on Update for immutable models)
+	withRowHooks  bool // When true, bulk Update/Delete/ForceDelete fan out per-row AfterCommit/AfterRollback hooks (Tier C). Suppresses BulkAfterCommitHook.
 
 	// disabledScopes records the global scope names this query opts out
 	// of. nil when no opt-outs have been set (no allocation in the
@@ -219,6 +220,7 @@ func (q *Query[T]) Clone() *Query[T] {
 		skipLocked:          q.skipLocked,
 		hasSoftDelete:       q.hasSoftDelete,
 		hasUpdatedAt:        q.hasUpdatedAt,
+		withRowHooks:        q.withRowHooks,
 		globalScopesApplied: q.globalScopesApplied,
 		err:                 q.err,
 		lastSQL:             q.lastSQL,
@@ -665,6 +667,29 @@ func (q *Query[T]) SkipLocked() *Query[T] {
 	return q
 }
 
+// WithRowHooks opts the bulk write paths (Update / Delete /
+// ForceDelete) into per-row [AfterCommitHook] / [AfterRollbackHook]
+// fan-out. The chain runs an extra SELECT before the write to
+// hydrate the affected rows, then registers a per-row callback for
+// each model exactly as the row-by-row Save path does.
+//
+// Cost: one extra SELECT plus N model allocations per call. Reserve
+// for cases that genuinely need the typed model in the hook (e.g.
+// derived-field recompute, per-row validation). For ID-only signal
+// (audit log, outbox enqueue, cache invalidation) implement
+// [BulkAfterCommitHook] instead, which fires once per statement.
+//
+// Suppresses BulkAfterCommitHook for the call: if a model implements
+// both hooks and WithRowHooks is requested, only per-row hooks fire.
+//
+// The flag propagates through Clone and through the soft-delete
+// Delete -> Update delegation, so q.WithRowHooks().Delete(ctx)
+// fans out per-row hooks for soft-deletable models.
+func (q *Query[T]) WithRowHooks() *Query[T] {
+	q.withRowHooks = true
+	return q
+}
+
 // Save persists model through the query's bound driver. Takes ctx as
 // the first argument so transaction enrollment is mandatory and
 // explicit: passing a ctx returned by Manager.Transaction routes the
@@ -1060,7 +1085,23 @@ func (q *Query[T]) Pluck(ctx context.Context, column string) ([]any, error) {
 // the package-level [NOW] sentinel) are emitted verbatim into the
 // generated statement; all other values, including plain string values
 // that happen to look like SQL, are bound as parameters.
+//
+// Hook semantics: this is a bulk path. Per-row [AfterCommitHook] and
+// [AfterRollbackHook] do NOT fire. Two opt-ins:
+//   - Implement [BulkAfterCommitHook] for one event per bulk statement
+//     with the affected primary-key set.
+//   - Chain [Query.WithRowHooks] to fan out per-row hooks at the cost of
+//     an extra SELECT and N model allocations.
 func (q *Query[T]) Update(ctx context.Context, updates map[string]any) (int64, error) {
+	return q.bulkUpdate(ctx, updates, BulkOpUpdate)
+}
+
+// bulkUpdate is the shared implementation for the public Update entry
+// point and the soft-delete branch of Delete. op identifies the caller
+// so BulkAfterCommitHook listeners receive the correct BulkOp value
+// (BulkOpUpdate from Update; BulkOpDelete from Delete on a soft-delete
+// model).
+func (q *Query[T]) bulkUpdate(ctx context.Context, updates map[string]any, op BulkOp) (int64, error) {
 	if q.err != nil {
 		return 0, q.err
 	}
@@ -1096,6 +1137,15 @@ func (q *Query[T]) Update(ctx context.Context, updates map[string]any) (int64, e
 		copyOfUpdates["updated_at"] = currentTimestampSentinel(q.driver.DriverName())
 	}
 
+	// Pre-capture for bulk hooks runs BEFORE the write so the affected
+	// row set (Tier B IDs / Tier C model snapshots) is captured against
+	// the conditions as the caller sees them. Returns a deferred closure
+	// that fires after a successful write.
+	afterFn, err := q.bulkPrepareHooks(ctx, op)
+	if err != nil {
+		return 0, err
+	}
+
 	sql, args := q.driver.Grammar().CompileUpdate(q.table, copyOfUpdates, q.conditions)
 	q.lastSQL = sql
 	q.lastArgs = args
@@ -1104,13 +1154,20 @@ func (q *Query[T]) Update(ctx context.Context, updates map[string]any) (int64, e
 	result, err := q.driver.ExecContext(ctx, sql, args...)
 	duration := time.Since(start)
 
+	// skip=3 because bulkUpdate is always reached through Update or
+	// Delete (one extra frame above bulkUpdate compared to the
+	// inline-emitter terminals like Get / Count / ForceDelete).
 	if err != nil {
-		dispatchQueryExecuted(ctx, sql, args, duration, 0, q.driver.DriverName(), 2)
+		dispatchQueryExecuted(ctx, sql, args, duration, 0, q.driver.DriverName(), 3)
 		return 0, err
 	}
 
 	rowsAffected, _ := result.RowsAffected()
-	dispatchQueryExecuted(ctx, sql, args, duration, rowsAffected, q.driver.DriverName(), 2)
+	dispatchQueryExecuted(ctx, sql, args, duration, rowsAffected, q.driver.DriverName(), 3)
+
+	if afterFn != nil {
+		afterFn()
+	}
 
 	return rowsAffected, nil
 }
@@ -1194,6 +1251,11 @@ func (q *Query[T]) InsertGetId(ctx context.Context, data map[string]any) (int64,
 // Delete soft deletes matching records (if model supports soft
 // deletes) or hard deletes. Takes ctx as the first argument so
 // transaction enrollment is mandatory and explicit.
+//
+// Hook semantics: this is a bulk path. Per-row [AfterCommitHook] and
+// [AfterRollbackHook] do NOT fire. Use [BulkAfterCommitHook] (one event
+// with affected IDs and op=BulkOpDelete) or chain [Query.WithRowHooks]
+// to fan out per-row hooks.
 func (q *Query[T]) Delete(ctx context.Context) (int64, error) {
 	if q.err != nil {
 		return 0, q.err
@@ -1201,12 +1263,13 @@ func (q *Query[T]) Delete(ctx context.Context) (int64, error) {
 	// Check if model has soft deletes
 	if q.hasSoftDelete {
 		// Soft delete, use the driver-appropriate RawSQL sentinel so the
-		// grammar emits it verbatim (not as a bound parameter).
-		// Bind via Update so the same ctx threads through to ExecContext.
+		// grammar emits it verbatim (not as a bound parameter). Route
+		// through bulkUpdate (not Update) so BulkAfterCommitHook listeners
+		// receive op=BulkOpDelete instead of op=BulkOpUpdate.
 		q.bindTxFromContextValue(ctx)
-		return q.Update(ctx, map[string]any{
+		return q.bulkUpdate(ctx, map[string]any{
 			"deleted_at": currentTimestampSentinel(q.driver.DriverName()),
-		})
+		}, BulkOpDelete)
 	}
 
 	// Hard delete for models without soft delete support
@@ -1215,11 +1278,22 @@ func (q *Query[T]) Delete(ctx context.Context) (int64, error) {
 
 // ForceDelete permanently deletes matching records. Takes ctx as the
 // first argument so transaction enrollment is mandatory and explicit.
+//
+// Hook semantics: this is a bulk path. Per-row [AfterCommitHook] and
+// [AfterRollbackHook] do NOT fire. Use [BulkAfterCommitHook] (one event
+// with affected IDs and op=BulkOpForceDelete) or chain
+// [Query.WithRowHooks] to fan out per-row hooks.
 func (q *Query[T]) ForceDelete(ctx context.Context) (int64, error) {
 	if q.err != nil {
 		return 0, q.err
 	}
 	q.bindTxFromContextValue(ctx)
+
+	afterFn, err := q.bulkPrepareHooks(ctx, BulkOpForceDelete)
+	if err != nil {
+		return 0, err
+	}
+
 	sql, args := q.driver.Grammar().CompileDelete(q.table, q.conditions)
 
 	start := time.Now()
@@ -1233,6 +1307,10 @@ func (q *Query[T]) ForceDelete(ctx context.Context) (int64, error) {
 
 	rowsAffected, _ := result.RowsAffected()
 	dispatchQueryExecuted(ctx, sql, args, duration, rowsAffected, q.driver.DriverName(), 2)
+
+	if afterFn != nil {
+		afterFn()
+	}
 
 	return rowsAffected, nil
 }

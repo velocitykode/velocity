@@ -5,6 +5,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/velocitykode/velocity/trace"
 )
 
 // Event is the typed contract every ORM event satisfies. Matches the shape of
@@ -87,7 +89,34 @@ func captureCallerInfo(skip int) (file string, line int) {
 	return file, line
 }
 
-// dispatchQueryExecuted is a no-op after DI refactor.
-// Event dispatching is handled through Manager.dispatchEvent().
-func dispatchQueryExecuted(_ context.Context, _ string, _ []any, _ time.Duration, _ int64, _ string, _ int) {
+// dispatchQueryExecuted constructs a QueryExecuted event and routes it
+// through the default Manager's dispatcher. No-ops when no default Manager
+// is set or no event dispatcher is wired. skip is the caller-frame skip
+// count for captureCallerInfo (typically 2: caller of dispatch + dispatch
+// itself).
+func dispatchQueryExecuted(ctx context.Context, sql string, args []any, dur time.Duration, rows int64, conn string, skip int) {
+	m := Default()
+	if m == nil {
+		return
+	}
+	m.mu.RLock()
+	hasDispatcher := m.eventDispatcher != nil
+	m.mu.RUnlock()
+	if !hasDispatcher {
+		return
+	}
+	file, line := captureCallerInfo(skip + 1)
+	m.dispatchEvent(ctx, &QueryExecuted{
+		Context:      ctx,
+		SQL:          sql,
+		Bindings:     args,
+		Duration:     dur,
+		RowsAffected: rows,
+		Connection:   conn,
+		File:         file,
+		Line:         line,
+		TraceID:      trace.GetTraceID(ctx),
+		SpanID:       trace.GetSpanID(ctx),
+		ParentID:     trace.GetParentID(ctx),
+	})
 }
