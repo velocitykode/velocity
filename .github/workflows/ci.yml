@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
       - run: go vet ./...
 
   staticcheck:
@@ -35,7 +35,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
       - name: Install staticcheck
         run: go install honnef.co/go/tools/cmd/staticcheck@latest
       - run: staticcheck ./...
@@ -47,7 +47,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
       - name: Run tests with race detector
         run: go test -race -timeout 10m ./...
 
@@ -63,7 +63,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
       - name: Fuzz JWT validate
         run: go test -run=^$ -fuzz=FuzzJWTValidate -fuzztime=30s ./auth/
       - name: Fuzz redirect sanitizer
@@ -111,7 +111,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
       - name: Enforce per-package coverage floors
         run: scripts/ci/check-coverage-floors.sh
 
@@ -127,7 +127,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
       - name: Run router benchmarks
         run: |
           go test -run='^$' -bench='BenchmarkRouter_(StaticHit|DynamicHit|MissFallback)' \
@@ -140,7 +140,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - run: govulncheck ./...
@@ -245,7 +245,7 @@ jobs:
         if: steps.check.outputs.skip == 'false'
         uses: actions/setup-go@v6
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
 
       - name: Auto-format
         if: steps.check.outputs.skip == 'false'
