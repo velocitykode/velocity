@@ -2,6 +2,7 @@ package crypto
 
 import (
 	"encoding/base64"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -449,5 +450,103 @@ func BenchmarkDecryptGCM(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = encryptor.Decrypt(encrypted)
+	}
+}
+
+func TestEncryptorAAD_MismatchSentinel(t *testing.T) {
+	enc, err := NewEncryptor(Config{Key: "12345678901234567890123456789012", Cipher: "AES-256-GCM"})
+	if err != nil {
+		t.Fatalf("NewEncryptor: %v", err)
+	}
+	env, err := enc.EncryptBytesWithAAD([]byte("secret"), []byte("team:42|cred:7"))
+	if err != nil {
+		t.Fatalf("EncryptBytesWithAAD: %v", err)
+	}
+	_, err = enc.DecryptBytesWithAAD(env, []byte("team:42|cred:8"))
+	if !errors.Is(err, ErrAADMismatch) {
+		t.Fatalf("want ErrAADMismatch, got %v", err)
+	}
+}
+
+func TestEncryptorAAD_CBCInvalidCipher(t *testing.T) {
+	enc, err := NewEncryptor(Config{Key: "12345678901234567890123456789012", Cipher: "AES-256-CBC"})
+	if err != nil {
+		t.Fatalf("NewEncryptor: %v", err)
+	}
+	if _, err := enc.EncryptBytesWithAAD([]byte("x"), []byte("a")); !errors.Is(err, ErrInvalidCipher) {
+		t.Fatalf("EncryptBytesWithAAD: want ErrInvalidCipher, got %v", err)
+	}
+	if _, err := enc.DecryptBytesWithAAD("v1:abc", []byte("a")); !errors.Is(err, ErrInvalidCipher) {
+		t.Fatalf("DecryptBytesWithAAD: want ErrInvalidCipher, got %v", err)
+	}
+}
+
+func TestEncryptorAAD_CrossPathRejection(t *testing.T) {
+	// Payload encrypted with AAD must NOT decrypt via plain DecryptBytes.
+	enc, err := NewEncryptor(Config{Key: "12345678901234567890123456789012", Cipher: "AES-256-GCM"})
+	if err != nil {
+		t.Fatalf("NewEncryptor: %v", err)
+	}
+	env, err := enc.EncryptBytesWithAAD([]byte("payload"), []byte("aad"))
+	if err != nil {
+		t.Fatalf("EncryptBytesWithAAD: %v", err)
+	}
+	if _, err := enc.DecryptBytes(env); err == nil {
+		t.Fatal("DecryptBytes on AAD-bound payload: want error, got nil")
+	}
+}
+
+func TestEncryptorAAD_ReverseCrossPathRejection(t *testing.T) {
+	// Plain EncryptBytes payload must NOT decrypt via DecryptBytesWithAAD
+	// when caller supplies a non-empty aad. The GCM tag was sealed with
+	// nil aad; any non-nil aad collapses to ErrAADMismatch by contract.
+	enc, err := NewEncryptor(Config{Key: "12345678901234567890123456789012", Cipher: "AES-256-GCM"})
+	if err != nil {
+		t.Fatalf("NewEncryptor: %v", err)
+	}
+	env, err := enc.EncryptBytes([]byte("payload"))
+	if err != nil {
+		t.Fatalf("EncryptBytes: %v", err)
+	}
+	if _, err := enc.DecryptBytesWithAAD(env, []byte("team:42|cred:7")); !errors.Is(err, ErrAADMismatch) {
+		t.Fatalf("DecryptBytesWithAAD on plain payload with non-empty aad: want ErrAADMismatch, got %v", err)
+	}
+}
+
+func TestEncryptorAAD_ZeroAADCrossPathInterop(t *testing.T) {
+	// Pin the nil/empty-AAD equivalence across the plain and AAD paths:
+	// EncryptBytes seals with nil aad, so DecryptBytesWithAAD with nil or
+	// empty aad must round-trip. Symmetric: EncryptBytesWithAAD(nil) seals
+	// the same tag, so DecryptBytes (which passes nil aad internally) must
+	// also round-trip. Without this pin, a future implementer could change
+	// the seal-time aad for plain EncryptBytes (e.g. inject a domain tag)
+	// and only the negative cross-path test would still pass.
+	enc, err := NewEncryptor(Config{Key: "12345678901234567890123456789012", Cipher: "AES-256-GCM"})
+	if err != nil {
+		t.Fatalf("NewEncryptor: %v", err)
+	}
+	plain, err := enc.EncryptBytes([]byte("payload"))
+	if err != nil {
+		t.Fatalf("EncryptBytes: %v", err)
+	}
+	for _, aad := range [][]byte{nil, {}} {
+		got, err := enc.DecryptBytesWithAAD(plain, aad)
+		if err != nil {
+			t.Fatalf("DecryptBytesWithAAD(plain, %v): %v", aad, err)
+		}
+		if string(got) != "payload" {
+			t.Fatalf("DecryptBytesWithAAD(plain, %v): got %q want payload", aad, got)
+		}
+	}
+	withAAD, err := enc.EncryptBytesWithAAD([]byte("payload"), nil)
+	if err != nil {
+		t.Fatalf("EncryptBytesWithAAD(nil): %v", err)
+	}
+	got, err := enc.DecryptBytes(withAAD)
+	if err != nil {
+		t.Fatalf("DecryptBytes(withAAD nil): %v", err)
+	}
+	if string(got) != "payload" {
+		t.Fatalf("DecryptBytes(withAAD nil): got %q want payload", got)
 	}
 }

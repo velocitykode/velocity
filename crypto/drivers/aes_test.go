@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -1200,5 +1201,147 @@ func TestGCMPayloadHasTag(t *testing.T) {
 	}
 	if payload.MAC != "" {
 		t.Error("GCM encrypted payload should not have MAC")
+	}
+}
+
+func TestEncryptDecryptWithAAD_RoundTrip(t *testing.T) {
+	cases := []struct {
+		cipher  string
+		keySize int
+	}{
+		{"AES-128-GCM", 16},
+		{"AES-192-GCM", 24},
+		{"AES-256-GCM", 32},
+	}
+	for _, tc := range cases {
+		t.Run(tc.cipher, func(t *testing.T) {
+			d, err := NewAESDriver(make([]byte, tc.keySize), nil, tc.cipher)
+			if err != nil {
+				t.Fatalf("NewAESDriver: %v", err)
+			}
+			plaintext := []byte("hello aad world")
+			aad := []byte("team:42|cred:7")
+			env, err := d.EncryptBytesWithAAD(plaintext, aad)
+			if err != nil {
+				t.Fatalf("EncryptBytesWithAAD: %v", err)
+			}
+			got, err := d.DecryptBytesWithAAD(env, aad)
+			if err != nil {
+				t.Fatalf("DecryptBytesWithAAD: %v", err)
+			}
+			if string(got) != string(plaintext) {
+				t.Fatalf("plaintext mismatch: got %q want %q", got, plaintext)
+			}
+		})
+	}
+}
+
+func TestEncryptBytesWithAAD_CBCRejected(t *testing.T) {
+	cases := []struct {
+		cipher  string
+		keySize int
+	}{
+		{"AES-128-CBC", 16},
+		{"AES-192-CBC", 24},
+		{"AES-256-CBC", 32},
+	}
+	for _, tc := range cases {
+		t.Run(tc.cipher, func(t *testing.T) {
+			d, err := NewAESDriver(make([]byte, tc.keySize), nil, tc.cipher)
+			if err != nil {
+				t.Fatalf("NewAESDriver: %v", err)
+			}
+			if _, err := d.EncryptBytesWithAAD([]byte("x"), []byte("a")); !errors.Is(err, ErrInvalidCipher) {
+				t.Fatalf("EncryptBytesWithAAD: want ErrInvalidCipher, got %v", err)
+			}
+			if _, err := d.DecryptBytesWithAAD("v1:abc", []byte("a")); !errors.Is(err, ErrInvalidCipher) {
+				t.Fatalf("DecryptBytesWithAAD: want ErrInvalidCipher, got %v", err)
+			}
+		})
+	}
+}
+
+func TestDecryptBytesWithAAD_TamperFails(t *testing.T) {
+	d, err := NewAESDriver(make([]byte, 32), nil, "AES-256-GCM")
+	if err != nil {
+		t.Fatalf("NewAESDriver: %v", err)
+	}
+	aad := []byte("team:42|cred:7")
+	env, err := d.EncryptBytesWithAAD([]byte("payload"), aad)
+	if err != nil {
+		t.Fatalf("EncryptBytesWithAAD: %v", err)
+	}
+
+	// Mutate one byte of the inner Value to force a tag failure.
+	_, inner := splitVersion(env)
+	p, err := deserializePayload(inner)
+	if err != nil {
+		t.Fatalf("deserializePayload: %v", err)
+	}
+	raw, err := base64.StdEncoding.DecodeString(p.Value)
+	if err != nil {
+		t.Fatalf("decode value: %v", err)
+	}
+	if len(raw) == 0 {
+		t.Fatal("empty ciphertext")
+	}
+	raw[0] ^= 0xFF
+	p.Value = base64.StdEncoding.EncodeToString(raw)
+	tampered, err := serializePayload(p)
+	if err != nil {
+		t.Fatalf("serializePayload: %v", err)
+	}
+	// Documented contract: any GCM auth failure on the AAD path collapses
+	// to ErrAADMismatch (cannot distinguish tamper, wrong key, wrong aad).
+	if _, err := d.DecryptBytesWithAAD(v1Sentinel+tampered, aad); !errors.Is(err, ErrAADMismatch) {
+		t.Fatalf("DecryptBytesWithAAD: want ErrAADMismatch on tampered ciphertext, got %v", err)
+	}
+}
+
+func TestDecryptBytesWithAAD_NilEmptyEquivalent(t *testing.T) {
+	cases := []struct {
+		cipher  string
+		keySize int
+	}{
+		{"AES-128-GCM", 16},
+		{"AES-192-GCM", 24},
+		{"AES-256-GCM", 32},
+	}
+	for _, tc := range cases {
+		t.Run(tc.cipher, func(t *testing.T) {
+			d, err := NewAESDriver(make([]byte, tc.keySize), nil, tc.cipher)
+			if err != nil {
+				t.Fatalf("NewAESDriver: %v", err)
+			}
+			env, err := d.EncryptBytesWithAAD([]byte("payload"), nil)
+			if err != nil {
+				t.Fatalf("EncryptBytesWithAAD nil aad: %v", err)
+			}
+			if _, err := d.DecryptBytesWithAAD(env, []byte{}); err != nil {
+				t.Fatalf("DecryptBytesWithAAD empty aad: %v", err)
+			}
+			if _, err := d.DecryptBytesWithAAD(env, nil); err != nil {
+				t.Fatalf("DecryptBytesWithAAD nil aad: %v", err)
+			}
+		})
+	}
+}
+
+func TestDecryptBytesWithAAD_RejectsLegacyAndEmpty(t *testing.T) {
+	d, err := NewAESDriver(make([]byte, 32), nil, "AES-256-GCM")
+	if err != nil {
+		t.Fatalf("NewAESDriver: %v", err)
+	}
+	if _, err := d.DecryptBytesWithAAD("", []byte("aad")); !errors.Is(err, ErrInvalidPayload) {
+		t.Fatalf("empty payload: want ErrInvalidPayload, got %v", err)
+	}
+	// Any envelope without the v1 sentinel must be rejected before the
+	// GCM Open path so a legacy ciphertext does not surface as a fake
+	// AAD mismatch. The version gate trips before deserialize, so the
+	// envelope contents are irrelevant; what matters is the missing
+	// "v1:" prefix.
+	notV1 := "anything-without-v1-prefix"
+	if _, err := d.DecryptBytesWithAAD(notV1, []byte("aad")); !errors.Is(err, ErrInvalidPayload) {
+		t.Fatalf("non-v1 payload: want ErrInvalidPayload, got %v", err)
 	}
 }

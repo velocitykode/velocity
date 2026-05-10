@@ -9,13 +9,15 @@ import (
 	"github.com/velocitykode/velocity/crypto/drivers"
 )
 
-// Errors
+// Errors. Sentinels owned by crypto/drivers are re-exported here under
+// the same identity so callers can use errors.Is against either package.
 var (
 	ErrInvalidKey       = errors.New("velocity/crypto: invalid encryption key")
-	ErrInvalidPayload   = errors.New("velocity/crypto: invalid payload format")
-	ErrDecryptionFailed = errors.New("velocity/crypto: decryption failed")
-	ErrInvalidCipher    = errors.New("velocity/crypto: unsupported cipher")
 	ErrNotInitialized   = errors.New("velocity/crypto: encryptor not initialized")
+	ErrInvalidCipher    = drivers.ErrInvalidCipher
+	ErrInvalidPayload   = drivers.ErrInvalidPayload
+	ErrDecryptionFailed = drivers.ErrDecryptionFailed
+	ErrAADMismatch      = drivers.ErrAADMismatch
 )
 
 // Encryptor interface defines encryption operations
@@ -31,6 +33,33 @@ type Encryptor interface {
 
 	// DecryptBytes decrypts a base64 encoded payload and returns bytes
 	DecryptBytes(payload string) ([]byte, error)
+
+	// EncryptBytesWithAAD encrypts plaintext and binds aad into the AEAD
+	// authentication tag. Decryption with a different aad fails. aad is
+	// not stored in the payload; the caller supplies the same aad on
+	// DecryptBytesWithAAD. nil and zero-length aad are equivalent.
+	// Returns ErrInvalidCipher when the configured cipher is non-AEAD
+	// (any CBC mode).
+	EncryptBytesWithAAD(plaintext, aad []byte) (string, error)
+
+	// DecryptBytesWithAAD decrypts a payload produced by
+	// EncryptBytesWithAAD.
+	//
+	// Returns ErrAADMismatch on any GCM authentication failure under the
+	// supplied aad. GCM is one-shot AEAD: the tag check cannot
+	// distinguish wrong key, wrong aad, AAD-vs-no-AAD payload mixing, or
+	// ciphertext tamper. All four collapse to ErrAADMismatch by design;
+	// operators investigating an unexpected mismatch should check key
+	// rotation, ciphertext integrity, and aad construction together.
+	//
+	// Returns ErrInvalidPayload when the envelope is empty or not
+	// produced by EncryptBytesWithAAD (only the v1 wire format is
+	// accepted on this path; legacy v0 payloads are rejected up-front).
+	//
+	// Returns ErrInvalidCipher when the configured cipher is non-AEAD
+	// (any CBC mode); the rejection is symmetric with
+	// EncryptBytesWithAAD.
+	DecryptBytesWithAAD(payload string, aad []byte) ([]byte, error)
 
 	// GenerateKey generates a new encryption key for the cipher
 	GenerateKey() (string, error)

@@ -263,6 +263,118 @@ func (d *AESDriver) GenerateKey() (string, error) {
 	return "base64:" + base64.StdEncoding.EncodeToString(key), nil
 }
 
+// EncryptBytesWithAAD encrypts plaintext under the GCM tag with aad bound
+// in. CBC ciphers return ErrInvalidCipher (no AEAD). aad is not persisted
+// in the payload; the caller supplies the same aad on decrypt.
+func (d *AESDriver) EncryptBytesWithAAD(plaintext, aad []byte) (string, error) {
+	if !strings.Contains(d.cipher, "GCM") {
+		return "", ErrInvalidCipher
+	}
+	return d.encryptGCMWithAAD(plaintext, aad)
+}
+
+// DecryptBytesWithAAD decrypts an AAD-bound GCM payload. See the
+// crypto.Encryptor interface doc for full semantics. CBC ciphers return
+// ErrInvalidCipher. Empty or non-v1 envelopes return ErrInvalidPayload.
+// Any GCM auth failure returns ErrAADMismatch (cannot distinguish wrong
+// key, wrong aad, tamper, or AAD-vs-no-AAD payload mixing).
+//
+// Key rotation via PreviousKeys is intentionally not iterated here: the
+// spec scopes rotation to the non-AAD path. Callers that need to rotate
+// AAD-bound ciphertexts must re-encrypt explicitly.
+func (d *AESDriver) DecryptBytesWithAAD(payload string, aad []byte) ([]byte, error) {
+	if !strings.Contains(d.cipher, "GCM") {
+		return nil, ErrInvalidCipher
+	}
+	if payload == "" {
+		return nil, ErrInvalidPayload
+	}
+
+	// AAD path is net-new: only v1 envelopes can have been produced by
+	// EncryptBytesWithAAD. Reject legacy v0 explicitly so a stray pre-v1
+	// payload does not surface as a fake AAD mismatch.
+	version, envelope := splitVersion(payload)
+	if version != 1 {
+		return nil, ErrInvalidPayload
+	}
+
+	p, err := deserializePayload(envelope)
+	if err != nil {
+		return nil, err
+	}
+
+	plaintext, err := d.decryptGCMWithAAD(p, d.key, aad)
+	if err != nil {
+		return nil, ErrAADMismatch
+	}
+	return plaintext, nil
+}
+
+// encryptGCMWithAAD encrypts using GCM with additional authenticated data.
+// Wire format is identical to encryptGCM (the AAD is not stored).
+func (d *AESDriver) encryptGCMWithAAD(plaintext, aad []byte) (string, error) {
+	block, err := aes.NewCipher(d.key)
+	if err != nil {
+		return "", err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", err
+	}
+
+	ciphertext := gcm.Seal(nil, nonce, plaintext, aad)
+
+	tagStart := len(ciphertext) - gcm.Overhead()
+	tag := ciphertext[tagStart:]
+	ciphertext = ciphertext[:tagStart]
+
+	p := &Payload{
+		IV:    base64.StdEncoding.EncodeToString(nonce),
+		Value: base64.StdEncoding.EncodeToString(ciphertext),
+		Tag:   base64.StdEncoding.EncodeToString(tag),
+	}
+
+	env, err := serializePayload(p)
+	if err != nil {
+		return "", err
+	}
+	return v1Sentinel + env, nil
+}
+
+// decryptGCMWithAAD decrypts a GCM payload using the supplied key and aad.
+// Returns the raw error from gcm.Open so the caller can map it.
+func (d *AESDriver) decryptGCMWithAAD(p *Payload, key, aad []byte) ([]byte, error) {
+	nonce, err := base64.StdEncoding.DecodeString(p.IV)
+	if err != nil {
+		return nil, err
+	}
+	ciphertext, err := base64.StdEncoding.DecodeString(p.Value)
+	if err != nil {
+		return nil, err
+	}
+	tag, err := base64.StdEncoding.DecodeString(p.Tag)
+	if err != nil {
+		return nil, err
+	}
+	ciphertext = append(ciphertext, tag...)
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	return gcm.Open(nil, nonce, ciphertext, aad)
+}
+
 // encryptCBC encrypts using CBC mode (v1 wire format).
 func (d *AESDriver) encryptCBC(plaintext []byte) (string, error) {
 	// Create cipher block
