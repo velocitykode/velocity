@@ -43,6 +43,14 @@ func (m *mockEncryptor) DecryptBytes(payload string) ([]byte, error) {
 	return []byte(result), err
 }
 
+func (m *mockEncryptor) EncryptBytesWithAAD(plaintext, _ []byte) (string, error) {
+	return m.EncryptBytes(plaintext)
+}
+
+func (m *mockEncryptor) DecryptBytesWithAAD(payload string, _ []byte) ([]byte, error) {
+	return m.DecryptBytes(payload)
+}
+
 func (m *mockEncryptor) GenerateKey() (string, error) {
 	return "test-key-32-bytes-long-for-test!", nil
 }
