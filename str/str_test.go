@@ -1,6 +1,7 @@
 package str
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -737,6 +738,39 @@ func TestRandom(t *testing.T) {
 	result := Random(10)
 	if len(result) != 10 {
 		t.Errorf("Random length = %d; want 10", len(result))
+	}
+}
+
+func TestRandom_Default(t *testing.T) {
+	if got := len(Random()); got != 16 {
+		t.Errorf("Random() length = %d; want 16", got)
+	}
+}
+
+func TestRandom_Zero(t *testing.T) {
+	if got := Random(0); got != "" {
+		t.Errorf("Random(0) = %q; want empty string", got)
+	}
+}
+
+func TestRandom_NotDeterministic(t *testing.T) {
+	a := Random(32)
+	b := Random(32)
+	if a == b {
+		t.Fatalf("Random(32) returned identical strings on consecutive calls: %q", a)
+	}
+}
+
+func TestRandom_AlphabetMembership(t *testing.T) {
+	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	out := Random(64)
+	if len(out) != 64 {
+		t.Fatalf("Random(64) length = %d; want 64", len(out))
+	}
+	for i, r := range out {
+		if !strings.ContainsRune(alphabet, r) {
+			t.Fatalf("Random(64) byte %d = %q not in alphabet", i, r)
+		}
 	}
 }
 

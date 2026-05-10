@@ -1,6 +1,7 @@
 package str
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"strings"
 	"unicode"
@@ -413,19 +414,26 @@ func Position(haystack, needle string) int {
 	return strings.Index(haystack, needle)
 }
 
-// Random generates a random string of the specified length.
+// Random generates a cryptographically random alphanumeric string of the
+// specified length (default 16). Panics if the system entropy source fails.
 func Random(length ...int) string {
 	n := 16
 	if len(length) > 0 {
 		n = length[0]
 	}
+	if n <= 0 {
+		return ""
+	}
 
 	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	result := make([]byte, n)
-	for i := range result {
-		result[i] = letters[i%len(letters)]
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		panic("str.Random: crypto/rand failed: " + err.Error())
 	}
-	return string(result)
+	for i, b := range buf {
+		buf[i] = letters[int(b)%len(letters)]
+	}
+	return string(buf)
 }
 
 // Repeat repeats the string.
