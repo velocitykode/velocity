@@ -71,6 +71,15 @@ func TestNewRedisStore_ConnectionFailure(t *testing.T) {
 	})
 }
 
+func TestRedisStore_Shutdown_NilContext(t *testing.T) {
+	store, mr := newTestRedisStore(t, "")
+	defer mr.Close()
+
+	if err := store.Shutdown(nil); err != nil {
+		t.Fatalf("Shutdown(nil) returned error: %v", err)
+	}
+}
+
 func TestRedisStore_Get(t *testing.T) {
 	tests := []struct {
 		name      string

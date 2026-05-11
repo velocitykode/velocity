@@ -68,6 +68,9 @@ func NewRedisStore(ctx context.Context, prefix string, host string, port int, pa
 // Close is synchronous, so the deadline is only consulted when it is
 // already cancelled.
 func (s *RedisStore) Shutdown(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
