@@ -103,19 +103,19 @@ func renderOperatorTemplate(g QueryGrammar, cond Condition, argIndex int, args *
 func bindOperatorValue(spec *OperatorSpec, val any, argIndex int, args *[]any, placeholderFmt string) (string, int) {
 	switch spec.ParamShape {
 	case ParamScalar, ParamJSON:
-		ph := fmt.Sprintf(placeholderFmt, argIndex)
+		ph := renderPlaceholder(placeholderFmt, argIndex)
 		*args = append(*args, val)
 		return ph, argIndex + 1
 	case ParamSlice, ParamArray:
 		values, ok := val.([]any)
 		if !ok || len(values) == 0 {
-			ph := fmt.Sprintf(placeholderFmt, argIndex)
+			ph := renderPlaceholder(placeholderFmt, argIndex)
 			*args = append(*args, val)
 			return ph, argIndex + 1
 		}
 		var parts []string
 		for _, v := range values {
-			parts = append(parts, fmt.Sprintf(placeholderFmt, argIndex))
+			parts = append(parts, renderPlaceholder(placeholderFmt, argIndex))
 			argIndex++
 			*args = append(*args, v)
 		}
@@ -125,7 +125,22 @@ func bindOperatorValue(spec *OperatorSpec, val any, argIndex int, args *[]any, p
 		}
 		return "(" + joined + ")", argIndex
 	}
-	ph := fmt.Sprintf(placeholderFmt, argIndex)
+	ph := renderPlaceholder(placeholderFmt, argIndex)
 	*args = append(*args, val)
 	return ph, argIndex + 1
+}
+
+// renderPlaceholder formats a single bound-parameter placeholder for the
+// active dialect. Indexed dialects (postgres) pass a format string with a
+// %d verb ("$%d") that resolves to "$1", "$2", ... Non-indexed dialects
+// (mysql, sqlite) pass a literal placeholder ("?") that has no verb to
+// substitute; passing such a literal through fmt.Sprintf with an extra int
+// would emit "?%!(EXTRA int=N)" and corrupt the SQL the moment either
+// driver registers an extension operator. Detect the no-verb case and
+// return the placeholder verbatim.
+func renderPlaceholder(placeholderFmt string, argIndex int) string {
+	if strings.Contains(placeholderFmt, "%") {
+		return fmt.Sprintf(placeholderFmt, argIndex)
+	}
+	return placeholderFmt
 }
