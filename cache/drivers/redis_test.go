@@ -75,6 +75,7 @@ func TestRedisStore_Shutdown_NilContext(t *testing.T) {
 	store, mr := newTestRedisStore(t, "")
 	defer mr.Close()
 
+	//lint:ignore SA1012 deliberately exercising the nil-ctx defensive guard
 	if err := store.Shutdown(nil); err != nil {
 		t.Fatalf("Shutdown(nil) returned error: %v", err)
 	}
