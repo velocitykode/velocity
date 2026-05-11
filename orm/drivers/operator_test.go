@@ -1,6 +1,9 @@
 package drivers
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestOperatorRegistry_PerDriver pins the per-driver registry shape so a
 // future change cannot silently widen or shrink the dialect-specific
@@ -127,5 +130,31 @@ func TestRenderOperatorTemplate_Postgres(t *testing.T) {
 				t.Errorf("nextIdx: got %d, want %d", nextIdx, 1+len(tt.wantArgs))
 			}
 		})
+	}
+}
+
+// TestRenderOperatorTemplate_NonIndexedPlaceholder guards against a latent
+// bug where bindOperatorValue ran the literal "?" placeholder used by
+// mysql / sqlite through fmt.Sprintf with an extra int arg, producing
+// "?%!(EXTRA int=N)" and corrupting the emitted SQL. The grammar callsite
+// passes "?" verbatim as placeholderFmt; the rendered fragment must
+// contain a literal "?" and no fmt-error sentinel.
+func TestRenderOperatorTemplate_NonIndexedPlaceholder(t *testing.T) {
+	g := &SQLiteGrammar{}
+	spec := OperatorSpec{
+		Op:         "@>",
+		Arity:      1,
+		ParamShape: ParamScalar,
+		Template:   "{{lhs}} {{op}} {{rhs}}",
+	}
+	cond := Condition{Column: "processes", Operator: "@>", Value: "x", Spec: &spec}
+	args := []any{}
+	fragment, _ := renderOperatorTemplate(g, cond, 1, &args, "?")
+
+	if !strings.Contains(fragment, "?") {
+		t.Errorf("fragment missing literal placeholder: %q", fragment)
+	}
+	if strings.Contains(fragment, "%!(EXTRA") {
+		t.Errorf("fragment contains fmt-error sentinel: %q", fragment)
 	}
 }
