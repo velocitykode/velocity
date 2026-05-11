@@ -5,6 +5,15 @@ import (
 	"strconv"
 )
 
+// Default values for gRPC configuration. Sourced once here so NewServer,
+// NewGateway, and LoadConfig agree on what "no env, no option" means.
+const (
+	defaultGRPCPort     = "50051"
+	defaultGatewayPort  = "8080"
+	defaultGRPCEndpoint = "localhost:" + defaultGRPCPort
+	defaultMaxMsgSize   = 4 * 1024 * 1024
+)
+
 // Config holds gRPC configuration loaded from environment
 type Config struct {
 	// Server configuration
@@ -27,12 +36,12 @@ type Config struct {
 //   - GRPC_ENDPOINT: gRPC endpoint for gateway (default: localhost:50051)
 func LoadConfig() *Config {
 	return &Config{
-		ServerPort:       envOr("GRPC_PORT", "50051"),
+		ServerPort:       envOr("GRPC_PORT", defaultGRPCPort),
 		EnableReflection: envOr("GRPC_REFLECTION", "false") == "true",
-		MaxRecvMsgSize:   envInt("GRPC_MAX_RECV_SIZE", 4*1024*1024),
-		MaxSendMsgSize:   envInt("GRPC_MAX_SEND_SIZE", 4*1024*1024),
-		GatewayPort:      envOr("GATEWAY_PORT", "8080"),
-		GRPCEndpoint:     envOr("GRPC_ENDPOINT", "localhost:50051"),
+		MaxRecvMsgSize:   envInt("GRPC_MAX_RECV_SIZE", defaultMaxMsgSize),
+		MaxSendMsgSize:   envInt("GRPC_MAX_SEND_SIZE", defaultMaxMsgSize),
+		GatewayPort:      envOr("GATEWAY_PORT", defaultGatewayPort),
+		GRPCEndpoint:     envOr("GRPC_ENDPOINT", defaultGRPCEndpoint),
 	}
 }
 

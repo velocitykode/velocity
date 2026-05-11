@@ -43,15 +43,23 @@ type Server struct {
 // ServerOption configures the Server
 type ServerOption func(*Server)
 
-// NewServer creates a new gRPC server with the given options
+// NewServer creates a new gRPC server with the given options. Defaults are
+// sourced from environment variables (via LoadConfig) so behaviour matches
+// the rest of the framework: GRPC_PORT / GRPC_REFLECTION /
+// GRPC_MAX_RECV_SIZE / GRPC_MAX_SEND_SIZE are honoured if set. Explicit
+// ServerOption arguments still override the env-derived defaults.
 func NewServer(opts ...ServerOption) *Server {
+	cfg := LoadConfig()
 	s := &Server{
-		port:               "50051",
-		enableReflection:   false,
+		port:               cfg.ServerPort,
+		enableReflection:   cfg.EnableReflection,
 		unaryInterceptors:  make([]grpc.UnaryServerInterceptor, 0),
 		streamInterceptors: make([]grpc.StreamServerInterceptor, 0),
 		registrations:      make([]RegistrationFunc, 0),
-		serverOptions:      make([]grpc.ServerOption, 0),
+		serverOptions: []grpc.ServerOption{
+			grpc.MaxRecvMsgSize(cfg.MaxRecvMsgSize),
+			grpc.MaxSendMsgSize(cfg.MaxSendMsgSize),
+		},
 	}
 
 	for _, opt := range opts {

@@ -50,10 +50,16 @@ type GatewayRegistrationFunc func(ctx context.Context, mux *runtime.ServeMux, en
 // GatewayOption configures the Gateway
 type GatewayOption func(*Gateway)
 
-// NewGateway creates a new HTTP gateway with the given options
+// NewGateway creates a new HTTP gateway with the given options. Defaults
+// are sourced from environment variables (via LoadConfig) so behaviour
+// matches the rest of the framework: GATEWAY_PORT and GRPC_ENDPOINT are
+// honoured if set. Explicit GatewayOption arguments still override the
+// env-derived defaults.
 func NewGateway(opts ...GatewayOption) *Gateway {
+	cfg := LoadConfig()
 	g := &Gateway{
-		port:          "8080",
+		port:          cfg.GatewayPort,
+		grpcEndpoint:  cfg.GRPCEndpoint,
 		registrations: make([]GatewayRegistrationFunc, 0),
 		muxOptions: []runtime.ServeMuxOption{
 			// Use JSON names and emit defaults
