@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -179,7 +180,7 @@ func (r *RedisDriver) PopCtxWithTrace(ctx context.Context, queueName string) (Jo
 		return nil, tc, err
 	}
 	// First, move any ready delayed jobs to the main queue
-	if err := r.moveDelayedJobs(queueName); err != nil {
+	if err := r.moveDelayedJobs(ctx, queueName); err != nil {
 		return nil, tc, err
 	}
 
@@ -291,8 +292,14 @@ func (r *RedisDriver) Failed(job Job, err error, queueName string) error {
 	return nil
 }
 
-// moveDelayedJobs moves ready delayed jobs to the main queue
-func (r *RedisDriver) moveDelayedJobs(queueName string) error {
+// moveDelayedJobs moves ready delayed jobs to the main queue. The supplied
+// ctx is honoured on every Redis round-trip so worker shutdown preempts the
+// loop instead of waiting on the driver-lifetime r.ctx.
+func (r *RedisDriver) moveDelayedJobs(ctx context.Context, queueName string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	delayedKey := r.getDelayedKey(queueName)
 	queueKey := r.getQueueKey(queueName)
 
@@ -301,8 +308,12 @@ func (r *RedisDriver) moveDelayedJobs(queueName string) error {
 	// Use ZPOPMIN to atomically get and remove ready jobs
 	// This prevents multiple workers from processing the same delayed job
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
 		// Check if the minimum score is ready
-		minScore, err := r.client.ZRangeWithScores(r.ctx, delayedKey, 0, 0).Result()
+		minScore, err := r.client.ZRangeWithScores(ctx, delayedKey, 0, 0).Result()
 		if err != nil || len(minScore) == 0 {
 			return nil // No delayed jobs
 		}
@@ -312,20 +323,48 @@ func (r *RedisDriver) moveDelayedJobs(queueName string) error {
 		}
 
 		// Atomically pop the job if it's still ready
-		result, err := r.client.ZPopMin(r.ctx, delayedKey, 1).Result()
+		result, err := r.client.ZPopMin(ctx, delayedKey, 1).Result()
 		if err != nil || len(result) == 0 {
 			return nil
 		}
 
-		// Push to main queue
-		member := result[0].Member.(string)
-		if err := r.client.RPush(r.ctx, queueKey, member).Err(); err != nil {
-			// If push fails, put it back in delayed queue
-			r.client.ZAdd(r.ctx, delayedKey, redis.Z{
+		// The ZSET member should always be the JSON payload string we wrote
+		// in PushDelayedCtx, but defend against go-redis returning an
+		// unexpected type. Surface the bad entry via JobFailed so it isn't
+		// silently dropped, then continue: ZPopMin already removed it from
+		// the delayed set.
+		member, ok := result[0].Member.(string)
+		if !ok {
+			dispatchJobFailed(
+				r.dispatchEvent,
+				ctx,
+				"unknown",
+				queueName,
+				fmt.Errorf("velocity/queue: delayed ZSET member has unexpected type %T", result[0].Member),
+				0,
+			)
+			continue
+		}
+
+		if rpushErr := r.client.RPush(ctx, queueKey, member).Err(); rpushErr != nil {
+			// The job is already gone from the delayed ZSET (ZPopMin
+			// consumed it) but never made it to the main list. Recovery
+			// must use a detached context with its own bounded budget:
+			// the caller's ctx may be the cancelled worker shutdown ctx
+			// that produced rpushErr in the first place, and reusing it
+			// here would guarantee the recovery ZAdd fails too, silently
+			// dropping the job. A fresh background ctx with a short
+			// timeout gives recovery a chance even mid-shutdown.
+			recoveryCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			zaddErr := r.client.ZAdd(recoveryCtx, delayedKey, redis.Z{
 				Score:  result[0].Score,
 				Member: member,
-			})
-			return err
+			}).Err()
+			cancel()
+			if zaddErr != nil {
+				return errors.Join(rpushErr, zaddErr)
+			}
+			return rpushErr
 		}
 	}
 }
