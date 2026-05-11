@@ -68,6 +68,69 @@ func TestRegexRule_CatastrophicBacktrackingTimeout(t *testing.T) {
 	}
 }
 
+// TestRegexRule_RejectsCatastrophicPatternAtCompileTime asserts that the
+// classic ReDoS pattern `^(a+)+$` is refused by `compileAnchored` (the
+// AST-level analyzer) and never reaches `re.MatchString`. This is the
+// primary defence: Go's regexp package has no preemption, so a runtime
+// timeout cannot stop a pathological match, it only abandons the
+// goroutine that keeps burning CPU.
+func TestRegexRule_RejectsCatastrophicPatternAtCompileTime(t *testing.T) {
+	bad := `^(a+)+$`
+	// Standard ReDoS attack input: many `a`s followed by a non-matching
+	// suffix. On a backtracking engine this would exhibit exponential
+	// time; we assert it is rejected synchronously before evaluation.
+	input := strings.Repeat("a", 20) + "X"
+
+	// Bypass RegexRule's own timeout fallback and prove the analyzer
+	// rejects the pattern up-front.
+	if _, err := compileAnchored(bad); err == nil {
+		t.Fatalf("compileAnchored(%q) returned nil error; want analyzer rejection", bad)
+	}
+
+	// And the public rule must surface the rejection.
+	start := time.Now()
+	err := RegexRule("code", input, []string{bad}, nil)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatalf("RegexRule accepted catastrophic pattern %q", bad)
+	}
+	// Compile-time rejection is synchronous; it should be far below
+	// the 10ms evaluation timeout.
+	if elapsed >= regexEvalTimeout {
+		t.Fatalf("RegexRule took %v (>= %v): looks like rejection ran via the runtime timeout, not the AST analyzer", elapsed, regexEvalTimeout)
+	}
+}
+
+// TestAnalyzeReDoSRisk_NestedShapes covers the AST walker directly so the
+// matrix of nested-repetition shapes is exhaustive without going through
+// RegexRule's own anchoring/parameter handling.
+func TestAnalyzeReDoSRisk_NestedShapes(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		wantErr bool
+	}{
+		{"plain anchored char class", `^[A-Z]+$`, false},
+		{"plain bounded repetition", `^a{2,5}$`, false},
+		{"alternation, no nesting", `^(foo|bar)$`, false},
+		{"quantified group, no inner quantifier", `^(ab)+$`, false},
+		{"two sibling unbounded reps", `^a+b+$`, false},
+
+		{"nested plus over plus", `^(a+)+$`, true},
+		{"nested star over star", `^(a*)*$`, true},
+		{"nested plus over star", `^(a*)+$`, true},
+		{"nested unbounded repeat", `^(a{1,})+$`, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := analyzeReDoSRisk(tt.pattern)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("analyzeReDoSRisk(%q) err=%v, wantErr=%v", tt.pattern, err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestJSONRule(t *testing.T) {
 	tests := []struct {
 		name    string
