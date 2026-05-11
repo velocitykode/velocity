@@ -1,0 +1,49 @@
+package providers
+
+import (
+	"context"
+	"os"
+
+	// vel:grpc:imports
+	{{ .ProtoAlias }} "{{ .ModulePath }}/api/gen/go/{{ .PackageName }}/v1"
+	"{{ .ModulePath }}/internal/grpc/services"
+
+	"github.com/velocitykode/velocity"
+	velgrpc "github.com/velocitykode/velocity/grpc"
+	googleGrpc "google.golang.org/grpc"
+)
+
+type GRPCProvider struct {
+	server *velgrpc.Server
+}
+
+func (p *GRPCProvider) Register(s *velocity.Services) error {
+	port := os.Getenv("GRPC_PORT")
+	if port == "" {
+		port = "50051"
+	}
+
+	p.server = velgrpc.NewServer(
+		velgrpc.WithPort(port),
+		velgrpc.WithLogger(s.Log),
+	)
+
+	// vel:grpc:services
+	{{ .VarName }} := services.New{{ .ServiceName }}()
+	p.server.RegisterService(func(srv interface{}) {
+		{{ .ProtoAlias }}.Register{{ .ServiceName }}Server(srv.(*googleGrpc.Server), {{ .VarName }})
+	})
+
+	return nil
+}
+
+func (p *GRPCProvider) Boot(s *velocity.Services) error {
+	if err := p.server.Build(); err != nil {
+		return err
+	}
+	return p.server.StartAsync()
+}
+
+func (p *GRPCProvider) Shutdown(ctx context.Context) error {
+	return p.server.Shutdown(ctx)
+}

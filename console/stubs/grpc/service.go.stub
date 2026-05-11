@@ -1,0 +1,18 @@
+package services
+
+import (
+	{{ .ProtoAlias }} "{{ .ModulePath }}/api/gen/go/{{ .PackageName }}/v1"
+)
+
+type {{ .ServiceName }} struct {
+	{{ .ProtoAlias }}.Unimplemented{{ .ServiceName }}Server
+}
+
+func New{{ .ServiceName }}() *{{ .ServiceName }} {
+	return &{{ .ServiceName }}{}
+}
+{{ range .Methods }}
+{{ .Signature }} {
+{{ .Body }}
+}
+{{ end }}

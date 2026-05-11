@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package {{ .PackageName }}.v1;
+
+option go_package = "{{ .ModulePath }}/api/gen/go/{{ .PackageName }}/v1;{{ .PackageName }}v1";
+
+service {{ .ServiceName }} {
+{{- range .RPCs }}
+  {{ .Line }}
+{{- end }}
+}
+{{ range .Messages }}
+message {{ .Request }} {
+}
+
+message {{ .Response }} {
+}
+{{ end }}

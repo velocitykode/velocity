@@ -62,6 +62,9 @@ func newCommandRegistry() *commandRegistry {
 		makePolicyCmd{},
 		makeProviderCmd{},
 		makeCommandCmd{},
+		makeGRPCServiceCmd{},
+		makeGRPCRPCCmd{},
+		makeGRPCGenCmd{},
 		// Database
 		dbWipeCmd{},
 		// Cache
@@ -171,6 +174,9 @@ func (a *App) printHelp() {
 	cli.Muted("  make:policy        Create a new policy")
 	cli.Muted("  make:provider      Create a new service provider")
 	cli.Muted("  make:command       Create a new command")
+	cli.Muted("  make:grpc:service  Scaffold a gRPC service (proto + impl + provider)")
+	cli.Muted("  make:grpc:rpc      Add an rpc to an existing gRPC service")
+	cli.Muted("  make:grpc:gen      Run `buf generate` in api/proto")
 	cli.Newline()
 
 	cli.Info("Custom Commands")
