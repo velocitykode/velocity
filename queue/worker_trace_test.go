@@ -29,8 +29,8 @@ func (j *traceCapturingJob) HandleCtx(ctx context.Context) error {
 	}{t, s, p}
 	return nil
 }
-func (j *traceCapturingJob) Failed(err error)   {}
-func (j *traceCapturingJob) JobID() string      { return j.ID }
+func (j *traceCapturingJob) Failed(err error) {}
+func (j *traceCapturingJob) JobID() string    { return j.ID }
 
 func waitForTrace(t *testing.T, ch <-chan struct {
 	traceID  string
