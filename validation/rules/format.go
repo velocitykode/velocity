@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"regexp/syntax"
 	"strings"
 	"sync"
 	"time"
@@ -30,21 +31,98 @@ var (
 	regexCache   = map[string]*regexp.Regexp{}
 )
 
-// suspiciousNested catches the most common catastrophic-backtracking shapes:
-// a quantified group whose body ends in another quantifier, e.g. (a+)+,
-// (.*)*, (\w+)+. This is not a full safety proof — Go's RE2 engine is
-// linear-time for the regexes it supports, but we still guard callers who
-// embed a Perl-compatible `(?P<name>...)` pattern or similar.
-var suspiciousNested = regexp.MustCompile(`\([^()]*[+*][^()]*\)[+*]`)
+// maxRepetitionNestingDepth caps how deeply repetition operators
+// (`*`, `+`, `{n,}`) may nest before we refuse the pattern. Three levels is
+// already enough to express any sane validation regex; deeper nesting is
+// almost always a footgun that risks catastrophic backtracking on engines
+// without RE2's linear-time guarantees.
+const maxRepetitionNestingDepth = 3
+
+// analyzeReDoSRisk parses `pattern` with `regexp/syntax` (Perl flavour) and
+// walks the resulting AST looking for two well-known catastrophic shapes:
+//
+//  1. nested unbounded repetition such as `(a+)+`, `(a*)*`, or `(a|a)+`,
+//     where the inner quantifier produces multiple ways to consume the same
+//     input and the outer quantifier multiplies them; and
+//  2. excessive repetition nesting in general (more than
+//     `maxRepetitionNestingDepth` levels of `OpStar`/`OpPlus`/`OpRepeat`).
+//
+// Go's `regexp` package is RE2-based and runs in linear time, so neither
+// shape can blow up the engine. But the package exposes no preemption: a
+// caller that bounds evaluation with a `select` + timeout still leaks a
+// goroutine that pegs a CPU until the match completes. Pre-rejecting the
+// pattern at compile time means the timeout becomes a fallback, not the
+// only line of defence.
+func analyzeReDoSRisk(pattern string) error {
+	tree, err := syntax.Parse(pattern, syntax.Perl)
+	if err != nil {
+		// Surface the parse error verbatim so the caller can report
+		// "invalid regex" rather than masking it as a ReDoS problem.
+		return err
+	}
+	return walkForReDoS(tree, 0, false)
+}
+
+// walkForReDoS recurses the syntax tree. `repDepth` counts the number of
+// enclosing unbounded-repetition nodes; `insideUnboundedRep` is true if any
+// ancestor is an unbounded repetition (`*`, `+`, or `{n,}` with no upper
+// bound). When a second unbounded-repetition node is found while
+// `insideUnboundedRep` is true, that's a nested-unbounded-repetition shape
+// and we refuse the pattern.
+func walkForReDoS(re *syntax.Regexp, repDepth int, insideUnboundedRep bool) error {
+	if re == nil {
+		return nil
+	}
+
+	unbounded := isUnboundedRepetition(re)
+	if unbounded {
+		if insideUnboundedRep {
+			return fmt.Errorf("regex contains nested unbounded repetition that risks catastrophic backtracking")
+		}
+		repDepth++
+		if repDepth > maxRepetitionNestingDepth {
+			return fmt.Errorf("regex nests repetition operators more than %d levels deep", maxRepetitionNestingDepth)
+		}
+		insideUnboundedRep = true
+	}
+
+	for _, sub := range re.Sub {
+		if err := walkForReDoS(sub, repDepth, insideUnboundedRep); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// isUnboundedRepetition reports whether `re` is a repetition node with no
+// finite upper bound: `*`, `+`, or `{n,}`. Bounded repetitions like `{2,5}`
+// cannot drive exponential blow-up on their own, so we ignore them here.
+func isUnboundedRepetition(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpStar, syntax.OpPlus:
+		return true
+	case syntax.OpRepeat:
+		// Max == -1 in regexp/syntax means "no upper bound" (e.g. {3,}).
+		return re.Max == -1
+	}
+	return false
+}
 
 // compileAnchored returns the compiled form of `pattern`, rejecting patterns
 // that are not `^...$`-anchored or that smell of catastrophic backtracking.
+//
+// The ReDoS guard runs against the parsed `regexp/syntax` tree (see
+// `analyzeReDoSRisk`) and is the primary defence: Go's `regexp` package has
+// no preemption, so a runtime evaluation timeout cannot actually stop a
+// pathological match, it only abandons the goroutine that keeps burning
+// CPU. Pre-rejecting risky shapes here means the runtime select+timeout in
+// `RegexRule` is belt-and-suspenders, not the only line of defence.
 func compileAnchored(pattern string) (*regexp.Regexp, error) {
 	if !strings.HasPrefix(pattern, "^") || !strings.HasSuffix(pattern, "$") {
 		return nil, fmt.Errorf("regex must be anchored with ^ and $")
 	}
-	if suspiciousNested.MatchString(pattern) {
-		return nil, fmt.Errorf("regex contains nested quantifiers that risk catastrophic backtracking")
+	if err := analyzeReDoSRisk(pattern); err != nil {
+		return nil, err
 	}
 
 	regexCacheMu.RLock()
@@ -93,7 +171,11 @@ func RegexRule(field string, value interface{}, params []string, data map[string
 		return fmt.Errorf("The %s field format is invalid.", field)
 	}
 
-	// Bound evaluation on a goroutine.
+	// Bound evaluation on a goroutine. Note: Go's `regexp` package has no
+	// preemption, so this select abandons the result but the worker goroutine
+	// keeps burning CPU until MatchString returns. The primary defence is
+	// the AST-level ReDoS check in compileAnchored (analyzeReDoSRisk); this
+	// timeout is belt-and-suspenders for unforeseen edge cases.
 	type result struct{ matched bool }
 	done := make(chan result, 1)
 	go func() {
