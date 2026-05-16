@@ -78,12 +78,12 @@ func injectGRPCServiceRegistration(path, packageName, serviceName, protoAlias, m
 	}
 
 	if !strings.Contains(content, grpcImportsMarker) || !strings.Contains(content, grpcServicesMarker) {
-		cli.Muted(fmt.Sprintf("grpc_provider.go missing markers; add the following manually:"))
+		cli.Muted("grpc_provider.go missing markers; add the following manually:")
 		cli.Muted(fmt.Sprintf("  import: %s \"%s/api/gen/go/%s/v1\"", protoAlias, modulePath, packageName))
 		cli.Muted(fmt.Sprintf("  in Register(): %s := services.New%s()", varName, serviceName))
-		cli.Muted(fmt.Sprintf("                 p.server.RegisterService(func(srv interface{}) {"))
+		cli.Muted("                 p.server.RegisterService(func(srv interface{}) {")
 		cli.Muted(fmt.Sprintf("                     %s.Register%sServer(srv.(*googleGrpc.Server), %s)", protoAlias, serviceName, varName))
-		cli.Muted(fmt.Sprintf("                 })"))
+		cli.Muted("                 })")
 		return nil
 	}
 
