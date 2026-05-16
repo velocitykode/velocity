@@ -40,7 +40,17 @@ type Validator interface {
 //
 // Pipe-delimited tokens inside a single slice element are accepted for
 // backward compatibility; the validator splits on '|' before evaluating.
-type Rules map[string][]string
+//
+// Rules is a type alias (not a defined type) so that adopter methods
+// declared with the underlying map type, e.g.
+//
+//	func (r *RegisterRequest) Rules() map[string][]string { ... }
+//
+// still satisfy interfaces declared against validation.Rules (notably
+// vform.FormRequest). Using a defined type here would cause those
+// methods to silently fail the interface assertion in vform, skipping
+// validation entirely.
+type Rules = map[string][]string
 
 // PipeRules is the legacy pipe-string form of validation rules. Each field
 // maps to a single string of '|'-delimited rule tokens. Convert to the

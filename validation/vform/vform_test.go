@@ -441,6 +441,98 @@ func TestNewRules_DropsEmptyTokens(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Validate[T]: plain map return type (alias regression guard)
+// ---------------------------------------------------------------------------
+
+// plainMapRulesRequest declares Rules with the underlying map[string][]string
+// type rather than the canonical validation.Rules alias. Before validation.Rules
+// became a type alias, this exact shape silently failed the FormRequest
+// interface assertion and validation was skipped entirely. The compile-time
+// _ = FormRequest(...) assertion plus this runtime test guard against that
+// regression.
+type plainMapRulesRequest struct {
+	Email                string `json:"email"`
+	Password             string `json:"password"`
+	PasswordConfirmation string `json:"password_confirmation"`
+}
+
+func (plainMapRulesRequest) Rules() map[string][]string {
+	return map[string][]string{
+		"email":    {"required", "email"},
+		"password": {"required", "min:8", "confirmed"},
+	}
+}
+
+// Compile-time check: plain map return type must satisfy FormRequest.
+var _ FormRequest = plainMapRulesRequest{}
+
+func TestValidate_PlainMapRulesReturnType_RunsValidation(t *testing.T) {
+	// password fails "confirmed" (no matching confirmation). If the alias
+	// fix regresses, this returns nil *Result and the assertion below trips.
+	ctx, _ := jsonCtx(t, `{"email":"a@b.com","password":"longenough","password_confirmation":"different"}`)
+
+	_, result, err := Validate[plainMapRulesRequest](ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("validation skipped: Rules() map[string][]string did not satisfy FormRequest interface (alias regression)")
+	}
+	if !result.HasErrors() {
+		t.Fatal("expected confirmed-rule failure")
+	}
+	if result.First("password") == "" {
+		t.Error("expected password confirmation error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Validate[T]: mismatched-shape Rules method guardrail
+// ---------------------------------------------------------------------------
+
+// badRulesShape declares a Rules method with an incompatible return type.
+// The guardrail in Validate[T] must report this loudly instead of falling
+// through to a silent bind-without-validation.
+type badRulesShape struct {
+	Name string `json:"name"`
+}
+
+func (badRulesShape) Rules() string { return "required" }
+
+func TestValidate_MismatchedRulesSignature_ReturnsLoudError(t *testing.T) {
+	ctx, _ := jsonCtx(t, `{"name":"x"}`)
+
+	_, _, err := Validate[badRulesShape](ctx)
+	if err == nil {
+		t.Fatal("expected loud error for mismatched Rules() signature, got nil")
+	}
+	if !strings.Contains(err.Error(), "Rules method") {
+		t.Errorf("expected error to mention Rules method, got %q", err.Error())
+	}
+}
+
+// noRulesMethod has no Rules method at all. Guardrail must not fire and
+// Validate must skip validation per the existing nonValidating contract.
+type noRulesMethod struct {
+	Name string `json:"name"`
+}
+
+func TestValidate_NoRulesMethod_GuardrailDoesNotFire(t *testing.T) {
+	ctx, _ := jsonCtx(t, `{"name":"Ali"}`)
+
+	form, result, err := Validate[noRulesMethod](ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != nil {
+		t.Fatalf("expected nil *Result, got %+v", result)
+	}
+	if form == nil || form.Name != "Ali" {
+		t.Fatalf("expected form bound, got %+v", form)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // utility helpers
 // ---------------------------------------------------------------------------
 

@@ -5,6 +5,7 @@ package vform
 
 import (
 	"fmt"
+	"reflect"
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/orm"
@@ -57,6 +58,13 @@ func Validate[T any](ctx *router.Context) (*T, *Result, error) {
 
 	fr, ok := any(req).(FormRequest)
 	if !ok {
+		if sig, has := mismatchedRulesMethod(req); has {
+			return nil, nil, fmt.Errorf(
+				"velocity/vform: %T has a Rules method but its signature %s does not satisfy vform.FormRequest; "+
+					"change the signature to `Rules() validation.Rules` (alias for map[string][]string) or `Rules() map[string][]string`",
+				req, sig,
+			)
+		}
 		if err := ctx.BindAuto(req); err != nil {
 			return nil, nil, fmt.Errorf("velocity/vform: bind failed: %w", err)
 		}
@@ -119,6 +127,31 @@ func Form[T any](ctx *router.Context) (*T, error) {
 	}
 
 	return nil, router.ErrValidationAborted
+}
+
+// mismatchedRulesMethod inspects req for a method literally named "Rules"
+// whose signature does not satisfy vform.FormRequest. It is the guardrail
+// that turns a silent-skip footgun into a loud error: if an adopter typed
+// the Rules method with an incompatible return type (e.g. a future shape
+// change, or a stray helper named Rules), Validate[T] reports it instead
+// of skipping validation. Returns the offending signature string and true
+// when a mismatch is detected.
+func mismatchedRulesMethod(req any) (string, bool) {
+	v := reflect.ValueOf(req)
+	if !v.IsValid() {
+		return "", false
+	}
+	m := v.MethodByName("Rules")
+	if !m.IsValid() {
+		return "", false
+	}
+	t := m.Type()
+	// Compatible: zero inputs (method value already binds receiver), one
+	// output of type validation.Rules (which is map[string][]string).
+	if t.NumIn() == 0 && t.NumOut() == 1 && t.Out(0) == reflect.TypeOf(validation.Rules(nil)) {
+		return "", false
+	}
+	return t.String(), true
 }
 
 // safeView mirrors safeDB: returns the view engine without panicking when
