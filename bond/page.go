@@ -14,8 +14,12 @@ type OnceMeta struct {
 
 // Page represents an Inertia page response
 type Page struct {
-	Component      string                `json:"component"`
-	Props          Props                 `json:"props"`
+	Component string `json:"component"`
+	Props     Props  `json:"props"`
+	// Flash carries one-shot flash data per the Inertia v2 protocol. The
+	// client exposes it via usePage().flash and does NOT persist it in
+	// history. Omitted from the payload when empty.
+	Flash          map[string]any        `json:"flash,omitempty"`
 	URL            string                `json:"url"`
 	Version        string                `json:"version"`
 	EncryptHistory bool                  `json:"encryptHistory,omitempty"`

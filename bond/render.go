@@ -30,10 +30,21 @@ func (b *Bond) Render(w http.ResponseWriter, r *http.Request, component string, 
 		return err
 	}
 
-	// 5. Build page object
+	// 5. Build page object.
+	//
+	// Flash drains only on full responses. Inertia v2 clients skip the
+	// `flash` event on deferred-prop and partial requests, so consuming
+	// the bag here would silently lose the message: the bag clears
+	// server-side but the toast never fires client-side. The bag stays
+	// intact for the next full render.
+	var flash map[string]any
+	if !isPartial {
+		flash = b.flashFor(w, r)
+	}
 	page := Page{
 		Component:      component,
 		Props:          resolvedProps,
+		Flash:          flash,
 		URL:            r.URL.String(),
 		Version:        b.version,
 		EncryptHistory: b.encryptHistory,

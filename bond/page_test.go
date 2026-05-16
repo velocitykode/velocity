@@ -325,3 +325,105 @@ func TestPage_ToHTMLAttr_UnmarshalableValue_ReturnsError(t *testing.T) {
 		t.Error("expected error for unmarshalable value")
 	}
 }
+
+// --- Flash field JSON marshalling tests (Inertia v2 flash protocol) ---
+
+func TestPage_ToJSON_Flash_Omitted_WhenUnset(t *testing.T) {
+	page := Page{
+		Component: "Home",
+		Props:     Props{},
+		URL:       "/",
+		Version:   "1",
+	}
+
+	jsonStr, err := page.ToJSON()
+	if err != nil {
+		t.Fatalf("ToJSON failed: %v", err)
+	}
+
+	if strings.Contains(jsonStr, `"flash"`) {
+		t.Errorf("expected flash to be omitted when nil, got %s", jsonStr)
+	}
+}
+
+func TestPage_ToJSON_Flash_Included_WhenSet(t *testing.T) {
+	page := Page{
+		Component: "Home",
+		Props:     Props{},
+		Flash:     map[string]any{"error": "x"},
+		URL:       "/",
+		Version:   "1",
+	}
+
+	jsonStr, err := page.ToJSON()
+	if err != nil {
+		t.Fatalf("ToJSON failed: %v", err)
+	}
+
+	if !strings.Contains(jsonStr, `"flash":{"error":"x"}`) {
+		t.Errorf("expected flash:{error:x} in JSON, got %s", jsonStr)
+	}
+
+	// Round-trip parse to confirm structure.
+	var parsed Page
+	if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
+		t.Fatalf("failed to round-trip flash: %v", err)
+	}
+	if parsed.Flash == nil || parsed.Flash["error"] != "x" {
+		t.Errorf("expected parsed flash[error]='x', got %#v", parsed.Flash)
+	}
+}
+
+// TestPage_ToJSON_Flash_EmptyMap_Omitted documents the actual Go encoding/json
+// behavior for `omitempty` on a non-nil but zero-length map: it IS omitted.
+// (The encoder treats map kinds as empty when len(m) == 0, regardless of
+// nil-ness.) The Inertia v2 protocol expects "flash" absent when empty, so
+// this is exactly the behavior we want.
+func TestPage_ToJSON_Flash_EmptyMap_Omitted(t *testing.T) {
+	page := Page{
+		Component: "Home",
+		Props:     Props{},
+		Flash:     map[string]any{},
+		URL:       "/",
+		Version:   "1",
+	}
+
+	jsonStr, err := page.ToJSON()
+	if err != nil {
+		t.Fatalf("ToJSON failed: %v", err)
+	}
+
+	if strings.Contains(jsonStr, `"flash"`) {
+		t.Errorf("expected flash to be omitted for empty (non-nil) map, got %s", jsonStr)
+	}
+}
+
+// TestPage_ToJSON_Flash_PositionBetweenPropsAndURL asserts the field ordering
+// in the encoded JSON matches the struct declaration (Component, Props,
+// Flash, URL, ...). Inertia clients don't depend on key order, but the
+// position is load-bearing for snapshot tests and protocol parity with the
+// reference implementation, so we lock it in.
+func TestPage_ToJSON_Flash_PositionBetweenPropsAndURL(t *testing.T) {
+	page := Page{
+		Component: "Home",
+		Props:     Props{"k": "v"},
+		Flash:     map[string]any{"error": "x"},
+		URL:       "/home",
+		Version:   "1",
+	}
+
+	jsonStr, err := page.ToJSON()
+	if err != nil {
+		t.Fatalf("ToJSON failed: %v", err)
+	}
+
+	propsIdx := strings.Index(jsonStr, `"props"`)
+	flashIdx := strings.Index(jsonStr, `"flash"`)
+	urlIdx := strings.Index(jsonStr, `"url"`)
+	if propsIdx < 0 || flashIdx < 0 || urlIdx < 0 {
+		t.Fatalf("missing key in JSON: %s", jsonStr)
+	}
+	if !(propsIdx < flashIdx && flashIdx < urlIdx) {
+		t.Errorf("expected props < flash < url ordering, got %s", jsonStr)
+	}
+}

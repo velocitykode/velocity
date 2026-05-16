@@ -52,6 +52,18 @@ type UserProvider interface {
 	UpdateRememberToken(user Authenticatable, token string) error
 }
 
+// SessionAware is an optional capability interface implemented by guards
+// that back authentication with a request-scoped Session. Guards that do
+// not have a session (e.g. JWT/bearer-token) leave this unimplemented;
+// Manager.Session returns nil for those.
+type SessionAware interface {
+	// Session returns the Session attached to this request, loading from
+	// the cookie store on first call and caching in the request context
+	// for subsequent calls. Returns nil when no session is available
+	// (no cookie, decode error, or the guard does not maintain sessions).
+	Session(r *http.Request) Session
+}
+
 // Guard defines authentication guard interface
 type Guard interface {
 	// Check if user is authenticated
@@ -207,6 +219,22 @@ func (m *Manager) User(r *http.Request) Authenticatable {
 		return nil
 	}
 	return guard.User(r)
+}
+
+// Session returns the Session attached to the request via the default
+// guard, or nil when the guard does not implement SessionAware or no
+// session is available. Handlers use this to set flash messages or
+// read/write session data without reaching into a specific guard impl.
+func (m *Manager) Session(r *http.Request) Session {
+	guard, err := m.DefaultGuard()
+	if err != nil {
+		return nil
+	}
+	sa, ok := guard.(SessionAware)
+	if !ok {
+		return nil
+	}
+	return sa.Session(r)
 }
 
 // ID returns the authenticated user ID using the default guard.

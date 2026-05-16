@@ -365,6 +365,17 @@ func (g *SessionGuard) SetProvider(provider auth.UserProvider) {
 	g.provider = provider
 }
 
+// Session returns the request-scoped Session, loading from the cookie store
+// on first call and caching it in the request context for subsequent calls
+// when WithSessionContext has been applied to the request.
+//
+// Implements the auth.SessionAware capability so auth.Manager.Session(r)
+// can surface the session bag (including Flash / GetFlash / FlushFlash)
+// without consumers reaching into the guard directly.
+func (g *SessionGuard) Session(r *http.Request) auth.Session {
+	return g.getSession(r)
+}
+
 // getSession gets or creates session for request
 func (g *SessionGuard) getSession(r *http.Request) auth.Session {
 	// Check request context cache first

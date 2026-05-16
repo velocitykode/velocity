@@ -52,6 +52,11 @@ type Session interface {
 	Flash(key string, value interface{})
 	GetFlash(key string) interface{}
 
+	// FlushFlash returns the entire flash bag and clears it in one call.
+	// Returns nil (not an empty map) when the bag is empty so callers can
+	// rely on JSON omitempty / nil checks.
+	FlushFlash() map[string]interface{}
+
 	// Save session
 	Save(w http.ResponseWriter) error
 }
@@ -203,6 +208,21 @@ func (s *BaseSession) GetFlash(key string) interface{} {
 		s.modified = true
 	}
 	return value
+}
+
+// FlushFlash returns the entire flash bag and clears it. Returns nil when
+// the bag is empty so callers can omit empty flash payloads via JSON
+// omitempty without a separate length check.
+func (s *BaseSession) FlushFlash() map[string]interface{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.flash) == 0 {
+		return nil
+	}
+	out := s.flash
+	s.flash = make(map[string]interface{})
+	s.modified = true
+	return out
 }
 
 // Save saves session (implemented by stores)

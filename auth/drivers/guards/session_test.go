@@ -39,6 +39,14 @@ func (s *mockSession) GetFlash(key string) interface{} {
 	delete(s.flash, key)
 	return v
 }
+func (s *mockSession) FlushFlash() map[string]interface{} {
+	if len(s.flash) == 0 {
+		return nil
+	}
+	out := s.flash
+	s.flash = make(map[string]interface{})
+	return out
+}
 func (s *mockSession) Save(w http.ResponseWriter) error { return nil }
 
 // mockSessionStore implements auth.SessionStore for testing
@@ -217,4 +225,83 @@ func TestSessionGuard_RaceCondition(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+// TestSessionGuard_Session_ExportsGetSession verifies that the exported
+// Session method returns the same instance as the internal getSession path,
+// satisfying the auth.SessionAware contract.
+func TestSessionGuard_Session_ExportsGetSession(t *testing.T) {
+	guard := &SessionGuard{
+		provider: &mockUserProvider{},
+		store:    &mockSessionStore{},
+		config:   auth.SessionConfig{Name: "test_session"},
+		hasher:   auth.NewBcryptHasher(10),
+	}
+
+	// Compile-time check that SessionGuard satisfies auth.SessionAware.
+	var _ auth.SessionAware = guard
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req = WithSessionContext(req)
+
+	first := guard.Session(req)
+	if first == nil {
+		t.Fatal("Session() returned nil")
+	}
+
+	// Internal getSession should hit the same context cache.
+	internal := guard.getSession(req)
+	if internal != first {
+		t.Error("Session() and getSession() returned different instances within the same request")
+	}
+}
+
+// TestSessionGuard_Session_CachesWithinRequest confirms that two Session
+// calls on the same request (with WithSessionContext applied) reuse the
+// cached holder rather than reloading from the store.
+func TestSessionGuard_Session_CachesWithinRequest(t *testing.T) {
+	guard := &SessionGuard{
+		provider: &mockUserProvider{},
+		store:    &mockSessionStore{},
+		config:   auth.SessionConfig{Name: "test_session"},
+		hasher:   auth.NewBcryptHasher(10),
+	}
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.AddCookie(&http.Cookie{Name: "test_session", Value: "cookie-value"})
+	req = WithSessionContext(req)
+
+	first := guard.Session(req)
+	second := guard.Session(req)
+	if first == nil || second == nil {
+		t.Fatal("Session() returned nil")
+	}
+	if first != second {
+		t.Error("Session() returned different instances on repeated calls with WithSessionContext")
+	}
+}
+
+// TestSessionGuard_Session_WithoutContextLoadsFreshEachCall verifies that
+// without WithSessionContext, the guard falls back to loading from the
+// store every call. Both calls must return non-nil sessions.
+func TestSessionGuard_Session_WithoutContextLoadsFreshEachCall(t *testing.T) {
+	guard := &SessionGuard{
+		provider: &mockUserProvider{},
+		store:    &mockSessionStore{},
+		config:   auth.SessionConfig{Name: "test_session"},
+		hasher:   auth.NewBcryptHasher(10),
+	}
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.AddCookie(&http.Cookie{Name: "test_session", Value: "cookie-value"})
+
+	first := guard.Session(req)
+	if first == nil {
+		t.Fatal("first Session() returned nil")
+	}
+
+	second := guard.Session(req)
+	if second == nil {
+		t.Fatal("second Session() returned nil")
+	}
 }

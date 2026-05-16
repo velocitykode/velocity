@@ -96,10 +96,15 @@ type Bond struct {
 	// CSR container. SetSSRGateway is safe to call after New.
 	ssr SSRGateway
 
-	// Event dispatcher — wired by the framework via SetEventDispatcher
+	// Event dispatcher: wired by the framework via SetEventDispatcher
 	// and propagated to the SSR gateway so failures surface through
 	// the app's event bus.
 	eventDispatcher func(ctx context.Context, event interface{}) error
+
+	// flashProvider returns one-shot flash data for the request, which
+	// bond merges onto Page.Flash during Render. Wired by the framework
+	// via SetFlashProvider so bond stays decoupled from auth.
+	flashProvider FlashProvider
 }
 
 // SetEncryptor sets the encryptor used for history state encryption.

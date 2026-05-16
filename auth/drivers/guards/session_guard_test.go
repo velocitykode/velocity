@@ -115,6 +115,14 @@ func (s *mockSessionGuardSession) GetFlash(key string) interface{} {
 	delete(s.flash, key)
 	return v
 }
+func (s *mockSessionGuardSession) FlushFlash() map[string]interface{} {
+	if len(s.flash) == 0 {
+		return nil
+	}
+	out := s.flash
+	s.flash = make(map[string]interface{})
+	return out
+}
 func (s *mockSessionGuardSession) Save(w http.ResponseWriter) error { return s.saveError }
 
 // mockSessionGuardStore implements auth.SessionStore for testing

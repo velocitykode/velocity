@@ -1019,6 +1019,7 @@ func (s *unsupportedSession) Regenerate() error                   { return nil }
 func (s *unsupportedSession) Invalidate() error                   { return nil }
 func (s *unsupportedSession) Flash(key string, value interface{}) {}
 func (s *unsupportedSession) GetFlash(key string) interface{}     { return nil }
+func (s *unsupportedSession) FlushFlash() map[string]interface{}  { return nil }
 func (s *unsupportedSession) Save(w http.ResponseWriter) error    { return nil }
 
 // Compile-time check that unsupportedSession implements auth.Session
