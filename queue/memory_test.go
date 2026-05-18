@@ -103,6 +103,98 @@ func TestMemoryDriver_MoveReadyJobs_HeapOrdering(t *testing.T) {
 	}
 }
 
+// TestMemoryDriver_PushCtx_ListenerReentrant verifies that a listener
+// invoked synchronously by the event dispatcher can call back into the
+// driver (e.g. Size, Push) without deadlocking. The dispatch site must
+// release m.mu before invoking the listener.
+func TestMemoryDriver_PushCtx_ListenerReentrant(t *testing.T) {
+	d := NewMemoryDriver()
+
+	var (
+		called   int
+		sizeSeen int64
+	)
+	d.SetEventDispatcher(func(ctx context.Context, event interface{}) error {
+		// Re-enter the driver while the event is being dispatched.
+		// If PushCtx still held m.mu, RLock() in Size would block forever
+		// (the writer holds the lock, and an RLock cannot proceed while
+		// a writer is held).
+		called++
+		n, _ := d.Size("q")
+		sizeSeen = n
+		return nil
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = d.PushCtx(context.Background(), &TestJob{ID: "a"}, "q")
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("PushCtx deadlocked while listener called back into driver")
+	}
+
+	if called != 1 {
+		t.Fatalf("listener should fire exactly once, fired %d", called)
+	}
+	if sizeSeen != 1 {
+		t.Fatalf("listener should observe queued job via Size, got %d", sizeSeen)
+	}
+}
+
+// TestMemoryDriver_PushDelayedCtx_ListenerReentrant mirrors the PushCtx
+// test for the delayed path. Listener calls PushCtx (a write op) to assert
+// the write lock has been released before dispatch.
+func TestMemoryDriver_PushDelayedCtx_ListenerReentrant(t *testing.T) {
+	d := NewMemoryDriver()
+
+	var (
+		fired             int
+		reentrantPushErr  error
+		reentrantPushDone bool
+	)
+	d.SetEventDispatcher(func(ctx context.Context, event interface{}) error {
+		fired++
+		// Only re-enter on the first call so the listener fired by the
+		// reentrant PushCtx doesn't infinitely recurse.
+		if reentrantPushDone {
+			return nil
+		}
+		reentrantPushDone = true
+		// Acquiring the writer lock here would deadlock if the original
+		// caller still held it.
+		reentrantPushErr = d.PushCtx(context.Background(), &TestJob{ID: "from-listener"}, "q")
+		return nil
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = d.PushDelayedCtx(context.Background(), &TestJob{ID: "delayed"}, time.Hour, "q")
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("PushDelayedCtx deadlocked while listener called back into driver")
+	}
+
+	if reentrantPushErr != nil {
+		t.Fatalf("listener's reentrant PushCtx failed: %v", reentrantPushErr)
+	}
+	if fired < 2 {
+		t.Fatalf("listener should fire for the delayed push and the reentrant push, got %d", fired)
+	}
+
+	n, _ := d.Size("q")
+	if n != 1 {
+		t.Fatalf("expected exactly 1 enqueued job from listener's PushCtx, got Size=%d", n)
+	}
+}
+
 // TestMemoryDriver_MoveReadyJobs_PartiallyReady asserts jobs with readyAt in
 // the future stay in the heap while ready ones are promoted.
 func TestMemoryDriver_MoveReadyJobs_PartiallyReady(t *testing.T) {

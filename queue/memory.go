@@ -154,14 +154,16 @@ func (m *MemoryDriver) PushCtx(ctx context.Context, job Job, queueName ...string
 	wrapper.Payload.TraceID, wrapper.Payload.SpanID, wrapper.Payload.ParentID = trace.GetTraceContext(ctx)
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if _, exists := m.queues[name]; !exists {
 		m.queues[name] = list.New()
 	}
-
 	m.queues[name].PushBack(wrapper)
-	dispatchJobQueued(m.dispatchEvent, ctx, wrapper.Payload.Type, name, false, 0)
+	jobType := wrapper.Payload.Type
+	m.mu.Unlock()
+
+	// Dispatch events outside the lock so listeners that call back into
+	// the driver (e.g. Push/Size) do not deadlock.
+	dispatchJobQueued(m.dispatchEvent, ctx, jobType, name, false, 0)
 	return nil
 }
 
@@ -181,20 +183,21 @@ func (m *MemoryDriver) PushDelayedCtx(ctx context.Context, job Job, delay time.D
 	wrapper.Payload.TraceID, wrapper.Payload.SpanID, wrapper.Payload.ParentID = trace.GetTraceContext(ctx)
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	h, exists := m.delayed[name]
 	if !exists {
 		h = &delayedHeap{}
 		m.delayed[name] = h
 	}
-
 	heap.Push(h, &delayedJob{
 		wrapper: wrapper,
 		runAt:   time.Now().Add(delay),
 	})
+	jobType := wrapper.Payload.Type
+	m.mu.Unlock()
 
-	dispatchJobQueued(m.dispatchEvent, ctx, wrapper.Payload.Type, name, true, delay)
+	// Dispatch events outside the lock so listeners that call back into
+	// the driver (e.g. Push/Size) do not deadlock.
+	dispatchJobQueued(m.dispatchEvent, ctx, jobType, name, true, delay)
 	return nil
 }
 
