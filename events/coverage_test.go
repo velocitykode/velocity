@@ -229,6 +229,63 @@ func TestEventWorkerFullCoverage(t *testing.T) {
 	}
 }
 
+// TestEventWorker_ConcurrentRegisterAndProcess hammers RegisterListener and
+// Process from separate goroutines to confirm the listeners map is properly
+// guarded. With -race this would fail (or trigger a fatal "concurrent map
+// read and map write" runtime panic) before the fix that added sync.RWMutex
+// protection.
+func TestEventWorker_ConcurrentRegisterAndProcess(t *testing.T) {
+	worker := NewEventWorker(NewDispatcher())
+
+	factory := func() Listener {
+		return &SimpleListener{
+			HandleFunc: func(ctx context.Context, event interface{}) error {
+				return nil
+			},
+		}
+	}
+	// Seed at least one entry so Process has something to find.
+	worker.RegisterListener("seed", factory)
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+
+	// Writer: keep registering new listener types.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		i := 0
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				worker.RegisterListener("type-"+strings.Repeat("x", i%8), factory)
+				i++
+			}
+		}
+	}()
+
+	// Reader: keep processing jobs (hits the map read path).
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		jobJSON := `{"listener_type":"seed","event":{"data":"x"}}`
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_ = worker.Process(context.Background(), jobJSON)
+			}
+		}
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+}
+
 // Test Dispatcher with queue error
 func TestDispatcherQueueError(t *testing.T) {
 	d := NewDispatcher()

@@ -110,7 +110,13 @@ type EventJob struct {
 // EventWorker processes queued events
 type EventWorker struct {
 	dispatcher Dispatcher
-	listeners  map[string]func() Listener // Factory functions for listeners
+	// mu guards the listeners map. Without this, concurrent RegisterListener
+	// and Process calls race on the map and trigger a fatal runtime panic
+	// ("concurrent map read and map write"). The factory itself is invoked
+	// outside the lock so listener Handle() calls cannot deadlock with
+	// registration.
+	mu        sync.RWMutex
+	listeners map[string]func() Listener // Factory functions for listeners
 }
 
 // NewEventWorker creates a new event worker
@@ -123,6 +129,8 @@ func NewEventWorker(dispatcher Dispatcher) *EventWorker {
 
 // RegisterListener registers a listener factory for async processing
 func (w *EventWorker) RegisterListener(listenerType string, factory func() Listener) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.listeners[listenerType] = factory
 }
 
@@ -137,8 +145,13 @@ func (w *EventWorker) Process(ctx context.Context, jobData string) error {
 		return fmt.Errorf("failed to unmarshal event job: %w", err)
 	}
 
-	// Get the listener factory
+	// Get the listener factory under read lock, then release before calling
+	// the factory or the listener. Holding the lock across user code would
+	// risk deadlocks (e.g. a listener that registers another listener) and
+	// block unrelated registrations for the duration of Handle().
+	w.mu.RLock()
 	factory, ok := w.listeners[job.ListenerType]
+	w.mu.RUnlock()
 	if !ok {
 		return fmt.Errorf("velocity/events: unknown listener type %s: %w", job.ListenerType, ErrListenerNotFound)
 	}
