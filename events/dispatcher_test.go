@@ -188,6 +188,60 @@ func TestDispatcherConcurrentModification(t *testing.T) {
 	wg.Wait()
 }
 
+// noopQueueDispatcher is a thread-safe QueueDispatcher used by the race test.
+// It records no state, so concurrent Push calls cannot race in the helper.
+type noopQueueDispatcher struct{}
+
+func (noopQueueDispatcher) Push(ctx context.Context, event interface{}, listener Listener, delay time.Duration) error {
+	return nil
+}
+
+// TestDispatcherSetQueueDispatcherRace exercises the data race between
+// SetQueueDispatcher (writer) and Dispatch / DispatchAsync / DispatchAfter
+// (readers) on the d.queue field. Must pass under `go test -race`.
+func TestDispatcherSetQueueDispatcherRace(t *testing.T) {
+	d := NewDispatcher()
+	d.Listen("race.event", &TestListener{})
+	d.Listen("race.queued", &TestQueuedListener{})
+
+	const goroutines = 16
+	const iterations = 200
+
+	var wg sync.WaitGroup
+
+	// Writers: continuously swap the queue dispatcher (including nil).
+	// Using a stateless dispatcher so the test doesn't introduce its own race.
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				if (i+j)%2 == 0 {
+					d.SetQueueDispatcher(noopQueueDispatcher{})
+				} else {
+					d.SetQueueDispatcher(nil)
+				}
+			}
+		}(i)
+	}
+
+	// Readers: call all three dispatch paths that read d.queue.
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx := context.Background()
+			for j := 0; j < iterations; j++ {
+				_ = d.Dispatch(ctx, "race.queued")
+				_ = d.DispatchAsync(ctx, "race.event")
+				_ = d.DispatchAfter(ctx, "race.event", time.Millisecond)
+			}
+		}()
+	}
+
+	wg.Wait()
+}
+
 // PanicListener for testing panic recovery
 type PanicListener struct{}
 

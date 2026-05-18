@@ -154,9 +154,12 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, event interface{}) err
 	if event == nil {
 		return fmt.Errorf("events: cannot dispatch nil event")
 	}
+	d.mu.RLock()
+	q := d.queue
+	d.mu.RUnlock()
 	return d.dispatchToListeners(event, func(listener Listener) error {
-		if listener.ShouldQueue() && d.queue != nil {
-			if err := d.queue.Push(ctx, event, listener, 0); err != nil {
+		if listener.ShouldQueue() && q != nil {
+			if err := q.Push(ctx, event, listener, 0); err != nil {
 				return fmt.Errorf("failed to queue listener: %w", err)
 			}
 			return nil
@@ -181,7 +184,10 @@ func (d *DefaultDispatcher) DispatchAsync(ctx context.Context, event interface{}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if d.queue == nil {
+	d.mu.RLock()
+	q := d.queue
+	d.mu.RUnlock()
+	if q == nil {
 		// Detach from request lifetime so the goroutine can outlive the
 		// caller, while still preserving values via context.WithoutCancel.
 		bgCtx := context.WithoutCancel(ctx)
@@ -192,7 +198,7 @@ func (d *DefaultDispatcher) DispatchAsync(ctx context.Context, event interface{}
 	}
 
 	return d.dispatchToListeners(event, func(listener Listener) error {
-		if err := d.queue.Push(ctx, event, listener, 0); err != nil {
+		if err := q.Push(ctx, event, listener, 0); err != nil {
 			return fmt.Errorf("failed to queue listener: %w", err)
 		}
 		return nil
@@ -205,7 +211,10 @@ func (d *DefaultDispatcher) DispatchAfter(ctx context.Context, event interface{}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if d.queue == nil {
+	d.mu.RLock()
+	q := d.queue
+	d.mu.RUnlock()
+	if q == nil {
 		bgCtx := context.WithoutCancel(ctx)
 		time.AfterFunc(delay, func() {
 			_ = d.Dispatch(bgCtx, event)
@@ -214,7 +223,7 @@ func (d *DefaultDispatcher) DispatchAfter(ctx context.Context, event interface{}
 	}
 
 	return d.dispatchToListeners(event, func(listener Listener) error {
-		if err := d.queue.Push(ctx, event, listener, delay); err != nil {
+		if err := q.Push(ctx, event, listener, delay); err != nil {
 			return fmt.Errorf("failed to queue delayed listener: %w", err)
 		}
 		return nil
