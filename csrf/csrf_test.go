@@ -1,7 +1,10 @@
 package csrf
 
 import (
+	"bytes"
 	"errors"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -481,5 +484,217 @@ func TestRouterMiddleware_RejectionDoesNotAppendInternalServerError(t *testing.T
 	want := c.config.ErrorMessage + "\n"
 	if body != want {
 		t.Errorf("expected body %q, got %q", want, body)
+	}
+}
+
+// newCSRFWithToken returns a CSRF instance pre-seeded with a token for
+// "test-session". Returned values: instance, sessionID, valid token.
+func newCSRFWithToken(t *testing.T) (*CSRF, string, string) {
+	t.Helper()
+	cfg := DefaultConfig()
+	cfg.Store = stores.NewSessionStore()
+	c := New(cfg)
+
+	sessionID := "test-session"
+	token, err := GenerateToken()
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+	if err := c.config.Store.Set(sessionID, token); err != nil {
+		t.Fatalf("store set: %v", err)
+	}
+	return c, sessionID, token
+}
+
+// TestGetTokenFromRequest_HeaderOnlyForMultipart pins the security
+// regression: a multipart body must NOT be parsed by the CSRF
+// middleware. Previously r.ParseForm would call ParseMultipartForm with
+// a 32 MiB default memory limit, letting an unauthenticated attacker
+// spike memory pre-validation. After the fix, token lookup for
+// multipart MUST fall back to the header only; a token in the form
+// part is ignored and the request is rejected.
+func TestGetTokenFromRequest_HeaderOnlyForMultipart(t *testing.T) {
+	c, sessionID, token := newCSRFWithToken(t)
+
+	// Build a small multipart body that carries the valid token in the
+	// _token form field. The server must NOT find it: multipart bodies
+	// are off-limits for the CSRF lookup.
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	if err := mw.WriteField("_token", token); err != nil {
+		t.Fatalf("write field: %v", err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("close mw: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/submit", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+
+	handler := c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("inner handler must not be called: token in multipart form should be ignored")
+	}))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 419 {
+		t.Fatalf("expected 419 for multipart with token in form, got %d", w.Code)
+	}
+}
+
+// TestGetTokenFromRequest_MultipartTokenInHeaderPasses confirms that
+// when a client sends a multipart body but puts the CSRF token in the
+// header (as required), the request is accepted. The body is NOT
+// parsed by the middleware.
+func TestGetTokenFromRequest_MultipartTokenInHeaderPasses(t *testing.T) {
+	c, sessionID, token := newCSRFWithToken(t)
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	if err := mw.WriteField("payload", "hello"); err != nil {
+		t.Fatalf("write field: %v", err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("close mw: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/submit", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("X-CSRF-Token", token)
+	req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+
+	var called bool
+	handler := c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if !called {
+		t.Fatalf("expected handler to be called, got status %d", w.Code)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+// TestGetTokenFromRequest_UrlencodedSmallBodyPasses verifies the
+// normal HTML-form flow still works: a small x-www-form-urlencoded
+// body carrying the token in _token is accepted and that the body is
+// restored so downstream handlers can re-read it.
+func TestGetTokenFromRequest_UrlencodedSmallBodyPasses(t *testing.T) {
+	c, sessionID, token := newCSRFWithToken(t)
+
+	form := url.Values{}
+	form.Set("_token", token)
+	form.Set("name", "alice")
+
+	req := httptest.NewRequest("POST", "/submit", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+
+	var called bool
+	var bodySeen string
+	handler := c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("downstream read body: %v", err)
+		}
+		bodySeen = string(b)
+		w.WriteHeader(http.StatusOK)
+	}))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if !called {
+		t.Fatalf("expected handler to be called, got status %d", w.Code)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	// Body must be restored verbatim so downstream handlers can re-read.
+	if bodySeen != form.Encode() {
+		t.Fatalf("body not restored for downstream: got %q want %q", bodySeen, form.Encode())
+	}
+}
+
+// TestGetTokenFromRequest_HeaderWinsOverUrlencodedBody verifies the
+// header is consulted first and the body is not even read when the
+// header carries the token. This is the cheap path for XHR clients.
+func TestGetTokenFromRequest_HeaderWinsOverUrlencodedBody(t *testing.T) {
+	c, sessionID, token := newCSRFWithToken(t)
+
+	// Body has garbage; header carries the real token. Request must pass
+	// and the body must still be available downstream untouched.
+	rawBody := "_token=NOT_A_TOKEN&name=alice"
+	req := httptest.NewRequest("POST", "/submit", strings.NewReader(rawBody))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", token)
+	req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+
+	var bodySeen string
+	var called bool
+	handler := c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		b, _ := io.ReadAll(r.Body)
+		bodySeen = string(b)
+		w.WriteHeader(http.StatusOK)
+	}))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if !called || w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if bodySeen != rawBody {
+		t.Fatalf("body must be untouched when header wins: got %q want %q", bodySeen, rawBody)
+	}
+}
+
+// TestGetTokenFromRequest_UrlencodedOversizeRejected ensures an
+// oversize x-www-form-urlencoded body returns 419 instead of being
+// buffered into memory. The cap is 1 MiB; we send 2 MiB.
+func TestGetTokenFromRequest_UrlencodedOversizeRejected(t *testing.T) {
+	c, sessionID, _ := newCSRFWithToken(t)
+
+	// Build a 2 MiB urlencoded body. The actual content does not matter;
+	// the middleware must refuse to read past the cap.
+	padding := strings.Repeat("a", 2<<20)
+	form := url.Values{}
+	form.Set("padding", padding)
+
+	req := httptest.NewRequest("POST", "/submit", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+
+	handler := c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("inner handler must not be called: oversize body must be rejected")
+	}))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 419 {
+		t.Fatalf("expected 419 for oversize urlencoded body, got %d", w.Code)
+	}
+}
+
+// TestGetTokenFromRequest_DirectReturnsErrFormBodyTooLarge exercises
+// the unit boundary: ErrFormBodyTooLarge bubbles out of
+// getTokenFromRequest for oversize urlencoded bodies. This guards
+// future refactors that might silently swallow the error.
+func TestGetTokenFromRequest_DirectReturnsErrFormBodyTooLarge(t *testing.T) {
+	c := New(DefaultConfig())
+	form := url.Values{}
+	form.Set("padding", strings.Repeat("a", 2<<20))
+
+	req := httptest.NewRequest("POST", "/submit", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	tok, err := c.getTokenFromRequest(req)
+	if !errors.Is(err, ErrFormBodyTooLarge) {
+		t.Fatalf("expected ErrFormBodyTooLarge, got token=%q err=%v", tok, err)
 	}
 }
