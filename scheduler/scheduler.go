@@ -72,13 +72,23 @@ func (s *Scheduler) SetEventDispatcher(fn func(ctx context.Context, event interf
 // dispatchEvent dispatches an event if a dispatcher is configured. The
 // caller-supplied ctx is propagated so listeners observe scheduler-job
 // scoped values.
+//
+// The dispatcher reference is snapshotted under s.mu.RLock() and released
+// before invocation so a concurrent SetEventDispatcher cannot race with
+// the read, and so the dispatcher itself runs without holding s.mu (the
+// dispatcher may take arbitrary time and must not block scheduler
+// operations).
 func (s *Scheduler) dispatchEvent(ctx context.Context, event interface{}) {
-	if s.eventDispatcher != nil {
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		s.eventDispatcher(ctx, event)
+	s.mu.RLock()
+	fn := s.eventDispatcher
+	s.mu.RUnlock()
+	if fn == nil {
+		return
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	fn(ctx, event)
 }
 
 // Logger is the minimal logging interface used by the scheduler. The
