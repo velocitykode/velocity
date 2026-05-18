@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/csrf/stores"
+	"github.com/velocitykode/velocity/router"
 )
 
 func TestNew(t *testing.T) {
@@ -429,5 +430,56 @@ func TestNewE_RejectsUnsupportedMode(t *testing.T) {
 	}
 	if !errors.Is(err, ErrInsecureCSRFConfig) {
 		t.Errorf("expected ErrInsecureCSRFConfig, got %v", err)
+	}
+}
+
+// TestRouterMiddleware_RejectionDoesNotAppendInternalServerError pins the
+// regression for the bug where RouterMiddleware returned a non-nil error
+// after the inner CSRF middleware had already written a 419 response.
+// The router would then call its ErrorHandler, which invokes http.Error
+// and appends "Internal Server Error\n" to the body (the status code is
+// guarded by responseWriter, but the body is not). The fix is to return
+// nil when the inner handler was not called, since the CSRF middleware
+// has already fully written the rejection response.
+func TestRouterMiddleware_RejectionDoesNotAppendInternalServerError(t *testing.T) {
+	c := New(DefaultConfig())
+
+	r := router.New()
+	// Install a sentinel error handler so we can detect if the router's
+	// error path fires (it must not, because RouterMiddleware should
+	// return nil after the 419 has been written).
+	errorHandlerFired := false
+	r.ErrorHandler = func(ctx *router.Context, err error) {
+		errorHandlerFired = true
+		http.Error(ctx.Response, "Internal Server Error", http.StatusInternalServerError)
+	}
+	r.Use(c.RouterMiddleware())
+	r.Post("/submit", func(ctx *router.Context) error {
+		t.Fatal("inner handler must not be called on CSRF rejection")
+		return nil
+	})
+
+	req := httptest.NewRequest("POST", "/submit", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != 419 {
+		t.Fatalf("expected status 419, got %d", w.Code)
+	}
+
+	body := w.Body.String()
+	if strings.Contains(body, "Internal Server Error") {
+		t.Errorf("response body must not contain appended 'Internal Server Error' marker; got body=%q", body)
+	}
+
+	if errorHandlerFired {
+		t.Error("router ErrorHandler must not fire after CSRF middleware writes 419")
+	}
+
+	// Body must be exactly the configured CSRF error message followed by a
+	// single newline (the format http.Error writes). No trailing garbage.
+	want := c.config.ErrorMessage + "\n"
+	if body != want {
+		t.Errorf("expected body %q, got %q", want, body)
 	}
 }

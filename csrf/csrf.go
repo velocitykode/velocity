@@ -166,8 +166,15 @@ func (c *CSRF) RouterMiddleware() router.MiddlewareFunc {
 			})
 			c.Middleware(inner).ServeHTTP(ctx.Response, ctx.Request)
 			if !called {
+				// CSRF middleware already wrote the 419 response (via
+				// handleError). Returning a non-nil error here would
+				// trigger the router's ErrorHandler, which calls
+				// http.Error and appends "Internal Server Error\n" to
+				// the body. The status is guarded by responseWriter
+				// but the body is not. Return nil so the router skips
+				// its error path; the rejection is already fully sent.
 				log.Printf("velocity/csrf: request blocked for %s %s", ctx.Request.Method, ctx.Request.URL.Path)
-				return fmt.Errorf("velocity/csrf: request rejected for %s %s", ctx.Request.Method, ctx.Request.URL.Path)
+				return nil
 			}
 			return handlerErr
 		}
