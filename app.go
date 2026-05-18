@@ -323,6 +323,10 @@ func New(opts ...Option) (*App, error) {
 	// resources at this point (no listener bound) so no cleanup is needed.
 	a.Router = router.New()
 	a.Router.SetServices(a.Services)
+	// Configure the file-serving root. When FILE_ROOT is unset, the
+	// router falls back to the process CWD at request time, preserving
+	// legacy behaviour for callers that have not opted in.
+	a.Router.SetFileRoot(a.config.FileRoot)
 	a.Router.SetValidator(func(c *router.Context, rules map[string][]string, messages ...map[string]string) error {
 		// rules is the canonical Rules slice form; pass through directly.
 		var msgs []validation.Messages

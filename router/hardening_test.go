@@ -583,8 +583,15 @@ func TestDownload_SetsRFC5987Header(t *testing.T) {
 	if err := os.WriteFile(path, []byte("hello"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+
 	c, rec := NewTestContext("GET", "/")
-	if err := c.Download(path, "résumé.pdf"); err != nil {
+	c.fileRoot = root
+	if err := c.Download("file.txt", "résumé.pdf"); err != nil {
 		t.Fatal(err)
 	}
 	cd := rec.Header().Get("Content-Disposition")

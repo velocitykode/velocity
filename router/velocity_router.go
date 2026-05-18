@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -93,6 +94,28 @@ type VelocityRouterV2 struct {
 	// Cross-host redirects to hosts outside this list are rewritten to "/".
 	RedirectAllowedHosts []string
 
+	// FileRoot is the absolute directory under which Context.File,
+	// Context.Download, and Context.SaveFile are permitted to operate.
+	// Configured via SetFileRoot during boot. An empty value means
+	// "fall back to the process current working directory at the time
+	// of router init", which preserves the legacy behaviour for
+	// callers that have not opted in to an explicit root.
+	//
+	// At request time the router resolves FileRoot to fileRootHandle,
+	// an *os.Root opened lazily and reused across requests. All
+	// per-request file I/O flows through that handle so the kernel
+	// (openat2 on Linux, equivalent on other platforms) enforces
+	// containment with zero TOCTOU window.
+	FileRoot string
+
+	// fileRootHandle is the lazily-opened *os.Root the router hands to
+	// every Context. Opened on first request (or first explicit call to
+	// FileRootHandle), closed by CloseFileRoot during shutdown. Guarded
+	// by fileRootMu so the lazy init is race-free.
+	fileRootHandle *os.Root
+	fileRootOpened bool
+	fileRootMu     sync.Mutex
+
 	// ErrorHandler is called when a handler returns an error or a panic occurs.
 	// If nil, the default behavior (HTTP 500) is used.
 	ErrorHandler func(*Context, error)
@@ -125,6 +148,72 @@ func (r *VelocityRouterV2) SetServices(s *app.Services) {
 // SetValidator sets the validation function used by ctx.Validate().
 func (r *VelocityRouterV2) SetValidator(fn func(c *Context, rules map[string][]string, messages ...map[string]string) error) {
 	r.validateFn = fn
+}
+
+// SetFileRoot configures the absolute directory under which Context.File,
+// Context.Download, and Context.SaveFile may operate. Pass an empty
+// string to fall back to the process current working directory at the
+// time of the first file operation. The framework's New() wires this
+// from the application config so the router can open an *os.Root and
+// hand it to every Context for kernel-enforced containment.
+//
+// Safe to call before serving begins. If called after a previous root
+// was opened, the previous handle is closed and a new one is opened on
+// the next file operation.
+func (r *VelocityRouterV2) SetFileRoot(path string) {
+	r.fileRootMu.Lock()
+	defer r.fileRootMu.Unlock()
+	if r.fileRootHandle != nil {
+		_ = r.fileRootHandle.Close()
+		r.fileRootHandle = nil
+	}
+	r.fileRootOpened = false
+	r.FileRoot = path
+}
+
+// FileRootHandle returns the *os.Root for the configured FileRoot,
+// opening it on first use. Returns nil when the root cannot be opened
+// (missing directory, permission denied); callers must handle nil and
+// surface an error rather than dereferencing. The handle is owned by
+// the router and released by CloseFileRoot during App shutdown, do
+// NOT close the returned value.
+func (r *VelocityRouterV2) FileRootHandle() *os.Root {
+	r.fileRootMu.Lock()
+	defer r.fileRootMu.Unlock()
+	if r.fileRootOpened {
+		return r.fileRootHandle
+	}
+	r.fileRootOpened = true
+	root := r.FileRoot
+	if root == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return nil
+		}
+		root = cwd
+	}
+	handle, err := os.OpenRoot(root)
+	if err != nil {
+		return nil
+	}
+	r.fileRootHandle = handle
+	return r.fileRootHandle
+}
+
+// CloseFileRoot releases the *os.Root file descriptor associated with
+// FileRoot. Idempotent. Called from App.Shutdown so the FD is returned
+// to the kernel during graceful shutdown.
+func (r *VelocityRouterV2) CloseFileRoot() error {
+	r.fileRootMu.Lock()
+	defer r.fileRootMu.Unlock()
+	if r.fileRootHandle == nil {
+		r.fileRootOpened = false
+		return nil
+	}
+	err := r.fileRootHandle.Close()
+	r.fileRootHandle = nil
+	r.fileRootOpened = false
+	return err
 }
 
 // SetEventDispatcher sets the event dispatcher on this router instance.
@@ -606,6 +695,7 @@ func (r *VelocityRouterV2) acquireContext(rw *responseWriter, req *http.Request,
 	ctx.services = r.services
 	ctx.trustedProxies = r.trustedProxiesOrParse()
 	ctx.redirectAllowedHosts = r.RedirectAllowedHosts
+	ctx.fileRoot = r.FileRootHandle()
 	ctx.validateFn = r.validateFn
 
 	if result.segments != nil {

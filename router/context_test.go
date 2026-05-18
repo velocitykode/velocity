@@ -939,17 +939,53 @@ func TestContext_XML(t *testing.T) {
 // File response tests
 // ---------------------------------------------------------------------------
 
-func TestContext_File(t *testing.T) {
-	// Create a temp file
+// chdirTempForFile creates a temp dir, chdirs into it, and writes the named
+// file with the given content. It returns the file's relative name and an
+// open *os.Root rooted at the temp dir. The cwd and the open root are
+// restored / closed on test cleanup. Tests that exercise File / Download /
+// SaveFile need a non-nil *os.Root on the context, the chdir is preserved
+// to keep test ergonomics close to the original "relative paths against
+// CWD" mental model.
+func chdirTempForFile(t *testing.T, name string, content []byte) (string, *os.Root) {
+	t.Helper()
 	tmp := t.TempDir()
-	fpath := filepath.Join(tmp, "test.txt")
-	if err := os.WriteFile(fpath, []byte("hello file"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmp, name), content, 0644); err != nil {
 		t.Fatal(err)
 	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+	root, err := os.OpenRoot(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	return name, root
+}
+
+// openTestRoot opens an *os.Root for the given dir and registers cleanup.
+func openTestRoot(t *testing.T, dir string) *os.Root {
+	t.Helper()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	return root
+}
+
+func TestContext_File(t *testing.T) {
+	fpath, root := chdirTempForFile(t, "test.txt", []byte("hello file"))
 
 	req := httptest.NewRequest("GET", "/test", nil)
 	w := httptest.NewRecorder()
 	c := NewContext(w, req)
+	c.fileRoot = root
 
 	if err := c.File(fpath); err != nil {
 		t.Fatalf("File error: %v", err)
@@ -959,26 +995,76 @@ func TestContext_File(t *testing.T) {
 	}
 }
 
-func TestContext_File_Traversal(t *testing.T) {
+func TestContext_File_DotSlashPrefix(t *testing.T) {
+	_, root := chdirTempForFile(t, "ok.txt", []byte("ok"))
+
 	req := httptest.NewRequest("GET", "/test", nil)
 	w := httptest.NewRecorder()
 	c := NewContext(w, req)
+	c.fileRoot = root
+
+	if err := c.File("./ok.txt"); err != nil {
+		t.Fatalf("File error: %v", err)
+	}
+	if !strings.Contains(w.Body.String(), "ok") {
+		t.Error("expected file content in body")
+	}
+}
+
+func TestContext_File_Traversal(t *testing.T) {
+	root := openTestRoot(t, t.TempDir())
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+	c := NewContext(w, req)
+	c.fileRoot = root
 
 	if err := c.File("../../etc/passwd"); err == nil {
 		t.Error("expected error for path traversal")
 	}
 }
 
-func TestContext_Download(t *testing.T) {
-	tmp := t.TempDir()
-	fpath := filepath.Join(tmp, "dl.txt")
-	if err := os.WriteFile(fpath, []byte("download me"), 0644); err != nil {
-		t.Fatal(err)
+func TestContext_File_Absolute(t *testing.T) {
+	root := openTestRoot(t, t.TempDir())
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+	c := NewContext(w, req)
+	c.fileRoot = root
+
+	if err := c.File("/etc/passwd"); err == nil {
+		t.Error("expected error for absolute path")
 	}
+}
+
+func TestContext_File_NullByte(t *testing.T) {
+	root := openTestRoot(t, t.TempDir())
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+	c := NewContext(w, req)
+	c.fileRoot = root
+
+	if err := c.File("foo\x00bar"); err == nil {
+		t.Error("expected error for null byte in path")
+	}
+}
+
+func TestContext_File_NilRoot(t *testing.T) {
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+	c := NewContext(w, req)
+	// c.fileRoot is intentionally nil to exercise the unconfigured path.
+
+	if err := c.File("anything.txt"); err == nil {
+		t.Error("expected error when fileRoot is nil")
+	}
+}
+
+func TestContext_Download(t *testing.T) {
+	fpath, root := chdirTempForFile(t, "dl.txt", []byte("download me"))
 
 	req := httptest.NewRequest("GET", "/test", nil)
 	w := httptest.NewRecorder()
 	c := NewContext(w, req)
+	c.fileRoot = root
 
 	if err := c.Download(fpath, "myfile.txt"); err != nil {
 		t.Fatalf("Download error: %v", err)
@@ -993,25 +1079,48 @@ func TestContext_Download(t *testing.T) {
 }
 
 func TestContext_Download_Traversal(t *testing.T) {
+	root := openTestRoot(t, t.TempDir())
 	req := httptest.NewRequest("GET", "/test", nil)
 	w := httptest.NewRecorder()
 	c := NewContext(w, req)
+	c.fileRoot = root
 
 	if err := c.Download("../../../etc/passwd", "passwd"); err == nil {
 		t.Error("expected error for path traversal")
 	}
 }
 
-func TestContext_Attachment(t *testing.T) {
-	tmp := t.TempDir()
-	fpath := filepath.Join(tmp, "att.txt")
-	if err := os.WriteFile(fpath, []byte("attachment"), 0644); err != nil {
-		t.Fatal(err)
+func TestContext_Download_Absolute(t *testing.T) {
+	root := openTestRoot(t, t.TempDir())
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+	c := NewContext(w, req)
+	c.fileRoot = root
+
+	if err := c.Download("/etc/passwd", "passwd"); err == nil {
+		t.Error("expected error for absolute path")
 	}
+}
+
+func TestContext_Download_NullByte(t *testing.T) {
+	root := openTestRoot(t, t.TempDir())
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+	c := NewContext(w, req)
+	c.fileRoot = root
+
+	if err := c.Download("foo\x00bar", "file.txt"); err == nil {
+		t.Error("expected error for null byte in path")
+	}
+}
+
+func TestContext_Attachment(t *testing.T) {
+	fpath, root := chdirTempForFile(t, "att.txt", []byte("attachment"))
 
 	req := httptest.NewRequest("GET", "/test", nil)
 	w := httptest.NewRecorder()
 	c := NewContext(w, req)
+	c.fileRoot = root
 
 	if err := c.Attachment(fpath, "att.txt"); err != nil {
 		t.Fatalf("Attachment error: %v", err)
@@ -1178,15 +1287,17 @@ func TestContext_FormFile_Missing(t *testing.T) {
 // SaveFile tests
 // ---------------------------------------------------------------------------
 
-func TestContext_SaveFile(t *testing.T) {
-	// Build multipart form
+// newUploadContext builds a *Context carrying a single multipart upload named
+// "upload" with the given filename and content.
+func newUploadContext(t *testing.T, filename string, content []byte) (*Context, *multipart.FileHeader) {
+	t.Helper()
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
-	fw, err := mw.CreateFormFile("upload", "test.txt")
+	fw, err := mw.CreateFormFile("upload", filename)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fw.Write([]byte("save me"))
+	fw.Write(content)
 	mw.Close()
 
 	req := httptest.NewRequest("POST", "/upload", &buf)
@@ -1198,13 +1309,20 @@ func TestContext_SaveFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return c, fh
+}
 
-	dst := filepath.Join(t.TempDir(), "saved.txt")
+func TestContext_SaveFile(t *testing.T) {
+	c, fh := newUploadContext(t, "test.txt", []byte("save me"))
+	tmp := t.TempDir()
+	c.fileRoot = openTestRoot(t, tmp)
+
+	dst := "saved.txt"
 	if err := c.SaveFile(fh, dst); err != nil {
 		t.Fatalf("SaveFile error: %v", err)
 	}
 
-	content, err := os.ReadFile(dst)
+	content, err := os.ReadFile(filepath.Join(tmp, dst))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1213,21 +1331,215 @@ func TestContext_SaveFile(t *testing.T) {
 	}
 }
 
+func TestContext_SaveFile_DotSlashPrefix(t *testing.T) {
+	c, fh := newUploadContext(t, "test.txt", []byte("dot slash"))
+	tmp := t.TempDir()
+	c.fileRoot = openTestRoot(t, tmp)
+
+	if err := c.SaveFile(fh, "./saved.txt"); err != nil {
+		t.Fatalf("SaveFile error: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(tmp, "saved.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "dot slash" {
+		t.Errorf("expected 'dot slash', got %q", string(content))
+	}
+}
+
 func TestContext_SaveFile_Traversal(t *testing.T) {
-	var buf bytes.Buffer
-	mw := multipart.NewWriter(&buf)
-	fw, _ := mw.CreateFormFile("upload", "test.txt")
-	fw.Write([]byte("data"))
-	mw.Close()
-
-	req := httptest.NewRequest("POST", "/upload", &buf)
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	w := httptest.NewRecorder()
-	c := NewContext(w, req)
-
-	fh, _ := c.FormFile("upload")
+	c, fh := newUploadContext(t, "test.txt", []byte("data"))
+	c.fileRoot = openTestRoot(t, t.TempDir())
 	if err := c.SaveFile(fh, "../../../tmp/evil.txt"); err == nil {
 		t.Error("expected error for path traversal")
+	}
+}
+
+func TestContext_SaveFile_Absolute(t *testing.T) {
+	c, fh := newUploadContext(t, "test.txt", []byte("data"))
+	c.fileRoot = openTestRoot(t, t.TempDir())
+	if err := c.SaveFile(fh, "/etc/passwd"); err == nil {
+		t.Error("expected error for absolute path")
+	}
+}
+
+func TestContext_SaveFile_NullByte(t *testing.T) {
+	c, fh := newUploadContext(t, "test.txt", []byte("data"))
+	c.fileRoot = openTestRoot(t, t.TempDir())
+	if err := c.SaveFile(fh, "foo\x00bar"); err == nil {
+		t.Error("expected error for null byte in path")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FileRoot containment tests
+//
+// These tests pin the symlink-resolved containment guard introduced by
+// Router.SetFileRoot. Without root resolution, a "relative" path could
+// still escape via a symlink whose target points anywhere on disk; the
+// validator must catch that even when the textual path looks safe.
+// ---------------------------------------------------------------------------
+
+// realPath returns the symlink-resolved absolute form of dir. The tests
+// need this because t.TempDir on macOS hands out paths under /var which
+// is itself a symlink to /private/var, so an unresolved path would not
+// match the validator's containment check.
+func realPath(t *testing.T, dir string) string {
+	t.Helper()
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
+}
+
+func TestContext_File_FileRoot_Allows(t *testing.T) {
+	dir := realPath(t, t.TempDir())
+	if err := os.WriteFile(filepath.Join(dir, "ok.txt"), []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+	c := NewContext(w, req)
+	c.fileRoot = openTestRoot(t, dir)
+
+	if err := c.File("ok.txt"); err != nil {
+		t.Fatalf("File error: %v", err)
+	}
+	if !strings.Contains(w.Body.String(), "ok") {
+		t.Errorf("expected file body, got %q", w.Body.String())
+	}
+}
+
+func TestContext_File_FileRoot_RejectsSymlinkEscape(t *testing.T) {
+	dir := realPath(t, t.TempDir())
+	outside := realPath(t, t.TempDir())
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A symlink inside the root whose target is the sibling temp dir.
+	if err := os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(dir, "escape.txt")); err != nil {
+		t.Skipf("symlink not supported on this platform: %v", err)
+	}
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+	c := NewContext(w, req)
+	c.fileRoot = openTestRoot(t, dir)
+
+	if err := c.File("escape.txt"); err == nil {
+		t.Errorf("expected error for symlink escape, body=%q", w.Body.String())
+	}
+}
+
+// TestContext_File_FileRoot_TOCTOU_SymlinkSwap pins the kernel-enforced
+// containment behaviour: even if an attacker swaps an in-root regular
+// file for a symlink-to-outside between path validation and the actual
+// open, *os.Root rejects the open. The Lstat-then-Open predecessor had
+// a window where the swap could win.
+func TestContext_File_FileRoot_TOCTOU_SymlinkSwap(t *testing.T) {
+	dir := realPath(t, t.TempDir())
+	outside := realPath(t, t.TempDir())
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "swap.txt")
+	if err := os.WriteFile(target, []byte("safe"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+	c := NewContext(w, req)
+	c.fileRoot = openTestRoot(t, dir)
+
+	// Sanity check: the regular file inside the root is served.
+	if err := c.File("swap.txt"); err != nil {
+		t.Fatalf("File error before swap: %v", err)
+	}
+
+	// Simulate the TOCTOU swap: regular file becomes a symlink to an
+	// out-of-root location. With os.Root, the next open MUST refuse.
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "secret.txt"), target); err != nil {
+		t.Skipf("symlink not supported on this platform: %v", err)
+	}
+
+	w2 := httptest.NewRecorder()
+	c2 := NewContext(w2, req)
+	c2.fileRoot = c.fileRoot
+	if err := c2.File("swap.txt"); err == nil {
+		t.Errorf("post-swap open should fail, body=%q", w2.Body.String())
+	}
+	if strings.Contains(w2.Body.String(), "secret") {
+		t.Errorf("os.Root let the symlinked secret through: %q", w2.Body.String())
+	}
+}
+
+func TestContext_File_FileRoot_RejectsTraversal(t *testing.T) {
+	dir := realPath(t, t.TempDir())
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+	c := NewContext(w, req)
+	c.fileRoot = openTestRoot(t, dir)
+
+	if err := c.File("../etc/passwd"); err == nil {
+		t.Error("expected error for ../ traversal")
+	}
+}
+
+func TestContext_File_FileRoot_RejectsAbsolute(t *testing.T) {
+	dir := realPath(t, t.TempDir())
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+	c := NewContext(w, req)
+	c.fileRoot = openTestRoot(t, dir)
+
+	if err := c.File("/etc/passwd"); err == nil {
+		t.Error("expected error for absolute path")
+	}
+}
+
+func TestContext_SaveFile_FileRoot_AllowsNonExistent(t *testing.T) {
+	dir := realPath(t, t.TempDir())
+	c, fh := newUploadContext(t, "test.txt", []byte("new"))
+	c.fileRoot = openTestRoot(t, dir)
+
+	if err := c.SaveFile(fh, "subdir-does-not-exist-yet.txt"); err != nil {
+		t.Fatalf("SaveFile error: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "subdir-does-not-exist-yet.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "new" {
+		t.Errorf("expected 'new', got %q", string(got))
+	}
+}
+
+func TestContext_SaveFile_FileRoot_RejectsParentSymlinkEscape(t *testing.T) {
+	dir := realPath(t, t.TempDir())
+	outside := realPath(t, t.TempDir())
+	// Symlink "uploads" inside the root to a directory outside the root.
+	// A SaveFile to "uploads/new.txt" would, without kernel-enforced
+	// containment, silently write into the attacker-controlled outside dir.
+	if err := os.Symlink(outside, filepath.Join(dir, "uploads")); err != nil {
+		t.Skipf("symlink not supported on this platform: %v", err)
+	}
+	c, fh := newUploadContext(t, "test.txt", []byte("data"))
+	c.fileRoot = openTestRoot(t, dir)
+
+	if err := c.SaveFile(fh, "uploads/new.txt"); err == nil {
+		t.Error("expected error for SaveFile through symlinked parent")
+	}
+	// And confirm nothing actually landed in the outside dir.
+	if _, statErr := os.Stat(filepath.Join(outside, "new.txt")); statErr == nil {
+		t.Error("SaveFile wrote to outside dir despite symlink escape")
 	}
 }
 

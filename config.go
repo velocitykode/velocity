@@ -67,6 +67,13 @@ type Config struct {
 	IdleTimeout       time.Duration // SERVER_IDLE_TIMEOUT, default 120s
 	ReadHeaderTimeout time.Duration // SERVER_READ_HEADER_TIMEOUT, default 10s
 
+	// FileRoot is the absolute directory under which Context.File,
+	// Context.Download, and Context.SaveFile may operate. Sourced from
+	// FILE_ROOT; defaults to the process current working directory at
+	// the time New() runs. The router enforces containment via symlink
+	// resolution against this path on every request.
+	FileRoot string
+
 	// Scheduler (no config needed, created fresh)
 }
 
@@ -236,10 +243,11 @@ func ConfigFromEnv() Config {
 	}
 
 	config := Config{
-		Env:   envOrDefault("APP_ENV", "development"),
-		Debug: envOrDefault("APP_DEBUG", "false") == "true",
-		Port:  envOrDefault("APP_PORT", "4000"),
-		Key:   os.Getenv("APP_KEY"),
+		Env:      envOrDefault("APP_ENV", "development"),
+		Debug:    envOrDefault("APP_DEBUG", "false") == "true",
+		Port:     envOrDefault("APP_PORT", "4000"),
+		Key:      os.Getenv("APP_KEY"),
+		FileRoot: os.Getenv("FILE_ROOT"),
 	}
 
 	// Database

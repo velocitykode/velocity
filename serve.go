@@ -155,6 +155,10 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// 2. Drain async event dispatcher workers (no-op if running sync).
 	if a.Router != nil {
 		collect(a.Router.ShutdownEventDispatcher(ctx))
+		// 2a. Release the *os.Root file descriptor used by Context.File,
+		// Context.Download and Context.SaveFile. Idempotent; safe even
+		// if no file root was ever opened.
+		collect(a.Router.CloseFileRoot())
 	}
 
 	// 3. Stop scheduler

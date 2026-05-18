@@ -73,7 +73,15 @@ type Context struct {
 	// validation to this explicit allowlist. It is taken from the router
 	// when the context is acquired from the pool.
 	redirectAllowedHosts []string
-	validateFn           func(c *Context, rules map[string][]string, messages ...map[string]string) error
+	// fileRoot is the kernel-enforced root under which File/Download/
+	// SaveFile are permitted to operate. Carried from
+	// Router.FileRootHandle() when the context is acquired from the
+	// pool. A nil value means "no root opened, reject all file ops"
+	// (which only happens when the configured directory could not be
+	// opened, e.g. missing or permission denied). The handle is owned
+	// by the router, the context never closes it.
+	fileRoot   *os.Root
+	validateFn func(c *Context, rules map[string][]string, messages ...map[string]string) error
 }
 
 // NewContext creates a new Context from http.Request and http.ResponseWriter.
@@ -397,6 +405,7 @@ func (c *Context) reset() {
 	c.sseStarted = false
 	c.trustedProxies = nil
 	c.redirectAllowedHosts = nil
+	c.fileRoot = nil
 	c.validateFn = nil
 }
 
@@ -843,40 +852,115 @@ func (c *Context) XML(status int, data interface{}) error {
 // File response methods
 // ---------------------------------------------------------------------------
 
-// validateFilePath cleans the path and rejects directory traversal attempts.
+// validateFilePath performs structural validation on a relative user
+// path before it is handed to an *os.Root for kernel-enforced
+// containment. It does NOT touch the filesystem; symlink and traversal
+// containment are enforced by os.Root at open time, which closes the
+// TOCTOU window an Lstat-then-Open implementation would have.
+//
+// Only relative paths are accepted. The function rejects:
+//   - absolute paths (e.g. "/etc/passwd")
+//   - paths containing a ".." segment after cleaning (directory traversal)
+//   - paths containing NUL bytes (null-byte injection)
+//
+// The returned path is the cleaned relative form, safe to pass to
+// (*os.Root).Open or (*os.Root).OpenFile.
 func validateFilePath(path string) (string, error) {
-	cleaned := filepath.Clean(path)
-	if strings.Contains(cleaned, "..") {
+	if strings.ContainsRune(path, 0) {
 		return "", fmt.Errorf("invalid file path")
+	}
+	cleaned := filepath.Clean(path)
+	if strings.ContainsRune(cleaned, 0) {
+		return "", fmt.Errorf("invalid file path")
+	}
+	if filepath.IsAbs(cleaned) || strings.HasPrefix(cleaned, string(filepath.Separator)) {
+		return "", fmt.Errorf("invalid file path")
+	}
+	// Reject ".." as a path segment (not as a substring of a filename).
+	if cleaned == ".." {
+		return "", fmt.Errorf("invalid file path")
+	}
+	for _, sep := range []string{string(filepath.Separator), "/"} {
+		if strings.HasPrefix(cleaned, ".."+sep) ||
+			strings.Contains(cleaned, sep+".."+sep) ||
+			strings.HasSuffix(cleaned, sep+"..") {
+			return "", fmt.Errorf("invalid file path")
+		}
 	}
 	return cleaned, nil
 }
 
-// File serves a file from the given path.
+// fileRootOrError returns the context's *os.Root, or an error if no
+// root is wired. File/Download/SaveFile all funnel through this so the
+// nil-root case (e.g. router never opened a root, or test context
+// without a root) surfaces as a clear error rather than a panic.
+func (c *Context) fileRootOrError() (*os.Root, error) {
+	if c.fileRoot == nil {
+		return nil, fmt.Errorf("velocity/router: no file root configured")
+	}
+	return c.fileRoot, nil
+}
+
+// File serves a file from the given path, resolved relative to the
+// router's FileRoot. Containment is kernel-enforced via *os.Root, so
+// a symlink swap between path validation and the actual open cannot
+// escape the root.
 func (c *Context) File(path string) error {
-	path, err := validateFilePath(path)
+	root, err := c.fileRootOrError()
 	if err != nil {
 		return err
 	}
-	http.ServeFile(c.Response, c.Request, path)
+	rel, err := validateFilePath(path)
+	if err != nil {
+		return err
+	}
+	f, err := OpenFileIn(root, rel)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("velocity/router: path is a directory")
+	}
+	http.ServeContent(c.Response, c.Request, filepath.Base(rel), info.ModTime(), f)
 	return nil
 }
 
 // Download sends a file as an attachment with the given filename.
 //
-// The Content-Disposition header is emitted with both a legacy
-// quoted-ASCII fallback ("filename=") and an RFC 5987 / 2231 encoded
-// filename* parameter, so non-ASCII characters (e.g. "résumé.pdf")
-// round-trip to modern clients while pre-RFC 5987 clients still
-// receive a sensible ASCII name.
+// path is resolved relative to the router's FileRoot. Containment is
+// kernel-enforced via *os.Root. The Content-Disposition header is
+// emitted with both a legacy quoted-ASCII fallback ("filename=") and
+// an RFC 5987 / 2231 encoded filename* parameter, so non-ASCII
+// characters (e.g. "résumé.pdf") round-trip to modern clients while
+// pre-RFC 5987 clients still receive a sensible ASCII name.
 func (c *Context) Download(path string, filename string) error {
-	var err error
-	path, err = validateFilePath(path)
+	root, err := c.fileRootOrError()
 	if err != nil {
 		return err
 	}
+	rel, err := validateFilePath(path)
+	if err != nil {
+		return err
+	}
+	f, err := OpenFileIn(root, rel)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("velocity/router: path is a directory")
+	}
 	c.Response.Header().Set("Content-Disposition", buildContentDisposition(filename))
-	http.ServeFile(c.Response, c.Request, path)
+	http.ServeContent(c.Response, c.Request, filepath.Base(rel), info.ModTime(), f)
 	return nil
 }
 
@@ -1061,11 +1145,17 @@ func (c *Context) FormFile(key string) (*multipart.FileHeader, error) {
 	return fh, err
 }
 
-// SaveFile saves an uploaded file to dst. The destination path must not
-// contain ".." to prevent directory traversal.
+// SaveFile saves an uploaded file to dst. dst is resolved relative to
+// the router's FileRoot and must resolve to a location contained
+// within that root. Containment is kernel-enforced via *os.Root, so
+// a symlinked parent pointing outside the root is rejected at
+// OpenFile time with no TOCTOU window between validation and create.
 func (c *Context) SaveFile(fh *multipart.FileHeader, dst string) error {
-	var err error
-	dst, err = validateFilePath(dst)
+	root, err := c.fileRootOrError()
+	if err != nil {
+		return err
+	}
+	rel, err := validateFilePath(dst)
 	if err != nil {
 		return err
 	}
@@ -1075,9 +1165,12 @@ func (c *Context) SaveFile(fh *multipart.FileHeader, dst string) error {
 	}
 	defer src.Close()
 
-	out, err := os.Create(dst)
+	out, err := root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
-		return err
+		if errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return fmt.Errorf("velocity/router: path %q escapes root: %w", rel, errors.Join(ErrPathOutsideRoot, err))
 	}
 	defer out.Close()
 
