@@ -399,10 +399,49 @@ func (g *SQLiteGrammar) compileConditions(sql *strings.Builder, args *[]any, con
 			continue
 		}
 
+		// Empty IN/NOT IN list is invalid SQL ("col IN ()" parses but
+		// behaves inconsistently across engines). Emit a constant boolean
+		// instead so the predicate is well-formed and produces the
+		// semantically correct result:
+		//   WhereIn(col, [])    -> 1=0  (never matches)
+		//   WhereNotIn(col, []) -> 1=1  (always matches)
+		if cond.Operator == "IN" || cond.Operator == "NOT IN" {
+			values, _ := cond.Value.([]any)
+			if len(values) == 0 {
+				if cond.Operator == "IN" {
+					sql.WriteString("1 = 0")
+				} else {
+					sql.WriteString("1 = 1")
+				}
+				continue
+			}
+		}
+
 		sql.WriteString(g.QuoteIdentifier(cond.Column))
 		sql.WriteString(" ")
 		sql.WriteString(cond.Operator)
-		if cond.Operator != "IS NULL" && cond.Operator != "IS NOT NULL" {
+
+		switch cond.Operator {
+		case "IS NULL", "IS NOT NULL":
+			// No placeholder needed
+		case "IN", "NOT IN":
+			// Empty-list case handled above; here len(values) > 0.
+			values, _ := cond.Value.([]any)
+			sql.WriteString(" (")
+			for j := range values {
+				if j > 0 {
+					sql.WriteString(", ")
+				}
+				sql.WriteString("?")
+				*args = append(*args, values[j])
+			}
+			sql.WriteString(")")
+		case "BETWEEN", "NOT BETWEEN":
+			if values, ok := cond.Value.([]any); ok && len(values) == 2 {
+				sql.WriteString(" ? AND ?")
+				*args = append(*args, values[0], values[1])
+			}
+		default:
 			sql.WriteString(" ?")
 			*args = append(*args, cond.Value)
 		}

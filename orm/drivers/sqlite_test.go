@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 )
@@ -1952,6 +1953,132 @@ func TestSQLiteDriver_ConcurrentTransactions(t *testing.T) {
 			driver.QueryRowContext(context.Background(), "SELECT SUM(balance) FROM bank_accounts").Scan(&totalBalance)
 			if totalBalance != tt.wantTotalBalance {
 				t.Errorf("Total balance = %d, want %d (money was created or destroyed)", totalBalance, tt.wantTotalBalance)
+			}
+		})
+	}
+}
+
+// TestSQLiteGrammar_CompileSelect_InAndBetween covers the IN/NOT IN/BETWEEN/
+// NOT BETWEEN operator paths in compileConditions. Without explicit cases the
+// default branch emits a single `?` placeholder and binds the entire slice as
+// one arg, which produces invalid SQL like `"col" IN ?`.
+func TestSQLiteGrammar_CompileSelect_InAndBetween(t *testing.T) {
+	grammar := &SQLiteGrammar{}
+
+	tests := []struct {
+		name     string
+		query    *SelectQuery
+		wantSQL  string
+		wantArgs []any
+	}{
+		{
+			name: "WhereIn expands to parenthesised placeholder list",
+			query: &SelectQuery{
+				Table:   "users",
+				Columns: []string{"id"},
+				Conditions: []Condition{
+					{Column: "id", Operator: "IN", Value: []any{1, 2, 3}, Type: "and"},
+				},
+			},
+			wantSQL:  "SELECT `id` FROM `users` WHERE `id` IN (?, ?, ?)",
+			wantArgs: []any{1, 2, 3},
+		},
+		{
+			name: "WhereNotIn expands to parenthesised placeholder list",
+			query: &SelectQuery{
+				Table:   "users",
+				Columns: []string{"id"},
+				Conditions: []Condition{
+					{Column: "status", Operator: "NOT IN", Value: []any{"a", "b"}, Type: "and"},
+				},
+			},
+			wantSQL:  "SELECT `id` FROM `users` WHERE `status` NOT IN (?, ?)",
+			wantArgs: []any{"a", "b"},
+		},
+		{
+			name: "WhereIn with a single element still parenthesises",
+			query: &SelectQuery{
+				Table:   "users",
+				Columns: []string{"id"},
+				Conditions: []Condition{
+					{Column: "id", Operator: "IN", Value: []any{42}, Type: "and"},
+				},
+			},
+			wantSQL:  "SELECT `id` FROM `users` WHERE `id` IN (?)",
+			wantArgs: []any{42},
+		},
+		{
+			name: "WhereBetween emits ? AND ? with both bounds bound",
+			query: &SelectQuery{
+				Table:   "users",
+				Columns: []string{"id"},
+				Conditions: []Condition{
+					{Column: "age", Operator: "BETWEEN", Value: []any{18, 65}, Type: "and"},
+				},
+			},
+			wantSQL:  "SELECT `id` FROM `users` WHERE `age` BETWEEN ? AND ?",
+			wantArgs: []any{18, 65},
+		},
+		{
+			name: "WhereNotBetween emits NOT BETWEEN ? AND ? with both bounds bound",
+			query: &SelectQuery{
+				Table:   "users",
+				Columns: []string{"id"},
+				Conditions: []Condition{
+					{Column: "age", Operator: "NOT BETWEEN", Value: []any{18, 65}, Type: "and"},
+				},
+			},
+			wantSQL:  "SELECT `id` FROM `users` WHERE `age` NOT BETWEEN ? AND ?",
+			wantArgs: []any{18, 65},
+		},
+		{
+			name: "WhereIn with empty slice collapses to 1 = 0 (never matches)",
+			query: &SelectQuery{
+				Table:   "users",
+				Columns: []string{"id"},
+				Conditions: []Condition{
+					{Column: "id", Operator: "IN", Value: []any{}, Type: "and"},
+				},
+			},
+			wantSQL:  "SELECT `id` FROM `users` WHERE 1 = 0",
+			wantArgs: nil,
+		},
+		{
+			name: "WhereNotIn with empty slice collapses to 1 = 1 (always matches)",
+			query: &SelectQuery{
+				Table:   "users",
+				Columns: []string{"id"},
+				Conditions: []Condition{
+					{Column: "id", Operator: "NOT IN", Value: []any{}, Type: "and"},
+				},
+			},
+			wantSQL:  "SELECT `id` FROM `users` WHERE 1 = 1",
+			wantArgs: nil,
+		},
+		{
+			name: "IN mixes correctly with other AND-joined conditions",
+			query: &SelectQuery{
+				Table:   "users",
+				Columns: []string{"id"},
+				Conditions: []Condition{
+					{Column: "tenant_id", Operator: "=", Value: 7, Type: "and"},
+					{Column: "id", Operator: "IN", Value: []any{1, 2}, Type: "and"},
+					{Column: "age", Operator: "BETWEEN", Value: []any{18, 65}, Type: "and"},
+				},
+			},
+			wantSQL:  "SELECT `id` FROM `users` WHERE `tenant_id` = ? AND `id` IN (?, ?) AND `age` BETWEEN ? AND ?",
+			wantArgs: []any{7, 1, 2, 18, 65},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotSQL, gotArgs := grammar.CompileSelect(tt.query)
+			if gotSQL != tt.wantSQL {
+				t.Errorf("CompileSelect() SQL = %q, want %q", gotSQL, tt.wantSQL)
+			}
+			if !reflect.DeepEqual(gotArgs, tt.wantArgs) {
+				t.Errorf("CompileSelect() args = %#v, want %#v", gotArgs, tt.wantArgs)
 			}
 		})
 	}
