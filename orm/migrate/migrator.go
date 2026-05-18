@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -27,6 +28,19 @@ type Migrator struct {
 	migrationsPath string
 	pretend        bool
 	pretendLog     []string
+
+	// conn is an optional pinned *sql.Conn used to route all migration
+	// SQL through a single backend connection. This is required for
+	// drivers whose advisory-lock primitives are session-scoped (most
+	// notably Postgres's pg_advisory_lock / pg_advisory_unlock pair),
+	// where acquiring and releasing the lock on different pooled
+	// connections would silently leak the lock. See acquireMigrationLock
+	// for how this field is populated for the Postgres path.
+	//
+	// When nil, helpers fall back to *sql.DB which lets database/sql
+	// pick any connection from the pool, which is fine for drivers
+	// whose locks are not session-scoped (MySQL row-lock tx, SQLite CAS row).
+	conn *sql.Conn
 }
 
 // NewMigrator creates a new Migrator instance
@@ -64,8 +78,35 @@ func (m *Migrator) exec(sql string) error {
 		m.pretendLog = append(m.pretendLog, sql)
 		return nil
 	}
-	_, err := m.db.Exec(sql)
+	_, err := m.execContext(context.Background(), sql)
 	return err
+}
+
+// execContext routes an Exec through the pinned *sql.Conn when present,
+// falling back to the pooled *sql.DB. All migration SQL that may run
+// while a session-scoped lock is held must go through this helper so
+// the lock and the work share the same backend connection.
+func (m *Migrator) execContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	if m.conn != nil {
+		return m.conn.ExecContext(ctx, query, args...)
+	}
+	return m.db.ExecContext(ctx, query, args...)
+}
+
+// queryContext mirrors execContext for SELECT statements that return rows.
+func (m *Migrator) queryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	if m.conn != nil {
+		return m.conn.QueryContext(ctx, query, args...)
+	}
+	return m.db.QueryContext(ctx, query, args...)
+}
+
+// queryRowContext mirrors execContext for single-row SELECT statements.
+func (m *Migrator) queryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	if m.conn != nil {
+		return m.conn.QueryRowContext(ctx, query, args...)
+	}
+	return m.db.QueryRowContext(ctx, query, args...)
 }
 
 func (m *Migrator) SetMigrationsPath(path string) {
@@ -180,13 +221,30 @@ func (m *Migrator) runUp() error {
 func (m *Migrator) acquireMigrationLock() (release func(), err error) {
 	switch m.driver {
 	case "postgres":
-		if _, lockErr := m.db.Exec("SELECT pg_advisory_lock($1)", migrationLockKey); lockErr != nil {
+		// pg_advisory_lock / pg_advisory_unlock are SESSION-scoped: the
+		// unlock must run on the same backend connection that took the
+		// lock, otherwise it is a silent no-op and the lock leaks until
+		// the holding session terminates. *sql.DB is a connection pool
+		// with no affinity between successive Exec calls, so we must
+		// pin a dedicated *sql.Conn for the duration of the migration
+		// run and route every subsequent query through it.
+		ctx := context.Background()
+		conn, connErr := m.db.Conn(ctx)
+		if connErr != nil {
+			return nil, fmt.Errorf("velocity/orm: pin migration conn: %w", connErr)
+		}
+		if _, lockErr := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", migrationLockKey); lockErr != nil {
+			_ = conn.Close()
 			return nil, fmt.Errorf("velocity/orm: pg_advisory_lock: %w", lockErr)
 		}
+		m.conn = conn
 		return func() {
-			// Best-effort release; Postgres drops session locks when
-			// the connection closes so losing this call is non-fatal.
-			_, _ = m.db.Exec("SELECT pg_advisory_unlock($1)", migrationLockKey)
+			// Release on the SAME conn that took the lock. Postgres
+			// also drops session locks when the conn closes, so the
+			// Close below is a defensive backstop if Exec fails.
+			_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", migrationLockKey)
+			m.conn = nil
+			_ = conn.Close()
 		}, nil
 
 	case "mysql":

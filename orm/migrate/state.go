@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 )
@@ -38,7 +39,7 @@ func (m *Migrator) createMigrationsTable() error {
 		return fmt.Errorf("unsupported driver: %s", m.driver)
 	}
 
-	_, err := m.db.Exec(createSQL)
+	_, err := m.execContext(context.Background(), createSQL)
 	return err
 }
 
@@ -49,7 +50,7 @@ func (m *Migrator) getAppliedMigrations() ([]string, error) {
 		return nil, fmt.Errorf("failed to create migrations table: %w", err)
 	}
 
-	rows, err := m.db.Query("SELECT version FROM migrations ORDER BY version ASC")
+	rows, err := m.queryContext(context.Background(), "SELECT version FROM migrations ORDER BY version ASC")
 	if err != nil {
 		return nil, fmt.Errorf("failed to query applied migrations: %w", err)
 	}
@@ -78,7 +79,7 @@ func (m *Migrator) getAppliedMigrationsWithBatch() (map[string]int, error) {
 		return nil, fmt.Errorf("failed to create migrations table: %w", err)
 	}
 
-	rows, err := m.db.Query("SELECT version, batch FROM migrations ORDER BY version ASC")
+	rows, err := m.queryContext(context.Background(), "SELECT version, batch FROM migrations ORDER BY version ASC")
 	if err != nil {
 		return nil, fmt.Errorf("failed to query applied migrations: %w", err)
 	}
@@ -104,7 +105,7 @@ func (m *Migrator) getAppliedMigrationsWithBatch() (map[string]int, error) {
 // recordMigration records a migration execution in the migrations table
 func (m *Migrator) recordMigration(version string, batch int) error {
 	query := m.placeholder("INSERT INTO migrations (version, batch) VALUES (%s, %s)")
-	_, err := m.db.Exec(query, version, batch)
+	_, err := m.execContext(context.Background(), query, version, batch)
 	if err != nil {
 		return fmt.Errorf("failed to record migration %s: %w", version, err)
 	}
@@ -114,7 +115,7 @@ func (m *Migrator) recordMigration(version string, batch int) error {
 // removeMigration removes a migration record from the migrations table
 func (m *Migrator) removeMigration(version string) error {
 	query := m.placeholder("DELETE FROM migrations WHERE version = %s")
-	_, err := m.db.Exec(query, version)
+	_, err := m.execContext(context.Background(), query, version)
 	if err != nil {
 		return fmt.Errorf("failed to remove migration %s: %w", version, err)
 	}
@@ -129,7 +130,7 @@ func (m *Migrator) getLastBatch() (int, error) {
 	}
 
 	var batch sql.NullInt64
-	err := m.db.QueryRow("SELECT MAX(batch) FROM migrations").Scan(&batch)
+	err := m.queryRowContext(context.Background(), "SELECT MAX(batch) FROM migrations").Scan(&batch)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get last batch: %w", err)
 	}
@@ -144,7 +145,7 @@ func (m *Migrator) getLastBatch() (int, error) {
 // getMigrationsByBatch returns all migration versions for a given batch
 func (m *Migrator) getMigrationsByBatch(batch int) ([]string, error) {
 	query := m.placeholder("SELECT version FROM migrations WHERE batch = %s ORDER BY version DESC")
-	rows, err := m.db.Query(query, batch)
+	rows, err := m.queryContext(context.Background(), query, batch)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query migrations by batch: %w", err)
 	}
@@ -181,7 +182,7 @@ func (m *Migrator) getAllTables() ([]string, error) {
 		return nil, fmt.Errorf("unsupported driver: %s", m.driver)
 	}
 
-	rows, err := m.db.Query(query)
+	rows, err := m.queryContext(context.Background(), query)
 	if err != nil {
 		return nil, err
 	}
@@ -213,7 +214,7 @@ func (m *Migrator) dropTable(table string) error {
 		return fmt.Errorf("unsupported driver: %s", m.driver)
 	}
 
-	_, err := m.db.Exec(query)
+	_, err := m.execContext(context.Background(), query)
 	return err
 }
 

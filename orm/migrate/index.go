@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
@@ -192,7 +193,7 @@ func (m *Migrator) CreateIndex(name, table string, fn func(*IndexBuilder)) error
 	fn(builder)
 
 	sql := builder.ToSQL()
-	_, err := m.db.Exec(sql)
+	_, err := m.execContext(context.Background(), sql)
 	if err != nil {
 		return fmt.Errorf("failed to create index %s: %w", name, err)
 	}
@@ -220,7 +221,7 @@ func (m *Migrator) DropIndex(name string, table ...string) error {
 		sql = "DROP INDEX IF EXISTS " + quotedName
 	}
 
-	_, err := m.db.Exec(sql)
+	_, err := m.execContext(context.Background(), sql)
 	if err != nil {
 		return fmt.Errorf("failed to drop index %s: %w", name, err)
 	}
