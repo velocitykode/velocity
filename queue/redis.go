@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -31,10 +32,15 @@ func (c RedisConfig) String() string {
 
 // RedisDriver implements Queue interface using Redis
 type RedisDriver struct {
-	client          *redis.Client
-	ctx             context.Context
-	config          RedisConfig
-	eventDispatcher func(ctx context.Context, event interface{}) error
+	client *redis.Client
+	ctx    context.Context
+	config RedisConfig
+	// eventDispatcher is stored via atomic.Pointer so the dispatcher path
+	// never acquires a lock. This keeps SetEventDispatcher safe to call
+	// from any context (including callers that may already hold other
+	// locks) and avoids a self-deadlock against future critical sections
+	// that wrap PushCtx/PopCtx.
+	eventDispatcher atomic.Pointer[dispatcherFn]
 }
 
 // NewRedisDriver creates a new Redis queue driver.
@@ -73,21 +79,31 @@ func NewRedisDriver(config RedisConfig) (*RedisDriver, error) {
 	}, nil
 }
 
-// SetEventDispatcher sets the function used to dispatch events.
+// SetEventDispatcher installs the event dispatcher. The assignment goes
+// through atomic.Pointer and never touches any lock, so it is safe to call
+// from inside callers that already hold unrelated mutexes.
 func (r *RedisDriver) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
-	r.eventDispatcher = fn
+	if fn == nil {
+		r.eventDispatcher.Store(nil)
+		return
+	}
+	f := dispatcherFn(fn)
+	r.eventDispatcher.Store(&f)
 }
 
 // dispatchEvent dispatches an event if a dispatcher is configured. The
 // caller-supplied ctx is propagated so listeners observe request-scoped
-// values.
+// values. The dispatcher pointer is loaded atomically and invoked outside
+// any lock.
 func (r *RedisDriver) dispatchEvent(ctx context.Context, event interface{}) {
-	if r.eventDispatcher != nil {
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		r.eventDispatcher(ctx, event)
+	p := r.eventDispatcher.Load()
+	if p == nil {
+		return
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	(*p)(ctx, event)
 }
 
 // PushCtx adds a job to the queue using the caller's context.

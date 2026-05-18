@@ -15,16 +15,25 @@ import (
 	"github.com/velocitykode/velocity/trace"
 )
 
+// dispatcherFn is the typed function pointer used for atomic.Pointer storage.
+// Defined at package scope so all drivers in this package share the same
+// underlying type for the dispatcher slot.
+type dispatcherFn func(ctx context.Context, event interface{}) error
+
 // MemoryDriver implements Queue interface using in-memory storage
 type MemoryDriver struct {
-	mu              sync.RWMutex
-	queues          map[string]*list.List
-	delayed         map[string]*delayedHeap
-	failed          map[string][]*failedJob
-	stopChan        chan struct{}
-	stopOnce        sync.Once
-	wg              sync.WaitGroup
-	eventDispatcher func(ctx context.Context, event interface{}) error
+	mu       sync.RWMutex
+	queues   map[string]*list.List
+	delayed  map[string]*delayedHeap
+	failed   map[string][]*failedJob
+	stopChan chan struct{}
+	stopOnce sync.Once
+	wg       sync.WaitGroup
+	// eventDispatcher is stored via atomic.Pointer so the dispatcher path
+	// never acquires m.mu. This is critical: PushCtx/PushDelayedCtx hold
+	// m.mu.Lock() while calling dispatchEvent, so any RLock attempt on the
+	// dispatcher path would self-deadlock against the writer lock.
+	eventDispatcher atomic.Pointer[dispatcherFn]
 
 	// logger is stored in an atomic.Value so the shutdown panic-recovery
 	// path can read it without acquiring the main lock (the goroutine
@@ -121,21 +130,32 @@ func (m *MemoryDriver) Start() {
 	})
 }
 
-// SetEventDispatcher sets the function used to dispatch events.
+// SetEventDispatcher installs the event dispatcher. Safe to call concurrently
+// with PushCtx/PushDelayedCtx (and from inside callers that already hold
+// m.mu) because the assignment goes through atomic.Pointer and never touches
+// the queue lock.
 func (m *MemoryDriver) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
-	m.eventDispatcher = fn
+	if fn == nil {
+		m.eventDispatcher.Store(nil)
+		return
+	}
+	f := dispatcherFn(fn)
+	m.eventDispatcher.Store(&f)
 }
 
 // dispatchEvent dispatches an event if a dispatcher is configured. The
 // caller-supplied ctx is propagated so listeners observe request-scoped
-// values.
+// values. The dispatcher pointer is loaded atomically, so this method is
+// safe to invoke from PushCtx/PushDelayedCtx while they hold m.mu.
 func (m *MemoryDriver) dispatchEvent(ctx context.Context, event interface{}) {
-	if m.eventDispatcher != nil {
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		m.eventDispatcher(ctx, event)
+	p := m.eventDispatcher.Load()
+	if p == nil {
+		return
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	(*p)(ctx, event)
 }
 
 // PushCtx adds a job to the queue. Honours ctx cancellation before the

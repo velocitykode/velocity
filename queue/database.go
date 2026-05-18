@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/velocitykode/velocity/trace"
@@ -71,11 +72,16 @@ type FailedJobRecord struct {
 
 // DatabaseDriver implements the Driver interface using database
 type DatabaseDriver struct {
-	mu              sync.RWMutex
-	db              *sql.DB
-	workerID        string
-	dbDriver        string // "postgres", "mysql", "sqlite"
-	eventDispatcher func(ctx context.Context, event interface{}) error
+	mu       sync.RWMutex
+	db       *sql.DB
+	workerID string
+	dbDriver string // "postgres", "mysql", "sqlite"
+	// eventDispatcher is stored via atomic.Pointer so the dispatcher path
+	// never acquires d.mu. PushDelayedCtx may grab d.mu under future
+	// refactors (and PopCtxWithTrace already does); routing dispatch
+	// through an atomic load keeps SetEventDispatcher lock-free and
+	// deadlock-proof regardless of the caller's lock state.
+	eventDispatcher atomic.Pointer[dispatcherFn]
 }
 
 // NewDatabaseDriver creates a new database queue driver with an injected *sql.DB.
@@ -92,21 +98,31 @@ func NewDatabaseDriver(db *sql.DB, dbDriver string) *DatabaseDriver {
 	return driver
 }
 
-// SetEventDispatcher sets the function used to dispatch events.
+// SetEventDispatcher installs the event dispatcher. The assignment goes
+// through atomic.Pointer and never touches d.mu, so it is safe to call from
+// inside callers that already hold the queue lock.
 func (d *DatabaseDriver) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
-	d.eventDispatcher = fn
+	if fn == nil {
+		d.eventDispatcher.Store(nil)
+		return
+	}
+	f := dispatcherFn(fn)
+	d.eventDispatcher.Store(&f)
 }
 
 // dispatchEvent dispatches an event if a dispatcher is configured. The
 // caller-supplied ctx is propagated so listeners observe request-scoped
-// values.
+// values. The dispatcher pointer is loaded atomically, so this method is
+// safe to invoke from paths that already hold d.mu.
 func (d *DatabaseDriver) dispatchEvent(ctx context.Context, event interface{}) {
-	if d.eventDispatcher != nil {
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		d.eventDispatcher(ctx, event)
+	p := d.eventDispatcher.Load()
+	if p == nil {
+		return
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	(*p)(ctx, event)
 }
 
 // PushCtx adds a job to the queue.
