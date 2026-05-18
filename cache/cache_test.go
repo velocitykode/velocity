@@ -2,9 +2,11 @@ package cache_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -765,4 +767,113 @@ func TestManagerGetStore(t *testing.T) {
 	if store == nil {
 		t.Error("Store returned nil")
 	}
+}
+
+// shutdownErrStore wraps *drivers.MemoryStore so it satisfies cache.Store
+// (and contract.ShutdownAware) but returns a configurable error from
+// Shutdown. The embedded MemoryStore.Shutdown is shadowed by the explicit
+// method below.
+type shutdownErrStore struct {
+	*drivers.MemoryStore
+	err    error
+	called atomic.Bool
+}
+
+func (s *shutdownErrStore) Shutdown(ctx context.Context) error {
+	s.called.Store(true)
+	// Still let the underlying store release its goroutine so the test
+	// process exits cleanly under -race.
+	_ = s.MemoryStore.Shutdown(ctx)
+	return s.err
+}
+
+// TestManager_Shutdown_ReturnsStoreErrors pins the contract that
+// Manager.Shutdown surfaces per-store Shutdown failures via errors.Join
+// instead of silently swallowing them, while still attempting Shutdown on
+// every store and clearing the internal store map.
+func TestManager_Shutdown_ReturnsStoreErrors(t *testing.T) {
+	errBoom := errors.New("boom")
+	errKaboom := errors.New("kaboom")
+
+	const failName = "fail-driver"
+	const failName2 = "fail-driver-2"
+	const okName = "ok-driver"
+
+	var failStore, failStore2, okStore *shutdownErrStore
+
+	prevFail := cache.Drivers().Override(failName, func(_ context.Context, cfg cache.StoreConfig) (cache.Store, error) {
+		failStore = &shutdownErrStore{MemoryStore: drivers.NewMemoryStore(cfg.Prefix), err: errBoom}
+		return failStore, nil
+	})
+	t.Cleanup(func() { cache.Drivers().Override(failName, prevFail) })
+
+	prevFail2 := cache.Drivers().Override(failName2, func(_ context.Context, cfg cache.StoreConfig) (cache.Store, error) {
+		failStore2 = &shutdownErrStore{MemoryStore: drivers.NewMemoryStore(cfg.Prefix), err: errKaboom}
+		return failStore2, nil
+	})
+	t.Cleanup(func() { cache.Drivers().Override(failName2, prevFail2) })
+
+	prevOK := cache.Drivers().Override(okName, func(_ context.Context, cfg cache.StoreConfig) (cache.Store, error) {
+		okStore = &shutdownErrStore{MemoryStore: drivers.NewMemoryStore(cfg.Prefix), err: nil}
+		return okStore, nil
+	})
+	t.Cleanup(func() { cache.Drivers().Override(okName, prevOK) })
+
+	m := cache.NewManager(&cache.Config{
+		Default: "fail",
+		Stores: map[string]cache.StoreConfig{
+			"fail":  {Driver: failName},
+			"fail2": {Driver: failName2},
+			"ok":    {Driver: okName},
+		},
+	})
+
+	// Materialise all three stores so they end up in the manager's map.
+	if _, err := m.Store("fail"); err != nil {
+		t.Fatalf("Store(fail) error = %v", err)
+	}
+	if _, err := m.Store("fail2"); err != nil {
+		t.Fatalf("Store(fail2) error = %v", err)
+	}
+	if _, err := m.Store("ok"); err != nil {
+		t.Fatalf("Store(ok) error = %v", err)
+	}
+
+	err := m.Shutdown(context.Background())
+	if err == nil {
+		t.Fatal("Manager.Shutdown returned nil; want joined error from failing stores")
+	}
+	if !errors.Is(err, errBoom) {
+		t.Errorf("Manager.Shutdown error does not wrap errBoom: %v", err)
+	}
+	if !errors.Is(err, errKaboom) {
+		t.Errorf("Manager.Shutdown error does not wrap errKaboom: %v", err)
+	}
+
+	// Every store must have had its Shutdown invoked even though the
+	// first one (iteration-order-dependent) returned an error.
+	if !failStore.called.Load() {
+		t.Error("failStore.Shutdown was not called")
+	}
+	if !failStore2.called.Load() {
+		t.Error("failStore2.Shutdown was not called")
+	}
+	if !okStore.called.Load() {
+		t.Error("okStore.Shutdown was not called")
+	}
+
+	// Map must be cleared regardless of errors: a subsequent Store()
+	// call must re-create the store via the factory, observable via a
+	// fresh pointer.
+	prevFailPtr := failStore
+	if _, err := m.Store("fail"); err != nil {
+		t.Fatalf("Store(fail) after Shutdown error = %v", err)
+	}
+	if failStore == prevFailPtr {
+		t.Error("manager did not clear its store map; factory was not re-invoked")
+	}
+
+	// Second Shutdown should be safe and report only the newly-created
+	// store's error.
+	_ = m.Shutdown(context.Background())
 }

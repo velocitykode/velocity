@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -247,18 +248,25 @@ func (m *Manager) DefaultStoreWithContext(ctx context.Context) (Store, error) {
 
 // Shutdown closes all cache stores, honoring the context deadline. All
 // built-in stores implement ShutdownAware; unknown types are ignored.
+// Each ShutdownAware store gets a Shutdown attempt even if a previous one
+// fails; errors are collected per-store and returned joined via
+// errors.Join. The internal store map is cleared regardless of errors so
+// callers cannot accidentally reuse a half-torn-down Manager.
 func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	for _, store := range m.stores {
+	var errs []error
+	for name, store := range m.stores {
 		if sd, ok := store.(contract.ShutdownAware); ok {
-			_ = sd.Shutdown(ctx)
+			if err := sd.Shutdown(ctx); err != nil {
+				errs = append(errs, fmt.Errorf("cache store %q shutdown: %w", name, err))
+			}
 		}
 	}
 
 	m.stores = make(map[string]Store)
-	return nil
+	return errors.Join(errs...)
 }
 
 // Implementation of Cache interface for default store
