@@ -37,7 +37,7 @@ func TestIndexBuilder_SQLGeneration(t *testing.T) {
 			indexName: "idx_users_email",
 			table:     "users",
 			columns:   []string{"email"},
-			contains:  []string{"CREATE INDEX", "idx_users_email", "ON users", "(email)"},
+			contains:  []string{"CREATE INDEX", "`idx_users_email`", "ON `users`", "(`email`)"},
 		},
 		{
 			name:      "simple index postgres",
@@ -45,7 +45,7 @@ func TestIndexBuilder_SQLGeneration(t *testing.T) {
 			indexName: "idx_users_email",
 			table:     "users",
 			columns:   []string{"email"},
-			contains:  []string{"CREATE INDEX", "idx_users_email", "ON users", "(email)"},
+			contains:  []string{"CREATE INDEX", `"idx_users_email"`, `ON "users"`, `("email")`},
 		},
 		{
 			name:      "simple index mysql",
@@ -53,7 +53,7 @@ func TestIndexBuilder_SQLGeneration(t *testing.T) {
 			indexName: "idx_users_email",
 			table:     "users",
 			columns:   []string{"email"},
-			contains:  []string{"CREATE INDEX", "idx_users_email", "ON users", "(email)"},
+			contains:  []string{"CREATE INDEX", "`idx_users_email`", "ON `users`", "(`email`)"},
 		},
 
 		// Unique indexes
@@ -74,7 +74,7 @@ func TestIndexBuilder_SQLGeneration(t *testing.T) {
 			indexName: "idx_projects_team",
 			table:     "projects",
 			columns:   []string{"team_id", "created_at"},
-			contains:  []string{"(team_id, created_at)"},
+			contains:  []string{`("team_id", "created_at")`},
 		},
 
 		// Partial indexes (WHERE clause)
@@ -114,7 +114,7 @@ func TestIndexBuilder_SQLGeneration(t *testing.T) {
 			table:     "users",
 			columns:   []string{"email"},
 			include:   []string{"id", "name", "avatar_url"},
-			contains:  []string{"INCLUDE (id, name, avatar_url)"},
+			contains:  []string{`INCLUDE ("id", "name", "avatar_url")`},
 		},
 		{
 			name:        "covering index sqlite - not supported",
@@ -186,10 +186,10 @@ func TestIndexBuilder_SQLGeneration(t *testing.T) {
 			include:   []string{"id", "uuid", "password", "name"},
 			contains: []string{
 				"CREATE INDEX",
-				"users_email_login_idx",
-				"ON users",
-				"(email)",
-				"INCLUDE (id, uuid, password, name)",
+				`"users_email_login_idx"`,
+				`ON "users"`,
+				`("email")`,
+				`INCLUDE ("id", "uuid", "password", "name")`,
 				"WHERE deleted_at IS NULL",
 			},
 		},
@@ -212,6 +212,242 @@ func TestIndexBuilder_SQLGeneration(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// =============================================================================
+// Using() / Where() validation tests (regression coverage for SQL injection
+// via the raw USING access method and partial-index WHERE predicate).
+// =============================================================================
+
+func TestIndexBuilder_UsingAccepted(t *testing.T) {
+	for _, method := range []string{"btree", "hash", "gin", "gist", "brin", "spgist"} {
+		t.Run(method, func(t *testing.T) {
+			b := migrate.NewIndexBuilder("idx_x", "tbl", "postgres")
+			b.Columns("col").Using(method)
+			sql, err := b.ToSQL()
+			if err != nil {
+				t.Fatalf("expected ToSQL to accept Using(%q), got error: %v", method, err)
+			}
+			if !strings.Contains(sql, "USING "+method) {
+				t.Errorf("expected SQL to contain USING %s, got:\n%s", method, sql)
+			}
+		})
+	}
+}
+
+func TestIndexBuilder_UsingRejectsUnknown(t *testing.T) {
+	b := migrate.NewIndexBuilder("idx_x", "tbl", "postgres")
+	b.Columns("col").Using("nonsense")
+	if _, err := b.ToSQL(); err == nil {
+		t.Fatal("expected ToSQL to reject Using(\"nonsense\")")
+	}
+}
+
+func TestIndexBuilder_UsingRejectsInjection(t *testing.T) {
+	b := migrate.NewIndexBuilder("idx_x", "tbl", "postgres")
+	b.Columns("col").Using("btree; DROP TABLE x")
+	if _, err := b.ToSQL(); err == nil {
+		t.Fatal("expected ToSQL to reject Using(\"btree; DROP TABLE x\")")
+	}
+}
+
+func TestIndexBuilder_WhereAccepted(t *testing.T) {
+	cases := []struct {
+		name      string
+		predicate string
+	}{
+		{"is null", "deleted_at IS NULL"},
+		{"equals string", "status = 'active'"},
+		{"and in list", "col = 1 AND id IN (1, 2, 3)"},
+		{"parenthesised or", "(a = 1 OR b = 2)"},
+		{"is not null", "deleted_at IS NOT NULL"},
+		{"not equal numeric", "count != 0"},
+		{"float compare", "ratio >= 0.5"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := migrate.NewIndexBuilder("idx_x", "tbl", "postgres")
+			b.Columns("col").Where(tc.predicate)
+			sql, err := b.ToSQL()
+			if err != nil {
+				t.Fatalf("expected Where(%q) to be accepted, got error: %v", tc.predicate, err)
+			}
+			if !strings.Contains(sql, "WHERE "+tc.predicate) {
+				t.Errorf("expected SQL to contain WHERE %s, got:\n%s", tc.predicate, sql)
+			}
+		})
+	}
+}
+
+func TestIndexBuilder_WhereRejectsInjection(t *testing.T) {
+	cases := []struct {
+		name      string
+		predicate string
+	}{
+		{"semicolon drop", "status = 'active'; DROP TABLE x"},
+		{"embedded quote and comment", "col = 'a'' OR 1=1--"},
+		{"double dash comment", "col = 1 -- AND id = 2"},
+		{"block comment", "col = 1 /* injected */"},
+		{"backtick identifier", "`col` = 1"},
+		{"double quote identifier", `"col" = 1`},
+		{"unterminated string", "col = 'unterminated"},
+		{"backslash escape", `col = 'a\'b'`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := migrate.NewIndexBuilder("idx_x", "tbl", "postgres")
+			b.Columns("col").Where(tc.predicate)
+			if _, err := b.ToSQL(); err == nil {
+				t.Fatalf("expected ToSQL to reject Where(%q)", tc.predicate)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// Identifier validation / quoting tests (regression coverage for SQL injection
+// via index column names, see toPostgresSQL/toMySQLSQL/toSQLiteSQL).
+// =============================================================================
+
+func TestCreateIndex_RejectsMaliciousColumn(t *testing.T) {
+	manager := newTestManager(t)
+	defer manager.Shutdown(context.Background())
+
+	db := manager.DB()
+	migrator := migrate.NewMigrator(db, manager.DriverName())
+
+	if err := migrator.CreateTable("safe_users", func(tb *migrate.TableBuilder) {
+		tb.ID()
+		tb.String("name")
+	}); err != nil {
+		t.Fatalf("failed to create table: %v", err)
+	}
+	defer migrator.DropTable("safe_users")
+
+	cases := []struct {
+		name string
+		col  string
+	}{
+		{"sql injection", "id; DROP TABLE users"},
+		{"contains space", "bad name"},
+		{"contains quote", `bad"name`},
+		{"contains backtick", "bad`name"},
+		{"starts with digit", "1column"},
+		{"empty", ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := migrator.CreateIndex("idx_bad", "safe_users", func(b *migrate.IndexBuilder) {
+				b.Columns(tc.col)
+			})
+			if err == nil {
+				t.Fatalf("expected CreateIndex to reject column %q, got nil error", tc.col)
+			}
+			if !strings.Contains(err.Error(), "invalid") {
+				t.Errorf("expected error to mention 'invalid', got %v", err)
+			}
+		})
+	}
+}
+
+func TestCreateIndex_RejectsMaliciousInclude(t *testing.T) {
+	manager := newTestManager(t)
+	defer manager.Shutdown(context.Background())
+
+	db := manager.DB()
+	// Use postgres driver path for SQL generation (INCLUDE is postgres-only).
+	migrator := migrate.NewMigrator(db, "postgres")
+
+	err := migrator.CreateIndex("idx_bad", "users", func(b *migrate.IndexBuilder) {
+		b.Columns("email").Include("id; DROP TABLE users")
+	})
+	if err == nil {
+		t.Fatal("expected CreateIndex to reject malicious include column")
+	}
+	if !strings.Contains(err.Error(), "invalid") {
+		t.Errorf("expected error to mention 'invalid', got %v", err)
+	}
+}
+
+func TestCreateIndex_RejectsMaliciousName(t *testing.T) {
+	manager := newTestManager(t)
+	defer manager.Shutdown(context.Background())
+
+	db := manager.DB()
+	migrator := migrate.NewMigrator(db, manager.DriverName())
+
+	err := migrator.CreateIndex("idx; DROP TABLE users", "safe_users", func(b *migrate.IndexBuilder) {
+		b.Columns("name")
+	})
+	if err == nil {
+		t.Fatal("expected CreateIndex to reject malicious index name")
+	}
+}
+
+func TestDropIndex_RejectsMaliciousName(t *testing.T) {
+	manager := newTestManager(t)
+	defer manager.Shutdown(context.Background())
+
+	db := manager.DB()
+	migrator := migrate.NewMigrator(db, manager.DriverName())
+
+	if err := migrator.DropIndex("idx; DROP TABLE users"); err == nil {
+		t.Fatal("expected DropIndex to reject malicious index name")
+	}
+}
+
+// TestIndexBuilder_ReservedWordQuoted verifies that a reserved SQL keyword
+// used as a column name is still emitted safely via driver-appropriate
+// quoting (e.g. `order` → "order" on postgres, `order` on mysql/sqlite).
+func TestIndexBuilder_ReservedWordQuoted(t *testing.T) {
+	cases := []struct {
+		driver       string
+		wantContains string
+	}{
+		{"postgres", `("order")`},
+		{"mysql", "(`order`)"},
+		{"sqlite", "(`order`)"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.driver, func(t *testing.T) {
+			sql := buildTestIndexSQL(tc.driver, "idx_orders", "orders",
+				[]string{"order"}, false, "", nil, "", false)
+			if !strings.Contains(sql, tc.wantContains) {
+				t.Errorf("expected SQL to contain %q, got:\n%s", tc.wantContains, sql)
+			}
+			// Should not contain the bare unquoted identifier in column list.
+			if strings.Contains(sql, "(order)") {
+				t.Errorf("reserved word emitted unquoted, got:\n%s", sql)
+			}
+		})
+	}
+}
+
+// TestIndexBuilder_ToSQLValidates ensures ToSQL returns an error directly
+// when an invalid column name is configured on the builder.
+func TestIndexBuilder_ToSQLValidates(t *testing.T) {
+	manager := newTestManager(t)
+	defer manager.Shutdown(context.Background())
+
+	db := manager.DB()
+	_ = db
+	// Drive ToSQL via CreateIndex which constructs the builder.
+	migrator := migrate.NewMigrator(db, manager.DriverName())
+	if err := migrator.CreateTable("tbl", func(tb *migrate.TableBuilder) {
+		tb.ID()
+	}); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	defer migrator.DropTable("tbl")
+
+	err := migrator.CreateIndex("idx_x", "tbl", func(b *migrate.IndexBuilder) {
+		b.Columns("col; DROP TABLE x")
+	})
+	if err == nil {
+		t.Fatal("expected error from invalid column")
 	}
 }
 
@@ -474,6 +710,25 @@ func getIndexes(t *testing.T, db *sql.DB, table string) map[string]bool {
 	return indexes
 }
 
+// quoteIdent mirrors the driver-aware quoting used by IndexBuilder so the unit
+// test helper produces the same SQL shape as production code.
+func quoteIdent(name, driver string) string {
+	switch driver {
+	case "mysql", "sqlite":
+		return "`" + strings.ReplaceAll(name, "`", "``") + "`"
+	default: // postgres + fallback
+		return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+	}
+}
+
+func quoteIdentList(names []string, driver string) string {
+	parts := make([]string, len(names))
+	for i, n := range names {
+		parts[i] = quoteIdent(n, driver)
+	}
+	return strings.Join(parts, ", ")
+}
+
 // buildTestIndexSQL mirrors the IndexBuilder logic for unit testing
 func buildTestIndexSQL(driver, name, table string, columns []string, unique bool,
 	where string, include []string, using string, ifNotExists bool) string {
@@ -490,9 +745,9 @@ func buildTestIndexSQL(driver, name, table string, columns []string, unique bool
 		sql.WriteString("IF NOT EXISTS ")
 	}
 
-	sql.WriteString(name)
+	sql.WriteString(quoteIdent(name, driver))
 	sql.WriteString(" ON ")
-	sql.WriteString(table)
+	sql.WriteString(quoteIdent(table, driver))
 
 	// USING (postgres, mysql btree/hash only)
 	if using != "" {
@@ -506,13 +761,13 @@ func buildTestIndexSQL(driver, name, table string, columns []string, unique bool
 	}
 
 	sql.WriteString(" (")
-	sql.WriteString(strings.Join(columns, ", "))
+	sql.WriteString(quoteIdentList(columns, driver))
 	sql.WriteString(")")
 
 	// INCLUDE (postgres only)
 	if len(include) > 0 && driver == "postgres" {
 		sql.WriteString(" INCLUDE (")
-		sql.WriteString(strings.Join(include, ", "))
+		sql.WriteString(quoteIdentList(include, driver))
 		sql.WriteString(")")
 	}
 
