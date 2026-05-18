@@ -231,3 +231,108 @@ func TestRedirect_RelativeURL(t *testing.T) {
 		t.Errorf("expected resolved relative URL '/other', got %s", location)
 	}
 }
+
+func TestSanitizeRedirectURL(t *testing.T) {
+	const host = "same.com"
+
+	tests := []struct {
+		name   string
+		target string
+		want   string
+	}{
+		{
+			name:   "javascript scheme rejected",
+			target: "javascript:alert(1)",
+			want:   "/",
+		},
+		{
+			name:   "javascript scheme mixed case rejected",
+			target: "JavaScript:alert(1)",
+			want:   "/",
+		},
+		{
+			name:   "data scheme rejected",
+			target: "data:text/html,<script>alert(1)</script>",
+			want:   "/",
+		},
+		{
+			name:   "vbscript scheme rejected",
+			target: "vbscript:msgbox(1)",
+			want:   "/",
+		},
+		{
+			name:   "file scheme rejected",
+			target: "file:///etc/passwd",
+			want:   "/",
+		},
+		{
+			name:   "cross-host http rejected",
+			target: "http://other.com/path",
+			want:   "/",
+		},
+		{
+			name:   "same-host http allowed",
+			target: "http://same.com/path",
+			want:   "http://same.com/path",
+		},
+		{
+			name:   "same-host https allowed",
+			target: "https://same.com/path",
+			want:   "https://same.com/path",
+		},
+		{
+			name:   "relative path allowed",
+			target: "/relative",
+			want:   "/relative",
+		},
+		{
+			name:   "relative deep path allowed",
+			target: "/users/42/edit",
+			want:   "/users/42/edit",
+		},
+		{
+			name:   "protocol-relative URL rejected",
+			target: "//evil.com/path",
+			want:   "/",
+		},
+		{
+			name:   "triple-slash network-path rejected",
+			target: "///evil.com/path",
+			want:   "/",
+		},
+		{
+			name:   "quad-slash network-path rejected",
+			target: "////evil.com",
+			want:   "/",
+		},
+		{
+			name:   "backslash variant rejected",
+			target: "/\\evil.com/path",
+			want:   "/",
+		},
+		{
+			name:   "double-backslash variant rejected",
+			target: "\\\\evil.com",
+			want:   "/",
+		},
+		{
+			name:   "safe relative path with multi-segment allowed",
+			target: "/safe/path",
+			want:   "/safe/path",
+		},
+		{
+			name:   "empty string falls through to parse and returns empty",
+			target: "",
+			want:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeRedirectURL(tt.target, host)
+			if got != tt.want {
+				t.Errorf("sanitizeRedirectURL(%q, %q) = %q, want %q", tt.target, host, got, tt.want)
+			}
+		})
+	}
+}

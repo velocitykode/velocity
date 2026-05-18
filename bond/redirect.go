@@ -52,10 +52,27 @@ func (b *Bond) Back(w http.ResponseWriter, r *http.Request) {
 }
 
 // sanitizeRedirectURL validates a redirect URL to prevent open redirects.
-// Returns "/" if the URL is absolute and points to a different host.
+// Returns "/" if the URL is absolute and points to a different host, uses
+// a dangerous scheme (javascript:, data:, vbscript:, file:, etc.), or fails
+// to parse.
 func sanitizeRedirectURL(target, host string) string {
+	// Reject any protocol-relative or network-path target up front. This
+	// covers "//evil.com", "///evil.com/path", "////evil.com", etc.
+	// Browsers treat all of these as cross-origin.
+	if strings.HasPrefix(target, "//") {
+		return "/"
+	}
+
+	// Reject backslash variants like "/\evil.com" and "\\evil.com". Some
+	// browsers and intermediaries normalise "\" to "/", which would turn
+	// these into a network-path reference. Be conservative and reject any
+	// target containing a backslash before we trust it as a relative path.
+	if strings.ContainsRune(target, '\\') {
+		return "/"
+	}
+
 	// Allow relative paths
-	if strings.HasPrefix(target, "/") && !strings.HasPrefix(target, "//") {
+	if strings.HasPrefix(target, "/") {
 		return target
 	}
 
@@ -65,8 +82,22 @@ func sanitizeRedirectURL(target, host string) string {
 		return "/"
 	}
 
-	// Reject protocol-relative URLs (//evil.com)
+	// Reject dangerous schemes (javascript:, data:, vbscript:, file:, etc.).
+	// Only http/https are allowed for absolute URLs; an empty scheme is fine
+	// because it indicates a relative URL.
+	if u.Scheme != "" && u.Scheme != "http" && u.Scheme != "https" {
+		return "/"
+	}
+
+	// Reject cross-host absolute URLs.
 	if u.Host != "" && u.Host != host {
+		return "/"
+	}
+
+	// Some inputs parse with an empty host but a path that starts with "//".
+	// Browsers and some intermediaries may normalise these back into a
+	// network-path reference, so reject them.
+	if strings.HasPrefix(u.Path, "//") {
 		return "/"
 	}
 
