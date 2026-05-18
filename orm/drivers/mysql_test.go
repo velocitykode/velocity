@@ -511,6 +511,32 @@ func TestMySQLGrammar_CompileSelect_WithGroupByAndHaving(t *testing.T) {
 			wantSQL:  "SELECT `user_id`, COUNT(*) as order_count FROM `orders` GROUP BY `user_id` HAVING `order_count` > ?",
 			wantArgs: []any{5},
 		},
+		{
+			name: "compiles HAVING with IS NULL (no placeholder, no args)",
+			query: &SelectQuery{
+				Table:   "orders",
+				Columns: []string{"user_id", "MAX(updated_at) as last_update"},
+				Groups:  []string{"user_id"},
+				Having: []Condition{
+					{Column: "last_update", Operator: "IS NULL", Type: "and"},
+				},
+			},
+			wantSQL:  "SELECT `user_id`, MAX(updated_at) as last_update FROM `orders` GROUP BY `user_id` HAVING `last_update` IS NULL",
+			wantArgs: nil,
+		},
+		{
+			name: "compiles HAVING with IS NOT NULL (no placeholder, no args)",
+			query: &SelectQuery{
+				Table:   "orders",
+				Columns: []string{"user_id", "MAX(updated_at) as last_update"},
+				Groups:  []string{"user_id"},
+				Having: []Condition{
+					{Column: "last_update", Operator: "IS NOT NULL", Type: "and"},
+				},
+			},
+			wantSQL:  "SELECT `user_id`, MAX(updated_at) as last_update FROM `orders` GROUP BY `user_id` HAVING `last_update` IS NOT NULL",
+			wantArgs: nil,
+		},
 	}
 
 	for _, tt := range tests {
@@ -521,6 +547,14 @@ func TestMySQLGrammar_CompileSelect_WithGroupByAndHaving(t *testing.T) {
 			}
 			if len(gotArgs) != len(tt.wantArgs) {
 				t.Errorf("CompileSelect() args length = %d, want %d", len(gotArgs), len(tt.wantArgs))
+			}
+			for i := range gotArgs {
+				if i >= len(tt.wantArgs) {
+					break
+				}
+				if gotArgs[i] != tt.wantArgs[i] {
+					t.Errorf("CompileSelect() args[%d] = %v, want %v", i, gotArgs[i], tt.wantArgs[i])
+				}
 			}
 		})
 	}

@@ -285,9 +285,14 @@ func (g *PostgresGrammar) CompileSelect(query *SelectQuery) (string, []any) {
 			sql.WriteString(g.QuoteIdentifier(cond.Column))
 			sql.WriteString(" ")
 			sql.WriteString(cond.Operator)
-			sql.WriteString(fmt.Sprintf(" $%d", argIndex))
-			args = append(args, cond.Value)
-			argIndex++
+			switch cond.Operator {
+			case "IS NULL", "IS NOT NULL":
+				// No placeholder needed
+			default:
+				sql.WriteString(fmt.Sprintf(" $%d", argIndex))
+				args = append(args, cond.Value)
+				argIndex++
+			}
 		}
 	}
 
