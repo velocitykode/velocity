@@ -100,8 +100,16 @@ func NewSession(id string) *BaseSession {
 
 // NewSessionWithError creates a new session and returns any error from the
 // underlying crypto/rand call used to generate the session ID.
+//
+// When id is empty a new ID is generated AND the session is marked as
+// modified, so the next Save() will issue a Set-Cookie carrying the fresh
+// ID. Without this the unconditional Save() behaviour previously masked
+// the issue: dropping that unconditional save would otherwise drop the
+// cookie for newly-created sessions and clients could never stabilise on
+// a server-issued ID.
 func NewSessionWithError(id string) (*BaseSession, error) {
-	if id == "" {
+	freshlyCreated := id == ""
+	if freshlyCreated {
 		generated, err := generateSessionID()
 		if err != nil {
 			return &BaseSession{
@@ -113,9 +121,10 @@ func NewSessionWithError(id string) (*BaseSession, error) {
 	}
 
 	return &BaseSession{
-		id:    id,
-		data:  make(map[string]interface{}),
-		flash: make(map[string]interface{}),
+		id:       id,
+		data:     make(map[string]interface{}),
+		flash:    make(map[string]interface{}),
+		modified: freshlyCreated,
 	}, nil
 }
 
@@ -236,6 +245,18 @@ func (s *BaseSession) IsModified() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.modified
+}
+
+// MarkClean clears the modified flag. Session stores call this after a
+// successful Save() so that a subsequent Save() on the same in-memory
+// session, without intervening writes, is a no-op. Every Encrypt
+// produces a fresh IV, so re-emitting Set-Cookie on every response
+// rotates the cookie value and breaks anything keyed by it (e.g. CSRF
+// token stores).
+func (s *BaseSession) MarkClean() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.modified = false
 }
 
 // IsDestroyed checks if session was destroyed

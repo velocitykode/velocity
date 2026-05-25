@@ -74,6 +74,16 @@ type Config struct {
 	// Storage strategy
 	Store Store
 
+	// SessionIDResolver, if set, is consulted before falling back to reading
+	// SessionCookieName directly from the request. Frameworks that encrypt
+	// the session cookie (e.g. velocity/auth session manager) MUST inject a
+	// resolver that returns the underlying plaintext session ID. Keying
+	// CSRF tokens by the raw ciphertext cookie value is incorrect: the IV
+	// changes on every Save() and the stored token becomes unreachable.
+	//
+	// The resolver returns ErrNoSession when no session is present.
+	SessionIDResolver func(*http.Request) (string, error)
+
 	// Exception handling
 	ExcludePaths []string
 	ExcludeFunc  func(*http.Request) bool

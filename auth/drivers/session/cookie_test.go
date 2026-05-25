@@ -412,7 +412,9 @@ func TestCookieStore_Save(t *testing.T) {
 		{
 			name: "saves BaseSession type by wrapping",
 			session: func(store *CookieStore) auth.Session {
-				return auth.NewSession("base-session-id")
+				s := auth.NewSession("base-session-id")
+				s.Put("k", "v") // mark modified so Save persists
+				return s
 			},
 			encryptor: &mockEncryptor{},
 			wantErr:   false,
@@ -460,6 +462,7 @@ func TestCookieStore_Save(t *testing.T) {
 			name: "returns error when encryption fails",
 			session: func(store *CookieStore) auth.Session {
 				session, _ := store.Create("encryption-fail-id")
+				session.Put("k", "v") // force modified so Encrypt is invoked
 				return session
 			},
 			encryptor: &mockEncryptor{
@@ -592,6 +595,7 @@ func TestCookieStore_Save_CookieAttributes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store := newTestCookieStore(tt.config, &mockEncryptor{})
 			session, _ := store.Create("attr-test-id")
+			session.Put("k", "v") // mark modified so Save persists
 
 			recorder := httptest.NewRecorder()
 			err := store.Save(recorder, session)
@@ -681,6 +685,7 @@ func TestCookieSession_Save(t *testing.T) {
 			name: "delegates to CookieStore.Save",
 			setupFunc: func(store *CookieStore) *CookieSession {
 				session, _ := store.Create("delegate-id")
+				session.Put("k", "v") // mark modified so Save persists
 				return session.(*CookieSession)
 			},
 			wantErr: false,
@@ -1066,6 +1071,7 @@ func TestCookieStore_Save_WithNilMaps(t *testing.T) {
 
 	// Create a session - the BaseSession initializes with empty maps
 	session, _ := store.Create("nil-maps-test")
+	session.Put("k", "v") // mark modified so Save persists
 
 	recorder := httptest.NewRecorder()
 	err := store.Save(recorder, session)
@@ -1246,6 +1252,7 @@ func TestCookieSession_StoreReference(t *testing.T) {
 func TestCookieStore_Save_ExpiresHeader(t *testing.T) {
 	store := newTestCookieStore(testConfig(), &mockEncryptor{})
 	session, _ := store.Create("expires-test")
+	session.Put("k", "v") // mark modified so Save persists
 
 	before := time.Now()
 	recorder := httptest.NewRecorder()
@@ -1338,6 +1345,7 @@ func TestCookieStore_UsesCorrectEncryptor(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store := newTestCookieStore(testConfig(), tt.encryptor)
 			session, _ := store.Create("encryptor-test")
+			session.Put("k", "v") // mark modified so Save persists
 
 			recorder := httptest.NewRecorder()
 			err := store.Save(recorder, session)
@@ -1446,5 +1454,45 @@ func TestCookieStore_Types_Implement_Interfaces(t *testing.T) {
 
 	if !sessionType.Implements(authSessionType) {
 		t.Error("CookieSession does not implement auth.Session")
+	}
+}
+
+// TestCookieStore_Save_SecondCallNoOpWhenUnchanged pins the contract
+// that "save only on modification" must hold across repeated Save()
+// calls on the same session. The first Save() persists the mutation
+// and clears the modified flag; the second Save() must NOT emit a new
+// Set-Cookie. Without this, every Encrypt() produces a fresh IV and
+// rotates the cookie on every response, breaking anything keyed by
+// the ciphertext (e.g. the CSRF token store).
+func TestCookieStore_Save_SecondCallNoOpWhenUnchanged(t *testing.T) {
+	store := newTestCookieStore(testConfig(), &mockEncryptor{})
+	session, _ := store.Create("stable-id")
+	session.Put("k", "v")
+
+	rec1 := httptest.NewRecorder()
+	if err := store.Save(rec1, session); err != nil {
+		t.Fatalf("first Save() error = %v", err)
+	}
+	if len(rec1.Result().Cookies()) == 0 {
+		t.Fatal("first Save() must emit a cookie")
+	}
+
+	// Second Save() on the unchanged session must be a no-op.
+	rec2 := httptest.NewRecorder()
+	if err := store.Save(rec2, session); err != nil {
+		t.Fatalf("second Save() error = %v", err)
+	}
+	if got := len(rec2.Result().Cookies()); got != 0 {
+		t.Fatalf("second Save() must NOT emit a cookie, got %d", got)
+	}
+
+	// Mutating again must re-arm the modified flag.
+	session.Put("k", "v2")
+	rec3 := httptest.NewRecorder()
+	if err := store.Save(rec3, session); err != nil {
+		t.Fatalf("third Save() error = %v", err)
+	}
+	if len(rec3.Result().Cookies()) == 0 {
+		t.Fatal("third Save() after mutation must emit a cookie")
 	}
 }

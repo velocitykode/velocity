@@ -101,6 +101,14 @@ func (s *CookieStore) Save(w http.ResponseWriter, session auth.Session) error {
 		return nil
 	}
 
+	// Skip re-encryption when nothing changed since load. Every Encrypt
+	// produces a new IV, so unconditionally refreshing the cookie on every
+	// response rotates the ciphertext and breaks anything keyed by the
+	// cookie value (e.g. CSRF token stores) on the next request.
+	if !cookieSession.IsModified() {
+		return nil
+	}
+
 	// Serialize session data
 	sessionData := struct {
 		ID    string                 `json:"id"`
@@ -135,6 +143,12 @@ func (s *CookieStore) Save(w http.ResponseWriter, session auth.Session) error {
 		SameSite: s.config.SameSite,
 		Expires:  time.Now().Add(time.Duration(s.config.Lifetime) * time.Minute),
 	})
+
+	// Clear the modified flag so a second Save() on the same session
+	// without intervening writes does not rotate the cookie. The check at
+	// the top of Save() short-circuits when IsModified() is false; without
+	// this reset, that gate is one-shot only.
+	cookieSession.MarkClean()
 
 	return nil
 }

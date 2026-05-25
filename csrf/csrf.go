@@ -328,6 +328,34 @@ func (c *CSRF) getTokenFromRequest(r *http.Request) (string, error) {
 // replay it). A csrf.session_fallback event is still dispatched here for
 // observability so operators can detect missing session middleware.
 func (c *CSRF) getSessionID(r *http.Request) (string, error) {
+	// Resolver wins. Frameworks that encrypt the session cookie inject one
+	// here so we key tokens against the plaintext session ID rather than
+	// the per-response ciphertext.
+	if c.config.SessionIDResolver != nil {
+		id, err := c.config.SessionIDResolver(r)
+		if err != nil {
+			if errors.Is(err, ErrNoSession) {
+				c.dispatchEvent(r.Context(), &SessionFallback{
+					Context: r.Context(),
+					Path:    r.URL.Path,
+					Method:  r.Method,
+					At:      time.Now(),
+				})
+			}
+			return "", err
+		}
+		if id == "" {
+			c.dispatchEvent(r.Context(), &SessionFallback{
+				Context: r.Context(),
+				Path:    r.URL.Path,
+				Method:  r.Method,
+				At:      time.Now(),
+			})
+			return "", ErrNoSession
+		}
+		return id, nil
+	}
+
 	// Use configured session cookie name
 	cookieName := c.config.SessionCookieName
 	if cookieName == "" {

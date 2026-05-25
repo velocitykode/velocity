@@ -3,6 +3,7 @@ package velocity
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -232,6 +233,61 @@ func New(opts ...Option) (*App, error) {
 	})
 
 	// 8. Initialize CSRF
+	//
+	// Inject a SessionIDResolver that decrypts the session cookie directly
+	// and returns the plaintext session ID. The CSRF token store is keyed
+	// by this ID; without the resolver it would be keyed by the per-response
+	// ciphertext cookie value, which rotates on every Save() and causes
+	// 419 on the next state-changing request.
+	//
+	// The resolver MUST refuse to mint or accept tokens for requests that
+	// carry no real session cookie. Calling auth.Manager.Session(r) here
+	// would silently create an ephemeral session (auth/session.go's
+	// GetSessionFromRequest / CookieStore.Get both fall back to
+	// store.Create("") on missing/invalid cookies), reintroducing the
+	// exact attack surface TestCSRF_RefusesEphemeralSession pins. So we
+	// require the cookie to exist AND decrypt successfully; anything else
+	// returns ErrNoSession.
+	//
+	// Install the auto-resolver ONLY when CSRF is binding to the
+	// built-in auth session cookie. Two cases must not auto-wire:
+	//
+	//   - CSRF_SESSION_COOKIE points at a different cookie (the operator
+	//     is intentionally binding CSRF to a non-session cookie, plain
+	//     or encrypted under a different scheme). Decrypting it with the
+	//     app encryptor would 419 every request.
+	//   - The app does not use the built-in session cookie at all
+	//     (a.config.Session.Name is empty). Same outcome.
+	//
+	// In both skipped cases, leaving the resolver nil preserves the
+	// documented legacy fallback in csrf.getSessionID, which reads
+	// Config.SessionCookieName as a raw value.
+	if a.config.CSRF.SessionIDResolver == nil &&
+		a.Crypto != nil &&
+		a.config.Session.Name != "" &&
+		a.config.CSRF.SessionCookieName == a.config.Session.Name {
+		encryptor := a.Crypto
+		sessionCookieName := a.config.Session.Name
+		a.config.CSRF.SessionIDResolver = func(r *http.Request) (string, error) {
+			c, err := r.Cookie(sessionCookieName)
+			if err != nil || c.Value == "" {
+				return "", csrf.ErrNoSession
+			}
+			plaintext, err := encryptor.Decrypt(c.Value)
+			if err != nil {
+				return "", csrf.ErrNoSession
+			}
+			// CookieStore wire format: {"id":"...","data":{...},"flash":{...}}.
+			// Only the id is needed to key CSRF tokens.
+			var payload struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal([]byte(plaintext), &payload); err != nil || payload.ID == "" {
+				return "", csrf.ErrNoSession
+			}
+			return payload.ID, nil
+		}
+	}
 	csrfInstance, err := csrf.NewE(&a.config.CSRF)
 	if err != nil {
 		cancel()

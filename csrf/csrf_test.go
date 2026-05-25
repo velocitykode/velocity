@@ -698,3 +698,94 @@ func TestGetTokenFromRequest_DirectReturnsErrFormBodyTooLarge(t *testing.T) {
 		t.Fatalf("expected ErrFormBodyTooLarge, got token=%q err=%v", tok, err)
 	}
 }
+
+// TestSessionIDResolver_PlaintextSessionIDAcrossEncryption is the
+// regression test for two compounding bugs that caused 419 on the
+// second state-changing request after a session-modifying response:
+//
+//  1. getSessionID used to return the raw Cookie value. When the
+//     framework encrypts the session cookie, that value is the
+//     ciphertext; every re-encrypt produces a fresh IV, so the CSRF
+//     token store key rotated on every response and the next request
+//     failed validation. The fix routes session-id lookup through an
+//     injectable SessionIDResolver that returns the plaintext id.
+//
+//  2. session.Save() unconditionally re-encrypted on every response,
+//     which made (1) trigger on every request — not just on session
+//     modifications. Fixed in auth/drivers/session.
+//
+// This test exercises only the CSRF half (the session half has its
+// own coverage). It simulates the encryption rotation by mutating the
+// session cookie between requests while the resolver continues to
+// return the stable plaintext id, and asserts both state-changing
+// requests validate successfully.
+func TestSessionIDResolver_PlaintextSessionIDAcrossEncryption(t *testing.T) {
+	const plaintextID = "stable-plaintext-session-id"
+
+	cfg := DefaultConfig()
+	cfg.Store = stores.NewSessionStore()
+	cfg.Secure = false // test env
+	cfg.SessionIDResolver = func(r *http.Request) (string, error) {
+		// Mimics auth.Manager.Session(r).ID(): plaintext id, stable
+		// across cookie ciphertext rotations.
+		if _, err := r.Cookie("session_id"); err != nil {
+			return "", ErrNoSession
+		}
+		return plaintextID, nil
+	}
+	c := New(cfg)
+
+	// Seed a valid token under the plaintext id.
+	token, err := GenerateToken()
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+	if err := c.config.Store.Set(plaintextID, token); err != nil {
+		t.Fatalf("store set: %v", err)
+	}
+
+	doRequest := func(cookieValue string) int {
+		req := httptest.NewRequest("DELETE", "/servers/x", nil)
+		req.Header.Set(c.config.HeaderName, token)
+		req.AddCookie(&http.Cookie{Name: "session_id", Value: cookieValue})
+		w := httptest.NewRecorder()
+		c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})).ServeHTTP(w, req)
+		return w.Code
+	}
+
+	// Request 1: cookie carries the original ciphertext.
+	if code := doRequest("v1:ciphertext-A"); code != http.StatusOK {
+		t.Fatalf("request 1: expected 200, got %d", code)
+	}
+
+	// Request 2: cookie has rotated to a new ciphertext (different IV).
+	// Pre-fix this caused a 419 because the token was keyed by the now-
+	// stale ciphertext "v1:ciphertext-A". The resolver hides the rotation.
+	if code := doRequest("v1:ciphertext-B-different-iv"); code != http.StatusOK {
+		t.Fatalf("request 2 (post-rotation): expected 200, got %d", code)
+	}
+}
+
+// TestSessionIDResolver_ErrorPropagation verifies a resolver returning
+// ErrNoSession produces 419 and emits the SessionFallback event.
+func TestSessionIDResolver_ErrorPropagation(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Store = stores.NewSessionStore()
+	cfg.Secure = false
+	cfg.SessionIDResolver = func(r *http.Request) (string, error) {
+		return "", ErrNoSession
+	}
+	c := New(cfg)
+
+	req := httptest.NewRequest("POST", "/x", nil)
+	req.Header.Set(c.config.HeaderName, "anything")
+	w := httptest.NewRecorder()
+	c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("inner handler must not run when resolver returns ErrNoSession")
+	})).ServeHTTP(w, req)
+	if w.Code != 419 {
+		t.Fatalf("expected 419, got %d", w.Code)
+	}
+}
