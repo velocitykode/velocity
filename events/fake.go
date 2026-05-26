@@ -86,21 +86,45 @@ func (f *FakeDispatcher) Subscribe(subscriber Subscriber) {
 	subscriber.Subscribe(f)
 }
 
-// Dispatch records the event without executing listeners
+// Dispatch records the event without executing listeners.
+//
+// When StopFaking has been called, listeners run for real. Listener bodies
+// commonly re-enter the dispatcher (a listener that dispatches a follow-up
+// event, calls AssertDispatched on its own dispatcher, or otherwise touches
+// any FakeDispatcher method) and any re-entrant call must be able to acquire
+// the dispatcher's lock. We therefore use a two-phase pattern: record / snapshot
+// listeners under the lock, release the lock, then invoke listeners outside
+// the critical section. Holding f.mu across listener execution would deadlock
+// the moment a listener body re-enters the FakeDispatcher.
 func (f *FakeDispatcher) Dispatch(ctx context.Context, event interface{}) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	f.mu.Lock()
-	defer f.mu.Unlock()
-
 	if f.shouldFake {
 		f.events = append(f.events, event)
+		f.mu.Unlock()
 		return nil
 	}
 
-	// If not faking, execute listeners
-	return f.executeListeners(ctx, event)
+	// Not faking: snapshot the listener set under the lock so concurrent
+	// Listen/Off cannot mutate the slice we are about to iterate, then
+	// release the lock so listener bodies are free to re-enter the
+	// dispatcher (AssertDispatched, Dispatch follow-ups, etc.).
+	eventName := f.getEventName(event)
+	entries := f.listeners[eventName]
+	listeners := make([]Listener, len(entries))
+	for i, entry := range entries {
+		listeners[i] = entry.listener
+	}
+	f.mu.Unlock()
+
+	for _, listener := range listeners {
+		if err := listener.Handle(ctx, event); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // DispatchNow records the event synchronously
@@ -264,17 +288,27 @@ func (f *FakeDispatcher) StartFaking() {
 	f.shouldFake = true
 }
 
-// executeListeners executes listeners for an event (when not faking)
+// executeListeners executes listeners for an event (when not faking).
+//
+// Acquires its own RLock to snapshot the listener slice, then releases the
+// lock before invoking listener bodies. Holding the lock across listener
+// execution would deadlock any listener that re-enters the dispatcher
+// (AssertDispatched, follow-up Dispatch, etc.).
 func (f *FakeDispatcher) executeListeners(ctx context.Context, event interface{}) error {
+	f.mu.RLock()
 	eventName := f.getEventName(event)
 	entries := f.listeners[eventName]
+	listeners := make([]Listener, len(entries))
+	for i, entry := range entries {
+		listeners[i] = entry.listener
+	}
+	f.mu.RUnlock()
 
-	for _, entry := range entries {
-		if err := entry.listener.Handle(ctx, event); err != nil {
+	for _, listener := range listeners {
+		if err := listener.Handle(ctx, event); err != nil {
 			return err
 		}
 	}
-
 	return nil
 }
 
