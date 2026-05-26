@@ -259,6 +259,43 @@ func (j *Job) runInternal(ctx context.Context, shutdownGrace time.Duration, rele
 		j.mu.Unlock()
 	}
 
+	// M-35: lock + running-flag teardown MUST happen even when a Before
+	// hook (or any pre-dispatch code below) panics. Track whether the
+	// background waiter has taken ownership of release; if not, the
+	// defer below runs the cleanup. Ownership transfer to the
+	// RunInBackground waiter sets `released` so the defer is a no-op
+	// on that path.
+	var released bool
+	defer func() {
+		// Recover any panic from Before hooks etc. so the
+		// teardown is unconditional. The outer goroutine in
+		// runDueJobs has its own recover that handles panics from
+		// runInternal itself, but doing it here ensures the
+		// runWg.Done + lock release happen synchronously inside
+		// runInternal regardless of who recovers.
+		r := recover()
+		if released {
+			if r != nil {
+				// Panic occurred after ownership transferred to the
+				// background waiter -- the waiter handles its own
+				// release. Re-raise so the outer recover sees it for
+				// logging.
+				panic(r)
+			}
+			return
+		}
+		// We still own teardown. Clear running flag (so the next
+		// tick is not gated by stale state) and run release.
+		clearRunningFlag()
+		if release != nil {
+			release()
+		}
+		if r != nil {
+			// Re-raise so the outer recover in runDueJobs logs it.
+			panic(r)
+		}
+	}()
+
 	// Create context with trace for APM. We don't propagate ctx into
 	// trace.StartTrace because that API expects a fresh context; future
 	// work could thread the runCtx for cancellation propagation into
@@ -269,37 +306,71 @@ func (j *Job) runInternal(ctx context.Context, shutdownGrace time.Duration, rele
 	dispatchScheduledTaskStarting(j.getDispatch(), tctx, jobName)
 	startTime := time.Now()
 
-	// Run before callbacks
+	// Run before callbacks. Each callback is isolated in its own
+	// panic-recovered scope so one misbehaving hook does not skip the
+	// remaining hooks (and so the panic does not bypass the deferred
+	// cleanup, which runs anyway). A panicking Before hook is logged
+	// via the scheduled.failed event and treated as a job failure.
 	for _, callback := range beforeCallbacks {
-		callback()
+		func(cb func()) {
+			defer func() {
+				if r := recover(); r != nil {
+					hookErr := panicerr.FromRecovered(r)
+					dispatchScheduledTaskFailed(j.getDispatch(), tctx, jobName, hookErr, time.Since(startTime))
+				}
+			}()
+			cb()
+		}(callback)
 	}
 
 	// finishSync runs the after-callbacks, success/failure callbacks,
-	// completion events, then clears the running flag and calls release.
-	// Used by every synchronous return path. RunInBackground's waiter
-	// goroutine builds its own finish path (it must defer event
-	// dispatch until cmd.Wait completes).
+	// and completion events. The clearRunningFlag + release teardown
+	// is handled by the deferred cleanup at the top of runInternal so
+	// even a panicking After/OnSuccess/OnFailure hook does not leak
+	// the lock or wedge the in-process running flag. Each hook is
+	// isolated in its own panic-recovered scope (a misbehaving hook
+	// does not skip the rest).
 	finishSync := func(err error, panicDispatched bool) {
 		duration := time.Since(startTime)
 		for _, callback := range afterCallbacks {
-			callback()
+			func(cb func()) {
+				defer func() {
+					if r := recover(); r != nil {
+						hookErr := panicerr.FromRecovered(r)
+						dispatchScheduledTaskFailed(j.getDispatch(), tctx, jobName, hookErr, time.Since(startTime))
+					}
+				}()
+				cb()
+			}(callback)
 		}
 		if err != nil {
 			for _, callback := range onFailureCallbacks {
-				callback(err)
+				func(cb func(error)) {
+					defer func() {
+						if r := recover(); r != nil {
+							hookErr := panicerr.FromRecovered(r)
+							dispatchScheduledTaskFailed(j.getDispatch(), tctx, jobName, hookErr, time.Since(startTime))
+						}
+					}()
+					cb(err)
+				}(callback)
 			}
 			if !panicDispatched {
 				dispatchScheduledTaskFailed(j.getDispatch(), tctx, jobName, err, duration)
 			}
 		} else {
 			for _, callback := range onSuccessCallbacks {
-				callback()
+				func(cb func()) {
+					defer func() {
+						if r := recover(); r != nil {
+							hookErr := panicerr.FromRecovered(r)
+							dispatchScheduledTaskFailed(j.getDispatch(), tctx, jobName, hookErr, time.Since(startTime))
+						}
+					}()
+					cb()
+				}(callback)
 			}
 			dispatchScheduledTaskFinished(j.getDispatch(), tctx, jobName, duration)
-		}
-		clearRunningFlag()
-		if release != nil {
-			release()
 		}
 	}
 
@@ -377,7 +448,10 @@ func (j *Job) runInternal(ctx context.Context, shutdownGrace time.Duration, rele
 			// of release + outFile to it. We MUST NOT call finishSync
 			// or release in this goroutine -- doing so would let the
 			// next scheduler tick re-acquire the lock while the
-			// process is still running.
+			// process is still running. Set `released` so the deferred
+			// cleanup at the top of runInternal skips the
+			// clearRunningFlag + release calls (the waiter owns both).
+			released = true
 			j.spawnBackgroundWaiter(ctx, shutdownGrace, cmd, outFile, jobName, tctx, startTime, afterCallbacks, onSuccessCallbacks, onFailureCallbacks, clearRunningFlag, release)
 			// Release ownership transferred; suppress unused traceID
 			// warning and return without invoking finishSync.
