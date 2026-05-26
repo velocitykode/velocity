@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -294,5 +295,146 @@ func TestWithoutPrivateIPDeny_ReachesLoopback(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestMaxResponseBytes_CapsReads(t *testing.T) {
+	// Server streams 64 MiB of zeroes in chunks. The client caps the
+	// body at 1 KiB and the read must terminate with ErrResponseTooLarge
+	// well before the host runs out of memory.
+	const totalBytes = 64 << 20
+	const chunkSize = 64 << 10
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Do not set Content-Length so the response is chunked. The
+		// cap must hold without relying on an honest header.
+		w.WriteHeader(http.StatusOK)
+		buf := make([]byte, chunkSize)
+		flusher, _ := w.(http.Flusher)
+		written := 0
+		for written < totalBytes {
+			n, err := w.Write(buf)
+			if err != nil {
+				return
+			}
+			written += n
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer srv.Close()
+
+	c := New(WithoutPrivateIPDeny(), WithMaxResponseBytes(1024))
+	resp, err := c.Get(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	got, err := io.ReadAll(resp.Body)
+	if !errors.Is(err, ErrResponseTooLarge) {
+		t.Fatalf("expected ErrResponseTooLarge, got %v", err)
+	}
+	if int64(len(got)) > 1024 {
+		t.Errorf("returned %d bytes, want <= 1024", len(got))
+	}
+}
+
+func TestMaxResponseBytes_UnderCapSucceeds(t *testing.T) {
+	body := strings.Repeat("a", 512)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	c := New(WithoutPrivateIPDeny(), WithMaxResponseBytes(1024))
+	resp, err := c.Get(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if string(got) != body {
+		t.Errorf("body = %q, want %q", got, body)
+	}
+}
+
+func TestMaxResponseBytes_ExactlyAtCapSucceeds(t *testing.T) {
+	// The +1 sentinel in the read loop must let exactly-cap-many bytes
+	// through; only the (cap+1)th byte trips the limit.
+	const cap = 1024
+	body := strings.Repeat("a", cap)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	c := New(WithoutPrivateIPDeny(), WithMaxResponseBytes(cap))
+	resp, err := c.Get(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll at-cap must succeed: %v", err)
+	}
+	if len(got) != cap {
+		t.Errorf("len(got) = %d, want %d", len(got), cap)
+	}
+}
+
+func TestMaxResponseBytes_ZeroDisablesCap(t *testing.T) {
+	// Passing 0 turns the cap off so trusted bulk transfers are still
+	// possible. The body should be readable in full.
+	body := strings.Repeat("a", 4096)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	c := New(WithoutPrivateIPDeny(), WithMaxResponseBytes(0))
+	resp, err := c.Get(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll with disabled cap: %v", err)
+	}
+	if len(got) != 4096 {
+		t.Errorf("len(got) = %d, want 4096", len(got))
+	}
+}
+
+func TestMaxResponseBytes_DefaultApplied(t *testing.T) {
+	// Without WithMaxResponseBytes the client should still wrap the
+	// body with the default cap so a non-configuring caller gets the
+	// safe behaviour automatically.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("hello"))
+	}))
+	defer srv.Close()
+
+	c := New(WithoutPrivateIPDeny())
+	resp, err := c.Get(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	defer resp.Body.Close()
+	if _, ok := resp.Body.(*limitedBody); !ok {
+		t.Errorf("default cap missing: body type = %T", resp.Body)
 	}
 }

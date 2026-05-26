@@ -31,10 +31,21 @@ import (
 // Wrapped with the velocity/httpclient prefix before surfacing.
 var errPrivateIP = errors.New("velocity/httpclient: destination address is private or internal")
 
+// ErrResponseTooLarge is returned from response body reads when the
+// configured maximum response size (see [WithMaxResponseBytes]) is
+// exceeded. Bound at read time, not at Content-Length inspection: a
+// server lying about Content-Length cannot bypass the limit.
+var ErrResponseTooLarge = errors.New("velocity/httpclient: response body exceeded max bytes")
+
 // defaultMaxRedirects caps redirect chains. The stdlib default is 10;
 // the framework explicitly enforces the same cap so WithMaxRedirects can
 // tighten it.
 const defaultMaxRedirects = 10
+
+// defaultMaxResponseBytes is the default per-response read cap (32 MiB).
+// Sized to comfortably hold typical webhook / API payloads while still
+// preventing an attacker-controlled endpoint from OOM-ing the host.
+const defaultMaxResponseBytes int64 = 32 << 20
 
 // sensitiveHeaders are stripped on cross-host (eTLD+1) redirects to
 // prevent leaking credentials to untrusted origins.
@@ -52,12 +63,13 @@ type Client struct {
 	eventDispatcher func(ctx context.Context, event interface{}) error
 
 	// Security options (configured via Option funcs).
-	minTLSVersion   uint16
-	maxRedirects    int
-	denyPrivateIPs  bool
-	allowedHosts    map[string]struct{} // eTLD+1 allowlist for private-IP deny
-	resolver        *net.Resolver
-	customTransport bool // set when WithHTTPClient supplies its own Transport
+	minTLSVersion    uint16
+	maxRedirects     int
+	denyPrivateIPs   bool
+	allowedHosts     map[string]struct{} // eTLD+1 allowlist for private-IP deny
+	resolver         *net.Resolver
+	customTransport  bool  // set when WithHTTPClient supplies its own Transport
+	maxResponseBytes int64 // <=0 disables the response body cap
 }
 
 // Option configures a Client
@@ -128,6 +140,20 @@ func WithoutPrivateIPDeny() Option {
 	}
 }
 
+// WithMaxResponseBytes caps how many bytes will be read from any
+// response body. Reads beyond the cap return [ErrResponseTooLarge].
+// The default is 32 MiB; pass 0 or a negative value to disable the cap
+// entirely (use only for trusted endpoints streaming bulk data).
+//
+// The cap is enforced on the read stream itself, not on the
+// Content-Length header, so a server that lies about Content-Length
+// cannot bypass it.
+func WithMaxResponseBytes(n int64) Option {
+	return func(c *Client) {
+		c.maxResponseBytes = n
+	}
+}
+
 // WithAllowedHosts whitelists specific eTLD+1 hosts from the private-IP
 // deny list — useful when you legitimately need to reach an internal
 // service while still blocking everything else.
@@ -149,11 +175,12 @@ func WithAllowedHosts(hosts ...string) Option {
 // or [WithoutPrivateIPDeny] to disable the guard entirely (tests only).
 func New(opts ...Option) *Client {
 	c := &Client{
-		client:         &http.Client{Timeout: 30 * time.Second},
-		minTLSVersion:  tls.VersionTLS12,
-		maxRedirects:   defaultMaxRedirects,
-		denyPrivateIPs: true,
-		resolver:       net.DefaultResolver,
+		client:           &http.Client{Timeout: 30 * time.Second},
+		minTLSVersion:    tls.VersionTLS12,
+		maxRedirects:     defaultMaxRedirects,
+		denyPrivateIPs:   true,
+		resolver:         net.DefaultResolver,
+		maxResponseBytes: defaultMaxResponseBytes,
 	}
 
 	for _, opt := range opts {
@@ -305,8 +332,66 @@ func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, err
 		responseSize = resp.ContentLength
 	}
 
+	// Cap the read stream so a hostile or misbehaving server cannot OOM
+	// the host. The wrapper preserves the underlying body's Close so
+	// connection reuse and idle pooling continue to work.
+	if c.maxResponseBytes > 0 {
+		resp.Body = &limitedBody{
+			r:      io.LimitReader(resp.Body, c.maxResponseBytes+1),
+			closer: resp.Body,
+			max:    c.maxResponseBytes,
+		}
+	}
+
 	c.dispatchRequestSent(ctx, method, reqURL, resp.StatusCode, duration, requestSize, responseSize)
 	return resp, nil
+}
+
+// limitedBody enforces a maximum read count over an HTTP response body
+// without preventing the caller from closing it (which is what allows
+// the transport to reuse the connection). Once max bytes have been
+// delivered to the caller, the next Read returns [ErrResponseTooLarge].
+//
+// The underlying reader is an io.LimitReader sized to max+1 so the
+// wrapper can distinguish "exactly at the cap" (still fine) from
+// "over the cap" (refuse).
+type limitedBody struct {
+	r      io.Reader
+	closer io.Closer
+	max    int64
+	read   int64
+	tipped bool
+}
+
+func (b *limitedBody) Read(p []byte) (int, error) {
+	if b.tipped {
+		return 0, ErrResponseTooLarge
+	}
+	n, err := b.r.Read(p)
+	b.read += int64(n)
+	if b.read > b.max {
+		// Surface the cap on the same call so callers using io.ReadAll
+		// observe the failure immediately instead of after one extra
+		// zero-byte Read.
+		over := b.read - b.max
+		// Trim the slice so the caller only sees bytes up to the cap.
+		if int64(n) >= over {
+			n -= int(over)
+		} else {
+			n = 0
+		}
+		b.read = b.max
+		b.tipped = true
+		return n, ErrResponseTooLarge
+	}
+	return n, err
+}
+
+func (b *limitedBody) Close() error {
+	if b.closer == nil {
+		return nil
+	}
+	return b.closer.Close()
 }
 
 // Get performs a GET request
