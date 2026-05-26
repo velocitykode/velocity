@@ -83,10 +83,48 @@ func (d *LocalDriver) Send(ctx context.Context, msg *mail.Message) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	// Defence in depth: reject any address that carries CR/LF before
+	// the SMTP envelope is built. Setter-built messages pass this
+	// trivially (validateAddressField blocks the same characters);
+	// literal-constructed mail.Address values are the failure mode.
+	if err := validateMessageAddresses(msg); err != nil {
+		return err
+	}
+
 	if d.sendmail != "" {
 		return d.sendViaSendmail(ctx, msg)
 	}
 	return d.sendViaSMTP(ctx, msg)
+}
+
+// validateMessageAddresses calls mail.Address.Validate on every address
+// field of the message so that a literal-constructed Address bearing
+// CR/LF in either Email or Name is rejected before serialisation.
+func validateMessageAddresses(msg *mail.Message) error {
+	if err := msg.GetFrom().Validate(); err != nil {
+		return fmt.Errorf("mail: smtp From: %w", err)
+	}
+	for _, a := range msg.GetTo() {
+		if err := a.Validate(); err != nil {
+			return fmt.Errorf("mail: smtp To: %w", err)
+		}
+	}
+	for _, a := range msg.GetCC() {
+		if err := a.Validate(); err != nil {
+			return fmt.Errorf("mail: smtp Cc: %w", err)
+		}
+	}
+	for _, a := range msg.GetBCC() {
+		if err := a.Validate(); err != nil {
+			return fmt.Errorf("mail: smtp Bcc: %w", err)
+		}
+	}
+	for _, a := range msg.GetReplyTo() {
+		if err := a.Validate(); err != nil {
+			return fmt.Errorf("mail: smtp Reply-To: %w", err)
+		}
+	}
+	return nil
 }
 
 // sendViaSMTP sends email via SMTP.

@@ -77,12 +77,24 @@ func NewMailMessage() *MailMessage {
 	}
 }
 
-// From sets the sender address.
+// From sets the sender address. Invalid email addresses (CR/LF
+// injection payloads, unparseable addr-specs) are silently ignored
+// rather than surfaced via a fluent error: the underlying mail driver
+// applies the same Validate check at serialisation time and will reject
+// the whole send with a descriptive error. The setter routes through
+// mail.NewAddress so the in-memory state of the MailMessage never holds
+// a header-split payload on the happy path.
 func (m *MailMessage) From(email string, name ...string) *MailMessage {
-	m.from = mail.Address{Email: email}
-	if len(name) > 0 {
-		m.from.Name = name[0]
+	addr, err := mail.NewAddress(email, name...)
+	if err != nil {
+		// Leave m.from zero so the eventual MailChannel driver call
+		// surfaces "missing from" rather than smuggling a CRLF payload.
+		// We deliberately do not panic here because Notifiable.From is
+		// often called from notification constructors that do not
+		// return errors.
+		return m
 	}
+	m.from = addr
 	return m
 }
 

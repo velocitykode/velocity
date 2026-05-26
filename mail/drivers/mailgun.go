@@ -187,35 +187,56 @@ func (d *MailgunDriver) addFields(writer *multipart.Writer, msg *mail.Message) e
 }
 
 // writeFromField writes the sender, applying driver defaults when unset.
+// The address is validated via mail.Address.Validate before serialisation
+// as defence in depth against callers that bypass Message setters via
+// struct-literal Address construction.
 func (d *MailgunDriver) writeFromField(writer *multipart.Writer, msg *mail.Message) error {
 	from := msg.GetFrom()
 	if from.Email == "" {
 		from.Email = d.fromAddr
 		from.Name = d.fromName
 	}
+	if err := from.Validate(); err != nil {
+		return fmt.Errorf("mail: mailgun From: %w", err)
+	}
 	return writer.WriteField("from", formatAddress(from.Name, from.Email))
 }
 
 // writeRecipientFields writes To / Cc / Bcc / Reply-To fields.
 // addr.Name values are sanitised to strip CRLF header-injection payloads.
+// Each address is also validated via mail.Address.Validate before
+// serialisation, blocking any literal-constructed Address that carries
+// CR/LF in either field.
 func (d *MailgunDriver) writeRecipientFields(writer *multipart.Writer, msg *mail.Message) error {
 	for _, addr := range msg.GetTo() {
+		if err := addr.Validate(); err != nil {
+			return fmt.Errorf("mail: mailgun To: %w", err)
+		}
 		if err := writer.WriteField("to", formatAddress(addr.Name, addr.Email)); err != nil {
 			return err
 		}
 	}
 	for _, addr := range msg.GetCC() {
+		if err := addr.Validate(); err != nil {
+			return fmt.Errorf("mail: mailgun Cc: %w", err)
+		}
 		if err := writer.WriteField("cc", formatAddress(addr.Name, addr.Email)); err != nil {
 			return err
 		}
 	}
 	for _, addr := range msg.GetBCC() {
+		if err := addr.Validate(); err != nil {
+			return fmt.Errorf("mail: mailgun Bcc: %w", err)
+		}
 		if err := writer.WriteField("bcc", formatAddress(addr.Name, addr.Email)); err != nil {
 			return err
 		}
 	}
 	replyTo := msg.GetReplyTo()
 	if len(replyTo) > 0 {
+		if err := replyTo[0].Validate(); err != nil {
+			return fmt.Errorf("mail: mailgun Reply-To: %w", err)
+		}
 		if err := writer.WriteField("h:Reply-To", formatAddress(replyTo[0].Name, replyTo[0].Email)); err != nil {
 			return err
 		}

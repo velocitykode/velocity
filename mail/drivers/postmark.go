@@ -74,6 +74,13 @@ func (d *PostmarkDriver) Send(ctx context.Context, msg *mail.Message) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	// Defence in depth: reject any address that carries CR/LF before
+	// we serialise. Setter-built messages already pass this; literal-
+	// constructed mail.Address values are the failure mode covered here.
+	if err := validatePostmarkAddresses(msg); err != nil {
+		return err
+	}
+
 	// Build Postmark request
 	payload := d.buildPayload(msg)
 
@@ -142,6 +149,40 @@ func (d *PostmarkDriver) buildPayload(msg *mail.Message) map[string]interface{} 
 	d.addAttachments(payload, msg)
 
 	return payload
+}
+
+// validateAddresses runs mail.Address.Validate against every address
+// field on the message. This is defence in depth against callers that
+// bypass Message setters via mail.Address{} struct-literal construction;
+// any CR/LF in either Email or Name surfaces as an error before the
+// payload is serialised. The fluent setters already block these via
+// validateAddressField at construction time, so this check is a no-op
+// on the common path.
+func validatePostmarkAddresses(msg *mail.Message) error {
+	if err := msg.GetFrom().Validate(); err != nil {
+		return fmt.Errorf("mail: postmark From: %w", err)
+	}
+	for _, a := range msg.GetTo() {
+		if err := a.Validate(); err != nil {
+			return fmt.Errorf("mail: postmark To: %w", err)
+		}
+	}
+	for _, a := range msg.GetCC() {
+		if err := a.Validate(); err != nil {
+			return fmt.Errorf("mail: postmark Cc: %w", err)
+		}
+	}
+	for _, a := range msg.GetBCC() {
+		if err := a.Validate(); err != nil {
+			return fmt.Errorf("mail: postmark Bcc: %w", err)
+		}
+	}
+	for _, a := range msg.GetReplyTo() {
+		if err := a.Validate(); err != nil {
+			return fmt.Errorf("mail: postmark Reply-To: %w", err)
+		}
+	}
+	return nil
 }
 
 // formatPostmarkAddress formats an address for a Postmark address header. The
