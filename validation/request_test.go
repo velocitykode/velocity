@@ -2,6 +2,7 @@ package validation
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -428,5 +429,123 @@ func TestExtractRequestData_JSONRestoresBody(t *testing.T) {
 	}
 	if buf.String() != body {
 		t.Errorf("expected restored body %q, got %q", body, buf.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M-23: http.MaxBytesReader enforcement on JSON + form branches.
+//
+// Before M-23 the JSON branch used io.LimitReader which silently
+// truncated at 10MB and the form branch had no limit at all. The fix
+// switches both branches to http.MaxBytesReader (default
+// DefaultMaxBodyBytes = 10 MiB), which surfaces an *http.MaxBytesError
+// on overrun instead of silently dropping bytes.
+// ---------------------------------------------------------------------------
+
+// TestExtractRequestDataLimited_JSON_RejectsOversize asserts that a JSON
+// body over the configured limit returns an *http.MaxBytesError so the
+// validator can surface a clear field-level error rather than treating
+// the truncated prefix as a valid (or invalid) form.
+func TestExtractRequestDataLimited_JSON_RejectsOversize(t *testing.T) {
+	// Craft a JSON body just over the small limit; the body itself is
+	// valid JSON to prove the rejection comes from the size cap, not
+	// the parser.
+	limit := int64(64)
+	big := bytes.Repeat([]byte("a"), 200)
+	body := `{"x":"` + string(big) + `"}`
+	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+
+	data, err := ExtractRequestDataLimited(nil, r, limit)
+	if err == nil {
+		t.Fatalf("expected *http.MaxBytesError, got nil; data=%v", data)
+	}
+	var mbe *http.MaxBytesError
+	if !errors.As(err, &mbe) {
+		t.Fatalf("expected *http.MaxBytesError, got %T: %v", err, err)
+	}
+}
+
+// TestExtractRequestDataLimited_Form_RejectsOversize is the form-branch
+// regression: before M-23, the form branch had no MaxBytesReader at all,
+// so an attacker could stream an unbounded application/x-www-form-urlencoded
+// body and exhaust memory. After the fix, ParseForm's internal body read
+// trips MaxBytesReader and returns an error.
+func TestExtractRequestDataLimited_Form_RejectsOversize(t *testing.T) {
+	limit := int64(64)
+	form := url.Values{}
+	form.Set("name", strings.Repeat("x", 200))
+	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	data, err := ExtractRequestDataLimited(nil, r, limit)
+	if err == nil {
+		t.Fatalf("expected size error from form branch, got nil; data=%v", data)
+	}
+	// ParseForm wraps the body Read error; isMaxBytesError walks the
+	// chain via errors.As.
+	if !isMaxBytesError(err) {
+		t.Fatalf("expected wrapped *http.MaxBytesError, got %T: %v", err, err)
+	}
+}
+
+// TestCheckW_OversizedJSON_SurfacesValidationError exercises the
+// public-facing CheckW path: an oversized body should yield a *Result
+// with a _body field error, not a silent pass.
+func TestCheckW_OversizedJSON_SurfacesValidationError(t *testing.T) {
+	// Build a JSON body well over DefaultMaxBodyBytes (10 MiB) so we
+	// exercise the production limit, not just the small-limit unit
+	// tests above. Using strings.Repeat is cheap because the body is
+	// emitted on demand by strings.NewReader.
+	big := strings.Repeat("a", int(DefaultMaxBodyBytes)+1024)
+	body := `{"x":"` + big + `"}`
+	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	result := CheckW(w, r, Rules{"x": {"required"}})
+	if !result.HasErrors() {
+		t.Fatal("expected validation error from oversized body, got no errors")
+	}
+	if result.First("_body") == "" {
+		t.Errorf("expected _body field error, got: %v", result.All())
+	}
+}
+
+// TestCheckW_OversizedForm_SurfacesValidationError is the form-branch
+// counterpart. Before M-23 the form branch was unbounded; we now expect
+// a _body validation error.
+func TestCheckW_OversizedForm_SurfacesValidationError(t *testing.T) {
+	form := url.Values{}
+	form.Set("name", strings.Repeat("x", int(DefaultMaxBodyBytes)+1024))
+	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	w := httptest.NewRecorder()
+	result := CheckW(w, r, Rules{"name": {"required"}})
+	if !result.HasErrors() {
+		t.Fatal("expected validation error from oversized form body, got no errors")
+	}
+	if result.First("_body") == "" {
+		t.Errorf("expected _body field error, got: %v", result.All())
+	}
+}
+
+// TestCheck_UnderLimit_StillWorks confirms a normal-sized request
+// continues to pass through validation untouched after the
+// MaxBytesReader rewiring.
+func TestCheck_UnderLimit_StillWorks(t *testing.T) {
+	form := url.Values{}
+	form.Set("name", "Alice")
+	form.Set("email", "alice@example.com")
+	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	result := Check(r, Rules{
+		"name":  {"required|min:3"},
+		"email": {"required|email"},
+	})
+	if result.HasErrors() {
+		t.Fatalf("expected no errors for normal-sized body, got: %v", result.All())
 	}
 }

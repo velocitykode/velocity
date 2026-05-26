@@ -78,7 +78,10 @@ func Validate[T any](ctx *router.Context) (*T, *Result, error) {
 		msgs = append(msgs, validation.Messages(wm.ValidationMessages()))
 	}
 
-	result := validation.CheckWithDB(ctx.Request, rules, safeDB(ctx), msgs...)
+	// CheckWithDBW threads ctx.Response into the body-read path so
+	// http.MaxBytesReader can signal a connection-close hint on
+	// oversized bodies (rule 5).
+	result := validation.CheckWithDBW(ctx.Response, ctx.Request, rules, safeDB(ctx), msgs...)
 	if result.HasErrors() {
 		return new(T), result, nil
 	}

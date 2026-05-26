@@ -511,7 +511,11 @@ func New(opts ...Option) (*App, error) {
 		for _, m := range messages {
 			msgs = append(msgs, validation.Messages(m))
 		}
-		result := validation.CheckWithDB(c.Request, validation.Rules(rules), c.DB(), msgs...)
+		// CheckWithDBW threads c.Response into the validation body-read
+		// path so http.MaxBytesReader can fire its requestTooLarge
+		// connection-close hint on oversized bodies (rule 5: limit all
+		// request body reads).
+		result := validation.CheckWithDBW(c.Response, c.Request, validation.Rules(rules), c.DB(), msgs...)
 		if !result.HasErrors() {
 			return nil
 		}
