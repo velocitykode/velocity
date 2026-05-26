@@ -849,15 +849,22 @@ func (g *SessionGuard) Logout(w http.ResponseWriter, r *http.Request) error {
 	// Clear remember cookie
 	g.clearRememberCookie(w)
 
-	// Invalidate session
-	if err := session.Invalidate(); err != nil {
-		return err
-	}
+	// Invalidate session. BaseSession.Invalidate marks the session
+	// destroyed, clears bags, zeroes the id, and marks the session
+	// modified even when its rand source errors. Capture the error
+	// but continue with the rest of the teardown: returning early
+	// would skip the delete-cookie write, CookieStore.Revoke for the
+	// pre-invalidate session id, and the server-store Delete, leaving
+	// the client cookie valid and the server-side record live until
+	// natural expiry.
+	invalidateErr := session.Invalidate()
 
-	// Save invalidated session (will delete cookie)
-	if err := session.Save(w); err != nil {
-		return err
-	}
+	// Save invalidated session (writes the delete-cookie because the
+	// session is now marked destroyed). A Save failure also continues
+	// to the revocation + server-store delete path; without revoke,
+	// the still-decrypting captured cookie would re-authenticate
+	// against a live server-side record.
+	saveErr := session.Save(w)
 
 	// Revoke in the underlying SessionStore when it supports the
 	// revocation capability (CookieStore). The cookie value still
@@ -873,6 +880,17 @@ func (g *SessionGuard) Logout(w http.ResponseWriter, r *http.Request) error {
 		if err := store.Delete(r.Context(), sessionID); err != nil {
 			g.logWarn("velocity/auth: server session store delete (logout) failed", "session_id", sessionID, "error", err)
 		}
+	}
+
+	// Surface the earliest hard error: invalidate first (the
+	// upstream entropy failure callers most care about), then save.
+	// Server-side teardown above is best-effort with its own logging.
+	if invalidateErr != nil {
+		g.logWarn("velocity/auth: session invalidate (logout) failed; teardown completed best-effort", "session_id", sessionID, "error", invalidateErr)
+		return invalidateErr
+	}
+	if saveErr != nil {
+		return saveErr
 	}
 	return nil
 }
