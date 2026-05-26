@@ -507,8 +507,23 @@ func (c *Context) Unauthorized(message ...string) error {
 //     Scheme!="" and are live XSS vectors; they must be stripped.
 //   - "https://trusted@evil": url.Parse puts "evil" in Host, so the
 //     allowlist check catches this naturally.
+//   - "/\evil.com", "\\evil.com": browsers and intermediaries may
+//     normalise "\" to "/", which would turn a leading "/\" into the
+//     network-path reference "//". Mirrors bond.sanitizeRedirectURL's
+//     backslash rejection (see bond/redirect.go).
+//   - Unicode-similar slashes (U+FF0F FULLWIDTH SOLIDUS, U+29F8 BIG
+//     SOLIDUS, U+2044 FRACTION SLASH, U+2215 DIVISION SLASH): some
+//     normalisers fold these into ASCII "/", which again creates a
+//     network-path reference. Reject conservatively before we trust the
+//     leading character as a path separator.
 func sanitizeRedirect(target string, allowedHosts []string) string {
 	if target == "" {
+		return "/"
+	}
+	// Reject backslash variants and Unicode-similar slash codepoints up
+	// front so a downstream normaliser cannot turn "/\evil" or
+	// "/／evil" into a protocol-relative reference.
+	if containsSlashLookalike(target) {
 		return "/"
 	}
 	// Protocol-relative URLs (//evil.com, ///evil) are unsafe even though
@@ -539,6 +554,29 @@ func sanitizeRedirect(target string, allowedHosts []string) string {
 	// Schemeless, hostless: a bare relative reference like "foo.html".
 	// Same-origin by definition.
 	return target
+}
+
+// containsSlashLookalike reports whether target contains a backslash or a
+// Unicode codepoint that some clients or intermediaries normalise to "/".
+// These are rejected before the path-vs-host decision because a leading
+// "/" followed by any of them (e.g. "/\evil", "/／evil") can become the
+// network-path reference "//evil" after normalisation, which is an open
+// redirect.
+//
+// Codepoints covered:
+//   - U+005C  REVERSE SOLIDUS (ASCII backslash)
+//   - U+FF0F  FULLWIDTH SOLIDUS
+//   - U+29F8  BIG SOLIDUS
+//   - U+2044  FRACTION SLASH
+//   - U+2215  DIVISION SLASH
+func containsSlashLookalike(target string) bool {
+	for _, r := range target {
+		switch r {
+		case '\\', '／', '⧸', '⁄', '∕':
+			return true
+		}
+	}
+	return false
 }
 
 // Forbidden sends a 403 error response
