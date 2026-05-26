@@ -39,12 +39,26 @@ func NewAddress(email string, name ...string) (Address, error) {
 	return addr, nil
 }
 
-// String returns the formatted email address
+// String returns the formatted email address. When a display name is
+// present, the result is produced by net/mail.Address.String(), which
+// applies RFC 2047 / RFC 5322 phrase quoting (any specials in the name
+// are quoted-string or encoded-word escaped). Hand-rolled concatenation
+// is avoided so that recipients cannot be impersonated by a name like
+//
+//	Bob" <evil@x>, "Real
+//
+// being interpolated raw into a header. The Name component is separately
+// rejected at the fluent setters (see validateAddressField) for the
+// address-grammar specials it must not contain even after quoting.
+//
+// For an empty Name the bare addr-spec is returned (no angle brackets)
+// to preserve the prior format used by logs and tests.
 func (a Address) String() string {
-	if a.Name != "" {
-		return a.Name + " <" + a.Email + ">"
+	if a.Name == "" {
+		return a.Email
 	}
-	return a.Email
+	na := netmail.Address{Name: a.Name, Address: a.Email}
+	return na.String()
 }
 
 // Attachment represents an email attachment

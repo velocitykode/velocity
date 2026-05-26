@@ -2,6 +2,7 @@ package mail
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -82,11 +83,28 @@ func TestAddress(t *testing.T) {
 		}
 	})
 
-	t.Run("email with name", func(t *testing.T) {
+	t.Run("email with name uses RFC 5322 phrase quoting", func(t *testing.T) {
+		// net/mail.Address.String() quotes the phrase whenever it contains
+		// whitespace or other specials; a bare "Test User" round-trips as
+		// "Test User" (quoted).
 		addr := Address{Email: "test@example.com", Name: "Test User"}
-		expected := "Test User <test@example.com>"
+		expected := `"Test User" <test@example.com>`
 		if addr.String() != expected {
-			t.Errorf("Expected '%s', got '%s'", expected, addr.String())
+			t.Errorf("Expected %q, got %q", expected, addr.String())
+		}
+	})
+
+	t.Run("email with unicode name uses RFC 2047 encoded-word", func(t *testing.T) {
+		// Non-ASCII display names are encoded as RFC 2047 encoded-words by
+		// net/mail rather than emitted raw, which is the safe interchange
+		// form for SMTP gateways that are not 8-bit clean.
+		addr := Address{Email: "muller@example.com", Name: "Müller"}
+		got := addr.String()
+		if got == "Müller <muller@example.com>" {
+			t.Errorf("Unicode name must be encoded, got raw form %q", got)
+		}
+		if !strings.Contains(got, "<muller@example.com>") {
+			t.Errorf("encoded form must still contain the addr-spec, got %q", got)
 		}
 	})
 }

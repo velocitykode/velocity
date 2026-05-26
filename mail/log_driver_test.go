@@ -235,7 +235,7 @@ func TestLogDriverFromWithName(t *testing.T) {
 	log := driver.GetLog()
 	entry := log[0]
 
-	if !strings.Contains(entry, "Sender Name <sender@example.com>") {
-		t.Errorf("Expected log to contain formatted from address: %s", entry)
+	if !strings.Contains(entry, `"Sender Name" <sender@example.com>`) {
+		t.Errorf("Expected log to contain RFC 5322 quoted from address: %s", entry)
 	}
 }

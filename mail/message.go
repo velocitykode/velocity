@@ -464,7 +464,16 @@ func validateHeaderValue(field, value string) error {
 // validateAddressField validates the email and display-name components of a
 // structured address setter (From/To/Cc/Bcc/ReplyTo). Either side containing
 // CR/LF/NUL/etc. is rejected, since both are ultimately serialised into a
-// header line by every driver.
+// header line by every driver. In addition, the display-name is rejected if
+// it contains any RFC 5322 address-grammar special (`<>,;:"\()`): even
+// when downstream serialisers RFC 2047/5322 quote, allowing these characters
+// invites confusion and recipient-impersonation payloads such as
+//
+//	Bob" <attacker@evil.com>, "Real
+//
+// being passed by callers that bypass quoting (logs, third-party gateways).
+// Display names that need such characters should be redesigned to avoid
+// them; legitimate Unicode display names are unaffected.
 func validateAddressField(field, email, name string) error {
 	if err := validateHeaderValue(field+" address", email); err != nil {
 		return err
@@ -472,6 +481,10 @@ func validateAddressField(field, email, name string) error {
 	if name != "" {
 		if err := validateHeaderValue(field+" name", name); err != nil {
 			return err
+		}
+		if i := strings.IndexAny(name, "<>,;:\"\\()"); i >= 0 {
+			return fmt.Errorf("%w: %s name contains address-grammar special %q",
+				ErrInvalidHeader, field, name[i])
 		}
 	}
 	return nil

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -508,6 +509,79 @@ func TestTo_RejectsCRLF(t *testing.T) {
 	msg2 := NewMessage().To("victim@example.com", "Bob\r\nBcc: evil@evil.com")
 	if !errors.Is(msg2.Err(), ErrInvalidHeader) {
 		t.Errorf("CRLF in name: expected ErrInvalidHeader, got %v", msg2.Err())
+	}
+}
+
+// --- Address grammar-special rejection (H-18) -------------------------------
+
+func TestTo_RejectsAddressGrammarSpecialsInName(t *testing.T) {
+	cases := []struct {
+		name    string
+		display string
+	}{
+		{"double_quote", `Bob" <evil@x.com>, "Real`},
+		{"angle_open", "Bob <evil"},
+		{"angle_close", "Bob>"},
+		{"comma", "Bob, the Builder"},
+		{"semicolon", "Bob; group"},
+		{"colon", "group: Bob"},
+		{"backslash", `Bob\ Builder`},
+		{"paren_open", "Bob (the"},
+		{"paren_close", "Bob) Builder"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := NewMessage().To("victim@example.com", tc.display)
+			if !errors.Is(msg.Err(), ErrInvalidHeader) {
+				t.Fatalf("display name %q must be rejected, got err=%v", tc.display, msg.Err())
+			}
+			if len(msg.GetTo()) != 0 {
+				t.Errorf("rejected recipient must not be appended, got %+v", msg.GetTo())
+			}
+		})
+	}
+}
+
+func TestFrom_RejectsInjectionPayloadInName(t *testing.T) {
+	// The canonical recipient-impersonation payload from the audit:
+	// without quoting, an MTA could split this into two mailboxes.
+	msg := NewMessage().From("victim@example.com", `Bob" <attacker@evil.com>, "Real Bob`)
+	if !errors.Is(msg.Err(), ErrInvalidHeader) {
+		t.Fatalf("injection payload must be rejected, got %v", msg.Err())
+	}
+	if msg.GetFrom().Email != "" {
+		t.Errorf("rejected From must not be stored, got %+v", msg.GetFrom())
+	}
+}
+
+func TestAddress_LegitimateUnicodeNameRoundTrips(t *testing.T) {
+	// Unicode names without ASCII grammar specials must pass the validator
+	// and serialise via net/mail.Address (RFC 2047 encoded-word).
+	msg := NewMessage().To("muller@example.com", "Müller")
+	if err := msg.Err(); err != nil {
+		t.Fatalf("Unicode display name must be accepted, got %v", err)
+	}
+	addrs := msg.GetTo()
+	if len(addrs) != 1 || addrs[0].Name != "Müller" {
+		t.Fatalf("expected one recipient with Name=Müller, got %+v", addrs)
+	}
+	// Address.String() must produce a header-safe form: the raw name
+	// is unsafe under SMTP gateways that are not 8-bit clean, so
+	// net/mail encodes it as a quoted-printable encoded-word.
+	got := addrs[0].String()
+	if !strings.Contains(got, "<muller@example.com>") {
+		t.Errorf("serialised form must wrap addr-spec in angle brackets, got %q", got)
+	}
+}
+
+func TestAddress_String_QuotesNameWithSpace(t *testing.T) {
+	// Even a benign space in the display name forces RFC 5322 phrase
+	// quoting; the result must round-trip unambiguously, not be left
+	// as bare "Test User <addr>".
+	addr := Address{Email: "test@example.com", Name: "Test User"}
+	got := addr.String()
+	if got != `"Test User" <test@example.com>` {
+		t.Errorf("expected RFC 5322 quoted phrase, got %q", got)
 	}
 }
 

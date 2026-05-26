@@ -12,6 +12,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	netmail "net/mail"
 	"net/url"
 	"strings"
 	"sync"
@@ -20,14 +21,18 @@ import (
 	"github.com/velocitykode/velocity/mail"
 )
 
-// formatAddress formats an Address for an email header, sanitising the name to
-// prevent header injection via CRLF.
+// formatAddress formats an Address for an email header. The display name is
+// passed through net/mail.Address, which applies RFC 2047 / RFC 5322 phrase
+// quoting so that grammar specials in the name cannot split the header. Name
+// content is also stripped of C0 control bytes via sanitizeHeader as a
+// belt-and-braces against callers that bypass the Message validators.
 func formatAddress(name, email string) string {
 	clean := sanitizeHeader(name)
-	if clean != "" {
-		return fmt.Sprintf("%s <%s>", clean, email)
+	if clean == "" {
+		return email
 	}
-	return email
+	a := netmail.Address{Name: clean, Address: email}
+	return a.String()
 }
 
 func init() {

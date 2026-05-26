@@ -90,12 +90,12 @@ func TestLocalDriverBuildMessage(t *testing.T) {
 	body := driver.buildMessage(msg)
 	bodyStr := string(body)
 
-	if !strings.Contains(bodyStr, "From: From Name <from@example.com>") {
-		t.Error("Expected From header in message")
+	if !strings.Contains(bodyStr, `From: "From Name" <from@example.com>`) {
+		t.Errorf("Expected RFC 5322 quoted From header in message, got: %s", bodyStr)
 	}
 
-	if !strings.Contains(bodyStr, "To: To Name <to@example.com>") {
-		t.Error("Expected To header in message")
+	if !strings.Contains(bodyStr, `To: "To Name" <to@example.com>`) {
+		t.Errorf("Expected RFC 5322 quoted To header in message, got: %s", bodyStr)
 	}
 
 	if !strings.Contains(bodyStr, "Subject: Test Subject") {
@@ -122,8 +122,8 @@ func TestLocalDriverBuildMessageWithCC(t *testing.T) {
 	body := driver.buildMessage(msg)
 	bodyStr := string(body)
 
-	if !strings.Contains(bodyStr, "Cc: CC Name <cc@example.com>") {
-		t.Errorf("Expected CC header in message, got: %s", bodyStr)
+	if !strings.Contains(bodyStr, `Cc: "CC Name" <cc@example.com>`) {
+		t.Errorf("Expected RFC 5322 quoted Cc header in message, got: %s", bodyStr)
 	}
 }
 
@@ -142,8 +142,8 @@ func TestLocalDriverBuildMessageWithReplyTo(t *testing.T) {
 	body := driver.buildMessage(msg)
 	bodyStr := string(body)
 
-	if !strings.Contains(bodyStr, "Reply-To: Reply Name <reply@example.com>") {
-		t.Error("Expected Reply-To header in message")
+	if !strings.Contains(bodyStr, `Reply-To: "Reply Name" <reply@example.com>`) {
+		t.Errorf("Expected RFC 5322 quoted Reply-To header in message, got: %s", bodyStr)
 	}
 }
 
@@ -300,8 +300,8 @@ func TestLocalDriverBuildMessageFromConfig(t *testing.T) {
 	body := driver.buildMessage(msg)
 	bodyStr := string(body)
 
-	if !strings.Contains(bodyStr, "From: Default Sender <default@example.com>") {
-		t.Error("Expected default from address from config")
+	if !strings.Contains(bodyStr, `From: "Default Sender" <default@example.com>`) {
+		t.Errorf("Expected default RFC 5322 quoted from address from config, got: %s", bodyStr)
 	}
 }
 

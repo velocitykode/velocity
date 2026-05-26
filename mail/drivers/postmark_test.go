@@ -75,8 +75,8 @@ func TestPostmarkDriverBuildPayload(t *testing.T) {
 
 	payload := driver.buildPayload(msg)
 
-	if payload["From"] != "From Name <from@example.com>" {
-		t.Errorf("Expected From to be formatted, got %v", payload["From"])
+	if payload["From"] != `"From Name" <from@example.com>` {
+		t.Errorf("Expected From to be RFC 5322 quoted, got %v", payload["From"])
 	}
 
 	if payload["Subject"] != "Test Subject" {
@@ -142,8 +142,8 @@ func TestPostmarkDriverBuildPayloadReplyTo(t *testing.T) {
 
 	payload := driver.buildPayload(msg)
 
-	if payload["ReplyTo"] != "Reply Name <reply@example.com>" {
-		t.Errorf("Expected ReplyTo to be formatted, got %v", payload["ReplyTo"])
+	if payload["ReplyTo"] != `"Reply Name" <reply@example.com>` {
+		t.Errorf("Expected ReplyTo to be RFC 5322 quoted, got %v", payload["ReplyTo"])
 	}
 }
 
@@ -218,8 +218,8 @@ func TestPostmarkDriverBuildPayloadFromConfig(t *testing.T) {
 
 	payload := driver.buildPayload(msg)
 
-	if payload["From"] != "Default <default@example.com>" {
-		t.Errorf("Expected From from config, got %v", payload["From"])
+	if payload["From"] != `"Default" <default@example.com>` {
+		t.Errorf("Expected RFC 5322 quoted From from config, got %v", payload["From"])
 	}
 }
 
