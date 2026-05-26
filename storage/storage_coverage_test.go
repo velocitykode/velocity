@@ -329,8 +329,11 @@ func TestMemoryDriverAdditional(t *testing.T) {
 
 	// Test detectMimeType edge cases
 	t.Run("MimeTypeEdgeCases", func(t *testing.T) {
-		// Test PNG
-		pngBytes := []byte{0x89, 0x50, 0x4E, 0x47}
+		// Test PNG. The full 8-byte PNG signature is required for
+		// http.DetectContentType to commit to image/png; the 4-byte
+		// prefix the toy detector matched on is ambiguous to the
+		// stdlib sniffer (returns text/plain).
+		pngBytes := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
 		driver.Put("image.png", pngBytes)
 		mime, _ := driver.MimeType("image.png")
 		if !strings.Contains(mime, "png") {

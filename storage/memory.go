@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -432,41 +433,22 @@ func (d *MemoryDriver) cleanPath(path string) string {
 	return path
 }
 
-// detectMimeType detects the MIME type from content
+// detectMimeType detects the MIME type from content using the standard
+// library sniffer (net/http.DetectContentType), which implements the
+// Mozilla "sniffing" rules and recognises ~30 common formats including
+// HTML, SVG, MP4, ZIP, OOXML, and EXE in addition to JPEG/PNG/GIF/PDF.
+//
+// Sniffing only the first 512 bytes mirrors http.DetectContentType's
+// own contract and bounds the work for very large objects.
 func detectMimeType(content []byte) string {
 	if len(content) == 0 {
 		return "application/octet-stream"
 	}
-
-	// Simple detection based on magic bytes
-	if len(content) > 2 {
-		if content[0] == 0xFF && content[1] == 0xD8 && content[2] == 0xFF {
-			return "image/jpeg"
-		}
-		if content[0] == 0x89 && content[1] == 0x50 && content[2] == 0x4E {
-			return "image/png"
-		}
-		if string(content[:3]) == "GIF" {
-			return "image/gif"
-		}
-		if string(content[:4]) == "%PDF" {
-			return "application/pdf"
-		}
+	n := len(content)
+	if n > 512 {
+		n = 512
 	}
-
-	// Check if it's valid UTF-8 text
-	if isValidUTF8(content) {
-		return "text/plain"
-	}
-
-	return "application/octet-stream"
-}
-
-// isValidUTF8 checks if content is valid UTF-8
-func isValidUTF8(data []byte) bool {
-	return strings.IndexFunc(string(data), func(r rune) bool {
-		return r == 0xFFFD || r == 0
-	}) == -1
+	return http.DetectContentType(content[:n])
 }
 
 // Stats returns memory usage statistics

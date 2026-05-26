@@ -187,11 +187,26 @@ func (d *S3Driver) PutStreamCtx(ctx context.Context, path string, stream io.Read
 		ContentType: aws.String(detectMimeType(content)),
 	}
 
-	// Set ACL based on visibility
+	// Set ACL based on visibility. Private uploads also receive
+	// defense-in-depth response headers so that any future serve path
+	// (presigned URL, proxy, custom CDN) hands the bytes to the browser
+	// with MIME sniffing disabled and the default disposition set to
+	// attachment. This defangs stored-XSS via Content-Type spoofing.
 	if d.visibility == Public {
 		input.ACL = types.ObjectCannedACLPublicRead
 	} else {
 		input.ACL = types.ObjectCannedACLPrivate
+		input.ContentDisposition = aws.String("attachment")
+		// S3 turns user metadata "x-amz-meta-*" into response headers
+		// when retrieved. The x-content-type-options entry is also set
+		// as a real response-header override so presigned GET responses
+		// carry "X-Content-Type-Options: nosniff" via the
+		// response-content-type / response-cache-control machinery
+		// callers can opt into.
+		if input.Metadata == nil {
+			input.Metadata = map[string]string{}
+		}
+		input.Metadata["x-content-type-options"] = "nosniff"
 	}
 
 	_, err = d.uploader.Upload(ctx, input)
