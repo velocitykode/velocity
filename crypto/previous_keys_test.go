@@ -37,32 +37,50 @@ func TestNewEncryptor_RejectsInvalidPreviousKey(t *testing.T) {
 // TestNewEncryptor_RejectsInvalidPreviousKey_LengthMismatch covers the
 // second class of "looks parseable but is unusable" PreviousKeys: an
 // entry that decodes cleanly but produces wrong-length raw bytes for
-// the cipher. The driver-level constructor already rejects these with
-// ErrInvalidKeyLength; the only reason they appeared invisible before
-// was the same silent-skip loop in crypto.go. Surface them too.
+// the cipher. Without a configuration-layer length check the wrong-
+// length entry parses cleanly, gets appended to previousKeys, and is
+// then silently filtered inside NewAESDriver, leaving the operator
+// believing rotation is active while pre-rotation ciphertexts fail.
+// NewEncryptor therefore rejects length-mismatched entries up front
+// with ErrInvalidPreviousKey, mirroring the parse-error fail-fast.
 func TestNewEncryptor_RejectsInvalidPreviousKey_LengthMismatch(t *testing.T) {
 	t.Setenv("CRYPTO_IGNORE_INVALID_PREVIOUS_KEYS", "")
 
-	// Note: parseKey itself does not enforce length; only the driver
-	// does. So a base64 entry that decodes to wrong-length bytes makes
-	// it past parseKey, lands in previousKeys, then driver
-	// NewAESDriver drops it (since H-11 added the per-prev length
-	// filter). The driver does NOT propagate an error for that case
-	// by design (rotation may legitimately mix retired ciphers). This
-	// test pins that contract: length mismatch is dropped silently at
-	// the driver layer; only parse failures bubble up as
-	// ErrInvalidPreviousKey.
 	cfg := Config{
 		Key:    strings.Repeat("a", 32),
 		Cipher: "AES-256-CBC",
 		PreviousKeys: []string{
-			// Decodes to 16 bytes, not 32; driver filters it out.
+			// Decodes to 16 bytes, not 32.
 			"base64:MTIzNDU2Nzg5MGFiY2RlZg==",
+		},
+	}
+	_, err := NewEncryptor(cfg)
+	if err == nil {
+		t.Fatal("expected ErrInvalidPreviousKey, got nil")
+	}
+	if !errors.Is(err, ErrInvalidPreviousKey) {
+		t.Fatalf("expected ErrInvalidPreviousKey, got %v", err)
+	}
+}
+
+// TestNewEncryptor_LengthMismatchPreviousKeyOptOut confirms the
+// CRYPTO_IGNORE_INVALID_PREVIOUS_KEYS=true escape hatch also tolerates
+// length-mismatched entries (in addition to parse-failure entries
+// already covered by TestNewEncryptor_IgnoreInvalidPreviousKeysOptOut).
+func TestNewEncryptor_LengthMismatchPreviousKeyOptOut(t *testing.T) {
+	t.Setenv("CRYPTO_IGNORE_INVALID_PREVIOUS_KEYS", "true")
+
+	cfg := Config{
+		Key:    strings.Repeat("a", 32),
+		Cipher: "AES-256-CBC",
+		PreviousKeys: []string{
+			"base64:MTIzNDU2Nzg5MGFiY2RlZg==", // 16 bytes
+			strings.Repeat("b", 32),           // valid
 		},
 	}
 	enc, err := NewEncryptor(cfg)
 	if err != nil {
-		t.Fatalf("length mismatch should be silently dropped at driver layer, got %v", err)
+		t.Fatalf("opt-out should tolerate length mismatch, got %v", err)
 	}
 	if enc == nil {
 		t.Fatal("expected non-nil encryptor")

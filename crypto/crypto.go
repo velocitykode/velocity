@@ -185,6 +185,18 @@ func newDriver(config Config) (Encryptor, error) {
 	// before redeploying) can set CRYPTO_IGNORE_INVALID_PREVIOUS_KEYS=true.
 	// The opt-out is intentionally an env var, not a Config field, so it
 	// is reviewable in deployment manifests.
+	cipher := strings.ToUpper(config.Cipher)
+
+	// Validate cipher and determine required key size. Resolved early so
+	// the previous-keys loop below can length-check each entry against
+	// the cipher; otherwise a wrong-length entry that decoded cleanly
+	// would silently slip past NewEncryptor and only get filtered out
+	// inside NewAESDriver, defeating M-13's fail-fast contract.
+	keySize, err := cipherKeySize(cipher)
+	if err != nil {
+		return nil, err
+	}
+
 	ignoreInvalid := os.Getenv("CRYPTO_IGNORE_INVALID_PREVIOUS_KEYS") == "true"
 	var previousKeys [][]byte
 	for i, k := range config.PreviousKeys {
@@ -198,25 +210,34 @@ func newDriver(config Config) (Encryptor, error) {
 			}
 			return nil, fmt.Errorf("%w: index %d: %v", ErrInvalidPreviousKey, i, err)
 		}
+		if len(prevKey) != keySize {
+			if ignoreInvalid {
+				continue
+			}
+			return nil, fmt.Errorf("%w: index %d: cipher %s requires %d-byte key, got %d", ErrInvalidPreviousKey, i, cipher, keySize, len(prevKey))
+		}
 		previousKeys = append(previousKeys, prevKey)
 	}
 
-	// Create the appropriate driver
-	cipher := strings.ToUpper(config.Cipher)
+	return drivers.NewAESDriver(key, previousKeys, cipher)
+}
 
-	// Validate cipher and determine required key size for derivation
+// cipherKeySize returns the required raw key length for a supported
+// cipher identifier. Returns ErrInvalidCipher for unknown ciphers. Used
+// by NewEncryptor to length-check PreviousKeys at the configuration
+// layer, matching the strict per-key length check NewAESDriver already
+// performs on the primary key.
+func cipherKeySize(cipher string) (int, error) {
 	switch cipher {
 	case "AES-128-CBC", "AES-128-GCM":
-		// 16-byte key
+		return 16, nil
 	case "AES-192-CBC", "AES-192-GCM":
-		// 24-byte key
+		return 24, nil
 	case "AES-256-CBC", "AES-256-GCM":
-		// 32-byte key
+		return 32, nil
 	default:
-		return nil, ErrInvalidCipher
+		return 0, ErrInvalidCipher
 	}
-
-	return drivers.NewAESDriver(key, previousKeys, cipher)
 }
 
 // parseKey parses a key string which may be base64 encoded. The returned
