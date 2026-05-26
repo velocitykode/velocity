@@ -67,11 +67,12 @@ type Payload struct {
 	Queue      string          `json:"queue"`
 	Attempts   int             `json:"attempts"`
 	CreatedAt  time.Time       `json:"created_at"`
-	TraceID    string          `json:"trace_id,omitempty"`  // Producer-side APM trace ID
-	SpanID     string          `json:"span_id,omitempty"`   // Producer-side APM span ID
-	ParentID   string          `json:"parent_id,omitempty"` // Producer-side parent span ID
-	Signature  string          `json:"signature,omitempty"` // HMAC-SHA256 integrity signature
-	DatabaseID int64           `json:"-"`                   // Internal use for database driver
+	TraceID    string          `json:"trace_id,omitempty"`   // Producer-side APM trace ID
+	SpanID     string          `json:"span_id,omitempty"`    // Producer-side APM span ID
+	ParentID   string          `json:"parent_id,omitempty"`  // Producer-side parent span ID
+	Signature  string          `json:"signature,omitempty"`  // HMAC-SHA256 integrity signature
+	DedupeKey  string          `json:"dedupe_key,omitempty"` // Queue-layer dedupe key for at-most-once enqueue
+	DatabaseID int64           `json:"-"`                    // Internal use for database driver
 }
 
 // TraceContext carries the producer-side APM trace ids associated with a
@@ -173,6 +174,37 @@ type ReservationDriver interface {
 	// FailReservedCtx records the row in failed_jobs and deletes the
 	// original row atomically, both bound to ctx.
 	FailReservedCtx(ctx context.Context, token ReservationToken, job Job, jobErr error, queue string) error
+}
+
+// DedupeAwarePusher is an optional driver capability for at-most-once
+// enqueue semantics keyed by a deterministic deduplication string. A
+// caller (typically the batch-callback reaper) computes a stable
+// dedupe key for the work it wants enqueued and asks the driver to push
+// the job ONLY if no live queue row already carries that key.
+//
+// Contract:
+//   - dedupeKey is opaque to the driver and must be < 128 bytes (DB
+//     drivers map it to an indexed column).
+//   - PushIfNotExistsCtx returns nil when the row is inserted AND when
+//     the dedupe key matches an existing live row. Callers cannot
+//     distinguish "I inserted" from "already enqueued"; this is
+//     intentional because both are success outcomes for at-most-once
+//     dispatch.
+//   - PushIfNotExistsCtx returns a non-nil error only on transport
+//     failures (DB unreachable, ctx cancelled, etc.).
+//   - "Live row" means the dedupe key is still in the driver's
+//     enqueue store. A queue row that has been consumed and deleted
+//     is NOT live, so a re-Push with the same key after consume will
+//     insert a fresh row. Callers that need exactly-once across the
+//     consume boundary must also gate the handler on application-level
+//     dedupe state (see BatchCallbackJob.HandleCtx).
+//
+// Used by the C-03 follow-up batch callback path: deterministic
+// (batchID, kind) UUIDs survive crashes between push and
+// MarkCallbackDispatched. The reaper retries are at-most-once at the
+// queue layer regardless of whether the bookkeeping write ran.
+type DedupeAwarePusher interface {
+	PushIfNotExistsCtx(ctx context.Context, job Job, dedupeKey string, queueName ...string) error
 }
 
 // MaxAttempter is an optional interface that jobs can implement to override

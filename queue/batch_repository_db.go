@@ -201,16 +201,24 @@ func (r *DatabaseBatchRepository) reaperTick() {
 		// whole sweep. The next tick reclaims any row that did not
 		// finish.
 		pushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		err := driver.PushCtx(pushCtx, job, queueName)
+		// pushBatchCallback routes through DedupeAwarePusher when the
+		// driver supports it (postgres, mysql, sqlite via job_dedupe;
+		// memory via in-process map; Redis via SETNX). That makes the
+		// retry idempotent at the queue layer: a successful push on a
+		// prior tick whose MarkCallbackDispatched then failed will
+		// no-op here instead of inserting a duplicate row.
+		err := pushBatchCallback(pushCtx, driver, queueName, job)
 		cancel()
 		if err != nil {
-			// Enqueue failed - leave dispatched=false so the next tick
+			// Enqueue failed: leave dispatched=false so the next tick
 			// retries. Recording the error against the row would be
 			// useful but is out of scope for this fix.
 			continue
 		}
-		// PushCtx succeeded. Mark the row so we don't re-enqueue.
-		// MarkCallbackDispatched ctx uses a fresh background context
+		// PushIfNotExistsCtx succeeded (either inserted a fresh row
+		// or no-op'd against an existing dedupe key). Mark the
+		// dispatched flag so the reaper stops sweeping this row.
+		// MarkCallbackDispatched uses a fresh background context
 		// with a short timeout because the inherited context here is
 		// already detached from the original caller.
 		markCtx, markCancel := context.WithTimeout(context.Background(), 5*time.Second)

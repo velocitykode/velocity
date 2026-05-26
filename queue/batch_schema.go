@@ -117,14 +117,62 @@ func JobBatchesMigrationSQL(driver string) []string {
 	}
 }
 
-// EnsureJobBatchesTable applies the CREATE TABLE DDL for the given
-// driver. Idempotent (uses IF NOT EXISTS). Useful for tests and
-// app-level wiring that does not use the orm/migrate package.
+// JobDedupeMigrationSQL returns the CREATE TABLE DDL for the
+// `job_dedupe` sidecar table that backs DatabaseDriver's
+// DedupeAwarePusher implementation. The table holds one row per live
+// dedupe key. PushIfNotExistsCtx INSERTs into this table under a UNIQUE
+// constraint (Postgres ON CONFLICT, MySQL INSERT IGNORE, SQLite INSERT
+// OR IGNORE); a key collision is treated as success without inserting
+// into `jobs`, so the reaper retry is idempotent at the storage layer
+// even when MarkCallbackDispatched fails after a successful push.
+//
+// Rows are removed when the matching `jobs` row is popped (so a
+// legitimate later dispatch for the same key is not blocked) and when
+// PruneStaleDedupeKeys is run on a periodic schedule (defensive sweep
+// for orphaned rows after a worker crash mid-pop).
+func JobDedupeMigrationSQL(driver string) []string {
+	switch driver {
+	case "postgres":
+		return []string{
+			`CREATE TABLE IF NOT EXISTS job_dedupe (
+				dedupe_key TEXT PRIMARY KEY,
+				queue TEXT NOT NULL,
+				created_at TIMESTAMP NOT NULL DEFAULT NOW()
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_job_dedupe_created_at ON job_dedupe (created_at)`,
+		}
+	case "mysql":
+		return []string{
+			`CREATE TABLE IF NOT EXISTS job_dedupe (
+				dedupe_key VARCHAR(128) PRIMARY KEY,
+				queue VARCHAR(64) NOT NULL,
+				created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+			) ENGINE=InnoDB`,
+			`CREATE INDEX idx_job_dedupe_created_at ON job_dedupe (created_at)`,
+		}
+	default: // sqlite + fallback
+		return []string{
+			`CREATE TABLE IF NOT EXISTS job_dedupe (
+				dedupe_key TEXT PRIMARY KEY,
+				queue TEXT NOT NULL,
+				created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_job_dedupe_created_at ON job_dedupe (created_at)`,
+		}
+	}
+}
+
+// EnsureJobBatchesTable applies the CREATE TABLE DDL for the
+// job_batches AND the job_dedupe sidecar tables for the given driver.
+// Idempotent (uses IF NOT EXISTS). Useful for tests and app-level
+// wiring that does not use the orm/migrate package.
 func EnsureJobBatchesTable(ctx context.Context, db *sql.DB, driver string) error {
 	if db == nil {
 		return fmt.Errorf("velocity/queue: EnsureJobBatchesTable requires a non-nil *sql.DB")
 	}
-	for _, stmt := range JobBatchesMigrationSQL(driver) {
+	stmts := JobBatchesMigrationSQL(driver)
+	stmts = append(stmts, JobDedupeMigrationSQL(driver)...)
+	for _, stmt := range stmts {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("velocity/queue: job_batches schema: %w", err)
 		}

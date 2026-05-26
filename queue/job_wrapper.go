@@ -21,6 +21,16 @@ type JobWrapper struct {
 	// so the memory driver can fast-path same-process pops.
 	Job     Job      `json:"-"`
 	Payload *Payload `json:"payload"`
+	// DedupeKey is the queue-layer deduplication identifier set by
+	// PushIfNotExistsCtx. Non-empty when the wrapper was enqueued via
+	// the at-most-once path; empty for ordinary Push. The memory and
+	// database drivers index live entries by this key so a re-push
+	// with the same key after a partial failure becomes a no-op. The
+	// key is included in the JSON payload for the database / Redis
+	// drivers (the Payload.DedupeKey field) so it survives a process
+	// restart; this struct-level copy is the producer-side hand-off
+	// to the same-process fast path.
+	DedupeKey string `json:"dedupe_key,omitempty"`
 }
 
 // CreateJobWrapper builds a [JobWrapper] for a job. The job is marshalled into

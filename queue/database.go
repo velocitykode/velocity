@@ -173,6 +173,100 @@ func (d *DatabaseDriver) PushCtx(ctx context.Context, job Job, queueName ...stri
 	return d.PushDelayedCtx(ctx, job, 0, queueName...)
 }
 
+// PushIfNotExistsCtx implements DedupeAwarePusher. It first attempts to
+// claim the dedupe key in `job_dedupe`: an INSERT with a UNIQUE
+// PRIMARY KEY constraint that fails (or returns RowsAffected = 0) when
+// the key is already held by an in-flight job. On a successful claim,
+// the job is then inserted into `jobs` exactly like PushCtx.
+//
+// The claim and the job INSERT live in a single transaction so a crash
+// between them does not leak a dedupe key. The claim is dropped on
+// commit failure via the defer rollback.
+//
+// Empty dedupeKey falls through to PushCtx so callers that mistakenly
+// invoke this path without a real dedupe identifier do not silently
+// bypass insertion.
+func (d *DatabaseDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupeKey string, queueName ...string) error {
+	if dedupeKey == "" {
+		return d.PushCtx(ctx, job, queueName...)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	name := resolveQueueName(job, queueName...)
+
+	db := d.db
+	if db == nil {
+		return fmt.Errorf("velocity/queue: database not initialized")
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("velocity/queue: PushIfNotExistsCtx begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Per-driver upsert syntax. All three forms have the same
+	// semantics: insert when the key is new, no-op (return 0 affected
+	// rows) when the key is already present.
+	var dedupeQuery string
+	switch d.dbDriver {
+	case "postgres":
+		dedupeQuery = `INSERT INTO job_dedupe (dedupe_key, queue) VALUES ($1, $2) ON CONFLICT (dedupe_key) DO NOTHING`
+	case "mysql":
+		dedupeQuery = `INSERT IGNORE INTO job_dedupe (dedupe_key, queue) VALUES ($1, $2)`
+	default: // sqlite + fallback
+		dedupeQuery = `INSERT OR IGNORE INTO job_dedupe (dedupe_key, queue) VALUES ($1, $2)`
+	}
+	res, err := tx.ExecContext(ctx, d.rewriteQuery(dedupeQuery), dedupeKey, name)
+	if err != nil {
+		return fmt.Errorf("velocity/queue: dedupe insert: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		// Dedupe key already exists: callback is already enqueued
+		// (or its row was dispatched and remains in flight). Commit
+		// the no-op so the caller can move on; the reaper will
+		// stop retrying once MarkCallbackDispatched runs.
+		_ = tx.Commit()
+		return nil
+	}
+
+	wrapper, err := CreateJobWrapper(job, name)
+	if err != nil {
+		return fmt.Errorf("velocity/queue: failed to create job wrapper: %w", err)
+	}
+	wrapper.DedupeKey = dedupeKey
+	wrapper.Payload.TraceID, wrapper.Payload.SpanID, wrapper.Payload.ParentID = trace.GetTraceContext(ctx)
+	wrapper.Payload.DedupeKey = dedupeKey
+
+	payload, err := json.Marshal(wrapper)
+	if err != nil {
+		return fmt.Errorf("velocity/queue: failed to serialize job: %w", err)
+	}
+	if sig := signPayload(payload); sig != "" {
+		wrapper.Payload.Signature = sig
+		payload, err = json.Marshal(wrapper)
+		if err != nil {
+			return fmt.Errorf("velocity/queue: failed to serialize signed job: %w", err)
+		}
+	}
+
+	now := time.Now()
+	insertQ := d.rewriteQuery(`INSERT INTO jobs (queue, payload, attempts, scheduled_at, created_at, updated_at)
+	          VALUES ($1, $2, $3, $4, $5, $6)`)
+	if _, err := tx.ExecContext(ctx, insertQ, name, string(payload), 0, now, now, now); err != nil {
+		return fmt.Errorf("velocity/queue: failed to insert job: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("velocity/queue: PushIfNotExistsCtx commit: %w", err)
+	}
+
+	dispatchJobQueued(d.dispatchEvent, ctx, wrapper.Payload.Type, name, false, 0)
+	return nil
+}
+
 // PushDelayedCtx adds a delayed job, using ctx for the INSERT round-trip so
 // callers can abort mid-enqueue on shutdown or deadline.
 func (d *DatabaseDriver) PushDelayedCtx(ctx context.Context, job Job, delay time.Duration, queueName ...string) error {
@@ -570,6 +664,19 @@ func (d *DatabaseDriver) FailReservedCtx(ctx context.Context, token ReservationT
 	if _, err := tx.ExecContext(ctx, insertQuery, queueName, string(payload), jobErr.Error(), now, now); err != nil {
 		return fmt.Errorf("velocity/queue: failed to record failed job: %w", err)
 	}
+
+	// The dedupe row in job_dedupe (if any) is INTENTIONALLY NOT
+	// released here. Holding the key past terminal failure is what
+	// makes the queue-layer at-most-once contract robust against the
+	// worst case described in C-03 fb4: a successful push whose
+	// MarkCallbackDispatched then failed, the worker consumes and
+	// runs the callback to completion, and a stale reaper tick then
+	// attempts a re-push. Deleting the dedupe row here would let the
+	// reaper retry insert a fresh queue row and run the handler a
+	// second time. The dedupe row is reclaimed by
+	// PruneStaleDedupeKeys on a long horizon (default 7 days) so the
+	// sidecar table does not grow unbounded.
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("velocity/queue: failed to commit failure transaction: %w", err)
 	}

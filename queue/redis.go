@@ -233,6 +233,16 @@ func (r *RedisDriver) PopCtxWithTrace(ctx context.Context, queueName string) (Jo
 
 	tc = TraceContext{TraceID: payload.TraceID, SpanID: payload.SpanID, ParentID: payload.ParentID}
 
+	// The dedupe sentinel is INTENTIONALLY NOT released here.
+	// Holding the SETNX key past Pop is what keeps the at-most-once
+	// contract robust against the C-03 fb4 failure mode where a
+	// stale reaper attempts a re-push after the worker has already
+	// consumed and executed the original. The key auto-expires after
+	// 7 days (see PushIfNotExistsCtx), which is far past the typical
+	// batch-completion window. Callers that need to release earlier
+	// can DEL velocity:queue:dedupe:<key> directly.
+	_ = payload.DedupeKey
+
 	// Deserialize the job using the registry
 	job, err := registry.Deserialize(&payload)
 	if err != nil {
@@ -394,6 +404,80 @@ func (r *RedisDriver) Shutdown(ctx context.Context) error {
 	return r.client.Close()
 }
 
+// PushIfNotExistsCtx implements DedupeAwarePusher using a sentinel
+// SET ... NX EX on a key derived from the dedupe identifier. When the
+// SETNX succeeds the job is RPush'd onto the queue list; when it fails
+// (key already present) the function returns nil without queueing.
+//
+// The sentinel TTL is intentionally long (24h) so a callback whose
+// queue entry is sitting in the list for hours under a backlog is
+// still protected from a reaper double-push. After the worker pops
+// the job and calls back into the driver (via the Popping deletion
+// path), the sentinel is explicitly DEL'd so a legitimate second
+// dispatch (different batch, same kind) is not blocked.
+//
+// Empty dedupeKey falls through to PushCtx for parity with the memory
+// driver. This is treated as a programmer error rather than a silent
+// no-dedupe push.
+func (r *RedisDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupeKey string, queueName ...string) error {
+	if dedupeKey == "" {
+		return r.PushCtx(ctx, job, queueName...)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	name := resolveQueueName(job, queueName...)
+	queueKey := r.getQueueKey(name)
+	sentinelKey := r.getDedupeKey(dedupeKey)
+
+	// SETNX with a 7d TTL: holds the dedupe sentinel past the typical
+	// callback-execution window so a stale reaper re-push (after the
+	// original job was consumed but MarkCallbackDispatched failed) is
+	// idempotent. 7 days matches the job_batches prune horizon.
+	ok, err := r.client.SetNX(ctx, sentinelKey, "1", 7*24*time.Hour).Result()
+	if err != nil {
+		return fmt.Errorf("velocity/queue: redis SETNX dedupe: %w", err)
+	}
+	if !ok {
+		// Already enqueued; treat as success.
+		return nil
+	}
+
+	payload, err := SerializeJob(job, name)
+	if err != nil {
+		// Roll back the sentinel so a retry can succeed.
+		_ = r.client.Del(ctx, sentinelKey).Err()
+		return err
+	}
+	payload.TraceID, payload.SpanID, payload.ParentID = trace.GetTraceContext(ctx)
+	payload.DedupeKey = dedupeKey
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		_ = r.client.Del(ctx, sentinelKey).Err()
+		return fmt.Errorf("velocity/queue: failed to marshal payload: %w", err)
+	}
+	if sig := signPayload(data); sig != "" {
+		payload.Signature = sig
+		data, err = json.Marshal(payload)
+		if err != nil {
+			_ = r.client.Del(ctx, sentinelKey).Err()
+			return fmt.Errorf("velocity/queue: failed to marshal signed payload: %w", err)
+		}
+	}
+
+	if err := r.client.RPush(ctx, queueKey, data).Err(); err != nil {
+		// RPush failed: drop the sentinel so the caller can retry.
+		// Without this rollback the SETNX would block all subsequent
+		// retries for the 24h TTL.
+		_ = r.client.Del(ctx, sentinelKey).Err()
+		return err
+	}
+
+	dispatchJobQueued(r.dispatchEvent, ctx, payload.Type, name, false, 0)
+	return nil
+}
+
 // Helper methods
 func (r *RedisDriver) getQueueKey(name string) string {
 	return fmt.Sprintf("velocity:queue:%s", name)
@@ -405,4 +489,12 @@ func (r *RedisDriver) getDelayedKey(name string) string {
 
 func (r *RedisDriver) getFailedKey(name string) string {
 	return fmt.Sprintf("velocity:queue:%s:failed", name)
+}
+
+// getDedupeKey returns the Redis key used as a SETNX sentinel for a
+// given dedupe identifier. The prefix is shared with the queue keys
+// (`velocity:queue:`) so an operator running `KEYS velocity:queue:*`
+// sees both queue and dedupe state.
+func (r *RedisDriver) getDedupeKey(dedupeKey string) string {
+	return fmt.Sprintf("velocity:queue:dedupe:%s", dedupeKey)
 }

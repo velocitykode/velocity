@@ -28,6 +28,13 @@ type MemoryDriver struct {
 	stopChan chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
+	// dedupeKeys tracks the dedupe identifiers of jobs currently live in
+	// the queue (queues + delayed). Implements DedupeAwarePusher: a
+	// PushIfNotExistsCtx whose key is already present returns nil
+	// without inserting. Entries are removed when the matching job is
+	// popped or cleared. Guarded by m.mu (same as queues / delayed) so
+	// the lookup and the insert are atomic against concurrent Push.
+	dedupeKeys map[string]struct{}
 	// eventDispatcher is stored via atomic.Pointer so the dispatcher path
 	// never acquires m.mu. This is critical: PushCtx/PushDelayedCtx hold
 	// m.mu.Lock() while calling dispatchEvent, so any RLock attempt on the
@@ -110,10 +117,11 @@ type failedJob struct {
 // Call Start() to begin the background delayed-job processor.
 func NewMemoryDriver() *MemoryDriver {
 	return &MemoryDriver{
-		queues:   make(map[string]*list.List),
-		delayed:  make(map[string]*delayedHeap),
-		failed:   make(map[string][]*failedJob),
-		stopChan: make(chan struct{}),
+		queues:     make(map[string]*list.List),
+		delayed:    make(map[string]*delayedHeap),
+		failed:     make(map[string][]*failedJob),
+		dedupeKeys: make(map[string]struct{}),
+		stopChan:   make(chan struct{}),
 	}
 }
 
@@ -253,6 +261,18 @@ func (m *MemoryDriver) popLocked(queueName string) (Job, TraceContext, error) {
 		return nil, TraceContext{}, fmt.Errorf("invalid wrapper type")
 	}
 
+	// The dedupe key is INTENTIONALLY NOT released here. Holding the
+	// key past Pop is what makes the queue-layer at-most-once contract
+	// robust against the failure mode that drove C-03 fb4: a
+	// successful push whose MarkCallbackDispatched then failed, the
+	// worker consumes and runs the callback to completion, and a
+	// stale reaper tick later attempts a re-push. With the key still
+	// present, PushIfNotExistsCtx no-ops on the retry. The memory
+	// driver does not currently prune the set; ResetDedupeKeysForTest
+	// clears it for test isolation, and production usage relies on
+	// each (batchID, kind) being naturally unique (UUID v7 batches).
+	_ = wrapper.DedupeKey
+
 	tc := TraceContext{}
 	if wrapper.Payload != nil {
 		tc.TraceID = wrapper.Payload.TraceID
@@ -268,6 +288,54 @@ func (m *MemoryDriver) popLocked(queueName string) (Job, TraceContext, error) {
 		return nil, tc, fmt.Errorf("velocity/queue: failed to restore job from wrapper: %w", err)
 	}
 	return job, tc, nil
+}
+
+// PushIfNotExistsCtx implements DedupeAwarePusher. The dedupe key is
+// the deterministic identifier supplied by the caller (typically
+// BatchCallbackJob.DedupeKey). Returns nil immediately when a live
+// queue entry with the same key already exists; otherwise inserts the
+// job and records the key. The lookup and the insert run under the
+// same lock so concurrent pushes with the same key never produce
+// duplicate entries.
+//
+// Empty dedupeKey falls through to PushCtx: the at-most-once contract
+// requires a non-empty identifier, so we surface that as a programmer
+// error via the regular push path rather than silently de-duping every
+// keyless push.
+func (m *MemoryDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupeKey string, queueName ...string) error {
+	if dedupeKey == "" {
+		return m.PushCtx(ctx, job, queueName...)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	name := resolveQueueName(job, queueName...)
+
+	wrapper, err := CreateJobWrapper(job, name)
+	if err != nil {
+		return err
+	}
+	wrapper.DedupeKey = dedupeKey
+	wrapper.Payload.TraceID, wrapper.Payload.SpanID, wrapper.Payload.ParentID = trace.GetTraceContext(ctx)
+
+	m.mu.Lock()
+	if _, exists := m.dedupeKeys[dedupeKey]; exists {
+		// Already enqueued. Treat as success so the caller's reaper
+		// stops retrying. We do NOT bump any retry counter or emit
+		// events: the original push already did.
+		m.mu.Unlock()
+		return nil
+	}
+	if _, exists := m.queues[name]; !exists {
+		m.queues[name] = list.New()
+	}
+	m.queues[name].PushBack(wrapper)
+	m.dedupeKeys[dedupeKey] = struct{}{}
+	jobType := wrapper.Payload.Type
+	m.mu.Unlock()
+
+	dispatchJobQueued(m.dispatchEvent, ctx, jobType, name, false, 0)
+	return nil
 }
 
 // Size returns the number of jobs in the queue
@@ -286,6 +354,24 @@ func (m *MemoryDriver) Size(queueName string) (int64, error) {
 func (m *MemoryDriver) Clear(queueName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// Release any dedupe keys associated with the cleared queue so a
+	// subsequent PushIfNotExistsCtx for the same key inserts a fresh
+	// row rather than silently no-op'ing against a stale entry.
+	if q, ok := m.queues[queueName]; ok {
+		for e := q.Front(); e != nil; e = e.Next() {
+			if w, ok := e.Value.(*JobWrapper); ok && w.DedupeKey != "" {
+				delete(m.dedupeKeys, w.DedupeKey)
+			}
+		}
+	}
+	if h, ok := m.delayed[queueName]; ok {
+		for _, dj := range h.items {
+			if dj.wrapper != nil && dj.wrapper.DedupeKey != "" {
+				delete(m.dedupeKeys, dj.wrapper.DedupeKey)
+			}
+		}
+	}
 
 	delete(m.queues, queueName)
 	delete(m.delayed, queueName)

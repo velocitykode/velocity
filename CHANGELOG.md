@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking changes
 
+- **New framework table `job_dedupe` for queue-layer at-most-once enqueue.** Backs the new `queue.DedupeAwarePusher` optional driver interface and its `PushIfNotExistsCtx(ctx, job, dedupeKey, queue...)` method. The `DatabaseDriver` implementation INSERTs into `job_dedupe` under a PRIMARY KEY (postgres `ON CONFLICT DO NOTHING`, mysql `INSERT IGNORE`, sqlite `INSERT OR IGNORE`) inside the same transaction as the `jobs` insert; a row already present in `job_dedupe` is treated as success without touching `jobs`. This is what makes the batch-callback reaper idempotent at the storage layer even when `MarkCallbackDispatched` (the bookkeeping write after a successful push) fails. Deployed apps must run an `ALTER TABLE`-equivalent migration to create the sidecar table before upgrading. Example for Postgres:
+  ```sql
+  CREATE TABLE IF NOT EXISTS job_dedupe (
+    dedupe_key TEXT PRIMARY KEY,
+    queue TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+  );
+  CREATE INDEX IF NOT EXISTS idx_job_dedupe_created_at ON job_dedupe (created_at);
+  ```
+  Rows are NOT released on Pop: keeping the dedupe key past the consume boundary is what blocks a stale reaper retry from re-enqueueing the callback after the original execution completed. Long-horizon prune (default 7 days) reclaims orphaned rows. Drivers that do not implement `DedupeAwarePusher` fall back to plain `PushCtx`; callback delivery still works but is at-least-once at the queue layer (the application-level `*_dispatched` flag plus the reaper still serialise duplicate attempts).
 - **`job_batches` table schema gained three new columns: `then_dispatched`, `catch_dispatched`, `finally_dispatched`.** All three are NOT NULL BOOLEAN (TINYINT(1) on MySQL, INTEGER on SQLite) defaulting to FALSE / 0. Deployed apps must run an `ALTER TABLE` (or the framework's migration once available) before upgrading. Example for Postgres:
   ```sql
   ALTER TABLE job_batches
