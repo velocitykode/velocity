@@ -112,6 +112,97 @@ func readDownPayload(path string) (*downPayload, bool) {
 	return &payload, true
 }
 
+// defaultMaintenanceExcludePaths is the set of request path prefixes that
+// bypass the 503 short-circuit by default. These are the paths every load
+// balancer probe, container orchestrator, and runtime health checker hits.
+// 503'ing them removes the instance from rotation seconds after the
+// operator runs `vel down`, which is the opposite of what they intended.
+//
+// Webhook endpoints are intentionally NOT included by default because their
+// path layout varies per application (/webhooks/stripe, /api/webhooks/...
+// /hooks/github). Operators add their own via WithMaintenanceExcludePaths
+// or the VELOCITY_MAINTENANCE_EXCLUDE_PATHS env var.
+var defaultMaintenanceExcludePaths = []string{"/healthz", "/livez", "/readyz"}
+
+// MaintenanceOption configures PreventRequestsDuringMaintenance.
+type MaintenanceOption func(*maintenanceConfig)
+
+// maintenanceConfig is the resolved option set for one middleware instance.
+type maintenanceConfig struct {
+	// excludePaths holds the request-path prefixes that bypass the 503
+	// short-circuit. Stored as a deduped slice, scanned linearly per
+	// request; on the order of a handful of entries so prefix-trie not
+	// warranted.
+	excludePaths []string
+}
+
+// WithMaintenanceExcludePaths appends path prefixes to the bypass list.
+// Each call adds to whatever the defaults + env already produced; pass
+// the empty string nowhere because that would match every request and
+// silently disable the middleware.
+func WithMaintenanceExcludePaths(paths ...string) MaintenanceOption {
+	return func(c *maintenanceConfig) {
+		for _, p := range paths {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			c.excludePaths = appendUniquePath(c.excludePaths, p)
+		}
+	}
+}
+
+// resolveMaintenanceConfig builds the per-instance config. Order:
+// defaults -> env -> caller options. Caller options always win.
+func resolveMaintenanceConfig(opts ...MaintenanceOption) *maintenanceConfig {
+	cfg := &maintenanceConfig{
+		excludePaths: append([]string{}, defaultMaintenanceExcludePaths...),
+	}
+	if raw, ok := os.LookupEnv("VELOCITY_MAINTENANCE_EXCLUDE_PATHS"); ok {
+		for _, p := range strings.Split(raw, ",") {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			cfg.excludePaths = appendUniquePath(cfg.excludePaths, p)
+		}
+	}
+	for _, o := range opts {
+		o(cfg)
+	}
+	return cfg
+}
+
+// appendUniquePath appends p to ps if not already present (string equal).
+// Caller path matching is by prefix below; uniqueness here is for the
+// stored list, not for the matching semantics.
+func appendUniquePath(ps []string, p string) []string {
+	for _, existing := range ps {
+		if existing == p {
+			return ps
+		}
+	}
+	return append(ps, p)
+}
+
+// matchesExcludePath returns true when reqPath is in or under any of the
+// configured exclude entries. Match is prefix-only and deliberately strict:
+// "/healthz" excludes "/healthz" and "/healthz/anything"; "/healthz" does
+// NOT exclude "/healthzoo" because the next char after the prefix must be
+// the end of the path or a "/". Mirrors how Laravel's Except() matcher
+// behaves for non-wildcard entries.
+func matchesExcludePath(reqPath string, excludes []string) bool {
+	for _, e := range excludes {
+		if reqPath == e {
+			return true
+		}
+		if strings.HasPrefix(reqPath, e) && len(reqPath) > len(e) && reqPath[len(e)] == '/' {
+			return true
+		}
+	}
+	return false
+}
+
 // PreventRequestsDuringMaintenance returns middleware that returns a 503
 // Service Unavailable response while the application is in maintenance mode.
 //
@@ -120,7 +211,13 @@ func readDownPayload(path string) (*downPayload, bool) {
 // requests carrying a valid, non-expired bypass cookie are served normally.
 // The bypass MAC is keyed off the operator-supplied secret via HKDF so leaking
 // APP_KEY alone cannot grant a bypass.
-func PreventRequestsDuringMaintenance() router.MiddlewareFunc {
+//
+// Paths in the configured exclude list pass through to the next handler
+// even while in maintenance. The defaults ("/healthz", "/livez", "/readyz")
+// keep load-balancer probes happy; operators add webhook prefixes through
+// WithMaintenanceExcludePaths or VELOCITY_MAINTENANCE_EXCLUDE_PATHS env.
+func PreventRequestsDuringMaintenance(opts ...MaintenanceOption) router.MiddlewareFunc {
+	cfg := resolveMaintenanceConfig(opts...)
 	return func(next router.HandlerFunc) router.HandlerFunc {
 		return func(c *router.Context) error {
 			path, err := maintenanceMarkerPath()
@@ -132,6 +229,14 @@ func PreventRequestsDuringMaintenance() router.MiddlewareFunc {
 			}
 			payload, down := readDownPayload(path)
 			if !down {
+				return next(c)
+			}
+
+			// Excluded paths (health probes, webhooks) must remain reachable
+			// while the application is otherwise in maintenance, otherwise
+			// load balancers will tear out the instance and webhook senders
+			// will back off / retry-storm.
+			if matchesExcludePath(c.Request.URL.Path, cfg.excludePaths) {
 				return next(c)
 			}
 

@@ -578,3 +578,181 @@ func TestMaintenance_RejectsInvalidEnvRoot(t *testing.T) {
 		})
 	}
 }
+
+// TestMaintenance_DefaultExcludePathsBypass503 pins the M-41 contract:
+// while the application is in maintenance the default health-probe
+// endpoints (/healthz, /livez, /readyz) must continue to return 200 so
+// load balancers do not tear out the instance.
+func TestMaintenance_DefaultExcludePathsBypass503(t *testing.T) {
+	useTempMaintRoot(t)
+	createMarker(t, `{"time":"2026-01-01T00:00:00Z"}`)
+
+	mw := PreventRequestsDuringMaintenance()
+	handler := mw(func(c *router.Context) error {
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	for _, p := range []string{"/healthz", "/livez", "/readyz"} {
+		t.Run(p, func(t *testing.T) {
+			c, w := router.NewTestContext("GET", p)
+			if err := handler(c); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if w.Code != http.StatusOK {
+				t.Errorf("path %s status: got %d, want 200 during maintenance", p, w.Code)
+			}
+		})
+	}
+}
+
+// TestMaintenance_NonExcludedPathStill503 asserts that adding exclusions
+// does not regress the baseline: a path NOT in the exclude list still
+// receives 503 while in maintenance.
+func TestMaintenance_NonExcludedPathStill503(t *testing.T) {
+	useTempMaintRoot(t)
+	createMarker(t, `{}`)
+
+	mw := PreventRequestsDuringMaintenance()
+	handler := mw(func(c *router.Context) error {
+		return c.JSON(http.StatusOK, nil)
+	})
+
+	c, w := router.NewTestContext("GET", "/dashboard")
+	if err := handler(c); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("dashboard status: got %d, want 503", w.Code)
+	}
+}
+
+// TestMaintenance_WithMaintenanceExcludePathsOption pins the functional
+// option: operator-supplied prefixes are honored alongside the defaults.
+func TestMaintenance_WithMaintenanceExcludePathsOption(t *testing.T) {
+	useTempMaintRoot(t)
+	createMarker(t, `{}`)
+
+	mw := PreventRequestsDuringMaintenance(WithMaintenanceExcludePaths("/webhooks", "/api/stripe"))
+	handler := mw(func(c *router.Context) error {
+		return c.JSON(http.StatusOK, nil)
+	})
+
+	cases := []struct {
+		path string
+		want int
+	}{
+		{"/webhooks/stripe", http.StatusOK},
+		{"/webhooks", http.StatusOK},
+		{"/api/stripe/event", http.StatusOK},
+		{"/healthz", http.StatusOK}, // default still in
+		{"/dashboard", http.StatusServiceUnavailable},
+	}
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			c, w := router.NewTestContext("GET", tc.path)
+			if err := handler(c); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if w.Code != tc.want {
+				t.Errorf("path %s status: got %d, want %d", tc.path, w.Code, tc.want)
+			}
+		})
+	}
+}
+
+// TestMaintenance_ExcludePathsCSVEnv asserts the env var is parsed as a
+// comma-separated list with whitespace trimmed, and that the env entries
+// merge with the built-in defaults rather than replacing them.
+func TestMaintenance_ExcludePathsCSVEnv(t *testing.T) {
+	useTempMaintRoot(t)
+	createMarker(t, `{}`)
+	t.Setenv("VELOCITY_MAINTENANCE_EXCLUDE_PATHS", "/webhooks/stripe, /webhooks/github ,/metrics")
+
+	mw := PreventRequestsDuringMaintenance()
+	handler := mw(func(c *router.Context) error {
+		return c.JSON(http.StatusOK, nil)
+	})
+
+	cases := []struct {
+		path string
+		want int
+	}{
+		{"/webhooks/stripe", http.StatusOK},
+		{"/webhooks/github/push", http.StatusOK},
+		{"/metrics", http.StatusOK},
+		{"/healthz", http.StatusOK}, // default still in
+		{"/api/users", http.StatusServiceUnavailable},
+	}
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			c, w := router.NewTestContext("GET", tc.path)
+			if err := handler(c); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if w.Code != tc.want {
+				t.Errorf("path %s status: got %d, want %d", tc.path, w.Code, tc.want)
+			}
+		})
+	}
+}
+
+// TestMatchesExcludePath_StrictBoundary pins the matcher's boundary
+// behaviour: "/healthz" excludes "/healthz" and "/healthz/..." but NOT
+// "/healthzoo" or "/healthzed". The next byte after the prefix must be
+// the end of the string or a "/".
+func TestMatchesExcludePath_StrictBoundary(t *testing.T) {
+	excludes := []string{"/healthz", "/api/v1"}
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/healthz", true},
+		{"/healthz/ready", true},
+		{"/healthz/", true},
+		{"/healthzoo", false},
+		{"/healthzed", false},
+		{"/api/v1", true},
+		{"/api/v1/users", true},
+		{"/api/v10", false},
+		{"/", false},
+		{"/health", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			got := matchesExcludePath(tc.path, excludes)
+			if got != tc.want {
+				t.Errorf("matchesExcludePath(%q): got %v, want %v", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMaintenance_ExcludePathSkipsBypassAndCookie asserts the exclude
+// list runs BEFORE the bypass-cookie mint, so an unauthenticated probe
+// to /healthz never receives a bypass cookie even when the down-file
+// configures a secret. Important because mint-and-redirect on a probe
+// path would set a long-lived cookie on a request that should be
+// stateless / unauthenticated.
+func TestMaintenance_ExcludePathSkipsBypassAndCookie(t *testing.T) {
+	useTempMaintRoot(t)
+	t.Setenv("APP_ENV", "testing")
+	createMarker(t, `{"secret":"letmein"}`)
+
+	mw := PreventRequestsDuringMaintenance()
+	handler := mw(func(c *router.Context) error {
+		return c.JSON(http.StatusOK, nil)
+	})
+
+	c, w := router.NewTestContext("GET", "/healthz")
+	if err := handler(c); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Errorf("status: got %d, want 200", w.Code)
+	}
+	for _, ck := range w.Result().Cookies() {
+		if ck.Name == maintenanceBypassCookie {
+			t.Errorf("bypass cookie issued on exclude path: %q", ck.Value)
+		}
+	}
+}
