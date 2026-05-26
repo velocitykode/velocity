@@ -70,12 +70,32 @@ type FailedJobRecord struct {
 	UpdatedAt time.Time `orm:"autoUpdateTime" json:"updated_at"`
 }
 
+// DefaultRetryAfter is the lease duration applied to a row reserved by a
+// worker. After this elapses without an Ack / Release / FailReserved the
+// row becomes eligible for reclamation by the next PopCtxReserved call.
+// The value mirrors Laravel's `retry_after` default (90 seconds).
+const DefaultRetryAfter = 90 * time.Second
+
+// Compile-time assertion that DatabaseDriver implements all the
+// driver-side capability interfaces the worker depends on.
+var (
+	_ Driver            = (*DatabaseDriver)(nil)
+	_ TraceAwareDriver  = (*DatabaseDriver)(nil)
+	_ ReservationDriver = (*DatabaseDriver)(nil)
+)
+
 // DatabaseDriver implements the Driver interface using database
 type DatabaseDriver struct {
 	mu       sync.RWMutex
 	db       *sql.DB
 	workerID string
 	dbDriver string // "postgres", "mysql", "sqlite"
+	// retryAfterNanos holds the row-lease duration in nanoseconds. A reserved
+	// row whose reserved_at is older than this becomes eligible for
+	// reclamation by the next PopCtxReserved. Stored as int64 in
+	// atomic.Int64 so SetRetryAfter is lock-free and safe to invoke
+	// concurrently with pumping workers.
+	retryAfterNanos atomic.Int64
 	// eventDispatcher is stored via atomic.Pointer so the dispatcher path
 	// never acquires d.mu. PushDelayedCtx may grab d.mu under future
 	// refactors (and PopCtxWithTrace already does); routing dispatch
@@ -94,8 +114,31 @@ func NewDatabaseDriver(db *sql.DB, dbDriver string) *DatabaseDriver {
 		workerID: workerID,
 		dbDriver: dbDriver,
 	}
+	driver.retryAfterNanos.Store(int64(DefaultRetryAfter))
 
 	return driver
+}
+
+// SetRetryAfter overrides the row-lease duration. The new value takes
+// effect on the next PopCtxReserved call. Values <= 0 reset to
+// DefaultRetryAfter; otherwise the supplied duration is used verbatim
+// (no clamping). Primarily exists for tests that need a sub-second lease
+// so a SIGKILL-equivalent can be observed quickly.
+func (d *DatabaseDriver) SetRetryAfter(retryAfter time.Duration) {
+	if retryAfter <= 0 {
+		d.retryAfterNanos.Store(int64(DefaultRetryAfter))
+		return
+	}
+	d.retryAfterNanos.Store(int64(retryAfter))
+}
+
+// retryAfter returns the current row-lease duration.
+func (d *DatabaseDriver) retryAfter() time.Duration {
+	v := d.retryAfterNanos.Load()
+	if v <= 0 {
+		return DefaultRetryAfter
+	}
+	return time.Duration(v)
 }
 
 // SetEventDispatcher installs the event dispatcher. The assignment goes
@@ -201,9 +244,12 @@ func (d *DatabaseDriver) PushDelayedCtx(ctx context.Context, job Job, delay time
 // PostgreSQL/MySQL 8+ the SELECT uses FOR UPDATE SKIP LOCKED so competing
 // workers never hand out the same job; SQLite falls back to a BEGIN IMMEDIATE
 // transaction (it serializes writers at the BEGIN). The payload is verified
-// BEFORE the DELETE so a tampered job is rejected without being removed from
-// the queue — the transaction is rolled back and the job stays reserved for
-// the next worker (or becomes visible again for inspection).
+// BEFORE the DELETE; unrecoverable hydration failures are routed to the
+// poison-quarantine path so the row never head-of-line-starves the queue.
+//
+// PopCtx is the bare [Driver] surface and provides no lease semantics: a
+// worker crash between this returning and handler completion permanently
+// loses the job. Worker code uses [DatabaseDriver.PopCtxReserved] instead.
 func (d *DatabaseDriver) PopCtx(ctx context.Context, queueName string) (Job, error) {
 	job, _, err := d.PopCtxWithTrace(ctx, queueName)
 	return job, err
@@ -212,6 +258,8 @@ func (d *DatabaseDriver) PopCtx(ctx context.Context, queueName string) (Job, err
 // PopCtxWithTrace is the trace-aware variant of PopCtx. It returns the
 // producer-side trace context recovered from the persisted payload so the
 // worker can rebuild ctx for downstream events and HandleCtxer handlers.
+// Like PopCtx, the row is deleted before this returns; lease-aware
+// workers should call [DatabaseDriver.PopCtxReserved] instead.
 // Implements TraceAwareDriver.
 func (d *DatabaseDriver) PopCtxWithTrace(ctx context.Context, queueName string) (Job, TraceContext, error) {
 	var tc TraceContext
@@ -247,7 +295,7 @@ func (d *DatabaseDriver) PopCtxWithTrace(ctx context.Context, queueName string) 
 			LIMIT 1
 			FOR UPDATE SKIP LOCKED`)
 	default:
-		// SQLite (and any unrecognised driver) — the outer transaction
+		// SQLite (and any unrecognised driver). The outer transaction
 		// already serializes writers, so no row-level locking hint is needed.
 		selectQuery = d.rewriteQuery(`SELECT id, queue, payload, attempts, scheduled_at, reserved_at, reserved_by, failed_at, failed_reason, created_at, updated_at
 			FROM jobs
@@ -333,7 +381,7 @@ func (d *DatabaseDriver) PopCtxWithTrace(ctx context.Context, queueName string) 
 			fmt.Errorf("velocity/queue: failed to restore job from wrapper: %w", err))
 	}
 
-	// Signature verified — safe to delete.
+	// Signature verified, safe to delete.
 	deleteQuery := d.rewriteQuery("DELETE FROM jobs WHERE id = $1")
 	if _, err := tx.ExecContext(ctx, deleteQuery, jobRecord.ID); err != nil {
 		return nil, tc, fmt.Errorf("velocity/queue: failed to delete job: %w", err)
@@ -344,6 +392,248 @@ func (d *DatabaseDriver) PopCtxWithTrace(ctx context.Context, queueName string) 
 	}
 
 	return job, tc, nil
+}
+
+// PopCtxReserved leases the next available row for the worker. It either
+// selects an unreserved row whose scheduled_at <= now, or reclaims a row
+// whose reserved_at is older than retryAfter (the lease window). The
+// selected row is updated in place: reserved_at = now, reserved_by =
+// workerID, attempts = attempts + 1. The returned token must be passed
+// back to AckCtx (success), ReleaseCtx (retry), or FailReservedCtx
+// (terminal failure). A zero token paired with a nil job means "no job
+// available".
+//
+// Unrecoverable hydration failures (malformed JSON, integrity mismatch,
+// unregistered job type, factory decode error) are routed through the
+// shared poison-quarantine path inherited from C-01: the row is moved
+// to failed_jobs, deleted from jobs, and the call returns ErrPoisonJob.
+// Quarantine runs BEFORE the reservation UPDATE, so a poison row never
+// ends up reserved; the worker's pop loop just re-selects and moves on.
+//
+// Implements [ReservationDriver].
+func (d *DatabaseDriver) PopCtxReserved(ctx context.Context, queueName string) (Job, ReservationToken, TraceContext, error) {
+	var tc TraceContext
+	if err := ctx.Err(); err != nil {
+		return nil, 0, tc, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// Use Serializable on SQLite since it lacks FOR UPDATE SKIP LOCKED;
+	// default isolation elsewhere (the row lock provides mutual exclusion).
+	var txOpts *sql.TxOptions
+	if d.dbDriver == "sqlite" || d.dbDriver == "sqlite3" {
+		txOpts = &sql.TxOptions{Isolation: sql.LevelSerializable}
+	}
+	tx, err := d.db.BeginTx(ctx, txOpts)
+	if err != nil {
+		return nil, 0, tc, fmt.Errorf("velocity/queue: failed to begin transaction: %w", err)
+	}
+	// Rollback is a no-op if Commit already succeeded.
+	defer func() { _ = tx.Rollback() }()
+
+	now := time.Now()
+	reclaimCutoff := now.Add(-d.retryAfter())
+
+	// Reservation predicate (Laravel parity): a row is poppable if it is
+	// unreserved and due, OR its lease has expired (reserved_at older
+	// than retryAfter). The latter clause is what makes the queue
+	// recoverable after a SIGKILL, OOM, or pod eviction; no separate
+	// reaper goroutine is required.
+	var selectQuery string
+	switch d.dbDriver {
+	case "postgres", "mysql":
+		selectQuery = d.rewriteQuery(`SELECT id, queue, payload, attempts, scheduled_at, reserved_at, reserved_by, failed_at, failed_reason, created_at, updated_at
+			FROM jobs
+			WHERE queue = $1
+			AND failed_at IS NULL
+			AND (
+				(reserved_at IS NULL AND scheduled_at <= $2)
+				OR (reserved_at IS NOT NULL AND reserved_at < $3)
+			)
+			ORDER BY scheduled_at ASC, id ASC
+			LIMIT 1
+			FOR UPDATE SKIP LOCKED`)
+	default:
+		// SQLite (and any unrecognised driver). The outer transaction
+		// already serializes writers, so no row-level locking hint is
+		// needed.
+		selectQuery = d.rewriteQuery(`SELECT id, queue, payload, attempts, scheduled_at, reserved_at, reserved_by, failed_at, failed_reason, created_at, updated_at
+			FROM jobs
+			WHERE queue = $1
+			AND failed_at IS NULL
+			AND (
+				(reserved_at IS NULL AND scheduled_at <= $2)
+				OR (reserved_at IS NOT NULL AND reserved_at < $3)
+			)
+			ORDER BY scheduled_at ASC, id ASC
+			LIMIT 1`)
+	}
+
+	var jobRecord JobRecord
+	row := tx.QueryRowContext(ctx, selectQuery, queueName, now, reclaimCutoff)
+	if err := scanJobRecord(row, &jobRecord); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, 0, tc, nil // No jobs available
+		}
+		return nil, 0, tc, fmt.Errorf("velocity/queue: failed to fetch job: %w", err)
+	}
+
+	// Quarantine path for unrecoverable pop-time failures (inherited
+	// from C-01). Runs BEFORE the reservation UPDATE so a poison row
+	// never gets reserved; the next pop just selects the next row.
+	var wrapper JobWrapper
+	if err := json.Unmarshal([]byte(jobRecord.Payload), &wrapper); err != nil {
+		j, qtc, qerr := d.quarantineAndReturn(tx, tc, jobRecord, queueName,
+			fmt.Errorf("velocity/queue: failed to deserialize job: %w", err))
+		return j, 0, qtc, qerr
+	}
+	if wrapper.Payload != nil {
+		sig := wrapper.Payload.Signature
+		wrapper.Payload.Signature = "" // Remove signature before verification
+		verifyData, marshalErr := json.Marshal(wrapper)
+		if marshalErr != nil {
+			j, qtc, qerr := d.quarantineAndReturn(tx, tc, jobRecord, queueName,
+				fmt.Errorf("velocity/queue: failed to marshal payload for verification: %w", marshalErr))
+			return j, 0, qtc, qerr
+		}
+		if err := verifyPayload(verifyData, sig); err != nil {
+			j, qtc, qerr := d.quarantineAndReturn(tx, tc, jobRecord, queueName,
+				fmt.Errorf("velocity/queue: queue integrity check failed: %w", err))
+			return j, 0, qtc, qerr
+		}
+		tc = TraceContext{
+			TraceID:  wrapper.Payload.TraceID,
+			SpanID:   wrapper.Payload.SpanID,
+			ParentID: wrapper.Payload.ParentID,
+		}
+	}
+
+	job, err := GetJobFromWrapper(&wrapper)
+	if err != nil {
+		j, qtc, qerr := d.quarantineAndReturn(tx, tc, jobRecord, queueName,
+			fmt.Errorf("velocity/queue: failed to restore job from wrapper: %w", err))
+		return j, 0, qtc, qerr
+	}
+
+	// Reserve the row. attempts is bumped here so the column reflects
+	// the durable retry budget across process restarts, matching
+	// Laravel's markJobAsReserved semantics. The worker-side sync.Map
+	// counter remains as a fast-path cache (audit #7 cleanup is out of
+	// scope for C-02).
+	updateQuery := d.rewriteQuery(`UPDATE jobs
+		SET reserved_at = $1, reserved_by = $2, attempts = attempts + 1, updated_at = $3
+		WHERE id = $4`)
+	if _, err := tx.ExecContext(ctx, updateQuery, now, d.workerID, now, jobRecord.ID); err != nil {
+		return nil, 0, tc, fmt.Errorf("velocity/queue: failed to reserve job: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, 0, tc, fmt.Errorf("velocity/queue: failed to commit pop transaction: %w", err)
+	}
+
+	return job, ReservationToken(jobRecord.ID), tc, nil
+}
+
+// AckCtx deletes the reserved row after the handler returned success.
+// Safe to call with a zero token (no-op) for symmetry with worker code
+// paths that may not have a reservation. Implements [ReservationDriver].
+func (d *DatabaseDriver) AckCtx(ctx context.Context, token ReservationToken) error {
+	if token == 0 {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	query := d.rewriteQuery("DELETE FROM jobs WHERE id = $1")
+	if _, err := d.db.ExecContext(ctx, query, int64(token)); err != nil {
+		return fmt.Errorf("velocity/queue: failed to ack job: %w", err)
+	}
+	return nil
+}
+
+// ReleaseCtx clears the reservation on the row and pushes scheduled_at
+// forward by delay so the next pop after the delay will reclaim it as a
+// retry. Used when a handler returns a retryable error. Implements
+// [ReservationDriver].
+//
+// NB: this updates the existing row in place; it does NOT call
+// PushDelayedCtx. The persisted attempts counter therefore survives the
+// retry, which is the desired Laravel semantics.
+func (d *DatabaseDriver) ReleaseCtx(ctx context.Context, token ReservationToken, delay time.Duration) error {
+	if token == 0 {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if delay < 0 {
+		delay = 0
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	now := time.Now()
+	scheduledAt := now.Add(delay)
+	query := d.rewriteQuery(`UPDATE jobs
+		SET reserved_at = NULL, reserved_by = NULL, scheduled_at = $1, updated_at = $2
+		WHERE id = $3`)
+	if _, err := d.db.ExecContext(ctx, query, scheduledAt, now, int64(token)); err != nil {
+		return fmt.Errorf("velocity/queue: failed to release job: %w", err)
+	}
+	return nil
+}
+
+// FailReservedCtx records the job in failed_jobs and deletes the original
+// row in a single transaction. Used when a handler exhausts its retry
+// budget or opts out of retries via RetryDecider. Implements
+// [ReservationDriver].
+func (d *DatabaseDriver) FailReservedCtx(ctx context.Context, token ReservationToken, job Job, jobErr error, queueName string) error {
+	if token == 0 {
+		// No reservation to clean up; fall back to the bare Failed path
+		// so a failed_jobs row is still recorded.
+		return d.Failed(job, jobErr, queueName)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	wrapper, wrapErr := CreateJobWrapper(job, queueName)
+	if wrapErr != nil {
+		return fmt.Errorf("velocity/queue: failed to create job wrapper: %w", wrapErr)
+	}
+	payload, serErr := json.Marshal(wrapper)
+	if serErr != nil {
+		return fmt.Errorf("velocity/queue: failed to serialize job: %w", serErr)
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("velocity/queue: failed to begin failure transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	now := time.Now()
+	insertQuery := d.rewriteQuery(
+		"INSERT INTO failed_jobs (queue, payload, exception, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
+	)
+	if _, err := tx.ExecContext(ctx, insertQuery, queueName, string(payload), jobErr.Error(), now, now); err != nil {
+		return fmt.Errorf("velocity/queue: failed to record failed job: %w", err)
+	}
+	deleteQuery := d.rewriteQuery("DELETE FROM jobs WHERE id = $1")
+	if _, err := tx.ExecContext(ctx, deleteQuery, int64(token)); err != nil {
+		return fmt.Errorf("velocity/queue: failed to delete reserved job: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("velocity/queue: failed to commit failure transaction: %w", err)
+	}
+	return nil
 }
 
 // Size returns the number of jobs in the queue
@@ -467,9 +757,10 @@ func setPopQuarantineCommitHookForTest(hook func()) (restore func()) {
 
 // quarantineAndReturn moves a poisoned row to failed_jobs, commits the tx,
 // and returns the appropriate (Job, TraceContext, error) tuple for
-// PopCtxWithTrace. Centralises the quarantine bookkeeping so all
-// unrecoverable pop-time failures (malformed JSON, integrity mismatch,
-// unregistered job type, factory decode error) share one code path.
+// PopCtxWithTrace and (via a small adapter) PopCtxReserved. Centralises
+// the quarantine bookkeeping so all unrecoverable pop-time failures
+// (malformed JSON, integrity mismatch, unregistered job type, factory
+// decode error) share one code path.
 //
 // On the happy path the row is gone from `jobs`, lives in `failed_jobs`
 // with poisonErr.Error() in the exception column, and the returned error
@@ -516,24 +807,25 @@ func (d *DatabaseDriver) quarantineAndReturn(tx *sql.Tx, tc TraceContext, rec Jo
 const quarantinePoisonTimeout = 10 * time.Second
 
 // quarantinePoisonLocked moves a row that failed hydration from `jobs` into
-// `failed_jobs` inside the supplied transaction. The caller (PopCtxWithTrace)
-// already holds the row lock for `jobID` under FOR UPDATE SKIP LOCKED (PG /
-// MySQL) or BEGIN IMMEDIATE (SQLite), so no competing worker can race us for
-// the same row before the tx commits.
+// `failed_jobs` inside the supplied transaction. The caller (PopCtxWithTrace
+// or PopCtxReserved) already holds the row lock for `jobID` under FOR
+// UPDATE SKIP LOCKED (PG / MySQL) or BEGIN IMMEDIATE (SQLite), so no
+// competing worker can race us for the same row before the tx commits.
 //
 // Context scoping (important): the DELETE + INSERT statements use a fresh
 // background-derived context bounded by [quarantinePoisonTimeout]. This
 // prevents a caller-side short per-tick deadline from cancelling either
 // statement mid-execution and leaving a half-quarantined row. However, the
-// ENCLOSING transaction `tx` was opened by PopCtxWithTrace via
-// `BeginTx(callerCtx, ...)`, and database/sql keeps that ctx tied to the tx
-// for the entire BEGIN / Commit window. If the caller's ctx is cancelled
-// between this function returning and `tx.Commit()`, the Commit fails, the
-// deferred Rollback discards everything we wrote here, and the poison row
-// remains live in `jobs`. The pop call returns a non-ErrPoisonJob error in
-// that branch (the join of hydrationErr and the Commit error) so the worker
-// does not falsely report a quarantine that never landed. The next pop on a
-// non-cancelled ctx re-selects the same poison row and quarantines it.
+// ENCLOSING transaction `tx` was opened by the pop method via
+// `BeginTx(callerCtx, ...)`, and database/sql keeps that ctx tied to the
+// tx for the entire BEGIN / Commit window. If the caller's ctx is
+// cancelled between this function returning and `tx.Commit()`, the Commit
+// fails, the deferred Rollback discards everything we wrote here, and the
+// poison row remains live in `jobs`. The pop call returns a
+// non-ErrPoisonJob error in that branch (the join of hydrationErr and the
+// Commit error) so the worker does not falsely report a quarantine that
+// never landed. The next pop on a non-cancelled ctx re-selects the same
+// poison row and quarantines it.
 //
 // True caller-cancel-resistant quarantine would require rebeginning the tx
 // with a detached ctx (or splitting quarantine into a second tx). Neither is

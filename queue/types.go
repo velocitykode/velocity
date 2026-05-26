@@ -91,6 +91,55 @@ type TraceAwareDriver interface {
 	PopCtxWithTrace(ctx context.Context, queue string) (Job, TraceContext, error)
 }
 
+// ReservationToken identifies a leased row owned by the popping worker for
+// the duration of handler execution. Drivers that implement [ReservationDriver]
+// return a non-zero token from PopCtxReserved and accept it back on Ack /
+// Release / FailReserved. A token value of zero means "no reservation"
+// (e.g. drivers that delete on pop, or jobs sourced from a non-reservation
+// path).
+type ReservationToken int64
+
+// ReservationDriver is an optional driver capability. Drivers that lease
+// rows to workers (DB driver) implement this so the worker can defer the
+// row's deletion until the handler has actually returned success. Drivers
+// that already remove the entry on pop (memory, redis) do not implement
+// this interface; the worker treats them as before.
+//
+// Lifecycle on a reservation-capable driver:
+//
+//  1. PopCtxReserved returns (job, token, trace, nil). The driver sets
+//     reserved_at = now, reserved_by = workerID, attempts += 1 on the row.
+//  2. On handler success, the worker calls AckCtx(token). Driver deletes
+//     the row.
+//  3. On handler failure with retries remaining, the worker calls
+//     ReleaseCtx(token, backoff). Driver clears reserved_at/reserved_by and
+//     pushes scheduled_at forward by backoff so the same row will be popped
+//     again after the delay (in-place retry, no row churn).
+//  4. On terminal failure (max attempts, opted-out retry), the worker
+//     calls FailReservedCtx(token, job, err, queueName). Driver inserts the
+//     failed_jobs row and deletes the original row in a single transaction.
+//
+// If the worker process is SIGKILLed between step 1 and any of 2/3/4, the
+// row remains reserved. The next PopCtxReserved reclaims it once
+// `reserved_at < now() - retryAfter`. This is the at-least-once invariant.
+type ReservationDriver interface {
+	// PopCtxReserved leases the next available row. Returns a non-zero
+	// token on success, (nil, 0, _, nil) when no job is available.
+	PopCtxReserved(ctx context.Context, queue string) (Job, ReservationToken, TraceContext, error)
+
+	// AckCtx removes the reserved row after the handler returned success.
+	AckCtx(ctx context.Context, token ReservationToken) error
+
+	// ReleaseCtx leaves the row in place but clears its reservation and
+	// pushes scheduled_at forward by delay so a future pop will reclaim
+	// it as a retry. delay = 0 means "available immediately".
+	ReleaseCtx(ctx context.Context, token ReservationToken, delay time.Duration) error
+
+	// FailReservedCtx records the row in failed_jobs and deletes the
+	// original row atomically, both bound to ctx.
+	FailReservedCtx(ctx context.Context, token ReservationToken, job Job, jobErr error, queue string) error
+}
+
 // MaxAttempter is an optional interface that jobs can implement to override
 // the worker's default max retry count.
 type MaxAttempter interface {

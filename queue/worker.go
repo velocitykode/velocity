@@ -328,11 +328,20 @@ func (w *Worker) work(id int) {
 // processJob processes a single job
 func (w *Worker) processJob() error {
 	var (
-		job        Job
-		producerTC TraceContext
-		err        error
+		job         Job
+		producerTC  TraceContext
+		reservation ReservationToken
+		err         error
 	)
-	if tad, ok := w.queue.(TraceAwareDriver); ok {
+	// Prefer the reservation-aware pop path so the row is leased (not
+	// deleted) for the duration of handler execution. This is the
+	// at-least-once guarantee: a SIGKILL between pop and ack leaves the
+	// row reserved, and the next PopCtxReserved reclaims it after
+	// retryAfter. Falls back to TraceAwareDriver and then bare PopCtx for
+	// drivers that delete on pop (memory, redis).
+	if rd, ok := w.queue.(ReservationDriver); ok {
+		job, reservation, producerTC, err = rd.PopCtxReserved(w.ctx, w.queueName)
+	} else if tad, ok := w.queue.(TraceAwareDriver); ok {
 		job, producerTC, err = tad.PopCtxWithTrace(w.ctx, w.queueName)
 	} else {
 		job, err = w.queue.PopCtx(w.ctx, w.queueName)
@@ -381,6 +390,10 @@ func (w *Worker) processJob() error {
 			// Decrement pending so the batch can still reach Finished state
 			batch.pendingJobs.Add(-1)
 			batch.checkFinished(jobCtx)
+			// Ack the reservation so the row is removed; the job will
+			// not be retried. Use a detached short-timeout context so a
+			// slow driver does not block shutdown.
+			w.ackReservation(reservation)
 			return nil
 		}
 	}
@@ -413,9 +426,8 @@ func (w *Worker) processJob() error {
 			// We discriminate against jobCtx.Done() (per-job timeout) by
 			// checking w.ctx.Err(): only the parent worker context being
 			// done counts as shutdown. The job is not retried, not marked
-			// failed, and not routed through Failed(); it stays "in flight"
-			// from the driver's perspective and a future worker will pick it
-			// up (or the driver's own shutdown path handles it).
+			// failed, and not routed through Failed(); the leased row stays
+			// reserved and the next worker (after retryAfter) reclaims it.
 			if (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) && w.ctx.Err() != nil {
 				w.logger.Info("Job aborted by worker shutdown",
 					"type", jobType,
@@ -442,10 +454,12 @@ func (w *Worker) processJob() error {
 				)
 				return nil
 			}
-			w.handleJobFailure(jobCtx, job, jobType, err, duration)
+			w.handleJobFailure(jobCtx, job, jobType, err, duration, reservation)
 			return fmt.Errorf("velocity/queue: job failed: %w", err)
 		}
-		// Success: clean up attempt tracking
+		// Success: clean up attempt tracking and ack the leased row so the
+		// driver removes it. For non-reservation drivers ackReservation is
+		// a no-op (the row was deleted on pop).
 		w.removeAttempts(job)
 		// Record batch success
 		if bj, ok := job.(Batchable); ok {
@@ -453,6 +467,7 @@ func (w *Worker) processJob() error {
 				batch.recordSuccess(jobCtx)
 			}
 		}
+		w.ackReservation(reservation)
 		dispatchJobProcessed(w.dispatchEvent, jobCtx, jobType, w.queueName, duration)
 		return nil
 	case <-jobCtx.Done():
@@ -473,7 +488,8 @@ func (w *Worker) processJob() error {
 		if w.ctx.Err() != nil {
 			// Worker shutdown, not a real per-job timeout. Same reasoning
 			// as the err-branch above: do not call handleJobFailure, do
-			// not retry, do not mark Failed.
+			// not retry, do not mark Failed. Leave the row reserved; the
+			// next worker reclaims it via the retryAfter predicate.
 			w.logger.Info("Job aborted by worker shutdown",
 				"type", jobType,
 				"queue", w.queueName,
@@ -482,8 +498,31 @@ func (w *Worker) processJob() error {
 			return nil
 		}
 		timeoutErr := fmt.Errorf("velocity/queue: job timed out")
-		w.handleJobFailure(jobCtx, job, jobType, timeoutErr, duration)
+		w.handleJobFailure(jobCtx, job, jobType, timeoutErr, duration, reservation)
 		return timeoutErr
+	}
+}
+
+// ackReservation deletes the leased row after handler success on
+// reservation-capable drivers. It is a no-op on drivers that delete the
+// row at pop time (memory, redis) and on calls with a zero token.
+// Uses a detached short-timeout context so a slow driver cannot hold
+// shutdown open past its deadline; an ack failure is logged but not
+// propagated because the row will still be reclaimed by the retryAfter
+// predicate on the next pop. (The duplicate-run cost there is preferable
+// to refusing the success path.)
+func (w *Worker) ackReservation(token ReservationToken) {
+	if token == 0 {
+		return
+	}
+	rd, ok := w.queue.(ReservationDriver)
+	if !ok {
+		return
+	}
+	ackCtx, cancel := context.WithTimeout(context.Background(), retryPushTimeout)
+	defer cancel()
+	if err := rd.AckCtx(ackCtx, token); err != nil {
+		w.logger.Error("Failed to ack reserved job", "token", int64(token), "error", err)
 	}
 }
 
@@ -516,7 +555,13 @@ func jobIDOf(job Job) string {
 }
 
 // handleJobFailure decides whether to retry a job or permanently fail it.
-func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, err error, duration time.Duration) {
+//
+// reservation carries the driver-side row lease for reservation-capable
+// drivers (DB); on retry the row is released in place (no PushDelayedCtx
+// churn), on terminal failure it is moved to failed_jobs atomically. A
+// zero token falls back to the legacy PushDelayedCtx + Failed paths used
+// by drivers that delete on pop.
+func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, err error, duration time.Duration, reservation ReservationToken) {
 	maxAttempts := w.maxRetries
 	if ma, ok := job.(MaxAttempter); ok {
 		maxAttempts = ma.MaxAttempts()
@@ -527,7 +572,7 @@ func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, 
 	// Check if the job opts out of retrying this specific error
 	if rd, ok := job.(RetryDecider); ok {
 		if !rd.ShouldRetry(err) {
-			w.failJob(ctx, job, jobType, err, duration, attempt, maxAttempts)
+			w.failJob(ctx, job, jobType, err, duration, attempt, maxAttempts, reservation)
 			return
 		}
 	}
@@ -543,25 +588,35 @@ func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, 
 			"error", err,
 		)
 		dispatchJobRetrying(w.dispatchEvent, ctx, jobType, w.queueName, attempt, maxAttempts, err, backoff)
-		// Use a detached context with a short timeout for the retry push so a
-		// slow driver (Redis partition, DB lock wait) cannot hold shutdown open
-		// past its deadline. If the push exceeds the timeout the job is marked
-		// failed: losing the retry is preferable to hanging the shutdown path.
+		// Use a detached context with a short timeout for the requeue so
+		// a slow driver (Redis partition, DB lock wait) cannot hold
+		// shutdown open past its deadline. If the requeue exceeds the
+		// timeout the job is marked failed: losing the retry is
+		// preferable to hanging the shutdown path.
 		pushCtx, pushCancel := context.WithTimeout(context.Background(), retryPushTimeout)
-		pushErr := w.queue.PushDelayedCtx(pushCtx, job, backoff, w.queueName)
+		var requeueErr error
+		if rd, ok := w.queue.(ReservationDriver); ok && reservation != 0 {
+			// Reservation-capable driver: release the row in place so
+			// the existing row (with its attempts counter, batch ID,
+			// trace ids) is reused for the retry.
+			requeueErr = rd.ReleaseCtx(pushCtx, reservation, backoff)
+		} else {
+			// Drivers that delete on pop: enqueue a fresh delayed copy.
+			requeueErr = w.queue.PushDelayedCtx(pushCtx, job, backoff, w.queueName)
+		}
 		pushCancel()
-		if pushErr != nil {
-			w.logger.Error("Failed to re-queue job for retry", "error", pushErr)
-			w.failJob(ctx, job, jobType, err, duration, attempt, maxAttempts)
+		if requeueErr != nil {
+			w.logger.Error("Failed to re-queue job for retry", "error", requeueErr)
+			w.failJob(ctx, job, jobType, err, duration, attempt, maxAttempts, reservation)
 		}
 		return
 	}
 
-	w.failJob(ctx, job, jobType, err, duration, attempt, maxAttempts)
+	w.failJob(ctx, job, jobType, err, duration, attempt, maxAttempts, reservation)
 }
 
 // failJob permanently fails a job after exhausting retries.
-func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error, duration time.Duration, attempt, maxAttempts int) {
+func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error, duration time.Duration, attempt, maxAttempts int, reservation ReservationToken) {
 	w.removeAttempts(job)
 	// Record batch failure
 	if bj, ok := job.(Batchable); ok {
@@ -570,6 +625,15 @@ func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error
 		}
 	}
 	dispatchJobFailed(w.dispatchEvent, ctx, jobType, w.queueName, err, duration)
+
+	// Reservation-capable drivers record + delete the row atomically;
+	// other drivers fall back to the bare Failed() path.
+	if rd, ok := w.queue.(ReservationDriver); ok && reservation != 0 {
+		if failErr := rd.FailReservedCtx(ctx, reservation, job, err, w.queueName); failErr != nil {
+			w.logger.Error("Failed to mark reserved job as failed", "error", failErr)
+		}
+		return
+	}
 	if failErr := w.queue.Failed(job, err, w.queueName); failErr != nil {
 		w.logger.Error("Failed to mark job as failed", "error", failErr)
 	}

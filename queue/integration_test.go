@@ -305,8 +305,9 @@ func TestIntegrationDatabaseDriver(t *testing.T) {
 			t.Errorf("Expected 1 job in database, got %d", count)
 		}
 
-		// Pop the job
-		poppedJob, err := driver.PopCtx(context.Background(), "db-queue")
+		// Pop the job. With lease-and-reclaim semantics the row remains
+		// in the table (now reserved) until the worker acks it.
+		poppedJob, token, _, err := driver.PopCtxReserved(context.Background(), "db-queue")
 		if err != nil {
 			t.Fatalf("Failed to pop job: %v", err)
 		}
@@ -314,15 +315,30 @@ func TestIntegrationDatabaseDriver(t *testing.T) {
 		if poppedJob == nil {
 			t.Error("Expected to pop job, got nil")
 		}
+		if token == 0 {
+			t.Error("Expected non-zero reservation token")
+		}
 
-		// Verify job is removed
+		// Verify the row is reserved (still present, reserved_at set).
+		var reservedCount int
+		err = db.QueryRow("SELECT COUNT(*) FROM jobs WHERE queue = 'db-queue' AND reserved_at IS NOT NULL").Scan(&reservedCount)
+		if err != nil {
+			t.Fatalf("Failed to query reserved jobs: %v", err)
+		}
+		if reservedCount != 1 {
+			t.Errorf("Expected 1 reserved job in database after pop, got %d", reservedCount)
+		}
+
+		// Ack the reservation. Row should now be gone.
+		if err := driver.AckCtx(context.Background(), token); err != nil {
+			t.Fatalf("Failed to ack reserved job: %v", err)
+		}
 		err = db.QueryRow("SELECT COUNT(*) FROM jobs WHERE queue = 'db-queue'").Scan(&count)
 		if err != nil {
 			t.Fatalf("Failed to query jobs: %v", err)
 		}
-
 		if count != 0 {
-			t.Errorf("Expected 0 jobs in database after pop, got %d", count)
+			t.Errorf("Expected 0 jobs in database after ack, got %d", count)
 		}
 	})
 
@@ -399,7 +415,7 @@ func TestIntegrationDatabaseDriver(t *testing.T) {
 			go func(workerID int) {
 				defer wg.Done()
 				for {
-					job, err := driver.PopCtx(context.Background(), "db-concurrent")
+					job, token, _, err := driver.PopCtxReserved(context.Background(), "db-concurrent")
 					if err != nil {
 						t.Errorf("Worker %d error: %v", workerID, err)
 						return
@@ -408,6 +424,12 @@ func TestIntegrationDatabaseDriver(t *testing.T) {
 						return // No more jobs
 					}
 					atomic.AddInt32(&popped, 1)
+					// Ack so the row is removed; simulates successful
+					// handler completion.
+					if err := driver.AckCtx(context.Background(), token); err != nil {
+						t.Errorf("Worker %d ack: %v", workerID, err)
+						return
+					}
 				}
 			}(i)
 		}

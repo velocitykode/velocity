@@ -261,6 +261,207 @@ func TestDatabaseDriver_Push_Size_Clear(t *testing.T) {
 	}
 }
 
+// TestDatabaseDriver_Pop_SIGKILLRecoverable proves the C-02 invariant:
+// a job whose worker dies between pop and ack (modelled here by cancelling
+// the worker context mid-handler and never calling Ack/Release/Fail)
+// remains durable, and a future worker reclaims it after the lease
+// expires. Pre-fix, PopCtx DELETEd the row before the handler ran, so a
+// SIGKILL permanently lost the job. Post-fix, the row is leased and
+// becomes reclaimable once reserved_at < now - retryAfter.
+func TestDatabaseDriver_Pop_SIGKILLRecoverable(t *testing.T) {
+	saveAndRestoreSigningState(t)
+	SetSigningKey(nil)
+
+	driver, cleanup := newSQLiteQueueDB(t)
+	defer cleanup()
+
+	// Short lease so the test does not have to wait 90 seconds for
+	// reclamation. 50ms is long enough to exclude flakes from clock skew
+	// and short enough to keep the test fast.
+	const lease = 50 * time.Millisecond
+	driver.SetRetryAfter(lease)
+
+	job := &TestJob{ID: "kill-me", Message: "halfway"}
+	if err := driver.PushCtx(context.Background(), job, "sigkill"); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+
+	// First worker pops and reserves the row. We then drop the
+	// reservation token on the floor (no Ack / Release / Fail) to model
+	// a SIGKILL between pop and ack.
+	popped, token, _, err := driver.PopCtxReserved(context.Background(), "sigkill")
+	if err != nil {
+		t.Fatalf("first pop: %v", err)
+	}
+	if popped == nil || token == 0 {
+		t.Fatalf("expected a reserved job, got job=%v token=%d", popped, token)
+	}
+
+	// While the lease is fresh, no other worker can claim the row.
+	// (Size filters reserved_at IS NULL, so it should report 0.)
+	if size, _ := driver.Size("sigkill"); size != 0 {
+		t.Errorf("Size during active lease = %d, want 0 (reserved rows excluded)", size)
+	}
+	stolen, stolenToken, _, err := driver.PopCtxReserved(context.Background(), "sigkill")
+	if err != nil {
+		t.Fatalf("second pop during lease: %v", err)
+	}
+	if stolen != nil || stolenToken != 0 {
+		t.Fatalf("a second worker stole the leased row before retryAfter; job=%v token=%d", stolen, stolenToken)
+	}
+
+	// The row must still be in the table (not deleted on pop). This is
+	// the invariant violated by the pre-fix code path.
+	var totalRows int
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE queue = ?", "sigkill").Scan(&totalRows); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if totalRows != 1 {
+		t.Fatalf("row removed before ack; rows=%d, want 1", totalRows)
+	}
+
+	// Simulate the SIGKILL: the "worker" never acks, never releases,
+	// never fails. Wait past the lease window so the row becomes
+	// eligible for reclamation.
+	time.Sleep(lease + 50*time.Millisecond)
+
+	reclaimed, reclaimToken, _, err := driver.PopCtxReserved(context.Background(), "sigkill")
+	if err != nil {
+		t.Fatalf("reclaim pop: %v", err)
+	}
+	if reclaimed == nil {
+		t.Fatal("expected lease to be reclaimable after retryAfter, got nil")
+	}
+	if reclaimToken == 0 {
+		t.Errorf("reclaim returned zero token")
+	}
+	// The reclaimed row is the same physical row (same DB id) as the
+	// original reservation; reservation tokens encode the row id.
+	if reclaimToken != token {
+		t.Errorf("reclaim returned different row id; got %d, want %d", reclaimToken, token)
+	}
+
+	// The persisted attempts counter must have advanced (once per
+	// reserve). Both pops should have incremented it, so attempts == 2.
+	var attempts int
+	if err := driver.db.QueryRow("SELECT attempts FROM jobs WHERE id = ?", int64(reclaimToken)).Scan(&attempts); err != nil {
+		t.Fatalf("read attempts: %v", err)
+	}
+	if attempts != 2 {
+		t.Errorf("persisted attempts = %d, want 2 (one per reserve)", attempts)
+	}
+
+	// Cleanly ack so the test leaves no residue.
+	if err := driver.AckCtx(context.Background(), reclaimToken); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE queue = ?", "sigkill").Scan(&totalRows); err != nil {
+		t.Fatalf("post-ack count: %v", err)
+	}
+	if totalRows != 0 {
+		t.Errorf("row not removed after ack; rows=%d, want 0", totalRows)
+	}
+}
+
+// TestDatabaseDriver_Pop_ReleaseRequeuesInPlace verifies that ReleaseCtx
+// updates the existing reserved row in place (clearing reserved_at and
+// pushing scheduled_at forward) rather than creating a churned duplicate.
+// The persisted attempts counter must therefore survive the retry.
+func TestDatabaseDriver_Pop_ReleaseRequeuesInPlace(t *testing.T) {
+	saveAndRestoreSigningState(t)
+	SetSigningKey(nil)
+
+	driver, cleanup := newSQLiteQueueDB(t)
+	defer cleanup()
+	driver.SetRetryAfter(time.Second)
+
+	job := &TestJob{ID: "release-me"}
+	if err := driver.PushCtx(context.Background(), job, "rel"); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+
+	_, token, _, err := driver.PopCtxReserved(context.Background(), "rel")
+	if err != nil || token == 0 {
+		t.Fatalf("first pop: token=%d err=%v", token, err)
+	}
+
+	// Release with a small delay; the row should be visible to the next
+	// pop after delay elapses, and the id (token) must be unchanged.
+	if err := driver.ReleaseCtx(context.Background(), token, 30*time.Millisecond); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+
+	// During the release delay, the row is not poppable.
+	if j, tok, _, _ := driver.PopCtxReserved(context.Background(), "rel"); j != nil || tok != 0 {
+		t.Errorf("row visible before release delay elapsed; job=%v token=%d", j, tok)
+	}
+
+	time.Sleep(60 * time.Millisecond)
+	_, retryToken, _, err := driver.PopCtxReserved(context.Background(), "rel")
+	if err != nil {
+		t.Fatalf("retry pop: %v", err)
+	}
+	if retryToken != token {
+		t.Errorf("release created a new row; got token=%d, want %d (in-place update)", retryToken, token)
+	}
+
+	var rows int
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE queue = ?", "rel").Scan(&rows); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if rows != 1 {
+		t.Errorf("release created %d rows; want exactly 1 in-place row", rows)
+	}
+
+	// attempts must have advanced twice (one reserve per pop).
+	var attempts int
+	if err := driver.db.QueryRow("SELECT attempts FROM jobs WHERE id = ?", int64(token)).Scan(&attempts); err != nil {
+		t.Fatalf("read attempts: %v", err)
+	}
+	if attempts != 2 {
+		t.Errorf("attempts = %d, want 2", attempts)
+	}
+}
+
+// TestDatabaseDriver_FailReservedCtx_AtomicMove verifies that a terminal
+// failure moves the row to failed_jobs and deletes the original in one
+// transaction.
+func TestDatabaseDriver_FailReservedCtx_AtomicMove(t *testing.T) {
+	saveAndRestoreSigningState(t)
+	SetSigningKey(nil)
+
+	driver, cleanup := newSQLiteQueueDB(t)
+	defer cleanup()
+
+	job := &TestJob{ID: "fail-me"}
+	if err := driver.PushCtx(context.Background(), job, "term"); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+
+	popped, token, _, err := driver.PopCtxReserved(context.Background(), "term")
+	if err != nil || popped == nil || token == 0 {
+		t.Fatalf("pop: token=%d err=%v", token, err)
+	}
+
+	if err := driver.FailReservedCtx(context.Background(), token, popped, fmt.Errorf("terminal"), "term"); err != nil {
+		t.Fatalf("fail: %v", err)
+	}
+
+	var jobs, failed int
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE queue = ?", "term").Scan(&jobs); err != nil {
+		t.Fatalf("count jobs: %v", err)
+	}
+	if jobs != 0 {
+		t.Errorf("reserved row not deleted on terminal fail; rows=%d", jobs)
+	}
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM failed_jobs WHERE queue = ?", "term").Scan(&failed); err != nil {
+		t.Fatalf("count failed: %v", err)
+	}
+	if failed != 1 {
+		t.Errorf("failed_jobs not written on terminal fail; rows=%d", failed)
+	}
+}
+
 // TestDatabaseDriver_RewriteQuery exercises the placeholder rewriter directly
 // so regressions are caught even if no driver-specific test runs.
 func TestDatabaseDriver_RewriteQuery(t *testing.T) {
