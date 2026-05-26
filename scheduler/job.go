@@ -53,6 +53,21 @@ type Job struct {
 	scheduler *Scheduler
 	timezone  *time.Location
 
+	// lastFiredWallMinute is the wall-clock minute string (YYYY-MM-DDTHH:MM
+	// in the scheduler timezone) of the most recent successful IsDue+dispatch
+	// for this job. Used to suppress the fall-back DST double-fire: when the
+	// local clock rewinds from 02:00 -> 01:00, the 01:xx wall minutes repeat
+	// at a different UTC instant. The ticker hits each repeated minute and
+	// IsDue evaluates true a second time; comparing against this field
+	// suppresses the second dispatch so the job fires exactly once per
+	// distinct local minute. Spring-forward (02:00 skipped) needs no
+	// suppression -- the minute simply does not occur, which mirrors cron(8).
+	//
+	// Stored as a string (not time.Time) because two distinct instants share
+	// the same local wall-clock during fall-back; the string is the
+	// equivalence-class key the suppression rule keys on.
+	lastFiredWallMinute string
+
 	// Constraints
 	when          func() bool
 	skip          func() bool
@@ -88,6 +103,37 @@ func (j *Job) IsDue(t time.Time) bool {
 	defer j.mu.RUnlock()
 
 	return j.schedule.IsDue(t)
+}
+
+// wallMinuteKey returns the dedup key used by the DST fall-back
+// suppression rule: the YYYY-MM-DDTHH:MM wall-clock representation in
+// the scheduler timezone. Two distinct UTC instants sharing the same
+// local wall-clock (the repeated hour during fall-back) collapse to the
+// same key, so the second dispatch is suppressed. The format mirrors
+// the oneServerLockKey time component for consistency.
+func wallMinuteKey(t time.Time) string {
+	return t.Format("2006-01-02T15:04")
+}
+
+// alreadyFiredAt reports whether this job has already been dispatched
+// for the wall-clock minute of t. Used to suppress the fall-back DST
+// double-fire (when the local clock rewinds 02:00 -> 01:00, the 01:xx
+// minutes recur at a different UTC instant). Pure read; markFired is
+// the writer.
+func (j *Job) alreadyFiredAt(t time.Time) bool {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	return j.lastFiredWallMinute != "" && j.lastFiredWallMinute == wallMinuteKey(t)
+}
+
+// markFired records that this job dispatched at the wall-clock minute
+// of t. Must be called before dispatching the run goroutine; the
+// follow-up tick (the second occurrence of the same wall minute during
+// DST fall-back) observes this via alreadyFiredAt and skips.
+func (j *Job) markFired(t time.Time) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.lastFiredWallMinute = wallMinuteKey(t)
 }
 
 // ShouldRun checks if the job should run based on constraints

@@ -563,6 +563,21 @@ func (s *Scheduler) runDueJobs() {
 			continue
 		}
 
+		// DST fall-back suppression: when the local clock rewinds (e.g.
+		// 02:00 -> 01:00 on Nov 1 in America/New_York), the 01:xx wall
+		// minutes recur at a different UTC instant. IsDue is purely
+		// pattern-matched against the local wall-clock so it returns
+		// true on both occurrences. Compare against the last fired wall
+		// minute (in tz) and skip the duplicate. Spring-forward (02:00
+		// skipped) needs no extra logic -- the minute does not occur,
+		// which matches cron(8). markFired is called BEFORE the runWg
+		// add so a follow-up tick within the same wall minute (rare;
+		// double-tick races) is suppressed by the next IsDue check.
+		if job.alreadyFiredAt(now) {
+			continue
+		}
+		job.markFired(now)
+
 		// Per-job maintenance gate: skip unless the job opted in via
 		// EvenInMaintenanceMode().
 		job.mu.RLock()

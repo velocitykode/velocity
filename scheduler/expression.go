@@ -153,14 +153,21 @@ func makeRange(min, max, step int) []int {
 //   - The caller is responsible for passing t in the scheduler's configured
 //     timezone (Scheduler.runDueJobs uses time.Now().In(tz)). Go's time.Time
 //     carries its own *time.Location and time.Time.In does not shift the
-//     underlying instant — only how Hour/Minute/Month/Day are reported. This
+//     underlying instant - only how Hour/Minute/Month/Day are reported. This
 //     matches cron(8) semantics.
-//   - During a spring-forward DST transition the hour 02:00 is skipped in the
-//     local representation, so a job scheduled exactly at 02:00 in that zone
-//     will not fire that day. During a fall-back transition the 01:00 hour
-//     repeats; the ticker will evaluate IsDue once per repeated minute and
-//     fire the job twice. This mirrors cron's behaviour and is intentional.
-//   - Leap seconds are transparent to time.Time — Go never surfaces them —
+//   - Spring-forward: during the spring-forward DST transition the hour 02:00
+//     is skipped in the local representation, so a job scheduled exactly at
+//     02:00 in that zone will not fire that day. This matches cron(8) /
+//     cronie's behaviour: a missing wall minute simply does not fire.
+//   - Fall-back: during the fall-back transition the 01:00 hour repeats; the
+//     ticker evaluates IsDue once per repeated minute and Expression.IsDue
+//     itself returns true on both occurrences (it is purely pattern-matched
+//     against the local wall-clock). The duplicate dispatch is suppressed
+//     one layer up in Scheduler.runDueJobs by comparing the wall-clock
+//     minute against Job.lastFiredWallMinute; the job fires exactly once
+//     per distinct local minute, matching cronie which de-duplicates
+//     ambiguous-hour repeats in the same way.
+//   - Leap seconds are transparent to time.Time - Go never surfaces them -
 //     so no special handling is required here.
 func (e *Expression) IsDue(t time.Time) bool {
 	// Check minute
