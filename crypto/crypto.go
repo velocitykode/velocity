@@ -107,26 +107,42 @@ type Config struct {
 // Validate checks that the Config is structurally usable. Allowed ciphers
 // are the AES variants with 128/192/256-bit keys, in CBC or GCM mode.
 //
-// Returns ErrInvalidKey for empty keys and ErrInvalidCipher for
-// unsupported cipher names so callers can still use errors.Is for
-// branching.
+// Returns ErrInvalidKey for empty keys, ErrInvalidCipher for
+// unsupported cipher names, and ErrInvalidKeyLength when the supplied
+// key (raw or base64-decoded) does not match the cipher's required raw
+// byte length. Callers can branch on errors.Is for each case.
 //
-// Note: Validate does not decode `base64:` keys or check key length
-// against the cipher; raw-byte length enforcement runs inside
-// NewEncryptor / NewAESDriver and surfaces as ErrInvalidKeyLength. The
-// split exists so callers that only want a cheap structural check
-// (e.g. config-time validators) can call Validate without depending on
-// the driver subpackage.
+// Validate is consistent with NewAESDriver: anything Validate accepts
+// will also pass driver construction, and anything it rejects will be
+// rejected by NewEncryptor too. The split exists so callers that want
+// a config-time check without constructing a driver (e.g. startup
+// validators) can call Validate on its own.
 func (c Config) Validate() error {
 	if c.Key == "" {
 		return ErrInvalidKey
 	}
 	cipher := strings.ToUpper(c.Cipher)
+	var want int
 	switch cipher {
-	case "AES-128-CBC", "AES-192-CBC", "AES-256-CBC",
-		"AES-128-GCM", "AES-192-GCM", "AES-256-GCM":
+	case "AES-128-CBC", "AES-128-GCM":
+		want = 16
+	case "AES-192-CBC", "AES-192-GCM":
+		want = 24
+	case "AES-256-CBC", "AES-256-GCM":
+		want = 32
 	default:
 		return ErrInvalidCipher
+	}
+	raw, err := parseKey(c.Key)
+	if err != nil {
+		// Malformed base64 key: surface the underlying decode error
+		// (callers checking errors.Is against ErrInvalidKey still
+		// trip on the empty case above; base64 parse failures get
+		// the verbatim error so operators can see what went wrong).
+		return err
+	}
+	if len(raw) != want {
+		return fmt.Errorf("%w: cipher %s requires %d-byte key, got %d", ErrInvalidKeyLength, cipher, want, len(raw))
 	}
 	return nil
 }
