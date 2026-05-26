@@ -38,6 +38,14 @@ type Job struct {
 	evenInMaintenanceMode bool
 	runInBackground       bool
 
+	// withoutOverlappingTTL is the TTL of the distributed lock acquired
+	// when WithoutOverlapping() is set. Zero means use the scheduler's
+	// default (24h, matching Laravel's $expiresAt = 1440 minutes). Set via
+	// WithoutOverlappingFor(d) for finer-grained control. The lock is
+	// always released on Job.Run exit (normal, error, or panic); the TTL
+	// is the upper bound the lock can be held by a crashed process.
+	withoutOverlappingTTL time.Duration
+
 	// State
 	running   bool
 	lastRun   time.Time
@@ -429,6 +437,24 @@ func (j *Job) WithoutOverlapping() *Job {
 	return j
 }
 
+// WithoutOverlappingFor is the TTL-configurable form of WithoutOverlapping.
+// The distributed lock acquired before running the job auto-expires after
+// ttl; a crashed process therefore cannot wedge the job forever. Default
+// (when WithoutOverlapping() is used without this method) is 24h, matching
+// Laravel's $expiresAt = 1440 minutes.
+func (j *Job) WithoutOverlappingFor(ttl time.Duration) *Job {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.withoutOverlapping = true
+	if j.mutex == nil {
+		j.mutex = &sync.Mutex{}
+	}
+	if ttl > 0 {
+		j.withoutOverlappingTTL = ttl
+	}
+	return j
+}
+
 // OnOneServer ensures job runs on only one server (requires distributed lock)
 func (j *Job) OnOneServer() *Job {
 	j.mu.Lock()
@@ -592,4 +618,48 @@ func (j *Job) IsRunning() bool {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 	return j.running
+}
+
+// overlapLockKey returns the distributed-lock key used by
+// WithoutOverlapping(). The key is derived from the job name and is shared
+// across hosts so the lock is mutually exclusive cluster-wide for the
+// configured TTL. Callers MUST hold no Job mutex; this method takes its
+// own RLock.
+func (j *Job) overlapLockKey() string {
+	j.mu.RLock()
+	name := j.name
+	j.mu.RUnlock()
+	return "velocity/scheduler/overlap:" + name
+}
+
+// oneServerLockKey returns the distributed-lock key used by OnOneServer().
+// The key embeds the scheduled minute (in the scheduler's timezone) so
+// each cron tick gets a fresh contest -- exactly one host wins per minute,
+// any host that misses the tick (e.g. due to load) cannot starve future
+// ticks. Matches Laravel's CacheSchedulingMutex (`<mutexName><time->Hi>`).
+// Callers MUST hold no Job mutex; this method takes its own RLock.
+func (j *Job) oneServerLockKey(scheduledMinute time.Time) string {
+	j.mu.RLock()
+	name := j.name
+	j.mu.RUnlock()
+	// Format like Laravel's `Hi` (HHMM) but include the date so a stuck
+	// 1h-TTL lock from a different day cannot accidentally gate today's
+	// run. RFC 3339 minute precision is sufficient and unambiguous.
+	return "velocity/scheduler/oneserver:" + name + ":" + scheduledMinute.Format("2006-01-02T15:04")
+}
+
+// effectiveOverlapTTL returns the TTL to use for WithoutOverlapping's
+// distributed lock. Per-job override via WithoutOverlappingFor(ttl) takes
+// precedence; otherwise the scheduler-level default (or 24h fallback)
+// applies. Callers MUST hold no Job mutex; this method takes its own RLock.
+func (j *Job) effectiveOverlapTTL(schedulerDefault time.Duration) time.Duration {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	if j.withoutOverlappingTTL > 0 {
+		return j.withoutOverlappingTTL
+	}
+	if schedulerDefault > 0 {
+		return schedulerDefault
+	}
+	return 24 * time.Hour
 }

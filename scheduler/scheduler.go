@@ -57,6 +57,25 @@ type Scheduler struct {
 
 	eventDispatcher func(ctx context.Context, event interface{}) error
 	runWg           sync.WaitGroup // tracks in-flight job goroutines
+
+	// locker acquires named distributed locks for WithoutOverlapping() and
+	// OnOneServer() jobs. Defaults to an InMemoryLocker (process-local) so
+	// single-instance deployments and tests work out of the box. Production
+	// HA deployments MUST install a shared-backend Locker via
+	// SetLocker(...) (e.g. a cache-backed adapter) before Run() is called;
+	// otherwise the "one server" / "no overlap" guarantees degrade to
+	// single-process semantics.
+	locker Locker
+
+	// oneServerTTL is the TTL for OnOneServer() locks. Short by design --
+	// each cron tick gets a fresh contest (the minute is embedded in the
+	// key). Default 1h, matching Laravel's CacheSchedulingMutex.
+	oneServerTTL time.Duration
+
+	// overlapTTL is the default TTL for WithoutOverlapping() locks when
+	// the job does not specify its own via WithoutOverlappingFor(d).
+	// Default 24h, matching Laravel's $expiresAt = 1440 minutes.
+	overlapTTL time.Duration
 }
 
 // schedLoggerHolder wraps a Logger so atomic.Value stores a single type.
@@ -113,12 +132,36 @@ func (nullLogger) Debug(string, ...interface{}) {}
 // New creates a new scheduler instance
 func New() *Scheduler {
 	s := &Scheduler{
-		jobs:     make([]*Job, 0),
-		stop:     make(chan struct{}),
-		stopped:  make(chan struct{}),
-		timezone: time.Local,
+		jobs:         make([]*Job, 0),
+		stop:         make(chan struct{}),
+		stopped:      make(chan struct{}),
+		timezone:     time.Local,
+		locker:       NewInMemoryLocker(),
+		oneServerTTL: 1 * time.Hour,
+		overlapTTL:   24 * time.Hour,
 	}
 	s.logger.Store(schedLoggerHolder{Logger: nullLogger{}})
+	return s
+}
+
+// SetLocker installs a distributed Locker used by WithoutOverlapping() and
+// OnOneServer() jobs. Pass nil to fall back to a process-local
+// InMemoryLocker. Production HA deployments must install a shared-backend
+// Locker (cache-backed, advisory lock, etc.) so cluster-wide guarantees
+// hold; otherwise both flags degrade to single-process semantics.
+//
+// Safe to call before Run(); not safe to call concurrently with
+// runDueJobs (Run takes a read lock on s.mu to snapshot the locker per
+// tick, but the setter takes a write lock so the read won't observe a
+// torn value).
+func (s *Scheduler) SetLocker(l Locker) *Scheduler {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if l == nil {
+		s.locker = NewInMemoryLocker()
+		return s
+	}
+	s.locker = l
 	return s
 }
 
@@ -412,17 +455,30 @@ func (s *Scheduler) Shutdown(ctx context.Context) error {
 // and runWg.Wait() is intentionally NOT invoked here, the ticker loop
 // must remain non-blocking so slow jobs cannot delay subsequent tick
 // evaluation. Shutdown() waits on runWg after the ticker has stopped.
+//
+// Maintenance-mode handling: previously this method returned early when
+// MaintenanceMode is enabled, which silently no-op'd jobs flagged
+// EvenInMaintenanceMode(). Now the gate is per-job -- only jobs that
+// opted in run during maintenance.
+//
+// Distributed locking: jobs flagged WithoutOverlapping() or OnOneServer()
+// must contest a Locker before dispatch. Acquisition happens here (NOT
+// inside the goroutine) so the ticker loop synchronously gates the
+// per-tick contest -- exactly one host wins per minute for OnOneServer
+// jobs. The acquired Lock is then passed to the run goroutine which
+// releases it via deferred panic-safe Unlock so a panicking hook cannot
+// leak the lock for its full TTL.
 func (s *Scheduler) runDueJobs() {
 	s.mu.RLock()
-	if s.maintenanceMode {
-		s.mu.RUnlock()
-		return
-	}
+	maintenance := s.maintenanceMode
 	jobs := make([]*Job, len(s.jobs))
 	copy(jobs, s.jobs)
 	beforeCallbacks := s.beforeCallbacks
 	afterCallbacks := s.afterCallbacks
 	tz := s.timezone // snapshot under RLock, SetTimezone writes under full Lock
+	locker := s.locker
+	oneServerTTL := s.oneServerTTL
+	overlapTTL := s.overlapTTL
 	s.mu.RUnlock()
 
 	if tz == nil {
@@ -441,19 +497,88 @@ func (s *Scheduler) runDueJobs() {
 	// against panics in logger.Debug or other surrounding calls so
 	// runWg.Done always fires.
 	for _, job := range jobs {
-		if job.IsDue(now) && job.ShouldRun() {
-			s.runWg.Add(1)
-			go func(j *Job) {
-				defer s.runWg.Done()
-				defer func() {
-					if r := recover(); r != nil {
-						s.log().Error("velocity/scheduler: run due jobs panic recovered", "name", j.name, "error", panicerr.FromRecovered(r))
-					}
-				}()
-				s.log().Debug("Running job", "name", j.name)
-				_ = j.Run()
-			}(job)
+		if !(job.IsDue(now) && job.ShouldRun()) {
+			continue
 		}
+
+		// Per-job maintenance gate: skip unless the job opted in via
+		// EvenInMaintenanceMode().
+		job.mu.RLock()
+		evenInMaintenance := job.evenInMaintenanceMode
+		onOneServer := job.onOneServer
+		withoutOverlapping := job.withoutOverlapping
+		jobName := job.name
+		job.mu.RUnlock()
+
+		if maintenance && !evenInMaintenance {
+			continue
+		}
+
+		// Acquire distributed locks BEFORE dispatching the goroutine so
+		// the per-tick contest is synchronous. Order: OnOneServer first
+		// (short TTL, minute-keyed; gates the per-tick winner across
+		// hosts), then WithoutOverlapping (long TTL; gates concurrent
+		// overlap of long-running jobs across processes).
+		var oneServerLock, overlapLock Lock
+		if onOneServer && locker != nil {
+			key := job.oneServerLockKey(now)
+			lk, err := locker.Acquire(context.Background(), key, oneServerTTL)
+			if err != nil {
+				// Another host (or this host on a previous tick whose
+				// lock has not yet expired) holds it -- skip silently.
+				s.log().Debug("Skipping OnOneServer job (lock held)", "name", jobName, "key", key)
+				continue
+			}
+			oneServerLock = lk
+		}
+		if withoutOverlapping && locker != nil {
+			key := job.overlapLockKey()
+			ttl := job.effectiveOverlapTTL(overlapTTL)
+			lk, err := locker.Acquire(context.Background(), key, ttl)
+			if err != nil {
+				// Job already running somewhere. Leave any OnOneServer
+				// lock held -- its key is minute-scoped and TTL-bounded,
+				// so this host has correctly recorded "I claimed this
+				// tick", and the next minute gets a fresh contest. The
+				// alternative (release) would let another host on the
+				// same tick re-claim and re-attempt, defeating the
+				// per-tick winner semantic.
+				_ = oneServerLock
+				s.log().Debug("Skipping WithoutOverlapping job (lock held)", "name", jobName, "key", key)
+				continue
+			}
+			overlapLock = lk
+		}
+
+		s.runWg.Add(1)
+		go func(j *Job, oneServerLock, overlapLock Lock) {
+			defer s.runWg.Done()
+			// Panic-safe lock release. The OnOneServer lock is
+			// intentionally NOT released here: its key embeds the
+			// scheduled minute and its TTL is set so the next tick gets
+			// a fresh contest naturally. Releasing on completion would
+			// let a fast-finishing job on host A allow host B to
+			// re-acquire the same minute's slot and re-run the job.
+			// The WithoutOverlapping lock IS released on completion so
+			// the next scheduled tick can fire the job without waiting
+			// for the (default 24h) TTL to elapse. Each release is
+			// wrapped in its own recover so a panicking backend cannot
+			// leak the sibling lock or skip subsequent deferred cleanup.
+			defer func() {
+				if overlapLock != nil {
+					_ = releaseLockSafely(overlapLock)
+				}
+			}()
+			defer func() {
+				if r := recover(); r != nil {
+					s.log().Error("velocity/scheduler: run due jobs panic recovered", "name", j.name, "error", panicerr.FromRecovered(r))
+				}
+			}()
+			s.log().Debug("Running job", "name", j.name)
+			_ = j.Run()
+			// oneServerLock is retained until TTL expiry (see note above).
+			_ = oneServerLock
+		}(job, oneServerLock, overlapLock)
 	}
 
 	// Run after callbacks, these fire per tick, not per job, and must not
@@ -461,6 +586,22 @@ func (s *Scheduler) runDueJobs() {
 	for _, callback := range afterCallbacks {
 		callback()
 	}
+}
+
+// releaseLockSafely releases a scheduler Lock and contains any panic
+// raised by a misbehaving Locker backend. The caller is the deferred
+// release path in runDueJobs's goroutine; a panic here would otherwise
+// bubble through runWg.Done and could be observed as a goroutine leak.
+// Returns the backend's error (if any) so callers may log it; the
+// scheduler currently swallows the value, since a release failure is not
+// actionable and the lock will expire at TTL.
+func releaseLockSafely(lk Lock) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = panicerr.FromRecovered(r)
+		}
+	}()
+	return lk.Release(context.Background())
 }
 
 // Jobs returns all registered jobs
