@@ -6,23 +6,36 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/velocitykode/velocity/internal/maintpath"
 )
 
+// useTempMaintRoot points the resolver at a fresh tmp dir and returns its
+// absolute path. The cache is reset so the next Root() call re-reads the env.
+func useTempMaintRoot(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	t.Setenv(maintpath.EnvVar, root)
+	maintpath.Reset()
+	t.Cleanup(maintpath.Reset)
+	return root
+}
+
 func TestDown_CreatesMarkerFile(t *testing.T) {
-	t.Chdir(t.TempDir())
+	root := useTempMaintRoot(t)
 
 	if err := Down(DownOptions{}); err != nil {
 		t.Fatalf("Down() error = %v", err)
 	}
 
-	path := filepath.Join(".vel", "down")
+	path := filepath.Join(root, maintpath.MarkerDir, maintpath.MarkerFile)
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		t.Fatal("expected .vel/down marker file to exist")
+		t.Fatalf("expected marker file at %s to exist", path)
 	}
 }
 
 func TestDown_WritesJSONPayload(t *testing.T) {
-	t.Chdir(t.TempDir())
+	root := useTempMaintRoot(t)
 
 	opts := DownOptions{
 		Secret:     "bypass-secret",
@@ -32,7 +45,7 @@ func TestDown_WritesJSONPayload(t *testing.T) {
 		t.Fatalf("Down() error = %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(".vel", "down"))
+	data, err := os.ReadFile(filepath.Join(root, maintpath.MarkerDir, maintpath.MarkerFile))
 	if err != nil {
 		t.Fatalf("failed to read marker file: %v", err)
 	}
@@ -54,13 +67,13 @@ func TestDown_WritesJSONPayload(t *testing.T) {
 }
 
 func TestDown_OmitsEmptyFields(t *testing.T) {
-	t.Chdir(t.TempDir())
+	root := useTempMaintRoot(t)
 
 	if err := Down(DownOptions{}); err != nil {
 		t.Fatalf("Down() error = %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(".vel", "down"))
+	data, err := os.ReadFile(filepath.Join(root, maintpath.MarkerDir, maintpath.MarkerFile))
 	if err != nil {
 		t.Fatalf("failed to read marker file: %v", err)
 	}
@@ -79,7 +92,7 @@ func TestDown_OmitsEmptyFields(t *testing.T) {
 }
 
 func TestUp_RemovesMarkerFile(t *testing.T) {
-	t.Chdir(t.TempDir())
+	root := useTempMaintRoot(t)
 
 	// Create the marker file first
 	if err := Down(DownOptions{}); err != nil {
@@ -90,14 +103,14 @@ func TestUp_RemovesMarkerFile(t *testing.T) {
 		t.Fatalf("Up() error = %v", err)
 	}
 
-	path := filepath.Join(".vel", "down")
+	path := filepath.Join(root, maintpath.MarkerDir, maintpath.MarkerFile)
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatal("expected .vel/down marker file to be removed")
+		t.Fatal("expected marker file to be removed")
 	}
 }
 
 func TestUp_NoErrorWhenFileDoesNotExist(t *testing.T) {
-	t.Chdir(t.TempDir())
+	useTempMaintRoot(t)
 
 	err := Up()
 	if err != nil {
@@ -112,13 +125,13 @@ func TestDown_FilePermissionsAreRestrictive(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("permission bits not enforced on Windows")
 	}
-	t.Chdir(t.TempDir())
+	root := useTempMaintRoot(t)
 
 	if err := Down(DownOptions{Secret: "topsecret"}); err != nil {
 		t.Fatalf("Down() error = %v", err)
 	}
 
-	info, err := os.Stat(filepath.Join(".vel", "down"))
+	info, err := os.Stat(filepath.Join(root, maintpath.MarkerDir, maintpath.MarkerFile))
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
@@ -126,7 +139,7 @@ func TestDown_FilePermissionsAreRestrictive(t *testing.T) {
 		t.Errorf("marker file mode: got %o, want 0o600", mode)
 	}
 
-	dirInfo, err := os.Stat(".vel")
+	dirInfo, err := os.Stat(filepath.Join(root, maintpath.MarkerDir))
 	if err != nil {
 		t.Fatalf("stat dir: %v", err)
 	}

@@ -11,26 +11,46 @@ import (
 	"testing"
 	"time"
 
+	"github.com/velocitykode/velocity/internal/maintpath"
 	"github.com/velocitykode/velocity/router"
 )
 
-// createMarker is a test helper that creates the .vel/down marker file in the
-// current working directory and returns the marker path.
+// useTempMaintRoot points the maintenance path resolver at a brand new tmp
+// directory for the duration of the test. The resolver caches its result on
+// first call, so the cache is also reset.
+func useTempMaintRoot(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	t.Setenv(maintpath.EnvVar, root)
+	maintpath.Reset()
+	t.Cleanup(maintpath.Reset)
+	// Also reset the one-time WARN log gate so each test exercises the
+	// resolution log path identically (otherwise gate state would leak).
+	maintenancePathLogOnce = sync.Once{}
+	return root
+}
+
+// createMarker creates the .vel/down marker file under the resolver's
+// currently-configured root and returns its absolute path.
 func createMarker(t *testing.T, content string) string {
 	t.Helper()
-	dir := filepath.Join(".", ".vel")
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		t.Fatalf("failed to create .vel dir: %v", err)
+	root, err := maintpath.Root()
+	if err != nil {
+		t.Fatalf("resolve maint root: %v", err)
 	}
-	markerPath := filepath.Join(dir, "down")
-	if err := os.WriteFile(markerPath, []byte(content), 0644); err != nil {
+	dir := filepath.Join(root, maintpath.MarkerDir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("failed to create %s dir: %v", maintpath.MarkerDir, err)
+	}
+	markerPath := filepath.Join(dir, maintpath.MarkerFile)
+	if err := os.WriteFile(markerPath, []byte(content), 0o600); err != nil {
 		t.Fatalf("failed to write marker: %v", err)
 	}
 	return markerPath
 }
 
 func TestPreventRequestsDuringMaintenance_AppIsUp(t *testing.T) {
-	t.Chdir(t.TempDir())
+	useTempMaintRoot(t)
 
 	mw := PreventRequestsDuringMaintenance()
 	handler := mw(func(c *router.Context) error {
@@ -48,7 +68,7 @@ func TestPreventRequestsDuringMaintenance_AppIsUp(t *testing.T) {
 }
 
 func TestPreventRequestsDuringMaintenance_AppIsDown(t *testing.T) {
-	t.Chdir(t.TempDir())
+	useTempMaintRoot(t)
 	createMarker(t, `{"time":"2024-01-01T00:00:00Z"}`)
 
 	mw := PreventRequestsDuringMaintenance()
@@ -80,7 +100,7 @@ func TestPreventRequestsDuringMaintenance_AppIsDown(t *testing.T) {
 }
 
 func TestPreventRequestsDuringMaintenance_RecoversAfterUp(t *testing.T) {
-	t.Chdir(t.TempDir())
+	useTempMaintRoot(t)
 	markerPath := createMarker(t, `{}`)
 
 	mw := PreventRequestsDuringMaintenance()
@@ -111,7 +131,7 @@ func TestPreventRequestsDuringMaintenance_RecoversAfterUp(t *testing.T) {
 }
 
 func TestPreventRequestsDuringMaintenance_ContentType(t *testing.T) {
-	t.Chdir(t.TempDir())
+	useTempMaintRoot(t)
 	createMarker(t, `{}`)
 
 	mw := PreventRequestsDuringMaintenance()
@@ -129,7 +149,7 @@ func TestPreventRequestsDuringMaintenance_ContentType(t *testing.T) {
 }
 
 func TestPreventRequestsDuringMaintenance_Concurrent(t *testing.T) {
-	t.Chdir(t.TempDir())
+	useTempMaintRoot(t)
 	createMarker(t, `{}`)
 
 	mw := PreventRequestsDuringMaintenance()
@@ -155,7 +175,7 @@ func TestPreventRequestsDuringMaintenance_Concurrent(t *testing.T) {
 }
 
 func TestIsDownForMaintenance(t *testing.T) {
-	t.Chdir(t.TempDir())
+	useTempMaintRoot(t)
 
 	if isDownForMaintenance() {
 		t.Error("should return false when marker does not exist")
@@ -171,7 +191,7 @@ func TestIsDownForMaintenance(t *testing.T) {
 // TestBypass_SecretPathMintsCookieAndRedirects asserts that hitting "/" + secret
 // while in maintenance mode mints a bypass cookie and 302-redirects to "/".
 func TestBypass_SecretPathMintsCookieAndRedirects(t *testing.T) {
-	t.Chdir(t.TempDir())
+	useTempMaintRoot(t)
 	t.Setenv("APP_ENV", "testing")
 	createMarker(t, `{"secret":"letmein","time":"2026-01-01T00:00:00Z"}`)
 
@@ -222,7 +242,7 @@ func TestBypass_SecretPathMintsCookieAndRedirects(t *testing.T) {
 // TestBypass_ValidCookieSkipsMaintenance asserts that a request carrying a
 // freshly minted bypass cookie passes through to the inner handler.
 func TestBypass_ValidCookieSkipsMaintenance(t *testing.T) {
-	t.Chdir(t.TempDir())
+	useTempMaintRoot(t)
 	t.Setenv("APP_ENV", "testing")
 	createMarker(t, `{"secret":"letmein"}`)
 
@@ -252,7 +272,7 @@ func TestBypass_ValidCookieSkipsMaintenance(t *testing.T) {
 // value (truncate, flip a byte, swap MAC) is rejected and the request still
 // receives a 503.
 func TestBypass_TamperedCookieIgnored(t *testing.T) {
-	t.Chdir(t.TempDir())
+	useTempMaintRoot(t)
 	t.Setenv("APP_ENV", "testing")
 	createMarker(t, `{"secret":"letmein"}`)
 
@@ -292,7 +312,7 @@ func TestBypass_TamperedCookieIgnored(t *testing.T) {
 // TestBypass_ExpiredCookieIgnored asserts that a syntactically valid cookie
 // whose expires_at is in the past is rejected.
 func TestBypass_ExpiredCookieIgnored(t *testing.T) {
-	t.Chdir(t.TempDir())
+	useTempMaintRoot(t)
 	t.Setenv("APP_ENV", "testing")
 	createMarker(t, `{"secret":"letmein"}`)
 
@@ -317,7 +337,7 @@ func TestBypass_ExpiredCookieIgnored(t *testing.T) {
 // TestBypass_AbsentCookieReturns503 asserts the baseline: no bypass cookie,
 // in maintenance, request returns 503.
 func TestBypass_AbsentCookieReturns503(t *testing.T) {
-	t.Chdir(t.TempDir())
+	useTempMaintRoot(t)
 	t.Setenv("APP_ENV", "testing")
 	createMarker(t, `{"secret":"letmein"}`)
 
@@ -340,7 +360,7 @@ func TestBypass_AbsentCookieReturns503(t *testing.T) {
 // secret) cannot bypass maintenance, and that hitting an arbitrary path does
 // not mint a cookie.
 func TestBypass_NoSecretInDownFileDisablesBypass(t *testing.T) {
-	t.Chdir(t.TempDir())
+	useTempMaintRoot(t)
 	t.Setenv("APP_ENV", "testing")
 	createMarker(t, `{"time":"2026-01-01T00:00:00Z"}`)
 
@@ -381,7 +401,7 @@ func TestBypass_NoSecretInDownFileDisablesBypass(t *testing.T) {
 // different secret cannot bypass when the down-file holds a real secret.
 // Catches cross-environment cookie replay between staging and prod.
 func TestBypass_WrongSecretCookieIgnored(t *testing.T) {
-	t.Chdir(t.TempDir())
+	useTempMaintRoot(t)
 	t.Setenv("APP_ENV", "testing")
 	createMarker(t, `{"secret":"prod-secret"}`)
 
@@ -405,7 +425,7 @@ func TestBypass_WrongSecretCookieIgnored(t *testing.T) {
 // TestBypass_MalformedDownFileBlocksBypass asserts that an unparseable
 // down-file still triggers maintenance mode and disables bypass entirely.
 func TestBypass_MalformedDownFileBlocksBypass(t *testing.T) {
-	t.Chdir(t.TempDir())
+	useTempMaintRoot(t)
 	t.Setenv("APP_ENV", "testing")
 	createMarker(t, `{not valid json`)
 
@@ -492,4 +512,69 @@ func flipFirstByte(s string) string {
 		repl = 'B'
 	}
 	return string(repl) + s[1:]
+}
+
+// TestMaintenance_PathSurvivesCWDDrift exercises the M-39 contract: the
+// resolved marker path is bound to the configured root, not the current
+// working directory, so a process launched in (or that chdirs to) a
+// different dir still finds the marker.
+func TestMaintenance_PathSurvivesCWDDrift(t *testing.T) {
+	root := useTempMaintRoot(t)
+	createMarker(t, `{}`)
+
+	// Chdir somewhere completely unrelated. If the resolver were still
+	// cwd-relative the marker would appear absent here and the request
+	// would slip through with 200 instead of 503.
+	t.Chdir("/tmp")
+
+	mw := PreventRequestsDuringMaintenance()
+	handler := mw(func(c *router.Context) error {
+		return c.JSON(http.StatusOK, nil)
+	})
+
+	c, w := router.NewTestContext("GET", "/")
+	if err := handler(c); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status: got %d, want 503 (root=%s)", w.Code, root)
+	}
+}
+
+// TestMaintenance_RejectsInvalidEnvRoot exercises CLAUDE.md rule 4: an
+// operator-supplied path with a `..` segment must be rejected and must NOT
+// silently fall through to maintenance-on. Invalid env means the middleware
+// treats it as "no marker file present" so a typo cannot lock the app.
+func TestMaintenance_RejectsInvalidEnvRoot(t *testing.T) {
+	// NUL is rejected at the os.Setenv layer by the runtime so it cannot
+	// be exercised through t.Setenv; the maintpath package-level test
+	// covers it directly via validateEnvRoot.
+	cases := []struct {
+		name string
+		val  string
+	}{
+		{"relative", "rel/path"},
+		{"dotdot", "/var/../etc"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(maintpath.EnvVar, tc.val)
+			maintpath.Reset()
+			t.Cleanup(maintpath.Reset)
+			maintenancePathLogOnce = sync.Once{}
+
+			mw := PreventRequestsDuringMaintenance()
+			handler := mw(func(c *router.Context) error {
+				return c.JSON(http.StatusOK, nil)
+			})
+
+			c, w := router.NewTestContext("GET", "/")
+			if err := handler(c); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if w.Code != http.StatusOK {
+				t.Errorf("status: got %d, want 200 (invalid env means no marker)", w.Code)
+			}
+		})
+	}
 }

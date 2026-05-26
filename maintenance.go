@@ -9,24 +9,22 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/hkdf"
 
+	"github.com/velocitykode/velocity/internal/maintpath"
 	"github.com/velocitykode/velocity/router"
 )
 
 // Maintenance constants.
 const (
-	// maintenanceMarkerDir is the directory holding the down-file.
-	maintenanceMarkerDir = ".vel"
-	// maintenanceMarkerFile is the filename of the down-file.
-	maintenanceMarkerFile = "down"
 	// maintenanceBypassCookie is the cookie name used to grant a browser
 	// bypass while the application is in maintenance mode.
 	maintenanceBypassCookie = "velocity_maintenance_bypass"
@@ -43,12 +41,39 @@ const (
 	maintenanceMACContext = "maintenance-bypass:"
 )
 
-// maintenanceMarkerPath returns the path of the down-file relative to the
-// current working directory. The CWD-relative behaviour is preserved to
-// match the existing console writer; resolving to an absolute startup
-// path is tracked separately (M-32 in the audit).
-func maintenanceMarkerPath() string {
-	return filepath.Join(".", maintenanceMarkerDir, maintenanceMarkerFile)
+// maintenancePathLogOnce guards the one-time WARN log emitted on first
+// resolution of the marker path. Operators see exactly one line per process
+// announcing which directory is being watched, removing the silent-cwd-drift
+// failure mode the M-39 finding flagged.
+var maintenancePathLogOnce sync.Once
+
+// maintenanceMarkerPath returns the absolute path of the down-file. The
+// resolution policy lives in internal/maintpath so the console writer and
+// the runtime reader agree on a single source of truth. On the first call
+// the resolved path is logged at WARN so operators can verify which
+// directory the framework is watching; subsequent calls are silent.
+//
+// Returns ("", err) when VELOCITY_MAINTENANCE_ROOT is set but fails
+// validation. Callers treat that as "no marker file present" so an
+// operator typo cannot accidentally pin the app into maintenance.
+func maintenanceMarkerPath() (string, error) {
+	p, err := maintpath.MarkerPath()
+	maintenancePathLogOnce.Do(func() {
+		if err != nil {
+			slog.Default().Warn(
+				"maintenance marker path resolution failed",
+				"error", err.Error(),
+				"source", maintpath.Source(),
+			)
+			return
+		}
+		slog.Default().Warn(
+			"maintenance marker path resolved",
+			"path", p,
+			"source", maintpath.Source(),
+		)
+	})
+	return p, err
 }
 
 // downPayload mirrors the JSON shape written by console.Down. Only fields
@@ -98,7 +123,14 @@ func readDownPayload(path string) (*downPayload, bool) {
 func PreventRequestsDuringMaintenance() router.MiddlewareFunc {
 	return func(next router.HandlerFunc) router.HandlerFunc {
 		return func(c *router.Context) error {
-			payload, down := readDownPayload(maintenanceMarkerPath())
+			path, err := maintenanceMarkerPath()
+			if err != nil {
+				// Misconfigured root: treat as "not in maintenance" so a
+				// bad env var cannot lock everyone out. The error is
+				// already logged once via maintenancePathLogOnce.
+				return next(c)
+			}
+			payload, down := readDownPayload(path)
 			if !down {
 				return next(c)
 			}
@@ -130,8 +162,12 @@ func PreventRequestsDuringMaintenance() router.MiddlewareFunc {
 // Retained for backwards compatibility with callers that only need a
 // boolean status check.
 func isDownForMaintenance() bool {
-	_, err := os.Stat(maintenanceMarkerPath())
-	return err == nil
+	path, err := maintenanceMarkerPath()
+	if err != nil {
+		return false
+	}
+	_, statErr := os.Stat(path)
+	return statErr == nil
 }
 
 // deriveMaintenanceMACKey derives a 32-byte HMAC key from the operator-
