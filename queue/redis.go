@@ -404,21 +404,71 @@ func (r *RedisDriver) Shutdown(ctx context.Context) error {
 	return r.client.Close()
 }
 
-// PushIfNotExistsCtx implements DedupeAwarePusher using a sentinel
-// SET ... NX EX on a key derived from the dedupe identifier. When the
-// SETNX succeeds the job is RPush'd onto the queue list; when it fails
-// (key already present) the function returns nil without queueing.
+// redisDedupePushScript is the Lua source for the at-most-once enqueue.
+// It runs atomically inside Redis: if the dedupe sentinel already
+// exists the script returns 0 without touching the queue list; if it
+// does not, the script SETs the sentinel with the supplied TTL and
+// RPUSHes the payload onto the queue list, returning 1.
 //
-// The sentinel TTL is intentionally long (24h) so a callback whose
-// queue entry is sitting in the list for hours under a backlog is
-// still protected from a reaper double-push. After the worker pops
-// the job and calls back into the driver (via the Popping deletion
-// path), the sentinel is explicitly DEL'd so a legitimate second
-// dispatch (different batch, same kind) is not blocked.
+// C-03 fb5: the previous implementation issued SETNX and RPUSH as two
+// separate round trips with a DEL "rollback" on RPUSH failure. Two
+// distinct failure modes leaked under that scheme:
+//
+//   - RPUSH lands on the server but the reply is lost (network reset
+//     during the response, RTT spike, etc.). The Go client returns an
+//     error; the rollback DEL removes the sentinel. The reaper's next
+//     tick sees no sentinel and re-pushes. Duplicate callback.
+//   - RPUSH does not land AND the rollback DEL fails (partitioned
+//     server, client context cancelled). The sentinel persists for its
+//     TTL while no queue entry exists, so the reaper's PushIfNotExists
+//     no-ops forever. Callback lost until the TTL expires.
+//
+// Atomic Lua execution closes both windows: any error returned by the
+// EVAL/EVALSHA round trip is either "the entire script ran" or "the
+// script did not start", with no in-between state. Callers (the
+// reaper) retry on next tick; the persisted dedupe sentinel either
+// matches both halves of the operation or matches neither.
+//
+// KEYS[1] = dedupe sentinel key
+// KEYS[2] = queue list key
+// ARGV[1] = sentinel TTL seconds
+// ARGV[2] = job payload (JSON bytes)
+//
+// Returns 1 when the script SET+RPUSH'd a new entry, 0 when the
+// sentinel was already present.
+const redisDedupePushScript = `
+if redis.call('EXISTS', KEYS[1]) == 1 then
+  return 0
+end
+redis.call('SET', KEYS[1], '1', 'EX', ARGV[1])
+redis.call('RPUSH', KEYS[2], ARGV[2])
+return 1
+`
+
+// redisDedupePushScriptCompiled is the package-level *redis.Script for
+// redisDedupePushScript. *redis.Script.Run() optimistically uses
+// EVALSHA on its first invocation; if Redis replies NOSCRIPT it
+// transparently falls back to EVAL, which both runs the script and
+// caches its SHA1 server-side. Subsequent calls go through EVALSHA
+// cleanly without reuploading the script body. Cached here so every
+// driver instance shares one SHA1 hash and one upload.
+var redisDedupePushScriptCompiled = redis.NewScript(redisDedupePushScript)
+
+// PushIfNotExistsCtx implements DedupeAwarePusher via a single Lua
+// script evaluated atomically on Redis. See redisDedupePushScript for
+// the full failure analysis the script closes; in short, the SETNX +
+// RPUSH + rollback-DEL sequence the previous implementation used had
+// two partial-failure windows that could either drop the sentinel
+// (allowing duplicates) or strand it (silently losing the callback).
+//
+// The sentinel TTL is 7 days, matching the job_batches prune horizon:
+// the dedupe row outlives the typical callback-execution window so a
+// stale reaper retry after the original queue entry was already
+// consumed cannot re-enqueue it.
 //
 // Empty dedupeKey falls through to PushCtx for parity with the memory
-// driver. This is treated as a programmer error rather than a silent
-// no-dedupe push.
+// and database drivers; that is treated as a programmer error rather
+// than a silent no-dedupe push.
 func (r *RedisDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupeKey string, queueName ...string) error {
 	if dedupeKey == "" {
 		return r.PushCtx(ctx, job, queueName...)
@@ -430,23 +480,8 @@ func (r *RedisDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupeKey
 	queueKey := r.getQueueKey(name)
 	sentinelKey := r.getDedupeKey(dedupeKey)
 
-	// SETNX with a 7d TTL: holds the dedupe sentinel past the typical
-	// callback-execution window so a stale reaper re-push (after the
-	// original job was consumed but MarkCallbackDispatched failed) is
-	// idempotent. 7 days matches the job_batches prune horizon.
-	ok, err := r.client.SetNX(ctx, sentinelKey, "1", 7*24*time.Hour).Result()
-	if err != nil {
-		return fmt.Errorf("velocity/queue: redis SETNX dedupe: %w", err)
-	}
-	if !ok {
-		// Already enqueued; treat as success.
-		return nil
-	}
-
 	payload, err := SerializeJob(job, name)
 	if err != nil {
-		// Roll back the sentinel so a retry can succeed.
-		_ = r.client.Del(ctx, sentinelKey).Err()
 		return err
 	}
 	payload.TraceID, payload.SpanID, payload.ParentID = trace.GetTraceContext(ctx)
@@ -454,24 +489,47 @@ func (r *RedisDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupeKey
 
 	data, err := json.Marshal(payload)
 	if err != nil {
-		_ = r.client.Del(ctx, sentinelKey).Err()
 		return fmt.Errorf("velocity/queue: failed to marshal payload: %w", err)
 	}
 	if sig := signPayload(data); sig != "" {
 		payload.Signature = sig
 		data, err = json.Marshal(payload)
 		if err != nil {
-			_ = r.client.Del(ctx, sentinelKey).Err()
 			return fmt.Errorf("velocity/queue: failed to marshal signed payload: %w", err)
 		}
 	}
 
-	if err := r.client.RPush(ctx, queueKey, data).Err(); err != nil {
-		// RPush failed: drop the sentinel so the caller can retry.
-		// Without this rollback the SETNX would block all subsequent
-		// retries for the 24h TTL.
-		_ = r.client.Del(ctx, sentinelKey).Err()
-		return err
+	const ttlSeconds = int64(7 * 24 * 60 * 60)
+	// Run uses EVALSHA optimistically and falls back to EVAL on
+	// NOSCRIPT, which keeps the redirection to Redis bounded to one
+	// extra round trip on first-call-after-restart instead of every
+	// invocation. Any transport error is bubbled up to the caller;
+	// the reaper's next tick retries from the persisted intent.
+	result, err := redisDedupePushScriptCompiled.Run(ctx,
+		r.client,
+		[]string{sentinelKey, queueKey},
+		ttlSeconds, data,
+	).Result()
+	if err != nil {
+		return fmt.Errorf("velocity/queue: redis dedupe push script: %w", err)
+	}
+
+	// The script returns an integer 0 or 1. go-redis types script
+	// integer replies as int64; accept either int or int64 defensively.
+	var pushed bool
+	switch v := result.(type) {
+	case int64:
+		pushed = v == 1
+	case int:
+		pushed = v == 1
+	default:
+		return fmt.Errorf("velocity/queue: redis dedupe push script: unexpected reply type %T", result)
+	}
+
+	if !pushed {
+		// Sentinel was already present; the duplicate dispatch is a
+		// no-op success.
+		return nil
 	}
 
 	dispatchJobQueued(r.dispatchEvent, ctx, payload.Type, name, false, 0)
