@@ -19,6 +19,7 @@ import (
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/orm"
+	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/router"
 	"github.com/velocitykode/velocity/scheduler"
 	"github.com/velocitykode/velocity/validation"
@@ -359,6 +360,14 @@ func New(opts ...Option) (*App, error) {
 		if a.Queue != nil {
 			_ = a.Queue.Shutdown(context.Background())
 		}
+		// C-03-fb2 HIGH 2: drop the auto-installed batch repository
+		// and clear the global hooks on failure-path teardown. The
+		// happy-path Shutdown does this in serve.go; here we mirror it
+		// so a partial New() failure does not leave a dangling repo
+		// for the next attempt.
+		queue.ResetAutoInstalledBatchRepository()
+		queue.SetGlobalEventDispatcher(nil)
+		queue.SetBatchCallbackQueue(nil, "")
 	})
 
 	// 11. Initialize storage with disk drivers

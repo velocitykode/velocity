@@ -142,6 +142,13 @@ func TestDatabaseBatchRepository_CrossRepo_CompletionCAS(t *testing.T) {
 	dispatcher, _ := NewDatabaseBatchRepository(db, "sqlite")
 	remote, _ := NewDatabaseBatchRepository(db, "sqlite")
 
+	// Install the dispatcher repo as the process-wide default so
+	// PendingBatch.Dispatch and the local Batch helpers route through
+	// the shared SQL table. The cleanup restores the in-memory default.
+	prevDefault := DefaultBatchRepository()
+	SetDefaultBatchRepository(dispatcher)
+	t.Cleanup(func() { SetDefaultBatchRepository(prevDefault) })
+
 	driver := newMemoryDriver()
 	var thenCalled atomic.Int32
 	var finallyCalled atomic.Int32
@@ -149,7 +156,6 @@ func TestDatabaseBatchRepository_CrossRepo_CompletionCAS(t *testing.T) {
 	batch, err := NewBatch(&testBatchJob{}, &testBatchJob{}).
 		Then(func(b *Batch) { thenCalled.Add(1) }).
 		Finally(func(b *Batch) { finallyCalled.Add(1) }).
-		WithRepository(dispatcher).
 		Dispatch(context.Background(), driver)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
@@ -182,7 +188,7 @@ func TestDatabaseBatchRepository_CrossRepo_CompletionCAS(t *testing.T) {
 	// Simulate how the worker reacts to justFinished: it fires the
 	// terminal callbacks via the batch helper.
 	batch.copyCountersFrom(updated)
-	batch.fireTerminalCallbacks(context.Background())
+	batch.fireTerminalCallbacks(context.Background(), updated)
 
 	testsync.Eventually(t, func() bool { return thenCalled.Load() == 1 && finallyCalled.Load() == 1 },
 		2*time.Second, "Then+Finally fire exactly once after cross-process completion")
@@ -418,9 +424,15 @@ func TestDatabaseBatchRepository_TwoProcessWorkers_ThenFires(t *testing.T) {
 	var thenFired atomic.Int32
 	var finallyFired atomic.Int32
 
-	// Dispatcher dispatches the batch with WithRepository so all batch
-	// state lives in the SQL table. Half the jobs go to the local
-	// queue, half to the "remote" queue.
+	// Worker.go (and FindBatch) always go through DefaultBatchRepository,
+	// so we set the workerRepo as the global default to exercise the
+	// real cross-process plumbing. The dispatcher uses dispatcherRepo
+	// directly during Dispatch via a temporary swap; both write to the
+	// same SQL table so progress is shared.
+	prevDefault := DefaultBatchRepository()
+	SetDefaultBatchRepository(dispatcherRepo)
+	t.Cleanup(func() { SetDefaultBatchRepository(prevDefault) })
+
 	jobs := []Job{
 		&testBatchJob{handler: func() error { return nil }},
 		&testBatchJob{handler: func() error { return nil }},
@@ -428,7 +440,6 @@ func TestDatabaseBatchRepository_TwoProcessWorkers_ThenFires(t *testing.T) {
 		&testBatchJob{handler: func() error { return nil }},
 	}
 	batch, err := NewBatch(jobs...).
-		WithRepository(dispatcherRepo).
 		Then(func(b *Batch) { thenFired.Add(1) }).
 		Finally(func(b *Batch) { finallyFired.Add(1) }).
 		Dispatch(context.Background(), dispatcherQueue)
@@ -451,25 +462,17 @@ func TestDatabaseBatchRepository_TwoProcessWorkers_ThenFires(t *testing.T) {
 		}
 	}
 
-	// Spin up worker pumps. Each worker installs its own repo as the
-	// process-wide default for the duration of its work so the
-	// recordSuccess plumbing in worker.go routes through the right
-	// SQL row. In production the apps would install this once during
-	// main(); here we tweak per-test.
+	// Spin up worker pumps. Both run in the same Go process here but
+	// route batch state through the workerRepo (we install it as the
+	// default just before starting them).
 	dispatcherWorker := NewWorker(dispatcherQueue, "default", func(j Job) error { return j.Handle() },
 		WithInterval(5*time.Millisecond), WithMaxRetries(0))
 	remoteWorker := NewWorker(workerQueue, "default", func(j Job) error { return j.Handle() },
 		WithInterval(5*time.Millisecond), WithMaxRetries(0))
 
-	// Swap the default repo to the dispatcher repo for the dispatcher
-	// process; the remote process uses its own. Worker code (and
-	// FindBatch) always uses DefaultBatchRepository(), so for this
-	// single-process test we route everything through the dispatcher
-	// repo: cross-process correctness is exercised by the shared SQL
-	// rows, and both repos write to the same table.
-	prevDefault := DefaultBatchRepository()
-	defaultBatchRepo.Store(&batchRepoHolder{BatchRepository: workerRepo})
-	t.Cleanup(func() { defaultBatchRepo.Store(&batchRepoHolder{BatchRepository: prevDefault}) })
+	// Swap to workerRepo for worker.go's FindBatch path so that we
+	// exercise the SQL update flow rather than a memory short-circuit.
+	SetDefaultBatchRepository(workerRepo)
 
 	dispatcherWorker.Start(context.Background())
 	remoteWorker.Start(context.Background())
@@ -479,10 +482,12 @@ func TestDatabaseBatchRepository_TwoProcessWorkers_ThenFires(t *testing.T) {
 	})
 
 	// Drive the dispatcher process by polling: its batch will reach
-	// completed once both queues are drained. Then must fire exactly
-	// once from the dispatcher's callback closure, not twice.
+	// completed once both queues are drained. Query through workerRepo
+	// because the dispatcherRepo was Close()d by SetDefaultBatchRepository
+	// when we swapped to workerRepo (Close marks the repo closed so we
+	// can't reuse it for queries; the shared SQL table is still alive).
 	testsync.Eventually(t, func() bool {
-		got, _ := dispatcherRepo.Find(context.Background(), batch.ID())
+		got, _ := workerRepo.Find(context.Background(), batch.ID())
 		return got != nil && got.Finished()
 	}, 5*time.Second, "batch reaches Finished across the two workers")
 
@@ -501,7 +506,7 @@ func TestDatabaseBatchRepository_TwoProcessWorkers_ThenFires(t *testing.T) {
 	}
 
 	// Final shared-state assertions.
-	got, _ := dispatcherRepo.Find(context.Background(), batch.ID())
+	got, _ := workerRepo.Find(context.Background(), batch.ID())
 	if got.CompletedJobs() != 4 {
 		t.Errorf("completed_jobs in DB: %d, want 4", got.CompletedJobs())
 	}

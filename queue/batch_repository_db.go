@@ -6,8 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 )
+
+// ErrBatchRepositoryClosed is returned when an operation hits a closed
+// DatabaseBatchRepository. App.Shutdown closes the auto-installed repo
+// to release its references before the underlying *sql.DB is closed by
+// the ORM manager; an in-flight worker that still holds a stale repo
+// pointer needs a deterministic error rather than a panic on a torn-
+// down connection pool.
+var ErrBatchRepositoryClosed = errors.New("velocity/queue: batch repository is closed")
 
 // DatabaseBatchRepository persists batch state in a SQL table so workers
 // on any host can observe progress, cancellation, and completion.
@@ -17,17 +26,29 @@ import (
 // would not find the batch and would silently skip cancel checks and
 // progress counters. The DB-backed repository replaces that map with a
 // shared `job_batches` row whose counters move atomically under SQL
-// UPDATEs. The Then/Catch/Finally callbacks remain in the dispatcher
-// process's callback registry (closures cannot cross processes); the
-// repository's CAS on `completed_at` guarantees the dispatcher fires
-// each terminal callback at most once even when the last job completes
-// on a remote worker.
+// UPDATEs.
+//
+// Cross-process callback delivery (C-03-fb2): Then/Catch/Finally
+// closures cannot cross process boundaries, but the persisted
+// `then_callback` / `catch_callback` / `finally_callback` columns name
+// a callback registered via RegisterBatchCallback. When the repository's
+// completion CAS fires on ANY host, the queue.Job runner for that
+// callback is enqueued so a worker (anywhere) picks it up and invokes
+// the registered handler. Closures registered locally still fire on
+// the dispatcher process for the convenience path, but cross-process
+// delivery uses the named-callback mechanism.
 //
 // Supported drivers: postgres, mysql, sqlite. Placeholders are written
 // as `$N` and rewritten to `?` for mysql/sqlite by rewriteQuery.
 type DatabaseBatchRepository struct {
 	db       *sql.DB
 	dbDriver string
+
+	// closed is set to true by Close so subsequent calls fail loudly
+	// instead of silently writing to a torn-down repo. Atomic.Bool
+	// because Close races with in-flight worker callbacks during app
+	// shutdown.
+	closed atomic.Bool
 }
 
 // NewDatabaseBatchRepository constructs a database-backed repository.
@@ -86,28 +107,36 @@ func (r *DatabaseBatchRepository) rewriteQuery(q string) string {
 // a worker process which is also the dispatcher process can fire
 // Then/Catch/Finally directly without a separate event hop.
 func (r *DatabaseBatchRepository) Find(ctx context.Context, id BatchID) (*Batch, error) {
+	if err := r.closedErr(); err != nil {
+		return nil, err
+	}
 	if err := ctxErr(ctx); err != nil {
 		return nil, err
 	}
 	const q = `SELECT id, total_jobs, pending_jobs, completed_jobs, failed_jobs,
-	                  allow_failures, queue, cancelled_at, completed_at, last_error
+	                  allow_failures, queue, then_callback, catch_callback, finally_callback,
+	                  cancelled_at, completed_at, last_error
 	           FROM job_batches WHERE id = $1`
 	row := r.db.QueryRowContext(ctx, r.rewriteQuery(q), string(id))
 
 	var (
-		rid           string
-		totalJobs     int
-		pendingJobs   int32
-		completedJobs int32
-		failedJobs    int32
-		allowFailures bool
-		queueName     string
-		cancelledAt   sql.NullTime
-		completedAt   sql.NullTime
-		lastError     sql.NullString
+		rid             string
+		totalJobs       int
+		pendingJobs     int32
+		completedJobs   int32
+		failedJobs      int32
+		allowFailures   bool
+		queueName       string
+		thenCallback    sql.NullString
+		catchCallback   sql.NullString
+		finallyCallback sql.NullString
+		cancelledAt     sql.NullTime
+		completedAt     sql.NullTime
+		lastError       sql.NullString
 	)
 	if err := row.Scan(&rid, &totalJobs, &pendingJobs, &completedJobs, &failedJobs,
-		&allowFailures, &queueName, &cancelledAt, &completedAt, &lastError); err != nil {
+		&allowFailures, &queueName, &thenCallback, &catchCallback, &finallyCallback,
+		&cancelledAt, &completedAt, &lastError); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -123,6 +152,15 @@ func (r *DatabaseBatchRepository) Find(ctx context.Context, id BatchID) (*Batch,
 	b.pendingJobs.Store(pendingJobs)
 	b.completedJobs.Store(completedJobs)
 	b.failedJobs.Store(failedJobs)
+	if thenCallback.Valid {
+		b.thenName = thenCallback.String
+	}
+	if catchCallback.Valid {
+		b.catchName = catchCallback.String
+	}
+	if finallyCallback.Valid {
+		b.finallyName = finallyCallback.String
+	}
 	if cancelledAt.Valid {
 		b.cancelled.Store(true)
 	}
@@ -134,9 +172,9 @@ func (r *DatabaseBatchRepository) Find(ctx context.Context, id BatchID) (*Batch,
 		b.lastError = lastError.String
 	}
 
-	// Attach local callbacks if this process dispatched the batch. Cross-
-	// process workers will not have these (closures don't serialise) and
-	// rely on BatchCompleted events for downstream coordination.
+	// Attach local closures if this process dispatched the batch. Cross-
+	// process workers will not have these and rely on the persisted
+	// callback names (resolved via BatchCallbackJob) instead.
 	if entry := globalCallbacks.get(b.id); entry != nil {
 		b.thenFn = entry.thenFn
 		b.catchFn = entry.catchFn
@@ -151,20 +189,27 @@ func (r *DatabaseBatchRepository) Find(ctx context.Context, id BatchID) (*Batch,
 // retried dispatch calls (rare; e.g. transient DB blip on the INSERT)
 // surface as a clear error rather than corrupting state.
 func (r *DatabaseBatchRepository) Save(ctx context.Context, batch *Batch) error {
+	if err := r.closedErr(); err != nil {
+		return err
+	}
 	if err := ctxErr(ctx); err != nil {
 		return err
 	}
 	now := time.Now()
 	const q = `INSERT INTO job_batches
 	    (id, total_jobs, pending_jobs, completed_jobs, failed_jobs,
-	     allow_failures, queue, cancelled_at, completed_at, last_error, created_at, updated_at)
-	    VALUES ($1, $2, $3, 0, 0, $4, $5, NULL, NULL, NULL, $6, $7)`
+	     allow_failures, queue, then_callback, catch_callback, finally_callback,
+	     cancelled_at, completed_at, last_error, created_at, updated_at)
+	    VALUES ($1, $2, $3, 0, 0, $4, $5, $6, $7, $8, NULL, NULL, NULL, $9, $10)`
 	_, err := r.db.ExecContext(ctx, r.rewriteQuery(q),
 		string(batch.id),
 		batch.totalJobs,
 		batch.pendingJobs.Load(),
 		batch.allowFailures,
 		batch.queue,
+		nullableString(batch.thenName),
+		nullableString(batch.catchName),
+		nullableString(batch.finallyName),
 		now,
 		now,
 	)
@@ -172,6 +217,16 @@ func (r *DatabaseBatchRepository) Save(ctx context.Context, batch *Batch) error 
 		return fmt.Errorf("velocity/queue: batch save: %w", err)
 	}
 	return nil
+}
+
+// nullableString returns a sql.NullString from a Go string, preferring
+// NULL over the empty-string sentinel so a column lookup can distinguish
+// "callback unset" from "callback explicitly empty".
+func nullableString(s string) sql.NullString {
+	if s == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: s, Valid: true}
 }
 
 // IncrementSuccess atomically decrements pending_jobs and increments
@@ -227,6 +282,9 @@ func (r *DatabaseBatchRepository) DecrementPending(ctx context.Context, id Batch
 // SQLite does not support `RETURNING *` on older versions, so we run
 // a SELECT for portability. The row is already locked by the UPDATE.
 func (r *DatabaseBatchRepository) incrementCounter(ctx context.Context, id BatchID, success, failure bool, errText *string) (*Batch, bool, error) {
+	if err := r.closedErr(); err != nil {
+		return nil, false, err
+	}
 	if err := ctxErr(ctx); err != nil {
 		return nil, false, err
 	}
@@ -243,34 +301,7 @@ func (r *DatabaseBatchRepository) incrementCounter(ctx context.Context, id Batch
 
 	now := time.Now().UTC()
 
-	// Step 1: atomically decrement pending_jobs and (conditionally) bump
-	// completed_jobs / failed_jobs / last_error. The completed/failed
-	// increment is gated on the SAME pending_jobs > 0 predicate the
-	// decrement uses, so a duplicate delivery (worker crashed after
-	// the handler returned but before the queue row was deleted, then
-	// a sibling worker re-popped the job) becomes a no-op rather than
-	// pushing completed_jobs above total_jobs. Holding the row lock
-	// for the duration of the UPDATE means the predicate is observed
-	// atomically. last_error is only written when failure AND the
-	// decrement actually fired so we don't smear a stale error onto a
-	// batch whose pending counter is already drained.
-	set := []string{
-		"pending_jobs = CASE WHEN pending_jobs > 0 THEN pending_jobs - 1 ELSE pending_jobs END",
-		"updated_at = $1",
-	}
-	args := []any{now}
-	if success {
-		set = append(set, "completed_jobs = CASE WHEN pending_jobs > 0 THEN completed_jobs + 1 ELSE completed_jobs END")
-	}
-	if failure {
-		set = append(set, "failed_jobs = CASE WHEN pending_jobs > 0 THEN failed_jobs + 1 ELSE failed_jobs END")
-		if errText != nil {
-			args = append(args, *errText)
-			set = append(set, fmt.Sprintf("last_error = CASE WHEN pending_jobs > 0 THEN $%d ELSE last_error END", len(args)))
-		}
-	}
-	args = append(args, string(id))
-	updateQ := fmt.Sprintf("UPDATE job_batches SET %s WHERE id = $%d", strings.Join(set, ", "), len(args))
+	updateQ, args := buildIncrementUpdate(id, success, failure, errText, now)
 	res, execErr := tx.ExecContext(ctx, r.rewriteQuery(updateQ), args...)
 	if execErr != nil {
 		return nil, false, fmt.Errorf("velocity/queue: batch increment update: %w", execErr)
@@ -299,24 +330,31 @@ func (r *DatabaseBatchRepository) incrementCounter(ctx context.Context, id Batch
 	casRows, _ := casRes.RowsAffected()
 	justFinished := casRows == 1
 
-	// Step 3: read back the post-update row.
+	// Step 3: read back the post-update row, including the persisted
+	// callback names so the caller can use them to enqueue cross-process
+	// BatchCallbackJob instances on terminal completion.
 	const selQ = `SELECT total_jobs, pending_jobs, completed_jobs, failed_jobs,
-	                     allow_failures, queue, cancelled_at, completed_at, last_error
+	                     allow_failures, queue, then_callback, catch_callback, finally_callback,
+	                     cancelled_at, completed_at, last_error
 	              FROM job_batches WHERE id = $1`
 	row := tx.QueryRowContext(ctx, r.rewriteQuery(selQ), string(id))
 	var (
-		totalJobs     int
-		pendingJobs   int32
-		completedJobs int32
-		failedJobs    int32
-		allowFailures bool
-		queueName     string
-		cancelledAt   sql.NullTime
-		completedAt   sql.NullTime
-		lastError     sql.NullString
+		totalJobs       int
+		pendingJobs     int32
+		completedJobs   int32
+		failedJobs      int32
+		allowFailures   bool
+		queueName       string
+		thenCallback    sql.NullString
+		catchCallback   sql.NullString
+		finallyCallback sql.NullString
+		cancelledAt     sql.NullTime
+		completedAt     sql.NullTime
+		lastError       sql.NullString
 	)
 	if scanErr := row.Scan(&totalJobs, &pendingJobs, &completedJobs, &failedJobs,
-		&allowFailures, &queueName, &cancelledAt, &completedAt, &lastError); scanErr != nil {
+		&allowFailures, &queueName, &thenCallback, &catchCallback, &finallyCallback,
+		&cancelledAt, &completedAt, &lastError); scanErr != nil {
 		return nil, false, fmt.Errorf("velocity/queue: batch increment readback: %w", scanErr)
 	}
 
@@ -333,6 +371,15 @@ func (r *DatabaseBatchRepository) incrementCounter(ctx context.Context, id Batch
 	b.pendingJobs.Store(pendingJobs)
 	b.completedJobs.Store(completedJobs)
 	b.failedJobs.Store(failedJobs)
+	if thenCallback.Valid {
+		b.thenName = thenCallback.String
+	}
+	if catchCallback.Valid {
+		b.catchName = catchCallback.String
+	}
+	if finallyCallback.Valid {
+		b.finallyName = finallyCallback.String
+	}
 	if cancelledAt.Valid {
 		b.cancelled.Store(true)
 	}
@@ -358,6 +405,9 @@ func (r *DatabaseBatchRepository) incrementCounter(ctx context.Context, id Batch
 // repeated Cancel calls idempotent and the timestamp lets DB inspectors
 // see exactly when cancellation propagated.
 func (r *DatabaseBatchRepository) Cancel(ctx context.Context, id BatchID) (*Batch, error) {
+	if err := r.closedErr(); err != nil {
+		return nil, err
+	}
 	if err := ctxErr(ctx); err != nil {
 		return nil, err
 	}
@@ -372,6 +422,9 @@ func (r *DatabaseBatchRepository) Cancel(ctx context.Context, id BatchID) (*Batc
 
 // Delete removes a batch row. Primarily for tests.
 func (r *DatabaseBatchRepository) Delete(ctx context.Context, id BatchID) error {
+	if err := r.closedErr(); err != nil {
+		return err
+	}
 	if err := ctxErr(ctx); err != nil {
 		return err
 	}
@@ -387,6 +440,9 @@ func (r *DatabaseBatchRepository) Delete(ctx context.Context, id BatchID) error 
 // olderThan. Callers typically run this from a periodic scheduler job
 // so the table does not grow unbounded.
 func (r *DatabaseBatchRepository) PruneStale(ctx context.Context, olderThan time.Duration) (int, error) {
+	if err := r.closedErr(); err != nil {
+		return 0, err
+	}
 	if err := ctxErr(ctx); err != nil {
 		return 0, err
 	}
@@ -400,9 +456,90 @@ func (r *DatabaseBatchRepository) PruneStale(ctx context.Context, olderThan time
 	return int(rows), nil
 }
 
-// Close is a no-op for the DB repository; the *sql.DB is owned by the
-// caller (typically the ORM manager) and closed separately.
-func (r *DatabaseBatchRepository) Close() error { return nil }
+// Close marks the repository as closed so subsequent operations return
+// ErrBatchRepositoryClosed instead of writing to a *sql.DB that may
+// already be torn down by the ORM manager.
+//
+// The *sql.DB itself is NOT closed here: it was injected by the caller
+// (typically the framework's ORM manager) and its lifecycle is owned by
+// whoever passed it in. Closing it here would tear down sibling
+// subsystems (cache, outbox, notification) that share the same pool.
+//
+// Idempotent: repeated Close calls succeed without panicking, which the
+// shutdown sequence relies on (App.Shutdown may close a repo that was
+// also installed via SetDefaultBatchRepository earlier).
+func (r *DatabaseBatchRepository) Close() error {
+	r.closed.Store(true)
+	return nil
+}
+
+// closedErr returns ErrBatchRepositoryClosed when Close has been called.
+// Callers should treat this exactly like ctxErr and abort the operation.
+func (r *DatabaseBatchRepository) closedErr() error {
+	if r.closed.Load() {
+		return ErrBatchRepositoryClosed
+	}
+	return nil
+}
+
+// buildIncrementUpdate constructs the SET clause for the counter UPDATE.
+//
+// SQL ordering matters for portability. MySQL evaluates a multi-column
+// SET left-to-right within a single UPDATE: by the time the RHS of the
+// nth assignment runs, earlier columns in the same UPDATE have already
+// been mutated. PostgreSQL and SQLite evaluate every RHS against the
+// pre-update row, which is what the previous version of this code
+// silently relied on.
+//
+// Concretely, "SET pending_jobs = pending_jobs - 1, completed_jobs =
+// CASE WHEN pending_jobs > 0 THEN completed_jobs + 1 ELSE completed_jobs
+// END" under MySQL sees pending_jobs already at the new value when it
+// computes completed_jobs's RHS, so the clamp fires for legitimate
+// increments and completed_jobs never advances. Tests under SQLite
+// would not detect that, since SQLite uses pre-update semantics.
+//
+// The fix is dialect-portable: place completed_jobs / failed_jobs /
+// last_error BEFORE pending_jobs in the SET list and keep them keyed on
+// the same `pending_jobs > 0` predicate. Under MySQL the counter
+// columns now execute against the pre-decrement value; under Postgres
+// and SQLite the order is irrelevant because the RHS already reads the
+// pre-update row. The invariant "completed_jobs + failed_jobs <=
+// total_jobs" holds on all three engines.
+//
+// Placeholders are written as $1...$N in the order they first appear in
+// the SET clause so the args slice can be built in lock-step and the
+// rewriteQuery helper can rewrite to `?` for mysql/sqlite without
+// permuting positional bindings.
+//
+// Returned as (query, args) so this can be unit-tested without a DB.
+func buildIncrementUpdate(id BatchID, success, failure bool, errText *string, now time.Time) (string, []any) {
+	set := []string{}
+	var args []any
+	nextPH := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+
+	if success {
+		set = append(set, "completed_jobs = CASE WHEN pending_jobs > 0 THEN completed_jobs + 1 ELSE completed_jobs END")
+	}
+	if failure {
+		set = append(set, "failed_jobs = CASE WHEN pending_jobs > 0 THEN failed_jobs + 1 ELSE failed_jobs END")
+		if errText != nil {
+			ph := nextPH(*errText)
+			set = append(set, fmt.Sprintf("last_error = CASE WHEN pending_jobs > 0 THEN %s ELSE last_error END", ph))
+		}
+	}
+	// pending_jobs decrement MUST follow the counter columns above so
+	// MySQL's left-to-right SET evaluation does not poison the counter
+	// CASE predicates with the already-decremented value.
+	set = append(set, "pending_jobs = CASE WHEN pending_jobs > 0 THEN pending_jobs - 1 ELSE pending_jobs END")
+	set = append(set, fmt.Sprintf("updated_at = %s", nextPH(now)))
+
+	idPH := nextPH(string(id))
+	q := fmt.Sprintf("UPDATE job_batches SET %s WHERE id = %s", strings.Join(set, ", "), idPH)
+	return q, args
+}
 
 // truncateErrorText caps an error string at max bytes. Multi-byte safe:
 // the truncation respects rune boundaries by trimming any trailing

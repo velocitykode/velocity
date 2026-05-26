@@ -416,20 +416,28 @@ func decrementPendingIfPositive(p *atomic.Int32) bool {
 // app wiring goroutines.
 var defaultBatchRepo atomic.Pointer[batchRepoHolder]
 
-// batchRepoHolder carries the repository pointer plus a flag that
-// distinguishes the package-init default (in-memory) from a holder
-// installed via an explicit caller. EnsureDefaultBatchRepository uses
-// the flag to keep the auto-install at boot time idempotent: once an
-// app has wired its own repo (via SetDefaultBatchRepository or a prior
-// EnsureDefaultBatchRepository) the auto-install path will not overwrite
-// it.
+// batchRepoHolder carries the repository pointer plus two flags that
+// classify how it was installed:
+//
+//   - userSet=true means the application called SetDefaultBatchRepository
+//     explicitly. This holder survives app Shutdown so embedded apps and
+//     test harnesses that pre-wire a repo do not get clobbered.
+//
+//   - autoInstalled=true means the framework's initQueue auto-wired the
+//     repo because Config.Queue.Driver=database. App.Shutdown calls
+//     ResetAutoInstalledBatchRepository to drop these back to the
+//     package-init in-memory default so a subsequent velocity.New on the
+//     same process can install its own DB-backed repo against the new
+//     *sql.DB. Without the reset, a re-entrant New would either keep
+//     using the previous app's (now-closed) DB handle or skip auto-
+//     install entirely because userSet was set on the previous boot.
+//
+// The init() holder has both flags false so the boot-time auto-install
+// can detect "still on the default" and upgrade.
 type batchRepoHolder struct {
 	BatchRepository
-	// userSet is true when SetDefaultBatchRepository was called by an
-	// explicit consumer. The init() holder has userSet=false so the
-	// boot-time auto-install can detect "still on the default" and
-	// upgrade to a database-backed repo.
-	userSet bool
+	userSet       bool
+	autoInstalled bool
 }
 
 func init() {
@@ -466,9 +474,16 @@ func SetDefaultBatchRepository(repo BatchRepository) {
 // still on the package-init in-memory default. Apps that have already
 // wired a custom repo via SetDefaultBatchRepository are left untouched,
 // which is what makes auto-install at app boot safe: the framework's
-// app.go calls this when Config.Queue.Driver=database, but a user who
-// preemptively installed (e.g. a custom Redis-backed repo) is not
+// initQueue calls this when Config.Queue.Driver=database, but a user
+// who preemptively installed (e.g. a custom Redis-backed repo) is not
 // overwritten.
+//
+// The installed holder is marked autoInstalled=true so App.Shutdown can
+// drop it back to the in-memory default via
+// ResetAutoInstalledBatchRepository. A subsequent velocity.New in the
+// same process therefore observes the package-init state and installs
+// its own DB-backed repo against the new *sql.DB, instead of inheriting
+// the previous app's (now-closed) repository pointer.
 //
 // Returns true when repo was installed, false when the default was
 // already user-set (in which case repo is closed to avoid leaking the
@@ -487,7 +502,7 @@ func EnsureDefaultBatchRepository(repo BatchRepository) bool {
 		_ = repo.Close()
 		return false
 	}
-	newHolder := &batchRepoHolder{BatchRepository: repo, userSet: true}
+	newHolder := &batchRepoHolder{BatchRepository: repo, userSet: true, autoInstalled: true}
 	if !defaultBatchRepo.CompareAndSwap(cur, newHolder) {
 		// Lost a race with another EnsureDefault / SetDefault call.
 		// Close repo and let the winner stand.
@@ -495,6 +510,37 @@ func EnsureDefaultBatchRepository(repo BatchRepository) bool {
 		return false
 	}
 	if cur != nil && cur.BatchRepository != nil {
+		_ = cur.BatchRepository.Close()
+	}
+	return true
+}
+
+// ResetAutoInstalledBatchRepository swaps the default back to a fresh
+// in-memory repo IFF the current holder was installed via
+// EnsureDefaultBatchRepository (autoInstalled=true). Holders installed
+// via SetDefaultBatchRepository (userSet=true && autoInstalled=false)
+// are explicit caller choices and are left alone.
+//
+// This is the App.Shutdown hook for C-03-fb2 HIGH 2: without it, a
+// second velocity.New in the same process would keep using the first
+// app's *sql.DB handle for batch state because EnsureDefault would
+// short-circuit on userSet=true.
+//
+// Returns true when a reset occurred, false when the current holder
+// belongs to an explicit caller or the package-init default is still
+// in place.
+func ResetAutoInstalledBatchRepository() bool {
+	cur := defaultBatchRepo.Load()
+	if cur == nil || !cur.autoInstalled {
+		return false
+	}
+	fresh := &batchRepoHolder{BatchRepository: NewInMemoryBatchRepository()}
+	if !defaultBatchRepo.CompareAndSwap(cur, fresh) {
+		// Concurrent SetDefault won the swap; their choice stands.
+		_ = fresh.BatchRepository.Close()
+		return false
+	}
+	if cur.BatchRepository != nil {
 		_ = cur.BatchRepository.Close()
 	}
 	return true

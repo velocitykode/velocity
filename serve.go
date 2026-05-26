@@ -14,6 +14,7 @@ import (
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/orm"
+	"github.com/velocitykode/velocity/queue"
 )
 
 // Serve is the single entry point for a Velocity application. If os.Args
@@ -176,6 +177,21 @@ func (a *App) Shutdown(ctx context.Context) error {
 	if a.Queue != nil {
 		collect(a.Queue.Shutdown(ctx))
 	}
+
+	// 4a. C-03-fb2 HIGH 2: drop any auto-installed batch repository
+	// back to the package-init in-memory default so a subsequent
+	// velocity.New on the same process installs its own DB-backed
+	// repo against the new *sql.DB. User-installed repos
+	// (SetDefaultBatchRepository) survive this reset and remain the
+	// process default until the user explicitly swaps them.
+	//
+	// Also clear the process-wide global event dispatcher and the
+	// callback queue pointer so they do not retain references to the
+	// torn-down services. Both setters accept nil as the "uninstall"
+	// signal.
+	queue.ResetAutoInstalledBatchRepository()
+	queue.SetGlobalEventDispatcher(nil)
+	queue.SetBatchCallbackQueue(nil, "")
 
 	// 5. Close cache connections
 	if a.Cache != nil {

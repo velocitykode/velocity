@@ -8,6 +8,7 @@ import (
 	"github.com/velocitykode/velocity/chain"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/orm"
+	"github.com/velocitykode/velocity/queue"
 )
 
 // Bootstrap runs the declarative chain (providers, middleware, routes, events,
@@ -107,6 +108,16 @@ func wireInstanceEvents(a *App) {
 	}
 
 	a.Router.SetEventDispatcher(dispatch)
+
+	// C-03-fb2 HIGH 1: the batch package fires lifecycle events
+	// (BatchCreated, BatchJobCompleted, BatchJobFailed, BatchCompleted,
+	// BatchCancelled) from inside the repository when ANY host observes
+	// a state transition. Previously these dispatches went to the
+	// per-batch dispatcher (nil when the dispatcher process did not call
+	// WithEventDispatcher, silently dropped). Routing through the
+	// app-wide events dispatcher ensures subscribers via events.Listen
+	// see the notification regardless of which host fired the CAS.
+	queue.SetGlobalEventDispatcher(dispatch)
 
 	candidates := []any{a.DB, a.Cache, a.Notification, a.View, a.Mail, a.Queue, a.Scheduler, a.Auth, a.Crypto}
 	for _, svc := range candidates {

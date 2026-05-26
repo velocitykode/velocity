@@ -278,6 +278,15 @@ func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey strin
 		}
 	}
 
+	// C-03-fb2 HIGH 1: wire the queue driver for cross-process callback
+	// delivery so Then/Catch/Finally callbacks registered by name (via
+	// PendingBatch.OnComplete / OnFailed / OnFinally) can be executed by
+	// a worker on ANY host when the terminal completion CAS fires. The
+	// driver is consulted lazily so the dispatcher's BatchCallbackJob
+	// enqueue picks up whichever driver is currently wired, not a stale
+	// snapshot from boot.
+	queue.SetBatchCallbackQueue(d, "default")
+
 	return d, nil
 }
 

@@ -15,6 +15,13 @@ import (
 // can CAS on `completed_at` to fire Then/Catch/Finally callbacks
 // exactly once.
 //
+// then_callback / catch_callback / finally_callback columns store the
+// NAME of a callback registered via RegisterBatchCallback /
+// RegisterBatchFailureCallback. On terminal completion the repository
+// enqueues a BatchCallbackJob carrying the name so any worker (on any
+// host) can run the registered handler; closures stored in-process are
+// kept only as a convenience for single-process apps.
+//
 // Driver names accepted: "postgres", "mysql", "sqlite" (or any other
 // value, which falls through to the SQLite dialect).
 func JobBatchesMigrationSQL(driver string) []string {
@@ -29,6 +36,9 @@ func JobBatchesMigrationSQL(driver string) []string {
 				failed_jobs INTEGER NOT NULL DEFAULT 0,
 				allow_failures BOOLEAN NOT NULL DEFAULT FALSE,
 				queue TEXT NOT NULL DEFAULT 'default',
+				then_callback TEXT NULL,
+				catch_callback TEXT NULL,
+				finally_callback TEXT NULL,
 				cancelled_at TIMESTAMP NULL,
 				completed_at TIMESTAMP NULL,
 				last_error TEXT NULL,
@@ -47,6 +57,9 @@ func JobBatchesMigrationSQL(driver string) []string {
 				failed_jobs INT NOT NULL DEFAULT 0,
 				allow_failures TINYINT(1) NOT NULL DEFAULT 0,
 				queue VARCHAR(64) NOT NULL DEFAULT 'default',
+				then_callback VARCHAR(128) NULL,
+				catch_callback VARCHAR(128) NULL,
+				finally_callback VARCHAR(128) NULL,
 				cancelled_at TIMESTAMP NULL,
 				completed_at TIMESTAMP NULL,
 				last_error TEXT NULL,
@@ -65,6 +78,9 @@ func JobBatchesMigrationSQL(driver string) []string {
 				failed_jobs INTEGER NOT NULL DEFAULT 0,
 				allow_failures INTEGER NOT NULL DEFAULT 0,
 				queue TEXT NOT NULL DEFAULT 'default',
+				then_callback TEXT NULL,
+				catch_callback TEXT NULL,
+				finally_callback TEXT NULL,
 				cancelled_at DATETIME NULL,
 				completed_at DATETIME NULL,
 				last_error TEXT NULL,

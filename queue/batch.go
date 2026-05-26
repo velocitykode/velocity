@@ -53,10 +53,10 @@ func newBatchID() BatchID {
 //
 // Callers in single-host deployments get the in-memory repository (the
 // historical behaviour). Callers in multi-host deployments that have
-// installed a DatabaseBatchRepository via SetDefaultBatchRepository get
-// a *Batch reconstructed from the persistent row, so cancel checks and
-// progress queries are correct regardless of which host dispatched the
-// batch.
+// installed a DatabaseBatchRepository via SetDefaultBatchRepository (or
+// via the framework's auto-install) get a *Batch reconstructed from the
+// persistent row, so cancel checks and progress queries are correct
+// regardless of which host dispatched the batch.
 //
 // The boolean second return preserves the legacy signature so worker
 // code does not need to change. Storage errors are swallowed (returned
@@ -73,11 +73,17 @@ func FindBatch(id BatchID) (*Batch, bool) {
 
 // Batch tracks the state of a group of jobs.
 //
-// The struct is now a thin value object: fields here mirror the
-// repository row so callers reading Batch.PendingJobs() see consistent
-// state regardless of repository implementation. Mutating operations
-// (recordSuccess, recordFailure, Cancel) route through the bound
+// The struct is a thin value object: fields here mirror the repository
+// row so callers reading Batch.PendingJobs() see consistent state
+// regardless of repository implementation. Mutating operations
+// (recordSuccess, recordFailure, Cancel) route through the process-wide
 // repository so cross-process workers observe the same counters.
+//
+// Callback delivery across processes is via the persisted thenName /
+// catchName / finallyName fields plus the BatchCallbackJob mechanism:
+// see queue/batch_callback.go for the full path. Closures (thenFn etc.)
+// remain as a convenience for in-process callers and fire ONLY in the
+// dispatcher process via the local callbackEntry registry.
 type Batch struct {
 	id            BatchID
 	totalJobs     int
@@ -91,21 +97,23 @@ type Batch struct {
 	queue         string
 	lastError     string
 
-	// Local callbacks. Populated when this process is the dispatcher;
-	// nil on remote-loaded Batch instances (closures can't cross
-	// process boundaries). When a remote worker observes terminal
-	// completion through the repository's CAS, the BatchCompleted
-	// event is still emitted so the dispatcher process can react.
+	// Named callbacks. Populated when the dispatcher used OnComplete /
+	// OnFailed / OnFinally with a name registered via
+	// RegisterBatchCallback. Persisted on the job_batches row so any
+	// host with a worker that runs BatchCallbackJob can dispatch them.
+	thenName    string
+	catchName   string
+	finallyName string
+
+	// Local closure callbacks. Populated when the dispatcher used the
+	// Then/Catch/Finally func variants. nil on remote-loaded Batch
+	// instances (closures don't cross processes). When set, the
+	// dispatcher process fires them locally on terminal completion.
 	thenFn    func(b *Batch)
 	catchFn   func(b *Batch, err error)
 	finallyFn func(b *Batch)
 
 	dispatchEvent func(ctx context.Context, event interface{})
-
-	// repo binds the Batch to the repository that minted it. When
-	// the caller goes through FindBatch we reuse the default repo.
-	// recordSuccess / recordFailure / Cancel route here.
-	repo BatchRepository
 
 	mu sync.Mutex // protects finishedAt and lastError
 }
@@ -148,15 +156,16 @@ func (b *Batch) HasFailures() bool { return b.failedJobs.Load() > 0 }
 // AllowsFailures returns whether the batch is configured to allow failures
 func (b *Batch) AllowsFailures() bool { return b.allowFailures }
 
-// repository returns the bound repository or the process default if the
-// Batch was constructed without one (defensive: a *Batch obtained via
-// FindBatch always has one, but tests sometimes build a zero Batch).
-func (b *Batch) repository() BatchRepository {
-	if b.repo != nil {
-		return b.repo
-	}
-	return DefaultBatchRepository()
-}
+// ThenCallbackName returns the persisted Then callback name (or empty
+// when none). Useful for inspection by listeners that prefer subscribing
+// over registering a callback handler.
+func (b *Batch) ThenCallbackName() string { return b.thenName }
+
+// CatchCallbackName returns the persisted Catch callback name.
+func (b *Batch) CatchCallbackName() string { return b.catchName }
+
+// FinallyCallbackName returns the persisted Finally callback name.
+func (b *Batch) FinallyCallbackName() string { return b.finallyName }
 
 // Cancel cancels the batch, preventing remaining jobs from being processed.
 // Callers that have a real ctx in scope should prefer CancelCtx.
@@ -175,7 +184,7 @@ func (b *Batch) CancelCtx(ctx context.Context) {
 	}
 	// Persist the cancellation via the repository so cross-process
 	// workers see it.
-	if updated, err := b.repository().Cancel(ctx, b.id); err == nil && updated != nil {
+	if updated, err := DefaultBatchRepository().Cancel(ctx, b.id); err == nil && updated != nil {
 		// Mirror DB-side counter values into the local Batch so a
 		// subsequent FailedJobs() reflects whatever else changed
 		// between our last read and the cancel.
@@ -194,7 +203,7 @@ func (b *Batch) CancelCtx(ctx context.Context) {
 // implementation can run an atomic UPDATE; the in-memory implementation
 // updates the same atomic.Int32 fields the caller already reads.
 func (b *Batch) recordSuccess(ctx context.Context) {
-	updated, justFinished, err := b.repository().IncrementSuccess(ctx, b.id)
+	updated, justFinished, err := DefaultBatchRepository().IncrementSuccess(ctx, b.id)
 	if err != nil || updated == nil {
 		return
 	}
@@ -211,13 +220,13 @@ func (b *Batch) recordSuccess(ctx context.Context) {
 	})
 
 	if justFinished {
-		b.fireTerminalCallbacks(ctx)
+		b.fireTerminalCallbacks(ctx, updated)
 	}
 }
 
 // recordFailure is called by the worker when a batch job fails permanently.
 func (b *Batch) recordFailure(ctx context.Context, jobErr error) {
-	updated, justFinished, err := b.repository().IncrementFailure(ctx, b.id, jobErr)
+	updated, justFinished, err := DefaultBatchRepository().IncrementFailure(ctx, b.id, jobErr)
 	if err != nil || updated == nil {
 		return
 	}
@@ -230,22 +239,17 @@ func (b *Batch) recordFailure(ctx context.Context, jobErr error) {
 		Error:      jobErr.Error(),
 	})
 
-	// Catch fires on first failure observed by this process. The
-	// callbackEntry's sync.Once handles the at-most-once guarantee
-	// locally; remote-process workers do not have the closure and
-	// rely on the BatchJobFailed event for downstream signalling.
+	// Catch fires on the first failure observed by ANY host. In-process
+	// closures fire on the dispatcher via the callbackEntry's sync.Once;
+	// for cross-process delivery we enqueue a BatchCallbackJob so any
+	// worker can run the registered handler. Both paths are at-most-once
+	// per process: the local sync.Once guards the closure and the
+	// queue's job-uniqueness (via JobID) guards the named handler.
 	if entry := globalCallbacks.get(b.id); entry != nil {
 		entry.fireCatch(b, jobErr)
-	} else if b.catchFn != nil {
-		// Legacy path: Batch was constructed without going through
-		// the dispatch registry (rare; mainly old tests). Fire the
-		// closure directly with no at-most-once guarantee.
-		fn := b.catchFn
-		capturedErr := jobErr
-		go func() {
-			defer func() { _ = recover() }()
-			fn(b, capturedErr)
-		}()
+	}
+	if name := b.useCatchName(updated); name != "" {
+		dispatchBatchCallbackJob(ctx, name, CallbackCatch, b.id, jobErr.Error())
 	}
 
 	// Auto-cancel when failures are not allowed. Idempotent at the
@@ -255,7 +259,7 @@ func (b *Batch) recordFailure(ctx context.Context, jobErr error) {
 	}
 
 	if justFinished {
-		b.fireTerminalCallbacks(ctx)
+		b.fireTerminalCallbacks(ctx, updated)
 	}
 }
 
@@ -264,21 +268,45 @@ func (b *Batch) recordFailure(ctx context.Context, jobErr error) {
 // pendingJobs so the batch can reach Finished, but no completion or
 // failure counter advances.
 func (b *Batch) recordSkip(ctx context.Context) {
-	updated, justFinished, err := b.repository().DecrementPending(ctx, b.id)
+	updated, justFinished, err := DefaultBatchRepository().DecrementPending(ctx, b.id)
 	if err != nil || updated == nil {
 		return
 	}
 	b.copyCountersFrom(updated)
 	if justFinished {
-		b.fireTerminalCallbacks(ctx)
+		b.fireTerminalCallbacks(ctx, updated)
 	}
 }
 
+// useCatchName picks the catch callback name from the most-recent
+// repository readback (preferred, in case the repo learned about a
+// previously-persisted name) and falls back to the in-memory copy.
+func (b *Batch) useCatchName(updated *Batch) string {
+	if updated != nil && updated.catchName != "" {
+		return updated.catchName
+	}
+	return b.catchName
+}
+
+func (b *Batch) useThenName(updated *Batch) string {
+	if updated != nil && updated.thenName != "" {
+		return updated.thenName
+	}
+	return b.thenName
+}
+
+func (b *Batch) useFinallyName(updated *Batch) string {
+	if updated != nil && updated.finallyName != "" {
+		return updated.finallyName
+	}
+	return b.finallyName
+}
+
 // copyCountersFrom mirrors counter and flag values from the repository
-// readback onto the receiver. We do NOT copy callback closures because
-// those are owned by the dispatcher process and would be nil on a
-// remote-loaded Batch; clobbering them with nil would break terminal
-// callback firing on the dispatcher.
+// readback onto the receiver. We do NOT copy closures or callback names
+// because those are owned by the dispatcher process (closures) or by
+// the repository row already loaded into the receiver (names); clobbering
+// them on the dispatcher would break terminal callback firing.
 func (b *Batch) copyCountersFrom(src *Batch) {
 	if src == nil || src == b {
 		return
@@ -300,35 +328,55 @@ func (b *Batch) copyCountersFrom(src *Batch) {
 		}
 		b.mu.Unlock()
 	}
+	// Names: copy if we don't already have one (the receiver was
+	// constructed without going through Save, e.g. on a remote worker
+	// that just called FindBatch).
+	if b.thenName == "" && src.thenName != "" {
+		b.thenName = src.thenName
+	}
+	if b.catchName == "" && src.catchName != "" {
+		b.catchName = src.catchName
+	}
+	if b.finallyName == "" && src.finallyName != "" {
+		b.finallyName = src.finallyName
+	}
 }
 
-// fireTerminalCallbacks fires Then (if no failures) and Finally exactly
-// once across the fleet. The "exactly once" guarantee is provided by
-// the repository's CAS on completed_at (justFinished is true on exactly
-// one caller) and reinforced by the callbackEntry's finishedFired
-// atomic.Bool in case a misbehaving repository returns justFinished
-// twice.
-func (b *Batch) fireTerminalCallbacks(ctx context.Context) {
+// fireTerminalCallbacks is invoked when the repository's CAS confirms
+// the batch transitioned to its terminal state (justFinished=true on
+// the caller). It fires local closures and enqueues named callbacks
+// so any worker can execute them, regardless of which host completed
+// the last job.
+//
+// updated is the repository readback that includes any callback names
+// persisted on the row; if non-nil it takes precedence over the
+// receiver's cached names (used by remote workers that just loaded the
+// batch).
+func (b *Batch) fireTerminalCallbacks(ctx context.Context, updated *Batch) {
+	// Local closure path: only the dispatcher process has these. The
+	// entry's finishedFired atomic.Bool gates against double-fire even
+	// when the CAS races with a duplicate observation.
 	if entry := globalCallbacks.get(b.id); entry != nil {
 		entry.fireFinished(b)
-	} else {
-		// Legacy / direct-construction path: no registry entry. Fall
-		// back to the closures stored on Batch with manual at-most-once
-		// guards via the finished flag (already CAS'd by the repo).
-		if !b.HasFailures() && b.thenFn != nil {
-			fn := b.thenFn
-			go func() {
-				defer func() { _ = recover() }()
-				fn(b)
-			}()
+	}
+
+	// Cross-process named-callback path. Enqueue a BatchCallbackJob
+	// for each non-empty callback name; the worker that pops it looks
+	// up the registered handler and runs it. We always enqueue on
+	// terminal completion regardless of whether closures fired,
+	// because the dispatcher process may not have the named handler
+	// registered (a different service is meant to handle it).
+	if !b.HasFailures() {
+		if name := b.useThenName(updated); name != "" {
+			dispatchBatchCallbackJob(ctx, name, CallbackThen, b.id, "")
 		}
-		if b.finallyFn != nil {
-			fn := b.finallyFn
-			go func() {
-				defer func() { _ = recover() }()
-				fn(b)
-			}()
+	}
+	if name := b.useFinallyName(updated); name != "" {
+		errMsg := ""
+		if updated != nil {
+			errMsg = updated.lastError
 		}
+		dispatchBatchCallbackJob(ctx, name, CallbackFinally, b.id, errMsg)
 	}
 
 	dispatchBatchEvent(ctx, b.dispatchEvent, &BatchCompleted{
@@ -340,15 +388,62 @@ func (b *Batch) fireTerminalCallbacks(ctx context.Context) {
 	})
 }
 
-// dispatchBatchEvent dispatches a batch event (nil-safe like other dispatch helpers)
+// dispatchBatchEvent dispatches a batch event through the batch's local
+// dispatcher when one is bound and ALWAYS through the process-wide
+// events dispatcher when one is wired via SetGlobalEventDispatcher.
+//
+// Pre-C-03-fb2 this helper silently dropped events when no local
+// dispatcher was bound, which meant a remote worker observing terminal
+// completion published nothing - so the dispatcher process on another
+// host never saw BatchCompleted. We now also route through the
+// process-wide dispatcher so subscribers (events.Listen) get the
+// notification regardless of which host fired the CAS.
+//
+// dispatch (the batch's local dispatcher) is allowed to be nil: it is
+// only populated when the dispatcher process used WithEventDispatcher.
+// The global dispatcher is what makes cross-process subscriptions work.
 func dispatchBatchEvent(ctx context.Context, dispatch func(context.Context, interface{}), event interface{}) {
-	if dispatch == nil {
-		return
-	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	dispatch(ctx, event)
+	if dispatch != nil {
+		dispatch(ctx, event)
+	}
+	if g := globalEventDispatcher(); g != nil {
+		_ = g(ctx, event)
+	}
+}
+
+// globalDispatcherFn is the type the framework wires when calling
+// SetGlobalEventDispatcher.
+type globalDispatcherFn func(ctx context.Context, event interface{}) error
+
+var globalEventDispatcherSlot atomic.Pointer[globalDispatcherFn]
+
+// SetGlobalEventDispatcher installs a process-wide event dispatcher
+// that the batch lifecycle helpers will invoke for every batch event
+// (Created / JobCompleted / JobFailed / Completed / Cancelled).
+//
+// The framework's wireInstanceEvents calls this with the App's events
+// dispatcher. The hook is exposed publicly so test harnesses (and
+// embedded apps that bring their own dispatcher) can wire it directly.
+//
+// Pass nil to clear.
+func SetGlobalEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
+	if fn == nil {
+		globalEventDispatcherSlot.Store(nil)
+		return
+	}
+	wrapped := globalDispatcherFn(fn)
+	globalEventDispatcherSlot.Store(&wrapped)
+}
+
+func globalEventDispatcher() globalDispatcherFn {
+	p := globalEventDispatcherSlot.Load()
+	if p == nil {
+		return nil
+	}
+	return *p
 }
 
 // PendingBatch is a fluent builder for creating and dispatching a batch
@@ -357,10 +452,12 @@ type PendingBatch struct {
 	thenFn        func(b *Batch)
 	catchFn       func(b *Batch, err error)
 	finallyFn     func(b *Batch)
+	thenName      string
+	catchName     string
+	finallyName   string
 	allowFailures bool
 	queue         string
 	dispatchEvent func(ctx context.Context, event interface{})
-	repo          BatchRepository
 }
 
 // NewBatch creates a new PendingBatch with the given jobs.
@@ -372,21 +469,55 @@ func NewBatch(jobs ...Job) *PendingBatch {
 	}
 }
 
-// Then sets a callback that fires when ALL jobs complete successfully (no failures)
+// Then sets a closure that fires when ALL jobs complete successfully (no failures).
+//
+// Closures fire ONLY in the dispatching process. For cross-process
+// delivery (multi-host worker fleets), use OnComplete with a name
+// registered via RegisterBatchCallback.
 func (pb *PendingBatch) Then(fn func(b *Batch)) *PendingBatch {
 	pb.thenFn = fn
 	return pb
 }
 
-// Catch sets a callback that fires once on the first job failure
+// Catch sets a closure that fires on the first job failure. Closures
+// fire only in-process; use OnFailed for cross-process delivery.
 func (pb *PendingBatch) Catch(fn func(b *Batch, err error)) *PendingBatch {
 	pb.catchFn = fn
 	return pb
 }
 
-// Finally sets a callback that always fires when all jobs have been processed
+// Finally sets a closure that fires when the batch reaches its terminal
+// state. Closures fire only in-process; use OnFinally for cross-process
+// delivery.
 func (pb *PendingBatch) Finally(fn func(b *Batch)) *PendingBatch {
 	pb.finallyFn = fn
+	return pb
+}
+
+// OnComplete binds a NAMED callback handler that fires when every job
+// in the batch completes without failure. Unlike Then, OnComplete is
+// safe across processes: the name is persisted to the job_batches row,
+// and the terminal completion CAS enqueues a BatchCallbackJob that any
+// worker can execute.
+//
+// The supplied name must be registered via RegisterBatchCallback on
+// every worker host that might run callback jobs.
+func (pb *PendingBatch) OnComplete(name string) *PendingBatch {
+	pb.thenName = name
+	return pb
+}
+
+// OnFailed binds a NAMED Catch handler (failure path).
+// Register via RegisterBatchFailureCallback.
+func (pb *PendingBatch) OnFailed(name string) *PendingBatch {
+	pb.catchName = name
+	return pb
+}
+
+// OnFinally binds a NAMED Finally handler.
+// Register via RegisterBatchCallback.
+func (pb *PendingBatch) OnFinally(name string) *PendingBatch {
+	pb.finallyName = name
 	return pb
 }
 
@@ -404,17 +535,13 @@ func (pb *PendingBatch) OnQueue(queue string) *PendingBatch {
 
 // WithEventDispatcher sets the event dispatcher for the batch. The fn
 // receives a context.Context so listeners observe per-job scoped values.
+//
+// This sets the batch's LOCAL dispatcher (per-batch listener). Apps that
+// want cross-process notification should also call
+// queue.SetGlobalEventDispatcher (typically wired by the framework's
+// bootstrap).
 func (pb *PendingBatch) WithEventDispatcher(fn func(ctx context.Context, event interface{})) *PendingBatch {
 	pb.dispatchEvent = fn
-	return pb
-}
-
-// WithRepository binds an explicit repository for this batch. Useful for
-// tests that need to drive a non-default repository or for multi-tenant
-// apps that route different batches to different storage. When omitted,
-// the process default is used (DefaultBatchRepository()).
-func (pb *PendingBatch) WithRepository(repo BatchRepository) *PendingBatch {
-	pb.repo = repo
 	return pb
 }
 
@@ -425,10 +552,7 @@ func (pb *PendingBatch) Dispatch(ctx context.Context, driver Driver) (*Batch, er
 	}
 
 	id := newBatchID()
-	repo := pb.repo
-	if repo == nil {
-		repo = DefaultBatchRepository()
-	}
+	repo := DefaultBatchRepository()
 
 	batch := &Batch{
 		id:            id,
@@ -438,8 +562,10 @@ func (pb *PendingBatch) Dispatch(ctx context.Context, driver Driver) (*Batch, er
 		thenFn:        pb.thenFn,
 		catchFn:       pb.catchFn,
 		finallyFn:     pb.finallyFn,
+		thenName:      pb.thenName,
+		catchName:     pb.catchName,
+		finallyName:   pb.finallyName,
 		dispatchEvent: pb.dispatchEvent,
-		repo:          repo,
 	}
 	batch.pendingJobs.Store(int32(len(pb.jobs)))
 
