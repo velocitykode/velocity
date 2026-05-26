@@ -338,19 +338,27 @@ func ConfigFromEnv() Config {
 		}
 	}
 
-	// CSRF
-	config.CSRF = csrf.Config{
-		TokenLifetime:     envDurationOrDefault("CSRF_TOKEN_LIFETIME", 24*time.Hour),
-		HeaderName:        envOrDefault("CSRF_HEADER", "X-CSRF-Token"),
-		FormField:         envOrDefault("CSRF_FORM_FIELD", "_token"),
-		CookieName:        envOrDefault("CSRF_COOKIE_NAME", "csrf_token"),
-		SessionCookieName: envOrDefault("CSRF_SESSION_COOKIE", config.Session.Name),
-		SameSite:          parseSameSite(os.Getenv("CSRF_SAME_SITE")),
-		Secure:            os.Getenv("CSRF_SECURE") != "false",
-		HttpOnly:          envOrDefault("CSRF_HTTP_ONLY", "true") == "true",
-		SingleUse:         os.Getenv("CSRF_SINGLE_USE") == "true",
-		ErrorMessage:      envOrDefault("CSRF_ERROR_MESSAGE", "CSRF token validation failed. Please refresh and try again."),
+	// CSRF: seed from csrf.DefaultConfig() so new fields added to the
+	// package default (e.g. WriteXSRFCookie, XSRFCookieName,
+	// MaxFormBodyBytes, Mode) propagate to velocity.New apps without a
+	// matching edit here. Env overrides only the fields with explicit
+	// knobs; everything else inherits the package default.
+	csrfCfg := csrf.DefaultConfig()
+	csrfCfg.TokenLifetime = envDurationOrDefault("CSRF_TOKEN_LIFETIME", csrfCfg.TokenLifetime)
+	csrfCfg.HeaderName = envOrDefault("CSRF_HEADER", csrfCfg.HeaderName)
+	csrfCfg.FormField = envOrDefault("CSRF_FORM_FIELD", csrfCfg.FormField)
+	csrfCfg.CookieName = envOrDefault("CSRF_COOKIE_NAME", csrfCfg.CookieName)
+	csrfCfg.SessionCookieName = envOrDefault("CSRF_SESSION_COOKIE", config.Session.Name)
+	if v := os.Getenv("CSRF_SAME_SITE"); v != "" {
+		csrfCfg.SameSite = parseSameSite(v)
 	}
+	csrfCfg.Secure = os.Getenv("CSRF_SECURE") != "false"
+	csrfCfg.HttpOnly = envOrDefault("CSRF_HTTP_ONLY", "true") == "true"
+	csrfCfg.SingleUse = os.Getenv("CSRF_SINGLE_USE") == "true"
+	csrfCfg.ErrorMessage = envOrDefault("CSRF_ERROR_MESSAGE", csrfCfg.ErrorMessage)
+	csrfCfg.WriteXSRFCookie = envOrDefault("CSRF_WRITE_XSRF_COOKIE", "true") == "true"
+	csrfCfg.XSRFCookieName = envOrDefault("CSRF_XSRF_COOKIE_NAME", csrfCfg.XSRFCookieName)
+	config.CSRF = *csrfCfg
 
 	// Cache
 	redisTLS := os.Getenv("REDIS_TLS") == "true"
