@@ -5,7 +5,11 @@ import (
 	"strconv"
 )
 
-// IntegerRule validates that a value is an integer
+// IntegerRule validates that a value is an integer. Whole-number floats
+// (e.g. float64(5.0) from a JSON number) are accepted; fractional floats
+// reject with a validation error. The rule must NEVER panic regardless of
+// input type: any unsupported runtime type falls through to a clean
+// validation error instead.
 func IntegerRule(field string, value interface{}, params []string, data map[string]interface{}) error {
 	if value == nil {
 		return nil
@@ -16,9 +20,22 @@ func IntegerRule(field string, value interface{}, params []string, data map[stri
 		return nil
 	case uint, uint8, uint16, uint32, uint64:
 		return nil
-	case float32, float64:
+	case float32:
+		// Split float32 out of the legacy `case float32, float64` group
+		// because that group's body used `v.(float64)` which panicked on
+		// a float32 runtime value (the type switch widened v to
+		// interface{} when the case listed multiple types, so the type
+		// assertion to float64 only worked half the time). Promote to
+		// float64 explicitly via Go's value conversion, then apply the
+		// same whole-number check.
+		f := float64(v)
+		if f == float64(int64(f)) {
+			return nil
+		}
+		return fmt.Errorf("The %s field must be an integer.", field)
+	case float64:
 		// Accept whole number floats
-		if v == float64(int64(v.(float64))) {
+		if v == float64(int64(v)) {
 			return nil
 		}
 		return fmt.Errorf("The %s field must be an integer.", field)

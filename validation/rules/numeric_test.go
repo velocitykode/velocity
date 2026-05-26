@@ -118,6 +118,29 @@ func TestIntegerRule(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			// SO-1 regression. Before the fix, a runtime float32 value
+			// hit the `case float32, float64` group whose body did
+			// `v.(float64)`; the assertion panicked because v was the
+			// boxed float32 inside an interface. After the fix,
+			// float32 has its own case with explicit float64 promotion.
+			name:    "returns nil for whole number float32 (SO-1 panic regression)",
+			field:   "count",
+			value:   float32(1.0),
+			params:  nil,
+			data:    nil,
+			wantErr: false,
+		},
+		{
+			// SO-1 regression: fractional float32 must reject with a
+			// validation error, NOT panic.
+			name:    "returns error for fractional float32 (SO-1 panic regression)",
+			field:   "count",
+			value:   float32(1.5),
+			params:  nil,
+			data:    nil,
+			wantErr: true,
+		},
+		{
 			name:    "returns nil for whole number float64",
 			field:   "count",
 			value:   float64(5.0),
@@ -223,6 +246,58 @@ func TestIntegerRule(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestIntegerRule_NeverPanics is the SO-1 panic-safety guarantee. Whatever
+// runtime type lands in IntegerRule, the function must either return nil
+// (accept) or a non-nil error (reject) but NEVER panic. The second-opinion
+// audit found float32 panicked at `v.(float64)`. We sweep a representative
+// set of types here to lock in panic-free behaviour against future
+// regressions.
+func TestIntegerRule_NeverPanics(t *testing.T) {
+	weird := []interface{}{
+		float32(1.0),
+		float32(1.5),
+		float32(-3.25),
+		float64(1.0),
+		float64(1.5),
+		complex64(complex(1, 0)),
+		complex128(complex(1, 0)),
+		[]byte{0x01, 0x02},
+		map[string]int{"a": 1},
+		struct{ X int }{X: 1},
+		make(chan int),
+		(*int)(nil),
+	}
+	for i, v := range weird {
+		i, v := i, v
+		t.Run("input_"+itoa(i), func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("IntegerRule panicked on %T(%v): %v", v, v, r)
+				}
+			}()
+			_ = IntegerRule("field", v, nil, nil)
+		})
+	}
+}
+
+// itoa is a tiny helper that converts a small int to a string without
+// pulling strconv into the test file's import block (strconv is already
+// imported via the rule under test, but the file-level test imports stay
+// minimal).
+func itoa(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	var buf [4]byte
+	pos := len(buf)
+	for i > 0 {
+		pos--
+		buf[pos] = byte('0' + i%10)
+		i /= 10
+	}
+	return string(buf[pos:])
 }
 
 func TestNumericRule(t *testing.T) {
