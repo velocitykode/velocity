@@ -11,13 +11,15 @@ import (
 )
 
 // fakeCSRFRotator is a contract.CSRFTokenRotator that records every
-// RotateToken / RevokeToken call. Tests use it to pin the pre/post
-// session-id pairs the guard passes to the rotator across Login,
-// Logout, and remember-cookie revival.
+// RotateToken / RevokeToken / WriteXSRFCookie call. Tests use it to pin
+// the pre/post session-id pairs the guard passes to the rotator across
+// Login, Logout, and remember-cookie revival, and to verify the
+// post-rotation XSRF cookie write (M-04).
 type fakeCSRFRotator struct {
 	mu        sync.Mutex
 	rotated   []rotateCall
 	revoked   []string
+	xsrfWrote []string
 	rotateErr error
 }
 
@@ -37,6 +39,12 @@ func (f *fakeCSRFRotator) RevokeToken(id string) error {
 	defer f.mu.Unlock()
 	f.revoked = append(f.revoked, id)
 	return nil
+}
+
+func (f *fakeCSRFRotator) WriteXSRFCookie(_ http.ResponseWriter, sessionID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.xsrfWrote = append(f.xsrfWrote, sessionID)
 }
 
 // compile-time guarantee SessionGuard satisfies the propagation shape.
@@ -73,6 +81,41 @@ func TestSessionGuard_LoginRotatesCSRFToken(t *testing.T) {
 	}
 	if call.oldID == call.newID {
 		t.Error("RotateToken called with oldID == newID; orphan-deletion would silently no-op")
+	}
+}
+
+// TestSessionGuard_LoginWritesXSRFCookie pins M-04: SessionGuard.Login
+// MUST call rotator.WriteXSRFCookie(w, newID) after the successful
+// RotateToken so the Login response carries the freshly-minted XSRF
+// token to the SPA. Pre-fix the per-session token was minted in the
+// CSRF store but no Set-Cookie was emitted; the SPA's very next POST
+// returned 419 because the client had no XSRF-TOKEN cookie to echo.
+func TestSessionGuard_LoginWritesXSRFCookie(t *testing.T) {
+	rotator := &fakeCSRFRotator{}
+	guard, _ := newRevokeGuard(t, nil)
+	guard.SetCSRFTokenRotator(rotator)
+
+	req := httptest.NewRequest(http.MethodPost, "/login", nil)
+	req = WithSessionContext(req)
+	w := httptest.NewRecorder()
+
+	if err := guard.Login(w, req, &revokeTestUser{id: "u1"}); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+
+	if got := len(rotator.xsrfWrote); got != 1 {
+		t.Fatalf("expected exactly 1 WriteXSRFCookie call, got %d", got)
+	}
+	if got := rotator.xsrfWrote[0]; got == "" {
+		t.Error("WriteXSRFCookie called with empty sessionID; the post-rotation id MUST be passed")
+	}
+	// The sessionID handed to WriteXSRFCookie must match newID from the
+	// RotateToken call (the post-regenerate id, not the pre-login one).
+	if len(rotator.rotated) != 1 {
+		t.Fatalf("expected exactly 1 RotateToken call, got %d", len(rotator.rotated))
+	}
+	if rotator.xsrfWrote[0] != rotator.rotated[0].newID {
+		t.Errorf("WriteXSRFCookie sessionID = %q, want newID = %q", rotator.xsrfWrote[0], rotator.rotated[0].newID)
 	}
 }
 

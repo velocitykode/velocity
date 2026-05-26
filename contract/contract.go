@@ -73,6 +73,26 @@ type CSRFTokenRotator interface {
 	// RevokeToken deletes the token bound to id. A missing entry is not
 	// an error.
 	RevokeToken(id string) error
+	// WriteXSRFCookie writes the non-HttpOnly XSRF-TOKEN cookie carrying
+	// the token currently bound to sessionID in the CSRF store, so SPA
+	// clients can read it via document.cookie and echo it back as
+	// X-XSRF-TOKEN on subsequent unsafe requests.
+	//
+	// Session guards MUST call this after RotateToken on Login and on the
+	// remember-cookie revival path: without it the response carries the
+	// new session cookie but no fresh XSRF-TOKEN, and the very next POST
+	// from the SPA returns 419 (the new per-session token is in the store
+	// but the client has no way to retrieve it). Safe to call any number
+	// of times.
+	//
+	// No-op when:
+	//   - w is nil (e.g. tests),
+	//   - sessionID is empty,
+	//   - the rotator's configuration disables cookie writes
+	//     (WriteXSRFCookie=false), or
+	//   - SingleUse is enabled (the cookie would carry a value about to
+	//     be consumed on the next unsafe request).
+	WriteXSRFCookie(w http.ResponseWriter, sessionID string)
 }
 
 // ViewEngine defines the contract for the view/rendering layer.

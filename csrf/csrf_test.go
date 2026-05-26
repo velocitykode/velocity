@@ -1184,6 +1184,114 @@ func TestSessionIDResolver_ErrorPropagation(t *testing.T) {
 	}
 }
 
+// TestWriteXSRFCookie_PostRotation pins M-04 at the csrf layer:
+// WriteXSRFCookie reads the token currently bound to sessionID and writes
+// it as a non-HttpOnly cookie. Session guards call this after
+// RotateToken on Login so the response that establishes the new session
+// also carries the matching XSRF-TOKEN cookie; without that hook the
+// SPA's first POST after login returns 419 because the new token lives
+// only in the server-side store.
+func TestWriteXSRFCookie_PostRotation(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.SessionIDResolver = testCookieResolver("session_id")
+	cfg.Store = stores.NewSessionStore()
+	c := New(cfg)
+
+	const sessionID = "post-login-id"
+	if err := c.RotateToken("", sessionID); err != nil {
+		t.Fatalf("RotateToken: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	c.WriteXSRFCookie(w, sessionID)
+
+	res := w.Result()
+	defer res.Body.Close()
+	var xsrf *http.Cookie
+	for _, k := range res.Cookies() {
+		if k.Name == "XSRF-TOKEN" {
+			xsrf = k
+		}
+	}
+	if xsrf == nil {
+		t.Fatalf("XSRF-TOKEN cookie not set; cookies=%v", res.Cookies())
+	}
+	if xsrf.HttpOnly {
+		t.Error("XSRF-TOKEN cookie must NOT be HttpOnly")
+	}
+	// Decoded value must equal the token RotateToken minted.
+	tokenInStore, err := c.config.Store.Get(sessionID)
+	if err != nil {
+		t.Fatalf("store.Get post-rotation: %v", err)
+	}
+	got, err := url.QueryUnescape(xsrf.Value)
+	if err != nil {
+		t.Fatalf("XSRF-TOKEN value not URL-encoded: %v", err)
+	}
+	if got != tokenInStore {
+		t.Errorf("XSRF-TOKEN decoded=%q, want token in store=%q", got, tokenInStore)
+	}
+}
+
+// TestWriteXSRFCookie_OptOutAndSingleUse pins that the post-rotation
+// hook respects the same opt-out switches as the safe-method bootstrap:
+// WriteXSRFCookie=false suppresses, SingleUse=true suppresses (the
+// cookie value would go stale on the next unsafe request).
+func TestWriteXSRFCookie_OptOutAndSingleUse(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{
+			name:   "WriteXSRFCookie=false",
+			mutate: func(c *Config) { c.WriteXSRFCookie = false },
+		},
+		{
+			name:   "SingleUse=true",
+			mutate: func(c *Config) { c.SingleUse = true },
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.SessionIDResolver = testCookieResolver("session_id")
+			cfg.Store = stores.NewSessionStore()
+			tc.mutate(cfg)
+			c := New(cfg)
+			const sessionID = "sess"
+			if err := c.RotateToken("", sessionID); err != nil {
+				t.Fatalf("RotateToken: %v", err)
+			}
+			w := httptest.NewRecorder()
+			c.WriteXSRFCookie(w, sessionID)
+			for _, k := range w.Result().Cookies() {
+				if k.Name == "XSRF-TOKEN" {
+					t.Errorf("%s must suppress XSRF-TOKEN; got %v", tc.name, k)
+				}
+			}
+		})
+	}
+}
+
+// TestWriteXSRFCookie_NoOpOnNilOrEmpty pins the defensive paths of
+// WriteXSRFCookie: nil w or empty sessionID must NOT panic and must
+// emit no Set-Cookie header.
+func TestWriteXSRFCookie_NoOpOnNilOrEmpty(t *testing.T) {
+	c := New(testConfig())
+
+	// nil w: must not panic.
+	c.WriteXSRFCookie(nil, "anything")
+
+	// empty sessionID: must not panic and must not write.
+	w := httptest.NewRecorder()
+	c.WriteXSRFCookie(w, "")
+	for _, k := range w.Result().Cookies() {
+		if k.Name == "XSRF-TOKEN" {
+			t.Errorf("empty sessionID must not produce XSRF-TOKEN cookie; got %v", k)
+		}
+	}
+}
+
 // TestRotateToken_DeletesOldAndMintsNew pins the contract that the H-02
 // session-guard hook depends on: after RotateToken(old, new), the old
 // session id has no entry in the store, and the new id has a fresh,

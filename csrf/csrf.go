@@ -196,27 +196,55 @@ func (c *CSRF) Middleware(next http.Handler) http.Handler {
 }
 
 // maybeWriteXSRFCookie writes a non-HttpOnly XSRF-TOKEN cookie carrying
-// the per-session CSRF token, IF:
-//   - Config.WriteXSRFCookie is true,
-//   - Config.SingleUse is false (single-use tokens cannot be safely
-//     echoed: they are consumed on validation and the client would
-//     repeatedly send a stale value),
-//   - the request has a resolvable session id (via SessionIDResolver),
-//   - and the configured Store accepts the per-session token write.
+// the per-session CSRF token for the request's session, IF a session is
+// resolvable. Used by the safe-method bootstrap path inside Middleware.
 //
-// On any of those conditions failing the cookie is NOT written. This is
-// a best-effort bootstrap: a failure here MUST NOT block the safe
-// request. The cookie value is URL-encoded so axios-style clients can
-// echo it verbatim as X-XSRF-TOKEN on subsequent unsafe requests.
-//
-// Secure defaults: HttpOnly=false (SPA must read it), SameSite=Lax,
-// Path=/, MaxAge tied to TokenLifetime. Secure is set true when the
-// request scheme is https; in HTTP dev environments Secure must be
-// false or the browser will drop the cookie.
+// Secure is derived from the incoming request scheme (r.TLS != nil).
+// See writeXSRFCookieForSession for the cookie attribute details.
 func (c *CSRF) maybeWriteXSRFCookie(w http.ResponseWriter, r *http.Request) {
 	if c == nil || c.config == nil {
 		return
 	}
+	sessionID, err := c.getSessionIDQuiet(r)
+	if err != nil || sessionID == "" {
+		// No session bound to this request - nothing to write. The
+		// quiet variant suppresses the SessionFallback event because
+		// this is the safe-method bootstrap path, not an enforcement
+		// boundary.
+		return
+	}
+	c.writeXSRFCookieForSession(w, sessionID, r.TLS != nil)
+}
+
+// WriteXSRFCookie writes the XSRF-TOKEN cookie for sessionID to w. It
+// is the public hook session guards call after RotateToken so the
+// response that establishes the new session also carries the freshly
+// minted CSRF token; without this the SPA's first POST after Login (or
+// remember-cookie revival) returns 419 because the per-session token
+// is in the store but the client has no way to read it.
+//
+// Returns silently when w is nil, when sessionID is empty, when the
+// CSRF cookie write is disabled (WriteXSRFCookie=false), or when
+// SingleUse is enabled (the cookie value would go stale on the next
+// unsafe request that consumes the token).
+//
+// Secure: this is the post-rotation write so we cannot read r.TLS. The
+// cookie is marked Secure=true unconditionally; HTTP-only dev
+// deployments must either disable WriteXSRFCookie or rely on the
+// safe-method bootstrap path (which has the request in hand and so can
+// downgrade Secure appropriately).
+func (c *CSRF) WriteXSRFCookie(w http.ResponseWriter, sessionID string) {
+	if c == nil || c.config == nil || w == nil || sessionID == "" {
+		return
+	}
+	c.writeXSRFCookieForSession(w, sessionID, true)
+}
+
+// writeXSRFCookieForSession is the shared body used by both
+// maybeWriteXSRFCookie (safe-method bootstrap, knows request scheme) and
+// WriteXSRFCookie (post-rotation, secure assumed). Both opt-out guards
+// (WriteXSRFCookie=false, SingleUse=true) are applied here.
+func (c *CSRF) writeXSRFCookieForSession(w http.ResponseWriter, sessionID string, secure bool) {
 	if !c.config.WriteXSRFCookie {
 		return
 	}
@@ -227,14 +255,6 @@ func (c *CSRF) maybeWriteXSRFCookie(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if c.config.Store == nil {
-		return
-	}
-	sessionID, err := c.getSessionIDQuiet(r)
-	if err != nil || sessionID == "" {
-		// No session bound to this request - nothing to write. The
-		// quiet variant suppresses the SessionFallback event because
-		// this is the safe-method bootstrap path, not an enforcement
-		// boundary.
 		return
 	}
 	token, err := c.GetToken(sessionID)
@@ -258,10 +278,6 @@ func (c *CSRF) maybeWriteXSRFCookie(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	// Secure only when the request arrived over TLS. Sending Secure
-	// over HTTP would have the browser drop the cookie in dev/local
-	// environments.
-	secure := r.TLS != nil
 	cookie := &http.Cookie{
 		Name: cookieName,
 		// URL-encode so axios-style clients can echo the value

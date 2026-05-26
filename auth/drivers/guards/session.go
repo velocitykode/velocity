@@ -548,10 +548,16 @@ func (g *SessionGuard) Login(w http.ResponseWriter, r *http.Request, user auth.A
 	// A rotation failure aborts the login: continuing with a stale
 	// token store would leave the post-login session without a valid
 	// CSRF token and the orphan still reachable.
+	//
+	// After rotation, write the XSRF-TOKEN cookie so the SPA's first
+	// POST after login has a token to echo (M-04). Without this hook
+	// the per-session token lives in the server store but the SPA has
+	// no way to read it; the very next state-changing request 419's.
 	if rotator := g.getCSRFTokenRotator(); rotator != nil {
 		if err := rotator.RotateToken(oldSessionID, session.ID()); err != nil {
 			return fmt.Errorf("velocity/auth: login aborted: csrf token rotate failed: %w", err)
 		}
+		rotator.WriteXSRFCookie(w, session.ID())
 	}
 
 	// Store user ID in session
