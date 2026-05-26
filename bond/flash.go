@@ -1,20 +1,27 @@
 package bond
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"net/http"
+
+	"github.com/velocitykode/velocity/crypto"
+	"github.com/velocitykode/velocity/router"
 )
 
 const (
-	flashErrorsCookie = "_velocity_errors"
-	flashInputCookie  = "_velocity_old"
+	flashErrorsCookie = router.FlashErrorsCookie
+	flashInputCookie  = router.FlashInputCookie
 )
 
 // applyFlashData reads flash cookies (validation errors + old input) from the
 // request, merges them into props, and clears the cookies on the response.
 // Flash data overrides any existing "errors" or "old" props so that
 // redirect-back-with-errors always wins.
+//
+// Cookies are authenticated via the app's crypto.Encryptor (same key as
+// the session cookie). A cookie with an invalid signature, wrong AAD
+// binding, oversized payload, or absent encryptor is treated as if it
+// were missing: no prop is set and no error reaches the client. This
+// is the only safe handling for unauthenticated user-supplied state.
 func applyFlashData(w http.ResponseWriter, r *http.Request, props Props) {
 	applied := false
 
@@ -32,24 +39,44 @@ func applyFlashData(w http.ResponseWriter, r *http.Request, props Props) {
 	}
 }
 
-// readFlashCookie reads a base64+JSON-encoded flash cookie and returns the
-// decoded value. Returns false if the cookie is absent or cannot be decoded.
+// readFlashCookie reads an authenticated flash cookie produced by
+// router.Context.WithErrors / WithInput and returns the decoded value.
+// Returns false when the cookie is absent, the app key is unavailable,
+// the cookie exceeds router.MaxFlashCookieSize, or authentication
+// fails for any reason (wrong key, tampered payload, AAD mismatch,
+// rotated-out previous key). Crucially this NEVER returns
+// (non-nil, false): a partial decode is reported as a clean miss so
+// downstream render code cannot accidentally treat the attacker's
+// partial bytes as trusted state.
 func readFlashCookie(r *http.Request, name string) (any, bool) {
 	cookie, err := r.Cookie(name)
 	if err != nil || cookie.Value == "" {
 		return nil, false
 	}
 
-	data, err := base64.URLEncoding.DecodeString(cookie.Value)
-	if err != nil {
+	enc := flashEncryptorFor(r)
+	if enc == nil {
 		return nil, false
 	}
 
-	var result any
-	if err := json.Unmarshal(data, &result); err != nil {
+	value, err := router.OpenFlash(enc, name, cookie.Value)
+	if err != nil {
 		return nil, false
 	}
-	return result, true
+	return value, true
+}
+
+// flashEncryptorFor returns the crypto.Encryptor attached to r via the
+// router pipeline, or nil when the request was not routed through
+// velocity.New() (typical for unit tests that build a *Bond directly).
+// Nil encryptor disables flash reads so that misconfigured environments
+// degrade safely instead of trusting an unauthenticated cookie.
+func flashEncryptorFor(r *http.Request) crypto.Encryptor {
+	services := router.ServicesFromRequest(r)
+	if services == nil {
+		return nil
+	}
+	return services.Crypto
 }
 
 // clearFlashCookies expires the flash cookies so they are consumed only once.

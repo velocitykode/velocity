@@ -2,7 +2,6 @@ package router
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -50,6 +49,20 @@ type servicesCtxKey struct{}
 // WithServices returns a copy of r whose context carries s.
 func WithServices(r *http.Request, s *app.Services) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), servicesCtxKey{}, s))
+}
+
+// ServicesFromRequest returns the *app.Services stashed on r's context by
+// WithServices, or nil when the request has not been routed through the
+// Velocity pipeline. Packages outside router (e.g. bond) use this to reach
+// shared services (crypto, etc.) without holding a *Context.
+func ServicesFromRequest(r *http.Request) *app.Services {
+	if r == nil {
+		return nil
+	}
+	if s, ok := r.Context().Value(servicesCtxKey{}).(*app.Services); ok {
+		return s
+	}
+	return nil
 }
 
 // Param represents a single route parameter key-value pair.
@@ -1272,29 +1285,157 @@ const (
 	FlashErrorsCookie = "_velocity_errors"
 	// FlashInputCookie is the cookie name for flash old input.
 	FlashInputCookie = "_velocity_old"
+
+	// MaxFlashCookieSize bounds the size of a flash cookie value (the
+	// authenticated, base64-encoded ciphertext). 4 KiB is the per-cookie
+	// limit common to all major browsers; oversized cookies are rejected
+	// on read to prevent an attacker from forcing a large decrypt path.
+	MaxFlashCookieSize = 4096
+
+	// flashErrorsAAD / flashInputAAD domain-separate the two flash
+	// cookies so a ciphertext valid for "_velocity_errors" cannot be
+	// replayed as "_velocity_old" (or vice versa) under the same app
+	// key. The "v1" tag reserves room for future format migrations.
+	flashErrorsAAD = "velocity:flash-cookie:errors:v1"
+	flashInputAAD  = "velocity:flash-cookie:old:v1"
 )
 
+// flashAADFor returns the AAD label bound into the ciphertext for the
+// given flash cookie name. Returns an empty string for unknown names so
+// the caller fails closed without panicking on a typo.
+func flashAADFor(name string) string {
+	switch name {
+	case FlashErrorsCookie:
+		return flashErrorsAAD
+	case FlashInputCookie:
+		return flashInputAAD
+	}
+	return ""
+}
+
 // WithErrors stashes validation errors as a flash cookie so they survive
-// a redirect and are available on the next request.
+// a redirect and are available on the next request. The cookie payload is
+// encrypted with the app key via AES-GCM (or AES-CBC+HMAC, whichever the
+// app's crypto.Encryptor was configured with) so a sibling-domain cookie
+// injection cannot forge errors that bond would inject into props on the
+// next render.
+//
+// Silently no-ops when the app has no crypto.Encryptor wired (e.g. raw
+// test contexts) so callers do not have to handle a failure mode that
+// only manifests in misconfigured environments. Operators should treat
+// a missing encryptor as a configuration bug; the lack of a flash
+// cookie on the response is the visible symptom.
 func (c *Context) WithErrors(errors any) {
-	writeFlashCookie(c.Response, FlashErrorsCookie, errors)
+	writeFlashCookie(c.Response, c.flashEncryptor(), FlashErrorsCookie, errors)
 }
 
 // WithInput stashes old form input as a flash cookie so it survives
-// a redirect and is available on the next request.
+// a redirect and is available on the next request. See WithErrors for
+// authentication and configuration notes.
 func (c *Context) WithInput(input any) {
-	writeFlashCookie(c.Response, FlashInputCookie, input)
+	writeFlashCookie(c.Response, c.flashEncryptor(), FlashInputCookie, input)
 }
 
-// writeFlashCookie JSON-encodes value and sets it as a base64-encoded cookie.
-func writeFlashCookie(w http.ResponseWriter, name string, value any) {
-	data, err := json.Marshal(value)
+// flashEncryptor returns the app's crypto.Encryptor when services are
+// wired, else nil. Callers must handle nil by skipping the cookie write
+// rather than emitting an unauthenticated payload.
+func (c *Context) flashEncryptor() crypto.Encryptor {
+	if c.services == nil {
+		return nil
+	}
+	return c.services.Crypto
+}
+
+// SealFlash JSON-encodes value, encrypts it with enc under the AAD bound
+// to name, and returns the cookie value. Returns the empty string and an
+// error when enc is nil, name is unrecognized, or encryption fails. The
+// returned string is safe to set as an HTTP cookie value (URL-base64,
+// no separators).
+//
+// Exposed so packages that read or write flash cookies outside the
+// router pipeline (e.g. bond/flash.go on the read path) can produce
+// payloads that this package will accept on the next request.
+func SealFlash(enc crypto.Encryptor, name string, value any) (string, error) {
+	if enc == nil {
+		return "", errors.New("velocity/router: flash encryptor not configured")
+	}
+	aad := flashAADFor(name)
+	if aad == "" {
+		return "", fmt.Errorf("velocity/router: unknown flash cookie name %q", name)
+	}
+	plaintext, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	sealed, err := enc.EncryptBytesWithAAD(plaintext, []byte(aad))
+	if err == nil {
+		return sealed, nil
+	}
+	// CBC ciphers reject EncryptBytesWithAAD. Fall back to the universal
+	// EncryptBytes path; integrity is still enforced via the CBC+HMAC
+	// payload format. The AAD domain separation is lost on CBC, an
+	// accepted trade-off for backward compatibility with apps that pin
+	// to a CBC cipher.
+	if errors.Is(err, crypto.ErrInvalidCipher) {
+		return enc.EncryptBytes(plaintext)
+	}
+	return "", err
+}
+
+// OpenFlash inverts SealFlash. Returns the decoded JSON value on
+// success. Returns (nil, error) when the cookie is missing the AAD
+// binding for name, is over MaxFlashCookieSize, fails decryption, or
+// does not contain valid JSON. Callers MUST treat any error as "no
+// flash data" and never surface the error to the client.
+func OpenFlash(enc crypto.Encryptor, name, cookieValue string) (any, error) {
+	if enc == nil {
+		return nil, errors.New("velocity/router: flash encryptor not configured")
+	}
+	if cookieValue == "" {
+		return nil, errors.New("velocity/router: empty flash cookie")
+	}
+	if len(cookieValue) > MaxFlashCookieSize {
+		return nil, fmt.Errorf("velocity/router: flash cookie exceeds %d bytes", MaxFlashCookieSize)
+	}
+	aad := flashAADFor(name)
+	if aad == "" {
+		return nil, fmt.Errorf("velocity/router: unknown flash cookie name %q", name)
+	}
+	plaintext, err := enc.DecryptBytesWithAAD(cookieValue, []byte(aad))
+	if err != nil {
+		// CBC fallback: SealFlash falls back to EncryptBytes on CBC, so
+		// the read side must mirror that path. DecryptBytes accepts any
+		// ciphertext shape the encryptor produced and surfaces the
+		// underlying authentication failure as an error.
+		if errors.Is(err, crypto.ErrInvalidCipher) || errors.Is(err, crypto.ErrInvalidPayload) {
+			plaintext, err = enc.DecryptBytes(cookieValue)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			return nil, err
+		}
+	}
+	var result any
+	if err := json.Unmarshal(plaintext, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// writeFlashCookie encrypts value with enc and sets it as a Secure,
+// HttpOnly, SameSite=Lax cookie. Silently no-ops when enc is nil or
+// encryption fails so the handler never blocks on a flash-write
+// failure (the missing cookie surfaces on the next render as the
+// absence of flashed errors / old input).
+func writeFlashCookie(w http.ResponseWriter, enc crypto.Encryptor, name string, value any) {
+	sealed, err := SealFlash(enc, name, value)
 	if err != nil {
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     name,
-		Value:    base64.URLEncoding.EncodeToString(data),
+		Value:    sealed,
 		Path:     "/",
 		MaxAge:   300, // 5 minutes; cleared on read
 		HttpOnly: true,

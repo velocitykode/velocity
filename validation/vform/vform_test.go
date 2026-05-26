@@ -9,9 +9,25 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/app"
+	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/router"
 	"github.com/velocitykode/velocity/validation"
 )
+
+// testFormEncryptor returns an AES-256-GCM encryptor for vform tests
+// that exercise flash-cookie emission. Sealing requires an encryptor;
+// without one, ctx.WithErrors no-ops and the cookie is never set.
+func testFormEncryptor(t *testing.T) crypto.Encryptor {
+	t.Helper()
+	enc, err := crypto.NewEncryptor(crypto.Config{
+		Key:    "base64:MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
+		Cipher: "AES-256-GCM",
+	})
+	if err != nil {
+		t.Fatalf("failed to build encryptor: %v", err)
+	}
+	return enc
+}
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -75,7 +91,11 @@ func jsonCtx(t *testing.T, body string) (*router.Context, *httptest.ResponseReco
 	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	c := router.NewContext(w, r)
-	c.SetServices(&app.Services{})
+	// Wire a real encryptor so ctx.WithErrors / WithInput can seal the
+	// flash cookies. Tests that need a DB still attach one via
+	// SetServices directly; they can preserve Crypto by reading it
+	// off the existing services first.
+	c.SetServices(&app.Services{Crypto: testFormEncryptor(t)})
 	return c, w
 }
 
