@@ -18,6 +18,7 @@ var (
 	ErrInvalidPayload   = drivers.ErrInvalidPayload
 	ErrDecryptionFailed = drivers.ErrDecryptionFailed
 	ErrAADMismatch      = drivers.ErrAADMismatch
+	ErrInvalidKeyLength = drivers.ErrInvalidKeyLength
 )
 
 // Encryptor interface defines encryption operations

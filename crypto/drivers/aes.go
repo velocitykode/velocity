@@ -72,7 +72,16 @@ type AESDriver struct {
 	legacyWarnOnce  sync.Once
 }
 
-// NewAESDriver creates a new AES driver
+// NewAESDriver creates a new AES driver. The supplied master key MUST have
+// exactly the cipher's required raw byte length (AES-128 = 16, AES-192 = 24,
+// AES-256 = 32). Shorter inputs are rejected with ErrInvalidKeyLength rather
+// than silently stretched, because HKDF cannot manufacture entropy that is
+// not present in the input; a 4-byte ASCII key (~32 bits of entropy) would
+// still be brute-forceable in seconds regardless of how it is expanded.
+//
+// HKDF is still used internally as a domain separator, deriving distinct
+// encryption and HMAC subkeys from the validated full-length master via
+// distinct info strings.
 func NewAESDriver(key []byte, previousKeys [][]byte, cipher string) (*AESDriver, error) {
 	d := &AESDriver{
 		previousKeys: previousKeys,
@@ -91,14 +100,30 @@ func NewAESDriver(key []byte, previousKeys [][]byte, cipher string) (*AESDriver,
 		return nil, fmt.Errorf("velocity/crypto: unsupported cipher: %s", cipher)
 	}
 
-	// Reject empty or nil keys
-	if len(key) == 0 {
-		return nil, errors.New("velocity/crypto: invalid key size: key must not be empty")
+	// Enforce raw key length against the cipher. Empty, undersized, and
+	// oversized keys all reject through the same sentinel so callers can
+	// branch on errors.Is(err, ErrInvalidKeyLength).
+	if len(key) != d.keySize {
+		return nil, fmt.Errorf("%w: cipher %s requires %d-byte key, got %d", ErrInvalidKeyLength, d.cipher, d.keySize, len(key))
 	}
 
-	// Derive separate encryption and HMAC subkeys directly from the original key
-	// via HKDF with distinct info strings. HKDF handles any input key size, so
-	// no intermediate normalization step is needed.
+	// Validate previous keys with the same rule. A rotated-out key that
+	// does not match the cipher's size is dropped rather than silently
+	// accepted; bad entries here would mask a misconfigured rotation
+	// window. The driver still accepts an empty PreviousKeys slice.
+	validPrev := make([][]byte, 0, len(previousKeys))
+	for _, pk := range previousKeys {
+		if len(pk) != d.keySize {
+			continue
+		}
+		validPrev = append(validPrev, pk)
+	}
+	d.previousKeys = validPrev
+
+	// Derive separate encryption and HMAC subkeys from the validated master
+	// via HKDF with distinct info strings. HKDF here is a subkey separator,
+	// not a stretcher: input entropy already meets the cipher's required
+	// length.
 	encKey, err := deriveSubkey(key, d.keySize, []byte("encryption"))
 	if err != nil {
 		return nil, fmt.Errorf("velocity/crypto: failed to derive encryption key: %w", err)

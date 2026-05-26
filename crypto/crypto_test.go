@@ -357,8 +357,11 @@ func TestInvalidKey(t *testing.T) {
 	}
 }
 
-func TestKeyDerivation(t *testing.T) {
-	// Non-standard-size keys are now accepted and derived via HKDF
+func TestKeyDerivation_RejectsWrongLength(t *testing.T) {
+	// Keys whose raw byte length does not match the cipher's required size
+	// MUST be rejected. Earlier behaviour silently HKDF-stretched short keys,
+	// laundering low-entropy input into a full-length derived key; that path
+	// is gone. Operators must supply a key with the correct length.
 	tests := []struct {
 		name   string
 		cipher string
@@ -368,13 +371,50 @@ func TestKeyDerivation(t *testing.T) {
 		{"Short key for AES-256", "AES-256-CBC", "shortkey"},
 		{"Long key for AES-128", "AES-128-GCM", "this-is-a-much-longer-key-than-required"},
 		{"Long key for AES-256", "AES-256-GCM", "this-is-a-much-longer-key-than-required"},
+		{"One byte short of AES-128", "AES-128-CBC", strings.Repeat("a", 15)},
+		{"One byte over AES-128", "AES-128-CBC", strings.Repeat("a", 17)},
+		{"One byte short of AES-192", "AES-192-CBC", strings.Repeat("a", 23)},
+		{"One byte short of AES-256", "AES-256-CBC", strings.Repeat("a", 31)},
+		{"One byte over AES-256", "AES-256-CBC", strings.Repeat("a", 33)},
+		{"24-byte key under AES-256", "AES-256-CBC", strings.Repeat("a", 24)},
+		{"16-byte key under AES-256", "AES-256-CBC", strings.Repeat("a", 16)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewEncryptor(Config{Key: tt.key, Cipher: tt.cipher})
+			if err == nil {
+				t.Fatalf("expected ErrInvalidKeyLength rejection for %q, got nil", tt.key)
+			}
+			if !errors.Is(err, ErrInvalidKeyLength) {
+				t.Fatalf("expected ErrInvalidKeyLength, got %v", err)
+			}
+		})
+	}
+}
+
+func TestKeyDerivation_AcceptsExactLength(t *testing.T) {
+	// Round trip each AES variant with a raw key of exactly the cipher's
+	// required byte length. These ARE the only sizes the constructor will
+	// admit; anything else is rejected by TestKeyDerivation_RejectsWrongLength.
+	tests := []struct {
+		name   string
+		cipher string
+		key    string
+	}{
+		{"AES-128-CBC with 16 raw bytes", "AES-128-CBC", strings.Repeat("a", 16)},
+		{"AES-128-GCM with 16 raw bytes", "AES-128-GCM", strings.Repeat("a", 16)},
+		{"AES-192-CBC with 24 raw bytes", "AES-192-CBC", strings.Repeat("a", 24)},
+		{"AES-192-GCM with 24 raw bytes", "AES-192-GCM", strings.Repeat("a", 24)},
+		{"AES-256-CBC with 32 raw bytes", "AES-256-CBC", strings.Repeat("a", 32)},
+		{"AES-256-GCM with 32 raw bytes", "AES-256-GCM", strings.Repeat("a", 32)},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			enc, err := NewEncryptor(Config{Key: tt.key, Cipher: tt.cipher})
 			if err != nil {
-				t.Fatalf("Expected no error, got: %v", err)
+				t.Fatalf("unexpected error: %v", err)
 			}
 			ciphertext, err := enc.Encrypt("hello world")
 			if err != nil {
