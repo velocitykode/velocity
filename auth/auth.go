@@ -763,17 +763,6 @@ func (m *Manager) SetEventDispatcher(fn func(ctx context.Context, event any) err
 	}
 }
 
-// dispatchEvent fires event through the installed event dispatcher when
-// one is wired. Returns nil when no dispatcher is configured so callers
-// can ignore the error without a nil check.
-func (m *Manager) dispatchEvent(ctx context.Context, event any) error {
-	holder := m.eventDispatcher.Load()
-	if holder == nil || holder.fn == nil {
-		return nil
-	}
-	return holder.fn(ctx, event)
-}
-
 // ServerSessionStore returns the installed server-side session store, or
 // nil when none has been configured.
 func (m *Manager) ServerSessionStore() ServerSessionStore {
