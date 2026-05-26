@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
 	"strings"
 
 	"github.com/velocitykode/velocity/crypto/drivers"
@@ -16,6 +18,13 @@ var (
 	ErrNotInitialized = errors.New("velocity/crypto: encryptor not initialized")
 	ErrInvalidCipher  = drivers.ErrInvalidCipher
 	ErrInvalidPayload = drivers.ErrInvalidPayload
+	// ErrInvalidPreviousKey indicates that an entry in
+	// Config.PreviousKeys could not be parsed (malformed base64,
+	// wrong-length decoded bytes, etc.). The constructor fails fast so a
+	// typo in APP_PREVIOUS_KEY does not silently disable key rotation.
+	// Operators who need the legacy "skip and continue" behaviour (e.g.
+	// transient migrations) can set CRYPTO_IGNORE_INVALID_PREVIOUS_KEYS=true.
+	ErrInvalidPreviousKey = errors.New("velocity/crypto: invalid previous key")
 	// ErrDecrypt is the single sentinel for any cryptographic decrypt
 	// failure (wrong key, wrong MAC, bad padding, malformed IV bytes).
 	// Callers MUST NOT include the error message in user-visible output;
@@ -141,16 +150,30 @@ func newDriver(config Config) (Encryptor, error) {
 		return nil, err
 	}
 
-	// Parse previous keys for rotation
+	// Parse previous keys for rotation. Default behaviour is fail-fast:
+	// any malformed entry rejects the entire constructor so an operator's
+	// typo cannot silently disable key rotation (e.g. APP_PREVIOUS_KEY
+	// shape "base64:..." with a corrupted suffix would otherwise drop the
+	// rotation entry and leave decrypts of pre-rotation ciphertexts
+	// failing in production while the env looks healthy).
+	//
+	// Operators with a transient migration that legitimately needs to
+	// tolerate parse failures (e.g. removing a retired key from the list
+	// before redeploying) can set CRYPTO_IGNORE_INVALID_PREVIOUS_KEYS=true.
+	// The opt-out is intentionally an env var, not a Config field, so it
+	// is reviewable in deployment manifests.
+	ignoreInvalid := os.Getenv("CRYPTO_IGNORE_INVALID_PREVIOUS_KEYS") == "true"
 	var previousKeys [][]byte
-	for _, k := range config.PreviousKeys {
+	for i, k := range config.PreviousKeys {
 		if k == "" {
 			continue
 		}
 		prevKey, err := parseKey(k)
 		if err != nil {
-			// Skip invalid previous keys
-			continue
+			if ignoreInvalid {
+				continue
+			}
+			return nil, fmt.Errorf("%w: index %d: %v", ErrInvalidPreviousKey, i, err)
 		}
 		previousKeys = append(previousKeys, prevKey)
 	}
