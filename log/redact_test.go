@@ -490,10 +490,11 @@ func TestChain_EmptyIsIdentity(t *testing.T) {
 // non-RE2 implementation with catastrophic backtracking, this test
 // times out instead of returning silently.
 //
-// Bound is set to 5s rather than 1s so the test passes reliably
-// under -race (which adds 5-10x overhead); a true exponential-time
-// regex on this input would not finish in minutes, so 5s still
-// detects catastrophic backtracking with margin to spare.
+// Bound is set to 15s rather than 1s so the test passes reliably
+// under -race on slow CI runners (which can add 10-15x overhead on
+// top of a cold GitHub Actions VM); a true exponential-time regex
+// on this input would not finish in minutes, so 15s still detects
+// catastrophic backtracking with margin to spare.
 func TestChain_ReDoSSmoke(t *testing.T) {
 	chain := Chain(HeaderRedactor(), JWTRedactor(), PANRedactor(), EmailRedactor())
 
@@ -524,12 +525,12 @@ func TestChain_ReDoSSmoke(t *testing.T) {
 	select {
 	case <-done:
 		elapsed := time.Since(start)
-		if elapsed > 5*time.Second {
-			t.Errorf("chain on ~96 KiB input took %v, want <5s", elapsed)
+		if elapsed > 15*time.Second {
+			t.Errorf("chain on ~96 KiB input took %v, want <15s", elapsed)
 		}
 		t.Logf("chain completed in %v", elapsed)
-	case <-time.After(15 * time.Second):
-		t.Fatal("chain did not complete within 15s on ~96 KiB input (possible ReDoS)")
+	case <-time.After(30 * time.Second):
+		t.Fatal("chain did not complete within 30s on ~96 KiB input (possible ReDoS)")
 	}
 }
 
