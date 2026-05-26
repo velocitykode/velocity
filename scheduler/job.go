@@ -70,9 +70,6 @@ type Job struct {
 	outputFile   string
 	appendOutput bool
 	emailOutput  string
-
-	// Mutex for preventing overlapping
-	mutex *sync.Mutex
 }
 
 // getDispatch returns the event dispatch function from the parent scheduler,
@@ -621,20 +618,24 @@ func (j *Job) Saturdays() *Job {
 
 // Constraint methods
 
-// WithoutOverlapping prevents job overlap. The overlap guard keys on the
-// job name, so an unnamed closure (e.g. one registered via Scheduler.Call
-// without a follow-up .Name(...) call) can collide with every other
-// unnamed closure in the same scheduler. The collision-hazard warning
-// fires at scheduler start (Run / ValidateJobs), not here, so chains like
+// WithoutOverlapping prevents job overlap. The overlap guard is the
+// scheduler's distributed Locker (per-process by default via
+// InMemoryLocker, cluster-wide when a shared-backend Locker is installed
+// via Scheduler.SetLocker). The Locker acquire happens in
+// Scheduler.runDueJobs BEFORE the run goroutine is dispatched, so the
+// per-tick contest is synchronous and cross-process.
+//
+// The overlap guard keys on the job name, so an unnamed closure (e.g.
+// one registered via Scheduler.Call without a follow-up .Name(...) call)
+// can collide with every other unnamed closure in the same scheduler.
+// The collision-hazard warning fires at scheduler start (Run /
+// ValidateJobs), not here, so chains like
 // s.Call(fn).WithoutOverlapping().Name("nightly") settle before being
 // inspected.
 func (j *Job) WithoutOverlapping() *Job {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.withoutOverlapping = true
-	if j.mutex == nil {
-		j.mutex = &sync.Mutex{}
-	}
 	return j
 }
 
@@ -647,9 +648,6 @@ func (j *Job) WithoutOverlappingFor(ttl time.Duration) *Job {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.withoutOverlapping = true
-	if j.mutex == nil {
-		j.mutex = &sync.Mutex{}
-	}
 	if ttl > 0 {
 		j.withoutOverlappingTTL = ttl
 	}

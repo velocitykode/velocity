@@ -1,7 +1,6 @@
 package scheduler
 
 import (
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -48,9 +47,6 @@ func TestJob(t *testing.T) {
 
 		if !job.withoutOverlapping {
 			t.Error("expected withoutOverlapping to be true")
-		}
-		if job.mutex == nil {
-			t.Error("expected mutex to be initialized")
 		}
 	})
 
@@ -192,7 +188,6 @@ func TestJob(t *testing.T) {
 			schedule:           &Schedule{},
 			timezone:           time.Local,
 			withoutOverlapping: true,
-			mutex:              &sync.Mutex{},
 		}
 
 		var executed atomic.Int32
