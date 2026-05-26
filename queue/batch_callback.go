@@ -217,14 +217,25 @@ func init() {
 }
 
 // dispatchBatchCallbackJob enqueues a BatchCallbackJob via the queue
-// driver. Wrapped in async.Go so the calling worker does not block on
-// driver I/O when the terminal CAS fires (it has already returned
-// success to the caller; the callback is a side effect).
+// driver and, on a successful PushCtx, marks the batch row's
+// `<kind>_dispatched` column to true.
 //
-// driverProvider is consulted lazily so the queue driver pointer can be
-// swapped (or absent in tests). If nil, the job is dropped and a
-// fallback in-process invocation is attempted via the closure registry;
-// see fireTerminalCallbacks.
+// Failure handling is the C-03 fb3 fix: PushCtx errors are NOT
+// swallowed. The function leaves the dispatched flag false so the
+// reaper goroutine on the DatabaseBatchRepository picks the row up on
+// its next tick. Without this contract the callback is permanently
+// lost the first time Redis goes down or the worker's context cancels.
+//
+// The actual driver.PushCtx is wrapped in async.Go so the worker
+// invoking the terminal CAS does not block on driver I/O. That said,
+// the reaper is the load-bearing durability path: even if the async
+// goroutine here is preempted indefinitely or the process crashes,
+// the reaper retries from the persisted state.
+//
+// Returns immediately when no callback queue driver is wired (e.g.
+// memory-only tests). The reaper handles that case too: it skips
+// dispatch when the driver is nil so a later SetBatchCallbackQueue
+// wiring picks up the backlog.
 func dispatchBatchCallbackJob(ctx context.Context, name string, kind CallbackKind, batchID BatchID, errMsg string) {
 	driver := callbackQueueDriver()
 	if driver == nil || name == "" {
@@ -239,11 +250,26 @@ func dispatchBatchCallbackJob(ctx context.Context, name string, kind CallbackKin
 	queueName := callbackQueueName()
 	async.Go(func() {
 		// Short timeout: callback enqueue should never hold up worker
-		// shutdown. If the driver is slow we accept the loss; the
-		// dispatcher process's closure (if any) still fires.
+		// shutdown. On timeout / driver error the reaper retries
+		// against the persisted state on its next tick.
 		pushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = driver.PushCtx(pushCtx, job, queueName)
+		if err := driver.PushCtx(pushCtx, job, queueName); err != nil {
+			// Enqueue failed - leave dispatched=false so the reaper
+			// retries. We intentionally do NOT log here because the
+			// reaper runs every 15s and a flood of failed PushCtx
+			// from a sustained Redis outage would otherwise spam the
+			// log. Operators see the symptom (batches stuck with
+			// dispatched=false in job_batches) via dashboards.
+			return
+		}
+		// Successful enqueue: mark dispatched=true so the reaper
+		// stops re-issuing this job. A fresh background context with
+		// a short timeout is used because the caller's ctx may have
+		// already been cancelled by worker shutdown.
+		markCtx, markCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer markCancel()
+		_ = DefaultBatchRepository().MarkCallbackDispatched(markCtx, batchID, kind)
 	})
 	// ctx is honoured indirectly via async.Go's recovery, but we still
 	// accept it for symmetry with sibling dispatch helpers.

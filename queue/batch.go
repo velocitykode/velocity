@@ -105,6 +105,16 @@ type Batch struct {
 	catchName   string
 	finallyName string
 
+	// dispatched flags track whether the corresponding callback job has
+	// been successfully PushCtx'd onto the queue. The terminal CAS path
+	// attempts the enqueue inline; if PushCtx fails the flag stays
+	// false and the reaper goroutine on DatabaseBatchRepository retries
+	// every 15s. The flags are atomic.Bool so the reaper and the
+	// terminal path can race without dropping notifications.
+	thenDispatched    atomic.Bool
+	catchDispatched   atomic.Bool
+	finallyDispatched atomic.Bool
+
 	// Local closure callbacks. Populated when the dispatcher used the
 	// Then/Catch/Finally func variants. nil on remote-loaded Batch
 	// instances (closures don't cross processes). When set, the

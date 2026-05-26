@@ -19,8 +19,16 @@ import (
 // NAME of a callback registered via RegisterBatchCallback /
 // RegisterBatchFailureCallback. On terminal completion the repository
 // enqueues a BatchCallbackJob carrying the name so any worker (on any
-// host) can run the registered handler; closures stored in-process are
-// kept only as a convenience for single-process apps.
+// host) can run the registered handler.
+//
+// then_dispatched / catch_dispatched / finally_dispatched track whether
+// the corresponding callback job has been successfully PushCtx'd onto
+// the queue. The terminal CAS path attempts the enqueue inline; if it
+// fails (driver down, ctx canceled, queue backend partitioned) the
+// dispatched flag stays false and the reaper goroutine on
+// DatabaseBatchRepository re-attempts the enqueue every 15 seconds.
+// This is what makes callback delivery durable across enqueue failures
+// and dispatcher-process crashes that race the CAS write.
 //
 // Driver names accepted: "postgres", "mysql", "sqlite" (or any other
 // value, which falls through to the SQLite dialect).
@@ -39,6 +47,9 @@ func JobBatchesMigrationSQL(driver string) []string {
 				then_callback TEXT NULL,
 				catch_callback TEXT NULL,
 				finally_callback TEXT NULL,
+				then_dispatched BOOLEAN NOT NULL DEFAULT FALSE,
+				catch_dispatched BOOLEAN NOT NULL DEFAULT FALSE,
+				finally_dispatched BOOLEAN NOT NULL DEFAULT FALSE,
 				cancelled_at TIMESTAMP NULL,
 				completed_at TIMESTAMP NULL,
 				last_error TEXT NULL,
@@ -46,6 +57,12 @@ func JobBatchesMigrationSQL(driver string) []string {
 				updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 			)`,
 			`CREATE INDEX IF NOT EXISTS idx_job_batches_completed_at ON job_batches (completed_at)`,
+			// Index supports the reaper scan: it filters on completed_at
+			// being non-null AND at least one *_dispatched flag being
+			// false. Postgres can use a partial index for the latter but
+			// a simple composite is enough for tens of thousands of
+			// rows.
+			`CREATE INDEX IF NOT EXISTS idx_job_batches_callback_pending ON job_batches (completed_at, then_dispatched, catch_dispatched, finally_dispatched)`,
 		}
 	case "mysql":
 		return []string{
@@ -60,6 +77,9 @@ func JobBatchesMigrationSQL(driver string) []string {
 				then_callback VARCHAR(128) NULL,
 				catch_callback VARCHAR(128) NULL,
 				finally_callback VARCHAR(128) NULL,
+				then_dispatched TINYINT(1) NOT NULL DEFAULT 0,
+				catch_dispatched TINYINT(1) NOT NULL DEFAULT 0,
+				finally_dispatched TINYINT(1) NOT NULL DEFAULT 0,
 				cancelled_at TIMESTAMP NULL,
 				completed_at TIMESTAMP NULL,
 				last_error TEXT NULL,
@@ -67,6 +87,7 @@ func JobBatchesMigrationSQL(driver string) []string {
 				updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 			) ENGINE=InnoDB`,
 			`CREATE INDEX idx_job_batches_completed_at ON job_batches (completed_at)`,
+			`CREATE INDEX idx_job_batches_callback_pending ON job_batches (completed_at, then_dispatched, catch_dispatched, finally_dispatched)`,
 		}
 	default: // sqlite + fallback
 		return []string{
@@ -81,6 +102,9 @@ func JobBatchesMigrationSQL(driver string) []string {
 				then_callback TEXT NULL,
 				catch_callback TEXT NULL,
 				finally_callback TEXT NULL,
+				then_dispatched INTEGER NOT NULL DEFAULT 0,
+				catch_dispatched INTEGER NOT NULL DEFAULT 0,
+				finally_dispatched INTEGER NOT NULL DEFAULT 0,
 				cancelled_at DATETIME NULL,
 				completed_at DATETIME NULL,
 				last_error TEXT NULL,
@@ -88,6 +112,7 @@ func JobBatchesMigrationSQL(driver string) []string {
 				updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 			)`,
 			`CREATE INDEX IF NOT EXISTS idx_job_batches_completed_at ON job_batches (completed_at)`,
+			`CREATE INDEX IF NOT EXISTS idx_job_batches_callback_pending ON job_batches (completed_at, then_dispatched, catch_dispatched, finally_dispatched)`,
 		}
 	}
 }

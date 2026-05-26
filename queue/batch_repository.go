@@ -72,9 +72,37 @@ type BatchRepository interface {
 	// supplied duration. Returns the number of rows removed.
 	PruneStale(ctx context.Context, olderThan time.Duration) (int, error)
 
+	// MarkCallbackDispatched flips the row's dispatched flag for the
+	// given callback kind. Invoked by the BatchCallbackJob dispatcher
+	// after a successful PushCtx. The reaper uses the flag to skip
+	// already-dispatched callbacks. Idempotent: a second call is a
+	// no-op (returns nil) since the flag is monotonic.
+	MarkCallbackDispatched(ctx context.Context, id BatchID, kind CallbackKind) error
+
+	// FindUndispatchedCallbacks returns up to `limit` (id, kind, name,
+	// errMsg) tuples for completed batches whose callback dispatch flag
+	// is still false. Catch callbacks are returned independent of the
+	// completed_at check because Catch can fire mid-flight on the first
+	// failure; Then and Finally only return rows with non-null
+	// completed_at. The reaper goroutine calls this every 15s and
+	// retries enqueue for each row.
+	FindUndispatchedCallbacks(ctx context.Context, limit int) ([]UndispatchedCallback, error)
+
 	// Close releases any background resources (cleanup goroutines, DB
 	// statements). Idempotent.
 	Close() error
+}
+
+// UndispatchedCallback is the row tuple returned by
+// FindUndispatchedCallbacks. The reaper enqueues one BatchCallbackJob
+// per entry and then calls MarkCallbackDispatched on success. ErrMsg is
+// populated only for Catch / Finally kinds where the originating
+// failure text needs to thread through to the handler.
+type UndispatchedCallback struct {
+	BatchID BatchID
+	Kind    CallbackKind
+	Name    string
+	ErrMsg  string
 }
 
 // callbackRegistry holds the in-memory Then/Catch/Finally closures and
@@ -357,6 +385,86 @@ func (r *inMemoryBatchRepository) PruneStale(ctx context.Context, olderThan time
 		}
 	}
 	return removed, nil
+}
+
+// MarkCallbackDispatched flips the in-memory dispatched flag for the
+// given callback kind. The in-memory repo has no persistent storage so
+// the flag lives on the Batch atomic.Bool fields; the reaper running
+// on the DB repo is the one that actually retries on failures, but
+// honouring the interface here lets the test suite exercise both code
+// paths uniformly.
+func (r *inMemoryBatchRepository) MarkCallbackDispatched(ctx context.Context, id BatchID, kind CallbackKind) error {
+	if err := ctxErr(ctx); err != nil {
+		return err
+	}
+	b, _ := r.Find(ctx, id)
+	if b == nil {
+		return nil
+	}
+	switch kind {
+	case CallbackThen:
+		b.thenDispatched.Store(true)
+	case CallbackCatch:
+		b.catchDispatched.Store(true)
+	case CallbackFinally:
+		b.finallyDispatched.Store(true)
+	}
+	return nil
+}
+
+// FindUndispatchedCallbacks scans the in-memory map for completed
+// batches whose Then/Finally dispatched flag is false (Catch is
+// independent of completion). Returns at most `limit` rows; the
+// reaper iterates these and PushCtx's a BatchCallbackJob for each.
+func (r *inMemoryBatchRepository) FindUndispatchedCallbacks(ctx context.Context, limit int) ([]UndispatchedCallback, error) {
+	if err := ctxErr(ctx); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []UndispatchedCallback
+	for _, b := range r.batches {
+		if len(out) >= limit {
+			break
+		}
+		// Catch fires on first failure - independent of finished state.
+		if b.catchName != "" && !b.catchDispatched.Load() && b.failedJobs.Load() > 0 {
+			out = append(out, UndispatchedCallback{
+				BatchID: b.id,
+				Kind:    CallbackCatch,
+				Name:    b.catchName,
+				ErrMsg:  b.lastError,
+			})
+			if len(out) >= limit {
+				break
+			}
+		}
+		if !b.finished.Load() {
+			continue
+		}
+		if b.thenName != "" && !b.thenDispatched.Load() && !(b.failedJobs.Load() > 0) {
+			out = append(out, UndispatchedCallback{
+				BatchID: b.id,
+				Kind:    CallbackThen,
+				Name:    b.thenName,
+			})
+			if len(out) >= limit {
+				break
+			}
+		}
+		if b.finallyName != "" && !b.finallyDispatched.Load() {
+			out = append(out, UndispatchedCallback{
+				BatchID: b.id,
+				Kind:    CallbackFinally,
+				Name:    b.finallyName,
+				ErrMsg:  b.lastError,
+			})
+		}
+	}
+	return out, nil
 }
 
 func (r *inMemoryBatchRepository) Close() error {

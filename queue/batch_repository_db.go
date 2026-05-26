@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/velocitykode/velocity/async"
 )
 
 // ErrBatchRepositoryClosed is returned when an operation hits a closed
@@ -17,6 +20,22 @@ import (
 // pointer needs a deterministic error rather than a panic on a torn-
 // down connection pool.
 var ErrBatchRepositoryClosed = errors.New("velocity/queue: batch repository is closed")
+
+// DefaultReaperInterval is the period between sweeps of undispatched
+// callbacks. 15s matches Laravel's behaviour and is short enough that a
+// transient Redis outage recovers within a few ticks; long enough that
+// the SELECT on job_batches is not a hot loop on idle apps. Override
+// via NewDatabaseBatchRepositoryWithReaperInterval when wiring a
+// repository whose backing queue has a different SLA.
+const DefaultReaperInterval = 15 * time.Second
+
+// reaperBatchSize bounds how many undispatched callbacks the reaper
+// claims per tick. The bound exists so a backlog under partition
+// recovery cannot flood the queue (and consequently OOM the worker
+// fleet) in one tick. 100 is large enough that legitimate steady-state
+// retries clear quickly and small enough to stay well below any
+// queue-driver batch limit.
+const reaperBatchSize = 100
 
 // DatabaseBatchRepository persists batch state in a SQL table so workers
 // on any host can observe progress, cancellation, and completion.
@@ -49,6 +68,15 @@ type DatabaseBatchRepository struct {
 	// because Close races with in-flight worker callbacks during app
 	// shutdown.
 	closed atomic.Bool
+
+	// reaperInterval and reaper-control plumbing for the goroutine that
+	// retries undispatched callback enqueues. Started by Start (called
+	// implicitly by NewDatabaseBatchRepository) and torn down by Close.
+	reaperInterval time.Duration
+	reaperStop     chan struct{}
+	reaperStopOnce sync.Once
+	reaperDone     chan struct{}
+	reaperStarted  atomic.Bool
 }
 
 // NewDatabaseBatchRepository constructs a database-backed repository.
@@ -62,6 +90,15 @@ type DatabaseBatchRepository struct {
 // rejected at construction so apps fail fast at boot rather than
 // silently corrupting batch state with mis-written SQL.
 func NewDatabaseBatchRepository(db *sql.DB, dbDriver string) (*DatabaseBatchRepository, error) {
+	return NewDatabaseBatchRepositoryWithReaperInterval(db, dbDriver, DefaultReaperInterval)
+}
+
+// NewDatabaseBatchRepositoryWithReaperInterval is the constructor used
+// by tests to shrink the reaper tick (15s is too slow for unit tests).
+// Production callers should use NewDatabaseBatchRepository; the reaper
+// interval is part of the public API for tuning, not for skipping the
+// reaper entirely. Passing a non-positive interval disables the reaper.
+func NewDatabaseBatchRepositoryWithReaperInterval(db *sql.DB, dbDriver string, interval time.Duration) (*DatabaseBatchRepository, error) {
 	if db == nil {
 		return nil, errors.New("velocity/queue: NewDatabaseBatchRepository requires a non-nil *sql.DB")
 	}
@@ -72,7 +109,114 @@ func NewDatabaseBatchRepository(db *sql.DB, dbDriver string) (*DatabaseBatchRepo
 	default:
 		return nil, fmt.Errorf("velocity/queue: unsupported dbDriver %q for batch repository", dbDriver)
 	}
-	return &DatabaseBatchRepository{db: db, dbDriver: dbDriver}, nil
+	r := &DatabaseBatchRepository{
+		db:             db,
+		dbDriver:       dbDriver,
+		reaperInterval: interval,
+		reaperStop:     make(chan struct{}),
+		reaperDone:     make(chan struct{}),
+	}
+	if interval > 0 {
+		r.startReaper()
+	} else {
+		// Reaper disabled: close the done channel so Close does not
+		// block waiting for a goroutine that never started.
+		close(r.reaperDone)
+	}
+	return r, nil
+}
+
+// startReaper kicks off the background sweep that retries enqueue for
+// any callback row whose dispatched flag is still false. Idempotent:
+// repeated calls (e.g. after a hot config reload) are no-ops because
+// reaperStarted gates the goroutine spawn.
+//
+// The reaper:
+//   - Wakes every reaperInterval (default 15s).
+//   - Calls FindUndispatchedCallbacks(limit=100) - filtered SELECT on
+//     the job_batches index.
+//   - For each row, builds a BatchCallbackJob and PushCtx's it via the
+//     wired callback queue driver. On success, calls
+//     MarkCallbackDispatched so the row is no longer eligible.
+//   - On PushCtx failure (driver down, ctx canceled, etc.) leaves the
+//     dispatched flag false; the next tick retries.
+//   - Stops on Close (signals reaperStop, waits via reaperDone).
+//
+// Wrapped in async.Go so any unrecovered panic in the loop is reported
+// via the framework's panic logger rather than crashing the worker
+// process. The async.Go path also reseeds the loop after panic so a
+// single bad iteration does not orphan the goroutine.
+func (r *DatabaseBatchRepository) startReaper() {
+	if !r.reaperStarted.CompareAndSwap(false, true) {
+		return
+	}
+	async.Go(func() {
+		defer close(r.reaperDone)
+		ticker := time.NewTicker(r.reaperInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-r.reaperStop:
+				return
+			case <-ticker.C:
+				r.reaperTick()
+			}
+		}
+	})
+}
+
+// reaperTick is one sweep. Pulled out so tests can drive a single pass
+// without waiting for the timer to fire. Errors from
+// FindUndispatchedCallbacks are swallowed: this is a best-effort retry
+// loop, and surfacing a Logger here would require dragging the queue
+// Logger type into the repository struct. Storage failures become
+// visible at the next worker.go call site, which has the logger wired.
+func (r *DatabaseBatchRepository) reaperTick() {
+	if r.closed.Load() {
+		return
+	}
+	rows, err := r.FindUndispatchedCallbacks(context.Background(), reaperBatchSize)
+	if err != nil || len(rows) == 0 {
+		return
+	}
+	driver := callbackQueueDriver()
+	if driver == nil {
+		// No queue driver wired - nothing to dispatch onto. Leaving the
+		// flag false means the reaper retries when a driver is wired
+		// (typically from the framework's initQueue on next boot).
+		return
+	}
+	queueName := callbackQueueName()
+	for _, row := range rows {
+		if r.closed.Load() {
+			return
+		}
+		job := &BatchCallbackJob{
+			BatchID:  row.BatchID,
+			Name:     row.Name,
+			Kind:     row.Kind,
+			ErrorMsg: row.ErrMsg,
+		}
+		// Per-row bounded timeout so a slow driver does not block the
+		// whole sweep. The next tick reclaims any row that did not
+		// finish.
+		pushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := driver.PushCtx(pushCtx, job, queueName)
+		cancel()
+		if err != nil {
+			// Enqueue failed - leave dispatched=false so the next tick
+			// retries. Recording the error against the row would be
+			// useful but is out of scope for this fix.
+			continue
+		}
+		// PushCtx succeeded. Mark the row so we don't re-enqueue.
+		// MarkCallbackDispatched ctx uses a fresh background context
+		// with a short timeout because the inherited context here is
+		// already detached from the original caller.
+		markCtx, markCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = r.MarkCallbackDispatched(markCtx, row.BatchID, row.Kind)
+		markCancel()
+	}
 }
 
 // rewriteQuery converts `$N` placeholders to `?` for mysql/sqlite.
@@ -115,27 +259,32 @@ func (r *DatabaseBatchRepository) Find(ctx context.Context, id BatchID) (*Batch,
 	}
 	const q = `SELECT id, total_jobs, pending_jobs, completed_jobs, failed_jobs,
 	                  allow_failures, queue, then_callback, catch_callback, finally_callback,
+	                  then_dispatched, catch_dispatched, finally_dispatched,
 	                  cancelled_at, completed_at, last_error
 	           FROM job_batches WHERE id = $1`
 	row := r.db.QueryRowContext(ctx, r.rewriteQuery(q), string(id))
 
 	var (
-		rid             string
-		totalJobs       int
-		pendingJobs     int32
-		completedJobs   int32
-		failedJobs      int32
-		allowFailures   bool
-		queueName       string
-		thenCallback    sql.NullString
-		catchCallback   sql.NullString
-		finallyCallback sql.NullString
-		cancelledAt     sql.NullTime
-		completedAt     sql.NullTime
-		lastError       sql.NullString
+		rid               string
+		totalJobs         int
+		pendingJobs       int32
+		completedJobs     int32
+		failedJobs        int32
+		allowFailures     bool
+		queueName         string
+		thenCallback      sql.NullString
+		catchCallback     sql.NullString
+		finallyCallback   sql.NullString
+		thenDispatched    bool
+		catchDispatched   bool
+		finallyDispatched bool
+		cancelledAt       sql.NullTime
+		completedAt       sql.NullTime
+		lastError         sql.NullString
 	)
 	if err := row.Scan(&rid, &totalJobs, &pendingJobs, &completedJobs, &failedJobs,
 		&allowFailures, &queueName, &thenCallback, &catchCallback, &finallyCallback,
+		&thenDispatched, &catchDispatched, &finallyDispatched,
 		&cancelledAt, &completedAt, &lastError); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -161,6 +310,9 @@ func (r *DatabaseBatchRepository) Find(ctx context.Context, id BatchID) (*Batch,
 	if finallyCallback.Valid {
 		b.finallyName = finallyCallback.String
 	}
+	b.thenDispatched.Store(thenDispatched)
+	b.catchDispatched.Store(catchDispatched)
+	b.finallyDispatched.Store(finallyDispatched)
 	if cancelledAt.Valid {
 		b.cancelled.Store(true)
 	}
@@ -196,11 +348,17 @@ func (r *DatabaseBatchRepository) Save(ctx context.Context, batch *Batch) error 
 		return err
 	}
 	now := time.Now()
+	// The *_dispatched columns are explicitly initialised to false here
+	// rather than relying on the DEFAULT 0 so a misapplied migration that
+	// dropped the DEFAULT (or a re-issued INSERT against a row built from
+	// schema-v1) produces a deterministic failure instead of inheriting
+	// stale state.
 	const q = `INSERT INTO job_batches
 	    (id, total_jobs, pending_jobs, completed_jobs, failed_jobs,
 	     allow_failures, queue, then_callback, catch_callback, finally_callback,
+	     then_dispatched, catch_dispatched, finally_dispatched,
 	     cancelled_at, completed_at, last_error, created_at, updated_at)
-	    VALUES ($1, $2, $3, 0, 0, $4, $5, $6, $7, $8, NULL, NULL, NULL, $9, $10)`
+	    VALUES ($1, $2, $3, 0, 0, $4, $5, $6, $7, $8, $9, $10, $11, NULL, NULL, NULL, $12, $13)`
 	_, err := r.db.ExecContext(ctx, r.rewriteQuery(q),
 		string(batch.id),
 		batch.totalJobs,
@@ -210,6 +368,7 @@ func (r *DatabaseBatchRepository) Save(ctx context.Context, batch *Batch) error 
 		nullableString(batch.thenName),
 		nullableString(batch.catchName),
 		nullableString(batch.finallyName),
+		false, false, false,
 		now,
 		now,
 	)
@@ -332,28 +491,35 @@ func (r *DatabaseBatchRepository) incrementCounter(ctx context.Context, id Batch
 
 	// Step 3: read back the post-update row, including the persisted
 	// callback names so the caller can use them to enqueue cross-process
-	// BatchCallbackJob instances on terminal completion.
+	// BatchCallbackJob instances on terminal completion. The dispatched
+	// flags are also returned so callers can short-circuit re-enqueue
+	// when a previous tick (or a sibling worker) already pushed the job.
 	const selQ = `SELECT total_jobs, pending_jobs, completed_jobs, failed_jobs,
 	                     allow_failures, queue, then_callback, catch_callback, finally_callback,
+	                     then_dispatched, catch_dispatched, finally_dispatched,
 	                     cancelled_at, completed_at, last_error
 	              FROM job_batches WHERE id = $1`
 	row := tx.QueryRowContext(ctx, r.rewriteQuery(selQ), string(id))
 	var (
-		totalJobs       int
-		pendingJobs     int32
-		completedJobs   int32
-		failedJobs      int32
-		allowFailures   bool
-		queueName       string
-		thenCallback    sql.NullString
-		catchCallback   sql.NullString
-		finallyCallback sql.NullString
-		cancelledAt     sql.NullTime
-		completedAt     sql.NullTime
-		lastError       sql.NullString
+		totalJobs         int
+		pendingJobs       int32
+		completedJobs     int32
+		failedJobs        int32
+		allowFailures     bool
+		queueName         string
+		thenCallback      sql.NullString
+		catchCallback     sql.NullString
+		finallyCallback   sql.NullString
+		thenDispatched    bool
+		catchDispatched   bool
+		finallyDispatched bool
+		cancelledAt       sql.NullTime
+		completedAt       sql.NullTime
+		lastError         sql.NullString
 	)
 	if scanErr := row.Scan(&totalJobs, &pendingJobs, &completedJobs, &failedJobs,
 		&allowFailures, &queueName, &thenCallback, &catchCallback, &finallyCallback,
+		&thenDispatched, &catchDispatched, &finallyDispatched,
 		&cancelledAt, &completedAt, &lastError); scanErr != nil {
 		return nil, false, fmt.Errorf("velocity/queue: batch increment readback: %w", scanErr)
 	}
@@ -380,6 +546,9 @@ func (r *DatabaseBatchRepository) incrementCounter(ctx context.Context, id Batch
 	if finallyCallback.Valid {
 		b.finallyName = finallyCallback.String
 	}
+	b.thenDispatched.Store(thenDispatched)
+	b.catchDispatched.Store(catchDispatched)
+	b.finallyDispatched.Store(finallyDispatched)
 	if cancelledAt.Valid {
 		b.cancelled.Store(true)
 	}
@@ -456,9 +625,158 @@ func (r *DatabaseBatchRepository) PruneStale(ctx context.Context, olderThan time
 	return int(rows), nil
 }
 
+// MarkCallbackDispatched flips the row's `<kind>_dispatched` column to
+// true. Used by the inline dispatch path (after a successful PushCtx)
+// and by the reaper (after a successful retried PushCtx). The UPDATE is
+// monotonic-set with an `... AND <kind>_dispatched = false` predicate so
+// duplicate calls are no-ops and we don't churn the row.
+func (r *DatabaseBatchRepository) MarkCallbackDispatched(ctx context.Context, id BatchID, kind CallbackKind) error {
+	if err := r.closedErr(); err != nil {
+		return err
+	}
+	if err := ctxErr(ctx); err != nil {
+		return err
+	}
+	col, err := dispatchedColumnFor(kind)
+	if err != nil {
+		return err
+	}
+	q := fmt.Sprintf(`UPDATE job_batches SET %s = $1, updated_at = $2 WHERE id = $3 AND %s = $4`, col, col)
+	now := time.Now()
+	if _, err := r.db.ExecContext(ctx, r.rewriteQuery(q), true, now, string(id), false); err != nil {
+		return fmt.Errorf("velocity/queue: mark callback dispatched: %w", err)
+	}
+	return nil
+}
+
+// FindUndispatchedCallbacks returns up to `limit` callback rows that
+// still need to be enqueued. The query unions three kinds via a single
+// SELECT plus client-side classification so we avoid three round trips:
+//
+//   - then_callback non-null, then_dispatched=false, batch completed
+//     without failures.
+//   - catch_callback non-null, catch_dispatched=false, batch has at
+//     least one failure (Catch fires on first failure, independent of
+//     terminal completion).
+//   - finally_callback non-null, finally_dispatched=false, batch
+//     completed (with or without failures).
+//
+// The result is the cheapest portable form: one row per BatchID with
+// the column flags, and the Go side fans out the kinds. limit applies
+// to BATCH ROWS, not callback rows; in practice each batch yields at
+// most 3 callbacks so the row count is bounded by 3*limit.
+func (r *DatabaseBatchRepository) FindUndispatchedCallbacks(ctx context.Context, limit int) ([]UndispatchedCallback, error) {
+	if err := r.closedErr(); err != nil {
+		return nil, err
+	}
+	if err := ctxErr(ctx); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = reaperBatchSize
+	}
+	q := `SELECT id, completed_at, failed_jobs,
+	             then_callback, then_dispatched,
+	             catch_callback, catch_dispatched,
+	             finally_callback, finally_dispatched,
+	             last_error
+	      FROM job_batches
+	      WHERE (
+	          (then_callback IS NOT NULL AND then_dispatched = $1 AND completed_at IS NOT NULL AND failed_jobs = 0)
+	       OR (catch_callback IS NOT NULL AND catch_dispatched = $2 AND failed_jobs > 0)
+	       OR (finally_callback IS NOT NULL AND finally_dispatched = $3 AND completed_at IS NOT NULL)
+	      )
+	      ORDER BY completed_at ASC
+	      LIMIT ` + fmt.Sprintf("%d", limit)
+	rows, err := r.db.QueryContext(ctx, r.rewriteQuery(q), false, false, false)
+	if err != nil {
+		return nil, fmt.Errorf("velocity/queue: find undispatched callbacks: %w", err)
+	}
+	defer rows.Close()
+
+	var out []UndispatchedCallback
+	for rows.Next() {
+		var (
+			id                string
+			completedAt       sql.NullTime
+			failedJobs        int32
+			thenCallback      sql.NullString
+			thenDispatched    bool
+			catchCallback     sql.NullString
+			catchDispatched   bool
+			finallyCallback   sql.NullString
+			finallyDispatched bool
+			lastError         sql.NullString
+		)
+		if scanErr := rows.Scan(&id, &completedAt, &failedJobs,
+			&thenCallback, &thenDispatched,
+			&catchCallback, &catchDispatched,
+			&finallyCallback, &finallyDispatched,
+			&lastError); scanErr != nil {
+			return nil, fmt.Errorf("velocity/queue: scan undispatched callback row: %w", scanErr)
+		}
+		bid := BatchID(id)
+		errMsg := ""
+		if lastError.Valid {
+			errMsg = lastError.String
+		}
+		// Catch is independent of terminal completion.
+		if catchCallback.Valid && !catchDispatched && failedJobs > 0 {
+			out = append(out, UndispatchedCallback{
+				BatchID: bid,
+				Kind:    CallbackCatch,
+				Name:    catchCallback.String,
+				ErrMsg:  errMsg,
+			})
+		}
+		if completedAt.Valid {
+			if thenCallback.Valid && !thenDispatched && failedJobs == 0 {
+				out = append(out, UndispatchedCallback{
+					BatchID: bid,
+					Kind:    CallbackThen,
+					Name:    thenCallback.String,
+				})
+			}
+			if finallyCallback.Valid && !finallyDispatched {
+				out = append(out, UndispatchedCallback{
+					BatchID: bid,
+					Kind:    CallbackFinally,
+					Name:    finallyCallback.String,
+					ErrMsg:  errMsg,
+				})
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("velocity/queue: iterate undispatched callbacks: %w", err)
+	}
+	return out, nil
+}
+
+// dispatchedColumnFor maps a CallbackKind to its dispatched column
+// name. Identifier validation lives here (not in SQL builders) so a
+// future caller cannot pass a user-controlled string and get arbitrary
+// SQL injected. Returns an error rather than panicking so the reaper
+// can log and continue.
+func dispatchedColumnFor(kind CallbackKind) (string, error) {
+	switch kind {
+	case CallbackThen:
+		return "then_dispatched", nil
+	case CallbackCatch:
+		return "catch_dispatched", nil
+	case CallbackFinally:
+		return "finally_dispatched", nil
+	default:
+		return "", fmt.Errorf("velocity/queue: unknown callback kind %q", kind)
+	}
+}
+
 // Close marks the repository as closed so subsequent operations return
 // ErrBatchRepositoryClosed instead of writing to a *sql.DB that may
-// already be torn down by the ORM manager.
+// already be torn down by the ORM manager. Also signals the reaper
+// goroutine to stop and waits for it to exit so a subsequent
+// NewDatabaseBatchRepository on the same process does not race with a
+// zombie reaper.
 //
 // The *sql.DB itself is NOT closed here: it was injected by the caller
 // (typically the framework's ORM manager) and its lifecycle is owned by
@@ -470,6 +788,14 @@ func (r *DatabaseBatchRepository) PruneStale(ctx context.Context, olderThan time
 // also installed via SetDefaultBatchRepository earlier).
 func (r *DatabaseBatchRepository) Close() error {
 	r.closed.Store(true)
+	r.reaperStopOnce.Do(func() { close(r.reaperStop) })
+	// Wait for the reaper goroutine to exit before returning. A bounded
+	// wait would be safer if the reaper could hang on PushCtx, but each
+	// PushCtx is already wrapped in a 5s timeout so the worst case is
+	// one in-flight iteration completes before close returns.
+	if r.reaperDone != nil {
+		<-r.reaperDone
+	}
 	return nil
 }
 
