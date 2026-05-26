@@ -192,18 +192,19 @@ func TestRelay_DispatchesJobsAndEvents(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = relay.Stop(context.Background()) })
 
-	waitFor(t, time.Second, func() bool {
-		return jobCount.Load() == 2 && eventCount.Load() == 1
+	// Wait for both the dispatch callbacks to fire AND the row deletions
+	// to commit. The relay increments the counters from the callback and
+	// only then issues the DELETE in a follow-up tx, so a counter-only
+	// gate races against the deletion under CI load (seen on
+	// runs/26407804175). Folding the row-count check into the same
+	// waitFor poll closes the window.
+	waitFor(t, 2*time.Second, func() bool {
+		if jobCount.Load() != 2 || eventCount.Load() != 1 {
+			return false
+		}
+		n, err := m.CountOutboxRows(context.Background())
+		return err == nil && n == 0
 	})
-
-	// And the rows are gone.
-	n, err := m.CountOutboxRows(context.Background())
-	if err != nil {
-		t.Fatalf("count: %v", err)
-	}
-	if n != 0 {
-		t.Fatalf("got %d remaining rows, want 0", n)
-	}
 }
 
 func TestRelay_CrashMidRelay_Idempotent(t *testing.T) {
