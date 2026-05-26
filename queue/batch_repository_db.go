@@ -243,23 +243,30 @@ func (r *DatabaseBatchRepository) incrementCounter(ctx context.Context, id Batch
 
 	now := time.Now().UTC()
 
-	// Step 1: atomically decrement pending_jobs and optionally bump
-	// completed_jobs / failed_jobs / last_error. The row lock acquired
-	// by the UPDATE serialises concurrent writers, which is what we
-	// need for the follow-up CAS to be safe.
+	// Step 1: atomically decrement pending_jobs and (conditionally) bump
+	// completed_jobs / failed_jobs / last_error. The completed/failed
+	// increment is gated on the SAME pending_jobs > 0 predicate the
+	// decrement uses, so a duplicate delivery (worker crashed after
+	// the handler returned but before the queue row was deleted, then
+	// a sibling worker re-popped the job) becomes a no-op rather than
+	// pushing completed_jobs above total_jobs. Holding the row lock
+	// for the duration of the UPDATE means the predicate is observed
+	// atomically. last_error is only written when failure AND the
+	// decrement actually fired so we don't smear a stale error onto a
+	// batch whose pending counter is already drained.
 	set := []string{
-		"pending_jobs = CASE WHEN pending_jobs > 0 THEN pending_jobs - 1 ELSE 0 END",
+		"pending_jobs = CASE WHEN pending_jobs > 0 THEN pending_jobs - 1 ELSE pending_jobs END",
 		"updated_at = $1",
 	}
 	args := []any{now}
 	if success {
-		set = append(set, "completed_jobs = completed_jobs + 1")
+		set = append(set, "completed_jobs = CASE WHEN pending_jobs > 0 THEN completed_jobs + 1 ELSE completed_jobs END")
 	}
 	if failure {
-		set = append(set, "failed_jobs = failed_jobs + 1")
+		set = append(set, "failed_jobs = CASE WHEN pending_jobs > 0 THEN failed_jobs + 1 ELSE failed_jobs END")
 		if errText != nil {
 			args = append(args, *errText)
-			set = append(set, fmt.Sprintf("last_error = $%d", len(args)))
+			set = append(set, fmt.Sprintf("last_error = CASE WHEN pending_jobs > 0 THEN $%d ELSE last_error END", len(args)))
 		}
 	}
 	args = append(args, string(id))

@@ -510,6 +510,194 @@ func TestDatabaseBatchRepository_TwoProcessWorkers_ThenFires(t *testing.T) {
 	}
 }
 
+// TestDatabaseBatchRepository_DuplicateDelivery_ClampsCompletedJobs is
+// the C-03 follow-up regression test for duplicate delivery. A batch
+// of total=2 receives three IncrementSuccess calls (the third
+// simulating a worker that crashed after marking the job complete but
+// before deleting the queue row, leaving the row available for a
+// second worker to re-pop). completed_jobs must NEVER exceed total_jobs
+// and the third call must NOT report justFinished=true (the batch was
+// already finished after the second call).
+func TestDatabaseBatchRepository_DuplicateDelivery_ClampsCompletedJobs(t *testing.T) {
+	db, cleanup := newSQLiteBatchDB(t)
+	defer cleanup()
+
+	repo, _ := NewDatabaseBatchRepository(db, "sqlite")
+
+	b := &Batch{id: newBatchID(), totalJobs: 2, queue: "default"}
+	b.pendingJobs.Store(2)
+	if err := repo.Save(context.Background(), b); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	// First two calls drain the pending counter normally.
+	_, finished1, _ := repo.IncrementSuccess(context.Background(), b.id)
+	if finished1 {
+		t.Error("call 1: should not finish a 2-job batch")
+	}
+	got1, _ := repo.Find(context.Background(), b.id)
+	if got1.CompletedJobs() != 1 || got1.PendingJobs() != 1 {
+		t.Errorf("call 1 counters: c=%d p=%d", got1.CompletedJobs(), got1.PendingJobs())
+	}
+
+	_, finished2, _ := repo.IncrementSuccess(context.Background(), b.id)
+	if !finished2 {
+		t.Error("call 2: should finalize a 2-job batch")
+	}
+	got2, _ := repo.Find(context.Background(), b.id)
+	if got2.CompletedJobs() != 2 || got2.PendingJobs() != 0 {
+		t.Errorf("call 2 counters: c=%d p=%d", got2.CompletedJobs(), got2.PendingJobs())
+	}
+
+	// Third call: duplicate delivery. The clamp must hold; completed_jobs
+	// must NOT advance past total_jobs, and justFinished must NOT
+	// re-fire (or Then/Finally would run twice via the CAS gate).
+	_, finished3, _ := repo.IncrementSuccess(context.Background(), b.id)
+	if finished3 {
+		t.Error("call 3 (duplicate): justFinished must not re-fire")
+	}
+	got3, _ := repo.Find(context.Background(), b.id)
+	if got3.CompletedJobs() > got3.TotalJobs() {
+		t.Errorf("duplicate delivery pushed completed_jobs past total_jobs: c=%d t=%d",
+			got3.CompletedJobs(), got3.TotalJobs())
+	}
+	if got3.CompletedJobs() != 2 {
+		t.Errorf("call 3 completed_jobs: got %d, want 2 (clamped)", got3.CompletedJobs())
+	}
+	if got3.PendingJobs() != 0 {
+		t.Errorf("call 3 pending_jobs: got %d, want 0", got3.PendingJobs())
+	}
+	if got3.CompletedJobs()+got3.FailedJobs() > got3.TotalJobs() {
+		t.Errorf("invariant violated: c+f=%d > total=%d",
+			got3.CompletedJobs()+got3.FailedJobs(), got3.TotalJobs())
+	}
+}
+
+// TestDatabaseBatchRepository_DuplicateFailure_ClampsFailedJobs is the
+// IncrementFailure mirror of the above. A duplicate failure delivery
+// (e.g. retry exhausted by two workers in a row before either could
+// delete the row) must not push failed_jobs past total_jobs.
+func TestDatabaseBatchRepository_DuplicateFailure_ClampsFailedJobs(t *testing.T) {
+	db, cleanup := newSQLiteBatchDB(t)
+	defer cleanup()
+
+	repo, _ := NewDatabaseBatchRepository(db, "sqlite")
+
+	b := &Batch{id: newBatchID(), totalJobs: 1, queue: "default", allowFailures: true}
+	b.pendingJobs.Store(1)
+	if err := repo.Save(context.Background(), b); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	firstErr := errors.New("first failure")
+	_, finished1, _ := repo.IncrementFailure(context.Background(), b.id, firstErr)
+	if !finished1 {
+		t.Error("call 1: single-job batch should finalize on failure")
+	}
+
+	// Duplicate failure. Must clamp.
+	_, finished2, _ := repo.IncrementFailure(context.Background(), b.id, errors.New("duplicate"))
+	if finished2 {
+		t.Error("call 2 (duplicate): justFinished must not re-fire")
+	}
+	got, _ := repo.Find(context.Background(), b.id)
+	if got.FailedJobs() != 1 {
+		t.Errorf("failed_jobs: got %d, want 1 (clamped)", got.FailedJobs())
+	}
+	if got.PendingJobs() != 0 {
+		t.Errorf("pending_jobs: got %d, want 0", got.PendingJobs())
+	}
+	// last_error must NOT have been overwritten by the duplicate, since
+	// the conditional UPDATE leaves it alone when pending_jobs = 0.
+	if got.lastError != firstErr.Error() {
+		t.Errorf("last_error overwritten by duplicate: got %q, want %q",
+			got.lastError, firstErr.Error())
+	}
+}
+
+// TestInMemoryBatchRepository_DuplicateDelivery_ClampsCompletedJobs is
+// the same regression for the in-memory repository. Both code paths
+// have to enforce the invariant because they're swappable defaults.
+func TestInMemoryBatchRepository_DuplicateDelivery_ClampsCompletedJobs(t *testing.T) {
+	repo := NewInMemoryBatchRepository()
+	defer repo.Close()
+
+	b := &Batch{id: newBatchID(), totalJobs: 2, queue: "default"}
+	b.pendingJobs.Store(2)
+	if err := repo.Save(context.Background(), b); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	_, _, _ = repo.IncrementSuccess(context.Background(), b.id)
+	_, finished2, _ := repo.IncrementSuccess(context.Background(), b.id)
+	if !finished2 {
+		t.Error("call 2 should finalize")
+	}
+
+	_, finished3, _ := repo.IncrementSuccess(context.Background(), b.id)
+	if finished3 {
+		t.Error("call 3 (duplicate): justFinished must not re-fire")
+	}
+
+	got, _ := repo.Find(context.Background(), b.id)
+	if got.CompletedJobs() != 2 {
+		t.Errorf("completed_jobs: got %d, want 2 (clamped)", got.CompletedJobs())
+	}
+	if got.PendingJobs() != 0 {
+		t.Errorf("pending_jobs went negative: %d", got.PendingJobs())
+	}
+}
+
+// TestEnsureDefaultBatchRepository_PreservesUserSet asserts the
+// idempotence contract Ensure relies on. After SetDefaultBatchRepository
+// the next EnsureDefaultBatchRepository must be a no-op; the user's
+// choice survives, and the rejected repo is closed so we don't leak
+// its cleanup goroutine.
+func TestEnsureDefaultBatchRepository_PreservesUserSet(t *testing.T) {
+	prev := DefaultBatchRepository()
+	t.Cleanup(func() { SetDefaultBatchRepository(prev) })
+
+	ResetDefaultBatchRepositoryForTest()
+
+	// User installs their own repo.
+	user := NewInMemoryBatchRepository()
+	SetDefaultBatchRepository(user)
+
+	// Boot-time path attempts to install a "framework default" repo.
+	autoCandidate := NewInMemoryBatchRepository()
+	if installed := EnsureDefaultBatchRepository(autoCandidate); installed {
+		t.Error("EnsureDefaultBatchRepository should have been a no-op")
+	}
+	if DefaultBatchRepository() != user {
+		t.Error("user repo was clobbered by EnsureDefault")
+	}
+}
+
+// TestEnsureDefaultBatchRepository_InstallsOverInitDefault complements
+// the above: when no user has called SetDefault yet, Ensure swaps the
+// init-time in-memory holder out for the candidate.
+func TestEnsureDefaultBatchRepository_InstallsOverInitDefault(t *testing.T) {
+	prev := DefaultBatchRepository()
+	t.Cleanup(func() { SetDefaultBatchRepository(prev) })
+
+	ResetDefaultBatchRepositoryForTest()
+
+	candidate := NewInMemoryBatchRepository()
+	if installed := EnsureDefaultBatchRepository(candidate); !installed {
+		t.Fatal("EnsureDefaultBatchRepository should install over init default")
+	}
+	if DefaultBatchRepository() != candidate {
+		t.Fatal("Default was not updated to the candidate")
+	}
+
+	// A second Ensure call must be a no-op now (the candidate above is
+	// itself userSet=true after install).
+	candidate2 := NewInMemoryBatchRepository()
+	if installed := EnsureDefaultBatchRepository(candidate2); installed {
+		t.Error("second Ensure must not overwrite first")
+	}
+}
+
 // TestNewDatabaseBatchRepository_RejectsInvalidDriver ensures we surface
 // configuration errors at construction instead of silently emitting
 // mis-written SQL at runtime.

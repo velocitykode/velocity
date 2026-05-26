@@ -251,6 +251,33 @@ func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey strin
 	if mem, ok := d.(*queue.MemoryDriver); ok {
 		mem.SetLogger(logger)
 	}
+
+	// C-03 follow-up: when the operator picks the database queue driver,
+	// the batch state needs to live in shared storage too. Without this
+	// auto-install the framework would silently fall back to the in-memory
+	// batch repository even on a multi-host install, so worker counters
+	// and Cancel state would not cross process boundaries (which was the
+	// original C-03 defect).
+	//
+	// Idempotent: EnsureDefaultBatchRepository is a no-op when the app
+	// has already wired a custom repo via SetDefaultBatchRepository, so
+	// users who want a different storage (e.g. a Redis-backed repo for
+	// a Redis queue) are not overwritten.
+	if _, ok := d.(*queue.DatabaseDriver); ok && db != nil {
+		repo, repoErr := queue.NewDatabaseBatchRepository(db, dbDriver)
+		if repoErr != nil {
+			// Surface the misconfiguration loudly at boot rather than
+			// silently dropping back to the in-memory default. The
+			// queue driver itself accepts dbDriver values that the
+			// batch repo rejects, so this catches typos that would
+			// otherwise hide for weeks.
+			return nil, fmt.Errorf("velocity/queue: failed to wire database batch repository: %w", repoErr)
+		}
+		if !queue.EnsureDefaultBatchRepository(repo) {
+			logger.Info("Skipping DatabaseBatchRepository auto-install: a custom batch repository was already configured")
+		}
+	}
+
 	return d, nil
 }
 

@@ -245,7 +245,15 @@ func (r *inMemoryBatchRepository) IncrementSuccess(ctx context.Context, id Batch
 	if b == nil {
 		return nil, false, nil
 	}
-	b.pendingJobs.Add(-1)
+	// Conditional increment: only bump completed_jobs when we actually
+	// consumed a pending slot. Under duplicate delivery (worker crashed
+	// after marking the job done but before deleting the queue row, then
+	// a sibling worker re-popped it) the second IncrementSuccess would
+	// otherwise push completed_jobs above total_jobs and lie about
+	// progress. The atomic.Int32 CAS loop reserves exactly one slot.
+	if !decrementPendingIfPositive(&b.pendingJobs) {
+		return b, false, nil
+	}
 	b.completedJobs.Add(1)
 	justFinished := false
 	if b.pendingJobs.Load() <= 0 && b.finished.CompareAndSwap(false, true) {
@@ -265,7 +273,12 @@ func (r *inMemoryBatchRepository) IncrementFailure(ctx context.Context, id Batch
 	if b == nil {
 		return nil, false, nil
 	}
-	b.pendingJobs.Add(-1)
+	// Conditional increment: same rationale as IncrementSuccess. A
+	// duplicate failure (e.g. the same job rerun by another worker on
+	// retry exhaustion) must not push failed_jobs past total_jobs.
+	if !decrementPendingIfPositive(&b.pendingJobs) {
+		return b, false, nil
+	}
 	b.failedJobs.Add(1)
 	if jobErr != nil {
 		b.mu.Lock()
@@ -302,7 +315,12 @@ func (r *inMemoryBatchRepository) DecrementPending(ctx context.Context, id Batch
 	if b == nil {
 		return nil, false, nil
 	}
-	b.pendingJobs.Add(-1)
+	// Same clamp as IncrementSuccess/Failure: a no-op when pending is
+	// already zero so duplicate skip notifications cannot drive the
+	// counter negative.
+	if !decrementPendingIfPositive(&b.pendingJobs) {
+		return b, false, nil
+	}
 	justFinished := false
 	if b.pendingJobs.Load() <= 0 && b.finished.CompareAndSwap(false, true) {
 		b.mu.Lock()
@@ -363,6 +381,33 @@ func ctxErr(ctx context.Context) error {
 	return ctx.Err()
 }
 
+// decrementPendingIfPositive atomically decrements an atomic.Int32 only
+// when its current value is > 0. Returns true when the decrement was
+// applied, false when the counter was already zero (or negative, which
+// should be impossible but is treated as the same no-op case).
+//
+// The CAS loop is needed because plain Add(-1) followed by a Load can
+// race with sibling workers and silently push the counter below zero.
+// Used by the in-memory batch repository to make duplicate
+// IncrementSuccess / IncrementFailure / DecrementPending calls safe:
+// the success / failure counter is only bumped when this call actually
+// consumed a pending slot, so the invariant
+//
+//	completed_jobs + failed_jobs <= total_jobs
+//
+// holds even when the queue layer delivers the same job twice.
+func decrementPendingIfPositive(p *atomic.Int32) bool {
+	for {
+		cur := p.Load()
+		if cur <= 0 {
+			return false
+		}
+		if p.CompareAndSwap(cur, cur-1) {
+			return true
+		}
+	}
+}
+
 // ----- default repository accessor ------------------------------------------
 
 // defaultBatchRepo is the process-wide repository used by FindBatch and by
@@ -371,7 +416,21 @@ func ctxErr(ctx context.Context) error {
 // app wiring goroutines.
 var defaultBatchRepo atomic.Pointer[batchRepoHolder]
 
-type batchRepoHolder struct{ BatchRepository }
+// batchRepoHolder carries the repository pointer plus a flag that
+// distinguishes the package-init default (in-memory) from a holder
+// installed via an explicit caller. EnsureDefaultBatchRepository uses
+// the flag to keep the auto-install at boot time idempotent: once an
+// app has wired its own repo (via SetDefaultBatchRepository or a prior
+// EnsureDefaultBatchRepository) the auto-install path will not overwrite
+// it.
+type batchRepoHolder struct {
+	BatchRepository
+	// userSet is true when SetDefaultBatchRepository was called by an
+	// explicit consumer. The init() holder has userSet=false so the
+	// boot-time auto-install can detect "still on the default" and
+	// upgrade to a database-backed repo.
+	userSet bool
+}
 
 func init() {
 	defaultBatchRepo.Store(&batchRepoHolder{BatchRepository: NewInMemoryBatchRepository()})
@@ -397,8 +456,46 @@ func SetDefaultBatchRepository(repo BatchRepository) {
 	if repo == nil {
 		panic("velocity/queue: SetDefaultBatchRepository called with nil repository")
 	}
-	prev := defaultBatchRepo.Swap(&batchRepoHolder{BatchRepository: repo})
+	prev := defaultBatchRepo.Swap(&batchRepoHolder{BatchRepository: repo, userSet: true})
 	if prev != nil && prev.BatchRepository != nil {
 		_ = prev.BatchRepository.Close()
 	}
+}
+
+// EnsureDefaultBatchRepository installs repo only when the process is
+// still on the package-init in-memory default. Apps that have already
+// wired a custom repo via SetDefaultBatchRepository are left untouched,
+// which is what makes auto-install at app boot safe: the framework's
+// app.go calls this when Config.Queue.Driver=database, but a user who
+// preemptively installed (e.g. a custom Redis-backed repo) is not
+// overwritten.
+//
+// Returns true when repo was installed, false when the default was
+// already user-set (in which case repo is closed to avoid leaking the
+// cleanup goroutine / prepared statements it would have spun up).
+//
+// Panics if repo is nil for the same reason SetDefaultBatchRepository
+// does: silently installing nil would break every worker code path.
+func EnsureDefaultBatchRepository(repo BatchRepository) bool {
+	if repo == nil {
+		panic("velocity/queue: EnsureDefaultBatchRepository called with nil repository")
+	}
+	cur := defaultBatchRepo.Load()
+	if cur != nil && cur.userSet {
+		// Caller already wired something explicitly; don't clobber it.
+		// Close repo so its resources are not leaked.
+		_ = repo.Close()
+		return false
+	}
+	newHolder := &batchRepoHolder{BatchRepository: repo, userSet: true}
+	if !defaultBatchRepo.CompareAndSwap(cur, newHolder) {
+		// Lost a race with another EnsureDefault / SetDefault call.
+		// Close repo and let the winner stand.
+		_ = repo.Close()
+		return false
+	}
+	if cur != nil && cur.BatchRepository != nil {
+		_ = cur.BatchRepository.Close()
+	}
+	return true
 }
