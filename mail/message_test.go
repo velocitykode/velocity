@@ -156,21 +156,30 @@ func TestMessageAttachData(t *testing.T) {
 	}
 }
 
-func TestMessageAttachFile(t *testing.T) {
-	// Create a temp file
-	tmpFile, err := os.CreateTemp("", "test-*.txt")
+// attachRoot creates a temp directory, writes a file with the given name
+// and content into it, opens an *os.Root for the directory, and returns
+// both. The Root is closed via t.Cleanup. The Message tests use this to
+// satisfy the AttachFile root-registration requirement.
+func attachRoot(t *testing.T, name, content string) (*os.Root, string) {
+	t.Helper()
+	dir := t.TempDir()
+	if name != "" {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+	root, err := os.OpenRoot(dir)
 	if err != nil {
-		t.Fatalf("Failed to create temp file: %v", err)
+		t.Fatalf("OpenRoot: %v", err)
 	}
-	defer os.Remove(tmpFile.Name())
+	t.Cleanup(func() { root.Close() })
+	return root, dir
+}
 
-	content := "test file content"
-	if _, err := tmpFile.WriteString(content); err != nil {
-		t.Fatalf("Failed to write temp file: %v", err)
-	}
-	tmpFile.Close()
+func TestMessageAttachFile(t *testing.T) {
+	root, _ := attachRoot(t, "test.txt", "test file content")
 
-	msg, err := NewMessage().AttachFile(tmpFile.Name())
+	msg, err := NewMessage().WithAttachmentRoot(root).AttachFile("test.txt")
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -180,22 +189,30 @@ func TestMessageAttachFile(t *testing.T) {
 		t.Errorf("Expected 1 attachment, got %d", len(attachments))
 	}
 
-	if string(attachments[0].Data) != content {
-		t.Errorf("Expected '%s', got '%s'", content, string(attachments[0].Data))
+	if string(attachments[0].Data) != "test file content" {
+		t.Errorf("Expected 'test file content', got %q", string(attachments[0].Data))
 	}
 }
 
 func TestMessageAttachFileReturnsErrorOnMissing(t *testing.T) {
-	_, err := NewMessage().AttachFile("/nonexistent/file.txt")
+	root, _ := attachRoot(t, "", "")
+	_, err := NewMessage().WithAttachmentRoot(root).AttachFile("nonexistent.txt")
 	if err == nil {
 		t.Error("Expected error when attaching non-existent file")
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("expected wrapped os.ErrNotExist, got %v", err)
 	}
 }
 
 func TestMessageAttachFileRejectsTraversal(t *testing.T) {
-	_, err := NewMessage().AttachFile("../../etc/passwd")
+	root, _ := attachRoot(t, "", "")
+	_, err := NewMessage().WithAttachmentRoot(root).AttachFile("../../etc/passwd")
 	if err == nil {
-		t.Error("Expected error for path traversal")
+		t.Fatal("Expected error for path traversal")
+	}
+	if !errors.Is(err, ErrAttachmentPathOutsideRoot) {
+		t.Errorf("expected ErrAttachmentPathOutsideRoot, got %v", err)
 	}
 }
 
@@ -321,11 +338,12 @@ func TestMessageTemplateRejectsTraversal(t *testing.T) {
 
 // --- Attachment size regression tests ----------------------------------------
 
-// largeFile creates a temp file of exactly size bytes. It is created with a
-// seek-then-single-byte trick to keep the test fast even at 25 MiB.
-func largeFile(t *testing.T, size int64) string {
+// largeFile creates a sparse file of exactly size bytes inside dir. It uses
+// a seek-then-single-byte trick to keep the test fast even at 25 MiB.
+// Returns the base name (relative to dir).
+func largeFile(t *testing.T, dir string, size int64) string {
 	t.Helper()
-	f, err := os.CreateTemp(t.TempDir(), "mail-attach-*.bin")
+	f, err := os.CreateTemp(dir, "mail-attach-*.bin")
 	if err != nil {
 		t.Fatalf("CreateTemp: %v", err)
 	}
@@ -338,12 +356,13 @@ func largeFile(t *testing.T, size int64) string {
 			t.Fatalf("Write: %v", err)
 		}
 	}
-	return f.Name()
+	return filepath.Base(f.Name())
 }
 
 func TestAttachFile_RejectsOversized(t *testing.T) {
-	path := largeFile(t, DefaultMaxAttachmentSize+1)
-	_, err := NewMessage().AttachFile(path)
+	root, dir := attachRoot(t, "", "")
+	name := largeFile(t, dir, DefaultMaxAttachmentSize+1)
+	_, err := NewMessage().WithAttachmentRoot(root).AttachFile(name)
 	if err == nil {
 		t.Fatal("expected ErrAttachmentTooLarge, got nil")
 	}
@@ -353,8 +372,9 @@ func TestAttachFile_RejectsOversized(t *testing.T) {
 }
 
 func TestAttachFile_AcceptsAtLimit(t *testing.T) {
-	path := largeFile(t, DefaultMaxAttachmentSize)
-	msg, err := NewMessage().AttachFile(path)
+	root, dir := attachRoot(t, "", "")
+	name := largeFile(t, dir, DefaultMaxAttachmentSize)
+	msg, err := NewMessage().WithAttachmentRoot(root).AttachFile(name)
 	if err != nil {
 		t.Fatalf("expected no error at exact limit, got %v", err)
 	}
@@ -417,8 +437,9 @@ func TestWithMaxAttachmentSize_OverridesDefault(t *testing.T) {
 
 func TestAttachFile_HonoursPerMessageLimit(t *testing.T) {
 	// Create a 2 KiB file, cap the message at 1 KiB.
-	path := largeFile(t, 2048)
-	_, err := NewMessage().WithMaxAttachmentSize(1024).AttachFile(path)
+	root, dir := attachRoot(t, "", "")
+	name := largeFile(t, dir, 2048)
+	_, err := NewMessage().WithAttachmentRoot(root).WithMaxAttachmentSize(1024).AttachFile(name)
 	if !errors.Is(err, ErrAttachmentTooLarge) {
 		t.Fatalf("expected ErrAttachmentTooLarge, got %v", err)
 	}
@@ -663,15 +684,173 @@ func TestCheckedMailer_RejectsMessageWithSetterError(t *testing.T) {
 func TestAttachFile_ReadsViaLimitReader(t *testing.T) {
 	// 1 KiB file, 1 MiB limit; succeeds cleanly.
 	dir := t.TempDir()
-	path := filepath.Join(dir, "ok.bin")
-	if err := os.WriteFile(path, make([]byte, 1024), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "ok.bin"), make([]byte, 1024), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	msg, err := NewMessage().WithMaxAttachmentSize(1 << 20).AttachFile(path)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	t.Cleanup(func() { root.Close() })
+	msg, err := NewMessage().WithAttachmentRoot(root).WithMaxAttachmentSize(1 << 20).AttachFile("ok.bin")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got := len(msg.GetAttachments()[0].Data); got != 1024 {
 		t.Errorf("expected 1024 bytes, got %d", got)
+	}
+}
+
+// --- Attachment root containment (H-19) -------------------------------------
+
+func TestAttachFile_NoRootConfigured_Rejected(t *testing.T) {
+	// Defensive: clear the package default for the duration of the test
+	// so a stray earlier call to SetDefaultAttachmentRoot cannot mask
+	// the failure mode this test is asserting.
+	prev := GetDefaultAttachmentRoot()
+	SetDefaultAttachmentRoot(nil)
+	t.Cleanup(func() { SetDefaultAttachmentRoot(prev) })
+
+	_, err := NewMessage().AttachFile("/etc/passwd")
+	if !errors.Is(err, ErrAttachmentRootRequired) {
+		t.Fatalf("expected ErrAttachmentRootRequired, got %v", err)
+	}
+	// Relative path with no root configured: same answer. Root is
+	// mandatory regardless of path shape, so callers cannot accidentally
+	// fall back to process-cwd file reads.
+	_, err = NewMessage().AttachFile("relative.txt")
+	if !errors.Is(err, ErrAttachmentRootRequired) {
+		t.Errorf("expected ErrAttachmentRootRequired for relative path too, got %v", err)
+	}
+}
+
+func TestAttachFile_AbsolutePathRejected(t *testing.T) {
+	root, _ := attachRoot(t, "ok.txt", "data")
+	_, err := NewMessage().WithAttachmentRoot(root).AttachFile("/etc/passwd")
+	if err == nil {
+		t.Fatal("absolute path must be rejected even with a configured root")
+	}
+	if !errors.Is(err, ErrAttachmentPathOutsideRoot) {
+		t.Errorf("expected ErrAttachmentPathOutsideRoot, got %v", err)
+	}
+}
+
+func TestAttachFile_TraversalEvenInRootRejected(t *testing.T) {
+	// Create two sibling dirs: secrets/ (out of root) and attachments/
+	// (the configured root). A ".." segment from inside attachments/
+	// must NOT be able to climb up to secrets/.
+	tmp := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmp, "secrets"), 0o700); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "secrets", "creds.txt"), []byte("PASSWORD"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	attDir := filepath.Join(tmp, "attachments")
+	if err := os.Mkdir(attDir, 0o700); err != nil {
+		t.Fatalf("Mkdir attachments: %v", err)
+	}
+	root, err := os.OpenRoot(attDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	t.Cleanup(func() { root.Close() })
+
+	_, err = NewMessage().WithAttachmentRoot(root).AttachFile("../secrets/creds.txt")
+	if err == nil {
+		t.Fatal("`..` traversal must be rejected by os.Root")
+	}
+	if !errors.Is(err, ErrAttachmentPathOutsideRoot) {
+		t.Errorf("expected ErrAttachmentPathOutsideRoot, got %v", err)
+	}
+}
+
+func TestAttachFile_SymlinkEscapeRejected(t *testing.T) {
+	// Place a real file at $TMP/secrets/passwd, then put a symlink at
+	// $TMP/attachments/escape that points to it. (*os.Root).Open must
+	// refuse to follow the symlink out of the root.
+	tmp := t.TempDir()
+	secrets := filepath.Join(tmp, "secrets")
+	if err := os.Mkdir(secrets, 0o700); err != nil {
+		t.Fatalf("Mkdir secrets: %v", err)
+	}
+	target := filepath.Join(secrets, "passwd")
+	if err := os.WriteFile(target, []byte("ROOT-SECRET"), 0o600); err != nil {
+		t.Fatalf("WriteFile target: %v", err)
+	}
+	attDir := filepath.Join(tmp, "attachments")
+	if err := os.Mkdir(attDir, 0o700); err != nil {
+		t.Fatalf("Mkdir attachments: %v", err)
+	}
+	link := filepath.Join(attDir, "escape")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink not supported on this platform: %v", err)
+	}
+	root, err := os.OpenRoot(attDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	t.Cleanup(func() { root.Close() })
+
+	_, err = NewMessage().WithAttachmentRoot(root).AttachFile("escape")
+	if err == nil {
+		t.Fatal("symlink escape must be rejected")
+	}
+	if !errors.Is(err, ErrAttachmentPathOutsideRoot) {
+		t.Errorf("expected ErrAttachmentPathOutsideRoot, got %v", err)
+	}
+}
+
+func TestAttachFile_DefaultRootFallback(t *testing.T) {
+	// When the message has no per-message root but the package default
+	// is set, AttachFile must pick it up.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "ok.txt"), []byte("hi"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	t.Cleanup(func() { root.Close() })
+
+	prev := GetDefaultAttachmentRoot()
+	SetDefaultAttachmentRoot(root)
+	t.Cleanup(func() { SetDefaultAttachmentRoot(prev) })
+
+	msg, err := NewMessage().AttachFile("ok.txt")
+	if err != nil {
+		t.Fatalf("expected fallback to default root, got %v", err)
+	}
+	if string(msg.GetAttachments()[0].Data) != "hi" {
+		t.Errorf("unexpected attachment content: %q", msg.GetAttachments()[0].Data)
+	}
+}
+
+func TestManager_SetAttachmentRoot_DelegatesToPackageDefault(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "viaMgr.txt"), []byte("hello"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	t.Cleanup(func() { root.Close() })
+
+	prev := GetDefaultAttachmentRoot()
+	t.Cleanup(func() { SetDefaultAttachmentRoot(prev) })
+
+	mgr := NewManager()
+	mgr.SetAttachmentRoot(root)
+	if got := GetDefaultAttachmentRoot(); got != root {
+		t.Fatalf("Manager.SetAttachmentRoot did not propagate to package default: got %p want %p", got, root)
+	}
+	msg, err := NewMessage().AttachFile("viaMgr.txt")
+	if err != nil {
+		t.Fatalf("AttachFile after Manager.SetAttachmentRoot: %v", err)
+	}
+	if string(msg.GetAttachments()[0].Data) != "hello" {
+		t.Errorf("unexpected attachment content: %q", msg.GetAttachments()[0].Data)
 	}
 }

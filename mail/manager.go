@@ -3,6 +3,7 @@ package mail
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -14,6 +15,17 @@ type Manager struct {
 	channels        map[string]Mailer
 	mu              sync.RWMutex
 	eventDispatcher func(ctx context.Context, event interface{}) error
+}
+
+// SetAttachmentRoot registers the process-wide attachment root used by
+// Message.AttachFile, equivalent to SetDefaultAttachmentRoot. Exposed as
+// a Manager method so application bootstrap code that already holds a
+// Manager does not need a separate import path to configure the root.
+//
+// The caller retains ownership of the *os.Root and is responsible for
+// closing it at shutdown.
+func (m *Manager) SetAttachmentRoot(root *os.Root) {
+	SetDefaultAttachmentRoot(root)
 }
 
 // SetEventDispatcher sets the function used to dispatch events.

@@ -13,7 +13,24 @@ var (
 
 	// ErrInvalidHeader is returned when a header name or value, a subject,
 	// or a structured address field (From/To/Cc/Bcc/ReplyTo) contains
-	// forbidden characters — in particular CR (\r), LF (\n) or other
+	// forbidden characters, in particular CR (\r), LF (\n) or other
 	// C0 control characters that would enable SMTP header injection.
 	ErrInvalidHeader = errors.New("velocity/mail: header contains forbidden control characters")
+
+	// ErrAttachmentRootRequired is returned by Message.AttachFile when no
+	// attachment root has been registered (neither per-message via
+	// WithAttachmentRoot nor package-wide via SetDefaultAttachmentRoot).
+	// AttachFile is no longer a free pass to read arbitrary absolute
+	// paths: applications must explicitly opt in to a containment root,
+	// matching the rule that filesystem accesses are sandboxed by the
+	// kernel via os.Root.
+	ErrAttachmentRootRequired = errors.New("velocity/mail: AttachFile requires a registered attachment root (call SetDefaultAttachmentRoot or Message.WithAttachmentRoot)")
+
+	// ErrAttachmentPathOutsideRoot is returned when the requested
+	// attachment path escapes the registered attachment root through
+	// traversal sequences or symlink targets. Containment is enforced by
+	// (*os.Root).Open, which on Linux uses openat2 with
+	// RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS and on other platforms uses the
+	// strongest equivalent the runtime can provide.
+	ErrAttachmentPathOutsideRoot = errors.New("velocity/mail: attachment path escapes attachment root")
 )

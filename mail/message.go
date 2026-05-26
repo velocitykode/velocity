@@ -35,6 +35,47 @@ var (
 	defaultMaxAttachmentSizeMu sync.RWMutex
 )
 
+// defaultAttachmentRoot is the package-level attachment containment root used
+// by Message.AttachFile when the message does not specify its own root via
+// WithAttachmentRoot. Reads and writes are guarded by defaultAttachmentRootMu
+// so boot-time registration races with in-flight sends are safe (string
+// fields under concurrent write are not torn-write safe in Go; *os.Root
+// would be the same hazard absent the mutex).
+//
+// A nil value means "no root configured": AttachFile returns
+// ErrAttachmentRootRequired rather than silently reading arbitrary paths.
+var (
+	defaultAttachmentRoot   *os.Root
+	defaultAttachmentRootMu sync.RWMutex
+)
+
+// SetDefaultAttachmentRoot registers the process-wide attachment root used by
+// Message.AttachFile when no per-message root is set. Pass nil to unregister
+// (subsequent AttachFile calls without a per-message root return
+// ErrAttachmentRootRequired). The caller retains ownership of the *os.Root
+// and is responsible for closing it at shutdown.
+//
+// Typical usage at boot:
+//
+//	root, err := os.OpenRoot("/srv/app/attachments")
+//	if err != nil { ... }
+//	mail.SetDefaultAttachmentRoot(root)
+//
+// Safe for concurrent use.
+func SetDefaultAttachmentRoot(root *os.Root) {
+	defaultAttachmentRootMu.Lock()
+	defer defaultAttachmentRootMu.Unlock()
+	defaultAttachmentRoot = root
+}
+
+// GetDefaultAttachmentRoot returns the currently registered package-level
+// attachment root, or nil if none has been configured.
+func GetDefaultAttachmentRoot() *os.Root {
+	defaultAttachmentRootMu.RLock()
+	defer defaultAttachmentRootMu.RUnlock()
+	return defaultAttachmentRoot
+}
+
 // SetDefaultMaxAttachmentSize replaces the package-level fallback used by
 // NewMessage. A zero or negative value resets to DefaultMaxAttachmentSize.
 // Safe for concurrent use; intended to be called once during boot.
@@ -73,6 +114,12 @@ type Message struct {
 	// AttachFile and AttachData. Zero means "use the package default".
 	maxAttachmentSize int64
 
+	// attachmentRoot is the optional per-message containment root used by
+	// AttachFile. Nil means "fall back to the package-level default" (see
+	// SetDefaultAttachmentRoot). If both are nil, AttachFile rejects with
+	// ErrAttachmentRootRequired.
+	attachmentRoot *os.Root
+
 	// err is the first error accumulated by a fluent setter (size-limit
 	// violation, CRLF injection attempt, ...). It is returned by Err() and
 	// surfaced by Manager.Send / checkedMailer.Send before any driver sees
@@ -93,6 +140,19 @@ func NewMessage() *Message {
 		priority:          NormalPriority,
 		maxAttachmentSize: GetDefaultMaxAttachmentSize(),
 	}
+}
+
+// WithAttachmentRoot registers a per-message attachment containment root.
+// AttachFile will resolve its path argument against this root via
+// (*os.Root).Open, which is symlink-safe and cannot be escaped by ".."
+// segments. Passing nil clears the per-message root, falling back to the
+// package-level default set by SetDefaultAttachmentRoot.
+//
+// The caller retains ownership of the *os.Root and is responsible for
+// closing it; the Message does not.
+func (m *Message) WithAttachmentRoot(root *os.Root) *Message {
+	m.attachmentRoot = root
+	return m
 }
 
 // WithMaxAttachmentSize overrides the per-attachment size limit for this
@@ -247,71 +307,108 @@ func (m *Message) HTMLBody(body string) *Message {
 	return m
 }
 
-// AttachFile attaches a file from the filesystem. Returns an error if the
-// file cannot be read, the path contains traversal sequences, or the file
-// exceeds the message's MaxAttachmentSize. On size rejection the returned
-// error wraps ErrAttachmentTooLarge and the message also carries the error
-// via Err() so a missed error return at call time is caught later by Send.
+// AttachFile attaches a file resolved against the configured attachment
+// root. A root MUST be registered before calling AttachFile: either
+// per-message via WithAttachmentRoot or process-wide via
+// SetDefaultAttachmentRoot. Calls without a configured root return
+// ErrAttachmentRootRequired. This is a deliberate breaking change for
+// safety: the previous implementation accepted any absolute path the
+// process could read (local-file-read primitive) and relied on a weak
+// strings.Contains(p, "..") check that did not defeat symlink escapes.
+//
+// Containment is enforced by (*os.Root).Open, which on Linux uses
+// openat2 with RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS and on other
+// platforms uses the strongest equivalent the runtime provides. A path
+// that escapes the root via traversal or symlink targets is rejected
+// with ErrAttachmentPathOutsideRoot.
+//
+// Returns ErrAttachmentTooLarge if the file exceeds the message's
+// MaxAttachmentSize. On any failure the message also carries the error
+// via Err() so a missed error return at call time is caught later by
+// Send.
 func (m *Message) AttachFile(path string) (*Message, error) {
 	if m.err != nil {
 		return m, m.err
 	}
 
-	// Reject paths containing ".." to prevent directory traversal.
-	cleanPath := filepath.Clean(path)
-	if strings.Contains(cleanPath, "..") {
-		err := fmt.Errorf("mail: invalid attachment path: path traversal not allowed")
-		m.setErr(err)
-		return m, err
+	root := m.attachmentRoot
+	if root == nil {
+		root = GetDefaultAttachmentRoot()
+	}
+	if root == nil {
+		m.setErr(ErrAttachmentRootRequired)
+		return m, ErrAttachmentRootRequired
+	}
+
+	// Reject absolute paths up front: (*os.Root).Open rejects them too,
+	// but a dedicated message helps callers see the API mismatch faster
+	// than a syscall-level error from the kernel.
+	if filepath.IsAbs(path) {
+		wrapped := fmt.Errorf("mail: attachment path %q must be relative to the attachment root: %w",
+			path, ErrAttachmentPathOutsideRoot)
+		m.setErr(wrapped)
+		return m, wrapped
 	}
 
 	limit := m.MaxAttachmentSize()
 
-	// Stat first so oversized files are rejected without any read.
-	info, err := os.Stat(cleanPath)
+	// Open via the registered root. *os.Root refuses traversal segments
+	// and symlinks that target outside the root, so the previous
+	// strings.Contains heuristic and the Stat-then-Open TOCTOU window
+	// both disappear in a single call.
+	f, err := root.Open(path)
 	if err != nil {
-		wrapped := fmt.Errorf("mail: failed to stat attachment %q: %w", cleanPath, err)
+		if errors.Is(err, os.ErrNotExist) {
+			wrapped := fmt.Errorf("mail: failed to open attachment %q: %w", path, err)
+			m.setErr(wrapped)
+			return m, wrapped
+		}
+		wrapped := fmt.Errorf("mail: attachment %q escapes attachment root: %w",
+			path, errors.Join(ErrAttachmentPathOutsideRoot, err))
+		m.setErr(wrapped)
+		return m, wrapped
+	}
+	defer f.Close()
+
+	// Stat the open handle (NOT the original path) so the size check
+	// runs against the file we are about to read, eliminating a stat /
+	// open TOCTOU.
+	info, err := f.Stat()
+	if err != nil {
+		wrapped := fmt.Errorf("mail: failed to stat attachment %q: %w", path, err)
 		m.setErr(wrapped)
 		return m, wrapped
 	}
 	if info.Size() > limit {
 		wrapped := fmt.Errorf("mail: attachment %q is %d bytes, limit is %d: %w",
-			cleanPath, info.Size(), limit, ErrAttachmentTooLarge)
+			path, info.Size(), limit, ErrAttachmentTooLarge)
 		m.setErr(wrapped)
 		return m, wrapped
 	}
-
-	f, err := os.Open(cleanPath)
-	if err != nil {
-		wrapped := fmt.Errorf("mail: failed to open attachment %q: %w", cleanPath, err)
-		m.setErr(wrapped)
-		return m, wrapped
-	}
-	defer f.Close()
 
 	// Read at most limit+1 bytes so a file that grew after Stat still trips
 	// the size check rather than being silently truncated or consuming
 	// unbounded memory.
 	data, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
-		wrapped := fmt.Errorf("mail: failed to read attachment %q: %w", cleanPath, err)
+		wrapped := fmt.Errorf("mail: failed to read attachment %q: %w", path, err)
 		m.setErr(wrapped)
 		return m, wrapped
 	}
 	if int64(len(data)) > limit {
 		wrapped := fmt.Errorf("mail: attachment %q exceeds limit of %d bytes: %w",
-			cleanPath, limit, ErrAttachmentTooLarge)
+			path, limit, ErrAttachmentTooLarge)
 		m.setErr(wrapped)
 		return m, wrapped
 	}
 
-	contentType := mime.TypeByExtension(filepath.Ext(cleanPath))
+	contentType := mime.TypeByExtension(filepath.Ext(path))
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
 
 	m.attachments = append(m.attachments, Attachment{
-		Name:        filepath.Base(cleanPath),
+		Name:        filepath.Base(path),
 		Data:        data,
 		ContentType: contentType,
 	})
