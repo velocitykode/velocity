@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -452,27 +451,6 @@ func unionTrustedProxies(a, b []*net.IPNet) []*net.IPNet {
 		out = append(out, n)
 	}
 	return out
-}
-
-// parseSingleIP validates that the given header value is a single IP address.
-// Retained for backward compatibility with callers outside the rate-limit
-// path; the rate limiter itself now routes through internal/clientip.
-// Returns the canonical string form when valid, "" when the value contains a
-// comma, whitespace, or is otherwise not a single well-formed IP.
-func parseSingleIP(value string) string {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return ""
-	}
-	// Reject any separator that would make this a multi-value header.
-	if strings.ContainsAny(trimmed, ", \t") {
-		return ""
-	}
-	ip := net.ParseIP(trimmed)
-	if ip == nil {
-		return ""
-	}
-	return ip.String()
 }
 
 // RateLimitStore is an interface for custom rate limit storage backends.

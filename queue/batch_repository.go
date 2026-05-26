@@ -472,13 +472,6 @@ func (r *inMemoryBatchRepository) Close() error {
 	return nil
 }
 
-// reset clears the repository state. Used by tests via resetBatchStoreForTest.
-func (r *inMemoryBatchRepository) reset() {
-	r.mu.Lock()
-	r.batches = make(map[BatchID]*Batch)
-	r.mu.Unlock()
-}
-
 // ctxErr returns ctx.Err() iff ctx is non-nil. A nil ctx is permitted as a
 // shorthand for context.Background() since several call sites in the queue
 // package use it that way.

@@ -359,6 +359,9 @@ func TestCloneIPNets_AppendToSourceNotVisible(t *testing.T) {
 	// Append a brand-new trusted network to the source.
 	extra, _ := ParseCIDRs([]string{"192.168.0.0/16"})
 	src = append(src, extra...)
+	if len(src) != 2 {
+		t.Fatalf("src append precondition: want 2, got %d", len(src))
+	}
 
 	if len(dst) != 1 {
 		t.Fatalf("dst length changed after append to src: %d", len(dst))

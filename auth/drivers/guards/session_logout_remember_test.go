@@ -12,11 +12,9 @@ import (
 // rememberClearingProvider exposes the UpdateRememberToken call so the test
 // can assert Logout cycled the persisted token.
 type rememberClearingProvider struct {
-	user            auth.Authenticatable
-	updates         []string
-	updateMu        atomic.Int32
-	failFirstUpdate bool
-	updated         int32
+	user    auth.Authenticatable
+	updates []string
+	updated int32
 }
 
 func (p *rememberClearingProvider) FindByID(id interface{}) (auth.Authenticatable, error) {

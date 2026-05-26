@@ -3,7 +3,6 @@ package queue
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -420,6 +419,3 @@ func callbackQueueName() string {
 	return "default"
 }
 
-// errCallbackHandlerMissing is exposed so tests can match the worker's
-// failure mode when a handler name is not registered.
-var errCallbackHandlerMissing = errors.New("velocity/queue: batch callback handler not registered on this worker")
