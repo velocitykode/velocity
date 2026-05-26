@@ -316,19 +316,44 @@ func (d *DatabaseDriver) PopCtxWithTrace(ctx context.Context, queueName string) 
 		hydrationErr := fmt.Errorf("velocity/queue: failed to restore job from wrapper: %w", err)
 		// Quarantine inside the same tx (the row is locked under
 		// FOR UPDATE SKIP LOCKED / BEGIN IMMEDIATE, so no other worker can
-		// race us). The Exec calls use a fresh background-derived context
-		// so a caller-side timeout that fires AFTER hydration cannot abort
-		// the quarantine half-way and leave the poison row in place.
+		// race us for the same row before commit). The DELETE / INSERT
+		// statements run on a fresh background-derived context so a
+		// caller-side timeout firing mid-DELETE cannot half-quarantine the
+		// row. The fresh ctx does NOT detach the enclosing transaction:
+		// `tx` was opened via `BeginTx(ctx, ...)` and database/sql keeps
+		// that ctx tied to the tx until Commit/Rollback. If the caller
+		// cancels between here and tx.Commit() below, the Commit fails,
+		// the deferred Rollback discards the quarantine writes, and the
+		// poison row remains live in `jobs`. That is intentional and
+		// safe: we surface a non-ErrPoisonJob error (the Commit error
+		// joined with hydrationErr) so the worker treats it as a generic
+		// pop failure rather than reporting a quarantine that did not
+		// land. The next pop on a non-cancelled ctx will quarantine
+		// correctly. True caller-cancel-resistant quarantine would
+		// require rebeginning the tx with a detached ctx, which is
+		// deferred (see TestC01_DatabaseDriver_PoisonRowSurvivesCallerCancellation
+		// for the documented behaviour).
 		if qErr := d.quarantinePoisonLocked(tx, jobRecord.ID, jobRecord.Payload, queueName, hydrationErr); qErr != nil {
-			// Quarantine itself failed (e.g. DB error inserting into
-			// failed_jobs). Surface the original hydration error joined
-			// with the quarantine error so the operator sees both, and
-			// let the deferred Rollback leave the row in place. The
-			// poison row will be retried; that is preferable to silently
-			// dropping it.
+			// Quarantine statements themselves failed (e.g. DB error
+			// inserting into failed_jobs, or the caller's ctx was already
+			// cancelled and database/sql refused the Exec on the tx).
+			// Surface the original hydration error joined with the
+			// quarantine error so the operator sees both, and let the
+			// deferred Rollback leave the row in place. The poison row
+			// will be retried; that is preferable to silently dropping
+			// it.
 			return nil, tc, errors.Join(hydrationErr, qErr)
 		}
 		if commitErr := tx.Commit(); commitErr != nil {
+			// Commit failed (typically: caller's ctx was cancelled between
+			// the Exec calls and here, so database/sql aborts the tx).
+			// The DELETE/INSERT writes are discarded by the deferred
+			// Rollback. We intentionally do NOT return ErrPoisonJob in
+			// this branch: the quarantine did not actually land, so
+			// signalling "quarantined, move on" would be a lie. The
+			// worker sees a plain pop error, backs off, and on the next
+			// pop (with a fresh ctx) the same poison row is re-selected
+			// and quarantined correctly.
 			return nil, tc, errors.Join(hydrationErr, fmt.Errorf("velocity/queue: failed to commit poison-job quarantine: %w", commitErr))
 		}
 		return nil, tc, errors.Join(ErrPoisonJob, hydrationErr)
@@ -451,15 +476,24 @@ const quarantinePoisonTimeout = 10 * time.Second
 // MySQL) or BEGIN IMMEDIATE (SQLite), so no competing worker can race us for
 // the same row before the tx commits.
 //
-// The DELETE + INSERT statements run with a fresh background-derived context
-// (bounded by [quarantinePoisonTimeout]) rather than the caller's ctx. This
-// is deliberate: PopCtxWithTrace is reachable from worker pop loops whose ctx
-// may carry a short per-tick deadline. If hydration fails right at the edge
-// of that deadline we want quarantine to still complete; leaving the poison
-// row in place would head-of-line-starve every other due job (the next pop
-// SELECT would reselect it). The fresh ctx is not used for `BeginTx` (the
-// caller already owns the tx) but it is the right scope for the statements
-// themselves.
+// Context scoping (important): the DELETE + INSERT statements use a fresh
+// background-derived context bounded by [quarantinePoisonTimeout]. This
+// prevents a caller-side short per-tick deadline from cancelling either
+// statement mid-execution and leaving a half-quarantined row. However, the
+// ENCLOSING transaction `tx` was opened by PopCtxWithTrace via
+// `BeginTx(callerCtx, ...)`, and database/sql keeps that ctx tied to the tx
+// for the entire BEGIN / Commit window. If the caller's ctx is cancelled
+// between this function returning and `tx.Commit()`, the Commit fails, the
+// deferred Rollback discards everything we wrote here, and the poison row
+// remains live in `jobs`. The pop call returns a non-ErrPoisonJob error in
+// that branch (the join of hydrationErr and the Commit error) so the worker
+// does not falsely report a quarantine that never landed. The next pop on a
+// non-cancelled ctx re-selects the same poison row and quarantines it.
+//
+// True caller-cancel-resistant quarantine would require rebeginning the tx
+// with a detached ctx (or splitting quarantine into a second tx). Neither is
+// implemented today; the existing behaviour is documented above and exercised
+// by TestC01_DatabaseDriver_PoisonRowSurvivesCallerCancellation.
 //
 // On success, the caller commits the transaction. On error, the caller is
 // expected to roll back; the row remains in `jobs` and will be retried.
