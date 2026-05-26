@@ -260,28 +260,24 @@ func TestFileLogger_OpenFileError(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses filesystem permission checks; this test requires non-root")
 	}
-	// Create a read-only directory to prevent file creation
+	// Create a read-only PARENT directory so MkdirAll cannot create
+	// the target log directory beneath it. The old form (chmod the
+	// log dir itself to 0o555) no longer fails because ensureFile
+	// now chmods the dir to 0o700 after MkdirAll, and the owner can
+	// always chmod a dir they own. Move the lock one level up.
 	tempDir := t.TempDir()
-	readOnlyDir := filepath.Join(tempDir, "readonly")
-
-	// Create and make directory read-only
-	err := os.Mkdir(readOnlyDir, 0755)
-	if err != nil {
-		t.Fatalf("Failed to create directory: %v", err)
+	parent := filepath.Join(tempDir, "parent")
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatalf("Failed to create parent: %v", err)
 	}
-
-	// Make it read-only after creation
-	err = os.Chmod(readOnlyDir, 0555)
-	if err != nil {
-		t.Fatalf("Failed to make directory read-only: %v", err)
+	if err := os.Chmod(parent, 0o555); err != nil {
+		t.Fatalf("Failed to lock parent: %v", err)
 	}
+	defer os.Chmod(parent, 0o755)
 
-	// Ensure we restore permissions for cleanup
-	defer os.Chmod(readOnlyDir, 0755)
+	logger := NewFileLogger(filepath.Join(parent, "logs"), 0, 0)
 
-	logger := NewFileLogger(readOnlyDir, 0, 0)
-
-	// Try to log - should fail to open file in read-only directory
+	// Try to log - MkdirAll cannot create a child under a 0o555 dir.
 	logger.Info("test message")
 
 	// File should be nil due to open error
@@ -512,6 +508,162 @@ func TestFileLogger_SanitisesMessage(t *testing.T) {
 	}
 	if strings.Contains(out, "decode failed: /api/users\r") {
 		t.Errorf("file logger preserved literal CR in msg:\n%q", out)
+	}
+}
+
+// TestFileLogger_DefaultsToTightPerms checks that a stock file logger
+// writes 0o600 logs inside a 0o700 directory. Log files routinely
+// contain request bodies, stack traces, and the occasional session ID
+// or PII shape; the previous 0o644 / 0o755 defaults exposed that data
+// to every local user on a multi-tenant host.
+func TestFileLogger_DefaultsToTightPerms(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses filesystem permission checks; this test requires non-root")
+	}
+	tempDir := t.TempDir()
+	dir := filepath.Join(tempDir, "logs")
+	logger := NewFileLogger(dir, 0, 0)
+	logger.Info("hello")
+	if logger.file != nil {
+		logger.file.Sync()
+		logger.file.Close()
+	}
+
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat dir: %v", err)
+	}
+	if got, want := dirInfo.Mode().Perm(), os.FileMode(0o700); got != want {
+		t.Errorf("log dir perms = %o, want %o", got, want)
+	}
+
+	logFile := filepath.Join(dir, "velocity-"+time.Now().Format("2006-01-02")+".log")
+	fileInfo, err := os.Stat(logFile)
+	if err != nil {
+		t.Fatalf("stat file: %v", err)
+	}
+	if got, want := fileInfo.Mode().Perm(), os.FileMode(0o600); got != want {
+		t.Errorf("log file perms = %o, want %o", got, want)
+	}
+}
+
+// TestFileLogger_TightensPreExistingLooseFile replays the M-40 audit
+// scenario against the log driver: a log file laid down by an older
+// binary (or an operator chmod) at 0o644 inside a 0o755 directory must
+// be tightened to 0o600 / 0o700 on next open. os.OpenFile / MkdirAll
+// preserve perms on pre-existing entries, so this only works because
+// ensureFile explicitly chmods after open.
+func TestFileLogger_TightensPreExistingLooseFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses filesystem permission checks; this test requires non-root")
+	}
+	tempDir := t.TempDir()
+	dir := filepath.Join(tempDir, "logs")
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir loose dir: %v", err)
+	}
+	stale := filepath.Join(dir, "velocity-"+time.Now().Format("2006-01-02")+".log")
+	if err := os.WriteFile(stale, []byte("stale\n"), 0o644); err != nil {
+		t.Fatalf("write stale file: %v", err)
+	}
+
+	// Sanity: confirm the pre-existing perms before the logger runs.
+	if info, err := os.Stat(stale); err != nil {
+		t.Fatalf("stat stale file: %v", err)
+	} else if info.Mode().Perm() != 0o644 {
+		t.Fatalf("test setup wrong, file perms = %o, want 0644", info.Mode().Perm())
+	}
+
+	logger := NewFileLogger(dir, 0, 0)
+	logger.Info("after upgrade")
+	if logger.file != nil {
+		logger.file.Sync()
+		logger.file.Close()
+	}
+
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat dir: %v", err)
+	}
+	if got, want := dirInfo.Mode().Perm(), os.FileMode(0o700); got != want {
+		t.Errorf("pre-existing loose dir not tightened: perms = %o, want %o", got, want)
+	}
+	fileInfo, err := os.Stat(stale)
+	if err != nil {
+		t.Fatalf("stat file: %v", err)
+	}
+	if got, want := fileInfo.Mode().Perm(), os.FileMode(0o600); got != want {
+		t.Errorf("pre-existing loose file not tightened: perms = %o, want %o", got, want)
+	}
+}
+
+// TestFileLogger_WithFileModeOverride confirms operators can opt into
+// a looser mode (e.g. group-readable logs aggregated by a sidecar
+// running as a different uid) without patching the framework. The
+// directory mode is derived to match: 0o640 file -> 0o750 dir.
+func TestFileLogger_WithFileModeOverride(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses filesystem permission checks; this test requires non-root")
+	}
+	tempDir := t.TempDir()
+	dir := filepath.Join(tempDir, "logs")
+
+	logger := NewFileLogger(dir, 0, 0, WithFileMode(0o640))
+	logger.Info("hello")
+	if logger.file != nil {
+		logger.file.Sync()
+		logger.file.Close()
+	}
+
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat dir: %v", err)
+	}
+	if got, want := dirInfo.Mode().Perm(), os.FileMode(0o750); got != want {
+		t.Errorf("override dir perms = %o, want %o", got, want)
+	}
+	logFile := filepath.Join(dir, "velocity-"+time.Now().Format("2006-01-02")+".log")
+	fileInfo, err := os.Stat(logFile)
+	if err != nil {
+		t.Fatalf("stat file: %v", err)
+	}
+	if got, want := fileInfo.Mode().Perm(), os.FileMode(0o640); got != want {
+		t.Errorf("override file perms = %o, want %o", got, want)
+	}
+}
+
+// TestFileLogger_PermsSurviveRotation guards against future drift:
+// when the date changes and ensureFile re-opens the next day's file,
+// the new file must still land at 0o600. Same invariant applied at
+// every rotation, not just the first open.
+func TestFileLogger_PermsSurviveRotation(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses filesystem permission checks; this test requires non-root")
+	}
+	tempDir := t.TempDir()
+	dir := filepath.Join(tempDir, "logs")
+
+	logger := NewFileLogger(dir, 0, 0)
+	logger.Info("day one")
+
+	// Simulate the date rolling over by mutating the cached date so
+	// the next log call re-opens a fresh file. Mirrors the existing
+	// TestFileLogger_DateRotation harness.
+	logger.date = "2020-01-01"
+	logger.Info("day two")
+	if logger.file != nil {
+		logger.file.Sync()
+		logger.file.Close()
+	}
+
+	logFile := filepath.Join(dir, "velocity-"+time.Now().Format("2006-01-02")+".log")
+	info, err := os.Stat(logFile)
+	if err != nil {
+		t.Fatalf("stat rotated file: %v", err)
+	}
+	if got, want := info.Mode().Perm(), os.FileMode(0o600); got != want {
+		t.Errorf("rotated log file perms = %o, want %o", got, want)
 	}
 }
 
