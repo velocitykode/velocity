@@ -1,6 +1,10 @@
 package drivers
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"sync"
@@ -54,6 +58,19 @@ type WebSocketDriver struct {
 	// without contending with the channel-membership lock held by
 	// Broadcast/BroadcastExcept.
 	logger atomic.Value // holds loggerHolder{Logger}
+
+	// opaqueSeed is a process-local 32-byte random key used to derive opaque
+	// per-(channel, socket) identifiers returned by GetClients. The seed is
+	// lazy-initialised on first use via opaqueSeedOnce so test fixtures that
+	// construct the driver as a bare literal do not crash.
+	//
+	// Audit M-27: presence channels must NOT leak the raw internal socket ID
+	// (a per-connection nonce) to channel peers - it lets one tenant fingerprint
+	// every other tenant's connection lifetime and trivially target individual
+	// sockets for DoS. The HMAC binds (socket, channel) so the same socket on
+	// two channels gets two unlinkable opaque IDs.
+	opaqueSeedOnce sync.Once
+	opaqueSeed     [32]byte
 }
 
 // loggerHolder wraps a Logger so atomic.Value stores a single concrete type.
@@ -210,19 +227,82 @@ func (d *WebSocketDriver) DroppedCount() uint64 {
 	return d.droppedCount.Load()
 }
 
-// GetClients returns clients in a channel
+// GetClients returns opaque per-channel identifiers for every socket currently
+// subscribed to the given channel.
+//
+// The returned values are 16-hex-character HMACs of (socketID, channel) under
+// a process-local random seed. They are:
+//
+//   - stable for the lifetime of a subscription (same socket on same channel
+//     always hashes to the same opaque value while it stays subscribed)
+//   - unlinkable across channels (the same socket on two channels produces
+//     two different opaque IDs)
+//   - unlinkable across server instances (the seed is regenerated on every
+//     process start; there is no persisted secret)
+//   - never reversible back to the raw socket ID without the seed
+//
+// This intentionally diverges from the previous behaviour, which returned the
+// raw internal socket ID. Raw socket IDs are per-connection nonces meant to
+// stay inside the server, and returning them to channel peers leaked enough
+// information to fingerprint connection lifetimes, target individual sockets
+// for DoS, and correlate the same user across tenants. See audit M-27.
+//
+// Pusher-protocol parity: real Pusher exposes a caller-supplied "user_id" plus
+// an opaque "info" blob on presence channels, not the connection's socket_id.
+// Velocity now lines up with that model. Applications that need to identify
+// peers in a presence channel should attach domain identity in the channel
+// authorizer / presence-data func rather than rely on this identifier.
 func (d *WebSocketDriver) GetClients(channel string) []string {
 	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	var clientIDs []string
+	socketIDs := make([]string, 0, len(d.channels[channel]))
 	if clients, exists := d.channels[channel]; exists {
 		for id := range clients {
-			clientIDs = append(clientIDs, id)
+			socketIDs = append(socketIDs, id)
 		}
 	}
+	d.mu.RUnlock()
 
-	return clientIDs
+	if len(socketIDs) == 0 {
+		return nil
+	}
+
+	seed := d.getOpaqueSeed()
+	opaque := make([]string, len(socketIDs))
+	for i, id := range socketIDs {
+		opaque[i] = computeOpaqueClientID(seed, id, channel)
+	}
+	return opaque
+}
+
+// getOpaqueSeed returns the process-local seed, generating one on first call.
+// crypto/rand.Read failure is fatal: without a seed we would either leak raw
+// socket IDs or hand out predictable values. Both options violate the contract
+// of GetClients, so we propagate by panicking - this is a startup-class
+// failure per CLAUDE.md rule 10 (never panic in library code EXCEPT for
+// unrecoverable startup configuration).
+func (d *WebSocketDriver) getOpaqueSeed() [32]byte {
+	d.opaqueSeedOnce.Do(func() {
+		if _, err := rand.Read(d.opaqueSeed[:]); err != nil {
+			panic(fmt.Sprintf("velocity/broadcast: crypto/rand failed seeding opaque client IDs: %v", err))
+		}
+	})
+	return d.opaqueSeed
+}
+
+// computeOpaqueClientID returns the first 8 bytes (16 hex chars) of
+// HMAC-SHA256(seed, socketID + 0x00 + channel). The NUL separator prevents
+// the (alice, room) collision against (alic, eroom) etc. We truncate to 16
+// hex chars to keep the wire payload small; the 64-bit space is still
+// astronomically resistant to collision within a single channel (subscriber
+// counts are bounded by Server.MaxConnections; 64 bits dwarfs any plausible
+// presence list).
+func computeOpaqueClientID(seed [32]byte, socketID, channel string) string {
+	mac := hmac.New(sha256.New, seed[:])
+	mac.Write([]byte(socketID))
+	mac.Write([]byte{0x00})
+	mac.Write([]byte(channel))
+	sum := mac.Sum(nil)
+	return hex.EncodeToString(sum[:8])
 }
 
 // Subscribe adds a client to a channel

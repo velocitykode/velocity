@@ -958,33 +958,45 @@ func TestWebSocketDriver_handleClientEvent(t *testing.T) {
 }
 
 func TestWebSocketDriver_GetClients(t *testing.T) {
+	// Per audit M-27 GetClients returns opaque per-channel HMACs, not the raw
+	// socket IDs. This test pins the cardinality and shape contract; the
+	// detailed opaque-ID properties (unlinkability, stability, etc) live in
+	// presence_opaque_test.go.
 	tests := []struct {
-		name          string
-		setupChannels map[string][]string
-		channel       string
-		wantClientIDs []string
+		name           string
+		setupChannels  map[string][]string
+		channel        string
+		wantOpaqueLen  int
+		wantClientIDs  []string
+		wantNonNilSize int
 	}{
 		{
-			name: "returns client IDs for channel with clients",
+			name: "returns one opaque id per subscriber",
 			setupChannels: map[string][]string{
 				"chat": {"client-1", "client-2", "client-3"},
 			},
-			channel:       "chat",
-			wantClientIDs: []string{"client-1", "client-2", "client-3"},
+			channel:        "chat",
+			wantOpaqueLen:  3,
+			wantClientIDs:  []string{"client-1", "client-2", "client-3"},
+			wantNonNilSize: 3,
 		},
 		{
-			name: "returns empty slice for channel with no clients",
+			name: "returns nil for channel with no clients",
 			setupChannels: map[string][]string{
 				"empty": {},
 			},
-			channel:       "empty",
-			wantClientIDs: nil,
+			channel:        "empty",
+			wantOpaqueLen:  0,
+			wantClientIDs:  nil,
+			wantNonNilSize: 0,
 		},
 		{
-			name:          "returns nil for non-existent channel",
-			setupChannels: nil,
-			channel:       "non-existent",
-			wantClientIDs: nil,
+			name:           "returns nil for non-existent channel",
+			setupChannels:  nil,
+			channel:        "non-existent",
+			wantOpaqueLen:  0,
+			wantClientIDs:  nil,
+			wantNonNilSize: 0,
 		},
 	}
 
@@ -1004,20 +1016,33 @@ func TestWebSocketDriver_GetClients(t *testing.T) {
 
 			got := driver.GetClients(tt.channel)
 
-			if len(got) != len(tt.wantClientIDs) {
-				t.Errorf("GetClients() returned %d clients, want %d", len(got), len(tt.wantClientIDs))
+			if len(got) != tt.wantOpaqueLen {
+				t.Errorf("GetClients() returned %d entries, want %d", len(got), tt.wantOpaqueLen)
 				return
 			}
 
-			// Verify all expected client IDs are present (order may vary)
-			gotMap := make(map[string]bool)
+			// Each returned identifier must be a 16-character hex string.
 			for _, id := range got {
-				gotMap[id] = true
+				if len(id) != 16 {
+					t.Errorf("opaque id %q has length %d, want 16", id, len(id))
+				}
+				for _, r := range id {
+					if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+						t.Errorf("opaque id %q contains non-hex rune %q", id, r)
+						break
+					}
+				}
 			}
 
-			for _, wantID := range tt.wantClientIDs {
-				if !gotMap[wantID] {
-					t.Errorf("GetClients() missing client ID %q", wantID)
+			// The raw socket IDs supplied in setup must NOT appear verbatim
+			// in the response - that is the whole point of M-27.
+			gotSet := make(map[string]bool, len(got))
+			for _, id := range got {
+				gotSet[id] = true
+			}
+			for _, raw := range tt.wantClientIDs {
+				if gotSet[raw] {
+					t.Errorf("GetClients() leaked raw socket id %q", raw)
 				}
 			}
 		})
