@@ -669,6 +669,17 @@ func newSlowPushDriver() *slowPushDriver {
 	}
 }
 
+// PopCtxReserved opts this test wrapper out of the ReservationDriver
+// path the underlying *MemoryDriver provides, so the worker exercises
+// the legacy PushDelayedCtx retry route this test was written to cover.
+// The embed promotes PopCtxReserved on the memory driver; without this
+// shadow the worker would call ReleaseCtx on retry and never touch
+// PushDelayedCtx, defeating the test's purpose.
+func (d *slowPushDriver) PopCtxReserved(ctx context.Context, queue string) (Job, ReservationToken, TraceContext, error) {
+	job, tc, err := d.MemoryDriver.PopCtxWithTrace(ctx, queue)
+	return job, ReservationToken{}, tc, err
+}
+
 func (d *slowPushDriver) PushDelayedCtx(ctx context.Context, job Job, delay time.Duration, queue ...string) error {
 	d.enteredOnce.Do(func() { close(d.pushEntered) })
 	// Model a Redis network partition or DB lock wait: the driver's

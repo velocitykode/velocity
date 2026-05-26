@@ -35,11 +35,32 @@ type MemoryDriver struct {
 	// popped or cleared. Guarded by m.mu (same as queues / delayed) so
 	// the lookup and the insert are atomic against concurrent Push.
 	dedupeKeys map[string]struct{}
+	// reservations holds wrappers leased to a worker by PopCtxReserved
+	// keyed by the ReservationToken.ID. The wrapper carries the
+	// persisted attempts counter (Payload.Attempts) which the pop path
+	// increments BEFORE handing the job to the worker. This is the
+	// memory-driver counterpart to the DB driver's jobs.attempts
+	// column: it is the authoritative source for MaxAttempts decisions
+	// across multiple worker goroutines sharing one driver, where the
+	// per-worker sync.Map cache resets on each Pop (jobKey is the job
+	// pointer for non-Identifiable jobs, and the pointer changes when a
+	// fresh pop returns a different wrapper struct).
+	reservations map[int64]*memReservation
+	// nextReservationID is a monotonic counter feeding ReservationToken.ID.
+	// Starts at 1 so 0 stays reserved for the IsZero contract. Read and
+	// written under m.mu.
+	nextReservationID int64
 	// eventDispatcher is stored via atomic.Pointer so the dispatcher path
 	// never acquires m.mu. This is critical: PushCtx/PushDelayedCtx hold
 	// m.mu.Lock() while calling dispatchEvent, so any RLock attempt on the
 	// dispatcher path would self-deadlock against the writer lock.
 	eventDispatcher atomic.Pointer[dispatcherFn]
+
+	// nonIdentifiableWarned ensures the "this job kind cannot reliably
+	// hit MaxAttempts across processes" advisory fires at most once per
+	// distinct job type. Without the gate, a chatty queue would spam
+	// the log every push.
+	nonIdentifiableWarned sync.Map // keyed by job type string
 
 	// logger is stored in an atomic.Value so the shutdown panic-recovery
 	// path can read it without acquiring the main lock (the goroutine
@@ -47,6 +68,26 @@ type MemoryDriver struct {
 	// conditions).
 	logger atomic.Value // holds memLoggerHolder{Logger}
 }
+
+// memReservation holds a wrapper leased to a worker via PopCtxReserved
+// along with the queue name it came from. Holding the wrapper (not a
+// fresh copy) means Attempts written on the wrapper inside Pop is the
+// same value seen on Release / Ack / FailReserved.
+type memReservation struct {
+	wrapper *JobWrapper
+	queue   string
+}
+
+// Compile-time assertion that MemoryDriver implements ReservationDriver.
+// Same shape as DatabaseDriver: the worker prefers PopCtxReserved when
+// available, which is the only path that surfaces persisted attempts on
+// the token (see Worker.attemptNumber).
+var (
+	_ Driver            = (*MemoryDriver)(nil)
+	_ TraceAwareDriver  = (*MemoryDriver)(nil)
+	_ ReservationDriver = (*MemoryDriver)(nil)
+	_ DedupeAwarePusher = (*MemoryDriver)(nil)
+)
 
 // memLoggerHolder wraps a Logger so atomic.Value stores a single concrete type.
 type memLoggerHolder struct{ Logger }
@@ -117,11 +158,12 @@ type failedJob struct {
 // Call Start() to begin the background delayed-job processor.
 func NewMemoryDriver() *MemoryDriver {
 	return &MemoryDriver{
-		queues:     make(map[string]*list.List),
-		delayed:    make(map[string]*delayedHeap),
-		failed:     make(map[string][]*failedJob),
-		dedupeKeys: make(map[string]struct{}),
-		stopChan:   make(chan struct{}),
+		queues:       make(map[string]*list.List),
+		delayed:      make(map[string]*delayedHeap),
+		failed:       make(map[string][]*failedJob),
+		dedupeKeys:   make(map[string]struct{}),
+		reservations: make(map[int64]*memReservation),
+		stopChan:     make(chan struct{}),
 	}
 }
 
@@ -165,6 +207,37 @@ func (m *MemoryDriver) dispatchEvent(ctx context.Context, event interface{}) {
 	(*p)(ctx, event)
 }
 
+// warnIfNonIdentifiable emits a one-time warning per distinct job type
+// when the job does not implement Identifiable. The worker's in-memory
+// attempts cache (Worker.attempts sync.Map) is keyed by the job pointer
+// for non-Identifiable jobs; a job that fails on host A and is
+// re-popped on host B (or even re-popped in the same process from a
+// fresh wrapper after Pop returned a different pointer) sees attempts
+// reset to zero, so MaxAttempts can never trip and a poison job loops
+// forever. The reservation path (PopCtxReserved -> token.Attempts)
+// patches the in-process case via Payload.Attempts on the wrapper, but
+// it cannot rejoin attempts across crashes or driver restarts without
+// an Identifiable.JobID() to key the persisted counter on.
+//
+// The warning is advisory only: existing jobs keep working with the
+// best-effort cache. To surface the gap loudly per kind we gate on the
+// fully-qualified type name in a sync.Map; once warned, the type stays
+// quiet for the lifetime of the driver.
+func (m *MemoryDriver) warnIfNonIdentifiable(job Job) {
+	if _, ok := job.(Identifiable); ok {
+		return
+	}
+	typ := fmt.Sprintf("%T", job)
+	if _, loaded := m.nonIdentifiableWarned.LoadOrStore(typ, struct{}{}); loaded {
+		return
+	}
+	if logger := m.log(); logger != nil {
+		logger.Warn("velocity/queue: job type does not implement Identifiable; MaxAttempts cannot be enforced reliably across process restarts. Implement queue.Identifiable.JobID() to fix.",
+			"type", typ,
+		)
+	}
+}
+
 // PushCtx adds a job to the queue. Honours ctx cancellation before the
 // lock is acquired so a graceful-shutdown cancel on the caller doesn't
 // queue new work.
@@ -172,6 +245,7 @@ func (m *MemoryDriver) PushCtx(ctx context.Context, job Job, queueName ...string
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	m.warnIfNonIdentifiable(job)
 	name := resolveQueueName(job, queueName...)
 
 	wrapper, err := CreateJobWrapper(job, name)
@@ -201,6 +275,7 @@ func (m *MemoryDriver) PushDelayedCtx(ctx context.Context, job Job, delay time.D
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	m.warnIfNonIdentifiable(job)
 	name := resolveQueueName(job, queueName...)
 
 	wrapper, err := CreateJobWrapper(job, name)
@@ -290,6 +365,164 @@ func (m *MemoryDriver) popLocked(queueName string) (Job, TraceContext, error) {
 	return job, tc, nil
 }
 
+// PopCtxReserved leases the next available job for the worker. The
+// wrapper's Payload.Attempts counter is incremented BEFORE the job is
+// returned and the post-increment value is surfaced on the
+// ReservationToken so the worker treats the persisted attempts as the
+// authoritative source for MaxAttempts (see Worker.attemptNumber). A
+// zero token paired with a nil job means "no job available".
+//
+// The wrapper is stashed in m.reservations under the new token ID
+// until the worker calls AckCtx (delete), ReleaseCtx (re-enqueue with
+// backoff), or FailReservedCtx (record in failed list). A driver
+// Shutdown leaves reservations in place: this is an in-memory driver,
+// so process exit is the end of the world and any in-flight jobs are
+// lost regardless.
+//
+// Implements ReservationDriver.
+func (m *MemoryDriver) PopCtxReserved(ctx context.Context, queueName string) (Job, ReservationToken, TraceContext, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, ReservationToken{}, TraceContext{}, err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	q, exists := m.queues[queueName]
+	if !exists || q.Len() == 0 {
+		return nil, ReservationToken{}, TraceContext{}, nil
+	}
+
+	element := q.Front()
+	q.Remove(element)
+
+	wrapper, ok := element.Value.(*JobWrapper)
+	if !ok {
+		return nil, ReservationToken{}, TraceContext{}, fmt.Errorf("invalid wrapper type")
+	}
+
+	tc := TraceContext{}
+	if wrapper.Payload != nil {
+		tc.TraceID = wrapper.Payload.TraceID
+		tc.SpanID = wrapper.Payload.SpanID
+		tc.ParentID = wrapper.Payload.ParentID
+		// Persist the incremented counter on the wrapper so a
+		// subsequent Release/re-pop reads it back.
+		wrapper.Payload.Attempts++
+	}
+
+	job, err := GetJobFromWrapper(wrapper)
+	if err != nil {
+		return nil, ReservationToken{}, tc, fmt.Errorf("velocity/queue: failed to restore job from wrapper: %w", err)
+	}
+
+	m.nextReservationID++
+	id := m.nextReservationID
+	m.reservations[id] = &memReservation{wrapper: wrapper, queue: queueName}
+
+	attempts := 0
+	if wrapper.Payload != nil {
+		attempts = wrapper.Payload.Attempts
+	}
+	return job, ReservationToken{ID: id, Attempts: attempts}, tc, nil
+}
+
+// AckCtx removes the reservation entry after the handler succeeded.
+// Zero token is a no-op for symmetry with non-reserving call sites.
+// Implements ReservationDriver.
+func (m *MemoryDriver) AckCtx(ctx context.Context, token ReservationToken) error {
+	if token.IsZero() {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, ok := m.reservations[token.ID]; !ok {
+		// The reservation was already cleared (Clear, Shutdown, etc.).
+		// Surface as lease-lost so the worker's success-side effects do
+		// not double-fire on a redelivery.
+		return ErrLeaseLost
+	}
+	delete(m.reservations, token.ID)
+	return nil
+}
+
+// ReleaseCtx re-enqueues the leased wrapper on the delayed heap with
+// the supplied backoff. The wrapper carries the incremented
+// Payload.Attempts from PopCtxReserved, so the next pop reads the
+// updated counter and the MaxAttempts budget shrinks as expected.
+// Implements ReservationDriver.
+func (m *MemoryDriver) ReleaseCtx(ctx context.Context, token ReservationToken, delay time.Duration) error {
+	if token.IsZero() {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if delay < 0 {
+		delay = 0
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	r, ok := m.reservations[token.ID]
+	if !ok {
+		return ErrLeaseLost
+	}
+	delete(m.reservations, token.ID)
+
+	h, exists := m.delayed[r.queue]
+	if !exists {
+		h = &delayedHeap{}
+		m.delayed[r.queue] = h
+	}
+	heap.Push(h, &delayedJob{
+		wrapper: r.wrapper,
+		runAt:   time.Now().Add(delay),
+	})
+	return nil
+}
+
+// FailReservedCtx records the job as failed and removes the reservation.
+// Implements ReservationDriver.
+func (m *MemoryDriver) FailReservedCtx(ctx context.Context, token ReservationToken, job Job, jobErr error, queueName string) error {
+	if token.IsZero() {
+		return m.Failed(job, jobErr, queueName)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	r, ok := m.reservations[token.ID]
+	if !ok {
+		m.mu.Unlock()
+		return ErrLeaseLost
+	}
+	delete(m.reservations, token.ID)
+
+	if _, exists := m.failed[queueName]; !exists {
+		m.failed[queueName] = make([]*failedJob, 0)
+	}
+	m.failed[queueName] = append(m.failed[queueName], &failedJob{
+		wrapper:  r.wrapper,
+		job:      job,
+		error:    jobErr.Error(),
+		failedAt: time.Now(),
+	})
+	m.mu.Unlock()
+
+	// Job.Failed runs outside the lock so a handler that re-enters the
+	// driver (Push/Size) does not self-deadlock.
+	job.Failed(jobErr)
+	return nil
+}
+
 // PushIfNotExistsCtx implements DedupeAwarePusher. The dedupe key is
 // the deterministic identifier supplied by the caller (typically
 // BatchCallbackJob.DedupeKey). Returns nil immediately when a live
@@ -309,6 +542,7 @@ func (m *MemoryDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupeKe
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	m.warnIfNonIdentifiable(job)
 	name := resolveQueueName(job, queueName...)
 
 	wrapper, err := CreateJobWrapper(job, name)
