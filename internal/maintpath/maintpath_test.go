@@ -85,7 +85,7 @@ func TestRoot_RejectsDotDot(t *testing.T) {
 // a NUL byte via Root() when the env layer would otherwise accept it. We
 // cannot Setenv with a NUL, so this test is omitted.
 
-func TestRoot_DefaultIsExecutableDir(t *testing.T) {
+func TestRoot_DefaultIsCwd(t *testing.T) {
 	resetForTest(t)
 	os.Unsetenv(maintpath.EnvVar)
 	maintpath.Reset()
@@ -95,17 +95,16 @@ func TestRoot_DefaultIsExecutableDir(t *testing.T) {
 		t.Fatalf("Root: %v", err)
 	}
 
-	exe, err := os.Executable()
+	wd, err := os.Getwd()
 	if err != nil {
-		t.Skipf("os.Executable unavailable: %v", err)
+		t.Skipf("os.Getwd unavailable: %v", err)
 	}
-	want := filepath.Dir(exe)
 
-	if got != want {
-		t.Errorf("Root: got %q, want %q (exe dir)", got, want)
+	if got != wd {
+		t.Errorf("Root: got %q, want %q (cwd)", got, wd)
 	}
-	if src := maintpath.Source(); src != "executable" {
-		t.Errorf("Source: got %q, want %q", src, "executable")
+	if src := maintpath.Source(); src != "cwd" {
+		t.Errorf("Source: got %q, want %q", src, "cwd")
 	}
 }
 

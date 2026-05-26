@@ -111,23 +111,37 @@ func resolve() {
 		sourceLabel = "env"
 		return
 	}
-	if exe, err := os.Executable(); err == nil {
-		// filepath.Dir preserves absolute-ness. The exe path may itself be a
-		// symlink; we deliberately do NOT resolve it because operators expect
-		// the marker to live next to the binary they invoke, not next to the
-		// target of a symlink they may not control.
-		cachedDir = filepath.Dir(exe)
-		sourceLabel = "executable"
-		return
-	}
+	// Default to the cwd captured at first reference (sync.Once-gated).
+	// This is the "project root" in every common workflow: an operator
+	// runs the binary from the project directory, so cwd is stable
+	// across the CLI (`vel down`) and the server process even when they
+	// are separate binaries with different executable paths. Using
+	// filepath.Dir(os.Executable()) instead would split the writer and
+	// reader whenever `go run ./cmd/cli down` ran alongside a compiled
+	// server, or whenever the CLI and server lived in separate binaries
+	// under different paths; the marker would land somewhere the
+	// server's middleware never looks. Operators with a non-standard
+	// layout (containers with WORKDIR drift, systemd units that chdir
+	// after startup) set VELOCITY_MAINTENANCE_ROOT to pin an absolute
+	// path.
 	if wd, err := os.Getwd(); err == nil {
 		cachedDir = wd
 		sourceLabel = "cwd"
 		return
 	}
-	// Both Executable() and Getwd() failed. Fall back to "." so callers do
-	// not panic; this will then fail open when the file is written somewhere
-	// the reader cannot find, which is preferable to crashing.
+	if exe, err := os.Executable(); err == nil {
+		// Last-resort fallback when Getwd fails (extremely rare; the
+		// cwd was deleted out from under the process). filepath.Dir
+		// preserves absolute-ness. Symlinks are intentionally not
+		// resolved so the marker lives next to the invoked binary
+		// path, not the symlink target.
+		cachedDir = filepath.Dir(exe)
+		sourceLabel = "executable"
+		return
+	}
+	// Both Getwd() and Executable() failed. Fall back to "." so callers
+	// do not panic; this will then fail open when the file is written
+	// somewhere the reader cannot find, which is preferable to crashing.
 	cachedDir = "."
 	sourceLabel = "fallback"
 }
