@@ -381,12 +381,17 @@ func (d *WebSocketDriver) SetAuthorizer(fn ChannelAuthorizer) {
 // SetTokenVerifier installs an HMAC token verifier consulted on every
 // subscribe to a private- or presence- channel. When non-nil, the inbound
 // subscribe message must carry an "auth" field whose value verifies against
-// (client.ID, channel). Wire it from broadcast.BroadcastManager.VerifyAuthToken
-// to enforce audit H-25; pass nil to disable.
-func (d *WebSocketDriver) SetTokenVerifier(fn TokenVerifier) {
+// (client.ID, channel). Pass nil to disable.
+//
+// The parameter is the bare func signature (not the local TokenVerifier
+// named type) so *WebSocketDriver structurally satisfies
+// broadcast.TokenVerifierSetter and BroadcastManager.SetAuthSecret can
+// auto-wire BroadcastManager.VerifyAuthToken here without an explicit
+// caller-side cast. See audit H-25 / followup F1.
+func (d *WebSocketDriver) SetTokenVerifier(fn func(socketID, channel, token string) bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.verifier = fn
+	d.verifier = TokenVerifier(fn)
 }
 
 // GetServer returns the underlying WebSocket server

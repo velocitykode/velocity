@@ -65,6 +65,21 @@ type Driver interface {
 	GetClients(channel string) []string
 }
 
+// TokenVerifierSetter is an optional driver capability that lets the
+// BroadcastManager auto-install an HMAC token verifier on the driver
+// whenever an auth secret is configured. Drivers satisfy this interface
+// structurally (no explicit declaration needed). When the manager calls
+// SetTokenVerifier with a non-nil function, the driver MUST require and
+// verify an auth token for every private/presence subscribe; passing nil
+// clears the requirement.
+//
+// Wiring this interface closes the audit H-25 gap where a consumer that
+// configured a secret but forgot to call driver.SetTokenVerifier directly
+// would silently leave subscribes unauthenticated.
+type TokenVerifierSetter interface {
+	SetTokenVerifier(fn func(socketID, channel, token string) bool)
+}
+
 // Authorizer is a function that authorizes channel access
 type Authorizer func(channel string, user interface{}) bool
 
@@ -217,16 +232,38 @@ func (b *BroadcastManager) SetPresenceData(fn PresenceDataFunc) {
 // SetAuthSecret installs the HMAC secret used to sign and verify private- and
 // presence- channel auth tokens. A copy of the secret is kept so subsequent
 // mutations to the input do not affect the manager.
+//
+// When the configured driver implements TokenVerifierSetter (the websocket
+// driver does), this also auto-wires the driver's subscribe-time verifier
+// to b.VerifyAuthToken. A subsequent call with an empty secret clears the
+// verifier so the driver returns to authorizer-only mode. This guarantees
+// that any consumer that installs a secret is protected against the
+// audit H-25 default-bypass without an extra explicit wiring step.
 func (b *BroadcastManager) SetAuthSecret(secret []byte) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	if len(secret) == 0 {
 		b.authSecret = nil
+	} else {
+		cp := make([]byte, len(secret))
+		copy(cp, secret)
+		b.authSecret = cp
+	}
+	setter, _ := b.driver.(TokenVerifierSetter)
+	hasSecret := len(b.authSecret) > 0
+	b.mu.Unlock()
+
+	if setter == nil {
 		return
 	}
-	cp := make([]byte, len(secret))
-	copy(cp, secret)
-	b.authSecret = cp
+	if hasSecret {
+		// The closure delegates to VerifyAuthToken, which reads the
+		// current secret under b.mu each call. That lets the secret
+		// be rotated via a subsequent SetAuthSecret without rebuilding
+		// the wiring.
+		setter.SetTokenVerifier(b.VerifyAuthToken)
+	} else {
+		setter.SetTokenVerifier(nil)
+	}
 }
 
 // SignAuthToken returns the HMAC-SHA256 signature for (socketID:channel) encoded
