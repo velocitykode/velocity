@@ -1361,3 +1361,75 @@ func TestDecryptBytesWithAAD_RejectsLegacyAndEmpty(t *testing.T) {
 		t.Fatalf("non-v1 payload: want ErrInvalidPayload, got %v", err)
 	}
 }
+
+// makeEnvelope builds a v1 envelope from raw nonce/value/tag bytes so
+// tests can craft malformed payloads (wrong nonce length, etc.) without
+// going through the encrypt path.
+func makeEnvelope(iv, value, tag []byte) string {
+	p := struct {
+		IV    string `json:"iv"`
+		Value string `json:"value"`
+		Tag   string `json:"tag,omitempty"`
+		MAC   string `json:"mac,omitempty"`
+	}{
+		IV:    base64.StdEncoding.EncodeToString(iv),
+		Value: base64.StdEncoding.EncodeToString(value),
+		Tag:   base64.StdEncoding.EncodeToString(tag),
+	}
+	js, _ := json.Marshal(p)
+	return "v1:" + base64.URLEncoding.EncodeToString(js)
+}
+
+// TestDecryptGCM_MalformedNonceDoesNotPanic guards against a process-DoS
+// vector. crypto/cipher.gcm.Open panics when len(nonce) != NonceSize.
+// An attacker who can submit a cookie whose IV base64-decodes to the
+// wrong length (e.g. empty IV) would crash the process. The driver
+// validates length explicitly and returns an error instead.
+func TestDecryptGCM_MalformedNonceDoesNotPanic(t *testing.T) {
+	d, err := NewAESDriver(make([]byte, 32), nil, "AES-256-GCM")
+	if err != nil {
+		t.Fatalf("NewAESDriver: %v", err)
+	}
+	// AAD path: any nonce length other than 12 bytes must be rejected
+	// without panicking.
+	for _, ivLen := range []int{0, 1, 11, 13, 32, 256} {
+		ivLen := ivLen
+		t.Run("AAD/iv-"+func() string {
+			if ivLen == 0 {
+				return "empty"
+			}
+			return string(rune('0' + ivLen%10))
+		}(), func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("DecryptBytesWithAAD panicked on iv length %d: %v", ivLen, r)
+				}
+			}()
+			env := makeEnvelope(make([]byte, ivLen), []byte{1, 2, 3, 4}, make([]byte, 16))
+			if _, err := d.DecryptBytesWithAAD(env, []byte("aad")); err == nil {
+				t.Errorf("expected error for iv length %d, got nil", ivLen)
+			}
+		})
+	}
+	// Non-AAD path (legacy Decrypt / DecryptBytes) goes through
+	// decryptGCMWithKey and must also refuse rather than panic.
+	for _, ivLen := range []int{0, 1, 11, 13, 32, 256} {
+		ivLen := ivLen
+		t.Run("plain/iv-"+func() string {
+			if ivLen == 0 {
+				return "empty"
+			}
+			return string(rune('0' + ivLen%10))
+		}(), func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("DecryptBytes panicked on iv length %d: %v", ivLen, r)
+				}
+			}()
+			env := makeEnvelope(make([]byte, ivLen), []byte{1, 2, 3, 4}, make([]byte, 16))
+			if _, err := d.DecryptBytes(env); err == nil {
+				t.Errorf("expected error for iv length %d, got nil", ivLen)
+			}
+		})
+	}
+}

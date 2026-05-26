@@ -374,6 +374,13 @@ func (d *AESDriver) encryptGCMWithAAD(plaintext, aad []byte) (string, error) {
 
 // decryptGCMWithAAD decrypts a GCM payload using the supplied key and aad.
 // Returns the raw error from gcm.Open so the caller can map it.
+//
+// Note on nonce length validation: crypto/cipher.gcm.Open panics when
+// len(nonce) != gcm.NonceSize(). An attacker can hit that branch by
+// supplying a payload whose IV base64-decodes to the wrong length
+// (e.g. empty IV). We validate before calling Open so a malformed
+// payload surfaces as ErrAADMismatch upstream rather than a panic
+// that takes the process down.
 func (d *AESDriver) decryptGCMWithAAD(p *Payload, key, aad []byte) ([]byte, error) {
 	nonce, err := base64.StdEncoding.DecodeString(p.IV)
 	if err != nil {
@@ -396,6 +403,9 @@ func (d *AESDriver) decryptGCMWithAAD(p *Payload, key, aad []byte) ([]byte, erro
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
 		return nil, err
+	}
+	if len(nonce) != gcm.NonceSize() {
+		return nil, ErrInvalidPayload
 	}
 	return gcm.Open(nil, nonce, ciphertext, aad)
 }
@@ -546,7 +556,13 @@ func (d *AESDriver) decryptCBCWithKey(p *Payload, encKey, hmacKey []byte, versio
 	return plaintext, nil
 }
 
-// decryptGCMWithKey decrypts GCM mode with a specific key
+// decryptGCMWithKey decrypts GCM mode with a specific key.
+//
+// crypto/cipher.gcm.Open panics on a nonce of the wrong length. An
+// attacker who can submit a cookie whose payload IV decodes to a
+// non-standard length would otherwise crash the process via a single
+// HTTP request. We validate length explicitly so a malformed payload
+// surfaces as an ErrDecryptionFailed upstream instead.
 func (d *AESDriver) decryptGCMWithKey(p *Payload, key []byte) ([]byte, error) {
 	// Decode components
 	nonce, err := base64.StdEncoding.DecodeString(p.IV)
@@ -577,6 +593,10 @@ func (d *AESDriver) decryptGCMWithKey(p *Payload, key []byte) ([]byte, error) {
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
 		return nil, err
+	}
+
+	if len(nonce) != gcm.NonceSize() {
+		return nil, ErrDecryptionFailed
 	}
 
 	// Decrypt and verify
