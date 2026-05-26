@@ -268,12 +268,22 @@ func (d *DatabaseDriver) PopCtxWithTrace(ctx context.Context, queueName string) 
 		return nil, tc, fmt.Errorf("velocity/queue: failed to fetch job: %w", err)
 	}
 
-	// Deserialize and verify the payload BEFORE delete. If verification
-	// fails we return without issuing the DELETE; the deferred rollback
-	// releases the row lock and leaves the job in place.
+	// Deserialize and verify the payload BEFORE delete. Every unrecoverable
+	// failure from this point through hydration is routed through the
+	// poison-quarantine path: the row is moved to failed_jobs with the
+	// specific error string, deleted from `jobs`, and the pop returns
+	// [ErrPoisonJob]. The worker treats that as a recoverable pop error
+	// and retries, and because the poison row is gone the next SELECT
+	// picks the next eligible row instead of head-of-line-starving the
+	// queue on the same broken row forever.
+	//
+	// JSON unmarshal failure on the on-wire wrapper IS unrecoverable: no
+	// further worker can parse these bytes, and leaving the row live makes
+	// the malformed row block the queue forever.
 	var wrapper JobWrapper
 	if err := json.Unmarshal([]byte(jobRecord.Payload), &wrapper); err != nil {
-		return nil, tc, fmt.Errorf("velocity/queue: failed to deserialize job: %w", err)
+		return d.quarantineAndReturn(tx, tc, jobRecord, queueName,
+			fmt.Errorf("velocity/queue: failed to deserialize job: %w", err))
 	}
 
 	if wrapper.Payload != nil {
@@ -281,10 +291,24 @@ func (d *DatabaseDriver) PopCtxWithTrace(ctx context.Context, queueName string) 
 		wrapper.Payload.Signature = "" // Remove signature before verification
 		verifyData, marshalErr := json.Marshal(wrapper)
 		if marshalErr != nil {
-			return nil, tc, fmt.Errorf("velocity/queue: failed to marshal payload for verification: %w", marshalErr)
+			// Re-marshal failure on bytes we just unmarshalled is exotic
+			// (only fires on cycles / custom MarshalJSON failures) but
+			// it is still unrecoverable; quarantine.
+			return d.quarantineAndReturn(tx, tc, jobRecord, queueName,
+				fmt.Errorf("velocity/queue: failed to marshal payload for verification: %w", marshalErr))
 		}
 		if err := verifyPayload(verifyData, sig); err != nil {
-			return nil, tc, fmt.Errorf("velocity/queue: queue integrity check failed: %w", err)
+			// Integrity failure (HMAC mismatch, missing signature when
+			// required, signature present when signing is disabled).
+			// Previous behaviour left the row in `jobs` so an operator
+			// could inspect it; that traded one bug (tamper-evidence) for
+			// another (head-of-line starvation). We honour the
+			// "preserved for forensic inspection" property by moving the
+			// row to `failed_jobs` with the integrity-failure error in
+			// the exception column. Operators inspect there, not in the
+			// live queue.
+			return d.quarantineAndReturn(tx, tc, jobRecord, queueName,
+				fmt.Errorf("velocity/queue: queue integrity check failed: %w", err))
 		}
 		tc = TraceContext{
 			TraceID:  wrapper.Payload.TraceID,
@@ -296,67 +320,17 @@ func (d *DatabaseDriver) PopCtxWithTrace(ctx context.Context, queueName string) 
 	// Restore the job from the wrapper. The deserialised wrapper has
 	// Job == nil (the field is `json:"-"`), so hydration always goes through
 	// the registry via GetJobFromWrapper -> HydrateJob. Failure to hydrate
-	// (unregistered type, factory decode error) means the row is a permanent
-	// "poison": no worker in this process can ever turn it into a runnable
-	// Job. Returning a plain error and rolling back would leave the row in
-	// place; the worker's next SELECT (ordered by scheduled_at, id) would
-	// reselect it and starve every other due job, indefinitely.
-	//
-	// To avoid that head-of-line starvation we quarantine the row to
-	// failed_jobs (with the hydration error preserved) BEFORE returning to
-	// the worker, and return [ErrPoisonJob] so the worker treats it as a
-	// transient pop error and tries again. The next pop now skips the
-	// (now-deleted) poison row and picks the next eligible job.
+	// (unregistered type, factory decode error) is unrecoverable; quarantine
+	// keeps the queue moving (see ErrPoisonJob docstring for the full set of
+	// quarantine triggers).
 	//
 	// This is the C-01 fix: the previous code path silently substituted
 	// &GenericJob{} (Handle() = nil) so cross-process pops succeeded
 	// vacuously and dropped every job.
 	job, err := GetJobFromWrapper(&wrapper)
 	if err != nil {
-		hydrationErr := fmt.Errorf("velocity/queue: failed to restore job from wrapper: %w", err)
-		// Quarantine inside the same tx (the row is locked under
-		// FOR UPDATE SKIP LOCKED / BEGIN IMMEDIATE, so no other worker can
-		// race us for the same row before commit). The DELETE / INSERT
-		// statements run on a fresh background-derived context so a
-		// caller-side timeout firing mid-DELETE cannot half-quarantine the
-		// row. The fresh ctx does NOT detach the enclosing transaction:
-		// `tx` was opened via `BeginTx(ctx, ...)` and database/sql keeps
-		// that ctx tied to the tx until Commit/Rollback. If the caller
-		// cancels between here and tx.Commit() below, the Commit fails,
-		// the deferred Rollback discards the quarantine writes, and the
-		// poison row remains live in `jobs`. That is intentional and
-		// safe: we surface a non-ErrPoisonJob error (the Commit error
-		// joined with hydrationErr) so the worker treats it as a generic
-		// pop failure rather than reporting a quarantine that did not
-		// land. The next pop on a non-cancelled ctx will quarantine
-		// correctly. True caller-cancel-resistant quarantine would
-		// require rebeginning the tx with a detached ctx, which is
-		// deferred (see TestC01_DatabaseDriver_PoisonRowSurvivesCallerCancellation
-		// for the documented behaviour).
-		if qErr := d.quarantinePoisonLocked(tx, jobRecord.ID, jobRecord.Payload, queueName, hydrationErr); qErr != nil {
-			// Quarantine statements themselves failed (e.g. DB error
-			// inserting into failed_jobs, or the caller's ctx was already
-			// cancelled and database/sql refused the Exec on the tx).
-			// Surface the original hydration error joined with the
-			// quarantine error so the operator sees both, and let the
-			// deferred Rollback leave the row in place. The poison row
-			// will be retried; that is preferable to silently dropping
-			// it.
-			return nil, tc, errors.Join(hydrationErr, qErr)
-		}
-		if commitErr := tx.Commit(); commitErr != nil {
-			// Commit failed (typically: caller's ctx was cancelled between
-			// the Exec calls and here, so database/sql aborts the tx).
-			// The DELETE/INSERT writes are discarded by the deferred
-			// Rollback. We intentionally do NOT return ErrPoisonJob in
-			// this branch: the quarantine did not actually land, so
-			// signalling "quarantined, move on" would be a lie. The
-			// worker sees a plain pop error, backs off, and on the next
-			// pop (with a fresh ctx) the same poison row is re-selected
-			// and quarantined correctly.
-			return nil, tc, errors.Join(hydrationErr, fmt.Errorf("velocity/queue: failed to commit poison-job quarantine: %w", commitErr))
-		}
-		return nil, tc, errors.Join(ErrPoisonJob, hydrationErr)
+		return d.quarantineAndReturn(tx, tc, jobRecord, queueName,
+			fmt.Errorf("velocity/queue: failed to restore job from wrapper: %w", err))
 	}
 
 	// Signature verified — safe to delete.
@@ -461,6 +435,59 @@ func (d *DatabaseDriver) ProcessDelayedJobs(queueName string) error {
 func (d *DatabaseDriver) Shutdown(ctx context.Context) error {
 	batchStore.close() // stop package-level batch cleanup goroutine (idempotent)
 	return nil
+}
+
+// popQuarantineCommitHook is a TEST-ONLY hook fired between successful
+// quarantine writes and tx.Commit() inside PopCtxWithTrace. When non-nil it
+// is invoked exactly once per quarantine path; tests use it to inject a
+// caller-ctx cancel deterministically and assert the safe-rollback branch.
+// Production code never sets this; the var lives in this file so tests in
+// the same package can swap it under t.Cleanup. Reads use a plain load
+// because writes are confined to test goroutines that already serialise
+// via t.Cleanup.
+var popQuarantineCommitHook func()
+
+// quarantineAndReturn moves a poisoned row to failed_jobs, commits the tx,
+// and returns the appropriate (Job, TraceContext, error) tuple for
+// PopCtxWithTrace. Centralises the quarantine bookkeeping so all
+// unrecoverable pop-time failures (malformed JSON, integrity mismatch,
+// unregistered job type, factory decode error) share one code path.
+//
+// On the happy path the row is gone from `jobs`, lives in `failed_jobs`
+// with poisonErr.Error() in the exception column, and the returned error
+// wraps both [ErrPoisonJob] (so the worker treats it as a recoverable pop
+// error) and poisonErr (so operators see the specific cause).
+//
+// On caller-ctx cancellation between quarantine writes and Commit, the
+// Commit fails, the deferred Rollback discards everything, and the
+// returned error does NOT carry ErrPoisonJob: the quarantine never
+// landed and a false-positive signal would leave the worker thinking the
+// row was handled when it is still live in `jobs`. The next pop on a
+// healthy ctx re-selects and quarantines. See
+// TestC01_DatabaseDriver_PoisonRowSurvivesCallerCancellation.
+func (d *DatabaseDriver) quarantineAndReturn(tx *sql.Tx, tc TraceContext, rec JobRecord, queueName string, poisonErr error) (Job, TraceContext, error) {
+	if qErr := d.quarantinePoisonLocked(tx, rec.ID, rec.Payload, queueName, poisonErr); qErr != nil {
+		// Quarantine statements themselves failed (DB error or the
+		// caller's ctx was already cancelled and database/sql refused
+		// the Exec on the tx). Surface both errors; the deferred
+		// Rollback leaves the row in place to be retried.
+		return nil, tc, errors.Join(poisonErr, qErr)
+	}
+	if hook := popQuarantineCommitHook; hook != nil {
+		hook()
+	}
+	if commitErr := tx.Commit(); commitErr != nil {
+		// Commit failed (typically: caller's ctx was cancelled between
+		// the quarantine Exec calls and here, so database/sql aborts
+		// the tx). The DELETE/INSERT writes are discarded by the
+		// deferred Rollback. We intentionally do NOT return
+		// ErrPoisonJob: the quarantine did not actually land, so
+		// signalling "quarantined, move on" would be a lie. The worker
+		// sees a plain pop error, backs off, and on the next pop the
+		// same poison row is re-selected and quarantined correctly.
+		return nil, tc, errors.Join(poisonErr, fmt.Errorf("velocity/queue: failed to commit poison-job quarantine: %w", commitErr))
+	}
+	return nil, tc, errors.Join(ErrPoisonJob, poisonErr)
 }
 
 // quarantinePoisonTimeout bounds how long the poison-quarantine statements

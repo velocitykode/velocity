@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -131,9 +133,13 @@ func TestDatabaseDriver_Pop_TwoWorkers_SingleJob(t *testing.T) {
 	}
 }
 
-// TestDatabaseDriver_Pop_RejectsTamperedPayload verifies that the signature
-// check runs BEFORE the DELETE, so a tampered job is rejected and left in
-// the queue rather than silently removed.
+// TestDatabaseDriver_Pop_RejectsTamperedPayload verifies that a row whose
+// HMAC signature does not validate is treated as poison and routed through
+// the quarantine path: it is removed from `jobs` and recorded in
+// `failed_jobs` with the integrity-failure exception. The earlier
+// "preserved for forensic inspection" property is honoured by the
+// failed_jobs row, not by leaving the poison row live in the queue (which
+// would head-of-line starve every other due job after C-01-fb4).
 func TestDatabaseDriver_Pop_RejectsTamperedPayload(t *testing.T) {
 	saveAndRestoreSigningState(t)
 	SetSigningKey([]byte("integrity-test-key"))
@@ -162,7 +168,7 @@ func TestDatabaseDriver_Pop_RejectsTamperedPayload(t *testing.T) {
 	if !ok {
 		t.Fatalf("unexpected wrapper shape: %T", wrapper["payload"])
 	}
-	// Replace the Data field with arbitrary bytes — signature now invalid.
+	// Replace the Data field with arbitrary bytes; the signature is now invalid.
 	p["data"] = json.RawMessage(`{"id":"MALICIOUS","message":"evil"}`)
 	tampered, err := json.Marshal(wrapper)
 	if err != nil {
@@ -172,20 +178,44 @@ func TestDatabaseDriver_Pop_RejectsTamperedPayload(t *testing.T) {
 		t.Fatalf("update: %v", err)
 	}
 
-	popped, err := driver.PopCtx(context.Background(), "tamper-queue")
-	if err == nil {
+	popped, popErr := driver.PopCtx(context.Background(), "tamper-queue")
+	if popErr == nil {
 		t.Fatalf("expected integrity error, got nil (job=%v)", popped)
+	}
+	if !errors.Is(popErr, ErrPoisonJob) {
+		t.Errorf("integrity error did not wrap ErrPoisonJob (worker would not treat as recoverable): %v", popErr)
 	}
 	if popped != nil {
 		t.Errorf("expected nil job on integrity failure, got %T", popped)
 	}
-	// Critical: the tampered job must NOT have been deleted.
-	size, err := driver.Size("tamper-queue")
-	if err != nil {
-		t.Fatalf("size: %v", err)
+
+	// Tampered row must be GONE from jobs (head-of-line starvation guard).
+	var liveCount int
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE queue = ?", "tamper-queue").Scan(&liveCount); err != nil {
+		t.Fatalf("count jobs: %v", err)
 	}
-	if size != 1 {
-		t.Errorf("tampered job was removed from queue; expected size=1, got %d", size)
+	if liveCount != 0 {
+		t.Errorf("tampered row left live in jobs: count=%d (HOL starvation regression)", liveCount)
+	}
+
+	// And recorded in failed_jobs with the integrity-failure exception
+	// preserved for forensic inspection.
+	var failedCount int
+	var exception, storedPayload string
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM failed_jobs WHERE queue = ?", "tamper-queue").Scan(&failedCount); err != nil {
+		t.Fatalf("count failed_jobs: %v", err)
+	}
+	if failedCount != 1 {
+		t.Fatalf("tampered row not recorded in failed_jobs: count=%d", failedCount)
+	}
+	if err := driver.db.QueryRow("SELECT exception, payload FROM failed_jobs WHERE queue = ?", "tamper-queue").Scan(&exception, &storedPayload); err != nil {
+		t.Fatalf("scan failed_jobs row: %v", err)
+	}
+	if !strings.Contains(exception, "integrity check failed") {
+		t.Errorf("failed_jobs.exception does not name the integrity-failure cause: %q", exception)
+	}
+	if storedPayload != string(tampered) {
+		t.Errorf("failed_jobs.payload does not match the on-wire (tampered) bytes; operator cannot inspect what came off the queue")
 	}
 }
 
