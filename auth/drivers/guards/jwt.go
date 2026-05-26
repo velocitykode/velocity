@@ -2,6 +2,7 @@ package guards
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -329,6 +330,12 @@ func (g *JWTGuard) Attempt(w http.ResponseWriter, r *http.Request, credentials m
 }
 
 // Logout revokes the JWT token
+//
+// In addition to blacklisting the access token's JTI, Logout bumps the
+// user's refresh-token generation so every outstanding refresh token for
+// the user is rejected on the next /auth/refresh call (audit H-07).
+// Without the bump a phished refresh token would survive Logout for up
+// to RefreshTTL (default 14 days).
 func (g *JWTGuard) Logout(w http.ResponseWriter, r *http.Request) error {
 	token := g.getTokenFromRequest(r)
 	if token == "" {
@@ -344,6 +351,19 @@ func (g *JWTGuard) Logout(w http.ResponseWriter, r *http.Request) error {
 
 	// Revoke token using its actual expiry for blacklist duration
 	g.jwtManager.RevokeToken(claims.ID, claims.ExpiresAt.Time)
+
+	// Bump the user's refresh-token generation so every outstanding
+	// refresh token for this user is invalidated on its next use.
+	// Best-effort: a counter-store transport error is swallowed so
+	// Logout still completes; the access JTI is already blacklisted
+	// above, so the immediate logout still has effect.
+	userIDStr, _ := claims.UserID.(string)
+	if userIDStr == "" && claims.UserID != nil {
+		userIDStr = fmt.Sprintf("%v", claims.UserID)
+	}
+	if userIDStr != "" {
+		_, _ = g.jwtManager.BumpRefreshGeneration(userIDStr)
+	}
 
 	// Clear cache
 	g.mu.Lock()

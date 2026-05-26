@@ -14,10 +14,17 @@ import (
 
 // ErrUnsupportedSigningMethod is returned when the configured JWT algorithm
 // cannot be mapped to a concrete jwt.SigningMethod. Callers must refuse to
-// sign or verify tokens when this error is returned — there is no safe
+// sign or verify tokens when this error is returned, there is no safe
 // fallback because silently downgrading to HS256 would allow an attacker to
 // substitute any algorithm name in config or tokens.
 var ErrUnsupportedSigningMethod = errors.New("velocity/auth: unsupported jwt signing method")
+
+// ErrRefreshGenerationStale is returned from RefreshToken when the refresh
+// token carries a generation counter older than the user's current
+// generation. The H-07 fix bumps the counter on Logout so a stolen refresh
+// token cannot survive a sign-out: the next /auth/refresh call resolves
+// against a stale generation and is rejected.
+var ErrRefreshGenerationStale = errors.New("velocity/auth: refresh token generation is stale")
 
 // BlacklistStore defines the interface for JWT token blacklist storage.
 // Implement with Redis or another persistent store for production use.
@@ -160,12 +167,83 @@ type Claims struct {
 	Email     string      `json:"email,omitempty"`
 	Role      string      `json:"role,omitempty"`
 	TokenType string      `json:"type,omitempty"` // "access" or "refresh"
+
+	// RefreshGeneration is the per-user generation counter at the time
+	// the refresh token was issued. RefreshToken rejects any refresh
+	// token whose RefreshGeneration is less than the user's current
+	// generation, so JWTGuard.Logout can revoke every refresh token
+	// outstanding for the user by bumping the counter. Access tokens
+	// leave this zero. See audit H-07.
+	RefreshGeneration int64 `json:"rgn,omitempty"`
+}
+
+// RefreshGenerationStore is the per-user generation counter the H-07 fix
+// uses to revoke refresh tokens on Logout. Refresh tokens carry the user's
+// generation at issue time; bumping the counter (Logout) invalidates every
+// outstanding refresh token for that user without writing each JTI to a
+// blacklist.
+//
+// In a multi-host deployment the store SHOULD be backed by Redis or
+// another shared cache so the bump propagates across the fleet. The
+// default in-process implementation is single-host only; multi-host
+// deployments need to wire SetRefreshGenerationStore from boot.
+//
+// Implementations MUST be safe for concurrent use.
+type RefreshGenerationStore interface {
+	// Current returns the active generation for userID. Implementations
+	// must return 0 (not an error) when no record exists; callers treat
+	// 0 as "never bumped". Errors should be reserved for transport-level
+	// failures.
+	Current(userID string) (int64, error)
+
+	// Bump increments and returns the new generation for userID. Used
+	// by JWTGuard.Logout to invalidate every refresh token outstanding
+	// for the user.
+	Bump(userID string) (int64, error)
+}
+
+// InMemoryRefreshGenerationStore is the default RefreshGenerationStore.
+// In-process scope only: counter resets on restart and does NOT propagate
+// across hosts. Suitable for single-host deployments and tests.
+type InMemoryRefreshGenerationStore struct {
+	mu     sync.RWMutex
+	counts map[string]int64
+}
+
+// NewInMemoryRefreshGenerationStore returns an empty in-process store.
+func NewInMemoryRefreshGenerationStore() *InMemoryRefreshGenerationStore {
+	return &InMemoryRefreshGenerationStore{counts: make(map[string]int64)}
+}
+
+// Current returns the generation for userID. Empty userID yields 0 so
+// tokens that lack a subject never look stale; the Validate path rejects
+// them on other grounds.
+func (s *InMemoryRefreshGenerationStore) Current(userID string) (int64, error) {
+	if userID == "" {
+		return 0, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.counts[userID], nil
+}
+
+// Bump increments and returns the new generation for userID.
+func (s *InMemoryRefreshGenerationStore) Bump(userID string) (int64, error) {
+	if userID == "" {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.counts[userID]++
+	return s.counts[userID], nil
 }
 
 // JWTManager handles JWT operations
 type JWTManager struct {
-	config         JWTConfig
-	blacklistStore BlacklistStore
+	config             JWTConfig
+	blacklistStore     BlacklistStore
+	refreshGenerations RefreshGenerationStore
+	rgMu               sync.RWMutex // protects refreshGenerations swaps
 }
 
 // NewJWTManager creates a new JWT manager.
@@ -192,14 +270,76 @@ func NewJWTManager(config JWTConfig) (*JWTManager, error) {
 	}
 
 	return &JWTManager{
-		config:         config,
-		blacklistStore: store,
+		config:             config,
+		blacklistStore:     store,
+		refreshGenerations: NewInMemoryRefreshGenerationStore(),
 	}, nil
 }
 
 // SetBlacklistStore replaces the blacklist store (e.g., swap in a Redis-backed store).
 func (j *JWTManager) SetBlacklistStore(store BlacklistStore) {
 	j.blacklistStore = store
+}
+
+// SetRefreshGenerationStore installs a refresh-generation counter store.
+// Pass a cache/Redis-backed implementation in multi-host deployments so
+// Logout-driven generation bumps propagate across the fleet. Passing nil
+// reverts to the in-process default.
+//
+// Safe for concurrent use.
+func (j *JWTManager) SetRefreshGenerationStore(store RefreshGenerationStore) {
+	j.rgMu.Lock()
+	defer j.rgMu.Unlock()
+	if store == nil {
+		j.refreshGenerations = NewInMemoryRefreshGenerationStore()
+		return
+	}
+	j.refreshGenerations = store
+}
+
+// refreshGenStore returns the active refresh-generation store under a
+// read lock so a concurrent SetRefreshGenerationStore call cannot tear the
+// underlying interface read. Defensively lazy-initialises on first read
+// so callers that construct *JWTManager by literal struct (test helpers
+// in the existing suite) do not nil-deref.
+func (j *JWTManager) refreshGenStore() RefreshGenerationStore {
+	j.rgMu.RLock()
+	store := j.refreshGenerations
+	j.rgMu.RUnlock()
+	if store != nil {
+		return store
+	}
+	j.rgMu.Lock()
+	defer j.rgMu.Unlock()
+	if j.refreshGenerations == nil {
+		j.refreshGenerations = NewInMemoryRefreshGenerationStore()
+	}
+	return j.refreshGenerations
+}
+
+// BumpRefreshGeneration invalidates every refresh token outstanding for
+// userID by bumping the per-user counter; refresh-token validation rejects
+// any token whose embedded generation is less than the current value. Used
+// by JWTGuard.Logout (H-07 fix).
+//
+// Returns the new generation value. Best-effort: implementations are
+// permitted to return an error on transport failure; the caller decides
+// whether to surface or swallow.
+func (j *JWTManager) BumpRefreshGeneration(userID string) (int64, error) {
+	if userID == "" {
+		return 0, nil
+	}
+	return j.refreshGenStore().Bump(userID)
+}
+
+// CurrentRefreshGeneration returns the active generation for userID. Used
+// by the refresh-token validation path; exposed publicly so callers can
+// build administrative listings.
+func (j *JWTManager) CurrentRefreshGeneration(userID string) (int64, error) {
+	if userID == "" {
+		return 0, nil
+	}
+	return j.refreshGenStore().Current(userID)
 }
 
 // signingKey returns the key to pass to SignedString for the active algorithm.
@@ -269,7 +409,16 @@ func (j *JWTManager) GenerateToken(user Authenticatable, customClaims ...map[str
 	return token.SignedString(j.signingKey())
 }
 
-// GenerateRefreshToken generates a refresh token
+// GenerateRefreshToken generates a refresh token.
+//
+// Embeds the user's current refresh-generation counter so Logout can
+// invalidate the token by bumping the counter (see RefreshToken /
+// BumpRefreshGeneration). Counter-store transport failures are logged
+// through the absence of an error path: GenerateRefreshToken still issues
+// the token with generation 0 because failing here would block Login on
+// transient cache flaps. The trade-off: a generation lookup error degrades
+// gracefully to "act as if user has no prior generation"; subsequent
+// Logout-driven bumps still invalidate the token.
 func (j *JWTManager) GenerateRefreshToken(user Authenticatable) (string, error) {
 	now := time.Now()
 	expiresAt := now.Add(time.Duration(j.config.RefreshTTL) * time.Minute)
@@ -278,6 +427,12 @@ func (j *JWTManager) GenerateRefreshToken(user Authenticatable) (string, error) 
 	if err != nil {
 		return "", err
 	}
+
+	userID, _ := user.GetAuthIdentifier().(string)
+	if userID == "" {
+		userID = fmt.Sprintf("%v", user.GetAuthIdentifier())
+	}
+	generation, _ := j.refreshGenStore().Current(userID)
 
 	claims := Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -288,8 +443,9 @@ func (j *JWTManager) GenerateRefreshToken(user Authenticatable) (string, error) 
 			NotBefore: jwt.NewNumericDate(now),
 			Issuer:    j.config.Issuer,
 		},
-		UserID:    user.GetAuthIdentifier(),
-		TokenType: "refresh",
+		UserID:            user.GetAuthIdentifier(),
+		TokenType:         "refresh",
+		RefreshGeneration: generation,
 	}
 	if j.config.Audience != "" {
 		claims.Audience = jwt.ClaimStrings{j.config.Audience}
@@ -361,7 +517,13 @@ func (j *JWTManager) ValidateToken(tokenString string) (*Claims, error) {
 	return claims, nil
 }
 
-// RefreshToken creates a new token from a refresh token
+// RefreshToken creates a new token from a refresh token.
+//
+// Returns ErrRefreshGenerationStale when the refresh token's embedded
+// generation is less than the user's current generation counter. The
+// H-07 fix uses this to invalidate every outstanding refresh token on
+// Logout: bumping the counter immediately stales all prior refresh
+// tokens for that user, without writing each JTI to a blacklist.
 func (j *JWTManager) RefreshToken(refreshTokenString string, provider UserProvider) (string, error) {
 	// Validate refresh token
 	claims, err := j.ValidateToken(refreshTokenString)
@@ -372,6 +534,19 @@ func (j *JWTManager) RefreshToken(refreshTokenString string, provider UserProvid
 	// Ensure this is actually a refresh token
 	if claims.TokenType != "refresh" {
 		return "", errors.New("velocity/auth: token is not a refresh token")
+	}
+
+	// Generation check (H-07): reject tokens whose embedded generation
+	// is older than the user's current generation. The counter resolves
+	// against the configured RefreshGenerationStore, so multi-host
+	// deployments propagating their counter via Redis see the bump.
+	userIDStr, _ := claims.UserID.(string)
+	if userIDStr == "" {
+		userIDStr = fmt.Sprintf("%v", claims.UserID)
+	}
+	current, cgErr := j.refreshGenStore().Current(userIDStr)
+	if cgErr == nil && claims.RefreshGeneration < current {
+		return "", ErrRefreshGenerationStale
 	}
 
 	// Get user
