@@ -255,18 +255,28 @@ func (s *CookieStore) Save(w http.ResponseWriter, session auth.Session) error {
 		return err
 	}
 
-	// Set cookie
-	http.SetCookie(w, &http.Cookie{
+	// Build the cookie. When Lifetime <= 0 the operator wants a session-
+	// lifetime cookie (no persistent expiry): omit Expires entirely and
+	// leave MaxAge at its zero value, which RFC 6265 specifies as "no
+	// Max-Age, treat as session". Setting Expires=time.Now() (the previous
+	// behaviour) made the cookie appear already-expired in some browsers,
+	// which silently dropped every Set-Cookie the framework emitted.
+	// Negative Lifetime is rejected at SessionConfig.Validate so we only
+	// have to handle the >0 and ==0 cases here.
+	cookie := &http.Cookie{
 		Name:     s.config.Name,
 		Value:    encrypted,
 		Path:     s.config.Path,
 		Domain:   s.config.Domain,
-		MaxAge:   s.config.Lifetime * 60, // Convert minutes to seconds
 		HttpOnly: s.config.HttpOnly,
 		Secure:   s.config.Secure,
 		SameSite: s.config.SameSite,
-		Expires:  time.Now().Add(time.Duration(s.config.Lifetime) * time.Minute),
-	})
+	}
+	if s.config.Lifetime > 0 {
+		cookie.MaxAge = s.config.Lifetime * 60
+		cookie.Expires = time.Now().Add(time.Duration(s.config.Lifetime) * time.Minute)
+	}
+	http.SetCookie(w, cookie)
 
 	// Clear the modified flag so a second Save() on the same session
 	// without intervening writes does not rotate the cookie. The check at

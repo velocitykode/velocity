@@ -18,6 +18,14 @@ import (
 // for bootstrap code to log-then-continue in dev and fail-fast in prod.
 var ErrInsecureSessionConfig = errors.New("velocity/auth: insecure session config")
 
+// ErrInvalidLifetime is returned from SessionConfig.Validate when the
+// configured Lifetime is negative. Negative lifetimes would translate to
+// a cookie with Expires in the past which most browsers treat as already
+// deleted; the framework refuses to boot rather than ship a no-op session
+// cookie. Lifetime == 0 is permitted and produces a session-lifetime
+// (no Expires / MaxAge=0) cookie per RFC 6265.
+var ErrInvalidLifetime = errors.New("velocity/auth: session lifetime must be >= 0")
+
 // sessionRandReader is the entropy source for session IDs. Tests may swap
 // this for a failing reader to exercise rand.Read error paths.
 var sessionRandReader io.Reader = rand.Reader
@@ -383,7 +391,11 @@ type SessionConfig struct {
 //   - Secure must be true outside testing/development
 //   - SameSite must be set (non-zero value)
 //   - SameSite=None requires Secure=true
+//   - Lifetime must be >= 0 (negative produces an already-expired cookie)
 func (c SessionConfig) Validate(env string) error {
+	if c.Lifetime < 0 {
+		return fmt.Errorf("%w: got %d minutes", ErrInvalidLifetime, c.Lifetime)
+	}
 	if !c.HttpOnly && !c.AllowJSAccess {
 		return fmt.Errorf("%w: HttpOnly=false requires AllowJSAccess=true opt-in", ErrInsecureSessionConfig)
 	}
