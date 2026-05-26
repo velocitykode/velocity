@@ -165,6 +165,17 @@ func (s *Scheduler) SetLocker(l Locker) *Scheduler {
 	return s
 }
 
+// Locker returns the currently installed Locker. Exposed so the
+// bootstrap layer and diagnostics can confirm which backend (the
+// process-local InMemoryLocker default or a shared-backend adapter)
+// will gate WithoutOverlapping() / OnOneServer() contests. Always
+// non-nil after New().
+func (s *Scheduler) Locker() Locker {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.locker
+}
+
 // log returns the installed logger. Always non-nil after New().
 func (s *Scheduler) log() Logger {
 	v := s.logger.Load()
