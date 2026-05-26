@@ -315,7 +315,7 @@ func TestIntegrationDatabaseDriver(t *testing.T) {
 		if poppedJob == nil {
 			t.Error("Expected to pop job, got nil")
 		}
-		if token == 0 {
+		if token.IsZero() {
 			t.Error("Expected non-zero reservation token")
 		}
 

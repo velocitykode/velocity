@@ -94,10 +94,30 @@ type TraceAwareDriver interface {
 // ReservationToken identifies a leased row owned by the popping worker for
 // the duration of handler execution. Drivers that implement [ReservationDriver]
 // return a non-zero token from PopCtxReserved and accept it back on Ack /
-// Release / FailReserved. A token value of zero means "no reservation"
+// Release / FailReserved. The zero value (ID == 0) means "no reservation"
 // (e.g. drivers that delete on pop, or jobs sourced from a non-reservation
 // path).
-type ReservationToken int64
+//
+// Attempts is the post-increment value of the persisted attempts column
+// read inside the reservation transaction. It is authoritative for
+// MaxAttempts decisions on durable drivers: the in-memory sync.Map cache
+// in Worker resets on process restart, so a job that crashed mid-handler
+// must be capped by the persisted counter rather than the cache. Drivers
+// that do not persist attempts (memory) leave this field zero; the
+// worker falls back to its in-memory cache in that case.
+type ReservationToken struct {
+	// ID is the row id of the reserved record. Zero means "no reservation".
+	ID int64
+	// Attempts is the post-increment value of the persisted attempts
+	// column as observed inside the reservation transaction. Zero means
+	// "driver does not persist attempts; consult the worker cache".
+	Attempts int
+}
+
+// IsZero reports whether t represents the absence of a reservation
+// (PopCtxReserved found no job, or the popping driver does not support
+// reservations).
+func (t ReservationToken) IsZero() bool { return t.ID == 0 }
 
 // ReservationDriver is an optional driver capability. Drivers that lease
 // rows to workers (DB driver) implement this so the worker can defer the

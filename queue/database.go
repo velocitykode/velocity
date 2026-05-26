@@ -414,7 +414,7 @@ func (d *DatabaseDriver) PopCtxWithTrace(ctx context.Context, queueName string) 
 func (d *DatabaseDriver) PopCtxReserved(ctx context.Context, queueName string) (Job, ReservationToken, TraceContext, error) {
 	var tc TraceContext
 	if err := ctx.Err(); err != nil {
-		return nil, 0, tc, err
+		return nil, ReservationToken{}, tc, err
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -427,7 +427,7 @@ func (d *DatabaseDriver) PopCtxReserved(ctx context.Context, queueName string) (
 	}
 	tx, err := d.db.BeginTx(ctx, txOpts)
 	if err != nil {
-		return nil, 0, tc, fmt.Errorf("velocity/queue: failed to begin transaction: %w", err)
+		return nil, ReservationToken{}, tc, fmt.Errorf("velocity/queue: failed to begin transaction: %w", err)
 	}
 	// Rollback is a no-op if Commit already succeeded.
 	defer func() { _ = tx.Rollback() }()
@@ -474,9 +474,9 @@ func (d *DatabaseDriver) PopCtxReserved(ctx context.Context, queueName string) (
 	row := tx.QueryRowContext(ctx, selectQuery, queueName, now, reclaimCutoff)
 	if err := scanJobRecord(row, &jobRecord); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, 0, tc, nil // No jobs available
+			return nil, ReservationToken{}, tc, nil // No jobs available
 		}
-		return nil, 0, tc, fmt.Errorf("velocity/queue: failed to fetch job: %w", err)
+		return nil, ReservationToken{}, tc, fmt.Errorf("velocity/queue: failed to fetch job: %w", err)
 	}
 
 	// Quarantine path for unrecoverable pop-time failures (inherited
@@ -486,7 +486,7 @@ func (d *DatabaseDriver) PopCtxReserved(ctx context.Context, queueName string) (
 	if err := json.Unmarshal([]byte(jobRecord.Payload), &wrapper); err != nil {
 		j, qtc, qerr := d.quarantineAndReturn(tx, tc, jobRecord, queueName,
 			fmt.Errorf("velocity/queue: failed to deserialize job: %w", err))
-		return j, 0, qtc, qerr
+		return j, ReservationToken{}, qtc, qerr
 	}
 	if wrapper.Payload != nil {
 		sig := wrapper.Payload.Signature
@@ -495,12 +495,12 @@ func (d *DatabaseDriver) PopCtxReserved(ctx context.Context, queueName string) (
 		if marshalErr != nil {
 			j, qtc, qerr := d.quarantineAndReturn(tx, tc, jobRecord, queueName,
 				fmt.Errorf("velocity/queue: failed to marshal payload for verification: %w", marshalErr))
-			return j, 0, qtc, qerr
+			return j, ReservationToken{}, qtc, qerr
 		}
 		if err := verifyPayload(verifyData, sig); err != nil {
 			j, qtc, qerr := d.quarantineAndReturn(tx, tc, jobRecord, queueName,
 				fmt.Errorf("velocity/queue: queue integrity check failed: %w", err))
-			return j, 0, qtc, qerr
+			return j, ReservationToken{}, qtc, qerr
 		}
 		tc = TraceContext{
 			TraceID:  wrapper.Payload.TraceID,
@@ -513,33 +513,37 @@ func (d *DatabaseDriver) PopCtxReserved(ctx context.Context, queueName string) (
 	if err != nil {
 		j, qtc, qerr := d.quarantineAndReturn(tx, tc, jobRecord, queueName,
 			fmt.Errorf("velocity/queue: failed to restore job from wrapper: %w", err))
-		return j, 0, qtc, qerr
+		return j, ReservationToken{}, qtc, qerr
 	}
 
 	// Reserve the row. attempts is bumped here so the column reflects
 	// the durable retry budget across process restarts, matching
-	// Laravel's markJobAsReserved semantics. The worker-side sync.Map
-	// counter remains as a fast-path cache (audit #7 cleanup is out of
-	// scope for C-02).
+	// Laravel's markJobAsReserved semantics. The post-increment value is
+	// computed in Go (jobRecord.Attempts was loaded inside the same tx
+	// under the row lock, so it cannot have been advanced by a
+	// concurrent worker) and surfaced on the ReservationToken; the
+	// worker uses it as the authoritative MaxAttempts source on durable
+	// drivers, so retry budgets survive worker restarts.
+	persistedAttempts := jobRecord.Attempts + 1
 	updateQuery := d.rewriteQuery(`UPDATE jobs
-		SET reserved_at = $1, reserved_by = $2, attempts = attempts + 1, updated_at = $3
-		WHERE id = $4`)
-	if _, err := tx.ExecContext(ctx, updateQuery, now, d.workerID, now, jobRecord.ID); err != nil {
-		return nil, 0, tc, fmt.Errorf("velocity/queue: failed to reserve job: %w", err)
+		SET reserved_at = $1, reserved_by = $2, attempts = $3, updated_at = $4
+		WHERE id = $5`)
+	if _, err := tx.ExecContext(ctx, updateQuery, now, d.workerID, persistedAttempts, now, jobRecord.ID); err != nil {
+		return nil, ReservationToken{}, tc, fmt.Errorf("velocity/queue: failed to reserve job: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return nil, 0, tc, fmt.Errorf("velocity/queue: failed to commit pop transaction: %w", err)
+		return nil, ReservationToken{}, tc, fmt.Errorf("velocity/queue: failed to commit pop transaction: %w", err)
 	}
 
-	return job, ReservationToken(jobRecord.ID), tc, nil
+	return job, ReservationToken{ID: int64(jobRecord.ID), Attempts: persistedAttempts}, tc, nil
 }
 
 // AckCtx deletes the reserved row after the handler returned success.
 // Safe to call with a zero token (no-op) for symmetry with worker code
 // paths that may not have a reservation. Implements [ReservationDriver].
 func (d *DatabaseDriver) AckCtx(ctx context.Context, token ReservationToken) error {
-	if token == 0 {
+	if token.IsZero() {
 		return nil
 	}
 	if err := ctx.Err(); err != nil {
@@ -549,7 +553,7 @@ func (d *DatabaseDriver) AckCtx(ctx context.Context, token ReservationToken) err
 	defer d.mu.Unlock()
 
 	query := d.rewriteQuery("DELETE FROM jobs WHERE id = $1")
-	if _, err := d.db.ExecContext(ctx, query, int64(token)); err != nil {
+	if _, err := d.db.ExecContext(ctx, query, token.ID); err != nil {
 		return fmt.Errorf("velocity/queue: failed to ack job: %w", err)
 	}
 	return nil
@@ -564,7 +568,7 @@ func (d *DatabaseDriver) AckCtx(ctx context.Context, token ReservationToken) err
 // PushDelayedCtx. The persisted attempts counter therefore survives the
 // retry, which is the desired Laravel semantics.
 func (d *DatabaseDriver) ReleaseCtx(ctx context.Context, token ReservationToken, delay time.Duration) error {
-	if token == 0 {
+	if token.IsZero() {
 		return nil
 	}
 	if err := ctx.Err(); err != nil {
@@ -581,7 +585,7 @@ func (d *DatabaseDriver) ReleaseCtx(ctx context.Context, token ReservationToken,
 	query := d.rewriteQuery(`UPDATE jobs
 		SET reserved_at = NULL, reserved_by = NULL, scheduled_at = $1, updated_at = $2
 		WHERE id = $3`)
-	if _, err := d.db.ExecContext(ctx, query, scheduledAt, now, int64(token)); err != nil {
+	if _, err := d.db.ExecContext(ctx, query, scheduledAt, now, token.ID); err != nil {
 		return fmt.Errorf("velocity/queue: failed to release job: %w", err)
 	}
 	return nil
@@ -592,7 +596,7 @@ func (d *DatabaseDriver) ReleaseCtx(ctx context.Context, token ReservationToken,
 // budget or opts out of retries via RetryDecider. Implements
 // [ReservationDriver].
 func (d *DatabaseDriver) FailReservedCtx(ctx context.Context, token ReservationToken, job Job, jobErr error, queueName string) error {
-	if token == 0 {
+	if token.IsZero() {
 		// No reservation to clean up; fall back to the bare Failed path
 		// so a failed_jobs row is still recorded.
 		return d.Failed(job, jobErr, queueName)
@@ -627,7 +631,7 @@ func (d *DatabaseDriver) FailReservedCtx(ctx context.Context, token ReservationT
 		return fmt.Errorf("velocity/queue: failed to record failed job: %w", err)
 	}
 	deleteQuery := d.rewriteQuery("DELETE FROM jobs WHERE id = $1")
-	if _, err := tx.ExecContext(ctx, deleteQuery, int64(token)); err != nil {
+	if _, err := tx.ExecContext(ctx, deleteQuery, token.ID); err != nil {
 		return fmt.Errorf("velocity/queue: failed to delete reserved job: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

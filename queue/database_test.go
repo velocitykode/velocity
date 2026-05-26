@@ -293,8 +293,11 @@ func TestDatabaseDriver_Pop_SIGKILLRecoverable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first pop: %v", err)
 	}
-	if popped == nil || token == 0 {
-		t.Fatalf("expected a reserved job, got job=%v token=%d", popped, token)
+	if popped == nil || token.IsZero() {
+		t.Fatalf("expected a reserved job, got job=%v token=%+v", popped, token)
+	}
+	if token.Attempts != 1 {
+		t.Errorf("first reservation attempts = %d, want 1", token.Attempts)
 	}
 
 	// While the lease is fresh, no other worker can claim the row.
@@ -306,8 +309,8 @@ func TestDatabaseDriver_Pop_SIGKILLRecoverable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second pop during lease: %v", err)
 	}
-	if stolen != nil || stolenToken != 0 {
-		t.Fatalf("a second worker stole the leased row before retryAfter; job=%v token=%d", stolen, stolenToken)
+	if stolen != nil || !stolenToken.IsZero() {
+		t.Fatalf("a second worker stole the leased row before retryAfter; job=%v token=%+v", stolen, stolenToken)
 	}
 
 	// The row must still be in the table (not deleted on pop). This is
@@ -332,19 +335,26 @@ func TestDatabaseDriver_Pop_SIGKILLRecoverable(t *testing.T) {
 	if reclaimed == nil {
 		t.Fatal("expected lease to be reclaimable after retryAfter, got nil")
 	}
-	if reclaimToken == 0 {
+	if reclaimToken.IsZero() {
 		t.Errorf("reclaim returned zero token")
 	}
 	// The reclaimed row is the same physical row (same DB id) as the
 	// original reservation; reservation tokens encode the row id.
-	if reclaimToken != token {
-		t.Errorf("reclaim returned different row id; got %d, want %d", reclaimToken, token)
+	if reclaimToken.ID != token.ID {
+		t.Errorf("reclaim returned different row id; got %d, want %d", reclaimToken.ID, token.ID)
+	}
+	// The token must carry the post-increment persisted attempts value
+	// so the worker can make MaxAttempts decisions without consulting
+	// in-memory state. This is the C-02 follow-up invariant: a
+	// hypothetical restart between pops would otherwise lose the count.
+	if reclaimToken.Attempts != 2 {
+		t.Errorf("reclaim token attempts = %d, want 2 (one per reserve)", reclaimToken.Attempts)
 	}
 
 	// The persisted attempts counter must have advanced (once per
 	// reserve). Both pops should have incremented it, so attempts == 2.
 	var attempts int
-	if err := driver.db.QueryRow("SELECT attempts FROM jobs WHERE id = ?", int64(reclaimToken)).Scan(&attempts); err != nil {
+	if err := driver.db.QueryRow("SELECT attempts FROM jobs WHERE id = ?", reclaimToken.ID).Scan(&attempts); err != nil {
 		t.Fatalf("read attempts: %v", err)
 	}
 	if attempts != 2 {
@@ -381,8 +391,8 @@ func TestDatabaseDriver_Pop_ReleaseRequeuesInPlace(t *testing.T) {
 	}
 
 	_, token, _, err := driver.PopCtxReserved(context.Background(), "rel")
-	if err != nil || token == 0 {
-		t.Fatalf("first pop: token=%d err=%v", token, err)
+	if err != nil || token.IsZero() {
+		t.Fatalf("first pop: token=%+v err=%v", token, err)
 	}
 
 	// Release with a small delay; the row should be visible to the next
@@ -392,8 +402,8 @@ func TestDatabaseDriver_Pop_ReleaseRequeuesInPlace(t *testing.T) {
 	}
 
 	// During the release delay, the row is not poppable.
-	if j, tok, _, _ := driver.PopCtxReserved(context.Background(), "rel"); j != nil || tok != 0 {
-		t.Errorf("row visible before release delay elapsed; job=%v token=%d", j, tok)
+	if j, tok, _, _ := driver.PopCtxReserved(context.Background(), "rel"); j != nil || !tok.IsZero() {
+		t.Errorf("row visible before release delay elapsed; job=%v token=%+v", j, tok)
 	}
 
 	time.Sleep(60 * time.Millisecond)
@@ -401,8 +411,11 @@ func TestDatabaseDriver_Pop_ReleaseRequeuesInPlace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retry pop: %v", err)
 	}
-	if retryToken != token {
-		t.Errorf("release created a new row; got token=%d, want %d (in-place update)", retryToken, token)
+	if retryToken.ID != token.ID {
+		t.Errorf("release created a new row; got token=%d, want %d (in-place update)", retryToken.ID, token.ID)
+	}
+	if retryToken.Attempts != 2 {
+		t.Errorf("retry token attempts = %d, want 2", retryToken.Attempts)
 	}
 
 	var rows int
@@ -415,7 +428,7 @@ func TestDatabaseDriver_Pop_ReleaseRequeuesInPlace(t *testing.T) {
 
 	// attempts must have advanced twice (one reserve per pop).
 	var attempts int
-	if err := driver.db.QueryRow("SELECT attempts FROM jobs WHERE id = ?", int64(token)).Scan(&attempts); err != nil {
+	if err := driver.db.QueryRow("SELECT attempts FROM jobs WHERE id = ?", token.ID).Scan(&attempts); err != nil {
 		t.Fatalf("read attempts: %v", err)
 	}
 	if attempts != 2 {
@@ -439,8 +452,8 @@ func TestDatabaseDriver_FailReservedCtx_AtomicMove(t *testing.T) {
 	}
 
 	popped, token, _, err := driver.PopCtxReserved(context.Background(), "term")
-	if err != nil || popped == nil || token == 0 {
-		t.Fatalf("pop: token=%d err=%v", token, err)
+	if err != nil || popped == nil || token.IsZero() {
+		t.Fatalf("pop: token=%+v err=%v", token, err)
 	}
 
 	if err := driver.FailReservedCtx(context.Background(), token, popped, fmt.Errorf("terminal"), "term"); err != nil {
@@ -459,6 +472,135 @@ func TestDatabaseDriver_FailReservedCtx_AtomicMove(t *testing.T) {
 	}
 	if failed != 1 {
 		t.Errorf("failed_jobs not written on terminal fail; rows=%d", failed)
+	}
+}
+
+// TestDatabaseDriver_PersistedAttemptsBoundMaxAttempts proves the C-02
+// follow-up invariant: a worker restart between attempts must not reset
+// the MaxAttempts budget. Worker1 pops the job, the handler fails, the
+// row is released for retry. Worker1 is then discarded; worker2 (with a
+// fresh, empty in-memory attempts cache) pops the same row. The second
+// attempt's persisted attempts value is 2 and MaxAttempts is 2, so
+// worker2 must route the failure through FailReservedCtx instead of
+// retrying again. If the in-memory cache were authoritative (the
+// pre-follow-up behaviour) worker2 would observe attempts=1 and retry.
+//
+// Note: we drive Worker.processJob directly rather than start the pump,
+// which keeps the test deterministic on a single SQLite connection.
+func TestDatabaseDriver_PersistedAttemptsBoundMaxAttempts(t *testing.T) {
+	saveAndRestoreSigningState(t)
+	SetSigningKey(nil)
+
+	driver, cleanup := newSQLiteQueueDB(t)
+	defer cleanup()
+	// Lease short enough that worker2's reservation reclaims any row
+	// worker1 might have left in flight without an explicit release.
+	// The retry release uses an explicit small delay, so this is mostly
+	// belt-and-braces for the test.
+	driver.SetRetryAfter(50 * time.Millisecond)
+
+	if err := driver.PushCtx(context.Background(), &TestJob{ID: "persist-attempts"}, "pa"); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+
+	var attempt1, attempt2 int32
+	failingHandler := func(target *int32) func(Job) error {
+		return func(Job) error {
+			atomic.AddInt32(target, 1)
+			return fmt.Errorf("intentional failure")
+		}
+	}
+
+	// Worker 1: max 2 attempts, immediate retry (no backoff delay) so
+	// worker2's pop happens cleanly after the row is released.
+	w1 := NewWorker(driver, "pa", failingHandler(&attempt1),
+		WithMaxRetries(2),
+		WithBackoff(func(int) time.Duration { return 0 }),
+		WithWorkerLogger(nullLogger{}),
+	)
+	w1.ctx, w1.cancel = context.WithCancel(context.Background())
+	defer w1.cancel()
+
+	// Drive a single pop+handle cycle on worker1. The handler returns
+	// an error; handleJobFailure observes token.Attempts == 1 < 2, so
+	// it releases the row for retry.
+	if err := w1.processJob(); err == nil {
+		t.Fatalf("worker1 processJob: expected job-failed error, got nil")
+	}
+	if got := atomic.LoadInt32(&attempt1); got != 1 {
+		t.Fatalf("worker1 handler invocations = %d, want 1", got)
+	}
+
+	// Confirm the row is back in the table, unreserved, scheduled for now.
+	var rows, reserved int
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE queue = ?", "pa").Scan(&rows); err != nil {
+		t.Fatalf("count rows after release: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("post-release rows = %d, want 1 (in-place release)", rows)
+	}
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE queue = ? AND reserved_at IS NULL", "pa").Scan(&reserved); err != nil {
+		t.Fatalf("count unreserved: %v", err)
+	}
+	if reserved != 1 {
+		t.Fatalf("post-release unreserved rows = %d, want 1", reserved)
+	}
+
+	// Confirm persisted attempts has advanced to 1 (worker1's reserve).
+	var persisted int
+	if err := driver.db.QueryRow("SELECT attempts FROM jobs WHERE queue = ?", "pa").Scan(&persisted); err != nil {
+		t.Fatalf("read attempts after worker1: %v", err)
+	}
+	if persisted != 1 {
+		t.Errorf("persisted attempts after worker1 = %d, want 1", persisted)
+	}
+
+	// "Restart": discard worker1 (its sync.Map cache evaporates with
+	// it) and construct worker2 with the same MaxRetries. Worker2 has
+	// never seen this job; w2.attempts is empty.
+	w1.cancel()
+
+	w2 := NewWorker(driver, "pa", failingHandler(&attempt2),
+		WithMaxRetries(2),
+		WithBackoff(func(int) time.Duration { return 0 }),
+		WithWorkerLogger(nullLogger{}),
+	)
+	w2.ctx, w2.cancel = context.WithCancel(context.Background())
+	defer w2.cancel()
+
+	// Sanity: w2's in-memory attempt counter is empty (this is the
+	// pre-fix authoritative source). If anything starts at 1, the test
+	// assumption is wrong.
+	if _, ok := w2.attempts.Load(w2.jobKey(&TestJob{})); ok {
+		t.Fatal("w2.attempts unexpectedly populated for a fresh worker")
+	}
+
+	// Drive worker2's pop+handle cycle. The persisted attempts column
+	// now advances to 2 inside the reservation. attemptNumber(token)
+	// must return 2 (from token.Attempts), not 1 (from w2.attempts).
+	// With MaxAttempts == 2 this is terminal: FailReservedCtx fires.
+	if err := w2.processJob(); err == nil {
+		t.Fatalf("worker2 processJob: expected job-failed error, got nil")
+	}
+	if got := atomic.LoadInt32(&attempt2); got != 1 {
+		t.Fatalf("worker2 handler invocations = %d, want 1", got)
+	}
+
+	// The jobs row must be gone (terminal failure) and a failed_jobs
+	// row must exist. If MaxAttempts had been driven by w2.attempts the
+	// row would still be in jobs (released for a second retry).
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE queue = ?", "pa").Scan(&rows); err != nil {
+		t.Fatalf("count jobs after worker2: %v", err)
+	}
+	if rows != 0 {
+		t.Errorf("jobs row not removed on terminal fail; rows=%d (persisted attempts ignored?)", rows)
+	}
+	var failed int
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM failed_jobs WHERE queue = ?", "pa").Scan(&failed); err != nil {
+		t.Fatalf("count failed_jobs: %v", err)
+	}
+	if failed != 1 {
+		t.Errorf("failed_jobs rows = %d, want 1 (worker2 should have terminated)", failed)
 	}
 }
 

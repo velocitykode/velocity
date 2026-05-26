@@ -512,7 +512,7 @@ func (w *Worker) processJob() error {
 // predicate on the next pop. (The duplicate-run cost there is preferable
 // to refusing the success path.)
 func (w *Worker) ackReservation(token ReservationToken) {
-	if token == 0 {
+	if token.IsZero() {
 		return
 	}
 	rd, ok := w.queue.(ReservationDriver)
@@ -522,7 +522,7 @@ func (w *Worker) ackReservation(token ReservationToken) {
 	ackCtx, cancel := context.WithTimeout(context.Background(), retryPushTimeout)
 	defer cancel()
 	if err := rd.AckCtx(ackCtx, token); err != nil {
-		w.logger.Error("Failed to ack reserved job", "token", int64(token), "error", err)
+		w.logger.Error("Failed to ack reserved job", "token", token.ID, "error", err)
 	}
 }
 
@@ -561,13 +561,25 @@ func jobIDOf(job Job) string {
 // churn), on terminal failure it is moved to failed_jobs atomically. A
 // zero token falls back to the legacy PushDelayedCtx + Failed paths used
 // by drivers that delete on pop.
+//
+// MaxAttempts source of truth: when a non-zero reservation is present,
+// the persisted attempts column (carried on reservation.Attempts as the
+// post-increment value observed inside the reservation transaction) is
+// authoritative. The in-memory attempts cache resets on worker restart,
+// so a process bounce between attempts would let an unbounded number of
+// retries through; the persisted column survives the bounce. For
+// drivers without reservations (memory), the worker's sync.Map cache is
+// the only source available and remains in use.
 func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, err error, duration time.Duration, reservation ReservationToken) {
 	maxAttempts := w.maxRetries
 	if ma, ok := job.(MaxAttempter); ok {
 		maxAttempts = ma.MaxAttempts()
 	}
 
-	attempt := w.incrementAttempts(job)
+	// Determine the attempt number for the MaxAttempts decision. Durable
+	// drivers report the persisted, post-increment value on the token;
+	// non-durable drivers fall through to the in-memory cache.
+	attempt := w.attemptNumber(job, reservation)
 
 	// Check if the job opts out of retrying this specific error
 	if rd, ok := job.(RetryDecider); ok {
@@ -595,7 +607,7 @@ func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, 
 		// preferable to hanging the shutdown path.
 		pushCtx, pushCancel := context.WithTimeout(context.Background(), retryPushTimeout)
 		var requeueErr error
-		if rd, ok := w.queue.(ReservationDriver); ok && reservation != 0 {
+		if rd, ok := w.queue.(ReservationDriver); ok && !reservation.IsZero() {
 			// Reservation-capable driver: release the row in place so
 			// the existing row (with its attempts counter, batch ID,
 			// trace ids) is reused for the retry.
@@ -615,6 +627,24 @@ func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, 
 	w.failJob(ctx, job, jobType, err, duration, attempt, maxAttempts, reservation)
 }
 
+// attemptNumber returns the authoritative attempt count for MaxAttempts
+// decisions. For reservation-capable drivers, the persisted column value
+// (carried on token.Attempts) wins because it survives worker restarts;
+// the in-memory cache is bumped for parity but its return value is
+// ignored. For non-reservation drivers the in-memory counter is the only
+// source available.
+func (w *Worker) attemptNumber(job Job, token ReservationToken) int {
+	if !token.IsZero() && token.Attempts > 0 {
+		// Keep the in-memory cache in sync with the persisted view so
+		// it remains a usable fast-path for diagnostics and so a later
+		// non-reservation call site reads a sane value. The return is
+		// discarded; the persisted column wins.
+		w.incrementAttempts(job)
+		return token.Attempts
+	}
+	return w.incrementAttempts(job)
+}
+
 // failJob permanently fails a job after exhausting retries.
 func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error, duration time.Duration, attempt, maxAttempts int, reservation ReservationToken) {
 	w.removeAttempts(job)
@@ -628,7 +658,7 @@ func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error
 
 	// Reservation-capable drivers record + delete the row atomically;
 	// other drivers fall back to the bare Failed() path.
-	if rd, ok := w.queue.(ReservationDriver); ok && reservation != 0 {
+	if rd, ok := w.queue.(ReservationDriver); ok && !reservation.IsZero() {
 		if failErr := rd.FailReservedCtx(ctx, reservation, job, err, w.queueName); failErr != nil {
 			w.logger.Error("Failed to mark reserved job as failed", "error", failErr)
 		}
