@@ -276,10 +276,13 @@ func FileRule(field string, value interface{}, params []string, data map[string]
 // Script-runner extensions (.php, .phtml, .phar, .cgi, .pl, .py, .rb,
 // .sh, ...) are refused outright regardless of the parameter list.
 //
-// SVG handling: "svg" in the parameter list is refused unless the
-// caller also passes the literal token "allow_svg" (e.g.
-// mimes:svg,allow_svg or mimes:jpg,svg,allow_svg). Even with opt-in,
-// SVG content containing a <script tag is refused; see validateSVG.
+// SVG handling: when the uploaded file itself is SVG (by extension),
+// the caller must also pass the literal token "allow_svg" (e.g.
+// mimes:svg,allow_svg or mimes:jpg,svg,allow_svg). Including "svg" in
+// the allowlist alongside other extensions does NOT block non-SVG
+// uploads from passing; mimes:jpg,svg with a clean .jpg is accepted
+// without opt-in. Even with opt-in, SVG content containing a <script
+// tag is refused; see validateSVG.
 func MimesRule(field string, value interface{}, params []string, data map[string]interface{}) error {
 	if value == nil {
 		return nil
@@ -313,7 +316,6 @@ func MimesRule(field string, value interface{}, params []string, data map[string
 	// Parse params: "allow_svg" is a flag, everything else is an
 	// extension allowlist entry.
 	allowSVG := false
-	hasSVGToken := false
 	matched := false
 	for _, p := range params {
 		token := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(p)), ".")
@@ -321,20 +323,19 @@ func MimesRule(field string, value interface{}, params []string, data map[string
 			allowSVG = true
 			continue
 		}
-		if token == "svg" {
-			hasSVGToken = true
-		}
 		if token == ext {
 			matched = true
 		}
 	}
-	// "svg" in the allowlist is rejected unless the caller also passes
-	// "allow_svg". Without opt-in we never let an SVG upload through
-	// MimesRule, even when the filename matches.
-	if hasSVGToken && !allowSVG {
+	if !matched {
 		return fmt.Errorf("The %s field must be a file of type: %s.", field, strings.Join(params, ", "))
 	}
-	if !matched {
+
+	// SVG-specific opt-in: only the uploaded file being SVG triggers
+	// the allow_svg requirement. mimes:jpg,svg without allow_svg must
+	// still accept clean .jpg uploads; the allow_svg flag is only
+	// checked when the actual upload sniffs/names as .svg.
+	if ext == "svg" && !allowSVG {
 		return fmt.Errorf("The %s field must be a file of type: %s.", field, strings.Join(params, ", "))
 	}
 

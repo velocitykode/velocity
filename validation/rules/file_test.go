@@ -247,6 +247,44 @@ func TestMimesRule_SVGRequiresOptIn(t *testing.T) {
 	}
 }
 
+// TestMimesRule_SVGOptInScopedToActualUpload verifies F4: the
+// allow_svg opt-in only governs uploads whose own extension is .svg.
+// Including "svg" in the mimes allowlist must not block other valid
+// uploads like .jpg. Audit ID F4.
+func TestMimesRule_SVGOptInScopedToActualUpload(t *testing.T) {
+	cleanSVG := []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><circle cx="50" cy="50" r="40"/></svg>`)
+	scriptSVG := []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`)
+
+	// mimes:jpg,svg (no opt-in) on clean .jpg: ACCEPTED. Before F4 this
+	// was rejected because the allowlist contained "svg" and the
+	// allowlist-wide gate fired before looking at the actual upload.
+	if err := MimesRule("upload", fakeFile{name: "photo.jpg", content: jpegBytes}, []string{"jpg", "svg"}, nil); err != nil {
+		t.Fatalf("expected mimes:jpg,svg to accept clean .jpg without opt-in, got %v", err)
+	}
+
+	// mimes:jpg,svg (no opt-in) on clean .svg: REJECTED via SVG
+	// opt-in requirement.
+	if err := MimesRule("upload", fakeFile{name: "logo.svg", content: cleanSVG}, []string{"jpg", "svg"}, nil); err == nil {
+		t.Fatal("expected mimes:jpg,svg without opt-in to refuse clean .svg upload, got nil")
+	}
+
+	// mimes:jpg,svg,allow_svg on clean .svg: ACCEPTED.
+	if err := MimesRule("upload", fakeFile{name: "logo.svg", content: cleanSVG}, []string{"jpg", "svg", "allow_svg"}, nil); err != nil {
+		t.Fatalf("expected mimes:jpg,svg,allow_svg to accept clean .svg, got %v", err)
+	}
+
+	// mimes:jpg,svg,allow_svg on scripted .svg: REJECTED via validateSVG.
+	if err := MimesRule("upload", fakeFile{name: "evil.svg", content: scriptSVG}, []string{"jpg", "svg", "allow_svg"}, nil); err == nil {
+		t.Fatal("expected mimes:jpg,svg,allow_svg to refuse scripted .svg, got nil")
+	}
+
+	// Other non-SVG uploads under an svg-containing allowlist must
+	// pass cleanly when their own type matches.
+	if err := MimesRule("upload", fakeFile{name: "photo.png", content: pngBytes}, []string{"png", "svg"}, nil); err != nil {
+		t.Fatalf("expected mimes:png,svg to accept clean .png without opt-in, got %v", err)
+	}
+}
+
 // TestMimesRule_BusinessFormatsAccepted verifies F3: extensions in the
 // common-business set (docx, xlsx, pptx, wasm, rar, 7z, doc/xls/ppt,
 // rtf, yaml, ...) are no longer rejected as "unsupported file type".
