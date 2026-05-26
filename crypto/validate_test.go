@@ -139,6 +139,26 @@ func TestConfigValidate_ConsistentWithNewEncryptor(t *testing.T) {
 		{Key: strings.Repeat("a", 24), Cipher: "AES-256-CBC"},  // mismatch
 		{Key: "", Cipher: "AES-256-CBC"},                       // empty
 		{Key: strings.Repeat("a", 32), Cipher: "BLOWFISH-128"}, // unsupported
+		// PreviousKeys must share Validate/NewEncryptor symmetry. A
+		// malformed base64 entry and a length-mismatched entry must
+		// both be rejected at Validate time, not silently passed and
+		// failed during construction.
+		{
+			Key:          strings.Repeat("a", 32),
+			Cipher:       "AES-256-CBC",
+			PreviousKeys: []string{"base64:!!!not-base64!!!"},
+		},
+		{
+			Key:    strings.Repeat("a", 32),
+			Cipher: "AES-256-CBC",
+			// Decodes to 16 bytes, not 32.
+			PreviousKeys: []string{"base64:MTIzNDU2Nzg5MGFiY2RlZg=="},
+		},
+		{
+			Key:          strings.Repeat("a", 32),
+			Cipher:       "AES-256-CBC",
+			PreviousKeys: []string{strings.Repeat("b", 32)},
+		}, // accept: valid rotation key
 	}
 	for i, cfg := range cases {
 		cfg := cfg

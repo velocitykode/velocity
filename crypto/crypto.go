@@ -144,7 +144,48 @@ func (c Config) Validate() error {
 	if len(raw) != want {
 		return fmt.Errorf("%w: cipher %s requires %d-byte key, got %d", ErrInvalidKeyLength, cipher, want, len(raw))
 	}
+	// PreviousKeys must satisfy the same parse + length contract as the
+	// primary key; otherwise Validate would accept a config that
+	// NewEncryptor later rejects, breaking the documented symmetry and
+	// letting startup validators sign off on configs that fail at
+	// runtime. Helper handles the CRYPTO_IGNORE_INVALID_PREVIOUS_KEYS
+	// opt-out so the env knob covers both call sites uniformly.
+	if _, err := validatePreviousKeys(c.PreviousKeys, cipher, want); err != nil {
+		return err
+	}
 	return nil
+}
+
+// validatePreviousKeys parses and length-checks rotation keys against
+// the cipher's required raw key length, honoring the
+// CRYPTO_IGNORE_INVALID_PREVIOUS_KEYS=true opt-out for transient
+// migrations. Returns the parsed valid keys; callers that only need
+// pass/fail (Validate) can discard the slice. Empty PreviousKeys
+// entries are silent no-ops since they model empty slots in
+// comma-split env values.
+func validatePreviousKeys(prev []string, cipher string, keySize int) ([][]byte, error) {
+	ignoreInvalid := os.Getenv("CRYPTO_IGNORE_INVALID_PREVIOUS_KEYS") == "true"
+	var parsed [][]byte
+	for i, k := range prev {
+		if k == "" {
+			continue
+		}
+		prevKey, err := parseKey(k)
+		if err != nil {
+			if ignoreInvalid {
+				continue
+			}
+			return nil, fmt.Errorf("%w: index %d: %v", ErrInvalidPreviousKey, i, err)
+		}
+		if len(prevKey) != keySize {
+			if ignoreInvalid {
+				continue
+			}
+			return nil, fmt.Errorf("%w: index %d: cipher %s requires %d-byte key, got %d", ErrInvalidPreviousKey, i, cipher, keySize, len(prevKey))
+		}
+		parsed = append(parsed, prevKey)
+	}
+	return parsed, nil
 }
 
 // NewEncryptor creates a new encryptor with custom configuration.
@@ -197,26 +238,9 @@ func newDriver(config Config) (Encryptor, error) {
 		return nil, err
 	}
 
-	ignoreInvalid := os.Getenv("CRYPTO_IGNORE_INVALID_PREVIOUS_KEYS") == "true"
-	var previousKeys [][]byte
-	for i, k := range config.PreviousKeys {
-		if k == "" {
-			continue
-		}
-		prevKey, err := parseKey(k)
-		if err != nil {
-			if ignoreInvalid {
-				continue
-			}
-			return nil, fmt.Errorf("%w: index %d: %v", ErrInvalidPreviousKey, i, err)
-		}
-		if len(prevKey) != keySize {
-			if ignoreInvalid {
-				continue
-			}
-			return nil, fmt.Errorf("%w: index %d: cipher %s requires %d-byte key, got %d", ErrInvalidPreviousKey, i, cipher, keySize, len(prevKey))
-		}
-		previousKeys = append(previousKeys, prevKey)
+	previousKeys, err := validatePreviousKeys(config.PreviousKeys, cipher, keySize)
+	if err != nil {
+		return nil, err
 	}
 
 	return drivers.NewAESDriver(key, previousKeys, cipher)
