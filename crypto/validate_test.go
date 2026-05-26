@@ -135,9 +135,9 @@ func TestConfigValidate_ConsistentWithNewEncryptor(t *testing.T) {
 	cases := []Config{
 		{Key: strings.Repeat("a", 32), Cipher: "AES-256-CBC"},
 		{Key: strings.Repeat("a", 16), Cipher: "AES-128-GCM"},
-		{Key: strings.Repeat("a", 8), Cipher: "AES-128-CBC"},  // mismatch
-		{Key: strings.Repeat("a", 24), Cipher: "AES-256-CBC"}, // mismatch
-		{Key: "", Cipher: "AES-256-CBC"},                      // empty
+		{Key: strings.Repeat("a", 8), Cipher: "AES-128-CBC"},   // mismatch
+		{Key: strings.Repeat("a", 24), Cipher: "AES-256-CBC"},  // mismatch
+		{Key: "", Cipher: "AES-256-CBC"},                       // empty
 		{Key: strings.Repeat("a", 32), Cipher: "BLOWFISH-128"}, // unsupported
 	}
 	for i, cfg := range cases {

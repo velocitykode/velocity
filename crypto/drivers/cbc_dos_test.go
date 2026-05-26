@@ -175,4 +175,3 @@ func TestDecryptCBC_V1Path_StillRejectsBadIVLength_NoPanic(t *testing.T) {
 		t.Fatalf("expected ErrDecrypt, got %v", gotErr)
 	}
 }
-
