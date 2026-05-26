@@ -1176,12 +1176,30 @@ func (c *Context) FormFile(key string) (*multipart.FileHeader, error) {
 	return fh, err
 }
 
+// ErrFileSizeExceeded is returned by SaveFile when the upload stream
+// produces more bytes than the declared multipart.FileHeader.Size (or
+// the caller-supplied MaxFileSize cap). A lying Content-Length is the
+// usual cause; the partially-written destination file is removed
+// before the error is surfaced.
+var ErrFileSizeExceeded = errors.New("velocity/router: uploaded file exceeds declared size")
+
 // SaveFile saves an uploaded file to dst. dst is resolved relative to
 // the router's FileRoot and must resolve to a location contained
 // within that root. Containment is kernel-enforced via *os.Root, so
 // a symlinked parent pointing outside the root is rejected at
 // OpenFile time with no TOCTOU window between validation and create.
-func (c *Context) SaveFile(fh *multipart.FileHeader, dst string) error {
+//
+// Optional FileValidationOption values (MaxFileSize, AllowedExtensions,
+// AllowedMIMETypes) are evaluated via ValidateFile before any bytes are
+// written. Validation failure returns the validator error and writes
+// nothing.
+//
+// Defence in depth: the copy is bounded by io.LimitReader at
+// fh.Size+1 (or the MaxFileSize option when smaller). If the source
+// stream produces more than the declared size, the partial file is
+// removed and ErrFileSizeExceeded is returned. This guards against
+// hostile clients whose Content-Length lies.
+func (c *Context) SaveFile(fh *multipart.FileHeader, dst string, opts ...FileValidationOption) error {
 	root, err := c.fileRootOrError()
 	if err != nil {
 		return err
@@ -1190,6 +1208,19 @@ func (c *Context) SaveFile(fh *multipart.FileHeader, dst string) error {
 	if err != nil {
 		return err
 	}
+	if err := c.ValidateFile(fh, opts...); err != nil {
+		return err
+	}
+
+	sizeCap := fh.Size
+	var cfg fileValidationConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	if cfg.maxSize > 0 && cfg.maxSize < sizeCap {
+		sizeCap = cfg.maxSize
+	}
+
 	src, err := fh.Open()
 	if err != nil {
 		return err
@@ -1205,8 +1236,16 @@ func (c *Context) SaveFile(fh *multipart.FileHeader, dst string) error {
 	}
 	defer out.Close()
 
-	_, err = io.Copy(out, src)
-	return err
+	written, err := io.Copy(out, io.LimitReader(src, sizeCap+1))
+	if err != nil {
+		_ = root.Remove(rel)
+		return err
+	}
+	if written > sizeCap {
+		_ = root.Remove(rel)
+		return ErrFileSizeExceeded
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
