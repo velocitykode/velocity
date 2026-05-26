@@ -401,6 +401,26 @@ func (g *SessionGuard) Logout(w http.ResponseWriter, r *http.Request) error {
 	// intact, but capturing here is robust against future changes.
 	sessionID := session.ID()
 
+	// Cycle the persisted remember-me token (H-06 fix). Laravel's
+	// SessionGuard::logout calls cycleRememberToken on every individual
+	// logout precisely so a stolen remember cookie is not later
+	// replayable against the user's account. Velocity used to clear the
+	// remember cookie on the client only (via clearRememberCookie below);
+	// the server-side users.remember_token survived intact, so a captured
+	// remember-cookie + the post-logout request could re-authenticate.
+	//
+	// Best-effort: failure to clear the token does not block Logout
+	// because a transient DB blip should not strand the user in a
+	// half-logged-out state. Failures are logged so operators can
+	// reconcile.
+	if userID := session.Get("user_id"); userID != nil {
+		if user, err := g.provider.FindByID(userID); err == nil && user != nil {
+			if err := g.provider.UpdateRememberToken(user, ""); err != nil {
+				g.logWarn("velocity/auth: clear remember token (logout) failed", "user_id", userID, "error", err)
+			}
+		}
+	}
+
 	// Clear remember cookie
 	g.clearRememberCookie(w)
 
