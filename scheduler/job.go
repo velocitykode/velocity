@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/velocitykode/velocity/internal/panicerr"
@@ -151,11 +152,53 @@ func (j *Job) ShouldRun() bool {
 	return true
 }
 
-// Run executes the job
+// Run executes the job. This is the legacy entry point preserved for
+// direct callers (tests, ad-hoc invocations). The scheduler itself uses
+// runInternal, which threads a runCtx + release callback so the
+// scheduler can drain locks and runWg accurately even when the job is a
+// RunInBackground command whose OS process outlives Job.Run.
 func (j *Job) Run() error {
+	return j.runInternal(context.Background(), 0, nil)
+}
+
+// runInternal is the scheduler-facing entry point.
+//
+//	ctx           - the scheduler's run-context. Used by RunInBackground
+//	                command jobs to drive a graceful SIGTERM+SIGKILL of
+//	                the spawned OS process when the scheduler is
+//	                shutting down. Synchronous job paths (closure /
+//	                non-background command) currently ignore ctx; the
+//	                callback itself decides whether to respect it.
+//	shutdownGrace - how long the RunInBackground waiter waits between
+//	                SIGTERM and SIGKILL when ctx is cancelled. Zero
+//	                means "no SIGTERM, just wait for cmd.Wait until
+//	                Shutdown's deadline elapses".
+//	release       - a callback the scheduler uses to release the
+//	                WithoutOverlapping lock and decrement runWg. Called
+//	                EXACTLY ONCE: inline before return for synchronous
+//	                paths, OR by the RunInBackground waiter goroutine
+//	                after cmd.Wait returns. May be nil for direct (test)
+//	                callers that have no scheduler-side bookkeeping.
+//
+// Background ownership transfer: for a RunInBackground command that
+// successfully started, ownership of `release` moves into the waiter
+// goroutine. runInternal returns nil to the caller in that case so
+// the scheduler's dispatch goroutine exits promptly; the waiter holds
+// the WithoutOverlapping lock until the OS process exits.
+func (j *Job) runInternal(ctx context.Context, shutdownGrace time.Duration, release func()) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	j.mu.Lock()
 	if j.withoutOverlapping && j.running {
 		j.mu.Unlock()
+		// In-process overlap gate fired. The scheduler should not have
+		// gotten here (Locker.Acquire is the cross-process guard), but
+		// if it did we must still balance the release callback.
+		if release != nil {
+			release()
+		}
 		return fmt.Errorf("velocity/scheduler: job %s: %w", j.name, ErrJobRunning)
 	}
 	j.running = true
@@ -167,22 +210,54 @@ func (j *Job) Run() error {
 	jobName := j.name
 	j.mu.Unlock()
 
-	defer func() {
+	clearRunningFlag := func() {
 		j.mu.Lock()
 		j.running = false
 		j.mu.Unlock()
-	}()
+	}
 
-	// Create context with trace for APM
-	ctx, traceID, _ := trace.StartTrace(context.Background())
+	// Create context with trace for APM. We don't propagate ctx into
+	// trace.StartTrace because that API expects a fresh context; future
+	// work could thread the runCtx for cancellation propagation into
+	// closures, but the closure-API itself does not accept a ctx.
+	tctx, traceID, _ := trace.StartTrace(context.Background())
 
 	// Dispatch scheduled.starting event
-	dispatchScheduledTaskStarting(j.getDispatch(), ctx, jobName)
+	dispatchScheduledTaskStarting(j.getDispatch(), tctx, jobName)
 	startTime := time.Now()
 
 	// Run before callbacks
 	for _, callback := range beforeCallbacks {
 		callback()
+	}
+
+	// finishSync runs the after-callbacks, success/failure callbacks,
+	// completion events, then clears the running flag and calls release.
+	// Used by every synchronous return path. RunInBackground's waiter
+	// goroutine builds its own finish path (it must defer event
+	// dispatch until cmd.Wait completes).
+	finishSync := func(err error, panicDispatched bool) {
+		duration := time.Since(startTime)
+		for _, callback := range afterCallbacks {
+			callback()
+		}
+		if err != nil {
+			for _, callback := range onFailureCallbacks {
+				callback(err)
+			}
+			if !panicDispatched {
+				dispatchScheduledTaskFailed(j.getDispatch(), tctx, jobName, err, duration)
+			}
+		} else {
+			for _, callback := range onSuccessCallbacks {
+				callback()
+			}
+			dispatchScheduledTaskFinished(j.getDispatch(), tctx, jobName, duration)
+		}
+		clearRunningFlag()
+		if release != nil {
+			release()
+		}
 	}
 
 	// Execute the job
@@ -199,7 +274,7 @@ func (j *Job) Run() error {
 			defer func() {
 				if r := recover(); r != nil {
 					err = panicerr.FromRecovered(r)
-					dispatchScheduledTaskFailed(j.getDispatch(), ctx, jobName, err, time.Since(startTime))
+					dispatchScheduledTaskFailed(j.getDispatch(), tctx, jobName, err, time.Since(startTime))
 					panicDispatched = true
 				}
 			}()
@@ -212,64 +287,190 @@ func (j *Job) Run() error {
 			defer func() {
 				if r := recover(); r != nil {
 					err = panicerr.FromRecovered(r)
-					dispatchScheduledTaskFailed(j.getDispatch(), ctx, jobName, err, time.Since(startTime))
+					dispatchScheduledTaskFailed(j.getDispatch(), tctx, jobName, err, time.Since(startTime))
 					panicDispatched = true
 				}
 			}()
 			j.callback()
 		}()
 	case j.command != "":
-		// Execute command
+		// Execute command. RunInBackground splits into (start now,
+		// wait elsewhere) so the WithoutOverlapping lock follows the
+		// OS process lifetime, not just the cmd.Start success.
 		cmd := exec.Command(j.command, j.args...)
 
-		// Handle output redirection
+		// Handle output redirection. For RunInBackground the file
+		// must outlive Job.Run -- the OS process still writes to it.
+		// Ownership of the file handle transfers to the waiter
+		// goroutine in that branch; the synchronous path keeps the
+		// existing defer Close behaviour.
+		var outFile *os.File
 		if j.outputFile != "" {
-			var file *os.File
+			var openErr error
 			if j.appendOutput {
-				file, err = os.OpenFile(j.outputFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+				outFile, openErr = os.OpenFile(j.outputFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 			} else {
-				file, err = os.OpenFile(j.outputFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+				outFile, openErr = os.OpenFile(j.outputFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 			}
-			if err == nil {
-				defer file.Close()
-				cmd.Stdout = file
-				cmd.Stderr = file
+			if openErr == nil && outFile != nil {
+				cmd.Stdout = outFile
+				cmd.Stderr = outFile
+			} else if openErr != nil {
+				err = openErr
 			}
 		}
 
-		if j.runInBackground {
-			err = cmd.Start()
-		} else {
+		if j.runInBackground && err == nil {
+			if startErr := cmd.Start(); startErr != nil {
+				err = startErr
+				if outFile != nil {
+					_ = outFile.Close()
+				}
+				// Start failed -- fall through to the synchronous
+				// finish path so callbacks fire and release is called.
+				break
+			}
+			// Start succeeded. Spawn the waiter and TRANSFER ownership
+			// of release + outFile to it. We MUST NOT call finishSync
+			// or release in this goroutine -- doing so would let the
+			// next scheduler tick re-acquire the lock while the
+			// process is still running.
+			j.spawnBackgroundWaiter(ctx, shutdownGrace, cmd, outFile, jobName, tctx, startTime, afterCallbacks, onSuccessCallbacks, onFailureCallbacks, clearRunningFlag, release)
+			// Release ownership transferred; suppress unused traceID
+			// warning and return without invoking finishSync.
+			_ = traceID
+			return nil
+		}
+
+		// Synchronous foreground command.
+		if err == nil {
 			err = cmd.Run()
 		}
+		if outFile != nil {
+			_ = outFile.Close()
+		}
 	}
 
-	duration := time.Since(startTime)
+	_ = traceID
+	finishSync(err, panicDispatched)
+	return err
+}
 
-	// Run after callbacks
-	for _, callback := range afterCallbacks {
-		callback()
-	}
+// spawnBackgroundWaiter owns the lock + runWg + completion bookkeeping
+// for a RunInBackground command that successfully started. It runs in
+// its own goroutine so Job.runInternal can return promptly to the
+// scheduler's dispatch goroutine.
+//
+// Shutdown handling: on ctx.Done it sends SIGTERM, waits up to
+// shutdownGrace, then SIGKILL. cmd.Wait is always called so the OS
+// process is fully reaped before release fires.
+func (j *Job) spawnBackgroundWaiter(
+	ctx context.Context,
+	shutdownGrace time.Duration,
+	cmd *exec.Cmd,
+	outFile *os.File,
+	jobName string,
+	tctx context.Context,
+	startTime time.Time,
+	afterCallbacks []func(),
+	onSuccessCallbacks []func(),
+	onFailureCallbacks []func(error),
+	clearRunningFlag func(),
+	release func(),
+) {
+	go func() {
+		// Panic-safe: a misbehaving callback must not leak the lock.
+		defer func() {
+			if r := recover(); r != nil {
+				if dispatch := j.getDispatch(); dispatch != nil {
+					dispatchScheduledTaskFailed(dispatch, tctx, jobName, panicerr.FromRecovered(r), time.Since(startTime))
+				}
+			}
+			if outFile != nil {
+				_ = outFile.Close()
+			}
+			clearRunningFlag()
+			if release != nil {
+				release()
+			}
+		}()
 
-	// Run success/failure callbacks and dispatch events
-	if err != nil {
-		for _, callback := range onFailureCallbacks {
-			callback(err)
+		// Wait for the command in a sub-goroutine so the outer select
+		// can observe ctx.Done concurrently.
+		waitDone := make(chan error, 1)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					waitDone <- panicerr.FromRecovered(r)
+					return
+				}
+			}()
+			waitDone <- cmd.Wait()
+		}()
+
+		var err error
+		select {
+		case err = <-waitDone:
+			// Normal completion (success or exec error).
+		case <-ctx.Done():
+			// Shutdown in progress. SIGTERM first; SIGKILL after
+			// the grace period if cmd has not exited. cmd.Wait is
+			// still observed so the process is reaped.
+			j.signalShutdown(cmd, shutdownGrace, jobName)
+			err = <-waitDone
+			if err == nil {
+				err = ctx.Err()
+			}
 		}
-		if !panicDispatched {
-			dispatchScheduledTaskFailed(j.getDispatch(), ctx, jobName, err, duration)
-		}
-	} else {
-		for _, callback := range onSuccessCallbacks {
+
+		duration := time.Since(startTime)
+		for _, callback := range afterCallbacks {
 			callback()
 		}
-		dispatchScheduledTaskFinished(j.getDispatch(), ctx, jobName, duration)
+		if err != nil {
+			for _, callback := range onFailureCallbacks {
+				callback(err)
+			}
+			dispatchScheduledTaskFailed(j.getDispatch(), tctx, jobName, err, duration)
+		} else {
+			for _, callback := range onSuccessCallbacks {
+				callback()
+			}
+			dispatchScheduledTaskFinished(j.getDispatch(), tctx, jobName, duration)
+		}
+	}()
+}
+
+// signalShutdown delivers SIGTERM to the running command and waits up
+// to shutdownGrace before escalating to SIGKILL. shutdownGrace <= 0
+// skips the SIGTERM phase (cmd.Wait will simply observe the natural
+// process exit, OR the caller's deadline). Errors from Signal/Kill are
+// logged via the scheduler's event dispatcher; they're rarely
+// actionable (process may have already exited).
+func (j *Job) signalShutdown(cmd *exec.Cmd, shutdownGrace time.Duration, jobName string) {
+	if cmd == nil || cmd.Process == nil {
+		return
 	}
-
-	// Suppress unused variable warning
-	_ = traceID
-
-	return err
+	if shutdownGrace <= 0 {
+		_ = cmd.Process.Kill()
+		return
+	}
+	// Best-effort SIGTERM. On platforms without signal support (Windows
+	// historically returns ENOTSUPP for os.Interrupt to a running
+	// process) we fall back to Kill below.
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		_ = cmd.Process.Kill()
+		return
+	}
+	// Wait for grace period in a non-blocking way: a timer that fires
+	// SIGKILL if cmd is still running. We can't observe cmd.Wait here
+	// (only the waiter goroutine does), so the timer always fires; a
+	// process that exited cleanly between SIGTERM and the timer will
+	// see Kill on a finished process, which is a harmless no-op
+	// (returns os.ErrProcessDone on modern Go).
+	time.AfterFunc(shutdownGrace, func() {
+		_ = cmd.Process.Kill()
+	})
 }
 
 // Schedule methods (fluent API)

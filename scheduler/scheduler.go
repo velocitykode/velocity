@@ -76,6 +76,25 @@ type Scheduler struct {
 	// the job does not specify its own via WithoutOverlappingFor(d).
 	// Default 24h, matching Laravel's $expiresAt = 1440 minutes.
 	overlapTTL time.Duration
+
+	// runCtx is the scheduler's lifetime context. Run(ctx) derives it
+	// from its caller's ctx and Shutdown cancels it. runDueJobs passes
+	// this context into Locker.Acquire so a slow remote backend (e.g.
+	// Redis network hiccup) does not let a lock acquisition outlive
+	// Shutdown: when runCtx is cancelled, any pending Acquire returns
+	// ctx.Err() promptly and the job is not dispatched.
+	//
+	// Pre-Run / out-of-Run callers (the existing direct-call tests, and
+	// MaintenanceMode-only Schedulers) observe runCtx == nil; runDueJobs
+	// falls back to context.Background() in that case so behaviour is
+	// unchanged for the synchronous-test code path.
+	runCtx    context.Context
+	runCancel context.CancelFunc
+
+	// shutdownGrace is how long a RunInBackground process gets after
+	// SIGTERM before SIGKILL when the scheduler is shutting down.
+	// Configurable for tests; defaults to 5s.
+	shutdownGrace time.Duration
 }
 
 // schedLoggerHolder wraps a Logger so atomic.Value stores a single type.
@@ -132,13 +151,14 @@ func (nullLogger) Debug(string, ...interface{}) {}
 // New creates a new scheduler instance
 func New() *Scheduler {
 	s := &Scheduler{
-		jobs:         make([]*Job, 0),
-		stop:         make(chan struct{}),
-		stopped:      make(chan struct{}),
-		timezone:     time.Local,
-		locker:       NewInMemoryLocker(),
-		oneServerTTL: 1 * time.Hour,
-		overlapTTL:   24 * time.Hour,
+		jobs:          make([]*Job, 0),
+		stop:          make(chan struct{}),
+		stopped:       make(chan struct{}),
+		timezone:      time.Local,
+		locker:        NewInMemoryLocker(),
+		oneServerTTL:  1 * time.Hour,
+		overlapTTL:    24 * time.Hour,
+		shutdownGrace: 5 * time.Second,
 	}
 	s.logger.Store(schedLoggerHolder{Logger: nullLogger{}})
 	return s
@@ -369,6 +389,14 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 	s.running = true
 	s.ticker = time.NewTicker(1 * time.Minute) // Check every minute
+	// Derive a cancellable run-context from the caller's ctx. Shutdown
+	// cancels this so any in-progress Locker.Acquire on a slow remote
+	// backend returns ctx.Err() promptly instead of dispatching a job
+	// AFTER the scheduler has signaled "no more dispatch".
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.runCtx, s.runCancel = context.WithCancel(ctx)
 	s.mu.Unlock()
 
 	s.ValidateJobs()
@@ -423,6 +451,13 @@ func (s *Scheduler) ValidateJobs() {
 // Shutdown stops the scheduler and waits for in-flight jobs to finish,
 // honoring the context deadline. Returns ctx.Err() if the context expires
 // before all jobs complete.
+//
+// Cancelling the scheduler's internal run-context is the first thing
+// Shutdown does. Any Locker.Acquire that is in-flight on a slow remote
+// backend, plus any RunInBackground waiter goroutine, observe the
+// cancellation and unwind promptly so runWg can drain. Without this,
+// a stuck Acquire could let a job start AFTER Shutdown's caller
+// believed shutdown completed.
 func (s *Scheduler) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
 	if !s.running {
@@ -433,6 +468,9 @@ func (s *Scheduler) Shutdown(ctx context.Context) error {
 	s.running = false
 	if s.ticker != nil {
 		s.ticker.Stop()
+	}
+	if s.runCancel != nil {
+		s.runCancel()
 	}
 	close(s.stop)
 	s.mu.Unlock()
@@ -490,10 +528,18 @@ func (s *Scheduler) runDueJobs() {
 	locker := s.locker
 	oneServerTTL := s.oneServerTTL
 	overlapTTL := s.overlapTTL
+	runCtx := s.runCtx
+	shutdownGrace := s.shutdownGrace
 	s.mu.RUnlock()
 
 	if tz == nil {
 		tz = time.Local
+	}
+	if runCtx == nil {
+		// Out-of-Run caller (test, ad-hoc tick). Use Background so
+		// Locker.Acquire still has a non-nil ctx; behaviour matches
+		// pre-fix for callers that never invoked Run.
+		runCtx = context.Background()
 	}
 	now := time.Now().In(tz)
 
@@ -525,19 +571,34 @@ func (s *Scheduler) runDueJobs() {
 			continue
 		}
 
+		// runWg.Add(1) is taken BEFORE the (possibly slow) Locker
+		// acquire calls so the in-flight count covers the acquire
+		// window. Without this, a Locker.Acquire stuck on a remote
+		// backend could complete AFTER Shutdown's runWg.Wait returns,
+		// and the resulting job dispatch would outlive the scheduler.
+		// On any skip / acquire error path we MUST call runWg.Done()
+		// to balance the Add. See https://github.com/golang/go/wiki/WaitGroup
+		// for the standard pattern.
+		s.runWg.Add(1)
+
 		// Acquire distributed locks BEFORE dispatching the goroutine so
 		// the per-tick contest is synchronous. Order: OnOneServer first
 		// (short TTL, minute-keyed; gates the per-tick winner across
 		// hosts), then WithoutOverlapping (long TTL; gates concurrent
 		// overlap of long-running jobs across processes).
+		//
+		// Both Acquire calls use the scheduler's runCtx so a remote
+		// backend hiccup unwinds promptly on Shutdown.
 		var oneServerLock, overlapLock Lock
 		if onOneServer && locker != nil {
 			key := job.oneServerLockKey(now)
-			lk, err := locker.Acquire(context.Background(), key, oneServerTTL)
+			lk, err := locker.Acquire(runCtx, key, oneServerTTL)
 			if err != nil {
-				// Another host (or this host on a previous tick whose
-				// lock has not yet expired) holds it -- skip silently.
-				s.log().Debug("Skipping OnOneServer job (lock held)", "name", jobName, "key", key)
+				// Either contention (ErrLockHeld) or runCtx cancel:
+				// in both cases this host is not running this tick.
+				// Balance the runWg.Add taken above.
+				s.runWg.Done()
+				s.log().Debug("Skipping OnOneServer job (lock held or shutting down)", "name", jobName, "key", key, "error", err)
 				continue
 			}
 			oneServerLock = lk
@@ -545,51 +606,58 @@ func (s *Scheduler) runDueJobs() {
 		if withoutOverlapping && locker != nil {
 			key := job.overlapLockKey()
 			ttl := job.effectiveOverlapTTL(overlapTTL)
-			lk, err := locker.Acquire(context.Background(), key, ttl)
+			lk, err := locker.Acquire(runCtx, key, ttl)
 			if err != nil {
-				// Job already running somewhere. Leave any OnOneServer
-				// lock held -- its key is minute-scoped and TTL-bounded,
-				// so this host has correctly recorded "I claimed this
-				// tick", and the next minute gets a fresh contest. The
-				// alternative (release) would let another host on the
-				// same tick re-claim and re-attempt, defeating the
-				// per-tick winner semantic.
+				// Job already running somewhere, or runCtx cancelled
+				// during the acquire. Leave any OnOneServer lock held
+				// (its key is minute-scoped + TTL-bounded). Balance
+				// the runWg.Add taken above.
 				_ = oneServerLock
-				s.log().Debug("Skipping WithoutOverlapping job (lock held)", "name", jobName, "key", key)
+				s.runWg.Done()
+				s.log().Debug("Skipping WithoutOverlapping job (lock held or shutting down)", "name", jobName, "key", key, "error", err)
 				continue
 			}
 			overlapLock = lk
 		}
 
-		s.runWg.Add(1)
-		go func(j *Job, oneServerLock, overlapLock Lock) {
-			defer s.runWg.Done()
-			// Panic-safe lock release. The OnOneServer lock is
-			// intentionally NOT released here: its key embeds the
-			// scheduled minute and its TTL is set so the next tick gets
-			// a fresh contest naturally. Releasing on completion would
-			// let a fast-finishing job on host A allow host B to
-			// re-acquire the same minute's slot and re-run the job.
-			// The WithoutOverlapping lock IS released on completion so
-			// the next scheduled tick can fire the job without waiting
-			// for the (default 24h) TTL to elapse. Each release is
-			// wrapped in its own recover so a panicking backend cannot
-			// leak the sibling lock or skip subsequent deferred cleanup.
-			defer func() {
+		// release wraps the overlap-lock release plus runWg.Done into a
+		// single callback the job goroutine (or, for RunInBackground
+		// commands, its waiter goroutine) calls exactly once. The
+		// OnOneServer lock is intentionally NOT released: its key
+		// embeds the scheduled minute and the next tick gets a fresh
+		// contest naturally. Releasing on completion would let a fast
+		// host A let host B re-acquire the same minute's slot.
+		var releaseOnce sync.Once
+		release := func() {
+			releaseOnce.Do(func() {
 				if overlapLock != nil {
 					_ = releaseLockSafely(overlapLock)
 				}
-			}()
+				s.runWg.Done()
+			})
+		}
+
+		go func(j *Job, oneServerLock Lock, release func()) {
+			// Recover any panic from logger.Debug or other framing so
+			// the release path always runs. Note: Job.runInternal's
+			// inner panics are already recovered by Job.Run itself.
 			defer func() {
 				if r := recover(); r != nil {
 					s.log().Error("velocity/scheduler: run due jobs panic recovered", "name", j.name, "error", panicerr.FromRecovered(r))
+					release()
 				}
 			}()
 			s.log().Debug("Running job", "name", j.name)
-			_ = j.Run()
-			// oneServerLock is retained until TTL expiry (see note above).
+			// runInternal owns the release callback. For synchronous
+			// jobs it invokes release before returning. For
+			// RunInBackground commands that successfully started, it
+			// transfers ownership to a waiter goroutine that calls
+			// release after cmd.Wait (or after the runCtx-driven
+			// SIGTERM+SIGKILL grace period).
+			j.runInternal(runCtx, shutdownGrace, release)
+			// oneServerLock retained until TTL expiry (see note above).
 			_ = oneServerLock
-		}(job, oneServerLock, overlapLock)
+		}(job, oneServerLock, release)
 	}
 
 	// Run after callbacks, these fire per tick, not per job, and must not
