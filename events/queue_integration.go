@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sync"
 	"time"
 
 	"github.com/velocitykode/velocity/queue"
@@ -40,9 +41,19 @@ func (j *EventListenerJob) Failed(err error) {
 	// or store failure information for analysis
 }
 
-// QueueIntegratedDispatcher extends DefaultDispatcher with deep queue integration
+// QueueIntegratedDispatcher extends DefaultDispatcher with deep queue integration.
+//
+// The qmu mutex guards queueDriver and listenerRegistry. We use a dedicated
+// lock on the outer struct rather than reusing the embedded *DefaultDispatcher.mu
+// so the listener-map invariants (Listen / Off / Dispatch path) stay isolated
+// from the queue-integration invariants (SetQueueDriver / RegisterListenerFactory
+// / pushToQueue / ProcessEventListenerJob). Sharing one lock across both surfaces
+// would force the dispatch fast path to contend with infrequent queue-driver
+// reconfiguration, and would make reasoning about lock ordering harder if either
+// surface ever grew nested calls.
 type QueueIntegratedDispatcher struct {
 	*DefaultDispatcher
+	qmu              sync.RWMutex
 	listenerRegistry map[string]func() Listener // Registry of listener factories
 	queueDriver      queue.Driver               // Injected queue driver
 }
@@ -56,13 +67,19 @@ func NewQueueIntegratedDispatcher() *QueueIntegratedDispatcher {
 }
 
 // SetQueueDriver sets the queue driver for dispatching queued listeners.
+// Safe to call concurrently with pushToQueue / Dispatch.
 func (d *QueueIntegratedDispatcher) SetQueueDriver(driver queue.Driver) {
+	d.qmu.Lock()
+	defer d.qmu.Unlock()
 	d.queueDriver = driver
 }
 
-// RegisterListenerFactory registers a factory function for creating listener instances
+// RegisterListenerFactory registers a factory function for creating listener instances.
+// Safe to call concurrently with ProcessEventListenerJob and other registrations.
 func (d *QueueIntegratedDispatcher) RegisterListenerFactory(listenerType string, factory func() Listener) {
+	d.qmu.Lock()
 	d.listenerRegistry[listenerType] = factory
+	d.qmu.Unlock()
 }
 
 // Dispatch fires an event to all registered listeners with enhanced queue support
@@ -116,14 +133,20 @@ func (d *QueueIntegratedDispatcher) pushToQueue(ctx context.Context, event inter
 		delay = ql.WithDelay()
 	}
 
-	// Push to queue
-	if d.queueDriver == nil {
+	// Snapshot the queue driver under qmu so a concurrent SetQueueDriver
+	// cannot race the read. The PushCtx call itself runs lock-free because
+	// drivers may block on IO and we do not want SetQueueDriver to wait
+	// behind a slow push.
+	d.qmu.RLock()
+	driver := d.queueDriver
+	d.qmu.RUnlock()
+	if driver == nil {
 		return fmt.Errorf("queue driver not set on QueueIntegratedDispatcher")
 	}
 	if delay > 0 {
-		return d.queueDriver.PushDelayedCtx(ctx, job, delay, queueName)
+		return driver.PushDelayedCtx(ctx, job, delay, queueName)
 	}
-	return d.queueDriver.PushCtx(ctx, job, queueName)
+	return driver.PushCtx(ctx, job, queueName)
 }
 
 // getListenerType returns a string representation of the listener type
@@ -145,8 +168,13 @@ func (d *QueueIntegratedDispatcher) ProcessEventListenerJob(ctx context.Context,
 		return fmt.Errorf("failed to unmarshal event listener job: %w", err)
 	}
 
-	// Get listener factory
+	// Read the factory under qmu so a concurrent RegisterListenerFactory
+	// cannot race the map read. The factory call itself runs lock-free
+	// because listener construction may allocate or do work the dispatcher
+	// should not block other registrations on.
+	d.qmu.RLock()
 	factory, ok := d.listenerRegistry[job.ListenerType]
+	d.qmu.RUnlock()
 	if !ok {
 		return fmt.Errorf("velocity/events: no factory registered for listener type %s: %w", job.ListenerType, ErrListenerNotFound)
 	}
