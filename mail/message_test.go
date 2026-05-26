@@ -854,3 +854,208 @@ func TestManager_SetAttachmentRoot_DelegatesToPackageDefault(t *testing.T) {
 		t.Errorf("unexpected attachment content: %q", msg.GetAttachments()[0].Data)
 	}
 }
+
+// --- F1: addr-spec validation in the email parameter -----------------------
+//
+// Every fluent address setter must parse the email argument as exactly one
+// RFC 5322 addr-spec. The previous round of fixes blocked CR/LF and
+// grammar specials in the *display name* but not in the *email*: an input
+// like `victim@example.com, attacker@evil.com` had no CR/LF, no display
+// name, and serialised on the wire as two mailboxes (the SMTP list
+// separator is `,`), smuggling the attacker's address into the To header.
+// These tests pin the closed gap.
+
+// addrSetters returns one closure per fluent setter so the same matrix
+// of attack inputs can be applied to every code path without duplication.
+func addrSetters() map[string]func(*Message, string) *Message {
+	return map[string]func(*Message, string) *Message{
+		"From":    func(m *Message, s string) *Message { return m.From(s) },
+		"To":      func(m *Message, s string) *Message { return m.To(s) },
+		"CC":      func(m *Message, s string) *Message { return m.CC(s) },
+		"BCC":     func(m *Message, s string) *Message { return m.BCC(s) },
+		"ReplyTo": func(m *Message, s string) *Message { return m.ReplyTo(s) },
+	}
+}
+
+func TestAddressSetters_RejectListSeparators(t *testing.T) {
+	cases := []struct {
+		name  string
+		email string
+	}{
+		{"comma_list", "victim@example.com, attacker@evil.com"},
+		{"semicolon_list", "victim@example.com; attacker@evil.com"},
+		{"comma_no_space", "victim@example.com,attacker@evil.com"},
+		{"angle_bracketed", "<victim@example.com>"},
+		{"trailing_angle", "victim@example.com>"},
+		{"display_name_form", "Display Name <victim@example.com>"},
+		{"quoted_phrase_form", `"Bob" <bob@example.com>`},
+	}
+	for _, tc := range cases {
+		for setter, fn := range addrSetters() {
+			t.Run(setter+"/"+tc.name, func(t *testing.T) {
+				msg := fn(NewMessage(), tc.email)
+				if !errors.Is(msg.Err(), ErrInvalidEmailAddress) {
+					t.Fatalf("%s(%q) must reject with ErrInvalidEmailAddress, got %v",
+						setter, tc.email, msg.Err())
+				}
+				if got := storedCount(msg, setter); got != 0 {
+					t.Errorf("rejected %s(%q) must not be appended, got %d entries",
+						setter, tc.email, got)
+				}
+			})
+		}
+	}
+}
+
+func TestAddressSetters_RejectCRLF(t *testing.T) {
+	// CR/LF rejection is covered for display names already; this matrix
+	// pins the email-side rejection so a regression cannot reopen the
+	// header-split surface from the email parameter.
+	cases := []string{
+		"victim@example.com\nBcc: leak@evil.com",
+		"victim@example.com\r",
+		"victim@example.com\r\nX-Injected: 1",
+		"victim@example.com\x00",
+	}
+	for _, email := range cases {
+		for setter, fn := range addrSetters() {
+			t.Run(setter+"/"+email, func(t *testing.T) {
+				msg := fn(NewMessage(), email)
+				if msg.Err() == nil {
+					t.Fatalf("%s(%q) must be rejected", setter, email)
+				}
+				// CRLF is caught by ErrInvalidHeader (it runs first);
+				// the remaining cases fall through to ErrInvalidEmailAddress.
+				if !errors.Is(msg.Err(), ErrInvalidHeader) && !errors.Is(msg.Err(), ErrInvalidEmailAddress) {
+					t.Errorf("%s(%q): want ErrInvalidHeader or ErrInvalidEmailAddress, got %v",
+						setter, email, msg.Err())
+				}
+			})
+		}
+	}
+}
+
+func TestAddressSetters_RejectMalformedEmail(t *testing.T) {
+	cases := []struct {
+		name  string
+		email string
+	}{
+		{"empty", ""},
+		{"no_at", "not-an-email"},
+		{"only_at", "@example.com"},
+		{"trailing_at", "user@"},
+	}
+	for _, tc := range cases {
+		for setter, fn := range addrSetters() {
+			t.Run(setter+"/"+tc.name, func(t *testing.T) {
+				msg := fn(NewMessage(), tc.email)
+				if !errors.Is(msg.Err(), ErrInvalidEmailAddress) {
+					t.Fatalf("%s(%q) must reject with ErrInvalidEmailAddress, got %v",
+						setter, tc.email, msg.Err())
+				}
+			})
+		}
+	}
+}
+
+func TestAddressSetters_AcceptValidAddrSpec(t *testing.T) {
+	cases := []string{
+		"victim@example.com",
+		"a@b.c",
+		"user+tag@example.com",
+		"user.name@example.com",
+		`"quoted local"@example.com`,
+	}
+	for _, email := range cases {
+		for setter, fn := range addrSetters() {
+			t.Run(setter+"/"+email, func(t *testing.T) {
+				msg := fn(NewMessage(), email)
+				if msg.Err() != nil {
+					t.Fatalf("%s(%q) must be accepted, got err=%v",
+						setter, email, msg.Err())
+				}
+				if got := storedCount(msg, setter); got != 1 {
+					t.Errorf("%s(%q) expected 1 stored entry, got %d",
+						setter, email, got)
+				}
+			})
+		}
+	}
+}
+
+// storedCount returns 1 if the setter-specific field on msg holds an
+// address (after a successful set) and 0 if it is empty (rejected).
+func storedCount(m *Message, setter string) int {
+	switch setter {
+	case "From":
+		if m.GetFrom().Email != "" {
+			return 1
+		}
+		return 0
+	case "To":
+		return len(m.GetTo())
+	case "CC":
+		return len(m.GetCC())
+	case "BCC":
+		return len(m.GetBCC())
+	case "ReplyTo":
+		return len(m.GetReplyTo())
+	}
+	return 0
+}
+
+// TestAddress_StringQuotesUnsafeAddrSpec exercises the defence-in-depth
+// path in Address.String(): when an Address is constructed via a
+// struct literal (bypassing the validated setters, as
+// notification/notification.go does) and the Email contains a
+// list-separator or angle bracket, String() must wrap it in angle
+// brackets via net/mail so it cannot split a structured header line.
+func TestAddress_StringQuotesUnsafeAddrSpec(t *testing.T) {
+	cases := []struct {
+		name string
+		in   Address
+		bad  string // substring that must NOT appear unwrapped in the output
+	}{
+		{
+			name: "comma_in_email",
+			in:   Address{Email: "victim@example.com, attacker@evil.com"},
+			bad:  "victim@example.com, attacker@evil.com",
+		},
+		{
+			name: "semicolon_in_email",
+			in:   Address{Email: "victim@example.com; attacker@evil.com"},
+			bad:  "victim@example.com; attacker@evil.com",
+		},
+		{
+			name: "angle_in_email",
+			in:   Address{Email: "victim@example.com>"},
+			bad:  "victim@example.com>",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.in.String()
+			// Result must wrap the addr-spec in angle brackets so that
+			// list separators inside it cannot terminate the mailbox in
+			// a structured header. The raw unwrapped form must not be
+			// returned.
+			if !strings.HasPrefix(got, "<") {
+				t.Errorf("unsafe addr-spec must serialise wrapped in <...>, got %q", got)
+			}
+			if got == tc.bad {
+				t.Errorf("unsafe addr-spec leaked raw: %q", got)
+			}
+		})
+	}
+}
+
+// TestAddress_StringBareAddrSpecForSafeEmail pins the backward-compatible
+// branch: when the Email is a clean single addr-spec and the Name is
+// empty, String() returns the bare addr-spec (no angle brackets), which
+// is the log format consumers depend on.
+func TestAddress_StringBareAddrSpecForSafeEmail(t *testing.T) {
+	got := Address{Email: "ok@example.com"}.String()
+	if got != "ok@example.com" {
+		t.Errorf("safe bare email should round-trip raw, got %q", got)
+	}
+}

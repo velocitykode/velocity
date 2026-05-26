@@ -33,4 +33,22 @@ var (
 	// RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS and on other platforms uses the
 	// strongest equivalent the runtime can provide.
 	ErrAttachmentPathOutsideRoot = errors.New("velocity/mail: attachment path escapes attachment root")
+
+	// ErrInvalidEmailAddress is returned by the address setters (From/To/
+	// Cc/Bcc/ReplyTo) when the email parameter is not a single RFC 5322
+	// addr-spec. The setters reject:
+	//
+	//   - comma- or semicolon-separated lists (the SMTP list separator
+	//     would split the rendered header into multiple mailboxes, with
+	//     an attacker's address smuggled in alongside the legitimate
+	//     recipient),
+	//   - display-name forms like "Bob <bob@x>" passed in the email
+	//     parameter (display names must come via the Name argument, so
+	//     the setter can validate them separately),
+	//   - inputs that net/mail.ParseAddress cannot resolve to exactly
+	//     one mailbox,
+	//   - inputs containing the address-grammar specials <>,; even when
+	//     ParseAddress happens to swallow them (defence in depth
+	//     against parser ambiguity).
+	ErrInvalidEmailAddress = errors.New("velocity/mail: invalid email address")
 )

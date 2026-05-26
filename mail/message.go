@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"io"
 	"mime"
+	netmail "net/mail"
 	"os"
 	"path/filepath"
 	"strings"
@@ -559,20 +560,32 @@ func validateHeaderValue(field, value string) error {
 }
 
 // validateAddressField validates the email and display-name components of a
-// structured address setter (From/To/Cc/Bcc/ReplyTo). Either side containing
-// CR/LF/NUL/etc. is rejected, since both are ultimately serialised into a
-// header line by every driver. In addition, the display-name is rejected if
-// it contains any RFC 5322 address-grammar special (`<>,;:"\()`): even
-// when downstream serialisers RFC 2047/5322 quote, allowing these characters
-// invites confusion and recipient-impersonation payloads such as
+// structured address setter (From/To/Cc/Bcc/ReplyTo).
 //
-//	Bob" <attacker@evil.com>, "Real
+// The email must parse as exactly one RFC 5322 addr-spec via
+// net/mail.ParseAddress, with no embedded display name and no
+// list-separator (`,;`) or angle-bracket characters anywhere in the input.
+// This closes a header-split primitive that the CR/LF and display-name
+// checks alone missed:
 //
-// being passed by callers that bypass quoting (logs, third-party gateways).
-// Display names that need such characters should be redesigned to avoid
-// them; legitimate Unicode display names are unaffected.
+//	To("victim@example.com, attacker@evil.com")
+//
+// had no CR/LF, no display name, and serialised on the wire as
+// `To: victim@example.com, attacker@evil.com`, two mailboxes, the
+// attacker's smuggled in alongside the victim.
+//
+// The display name is independently rejected if it contains CR/LF/NUL
+// or any RFC 5322 address-grammar special (`<>,;:"\()`); even when
+// downstream serialisers apply RFC 2047/5322 quoting, allowing these
+// characters invites recipient-impersonation payloads such as
+// `Bob" <attacker@evil.com>, "Real` slipping into logs or third-party
+// gateways that bypass quoting. Legitimate Unicode display names are
+// unaffected.
 func validateAddressField(field, email, name string) error {
 	if err := validateHeaderValue(field+" address", email); err != nil {
+		return err
+	}
+	if err := validateSingleAddrSpec(field, email); err != nil {
 		return err
 	}
 	if name != "" {
@@ -583,6 +596,37 @@ func validateAddressField(field, email, name string) error {
 			return fmt.Errorf("%w: %s name contains address-grammar special %q",
 				ErrInvalidHeader, field, name[i])
 		}
+	}
+	return nil
+}
+
+// validateSingleAddrSpec parses email via net/mail and rejects anything
+// that is not a single bare addr-spec. Callers that want a display name
+// must pass it via the Name argument of the setter so it can be validated
+// separately; smuggling a display-name form ("Bob <bob@x>") through the
+// email parameter is refused. List separators (`,;`) and angle brackets
+// are refused outright as a belt-and-braces measure against parser
+// ambiguity, before ParseAddress would have an opinion.
+func validateSingleAddrSpec(field, email string) error {
+	// Reject list-separator and angle-bracket characters before parsing.
+	// ParseAddress also rejects most of these, but doing it here gives
+	// callers a single, consistent error and closes the corner case
+	// "<addr@x>" which ParseAddress accepts with an empty Name.
+	if i := strings.IndexAny(email, ",;<>"); i >= 0 {
+		return fmt.Errorf("%w: %s address contains forbidden character %q",
+			ErrInvalidEmailAddress, field, email[i])
+	}
+	parsed, err := netmail.ParseAddress(email)
+	if err != nil {
+		return fmt.Errorf("%w: %s address %q: %v",
+			ErrInvalidEmailAddress, field, email, err)
+	}
+	// A non-empty Name means the caller passed "Display <addr>" through
+	// the email parameter. Display names must come via the Name argument
+	// so they get the dedicated grammar-specials check above.
+	if parsed.Name != "" {
+		return fmt.Errorf("%w: %s address %q includes a display name; pass it via the name argument",
+			ErrInvalidEmailAddress, field, email)
 	}
 	return nil
 }
