@@ -3,6 +3,7 @@ package guards
 import (
 	"bufio"
 	"context"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -370,3 +371,110 @@ var errNoCookie = errSentinel("response carries no vel_session Set-Cookie")
 type errSentinel string
 
 func (e errSentinel) Error() string { return string(e) }
+
+// TestSessionMiddleware_Integration_FlushFlushesCookie is the F4
+// regression test. A handler that mutates the session and then calls
+// Flush() (the SSE / streaming pattern) MUST deliver Set-Cookie ahead
+// of the flushed body. Go's net/http chunkWriter commits the status
+// line + headers on the first Flush call, so without the pre-commit
+// hook on responseWriter.Flush the Set-Cookie ends up on the wire AFTER
+// the headers have already been emitted and is silently dropped.
+//
+// We drive the handler against a real httptest.NewServer so Go's
+// production response writer is exercised (httptest.ResponseRecorder
+// accepts late header writes and would mask the bug).
+func TestSessionMiddleware_Integration_FlushFlushesCookie(t *testing.T) {
+	guard := newRealCookieGuard(t)
+	r := newRouterWithSessionMiddleware(t, guard, func(c *router.Context) error {
+		// Mutate the session BEFORE any write.
+		s := guard.getSession(c.Request)
+		s.Put("sse-user", "u-sse")
+
+		// SSE-style setup: set headers, then write an event frame and
+		// Flush. The Flush is the moment Go commits headers; the
+		// pre-commit hook MUST fire here so Set-Cookie lands in the
+		// same header block.
+		c.Response.Header().Set("Content-Type", "text/event-stream")
+		c.Response.Header().Set("Cache-Control", "no-cache")
+		c.Response.Header().Set("X-Accel-Buffering", "no")
+
+		if _, err := c.Response.Write([]byte("event: hello\ndata: {\"k\":\"v\"}\n\n")); err != nil {
+			return err
+		}
+		flusher, ok := c.Response.(http.Flusher)
+		if !ok {
+			t.Errorf("c.Response does not implement http.Flusher; cannot exercise F4")
+			return nil
+		}
+		flusher.Flush()
+		return nil
+	})
+
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d; want 200", resp.StatusCode)
+	}
+	cookie, ok := hasSessionCookie(resp, "vel_session")
+	if !ok {
+		t.Fatalf("SSE response carries no vel_session Set-Cookie; Flush() did not fire pre-commit hook")
+	}
+	if cookie.Value == "" {
+		t.Fatalf("Set-Cookie carried empty value; expected encrypted payload")
+	}
+
+	// Belt-and-braces: also assert the SSE payload made it to the
+	// wire so the test proves BOTH paths (the dirty-session save AND
+	// the body the handler intended to emit) survived the flush.
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if !strings.Contains(string(body), "event: hello") {
+		t.Fatalf("SSE payload not delivered; body=%q", string(body))
+	}
+}
+
+// TestSessionMiddleware_Integration_BareFlushBeforeWriteFiresHook
+// pins the corner case: a handler that calls Flush() BEFORE writing any
+// body (e.g. to flush early headers for slow-handler keepalive) still
+// commits Set-Cookie through the pre-commit hook. Without F4, the bare
+// Flush would commit empty headers without firing the hook and the
+// downstream Write/return would write into already-committed headers.
+func TestSessionMiddleware_Integration_BareFlushBeforeWriteFiresHook(t *testing.T) {
+	guard := newRealCookieGuard(t)
+	r := newRouterWithSessionMiddleware(t, guard, func(c *router.Context) error {
+		s := guard.getSession(c.Request)
+		s.Put("bare-flush", "yes")
+
+		// Bare Flush before any Write. Go commits status line + headers
+		// here. Pre-commit hook must fire.
+		if f, ok := c.Response.(http.Flusher); ok {
+			f.Flush()
+		}
+		// Continuing the response is fine; headers are already
+		// committed, but Set-Cookie should already be in them.
+		_, _ = c.Response.Write([]byte("ok"))
+		return nil
+	})
+
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if _, ok := hasSessionCookie(resp, "vel_session"); !ok {
+		t.Fatalf("bare-Flush handler did not emit vel_session Set-Cookie; F4 hook did not fire on Flush()")
+	}
+}

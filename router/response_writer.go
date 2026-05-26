@@ -118,14 +118,40 @@ func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return nil, nil, http.ErrNotSupported
 }
 
-// Flush implements http.Flusher for streaming support
+// Flush implements http.Flusher for streaming support.
+// Fires the BeforeFirstWrite hook before delegating because Go's
+// http.ResponseWriter commits response headers on the first Flush call
+// (chunkWriter writes the status line + headers before the buffered
+// body bytes hit the wire). A handler that calls c.Response.(http.Flusher).
+// Flush() before any explicit WriteHeader / Write would otherwise leak
+// past the hook and the save-at-end middleware's Set-Cookie would be
+// emitted into already-committed headers.
+//
+// Marks wroteHeader so a subsequent Write does not trigger a second
+// implicit WriteHeader on the inner ResponseWriter (which would log
+// "superfluous response.WriteHeader call"). The wrapper's status field
+// stays at its default http.StatusOK because that is what Go's inner
+// flush emits implicitly.
+//
+// Idempotent via the sync.Once gate inside fireBeforeFirstWrite, so
+// repeated Flush calls during a long stream (SSE keepalive ticks) only
+// fire the hook on the first call.
 func (rw *responseWriter) Flush() {
 	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		rw.fireBeforeFirstWrite()
+		rw.wroteHeader = true
 		f.Flush()
 	}
 }
 
-// Push implements http.Pusher for HTTP/2 server push
+// Push implements http.Pusher for HTTP/2 server push.
+//
+// Per the http.Pusher contract, Push initiates a separate server-push
+// stream (a synthesized GET on the target) carried on its own HTTP/2
+// stream; it does NOT commit headers on the main response. The pre-commit
+// hook does not fire here: a save-at-end Set-Cookie still needs to wait
+// for the main response's first WriteHeader/Write so the cookie lands on
+// the response the client requested, not the pushed asset.
 func (rw *responseWriter) Push(target string, opts *http.PushOptions) error {
 	if p, ok := rw.ResponseWriter.(http.Pusher); ok {
 		return p.Push(target, opts)
