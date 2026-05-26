@@ -122,6 +122,15 @@ type VelocityRouterV2 struct {
 
 	// validateFn is wired during app init to run validation with DB support.
 	validateFn func(c *Context, rules map[string][]string, messages ...map[string]string) error
+
+	// signedURLKey holds the HKDF-derived HMAC subkey used by
+	// SignedURL / ValidateSignature. Populated by SetSignedURLKey
+	// during velocity.New() after APP_KEY is loaded; nil when the
+	// framework was constructed without an APP_KEY (testing /
+	// pre-key-generate development). The slot is mutex-guarded so a
+	// future runtime rotation does not race against in-flight
+	// signature verifications.
+	signedURLKey signedURLKey
 }
 
 // NewV2 creates a new tree-based router instance

@@ -513,6 +513,23 @@ func New(opts ...Option) (*App, error) {
 	// router falls back to the process CWD at request time, preserving
 	// legacy behaviour for callers that have not opted in.
 	a.Router.SetFileRoot(a.config.FileRoot)
+	// Derive the signed-URL HMAC subkey from APP_KEY so router.SignedURL /
+	// router.ValidateSignature work without leaking the master key into
+	// every Context. HKDF separates this subsystem from the queue signing
+	// key, the maintenance-bypass MAC, and cookie encryption: a forged
+	// signature on one subkey grants nothing on the others. When APP_KEY
+	// is unset (testing / pre-key-generate development), the router slot
+	// stays nil and SignedURL / ValidateSignature return
+	// ErrSignedURLKeyMissing instead of silently signing with a default
+	// (rule 2: no hardcoded fallback secrets).
+	if a.config.Key != "" {
+		signedKey, err := router.DeriveSignedURLKey([]byte(a.config.Key))
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("velocity: failed to derive signed URL key: %w", err)
+		}
+		a.Router.SetSignedURLKey(signedKey)
+	}
 	a.Router.SetValidator(func(c *router.Context, rules map[string][]string, messages ...map[string]string) error {
 		// rules is the canonical Rules slice form; pass through directly.
 		var msgs []validation.Messages
