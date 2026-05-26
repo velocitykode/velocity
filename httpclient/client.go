@@ -1,5 +1,13 @@
 // Package httpclient provides an instrumented HTTP client for APM monitoring.
-// It wraps the standard http.Client and dispatches events for outgoing requests.
+// It wraps the standard http.Client and dispatches events for outgoing
+// requests.
+//
+// Defaults are secure: TLS 1.2 minimum, capped redirect chain (sensitive
+// headers stripped on cross-origin hops), and an SSRF dial guard that
+// refuses connections to loopback, RFC1918, link-local, CGNAT, and
+// cloud-metadata IPs (IPv4 and IPv6). Pair with [WithAllowedHosts] to
+// whitelist specific internal services, or [WithoutPrivateIPDeny] to
+// disable the guard entirely for tests or trusted callers.
 package httpclient
 
 import (
@@ -100,9 +108,23 @@ func WithMaxRedirects(n int) Option {
 // WithPrivateIPDeny installs a DialContext that refuses to connect to
 // addresses in private, loopback, link-local, CGNAT, or cloud-metadata
 // ranges. Combines with WithAllowedHosts for a per-client allowlist.
+//
+// The deny is on by default; this option is kept for callers that toggle
+// it explicitly or that previously disabled it via [WithoutPrivateIPDeny].
 func WithPrivateIPDeny() Option {
 	return func(c *Client) {
 		c.denyPrivateIPs = true
+	}
+}
+
+// WithoutPrivateIPDeny disables the default SSRF dial guard, allowing
+// connections to loopback, RFC1918, link-local, CGNAT, and cloud-metadata
+// addresses. Use only for tests or for callers that intentionally reach
+// internal services and accept the risk. Prefer [WithAllowedHosts] for a
+// targeted exception.
+func WithoutPrivateIPDeny() Option {
+	return func(c *Client) {
+		c.denyPrivateIPs = false
 	}
 }
 
@@ -122,13 +144,16 @@ func WithAllowedHosts(hosts ...string) Option {
 
 // New creates a new instrumented HTTP client with secure defaults:
 // TLS >= 1.2, capped redirect chain, sensitive headers stripped on
-// cross-host redirects. Add WithPrivateIPDeny for full SSRF hardening.
+// cross-host redirects, and the SSRF dial guard ([WithPrivateIPDeny])
+// enabled. Use [WithAllowedHosts] to whitelist specific internal hosts,
+// or [WithoutPrivateIPDeny] to disable the guard entirely (tests only).
 func New(opts ...Option) *Client {
 	c := &Client{
-		client:        &http.Client{Timeout: 30 * time.Second},
-		minTLSVersion: tls.VersionTLS12,
-		maxRedirects:  defaultMaxRedirects,
-		resolver:      net.DefaultResolver,
+		client:         &http.Client{Timeout: 30 * time.Second},
+		minTLSVersion:  tls.VersionTLS12,
+		maxRedirects:   defaultMaxRedirects,
+		denyPrivateIPs: true,
+		resolver:       net.DefaultResolver,
 	}
 
 	for _, opt := range opts {

@@ -50,7 +50,7 @@ func TestClientDo(t *testing.T) {
 	var failedEvents []*RequestFailed
 	var mu sync.Mutex
 
-	client := New()
+	client := New(WithoutPrivateIPDeny())
 	client.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		mu.Lock()
 		defer mu.Unlock()
@@ -110,7 +110,7 @@ func TestClientDo(t *testing.T) {
 		failedEvents = nil
 		mu.Unlock()
 
-		failClient := New(WithTimeout(100 * time.Millisecond))
+		failClient := New(WithTimeout(100*time.Millisecond), WithoutPrivateIPDeny())
 		failClient.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 			mu.Lock()
 			defer mu.Unlock()
@@ -152,7 +152,7 @@ func TestClientGet(t *testing.T) {
 	var sentEvents []*RequestSent
 	var mu sync.Mutex
 
-	client := New()
+	client := New(WithoutPrivateIPDeny())
 	client.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		mu.Lock()
 		defer mu.Unlock()
@@ -192,7 +192,7 @@ func TestClientPost(t *testing.T) {
 	var sentEvents []*RequestSent
 	var mu sync.Mutex
 
-	client := New()
+	client := New(WithoutPrivateIPDeny())
 	client.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		mu.Lock()
 		defer mu.Unlock()
@@ -242,7 +242,7 @@ func TestClientPut(t *testing.T) {
 	var sentEvents []*RequestSent
 	var mu sync.Mutex
 
-	client := New()
+	client := New(WithoutPrivateIPDeny())
 	client.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		mu.Lock()
 		defer mu.Unlock()
@@ -282,7 +282,7 @@ func TestClientDelete(t *testing.T) {
 	var sentEvents []*RequestSent
 	var mu sync.Mutex
 
-	client := New()
+	client := New(WithoutPrivateIPDeny())
 	client.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		mu.Lock()
 		defer mu.Unlock()
@@ -325,7 +325,7 @@ func TestClientPatch(t *testing.T) {
 	var sentEvents []*RequestSent
 	var mu sync.Mutex
 
-	client := New()
+	client := New(WithoutPrivateIPDeny())
 	client.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		mu.Lock()
 		defer mu.Unlock()
@@ -396,7 +396,7 @@ func TestResolveURL(t *testing.T) {
 }
 
 func TestClientMethods(t *testing.T) {
-	client := New()
+	client := New(WithoutPrivateIPDeny())
 	client.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		return nil
 	})

@@ -132,7 +132,7 @@ func TestRedirect_CapsAtMax(t *testing.T) {
 }
 
 func TestRedirect_ZeroDisablesFollowing(t *testing.T) {
-	c := New(WithMaxRedirects(0))
+	c := New(WithMaxRedirects(0), WithoutPrivateIPDeny())
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "http://example.com/", http.StatusFound)
 	}))
@@ -207,5 +207,92 @@ func TestSameRedirectOrigin_DowngradeHTTPSToHTTP(t *testing.T) {
 	httpURL, _ := url.Parse("http://example.com/")
 	if sameRedirectOrigin(https, httpURL) {
 		t.Error("https→http must be treated as cross-origin")
+	}
+}
+
+func TestPrivateIPDeny_OnByDefault(t *testing.T) {
+	// Constructed with no options: the deny must be active and the
+	// loopback test backend unreachable. This is the inverted default.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("loopback backend must not be reached when guard is on by default")
+	}))
+	defer backend.Close()
+
+	c := New()
+	_, err := c.Get(context.Background(), backend.URL)
+	if err == nil {
+		t.Fatal("expected default-on private-IP deny to block 127.0.0.1")
+	}
+	if !errors.Is(err, errPrivateIP) {
+		t.Errorf("expected errPrivateIP, got %v", err)
+	}
+}
+
+func TestPrivateIPDeny_RFC1918_Blocked(t *testing.T) {
+	// Address-level deny must block RFC1918 ranges even without a live
+	// listener; the dial is refused before a TCP connection is made.
+	c := New()
+	for _, addr := range []string{
+		"http://10.0.0.1/",
+		"http://192.168.0.1/",
+		"http://172.16.0.1/",
+	} {
+		_, err := c.Get(context.Background(), addr)
+		if err == nil {
+			t.Errorf("%s: expected deny, got nil error", addr)
+			continue
+		}
+		if !errors.Is(err, errPrivateIP) {
+			t.Errorf("%s: expected errPrivateIP, got %v", addr, err)
+		}
+	}
+}
+
+func TestPrivateIPDeny_LinkLocalAndCloudMetadata_Blocked(t *testing.T) {
+	c := New()
+	for _, addr := range []string{
+		"http://169.254.1.1/",
+		"http://169.254.169.254/latest/meta-data/",
+		"http://[fe80::1]/",
+	} {
+		_, err := c.Get(context.Background(), addr)
+		if err == nil {
+			t.Errorf("%s: expected deny, got nil error", addr)
+			continue
+		}
+		if !errors.Is(err, errPrivateIP) {
+			t.Errorf("%s: expected errPrivateIP, got %v", addr, err)
+		}
+	}
+}
+
+func TestPrivateIPDeny_IPv6ULA_Blocked(t *testing.T) {
+	// fc00::/7 is unique local addresses (RFC 4193).
+	c := New()
+	_, err := c.Get(context.Background(), "http://[fc00::1]/")
+	if err == nil {
+		t.Fatal("expected deny on fc00::/7")
+	}
+	if !errors.Is(err, errPrivateIP) {
+		t.Errorf("expected errPrivateIP, got %v", err)
+	}
+}
+
+func TestWithoutPrivateIPDeny_ReachesLoopback(t *testing.T) {
+	// Explicit escape hatch must restore connectivity to a local
+	// httptest server.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	c := New(WithoutPrivateIPDeny())
+	resp, err := c.Get(context.Background(), backend.URL)
+	if err != nil {
+		t.Fatalf("WithoutPrivateIPDeny must allow loopback: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
 }
