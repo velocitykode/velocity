@@ -77,7 +77,19 @@ var imageMimePrefixes = []string{
 // Each value is a list of prefixes; a sniffed type matches if it starts
 // with one of the listed prefixes. Trailing parameters such as
 // "; charset=utf-8" are therefore accepted.
+//
+// Some legitimate formats do not have a magic-byte signature that Go's
+// http.DetectContentType recognises (tar, 7z, legacy MS Office, many MP4
+// variants, ...). For those extensions we accept application/octet-stream
+// as a fallback, leaning on the blockedExecutableExts list and the
+// filename allowlist for safety. This is a deliberate trade-off
+// documented per-row below.
+//
+// OOXML formats (docx, xlsx, pptx, odt, ods, odp, jar) are ZIP
+// containers and sniff as application/zip. They are accepted as zip;
+// the extension cross-check is what distinguishes them.
 var extMimeAllowlist = map[string][]string{
+	// Images.
 	"jpg":  {"image/jpeg"},
 	"jpeg": {"image/jpeg"},
 	"png":  {"image/png"},
@@ -87,22 +99,71 @@ var extMimeAllowlist = map[string][]string{
 	"heic": {"image/heic", "image/heif"},
 	"heif": {"image/heif", "image/heic"},
 	"avif": {"image/avif"},
-	"pdf":  {"application/pdf"},
-	"txt":  {"text/plain"},
-	"csv":  {"text/csv", "text/plain"},
+	"svg":  {"text/xml", "image/svg+xml", "text/plain"},
+	"ico":  {"image/x-icon", "image/vnd.microsoft.icon", "application/octet-stream"},
+	"tif":  {"image/tiff", "application/octet-stream"},
+	"tiff": {"image/tiff", "application/octet-stream"},
+
+	// Documents.
+	"pdf": {"application/pdf"},
+	"rtf": {"text/rtf", "application/rtf", "text/plain"},
+	"txt": {"text/plain"},
+	"csv": {"text/csv", "text/plain"},
+	"tsv": {"text/tab-separated-values", "text/plain"},
+	"md":  {"text/plain", "text/markdown"},
+
+	// Web formats.
 	"html": {"text/html"},
 	"htm":  {"text/html"},
 	"json": {"application/json", "text/plain"},
 	"xml":  {"text/xml", "application/xml", "text/plain"},
-	"zip":  {"application/zip", "application/x-zip-compressed"},
-	"gz":   {"application/x-gzip", "application/gzip"},
-	"tar":  {"application/x-tar"},
+	"yaml": {"text/plain", "application/yaml", "text/yaml"},
+	"yml":  {"text/plain", "application/yaml", "text/yaml"},
+
+	// OOXML / OpenDocument / Java archives (all ZIP containers; Go
+	// sniffs them as application/zip and the cross-check is the
+	// extension allowlist).
+	"docx": {"application/zip", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+	"xlsx": {"application/zip", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+	"pptx": {"application/zip", "application/vnd.openxmlformats-officedocument.presentationml.presentation"},
+	"odt":  {"application/zip", "application/vnd.oasis.opendocument.text"},
+	"ods":  {"application/zip", "application/vnd.oasis.opendocument.spreadsheet"},
+	"odp":  {"application/zip", "application/vnd.oasis.opendocument.presentation"},
+	"jar":  {"application/zip", "application/java-archive"},
+
+	// Legacy Microsoft Office binary formats use OLE compound storage,
+	// which Go does not have a dedicated signature for. They sniff as
+	// application/octet-stream; we accept that fallback and rely on the
+	// .doc/.xls/.ppt extension plus the executable blocklist.
+	"doc": {"application/msword", "application/octet-stream"},
+	"xls": {"application/vnd.ms-excel", "application/octet-stream"},
+	"ppt": {"application/vnd.ms-powerpoint", "application/octet-stream"},
+
+	// Archives. tar and 7z lack reliable magic-byte signatures in Go's
+	// sniffer; we accept application/octet-stream alongside the
+	// canonical type.
+	"zip": {"application/zip", "application/x-zip-compressed"},
+	"gz":  {"application/x-gzip", "application/gzip"},
+	"tar": {"application/x-tar", "application/octet-stream"},
+	"rar": {"application/x-rar-compressed", "application/vnd.rar", "application/octet-stream"},
+	"7z":  {"application/x-7z-compressed", "application/octet-stream"},
+
+	// Audio / video. mp4 and some other media containers do not always
+	// sniff to the expected MIME; we accept application/octet-stream as
+	// a fallback.
 	"mp3":  {"audio/mpeg"},
-	"mp4":  {"video/mp4", "audio/mp4"},
+	"mp4":  {"video/mp4", "audio/mp4", "application/mp4", "application/octet-stream"},
+	"m4a":  {"audio/mp4", "audio/x-m4a", "application/octet-stream"},
 	"webm": {"video/webm", "audio/webm"},
 	"ogg":  {"audio/ogg", "application/ogg", "video/ogg"},
+	"oga":  {"audio/ogg", "application/ogg"},
+	"ogv":  {"video/ogg", "application/ogg"},
 	"wav":  {"audio/wave", "audio/wav", "audio/x-wav"},
-	"svg":  {"text/xml", "image/svg+xml", "text/plain"},
+	"flac": {"audio/flac", "audio/x-flac", "application/octet-stream"},
+	"aac":  {"audio/aac", "audio/x-aac", "application/octet-stream"},
+
+	// WebAssembly. Go 1.21+ recognises the \x00asm signature.
+	"wasm": {"application/wasm", "application/octet-stream"},
 }
 
 // blockedExecutableExts is the set of script-runner / executable suffixes

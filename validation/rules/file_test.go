@@ -247,6 +247,100 @@ func TestMimesRule_SVGRequiresOptIn(t *testing.T) {
 	}
 }
 
+// TestMimesRule_BusinessFormatsAccepted verifies F3: extensions in the
+// common-business set (docx, xlsx, pptx, wasm, rar, 7z, doc/xls/ppt,
+// rtf, yaml, ...) are no longer rejected as "unsupported file type".
+// Each format passes when given content whose sniffed MIME falls into
+// its accepted set. Audit ID F3.
+func TestMimesRule_BusinessFormatsAccepted(t *testing.T) {
+	// Minimal ZIP container header used by OOXML / OpenDocument / jar.
+	zipBytes := []byte{0x50, 0x4B, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x08, 0x00, 0, 0, 0, 0}
+	// WebAssembly magic + version.
+	wasmBytes := []byte{0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, 0, 0, 0, 0}
+	// RAR v5 magic.
+	rarBytes := []byte{0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01, 0x00, 0, 0, 0, 0}
+	// OLE compound document (legacy doc/xls/ppt).
+	oleBytes := []byte{0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0, 0, 0, 0}
+	// 7z magic.
+	sevenZBytes := []byte{0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0, 0, 0, 0}
+	// tar v7 header with ustar magic at offset 257.
+	tarBytes := make([]byte, 512)
+	copy(tarBytes[257:], []byte("ustar  \x00"))
+	// RTF starts with "{\rtf".
+	rtfBytes := []byte("{\\rtf1\\ansi hello}")
+	// YAML / YML sniff as text/plain.
+	yamlBytes := []byte("key: value\nlist:\n  - one\n  - two\n")
+	tsvBytes := []byte("a\tb\tc\n1\t2\t3\n")
+
+	cases := []struct {
+		name    string
+		file    fakeFile
+		params  []string
+		wantErr bool
+	}{
+		{"docx accepted as zip", fakeFile{name: "report.docx", content: zipBytes}, []string{"docx"}, false},
+		{"xlsx accepted as zip", fakeFile{name: "sheet.xlsx", content: zipBytes}, []string{"xlsx"}, false},
+		{"pptx accepted as zip", fakeFile{name: "deck.pptx", content: zipBytes}, []string{"pptx"}, false},
+		{"odt accepted as zip", fakeFile{name: "doc.odt", content: zipBytes}, []string{"odt"}, false},
+		{"jar accepted as zip", fakeFile{name: "app.jar", content: zipBytes}, []string{"jar"}, false},
+		{"wasm accepted", fakeFile{name: "mod.wasm", content: wasmBytes}, []string{"wasm"}, false},
+		{"rar accepted", fakeFile{name: "archive.rar", content: rarBytes}, []string{"rar"}, false},
+		{"7z accepted", fakeFile{name: "archive.7z", content: sevenZBytes}, []string{"7z"}, false},
+		{"tar accepted", fakeFile{name: "bundle.tar", content: tarBytes}, []string{"tar"}, false},
+		{"doc accepted (OLE)", fakeFile{name: "memo.doc", content: oleBytes}, []string{"doc"}, false},
+		{"xls accepted (OLE)", fakeFile{name: "data.xls", content: oleBytes}, []string{"xls"}, false},
+		{"ppt accepted (OLE)", fakeFile{name: "slides.ppt", content: oleBytes}, []string{"ppt"}, false},
+		{"rtf accepted", fakeFile{name: "notes.rtf", content: rtfBytes}, []string{"rtf"}, false},
+		{"yaml accepted", fakeFile{name: "config.yaml", content: yamlBytes}, []string{"yaml"}, false},
+		{"yml accepted", fakeFile{name: "config.yml", content: yamlBytes}, []string{"yml"}, false},
+		{"tsv accepted", fakeFile{name: "data.tsv", content: tsvBytes}, []string{"tsv"}, false},
+		{
+			"mixed allowlist accepts docx",
+			fakeFile{name: "report.docx", content: zipBytes},
+			[]string{"pdf", "docx", "xlsx"},
+			false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := MimesRule("upload", tc.file, tc.params, nil)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("want err=%v, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+// TestMimesRule_ExecutablesStillRefused asserts F3 did not relax the
+// executable blocklist. .exe and friends must still be refused even if
+// the caller explicitly includes them in the allowlist. Audit ID F3.
+func TestMimesRule_ExecutablesStillRefused(t *testing.T) {
+	// MZ header for a PE/COFF executable.
+	exeBytes := []byte{0x4D, 0x5A, 0x90, 0x00, 0x03, 0x00, 0x00, 0x00}
+	bashBytes := []byte("#!/bin/bash\necho hi\n")
+
+	cases := []struct {
+		name string
+		file fakeFile
+	}{
+		{"exe refused", fakeFile{name: "evil.exe", content: exeBytes}},
+		{"sh refused", fakeFile{name: "evil.sh", content: bashBytes}},
+		{"bat refused", fakeFile{name: "evil.bat", content: []byte("echo hi\n")}},
+		{"cmd refused", fakeFile{name: "evil.cmd", content: []byte("echo hi\n")}},
+		{"php refused", fakeFile{name: "evil.php", content: []byte("<?php echo 1; ?>")}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Caller asks for the suffix explicitly; rule must still
+			// refuse via the blocklist.
+			err := MimesRule("upload", tc.file, []string{"exe", "sh", "bat", "cmd", "php"}, nil)
+			if err == nil {
+				t.Fatalf("expected %s to be refused, got nil", tc.file.name)
+			}
+		})
+	}
+}
+
 // TestValidateSVG_FailsClosedAboveCap verifies F2: a padded SVG that
 // pushes the <script> tag past the 1 MiB scan cap must be refused. Under
 // the prior implementation the scanner truncated at 1 MiB, missing the
