@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -372,19 +373,29 @@ func (s *Server) handleBroadcast(message Message) {
 }
 
 // checkOrigin validates the origin of the connection.
-// If no AllowedOrigins are configured, only same-origin requests are accepted.
-// Use AllowedOrigins: []string{"*"} to explicitly allow all origins.
+// If no AllowedOrigins are configured, only same-origin requests are accepted:
+// the Origin header host (case-insensitive) must match the request Host. A
+// missing Origin header is rejected unless AllowEmptyOrigin is explicitly set.
+// Use AllowedOrigins: []string{"*"} to allow all origins.
 func (s *Server) checkOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 
-	// If no allowed origins specified, only allow same-origin
+	// If no allowed origins specified, only allow same-origin.
 	if len(s.config.AllowedOrigins) == 0 {
 		if origin == "" {
-			return true
+			// Browsers always send Origin on WS upgrades, so an empty
+			// Origin almost always means a non-browser client. Treat as
+			// untrusted unless the application opted in.
+			return s.config.AllowEmptyOrigin
 		}
-		// Compare origin to the Host header (same-origin check)
-		host := r.Host
-		return origin == "http://"+host || origin == "https://"+host
+		o, err := url.Parse(origin)
+		if err != nil || o.Host == "" {
+			return false
+		}
+		// url.Parse on an Origin like "https://example.com" populates
+		// o.Host; compare hostnames case-insensitively against r.Host
+		// (which carries the request authority for HTTP/1.1 upgrades).
+		return strings.EqualFold(o.Host, r.Host)
 	}
 
 	// Check if origin is in allowed list

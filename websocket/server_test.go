@@ -73,7 +73,7 @@ func TestHandleConnection(t *testing.T) {
 
 	// Connect to WebSocket
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
-	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL, originHeader(ts.URL))
 	if err != nil {
 		t.Fatalf("Failed to connect to WebSocket: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestMessageHandler(t *testing.T) {
 
 	// Connect
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
-	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL, originHeader(ts.URL))
 	if err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -163,14 +163,14 @@ func TestGroups(t *testing.T) {
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
 
 	// Connect client 1
-	ws1, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	ws1, _, err := websocket.DefaultDialer.Dial(wsURL, originHeader(ts.URL))
 	if err != nil {
 		t.Fatalf("Failed to connect client 1: %v", err)
 	}
 	defer ws1.Close()
 
 	// Connect client 2
-	ws2, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	ws2, _, err := websocket.DefaultDialer.Dial(wsURL, originHeader(ts.URL))
 	if err != nil {
 		t.Fatalf("Failed to connect client 2: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestBroadcast(t *testing.T) {
 	// Connect multiple clients
 	clients := make([]*websocket.Conn, 3)
 	for i := range clients {
-		ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+		ws, _, err := websocket.DefaultDialer.Dial(wsURL, originHeader(ts.URL))
 		if err != nil {
 			t.Fatalf("Failed to connect client %d: %v", i, err)
 		}
@@ -320,7 +320,7 @@ func TestHandleRaw(t *testing.T) {
 
 	// Connect to WebSocket
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
-	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL, originHeader(ts.URL))
 	if err != nil {
 		t.Fatalf("Failed to connect to WebSocket: %v", err)
 	}
@@ -385,7 +385,7 @@ func TestHandleRaw_DoesNotRegisterClient(t *testing.T) {
 	defer ts.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
-	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL, originHeader(ts.URL))
 	if err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -446,14 +446,14 @@ func TestConnectionLimit(t *testing.T) {
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
 
 	// Connect first client (should succeed)
-	ws1, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	ws1, _, err := websocket.DefaultDialer.Dial(wsURL, originHeader(ts.URL))
 	if err != nil {
 		t.Fatalf("Failed to connect client 1: %v", err)
 	}
 	defer ws1.Close()
 
 	// Connect second client (should succeed)
-	ws2, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	ws2, _, err := websocket.DefaultDialer.Dial(wsURL, originHeader(ts.URL))
 	if err != nil {
 		t.Fatalf("Failed to connect client 2: %v", err)
 	}
@@ -463,7 +463,7 @@ func TestConnectionLimit(t *testing.T) {
 	testsync.Eventually(t, func() bool { return s.GetStats().ConnectedClients == 2 }, 2*time.Second, "two clients registered before testing limit")
 
 	// Connect third client (should fail due to limit)
-	ws3, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	ws3, resp, err := websocket.DefaultDialer.Dial(wsURL, originHeader(ts.URL))
 	if err == nil {
 		ws3.Close()
 		t.Fatal("Expected connection to fail due to limit")
@@ -518,12 +518,12 @@ func TestServer_ShutdownWaitsForClientPumps(t *testing.T) {
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
 
 	// Two long-lived clients, each with a read/write pump on the server.
-	ws1, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	ws1, _, err := websocket.DefaultDialer.Dial(wsURL, originHeader(ts.URL))
 	if err != nil {
 		t.Fatalf("dial 1: %v", err)
 	}
 	defer ws1.Close()
-	ws2, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	ws2, _, err := websocket.DefaultDialer.Dial(wsURL, originHeader(ts.URL))
 	if err != nil {
 		t.Fatalf("dial 2: %v", err)
 	}
@@ -586,4 +586,83 @@ func TestServer_ShutdownRespectsCtxDeadline(t *testing.T) {
 	// Release the stuck goroutine so the test exits cleanly.
 	close(release)
 	released.Wait()
+}
+
+// TestCheckOrigin_SameOriginDefault exercises the same-origin gate that runs
+// whenever AllowedOrigins is empty. Three properties matter:
+//
+//  1. An empty Origin header is rejected by default (browsers always send
+//     Origin on WS upgrades, so a missing one signals a non-browser caller
+//     and must not be silently trusted).
+//  2. A case-mismatched Origin host is accepted (Host headers and Origin
+//     values often differ in case for IDN/punycode and ALL-CAPS environments).
+//  3. A mismatched host is rejected.
+//
+// The opt-in AllowEmptyOrigin flag flips behaviour 1 back to accept.
+func TestCheckOrigin_SameOriginDefault(t *testing.T) {
+	tests := []struct {
+		name             string
+		origin           string
+		host             string
+		allowEmptyOrigin bool
+		want             bool
+	}{
+		{
+			name:   "missing Origin header is rejected by default",
+			origin: "",
+			host:   "example.com",
+			want:   false,
+		},
+		{
+			name:             "missing Origin header is accepted when opted in",
+			origin:           "",
+			host:             "example.com",
+			allowEmptyOrigin: true,
+			want:             true,
+		},
+		{
+			name:   "case-mismatched Origin host accepted",
+			origin: "https://Example.COM",
+			host:   "example.com",
+			want:   true,
+		},
+		{
+			name:   "matching origin accepted",
+			origin: "https://example.com",
+			host:   "example.com",
+			want:   true,
+		},
+		{
+			name:   "mismatched host rejected",
+			origin: "https://attacker.example.net",
+			host:   "example.com",
+			want:   false,
+		},
+		{
+			name:   "malformed Origin rejected",
+			origin: "::::not-a-url",
+			host:   "example.com",
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := DefaultConfig()
+			config.AllowedOrigins = nil // same-origin only
+			config.AllowEmptyOrigin = tt.allowEmptyOrigin
+			s := New(config)
+
+			req := httptest.NewRequest(http.MethodGet, "http://"+tt.host+"/ws", nil)
+			req.Host = tt.host
+			if tt.origin != "" {
+				req.Header.Set("Origin", tt.origin)
+			}
+
+			got := s.checkOrigin(req)
+			if got != tt.want {
+				t.Errorf("checkOrigin(origin=%q host=%q allowEmpty=%v) = %v, want %v", tt.origin, tt.host, tt.allowEmptyOrigin, got, tt.want)
+			}
+		})
+	}
 }

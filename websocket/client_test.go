@@ -24,7 +24,7 @@ func TestClientConnection(t *testing.T) {
 	defer ts.Close()
 
 	wsURL := strings.Replace(ts.URL, "http", "ws", 1)
-	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL, originHeader(ts.URL))
 	if err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestClientDisconnection(t *testing.T) {
 	defer ts.Close()
 
 	wsURL := strings.Replace(ts.URL, "http", "ws", 1)
-	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL, originHeader(ts.URL))
 	if err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestClientSendJSON(t *testing.T) {
 	defer ts.Close()
 
 	wsURL := strings.Replace(ts.URL, "http", "ws", 1)
-	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL, originHeader(ts.URL))
 	if err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestConcurrentClientMessages(t *testing.T) {
 	defer ts.Close()
 
 	wsURL := strings.Replace(ts.URL, "http", "ws", 1)
-	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL, originHeader(ts.URL))
 	if err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -177,13 +177,13 @@ func TestClientIDGeneration(t *testing.T) {
 	wsURL := strings.Replace(ts.URL, "http", "ws", 1)
 
 	// Connect two clients and get their IDs
-	ws1, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	ws1, _, err := websocket.DefaultDialer.Dial(wsURL, originHeader(ts.URL))
 	if err != nil {
 		t.Fatalf("Failed to connect client 1: %v", err)
 	}
 	defer ws1.Close()
 
-	ws2, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	ws2, _, err := websocket.DefaultDialer.Dial(wsURL, originHeader(ts.URL))
 	if err != nil {
 		t.Fatalf("Failed to connect client 2: %v", err)
 	}

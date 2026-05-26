@@ -43,6 +43,13 @@ type Config struct {
 	MessageRateLimit int                         // Max messages per second per client (0 = unlimited)
 	MessageBurstSize int                         // Max burst before rate limiting disconnects the client
 	AuthFunc         func(r *http.Request) error // Pre-upgrade authentication; return non-nil to reject
+
+	// AllowEmptyOrigin opts in to accepting upgrade requests that arrive with
+	// no Origin header. Browsers always send Origin on WebSocket upgrades, so
+	// missing Origin only happens with non-browser clients (curl, custom Go
+	// or Python clients). The secure default is to reject such requests; set
+	// to true only for trusted non-browser integrations.
+	AllowEmptyOrigin bool
 }
 
 // Stats holds server statistics
