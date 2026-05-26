@@ -4,11 +4,20 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 )
+
+// ErrCannotFlushUnprefixed is returned by RedisStore.Flush when the store
+// was configured with an empty prefix. SCAN with pattern "*" iterates the
+// entire Redis database and DEL deletes every key returned, which on a
+// shared Redis instance wipes every other application's data. Operators
+// who genuinely want this behaviour must opt in via FlushAllUnsafe.
+var ErrCannotFlushUnprefixed = errors.New("velocity/cache: refusing to Flush a Redis store with empty prefix (would wipe entire DB); set Prefix or call FlushAllUnsafe")
 
 // RedisStore implements a Redis-based cache store
 type RedisStore struct {
@@ -55,6 +64,16 @@ func NewRedisStore(ctx context.Context, prefix string, host string, port int, pa
 	if err := client.Ping(ctx).Err(); err != nil {
 		_ = client.Close()
 		return nil, fmt.Errorf("velocity/cache: failed to connect to redis: %w", err)
+	}
+
+	// An empty prefix on Redis is dangerous: Flush would SCAN/DEL every
+	// key in the database, including keys owned by other applications
+	// sharing the same Redis instance. Warn loudly at startup so the
+	// operator notices before they ever call Flush in production.
+	if prefix == "" {
+		slog.Default().Warn(
+			"velocity/cache: redis store configured with empty prefix; Flush is disabled until a prefix is set (see ErrCannotFlushUnprefixed). Set CACHE_PREFIX or per-store Prefix.",
+		)
 	}
 
 	return &RedisStore{
@@ -178,14 +197,43 @@ func (s *RedisStore) Forget(key string) error {
 	return s.ForgetCtx(context.Background(), key)
 }
 
-// FlushCtx removes all cache keys matching the configured prefix using the provided context.
-// Uses SCAN + DEL to avoid destroying the entire Redis database.
+// FlushCtx removes all cache keys matching the configured prefix using the
+// provided context. Refuses to operate when the prefix is empty -- a SCAN
+// pattern of "*" would iterate every key in the Redis database and the
+// subsequent DEL would wipe data owned by every other application sharing
+// the instance. Callers that genuinely want that behaviour must call
+// FlushAllUnsafeCtx explicitly.
 func (s *RedisStore) FlushCtx(ctx context.Context) error {
-	pattern := s.prefix + ":*"
 	if s.prefix == "" {
-		pattern = "*"
+		return ErrCannotFlushUnprefixed
 	}
+	return s.flushPattern(ctx, s.prefix+":*")
+}
 
+// Flush removes all cache keys matching the configured prefix.
+func (s *RedisStore) Flush() error {
+	return s.FlushCtx(context.Background())
+}
+
+// FlushAllUnsafe is the explicit, opt-in escape hatch that DOES wipe every
+// key in the connected Redis database (pattern "*"). It exists so callers
+// that genuinely own the entire Redis instance (e.g. per-app dedicated
+// Redis, integration tests) can still flush. The name is deliberately
+// alarming so a code reviewer cannot mistake it for the bounded Flush.
+// Prefer setting a non-empty prefix and using Flush.
+func (s *RedisStore) FlushAllUnsafe() error {
+	return s.FlushAllUnsafeCtx(context.Background())
+}
+
+// FlushAllUnsafeCtx is the ctx-aware variant of FlushAllUnsafe.
+func (s *RedisStore) FlushAllUnsafeCtx(ctx context.Context) error {
+	return s.flushPattern(ctx, "*")
+}
+
+// flushPattern iterates SCAN+DEL for the supplied match pattern. The
+// caller is responsible for choosing a safe pattern; this method does no
+// guard checking.
+func (s *RedisStore) flushPattern(ctx context.Context, pattern string) error {
 	var cursor uint64
 	for {
 		keys, nextCursor, err := s.client.Scan(ctx, cursor, pattern, 100).Result()
@@ -203,11 +251,6 @@ func (s *RedisStore) FlushCtx(ctx context.Context) error {
 		}
 	}
 	return nil
-}
-
-// Flush removes all cache keys matching the configured prefix.
-func (s *RedisStore) Flush() error {
-	return s.FlushCtx(context.Background())
 }
 
 // HasCtx checks if a key exists in the cache using the provided context.

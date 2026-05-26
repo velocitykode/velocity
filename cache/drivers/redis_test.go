@@ -447,8 +447,12 @@ func TestRedisStore_Forget_WithPrefix(t *testing.T) {
 }
 
 func TestRedisStore_Flush(t *testing.T) {
+	// Uses a non-empty prefix because Flush on an unprefixed RedisStore
+	// is now refused (ErrCannotFlushUnprefixed) to prevent accidental
+	// SCAN "*" + DEL of a shared Redis instance. The unprefixed-refusal
+	// and FlushAllUnsafe paths are covered in redis_flush_test.go.
 	t.Run("removes all values", func(t *testing.T) {
-		store, mr := newTestRedisStore(t, "")
+		store, mr := newTestRedisStore(t, "flushtest")
 		defer mr.Close()
 		defer func() { _ = store.Shutdown(context.Background()) }()
 
