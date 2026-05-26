@@ -9,6 +9,8 @@ type Lock = drivers.Lock
 
 // Lock-related errors re-exported from the drivers package for convenience.
 var (
-	ErrLockNotAcquired = drivers.ErrLockNotAcquired
-	ErrLockTimeout     = drivers.ErrLockTimeout
+	ErrLockNotAcquired  = drivers.ErrLockNotAcquired
+	ErrLockTimeout      = drivers.ErrLockTimeout
+	ErrLockNotSupported = drivers.ErrLockNotSupported
+	ErrInvalidLockTTL   = drivers.ErrInvalidLockTTL
 )

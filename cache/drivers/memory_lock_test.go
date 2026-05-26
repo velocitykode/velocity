@@ -2,6 +2,7 @@ package drivers
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,7 +17,7 @@ func TestMemoryLock(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("GetAndRelease", func(t *testing.T) {
-		lock := store.Lock("get-release")
+		lock := store.Lock("get-release", time.Minute)
 		defer lock.ForceRelease(ctx)
 
 		if !lock.Get(ctx) {
@@ -28,7 +29,7 @@ func TestMemoryLock(t *testing.T) {
 	})
 
 	t.Run("DoubleGet", func(t *testing.T) {
-		lock := store.Lock("double-get")
+		lock := store.Lock("double-get", time.Minute)
 		defer lock.ForceRelease(ctx)
 
 		if !lock.Get(ctx) {
@@ -40,7 +41,7 @@ func TestMemoryLock(t *testing.T) {
 	})
 
 	t.Run("ReleaseWithoutGet", func(t *testing.T) {
-		lock := store.Lock("release-no-get")
+		lock := store.Lock("release-no-get", time.Minute)
 
 		if lock.Release(ctx) {
 			t.Fatal("expected Release() to return false when lock was never acquired")
@@ -48,40 +49,40 @@ func TestMemoryLock(t *testing.T) {
 	})
 
 	t.Run("ReleaseWrongOwner", func(t *testing.T) {
-		lock1 := store.Lock("wrong-owner")
+		lock1 := store.Lock("wrong-owner", time.Minute)
 		defer lock1.ForceRelease(ctx)
 
 		if !lock1.Get(ctx) {
 			t.Fatal("expected lock1.Get(ctx) to succeed")
 		}
 
-		lock2 := store.Lock("wrong-owner")
+		lock2 := store.Lock("wrong-owner", time.Minute)
 		if lock2.Release(ctx) {
 			t.Fatal("expected Release() to return false for non-owner")
 		}
 	})
 
 	t.Run("Owner", func(t *testing.T) {
-		lock := store.Lock("owner-test")
+		lock := store.Lock("owner-test", time.Minute)
 
 		owner := lock.Owner()
 		if owner == "" {
 			t.Fatal("expected Owner() to return a non-empty string")
 		}
 
-		lock2 := store.Lock("owner-test-2")
+		lock2 := store.Lock("owner-test-2", time.Minute)
 		if lock.Owner() == lock2.Owner() {
 			t.Fatal("expected different locks to have different owners")
 		}
 	})
 
 	t.Run("ForceRelease", func(t *testing.T) {
-		lock1 := store.Lock("force-release")
+		lock1 := store.Lock("force-release", time.Minute)
 		if !lock1.Get(ctx) {
 			t.Fatal("expected Get() to succeed")
 		}
 
-		lock2 := store.Lock("force-release")
+		lock2 := store.Lock("force-release", time.Minute)
 		if lock2.Get(ctx) {
 			t.Fatal("expected Get() to fail while lock is held")
 		}
@@ -90,7 +91,7 @@ func TestMemoryLock(t *testing.T) {
 			t.Fatalf("expected ForceRelease() to succeed, got %v", err)
 		}
 
-		lock3 := store.Lock("force-release")
+		lock3 := store.Lock("force-release", time.Minute)
 		defer lock3.ForceRelease(ctx)
 		if !lock3.Get(ctx) {
 			t.Fatal("expected Get() to succeed after ForceRelease()")
@@ -98,14 +99,14 @@ func TestMemoryLock(t *testing.T) {
 	})
 
 	t.Run("ForceReleaseNonExistent", func(t *testing.T) {
-		lock := store.Lock("force-release-nonexistent")
+		lock := store.Lock("force-release-nonexistent", time.Minute)
 		if err := lock.ForceRelease(ctx); err != nil {
 			t.Fatalf("expected ForceRelease() on non-existent key to succeed, got %v", err)
 		}
 	})
 
 	t.Run("RunSuccess", func(t *testing.T) {
-		lock := store.Lock("run-success")
+		lock := store.Lock("run-success", time.Minute)
 
 		called := false
 		err := lock.Run(ctx, func() {
@@ -119,7 +120,7 @@ func TestMemoryLock(t *testing.T) {
 		}
 
 		// Lock should be released after Run
-		lock2 := store.Lock("run-success")
+		lock2 := store.Lock("run-success", time.Minute)
 		defer lock2.ForceRelease(ctx)
 		if !lock2.Get(ctx) {
 			t.Fatal("expected lock to be released after Run()")
@@ -127,14 +128,14 @@ func TestMemoryLock(t *testing.T) {
 	})
 
 	t.Run("RunNotAcquired", func(t *testing.T) {
-		lock1 := store.Lock("run-not-acquired")
+		lock1 := store.Lock("run-not-acquired", time.Minute)
 		defer lock1.ForceRelease(ctx)
 
 		if !lock1.Get(ctx) {
 			t.Fatal("expected Get() to succeed")
 		}
 
-		lock2 := store.Lock("run-not-acquired")
+		lock2 := store.Lock("run-not-acquired", time.Minute)
 		err := lock2.Run(ctx, func() {
 			t.Fatal("callback should not be called")
 		})
@@ -144,7 +145,7 @@ func TestMemoryLock(t *testing.T) {
 	})
 
 	t.Run("RunPanicRecovery", func(t *testing.T) {
-		lock := store.Lock("run-panic")
+		lock := store.Lock("run-panic", time.Minute)
 
 		func() {
 			defer func() {
@@ -162,7 +163,7 @@ func TestMemoryLock(t *testing.T) {
 		}()
 
 		// Lock should still be released after panic
-		lock2 := store.Lock("run-panic")
+		lock2 := store.Lock("run-panic", time.Minute)
 		defer lock2.ForceRelease(ctx)
 		if !lock2.Get(ctx) {
 			t.Fatal("expected lock to be released after panic in Run()")
@@ -170,7 +171,7 @@ func TestMemoryLock(t *testing.T) {
 	})
 
 	t.Run("BlockSuccess", func(t *testing.T) {
-		lock := store.Lock("block-success")
+		lock := store.Lock("block-success", time.Minute)
 
 		called := false
 		err := lock.Block(ctx, time.Second, func() {
@@ -185,14 +186,14 @@ func TestMemoryLock(t *testing.T) {
 	})
 
 	t.Run("BlockTimeout", func(t *testing.T) {
-		lock1 := store.Lock("block-timeout")
+		lock1 := store.Lock("block-timeout", time.Minute)
 		defer lock1.ForceRelease(ctx)
 
 		if !lock1.Get(ctx) {
 			t.Fatal("expected Get() to succeed")
 		}
 
-		lock2 := store.Lock("block-timeout")
+		lock2 := store.Lock("block-timeout", time.Minute)
 		start := time.Now()
 		err := lock2.Block(ctx, 250*time.Millisecond, func() {
 			t.Fatal("callback should not be called on timeout")
@@ -208,7 +209,7 @@ func TestMemoryLock(t *testing.T) {
 	})
 
 	t.Run("BlockWaitsAndAcquires", func(t *testing.T) {
-		lock1 := store.Lock("block-wait")
+		lock1 := store.Lock("block-wait", time.Minute)
 		if !lock1.Get(ctx) {
 			t.Fatal("expected Get() to succeed")
 		}
@@ -219,7 +220,7 @@ func TestMemoryLock(t *testing.T) {
 			lock1.Release(ctx)
 		}()
 
-		lock2 := store.Lock("block-wait")
+		lock2 := store.Lock("block-wait", time.Minute)
 		defer lock2.ForceRelease(ctx)
 
 		called := false
@@ -235,7 +236,7 @@ func TestMemoryLock(t *testing.T) {
 	})
 
 	t.Run("BlockPanicRecovery", func(t *testing.T) {
-		lock := store.Lock("block-panic")
+		lock := store.Lock("block-panic", time.Minute)
 
 		func() {
 			defer func() {
@@ -253,7 +254,7 @@ func TestMemoryLock(t *testing.T) {
 		}()
 
 		// Lock should be released after panic
-		lock2 := store.Lock("block-panic")
+		lock2 := store.Lock("block-panic", time.Minute)
 		defer lock2.ForceRelease(ctx)
 		if !lock2.Get(ctx) {
 			t.Fatal("expected lock to be released after panic in Block()")
@@ -269,7 +270,7 @@ func TestMemoryLock(t *testing.T) {
 		}
 
 		// Should fail before expiry
-		lock2 := store.Lock("ttl-expire")
+		lock2 := store.Lock("ttl-expire", time.Minute)
 		if lock2.Get(ctx) {
 			lock2.ForceRelease(ctx)
 			t.Fatal("expected Get() to fail before TTL expires")
@@ -278,35 +279,71 @@ func TestMemoryLock(t *testing.T) {
 		// Wait for TTL to expire
 		time.Sleep(300 * time.Millisecond)
 
-		lock3 := store.Lock("ttl-expire")
+		lock3 := store.Lock("ttl-expire", time.Minute)
 		defer lock3.ForceRelease(ctx)
 		if !lock3.Get(ctx) {
 			t.Fatal("expected Get() to succeed after TTL expiration")
 		}
 	})
 
-	t.Run("NoTTLDoesNotExpire", func(t *testing.T) {
-		lock := store.Lock("no-ttl")
+	t.Run("LongTTLStaysHeldForTestDuration", func(t *testing.T) {
+		// Previously this test relied on TTL=0 meaning "no expiry"; that
+		// behaviour is now rejected with ErrInvalidLockTTL because a
+		// crashed holder would pin the lock forever (M-32). A long TTL
+		// gives the same observable property within the test window.
+		lock := store.Lock("no-ttl", time.Minute)
 		defer lock.ForceRelease(ctx)
 
 		if !lock.Get(ctx) {
 			t.Fatal("expected Get() to succeed")
 		}
 
-		// No sleep: a lock without TTL is held indefinitely by stored state,
-		// there is no sweeper or timer path that would release it — a sleep
-		// here would be placebo.
-		lock2 := store.Lock("no-ttl")
+		// No sleep: a long-TTL lock will not expire within the test;
+		// peers must observe it as held.
+		lock2 := store.Lock("no-ttl", time.Minute)
 		if lock2.Get(ctx) {
 			lock2.ForceRelease(ctx)
-			t.Fatal("expected lock without TTL to remain held")
+			t.Fatal("expected lock to remain held while TTL has not elapsed")
+		}
+	})
+
+	t.Run("ZeroTTLRejected", func(t *testing.T) {
+		// A lock constructed with ttl=0 must refuse acquisition with
+		// ErrInvalidLockTTL rather than silently pinning the key
+		// permanently. Bool-only Get returns false.
+		lock := store.Lock("zero-ttl", 0)
+		defer lock.ForceRelease(ctx)
+
+		acquired, err := lock.GetWithErr(ctx)
+		if err == nil {
+			t.Fatal("GetWithErr with ttl=0 must return ErrInvalidLockTTL")
+		}
+		if !errors.Is(err, ErrInvalidLockTTL) {
+			t.Fatalf("GetWithErr err = %v; want ErrInvalidLockTTL", err)
+		}
+		if acquired {
+			t.Fatal("must not acquire with ttl=0")
+		}
+
+		if lock.Get(ctx) {
+			t.Fatal("Get with ttl=0 must return false")
+		}
+	})
+
+	t.Run("NegativeTTLRejected", func(t *testing.T) {
+		lock := store.Lock("neg-ttl", -time.Second)
+		defer lock.ForceRelease(ctx)
+
+		_, err := lock.GetWithErr(ctx)
+		if !errors.Is(err, ErrInvalidLockTTL) {
+			t.Fatalf("GetWithErr err = %v; want ErrInvalidLockTTL", err)
 		}
 	})
 
 	t.Run("DifferentKeysDontInterfere", func(t *testing.T) {
-		lockA := store.Lock("key-a")
+		lockA := store.Lock("key-a", time.Minute)
 		defer lockA.ForceRelease(ctx)
-		lockB := store.Lock("key-b")
+		lockB := store.Lock("key-b", time.Minute)
 		defer lockB.ForceRelease(ctx)
 
 		if !lockA.Get(ctx) {
@@ -324,7 +361,7 @@ func TestMemoryLock(t *testing.T) {
 	})
 
 	t.Run("RestoreLockCorrectOwner", func(t *testing.T) {
-		lock := store.Lock("restore-correct")
+		lock := store.Lock("restore-correct", time.Minute)
 		defer lock.ForceRelease(ctx)
 
 		if !lock.Get(ctx) {
@@ -340,7 +377,7 @@ func TestMemoryLock(t *testing.T) {
 	})
 
 	t.Run("RestoreLockWrongOwner", func(t *testing.T) {
-		lock := store.Lock("restore-wrong")
+		lock := store.Lock("restore-wrong", time.Minute)
 		defer lock.ForceRelease(ctx)
 
 		if !lock.Get(ctx) {
@@ -362,7 +399,7 @@ func TestMemoryLock(t *testing.T) {
 		for i := 0; i < goroutines; i++ {
 			go func() {
 				defer wg.Done()
-				lock := store.Lock("concurrent")
+				lock := store.Lock("concurrent", time.Minute)
 				if lock.Get(ctx) {
 					atomic.AddInt32(&acquired, 1)
 					time.Sleep(10 * time.Millisecond)
@@ -382,7 +419,7 @@ func TestMemoryLock(t *testing.T) {
 	})
 
 	t.Run("RunReleasesBeforeReturn", func(t *testing.T) {
-		lock := store.Lock("run-releases")
+		lock := store.Lock("run-releases", time.Minute)
 
 		err := lock.Run(ctx, func() {})
 		if err != nil {
@@ -390,7 +427,7 @@ func TestMemoryLock(t *testing.T) {
 		}
 
 		// Immediately try to acquire with a new lock — should succeed
-		lock2 := store.Lock("run-releases")
+		lock2 := store.Lock("run-releases", time.Minute)
 		defer lock2.ForceRelease(ctx)
 		if !lock2.Get(ctx) {
 			t.Fatal("expected lock to be available after Run() returns")
@@ -406,7 +443,7 @@ func TestMemoryLock(t *testing.T) {
 		}
 
 		// Verify the lock is held
-		lock2 := store.Lock("store-ttl")
+		lock2 := store.Lock("store-ttl", time.Minute)
 		if lock2.Get(ctx) {
 			lock2.ForceRelease(ctx)
 			t.Fatal("expected lock to be held")
@@ -418,7 +455,7 @@ func TestMemoryLock(t *testing.T) {
 		store2.Start()
 		defer func() { _ = store2.Shutdown(context.Background()) }()
 
-		lock1 := store.Lock("isolated-key")
+		lock1 := store.Lock("isolated-key", time.Minute)
 		defer lock1.ForceRelease(ctx)
 
 		if !lock1.Get(ctx) {
@@ -426,7 +463,7 @@ func TestMemoryLock(t *testing.T) {
 		}
 
 		// Different store instance should have its own lock store
-		lock2 := store2.Lock("isolated-key")
+		lock2 := store2.Lock("isolated-key", time.Minute)
 		defer lock2.ForceRelease(ctx)
 		if !lock2.Get(ctx) {
 			t.Fatal("expected store2 lock to succeed (separate lock store)")
@@ -434,7 +471,7 @@ func TestMemoryLock(t *testing.T) {
 	})
 
 	t.Run("GetWithErr", func(t *testing.T) {
-		lock := store.Lock("get-with-err")
+		lock := store.Lock("get-with-err", time.Minute)
 		defer lock.ForceRelease(ctx)
 
 		acquired, err := lock.GetWithErr(ctx)
@@ -458,7 +495,7 @@ func TestMemoryLock(t *testing.T) {
 	})
 
 	t.Run("GetWithErr_CancelledCtx", func(t *testing.T) {
-		lock := store.Lock("get-with-err-cancel")
+		lock := store.Lock("get-with-err-cancel", time.Minute)
 		defer lock.ForceRelease(ctx)
 
 		cancelled, cancel := context.WithCancel(ctx)
@@ -484,13 +521,13 @@ func TestMemoryLock_BlockHonorsCtxCancel(t *testing.T) {
 	defer func() { _ = store.Shutdown(context.Background()) }()
 
 	// Hold the lock so Block has to wait.
-	holder := store.Lock("held")
+	holder := store.Lock("held", time.Minute)
 	if !holder.Get(context.Background()) {
 		t.Fatal("failed to acquire holder lock")
 	}
 	defer holder.Release(context.Background())
 
-	blocker := store.Lock("held")
+	blocker := store.Lock("held", time.Minute)
 	cancelCtx, cancel := context.WithCancel(context.Background())
 
 	go func() {
@@ -522,7 +559,7 @@ func TestMemoryLock_MethodsRespectPreCancelledCtx(t *testing.T) {
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	lock := store.Lock("key")
+	lock := store.Lock("key", time.Minute)
 	if lock.Get(cancelled) {
 		t.Error("Get with cancelled ctx acquired the lock; expected false")
 	}

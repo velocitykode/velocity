@@ -4,6 +4,7 @@ package drivers
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -24,7 +25,7 @@ func TestFileLock(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("GetAndRelease", func(t *testing.T) {
-		lock := store.Lock("get-release")
+		lock := store.Lock("get-release", time.Minute)
 		if lock == nil {
 			t.Fatal("FileStore.Lock must not return nil on POSIX")
 		}
@@ -39,7 +40,7 @@ func TestFileLock(t *testing.T) {
 	})
 
 	t.Run("DoubleGet", func(t *testing.T) {
-		lock := store.Lock("double-get")
+		lock := store.Lock("double-get", time.Minute)
 		defer lock.ForceRelease(ctx)
 
 		if !lock.Get(ctx) {
@@ -51,13 +52,13 @@ func TestFileLock(t *testing.T) {
 	})
 
 	t.Run("ContentionAcrossInstances", func(t *testing.T) {
-		lock1 := store.Lock("contend")
+		lock1 := store.Lock("contend", time.Minute)
 		defer lock1.ForceRelease(ctx)
 		if !lock1.Get(ctx) {
 			t.Fatal("lock1.Get must succeed")
 		}
 
-		lock2 := store.Lock("contend")
+		lock2 := store.Lock("contend", time.Minute)
 		if lock2.Get(ctx) {
 			lock2.ForceRelease(ctx)
 			t.Fatal("lock2 must not acquire while lock1 holds")
@@ -73,7 +74,7 @@ func TestFileLock(t *testing.T) {
 	})
 
 	t.Run("ReleaseWrongOwner", func(t *testing.T) {
-		lock1 := store.Lock("wrong-owner")
+		lock1 := store.Lock("wrong-owner", time.Minute)
 		defer lock1.ForceRelease(ctx)
 		if !lock1.Get(ctx) {
 			t.Fatal("lock1.Get must succeed")
@@ -86,19 +87,19 @@ func TestFileLock(t *testing.T) {
 	})
 
 	t.Run("ForceRelease", func(t *testing.T) {
-		lock1 := store.Lock("force")
+		lock1 := store.Lock("force", time.Minute)
 		if !lock1.Get(ctx) {
 			t.Fatal("lock1.Get must succeed")
 		}
 
 		// A peer lock without the owner credential can still ForceRelease.
-		lock2 := store.Lock("force")
+		lock2 := store.Lock("force", time.Minute)
 		if err := lock2.ForceRelease(ctx); err != nil {
 			t.Fatalf("ForceRelease must succeed: %v", err)
 		}
 
 		// After ForceRelease, a new acquire must succeed.
-		lock3 := store.Lock("force")
+		lock3 := store.Lock("force", time.Minute)
 		defer lock3.ForceRelease(ctx)
 		if !lock3.Get(ctx) {
 			t.Fatal("Get after ForceRelease must succeed")
@@ -106,7 +107,7 @@ func TestFileLock(t *testing.T) {
 	})
 
 	t.Run("RunSuccess", func(t *testing.T) {
-		lock := store.Lock("run-success")
+		lock := store.Lock("run-success", time.Minute)
 		called := false
 		if err := lock.Run(ctx, func() { called = true }); err != nil {
 			t.Fatalf("Run: %v", err)
@@ -117,13 +118,13 @@ func TestFileLock(t *testing.T) {
 	})
 
 	t.Run("RunNotAcquired", func(t *testing.T) {
-		lock1 := store.Lock("run-not-acquired")
+		lock1 := store.Lock("run-not-acquired", time.Minute)
 		defer lock1.ForceRelease(ctx)
 		if !lock1.Get(ctx) {
 			t.Fatal("lock1.Get must succeed")
 		}
 
-		lock2 := store.Lock("run-not-acquired")
+		lock2 := store.Lock("run-not-acquired", time.Minute)
 		err := lock2.Run(ctx, func() { t.Fatal("must not run") })
 		if err != ErrLockNotAcquired {
 			t.Fatalf("Run err = %v; want ErrLockNotAcquired", err)
@@ -131,7 +132,7 @@ func TestFileLock(t *testing.T) {
 	})
 
 	t.Run("RunPanicRecovery", func(t *testing.T) {
-		lock := store.Lock("run-panic")
+		lock := store.Lock("run-panic", time.Minute)
 
 		func() {
 			defer func() {
@@ -143,7 +144,7 @@ func TestFileLock(t *testing.T) {
 		}()
 
 		// Lock must be released even after panic.
-		lock2 := store.Lock("run-panic")
+		lock2 := store.Lock("run-panic", time.Minute)
 		defer lock2.ForceRelease(ctx)
 		if !lock2.Get(ctx) {
 			t.Fatal("lock must be available after panic in Run")
@@ -151,7 +152,7 @@ func TestFileLock(t *testing.T) {
 	})
 
 	t.Run("BlockSuccess", func(t *testing.T) {
-		lock := store.Lock("block-success")
+		lock := store.Lock("block-success", time.Minute)
 		called := false
 		if err := lock.Block(ctx, time.Second, func() { called = true }); err != nil {
 			t.Fatalf("Block: %v", err)
@@ -162,12 +163,12 @@ func TestFileLock(t *testing.T) {
 	})
 
 	t.Run("BlockTimeout", func(t *testing.T) {
-		lock1 := store.Lock("block-timeout")
+		lock1 := store.Lock("block-timeout", time.Minute)
 		defer lock1.ForceRelease(ctx)
 		if !lock1.Get(ctx) {
 			t.Fatal("lock1.Get must succeed")
 		}
-		lock2 := store.Lock("block-timeout")
+		lock2 := store.Lock("block-timeout", time.Minute)
 		err := lock2.Block(ctx, 250*time.Millisecond, func() {
 			t.Fatal("must not run")
 		})
@@ -186,7 +187,7 @@ func TestFileLock(t *testing.T) {
 		for i := 0; i < goroutines; i++ {
 			go func() {
 				defer wg.Done()
-				lock := store.Lock("mutex")
+				lock := store.Lock("mutex", time.Minute)
 				if lock.Get(ctx) {
 					inFlight := atomic.AddInt32(&concurrent, 1)
 					for {
@@ -212,7 +213,7 @@ func TestFileLock(t *testing.T) {
 	})
 
 	t.Run("RestoreLockOwnerMatch", func(t *testing.T) {
-		lock := store.Lock("restore-ok")
+		lock := store.Lock("restore-ok", time.Minute)
 		if !lock.Get(ctx) {
 			t.Fatal("Get must succeed")
 		}
@@ -224,7 +225,7 @@ func TestFileLock(t *testing.T) {
 	})
 
 	t.Run("GetWithErr", func(t *testing.T) {
-		lock := store.Lock("get-with-err")
+		lock := store.Lock("get-with-err", time.Minute)
 		defer lock.ForceRelease(ctx)
 		got, err := lock.GetWithErr(ctx)
 		if err != nil {
@@ -232,6 +233,22 @@ func TestFileLock(t *testing.T) {
 		}
 		if !got {
 			t.Fatal("expected acquired=true on first GetWithErr")
+		}
+	})
+
+	t.Run("ZeroTTLRejected", func(t *testing.T) {
+		lock := store.Lock("file-zero-ttl", 0)
+		defer lock.ForceRelease(ctx)
+
+		acquired, err := lock.GetWithErr(ctx)
+		if !errors.Is(err, ErrInvalidLockTTL) {
+			t.Fatalf("GetWithErr err = %v; want ErrInvalidLockTTL", err)
+		}
+		if acquired {
+			t.Fatal("must not acquire with ttl=0")
+		}
+		if lock.Get(ctx) {
+			t.Fatal("Get with ttl=0 must return false")
 		}
 	})
 }

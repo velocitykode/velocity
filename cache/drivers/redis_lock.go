@@ -59,7 +59,14 @@ func (l *RedisLock) Get(ctx context.Context) bool {
 // context cancels; net.OpError on dropped connections; redis.Error /
 // proto errors on AUTH / NOAUTH / OOM / READONLY. All are returned
 // verbatim so callers can inspect via errors.Is / errors.As.
+//
+// Refuses ttl<=0 with ErrInvalidLockTTL: SET NX with PX/EX=0 in Redis
+// stores the key permanently, so a crashed holder pins the lock
+// indefinitely. Callers MUST pass a positive ttl to RedisStore.Lock.
 func (l *RedisLock) GetWithErr(ctx context.Context) (bool, error) {
+	if l.ttl <= 0 {
+		return false, ErrInvalidLockTTL
+	}
 	result, err := l.client.SetNX(ctx, l.key, l.owner, l.ttl).Result()
 	if err != nil {
 		return false, err

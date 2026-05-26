@@ -19,6 +19,15 @@ var (
 	// unavailable). Callers should switch to a different driver or
 	// avoid Lock on that store.
 	ErrLockNotSupported = errors.New("cache: lock not supported on this driver/platform")
+
+	// ErrInvalidLockTTL is returned when a caller asks for a lock with
+	// a non-positive TTL. A zero/negative TTL means "never expire",
+	// which is unsafe in a distributed setting: if the holder process
+	// crashes between Get and Release the lock pins the key forever
+	// and every subsequent acquirer blocks. Callers MUST pass a
+	// positive ttl to Store.Lock so an abandoned hold eventually
+	// frees itself.
+	ErrInvalidLockTTL = errors.New("cache: lock requires a positive TTL")
 )
 
 // Lock defines the interface for a cache lock.
@@ -79,6 +88,13 @@ type Lock interface {
 }
 
 // Locker is implemented by stores that support locking.
+//
+// Lock takes a positive TTL. Callers MUST pass a non-zero positive
+// duration: a zero or negative TTL is rejected at acquisition with
+// ErrInvalidLockTTL because an unbounded hold pins the key forever
+// when the holding process crashes. The variadic shape is preserved
+// for source-compat with earlier callers, but supplying zero ttls is
+// now an error.
 type Locker interface {
 	Lock(key string, ttl ...time.Duration) Lock
 	RestoreLock(key string, owner string) Lock

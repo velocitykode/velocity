@@ -104,14 +104,24 @@ func (l *MemoryLock) Get(ctx context.Context) bool {
 }
 
 // GetWithErr is the error-returning variant. For an in-memory lock the
-// error is always nil; ctx cancellation surfaces as (false, nil) because
-// there is no underlying I/O that could be cancelled mid-flight -- the
-// acquire is a synchronous map update.
+// error is non-nil iff the lock was constructed with a non-positive TTL
+// (ErrInvalidLockTTL); ctx cancellation surfaces as (false, nil)
+// because there is no underlying I/O that could be cancelled mid-flight
+// -- the acquire is a synchronous map update.
+//
+// A zero/negative TTL means "never expires", which is dangerous: a
+// holder that crashes between Get and Release pins the key forever and
+// every subsequent acquirer blocks indefinitely. Rather than silently
+// promoting that to a permanent hold we surface ErrInvalidLockTTL so
+// the caller realises they forgot to pass a TTL.
 func (l *MemoryLock) GetWithErr(ctx context.Context) (bool, error) {
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
 			return false, nil
 		}
+	}
+	if l.ttl <= 0 {
+		return false, ErrInvalidLockTTL
 	}
 	return l.store.acquire(l.key, l.owner, l.ttl), nil
 }

@@ -2,6 +2,7 @@ package drivers
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -35,7 +36,7 @@ func TestRedisLock(t *testing.T) {
 		store, _, cleanup := setupRedisForLock(t)
 		defer cleanup()
 
-		lock := store.Lock("resource1")
+		lock := store.Lock("resource1", time.Minute)
 		acquired := lock.Get(ctx)
 		if !acquired {
 			t.Error("Get() = false, want true")
@@ -46,8 +47,8 @@ func TestRedisLock(t *testing.T) {
 		store, _, cleanup := setupRedisForLock(t)
 		defer cleanup()
 
-		lock1 := store.Lock("resource1")
-		lock2 := store.Lock("resource1")
+		lock1 := store.Lock("resource1", time.Minute)
+		lock2 := store.Lock("resource1", time.Minute)
 
 		if !lock1.Get(ctx) {
 			t.Fatal("first Get() = false, want true")
@@ -61,7 +62,7 @@ func TestRedisLock(t *testing.T) {
 		store, _, cleanup := setupRedisForLock(t)
 		defer cleanup()
 
-		lock := store.Lock("resource1")
+		lock := store.Lock("resource1", time.Minute)
 		if !lock.Get(ctx) {
 			t.Fatal("Get() = false, want true")
 		}
@@ -70,7 +71,7 @@ func TestRedisLock(t *testing.T) {
 		}
 
 		// Can reacquire after release
-		lock2 := store.Lock("resource1")
+		lock2 := store.Lock("resource1", time.Minute)
 		if !lock2.Get(ctx) {
 			t.Error("Get() after Release() = false, want true")
 		}
@@ -80,7 +81,7 @@ func TestRedisLock(t *testing.T) {
 		store, _, cleanup := setupRedisForLock(t)
 		defer cleanup()
 
-		lock := store.Lock("resource1")
+		lock := store.Lock("resource1", time.Minute)
 		if !lock.Get(ctx) {
 			t.Fatal("Get() = false, want true")
 		}
@@ -96,7 +97,7 @@ func TestRedisLock(t *testing.T) {
 		store, _, cleanup := setupRedisForLock(t)
 		defer cleanup()
 
-		lock := store.Lock("resource1")
+		lock := store.Lock("resource1", time.Minute)
 		called := false
 		err := lock.Run(ctx, func() {
 			called = true
@@ -109,7 +110,7 @@ func TestRedisLock(t *testing.T) {
 		}
 
 		// Lock should be released after Run
-		lock2 := store.Lock("resource1")
+		lock2 := store.Lock("resource1", time.Minute)
 		if !lock2.Get(ctx) {
 			t.Error("lock not released after Run()")
 		}
@@ -119,12 +120,12 @@ func TestRedisLock(t *testing.T) {
 		store, _, cleanup := setupRedisForLock(t)
 		defer cleanup()
 
-		holder := store.Lock("resource1")
+		holder := store.Lock("resource1", time.Minute)
 		if !holder.Get(ctx) {
 			t.Fatal("Get() = false, want true")
 		}
 
-		lock := store.Lock("resource1")
+		lock := store.Lock("resource1", time.Minute)
 		err := lock.Run(ctx, func() {
 			t.Error("callback should not be called when lock not acquired")
 		})
@@ -137,7 +138,7 @@ func TestRedisLock(t *testing.T) {
 		store, _, cleanup := setupRedisForLock(t)
 		defer cleanup()
 
-		holder := store.Lock("resource1")
+		holder := store.Lock("resource1", time.Minute)
 		if !holder.Get(ctx) {
 			t.Fatal("Get() = false, want true")
 		}
@@ -148,7 +149,7 @@ func TestRedisLock(t *testing.T) {
 			holder.Release(ctx)
 		}()
 
-		lock := store.Lock("resource1")
+		lock := store.Lock("resource1", time.Minute)
 		called := false
 		err := lock.Block(ctx, 2*time.Second, func() {
 			called = true
@@ -165,12 +166,12 @@ func TestRedisLock(t *testing.T) {
 		store, _, cleanup := setupRedisForLock(t)
 		defer cleanup()
 
-		holder := store.Lock("resource1")
+		holder := store.Lock("resource1", time.Minute)
 		if !holder.Get(ctx) {
 			t.Fatal("Get() = false, want true")
 		}
 
-		lock := store.Lock("resource1")
+		lock := store.Lock("resource1", time.Minute)
 		err := lock.Block(ctx, 250*time.Millisecond, func() {
 			t.Error("callback should not be called on timeout")
 		})
@@ -189,7 +190,7 @@ func TestRedisLock(t *testing.T) {
 		}
 
 		// Lock should still be held before TTL expires
-		lock2 := store.Lock("resource1")
+		lock2 := store.Lock("resource1", time.Minute)
 		if lock2.Get(ctx) {
 			t.Error("Get() before TTL = true, want false")
 		}
@@ -198,7 +199,7 @@ func TestRedisLock(t *testing.T) {
 		mr.FastForward(3 * time.Second)
 
 		// Lock should have expired, a new lock can be acquired
-		lock3 := store.Lock("resource1")
+		lock3 := store.Lock("resource1", time.Minute)
 		if !lock3.Get(ctx) {
 			t.Error("Get() after TTL expiration = false, want true")
 		}
@@ -208,7 +209,7 @@ func TestRedisLock(t *testing.T) {
 		store, _, cleanup := setupRedisForLock(t)
 		defer cleanup()
 
-		lock := store.Lock("resource1")
+		lock := store.Lock("resource1", time.Minute)
 		owner := lock.Owner()
 		if owner == "" {
 			t.Error("Owner() returned empty string, want non-empty UUID")
@@ -224,20 +225,20 @@ func TestRedisLock(t *testing.T) {
 		store, _, cleanup := setupRedisForLock(t)
 		defer cleanup()
 
-		lock := store.Lock("resource1")
+		lock := store.Lock("resource1", time.Minute)
 		if !lock.Get(ctx) {
 			t.Fatal("Get() = false, want true")
 		}
 
 		// Force release from a different lock instance (different owner)
-		other := store.Lock("resource1")
+		other := store.Lock("resource1", time.Minute)
 		err := other.ForceRelease(ctx)
 		if err != nil {
 			t.Errorf("ForceRelease() error = %v, want nil", err)
 		}
 
 		// Lock should be released; a new one can be acquired
-		lock2 := store.Lock("resource1")
+		lock2 := store.Lock("resource1", time.Minute)
 		if !lock2.Get(ctx) {
 			t.Error("Get() after ForceRelease() = false, want true")
 		}
@@ -247,7 +248,7 @@ func TestRedisLock(t *testing.T) {
 		store, _, cleanup := setupRedisForLock(t)
 		defer cleanup()
 
-		lock := store.Lock("resource1")
+		lock := store.Lock("resource1", time.Minute)
 		if !lock.Get(ctx) {
 			t.Fatal("Get() = false, want true")
 		}
@@ -260,7 +261,7 @@ func TestRedisLock(t *testing.T) {
 		}
 
 		// Lock should be released now
-		lock2 := store.Lock("resource1")
+		lock2 := store.Lock("resource1", time.Minute)
 		if !lock2.Get(ctx) {
 			t.Error("Get() after restored Release() = false, want true")
 		}
@@ -270,7 +271,7 @@ func TestRedisLock(t *testing.T) {
 		store, _, cleanup := setupRedisForLock(t)
 		defer cleanup()
 
-		lock := store.Lock("resource1")
+		lock := store.Lock("resource1", time.Minute)
 
 		func() {
 			defer func() {
@@ -288,7 +289,7 @@ func TestRedisLock(t *testing.T) {
 		}()
 
 		// Lock should be released despite the panic
-		lock2 := store.Lock("resource1")
+		lock2 := store.Lock("resource1", time.Minute)
 		if !lock2.Get(ctx) {
 			t.Error("Get() after panic in Run() = false, want true (lock should be released)")
 		}
@@ -298,7 +299,7 @@ func TestRedisLock(t *testing.T) {
 		store, _, cleanup := setupRedisForLock(t)
 		defer cleanup()
 
-		lock := store.Lock("resource1")
+		lock := store.Lock("resource1", time.Minute)
 
 		func() {
 			defer func() {
@@ -316,7 +317,7 @@ func TestRedisLock(t *testing.T) {
 		}()
 
 		// Lock should be released despite the panic
-		lock2 := store.Lock("resource1")
+		lock2 := store.Lock("resource1", time.Minute)
 		if !lock2.Get(ctx) {
 			t.Error("Get() after panic in Block() = false, want true (lock should be released)")
 		}
@@ -326,8 +327,8 @@ func TestRedisLock(t *testing.T) {
 		store, _, cleanup := setupRedisForLock(t)
 		defer cleanup()
 
-		lock1 := store.Lock("resource1")
-		lock2 := store.Lock("resource2")
+		lock1 := store.Lock("resource1", time.Minute)
+		lock2 := store.Lock("resource2", time.Minute)
 
 		if !lock1.Get(ctx) {
 			t.Error("Get() on resource1 = false, want true")
@@ -353,7 +354,7 @@ func TestRedisLock(t *testing.T) {
 			go func() {
 				defer wg.Done()
 
-				lock := store.Lock("shared-resource")
+				lock := store.Lock("shared-resource", time.Minute)
 				err := lock.Block(ctx, 5*time.Second, func() {
 					cur := atomic.AddInt64(&currentHolders, 1)
 
@@ -389,7 +390,7 @@ func TestRedisLock(t *testing.T) {
 		store, _, cleanup := setupRedisForLock(t)
 		defer cleanup()
 
-		lock := store.Lock("get-with-err")
+		lock := store.Lock("get-with-err", time.Minute)
 		acquired, err := lock.GetWithErr(ctx)
 		if err != nil {
 			t.Fatalf("healthy Redis must return nil err, got %v", err)
@@ -403,11 +404,11 @@ func TestRedisLock(t *testing.T) {
 		store, _, cleanup := setupRedisForLock(t)
 		defer cleanup()
 
-		l1 := store.Lock("contended")
+		l1 := store.Lock("contended", time.Minute)
 		if !l1.Get(ctx) {
 			t.Fatal("first acquire failed")
 		}
-		l2 := store.Lock("contended")
+		l2 := store.Lock("contended", time.Minute)
 		acquired, err := l2.GetWithErr(ctx)
 		// Contention is (false, nil) -- the SETNX command succeeded
 		// but didn't set the key. Backend error must NOT leak here.
@@ -427,7 +428,7 @@ func TestRedisLock(t *testing.T) {
 		store, mr, cleanup := setupRedisForLock(t)
 		defer cleanup()
 
-		lock := store.Lock("backend-down")
+		lock := store.Lock("backend-down", time.Minute)
 		// Tear down the Redis server mid-flight to force a backend
 		// error on the next SETNX.
 		mr.Close()
@@ -449,7 +450,7 @@ func TestRedisLock_GetHonorsCtxCancel(t *testing.T) {
 	store, _, cleanup := setupRedisForLock(t)
 	defer cleanup()
 
-	lock := store.Lock("ctx-get")
+	lock := store.Lock("ctx-get", time.Minute)
 
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel() // pre-cancel
@@ -473,13 +474,13 @@ func TestRedisLock_BlockHonorsCtxCancel(t *testing.T) {
 	defer cleanup()
 
 	// Hold the lock so Block has to wait.
-	holder := store.Lock("ctx-block")
+	holder := store.Lock("ctx-block", time.Minute)
 	if !holder.Get(context.Background()) {
 		t.Fatal("failed to acquire holder lock")
 	}
 	defer holder.Release(context.Background())
 
-	blocker := store.Lock("ctx-block")
+	blocker := store.Lock("ctx-block", time.Minute)
 	cancelCtx, cancel := context.WithCancel(context.Background())
 
 	// Cancel after a short delay; Block should return ctx.Err() — not wait out the full 10s timeout.
@@ -511,7 +512,7 @@ func TestRedisLock_ReleaseHonorsCtxCancel(t *testing.T) {
 	store, _, cleanup := setupRedisForLock(t)
 	defer cleanup()
 
-	lock := store.Lock("ctx-release")
+	lock := store.Lock("ctx-release", time.Minute)
 	if !lock.Get(context.Background()) {
 		t.Fatal("failed to acquire lock")
 	}
@@ -537,7 +538,7 @@ func TestRedisLock_ForceReleaseHonorsCtxCancel(t *testing.T) {
 	store, _, cleanup := setupRedisForLock(t)
 	defer cleanup()
 
-	lock := store.Lock("ctx-force-release")
+	lock := store.Lock("ctx-force-release", time.Minute)
 	if !lock.Get(context.Background()) {
 		t.Fatal("failed to acquire lock")
 	}
@@ -554,5 +555,29 @@ func TestRedisLock_ForceReleaseHonorsCtxCancel(t *testing.T) {
 	}
 	if elapsed > time.Second {
 		t.Fatalf("ForceRelease with cancelled ctx took %v; expected prompt return — ctx was ignored", elapsed)
+	}
+}
+
+// TestRedisLock_ZeroTTLRejected pins the M-32 contract on Redis: a lock
+// constructed with ttl<=0 must refuse acquisition with ErrInvalidLockTTL
+// rather than send SET NX with PX=0 (which Redis treats as "never
+// expires"). A crashed holder with no expiry pins the key indefinitely.
+func TestRedisLock_ZeroTTLRejected(t *testing.T) {
+	store, _, cleanup := setupRedisForLock(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	lock := store.Lock("redis-zero-ttl", 0)
+	defer lock.ForceRelease(ctx)
+
+	acquired, err := lock.GetWithErr(ctx)
+	if !errors.Is(err, ErrInvalidLockTTL) {
+		t.Fatalf("GetWithErr err = %v; want ErrInvalidLockTTL", err)
+	}
+	if acquired {
+		t.Fatal("must not acquire with ttl=0")
+	}
+	if lock.Get(ctx) {
+		t.Fatal("Get with ttl=0 must return false")
 	}
 }

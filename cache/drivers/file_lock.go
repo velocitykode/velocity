@@ -159,14 +159,25 @@ func (l *FileLock) Get(ctx context.Context) bool {
 }
 
 // GetWithErr is the error-returning variant. The bool reports whether
-// the lock was acquired; the error is non-nil only on backend failure
-// (cannot open the lock file, etc.). Contention is reported as
-// (false, nil).
+// the lock was acquired; the error is non-nil on backend failure
+// (cannot open the lock file, etc.) or when the lock was constructed
+// with a non-positive TTL (ErrInvalidLockTTL). Contention is reported
+// as (false, nil).
+//
+// A zero/negative TTL is rejected: without expiry, a holder process
+// that crashes between Get and Release pins the on-disk lock file
+// forever; subsequent acquirers see the metadata "still held until
+// ExpiresAt" check (which is now `ExpiresAt == nil` -> treated as
+// "no declared end") and may keep blocking. Forcing a positive TTL
+// gives operators a reliable maximum-stale-lock window.
 func (l *FileLock) GetWithErr(ctx context.Context) (bool, error) {
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
 			return false, nil
 		}
+	}
+	if l.ttl <= 0 {
+		return false, ErrInvalidLockTTL
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
