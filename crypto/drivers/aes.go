@@ -45,12 +45,34 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/crypto/hkdf"
 )
+
+// cryptoDebug controls whether the driver emits per-failure debug lines via
+// stdlib log. Off by default to avoid noise; operators flip CRYPTO_DEBUG=true
+// to trace decrypt errors without exposing them on the wire.
+var cryptoDebug = os.Getenv("CRYPTO_DEBUG") == "true"
+
+// debugDecryptFailure logs the underlying cause of a decrypt failure for
+// operator-side debugging. The public API only ever returns ErrDecrypt to
+// callers (so error messages cannot form a padding-oracle), but operators
+// running with CRYPTO_DEBUG=true can see why a given payload was rejected.
+// Keep the log line free of secret material (no key bytes, no plaintext).
+func debugDecryptFailure(stage string, err error) {
+	if !cryptoDebug {
+		return
+	}
+	if err == nil {
+		log.Printf("velocity/crypto: decrypt failed stage=%s", stage)
+		return
+	}
+	log.Printf("velocity/crypto: decrypt failed stage=%s err=%v", stage, err)
+}
 
 // v1Sentinel marks payloads produced by the current (domain-separated MAC)
 // wire format. The colon is unreachable in base64 output, so it can never
@@ -202,9 +224,17 @@ func (d *AESDriver) Decrypt(payload string) (string, error) {
 
 // DecryptBytes decrypts a payload to bytes. Accepts both v1 (current
 // domain-separated MAC) and v0 (legacy fmt-concatenated MAC) payloads.
+//
+// Returns ErrInvalidPayload only for structural envelope problems (empty
+// input, non-base64 outer, malformed JSON). Every cryptographic failure
+// (wrong MAC, wrong key, bad padding, malformed IV bytes, etc.) collapses
+// to ErrDecrypt so callers cannot distinguish between them via the error
+// message; the variants would otherwise form a padding-oracle precursor if
+// the message were ever forwarded to a client. Callers MUST NOT include
+// the error message in user-visible output; branch on errors.Is.
 func (d *AESDriver) DecryptBytes(payload string) ([]byte, error) {
 	if payload == "" {
-		return nil, errors.New("velocity/crypto: invalid payload format")
+		return nil, ErrInvalidPayload
 	}
 
 	version, envelope := splitVersion(payload)
@@ -236,7 +266,8 @@ func (d *AESDriver) DecryptBytes(payload string) ([]byte, error) {
 		}
 	}
 
-	return nil, errors.New("velocity/crypto: decryption failed with all keys")
+	debugDecryptFailure("decrypt-all-keys", err)
+	return nil, ErrDecrypt
 }
 
 // splitVersion peeks the payload's leading sentinel and returns (version,
@@ -505,10 +536,17 @@ func (d *AESDriver) decryptWithKeys(p *Payload, encKey, hmacKey []byte, version 
 // decryptCBCWithKey decrypts CBC mode with separate encryption and HMAC keys.
 // version == 1 uses the domain-separated MAC; version == 0 uses the
 // pre-sweep fmt-concatenated MAC for backwards compatibility.
+//
+// Every failure returns ErrDecrypt (single sentinel). The actual cause is
+// surfaced via debugDecryptFailure(stage, err) for operator-side
+// debugging only. This collapse is deliberate: six distinct error strings
+// reachable from a single payload form a padding-oracle precursor if any
+// caller forwards the error message back to a client.
 func (d *AESDriver) decryptCBCWithKey(p *Payload, encKey, hmacKey []byte, version int) ([]byte, error) {
 	// MAC is required for CBC decryption to ensure integrity
 	if p.MAC == "" {
-		return nil, errors.New("velocity/crypto: mac required for cbc decryption")
+		debugDecryptFailure("cbc-mac-missing", nil)
+		return nil, ErrDecrypt
 	}
 
 	// Decode components BEFORE MAC verification so we can compute the MAC
@@ -516,11 +554,13 @@ func (d *AESDriver) decryptCBCWithKey(p *Payload, encKey, hmacKey []byte, versio
 	// domain-separation prefix; v0 hashes the base64 strings).
 	iv, err := base64.StdEncoding.DecodeString(p.IV)
 	if err != nil {
-		return nil, fmt.Errorf("velocity/crypto: invalid iv encoding: %w", err)
+		debugDecryptFailure("cbc-iv-decode", err)
+		return nil, ErrDecrypt
 	}
 	ciphertext, err := base64.StdEncoding.DecodeString(p.Value)
 	if err != nil {
-		return nil, fmt.Errorf("velocity/crypto: invalid value encoding: %w", err)
+		debugDecryptFailure("cbc-value-decode", err)
+		return nil, ErrDecrypt
 	}
 
 	var expectedMAC string
@@ -530,16 +570,19 @@ func (d *AESDriver) decryptCBCWithKey(p *Payload, encKey, hmacKey []byte, versio
 	case 0:
 		expectedMAC = computeLegacyMACWith(p.Value, p.IV, hmacKey)
 	default:
-		return nil, errors.New("velocity/crypto: unsupported payload version")
+		debugDecryptFailure("cbc-version-unsupported", nil)
+		return nil, ErrDecrypt
 	}
 	if !secureCompare(p.MAC, expectedMAC) {
-		return nil, errors.New("velocity/crypto: mac verification failed")
+		debugDecryptFailure("cbc-mac-mismatch", nil)
+		return nil, ErrDecrypt
 	}
 
 	// Create cipher block
 	block, err := aes.NewCipher(encKey)
 	if err != nil {
-		return nil, fmt.Errorf("velocity/crypto: %w", err)
+		debugDecryptFailure("cbc-new-cipher", err)
+		return nil, ErrDecrypt
 	}
 
 	// Decrypt
@@ -550,7 +593,8 @@ func (d *AESDriver) decryptCBCWithKey(p *Payload, encKey, hmacKey []byte, versio
 	// Remove padding
 	plaintext, err = pkcs7Unpad(plaintext)
 	if err != nil {
-		return nil, err
+		debugDecryptFailure("cbc-unpad", err)
+		return nil, ErrDecrypt
 	}
 
 	return plaintext, nil
@@ -562,22 +606,30 @@ func (d *AESDriver) decryptCBCWithKey(p *Payload, encKey, hmacKey []byte, versio
 // attacker who can submit a cookie whose payload IV decodes to a
 // non-standard length would otherwise crash the process via a single
 // HTTP request. We validate length explicitly so a malformed payload
-// surfaces as an ErrDecryptionFailed upstream instead.
+// surfaces as ErrDecrypt upstream instead.
+//
+// All cryptographic failures collapse to ErrDecrypt so distinct
+// per-stage error messages do not form an oracle if the error reaches a
+// client. The variant is captured via debugDecryptFailure for operator
+// logs.
 func (d *AESDriver) decryptGCMWithKey(p *Payload, key []byte) ([]byte, error) {
 	// Decode components
 	nonce, err := base64.StdEncoding.DecodeString(p.IV)
 	if err != nil {
-		return nil, err
+		debugDecryptFailure("gcm-iv-decode", err)
+		return nil, ErrDecrypt
 	}
 
 	ciphertext, err := base64.StdEncoding.DecodeString(p.Value)
 	if err != nil {
-		return nil, err
+		debugDecryptFailure("gcm-value-decode", err)
+		return nil, ErrDecrypt
 	}
 
 	tag, err := base64.StdEncoding.DecodeString(p.Tag)
 	if err != nil {
-		return nil, err
+		debugDecryptFailure("gcm-tag-decode", err)
+		return nil, ErrDecrypt
 	}
 
 	// Append tag to ciphertext for GCM
@@ -586,23 +638,27 @@ func (d *AESDriver) decryptGCMWithKey(p *Payload, key []byte) ([]byte, error) {
 	// Create cipher block
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		return nil, err
+		debugDecryptFailure("gcm-new-cipher", err)
+		return nil, ErrDecrypt
 	}
 
 	// Create GCM
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, err
+		debugDecryptFailure("gcm-new-gcm", err)
+		return nil, ErrDecrypt
 	}
 
 	if len(nonce) != gcm.NonceSize() {
-		return nil, ErrDecryptionFailed
+		debugDecryptFailure("gcm-nonce-length", nil)
+		return nil, ErrDecrypt
 	}
 
 	// Decrypt and verify
 	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
-		return nil, err
+		debugDecryptFailure("gcm-open", err)
+		return nil, ErrDecrypt
 	}
 
 	return plaintext, nil
@@ -706,6 +762,11 @@ func serializePayload(p *Payload) (string, error) {
 // ("v1:"-prefixed) and v0 (bare base64) envelopes. The inner parser does
 // not need to know which version it is; that information is used by the
 // caller to select the correct MAC verifier.
+//
+// Returns ErrInvalidPayload for structural failures (non-base64 outer,
+// non-JSON inner). This is distinct from ErrDecrypt: callers that wish
+// to distinguish "bad envelope shape" from "wrong key / tampered" can
+// branch on the two sentinels.
 func deserializePayload(encoded string) (*Payload, error) {
 	encoded = strings.TrimPrefix(encoded, v1Sentinel)
 
@@ -714,13 +775,13 @@ func deserializePayload(encoded string) (*Payload, error) {
 	if err != nil {
 		data, err = base64.StdEncoding.DecodeString(encoded)
 		if err != nil {
-			return nil, errors.New("velocity/crypto: invalid payload format")
+			return nil, ErrInvalidPayload
 		}
 	}
 
 	var p Payload
 	if err := json.Unmarshal(data, &p); err != nil {
-		return nil, errors.New("velocity/crypto: invalid payload format")
+		return nil, ErrInvalidPayload
 	}
 
 	return &p, nil

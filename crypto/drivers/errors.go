@@ -8,10 +8,27 @@ import "errors"
 // under the same identity, so errors.Is(err, crypto.ErrInvalidCipher)
 // works against errors returned from this package.
 var (
-	ErrInvalidCipher    = errors.New("velocity/crypto: unsupported cipher")
-	ErrAADMismatch      = errors.New("velocity/crypto: AAD mismatch")
-	ErrInvalidPayload   = errors.New("velocity/crypto: invalid payload format")
-	ErrDecryptionFailed = errors.New("velocity/crypto: decryption failed")
+	ErrInvalidCipher = errors.New("velocity/crypto: unsupported cipher")
+	ErrAADMismatch   = errors.New("velocity/crypto: AAD mismatch")
+	// ErrInvalidPayload signals a structural problem with the envelope
+	// itself (empty input, non-base64 outer, malformed JSON, wrong wire
+	// version). The payload never reached the AEAD/CBC decrypt path.
+	ErrInvalidPayload = errors.New("velocity/crypto: invalid payload format")
+	// ErrDecrypt is the single sentinel returned for any decrypt failure
+	// where the inner envelope parsed but the cryptographic check failed
+	// or could not be safely performed. CBC paths used to surface six
+	// distinct error strings (bad IV b64, bad value b64, wrong MAC, bad
+	// padding, etc.) which formed a padding-oracle precursor whenever an
+	// operator's error pipeline leaked the message to the client.
+	// Callers MUST NOT include the underlying message in a user-visible
+	// response; branch on errors.Is(err, ErrDecrypt) and log the real
+	// cause server-side. The driver itself emits the variant via stdlib
+	// log so operators retain debuggability without an oracle on the
+	// wire.
+	ErrDecrypt = errors.New("velocity/crypto: decryption failed")
+	// ErrDecryptionFailed is retained as an alias for ErrDecrypt so
+	// existing callers using errors.Is keep compiling unchanged.
+	ErrDecryptionFailed = ErrDecrypt
 	// ErrInvalidKeyLength is returned when the supplied raw key length does
 	// not match the cipher's required key size (AES-128 = 16 bytes,
 	// AES-192 = 24, AES-256 = 32). HKDF is not used to stretch undersized

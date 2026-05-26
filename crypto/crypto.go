@@ -12,10 +12,17 @@ import (
 // Errors. Sentinels owned by crypto/drivers are re-exported here under
 // the same identity so callers can use errors.Is against either package.
 var (
-	ErrInvalidKey       = errors.New("velocity/crypto: invalid encryption key")
-	ErrNotInitialized   = errors.New("velocity/crypto: encryptor not initialized")
-	ErrInvalidCipher    = drivers.ErrInvalidCipher
-	ErrInvalidPayload   = drivers.ErrInvalidPayload
+	ErrInvalidKey     = errors.New("velocity/crypto: invalid encryption key")
+	ErrNotInitialized = errors.New("velocity/crypto: encryptor not initialized")
+	ErrInvalidCipher  = drivers.ErrInvalidCipher
+	ErrInvalidPayload = drivers.ErrInvalidPayload
+	// ErrDecrypt is the single sentinel for any cryptographic decrypt
+	// failure (wrong key, wrong MAC, bad padding, malformed IV bytes).
+	// Callers MUST NOT include the error message in user-visible output;
+	// branch on errors.Is(err, crypto.ErrDecrypt) and log the real cause
+	// server-side. Operators can enable CRYPTO_DEBUG=true to surface the
+	// underlying stage via stdlib log.
+	ErrDecrypt          = drivers.ErrDecrypt
 	ErrDecryptionFailed = drivers.ErrDecryptionFailed
 	ErrAADMismatch      = drivers.ErrAADMismatch
 	ErrInvalidKeyLength = drivers.ErrInvalidKeyLength
