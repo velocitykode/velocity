@@ -16,16 +16,17 @@ import (
 )
 
 func TestNew(t *testing.T) {
-	// Test with nil config
-	csrf := New(nil)
+	// Test with default-with-resolver config
+	csrf := New(testConfig())
 	if csrf == nil {
 		t.Fatal("New returned nil")
 	}
 
-	// Test with custom config
+	// Test with custom config (resolver still required)
 	config := &Config{
-		HeaderName: "X-Custom-Token",
-		FormField:  "_custom_token",
+		HeaderName:        "X-Custom-Token",
+		FormField:         "_custom_token",
+		SessionIDResolver: testCookieResolver("session_id"),
 	}
 	csrf = New(config)
 	if csrf.config.HeaderName != "X-Custom-Token" {
@@ -34,7 +35,7 @@ func TestNew(t *testing.T) {
 }
 
 func TestMiddleware_SafeMethods(t *testing.T) {
-	csrf := New(nil)
+	csrf := New(testConfig())
 
 	handler := csrf.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -58,7 +59,7 @@ func TestMiddleware_SafeMethods(t *testing.T) {
 }
 
 func TestMiddleware_UnsafeMethods_NoToken(t *testing.T) {
-	csrf := New(nil)
+	csrf := New(testConfig())
 
 	handler := csrf.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -83,6 +84,7 @@ func TestMiddleware_UnsafeMethods_NoToken(t *testing.T) {
 
 func TestMiddleware_ValidToken_Header(t *testing.T) {
 	config := DefaultConfig()
+	config.SessionIDResolver = testCookieResolver("session_id")
 	config.Store = stores.NewSessionStore()
 	csrf := New(config)
 
@@ -110,6 +112,7 @@ func TestMiddleware_ValidToken_Header(t *testing.T) {
 
 func TestMiddleware_ValidToken_FormField(t *testing.T) {
 	config := DefaultConfig()
+	config.SessionIDResolver = testCookieResolver("session_id")
 	config.Store = stores.NewSessionStore()
 	csrf := New(config)
 
@@ -139,6 +142,7 @@ func TestMiddleware_ValidToken_FormField(t *testing.T) {
 
 func TestMiddleware_InvalidToken(t *testing.T) {
 	config := DefaultConfig()
+	config.SessionIDResolver = testCookieResolver("session_id")
 	config.Store = stores.NewSessionStore()
 	csrf := New(config)
 
@@ -166,6 +170,7 @@ func TestMiddleware_InvalidToken(t *testing.T) {
 
 func TestMiddleware_ExcludedPaths(t *testing.T) {
 	config := DefaultConfig()
+	config.SessionIDResolver = testCookieResolver("session_id")
 	config.ExcludePaths = []string{"/api/webhooks/*", "/health"}
 	csrf := New(config)
 
@@ -199,6 +204,7 @@ func TestMiddleware_ExcludedPaths(t *testing.T) {
 
 func TestMiddleware_ExcludeFunc(t *testing.T) {
 	config := DefaultConfig()
+	config.SessionIDResolver = testCookieResolver("session_id")
 	// Exclude requests with API key
 	config.ExcludeFunc = func(r *http.Request) bool {
 		return r.Header.Get("X-API-Key") != ""
@@ -231,6 +237,7 @@ func TestMiddleware_ExcludeFunc(t *testing.T) {
 
 func TestRefreshHandler(t *testing.T) {
 	config := DefaultConfig()
+	config.SessionIDResolver = testCookieResolver("session_id")
 	config.Store = stores.NewSessionStore()
 	csrf := New(config)
 
@@ -254,6 +261,7 @@ func TestRefreshHandler(t *testing.T) {
 
 func TestGetToken(t *testing.T) {
 	config := DefaultConfig()
+	config.SessionIDResolver = testCookieResolver("session_id")
 	config.Store = stores.NewSessionStore()
 	csrf := New(config)
 
@@ -337,7 +345,7 @@ func TestIsJSONRequest(t *testing.T) {
 }
 
 func BenchmarkMiddleware_SafeMethod(b *testing.B) {
-	csrf := New(nil)
+	csrf := New(testConfig())
 	handler := csrf.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 
 	req := httptest.NewRequest("GET", "/test", nil)
@@ -351,6 +359,7 @@ func BenchmarkMiddleware_SafeMethod(b *testing.B) {
 
 func BenchmarkMiddleware_ValidToken(b *testing.B) {
 	config := DefaultConfig()
+	config.SessionIDResolver = testCookieResolver("session_id")
 	config.Store = stores.NewSessionStore()
 	csrf := New(config)
 
@@ -379,7 +388,7 @@ func BenchmarkMiddleware_ValidToken(b *testing.B) {
 // The middleware must now refuse to issue or validate tokens without a
 // real session cookie.
 func TestCSRF_RefusesEphemeralSession(t *testing.T) {
-	c := New(DefaultConfig())
+	c := New(testConfig())
 
 	t.Run("getSessionID returns ErrNoSession", func(t *testing.T) {
 		r := httptest.NewRequest("POST", "/submit", nil)
@@ -436,6 +445,82 @@ func TestNewE_RejectsUnsupportedMode(t *testing.T) {
 	}
 }
 
+// TestNewE_RejectsNilResolver pins the regression for the legacy fallback
+// where, when SessionIDResolver was nil, getSessionID returned the raw
+// http.Cookie value as the binding key. That let an unauthenticated
+// attacker mint a CSRF token against any self-chosen "session id" simply
+// by sending Cookie: <name>=<arbitrary-string>; the cookie value never
+// went through session-middleware authentication. NewE must refuse to
+// construct a CSRF instance without an explicit resolver so the
+// attacker-controlled-binding-key path cannot be reached.
+func TestNewE_RejectsNilResolver(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.SessionIDResolver = nil
+	_, err := NewE(cfg)
+	if err == nil {
+		t.Fatal("expected error for nil SessionIDResolver")
+	}
+	if !errors.Is(err, ErrInsecureCSRFConfig) {
+		t.Errorf("expected ErrInsecureCSRFConfig, got %v", err)
+	}
+}
+
+// TestCSRF_RawCookieValueNeverTrustedAsSessionID pins the H-01 regression.
+// A request that carries only a raw session_id cookie (no resolver wired)
+// must NOT validate; pre-fix, the middleware's legacy fallback path read
+// cookie.Value as the session ID and let an attacker bind a token to any
+// self-chosen string by hitting RefreshHandler with the attacker's cookie.
+// With NewE requiring a resolver, the only construction in this test must
+// fail, and any synthetic construction (bypassing NewE) cannot reach the
+// removed branch because getSessionID delegates unconditionally to the
+// resolver.
+func TestCSRF_RawCookieValueNeverTrustedAsSessionID(t *testing.T) {
+	// Construct without resolver: NewE must reject.
+	cfg := DefaultConfig()
+	cfg.SessionIDResolver = nil
+	if _, err := NewE(cfg); err == nil {
+		t.Fatal("NewE must reject nil SessionIDResolver")
+	}
+
+	// Even when a resolver is wired, the middleware must NOT fall through
+	// to reading the cookie value. Wire a resolver that rejects every
+	// request; a raw session_id cookie must be ignored.
+	cfg = DefaultConfig()
+	cfg.Store = stores.NewSessionStore()
+	cfg.SessionIDResolver = func(r *http.Request) (string, error) {
+		return "", ErrNoSession
+	}
+	c, err := NewE(cfg)
+	if err != nil {
+		t.Fatalf("NewE: %v", err)
+	}
+
+	// Attacker pre-seeds a token in the store keyed by the literal cookie
+	// value they intend to send. Pre-fix, the legacy fallback path would
+	// have used this string as the binding key. The resolver now refuses
+	// every request, so the seeded entry must NOT be reachable.
+	const attackerKey = "attacker-chosen-session-id"
+	token, err := GenerateToken()
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+	if err := c.config.Store.Set(attackerKey, token); err != nil {
+		t.Fatalf("seed token: %v", err)
+	}
+
+	handler := c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("inner handler must not run; raw cookie value MUST NOT be trusted as session ID")
+	}))
+	req := httptest.NewRequest("POST", "/submit", nil)
+	req.AddCookie(&http.Cookie{Name: "session_id", Value: attackerKey})
+	req.Header.Set("X-CSRF-Token", token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != 419 {
+		t.Fatalf("expected 419 (resolver rejects), got %d", w.Code)
+	}
+}
+
 // TestRouterMiddleware_RejectionDoesNotAppendInternalServerError pins the
 // regression for the bug where RouterMiddleware returned a non-nil error
 // after the inner CSRF middleware had already written a 419 response.
@@ -445,7 +530,7 @@ func TestNewE_RejectsUnsupportedMode(t *testing.T) {
 // nil when the inner handler was not called, since the CSRF middleware
 // has already fully written the rejection response.
 func TestRouterMiddleware_RejectionDoesNotAppendInternalServerError(t *testing.T) {
-	c := New(DefaultConfig())
+	c := New(testConfig())
 
 	r := router.New()
 	// Install a sentinel error handler so we can detect if the router's
@@ -492,6 +577,7 @@ func TestRouterMiddleware_RejectionDoesNotAppendInternalServerError(t *testing.T
 func newCSRFWithToken(t *testing.T) (*CSRF, string, string) {
 	t.Helper()
 	cfg := DefaultConfig()
+	cfg.SessionIDResolver = testCookieResolver("session_id")
 	cfg.Store = stores.NewSessionStore()
 	c := New(cfg)
 
@@ -686,7 +772,7 @@ func TestGetTokenFromRequest_UrlencodedOversizeRejected(t *testing.T) {
 // getTokenFromRequest for oversize urlencoded bodies. This guards
 // future refactors that might silently swallow the error.
 func TestGetTokenFromRequest_DirectReturnsErrFormBodyTooLarge(t *testing.T) {
-	c := New(DefaultConfig())
+	c := New(testConfig())
 	form := url.Values{}
 	form.Set("padding", strings.Repeat("a", 2<<20))
 

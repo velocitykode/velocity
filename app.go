@@ -288,9 +288,11 @@ func New(opts ...Option) (*App, error) {
 	//   - The app does not use the built-in session cookie at all
 	//     (a.config.Session.Name is empty). Same outcome.
 	//
-	// In both skipped cases, leaving the resolver nil preserves the
-	// documented legacy fallback in csrf.getSessionID, which reads
-	// Config.SessionCookieName as a raw value.
+	// In both skipped cases we install a strict-reject resolver that
+	// always returns ErrNoSession. csrf.NewE rejects nil resolvers because
+	// keying CSRF tokens by an unauthenticated cookie value is unsafe;
+	// the strict-reject resolver fails closed (all unsafe requests 419)
+	// until the operator wires a real resolver via Config.SessionIDResolver.
 	if a.config.CSRF.SessionIDResolver == nil &&
 		a.Crypto != nil &&
 		a.config.Session.Name != "" &&
@@ -315,6 +317,10 @@ func New(opts ...Option) (*App, error) {
 				return "", csrf.ErrNoSession
 			}
 			return payload.ID, nil
+		}
+	} else if a.config.CSRF.SessionIDResolver == nil {
+		a.config.CSRF.SessionIDResolver = func(r *http.Request) (string, error) {
+			return "", csrf.ErrNoSession
 		}
 	}
 	csrfInstance, err := csrf.NewE(&a.config.CSRF)

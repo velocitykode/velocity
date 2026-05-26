@@ -9,7 +9,7 @@ import (
 )
 
 func TestSessionFallback_DispatchedWhenNoSessionCookie(t *testing.T) {
-	c := New(DefaultConfig())
+	c := New(testConfig())
 
 	var mu sync.Mutex
 	var events []interface{}
@@ -46,7 +46,7 @@ func TestSessionFallback_DispatchedWhenNoSessionCookie(t *testing.T) {
 }
 
 func TestSessionFallback_NotDispatchedWithCookie(t *testing.T) {
-	c := New(DefaultConfig())
+	c := New(testConfig())
 	var count int
 	c.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		count++

@@ -76,16 +76,28 @@ func New(config *Config) *CSRF {
 
 // NewE is the error-returning constructor. Prefer this in app bootstrap
 // so mis-set Config.Mode surfaces as a return error rather than a panic.
+//
+// SessionIDResolver MUST be non-nil. The resolver is the binding-key
+// boundary between an attacker-controlled cookie value and the CSRF token
+// store. Allowing a nil resolver re-opened a legacy code path that keyed
+// tokens by the raw cookie value, which let an unauthenticated attacker
+// mint tokens against a self-chosen session ID. Bootstrap code in app.go
+// installs an encrypted-session resolver by default; consumers wiring CSRF
+// directly must supply one explicitly.
 func NewE(config *Config) (*CSRF, error) {
 	if config == nil {
 		config = DefaultConfig()
 	}
 
 	// Only ModeSession is currently implemented. Silently accepting
-	// ModeDoubleSubmit would be worse than rejecting it — apps would
+	// ModeDoubleSubmit would be worse than rejecting it - apps would
 	// believe they had CSRF protection that was never wired.
 	if config.Mode != ModeSession {
 		return nil, fmt.Errorf("%w: Mode=%s is not yet implemented; use ModeSession", ErrInsecureCSRFConfig, config.Mode)
+	}
+
+	if config.SessionIDResolver == nil {
+		return nil, fmt.Errorf("%w: SessionIDResolver is required; raw cookie value MUST NOT be used as the CSRF binding key", ErrInsecureCSRFConfig)
 	}
 
 	// Set default store if none provided
@@ -321,71 +333,35 @@ func (c *CSRF) getTokenFromRequest(r *http.Request) (string, error) {
 }
 
 // getSessionID extracts the session ID from the request for ModeSession.
-// Returns ErrNoSession when no session cookie is present. The middleware
-// used to generate a per-request ephemeral ID and dispatch a fallback
-// event; that behaviour silently bound CSRF tokens to attacker-chosen IDs
-// (the attacker could request a token for a self-minted session and
-// replay it). A csrf.session_fallback event is still dispatched here for
-// observability so operators can detect missing session middleware.
+// Returns ErrNoSession when no session cookie is present. NewE guarantees
+// SessionIDResolver is non-nil; the legacy fallback that read the raw
+// cookie value as the session ID was removed because it let an
+// unauthenticated attacker mint tokens bound to any self-chosen string.
+// A csrf.session_fallback event is dispatched on ErrNoSession so operators
+// can detect requests arriving without a session.
 func (c *CSRF) getSessionID(r *http.Request) (string, error) {
-	// Resolver wins. Frameworks that encrypt the session cookie inject one
-	// here so we key tokens against the plaintext session ID rather than
-	// the per-response ciphertext.
-	if c.config.SessionIDResolver != nil {
-		id, err := c.config.SessionIDResolver(r)
-		if err != nil {
-			if errors.Is(err, ErrNoSession) {
-				c.dispatchEvent(r.Context(), &SessionFallback{
-					Context: r.Context(),
-					Path:    r.URL.Path,
-					Method:  r.Method,
-					At:      time.Now(),
-				})
-			}
-			return "", err
-		}
-		if id == "" {
+	id, err := c.config.SessionIDResolver(r)
+	if err != nil {
+		if errors.Is(err, ErrNoSession) {
 			c.dispatchEvent(r.Context(), &SessionFallback{
 				Context: r.Context(),
 				Path:    r.URL.Path,
 				Method:  r.Method,
 				At:      time.Now(),
 			})
-			return "", ErrNoSession
 		}
-		return id, nil
+		return "", err
 	}
-
-	// Use configured session cookie name
-	cookieName := c.config.SessionCookieName
-	if cookieName == "" {
-		cookieName = "session_id"
+	if id == "" {
+		c.dispatchEvent(r.Context(), &SessionFallback{
+			Context: r.Context(),
+			Path:    r.URL.Path,
+			Method:  r.Method,
+			At:      time.Now(),
+		})
+		return "", ErrNoSession
 	}
-
-	// Try to get session ID from cookie
-	cookie, err := r.Cookie(cookieName)
-	if err == nil {
-		if cookie.Value == "" {
-			c.dispatchEvent(r.Context(), &SessionFallback{
-				Context: r.Context(),
-				Path:    r.URL.Path,
-				Method:  r.Method,
-				At:      time.Now(),
-			})
-			return "", ErrNoSession
-		}
-		return cookie.Value, nil
-	}
-
-	// Emit an event so operators can detect missing session middleware.
-	c.dispatchEvent(r.Context(), &SessionFallback{
-		Context: r.Context(),
-		Path:    r.URL.Path,
-		Method:  r.Method,
-		At:      time.Now(),
-	})
-
-	return "", ErrNoSession
+	return id, nil
 }
 
 // isExcluded checks if the request should be excluded from CSRF protection

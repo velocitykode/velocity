@@ -42,7 +42,7 @@ func FuzzValidateToken_CRLFInput(f *testing.F) {
 // that is an acceptable outcome (no CSRF token is issued when no usable
 // session cookie is present).
 func TestGetSessionID_StripsCRLFFromCookies(t *testing.T) {
-	c := New(DefaultConfig())
+	c := New(testConfig())
 	r := httptest.NewRequest("POST", "/", nil)
 	// Manually set a header value containing CR/LF — net/http's AddCookie
 	// would sanitize this, so we set via Header.
