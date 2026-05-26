@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/velocitykode/velocity/driverregistry"
 	"github.com/velocitykode/velocity/log/drivers"
@@ -39,7 +41,7 @@ func Drivers() *driverregistry.Registry[Logger, LogConfig] { return driverRegist
 
 func init() {
 	Drivers().Register("console", func(_ context.Context, cfg LogConfig) (Logger, error) {
-		return drivers.NewConsoleLogger(extractLevel(cfg.Config)), nil
+		return wrapWithRedactors(drivers.NewConsoleLogger(extractLevel(cfg.Config)), cfg), nil
 	})
 
 	fileFactory := func(_ context.Context, cfg LogConfig) (Logger, error) {
@@ -51,7 +53,7 @@ func init() {
 		if d, ok := cfg.Config["days"].(int); ok {
 			days = d
 		}
-		return drivers.NewFileLogger(path, days, extractLevel(cfg.Config)), nil
+		return wrapWithRedactors(drivers.NewFileLogger(path, days, extractLevel(cfg.Config)), cfg), nil
 	}
 	Drivers().Register("file", fileFactory)
 	Drivers().Register("daily", fileFactory)
@@ -108,4 +110,36 @@ func extractLevel(config map[string]any) int {
 		return parseLevel(l)
 	}
 	return int(DEBUG)
+}
+
+// wrapWithRedactors layers the default redactor chain on top of a
+// freshly constructed driver Logger when the config opts in. Three
+// equivalent opt-ins exist so operators can choose the surface that
+// best matches their bootstrap:
+//
+//   - cfg.Config["redact"] == true: per-channel JSON-friendly toggle.
+//   - cfg.Config["redactors"] []Redactor: caller-supplied chain that
+//     bypasses BuildDefaultRedactors entirely. Lets framework
+//     extensions register custom rules (e.g. SSN, phone) without
+//     forking the log package.
+//   - LOG_REDACT=true env: process-wide default-on. Honoured even
+//     when cfg.Config has no "redact" key so a single env flip in a
+//     stricter compliance environment covers every channel.
+//
+// Returns inner unchanged when no opt-in is in effect so the common
+// path stays allocation-free.
+func wrapWithRedactors(inner Logger, cfg LogConfig) Logger {
+	if inner == nil {
+		return inner
+	}
+	if rs, ok := cfg.Config["redactors"].([]Redactor); ok && len(rs) > 0 {
+		return WithRedactors(inner, rs...)
+	}
+	if enabled, ok := cfg.Config["redact"].(bool); ok && enabled {
+		return WithRedactors(inner, BuildDefaultRedactors())
+	}
+	if strings.EqualFold(os.Getenv("LOG_REDACT"), "true") {
+		return WithRedactors(inner, BuildDefaultRedactors())
+	}
+	return inner
 }
