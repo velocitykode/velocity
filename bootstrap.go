@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/velocitykode/velocity/app"
+	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/auth/drivers/guards"
 	"github.com/velocitykode/velocity/chain"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/orm"
@@ -37,6 +39,18 @@ func (a *App) bootstrap() error {
 
 	// 2. Build middleware stack
 	mwStack := chain.NewMiddlewareStack(a.Services)
+
+	// 2a. Auto-install the save-at-end session middleware BEFORE any
+	// consumer middleware so it wraps every request: session writes
+	// inside the handler (Put/Flash/login-helpers) must be persisted by
+	// the framework, not by every consumer remembering to call Save(w).
+	// See guards.SessionGuard.SessionMiddleware for the contract.
+	//
+	// Installed only when the default auth guard is the session guard;
+	// JWT-only or other configurations are skipped (no session bag to
+	// persist). Idempotent under repeated bootstrap() calls because
+	// bootstrapped=true short-circuits before any middleware wiring.
+	installSessionMiddleware(a)
 
 	dispatchProviderCallback(a.chainProviders, func(mp chain.MiddlewareProvider) {
 		mp.Middleware(mwStack)
@@ -172,4 +186,41 @@ func dispatchProviderCallback[T any](providers []app.ServiceProvider, fn func(T)
 			fn(t)
 		}
 	}
+}
+
+// installSessionMiddleware mounts guards.SessionGuard.SessionMiddleware
+// onto the router as the outermost global middleware when the active
+// default auth guard is a *SessionGuard. The fix for security audit H-05
+// (CONFIRMED HIGH: "No save-at-end session middleware installed").
+//
+// Without this hook, every ctx.Auth().Session(r).Put / Flash call inside
+// a handler is silently dropped because the cookie session store is only
+// flushed by an explicit Session.Save(w). Laravel's StartSession is the
+// reference implementation: handle, then saveSession on the way out.
+//
+// We type-assert through contract.AuthManager because a.Services.Auth is
+// the public interface (the auth/csrf/view packages cannot import each
+// other directly without a cycle). When the assertion fails (no auth
+// configured, custom manager, JWT-only setup) we skip silently: there is
+// no session bag to persist in those modes.
+//
+// Idempotent: bootstrap() guards against double-install via the
+// a.bootstrapped flag.
+func installSessionMiddleware(a *App) {
+	if a.Auth == nil || a.Router == nil {
+		return
+	}
+	mgr, ok := a.Auth.(*auth.Manager)
+	if !ok {
+		return
+	}
+	guard, err := mgr.DefaultGuard()
+	if err != nil {
+		return
+	}
+	sg, ok := guard.(*guards.SessionGuard)
+	if !ok {
+		return
+	}
+	a.Router.Use(sg.SessionMiddleware())
 }

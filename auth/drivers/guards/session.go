@@ -48,6 +48,27 @@ func WithSessionContext(r *http.Request) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), sessionCtxKey{}, &sessionHolder{}))
 }
 
+// sessionFromHolder returns the session cached on r's holder, or nil when no
+// handler in the request resolved one (the holder was attached but
+// SessionGuard.getSession was never called). Test helper / middleware helper
+// only; nil is a normal outcome.
+func sessionFromHolder(r *http.Request) auth.Session {
+	holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder)
+	if !ok || holder == nil {
+		return nil
+	}
+	return holder.session
+}
+
+// modifiedSession is the optional capability the save-at-end middleware uses
+// to skip writing a Set-Cookie header for sessions that no handler touched.
+// *auth.BaseSession (and therefore session.CookieSession via embedding)
+// satisfies it; mock sessions in tests can opt in by exposing IsModified().
+type modifiedSession interface {
+	IsModified() bool
+	IsDestroyed() bool
+}
+
 // lastSeenDebounce is the minimum interval between LastSeenAt write-backs
 // for a given session. Reads happen on every authenticated request to honor
 // revocation; writes are debounced so a chatty client does not generate one
