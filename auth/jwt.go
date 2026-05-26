@@ -94,10 +94,19 @@ type JWTConfig struct {
 	BlacklistEnabled bool
 	BlacklistStore   BlacklistStore // Optional persistent store; defaults to in-memory
 
+	// RefreshGenerationStore lets the operator install a shared
+	// (typically Redis-backed) per-user refresh-generation counter so
+	// Logout-driven bumps from H-07 propagate across hosts. Without
+	// this, multi-host deployments would each carry their own in-memory
+	// counter and a stolen refresh token would still refresh on hosts
+	// that did not see the Logout. Nil falls back to the in-process
+	// InMemoryRefreshGenerationStore.
+	RefreshGenerationStore RefreshGenerationStore
+
 	// RSAPrivateKey / RSAPublicKey enable asymmetric signing (RS256/RS384/RS512).
 	// When RSA algorithms are selected, the HMAC Secret is ignored for signing/verification.
-	RSAPrivateKey interface{} // *rsa.PrivateKey — signing key for RSxxx algorithms
-	RSAPublicKey  interface{} // *rsa.PublicKey  — verification key for RSxxx algorithms
+	RSAPrivateKey interface{} // *rsa.PrivateKey, signing key for RSxxx algorithms
+	RSAPublicKey  interface{} // *rsa.PublicKey, verification key for RSxxx algorithms
 }
 
 // allowedJWTAlgorithms is the allowlist of accepted JWT signing algorithms.
@@ -269,10 +278,15 @@ func NewJWTManager(config JWTConfig) (*JWTManager, error) {
 		store = NewInMemoryBlacklistStore()
 	}
 
+	refreshStore := config.RefreshGenerationStore
+	if refreshStore == nil {
+		refreshStore = NewInMemoryRefreshGenerationStore()
+	}
+
 	return &JWTManager{
 		config:             config,
 		blacklistStore:     store,
-		refreshGenerations: NewInMemoryRefreshGenerationStore(),
+		refreshGenerations: refreshStore,
 	}, nil
 }
 

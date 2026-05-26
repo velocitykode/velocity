@@ -481,6 +481,23 @@ func (g *JWTGuard) SetProvider(provider auth.UserProvider) {
 	g.provider.Store(&providerHolder{p: provider})
 }
 
+// SetRefreshGenerationStore installs a shared per-user refresh-generation
+// counter store on the underlying JWT manager. Use a Redis-backed (or
+// otherwise cross-host) implementation in multi-host deployments so the
+// H-07 Logout bump propagates: without a shared store, a stolen refresh
+// token will still refresh successfully on hosts that did not handle the
+// Logout call.
+//
+// Passing nil reverts to the in-process InMemoryRefreshGenerationStore
+// (single-host scope, lost on restart). Safe for concurrent use.
+//
+// Forwards to JWTManager.SetRefreshGenerationStore, which itself stores
+// the value under a mutex so concurrent Refresh / Logout callers cannot
+// tear the interface read.
+func (g *JWTGuard) SetRefreshGenerationStore(store auth.RefreshGenerationStore) {
+	g.jwtManager.SetRefreshGenerationStore(store)
+}
+
 // GenerateToken generates a JWT token for a user
 func (g *JWTGuard) GenerateToken(user auth.Authenticatable, claims ...map[string]interface{}) (string, error) {
 	return g.jwtManager.GenerateToken(user, claims...)
