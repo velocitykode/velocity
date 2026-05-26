@@ -68,11 +68,15 @@ func testConfig() auth.SessionConfig {
 	}
 }
 
-// newTestCookieStore creates a CookieStore with a mock encryptor for testing
+// newTestCookieStore creates a CookieStore with a mock encryptor for testing.
+// Mirrors NewCookieStore's initialisation of the revocation maps so tests
+// that exercise Revoke / isRevoked do not have to set them up by hand.
 func newTestCookieStore(config auth.SessionConfig, enc *mockEncryptor) *CookieStore {
 	return &CookieStore{
-		config:    config,
-		encryptor: enc,
+		config:      config,
+		encryptor:   enc,
+		revoked:     make(map[string]time.Time),
+		revokedTTLs: make(map[string]time.Time),
 	}
 }
 

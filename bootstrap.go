@@ -102,6 +102,15 @@ func (a *App) bootstrap() error {
 		a.exceptionsFn(a.Services.Exceptions)
 	}
 
+	// 8. Refuse to run with CookieStore-only sessions in production
+	// unless the operator explicitly opted in. The CookieStore in-process
+	// revocation list (H-04) closes the captured-cookie window on a
+	// single host, but cannot propagate across a fleet on its own. See
+	// validateSessionStoreForProduction for the full contract.
+	if err := validateSessionStoreForProduction(a); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -186,6 +195,56 @@ func dispatchProviderCallback[T any](providers []app.ServiceProvider, fn func(T)
 			fn(t)
 		}
 	}
+}
+
+// ErrCookieStoreInProduction is returned by App.Bootstrap when the app is
+// running with APP_ENV unset / production AND the session guard is using
+// the default CookieStore AND no ServerSessionStore has been installed AND
+// the operator has not opted in via SessionConfig.AllowCookieStoreInProduction.
+//
+// CookieStore alone cannot enforce a cross-process Logout: the in-process
+// revocation list (H-04 fix) only closes the captured-cookie window on the
+// host that handled Logout. A multi-host deployment MUST install a real
+// ServerSessionStore (Redis/SQL) via Manager.SetServerSessionStore so
+// revocations propagate. See audit findings H-04 / 02-session.md for the
+// full attack model.
+var ErrCookieStoreInProduction = fmt.Errorf("velocity/auth: production deployment must install a ServerSessionStore (or opt-in via SessionConfig.AllowCookieStoreInProduction)")
+
+// validateSessionStoreForProduction implements the H-04 boot-time guard.
+// Skip in testing/development; skip when the active guard is not the session
+// guard (JWT-only setups carry their own credentials); skip when a
+// ServerSessionStore has been installed by an earlier Boot() hook; skip when
+// the operator opted in.
+//
+// The check runs at the END of bootstrap so providers that wire a
+// ServerSessionStore in their Boot() callback are honoured before the gate
+// fires.
+func validateSessionStoreForProduction(a *App) error {
+	if a == nil || a.config == nil {
+		return nil
+	}
+	switch a.config.Env {
+	case "testing", "development":
+		return nil
+	}
+	if a.config.Session.AllowCookieStoreInProduction {
+		return nil
+	}
+	mgr, ok := a.Auth.(*auth.Manager)
+	if !ok {
+		return nil
+	}
+	guard, err := mgr.DefaultGuard()
+	if err != nil {
+		return nil
+	}
+	if _, ok := guard.(*guards.SessionGuard); !ok {
+		return nil
+	}
+	if mgr.ServerSessionStore() != nil {
+		return nil
+	}
+	return ErrCookieStoreInProduction
 }
 
 // installSessionMiddleware mounts guards.SessionGuard.SessionMiddleware

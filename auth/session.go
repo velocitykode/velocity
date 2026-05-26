@@ -327,10 +327,21 @@ type SessionConfig struct {
 	SameSite http.SameSite
 
 	// AllowJSAccess opts in to HttpOnly=false. Without this flag the
-	// session cookie MUST be HttpOnly — otherwise JavaScript (and any
+	// session cookie MUST be HttpOnly, otherwise JavaScript (and any
 	// injected script) can steal the session ID. Name is intentionally
 	// loud so reviewers notice.
 	AllowJSAccess bool
+
+	// AllowCookieStoreInProduction opts the framework into running the
+	// default CookieStore in a production environment without a
+	// ServerSessionStore wired up. Without this flag, App.Bootstrap
+	// refuses to boot in production when no ServerSessionStore is
+	// installed: a captured cookie cannot be invalidated server-wide on
+	// Logout (only the in-process revocation list rejects it, and that
+	// list does not cross process boundaries). Operators who accept the
+	// single-host risk profile (small / dev-like prod) MUST opt in here;
+	// the name is loud so reviewers notice. See audit H-04.
+	AllowCookieStoreInProduction bool
 }
 
 // Validate checks the SessionConfig for insecure defaults. Pass env to

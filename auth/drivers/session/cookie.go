@@ -1,19 +1,44 @@
+// Package session provides session storage drivers.
+//
+// CookieStore (this file) is a self-contained, stateless-on-the-server store
+// suitable for development and small deployments. It is NOT recommended for
+// production: a captured cookie remains replayable until the IssuedAt window
+// elapses (H-03 fix) or the in-process revocation list rejects it (H-04
+// fix). Operators running multiple processes/hosts must use a shared
+// ServerSessionStore so administrative revocations survive a single-host
+// restart and propagate across the fleet.
 package session
 
 import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/crypto"
 )
 
-// CookieStore implements SessionStore using encrypted cookies
+// CookieStore implements SessionStore using encrypted cookies.
+//
+// SECURITY: CookieStore alone cannot enforce server-side Logout (see audit
+// H-04). It carries a per-process revocation list so a Logout call rejects
+// subsequent Gets for the same session ID, but the list is in-memory only:
+// it is lost on restart and does not cross process boundaries. For
+// production deployments install an auth.ServerSessionStore (Redis/SQL) via
+// Manager.SetServerSessionStore so revocations survive across the fleet.
 type CookieStore struct {
 	config    auth.SessionConfig
 	encryptor crypto.Encryptor
+
+	// revokedMu protects revoked + revokedTTLs. The revocation list grows
+	// only via Revoke calls; entries naturally age out after their cookie
+	// lifetime expires (no infinite growth as long as session lifetime is
+	// bounded).
+	revokedMu   sync.RWMutex
+	revoked     map[string]time.Time // sessionID -> revoked-at timestamp
+	revokedTTLs map[string]time.Time // sessionID -> cookie expiry (cleanup hint)
 }
 
 // NewCookieStore creates a new cookie session store with an injected encryptor.
@@ -22,9 +47,67 @@ func NewCookieStore(config auth.SessionConfig, encryptor crypto.Encryptor) (*Coo
 		return nil, fmt.Errorf("cookie store requires an encryptor")
 	}
 	return &CookieStore{
-		config:    config,
-		encryptor: encryptor,
+		config:      config,
+		encryptor:   encryptor,
+		revoked:     make(map[string]time.Time),
+		revokedTTLs: make(map[string]time.Time),
 	}, nil
+}
+
+// Revoke marks sessionID as revoked. Subsequent Get calls for this id are
+// rejected and a fresh empty session is returned, even if the cookie value
+// is otherwise valid. The fix for H-04 (CookieStore Logout does not
+// invalidate server-side): a captured cookie cannot be replayed after the
+// user logs out.
+//
+// In-process scope: the revocation list lives in RAM and does not survive
+// restart. Multi-host deployments MUST also install a real
+// ServerSessionStore so revocations propagate.
+func (s *CookieStore) Revoke(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	now := cookieNowFn()
+	lifetime := time.Duration(s.config.Lifetime) * time.Minute
+	if lifetime <= 0 {
+		// Without a configured lifetime we cannot tell when to age out
+		// the entry; conservatively keep it for 24h so the in-memory
+		// map does not grow without bound.
+		lifetime = 24 * time.Hour
+	}
+	s.revokedMu.Lock()
+	defer s.revokedMu.Unlock()
+	if s.revoked == nil {
+		s.revoked = make(map[string]time.Time)
+	}
+	if s.revokedTTLs == nil {
+		s.revokedTTLs = make(map[string]time.Time)
+	}
+	s.revoked[sessionID] = now
+	s.revokedTTLs[sessionID] = now.Add(lifetime)
+	// Opportunistic cleanup: when we Revoke, drop any expired
+	// entries so the map does not grow indefinitely.
+	for id, expiry := range s.revokedTTLs {
+		if now.After(expiry) {
+			delete(s.revoked, id)
+			delete(s.revokedTTLs, id)
+		}
+	}
+}
+
+// isRevoked reports whether sessionID has been added to the revocation list
+// and has not yet aged out.
+func (s *CookieStore) isRevoked(sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	s.revokedMu.RLock()
+	expiry, ok := s.revokedTTLs[sessionID]
+	s.revokedMu.RUnlock()
+	if !ok {
+		return false
+	}
+	return cookieNowFn().Before(expiry)
 }
 
 // Create creates a new session
@@ -75,6 +158,14 @@ func (s *CookieStore) Get(r *http.Request, id string) (auth.Session, error) {
 	}
 
 	if err := json.Unmarshal([]byte(decrypted), &sessionData); err != nil {
+		return s.Create("")
+	}
+
+	// Revocation enforcement (H-04 fix). When Logout calls Revoke
+	// against this session id, every subsequent Get returns a fresh
+	// empty session even though the cookie value still decrypts.
+	// In-process only: see CookieStore doc for the multi-host caveat.
+	if s.isRevoked(sessionData.ID) {
 		return s.Create("")
 	}
 

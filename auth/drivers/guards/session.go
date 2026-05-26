@@ -380,6 +380,15 @@ func (g *SessionGuard) Attempt(w http.ResponseWriter, r *http.Request, credentia
 	return true, nil
 }
 
+// sessionRevoker is the optional capability the H-04 fix relies on when no
+// server-side ServerSessionStore is installed: the cookie store accepts a
+// Revoke(id) call so subsequent Get calls for that id return a fresh empty
+// session even though the cookie value still decrypts. Implemented by
+// *session.CookieStore.
+type sessionRevoker interface {
+	Revoke(sessionID string)
+}
+
 // Logout logs out the user
 func (g *SessionGuard) Logout(w http.ResponseWriter, r *http.Request) error {
 	session := g.getSession(r)
@@ -403,6 +412,16 @@ func (g *SessionGuard) Logout(w http.ResponseWriter, r *http.Request) error {
 	// Save invalidated session (will delete cookie)
 	if err := session.Save(w); err != nil {
 		return err
+	}
+
+	// Revoke in the underlying SessionStore when it supports the
+	// revocation capability (CookieStore). The cookie value still
+	// decrypts post-logout, so without this call a captured cookie
+	// remains valid until its IssuedAt window elapses. Best-effort:
+	// the store may not implement the interface (other drivers,
+	// future stores), and Revoke has no failure mode.
+	if rev, ok := g.store.(sessionRevoker); ok && sessionID != "" {
+		rev.Revoke(sessionID)
 	}
 
 	if store := g.getServerStore(); store != nil && sessionID != "" {
