@@ -322,7 +322,7 @@ func TestExtractIP_XForwardedFor(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx, _ := createTestContext("GET", "/", map[string]string{"X-Forwarded-For": tt.xff})
-			ip := extractIP(ctx, trusted)
+			ip := extractIP(ctx, trusted.IPNets())
 			if ip != tt.expected {
 				t.Errorf("Expected IP %s, got %s", tt.expected, ip)
 			}
@@ -345,7 +345,7 @@ func TestExtractIP_XRealIP(t *testing.T) {
 		t.Fatalf("ParseTrustedProxies: %v", err)
 	}
 	ctx, _ := createTestContext("GET", "/", map[string]string{"X-Real-IP": "10.0.0.1"})
-	ip := extractIP(ctx, trusted)
+	ip := extractIP(ctx, trusted.IPNets())
 	if ip != "10.0.0.1" {
 		t.Errorf("Expected IP 10.0.0.1, got %s", ip)
 	}
@@ -385,7 +385,7 @@ func TestExtractIP_XForwardedForPriority(t *testing.T) {
 		"X-Forwarded-For": "192.168.1.1",
 		"X-Real-IP":       "10.0.0.1",
 	})
-	ip := extractIP(ctx, trusted)
+	ip := extractIP(ctx, trusted.IPNets())
 	if ip != "192.168.1.1" {
 		t.Errorf("Expected X-Forwarded-For IP 192.168.1.1, got %s", ip)
 	}
@@ -978,7 +978,7 @@ func TestExtractIP_RejectsCommaInjectedXRealIP(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx, _ := createTestContext("GET", "/", map[string]string{"X-Real-IP": tt.header})
-			ip := extractIP(ctx, trusted)
+			ip := extractIP(ctx, trusted.IPNets())
 			// Spoof was ignored — fell back to RemoteAddr (httptest default 192.0.2.1).
 			if ip != "192.0.2.1" {
 				t.Errorf("expected fallback to remoteAddr 192.0.2.1, got %q (spoofed header was honoured)", ip)
@@ -988,7 +988,7 @@ func TestExtractIP_RejectsCommaInjectedXRealIP(t *testing.T) {
 
 	// Sanity: a valid single IP is still accepted.
 	ctx, _ := createTestContext("GET", "/", map[string]string{"X-Real-IP": "10.0.0.9"})
-	if ip := extractIP(ctx, trusted); ip != "10.0.0.9" {
+	if ip := extractIP(ctx, trusted.IPNets()); ip != "10.0.0.9" {
 		t.Errorf("valid single IP rejected: got %q, want 10.0.0.9", ip)
 	}
 }
@@ -1011,7 +1011,126 @@ func TestExtractIP_IgnoresXRealIPFromUntrustedPeer(t *testing.T) {
 		t.Fatalf("ParseTrustedProxies: %v", err)
 	}
 	ctx2, _ := createTestContext("GET", "/", map[string]string{"X-Real-IP": "203.0.113.9"})
-	if ip := extractIP(ctx2, otherTrusted); ip != "192.0.2.1" {
+	if ip := extractIP(ctx2, otherTrusted.IPNets()); ip != "192.0.2.1" {
 		t.Errorf("peer outside trust: expected RemoteAddr 192.0.2.1, got %q", ip)
+	}
+}
+
+// TestRateLimitByIP_HonorsRouterLevelTrustedProxies asserts the C-05
+// follow-up wiring: a deployment behind a load balancer sets the
+// trusted-proxy list at the ROUTER level (Router.TrustedProxies),
+// and RateLimitByIP picks it up via Context.TrustedProxyNets()
+// without needing a per-middleware WithTrustedProxies. Distinct
+// real clients behind the LB get distinct rate-limit buckets;
+// without the wiring they would share one bucket per LB IP.
+func TestRateLimitByIP_HonorsRouterLevelTrustedProxies(t *testing.T) {
+	// Build a router with the LB CIDR in its trust list.
+	r := NewV2()
+	r.TrustedProxies = []string{"10.0.0.0/8"}
+	if err := r.ValidateConfig(); err != nil {
+		t.Fatalf("ValidateConfig: %v", err)
+	}
+	parsed := r.trustedProxiesOrParse()
+
+	// Build the middleware with NO per-middleware list (must rely on
+	// router-level). Burst=1 so the second hit from the same client
+	// is denied.
+	middleware := RateLimitByIP(1, time.Minute)
+	handler := middleware(successHandler)
+
+	// Helper: build a context with router-level trust populated, a
+	// fixed LB RemoteAddr, and a chosen real-client XFF.
+	ctxAs := func(realClient string) (*Context, *httptest.ResponseRecorder) {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.RemoteAddr = "10.0.0.1:443" // LB IP
+		req.Header.Set("X-Forwarded-For", realClient)
+		rec := httptest.NewRecorder()
+		ctx := &Context{
+			Request:        req,
+			Response:       rec,
+			params:         make([]RouteParam, 0),
+			values:         make(map[string]interface{}),
+			trustedProxies: parsed,
+		}
+		return ctx, rec
+	}
+
+	// Client A: first request allowed.
+	ctxA1, recA1 := ctxAs("203.0.113.9")
+	_ = handler(ctxA1)
+	if recA1.Code != http.StatusOK {
+		t.Fatalf("client A first request: expected 200, got %d", recA1.Code)
+	}
+
+	// Client A: second request blocked (same bucket).
+	ctxA2, recA2 := ctxAs("203.0.113.9")
+	_ = handler(ctxA2)
+	if recA2.Code != http.StatusTooManyRequests {
+		t.Fatalf("client A second request: expected 429 (same client), got %d", recA2.Code)
+	}
+
+	// Client B (different real-client IP behind the same LB): allowed.
+	// If the trust list were NOT honoured, both clients would share
+	// the LB's bucket and this would also be 429.
+	ctxB, recB := ctxAs("198.51.100.42")
+	_ = handler(ctxB)
+	if recB.Code != http.StatusOK {
+		t.Fatalf("client B first request: expected 200 (distinct client behind same LB), got %d (router-level trust list not honoured)", recB.Code)
+	}
+}
+
+// TestRateLimitByIP_UnionsRouterAndPerMiddlewareTrust asserts the
+// per-middleware WithTrustedProxies list is ADDED to the router-level
+// list, not replacing it.
+func TestRateLimitByIP_UnionsRouterAndPerMiddlewareTrust(t *testing.T) {
+	// Router trusts 10.0.0.0/8 (the LB tier).
+	r := NewV2()
+	r.TrustedProxies = []string{"10.0.0.0/8"}
+	if err := r.ValidateConfig(); err != nil {
+		t.Fatalf("ValidateConfig: %v", err)
+	}
+	parsed := r.trustedProxiesOrParse()
+
+	// Per-middleware adds 192.168.0.0/16 (a second hop the router
+	// itself does not trust, e.g. an internal LB layer).
+	middleware := RateLimitByIP(1, time.Minute, WithTrustedProxies([]string{"192.168.0.0/16"}))
+	handler := middleware(successHandler)
+
+	// Request through the chain: real client + 192.168.x (inner LB,
+	// per-middleware trust) + 10.0.0.x (outer LB, router trust) ->
+	// RemoteAddr. With union, right-most-of-trusted resolution
+	// returns the real client.
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "10.0.0.1:443" // outer LB
+	req.Header.Set("X-Forwarded-For", "203.0.113.9, 192.168.1.5, 10.0.0.2")
+	rec := httptest.NewRecorder()
+	ctx := &Context{
+		Request:        req,
+		Response:       rec,
+		params:         make([]RouteParam, 0),
+		values:         make(map[string]interface{}),
+		trustedProxies: parsed,
+	}
+	_ = handler(ctx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first request expected 200, got %d", rec.Code)
+	}
+
+	// Second request from the same real client must hit the bucket
+	// (proving the key was the real client, not the LB).
+	req2 := httptest.NewRequest("GET", "/", nil)
+	req2.RemoteAddr = "10.0.0.1:443"
+	req2.Header.Set("X-Forwarded-For", "203.0.113.9, 192.168.1.5, 10.0.0.2")
+	rec2 := httptest.NewRecorder()
+	ctx2 := &Context{
+		Request:        req2,
+		Response:       rec2,
+		params:         make([]RouteParam, 0),
+		values:         make(map[string]interface{}),
+		trustedProxies: parsed,
+	}
+	_ = handler(ctx2)
+	if rec2.Code != http.StatusTooManyRequests {
+		t.Fatalf("second request expected 429 (same real client), got %d (union of trust lists is broken)", rec2.Code)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -391,6 +392,18 @@ func (c *Context) IP() string {
 	}
 	xff := c.Request.Header.Get("X-Forwarded-For")
 	return c.trustedProxies.ClientIP(host, xff)
+}
+
+// TrustedProxyNets returns the router-level trusted proxy networks
+// installed for this request, in the form expected by
+// internal/clientip.Extract. Middleware wanting to perform their own
+// client-IP resolution (e.g. rate limiters that want to union an
+// extra deployment-specific trust list with the router's) should
+// call this so the framework speaks one trust policy.
+//
+// Returns nil when no proxies are trusted.
+func (c *Context) TrustedProxyNets() []*net.IPNet {
+	return c.trustedProxies.IPNets()
 }
 
 // reset clears the context for reuse by the sync.Pool.

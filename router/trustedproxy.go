@@ -71,6 +71,23 @@ func (tp *TrustedProxies) Len() int {
 	return len(tp.nets)
 }
 
+// IPNets returns a snapshot of the parsed proxy networks, suitable for
+// passing to internal/clientip.Extract or unioning with another
+// trust list at the middleware layer.
+//
+// The returned slice is a copy; callers may inspect it freely but
+// must not assume the contents will track later mutations of the
+// TrustedProxies value (which is immutable after construction
+// anyway). Returns nil when the set is empty.
+func (tp *TrustedProxies) IPNets() []*net.IPNet {
+	if tp == nil || len(tp.nets) == 0 {
+		return nil
+	}
+	out := make([]*net.IPNet, len(tp.nets))
+	copy(out, tp.nets)
+	return out
+}
+
 // Contains reports whether the given IP (string form) falls inside any
 // trusted network. Returns false for unparseable input.
 func (tp *TrustedProxies) Contains(ipStr string) bool {

@@ -15,6 +15,7 @@ import (
 	"github.com/velocitykode/velocity/csrf"
 	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/exceptions"
+	"github.com/velocitykode/velocity/internal/clientip"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/orm"
@@ -150,10 +151,29 @@ func New(opts ...Option) (*App, error) {
 		}
 	})
 
-	// 2. Initialize exception handler (available for all subsequent services)
+	// 2. Initialize exception handler (available for all subsequent services).
+	//
+	// Trusted-proxy plumbing: parse the deployment-level trust list once
+	// here and propagate to every subsystem that captures a client IP
+	// (exceptions audit log, router rate-limit, auth throttler). The
+	// list is sourced from Config.Auth.TrustedProxies for now; the auth
+	// config is where the C-05 fix introduced the deployment knob and
+	// it is still the single source of truth for "real client IP" until
+	// a follow-up consolidates it to the root Config.
+	//
+	// A malformed entry is logged once and the list is dropped (no
+	// proxies trusted, secure default). Operators who want fail-fast
+	// startup should validate at boot via clientip.ParseCIDRs.
+	trustedProxyNets, tpErr := clientip.ParseCIDRs(a.config.Auth.TrustedProxies)
+	if tpErr != nil {
+		a.Log.Warn("Trusted proxies parse failed; XFF headers will be untrusted everywhere", "error", tpErr)
+		trustedProxyNets = nil
+	}
+
 	a.Services.Exceptions = exceptions.NewHandler(
 		exceptions.WithDebug(a.config.Debug),
 		exceptions.WithEnvironment(a.config.Env),
+		exceptions.WithTrustedProxies(trustedProxyNets),
 	)
 
 	// 3. Initialize crypto (auth/csrf may need it). Crypto is stateless
@@ -379,6 +399,13 @@ func New(opts ...Option) (*App, error) {
 	// resources at this point (no listener bound) so no cleanup is needed.
 	a.Router = router.New()
 	a.Router.SetServices(a.Services)
+	// Propagate the deployment-level trusted-proxy list parsed at step 2
+	// so Context.IP(), per-IP rate limits, and any future client-IP
+	// surface in the router agree with the throttle/exception layers.
+	// Stored on the router as the raw strings so ValidateConfig can
+	// re-parse for fail-fast at boot; the rate-limit path reads the
+	// already-parsed nets via Context.TrustedProxyNets().
+	a.Router.TrustedProxies = a.config.Auth.TrustedProxies
 	// Configure the file-serving root. When FILE_ROOT is unset, the
 	// router falls back to the process CWD at request time, preserving
 	// legacy behaviour for callers that have not opted in.

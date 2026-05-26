@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/velocitykode/velocity/internal/clientip"
 )
 
 func TestNewHTTPRenderContext(t *testing.T) {
@@ -275,7 +277,11 @@ func TestErrorHandler(t *testing.T) {
 	}
 }
 
-func TestGetClientIP(t *testing.T) {
+// TestGetClientIP_SecureDefault confirms the post-C-05 behaviour:
+// without any trusted-proxy list installed, X-Forwarded-For and
+// X-Real-IP are IGNORED. Spoofed headers from a direct-internet client
+// can no longer poison the audit log. RemoteAddr is the only source.
+func TestGetClientIP_SecureDefault(t *testing.T) {
 	tests := []struct {
 		name          string
 		xForwardedFor string
@@ -284,36 +290,39 @@ func TestGetClientIP(t *testing.T) {
 		want          string
 	}{
 		{
-			name:          "x-forwarded-for single",
-			xForwardedFor: "192.168.1.1",
-			want:          "192.168.1.1",
-		},
-		{
-			name:          "x-forwarded-for multiple",
-			xForwardedFor: "192.168.1.1, 10.0.0.1, 172.16.0.1",
-			want:          "192.168.1.1",
-		},
-		{
-			name:    "x-real-ip",
-			xRealIP: "192.168.1.2",
-			want:    "192.168.1.2",
-		},
-		{
 			name:       "remote addr with port",
 			remoteAddr: "192.168.1.3:12345",
 			want:       "192.168.1.3",
 		},
 		{
-			name:       "remote addr without port",
-			remoteAddr: "192.168.1.4",
-			want:       "192.168.1.4",
+			name:       "ipv6 with brackets+port",
+			remoteAddr: "[2001:db8::1]:443",
+			want:       "2001:db8::1",
 		},
 		{
-			name:          "priority x-forwarded-for",
+			name:          "spoofed XFF ignored when no trusted proxies configured",
+			xForwardedFor: "8.8.8.8",
+			remoteAddr:    "203.0.113.9:54321",
+			want:          "203.0.113.9",
+		},
+		{
+			name:          "spoofed XFF with multiple hops ignored",
+			xForwardedFor: "8.8.8.8, 1.2.3.4, 5.6.7.8",
+			remoteAddr:    "203.0.113.9:54321",
+			want:          "203.0.113.9",
+		},
+		{
+			name:       "spoofed X-Real-IP ignored",
+			xRealIP:    "8.8.8.8",
+			remoteAddr: "203.0.113.9:54321",
+			want:       "203.0.113.9",
+		},
+		{
+			name:          "spoofed X-Forwarded-For + X-Real-IP both ignored",
 			xForwardedFor: "10.0.0.1",
 			xRealIP:       "10.0.0.2",
 			remoteAddr:    "10.0.0.3:1234",
-			want:          "10.0.0.1",
+			want:          "10.0.0.3",
 		},
 	}
 
@@ -330,11 +339,100 @@ func TestGetClientIP(t *testing.T) {
 				r.RemoteAddr = tt.remoteAddr
 			}
 
-			got := getClientIP(r)
+			// nil trusted-proxy list: forwarded headers MUST be ignored.
+			got := getClientIP(r, nil)
 			if got != tt.want {
-				t.Errorf("getClientIP() = %q, want %q", got, tt.want)
+				t.Errorf("getClientIP() = %q, want %q (spoofed header leaked into audit log)", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestGetClientIP_HonorsTrustedProxies confirms that when a trusted-
+// proxy list IS installed and the direct peer is in it, forwarded
+// headers ARE honoured via clientip.Extract's right-most-of-trusted
+// semantics. This is the explicit opt-in for load-balancer
+// deployments.
+func TestGetClientIP_HonorsTrustedProxies(t *testing.T) {
+	trusted, err := clientip.ParseCIDRs([]string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("ParseCIDRs: %v", err)
+	}
+
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "10.0.0.1:443"
+	r.Header.Set("X-Forwarded-For", "203.0.113.9, 10.0.0.2")
+
+	if got := getClientIP(r, trusted); got != "203.0.113.9" {
+		t.Errorf("getClientIP = %q, want %q", got, "203.0.113.9")
+	}
+
+	// Spoofed XFF from an UNTRUSTED direct peer must still be ignored
+	// even when a trust list is installed.
+	r2 := httptest.NewRequest("GET", "/", nil)
+	r2.RemoteAddr = "203.0.113.9:54321"
+	r2.Header.Set("X-Forwarded-For", "8.8.8.8")
+	if got := getClientIP(r2, trusted); got != "203.0.113.9" {
+		t.Errorf("spoofed XFF from untrusted peer leaked: got %q, want %q", got, "203.0.113.9")
+	}
+}
+
+// TestErrorHandler_RecordsRealClientIP_NotSpoofedXFF wires the
+// Handler-side setter end-to-end: a deployment with NO trusted proxies
+// (the default after `velocity.New` on a direct-internet host) must
+// record RemoteAddr on the ExceptionContext, even when the attacker
+// sends X-Forwarded-For. This is the regression pin for the audit
+// finding (log poisoning / forensics evasion).
+func TestErrorHandler_RecordsRealClientIP_NotSpoofedXFF(t *testing.T) {
+	var captured *ExceptionContext
+	h := NewHandler(WithReporters(NewCallbackReporter(func(_ error, exCtx *ExceptionContext) {
+		captured = exCtx
+	})))
+
+	// No SetTrustedProxies call: handler defaults to no trust.
+	eh := ErrorHandler(h)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "203.0.113.9:54321"
+	r.Header.Set("X-Forwarded-For", "8.8.8.8")
+	r.Header.Set("X-Real-IP", "9.9.9.9")
+
+	eh(w, r, NewInternalServerErrorException("boom"))
+
+	if captured == nil {
+		t.Fatal("no exception context captured")
+	}
+	if captured.IP != "203.0.113.9" {
+		t.Fatalf("ExceptionContext.IP = %q, want %q (spoofed XFF/X-Real-IP leaked into audit log)", captured.IP, "203.0.113.9")
+	}
+}
+
+// TestHandler_SetTrustedProxies_DefensiveCopy: caller mutation of the
+// slice handed in must not affect the handler's view.
+func TestHandler_SetTrustedProxies_DefensiveCopy(t *testing.T) {
+	h := NewHandler()
+	proxies, _ := clientip.ParseCIDRs([]string{"10.0.0.0/8"})
+	h.SetTrustedProxies(proxies)
+
+	for i := range proxies {
+		proxies[i] = nil
+	}
+
+	got := h.getTrustedProxies()
+	if len(got) != 1 || got[0] == nil {
+		t.Fatalf("handler observed caller mutation: %v", got)
+	}
+}
+
+// TestHandler_SetTrustedProxies_NilClears: passing nil reverts to the
+// secure default (no trust).
+func TestHandler_SetTrustedProxies_NilClears(t *testing.T) {
+	h := NewHandler()
+	proxies, _ := clientip.ParseCIDRs([]string{"10.0.0.0/8"})
+	h.SetTrustedProxies(proxies)
+	h.SetTrustedProxies(nil)
+	if got := h.getTrustedProxies(); got != nil {
+		t.Fatalf("expected nil after clear, got %v", got)
 	}
 }
 

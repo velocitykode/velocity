@@ -13,6 +13,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/velocitykode/velocity/internal/clientip"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -68,9 +69,18 @@ func WithCleanupInterval(interval time.Duration) RateLimitOption {
 	}
 }
 
-// WithTrustedProxies sets the list of trusted proxy IPs/CIDRs.
-// When set, X-Forwarded-For and X-Real-IP headers are only trusted
-// when the direct connection IP is in this list.
+// WithTrustedProxies sets the per-middleware list of trusted proxy
+// IPs/CIDRs. When set, X-Forwarded-For and X-Real-IP headers are
+// trusted when the direct connection IP is in this list OR in the
+// router-level set (Router.TrustedProxies / Router.SetTrustedProxies).
+//
+// Prefer configuring trust ONCE at the router level. This option
+// remains as an escape hatch when a single rate limiter genuinely
+// needs to trust an extra hop the router does not; the two lists
+// are unioned at request time. Diverging the per-middleware list
+// from the router-level list was the historical foot-gun that
+// caused staging/prod inconsistency, so plain "rely on the router"
+// is the recommended configuration.
 func WithTrustedProxies(proxies []string) RateLimitOption {
 	return func(cfg *RateLimitConfig) {
 		cfg.TrustedProxies = proxies
@@ -348,13 +358,15 @@ func RateLimitByKey(requests int, window time.Duration, keyFunc func(*Context) s
 }
 
 // RateLimitByIP creates a per-IP rate limiter middleware.
-// It extracts the client IP from RemoteAddr by default. If TrustedProxies
-// is configured (via WithTrustedProxies), it will trust X-Forwarded-For
-// and X-Real-IP headers only when the direct connection comes from a
-// trusted proxy.
+// It resolves the client IP via internal/clientip.Extract, honouring
+// the router-level trusted-proxy set (Router.TrustedProxies /
+// Router.SetTrustedProxies). When the per-middleware WithTrustedProxies
+// option is also supplied, the two lists are unioned at request time;
+// historically diverging the two caused staging/prod inconsistency, so
+// configure trust at the router level when possible.
 //
-// Returns a middleware that panics at first use if any TrustedProxies
-// entry is invalid. For fail-fast behaviour at boot use
+// Returns a middleware that panics at first use if any per-middleware
+// TrustedProxies entry is invalid. For fail-fast behaviour at boot use
 // RateLimitByIPE, which surfaces the parse error directly.
 func RateLimitByIP(requests int, window time.Duration, opts ...RateLimitOption) MiddlewareFunc {
 	mw, err := RateLimitByIPE(requests, window, opts...)
@@ -368,53 +380,85 @@ func RateLimitByIP(requests int, window time.Duration, opts ...RateLimitOption) 
 // Use this in bootstrap code so an invalid TrustedProxies list fails
 // startup instead of deferring the panic to the first request.
 func RateLimitByIPE(requests int, window time.Duration, opts ...RateLimitOption) (MiddlewareFunc, error) {
-	// Pre-parse opts to extract trusted proxies for the key func closure
+	// Pre-parse the per-middleware opts so a malformed CIDR fails at
+	// construction time. ParseTrustedProxies wraps ErrInvalidTrustedProxy
+	// so callers can errors.Is-match across both the router-level and
+	// rate-limit code paths. The parsed list is unioned with the
+	// router-level trusted-proxy set (carried on Context) at request
+	// time via extractIP.
 	cfg := &RateLimitConfig{}
 	for _, opt := range opts {
 		opt(cfg)
 	}
-	trusted, err := ParseTrustedProxies(cfg.TrustedProxies)
+	extra, err := ParseTrustedProxies(cfg.TrustedProxies)
 	if err != nil {
 		return nil, fmt.Errorf("velocity/router: rate limit: %w", err)
 	}
+	extraNets := extra.IPNets()
 	return RateLimitByKey(requests, window, func(c *Context) string {
-		return extractIP(c, trusted)
+		return extractIP(c, extraNets)
 	}, opts...), nil
 }
 
-// extractIP extracts the client IP address from the request.
-// Only trusts X-Forwarded-For and X-Real-IP when the direct connection
-// comes from a trusted proxy. Otherwise, uses RemoteAddr.
+// extractIP resolves the client IP for a per-IP rate-limit bucket via
+// internal/clientip.Extract. The trust list is the UNION of the
+// router-level set (Context.TrustedProxyNets, populated from
+// Router.TrustedProxies) and the per-middleware extras passed in via
+// WithTrustedProxies. Unioning, rather than letting the per-middleware
+// list silently replace the router-level list, closes the
+// staging/prod-divergence foot-gun documented in the C-05 audit.
 //
-// When the direct connection is trusted, X-Forwarded-For is honoured
-// using RFC 7239 right-most-trusted semantics.
-//
-// X-Real-IP is a single-value header and is parsed with net.ParseIP; any
-// value containing whitespace-separated or comma-separated entries is
-// rejected to prevent throttle-key spoofing via injected headers.
-func extractIP(c *Context, trusted *TrustedProxies) string {
-	remoteIP := stripPortHost(c.Request.RemoteAddr)
-	if trusted == nil || trusted.Len() == 0 || !trusted.Contains(remoteIP) {
-		return remoteIP
-	}
+// Returns the RemoteAddr IP (port stripped) when no proxies are
+// trusted or the direct peer is not among them; otherwise honours
+// Forwarded > X-Forwarded-For (rightmost-of-trusted) > X-Real-IP
+// (single-value only) per the clientip package contract.
+func extractIP(c *Context, extra []*net.IPNet) string {
+	return clientip.ExtractString(c.Request, unionTrustedProxies(c.TrustedProxyNets(), extra))
+}
 
-	if xff := c.Header("X-Forwarded-For"); xff != "" {
-		return trusted.ClientIP(remoteIP, xff)
+// unionTrustedProxies returns the deduplicated union of two
+// proxy-network lists. The "deduplication" is a string-key compare
+// on String() form, which is fine for the small lists typical of
+// deployment topologies. Nil slices are treated as empty.
+func unionTrustedProxies(a, b []*net.IPNet) []*net.IPNet {
+	if len(a) == 0 {
+		return b
 	}
-	if xri := c.Header("X-Real-IP"); xri != "" {
-		if parsed := parseSingleIP(xri); parsed != "" {
-			return parsed
+	if len(b) == 0 {
+		return a
+	}
+	out := make([]*net.IPNet, 0, len(a)+len(b))
+	seen := make(map[string]struct{}, len(a)+len(b))
+	for _, n := range a {
+		if n == nil {
+			continue
 		}
+		k := n.String()
+		if _, dup := seen[k]; dup {
+			continue
+		}
+		seen[k] = struct{}{}
+		out = append(out, n)
 	}
-	return remoteIP
+	for _, n := range b {
+		if n == nil {
+			continue
+		}
+		k := n.String()
+		if _, dup := seen[k]; dup {
+			continue
+		}
+		seen[k] = struct{}{}
+		out = append(out, n)
+	}
+	return out
 }
 
 // parseSingleIP validates that the given header value is a single IP address.
+// Retained for backward compatibility with callers outside the rate-limit
+// path; the rate limiter itself now routes through internal/clientip.
 // Returns the canonical string form when valid, "" when the value contains a
-// comma, whitespace, or is otherwise not a single well-formed IP. X-Real-IP
-// is spec'd as a single value — rejecting multi-value input closes a
-// throttle-key spoofing vector where an attacker sends
-// `X-Real-IP: 1.2.3.4, 5.6.7.8`.
+// comma, whitespace, or is otherwise not a single well-formed IP.
 func parseSingleIP(value string) string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {

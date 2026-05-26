@@ -3,6 +3,7 @@ package exceptions
 import (
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"reflect"
 	"sync"
@@ -66,6 +67,18 @@ type Handler struct {
 
 	// Custom handlers for specific exception types
 	customHandlers map[reflect.Type]func(RenderContext, error, *ExceptionContext)
+
+	// trustedProxies is the parsed list of proxy networks whose
+	// forwarded headers (Forwarded, X-Forwarded-For, X-Real-IP) may
+	// be honoured when capturing the client IP for the
+	// ExceptionContext. Nil means "no proxies trusted" (the secure
+	// default): forwarded headers are ignored and the RemoteAddr IP
+	// is recorded. Set via SetTrustedProxies during boot.
+	//
+	// Logging the real client IP and refusing to honour spoofed
+	// headers prevents log poisoning / forensics evasion from any
+	// direct-internet deployment (audit C-05 finding 4).
+	trustedProxies []*net.IPNet
 }
 
 // Option is a functional option for configuring the Handler.
@@ -155,6 +168,21 @@ func WithAPIMode(enabled bool) Option {
 	}
 }
 
+// WithTrustedProxies installs the parsed proxy-network list used to
+// resolve the client IP recorded on the ExceptionContext. Pass nil to
+// disable XFF/Forwarded resolution (secure default; the RemoteAddr IP
+// is logged). Safe for use at construction time; SetTrustedProxies is
+// the runtime equivalent.
+func WithTrustedProxies(proxies []*net.IPNet) Option {
+	return func(h *Handler) {
+		if len(proxies) == 0 {
+			h.trustedProxies = nil
+			return
+		}
+		h.trustedProxies = append([]*net.IPNet(nil), proxies...)
+	}
+}
+
 // WithAPIPrefixes sets URL prefixes that indicate API routes.
 // Requests to these paths will always receive JSON responses.
 func WithAPIPrefixes(prefixes ...string) Option {
@@ -241,6 +269,41 @@ func (h *Handler) IsAPIMode() bool {
 }
 
 // SetAPIPrefixes sets URL prefixes that indicate API routes.
+// SetTrustedProxies installs the parsed proxy-network list used by
+// ErrorHandler (and any other client-IP-sensitive surface on this
+// handler) when capturing the IP onto the ExceptionContext. Pass nil
+// to disable XFF/Forwarded resolution (the secure default; the
+// RemoteAddr IP is logged verbatim).
+//
+// Safe to call concurrently with request handling: the handler
+// snapshots the slice under its mutex so a concurrent
+// getTrustedProxies sees either the old or the new list, never a
+// torn pointer.
+func (h *Handler) SetTrustedProxies(proxies []*net.IPNet) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(proxies) == 0 {
+		h.trustedProxies = nil
+		return
+	}
+	// Defensive copy so callers cannot mutate the handler's view by
+	// editing the slice they handed in.
+	h.trustedProxies = append([]*net.IPNet(nil), proxies...)
+}
+
+// getTrustedProxies returns a snapshot of the installed proxy list
+// under a read lock. Returned slice is owned by the caller.
+func (h *Handler) getTrustedProxies() []*net.IPNet {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if len(h.trustedProxies) == 0 {
+		return nil
+	}
+	out := make([]*net.IPNet, len(h.trustedProxies))
+	copy(out, h.trustedProxies)
+	return out
+}
+
 func (h *Handler) SetAPIPrefixes(prefixes ...string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
