@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // afterCommitListener implements ShouldDispatchAfterCommit and records
@@ -431,3 +432,124 @@ func (l funcListener) Handle(ctx context.Context, event interface{}) error {
 
 func (l funcListener) ShouldQueue() bool               { return l.shouldQueue }
 func (l funcListener) ShouldDispatchAfterCommit() bool { return l.shouldDefer }
+
+// recordingQueue captures Push invocations so a test can assert a
+// listener went through the queue branch instead of running inline.
+type recordingQueue struct {
+	pushed []recordingPush
+}
+
+type recordingPush struct {
+	event    interface{}
+	listener Listener
+	delay    time.Duration
+}
+
+func (q *recordingQueue) Push(_ context.Context, event interface{}, listener Listener, delay time.Duration) error {
+	q.pushed = append(q.pushed, recordingPush{event: event, listener: listener, delay: delay})
+	return nil
+}
+
+// queueDeferListener implements BOTH ShouldQueue and
+// ShouldDispatchAfterCommit. Under a transaction, Dispatch must defer to
+// the after-commit queue; at commit time, the replay must re-route
+// through the queue dispatcher (not run the listener inline). Without
+// the M-47 closure fix, the listener fires sync on the commit goroutine.
+type queueDeferListener struct {
+	invocations atomic.Int32
+}
+
+func (l *queueDeferListener) Handle(_ context.Context, _ interface{}) error {
+	l.invocations.Add(1)
+	return nil
+}
+
+func (l *queueDeferListener) ShouldQueue() bool               { return true }
+func (l *queueDeferListener) ShouldDispatchAfterCommit() bool { return true }
+
+// TestDispatch_AfterCommitListener_ShouldQueueRoutesThroughQueueAtCommit
+// closes the M-47 follow-up: a listener that opts into both
+// after-commit AND queue must be PUSHED to the queue when the
+// transaction commits, not invoked synchronously on the commit
+// goroutine. Sync invocation silently breaks the listener's declared
+// async semantics and blocks the orm wrapper return.
+func TestDispatch_AfterCommitListener_ShouldQueueRoutesThroughQueueAtCommit(t *testing.T) {
+	d := NewDispatcher()
+	q := &recordingQueue{}
+	d.SetQueueDispatcher(q)
+
+	listener := &queueDeferListener{}
+	d.Listen("user.created", listener)
+
+	ctx := PrepareAfterCommit(context.Background())
+
+	if err := d.Dispatch(ctx, "user.created"); err != nil {
+		t.Fatalf("Dispatch returned error: %v", err)
+	}
+
+	// Inside the tx: listener has NOT fired, nothing pushed yet (the
+	// replay closure has not run; the queue Push happens at commit).
+	if got := listener.invocations.Load(); got != 0 {
+		t.Fatalf("listener fired %d times inside tx; want 0", got)
+	}
+	if len(q.pushed) != 0 {
+		t.Fatalf("queue received %d pushes inside tx; want 0", len(q.pushed))
+	}
+	if pending := PendingAfterCommit(ctx); pending != 1 {
+		t.Fatalf("PendingAfterCommit = %d; want 1", pending)
+	}
+
+	if err := FireAfterCommit(ctx); err != nil {
+		t.Fatalf("FireAfterCommit returned error: %v", err)
+	}
+
+	// At commit: the replay closure ran, observed ShouldQueue()==true,
+	// and pushed to the queue. The listener body did NOT run on the
+	// commit goroutine; the queue would invoke it asynchronously in
+	// production.
+	if got := listener.invocations.Load(); got != 0 {
+		t.Fatalf("listener fired sync on commit goroutine (%d times); want 0", got)
+	}
+	if len(q.pushed) != 1 {
+		t.Fatalf("queue received %d pushes after commit; want 1", len(q.pushed))
+	}
+	if q.pushed[0].event != "user.created" {
+		t.Fatalf("queued event = %v; want user.created", q.pushed[0].event)
+	}
+	if q.pushed[0].listener != listener {
+		t.Fatal("queued listener pointer mismatch")
+	}
+}
+
+// TestDispatch_AfterCommitListener_ShouldQueueFallsThroughWhenQueueUnwired
+// pins the rare-race fallback: if the queue dispatcher is unwired
+// between dispatch and commit, the replay closure falls back to inline
+// invocation rather than silently dropping the listener.
+func TestDispatch_AfterCommitListener_ShouldQueueFallsThroughWhenQueueUnwired(t *testing.T) {
+	d := NewDispatcher()
+	q := &recordingQueue{}
+	d.SetQueueDispatcher(q)
+
+	listener := &queueDeferListener{}
+	d.Listen("user.created", listener)
+
+	ctx := PrepareAfterCommit(context.Background())
+	if err := d.Dispatch(ctx, "user.created"); err != nil {
+		t.Fatalf("Dispatch returned error: %v", err)
+	}
+
+	// Unwire the queue before commit.
+	d.SetQueueDispatcher(nil)
+
+	if err := FireAfterCommit(ctx); err != nil {
+		t.Fatalf("FireAfterCommit returned error: %v", err)
+	}
+
+	// Listener fired inline because the queue was nil at replay time.
+	if got := listener.invocations.Load(); got != 1 {
+		t.Fatalf("listener fired %d times; want 1 (inline fallback)", got)
+	}
+	if len(q.pushed) != 0 {
+		t.Fatalf("queue received %d pushes after unwire; want 0", len(q.pushed))
+	}
+}

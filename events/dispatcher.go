@@ -178,9 +178,32 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, event interface{}) err
 			// Capture the listener and event for replay at commit
 			// time. The replay uses commit-time ctx (not the in-flight
 			// tx ctx) so listeners see post-transaction values.
+			//
+			// At commit time we re-check ShouldQueue and the live queue
+			// handle: a listener that opts into BOTH after-commit AND
+			// queueing must still take the queue branch when the
+			// transaction lands. Without this gate a ShouldQueue
+			// listener that also implements ShouldDispatchAfterCommit
+			// would run synchronously on the commit goroutine, blocking
+			// the orm wrapper return and silently changing the listener's
+			// declared async semantics.
 			ev := event
 			ln := listener
 			if EnqueueAfterCommit(ctx, func(replayCtx context.Context) error {
+				if ln.ShouldQueue() {
+					d.mu.RLock()
+					replayQueue := d.queue
+					d.mu.RUnlock()
+					if replayQueue != nil {
+						if err := replayQueue.Push(replayCtx, ev, ln, 0); err != nil {
+							return fmt.Errorf("failed to queue listener: %w", err)
+						}
+						return nil
+					}
+					// Queue was unwired between dispatch and commit
+					// (rare). Fall through to inline so the listener
+					// still runs rather than silently disappearing.
+				}
 				return d.processListener(replayCtx, ev, ln)
 			}) {
 				return nil
