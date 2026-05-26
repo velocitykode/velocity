@@ -120,16 +120,22 @@ var extMimeAllowlist = map[string][]string{
 	"yaml": {"text/plain", "application/yaml", "text/yaml"},
 	"yml":  {"text/plain", "application/yaml", "text/yaml"},
 
-	// OOXML / OpenDocument / Java archives (all ZIP containers; Go
+	// OOXML / OpenDocument document containers (all ZIP-based; Go
 	// sniffs them as application/zip and the cross-check is the
 	// extension allowlist).
+	//
+	// Java archives (.jar) are deliberately NOT listed: a JAR is a ZIP
+	// of executable Java bytecode, which violates the framework's
+	// posture of "no executable uploads through mimes". Operators who
+	// genuinely need JAR uploads should bypass mimes for that field
+	// or wait for a dedicated archive-content allowlist rule (future
+	// work).
 	"docx": {"application/zip", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
 	"xlsx": {"application/zip", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
 	"pptx": {"application/zip", "application/vnd.openxmlformats-officedocument.presentationml.presentation"},
 	"odt":  {"application/zip", "application/vnd.oasis.opendocument.text"},
 	"ods":  {"application/zip", "application/vnd.oasis.opendocument.spreadsheet"},
 	"odp":  {"application/zip", "application/vnd.oasis.opendocument.presentation"},
-	"jar":  {"application/zip", "application/java-archive"},
 
 	// Legacy Microsoft Office binary formats use OLE compound storage,
 	// which Go does not have a dedicated signature for. They sniff as
@@ -171,6 +177,12 @@ var extMimeAllowlist = map[string][]string{
 // These extensions cause RCE when the upload is later served by a webserver
 // that runs them, and there is rarely a legitimate reason to permit them
 // through a "mimes:" content-type gate.
+//
+// .jar is included even though a JAR file sniffs as application/zip:
+// JARs bundle executable Java bytecode and a host that imports them
+// will run that code. Refusing the extension closes the rename vector
+// (foo.jar uploaded under mimes:zip) and matches the explicit removal
+// of .jar from extMimeAllowlist.
 var blockedExecutableExts = map[string]struct{}{
 	".php":      {},
 	".phtml":    {},
@@ -189,6 +201,7 @@ var blockedExecutableExts = map[string]struct{}{
 	".exe":      {},
 	".bat":      {},
 	".cmd":      {},
+	".jar":      {},
 	".htaccess": {},
 }
 
@@ -335,6 +348,15 @@ func FileRule(field string, value interface{}, params []string, data map[string]
 // payloads (e.g. report.doc carrying a PE executable) that would
 // otherwise slip past the application/octet-stream fallback used for
 // opaque container formats.
+//
+// Archive-content limitation: mimes:zip accepts the ZIP container but
+// does not scan its entries. A ZIP can carry arbitrary contents,
+// including executable bytecode. The .jar extension is therefore
+// refused outright (see blockedExecutableExts) and removed from
+// extMimeAllowlist, but mimes:zip on a payload-bearing ZIP is still
+// accepted. Adopters who need per-entry restrictions on archives
+// should validate the archive contents separately after the mimes
+// check passes.
 //
 // SVG handling: when the uploaded file itself is SVG (by extension),
 // the caller must also pass the literal token "allow_svg" (e.g.

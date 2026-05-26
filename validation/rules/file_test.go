@@ -291,7 +291,7 @@ func TestMimesRule_SVGOptInScopedToActualUpload(t *testing.T) {
 // Each format passes when given content whose sniffed MIME falls into
 // its accepted set. Audit ID F3.
 func TestMimesRule_BusinessFormatsAccepted(t *testing.T) {
-	// Minimal ZIP container header used by OOXML / OpenDocument / jar.
+	// Minimal ZIP container header used by OOXML / OpenDocument.
 	zipBytes := []byte{0x50, 0x4B, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x08, 0x00, 0, 0, 0, 0}
 	// WebAssembly magic + version.
 	wasmBytes := []byte{0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, 0, 0, 0, 0}
@@ -320,7 +320,6 @@ func TestMimesRule_BusinessFormatsAccepted(t *testing.T) {
 		{"xlsx accepted as zip", fakeFile{name: "sheet.xlsx", content: zipBytes}, []string{"xlsx"}, false},
 		{"pptx accepted as zip", fakeFile{name: "deck.pptx", content: zipBytes}, []string{"pptx"}, false},
 		{"odt accepted as zip", fakeFile{name: "doc.odt", content: zipBytes}, []string{"odt"}, false},
-		{"jar accepted as zip", fakeFile{name: "app.jar", content: zipBytes}, []string{"jar"}, false},
 		{"wasm accepted", fakeFile{name: "mod.wasm", content: wasmBytes}, []string{"wasm"}, false},
 		{"rar accepted", fakeFile{name: "archive.rar", content: rarBytes}, []string{"rar"}, false},
 		{"7z accepted", fakeFile{name: "archive.7z", content: sevenZBytes}, []string{"7z"}, false},
@@ -346,6 +345,49 @@ func TestMimesRule_BusinessFormatsAccepted(t *testing.T) {
 				t.Fatalf("want err=%v, got %v", tc.wantErr, err)
 			}
 		})
+	}
+}
+
+// TestMimesRule_JARRefused verifies F6: .jar is no longer in the
+// mimes allowlist and is also in the executable extension blocklist.
+// A JAR file is a ZIP of executable Java bytecode; the framework's
+// stated posture refuses executable uploads through mimes. Audit ID F6.
+func TestMimesRule_JARRefused(t *testing.T) {
+	// JAR / ZIP container header (PK\x03\x04).
+	jarBytes := []byte{0x50, 0x4B, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x08, 0x00, 0, 0, 0, 0}
+	plainZip := []byte{0x50, 0x4B, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x08, 0x00, 0, 0, 0, 0}
+	wasmBytes := []byte{0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, 0, 0, 0, 0}
+
+	// mimes:jar on a real JAR: refused. The "jar" token is no longer
+	// in extMimeAllowlist, and the .jar extension itself is in the
+	// blockedExecutableExts list.
+	if err := MimesRule("upload", fakeFile{name: "app.jar", content: jarBytes}, []string{"jar"}, nil); err == nil {
+		t.Fatal("expected mimes:jar on real JAR to be refused, got nil")
+	}
+
+	// mimes:zip on a file named .jar: refused via the executable
+	// extension blocklist (the .jar segment scan catches it before
+	// reaching the allowlist).
+	if err := MimesRule("upload", fakeFile{name: "app.jar", content: jarBytes}, []string{"zip"}, nil); err == nil {
+		t.Fatal("expected mimes:zip on .jar-named file to be refused, got nil")
+	}
+
+	// mimes:zip on a rename-trick app.jar.zip: refused via the
+	// segment scan that catches .jar anywhere in the filename.
+	if err := MimesRule("upload", fakeFile{name: "app.jar.zip", content: jarBytes}, []string{"zip"}, nil); err == nil {
+		t.Fatal("expected mimes:zip on app.jar.zip to be refused, got nil")
+	}
+
+	// mimes:zip on plain .zip with benign ZIP contents: still ACCEPTED.
+	// This documents the limitation that ZIP entries are not scanned;
+	// the package doc spells this out.
+	if err := MimesRule("upload", fakeFile{name: "archive.zip", content: plainZip}, []string{"zip"}, nil); err != nil {
+		t.Fatalf("expected mimes:zip on plain .zip to be accepted, got %v", err)
+	}
+
+	// Sanity regression: mimes:wasm on real WASM is unaffected.
+	if err := MimesRule("upload", fakeFile{name: "mod.wasm", content: wasmBytes}, []string{"wasm"}, nil); err != nil {
+		t.Fatalf("expected mimes:wasm on real WASM to be accepted, got %v", err)
 	}
 }
 
