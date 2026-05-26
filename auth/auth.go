@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -120,6 +121,13 @@ type Manager struct {
 	// ListActiveSessions). Nil disables those operations.
 	serverSessions ServerSessionStore
 
+	// trustedProxies is the parsed proxy-network list propagated to
+	// every guard so login throttling, audit-trail IP capture, and
+	// per-IP rate limits all agree on "who is the real client?".
+	// Set via SetTrustedProxies (typically at boot from Config.TrustedProxies).
+	// Nil means "no proxies trusted" (forwarded headers are ignored).
+	trustedProxies []*net.IPNet
+
 	mu sync.RWMutex
 }
 
@@ -139,18 +147,24 @@ func NewManager() *Manager {
 // RegisterGuard registers an authentication guard. If a server-side
 // session store is already installed and the guard implements
 // ServerSessionStoreReceiver, the store is propagated immediately so
-// registration order does not matter.
+// registration order does not matter. The same applies to the
+// trusted-proxies list and TrustedProxiesReceiver.
 func (m *Manager) RegisterGuard(name string, guard Guard) {
 	m.mu.Lock()
 	m.guards[name] = guard
 	store := m.serverSessions
+	proxies := m.trustedProxies
 	m.mu.Unlock()
 
-	if store == nil {
-		return
+	if store != nil {
+		if r, ok := guard.(ServerSessionStoreReceiver); ok {
+			r.SetServerSessionStore(store)
+		}
 	}
-	if r, ok := guard.(ServerSessionStoreReceiver); ok {
-		r.SetServerSessionStore(store)
+	if len(proxies) > 0 {
+		if r, ok := guard.(TrustedProxiesReceiver); ok {
+			r.SetTrustedProxies(proxies)
+		}
 	}
 }
 
@@ -387,6 +401,17 @@ type Config struct {
 	Guards       map[string]GuardConfig
 	Providers    map[string]ProviderConfig
 	BcryptCost   int // Bcrypt cost for password hashing. 0 uses the default.
+
+	// TrustedProxies is the list of IP/CIDR strings whose forwarded
+	// headers (Forwarded, X-Forwarded-For, X-Real-IP) may be honoured
+	// when deriving the client IP for the login throttler and the
+	// session audit trail. Empty means "no proxies trusted" (the
+	// secure default; XFF spoofing is fully ignored). Configure this
+	// at boot to match your load balancer / reverse proxy topology.
+	//
+	// Entries are parsed via internal/clientip.ParseCIDRs and
+	// propagated to every guard via Manager.SetTrustedProxies.
+	TrustedProxies []string
 }
 
 // GuardConfig holds guard configuration
@@ -422,6 +447,69 @@ func (m *Manager) SetServerSessionStore(store ServerSessionStore) {
 	for _, r := range receivers {
 		r.SetServerSessionStore(store)
 	}
+}
+
+// TrustedProxiesReceiver is an optional capability interface implemented
+// by guards that derive a client IP for throttling or audit logging.
+// Manager.SetTrustedProxies propagates the parsed proxy network list to
+// every registered guard that satisfies this interface so the throttle
+// key, the session audit trail, and per-IP limiters all agree on
+// "who is the real client?".
+//
+// Guards that do not maintain a client-IP-sensitive surface (e.g. a
+// pure bearer-token guard) leave this unimplemented; Manager silently
+// skips them.
+type TrustedProxiesReceiver interface {
+	SetTrustedProxies(proxies []*net.IPNet)
+}
+
+// SetTrustedProxies installs the parsed proxy network list used for
+// client-IP resolution across the auth package. Pass nil to clear a
+// previously installed list (reverts to "trust nothing"). Safe for
+// concurrent use.
+//
+// Every registered guard implementing TrustedProxiesReceiver is
+// notified immediately; guards registered later inherit the list at
+// registration time (see RegisterGuard).
+//
+// At boot the framework parses Config.TrustedProxies via
+// internal/clientip.ParseCIDRs and calls this with the result, so app
+// code does not normally need to touch it.
+func (m *Manager) SetTrustedProxies(proxies []*net.IPNet) {
+	m.mu.Lock()
+	// Defensive copy so callers cannot mutate the manager's view by
+	// editing the slice they handed in.
+	if len(proxies) > 0 {
+		m.trustedProxies = append([]*net.IPNet(nil), proxies...)
+	} else {
+		m.trustedProxies = nil
+	}
+	receivers := make([]TrustedProxiesReceiver, 0, len(m.guards))
+	for _, g := range m.guards {
+		if r, ok := g.(TrustedProxiesReceiver); ok {
+			receivers = append(receivers, r)
+		}
+	}
+	snapshot := m.trustedProxies
+	m.mu.Unlock()
+
+	for _, r := range receivers {
+		r.SetTrustedProxies(snapshot)
+	}
+}
+
+// TrustedProxies returns the parsed proxy network list installed via
+// SetTrustedProxies. The returned slice is a snapshot; callers may
+// read from it freely but must not mutate it.
+func (m *Manager) TrustedProxies() []*net.IPNet {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if len(m.trustedProxies) == 0 {
+		return nil
+	}
+	out := make([]*net.IPNet, len(m.trustedProxies))
+	copy(out, m.trustedProxies)
+	return out
 }
 
 // ServerSessionStore returns the installed server-side session store, or

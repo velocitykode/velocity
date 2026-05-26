@@ -8,6 +8,7 @@ import (
 	"github.com/velocitykode/velocity/auth/drivers/guards"
 	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/crypto"
+	"github.com/velocitykode/velocity/internal/clientip"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/notification"
@@ -95,6 +96,25 @@ func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger log.Logger
 	}
 	if authCfg.BcryptCost > 0 {
 		manager.SetHasher(auth.NewBcryptHasher(authCfg.BcryptCost))
+	}
+
+	// Parse the trusted-proxy list and propagate it to every guard via
+	// the auth.TrustedProxiesReceiver interface. SetTrustedProxies must
+	// be called BEFORE RegisterGuard below so newly registered guards
+	// inherit the list at registration time. A malformed entry is
+	// logged and the list is dropped (no proxies trusted), which is
+	// the same "warn-and-continue" stance the rest of initAuth uses
+	// for guard-level misconfiguration. Operators who want fail-fast
+	// should validate at boot via clientip.ParseCIDRs explicitly.
+	if len(authCfg.TrustedProxies) > 0 {
+		proxies, err := clientip.ParseCIDRs(authCfg.TrustedProxies)
+		if err != nil {
+			if logger != nil {
+				logger.Warn("Auth trusted proxies parse failed; ignoring list (XFF headers will be untrusted)", "error", err)
+			}
+		} else {
+			manager.SetTrustedProxies(proxies)
+		}
 	}
 
 	// Register providers

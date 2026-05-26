@@ -282,10 +282,11 @@ func ConfigFromEnv() Config {
 
 	// Auth
 	config.Auth = auth.Config{
-		DefaultGuard: os.Getenv("AUTH_GUARD"),
-		Guards:       make(map[string]auth.GuardConfig),
-		Providers:    make(map[string]auth.ProviderConfig),
-		BcryptCost:   envIntOrDefault("HASH_BCRYPT_COST", 10),
+		DefaultGuard:   os.Getenv("AUTH_GUARD"),
+		Guards:         make(map[string]auth.GuardConfig),
+		Providers:      make(map[string]auth.ProviderConfig),
+		BcryptCost:     envIntOrDefault("HASH_BCRYPT_COST", 10),
+		TrustedProxies: splitTrustedProxies(os.Getenv("AUTH_TRUSTED_PROXIES")),
 	}
 
 	// Configure guards if AUTH_GUARD is set
@@ -519,6 +520,27 @@ func defaultPortForDriver(driver string) string {
 	default:
 		return ""
 	}
+}
+
+// splitTrustedProxies parses a comma-separated list of IPs/CIDRs from
+// the AUTH_TRUSTED_PROXIES env var. Empty input returns nil, which the
+// auth layer treats as "no proxies trusted" (forwarded headers ignored,
+// the secure default). Whitespace around each entry is trimmed.
+func splitTrustedProxies(value string) []string {
+	if value == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func parseSameSite(value string) http.SameSite {

@@ -2,6 +2,7 @@ package guards
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -24,13 +25,40 @@ type cachedUser struct {
 
 // JWTGuard implements JWT-based authentication for APIs
 type JWTGuard struct {
-	provider    auth.UserProvider
-	jwtManager  *auth.JWTManager
-	config      auth.JWTConfig
-	mu          sync.RWMutex
-	userCache   map[string]cachedUser
-	stopCleanup chan struct{}
-	throttler   contract.LoginThrottler
+	provider       auth.UserProvider
+	jwtManager     *auth.JWTManager
+	config         auth.JWTConfig
+	mu             sync.RWMutex
+	userCache      map[string]cachedUser
+	stopCleanup    chan struct{}
+	throttler      contract.LoginThrottler
+	trustedProxies []*net.IPNet
+}
+
+// SetTrustedProxies installs the parsed proxy-network list used for
+// client-IP resolution in the login throttler. Pass nil to revert to
+// "no proxies trusted" (forwarded headers are ignored, RemoteAddr is
+// used verbatim).
+//
+// Manager.SetTrustedProxies propagates to every registered guard via
+// the auth.TrustedProxiesReceiver interface, so consumers normally do
+// not need to call this directly.
+func (g *JWTGuard) SetTrustedProxies(proxies []*net.IPNet) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(proxies) == 0 {
+		g.trustedProxies = nil
+		return
+	}
+	g.trustedProxies = append([]*net.IPNet(nil), proxies...)
+}
+
+// getTrustedProxies returns the installed trusted-proxy list under a
+// read lock so concurrent Attempt() calls see a consistent snapshot.
+func (g *JWTGuard) getTrustedProxies() []*net.IPNet {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.trustedProxies
 }
 
 // SetLoginThrottler installs a rate-limiter for Attempt() calls. Passing nil
@@ -267,7 +295,7 @@ func (g *JWTGuard) Attempt(w http.ResponseWriter, r *http.Request, credentials m
 	if throttler == nil {
 		throttler = auth.NoopLoginThrottler{}
 	}
-	key := auth.ThrottleKey(r, credentials)
+	key := auth.ThrottleKey(r, credentials, g.getTrustedProxies())
 	if !throttler.Allow(r, key) {
 		return false, auth.ErrLoginThrottled
 	}

@@ -20,6 +20,7 @@ import (
 	"github.com/velocitykode/velocity/auth/drivers/session"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
+	"github.com/velocitykode/velocity/internal/clientip"
 )
 
 // rememberRandReader is the entropy source for remember-me tokens. Tests may
@@ -56,15 +57,16 @@ const lastSeenDebounce = 60 * time.Second
 
 // SessionGuard implements session-based authentication
 type SessionGuard struct {
-	provider    auth.UserProvider
-	store       auth.SessionStore
-	config      auth.SessionConfig
-	hasher      auth.Hasher
-	encryptor   crypto.Encryptor
-	throttler   contract.LoginThrottler
-	mu          sync.RWMutex
-	serverStore auth.ServerSessionStore
-	logger      auth.Logger
+	provider       auth.UserProvider
+	store          auth.SessionStore
+	config         auth.SessionConfig
+	hasher         auth.Hasher
+	encryptor      crypto.Encryptor
+	throttler      contract.LoginThrottler
+	mu             sync.RWMutex
+	serverStore    auth.ServerSessionStore
+	logger         auth.Logger
+	trustedProxies []*net.IPNet
 }
 
 // NewSessionGuard creates a new session guard.
@@ -113,6 +115,35 @@ func (g *SessionGuard) SetServerSessionStore(store auth.ServerSessionStore) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.serverStore = store
+}
+
+// SetTrustedProxies installs the parsed proxy-network list used for
+// client-IP resolution in the login throttler and the audit-trail IP
+// recorded on Login. Pass nil to revert to "no proxies trusted"
+// (forwarded headers are ignored, RemoteAddr is used verbatim).
+//
+// Manager.SetTrustedProxies propagates to every registered guard via
+// the auth.TrustedProxiesReceiver interface, so consumers normally do
+// not need to call this directly.
+func (g *SessionGuard) SetTrustedProxies(proxies []*net.IPNet) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(proxies) == 0 {
+		g.trustedProxies = nil
+		return
+	}
+	// Defensive copy so the caller cannot mutate the guard's view by
+	// editing the slice after handing it in.
+	g.trustedProxies = append([]*net.IPNet(nil), proxies...)
+}
+
+// getTrustedProxies returns the installed trusted-proxy list under a
+// read lock so concurrent Attempt() / Login() calls see a consistent
+// snapshot. Returns nil when none has been configured.
+func (g *SessionGuard) getTrustedProxies() []*net.IPNet {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.trustedProxies
 }
 
 // SetLogger installs a logger used for non-fatal store errors (e.g. Redis
@@ -294,7 +325,7 @@ func (g *SessionGuard) Attempt(w http.ResponseWriter, r *http.Request, credentia
 	if throttler == nil {
 		throttler = auth.NoopLoginThrottler{}
 	}
-	key := auth.ThrottleKey(r, credentials)
+	key := auth.ThrottleKey(r, credentials, g.getTrustedProxies())
 	if !throttler.Allow(r, key) {
 		return false, auth.ErrLoginThrottled
 	}
@@ -505,7 +536,7 @@ func (g *SessionGuard) recordServerSession(r *http.Request, session auth.Session
 		CreatedAt:  now,
 		LastSeenAt: now,
 		ExpiresAt:  now.Add(ttl),
-		IPAddress:  clientIP(r),
+		IPAddress:  g.clientIP(r),
 		UserAgent:  r.Header.Get("User-Agent"),
 	}
 	if err := store.Put(r.Context(), rec); err != nil {
@@ -533,17 +564,19 @@ func (g *SessionGuard) ClearRememberTokensForUser(ctx context.Context, userID st
 	return g.provider.UpdateRememberToken(user, "")
 }
 
-// clientIP returns the host portion of r.RemoteAddr, stripping any
-// :port suffix so administrative listings show clean addresses.
-// X-Forwarded-For / trusted-proxy resolution is intentionally not done
-// here; that needs its own design (trusted proxy list, header validation)
-// and is tracked separately.
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
+// clientIP returns the originating client IP for r, honouring the
+// guard's configured trusted-proxy list. When no proxies are trusted
+// (the default), the result is the host portion of r.RemoteAddr with
+// the ephemeral TCP port stripped. When the request arrives from a
+// trusted proxy, RFC 7239 Forwarded / X-Forwarded-For / X-Real-IP
+// resolution kicks in (see internal/clientip).
+//
+// The string is recorded on auth.StoredSession.IPAddress so audit
+// listings show the real client, not the load balancer, and so the
+// administrative "Sign out everywhere" UX surfaces meaningful IPs.
+// Returns "" when r.RemoteAddr is unparseable.
+func (g *SessionGuard) clientIP(r *http.Request) string {
+	return clientip.ExtractString(r, g.getTrustedProxies())
 }
 
 // checkRememberCookie checks and validates remember cookie.
