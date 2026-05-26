@@ -811,9 +811,9 @@ func (m *Manager) RevokeAllSessions(ctx context.Context, userID string) error {
 	}
 
 	type guardCapabilities struct {
-		name     string
-		clearer  RememberTokenClearer
-		revoker  RefreshTokenRevoker
+		name    string
+		clearer RememberTokenClearer
+		revoker RefreshTokenRevoker
 	}
 
 	m.mu.RLock()

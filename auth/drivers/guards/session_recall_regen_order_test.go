@@ -73,8 +73,8 @@ func (s *orderTrackingStore) Save(w http.ResponseWriter, session auth.Session) e
 	return nil
 }
 
-func (s *orderTrackingStore) Destroy(string) error                  { return nil }
-func (s *orderTrackingStore) GarbageCollect(_ time.Duration) error  { return nil }
+func (s *orderTrackingStore) Destroy(string) error                 { return nil }
+func (s *orderTrackingStore) GarbageCollect(_ time.Duration) error { return nil }
 
 func (s *orderTrackingStore) tracking() *orderTrackingSession {
 	s.mu.Lock()
