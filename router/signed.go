@@ -279,16 +279,30 @@ func (r *VelocityRouterV2) ValidateSignature(req *http.Request) error {
 // failing ValidateSignature with a 403 *HTTPError. The underlying
 // signature error is preserved via Internal so server-side logs see
 // the real cause; clients see a generic "Forbidden" body per CLAUDE.md
-// rule 6 (no error leakage). If the router has no signed-URL key
-// configured the middleware passes the request through unchanged so
-// development environments that have not yet run `vel key:generate`
-// keep working; production environments fail closed because the
-// constructor refuses to start without APP_KEY (see ErrNoAppKey).
+// rule 6 (no error leakage).
+//
+// Fails closed when the router has no signed-URL key configured: every
+// request through the middleware is rejected with 403 wrapping
+// ErrSignedURLKeyMissing. A route the developer chose to wrap in
+// SignedMiddleware is opt-in to signing enforcement; if the key was
+// never derived (e.g. APP_KEY left empty under a custom CRYPTO_KEY
+// deployment) the route is broken at boot, not silently downgraded to
+// "unsigned route". This is the M-16 fix: the previous fail-open path
+// could turn a protected signed route into an unauthenticated route
+// whenever APP_KEY was unset. Operators see ErrSignedURLKeyMissing in
+// the access log the first time the route is hit; clients see the same
+// 403 as a tampered-signature attempt.
+//
+// The boot-time guard in velocity.New() refuses to start outside
+// APP_ENV=testing/development without APP_KEY, so production
+// deployments cannot hit this branch unless they explicitly opt out.
 func (r *VelocityRouterV2) SignedMiddleware() MiddlewareFunc {
 	return func(next HandlerFunc) HandlerFunc {
 		return func(c *Context) error {
 			if len(r.signedURLKey.get()) == 0 {
-				return next(c)
+				httpErr := NewHTTPError(http.StatusForbidden)
+				httpErr.Internal = ErrSignedURLKeyMissing
+				return httpErr
 			}
 			if err := r.ValidateSignature(c.Request); err != nil {
 				httpErr := NewHTTPError(http.StatusForbidden)

@@ -299,15 +299,19 @@ func TestSignedURL_SignedMiddlewareAllowsValid(t *testing.T) {
 	}
 }
 
-func TestSignedURL_SignedMiddlewarePassesWhenKeyMissing(t *testing.T) {
+// TestSignedURL_SignedMiddlewareFailsClosedNoKey_Unsigned is the M-16
+// regression for the unsigned-request branch: a router with no
+// signed-URL key MUST reject any request through SignedMiddleware with
+// 403, even when the request carries no signature param. The previous
+// fail-open behaviour silently downgraded a protected signed route to
+// an unsigned route whenever APP_KEY was empty.
+func TestSignedURL_SignedMiddlewareFailsClosedNoKey_Unsigned(t *testing.T) {
 	r := NewV2()
 	r.Get("/orders/{id}", dummyHandler).Name("orders.show")
 	req0 := httptest.NewRequest("GET", "/orders/1", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req0)
-	// No SetSignedURLKey: the middleware fails open so dev environments
-	// without APP_KEY don't 403 every request that happens to hit a
-	// signed route.
+	// No SetSignedURLKey: fail-closed 403 with ErrSignedURLKeyMissing.
 
 	mw := r.SignedMiddleware()
 	called := false
@@ -319,11 +323,88 @@ func TestSignedURL_SignedMiddlewarePassesWhenKeyMissing(t *testing.T) {
 	req := httptest.NewRequest("GET", "/orders/1", nil)
 	c, _ := NewTestContext("GET", "/orders/1")
 	c.Request = req
-	if err := wrapped(c); err != nil {
-		t.Fatalf("middleware should pass through without key, got %v", err)
+	err := wrapped(c)
+	if called {
+		t.Fatal("handler must not be called when signed-URL key is missing")
 	}
-	if !called {
-		t.Fatal("handler not called when key missing")
+	httpErr, ok := err.(*HTTPError)
+	if !ok {
+		t.Fatalf("expected *HTTPError, got %T (%v)", err, err)
+	}
+	if httpErr.Code != http.StatusForbidden {
+		t.Errorf("expected 403 when key missing, got %d", httpErr.Code)
+	}
+	if !errors.Is(httpErr.Internal, ErrSignedURLKeyMissing) {
+		t.Errorf("expected Internal to wrap ErrSignedURLKeyMissing, got %v", httpErr.Internal)
+	}
+}
+
+// TestSignedURL_SignedMiddlewareFailsClosedNoKey_ValidSig is the M-16
+// regression for the worst-case branch: an attacker crafts a request
+// that LOOKS like a valid signed URL (e.g. captured from another
+// environment or replayed) and the production deployment has lost its
+// APP_KEY. Without the fail-closed fix, the middleware would pass the
+// request through unchanged. With the fix, the absence of a key means
+// the router cannot prove the signature is valid, so it MUST reject.
+func TestSignedURL_SignedMiddlewareFailsClosedNoKey_ValidSig(t *testing.T) {
+	// Mint a URL with a real key, then point the verifier at a
+	// freshly-constructed router that has no key. The middleware must
+	// 403 without consulting the URL contents (no oracle leakage).
+	rMinter := testRouterWithSignedKey(t)
+	signed, err := rMinter.TemporarySignedURL("orders.show", map[string]string{"id": "1"}, nil, time.Hour)
+	if err != nil {
+		t.Fatalf("SignedURL: %v", err)
+	}
+
+	rVerifier := NewV2()
+	rVerifier.Get("/orders/{id}", dummyHandler).Name("orders.show")
+	req0 := httptest.NewRequest("GET", "/orders/1", nil)
+	w := httptest.NewRecorder()
+	rVerifier.ServeHTTP(w, req0)
+	// No SetSignedURLKey on rVerifier.
+
+	mw := rVerifier.SignedMiddleware()
+	called := false
+	wrapped := mw(func(c *Context) error {
+		called = true
+		return nil
+	})
+
+	req := httptest.NewRequest("GET", signed, nil)
+	c, _ := NewTestContext("GET", signed)
+	c.Request = req
+	err = wrapped(c)
+	if called {
+		t.Fatal("handler must not be called when signed-URL key is missing, even with a syntactically valid signature")
+	}
+	httpErr, ok := err.(*HTTPError)
+	if !ok {
+		t.Fatalf("expected *HTTPError, got %T (%v)", err, err)
+	}
+	if httpErr.Code != http.StatusForbidden {
+		t.Errorf("expected 403 when key missing, got %d", httpErr.Code)
+	}
+	if !errors.Is(httpErr.Internal, ErrSignedURLKeyMissing) {
+		t.Errorf("expected Internal to wrap ErrSignedURLKeyMissing, got %v", httpErr.Internal)
+	}
+}
+
+// TestSignedURL_HasValidSignatureKeyMissing pins the verify-only path
+// behaviour: ValidateSignature returns ErrSignedURLKeyMissing so a
+// caller using the helper directly (not via SignedMiddleware) can
+// choose its own policy. HasValidSignature collapses that to false.
+func TestSignedURL_HasValidSignatureKeyMissing(t *testing.T) {
+	r := NewV2()
+	r.Get("/orders/{id}", dummyHandler).Name("orders.show")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/orders/1", nil))
+
+	req := httptest.NewRequest("GET", "/orders/1?expires=99999999999&signature=abc", nil)
+	if err := r.ValidateSignature(req); !errors.Is(err, ErrSignedURLKeyMissing) {
+		t.Fatalf("ValidateSignature expected ErrSignedURLKeyMissing, got %v", err)
+	}
+	if r.HasValidSignature(req) {
+		t.Fatal("HasValidSignature must return false when key is missing")
 	}
 }
 
