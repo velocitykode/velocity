@@ -227,11 +227,20 @@ func (g *SessionGuard) CheckWithError(r *http.Request) (bool, error) {
 
 	userID := session.Get("user_id")
 	if userID == nil {
-		// Remember-cookie fallback bypasses the server store: the
-		// derived session is not registered there, and the path is
-		// already considered a re-auth (a fresh Login should follow
-		// to anchor the session in the store).
-		return g.checkRememberCookie(r) != nil, nil
+		// Remember-cookie fallback: treat as a full re-authentication
+		// (H-08 fix). Rotate the session id, anchor user_id, and
+		// consult the server store on the rotated id when one is
+		// installed. Without this, an attacker holding a valid
+		// remember cookie could authenticate one request even after
+		// administrative revocation cleared the server-side record.
+		user := g.checkRememberCookie(r)
+		if user == nil {
+			return false, nil
+		}
+		if !g.anchorRecalledUser(r, session, user) {
+			return false, nil
+		}
+		return true, nil
 	}
 
 	user, err := g.provider.FindByID(userID)
@@ -249,6 +258,13 @@ func (g *SessionGuard) CheckWithError(r *http.Request) (bool, error) {
 // authenticated. When a server-side session store is configured, a revoked
 // or missing record causes User to return nil even when the cookie is
 // otherwise valid.
+//
+// Remember-cookie revival (H-08 fix): when the session does not yet carry
+// a user_id but the remember cookie is valid, the request is treated as a
+// full re-authentication: the session ID is rotated (defeats fixation),
+// user_id is anchored on the new session, and the server-side session
+// store (when configured) is consulted on the rotated ID. If the store is
+// configured and the write/lookup fails, User returns nil.
 func (g *SessionGuard) User(r *http.Request) auth.Authenticatable {
 	session := g.getSession(r)
 	if session == nil {
@@ -259,12 +275,18 @@ func (g *SessionGuard) User(r *http.Request) auth.Authenticatable {
 	if userID == nil {
 		// Try remember cookie
 		user := g.checkRememberCookie(r)
-		if user != nil {
-			// Re-establish session for the remembered user
-			session.Put("user_id", user.GetAuthIdentifier())
-			return user
+		if user == nil {
+			return nil
 		}
-		return nil
+		// Anchor the recovered user as a fresh authenticated session.
+		// The cookie itself is flushed by the save-at-end session
+		// middleware (H-05); this path mutates the in-memory session
+		// AND, when a server store is configured, writes a record
+		// keyed on the rotated id.
+		if !g.anchorRecalledUser(r, session, user) {
+			return nil
+		}
+		return user
 	}
 
 	user, err := g.provider.FindByID(userID)
@@ -276,6 +298,56 @@ func (g *SessionGuard) User(r *http.Request) auth.Authenticatable {
 		return nil
 	}
 	return user
+}
+
+// anchorRecalledUser performs the in-memory equivalent of a fresh Login
+// for a user recovered via the remember-cookie fallback (H-08 fix).
+// Rotates the session id (defeats fixation against attacker-planted
+// cookies), writes user_id into the now-fresh bag, and, when a server-
+// side store is configured, records the new id there and re-consults.
+//
+// Returns true when the request may proceed authenticated. Returns false
+// (forcing User to return nil) when:
+//   - session ID regeneration failed, OR
+//   - server-side store write failed AND a store is configured.
+//
+// When no server store is wired, write failure cannot happen and the
+// rotation alone is enough.
+func (g *SessionGuard) anchorRecalledUser(r *http.Request, session auth.Session, user auth.Authenticatable) bool {
+	// Rotate the session id BEFORE writing user_id so an attacker who
+	// planted the prior id can no longer inherit authenticated state.
+	if err := session.Regenerate(); err != nil {
+		g.logWarn("velocity/auth: remember-cookie revival: session regenerate failed", "error", err)
+		return false
+	}
+
+	session.Put("user_id", user.GetAuthIdentifier())
+
+	// Write the new session to the server-side store on revival so
+	// administrative revocation surfaces actually have a record to
+	// delete, and so consultServerStore below has something to find.
+	// recordServerSession is a no-op when no store has been installed.
+	g.recordServerSession(r, session, user)
+
+	// Reset the per-request store cache; the holder may have cached
+	// "no record" against the pre-rotation id earlier in the request.
+	if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok && holder != nil {
+		holder.storeOnce = false
+		holder.storeRec = nil
+		holder.storeErr = nil
+	}
+
+	// If a store is wired, fail-closed when the just-written record is
+	// not retrievable. Without this check the H-08 attack model holds:
+	// a remember-cookie can authenticate one request even when the
+	// store is unhealthy.
+	if g.getServerStore() != nil {
+		if err := g.consultServerStore(r, session); err != nil {
+			g.logWarn("velocity/auth: remember-cookie revival: store consult failed", "error", err)
+			return false
+		}
+	}
+	return true
 }
 
 // ID returns the authenticated user ID
