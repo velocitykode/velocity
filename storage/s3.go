@@ -187,26 +187,30 @@ func (d *S3Driver) PutStreamCtx(ctx context.Context, path string, stream io.Read
 		ContentType: aws.String(detectMimeType(content)),
 	}
 
-	// Set ACL based on visibility. Private uploads also receive
-	// defense-in-depth response headers so that any future serve path
-	// (presigned URL, proxy, custom CDN) hands the bytes to the browser
-	// with MIME sniffing disabled and the default disposition set to
-	// attachment. This defangs stored-XSS via Content-Type spoofing.
+	// Set ACL based on visibility. Private uploads also get
+	// Content-Disposition: attachment so that any presigned GET or
+	// proxy serve path defaults to download semantics rather than
+	// inline rendering, defanging stored-XSS via Content-Type
+	// spoofing for non-image payloads.
+	//
+	// X-Content-Type-Options: nosniff CANNOT be persisted on the
+	// object: the S3 PutObject API only honours a fixed set of
+	// canonical response-header overrides (Cache-Control,
+	// Content-Disposition, Content-Encoding, Content-Language,
+	// Content-Type, Expires). Storing the directive as user metadata
+	// would surface it on retrieval as the unrelated header
+	// X-Amz-Meta-X-Content-Type-Options, which browsers do not honour
+	// for MIME-sniffing protection. Real X-Content-Type-Options
+	// enforcement therefore MUST live at the serve layer (the
+	// application's HTTP handler, a reverse proxy, or a CloudFront
+	// response-headers policy in front of the bucket). See the
+	// roadmap entry for a framework-owned Storage.Serve handler that
+	// will set nosniff, no-store, and a CSP sandbox.
 	if d.visibility == Public {
 		input.ACL = types.ObjectCannedACLPublicRead
 	} else {
 		input.ACL = types.ObjectCannedACLPrivate
 		input.ContentDisposition = aws.String("attachment")
-		// S3 turns user metadata "x-amz-meta-*" into response headers
-		// when retrieved. The x-content-type-options entry is also set
-		// as a real response-header override so presigned GET responses
-		// carry "X-Content-Type-Options: nosniff" via the
-		// response-content-type / response-cache-control machinery
-		// callers can opt into.
-		if input.Metadata == nil {
-			input.Metadata = map[string]string{}
-		}
-		input.Metadata["x-content-type-options"] = "nosniff"
 	}
 
 	_, err = d.uploader.Upload(ctx, input)
