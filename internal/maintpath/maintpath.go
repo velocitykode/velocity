@@ -8,8 +8,15 @@
 //     and must not contain any `..` segment. Symlinked roots are accepted
 //     because the file inside may not exist yet (vel down creates it), but
 //     traversal segments are rejected at the input layer per CLAUDE.md rule 4.
-//  2. The directory of os.Executable() when available.
-//  3. The current working directory as a last resort.
+//  2. The current working directory captured at first reference. This is the
+//     shared "project root" identity the CLI (`vel down`) and the running
+//     server agree on in every common workflow; using the executable dir
+//     instead would split the writer and reader whenever the two run from
+//     different binary paths (go run vs. compiled, distinct CLI / server
+//     binaries, containers with per-entrypoint WORKDIR).
+//  3. The directory of os.Executable() as a last-resort fallback when
+//     os.Getwd fails (extremely rare; cwd was deleted out from under the
+//     process). Symlinks are intentionally not resolved.
 //
 // The resolved path is computed once on first call and cached for the lifetime
 // of the process. The cache deliberately ignores subsequent env mutations so
