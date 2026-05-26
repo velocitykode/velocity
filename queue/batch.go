@@ -20,7 +20,11 @@ type Batchable interface {
 	SetBatchID(id BatchID)
 }
 
-// batchStore holds all active batches (package-level, like jobStore in job_wrapper.go)
+// batchStore holds all active batches as a package-level map guarded by a
+// sync.RWMutex (see batchStoreMap below). It is process-local: workers in
+// other processes do not observe batches dispatched here. C-03 will replace
+// this with a durable BatchRepository; until then, batch state is
+// single-process only.
 var batchStore = newBatchStore()
 
 type batchStoreMap struct {
@@ -39,8 +43,9 @@ func newBatchStore() *batchStoreMap {
 	return s
 }
 
-// periodicCleanup removes finished batches older than 1 hour (same pattern as jobStore).
-// Exits when the stop channel is closed.
+// periodicCleanup removes finished batches older than 1 hour so the in-memory
+// map does not grow unbounded over the process lifetime. Exits when the stop
+// channel is closed.
 func (s *batchStoreMap) periodicCleanup() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
