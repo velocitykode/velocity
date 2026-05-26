@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/velocitykode/velocity/httpclient"
 	"github.com/velocitykode/velocity/internal/neturl"
 	"github.com/velocitykode/velocity/notification"
 )
@@ -19,17 +20,24 @@ func init() {
 	})
 }
 
-// SlackChannel delivers notifications via Slack incoming webhooks.
+// SlackChannel delivers notifications via Slack incoming webhooks. The
+// channel relies on httpclient.Client for outbound traffic so every dial
+// re-runs the SSRF guard against the same private-range allowlist that
+// validateWebhookURL applies up-front. The httpclient guard pins the
+// first resolved IP into the dial, which closes the DNS-rebinding gap
+// where a public-looking hostname could TOCTOU into a metadata or
+// RFC1918 address between validation and the real connection.
 type SlackChannel struct {
-	client *http.Client
+	client *httpclient.Client
 }
 
-// NewSlackChannel creates a new Slack notification channel.
+// NewSlackChannel creates a new Slack notification channel backed by the
+// framework's hardened httpclient (private-IP deny on by default, TLS
+// minimum enforced, redirects capped, sensitive headers stripped on
+// cross-origin hops).
 func NewSlackChannel() *SlackChannel {
 	return &SlackChannel{
-		client: &http.Client{
-			Timeout: 15 * time.Second,
-		},
+		client: httpclient.New(httpclient.WithTimeout(15 * time.Second)),
 	}
 }
 
@@ -54,7 +62,12 @@ func (c *SlackChannel) Send(ctx context.Context, notifiable interface{}, n notif
 		return fmt.Errorf("notification: no Slack webhook URL for notifiable")
 	}
 
-	// Validate webhook URL to prevent SSRF attacks
+	// Validate webhook URL up-front to fail fast on obviously bad
+	// targets. The httpclient dial guard repeats the check on every
+	// outbound connection, so this validate-then-dial pair never has a
+	// DNS-rebinding gap: if the second resolve returns a private IP,
+	// the dial refuses the connection even though validateWebhookURL
+	// has already returned ok.
 	if err := validateWebhookURL(webhookURL); err != nil {
 		return err
 	}
@@ -73,7 +86,7 @@ func (c *SlackChannel) Send(ctx context.Context, notifiable interface{}, n notif
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.client.Do(req)
+	resp, err := c.client.Do(ctx, req)
 	if err != nil {
 		return fmt.Errorf("notification: Slack request failed: %w", err)
 	}
@@ -149,11 +162,14 @@ func (c *SlackChannel) buildPayload(msg *notification.SlackMessage) map[string]i
 	return payload
 }
 
-// validateWebhookURL validates that a webhook URL is safe to call,
-// preventing SSRF attacks against internal/private networks. DNS
-// hostnames are resolved and every resolved address is checked against
-// the shared private-range guard — so a public-looking name that
-// resolves to 127.0.0.1 or an RFC1918 address is still rejected.
+// validateWebhookURL is a defence-in-depth pre-check that rejects
+// obviously bad webhook URLs (private/internal addresses, non-http(s)
+// schemes) before any HTTP machinery is engaged. The real SSRF guard is
+// inside httpclient.Client: every dial re-resolves and refuses private
+// destinations, and the URL-host gate runs on Do() and on every
+// redirect hop. Without that second layer, a public hostname could
+// resolve to a public IP here and to 169.254.169.254 a millisecond
+// later when the real connection is dialled.
 func validateWebhookURL(rawURL string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
