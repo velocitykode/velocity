@@ -218,6 +218,132 @@ func TestSessionStore_UpdateToken(t *testing.T) {
 	}
 }
 
+// TestSessionStore_ConsumeIfMatch_Atomic exercises the cross-process
+// single-use primitive added for M-01. ConsumeIfMatch MUST behave as one
+// compare-and-delete: only one of N concurrent callers with the right
+// expected value may observe consumed=true, the rest see consumed=false.
+// Without this property, two replicas behind a shared store could each
+// accept the same single-use token simultaneously.
+func TestSessionStore_ConsumeIfMatch_Atomic(t *testing.T) {
+	store := NewSessionStore()
+	const id = "shared-session"
+	const token = "single-use-token"
+
+	if err := store.Set(id, token); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	const goroutines = 64
+	var (
+		wg        sync.WaitGroup
+		consumed  int64
+		mismatch  int64
+		mu        sync.Mutex
+		errsFound []error
+	)
+
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			ok, err := store.ConsumeIfMatch(id, token)
+			if err != nil {
+				mu.Lock()
+				errsFound = append(errsFound, err)
+				mu.Unlock()
+				return
+			}
+			if ok {
+				mu.Lock()
+				consumed++
+				mu.Unlock()
+				return
+			}
+			mu.Lock()
+			mismatch++
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	if len(errsFound) > 0 {
+		t.Fatalf("ConsumeIfMatch returned errors: %v", errsFound)
+	}
+	if consumed != 1 {
+		t.Errorf("expected exactly 1 successful consume across %d goroutines, got %d", goroutines, consumed)
+	}
+	if mismatch != goroutines-1 {
+		t.Errorf("expected %d misses, got %d", goroutines-1, mismatch)
+	}
+
+	// Entry must be gone now.
+	if store.Exists(id) {
+		t.Error("entry must be deleted after successful ConsumeIfMatch")
+	}
+}
+
+// TestSessionStore_ConsumeIfMatch_Mismatch verifies wrong-value callers do
+// NOT delete the entry; the legitimate holder of the right token must
+// still be able to consume it afterwards.
+func TestSessionStore_ConsumeIfMatch_Mismatch(t *testing.T) {
+	store := NewSessionStore()
+	const id = "session"
+	const token = "real-token"
+	if err := store.Set(id, token); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	ok, err := store.ConsumeIfMatch(id, "wrong-token")
+	if err != nil {
+		t.Fatalf("ConsumeIfMatch err: %v", err)
+	}
+	if ok {
+		t.Fatal("ConsumeIfMatch returned true for non-matching token")
+	}
+	if !store.Exists(id) {
+		t.Fatal("entry must NOT be deleted on mismatch")
+	}
+
+	// Right token still consumes.
+	ok, err = store.ConsumeIfMatch(id, token)
+	if err != nil {
+		t.Fatalf("ConsumeIfMatch (correct) err: %v", err)
+	}
+	if !ok {
+		t.Fatal("ConsumeIfMatch (correct token) returned false")
+	}
+}
+
+// TestSessionStore_ConsumeIfMatch_Missing verifies missing/expired entries
+// return consumed=false without error.
+func TestSessionStore_ConsumeIfMatch_Missing(t *testing.T) {
+	store := NewSessionStore()
+	ok, err := store.ConsumeIfMatch("ghost", "anything")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if ok {
+		t.Fatal("ConsumeIfMatch on missing entry returned true")
+	}
+
+	// Expired entry behaves like missing.
+	const id = "expired"
+	if err := store.Set(id, "tok"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	store.mu.Lock()
+	store.tokens[id].expiresAt = time.Now().Add(-time.Hour)
+	store.mu.Unlock()
+
+	ok, err = store.ConsumeIfMatch(id, "tok")
+	if err != nil {
+		t.Fatalf("unexpected err on expired: %v", err)
+	}
+	if ok {
+		t.Fatal("ConsumeIfMatch on expired entry returned true")
+	}
+}
+
 func BenchmarkSessionStore_Set(b *testing.B) {
 	store := NewSessionStore()
 	sessionID := "session123"

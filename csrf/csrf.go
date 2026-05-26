@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
@@ -49,8 +50,18 @@ var (
 
 // CSRF provides CSRF protection functionality
 type CSRF struct {
-	config      *Config
-	singleUseMu sync.Mutex // serializes validate+delete for single-use tokens
+	config *Config
+	// singleUseMu serializes validate+delete for single-use tokens when the
+	// configured Store does NOT implement AtomicConsumer. With multiple
+	// replicas behind a Redis-backed store, this per-process lock cannot
+	// prevent replica A and replica B from both accepting the same token
+	// simultaneously; the cross-process gate must come from the store's
+	// own atomic compare-and-delete primitive (AtomicConsumer). When the
+	// store lacks that primitive, the middleware logs a one-time warning
+	// (singleUseDegradedLogged) so operators know the deployment is
+	// single-use-best-effort rather than single-use-exact.
+	singleUseMu             sync.Mutex
+	singleUseDegradedLogged atomic.Bool
 
 	// eventDispatcher is optional; when set via SetEventDispatcher, the CSRF
 	// instance emits events such as csrf.session_fallback.
@@ -211,7 +222,15 @@ func (c *CSRF) RouterMiddleware() router.MiddlewareFunc {
 	}
 }
 
-// validateToken validates the CSRF token in the request
+// validateToken validates the CSRF token in the request.
+//
+// Single-use semantics: when SingleUse is enabled and the configured Store
+// implements AtomicConsumer, validation and deletion happen as one atomic
+// cross-process operation. This is the only path that closes the multi-
+// replica race where two replicas could each accept the same token in the
+// same instant. When the store lacks AtomicConsumer, the middleware falls
+// back to per-process serialization (singleUseMu) and logs a one-time
+// warning so operators know their deployment is single-use-best-effort.
 func (c *CSRF) validateToken(r *http.Request) error {
 	// Get token from request
 	requestToken, err := c.getTokenFromRequest(r)
@@ -228,9 +247,29 @@ func (c *CSRF) validateToken(r *http.Request) error {
 		return err
 	}
 
-	// For single-use tokens, serialize validate+delete to prevent race conditions
-	// where concurrent requests could both validate the same token before deletion.
+	// Fast path for single-use tokens when the store supports an atomic
+	// compare-and-delete. This is the only primitive that prevents two
+	// replicas from accepting the same token simultaneously.
 	if c.config.SingleUse {
+		if consumer, ok := c.config.Store.(AtomicConsumer); ok {
+			consumed, err := consumer.ConsumeIfMatch(sessionID, requestToken)
+			if err != nil {
+				log.Printf("velocity/csrf: ConsumeIfMatch failed for session %s: %v", sessionID, err)
+				return ErrTokenInvalid
+			}
+			if !consumed {
+				return ErrTokenInvalid
+			}
+			return nil
+		}
+		// Store cannot enforce cross-process single-use. Warn once,
+		// then fall through to per-process serialize+validate+delete.
+		// Multi-replica deployments with this code path MUST migrate to
+		// an AtomicConsumer-capable store; the per-process mutex below
+		// only protects within a single process.
+		if c.singleUseDegradedLogged.CompareAndSwap(false, true) {
+			log.Printf("velocity/csrf: WARNING SingleUse enabled but Store does not implement AtomicConsumer; cross-process single-use is best-effort only and a token may be accepted by multiple replicas concurrently")
+		}
 		c.singleUseMu.Lock()
 		defer c.singleUseMu.Unlock()
 	}
@@ -246,7 +285,7 @@ func (c *CSRF) validateToken(r *http.Request) error {
 		return ErrTokenInvalid
 	}
 
-	// Handle single-use tokens
+	// Handle single-use tokens (degraded path - store lacks AtomicConsumer).
 	if c.config.SingleUse {
 		if err := c.config.Store.Delete(sessionID); err != nil {
 			log.Printf("velocity/csrf: failed to delete single-use token for session %s: %v", sessionID, err)

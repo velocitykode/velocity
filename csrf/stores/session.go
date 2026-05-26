@@ -2,6 +2,7 @@ package stores
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"sync"
 	"time"
@@ -108,6 +109,39 @@ func (s *SessionStore) Delete(id string) error {
 
 	delete(s.tokens, id)
 	return nil
+}
+
+// ConsumeIfMatch implements csrf.AtomicConsumer. It atomically (under the
+// store's write lock) compares the stored token for id against expected
+// using a constant-time comparison, and deletes the entry only on match.
+// In-memory locking is sufficient for the single-process case; cross-
+// process deployments backed by Redis or another remote store must
+// implement their own driver that uses a Lua script or equivalent atomic
+// primitive.
+//
+// Returns consumed=true only when the entry existed, was unexpired, and
+// matched expected. A missing/expired/mismatched entry returns
+// consumed=false with no error.
+func (s *SessionStore) ConsumeIfMatch(id string, expected string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry, ok := s.tokens[id]
+	if !ok {
+		return false, nil
+	}
+	if time.Now().After(entry.expiresAt) {
+		// Expired entries are not a match; clean up opportunistically.
+		delete(s.tokens, id)
+		return false, nil
+	}
+	// Constant-time compare to avoid leaking a length/timing oracle to
+	// callers who can probe entries via the public refresh handler.
+	if subtle.ConstantTimeCompare([]byte(entry.token), []byte(expected)) != 1 {
+		return false, nil
+	}
+	delete(s.tokens, id)
+	return true, nil
 }
 
 // Exists checks if a token exists and is not expired

@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/velocitykode/velocity/csrf/stores"
@@ -915,6 +918,234 @@ func TestRotateToken_DeletesOldAndMintsNew(t *testing.T) {
 	}
 	if got == seed {
 		t.Error("RotateToken reused the old token under newID; fresh token expected")
+	}
+}
+
+// nonAtomicStore is a Store that intentionally does NOT implement
+// AtomicConsumer. M-01 regression tests use it to drive the degraded
+// fallback path and assert the operator-warning is emitted exactly once.
+type nonAtomicStore struct {
+	mu     sync.Mutex
+	tokens map[string]string
+}
+
+func newNonAtomicStore() *nonAtomicStore { return &nonAtomicStore{tokens: make(map[string]string)} }
+
+func (s *nonAtomicStore) Get(id string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if v, ok := s.tokens[id]; ok {
+		return v, nil
+	}
+	return "", errors.New("not found")
+}
+func (s *nonAtomicStore) Set(id string, token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tokens[id] = token
+	return nil
+}
+func (s *nonAtomicStore) Delete(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.tokens, id)
+	return nil
+}
+func (s *nonAtomicStore) Exists(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.tokens[id]
+	return ok
+}
+
+// TestSingleUse_AtomicStore_ConcurrentValidate pins M-01: with an
+// AtomicConsumer-capable store, exactly one of N concurrent unsafe
+// requests carrying the same single-use token may pass. Pre-fix the
+// per-process singleUseMu serialised within a single process but
+// could not stop two replicas from both accepting the token; an
+// atomic compare-and-delete store closes that hole. We model both
+// replicas inside one process by sharing the same store across two
+// CSRF instances.
+func TestSingleUse_AtomicStore_ConcurrentValidate(t *testing.T) {
+	const sessionID = "shared-session"
+	token, err := GenerateToken()
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+
+	sharedStore := stores.NewSessionStore()
+	if err := sharedStore.Set(sessionID, token); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	newReplica := func() *CSRF {
+		cfg := DefaultConfig()
+		cfg.SessionIDResolver = testCookieResolver("session_id")
+		cfg.SingleUse = true
+		cfg.Store = sharedStore // same store across both replicas
+		return New(cfg)
+	}
+	replicaA := newReplica()
+	replicaB := newReplica()
+
+	const goroutines = 32
+	var (
+		wg          sync.WaitGroup
+		successCnt  atomic.Int64
+		rejectedCnt atomic.Int64
+	)
+
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func(i int) {
+			defer wg.Done()
+			req := httptest.NewRequest("POST", "/submit", nil)
+			req.Header.Set("X-CSRF-Token", token)
+			req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+			w := httptest.NewRecorder()
+
+			target := replicaA
+			if i%2 == 1 {
+				target = replicaB
+			}
+			handler := target.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				successCnt.Add(1)
+				w.WriteHeader(http.StatusOK)
+			}))
+			handler.ServeHTTP(w, req)
+			if w.Code == 419 {
+				rejectedCnt.Add(1)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if successCnt.Load() != 1 {
+		t.Errorf("expected exactly 1 success across %d goroutines, got %d", goroutines, successCnt.Load())
+	}
+	if rejectedCnt.Load() != goroutines-1 {
+		t.Errorf("expected %d rejections, got %d", goroutines-1, rejectedCnt.Load())
+	}
+
+	// Token must be gone from the shared store after consumption.
+	if _, err := sharedStore.Get(sessionID); err == nil {
+		t.Error("single-use token must be removed from shared store after consume")
+	}
+}
+
+// TestSingleUse_NonAtomicStore_EmitsWarningOnce pins the operator-warning
+// half of M-01: when SingleUse is enabled and the Store does NOT
+// implement AtomicConsumer, the middleware must emit a one-time warning
+// so operators know their deployment is best-effort. The warning must
+// NOT repeat on subsequent validations.
+func TestSingleUse_NonAtomicStore_EmitsWarningOnce(t *testing.T) {
+	const sessionID = "sess"
+	token, err := GenerateToken()
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+
+	store := newNonAtomicStore()
+	if err := store.Set(sessionID, token); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.SessionIDResolver = testCookieResolver("session_id")
+	cfg.SingleUse = true
+	cfg.Store = store
+	c := New(cfg)
+
+	// Capture log output.
+	var buf bytes.Buffer
+	prevOut := log.Writer()
+	prevFlags := log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(prevOut)
+		log.SetFlags(prevFlags)
+	})
+
+	do := func(tok string) int {
+		req := httptest.NewRequest("POST", "/submit", nil)
+		req.Header.Set("X-CSRF-Token", tok)
+		req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+		w := httptest.NewRecorder()
+		c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})).ServeHTTP(w, req)
+		return w.Code
+	}
+
+	// First validate: consumed (degraded path), warning emitted.
+	if code := do(token); code != http.StatusOK {
+		t.Fatalf("first validate: expected 200, got %d (log=%s)", code, buf.String())
+	}
+	if !strings.Contains(buf.String(), "Store does not implement AtomicConsumer") {
+		t.Errorf("expected one-time warning on first single-use validate; log=%q", buf.String())
+	}
+	firstLog := buf.String()
+
+	// Second validate: token is gone (deleted by first), so 419. Critical
+	// assertion: warning must NOT repeat.
+	if code := do(token); code != 419 {
+		t.Fatalf("second validate: expected 419 (token consumed), got %d", code)
+	}
+	if buf.String() != firstLog {
+		t.Errorf("warning must not repeat; first=%q second=%q", firstLog, buf.String())
+	}
+}
+
+// TestSingleUse_WrongTokenLeavesEntry pins that an attacker submitting a
+// wrong single-use token does NOT cause the legitimate token to be
+// deleted via the AtomicConsumer path. Without this guarantee, an
+// adversary who could observe POSTs could rapid-fire wrong tokens and
+// either DoS the legitimate user or race the delete on the non-atomic
+// fallback path.
+func TestSingleUse_WrongTokenLeavesEntry(t *testing.T) {
+	const sessionID = "sess"
+	token, err := GenerateToken()
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+
+	store := stores.NewSessionStore()
+	if err := store.Set(sessionID, token); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.SessionIDResolver = testCookieResolver("session_id")
+	cfg.SingleUse = true
+	cfg.Store = store
+	c := New(cfg)
+
+	// Wrong token rejected, store entry intact.
+	req := httptest.NewRequest("POST", "/submit", nil)
+	req.Header.Set("X-CSRF-Token", "bogus")
+	req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+	w := httptest.NewRecorder()
+	c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("inner handler must not run for wrong token")
+	})).ServeHTTP(w, req)
+	if w.Code != 419 {
+		t.Fatalf("expected 419 for wrong token, got %d", w.Code)
+	}
+	if _, err := store.Get(sessionID); err != nil {
+		t.Fatalf("legitimate token must survive wrong-token attempt: %v", err)
+	}
+
+	// Right token now succeeds and consumes.
+	req = httptest.NewRequest("POST", "/submit", nil)
+	req.Header.Set("X-CSRF-Token", token)
+	req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+	w = httptest.NewRecorder()
+	c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for right token, got %d", w.Code)
 	}
 }
 
