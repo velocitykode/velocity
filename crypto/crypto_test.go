@@ -161,6 +161,97 @@ func TestBase64Key(t *testing.T) {
 	}
 }
 
+// TestBase64Key_AcceptsExactLength covers the base64-prefixed key path
+// for each cipher's required decoded byte length. Mirrors the raw-key
+// acceptance test so operators using `base64:` keys (the default written
+// by `vel key:generate`) get the same coverage.
+func TestBase64Key_AcceptsExactLength(t *testing.T) {
+	tests := []struct {
+		name    string
+		cipher  string
+		rawSize int
+	}{
+		{"AES-128-CBC with 16 decoded bytes", "AES-128-CBC", 16},
+		{"AES-128-GCM with 16 decoded bytes", "AES-128-GCM", 16},
+		{"AES-192-CBC with 24 decoded bytes", "AES-192-CBC", 24},
+		{"AES-192-GCM with 24 decoded bytes", "AES-192-GCM", 24},
+		{"AES-256-CBC with 32 decoded bytes", "AES-256-CBC", 32},
+		{"AES-256-GCM with 32 decoded bytes", "AES-256-GCM", 32},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := []byte(strings.Repeat("a", tt.rawSize))
+			key := "base64:" + base64.StdEncoding.EncodeToString(raw)
+			enc, err := NewEncryptor(Config{Key: key, Cipher: tt.cipher})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			ct, err := enc.Encrypt("base64 round trip")
+			if err != nil {
+				t.Fatalf("Encrypt failed: %v", err)
+			}
+			pt, err := enc.Decrypt(ct)
+			if err != nil {
+				t.Fatalf("Decrypt failed: %v", err)
+			}
+			if pt != "base64 round trip" {
+				t.Errorf("round trip mismatch: got %q", pt)
+			}
+		})
+	}
+}
+
+// TestBase64Key_RejectsWrongLength asserts that a `base64:` key whose
+// decoded byte length does not match the cipher's required size is
+// rejected with ErrInvalidKeyLength. Earlier behaviour silently
+// HKDF-stretched the decoded bytes regardless of length, so a key like
+// `base64:eA==` (decodes to a single byte "x") was accepted and laundered
+// into a 32-byte AES key. That path is gone.
+func TestBase64Key_RejectsWrongLength(t *testing.T) {
+	tests := []struct {
+		name    string
+		cipher  string
+		rawSize int
+	}{
+		{"AES-128 with 1 decoded byte", "AES-128-CBC", 1},
+		{"AES-128 with 15 decoded bytes", "AES-128-CBC", 15},
+		{"AES-128 with 17 decoded bytes", "AES-128-CBC", 17},
+		{"AES-128 with 32 decoded bytes", "AES-128-CBC", 32},
+		{"AES-192 with 23 decoded bytes", "AES-192-CBC", 23},
+		{"AES-192 with 25 decoded bytes", "AES-192-CBC", 25},
+		{"AES-256 with 16 decoded bytes", "AES-256-CBC", 16},
+		{"AES-256 with 24 decoded bytes", "AES-256-CBC", 24},
+		{"AES-256 with 31 decoded bytes", "AES-256-CBC", 31},
+		{"AES-256 with 33 decoded bytes", "AES-256-CBC", 33},
+		{"AES-256-GCM with 1 decoded byte", "AES-256-GCM", 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := []byte(strings.Repeat("a", tt.rawSize))
+			key := "base64:" + base64.StdEncoding.EncodeToString(raw)
+			_, err := NewEncryptor(Config{Key: key, Cipher: tt.cipher})
+			if err == nil {
+				t.Fatalf("expected rejection, got nil for cipher=%s rawSize=%d", tt.cipher, tt.rawSize)
+			}
+			if !errors.Is(err, ErrInvalidKeyLength) {
+				t.Fatalf("expected ErrInvalidKeyLength, got %v", err)
+			}
+		})
+	}
+}
+
+// TestBase64Key_InvalidEncoding covers the malformed-base64 path. The
+// parser surfaces a decode error rather than ErrInvalidKeyLength because
+// the input never produced raw bytes at all.
+func TestBase64Key_InvalidEncoding(t *testing.T) {
+	// A `base64:` prefix followed by something that is not valid base64
+	// must error out at parseKey, before length enforcement is reached.
+	_, err := NewEncryptor(Config{Key: "base64:!!!not-base64!!!", Cipher: "AES-256-GCM"})
+	if err == nil {
+		t.Fatal("expected error for invalid base64 payload, got nil")
+	}
+}
+
 func TestGenerateKey(t *testing.T) {
 	ciphers := []struct {
 		cipher  string

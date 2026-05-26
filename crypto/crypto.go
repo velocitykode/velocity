@@ -81,11 +81,19 @@ type Config struct {
 	Cipher       string   // Cipher algorithm
 }
 
-// Validate checks that the Config is usable. Allowed ciphers are the AES
-// variants with 128/192/256-bit keys, in CBC or GCM mode.
+// Validate checks that the Config is structurally usable. Allowed ciphers
+// are the AES variants with 128/192/256-bit keys, in CBC or GCM mode.
 //
-// Returns ErrInvalidKey for empty keys and ErrInvalidCipher for unsupported
-// cipher names so callers can still use errors.Is for branching.
+// Returns ErrInvalidKey for empty keys and ErrInvalidCipher for
+// unsupported cipher names so callers can still use errors.Is for
+// branching.
+//
+// Note: Validate does not decode `base64:` keys or check key length
+// against the cipher; raw-byte length enforcement runs inside
+// NewEncryptor / NewAESDriver and surfaces as ErrInvalidKeyLength. The
+// split exists so callers that only want a cheap structural check
+// (e.g. config-time validators) can call Validate without depending on
+// the driver subpackage.
 func (c Config) Validate() error {
 	if c.Key == "" {
 		return ErrInvalidKey
@@ -158,7 +166,12 @@ func newDriver(config Config) (Encryptor, error) {
 	return drivers.NewAESDriver(key, previousKeys, cipher)
 }
 
-// parseKey parses a key string which may be base64 encoded
+// parseKey parses a key string which may be base64 encoded. The returned
+// bytes are NOT length-validated here; downstream NewAESDriver enforces
+// len(key) == cipher.keySize and surfaces ErrInvalidKeyLength on
+// mismatch. Decoding errors on `base64:` keys are returned verbatim so
+// operators see the underlying base64 failure (not an opaque length
+// rejection masking a malformed key).
 func parseKey(keyStr string) ([]byte, error) {
 	if keyStr == "" {
 		return nil, ErrInvalidKey
