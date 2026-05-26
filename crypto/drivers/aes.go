@@ -578,6 +578,23 @@ func (d *AESDriver) decryptCBCWithKey(p *Payload, encKey, hmacKey []byte, versio
 		return nil, ErrDecrypt
 	}
 
+	// IV and ciphertext shape must be validated before they reach
+	// cipher.NewCBCDecrypter / CryptBlocks; both panic on misaligned
+	// input. For v1 payloads the MAC check above implies these lengths
+	// (the MAC covers raw bytes and only the framework's encryptCBC
+	// produces inputs), but the v0 framing hashes the base64 strings, so
+	// an attacker can hand-craft a v0 payload with an empty IV or a
+	// non-block-aligned ciphertext and still pass MAC verification. The
+	// length checks here close that DoS vector explicitly.
+	if len(iv) != aes.BlockSize {
+		debugDecryptFailure("cbc-iv-length", nil)
+		return nil, ErrDecrypt
+	}
+	if len(ciphertext) == 0 || len(ciphertext)%aes.BlockSize != 0 {
+		debugDecryptFailure("cbc-ct-length", nil)
+		return nil, ErrDecrypt
+	}
+
 	// Create cipher block
 	block, err := aes.NewCipher(encKey)
 	if err != nil {
