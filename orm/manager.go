@@ -378,6 +378,29 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 	// so per-statement events under fn parent under the tx span.
 	txCtx := WithTxContext(txTraceCtx, tx)
 
+	// Install the after-commit task queue so a Dispatcher.Dispatch call
+	// inside fn that targets a ShouldDispatchAfterCommit listener defers
+	// the listener until commit. The outermost Transaction owns the
+	// drain; nested Transaction calls inherit the queue via context
+	// propagation and InstallAfterCommitQueue returns acOwner == false
+	// so nested commit/rollback do not prematurely flush listeners
+	// waiting for the outermost boundary. When neither the caller nor
+	// the outer Transaction prepared a queue, the outermost call installs
+	// one transparently so the gate works without user opt-in.
+	var acOwner bool
+	txCtx, acOwner = events.InstallAfterCommitQueue(txCtx)
+	drainAfterCommit := func() error {
+		if acOwner {
+			return events.FireAfterCommit(txCtx)
+		}
+		return nil
+	}
+	dropAfterCommit := func() {
+		if acOwner {
+			events.DropAfterCommit(txCtx)
+		}
+	}
+
 	dispatchTxExecuted := func(errMsg string) {
 		m.dispatchEvent(ctx, &TransactionExecuted{
 			Context:    ctx,
@@ -394,6 +417,11 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 	defer func() {
 		if p := recover(); p != nil {
 			buffer.Drop()
+			// After-commit listeners must never fire on a rolled-back
+			// transaction. Drop pending tasks before the panic
+			// propagates so a deferred Reportable / outbox enqueue
+			// cannot leak side effects.
+			dropAfterCommit()
 			if rbErr := tx.Rollback(); rbErr != nil {
 				// Surface rollback failure through the configured logger
 				// when available; otherwise fire a typed event so callers
@@ -419,6 +447,7 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 
 	if err := fn(txCtx); err != nil {
 		buffer.Drop()
+		dropAfterCommit()
 		if rbErr := tx.Rollback(); rbErr != nil {
 			if logger != nil {
 				logger.Error("velocity/orm: rollback failed", "error", rbErr, "original_error", err)
@@ -443,7 +472,12 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 		// (re-enqueue jobs that already fired) or invalidate caches
 		// for changes that DID land. Drain ONLY commit-failure
 		// callbacks, which receive the commit error so they can
-		// branch on driver-specific error codes.
+		// branch on driver-specific error codes. After-commit
+		// listeners follow the rollback convention (drop on AMBIGUOUS)
+		// because firing them on a commit that may not have landed is
+		// strictly more dangerous than missing a side effect the
+		// operator's commit-failure callbacks can re-trigger.
+		dropAfterCommit()
 		dispatchTxExecuted(cmErr.Error())
 		drainOnCommitFailure(cmErr)
 		return cmErr
@@ -453,9 +487,30 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 		// drain commit callbacks so outbox / cache invalidation runs:
 		// the row IS durable, only the in-memory event delivery
 		// failed. Surface flushErr to the caller.
+		// After-commit listeners still run: the row IS durable so the
+		// side effect they encode is legitimate. A listener-level
+		// error is reported alongside the buffer flush error so the
+		// caller sees both via errors.Is.
+		var acErr error
+		if owned := drainAfterCommit(); owned != nil {
+			acErr = owned
+		}
 		dispatchTxExecuted("")
 		drainOnCommit()
+		if acErr != nil {
+			return errors.Join(flushErr, acErr)
+		}
 		return flushErr
+	}
+	if acErr := drainAfterCommit(); acErr != nil {
+		// Buffer flush succeeded; an after-commit listener failed.
+		// Surface to the caller alongside the normal commit path; the
+		// commit callbacks have already been drained on the happy
+		// path so we surface the listener error without re-running
+		// the callback drain.
+		dispatchTxExecuted("")
+		drainOnCommit()
+		return acErr
 	}
 	dispatchTxExecuted("")
 	drainOnCommit()

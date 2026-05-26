@@ -147,6 +147,16 @@ func (d *DefaultDispatcher) Subscribe(subscriber Subscriber) {
 // Dispatch fires an event to all registered listeners.
 // Listeners that return true from ShouldQueue are dispatched via the queue;
 // all others are processed synchronously. Returns an error if event is nil.
+//
+// After-commit gating: a listener that implements
+// ShouldDispatchAfterCommit and returns true is queued onto the
+// after-commit task list attached to ctx (events.PrepareAfterCommit +
+// orm.Manager.Transaction). The listener fires only if the surrounding
+// transaction commits and is dropped on rollback. Outside a transaction
+// (no queue on ctx) the listener fires inline so behaviour is unchanged
+// for callers that have not wired the orm hook. Non-opt-in listeners
+// always fire inline (or via the queue if ShouldQueue is true) regardless
+// of the after-commit queue state.
 func (d *DefaultDispatcher) Dispatch(ctx context.Context, event interface{}) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -158,6 +168,27 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, event interface{}) err
 	q := d.queue
 	d.mu.RUnlock()
 	return d.dispatchToListeners(event, func(listener Listener) error {
+		// After-commit gate runs FIRST: a listener that opts into
+		// post-commit delivery should never reach the queue or the
+		// inline branch while the transaction is still in flight.
+		// EnqueueAfterCommit returns false when no queue is installed
+		// or the queue has already drained, which collapses the gate
+		// into the existing inline / queue branches below.
+		if ac, ok := listener.(ShouldDispatchAfterCommit); ok && ac.ShouldDispatchAfterCommit() {
+			// Capture the listener and event for replay at commit
+			// time. The replay uses commit-time ctx (not the in-flight
+			// tx ctx) so listeners see post-transaction values.
+			ev := event
+			ln := listener
+			if EnqueueAfterCommit(ctx, func(replayCtx context.Context) error {
+				return d.processListener(replayCtx, ev, ln)
+			}) {
+				return nil
+			}
+			// Fall through: no queue installed (no transaction) or
+			// the queue already drained. The listener fires inline
+			// just like a non-opt-in listener would.
+		}
 		if listener.ShouldQueue() && q != nil {
 			if err := q.Push(ctx, event, listener, 0); err != nil {
 				return fmt.Errorf("failed to queue listener: %w", err)
