@@ -3,6 +3,8 @@ package drivers
 import (
 	"fmt"
 	"time"
+
+	"github.com/velocitykode/velocity/log/internal/sanitize"
 )
 
 // ConsoleLogger writes log messages to standard output with timestamps.
@@ -16,17 +18,29 @@ func NewConsoleLogger(level int) *ConsoleLogger {
 	return &ConsoleLogger{level: level}
 }
 
-// formatMessage creates a formatted log line with timestamp, level, and key-value pairs
+// formatMessage creates a formatted log line with timestamp, level, and key-value pairs.
+//
+// Every interpolated value (msg, kv keys, kv values) is run through
+// sanitize.Value before concatenation. Without this, an attacker who
+// controls any field of the record (URL path, user-agent, request
+// header echoed into an error message) can drop literal CRLF or ESC
+// bytes into the line and forge additional records or drive ANSI
+// terminal control sequences when an operator tails the output. See
+// log/internal/sanitize and audit finding H-30.
 func (c *ConsoleLogger) formatMessage(level, msg string, kvs ...any) string {
 	timestamp := time.Now().Format("15:04:05")
 
-	logLine := fmt.Sprintf("[%s] %s: %s", timestamp, level, msg)
+	logLine := fmt.Sprintf("[%s] %s: %s", timestamp, level, sanitize.Value(msg))
 
 	if len(kvs) > 0 {
 		logLine += " |"
 		for i := 0; i < len(kvs); i += 2 {
 			if i+1 < len(kvs) {
-				logLine += fmt.Sprintf(" %v=%v", kvs[i], kvs[i+1])
+				// Sanitise both halves: a user-tainted kv key forges
+				// a log line just as effectively as a tainted value.
+				k := sanitize.Value(fmt.Sprintf("%v", kvs[i]))
+				v := sanitize.Value(fmt.Sprintf("%v", kvs[i+1]))
+				logLine += fmt.Sprintf(" %s=%s", k, v)
 			}
 		}
 	}

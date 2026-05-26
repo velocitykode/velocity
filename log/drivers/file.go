@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/log/internal/sanitize"
 )
 
 // FileLogger writes log messages to daily rotating files.
@@ -81,13 +83,23 @@ func (f *FileLogger) log(level, msg string, kvs ...any) {
 
 	timestamp := time.Now().Format("2006-01-02 15:04:05.000")
 
-	logLine := fmt.Sprintf("[%s] %s: %s", timestamp, level, msg)
+	// Sanitise the user-controlled msg before emit. Without this, a
+	// caller passing an HTTP URL path or any other request-derived
+	// string can drop a literal CRLF into the log file and forge a
+	// second record. See log/internal/sanitize and audit finding H-30.
+	logLine := fmt.Sprintf("[%s] %s: %s", timestamp, level, sanitize.Value(msg))
 
 	if len(kvs) > 0 {
 		logLine += " |"
 		for i := 0; i < len(kvs); i += 2 {
 			if i+1 < len(kvs) {
-				logLine += fmt.Sprintf(" %v=%v", kvs[i], kvs[i+1])
+				// Both halves of the kv pair are sanitised: nothing in
+				// the framework prevents a user-tainted string from
+				// being passed as a key, and a CRLF in the key forges
+				// a log line just as effectively as one in the value.
+				k := sanitize.Value(fmt.Sprintf("%v", kvs[i]))
+				v := sanitize.Value(fmt.Sprintf("%v", kvs[i+1]))
+				logLine += fmt.Sprintf(" %s=%s", k, v)
 			}
 		}
 	}

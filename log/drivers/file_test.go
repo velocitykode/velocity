@@ -377,6 +377,144 @@ func TestFileLogger_Cleanup(t *testing.T) {
 	}
 }
 
+// TestFileLogger_SanitisesCRLFInValue replays the H-30 threat against
+// the file driver: a user-controlled value containing CRLF must not
+// produce additional newlines in the emitted bytes. The sanitiser
+// substitutes \x0d / \x0a hex escapes so a single log call still
+// produces exactly one line.
+func TestFileLogger_SanitisesCRLFInValue(t *testing.T) {
+	tempDir := t.TempDir()
+	logger := NewFileLogger(tempDir, 0, 0)
+
+	// Simulate the audit scenario: url field carries a percent-decoded
+	// CRLF + a forged "[fake-fatal]" record.
+	logger.Info("not found", "url", "/vulnpath\r\n[2026-01-01] FATAL: Database deleted")
+
+	if logger.file != nil {
+		logger.file.Sync()
+		logger.file.Close()
+	}
+
+	logFile := filepath.Join(tempDir, "velocity-"+time.Now().Format("2006-01-02")+".log")
+	content, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("Failed to read log file: %v", err)
+	}
+	out := string(content)
+
+	// Exactly one record (one trailing newline from fmt.Fprintln).
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 log line, got %d:\n%s", len(lines), out)
+	}
+
+	// CRLF must be escaped, not preserved literally.
+	if strings.Contains(out, "/vulnpath\r") || strings.Contains(out, "/vulnpath\n") {
+		t.Errorf("file logger preserved literal CRLF (log forgery possible):\n%s", out)
+	}
+	if !strings.Contains(out, `\x0d\x0a`) {
+		t.Errorf("file logger output missing CRLF escape \\x0d\\x0a:\n%s", out)
+	}
+
+	// The forged FATAL marker must remain visible but inside one
+	// record, so SIEM cannot mistake it for a real log line.
+	if !strings.Contains(out, "[2026-01-01] FATAL: Database deleted") {
+		t.Errorf("file logger dropped sanitised content entirely:\n%s", out)
+	}
+}
+
+// TestFileLogger_SanitisesANSIEscape confirms ESC (0x1b) in a kv
+// value is escaped, so an operator tailing the log file from a
+// terminal cannot have their cursor / colour / window-title state
+// driven by an attacker-controlled request field.
+func TestFileLogger_SanitisesANSIEscape(t *testing.T) {
+	tempDir := t.TempDir()
+	logger := NewFileLogger(tempDir, 0, 0)
+
+	logger.Info("request", "url", "/path\x1b[2J\x1b]0;evil\x07")
+
+	if logger.file != nil {
+		logger.file.Sync()
+		logger.file.Close()
+	}
+
+	logFile := filepath.Join(tempDir, "velocity-"+time.Now().Format("2006-01-02")+".log")
+	content, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("Failed to read log file: %v", err)
+	}
+	out := string(content)
+
+	if strings.ContainsRune(out, 0x1b) {
+		t.Errorf("file logger preserved literal ESC (terminal hijack possible):\n%q", out)
+	}
+	if strings.ContainsRune(out, 0x07) {
+		t.Errorf("file logger preserved literal BEL:\n%q", out)
+	}
+	if !strings.Contains(out, `\x1b`) {
+		t.Errorf("file logger output missing ESC escape \\x1b:\n%s", out)
+	}
+}
+
+// TestFileLogger_SanitisesKey guards the second half of the audit
+// fix: a CRLF in a kv key forges a log line just as effectively as
+// one in the value.
+func TestFileLogger_SanitisesKey(t *testing.T) {
+	tempDir := t.TempDir()
+	logger := NewFileLogger(tempDir, 0, 0)
+
+	logger.Info("test", "tainted\nkey", "value")
+
+	if logger.file != nil {
+		logger.file.Sync()
+		logger.file.Close()
+	}
+
+	logFile := filepath.Join(tempDir, "velocity-"+time.Now().Format("2006-01-02")+".log")
+	content, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("Failed to read log file: %v", err)
+	}
+	out := string(content)
+
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("CRLF in kv key produced %d lines, want 1:\n%s", len(lines), out)
+	}
+	if !strings.Contains(out, `tainted\x0akey=value`) {
+		t.Errorf("file logger did not escape LF in kv key:\n%s", out)
+	}
+}
+
+// TestFileLogger_SanitisesMessage verifies the msg argument is also
+// run through the sanitiser, not just kvs. err.Error() goes here.
+func TestFileLogger_SanitisesMessage(t *testing.T) {
+	tempDir := t.TempDir()
+	logger := NewFileLogger(tempDir, 0, 0)
+
+	logger.Error("decode failed: /api/users\r\n[FORGED] FATAL: db down")
+
+	if logger.file != nil {
+		logger.file.Sync()
+		logger.file.Close()
+	}
+
+	logFile := filepath.Join(tempDir, "velocity-"+time.Now().Format("2006-01-02")+".log")
+	content, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("Failed to read log file: %v", err)
+	}
+	out := string(content)
+
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("CRLF in msg produced %d lines, want 1:\n%s", len(lines), out)
+	}
+	if strings.Contains(out, "decode failed: /api/users\r") {
+		t.Errorf("file logger preserved literal CR in msg:\n%q", out)
+	}
+}
+
 func TestFileLogger_Cleanup_ZeroDays(t *testing.T) {
 	tempDir := t.TempDir()
 

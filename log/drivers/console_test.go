@@ -157,6 +157,86 @@ func TestConsoleLogger_ConcurrentWrites(t *testing.T) {
 	}
 }
 
+// TestConsoleLogger_SanitisesCRLFInValue replays the H-30 threat for
+// the console driver: a value containing CRLF must not produce
+// additional newlines in the formatted line. The sanitiser
+// substitutes \x0d / \x0a hex escapes so a single log call still
+// produces exactly one line.
+func TestConsoleLogger_SanitisesCRLFInValue(t *testing.T) {
+	logger := NewConsoleLogger(0)
+	line := logger.formatMessage("INFO", "not found",
+		"url", "/vulnpath\r\n[2026-01-01] FATAL: Database deleted")
+
+	if strings.Contains(line, "\r") || strings.Contains(line, "\n") {
+		t.Errorf("console formatMessage preserved literal CRLF (log forgery):\n%q", line)
+	}
+	if !strings.Contains(line, `\x0d\x0a`) {
+		t.Errorf("console formatMessage missing CRLF escape \\x0d\\x0a:\n%s", line)
+	}
+	if !strings.Contains(line, "[2026-01-01] FATAL: Database deleted") {
+		t.Errorf("console formatMessage dropped sanitised content:\n%s", line)
+	}
+}
+
+// TestConsoleLogger_SanitisesANSIEscape verifies ESC (0x1b) is escaped
+// so a dev watching stdout cannot have their terminal driven by an
+// attacker-controlled URL.
+func TestConsoleLogger_SanitisesANSIEscape(t *testing.T) {
+	logger := NewConsoleLogger(0)
+	line := logger.formatMessage("INFO", "request",
+		"url", "/path\x1b[2J")
+
+	if strings.ContainsRune(line, 0x1b) {
+		t.Errorf("console formatMessage preserved literal ESC (terminal hijack):\n%q", line)
+	}
+	if !strings.Contains(line, `\x1b`) {
+		t.Errorf("console formatMessage missing ESC escape \\x1b:\n%s", line)
+	}
+}
+
+// TestConsoleLogger_SanitisesKey: same as the file driver test;
+// CRLF in a kv key must be escaped or it forges a log line.
+func TestConsoleLogger_SanitisesKey(t *testing.T) {
+	logger := NewConsoleLogger(0)
+	line := logger.formatMessage("INFO", "test", "tainted\nkey", "value")
+
+	if strings.Contains(line, "\n") {
+		t.Errorf("console formatMessage preserved literal LF in key:\n%q", line)
+	}
+	if !strings.Contains(line, `tainted\x0akey=value`) {
+		t.Errorf("console formatMessage did not escape LF in key:\n%s", line)
+	}
+}
+
+// TestConsoleLogger_SanitisesMessage covers the msg path, where
+// err.Error() is typically interpolated.
+func TestConsoleLogger_SanitisesMessage(t *testing.T) {
+	logger := NewConsoleLogger(0)
+	line := logger.formatMessage("ERROR", "decode failed: /api/users\r\n[FORGED] FATAL: db down")
+
+	if strings.Contains(line, "\r") || strings.Contains(line, "\n") {
+		t.Errorf("console formatMessage preserved literal CRLF in msg:\n%q", line)
+	}
+	if !strings.Contains(line, `\x0d\x0a`) {
+		t.Errorf("console formatMessage missing CRLF escape in msg:\n%s", line)
+	}
+}
+
+// TestConsoleLogger_PreservesTab guards the columnar-alignment
+// carve-out: TAB (0x09) is the sole sub-0x20 byte that passes
+// through, so structured text logs remain readable.
+func TestConsoleLogger_PreservesTab(t *testing.T) {
+	logger := NewConsoleLogger(0)
+	line := logger.formatMessage("INFO", "col1\tcol2", "a", "b\tc")
+
+	if !strings.Contains(line, "col1\tcol2") {
+		t.Errorf("console formatMessage stripped TAB from msg:\n%q", line)
+	}
+	if !strings.Contains(line, "a=b\tc") {
+		t.Errorf("console formatMessage stripped TAB from value:\n%q", line)
+	}
+}
+
 func TestConsoleLogger_LevelFiltering(t *testing.T) {
 	// Level 1 = info: should suppress debug
 	logger := NewConsoleLogger(1)
