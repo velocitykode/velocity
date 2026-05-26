@@ -8,11 +8,69 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/velocitykode/velocity/internal/clientip"
 )
+
+// DefaultAttemptFloor is the wall-clock floor applied to guard.Attempt
+// when Config.AttemptFloor is zero. 200ms matches Laravel's Timebox
+// default and brackets a typical bcrypt verify at cost 10-12, so the
+// missing-user path and the wrong-password path both pad to the same
+// observable duration.
+const DefaultAttemptFloor = 200 * time.Millisecond
+
+// DummyBcryptHash is a bcrypt hash of a fixed string used by the
+// missing-user path of guard.Attempt so the CPU cost of "user does not
+// exist" matches "user exists but password is wrong". Mirrors Laravel's
+// retrieveByCredentials returning null + a dummy bcrypt compare.
+//
+// Generated once at package init via bcrypt.GenerateFromPassword over a
+// fixed seed; the hash is stable across process lifetime so the timing
+// channel never opens. Cost matches DefaultBcryptCost to track typical
+// production cost.
+var DummyBcryptHash = mustBcrypt("velocity/auth/timing-dummy")
+
+func mustBcrypt(seed string) []byte {
+	h, err := bcrypt.GenerateFromPassword([]byte(seed), bcrypt.DefaultCost)
+	if err != nil {
+		// crypto/rand exhaustion at package init is unrecoverable.
+		panic(fmt.Sprintf("velocity/auth: bcrypt dummy hash generation failed: %v", err))
+	}
+	return h
+}
+
+// timeboxFn is the test seam for the attempt-floor helper. Tests can swap
+// this to inject deterministic timing without sleeping in real time.
+var timeboxFn = realTimebox
+
+// realTimebox sleeps so the total wall clock for the wrapped call is
+// >=floor when floor > 0. Mirrors Laravel's Timebox::call. Always runs
+// inner before deciding the residual sleep so panics inside inner
+// propagate untouched (the defer floor still applies).
+func realTimebox(floor time.Duration, inner func()) {
+	if floor <= 0 {
+		inner()
+		return
+	}
+	start := time.Now()
+	defer func() {
+		if remaining := floor - time.Since(start); remaining > 0 {
+			time.Sleep(remaining)
+		}
+	}()
+	inner()
+}
+
+// Timebox runs inner and blocks until at least floor has elapsed since
+// entry. Exposed publicly so JWTGuard.Attempt and SessionGuard.Attempt
+// share a single implementation; consumers should not need to call this
+// directly.
+func Timebox(floor time.Duration, inner func()) {
+	timeboxFn(floor, inner)
+}
 
 // Errors
 var (
@@ -417,6 +475,19 @@ type Config struct {
 	// Entries are parsed via internal/clientip.ParseCIDRs and
 	// propagated to every guard via Manager.SetTrustedProxies.
 	TrustedProxies []string
+
+	// AttemptFloor is the minimum wall-clock duration a guard.Attempt
+	// call must take, regardless of whether the user existed and
+	// regardless of whether the password matched. The H-09 fix uses
+	// this to defeat the timing side-channel that lets an unauthenticated
+	// attacker enumerate registered email addresses (missing user
+	// returns in <5ms, valid user with wrong password takes 80-300ms
+	// inside bcrypt; the delta is two orders of magnitude).
+	//
+	// Mirrors Laravel's $this->timeboxDuration on SessionGuard. A zero
+	// value falls back to DefaultAttemptFloor (200ms). Negative values
+	// are clamped to zero (no floor) which is for tests only.
+	AttemptFloor time.Duration
 }
 
 // GuardConfig holds guard configuration

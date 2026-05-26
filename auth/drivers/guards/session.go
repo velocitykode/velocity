@@ -88,6 +88,37 @@ type SessionGuard struct {
 	serverStore    auth.ServerSessionStore
 	logger         auth.Logger
 	trustedProxies []*net.IPNet
+	// attemptFloor is the wall-clock floor for Attempt; zero falls back
+	// to auth.DefaultAttemptFloor. Set via SetAttemptFloor or seeded
+	// from auth.Config.AttemptFloor at boot.
+	attemptFloor time.Duration
+}
+
+// SetAttemptFloor configures the wall-clock floor that Attempt blocks for,
+// regardless of whether the credential check resolved fast (missing user)
+// or slow (bcrypt verify). Pass 0 to revert to auth.DefaultAttemptFloor.
+// Negative values disable the floor (test-only).
+//
+// See auth.Config.AttemptFloor for the threat model.
+func (g *SessionGuard) SetAttemptFloor(d time.Duration) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.attemptFloor = d
+}
+
+// effectiveAttemptFloor returns the configured floor, falling back to the
+// package-level default when unset.
+func (g *SessionGuard) effectiveAttemptFloor() time.Duration {
+	g.mu.RLock()
+	d := g.attemptFloor
+	g.mu.RUnlock()
+	if d == 0 {
+		return auth.DefaultAttemptFloor
+	}
+	if d < 0 {
+		return 0
+	}
+	return d
 }
 
 // NewSessionGuard creates a new session guard.
@@ -414,6 +445,13 @@ func (g *SessionGuard) LoginByID(w http.ResponseWriter, r *http.Request, id inte
 // Attempt attempts to log in with credentials. The configured LoginThrottler
 // is consulted before the credential check; failed attempts call
 // RecordFailure and successes call RecordSuccess.
+//
+// The entire credential-check phase runs inside auth.Timebox so the
+// missing-user fast path and the wrong-password slow path both pad to the
+// same wall-clock duration (H-09 fix). When the user does not exist the
+// guard still runs the configured hasher against a dummy bcrypt hash so
+// the CPU cost also matches; without this an attacker can probe valid
+// emails by measuring response time even with a constant-time floor.
 func (g *SessionGuard) Attempt(w http.ResponseWriter, r *http.Request, credentials map[string]interface{}, remember ...bool) (bool, error) {
 	throttler := g.throttler
 	if throttler == nil {
@@ -424,26 +462,57 @@ func (g *SessionGuard) Attempt(w http.ResponseWriter, r *http.Request, credentia
 		return false, auth.ErrLoginThrottled
 	}
 
-	// Find user by credentials
-	user, err := g.provider.FindByCredentials(credentials)
-	if err != nil {
+	var (
+		user            auth.Authenticatable
+		credentialsOK   bool
+		invalidCredErr  error
+		findErr         error
+		password        string
+		passwordTypedOK bool
+	)
+
+	auth.Timebox(g.effectiveAttemptFloor(), func() {
+		user, findErr = g.provider.FindByCredentials(credentials)
+		password, passwordTypedOK = credentials["password"].(string)
+
+		if findErr != nil || user == nil {
+			// User does not exist: still run the hasher against
+			// a dummy hash so the CPU profile matches the
+			// wrong-password branch. The result is discarded.
+			if passwordTypedOK {
+				_ = g.hasher.Verify(password, string(auth.DummyBcryptHash))
+			} else {
+				_ = g.hasher.Verify("", string(auth.DummyBcryptHash))
+			}
+			return
+		}
+		if !passwordTypedOK {
+			// Credential dict lacked a "password" string. Treat
+			// as invalid; still run the dummy hash so timing
+			// stays uniform across the branch.
+			_ = g.hasher.Verify("", string(auth.DummyBcryptHash))
+			invalidCredErr = auth.ErrInvalidCredentials
+			return
+		}
+		credentialsOK = g.provider.ValidateCredentials(user, map[string]interface{}{"password": password})
+	})
+
+	if findErr != nil || user == nil {
 		throttler.RecordFailure(r, key)
 		return false, nil // User not found
 	}
-
-	// Validate password
-	password, ok := credentials["password"].(string)
-	if !ok {
+	if invalidCredErr != nil {
 		throttler.RecordFailure(r, key)
-		return false, auth.ErrInvalidCredentials
+		return false, invalidCredErr
 	}
-
-	if !g.provider.ValidateCredentials(user, map[string]interface{}{"password": password}) {
+	if !credentialsOK {
 		throttler.RecordFailure(r, key)
 		return false, nil // Invalid password
 	}
 
-	// Login user
+	// Login user (post-timebox; the success path's residual delay is
+	// the login pipeline itself, which is the same on every successful
+	// auth so timing here is not a privacy concern).
 	if err := g.Login(w, r, user, remember...); err != nil {
 		return false, err
 	}

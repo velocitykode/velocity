@@ -35,6 +35,43 @@ type JWTGuard struct {
 	stopCleanup    chan struct{}
 	throttler      contract.LoginThrottler
 	trustedProxies []*net.IPNet
+	// attemptFloor is the wall-clock floor for Attempt (H-09 fix).
+	// Zero falls back to auth.DefaultAttemptFloor.
+	attemptFloor time.Duration
+	// hasher is consulted on the missing-user path so CPU timing
+	// matches the bcrypt-verify path; defaults to bcrypt cost 10.
+	hasher auth.Hasher
+}
+
+// SetAttemptFloor configures the wall-clock floor that Attempt blocks for.
+// See auth.Config.AttemptFloor for the threat model.
+func (g *JWTGuard) SetAttemptFloor(d time.Duration) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.attemptFloor = d
+}
+
+func (g *JWTGuard) effectiveAttemptFloor() time.Duration {
+	g.mu.RLock()
+	d := g.attemptFloor
+	g.mu.RUnlock()
+	if d == 0 {
+		return auth.DefaultAttemptFloor
+	}
+	if d < 0 {
+		return 0
+	}
+	return d
+}
+
+func (g *JWTGuard) effectiveHasher() auth.Hasher {
+	g.mu.RLock()
+	h := g.hasher
+	g.mu.RUnlock()
+	if h != nil {
+		return h
+	}
+	return auth.NewBcryptHasher(10)
 }
 
 // SetTrustedProxies installs the parsed proxy-network list used for
@@ -291,6 +328,11 @@ func (g *JWTGuard) LoginByID(w http.ResponseWriter, r *http.Request, id interfac
 // Attempt validates credentials and generates JWT if valid.
 // The configured LoginThrottler is consulted before the credential check;
 // failures call RecordFailure, successes call RecordSuccess.
+//
+// The credential-check phase runs inside auth.Timebox so the missing-user
+// fast path and the wrong-password slow path pad to the same wall-clock
+// duration (H-09 fix). The dummy bcrypt run on the missing-user branch
+// matches the CPU profile of the bcrypt verify branch.
 func (g *JWTGuard) Attempt(w http.ResponseWriter, r *http.Request, credentials map[string]interface{}, remember ...bool) (bool, error) {
 	throttler := g.throttler
 	if throttler == nil {
@@ -301,26 +343,51 @@ func (g *JWTGuard) Attempt(w http.ResponseWriter, r *http.Request, credentials m
 		return false, auth.ErrLoginThrottled
 	}
 
-	// Find user by credentials
-	user, err := g.provider.FindByCredentials(credentials)
-	if err != nil {
+	var (
+		user            auth.Authenticatable
+		findErr         error
+		credentialsOK   bool
+		invalidCredErr  error
+		password        string
+		passwordTypedOK bool
+	)
+
+	hasher := g.effectiveHasher()
+	auth.Timebox(g.effectiveAttemptFloor(), func() {
+		user, findErr = g.provider.FindByCredentials(credentials)
+		password, passwordTypedOK = credentials["password"].(string)
+
+		if findErr != nil || user == nil {
+			if passwordTypedOK {
+				_ = hasher.Verify(password, string(auth.DummyBcryptHash))
+			} else {
+				_ = hasher.Verify("", string(auth.DummyBcryptHash))
+			}
+			return
+		}
+		if !passwordTypedOK {
+			_ = hasher.Verify("", string(auth.DummyBcryptHash))
+			invalidCredErr = auth.ErrInvalidCredentials
+			return
+		}
+		credentialsOK = g.provider.ValidateCredentials(user, map[string]interface{}{"password": password})
+	})
+
+	if findErr != nil || user == nil {
 		throttler.RecordFailure(r, key)
 		return false, nil // User not found
 	}
-
-	// Validate password
-	password, ok := credentials["password"].(string)
-	if !ok {
+	if invalidCredErr != nil {
 		throttler.RecordFailure(r, key)
-		return false, auth.ErrInvalidCredentials
+		return false, invalidCredErr
 	}
-
-	if !g.provider.ValidateCredentials(user, map[string]interface{}{"password": password}) {
+	if !credentialsOK {
 		throttler.RecordFailure(r, key)
 		return false, nil // Invalid password
 	}
 
-	// Generate token
+	// Generate token (post-timebox; success path varies by token
+	// generation time, which leaks "succeeded" but not user identity).
 	if err := g.Login(w, r, user, remember...); err != nil {
 		return false, err
 	}
