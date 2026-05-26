@@ -373,13 +373,18 @@ func New(opts ...Option) (*App, error) {
 	sched := scheduler.New()
 	sched.SetEnv(a.config.Env)
 	sched.SetLogger(a.Log)
-	// Wire a cache-backed Locker when the configured cache driver is a
-	// shared backend (file/redis/database). Without this, scheduler.New
-	// defaults to InMemoryLocker, which means OnOneServer() and
-	// WithoutOverlapping() degrade to single-process semantics across an
-	// HA pair -- the C-04 worst case. Memory-cache deployments retain
-	// InMemoryLocker (single-process scope matches the cache's scope).
-	installSchedulerLocker(sched, a.Cache, a.config.Cache.Driver)
+	// Wire a cache-backed Locker when the configured cache driver
+	// supports the cache Lock primitive (Redis today). Without this,
+	// scheduler.New defaults to InMemoryLocker, which means
+	// OnOneServer() and WithoutOverlapping() degrade to single-process
+	// semantics across an HA pair -- the C-04 worst case. Drivers that
+	// do not implement Lock (file, database) fall back to
+	// InMemoryLocker with a WARN; otherwise cacheLocker.Acquire would
+	// surface a misconfiguration error that the scheduler treats as
+	// contention, silently skipping every guarded job. Memory-cache
+	// deployments retain InMemoryLocker (single-process scope matches
+	// the cache's scope).
+	installSchedulerLocker(sched, a.Cache, a.config.Cache.Driver, a.Log)
 	a.Scheduler = sched
 	cleanups = append(cleanups, func() {
 		if a.Scheduler != nil {

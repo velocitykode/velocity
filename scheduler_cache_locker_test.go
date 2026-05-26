@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -186,17 +187,88 @@ func TestCacheLocker_ReleaseIsIdempotent(t *testing.T) {
 	}
 }
 
+// captureLogger collects Warn calls for assertion. Implements
+// installerLogger via the structural Warn(string, ...any) shape; no
+// dependency on the log package.
+type captureLogger struct {
+	mu    sync.Mutex
+	warns []capturedWarn
+}
+
+type capturedWarn struct {
+	msg string
+	kvs []any
+}
+
+func (c *captureLogger) Warn(msg string, kvs ...any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.warns = append(c.warns, capturedWarn{msg: msg, kvs: append([]any(nil), kvs...)})
+}
+
+func (c *captureLogger) Warns() []capturedWarn {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]capturedWarn, len(c.warns))
+	copy(out, c.warns)
+	return out
+}
+
+// newFileBackedCache builds a *cache.Manager whose default store is the
+// FileStore driver. Used to exercise the capability-detection fallback:
+// FileStore does NOT implement the cache Lock primitive, so
+// installSchedulerLocker must NOT install cacheLocker for this cache.
+func newFileBackedCache(t *testing.T) *cache.Manager {
+	t.Helper()
+	dir := t.TempDir()
+	cm := cache.NewManager(&cache.Config{
+		Default: "default",
+		Stores: map[string]cache.StoreConfig{
+			"default": {Driver: "file", Path: dir},
+		},
+	})
+	if cm == nil {
+		t.Fatal("cache.NewManager returned nil for file driver")
+	}
+	// Force store materialisation up-front so a subsequent
+	// installSchedulerLocker probe does not race on initial creation.
+	if _, err := cm.DefaultStore(); err != nil {
+		t.Fatalf("file-backed default store: %v", err)
+	}
+	return cm
+}
+
+// newDatabaseBackedCache builds a *cache.Manager configured for the
+// "database" driver. The factory currently returns "not yet
+// implemented", so DefaultStore() errors. Used to exercise the
+// fallback's error-path branch.
+func newDatabaseBackedCache(t *testing.T) *cache.Manager {
+	t.Helper()
+	cm := cache.NewManager(&cache.Config{
+		Default: "default",
+		Stores: map[string]cache.StoreConfig{
+			"default": {Driver: "database"},
+		},
+	})
+	if cm == nil {
+		t.Fatal("cache.NewManager returned nil for database driver")
+	}
+	return cm
+}
+
 // TestInstallSchedulerLocker_MemoryDriverLeavesDefault asserts the
 // documented carve-out: memory cache driver retains InMemoryLocker
-// (same scope as the cache, swapping in an adapter buys nothing).
+// (same scope as the cache, swapping in an adapter buys nothing). No
+// WARN should fire on this path -- memory is the supported dev default.
 func TestInstallSchedulerLocker_MemoryDriverLeavesDefault(t *testing.T) {
 	t.Parallel()
 
 	cm := newSharedMemoryCache(t)
 	sched := scheduler.New()
 	beforeType := reflect.TypeOf(sched.Locker()).String()
+	logger := &captureLogger{}
 
-	installSchedulerLocker(sched, cm, "memory")
+	installSchedulerLocker(sched, cm, "memory", logger)
 
 	afterType := reflect.TypeOf(sched.Locker()).String()
 	if beforeType != afterType {
@@ -205,33 +277,123 @@ func TestInstallSchedulerLocker_MemoryDriverLeavesDefault(t *testing.T) {
 	if afterType != "*scheduler.InMemoryLocker" {
 		t.Fatalf("expected *scheduler.InMemoryLocker default, got %s", afterType)
 	}
+	if got := logger.Warns(); len(got) != 0 {
+		t.Fatalf("memory driver path must not WARN; got %d warnings: %+v", len(got), got)
+	}
 }
 
-// TestInstallSchedulerLocker_NonMemoryDriverInstallsAdapter verifies the
-// positive case: when the configured cache driver is anything other
-// than "memory" (redis, file, database), the scheduler's Locker is
-// replaced with the cache-backed adapter. The driver name is the only
-// thing the installer inspects -- the actual backend connection is not
-// required for this assertion.
-func TestInstallSchedulerLocker_NonMemoryDriverInstallsAdapter(t *testing.T) {
+// TestInstallSchedulerLocker_RedisDriverInstallsCacheLocker pins the
+// positive case: a cache backed by a lockCapable store (we use
+// MemoryStore here because the test does not need a real Redis -- the
+// memory driver satisfies the same Lock(...)/RestoreLock(...) shape
+// the type assertion checks for) plus a non-memory driver name must
+// install cacheLocker, with no WARN.
+//
+// Production deployments substitute Redis for the MemoryStore; the
+// installer's capability decision is the same.
+func TestInstallSchedulerLocker_RedisDriverInstallsCacheLocker(t *testing.T) {
 	t.Parallel()
 
-	for _, driver := range []string{"redis", "file", "database"} {
-		driver := driver
-		t.Run(driver, func(t *testing.T) {
-			t.Parallel()
-			cm := newSharedMemoryCache(t)
-			sched := scheduler.New()
-			installSchedulerLocker(sched, cm, driver)
+	cm := newSharedMemoryCache(t)
+	sched := scheduler.New()
+	logger := &captureLogger{}
 
-			got := reflect.TypeOf(sched.Locker()).String()
-			if got == "*scheduler.InMemoryLocker" {
-				t.Fatalf("driver %q must install cacheLocker; got InMemoryLocker still", driver)
+	installSchedulerLocker(sched, cm, "redis", logger)
+
+	got := reflect.TypeOf(sched.Locker()).String()
+	if got == "*scheduler.InMemoryLocker" {
+		t.Fatal("lockCapable store must install cacheLocker; got InMemoryLocker still")
+	}
+	if got != "*velocity.cacheLocker" {
+		t.Fatalf("expected *velocity.cacheLocker, got %s", got)
+	}
+	if w := logger.Warns(); len(w) != 0 {
+		t.Fatalf("lock-capable cache must not WARN; got %d warnings: %+v", len(w), w)
+	}
+}
+
+// TestInstallSchedulerLocker_FileDriverFallsBackToInMemory is the C-04
+// follow-up regression: a fresh CACHE_DRIVER=file deployment must NOT
+// install cacheLocker (FileStore does not implement Lock; cacheLocker
+// would surface a misconfiguration error and the scheduler would
+// silently skip every guarded job). installSchedulerLocker must
+// instead leave the InMemoryLocker default in place AND emit a WARN
+// so multi-host operators see a loud signal.
+func TestInstallSchedulerLocker_FileDriverFallsBackToInMemory(t *testing.T) {
+	t.Parallel()
+
+	cm := newFileBackedCache(t)
+	sched := scheduler.New()
+	logger := &captureLogger{}
+
+	installSchedulerLocker(sched, cm, "file", logger)
+
+	got := reflect.TypeOf(sched.Locker()).String()
+	if got != "*scheduler.InMemoryLocker" {
+		t.Fatalf("file driver lacks Lock support; must fall back to InMemoryLocker, got %s", got)
+	}
+	warns := logger.Warns()
+	if len(warns) != 1 {
+		t.Fatalf("expected exactly 1 WARN on file driver fallback, got %d: %+v", len(warns), warns)
+	}
+	if !strings.Contains(warns[0].msg, "does not support distributed locks") {
+		t.Fatalf("WARN message did not name the capability gap; got %q", warns[0].msg)
+	}
+	// The driver name must appear in the kvs so the warning is
+	// actionable.
+	found := false
+	for i := 0; i+1 < len(warns[0].kvs); i += 2 {
+		if k, _ := warns[0].kvs[i].(string); k == "driver" {
+			if v, _ := warns[0].kvs[i+1].(string); v == "file" {
+				found = true
+				break
 			}
-			if got != "*velocity.cacheLocker" {
-				t.Fatalf("driver %q expected *velocity.cacheLocker, got %s", driver, got)
-			}
-		})
+		}
+	}
+	if !found {
+		t.Fatalf("WARN kvs missing driver=file; got %+v", warns[0].kvs)
+	}
+}
+
+// TestInstallSchedulerLocker_DatabaseDriverFallsBackToInMemory covers
+// the related case where the cache driver factory itself returns an
+// error (database driver is registered but currently returns "not yet
+// implemented"). installSchedulerLocker's DefaultStore call fails, so
+// the error-branch WARN fires and InMemoryLocker is retained.
+func TestInstallSchedulerLocker_DatabaseDriverFallsBackToInMemory(t *testing.T) {
+	t.Parallel()
+
+	cm := newDatabaseBackedCache(t)
+	sched := scheduler.New()
+	logger := &captureLogger{}
+
+	installSchedulerLocker(sched, cm, "database", logger)
+
+	got := reflect.TypeOf(sched.Locker()).String()
+	if got != "*scheduler.InMemoryLocker" {
+		t.Fatalf("database driver must fall back to InMemoryLocker, got %s", got)
+	}
+	warns := logger.Warns()
+	if len(warns) != 1 {
+		t.Fatalf("expected exactly 1 WARN on database driver fallback, got %d: %+v", len(warns), warns)
+	}
+}
+
+// TestInstallSchedulerLocker_NilLoggerIsSafe verifies that a nil
+// installerLogger argument does not panic on the WARN paths -- the
+// installer must remain robust against callers that have not yet
+// constructed a logger (early bootstrap, test harnesses).
+func TestInstallSchedulerLocker_NilLoggerIsSafe(t *testing.T) {
+	t.Parallel()
+
+	cm := newFileBackedCache(t)
+	sched := scheduler.New()
+
+	// Must not panic.
+	installSchedulerLocker(sched, cm, "file", nil)
+
+	if got := reflect.TypeOf(sched.Locker()).String(); got != "*scheduler.InMemoryLocker" {
+		t.Fatalf("nil logger should still fall back; got %s", got)
 	}
 }
 
@@ -242,8 +404,9 @@ func TestInstallSchedulerLocker_NonMemoryDriverInstallsAdapter(t *testing.T) {
 func TestInstallSchedulerLocker_NilArgsAreSafe(t *testing.T) {
 	t.Parallel()
 
-	// All three call shapes must not panic.
-	installSchedulerLocker(nil, nil, "redis")
-	installSchedulerLocker(scheduler.New(), nil, "redis")
-	installSchedulerLocker(nil, newSharedMemoryCache(t), "redis")
+	// All call shapes must not panic.
+	logger := &captureLogger{}
+	installSchedulerLocker(nil, nil, "redis", logger)
+	installSchedulerLocker(scheduler.New(), nil, "redis", logger)
+	installSchedulerLocker(nil, newSharedMemoryCache(t), "redis", logger)
 }

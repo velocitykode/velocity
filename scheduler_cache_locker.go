@@ -116,26 +116,90 @@ func (h *cacheLockHandle) Release(ctx context.Context) error {
 	return nil
 }
 
-// installSchedulerLocker is called by velocity.New after both cache and
-// scheduler are constructed. When the configured cache driver is
-// anything other than "memory" (i.e. file, redis, database -- any shared
-// or persistent backend), the scheduler's process-local InMemoryLocker
-// default is replaced with a cache-backed adapter. For "memory" cache
-// deployments (typically dev/test single-host) the InMemoryLocker is
-// left in place: a per-process cache and a per-process Locker have the
-// same scope, and swapping in the adapter would not improve correctness
-// while making the test surface noisier.
+// lockCapable is the structural interface a cache store must satisfy
+// for cacheLocker to be installable. It matches cache/drivers.Locker
+// without forcing scheduler_cache_locker.go to import the drivers
+// package directly: a *MemoryStore and *RedisStore satisfy it, a
+// *FileStore and a *DatabaseStore (the latter not yet implemented at
+// all) do NOT, because their Lock method is absent.
 //
-// Pass-through helper centralises the "is this driver shareable?"
-// decision; future drivers (memcached, dynamodb, etc.) only need to be
-// added to the deny-list once.
-func installSchedulerLocker(sched *scheduler.Scheduler, cm cache.CacheManager, driver string) {
+// The match is structural -- if a future cache driver implements the
+// same two-method shape, capability is detected automatically with no
+// changes to this file.
+type lockCapable interface {
+	Lock(key string, ttl ...time.Duration) cache.Lock
+	RestoreLock(key string, owner string) cache.Lock
+}
+
+// installerLogger is the narrow log surface installSchedulerLocker
+// uses to emit the fallback WARN. Implemented by *log.Logger. Defining
+// it locally keeps this file's import set unchanged and lets tests
+// inject a capture logger without depending on the log package.
+type installerLogger interface {
+	Warn(msg string, kvs ...any)
+}
+
+// installSchedulerLocker is called by velocity.New after both cache and
+// scheduler are constructed. It decides which Locker the scheduler will
+// use for WithoutOverlapping() and OnOneServer() contests:
+//
+//   - driver == "" or "memory": leave the scheduler.InMemoryLocker
+//     default in place. A per-process cache and a per-process Locker
+//     have the same scope; swapping in the adapter would not improve
+//     correctness.
+//
+//   - any other driver, BUT the underlying store does not implement
+//     the Lock primitive (file, database -- see lockCapable docstring):
+//     fall back to scheduler.InMemoryLocker and emit a WARN log. This
+//     preserves single-process correctness; multi-host operators get
+//     a loud signal that distributed locking is NOT active. Without
+//     this fallback, cacheLocker.Acquire would surface the
+//     misconfiguration error, the scheduler would treat it as
+//     contention, and every WithoutOverlapping / OnOneServer job
+//     would be silently skipped forever -- the C-04 worst case
+//     re-introduced via a different path.
+//
+//   - any other driver AND the store implements Lock (redis today):
+//     install the cache-backed adapter; cluster-wide guarantees hold.
+//
+// Pass-through helper centralises the capability decision; future
+// drivers that grow Lock support only need to satisfy the lockCapable
+// interface and no changes here are required.
+func installSchedulerLocker(sched *scheduler.Scheduler, cm cache.CacheManager, driver string, log installerLogger) {
 	if sched == nil || cm == nil {
 		return
 	}
 	if driver == "" || driver == "memory" {
 		return
 	}
+
+	// Probe the default store for Lock capability. If the cache has
+	// not been initialised (e.g. cm is a mock that returns an error),
+	// or the store does not implement the lock primitive, the
+	// distributed-Locker path is unsafe and we fall back to in-process
+	// semantics. The driver name is logged so the warning is
+	// actionable.
+	store, err := cm.DefaultStore()
+	if err != nil || store == nil {
+		if log != nil {
+			log.Warn(
+				"velocity/scheduler: cache default store unavailable; falling back to in-process Locker; multi-host OnOneServer / WithoutOverlapping will NOT work",
+				"driver", driver,
+				"error", err,
+			)
+		}
+		return
+	}
+	if _, ok := store.(lockCapable); !ok {
+		if log != nil {
+			log.Warn(
+				"velocity/scheduler: cache driver does not support distributed locks; falling back to in-process Locker; multi-host OnOneServer / WithoutOverlapping will NOT work",
+				"driver", driver,
+			)
+		}
+		return
+	}
+
 	if l := newCacheLocker(cm); l != nil {
 		sched.SetLocker(l)
 	}
