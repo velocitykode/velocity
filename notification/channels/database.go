@@ -2,14 +2,14 @@ package channels
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/velocitykode/velocity/notification"
 )
 
@@ -24,16 +24,21 @@ func init() {
 // Expected table schema (create via a migration):
 //
 //	CREATE TABLE notifications (
-//	  id            VARCHAR(36) PRIMARY KEY,
-//	  type          VARCHAR(255) NOT NULL,
-//	  notifiable_id VARCHAR(255) NOT NULL,
-//	  data          TEXT NOT NULL,
-//	  read_at       TIMESTAMP NULL,
-//	  created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-//	  updated_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+//	  id              VARCHAR(36) PRIMARY KEY,
+//	  type            VARCHAR(255) NOT NULL,
+//	  notifiable_type VARCHAR(255) NOT NULL,
+//	  notifiable_id   VARCHAR(255) NOT NULL,
+//	  data            TEXT NOT NULL,
+//	  read_at         TIMESTAMP NULL,
+//	  created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+//	  updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 //	);
-//	CREATE INDEX idx_notifications_notifiable ON notifications (notifiable_id);
+//	CREATE INDEX idx_notifications_notifiable ON notifications (notifiable_type, notifiable_id);
 //	CREATE INDEX idx_notifications_read_at ON notifications (read_at);
+//
+// id is a UUIDv4 string (RFC 4122), shared across every channel in the
+// same Send call so the row inserted here correlates with the email,
+// broadcast, etc. that went out in parallel.
 type DatabaseChannel struct {
 	db     *sql.DB
 	driver string // "postgres", "mysql", or "sqlite"
@@ -75,6 +80,15 @@ func (c *DatabaseChannel) Send(ctx context.Context, notifiable interface{}, n no
 		notifiableID = nr.NotificationRoute("database")
 	}
 
+	// Resolve polymorphic recipient type. The notification can declare
+	// it explicitly via DatabaseMessage.WithNotifiableType, otherwise we
+	// fall back to the Go runtime type so the column is always
+	// populated (NOT NULL in the schema above).
+	notifiableType := dbMsg.NotifiableType
+	if notifiableType == "" {
+		notifiableType = inferNotifiableType(notifiable)
+	}
+
 	// Serialize data to JSON
 	dataJSON, err := json.Marshal(dbMsg.Data)
 	if err != nil {
@@ -82,14 +96,22 @@ func (c *DatabaseChannel) Send(ctx context.Context, notifiable interface{}, n no
 	}
 
 	now := time.Now().UTC()
-	id := generateNotificationID()
+
+	// Re-use the per-Send notification ID propagated by Manager.Send so
+	// the database row matches the same ID surfaced via mail headers,
+	// broadcast payload, etc. Falls back to a fresh UUIDv4 when called
+	// outside Manager.Send (e.g. direct ch.Send for tests).
+	id := notification.IDFromContext(ctx)
+	if id == "" {
+		id = generateNotificationID()
+	}
 
 	query := rebind(c.driver,
-		"INSERT INTO notifications (id, type, notifiable_id, data, read_at, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, ?, ?)",
+		"INSERT INTO notifications (id, type, notifiable_type, notifiable_id, data, read_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)",
 	)
 
 	_, err = c.db.ExecContext(ctx, query,
-		id, dbMsg.Type, notifiableID, string(dataJSON), now, now,
+		id, dbMsg.Type, notifiableType, notifiableID, string(dataJSON), now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("notification: failed to insert notification: %w", err)
@@ -98,14 +120,29 @@ func (c *DatabaseChannel) Send(ctx context.Context, notifiable interface{}, n no
 	return nil
 }
 
-// generateNotificationID generates a cryptographically random 36-character hex ID.
+// generateNotificationID generates a fresh RFC 4122 UUIDv4. Stable
+// 36-char canonical form (8-4-4-4-12 hex with dashes). Replaces the
+// previous ad-hoc 18-byte hex encoding which lacked the version /
+// variant bits and could not be parsed by uuid-aware downstream tools.
 func generateNotificationID() string {
-	b := make([]byte, 18)
-	if _, err := rand.Read(b); err != nil {
-		// Fallback: include timestamp to reduce collision risk
-		return fmt.Sprintf("%d", time.Now().UnixNano())
+	return uuid.NewString()
+}
+
+// inferNotifiableType derives a stable string for the notifiable's
+// Go runtime type. Pointer wrappers are unwrapped so *models.User and
+// models.User produce the same value; nil interfaces produce "".
+func inferNotifiableType(notifiable interface{}) string {
+	if notifiable == nil {
+		return ""
 	}
-	return hex.EncodeToString(b)
+	t := reflect.TypeOf(notifiable)
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == nil {
+		return ""
+	}
+	return t.String()
 }
 
 // rebind converts ? placeholders to $1, $2, ... for PostgreSQL.

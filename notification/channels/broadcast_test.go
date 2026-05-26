@@ -15,9 +15,9 @@ import (
 // call so tests can assert which channel names actually went over the
 // wire after the authorizer ran.
 type captureDriver struct {
-	mu       sync.Mutex
-	calls    []captureCall
-	emitErr  error
+	mu      sync.Mutex
+	calls   []captureCall
+	emitErr error
 }
 
 type captureCall struct {

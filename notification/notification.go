@@ -12,6 +12,7 @@ package notification
 import (
 	"context"
 
+	"github.com/google/uuid"
 	"github.com/velocitykode/velocity/mail"
 )
 
@@ -20,6 +21,55 @@ type Notification interface {
 	// Via returns the channel names this notification should be delivered through.
 	// Channel names correspond to registered Channel drivers (e.g., "mail", "database", "broadcast", "slack").
 	Via(notifiable interface{}) []string
+}
+
+// WithID is an optional Notification capability. When a notification
+// implements ID(), its value is treated as the shared identifier for
+// this Send invocation across every channel. Otherwise the manager
+// allocates a fresh UUIDv4 per Send.
+//
+// The ID is propagated through context via IDFromContext so channels
+// can store / surface the same identifier (database, broadcast, mail
+// headers, ...) without re-generating their own.
+type WithID interface {
+	ID() string
+}
+
+// notificationIDKey is the context key used to thread a per-Send
+// notification ID across every channel in one delivery.
+type notificationIDKey struct{}
+
+// WithNotificationID returns ctx augmented with id. Used by Manager.Send
+// so downstream channels can read the shared identifier via
+// IDFromContext. Exported so worker / job code that builds its own
+// per-job context can carry the same ID forward.
+func WithNotificationID(ctx context.Context, id string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, notificationIDKey{}, id)
+}
+
+// IDFromContext returns the shared notification ID set by Manager.Send,
+// or "" when no ID is present.
+func IDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if v, ok := ctx.Value(notificationIDKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// NewID returns a fresh notification identifier. The manager calls it
+// once per Send when the notification does not implement WithID, so
+// every channel in the same delivery sees the same string.
+func NewID() string {
+	return uuid.NewString()
 }
 
 // Notifiable represents an entity that can receive notifications.
@@ -214,6 +264,13 @@ type DatabaseNotification interface {
 type DatabaseMessage struct {
 	// Type identifies the notification (e.g., "App.Notifications.InvoicePaid").
 	Type string
+	// NotifiableType is the polymorphic type of the recipient
+	// (e.g. "App.Models.User"). Stored alongside notifiable_id so
+	// applications can host notifications for heterogeneous recipient
+	// types in one table, matching Laravel's notifications schema.
+	// When empty, channels infer the type from the notifiable's runtime
+	// type (e.g. "*models.User").
+	NotifiableType string
 	// Data holds the notification payload as a map.
 	Data map[string]interface{}
 }
@@ -229,6 +286,14 @@ func NewDatabaseMessage(notificationType string) *DatabaseMessage {
 // Set adds a key-value pair to the notification data.
 func (m *DatabaseMessage) Set(key string, value interface{}) *DatabaseMessage {
 	m.Data[key] = value
+	return m
+}
+
+// WithNotifiableType sets the polymorphic recipient type. Useful when
+// the application stores its model class name explicitly rather than
+// inferring it from the Go runtime type.
+func (m *DatabaseMessage) WithNotifiableType(t string) *DatabaseMessage {
+	m.NotifiableType = t
 	return m
 }
 

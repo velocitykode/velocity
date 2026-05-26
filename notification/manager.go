@@ -117,10 +117,28 @@ func (m *Manager) SetChannel(name string, ch Channel) {
 
 // Send delivers a notification to a single notifiable across all channels
 // returned by notification.Via().
+//
+// A single notification identifier is allocated once per Send and
+// propagated through ctx via WithNotificationID so every channel
+// (mail, database, broadcast, ...) sees the same string. Notifications
+// that implement WithID provide their own; otherwise a UUIDv4 is used.
+// This is what makes "the email I just received" and "the database row
+// I just inserted" correlate by ID.
 func (m *Manager) Send(ctx context.Context, notifiable interface{}, notification Notification) error {
 	channels := notification.Via(notifiable)
 	if len(channels) == 0 {
 		return nil
+	}
+
+	if IDFromContext(ctx) == "" {
+		id := ""
+		if wi, ok := notification.(WithID); ok {
+			id = wi.ID()
+		}
+		if id == "" {
+			id = NewID()
+		}
+		ctx = WithNotificationID(ctx, id)
 	}
 
 	var firstErr error

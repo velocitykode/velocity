@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/notification"
 )
@@ -374,9 +375,12 @@ func TestGenerateNotificationIDUniqueness(t *testing.T) {
 
 func TestGenerateNotificationIDLength(t *testing.T) {
 	id := generateNotificationID()
-	// 18 bytes = 36 hex characters
+	// RFC 4122 canonical UUIDv4: 36 characters, 8-4-4-4-12 hex with dashes.
 	if len(id) != 36 {
-		t.Errorf("expected 36-char hex ID, got %d chars: %s", len(id), id)
+		t.Errorf("expected 36-char UUID, got %d chars: %s", len(id), id)
+	}
+	if _, err := uuid.Parse(id); err != nil {
+		t.Errorf("generateNotificationID must produce a parseable UUID, got %q: %v", id, err)
 	}
 }
 
