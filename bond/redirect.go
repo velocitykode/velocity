@@ -114,11 +114,20 @@ func sanitizeRedirectURL(target string, allowedHosts []string) string {
 		return "/"
 	}
 
-	// Reject backslash variants like "/\evil.com" and "\\evil.com". Some
-	// browsers and intermediaries normalise "\" to "/", which would turn
-	// these into a network-path reference. Be conservative and reject any
-	// target containing a backslash before we trust it as a relative path.
-	if strings.ContainsRune(target, '\\') {
+	// Reject backslash variants and Unicode-similar slash codepoints up
+	// front. Some browsers and intermediaries normalise these to ASCII
+	// "/", turning a leading "/\evil" or "/／evil" into the network-path
+	// reference "//evil" (open redirect). Matches the router-side
+	// sanitizeRedirect helper so bond.Back and Inertia redirects close
+	// the same parity gap.
+	//
+	// Codepoints covered:
+	//   - U+005C  REVERSE SOLIDUS (ASCII backslash)
+	//   - U+FF0F  FULLWIDTH SOLIDUS
+	//   - U+29F8  BIG SOLIDUS
+	//   - U+2044  FRACTION SLASH
+	//   - U+2215  DIVISION SLASH
+	if containsSlashLookalike(target) {
 		return "/"
 	}
 
@@ -163,6 +172,20 @@ func sanitizeRedirectURL(target string, allowedHosts []string) string {
 // hostInAllowlist reports whether host appears in allowed. Exact match
 // only; allowlist semantics intentionally do not include suffix or
 // wildcard matching, matching the router's RedirectAllowedHosts contract.
+// containsSlashLookalike reports whether target contains a backslash or
+// a Unicode codepoint that some clients or intermediaries normalise to
+// "/". Mirrors the router-side helper of the same name so bond and
+// router agree on which redirect targets are safe.
+func containsSlashLookalike(target string) bool {
+	for _, r := range target {
+		switch r {
+		case '\\', '／', '⧸', '⁄', '∕':
+			return true
+		}
+	}
+	return false
+}
+
 func hostInAllowlist(host string, allowed []string) bool {
 	for _, h := range allowed {
 		if h != "" && host == h {

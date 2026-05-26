@@ -316,6 +316,26 @@ func TestSanitizeRedirectURL(t *testing.T) {
 			want:   "/",
 		},
 		{
+			name:   "unicode fullwidth solidus rejected",
+			target: "/／evil.com/path",
+			want:   "/",
+		},
+		{
+			name:   "unicode big solidus rejected",
+			target: "/⧸evil.com/path",
+			want:   "/",
+		},
+		{
+			name:   "unicode fraction slash rejected",
+			target: "/⁄evil.com/path",
+			want:   "/",
+		},
+		{
+			name:   "unicode division slash rejected",
+			target: "/∕evil.com/path",
+			want:   "/",
+		},
+		{
 			name:   "safe relative path with multi-segment allowed",
 			target: "/safe/path",
 			want:   "/safe/path",
