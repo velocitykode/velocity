@@ -77,7 +77,7 @@ type Option func(*Client)
 
 // WithHTTPClient sets a custom http.Client. When used, TLS/redirect/SSRF
 // options applied after this call take effect on the caller's transport
-// only if it is an *http.Transport — otherwise they are ignored.
+// only if it is an *http.Transport, otherwise they are ignored.
 func WithHTTPClient(client *http.Client) Option {
 	return func(c *Client) {
 		c.client = client
@@ -155,7 +155,7 @@ func WithMaxResponseBytes(n int64) Option {
 }
 
 // WithAllowedHosts whitelists specific eTLD+1 hosts from the private-IP
-// deny list — useful when you legitimately need to reach an internal
+// deny list, useful when you legitimately need to reach an internal
 // service while still blocking everything else.
 func WithAllowedHosts(hosts ...string) Option {
 	return func(c *Client) {
