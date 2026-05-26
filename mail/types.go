@@ -57,25 +57,45 @@ func NewAddress(email string, name ...string) (Address, error) {
 	return addr, nil
 }
 
-// Validate rejects an Address whose Email or Name fields contain CR,
-// LF, NUL, or any other C0 control byte. This is defence in depth at
-// the driver/serialiser boundary: the fluent setters on Message
-// (From/To/Cc/Bcc/ReplyTo) already block these via validateAddressField
-// at construction, but a caller that builds an Address literal (the
-// struct has exported fields for backward compatibility) bypasses that
-// path entirely. Drivers call Validate before serialising so a
-// literal-constructed payload with header-split bytes cannot reach
-// the wire.
+// Validate enforces the same invariants on a literal-built Address
+// that the fluent setters on Message (From/To/Cc/Bcc/ReplyTo) enforce
+// at construction time. Drivers call Validate before serialising so a
+// caller that bypasses the setters by building mail.Address{} directly
+// cannot smuggle a recipient list, an embedded display name, or a
+// header-split payload onto the wire.
 //
-// Validate does NOT re-parse the email via net/mail (that is what
-// NewAddress is for); it only enforces the minimal CR/LF/control
-// invariant every downstream serialiser needs.
+// Enforced:
+//
+//   - Email and Name contain no CR, LF, NUL, or other C0 control byte
+//     (CRLF header injection defence).
+//   - Email parses as exactly one RFC 5322 addr-spec via
+//     net/mail.ParseAddress, with no embedded display name and no
+//     list-separator ( `,` `;` ) or angle-bracket characters. This is
+//     the single-mailbox invariant: a payload like
+//     "victim@example.com, attacker@evil.com" otherwise lands as two
+//     recipients on Mailgun / Postmark / SMTP because their REST
+//     bodies and headers are list-aware.
+//   - Name (when present) carries no address-grammar special
+//     ( `<>,;:"\()` ) since downstream RFC 2047 / 5322 quoting alone
+//     does not prevent recipient-impersonation payloads such as
+//     `Bob" <evil@x>, "Real` leaking through gateways that bypass
+//     quoting.
+//
+// Validate's contract matches NewAddress and validateAddressField; the
+// three converge on the same accept/reject set so the driver boundary
+// does not see addresses the setter path would have rejected.
 func (a Address) Validate() error {
-	if containsForbiddenControl(a.Email) {
-		return fmt.Errorf("%w: address Email contains CR/LF or other control characters", ErrInvalidHeader)
+	if err := validateAddrSpec(a.Email); err != nil {
+		return err
 	}
-	if containsForbiddenControl(a.Name) {
-		return fmt.Errorf("%w: address Name contains CR/LF or other control characters", ErrInvalidHeader)
+	if a.Name != "" {
+		if containsForbiddenControl(a.Name) {
+			return fmt.Errorf("%w: address Name contains CR/LF or other control characters", ErrInvalidHeader)
+		}
+		if i := strings.IndexAny(a.Name, "<>,;:\"\\()"); i >= 0 {
+			return fmt.Errorf("%w: address Name contains address-grammar special %q",
+				ErrInvalidHeader, a.Name[i])
+		}
 	}
 	return nil
 }
@@ -107,6 +127,44 @@ func (a Address) String() string {
 	}
 	na := netmail.Address{Name: a.Name, Address: a.Email}
 	return na.String()
+}
+
+// validateAddrSpec enforces the single-bare-addr-spec invariant on an
+// Address.Email value: no control bytes, no list-separator
+// ( `,` `;` ) or angle-bracket characters, must parse as exactly one
+// RFC 5322 addr-spec via net/mail.ParseAddress, and must not carry an
+// embedded display name. Returns ErrInvalidHeader for control-byte
+// failures and ErrInvalidEmailAddress for parse / shape failures so
+// callers can distinguish header-split from list-smuggling at the
+// errors.Is layer.
+//
+// An empty Email is accepted: presence is a driver-level concern
+// ("From is required" errors come from the driver, not from this
+// invariant gate). Validate only blocks smuggling; the driver still
+// decides whether it can serialise a zero Address. Shared between
+// Address.Validate (driver boundary, literal-built addresses) and the
+// fluent setter path so both call sites converge.
+func validateAddrSpec(email string) error {
+	if email == "" {
+		return nil
+	}
+	if containsForbiddenControl(email) {
+		return fmt.Errorf("%w: address Email contains CR/LF or other control characters", ErrInvalidHeader)
+	}
+	if i := strings.IndexAny(email, ",;<>"); i >= 0 {
+		return fmt.Errorf("%w: address Email contains forbidden character %q",
+			ErrInvalidEmailAddress, email[i])
+	}
+	parsed, err := netmail.ParseAddress(email)
+	if err != nil {
+		return fmt.Errorf("%w: address Email %q: %v",
+			ErrInvalidEmailAddress, email, err)
+	}
+	if parsed.Name != "" {
+		return fmt.Errorf("%w: address Email %q includes a display name; use the Name field",
+			ErrInvalidEmailAddress, email)
+	}
+	return nil
 }
 
 // safeAddrSpec returns email unchanged when it parses as a single bare

@@ -126,6 +126,49 @@ func TestAddressValidateRejectsLiteralCRLF(t *testing.T) {
 	}
 }
 
+// TestAddressValidateRejectsRecipientListSmuggling pins the
+// driver-boundary single-mailbox invariant: a literal-built Address
+// whose Email field carries a recipient list, an embedded display
+// name, or a Name field with address-grammar specials must be
+// rejected before serialisation. Pre-fix the Validate function only
+// covered CR/LF control bytes, so payloads like
+//
+//	mail.Address{Email: "victim@example.com, attacker@evil.com"}
+//
+// reached Mailgun / Postmark as a two-recipient list because the
+// REST bodies and SMTP To header are list-aware. Validate now mirrors
+// validateAddressField on the setter path.
+func TestAddressValidateRejectsRecipientListSmuggling(t *testing.T) {
+	cases := []struct {
+		name string
+		addr Address
+	}{
+		{"comma-separated recipient list",
+			Address{Email: "victim@example.com, attacker@evil.com"}},
+		{"semicolon-separated recipient list",
+			Address{Email: "victim@example.com; attacker@evil.com"}},
+		{"embedded display name in email",
+			Address{Email: "Bob <bob@example.com>"}},
+		{"angle-bracketed bare addr-spec",
+			Address{Email: "<bob@example.com>"}},
+		{"unparseable email",
+			Address{Email: "not-an-email"}},
+		{"display-name impersonation special",
+			Address{Email: "ok@example.com", Name: `Bob" <evil@x>, "Real`}},
+		{"display-name with comma list-separator",
+			Address{Email: "ok@example.com", Name: "Bob, Alice"}},
+		{"display-name with angle bracket",
+			Address{Email: "ok@example.com", Name: "Bob <evil>"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.addr.Validate(); err == nil {
+				t.Fatalf("Validate must reject %+v", tc.addr)
+			}
+		})
+	}
+}
+
 // TestAddressValidateAcceptsCleanLiteral verifies that an Address
 // literal with clean fields passes Validate. The check must be a
 // no-op on the common path.
