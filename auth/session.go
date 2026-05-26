@@ -189,13 +189,42 @@ func (s *BaseSession) Regenerate() error {
 	return nil
 }
 
-// Invalidate invalidates session
+// Invalidate invalidates session.
+//
+// Beyond clearing the data/flash bags and marking the session destroyed,
+// Invalidate rotates the session ID so that any caller holding the
+// pre-invalidate ID cannot rehydrate state against this session.
+// Without rotation an attacker who learned the old ID (logged elsewhere,
+// browser history, etc.) could re-submit it before the store flushes the
+// deletion and a downstream layer that rebuilds a session by ID would
+// reattach to the old identifier. Mirrors Laravel's Session::invalidate
+// (which delegates to migrate(destroy=true) and produces a new id).
+//
+// A regenerate failure is non-fatal: the session is still marked
+// destroyed, the bags are cleared, and the id is forced to empty so the
+// rotation invariant ("the pre-invalidate id can no longer be reused as
+// this session's id") holds even on the entropy-exhausted path.
 func (s *BaseSession) Invalidate() error {
+	// Generate a fresh ID before taking the write lock so the rare
+	// crypto/rand failure path can bubble up without holding s.mu.
+	newID, genErr := generateSessionID()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.destroyed = true
 	s.data = make(map[string]interface{})
 	s.flash = make(map[string]interface{})
+	if genErr != nil {
+		// Defence in depth: zero the ID so the pre-invalidate ID is no
+		// longer the session's identifier even though we could not
+		// produce a fresh one. The session is destroyed anyway; any
+		// subsequent Save will be a no-op or a cookie-clear.
+		s.id = ""
+		s.modified = true
+		return genErr
+	}
+	s.id = newID
+	s.modified = true
 	return nil
 }
 
