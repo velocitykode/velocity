@@ -21,18 +21,11 @@ import (
 	"github.com/velocitykode/velocity/router"
 )
 
-// maxFormBodyForCSRFLookup caps the amount of an x-www-form-urlencoded
-// request body the CSRF middleware will buffer while looking for a token.
-// An unauthenticated attacker can otherwise force the middleware to read
-// (and ParseMultipartForm to write to disk / hold in memory) an arbitrarily
-// large body before any auth check runs. 1 MiB is generous for hidden
-// _token fields and still bounds resource use. Multipart bodies are never
-// parsed here, the token MUST come from a header.
-const maxFormBodyForCSRFLookup = 1 << 20 // 1 MiB
-
 // ErrFormBodyTooLarge is returned by getTokenFromRequest when the
-// x-www-form-urlencoded body exceeds maxFormBodyForCSRFLookup. Callers
-// surface this as 419 to the client; the body is not drained further.
+// x-www-form-urlencoded body exceeds Config.MaxFormBodyBytes. Callers
+// surface this as 419 to the client; the request is NOT forwarded to
+// the downstream handler so no truncated prefix is observable past the
+// middleware boundary.
 var ErrFormBodyTooLarge = errors.New("velocity/csrf: form body exceeds CSRF lookup limit")
 
 var (
@@ -181,8 +174,12 @@ func (c *CSRF) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Validate token
-		if err := c.validateToken(r); err != nil {
+		// Validate token. Pass w so getTokenFromRequest can wrap the
+		// body with http.MaxBytesReader, which lets the standard
+		// library handle oversize bodies cleanly (returns *MaxBytesError
+		// once the cap is exceeded; we surface 419 without truncating
+		// the request downstream).
+		if err := c.validateToken(w, r); err != nil {
 			c.handleError(w, r, err)
 			return
 		}
@@ -231,9 +228,9 @@ func (c *CSRF) RouterMiddleware() router.MiddlewareFunc {
 // same instant. When the store lacks AtomicConsumer, the middleware falls
 // back to per-process serialization (singleUseMu) and logs a one-time
 // warning so operators know their deployment is single-use-best-effort.
-func (c *CSRF) validateToken(r *http.Request) error {
+func (c *CSRF) validateToken(w http.ResponseWriter, r *http.Request) error {
 	// Get token from request
-	requestToken, err := c.getTokenFromRequest(r)
+	requestToken, err := c.getTokenFromRequest(w, r)
 	if err != nil {
 		return err
 	}
@@ -300,8 +297,11 @@ func (c *CSRF) validateToken(r *http.Request) error {
 // Token lookup order:
 //  1. Header (always checked first, no body read).
 //  2. application/x-www-form-urlencoded body, capped at
-//     maxFormBodyForCSRFLookup. The body is buffered and restored so
-//     downstream handlers can re-read it.
+//     Config.MaxFormBodyBytes (default 1 MiB). The body is wrapped with
+//     http.MaxBytesReader so an oversize body errors cleanly at read
+//     time without ever buffering the prefix downstream. On successful
+//     read the body is restored as a bytes.NewReader so the handler can
+//     re-read it.
 //
 // Multipart bodies are NEVER parsed by the CSRF middleware. The standard
 // library's r.ParseForm / r.FormValue would call ParseMultipartForm with
@@ -310,10 +310,11 @@ func (c *CSRF) validateToken(r *http.Request) error {
 // Clients submitting multipart forms must send the token in the configured
 // header.
 //
-// Returns ErrFormBodyTooLarge when the urlencoded body exceeds the cap.
-// The middleware translates that into a 419 response without draining
-// the rest of the body.
-func (c *CSRF) getTokenFromRequest(r *http.Request) (string, error) {
+// Returns ErrFormBodyTooLarge when the urlencoded body exceeds
+// Config.MaxFormBodyBytes. The middleware translates that into a 419
+// response and does NOT call the downstream handler, so no truncated
+// prefix is observable past the middleware boundary.
+func (c *CSRF) getTokenFromRequest(w http.ResponseWriter, r *http.Request) (string, error) {
 	// Try header first; this is always safe and never reads the body.
 	if token := r.Header.Get(c.config.HeaderName); token != "" {
 		return token, nil
@@ -340,28 +341,46 @@ func (c *CSRF) getTokenFromRequest(r *http.Request) (string, error) {
 		return "", nil
 	}
 
-	// Read up to the cap+1 so we can detect overflow distinctly from "fits
-	// exactly". http.MaxBytesReader would set a 413 on the writer if we
-	// passed one in, which is not what we want here; we just need a bound.
-	limited := io.LimitReader(r.Body, maxFormBodyForCSRFLookup+1)
-	buf, readErr := io.ReadAll(limited)
-	// Always restore the body, even on error, so downstream handlers and
-	// the deferred Close on the original body still behave.
+	cap := c.config.MaxFormBodyBytes
+	if cap <= 0 {
+		cap = DefaultMaxFormBodyBytes
+	}
+
+	// Wrap with http.MaxBytesReader so reads beyond the cap return a
+	// *http.MaxBytesError rather than silently truncating. We do NOT
+	// install the wrapped body on r yet; that happens only on a clean
+	// read so a downstream handler never observes a partial prefix as a
+	// "complete" body.
 	origBody := r.Body
+	limited := http.MaxBytesReader(w, origBody, cap)
+	buf, readErr := io.ReadAll(limited)
+	if readErr != nil {
+		// MaxBytesReader returns *http.MaxBytesError on overflow.
+		var maxErr *http.MaxBytesError
+		if errors.As(readErr, &maxErr) {
+			// Do NOT install the truncated buffer on r. Leave the
+			// original body in place; the middleware will write 419
+			// and not call the handler, so the body is never read
+			// past this point.
+			r.Body = origBody
+			return "", ErrFormBodyTooLarge
+		}
+		// Other read errors (client disconnect, mid-stream EOF, etc.):
+		// restore the original body and treat as "no token"; the
+		// downstream handler, if reached, will see the same error.
+		r.Body = origBody
+		return "", nil
+	}
+
+	// Read succeeded and stayed within the cap. Restore r.Body as a
+	// re-readable wrapper around the buffered bytes so handlers can
+	// re-parse the form.
 	r.Body = struct {
 		io.Reader
 		io.Closer
 	}{
 		Reader: bytes.NewReader(buf),
 		Closer: origBody,
-	}
-	if readErr != nil {
-		// Treat read errors as "no token"; the handler will likely fail
-		// downstream with its own body-read error.
-		return "", nil
-	}
-	if len(buf) > maxFormBodyForCSRFLookup {
-		return "", ErrFormBodyTooLarge
 	}
 
 	values, err := url.ParseQuery(string(buf))

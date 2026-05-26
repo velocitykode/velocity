@@ -782,9 +782,150 @@ func TestGetTokenFromRequest_DirectReturnsErrFormBodyTooLarge(t *testing.T) {
 	req := httptest.NewRequest("POST", "/submit", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	tok, err := c.getTokenFromRequest(req)
+	w := httptest.NewRecorder()
+	tok, err := c.getTokenFromRequest(w, req)
 	if !errors.Is(err, ErrFormBodyTooLarge) {
 		t.Fatalf("expected ErrFormBodyTooLarge, got token=%q err=%v", tok, err)
+	}
+}
+
+// TestGetTokenFromRequest_OversizeDoesNotTruncateDownstream pins M-02:
+// when the urlencoded body exceeds Config.MaxFormBodyBytes the middleware
+// must reject with 419 and MUST NOT call the downstream handler with a
+// truncated prefix. Previously the middleware silently replaced r.Body
+// with a bytes.NewReader over the buffered prefix, then returned
+// ErrFormBodyTooLarge - the handler was not called only because the
+// middleware path rejected, but the truncated body would have leaked
+// through any code path that re-read r.Body before checking the error.
+func TestGetTokenFromRequest_OversizeDoesNotTruncateDownstream(t *testing.T) {
+	c, sessionID, _ := newCSRFWithToken(t)
+
+	// Build a body that exceeds the default 1 MiB cap.
+	padding := strings.Repeat("a", int(DefaultMaxFormBodyBytes)+1024)
+	form := url.Values{}
+	form.Set("padding", padding)
+
+	req := httptest.NewRequest("POST", "/submit", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+
+	var handlerCalled bool
+	handler := c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+	}))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if handlerCalled {
+		t.Fatal("downstream handler must NOT run for oversize body")
+	}
+	if w.Code != 419 {
+		t.Fatalf("expected 419, got %d", w.Code)
+	}
+}
+
+// TestGetTokenFromRequest_MaxFormBodyBytesConfigurable pins that the cap
+// is configurable via Config.MaxFormBodyBytes. Setting a small cap must
+// reject smaller bodies; setting a large cap must accept larger ones.
+func TestGetTokenFromRequest_MaxFormBodyBytesConfigurable(t *testing.T) {
+	// Cap at 128 bytes; a 200-byte body must be rejected.
+	{
+		const sessionID = "test-session"
+		token, err := GenerateToken()
+		if err != nil {
+			t.Fatalf("GenerateToken: %v", err)
+		}
+		cfg := DefaultConfig()
+		cfg.SessionIDResolver = testCookieResolver("session_id")
+		cfg.Store = stores.NewSessionStore()
+		cfg.MaxFormBodyBytes = 128
+		c := New(cfg)
+		if err := c.config.Store.Set(sessionID, token); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+
+		form := url.Values{}
+		form.Set("padding", strings.Repeat("a", 200))
+		form.Set("_token", token)
+		req := httptest.NewRequest("POST", "/submit", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+
+		w := httptest.NewRecorder()
+		handlerCalled := false
+		c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handlerCalled = true
+		})).ServeHTTP(w, req)
+		if handlerCalled {
+			t.Fatal("custom MaxFormBodyBytes ignored: handler ran for oversize body")
+		}
+		if w.Code != 419 {
+			t.Fatalf("expected 419, got %d", w.Code)
+		}
+	}
+
+	// Zero falls back to DefaultMaxFormBodyBytes; a 200-byte body must pass.
+	{
+		const sessionID = "test-session"
+		token, err := GenerateToken()
+		if err != nil {
+			t.Fatalf("GenerateToken: %v", err)
+		}
+		cfg := DefaultConfig()
+		cfg.SessionIDResolver = testCookieResolver("session_id")
+		cfg.Store = stores.NewSessionStore()
+		cfg.MaxFormBodyBytes = 0 // falls back to default
+		c := New(cfg)
+		if err := c.config.Store.Set(sessionID, token); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+
+		form := url.Values{}
+		form.Set("_token", token)
+		form.Set("padding", strings.Repeat("a", 200))
+		req := httptest.NewRequest("POST", "/submit", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+
+		w := httptest.NewRecorder()
+		var handlerCalled bool
+		c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handlerCalled = true
+			w.WriteHeader(http.StatusOK)
+		})).ServeHTTP(w, req)
+		if !handlerCalled || w.Code != http.StatusOK {
+			t.Fatalf("zero MaxFormBodyBytes must fall back to default; got code=%d called=%v", w.Code, handlerCalled)
+		}
+	}
+}
+
+// TestGetTokenFromRequest_BodyRestoredOnSuccess pins that successful
+// reads restore r.Body verbatim so downstream handlers can re-parse the
+// form. This is the happy path; the M-02 fix must not regress it.
+func TestGetTokenFromRequest_BodyRestoredOnSuccess(t *testing.T) {
+	c, sessionID, token := newCSRFWithToken(t)
+
+	form := url.Values{}
+	form.Set("_token", token)
+	form.Set("name", "alice")
+	want := form.Encode()
+
+	req := httptest.NewRequest("POST", "/submit", strings.NewReader(want))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+
+	var got string
+	c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("downstream read: %v", err)
+		}
+		got = string(b)
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(httptest.NewRecorder(), req)
+
+	if got != want {
+		t.Fatalf("body not restored verbatim: got %q want %q", got, want)
 	}
 }
 

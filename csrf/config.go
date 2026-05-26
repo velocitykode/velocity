@@ -55,6 +55,16 @@ type Config struct {
 	CookieName        string
 	SessionCookieName string // Name of the session cookie to read session ID from
 
+	// MaxFormBodyBytes bounds how many bytes of an
+	// application/x-www-form-urlencoded request body the CSRF middleware
+	// is allowed to buffer while looking for a token. Bodies larger than
+	// this are rejected with 419 before any prefix is buffered; the
+	// downstream handler is NOT called. The default (1 MiB) is generous
+	// for a hidden _token field. Operators with legitimate >1 MiB urlencoded
+	// payloads should send the token in the configured header instead.
+	// A zero value falls back to the default.
+	MaxFormBodyBytes int64
+
 	// Mode selects how tokens are bound to the client. Default ModeSession.
 	Mode Mode
 
@@ -117,6 +127,7 @@ func DefaultConfig() *Config {
 		FormField:         "_token",
 		CookieName:        "csrf_token",
 		SessionCookieName: "session_id", // Default session cookie name
+		MaxFormBodyBytes:  DefaultMaxFormBodyBytes,
 		Mode:              ModeSession,
 		SameSite:          http.SameSiteLaxMode,
 		Secure:            true,
@@ -125,6 +136,13 @@ func DefaultConfig() *Config {
 		ErrorMessage:      "CSRF token validation failed. Please refresh and try again.",
 	}
 }
+
+// DefaultMaxFormBodyBytes caps the amount of an x-www-form-urlencoded
+// request body the CSRF middleware will buffer while looking for a token.
+// 1 MiB is generous for hidden _token fields and still bounds resource
+// use. Operators needing larger payloads must send the token in the
+// configured header.
+const DefaultMaxFormBodyBytes int64 = 1 << 20
 
 // Validate checks the Config for insecure defaults. Pass env to enable
 // environment-aware rules: Secure=false is allowed when env is "testing"
