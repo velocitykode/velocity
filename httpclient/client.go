@@ -5,13 +5,18 @@
 // Defaults are secure: TLS 1.2 minimum, capped redirect chain (sensitive
 // headers stripped on cross-origin hops), an SSRF dial guard that
 // refuses connections to loopback, RFC1918, link-local, CGNAT, and
-// cloud-metadata IPs (IPv4 and IPv6), and the standard library's
-// HTTP_PROXY environment hook is cleared so a hostile env value cannot
-// route outbound traffic through an attacker-controlled CONNECT proxy.
-// Pair with [WithAllowedHosts] to whitelist specific internal services,
+// cloud-metadata IPs (IPv4 and IPv6), the standard library's HTTP_PROXY
+// environment hook is cleared so a hostile env value cannot route
+// outbound traffic through an attacker-controlled CONNECT proxy, and
+// per-stage transport timeouts are pinned (TLS handshake 10s, response
+// header 30s, idle conn 90s, expect-continue 1s) so a slow-header
+// upstream cannot starve the calling goroutine. Pair with
+// [WithAllowedHosts] to whitelist specific internal services,
 // [WithProxyAllowed] to honour HTTP(S)_PROXY env in trusted egress
-// gateways, or [WithoutPrivateIPDeny] to disable the guard entirely for
-// tests or trusted callers.
+// gateways, [WithResponseHeaderTimeout] / [WithTLSHandshakeTimeout] /
+// [WithIdleConnTimeout] / [WithExpectContinueTimeout] to tune per-stage
+// budgets, or [WithoutPrivateIPDeny] to disable the SSRF guard entirely
+// for tests or trusted callers.
 package httpclient
 
 import (
@@ -51,6 +56,22 @@ const defaultMaxRedirects = 10
 // preventing an attacker-controlled endpoint from OOM-ing the host.
 const defaultMaxResponseBytes int64 = 32 << 20
 
+// Granular transport timeouts. http.DefaultTransport.Clone() already
+// supplies TLSHandshakeTimeout (10s), IdleConnTimeout (90s), and
+// ExpectContinueTimeout (1s); these constants pin the same values so a
+// caller-supplied transport (WithHTTPClient) that omits them still gets
+// reasonable defaults applied by buildTransport. ResponseHeaderTimeout
+// is *not* in the stdlib default, so the absence is what lets a server
+// that opens a TCP connection and dribbles bytes (slowloris) starve the
+// goroutine; pinning a default closes that window while still letting
+// operators raise the cap for slow-rendering upstreams.
+const (
+	defaultTLSHandshakeTimeout   = 10 * time.Second
+	defaultResponseHeaderTimeout = 30 * time.Second
+	defaultIdleConnTimeout       = 90 * time.Second
+	defaultExpectContinueTimeout = 1 * time.Second
+)
+
 // sensitiveHeaders are stripped on cross-host (eTLD+1) redirects to
 // prevent leaking credentials to untrusted origins.
 var sensitiveHeaders = []string{
@@ -75,6 +96,16 @@ type Client struct {
 	resolver         *net.Resolver
 	customTransport  bool  // set when WithHTTPClient supplies its own Transport
 	maxResponseBytes int64 // <=0 disables the response body cap
+
+	// Granular transport timeouts. nil means "use the framework default";
+	// a non-nil pointer is honoured verbatim (including 0, which the
+	// stdlib reads as "no timeout"). Pointer indirection is the cleanest
+	// way to distinguish "operator did not set this" from "operator
+	// chose 0 on purpose".
+	tlsHandshakeTimeout   *time.Duration
+	responseHeaderTimeout *time.Duration
+	idleConnTimeout       *time.Duration
+	expectContinueTimeout *time.Duration
 }
 
 // Option configures a Client
@@ -101,6 +132,52 @@ func WithBaseURL(baseURL string) Option {
 func WithTimeout(timeout time.Duration) Option {
 	return func(c *Client) {
 		c.client.Timeout = timeout
+	}
+}
+
+// WithTLSHandshakeTimeout caps the duration of the TLS handshake on
+// the underlying transport. The framework default is 10s (matching the
+// stdlib's [http.DefaultTransport]). Pass 0 to disable the timeout
+// entirely; pair only with trusted backends.
+func WithTLSHandshakeTimeout(d time.Duration) Option {
+	return func(c *Client) {
+		c.tlsHandshakeTimeout = &d
+	}
+}
+
+// WithResponseHeaderTimeout caps the time the transport will wait for
+// the upstream's response status line + headers after writing the
+// request. Closes the slowloris window where a server opens the TCP
+// connection and dribbles header bytes to starve the calling goroutine.
+//
+// The framework default is 30s. The stdlib does *not* set this field;
+// the framework supplies a value by default so calls cannot block on
+// the response indefinitely under the only-WithTimeout configuration.
+// Pass 0 to disable the per-stage timeout (still bounded by
+// [Client.Timeout] / request context if those are set).
+func WithResponseHeaderTimeout(d time.Duration) Option {
+	return func(c *Client) {
+		c.responseHeaderTimeout = &d
+	}
+}
+
+// WithIdleConnTimeout sets the maximum amount of time an idle (keep-alive)
+// connection will remain idle in the transport's pool before closing.
+// The framework default is 90s (matching the stdlib's
+// [http.DefaultTransport]). Pass 0 to disable (idle conns never expire).
+func WithIdleConnTimeout(d time.Duration) Option {
+	return func(c *Client) {
+		c.idleConnTimeout = &d
+	}
+}
+
+// WithExpectContinueTimeout sets the timeout when sending a request
+// with an "Expect: 100-continue" header. The framework default is 1s
+// (matching the stdlib's [http.DefaultTransport]). Pass 0 to send the
+// body immediately without waiting for a 100 Continue.
+func WithExpectContinueTimeout(d time.Duration) Option {
+	return func(c *Client) {
+		c.expectContinueTimeout = &d
 	}
 }
 
@@ -246,9 +323,17 @@ func New(opts ...Option) *Client {
 // CONNECT-relays to a metadata IP, defeating the dial-time guard which
 // only sees the (public) proxy address.
 //
+// Granular per-stage timeouts (TLSHandshakeTimeout, ResponseHeaderTimeout,
+// IdleConnTimeout, ExpectContinueTimeout) are pinned to framework
+// defaults on the default-construction path so the only-WithTimeout
+// configuration cannot block indefinitely on any single stage (the
+// stdlib's DefaultTransport omits ResponseHeaderTimeout, which is the
+// classic slowloris vector). With* options override each default
+// individually; passing 0 disables that stage's timeout.
+//
 // Caller-supplied transports (base != nil) are left untouched: the
-// caller has set Proxy explicitly and [WithHTTPClient] documents that
-// transport-level fields are theirs to own.
+// caller has set Proxy and timeouts explicitly and [WithHTTPClient]
+// documents that transport-level fields are theirs to own.
 func (c *Client) buildTransport(base *http.Transport) *http.Transport {
 	t := base
 	clonedFromDefault := false
@@ -268,7 +353,32 @@ func (c *Client) buildTransport(base *http.Transport) *http.Transport {
 	if c.denyPrivateIPs {
 		t.DialContext = c.dialContextGuarded(t.DialContext)
 	}
+	c.applyTransportTimeouts(t, clonedFromDefault)
 	return t
+}
+
+// applyTransportTimeouts pins per-stage timeouts on the transport.
+//
+// On the default-construction path (clonedFromDefault=true) the
+// framework-default value is applied whenever the operator has not
+// passed a With* override; ResponseHeaderTimeout is forced because the
+// stdlib default omits it. On the caller-supplied path we only touch
+// the field when the operator has explicitly asked via a With* option,
+// which keeps WithHTTPClient honouring its "your transport, your
+// fields" contract.
+func (c *Client) applyTransportTimeouts(t *http.Transport, clonedFromDefault bool) {
+	apply := func(field *time.Duration, override *time.Duration, def time.Duration) {
+		switch {
+		case override != nil:
+			*field = *override
+		case clonedFromDefault:
+			*field = def
+		}
+	}
+	apply(&t.TLSHandshakeTimeout, c.tlsHandshakeTimeout, defaultTLSHandshakeTimeout)
+	apply(&t.ResponseHeaderTimeout, c.responseHeaderTimeout, defaultResponseHeaderTimeout)
+	apply(&t.IdleConnTimeout, c.idleConnTimeout, defaultIdleConnTimeout)
+	apply(&t.ExpectContinueTimeout, c.expectContinueTimeout, defaultExpectContinueTimeout)
 }
 
 // hostCheck is the result of evaluating a hostname against the SSRF
