@@ -1,7 +1,9 @@
 package validation
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
@@ -67,7 +69,29 @@ func placeholder(driver string, n int) string {
 //	"email": "required|email|unique:users,email"
 //	"email": "required|email|unique:users,email,5"         // exclude id=5
 //	"email": "required|email|unique:users,email,5,user_id" // custom id column
+//
+// The returned handler uses context.Background() for the underlying query.
+// Callers that want request-scoped cancellation (so a slow query is dropped
+// when the client disconnects) should use UniqueRuleCtx and pass the
+// request's context.
 func UniqueRule(db orm.Database) RuleHandler {
+	return UniqueRuleCtx(context.Background(), db)
+}
+
+// UniqueRuleCtx is the context-aware variant of UniqueRule. The query runs
+// under ctx so request cancellation (client disconnect, timeout middleware)
+// aborts the database round-trip instead of letting a slow validation pile
+// up goroutines and a SQL connection.
+//
+// Raw DB errors are deliberately swallowed and replaced with a generic
+// "Unable to validate <field>." message: schema names, table existence,
+// and query text are server-side details that must not surface to a
+// validation error string visible to the client. The underlying error is
+// logged via slog.Default() at ERROR level so operators retain a trail.
+func UniqueRuleCtx(ctx context.Context, db orm.Database) RuleHandler {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	driver := db.DriverName()
 	return func(field string, value interface{}, params []string, data map[string]interface{}) error {
 		if len(params) < 1 {
@@ -105,7 +129,14 @@ func UniqueRule(db orm.Database) RuleHandler {
 		}
 
 		var count int64
-		if err := db.DB().QueryRow(query, args...).Scan(&count); err != nil {
+		if err := db.DB().QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+			slog.Default().Error("validation unique rule query failed",
+				"field", field,
+				"table", table,
+				"column", column,
+				"driver", driver,
+				"err", err.Error(),
+			)
 			return fmt.Errorf("Unable to validate %s.", field)
 		}
 
@@ -121,7 +152,20 @@ func UniqueRule(db orm.Database) RuleHandler {
 // Syntax: exists:table,column
 //
 //	"team_id": "required|exists:teams,id"
+//
+// The returned handler uses context.Background() for the underlying query.
+// Use ExistsRuleCtx with the request's context for cancellation propagation.
 func ExistsRule(db orm.Database) RuleHandler {
+	return ExistsRuleCtx(context.Background(), db)
+}
+
+// ExistsRuleCtx is the context-aware variant of ExistsRule. Same semantics
+// as UniqueRuleCtx: the query runs under ctx and raw DB errors are
+// suppressed in the client-visible message but logged via slog.Default().
+func ExistsRuleCtx(ctx context.Context, db orm.Database) RuleHandler {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	driver := db.DriverName()
 	return func(field string, value interface{}, params []string, data map[string]interface{}) error {
 		if len(params) < 1 {
@@ -144,7 +188,14 @@ func ExistsRule(db orm.Database) RuleHandler {
 		query := "SELECT COUNT(*) FROM " + quoteIdentifier(table, driver) + " WHERE " + quoteIdentifier(column, driver) + " = " + placeholder(driver, 1)
 
 		var count int64
-		if err := db.DB().QueryRow(query, value).Scan(&count); err != nil {
+		if err := db.DB().QueryRowContext(ctx, query, value).Scan(&count); err != nil {
+			slog.Default().Error("validation exists rule query failed",
+				"field", field,
+				"table", table,
+				"column", column,
+				"driver", driver,
+				"err", err.Error(),
+			)
 			return fmt.Errorf("Unable to validate %s.", field)
 		}
 

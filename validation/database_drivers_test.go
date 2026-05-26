@@ -223,6 +223,69 @@ func TestCheckWithDB_UniqueExists_SQLite_EndToEnd(t *testing.T) {
 	}
 }
 
+// TestUniqueRuleCtx_CancelledContextAborts proves the unique rule honours
+// request cancellation. Before M-22 the rule called db.DB().QueryRow which
+// silently dropped any context, so a slow DB during a request lifecycle
+// would pile up goroutines + connections instead of being torn down when
+// the client gave up. After the fix, a pre-cancelled ctx must return a
+// validation error (the generic "Unable to validate" string), and crucially
+// must NOT block.
+func TestUniqueRuleCtx_CancelledContextAborts(t *testing.T) {
+	db := newSQLiteOrm(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel so the QueryRowContext returns immediately
+
+	rule := UniqueRuleCtx(ctx, db)
+	err := rule("email", "taken@example.com", []string{"users", "email"}, nil)
+	if err == nil {
+		t.Fatal("expected validation error on cancelled context, got nil")
+	}
+	if !strings.Contains(err.Error(), "Unable to validate") {
+		t.Errorf("expected generic 'Unable to validate' message (raw DB error must NOT leak to client), got: %v", err)
+	}
+}
+
+// TestExistsRuleCtx_CancelledContextAborts mirrors the above for ExistsRule.
+func TestExistsRuleCtx_CancelledContextAborts(t *testing.T) {
+	db := newSQLiteOrm(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	rule := ExistsRuleCtx(ctx, db)
+	err := rule("team_id", 1, []string{"teams", "id"}, nil)
+	if err == nil {
+		t.Fatal("expected validation error on cancelled context, got nil")
+	}
+	if !strings.Contains(err.Error(), "Unable to validate") {
+		t.Errorf("expected generic 'Unable to validate' message (raw DB error must NOT leak to client), got: %v", err)
+	}
+}
+
+// TestUniqueRule_DBErrorDoesNotLeakToClient is the rule 6 regression: when
+// the underlying DB query returns an error (here: invalid table reference
+// surfaces as a sql error), the user-visible validation message must be
+// the generic "Unable to validate" string. The raw error must stay
+// server-side.
+func TestUniqueRule_DBErrorDoesNotLeakToClient(t *testing.T) {
+	db := newSQLiteOrm(t)
+	rule := UniqueRule(db)
+	// Force a DB error by referencing a table that exists but a column that
+	// doesn't; SQLite will surface a "no such column" error from the driver.
+	err := rule("email", "x", []string{"users", "nonexistent_column"}, nil)
+	if err == nil {
+		t.Fatal("expected validation error from DB failure, got nil")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "nonexistent_column") || strings.Contains(msg, "no such column") || strings.Contains(msg, "SQL") {
+		t.Errorf("raw DB error leaked to client-visible validation message: %q", msg)
+	}
+	if !strings.Contains(msg, "Unable to validate") {
+		t.Errorf("expected generic 'Unable to validate' message, got: %q", msg)
+	}
+}
+
 // TestCheck_BothFormsConverge confirms that PipeRules->NewRules path and a
 // hand-written slice literal produce identical validation outcomes.
 func TestCheck_BothFormsConverge(t *testing.T) {

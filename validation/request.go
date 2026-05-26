@@ -2,6 +2,7 @@ package validation
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -14,23 +15,36 @@ import (
 // It extracts form values or JSON body from the request automatically.
 func Check(r *http.Request, rules Rules, messages ...Messages) *Result {
 	data := ExtractRequestData(r)
-	return run(data, rules, nil, messages...)
+	return run(r.Context(), data, rules, nil, messages...)
 }
 
 // CheckData validates a pre-extracted data map against rules.
 func CheckData(data map[string]interface{}, rules Rules, messages ...Messages) *Result {
-	return run(data, rules, nil, messages...)
+	return run(context.Background(), data, rules, nil, messages...)
 }
 
 // CheckWithDB validates request data with database rules (unique, exists) available.
+// The request's context is threaded into the database rules so unique/exists
+// queries are cancelled when the client disconnects or a timeout fires; this
+// prevents slow-query goroutine pile-up on the request hot path.
 func CheckWithDB(r *http.Request, rules Rules, db orm.Database, messages ...Messages) *Result {
 	data := ExtractRequestData(r)
-	return run(data, rules, db, messages...)
+	return run(r.Context(), data, rules, db, messages...)
 }
 
 // CheckDataWithDB validates a data map with database rules available.
 func CheckDataWithDB(data map[string]interface{}, rules Rules, db orm.Database, messages ...Messages) *Result {
-	return run(data, rules, db, messages...)
+	return run(context.Background(), data, rules, db, messages...)
+}
+
+// CheckDataWithDBCtx is like CheckDataWithDB but uses the caller-supplied
+// context for unique/exists query cancellation. Use this in non-HTTP code
+// paths (workers, jobs) that still need to validate against the DB.
+func CheckDataWithDBCtx(ctx context.Context, data map[string]interface{}, rules Rules, db orm.Database, messages ...Messages) *Result {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return run(ctx, data, rules, db, messages...)
 }
 
 // Result holds the outcome of a validation check.
@@ -116,14 +130,18 @@ func (r *Result) Old() map[string]interface{} {
 	return old
 }
 
-// run validates data against rules using a fresh validator.
-func run(data map[string]interface{}, rules Rules, db orm.Database, messages ...Messages) *Result {
+// run validates data against rules using a fresh validator. ctx is threaded
+// into database-backed rules (unique, exists) so their queries are
+// cancellable; for non-DB rules it is unused but cheap to plumb.
+func run(ctx context.Context, data map[string]interface{}, rules Rules, db orm.Database, messages ...Messages) *Result {
 	v := NewValidator()
 
-	// Register database rules when DB is available
+	// Register database rules when DB is available. The ctx variants thread
+	// request cancellation into the SQL round-trip so a slow query gets
+	// dropped instead of piling up goroutines + connections.
 	if db != nil {
-		v.RegisterRule("unique", UniqueRule(db))
-		v.RegisterRule("exists", ExistsRule(db))
+		v.RegisterRule("unique", UniqueRuleCtx(ctx, db))
+		v.RegisterRule("exists", ExistsRuleCtx(ctx, db))
 	}
 
 	if len(messages) > 0 {
