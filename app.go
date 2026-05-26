@@ -517,12 +517,28 @@ func New(opts ...Option) (*App, error) {
 	// router.ValidateSignature work without leaking the master key into
 	// every Context. HKDF separates this subsystem from the queue signing
 	// key, the maintenance-bypass MAC, and cookie encryption: a forged
-	// signature on one subkey grants nothing on the others. When APP_KEY
-	// is unset (testing / pre-key-generate development), the router slot
-	// stays nil and SignedURL / ValidateSignature return
-	// ErrSignedURLKeyMissing instead of silently signing with a default
-	// (rule 2: no hardcoded fallback secrets).
-	if a.config.Key != "" {
+	// signature on one subkey grants nothing on the others.
+	//
+	// M-16 defence-in-depth: production refuses to boot when APP_KEY is
+	// empty even if CRYPTO_KEY is set. The previous behaviour silently
+	// skipped derivation here whenever a.config.Key was empty, and the
+	// router middleware then failed open, so a protected signed route
+	// downgraded to an unsigned route. Mirror the APP_KEY check at line
+	// ~190 (Crypto.Key gating): permit testing/development to run
+	// without APP_KEY so local-dev does not require `vel key:generate`,
+	// but every other environment must have APP_KEY set explicitly.
+	if a.config.Key == "" {
+		switch a.config.Env {
+		case "testing":
+			// Silent bypass; test harnesses wire keys explicitly via
+			// router.SetSignedURLKey when they need signed URLs.
+		case "development":
+			a.Log.Warn("APP_KEY is unset, router signed-URL middleware will fail closed (403) on every signed route. Run `vel key:generate` before exercising signed-URL flows.")
+		default:
+			cancel()
+			return nil, fmt.Errorf("velocity: %w", ErrNoAppKey)
+		}
+	} else {
 		signedKey, err := router.DeriveSignedURLKey([]byte(a.config.Key))
 		if err != nil {
 			cancel()
