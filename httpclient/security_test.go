@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -72,8 +73,10 @@ func TestPrivateIPDeny_AllowedHost(t *testing.T) {
 func TestCrossHostRedirect_StripsSensitiveHeaders(t *testing.T) {
 	// Exercise checkRedirect directly: httptest binds only 127.0.0.1 so we
 	// cannot stand up two hosts with different eTLD+1 values without DNS
-	// plumbing. The logic being validated is the critical unit.
-	c := New()
+	// plumbing. The logic being validated is the critical unit. Disable
+	// the URL-host SSRF gate so the test does not depend on resolving
+	// the placeholder hostnames against the real network.
+	c := New(WithoutPrivateIPDeny())
 
 	orig, _ := http.NewRequest("GET", "https://api.example.com/", nil)
 	orig.Header.Set("Authorization", "Bearer secret")
@@ -98,7 +101,7 @@ func TestCrossHostRedirect_StripsSensitiveHeaders(t *testing.T) {
 }
 
 func TestSameHostRedirect_PreservesHeaders(t *testing.T) {
-	c := New()
+	c := New(WithoutPrivateIPDeny())
 
 	orig, _ := http.NewRequest("GET", "https://api.example.com/a", nil)
 	orig.Header.Set("Authorization", "Bearer secret")
@@ -436,5 +439,174 @@ func TestMaxResponseBytes_DefaultApplied(t *testing.T) {
 	defer resp.Body.Close()
 	if _, ok := resp.Body.(*limitedBody); !ok {
 		t.Errorf("default cap missing: body type = %T", resp.Body)
+	}
+}
+
+// TestPrivateIPDeny_ProxyModeBypassRefused_Env exercises the proxy
+// bypass path with HTTP_PROXY set via env. It uses t.Setenv to keep
+// the env scoped to this test. Note: http.ProxyFromEnvironment caches
+// the first env read; the assertion here is on the URL-host gate's
+// rejection regardless of whether the cached proxy func ever fires.
+func TestPrivateIPDeny_ProxyModeBypassRefused_Env(t *testing.T) {
+	var proxyHits atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer proxy.Close()
+
+	t.Setenv("HTTP_PROXY", proxy.URL)
+	t.Setenv("HTTPS_PROXY", proxy.URL)
+	t.Setenv("NO_PROXY", "")
+
+	c := New()
+	_, err := c.Get(context.Background(), "http://10.0.0.5/secret")
+	if err == nil {
+		t.Fatal("expected URL-host gate to refuse private upstream behind proxy")
+	}
+	if !errors.Is(err, errPrivateIP) {
+		t.Errorf("expected errPrivateIP, got %v", err)
+	}
+	if hits := proxyHits.Load(); hits != 0 {
+		t.Errorf("proxy must not be dialled when upstream is private; hits=%d", hits)
+	}
+}
+
+// TestPrivateIPDeny_ProxyModeBypassRefused_Explicit proves the URL-host
+// gate fires before the transport even when a non-env proxy is wired
+// in via WithHTTPClient. The dial guard alone would see the proxy's
+// public IP and wave the request through; only the URL-host check
+// catches it.
+func TestPrivateIPDeny_ProxyModeBypassRefused_Explicit(t *testing.T) {
+	var proxyHits atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer proxy.Close()
+
+	proxyURL, _ := url.Parse(proxy.URL)
+	transport := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+	c := New(WithHTTPClient(&http.Client{Transport: transport}))
+
+	_, err := c.Get(context.Background(), "http://10.0.0.5/secret")
+	if err == nil {
+		t.Fatal("expected URL-host gate to refuse private upstream behind explicit proxy")
+	}
+	if !errors.Is(err, errPrivateIP) {
+		t.Errorf("expected errPrivateIP, got %v", err)
+	}
+	if hits := proxyHits.Load(); hits != 0 {
+		t.Errorf("proxy must not be dialled when upstream is private; hits=%d", hits)
+	}
+}
+
+// TestPrivateIPDeny_RedirectToPrivate_Rejected ensures a public origin
+// returning a 302 to an internal IP cannot trick the client into
+// reaching that internal IP. The gate fires on every hop, including
+// the redirect target.
+func TestPrivateIPDeny_RedirectToPrivate_Rejected(t *testing.T) {
+	// Public-style origin issues a 302 to a metadata IP.
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://169.254.169.254/latest/meta-data/", http.StatusFound)
+	}))
+	defer origin.Close()
+
+	// Allow the loopback origin so the first hop succeeds; the second
+	// hop must still be rejected by the URL-host gate.
+	c := New(WithAllowedHosts("127.0.0.1"))
+	_, err := c.Get(context.Background(), origin.URL)
+	if err == nil {
+		t.Fatal("expected redirect to private IP to be rejected")
+	}
+	if !errors.Is(err, errPrivateIP) {
+		t.Errorf("expected errPrivateIP, got %v", err)
+	}
+}
+
+// TestPrivateIPDeny_RedirectToPrivate_RejectedUnderProxy is the proxy
+// variant of the redirect test. The redirect target is internal; the
+// gate must refuse to follow even though the dial path would only ever
+// see the proxy.
+func TestPrivateIPDeny_RedirectToPrivate_RejectedUnderProxy(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://169.254.169.254/latest/meta-data/", http.StatusFound)
+	}))
+	defer origin.Close()
+
+	var proxyHits atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyHits.Add(1)
+		// If we ever get here, forward to the origin to keep the
+		// redirect chain live. The check below should never see hits
+		// for the metadata IP though.
+		http.Redirect(w, r, origin.URL, http.StatusFound)
+	}))
+	defer proxy.Close()
+
+	t.Setenv("HTTP_PROXY", proxy.URL)
+	t.Setenv("HTTPS_PROXY", proxy.URL)
+	t.Setenv("NO_PROXY", "")
+
+	// Use the origin URL directly so the first hop is the public-ish
+	// origin (loopback, whitelisted) and the second hop is private.
+	c := New(WithAllowedHosts("127.0.0.1"))
+	_, err := c.Get(context.Background(), origin.URL)
+	if err == nil {
+		t.Fatal("expected private redirect target to be rejected under proxy")
+	}
+	if !errors.Is(err, errPrivateIP) {
+		t.Errorf("expected errPrivateIP, got %v", err)
+	}
+}
+
+// TestWithoutPrivateIPDeny_ProxyAndDirect confirms the escape hatch
+// disables both the URL-host gate and the dial guard, so internal
+// traffic flows in both direct and proxy modes.
+//
+// Note on proxy testing: http.ProxyFromEnvironment caches its config
+// the first time it is read, so the proxy half of this test wires a
+// per-client Proxy function via WithHTTPClient instead of relying on
+// HTTP_PROXY env. The behaviour under test is the URL-host gate, not
+// the env-loading code path.
+func TestWithoutPrivateIPDeny_ProxyAndDirect(t *testing.T) {
+	// Direct: internal address reachable when deny is off.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer backend.Close()
+
+	c := New(WithoutPrivateIPDeny())
+	resp, err := c.Get(context.Background(), backend.URL)
+	if err != nil {
+		t.Fatalf("direct loopback must succeed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("status = %d, want 204", resp.StatusCode)
+	}
+
+	// Proxy: forwarded request reaches a private upstream when deny
+	// is off. The proxy itself is on loopback so this fully exercises
+	// proxy mode without any external network.
+	var proxyHits atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer proxy.Close()
+
+	proxyURL, _ := url.Parse(proxy.URL)
+	transport := &http.Transport{
+		Proxy: http.ProxyURL(proxyURL),
+	}
+	c2 := New(WithoutPrivateIPDeny(), WithHTTPClient(&http.Client{Transport: transport}))
+	resp2, err := c2.Get(context.Background(), "http://10.0.0.5/whatever")
+	if err != nil {
+		t.Fatalf("proxy-mode request must succeed with deny off: %v", err)
+	}
+	resp2.Body.Close()
+	if hits := proxyHits.Load(); hits == 0 {
+		t.Error("proxy should have been dialled with deny off")
 	}
 }

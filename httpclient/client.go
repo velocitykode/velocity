@@ -225,10 +225,66 @@ func (c *Client) buildTransport(base *http.Transport) *http.Transport {
 	return t
 }
 
+// hostCheck is the result of evaluating a hostname against the SSRF
+// allow / deny rules. Exactly one of (allowed, pinnedIP) is meaningful
+// for the caller:
+//
+//   - allowed=true, pinnedIP=="": host was on the allowlist, dial as-is.
+//   - allowed=true, pinnedIP!="": host resolved to a public address,
+//     dial the pinned IP to defeat DNS rebinding between this check and
+//     the real connect.
+//
+// The dial guard uses pinnedIP; the URL-host gate ignores it.
+type hostCheck struct {
+	pinnedIP string
+}
+
+// evaluateHost reports whether the given hostname is permitted under
+// the client's deny / allowlist rules. The same code path is used by
+// the URL-host gate (so proxy-mode is covered) and by the dial-time
+// guard (so direct-dial still gets the pinned-IP TOCTOU protection).
+//
+// When denyPrivateIPs is false the function returns ok with no pinned
+// IP, leaving the caller's existing dial behaviour untouched.
+func (c *Client) evaluateHost(ctx context.Context, host string) (hostCheck, error) {
+	if !c.denyPrivateIPs {
+		return hostCheck{}, nil
+	}
+	// Allowlist short-circuits the deny for a specific eTLD+1.
+	if _, allowed := c.allowedHosts[strings.ToLower(neturl.ETLDPlusOne(host))]; allowed {
+		return hostCheck{}, nil
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if neturl.IsPrivateOrInternal(ip) {
+			return hostCheck{}, fmt.Errorf("velocity/httpclient: refusing to reach %s: %w", host, errPrivateIP)
+		}
+		return hostCheck{}, nil
+	}
+	addrs, err := c.resolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return hostCheck{}, fmt.Errorf("velocity/httpclient: resolve %s: %w", host, err)
+	}
+	if len(addrs) == 0 {
+		return hostCheck{}, fmt.Errorf("velocity/httpclient: resolve %s: no addresses", host)
+	}
+	for _, a := range addrs {
+		if neturl.IsPrivateOrInternal(a.IP) {
+			return hostCheck{}, fmt.Errorf("velocity/httpclient: refusing to reach %s (resolves to %s): %w", host, a.IP, errPrivateIP)
+		}
+	}
+	return hostCheck{pinnedIP: addrs[0].IP.String()}, nil
+}
+
 // dialContextGuarded wraps dial so every outbound TCP connection is
 // resolved ahead of time and rejected if any resolved address falls in a
 // disallowed private range. The resolved IP is pinned into the dial to
 // prevent TOCTOU / DNS-rebinding between this check and the real dial.
+//
+// This is the second line of defence: the URL-host gate in [Client.Do]
+// and [Client.checkRedirect] blocks SSRF before the request even reaches
+// the transport (which matters in proxy mode, where the dial target is
+// the proxy, not the upstream). The dial guard still runs to catch
+// direct-dial cases and to pin the resolved IP against TOCTOU.
 func (c *Client) dialContextGuarded(inner func(ctx context.Context, network, addr string) (net.Conn, error)) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	if inner == nil {
 		d := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
@@ -239,44 +295,33 @@ func (c *Client) dialContextGuarded(inner func(ctx context.Context, network, add
 		if err != nil {
 			return nil, fmt.Errorf("velocity/httpclient: split host/port: %w", err)
 		}
-		// Allowlist short-circuits the deny for a specific eTLD+1.
-		if _, allowed := c.allowedHosts[strings.ToLower(neturl.ETLDPlusOne(host))]; allowed {
-			return inner(ctx, network, addr)
-		}
-		if ip := net.ParseIP(host); ip != nil {
-			if neturl.IsPrivateOrInternal(ip) {
-				return nil, fmt.Errorf("velocity/httpclient: refusing to dial %s: %w", host, errPrivateIP)
-			}
-			return inner(ctx, network, addr)
-		}
-		addrs, err := c.resolver.LookupIPAddr(ctx, host)
+		hc, err := c.evaluateHost(ctx, host)
 		if err != nil {
-			return nil, fmt.Errorf("velocity/httpclient: resolve %s: %w", host, err)
+			return nil, err
 		}
-		if len(addrs) == 0 {
-			return nil, fmt.Errorf("velocity/httpclient: resolve %s: no addresses", host)
+		if hc.pinnedIP != "" {
+			// Pin first resolved address to prevent re-resolution between check and dial.
+			return inner(ctx, network, net.JoinHostPort(hc.pinnedIP, port))
 		}
-		for _, a := range addrs {
-			if neturl.IsPrivateOrInternal(a.IP) {
-				return nil, fmt.Errorf("velocity/httpclient: refusing to dial %s (resolves to %s): %w", host, a.IP, errPrivateIP)
-			}
-		}
-		// Pin first resolved address to prevent re-resolution between check and dial.
-		pinned := net.JoinHostPort(addrs[0].IP.String(), port)
-		return inner(ctx, network, pinned)
+		return inner(ctx, network, addr)
 	}
 }
 
 // checkRedirect is the stdlib CheckRedirect callback. It caps the chain
-// length and strips sensitive headers when the next host (eTLD+1)
-// differs from the original request host. Context from the first request
-// is preserved automatically by net/http.
+// length, re-runs the URL-host SSRF gate on every hop (so a public
+// origin cannot 302 the client to an internal address), and strips
+// sensitive headers when the next host (eTLD+1) differs from the
+// original request host. Context from the first request is preserved
+// automatically by net/http.
 func (c *Client) checkRedirect(req *http.Request, via []*http.Request) error {
 	if c.maxRedirects <= 0 {
 		return http.ErrUseLastResponse
 	}
 	if len(via) >= c.maxRedirects {
 		return fmt.Errorf("velocity/httpclient: stopped after %d redirects", len(via))
+	}
+	if err := c.assertURLAllowed(req.Context(), req.URL); err != nil {
+		return err
 	}
 	if len(via) == 0 {
 		return nil
@@ -286,6 +331,24 @@ func (c *Client) checkRedirect(req *http.Request, via []*http.Request) error {
 		for _, h := range sensitiveHeaders {
 			req.Header.Del(h)
 		}
+	}
+	return nil
+}
+
+// assertURLAllowed runs the SSRF host check against the URL of a
+// pending request. Called for the initial request and for every
+// redirect hop so the check fires regardless of whether the underlying
+// transport ends up dialling the upstream directly or via a proxy.
+func (c *Client) assertURLAllowed(ctx context.Context, u *url.URL) error {
+	if !c.denyPrivateIPs || u == nil {
+		return nil
+	}
+	host := u.Hostname()
+	if host == "" {
+		return nil
+	}
+	if _, err := c.evaluateHost(ctx, host); err != nil {
+		return err
 	}
 	return nil
 }
@@ -311,6 +374,14 @@ func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, err
 	start := time.Now()
 	reqURL := req.URL.String()
 	method := req.Method
+
+	// URL-host SSRF gate runs before the transport so the check covers
+	// proxy mode (where the dial target is the proxy, not the upstream).
+	// Bypasses cleanly when denyPrivateIPs is off.
+	if err := c.assertURLAllowed(ctx, req.URL); err != nil {
+		c.dispatchRequestFailed(ctx, method, reqURL, err, time.Since(start))
+		return nil, err
+	}
 
 	// Get request size
 	var requestSize int64
