@@ -145,6 +145,26 @@ func (r *VelocityRouterV2) SetServices(s *app.Services) {
 	r.services = s
 }
 
+// AllowedRedirectHosts returns a defensive copy of RedirectAllowedHosts so
+// downstream consumers (notably bond's redirect sanitizer, via the
+// contract.RedirectAllowlist interface) cannot mutate the router-owned
+// slice. The router treats RedirectAllowedHosts as immutable after
+// startup; the copy keeps that invariant even if a caller mishandles
+// the returned value.
+//
+// Returns nil when the operator has not configured a list. Callers MUST
+// treat nil/empty as "no cross-origin host allowed" and decide their own
+// fallback policy (router rewrites to "/"; bond falls back to r.Host
+// with a one-time warning to preserve legacy behaviour).
+func (r *VelocityRouterV2) AllowedRedirectHosts() []string {
+	if len(r.RedirectAllowedHosts) == 0 {
+		return nil
+	}
+	out := make([]string, len(r.RedirectAllowedHosts))
+	copy(out, r.RedirectAllowedHosts)
+	return out
+}
+
 // SetValidator sets the validation function used by ctx.Validate().
 func (r *VelocityRouterV2) SetValidator(fn func(c *Context, rules map[string][]string, messages ...map[string]string) error) {
 	r.validateFn = fn

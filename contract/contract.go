@@ -101,6 +101,29 @@ type ViewEngine interface {
 	Back(w http.ResponseWriter, r *http.Request)
 }
 
+// RedirectAllowlist is the operator-configured allowlist of cross-origin
+// hosts that redirect helpers may treat as "same-origin equivalent".
+// Implemented by *router.VelocityRouterV2 (the Router.RedirectAllowedHosts
+// field).
+//
+// Redirect helpers (router.Context.Redirect, bond.RedirectWithStatus,
+// bond.Back) MUST consult this contract instead of trusting the incoming
+// Host header. A misconfigured fronting proxy that copies an attacker-
+// supplied X-Forwarded-Host into r.Host would otherwise convert
+// "same-origin" into an attacker-controlled origin and let cross-host
+// targets pass the sanitizer.
+//
+// Implementations MUST be safe for concurrent use and SHOULD return a
+// stable snapshot (callers MUST NOT mutate the returned slice).
+//
+// An implementation MAY return an empty slice. Callers that receive an
+// empty slice should fail closed (reject every cross-host target) or,
+// where backwards compatibility forbids that, fall back to r.Host with
+// a one-time logged warning so operators see the gap.
+type RedirectAllowlist interface {
+	AllowedRedirectHosts() []string
+}
+
 // LoginThrottler rate-limits login attempts. Implementations should be safe
 // for concurrent use. The default no-op implementation lives in the auth
 // package as auth.NoopLoginThrottler.

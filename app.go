@@ -477,6 +477,14 @@ func New(opts ...Option) (*App, error) {
 	// 15. Create router and inject services. The router has no external
 	// resources at this point (no listener bound) so no cleanup is needed.
 	a.Router = router.New()
+	// Publish the router as the canonical redirect-allowlist source so
+	// bond (and any future redirect helper that cannot import router)
+	// can consult Router.RedirectAllowedHosts via the contract interface
+	// instead of trusting an operator-spoofable r.Host. Set BEFORE
+	// SetServices so the router-owned services struct sees the value
+	// immediately, and any pooled Context carries the same Services
+	// pointer.
+	a.Services.RedirectAllowlist = a.Router
 	a.Router.SetServices(a.Services)
 	// Propagate the deployment-level trusted-proxy list parsed at step 2
 	// so Context.IP(), per-IP rate limits, and any future client-IP

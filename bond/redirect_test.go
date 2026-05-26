@@ -327,11 +327,12 @@ func TestSanitizeRedirectURL(t *testing.T) {
 		},
 	}
 
+	allowed := []string{host}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := sanitizeRedirectURL(tt.target, host)
+			got := sanitizeRedirectURL(tt.target, allowed)
 			if got != tt.want {
-				t.Errorf("sanitizeRedirectURL(%q, %q) = %q, want %q", tt.target, host, got, tt.want)
+				t.Errorf("sanitizeRedirectURL(%q, %v) = %q, want %q", tt.target, allowed, got, tt.want)
 			}
 		})
 	}

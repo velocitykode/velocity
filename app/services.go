@@ -43,6 +43,14 @@ type Services struct {
 	Notification notification.Notifier
 	Validator    validation.Validator
 
+	// RedirectAllowlist exposes the operator-configured cross-origin
+	// host allowlist (Router.RedirectAllowedHosts) to redirect helpers
+	// that cannot import router. Used by bond.sanitizeRedirectURL to
+	// avoid trusting an attacker-controlled r.Host when a fronting
+	// proxy is misconfigured. May be nil when the framework is wired
+	// without a router (e.g. unit tests).
+	RedirectAllowlist contract.RedirectAllowlist
+
 	// Extensions holds optional first-party and third-party service instances.
 	// Packages register themselves here via ServiceProvider.Register() so that
 	// core never needs new fields for each additional package.
