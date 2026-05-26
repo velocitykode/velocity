@@ -5,14 +5,25 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/velocitykode/velocity/async"
 )
+
+// newAddOwnerID returns a unique owner identifier for the cross-process
+// flock used by FileStore.Add when taking over an expired entry. The
+// owner string is opaque to callers; it just needs to be unique enough
+// for the flock release to recognise its own acquire.
+func newAddOwnerID() string {
+	return uuid.New().String()
+}
 
 // DefaultFileCleanupInterval is the default period between expired-file sweeps.
 const DefaultFileCleanupInterval = 5 * time.Minute
@@ -235,29 +246,27 @@ func (s *FileStore) Put(key string, value interface{}, ttl time.Duration) error 
 	return nil
 }
 
-// Add atomically stores a value only if the key does not already exist.
-// Returns true if inserted, false if a non-expired entry is already
-// present. The check-and-write runs under the store's write mutex, so
-// concurrent goroutines in the same process cannot race past the
-// existence check. Cross-process atomicity is best-effort -- two
-// processes that share the same cache directory may both observe the
-// key as absent and both succeed; callers that need cross-process
-// single-flight semantics should use the Redis driver.
+// Add atomically stores a value only if the key does not already
+// exist (or its existing entry is expired). Returns true if inserted,
+// false if a non-expired entry was already present.
+//
+// Atomicity is layered:
+//
+//   - Same-process goroutines serialize on the FileStore write mutex.
+//   - Cross-process / cross-instance contention is gated by os.O_EXCL
+//     for the create path (kernel-enforced single creator) and by an
+//     advisory flock(2) under the existing per-key lock infrastructure
+//     for the expired-entry takeover path.
+//
+// On a platform where flock is unavailable (the windows build) the
+// takeover path degrades to last-writer-wins; the fresh-key create
+// path is still O_EXCL-protected so two cold-start processes cannot
+// both win Add for an absent key.
 func (s *FileStore) Add(key string, value interface{}, ttl time.Duration) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	path := s.getCacheFilePath(key)
-	if data, err := os.ReadFile(path); err == nil {
-		var item fileCacheItem
-		if err := json.Unmarshal(data, &item); err == nil {
-			// Treat unparseable / expired entries as absent.
-			if item.Expiration == nil || time.Now().Before(*item.Expiration) {
-				return false, nil
-			}
-		}
-	}
-
 	valueData, err := json.Marshal(value)
 	if err != nil {
 		return false, fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
@@ -271,8 +280,75 @@ func (s *FileStore) Add(key string, value interface{}, ttl time.Duration) (bool,
 	if err != nil {
 		return false, fmt.Errorf("velocity/cache: failed to marshal cache item: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		return false, fmt.Errorf("velocity/cache: failed to write cache file: %w", err)
+
+	// Atomic create-if-absent. O_EXCL is enforced by the kernel; the
+	// two-process race that prior best-effort code could lose is closed
+	// for the fresh-key path.
+	if f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600); err == nil {
+		_, werr := f.Write(data)
+		cerr := f.Close()
+		if werr != nil {
+			_ = os.Remove(path)
+			return false, fmt.Errorf("velocity/cache: failed to write cache file: %w", werr)
+		}
+		if cerr != nil {
+			return false, fmt.Errorf("velocity/cache: failed to close cache file: %w", cerr)
+		}
+		return true, nil
+	} else if !errors.Is(err, fs.ErrExist) {
+		return false, fmt.Errorf("velocity/cache: failed to create cache file: %w", err)
+	}
+
+	// File exists. Read it under the same process mutex; if still
+	// valid, refuse insertion. If expired, the caller wants to take
+	// over - but we must coordinate with other processes that may
+	// have made the same observation. Acquire the per-key flock via
+	// the existing lock infrastructure, then re-check after lock to
+	// avoid the lost-update window.
+	if existing, rerr := os.ReadFile(path); rerr == nil {
+		var ex fileCacheItem
+		if json.Unmarshal(existing, &ex) == nil {
+			if ex.Expiration == nil || time.Now().Before(*ex.Expiration) {
+				return false, nil
+			}
+		}
+	}
+
+	// Expired or unparseable entry. Try to take over under a flock.
+	lockStore, lerr := s.ensureLockStore()
+	if lerr != nil {
+		// Platforms without flock (windows): degrade to last-writer-
+		// wins on the takeover path. The fresh-key path above is
+		// still kernel-atomic via O_EXCL.
+		if werr := os.WriteFile(path, data, 0600); werr != nil {
+			return false, fmt.Errorf("velocity/cache: failed to write cache file: %w", werr)
+		}
+		return true, nil
+	}
+	owner := newAddOwnerID()
+	lock := NewFileLock(lockStore, PrefixKey(s.prefix, "add:"+key), owner, 30*time.Second)
+	ctx := context.Background()
+	acquired, aerr := lock.GetWithErr(ctx)
+	if aerr != nil || !acquired {
+		// Another process is performing the takeover. Treat as
+		// existing entry (we did not insert).
+		return false, nil
+	}
+	defer func() { _ = lock.Release(ctx) }()
+
+	// Re-check after acquiring the lock: another worker may have
+	// already inserted a fresh entry.
+	if existing, rerr := os.ReadFile(path); rerr == nil {
+		var ex fileCacheItem
+		if json.Unmarshal(existing, &ex) == nil {
+			if ex.Expiration == nil || time.Now().Before(*ex.Expiration) {
+				return false, nil
+			}
+		}
+	}
+
+	if werr := os.WriteFile(path, data, 0600); werr != nil {
+		return false, fmt.Errorf("velocity/cache: failed to write cache file: %w", werr)
 	}
 	return true, nil
 }

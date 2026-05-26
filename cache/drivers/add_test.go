@@ -2,6 +2,7 @@ package drivers
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -152,6 +153,47 @@ func TestFileStore_Add(t *testing.T) {
 			t.Fatalf("exactly one Add must win under concurrency; got %d winners", got)
 		}
 	})
+}
+
+// TestFileStore_Add_CrossInstanceMutualExclusion exercises the
+// cross-process atomicity contract by pointing two independent
+// FileStore instances at the same directory and racing them on Add
+// for the same key. The O_CREATE|O_EXCL atomic-create gate must elect
+// exactly one winner regardless of which instance asks first; without
+// it the prior best-effort code could let both instances observe the
+// key as absent and both succeed.
+func TestFileStore_Add_CrossInstanceMutualExclusion(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "shared-cache")
+
+	storeA, err := NewFileStoreWithOptions("xinst", dir, time.Hour)
+	if err != nil {
+		t.Fatalf("storeA: %v", err)
+	}
+	defer func() { _ = storeA.Shutdown(context.Background()) }()
+	storeB, err := NewFileStoreWithOptions("xinst", dir, time.Hour)
+	if err != nil {
+		t.Fatalf("storeB: %v", err)
+	}
+	defer func() { _ = storeB.Shutdown(context.Background()) }()
+
+	const iterations = 30
+	for i := 0; i < iterations; i++ {
+		key := fmt.Sprintf("xkey-%d", i)
+		var aOK, bOK bool
+		var aErr, bErr error
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); aOK, aErr = storeA.Add(key, "from-a", time.Hour) }()
+		go func() { defer wg.Done(); bOK, bErr = storeB.Add(key, "from-b", time.Hour) }()
+		wg.Wait()
+		if aErr != nil || bErr != nil {
+			t.Fatalf("iter %d: Add errors aErr=%v bErr=%v", i, aErr, bErr)
+		}
+		if aOK == bOK {
+			t.Fatalf("iter %d: cross-instance Add must elect exactly one winner; aOK=%v bOK=%v", i, aOK, bOK)
+		}
+	}
 }
 
 // TestRedisStore_Add covers the SETNX-based Add primitive on the Redis driver.
