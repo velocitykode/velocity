@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // DefaultMaxAttachmentSize is the fallback per-attachment size limit used
@@ -20,12 +21,37 @@ import (
 // Postmark 10, Mailgun 25) and prevents trivial OOM-via-attachment DoS.
 const DefaultMaxAttachmentSize int64 = 25 * 1024 * 1024
 
-// templatePath is the directory where email templates are stored
-var templatePath = "resources/views/emails"
+// defaultTemplatePath is the initial directory where email templates
+// live, before any SetTemplatePath call. Treated as an immutable
+// constant; the live value is stored in templatePathStore.
+const defaultTemplatePath = "resources/views/emails"
 
-// SetTemplatePath configures the directory for email templates
+// templatePathStore is the live template directory. Reads happen from
+// Message.Template; writes happen via SetTemplatePath. Strings in Go
+// are two-word headers (data pointer + length); a concurrent read and
+// write of a bare package-level string can observe a torn header and
+// produce a corrupt path. atomic.Value gives us race-clean load/store
+// semantics without the lock overhead a sync.RWMutex would impose on
+// every Template() call.
+var templatePathStore atomic.Value // string
+
+func init() {
+	templatePathStore.Store(defaultTemplatePath)
+}
+
+// SetTemplatePath configures the directory for email templates.
+// Safe for concurrent use.
 func SetTemplatePath(path string) {
-	templatePath = path
+	templatePathStore.Store(path)
+}
+
+// templatePath returns the live template directory. atomic.Value
+// guarantees the returned string is a non-torn snapshot.
+func templatePath() string {
+	if v, ok := templatePathStore.Load().(string); ok {
+		return v
+	}
+	return defaultTemplatePath
 }
 
 // defaultMaxAttachmentSize is the package-level fallback used by NewMessage
@@ -451,9 +477,12 @@ func (m *Message) Template(name string, data interface{}) (*Message, error) {
 		return m, err
 	}
 
-	tmplFile := filepath.Join(templatePath, name+".html")
-	// Verify the resolved path stays within templatePath.
-	cleanBase := filepath.Clean(templatePath) + string(filepath.Separator)
+	// Snapshot once so a concurrent SetTemplatePath between Join and
+	// the HasPrefix verification cannot move the goalposts.
+	base := templatePath()
+	tmplFile := filepath.Join(base, name+".html")
+	// Verify the resolved path stays within base.
+	cleanBase := filepath.Clean(base) + string(filepath.Separator)
 	cleanFile := filepath.Clean(tmplFile)
 	if !strings.HasPrefix(cleanFile, cleanBase) {
 		err := fmt.Errorf("mail: template path traversal detected")
