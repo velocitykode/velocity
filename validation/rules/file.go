@@ -214,6 +214,11 @@ func FileRule(field string, value interface{}, params []string, data map[string]
 //
 // Script-runner extensions (.php, .phtml, .phar, .cgi, .pl, .py, .rb,
 // .sh, ...) are refused outright regardless of the parameter list.
+//
+// SVG handling: "svg" in the parameter list is refused unless the
+// caller also passes the literal token "allow_svg" (e.g.
+// mimes:svg,allow_svg or mimes:jpg,svg,allow_svg). Even with opt-in,
+// SVG content containing a <script tag is refused; see validateSVG.
 func MimesRule(field string, value interface{}, params []string, data map[string]interface{}) error {
 	if value == nil {
 		return nil
@@ -244,13 +249,29 @@ func MimesRule(field string, value interface{}, params []string, data map[string
 		}
 	}
 
-	// First confirm the extension is in the caller's allowlist.
+	// Parse params: "allow_svg" is a flag, everything else is an
+	// extension allowlist entry.
+	allowSVG := false
+	hasSVGToken := false
 	matched := false
 	for _, p := range params {
-		if strings.TrimPrefix(strings.ToLower(strings.TrimSpace(p)), ".") == ext {
-			matched = true
-			break
+		token := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(p)), ".")
+		if token == "allow_svg" {
+			allowSVG = true
+			continue
 		}
+		if token == "svg" {
+			hasSVGToken = true
+		}
+		if token == ext {
+			matched = true
+		}
+	}
+	// "svg" in the allowlist is rejected unless the caller also passes
+	// "allow_svg". Without opt-in we never let an SVG upload through
+	// MimesRule, even when the filename matches.
+	if hasSVGToken && !allowSVG {
+		return fmt.Errorf("The %s field must be a file of type: %s.", field, strings.Join(params, ", "))
 	}
 	if !matched {
 		return fmt.Errorf("The %s field must be a file of type: %s.", field, strings.Join(params, ", "))
@@ -274,6 +295,15 @@ func MimesRule(field string, value interface{}, params []string, data map[string
 	}
 	if !mimeMatches(sniffed, allowed) {
 		return fmt.Errorf("The %s field must be a file of type: %s.", field, strings.Join(params, ", "))
+	}
+
+	// SVG uploads still need the script-tag rejection check even when
+	// the caller opted in. Defense in depth against the most common
+	// SVG XSS payload; deeper sanitization is the adopter's job.
+	if ext == "svg" {
+		if err := validateSVG(opener); err != nil {
+			return fmt.Errorf("The %s field must be a file of type: %s.", field, strings.Join(params, ", "))
+		}
 	}
 	return nil
 }
@@ -324,7 +354,7 @@ func ImageRule(field string, value interface{}, params []string, data map[string
 		// the caller opted in. This is a baseline defense against the
 		// most common SVG XSS payload; deeper sanitization is the
 		// adopter's responsibility.
-		if err := rejectSVGScript(opener); err != nil {
+		if err := validateSVG(opener); err != nil {
 			return fmt.Errorf("The %s field must be an image.", field)
 		}
 		return nil
@@ -335,10 +365,13 @@ func ImageRule(field string, value interface{}, params []string, data map[string
 	return nil
 }
 
-// rejectSVGScript reopens the file and refuses content that contains
-// a <script tag (case-insensitive). Returns nil if no script tag found.
-// SVG files are typically small; we cap the read at 1MB.
-func rejectSVGScript(o openable) error {
+// validateSVG reopens the file and refuses content that contains a
+// <script tag (case-insensitive). Returns nil if no script tag is
+// found. SVG files are typically small; we cap the read at 1MB.
+//
+// Shared between MimesRule and ImageRule so both rules apply the same
+// SVG XSS check.
+func validateSVG(o openable) error {
 	f, err := o.Open()
 	if err != nil {
 		return err

@@ -208,6 +208,45 @@ func TestImageRule_SVGOptIn(t *testing.T) {
 	}
 }
 
+// TestMimesRule_SVGRequiresOptIn verifies the F1 fix: mimes:svg without
+// an "allow_svg" opt-in is refused, and even with opt-in a scripted SVG
+// is rejected. Without this fix, scripted SVG flowed through mimes:svg
+// straight to disk while ImageRule was the only path scanning for
+// <script. Audit ID F1.
+func TestMimesRule_SVGRequiresOptIn(t *testing.T) {
+	cleanSVG := []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><circle cx="50" cy="50" r="40"/></svg>`)
+	scriptSVG := []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`)
+
+	// mimes:svg without opt-in: refused even for clean SVG.
+	if err := MimesRule("upload", fakeFile{name: "logo.svg", content: cleanSVG}, []string{"svg"}, nil); err == nil {
+		t.Fatal("expected mimes:svg without allow_svg to refuse clean SVG, got nil")
+	}
+
+	// mimes:svg,allow_svg: clean SVG accepted.
+	if err := MimesRule("upload", fakeFile{name: "logo.svg", content: cleanSVG}, []string{"svg", "allow_svg"}, nil); err != nil {
+		t.Fatalf("expected mimes:svg,allow_svg to accept clean SVG, got %v", err)
+	}
+
+	// mimes:jpg,svg,allow_svg: mixed allowlist still accepts clean SVG.
+	if err := MimesRule("upload", fakeFile{name: "logo.svg", content: cleanSVG}, []string{"jpg", "svg", "allow_svg"}, nil); err != nil {
+		t.Fatalf("expected mimes:jpg,svg,allow_svg to accept clean SVG, got %v", err)
+	}
+
+	// mimes:svg,allow_svg with scripted SVG: refused. This is the
+	// regression that motivated F1; before the fix the request would
+	// pass since MimesRule never ran the script scan.
+	if err := MimesRule("upload", fakeFile{name: "evil.svg", content: scriptSVG}, []string{"svg", "allow_svg"}, nil); err == nil {
+		t.Fatal("expected mimes:svg,allow_svg to refuse scripted SVG, got nil")
+	}
+
+	// Sibling check: mimes:jpg with a scripted SVG (renamed to .svg) is
+	// refused twice over: not in the allowlist, and would be refused by
+	// the SVG script scan even if it were.
+	if err := MimesRule("upload", fakeFile{name: "evil.svg", content: scriptSVG}, []string{"jpg"}, nil); err == nil {
+		t.Fatal("expected mimes:jpg with .svg upload to be refused, got nil")
+	}
+}
+
 // TestImageRule_RejectsNonOpener verifies a value carrying file metadata
 // but no Open method fails closed. Without content, the extension alone
 // is untrustworthy.
