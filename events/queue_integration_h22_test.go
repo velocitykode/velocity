@@ -93,15 +93,20 @@ func runWorkerOnce(t *testing.T, drv queue.Driver, queueName string) {
 func TestEventListenerJob_QueuedListenerEndToEnd(t *testing.T) {
 	// Reset package-level state to keep tests isolated.
 	defer UnregisterListenerFactory("events.h22Listener")
+	defer UnregisterEventFactory("string")
 	defer setFailureReporter(nil)
 
 	counter := &atomic.Int32{}
 	done := make(chan struct{}, 1)
 
-	// Register factory + initialize integration.
+	// Register factory + initialize integration. The dispatched event is
+	// a bare string so the event factory key is "string"; production
+	// consumers typically dispatch typed structs and register the
+	// matching pointer factory ("*pkg.UserSignedUp").
 	RegisterListenerFactory("events.h22Listener", func() Listener {
 		return &h22Listener{counter: counter, done: done}
 	})
+	RegisterEventFactory("string", func() interface{} { s := ""; return &s })
 
 	drv := queue.NewMemoryDriver()
 	defer drv.Shutdown(context.Background())
@@ -147,11 +152,15 @@ func TestEventListenerJob_FailedReportsThroughReporter(t *testing.T) {
 	RegisterListenerFactory("events.h22FailingListener", func() Listener { return h22FailingListener{} })
 	InitializeQueueIntegration(nil, nil, reporter)
 
+	// Set the in-process event pointer so the listener can run without an
+	// event-factory registration. The test asserts the Failed-path
+	// reporter wiring; event-factory contracts are covered elsewhere.
 	job := &EventListenerJob{
-		Event:        "h22.failure",
-		EventType:    "h22.failure",
+		Event:        json.RawMessage(`"h22.failure"`),
+		EventType:    "string",
 		ListenerType: "events.h22FailingListener",
 		MaxRetries:   1,
+		event:        "h22.failure",
 	}
 
 	// Simulate the queue driver path: Handle returns the listener error,
@@ -273,16 +282,18 @@ func TestRegisterListenerFactory_Concurrent(t *testing.T) {
 // package registry on HandleCtx, instead of returning "listener not set".
 func TestEventListenerJob_HandleCtx_HydratesFromRegistry(t *testing.T) {
 	defer UnregisterListenerFactory("events.h22Listener")
+	defer UnregisterEventFactory("string")
 
 	counter := &atomic.Int32{}
 	RegisterListenerFactory("events.h22Listener", func() Listener {
 		return &h22Listener{counter: counter}
 	})
+	RegisterEventFactory("string", func() interface{} { s := ""; return &s })
 
 	// Pretend the job just came back from the wire: listener is nil.
 	jobBytes, err := json.Marshal(EventListenerJob{
-		Event:        "wire.event",
-		EventType:    "wire.event",
+		Event:        json.RawMessage(`"wire.event"`),
+		EventType:    "string",
 		ListenerType: "events.h22Listener",
 	})
 	if err != nil {

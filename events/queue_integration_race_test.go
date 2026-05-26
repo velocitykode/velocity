@@ -47,6 +47,14 @@ func (raceQueuedListener) Tries() int                                          {
 // detector flagged the unprotected map writes; this test must pass under
 // `go test -race`.
 func TestQueueIntegratedDispatcher_ConcurrentSettersAndReaders(t *testing.T) {
+	// pushToQueue requires both a listener-factory and an event-factory
+	// registration before it will enqueue; register both up front so the
+	// race-test Dispatch path can actually reach the writer code.
+	RegisterListenerFactory("events.raceQueuedListener", func() Listener { return raceQueuedListener{} })
+	RegisterEventFactory("string", func() interface{} { s := ""; return &s })
+	defer UnregisterListenerFactory("events.raceQueuedListener")
+	defer UnregisterEventFactory("string")
+
 	d := NewQueueIntegratedDispatcher()
 	d.SetQueueDriver(nopMemQueueDriver{})
 	d.Listen("race.event", raceQueuedListener{})
@@ -56,8 +64,8 @@ func TestQueueIntegratedDispatcher_ConcurrentSettersAndReaders(t *testing.T) {
 	// type identity is unimportant for the race assertion; we just need
 	// the read path to fire.
 	jobBytes, err := json.Marshal(EventListenerJob{
-		Event:        "race.event",
-		EventType:    "race.event",
+		Event:        json.RawMessage(`"race.event"`),
+		EventType:    "string",
 		ListenerType: "events.raceQueuedListener",
 		MaxRetries:   1,
 	})

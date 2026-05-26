@@ -11,8 +11,8 @@ import (
 func TestEventListenerJob(t *testing.T) {
 	// Test with nil listener
 	job := &EventListenerJob{
-		Event:     "test event",
-		EventType: "test.event",
+		Event:     json.RawMessage(`"test event"`),
+		EventType: "string",
 	}
 
 	err := job.Handle()
@@ -20,7 +20,9 @@ func TestEventListenerJob(t *testing.T) {
 		t.Error("Expected error when listener is nil")
 	}
 
-	// Test with valid listener
+	// Test with valid listener. Set j.event (the in-process fast path)
+	// so HandleCtx does not require an event-factory registration for
+	// the bare "test event" string payload.
 	handled := false
 	listener := &SimpleListener{
 		HandleFunc: func(ctx context.Context, event interface{}) error {
@@ -30,6 +32,7 @@ func TestEventListenerJob(t *testing.T) {
 	}
 
 	job.listener = listener
+	job.event = "test event"
 	err = job.Handle()
 	if err != nil {
 		t.Errorf("Handle failed: %v", err)
@@ -121,10 +124,12 @@ func TestProcessEventListenerJob(t *testing.T) {
 		t.Error("Expected error for invalid JSON")
 	}
 
-	// Test with unregistered listener type
+	// Test with unregistered listener type. Event payload is left empty
+	// so HandleCtx's event hydration is a no-op (an empty payload bypasses
+	// the event-factory lookup, mirroring the legacy hand-constructed
+	// EventListenerJob test path).
 	job := EventListenerJob{
-		Event:        "test event",
-		EventType:    "test.event",
+		EventType:    "string",
 		ListenerType: "unregistered",
 	}
 
@@ -187,7 +192,7 @@ func TestEventJobFactory(t *testing.T) {
 
 	// Test with valid JSON
 	job := EventListenerJob{
-		Event:        "test event",
+		Event:        json.RawMessage(`"test event"`),
 		EventType:    "test.event",
 		ListenerType: "test.listener",
 		Attempts:     1,
@@ -633,7 +638,7 @@ func TestPushToQueue(t *testing.T) {
 	// This will fail because queue.Push/Later are not mocked,
 	// but we're testing the job preparation logic
 	job := &EventListenerJob{
-		Event:        event,
+		Event:        json.RawMessage(`"test event"`),
 		EventType:    dispatcher.getEventName(event),
 		ListenerType: dispatcher.getListenerType(queuedListener),
 		Attempts:     0,
