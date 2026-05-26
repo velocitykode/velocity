@@ -1,6 +1,7 @@
 package velocity
 
 import (
+	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/bond"
 	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/contract"
@@ -21,6 +22,7 @@ import (
 // satisfies contract.EventDispatcherAware. Signature drift (typed vs. any)
 // fails the build here before bootstrap tries to wire it up.
 var (
+	_ contract.EventDispatcherAware = (*auth.Manager)(nil)
 	_ contract.EventDispatcherAware = (*bond.Bond)(nil)
 	_ contract.EventDispatcherAware = (*cache.Manager)(nil)
 	_ contract.EventDispatcherAware = (*cryptodrv.AESDriver)(nil)

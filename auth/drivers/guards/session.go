@@ -166,6 +166,13 @@ type SessionGuard struct {
 	// revival path rotates inside anchorRecalledUser. Nil disables
 	// rotation (tests, JWT-only configs).
 	csrfRotator contract.CSRFTokenRotator
+
+	// eventDispatcher is the framework event dispatcher installed by
+	// auth.Manager.SetEventDispatcher. Used to emit
+	// auth.PasswordNeedsRehashEvent after a successful Attempt against
+	// a stored hash that no longer matches the configured Hasher
+	// parameters (M-08). Nil disables event emission.
+	eventDispatcher func(ctx context.Context, event any) error
 }
 
 // loadProvider returns the active auth.UserProvider via atomic load.
@@ -357,6 +364,31 @@ func (g *SessionGuard) SetCSRFTokenRotator(rotator contract.CSRFTokenRotator) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.csrfRotator = rotator
+}
+
+// SetEventDispatcher installs the framework event dispatcher used to
+// emit auth.PasswordNeedsRehashEvent after a successful login against a
+// stored hash that no longer matches the configured Hasher parameters
+// (e.g. operator bumped BcryptCost from 10 to 14). Pass nil to disable
+// emission; the guard otherwise becomes silent on the rehash signal.
+// Safe for concurrent use.
+//
+// Manager.SetEventDispatcher propagates to every registered guard via
+// the auth.EventDispatcherReceiver interface; consumers normally do not
+// need to call this directly.
+func (g *SessionGuard) SetEventDispatcher(fn func(ctx context.Context, event any) error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.eventDispatcher = fn
+}
+
+// getEventDispatcher returns the installed dispatcher under a read lock
+// so concurrent Attempt() readers observe a consistent value across a
+// SetEventDispatcher swap.
+func (g *SessionGuard) getEventDispatcher() func(ctx context.Context, event any) error {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.eventDispatcher
 }
 
 // getCSRFTokenRotator returns the installed rotator under a read lock so
@@ -726,8 +758,37 @@ func (g *SessionGuard) Attempt(w http.ResponseWriter, r *http.Request, credentia
 		return false, err
 	}
 
+	// Hash-staleness check (M-08): when the stored hash no longer
+	// matches the configured Hasher parameters (e.g. operator bumped
+	// BcryptCost from 10 to 14), emit a PasswordNeedsRehashEvent so
+	// listeners can re-hash on the next login. The event carries the
+	// user identifier only; the plaintext stays inside this stack
+	// frame and is not surfaced to subscribers.
+	g.maybeEmitRehashEvent(r.Context(), hasher, user)
+
 	throttler.RecordSuccess(r, key)
 	return true, nil
+}
+
+// maybeEmitRehashEvent fires auth.PasswordNeedsRehashEvent through the
+// installed dispatcher when hasher.NeedsRehash reports the stored hash
+// is out of date. No-op when no dispatcher has been wired. A dispatcher
+// error is swallowed: a transient subscriber failure must not block the
+// already-successful login.
+func (g *SessionGuard) maybeEmitRehashEvent(ctx context.Context, hasher auth.Hasher, user auth.Authenticatable) {
+	dispatcher := g.getEventDispatcher()
+	if dispatcher == nil || hasher == nil || user == nil {
+		return
+	}
+	if !hasher.NeedsRehash(user.GetAuthPassword()) {
+		return
+	}
+	if err := dispatcher(ctx, auth.PasswordNeedsRehashEvent{
+		UserID:    user.GetAuthIdentifier(),
+		GuardName: "session",
+	}); err != nil {
+		g.logWarn("velocity/auth: password needs-rehash event dispatch failed", "user_id", user.GetAuthIdentifier(), "error", err)
+	}
 }
 
 // sessionRevoker is the optional capability the H-04 fix relies on when no

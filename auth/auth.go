@@ -108,6 +108,29 @@ func Timebox(floor time.Duration, inner func()) {
 	timeboxFn(floor, inner)
 }
 
+// PasswordNeedsRehashEvent is dispatched after a successful credential
+// check (guard Attempt) when the stored password hash no longer matches
+// the configured Hasher parameters (e.g. operator bumped BcryptCost from
+// 10 to 14). Listeners typically queue a job to re-hash the password on
+// the user's next login while the plaintext is still in memory; the
+// event itself intentionally carries only the user identifier so the
+// plaintext never crosses the event boundary.
+//
+// Audit M-08: previously Hasher.NeedsRehash was defined but never
+// invoked, so a cost-bump silently left every legacy hash at the lower
+// cost forever.
+type PasswordNeedsRehashEvent struct {
+	UserID    interface{}
+	GuardName string
+}
+
+// EventName returns the canonical event name used by listeners
+// subscribed to the framework dispatcher. Static so listeners can
+// register before the auth subsystem is constructed.
+func (PasswordNeedsRehashEvent) EventName() string {
+	return "auth.password.needs_rehash"
+}
+
 // Errors
 var (
 	ErrNotAuthenticated   = errors.New("not authenticated")
@@ -232,7 +255,20 @@ type Manager struct {
 	// registered guard implementing CSRFTokenRotatorReceiver.
 	csrfRotator contract.CSRFTokenRotator
 
+	// eventDispatcher is the framework-wide event dispatcher used to emit
+	// auth events (e.g. PasswordNeedsRehashEvent on a successful login
+	// against an out-of-date hash). Stored atomically so request paths
+	// can load it without contending with the guard-map mutex. Nil when
+	// no dispatcher has been wired (auth events become no-ops).
+	eventDispatcher atomic.Pointer[authEventDispatcherHolder]
+
 	mu sync.RWMutex
+}
+
+// authEventDispatcherHolder boxes the dispatcher function so atomic.Pointer
+// can hold the two-word func value as a single addressable cell.
+type authEventDispatcherHolder struct {
+	fn func(ctx context.Context, event any) error
 }
 
 // authLoggerHolder wraps a Logger so atomic.Value stores a single type.
@@ -260,6 +296,12 @@ func (m *Manager) RegisterGuard(name string, guard Guard) {
 	proxies := m.trustedProxies
 	rotator := m.csrfRotator
 	m.mu.Unlock()
+
+	if dispatcher := m.eventDispatcher.Load(); dispatcher != nil && dispatcher.fn != nil {
+		if r, ok := guard.(EventDispatcherReceiver); ok {
+			r.SetEventDispatcher(dispatcher.fn)
+		}
+	}
 
 	if store != nil {
 		if r, ok := guard.(ServerSessionStoreReceiver); ok {
@@ -676,6 +718,60 @@ func (m *Manager) SetCSRFTokenRotator(rotator contract.CSRFTokenRotator) {
 	for _, r := range receivers {
 		r.SetCSRFTokenRotator(rotator)
 	}
+}
+
+// EventDispatcherReceiver is the optional capability interface implemented
+// by guards that need to emit framework events (e.g. session and JWT
+// guards emit PasswordNeedsRehashEvent after a successful login against an
+// out-of-date hash). Manager.SetEventDispatcher walks every registered
+// guard implementing this interface so listeners can subscribe to auth
+// events at the framework dispatcher level without knowing about
+// individual guards.
+//
+// The dispatcher signature mirrors contract.EventDispatcherAware so the
+// app-level dispatcher passes through unchanged.
+type EventDispatcherReceiver interface {
+	SetEventDispatcher(fn func(ctx context.Context, event any) error)
+}
+
+// SetEventDispatcher installs the framework event dispatcher used by
+// the manager and propagates it to every registered guard implementing
+// EventDispatcherReceiver. Pass nil to remove a previously installed
+// dispatcher; guards become silent. Safe for concurrent use.
+//
+// At boot the framework calls this from wireInstanceEvents so auth
+// events (PasswordNeedsRehashEvent on cost-bumped hashes etc.) flow
+// through the same dispatcher as every other subsystem.
+func (m *Manager) SetEventDispatcher(fn func(ctx context.Context, event any) error) {
+	if fn == nil {
+		m.eventDispatcher.Store(nil)
+	} else {
+		m.eventDispatcher.Store(&authEventDispatcherHolder{fn: fn})
+	}
+
+	m.mu.RLock()
+	receivers := make([]EventDispatcherReceiver, 0, len(m.guards))
+	for _, g := range m.guards {
+		if r, ok := g.(EventDispatcherReceiver); ok {
+			receivers = append(receivers, r)
+		}
+	}
+	m.mu.RUnlock()
+
+	for _, r := range receivers {
+		r.SetEventDispatcher(fn)
+	}
+}
+
+// dispatchEvent fires event through the installed event dispatcher when
+// one is wired. Returns nil when no dispatcher is configured so callers
+// can ignore the error without a nil check.
+func (m *Manager) dispatchEvent(ctx context.Context, event any) error {
+	holder := m.eventDispatcher.Load()
+	if holder == nil || holder.fn == nil {
+		return nil
+	}
+	return holder.fn(ctx, event)
 }
 
 // ServerSessionStore returns the installed server-side session store, or

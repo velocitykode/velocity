@@ -46,6 +46,11 @@ type JWTGuard struct {
 	// hasher is consulted on the missing-user path so CPU timing
 	// matches the bcrypt-verify path; defaults to bcrypt cost 10.
 	hasher auth.Hasher
+
+	// eventDispatcher emits auth.PasswordNeedsRehashEvent after a
+	// successful Attempt against a stored hash that no longer matches
+	// the configured Hasher parameters (M-08). Nil disables emission.
+	eventDispatcher func(ctx context.Context, event any) error
 }
 
 // loadProvider returns the active auth.UserProvider via atomic load.
@@ -151,6 +156,29 @@ func (g *JWTGuard) SetLoginThrottler(t contract.LoginThrottler) {
 		return
 	}
 	g.throttler.Store(&throttlerHolder{t: t})
+}
+
+// SetEventDispatcher installs the framework event dispatcher used to emit
+// auth.PasswordNeedsRehashEvent after a successful Attempt against a
+// stored hash that no longer matches the configured Hasher parameters
+// (M-08). Pass nil to disable emission. Safe for concurrent use.
+//
+// Manager.SetEventDispatcher propagates to every registered guard via
+// the auth.EventDispatcherReceiver interface; consumers normally do not
+// need to call this directly.
+func (g *JWTGuard) SetEventDispatcher(fn func(ctx context.Context, event any) error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.eventDispatcher = fn
+}
+
+// getEventDispatcher returns the installed dispatcher under a read lock
+// so concurrent Attempt() readers observe a consistent value across a
+// SetEventDispatcher swap.
+func (g *JWTGuard) getEventDispatcher() func(ctx context.Context, event any) error {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.eventDispatcher
 }
 
 // NewJWTGuard creates a new JWT guard.
@@ -441,8 +469,31 @@ func (g *JWTGuard) Attempt(w http.ResponseWriter, r *http.Request, credentials m
 		return false, err
 	}
 
+	// Hash-staleness check (M-08): emit PasswordNeedsRehashEvent when the
+	// stored hash no longer matches the configured Hasher parameters.
+	g.maybeEmitRehashEvent(r.Context(), hasher, user)
+
 	throttler.RecordSuccess(r, key)
 	return true, nil
+}
+
+// maybeEmitRehashEvent fires auth.PasswordNeedsRehashEvent through the
+// installed dispatcher when hasher.NeedsRehash reports the stored hash
+// is out of date. No-op when no dispatcher has been wired. A dispatcher
+// error is swallowed: a transient subscriber failure must not block the
+// already-successful login.
+func (g *JWTGuard) maybeEmitRehashEvent(ctx context.Context, hasher auth.Hasher, user auth.Authenticatable) {
+	dispatcher := g.getEventDispatcher()
+	if dispatcher == nil || hasher == nil || user == nil {
+		return
+	}
+	if !hasher.NeedsRehash(user.GetAuthPassword()) {
+		return
+	}
+	_ = dispatcher(ctx, auth.PasswordNeedsRehashEvent{
+		UserID:    user.GetAuthIdentifier(),
+		GuardName: "jwt",
+	})
 }
 
 // Logout revokes the JWT token
