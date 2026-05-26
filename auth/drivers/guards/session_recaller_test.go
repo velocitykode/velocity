@@ -147,17 +147,21 @@ func TestSessionGuard_RememberRevival_RotatesSessionID(t *testing.T) {
 	}
 
 	holder, ok := req.Context().Value(sessionCtxKey{}).(*sessionHolder)
-	if !ok || holder == nil || holder.session == nil {
+	if !ok || holder == nil {
 		t.Fatal("session holder unexpectedly nil after revival")
 	}
-	postID := holder.session.ID()
+	sess := holder.getSession()
+	if sess == nil {
+		t.Fatal("session holder.getSession() returned nil after revival")
+	}
+	postID := sess.ID()
 	if postID == "" {
 		t.Fatal("revived session id is empty; expected rotated id")
 	}
 	if postID == preID && preID != "" {
 		t.Fatalf("revived session id %q == pre-revival id; expected rotation", postID)
 	}
-	if holder.session.Get("user_id") == nil {
+	if sess.Get("user_id") == nil {
 		t.Fatal("revived session has no user_id anchored")
 	}
 }

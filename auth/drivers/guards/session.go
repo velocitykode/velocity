@@ -35,11 +35,64 @@ type sessionCtxKey struct{}
 // It also caches the result of the server-side session store lookup so that
 // multiple guard methods invoked on the same request (Check, then User, then
 // ID) only pay the Redis round-trip once.
+//
+// All fields are protected by mu. Handlers that fan out goroutines sharing
+// the parent request context (e.g. async.All over a batch of authorisation
+// checks) hit these accessors concurrently, and without mu the writes from
+// getSession / consultServerStore / anchorRecalledUser race the reads from
+// sibling goroutines. `go test -race` catches it deterministically.
 type sessionHolder struct {
+	mu        sync.RWMutex
 	session   auth.Session
 	storeOnce bool
 	storeRec  *auth.StoredSession
 	storeErr  error
+}
+
+// getSession returns the cached session under a read lock.
+func (h *sessionHolder) getSession() auth.Session {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.session
+}
+
+// setSession installs s as the cached session under a write lock.
+func (h *sessionHolder) setSession(s auth.Session) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.session = s
+}
+
+// getStoreCache returns (cached, ok, rec, err) under a read lock so the
+// fast path in consultServerStore observes a coherent snapshot.
+func (h *sessionHolder) getStoreCache() (bool, *auth.StoredSession, error) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.storeOnce, h.storeRec, h.storeErr
+}
+
+// setStoreCache records the server-store lookup outcome under a write lock.
+// rec and err are stored together; both may be nil (rec=nil + err=nil is the
+// unset state, but consultServerStore always sets storeOnce=true before
+// reaching here so callers do not observe the unset combination).
+func (h *sessionHolder) setStoreCache(rec *auth.StoredSession, err error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.storeOnce = true
+	h.storeRec = rec
+	h.storeErr = err
+}
+
+// resetStoreCache drops the server-store lookup cache so consultServerStore
+// is forced to re-query. Used after session-id rotations (Login,
+// anchorRecalledUser) where any cached "no record" entry was keyed on the
+// pre-rotation id.
+func (h *sessionHolder) resetStoreCache() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.storeOnce = false
+	h.storeRec = nil
+	h.storeErr = nil
 }
 
 // WithSessionContext returns a new request with a session cache attached to its context.
@@ -58,7 +111,7 @@ func sessionFromHolder(r *http.Request) auth.Session {
 	if !ok || holder == nil {
 		return nil
 	}
-	return holder.session
+	return holder.getSession()
 }
 
 // modifiedSession is the optional capability the save-at-end middleware uses
@@ -484,9 +537,7 @@ func (g *SessionGuard) anchorRecalledUser(r *http.Request, session auth.Session,
 	// Reset the per-request store cache; the holder may have cached
 	// "no record" against the pre-rotation id earlier in the request.
 	if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok && holder != nil {
-		holder.storeOnce = false
-		holder.storeRec = nil
-		holder.storeErr = nil
+		holder.resetStoreCache()
 	}
 
 	// If a store is wired, fail-closed when the just-written record is
@@ -523,7 +574,7 @@ func (g *SessionGuard) Login(w http.ResponseWriter, r *http.Request, user auth.A
 		}
 		// Cache in request context if available
 		if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok {
-			holder.session = session
+			holder.setSession(session)
 		}
 	}
 
@@ -791,8 +842,10 @@ func (g *SessionGuard) Session(r *http.Request) auth.Session {
 // getSession gets or creates session for request
 func (g *SessionGuard) getSession(r *http.Request) auth.Session {
 	// Check request context cache first
-	if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok && holder.session != nil {
-		return holder.session
+	if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok {
+		if cached := holder.getSession(); cached != nil {
+			return cached
+		}
 	}
 
 	// Get from store
@@ -803,7 +856,7 @@ func (g *SessionGuard) getSession(r *http.Request) auth.Session {
 
 	// Cache in request context if available
 	if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok {
-		holder.session = session
+		holder.setSession(session)
 	}
 
 	return session
@@ -824,8 +877,10 @@ func (g *SessionGuard) consultServerStore(r *http.Request, session auth.Session)
 	}
 
 	holder, _ := r.Context().Value(sessionCtxKey{}).(*sessionHolder)
-	if holder != nil && holder.storeOnce {
-		return holder.storeErr
+	if holder != nil {
+		if once, _, err := holder.getStoreCache(); once {
+			return err
+		}
 	}
 
 	sessionID := session.ID()
@@ -833,8 +888,7 @@ func (g *SessionGuard) consultServerStore(r *http.Request, session auth.Session)
 		// A session with no id cannot be looked up; treat as revoked
 		// (the cookie cannot have come from a successful Login).
 		if holder != nil {
-			holder.storeOnce = true
-			holder.storeErr = auth.ErrSessionRevoked
+			holder.setStoreCache(nil, auth.ErrSessionRevoked)
 		}
 		return auth.ErrSessionRevoked
 	}
@@ -849,15 +903,13 @@ func (g *SessionGuard) consultServerStore(r *http.Request, session auth.Session)
 			resolved = fmt.Errorf("velocity/auth: server session store get: %w", err)
 		}
 		if holder != nil {
-			holder.storeOnce = true
-			holder.storeErr = resolved
+			holder.setStoreCache(nil, resolved)
 		}
 		return resolved
 	}
 
 	if holder != nil {
-		holder.storeOnce = true
-		holder.storeRec = rec
+		holder.setStoreCache(rec, nil)
 	}
 
 	g.maybeRefreshLastSeen(r.Context(), store, rec)

@@ -262,9 +262,11 @@ func TestSessionGuard_RememberRevival_AbortsOnRotateFailure(t *testing.T) {
 			// user_id MUST NOT have been committed when the rotation
 			// aborted; revival must look unauthenticated end-to-end.
 			holder, _ := req.Context().Value(sessionCtxKey{}).(*sessionHolder)
-			if holder != nil && holder.session != nil {
-				if uid := holder.session.Get("user_id"); uid != nil {
-					t.Errorf("user_id = %v after aborted revival, want nil", uid)
+			if holder != nil {
+				if sess := holder.getSession(); sess != nil {
+					if uid := sess.Get("user_id"); uid != nil {
+						t.Errorf("user_id = %v after aborted revival, want nil", uid)
+					}
 				}
 			}
 		})
