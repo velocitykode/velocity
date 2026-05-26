@@ -35,7 +35,24 @@ func (s *CookieStore) Create(id string) (auth.Session, error) {
 	}, nil
 }
 
+// cookieNowFn is the wall-clock source used for IssuedAt enforcement. Tests
+// may override it to simulate cookies minted in the past so the expiry
+// rejection path can be exercised deterministically. Production code must
+// never reassign this; it exists solely as a test seam.
+var cookieNowFn = time.Now
+
 // Get gets session from request
+//
+// Cookie payloads include an IssuedAt timestamp that is enforced server-side:
+// any cookie older than SessionConfig.Lifetime minutes is rejected and a
+// fresh empty session is returned. Without this, a captured cookie remains
+// replayable indefinitely (until APP_KEY rotates) even if the client-side
+// MaxAge/Expires says otherwise, since curl/replay tools ignore those.
+//
+// Legacy payloads without IssuedAt (zero time) are accepted to preserve
+// rolling-deploy compatibility: the next Save() bumps IssuedAt, after which
+// the new value enforces. Operators who want strict cutoff can rotate
+// APP_KEY which invalidates every prior cookie.
 func (s *CookieStore) Get(r *http.Request, id string) (auth.Session, error) {
 	// Get cookie
 	cookie, err := r.Cookie(s.config.Name)
@@ -51,13 +68,25 @@ func (s *CookieStore) Get(r *http.Request, id string) (auth.Session, error) {
 
 	// Deserialize session data
 	var sessionData struct {
-		ID    string                 `json:"id"`
-		Data  map[string]interface{} `json:"data"`
-		Flash map[string]interface{} `json:"flash"`
+		ID       string                 `json:"id"`
+		Data     map[string]interface{} `json:"data"`
+		Flash    map[string]interface{} `json:"flash"`
+		IssuedAt time.Time              `json:"iat,omitempty"`
 	}
 
 	if err := json.Unmarshal([]byte(decrypted), &sessionData); err != nil {
 		return s.Create("")
+	}
+
+	// Server-side expiry enforcement. When IssuedAt is non-zero (cookies
+	// minted by the post-fix Save), enforce Lifetime minutes from issue.
+	// Zero IssuedAt is the legacy/no-config path: skip enforcement and
+	// let the next Save bump the timestamp.
+	if !sessionData.IssuedAt.IsZero() && s.config.Lifetime > 0 {
+		lifetime := time.Duration(s.config.Lifetime) * time.Minute
+		if cookieNowFn().After(sessionData.IssuedAt.Add(lifetime)) {
+			return s.Create("")
+		}
 	}
 
 	// Create session with data
@@ -109,15 +138,19 @@ func (s *CookieStore) Save(w http.ResponseWriter, session auth.Session) error {
 		return nil
 	}
 
-	// Serialize session data
+	// Serialize session data. IssuedAt bumps on every Save so a rolling
+	// active session keeps refreshing its server-side expiry window;
+	// captured-and-replayed cookies past Lifetime are rejected in Get.
 	sessionData := struct {
-		ID    string                 `json:"id"`
-		Data  map[string]interface{} `json:"data"`
-		Flash map[string]interface{} `json:"flash"`
+		ID       string                 `json:"id"`
+		Data     map[string]interface{} `json:"data"`
+		Flash    map[string]interface{} `json:"flash"`
+		IssuedAt time.Time              `json:"iat,omitempty"`
 	}{
-		ID:    cookieSession.ID(),
-		Data:  cookieSession.GetData(),
-		Flash: cookieSession.GetFlashData(),
+		ID:       cookieSession.ID(),
+		Data:     cookieSession.GetData(),
+		Flash:    cookieSession.GetFlashData(),
+		IssuedAt: cookieNowFn(),
 	}
 
 	data, err := json.Marshal(sessionData)
