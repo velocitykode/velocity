@@ -101,6 +101,16 @@ func writeStderr(level, msg string, kvs []any) {
 // push exceeds this budget the job is marked failed instead of requeued.
 const retryPushTimeout = 5 * time.Second
 
+// terminalCleanupTimeout bounds the DB write that records a terminal
+// failure (failed_jobs INSERT + jobs DELETE) and the success ack. The
+// cleanup write MUST be detached from the per-job context because the
+// jobCtx-timeout branch in processJob calls into failJob with an
+// already-cancelled ctx; binding the DB write to that ctx returns
+// context.DeadlineExceeded immediately and the row never moves to
+// failed_jobs. 5s mirrors retryPushTimeout and is generous enough for a
+// healthy backend, short enough not to hang shutdown on a sick one.
+const terminalCleanupTimeout = 5 * time.Second
+
 // defaultHandlerKillCeiling bounds how long processJob will wait, after
 // the per-job ctx fires, for the detached handler goroutine to return
 // cooperatively. Once jobCtx.Done() fires, the goroutine is no longer
@@ -506,11 +516,16 @@ func (w *Worker) processJob() error {
 // ackReservation deletes the leased row after handler success on
 // reservation-capable drivers. It is a no-op on drivers that delete the
 // row at pop time (memory, redis) and on calls with a zero token.
-// Uses a detached short-timeout context so a slow driver cannot hold
-// shutdown open past its deadline; an ack failure is logged but not
-// propagated because the row will still be reclaimed by the retryAfter
-// predicate on the next pop. (The duplicate-run cost there is preferable
-// to refusing the success path.)
+//
+// Uses a fresh background ctx with a short timeout so the ack survives
+// jobCtx cancellation (e.g. when the handler completed just as the per-
+// job timeout fires) and so a slow driver cannot hold shutdown open
+// past its deadline. ErrLeaseLost is downgraded to a warning: the lease
+// expired and another worker reclaimed the row before we could ack, so
+// the job will run a second time (the documented at-least-once cost of
+// a slow handler). Other failures are logged but not propagated because
+// the row will still be reclaimed by the retryAfter predicate on the
+// next pop.
 func (w *Worker) ackReservation(token ReservationToken) {
 	if token.IsZero() {
 		return
@@ -519,9 +534,16 @@ func (w *Worker) ackReservation(token ReservationToken) {
 	if !ok {
 		return
 	}
-	ackCtx, cancel := context.WithTimeout(context.Background(), retryPushTimeout)
+	ackCtx, cancel := context.WithTimeout(context.Background(), terminalCleanupTimeout)
 	defer cancel()
-	if err := rd.AckCtx(ackCtx, token); err != nil {
+	switch err := rd.AckCtx(ackCtx, token); {
+	case err == nil:
+		// happy path
+	case errors.Is(err, ErrLeaseLost):
+		w.logger.Warn("Lease lost before ack; another worker may re-run the job",
+			"token", token.ID,
+		)
+	default:
 		w.logger.Error("Failed to ack reserved job", "token", token.ID, "error", err)
 	}
 }
@@ -618,6 +640,19 @@ func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, 
 		}
 		pushCancel()
 		if requeueErr != nil {
+			if errors.Is(requeueErr, ErrLeaseLost) {
+				// Lease lost between handler return and release: another
+				// worker already owns the row. Do not failJob (that
+				// would write a duplicate failed_jobs row for a lease
+				// we no longer hold). Drop the retry; the new owner is
+				// in charge.
+				w.logger.Warn("Lease lost before retry release; another worker owns the row",
+					"type", jobType,
+					"queue", w.queueName,
+					"job_id", jobIDOf(job),
+				)
+				return
+			}
 			w.logger.Error("Failed to re-queue job for retry", "error", requeueErr)
 			w.failJob(ctx, job, jobType, err, duration, attempt, maxAttempts, reservation)
 		}
@@ -646,6 +681,18 @@ func (w *Worker) attemptNumber(job Job, token ReservationToken) int {
 }
 
 // failJob permanently fails a job after exhausting retries.
+//
+// The driver-side cleanup write MUST use a fresh context with its own
+// short timeout, not the per-job ctx: when this is reached via the
+// jobCtx-timeout branch in processJob, ctx is already
+// context.DeadlineExceeded and any DB write bound to it returns the
+// deadline error before touching the row. The row would then stay
+// reserved (never moved to failed_jobs) until the lease expires,
+// breaking the at-least-once-but-bounded contract.
+//
+// Event dispatch still uses ctx so trace ids and request-scoped values
+// propagate; only the database mutation runs under the detached
+// terminalCleanupTimeout budget.
 func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error, duration time.Duration, attempt, maxAttempts int, reservation ReservationToken) {
 	w.removeAttempts(job)
 	// Record batch failure
@@ -656,10 +703,26 @@ func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error
 	}
 	dispatchJobFailed(w.dispatchEvent, ctx, jobType, w.queueName, err, duration)
 
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), terminalCleanupTimeout)
+	defer cleanupCancel()
+
 	// Reservation-capable drivers record + delete the row atomically;
 	// other drivers fall back to the bare Failed() path.
 	if rd, ok := w.queue.(ReservationDriver); ok && !reservation.IsZero() {
-		if failErr := rd.FailReservedCtx(ctx, reservation, job, err, w.queueName); failErr != nil {
+		failErr := rd.FailReservedCtx(cleanupCtx, reservation, job, err, w.queueName)
+		switch {
+		case failErr == nil:
+			// happy path
+		case errors.Is(failErr, ErrLeaseLost):
+			// Another worker reclaimed the row; the new owner is now
+			// responsible for it. Log and move on; do not panic, do
+			// not double-write failed_jobs.
+			w.logger.Warn("Lease lost before terminal cleanup; another worker owns the row",
+				"type", jobType,
+				"queue", w.queueName,
+				"job_id", jobIDOf(job),
+			)
+		default:
 			w.logger.Error("Failed to mark reserved job as failed", "error", failErr)
 		}
 		return

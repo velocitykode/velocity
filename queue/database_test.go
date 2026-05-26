@@ -604,6 +604,228 @@ func TestDatabaseDriver_PersistedAttemptsBoundMaxAttempts(t *testing.T) {
 	}
 }
 
+// TestDatabaseDriver_StaleLeaseFencedByToken proves the fencing-token
+// invariant: a worker that holds a stale lease (its lease window
+// expired and another worker reclaimed the row) MUST NOT be able to
+// mutate the row. AckCtx, ReleaseCtx, and FailReservedCtx invoked with
+// the stale token return ErrLeaseLost and the row stays owned by the
+// new worker.
+//
+// Pre-fix, mutators fenced on row id only and the stale token would
+// happily delete (or clobber) the new owner's row.
+func TestDatabaseDriver_StaleLeaseFencedByToken(t *testing.T) {
+	saveAndRestoreSigningState(t)
+	SetSigningKey(nil)
+
+	driver, cleanup := newSQLiteQueueDB(t)
+	defer cleanup()
+	driver.SetRetryAfter(40 * time.Millisecond)
+
+	if err := driver.PushCtx(context.Background(), &TestJob{ID: "stale-lease"}, "stale"); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+
+	// First worker reserves the row, then "stalls" past the lease.
+	popped, stale, _, err := driver.PopCtxReserved(context.Background(), "stale")
+	if err != nil || popped == nil || stale.IsZero() {
+		t.Fatalf("first pop: token=%+v err=%v", stale, err)
+	}
+	time.Sleep(60 * time.Millisecond)
+
+	// To simulate a *different* worker reclaiming, swap the driver's
+	// workerID before the reclaim pop. Without this the token's
+	// ReservedBy would match the same string and the row id +
+	// attempts mismatch alone would carry the fence, but we want to
+	// exercise the full (id, attempts, reserved_by) tuple.
+	originalWorker := driver.workerID
+	driver.workerID = "different-worker-id"
+	defer func() { driver.workerID = originalWorker }()
+
+	// Second worker reclaims via the retryAfter predicate.
+	popped2, fresh, _, err := driver.PopCtxReserved(context.Background(), "stale")
+	if err != nil || popped2 == nil || fresh.IsZero() {
+		t.Fatalf("reclaim pop: token=%+v err=%v", fresh, err)
+	}
+	if fresh.ID != stale.ID {
+		t.Fatalf("reclaim returned different row id; got %d, want %d", fresh.ID, stale.ID)
+	}
+	if fresh.Attempts <= stale.Attempts {
+		t.Fatalf("attempts did not advance on reclaim; fresh=%d stale=%d", fresh.Attempts, stale.Attempts)
+	}
+	if fresh.ReservedBy == stale.ReservedBy {
+		t.Fatalf("reserved_by did not change on reclaim; both=%q", fresh.ReservedBy)
+	}
+
+	// The stale token must now be fenced off from every mutator.
+	if err := driver.AckCtx(context.Background(), stale); !errors.Is(err, ErrLeaseLost) {
+		t.Errorf("stale AckCtx: got err=%v, want ErrLeaseLost", err)
+	}
+	if err := driver.ReleaseCtx(context.Background(), stale, 0); !errors.Is(err, ErrLeaseLost) {
+		t.Errorf("stale ReleaseCtx: got err=%v, want ErrLeaseLost", err)
+	}
+	if err := driver.FailReservedCtx(context.Background(), stale, popped, fmt.Errorf("stale"), "stale"); !errors.Is(err, ErrLeaseLost) {
+		t.Errorf("stale FailReservedCtx: got err=%v, want ErrLeaseLost", err)
+	}
+
+	// The new owner's row must be intact. reserved_by should still
+	// reflect the second worker, attempts unchanged, and no failed_jobs
+	// row should have been written by the stale FailReservedCtx call.
+	var reservedBy string
+	var persistedAttempts int
+	if err := driver.db.QueryRow("SELECT reserved_by, attempts FROM jobs WHERE id = ?", fresh.ID).Scan(&reservedBy, &persistedAttempts); err != nil {
+		t.Fatalf("inspect row: %v", err)
+	}
+	if reservedBy != fresh.ReservedBy {
+		t.Errorf("reserved_by mutated by stale lease; got %q, want %q", reservedBy, fresh.ReservedBy)
+	}
+	if persistedAttempts != fresh.Attempts {
+		t.Errorf("attempts mutated by stale lease; got %d, want %d", persistedAttempts, fresh.Attempts)
+	}
+	var failed int
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM failed_jobs WHERE queue = ?", "stale").Scan(&failed); err != nil {
+		t.Fatalf("count failed_jobs: %v", err)
+	}
+	if failed != 0 {
+		t.Errorf("failed_jobs unexpectedly written by stale FailReservedCtx; rows=%d", failed)
+	}
+
+	// The fresh token still works.
+	if err := driver.AckCtx(context.Background(), fresh); err != nil {
+		t.Errorf("fresh AckCtx: %v", err)
+	}
+}
+
+// TestDatabaseDriver_TerminalCleanupSurvivesCancelledCtx proves that
+// FailReservedCtx still moves the row to failed_jobs when the caller's
+// jobCtx is already cancelled (the common case when the per-job
+// timeout fires). The worker.failJob path uses a fresh detached ctx
+// for the cleanup write, so we exercise that here at the driver level
+// by passing a pre-cancelled ctx and confirming that FailReservedCtx
+// honours it (returning the ctx error) while the worker-level path
+// supplies a fresh ctx.
+//
+// This test asserts two things:
+//  1. The driver method DOES honour a cancelled ctx (so the worker's
+//     fresh-ctx wrapping is the only way to survive a jobCtx timeout).
+//  2. With a fresh background ctx, the row moves to failed_jobs and
+//     is deleted from jobs even when the original jobCtx is dead.
+func TestDatabaseDriver_TerminalCleanupSurvivesCancelledCtx(t *testing.T) {
+	saveAndRestoreSigningState(t)
+	SetSigningKey(nil)
+
+	driver, cleanup := newSQLiteQueueDB(t)
+	defer cleanup()
+
+	if err := driver.PushCtx(context.Background(), &TestJob{ID: "cancel-cleanup"}, "cc"); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+
+	popped, token, _, err := driver.PopCtxReserved(context.Background(), "cc")
+	if err != nil || popped == nil || token.IsZero() {
+		t.Fatalf("pop: token=%+v err=%v", token, err)
+	}
+
+	// (1) A pre-cancelled ctx is honoured (proves we need the fresh-ctx wrap).
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := driver.FailReservedCtx(cancelled, token, popped, fmt.Errorf("timeout"), "cc"); err == nil {
+		t.Fatalf("FailReservedCtx with cancelled ctx: expected ctx.Err, got nil")
+	} else if !errors.Is(err, context.Canceled) {
+		t.Fatalf("FailReservedCtx with cancelled ctx: got %v, want context.Canceled", err)
+	}
+
+	// Row must still be in jobs (the cancelled ctx aborted before any
+	// write). This is the trap the pre-fix worker fell into.
+	var jobs int
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE queue = ?", "cc").Scan(&jobs); err != nil {
+		t.Fatalf("count jobs after cancelled fail: %v", err)
+	}
+	if jobs != 1 {
+		t.Errorf("jobs row count after cancelled fail = %d, want 1 (write should have been aborted)", jobs)
+	}
+
+	// (2) A fresh ctx (the kind the worker's failJob constructs) lets
+	// the cleanup write complete despite the original ctx being dead.
+	freshCtx, freshCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer freshCancel()
+	if err := driver.FailReservedCtx(freshCtx, token, popped, fmt.Errorf("timeout"), "cc"); err != nil {
+		t.Fatalf("FailReservedCtx with fresh ctx: %v", err)
+	}
+
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE queue = ?", "cc").Scan(&jobs); err != nil {
+		t.Fatalf("count jobs after fresh-ctx fail: %v", err)
+	}
+	if jobs != 0 {
+		t.Errorf("jobs row not removed by fresh-ctx fail; rows=%d", jobs)
+	}
+	var failed int
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM failed_jobs WHERE queue = ?", "cc").Scan(&failed); err != nil {
+		t.Fatalf("count failed_jobs: %v", err)
+	}
+	if failed != 1 {
+		t.Errorf("failed_jobs not written by fresh-ctx fail; rows=%d", failed)
+	}
+}
+
+// TestWorker_TimedOutHandlerLandsInFailedJobs is the end-to-end variant
+// of the previous test: drive the worker through the per-job timeout
+// branch in processJob and verify the row lands in failed_jobs. The
+// only way this can pass is if failJob detaches the cleanup write from
+// the now-dead jobCtx.
+func TestWorker_TimedOutHandlerLandsInFailedJobs(t *testing.T) {
+	saveAndRestoreSigningState(t)
+	SetSigningKey(nil)
+
+	driver, cleanup := newSQLiteQueueDB(t)
+	defer cleanup()
+
+	if err := driver.PushCtx(context.Background(), &TestJob{ID: "to-fail"}, "to"); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+
+	// Handler that blocks past the per-job timeout. The worker's
+	// processJob will fire the jobCtx-timeout branch and route the
+	// failure into handleJobFailure -> failJob with an already-dead
+	// ctx. failJob must construct a fresh ctx for the cleanup write.
+	handler := func(job Job) error {
+		// Sleep well past the per-job timeout set below.
+		time.Sleep(500 * time.Millisecond)
+		return nil
+	}
+
+	w := NewWorker(driver, "to", handler,
+		WithMaxRetries(1),                // first failure is terminal
+		WithTimeout(50*time.Millisecond), // forces the jobCtx-timeout branch
+		WithBackoff(func(int) time.Duration { return 0 }),
+		WithWorkerLogger(nullLogger{}),
+	)
+	w.ctx, w.cancel = context.WithCancel(context.Background())
+	defer w.cancel()
+
+	// Reduce defaultHandlerKillCeiling so drainHandler does not stall the test.
+	saved := defaultHandlerKillCeiling
+	defaultHandlerKillCeiling = 200 * time.Millisecond
+	defer func() { defaultHandlerKillCeiling = saved }()
+
+	if err := w.processJob(); err == nil {
+		t.Fatalf("processJob: expected timeout error, got nil")
+	}
+
+	var jobs, failed int
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE queue = ?", "to").Scan(&jobs); err != nil {
+		t.Fatalf("count jobs: %v", err)
+	}
+	if jobs != 0 {
+		t.Errorf("timed-out job not removed from jobs; rows=%d (terminal cleanup used dead ctx?)", jobs)
+	}
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM failed_jobs WHERE queue = ?", "to").Scan(&failed); err != nil {
+		t.Fatalf("count failed_jobs: %v", err)
+	}
+	if failed != 1 {
+		t.Errorf("timed-out job not recorded in failed_jobs; rows=%d", failed)
+	}
+}
+
 // TestDatabaseDriver_RewriteQuery exercises the placeholder rewriter directly
 // so regressions are caught even if no driver-specific test runs.
 func TestDatabaseDriver_RewriteQuery(t *testing.T) {

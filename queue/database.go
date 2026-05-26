@@ -536,12 +536,20 @@ func (d *DatabaseDriver) PopCtxReserved(ctx context.Context, queueName string) (
 		return nil, ReservationToken{}, tc, fmt.Errorf("velocity/queue: failed to commit pop transaction: %w", err)
 	}
 
-	return job, ReservationToken{ID: int64(jobRecord.ID), Attempts: persistedAttempts}, tc, nil
+	return job, ReservationToken{
+		ID:         int64(jobRecord.ID),
+		Attempts:   persistedAttempts,
+		ReservedBy: d.workerID,
+	}, tc, nil
 }
 
 // AckCtx deletes the reserved row after the handler returned success.
-// Safe to call with a zero token (no-op) for symmetry with worker code
-// paths that may not have a reservation. Implements [ReservationDriver].
+// Fenced on (id, attempts, reserved_by): if the row's current state no
+// longer matches the token, the lease was reclaimed by another worker
+// (or the row has already been removed) and the method returns
+// [ErrLeaseLost] without mutating any row. Safe to call with a zero
+// token (no-op) for symmetry with worker code paths that may not have a
+// reservation. Implements [ReservationDriver].
 func (d *DatabaseDriver) AckCtx(ctx context.Context, token ReservationToken) error {
 	if token.IsZero() {
 		return nil
@@ -552,17 +560,18 @@ func (d *DatabaseDriver) AckCtx(ctx context.Context, token ReservationToken) err
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	query := d.rewriteQuery("DELETE FROM jobs WHERE id = $1")
-	if _, err := d.db.ExecContext(ctx, query, token.ID); err != nil {
+	query := d.rewriteQuery("DELETE FROM jobs WHERE id = $1 AND attempts = $2 AND reserved_by = $3")
+	res, err := d.db.ExecContext(ctx, query, token.ID, token.Attempts, token.ReservedBy)
+	if err != nil {
 		return fmt.Errorf("velocity/queue: failed to ack job: %w", err)
 	}
-	return nil
+	return assertFenced(res, "ack")
 }
 
 // ReleaseCtx clears the reservation on the row and pushes scheduled_at
 // forward by delay so the next pop after the delay will reclaim it as a
-// retry. Used when a handler returns a retryable error. Implements
-// [ReservationDriver].
+// retry. Used when a handler returns a retryable error. Fenced on
+// (id, attempts, reserved_by); see AckCtx. Implements [ReservationDriver].
 //
 // NB: this updates the existing row in place; it does NOT call
 // PushDelayedCtx. The persisted attempts counter therefore survives the
@@ -584,17 +593,21 @@ func (d *DatabaseDriver) ReleaseCtx(ctx context.Context, token ReservationToken,
 	scheduledAt := now.Add(delay)
 	query := d.rewriteQuery(`UPDATE jobs
 		SET reserved_at = NULL, reserved_by = NULL, scheduled_at = $1, updated_at = $2
-		WHERE id = $3`)
-	if _, err := d.db.ExecContext(ctx, query, scheduledAt, now, token.ID); err != nil {
+		WHERE id = $3 AND attempts = $4 AND reserved_by = $5`)
+	res, err := d.db.ExecContext(ctx, query, scheduledAt, now, token.ID, token.Attempts, token.ReservedBy)
+	if err != nil {
 		return fmt.Errorf("velocity/queue: failed to release job: %w", err)
 	}
-	return nil
+	return assertFenced(res, "release")
 }
 
 // FailReservedCtx records the job in failed_jobs and deletes the original
 // row in a single transaction. Used when a handler exhausts its retry
-// budget or opts out of retries via RetryDecider. Implements
-// [ReservationDriver].
+// budget or opts out of retries via RetryDecider. Fenced on (id,
+// attempts, reserved_by): if the delete affects zero rows, the lease
+// was reclaimed by another worker. The transaction is rolled back so no
+// failed_jobs row is written for a lease we do not own; the function
+// returns [ErrLeaseLost]. Implements [ReservationDriver].
 func (d *DatabaseDriver) FailReservedCtx(ctx context.Context, token ReservationToken, job Job, jobErr error, queueName string) error {
 	if token.IsZero() {
 		// No reservation to clean up; fall back to the bare Failed path
@@ -623,6 +636,19 @@ func (d *DatabaseDriver) FailReservedCtx(ctx context.Context, token ReservationT
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// Delete first so the fence check covers both the row removal and
+	// the failed_jobs write atomically. If the lease was reclaimed, the
+	// delete affects zero rows, we bail with ErrLeaseLost, and the
+	// rollback discards the (unwritten) failed_jobs insert.
+	deleteQuery := d.rewriteQuery("DELETE FROM jobs WHERE id = $1 AND attempts = $2 AND reserved_by = $3")
+	res, err := tx.ExecContext(ctx, deleteQuery, token.ID, token.Attempts, token.ReservedBy)
+	if err != nil {
+		return fmt.Errorf("velocity/queue: failed to delete reserved job: %w", err)
+	}
+	if err := assertFenced(res, "fail-reserved"); err != nil {
+		return err
+	}
+
 	now := time.Now()
 	insertQuery := d.rewriteQuery(
 		"INSERT INTO failed_jobs (queue, payload, exception, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
@@ -630,12 +656,27 @@ func (d *DatabaseDriver) FailReservedCtx(ctx context.Context, token ReservationT
 	if _, err := tx.ExecContext(ctx, insertQuery, queueName, string(payload), jobErr.Error(), now, now); err != nil {
 		return fmt.Errorf("velocity/queue: failed to record failed job: %w", err)
 	}
-	deleteQuery := d.rewriteQuery("DELETE FROM jobs WHERE id = $1")
-	if _, err := tx.ExecContext(ctx, deleteQuery, token.ID); err != nil {
-		return fmt.Errorf("velocity/queue: failed to delete reserved job: %w", err)
-	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("velocity/queue: failed to commit failure transaction: %w", err)
+	}
+	return nil
+}
+
+// assertFenced inspects a mutator result. RowsAffected == 0 means the
+// fencing predicate (id + attempts + reserved_by) did not match a row,
+// i.e. the lease was reclaimed by another worker (or the row was
+// deleted). Returns [ErrLeaseLost] in that case. Drivers that do not
+// report RowsAffected reliably fall through as "ok"; our backends
+// (postgres, mysql, sqlite via go-sqlite3) all support it.
+func assertFenced(res sql.Result, op string) error {
+	n, err := res.RowsAffected()
+	if err != nil {
+		// Backend cannot report rows-affected; we cannot fence safely.
+		// Surface the underlying error rather than silently succeeding.
+		return fmt.Errorf("velocity/queue: %s rows-affected unavailable: %w", op, err)
+	}
+	if n == 0 {
+		return ErrLeaseLost
 	}
 	return nil
 }

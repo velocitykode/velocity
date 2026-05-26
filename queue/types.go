@@ -105,13 +105,28 @@ type TraceAwareDriver interface {
 // must be capped by the persisted counter rather than the cache. Drivers
 // that do not persist attempts (memory) leave this field zero; the
 // worker falls back to its in-memory cache in that case.
+//
+// Attempts and ReservedBy together form a fencing token. The DB driver
+// requires both to match the row's current state on every mutator call;
+// a slow worker whose lease has expired and whose row was reclaimed by
+// another worker will see attempts advanced (or reserved_by changed) on
+// the row, and the mutator returns [ErrLeaseLost] instead of clobbering
+// the new owner's state. attempts is strictly monotonic per row (only
+// the pop path writes it, and only increases), so the tuple
+// (id, attempts, reserved_by) uniquely identifies one specific lease.
 type ReservationToken struct {
 	// ID is the row id of the reserved record. Zero means "no reservation".
 	ID int64
 	// Attempts is the post-increment value of the persisted attempts
 	// column as observed inside the reservation transaction. Zero means
 	// "driver does not persist attempts; consult the worker cache".
+	// Doubles as the monotonic component of the fencing token.
 	Attempts int
+	// ReservedBy is the worker identifier written to the row inside the
+	// reservation transaction. Combined with Attempts it fences stale
+	// tokens on AckCtx / ReleaseCtx / FailReservedCtx. Empty for
+	// drivers that do not record reserver identity.
+	ReservedBy string
 }
 
 // IsZero reports whether t represents the absence of a reservation

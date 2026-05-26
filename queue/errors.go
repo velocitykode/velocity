@@ -32,4 +32,10 @@ var (
 	// errors.Is(err, ErrPoisonJob) only need the binary "quarantined,
 	// move on" signal; the specific cause is for forensics.
 	ErrPoisonJob = errors.New("velocity/queue: poison job quarantined to failed_jobs")
+	// ErrLeaseLost is returned by reservation-aware mutator methods
+	// (AckCtx / ReleaseCtx / FailReservedCtx) when the row's current
+	// state does not match the fencing token: the lease expired and the
+	// row was reclaimed by another worker. The caller must NOT retry
+	// the mutation; the new owner is now responsible for the row.
+	ErrLeaseLost = errors.New("velocity/queue: lease lost; row reclaimed by another worker")
 )
