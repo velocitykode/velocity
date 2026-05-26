@@ -423,11 +423,26 @@ func (r *RedisDriver) Shutdown(ctx context.Context) error {
 //     TTL while no queue entry exists, so the reaper's PushIfNotExists
 //     no-ops forever. Callback lost until the TTL expires.
 //
-// Atomic Lua execution closes both windows: any error returned by the
-// EVAL/EVALSHA round trip is either "the entire script ran" or "the
-// script did not start", with no in-between state. Callers (the
-// reaper) retry on next tick; the persisted dedupe sentinel either
-// matches both halves of the operation or matches neither.
+// C-03 fb6: Lua atomicity is NOT Redis transactionality. The SET, RPUSH
+// pair runs without external interleaving but if RPUSH itself errors
+// inside the script (WRONGTYPE because the queue key was reused by
+// another caller as a string, OOM mid-script, eviction of the queue
+// list under maxmemory pressure, and any future Redis-internal RPUSH
+// error path we have not enumerated) the prior SET stands. The reaper's
+// EXISTS branch then no-ops every subsequent retry until the 7d TTL
+// expires; the callback is delayed up to 7 days or lost if the
+// underlying cause is permanent. Wrapping RPUSH in `pcall` and DEL'ing
+// the sentinel on failure makes the script transactional in the only
+// failure mode that matters: if RPUSH errors for any Redis-level
+// reason, the script clears the dedupe state in the same atomic
+// execution and returns the original error so the caller can surface
+// it. The next reaper tick retries cleanly because EXISTS is back to 0.
+//
+// `pcall` (vs. `call`) catches the Lua runtime error that the C-level
+// command would otherwise propagate up the script, letting us run the
+// DEL even though RPUSH "failed". `redis.error_reply` formats the
+// returned error so go-redis surfaces it as an ordinary command error
+// rather than a script-execution panic.
 //
 // KEYS[1] = dedupe sentinel key
 // KEYS[2] = queue list key
@@ -435,13 +450,18 @@ func (r *RedisDriver) Shutdown(ctx context.Context) error {
 // ARGV[2] = job payload (JSON bytes)
 //
 // Returns 1 when the script SET+RPUSH'd a new entry, 0 when the
-// sentinel was already present.
+// sentinel was already present, or a Redis error reply when RPUSH
+// failed (in which case the sentinel was rolled back atomically).
 const redisDedupePushScript = `
 if redis.call('EXISTS', KEYS[1]) == 1 then
   return 0
 end
 redis.call('SET', KEYS[1], '1', 'EX', ARGV[1])
-redis.call('RPUSH', KEYS[2], ARGV[2])
+local ok, err = pcall(redis.call, 'RPUSH', KEYS[2], ARGV[2])
+if not ok then
+  redis.call('DEL', KEYS[1])
+  return redis.error_reply(tostring(err))
+end
 return 1
 `
 

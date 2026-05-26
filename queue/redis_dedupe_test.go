@@ -212,3 +212,81 @@ func TestRedisDriver_PushIfNotExistsCtx_AmbiguousNetworkError(t *testing.T) {
 		t.Errorf("retry must enqueue exactly 1 payload; got %d", len(entries))
 	}
 }
+
+// TestRedisDriver_PushIfNotExistsCtx_RPUSHErrorRollsBackSentinel is the
+// C-03 fb6 regression. Lua atomicity is NOT Redis transactionality: a
+// runtime error inside `redis.call('RPUSH', ...)` raises a Lua error
+// after the prior SET has already mutated state, so without the pcall
+// wrapper the sentinel survives even though no queue entry was created.
+// The reaper's EXISTS branch would then no-op every subsequent retry
+// for the full 7d TTL.
+//
+// We trigger the failure deterministically by pre-poisoning the queue
+// key as a string. RPUSH on a key holding a string value returns
+// WRONGTYPE, which the script's `pcall` catches; the rollback DEL
+// runs in the same atomic execution, clearing the sentinel before the
+// script returns its error reply.
+//
+// Post-conditions: PushIfNotExistsCtx returns an error, the sentinel
+// is gone (so the reaper can retry), the queue key is unchanged
+// (still the poisoned string).
+func TestRedisDriver_PushIfNotExistsCtx_RPUSHErrorRollsBackSentinel(t *testing.T) {
+	saveAndRestoreSigningState(t)
+	SetSigningKey(nil)
+
+	driver, mr := newMiniRedisDriver(t)
+
+	queueKey := driver.getQueueKey("default")
+
+	// Poison: set the queue key to a string so RPUSH errors with
+	// WRONGTYPE inside the script.
+	if err := mr.Set(queueKey, "not-a-list"); err != nil {
+		t.Fatalf("seed poison key: %v", err)
+	}
+
+	job := &BatchCallbackJob{BatchID: "batch_wrongtype", Kind: CallbackThen, Name: "noop"}
+	dedupe := job.DedupeKey()
+	sentinelKey := driver.getDedupeKey(dedupe)
+
+	err := driver.PushIfNotExistsCtx(context.Background(), job, dedupe, "default")
+	if err == nil {
+		t.Fatal("expected an error when RPUSH targets a string key")
+	}
+
+	// The CRITICAL invariant: the sentinel must NOT outlive the
+	// failed push. Without the pcall+DEL pair, the SET would persist
+	// for the full 7d TTL and every subsequent reaper retry would
+	// hit the EXISTS=1 short-circuit.
+	if mr.Exists(sentinelKey) {
+		t.Fatalf("sentinel %q must be rolled back after RPUSH error; instead it survives. "+
+			"Lua atomicity is not transactionality; pcall+DEL is required.",
+			sentinelKey)
+	}
+
+	// The poisoned queue key was not corrupted further. (Sanity:
+	// RPUSH against a string never mutates the string.)
+	got, err := mr.Get(queueKey)
+	if err != nil {
+		t.Fatalf("re-read poisoned queue key: %v", err)
+	}
+	if got != "not-a-list" {
+		t.Errorf("poisoned queue key was mutated by failed RPUSH: got %q", got)
+	}
+
+	// Once the poison is cleared, the next push must succeed exactly
+	// as if no prior attempt had happened. This proves the rollback
+	// left no residual state.
+	if !mr.Del(queueKey) {
+		t.Fatalf("clear poison: key %q did not exist for delete", queueKey)
+	}
+	if err := driver.PushIfNotExistsCtx(context.Background(), job, dedupe, "default"); err != nil {
+		t.Fatalf("clean retry after rollback: %v", err)
+	}
+	if !mr.Exists(sentinelKey) {
+		t.Error("clean retry must create the sentinel")
+	}
+	entries, _ := mr.List(queueKey)
+	if len(entries) != 1 {
+		t.Errorf("clean retry must enqueue exactly 1 payload; got %d", len(entries))
+	}
+}
