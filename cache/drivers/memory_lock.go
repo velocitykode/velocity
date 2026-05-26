@@ -94,14 +94,26 @@ func NewMemoryLock(store *memoryLockStore, key string, owner string, ttl time.Du
 // Get attempts to acquire the lock. Returns true if the lock was acquired.
 // ctx is accepted for interface uniformity with RedisLock; because acquisition
 // is an in-process map update it never blocks, but a pre-cancelled ctx is
-// respected (returns false).
+// respected (returns false). Backend-error vs contention distinction is
+// not possible here (the operation is a synchronous map update with no
+// failure mode beyond ctx cancellation), but the GetWithErr surface is
+// implemented so callers compile against the full Lock interface.
 func (l *MemoryLock) Get(ctx context.Context) bool {
+	acquired, _ := l.GetWithErr(ctx)
+	return acquired
+}
+
+// GetWithErr is the error-returning variant. For an in-memory lock the
+// error is always nil; ctx cancellation surfaces as (false, nil) because
+// there is no underlying I/O that could be cancelled mid-flight -- the
+// acquire is a synchronous map update.
+func (l *MemoryLock) GetWithErr(ctx context.Context) (bool, error) {
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
-			return false
+			return false, nil
 		}
 	}
-	return l.store.acquire(l.key, l.owner, l.ttl)
+	return l.store.acquire(l.key, l.owner, l.ttl), nil
 }
 
 // Release releases the lock only if the current instance is the owner.

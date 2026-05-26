@@ -24,7 +24,31 @@ type Lock interface {
 	// Get attempts to acquire the lock. Returns true if acquired.
 	// Honors ctx cancellation: returns false if ctx is cancelled before
 	// the underlying driver completes.
+	//
+	// Get collapses backend errors and contention into a single boolean
+	// return. Callers that need to distinguish "another holder owns the
+	// key" from "Redis connection dropped / AUTH failure / OOM" MUST
+	// use GetWithErr instead. The scheduler's distributed-Locker
+	// adapter uses GetWithErr so a Redis outage surfaces as a
+	// WARN-level "skip with backend error" event instead of a silent
+	// "skip as if contended".
 	Get(ctx context.Context) bool
+
+	// GetWithErr is the error-returning variant of Get. The bool is
+	// "was the lock acquired?"; the error is non-nil iff the backend
+	// itself failed (e.g. Redis network reset, AUTH failure, OOM).
+	//
+	// Return-value contract: (true, nil) means the lock was acquired
+	// by this caller. (false, nil) means contention, another holder
+	// owns the key. (any, err != nil) means backend failure -- the
+	// bool MUST be ignored and callers MUST NOT treat the call as
+	// "lock is held by another caller", because the lock state is
+	// undefined.
+	//
+	// Drivers that do not perform I/O (memory) always return a nil
+	// error. Drivers that perform I/O (redis, database) return the
+	// underlying client error verbatim so callers can inspect it.
+	GetWithErr(ctx context.Context) (bool, error)
 
 	// Release releases the lock only if the current instance is the owner.
 	// Returns true if the lock was successfully released.

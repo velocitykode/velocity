@@ -414,10 +414,12 @@ type captureLogger struct {
 	mu  sync.Mutex
 	dbg []string
 	inf []string
+	wrn []string
 	err []string
 }
 
 func (l *captureLogger) Info(msg string, _ ...interface{})  { l.add(&l.inf, msg) }
+func (l *captureLogger) Warn(msg string, _ ...interface{})  { l.add(&l.wrn, msg) }
 func (l *captureLogger) Error(msg string, _ ...interface{}) { l.add(&l.err, msg) }
 func (l *captureLogger) Debug(msg string, _ ...interface{}) { l.add(&l.dbg, msg) }
 

@@ -37,9 +37,34 @@ func NewRedisLock(client *redis.Client, key string, owner string, ttl time.Durat
 // Get attempts to acquire the lock. Returns true if the lock was acquired.
 // The caller's ctx is propagated to the underlying Redis call so cancellation
 // aborts the SETNX in-flight rather than blocking on a slow network.
+//
+// Get collapses contention (SETNX returned false) and backend errors
+// (network reset, AUTH failure, OOM) into a single false return. Callers
+// that need to distinguish the two MUST use GetWithErr; treating every
+// false from Get as "another host owns this lock" hides Redis outages
+// behind silent skip behaviour. The scheduler's cacheLocker adapter
+// uses GetWithErr for exactly this reason.
 func (l *RedisLock) Get(ctx context.Context) bool {
+	acquired, _ := l.GetWithErr(ctx)
+	return acquired
+}
+
+// GetWithErr is the error-returning variant. The bool reports SETNX
+// outcome (true iff Redis stored the key); the error is the Redis
+// client error verbatim when the call failed. A non-nil error means
+// the SETNX result is undefined; callers MUST NOT interpret a (false,
+// err != nil) return as "another host owns the lock".
+//
+// Typical error shapes go-redis surfaces: ctx.Err() if the caller's
+// context cancels; net.OpError on dropped connections; redis.Error /
+// proto errors on AUTH / NOAUTH / OOM / READONLY. All are returned
+// verbatim so callers can inspect via errors.Is / errors.As.
+func (l *RedisLock) GetWithErr(ctx context.Context) (bool, error) {
 	result, err := l.client.SetNX(ctx, l.key, l.owner, l.ttl).Result()
-	return err == nil && result
+	if err != nil {
+		return false, err
+	}
+	return result, nil
 }
 
 // Release releases the lock only if the current instance is the owner.

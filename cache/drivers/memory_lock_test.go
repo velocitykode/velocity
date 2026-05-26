@@ -432,6 +432,48 @@ func TestMemoryLock(t *testing.T) {
 			t.Fatal("expected store2 lock to succeed (separate lock store)")
 		}
 	})
+
+	t.Run("GetWithErr", func(t *testing.T) {
+		lock := store.Lock("get-with-err")
+		defer lock.ForceRelease(ctx)
+
+		acquired, err := lock.GetWithErr(ctx)
+		if err != nil {
+			t.Fatalf("MemoryLock.GetWithErr must never return a backend error; got %v", err)
+		}
+		if !acquired {
+			t.Fatal("expected first GetWithErr() to acquire")
+		}
+
+		// Second call on same lock instance returns (false, nil) -- the
+		// lock is held by the same owner, but Get's semantics treat
+		// "already held" as "not acquired by this call" (matches Get).
+		acquired2, err := lock.GetWithErr(ctx)
+		if err != nil {
+			t.Fatalf("MemoryLock.GetWithErr must never return a backend error; got %v", err)
+		}
+		if acquired2 {
+			t.Fatal("expected second GetWithErr() to return false (already held)")
+		}
+	})
+
+	t.Run("GetWithErr_CancelledCtx", func(t *testing.T) {
+		lock := store.Lock("get-with-err-cancel")
+		defer lock.ForceRelease(ctx)
+
+		cancelled, cancel := context.WithCancel(ctx)
+		cancel()
+		acquired, err := lock.GetWithErr(cancelled)
+		// Memory backend has no I/O, so a pre-cancelled ctx returns
+		// (false, nil) -- there is no backend operation to surface a
+		// real error from.
+		if err != nil {
+			t.Fatalf("MemoryLock.GetWithErr on cancelled ctx must return nil err (no I/O); got %v", err)
+		}
+		if acquired {
+			t.Fatal("expected acquired=false on cancelled ctx")
+		}
+	})
 }
 
 // TestMemoryLock_BlockHonorsCtxCancel verifies that Block wakes on ctx cancel

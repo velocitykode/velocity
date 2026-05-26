@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -356,4 +358,154 @@ func TestJobRunInternal_NilReleaseStillBalances(t *testing.T) {
 func errIsExecNotFound(err error) bool {
 	_, ok := err.(*exec.Error)
 	return ok
+}
+
+// levelCaptureLogger collects log messages per level so a test can
+// assert that Locker.Acquire failures are routed to the right severity
+// (Debug for contention, Warn for backend outages).
+type levelCaptureLogger struct {
+	mu                sync.Mutex
+	debugs, infos     []string
+	warns, errors_    []string
+	warnKvs, debugKvs [][]any
+}
+
+func (l *levelCaptureLogger) Debug(msg string, kvs ...any) { l.add(&l.debugs, &l.debugKvs, msg, kvs) }
+func (l *levelCaptureLogger) Info(msg string, _ ...any)    { l.add(&l.infos, nil, msg, nil) }
+func (l *levelCaptureLogger) Warn(msg string, kvs ...any)  { l.add(&l.warns, &l.warnKvs, msg, kvs) }
+func (l *levelCaptureLogger) Error(msg string, _ ...any)   { l.add(&l.errors_, nil, msg, nil) }
+
+func (l *levelCaptureLogger) add(msgs *[]string, kvsOut *[][]any, msg string, kvs []any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	*msgs = append(*msgs, msg)
+	if kvsOut != nil {
+		*kvsOut = append(*kvsOut, append([]any(nil), kvs...))
+	}
+}
+
+func (l *levelCaptureLogger) Warns() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]string, len(l.warns))
+	copy(out, l.warns)
+	return out
+}
+
+func (l *levelCaptureLogger) Debugs() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]string, len(l.debugs))
+	copy(out, l.debugs)
+	return out
+}
+
+// errBackendLocker returns a non-ErrLockHeld error from Acquire to
+// simulate a backend outage (Redis network reset, AUTH failure, ...).
+type errBackendLocker struct {
+	err error
+}
+
+func (l *errBackendLocker) Acquire(_ context.Context, _ string, _ time.Duration) (Lock, error) {
+	return nil, l.err
+}
+
+// TestRunDueJobs_BackendErrorLogsAsWarn is the canonical HIGH C-04-fb4
+// regression on the scheduler side: a backend outage from Locker.Acquire
+// must surface at Warn level (with the underlying error in the kvs)
+// instead of being collapsed into the quiet-contention Debug path.
+// Pre-fix every acquire error was logged at Debug, indistinguishable
+// from "another host owns the lock".
+func TestRunDueJobs_BackendErrorLogsAsWarn(t *testing.T) {
+	t.Parallel()
+
+	loggerHits := &levelCaptureLogger{}
+	s := New()
+	s.SetLogger(loggerHits)
+	// A non-ErrLockHeld error must route to Warn.
+	backendErr := errors.New("redis: connection reset by peer")
+	s.SetLocker(&errBackendLocker{err: backendErr})
+	cron := fmt.Sprintf("%d * * * *", time.Now().Minute())
+	s.Named("job.a", func() {}).Cron(cron).OnOneServer()
+
+	s.runDueJobs()
+	s.runWg.Wait()
+
+	warns := loggerHits.Warns()
+	if len(warns) == 0 {
+		t.Fatal("backend error must produce a Warn log; got 0 warnings")
+	}
+	if !strings.Contains(warns[0], "Acquire backend error") {
+		t.Fatalf("warn message should name the failure; got %q", warns[0])
+	}
+	// Acquire-failure Debug logs must NOT fire for backend errors --
+	// pre-fix, the scheduler emitted Debug "lock held or shutting
+	// down" for every error including backend outages, which was the
+	// regression.
+	for _, d := range loggerHits.Debugs() {
+		if strings.Contains(d, "Acquire") || strings.Contains(d, "lock") {
+			t.Errorf("acquire-related Debug should NOT fire on backend error; saw %q", d)
+		}
+	}
+}
+
+// TestRunDueJobs_ContentionLogsAsDebug verifies the converse: when
+// Acquire returns ErrLockHeld (healthy contention, another host is
+// running the job), the log line stays at Debug -- otherwise a normal
+// HA pair would spam Warn at every tick on the loser side.
+func TestRunDueJobs_ContentionLogsAsDebug(t *testing.T) {
+	t.Parallel()
+
+	loggerHits := &levelCaptureLogger{}
+	s := New()
+	s.SetLogger(loggerHits)
+	s.SetLocker(&errBackendLocker{err: ErrLockHeld})
+	cron := fmt.Sprintf("%d * * * *", time.Now().Minute())
+	s.Named("job.b", func() {}).Cron(cron).OnOneServer()
+
+	s.runDueJobs()
+	s.runWg.Wait()
+
+	if w := loggerHits.Warns(); len(w) != 0 {
+		t.Errorf("ErrLockHeld must NOT Warn; got %d warnings: %v", len(w), w)
+	}
+	debugs := loggerHits.Debugs()
+	found := false
+	for _, d := range debugs {
+		if strings.Contains(d, "distributed lock held") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected Debug log naming distributed-lock-held; got %v", debugs)
+	}
+}
+
+// TestRunDueJobs_BackendErrorBalancesRunWg pins that runWg is still
+// drained on the backend-error path (same invariant as
+// TestRunDueJobs_RunWgBalancedOnAcquireFailure, but for the non-
+// ErrLockHeld branch we just routed to Warn).
+func TestRunDueJobs_BackendErrorBalancesRunWg(t *testing.T) {
+	t.Parallel()
+
+	s := New()
+	s.SetLogger(&levelCaptureLogger{})
+	s.SetLocker(&errBackendLocker{err: errors.New("redis: io: read tcp connection closed")})
+	cron := fmt.Sprintf("%d * * * *", time.Now().Minute())
+	s.Named("job.a", func() {}).Cron(cron).OnOneServer()
+	s.Named("job.b", func() {}).Cron(cron).WithoutOverlapping()
+
+	s.runDueJobs()
+
+	done := make(chan struct{})
+	go func() {
+		s.runWg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runWg leaked on backend-error path")
+	}
 }

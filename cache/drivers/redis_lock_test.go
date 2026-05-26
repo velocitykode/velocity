@@ -384,6 +384,62 @@ func TestRedisLock(t *testing.T) {
 			t.Errorf("maxConcurrent = %d, want 1 (only one goroutine should hold the lock at a time)", atomic.LoadInt64(&maxConcurrent))
 		}
 	})
+
+	t.Run("GetWithErr_Acquire", func(t *testing.T) {
+		store, _, cleanup := setupRedisForLock(t)
+		defer cleanup()
+
+		lock := store.Lock("get-with-err")
+		acquired, err := lock.GetWithErr(ctx)
+		if err != nil {
+			t.Fatalf("healthy Redis must return nil err, got %v", err)
+		}
+		if !acquired {
+			t.Error("expected acquired=true on first GetWithErr")
+		}
+	})
+
+	t.Run("GetWithErr_Contention", func(t *testing.T) {
+		store, _, cleanup := setupRedisForLock(t)
+		defer cleanup()
+
+		l1 := store.Lock("contended")
+		if !l1.Get(ctx) {
+			t.Fatal("first acquire failed")
+		}
+		l2 := store.Lock("contended")
+		acquired, err := l2.GetWithErr(ctx)
+		// Contention is (false, nil) -- the SETNX command succeeded
+		// but didn't set the key. Backend error must NOT leak here.
+		if err != nil {
+			t.Fatalf("contention must return nil err, got %v", err)
+		}
+		if acquired {
+			t.Error("expected acquired=false on contended acquire")
+		}
+	})
+
+	t.Run("GetWithErr_BackendDown", func(t *testing.T) {
+		// This is the C-04-fb4 canonical regression: a Redis outage
+		// must surface as (any, err != nil), NOT (false, nil).
+		// Otherwise callers cannot distinguish "another holder has
+		// the lock" (healthy) from "Redis is down" (outage).
+		store, mr, cleanup := setupRedisForLock(t)
+		defer cleanup()
+
+		lock := store.Lock("backend-down")
+		// Tear down the Redis server mid-flight to force a backend
+		// error on the next SETNX.
+		mr.Close()
+
+		_, err := lock.GetWithErr(ctx)
+		if err == nil {
+			t.Fatal("backend down must surface as non-nil error from GetWithErr")
+		}
+		// We don't assert the exact error string -- go-redis wraps
+		// net errors differently across versions. The contract is
+		// "non-nil error".
+	})
 }
 
 // TestRedisLock_GetHonorsCtxCancel verifies that a cancelled ctx propagates into

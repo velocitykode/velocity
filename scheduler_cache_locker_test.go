@@ -410,3 +410,131 @@ func TestInstallSchedulerLocker_NilArgsAreSafe(t *testing.T) {
 	installSchedulerLocker(scheduler.New(), nil, "redis", logger)
 	installSchedulerLocker(nil, newSharedMemoryCache(t), "redis", logger)
 }
+
+// erringLock is a cache.Lock whose GetWithErr returns a configurable
+// backend error. Used to drive the cacheLocker.Acquire backend-error
+// path without depending on a real Redis instance.
+type erringLock struct {
+	err error
+}
+
+func (l *erringLock) Get(ctx context.Context) bool {
+	acq, _ := l.GetWithErr(ctx)
+	return acq
+}
+func (l *erringLock) GetWithErr(_ context.Context) (bool, error) { return false, l.err }
+func (l *erringLock) Release(_ context.Context) bool             { return true }
+func (l *erringLock) Run(_ context.Context, _ func()) error      { return l.err }
+func (l *erringLock) Block(_ context.Context, _ time.Duration, _ func()) error {
+	return l.err
+}
+func (l *erringLock) Owner() string                        { return "erring" }
+func (l *erringLock) ForceRelease(_ context.Context) error { return l.err }
+
+// errLockManager embeds *cache.Manager so it satisfies cache.CacheManager
+// without re-stubbing 30 methods, then overrides Lock to return an
+// erringLock. Used to exercise the backend-error branch of
+// cacheLocker.Acquire.
+type errLockManager struct {
+	*cache.Manager
+	backendErr error
+}
+
+func (m *errLockManager) Lock(_ string, _ ...time.Duration) cache.Lock {
+	return &erringLock{err: m.backendErr}
+}
+
+// TestCacheLocker_Acquire_BackendErrorIsNotErrLockHeld is the canonical
+// HIGH regression for C-04-fb4: a Redis backend error (network reset,
+// AUTH failure, OOM) must NOT be wrapped as scheduler.ErrLockHeld.
+// Without the fix, the scheduler treated every Redis outage as healthy
+// contention and silently skipped every guarded job for the duration
+// of the outage with no operator-visible signal.
+func TestCacheLocker_Acquire_BackendErrorIsNotErrLockHeld(t *testing.T) {
+	t.Parallel()
+
+	backendErr := errors.New("redis: connection reset by peer")
+	cm := &errLockManager{
+		Manager:    newSharedMemoryCache(t),
+		backendErr: backendErr,
+	}
+
+	l := newCacheLocker(cm)
+	_, err := l.Acquire(context.Background(), "key", time.Minute)
+	if err == nil {
+		t.Fatal("expected error on backend failure, got nil")
+	}
+	if errors.Is(err, scheduler.ErrLockHeld) {
+		t.Fatalf("backend error must NOT wrap ErrLockHeld; got %v", err)
+	}
+	if !errors.Is(err, backendErr) {
+		t.Fatalf("expected wrapped backend error %q; got %v", backendErr, err)
+	}
+}
+
+// TestCacheLocker_Acquire_ContentionIsErrLockHeld pins the converse
+// case: an honest (false, nil) GetWithErr return must surface as
+// ErrLockHeld so the scheduler's quiet-contention path fires (Debug
+// log, no WARN).
+func TestCacheLocker_Acquire_ContentionIsErrLockHeld(t *testing.T) {
+	t.Parallel()
+
+	cm := newSharedMemoryCache(t)
+	l := newCacheLocker(cm)
+	ctx := context.Background()
+
+	// Acquire first to set up contention.
+	if _, err := l.Acquire(ctx, "key", time.Minute); err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+	_, err := l.Acquire(ctx, "key", time.Minute)
+	if err == nil {
+		t.Fatal("expected ErrLockHeld on contested acquire")
+	}
+	if !errors.Is(err, scheduler.ErrLockHeld) {
+		t.Fatalf("contention must wrap ErrLockHeld; got %v", err)
+	}
+}
+
+// TestCacheLocker_FencingTokenDocumentedAsProcessLocal pins the
+// documentation contract change (MEDIUM C-04-fb4): tokens are
+// process-local and NOT safe for cross-process fencing. Two cacheLocker
+// instances backed by the SAME cm produce overlapping token sequences
+// because the underlying atomic counter resets on each process restart
+// (here, on each test process). This test does not assert a specific
+// number; it asserts that tokens are NOT a function of the shared
+// backend's state, which is the property a cross-process fencing
+// scheme would need.
+func TestCacheLocker_FencingTokenDocumentedAsProcessLocal(t *testing.T) {
+	t.Parallel()
+
+	cm := newSharedMemoryCache(t)
+	l1 := newCacheLocker(cm)
+	l2 := newCacheLocker(cm)
+
+	a, err := l1.Acquire(context.Background(), "k1", time.Minute)
+	if err != nil {
+		t.Fatalf("l1 acquire k1: %v", err)
+	}
+	b, err := l2.Acquire(context.Background(), "k2", time.Minute)
+	if err != nil {
+		t.Fatalf("l2 acquire k2: %v", err)
+	}
+
+	// Both came from the same package-level counter; ordering is
+	// monotonic across the two adapters. The point of the assertion is
+	// "tokens come from a shared in-process source," not from per-key
+	// or per-backend state -- consistent with the documented
+	// process-local semantic.
+	if a.FencingToken() == b.FencingToken() {
+		t.Fatalf("tokens from sequential acquires should differ; got %d == %d", a.FencingToken(), b.FencingToken())
+	}
+	// Both tokens should be small positive ints (counter starts from a
+	// process-local zero, no cross-process state). We can't pin an
+	// exact value because parallel tests share the counter, but we can
+	// pin "well below uint64 max -- not derived from a hash or
+	// timestamp."
+	if a.FencingToken() > 1_000_000_000 {
+		t.Errorf("unexpectedly large fencing token %d; expected process-local counter, not external state", a.FencingToken())
+	}
+}

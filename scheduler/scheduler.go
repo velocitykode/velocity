@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"runtime"
 	"strings"
@@ -131,9 +132,12 @@ func (s *Scheduler) dispatchEvent(ctx context.Context, event interface{}) {
 
 // Logger is the minimal logging interface used by the scheduler. The
 // framework's log.Logger satisfies this shape; keeping the contract local
-// allows scheduler/ to remain a log-free leaf.
+// allows scheduler/ to remain a log-free leaf. Warn was added when the
+// distributed-Locker wiring needed to distinguish quiet contention
+// (Debug) from backend outages (Warn); see logAcquireFailure.
 type Logger interface {
 	Info(msg string, keysAndValues ...interface{})
+	Warn(msg string, keysAndValues ...interface{})
 	Error(msg string, keysAndValues ...interface{})
 	Debug(msg string, keysAndValues ...interface{})
 }
@@ -145,6 +149,7 @@ type Logger interface {
 type nullLogger struct{}
 
 func (nullLogger) Info(string, ...interface{})  {}
+func (nullLogger) Warn(string, ...interface{})  {}
 func (nullLogger) Error(string, ...interface{}) {}
 func (nullLogger) Debug(string, ...interface{}) {}
 
@@ -594,11 +599,14 @@ func (s *Scheduler) runDueJobs() {
 			key := job.oneServerLockKey(now)
 			lk, err := locker.Acquire(runCtx, key, oneServerTTL)
 			if err != nil {
-				// Either contention (ErrLockHeld) or runCtx cancel:
-				// in both cases this host is not running this tick.
-				// Balance the runWg.Add taken above.
+				// Balance the runWg.Add taken above on every skip
+				// path. ErrLockHeld is quiet contention; anything else
+				// is a backend outage / misconfiguration / ctx cancel
+				// and operators need to see it at WARN so a Redis
+				// outage doesn't look identical to "another host is
+				// healthily running this".
 				s.runWg.Done()
-				s.log().Debug("Skipping OnOneServer job (lock held or shutting down)", "name", jobName, "key", key, "error", err)
+				logAcquireFailure(s.log(), "OnOneServer", jobName, key, err)
 				continue
 			}
 			oneServerLock = lk
@@ -608,13 +616,11 @@ func (s *Scheduler) runDueJobs() {
 			ttl := job.effectiveOverlapTTL(overlapTTL)
 			lk, err := locker.Acquire(runCtx, key, ttl)
 			if err != nil {
-				// Job already running somewhere, or runCtx cancelled
-				// during the acquire. Leave any OnOneServer lock held
-				// (its key is minute-scoped + TTL-bounded). Balance
-				// the runWg.Add taken above.
+				// Same level-split as above. Leave any OnOneServer
+				// lock held (its key is minute-scoped + TTL-bounded).
 				_ = oneServerLock
 				s.runWg.Done()
-				s.log().Debug("Skipping WithoutOverlapping job (lock held or shutting down)", "name", jobName, "key", key, "error", err)
+				logAcquireFailure(s.log(), "WithoutOverlapping", jobName, key, err)
 				continue
 			}
 			overlapLock = lk
@@ -690,4 +696,33 @@ func (s *Scheduler) Jobs() []*Job {
 	jobs := make([]*Job, len(s.jobs))
 	copy(jobs, s.jobs)
 	return jobs
+}
+
+// logAcquireFailure picks the right log level for a Locker.Acquire
+// error: ErrLockHeld is healthy contention (Debug, normal at every
+// tick when another host is running the job) and everything else is a
+// backend outage / runCtx cancel / misconfiguration that ops need to
+// see (Warn). Pre-fix this code path used Debug for everything, which
+// hid Redis outages behind silent skip behaviour identical to
+// "another host owns the lock".
+//
+// The kind argument names which guard (OnOneServer or
+// WithoutOverlapping) failed so the log line is actionable.
+func logAcquireFailure(log Logger, kind, jobName, key string, err error) {
+	if errors.Is(err, ErrLockHeld) {
+		log.Debug(
+			"Skipping job: distributed lock held",
+			"guard", kind,
+			"name", jobName,
+			"key", key,
+		)
+		return
+	}
+	log.Warn(
+		"Skipping job: Locker.Acquire backend error",
+		"guard", kind,
+		"name", jobName,
+		"key", key,
+		"error", err,
+	)
 }
