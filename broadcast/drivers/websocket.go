@@ -147,37 +147,81 @@ func NewWebSocketDriver(config websocket.Config, opts ...DriverOption) *WebSocke
 // the message is either dropped (default) or the call blocks for up to
 // blockingSendTO (configured via WithBlockingSend). Dropped messages are
 // counted and the onDrop callback (if any) is invoked.
+//
+// Per audit M-28 the fan-out runs in two phases: snapshot the subscriber set
+// under the channels-map RLock, release the lock, then iterate the local
+// snapshot and write. Holding the RLock across writes lets a single slow
+// client gate every concurrent subscribe / unsubscribe / broadcast on the
+// affected channel for the full blockingSendTO; the snapshot-then-send
+// pattern keeps the lock window O(subscribers) memcpy rather than
+// O(subscribers * write timeout).
 func (d *WebSocketDriver) Broadcast(channels []string, event string, data interface{}) error {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	for _, channel := range channels {
-		if clients, exists := d.channels[channel]; exists {
-			for _, client := range clients {
-				d.sendOrDrop(client, channel, event, data)
-			}
-		}
+	targets := d.snapshotTargets(channels, "")
+	for _, t := range targets {
+		d.sendOrDrop(t.client, t.channel, event, data)
 	}
-
 	return nil
 }
 
-// BroadcastExcept broadcasts to all except specified socket
+// BroadcastExcept broadcasts to all except specified socket. Same two-phase
+// fan-out as Broadcast - see that method for the lock-hold rationale.
 func (d *WebSocketDriver) BroadcastExcept(channels []string, event string, data interface{}, socketID string) error {
+	targets := d.snapshotTargets(channels, socketID)
+	for _, t := range targets {
+		d.sendOrDrop(t.client, t.channel, event, data)
+	}
+	return nil
+}
+
+// broadcastTarget pairs a snapshot subscriber with the channel under which it
+// was selected, so the eventual send still attributes drops/onDrop to the
+// originating channel.
+type broadcastTarget struct {
+	client  *websocket.Client
+	channel string
+}
+
+// snapshotTargets walks the channels-map under d.mu.RLock and returns the
+// flattened list of (client, channel) tuples to receive the broadcast. When
+// exceptSocketID is non-empty, the matching socket is skipped at snapshot
+// time. The caller then iterates this slice OUTSIDE the lock so a slow
+// websocket.Client.Send recipient cannot block concurrent
+// subscribe/unsubscribe/broadcast traffic on the same channel.
+//
+// A client that was selected here but unsubscribes before its send runs is
+// harmless: sendOrDrop pushes onto client.Send which is still a live channel
+// (Unsubscribe does not close it - the websocket goroutine owns close), so
+// the write either succeeds and is GC'd with the closed connection, or
+// times out under the blocking-send path. Either way the snapshot lifecycle
+// does not produce stale-pointer crashes.
+func (d *WebSocketDriver) snapshotTargets(channels []string, exceptSocketID string) []broadcastTarget {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	for _, channel := range channels {
-		if clients, exists := d.channels[channel]; exists {
-			for id, client := range clients {
-				if id != socketID {
-					d.sendOrDrop(client, channel, event, data)
-				}
-			}
-		}
+	// Pre-size to the sum of channel subscriber counts so the common case
+	// avoids a re-allocation. Reading len(d.channels[c]) under RLock is safe.
+	total := 0
+	for _, c := range channels {
+		total += len(d.channels[c])
+	}
+	if total == 0 {
+		return nil
 	}
 
-	return nil
+	targets := make([]broadcastTarget, 0, total)
+	for _, c := range channels {
+		clients, exists := d.channels[c]
+		if !exists {
+			continue
+		}
+		for id, client := range clients {
+			if exceptSocketID != "" && id == exceptSocketID {
+				continue
+			}
+			targets = append(targets, broadcastTarget{client: client, channel: c})
+		}
+	}
+	return targets
 }
 
 // sendOrDrop attempts to deliver a message to client's Send channel. When a
