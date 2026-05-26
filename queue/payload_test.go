@@ -428,25 +428,26 @@ func TestC01_DatabaseDriver_PoisonRowSurvivesCallerCancellation(t *testing.T) {
 	}
 
 	// Install the test hook: cancel the caller ctx exactly once, AFTER
-	// quarantine writes succeed and BEFORE tx.Commit(). Restore on exit so
-	// sibling tests are unaffected.
+	// quarantine writes succeed and BEFORE tx.Commit(). setPopQuarantineCommitHookForTest
+	// returns a restore func that we register with t.Cleanup so sibling
+	// tests are unaffected and so the hook is cleared even on early
+	// t.Fatalf paths.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel() // safety net; the hook also calls cancel.
 
-	prevHook := popQuarantineCommitHook
-	t.Cleanup(func() { popQuarantineCommitHook = prevHook })
 	var hookFired atomic.Int32
-	popQuarantineCommitHook = func() {
-		// Re-entrancy guard: PopCtxWithTrace must invoke the hook at most
-		// once per call. If a future refactor accidentally invokes it
-		// twice the second call will already see hookFired > 0 and we
-		// surface the bug rather than double-cancel.
+	restore := setPopQuarantineCommitHookForTest(func() {
+		// Re-entrancy guard: PopCtxWithTrace must invoke the hook at
+		// most once per call. If a future refactor accidentally invokes
+		// it twice the second call sees hookFired > 0 and we surface
+		// the bug rather than double-cancel.
 		if hookFired.Add(1) != 1 {
 			t.Errorf("popQuarantineCommitHook fired more than once: %d", hookFired.Load())
 			return
 		}
 		cancel()
-	}
+	})
+	t.Cleanup(restore)
 
 	job, popErr := driver.PopCtx(ctx, "cancel-test")
 	if popErr == nil {
@@ -480,8 +481,10 @@ func TestC01_DatabaseDriver_PoisonRowSurvivesCallerCancellation(t *testing.T) {
 	// Symmetry check: PopCtx on a fresh ctx (no hook) must succeed in
 	// quarantining the row. This proves the caller-cancel branch is not a
 	// permanent quarantine-killer; the worker's normal retry behaviour
-	// heals it on the next pop.
-	popQuarantineCommitHook = nil
+	// heals it on the next pop. We restore the hook to nil now (the
+	// t.Cleanup-registered restore will run again on exit, which is fine:
+	// reinstalling the same prior state twice is idempotent).
+	restore()
 	retryJob, retryErr := driver.PopCtx(context.Background(), "cancel-test")
 	if retryErr == nil {
 		t.Fatalf("retry pop succeeded on poison row: job=%T", retryJob)

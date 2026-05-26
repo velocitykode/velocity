@@ -438,14 +438,32 @@ func (d *DatabaseDriver) Shutdown(ctx context.Context) error {
 }
 
 // popQuarantineCommitHook is a TEST-ONLY hook fired between successful
-// quarantine writes and tx.Commit() inside PopCtxWithTrace. When non-nil it
-// is invoked exactly once per quarantine path; tests use it to inject a
-// caller-ctx cancel deterministically and assert the safe-rollback branch.
-// Production code never sets this; the var lives in this file so tests in
-// the same package can swap it under t.Cleanup. Reads use a plain load
-// because writes are confined to test goroutines that already serialise
-// via t.Cleanup.
-var popQuarantineCommitHook func()
+// quarantine writes and tx.Commit() inside [DatabaseDriver.quarantineAndReturn].
+// When set it is invoked exactly once per quarantine path; tests use it to
+// inject a caller-ctx cancel deterministically and assert the safe-rollback
+// branch.
+//
+// Held in an atomic.Pointer so concurrent installs/resets (parallel tests
+// in the same binary) cannot race with concurrent quarantine reads. The
+// zero value (nil pointer) is the production behaviour: the read path
+// loads, sees nil, skips the hook, and goes straight to tx.Commit().
+//
+// Tests install via [setPopQuarantineCommitHookForTest] which returns a
+// restore func suitable for t.Cleanup. Production code never sets this.
+var popQuarantineCommitHook atomic.Pointer[func()]
+
+// setPopQuarantineCommitHookForTest installs hook as the package-level
+// pop-quarantine commit hook and returns a restore func that reinstates
+// whatever pointer was there before. TEST-ONLY: production code must not
+// call this. The restore func is idempotent.
+func setPopQuarantineCommitHookForTest(hook func()) (restore func()) {
+	var newPtr *func()
+	if hook != nil {
+		newPtr = &hook
+	}
+	prev := popQuarantineCommitHook.Swap(newPtr)
+	return func() { popQuarantineCommitHook.Store(prev) }
+}
 
 // quarantineAndReturn moves a poisoned row to failed_jobs, commits the tx,
 // and returns the appropriate (Job, TraceContext, error) tuple for
@@ -473,8 +491,8 @@ func (d *DatabaseDriver) quarantineAndReturn(tx *sql.Tx, tc TraceContext, rec Jo
 		// Rollback leaves the row in place to be retried.
 		return nil, tc, errors.Join(poisonErr, qErr)
 	}
-	if hook := popQuarantineCommitHook; hook != nil {
-		hook()
+	if hookPtr := popQuarantineCommitHook.Load(); hookPtr != nil {
+		(*hookPtr)()
 	}
 	if commitErr := tx.Commit(); commitErr != nil {
 		// Commit failed (typically: caller's ctx was cancelled between

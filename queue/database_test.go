@@ -15,20 +15,32 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// newSQLiteQueueDB spins up an in-memory SQLite database with the jobs and
-// failed_jobs tables the DatabaseDriver expects. It returns the driver pointed
-// at that DB plus a cleanup func.
+// newSQLiteQueueDB spins up a per-test SQLite database with the jobs and
+// failed_jobs tables the DatabaseDriver expects. It returns the driver
+// pointed at that DB plus a cleanup func.
+//
+// File-backed (t.TempDir()) rather than in-memory: a context-cancelled
+// transaction inside PopCtxWithTrace causes database/sql to discard the
+// connection on which the tx was running, and SQLite in-memory databases
+// live on that single connection. After the cancel, follow-up queries open
+// a fresh connection and see an empty DB ("no such table: jobs"), which
+// flaked TestC01_DatabaseDriver_PoisonRowSurvivesCallerCancellation under
+// -race. File-backed schema survives reconnects. Each call gets a unique
+// path under t.TempDir() so parallel subtests cannot collide.
 func newSQLiteQueueDB(t *testing.T) (*DatabaseDriver, func()) {
 	t.Helper()
 
-	// Shared cache so concurrent connections see the same in-memory DB.
-	db, err := sql.Open("sqlite3", "file::memory:?cache=shared")
+	dsn := "file:" + t.TempDir() + "/queue.db?_busy_timeout=5000&_journal_mode=WAL"
+	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	// A single connection serialises access which keeps SQLite happy under
-	// "racing" workers. Scaling the pool is a DB-level concern, not the
-	// pop-correctness concern the test is validating.
+	// Cap the pool at 1 connection. The DatabaseDriver pop path holds d.mu
+	// across BeginTx; with multiple conns SQLite can throw "database is
+	// locked" on WAL writers. A single connection serialises access at the
+	// sql.DB layer instead of relying on SQLite's lock manager. Scaling the
+	// pool is a DB-level concern, not the pop-correctness concern these
+	// tests are validating.
 	db.SetMaxOpenConns(1)
 
 	schema := []string{
