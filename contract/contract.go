@@ -49,6 +49,32 @@ type CSRFProtector interface {
 	Middleware(next http.Handler) http.Handler
 }
 
+// CSRFTokenRotator is the contract the auth subsystem uses to keep CSRF
+// tokens aligned with the session lifecycle. Implemented by *csrf.CSRF.
+//
+// Session guards MUST call RotateToken after Session.Regenerate (Login,
+// privilege change, remember-cookie revival) so the token bound to the
+// old session id is gone and the new id has a fresh token. They MUST
+// call RevokeToken before Session.Invalidate (Logout) so the token does
+// not survive the session. Without this, a captured cookie+token pair
+// would remain valid for the store TTL (default 24h) even after the
+// user logs out, and a token minted under a pre-login session id would
+// persist as an orphan after regenerate.
+//
+// Implementations MUST be safe for concurrent use. A best-effort
+// implementation is acceptable: a transient store failure should not
+// abort Login/Logout, but it should be observable (logged or eventful)
+// because each surviving token weakens the invariant.
+type CSRFTokenRotator interface {
+	// RotateToken deletes any token bound to oldID and mints a fresh one
+	// bound to newID. oldID may be empty (first login after a fresh
+	// session). newID MUST be non-empty.
+	RotateToken(oldID, newID string) error
+	// RevokeToken deletes the token bound to id. A missing entry is not
+	// an error.
+	RevokeToken(id string) error
+}
+
 // ViewEngine defines the contract for the view/rendering layer.
 // Implemented by *view.Engine.
 type ViewEngine interface {

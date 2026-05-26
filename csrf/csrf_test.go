@@ -875,3 +875,80 @@ func TestSessionIDResolver_ErrorPropagation(t *testing.T) {
 		t.Fatalf("expected 419, got %d", w.Code)
 	}
 }
+
+// TestRotateToken_DeletesOldAndMintsNew pins the contract that the H-02
+// session-guard hook depends on: after RotateToken(old, new), the old
+// session id has no entry in the store, and the new id has a fresh,
+// non-empty token. Without this, an orphan token bound to the pre-login
+// session id would survive Session.Regenerate.
+func TestRotateToken_DeletesOldAndMintsNew(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.SessionIDResolver = testCookieResolver("session_id")
+	cfg.Store = stores.NewSessionStore()
+	c := New(cfg)
+
+	const oldID = "pre-login-id"
+	const newID = "post-regenerate-id"
+
+	seed, err := GenerateToken()
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+	if err := c.config.Store.Set(oldID, seed); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := c.RotateToken(oldID, newID); err != nil {
+		t.Fatalf("RotateToken: %v", err)
+	}
+
+	if _, err := c.config.Store.Get(oldID); err == nil {
+		t.Error("RotateToken did not delete the old session's token; orphan remains in the store")
+	}
+
+	got, err := c.config.Store.Get(newID)
+	if err != nil {
+		t.Fatalf("RotateToken did not mint a new token under newID: %v", err)
+	}
+	if got == "" {
+		t.Error("RotateToken stored empty token for newID")
+	}
+	if got == seed {
+		t.Error("RotateToken reused the old token under newID; fresh token expected")
+	}
+}
+
+// TestRevokeToken_DeletesEntry pins the contract that Logout depends on:
+// after RevokeToken(id), the token bound to id is gone from the store.
+// Without this, a captured cookie+token pair would remain valid for the
+// store TTL (24h default) past logout.
+func TestRevokeToken_DeletesEntry(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.SessionIDResolver = testCookieResolver("session_id")
+	cfg.Store = stores.NewSessionStore()
+	c := New(cfg)
+
+	const id = "live-session"
+	token, err := GenerateToken()
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+	if err := c.config.Store.Set(id, token); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := c.RevokeToken(id); err != nil {
+		t.Fatalf("RevokeToken: %v", err)
+	}
+	if _, err := c.config.Store.Get(id); err == nil {
+		t.Error("RevokeToken did not delete the token; it must be unreachable after logout")
+	}
+
+	if err := c.RevokeToken("never-existed"); err != nil {
+		t.Errorf("RevokeToken on missing id must be a no-op, got %v", err)
+	}
+
+	if err := c.RevokeToken(""); err != nil {
+		t.Errorf("RevokeToken with empty id must be a no-op, got %v", err)
+	}
+}

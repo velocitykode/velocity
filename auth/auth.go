@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/clientip"
 )
 
@@ -223,6 +224,14 @@ type Manager struct {
 	// Nil means "no proxies trusted" (forwarded headers are ignored).
 	trustedProxies []*net.IPNet
 
+	// csrfRotator hooks the CSRF token store to the session lifecycle so
+	// Login regenerates / mints the per-session token, Logout revokes
+	// it, and the remember-cookie revival path rotates it across the
+	// recall regenerate. Set via SetCSRFTokenRotator (typically at boot
+	// once the CSRF instance is constructed). Propagates to every
+	// registered guard implementing CSRFTokenRotatorReceiver.
+	csrfRotator contract.CSRFTokenRotator
+
 	mu sync.RWMutex
 }
 
@@ -249,6 +258,7 @@ func (m *Manager) RegisterGuard(name string, guard Guard) {
 	m.guards[name] = guard
 	store := m.serverSessions
 	proxies := m.trustedProxies
+	rotator := m.csrfRotator
 	m.mu.Unlock()
 
 	if store != nil {
@@ -262,6 +272,11 @@ func (m *Manager) RegisterGuard(name string, guard Guard) {
 			// the manager's snapshot (or any sibling guard's) by
 			// mutating the list it receives.
 			r.SetTrustedProxies(clientip.CloneIPNets(proxies))
+		}
+	}
+	if rotator != nil {
+		if r, ok := guard.(CSRFTokenRotatorReceiver); ok {
+			r.SetCSRFTokenRotator(rotator)
 		}
 	}
 }
@@ -617,6 +632,50 @@ func (m *Manager) TrustedProxies() []*net.IPNet {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return clientip.CloneIPNets(m.trustedProxies)
+}
+
+// CSRFTokenRotatorReceiver is an optional capability interface implemented
+// by guards that maintain a session lifecycle and need to keep the CSRF
+// token store aligned with that lifecycle. Manager.SetCSRFTokenRotator
+// propagates the rotator to every registered guard satisfying this
+// interface so Login regenerates the bound token, Logout revokes it, and
+// the remember-cookie revival path rotates it across recall.
+//
+// Guards that have no session boundary (e.g. JWT) leave this
+// unimplemented; Manager silently skips them.
+type CSRFTokenRotatorReceiver interface {
+	SetCSRFTokenRotator(rotator contract.CSRFTokenRotator)
+}
+
+// SetCSRFTokenRotator installs a CSRF token rotator. Pass nil to remove
+// a previously installed rotator. Safe for concurrent use.
+//
+// Every registered guard implementing CSRFTokenRotatorReceiver is
+// notified immediately; guards registered later inherit the rotator at
+// registration time (see RegisterGuard).
+//
+// At boot the framework constructs the CSRF instance and calls this so
+// SessionGuard.Login rotates the per-session token alongside the session
+// id, SessionGuard.Logout revokes it before the session is invalidated,
+// and the remember-cookie revival path inside anchorRecalledUser rotates
+// the token across the recall regenerate. Without this hook, tokens
+// minted under a pre-login session id persist as orphans in the CSRF
+// store after regenerate, and tokens for the now-destroyed session
+// survive Logout for the full token-store TTL.
+func (m *Manager) SetCSRFTokenRotator(rotator contract.CSRFTokenRotator) {
+	m.mu.Lock()
+	m.csrfRotator = rotator
+	receivers := make([]CSRFTokenRotatorReceiver, 0, len(m.guards))
+	for _, g := range m.guards {
+		if r, ok := g.(CSRFTokenRotatorReceiver); ok {
+			receivers = append(receivers, r)
+		}
+	}
+	m.mu.Unlock()
+
+	for _, r := range receivers {
+		r.SetCSRFTokenRotator(rotator)
+	}
 }
 
 // ServerSessionStore returns the installed server-side session store, or

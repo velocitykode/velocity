@@ -107,6 +107,12 @@ type SessionGuard struct {
 	// to auth.DefaultAttemptFloor. Set via SetAttemptFloor or seeded
 	// from auth.Config.AttemptFloor at boot.
 	attemptFloor time.Duration
+	// csrfRotator keeps the per-session CSRF token aligned with the
+	// session lifecycle (H-02): Login rotates across Session.Regenerate,
+	// Logout revokes before Session.Invalidate, and the remember-cookie
+	// revival path rotates inside anchorRecalledUser. Nil disables
+	// rotation (tests, JWT-only configs).
+	csrfRotator contract.CSRFTokenRotator
 }
 
 // loadProvider returns the active auth.UserProvider via atomic load.
@@ -282,6 +288,33 @@ func (g *SessionGuard) getServerStore() auth.ServerSessionStore {
 	return g.serverStore
 }
 
+// SetCSRFTokenRotator wires (or removes when nil) the CSRF token
+// rotator. When set, Login rotates the CSRF token alongside the session
+// regenerate, Logout revokes the token before invalidating the session,
+// and the remember-cookie revival path inside anchorRecalledUser rotates
+// the token across the recall regenerate. Without this hook, tokens
+// minted under a pre-login session id would persist as orphans in the
+// CSRF store after Session.Regenerate, and tokens for the now-destroyed
+// session would survive Logout for the full token-store TTL (24h default).
+//
+// Manager.SetCSRFTokenRotator propagates to every registered guard via
+// the auth.CSRFTokenRotatorReceiver interface; consumers normally do not
+// need to call this directly.
+func (g *SessionGuard) SetCSRFTokenRotator(rotator contract.CSRFTokenRotator) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.csrfRotator = rotator
+}
+
+// getCSRFTokenRotator returns the installed rotator under a read lock so
+// concurrent Login / Logout / recall paths see a consistent snapshot.
+// Returns nil when none has been configured (rotation becomes a no-op).
+func (g *SessionGuard) getCSRFTokenRotator() contract.CSRFTokenRotator {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.csrfRotator
+}
+
 // logWarn emits a warn event when a logger is configured. Safe to call
 // when no logger has been installed.
 func (g *SessionGuard) logWarn(msg string, kvs ...any) {
@@ -412,11 +445,32 @@ func (g *SessionGuard) User(r *http.Request) auth.Authenticatable {
 // When no server store is wired, write failure cannot happen and the
 // rotation alone is enough.
 func (g *SessionGuard) anchorRecalledUser(r *http.Request, session auth.Session, user auth.Authenticatable) bool {
+	// Capture the pre-rotation id so the CSRF rotator (when wired) can
+	// drop any token bound to the planted id. Required to keep the
+	// session-fixation defense complete: H-02 says the CSRF token MUST
+	// follow Session.Regenerate, and this is the revival entry point
+	// reached from both User() and CheckWithError() (G2's H-08).
+	oldSessionID := session.ID()
+
 	// Rotate the session id BEFORE writing user_id so an attacker who
 	// planted the prior id can no longer inherit authenticated state.
 	if err := session.Regenerate(); err != nil {
 		g.logWarn("velocity/auth: remember-cookie revival: session regenerate failed", "error", err)
 		return false
+	}
+
+	// Rotate the CSRF token alongside the session id (H-02). Without
+	// this, a token an attacker minted under the pre-revival id remains
+	// a valid orphan in the CSRF store for the token-store TTL (24h
+	// default), and the post-revival session has no token bound to its
+	// new id. A rotate failure fails the revival closed: continuing
+	// with a stale CSRF store would leave the now-authenticated session
+	// with no valid token and the orphan still reachable.
+	if rotator := g.getCSRFTokenRotator(); rotator != nil {
+		if err := rotator.RotateToken(oldSessionID, session.ID()); err != nil {
+			g.logWarn("velocity/auth: remember-cookie revival: csrf token rotate failed", "old_id", oldSessionID, "new_id", session.ID(), "error", err)
+			return false
+		}
 	}
 
 	session.Put("user_id", user.GetAuthIdentifier())
@@ -473,11 +527,31 @@ func (g *SessionGuard) Login(w http.ResponseWriter, r *http.Request, user auth.A
 		}
 	}
 
+	// Capture the pre-regenerate session ID so the CSRF rotator can
+	// drop any token bound to it. Required for the session-fixation
+	// defense: a token an attacker minted under a planted session id
+	// must not outlive the regenerate boundary.
+	oldSessionID := session.ID()
+
 	// Regenerate session ID for security. A failure here must abort the
 	// login: proceeding with the old session ID opens a session-fixation
 	// window (an attacker who planted the cookie keeps access).
 	if err := session.Regenerate(); err != nil {
 		return fmt.Errorf("velocity/auth: login aborted: session regenerate failed: %w", err)
+	}
+
+	// Rotate the CSRF token alongside the session ID (H-02). The CSRF
+	// token store is keyed by session id; without this hook, a token
+	// bound to the pre-regenerate id would remain a valid orphan in the
+	// store until the (default 24h) TTL expired, and the post-login
+	// session would have no token until something explicitly minted one.
+	// A rotation failure aborts the login: continuing with a stale
+	// token store would leave the post-login session without a valid
+	// CSRF token and the orphan still reachable.
+	if rotator := g.getCSRFTokenRotator(); rotator != nil {
+		if err := rotator.RotateToken(oldSessionID, session.ID()); err != nil {
+			return fmt.Errorf("velocity/auth: login aborted: csrf token rotate failed: %w", err)
+		}
 	}
 
 	// Store user ID in session
@@ -619,6 +693,19 @@ func (g *SessionGuard) Logout(w http.ResponseWriter, r *http.Request) error {
 	// the server-side record. BaseSession.Invalidate currently leaves id
 	// intact, but capturing here is robust against future changes.
 	sessionID := session.ID()
+
+	// Revoke the CSRF token for this session BEFORE Invalidate clears
+	// the session bag (H-02). Without this, the token would survive in
+	// the CSRF store for the full token-store TTL (24h default) and a
+	// captured cookie+token pair would remain valid against the now-
+	// logged-out session id. A revoke failure is logged and swallowed:
+	// logout must not refuse to clear the cookie because a downstream
+	// store is unavailable.
+	if rotator := g.getCSRFTokenRotator(); rotator != nil && sessionID != "" {
+		if err := rotator.RevokeToken(sessionID); err != nil {
+			g.logWarn("velocity/auth: csrf token revoke (logout) failed", "session_id", sessionID, "error", err)
+		}
+	}
 
 	// Cycle the persisted remember-me token (H-06 fix). Laravel's
 	// SessionGuard::logout calls cycleRememberToken on every individual

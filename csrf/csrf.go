@@ -441,6 +441,58 @@ func (c *CSRF) RefreshHandler() http.HandlerFunc {
 	}
 }
 
+// RotateToken implements contract.CSRFTokenRotator. It deletes any token
+// bound to oldID and mints a fresh token bound to newID. Session guards
+// call this from Login (immediately after Session.Regenerate) and from
+// the remember-cookie revival path so the token follows the session-id
+// rotation, closing the orphan-token window described in the H-02 audit
+// finding. oldID may be empty (first login on a fresh session); newID
+// must be non-empty.
+//
+// A delete error on oldID is logged but does NOT abort the rotation: the
+// new token must still be installed under newID so the post-login request
+// has a valid token to validate against. A set error on newID IS returned
+// so the caller can surface it (Login aborts on token-mint failure).
+func (c *CSRF) RotateToken(oldID, newID string) error {
+	if c == nil || c.config == nil || c.config.Store == nil {
+		return ErrNoStore
+	}
+	if newID == "" {
+		return fmt.Errorf("velocity/csrf: RotateToken: newID is required")
+	}
+	if oldID != "" && oldID != newID {
+		if err := c.config.Store.Delete(oldID); err != nil {
+			log.Printf("velocity/csrf: RotateToken: delete old token for session %s failed: %v", oldID, err)
+		}
+	}
+	token, err := GenerateToken()
+	if err != nil {
+		return fmt.Errorf("velocity/csrf: RotateToken: generate: %w", err)
+	}
+	if err := c.config.Store.Set(newID, token); err != nil {
+		return fmt.Errorf("velocity/csrf: RotateToken: store set: %w", err)
+	}
+	return nil
+}
+
+// RevokeToken implements contract.CSRFTokenRotator. It deletes the token
+// bound to id. Session guards call this from Logout (before
+// Session.Invalidate) so the token does not survive the session in the
+// CSRF store; without this a captured cookie+token pair would remain
+// valid for the store TTL (24h default) past logout.
+//
+// A delete on a missing entry is not an error (idempotent), matching the
+// underlying Store.Delete contract.
+func (c *CSRF) RevokeToken(id string) error {
+	if c == nil || c.config == nil || c.config.Store == nil {
+		return ErrNoStore
+	}
+	if id == "" {
+		return nil
+	}
+	return c.config.Store.Delete(id)
+}
+
 // GetToken retrieves or generates a token for the given session ID
 func (c *CSRF) GetToken(sessionID string) (string, error) {
 	if c.config.Store == nil {
