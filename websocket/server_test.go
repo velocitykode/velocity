@@ -644,6 +644,45 @@ func TestCheckOrigin_SameOriginDefault(t *testing.T) {
 			host:   "example.com",
 			want:   false,
 		},
+		// F2: Origin scheme allowlist. Browser WS upgrades only ever send
+		// http(s) Origin values; anything else is a non-browser caller
+		// trying to impersonate the host. The gate must reject them.
+		{
+			name:   "chrome-extension scheme rejected even with matching host",
+			origin: "chrome-extension://example.com",
+			host:   "example.com",
+			want:   false,
+		},
+		{
+			name:   "ftp scheme rejected even with matching host",
+			origin: "ftp://example.com",
+			host:   "example.com",
+			want:   false,
+		},
+		{
+			name:   "file scheme rejected",
+			origin: "file://example.com",
+			host:   "example.com",
+			want:   false,
+		},
+		{
+			name:   "ws scheme rejected (browsers do not send it as Origin)",
+			origin: "ws://example.com",
+			host:   "example.com",
+			want:   false,
+		},
+		{
+			name:   "http scheme with matching host accepted",
+			origin: "http://example.com",
+			host:   "example.com",
+			want:   true,
+		},
+		{
+			name:   "uppercase HTTPS scheme accepted (case-insensitive)",
+			origin: "HTTPS://example.com",
+			host:   "example.com",
+			want:   true,
+		},
 	}
 
 	for _, tt := range tests {

@@ -392,6 +392,15 @@ func (s *Server) checkOrigin(r *http.Request) bool {
 		if err != nil || o.Host == "" {
 			return false
 		}
+		// Restrict to HTTP(S) so non-web schemes (chrome-extension://,
+		// ftp://, file://, etc.) cannot pass the same-origin gate by
+		// merely matching the host. Browser WebSocket upgrades always
+		// send an http(s) Origin; everything else is hostile or buggy.
+		switch strings.ToLower(o.Scheme) {
+		case "http", "https":
+		default:
+			return false
+		}
 		// url.Parse on an Origin like "https://example.com" populates
 		// o.Host; compare hostnames case-insensitively against r.Host
 		// (which carries the request authority for HTTP/1.1 upgrades).
