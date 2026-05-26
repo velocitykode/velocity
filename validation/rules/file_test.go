@@ -247,6 +247,49 @@ func TestMimesRule_SVGRequiresOptIn(t *testing.T) {
 	}
 }
 
+// TestValidateSVG_FailsClosedAboveCap verifies F2: a padded SVG that
+// pushes the <script> tag past the 1 MiB scan cap must be refused. Under
+// the prior implementation the scanner truncated at 1 MiB, missing the
+// payload and returning nil. Now the helper refuses outright when the
+// file exceeds the cap. Audit ID F2.
+func TestValidateSVG_FailsClosedAboveCap(t *testing.T) {
+	var sb bytes.Buffer
+	sb.WriteString(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg">`)
+	// Pad with 1.5 MiB of harmless XML comments so the actual <script
+	// tag lands well past svgScanCap (1 MiB).
+	const padBytes = 1572864 // 1.5 MiB
+	pad := bytes.Repeat([]byte("<!--pad-->"), padBytes/len("<!--pad-->"))
+	sb.Write(pad)
+	sb.WriteString(`<script>alert(1)</script></svg>`)
+	padded := sb.Bytes()
+
+	// Direct helper check.
+	if err := validateSVG(fakeFile{name: "big.svg", content: padded}); err == nil {
+		t.Fatal("validateSVG accepted oversized SVG; payload would slip past 1 MiB scan cap")
+	}
+
+	// Through ImageRule with opt-in.
+	if err := ImageRule("photo", fakeFile{name: "big.svg", content: padded}, []string{"svg"}, nil); err == nil {
+		t.Fatal("ImageRule accepted oversized SVG with opt-in; expected refusal")
+	}
+
+	// Through MimesRule with opt-in.
+	if err := MimesRule("upload", fakeFile{name: "big.svg", content: padded}, []string{"svg", "allow_svg"}, nil); err == nil {
+		t.Fatal("MimesRule accepted oversized SVG with opt-in; expected refusal")
+	}
+
+	// Sanity: an oversized but clean SVG (no script) is also refused.
+	// The cap is fail-closed; we cannot prove the absence of <script
+	// past the scan window, so we refuse.
+	var clean bytes.Buffer
+	clean.WriteString(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg">`)
+	clean.Write(pad)
+	clean.WriteString(`</svg>`)
+	if err := validateSVG(fakeFile{name: "big.svg", content: clean.Bytes()}); err == nil {
+		t.Fatal("validateSVG accepted oversized clean SVG; expected fail-closed refusal")
+	}
+}
+
 // TestImageRule_RejectsNonOpener verifies a value carrying file metadata
 // but no Open method fails closed. Without content, the extension alone
 // is untrustworthy.

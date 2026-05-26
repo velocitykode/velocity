@@ -365,9 +365,18 @@ func ImageRule(field string, value interface{}, params []string, data map[string
 	return nil
 }
 
+// svgScanCap is the maximum size of an SVG upload that validateSVG will
+// scan in full. SVG files are typically small (icons, logos); anything
+// larger is refused fail-closed rather than scanned partially, because a
+// partial scan can be bypassed by prepending padding/comments before the
+// <script tag and pushing the payload past the cap.
+const svgScanCap = 1 << 20
+
 // validateSVG reopens the file and refuses content that contains a
 // <script tag (case-insensitive). Returns nil if no script tag is
-// found. SVG files are typically small; we cap the read at 1MB.
+// found. Uploads larger than svgScanCap are refused outright (fail
+// closed) since scanning only the first svgScanCap bytes lets an
+// attacker hide the payload past that mark.
 //
 // Shared between MimesRule and ImageRule so both rules apply the same
 // SVG XSS check.
@@ -377,9 +386,15 @@ func validateSVG(o openable) error {
 		return err
 	}
 	defer f.Close()
-	buf, err := io.ReadAll(io.LimitReader(f, 1<<20))
+	// Read one byte past the cap so we can distinguish "fits within the
+	// cap" from "too large to scan". A read that returns exactly
+	// svgScanCap+1 bytes means the file exceeded the cap.
+	buf, err := io.ReadAll(io.LimitReader(f, svgScanCap+1))
 	if err != nil {
 		return err
+	}
+	if int64(len(buf)) > svgScanCap {
+		return errors.New("svg exceeds scan size limit")
 	}
 	lower := strings.ToLower(string(buf))
 	if strings.Contains(lower, "<script") {
