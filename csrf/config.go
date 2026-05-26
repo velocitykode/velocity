@@ -74,12 +74,28 @@ type Config struct {
 	// Storage strategy
 	Store Store
 
-	// SessionIDResolver, if set, is consulted before falling back to reading
-	// SessionCookieName directly from the request. Frameworks that encrypt
-	// the session cookie (e.g. velocity/auth session manager) MUST inject a
-	// resolver that returns the underlying plaintext session ID. Keying
-	// CSRF tokens by the raw ciphertext cookie value is incorrect: the IV
+	// SessionIDResolver returns the plaintext session ID that CSRF tokens
+	// are keyed by. It is REQUIRED: csrf.NewE returns
+	// ErrInsecureCSRFConfig when this field is nil. There is no fallback
+	// to reading SessionCookieName as a raw value from the request - that
+	// legacy path let an unauthenticated attacker mint a CSRF token
+	// against any self-chosen string by sending the cookie under the
+	// configured name (the cookie value never went through session
+	// middleware), and has been removed.
+	//
+	// Frameworks that encrypt the session cookie (e.g. velocity/auth
+	// session manager) MUST inject a resolver that decrypts the cookie
+	// and returns the underlying plaintext session ID. Keying CSRF tokens
+	// by the raw ciphertext cookie value is also incorrect: the IV
 	// changes on every Save() and the stored token becomes unreachable.
+	//
+	// velocity.New auto-installs an encrypted-session resolver when the
+	// app encryptor, session cookie name, and CSRFConfig.SessionCookieName
+	// all align. When any of those conditions miss, velocity.New installs
+	// a strict-reject resolver (returns ErrNoSession on every request) so
+	// the deployment fails closed (419 on every unsafe request) instead
+	// of silently bypassing CSRF; operators wire a real resolver here to
+	// override.
 	//
 	// The resolver returns ErrNoSession when no session is present.
 	SessionIDResolver func(*http.Request) (string, error)
