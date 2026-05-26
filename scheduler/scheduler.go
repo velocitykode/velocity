@@ -425,11 +425,19 @@ func (s *Scheduler) Run(ctx context.Context) error {
 }
 
 // ValidateJobs scans registered jobs and logs warnings for hazards that
-// can only be assessed once the registration chain has settled. Today it
-// surfaces WithoutOverlapping on default-named (auto-derived) jobs, where
-// multiple unnamed closures would collide on the same overlap-guard key
-// and skip silently. Called automatically at the top of Run; callers can
-// invoke it earlier (e.g. during boot) to fail-fast.
+// can only be assessed once the registration chain has settled. Today
+// it surfaces:
+//
+//   - WithoutOverlapping on default-named (auto-derived) jobs, where
+//     multiple unnamed closures would collide on the same overlap-guard
+//     key and skip silently. Logged as Error.
+//   - Deferred validation errors from chainable setters (Schedule.Days
+//     out of range, Schedule.Cron with invalid syntax such as */0).
+//     Logged as Error so the misconfiguration is loud at boot instead
+//     of silently no-op'ing at the first tick.
+//
+// Called automatically at the top of Run; callers can invoke it
+// earlier (e.g. during boot) to fail-fast.
 func (s *Scheduler) ValidateJobs() {
 	s.mu.RLock()
 	jobs := make([]*Job, len(s.jobs))
@@ -442,7 +450,17 @@ func (s *Scheduler) ValidateJobs() {
 		if j.withoutOverlapping && !j.nameExplicit {
 			collisions[j.name]++
 		}
+		schedErr := j.schedule.ValidationError()
+		jobName := j.name
 		j.mu.RUnlock()
+
+		if schedErr != nil {
+			s.log().Error(
+				"velocity/scheduler: invalid schedule configuration; job will never fire",
+				"name", jobName,
+				"error", schedErr,
+			)
+		}
 	}
 	for name, count := range collisions {
 		s.log().Error(

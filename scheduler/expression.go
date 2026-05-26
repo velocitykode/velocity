@@ -43,27 +43,27 @@ func ParseExpression(expr string) (*Expression, error) {
 	var err error
 	e.minute, err = parseField(fields[0], 0, 59)
 	if err != nil {
-		return nil, fmt.Errorf("invalid minute field: %v", err)
+		return nil, fmt.Errorf("invalid minute field: %w", err)
 	}
 
 	e.hour, err = parseField(fields[1], 0, 23)
 	if err != nil {
-		return nil, fmt.Errorf("invalid hour field: %v", err)
+		return nil, fmt.Errorf("invalid hour field: %w", err)
 	}
 
 	e.dayOfMonth, err = parseField(fields[2], 1, 31)
 	if err != nil {
-		return nil, fmt.Errorf("invalid day of month field: %v", err)
+		return nil, fmt.Errorf("invalid day of month field: %w", err)
 	}
 
 	e.month, err = parseField(fields[3], 1, 12)
 	if err != nil {
-		return nil, fmt.Errorf("invalid month field: %v", err)
+		return nil, fmt.Errorf("invalid month field: %w", err)
 	}
 
 	e.dayOfWeek, err = parseField(fields[4], 0, 6)
 	if err != nil {
-		return nil, fmt.Errorf("invalid day of week field: %v", err)
+		return nil, fmt.Errorf("invalid day of week field: %w", err)
 	}
 
 	return e, nil
@@ -80,6 +80,13 @@ func parseField(field string, min, max int) ([]int, error) {
 		step, err := strconv.Atoi(field[2:])
 		if err != nil {
 			return nil, err
+		}
+		if step <= 0 {
+			// makeRange divides by step; step==0 would panic the
+			// library (CLAUDE.md rule 10 violation). Surface a
+			// typed error so callers can react at registration
+			// time instead of at first-tick evaluation.
+			return nil, ErrInvalidCronStep
 		}
 		return makeRange(min, max, step), nil
 	}

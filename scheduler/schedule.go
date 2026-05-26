@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -15,6 +16,14 @@ type Schedule struct {
 	dayOfMonth string
 	month      string
 	dayOfWeek  string
+
+	// validationErr captures any invalid input passed to fluent setters
+	// like Days(...). The chainable API cannot return an error directly
+	// (returning *Schedule preserves builder ergonomics), so the error
+	// is stored here and surfaced by Scheduler.ValidateJobs at Run /
+	// boot time. M-36 added this path because Days(0) previously wrote
+	// an out-of-range dayOfMonth that only failed at the first tick.
+	validationErr error
 }
 
 // NewSchedule creates a new schedule
@@ -34,8 +43,14 @@ func (s *Schedule) buildExpression() {
 		s.minute, s.hour, s.dayOfMonth, s.month, s.dayOfWeek)
 }
 
-// IsDue checks if the schedule is due at the given time
+// IsDue checks if the schedule is due at the given time. Returns
+// false if the schedule has a deferred validation error (e.g. invalid
+// Days() input) so a misconfigured job never fires unexpectedly; the
+// error is surfaced by Scheduler.ValidateJobs at boot.
 func (s *Schedule) IsDue(t time.Time) bool {
+	if s.validationErr != nil {
+		return false
+	}
 	if s.expression == "" {
 		s.buildExpression()
 	}
@@ -177,7 +192,11 @@ func (s *Schedule) Yearly() *Schedule {
 	return s
 }
 
-// Cron sets a custom cron expression
+// Cron sets a custom cron expression. The expression is parsed
+// immediately so invalid syntax (e.g. */0, out-of-range fields) is
+// caught at registration via ValidationError instead of silently
+// surfacing at the first tick. The string is still stored verbatim
+// so GetExpression returns what the caller provided.
 func (s *Schedule) Cron(expression string) *Schedule {
 	s.expression = expression
 	// Parse expression to set components
@@ -189,22 +208,49 @@ func (s *Schedule) Cron(expression string) *Schedule {
 		s.month = parts[3]
 		s.dayOfWeek = parts[4]
 	}
+	if _, err := ParseExpression(expression); err != nil {
+		s.validationErr = errors.Join(s.validationErr, fmt.Errorf("invalid cron expression %q: %w", expression, err))
+	}
 	return s
 }
 
 // Day constraints
 
-// Days sets specific days of the month
+// Days sets specific days of the month.
+//
+// Velocity's Days() targets the day-of-month cron field. Note this
+// diverges from Laravel's days() helper, which targets day-of-week
+// (and accepts Sunday=0 .. Saturday=6). Velocity exposes day-of-week
+// constants via Sundays() / Mondays() / ... / Weekdays() / Weekends()
+// instead. Day-of-month values outside 1-31 are rejected with
+// ErrInvalidDayOfMonth; the error is stored on the schedule and
+// surfaced by Scheduler.ValidateJobs (and the Run loop) so callers see
+// the misconfiguration at boot time, not at the first tick.
 func (s *Schedule) Days(days ...int) *Schedule {
-	if len(days) > 0 {
-		strs := make([]string, len(days))
-		for i, day := range days {
-			strs[i] = strconv.Itoa(day)
-		}
-		s.dayOfMonth = strings.Join(strs, ",")
-		s.buildExpression()
+	if len(days) == 0 {
+		return s
 	}
+	for _, day := range days {
+		if day < 1 || day > 31 {
+			s.validationErr = errors.Join(s.validationErr, fmt.Errorf("%w: got %d", ErrInvalidDayOfMonth, day))
+			return s
+		}
+	}
+	strs := make([]string, len(days))
+	for i, day := range days {
+		strs[i] = strconv.Itoa(day)
+	}
+	s.dayOfMonth = strings.Join(strs, ",")
+	s.buildExpression()
 	return s
+}
+
+// ValidationError returns the deferred validation error captured by
+// chainable setters (currently only Days). Returns nil if no input
+// was rejected. ValidateJobs and the Run loop use this to surface
+// invalid configurations at boot time.
+func (s *Schedule) ValidationError() error {
+	return s.validationErr
 }
 
 // Weekdays runs only on weekdays (Mon-Fri)
