@@ -1,10 +1,13 @@
 package router
 
 import (
+	"bytes"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1132,5 +1135,238 @@ func TestRateLimitByIP_UnionsRouterAndPerMiddlewareTrust(t *testing.T) {
 	_ = handler(ctx2)
 	if rec2.Code != http.StatusTooManyRequests {
 		t.Fatalf("second request expected 429 (same real client), got %d (union of trust lists is broken)", rec2.Code)
+	}
+}
+
+// TestRouterThrottleByIP_SnapshotIsolatedFromLaterMutation asserts the
+// H-13 deep-clone guarantee: ThrottleByIP captures the router's
+// TrustedProxies at registration time, so mutating Router.TrustedProxies
+// (or re-running ValidateConfig with a different list) afterwards does
+// NOT change the bucket key for an already-registered limiter. This
+// closes the foot-gun where a deployment swaps its trusted-proxy
+// configuration after routes are wired and silently re-partitions
+// throttling.
+func TestRouterThrottleByIP_SnapshotIsolatedFromLaterMutation(t *testing.T) {
+	r := NewV2()
+	r.TrustedProxies = []string{"10.0.0.0/8"}
+	if err := r.ValidateConfig(); err != nil {
+		t.Fatalf("ValidateConfig: %v", err)
+	}
+
+	// Register the limiter NOW. The snapshot is 10.0.0.0/8.
+	middleware := r.ThrottleByIP(1, time.Minute)
+	handler := middleware(successHandler)
+
+	// Mutate the router's trusted-proxy set AFTER registration. The
+	// already-captured snapshot must not be affected.
+	r.TrustedProxies = []string{"192.168.0.0/16"}
+	if err := r.ValidateConfig(); err != nil {
+		t.Fatalf("ValidateConfig (post-mutation): %v", err)
+	}
+
+	// Build a request through 10.0.0.0/8 (the SNAPSHOT trust list).
+	// If the middleware re-reads the router list at request time it
+	// would no longer trust 10.0.0.1 and would resolve to the LB IP,
+	// collapsing all clients into one bucket. With the snapshot, the
+	// real client wins.
+	makeReq := func(realClient string) (*Context, *httptest.ResponseRecorder) {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.RemoteAddr = "10.0.0.1:443"
+		req.Header.Set("X-Forwarded-For", realClient)
+		rec := httptest.NewRecorder()
+		// trustedProxies on Context reflects POST-mutation state to
+		// prove ThrottleByIP does NOT consult it.
+		ctx := &Context{
+			Request:        req,
+			Response:       rec,
+			params:         make([]RouteParam, 0),
+			values:         make(map[string]interface{}),
+			trustedProxies: r.trustedProxiesOrParse(),
+		}
+		return ctx, rec
+	}
+
+	ctxA1, recA1 := makeReq("203.0.113.9")
+	_ = handler(ctxA1)
+	if recA1.Code != http.StatusOK {
+		t.Fatalf("client A first request: expected 200, got %d", recA1.Code)
+	}
+
+	ctxA2, recA2 := makeReq("203.0.113.9")
+	_ = handler(ctxA2)
+	if recA2.Code != http.StatusTooManyRequests {
+		t.Fatalf("client A second request: expected 429 (same client, snapshot trust), got %d", recA2.Code)
+	}
+
+	// Distinct real client behind the same LB: allowed. Proves the
+	// snapshot is still resolving the LB as trusted and honouring
+	// XFF for real-client distinction.
+	ctxB, recB := makeReq("198.51.100.42")
+	_ = handler(ctxB)
+	if recB.Code != http.StatusOK {
+		t.Fatalf("client B first request: expected 200 (distinct real client), got %d (snapshot lost)", recB.Code)
+	}
+}
+
+// TestRouterThrottleByIP_SpoofedXFFResolvesOnlyWithTrust asserts the
+// spec's other invariant: with the trusted-proxy set populated, an
+// attacker who prepends a spoofed IP in front of the trusted-proxy
+// hop is correctly resolved to the spoofed left-most (because the
+// right-most trusted hop is skipped). Without trust, the spoof is
+// ignored and the LB IP is used.
+func TestRouterThrottleByIP_SpoofedXFFResolvesOnlyWithTrust(t *testing.T) {
+	// Case 1: WITH trust list.
+	r := NewV2()
+	r.TrustedProxies = []string{"10.0.0.0/8"}
+	if err := r.ValidateConfig(); err != nil {
+		t.Fatalf("ValidateConfig: %v", err)
+	}
+	withTrust := r.ThrottleByIP(1, time.Minute)(successHandler)
+
+	makeReq := func(remote string, xff string, tp *TrustedProxies) (*Context, *httptest.ResponseRecorder) {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.RemoteAddr = remote
+		if xff != "" {
+			req.Header.Set("X-Forwarded-For", xff)
+		}
+		rec := httptest.NewRecorder()
+		ctx := &Context{
+			Request:        req,
+			Response:       rec,
+			params:         make([]RouteParam, 0),
+			values:         make(map[string]interface{}),
+			trustedProxies: tp,
+		}
+		return ctx, rec
+	}
+
+	// First request: peer is trusted LB (10.0.0.1), XFF is "spoofed,
+	// 10.0.0.2". Right-most-of-trusted resolves to "spoofed" because
+	// 10.0.0.2 is trusted and gets skipped.
+	ctx1, rec1 := makeReq("10.0.0.1:443", "203.0.113.9, 10.0.0.2", r.trustedProxiesOrParse())
+	_ = withTrust(ctx1)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("trusted: first request from spoofed expected 200, got %d", rec1.Code)
+	}
+	ctx2, rec2 := makeReq("10.0.0.1:443", "203.0.113.9, 10.0.0.2", r.trustedProxiesOrParse())
+	_ = withTrust(ctx2)
+	if rec2.Code != http.StatusTooManyRequests {
+		t.Fatalf("trusted: second from same spoofed expected 429 (same bucket), got %d", rec2.Code)
+	}
+
+	// Case 2: NO trust list (fresh router). Same XFF, same LB peer:
+	// header is ignored, peer IP is the bucket. Two requests from the
+	// SAME LB peer with different "spoofed" entries share the bucket.
+	rNoTrust := NewV2()
+	if err := rNoTrust.ValidateConfig(); err != nil {
+		t.Fatalf("ValidateConfig (no trust): %v", err)
+	}
+	noTrust := rNoTrust.ThrottleByIP(1, time.Minute)(successHandler)
+
+	ctx3, rec3 := makeReq("10.0.0.1:443", "203.0.113.9, 10.0.0.2", rNoTrust.trustedProxiesOrParse())
+	_ = noTrust(ctx3)
+	if rec3.Code != http.StatusOK {
+		t.Fatalf("no-trust: first request expected 200, got %d", rec3.Code)
+	}
+	ctx4, rec4 := makeReq("10.0.0.1:443", "198.51.100.42, 10.0.0.2", rNoTrust.trustedProxiesOrParse())
+	_ = noTrust(ctx4)
+	if rec4.Code != http.StatusTooManyRequests {
+		t.Fatalf("no-trust: second from same LB IP expected 429 (XFF ignored), got %d", rec4.Code)
+	}
+}
+
+// TestRouterThrottleByIP_UnionsPerMiddlewareTrust asserts that the
+// optional WithTrustedProxies passed to Router.ThrottleByIP is unioned
+// with the snapshot at registration, not silently dropped.
+func TestRouterThrottleByIP_UnionsPerMiddlewareTrust(t *testing.T) {
+	r := NewV2()
+	r.TrustedProxies = []string{"10.0.0.0/8"}
+	if err := r.ValidateConfig(); err != nil {
+		t.Fatalf("ValidateConfig: %v", err)
+	}
+
+	middleware := r.ThrottleByIP(1, time.Minute, WithTrustedProxies([]string{"192.168.0.0/16"}))
+	handler := middleware(successHandler)
+
+	makeReq := func(remote, xff string) (*Context, *httptest.ResponseRecorder) {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.RemoteAddr = remote
+		req.Header.Set("X-Forwarded-For", xff)
+		rec := httptest.NewRecorder()
+		ctx := &Context{
+			Request:        req,
+			Response:       rec,
+			params:         make([]RouteParam, 0),
+			values:         make(map[string]interface{}),
+			trustedProxies: r.trustedProxiesOrParse(),
+		}
+		return ctx, rec
+	}
+
+	// Real client -> inner LB (192.168.x) -> outer LB (10.0.0.x) -> us.
+	// Both inner and outer must be trusted for the real client to win.
+	ctx1, rec1 := makeReq("10.0.0.1:443", "203.0.113.9, 192.168.1.5, 10.0.0.2")
+	_ = handler(ctx1)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("union: first request expected 200, got %d", rec1.Code)
+	}
+	ctx2, rec2 := makeReq("10.0.0.1:443", "203.0.113.9, 192.168.1.5, 10.0.0.2")
+	_ = handler(ctx2)
+	if rec2.Code != http.StatusTooManyRequests {
+		t.Fatalf("union: second request expected 429 (same real client), got %d", rec2.Code)
+	}
+}
+
+// TestRateLimitByIP_WarnsOnPrivatePeerWithNoTrust asserts the H-13
+// runtime-warning behaviour: when the standalone RateLimitByIP runs
+// with no trusted proxies AND the request peer is RFC1918/loopback
+// (the canonical misconfigured-LB signature), the middleware logs a
+// one-shot warning. The warning fires at most once per middleware
+// instance to avoid log flooding.
+func TestRateLimitByIP_WarnsOnPrivatePeerWithNoTrust(t *testing.T) {
+	var buf bytes.Buffer
+	origOut := log.Writer()
+	origFlags := log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(origOut)
+		log.SetFlags(origFlags)
+	}()
+
+	middleware := RateLimitByIP(10, time.Minute)
+	handler := middleware(successHandler)
+
+	makeReq := func(remote string) *Context {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.RemoteAddr = remote
+		rec := httptest.NewRecorder()
+		return &Context{
+			Request:  req,
+			Response: rec,
+			params:   make([]RouteParam, 0),
+			values:   make(map[string]interface{}),
+		}
+	}
+
+	// First RFC1918 peer: warning expected.
+	_ = handler(makeReq("10.0.0.1:443"))
+	if !strings.Contains(buf.String(), "RFC1918/loopback") {
+		t.Errorf("expected warning on first private peer, got log: %q", buf.String())
+	}
+
+	// Second RFC1918 peer: warning must NOT repeat.
+	buf.Reset()
+	_ = handler(makeReq("192.168.1.5:443"))
+	if buf.Len() != 0 {
+		t.Errorf("warning fired again, log: %q", buf.String())
+	}
+
+	// Public peer on a different middleware instance: no warning.
+	buf.Reset()
+	mw2 := RateLimitByIP(10, time.Minute)(successHandler)
+	_ = mw2(makeReq("203.0.113.9:443"))
+	if buf.Len() != 0 {
+		t.Errorf("public peer should not warn, log: %q", buf.String())
 	}
 }

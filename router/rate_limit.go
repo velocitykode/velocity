@@ -358,11 +358,22 @@ func RateLimitByKey(requests int, window time.Duration, keyFunc func(*Context) s
 
 // RateLimitByIP creates a per-IP rate limiter middleware.
 // It resolves the client IP via internal/clientip.Extract, honouring
-// the router-level trusted-proxy set (Router.TrustedProxies /
-// Router.SetTrustedProxies). When the per-middleware WithTrustedProxies
-// option is also supplied, the two lists are unioned at request time;
-// historically diverging the two caused staging/prod inconsistency, so
-// configure trust at the router level when possible.
+// the router-level trusted-proxy set (Router.TrustedProxies). When the
+// per-middleware WithTrustedProxies option is also supplied, the two
+// lists are unioned at request time; historically diverging the two
+// caused staging/prod inconsistency, so configure trust at the router
+// level when possible.
+//
+// For deployments where the trusted-proxy list is owned at the router
+// (the recommended pattern), prefer Router.ThrottleByIP: it captures
+// the router's trusted proxies at middleware-registration time and is
+// immune to later mutation of Router.TrustedProxies.
+//
+// When this constructor is used WITHOUT any trusted proxies (neither
+// at the router nor via WithTrustedProxies) and an RFC1918 / loopback
+// peer is observed at request time, a one-shot warning is logged: the
+// deployment is almost certainly behind a load balancer and the
+// bucket key has collapsed to the LB IP.
 //
 // Returns a middleware that panics at first use if any per-middleware
 // TrustedProxies entry is invalid. For fail-fast behaviour at boot use
@@ -394,9 +405,90 @@ func RateLimitByIPE(requests int, window time.Duration, opts ...RateLimitOption)
 		return nil, fmt.Errorf("velocity/router: rate limit: %w", err)
 	}
 	extraNets := extra.IPNets()
+
+	// warned guards the misconfigured-LB warning so it logs once per
+	// middleware instance, not once per request. Cheap CAS path.
+	var warned atomic.Bool
+
 	return RateLimitByKey(requests, window, func(c *Context) string {
-		return extractIP(c, extraNets)
+		routerNets := c.TrustedProxyNets()
+		merged := unionTrustedProxies(routerNets, extraNets)
+		ip := clientip.ExtractString(c.Request, merged)
+		maybeWarnPrivatePeerUntrusted(c, merged, ip, &warned)
+		return ip
 	}, opts...), nil
+}
+
+// ThrottleByIP returns a per-IP rate-limit middleware that resolves
+// the client IP via the router's trusted-proxy set captured at the
+// moment ThrottleByIP is called. The capture is a deep clone (via
+// internal/clientip.CloneIPNets) so subsequent mutation of
+// Router.TrustedProxies cannot change the buckets observed by an
+// already-registered limiter; this avoids the foot-gun where
+// reconfiguring the router after route registration silently
+// repartitions login throttling.
+//
+// Prefer this over the package-level RateLimitByIP when the router
+// is the source of truth for "who is a trusted proxy". Per-middleware
+// extras passed via WithTrustedProxies are honoured and unioned with
+// the captured snapshot at request time.
+func (r *VelocityRouterV2) ThrottleByIP(requests int, window time.Duration, opts ...RateLimitOption) MiddlewareFunc {
+	mw, err := r.ThrottleByIPE(requests, window, opts...)
+	if err != nil {
+		panic(err)
+	}
+	return mw
+}
+
+// ThrottleByIPE is the error-returning variant of Router.ThrottleByIP.
+// Use this in bootstrap code so an invalid per-middleware
+// TrustedProxies entry fails startup rather than at the first
+// request.
+func (r *VelocityRouterV2) ThrottleByIPE(requests int, window time.Duration, opts ...RateLimitOption) (MiddlewareFunc, error) {
+	cfg := &RateLimitConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+	extra, err := ParseTrustedProxies(cfg.TrustedProxies)
+	if err != nil {
+		return nil, fmt.Errorf("velocity/router: rate limit: %w", err)
+	}
+
+	// Capture the router-level trusted-proxy set at registration time
+	// and deep clone so later mutation of Router.TrustedProxies is
+	// invisible to this middleware. clientip.CloneIPNets duplicates
+	// each IPNet's IP / Mask backing arrays so we are isolated even
+	// from in-place mutation of the originals.
+	snapshot := clientip.CloneIPNets(r.trustedProxiesOrParse().IPNets())
+	extraNets := extra.IPNets()
+	merged := unionTrustedProxies(snapshot, extraNets)
+
+	return RateLimitByKey(requests, window, func(c *Context) string {
+		return clientip.ExtractString(c.Request, merged)
+	}, opts...), nil
+}
+
+// maybeWarnPrivatePeerUntrusted logs a one-shot warning when the
+// limiter has no trust list and the direct peer is private/loopback,
+// the canonical misconfigured-LB signature. The CAS gate ensures at
+// most one log line per middleware instance; subsequent requests do
+// not re-trigger the lookup chain. Quiet by design: a load-balanced
+// deployment that just hasn't configured TrustedProxies yet would
+// otherwise flood logs.
+func maybeWarnPrivatePeerUntrusted(c *Context, merged []*net.IPNet, resolvedIP string, warned *atomic.Bool) {
+	if len(merged) != 0 {
+		return
+	}
+	if warned.Load() {
+		return
+	}
+	ip := net.ParseIP(resolvedIP)
+	if ip == nil || (!ip.IsPrivate() && !ip.IsLoopback()) {
+		return
+	}
+	if warned.CompareAndSwap(false, true) {
+		log.Printf("velocity/router: RateLimitByIP observed RFC1918/loopback peer %q with no trusted proxies configured; if this server is behind a load balancer all clients share one bucket. Configure Router.TrustedProxies or use Router.ThrottleByIP.", resolvedIP)
+	}
 }
 
 // extractIP resolves the client IP for a per-IP rate-limit bucket via
