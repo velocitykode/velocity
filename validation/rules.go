@@ -2,6 +2,7 @@ package validation
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/validation/rules"
@@ -10,8 +11,15 @@ import (
 // RuleHandler defines a validation rule function
 type RuleHandler func(field string, value interface{}, params []string, data map[string]interface{}) error
 
-// RuleRegistry manages validation rules
+// RuleRegistry manages validation rules.
+//
+// The registry is safe for concurrent use: Register acquires a write lock and
+// Get acquires a read lock. This matters because app.Services.Validator is a
+// long-lived singleton shared across every handler goroutine, and adopters
+// may call RegisterRule from lazily initialized code paths while requests are
+// already running.
 type RuleRegistry struct {
+	mu    sync.RWMutex
 	rules map[string]RuleHandler
 }
 
@@ -22,6 +30,8 @@ func (r *RuleRegistry) Register(name string, handler RuleHandler) {
 	if handler == nil {
 		panic(contract.NewRegistrationError("validation", fmt.Sprintf("nil handler for rule %q", name)))
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if _, exists := r.rules[name]; exists {
 		panic(contract.NewRegistrationError("validation", fmt.Sprintf("rule %q already registered", name)))
 	}
@@ -30,6 +40,8 @@ func (r *RuleRegistry) Register(name string, handler RuleHandler) {
 
 // Get retrieves a validation rule handler
 func (r *RuleRegistry) Get(name string) (RuleHandler, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	handler, exists := r.rules[name]
 	return handler, exists
 }

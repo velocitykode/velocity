@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -752,4 +753,48 @@ func BenchmarkParseRules(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		parseRules(ruleString)
 	}
+}
+
+// TestRuleRegistry_ConcurrentRegisterAndGet stresses RuleRegistry under
+// simultaneous Register and Get calls. Before the registry grew an internal
+// RWMutex, this would trip Go's runtime concurrent-map detector and abort the
+// test binary with "fatal error: concurrent map read and map write" under
+// -race. It must pass cleanly now.
+func TestRuleRegistry_ConcurrentRegisterAndGet(t *testing.T) {
+	v := NewValidator()
+
+	const (
+		writers = 8
+		readers = 16
+		writes  = 200
+		reads   = 1000
+	)
+
+	var wg sync.WaitGroup
+	wg.Add(writers + readers)
+
+	for w := 0; w < writers; w++ {
+		go func(id int) {
+			defer wg.Done()
+			for i := 0; i < writes; i++ {
+				name := fmt.Sprintf("rule_w%d_i%d", id, i)
+				v.RegisterRule(name, func(field string, value interface{}, params []string, data map[string]interface{}) error {
+					return nil
+				})
+			}
+		}(w)
+	}
+
+	for r := 0; r < readers; r++ {
+		go func() {
+			defer wg.Done()
+			for i := 0; i < reads; i++ {
+				// "required" is always present from registerBuiltInRules;
+				// exercising Get on a known rule keeps the read path hot.
+				_ = v.ValidateValue("x", "required")
+			}
+		}()
+	}
+
+	wg.Wait()
 }
