@@ -86,6 +86,13 @@ type AESDriver struct {
 	previousKeys [][]byte // Previous keys for rotation
 	cipher       string   // Cipher mode (AES-128-CBC, AES-256-CBC, AES-128-GCM, AES-256-GCM)
 	keySize      int      // Key size in bytes
+	// v0Disabled rejects legacy v0 payloads at decrypt time. Set via env
+	// (CRYPTO_DISABLE_V0=true) at driver construction; immutable after
+	// NewAESDriver returns. Operators flip this on once they have
+	// confirmed no in-flight v0 ciphertexts remain (cookies, signed
+	// URLs, encrypted DB columns) and want to retire the weaker
+	// MAC-over-base64 surface.
+	v0Disabled bool
 
 	// Event dispatcher wiring (mirrors the cache/queue/mail pattern).
 	// mu guards eventDispatcher and legacyWarned.
@@ -108,6 +115,7 @@ func NewAESDriver(key []byte, previousKeys [][]byte, cipher string) (*AESDriver,
 	d := &AESDriver{
 		previousKeys: previousKeys,
 		cipher:       strings.ToUpper(cipher),
+		v0Disabled:   os.Getenv("CRYPTO_DISABLE_V0") == "true",
 	}
 
 	// Determine required key size. Only AES-128/192/256 are permitted.
@@ -238,6 +246,16 @@ func (d *AESDriver) DecryptBytes(payload string) ([]byte, error) {
 	}
 
 	version, envelope := splitVersion(payload)
+
+	// Operator-driven v0 cutoff. Once the rotation window is complete,
+	// CRYPTO_DISABLE_V0=true rejects every v0-shaped payload up-front so
+	// the weaker MAC-over-base64 surface is no longer reachable.
+	// Returns a distinct sentinel (ErrLegacyPayloadDisabled) so cookie /
+	// signed-URL pipelines can force re-encrypt rather than treat it as
+	// tamper.
+	if version == 0 && d.v0Disabled {
+		return nil, ErrLegacyPayloadDisabled
+	}
 
 	// Parse the inner base64+JSON envelope.
 	p, err := deserializePayload(envelope)

@@ -10,6 +10,14 @@ import "errors"
 var (
 	ErrInvalidCipher = errors.New("velocity/crypto: unsupported cipher")
 	ErrAADMismatch   = errors.New("velocity/crypto: AAD mismatch")
+	// ErrLegacyPayloadDisabled is returned when a v0 (pre-domain-separated
+	// MAC) payload is presented to a driver that has v0 decoding turned
+	// off. Operators disable v0 once their rotation window is complete so
+	// the weaker MAC-over-base64 surface is no longer reachable. The
+	// sentinel is distinct from ErrDecrypt so cookie / signed-URL
+	// pipelines can react with a forced re-encrypt rather than treating
+	// it as tamper.
+	ErrLegacyPayloadDisabled = errors.New("velocity/crypto: legacy v0 payload decoding disabled")
 	// ErrInvalidPayload signals a structural problem with the envelope
 	// itself (empty input, non-base64 outer, malformed JSON, wrong wire
 	// version). The payload never reached the AEAD/CBC decrypt path.

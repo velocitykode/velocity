@@ -35,6 +35,13 @@ var (
 	ErrDecryptionFailed = drivers.ErrDecryptionFailed
 	ErrAADMismatch      = drivers.ErrAADMismatch
 	ErrInvalidKeyLength = drivers.ErrInvalidKeyLength
+	// ErrLegacyPayloadDisabled is returned when a v0 (pre-domain-separated
+	// MAC) payload is decrypted by a driver constructed with
+	// CRYPTO_DISABLE_V0=true. Operators flip this flag once their
+	// rotation window completes; the sentinel lets cookie / signed-URL
+	// pipelines force re-encrypt rather than treat the rejection as
+	// tamper.
+	ErrLegacyPayloadDisabled = drivers.ErrLegacyPayloadDisabled
 )
 
 // Encryptor interface defines encryption operations
