@@ -34,8 +34,8 @@ func TestOverlapAndOneServerKeysDoNotCollide(t *testing.T) {
 	}
 
 	// The shared Locker must accept both keys concurrently, even with
-	// identical job name. A job flagged with both gates exists in the
-	// production gallery (see m33_combined test below).
+	// identical job name. A job flagged with both gates is exercised
+	// by TestRunDueJobs_BothGates_ExactlyOnce below.
 	loc := NewInMemoryLocker()
 	if _, err := loc.Acquire(context.Background(), overlapKey, time.Hour); err != nil {
 		t.Fatalf("acquire overlap: %v", err)
