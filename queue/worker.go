@@ -397,13 +397,15 @@ func (w *Worker) processJob() error {
 	// a job from running. This is an acceptable trade-off for simplicity.
 	if bj, ok := job.(Batchable); ok {
 		if batch, found := FindBatch(bj.GetBatchID()); found && batch.Cancelled() {
-			// Decrement pending so the batch can still reach Finished state
+			// Ack first; the batch counter decrement is a side effect
+			// and must only fire on the worker that actually owned the
+			// lease. If the lease was lost, the new owner will run the
+			// same skip-and-ack path and decrement the counter once.
+			if owned := w.ackReservation(reservation); !owned {
+				return nil
+			}
 			batch.pendingJobs.Add(-1)
 			batch.checkFinished(jobCtx)
-			// Ack the reservation so the row is removed; the job will
-			// not be retried. Use a detached short-timeout context so a
-			// slow driver does not block shutdown.
-			w.ackReservation(reservation)
 			return nil
 		}
 	}
@@ -467,17 +469,24 @@ func (w *Worker) processJob() error {
 			w.handleJobFailure(jobCtx, job, jobType, err, duration, reservation)
 			return fmt.Errorf("velocity/queue: job failed: %w", err)
 		}
-		// Success: clean up attempt tracking and ack the leased row so the
-		// driver removes it. For non-reservation drivers ackReservation is
-		// a no-op (the row was deleted on pop).
+		// Success: ack first, then run side effects only if we still
+		// own the lease. A stale worker whose lease was reclaimed must
+		// NOT bump batch counters or fire JobProcessed; the new owner
+		// will do that when it succeeds. Doing side effects before the
+		// fenced ack would double-count batches and double-emit events
+		// for every slow-handler / lease-loss combination.
+		owned := w.ackReservation(reservation)
+		// removeAttempts is local cache cleanup, safe to do regardless
+		// of ownership.
 		w.removeAttempts(job)
-		// Record batch success
+		if !owned {
+			return nil
+		}
 		if bj, ok := job.(Batchable); ok {
 			if batch, found := FindBatch(bj.GetBatchID()); found {
 				batch.recordSuccess(jobCtx)
 			}
 		}
-		w.ackReservation(reservation)
 		dispatchJobProcessed(w.dispatchEvent, jobCtx, jobType, w.queueName, duration)
 		return nil
 	case <-jobCtx.Done():
@@ -514,37 +523,50 @@ func (w *Worker) processJob() error {
 }
 
 // ackReservation deletes the leased row after handler success on
-// reservation-capable drivers. It is a no-op on drivers that delete the
-// row at pop time (memory, redis) and on calls with a zero token.
+// reservation-capable drivers. Returns true when the caller still owns
+// the lease and is therefore responsible for recording success-side
+// effects (batch counters, JobProcessed event); returns false when the
+// lease was lost (the new owner will record those instead) or when no
+// reservation applies (zero token / non-reservation driver -- in that
+// case the caller is still the sole executor and should run side
+// effects).
 //
 // Uses a fresh background ctx with a short timeout so the ack survives
 // jobCtx cancellation (e.g. when the handler completed just as the per-
 // job timeout fires) and so a slow driver cannot hold shutdown open
-// past its deadline. ErrLeaseLost is downgraded to a warning: the lease
-// expired and another worker reclaimed the row before we could ack, so
-// the job will run a second time (the documented at-least-once cost of
-// a slow handler). Other failures are logged but not propagated because
-// the row will still be reclaimed by the retryAfter predicate on the
-// next pop.
-func (w *Worker) ackReservation(token ReservationToken) {
+// past its deadline. ErrLeaseLost is downgraded to a warn; other
+// failures are logged but treated as "ownership confirmed" because the
+// row will still be reclaimed by the retryAfter predicate on the next
+// pop, and refusing to record success-side effects on a transient DB
+// error would be worse than running them once on this worker.
+func (w *Worker) ackReservation(token ReservationToken) bool {
 	if token.IsZero() {
-		return
+		// No lease to confirm: caller is the sole executor (memory /
+		// redis driver, or a job sourced outside the reservation path).
+		// Side effects must fire.
+		return true
 	}
 	rd, ok := w.queue.(ReservationDriver)
 	if !ok {
-		return
+		return true
 	}
 	ackCtx, cancel := context.WithTimeout(context.Background(), terminalCleanupTimeout)
 	defer cancel()
 	switch err := rd.AckCtx(ackCtx, token); {
 	case err == nil:
-		// happy path
+		return true
 	case errors.Is(err, ErrLeaseLost):
-		w.logger.Warn("Lease lost before ack; another worker may re-run the job",
+		w.logger.Warn("Lease lost before ack; the new owner will record success",
 			"token", token.ID,
 		)
+		return false
 	default:
 		w.logger.Error("Failed to ack reserved job", "token", token.ID, "error", err)
+		// Transient backend error. The row will still be reclaimed via
+		// retryAfter; refusing to record this worker's side effects
+		// would silently drop the batch counter / event for every
+		// transient ack failure. Treat ownership as confirmed.
+		return true
 	}
 }
 
@@ -614,19 +636,17 @@ func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, 
 	// If we have retries remaining (attempt < maxAttempts means we haven't used all attempts)
 	if attempt < maxAttempts {
 		backoff := w.calculateBackoff(job, attempt)
-		w.logger.Info("Retrying job",
-			"type", jobType,
-			"attempt", attempt,
-			"max_attempts", maxAttempts,
-			"backoff_ms", backoff.Milliseconds(),
-			"error", err,
-		)
-		dispatchJobRetrying(w.dispatchEvent, ctx, jobType, w.queueName, attempt, maxAttempts, err, backoff)
 		// Use a detached context with a short timeout for the requeue so
 		// a slow driver (Redis partition, DB lock wait) cannot hold
 		// shutdown open past its deadline. If the requeue exceeds the
 		// timeout the job is marked failed: losing the retry is
 		// preferable to hanging the shutdown path.
+		//
+		// IMPORTANT: the requeue mutation MUST run before any
+		// side-effect (log "Retrying job", dispatchJobRetrying). A
+		// stale lease that has been reclaimed by another worker will
+		// get ErrLeaseLost back from ReleaseCtx; firing the retry
+		// event first would double-emit JobRetrying for the same row.
 		pushCtx, pushCancel := context.WithTimeout(context.Background(), retryPushTimeout)
 		var requeueErr error
 		if rd, ok := w.queue.(ReservationDriver); ok && !reservation.IsZero() {
@@ -645,7 +665,7 @@ func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, 
 				// worker already owns the row. Do not failJob (that
 				// would write a duplicate failed_jobs row for a lease
 				// we no longer hold). Drop the retry; the new owner is
-				// in charge.
+				// in charge of side effects.
 				w.logger.Warn("Lease lost before retry release; another worker owns the row",
 					"type", jobType,
 					"queue", w.queueName,
@@ -655,7 +675,18 @@ func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, 
 			}
 			w.logger.Error("Failed to re-queue job for retry", "error", requeueErr)
 			w.failJob(ctx, job, jobType, err, duration, attempt, maxAttempts, reservation)
+			return
 		}
+		// Requeue confirmed (or no lease to lose): now safe to fire
+		// the retry-side log + event.
+		w.logger.Info("Retrying job",
+			"type", jobType,
+			"attempt", attempt,
+			"max_attempts", maxAttempts,
+			"backoff_ms", backoff.Milliseconds(),
+			"error", err,
+		)
+		dispatchJobRetrying(w.dispatchEvent, ctx, jobType, w.queueName, attempt, maxAttempts, err, backoff)
 		return
 	}
 
@@ -682,6 +713,12 @@ func (w *Worker) attemptNumber(job Job, token ReservationToken) int {
 
 // failJob permanently fails a job after exhausting retries.
 //
+// Cleanup-first, then side effects: the FailReservedCtx mutation runs
+// before the batch counter increment and the JobFailed event dispatch.
+// If the lease was reclaimed by another worker (ErrLeaseLost), the new
+// owner is responsible for the side effects; firing them here would
+// double-emit JobFailed and double-increment batch failure counters.
+//
 // The driver-side cleanup write MUST use a fresh context with its own
 // short timeout, not the per-job ctx: when this is reached via the
 // jobCtx-timeout branch in processJob, ctx is already
@@ -694,14 +731,9 @@ func (w *Worker) attemptNumber(job Job, token ReservationToken) int {
 // propagate; only the database mutation runs under the detached
 // terminalCleanupTimeout budget.
 func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error, duration time.Duration, attempt, maxAttempts int, reservation ReservationToken) {
+	// Cleanup attempt cache regardless of ownership; this is pure
+	// per-worker state.
 	w.removeAttempts(job)
-	// Record batch failure
-	if bj, ok := job.(Batchable); ok {
-		if batch, found := FindBatch(bj.GetBatchID()); found {
-			batch.recordFailure(ctx, err)
-		}
-	}
-	dispatchJobFailed(w.dispatchEvent, ctx, jobType, w.queueName, err, duration)
 
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), terminalCleanupTimeout)
 	defer cleanupCancel()
@@ -709,27 +741,44 @@ func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error
 	// Reservation-capable drivers record + delete the row atomically;
 	// other drivers fall back to the bare Failed() path.
 	if rd, ok := w.queue.(ReservationDriver); ok && !reservation.IsZero() {
-		failErr := rd.FailReservedCtx(cleanupCtx, reservation, job, err, w.queueName)
-		switch {
+		switch failErr := rd.FailReservedCtx(cleanupCtx, reservation, job, err, w.queueName); {
 		case failErr == nil:
-			// happy path
+			// Ownership confirmed; safe to fire side effects below.
 		case errors.Is(failErr, ErrLeaseLost):
 			// Another worker reclaimed the row; the new owner is now
-			// responsible for it. Log and move on; do not panic, do
-			// not double-write failed_jobs.
-			w.logger.Warn("Lease lost before terminal cleanup; another worker owns the row",
+			// responsible for it. Log and stop -- do NOT bump batch
+			// counters or fire JobFailed; the new owner will when its
+			// own attempt terminates.
+			w.logger.Warn("Lease lost before terminal cleanup; the new owner will record failure",
 				"type", jobType,
 				"queue", w.queueName,
 				"job_id", jobIDOf(job),
 			)
+			return
 		default:
+			// Transient backend failure. We still own the row (no
+			// fence violation), it will be reclaimed via retryAfter
+			// and eventually fail there. We still fire side effects on
+			// this attempt so a downstream alerting pipeline sees the
+			// failure -- silencing it on a transient DB error would be
+			// worse than over-counting if a future reclaim also fails.
 			w.logger.Error("Failed to mark reserved job as failed", "error", failErr)
 		}
-		return
+	} else {
+		// Non-reservation driver (memory, redis): the row was deleted
+		// at pop time, so no lease to lose. Always run side effects.
+		if failErr := w.queue.Failed(job, err, w.queueName); failErr != nil {
+			w.logger.Error("Failed to mark job as failed", "error", failErr)
+		}
 	}
-	if failErr := w.queue.Failed(job, err, w.queueName); failErr != nil {
-		w.logger.Error("Failed to mark job as failed", "error", failErr)
+
+	// Side effects below run only on confirmed-ownership paths above.
+	if bj, ok := job.(Batchable); ok {
+		if batch, found := FindBatch(bj.GetBatchID()); found {
+			batch.recordFailure(ctx, err)
+		}
 	}
+	dispatchJobFailed(w.dispatchEvent, ctx, jobType, w.queueName, err, duration)
 }
 
 // calculateBackoff determines the delay before the next retry.

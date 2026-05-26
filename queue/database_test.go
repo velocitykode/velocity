@@ -826,6 +826,259 @@ func TestWorker_TimedOutHandlerLandsInFailedJobs(t *testing.T) {
 	}
 }
 
+// TestDatabaseDriver_PopCtx_RemovesRow asserts the restored [Driver]
+// contract: PopCtx (and PopCtxWithTrace) MUST remove the row from the
+// queue before returning. Pre-this-fix, PopCtx silently reserved the
+// row and the caller (any non-worker caller, e.g. admin scripts) had no
+// token to ack with, so the row redelivered after retryAfter.
+func TestDatabaseDriver_PopCtx_RemovesRow(t *testing.T) {
+	saveAndRestoreSigningState(t)
+	SetSigningKey(nil)
+
+	driver, cleanup := newSQLiteQueueDB(t)
+	defer cleanup()
+
+	if err := driver.PushCtx(context.Background(), &TestJob{ID: "drain-1"}, "drain"); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+
+	popped, err := driver.PopCtx(context.Background(), "drain")
+	if err != nil {
+		t.Fatalf("pop: %v", err)
+	}
+	if popped == nil {
+		t.Fatal("expected a popped job, got nil")
+	}
+
+	// Row must be gone immediately; no lease, no redelivery.
+	var rows int
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE queue = ?", "drain").Scan(&rows); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if rows != 0 {
+		t.Errorf("PopCtx left %d rows in table; expected 0 (contract is 'retrieves and removes')", rows)
+	}
+
+	// A subsequent PopCtx returns nil; the queue is empty, no reclaim
+	// window to wait through.
+	again, err := driver.PopCtx(context.Background(), "drain")
+	if err != nil {
+		t.Fatalf("second pop: %v", err)
+	}
+	if again != nil {
+		t.Errorf("PopCtx redelivered a removed job; got %v", again)
+	}
+}
+
+// TestDatabaseDriver_PopCtxWithTrace_RemovesRow mirrors PopCtx_RemovesRow
+// for the trace-aware shim. Same contract: row is gone after pop.
+func TestDatabaseDriver_PopCtxWithTrace_RemovesRow(t *testing.T) {
+	saveAndRestoreSigningState(t)
+	SetSigningKey(nil)
+
+	driver, cleanup := newSQLiteQueueDB(t)
+	defer cleanup()
+
+	if err := driver.PushCtx(context.Background(), &TestJob{ID: "drain-2"}, "drain"); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+
+	popped, _, err := driver.PopCtxWithTrace(context.Background(), "drain")
+	if err != nil {
+		t.Fatalf("pop: %v", err)
+	}
+	if popped == nil {
+		t.Fatal("expected a popped job, got nil")
+	}
+
+	var rows int
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE queue = ?", "drain").Scan(&rows); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if rows != 0 {
+		t.Errorf("PopCtxWithTrace left %d rows in table; expected 0", rows)
+	}
+}
+
+// TestWorker_StaleLeaseDoesNotDoubleRecord proves the side-effect
+// ordering invariant: when a worker's lease has been reclaimed by
+// another worker, the stale worker's success path MUST NOT
+// (a) increment batch counters, or (b) dispatch JobProcessed.
+// The fenced AckCtx returns ErrLeaseLost; the worker must short-circuit
+// before recording any side effect.
+//
+// Pre-this-fix, batch.recordSuccess and dispatchJobProcessed ran before
+// the ack, so a stale worker double-bumped the batch counter and the
+// new owner would do it again when it succeeded.
+//
+// The test drives the full worker pipeline (processJob) on two
+// independent DatabaseDriver instances pointed at the same DB. Each
+// driver has its own workerID (no shared mutable state), which both
+// models the realistic multi-worker case and avoids racing on a
+// shared workerID field.
+func TestWorker_StaleLeaseDoesNotDoubleRecord(t *testing.T) {
+	saveAndRestoreSigningState(t)
+	SetSigningKey(nil)
+	t.Cleanup(func() { batchStore.reset() })
+
+	driver1, cleanup := newSQLiteQueueDB(t)
+	defer cleanup()
+	const lease = 40 * time.Millisecond
+	driver1.SetRetryAfter(lease)
+	// driver2 shares driver1's underlying DB but gets its own workerID
+	// (NewDatabaseDriver derives one from the wall clock + nanos), so
+	// fence checks correctly distinguish the two workers. The sleep
+	// guarantees the two workerIDs differ even on very fast hardware
+	// (NewDatabaseDriver derives from Unix() + Nanosecond()).
+	time.Sleep(time.Millisecond)
+	driver2 := NewDatabaseDriver(driver1.db, driver1.dbDriver)
+	driver2.SetRetryAfter(lease)
+	if driver1.workerID == driver2.workerID {
+		t.Fatalf("two NewDatabaseDriver calls produced the same workerID %q", driver1.workerID)
+	}
+
+	// Register marshallableBatchJob (exported-field Batchable defined
+	// near the bottom of this file) so C-01's payload-bytes hydration
+	// succeeds on pop. testBatchJob from batch_test.go has unexported
+	// fields and cannot round-trip through json.Marshal.
+	RegisterJob(func(data []byte) (*marshallableBatchJob, error) {
+		j := &marshallableBatchJob{}
+		if len(data) == 0 {
+			return j, nil
+		}
+		if err := json.Unmarshal(data, j); err != nil {
+			return nil, err
+		}
+		return j, nil
+	})
+	t.Cleanup(func() {
+		registry.mu.Lock()
+		delete(registry.handlers, "marshallableBatchJob")
+		registry.mu.Unlock()
+	})
+
+	// Build a batch with a single Batchable job so we can observe
+	// counter changes through batch.CompletedJobs().
+	bjob := &marshallableBatchJob{}
+	batch, err := NewBatch(bjob).Dispatch(context.Background(), driver1)
+	if err != nil {
+		t.Fatalf("dispatch batch: %v", err)
+	}
+
+	// Confirm the row is in the DB.
+	var rows int
+	if err := driver1.db.QueryRow("SELECT COUNT(*) FROM jobs").Scan(&rows); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("expected 1 row after batch dispatch, got %d", rows)
+	}
+
+	// Count JobProcessed events. After both workers complete, this
+	// must be exactly 1 (worker 2's success only).
+	var processedEvents int32
+	dispatcher := func(ctx context.Context, ev interface{}) error {
+		if _, ok := ev.(*JobProcessed); ok {
+			atomic.AddInt32(&processedEvents, 1)
+		}
+		return nil
+	}
+
+	// Channel to gate worker1's handler: it blocks until we signal,
+	// guaranteeing worker2 has reclaimed before w1 reaches its ack.
+	releaseW1 := make(chan struct{})
+
+	// Worker 1 (uses driver1): handler sleeps until releaseW1 is
+	// closed, then returns success. The worker's success branch will
+	// reach ackReservation with a stale token; under the fix it
+	// observes ErrLeaseLost and skips side effects.
+	w1 := NewWorker(driver1, "default", func(Job) error {
+		<-releaseW1
+		return nil
+	},
+		WithMaxRetries(1),
+		WithTimeout(2*time.Second),
+		WithWorkerLogger(nullLogger{}),
+	)
+	w1.SetEventDispatcher(dispatcher)
+	w1.ctx, w1.cancel = context.WithCancel(context.Background())
+	defer w1.cancel()
+
+	w1Done := make(chan error, 1)
+	go func() { w1Done <- w1.processJob() }()
+
+	// Wait until worker1 has actually reserved the row.
+	deadline := time.Now().Add(2 * time.Second)
+	var w1Reserved bool
+	for time.Now().Before(deadline) {
+		var reservedCount int
+		if err := driver1.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE reserved_at IS NOT NULL").Scan(&reservedCount); err != nil {
+			t.Fatalf("scan reserved: %v", err)
+		}
+		if reservedCount == 1 {
+			w1Reserved = true
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if !w1Reserved {
+		t.Fatal("worker1 never reserved the row")
+	}
+
+	// Wait for the lease to expire so driver2 can reclaim.
+	time.Sleep(lease + 20*time.Millisecond)
+
+	// Worker 2 (uses driver2): runs the full worker pipeline. After
+	// this, batch.CompletedJobs == 1 and exactly one JobProcessed
+	// event has fired.
+	w2 := NewWorker(driver2, "default", func(Job) error { return nil },
+		WithMaxRetries(1),
+		WithWorkerLogger(nullLogger{}),
+	)
+	w2.SetEventDispatcher(dispatcher)
+	w2.ctx, w2.cancel = context.WithCancel(context.Background())
+	defer w2.cancel()
+
+	if err := w2.processJob(); err != nil {
+		t.Fatalf("w2 processJob: %v", err)
+	}
+	if got := batch.CompletedJobs(); got != 1 {
+		t.Fatalf("after w2 success, batch.CompletedJobs = %d, want 1", got)
+	}
+	if got := atomic.LoadInt32(&processedEvents); got != 1 {
+		t.Fatalf("after w2 success, JobProcessed events = %d, want 1", got)
+	}
+
+	// Release worker1's handler so its success branch runs. Under the
+	// fix, ackReservation returns false (ErrLeaseLost), worker1 skips
+	// the batch + event side effects, and the counters stay at 1.
+	close(releaseW1)
+
+	select {
+	case err := <-w1Done:
+		if err != nil {
+			t.Fatalf("w1 processJob: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker1 processJob did not return")
+	}
+
+	if got := batch.CompletedJobs(); got != 1 {
+		t.Errorf("stale w1 double-recorded batch success; batch.CompletedJobs=%d, want 1", got)
+	}
+	if got := atomic.LoadInt32(&processedEvents); got != 1 {
+		t.Errorf("stale w1 double-dispatched JobProcessed; events=%d, want 1", got)
+	}
+
+	// Row must be gone (w2 acked).
+	if err := driver1.db.QueryRow("SELECT COUNT(*) FROM jobs").Scan(&rows); err != nil {
+		t.Fatalf("post-test count: %v", err)
+	}
+	if rows != 0 {
+		t.Errorf("row should be removed after w2 ack; got %d", rows)
+	}
+}
+
 // TestDatabaseDriver_RewriteQuery exercises the placeholder rewriter directly
 // so regressions are caught even if no driver-specific test runs.
 func TestDatabaseDriver_RewriteQuery(t *testing.T) {
@@ -851,3 +1104,16 @@ func TestDatabaseDriver_RewriteQuery(t *testing.T) {
 		})
 	}
 }
+
+// marshallableBatchJob is a Batchable test job with exported fields so it
+// round-trips through json.Marshal/Unmarshal in the database-backed
+// reservation tests. testBatchJob (in batch_test.go) has unexported
+// fields and is intended for the in-memory driver only.
+type marshallableBatchJob struct {
+	BatchIDValue BatchID `json:"batch_id"`
+}
+
+func (j *marshallableBatchJob) Handle() error          { return nil }
+func (j *marshallableBatchJob) Failed(err error)       {}
+func (j *marshallableBatchJob) GetBatchID() BatchID    { return j.BatchIDValue }
+func (j *marshallableBatchJob) SetBatchID(id BatchID)  { j.BatchIDValue = id }

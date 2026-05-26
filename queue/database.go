@@ -236,162 +236,47 @@ func (d *DatabaseDriver) PushDelayedCtx(ctx context.Context, job Job, delay time
 	return nil
 }
 
-// PopCtx retrieves and removes a job from the queue, using the caller's ctx
-// for every transactional round-trip so worker shutdown aborts a blocking
-// SELECT instead of waiting for the driver deadline.
+// popMode selects how popSelectLocked finalises the popped row.
+type popMode int
+
+const (
+	// popModeDelete is the "retrieves and removes" path used by PopCtx
+	// and PopCtxWithTrace. The row is DELETEd inside the same tx as the
+	// SELECT, restoring the [Driver] contract for non-worker callers.
+	popModeDelete popMode = iota
+	// popModeReserve is the lease path used by PopCtxReserved. The row
+	// is updated with reserved_at/reserved_by/attempts and the caller
+	// receives a fencing token it must pass back to Ack / Release /
+	// FailReservedCtx.
+	popModeReserve
+)
+
+// PopCtx retrieves and removes the next job from the queue. This honours
+// the original [Driver] contract: after PopCtx returns successfully the
+// row is gone from the table and the caller owns the job outright.
 //
-// The read and delete run inside a single BEGIN/COMMIT transaction. On
-// PostgreSQL/MySQL 8+ the SELECT uses FOR UPDATE SKIP LOCKED so competing
-// workers never hand out the same job; SQLite falls back to a BEGIN IMMEDIATE
-// transaction (it serializes writers at the BEGIN). The payload is verified
-// BEFORE the DELETE; unrecoverable hydration failures are routed to the
-// poison-quarantine path so the row never head-of-line-starves the queue.
-//
-// PopCtx is the bare [Driver] surface and provides no lease semantics: a
-// worker crash between this returning and handler completion permanently
-// loses the job. Worker code uses [DatabaseDriver.PopCtxReserved] instead.
+// Deprecated: PopCtx provides no lease semantics, so a worker crash
+// between pop and handler completion permanently loses the job. The
+// worker pipeline uses [DatabaseDriver.PopCtxReserved] instead, which
+// returns a fencing token for Ack / Release / FailReservedCtx. PopCtx is
+// retained as an administrative / debug helper (e.g. drain a queue from
+// a script) and to satisfy the bare [Driver] interface. Production
+// callers should switch to PopCtxReserved.
 func (d *DatabaseDriver) PopCtx(ctx context.Context, queueName string) (Job, error) {
-	job, _, err := d.PopCtxWithTrace(ctx, queueName)
+	job, _, _, err := d.popSelectLocked(ctx, queueName, popModeDelete)
 	return job, err
 }
 
-// PopCtxWithTrace is the trace-aware variant of PopCtx. It returns the
-// producer-side trace context recovered from the persisted payload so the
-// worker can rebuild ctx for downstream events and HandleCtxer handlers.
-// Like PopCtx, the row is deleted before this returns; lease-aware
-// workers should call [DatabaseDriver.PopCtxReserved] instead.
+// PopCtxWithTrace is the trace-aware variant of PopCtx with the same
+// semantics: the row is removed from the queue before this returns.
+//
+// Deprecated: see [DatabaseDriver.PopCtx]. Use PopCtxReserved for
+// lease-safe consumption; this helper exists only for the bare
+// [TraceAwareDriver] interface and ad-hoc tooling.
 // Implements TraceAwareDriver.
 func (d *DatabaseDriver) PopCtxWithTrace(ctx context.Context, queueName string) (Job, TraceContext, error) {
-	var tc TraceContext
-	if err := ctx.Err(); err != nil {
-		return nil, tc, err
-	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	// Use Serializable on SQLite since it lacks FOR UPDATE SKIP LOCKED;
-	// default isolation elsewhere (the row lock provides mutual exclusion).
-	var txOpts *sql.TxOptions
-	if d.dbDriver == "sqlite" || d.dbDriver == "sqlite3" {
-		txOpts = &sql.TxOptions{Isolation: sql.LevelSerializable}
-	}
-	tx, err := d.db.BeginTx(ctx, txOpts)
-	if err != nil {
-		return nil, tc, fmt.Errorf("velocity/queue: failed to begin transaction: %w", err)
-	}
-	// Rollback is a no-op if Commit already succeeded.
-	defer func() { _ = tx.Rollback() }()
-
-	var selectQuery string
-	switch d.dbDriver {
-	case "postgres", "mysql":
-		selectQuery = d.rewriteQuery(`SELECT id, queue, payload, attempts, scheduled_at, reserved_at, reserved_by, failed_at, failed_reason, created_at, updated_at
-			FROM jobs
-			WHERE queue = $1
-			AND scheduled_at <= $2
-			AND reserved_at IS NULL
-			AND failed_at IS NULL
-			ORDER BY scheduled_at ASC, id ASC
-			LIMIT 1
-			FOR UPDATE SKIP LOCKED`)
-	default:
-		// SQLite (and any unrecognised driver). The outer transaction
-		// already serializes writers, so no row-level locking hint is needed.
-		selectQuery = d.rewriteQuery(`SELECT id, queue, payload, attempts, scheduled_at, reserved_at, reserved_by, failed_at, failed_reason, created_at, updated_at
-			FROM jobs
-			WHERE queue = $1
-			AND scheduled_at <= $2
-			AND reserved_at IS NULL
-			AND failed_at IS NULL
-			ORDER BY scheduled_at ASC, id ASC
-			LIMIT 1`)
-	}
-
-	var jobRecord JobRecord
-	row := tx.QueryRowContext(ctx, selectQuery, queueName, time.Now())
-	if err := scanJobRecord(row, &jobRecord); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, tc, nil // No jobs available
-		}
-		return nil, tc, fmt.Errorf("velocity/queue: failed to fetch job: %w", err)
-	}
-
-	// Deserialize and verify the payload BEFORE delete. Every unrecoverable
-	// failure from this point through hydration is routed through the
-	// poison-quarantine path: the row is moved to failed_jobs with the
-	// specific error string, deleted from `jobs`, and the pop returns
-	// [ErrPoisonJob]. The worker treats that as a recoverable pop error
-	// and retries, and because the poison row is gone the next SELECT
-	// picks the next eligible row instead of head-of-line-starving the
-	// queue on the same broken row forever.
-	//
-	// JSON unmarshal failure on the on-wire wrapper IS unrecoverable: no
-	// further worker can parse these bytes, and leaving the row live makes
-	// the malformed row block the queue forever.
-	var wrapper JobWrapper
-	if err := json.Unmarshal([]byte(jobRecord.Payload), &wrapper); err != nil {
-		return d.quarantineAndReturn(tx, tc, jobRecord, queueName,
-			fmt.Errorf("velocity/queue: failed to deserialize job: %w", err))
-	}
-
-	if wrapper.Payload != nil {
-		sig := wrapper.Payload.Signature
-		wrapper.Payload.Signature = "" // Remove signature before verification
-		verifyData, marshalErr := json.Marshal(wrapper)
-		if marshalErr != nil {
-			// Re-marshal failure on bytes we just unmarshalled is exotic
-			// (only fires on cycles / custom MarshalJSON failures) but
-			// it is still unrecoverable; quarantine.
-			return d.quarantineAndReturn(tx, tc, jobRecord, queueName,
-				fmt.Errorf("velocity/queue: failed to marshal payload for verification: %w", marshalErr))
-		}
-		if err := verifyPayload(verifyData, sig); err != nil {
-			// Integrity failure (HMAC mismatch, missing signature when
-			// required, signature present when signing is disabled).
-			// Previous behaviour left the row in `jobs` so an operator
-			// could inspect it; that traded one bug (tamper-evidence) for
-			// another (head-of-line starvation). We honour the
-			// "preserved for forensic inspection" property by moving the
-			// row to `failed_jobs` with the integrity-failure error in
-			// the exception column. Operators inspect there, not in the
-			// live queue.
-			return d.quarantineAndReturn(tx, tc, jobRecord, queueName,
-				fmt.Errorf("velocity/queue: queue integrity check failed: %w", err))
-		}
-		tc = TraceContext{
-			TraceID:  wrapper.Payload.TraceID,
-			SpanID:   wrapper.Payload.SpanID,
-			ParentID: wrapper.Payload.ParentID,
-		}
-	}
-
-	// Restore the job from the wrapper. The deserialised wrapper has
-	// Job == nil (the field is `json:"-"`), so hydration always goes through
-	// the registry via GetJobFromWrapper -> HydrateJob. Failure to hydrate
-	// (unregistered type, factory decode error) is unrecoverable; quarantine
-	// keeps the queue moving (see ErrPoisonJob docstring for the full set of
-	// quarantine triggers).
-	//
-	// This is the C-01 fix: the previous code path silently substituted
-	// &GenericJob{} (Handle() = nil) so cross-process pops succeeded
-	// vacuously and dropped every job.
-	job, err := GetJobFromWrapper(&wrapper)
-	if err != nil {
-		return d.quarantineAndReturn(tx, tc, jobRecord, queueName,
-			fmt.Errorf("velocity/queue: failed to restore job from wrapper: %w", err))
-	}
-
-	// Signature verified, safe to delete.
-	deleteQuery := d.rewriteQuery("DELETE FROM jobs WHERE id = $1")
-	if _, err := tx.ExecContext(ctx, deleteQuery, jobRecord.ID); err != nil {
-		return nil, tc, fmt.Errorf("velocity/queue: failed to delete job: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, tc, fmt.Errorf("velocity/queue: failed to commit pop transaction: %w", err)
-	}
-
-	return job, tc, nil
+	job, _, tc, err := d.popSelectLocked(ctx, queueName, popModeDelete)
+	return job, tc, err
 }
 
 // PopCtxReserved leases the next available row for the worker. It either
@@ -412,6 +297,15 @@ func (d *DatabaseDriver) PopCtxWithTrace(ctx context.Context, queueName string) 
 //
 // Implements [ReservationDriver].
 func (d *DatabaseDriver) PopCtxReserved(ctx context.Context, queueName string) (Job, ReservationToken, TraceContext, error) {
+	return d.popSelectLocked(ctx, queueName, popModeReserve)
+}
+
+// popSelectLocked is the shared pop implementation. It opens a tx,
+// selects the next due (or reclaimable) row, verifies payload
+// integrity, rehydrates the job, then either DELETEs the row
+// (popModeDelete) or UPDATEs it into a reserved state (popModeReserve)
+// before committing. Returns a zero token when mode == popModeDelete.
+func (d *DatabaseDriver) popSelectLocked(ctx context.Context, queueName string, mode popMode) (Job, ReservationToken, TraceContext, error) {
 	var tc TraceContext
 	if err := ctx.Err(); err != nil {
 		return nil, ReservationToken{}, tc, err
@@ -439,7 +333,9 @@ func (d *DatabaseDriver) PopCtxReserved(ctx context.Context, queueName string) (
 	// unreserved and due, OR its lease has expired (reserved_at older
 	// than retryAfter). The latter clause is what makes the queue
 	// recoverable after a SIGKILL, OOM, or pod eviction; no separate
-	// reaper goroutine is required.
+	// reaper goroutine is required. The delete-mode path uses the same
+	// predicate so a stuck-reserved row can still be drained by an admin
+	// PopCtx after the lease expires.
 	var selectQuery string
 	switch d.dbDriver {
 	case "postgres", "mysql":
@@ -516,31 +412,49 @@ func (d *DatabaseDriver) PopCtxReserved(ctx context.Context, queueName string) (
 		return j, ReservationToken{}, qtc, qerr
 	}
 
-	// Reserve the row. attempts is bumped here so the column reflects
-	// the durable retry budget across process restarts, matching
-	// Laravel's markJobAsReserved semantics. The post-increment value is
-	// computed in Go (jobRecord.Attempts was loaded inside the same tx
-	// under the row lock, so it cannot have been advanced by a
-	// concurrent worker) and surfaced on the ReservationToken; the
-	// worker uses it as the authoritative MaxAttempts source on durable
-	// drivers, so retry budgets survive worker restarts.
-	persistedAttempts := jobRecord.Attempts + 1
-	updateQuery := d.rewriteQuery(`UPDATE jobs
-		SET reserved_at = $1, reserved_by = $2, attempts = $3, updated_at = $4
-		WHERE id = $5`)
-	if _, err := tx.ExecContext(ctx, updateQuery, now, d.workerID, persistedAttempts, now, jobRecord.ID); err != nil {
-		return nil, ReservationToken{}, tc, fmt.Errorf("velocity/queue: failed to reserve job: %w", err)
-	}
+	switch mode {
+	case popModeDelete:
+		// Old [Driver] contract: pop fully removes the row before
+		// returning. No lease, no token. Callers that need crash-safe
+		// at-least-once delivery must use PopCtxReserved instead.
+		deleteQuery := d.rewriteQuery("DELETE FROM jobs WHERE id = $1")
+		if _, err := tx.ExecContext(ctx, deleteQuery, jobRecord.ID); err != nil {
+			return nil, ReservationToken{}, tc, fmt.Errorf("velocity/queue: failed to delete job: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, ReservationToken{}, tc, fmt.Errorf("velocity/queue: failed to commit pop transaction: %w", err)
+		}
+		return job, ReservationToken{}, tc, nil
 
-	if err := tx.Commit(); err != nil {
-		return nil, ReservationToken{}, tc, fmt.Errorf("velocity/queue: failed to commit pop transaction: %w", err)
-	}
+	case popModeReserve:
+		// Reserve the row. attempts is bumped here so the column
+		// reflects the durable retry budget across process restarts,
+		// matching Laravel's markJobAsReserved semantics. The
+		// post-increment value is computed in Go (jobRecord.Attempts
+		// was loaded inside the same tx under the row lock, so it
+		// cannot have been advanced by a concurrent worker) and
+		// surfaced on the ReservationToken; the worker uses it as the
+		// authoritative MaxAttempts source on durable drivers, so
+		// retry budgets survive worker restarts.
+		persistedAttempts := jobRecord.Attempts + 1
+		updateQuery := d.rewriteQuery(`UPDATE jobs
+			SET reserved_at = $1, reserved_by = $2, attempts = $3, updated_at = $4
+			WHERE id = $5`)
+		if _, err := tx.ExecContext(ctx, updateQuery, now, d.workerID, persistedAttempts, now, jobRecord.ID); err != nil {
+			return nil, ReservationToken{}, tc, fmt.Errorf("velocity/queue: failed to reserve job: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, ReservationToken{}, tc, fmt.Errorf("velocity/queue: failed to commit pop transaction: %w", err)
+		}
+		return job, ReservationToken{
+			ID:         int64(jobRecord.ID),
+			Attempts:   persistedAttempts,
+			ReservedBy: d.workerID,
+		}, tc, nil
 
-	return job, ReservationToken{
-		ID:         int64(jobRecord.ID),
-		Attempts:   persistedAttempts,
-		ReservedBy: d.workerID,
-	}, tc, nil
+	default:
+		return nil, ReservationToken{}, tc, fmt.Errorf("velocity/queue: unknown pop mode %d", mode)
+	}
 }
 
 // AckCtx deletes the reserved row after the handler returned success.
