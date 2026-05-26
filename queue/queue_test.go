@@ -10,12 +10,20 @@ import (
 	testsync "github.com/velocitykode/velocity/testing"
 )
 
-// TestJob is a simple job implementation for testing
+// TestJob is a simple job implementation for testing.
+//
+// Handler and OnFail carry test-time closures and are excluded from JSON
+// serialization. The memory driver retains the live job pointer on the
+// wrapper's Job field (a `json:"-"` in-process fast path), so closures
+// survive the same-process push/pop round-trip and can be invoked during
+// Handle / Failed. Durable drivers (database, redis) would receive the
+// JSON-marshalled bytes only; closures cannot survive that boundary, so a
+// production job MUST be pure-data. This struct is a test fixture only.
 type TestJob struct {
-	ID      string `json:"id"`
-	Message string `json:"message"`
-	Handler func() error
-	OnFail  func(error)
+	ID      string       `json:"id"`
+	Message string       `json:"message"`
+	Handler func() error `json:"-"`
+	OnFail  func(error)  `json:"-"`
 }
 
 func (t *TestJob) Handle() error {

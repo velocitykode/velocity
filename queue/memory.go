@@ -4,7 +4,6 @@ import (
 	"container/heap"
 	"container/list"
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -261,8 +260,14 @@ func (m *MemoryDriver) popLocked(queueName string) (Job, TraceContext, error) {
 		tc.ParentID = wrapper.Payload.ParentID
 	}
 
-	// Return the actual job instance
-	return GetJobFromWrapper(wrapper), tc, nil
+	// Same-process pop: wrapper.Job is non-nil and is returned directly via
+	// the fast path inside GetJobFromWrapper. Error path covers wrappers
+	// rebuilt from bytes (defensive; the memory driver never produces those).
+	job, err := GetJobFromWrapper(wrapper)
+	if err != nil {
+		return nil, tc, fmt.Errorf("velocity/queue: failed to restore job from wrapper: %w", err)
+	}
+	return job, tc, nil
 }
 
 // Size returns the number of jobs in the queue
@@ -405,46 +410,15 @@ func (m *MemoryDriver) moveReadyJobs() {
 	}
 }
 
-// GenericJob is a wrapper for jobs in memory driver
-type GenericJob struct {
-	Payload *Payload
-}
-
-func (g *GenericJob) Handle() error {
-	// This is a placeholder - real implementation would deserialize and execute
-	return nil
-}
-
-func (g *GenericJob) Failed(err error) {
-	// Log the failure
-}
-
-// MarshalJSON for GenericJob
-func (g *GenericJob) MarshalJSON() ([]byte, error) {
-	return json.Marshal(g.Payload)
-}
-
-// SerializeJob converts a job to a payload
+// SerializeJob converts a job to a durable [Payload]. Thin compatibility
+// wrapper around [MarshalJob]: callers that predate the C-01 fix can keep
+// using SerializeJob unchanged. New code should call MarshalJob directly.
+//
+// SerializeJob never returns a "salvage" payload on marshal failure. The
+// pre-C-01 implementation silently substituted `{"type":"%T"}` for jobs
+// json.Marshal could not encode, which let the producer report success while
+// guaranteeing the consumer could not reconstruct the job. The fix returns
+// the marshal error so callers stop the push instead of dropping data.
 func SerializeJob(job Job, queueName string) (*Payload, error) {
-	// For GenericJob, we just want to store the payload
-	if gj, ok := job.(*GenericJob); ok {
-		return gj.Payload, nil
-	}
-
-	// Try to marshal the job
-	data, err := json.Marshal(job)
-	if err != nil {
-		// If we can't marshal, store a simple representation
-		data = []byte(fmt.Sprintf(`{"type":"%T"}`, job))
-	}
-
-	jobType := normalizeJobType(fmt.Sprintf("%T", job))
-
-	return &Payload{
-		Type:      jobType,
-		Data:      data,
-		Queue:     queueName,
-		Attempts:  0,
-		CreatedAt: time.Now(),
-	}, nil
+	return MarshalJob(job, queueName)
 }

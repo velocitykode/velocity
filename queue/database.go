@@ -294,10 +294,17 @@ func (d *DatabaseDriver) PopCtxWithTrace(ctx context.Context, queueName string) 
 	}
 
 	// Restore the job from the wrapper before committing so a restoration
-	// failure also avoids deleting the row.
-	job := GetJobFromWrapper(&wrapper)
-	if job == nil {
-		return nil, tc, fmt.Errorf("velocity/queue: failed to restore job from wrapper")
+	// failure also avoids deleting the row. The deserialised wrapper has
+	// Job == nil (the field is `json:"-"`), so hydration always goes through
+	// the registry via GetJobFromWrapper -> HydrateJob. Failure to hydrate
+	// (unregistered type, factory decode error) surfaces here, the deferred
+	// Rollback releases the row, and the job remains in the queue for the
+	// next worker / inspection. This is the C-01 fix: the previous code path
+	// silently substituted &GenericJob{} (Handle() = nil) so cross-process
+	// pops succeeded vacuously and dropped every job.
+	job, err := GetJobFromWrapper(&wrapper)
+	if err != nil {
+		return nil, tc, fmt.Errorf("velocity/queue: failed to restore job from wrapper: %w", err)
 	}
 
 	// Signature verified — safe to delete.

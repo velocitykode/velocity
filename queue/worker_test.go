@@ -767,10 +767,14 @@ func TestWorker_RetryPushBoundedDuringShutdown(t *testing.T) {
 // observed ctx.Err() so the test can assert cancellation propagated into the
 // handler.
 type ctxAwareJob struct {
-	ID         string
-	started    chan struct{}
-	observed   atomic.Value // error
-	failedWith atomic.Value // error
+	ID string `json:"id"`
+	// In-process test-only fields. Excluded from JSON: the memory driver
+	// keeps the live pointer on JobWrapper.Job for same-process pops, so
+	// these channels / atomic values survive without going through the
+	// payload bytes (which now carry only ID for cross-process workers).
+	started    chan struct{} `json:"-"`
+	observed   atomic.Value  `json:"-"` // error
+	failedWith atomic.Value  `json:"-"` // error
 }
 
 func (j *ctxAwareJob) Handle() error {

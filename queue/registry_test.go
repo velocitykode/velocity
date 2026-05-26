@@ -395,8 +395,12 @@ func TestRegisterJob_MemoryDriverRoundTrip(t *testing.T) {
 		if len(data) == 0 {
 			return j, nil
 		}
-		// MemoryDriver stores the live job pointer behind an ID lookup, so
-		// the factory is invoked but Data is the {"job_id":"..."} stub.
+		// MemoryDriver hands back the live Job pointer via JobWrapper.Job
+		// (in-process fast path), so this factory is NOT invoked on a
+		// same-process push/pop. It runs only for durable drivers that
+		// hydrate from Payload.Data bytes. Even so, registering it lets
+		// the producer round-trip prove the payload bytes are decodable,
+		// which is the C-01 invariant.
 		_ = json.Unmarshal(data, j)
 		return j, nil
 	})
