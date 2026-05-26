@@ -41,6 +41,20 @@ var _ contract.LoginThrottler = NoopLoginThrottler{}
 // legitimate identifier fits comfortably.
 const maxIdentifierBytes = 254
 
+// throttleKeySep is the byte used to separate the normalised identifier
+// from the canonical client IP inside the SHA-256 input. ASCII Unit
+// Separator (0x1F) is the standard control character ECMA-48 reserves
+// for "logical record element separators inside opaque data", which is
+// exactly the role it plays here. It is also explicitly forbidden in
+// every canonical IP textual representation (net.ParseIP/net.SplitHostPort
+// reject it) and is normalised out of any sane credential identifier
+// (NFKC + ToLower passes it through unchanged, but it has no use in
+// emails / usernames). Without a separator that cannot appear in either
+// component, a crafted identifier like "victim<sep>198.51.100.1"
+// collides with the throttle key for ("victim", "198.51.100.1") and
+// lets the attacker poison or share a victim's rate-limit bucket.
+const throttleKeySep = "\x1f"
+
 // ThrottleKey derives the rate-limiting key used for a login attempt.
 //
 // The key is a stable, length-bounded SHA-256 hex digest over the
@@ -71,11 +85,12 @@ func ThrottleKey(r *http.Request, credentials map[string]interface{}, trustedPro
 	// unique-per-connection key.
 	ip := clientip.ExtractString(r, trustedProxies)
 
-	// Use NUL as separator so neither ident nor ip can collide with
-	// another (ident, ip) pair via a "|"-bearing identifier (e.g.
-	// `alice|10.0.0.5` impersonating `alice` from 10.0.0.5). Hashing
-	// further removes the separator as an attack surface.
-	sum := sha256.Sum256([]byte(ident + "\x00" + ip))
+	// throttleKeySep (ASCII Unit Separator 0x1f) cannot appear in any
+	// canonical IP textual representation and is normalised out of any
+	// sane credential identifier. Using it as the separator stops a
+	// crafted identifier "victim<sep>198.51.100.1" from colliding with
+	// the throttle key for ("victim", "198.51.100.1"). See M-46.
+	sum := sha256.Sum256([]byte(ident + throttleKeySep + ip))
 	return "login:" + hex.EncodeToString(sum[:8])
 }
 
