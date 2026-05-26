@@ -43,9 +43,24 @@ type afterCommitTask struct {
 // of FireAfterCommit (commit) or DropAfterCommit (rollback). State after
 // drain is terminal: subsequent Enqueue calls return false so a late
 // dispatch in a finalizer cannot smuggle work past the boundary.
+//
+// `claimed` distinguishes the two install-time states:
+//
+//   - false: the queue was attached by PrepareAfterCommit but no
+//     InstallAfterCommitQueue has run yet. The first Install call flips
+//     `claimed` to true under q.mu and returns an owner handle.
+//   - true: the queue is already owned by an outer Install caller.
+//     Subsequent Install calls return non-owner handles whose baseline is
+//     the current task count (savepoint semantics).
+//
+// The claim flip closes the M-48 F2 hole where PrepareAfterCommit followed
+// by Transaction silently produced an orphan queue: without `claimed`, the
+// first Install treated the prepared queue as already-nested and returned
+// owner=false, so the Transaction never fired its drain.
 type afterCommitQueue struct {
 	mu       sync.Mutex
 	tasks    []afterCommitTask
+	claimed  bool // true once an Install call has taken ownership; gates owner vs nested handle
 	draining bool // true while FireAfterCommit is invoking tasks
 	finished bool // true once Fire or Drop has completed; Enqueue refuses afterwards
 }
@@ -123,6 +138,13 @@ func (h AfterCommitHandle) TruncateToBaseline() {
 // same ctx is returned unchanged so nested preparations do not stack
 // holders.
 //
+// The queue is left unclaimed: the first InstallAfterCommitQueue call
+// (typically from orm.Manager.Transaction) claims the queue and becomes
+// its owner; subsequent installs on the same queue are nested. Without
+// this two-step shape a Prepare-then-Transaction sequence would orphan
+// the queue (Install would see an existing queue, return owner=false,
+// and the Transaction wrapper would never fire the drain).
+//
 // Outside a Transaction (no orm wiring), the queue still records tasks
 // but they will never fire. The orm layer owns the drain because rollback
 // and commit boundaries are orm-defined; events alone has no way to know
@@ -138,21 +160,33 @@ func PrepareAfterCommit(ctx context.Context) context.Context {
 }
 
 // InstallAfterCommitQueue is the entry orm.Manager.Transaction uses to
-// install or join an after-commit queue on ctx. Behaviour mirrors the
-// nested/baseline semantics of InstallBuffer in events/buffer.go:
+// install or join an after-commit queue on ctx. Three cases:
 //
-//   - If ctx has no queue, a fresh queue is installed and the returned
-//     ctx carries it. handle.Owner() == true: the caller is responsible
-//     for calling FireAfterCommit on commit and DropAfterCommit on
-//     rollback.
-//   - If ctx already carries a queue (a nested Transaction reusing the
-//     outer queue), the ctx is returned unchanged and the handle binds
-//     to the existing queue with the current task count captured as the
+//   - ctx has no queue: a fresh queue is installed (claimed=true at
+//     birth) and the returned ctx carries it. handle.Owner() == true
+//     with baseline=0. Auto-install path used when the caller did not
+//     PrepareAfterCommit.
+//   - ctx already carries a queue AND the queue is unclaimed: the first
+//     Install on a Prepare-attached queue claims it (claimed flips
+//     under q.mu) and returns handle.Owner() == true with baseline=0.
+//     ctx is returned unchanged because the queue is already on it.
+//     This is the path that fixes M-48 F2: without the claim flip the
+//     Install would have returned a non-owner handle and the
+//     Transaction wrapper would never have drained the queue.
+//   - ctx already carries a queue AND the queue is already claimed:
+//     nested Install. ctx is returned unchanged; the handle binds to
+//     the existing queue with the current task count captured as the
 //     baseline. handle.Owner() == false: the caller MUST NOT call
 //     Fire/Drop; instead, on inner rollback / panic the caller invokes
 //     handle.TruncateToBaseline to drop only inner-enqueued tasks while
 //     leaving outer-enqueued tasks intact. Inner commit is a no-op so
 //     forwarding is owned by the outermost scope.
+//
+// The claim flip and the baseline read both happen under q.mu so two
+// concurrent Install calls cannot both believe they own the queue: the
+// loser sees claimed=true on its turn under the lock and falls through
+// to the nested branch with a baseline of whatever the winner enqueued
+// in between.
 //
 // The baseline+truncate shape closes the rollback-leak hole that the
 // previous (ctx, bool) signature had: a nested Transaction that
@@ -161,7 +195,7 @@ func PrepareAfterCommit(ctx context.Context) context.Context {
 // rolled-back savepoint.
 //
 // Used by orm.Manager.Transaction to wire automatic deferral of
-// ShouldDispatchAfterCommit listeners even when the user did not call
+// ShouldDispatchAfterCommit listeners whether or not the caller invoked
 // PrepareAfterCommit on the outer ctx.
 func InstallAfterCommitQueue(ctx context.Context) (context.Context, AfterCommitHandle) {
 	if ctx == nil {
@@ -169,11 +203,22 @@ func InstallAfterCommitQueue(ctx context.Context) (context.Context, AfterCommitH
 	}
 	if existing, ok := ctx.Value(afterCommitKey{}).(*afterCommitQueue); ok && existing != nil {
 		existing.mu.Lock()
+		if !existing.claimed {
+			// First Install on a Prepare-attached queue: claim it and
+			// become the owner. Baseline is 0 because the queue must
+			// not have accumulated tasks before any owner existed
+			// (Dispatch's gate requires HasAfterCommitQueue, which is
+			// true here, but tasks queued under an unclaimed queue
+			// without a Transaction wrapper would never fire anyway).
+			existing.claimed = true
+			existing.mu.Unlock()
+			return ctx, AfterCommitHandle{q: existing, baseline: 0, owner: true}
+		}
 		baseline := len(existing.tasks)
 		existing.mu.Unlock()
 		return ctx, AfterCommitHandle{q: existing, baseline: baseline, owner: false}
 	}
-	q := &afterCommitQueue{}
+	q := &afterCommitQueue{claimed: true}
 	return context.WithValue(ctx, afterCommitKey{}, q), AfterCommitHandle{q: q, baseline: 0, owner: true}
 }
 

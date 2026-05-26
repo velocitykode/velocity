@@ -376,6 +376,89 @@ func TestInstallAfterCommitQueue_OwnerSemantics(t *testing.T) {
 	}
 }
 
+// TestPrepareAfterCommit_FirstInstallClaimsAsOwner is the canonical M-48 F2
+// regression: PrepareAfterCommit attaches an unclaimed queue, then the first
+// InstallAfterCommitQueue (typically from orm.Manager.Transaction) MUST
+// flip the claim and return owner=true. Without the claim flip the Install
+// saw the prepared queue as already-nested, returned owner=false, and the
+// Transaction wrapper silently never drained the queue: every queued
+// listener went unfired on commit.
+func TestPrepareAfterCommit_FirstInstallClaimsAsOwner(t *testing.T) {
+	ctx := PrepareAfterCommit(context.Background())
+	_, handle := InstallAfterCommitQueue(ctx)
+	if !handle.Owner() {
+		t.Fatal("first Install after PrepareAfterCommit returned Owner()=false; queue would be orphaned")
+	}
+}
+
+// TestPrepareAfterCommit_NestedInstallAfterClaimIsNonOwner pins the second
+// half of the F2 contract: once the first Install has claimed the
+// prepared queue, a subsequent Install on the same ctx is nested and
+// MUST return owner=false so the inner Transaction's commit / rollback
+// boundary does not drain the outer owner's listeners.
+func TestPrepareAfterCommit_NestedInstallAfterClaimIsNonOwner(t *testing.T) {
+	ctx := PrepareAfterCommit(context.Background())
+	_, outer := InstallAfterCommitQueue(ctx)
+	if !outer.Owner() {
+		t.Fatal("first Install returned Owner()=false")
+	}
+	_, inner := InstallAfterCommitQueue(ctx)
+	if inner.Owner() {
+		t.Fatal("second Install after claim returned Owner()=true; nested install must be non-owner")
+	}
+}
+
+// TestPrepareAfterCommit_NestedInstallRespectsBaseline pins savepoint
+// semantics on the F2 path: after the first Install claims the queue and
+// enqueues task A, a nested Install captures baseline=1; the nested
+// caller enqueues B; TruncateToBaseline on the nested handle drops B but
+// keeps A; the owner's drain fires only A.
+func TestPrepareAfterCommit_NestedInstallRespectsBaseline(t *testing.T) {
+	ctx := PrepareAfterCommit(context.Background())
+	_, owner := InstallAfterCommitQueue(ctx)
+	if !owner.Owner() {
+		t.Fatal("first Install returned Owner()=false")
+	}
+
+	var fired []string
+	if !EnqueueAfterCommit(ctx, func(context.Context) error {
+		fired = append(fired, "A")
+		return nil
+	}) {
+		t.Fatal("owner EnqueueAfterCommit(A) returned false")
+	}
+
+	_, nested := InstallAfterCommitQueue(ctx)
+	if nested.Owner() {
+		t.Fatal("nested Install returned Owner()=true")
+	}
+
+	if !EnqueueAfterCommit(ctx, func(context.Context) error {
+		fired = append(fired, "B")
+		return nil
+	}) {
+		t.Fatal("nested EnqueueAfterCommit(B) returned false")
+	}
+
+	if got := PendingAfterCommit(ctx); got != 2 {
+		t.Fatalf("PendingAfterCommit before truncate = %d; want 2", got)
+	}
+
+	nested.TruncateToBaseline()
+
+	if got := PendingAfterCommit(ctx); got != 1 {
+		t.Fatalf("PendingAfterCommit after nested truncate = %d; want 1 (only A survives)", got)
+	}
+
+	if err := FireAfterCommit(ctx); err != nil {
+		t.Fatalf("FireAfterCommit returned error: %v", err)
+	}
+
+	if len(fired) != 1 || fired[0] != "A" {
+		t.Fatalf("drained tasks = %v; want [A] (B was truncated)", fired)
+	}
+}
+
 // TestDispatch_AfterCommitListener_UsesReplayContext asserts the listener
 // observes the ctx passed to FireAfterCommit, not the (now stale)
 // in-flight tx ctx. Listeners that read deadlines or trace IDs from ctx

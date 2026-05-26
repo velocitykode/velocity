@@ -408,6 +408,85 @@ func TestTransaction_NestedInnerCommit_AllListenersFire(t *testing.T) {
 	}
 }
 
+// TestTransaction_RespectsPrepareAfterCommit_FiresOnCommit is the canonical
+// M-48 F2 regression: a caller that explicitly calls PrepareAfterCommit
+// before opening a Transaction MUST see ShouldDispatchAfterCommit
+// listeners fire on commit. Before the claim/owner refactor, the prepared
+// queue was treated as already-nested by InstallAfterCommitQueue and the
+// Transaction wrapper never drained it: every queued listener went
+// unfired on commit, silently breaking outbox enqueues, read-model
+// updates, and any side effect the caller assumed was deferred to commit.
+func TestTransaction_RespectsPrepareAfterCommit_FiresOnCommit(t *testing.T) {
+	m := newTestManager(t)
+	defer m.Shutdown(context.Background())
+
+	d := events.NewDispatcher()
+	listener := &afterCommitTestListener{defer_: true}
+	d.Listen("user.created", listener)
+
+	ctx := events.PrepareAfterCommit(context.Background())
+
+	err := m.Transaction(ctx, func(txCtx context.Context) error {
+		if err := d.Dispatch(txCtx, "user.created"); err != nil {
+			t.Fatalf("Dispatch returned error: %v", err)
+		}
+		if got := listener.invocations.Load(); got != 0 {
+			t.Errorf("listener fired %d times inside tx; want 0", got)
+		}
+		if !events.HasAfterCommitQueue(txCtx) {
+			t.Error("HasAfterCommitQueue returned false inside Transaction on a prepared ctx")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Transaction returned %v", err)
+	}
+
+	if got := listener.invocations.Load(); got != 1 {
+		t.Fatalf("listener fired %d times after commit; want 1 (queue was orphaned before claim fix)", got)
+	}
+}
+
+// TestTransaction_RespectsPrepareAfterCommit_DropsOnRollback mirrors the
+// fires-on-commit test for the rollback path: when the caller prepared
+// the queue upfront and the Transaction body returns an error, the
+// listener MUST NOT fire. Without the claim flip the Transaction never
+// owned the queue, so DropAfterCommit was a no-op and the tasks would
+// have sat in the queue forever (still unfired but reachable via any
+// later code holding the ctx).
+func TestTransaction_RespectsPrepareAfterCommit_DropsOnRollback(t *testing.T) {
+	m := newTestManager(t)
+	defer m.Shutdown(context.Background())
+
+	d := events.NewDispatcher()
+	listener := &afterCommitTestListener{defer_: true}
+	d.Listen("user.created", listener)
+
+	ctx := events.PrepareAfterCommit(context.Background())
+
+	rollback := errors.New("force rollback")
+	err := m.Transaction(ctx, func(txCtx context.Context) error {
+		if err := d.Dispatch(txCtx, "user.created"); err != nil {
+			t.Fatalf("Dispatch returned error: %v", err)
+		}
+		return rollback
+	})
+	if !errors.Is(err, rollback) {
+		t.Fatalf("Transaction err = %v, want %v", err, rollback)
+	}
+
+	if got := listener.invocations.Load(); got != 0 {
+		t.Fatalf("listener fired %d times after rollback on prepared ctx; want 0", got)
+	}
+
+	// And the queue must be fully drained / terminal now: a later
+	// Dispatch on the same ctx fires inline, it does not stack on a
+	// dead queue.
+	if events.HasAfterCommitQueue(ctx) {
+		t.Fatal("HasAfterCommitQueue returned true after rollback drained the owner")
+	}
+}
+
 // TestTransaction_TripleNested_InnerRollback_MidAndOuterCommit pins the
 // three-level case: outer -> mid -> inner. Inner rolls back; mid
 // continues and commits; outer commits. Mid- and outer-enqueued
