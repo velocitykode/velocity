@@ -773,13 +773,13 @@ func TestWebSocketDriver_handleClientEvent(t *testing.T) {
 		wantReceivers []string
 	}{
 		{
-			name: "broadcasts client event to other clients in channel",
+			name: "broadcasts client event to other clients in private channel",
 			setupChannels: map[string][]string{
-				"chat": {"client-1", "client-2", "client-3"},
+				"private-chat": {"client-1", "client-2", "client-3"},
 			},
 			clientID: "client-1",
 			msgData: map[string]interface{}{
-				"channel": "chat",
+				"channel": "private-chat",
 				"event":   "typing",
 				"data":    "user is typing",
 			},
@@ -807,24 +807,77 @@ func TestWebSocketDriver_handleClientEvent(t *testing.T) {
 			name:     "returns error when event not specified",
 			clientID: "client-1",
 			msgData: map[string]interface{}{
-				"channel": "chat",
+				"channel": "private-chat",
 			},
 			wantErr:    true,
 			wantErrMsg: "event not specified",
 		},
 		{
-			name: "handles client event when sender is only one in channel",
+			name: "handles client event when sender is only one in private channel",
 			setupChannels: map[string][]string{
-				"solo": {"client-1"},
+				"private-solo": {"client-1"},
 			},
 			clientID: "client-1",
 			msgData: map[string]interface{}{
-				"channel": "solo",
+				"channel": "private-solo",
 				"event":   "typing",
 			},
 			wantErr:       false,
 			wantEvent:     "client-typing",
 			wantReceivers: []string{},
+		},
+		{
+			name: "rejects client event on public channel",
+			setupChannels: map[string][]string{
+				"chat": {"client-1", "client-2"},
+			},
+			clientID: "client-1",
+			msgData: map[string]interface{}{
+				"channel": "chat",
+				"event":   "typing",
+			},
+			wantErr:    true,
+			wantErrMsg: "velocity/broadcast: client events only allowed on private/presence channels",
+		},
+		{
+			name: "rejects client event when sender is not a channel member",
+			setupChannels: map[string][]string{
+				"private-room": {"client-2", "client-3"},
+			},
+			clientID: "client-1",
+			msgData: map[string]interface{}{
+				"channel": "private-room",
+				"event":   "typing",
+			},
+			wantErr:    true,
+			wantErrMsg: "velocity/broadcast: not a member of private-room",
+		},
+		{
+			name: "rejects client event on presence channel when not a member",
+			setupChannels: map[string][]string{
+				"presence-lobby": {"client-2"},
+			},
+			clientID: "client-1",
+			msgData: map[string]interface{}{
+				"channel": "presence-lobby",
+				"event":   "wave",
+			},
+			wantErr:    true,
+			wantErrMsg: "velocity/broadcast: not a member of presence-lobby",
+		},
+		{
+			name: "allows client event on presence channel when subscribed",
+			setupChannels: map[string][]string{
+				"presence-lobby": {"client-1", "client-2"},
+			},
+			clientID: "client-1",
+			msgData: map[string]interface{}{
+				"channel": "presence-lobby",
+				"event":   "wave",
+			},
+			wantErr:       false,
+			wantEvent:     "client-wave",
+			wantReceivers: []string{"client-2"},
 		},
 	}
 

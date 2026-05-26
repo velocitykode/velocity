@@ -328,7 +328,12 @@ func (d *WebSocketDriver) handleUnsubscribe(client *websocket.Client, msg websoc
 	})
 }
 
-// handleClientEvent handles client-to-client events
+// handleClientEvent handles client-to-client events.
+//
+// Per audit H-26, client events (a.k.a. "whisper" in the Pusher protocol)
+// are restricted to private- and presence- channels, and the sender must be
+// a current subscriber of the channel. Anything else lets an unrelated
+// connection forge events on channels it has not joined.
 func (d *WebSocketDriver) handleClientEvent(client *websocket.Client, msg websocket.Message) error {
 	data, ok := msg.Data.(map[string]interface{})
 	if !ok {
@@ -343,6 +348,22 @@ func (d *WebSocketDriver) handleClientEvent(client *websocket.Client, msg websoc
 	event, ok := data["event"].(string)
 	if !ok {
 		return fmt.Errorf("event not specified")
+	}
+
+	// Reject client events on public channels: Pusher's "client events" rule
+	// only permits them on private/presence channels.
+	if !strings.HasPrefix(channel, "private-") && !strings.HasPrefix(channel, "presence-") {
+		return fmt.Errorf("velocity/broadcast: client events only allowed on private/presence channels")
+	}
+
+	// The sender must be a current subscriber of the channel. Reading the
+	// channel membership map under d.mu.RLock pairs with the writes in
+	// Subscribe / Unsubscribe.
+	d.mu.RLock()
+	_, member := d.channels[channel][client.ID]
+	d.mu.RUnlock()
+	if !member {
+		return fmt.Errorf("velocity/broadcast: not a member of %s", channel)
 	}
 
 	// Broadcast to channel except sender
