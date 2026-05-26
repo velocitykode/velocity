@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -101,5 +102,35 @@ func TestUp_NoErrorWhenFileDoesNotExist(t *testing.T) {
 	err := Up()
 	if err != nil {
 		t.Fatalf("Up() returned error when file does not exist: %v", err)
+	}
+}
+
+// TestDown_FilePermissionsAreRestrictive asserts that the marker file is
+// written with 0o600 because it may contain a bypass secret. This test is
+// skipped on Windows where Unix-style permission bits are not enforced.
+func TestDown_FilePermissionsAreRestrictive(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits not enforced on Windows")
+	}
+	t.Chdir(t.TempDir())
+
+	if err := Down(DownOptions{Secret: "topsecret"}); err != nil {
+		t.Fatalf("Down() error = %v", err)
+	}
+
+	info, err := os.Stat(filepath.Join(".vel", "down"))
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Errorf("marker file mode: got %o, want 0o600", mode)
+	}
+
+	dirInfo, err := os.Stat(".vel")
+	if err != nil {
+		t.Fatalf("stat dir: %v", err)
+	}
+	if mode := dirInfo.Mode().Perm(); mode != 0o700 {
+		t.Errorf("marker dir mode: got %o, want 0o700", mode)
 	}
 }

@@ -24,9 +24,15 @@ type downPayload struct {
 }
 
 // Down puts the application into maintenance mode by creating a .vel/down marker file.
+//
+// The marker file is written with restrictive permissions (0o600) because it
+// may contain a bypass secret that grants per-browser access to the app while
+// it is otherwise serving 503. The containing directory is created with 0o700
+// for the same reason. Both align with CLAUDE.md security rule #4 on the
+// principle of least privilege for files holding sensitive material.
 func Down(opts DownOptions) error {
 	dir := filepath.Join(".", ".vel")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("failed to create .vel directory: %w", err)
 	}
 
@@ -42,7 +48,7 @@ func Down(opts DownOptions) error {
 	}
 
 	path := filepath.Join(dir, "down")
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("failed to write maintenance file: %w", err)
 	}
 
