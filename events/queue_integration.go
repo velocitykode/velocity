@@ -105,10 +105,23 @@ func (j *EventListenerJob) HandleCtx(ctx context.Context) error {
 
 // hydrateEvent returns the concrete event value the listener should
 // receive. The in-process producer-side pointer is preferred when set;
-// otherwise the event is reconstructed from EventType + Event raw bytes
-// via the event factory registry. A missing event factory is a real error
-// (mirrors the listener-factory contract) so the failure can be reported
-// and routed to failed_jobs rather than silently handed map[string]any.
+// otherwise the event is reconstructed from EventType + Event raw bytes.
+//
+// Lookup order:
+//  1. Built-in scalar shortcut (newScalarEventValue): the named Go scalar
+//     types (string, bool, int / int64 / float64, []byte, json.RawMessage)
+//     are hydrated without consulting the user-supplied event factory
+//     registry. Scalars carry no ambiguity at unmarshal time (no nested
+//     fields can come back as map[string]any), so requiring every app
+//     that dispatches a string-named event through a queued listener to
+//     register a factory was a compatibility regression.
+//  2. User-registered factory via lookupEventFactory. Concrete struct
+//     events still require explicit registration so the cross-process
+//     typing guarantee is preserved.
+//
+// A missing factory for a non-scalar type is a real error (mirrors the
+// listener-factory contract) so the failure can be reported and routed
+// to failed_jobs rather than silently handed map[string]any.
 func (j *EventListenerJob) hydrateEvent() (interface{}, error) {
 	if j.event != nil {
 		return j.event, nil
@@ -123,6 +136,15 @@ func (j *EventListenerJob) hydrateEvent() (interface{}, error) {
 	if j.EventType == "" {
 		return nil, fmt.Errorf("velocity/events: event payload without event_type: %w", ErrEventTypeNotRegistered)
 	}
+
+	// Built-in scalar shortcut: no user registration required.
+	if value, ok := newScalarEventValue(j.EventType); ok {
+		if err := json.Unmarshal(j.Event, value); err != nil {
+			return nil, fmt.Errorf("velocity/events: failed to unmarshal scalar event payload into %q: %w", j.EventType, err)
+		}
+		return derefScalarValue(value, j.EventType), nil
+	}
+
 	efactory, ok := lookupEventFactory(j.EventType)
 	if !ok {
 		return nil, fmt.Errorf("velocity/events: no factory registered for event type %q: %w", j.EventType, ErrEventTypeNotRegistered)
@@ -235,8 +257,10 @@ func (d *QueueIntegratedDispatcher) pushToQueue(ctx context.Context, event inter
 	}
 
 	eventType := eventTypeKey(event)
-	if _, ok := lookupEventFactory(eventType); !ok {
-		return fmt.Errorf("velocity/events: refusing to enqueue event %q for listener %q: no event factory registered (call RegisterEventFactory before Dispatch): %w", eventType, listenerType, ErrEventTypeNotRegistered)
+	if !isScalarEventType(eventType) {
+		if _, ok := lookupEventFactory(eventType); !ok {
+			return fmt.Errorf("velocity/events: refusing to enqueue event %q for listener %q: no event factory registered (call RegisterEventFactory before Dispatch): %w", eventType, listenerType, ErrEventTypeNotRegistered)
+		}
 	}
 
 	payload, err := json.Marshal(event)
@@ -304,17 +328,126 @@ func (d *QueueIntegratedDispatcher) getListenerType(listener Listener) string {
 // pointer (the convention, matching the factory signature) emits a key
 // like "*pkg.UserSignedUp"; a value-form dispatch emits "pkg.UserSignedUp".
 // Mixing the two forms across registration and dispatch is a registration
-// error -- the dispatch-side refusal in pushToQueue surfaces it.
+// error; the dispatch-side refusal in pushToQueue surfaces it.
 //
 // String events (events dispatched as the raw event-name string used by the
 // listener-routing tables, e.g. d.Dispatch(ctx, "user.created")) collapse
-// to "string"; tests that exercise the dispatch path with a bare string
-// payload must register an event factory for the "string" key.
+// to "string". The built-in scalar shortcut (newScalarEventValue) lets the
+// hydration path skip the user registry for the named Go scalar types, so
+// apps that dispatch through queued listeners with a bare string payload
+// keep working without a RegisterEventFactory call.
 func eventTypeKey(event interface{}) string {
 	if event == nil {
 		return ""
 	}
 	return reflect.TypeOf(event).String()
+}
+
+// isScalarEventType reports whether the EventType key is one of the
+// built-in Go scalar payload types the hydration path can rebuild without
+// consulting the user-supplied event factory registry. These types have no
+// ambiguity at json.Unmarshal time (no nested fields can come back as
+// map[string]any), so the cross-process typing guarantee for struct events
+// is not weakened by exempting them.
+func isScalarEventType(typeName string) bool {
+	switch typeName {
+	case "string",
+		"bool",
+		"int", "int8", "int16", "int32", "int64",
+		"uint", "uint8", "uint16", "uint32", "uint64",
+		"float32", "float64",
+		"[]uint8",         // []byte
+		"json.RawMessage": // alias for []byte but reflect emits this distinct name
+		return true
+	}
+	return false
+}
+
+// newScalarEventValue returns a fresh pointer-to-zero of the named scalar
+// type so json.Unmarshal can populate it, plus true. When typeName is not a
+// recognised scalar, returns (nil, false) and the caller must consult the
+// user registry. The returned pointer is always non-nil so the unmarshal
+// call site does not need to nil-check.
+func newScalarEventValue(typeName string) (interface{}, bool) {
+	switch typeName {
+	case "string":
+		return new(string), true
+	case "bool":
+		return new(bool), true
+	case "int":
+		return new(int), true
+	case "int8":
+		return new(int8), true
+	case "int16":
+		return new(int16), true
+	case "int32":
+		return new(int32), true
+	case "int64":
+		return new(int64), true
+	case "uint":
+		return new(uint), true
+	case "uint8":
+		return new(uint8), true
+	case "uint16":
+		return new(uint16), true
+	case "uint32":
+		return new(uint32), true
+	case "uint64":
+		return new(uint64), true
+	case "float32":
+		return new(float32), true
+	case "float64":
+		return new(float64), true
+	case "[]uint8":
+		return new([]byte), true
+	case "json.RawMessage":
+		return new(json.RawMessage), true
+	}
+	return nil, false
+}
+
+// derefScalarValue unwraps the *T pointer newScalarEventValue produced so
+// the listener observes the same value form the producer dispatched: a
+// dispatcher that calls Dispatch(ctx, "user.created") expects the listener
+// to receive "user.created" (string), not *string. For pointer-shaped
+// scalars the producer dispatched directly (rare; e.g. *json.RawMessage)
+// callers stay on the pointer form.
+func derefScalarValue(p interface{}, typeName string) interface{} {
+	switch typeName {
+	case "string":
+		return *(p.(*string))
+	case "bool":
+		return *(p.(*bool))
+	case "int":
+		return *(p.(*int))
+	case "int8":
+		return *(p.(*int8))
+	case "int16":
+		return *(p.(*int16))
+	case "int32":
+		return *(p.(*int32))
+	case "int64":
+		return *(p.(*int64))
+	case "uint":
+		return *(p.(*uint))
+	case "uint8":
+		return *(p.(*uint8))
+	case "uint16":
+		return *(p.(*uint16))
+	case "uint32":
+		return *(p.(*uint32))
+	case "uint64":
+		return *(p.(*uint64))
+	case "float32":
+		return *(p.(*float32))
+	case "float64":
+		return *(p.(*float64))
+	case "[]uint8":
+		return *(p.(*[]byte))
+	case "json.RawMessage":
+		return *(p.(*json.RawMessage))
+	}
+	return p
 }
 
 // ProcessEventListenerJob processes an event listener job from the queue
