@@ -92,6 +92,140 @@ func TestHeaderRedactor_LeavesUnrelatedHeadersAlone(t *testing.T) {
 	}
 }
 
+// TestHeaderRedactor_CookieMultiPair_FullValueRedacted is the M-38
+// regression pin. Pre-fix the value-half regex stopped at the first
+// ';' so a Cookie header with multiple cookie pairs leaked everything
+// after the first pair into the log file. The fix swaps the Cookie
+// header onto the "redact to end-of-line" pattern so every pair after
+// the first ';' is masked too.
+func TestHeaderRedactor_CookieMultiPair_FullValueRedacted(t *testing.T) {
+	r := HeaderRedactor()
+	in := "Cookie: session=a; csrf=b; remember=c"
+	got := r.Redact(in)
+
+	// The whole value half must collapse to [REDACTED]; no cookie
+	// name=value pair after the first ';' may survive.
+	if got != "Cookie: [REDACTED]" {
+		t.Errorf("Redact(%q) = %q, want %q", in, got, "Cookie: [REDACTED]")
+	}
+	for _, leaked := range []string{"session=a", "csrf=b", "remember=c"} {
+		if strings.Contains(got, leaked) {
+			t.Errorf("Redact leaked cookie pair %q in output: %s", leaked, got)
+		}
+	}
+}
+
+// TestHeaderRedactor_CookieMultiPair_OwnLine_NoLeak is the multi-line
+// shape of the same M-38 regression: a Cookie header that occupies
+// its own log line must have every cookie pair redacted, not just the
+// first. Mirrors how production loggers print headers (one per line).
+func TestHeaderRedactor_CookieMultiPair_OwnLine_NoLeak(t *testing.T) {
+	r := HeaderRedactor()
+	in := "request:\nCookie: session=abc123; XSRF-TOKEN=xyz789; remember_me=def456\nUser-Agent: curl/8.4.0"
+	got := r.Redact(in)
+
+	// Surrounding context (User-Agent) survives, but every cookie pair
+	// in the Cookie header is gone.
+	if !strings.Contains(got, "User-Agent: curl/8.4.0") {
+		t.Errorf("Redact wiped unrelated header context: %s", got)
+	}
+	for _, leaked := range []string{"session=abc123", "XSRF-TOKEN=xyz789", "remember_me=def456", "abc123", "xyz789", "def456"} {
+		if strings.Contains(got, leaked) {
+			t.Errorf("Redact leaked cookie material %q in multi-line output:\n%s", leaked, got)
+		}
+	}
+	if !strings.Contains(got, "Cookie: [REDACTED]") {
+		t.Errorf("Redact did not insert [REDACTED] for Cookie line:\n%s", got)
+	}
+}
+
+// TestHeaderRedactor_Authorization_BearerStillRedacted confirms the
+// M-38 fix did not regress the single-value Authorization header.
+// Bearer / Basic / token values have no internal ';' so the prior
+// behaviour and the new behaviour both end at CR / LF / end-of-input;
+// the test is here to lock that explicitly.
+func TestHeaderRedactor_Authorization_BearerStillRedacted(t *testing.T) {
+	r := HeaderRedactor()
+	in := "Authorization: Bearer foo.bar.baz"
+	got := r.Redact(in)
+	if got != "Authorization: [REDACTED]" {
+		t.Errorf("Redact(%q) = %q, want %q", in, got, "Authorization: [REDACTED]")
+	}
+	if strings.Contains(got, "foo.bar.baz") {
+		t.Errorf("Redact leaked bearer token: %s", got)
+	}
+}
+
+// TestHeaderRedactor_SetCookie_ApproachBPreservesAttributes pins the
+// design choice for Set-Cookie: redact the cookie name=value pair
+// before the first ';' and PRESERVE the security attributes after
+// (Path, HttpOnly, Secure, SameSite, Domain, Max-Age, Expires).
+//
+// Rationale: those attributes are public metadata that operators
+// scrape from logs to verify cookie-security posture in production
+// ("is my session cookie actually HttpOnly+Secure+SameSite=Lax?").
+// The credential sits before the ';'; the attributes after are not
+// secrets. Approach (A) "redact entire value" would erase real
+// observability signal for zero security gain. See
+// pairValueSensitiveHeaders / HeaderRedactor godoc.
+func TestHeaderRedactor_SetCookie_ApproachBPreservesAttributes(t *testing.T) {
+	r := HeaderRedactor()
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "session cookie with HttpOnly",
+			in:   "Set-Cookie: session=abc; HttpOnly",
+			want: "Set-Cookie: [REDACTED]; HttpOnly",
+		},
+		{
+			name: "session cookie with full attribute set",
+			in:   "Set-Cookie: session=abc; Path=/; HttpOnly; Secure; SameSite=Lax",
+			want: "Set-Cookie: [REDACTED]; Path=/; HttpOnly; Secure; SameSite=Lax",
+		},
+		{
+			name: "remember-me cookie with Max-Age",
+			in:   "Set-Cookie: remember_me=longsecret; Max-Age=2592000; Path=/; HttpOnly",
+			want: "Set-Cookie: [REDACTED]; Max-Age=2592000; Path=/; HttpOnly",
+		},
+		{
+			name: "cookie with Domain",
+			in:   "Set-Cookie: id=value; Domain=.example.com; Path=/",
+			want: "Set-Cookie: [REDACTED]; Domain=.example.com; Path=/",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := r.Redact(tt.in)
+			if got != tt.want {
+				t.Errorf("Redact(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestHeaderRedactor_BenignSemicolonElsewhereUnaffected guards
+// against the M-38 fix over-reaching: a benign log line that happens
+// to contain ';' chars (SQL fragments, code snippets, paths) must not
+// be touched if no sensitive header name is present.
+func TestHeaderRedactor_BenignSemicolonElsewhereUnaffected(t *testing.T) {
+	r := HeaderRedactor()
+	cases := []string{
+		"SELECT 1; UPDATE users SET name='x'; DELETE FROM sessions;",
+		"PATH=/usr/local/bin:/usr/bin; export PATH",
+		"params: a=1; b=2; c=3 (no header context)",
+		"line with semicolons; nothing sensitive here; really; truly;",
+	}
+	for _, in := range cases {
+		got := r.Redact(in)
+		if got != in {
+			t.Errorf("Redact(%q) = %q, want unchanged", in, got)
+		}
+	}
+}
+
 // TestJWTRedactor_ReplacesValidTriple verifies the 3-segment base64url
 // JWT shape is masked. The "eyJ" prefix is required on the first two
 // segments so the regex does not false-fire on arbitrary dotted
@@ -316,9 +450,9 @@ func TestChain_ComposesInOrder(t *testing.T) {
 
 // TestChain_AppliesAllStages confirms the chain runs every stage when
 // matches sit on independent log lines. The HeaderRedactor consumes
-// everything up to a separator (";" or end-of-line) so we put each
-// kind of secret on its own line; in a real multi-line log dump this
-// is the natural shape.
+// everything up to end-of-line for Authorization / Cookie / etc, so
+// we put each kind of secret on its own line; in a real multi-line
+// log dump this is the natural shape.
 func TestChain_AppliesAllStages(t *testing.T) {
 	chain := Chain(HeaderRedactor(), JWTRedactor(), PANRedactor())
 	jwt := "eyJ0.eyJ1.sig_value"

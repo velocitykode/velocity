@@ -72,62 +72,141 @@ func Chain(rs ...Redactor) Redactor {
 
 // ---- HTTP header redactor -------------------------------------------------
 
-// sensitiveHeaders is the list of HTTP header names whose values are
-// always replaced with [REDACTED] when seen in a log line. Names are
-// matched case-insensitively. The list is intentionally short and
-// security-focused: bearer tokens, cookies, API keys.
-var sensitiveHeaders = []string{
+// fullValueSensitiveHeaders is the list of HTTP header names whose
+// entire value half (everything up to CR / LF / end-of-input) is
+// replaced with [REDACTED]. The Cookie header concatenates multiple
+// credentials with ';' separators ("session=a; csrf=b; remember=c"),
+// so stopping at the first ';' would leak every cookie after the
+// first one. Authorization, Proxy-Authorization, and X-* token /
+// API-key headers carry a single value with no internal ';' boundary,
+// so end-of-line is the only correct stop in either case.
+//
+// Matched case-insensitively.
+var fullValueSensitiveHeaders = []string{
 	"Authorization",
 	"Cookie",
-	"Set-Cookie",
 	"Proxy-Authorization",
 	"X-API-Key",
 	"X-Auth-Token",
 	"X-Csrf-Token",
 }
 
-// headerValueRedactor matches "Header: value" pairs (with the header
-// name in sensitiveHeaders) and rewrites the value to [REDACTED].
+// pairValueSensitiveHeaders is the list of HTTP header names whose
+// value half is redacted only up to the first ';' separator, so the
+// cookie attributes after it (Path, Domain, HttpOnly, Secure,
+// SameSite, Max-Age, Expires) survive into the log.
 //
-// The regex is built once at package load from sensitiveHeaders and
-// reused for the process lifetime; regexp.Regexp is safe for
-// concurrent use. The pattern uses a bounded character class for the
-// value half (anything up to CR / LF / ; / end-of-line) so there is
-// no nested unbounded backtracking; combined with Go's RE2 engine the
+// Approach (B) from the M-38 finding: attribute preservation is a
+// real observability signal. Operators verify "is my session cookie
+// actually HttpOnly + Secure + SameSite=Lax in production?" by
+// scraping logs. The credential (name=value) before the first ';' is
+// the secret; everything after is public metadata about how the
+// browser is told to handle it. Approach (A) "redact entire value"
+// would erase that signal.
+//
+// Matched case-insensitively.
+var pairValueSensitiveHeaders = []string{
+	"Set-Cookie",
+}
+
+// headerNameBoundary is the prefix used in front of every header name
+// alternative so a substring match never fires inside a compound
+// header. "Cookie" must not match the trailing "Cookie" inside
+// "Set-Cookie" (Set-Cookie uses pair-value redaction, Cookie uses
+// full-value), so `\b` is not strong enough since `-` is a word
+// boundary in Go's RE2. The wrapper requires the byte before the
+// header name to be start-of-input / start-of-line OR any character
+// that is not part of an HTTP header token (per RFC 7230 token =
+// 1*tchar; we exclude letters, digits, '-', and '_' which are the
+// chars HTTP header names actually use).
+const headerNameBoundary = `(?:^|[^A-Za-z0-9_-])`
+
+// headerFullValueRedactor matches "Header: value" pairs where the
+// header is in fullValueSensitiveHeaders and rewrites the value to
+// [REDACTED]. The value half spans everything up to CR / LF /
+// end-of-input so the Cookie header's internal ';' separators no
+// longer truncate the redaction at the first cookie pair.
+//
+// Regex is RE2-backed (no backreferences) with a bounded character
+// class for the value half, so the engine is linear-time and the
 // ReDoS class is unreachable.
-var headerValueRedactor = func() *regexp.Regexp {
-	parts := make([]string, len(sensitiveHeaders))
-	for i, name := range sensitiveHeaders {
+var headerFullValueRedactor = func() *regexp.Regexp {
+	parts := make([]string, len(fullValueSensitiveHeaders))
+	for i, name := range fullValueSensitiveHeaders {
 		parts[i] = regexp.QuoteMeta(name)
 	}
 	// (?i) case-insensitive header name; value is anything up to CR /
-	// LF / ';' (cookie separator) or end-of-input. The character class
-	// is bounded so the engine cannot backtrack catastrophically.
-	pattern := `(?i)\b(` + strings.Join(parts, "|") + `)\s*[:=]\s*[^\r\n;]+`
+	// LF / end-of-input. The character class is bounded so the engine
+	// cannot backtrack catastrophically.
+	pattern := `(?im)` + headerNameBoundary + `(` + strings.Join(parts, "|") + `)\s*[:=]\s*[^\r\n]+`
+	return regexp.MustCompile(pattern)
+}()
+
+// headerPairValueRedactor matches "Header: name=value" pairs where the
+// header is in pairValueSensitiveHeaders and rewrites the value up to
+// the first ';' (preserving Set-Cookie attributes that follow).
+//
+// Same RE2-backed bounded character class as the full-value regex.
+var headerPairValueRedactor = func() *regexp.Regexp {
+	parts := make([]string, len(pairValueSensitiveHeaders))
+	for i, name := range pairValueSensitiveHeaders {
+		parts[i] = regexp.QuoteMeta(name)
+	}
+	pattern := `(?im)` + headerNameBoundary + `(` + strings.Join(parts, "|") + `)\s*[:=]\s*[^\r\n;]+`
 	return regexp.MustCompile(pattern)
 }()
 
 // HeaderRedactor returns a Redactor that replaces the value half of
-// any HTTP header name in sensitiveHeaders with [REDACTED]. The header
-// name is preserved verbatim so operators can still see which header
-// fired (the contents are gone, the context is kept).
+// any sensitive HTTP header with [REDACTED]. The header name is
+// preserved verbatim so operators can still see which header fired
+// (the contents are gone, the context is kept).
+//
+// Two redaction shapes are applied in sequence:
+//
+//  1. Full-value redaction for Authorization, Cookie,
+//     Proxy-Authorization, X-API-Key, X-Auth-Token, X-Csrf-Token.
+//     The Cookie header concatenates "session=a; csrf=b; remember=c";
+//     stopping at the first ';' (the pre-M-38 behaviour) leaked every
+//     cookie after the first. End-of-line is the only safe stop.
+//
+//  2. Pair-only redaction for Set-Cookie (approach B): only the
+//     name=value pair before the first ';' is replaced, so cookie
+//     attributes (Path, HttpOnly, Secure, SameSite, Domain, Max-Age,
+//     Expires) survive. Operators read those attributes to verify
+//     cookie-security configuration in production logs; redacting
+//     them erases real observability signal while the credential
+//     itself sits before the ';'.
 //
 // Matches both colon-separated ("Authorization: Bearer ...") and
 // equals-separated ("Cookie=session=...") shapes so URL-encoded query
 // dumps and structured kv lines both get filtered.
 func HeaderRedactor() Redactor {
 	return RedactorFunc(func(s string) string {
-		return headerValueRedactor.ReplaceAllStringFunc(s, func(match string) string {
-			// Find the separator (':' or '=') so we can preserve the
-			// header name and only replace the value half.
-			for i := 0; i < len(match); i++ {
-				if match[i] == ':' || match[i] == '=' {
-					return match[:i+1] + " [REDACTED]"
-				}
-			}
-			return "[REDACTED]"
-		})
+		s = headerFullValueRedactor.ReplaceAllStringFunc(s, redactHeaderMatch)
+		s = headerPairValueRedactor.ReplaceAllStringFunc(s, redactHeaderMatch)
+		return s
 	})
+}
+
+// redactHeaderMatch rewrites a matched "Header: value" (or
+// "Header=value") fragment so the header name and separator are
+// preserved and the value is replaced with [REDACTED]. Shared between
+// the full-value and pair-value regex callbacks because the
+// header-name preservation logic is identical; only the regex bounds
+// where "value" ends differ.
+//
+// The regex prefix headerNameBoundary captures either start-of-line
+// (empty) or one boundary byte (a non-header-token char that we must
+// echo back so we do not silently delete e.g. a leading newline or
+// space between log fields). The first ':' or '=' marks the end of
+// the header name; everything after is the value to redact.
+func redactHeaderMatch(match string) string {
+	for i := 0; i < len(match); i++ {
+		if match[i] == ':' || match[i] == '=' {
+			return match[:i+1] + " [REDACTED]"
+		}
+	}
+	return "[REDACTED]"
 }
 
 // ---- JWT redactor ---------------------------------------------------------
