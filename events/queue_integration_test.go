@@ -416,8 +416,10 @@ func TestStoppablePropagationListenerProcessing(t *testing.T) {
 
 // Test InitializeQueueIntegration
 func TestInitializeQueueIntegration(t *testing.T) {
-	// This should not panic
-	InitializeQueueIntegration()
+	// This should not panic. Passing nil for dispatcher, driver, and reporter
+	// is the minimum-info form: registers the queue.RegisterJob factory and
+	// clears any previously installed failure reporter.
+	InitializeQueueIntegration(nil, nil, nil)
 }
 
 // Test Dispatch method in QueueIntegratedDispatcher

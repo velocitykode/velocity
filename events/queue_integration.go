@@ -11,14 +11,21 @@ import (
 	"github.com/velocitykode/velocity/queue"
 )
 
-// EventListenerJob implements the queue.Job interface for event listeners
+// EventListenerJob implements the queue.Job interface for event listeners.
+//
+// A queued listener is enqueued with the listener TYPE NAME (ListenerType)
+// rather than a live pointer. The queue worker rehydrates the job from JSON
+// bytes via the package job registry; the worker's process may not be the
+// dispatcher's process, so the listener instance must be reconstructable
+// from the type name alone using the package-level listener factory
+// registry (RegisterListenerFactory / lookupListenerFactory).
 type EventListenerJob struct {
 	Event        interface{} `json:"event"`
 	EventType    string      `json:"event_type"`
 	ListenerType string      `json:"listener_type"`
 	Attempts     int         `json:"attempts"`
 	MaxRetries   int         `json:"max_retries"`
-	listener     Listener    `json:"-"` // Not serialized, set when processing
+	listener     Listener    `json:"-"` // Not serialized; populated on hydration or by tests.
 }
 
 // Handle processes the event listener job. Implements queue.Job.
@@ -28,17 +35,37 @@ func (j *EventListenerJob) Handle() error {
 
 // HandleCtx processes the event listener job with the worker-supplied ctx.
 // Implements queue.HandleCtxer so the listener receives the worker context.
+//
+// If j.listener is nil (the normal cross-process worker path, where the job
+// was rehydrated from JSON bytes), the listener is reconstructed via the
+// package-level listener factory registry keyed on ListenerType. A missing
+// registration is a real error and surfaces to the worker so it can route
+// the job to failed_jobs / events -- silently dropping a queued security
+// listener was the H-22 hole.
 func (j *EventListenerJob) HandleCtx(ctx context.Context) error {
 	if j.listener == nil {
-		return fmt.Errorf("listener not set for job")
+		factory, ok := lookupListenerFactory(j.ListenerType)
+		if !ok {
+			return fmt.Errorf("velocity/events: no factory registered for listener type %q: %w", j.ListenerType, ErrListenerNotFound)
+		}
+		j.listener = factory()
+		if j.listener == nil {
+			return fmt.Errorf("velocity/events: listener factory for %q returned nil", j.ListenerType)
+		}
 	}
 	return j.listener.Handle(ctx, j.Event)
 }
 
-// Failed handles job failure
+// Failed is invoked by the queue driver once the job has exhausted its retry
+// budget. The previous no-op silently dropped queued security / audit
+// listeners. Route the error through the package-level failure reporter so
+// the framework's exceptions handler (or any other reporter installed via
+// SetFailureReporter) records the drop. When no reporter is installed --
+// e.g. in tests that exercise the queue path standalone -- the call becomes
+// a documented no-op rather than a silent one (it is still observable via
+// the test's assertion on the original Handle error).
 func (j *EventListenerJob) Failed(err error) {
-	// Log the failure - in a real implementation this might send alerts
-	// or store failure information for analysis
+	reportFailure(j, err)
 }
 
 // QueueIntegratedDispatcher extends DefaultDispatcher with deep queue integration.
@@ -74,12 +101,18 @@ func (d *QueueIntegratedDispatcher) SetQueueDriver(driver queue.Driver) {
 	d.queueDriver = driver
 }
 
-// RegisterListenerFactory registers a factory function for creating listener instances.
-// Safe to call concurrently with ProcessEventListenerJob and other registrations.
+// RegisterListenerFactory registers a factory function for creating listener
+// instances. The factory is written to both the per-dispatcher map (for the
+// in-process ProcessEventListenerJob path) and the package-level registry
+// (so a different process running the queue worker can rehydrate the
+// listener from the persisted ListenerType -- this is the H-22 fix).
+// Safe to call concurrently with ProcessEventListenerJob and other
+// registrations.
 func (d *QueueIntegratedDispatcher) RegisterListenerFactory(listenerType string, factory func() Listener) {
 	d.qmu.Lock()
 	d.listenerRegistry[listenerType] = factory
 	d.qmu.Unlock()
+	RegisterListenerFactory(listenerType, factory)
 }
 
 // Dispatch fires an event to all registered listeners with enhanced queue support
@@ -106,13 +139,23 @@ func (d *QueueIntegratedDispatcher) Dispatch(ctx context.Context, event interfac
 	return nil
 }
 
-// pushToQueue pushes a listener to the queue with proper event serialization
+// pushToQueue pushes a listener to the queue with proper event serialization.
+// Refuses to enqueue when no listener factory has been registered for the
+// listener's type, because the worker would not be able to rehydrate the
+// listener and the job would silently move to failed_jobs (H-22). Returning
+// an error here surfaces the misconfiguration on the dispatch side, where
+// it can be fixed at boot.
 func (d *QueueIntegratedDispatcher) pushToQueue(ctx context.Context, event interface{}, listener Listener) error {
+	listenerType := d.getListenerType(listener)
+	if _, ok := lookupListenerFactory(listenerType); !ok {
+		return fmt.Errorf("velocity/events: refusing to enqueue listener %q: no factory registered (call RegisterListenerFactory before Dispatch): %w", listenerType, ErrListenerNotFound)
+	}
+
 	// Create the job
 	job := &EventListenerJob{
 		Event:        event,
 		EventType:    d.getEventName(event),
-		ListenerType: d.getListenerType(listener),
+		ListenerType: listenerType,
 		Attempts:     0,
 		MaxRetries:   3, // Default
 	}
@@ -186,7 +229,11 @@ func (d *QueueIntegratedDispatcher) ProcessEventListenerJob(ctx context.Context,
 	return job.HandleCtx(ctx)
 }
 
-// EventJobFactory creates EventListenerJob instances for queue deserialization
+// EventJobFactory creates EventListenerJob instances for queue
+// deserialization. The hydrated job intentionally has listener == nil; the
+// listener is reconstructed inside EventListenerJob.HandleCtx via the
+// package-level listener factory registry, because the worker process may
+// not share producer-side memory.
 func EventJobFactory(data []byte) (queue.Job, error) {
 	var job EventListenerJob
 	if err := json.Unmarshal(data, &job); err != nil {
@@ -195,11 +242,32 @@ func EventJobFactory(data []byte) (queue.Job, error) {
 	return &job, nil
 }
 
-// Initialize queue integration by registering the event job type. Uses
-// the generic RegisterJob form so the registry key is derived from the
-// concrete job type, eliminating the typo footgun the deprecated string-keyed
-// queue.Register had.
-func InitializeQueueIntegration() {
+// FailureReporter receives queued-listener failure callbacks invoked by
+// queue.Driver.Failed once the job has exhausted its retry budget. The
+// framework wires the App's exceptions handler via InitializeQueueIntegration
+// so a silently dropped security / audit listener becomes visible to the
+// configured reporters (sentry, log, etc).
+type FailureReporter func(job *EventListenerJob, err error)
+
+// InitializeQueueIntegration wires the queue-integration plumbing that turns
+// queued listeners from a silent-drop hole (H-22) into a production-ready
+// path. It is idempotent: repeated calls overwrite the previous wiring with
+// the new arguments, so consumers can re-invoke it during hot config reloads.
+//
+// Arguments:
+//   - dispatcher: the QueueIntegratedDispatcher to bind to the queue driver.
+//     May be nil when consumers manage the dispatcher separately.
+//   - driver: the queue.Driver that pushed jobs land on. May be nil when
+//     consumers only want to register the job factory and reporter.
+//   - reporter: optional callback that fires from EventListenerJob.Failed.
+//     Nil disables the reporter (calls become no-ops); pass a closure over
+//     exceptions.Handler.Report to route to the framework's exception sink.
+//
+// The function also registers the EventListenerJob with the queue's typed
+// job registry (queue.RegisterJob) so cross-process workers can rehydrate
+// jobs from JSON bytes. The registry key is derived from the job type, so
+// producer and consumer paths stay symmetric by construction.
+func InitializeQueueIntegration(dispatcher *QueueIntegratedDispatcher, driver queue.Driver, reporter FailureReporter) {
 	queue.RegisterJob(func(data []byte) (*EventListenerJob, error) {
 		var job EventListenerJob
 		if err := json.Unmarshal(data, &job); err != nil {
@@ -207,6 +275,81 @@ func InitializeQueueIntegration() {
 		}
 		return &job, nil
 	})
+
+	if dispatcher != nil && driver != nil {
+		dispatcher.SetQueueDriver(driver)
+	}
+
+	setFailureReporter(reporter)
+}
+
+// --- package-level listener factory registry (H-22) ---------------------
+
+var (
+	listenerFactoryMu sync.RWMutex
+	listenerFactories = make(map[string]func() Listener)
+
+	failureReporterMu sync.RWMutex
+	failureReporter   FailureReporter
+)
+
+// RegisterListenerFactory registers a factory function at the package level
+// for the listener type name. The package-level registry lets queue workers
+// running in a different process than the producer rehydrate a listener
+// instance from the persisted ListenerType -- this is the H-22 fix.
+// Multiple calls with the same name overwrite the previous factory.
+// Safe to call concurrently.
+func RegisterListenerFactory(listenerType string, factory func() Listener) {
+	if listenerType == "" || factory == nil {
+		return
+	}
+	listenerFactoryMu.Lock()
+	listenerFactories[listenerType] = factory
+	listenerFactoryMu.Unlock()
+}
+
+// UnregisterListenerFactory removes a previously registered factory. Mainly
+// useful in tests; production code rarely needs to unregister.
+func UnregisterListenerFactory(listenerType string) {
+	listenerFactoryMu.Lock()
+	delete(listenerFactories, listenerType)
+	listenerFactoryMu.Unlock()
+}
+
+// lookupListenerFactory returns the registered factory for a listener type
+// name. The bool is false when no factory is registered; callers MUST treat
+// that as an error rather than substituting a stub (the previous "listener
+// not set" no-op trap that H-22 closed).
+func lookupListenerFactory(listenerType string) (func() Listener, bool) {
+	listenerFactoryMu.RLock()
+	factory, ok := listenerFactories[listenerType]
+	listenerFactoryMu.RUnlock()
+	return factory, ok
+}
+
+// setFailureReporter installs the package-level FailureReporter invoked by
+// EventListenerJob.Failed. Nil clears the reporter (subsequent Failed calls
+// become explicit no-ops). Safe to call concurrently with Failed.
+func setFailureReporter(fn FailureReporter) {
+	failureReporterMu.Lock()
+	failureReporter = fn
+	failureReporterMu.Unlock()
+}
+
+// reportFailure routes a queued-listener failure through the installed
+// reporter, recovering from any panic in the reporter so a misbehaving
+// sink cannot take down the queue worker.
+func reportFailure(job *EventListenerJob, err error) {
+	failureReporterMu.RLock()
+	fn := failureReporter
+	failureReporterMu.RUnlock()
+	if fn == nil || err == nil {
+		return
+	}
+	defer func() {
+		_ = recover()
+	}()
+	fn(job, err)
 }
 
 // PriorityListener extends Listener with priority support
