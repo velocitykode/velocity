@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
@@ -27,13 +28,17 @@ type cachedUser struct {
 
 // JWTGuard implements JWT-based authentication for APIs
 type JWTGuard struct {
-	provider       auth.UserProvider
+	// provider and throttler are held via atomic.Pointer so concurrent
+	// SetProvider / SetLoginThrottler calls cannot tear a reader's
+	// two-word interface fetch in Attempt / User / Check (H-10 fix).
+	provider  atomic.Pointer[providerHolder]
+	throttler atomic.Pointer[throttlerHolder]
+
 	jwtManager     *auth.JWTManager
 	config         auth.JWTConfig
 	mu             sync.RWMutex
 	userCache      map[string]cachedUser
 	stopCleanup    chan struct{}
-	throttler      contract.LoginThrottler
 	trustedProxies []*net.IPNet
 	// attemptFloor is the wall-clock floor for Attempt (H-09 fix).
 	// Zero falls back to auth.DefaultAttemptFloor.
@@ -41,6 +46,25 @@ type JWTGuard struct {
 	// hasher is consulted on the missing-user path so CPU timing
 	// matches the bcrypt-verify path; defaults to bcrypt cost 10.
 	hasher auth.Hasher
+}
+
+// loadProvider returns the active auth.UserProvider via atomic load.
+func (g *JWTGuard) loadProvider() auth.UserProvider {
+	h := g.provider.Load()
+	if h == nil {
+		return nil
+	}
+	return h.p
+}
+
+// loadThrottler returns the active contract.LoginThrottler via atomic load.
+// Falls back to NoopLoginThrottler when no throttler has been installed.
+func (g *JWTGuard) loadThrottler() contract.LoginThrottler {
+	h := g.throttler.Load()
+	if h == nil || h.t == nil {
+		return auth.NoopLoginThrottler{}
+	}
+	return h.t
 }
 
 // SetAttemptFloor configures the wall-clock floor that Attempt blocks for.
@@ -101,12 +125,15 @@ func (g *JWTGuard) getTrustedProxies() []*net.IPNet {
 
 // SetLoginThrottler installs a rate-limiter for Attempt() calls. Passing nil
 // reverts to the no-op throttler.
+//
+// Stored via atomic.Pointer so concurrent Attempt() readers cannot tear the
+// two-word interface fetch on the throttler field (H-10 fix).
 func (g *JWTGuard) SetLoginThrottler(t contract.LoginThrottler) {
 	if t == nil {
-		g.throttler = auth.NoopLoginThrottler{}
+		g.throttler.Store(&throttlerHolder{t: auth.NoopLoginThrottler{}})
 		return
 	}
-	g.throttler = t
+	g.throttler.Store(&throttlerHolder{t: t})
 }
 
 // NewJWTGuard creates a new JWT guard.
@@ -117,14 +144,15 @@ func NewJWTGuard(provider auth.UserProvider, config auth.JWTConfig) (*JWTGuard, 
 	if err != nil {
 		return nil, err
 	}
-	return &JWTGuard{
-		provider:    provider,
+	g := &JWTGuard{
 		jwtManager:  manager,
 		config:      config,
 		userCache:   make(map[string]cachedUser),
 		stopCleanup: make(chan struct{}),
-		throttler:   auth.NoopLoginThrottler{},
-	}, nil
+	}
+	g.provider.Store(&providerHolder{p: provider})
+	g.throttler.Store(&throttlerHolder{t: auth.NoopLoginThrottler{}})
+	return g, nil
 }
 
 // Start begins the background cache cleanup goroutine. An optional
@@ -238,7 +266,7 @@ func (g *JWTGuard) Check(r *http.Request) bool {
 	}
 
 	// Validate user still exists
-	user, err := g.provider.FindByID(claims.UserID)
+	user, err := g.loadProvider().FindByID(claims.UserID)
 	if err != nil || user == nil {
 		return false
 	}
@@ -265,7 +293,7 @@ func (g *JWTGuard) User(r *http.Request) auth.Authenticatable {
 		return nil
 	}
 
-	user, err := g.provider.FindByID(claims.UserID)
+	user, err := g.loadProvider().FindByID(claims.UserID)
 	if err != nil {
 		return nil
 	}
@@ -317,7 +345,7 @@ func (g *JWTGuard) Login(w http.ResponseWriter, r *http.Request, user auth.Authe
 
 // LoginByID logs in a user by ID and generates JWT
 func (g *JWTGuard) LoginByID(w http.ResponseWriter, r *http.Request, id interface{}, remember ...bool) error {
-	user, err := g.provider.FindByID(id)
+	user, err := g.loadProvider().FindByID(id)
 	if err != nil {
 		return err
 	}
@@ -334,14 +362,16 @@ func (g *JWTGuard) LoginByID(w http.ResponseWriter, r *http.Request, id interfac
 // duration (H-09 fix). The dummy bcrypt run on the missing-user branch
 // matches the CPU profile of the bcrypt verify branch.
 func (g *JWTGuard) Attempt(w http.ResponseWriter, r *http.Request, credentials map[string]interface{}, remember ...bool) (bool, error) {
-	throttler := g.throttler
-	if throttler == nil {
-		throttler = auth.NoopLoginThrottler{}
-	}
+	throttler := g.loadThrottler()
 	key := auth.ThrottleKey(r, credentials, g.getTrustedProxies())
 	if !throttler.Allow(r, key) {
 		return false, auth.ErrLoginThrottled
 	}
+
+	// Snapshot the provider once so the timebox closure and the
+	// post-timebox branches see a consistent reference even if a
+	// concurrent SetProvider call swaps the pointer mid-call.
+	provider := g.loadProvider()
 
 	var (
 		user            auth.Authenticatable
@@ -354,7 +384,7 @@ func (g *JWTGuard) Attempt(w http.ResponseWriter, r *http.Request, credentials m
 
 	hasher := g.effectiveHasher()
 	auth.Timebox(g.effectiveAttemptFloor(), func() {
-		user, findErr = g.provider.FindByCredentials(credentials)
+		user, findErr = provider.FindByCredentials(credentials)
 		password, passwordTypedOK = credentials["password"].(string)
 
 		if findErr != nil || user == nil {
@@ -370,7 +400,7 @@ func (g *JWTGuard) Attempt(w http.ResponseWriter, r *http.Request, credentials m
 			invalidCredErr = auth.ErrInvalidCredentials
 			return
 		}
-		credentialsOK = g.provider.ValidateCredentials(user, map[string]interface{}{"password": password})
+		credentialsOK = provider.ValidateCredentials(user, map[string]interface{}{"password": password})
 	})
 
 	if findErr != nil || user == nil {
@@ -440,9 +470,15 @@ func (g *JWTGuard) Logout(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// SetProvider sets the user provider
+// SetProvider sets the user provider. Stored via atomic.Pointer so
+// concurrent Attempt / User / Check readers cannot tear the two-word
+// interface fetch on the provider field (H-10 fix). Passing nil leaves
+// the previously installed provider in place.
 func (g *JWTGuard) SetProvider(provider auth.UserProvider) {
-	g.provider = provider
+	if provider == nil {
+		return
+	}
+	g.provider.Store(&providerHolder{p: provider})
 }
 
 // GenerateToken generates a JWT token for a user
@@ -457,7 +493,7 @@ func (g *JWTGuard) GenerateRefreshToken(user auth.Authenticatable) (string, erro
 
 // RefreshToken refreshes an access token using refresh token
 func (g *JWTGuard) RefreshToken(refreshToken string) (string, error) {
-	return g.jwtManager.RefreshToken(refreshToken, g.provider)
+	return g.jwtManager.RefreshToken(refreshToken, g.loadProvider())
 }
 
 // ValidateToken validates a JWT token

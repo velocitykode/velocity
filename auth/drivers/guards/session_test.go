@@ -92,12 +92,15 @@ func (p *mockUserProvider) UpdateRememberToken(user auth.Authenticatable, token 
 }
 
 func TestSessionGuard_ConcurrentGetSession(t *testing.T) {
-	guard := &SessionGuard{
-		provider: &mockUserProvider{},
-		store:    &mockSessionStore{},
-		config:   auth.SessionConfig{Name: "test_session"},
-		hasher:   auth.NewBcryptHasher(10),
-	}
+	guard := func() *SessionGuard {
+		g := &SessionGuard{
+			store:  &mockSessionStore{},
+			config: auth.SessionConfig{Name: "test_session"},
+			hasher: auth.NewBcryptHasher(10),
+		}
+		g.provider.Store(&providerHolder{p: &mockUserProvider{}})
+		return g
+	}()
 
 	// Create multiple requests
 	numRequests := 100
@@ -127,12 +130,15 @@ func TestSessionGuard_ConcurrentGetSession(t *testing.T) {
 }
 
 func TestSessionGuard_ConcurrentCheck(t *testing.T) {
-	guard := &SessionGuard{
-		provider: &mockUserProvider{},
-		store:    &mockSessionStore{},
-		config:   auth.SessionConfig{Name: "test_session"},
-		hasher:   auth.NewBcryptHasher(10),
-	}
+	guard := func() *SessionGuard {
+		g := &SessionGuard{
+			store:  &mockSessionStore{},
+			config: auth.SessionConfig{Name: "test_session"},
+			hasher: auth.NewBcryptHasher(10),
+		}
+		g.provider.Store(&providerHolder{p: &mockUserProvider{}})
+		return g
+	}()
 
 	// Create a request with session containing user_id
 	req := httptest.NewRequest("GET", "/test", nil)
@@ -162,12 +168,15 @@ func TestSessionGuard_ConcurrentCheck(t *testing.T) {
 }
 
 func TestSessionGuard_ConcurrentMixedOperations(t *testing.T) {
-	guard := &SessionGuard{
-		provider: &mockUserProvider{},
-		store:    &mockSessionStore{},
-		config:   auth.SessionConfig{Name: "test_session"},
-		hasher:   auth.NewBcryptHasher(10),
-	}
+	guard := func() *SessionGuard {
+		g := &SessionGuard{
+			store:  &mockSessionStore{},
+			config: auth.SessionConfig{Name: "test_session"},
+			hasher: auth.NewBcryptHasher(10),
+		}
+		g.provider.Store(&providerHolder{p: &mockUserProvider{}})
+		return g
+	}()
 
 	var wg sync.WaitGroup
 	numGoroutines := 100
@@ -198,12 +207,15 @@ func TestSessionGuard_ConcurrentMixedOperations(t *testing.T) {
 
 func TestSessionGuard_RaceCondition(t *testing.T) {
 	// This test verifies that concurrent access to getSession doesn't cause a race condition
-	guard := &SessionGuard{
-		provider: &mockUserProvider{},
-		store:    &mockSessionStore{},
-		config:   auth.SessionConfig{Name: "test_session"},
-		hasher:   auth.NewBcryptHasher(10),
-	}
+	guard := func() *SessionGuard {
+		g := &SessionGuard{
+			store:  &mockSessionStore{},
+			config: auth.SessionConfig{Name: "test_session"},
+			hasher: auth.NewBcryptHasher(10),
+		}
+		g.provider.Store(&providerHolder{p: &mockUserProvider{}})
+		return g
+	}()
 
 	// Create a single request that will be accessed by multiple goroutines
 	req := httptest.NewRequest("GET", "/test", nil)
@@ -231,12 +243,15 @@ func TestSessionGuard_RaceCondition(t *testing.T) {
 // Session method returns the same instance as the internal getSession path,
 // satisfying the auth.SessionAware contract.
 func TestSessionGuard_Session_ExportsGetSession(t *testing.T) {
-	guard := &SessionGuard{
-		provider: &mockUserProvider{},
-		store:    &mockSessionStore{},
-		config:   auth.SessionConfig{Name: "test_session"},
-		hasher:   auth.NewBcryptHasher(10),
-	}
+	guard := func() *SessionGuard {
+		g := &SessionGuard{
+			store:  &mockSessionStore{},
+			config: auth.SessionConfig{Name: "test_session"},
+			hasher: auth.NewBcryptHasher(10),
+		}
+		g.provider.Store(&providerHolder{p: &mockUserProvider{}})
+		return g
+	}()
 
 	// Compile-time check that SessionGuard satisfies auth.SessionAware.
 	var _ auth.SessionAware = guard
@@ -260,12 +275,15 @@ func TestSessionGuard_Session_ExportsGetSession(t *testing.T) {
 // calls on the same request (with WithSessionContext applied) reuse the
 // cached holder rather than reloading from the store.
 func TestSessionGuard_Session_CachesWithinRequest(t *testing.T) {
-	guard := &SessionGuard{
-		provider: &mockUserProvider{},
-		store:    &mockSessionStore{},
-		config:   auth.SessionConfig{Name: "test_session"},
-		hasher:   auth.NewBcryptHasher(10),
-	}
+	guard := func() *SessionGuard {
+		g := &SessionGuard{
+			store:  &mockSessionStore{},
+			config: auth.SessionConfig{Name: "test_session"},
+			hasher: auth.NewBcryptHasher(10),
+		}
+		g.provider.Store(&providerHolder{p: &mockUserProvider{}})
+		return g
+	}()
 
 	req := httptest.NewRequest("GET", "/", nil)
 	req.AddCookie(&http.Cookie{Name: "test_session", Value: "cookie-value"})
@@ -285,12 +303,15 @@ func TestSessionGuard_Session_CachesWithinRequest(t *testing.T) {
 // without WithSessionContext, the guard falls back to loading from the
 // store every call. Both calls must return non-nil sessions.
 func TestSessionGuard_Session_WithoutContextLoadsFreshEachCall(t *testing.T) {
-	guard := &SessionGuard{
-		provider: &mockUserProvider{},
-		store:    &mockSessionStore{},
-		config:   auth.SessionConfig{Name: "test_session"},
-		hasher:   auth.NewBcryptHasher(10),
-	}
+	guard := func() *SessionGuard {
+		g := &SessionGuard{
+			store:  &mockSessionStore{},
+			config: auth.SessionConfig{Name: "test_session"},
+			hasher: auth.NewBcryptHasher(10),
+		}
+		g.provider.Store(&providerHolder{p: &mockUserProvider{}})
+		return g
+	}()
 
 	req := httptest.NewRequest("GET", "/", nil)
 	req.AddCookie(&http.Cookie{Name: "test_session", Value: "cookie-value"})

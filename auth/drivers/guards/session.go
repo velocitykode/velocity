@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
@@ -76,14 +77,28 @@ type modifiedSession interface {
 // timestamps without amplifying write volume.
 const lastSeenDebounce = 60 * time.Second
 
+// providerHolder boxes an auth.UserProvider so atomic.Pointer can hold the
+// two-word interface as a single addressable value (H-10 fix). Without the
+// box, swaps would race on the interface itab + data pair.
+type providerHolder struct{ p auth.UserProvider }
+
+// throttlerHolder boxes a contract.LoginThrottler for the same reason.
+type throttlerHolder struct{ t contract.LoginThrottler }
+
 // SessionGuard implements session-based authentication
 type SessionGuard struct {
-	provider       auth.UserProvider
+	// provider and throttler are held via atomic.Pointer so concurrent
+	// SetProvider / SetLoginThrottler calls cannot tear a reader's
+	// two-word interface fetch in Attempt / Login (H-10 fix). The
+	// pointers are NEVER nil after construction; helpers always wrap
+	// before storing.
+	provider  atomic.Pointer[providerHolder]
+	throttler atomic.Pointer[throttlerHolder]
+
 	store          auth.SessionStore
 	config         auth.SessionConfig
 	hasher         auth.Hasher
 	encryptor      crypto.Encryptor
-	throttler      contract.LoginThrottler
 	mu             sync.RWMutex
 	serverStore    auth.ServerSessionStore
 	logger         auth.Logger
@@ -92,6 +107,26 @@ type SessionGuard struct {
 	// to auth.DefaultAttemptFloor. Set via SetAttemptFloor or seeded
 	// from auth.Config.AttemptFloor at boot.
 	attemptFloor time.Duration
+}
+
+// loadProvider returns the active auth.UserProvider via atomic load.
+func (g *SessionGuard) loadProvider() auth.UserProvider {
+	h := g.provider.Load()
+	if h == nil {
+		return nil
+	}
+	return h.p
+}
+
+// loadThrottler returns the active contract.LoginThrottler via atomic load.
+// Falls back to NoopLoginThrottler when no throttler has been installed so
+// callers never need a nil check.
+func (g *SessionGuard) loadThrottler() contract.LoginThrottler {
+	h := g.throttler.Load()
+	if h == nil || h.t == nil {
+		return auth.NoopLoginThrottler{}
+	}
+	return h.t
 }
 
 // SetAttemptFloor configures the wall-clock floor that Attempt blocks for,
@@ -135,24 +170,28 @@ func NewSessionGuard(provider auth.UserProvider, config auth.SessionConfig, encr
 		return nil, err
 	}
 
-	return &SessionGuard{
-		provider:  provider,
+	g := &SessionGuard{
 		store:     store,
 		config:    config,
 		hasher:    auth.NewBcryptHasher(10),
 		encryptor: enc,
-		throttler: auth.NoopLoginThrottler{},
-	}, nil
+	}
+	g.provider.Store(&providerHolder{p: provider})
+	g.throttler.Store(&throttlerHolder{t: auth.NoopLoginThrottler{}})
+	return g, nil
 }
 
 // SetLoginThrottler installs a rate-limiter for Attempt() calls. Passing nil
 // reverts to the no-op throttler.
+//
+// Stored via atomic.Pointer so concurrent Attempt() readers cannot tear the
+// two-word interface fetch on the throttler field (H-10 fix).
 func (g *SessionGuard) SetLoginThrottler(t contract.LoginThrottler) {
 	if t == nil {
-		g.throttler = auth.NoopLoginThrottler{}
+		g.throttler.Store(&throttlerHolder{t: auth.NoopLoginThrottler{}})
 		return
 	}
-	g.throttler = t
+	g.throttler.Store(&throttlerHolder{t: t})
 }
 
 // SetServerSessionStore installs (or removes when nil) a server-side session
@@ -274,7 +313,7 @@ func (g *SessionGuard) CheckWithError(r *http.Request) (bool, error) {
 		return true, nil
 	}
 
-	user, err := g.provider.FindByID(userID)
+	user, err := g.loadProvider().FindByID(userID)
 	if err != nil || user == nil {
 		return false, nil
 	}
@@ -320,7 +359,7 @@ func (g *SessionGuard) User(r *http.Request) auth.Authenticatable {
 		return user
 	}
 
-	user, err := g.provider.FindByID(userID)
+	user, err := g.loadProvider().FindByID(userID)
 	if err != nil {
 		return nil
 	}
@@ -434,7 +473,7 @@ func (g *SessionGuard) Login(w http.ResponseWriter, r *http.Request, user auth.A
 
 // LoginByID logs in a user by ID
 func (g *SessionGuard) LoginByID(w http.ResponseWriter, r *http.Request, id interface{}, remember ...bool) error {
-	user, err := g.provider.FindByID(id)
+	user, err := g.loadProvider().FindByID(id)
 	if err != nil {
 		return err
 	}
@@ -453,14 +492,16 @@ func (g *SessionGuard) LoginByID(w http.ResponseWriter, r *http.Request, id inte
 // the CPU cost also matches; without this an attacker can probe valid
 // emails by measuring response time even with a constant-time floor.
 func (g *SessionGuard) Attempt(w http.ResponseWriter, r *http.Request, credentials map[string]interface{}, remember ...bool) (bool, error) {
-	throttler := g.throttler
-	if throttler == nil {
-		throttler = auth.NoopLoginThrottler{}
-	}
+	throttler := g.loadThrottler()
 	key := auth.ThrottleKey(r, credentials, g.getTrustedProxies())
 	if !throttler.Allow(r, key) {
 		return false, auth.ErrLoginThrottled
 	}
+
+	// Snapshot the provider once so the timebox closure and the
+	// post-timebox branches see a consistent reference even if a
+	// concurrent SetProvider call swaps the pointer mid-call.
+	provider := g.loadProvider()
 
 	var (
 		user            auth.Authenticatable
@@ -472,7 +513,7 @@ func (g *SessionGuard) Attempt(w http.ResponseWriter, r *http.Request, credentia
 	)
 
 	auth.Timebox(g.effectiveAttemptFloor(), func() {
-		user, findErr = g.provider.FindByCredentials(credentials)
+		user, findErr = provider.FindByCredentials(credentials)
 		password, passwordTypedOK = credentials["password"].(string)
 
 		if findErr != nil || user == nil {
@@ -494,7 +535,7 @@ func (g *SessionGuard) Attempt(w http.ResponseWriter, r *http.Request, credentia
 			invalidCredErr = auth.ErrInvalidCredentials
 			return
 		}
-		credentialsOK = g.provider.ValidateCredentials(user, map[string]interface{}{"password": password})
+		credentialsOK = provider.ValidateCredentials(user, map[string]interface{}{"password": password})
 	})
 
 	if findErr != nil || user == nil {
@@ -555,8 +596,9 @@ func (g *SessionGuard) Logout(w http.ResponseWriter, r *http.Request) error {
 	// half-logged-out state. Failures are logged so operators can
 	// reconcile.
 	if userID := session.Get("user_id"); userID != nil {
-		if user, err := g.provider.FindByID(userID); err == nil && user != nil {
-			if err := g.provider.UpdateRememberToken(user, ""); err != nil {
+		provider := g.loadProvider()
+		if user, err := provider.FindByID(userID); err == nil && user != nil {
+			if err := provider.UpdateRememberToken(user, ""); err != nil {
 				g.logWarn("velocity/auth: clear remember token (logout) failed", "user_id", userID, "error", err)
 			}
 		}
@@ -593,9 +635,16 @@ func (g *SessionGuard) Logout(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// SetProvider sets the user provider
+// SetProvider sets the user provider. Stored via atomic.Pointer so
+// concurrent Attempt() readers cannot tear the two-word interface fetch
+// on the provider field (H-10 fix). Passing nil leaves the previously
+// installed provider in place; SessionGuard must always have a non-nil
+// provider so nil swaps are silently ignored.
 func (g *SessionGuard) SetProvider(provider auth.UserProvider) {
-	g.provider = provider
+	if provider == nil {
+		return
+	}
+	g.provider.Store(&providerHolder{p: provider})
 }
 
 // Session returns the request-scoped Session, loading from the cookie store
@@ -759,11 +808,12 @@ func (g *SessionGuard) recordServerSession(r *http.Request, session auth.Session
 // RevokeAllSessions but is why Manager.RevokeSession (single-session)
 // deliberately does NOT call this method.
 func (g *SessionGuard) ClearRememberTokensForUser(ctx context.Context, userID string) error {
-	user, err := g.provider.FindByID(userID)
+	provider := g.loadProvider()
+	user, err := provider.FindByID(userID)
 	if err != nil || user == nil {
 		return nil
 	}
-	return g.provider.UpdateRememberToken(user, "")
+	return provider.UpdateRememberToken(user, "")
 }
 
 // clientIP returns the originating client IP for r, honouring the
@@ -808,7 +858,7 @@ func (g *SessionGuard) checkRememberCookie(r *http.Request) auth.Authenticatable
 	token := parts[1]
 
 	// Look up user by ID
-	user, err := g.provider.FindByID(userID)
+	user, err := g.loadProvider().FindByID(userID)
 	if err != nil || user == nil {
 		return nil
 	}
@@ -865,7 +915,7 @@ func (g *SessionGuard) setRememberCookie(w http.ResponseWriter, user auth.Authen
 	// Store only the hash of the token on the user record.
 	hashed := hashRememberToken(token)
 	user.SetRememberToken(hashed)
-	if err := g.provider.UpdateRememberToken(user, hashed); err != nil {
+	if err := g.loadProvider().UpdateRememberToken(user, hashed); err != nil {
 		return err
 	}
 

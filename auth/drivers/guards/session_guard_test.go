@@ -218,7 +218,7 @@ func TestNewSessionGuard(t *testing.T) {
 					t.Error("NewSessionGuard() returned nil guard")
 					return
 				}
-				if guard.provider != tt.provider {
+				if guard.loadProvider() != tt.provider {
 					t.Error("provider not set correctly")
 				}
 				if guard.store == nil {
@@ -249,12 +249,15 @@ func TestSessionGuard_Check(t *testing.T) {
 						return session, nil
 					},
 				}
-				return &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("GET", "/", nil)
@@ -274,12 +277,15 @@ func TestSessionGuard_Check(t *testing.T) {
 						return nil, errors.New("cannot create session")
 					},
 				}
-				return &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("GET", "/", nil)
@@ -301,12 +307,15 @@ func TestSessionGuard_Check(t *testing.T) {
 						return session, nil
 					},
 				}
-				return &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("GET", "/", nil)
@@ -333,12 +342,15 @@ func TestSessionGuard_Check(t *testing.T) {
 						return nil, errors.New("user not found")
 					},
 				}
-				return &SessionGuard{
-					provider: provider,
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: provider})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("GET", "/", nil)
@@ -365,12 +377,15 @@ func TestSessionGuard_Check(t *testing.T) {
 						return nil, nil
 					},
 				}
-				return &SessionGuard{
-					provider: provider,
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: provider})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("GET", "/", nil)
@@ -414,12 +429,15 @@ func TestSessionGuard_User(t *testing.T) {
 						return session, nil
 					},
 				}
-				return &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("GET", "/", nil)
@@ -440,12 +458,15 @@ func TestSessionGuard_User(t *testing.T) {
 						return nil, errors.New("cannot create")
 					},
 				}
-				return &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("GET", "/", nil)
@@ -466,12 +487,15 @@ func TestSessionGuard_User(t *testing.T) {
 						return session, nil
 					},
 				}
-				return &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("GET", "/", nil)
@@ -498,12 +522,15 @@ func TestSessionGuard_User(t *testing.T) {
 						return nil, errors.New("database error")
 					},
 				}
-				return &SessionGuard{
-					provider: provider,
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: provider})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("GET", "/", nil)
@@ -557,12 +584,15 @@ func TestSessionGuard_ID(t *testing.T) {
 						return session, nil
 					},
 				}
-				return &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("GET", "/", nil)
@@ -583,12 +613,15 @@ func TestSessionGuard_ID(t *testing.T) {
 						return nil, errors.New("cannot create")
 					},
 				}
-				return &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("GET", "/", nil)
@@ -609,12 +642,15 @@ func TestSessionGuard_ID(t *testing.T) {
 						return session, nil
 					},
 				}
-				return &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("GET", "/", nil)
@@ -665,12 +701,15 @@ func TestSessionGuard_Login(t *testing.T) {
 						return session, nil
 					},
 				}
-				return &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("POST", "/login", nil)
@@ -703,12 +742,15 @@ func TestSessionGuard_Login(t *testing.T) {
 						return session, nil
 					},
 				}
-				return &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				return httptest.NewRequest("POST", "/login", nil)
@@ -727,12 +769,15 @@ func TestSessionGuard_Login(t *testing.T) {
 						return nil, errors.New("cannot create session")
 					},
 				}
-				return &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				return httptest.NewRequest("POST", "/login", nil)
@@ -757,12 +802,15 @@ func TestSessionGuard_Login(t *testing.T) {
 						return session, nil
 					},
 				}
-				return &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("POST", "/login", nil)
@@ -813,12 +861,15 @@ func TestSessionGuard_LoginByID(t *testing.T) {
 						return session, nil
 					},
 				}
-				return &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("POST", "/login", nil)
@@ -836,12 +887,15 @@ func TestSessionGuard_LoginByID(t *testing.T) {
 						return nil, errors.New("user not found")
 					},
 				}
-				return &SessionGuard{
-					provider: provider,
-					store:    &mockSessionGuardStore{},
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  &mockSessionGuardStore{},
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: provider})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				return httptest.NewRequest("POST", "/login", nil)
@@ -861,12 +915,15 @@ func TestSessionGuard_LoginByID(t *testing.T) {
 						return session, nil
 					},
 				}
-				return &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("POST", "/login", nil)
@@ -928,12 +985,15 @@ func TestSessionGuard_Attempt(t *testing.T) {
 						return session, nil
 					},
 				}
-				return &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("POST", "/login", nil)
@@ -955,12 +1015,15 @@ func TestSessionGuard_Attempt(t *testing.T) {
 						return nil, errors.New("user not found")
 					},
 				}
-				return &SessionGuard{
-					provider: provider,
-					store:    &mockSessionGuardStore{},
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  &mockSessionGuardStore{},
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: provider})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				return httptest.NewRequest("POST", "/login", nil)
@@ -975,12 +1038,15 @@ func TestSessionGuard_Attempt(t *testing.T) {
 		{
 			name: "returns error when password not a string",
 			setupGuard: func() *SessionGuard {
-				return &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    &mockSessionGuardStore{},
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  &mockSessionGuardStore{},
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				return httptest.NewRequest("POST", "/login", nil)
@@ -1000,12 +1066,15 @@ func TestSessionGuard_Attempt(t *testing.T) {
 						return false
 					},
 				}
-				return &SessionGuard{
-					provider: provider,
-					store:    &mockSessionGuardStore{},
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  &mockSessionGuardStore{},
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: provider})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				return httptest.NewRequest("POST", "/login", nil)
@@ -1028,12 +1097,15 @@ func TestSessionGuard_Attempt(t *testing.T) {
 						return nil, errors.New("cannot create session")
 					},
 				}
-				return &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				return httptest.NewRequest("POST", "/login", nil)
@@ -1086,12 +1158,15 @@ func TestSessionGuard_Logout(t *testing.T) {
 						return session, nil
 					},
 				}
-				return &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("POST", "/logout", nil)
@@ -1111,12 +1186,15 @@ func TestSessionGuard_Logout(t *testing.T) {
 						return nil, errors.New("cannot create")
 					},
 				}
-				return &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				return httptest.NewRequest("POST", "/logout", nil)
@@ -1140,12 +1218,15 @@ func TestSessionGuard_Logout(t *testing.T) {
 						return session, nil
 					},
 				}
-				return &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("POST", "/logout", nil)
@@ -1166,12 +1247,15 @@ func TestSessionGuard_Logout(t *testing.T) {
 						return session, nil
 					},
 				}
-				return &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("POST", "/logout", nil)
@@ -1224,14 +1308,17 @@ func TestSessionGuard_SetProvider(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			guard := &SessionGuard{
-				provider: &mockSessionGuardUserProvider{},
-				store:    &mockSessionGuardStore{},
-				config:   newTestSessionConfig(),
-				hasher:   auth.NewBcryptHasher(10),
-			}
+			guard := func() *SessionGuard {
+				g := &SessionGuard{
+					store:  &mockSessionGuardStore{},
+					config: newTestSessionConfig(),
+					hasher: auth.NewBcryptHasher(10),
+				}
+				g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+				return g
+			}()
 			guard.SetProvider(tt.newProvider)
-			if guard.provider != tt.newProvider {
+			if guard.loadProvider() != tt.newProvider {
 				t.Error("SetProvider() did not update provider")
 			}
 		})
@@ -1248,12 +1335,15 @@ func TestSessionGuard_getSession(t *testing.T) {
 		{
 			name: "returns cached session",
 			setupGuard: func() *SessionGuard {
-				guard := &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    &mockSessionGuardStore{},
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				guard := func() *SessionGuard {
+					g := &SessionGuard{
+						store:  &mockSessionGuardStore{},
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 				return guard
 			},
 			setupReq: func() *http.Request {
@@ -1274,12 +1364,15 @@ func TestSessionGuard_getSession(t *testing.T) {
 						return newMockSessionGuardSession("new-session"), nil
 					},
 				}
-				return &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("GET", "/", nil)
@@ -1296,12 +1389,15 @@ func TestSessionGuard_getSession(t *testing.T) {
 						return newMockSessionGuardSession("new-session"), nil
 					},
 				}
-				return &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				return httptest.NewRequest("GET", "/", nil)
@@ -1319,12 +1415,15 @@ func TestSessionGuard_getSession(t *testing.T) {
 						return nil, errors.New("create failed")
 					},
 				}
-				return &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				return func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 			},
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("GET", "/", nil)
@@ -1372,12 +1471,15 @@ func TestSessionGuard_SessionRegeneration(t *testing.T) {
 						return session, nil
 					},
 				}
-				guard := &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				guard := func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 				return guard, session
 			},
 			user:      &mockSessionGuardUser{id: "user123"},
@@ -1423,12 +1525,15 @@ func TestSessionGuard_SessionInvalidation(t *testing.T) {
 						return session, nil
 					},
 				}
-				guard := &SessionGuard{
-					provider: &mockSessionGuardUserProvider{},
-					store:    store,
-					config:   newTestSessionConfig(),
-					hasher:   auth.NewBcryptHasher(10),
-				}
+				guard := func() *SessionGuard {
+					g := &SessionGuard{
+						store:  store,
+						config: newTestSessionConfig(),
+						hasher: auth.NewBcryptHasher(10),
+					}
+					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					return g
+				}()
 				return guard, session
 			},
 			wantInvalidate: true,
@@ -1472,12 +1577,15 @@ func TestLogin_RegenerateErrorFailsLogin(t *testing.T) {
 			return session, nil
 		},
 	}
-	guard := &SessionGuard{
-		provider: &mockSessionGuardUserProvider{},
-		store:    store,
-		config:   newTestSessionConfig(),
-		hasher:   auth.NewBcryptHasher(10),
-	}
+	guard := func() *SessionGuard {
+		g := &SessionGuard{
+			store:  store,
+			config: newTestSessionConfig(),
+			hasher: auth.NewBcryptHasher(10),
+		}
+		g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+		return g
+	}()
 
 	req := httptest.NewRequest("POST", "/login", nil)
 	req.AddCookie(&http.Cookie{Name: "test_session", Value: originalID})

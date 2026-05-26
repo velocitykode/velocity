@@ -52,13 +52,16 @@ func (s *trackingStore) GarbageCollect(maxLifetime time.Duration) error { return
 // helper: build a SessionGuard whose getSession returns the trackingSession.
 func newGuardForMiddleware(t *testing.T, store *trackingStore) *SessionGuard {
 	t.Helper()
-	g := &SessionGuard{
-		provider:  &mockSessionGuardUserProvider{},
-		store:     store,
-		config:    auth.SessionConfig{Name: "test_session"},
-		hasher:    auth.NewBcryptHasher(4),
-		throttler: auth.NoopLoginThrottler{},
-	}
+	g := func() *SessionGuard {
+		g := &SessionGuard{
+			store:  store,
+			config: auth.SessionConfig{Name: "test_session"},
+			hasher: auth.NewBcryptHasher(4),
+		}
+		g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+		g.throttler.Store(&throttlerHolder{t: auth.NoopLoginThrottler{}})
+		return g
+	}()
 	return g
 }
 

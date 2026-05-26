@@ -84,12 +84,15 @@ func TestGenerateRememberToken_RandFailure(t *testing.T) {
 func TestSetRememberCookie_StoresHashedToken(t *testing.T) {
 	enc := newRememberEncryptor(t)
 	provider := &mockRememberProvider{}
-	g := &SessionGuard{
-		provider:  provider,
-		config:    auth.SessionConfig{Name: "sess", Lifetime: 60},
-		encryptor: enc,
-		throttler: auth.NoopLoginThrottler{},
-	}
+	g := func() *SessionGuard {
+		g := &SessionGuard{
+			config:    auth.SessionConfig{Name: "sess", Lifetime: 60},
+			encryptor: enc,
+		}
+		g.provider.Store(&providerHolder{p: provider})
+		g.throttler.Store(&throttlerHolder{t: auth.NoopLoginThrottler{}})
+		return g
+	}()
 	user := &mockRememberUser{id: "u1"}
 	w := httptest.NewRecorder()
 
@@ -119,12 +122,15 @@ func TestSetRememberCookie_StoresHashedToken(t *testing.T) {
 
 func TestSetRememberCookie_RefusesZeroLifetime(t *testing.T) {
 	enc := newRememberEncryptor(t)
-	g := &SessionGuard{
-		provider:  &mockRememberProvider{},
-		config:    auth.SessionConfig{Name: "sess", Lifetime: 0},
-		encryptor: enc,
-		throttler: auth.NoopLoginThrottler{},
-	}
+	g := func() *SessionGuard {
+		g := &SessionGuard{
+			config:    auth.SessionConfig{Name: "sess", Lifetime: 0},
+			encryptor: enc,
+		}
+		g.provider.Store(&providerHolder{p: &mockRememberProvider{}})
+		g.throttler.Store(&throttlerHolder{t: auth.NoopLoginThrottler{}})
+		return g
+	}()
 	user := &mockRememberUser{id: "u1"}
 	w := httptest.NewRecorder()
 	err := g.setRememberCookie(w, user)
@@ -143,14 +149,17 @@ func TestCheckRememberCookie_ComparesHashedToken(t *testing.T) {
 	hashed := hashRememberToken(rawToken)
 	user := &mockRememberUser{id: "u1", rememberToken: hashed}
 
-	g := &SessionGuard{
-		provider:  &mockRememberProvider{},
-		config:    auth.SessionConfig{Name: "sess", Lifetime: 60},
-		encryptor: enc,
-		throttler: auth.NoopLoginThrottler{},
-	}
+	g := func() *SessionGuard {
+		g := &SessionGuard{
+			config:    auth.SessionConfig{Name: "sess", Lifetime: 60},
+			encryptor: enc,
+		}
+		g.provider.Store(&providerHolder{p: &mockRememberProvider{}})
+		g.throttler.Store(&throttlerHolder{t: auth.NoopLoginThrottler{}})
+		return g
+	}()
 	// Install a lookup that returns our user.
-	g.provider = &remLookupProvider{user: user}
+	g.SetProvider(&remLookupProvider{user: user})
 
 	// Encrypt cookie value "userID|rawToken".
 	value := "u1|" + rawToken

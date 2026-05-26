@@ -147,7 +147,7 @@ func TestNewJWTGuard(t *testing.T) {
 				t.Error("NewJWTGuard returned nil")
 				return
 			}
-			if guard.provider != tt.provider {
+			if guard.loadProvider() != tt.provider {
 				t.Error("provider not set correctly")
 			}
 			if guard.userCache == nil {
@@ -936,7 +936,7 @@ func TestJWTGuard_SetProvider(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			guard := mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
 			guard.SetProvider(tt.newProvider)
-			if guard.provider != tt.newProvider {
+			if guard.loadProvider() != tt.newProvider {
 				t.Error("SetProvider() did not update provider")
 			}
 		})
