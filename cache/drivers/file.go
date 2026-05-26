@@ -248,7 +248,12 @@ func (s *FileStore) Put(key string, value interface{}, ttl time.Duration) error 
 
 // Add atomically stores a value only if the key does not already
 // exist (or its existing entry is expired). Returns true if inserted,
-// false if a non-expired entry was already present.
+// false if a non-expired entry was already present or if another
+// process holds the takeover lock for the same key.
+//
+// A non-nil error indicates a real backend failure (write or lock
+// acquisition); callers must not treat (false, err) as benign
+// contention.
 //
 // Atomicity is layered:
 //
@@ -258,10 +263,12 @@ func (s *FileStore) Put(key string, value interface{}, ttl time.Duration) error 
 //     advisory flock(2) under the existing per-key lock infrastructure
 //     for the expired-entry takeover path.
 //
-// On a platform where flock is unavailable (the windows build) the
-// takeover path degrades to last-writer-wins; the fresh-key create
-// path is still O_EXCL-protected so two cold-start processes cannot
-// both win Add for an absent key.
+// On a platform where flock is unavailable (the windows build), the
+// expired-entry takeover path returns ErrLockNotSupported instead of
+// degrading to last-writer-wins. There is no safe non-flock fallback
+// that preserves the SETNX contract; operators that need cross-process
+// single-flight on Windows should use the Redis driver. The fresh-key
+// create path is still O_EXCL-protected on every platform.
 func (s *FileStore) Add(key string, value interface{}, ttl time.Duration) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -314,24 +321,33 @@ func (s *FileStore) Add(key string, value interface{}, ttl time.Duration) (bool,
 		}
 	}
 
-	// Expired or unparseable entry. Try to take over under a flock.
+	// Expired or unparseable entry. Take over under a flock. On
+	// platforms where flock(2) is unavailable (windows), there is no
+	// safe way to honor the Store.Add SETNX contract for the takeover
+	// path - last-writer-wins would let two processes both report
+	// successful Add for the same expired key. Surface
+	// ErrLockNotSupported instead so the caller knows the driver
+	// cannot fulfil the contract on this platform; operators relying
+	// on cross-process single-flight should use Redis or run on POSIX.
 	lockStore, lerr := s.ensureLockStore()
 	if lerr != nil {
-		// Platforms without flock (windows): degrade to last-writer-
-		// wins on the takeover path. The fresh-key path above is
-		// still kernel-atomic via O_EXCL.
-		if werr := os.WriteFile(path, data, 0600); werr != nil {
-			return false, fmt.Errorf("velocity/cache: failed to write cache file: %w", werr)
-		}
-		return true, nil
+		return false, fmt.Errorf("velocity/cache: FileStore.Add cannot fulfil SETNX contract on this platform: %w", lerr)
 	}
 	owner := newAddOwnerID()
 	lock := NewFileLock(lockStore, PrefixKey(s.prefix, "add:"+key), owner, 30*time.Second)
 	ctx := context.Background()
 	acquired, aerr := lock.GetWithErr(ctx)
-	if aerr != nil || !acquired {
-		// Another process is performing the takeover. Treat as
-		// existing entry (we did not insert).
+	if aerr != nil {
+		// Backend failure on the lock store itself (filesystem
+		// problem, exhausted file descriptors, etc) is a real error
+		// the caller needs to see. Don't mask it as benign
+		// contention; Cache.Remember would otherwise poll, then run
+		// the populate callback without ever caching the result.
+		return false, fmt.Errorf("velocity/cache: FileStore.Add lock acquire failed: %w", aerr)
+	}
+	if !acquired {
+		// Genuine contention: another process holds the takeover
+		// lock. Treat as existing entry; caller retries the Get.
 		return false, nil
 	}
 	defer func() { _ = lock.Release(ctx) }()
