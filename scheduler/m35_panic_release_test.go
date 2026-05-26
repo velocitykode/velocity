@@ -160,14 +160,13 @@ func TestM35_MultipleBeforeHooks_PanicIsolated(t *testing.T) {
 
 	cron := fmt.Sprintf("%d * * * *", time.Now().Minute())
 
-	var first, second, third atomic.Bool
+	var first, third atomic.Bool
 
 	s := New()
 	job := s.Named("multihook", func() {}).Cron(cron)
 	job.Before(func() { first.Store(true) })
 	job.Before(func() { panic("middle hook boom") })
 	job.Before(func() { third.Store(true) })
-	_ = second
 
 	s.runDueJobs()
 	s.runWg.Wait()
