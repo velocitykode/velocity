@@ -17,6 +17,17 @@ type Cache interface {
 	// Put stores a value in the cache with a TTL
 	Put(key string, value interface{}, ttl time.Duration) error
 
+	// Add atomically stores a value in the cache with a TTL only if the
+	// key does not already exist. Returns true if the value was inserted,
+	// false if the key already existed (no write performed). Returns an
+	// error only on backend failure; contention (key already present) is
+	// reported as (false, nil).
+	//
+	// Add is the SETNX primitive that lets callers gate single-flight
+	// populates over the cache layer itself, avoiding the thundering-herd
+	// problem on Remember-style cache-miss paths.
+	Add(key string, value interface{}, ttl time.Duration) (bool, error)
+
 	// Forever stores a value in the cache indefinitely
 	Forever(key string, value interface{}) error
 
@@ -68,6 +79,7 @@ type ContextStore interface {
 	GetCtx(ctx context.Context, key string) (interface{}, bool)
 	GetStringCtx(ctx context.Context, key string) (string, bool)
 	PutCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) error
+	AddCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) (bool, error)
 	ForeverCtx(ctx context.Context, key string, value interface{}) error
 	ForgetCtx(ctx context.Context, key string) error
 	FlushCtx(ctx context.Context) error

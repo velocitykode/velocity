@@ -128,6 +128,30 @@ func (s *MemoryStore) Put(key string, value interface{}, ttl time.Duration) erro
 	return nil
 }
 
+// Add atomically stores a value only if the key does not already exist.
+// Returns true if inserted, false on contention (key already present).
+// Expired entries are treated as absent and overwritten. The atomic
+// check-and-set runs under the store's existing mutex so concurrent
+// callers cannot race past the existence check.
+func (s *MemoryStore) Add(key string, value interface{}, ttl time.Duration) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	prefixedKey := s.prefixedKey(key)
+	if existing, exists := s.items[prefixedKey]; exists {
+		if existing.expiration == nil || time.Now().Before(*existing.expiration) {
+			return false, nil
+		}
+	}
+
+	expiration := time.Now().Add(ttl)
+	s.items[prefixedKey] = &cacheItem{
+		value:      value,
+		expiration: &expiration,
+	}
+	return true, nil
+}
+
 // Forever stores a value in the cache indefinitely
 func (s *MemoryStore) Forever(key string, value interface{}) error {
 	s.mu.Lock()

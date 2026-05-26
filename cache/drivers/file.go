@@ -226,6 +226,48 @@ func (s *FileStore) Put(key string, value interface{}, ttl time.Duration) error 
 	return nil
 }
 
+// Add atomically stores a value only if the key does not already exist.
+// Returns true if inserted, false if a non-expired entry is already
+// present. The check-and-write runs under the store's write mutex, so
+// concurrent goroutines in the same process cannot race past the
+// existence check. Cross-process atomicity is best-effort -- two
+// processes that share the same cache directory may both observe the
+// key as absent and both succeed; callers that need cross-process
+// single-flight semantics should use the Redis driver.
+func (s *FileStore) Add(key string, value interface{}, ttl time.Duration) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	path := s.getCacheFilePath(key)
+	if data, err := os.ReadFile(path); err == nil {
+		var item fileCacheItem
+		if err := json.Unmarshal(data, &item); err == nil {
+			// Treat unparseable / expired entries as absent.
+			if item.Expiration == nil || time.Now().Before(*item.Expiration) {
+				return false, nil
+			}
+		}
+	}
+
+	valueData, err := json.Marshal(value)
+	if err != nil {
+		return false, fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
+	}
+	expiration := time.Now().Add(ttl)
+	item := fileCacheItem{
+		Value:      valueData,
+		Expiration: &expiration,
+	}
+	data, err := json.Marshal(item)
+	if err != nil {
+		return false, fmt.Errorf("velocity/cache: failed to marshal cache item: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return false, fmt.Errorf("velocity/cache: failed to write cache file: %w", err)
+	}
+	return true, nil
+}
+
 // Forever stores a value in the cache indefinitely
 func (s *FileStore) Forever(key string, value interface{}) error {
 	s.mu.Lock()

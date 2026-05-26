@@ -134,6 +134,27 @@ func (s *RedisStore) Put(key string, value interface{}, ttl time.Duration) error
 	return s.PutCtx(context.Background(), key, value, ttl)
 }
 
+// AddCtx atomically stores a value only if the key does not already exist.
+// Uses Redis SET ... NX EX which is atomic on the server. Returns true if
+// the key was inserted, false on contention (key already present). The
+// caller's ctx is propagated so the SETNX can be cancelled in-flight.
+func (s *RedisStore) AddCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) (bool, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return false, fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
+	}
+	ok, err := s.client.SetNX(ctx, s.prefixedKey(key), data, ttl).Result()
+	if err != nil {
+		return false, fmt.Errorf("velocity/cache: redis setnx failed: %w", err)
+	}
+	return ok, nil
+}
+
+// Add atomically stores a value only if the key does not already exist.
+func (s *RedisStore) Add(key string, value interface{}, ttl time.Duration) (bool, error) {
+	return s.AddCtx(context.Background(), key, value, ttl)
+}
+
 // ForeverCtx stores a value in the cache indefinitely using the provided context.
 func (s *RedisStore) ForeverCtx(ctx context.Context, key string, value interface{}) error {
 	return s.PutCtx(ctx, key, value, 0)

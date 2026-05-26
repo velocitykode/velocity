@@ -38,6 +38,8 @@ type CacheManager interface {
 	GetString(key string) (string, bool)
 	Put(key string, value interface{}, ttl time.Duration) error
 	PutWithContext(ctx context.Context, key string, value interface{}, ttl time.Duration) error
+	Add(key string, value interface{}, ttl time.Duration) (bool, error)
+	AddWithContext(ctx context.Context, key string, value interface{}, ttl time.Duration) (bool, error)
 	Forever(key string, value interface{}) error
 	ForeverWithContext(ctx context.Context, key string, value interface{}) error
 	Forget(key string) error
@@ -336,6 +338,38 @@ func (m *Manager) PutWithContext(ctx context.Context, key string, value interfac
 	return nil
 }
 
+// Add atomically stores a value only if the key does not already exist.
+// Returns (true, nil) on insert, (false, nil) on contention. See Cache.Add.
+func (m *Manager) Add(key string, value interface{}, ttl time.Duration) (bool, error) {
+	return m.AddWithContext(context.Background(), key, value, ttl)
+}
+
+// AddWithContext is the ctx-aware variant of Add. Threads ctx through
+// when the store implements ContextStore so the underlying SETNX can be
+// cancelled in-flight.
+func (m *Manager) AddWithContext(ctx context.Context, key string, value interface{}, ttl time.Duration) (bool, error) {
+	store, err := m.DefaultStoreWithContext(ctx)
+	if err != nil {
+		return false, err
+	}
+	var (
+		inserted bool
+		addErr   error
+	)
+	if cs, ok := store.(ContextStore); ok {
+		inserted, addErr = cs.AddCtx(ctx, key, value, ttl)
+	} else {
+		inserted, addErr = store.Add(key, value, ttl)
+	}
+	if addErr != nil {
+		return false, addErr
+	}
+	if inserted {
+		m.dispatchCacheWritten(ctx, key, m.defaultStore, ttl)
+	}
+	return inserted, nil
+}
+
 // Forever stores a value in the default cache store indefinitely
 func (m *Manager) Forever(key string, value interface{}) error {
 	return m.ForeverWithContext(context.Background(), key, value)
@@ -438,9 +472,74 @@ func (m *Manager) RememberE(key string, ttl time.Duration, callback func() (inte
 	return m.RememberEWithContext(context.Background(), key, ttl, callback)
 }
 
+// rememberLoserPollAttempts caps how long a Remember caller that lost the
+// populate race spins waiting for the winner to write the real value.
+// With rememberLoserPollInterval at 5ms this gives ~250ms of polling --
+// enough for typical callback work (DB query, upstream API) to land,
+// short enough that pathological slow callbacks fall through to local
+// execution rather than blocking the request indefinitely. Losers
+// that time out run the callback themselves, so correctness is
+// preserved at the cost of one extra callback per slow-path key.
+const (
+	rememberLoserPollAttempts = 50
+	rememberLoserPollInterval = 5 * time.Millisecond
+)
+
+// rememberLockSentinel is the placeholder value Add'd to the cache slot
+// while the populate callback runs. It exists only inside the Manager's
+// Remember path; callers never observe it because the populater
+// overwrites the slot with the real value and the loser-poll loop
+// treats the sentinel as "still populating, keep polling".
+//
+// The sentinel is a string with a NUL-prefixed magic marker so it
+// survives JSON round-trip through the Redis driver (which serialises
+// values as JSON) while remaining distinguishable from any legitimate
+// user-supplied string value -- user strings cannot contain a leading
+// NUL byte that round-trips through JSON unchanged because Go's
+// json.Marshal escapes such bytes.
+const rememberLockSentinel = "\x00\x00velocity/cache:remember-populating\x00\x00"
+
+// isRememberSentinel reports whether a value read back from the store
+// represents an in-flight populater marker. It accepts both the raw
+// string form (memory driver, which stores values by reference) and the
+// JSON-decoded form (redis/file drivers, which round-trip values
+// through json.Marshal/Unmarshal).
+func isRememberSentinel(v interface{}) bool {
+	if s, ok := v.(string); ok {
+		return s == rememberLockSentinel
+	}
+	return false
+}
+
+// rememberLockTTL is how long the placeholder lives if the populater
+// crashes or is killed mid-callback. Once it elapses, the next caller
+// can re-elect itself as the populater. Kept short so a misbehaving
+// callback does not pin a slot for the full Remember TTL.
+const rememberLockTTL = 30 * time.Second
+
 // RememberEWithContext is the ctx + error-aware variant of Remember. Threads
 // ctx through to the underlying ContextStore when available, and skips the
 // cache Put when the callback returns an error.
+//
+// To mitigate the thundering-herd problem on cache misses, Remember uses
+// the Store's atomic Add (SETNX) primitive to elect a single populater:
+//   - Concurrent callers Get-miss, then race to Add a short-lived sentinel
+//     placeholder for the slot.
+//   - Exactly one caller wins the Add and runs the populate callback. On
+//     success it Put's the real value (overwriting the sentinel); on
+//     callback error it Forget's the placeholder so the next caller
+//     re-elects.
+//   - Losers observe Add returning false and poll Get with a small
+//     backoff (capped at rememberLoserPollAttempts*rememberLoserPollInterval).
+//     When they see the real value they return it; if they time out
+//     they fall through to running the callback themselves -- correctness
+//     is preserved at the cost of one extra callback in the pathological
+//     slow-populater case.
+//
+// This converts the unbounded concurrent-callback problem into a single
+// callback (typical case) or one fallback callback per slow populater,
+// without requiring a separate in-process singleflight layer (which
+// would not coordinate across multiple replicas).
 func (m *Manager) RememberEWithContext(ctx context.Context, key string, ttl time.Duration, callback func() (interface{}, error)) (interface{}, error) {
 	store, err := m.DefaultStoreWithContext(ctx)
 	if err != nil {
@@ -448,33 +547,94 @@ func (m *Manager) RememberEWithContext(ctx context.Context, key string, ttl time
 	}
 	cs, hasCtx := store.(ContextStore)
 
-	if hasCtx {
-		if val, found := cs.GetCtx(ctx, key); found {
-			m.dispatchCacheHit(ctx, key, m.defaultStore)
-			return val, nil
+	getFn := func() (interface{}, bool) {
+		if hasCtx {
+			return cs.GetCtx(ctx, key)
 		}
-	} else {
-		if val, found := store.Get(key); found {
+		return store.Get(key)
+	}
+	addFn := func(v interface{}, addTTL time.Duration) (bool, error) {
+		if hasCtx {
+			return cs.AddCtx(ctx, key, v, addTTL)
+		}
+		return store.Add(key, v, addTTL)
+	}
+	putFn := func(v interface{}) error {
+		if hasCtx {
+			return cs.PutCtx(ctx, key, v, ttl)
+		}
+		return store.Put(key, v, ttl)
+	}
+	forgetFn := func() error {
+		if hasCtx {
+			return cs.ForgetCtx(ctx, key)
+		}
+		return store.Forget(key)
+	}
+
+	if val, found := getFn(); found {
+		if !isRememberSentinel(val) {
 			m.dispatchCacheHit(ctx, key, m.defaultStore)
 			return val, nil
 		}
 	}
 	m.dispatchCacheMiss(ctx, key, m.defaultStore)
 
+	// Pick the placeholder TTL: never longer than the caller's intended
+	// TTL (so a misbehaving short-TTL key is not pinned for 30s by the
+	// sentinel) and never longer than rememberLockTTL.
+	lockTTL := rememberLockTTL
+	if ttl > 0 && ttl < lockTTL {
+		lockTTL = ttl
+	}
+
+	won, addErr := addFn(rememberLockSentinel, lockTTL)
+	if addErr != nil {
+		return nil, addErr
+	}
+	if won {
+		// We are the populater. Run the callback and write the real
+		// value over the sentinel. On callback error, drop the
+		// sentinel so the next caller can re-elect.
+		value, cbErr := callback()
+		if cbErr != nil {
+			_ = forgetFn()
+			return nil, cbErr
+		}
+		if err := putFn(value); err != nil {
+			_ = forgetFn()
+			return nil, err
+		}
+		m.dispatchCacheWritten(ctx, key, m.defaultStore, ttl)
+		return value, nil
+	}
+
+	// Lost the race -- another caller is populating. Poll briefly for
+	// the real value before falling back to running the callback
+	// ourselves. Honour ctx cancellation between polls.
+	for attempt := 0; attempt < rememberLoserPollAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if val, found := getFn(); found {
+			if !isRememberSentinel(val) {
+				m.dispatchCacheHit(ctx, key, m.defaultStore)
+				return val, nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(rememberLoserPollInterval):
+		}
+	}
+	// Timed out waiting for the winner. Fall through and run the
+	// callback ourselves; better one extra callback than blocking the
+	// request indefinitely.
 	value, cbErr := callback()
 	if cbErr != nil {
 		return nil, cbErr
 	}
-	if hasCtx {
-		if err := cs.PutCtx(ctx, key, value, ttl); err != nil {
-			return nil, err
-		}
-	} else {
-		if err := store.Put(key, value, ttl); err != nil {
-			return nil, err
-		}
-	}
-	m.dispatchCacheWritten(ctx, key, m.defaultStore, ttl)
 	return value, nil
 }
 
@@ -501,7 +661,11 @@ func (m *Manager) RememberForeverE(key string, callback func() (interface{}, err
 }
 
 // RememberForeverEWithContext is the ctx + error-aware variant of
-// RememberForever.
+// RememberForever. Uses the same single-flight populater election as
+// RememberEWithContext (see that method's doc comment for the protocol).
+// The placeholder sentinel is written with a short TTL even though the
+// final value is stored Forever, so a crashed populater does not pin
+// the slot permanently.
 func (m *Manager) RememberForeverEWithContext(ctx context.Context, key string, callback func() (interface{}, error)) (interface{}, error) {
 	store, err := m.DefaultStoreWithContext(ctx)
 	if err != nil {
@@ -509,33 +673,77 @@ func (m *Manager) RememberForeverEWithContext(ctx context.Context, key string, c
 	}
 	cs, hasCtx := store.(ContextStore)
 
-	if hasCtx {
-		if val, found := cs.GetCtx(ctx, key); found {
-			m.dispatchCacheHit(ctx, key, m.defaultStore)
-			return val, nil
+	getFn := func() (interface{}, bool) {
+		if hasCtx {
+			return cs.GetCtx(ctx, key)
 		}
-	} else {
-		if val, found := store.Get(key); found {
+		return store.Get(key)
+	}
+	addFn := func(v interface{}, addTTL time.Duration) (bool, error) {
+		if hasCtx {
+			return cs.AddCtx(ctx, key, v, addTTL)
+		}
+		return store.Add(key, v, addTTL)
+	}
+	foreverFn := func(v interface{}) error {
+		if hasCtx {
+			return cs.ForeverCtx(ctx, key, v)
+		}
+		return store.Forever(key, v)
+	}
+	forgetFn := func() error {
+		if hasCtx {
+			return cs.ForgetCtx(ctx, key)
+		}
+		return store.Forget(key)
+	}
+
+	if val, found := getFn(); found {
+		if !isRememberSentinel(val) {
 			m.dispatchCacheHit(ctx, key, m.defaultStore)
 			return val, nil
 		}
 	}
 	m.dispatchCacheMiss(ctx, key, m.defaultStore)
 
+	won, addErr := addFn(rememberLockSentinel, rememberLockTTL)
+	if addErr != nil {
+		return nil, addErr
+	}
+	if won {
+		value, cbErr := callback()
+		if cbErr != nil {
+			_ = forgetFn()
+			return nil, cbErr
+		}
+		if err := foreverFn(value); err != nil {
+			_ = forgetFn()
+			return nil, err
+		}
+		m.dispatchCacheWritten(ctx, key, m.defaultStore, 0)
+		return value, nil
+	}
+
+	for attempt := 0; attempt < rememberLoserPollAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if val, found := getFn(); found {
+			if !isRememberSentinel(val) {
+				m.dispatchCacheHit(ctx, key, m.defaultStore)
+				return val, nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(rememberLoserPollInterval):
+		}
+	}
 	value, cbErr := callback()
 	if cbErr != nil {
 		return nil, cbErr
 	}
-	if hasCtx {
-		if err := cs.ForeverCtx(ctx, key, value); err != nil {
-			return nil, err
-		}
-	} else {
-		if err := store.Forever(key, value); err != nil {
-			return nil, err
-		}
-	}
-	m.dispatchCacheWritten(ctx, key, m.defaultStore, 0)
 	return value, nil
 }
 
