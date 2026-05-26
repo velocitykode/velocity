@@ -1145,13 +1145,31 @@ func (c *Context) FormValue(key string) string {
 	return c.Request.FormValue(key)
 }
 
+// formFileMaxMemory is the in-memory threshold passed to
+// (*Request).ParseMultipartForm. Past this threshold the multipart
+// reader spills parts to os.TempDir(). Keeping this small bounds the
+// per-request RAM cost; the full upload size is bounded separately by
+// http.MaxBytesReader on the request body (see FormFile below).
+const formFileMaxMemory int64 = 1 << 20 // 1 MiB
+
 // FormFile returns the first file for the provided form key.
+//
+// Unless the BodyLimit middleware has already wrapped the request body,
+// FormFile caps the multipart payload at DefaultMaxBodySize via
+// http.MaxBytesReader before parsing. The on-disk spill threshold
+// passed to ParseMultipartForm is the small fixed constant
+// formFileMaxMemory; the body-size cap is enforced by MaxBytesReader,
+// not by ParseMultipartForm's maxMemory argument, which controls only
+// how much of the parsed form lives in RAM before spilling to
+// os.TempDir().
+//
+// Routes that legitimately need to accept large uploads must install
+// router.BodyLimit(N) for their chain so the cap matches the use case.
 func (c *Context) FormFile(key string) (*multipart.FileHeader, error) {
-	limit := DefaultMaxBodySize
-	if l, ok := c.Get(bodyLimitKey).(int64); ok {
-		limit = l
+	if c.Get(bodyLimitKey) == nil {
+		c.Request.Body = http.MaxBytesReader(c.Response, c.Request.Body, DefaultMaxBodySize)
 	}
-	if err := c.Request.ParseMultipartForm(limit); err != nil {
+	if err := c.Request.ParseMultipartForm(formFileMaxMemory); err != nil {
 		return nil, err
 	}
 	_, fh, err := c.Request.FormFile(key)
