@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/cache"
+	"github.com/velocitykode/velocity/cache/drivers"
 	"github.com/velocitykode/velocity/scheduler"
 )
 
@@ -392,6 +393,63 @@ func TestInstallSchedulerLocker_NilArgsAreSafe(t *testing.T) {
 	installSchedulerLocker(nil, nil, "redis", logger)
 	installSchedulerLocker(scheduler.New(), nil, "redis", logger)
 	installSchedulerLocker(nil, newSharedMemoryCache(t), "redis", logger)
+}
+
+// nilLockingStore wraps a real Store but reports Lock/RestoreLock as
+// nil. Satisfies the structural lockCapable interface (the methods
+// exist) but every acquire returns a nil Lock - the exact shape
+// *FileStore presents on non-POSIX builds where flock(2) is
+// unavailable. installSchedulerLocker must catch this via the capability
+// probe and fall back to InMemoryLocker rather than installing
+// cacheLocker (which would treat the first nil Lock as a backend
+// error on the next scheduled tick).
+type nilLockingStore struct {
+	cache.Store
+}
+
+func (n *nilLockingStore) Lock(key string, ttl ...time.Duration) cache.Lock {
+	return nil
+}
+
+func (n *nilLockingStore) RestoreLock(key string, owner string) cache.Lock {
+	return nil
+}
+
+// TestInstallSchedulerLocker_NilLockProbeFallsBack pins the capability
+// probe added alongside the FileStore-on-Windows fix. A store that
+// satisfies lockCapable structurally but returns nil from Lock must
+// trip the probe and fall back to InMemoryLocker with one WARN.
+func TestInstallSchedulerLocker_NilLockProbeFallsBack(t *testing.T) {
+	const name = "test-nil-lock-store"
+	prev := cache.Drivers().Override(name, func(_ context.Context, cfg cache.StoreConfig) (cache.Store, error) {
+		return &nilLockingStore{Store: drivers.NewMemoryStore(cfg.Prefix)}, nil
+	})
+	t.Cleanup(func() { cache.Drivers().Override(name, prev) })
+
+	cm := cache.NewManager(&cache.Config{
+		Default: "default",
+		Stores: map[string]cache.StoreConfig{
+			"default": {Driver: name},
+		},
+	})
+	if cm == nil {
+		t.Fatal("cache.NewManager returned nil")
+	}
+	defer func() { _ = cm.Shutdown(context.Background()) }()
+
+	sched := scheduler.New()
+	logger := &captureLogger{}
+
+	installSchedulerLocker(sched, cm, "redis", logger)
+
+	got := reflect.TypeOf(sched.Locker()).String()
+	if got != "*scheduler.InMemoryLocker" {
+		t.Fatalf("nil-Lock store must trip the capability probe and fall back; got %s", got)
+	}
+	warns := logger.Warns()
+	if len(warns) != 1 {
+		t.Fatalf("expected exactly 1 WARN on nil-Lock fallback, got %d: %+v", len(warns), warns)
+	}
 }
 
 // erringLock is a cache.Lock whose GetWithErr returns a configurable

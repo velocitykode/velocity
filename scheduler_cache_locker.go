@@ -228,10 +228,29 @@ func installSchedulerLocker(sched *scheduler.Scheduler, cm cache.CacheManager, d
 		}
 		return
 	}
-	if _, ok := store.(lockCapable); !ok {
+	lc, ok := store.(lockCapable)
+	if !ok {
 		if log != nil {
 			log.Warn(
 				"velocity/scheduler: cache driver does not support distributed locks; falling back to in-process Locker; multi-host OnOneServer / WithoutOverlapping will NOT work",
+				"driver", driver,
+			)
+		}
+		return
+	}
+
+	// Capability probe: *FileStore satisfies lockCapable structurally
+	// on every platform because Lock is defined in both the unix and
+	// non-unix build files, but the non-unix variant returns nil. A
+	// nil result would otherwise look like a backend error on the
+	// first scheduler tick. Probe with a throwaway key to confirm the
+	// driver actually issues working locks; allow the lock to expire
+	// by TTL rather than releasing explicitly (cheap, side-effect free
+	// across runs).
+	if probe := lc.Lock("__velocity_locker_probe__", time.Second); probe == nil {
+		if log != nil {
+			log.Warn(
+				"velocity/scheduler: cache driver returned nil Lock during capability probe; falling back to in-process Locker; multi-host OnOneServer / WithoutOverlapping will NOT work",
 				"driver", driver,
 			)
 		}
