@@ -83,6 +83,30 @@ func TestThrottleKey_IdentifierNFKC(t *testing.T) {
 	}
 }
 
+func TestThrottleKey_IdentifierFullwidthAtSign(t *testing.T) {
+	// All four of these variants must collapse to one throttle bucket.
+	// The fullwidth at-sign ("＠", U+FF20) is the load-bearing case: an
+	// attacker rotating between halfwidth and fullwidth "@" in the local
+	// part would otherwise get one bucket per encoding while the user
+	// provider's UTF-8 collation resolves them to one account.
+	r, _ := http.NewRequest(http.MethodPost, "/login", nil)
+	r.RemoteAddr = "203.0.113.5:54321"
+
+	canonical := ThrottleKey(r, map[string]interface{}{"email": "victim@example.com"}, nil)
+	variants := []map[string]interface{}{
+		{"email": "Victim@Example.com"},
+		{"email": "VICTIM@example.com"},
+		{"email": " VICTIM@example.com "},
+		{"email": "Victim＠Example.com"}, // fullwidth @
+	}
+	for _, v := range variants {
+		got := ThrottleKey(r, v, nil)
+		if got != canonical {
+			t.Errorf("variant %v produced different key %q (canonical %q)", v, got, canonical)
+		}
+	}
+}
+
 func TestThrottleKey_DifferentIdentifiersDifferentKeys(t *testing.T) {
 	r, _ := http.NewRequest(http.MethodPost, "/login", nil)
 	r.RemoteAddr = "203.0.113.5:54321"
