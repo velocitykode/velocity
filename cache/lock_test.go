@@ -389,7 +389,13 @@ func TestManagerLock_Redis(t *testing.T) {
 	})
 }
 
-func TestManagerLock_UnsupportedDriver(t *testing.T) {
+// TestManagerLock_FileDriverNowSupported pins the new contract: the
+// file driver now implements Locker via flock(2) on POSIX (was: returns
+// nil, leading callers using `if lock := cache.Lock(k); lock != nil`
+// to silently skip locking entirely). On unix Manager.Lock returns a
+// working Lock; on platforms without flock the store still returns nil
+// per the platform stub.
+func TestManagerLock_FileDriverNowSupported(t *testing.T) {
 	t.Parallel()
 	config := &cache.Config{
 		Default: "file",
@@ -401,11 +407,22 @@ func TestManagerLock_UnsupportedDriver(t *testing.T) {
 	m := cache.NewManager(config)
 	defer func() { _ = m.Shutdown(context.Background()) }()
 
-	if m.Lock("key") != nil {
-		t.Fatal("expected nil lock for file store")
+	lock := m.Lock("file-supported")
+	if !fileLocksSupported {
+		if lock != nil {
+			t.Fatal("expected nil lock on a platform without flock support")
+		}
+		return
 	}
-	if m.RestoreLock("key", "owner") != nil {
-		t.Fatal("expected nil restored lock for file store")
+	if lock == nil {
+		t.Fatal("file driver must provide a working Lock on POSIX platforms")
+	}
+	ctx := context.Background()
+	if !lock.Get(ctx) {
+		t.Fatal("failed to acquire lock on file driver")
+	}
+	if !lock.Release(ctx) {
+		t.Fatal("failed to release lock on file driver")
 	}
 }
 

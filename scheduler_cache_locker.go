@@ -153,9 +153,10 @@ func (h *cacheLockHandle) Release(ctx context.Context) error {
 // lockCapable is the structural interface a cache store must satisfy
 // for cacheLocker to be installable. It matches cache/drivers.Locker
 // without forcing scheduler_cache_locker.go to import the drivers
-// package directly: a *MemoryStore and *RedisStore satisfy it, a
-// *FileStore and a *DatabaseStore (the latter not yet implemented at
-// all) do NOT, because their Lock method is absent.
+// package directly: *MemoryStore, *FileStore (on POSIX via flock(2)),
+// and *RedisStore all satisfy it. The database driver does NOT
+// because its factory returns "not yet implemented"; on Windows
+// *FileStore also returns a nil Lock since flock(2) is unavailable.
 //
 // The match is structural -- if a future cache driver implements the
 // same two-method shape, capability is detected automatically with no
@@ -183,7 +184,8 @@ type installerLogger interface {
 //     correctness.
 //
 //   - any other driver, BUT the underlying store does not implement
-//     the Lock primitive (file, database -- see lockCapable docstring):
+//     the Lock primitive (database driver, or file driver on a
+//     non-POSIX platform without flock -- see lockCapable docstring):
 //     fall back to scheduler.InMemoryLocker and emit a WARN log. This
 //     preserves single-process correctness; multi-host operators get
 //     a loud signal that distributed locking is NOT active. Without
@@ -193,8 +195,10 @@ type installerLogger interface {
 //     would be silently skipped forever -- the C-04 worst case
 //     re-introduced via a different path.
 //
-//   - any other driver AND the store implements Lock (redis today):
-//     install the cache-backed adapter; cluster-wide guarantees hold.
+//   - any other driver AND the store implements Lock (redis; or file
+//     on POSIX): install the cache-backed adapter. Redis gives true
+//     cross-host guarantees; file gives single-host cross-process
+//     guarantees via flock(2).
 //
 // Pass-through helper centralises the capability decision; future
 // drivers that grow Lock support only need to satisfy the lockCapable

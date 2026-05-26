@@ -26,6 +26,15 @@ type FileStore struct {
 	shardDirs       sync.Map // pre-created shard dirs so per-write MkdirAll is avoided
 	done            chan struct{}
 	closeOnce       sync.Once
+
+	// lockStore and friends back FileStore.Lock with flock(2) so the
+	// file driver satisfies the Locker capability. Created lazily on
+	// first Lock call; lockErr captures any initialisation failure so
+	// subsequent calls don't repeatedly attempt MkdirAll on a broken
+	// filesystem.
+	lockOnce  sync.Once
+	lockStore *fileLockStore
+	lockErr   error
 }
 
 // fileCacheItem represents a cached item stored in file

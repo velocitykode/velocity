@@ -12,6 +12,13 @@ var (
 
 	// ErrLockTimeout is returned when a lock wait exceeds the given timeout.
 	ErrLockTimeout = errors.New("cache: lock wait timeout exceeded")
+
+	// ErrLockNotSupported is returned when the underlying store does
+	// not provide a distributed-lock implementation for the running
+	// platform (e.g. file driver on Windows where flock(2) is
+	// unavailable). Callers should switch to a different driver or
+	// avoid Lock on that store.
+	ErrLockNotSupported = errors.New("cache: lock not supported on this driver/platform")
 )
 
 // Lock defines the interface for a cache lock.

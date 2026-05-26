@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -312,14 +311,13 @@ func TestInstallSchedulerLocker_RedisDriverInstallsCacheLocker(t *testing.T) {
 	}
 }
 
-// TestInstallSchedulerLocker_FileDriverFallsBackToInMemory is the C-04
-// follow-up regression: a fresh CACHE_DRIVER=file deployment must NOT
-// install cacheLocker (FileStore does not implement Lock; cacheLocker
-// would surface a misconfiguration error and the scheduler would
-// silently skip every guarded job). installSchedulerLocker must
-// instead leave the InMemoryLocker default in place AND emit a WARN
-// so multi-host operators see a loud signal.
-func TestInstallSchedulerLocker_FileDriverFallsBackToInMemory(t *testing.T) {
+// TestInstallSchedulerLocker_FileDriverInstallsCacheLocker pins the
+// post-M-31 contract: the file driver now implements Lock via flock(2)
+// on POSIX, so installSchedulerLocker must install the cache-backed
+// adapter (not fall back to InMemoryLocker). The original C-04
+// fallback path is still exercised by the database-driver test below;
+// the file driver moves into the lock-capable category.
+func TestInstallSchedulerLocker_FileDriverInstallsCacheLocker(t *testing.T) {
 	t.Parallel()
 
 	cm := newFileBackedCache(t)
@@ -329,29 +327,11 @@ func TestInstallSchedulerLocker_FileDriverFallsBackToInMemory(t *testing.T) {
 	installSchedulerLocker(sched, cm, "file", logger)
 
 	got := reflect.TypeOf(sched.Locker()).String()
-	if got != "*scheduler.InMemoryLocker" {
-		t.Fatalf("file driver lacks Lock support; must fall back to InMemoryLocker, got %s", got)
+	if got != "*velocity.cacheLocker" {
+		t.Fatalf("file driver now supports Lock; must install cacheLocker, got %s", got)
 	}
-	warns := logger.Warns()
-	if len(warns) != 1 {
-		t.Fatalf("expected exactly 1 WARN on file driver fallback, got %d: %+v", len(warns), warns)
-	}
-	if !strings.Contains(warns[0].msg, "does not support distributed locks") {
-		t.Fatalf("WARN message did not name the capability gap; got %q", warns[0].msg)
-	}
-	// The driver name must appear in the kvs so the warning is
-	// actionable.
-	found := false
-	for i := 0; i+1 < len(warns[0].kvs); i += 2 {
-		if k, _ := warns[0].kvs[i].(string); k == "driver" {
-			if v, _ := warns[0].kvs[i+1].(string); v == "file" {
-				found = true
-				break
-			}
-		}
-	}
-	if !found {
-		t.Fatalf("WARN kvs missing driver=file; got %+v", warns[0].kvs)
+	if warns := logger.Warns(); len(warns) != 0 {
+		t.Fatalf("file driver supports locks now; expected 0 WARNs, got %d: %+v", len(warns), warns)
 	}
 }
 
@@ -386,11 +366,14 @@ func TestInstallSchedulerLocker_DatabaseDriverFallsBackToInMemory(t *testing.T) 
 func TestInstallSchedulerLocker_NilLoggerIsSafe(t *testing.T) {
 	t.Parallel()
 
-	cm := newFileBackedCache(t)
+	// Use the database driver here because it still triggers the
+	// fallback path (factory returns "not yet implemented"); the file
+	// driver now supports flock and would install cacheLocker.
+	cm := newDatabaseBackedCache(t)
 	sched := scheduler.New()
 
 	// Must not panic.
-	installSchedulerLocker(sched, cm, "file", nil)
+	installSchedulerLocker(sched, cm, "database", nil)
 
 	if got := reflect.TypeOf(sched.Locker()).String(); got != "*scheduler.InMemoryLocker" {
 		t.Fatalf("nil logger should still fall back; got %s", got)
