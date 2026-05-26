@@ -143,6 +143,14 @@ func (cb *ChannelBuilder) Emit(event string, data interface{}) error {
 // Auth handles channel authorization. Private- and presence- channels always
 // require an authorizer; the zero-value default denies every request.
 // Public channels bypass the authorizer entirely.
+//
+// For private- and presence- channels, when an auth secret has been installed
+// via SetAuthSecret, the response includes an "auth" field carrying
+// hex(HMAC-SHA256(socketID ":" channel)). The client is expected to forward
+// that value to the WebSocket server when it subscribes, where the driver
+// re-verifies the HMAC via VerifyAuthToken (see audit H-25). Without the
+// token, a stolen authorizer verdict alone is not sufficient to bind a
+// WebSocket connection to a restricted channel.
 func (b *BroadcastManager) Auth(channel string, socketID string, user interface{}) (interface{}, error) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -158,12 +166,32 @@ func (b *BroadcastManager) Auth(channel string, socketID string, user interface{
 		}
 	}
 
-	// For presence channels, return user data
-	if isPresenceChannel(channel) && b.presence != nil {
-		return b.presence(channel, user), nil
+	// Compute the channel-auth signature once if a secret is configured. The
+	// signature binds (socketID, channel) so a leaked authorizer verdict
+	// cannot be replayed against a different connection.
+	var sig string
+	if isRestricted && len(b.authSecret) > 0 {
+		sig = computeAuthSignature(b.authSecret, socketID, channel)
 	}
 
-	return map[string]interface{}{"status": "authorized"}, nil
+	// For presence channels with a presence-data func, return the user data
+	// alongside the auth token so the client can forward both.
+	if isPresenceChannel(channel) && b.presence != nil {
+		data := b.presence(channel, user)
+		if sig == "" {
+			return data, nil
+		}
+		return map[string]interface{}{
+			"auth":         sig,
+			"channel_data": data,
+		}, nil
+	}
+
+	resp := map[string]interface{}{"status": "authorized"}
+	if sig != "" {
+		resp["auth"] = sig
+	}
+	return resp, nil
 }
 
 // Leave handles user leaving presence channel

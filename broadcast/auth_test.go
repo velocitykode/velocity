@@ -89,3 +89,113 @@ func TestSignAuthToken_NoSecret(t *testing.T) {
 		t.Fatal("VerifyAuthToken must return false when no secret is configured")
 	}
 }
+
+// TestAuth_SignsHMACForRestrictedChannels covers audit H-25 (a): when a secret
+// is installed, Auth must return an "auth" field carrying a verifying HMAC
+// signature for private- and presence- channels. Without that token a leaked
+// authorizer verdict cannot bind a WebSocket session to the channel.
+func TestAuth_SignsHMACForRestrictedChannels(t *testing.T) {
+	b := New(NewMockDriver())
+	b.SetAuthSecret([]byte("test-secret"))
+	b.SetAuthorizer(func(channel string, user interface{}) bool { return true })
+
+	t.Run("private channel response carries verifying HMAC", func(t *testing.T) {
+		out, err := b.Auth("private-room.7", "socket-A", nil)
+		if err != nil {
+			t.Fatalf("Auth: %v", err)
+		}
+		m, ok := out.(map[string]interface{})
+		if !ok {
+			t.Fatalf("Auth returned %T, want map", out)
+		}
+		tok, _ := m["auth"].(string)
+		if tok == "" {
+			t.Fatal("Auth response missing auth field")
+		}
+		if !b.VerifyAuthToken("socket-A", "private-room.7", tok) {
+			t.Fatal("returned token failed VerifyAuthToken")
+		}
+		// Token must be socket+channel bound; reusing it for a different
+		// socket must fail.
+		if b.VerifyAuthToken("socket-B", "private-room.7", tok) {
+			t.Fatal("token verified for wrong socket")
+		}
+	})
+
+	t.Run("presence channel without presence data still signs", func(t *testing.T) {
+		out, err := b.Auth("presence-room.42", "socket-A", nil)
+		if err != nil {
+			t.Fatalf("Auth: %v", err)
+		}
+		m, ok := out.(map[string]interface{})
+		if !ok {
+			t.Fatalf("Auth returned %T, want map", out)
+		}
+		tok, _ := m["auth"].(string)
+		if tok == "" {
+			t.Fatal("presence Auth response missing auth field")
+		}
+		if !b.VerifyAuthToken("socket-A", "presence-room.42", tok) {
+			t.Fatal("presence token failed VerifyAuthToken")
+		}
+	})
+
+	t.Run("presence channel with presence data nests channel_data alongside auth", func(t *testing.T) {
+		b.SetPresenceData(func(channel string, user interface{}) interface{} {
+			return map[string]interface{}{"user_id": "u-1"}
+		})
+		defer b.SetPresenceData(nil)
+		out, err := b.Auth("presence-room.42", "socket-A", nil)
+		if err != nil {
+			t.Fatalf("Auth: %v", err)
+		}
+		m, ok := out.(map[string]interface{})
+		if !ok {
+			t.Fatalf("Auth returned %T, want map", out)
+		}
+		if _, ok := m["auth"].(string); !ok {
+			t.Fatal("Auth response missing auth field")
+		}
+		cd, ok := m["channel_data"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("channel_data missing or wrong type: %T", m["channel_data"])
+		}
+		if cd["user_id"] != "u-1" {
+			t.Errorf("channel_data.user_id = %v, want u-1", cd["user_id"])
+		}
+	})
+
+	t.Run("public channel response omits auth", func(t *testing.T) {
+		out, err := b.Auth("news", "socket-A", nil)
+		if err != nil {
+			t.Fatalf("Auth: %v", err)
+		}
+		m, ok := out.(map[string]interface{})
+		if !ok {
+			t.Fatalf("Auth returned %T, want map", out)
+		}
+		if _, present := m["auth"]; present {
+			t.Error("public channel response must not include auth token")
+		}
+	})
+}
+
+// TestAuth_OmitsTokenWhenNoSecret confirms that without SetAuthSecret the Auth
+// response shape is the legacy status-only form, so applications that rely on
+// authorizer-only access during the transition keep working.
+func TestAuth_OmitsTokenWhenNoSecret(t *testing.T) {
+	b := New(NewMockDriver())
+	b.SetAuthorizer(func(channel string, user interface{}) bool { return true })
+
+	out, err := b.Auth("private-x", "socket", nil)
+	if err != nil {
+		t.Fatalf("Auth: %v", err)
+	}
+	m, ok := out.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Auth returned %T, want map", out)
+	}
+	if _, present := m["auth"]; present {
+		t.Error("Auth must not include auth field when no secret is configured")
+	}
+}

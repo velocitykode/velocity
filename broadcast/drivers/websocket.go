@@ -23,6 +23,15 @@ type Logger interface {
 // Must be set for private- and presence- channels to be accessible.
 type ChannelAuthorizer func(client *websocket.Client, channel string) bool
 
+// TokenVerifier checks the HMAC auth token presented by a client when
+// subscribing to a private- or presence- channel. The token is produced by
+// BroadcastManager.SignAuthToken on the HTTP auth endpoint and forwarded by
+// the client on subscribe. Returning false rejects the subscription. When
+// the verifier is nil, no token check is performed and the channel authorizer
+// alone gates access; install the verifier (e.g. broadcast.BroadcastManager
+// .VerifyAuthToken) to enforce audit H-25.
+type TokenVerifier func(socketID, channel, token string) bool
+
 // denyAllChannelAuthorizer is the secure default: deny every subscription to
 // a private- or presence- channel. Applications must explicitly install an
 // authorizer via SetAuthorizer.
@@ -35,6 +44,7 @@ type WebSocketDriver struct {
 	server         *websocket.Server
 	channels       map[string]map[string]*websocket.Client // channel -> socketID -> client
 	authorizer     ChannelAuthorizer
+	verifier       TokenVerifier
 	mu             sync.RWMutex
 	droppedCount   atomic.Uint64
 	blockingSendTO time.Duration // 0 means non-blocking (drop on full)
@@ -262,12 +272,25 @@ func (d *WebSocketDriver) handleSubscribe(client *websocket.Client, msg websocke
 	if strings.HasPrefix(channel, "private-") || strings.HasPrefix(channel, "presence-") {
 		d.mu.RLock()
 		auth := d.authorizer
+		verify := d.verifier
 		d.mu.RUnlock()
 		if auth == nil {
 			auth = denyAllChannelAuthorizer
 		}
 		if !auth(client, channel) {
 			return fmt.Errorf("velocity/broadcast: unauthorized to subscribe to channel %s", channel)
+		}
+
+		// When a token verifier is installed (audit H-25 wiring), the
+		// inbound subscribe message MUST carry an "auth" string produced
+		// by BroadcastManager.Auth and the HMAC must verify against the
+		// (socketID, channel) pair. VerifyAuthToken does the constant-time
+		// comparison; we just gate on its bool result.
+		if verify != nil {
+			token, _ := data["auth"].(string)
+			if token == "" || !verify(client.ID, channel, token) {
+				return fmt.Errorf("velocity/broadcast: invalid auth token for channel %s", channel)
+			}
 		}
 	}
 
@@ -332,6 +355,17 @@ func (d *WebSocketDriver) SetAuthorizer(fn ChannelAuthorizer) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.authorizer = fn
+}
+
+// SetTokenVerifier installs an HMAC token verifier consulted on every
+// subscribe to a private- or presence- channel. When non-nil, the inbound
+// subscribe message must carry an "auth" field whose value verifies against
+// (client.ID, channel). Wire it from broadcast.BroadcastManager.VerifyAuthToken
+// to enforce audit H-25; pass nil to disable.
+func (d *WebSocketDriver) SetTokenVerifier(fn TokenVerifier) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.verifier = fn
 }
 
 // GetServer returns the underlying WebSocket server

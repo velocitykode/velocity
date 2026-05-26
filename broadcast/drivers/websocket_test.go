@@ -1082,3 +1082,148 @@ func TestWebSocketDriver_BroadcastWithFullChannel(t *testing.T) {
 		t.Errorf("expected filler message, got %q", msgs[0].Type)
 	}
 }
+
+// TestWebSocketDriver_handleSubscribe_TokenVerifier covers audit H-25 (b):
+// once a TokenVerifier is installed on the driver, subscribes to private- or
+// presence- channels require an "auth" field that verifies against the
+// (socketID, channel) pair. The authorizer alone is not enough.
+func TestWebSocketDriver_handleSubscribe_TokenVerifier(t *testing.T) {
+	const validToken = "valid-token-abc"
+
+	// Verifier accepts only the canonical (clientID="client-1", channel,
+	// token=validToken) triple so we can exercise tamper paths against it.
+	verifier := func(socketID, channel, token string) bool {
+		return socketID == "client-1" && token == validToken
+	}
+
+	tests := []struct {
+		name     string
+		channel  string
+		authData map[string]interface{}
+		want     bool // true = subscribe should succeed
+	}{
+		{
+			name:    "private channel without auth field is rejected",
+			channel: "private-room",
+			authData: map[string]interface{}{
+				"channel": "private-room",
+			},
+			want: false,
+		},
+		{
+			name:    "private channel with empty auth is rejected",
+			channel: "private-room",
+			authData: map[string]interface{}{
+				"channel": "private-room",
+				"auth":    "",
+			},
+			want: false,
+		},
+		{
+			name:    "private channel with tampered auth is rejected",
+			channel: "private-room",
+			authData: map[string]interface{}{
+				"channel": "private-room",
+				"auth":    validToken + "x",
+			},
+			want: false,
+		},
+		{
+			name:    "private channel with valid auth is accepted",
+			channel: "private-room",
+			authData: map[string]interface{}{
+				"channel": "private-room",
+				"auth":    validToken,
+			},
+			want: true,
+		},
+		{
+			name:    "presence channel with valid auth is accepted",
+			channel: "presence-room",
+			authData: map[string]interface{}{
+				"channel": "presence-room",
+				"auth":    validToken,
+			},
+			want: true,
+		},
+		{
+			name:    "presence channel without auth is rejected",
+			channel: "presence-room",
+			authData: map[string]interface{}{
+				"channel": "presence-room",
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			driver := &WebSocketDriver{
+				channels:   make(map[string]map[string]*websocket.Client),
+				authorizer: func(client *websocket.Client, channel string) bool { return true },
+				verifier:   verifier,
+			}
+			client := createTestClient("client-1")
+
+			err := driver.handleSubscribe(client, websocket.Message{Type: "subscribe", Data: tt.authData})
+
+			if tt.want && err != nil {
+				t.Fatalf("expected subscribe to succeed, got error: %v", err)
+			}
+			if !tt.want && err == nil {
+				t.Fatal("expected subscribe to be rejected, got nil error")
+			}
+
+			_, joined := driver.channels[tt.channel][client.ID]
+			if joined != tt.want {
+				t.Errorf("channel membership = %v, want %v", joined, tt.want)
+			}
+		})
+	}
+}
+
+// TestWebSocketDriver_SetTokenVerifier verifies the setter races cleanly with
+// concurrent reads from handleSubscribe (which acquires d.mu.RLock to snapshot
+// the verifier before invoking it).
+func TestWebSocketDriver_SetTokenVerifier(t *testing.T) {
+	driver := &WebSocketDriver{
+		channels:   make(map[string]map[string]*websocket.Client),
+		authorizer: func(*websocket.Client, string) bool { return true },
+	}
+
+	// Default: no verifier installed, so subscribe to private channel is
+	// allowed (authorizer-only path, backwards compatible).
+	client := createTestClient("client-1")
+	err := driver.handleSubscribe(client, websocket.Message{
+		Type: "subscribe",
+		Data: map[string]interface{}{"channel": "private-x"},
+	})
+	if err != nil {
+		t.Fatalf("subscribe without verifier failed: %v", err)
+	}
+
+	// Install a deny-all verifier.
+	driver.SetTokenVerifier(func(string, string, string) bool { return false })
+	client2 := createTestClient("client-2")
+	err = driver.handleSubscribe(client2, websocket.Message{
+		Type: "subscribe",
+		Data: map[string]interface{}{
+			"channel": "private-x",
+			"auth":    "anything",
+		},
+	})
+	if err == nil {
+		t.Fatal("subscribe with deny-all verifier should fail")
+	}
+
+	// Remove verifier; private-channel subscribe should work again.
+	driver.SetTokenVerifier(nil)
+	client3 := createTestClient("client-3")
+	err = driver.handleSubscribe(client3, websocket.Message{
+		Type: "subscribe",
+		Data: map[string]interface{}{"channel": "private-x"},
+	})
+	if err != nil {
+		t.Fatalf("subscribe after clearing verifier failed: %v", err)
+	}
+}
