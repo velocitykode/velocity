@@ -3,11 +3,15 @@
 // requests.
 //
 // Defaults are secure: TLS 1.2 minimum, capped redirect chain (sensitive
-// headers stripped on cross-origin hops), and an SSRF dial guard that
+// headers stripped on cross-origin hops), an SSRF dial guard that
 // refuses connections to loopback, RFC1918, link-local, CGNAT, and
-// cloud-metadata IPs (IPv4 and IPv6). Pair with [WithAllowedHosts] to
-// whitelist specific internal services, or [WithoutPrivateIPDeny] to
-// disable the guard entirely for tests or trusted callers.
+// cloud-metadata IPs (IPv4 and IPv6), and the standard library's
+// HTTP_PROXY environment hook is cleared so a hostile env value cannot
+// route outbound traffic through an attacker-controlled CONNECT proxy.
+// Pair with [WithAllowedHosts] to whitelist specific internal services,
+// [WithProxyAllowed] to honour HTTP(S)_PROXY env in trusted egress
+// gateways, or [WithoutPrivateIPDeny] to disable the guard entirely for
+// tests or trusted callers.
 package httpclient
 
 import (
@@ -66,6 +70,7 @@ type Client struct {
 	minTLSVersion    uint16
 	maxRedirects     int
 	denyPrivateIPs   bool
+	proxyAllowed     bool                // opt-in to honour HTTP(S)_PROXY env when denyPrivateIPs is true
 	allowedHosts     map[string]struct{} // eTLD+1 allowlist for private-IP deny
 	resolver         *net.Resolver
 	customTransport  bool  // set when WithHTTPClient supplies its own Transport
@@ -154,6 +159,29 @@ func WithMaxResponseBytes(n int64) Option {
 	}
 }
 
+// WithProxyAllowed opts back into honouring HTTP_PROXY / HTTPS_PROXY /
+// NO_PROXY environment variables when the SSRF dial guard is on. Without
+// this option, [New] clears the default transport's
+// [http.ProxyFromEnvironment] hook so an attacker who can influence the
+// process environment cannot tunnel the client through a hostile proxy
+// (which would defeat the dial-time private-IP guard by terminating the
+// TCP connection at a public proxy IP and CONNECT-ing onwards to a
+// metadata service inside the trust boundary).
+//
+// Use this option for clients that run inside environments where a
+// trusted proxy is configured via env (CI runners, corporate egress
+// gateways) and the proxy itself is trusted.
+//
+// Callers that supply a transport via [WithHTTPClient] already control
+// the Proxy field explicitly; this option is therefore a no-op for that
+// path. The deny is also a no-op when [WithoutPrivateIPDeny] has been
+// applied (env proxies pass through unmodified in that mode).
+func WithProxyAllowed() Option {
+	return func(c *Client) {
+		c.proxyAllowed = true
+	}
+}
+
 // WithAllowedHosts whitelists specific eTLD+1 hosts from the private-IP
 // deny list, useful when you legitimately need to reach an internal
 // service while still blocking everything else.
@@ -208,16 +236,34 @@ func New(opts ...Option) *Client {
 // buildTransport returns a transport with TLS minimum and SSRF-guard
 // DialContext applied. If base is non-nil, its pooling/idle-timeout
 // settings are preserved.
+//
+// When base is nil (the default-construction path), the cloned
+// [http.DefaultTransport] carries [http.ProxyFromEnvironment]. If the
+// SSRF dial guard is enabled and the caller has not opted in via
+// [WithProxyAllowed], the proxy hook is cleared: an attacker who can
+// influence HTTP_PROXY / HTTPS_PROXY in the process environment could
+// otherwise tunnel outbound requests through a hostile proxy that
+// CONNECT-relays to a metadata IP, defeating the dial-time guard which
+// only sees the (public) proxy address.
+//
+// Caller-supplied transports (base != nil) are left untouched: the
+// caller has set Proxy explicitly and [WithHTTPClient] documents that
+// transport-level fields are theirs to own.
 func (c *Client) buildTransport(base *http.Transport) *http.Transport {
 	t := base
+	clonedFromDefault := false
 	if t == nil {
 		t = http.DefaultTransport.(*http.Transport).Clone()
+		clonedFromDefault = true
 	}
 	if t.TLSClientConfig == nil {
 		t.TLSClientConfig = &tls.Config{}
 	}
 	if c.minTLSVersion != 0 && t.TLSClientConfig.MinVersion < c.minTLSVersion {
 		t.TLSClientConfig.MinVersion = c.minTLSVersion
+	}
+	if clonedFromDefault && c.denyPrivateIPs && !c.proxyAllowed {
+		t.Proxy = nil
 	}
 	if c.denyPrivateIPs {
 		t.DialContext = c.dialContextGuarded(t.DialContext)
