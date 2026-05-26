@@ -162,8 +162,15 @@ func (c *CSRF) dispatchEvent(ctx context.Context, evt interface{}) {
 // Middleware returns HTTP middleware that validates CSRF tokens
 func (c *CSRF) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Skip safe methods (GET, HEAD, OPTIONS, TRACE)
+		// Skip safe methods (GET, HEAD, OPTIONS, TRACE).
+		// Safe methods are also the bootstrap point for the XSRF-TOKEN
+		// cookie: SPA clients (axios, fetch) expect a non-HttpOnly
+		// cookie they can read and echo as X-XSRF-TOKEN on unsafe
+		// requests. We write that cookie before delegating to the
+		// handler so the body never sees it pre-empted by a Set-Cookie
+		// race.
 		if isSafeMethod(r.Method) {
+			c.maybeWriteXSRFCookie(w, r)
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -186,6 +193,105 @@ func (c *CSRF) Middleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// maybeWriteXSRFCookie writes a non-HttpOnly XSRF-TOKEN cookie carrying
+// the per-session CSRF token, IF:
+//   - Config.WriteXSRFCookie is true,
+//   - Config.SingleUse is false (single-use tokens cannot be safely
+//     echoed: they are consumed on validation and the client would
+//     repeatedly send a stale value),
+//   - the request has a resolvable session id (via SessionIDResolver),
+//   - and the configured Store accepts the per-session token write.
+//
+// On any of those conditions failing the cookie is NOT written. This is
+// a best-effort bootstrap: a failure here MUST NOT block the safe
+// request. The cookie value is URL-encoded so axios-style clients can
+// echo it verbatim as X-XSRF-TOKEN on subsequent unsafe requests.
+//
+// Secure defaults: HttpOnly=false (SPA must read it), SameSite=Lax,
+// Path=/, MaxAge tied to TokenLifetime. Secure is set true when the
+// request scheme is https; in HTTP dev environments Secure must be
+// false or the browser will drop the cookie.
+func (c *CSRF) maybeWriteXSRFCookie(w http.ResponseWriter, r *http.Request) {
+	if c == nil || c.config == nil {
+		return
+	}
+	if !c.config.WriteXSRFCookie {
+		return
+	}
+	if c.config.SingleUse {
+		// Single-use tokens cannot be safely echoed via cookie: they
+		// would be consumed by the next unsafe request and the cookie
+		// value would be stale for any subsequent JS-driven request.
+		return
+	}
+	if c.config.Store == nil {
+		return
+	}
+	sessionID, err := c.getSessionIDQuiet(r)
+	if err != nil || sessionID == "" {
+		// No session bound to this request - nothing to write. The
+		// quiet variant suppresses the SessionFallback event because
+		// this is the safe-method bootstrap path, not an enforcement
+		// boundary.
+		return
+	}
+	token, err := c.GetToken(sessionID)
+	if err != nil || token == "" {
+		return
+	}
+	cookieName := c.config.XSRFCookieName
+	if cookieName == "" {
+		cookieName = "XSRF-TOKEN"
+	}
+	// MaxAge in seconds; clamp to int range. TokenLifetime <= 0 means
+	// session cookie (no MaxAge set).
+	maxAge := 0
+	if ttl := c.config.TokenLifetime; ttl > 0 {
+		secs := int64(ttl / time.Second)
+		if secs > 0 {
+			if secs > int64(int(^uint(0)>>1)) {
+				maxAge = int(^uint(0) >> 1)
+			} else {
+				maxAge = int(secs)
+			}
+		}
+	}
+	// Secure only when the request arrived over TLS. Sending Secure
+	// over HTTP would have the browser drop the cookie in dev/local
+	// environments.
+	secure := r.TLS != nil
+	cookie := &http.Cookie{
+		Name: cookieName,
+		// URL-encode so axios-style clients can echo the value
+		// verbatim in X-XSRF-TOKEN without double-encoding.
+		Value:    url.QueryEscape(token),
+		Path:     "/",
+		HttpOnly: false, // SPAs must read this
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   maxAge,
+	}
+	http.SetCookie(w, cookie)
+}
+
+// getSessionIDQuiet resolves the session id without dispatching a
+// SessionFallback event. Used by the XSRF-TOKEN cookie bootstrap path
+// where the absence of a session is normal (anonymous GET) rather than
+// a CSRF policy violation.
+func (c *CSRF) getSessionIDQuiet(r *http.Request) (string, error) {
+	if c.config.SessionIDResolver == nil {
+		return "", ErrNoSession
+	}
+	id, err := c.config.SessionIDResolver(r)
+	if err != nil {
+		return "", err
+	}
+	if id == "" {
+		return "", ErrNoSession
+	}
+	return id, nil
 }
 
 // RouterMiddleware returns a router.MiddlewareFunc that validates CSRF tokens.

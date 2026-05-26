@@ -789,6 +789,170 @@ func TestGetTokenFromRequest_DirectReturnsErrFormBodyTooLarge(t *testing.T) {
 	}
 }
 
+// TestXSRFCookie_WrittenOnSafeMethodWithSession pins M-03: on a GET with
+// a resolvable session, the middleware MUST write a non-HttpOnly
+// XSRF-TOKEN cookie carrying the URL-encoded per-session token. SPA
+// clients (axios) read this cookie and echo it back as X-XSRF-TOKEN on
+// unsafe requests. Pre-fix the cookie name was declared in Config but
+// no code ever wrote it; operators had to hand-roll a refresh handler.
+func TestXSRFCookie_WrittenOnSafeMethodWithSession(t *testing.T) {
+	const sessionID = "test-session"
+
+	cfg := DefaultConfig()
+	cfg.SessionIDResolver = testCookieResolver("session_id")
+	cfg.Store = stores.NewSessionStore()
+	c := New(cfg)
+
+	// Seed a known token so we can compare.
+	token, err := GenerateToken()
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+	if err := c.config.Store.Set(sessionID, token); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+	w := httptest.NewRecorder()
+	c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(w, req)
+
+	res := w.Result()
+	defer res.Body.Close()
+	cookies := res.Cookies()
+	var xsrf *http.Cookie
+	for _, k := range cookies {
+		if k.Name == "XSRF-TOKEN" {
+			xsrf = k
+		}
+	}
+	if xsrf == nil {
+		t.Fatalf("XSRF-TOKEN cookie not set; cookies=%v", cookies)
+	}
+	if xsrf.HttpOnly {
+		t.Error("XSRF-TOKEN cookie must NOT be HttpOnly (SPA must read it)")
+	}
+	if xsrf.SameSite != http.SameSiteLaxMode {
+		t.Errorf("XSRF-TOKEN cookie SameSite=%v, want Lax", xsrf.SameSite)
+	}
+	if xsrf.Path != "/" {
+		t.Errorf("XSRF-TOKEN cookie Path=%q, want /", xsrf.Path)
+	}
+	// Value must be URL-encoded form of the token.
+	decoded, err := url.QueryUnescape(xsrf.Value)
+	if err != nil {
+		t.Fatalf("XSRF-TOKEN value not URL-encoded: %v", err)
+	}
+	if decoded != token {
+		t.Errorf("XSRF-TOKEN decoded=%q, want token=%q", decoded, token)
+	}
+	// Secure must be false on plain HTTP (no TLS on httptest.NewRequest).
+	if xsrf.Secure {
+		t.Error("XSRF-TOKEN cookie Secure should be false on plain HTTP request")
+	}
+}
+
+// TestXSRFCookie_NotWrittenWithoutSession pins that the cookie is NOT
+// written when no session is resolvable. Anonymous GET requests must
+// not provoke a Set-Cookie storm.
+func TestXSRFCookie_NotWrittenWithoutSession(t *testing.T) {
+	c := New(testConfig())
+
+	req := httptest.NewRequest("GET", "/", nil) // no session_id cookie
+	w := httptest.NewRecorder()
+	c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(w, req)
+
+	for _, k := range w.Result().Cookies() {
+		if k.Name == "XSRF-TOKEN" {
+			t.Errorf("XSRF-TOKEN cookie must NOT be written without session; got %v", k)
+		}
+	}
+}
+
+// TestXSRFCookie_OptOut pins that setting WriteXSRFCookie=false suppresses
+// the cookie write. Operators with custom CSRF bootstrapping need a way
+// to opt out.
+func TestXSRFCookie_OptOut(t *testing.T) {
+	const sessionID = "test-session"
+
+	cfg := DefaultConfig()
+	cfg.SessionIDResolver = testCookieResolver("session_id")
+	cfg.Store = stores.NewSessionStore()
+	cfg.WriteXSRFCookie = false
+	c := New(cfg)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+	w := httptest.NewRecorder()
+	c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(w, req)
+
+	for _, k := range w.Result().Cookies() {
+		if k.Name == "XSRF-TOKEN" {
+			t.Errorf("WriteXSRFCookie=false must suppress; got %v", k)
+		}
+	}
+}
+
+// TestXSRFCookie_SuppressedForSingleUse pins that the cookie is NOT
+// written when SingleUse is enabled. A per-session token in the cookie
+// would be stale after the first unsafe request consumed it; better to
+// skip than to mislead the client.
+func TestXSRFCookie_SuppressedForSingleUse(t *testing.T) {
+	const sessionID = "sess"
+	cfg := DefaultConfig()
+	cfg.SessionIDResolver = testCookieResolver("session_id")
+	cfg.Store = stores.NewSessionStore()
+	cfg.SingleUse = true
+	c := New(cfg)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+	w := httptest.NewRecorder()
+	c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(w, req)
+
+	for _, k := range w.Result().Cookies() {
+		if k.Name == "XSRF-TOKEN" {
+			t.Errorf("SingleUse=true must suppress XSRF-TOKEN cookie; got %v", k)
+		}
+	}
+}
+
+// TestXSRFCookie_NotWrittenOnUnsafeMethod pins that the cookie is only
+// written on safe methods (the bootstrap path). Unsafe methods are the
+// enforcement path; writing the cookie there could leak a fresh token
+// alongside a 419.
+func TestXSRFCookie_NotWrittenOnUnsafeMethod(t *testing.T) {
+	const sessionID = "sess"
+	cfg := DefaultConfig()
+	cfg.SessionIDResolver = testCookieResolver("session_id")
+	cfg.Store = stores.NewSessionStore()
+	c := New(cfg)
+
+	req := httptest.NewRequest("POST", "/", nil)
+	req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+	w := httptest.NewRecorder()
+	c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("inner handler must not run without CSRF token")
+	})).ServeHTTP(w, req)
+
+	for _, k := range w.Result().Cookies() {
+		if k.Name == "XSRF-TOKEN" {
+			t.Errorf("XSRF-TOKEN cookie must not be written on unsafe method; got %v", k)
+		}
+	}
+	if w.Code != 419 {
+		t.Errorf("expected 419, got %d", w.Code)
+	}
+}
+
 // TestGetTokenFromRequest_OversizeDoesNotTruncateDownstream pins M-02:
 // when the urlencoded body exceeds Config.MaxFormBodyBytes the middleware
 // must reject with 419 and MUST NOT call the downstream handler with a

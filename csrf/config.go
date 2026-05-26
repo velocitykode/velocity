@@ -76,10 +76,40 @@ type Config struct {
 	SingleUse bool
 
 	// AllowJSAccess opts in to HttpOnly=false. Without this flag the
-	// CSRF cookie MUST be HttpOnly — JavaScript has no legitimate need
+	// CSRF cookie MUST be HttpOnly - JavaScript has no legitimate need
 	// to read it in the default flow (forms and XHR echo the value via
 	// hidden input / custom header). Name intentionally loud.
 	AllowJSAccess bool
+
+	// WriteXSRFCookie controls whether the middleware writes a non-
+	// HttpOnly cookie carrying the per-session CSRF token on safe
+	// (idempotent) requests. The cookie name is "XSRF-TOKEN" by
+	// convention (axios, angular, etc.) and its value is the URL-encoded
+	// token so axios-style clients can echo it back as X-XSRF-TOKEN.
+	// Default true. Set to false to opt out (the operator must then
+	// hand-roll cookie wiring or rely solely on RefreshHandler).
+	//
+	// Security notes:
+	//   - The cookie is intentionally NOT HttpOnly: SPA JS must read it
+	//     to echo into the header on unsafe requests.
+	//   - Secure is set true when the request scheme is https. In HTTP
+	//     dev environments Secure is false (the browser would otherwise
+	//     drop the cookie); production runs over TLS by policy.
+	//   - SameSite=Lax matches the Set-Cookie semantics most SPAs need
+	//     (the cookie travels on top-level POST navigations from the
+	//     same site but not cross-site).
+	//   - The cookie carries the SAME per-session token reachable via
+	//     GetToken(sessionID). Single-use tokens MUST NOT be exposed via
+	//     this cookie - they are consumed on validation and the client
+	//     would echo a stale value. When SingleUse is true the cookie
+	//     write is skipped automatically.
+	WriteXSRFCookie bool
+
+	// XSRFCookieName is the name of the non-HttpOnly cookie written
+	// when WriteXSRFCookie is true. Default "XSRF-TOKEN" (axios
+	// convention). Header echoed by the client is X-XSRF-TOKEN by
+	// convention; the framework also accepts HeaderName.
+	XSRFCookieName string
 
 	// Storage strategy
 	Store Store
@@ -133,6 +163,8 @@ func DefaultConfig() *Config {
 		Secure:            true,
 		HttpOnly:          true,
 		SingleUse:         false,
+		WriteXSRFCookie:   true,
+		XSRFCookieName:    "XSRF-TOKEN",
 		ErrorMessage:      "CSRF token validation failed. Please refresh and try again.",
 	}
 }
