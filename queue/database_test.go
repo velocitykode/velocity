@@ -1079,6 +1079,304 @@ func TestWorker_StaleLeaseDoesNotDoubleRecord(t *testing.T) {
 	}
 }
 
+// flakyReservationDriver wraps a *DatabaseDriver and injects a single
+// transient error on the first AckCtx or FailReservedCtx call (selected
+// by which channel is set). After the transient error fires once, calls
+// pass through to the embedded driver. Used to model a connection blip
+// or pool-exhausted error against a real backing store.
+type flakyReservationDriver struct {
+	*DatabaseDriver
+	ackFaults     atomic.Int32 // remaining transient AckCtx errors to inject
+	failFaults    atomic.Int32 // remaining transient FailReservedCtx errors to inject
+	ackCallCount  atomic.Int32
+	failCallCount atomic.Int32
+}
+
+func (f *flakyReservationDriver) AckCtx(ctx context.Context, token ReservationToken) error {
+	f.ackCallCount.Add(1)
+	if f.ackFaults.Load() > 0 {
+		f.ackFaults.Add(-1)
+		return fmt.Errorf("simulated transient ack error: connection refused")
+	}
+	return f.DatabaseDriver.AckCtx(ctx, token)
+}
+
+func (f *flakyReservationDriver) FailReservedCtx(ctx context.Context, token ReservationToken, job Job, jobErr error, queueName string) error {
+	f.failCallCount.Add(1)
+	if f.failFaults.Load() > 0 {
+		f.failFaults.Add(-1)
+		return fmt.Errorf("simulated transient fail-reserved error: connection refused")
+	}
+	return f.DatabaseDriver.FailReservedCtx(ctx, token, job, jobErr, queueName)
+}
+
+// TestWorker_TransientAckErrorDoesNotDoubleRecord proves the strict
+// gating rule: a transient (non-fence) error from AckCtx must NOT let
+// success side effects fire, because the row stays reserved and will
+// redeliver. Worker 1 pops, handler succeeds, AckCtx returns a
+// transient error. Worker 1 must skip batch.recordSuccess and
+// dispatchJobProcessed. After the lease expires, worker 2 pops, handler
+// succeeds, AckCtx succeeds, side effects fire exactly once.
+//
+// Pre-this-fix, the non-fence error path returned true ("ownership
+// confirmed") and ran side effects, then the redelivery ran them again.
+func TestWorker_TransientAckErrorDoesNotDoubleRecord(t *testing.T) {
+	saveAndRestoreSigningState(t)
+	SetSigningKey(nil)
+	t.Cleanup(func() { batchStore.reset() })
+
+	driver, cleanup := newSQLiteQueueDB(t)
+	defer cleanup()
+	const lease = 40 * time.Millisecond
+	driver.SetRetryAfter(lease)
+
+	// flakyDriver wraps the real driver and will reject the first
+	// AckCtx call with a synthesized transient error. Worker 1 uses
+	// this proxy; worker 2 uses the underlying driver directly so its
+	// ack hits real SQLite.
+	flaky := &flakyReservationDriver{DatabaseDriver: driver}
+	flaky.ackFaults.Store(1)
+
+	// Register marshallableBatchJob for C-01's payload-bytes hydration.
+	RegisterJob(func(data []byte) (*marshallableBatchJob, error) {
+		j := &marshallableBatchJob{}
+		if len(data) == 0 {
+			return j, nil
+		}
+		if err := json.Unmarshal(data, j); err != nil {
+			return nil, err
+		}
+		return j, nil
+	})
+	t.Cleanup(func() {
+		registry.mu.Lock()
+		delete(registry.handlers, "marshallableBatchJob")
+		registry.mu.Unlock()
+	})
+
+	// Build a batch with a single Batchable job so we can observe
+	// counter changes through batch.CompletedJobs().
+	bjob := &marshallableBatchJob{}
+	batch, err := NewBatch(bjob).Dispatch(context.Background(), driver)
+	if err != nil {
+		t.Fatalf("dispatch batch: %v", err)
+	}
+
+	var processedEvents int32
+	dispatcher := func(ctx context.Context, ev interface{}) error {
+		if _, ok := ev.(*JobProcessed); ok {
+			atomic.AddInt32(&processedEvents, 1)
+		}
+		return nil
+	}
+
+	// Worker 1 uses the flaky proxy. Its handler succeeds; the first
+	// AckCtx call will return the synthesized transient error.
+	w1 := NewWorker(flaky, "default", func(Job) error { return nil },
+		WithMaxRetries(1),
+		WithTimeout(2*time.Second),
+		WithWorkerLogger(nullLogger{}),
+	)
+	w1.SetEventDispatcher(dispatcher)
+	w1.ctx, w1.cancel = context.WithCancel(context.Background())
+	defer w1.cancel()
+
+	if err := w1.processJob(); err != nil {
+		t.Fatalf("w1 processJob: %v", err)
+	}
+	if got := flaky.ackCallCount.Load(); got != 1 {
+		t.Fatalf("w1 ackCallCount = %d, want 1", got)
+	}
+	// After w1's transient-error ack: row is still reserved, side
+	// effects MUST NOT have fired.
+	if got := batch.CompletedJobs(); got != 0 {
+		t.Fatalf("after transient ack error, batch.CompletedJobs = %d, want 0", got)
+	}
+	if got := atomic.LoadInt32(&processedEvents); got != 0 {
+		t.Fatalf("after transient ack error, JobProcessed events = %d, want 0", got)
+	}
+	var rows int
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE queue = ?", "default").Scan(&rows); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("post-transient-ack row count = %d, want 1 (row still reserved for redelivery)", rows)
+	}
+
+	// Wait past the lease so a fresh worker can reclaim.
+	time.Sleep(lease + 20*time.Millisecond)
+
+	// Worker 2 uses the underlying driver (no fault injection) so its
+	// ack succeeds. Side effects fire exactly once.
+	time.Sleep(time.Millisecond) // ensure distinct workerID for fence
+	driver2 := NewDatabaseDriver(driver.db, driver.dbDriver)
+	driver2.SetRetryAfter(lease)
+	if driver.workerID == driver2.workerID {
+		t.Fatalf("second NewDatabaseDriver produced the same workerID %q", driver.workerID)
+	}
+	w2 := NewWorker(driver2, "default", func(Job) error { return nil },
+		WithMaxRetries(1),
+		WithWorkerLogger(nullLogger{}),
+	)
+	w2.SetEventDispatcher(dispatcher)
+	w2.ctx, w2.cancel = context.WithCancel(context.Background())
+	defer w2.cancel()
+
+	if err := w2.processJob(); err != nil {
+		t.Fatalf("w2 processJob: %v", err)
+	}
+	if got := batch.CompletedJobs(); got != 1 {
+		t.Errorf("final batch.CompletedJobs = %d, want 1", got)
+	}
+	if got := atomic.LoadInt32(&processedEvents); got != 1 {
+		t.Errorf("final JobProcessed events = %d, want 1", got)
+	}
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE queue = ?", "default").Scan(&rows); err != nil {
+		t.Fatalf("post-test count rows: %v", err)
+	}
+	if rows != 0 {
+		t.Errorf("post-test rows = %d, want 0 (w2 acked)", rows)
+	}
+}
+
+// TestWorker_TransientFailReservedErrorDoesNotDoubleRecord mirrors the
+// ack case for the terminal failure path. Worker 1 pops, handler fails
+// permanently (MaxRetries=1), FailReservedCtx returns a transient
+// error. Worker 1 must skip batch.recordFailure and dispatchJobFailed.
+// After the lease expires, worker 2 pops, handler fails, the underlying
+// FailReservedCtx succeeds, side effects fire exactly once.
+//
+// Pre-this-fix, the non-fence error path in failJob fell through to
+// batch.recordFailure + dispatchJobFailed, then the redelivery ran
+// them again.
+func TestWorker_TransientFailReservedErrorDoesNotDoubleRecord(t *testing.T) {
+	saveAndRestoreSigningState(t)
+	SetSigningKey(nil)
+	t.Cleanup(func() { batchStore.reset() })
+
+	driver, cleanup := newSQLiteQueueDB(t)
+	defer cleanup()
+	const lease = 40 * time.Millisecond
+	driver.SetRetryAfter(lease)
+
+	flaky := &flakyReservationDriver{DatabaseDriver: driver}
+	flaky.failFaults.Store(1)
+
+	// Register marshallableBatchJob for C-01's payload-bytes hydration.
+	RegisterJob(func(data []byte) (*marshallableBatchJob, error) {
+		j := &marshallableBatchJob{}
+		if len(data) == 0 {
+			return j, nil
+		}
+		if err := json.Unmarshal(data, j); err != nil {
+			return nil, err
+		}
+		return j, nil
+	})
+	t.Cleanup(func() {
+		registry.mu.Lock()
+		delete(registry.handlers, "marshallableBatchJob")
+		registry.mu.Unlock()
+	})
+
+	bjob := &marshallableBatchJob{}
+	batch, err := NewBatch(bjob).Dispatch(context.Background(), driver)
+	if err != nil {
+		t.Fatalf("dispatch batch: %v", err)
+	}
+
+	var failedEvents int32
+	dispatcher := func(ctx context.Context, ev interface{}) error {
+		if _, ok := ev.(*JobFailed); ok {
+			atomic.AddInt32(&failedEvents, 1)
+		}
+		return nil
+	}
+
+	// Worker 1 (flaky): handler returns a permanent failure. MaxRetries
+	// = 1 means the first failure is terminal, so failJob runs
+	// FailReservedCtx, which the flaky proxy rejects once.
+	w1 := NewWorker(flaky, "default", func(Job) error { return fmt.Errorf("boom") },
+		WithMaxRetries(1),
+		WithBackoff(func(int) time.Duration { return 0 }),
+		WithWorkerLogger(nullLogger{}),
+	)
+	w1.SetEventDispatcher(dispatcher)
+	w1.ctx, w1.cancel = context.WithCancel(context.Background())
+	defer w1.cancel()
+
+	if err := w1.processJob(); err == nil {
+		t.Fatalf("w1 processJob: expected error, got nil")
+	}
+	if got := flaky.failCallCount.Load(); got != 1 {
+		t.Fatalf("w1 failCallCount = %d, want 1", got)
+	}
+	// Transient FailReservedCtx error: row still reserved, no side
+	// effects fired, no failed_jobs row written.
+	if got := batch.FailedJobs(); got != 0 {
+		t.Fatalf("after transient fail error, batch.FailedJobs = %d, want 0", got)
+	}
+	if got := atomic.LoadInt32(&failedEvents); got != 0 {
+		t.Fatalf("after transient fail error, JobFailed events = %d, want 0", got)
+	}
+	var failed int
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM failed_jobs").Scan(&failed); err != nil {
+		t.Fatalf("count failed_jobs: %v", err)
+	}
+	if failed != 0 {
+		t.Fatalf("failed_jobs rows after transient fail error = %d, want 0 (no partial state)", failed)
+	}
+	var rows int
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE queue = ?", "default").Scan(&rows); err != nil {
+		t.Fatalf("count jobs: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("jobs row count after transient fail error = %d, want 1", rows)
+	}
+
+	// Wait past the lease so worker 2 can reclaim. Worker 2 uses a
+	// distinct DatabaseDriver against the same DB so the fence
+	// recognises a different reserved_by.
+	time.Sleep(lease + 20*time.Millisecond)
+	time.Sleep(time.Millisecond)
+	driver2 := NewDatabaseDriver(driver.db, driver.dbDriver)
+	driver2.SetRetryAfter(lease)
+	if driver.workerID == driver2.workerID {
+		t.Fatalf("second NewDatabaseDriver produced the same workerID %q", driver.workerID)
+	}
+	w2 := NewWorker(driver2, "default", func(Job) error { return fmt.Errorf("boom") },
+		WithMaxRetries(1),
+		WithBackoff(func(int) time.Duration { return 0 }),
+		WithWorkerLogger(nullLogger{}),
+	)
+	w2.SetEventDispatcher(dispatcher)
+	w2.ctx, w2.cancel = context.WithCancel(context.Background())
+	defer w2.cancel()
+
+	if err := w2.processJob(); err == nil {
+		t.Fatalf("w2 processJob: expected error, got nil")
+	}
+
+	if got := batch.FailedJobs(); got != 1 {
+		t.Errorf("final batch.FailedJobs = %d, want 1", got)
+	}
+	if got := atomic.LoadInt32(&failedEvents); got != 1 {
+		t.Errorf("final JobFailed events = %d, want 1", got)
+	}
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM failed_jobs").Scan(&failed); err != nil {
+		t.Fatalf("post count failed_jobs: %v", err)
+	}
+	if failed != 1 {
+		t.Errorf("final failed_jobs rows = %d, want 1", failed)
+	}
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE queue = ?", "default").Scan(&rows); err != nil {
+		t.Fatalf("post count jobs: %v", err)
+	}
+	if rows != 0 {
+		t.Errorf("jobs row not removed after w2 terminal fail; rows=%d", rows)
+	}
+}
+
 // TestDatabaseDriver_RewriteQuery exercises the placeholder rewriter directly
 // so regressions are caught even if no driver-specific test runs.
 func TestDatabaseDriver_RewriteQuery(t *testing.T) {
@@ -1113,7 +1411,7 @@ type marshallableBatchJob struct {
 	BatchIDValue BatchID `json:"batch_id"`
 }
 
-func (j *marshallableBatchJob) Handle() error          { return nil }
-func (j *marshallableBatchJob) Failed(err error)       {}
-func (j *marshallableBatchJob) GetBatchID() BatchID    { return j.BatchIDValue }
-func (j *marshallableBatchJob) SetBatchID(id BatchID)  { j.BatchIDValue = id }
+func (j *marshallableBatchJob) Handle() error         { return nil }
+func (j *marshallableBatchJob) Failed(err error)      {}
+func (j *marshallableBatchJob) GetBatchID() BatchID   { return j.BatchIDValue }
+func (j *marshallableBatchJob) SetBatchID(id BatchID) { j.BatchIDValue = id }

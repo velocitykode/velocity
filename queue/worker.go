@@ -523,22 +523,32 @@ func (w *Worker) processJob() error {
 }
 
 // ackReservation deletes the leased row after handler success on
-// reservation-capable drivers. Returns true when the caller still owns
-// the lease and is therefore responsible for recording success-side
-// effects (batch counters, JobProcessed event); returns false when the
-// lease was lost (the new owner will record those instead) or when no
-// reservation applies (zero token / non-reservation driver -- in that
-// case the caller is still the sole executor and should run side
-// effects).
+// reservation-capable drivers. Returns true ONLY when the cleanup
+// write completed successfully (AckCtx returned nil) and the caller is
+// therefore the sole, durable owner of the result. The caller MUST gate
+// success-side effects (batch counters, JobProcessed event) on the
+// returned bool.
+//
+// Returns false on every error path:
+//   - ErrLeaseLost: another worker reclaimed the row and will run side
+//     effects; logged at WARN.
+//   - Transient backend error (connection blip, pool exhausted,
+//     deadlock-retry exhausted): the row stays reserved and will
+//     redeliver via retryAfter; logged at WARN so operators see the
+//     failure. The next attempt will either succeed (side effects fire
+//     once) or also fail (no double-recording). Running side effects on
+//     this attempt would double-count once the row redelivers.
+//   - Unknown / wrapped: logged at ERROR; same skip-side-effects rule.
+//
+// Returns true for the zero-token case (no reservation applies, e.g.
+// memory/redis drivers) and for non-reservation drivers, because the
+// caller is the sole executor and there is no second worker to
+// double-record.
 //
 // Uses a fresh background ctx with a short timeout so the ack survives
 // jobCtx cancellation (e.g. when the handler completed just as the per-
 // job timeout fires) and so a slow driver cannot hold shutdown open
-// past its deadline. ErrLeaseLost is downgraded to a warn; other
-// failures are logged but treated as "ownership confirmed" because the
-// row will still be reclaimed by the retryAfter predicate on the next
-// pop, and refusing to record success-side effects on a transient DB
-// error would be worse than running them once on this worker.
+// past its deadline.
 func (w *Worker) ackReservation(token ReservationToken) bool {
 	if token.IsZero() {
 		// No lease to confirm: caller is the sole executor (memory /
@@ -561,12 +571,16 @@ func (w *Worker) ackReservation(token ReservationToken) bool {
 		)
 		return false
 	default:
-		w.logger.Error("Failed to ack reserved job", "token", token.ID, "error", err)
-		// Transient backend error. The row will still be reclaimed via
-		// retryAfter; refusing to record this worker's side effects
-		// would silently drop the batch counter / event for every
-		// transient ack failure. Treat ownership as confirmed.
-		return true
+		// Transient or unknown backend error. Do NOT run side effects:
+		// the row is still reserved and will redeliver after the lease
+		// expires, and the new attempt will record success exactly
+		// once. Firing batch counters / JobProcessed here would
+		// double-count once the redelivery succeeds.
+		w.logger.Warn("Ack failed; lease will expire and row will redeliver",
+			"token", token.ID,
+			"error", err,
+		)
+		return false
 	}
 }
 
@@ -715,9 +729,13 @@ func (w *Worker) attemptNumber(job Job, token ReservationToken) int {
 //
 // Cleanup-first, then side effects: the FailReservedCtx mutation runs
 // before the batch counter increment and the JobFailed event dispatch.
-// If the lease was reclaimed by another worker (ErrLeaseLost), the new
-// owner is responsible for the side effects; firing them here would
-// double-emit JobFailed and double-increment batch failure counters.
+// Side effects fire ONLY when the cleanup write returned nil. Every
+// error path (ErrLeaseLost, transient backend failure, unknown) skips
+// batch.recordFailure + dispatchJobFailed and returns; the row stays
+// reserved and either succeeds or fails again on the next attempt.
+// This prevents the double-recording trap where a transient DB error
+// would let the failure events fire while the row redelivers and the
+// new worker records its own outcome on top.
 //
 // The driver-side cleanup write MUST use a fresh context with its own
 // short timeout, not the per-job ctx: when this is reached via the
@@ -756,17 +774,26 @@ func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error
 			)
 			return
 		default:
-			// Transient backend failure. We still own the row (no
-			// fence violation), it will be reclaimed via retryAfter
-			// and eventually fail there. We still fire side effects on
-			// this attempt so a downstream alerting pipeline sees the
-			// failure -- silencing it on a transient DB error would be
-			// worse than over-counting if a future reclaim also fails.
-			w.logger.Error("Failed to mark reserved job as failed", "error", failErr)
+			// Transient or unknown backend failure. The row is still
+			// reserved and will redeliver after the lease expires; the
+			// next attempt either records success cleanly or fails
+			// again. Running side effects here would double-count once
+			// the redelivery completes -- the symmetric trap to the
+			// ack path.
+			w.logger.Warn("FailReservedCtx errored; lease will expire and row will redeliver",
+				"type", jobType,
+				"queue", w.queueName,
+				"job_id", jobIDOf(job),
+				"error", failErr,
+			)
+			return
 		}
 	} else {
 		// Non-reservation driver (memory, redis): the row was deleted
-		// at pop time, so no lease to lose. Always run side effects.
+		// at pop time, so there is no redelivery to double-count
+		// against. Run side effects regardless of Failed()'s outcome
+		// so alerting pipelines still see the failure when the
+		// failed_jobs sink itself is degraded.
 		if failErr := w.queue.Failed(job, err, w.queueName); failErr != nil {
 			w.logger.Error("Failed to mark job as failed", "error", failErr)
 		}
