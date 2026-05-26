@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 
 	"golang.org/x/crypto/bcrypt"
+
+	"github.com/velocitykode/velocity/internal/clientip"
 )
 
 // Errors
@@ -163,7 +165,10 @@ func (m *Manager) RegisterGuard(name string, guard Guard) {
 	}
 	if len(proxies) > 0 {
 		if r, ok := guard.(TrustedProxiesReceiver); ok {
-			r.SetTrustedProxies(proxies)
+			// Deep-clone so the newly registered guard cannot affect
+			// the manager's snapshot (or any sibling guard's) by
+			// mutating the list it receives.
+			r.SetTrustedProxies(clientip.CloneIPNets(proxies))
 		}
 	}
 }
@@ -476,40 +481,36 @@ type TrustedProxiesReceiver interface {
 // internal/clientip.ParseCIDRs and calls this with the result, so app
 // code does not normally need to touch it.
 func (m *Manager) SetTrustedProxies(proxies []*net.IPNet) {
+	// Deep-clone on the write path so caller mutation of either the
+	// slice header or any *net.IPNet's IP/Mask fields cannot flip the
+	// manager's trust decisions at runtime. A shallow copy would keep
+	// the same pointers and re-expose the audit-finding hole.
+	cloned := clientip.CloneIPNets(proxies)
+
 	m.mu.Lock()
-	// Defensive copy so callers cannot mutate the manager's view by
-	// editing the slice they handed in.
-	if len(proxies) > 0 {
-		m.trustedProxies = append([]*net.IPNet(nil), proxies...)
-	} else {
-		m.trustedProxies = nil
-	}
+	m.trustedProxies = cloned
 	receivers := make([]TrustedProxiesReceiver, 0, len(m.guards))
 	for _, g := range m.guards {
 		if r, ok := g.(TrustedProxiesReceiver); ok {
 			receivers = append(receivers, r)
 		}
 	}
-	snapshot := m.trustedProxies
 	m.mu.Unlock()
 
+	// Each guard gets an INDEPENDENT clone. Sharing one snapshot across
+	// receivers would let one guard's later mutation reach the others.
 	for _, r := range receivers {
-		r.SetTrustedProxies(snapshot)
+		r.SetTrustedProxies(clientip.CloneIPNets(cloned))
 	}
 }
 
 // TrustedProxies returns the parsed proxy network list installed via
-// SetTrustedProxies. The returned slice is a snapshot; callers may
-// read from it freely but must not mutate it.
+// SetTrustedProxies. The returned slice is a deep clone; mutating it
+// (or any of its IPNet elements) has no effect on the manager.
 func (m *Manager) TrustedProxies() []*net.IPNet {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if len(m.trustedProxies) == 0 {
-		return nil
-	}
-	out := make([]*net.IPNet, len(m.trustedProxies))
-	copy(out, m.trustedProxies)
-	return out
+	return clientip.CloneIPNets(m.trustedProxies)
 }
 
 // ServerSessionStore returns the installed server-side session store, or

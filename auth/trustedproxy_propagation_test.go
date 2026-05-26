@@ -120,3 +120,80 @@ func TestManager_SetTrustedProxies_DefensiveCopy(t *testing.T) {
 		t.Fatalf("manager observed caller-side mutation: %v", got)
 	}
 }
+
+// TestManager_SetTrustedProxies_DeepClone pins the C-05 follow-up fix:
+// mutation of an IPNet's IP / Mask byte arrays AFTER SetTrustedProxies
+// must not flip the manager's trust decisions. A shallow []*net.IPNet
+// copy would reuse the same pointers and re-expose the audit hole.
+func TestManager_SetTrustedProxies_DeepClone(t *testing.T) {
+	m := NewManager()
+	proxies, err := clientip.ParseCIDRs([]string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("ParseCIDRs: %v", err)
+	}
+	m.SetTrustedProxies(proxies)
+
+	// Mutate the IP bytes of the original to point at a completely
+	// different network. With a deep clone, the manager's stored
+	// IPNet must remain 10.0.0.0/8.
+	for i := range proxies[0].IP {
+		proxies[0].IP[i] = 0xff
+	}
+	// Also stomp the mask: open it up to /0.
+	for i := range proxies[0].Mask {
+		proxies[0].Mask[i] = 0
+	}
+
+	got := m.TrustedProxies()
+	if len(got) != 1 || got[0] == nil {
+		t.Fatalf("manager view lost: %v", got)
+	}
+	if !got[0].Contains(net.ParseIP("10.0.0.5")) {
+		t.Errorf("manager forgot 10.0.0.5 (post-clone mutation of source leaked): got %v", got[0])
+	}
+	if got[0].Contains(net.ParseIP("203.0.113.5")) {
+		t.Errorf("manager now trusts 203.0.113.5 (post-clone mutation leaked): got %v", got[0])
+	}
+}
+
+// TestManager_SetTrustedProxies_AppendNotVisible: appending to the
+// outer slice after SetTrustedProxies must not show up in the
+// manager's snapshot.
+func TestManager_SetTrustedProxies_AppendNotVisible(t *testing.T) {
+	m := NewManager()
+	proxies, _ := clientip.ParseCIDRs([]string{"10.0.0.0/8"})
+	m.SetTrustedProxies(proxies)
+
+	extra, _ := clientip.ParseCIDRs([]string{"192.168.0.0/16"})
+	_ = append(proxies, extra...)
+
+	got := m.TrustedProxies()
+	if len(got) != 1 {
+		t.Fatalf("manager length changed after append: %d", len(got))
+	}
+	if got[0].Contains(net.ParseIP("192.168.1.1")) {
+		t.Errorf("manager picked up appended entry: %v", got[0])
+	}
+}
+
+// TestManager_TrustedProxies_ReturnsClone: mutating the slice
+// returned by TrustedProxies() must not affect subsequent reads.
+func TestManager_TrustedProxies_ReturnsClone(t *testing.T) {
+	m := NewManager()
+	proxies, _ := clientip.ParseCIDRs([]string{"10.0.0.0/8"})
+	m.SetTrustedProxies(proxies)
+
+	snap := m.TrustedProxies()
+	// Stomp the snapshot's IP bytes.
+	for i := range snap[0].IP {
+		snap[0].IP[i] = 0xff
+	}
+
+	again := m.TrustedProxies()
+	if len(again) != 1 {
+		t.Fatalf("second read length: %d", len(again))
+	}
+	if !again[0].Contains(net.ParseIP("10.0.0.5")) {
+		t.Errorf("second read lost the original IP: %v", again[0])
+	}
+}

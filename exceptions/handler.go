@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"reflect"
 	"sync"
+
+	"github.com/velocitykode/velocity/internal/clientip"
 )
 
 // ExceptionHandler is the interface satisfied by *Handler. It covers the
@@ -175,11 +177,12 @@ func WithAPIMode(enabled bool) Option {
 // the runtime equivalent.
 func WithTrustedProxies(proxies []*net.IPNet) Option {
 	return func(h *Handler) {
-		if len(proxies) == 0 {
-			h.trustedProxies = nil
-			return
-		}
-		h.trustedProxies = append([]*net.IPNet(nil), proxies...)
+		// Deep-clone so caller mutation of any *net.IPNet's IP / Mask
+		// (or the slice header) cannot flip the handler's trust
+		// decisions at runtime. A shallow []*net.IPNet copy reuses
+		// the same IPNet pointers and re-exposes the audit-finding
+		// hole.
+		h.trustedProxies = clientip.CloneIPNets(proxies)
 	}
 }
 
@@ -268,7 +271,6 @@ func (h *Handler) IsAPIMode() bool {
 	return h.apiMode
 }
 
-// SetAPIPrefixes sets URL prefixes that indicate API routes.
 // SetTrustedProxies installs the parsed proxy-network list used by
 // ErrorHandler (and any other client-IP-sensitive surface on this
 // handler) when capturing the IP onto the ExceptionContext. Pass nil
@@ -280,30 +282,27 @@ func (h *Handler) IsAPIMode() bool {
 // getTrustedProxies sees either the old or the new list, never a
 // torn pointer.
 func (h *Handler) SetTrustedProxies(proxies []*net.IPNet) {
+	// Deep-clone OUTSIDE the lock so the (potentially non-trivial)
+	// allocation does not extend the critical section. Caller
+	// mutation of any IPNet field after this point cannot flip the
+	// handler's trust decisions.
+	cloned := clientip.CloneIPNets(proxies)
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if len(proxies) == 0 {
-		h.trustedProxies = nil
-		return
-	}
-	// Defensive copy so callers cannot mutate the handler's view by
-	// editing the slice they handed in.
-	h.trustedProxies = append([]*net.IPNet(nil), proxies...)
+	h.trustedProxies = cloned
 }
 
-// getTrustedProxies returns a snapshot of the installed proxy list
-// under a read lock. Returned slice is owned by the caller.
+// getTrustedProxies returns a deep clone of the installed proxy list
+// under a read lock. The returned slice is fully owned by the caller:
+// mutating any element (or its IP / Mask backing array) has no effect
+// on the handler. Returns nil when no list is installed.
 func (h *Handler) getTrustedProxies() []*net.IPNet {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	if len(h.trustedProxies) == 0 {
-		return nil
-	}
-	out := make([]*net.IPNet, len(h.trustedProxies))
-	copy(out, h.trustedProxies)
-	return out
+	return clientip.CloneIPNets(h.trustedProxies)
 }
 
+// SetAPIPrefixes sets URL prefixes that indicate API routes.
 func (h *Handler) SetAPIPrefixes(prefixes ...string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

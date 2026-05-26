@@ -10,6 +10,7 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/clientip"
 )
 
 const (
@@ -44,21 +45,20 @@ type JWTGuard struct {
 // the auth.TrustedProxiesReceiver interface, so consumers normally do
 // not need to call this directly.
 func (g *JWTGuard) SetTrustedProxies(proxies []*net.IPNet) {
+	// Deep-clone (see SessionGuard.SetTrustedProxies for rationale).
+	cloned := clientip.CloneIPNets(proxies)
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if len(proxies) == 0 {
-		g.trustedProxies = nil
-		return
-	}
-	g.trustedProxies = append([]*net.IPNet(nil), proxies...)
+	g.trustedProxies = cloned
 }
 
 // getTrustedProxies returns the installed trusted-proxy list under a
 // read lock so concurrent Attempt() calls see a consistent snapshot.
+// The returned slice is a deep clone (see SessionGuard.getTrustedProxies).
 func (g *JWTGuard) getTrustedProxies() []*net.IPNet {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	return g.trustedProxies
+	return clientip.CloneIPNets(g.trustedProxies)
 }
 
 // SetLoginThrottler installs a rate-limiter for Attempt() calls. Passing nil

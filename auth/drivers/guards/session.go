@@ -126,24 +126,25 @@ func (g *SessionGuard) SetServerSessionStore(store auth.ServerSessionStore) {
 // the auth.TrustedProxiesReceiver interface, so consumers normally do
 // not need to call this directly.
 func (g *SessionGuard) SetTrustedProxies(proxies []*net.IPNet) {
+	// Deep-clone so caller mutation of any *net.IPNet's IP / Mask
+	// (or the slice header) cannot flip the guard's trust decisions
+	// at runtime. A shallow []*net.IPNet copy would reuse the same
+	// IPNet pointers and re-expose the audit-finding hole.
+	cloned := clientip.CloneIPNets(proxies)
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if len(proxies) == 0 {
-		g.trustedProxies = nil
-		return
-	}
-	// Defensive copy so the caller cannot mutate the guard's view by
-	// editing the slice after handing it in.
-	g.trustedProxies = append([]*net.IPNet(nil), proxies...)
+	g.trustedProxies = cloned
 }
 
 // getTrustedProxies returns the installed trusted-proxy list under a
 // read lock so concurrent Attempt() / Login() calls see a consistent
-// snapshot. Returns nil when none has been configured.
+// snapshot. Returns a deep clone so the caller cannot mutate the
+// guard's state by editing the returned slice or its IPNet elements.
+// Returns nil when none has been configured.
 func (g *SessionGuard) getTrustedProxies() []*net.IPNet {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	return g.trustedProxies
+	return clientip.CloneIPNets(g.trustedProxies)
 }
 
 // SetLogger installs a logger used for non-fatal store errors (e.g. Redis

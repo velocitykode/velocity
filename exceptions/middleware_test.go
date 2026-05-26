@@ -1,6 +1,7 @@
 package exceptions
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -532,5 +533,87 @@ func TestVelocityContextAdapter_WriteHeader_OnlyOnce(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Error("Second WriteHeader should be ignored")
+	}
+}
+
+// TestHandler_SetTrustedProxies_DeepClone_SubsequentExtractUnaffected
+// pins the C-05 follow-up fix on the exceptions side: mutation of an
+// IPNet's IP / Mask AFTER SetTrustedProxies must not change what
+// ErrorHandler.getClientIP resolves on later requests.
+func TestHandler_SetTrustedProxies_DeepClone_SubsequentExtractUnaffected(t *testing.T) {
+	h := NewHandler()
+	proxies, err := clientip.ParseCIDRs([]string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("ParseCIDRs: %v", err)
+	}
+	h.SetTrustedProxies(proxies)
+
+	// Stomp the IP and mask bytes through the source slice.
+	for i := range proxies[0].IP {
+		proxies[0].IP[i] = 0xff
+	}
+	for i := range proxies[0].Mask {
+		proxies[0].Mask[i] = 0
+	}
+
+	// Build a request that arrives "from the LB" (10.0.0.1, formerly
+	// in the trust set; should still be) carrying a forwarded chain.
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "10.0.0.1:443"
+	r.Header.Set("X-Forwarded-For", "203.0.113.9")
+
+	// With the deep clone intact, the LB is still trusted and the
+	// real-client XFF is honoured.
+	got := getClientIP(r, h.getTrustedProxies())
+	if got != "203.0.113.9" {
+		t.Fatalf("handler trust set was mutated: got %q, want %q", got, "203.0.113.9")
+	}
+
+	// Also: a peer at the post-mutation address (which would be
+	// trusted if the mutation had leaked) must NOT be honoured for
+	// its XFF.
+	r2 := httptest.NewRequest("GET", "/", nil)
+	r2.RemoteAddr = "255.255.255.255:443"
+	r2.Header.Set("X-Forwarded-For", "8.8.8.8")
+	if got := getClientIP(r2, h.getTrustedProxies()); got != "255.255.255.255" {
+		t.Errorf("post-mutation address became trusted (deep clone leaked): got %q", got)
+	}
+}
+
+// TestHandler_SetTrustedProxies_AppendNotVisible: appending to the
+// source slice after SetTrustedProxies must not extend the handler's
+// trust set.
+func TestHandler_SetTrustedProxies_AppendNotVisible(t *testing.T) {
+	h := NewHandler()
+	proxies, _ := clientip.ParseCIDRs([]string{"10.0.0.0/8"})
+	h.SetTrustedProxies(proxies)
+
+	extra, _ := clientip.ParseCIDRs([]string{"192.168.0.0/16"})
+	_ = append(proxies, extra...)
+
+	// A peer in the would-be-appended range must NOT be trusted.
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "192.168.1.5:443"
+	r.Header.Set("X-Forwarded-For", "203.0.113.9")
+	if got := getClientIP(r, h.getTrustedProxies()); got != "192.168.1.5" {
+		t.Errorf("appended entry leaked into handler trust: got %q, want %q", got, "192.168.1.5")
+	}
+}
+
+// TestHandler_GetTrustedProxies_ReturnsClone: mutating the slice
+// returned by getTrustedProxies() must not affect subsequent reads.
+func TestHandler_GetTrustedProxies_ReturnsClone(t *testing.T) {
+	h := NewHandler()
+	proxies, _ := clientip.ParseCIDRs([]string{"10.0.0.0/8"})
+	h.SetTrustedProxies(proxies)
+
+	snap := h.getTrustedProxies()
+	for i := range snap[0].IP {
+		snap[0].IP[i] = 0xff
+	}
+
+	again := h.getTrustedProxies()
+	if !again[0].Contains(net.ParseIP("10.0.0.5")) {
+		t.Errorf("second read shows mutated state: %v", again[0])
 	}
 }

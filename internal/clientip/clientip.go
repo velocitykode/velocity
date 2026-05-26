@@ -236,6 +236,42 @@ func parseSingleIP(value string) net.IP {
 	return net.ParseIP(trimmed)
 }
 
+// CloneIPNets returns a deep copy of src. Every *net.IPNet element
+// is independently allocated and its IP / Mask byte slices are
+// freshly copied, so subsequent caller-side mutation of any element
+// in src (or of its IP / Mask fields) cannot affect the returned
+// slice or vice versa.
+//
+// This is the right defensive-copy primitive at the
+// configure-trusted-proxies boundary. A shallow []*net.IPNet copy
+// would keep the same pointers, so a caller (or a buggy framework
+// path) holding the original slice could still flip every consumer's
+// trust decisions at runtime by reassigning an IPNet's fields.
+//
+// Returns nil when src is nil or empty so the caller's "no trust"
+// path is preserved without an extra allocation. nil elements in
+// src are skipped (they were never trusted anyway).
+func CloneIPNets(src []*net.IPNet) []*net.IPNet {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]*net.IPNet, 0, len(src))
+	for _, n := range src {
+		if n == nil {
+			continue
+		}
+		ipCopy := make(net.IP, len(n.IP))
+		copy(ipCopy, n.IP)
+		maskCopy := make(net.IPMask, len(n.Mask))
+		copy(maskCopy, n.Mask)
+		out = append(out, &net.IPNet{IP: ipCopy, Mask: maskCopy})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // ParseCIDRs parses a list of IP or CIDR strings into a slice of
 // *net.IPNet. Useful at boot to translate a TrustedProxies config
 // slice into the form Extract accepts. Returns the first parse error

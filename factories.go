@@ -113,7 +113,12 @@ func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger log.Logger
 				logger.Warn("Auth trusted proxies parse failed; ignoring list (XFF headers will be untrusted)", "error", err)
 			}
 		} else {
-			manager.SetTrustedProxies(proxies)
+			// Pass a deep clone so this function's local `proxies`
+			// reference, retained by anything caller-side after
+			// initAuth returns, cannot influence the manager's
+			// trust decisions at runtime. SetTrustedProxies also
+			// deep-clones on its write path as belt-and-braces.
+			manager.SetTrustedProxies(clientip.CloneIPNets(proxies))
 		}
 	}
 

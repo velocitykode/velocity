@@ -2,6 +2,7 @@ package router
 
 import (
 	"errors"
+	"net"
 	"testing"
 )
 
@@ -169,5 +170,46 @@ func TestRateLimitByIPE_InvalidCIDR(t *testing.T) {
 	}
 	if !errors.Is(err, ErrInvalidTrustedProxy) {
 		t.Errorf("err = %v, want ErrInvalidTrustedProxy wrap", err)
+	}
+}
+
+// TestTrustedProxies_IPNets_DeepClone pins the C-05 follow-up fix:
+// mutation of any *net.IPNet returned by IPNets() must not affect
+// the underlying TrustedProxies value or subsequent IPNets() calls.
+func TestTrustedProxies_IPNets_DeepClone(t *testing.T) {
+	tp, err := ParseTrustedProxies([]string{"10.0.0.0/8", "192.168.0.0/16"})
+	if err != nil {
+		t.Fatalf("ParseTrustedProxies: %v", err)
+	}
+
+	snap1 := tp.IPNets()
+	if len(snap1) != 2 {
+		t.Fatalf("snap1 len = %d, want 2", len(snap1))
+	}
+
+	// Stomp every byte of every IPNet returned.
+	for _, n := range snap1 {
+		for i := range n.IP {
+			n.IP[i] = 0xff
+		}
+		for i := range n.Mask {
+			n.Mask[i] = 0
+		}
+	}
+
+	// A fresh IPNets() call must return un-mutated nets.
+	snap2 := tp.IPNets()
+	if len(snap2) != 2 {
+		t.Fatalf("snap2 len = %d, want 2", len(snap2))
+	}
+	if !snap2[0].Contains(net.ParseIP("10.0.0.5")) {
+		t.Errorf("snap2[0] lost 10.0.0.5 (mutation leaked): %v", snap2[0])
+	}
+	if !snap2[1].Contains(net.ParseIP("192.168.1.1")) {
+		t.Errorf("snap2[1] lost 192.168.1.1 (mutation leaked): %v", snap2[1])
+	}
+	// And the underlying Contains() check still works.
+	if !tp.Contains("10.0.0.5") {
+		t.Error("TrustedProxies.Contains() broke after caller mutation of IPNets() return")
 	}
 }

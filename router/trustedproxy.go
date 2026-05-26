@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"strings"
+
+	"github.com/velocitykode/velocity/internal/clientip"
 )
 
 // ErrInvalidTrustedProxy is returned when a trusted-proxy entry is not a
@@ -71,21 +73,19 @@ func (tp *TrustedProxies) Len() int {
 	return len(tp.nets)
 }
 
-// IPNets returns a snapshot of the parsed proxy networks, suitable for
-// passing to internal/clientip.Extract or unioning with another
+// IPNets returns a deep clone of the parsed proxy networks, suitable
+// for passing to internal/clientip.Extract or unioning with another
 // trust list at the middleware layer.
 //
-// The returned slice is a copy; callers may inspect it freely but
-// must not assume the contents will track later mutations of the
-// TrustedProxies value (which is immutable after construction
-// anyway). Returns nil when the set is empty.
+// The clone is independent: callers may mutate the slice header or
+// any IPNet's IP / Mask backing array without affecting subsequent
+// reads on the underlying TrustedProxies value (which is itself
+// immutable after construction). Returns nil when the set is empty.
 func (tp *TrustedProxies) IPNets() []*net.IPNet {
 	if tp == nil || len(tp.nets) == 0 {
 		return nil
 	}
-	out := make([]*net.IPNet, len(tp.nets))
-	copy(out, tp.nets)
-	return out
+	return clientip.CloneIPNets(tp.nets)
 }
 
 // Contains reports whether the given IP (string form) falls inside any

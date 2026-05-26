@@ -164,6 +164,14 @@ func New(opts ...Option) (*App, error) {
 	// A malformed entry is logged once and the list is dropped (no
 	// proxies trusted, secure default). Operators who want fail-fast
 	// startup should validate at boot via clientip.ParseCIDRs.
+	//
+	// CRITICAL: every consumer receives its OWN deep clone (via
+	// clientip.CloneIPNets at each call site). The parsed list, the
+	// app.config.Auth.TrustedProxies string slice, and any caller-side
+	// retained reference therefore cannot influence consumers'
+	// runtime trust decisions. Each setter also deep-clones on its
+	// write path as belt-and-braces, but cloning at wiring time makes
+	// the intent explicit at the boundary where the decision is made.
 	trustedProxyNets, tpErr := clientip.ParseCIDRs(a.config.Auth.TrustedProxies)
 	if tpErr != nil {
 		a.Log.Warn("Trusted proxies parse failed; XFF headers will be untrusted everywhere", "error", tpErr)
@@ -173,7 +181,7 @@ func New(opts ...Option) (*App, error) {
 	a.Services.Exceptions = exceptions.NewHandler(
 		exceptions.WithDebug(a.config.Debug),
 		exceptions.WithEnvironment(a.config.Env),
-		exceptions.WithTrustedProxies(trustedProxyNets),
+		exceptions.WithTrustedProxies(clientip.CloneIPNets(trustedProxyNets)),
 	)
 
 	// 3. Initialize crypto (auth/csrf may need it). Crypto is stateless
@@ -402,10 +410,26 @@ func New(opts ...Option) (*App, error) {
 	// Propagate the deployment-level trusted-proxy list parsed at step 2
 	// so Context.IP(), per-IP rate limits, and any future client-IP
 	// surface in the router agree with the throttle/exception layers.
-	// Stored on the router as the raw strings so ValidateConfig can
-	// re-parse for fail-fast at boot; the rate-limit path reads the
-	// already-parsed nets via Context.TrustedProxyNets().
-	a.Router.TrustedProxies = a.config.Auth.TrustedProxies
+	//
+	// Copy the []string slice (defensively) AND immediately force a
+	// parse via ValidateConfig so the router holds its own parsed
+	// *TrustedProxies. Aliasing app.config.Auth.TrustedProxies would
+	// let any later mutation of that slice (or its strings) flip
+	// router trust decisions at runtime. Validation failure here is
+	// logged and the list is dropped (no proxies trusted, secure
+	// default), matching the exceptions/auth wiring above.
+	if len(a.config.Auth.TrustedProxies) > 0 {
+		copied := make([]string, len(a.config.Auth.TrustedProxies))
+		copy(copied, a.config.Auth.TrustedProxies)
+		a.Router.TrustedProxies = copied
+		if err := a.Router.ValidateConfig(); err != nil {
+			a.Log.Warn("Router trusted proxies parse failed; XFF headers will be untrusted in the router", "error", err)
+			// Drop the raw list so the lazy-parse path that runs on
+			// first request also yields an empty trust set, not a
+			// partial / broken one.
+			a.Router.TrustedProxies = nil
+		}
+	}
 	// Configure the file-serving root. When FILE_ROOT is unset, the
 	// router falls back to the process CWD at request time, preserving
 	// legacy behaviour for callers that have not opted in.

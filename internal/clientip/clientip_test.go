@@ -273,3 +273,97 @@ func TestParseCIDRs(t *testing.T) {
 		})
 	}
 }
+
+func TestCloneIPNets_NilAndEmpty(t *testing.T) {
+	if got := CloneIPNets(nil); got != nil {
+		t.Errorf("CloneIPNets(nil) = %v, want nil", got)
+	}
+	if got := CloneIPNets([]*net.IPNet{}); got != nil {
+		t.Errorf("CloneIPNets(empty) = %v, want nil", got)
+	}
+	if got := CloneIPNets([]*net.IPNet{nil, nil}); got != nil {
+		t.Errorf("CloneIPNets(all-nil) = %v, want nil (skipped)", got)
+	}
+}
+
+func TestCloneIPNets_DeepCopiesPointers(t *testing.T) {
+	src, err := ParseCIDRs([]string{"10.0.0.0/8", "2001:db8::/32"})
+	if err != nil {
+		t.Fatalf("ParseCIDRs: %v", err)
+	}
+	dst := CloneIPNets(src)
+	if len(dst) != len(src) {
+		t.Fatalf("len(dst) = %d, want %d", len(dst), len(src))
+	}
+	for i := range src {
+		if dst[i] == src[i] {
+			t.Errorf("dst[%d] aliases src[%d] (*net.IPNet pointer reused)", i, i)
+		}
+		// IP backing array must be distinct.
+		if len(src[i].IP) > 0 && len(dst[i].IP) > 0 && &src[i].IP[0] == &dst[i].IP[0] {
+			t.Errorf("dst[%d].IP shares backing array with src[%d].IP", i, i)
+		}
+		// Mask backing array must be distinct.
+		if len(src[i].Mask) > 0 && len(dst[i].Mask) > 0 && &src[i].Mask[0] == &dst[i].Mask[0] {
+			t.Errorf("dst[%d].Mask shares backing array with src[%d].Mask", i, i)
+		}
+		// Equality of value still holds.
+		if !src[i].IP.Equal(dst[i].IP) {
+			t.Errorf("dst[%d].IP = %v, want %v", i, dst[i].IP, src[i].IP)
+		}
+		if src[i].Mask.String() != dst[i].Mask.String() {
+			t.Errorf("dst[%d].Mask = %v, want %v", i, dst[i].Mask, src[i].Mask)
+		}
+	}
+}
+
+// Caller-side mutation of the source slice and its elements must not
+// alter the clone. This is the core property exercised end-to-end by
+// the auth / exceptions / router consumers.
+func TestCloneIPNets_CallerMutationIsolated(t *testing.T) {
+	src, err := ParseCIDRs([]string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("ParseCIDRs: %v", err)
+	}
+	dst := CloneIPNets(src)
+
+	// Mutate the source IP and Mask bytes.
+	for i := range src[0].IP {
+		src[0].IP[i] = 0xff
+	}
+	for i := range src[0].Mask {
+		src[0].Mask[i] = 0
+	}
+	// Reassign the slice's pointer to nil. (Caller mutation of the
+	// outer slice contents.)
+	src[0] = nil
+
+	// dst must still be 10.0.0.0/8.
+	if len(dst) != 1 || dst[0] == nil {
+		t.Fatalf("dst was clobbered by source mutation: %v", dst)
+	}
+	if !dst[0].Contains(net.ParseIP("10.0.0.1")) {
+		t.Errorf("clone no longer contains 10.0.0.1; src mutation leaked: dst[0]=%v", dst[0])
+	}
+	if dst[0].Contains(net.ParseIP("203.0.113.5")) {
+		t.Errorf("clone now contains 203.0.113.5; src mutation leaked: dst[0]=%v", dst[0])
+	}
+}
+
+// Appending to the source slice after clone must not show up in the
+// clone (the outer slice header is owned by the consumer too).
+func TestCloneIPNets_AppendToSourceNotVisible(t *testing.T) {
+	src, _ := ParseCIDRs([]string{"10.0.0.0/8"})
+	dst := CloneIPNets(src)
+
+	// Append a brand-new trusted network to the source.
+	extra, _ := ParseCIDRs([]string{"192.168.0.0/16"})
+	src = append(src, extra...)
+
+	if len(dst) != 1 {
+		t.Fatalf("dst length changed after append to src: %d", len(dst))
+	}
+	if dst[0].Contains(net.ParseIP("192.168.1.1")) {
+		t.Errorf("dst silently picked up the appended entry")
+	}
+}
