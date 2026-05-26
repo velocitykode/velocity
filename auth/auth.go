@@ -801,13 +801,17 @@ func (m *Manager) RevokeSession(ctx context.Context, sessionID string) error {
 }
 
 // RevokeAllSessions deletes every server-side session belonging to
-// userID and clears the user's remember-me token on every registered
-// guard that implements RememberTokenClearer. Returns
-// ErrNoServerSessionStore when no store has been configured.
+// userID, clears the user's remember-me token on every registered guard
+// that implements RememberTokenClearer, and revokes outstanding refresh
+// tokens on every registered guard that implements RefreshTokenRevoker.
+// Returns ErrNoServerSessionStore when no store has been configured.
 //
-// Remember-token clearing is best-effort: failures are logged but do not
-// undo the store-side session deletion, since the load-bearing security
-// action (revoking active sessions) has already succeeded.
+// Remember-token clearing and refresh-token revocation are best-effort:
+// failures are logged but do not undo the store-side session deletion,
+// since the load-bearing security action (revoking active sessions) has
+// already succeeded. Aggregate failures across the two walks are joined
+// and returned wrapped with ErrRememberClearPartial so callers can
+// detect partial success without losing the individual error chain.
 func (m *Manager) RevokeAllSessions(ctx context.Context, userID string) error {
 	store := m.ServerSessionStore()
 	if store == nil {
@@ -817,26 +821,45 @@ func (m *Manager) RevokeAllSessions(ctx context.Context, userID string) error {
 		return err
 	}
 
+	type guardCapabilities struct {
+		name     string
+		clearer  RememberTokenClearer
+		revoker  RefreshTokenRevoker
+	}
+
 	m.mu.RLock()
-	names := make([]string, 0, len(m.guards))
-	clearers := make([]RememberTokenClearer, 0, len(m.guards))
+	caps := make([]guardCapabilities, 0, len(m.guards))
 	for name, g := range m.guards {
+		gc := guardCapabilities{name: name}
 		if c, ok := g.(RememberTokenClearer); ok {
-			names = append(names, name)
-			clearers = append(clearers, c)
+			gc.clearer = c
+		}
+		if r, ok := g.(RefreshTokenRevoker); ok {
+			gc.revoker = r
+		}
+		if gc.clearer != nil || gc.revoker != nil {
+			caps = append(caps, gc)
 		}
 	}
 	m.mu.RUnlock()
 
-	var clearerErrs []error
-	for i, c := range clearers {
-		if err := c.ClearRememberTokensForUser(ctx, userID); err != nil {
-			m.logWarn("velocity/auth: clear remember token failed", "guard", names[i], "user_id", userID, "error", err)
-			clearerErrs = append(clearerErrs, fmt.Errorf("guard %q: %w", names[i], err))
+	var partialErrs []error
+	for _, gc := range caps {
+		if gc.clearer != nil {
+			if err := gc.clearer.ClearRememberTokensForUser(ctx, userID); err != nil {
+				m.logWarn("velocity/auth: clear remember token failed", "guard", gc.name, "user_id", userID, "error", err)
+				partialErrs = append(partialErrs, fmt.Errorf("guard %q clear remember: %w", gc.name, err))
+			}
+		}
+		if gc.revoker != nil {
+			if err := gc.revoker.RevokeAllRefreshTokensForUser(ctx, userID); err != nil {
+				m.logWarn("velocity/auth: revoke refresh tokens failed", "guard", gc.name, "user_id", userID, "error", err)
+				partialErrs = append(partialErrs, fmt.Errorf("guard %q revoke refresh: %w", gc.name, err))
+			}
 		}
 	}
-	if len(clearerErrs) > 0 {
-		return fmt.Errorf("%w: %w", ErrRememberClearPartial, errors.Join(clearerErrs...))
+	if len(partialErrs) > 0 {
+		return fmt.Errorf("%w: %w", ErrRememberClearPartial, errors.Join(partialErrs...))
 	}
 	return nil
 }

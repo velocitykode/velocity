@@ -496,6 +496,33 @@ func (g *JWTGuard) maybeEmitRehashEvent(ctx context.Context, hasher auth.Hasher,
 	})
 }
 
+// RevokeAllRefreshTokensForUser implements auth.RefreshTokenRevoker. It
+// bumps the per-user refresh-token generation counter so every
+// outstanding refresh token issued under a lower generation is rejected
+// on its next /auth/refresh call. The same mechanism as JWTGuard.Logout
+// uses for the single-user single-Logout case; the difference is the
+// trigger (administrative "sign out everywhere" vs. user-initiated
+// logout).
+//
+// Without this hook, Manager.RevokeAllSessions deleted server-side
+// session records and cleared session-guard remember-me tokens but left
+// outstanding refresh tokens valid until their natural expiry (default
+// 14 days). A phished refresh token therefore survived the
+// administrative purge and re-minted fresh access tokens for the
+// attacker (audit M-10).
+//
+// userID is the string form to match RememberTokenClearer / DeleteAllForUser.
+func (g *JWTGuard) RevokeAllRefreshTokensForUser(_ context.Context, userID string) error {
+	if userID == "" {
+		return nil
+	}
+	if g.jwtManager == nil {
+		return nil
+	}
+	_, err := g.jwtManager.BumpRefreshGeneration(userID)
+	return err
+}
+
 // Logout revokes the JWT token
 //
 // In addition to blacklisting the access token's JTI, Logout bumps the

@@ -135,6 +135,28 @@ type RememberTokenClearer interface {
 	ClearRememberTokensForUser(ctx context.Context, userID string) error
 }
 
+// RefreshTokenRevoker is the optional interface a Guard implements to
+// invalidate persistent refresh tokens (bearer-token / JWT auth) for a
+// user. Manager.RevokeAllSessions walks every registered guard and
+// invokes RevokeAllRefreshTokensForUser so a "sign out everywhere"
+// admin action also kills outstanding refresh tokens; without this
+// hook, a phished refresh token survives the administrative purge for
+// up to RefreshTTL (default 14 days) and re-mints fresh access tokens
+// for the attacker (audit M-10).
+//
+// Session guards do not need this interface (the cookie revocation list
+// and server-side store deletion already cover their access surface);
+// JWT guards do because their refresh tokens have no equivalent of a
+// per-session record on the server. JWTGuard's implementation bumps
+// the user's refresh-token generation counter (the same H-07 mechanism
+// used on individual Logout).
+//
+// Implementations must be best-effort: a failure here does not undo the
+// store-side session deletion, so callers should log + continue.
+type RefreshTokenRevoker interface {
+	RevokeAllRefreshTokensForUser(ctx context.Context, userID string) error
+}
+
 // ToMeta returns the listing-only projection of a StoredSession.
 func (s *StoredSession) ToMeta() *SessionMeta {
 	return &SessionMeta{
