@@ -13,7 +13,19 @@ import (
 
 func resetBatchStoreForTest(t *testing.T) {
 	t.Helper()
-	batchStore.reset()
+	// Reset the global callback registry so tests don't leak Then/Catch/
+	// Finally closures across cases.
+	globalCallbacks.mu.Lock()
+	globalCallbacks.entries = make(map[BatchID]*callbackEntry)
+	globalCallbacks.mu.Unlock()
+	// Reset the process-wide default repository back to a fresh
+	// in-memory instance. Closing the previous one drains its cleanup
+	// goroutine.
+	prev := DefaultBatchRepository()
+	if prev != nil {
+		_ = prev.Close()
+	}
+	defaultBatchRepo.Store(&batchRepoHolder{BatchRepository: NewInMemoryBatchRepository()})
 }
 
 // testBatchJob is a simple job that implements Batchable
@@ -762,8 +774,13 @@ func TestBatch_JobOnQueuerOverridesBatchQueue(t *testing.T) {
 }
 
 func TestBatchStore_Close(t *testing.T) {
-	s := newBatchStore()
-	s.close()
-	// Second close should not panic (idempotent)
-	s.close()
+	// Idempotent Close on the in-memory batch repository so apps that
+	// retry shutdown do not panic on a double-close of the stop channel.
+	r := NewInMemoryBatchRepository()
+	if err := r.Close(); err != nil {
+		t.Fatalf("unexpected close error: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("unexpected close error on second call: %v", err)
+	}
 }

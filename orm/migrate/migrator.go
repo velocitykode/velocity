@@ -72,6 +72,13 @@ func (m *Migrator) PretendLog() []string {
 	return m.pretendLog
 }
 
+// Driver returns the database driver name ("postgres", "mysql", "sqlite")
+// that this Migrator was constructed with. Migrations can use this to
+// pick driver-specific DDL via a Raw() call.
+func (m *Migrator) Driver() string {
+	return m.driver
+}
+
 // exec runs SQL or collects it in pretend mode.
 func (m *Migrator) exec(sql string) error {
 	if m.pretend {

@@ -919,7 +919,7 @@ func TestDatabaseDriver_PopCtxWithTrace_RemovesRow(t *testing.T) {
 func TestWorker_StaleLeaseDoesNotDoubleRecord(t *testing.T) {
 	saveAndRestoreSigningState(t)
 	SetSigningKey(nil)
-	t.Cleanup(func() { batchStore.reset() })
+	t.Cleanup(func() { resetBatchStoreForTest(t) })
 
 	driver1, cleanup := newSQLiteQueueDB(t)
 	defer cleanup()
@@ -1123,7 +1123,7 @@ func (f *flakyReservationDriver) FailReservedCtx(ctx context.Context, token Rese
 func TestWorker_TransientAckErrorDoesNotDoubleRecord(t *testing.T) {
 	saveAndRestoreSigningState(t)
 	SetSigningKey(nil)
-	t.Cleanup(func() { batchStore.reset() })
+	t.Cleanup(func() { resetBatchStoreForTest(t) })
 
 	driver, cleanup := newSQLiteQueueDB(t)
 	defer cleanup()
@@ -1252,7 +1252,7 @@ func TestWorker_TransientAckErrorDoesNotDoubleRecord(t *testing.T) {
 func TestWorker_TransientFailReservedErrorDoesNotDoubleRecord(t *testing.T) {
 	saveAndRestoreSigningState(t)
 	SetSigningKey(nil)
-	t.Cleanup(func() { batchStore.reset() })
+	t.Cleanup(func() { resetBatchStoreForTest(t) })
 
 	driver, cleanup := newSQLiteQueueDB(t)
 	defer cleanup()

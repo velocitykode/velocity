@@ -682,7 +682,11 @@ func (d *DatabaseDriver) ProcessDelayedJobs(queueName string) error {
 // Shutdown is a no-op for the database driver; the underlying DB connection
 // is owned by the ORM and closed separately.
 func (d *DatabaseDriver) Shutdown(ctx context.Context) error {
-	batchStore.close() // stop package-level batch cleanup goroutine (idempotent)
+	// The batch repository is process-wide (see queue/batch_repository.go).
+	// Closing it here would break sibling drivers in the same process and
+	// double-close panics on graceful-shutdown retries; apps install a
+	// custom repo via SetDefaultBatchRepository and close it from their
+	// own teardown.
 	return nil
 }
 

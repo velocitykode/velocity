@@ -395,17 +395,27 @@ func (w *Worker) processJob() error {
 	// Note: This is a best-effort check. A batch could be cancelled between this
 	// check and job execution (TOCTOU), so cancellation is not guaranteed to prevent
 	// a job from running. This is an acceptable trade-off for simplicity.
+	//
+	// Counter mutation goes through the repository so a worker on a
+	// different process than the dispatcher still updates the shared
+	// pending_jobs counter; see queue/batch_repository.go for the
+	// in-memory and database implementations.
 	if bj, ok := job.(Batchable); ok {
 		if batch, found := FindBatch(bj.GetBatchID()); found && batch.Cancelled() {
 			// Ack first; the batch counter decrement is a side effect
 			// and must only fire on the worker that actually owned the
 			// lease. If the lease was lost, the new owner will run the
 			// same skip-and-ack path and decrement the counter once.
+			// (C-02: side effects only after a confirmed fenced ack.)
 			if owned := w.ackReservation(reservation); !owned {
 				return nil
 			}
-			batch.pendingJobs.Add(-1)
-			batch.checkFinished(jobCtx)
+			// (C-03: batch.recordSkip routes the pendingJobs decrement
+			// through the BatchRepository so a worker in a different
+			// process than the dispatcher mutates the shared SQL row,
+			// not a process-local map. The repository's CAS gates the
+			// terminal-completion side effects.)
+			batch.recordSkip(jobCtx)
 			return nil
 		}
 	}

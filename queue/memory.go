@@ -337,7 +337,11 @@ func (m *MemoryDriver) GetFailed(queueName string) ([]*failedJob, error) {
 // the goroutine exits, ctx.Err() is returned. Idempotent, safe to call
 // multiple times.
 func (m *MemoryDriver) Shutdown(ctx context.Context) error {
-	batchStore.close() // stop package-level batch cleanup goroutine (idempotent)
+	// The batch repository is process-wide (see queue/batch_repository.go)
+	// and outlives a single driver, so we no longer close it here.
+	// Apps that explicitly install a custom default via
+	// SetDefaultBatchRepository are responsible for Close()ing it from
+	// their own shutdown path.
 	m.stopOnce.Do(func() { close(m.stopChan) })
 
 	done := make(chan struct{})
