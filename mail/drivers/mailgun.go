@@ -21,6 +21,17 @@ import (
 	"github.com/velocitykode/velocity/mail"
 )
 
+// mailgunErrorPreview caps how many bytes of an unexpected error response
+// body we read from Mailgun. Without a cap a misbehaving or malicious proxy
+// in front of Mailgun could stream an unbounded body, exhaust memory, and
+// then have those bytes concatenated into a returned error. 4 KiB is
+// enough to keep Mailgun's structured JSON ({"message":"..."}) plus a
+// comfortable margin for nested error text, while staying well under any
+// reasonable memory ceiling. The preview is appended to the returned
+// error verbatim with an explicit truncation marker when the body would
+// have exceeded the cap.
+const mailgunErrorPreview = 4 * 1024
+
 // formatAddress formats an Address for an email header. The display name is
 // passed through net/mail.Address, which applies RFC 2047 / RFC 5322 phrase
 // quoting so that grammar specials in the name cannot split the header. Name
@@ -136,10 +147,22 @@ func (d *MailgunDriver) Send(ctx context.Context, msg *mail.Message) error {
 	}
 	defer resp.Body.Close()
 
-	// Check response
+	// Check response. We read at most mailgunErrorPreview+1 bytes from the
+	// error body so a misbehaving proxy cannot stream gigabytes into our
+	// error-formatting path. When the body would exceed the cap we mark
+	// the preview with an explicit "...(truncated)" suffix so operators
+	// see that the surfaced text is partial.
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("mail: mailgun API error (status %d): %s", resp.StatusCode, string(bodyBytes))
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, mailgunErrorPreview+1))
+		truncated := len(bodyBytes) > mailgunErrorPreview
+		if truncated {
+			bodyBytes = bodyBytes[:mailgunErrorPreview]
+		}
+		preview := string(bodyBytes)
+		if truncated {
+			preview += "...(truncated)"
+		}
+		return fmt.Errorf("mail: mailgun API error (status %d): %s", resp.StatusCode, preview)
 	}
 
 	return nil
