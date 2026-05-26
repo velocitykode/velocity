@@ -153,6 +153,17 @@ func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger log.Logger
 				}
 				continue
 			}
+			// Propagate the operator-configured bcrypt cost so the
+			// dummy-hash timing defense (H-09) runs at the same cost
+			// as the real verify. Without this the missing-user
+			// path runs cost 10 while real verify runs cost 14,
+			// reopening the username-enumeration channel (F2).
+			if authCfg.BcryptCost > 0 {
+				guard.SetHasher(auth.NewBcryptHasher(authCfg.BcryptCost))
+			}
+			if authCfg.AttemptFloor != 0 {
+				guard.SetAttemptFloor(authCfg.AttemptFloor)
+			}
 			manager.RegisterGuard(name, guard)
 
 		case "jwt":
@@ -176,6 +187,12 @@ func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger log.Logger
 					logger.Warn("Failed to create JWT guard", "guard", name, "error", err)
 				}
 				continue
+			}
+			if authCfg.BcryptCost > 0 {
+				guard.SetHasher(auth.NewBcryptHasher(authCfg.BcryptCost))
+			}
+			if authCfg.AttemptFloor != 0 {
+				guard.SetAttemptFloor(authCfg.AttemptFloor)
 			}
 			guard.Start()
 			manager.RegisterGuard(name, guard)

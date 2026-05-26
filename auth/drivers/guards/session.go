@@ -141,6 +141,34 @@ func (g *SessionGuard) SetAttemptFloor(d time.Duration) {
 	g.attemptFloor = d
 }
 
+// SetHasher installs the password hasher used both for ValidateCredentials
+// (via the configured UserProvider, indirectly) and for the dummy-hash
+// timing defense on the missing-user branch of Attempt. Passing nil
+// leaves the previously installed hasher in place.
+//
+// factories.go propagates the operator-configured BcryptCost via this
+// setter so the dummy hash on the missing-user path runs at the same
+// cost as the real verify; without this, a configured cost of 14 would
+// have the dummy at cost 10 (5x faster) and the timing channel from
+// H-09 would reopen.
+func (g *SessionGuard) SetHasher(h auth.Hasher) {
+	if h == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.hasher = h
+}
+
+// effectiveHasher returns the configured hasher under a read lock so a
+// concurrent SetHasher swap is observed atomically. Used by Attempt's
+// dummy-hash sizing path.
+func (g *SessionGuard) effectiveHasher() auth.Hasher {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.hasher
+}
+
 // effectiveAttemptFloor returns the configured floor, falling back to the
 // package-level default when unset.
 func (g *SessionGuard) effectiveAttemptFloor() time.Duration {
@@ -512,6 +540,15 @@ func (g *SessionGuard) Attempt(w http.ResponseWriter, r *http.Request, credentia
 		passwordTypedOK bool
 	)
 
+	// Snapshot the hasher once so the closure sees a consistent value
+	// across a concurrent SetHasher call. Size the dummy hash to the
+	// configured bcrypt cost so the missing-user CPU profile matches
+	// the wrong-password CPU profile: a cost-10 dummy against a
+	// cost-14 real verify would leak ~400ms of timing difference even
+	// with the AttemptFloor in place (F2 fix).
+	hasher := g.effectiveHasher()
+	dummyHash := dummyHashForHasher(hasher)
+
 	auth.Timebox(g.effectiveAttemptFloor(), func() {
 		user, findErr = provider.FindByCredentials(credentials)
 		password, passwordTypedOK = credentials["password"].(string)
@@ -521,9 +558,9 @@ func (g *SessionGuard) Attempt(w http.ResponseWriter, r *http.Request, credentia
 			// a dummy hash so the CPU profile matches the
 			// wrong-password branch. The result is discarded.
 			if passwordTypedOK {
-				_ = g.hasher.Verify(password, string(auth.DummyBcryptHash))
+				_ = hasher.Verify(password, string(dummyHash))
 			} else {
-				_ = g.hasher.Verify("", string(auth.DummyBcryptHash))
+				_ = hasher.Verify("", string(dummyHash))
 			}
 			return
 		}
@@ -531,7 +568,7 @@ func (g *SessionGuard) Attempt(w http.ResponseWriter, r *http.Request, credentia
 			// Credential dict lacked a "password" string. Treat
 			// as invalid; still run the dummy hash so timing
 			// stays uniform across the branch.
-			_ = g.hasher.Verify("", string(auth.DummyBcryptHash))
+			_ = hasher.Verify("", string(dummyHash))
 			invalidCredErr = auth.ErrInvalidCredentials
 			return
 		}

@@ -144,3 +144,14 @@ func (h *BcryptHasher) SetCost(cost int) {
 		logger.Warn("auth: bcrypt cost below secure minimum, clamped", "requested", cost, "minimum", minSecureBcryptCost, "using", effective)
 	}
 }
+
+// Cost returns the effective bcrypt cost used for Hash/Verify. Exposed
+// so the timing-defense path in guard.Attempt can size its dummy hash
+// to match the real-user verify latency: without this, a configured
+// cost of 14 would run the real verify ~5x slower than the dummy hash
+// at cost 10, reopening the H-09 enumeration channel.
+func (h *BcryptHasher) Cost() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.cost
+}

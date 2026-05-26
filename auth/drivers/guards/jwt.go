@@ -98,6 +98,23 @@ func (g *JWTGuard) effectiveHasher() auth.Hasher {
 	return auth.NewBcryptHasher(10)
 }
 
+// SetHasher installs the password hasher used by Attempt's dummy-hash
+// timing defense. Passing nil leaves the previously installed hasher in
+// place (effectiveHasher falls back to bcrypt cost 10 when unset).
+//
+// factories.go propagates the operator-configured BcryptCost via this
+// setter so the dummy hash on the missing-user path runs at the same
+// cost as the real verify; without this, a configured cost of 14 would
+// have the dummy at cost 10 and the H-09 timing channel would reopen.
+func (g *JWTGuard) SetHasher(h auth.Hasher) {
+	if h == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.hasher = h
+}
+
 // SetTrustedProxies installs the parsed proxy-network list used for
 // client-IP resolution in the login throttler. Pass nil to revert to
 // "no proxies trusted" (forwarded headers are ignored, RemoteAddr is
@@ -383,20 +400,22 @@ func (g *JWTGuard) Attempt(w http.ResponseWriter, r *http.Request, credentials m
 	)
 
 	hasher := g.effectiveHasher()
+	// Size the dummy hash to the configured bcrypt cost (F2 fix).
+	dummyHash := dummyHashForHasher(hasher)
 	auth.Timebox(g.effectiveAttemptFloor(), func() {
 		user, findErr = provider.FindByCredentials(credentials)
 		password, passwordTypedOK = credentials["password"].(string)
 
 		if findErr != nil || user == nil {
 			if passwordTypedOK {
-				_ = hasher.Verify(password, string(auth.DummyBcryptHash))
+				_ = hasher.Verify(password, string(dummyHash))
 			} else {
-				_ = hasher.Verify("", string(auth.DummyBcryptHash))
+				_ = hasher.Verify("", string(dummyHash))
 			}
 			return
 		}
 		if !passwordTypedOK {
-			_ = hasher.Verify("", string(auth.DummyBcryptHash))
+			_ = hasher.Verify("", string(dummyHash))
 			invalidCredErr = auth.ErrInvalidCredentials
 			return
 		}

@@ -22,22 +22,57 @@ import (
 // observable duration.
 const DefaultAttemptFloor = 200 * time.Millisecond
 
-// DummyBcryptHash is a bcrypt hash of a fixed string used by the
-// missing-user path of guard.Attempt so the CPU cost of "user does not
-// exist" matches "user exists but password is wrong". Mirrors Laravel's
-// retrieveByCredentials returning null + a dummy bcrypt compare.
-//
-// Generated once at package init via bcrypt.GenerateFromPassword over a
-// fixed seed; the hash is stable across process lifetime so the timing
-// channel never opens. Cost matches DefaultBcryptCost to track typical
-// production cost.
-var DummyBcryptHash = mustBcrypt("velocity/auth/timing-dummy")
+// DummyBcryptHash is the legacy package-default dummy hash, generated at
+// bcrypt.DefaultCost. Kept for backward compatibility with callers that
+// referenced the var directly. New code MUST use GetDummyBcryptHash(cost)
+// instead so the dummy hash CPU cost tracks the operator's configured
+// bcrypt cost. With the operator running cost 14 but the dummy running
+// cost 10, the missing-user path is 5-10x faster than the real verify,
+// reopening the username-enumeration timing channel from H-09.
+var DummyBcryptHash = mustBcrypt(bcrypt.DefaultCost)
 
-func mustBcrypt(seed string) []byte {
-	h, err := bcrypt.GenerateFromPassword([]byte(seed), bcrypt.DefaultCost)
+// dummyHashCache memoises dummy bcrypt hashes per cost so the first call
+// at a given cost pays the bcrypt-N generation cost (~hash time) and
+// every subsequent call returns the cached value in O(1). Without the
+// cache, the timing defense itself would be a CPU-burn-per-attempt
+// liability under load.
+var dummyHashCache sync.Map // map[int][]byte
+
+// GetDummyBcryptHash returns a bcrypt hash generated at the requested
+// cost, suitable for the missing-user branch of guard.Attempt. Hashes
+// are memoised per cost via dummyHashCache; the first call at cost N
+// pays the bcrypt-N generation latency and every subsequent call is
+// O(1) map lookup.
+//
+// cost is clamped to the bcrypt-package valid range [MinCost, MaxCost].
+// A zero / negative cost falls back to bcrypt.DefaultCost so callers
+// without explicit configuration still get a sane hash.
+func GetDummyBcryptHash(cost int) []byte {
+	switch {
+	case cost <= 0:
+		cost = bcrypt.DefaultCost
+	case cost < bcrypt.MinCost:
+		cost = bcrypt.MinCost
+	case cost > bcrypt.MaxCost:
+		cost = bcrypt.MaxCost
+	}
+	if v, ok := dummyHashCache.Load(cost); ok {
+		return v.([]byte)
+	}
+	h := mustBcrypt(cost)
+	actual, _ := dummyHashCache.LoadOrStore(cost, h)
+	return actual.([]byte)
+}
+
+// mustBcrypt generates a bcrypt hash of a fixed seed at the given cost.
+// The seed is a constant so attackers cannot probe it; what we care
+// about is the cost-dependent verify latency, not the hash value.
+func mustBcrypt(cost int) []byte {
+	const seed = "velocity/auth/timing-dummy"
+	h, err := bcrypt.GenerateFromPassword([]byte(seed), cost)
 	if err != nil {
 		// crypto/rand exhaustion at package init is unrecoverable.
-		panic(fmt.Sprintf("velocity/auth: bcrypt dummy hash generation failed: %v", err))
+		panic(fmt.Sprintf("velocity/auth: bcrypt dummy hash generation failed at cost %d: %v", cost, err))
 	}
 	return h
 }

@@ -287,6 +287,15 @@ func ConfigFromEnv() Config {
 		Providers:      make(map[string]auth.ProviderConfig),
 		BcryptCost:     envIntOrDefault("HASH_BCRYPT_COST", 10),
 		TrustedProxies: splitTrustedProxies(os.Getenv("AUTH_TRUSTED_PROXIES")),
+		// AUTH_ATTEMPT_FLOOR is the wall-clock floor for guard Attempt
+		// (H-09); zero falls back to auth.DefaultAttemptFloor (200ms).
+		// Operators with high bcrypt cost (12+) should raise this so
+		// the real-verify path still fits inside the budget; otherwise
+		// the missing-user path padding to 200ms is trivially
+		// distinguishable from the wrong-password path running real
+		// bcrypt for 500ms+. Accepts time.ParseDuration syntax
+		// (e.g. "500ms", "1s"). See F2.
+		AttemptFloor: envDurationOrDefault("AUTH_ATTEMPT_FLOOR", 0),
 	}
 
 	// Configure guards if AUTH_GUARD is set
