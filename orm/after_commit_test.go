@@ -258,3 +258,208 @@ func TestTransaction_NestedTransaction_OuterRollbackDropsListeners(t *testing.T)
 		t.Fatalf("listener fired %d times after outer rollback; want 0", got)
 	}
 }
+
+// TestTransaction_NestedInnerRollback_DropsOnlyInnerWork closes the M-48
+// nested-rollback leak. Without the AfterCommitHandle baseline/truncate
+// shape, an inner Transaction that enqueues a listener and then returns
+// an error would leave that listener on the outer queue: the outer
+// Transaction would later commit and fire a listener from a logically
+// rolled-back savepoint. This pins:
+//
+//   - inner-enqueued listener does NOT fire when inner rolls back, even
+//     if the outer body swallows the error and commits;
+//   - outer-enqueued listener (registered before the inner block) DOES
+//     fire on outer commit;
+//   - outer-enqueued listener registered AFTER the inner rollback ALSO
+//     fires (the truncate only removes inner's contribution).
+func TestTransaction_NestedInnerRollback_DropsOnlyInnerWork(t *testing.T) {
+	m := newTestManager(t)
+	defer m.Shutdown(context.Background())
+
+	d := events.NewDispatcher()
+	outerBefore := &afterCommitTestListener{defer_: true}
+	inner := &afterCommitTestListener{defer_: true}
+	outerAfter := &afterCommitTestListener{defer_: true}
+	d.Listen("outer.before", outerBefore)
+	d.Listen("inner.event", inner)
+	d.Listen("outer.after", outerAfter)
+
+	innerRollback := errors.New("force inner rollback")
+	err := m.Transaction(context.Background(), func(outerCtx context.Context) error {
+		// Outer enqueues A (outer.before) before opening the inner.
+		if err := d.Dispatch(outerCtx, "outer.before"); err != nil {
+			t.Fatalf("outer.before Dispatch: %v", err)
+		}
+
+		// Inner enqueues B (inner.event) and rolls back.
+		innerErr := m.Transaction(outerCtx, func(innerCtx context.Context) error {
+			if err := d.Dispatch(innerCtx, "inner.event"); err != nil {
+				t.Fatalf("inner.event Dispatch: %v", err)
+			}
+			return innerRollback
+		})
+		if !errors.Is(innerErr, innerRollback) {
+			t.Fatalf("inner Transaction err = %v; want innerRollback", innerErr)
+		}
+
+		// Outer SWALLOWS the inner error and continues; enqueues C.
+		if err := d.Dispatch(outerCtx, "outer.after"); err != nil {
+			t.Fatalf("outer.after Dispatch: %v", err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("outer Transaction returned %v", err)
+	}
+
+	// outer.before fired (outer-enqueued, before inner block).
+	if got := outerBefore.invocations.Load(); got != 1 {
+		t.Errorf("outer.before fired %d times; want 1", got)
+	}
+	// inner.event did NOT fire (inner-enqueued, inner rolled back).
+	if got := inner.invocations.Load(); got != 0 {
+		t.Errorf("inner.event fired %d times after inner rollback; want 0", got)
+	}
+	// outer.after fired (outer-enqueued, after inner block).
+	if got := outerAfter.invocations.Load(); got != 1 {
+		t.Errorf("outer.after fired %d times; want 1", got)
+	}
+}
+
+// TestTransaction_NestedInnerPanic_DropsOnlyInnerWork mirrors the
+// rollback case for panics: an inner Transaction that enqueues a
+// listener and then panics must NOT leave that listener on the outer
+// queue when the outer body recovers and commits.
+func TestTransaction_NestedInnerPanic_DropsOnlyInnerWork(t *testing.T) {
+	m := newTestManager(t)
+	defer m.Shutdown(context.Background())
+
+	d := events.NewDispatcher()
+	outerL := &afterCommitTestListener{defer_: true}
+	innerL := &afterCommitTestListener{defer_: true}
+	d.Listen("outer.event", outerL)
+	d.Listen("inner.event", innerL)
+
+	err := m.Transaction(context.Background(), func(outerCtx context.Context) error {
+		if err := d.Dispatch(outerCtx, "outer.event"); err != nil {
+			t.Fatalf("outer.event Dispatch: %v", err)
+		}
+
+		// Recover the inner panic at the outer body level so the outer
+		// can still commit.
+		func() {
+			defer func() {
+				_ = recover() // swallow inner panic
+			}()
+			_ = m.Transaction(outerCtx, func(innerCtx context.Context) error {
+				if err := d.Dispatch(innerCtx, "inner.event"); err != nil {
+					t.Fatalf("inner.event Dispatch: %v", err)
+				}
+				panic("force unwind in inner")
+			})
+		}()
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("outer Transaction returned %v", err)
+	}
+
+	if got := outerL.invocations.Load(); got != 1 {
+		t.Errorf("outer.event fired %d times; want 1", got)
+	}
+	if got := innerL.invocations.Load(); got != 0 {
+		t.Errorf("inner.event fired %d times after inner panic; want 0", got)
+	}
+}
+
+// TestTransaction_NestedInnerCommit_AllListenersFire pins the "happy
+// nested" path: inner commits cleanly (returns nil), outer commits
+// cleanly. Both outer-enqueued and inner-enqueued listeners fire.
+// Inner commit is a no-op at the handle level; the outer commit owns
+// the drain.
+func TestTransaction_NestedInnerCommit_AllListenersFire(t *testing.T) {
+	m := newTestManager(t)
+	defer m.Shutdown(context.Background())
+
+	d := events.NewDispatcher()
+	outerL := &afterCommitTestListener{defer_: true}
+	innerL := &afterCommitTestListener{defer_: true}
+	d.Listen("outer.event", outerL)
+	d.Listen("inner.event", innerL)
+
+	err := m.Transaction(context.Background(), func(outerCtx context.Context) error {
+		if err := d.Dispatch(outerCtx, "outer.event"); err != nil {
+			t.Fatalf("outer.event Dispatch: %v", err)
+		}
+		return m.Transaction(outerCtx, func(innerCtx context.Context) error {
+			return d.Dispatch(innerCtx, "inner.event")
+		})
+	})
+	if err != nil {
+		t.Fatalf("outer Transaction returned %v", err)
+	}
+
+	if got := outerL.invocations.Load(); got != 1 {
+		t.Errorf("outer.event fired %d times; want 1", got)
+	}
+	if got := innerL.invocations.Load(); got != 1 {
+		t.Errorf("inner.event fired %d times; want 1", got)
+	}
+}
+
+// TestTransaction_TripleNested_InnerRollback_MidAndOuterCommit pins the
+// three-level case: outer -> mid -> inner. Inner rolls back; mid
+// continues and commits; outer commits. Mid- and outer-enqueued
+// listeners fire; inner-enqueued listener does not. This verifies the
+// baseline mechanism cascades correctly: the mid handle's baseline is
+// the outer's enqueue count, the inner handle's baseline is the mid's
+// post-mid-enqueue count, and inner truncate touches only inner.
+func TestTransaction_TripleNested_InnerRollback_MidAndOuterCommit(t *testing.T) {
+	m := newTestManager(t)
+	defer m.Shutdown(context.Background())
+
+	d := events.NewDispatcher()
+	outerL := &afterCommitTestListener{defer_: true}
+	midL := &afterCommitTestListener{defer_: true}
+	innerL := &afterCommitTestListener{defer_: true}
+	d.Listen("outer.event", outerL)
+	d.Listen("mid.event", midL)
+	d.Listen("inner.event", innerL)
+
+	innerRollback := errors.New("force inner rollback")
+	err := m.Transaction(context.Background(), func(outerCtx context.Context) error {
+		if err := d.Dispatch(outerCtx, "outer.event"); err != nil {
+			return err
+		}
+		return m.Transaction(outerCtx, func(midCtx context.Context) error {
+			if err := d.Dispatch(midCtx, "mid.event"); err != nil {
+				return err
+			}
+			innerErr := m.Transaction(midCtx, func(innerCtx context.Context) error {
+				if err := d.Dispatch(innerCtx, "inner.event"); err != nil {
+					return err
+				}
+				return innerRollback
+			})
+			if !errors.Is(innerErr, innerRollback) {
+				t.Fatalf("inner Transaction err = %v; want innerRollback", innerErr)
+			}
+			// Mid swallows inner error and commits.
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatalf("outer Transaction returned %v", err)
+	}
+
+	if got := outerL.invocations.Load(); got != 1 {
+		t.Errorf("outer.event fired %d times; want 1", got)
+	}
+	if got := midL.invocations.Load(); got != 1 {
+		t.Errorf("mid.event fired %d times; want 1", got)
+	}
+	if got := innerL.invocations.Load(); got != 0 {
+		t.Errorf("inner.event fired %d times after inner rollback; want 0", got)
+	}
+}

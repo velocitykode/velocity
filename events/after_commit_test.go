@@ -361,17 +361,18 @@ func TestPrepareAfterCommit_Idempotent(t *testing.T) {
 
 // TestInstallAfterCommitQueue_OwnerSemantics pins the owner contract used
 // by orm.Manager.Transaction: the FIRST call installs the queue and
-// returns owner=true; subsequent calls on the same ctx see the existing
-// queue and return owner=false so nested transactions do not flush
-// listeners belonging to the outermost commit.
+// returns a handle with Owner()==true; subsequent calls on the same ctx
+// see the existing queue and return a handle with Owner()==false so
+// nested transactions do not flush listeners belonging to the outermost
+// commit.
 func TestInstallAfterCommitQueue_OwnerSemantics(t *testing.T) {
-	outerCtx, outerOwner := InstallAfterCommitQueue(context.Background())
-	if !outerOwner {
-		t.Fatal("first InstallAfterCommitQueue returned owner=false")
+	outerCtx, outerHandle := InstallAfterCommitQueue(context.Background())
+	if !outerHandle.Owner() {
+		t.Fatal("first InstallAfterCommitQueue returned Owner()=false")
 	}
-	_, innerOwner := InstallAfterCommitQueue(outerCtx)
-	if innerOwner {
-		t.Fatal("nested InstallAfterCommitQueue returned owner=true; outer must retain ownership")
+	_, innerHandle := InstallAfterCommitQueue(outerCtx)
+	if innerHandle.Owner() {
+		t.Fatal("nested InstallAfterCommitQueue returned Owner()=true; outer must retain ownership")
 	}
 }
 
@@ -432,6 +433,84 @@ func (l funcListener) Handle(ctx context.Context, event interface{}) error {
 
 func (l funcListener) ShouldQueue() bool               { return l.shouldQueue }
 func (l funcListener) ShouldDispatchAfterCommit() bool { return l.shouldDefer }
+
+// TestInstallAfterCommitQueue_NestedHandleTruncatesBaseline pins the M-48
+// nested-rollback contract: a nested install captures the queue's current
+// task count as a baseline; TruncateToBaseline rolls only inner-enqueued
+// tasks back, leaving outer-enqueued tasks intact. Without this the
+// outer commit fires inner work that was logically rolled back.
+func TestInstallAfterCommitQueue_NestedHandleTruncatesBaseline(t *testing.T) {
+	outerCtx, outerHandle := InstallAfterCommitQueue(context.Background())
+	if !outerHandle.Owner() {
+		t.Fatal("outer handle Owner()=false")
+	}
+
+	// Outer enqueues task A.
+	if !EnqueueAfterCommit(outerCtx, func(context.Context) error { return nil }) {
+		t.Fatal("outer EnqueueAfterCommit returned false")
+	}
+
+	// Nested install: baseline should be 1 (the outer A).
+	innerCtx, innerHandle := InstallAfterCommitQueue(outerCtx)
+	if innerHandle.Owner() {
+		t.Fatal("inner handle Owner()=true; expected false on nested install")
+	}
+
+	// Inner enqueues task B.
+	if !EnqueueAfterCommit(innerCtx, func(context.Context) error { return nil }) {
+		t.Fatal("inner EnqueueAfterCommit returned false")
+	}
+
+	if got := PendingAfterCommit(outerCtx); got != 2 {
+		t.Fatalf("PendingAfterCommit before truncate = %d; want 2", got)
+	}
+
+	// Inner rollback: truncate to baseline (1). Outer's A survives.
+	innerHandle.TruncateToBaseline()
+
+	if got := PendingAfterCommit(outerCtx); got != 1 {
+		t.Fatalf("PendingAfterCommit after truncate = %d; want 1 (outer A survives)", got)
+	}
+}
+
+// TestInstallAfterCommitQueue_OwnerHandleTruncateIsDrop asserts the
+// owner-level convenience: TruncateToBaseline on a fresh owner handle
+// (baseline=0) clears the entire queue, behaving like DropAfterCommit
+// minus the finished-state transition. The owner caller should still
+// prefer DropAfterCommit for clarity but the method is safe.
+func TestInstallAfterCommitQueue_OwnerHandleTruncateIsDrop(t *testing.T) {
+	ctx, handle := InstallAfterCommitQueue(context.Background())
+	if !handle.Owner() {
+		t.Fatal("owner handle Owner()=false")
+	}
+
+	for i := 0; i < 3; i++ {
+		if !EnqueueAfterCommit(ctx, func(context.Context) error { return nil }) {
+			t.Fatalf("EnqueueAfterCommit %d returned false", i)
+		}
+	}
+	if got := PendingAfterCommit(ctx); got != 3 {
+		t.Fatalf("PendingAfterCommit = %d; want 3", got)
+	}
+
+	handle.TruncateToBaseline()
+
+	if got := PendingAfterCommit(ctx); got != 0 {
+		t.Fatalf("PendingAfterCommit after owner truncate = %d; want 0", got)
+	}
+}
+
+// TestInstallAfterCommitQueue_ZeroHandleSafeNoop asserts the zero-value
+// AfterCommitHandle is safe to call: a caller that drops the handle on
+// the floor (or uses a zero-value default) cannot panic the process.
+func TestInstallAfterCommitQueue_ZeroHandleSafeNoop(t *testing.T) {
+	var h AfterCommitHandle
+	if h.Owner() {
+		t.Fatal("zero handle Owner()=true")
+	}
+	// Must not panic.
+	h.TruncateToBaseline()
+}
 
 // recordingQueue captures Push invocations so a test can assert a
 // listener went through the queue branch instead of running inline.

@@ -382,23 +382,32 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 	// inside fn that targets a ShouldDispatchAfterCommit listener defers
 	// the listener until commit. The outermost Transaction owns the
 	// drain; nested Transaction calls inherit the queue via context
-	// propagation and InstallAfterCommitQueue returns acOwner == false
-	// so nested commit/rollback do not prematurely flush listeners
-	// waiting for the outermost boundary. When neither the caller nor
-	// the outer Transaction prepared a queue, the outermost call installs
-	// one transparently so the gate works without user opt-in.
-	var acOwner bool
-	txCtx, acOwner = events.InstallAfterCommitQueue(txCtx)
+	// propagation and InstallAfterCommitQueue returns a non-owner handle
+	// pinned to the parent queue's current task count. Inner rollback /
+	// panic truncates the queue back to that baseline so only
+	// inner-enqueued tasks are dropped; outer-enqueued tasks remain.
+	// Inner commit is a no-op so forwarding stays owned by the outermost
+	// scope. When neither the caller nor the outer Transaction prepared a
+	// queue, the outermost call installs one transparently so the gate
+	// works without user opt-in.
+	var acHandle events.AfterCommitHandle
+	txCtx, acHandle = events.InstallAfterCommitQueue(txCtx)
 	drainAfterCommit := func() error {
-		if acOwner {
+		if acHandle.Owner() {
 			return events.FireAfterCommit(txCtx)
 		}
 		return nil
 	}
+	// dropAfterCommit handles the four rollback paths (fn error, panic,
+	// commit failure, ambiguous commit). On the outer (owner) it nukes
+	// the entire queue; on a nested handle it truncates back to the
+	// baseline captured at install time so outer-enqueued tasks survive.
 	dropAfterCommit := func() {
-		if acOwner {
+		if acHandle.Owner() {
 			events.DropAfterCommit(txCtx)
+			return
 		}
+		acHandle.TruncateToBaseline()
 	}
 
 	dispatchTxExecuted := func(errMsg string) {
