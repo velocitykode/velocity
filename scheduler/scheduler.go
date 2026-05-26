@@ -649,9 +649,17 @@ func (s *Scheduler) runDueJobs() {
 			ttl := job.effectiveOverlapTTL(overlapTTL)
 			lk, err := locker.Acquire(runCtx, key, ttl)
 			if err != nil {
-				// Same level-split as above. Leave any OnOneServer
-				// lock held (its key is minute-scoped + TTL-bounded).
-				_ = oneServerLock
+				// Pre-dispatch failure: the job has NOT started on
+				// this host, so the minute's OnOneServer slot must
+				// be returned to the cluster. Holding it would let a
+				// host with a stale overlap lock suppress every
+				// other host for the rest of the minute. Releasing
+				// here is symmetric with the post-dispatch path
+				// where the OnOneServer lock is intentionally left
+				// to expire by TTL.
+				if oneServerLock != nil {
+					_ = releaseLockSafely(oneServerLock)
+				}
 				s.runWg.Done()
 				logAcquireFailure(s.log(), "WithoutOverlapping", jobName, key, err)
 				continue
