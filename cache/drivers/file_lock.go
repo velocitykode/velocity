@@ -107,13 +107,6 @@ func (s *fileLockStore) forceRelease(key string) {
 	delete(s.holders, key)
 }
 
-// holder reports the current in-process owner of key (or "" if unheld).
-func (s *fileLockStore) holder(key string) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.holders[key]
-}
-
 func (s *fileLockStore) pathFor(key string) string {
 	sum := sha256.Sum256([]byte(key))
 	return filepath.Join(s.lockDir, hex.EncodeToString(sum[:])+".lock")
