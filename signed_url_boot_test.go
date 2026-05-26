@@ -54,6 +54,10 @@ func baseSignedURLBootConfig() Config {
 // APP_KEY/CRYPTO_KEY gating: production (anything other than testing /
 // development) must have APP_KEY set, full stop.
 func TestNew_ProductionRefusesBootWithoutAppKey(t *testing.T) {
+	// Opt out of the queue-signing prod gate so the signed-URL guard
+	// (the subject of this test) is the one that fires, not the
+	// upstream queue check.
+	t.Setenv("QUEUE_ACCEPT_UNSIGNED", "true")
 	cfg := baseSignedURLBootConfig()
 	cfg.Env = "production"
 	cfg.Key = "" // M-16 trigger: no APP_KEY
@@ -77,6 +81,7 @@ func TestNew_ProductionRefusesBootWithoutAppKey(t *testing.T) {
 // silently downgraded signed routes to unsigned routes would be a
 // classic "tests pass in CI, prod cuts auth" trap.
 func TestNew_StagingRefusesBootWithoutAppKey(t *testing.T) {
+	t.Setenv("QUEUE_ACCEPT_UNSIGNED", "true")
 	cfg := baseSignedURLBootConfig()
 	cfg.Env = "staging"
 	cfg.Key = ""
