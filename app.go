@@ -373,7 +373,7 @@ func New(opts ...Option) (*App, error) {
 	}
 
 	// 10. Initialize queue, pass DB for database driver
-	queueDriver, err := initQueue(a.config.Queue, sqlDB, a.config.DB.Connection, a.config.Queue.SigningKey, a.config.Key, a.Log)
+	queueDriver, err := initQueue(a.config.Queue, sqlDB, a.config.DB.Connection, a.config.Queue.SigningKey, a.config.Key, a.config.Env, a.Log)
 	if err != nil {
 		return nil, fmt.Errorf("velocity: failed to initialize queue: %w", err)
 	}

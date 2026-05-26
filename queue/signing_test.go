@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"errors"
 	"testing"
 )
 
@@ -290,6 +291,84 @@ func TestSignVerify_RoundTrip(t *testing.T) {
 				t.Fatalf("round-trip verification failed: %v", err)
 			}
 		})
+	}
+}
+
+func TestConfigureSigning_FailClosedWithoutKeyInProduction(t *testing.T) {
+	saveAndRestoreSigningState(t)
+
+	// Production-like call (no opts): empty keys must refuse to boot so
+	// an attacker who can write to the queue store cannot smuggle
+	// unverified payloads into the worker pipeline.
+	err := ConfigureSigning("", "")
+	if !errors.Is(err, ErrSigningKeyRequired) {
+		t.Fatalf("expected ErrSigningKeyRequired with empty keys in production, got %v", err)
+	}
+	if IsSigningEnabled() {
+		t.Fatal("signing must remain disabled after a refused boot")
+	}
+}
+
+func TestConfigureSigningWith_AllowUnsignedInDev(t *testing.T) {
+	saveAndRestoreSigningState(t)
+
+	if err := ConfigureSigningWith("", "", SigningOptions{AllowUnsignedInDev: true}); err != nil {
+		t.Fatalf("dev/test profile must tolerate empty signing keys, got %v", err)
+	}
+	if IsSigningEnabled() {
+		t.Fatal("signing must remain disabled when no key is configured")
+	}
+}
+
+func TestConfigureSigningWith_AcceptUnsignedOptIn(t *testing.T) {
+	saveAndRestoreSigningState(t)
+
+	if err := ConfigureSigningWith("", "", SigningOptions{AcceptUnsigned: true}); err != nil {
+		t.Fatalf("QUEUE_ACCEPT_UNSIGNED opt-in must allow boot, got %v", err)
+	}
+	if IsSigningEnabled() {
+		t.Fatal("signing must remain disabled when operator opts into unsigned")
+	}
+}
+
+func TestConfigureSigningWith_KeyEnablesSigning(t *testing.T) {
+	saveAndRestoreSigningState(t)
+
+	// A real signing key with no opts (production defaults) must enable
+	// signing without returning an error.
+	if err := ConfigureSigningWith("queue-signing-key", "", SigningOptions{}); err != nil {
+		t.Fatalf("expected nil error with a real signing key, got %v", err)
+	}
+	if !IsSigningEnabled() {
+		t.Fatal("signing must be enabled when QUEUE_SIGNING_KEY is set")
+	}
+}
+
+func TestConfigureSigningWith_AppKeyFallbackEnablesSigning(t *testing.T) {
+	saveAndRestoreSigningState(t)
+
+	// APP_KEY fallback path: empty QUEUE_SIGNING_KEY but a real APP_KEY
+	// should derive a queue-scoped key via HKDF and enable signing.
+	if err := ConfigureSigningWith("", "app-key-material", SigningOptions{}); err != nil {
+		t.Fatalf("expected APP_KEY fallback to succeed, got %v", err)
+	}
+	if !IsSigningEnabled() {
+		t.Fatal("signing must be enabled after APP_KEY fallback")
+	}
+}
+
+func TestConfigureSigningWith_AcceptUnsignedDoesNotShadowRealKey(t *testing.T) {
+	saveAndRestoreSigningState(t)
+
+	// AcceptUnsigned is the empty-key escape hatch; when an actual key
+	// is supplied the normal sign-enabled path must still run so a
+	// production fleet that accidentally leaves the flag set still gets
+	// HMAC verification.
+	if err := ConfigureSigningWith("queue-signing-key", "", SigningOptions{AcceptUnsigned: true}); err != nil {
+		t.Fatalf("expected nil error when a real key is supplied alongside AcceptUnsigned, got %v", err)
+	}
+	if !IsSigningEnabled() {
+		t.Fatal("signing must be enabled when a key is supplied regardless of AcceptUnsigned")
 	}
 }
 

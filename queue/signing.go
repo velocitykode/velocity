@@ -28,16 +28,45 @@ func SetSigningLogger(l Logger) {
 	signingLogger = l
 }
 
-// ConfigureSigning configures payload signing from the provided keys.
-// signingKey is the dedicated QUEUE_SIGNING_KEY; appKey is the fallback APP_KEY.
-// If signingKey is empty, appKey is used with HKDF derivation.
-// Must be called from velocity.New() after config is loaded.
-//
-// Signing is enabled whenever signingKey or appKey is non-empty. Returns an
-// error when HKDF derivation from APP_KEY fails so the boot sequence can
-// fail visibly instead of silently running without integrity protection.
-// Returns nil (and leaves signing disabled) when neither key is set.
+// SigningOptions tunes how ConfigureSigningWith reacts when no signing
+// key is available. Callers that only need the default (refuse to boot
+// without a key outside dev/test) should use ConfigureSigning.
+type SigningOptions struct {
+	// AcceptUnsigned, when true, lets the queue boot with payload signing
+	// disabled even when AllowUnsignedInDev is false. This is the loud
+	// opt-in for operators migrating an existing fleet onto a signing key
+	// or running a local dev queue without one. Set via the
+	// QUEUE_ACCEPT_UNSIGNED=true env var; the warning log path stays so
+	// the operator's intent is visible in startup logs.
+	AcceptUnsigned bool
+
+	// AllowUnsignedInDev, when true, treats an empty signing key as
+	// non-fatal because the process is running under a development or
+	// test profile. Production callers must leave this false so a missing
+	// key is fatal; the framework passes true only when APP_ENV is local,
+	// development, or test/testing.
+	AllowUnsignedInDev bool
+}
+
+// ConfigureSigning configures payload signing from the provided keys with
+// the fail-closed defaults: an empty key in a production environment
+// returns ErrSigningKeyRequired so the boot path stops. Callers that need
+// to override this (operator opt-in or dev/test profile) should use
+// ConfigureSigningWith.
 func ConfigureSigning(rawSigningKey, appKey string) error {
+	return ConfigureSigningWith(rawSigningKey, appKey, SigningOptions{})
+}
+
+// ConfigureSigningWith is the option-aware form of ConfigureSigning. It
+// derives the key from rawSigningKey (preferred) or appKey via HKDF, and
+// when both are empty consults opts to decide whether the boot should
+// fail. Returns ErrSigningKeyRequired when no key is configured AND
+// neither AcceptUnsigned nor AllowUnsignedInDev is set; this is the
+// fail-closed default that protects against an attacker who can write to
+// the queue store enqueueing arbitrary jobs into an unverifying worker.
+//
+// Must be called from velocity.New() after config is loaded.
+func ConfigureSigningWith(rawSigningKey, appKey string, opts SigningOptions) error {
 	key := rawSigningKey
 	useAppKey := false
 	if key == "" {
@@ -49,12 +78,35 @@ func ConfigureSigning(rawSigningKey, appKey string) error {
 	defer signingMu.Unlock()
 
 	if key == "" {
-		if signingLogger != nil {
-			signingLogger.Warn("velocity/queue: no signing key found (QUEUE_SIGNING_KEY or APP_KEY), payload signing disabled")
+		switch {
+		case opts.AcceptUnsigned:
+			// Operator-acknowledged opt-in: warn once and proceed
+			// without signing. The warning is the only signal that the
+			// fleet is running unsigned, so it stays even when a
+			// logger is wired.
+			if signingLogger != nil {
+				signingLogger.Warn("velocity/queue: QUEUE_ACCEPT_UNSIGNED=true; payload signing disabled. Set QUEUE_SIGNING_KEY or APP_KEY to enable HMAC verification.")
+			}
+			signingKey = nil
+			signingEnabled = false
+			return nil
+		case opts.AllowUnsignedInDev:
+			// Dev/test profile: unsigned payloads are tolerated so
+			// unit tests and local-dev runs do not require a key.
+			if signingLogger != nil {
+				signingLogger.Warn("velocity/queue: no signing key found (QUEUE_SIGNING_KEY or APP_KEY); payload signing disabled in dev/test environment")
+			}
+			signingKey = nil
+			signingEnabled = false
+			return nil
+		default:
+			// Fail-closed: refuse to boot. An empty signing key in
+			// production means any payload an attacker can place into
+			// the queue store will be executed by a worker.
+			signingKey = nil
+			signingEnabled = false
+			return ErrSigningKeyRequired
 		}
-		signingKey = nil
-		signingEnabled = false
-		return nil
 	}
 
 	if useAppKey {

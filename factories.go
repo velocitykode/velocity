@@ -3,6 +3,8 @@ package velocity
 import (
 	"database/sql"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/guards"
@@ -233,7 +235,7 @@ func initDB(config DBConfig) (*orm.Manager, error) {
 // DB for the database driver prevents the requested driver from starting,
 // so boot fails loudly rather than silently downgrading to the in-memory
 // driver.
-func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey string, appKey string, logger log.Logger) (queue.Driver, error) {
+func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey string, appKey string, appEnv string, logger log.Logger) (queue.Driver, error) {
 	// Route queue-signing diagnostics through the framework logger before
 	// configuring so missing/APP_KEY fallbacks are surfaced consistently.
 	queue.SetSigningLogger(logger)
@@ -242,7 +244,17 @@ func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey strin
 	// to run in queue's package init(), which fired before godotenv.Load
 	// had populated APP_KEY/QUEUE_SIGNING_KEY, so signing was always
 	// reported as disabled even when the key was present.
-	if err := queue.ConfigureSigning(signingKey, appKey); err != nil {
+	//
+	// Fail-closed: when neither QUEUE_SIGNING_KEY nor APP_KEY is set and
+	// the process is not running under a dev/test profile,
+	// ConfigureSigningWith returns ErrSigningKeyRequired so boot stops.
+	// Operators who explicitly want to run unsigned (migration window,
+	// local dev queue) opt in via QUEUE_ACCEPT_UNSIGNED=true; the warning
+	// log path stays so the choice is visible in startup logs.
+	if err := queue.ConfigureSigningWith(signingKey, appKey, queue.SigningOptions{
+		AcceptUnsigned:     queueAcceptUnsigned(),
+		AllowUnsignedInDev: isDevOrTestEnvProfile(appEnv),
+	}); err != nil {
 		return nil, err
 	}
 
@@ -332,4 +344,36 @@ func initNotification(mailer mail.Mailer, db *sql.DB, dbDriver string) *notifica
 	}
 
 	return mgr
+}
+
+// isDevOrTestEnvProfile reports whether appEnv names a development or
+// test profile. Used by initQueue to relax the fail-closed signing-key
+// requirement so unit tests and local dev runs do not need a signing
+// key configured; production environments (Config.Env unset or anything
+// else) must supply one or opt in via QUEUE_ACCEPT_UNSIGNED.
+//
+// We take appEnv as a parameter (not via os.Getenv) so test fixtures
+// that build a Config in-memory with Env="testing" get the relaxation
+// without having to also export APP_ENV into the process environment.
+//
+// The values mirror auth's APP_KEY guard and maintenance's bypass-cookie
+// gate so operators do not learn a third spelling for "this is a
+// non-prod profile".
+func isDevOrTestEnvProfile(appEnv string) bool {
+	switch strings.ToLower(strings.TrimSpace(appEnv)) {
+	case "local", "development", "dev", "test", "testing":
+		return true
+	}
+	return false
+}
+
+// queueAcceptUnsigned reports whether the operator has explicitly opted
+// into running the queue without payload signing. Recognises the common
+// truthy spellings so a typo does not silently disable the guard.
+func queueAcceptUnsigned() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("QUEUE_ACCEPT_UNSIGNED"))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }

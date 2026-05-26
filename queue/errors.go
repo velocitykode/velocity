@@ -7,6 +7,14 @@ var (
 	ErrJobNotFound       = errors.New("velocity/queue: job not found")
 	ErrBatchNotFound     = errors.New("velocity/queue: batch not found")
 	ErrSigningKeyMissing = errors.New("velocity/queue: signing key not configured")
+	// ErrSigningKeyRequired is returned by ConfigureSigning when no signing
+	// key is available in a production-like environment and the operator
+	// has not explicitly opted into unsigned payloads via
+	// QUEUE_ACCEPT_UNSIGNED=true. Fail-closed: an empty key combined with
+	// an attacker who can write to the queue store (compromised Redis, DB
+	// injection on the jobs table) lets arbitrary jobs into the worker
+	// pipeline, so the boot path must refuse rather than silently warn.
+	ErrSigningKeyRequired = errors.New("velocity/queue: signing key required (set QUEUE_SIGNING_KEY or APP_KEY, or set QUEUE_ACCEPT_UNSIGNED=true to acknowledge the risk)")
 	// ErrPoisonJob is returned by a driver's Pop path when a row is
 	// unrecoverably broken AND the driver has already quarantined it
 	// (moved it to failed_jobs and removed it from the live queue). The
