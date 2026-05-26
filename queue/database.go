@@ -293,18 +293,45 @@ func (d *DatabaseDriver) PopCtxWithTrace(ctx context.Context, queueName string) 
 		}
 	}
 
-	// Restore the job from the wrapper before committing so a restoration
-	// failure also avoids deleting the row. The deserialised wrapper has
+	// Restore the job from the wrapper. The deserialised wrapper has
 	// Job == nil (the field is `json:"-"`), so hydration always goes through
 	// the registry via GetJobFromWrapper -> HydrateJob. Failure to hydrate
-	// (unregistered type, factory decode error) surfaces here, the deferred
-	// Rollback releases the row, and the job remains in the queue for the
-	// next worker / inspection. This is the C-01 fix: the previous code path
-	// silently substituted &GenericJob{} (Handle() = nil) so cross-process
-	// pops succeeded vacuously and dropped every job.
+	// (unregistered type, factory decode error) means the row is a permanent
+	// "poison": no worker in this process can ever turn it into a runnable
+	// Job. Returning a plain error and rolling back would leave the row in
+	// place; the worker's next SELECT (ordered by scheduled_at, id) would
+	// reselect it and starve every other due job, indefinitely.
+	//
+	// To avoid that head-of-line starvation we quarantine the row to
+	// failed_jobs (with the hydration error preserved) BEFORE returning to
+	// the worker, and return [ErrPoisonJob] so the worker treats it as a
+	// transient pop error and tries again. The next pop now skips the
+	// (now-deleted) poison row and picks the next eligible job.
+	//
+	// This is the C-01 fix: the previous code path silently substituted
+	// &GenericJob{} (Handle() = nil) so cross-process pops succeeded
+	// vacuously and dropped every job.
 	job, err := GetJobFromWrapper(&wrapper)
 	if err != nil {
-		return nil, tc, fmt.Errorf("velocity/queue: failed to restore job from wrapper: %w", err)
+		hydrationErr := fmt.Errorf("velocity/queue: failed to restore job from wrapper: %w", err)
+		// Quarantine inside the same tx (the row is locked under
+		// FOR UPDATE SKIP LOCKED / BEGIN IMMEDIATE, so no other worker can
+		// race us). The Exec calls use a fresh background-derived context
+		// so a caller-side timeout that fires AFTER hydration cannot abort
+		// the quarantine half-way and leave the poison row in place.
+		if qErr := d.quarantinePoisonLocked(tx, jobRecord.ID, jobRecord.Payload, queueName, hydrationErr); qErr != nil {
+			// Quarantine itself failed (e.g. DB error inserting into
+			// failed_jobs). Surface the original hydration error joined
+			// with the quarantine error so the operator sees both, and
+			// let the deferred Rollback leave the row in place. The
+			// poison row will be retried; that is preferable to silently
+			// dropping it.
+			return nil, tc, errors.Join(hydrationErr, qErr)
+		}
+		if commitErr := tx.Commit(); commitErr != nil {
+			return nil, tc, errors.Join(hydrationErr, fmt.Errorf("velocity/queue: failed to commit poison-job quarantine: %w", commitErr))
+		}
+		return nil, tc, errors.Join(ErrPoisonJob, hydrationErr)
 	}
 
 	// Signature verified — safe to delete.
@@ -408,6 +435,55 @@ func (d *DatabaseDriver) ProcessDelayedJobs(queueName string) error {
 // is owned by the ORM and closed separately.
 func (d *DatabaseDriver) Shutdown(ctx context.Context) error {
 	batchStore.close() // stop package-level batch cleanup goroutine (idempotent)
+	return nil
+}
+
+// quarantinePoisonTimeout bounds how long the poison-quarantine statements
+// (DELETE from jobs + INSERT into failed_jobs) may run before being aborted.
+// The bound exists so a slow DB cannot hang the worker pop loop indefinitely;
+// if quarantine times out the row stays in jobs and will be reselected, but
+// at least the worker is not held inside Pop forever.
+const quarantinePoisonTimeout = 10 * time.Second
+
+// quarantinePoisonLocked moves a row that failed hydration from `jobs` into
+// `failed_jobs` inside the supplied transaction. The caller (PopCtxWithTrace)
+// already holds the row lock for `jobID` under FOR UPDATE SKIP LOCKED (PG /
+// MySQL) or BEGIN IMMEDIATE (SQLite), so no competing worker can race us for
+// the same row before the tx commits.
+//
+// The DELETE + INSERT statements run with a fresh background-derived context
+// (bounded by [quarantinePoisonTimeout]) rather than the caller's ctx. This
+// is deliberate: PopCtxWithTrace is reachable from worker pop loops whose ctx
+// may carry a short per-tick deadline. If hydration fails right at the edge
+// of that deadline we want quarantine to still complete; leaving the poison
+// row in place would head-of-line-starve every other due job (the next pop
+// SELECT would reselect it). The fresh ctx is not used for `BeginTx` (the
+// caller already owns the tx) but it is the right scope for the statements
+// themselves.
+//
+// On success, the caller commits the transaction. On error, the caller is
+// expected to roll back; the row remains in `jobs` and will be retried.
+//
+// Schema note: failed_jobs has columns (id, queue, payload, exception,
+// created_at, updated_at). We persist the raw on-wire payload so an operator
+// can inspect what came off the queue, and the hydration error string as the
+// exception so the failure mode is self-documenting.
+func (d *DatabaseDriver) quarantinePoisonLocked(tx *sql.Tx, jobID uint, rawPayload, queueName string, hydrationErr error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), quarantinePoisonTimeout)
+	defer cancel()
+
+	deleteQuery := d.rewriteQuery("DELETE FROM jobs WHERE id = $1")
+	if _, err := tx.ExecContext(ctx, deleteQuery, jobID); err != nil {
+		return fmt.Errorf("velocity/queue: failed to delete poison row %d: %w", jobID, err)
+	}
+
+	now := time.Now()
+	insertQuery := d.rewriteQuery(
+		"INSERT INTO failed_jobs (queue, payload, exception, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
+	)
+	if _, err := tx.ExecContext(ctx, insertQuery, queueName, rawPayload, hydrationErr.Error(), now, now); err != nil {
+		return fmt.Errorf("velocity/queue: failed to record poison row %d in failed_jobs: %w", jobID, err)
+	}
 	return nil
 }
 

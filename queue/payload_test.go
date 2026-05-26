@@ -3,8 +3,10 @@ package queue
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // crossProcessJob is a plain-data job whose Handle has an observable side
@@ -149,6 +151,12 @@ func TestC01_DatabaseDriver_CrossProcessHydration(t *testing.T) {
 // post-fix failure mode: a payload whose Type is not in the registry no
 // longer silently degrades to a no-op GenericJob. It surfaces an error so
 // the worker can route the row to failed_jobs / JobFailed observers.
+//
+// It also asserts the C-01 follow-up guarantee: the offending row is
+// QUARANTINED (deleted from jobs, inserted into failed_jobs) before the
+// error is returned, so the worker's next pop does not reselect the same
+// poison row. The error is [ErrPoisonJob] so the worker can treat it as a
+// recoverable pop error.
 func TestC01_DatabaseDriver_UnregisteredJobReturnsError(t *testing.T) {
 	saveAndRestoreSigningState(t)
 	SetSigningKey(nil)
@@ -183,7 +191,130 @@ func TestC01_DatabaseDriver_UnregisteredJobReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("pop returned no error; the pre-fix code silently produced a GenericJob stub (job=%T)", job)
 	}
+	if !errors.Is(err, ErrPoisonJob) {
+		t.Errorf("pop error did not wrap ErrPoisonJob: %v", err)
+	}
 	if job != nil {
 		t.Errorf("pop returned non-nil job alongside hydration error: %T", job)
+	}
+
+	// The row must have left `jobs` and landed in `failed_jobs`.
+	var liveCount int
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE queue = ?", "no-registry-queue").Scan(&liveCount); err != nil {
+		t.Fatalf("count jobs: %v", err)
+	}
+	if liveCount != 0 {
+		t.Errorf("poison row left in jobs: count=%d (head-of-line starvation would resume)", liveCount)
+	}
+	var failedCount int
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM failed_jobs WHERE queue = ?", "no-registry-queue").Scan(&failedCount); err != nil {
+		t.Fatalf("count failed_jobs: %v", err)
+	}
+	if failedCount != 1 {
+		t.Errorf("poison row not recorded in failed_jobs: count=%d", failedCount)
+	}
+	// Sanity-check that the recorded exception carries the hydration error.
+	var exception string
+	if err := driver.db.QueryRow("SELECT exception FROM failed_jobs WHERE queue = ?", "no-registry-queue").Scan(&exception); err != nil {
+		t.Fatalf("scan exception: %v", err)
+	}
+	if exception == "" {
+		t.Error("failed_jobs exception column is empty; operator cannot tell why this row was quarantined")
+	}
+}
+
+// TestC01_DatabaseDriver_PoisonRowDoesNotStarveFollowups is the C-01
+// follow-up regression test for the head-of-line starvation bug found by
+// review on commit 1862c82. Setup: push a poison row (job type that will
+// fail hydration on this worker) followed by a healthy row. Before the
+// quarantine fix the first Pop returned an error and left the poison row
+// in place; the second Pop reselected the same row and got the same error
+// indefinitely. After the fix the first Pop quarantines the poison row to
+// failed_jobs, and the second Pop returns the healthy row.
+func TestC01_DatabaseDriver_PoisonRowDoesNotStarveFollowups(t *testing.T) {
+	saveAndRestoreSigningState(t)
+	SetSigningKey(nil)
+	crossProcessRan.Store(0)
+
+	// Register crossProcessJob so the healthy row hydrates cleanly.
+	t.Cleanup(func() {
+		registry.mu.Lock()
+		delete(registry.handlers, "crossProcessJob")
+		registry.mu.Unlock()
+	})
+	RegisterJob(func(data []byte) (*crossProcessJob, error) {
+		j := &crossProcessJob{}
+		if len(data) == 0 {
+			return j, nil
+		}
+		if err := json.Unmarshal(data, j); err != nil {
+			return nil, err
+		}
+		return j, nil
+	})
+
+	driver, cleanup := newSQLiteQueueDB(t)
+	defer cleanup()
+
+	// Manufacture a poison row: write a JSON payload that points at a job
+	// type the registry does not know. This simulates a deploy where the
+	// producer pushed type X but the consumer process never registered X.
+	poisonPayload := `{"payload":{"type":"VanishedJob","data":{"who":"cares"},"queue":"starvation-test","attempts":0,"created_at":"2026-05-26T00:00:00Z"}}`
+	now := time.Now()
+	if _, err := driver.db.Exec(
+		`INSERT INTO jobs (queue, payload, attempts, scheduled_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		"starvation-test", poisonPayload, 0, now.Add(-2*time.Second), now, now,
+	); err != nil {
+		t.Fatalf("insert poison: %v", err)
+	}
+	// Healthy follow-up row, scheduled later than the poison so the
+	// scheduled_at-ordered SELECT returns the poison first.
+	if err := driver.PushCtx(context.Background(), &crossProcessJob{ID: "healthy", Value: 1}, "starvation-test"); err != nil {
+		t.Fatalf("push healthy: %v", err)
+	}
+
+	// First pop: must return the poison error AND quarantine the row.
+	job1, err1 := driver.PopCtx(context.Background(), "starvation-test")
+	if err1 == nil {
+		t.Fatalf("first pop succeeded on poison row: job=%T", job1)
+	}
+	if !errors.Is(err1, ErrPoisonJob) {
+		t.Errorf("first pop error not ErrPoisonJob: %v", err1)
+	}
+	if job1 != nil {
+		t.Errorf("first pop returned non-nil job alongside poison error: %T", job1)
+	}
+
+	// Second pop: must return the healthy row, NOT the poison again.
+	// Without the quarantine fix this returns the same poison error
+	// forever (head-of-line starvation).
+	job2, err2 := driver.PopCtx(context.Background(), "starvation-test")
+	if err2 != nil {
+		t.Fatalf("second pop errored instead of returning healthy row (starvation regression): %v", err2)
+	}
+	if job2 == nil {
+		t.Fatal("second pop returned nil; healthy row was not delivered")
+	}
+	healthy, ok := job2.(*crossProcessJob)
+	if !ok {
+		t.Fatalf("second pop returned %T, want *crossProcessJob (the poison row leaked back?)", job2)
+	}
+	if healthy.ID != "healthy" {
+		t.Errorf("hydrated ID = %q, want %q", healthy.ID, "healthy")
+	}
+
+	// Verify state: jobs is empty, failed_jobs holds the poison row.
+	var jobsCount, failedCount int
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE queue = ?", "starvation-test").Scan(&jobsCount); err != nil {
+		t.Fatalf("count jobs: %v", err)
+	}
+	if jobsCount != 0 {
+		t.Errorf("jobs not drained: count=%d", jobsCount)
+	}
+	if err := driver.db.QueryRow("SELECT COUNT(*) FROM failed_jobs WHERE queue = ?", "starvation-test").Scan(&failedCount); err != nil {
+		t.Fatalf("count failed_jobs: %v", err)
+	}
+	if failedCount != 1 {
+		t.Errorf("failed_jobs poison count = %d, want 1", failedCount)
 	}
 }
