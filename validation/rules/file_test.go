@@ -349,6 +349,124 @@ func TestMimesRule_BusinessFormatsAccepted(t *testing.T) {
 	}
 }
 
+// TestMimesRule_ContentExecutableRefused verifies F5: a native
+// executable payload (PE/ELF/Mach-O/Java .class) is refused even when
+// the upload uses a benign extension that the allowlist accepts via
+// the application/octet-stream fallback. Before F5, a PE renamed
+// report.doc passed mimes:doc since the OLE doc entry accepts
+// application/octet-stream and the executable blocklist only looked
+// at the filename suffix. Audit ID F5.
+func TestMimesRule_ContentExecutableRefused(t *testing.T) {
+	// PE/COFF: MZ at offset 0.
+	pe := []byte{0x4D, 0x5A, 0x90, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00}
+	// ELF: \x7fELF at offset 0.
+	elf := []byte{0x7F, 0x45, 0x4C, 0x46, 0x02, 0x01, 0x01, 0x00, 0, 0, 0, 0}
+	// Mach-O 64-bit LE.
+	machoLE := []byte{0xCF, 0xFA, 0xED, 0xFE, 0x07, 0x00, 0x00, 0x01, 0, 0, 0, 0}
+	// Mach-O 64-bit BE.
+	machoBE := []byte{0xFE, 0xED, 0xFA, 0xCF, 0x00, 0x00, 0x00, 0x07, 0, 0, 0, 0}
+	// Mach-O 32-bit LE.
+	macho32LE := []byte{0xCE, 0xFA, 0xED, 0xFE, 0x07, 0x00, 0x00, 0x00, 0, 0, 0, 0}
+	// Mach-O fat / Java .class shared magic.
+	classMagic := []byte{0xCA, 0xFE, 0xBA, 0xBE, 0x00, 0x00, 0x00, 0x34, 0, 0, 0, 0}
+
+	cases := []struct {
+		name   string
+		file   fakeFile
+		params []string
+	}{
+		{"PE renamed report.doc", fakeFile{name: "report.doc", content: pe}, []string{"doc"}},
+		{"ELF renamed clip.mp4", fakeFile{name: "clip.mp4", content: elf}, []string{"mp4"}},
+		{"Mach-O 64 LE renamed archive.7z", fakeFile{name: "archive.7z", content: machoLE}, []string{"7z"}},
+		{"Mach-O 64 BE renamed archive.tar", fakeFile{name: "archive.tar", content: machoBE}, []string{"tar"}},
+		{"Mach-O 32 LE renamed bundle.rar", fakeFile{name: "bundle.rar", content: macho32LE}, []string{"rar"}},
+		{"Java class renamed image.tif", fakeFile{name: "image.tif", content: classMagic}, []string{"tif"}},
+		{"PE under any mimes call", fakeFile{name: "thing.pdf", content: pe}, []string{"pdf"}},
+		{"ELF under mimes:wasm fallback", fakeFile{name: "mod.wasm", content: elf}, []string{"wasm"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := MimesRule("upload", tc.file, tc.params, nil)
+			if err == nil {
+				t.Fatalf("expected %s to be refused as executable content, got nil", tc.name)
+			}
+		})
+	}
+}
+
+// TestMimesRule_LegitimateBinaryFormatsStillAccepted asserts F5's
+// executable check does not over-reject benign binary formats whose
+// magic bytes happen to share leading bytes with executables. Real
+// OLE compound documents, real tar archives, real wasm modules, and
+// real RAR archives must continue to pass after F5. Audit ID F5.
+func TestMimesRule_LegitimateBinaryFormatsStillAccepted(t *testing.T) {
+	// OLE compound (real doc/xls/ppt) magic.
+	ole := []byte{0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0, 0, 0, 0}
+	// tar v7 with ustar magic at offset 257.
+	tarBytes := make([]byte, 512)
+	copy(tarBytes[257:], []byte("ustar  \x00"))
+	// WebAssembly magic.
+	wasm := []byte{0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, 0, 0, 0, 0}
+	// RAR v5 magic.
+	rar := []byte{0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01, 0x00, 0, 0, 0, 0}
+	// 7z magic.
+	sevenZ := []byte{0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0, 0, 0, 0}
+
+	cases := []struct {
+		name   string
+		file   fakeFile
+		params []string
+	}{
+		{"real OLE .doc", fakeFile{name: "memo.doc", content: ole}, []string{"doc"}},
+		{"real tar", fakeFile{name: "bundle.tar", content: tarBytes}, []string{"tar"}},
+		{"real wasm", fakeFile{name: "mod.wasm", content: wasm}, []string{"wasm"}},
+		{"real RAR", fakeFile{name: "archive.rar", content: rar}, []string{"rar"}},
+		{"real 7z", fakeFile{name: "archive.7z", content: sevenZ}, []string{"7z"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := MimesRule("upload", tc.file, tc.params, nil)
+			if err != nil {
+				t.Fatalf("expected %s to pass after F5, got %v", tc.name, err)
+			}
+		})
+	}
+}
+
+// TestIsExecutableContent unit-tests the magic-byte detector
+// independently of MimesRule. Audit ID F5.
+func TestIsExecutableContent(t *testing.T) {
+	cases := []struct {
+		name string
+		head []byte
+		want bool
+	}{
+		{"PE", []byte{0x4D, 0x5A, 0x90, 0x00}, true},
+		{"ELF", []byte{0x7F, 0x45, 0x4C, 0x46}, true},
+		{"Mach-O 32 BE", []byte{0xFE, 0xED, 0xFA, 0xCE}, true},
+		{"Mach-O 32 LE", []byte{0xCE, 0xFA, 0xED, 0xFE}, true},
+		{"Mach-O 64 BE", []byte{0xFE, 0xED, 0xFA, 0xCF}, true},
+		{"Mach-O 64 LE", []byte{0xCF, 0xFA, 0xED, 0xFE}, true},
+		{"fat Mach-O / class", []byte{0xCA, 0xFE, 0xBA, 0xBE}, true},
+		{"ZIP", []byte{0x50, 0x4B, 0x03, 0x04}, false},
+		{"JPEG", []byte{0xFF, 0xD8, 0xFF, 0xE0}, false},
+		{"PNG", []byte{0x89, 0x50, 0x4E, 0x47}, false},
+		{"OLE", []byte{0xD0, 0xCF, 0x11, 0xE0}, false},
+		{"WASM", []byte{0x00, 0x61, 0x73, 0x6D}, false},
+		{"too short", []byte{0x4D, 0x5A}, true}, // MZ alone still PE
+		{"empty", []byte{}, false},
+		{"one byte", []byte{0x4D}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isExecutableContent(tc.head)
+			if got != tc.want {
+				t.Fatalf("want %v, got %v", tc.want, got)
+			}
+		})
+	}
+}
+
 // TestMimesRule_ExecutablesStillRefused asserts F3 did not relax the
 // executable blocklist. .exe and friends must still be refused even if
 // the caller explicitly includes them in the allowlist. Audit ID F3.

@@ -218,25 +218,78 @@ func fileLike(v interface{}) (name string, size int64, opener openable, ok bool)
 	return "", 0, nil, false
 }
 
-// sniffContentType reads the first 512 bytes via opener.Open and returns
-// the http.DetectContentType result. Each Open returns an independent
-// reader, so reading here does not consume bytes from later consumers
-// who reopen the file.
-func sniffContentType(o openable) (string, error) {
+// sniffHead reads the first 512 bytes via opener.Open and returns the
+// raw bytes. Used by sniffContentType (for http.DetectContentType) and
+// by isExecutableContent (for magic-byte refusal of PE/ELF/Mach-O
+// payloads regardless of the claimed extension). Each Open returns an
+// independent reader so re-sniffing later does not consume bytes from
+// downstream consumers.
+func sniffHead(o openable) ([]byte, error) {
 	if o == nil {
-		return "", errors.New("file content is not readable for sniffing")
+		return nil, errors.New("file content is not readable for sniffing")
 	}
 	f, err := o.Open()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer f.Close()
 	buf := make([]byte, 512)
 	n, err := io.ReadFull(f, buf)
 	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return nil, err
+	}
+	return buf[:n], nil
+}
+
+// sniffContentType returns the http.DetectContentType result for the
+// first 512 bytes of the upload.
+func sniffContentType(o openable) (string, error) {
+	buf, err := sniffHead(o)
+	if err != nil {
 		return "", err
 	}
-	return http.DetectContentType(buf[:n]), nil
+	return http.DetectContentType(buf), nil
+}
+
+// isExecutableContent reports whether head begins with magic bytes that
+// identify a native executable or compiled bytecode payload. These
+// formats execute on a target system when launched and have no
+// legitimate place in a "mimes:" content gate, regardless of what
+// extension or sniffed MIME the rest of the rule would otherwise
+// accept (e.g. the application/octet-stream fallback for opaque
+// archive / OLE / older MP4 formats).
+//
+// Covered:
+//   - PE/COFF (Windows .exe/.dll): "MZ" at offset 0.
+//   - ELF (Linux/BSD/Solaris executables, .so): "\x7fELF" at offset 0.
+//   - Mach-O 32-bit BE/LE: 0xFEEDFACE / 0xCEFAEDFE.
+//   - Mach-O 64-bit BE/LE: 0xFEEDFACF / 0xCFFAEDFE.
+//   - Mach-O fat / Java .class: 0xCAFEBABE. Java .class shares this
+//     magic; we refuse both.
+func isExecutableContent(head []byte) bool {
+	// PE/COFF. "MZ" is sufficient on its own.
+	if len(head) >= 2 && head[0] == 0x4D && head[1] == 0x5A {
+		return true
+	}
+	if len(head) < 4 {
+		return false
+	}
+	// ELF.
+	if head[0] == 0x7F && head[1] == 0x45 && head[2] == 0x4C && head[3] == 0x46 {
+		return true
+	}
+	// Mach-O 32-bit BE, 32-bit LE, 64-bit BE, 64-bit LE.
+	if head[0] == 0xFE && head[1] == 0xED && head[2] == 0xFA && (head[3] == 0xCE || head[3] == 0xCF) {
+		return true
+	}
+	if (head[0] == 0xCE || head[0] == 0xCF) && head[1] == 0xFA && head[2] == 0xED && head[3] == 0xFE {
+		return true
+	}
+	// Mach-O fat / Java .class.
+	if head[0] == 0xCA && head[1] == 0xFE && head[2] == 0xBA && head[3] == 0xBE {
+		return true
+	}
+	return false
 }
 
 // mimeMatches reports whether sniffed starts with any of the allowed
@@ -275,6 +328,13 @@ func FileRule(field string, value interface{}, params []string, data map[string]
 //
 // Script-runner extensions (.php, .phtml, .phar, .cgi, .pl, .py, .rb,
 // .sh, ...) are refused outright regardless of the parameter list.
+//
+// Content-level executable refusal: uploads beginning with PE/COFF,
+// ELF, Mach-O, or Java .class magic bytes are refused regardless of
+// the claimed extension or sniffed MIME. This blocks renamed binary
+// payloads (e.g. report.doc carrying a PE executable) that would
+// otherwise slip past the application/octet-stream fallback used for
+// opaque container formats.
 //
 // SVG handling: when the uploaded file itself is SVG (by extension),
 // the caller must also pass the literal token "allow_svg" (e.g.
@@ -345,10 +405,19 @@ func MimesRule(field string, value interface{}, params []string, data map[string
 	if opener == nil {
 		return fmt.Errorf("The %s field could not be verified.", field)
 	}
-	sniffed, err := sniffContentType(opener)
+	head, err := sniffHead(opener)
 	if err != nil {
 		return fmt.Errorf("The %s field could not be verified.", field)
 	}
+	// Content-level executable refusal: PE/ELF/Mach-O/Java-class
+	// payloads are rejected regardless of the claimed extension or the
+	// sniffed MIME. This closes the application/octet-stream fallback
+	// hole where a renamed .exe would otherwise pass mimes:doc (sniff
+	// returns octet-stream, allowlist accepts octet-stream for doc).
+	if isExecutableContent(head) {
+		return fmt.Errorf("The %s field has a disallowed file type.", field)
+	}
+	sniffed := http.DetectContentType(head)
 	allowed, known := extMimeAllowlist[ext]
 	if !known {
 		// Extension is in the caller's allowlist but we have no MIME
