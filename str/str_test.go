@@ -2165,3 +2165,57 @@ func TestMatch_ExistingBehavior(t *testing.T) {
 		t.Error("Is(foo*, foo123) = false; want true")
 	}
 }
+
+// noPanic runs fn and reports whether it panicked. Used by the malformed
+// pattern tests below to confirm the non-Safe API no longer panics.
+func noPanic(t *testing.T, fn func()) {
+	t.Helper()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("panic: %v", r)
+		}
+	}()
+	fn()
+}
+
+func TestMatch_MalformedPatternReturnsFalse(t *testing.T) {
+	var got bool
+	noPanic(t, func() {
+		got = Match("(unclosed", "abc")
+	})
+	if got {
+		t.Errorf("Match with malformed pattern = true; want false")
+	}
+}
+
+func TestMatchAll_MalformedPatternReturnsNil(t *testing.T) {
+	var got [][]string
+	noPanic(t, func() {
+		got = MatchAll("[", "abc")
+	})
+	if got != nil {
+		t.Errorf("MatchAll with malformed pattern = %v; want nil", got)
+	}
+}
+
+func TestTest_MalformedPatternReturnsFalse(t *testing.T) {
+	var got bool
+	noPanic(t, func() {
+		got = Test("(unclosed", "abc")
+	})
+	if got {
+		t.Errorf("Test with malformed pattern = true; want false")
+	}
+}
+
+func TestIs_MalformedPatternReturnsFalse(t *testing.T) {
+	// A bare "(" becomes "^(.$" after glob-to-regex conversion, which is
+	// malformed regex. Before this fix it panicked.
+	var got bool
+	noPanic(t, func() {
+		got = Is("(", "x")
+	})
+	if got {
+		t.Errorf("Is with malformed pattern = true; want false")
+	}
+}

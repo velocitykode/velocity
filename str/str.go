@@ -196,19 +196,12 @@ func Headline(value string) string {
 	return Title(string(result))
 }
 
-// Is checks if the string matches the given pattern.
+// Is checks if the string matches the given glob pattern. Returns false if
+// the pattern would compile to a malformed regex (no panic). Use IsSafe to
+// surface the compilation error.
 func Is(pattern, value string) bool {
-	if pattern == value {
-		return true
-	}
-
-	// Convert glob pattern to regex
-	pattern = strings.ReplaceAll(pattern, ".", "\\.")
-	pattern = strings.ReplaceAll(pattern, "*", ".*")
-	pattern = strings.ReplaceAll(pattern, "?", ".")
-	pattern = "^" + pattern + "$"
-
-	return mustMatch(pattern, value)
+	ok, _ := IsSafe(pattern, value)
+	return ok
 }
 
 // IsAscii checks if the string is 7-bit ASCII.
@@ -325,26 +318,25 @@ func Mask(str string, character rune, index int, length ...int) string {
 	return string(runes)
 }
 
-// Match performs a pattern match on the string.
-//
-// Deprecated: panics if pattern is malformed. Use MatchSafe with any
-// user-controlled pattern.
+// Match performs a pattern match on the string. Returns false if the
+// pattern is malformed (no panic). Use MatchSafe to surface the
+// compilation error.
 func Match(pattern, value string) bool {
-	return mustMatch(pattern, value)
+	ok, _ := MatchSafe(pattern, value)
+	return ok
 }
 
-// MatchAll performs a global pattern match on the string.
-//
-// Deprecated: panics if pattern is malformed. Use MatchAllSafe with any
-// user-controlled pattern.
+// MatchAll performs a global pattern match on the string. Returns nil if
+// the pattern is malformed (no panic). Use MatchAllSafe to surface the
+// compilation error.
 func MatchAll(pattern, subject string) [][]string {
-	return mustFindAll(pattern, subject)
+	out, _ := MatchAllSafe(pattern, subject)
+	return out
 }
 
-// Test checks if the string matches the given pattern.
-//
-// Deprecated: panics if pattern is malformed. Use TestSafe with any
-// user-controlled pattern.
+// Test checks if the string matches the given pattern. Returns false if
+// the pattern is malformed (no panic). Use TestSafe to surface the
+// compilation error.
 func Test(pattern, value string) bool {
 	return Match(pattern, value)
 }
