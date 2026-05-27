@@ -162,6 +162,23 @@ func (c *CSRF) dispatchEvent(ctx context.Context, evt interface{}) {
 // Middleware returns HTTP middleware that validates CSRF tokens
 func (c *CSRF) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Attach the request-scoped token cache BEFORE any downstream
+		// reader can observe the request. Both the safe-method
+		// bootstrap path (which mints the XSRF-TOKEN cookie via
+		// c.GetToken) and the unsafe-method validation path benefit:
+		// any handler that calls csrf.TokenForRequest(r) downstream
+		// gets a memoised token instead of re-paying Store.Get. See
+		// request_token.go for the cache contract.
+		//
+		// We MUST replace the request pointer so the handler chain
+		// inherits the augmented context. WithTokenState is cheap
+		// (one allocation per request) and idempotent: nested
+		// middleware stacks that re-enter Middleware will shadow the
+		// outer state with their own, which is the desired behaviour
+		// when a consumer wires a custom CSRF instance under a
+		// sub-path mounted under the framework default.
+		r = r.WithContext(withTokenState(r.Context(), c))
+
 		// Skip safe methods (GET, HEAD, OPTIONS, TRACE).
 		// Safe methods are also the bootstrap point for the XSRF-TOKEN
 		// cookie: SPA clients (axios, fetch) expect a non-HttpOnly
@@ -213,7 +230,13 @@ func (c *CSRF) maybeWriteXSRFCookie(w http.ResponseWriter, r *http.Request) {
 		// boundary.
 		return
 	}
-	c.writeXSRFCookieForSession(w, sessionID, r.TLS != nil)
+	// Route through the request-scoped token cache so the bond shared-
+	// props function and any downstream TokenForRequest reader observe
+	// the exact same token value that we URL-encode into the cookie.
+	// Without this, the cookie and the page-prop could diverge if the
+	// store mints the token twice (transient inconsistency, or a slow
+	// race between Get and Set). See request_token.go.
+	c.writeXSRFCookieForSession(w, r, sessionID, r.TLS != nil)
 }
 
 // WriteXSRFCookie writes the XSRF-TOKEN cookie for sessionID to w. It
@@ -237,14 +260,26 @@ func (c *CSRF) WriteXSRFCookie(w http.ResponseWriter, sessionID string) {
 	if c == nil || c.config == nil || w == nil || sessionID == "" {
 		return
 	}
-	c.writeXSRFCookieForSession(w, sessionID, true)
+	// Post-rotation write: no request in hand, so we cannot route
+	// through the request-scoped cache. This call site does not
+	// observe the drift surface the cache exists to close (it runs
+	// once after RotateToken, not paired with a sharePropsFunc read),
+	// so a direct GetToken is fine.
+	c.writeXSRFCookieForSession(w, nil, sessionID, true)
 }
 
 // writeXSRFCookieForSession is the shared body used by both
 // maybeWriteXSRFCookie (safe-method bootstrap, knows request scheme) and
 // WriteXSRFCookie (post-rotation, secure assumed). Both opt-out guards
 // (WriteXSRFCookie=false, SingleUse=true) are applied here.
-func (c *CSRF) writeXSRFCookieForSession(w http.ResponseWriter, sessionID string, secure bool) {
+//
+// When r is non-nil and the request carries a TokenForRequest cache
+// (attached by the CSRF middleware), the token lookup goes through the
+// cache so the cookie value and any downstream TokenForRequest reader
+// (sharePropsFunc, template helper) agree byte-for-byte. When r is nil
+// (post-rotation WriteXSRFCookie call site), fall back to direct
+// Store.Get via GetToken.
+func (c *CSRF) writeXSRFCookieForSession(w http.ResponseWriter, r *http.Request, sessionID string, secure bool) {
 	if !c.config.WriteXSRFCookie {
 		return
 	}
@@ -257,7 +292,19 @@ func (c *CSRF) writeXSRFCookieForSession(w http.ResponseWriter, sessionID string
 	if c.config.Store == nil {
 		return
 	}
-	token, err := c.GetToken(sessionID)
+	var (
+		token string
+		err   error
+	)
+	if r != nil {
+		// Route through the request-scoped cache. The session id
+		// argument is implied (TokenForRequest resolves it from the
+		// same SessionIDResolver), so the (sessionID, cached token)
+		// pair stays internally consistent.
+		token, err = TokenForRequest(r)
+	} else {
+		token, err = c.GetToken(sessionID)
+	}
 	if err != nil || token == "" {
 		return
 	}
