@@ -90,7 +90,7 @@ func (l *RedisLock) Run(ctx context.Context, callback func()) error {
 		return ErrLockNotAcquired
 	}
 	// Release always runs, even on panic. We deliberately re-use the caller's
-	// ctx — if they cancelled it, releasing through a dead ctx is acceptable
+	// ctx - if they cancelled it, releasing through a dead ctx is acceptable
 	// because the lock will eventually expire on its TTL.
 	defer l.Release(ctx)
 
