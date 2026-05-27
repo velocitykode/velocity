@@ -313,6 +313,15 @@ func (s *FileStore) Add(key string, value interface{}, ttl time.Duration) (bool,
 	// the existing lock infrastructure, then re-check after lock to
 	// avoid the lost-update window.
 	if existing, rerr := os.ReadFile(path); rerr == nil {
+		// A zero-byte file means another instance just won the O_EXCL
+		// create above and has not flushed its payload yet. The kernel
+		// has already elected that creator the SETNX winner; we must
+		// refuse insertion here. Falling through would race the
+		// takeover path against a live creator and let both callers
+		// return true (cache/drivers#TestFileStore_Add_CrossInstanceMutualExclusion).
+		if len(existing) == 0 {
+			return false, nil
+		}
 		var ex fileCacheItem
 		if json.Unmarshal(existing, &ex) == nil {
 			if ex.Expiration == nil || time.Now().Before(*ex.Expiration) {
@@ -355,6 +364,12 @@ func (s *FileStore) Add(key string, value interface{}, ttl time.Duration) (bool,
 	// Re-check after acquiring the lock: another worker may have
 	// already inserted a fresh entry.
 	if existing, rerr := os.ReadFile(path); rerr == nil {
+		// Empty file => another O_EXCL creator owns the slot; defer
+		// to them just like the pre-lock check does. Without this the
+		// takeover write below would clobber a live creator's payload.
+		if len(existing) == 0 {
+			return false, nil
+		}
 		var ex fileCacheItem
 		if json.Unmarshal(existing, &ex) == nil {
 			if ex.Expiration == nil || time.Now().Before(*ex.Expiration) {
