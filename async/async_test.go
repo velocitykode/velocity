@@ -134,14 +134,17 @@ func TestRunWithContext(t *testing.T) {
 func TestAll(t *testing.T) {
 	t.Run("parallel execution", func(t *testing.T) {
 		start := time.Now()
-		// orchestration: each closure's sleep is test input — the fake "work"
+		// orchestration: each closure's sleep is test input, the fake "work"
 		// All must run concurrently. Elapsed time is the assertion.
-		results := All(
+		results, err := All(
 			func() int { time.Sleep(100 * time.Millisecond); return 1 },
 			func() int { time.Sleep(100 * time.Millisecond); return 2 },
 			func() int { time.Sleep(100 * time.Millisecond); return 3 },
 		)
 		elapsed := time.Since(start)
+		if err != nil {
+			t.Fatalf("unexpected error from All: %v", err)
+		}
 
 		// Should complete in ~100ms, not 300ms
 		if elapsed > 150*time.Millisecond {
@@ -160,11 +163,14 @@ func TestAll(t *testing.T) {
 	t.Run("preserves order", func(t *testing.T) {
 		// orchestration: staggered sleeps are test input so closures finish
 		// out of submission order; assertion checks output preserves index order.
-		results := All(
+		results, err := All(
 			func() string { time.Sleep(100 * time.Millisecond); return "first" },
 			func() string { time.Sleep(50 * time.Millisecond); return "second" },
 			func() string { time.Sleep(10 * time.Millisecond); return "third" },
 		)
+		if err != nil {
+			t.Fatalf("unexpected error from All: %v", err)
+		}
 
 		// Despite different delays, order should be preserved
 		if results[0] != "first" || results[1] != "second" || results[2] != "third" {
@@ -367,9 +373,12 @@ func TestForEach(t *testing.T) {
 func TestMap(t *testing.T) {
 	t.Run("transforms items", func(t *testing.T) {
 		items := []int{1, 2, 3, 4, 5}
-		results := Map(items, func(i int) int {
+		results, err := Map(items, func(i int) int {
 			return i * i
 		})
+		if err != nil {
+			t.Fatalf("unexpected error from Map: %v", err)
+		}
 
 		expected := []int{1, 4, 9, 16, 25}
 		for i, v := range results {
@@ -383,12 +392,15 @@ func TestMap(t *testing.T) {
 		items := []int{1, 2, 3}
 		start := time.Now()
 
-		Map(items, func(i int) int {
-			// orchestration: sleep is test input — fake per-item work; total
+		_, err := Map(items, func(i int) int {
+			// orchestration: sleep is test input, fake per-item work; total
 			// elapsed is the assertion that Map runs closures in parallel.
 			time.Sleep(100 * time.Millisecond)
 			return i
 		})
+		if err != nil {
+			t.Fatalf("unexpected error from Map: %v", err)
+		}
 
 		elapsed := time.Since(start)
 		if elapsed > 150*time.Millisecond {

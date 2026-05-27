@@ -33,7 +33,7 @@ func BenchmarkAll(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		All(fns...)
+		_, _ = All(fns...)
 	}
 }
 
@@ -92,7 +92,7 @@ func BenchmarkMap(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		Map(items, func(item int) int {
+		_, _ = Map(items, func(item int) int {
 			return item * 2
 		})
 	}
@@ -127,6 +127,6 @@ func BenchmarkAllMemory(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		All(fns...)
+		_, _ = All(fns...)
 	}
 }

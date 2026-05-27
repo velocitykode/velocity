@@ -8,8 +8,19 @@ import (
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
-// All runs functions in parallel, waits for all
-func All[T any](fns ...func() T) []T {
+// All runs functions in parallel and waits for every result. It returns the
+// collected values in submission order and the first non-nil error seen.
+//
+// Errors here come from recovered panics inside the fn closures (see Run):
+// a panicking fn would otherwise produce a zero value in the result slot
+// with no signal to the caller, which has masked real failures with security
+// implications (X-04). Callers MUST check the returned error before reading
+// the values slice. If any fn panicked, the returned values slice still has
+// len(fns) elements but the indices corresponding to panicked fns hold zero
+// values; treat the slice as undefined when err != nil.
+//
+// All always waits for every fn to finish so spawned goroutines don't leak.
+func All[T any](fns ...func() T) ([]T, error) {
 	results := make([]*Result[T], len(fns))
 
 	for i, fn := range fns {
@@ -17,12 +28,16 @@ func All[T any](fns ...func() T) []T {
 	}
 
 	values := make([]T, len(fns))
+	var firstErr error
 	for i, r := range results {
-		v, _ := r.Get() // Ignore errors in basic version
+		v, err := r.Get()
 		values[i] = v
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
 
-	return values
+	return values, firstErr
 }
 
 // AllWithError runs functions in parallel, returns first error
@@ -255,8 +270,15 @@ func TryForEach[T any](items []T, concurrency int, fn func(T) error) []error {
 	return errs
 }
 
-// Map transforms items in parallel
-func Map[T, R any](items []T, fn func(T) R) []R {
+// Map transforms items in parallel and returns the results in input order
+// alongside the first non-nil error encountered. As with All, errors here
+// originate from recovered panics inside fn; silently dropping them
+// previously masked real failures (X-04). Callers MUST check the returned
+// error before consuming values. The values slice is always len(items)
+// long; indices corresponding to panicked fn calls hold zero values.
+//
+// Map always waits for every fn to finish so spawned goroutines don't leak.
+func Map[T, R any](items []T, fn func(T) R) ([]R, error) {
 	results := make([]*Result[R], len(items))
 
 	for i, item := range items {
@@ -267,10 +289,14 @@ func Map[T, R any](items []T, fn func(T) R) []R {
 	}
 
 	values := make([]R, len(items))
+	var firstErr error
 	for i, r := range results {
-		v, _ := r.Get()
+		v, err := r.Get()
 		values[i] = v
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
 
-	return values
+	return values, firstErr
 }
