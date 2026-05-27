@@ -82,11 +82,18 @@ func (q *Query[T]) Decrement(ctx context.Context, column string, amount ...int) 
 // It delegates the WHERE clause to the grammar's CompileDelete (which compiles
 // conditions identically to CompileUpdate) to avoid hand-rolling placeholder
 // logic that differs per driver (e.g. ? vs $N).
+//
+// Scope semantics: Increment/Decrement is a write terminal and honours
+// every registered global scope on T. A multi-tenant Increment cannot
+// modify rows outside the caller's tenant scope, and an Increment on a
+// SoftDeleteModel does NOT touch trashed rows. Opt out per-query with
+// [Query.WithoutGlobalScope].
 func (q *Query[T]) incrementOrDecrement(ctx context.Context, column, op string, amount ...int) error {
 	if err := validateIdentifier(column); err != nil {
 		return fmt.Errorf("velocity/orm: increment/decrement: %w", err)
 	}
 	q.bindTxFromContextValue(ctx)
+	q.applyGlobalScopes(ctx)
 
 	amt := 1
 	if len(amount) > 0 {

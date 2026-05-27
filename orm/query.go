@@ -157,6 +157,10 @@ func newQuery[T any]() *Query[T] {
 		hasSoftDelete: modelHasSoftDelete[T](),
 		hasUpdatedAt:  modelHasUpdatedAt[T](),
 	}
+	// Remember a reflect-friendly constructor for T so eager-load
+	// helpers in relation*.go / morph.go can apply global scopes to T
+	// without knowing T at compile time.
+	rememberQueryConstructor[T]()
 	if q.hasSoftDelete {
 		registerSoftDeleteScopeOnce[T]()
 	}
@@ -1491,11 +1495,26 @@ func (q *Query[T]) Delete(ctx context.Context) (int64, error) {
 // [AfterRollbackHook] do NOT fire. Use [BulkAfterCommitHook] (one event
 // with affected IDs and op=BulkOpForceDelete) or chain
 // [Query.WithRowHooks] to fan out per-row hooks.
+//
+// Scope semantics: ForceDelete honours every registered global scope on T
+// EXCEPT the auto-installed soft-delete predicate. Filtering by
+// deleted_at IS NULL would defeat the entire purpose of ForceDelete on a
+// SoftDeleteModel (the caller is explicitly trying to drop trashed rows
+// alongside live ones). All other scopes (tenant, archive, locale,
+// state) still apply, so a multi-tenant ForceDelete cannot leak across
+// tenant boundaries. Opt out of additional scopes with
+// [Query.WithoutGlobalScope] / [Query.WithoutGlobalScopes] if needed.
 func (q *Query[T]) ForceDelete(ctx context.Context) (int64, error) {
 	if q.err != nil {
 		return 0, q.err
 	}
 	q.bindTxFromContextValue(ctx)
+	// Apply every registered global scope EXCEPT soft-delete so user
+	// scopes (tenant, archive, locale, ...) still constrain the rows we
+	// drop. The soft-delete scope must be skipped because ForceDelete
+	// is the documented way to bypass it.
+	q.WithoutGlobalScope(softDeleteScopeName)
+	q.applyGlobalScopes(ctx)
 
 	plan, err := q.bulkPrepareHooks(ctx, BulkOpForceDelete, callerSkipForceDelete)
 	if err != nil {

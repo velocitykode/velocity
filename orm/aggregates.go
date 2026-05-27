@@ -35,11 +35,18 @@ func (q *Query[T]) Max(ctx context.Context, column string) (float64, error) {
 }
 
 // aggregate executes an aggregate function on a column and returns the result.
+//
+// Scope semantics: aggregate honours every registered global scope on T
+// (tenant, archive, soft-delete, ...). A Sum/Avg/Min/Max over a
+// SoftDeleteModel does NOT include trashed rows by default, and a
+// multi-tenant aggregate cannot leak the other tenant's totals. Opt out
+// per-query with [Query.WithoutGlobalScope].
 func (q *Query[T]) aggregate(ctx context.Context, fn, column string) (float64, error) {
 	if err := validateIdentifier(column); err != nil {
 		return 0, fmt.Errorf("%s: %w", fn, err)
 	}
 	q.bindTxFromContextValue(ctx)
+	q.applyGlobalScopes(ctx)
 
 	// Framework-built aggregate projection: emit through the trusted
 	// RawColumns path so the user-facing Columns whitelist (which

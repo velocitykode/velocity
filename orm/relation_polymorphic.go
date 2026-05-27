@@ -192,6 +192,11 @@ func (q *Query[T]) loadPolymorphic(ctx context.Context, models *[]T, meta *polym
 
 // loadByIDs loads rows from the table for relatedType where id IN (ids).
 // Returns a slice of pointer-to-relatedType values, with IsExisting set.
+//
+// Scope semantics: the SELECT honours every global scope registered for
+// relatedType. Builds the IN predicate plus scope conditions through
+// buildScopedInSelect so a polymorphic eager-load cannot leak rows
+// from outside the caller's tenant / archive / locale / state scope.
 func loadByIDs(driver drivers.Driver, ctx context.Context, relatedType reflect.Type, ids []any) ([]any, error) {
 	if len(ids) == 0 {
 		return nil, nil
@@ -200,23 +205,11 @@ func loadByIDs(driver drivers.Driver, ctx context.Context, relatedType reflect.T
 	if err := validateIdentifier(tableName); err != nil {
 		return nil, fmt.Errorf("orm: invalid table name for %s: %w", relatedType.Name(), err)
 	}
-	grammar := driver.Grammar()
-	placeholders := make([]string, len(ids))
-	for i := range ids {
-		placeholders[i] = grammar.Placeholder(i + 1)
-	}
-	sqlStr := fmt.Sprintf("SELECT * FROM %s WHERE %s IN (%s)",
-		grammar.QuoteIdentifier(tableName),
-		grammar.QuoteIdentifier("id"),
-		strings.Join(placeholders, ", "),
-	)
-	if checkSoftDelete(relatedType) {
-		sqlStr += " AND " + grammar.QuoteIdentifier("deleted_at") + " IS NULL"
-	}
+	sqlStr, sqlArgs := buildScopedInSelect(ctx, driver, relatedType, tableName, "id", ids)
 	start := time.Now()
-	rows, err := driver.QueryContext(ctx, sqlStr, ids...)
+	rows, err := driver.QueryContext(ctx, sqlStr, sqlArgs...)
 	if err != nil {
-		dispatchQueryExecuted(ctx, sqlStr, ids, time.Since(start), 0, driver.DriverName(), 2)
+		dispatchQueryExecuted(ctx, sqlStr, sqlArgs, time.Since(start), 0, driver.DriverName(), 2)
 		return nil, err
 	}
 	defer rows.Close()
@@ -232,6 +225,6 @@ func loadByIDs(driver drivers.Driver, ctx context.Context, relatedType reflect.T
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	dispatchQueryExecuted(ctx, sqlStr, ids, time.Since(start), int64(len(out)), driver.DriverName(), 2)
+	dispatchQueryExecuted(ctx, sqlStr, sqlArgs, time.Since(start), int64(len(out)), driver.DriverName(), 2)
 	return out, nil
 }

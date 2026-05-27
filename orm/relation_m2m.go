@@ -343,25 +343,19 @@ func queryPivotRows(driver drivers.Driver, ctx context.Context, meta *m2mMeta, p
 }
 
 // queryRelatedRows loads related rows by ID and returns them as []reflect.Value.
+//
+// Scope semantics: the SELECT honours every global scope registered for
+// meta.relatedType (tenant, archive, locale, state, soft-delete, ...).
+// Builds the IN predicate plus scope conditions through
+// buildScopedInSelect so the hand-rolled SQL stays in lockstep with
+// what a typed Query[Related].WhereIn(...).Get(ctx) would emit.
 func queryRelatedRows(driver drivers.Driver, ctx context.Context, meta *m2mMeta, relatedIDs []any) ([]reflect.Value, error) {
-	grammar := driver.Grammar()
-	placeholders := make([]string, len(relatedIDs))
-	for i := range relatedIDs {
-		placeholders[i] = grammar.Placeholder(i + 1)
-	}
-	relSQL := fmt.Sprintf("SELECT * FROM %s WHERE %s IN (%s)",
-		grammar.QuoteIdentifier(meta.relatedTable),
-		grammar.QuoteIdentifier("id"),
-		strings.Join(placeholders, ", "),
-	)
-	if checkSoftDelete(meta.relatedType) {
-		relSQL += " AND " + grammar.QuoteIdentifier("deleted_at") + " IS NULL"
-	}
+	relSQL, sqlArgs := buildScopedInSelect(ctx, driver, meta.relatedType, meta.relatedTable, "id", relatedIDs)
 
 	start := time.Now()
-	rows, err := driver.QueryContext(ctx, relSQL, relatedIDs...)
+	rows, err := driver.QueryContext(ctx, relSQL, sqlArgs...)
 	if err != nil {
-		dispatchQueryExecuted(ctx, relSQL, relatedIDs, time.Since(start), 0, driver.DriverName(), 2)
+		dispatchQueryExecuted(ctx, relSQL, sqlArgs, time.Since(start), 0, driver.DriverName(), 2)
 		return nil, fmt.Errorf("orm: failed to load m2m related rows: %w", err)
 	}
 	defer rows.Close()
@@ -379,7 +373,7 @@ func queryRelatedRows(driver drivers.Driver, ctx context.Context, meta *m2mMeta,
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	dispatchQueryExecuted(ctx, relSQL, relatedIDs, time.Since(start), int64(len(out)), driver.DriverName(), 2)
+	dispatchQueryExecuted(ctx, relSQL, sqlArgs, time.Since(start), int64(len(out)), driver.DriverName(), 2)
 	return out, nil
 }
 

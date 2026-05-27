@@ -4,6 +4,8 @@ import (
 	"context"
 	"reflect"
 	"sync"
+
+	"github.com/velocitykode/velocity/orm/drivers"
 )
 
 // softDeleteScopeName is the reserved name used for the auto-registered
@@ -90,6 +92,16 @@ func AddGlobalScope[T any](name string, fn func(ctx context.Context, q *Query[T]
 	t := modelTypeFor[T]()
 	if t == nil {
 		return
+	}
+	// Register a fresh-Query[T] constructor so reflect-only callers
+	// (eager-load helpers in relation*.go / morph.go) can apply T's
+	// global scopes without knowing T at compile time. If T is a
+	// soft-delete model, also wire its built-in soft-delete scope so
+	// eager-loads of T do not bypass deleted_at IS NULL just because no
+	// newQuery[T] has ever been constructed yet.
+	rememberQueryConstructor[T]()
+	if modelHasSoftDelete[T]() {
+		registerSoftDeleteScopeOnce[T]()
 	}
 	reg := scopeRegistryFor(t)
 	reg.mu.Lock()
@@ -213,12 +225,18 @@ func (q *Query[T]) WithoutGlobalScopes() *Query[T] {
 // scope for type T the first time newQuery sees a soft-delete model.
 // The scope reads q.withTrashed / q.onlyTrashed at apply time so the
 // existing WithTrashed() / OnlyTrashed() chain methods keep working.
+//
+// The "done" flag is recorded BEFORE invoking AddGlobalScope so the
+// reentrancy that AddGlobalScope itself performs (AddGlobalScope calls
+// registerSoftDeleteScopeOnce when T is a soft-delete model, to make
+// reflect-only eager-load callers see the soft-delete predicate) is
+// terminated at the first frame instead of recursing indefinitely.
 func registerSoftDeleteScopeOnce[T any]() {
 	t := modelTypeFor[T]()
 	if t == nil {
 		return
 	}
-	if _, done := softDeleteScopeRegistered.Load(t); done {
+	if _, loaded := softDeleteScopeRegistered.LoadOrStore(t, true); loaded {
 		return
 	}
 	AddGlobalScope[T](softDeleteScopeName, func(_ context.Context, q *Query[T]) {
@@ -230,9 +248,128 @@ func registerSoftDeleteScopeOnce[T any]() {
 		}
 		q.WhereNull("deleted_at")
 	})
-	softDeleteScopeRegistered.Store(t, true)
 }
 
 // softDeleteScopeRegistered tracks which model types have already had
 // their built-in soft-delete scope auto-registered.
 var softDeleteScopeRegistered sync.Map
+
+// scopedQuery is the non-generic surface every *Query[T] satisfies for
+// reflect-based scope application. The eager-load helpers in
+// relation.go / relation_m2m.go / relation_polymorphic.go / morph.go
+// only know the related model type as a reflect.Type, so they cannot
+// call applyGlobalScopes directly. They route through
+// applyGlobalScopesByType, which constructs a fresh *Query[Related] via
+// a per-type constructor (queryConstructorFor), runs every registered
+// scope against it, and surfaces the accumulated WHERE conditions back
+// to the caller through this interface.
+type scopedQuery interface {
+	// scopeConditions returns the accumulated WHERE conditions on the
+	// underlying *Query[T] after applyGlobalScopes has run.
+	scopeConditions() []drivers.Condition
+	// applyScopesFromCtx is the entry point for the reflect helper;
+	// it invokes applyGlobalScopes with the supplied ctx so each
+	// registered scope fn sees the caller's context.
+	applyScopesFromCtx(ctx context.Context)
+}
+
+// scopeConditions implements scopedQuery. Returns the underlying
+// conditions slice directly; callers must not mutate it.
+func (q *Query[T]) scopeConditions() []drivers.Condition {
+	if q == nil {
+		return nil
+	}
+	return q.conditions
+}
+
+// applyScopesFromCtx implements scopedQuery. It is a thin wrapper
+// around applyGlobalScopes that routes through the same idempotency
+// guard.
+func (q *Query[T]) applyScopesFromCtx(ctx context.Context) {
+	if q == nil {
+		return
+	}
+	q.applyGlobalScopes(ctx)
+}
+
+// queryConstructors maps reflect.Type (the model T) to a func that
+// returns a fresh, driver-less *Query[T] as `any`. The constructor is
+// registered the first time AddGlobalScope[T] or
+// registerSoftDeleteScopeOnce[T] runs for the type, because both call
+// paths have a compile-time T from which Query[T] can be instantiated.
+// A reflect-only caller (eager-load helpers) calls
+// queryConstructorFor(t)() to obtain a typed query without knowing T
+// at compile time.
+var queryConstructors sync.Map // map[reflect.Type]func() any
+
+// rememberQueryConstructor stores a constructor for *Query[T] keyed by
+// modelTypeFor[T](). Idempotent: re-registration on the same type is a
+// no-op, so this is safe to call from every code path that has access
+// to T (AddGlobalScope, registerSoftDeleteScopeOnce, newQuery).
+func rememberQueryConstructor[T any]() {
+	t := modelTypeFor[T]()
+	if t == nil {
+		return
+	}
+	if _, ok := queryConstructors.Load(t); ok {
+		return
+	}
+	queryConstructors.LoadOrStore(t, func() any {
+		// Build a fresh query but skip the Default() driver wiring: the
+		// caller (applyGlobalScopesByType) only needs the conditions
+		// the scopes append. Driver-dependent state (table name, soft
+		// delete metadata) is irrelevant because the eager-load helper
+		// has its own table name and only consumes the WHERE clause.
+		return &Query[T]{
+			table:         getTableName[T](),
+			columns:       []string{"*"},
+			hasSoftDelete: modelHasSoftDelete[T](),
+		}
+	})
+}
+
+// queryConstructorFor returns the registered fresh-query constructor
+// for type t, or nil when no scope (including soft-delete) has been
+// registered for t. The nil return is the signal to skip scope
+// application for this type entirely (no scopes means no extra
+// conditions to inject).
+func queryConstructorFor(t reflect.Type) func() any {
+	v, ok := queryConstructors.Load(t)
+	if !ok {
+		return nil
+	}
+	fn, ok := v.(func() any)
+	if !ok {
+		return nil
+	}
+	return fn
+}
+
+// applyGlobalScopesByType is the reflect-friendly counterpart to
+// (*Query[T]).applyGlobalScopes. It looks up the registered query
+// constructor for t, builds a fresh *Query[T], runs every registered
+// scope against it, and returns the WHERE conditions the scopes
+// appended. Eager-load helpers in relation.go, relation_m2m.go,
+// relation_polymorphic.go, and morph.go call this so a hand-rolled
+// "SELECT * FROM table WHERE fk IN (...)" query still honours tenant /
+// archive / locale / state scopes registered on the related model.
+//
+// Returns nil conditions (not an error) when no constructor is
+// registered for t: that case means no AddGlobalScope[T] or soft-delete
+// model has ever been seen for the type, so the scope set is empty by
+// construction.
+func applyGlobalScopesByType(ctx context.Context, t reflect.Type) []drivers.Condition {
+	if t == nil {
+		return nil
+	}
+	ctor := queryConstructorFor(t)
+	if ctor == nil {
+		return nil
+	}
+	q, ok := ctor().(scopedQuery)
+	if !ok {
+		return nil
+	}
+	q.applyScopesFromCtx(ctx)
+	return q.scopeConditions()
+}

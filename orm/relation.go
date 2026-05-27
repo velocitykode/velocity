@@ -6,7 +6,78 @@ import (
 	"reflect"
 	"strings"
 	"time"
+
+	"github.com/velocitykode/velocity/orm/drivers"
 )
+
+// buildScopedInSelect compiles a "SELECT * FROM table WHERE col IN (...)
+// AND <scope conditions>" statement for the related type t via the
+// grammar's CompileSelect. Used by the eager-load helpers in
+// relation.go, relation_m2m.go, relation_polymorphic.go, and morph.go
+// so the IN query honours every global scope registered on t (tenant,
+// archive, locale, state, soft-delete, ...).
+//
+// When no constructor is registered for t (no AddGlobalScope[T] or
+// newQuery[T] has ever fired for this T), the helper falls back to
+// the legacy hand-rolled predicate: the IN clause plus, when t embeds
+// SoftDeletes, a deleted_at IS NULL filter. The legacy fallback
+// preserves the historical behaviour for callers that have not opted
+// into the global-scope primitive at all.
+//
+// Callers (loadRelation, queryRelatedRows, loadByIDs, Morph.Resolve)
+// pass the related table name, the foreign-key column, and the
+// parents' id values; this helper appends the scope conditions and
+// returns the compiled SQL + bound args.
+func buildScopedInSelect(ctx context.Context, driver drivers.Driver, t reflect.Type, table, fkColumn string, ids []any) (string, []any) {
+	grammar := driver.Grammar()
+	scopeConditions := applyGlobalScopesByType(ctx, t)
+
+	if scopeConditions == nil {
+		// Fall back to the legacy hand-rolled predicate. We still
+		// embed deleted_at IS NULL for soft-delete models so callers
+		// that have never registered any global scope keep their
+		// previous behaviour. Callers who opt in via AddGlobalScope
+		// (or by triggering newQuery[T]) hit the grammar-compiled
+		// path above instead.
+		placeholders := make([]string, len(ids))
+		for i := range ids {
+			placeholders[i] = grammar.Placeholder(i + 1)
+		}
+		sqlStr := fmt.Sprintf("SELECT * FROM %s WHERE %s IN (%s)",
+			grammar.QuoteIdentifier(table),
+			grammar.QuoteIdentifier(fkColumn),
+			strings.Join(placeholders, ", "),
+		)
+		if checkSoftDelete(t) {
+			sqlStr += " AND " + grammar.QuoteIdentifier("deleted_at") + " IS NULL"
+		}
+		return sqlStr, ids
+	}
+
+	// IN predicate: build it as a Condition so the grammar emits the
+	// placeholders for our dialect. Use the "IN" operator and pass the
+	// ids slice as the Value; the grammar expands [N]any to N
+	// placeholders.
+	conditions := make([]drivers.Condition, 0, len(scopeConditions)+1)
+	conditions = append(conditions, drivers.Condition{
+		Column:   fkColumn,
+		Operator: "IN",
+		Value:    ids,
+		Type:     "and",
+	})
+	for _, c := range scopeConditions {
+		// Force "and" so a scope that starts with "or" does not
+		// shadow the IN predicate.
+		c.Type = "and"
+		conditions = append(conditions, c)
+	}
+	selectQuery := &drivers.SelectQuery{
+		Table:      table,
+		Columns:    []string{"*"},
+		Conditions: conditions,
+	}
+	return grammar.CompileSelect(selectQuery)
+}
 
 // RelationType represents the type of a model relationship.
 type RelationType int
@@ -414,6 +485,15 @@ func lookupTaggedField(modelType reflect.Type, name string) (reflect.StructField
 }
 
 // loadRelation loads a single relationship for all parent models using a single IN query.
+//
+// Scope semantics: the SELECT against the related table runs every
+// global scope registered for meta.relatedType (tenant, archive,
+// locale, state, soft-delete, ...). The previous implementation
+// hand-rolled "SELECT * FROM tbl WHERE fk IN (...)" and inlined a
+// deleted_at IS NULL fallback for soft-delete models; every other
+// scope was silently dropped. Routing the IN predicate plus the
+// scope conditions through the grammar's CompileSelect keeps the
+// eager-load path symmetric with the typed Query[T] path.
 func (q *Query[T]) loadRelation(ctx context.Context, models *[]T, meta *relationMeta) error {
 	// Determine which column to collect from parents and which to query on the related table.
 	// HasOne/HasMany: collect parent's localKey, query related's foreignKey
@@ -451,31 +531,17 @@ func (q *Query[T]) loadRelation(ctx context.Context, models *[]T, meta *relation
 		return nil
 	}
 
-	// 2. Build and execute: SELECT * FROM related_table WHERE queryColumn IN (?, ?, ...)
-	grammar := q.driver.Grammar()
-
-	placeholders := make([]string, len(keys))
-	for i := range keys {
-		placeholders[i] = grammar.Placeholder(i + 1)
-	}
-
-	relSQL := fmt.Sprintf("SELECT * FROM %s WHERE %s IN (%s)",
-		grammar.QuoteIdentifier(meta.relatedTable),
-		grammar.QuoteIdentifier(queryColumn),
-		strings.Join(placeholders, ", "),
-	)
-
-	// Respect soft deletes on the related model
-	if checkSoftDelete(meta.relatedType) {
-		relSQL += " AND " + grammar.QuoteIdentifier("deleted_at") + " IS NULL"
-	}
+	// 2. Build the IN predicate plus any scope conditions registered on
+	// the related model, then compile through the grammar so we honour
+	// every dialect's placeholder/quote conventions.
+	relSQL, sqlArgs := buildScopedInSelect(ctx, q.driver, meta.relatedType, meta.relatedTable, queryColumn, keys)
 
 	start := time.Now()
-	rows, err := q.driver.QueryContext(ctx, relSQL, keys...)
+	rows, err := q.driver.QueryContext(ctx, relSQL, sqlArgs...)
 	duration := time.Since(start)
 
 	if err != nil {
-		dispatchQueryExecuted(ctx, relSQL, keys, duration, 0, q.driver.DriverName(), 2)
+		dispatchQueryExecuted(ctx, relSQL, sqlArgs, duration, 0, q.driver.DriverName(), 2)
 		return fmt.Errorf("orm: failed to load relation %q: %w", meta.fieldName, err)
 	}
 	defer rows.Close()
@@ -503,7 +569,7 @@ func (q *Query[T]) loadRelation(ctx context.Context, models *[]T, meta *relation
 		return fmt.Errorf("orm: error iterating relation %q results: %w", meta.fieldName, err)
 	}
 
-	dispatchQueryExecuted(ctx, relSQL, keys, duration, rowCount, q.driver.DriverName(), 2)
+	dispatchQueryExecuted(ctx, relSQL, sqlArgs, duration, rowCount, q.driver.DriverName(), 2)
 
 	// 4. Assign results back to parent models
 	for i := range *models {

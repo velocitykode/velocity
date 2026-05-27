@@ -56,7 +56,11 @@ func setupScopeTests(t *testing.T) *Manager {
 }
 
 // clearGlobalScopes removes every registered global scope for type T.
-// Used by tests to reset registry state between subtests.
+// Used by tests to reset registry state between subtests. Also clears
+// the per-type "soft-delete scope already auto-registered" flag so the
+// next newQuery[T]() in this binary will re-install the soft-delete
+// scope; without this reset, a subtest that wipes the registry then
+// expects newQuery to re-register the scope would see it absent.
 func clearGlobalScopes[T any]() {
 	t := modelTypeFor[T]()
 	if t == nil {
@@ -67,6 +71,7 @@ func clearGlobalScopes[T any]() {
 	reg.entries = make(map[string]*scopeEntry)
 	reg.next = 0
 	reg.mu.Unlock()
+	softDeleteScopeRegistered.Delete(t)
 }
 
 // TestAddGlobalScope confirms a registered scope is applied to every

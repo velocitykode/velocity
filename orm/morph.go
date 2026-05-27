@@ -171,16 +171,13 @@ func (m *Morph) Resolve(ctx context.Context) (any, error) {
 		return nil, fmt.Errorf("orm: Morph.Resolve: invalid table name for %s: %w", relatedType.Name(), err)
 	}
 
-	grammar := driver.Grammar()
-	sqlStr := fmt.Sprintf("SELECT * FROM %s WHERE %s = %s",
-		grammar.QuoteIdentifier(tableName),
-		grammar.QuoteIdentifier("id"),
-		grammar.Placeholder(1),
-	)
-	if checkSoftDelete(relatedType) {
-		sqlStr += " AND " + grammar.QuoteIdentifier("deleted_at") + " IS NULL"
-	}
-	rows, err := driver.QueryContext(ctx, sqlStr, m.ID)
+	// Honour every global scope registered on relatedType (tenant,
+	// archive, locale, state, soft-delete, ...). The IN-of-one shape
+	// keeps the helper signature uniform with the batched eager-load
+	// path; the grammar's single-element IN compiles to "id IN ($1)"
+	// which every supported driver handles identically to "id = $1".
+	sqlStr, sqlArgs := buildScopedInSelect(ctx, driver, relatedType, tableName, "id", []any{m.ID})
+	rows, err := driver.QueryContext(ctx, sqlStr, sqlArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("orm: Morph.Resolve: query failed: %w", err)
 	}
