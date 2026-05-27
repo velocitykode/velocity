@@ -5,12 +5,36 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
 
 	cli "github.com/velocitykode/velocity-cli"
 )
+
+// ldflagsValueRe is the allowlist for values interpolated into the -ldflags
+// argument. The Go linker re-tokenises -ldflags on whitespace and honours
+// shell-style single quotes, so any quote, whitespace, shell-metacharacter,
+// or backslash in version/commit lets the caller inject an extra -X
+// directive that overwrites exported string vars (signing keys, default
+// URLs, feature flags) with attacker-chosen content. The pattern below
+// matches the shapes produced by git describe (v1.2.3-4-gabc1234), semver
+// (v1.2.3+build.5), and SHA digests while rejecting every injection-capable
+// character.
+var ldflagsValueRe = regexp.MustCompile(`^[A-Za-z0-9._+/:@-]*$`)
+
+// validateLDFlagsValue returns a clear error when value contains any
+// character that would let the Go linker re-tokenise the -ldflags argument
+// and inject extra -X directives. The empty string is rejected separately
+// at the call site because the caller already substitutes defaults when
+// the flag is unset.
+func validateLDFlagsValue(field, value string) error {
+	if !ldflagsValueRe.MatchString(value) {
+		return fmt.Errorf("invalid %s %q: only [A-Za-z0-9._+/:@-] characters are allowed in build metadata", field, value)
+	}
+	return nil
+}
 
 // BuildOptions holds flags for the build command.
 type BuildOptions struct {
@@ -56,6 +80,17 @@ func Build(opts BuildOptions) error {
 	version := opts.Version
 	if version == "" {
 		version = "devel"
+	}
+	// Validate any caller-supplied build metadata before it reaches the
+	// -ldflags argument. The Go linker re-tokenises that string on
+	// whitespace and honours single quotes, so an unfiltered value like
+	// "x' -X 'main.foo=bar" would smuggle a second -X directive past the
+	// build command and overwrite arbitrary exported string vars.
+	if err := validateLDFlagsValue("version", version); err != nil {
+		return err
+	}
+	if err := validateLDFlagsValue("commit", commit); err != nil {
+		return err
 	}
 	date := time.Now().UTC().Format(time.RFC3339)
 
