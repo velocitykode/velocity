@@ -662,7 +662,13 @@ func (d *S3Driver) DeleteDirectoryCtx(ctx context.Context, directory string) err
 	return nil
 }
 
-// URL returns the public URL for a file
+// URL returns the public URL for a file.
+//
+// Each path segment is URL-escaped independently so reserved
+// characters (`?`, `#`, space, `%`, ...) inside an object key cannot
+// inject query strings or fragments into the emitted URL. The literal
+// `/` between segments is preserved. Applies to both the custom-URL
+// branch and the synthesised `s3.<region>.amazonaws.com` branch.
 func (d *S3Driver) URL(path string) string {
 	var err error
 	path, err = d.cleanPath(path)
@@ -670,13 +676,14 @@ func (d *S3Driver) URL(path string) string {
 		return ""
 	}
 
+	escaped := escapeURLPathSegments(path)
 	if d.url != "" {
 		// Use custom URL if configured
-		return fmt.Sprintf("%s/%s", d.url, path)
+		return d.url + "/" + escaped
 	}
 
 	// Generate S3 URL
-	return fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", d.bucket, d.region, path)
+	return fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", d.bucket, d.region, escaped)
 }
 
 // TemporaryURL returns a temporary presigned URL for a file (uses context.Background()).

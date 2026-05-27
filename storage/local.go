@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -540,13 +541,34 @@ func (d *LocalDriver) DeleteDirectory(directory string) error {
 	})
 }
 
-// URL returns the public URL for a file
+// URL returns the public URL for a file.
+//
+// Each path segment is URL-escaped independently so that reserved
+// characters (`?`, `#`, space, `%`, ...) inside a storage key cannot
+// inject query strings, fragments, or invalid bytes into the emitted
+// URL. The literal `/` between segments is preserved.
 func (d *LocalDriver) URL(path string) string {
 	if d.url == "" {
 		return ""
 	}
 	path = strings.ReplaceAll(path, string(filepath.Separator), "/")
-	return fmt.Sprintf("%s/%s", d.url, path)
+	return d.url + "/" + escapeURLPathSegments(path)
+}
+
+// escapeURLPathSegments percent-encodes each `/`-delimited segment of
+// path so reserved characters in keys cannot inject query / fragment
+// state. `url.PathEscape` does NOT escape `/`, so a blanket call would
+// destroy the separators; splitting first preserves the path shape
+// while encoding every segment individually.
+func escapeURLPathSegments(path string) string {
+	if path == "" {
+		return ""
+	}
+	segs := strings.Split(path, "/")
+	for i, seg := range segs {
+		segs[i] = url.PathEscape(seg)
+	}
+	return strings.Join(segs, "/")
 }
 
 // TemporaryURL returns a temporary URL for a file (not supported for local)
