@@ -11,11 +11,20 @@ import (
 )
 
 // buildScopedInSelect compiles a "SELECT * FROM table WHERE col IN (...)
-// AND <scope conditions>" statement for the related type t via the
+// AND (<scope conditions>)" statement for the related type t via the
 // grammar's CompileSelect. Used by the eager-load helpers in
 // relation.go, relation_m2m.go, relation_polymorphic.go, and morph.go
 // so the IN query honours every global scope registered on t (tenant,
 // archive, locale, state, soft-delete, ...).
+//
+// The scope conditions are wrapped in a single parenthesized group
+// before being AND-joined to the IN predicate. This preserves the
+// scope's internal AND/OR composition (e.g. a scope written as
+// q.Where("tenant_id = ?", t).OrWhere("public = ?", true) compiles to
+// "id IN (...) AND (tenant_id = ? OR public = ?)"). Coercing every
+// scope condition's Type to "and" before appending would silently
+// rewrite that to "id IN (...) AND tenant_id = ? AND public = ?",
+// narrowing the matched set and changing correctness.
 //
 // When no constructor is registered for t (no AddGlobalScope[T] or
 // newQuery[T] has ever fired for this T), the helper falls back to
@@ -24,13 +33,16 @@ import (
 // preserves the historical behaviour for callers that have not opted
 // into the global-scope primitive at all.
 //
-// Callers (loadRelation, queryRelatedRows, loadByIDs, Morph.Resolve)
-// pass the related table name, the foreign-key column, and the
-// parents' id values; this helper appends the scope conditions and
-// returns the compiled SQL + bound args.
-func buildScopedInSelect(ctx context.Context, driver drivers.Driver, t reflect.Type, table, fkColumn string, ids []any) (string, []any) {
+// Returns (sql, args, nil) on success or (zero, zero, err) when
+// applyGlobalScopesByType surfaces a scope validation error. Callers
+// MUST propagate the error rather than execute SQL with the scope
+// silently dropped.
+func buildScopedInSelect(ctx context.Context, driver drivers.Driver, t reflect.Type, table, fkColumn string, ids []any) (string, []any, error) {
 	grammar := driver.Grammar()
-	scopeConditions := applyGlobalScopesByType(ctx, t)
+	scopeConditions, err := applyGlobalScopesByType(ctx, t, driver)
+	if err != nil {
+		return "", nil, err
+	}
 
 	if scopeConditions == nil {
 		// Fall back to the legacy hand-rolled predicate. We still
@@ -51,32 +63,36 @@ func buildScopedInSelect(ctx context.Context, driver drivers.Driver, t reflect.T
 		if checkSoftDelete(t) {
 			sqlStr += " AND " + grammar.QuoteIdentifier("deleted_at") + " IS NULL"
 		}
-		return sqlStr, ids
+		return sqlStr, ids, nil
 	}
 
-	// IN predicate: build it as a Condition so the grammar emits the
-	// placeholders for our dialect. Use the "IN" operator and pass the
-	// ids slice as the Value; the grammar expands [N]any to N
-	// placeholders.
-	conditions := make([]drivers.Condition, 0, len(scopeConditions)+1)
+	// First condition: the relation IN predicate. Always AND-joined at
+	// the top level; this is the eager-load contract.
+	conditions := make([]drivers.Condition, 0, 2)
 	conditions = append(conditions, drivers.Condition{
 		Column:   fkColumn,
 		Operator: "IN",
 		Value:    ids,
 		Type:     "and",
 	})
-	for _, c := range scopeConditions {
-		// Force "and" so a scope that starts with "or" does not
-		// shadow the IN predicate.
-		c.Type = "and"
-		conditions = append(conditions, c)
+	// Second condition (only when scopes are present): one grouped
+	// block carrying the harvested scope conditions verbatim. The
+	// group's outer Type is "and" so it AND-joins to the IN predicate,
+	// but the inner conditions keep their original And/Or types so a
+	// scope that used OrWhere stays an OR at the same precedence level.
+	if len(scopeConditions) > 0 {
+		conditions = append(conditions, drivers.Condition{
+			Type:  "and",
+			Group: scopeConditions,
+		})
 	}
 	selectQuery := &drivers.SelectQuery{
 		Table:      table,
 		Columns:    []string{"*"},
 		Conditions: conditions,
 	}
-	return grammar.CompileSelect(selectQuery)
+	sqlStr, args := grammar.CompileSelect(selectQuery)
+	return sqlStr, args, nil
 }
 
 // RelationType represents the type of a model relationship.
@@ -533,8 +549,13 @@ func (q *Query[T]) loadRelation(ctx context.Context, models *[]T, meta *relation
 
 	// 2. Build the IN predicate plus any scope conditions registered on
 	// the related model, then compile through the grammar so we honour
-	// every dialect's placeholder/quote conventions.
-	relSQL, sqlArgs := buildScopedInSelect(ctx, q.driver, meta.relatedType, meta.relatedTable, queryColumn, keys)
+	// every dialect's placeholder/quote conventions. A scope that fails
+	// validation surfaces here; propagate the error rather than execute
+	// SQL with the scope silently dropped.
+	relSQL, sqlArgs, scopeErr := buildScopedInSelect(ctx, q.driver, meta.relatedType, meta.relatedTable, queryColumn, keys)
+	if scopeErr != nil {
+		return fmt.Errorf("orm: failed to apply scopes for relation %q: %w", meta.fieldName, scopeErr)
+	}
 
 	start := time.Now()
 	rows, err := q.driver.QueryContext(ctx, relSQL, sqlArgs...)

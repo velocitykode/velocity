@@ -205,7 +205,10 @@ func loadByIDs(driver drivers.Driver, ctx context.Context, relatedType reflect.T
 	if err := validateIdentifier(tableName); err != nil {
 		return nil, fmt.Errorf("orm: invalid table name for %s: %w", relatedType.Name(), err)
 	}
-	sqlStr, sqlArgs := buildScopedInSelect(ctx, driver, relatedType, tableName, "id", ids)
+	sqlStr, sqlArgs, scopeErr := buildScopedInSelect(ctx, driver, relatedType, tableName, "id", ids)
+	if scopeErr != nil {
+		return nil, fmt.Errorf("orm: failed to apply scopes for polymorphic %s: %w", relatedType.Name(), scopeErr)
+	}
 	start := time.Now()
 	rows, err := driver.QueryContext(ctx, sqlStr, sqlArgs...)
 	if err != nil {

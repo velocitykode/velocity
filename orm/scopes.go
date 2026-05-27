@@ -261,12 +261,17 @@ var softDeleteScopeRegistered sync.Map
 // call applyGlobalScopes directly. They route through
 // applyGlobalScopesByType, which constructs a fresh *Query[Related] via
 // a per-type constructor (queryConstructorFor), runs every registered
-// scope against it, and surfaces the accumulated WHERE conditions back
-// to the caller through this interface.
+// scope against it, and surfaces the accumulated WHERE conditions and
+// any deferred validation error back to the caller through this
+// interface.
 type scopedQuery interface {
 	// scopeConditions returns the accumulated WHERE conditions on the
 	// underlying *Query[T] after applyGlobalScopes has run.
 	scopeConditions() []drivers.Condition
+	// scopeError returns the deferred error captured during scope
+	// application (invalid identifier, unknown operator, ...). nil
+	// when every scope's setup succeeded.
+	scopeError() error
 	// applyScopesFromCtx is the entry point for the reflect helper;
 	// it invokes applyGlobalScopes with the supplied ctx so each
 	// registered scope fn sees the caller's context.
@@ -282,6 +287,17 @@ func (q *Query[T]) scopeConditions() []drivers.Condition {
 	return q.conditions
 }
 
+// scopeError implements scopedQuery. Surfaces the deferred q.err set
+// by chain builders (Where, OrWhere, ...) when a scope's setup
+// rejected its predicate. Callers MUST propagate this rather than
+// silently drop the scope.
+func (q *Query[T]) scopeError() error {
+	if q == nil {
+		return nil
+	}
+	return q.err
+}
+
 // applyScopesFromCtx implements scopedQuery. It is a thin wrapper
 // around applyGlobalScopes that routes through the same idempotency
 // guard.
@@ -293,14 +309,20 @@ func (q *Query[T]) applyScopesFromCtx(ctx context.Context) {
 }
 
 // queryConstructors maps reflect.Type (the model T) to a func that
-// returns a fresh, driver-less *Query[T] as `any`. The constructor is
-// registered the first time AddGlobalScope[T] or
+// returns a fresh *Query[T] (bound to the supplied driver) as `any`.
+// The constructor is registered the first time AddGlobalScope[T] or
 // registerSoftDeleteScopeOnce[T] runs for the type, because both call
 // paths have a compile-time T from which Query[T] can be instantiated.
 // A reflect-only caller (eager-load helpers) calls
-// queryConstructorFor(t)() to obtain a typed query without knowing T
-// at compile time.
-var queryConstructors sync.Map // map[reflect.Type]func() any
+// queryConstructorFor(t)(drv) to obtain a typed query without knowing
+// T at compile time.
+//
+// The driver argument is required because scopes that use a
+// driver-registered operator (Postgres ~, MySQL REGEXP, ...) call
+// q.resolveOperator which dereferences q.driver. A constructor that
+// returned a driver-less query would silently reject those scopes as
+// "invalid SQL operator" and drop them from the eager-load query.
+var queryConstructors sync.Map // map[reflect.Type]func(drivers.Driver) any
 
 // rememberQueryConstructor stores a constructor for *Query[T] keyed by
 // modelTypeFor[T](). Idempotent: re-registration on the same type is a
@@ -314,13 +336,9 @@ func rememberQueryConstructor[T any]() {
 	if _, ok := queryConstructors.Load(t); ok {
 		return
 	}
-	queryConstructors.LoadOrStore(t, func() any {
-		// Build a fresh query but skip the Default() driver wiring: the
-		// caller (applyGlobalScopesByType) only needs the conditions
-		// the scopes append. Driver-dependent state (table name, soft
-		// delete metadata) is irrelevant because the eager-load helper
-		// has its own table name and only consumes the WHERE clause.
+	queryConstructors.LoadOrStore(t, func(drv drivers.Driver) any {
 		return &Query[T]{
+			driver:        drv,
 			table:         getTableName[T](),
 			columns:       []string{"*"},
 			hasSoftDelete: modelHasSoftDelete[T](),
@@ -333,12 +351,12 @@ func rememberQueryConstructor[T any]() {
 // registered for t. The nil return is the signal to skip scope
 // application for this type entirely (no scopes means no extra
 // conditions to inject).
-func queryConstructorFor(t reflect.Type) func() any {
+func queryConstructorFor(t reflect.Type) func(drivers.Driver) any {
 	v, ok := queryConstructors.Load(t)
 	if !ok {
 		return nil
 	}
-	fn, ok := v.(func() any)
+	fn, ok := v.(func(drivers.Driver) any)
 	if !ok {
 		return nil
 	}
@@ -347,29 +365,48 @@ func queryConstructorFor(t reflect.Type) func() any {
 
 // applyGlobalScopesByType is the reflect-friendly counterpart to
 // (*Query[T]).applyGlobalScopes. It looks up the registered query
-// constructor for t, builds a fresh *Query[T], runs every registered
-// scope against it, and returns the WHERE conditions the scopes
-// appended. Eager-load helpers in relation.go, relation_m2m.go,
+// constructor for t, builds a fresh *Query[T] bound to drv, runs
+// every registered scope against it, and returns the WHERE conditions
+// the scopes appended plus any deferred error.
+//
+// Eager-load helpers in relation.go, relation_m2m.go,
 // relation_polymorphic.go, and morph.go call this so a hand-rolled
 // "SELECT * FROM table WHERE fk IN (...)" query still honours tenant /
 // archive / locale / state scopes registered on the related model.
 //
-// Returns nil conditions (not an error) when no constructor is
-// registered for t: that case means no AddGlobalScope[T] or soft-delete
-// model has ever been seen for the type, so the scope set is empty by
-// construction.
-func applyGlobalScopesByType(ctx context.Context, t reflect.Type) []drivers.Condition {
+// The driver argument MUST be the same driver the eager-load query
+// will execute against. Scopes that use a driver-registered operator
+// (e.g. Postgres ~ or MySQL REGEXP) call q.resolveOperator which
+// looks the operator up in drv.OperatorRegistry(); passing nil here
+// would silently reject those scopes as "invalid SQL operator".
+//
+// Returns (nil, nil) when no constructor is registered for t: that
+// case means no AddGlobalScope[T] or newQuery[T] has ever been seen
+// for the type, so the scope set is empty by construction and the
+// eager-load helper falls back to its legacy hand-rolled predicate
+// (which still inlines deleted_at IS NULL for soft-delete models).
+//
+// Returns a non-nil error when a scope fails validation (invalid
+// identifier, unknown operator, driver-registered operator with a
+// value of the wrong shape). Callers MUST propagate the error rather
+// than execute SQL with the broken scope silently dropped. The whole
+// point of global scopes is that callers cannot accidentally bypass
+// them; swallowing a setup-time error would defeat that.
+func applyGlobalScopesByType(ctx context.Context, t reflect.Type, drv drivers.Driver) ([]drivers.Condition, error) {
 	if t == nil {
-		return nil
+		return nil, nil
 	}
 	ctor := queryConstructorFor(t)
 	if ctor == nil {
-		return nil
+		return nil, nil
 	}
-	q, ok := ctor().(scopedQuery)
+	q, ok := ctor(drv).(scopedQuery)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	q.applyScopesFromCtx(ctx)
-	return q.scopeConditions()
+	if err := q.scopeError(); err != nil {
+		return nil, err
+	}
+	return q.scopeConditions(), nil
 }

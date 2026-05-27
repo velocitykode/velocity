@@ -45,8 +45,18 @@ func (q *Query[T]) aggregate(ctx context.Context, fn, column string) (float64, e
 	if err := validateIdentifier(column); err != nil {
 		return 0, fmt.Errorf("%s: %w", fn, err)
 	}
+	if q.err != nil {
+		return 0, q.err
+	}
 	q.bindTxFromContextValue(ctx)
 	q.applyGlobalScopes(ctx)
+	// A scope predicate that fails validation (invalid identifier,
+	// unknown operator, driver-registered operator with bad value) sets
+	// q.err during apply. Surface it before issuing SQL so a broken
+	// scope cannot silently drop its predicate.
+	if q.err != nil {
+		return 0, q.err
+	}
 
 	// Framework-built aggregate projection: emit through the trusted
 	// RawColumns path so the user-facing Columns whitelist (which

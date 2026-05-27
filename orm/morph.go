@@ -176,7 +176,12 @@ func (m *Morph) Resolve(ctx context.Context) (any, error) {
 	// keeps the helper signature uniform with the batched eager-load
 	// path; the grammar's single-element IN compiles to "id IN ($1)"
 	// which every supported driver handles identically to "id = $1".
-	sqlStr, sqlArgs := buildScopedInSelect(ctx, driver, relatedType, tableName, "id", []any{m.ID})
+	// A scope that fails validation surfaces here; propagate the error
+	// rather than execute SQL with the scope silently dropped.
+	sqlStr, sqlArgs, scopeErr := buildScopedInSelect(ctx, driver, relatedType, tableName, "id", []any{m.ID})
+	if scopeErr != nil {
+		return nil, fmt.Errorf("orm: Morph.Resolve: scope error: %w", scopeErr)
+	}
 	rows, err := driver.QueryContext(ctx, sqlStr, sqlArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("orm: Morph.Resolve: query failed: %w", err)

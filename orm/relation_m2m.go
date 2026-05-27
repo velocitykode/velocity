@@ -348,9 +348,14 @@ func queryPivotRows(driver drivers.Driver, ctx context.Context, meta *m2mMeta, p
 // meta.relatedType (tenant, archive, locale, state, soft-delete, ...).
 // Builds the IN predicate plus scope conditions through
 // buildScopedInSelect so the hand-rolled SQL stays in lockstep with
-// what a typed Query[Related].WhereIn(...).Get(ctx) would emit.
+// what a typed Query[Related].WhereIn(...).Get(ctx) would emit. A
+// scope that fails validation propagates as an error: callers must not
+// see related rows loaded with a missing tenant/archive/locale filter.
 func queryRelatedRows(driver drivers.Driver, ctx context.Context, meta *m2mMeta, relatedIDs []any) ([]reflect.Value, error) {
-	relSQL, sqlArgs := buildScopedInSelect(ctx, driver, meta.relatedType, meta.relatedTable, "id", relatedIDs)
+	relSQL, sqlArgs, scopeErr := buildScopedInSelect(ctx, driver, meta.relatedType, meta.relatedTable, "id", relatedIDs)
+	if scopeErr != nil {
+		return nil, fmt.Errorf("orm: failed to apply scopes for m2m related rows: %w", scopeErr)
+	}
 
 	start := time.Now()
 	rows, err := driver.QueryContext(ctx, relSQL, sqlArgs...)

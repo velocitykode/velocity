@@ -1072,6 +1072,13 @@ func (q *Query[T]) Get(ctx context.Context) ([]T, error) {
 	}
 	q.bindTxFromContextValue(ctx)
 	q.applySoftDeleteScope(ctx)
+	// A scope predicate that fails validation (invalid identifier,
+	// unknown operator, driver-registered operator with bad value) sets
+	// q.err during apply. Surface it before issuing the SELECT so a
+	// broken scope cannot silently drop its predicate from the query.
+	if q.err != nil {
+		return nil, q.err
+	}
 
 	// Build SELECT query
 	selectQuery := &drivers.SelectQuery{
@@ -1177,6 +1184,12 @@ func (q *Query[T]) Count(ctx context.Context) (int, error) {
 	}
 	q.bindTxFromContextValue(ctx)
 	q.applySoftDeleteScope(ctx)
+	// A scope predicate that fails validation sets q.err during apply.
+	// Surface it before issuing SQL so a broken scope cannot silently
+	// drop its predicate.
+	if q.err != nil {
+		return 0, q.err
+	}
 	// COUNT(*) is a framework-generated projection: emit it through
 	// the trusted RawColumns path so the user-facing Columns whitelist
 	// stays strict for untrusted input.
@@ -1215,6 +1228,12 @@ func (q *Query[T]) Pluck(ctx context.Context, column string) ([]any, error) {
 	}
 	q.bindTxFromContextValue(ctx)
 	q.applySoftDeleteScope(ctx)
+	// A scope predicate that fails validation sets q.err during apply.
+	// Surface it before issuing SQL so a broken scope cannot silently
+	// drop its predicate.
+	if q.err != nil {
+		return nil, q.err
+	}
 	q.Select(column)
 
 	selectQuery := &drivers.SelectQuery{
@@ -1295,6 +1314,14 @@ func (q *Query[T]) bulkUpdate(ctx context.Context, updates map[string]any, op Bu
 	// path, so the same predicate also prevents double-stamping deleted_at
 	// on already-trashed rows.
 	q.applyGlobalScopes(ctx)
+	// A scope predicate that fails validation (invalid identifier,
+	// unknown operator, driver-registered operator with bad value) sets
+	// q.err during apply. Surface it before issuing the UPDATE so a
+	// broken tenant scope cannot silently mutate rows outside its
+	// intended set.
+	if q.err != nil {
+		return 0, q.err
+	}
 
 	// Copy the caller's map before mutation. Update must not have
 	// visible side effects on the passed-in map (thread safety, idempotent
@@ -1515,6 +1542,14 @@ func (q *Query[T]) ForceDelete(ctx context.Context) (int64, error) {
 	// is the documented way to bypass it.
 	q.WithoutGlobalScope(softDeleteScopeName)
 	q.applyGlobalScopes(ctx)
+	// A scope predicate that fails validation (invalid identifier,
+	// unknown operator, driver-registered operator with bad value) sets
+	// q.err during apply. Surface it before issuing the DELETE so a
+	// broken tenant scope cannot silently drop rows outside its
+	// intended set.
+	if q.err != nil {
+		return 0, q.err
+	}
 
 	plan, err := q.bulkPrepareHooks(ctx, BulkOpForceDelete, callerSkipForceDelete)
 	if err != nil {

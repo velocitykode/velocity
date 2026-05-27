@@ -92,8 +92,19 @@ func (q *Query[T]) incrementOrDecrement(ctx context.Context, column, op string, 
 	if err := validateIdentifier(column); err != nil {
 		return fmt.Errorf("velocity/orm: increment/decrement: %w", err)
 	}
+	if q.err != nil {
+		return q.err
+	}
 	q.bindTxFromContextValue(ctx)
 	q.applyGlobalScopes(ctx)
+	// A scope predicate that fails validation (invalid identifier,
+	// unknown operator, driver-registered operator with bad value) sets
+	// q.err during apply. Surface it before issuing the UPDATE so a
+	// broken tenant scope cannot silently mutate rows outside its
+	// intended set.
+	if q.err != nil {
+		return q.err
+	}
 
 	amt := 1
 	if len(amount) > 0 {

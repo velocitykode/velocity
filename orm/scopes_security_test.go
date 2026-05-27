@@ -588,3 +588,223 @@ func TestMorphResolve_AppliesRelatedTenantScope(t *testing.T) {
 		t.Error("own resolve: Resolved is nil")
 	}
 }
+
+// --- Follow-up: OR-preservation in eager-load scopes ----------------
+
+// TestEagerLoad_PreservesOrInScope is the regression test for the
+// reviewer's Blocker 1: an OR-based scope on the related model was
+// being coerced to AND inside the eager-load helper, narrowing the
+// matched result set and silently changing correctness.
+//
+// Scope: q.Where("tenant_id = ?", 1).OrWhere("public = ?", true)
+//
+// Semantics: a comment is visible if it belongs to tenant 1 OR if it
+// is marked public. Three comments are seeded:
+//   - id=1: tenant=1, public=false (matches WHERE branch)
+//   - id=2: tenant=2, public=true  (matches OR branch)
+//   - id=3: tenant=2, public=false (matches neither, must be hidden)
+//
+// Pre-fix the eager-load coerced every harvested scope condition to
+// "and", so the predicate compiled to "tenant=1 AND public=true" and
+// only an impossible combination matched. Both rows 1 and 2 should
+// surface; row 3 must remain hidden.
+func TestEagerLoad_PreservesOrInScope(t *testing.T) {
+	m := setupSecurityTables(t)
+
+	// scope_comments carries a `public` column too: extend the schema
+	// rather than redo the helper.
+	if _, err := m.DB().Exec(`ALTER TABLE scope_comments ADD COLUMN public BOOLEAN NOT NULL DEFAULT 0`); err != nil {
+		t.Fatalf("alter: %v", err)
+	}
+	if _, err := m.DB().Exec(`INSERT INTO scope_posts (id, title, tenant_id, created_at, updated_at) VALUES
+		(1, 'blog', 1, '2024-01-01', '2024-01-01')`); err != nil {
+		t.Fatalf("seed posts: %v", err)
+	}
+	if _, err := m.DB().Exec(`INSERT INTO scope_comments (id, post_id, tenant_id, body, public, created_at, updated_at) VALUES
+		(1, 1, 1, 'mine private',     0, '2024-01-01', '2024-01-01'),
+		(2, 1, 2, 'their public',     1, '2024-01-01', '2024-01-01'),
+		(3, 1, 2, 'their private',    0, '2024-01-01', '2024-01-01')`); err != nil {
+		t.Fatalf("seed comments: %v", err)
+	}
+
+	// OR scope: visible if tenant_id=1 OR public=true.
+	AddGlobalScope[ScopeComment]("visible", func(_ context.Context, q *Query[ScopeComment]) {
+		q.Where("tenant_id = ?", 1).OrWhere("public = ?", true)
+	})
+
+	blogs, err := newQuery[ScopeBlog]().With("Comments").Get(context.Background())
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(blogs) != 1 {
+		t.Fatalf("got %d blogs, want 1", len(blogs))
+	}
+	if got := len(blogs[0].Comments); got != 2 {
+		t.Fatalf("OR SCOPE COERCED TO AND: got %d comments, want 2 (id=1 tenant-match + id=2 public-match)", got)
+	}
+	// id=3 must NOT be present.
+	for _, c := range blogs[0].Comments {
+		if c.ID == 3 {
+			t.Errorf("attacker comment id=3 leaked through scope")
+		}
+	}
+}
+
+// --- Follow-up: driver-aware reflect scope path ----------------------
+
+// TestEagerLoad_ScopeErrorPropagates is the regression test for the
+// reviewer's Blocker 2: a scope whose setup fails (unknown operator,
+// invalid identifier, ...) used to be silently dropped from the
+// eager-load query because applyGlobalScopesByType discarded q.err.
+// Now the error propagates as a query-time failure.
+func TestEagerLoad_ScopeErrorPropagates(t *testing.T) {
+	m := setupSecurityTables(t)
+
+	if _, err := m.DB().Exec(`INSERT INTO scope_posts (id, title, tenant_id, created_at, updated_at) VALUES
+		(1, 'blog', 1, '2024-01-01', '2024-01-01')`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := m.DB().Exec(`INSERT INTO scope_comments (id, post_id, tenant_id, body, created_at, updated_at) VALUES
+		(1, 1, 1, 'a', '2024-01-01', '2024-01-01')`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Register a scope that uses an operator no driver knows. The
+	// scope's q.Where(...) sets q.err to "invalid SQL operator". Before
+	// the fix, applyGlobalScopesByType returned only []Condition and
+	// dropped q.err, so the eager-load ran without any predicate.
+	AddGlobalScope[ScopeComment]("broken", func(_ context.Context, q *Query[ScopeComment]) {
+		q.Where("body NOSUCHOP ?", "x")
+	})
+
+	_, err := newQuery[ScopeBlog]().With("Comments").Get(context.Background())
+	if err == nil {
+		t.Fatal("expected eager-load to fail with scope error; got nil (scope was silently dropped)")
+	}
+}
+
+// --- Follow-up: terminal err-check after applyGlobalScopes -----------
+
+// TestSum_ScopeErrorPropagates confirms aggregate() returns the
+// deferred scope error captured during applyGlobalScopes instead of
+// running SQL with the predicate dropped.
+func TestSum_ScopeErrorPropagates(t *testing.T) {
+	m := setupSecurityTables(t)
+
+	if _, err := m.DB().Exec(`INSERT INTO scope_posts (id, title, tenant_id, amount, created_at, updated_at) VALUES
+		(1, 'a', 1, 100, '2024-01-01', '2024-01-01'),
+		(2, 'b', 2, 999, '2024-01-01', '2024-01-01')`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	AddGlobalScope[ScopePost]("broken", func(_ context.Context, q *Query[ScopePost]) {
+		q.Where("amount NOSUCHOP ?", 1)
+	})
+
+	got, err := newQuery[ScopePost]().Sum(context.Background(), "amount")
+	if err == nil {
+		t.Fatalf("expected Sum to fail with scope error; got nil (silent scope drop), result = %v", got)
+	}
+}
+
+// TestIncrement_ScopeErrorPropagates confirms incrementOrDecrement()
+// returns the deferred scope error instead of mutating rows with the
+// scope predicate dropped.
+func TestIncrement_ScopeErrorPropagates(t *testing.T) {
+	m := setupSecurityTables(t)
+
+	if _, err := m.DB().Exec(`INSERT INTO scope_posts (id, title, tenant_id, views, created_at, updated_at) VALUES
+		(1, 'a', 1, 0, '2024-01-01', '2024-01-01'),
+		(2, 'b', 2, 0, '2024-01-01', '2024-01-01')`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	AddGlobalScope[ScopePost]("broken", func(_ context.Context, q *Query[ScopePost]) {
+		q.Where("views NOSUCHOP ?", 1)
+	})
+
+	err := newQuery[ScopePost]().Increment(context.Background(), "views", 5)
+	if err == nil {
+		t.Fatal("expected Increment to fail with scope error; got nil (silent scope drop)")
+	}
+
+	// Verify NO rows were mutated.
+	var v1, v2 int
+	if err := m.DB().QueryRow(`SELECT views FROM scope_posts WHERE id = 1`).Scan(&v1); err != nil {
+		t.Fatalf("v1: %v", err)
+	}
+	if err := m.DB().QueryRow(`SELECT views FROM scope_posts WHERE id = 2`).Scan(&v2); err != nil {
+		t.Fatalf("v2: %v", err)
+	}
+	if v1 != 0 || v2 != 0 {
+		t.Errorf("rows mutated despite scope error: v1=%d v2=%d (want 0,0)", v1, v2)
+	}
+}
+
+// TestForceDelete_ScopeErrorPropagates confirms ForceDelete returns the
+// deferred scope error instead of deleting rows with the scope
+// predicate dropped.
+func TestForceDelete_ScopeErrorPropagates(t *testing.T) {
+	m := setupSecurityTables(t)
+
+	if _, err := m.DB().Exec(`INSERT INTO scope_posts (id, title, tenant_id, created_at, updated_at) VALUES
+		(1, 'a', 1, '2024-01-01', '2024-01-01'),
+		(2, 'b', 2, '2024-01-01', '2024-01-01')`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	AddGlobalScope[ScopePost]("broken", func(_ context.Context, q *Query[ScopePost]) {
+		q.Where("tenant_id NOSUCHOP ?", 1)
+	})
+
+	affected, err := newQuery[ScopePost]().ForceDelete(context.Background())
+	if err == nil {
+		t.Fatalf("expected ForceDelete to fail with scope error; got nil, affected = %d", affected)
+	}
+
+	// Verify NO rows were deleted.
+	var n int
+	if err := m.DB().QueryRow(`SELECT COUNT(*) FROM scope_posts`).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("rows deleted despite scope error: count=%d (want 2)", n)
+	}
+}
+
+// TestEagerLoad_DriverOperatorInScope confirms the reflect-only scope
+// path passes the active driver into the constructed *Query[T] so
+// scopes that use a driver-registered operator resolve via
+// drv.OperatorRegistry instead of always failing with "invalid SQL
+// operator". SQLite's OperatorRegistry is nil today, but the same
+// resolveOperator path is exercised; if the driver were nil, the
+// operator would be rejected before the registry was consulted. The
+// test asserts the error message that surfaces from a driver-less
+// path ("invalid SQL operator") still propagates correctly, which
+// confirms the reflect-only path reaches resolveOperator at all.
+func TestEagerLoad_DriverOperatorInScope(t *testing.T) {
+	m := setupSecurityTables(t)
+
+	if _, err := m.DB().Exec(`INSERT INTO scope_posts (id, title, tenant_id, created_at, updated_at) VALUES
+		(1, 'blog', 1, '2024-01-01', '2024-01-01')`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := m.DB().Exec(`INSERT INTO scope_comments (id, post_id, tenant_id, body, created_at, updated_at) VALUES
+		(1, 1, 1, 'a', '2024-01-01', '2024-01-01')`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// A Postgres-only operator on a SQLite test harness. SQLite's
+	// OperatorRegistry is nil, so resolveOperator returns the same
+	// "invalid SQL operator" message either with or without a driver.
+	// What matters is the eager-load surfaces the error rather than
+	// swallowing it.
+	AddGlobalScope[ScopeComment]("custom_op", func(_ context.Context, q *Query[ScopeComment]) {
+		q.Where("body @> ?", `"x"`)
+	})
+
+	_, err := newQuery[ScopeBlog]().With("Comments").Get(context.Background())
+	if err == nil {
+		t.Fatal("expected eager-load to surface scope operator error; got nil")
+	}
+}
