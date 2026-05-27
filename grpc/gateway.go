@@ -33,6 +33,16 @@ type Gateway struct {
 	running      bool
 	logger       log.Logger
 
+	// environment is the deployment environment (e.g., "production", "staging").
+	// When set to "production", Build() refuses to start without explicitly
+	// configured transport credentials. Defaults to APP_ENV at construction.
+	environment string
+
+	// credsOpted tracks whether the caller supplied transport credentials via
+	// a Gateway*With* option that sets dial credentials. The production guard
+	// in Build() uses this to decide whether to refuse the cleartext default.
+	credsOpted bool
+
 	// Handler registration functions to call after gateway is built
 	registrations []GatewayRegistrationFunc
 	muxOptions    []runtime.ServeMuxOption
@@ -60,6 +70,7 @@ func NewGateway(opts ...GatewayOption) *Gateway {
 	g := &Gateway{
 		port:          cfg.GatewayPort,
 		grpcEndpoint:  cfg.GRPCEndpoint,
+		environment:   os.Getenv("APP_ENV"),
 		registrations: make([]GatewayRegistrationFunc, 0),
 		muxOptions: []runtime.ServeMuxOption{
 			// Use JSON names and emit defaults
@@ -85,46 +96,68 @@ func NewGateway(opts ...GatewayOption) *Gateway {
 		g.logger, _ = log.NewLogger(log.LogConfig{Driver: "console", Config: map[string]interface{}{"level": "info"}})
 	}
 
-	// If no transport credentials were configured via options, default to insecure
-	// for backward compatibility. Users should use GatewayWithTLS() or
-	// GatewayWithTransportConfig() to configure TLS.
-	if len(g.dialOptions) == 0 {
-		g.dialOptions = []grpc.DialOption{
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
-		}
-	}
-
 	return g
 }
 
 // GatewayTransportConfig holds TLS configuration for the gateway's connection
 // to the gRPC server.
+//
+// TLSCert and TLSKey form the client identity used for mutual TLS via
+// tls.LoadX509KeyPair. CACert (optional) pins the server's CA; when empty,
+// the system root CA pool is used to verify the server.
 type GatewayTransportConfig struct {
-	// TLSCert is the path to the CA certificate file for verifying the gRPC server.
+	// TLSCert is the path to the client certificate PEM file (mTLS client identity).
 	TLSCert string
-	// TLSKey is the path to the TLS key file.
+	// TLSKey is the path to the client private key PEM file (mTLS client identity).
 	TLSKey string
+	// CACert is the optional path to a CA certificate PEM file used to verify
+	// the upstream gRPC server. When empty, the system root CA pool is used.
+	CACert string
 	// Insecure disables TLS. Only use for local development.
 	Insecure bool
 }
 
 // GatewayWithTransportConfig configures the gateway transport from a typed config.
-// If both TLSCert and TLSKey are set, TLS is enabled. If Insecure is true, insecure
-// credentials are used. Returns an error at Build() time if neither is configured.
+// If both TLSCert and TLSKey are set, TLS is enabled and the cert/key pair is
+// loaded as the client identity for mutual TLS. If CACert is set, it is loaded
+// as the trust anchor for verifying the upstream gRPC server. If Insecure is
+// true, insecure credentials are used. Returns an error at Build() time if
+// neither is configured, or if any referenced file cannot be read or parsed.
 func GatewayWithTransportConfig(cfg GatewayTransportConfig) GatewayOption {
 	return func(g *Gateway) {
 		if cfg.TLSCert != "" && cfg.TLSKey != "" {
 			tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
-			caCert, err := os.ReadFile(cfg.TLSCert)
-			if err == nil {
-				pool := x509.NewCertPool()
-				if pool.AppendCertsFromPEM(caCert) {
-					tlsConfig.RootCAs = pool
-				}
+
+			// Load the client cert and key for mTLS. Any error here is a hard
+			// failure: silently dialling without a client cert is a regression.
+			clientCert, err := tls.LoadX509KeyPair(cfg.TLSCert, cfg.TLSKey)
+			if err != nil {
+				g.configErr = fmt.Errorf("velocity/grpc: failed to load gateway client cert/key (%s, %s): %w", cfg.TLSCert, cfg.TLSKey, err)
+				return
 			}
+			tlsConfig.Certificates = []tls.Certificate{clientCert}
+
+			// If a CA cert is provided, pin it. Any error here is a hard
+			// failure: silently falling back to system roots when an operator
+			// asked for a private CA is the trap that I-01 is fixing.
+			if cfg.CACert != "" {
+				caCert, err := os.ReadFile(cfg.CACert)
+				if err != nil {
+					g.configErr = fmt.Errorf("velocity/grpc: failed to read gateway CA cert %q: %w", cfg.CACert, err)
+					return
+				}
+				pool := x509.NewCertPool()
+				if !pool.AppendCertsFromPEM(caCert) {
+					g.configErr = fmt.Errorf("velocity/grpc: failed to parse gateway CA cert %q (no valid PEM blocks)", cfg.CACert)
+					return
+				}
+				tlsConfig.RootCAs = pool
+			}
+
 			g.dialOptions = []grpc.DialOption{
 				grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
 			}
+			g.credsOpted = true
 			return
 		}
 
@@ -132,10 +165,11 @@ func GatewayWithTransportConfig(cfg GatewayTransportConfig) GatewayOption {
 			g.dialOptions = []grpc.DialOption{
 				grpc.WithTransportCredentials(insecure.NewCredentials()),
 			}
+			g.credsOpted = true
 			return
 		}
 
-		g.configErr = fmt.Errorf("gRPC gateway: TLS is required. Set TLSCert and TLSKey, or set Insecure=true for local development")
+		g.configErr = fmt.Errorf("velocity/grpc: gateway TLS is required. Set TLSCert and TLSKey, or set Insecure=true for local development")
 	}
 }
 
@@ -153,10 +187,25 @@ func GatewayWithGRPCEndpoint(endpoint string) GatewayOption {
 	}
 }
 
-// GatewayWithDialOption adds a gRPC dial option
+// GatewayWithDialOption adds a gRPC dial option. Callers that pass a transport
+// credentials option through this hook should also set the environment
+// explicitly so the production guard in Build() does not refuse the start.
 func GatewayWithDialOption(opt grpc.DialOption) GatewayOption {
 	return func(g *Gateway) {
 		g.dialOptions = append(g.dialOptions, opt)
+		// We cannot inspect grpc.DialOption to know if it set credentials, so
+		// any caller using this hook is treated as having opted into managing
+		// transport credentials themselves.
+		g.credsOpted = true
+	}
+}
+
+// GatewayWithEnvironment sets the deployment environment (e.g., "production",
+// "staging"). When set to "production", Build() refuses to start without
+// explicitly configured transport credentials.
+func GatewayWithEnvironment(env string) GatewayOption {
+	return func(g *Gateway) {
+		g.environment = env
 	}
 }
 
@@ -181,6 +230,7 @@ func GatewayWithInsecure() GatewayOption {
 		g.dialOptions = []grpc.DialOption{
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 		}
+		g.credsOpted = true
 	}
 }
 
@@ -210,6 +260,7 @@ func GatewayWithTLS(certFile string) GatewayOption {
 		g.dialOptions = []grpc.DialOption{
 			grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
 		}
+		g.credsOpted = true
 	}
 }
 
@@ -235,6 +286,12 @@ func (g *Gateway) RegisterHandler(handler GatewayRegistrationFunc) *Gateway {
 
 // Build constructs the HTTP gateway with all configured handlers.
 // This is called automatically by Start() if not called explicitly.
+//
+// Build refuses to start in production (APP_ENV=production or
+// GatewayWithEnvironment("production")) when no transport credentials have
+// been configured. Outside production, an unconfigured gateway defaults to
+// insecure credentials and emits a one-shot warning. Operators that
+// deliberately run a cleartext mesh must opt in via GatewayWithInsecure().
 func (g *Gateway) Build(ctx context.Context) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -245,6 +302,20 @@ func (g *Gateway) Build(ctx context.Context) error {
 
 	if g.configErr != nil {
 		return g.configErr
+	}
+
+	// Enforce the production TLS guard before any other validation so the
+	// error is unambiguous when an operator forgets to wire credentials.
+	if !g.credsOpted {
+		if g.environment == "production" {
+			return fmt.Errorf("velocity/grpc: gateway TLS credentials are required in production. Use GatewayWithTLS, GatewayWithTransportConfig, or GatewayWithInsecure to opt out for a known-internal mesh")
+		}
+		g.logger.Warn("gRPC gateway dialling upstream with insecure credentials. Configure TLS via GatewayWithTLS or GatewayWithTransportConfig before deploying to production",
+			"grpc_endpoint", g.grpcEndpoint,
+		)
+		g.dialOptions = []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+		}
 	}
 
 	if g.grpcEndpoint == "" {
