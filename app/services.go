@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/contract"
@@ -51,19 +52,34 @@ type Services struct {
 	// without a router (e.g. unit tests).
 	RedirectAllowlist contract.RedirectAllowlist
 
+	// extMu guards Extensions against concurrent registration and read.
+	// Extensions is exported so applications can register their own
+	// instances via RegisterExtension at boot; the public API permits
+	// later runtime use too (e.g. a chain.Command that lazily registers
+	// a sub-service the first time it runs), so every accessor must be
+	// safe for concurrent use. Cross-cutting map mutex sweep: rule #3.
+	extMu sync.RWMutex
+
 	// Extensions holds optional first-party and third-party service instances.
 	// Packages register themselves here via ServiceProvider.Register() so that
 	// core never needs new fields for each additional package.
 	//
-	// Prefer RegisterExtension / ExtensionAs over direct map access — the
-	// generic helpers give you duplicate-key detection and type-safe reads.
+	// Prefer RegisterExtension / ExtensionAs / RangeExtensions over direct
+	// map access. The generic helpers give you duplicate-key detection,
+	// type-safe reads, and mutex-protected iteration. Direct access to
+	// this field is NOT safe for concurrent use.
 	Extensions map[string]any
 }
 
 // RegisterExtension stores an instance under the given key. Returns an error
 // if the key is already registered (duplicate registration usually means a
 // provider ran twice or two packages clashed on the same key).
+//
+// Safe for concurrent use with ExtensionAs / RangeExtensions: every accessor
+// serialises through s.extMu.
 func RegisterExtension[T any](s *Services, key string, v T) error {
+	s.extMu.Lock()
+	defer s.extMu.Unlock()
 	if s.Extensions == nil {
 		s.Extensions = make(map[string]any)
 	}
@@ -77,9 +93,13 @@ func RegisterExtension[T any](s *Services, key string, v T) error {
 // ExtensionAs retrieves the extension registered under key and asserts it to
 // type T. Returns a wrapped error when the key is missing or the stored
 // instance does not satisfy T so callers can distinguish the two cases.
+//
+// Safe for concurrent use; reads s.Extensions under s.extMu.RLock.
 func ExtensionAs[T any](s *Services, key string) (T, error) {
 	var zero T
+	s.extMu.RLock()
 	v, ok := s.Extensions[key]
+	s.extMu.RUnlock()
 	if !ok {
 		return zero, fmt.Errorf("velocity/app: extension %q not registered", key)
 	}
@@ -88,4 +108,23 @@ func ExtensionAs[T any](s *Services, key string) (T, error) {
 		return zero, fmt.Errorf("velocity/app: extension %q is %T, not %T", key, v, zero)
 	}
 	return typed, nil
+}
+
+// RangeExtensions calls fn for every registered extension under s.extMu.RLock.
+// fn must NOT call RegisterExtension or any other Services method that
+// acquires extMu (re-entrant Lock on a held RLock deadlocks). If fn needs to
+// register something, capture the keys/values during Range and register
+// after Range returns. Returns false from fn to halt iteration early.
+//
+// The framework uses this from bootstrap.wireInstanceEvents to push the
+// instance event dispatcher into every extension that implements
+// contract.EventDispatcherAware.
+func (s *Services) RangeExtensions(fn func(key string, v any) bool) {
+	s.extMu.RLock()
+	defer s.extMu.RUnlock()
+	for k, v := range s.Extensions {
+		if !fn(k, v) {
+			return
+		}
+	}
 }

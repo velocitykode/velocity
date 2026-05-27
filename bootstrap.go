@@ -159,12 +159,16 @@ func wireInstanceEvents(a *App) {
 		mgr.SetTxEventBus(a.Services.Events)
 	}
 
-	// Wire events into any extension that supports it.
-	for _, ext := range a.Extensions {
+	// Wire events into any extension that supports it. Iterate under the
+	// Services extMu RLock via RangeExtensions so a concurrent
+	// RegisterExtension cannot race the iteration (cross-cutting map
+	// mutex sweep, rule #3).
+	a.Services.RangeExtensions(func(_ string, ext any) bool {
 		if s, ok := ext.(contract.EventDispatcherAware); ok {
 			s.SetEventDispatcher(dispatch)
 		}
-	}
+		return true
+	})
 }
 
 // runProviderLifecycle executes the two-phase provider startup: all Register() calls
