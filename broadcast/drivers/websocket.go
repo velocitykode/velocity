@@ -470,14 +470,33 @@ func computeOpaqueClientID(seed [32]byte, socketID, channel string) string {
 // cap allows. Audit D-03.
 var ErrChannelLimit = fmt.Errorf("velocity/broadcast: channel subscription limit reached")
 
-// Subscribe adds a client to a channel. Enforces the per-client channel cap
-// configured via WithMaxChannelsPerClient (audit D-03). Returns
-// ErrChannelLimit if adding the channel would exceed the cap; idempotent for
-// re-subscribes (already-subscribed channels do not count against the cap a
-// second time).
+// ErrChannelNameTooLong is returned by Subscribe (and surfaced by
+// handleSubscribe) when the channel name length exceeds the configured cap.
+// Audit D-03 follow-up: this guard lives inside Subscribe so direct
+// callers (programmatic subscribe paths, anything that bypasses the WS
+// message handler) cannot route past the length check.
+var ErrChannelNameTooLong = fmt.Errorf("velocity/broadcast: channel name exceeds configured length cap")
+
+// Subscribe adds a client to a channel. Enforces both the per-client
+// channel cap (WithMaxChannelsPerClient) and the per-name length cap
+// (WithMaxChannelNameLength). Audit D-03.
+//
+// Returns ErrChannelNameTooLong if channel exceeds the length cap.
+// Returns ErrChannelLimit if adding the channel would exceed the per-client
+// cap; idempotent for re-subscribes (already-subscribed channels do not
+// count against the cap a second time).
 func (d *WebSocketDriver) Subscribe(channel string, client *websocket.Client) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	// Audit D-03 follow-up: gate channel-name length here so direct
+	// callers of Subscribe share the same protection that handleSubscribe
+	// applies to WS-message-driven subscribes. Without this, an internal
+	// path that bypasses handleSubscribe could still inflate clientSubs /
+	// channels with megabyte-sized channel names.
+	if d.maxChannelNameLength > 0 && len(channel) > d.maxChannelNameLength {
+		return ErrChannelNameTooLong
+	}
 
 	// Lazy-init the per-client bookkeeping map so test fixtures that build
 	// the driver as a bare struct literal (skipping NewWebSocketDriver) do
@@ -558,8 +577,13 @@ func (d *WebSocketDriver) handleSubscribe(client *websocket.Client, msg websocke
 	// authorizer or touching any map. Without this gate an attacker can
 	// submit megabyte-sized channel strings on the unauthenticated public
 	// path and force the server to copy them into clientSubs / channels.
+	//
+	// Subscribe enforces the same cap (D-03 follow-up); this early reject
+	// is retained so the returned error carries the configured cap value
+	// for nicer diagnostics. Wrap ErrChannelNameTooLong so callers can
+	// errors.Is the sentinel regardless of which seam rejected.
 	if d.maxChannelNameLength > 0 && len(channel) > d.maxChannelNameLength {
-		return fmt.Errorf("velocity/broadcast: channel name exceeds %d characters", d.maxChannelNameLength)
+		return fmt.Errorf("%w: %d characters", ErrChannelNameTooLong, d.maxChannelNameLength)
 	}
 
 	// Authorize private and presence channels. The default authorizer is

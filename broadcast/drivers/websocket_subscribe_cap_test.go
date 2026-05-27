@@ -124,14 +124,67 @@ func TestHandleSubscribe_OversizedChannelNameRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for oversized channel name, got nil")
 	}
-	if !strings.Contains(err.Error(), "channel name exceeds") {
-		t.Fatalf("expected length-cap error, got %v", err)
+	if !errors.Is(err, ErrChannelNameTooLong) {
+		t.Fatalf("expected ErrChannelNameTooLong, got %v", err)
 	}
 	if _, exists := d.channels[long]; exists {
 		t.Error("oversized channel name leaked into channels map")
 	}
 	if subs, ok := d.clientSubs[client.ID]; ok && len(subs) > 0 {
 		t.Errorf("oversized channel name leaked into clientSubs: %v", subs)
+	}
+}
+
+// TestSubscribe_DirectCallEnforcesNameLengthCap covers the D-03 follow-up:
+// direct callers of the exported Subscribe method (anything that does NOT
+// route through handleSubscribe) must hit the same length cap. Without the
+// guard inside Subscribe, programmatic subscribe paths can store
+// arbitrarily long channel names in clientSubs / channels.
+func TestSubscribe_DirectCallEnforcesNameLengthCap(t *testing.T) {
+	const nameCap = 32
+	d := &WebSocketDriver{
+		channels:             make(map[string]map[string]*websocket.Client),
+		clientSubs:           make(map[string]map[string]struct{}),
+		maxChannelsPerClient: DefaultMaxChannelsPerClient,
+		maxChannelNameLength: nameCap,
+	}
+	client := createTestClient("direct")
+	long := strings.Repeat("a", 1024)
+
+	err := d.Subscribe(long, client)
+	if err == nil {
+		t.Fatal("expected error for oversized channel name on direct Subscribe, got nil")
+	}
+	if !errors.Is(err, ErrChannelNameTooLong) {
+		t.Fatalf("expected ErrChannelNameTooLong, got %v", err)
+	}
+
+	// State must be untouched: no entry in channels, no entry in clientSubs.
+	if _, exists := d.channels[long]; exists {
+		t.Error("rejected direct subscribe leaked into channels map")
+	}
+	if subs, ok := d.clientSubs[client.ID]; ok && len(subs) > 0 {
+		t.Errorf("rejected direct subscribe leaked into clientSubs: %v", subs)
+	}
+
+	// A normal-sized subscribe on the same client still succeeds.
+	if err := d.Subscribe("room-ok", client); err != nil {
+		t.Fatalf("subsequent in-range Subscribe must succeed, got %v", err)
+	}
+}
+
+// TestSubscribe_DirectCallLengthCapDisabled confirms a non-positive cap
+// (caller opt-out via WithMaxChannelNameLength(-1)) lets a direct Subscribe
+// accept long channel names.
+func TestSubscribe_DirectCallLengthCapDisabled(t *testing.T) {
+	d := NewWebSocketDriver(websocket.DefaultConfig(), WithMaxChannelNameLength(-1))
+	defer d.server.Shutdown(context.Background()) //nolint:errcheck
+
+	client := createTestClient("c1")
+	long := strings.Repeat("z", 4096)
+
+	if err := d.Subscribe(long, client); err != nil {
+		t.Fatalf("opt-out config must allow long channel names; got %v", err)
 	}
 }
 
