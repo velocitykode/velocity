@@ -131,6 +131,14 @@ type VelocityRouterV2 struct {
 	// future runtime rotation does not race against in-flight
 	// signature verifications.
 	signedURLKey signedURLKey
+
+	// notFoundHandler is the global middleware chain wrapped around a
+	// synthetic terminal handler that writes the 404 response. Built once
+	// during commitOnce so unmatched requests still pass through every
+	// Use(...) middleware (rate limiters, security headers, body limits,
+	// etc.). Stored via atomic.Pointer so the read on the hot path is
+	// lock-free; written only under mu inside commitOnce / ClearRoutes.
+	notFoundHandler atomic.Pointer[HandlerFunc]
 }
 
 // NewV2 creates a new tree-based router instance
@@ -679,26 +687,90 @@ func (r *VelocityRouterV2) matchRoute(req *http.Request) *MatchResult {
 	return tree.Match("ANY", path)
 }
 
-// handleNotFound writes the 404 response and dispatches events.
+// handleNotFound runs the unmatched-path response through the global
+// middleware chain and dispatches events. The middleware chain is built
+// once during commitOnce (see notFoundHandler) so global Use(...)
+// middleware (rate limiters, security headers, body limits) applies to
+// 404 responses just as it does to matched routes. Without this, an
+// attacker could hammer arbitrary unknown paths to bypass per-IP
+// throttles while still costing the server per-request work
+// (security-audit-2026-05 finding E-01).
+//
+// RequestRouted fires with Matched=false (no route was matched);
+// RequestHandled fires after the middleware chain completes with the
+// final status. A Context is acquired from the pool exactly once and
+// released exactly once, matching the invokeHandler pairing.
 func (r *VelocityRouterV2) handleNotFound(rw *responseWriter, req *http.Request, meta requestMeta) {
 	r.dispatchInstanceEvent(req.Context(), &RequestRouted{
 		Context:   req.Context(),
 		RequestID: meta.id,
 		Matched:   false,
 	})
-	http.NotFound(rw, req)
-	r.dispatchInstanceEvent(req.Context(), &RequestHandled{
-		Context:      req.Context(),
-		RequestID:    meta.id,
-		Method:       req.Method,
-		Path:         req.URL.Path,
-		StatusCode:   http.StatusNotFound,
-		BytesWritten: rw.BytesWritten(),
-		Duration:     time.Since(meta.startedAt),
-		TraceID:      meta.traceID,
-		SpanID:       meta.spanID,
-		ParentID:     meta.parentID,
-	})
+
+	// Attach services to the request so middleware that pulls from
+	// ServicesFromRequest (or relies on ctx.services) sees the
+	// configured container, matching the matched-route path
+	// (enrichRequest does the same wiring there).
+	if r.services != nil {
+		req = WithServices(req, r.services)
+	}
+
+	ctx := r.ctxPool.Get().(*Context)
+	ctx.Response = rw
+	ctx.Request = req
+	ctx.services = r.services
+	ctx.trustedProxies = r.trustedProxiesOrParse()
+	ctx.redirectAllowedHosts = r.RedirectAllowedHosts
+	ctx.fileRoot = r.FileRootHandle()
+	ctx.validateFn = r.validateFn
+
+	var handlerErr error
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			r.onPanic(ctx, rw, req, meta, recovered)
+		} else if handlerErr != nil && !errors.Is(handlerErr, ErrValidationAborted) {
+			r.dispatchInstanceEvent(req.Context(), &RequestFailed{
+				Context:   req.Context(),
+				RequestID: meta.id,
+				Method:    req.Method,
+				Path:      req.URL.Path,
+				Error:     handlerErr,
+				Recovered: false,
+				TraceID:   meta.traceID,
+				SpanID:    meta.spanID,
+				ParentID:  meta.parentID,
+			})
+		}
+		r.dispatchInstanceEvent(req.Context(), &RequestHandled{
+			Context:      req.Context(),
+			RequestID:    meta.id,
+			Method:       req.Method,
+			Path:         req.URL.Path,
+			StatusCode:   rw.Status(),
+			BytesWritten: rw.BytesWritten(),
+			Duration:     time.Since(meta.startedAt),
+			TraceID:      meta.traceID,
+			SpanID:       meta.spanID,
+			ParentID:     meta.parentID,
+		})
+		ctx.reset()
+		r.ctxPool.Put(ctx)
+	}()
+
+	handler := r.notFoundHandler.Load()
+	if handler == nil {
+		// commitOnce has not run (or ClearRoutes wiped state and no
+		// request has rebuilt it yet). Fall back to a bare 404 so the
+		// router degrades safely rather than panicking; this branch is
+		// effectively unreachable from ServeHTTP because commitOnce
+		// runs at the top of every request.
+		http.NotFound(rw, req)
+		return
+	}
+	handlerErr = (*handler)(ctx)
+	if handlerErr != nil && !errors.Is(handlerErr, ErrValidationAborted) {
+		r.handleError(ctx, rw, handlerErr)
+	}
 }
 
 // enrichRequest attaches route params, name, pattern, and services to
@@ -867,6 +939,19 @@ func (r *VelocityRouterV2) commitOnce() {
 	compiled := tree.CompileStaticRoutes()
 	r.compiledRoutes.Store(&compiled)
 
+	// Build the 404 handler with the global middleware chain wrapped
+	// around a synthetic terminal handler. Without this wrap, unknown
+	// paths would bypass every Router.Use(...) middleware (rate
+	// limiters, security headers, body limits), letting an attacker
+	// hammer arbitrary paths at zero cost and skipping the operator's
+	// global throttle (security-audit-2026-05 finding E-01).
+	terminal := HandlerFunc(func(c *Context) error {
+		http.NotFound(c.Response, c.Request)
+		return nil
+	})
+	wrapped := applyMiddlewareChain(terminal, r.middlewares)
+	r.notFoundHandler.Store(&wrapped)
+
 	r.committed = true
 	r.frozen = true
 }
@@ -877,8 +962,9 @@ func (r *VelocityRouterV2) ClearCompiledRoutes() {
 	r.compiledRoutes.Store(nil)
 }
 
-// ClearRoutes fully resets the router — tree, compiled cache, groups, and resources.
-// After calling this, new routes can be registered and will be committed on the next request.
+// ClearRoutes fully resets the router (tree, compiled cache, groups, resources,
+// and the wrapped 404 handler). After calling this, new routes can be
+// registered and will be committed on the next request.
 func (r *VelocityRouterV2) ClearRoutes() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -887,6 +973,7 @@ func (r *VelocityRouterV2) ClearRoutes() {
 	r.rootGroup = NewGroupDefinition("", nil)
 	r.resources = nil
 	r.compiledRoutes.Store(nil)
+	r.notFoundHandler.Store(nil)
 	r.committed = false
 	r.frozen = false
 }
