@@ -157,12 +157,35 @@ func (d *S3Driver) PutCtx(ctx context.Context, path string, contents []byte) err
 // maxS3StreamSize is the default maximum stream size for S3 uploads (100MB)
 const maxS3StreamSize = 100 * 1024 * 1024
 
+// mimeSniffSize is the number of bytes net/http sniffs to detect a
+// Content-Type. We pre-buffer this many bytes off the source stream so
+// detectMimeType keeps working without forcing us to load the entire
+// upload into memory first.
+const mimeSniffSize = 512
+
+// ErrStreamTooLarge is returned by PutStream / PutStreamCtx when the
+// uploaded body would exceed maxS3StreamSize. Surfacing this as a typed
+// sentinel lets callers distinguish "client uploaded too much" from
+// generic SDK transport errors.
+var ErrStreamTooLarge = errors.New("velocity/storage: stream exceeds maximum size")
+
 // PutStream stores a stream at the given path (uses context.Background()).
 func (d *S3Driver) PutStream(path string, stream io.Reader) error {
 	return d.PutStreamCtx(context.Background(), path, stream)
 }
 
-// PutStreamCtx stores a stream at the given path using the caller-provided context.
+// PutStreamCtx stores a stream at the given path using the caller-provided
+// context.
+//
+// The body is streamed to S3 in chunks via manager.Uploader so peak memory
+// stays close to the SDK's default part size (5 MiB) rather than the full
+// upload (up to 100 MiB). MIME detection sniffs the first 512 bytes off the
+// front of the stream, which are then prepended back via io.MultiReader so
+// the SDK still sees the complete body. A cap-enforcing wrapper aborts the
+// upload with ErrStreamTooLarge if the source exceeds maxS3StreamSize: this
+// surfaces back through manager.Uploader as a wrapped read error and the
+// partial multipart upload (if any) is cleaned up by the SDK's standard
+// abort-on-error behaviour.
 func (d *S3Driver) PutStreamCtx(ctx context.Context, path string, stream io.Reader) error {
 	var err error
 	path, err = d.cleanPath(path)
@@ -170,21 +193,32 @@ func (d *S3Driver) PutStreamCtx(ctx context.Context, path string, stream io.Read
 		return err
 	}
 
-	// Limit stream size to prevent unbounded memory usage
-	limited := io.LimitReader(stream, maxS3StreamSize+1)
-	content, err := io.ReadAll(limited)
-	if err != nil {
+	// Sniff the leading bytes for MIME detection without buffering the
+	// whole upload. io.ReadFull lets us tolerate short streams (an upload
+	// smaller than mimeSniffSize is still valid; we just sniff whatever
+	// we got).
+	sniff := make([]byte, mimeSniffSize)
+	n, err := io.ReadFull(stream, sniff)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 		return fmt.Errorf("velocity/storage: failed to read stream: %w", err)
 	}
-	if int64(len(content)) > maxS3StreamSize {
-		return fmt.Errorf("velocity/storage: stream exceeds maximum size of %d bytes", maxS3StreamSize)
-	}
+	sniff = sniff[:n]
+	contentType := detectMimeType(sniff)
+
+	// Re-attach the sniffed bytes to the front of the remaining stream
+	// and wrap with a cap-enforcing reader sized to maxS3StreamSize+1.
+	// The +1 byte lets us distinguish "exactly at cap" (still fine) from
+	// "over cap" (abort): the cap reader returns ErrStreamTooLarge on
+	// the read that crosses the boundary, which surfaces back through
+	// the AWS uploader as an upload error.
+	body := io.MultiReader(bytes.NewReader(sniff), stream)
+	capped := &capReader{r: body, max: maxS3StreamSize}
 
 	input := &s3.PutObjectInput{
 		Bucket:      aws.String(d.bucket),
 		Key:         aws.String(path),
-		Body:        bytes.NewReader(content),
-		ContentType: aws.String(detectMimeType(content)),
+		Body:        capped,
+		ContentType: aws.String(contentType),
 	}
 
 	// Set ACL based on visibility. Private uploads also get
@@ -215,10 +249,67 @@ func (d *S3Driver) PutStreamCtx(ctx context.Context, path string, stream io.Read
 
 	_, err = d.uploader.Upload(ctx, input)
 	if err != nil {
+		// Surface ErrStreamTooLarge cleanly even when the AWS SDK has
+		// wrapped it in its own error type. The cap reader emits the
+		// sentinel from Read; the uploader's chunker propagates it
+		// through one or more layers of wrapping.
+		if errors.Is(err, ErrStreamTooLarge) {
+			return ErrStreamTooLarge
+		}
 		return fmt.Errorf("velocity/storage: failed to upload to s3: %w", err)
 	}
 
 	return nil
+}
+
+// capReader returns ErrStreamTooLarge from Read once the source has
+// produced more than max bytes. The wrapper is used to enforce an
+// upload size cap WITHOUT buffering the entire upload in memory: the
+// AWS uploader streams chunks through Read, the wrapper counts as it
+// goes, and the read that crosses the boundary returns the sentinel
+// error. The uploader propagates the error back to its caller and (for
+// multipart uploads) issues an AbortMultipartUpload internally.
+//
+// Implementation reads from the source unrestricted but trims any
+// returned slice that would push the running total past max+1. The
+// running total going strictly above max trips the sentinel on the
+// SAME Read call so the uploader sees the failure immediately.
+type capReader struct {
+	r      io.Reader
+	max    int64
+	read   int64
+	tipped bool
+}
+
+func (c *capReader) Read(p []byte) (int, error) {
+	if c.tipped {
+		return 0, ErrStreamTooLarge
+	}
+	// Allow reading exactly one byte past the cap so we can detect
+	// overflow without trapping a stream that is exactly max bytes.
+	allowed := c.max + 1 - c.read
+	if allowed <= 0 {
+		c.tipped = true
+		return 0, ErrStreamTooLarge
+	}
+	if int64(len(p)) > allowed {
+		p = p[:allowed]
+	}
+	n, err := c.r.Read(p)
+	c.read += int64(n)
+	if c.read > c.max {
+		c.tipped = true
+		// Hand back the bytes that fit under the cap so the caller's
+		// running buffer is consistent, then surface the cap error.
+		over := c.read - c.max
+		if int64(n) >= over {
+			n -= int(over)
+		} else {
+			n = 0
+		}
+		return n, ErrStreamTooLarge
+	}
+	return n, err
 }
 
 // Get retrieves content from the given path (uses context.Background()).
