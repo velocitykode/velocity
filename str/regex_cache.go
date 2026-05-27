@@ -133,8 +133,3 @@ func mustReplace(pattern, text, replacement string) string {
 	return getRegex(pattern).ReplaceAllString(text, replacement)
 }
 
-// mustFindAll is a helper that uses cached regex for finding all matches.
-// Trusted patterns only.
-func mustFindAll(pattern, text string) [][]string {
-	return getRegex(pattern).FindAllStringSubmatch(text, -1)
-}
