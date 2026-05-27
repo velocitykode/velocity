@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
 )
 
@@ -183,11 +184,16 @@ func (s *Server) Start() error {
 
 	s.logInfo("WebSocket server starting", "host", s.config.Host, "port", s.config.Port, "path", s.config.Path)
 
+	// Audit D-04: wrap the run loop in async.Go so a panic from any of
+	// the handle* dispatchers (nil deref via callback hot-swap, map race,
+	// closed-channel send, etc.) is contained instead of crashing the
+	// process. async.Go installs a deferred recover and routes through
+	// the package panic hook so observers still see the failure.
 	s.wg.Add(1)
-	go func() {
+	async.Go(func() {
 		defer s.wg.Done()
 		s.run()
-	}()
+	})
 	return nil
 }
 
@@ -303,14 +309,21 @@ func (s *Server) HandleConnection(w http.ResponseWriter, r *http.Request) {
 
 	// Start client goroutines. Pump slots already reserved on the WaitGroup
 	// above so Shutdown can wait for them to drain.
-	go func() {
+	//
+	// Audit D-04: route through async.Go so a panic that escapes the
+	// pump's own recover (e.g. inside an onConnect callback that captures
+	// client state and panics mid-pump) is contained at the goroutine
+	// boundary instead of taking the process down. The internal pump
+	// recover stays in place for symptom logging; async.Go is the
+	// last-resort net.
+	async.Go(func() {
 		defer s.wg.Done()
 		client.writePump()
-	}()
-	go func() {
+	})
+	async.Go(func() {
 		defer s.wg.Done()
 		client.readPump()
-	}()
+	})
 
 	// Call connect callback
 	if s.onConnect != nil {
