@@ -10,7 +10,10 @@
 package notification
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/velocitykode/velocity/mail"
@@ -261,6 +264,28 @@ type DatabaseNotification interface {
 }
 
 // DatabaseMessage represents a notification stored in the database.
+//
+// The Data map is serialized to JSON by the database channel before
+// insertion. Because Go's encoding/json has limits that PHP arrays do
+// not, certain value types round-trip lossily or fail outright:
+//
+//   - []byte is base64-encoded by json.Marshal. On decode into
+//     interface{} the consumer gets a base64 string, not the original
+//     bytes. Signed tokens / encrypted blobs stored this way will fail
+//     verification when decoded back. Use a hex/base64 string and
+//     document the encoding instead of stashing raw bytes.
+//   - time.Time round-trips fine into another time.Time but decodes
+//     to a RFC3339 string when scanned into interface{}.
+//   - chan and func values are not encodable; json.Marshal returns
+//     an error and the send fails for this channel.
+//   - math.NaN, math.Inf(+1), math.Inf(-1) are not valid JSON;
+//     json.Marshal returns an error.
+//   - Strings containing invalid UTF-8 are replaced with U+FFFD
+//     before encoding.
+//
+// Use [DatabaseMessage.Validate] before [DatabaseNotification.ToDatabase]
+// returns the message to surface encoding failures synchronously at the
+// call site instead of letting them fail later inside the channel.
 type DatabaseMessage struct {
 	// Type identifies the notification (e.g., "App.Notifications.InvoicePaid").
 	Type string
@@ -271,7 +296,8 @@ type DatabaseMessage struct {
 	// When empty, channels infer the type from the notifiable's runtime
 	// type (e.g. "*models.User").
 	NotifiableType string
-	// Data holds the notification payload as a map.
+	// Data holds the notification payload as a map. See the type-level
+	// doc for JSON-encoding caveats.
 	Data map[string]interface{}
 }
 
@@ -283,7 +309,9 @@ func NewDatabaseMessage(notificationType string) *DatabaseMessage {
 	}
 }
 
-// Set adds a key-value pair to the notification data.
+// Set adds a key-value pair to the notification data. The value MUST
+// be JSON-encodable; see the [DatabaseMessage] doc for the constraints.
+// Call [DatabaseMessage.Validate] to verify encodability synchronously.
 func (m *DatabaseMessage) Set(key string, value interface{}) *DatabaseMessage {
 	m.Data[key] = value
 	return m
@@ -295,6 +323,59 @@ func (m *DatabaseMessage) Set(key string, value interface{}) *DatabaseMessage {
 func (m *DatabaseMessage) WithNotifiableType(t string) *DatabaseMessage {
 	m.NotifiableType = t
 	return m
+}
+
+// Validate verifies that every value in Data is JSON-encodable using
+// the same encoder configuration the database channel will use at
+// store time. Returns a wrapped json.UnsupportedValueError /
+// json.UnsupportedTypeError when a value is rejected, or nil when the
+// message is safe to persist. Callers can run this before returning
+// from ToDatabase to surface encoding failures at the call site
+// instead of inside the channel goroutine.
+func (m *DatabaseMessage) Validate() error {
+	if m == nil || len(m.Data) == 0 {
+		return nil
+	}
+	return encodeDatabaseData(m.Data, nil)
+}
+
+// EncodeDatabaseData serialises the message Data to the canonical
+// JSON form used by the database channel: HTML escaping disabled so
+// '<', '>', and '&' survive the round-trip into the column unchanged
+// (json.Marshal's default replaces them with <, >, &
+// which is correct for a browser context but surprises every other
+// downstream consumer). The trailing newline json.Encoder appends is
+// stripped so the stored value matches json.Marshal's shape.
+func EncodeDatabaseData(data map[string]interface{}) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := encodeDatabaseData(data, &buf); err != nil {
+		return nil, err
+	}
+	// json.Encoder always writes a trailing newline; strip for parity
+	// with json.Marshal so consumers comparing exact bytes do not see
+	// the implementation detail.
+	out := buf.Bytes()
+	if n := len(out); n > 0 && out[n-1] == '\n' {
+		out = out[:n-1]
+	}
+	return out, nil
+}
+
+// encodeDatabaseData is the shared encode-into-or-discard implementation.
+// When buf is nil the encoded bytes are discarded; only the error is
+// returned. Used by both Validate (no buffer) and EncodeDatabaseData
+// (real buffer).
+func encodeDatabaseData(data map[string]interface{}, buf *bytes.Buffer) error {
+	target := buf
+	if target == nil {
+		target = &bytes.Buffer{}
+	}
+	enc := json.NewEncoder(target)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(data); err != nil {
+		return fmt.Errorf("notification: database data not json-encodable: %w", err)
+	}
+	return nil
 }
 
 // BroadcastNotification is implemented by notifications that should be broadcast in real time.

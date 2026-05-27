@@ -3,7 +3,6 @@ package channels
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -89,8 +88,12 @@ func (c *DatabaseChannel) Send(ctx context.Context, notifiable interface{}, n no
 		notifiableType = inferNotifiableType(notifiable)
 	}
 
-	// Serialize data to JSON
-	dataJSON, err := json.Marshal(dbMsg.Data)
+	// Serialize data to JSON via the canonical encoder (HTML escaping
+	// disabled so '<', '>', '&' survive round-trip unchanged). The shared
+	// helper also surfaces the same JSON-encoding constraints documented
+	// on DatabaseMessage at the call site here so callers see a
+	// consistent failure mode whether they pre-validated or not.
+	dataJSON, err := notification.EncodeDatabaseData(dbMsg.Data)
 	if err != nil {
 		return fmt.Errorf("notification: failed to serialize notification data: %w", err)
 	}
