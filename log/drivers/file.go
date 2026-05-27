@@ -42,6 +42,31 @@ func WithFileMode(mode os.FileMode) FileLoggerOption {
 	}
 }
 
+// WithFileLock enables advisory whole-file locking around every write
+// so two Velocity processes writing to the same log file do not
+// interleave bytes mid-record. Required when running multiple
+// instances behind a load balancer that share a host log directory,
+// or when systemd Type=forking spawns siblings sharing the same
+// stdout/file.
+//
+// The lock is acquired via flock(LOCK_EX) on supported platforms
+// (Linux, *BSD, Darwin). On Windows the option is a no-op (the
+// stdlib does not expose a portable equivalent and Windows file
+// semantics differ enough that callers should serialize at the
+// application layer). Default off: matches Monolog's useLocking
+// default and avoids the ~5-10 percent per-write cost on the common
+// single-writer deployment.
+//
+// Even with WithFileLock enabled the in-process mutex still
+// serialises writes within one process so concurrent goroutines do
+// not contend with each other through the kernel. The flock layer
+// only kicks in for cross-process coordination.
+func WithFileLock() FileLoggerOption {
+	return func(f *FileLogger) {
+		f.useFileLock = true
+	}
+}
+
 // dirModeFromFileMode derives a sensible directory mode from a file
 // mode: any read bit becomes both read+execute on the directory (so
 // the entry is listable as well as openable). Default file mode 0o600
@@ -66,14 +91,15 @@ func dirModeFromFileMode(fileMode os.FileMode) os.FileMode {
 // FileLogger writes log messages to daily rotating files.
 // Thread-safe with automatic date-based file rotation and optional retention cleanup.
 type FileLogger struct {
-	path     string
-	days     int         // retention days; 0 means keep forever
-	level    int         // minimum level: 0=debug, 1=info, 2=warn, 3=error, 4=fatal
-	fileMode os.FileMode // perms applied to new and pre-existing log files
-	dirMode  os.FileMode // perms applied to the containing directory
-	mu       sync.Mutex
-	file     *os.File
-	date     string
+	path        string
+	days        int         // retention days; 0 means keep forever
+	level       int         // minimum level: 0=debug, 1=info, 2=warn, 3=error, 4=fatal
+	fileMode    os.FileMode // perms applied to new and pre-existing log files
+	dirMode     os.FileMode // perms applied to the containing directory
+	useFileLock bool        // opt-in cross-process advisory locking; see WithFileLock
+	mu          sync.Mutex
+	file        *os.File
+	date        string
 }
 
 // NewFileLogger creates a file logger that writes to the specified directory.
@@ -180,6 +206,22 @@ func (f *FileLogger) log(level, msg string, kvs ...any) {
 				logLine += fmt.Sprintf(" %s=%s", k, v)
 			}
 		}
+	}
+
+	// Cross-process advisory lock around the single write so two
+	// processes sharing this log file cannot interleave bytes
+	// mid-record (POSIX append is atomic below PIPE_BUF on Linux but
+	// behaviour is OS-dependent on Darwin and undefined for writes
+	// above the limit). No-op when useFileLock is false and on
+	// platforms without flock support.
+	if f.useFileLock && f.file != nil {
+		release, lockErr := lockFile(f.file)
+		if lockErr == nil {
+			defer release()
+		}
+		// On flock error we still proceed with the write rather than
+		// drop the line; the worst case (mixed bytes) beats silent
+		// data loss.
 	}
 
 	_, err := fmt.Fprintln(f.file, logLine)
