@@ -184,6 +184,8 @@ func InlineMarkdown(str string) string {
 //     placeholder tokens. The URL is validated against the raw input (so
 //     scheme allowlisting still sees javascript:, data:, etc.) and either
 //     stored as a rendered <a> tag or replaced with escaped link text.
+//     Inline markdown (bold, italic, code) inside the link label is
+//     rendered before the placeholder is stored.
 //  2. HTML-escape the entire remaining string. Any raw HTML in the source
 //     (for example <script> or <img onerror=...>) becomes inert text.
 //  3. Run the markdown regex passes against the escaped string. The opening
@@ -209,13 +211,7 @@ func Markdown(str string) string {
 	str = replaceCapture(`^## (.+)$`, str, "<h2>", "</h2>")
 	str = replaceCapture(`^# (.+)$`, str, "<h1>", "</h1>")
 
-	str = replaceCapture(`\*\*([^*]+)\*\*`, str, "<strong>", "</strong>")
-	str = replaceCapture(`__([^_]+)__`, str, "<strong>", "</strong>")
-
-	str = replaceCapture(`\*([^*]+)\*`, str, "<em>", "</em>")
-	str = replaceCapture(`_([^_]+)_`, str, "<em>", "</em>")
-
-	str = replaceCapture("`([^`]+)`", str, "<code>", "</code>")
+	str = applyInlineMarkdown(str)
 
 	// Step 4: restore links. Tokens were generated with ASCII only so
 	// html.EscapeString does not touch them.
@@ -224,6 +220,23 @@ func Markdown(str string) string {
 	}
 
 	return str
+}
+
+// applyInlineMarkdown runs the inline (non-block) markdown passes against
+// an already-escaped subject. Used both for the main body and for link
+// label content, so [**docs**](url) renders <strong>docs</strong> inside
+// the anchor.
+//
+// The subject must already be HTML-escaped before calling. Inline tags
+// inserted here (<strong>, <em>, <code>) are literal constants owned by
+// this package.
+func applyInlineMarkdown(subject string) string {
+	subject = replaceCapture(`\*\*([^*]+)\*\*`, subject, "<strong>", "</strong>")
+	subject = replaceCapture(`__([^_]+)__`, subject, "<strong>", "</strong>")
+	subject = replaceCapture(`\*([^*]+)\*`, subject, "<em>", "</em>")
+	subject = replaceCapture(`_([^_]+)_`, subject, "<em>", "</em>")
+	subject = replaceCapture("`([^`]+)`", subject, "<code>", "</code>")
+	return subject
 }
 
 // replaceCapture wraps the first capture group of pattern in open/close.
@@ -260,13 +273,19 @@ func extractMarkdownLinks(s string) (string, map[string]string) {
 		text := groups[1]
 		url := strings.TrimSpace(groups[2])
 
+		// Render label content: escape first (so any raw HTML in the
+		// label becomes inert), then apply inline markdown passes against
+		// the escaped form. The tags emitted by applyInlineMarkdown are
+		// trusted literal constants.
+		label := applyInlineMarkdown(html.EscapeString(text))
+
 		var rendered string
 		if !isSafeMarkdownURL(url) {
 			// Render the link text only. This neutralises javascript:,
 			// data:, vbscript:, and anything else not in the allowlist.
-			rendered = html.EscapeString(text)
+			rendered = label
 		} else {
-			rendered = `<a href="` + html.EscapeString(url) + `">` + html.EscapeString(text) + `</a>`
+			rendered = `<a href="` + html.EscapeString(url) + `">` + label + `</a>`
 		}
 
 		// Token uses only ASCII letters and digits so html.EscapeString

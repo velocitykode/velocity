@@ -2118,6 +2118,52 @@ func TestMarkdown_MixesPlainTextAndMarkdown(t *testing.T) {
 	}
 }
 
+func TestMarkdown_BoldInLinkLabel(t *testing.T) {
+	got := Markdown("[**docs**](https://x)")
+	want := `<a href="https://x"><strong>docs</strong></a>`
+	if got != want {
+		t.Errorf("Markdown(%q) = %q; want %q", "[**docs**](https://x)", got, want)
+	}
+}
+
+func TestMarkdown_ItalicInLinkLabel(t *testing.T) {
+	got := Markdown("[_em_](https://x)")
+	want := `<a href="https://x"><em>em</em></a>`
+	if got != want {
+		t.Errorf("Markdown(%q) = %q; want %q", "[_em_](https://x)", got, want)
+	}
+}
+
+func TestMarkdown_CodeInLinkLabel(t *testing.T) {
+	got := Markdown("[`x`](https://x)")
+	want := `<a href="https://x"><code>x</code></a>`
+	if got != want {
+		t.Errorf("Markdown(%q) = %q; want %q", "[`x`](https://x)", got, want)
+	}
+}
+
+func TestMarkdown_LinkLabelStillEscapesRawHTML(t *testing.T) {
+	// Inline markdown rendering inside the label must not bypass escape.
+	got := Markdown("[<script>x</script>](https://x)")
+	if strings.Contains(got, "<script>") {
+		t.Errorf("Markdown leaked <script> in link label: %q", got)
+	}
+	if !strings.Contains(got, "&lt;script&gt;") {
+		t.Errorf("Markdown did not escape <script> in link label: %q", got)
+	}
+}
+
+func TestMarkdown_RejectedURLLabelKeepsInlineMarkdown(t *testing.T) {
+	// Even when the URL is rejected, the label text gets inline markdown.
+	got := Markdown("[**x**](javascript:alert(1))")
+	if strings.Contains(strings.ToLower(got), "javascript:") {
+		t.Errorf("Markdown leaked javascript: URI: %q", got)
+	}
+	if !strings.Contains(got, "<strong>x</strong>") {
+		t.Errorf("Markdown did not render inline markdown in rejected-URL label: %q", got)
+	}
+}
+
 func TestMarkdown_LinkAlongsideRawHTML(t *testing.T) {
 	got := Markdown("[home](https://example.com) <img src=x>")
 	if !strings.Contains(got, `<a href="https://example.com">home</a>`) {
