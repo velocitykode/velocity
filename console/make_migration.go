@@ -23,6 +23,10 @@ type MakeMigrationOptions struct {
 
 // MakeMigration generates a new timestamped migration file from a stub template.
 func MakeMigration(name string, opts MakeMigrationOptions) error {
+	if err := validateMakeName(name); err != nil {
+		return err
+	}
+
 	version := time.Now().Format("20060102150405")
 	snakeName := toSnakeCase(toPascalCase(name))
 
@@ -33,6 +37,9 @@ func MakeMigration(name string, opts MakeMigrationOptions) error {
 
 	filename := version + "_" + snakeName + ".go"
 	outputPath := filepath.Join(outputDir, filename)
+	if err := ensureWithinRoot(outputDir, outputPath); err != nil {
+		return fmt.Errorf("invalid migration name %q: %w", name, err)
+	}
 
 	if _, err := os.Stat(outputPath); err == nil {
 		return fmt.Errorf("migration already exists: %s", outputPath)

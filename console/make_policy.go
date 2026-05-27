@@ -17,6 +17,10 @@ type MakePolicyOptions struct{}
 
 // MakePolicy generates a new policy file from a stub template.
 func MakePolicy(name string, opts MakePolicyOptions) error {
+	if err := validateMakeName(name); err != nil {
+		return err
+	}
+
 	policyName := toPolicyName(name)
 
 	outputDir := "internal/policies"
@@ -26,6 +30,9 @@ func MakePolicy(name string, opts MakePolicyOptions) error {
 
 	filename := toSnakeCase(policyName) + ".go"
 	outputPath := filepath.Join(outputDir, filename)
+	if err := ensureWithinRoot(outputDir, outputPath); err != nil {
+		return fmt.Errorf("invalid policy name %q: %w", name, err)
+	}
 
 	if _, err := os.Stat(outputPath); err == nil {
 		return fmt.Errorf("policy already exists: %s", outputPath)

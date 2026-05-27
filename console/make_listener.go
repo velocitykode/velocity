@@ -17,6 +17,10 @@ type MakeListenerOptions struct{}
 
 // MakeListener generates a new listener file from a stub template.
 func MakeListener(name string, opts MakeListenerOptions) error {
+	if err := validateMakeName(name); err != nil {
+		return err
+	}
+
 	listenerName := toListenerName(name)
 
 	outputDir := "internal/listeners"
@@ -26,6 +30,9 @@ func MakeListener(name string, opts MakeListenerOptions) error {
 
 	filename := toSnakeCase(listenerName) + ".go"
 	outputPath := filepath.Join(outputDir, filename)
+	if err := ensureWithinRoot(outputDir, outputPath); err != nil {
+		return fmt.Errorf("invalid listener name %q: %w", name, err)
+	}
 
 	if _, err := os.Stat(outputPath); err == nil {
 		return fmt.Errorf("listener already exists: %s", outputPath)

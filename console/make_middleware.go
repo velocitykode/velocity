@@ -17,6 +17,10 @@ type MakeMiddlewareOptions struct{}
 
 // MakeMiddleware generates a new middleware file from a stub template.
 func MakeMiddleware(name string, opts MakeMiddlewareOptions) error {
+	if err := validateMakeName(name); err != nil {
+		return err
+	}
+
 	middlewareName := toMiddlewareName(name)
 
 	outputDir := "internal/middleware"
@@ -26,6 +30,9 @@ func MakeMiddleware(name string, opts MakeMiddlewareOptions) error {
 
 	filename := toSnakeCase(middlewareName) + ".go"
 	outputPath := filepath.Join(outputDir, filename)
+	if err := ensureWithinRoot(outputDir, outputPath); err != nil {
+		return fmt.Errorf("invalid middleware name %q: %w", name, err)
+	}
 
 	if _, err := os.Stat(outputPath); err == nil {
 		return fmt.Errorf("middleware already exists: %s", outputPath)

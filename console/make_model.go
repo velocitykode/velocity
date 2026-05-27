@@ -22,6 +22,10 @@ type MakeModelOptions struct {
 
 // MakeModel generates a new model file from a stub template.
 func MakeModel(name string, opts MakeModelOptions) error {
+	if err := validateMakeName(name); err != nil {
+		return err
+	}
+
 	modelName := toModelName(name)
 	tableName := toTableName(modelName)
 
@@ -32,6 +36,9 @@ func MakeModel(name string, opts MakeModelOptions) error {
 
 	filename := toSnakeCase(modelName) + ".go"
 	outputPath := filepath.Join(outputDir, filename)
+	if err := ensureWithinRoot(outputDir, outputPath); err != nil {
+		return fmt.Errorf("invalid model name %q: %w", name, err)
+	}
 
 	if _, err := os.Stat(outputPath); err == nil {
 		return fmt.Errorf("model already exists: %s", outputPath)

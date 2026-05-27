@@ -17,6 +17,10 @@ type MakeProviderOptions struct{}
 
 // MakeProvider generates a new service provider file from a stub template.
 func MakeProvider(name string, opts MakeProviderOptions) error {
+	if err := validateMakeName(name); err != nil {
+		return err
+	}
+
 	providerName := toProviderName(name)
 
 	outputDir := "internal/providers"
@@ -26,6 +30,9 @@ func MakeProvider(name string, opts MakeProviderOptions) error {
 
 	filename := toSnakeCase(providerName) + ".go"
 	outputPath := filepath.Join(outputDir, filename)
+	if err := ensureWithinRoot(outputDir, outputPath); err != nil {
+		return fmt.Errorf("invalid provider name %q: %w", name, err)
+	}
 
 	if _, err := os.Stat(outputPath); err == nil {
 		return fmt.Errorf("provider already exists: %s", outputPath)

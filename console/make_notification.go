@@ -17,6 +17,10 @@ type MakeNotificationOptions struct{}
 
 // MakeNotification generates a new notification file from a stub template.
 func MakeNotification(name string, opts MakeNotificationOptions) error {
+	if err := validateMakeName(name); err != nil {
+		return err
+	}
+
 	notificationName := toNotificationName(name)
 
 	outputDir := "internal/notifications"
@@ -26,6 +30,9 @@ func MakeNotification(name string, opts MakeNotificationOptions) error {
 
 	filename := toSnakeCase(notificationName) + ".go"
 	outputPath := filepath.Join(outputDir, filename)
+	if err := ensureWithinRoot(outputDir, outputPath); err != nil {
+		return fmt.Errorf("invalid notification name %q: %w", name, err)
+	}
 
 	if _, err := os.Stat(outputPath); err == nil {
 		return fmt.Errorf("notification already exists: %s", outputPath)

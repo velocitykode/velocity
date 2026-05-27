@@ -17,6 +17,10 @@ type MakeJobOptions struct{}
 
 // MakeJob generates a new queue job file from a stub template.
 func MakeJob(name string, opts MakeJobOptions) error {
+	if err := validateMakeName(name); err != nil {
+		return err
+	}
+
 	jobName := toJobName(name)
 
 	outputDir := "internal/jobs"
@@ -26,6 +30,9 @@ func MakeJob(name string, opts MakeJobOptions) error {
 
 	filename := toSnakeCase(jobName) + ".go"
 	outputPath := filepath.Join(outputDir, filename)
+	if err := ensureWithinRoot(outputDir, outputPath); err != nil {
+		return fmt.Errorf("invalid job name %q: %w", name, err)
+	}
 
 	if _, err := os.Stat(outputPath); err == nil {
 		return fmt.Errorf("job already exists: %s", outputPath)

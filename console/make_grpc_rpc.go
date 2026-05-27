@@ -48,17 +48,40 @@ func MakeGRPCRPC(serviceArg, rpcArg string, opts MakeGRPCRPCOptions) error {
 		return err
 	}
 
+	if err := validateMakeName(serviceArg); err != nil {
+		return fmt.Errorf("service argument: %w", err)
+	}
+	if err := validateMakeName(rpcArg); err != nil {
+		return fmt.Errorf("rpc argument: %w", err)
+	}
+
 	serviceName := grpcServiceName(serviceArg)
 	packageName := grpcPackageName(serviceArg)
 	protoAlias := grpcProtoAlias(packageName)
 	rpcName := toPascalCase(rpcArg)
 
-	protoPath := filepath.Join("api", "proto", packageName, "v1", packageName+".proto")
+	// Re-validate the derived package name. grpcPackageName lower-cases
+	// the input but does not strip "/" or "..", so a sufficiently crafted
+	// argument could still smuggle a traversal segment into the proto and
+	// impl paths constructed below.
+	if err := validateMakeName(packageName); err != nil {
+		return fmt.Errorf("derived package name %q from %q is unsafe: %w", packageName, serviceArg, err)
+	}
+
+	protoRoot := filepath.Join("api", "proto")
+	protoPath := filepath.Join(protoRoot, packageName, "v1", packageName+".proto")
+	if err := ensureWithinRoot(protoRoot, protoPath); err != nil {
+		return fmt.Errorf("invalid service name %q: %w", serviceArg, err)
+	}
 	if _, err := os.Stat(protoPath); os.IsNotExist(err) {
 		return fmt.Errorf("proto not found: %s (run `vel make:grpc:service %s` first)", protoPath, serviceName)
 	}
 
-	implPath := filepath.Join("internal", "grpc", "services", packageName+".go")
+	implRoot := filepath.Join("internal", "grpc", "services")
+	implPath := filepath.Join(implRoot, packageName+".go")
+	if err := ensureWithinRoot(implRoot, implPath); err != nil {
+		return fmt.Errorf("invalid service name %q: %w", serviceArg, err)
+	}
 	if _, err := os.Stat(implPath); os.IsNotExist(err) {
 		return fmt.Errorf("service impl not found: %s", implPath)
 	}

@@ -17,6 +17,10 @@ type MakeMailOptions struct{}
 
 // MakeMail generates a new mailable file from a stub template.
 func MakeMail(name string, opts MakeMailOptions) error {
+	if err := validateMakeName(name); err != nil {
+		return err
+	}
+
 	mailName := toMailName(name)
 
 	outputDir := "internal/mail"
@@ -26,6 +30,9 @@ func MakeMail(name string, opts MakeMailOptions) error {
 
 	filename := toSnakeCase(mailName) + ".go"
 	outputPath := filepath.Join(outputDir, filename)
+	if err := ensureWithinRoot(outputDir, outputPath); err != nil {
+		return fmt.Errorf("invalid mail name %q: %w", name, err)
+	}
 
 	if _, err := os.Stat(outputPath); err == nil {
 		return fmt.Errorf("mailable already exists: %s", outputPath)

@@ -18,6 +18,10 @@ type MakeEventOptions struct{}
 
 // MakeEvent generates a new event file from a stub template.
 func MakeEvent(name string, opts MakeEventOptions) error {
+	if err := validateMakeName(name); err != nil {
+		return err
+	}
+
 	eventName := toEventName(name)
 	dotName := toDotSeparated(eventName)
 
@@ -28,6 +32,9 @@ func MakeEvent(name string, opts MakeEventOptions) error {
 
 	filename := toSnakeCase(eventName) + ".go"
 	outputPath := filepath.Join(outputDir, filename)
+	if err := ensureWithinRoot(outputDir, outputPath); err != nil {
+		return fmt.Errorf("invalid event name %q: %w", name, err)
+	}
 
 	if _, err := os.Stat(outputPath); err == nil {
 		return fmt.Errorf("event already exists: %s", outputPath)

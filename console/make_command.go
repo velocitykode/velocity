@@ -18,6 +18,10 @@ type MakeCommandOptions struct{}
 
 // MakeCommand generates a new command file from a stub template.
 func MakeCommand(name string, opts MakeCommandOptions) error {
+	if err := validateMakeName(name); err != nil {
+		return err
+	}
+
 	commandName := toCommandStructName(name)
 	kebabName := toKebabCase(commandName)
 
@@ -28,6 +32,9 @@ func MakeCommand(name string, opts MakeCommandOptions) error {
 
 	filename := toSnakeCase(commandName) + ".go"
 	outputPath := filepath.Join(outputDir, filename)
+	if err := ensureWithinRoot(outputDir, outputPath); err != nil {
+		return fmt.Errorf("invalid command name %q: %w", name, err)
+	}
 
 	if _, err := os.Stat(outputPath); err == nil {
 		return fmt.Errorf("command already exists: %s", outputPath)

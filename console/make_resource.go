@@ -17,6 +17,10 @@ type MakeResourceOptions struct{}
 
 // MakeResource generates a new resource file from a stub template.
 func MakeResource(name string, opts MakeResourceOptions) error {
+	if err := validateMakeName(name); err != nil {
+		return err
+	}
+
 	resourceName := toResourceName(name)
 
 	outputDir := "internal/resources"
@@ -26,6 +30,9 @@ func MakeResource(name string, opts MakeResourceOptions) error {
 
 	filename := toSnakeCase(resourceName) + ".go"
 	outputPath := filepath.Join(outputDir, filename)
+	if err := ensureWithinRoot(outputDir, outputPath); err != nil {
+		return fmt.Errorf("invalid resource name %q: %w", name, err)
+	}
 
 	if _, err := os.Stat(outputPath); err == nil {
 		return fmt.Errorf("resource already exists: %s", outputPath)
