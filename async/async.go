@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -95,9 +96,28 @@ func runPanicHook(p any) {
 	}
 }
 
-// handlePanic handles panics in goroutines
+// logRecoveredPanic emits a structured Error log for a recovered panic.
+// The "stack" field carries the calling goroutine's frames via debug.Stack().
+// Because logRecoveredPanic is invoked from inside the deferred recover()
+// frame of the panicking goroutine, debug.Stack() captures that goroutine's
+// frames, i.e. the real site of the panic, not an unrelated supervisor.
+//
+// Extra key/value pairs (e.g. "name", "<callsite>") are appended after the
+// canonical "panic" / "stack" fields. debug.Stack() is invoked exactly once
+// per recovery so the formatted backtrace cost is paid only on the slow path.
+func logRecoveredPanic(l Logger, p any, kvs ...any) {
+	if l == nil {
+		l = getLogger()
+	}
+	attrs := make([]any, 0, 4+len(kvs))
+	attrs = append(attrs, "panic", p, "stack", string(debug.Stack()))
+	attrs = append(attrs, kvs...)
+	l.Error("async: panic recovered", attrs...)
+}
+
+// handlePanic handles panics in goroutines.
 func handlePanic(p any) {
-	getLogger().Error("async: panic recovered", "panic", p)
+	logRecoveredPanic(nil, p)
 	runPanicHook(p)
 }
 
@@ -118,7 +138,9 @@ func Run[T any](fn func() T) *Result[T] {
 	return r
 }
 
-// RunWithTimeout executes with timeout
+// RunWithTimeout executes with timeout. If fn panics before the timeout
+// fires, the recovered panic is forwarded through panicCh so the result
+// carries the panic error (not a misleading timeout error).
 func RunWithTimeout[T any](timeout time.Duration, fn func() T) *Result[T] {
 	r := NewResult[T]()
 
@@ -131,10 +153,15 @@ func RunWithTimeout[T any](timeout time.Duration, fn func() T) *Result[T] {
 		}()
 
 		done := make(chan T, 1)
+		// panicCh is cap=1 so the inner goroutine never blocks if the outer
+		// already moved on to the timeout branch (drop-on-floor is fine: the
+		// panic was already logged by handlePanic).
+		panicCh := make(chan error, 1)
 		go func() {
 			defer func() {
 				if p := recover(); p != nil {
 					handlePanic(p)
+					panicCh <- panicerr.FromRecovered(p)
 				}
 			}()
 			done <- fn()
@@ -143,6 +170,8 @@ func RunWithTimeout[T any](timeout time.Duration, fn func() T) *Result[T] {
 		select {
 		case v := <-done:
 			r.valueCh <- v
+		case err := <-panicCh:
+			r.errorCh <- err
 		case <-time.After(timeout):
 			r.setTimedOut()
 			r.errorCh <- fmt.Errorf("operation timed out after %v", timeout)
@@ -152,7 +181,10 @@ func RunWithTimeout[T any](timeout time.Duration, fn func() T) *Result[T] {
 	return r
 }
 
-// RunWithContext executes with context for cancellation
+// RunWithContext executes with context for cancellation. If fn panics
+// before ctx is canceled, the recovered panic is forwarded through panicCh
+// so the result carries the panic error instead of hanging forever waiting
+// on a `done` send that will never happen.
 func RunWithContext[T any](ctx context.Context, fn func() T) *Result[T] {
 	r := NewResult[T]()
 
@@ -165,10 +197,14 @@ func RunWithContext[T any](ctx context.Context, fn func() T) *Result[T] {
 		}()
 
 		done := make(chan T, 1)
+		// panicCh is cap=1 so the inner goroutine never blocks if the outer
+		// already moved on to the ctx-cancel branch.
+		panicCh := make(chan error, 1)
 		go func() {
 			defer func() {
 				if p := recover(); p != nil {
 					handlePanic(p)
+					panicCh <- panicerr.FromRecovered(p)
 				}
 			}()
 			done <- fn()
@@ -177,6 +213,8 @@ func RunWithContext[T any](ctx context.Context, fn func() T) *Result[T] {
 		select {
 		case v := <-done:
 			r.valueCh <- v
+		case err := <-panicCh:
+			r.errorCh <- err
 		case <-ctx.Done():
 			r.errorCh <- ctx.Err()
 		}
@@ -303,11 +341,7 @@ func GoWithLogger(l Logger, name string, fn func()) {
 	go func() {
 		defer func() {
 			if p := recover(); p != nil {
-				logTo := l
-				if logTo == nil {
-					logTo = getLogger()
-				}
-				logTo.Error("async: panic recovered", "name", name, "panic", p)
+				logRecoveredPanic(l, p, "name", name)
 				runPanicHook(p)
 			}
 		}()
