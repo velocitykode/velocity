@@ -107,6 +107,26 @@ type JWTConfig struct {
 	// When RSA algorithms are selected, the HMAC Secret is ignored for signing/verification.
 	RSAPrivateKey interface{} // *rsa.PrivateKey, signing key for RSxxx algorithms
 	RSAPublicKey  interface{} // *rsa.PublicKey, verification key for RSxxx algorithms
+
+	// PreviousSecrets lists HMAC secrets retired from minting but still
+	// accepted for verification (E-02). Lets operators rotate Secret on
+	// the standard cadence without invalidating every outstanding access
+	// AND refresh token in lock-step. Tokens signed under any entry here
+	// verify successfully until they expire on their own. Order is the
+	// order tried after the active Secret fails verification.
+	//
+	// MINTING never uses these: GenerateToken / GenerateRefreshToken
+	// always sign with the current Secret. Drop a retired secret from
+	// this slice once its longest-lived token (typically the refresh TTL)
+	// has expired.
+	PreviousSecrets []string
+
+	// PreviousRSAPublicKeys lists RSA public keys retired from minting
+	// but still accepted for verification (E-02). Same lifecycle and
+	// semantics as PreviousSecrets but for RSxxx algorithms. Entries
+	// MUST be *rsa.PublicKey values (mirrors the type stored in
+	// RSAPublicKey).
+	PreviousRSAPublicKeys []interface{}
 }
 
 // allowedJWTAlgorithms is the allowlist of accepted JWT signing algorithms.
@@ -157,10 +177,38 @@ func (c JWTConfig) Validate() error {
 		if len(c.Secret) < 32 {
 			return errors.New("velocity/auth: jwt secret must be at least 32 bytes for hmac algorithms")
 		}
+		// Previous secrets enable verify-only key rotation (E-02). The
+		// length guard mirrors the active secret so a retired weak key
+		// never re-enters service via this slot.
+		for i, prev := range c.PreviousSecrets {
+			if prev == "" {
+				return fmt.Errorf("velocity/auth: jwt previous secret at index %d must not be empty", i)
+			}
+			if len(prev) < 32 {
+				return fmt.Errorf("velocity/auth: jwt previous secret at index %d must be at least 32 bytes", i)
+			}
+			if prev == c.Secret {
+				return fmt.Errorf("velocity/auth: jwt previous secret at index %d duplicates active secret", i)
+			}
+		}
+		if len(c.PreviousRSAPublicKeys) > 0 {
+			return errors.New("velocity/auth: jwt previous rsa public keys are only valid for rsa algorithms")
+		}
 	}
 	if isRSAAlgorithm(alg) {
 		if c.RSAPrivateKey == nil || c.RSAPublicKey == nil {
 			return errors.New("velocity/auth: jwt rsa key pair is required for rsa algorithms")
+		}
+		// Previous public keys enable verify-only key rotation (E-02).
+		// Mirror the active RSAPublicKey type to keep the signature loop
+		// in ValidateToken simple.
+		for i, prev := range c.PreviousRSAPublicKeys {
+			if prev == nil {
+				return fmt.Errorf("velocity/auth: jwt previous rsa public key at index %d must not be nil", i)
+			}
+		}
+		if len(c.PreviousSecrets) > 0 {
+			return errors.New("velocity/auth: jwt previous secrets are only valid for hmac algorithms")
 		}
 	}
 	if c.BlacklistEnabled && c.BlacklistStore == nil {
@@ -364,12 +412,38 @@ func (j *JWTManager) signingKey() interface{} {
 	return []byte(j.config.Secret)
 }
 
-// verificationKey returns the key to use for signature verification.
+// verificationKey returns the key (or keys) to use for signature verification.
+//
+// When PreviousSecrets / PreviousRSAPublicKeys (E-02) are populated, the
+// returned value is a jwt.VerificationKeySet whose Keys are tried in order
+// by the underlying parser: current key first, then each retired key.
+// This enables verify-only key rotation. Operators can rotate the active
+// minting key without invalidating every outstanding access AND refresh
+// token in lock-step. Retired keys stay accepted only until their tokens
+// naturally expire.
+//
+// Minting (signingKey) is unaffected, it always returns the active key.
 func (j *JWTManager) verificationKey() interface{} {
 	if isRSAAlgorithm(j.config.Algorithm) {
-		return j.config.RSAPublicKey
+		if len(j.config.PreviousRSAPublicKeys) == 0 {
+			return j.config.RSAPublicKey
+		}
+		keys := make([]jwt.VerificationKey, 0, 1+len(j.config.PreviousRSAPublicKeys))
+		keys = append(keys, j.config.RSAPublicKey)
+		for _, prev := range j.config.PreviousRSAPublicKeys {
+			keys = append(keys, prev)
+		}
+		return jwt.VerificationKeySet{Keys: keys}
 	}
-	return []byte(j.config.Secret)
+	if len(j.config.PreviousSecrets) == 0 {
+		return []byte(j.config.Secret)
+	}
+	keys := make([]jwt.VerificationKey, 0, 1+len(j.config.PreviousSecrets))
+	keys = append(keys, []byte(j.config.Secret))
+	for _, prev := range j.config.PreviousSecrets {
+		keys = append(keys, []byte(prev))
+	}
+	return jwt.VerificationKeySet{Keys: keys}
 }
 
 // GenerateToken generates a JWT token for a user
