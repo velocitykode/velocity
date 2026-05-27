@@ -5,9 +5,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"log"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // Context keys for trace information
@@ -19,17 +22,26 @@ const (
 	parentIDKey contextKey = "velocity_parent_id"
 )
 
-// FallbackTraceID is returned by MustGenerateTraceID when crypto/rand
-// is unavailable even after a retry. It is intentionally NOT 32 hex
-// characters so APM tooling cannot accidentally correlate the fallback
-// with a real trace. The marker shape makes the failure mode obvious in
-// any downstream system that indexes traces.
-const FallbackTraceID = "velocity_trace_rand_unavailable"
+// FallbackTraceIDPrefix is the prefix used by per-call fallback trace
+// IDs when crypto/rand is unavailable. The full ID has the shape
+//
+//	velocity_trace_norand_<processStartNs>_<counter>
+//
+// which is:
+//   - non-hex, so any APM that pattern-matches ^[0-9a-f]{32}$ filters
+//     it out and cannot conflate it with a real trace,
+//   - unique within a process (monotonic atomic counter), so concurrent
+//     in-flight traces stay correlated even under a rand outage,
+//   - unique across process restarts (processStartNs varies), so a
+//     restarted node does not reuse the previous process's fallback
+//     ids,
+//   - independent of crypto/rand (the very thing that failed).
+const FallbackTraceIDPrefix = "velocity_trace_norand_"
 
-// FallbackSpanID is the span-equivalent of FallbackTraceID. Same
-// rationale: not 16 hex characters, intentionally distinguishable from
-// any valid span.
-const FallbackSpanID = "velocity_span_rand_unavailable"
+// FallbackSpanIDPrefix is the span-equivalent of FallbackTraceIDPrefix.
+// Same shape, same guarantees, different prefix so traces and spans
+// remain distinguishable in logs.
+const FallbackSpanIDPrefix = "velocity_span_norand_"
 
 // randReader is the entropy source used by the package. It is exposed as
 // a package-level variable so tests can inject a faulty reader. Defaults
@@ -39,6 +51,18 @@ var randReader io.Reader = rand.Reader
 // randFallbackWarnOnce guards the one-time WARN log emitted by the Must*
 // helpers when crypto/rand is unavailable.
 var randFallbackWarnOnce sync.Once
+
+// fallbackCounter is a monotonic counter that distinguishes per-call
+// fallback IDs within a single process. atomic.Uint64 is safe across
+// goroutines without a mutex, which matters because Must* helpers can
+// be called from any request-handling goroutine.
+var fallbackCounter atomic.Uint64
+
+// processStartNs is captured once at package init and embedded in every
+// fallback ID. It lets operators distinguish fallback IDs minted by
+// different process incarnations of the same service, so a restart
+// doesn't silently merge two distinct entropy outages in dashboards.
+var processStartNs = time.Now().UnixNano()
 
 // GenerateTraceID generates a new random trace ID (32 hex characters).
 // A trace ID represents a single distributed trace across multiple services.
@@ -56,9 +80,13 @@ func GenerateSpanID() (string, error) {
 
 // MustGenerateTraceID returns a fresh trace ID. If crypto/rand fails on
 // the first attempt, it retries once. If the retry also fails, it emits
-// a one-time WARN log and returns FallbackTraceID. The fallback is
-// shaped so that downstream APM tools cannot conflate it with a real
-// trace ID (see FallbackTraceID).
+// a one-time WARN log and returns a per-call fallback ID generated
+// without crypto/rand (see fallbackTraceID).
+//
+// The fallback IDs are unique per call (atomic counter + process start
+// nanosecond timestamp) so concurrent in-flight traces stay correlated
+// even under an entropy outage, and the shape is non-hex so APM tooling
+// cannot conflate them with real trace IDs.
 //
 // Intended for hot paths (HTTP middleware, gRPC interceptors) where the
 // caller cannot fail the request just because the entropy source is
@@ -72,11 +100,11 @@ func MustGenerateTraceID() string {
 		return id
 	}
 	warnRandUnavailable()
-	return FallbackTraceID
+	return fallbackTraceID()
 }
 
 // MustGenerateSpanID returns a fresh span ID. Mirrors MustGenerateTraceID
-// for the span case: one retry then a distinguishable fallback marker.
+// for the span case: one retry then a per-call non-hex fallback ID.
 func MustGenerateSpanID() string {
 	if id, err := generateHexID(8); err == nil {
 		return id
@@ -85,7 +113,22 @@ func MustGenerateSpanID() string {
 		return id
 	}
 	warnRandUnavailable()
-	return FallbackSpanID
+	return fallbackSpanID()
+}
+
+// fallbackTraceID returns a per-call trace ID that does not require
+// crypto/rand. Format: velocity_trace_norand_<processStartNs>_<counter>.
+// See FallbackTraceIDPrefix for the rationale and guarantees.
+func fallbackTraceID() string {
+	return fmt.Sprintf("%s%d_%d", FallbackTraceIDPrefix, processStartNs, fallbackCounter.Add(1))
+}
+
+// fallbackSpanID returns a per-call span ID with the same shape and
+// guarantees as fallbackTraceID. Shares the same monotonic counter so
+// span IDs and trace IDs minted in the same outage are never equal even
+// though their lengths overlap.
+func fallbackSpanID() string {
+	return fmt.Sprintf("%s%d_%d", FallbackSpanIDPrefix, processStartNs, fallbackCounter.Add(1))
 }
 
 // generateHexID generates a random hex string of the given byte length.

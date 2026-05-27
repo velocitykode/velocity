@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -66,35 +67,204 @@ func TestGenerateSpanID_RandFailureReturnsError(t *testing.T) {
 	}
 }
 
-func TestMustGenerateTraceID_FallsBackToDistinguishableMarker(t *testing.T) {
+// fallbackTraceIDRe matches the documented per-call fallback shape:
+// velocity_trace_norand_<processStartNs>_<counter> where both
+// numeric segments are unbounded decimal digits.
+var fallbackTraceIDRe = regexp.MustCompile(`^velocity_trace_norand_\d+_\d+$`)
+var fallbackSpanIDRe = regexp.MustCompile(`^velocity_span_norand_\d+_\d+$`)
+
+func TestMustGenerateTraceID_FallbackShape(t *testing.T) {
 	withRandReader(t, failingReader{})
 
 	id := MustGenerateTraceID()
-	if id != FallbackTraceID {
-		t.Fatalf("expected fallback marker %q, got %q", FallbackTraceID, id)
+	if !strings.HasPrefix(id, FallbackTraceIDPrefix) {
+		t.Fatalf("expected prefix %q, got %q", FallbackTraceIDPrefix, id)
 	}
-	// Fallback marker must NOT be a 32-hex string so APM cannot
-	// correlate it with a real trace.
+	if !fallbackTraceIDRe.MatchString(id) {
+		t.Fatalf("fallback trace id %q does not match %s", id, fallbackTraceIDRe)
+	}
+	// Must not be hex-shaped at the canonical length so any APM that
+	// pattern-matches ^[0-9a-f]{32}$ filters it out.
 	if len(id) == 32 && isHexOnly(id) {
-		t.Errorf("fallback marker must not be 32-hex; got %q", id)
+		t.Errorf("fallback id must not be 32-hex; got %q", id)
 	}
 	if id == strings.Repeat("0", 32) {
-		t.Errorf("fallback marker must not be all-zero hex; got %q", id)
+		t.Errorf("fallback id must not be all-zero hex; got %q", id)
 	}
 }
 
-func TestMustGenerateSpanID_FallsBackToDistinguishableMarker(t *testing.T) {
+func TestMustGenerateSpanID_FallbackShape(t *testing.T) {
 	withRandReader(t, failingReader{})
 
 	id := MustGenerateSpanID()
-	if id != FallbackSpanID {
-		t.Fatalf("expected fallback marker %q, got %q", FallbackSpanID, id)
+	if !strings.HasPrefix(id, FallbackSpanIDPrefix) {
+		t.Fatalf("expected prefix %q, got %q", FallbackSpanIDPrefix, id)
+	}
+	if !fallbackSpanIDRe.MatchString(id) {
+		t.Fatalf("fallback span id %q does not match %s", id, fallbackSpanIDRe)
 	}
 	if len(id) == 16 && isHexOnly(id) {
-		t.Errorf("fallback marker must not be 16-hex; got %q", id)
+		t.Errorf("fallback id must not be 16-hex; got %q", id)
 	}
 	if id == strings.Repeat("0", 16) {
-		t.Errorf("fallback marker must not be all-zero hex; got %q", id)
+		t.Errorf("fallback id must not be all-zero hex; got %q", id)
+	}
+}
+
+// TestMustGenerateTraceID_SequentialUniqueness exercises the core
+// reviewer requirement: 1000 sequential fallback IDs must all be
+// distinct so concurrent in-flight traces stay correlatable during an
+// entropy outage.
+func TestMustGenerateTraceID_SequentialUniqueness(t *testing.T) {
+	withRandReader(t, failingReader{})
+
+	const calls = 1000
+	seen := make(map[string]struct{}, calls)
+	for i := 0; i < calls; i++ {
+		id := MustGenerateTraceID()
+		if !fallbackTraceIDRe.MatchString(id) {
+			t.Fatalf("call %d: id %q does not match fallback shape", i, id)
+		}
+		if _, dup := seen[id]; dup {
+			t.Fatalf("call %d: duplicate fallback trace id %q", i, id)
+		}
+		seen[id] = struct{}{}
+	}
+	if got := len(seen); got != calls {
+		t.Fatalf("distinct count: got %d want %d", got, calls)
+	}
+}
+
+func TestMustGenerateSpanID_SequentialUniqueness(t *testing.T) {
+	withRandReader(t, failingReader{})
+
+	const calls = 1000
+	seen := make(map[string]struct{}, calls)
+	for i := 0; i < calls; i++ {
+		id := MustGenerateSpanID()
+		if !fallbackSpanIDRe.MatchString(id) {
+			t.Fatalf("call %d: id %q does not match fallback shape", i, id)
+		}
+		if _, dup := seen[id]; dup {
+			t.Fatalf("call %d: duplicate fallback span id %q", i, id)
+		}
+		seen[id] = struct{}{}
+	}
+	if got := len(seen); got != calls {
+		t.Fatalf("distinct count: got %d want %d", got, calls)
+	}
+}
+
+// TestMustGenerateTraceID_ConcurrentUniqueness fires 100 goroutines x
+// 100 calls each (10,000 calls) under a dead rand source and asserts
+// every fallback ID is distinct. atomic.Uint64 guarantees this; the
+// test pins the contract.
+func TestMustGenerateTraceID_ConcurrentUniqueness(t *testing.T) {
+	withRandReader(t, failingReader{})
+
+	const workers = 100
+	const perWorker = 100
+	const total = workers * perWorker
+
+	var set sync.Map
+	var dupCount int64
+	var dupMu sync.Mutex
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go func() {
+			defer wg.Done()
+			for i := 0; i < perWorker; i++ {
+				id := MustGenerateTraceID()
+				if _, loaded := set.LoadOrStore(id, struct{}{}); loaded {
+					dupMu.Lock()
+					dupCount++
+					dupMu.Unlock()
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	if dupCount != 0 {
+		t.Fatalf("%d duplicate fallback trace ids across %d concurrent calls", dupCount, total)
+	}
+
+	// Count distinct keys in the sync.Map and pin to total.
+	var distinct int
+	set.Range(func(_, _ any) bool {
+		distinct++
+		return true
+	})
+	if distinct != total {
+		t.Fatalf("distinct count: got %d want %d", distinct, total)
+	}
+}
+
+func TestMustGenerateSpanID_ConcurrentUniqueness(t *testing.T) {
+	withRandReader(t, failingReader{})
+
+	const workers = 100
+	const perWorker = 100
+	const total = workers * perWorker
+
+	var set sync.Map
+	var dupCount int64
+	var dupMu sync.Mutex
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go func() {
+			defer wg.Done()
+			for i := 0; i < perWorker; i++ {
+				id := MustGenerateSpanID()
+				if _, loaded := set.LoadOrStore(id, struct{}{}); loaded {
+					dupMu.Lock()
+					dupCount++
+					dupMu.Unlock()
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	if dupCount != 0 {
+		t.Fatalf("%d duplicate fallback span ids across %d concurrent calls", dupCount, total)
+	}
+	var distinct int
+	set.Range(func(_, _ any) bool {
+		distinct++
+		return true
+	})
+	if distinct != total {
+		t.Fatalf("distinct count: got %d want %d", distinct, total)
+	}
+}
+
+// TestMustGenerate_TraceAndSpanNeverEqual asserts that within a single
+// outage the fallback trace IDs and span IDs are never equal even
+// though both use the same counter. Different prefixes are the only
+// thing keeping them apart; this test pins that.
+func TestMustGenerate_TraceAndSpanNeverEqual(t *testing.T) {
+	withRandReader(t, failingReader{})
+
+	seen := make(map[string]struct{}, 200)
+	for i := 0; i < 100; i++ {
+		tid := MustGenerateTraceID()
+		sid := MustGenerateSpanID()
+		if tid == sid {
+			t.Fatalf("iter %d: trace id %q == span id %q", i, tid, sid)
+		}
+		if _, dup := seen[tid]; dup {
+			t.Fatalf("iter %d: duplicate trace id %q", i, tid)
+		}
+		seen[tid] = struct{}{}
+		if _, dup := seen[sid]; dup {
+			t.Fatalf("iter %d: duplicate span id %q", i, sid)
+		}
+		seen[sid] = struct{}{}
 	}
 }
 
@@ -123,7 +293,7 @@ func TestMustGenerateTraceID_RetriesOnceBeforeFallback(t *testing.T) {
 	withRandReader(t, &retryingReader{failsLeft: 1})
 
 	id := MustGenerateTraceID()
-	if id == FallbackTraceID {
+	if strings.HasPrefix(id, FallbackTraceIDPrefix) {
 		t.Fatalf("expected real id after retry, got fallback %q", id)
 	}
 	if len(id) != 32 {
@@ -135,7 +305,7 @@ func TestMustGenerateSpanID_RetriesOnceBeforeFallback(t *testing.T) {
 	withRandReader(t, &retryingReader{failsLeft: 1})
 
 	id := MustGenerateSpanID()
-	if id == FallbackSpanID {
+	if strings.HasPrefix(id, FallbackSpanIDPrefix) {
 		t.Fatalf("expected real id after retry, got fallback %q", id)
 	}
 	if len(id) != 16 {
@@ -195,22 +365,30 @@ func TestGenerateIDs_NoCollisionUnderConcurrency(t *testing.T) {
 
 // TestStartTrace_RandFailureProducesDistinguishableMarker locks down
 // the composite helper used by router middleware: when entropy is dead
-// the resulting context must carry the fallback markers, not all-zero
-// hex.
+// the resulting context must carry per-call distinguishable IDs (not
+// all-zero hex, and not a single shared constant).
 func TestStartTrace_RandFailureProducesDistinguishableMarker(t *testing.T) {
 	withRandReader(t, failingReader{})
 
-	_, traceID, spanID := StartTrace(context.Background())
-	if traceID != FallbackTraceID {
-		t.Errorf("StartTrace trace id: got %q want fallback %q", traceID, FallbackTraceID)
+	_, traceID1, spanID1 := StartTrace(context.Background())
+	_, traceID2, spanID2 := StartTrace(context.Background())
+
+	if !fallbackTraceIDRe.MatchString(traceID1) {
+		t.Errorf("StartTrace trace id %q does not match fallback shape", traceID1)
 	}
-	if spanID != FallbackSpanID {
-		t.Errorf("StartTrace span id: got %q want fallback %q", spanID, FallbackSpanID)
+	if !fallbackSpanIDRe.MatchString(spanID1) {
+		t.Errorf("StartTrace span id %q does not match fallback shape", spanID1)
 	}
-	if traceID == strings.Repeat("0", 32) {
+	if traceID1 == traceID2 {
+		t.Fatalf("StartTrace produced identical trace ids %q across two calls; correlation broken", traceID1)
+	}
+	if spanID1 == spanID2 {
+		t.Fatalf("StartTrace produced identical span ids %q across two calls; correlation broken", spanID1)
+	}
+	if traceID1 == strings.Repeat("0", 32) {
 		t.Fatal("regression: StartTrace returned all-zero trace id")
 	}
-	if spanID == strings.Repeat("0", 16) {
+	if spanID1 == strings.Repeat("0", 16) {
 		t.Fatal("regression: StartTrace returned all-zero span id")
 	}
 }
