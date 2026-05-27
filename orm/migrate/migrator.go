@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -41,6 +42,25 @@ type Migrator struct {
 	// pick any connection from the pool, which is fine for drivers
 	// whose locks are not session-scoped (MySQL row-lock tx, SQLite CAS row).
 	conn *sql.Conn
+
+	// lockMu serializes lock acquire/release on this Migrator instance and
+	// guards lockDepth + lockRelease. The migration lock itself is held by
+	// the driver-specific primitive (pg_advisory_lock, MySQL FOR UPDATE tx,
+	// SQLite CAS row); lockMu only coordinates *this* instance's view of
+	// whether it already holds that lock.
+	lockMu sync.Mutex
+
+	// lockDepth tracks how many nested entry points on THIS Migrator
+	// instance currently hold the migration lock. The outermost caller
+	// acquires the driver primitive at depth 1; nested DDL helpers invoked
+	// from within a migration body increment the counter and skip the
+	// acquire (and decrement on return), letting them pass through without
+	// deadlocking. Lock is fully released when the counter returns to 0.
+	lockDepth int
+
+	// lockRelease is the driver-specific release function captured at the
+	// outermost acquire; only invoked when lockDepth drops back to 0.
+	lockRelease func()
 }
 
 // NewMigrator creates a new Migrator instance
@@ -124,7 +144,7 @@ func (m *Migrator) SetMigrationsPath(path string) {
 // concurrent migrator processes cannot double-apply a migration.
 //
 // Locking strategy:
-//   - Postgres: pg_advisory_lock(migrationLockKey) — session-scoped lock
+//   - Postgres: pg_advisory_lock(migrationLockKey), session-scoped lock
 //     released via pg_advisory_unlock when Up returns.
 //   - MySQL/SQLite: a dedicated single-row "migrations_lock" table is
 //     created on demand and acquired via SELECT ... FOR UPDATE inside a
@@ -137,19 +157,74 @@ func (m *Migrator) SetMigrationsPath(path string) {
 // the underlying error. When it can be acquired but has already been
 // taken by another runner, the call blocks until the holder releases.
 func (m *Migrator) Up() error {
+	return m.withMigrationLock(m.runUp)
+}
+
+// withMigrationLock executes fn while holding the migration lock for this
+// Migrator instance. The lock is re-entrant on a single Migrator: nested
+// invocations (e.g. DDL helpers called from inside a migration body) see
+// lockDepth > 0 and skip both acquire and release, passing fn straight
+// through. The outermost caller acquires the driver primitive, runs fn,
+// then releases when lockDepth returns to 0.
+//
+// Pretend mode skips locking entirely: no database mutation occurs so
+// there is nothing to serialize. This matches the previous Up()-only
+// pretend-mode semantics now that every schema-mutating entry point
+// flows through this helper.
+//
+// Re-entrance is keyed on the Migrator instance, not the underlying
+// *sql.DB. Two different Migrator structs against the same database
+// still contend on the driver-level lock, which is what makes
+// cross-process serialization work. This intentional asymmetry is what
+// lets Fresh() hold a single outer lock across its drop-then-Up pipeline
+// while Up()'s inner call no-ops on the same instance.
+func (m *Migrator) withMigrationLock(fn func() error) error {
 	if m.pretend {
-		// Pretend mode is pure SQL collection — no database mutation
+		// Pretend mode is pure SQL collection: no database mutation
 		// and therefore no locking required.
-		return m.runUp()
+		return fn()
 	}
 
+	m.lockMu.Lock()
+	if m.lockDepth > 0 {
+		m.lockDepth++
+		m.lockMu.Unlock()
+		defer func() {
+			m.lockMu.Lock()
+			m.lockDepth--
+			m.lockMu.Unlock()
+		}()
+		return fn()
+	}
+
+	// Outermost acquire. We hold lockMu while taking the driver
+	// primitive so a concurrent re-entrant caller on this instance does
+	// not race past us and treat the half-acquired state as held.
 	release, err := m.acquireMigrationLock()
 	if err != nil {
+		m.lockMu.Unlock()
 		return fmt.Errorf("velocity/orm: failed to acquire migration lock: %w", err)
 	}
-	defer release()
+	m.lockDepth = 1
+	m.lockRelease = release
+	m.lockMu.Unlock()
 
-	return m.runUp()
+	defer func() {
+		m.lockMu.Lock()
+		m.lockDepth--
+		if m.lockDepth == 0 {
+			r := m.lockRelease
+			m.lockRelease = nil
+			m.lockMu.Unlock()
+			if r != nil {
+				r()
+			}
+			return
+		}
+		m.lockMu.Unlock()
+	}()
+
+	return fn()
 }
 
 // runUp is the migration-execution body; acquireMigrationLock guarantees
@@ -369,8 +444,19 @@ func (m *Migrator) ensureLockTable() error {
 	return nil
 }
 
-// Down rolls back the last N batches of migrations
+// Down rolls back the last N batches of migrations under the same
+// migration lock used by Up. Without the lock, a concurrent migrator
+// process could run Up while this one ran Down, leaving the schema in
+// an unrecoverable partial state.
 func (m *Migrator) Down(steps int) error {
+	return m.withMigrationLock(func() error {
+		return m.runDown(steps)
+	})
+}
+
+// runDown is the rollback body; withMigrationLock guarantees exclusivity
+// before it is invoked.
+func (m *Migrator) runDown(steps int) error {
 	if steps <= 0 {
 		steps = 1 // Default to rolling back one batch
 	}
@@ -420,23 +506,31 @@ func (m *Migrator) Down(steps int) error {
 	return nil
 }
 
-// Fresh drops all tables and re-runs all migrations
+// Fresh drops all tables and re-runs all migrations. The lock is held
+// across BOTH the drop pass and the subsequent Up so a concurrent
+// migrator process cannot start applying migrations to tables that this
+// process is in the middle of dropping (which would corrupt the schema
+// into an unrecoverable intermediate state). The nested Up() call sees
+// lockDepth > 0 and skips its own acquire via withMigrationLock's
+// re-entrance.
 func (m *Migrator) Fresh() error {
-	// Get all table names
-	tables, err := m.getAllTables()
-	if err != nil {
-		return fmt.Errorf("failed to get tables: %w", err)
-	}
-
-	// Drop all tables
-	for _, table := range tables {
-		if err := m.dropTable(table); err != nil {
-			return fmt.Errorf("failed to drop table %s: %w", table, err)
+	return m.withMigrationLock(func() error {
+		// Get all table names
+		tables, err := m.getAllTables()
+		if err != nil {
+			return fmt.Errorf("failed to get tables: %w", err)
 		}
-	}
 
-	// Run all migrations
-	return m.Up()
+		// Drop all tables
+		for _, table := range tables {
+			if err := m.dropTable(table); err != nil {
+				return fmt.Errorf("failed to drop table %s: %w", table, err)
+			}
+		}
+
+		// Run all migrations under the same outer lock.
+		return m.Up()
+	})
 }
 
 // Status returns the status of all migrations
@@ -484,7 +578,13 @@ type MigrationStatus struct {
 	ExecutedAt *string
 }
 
-// CreateTable creates a new database table using the fluent TableBuilder API
+// CreateTable creates a new database table using the fluent TableBuilder API.
+// Input is validated before the lock is taken so malformed calls fail fast
+// without spending a lock acquisition. The DDL runs under the migration
+// lock so standalone callers (outside a migration body) do not race a
+// concurrent Up/Down/Fresh. When invoked from within a migration body the
+// call is re-entrant on the same Migrator instance and passes through
+// without re-acquiring.
 func (m *Migrator) CreateTable(name string, fn func(*TableBuilder)) error {
 	builder := newTableBuilder(name, m.driver)
 	fn(builder)
@@ -501,31 +601,36 @@ func (m *Migrator) CreateTable(name string, fn func(*TableBuilder)) error {
 	}
 
 	sql := builder.ToSQL()
-	if err := m.exec(sql); err != nil {
-		return fmt.Errorf("failed to create table %s: %w", name, err)
-	}
-
-	return nil
+	return m.withMigrationLock(func() error {
+		if err := m.exec(sql); err != nil {
+			return fmt.Errorf("failed to create table %s: %w", name, err)
+		}
+		return nil
+	})
 }
 
-// DropTable drops a database table
+// DropTable drops a database table. Held under the migration lock so
+// standalone callers (outside a migration body) do not race a concurrent
+// Up/Down/Fresh. Re-entrant within a migration body.
 func (m *Migrator) DropTable(name string) error {
-	quoted := quoteIdentifier(name, m.driver)
-	var sql string
+	return m.withMigrationLock(func() error {
+		quoted := quoteIdentifier(name, m.driver)
+		var sql string
 
-	switch m.driver {
-	case "postgres":
-		// Postgres needs CASCADE to drop dependent objects
-		sql = "DROP TABLE IF EXISTS " + quoted + " CASCADE"
-	default:
-		sql = "DROP TABLE IF EXISTS " + quoted
-	}
+		switch m.driver {
+		case "postgres":
+			// Postgres needs CASCADE to drop dependent objects
+			sql = "DROP TABLE IF EXISTS " + quoted + " CASCADE"
+		default:
+			sql = "DROP TABLE IF EXISTS " + quoted
+		}
 
-	if err := m.exec(sql); err != nil {
-		return fmt.Errorf("failed to drop table %s: %w", name, err)
-	}
+		if err := m.exec(sql); err != nil {
+			return fmt.Errorf("failed to drop table %s: %w", name, err)
+		}
 
-	return nil
+		return nil
+	})
 }
 
 // Raw executes arbitrary SQL.
@@ -533,20 +638,33 @@ func (m *Migrator) DropTable(name string) error {
 // WARNING: This method executes raw SQL directly. The caller is responsible for
 // preventing SQL injection by using parameterized queries with placeholder arguments.
 // Never concatenate user input directly into the sql string.
+//
+// Held under the migration lock so standalone callers do not race a
+// concurrent Up/Down/Fresh. Re-entrant within a migration body.
 func (m *Migrator) Raw(sql string) error {
-	if err := m.exec(sql); err != nil {
-		return fmt.Errorf("failed to execute raw SQL: %w", err)
-	}
-	return nil
+	return m.withMigrationLock(func() error {
+		if err := m.exec(sql); err != nil {
+			return fmt.Errorf("failed to execute raw SQL: %w", err)
+		}
+		return nil
+	})
 }
 
 // Table modifies an existing table using the same TableBuilder API as CreateTable.
 // Each column added via the builder generates an ALTER TABLE ADD COLUMN statement.
 // Primary key columns (ID, UUIDPrimary) are rejected since they cannot be added to existing tables.
+//
+// Input is validated before the lock is taken so malformed calls fail
+// fast. The DDL runs under the migration lock so standalone callers do
+// not race a concurrent Up/Down/Fresh. Re-entrant within a migration body.
 func (m *Migrator) Table(name string, fn func(*TableBuilder)) error {
 	builder := newTableBuilder(name, m.driver)
 	fn(builder)
 
+	type stmt struct {
+		sql string
+	}
+	stmts := make([]stmt, 0, len(builder.columns))
 	for _, col := range builder.columns {
 		if col.PrimaryKey {
 			return fmt.Errorf("cannot add primary key column %q to existing table %q via ALTER TABLE", col.Name, name)
@@ -555,16 +673,25 @@ func (m *Migrator) Table(name string, fn func(*TableBuilder)) error {
 			return fmt.Errorf("invalid column name: %q", col.Name)
 		}
 		colSQL := columnToSQL(col, m.driver)
-		sql := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", quoteIdentifier(name, m.driver), colSQL)
-		if err := m.exec(sql); err != nil {
-			return fmt.Errorf("failed to alter table %s: %w", name, err)
-		}
+		stmts = append(stmts, stmt{
+			sql: fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", quoteIdentifier(name, m.driver), colSQL),
+		})
 	}
 
-	return nil
+	return m.withMigrationLock(func() error {
+		for _, s := range stmts {
+			if err := m.exec(s.sql); err != nil {
+				return fmt.Errorf("failed to alter table %s: %w", name, err)
+			}
+		}
+		return nil
+	})
 }
 
-// AddColumn adds a column to an existing table
+// AddColumn adds a column to an existing table. Input is validated
+// before the lock is taken so malformed calls fail fast. The DDL runs
+// under the migration lock so standalone callers do not race a concurrent
+// Up/Down/Fresh. Re-entrant within a migration body.
 func (m *Migrator) AddColumn(table, column string, fn func(*ColumnBuilder)) error {
 	if !ddlIdentifierRegex.MatchString(column) {
 		return fmt.Errorf("invalid column name: %q", column)
@@ -576,23 +703,29 @@ func (m *Migrator) AddColumn(table, column string, fn func(*ColumnBuilder)) erro
 	fn(builder)
 
 	sql := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", quoteIdentifier(table, m.driver), builder.ToSQL())
-	if err := m.exec(sql); err != nil {
-		return fmt.Errorf("failed to add column %s to table %s: %w", column, table, err)
-	}
-	return nil
+	return m.withMigrationLock(func() error {
+		if err := m.exec(sql); err != nil {
+			return fmt.Errorf("failed to add column %s to table %s: %w", column, table, err)
+		}
+		return nil
+	})
 }
 
-// DropColumn removes a column from a table
+// DropColumn removes a column from a table. Held under the migration
+// lock so standalone callers do not race a concurrent Up/Down/Fresh.
+// Re-entrant within a migration body.
 // Note: SQLite does not support DROP COLUMN prior to version 3.35.0
 func (m *Migrator) DropColumn(table, column string) error {
-	quotedTable := quoteIdentifier(table, m.driver)
-	quotedColumn := quoteIdentifier(column, m.driver)
-	sql := fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", quotedTable, quotedColumn)
+	return m.withMigrationLock(func() error {
+		quotedTable := quoteIdentifier(table, m.driver)
+		quotedColumn := quoteIdentifier(column, m.driver)
+		sql := fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", quotedTable, quotedColumn)
 
-	if err := m.exec(sql); err != nil {
-		return fmt.Errorf("failed to drop column %s from table %s: %w", column, table, err)
-	}
-	return nil
+		if err := m.exec(sql); err != nil {
+			return fmt.Errorf("failed to drop column %s from table %s: %w", column, table, err)
+		}
+		return nil
+	})
 }
 
 // ColumnBuilder provides a fluent API for defining a single column

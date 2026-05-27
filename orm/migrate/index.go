@@ -422,7 +422,11 @@ func (b *IndexBuilder) toSQLiteSQL() (string, error) {
 	return sql.String(), nil
 }
 
-// CreateIndex creates a new index using the fluent IndexBuilder API
+// CreateIndex creates a new index using the fluent IndexBuilder API.
+// Input is validated before the lock is taken so malformed calls fail
+// fast without spending a lock acquisition. The actual DDL runs under
+// the migration lock so standalone callers do not race a concurrent
+// Up/Down/Fresh. Re-entrant within a migration body.
 func (m *Migrator) CreateIndex(name, table string, fn func(*IndexBuilder)) error {
 	if !ddlIdentifierRegex.MatchString(name) {
 		return fmt.Errorf("invalid index name: %q", name)
@@ -438,14 +442,19 @@ func (m *Migrator) CreateIndex(name, table string, fn func(*IndexBuilder)) error
 	if err != nil {
 		return fmt.Errorf("failed to build index SQL for %s: %w", name, err)
 	}
-	if _, err := m.execContext(context.Background(), sql); err != nil {
-		return fmt.Errorf("failed to create index %s: %w", name, err)
-	}
 
-	return nil
+	return m.withMigrationLock(func() error {
+		if _, err := m.execContext(context.Background(), sql); err != nil {
+			return fmt.Errorf("failed to create index %s: %w", name, err)
+		}
+		return nil
+	})
 }
 
-// DropIndex drops an index
+// DropIndex drops an index. Input is validated before the lock is taken
+// so malformed calls fail fast without spending a lock acquisition. The
+// DDL runs under the migration lock so standalone callers do not race a
+// concurrent Up/Down/Fresh. Re-entrant within a migration body.
 func (m *Migrator) DropIndex(name string, table ...string) error {
 	if !ddlIdentifierRegex.MatchString(name) {
 		return fmt.Errorf("invalid index name: %q", name)
@@ -471,12 +480,12 @@ func (m *Migrator) DropIndex(name string, table ...string) error {
 		sql = "DROP INDEX IF EXISTS " + quotedName
 	}
 
-	_, err := m.execContext(context.Background(), sql)
-	if err != nil {
-		return fmt.Errorf("failed to drop index %s: %w", name, err)
-	}
-
-	return nil
+	return m.withMigrationLock(func() error {
+		if _, err := m.execContext(context.Background(), sql); err != nil {
+			return fmt.Errorf("failed to drop index %s: %w", name, err)
+		}
+		return nil
+	})
 }
 
 // Index is a shorthand for creating a simple index
