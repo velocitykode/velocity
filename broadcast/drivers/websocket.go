@@ -47,12 +47,26 @@ func denyAllChannelAuthorizer(client *websocket.Client, channel string) bool {
 type WebSocketDriver struct {
 	server         *websocket.Server
 	channels       map[string]map[string]*websocket.Client // channel -> socketID -> client
+	clientSubs     map[string]map[string]struct{}          // clientID -> channel set (audit D-03)
 	authorizer     ChannelAuthorizer
 	verifier       TokenVerifier
 	mu             sync.RWMutex
 	droppedCount   atomic.Uint64
 	blockingSendTO time.Duration // 0 means non-blocking (drop on full)
 	onDrop         func(clientID, channel, event string)
+
+	// maxChannelsPerClient caps the number of distinct channels a single
+	// WebSocket client may subscribe to. Zero falls back to
+	// DefaultMaxChannelsPerClient. Audit D-03: without a cap, an
+	// unauthenticated client can spam subscribe to unique public channel
+	// names and inflate the channels map to unbounded size.
+	maxChannelsPerClient int
+
+	// maxChannelNameLength caps the length of a subscribe target channel
+	// name. Zero falls back to DefaultMaxChannelNameLength. Audit D-03:
+	// without a cap, an attacker can submit megabyte-sized channel names
+	// to consume server memory per subscribe.
+	maxChannelNameLength int
 
 	// logger is stored via atomic.Value so drop-path logging can read it
 	// without contending with the channel-membership lock held by
@@ -92,8 +106,37 @@ func (d *WebSocketDriver) log() Logger {
 	return v.(loggerHolder).Logger
 }
 
+// DefaultMaxChannelsPerClient is the per-client channel subscription cap
+// applied when the driver is constructed without WithMaxChannelsPerClient.
+// Audit D-03.
+const DefaultMaxChannelsPerClient = 100
+
+// DefaultMaxChannelNameLength is the per-subscribe channel name length cap
+// applied when the driver is constructed without WithMaxChannelNameLength.
+// Audit D-03.
+const DefaultMaxChannelNameLength = 256
+
 // DriverOption configures a WebSocketDriver.
 type DriverOption func(*WebSocketDriver)
+
+// WithMaxChannelsPerClient sets the per-client channel subscription cap.
+// A value of 0 keeps the default (DefaultMaxChannelsPerClient). A negative
+// value disables the cap (not recommended in untrusted multi-tenant
+// deployments). Audit D-03.
+func WithMaxChannelsPerClient(n int) DriverOption {
+	return func(d *WebSocketDriver) {
+		d.maxChannelsPerClient = n
+	}
+}
+
+// WithMaxChannelNameLength sets the per-subscribe channel name length cap.
+// A value of 0 keeps the default (DefaultMaxChannelNameLength). A negative
+// value disables the cap (not recommended). Audit D-03.
+func WithMaxChannelNameLength(n int) DriverOption {
+	return func(d *WebSocketDriver) {
+		d.maxChannelNameLength = n
+	}
+}
 
 // WithBlockingSend returns an option that makes Broadcast and BroadcastExcept
 // block for up to the given duration when a client's send buffer is full,
@@ -121,11 +164,21 @@ func WithOnDrop(fn func(clientID, channel, event string)) DriverOption {
 func NewWebSocketDriver(config websocket.Config, opts ...DriverOption) *WebSocketDriver {
 	driver := &WebSocketDriver{
 		channels:   make(map[string]map[string]*websocket.Client),
+		clientSubs: make(map[string]map[string]struct{}),
 		authorizer: denyAllChannelAuthorizer,
 	}
 
 	for _, opt := range opts {
 		opt(driver)
+	}
+
+	// Apply secure defaults for the D-03 caps. A negative value left in
+	// place after options run is the explicit opt out.
+	if driver.maxChannelsPerClient == 0 {
+		driver.maxChannelsPerClient = DefaultMaxChannelsPerClient
+	}
+	if driver.maxChannelNameLength == 0 {
+		driver.maxChannelNameLength = DefaultMaxChannelNameLength
 	}
 
 	// Create WebSocket server
@@ -312,6 +365,9 @@ func (d *WebSocketDriver) purgeClient(clientID string) {
 			}
 		}
 	}
+	// Drop the per-client subscription bookkeeping so a disconnect frees
+	// the D-03 cap budget for any future reconnect of the same ID.
+	delete(d.clientSubs, clientID)
 }
 
 func (d *WebSocketDriver) recordDrop(clientID, channel, event string) {
@@ -409,10 +465,48 @@ func computeOpaqueClientID(seed [32]byte, socketID, channel string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// Subscribe adds a client to a channel
+// ErrChannelLimit is returned by Subscribe (and surfaced by handleSubscribe)
+// when a client tries to subscribe to more channels than the per-connection
+// cap allows. Audit D-03.
+var ErrChannelLimit = fmt.Errorf("velocity/broadcast: channel subscription limit reached")
+
+// Subscribe adds a client to a channel. Enforces the per-client channel cap
+// configured via WithMaxChannelsPerClient (audit D-03). Returns
+// ErrChannelLimit if adding the channel would exceed the cap; idempotent for
+// re-subscribes (already-subscribed channels do not count against the cap a
+// second time).
 func (d *WebSocketDriver) Subscribe(channel string, client *websocket.Client) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	// Lazy-init the per-client bookkeeping map so test fixtures that build
+	// the driver as a bare struct literal (skipping NewWebSocketDriver) do
+	// not nil-panic. Same pattern as opaqueSeedOnce.
+	if d.clientSubs == nil {
+		d.clientSubs = make(map[string]map[string]struct{})
+	}
+
+	// Initialise the per-client set if needed so a re-subscribe to an
+	// existing channel is a no-op rather than a cap hit.
+	subs, ok := d.clientSubs[client.ID]
+	if !ok {
+		subs = make(map[string]struct{})
+		d.clientSubs[client.ID] = subs
+	}
+
+	if _, already := subs[channel]; !already {
+		// Enforce cap only on new memberships. A negative cap disables
+		// enforcement (caller opt out).
+		if d.maxChannelsPerClient > 0 && len(subs) >= d.maxChannelsPerClient {
+			// Drop the empty bookkeeping entry created above so we do
+			// not leak it for a client that never lands a subscription.
+			if len(subs) == 0 {
+				delete(d.clientSubs, client.ID)
+			}
+			return ErrChannelLimit
+		}
+		subs[channel] = struct{}{}
+	}
 
 	if d.channels[channel] == nil {
 		d.channels[channel] = make(map[string]*websocket.Client)
@@ -436,6 +530,15 @@ func (d *WebSocketDriver) Unsubscribe(channel string, clientID string) error {
 		}
 	}
 
+	// Drop from the per-client subscription set so the D-03 cap reflects
+	// only currently-held memberships.
+	if subs, ok := d.clientSubs[clientID]; ok {
+		delete(subs, channel)
+		if len(subs) == 0 {
+			delete(d.clientSubs, clientID)
+		}
+	}
+
 	return nil
 }
 
@@ -449,6 +552,14 @@ func (d *WebSocketDriver) handleSubscribe(client *websocket.Client, msg websocke
 	channel, ok := data["channel"].(string)
 	if !ok {
 		return fmt.Errorf("channel not specified")
+	}
+
+	// Audit D-03: reject oversized channel names BEFORE consulting the
+	// authorizer or touching any map. Without this gate an attacker can
+	// submit megabyte-sized channel strings on the unauthenticated public
+	// path and force the server to copy them into clientSubs / channels.
+	if d.maxChannelNameLength > 0 && len(channel) > d.maxChannelNameLength {
+		return fmt.Errorf("velocity/broadcast: channel name exceeds %d characters", d.maxChannelNameLength)
 	}
 
 	// Authorize private and presence channels. The default authorizer is

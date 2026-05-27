@@ -141,6 +141,15 @@ func New(config Config) *Server {
 	if config.WriteTimeout == 0 {
 		config.WriteTimeout = 10 * time.Second
 	}
+	// Audit D-03: rate limiting must be opt out, not opt in. A zero value
+	// (unconfigured) installs the secure default; a negative value is the
+	// explicit opt out and is normalised to 0 so the readPump treats it as
+	// unlimited.
+	if config.MessageRateLimit == 0 {
+		config.MessageRateLimit = DefaultMessageRateLimit
+	} else if config.MessageRateLimit < 0 {
+		config.MessageRateLimit = 0
+	}
 
 	s := &Server{
 		config:     config,

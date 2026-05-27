@@ -16,6 +16,11 @@ var (
 	ErrInvalidMessage   = errors.New("invalid message")
 )
 
+// DefaultMessageRateLimit is the per-client inbound messages-per-second cap
+// applied when Config.MessageRateLimit is unset. Set MessageRateLimit to a
+// negative value to explicitly opt out. Audit D-03.
+const DefaultMessageRateLimit = 10
+
 // generateID generates a unique ID for clients
 func generateID() string {
 	b := make([]byte, 16)

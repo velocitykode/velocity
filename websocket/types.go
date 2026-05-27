@@ -29,19 +29,27 @@ type Client struct {
 
 // Config holds WebSocket server configuration
 type Config struct {
-	Host             string
-	Port             int
-	Path             string
-	AllowedOrigins   []string
-	MaxConnections   int
-	ReadBufferSize   int
-	WriteBufferSize  int
-	MaxMessageSize   int64
-	PingInterval     time.Duration
-	PongTimeout      time.Duration
-	WriteTimeout     time.Duration
-	MessageRateLimit int                         // Max messages per second per client (0 = unlimited)
-	MessageBurstSize int                         // Max burst before rate limiting disconnects the client
+	Host            string
+	Port            int
+	Path            string
+	AllowedOrigins  []string
+	MaxConnections  int
+	ReadBufferSize  int
+	WriteBufferSize int
+	MaxMessageSize  int64
+	PingInterval    time.Duration
+	PongTimeout     time.Duration
+	WriteTimeout    time.Duration
+	// MessageRateLimit caps the number of inbound messages per second per
+	// client. The zero value installs the secure default
+	// (DefaultMessageRateLimit) so unconfigured deployments are not silently
+	// unrate-limited. To explicitly opt out and run with no rate limit, set
+	// this field to a negative value (e.g. -1). Audit D-03.
+	MessageRateLimit int
+	// MessageBurstSize is the maximum burst above MessageRateLimit before a
+	// flooding client is disconnected. Zero defaults to 2x MessageRateLimit
+	// once the rate limit default is applied.
+	MessageBurstSize int
 	AuthFunc         func(r *http.Request) error // Pre-upgrade authentication; return non-nil to reject
 
 	// AllowEmptyOrigin opts in to accepting upgrade requests that arrive with
