@@ -457,3 +457,106 @@ func TestBond_SSR_ForbidPrivateTarget(t *testing.T) {
 		t.Errorf("expected private target rejected, got URL=%q", gw.URL)
 	}
 }
+
+// TestHTTPGateway_Dispatch_OversizedResponse_RefusedNotTruncated pins the
+// ssrResponseCap guard. A misbehaving (or attacker-controlled) SSR server
+// that streams more than 10 MiB must NOT be silently truncated into a
+// JSON-parse-failure path: the gateway should refuse the payload and
+// surface ErrSSRResponseTooLarge via the event stream while CSR-fallback
+// returns (nil, nil) for the caller.
+func TestHTTPGateway_Dispatch_OversizedResponse_RefusedNotTruncated(t *testing.T) {
+	// Build a valid JSON envelope larger than ssrResponseCap. The body
+	// field is padded so the total response exceeds 10 MiB.
+	pad := strings.Repeat("a", int(ssrResponseCap)+1)
+	payload := `{"head":[],"body":"` + pad + `"}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, payload)
+	}))
+	defer server.Close()
+
+	gw := NewHTTPGateway(server.URL)
+	events := collectSSREvents(gw)
+
+	resp, err := gw.Dispatch(context.Background(), Page{Component: "Home", URL: "/"})
+	if err != nil {
+		t.Fatalf("dispatch returned error, expected graceful fallback: %v", err)
+	}
+	if resp != nil {
+		t.Errorf("expected nil response on oversized body, got %+v", resp)
+	}
+	got := events()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 SSRRenderFailed event, got %d", len(got))
+	}
+	if got[0].Error != ErrSSRResponseTooLarge.Error() {
+		t.Errorf("expected ErrSSRResponseTooLarge event, got %q", got[0].Error)
+	}
+	if got[0].Type != SSRErrorConnection {
+		t.Errorf("expected connection error type, got %q", got[0].Type)
+	}
+}
+
+// TestHTTPGateway_Dispatch_OversizedResponse_ThrowOnError pins the
+// ThrowOnError path for the cap. ErrSSRResponseTooLarge must propagate
+// out instead of being swallowed for CSR fallback.
+func TestHTTPGateway_Dispatch_OversizedResponse_ThrowOnError(t *testing.T) {
+	pad := strings.Repeat("a", int(ssrResponseCap)+1)
+	payload := `{"head":[],"body":"` + pad + `"}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, payload)
+	}))
+	defer server.Close()
+
+	gw := NewHTTPGateway(server.URL)
+	gw.ThrowOnError = true
+
+	resp, err := gw.Dispatch(context.Background(), Page{Component: "Home", URL: "/"})
+	if err == nil {
+		t.Fatal("expected ThrowOnError to surface a non-nil error")
+	}
+	if !errors.Is(err, ErrSSRResponseTooLarge) {
+		t.Errorf("expected ErrSSRResponseTooLarge, got %v", err)
+	}
+	if resp != nil {
+		t.Errorf("expected nil response alongside error, got %+v", resp)
+	}
+}
+
+// TestHTTPGateway_Dispatch_AtCap_StillSucceeds pins the lower boundary:
+// a response of exactly ssrResponseCap bytes parses normally. The +1
+// read guards against silent truncation but must not refuse a payload
+// that fits.
+func TestHTTPGateway_Dispatch_AtCap_StillSucceeds(t *testing.T) {
+	// Compute pad length so the total JSON envelope is exactly
+	// ssrResponseCap bytes. The envelope is `{"head":[],"body":"<pad>"}`
+	// (no trailing newline). Length is 26 wrapper bytes + len(pad).
+	envelope := `{"head":[],"body":"` + `"}`
+	padLen := int(ssrResponseCap) - len(envelope)
+	if padLen <= 0 {
+		t.Fatalf("test invariant: ssrResponseCap too small to fit envelope wrapper")
+	}
+	pad := strings.Repeat("a", padLen)
+	payload := `{"head":[],"body":"` + pad + `"}`
+	if int64(len(payload)) != ssrResponseCap {
+		t.Fatalf("test invariant: payload length %d, want %d", len(payload), ssrResponseCap)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, payload)
+	}))
+	defer server.Close()
+
+	gw := NewHTTPGateway(server.URL)
+	resp, err := gw.Dispatch(context.Background(), Page{Component: "Home", URL: "/"})
+	if err != nil {
+		t.Fatalf("unexpected error at exactly cap: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response at exactly cap")
+	}
+	if resp.Body != pad {
+		t.Errorf("body mismatch at cap boundary")
+	}
+}

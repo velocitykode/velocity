@@ -91,12 +91,24 @@ const DefaultSSRURL = "http://127.0.0.1:13714/render"
 
 const defaultSSRTimeout = 3 * time.Second
 
+// ssrResponseCap is the maximum number of bytes Dispatch will read from
+// the SSR server's response body. A pre-rendered page that exceeds this
+// is almost certainly a misbehaving or attacker-controlled SSR server,
+// not legitimate Inertia output. Capped at 10 MiB.
+const ssrResponseCap int64 = 10 << 20
+
 // ErrNoClient is returned by Dispatch/IsHealthy when the gateway's
-// Client field is nil. The zero-value HTTPGateway is not usable —
+// Client field is nil. The zero-value HTTPGateway is not usable,
 // callers must construct via NewHTTPGateway, which installs a hardened
 // *http.Client. Falling back to http.DefaultClient would silently
 // bypass TLS, redirect, and SSRF hardening applied elsewhere.
 var ErrNoClient = errors.New("velocity/bond: ssr gateway client not configured; use NewHTTPGateway")
+
+// ErrSSRResponseTooLarge is surfaced when the SSR server returns a body
+// larger than ssrResponseCap. Dispatch refuses to allocate the full
+// payload and falls back to CSR (or returns the error when
+// ThrowOnError is set).
+var ErrSSRResponseTooLarge = errors.New("velocity/bond: ssr response exceeds 10 MiB cap")
 
 // ssrServerError is the structured error payload an inertia-aware SSR
 // server returns in the response body on failure. Unknown fields are
@@ -233,14 +245,23 @@ func (g *HTTPGateway) Dispatch(ctx context.Context, page Page) (*SSRResponse, er
 	defer resp.Body.Close()
 
 	// Cap at 10 MiB. A pre-rendered page that exceeds this is almost
-	// certainly an error or a misbehaving SSR server — CSR fallback
-	// is safer than ballooning memory.
-	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	// certainly an error or a misbehaving SSR server, CSR fallback
+	// is safer than ballooning memory. Read one byte past the cap so
+	// we can distinguish "exactly at the cap" from "over the cap" and
+	// refuse the latter rather than silently truncating a JSON payload
+	// into something that may or may not parse.
+	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, ssrResponseCap+1))
 	if readErr != nil {
 		return g.handleFailure(ctx, page, ssrServerError{
 			Error: readErr.Error(),
 			Type:  string(SSRErrorConnection),
 		}, readErr)
+	}
+	if int64(len(raw)) > ssrResponseCap {
+		return g.handleFailure(ctx, page, ssrServerError{
+			Error: ErrSSRResponseTooLarge.Error(),
+			Type:  string(SSRErrorConnection),
+		}, ErrSSRResponseTooLarge)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
