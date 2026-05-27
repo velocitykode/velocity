@@ -142,25 +142,37 @@ func (g *Gate) Any(user Authenticatable, abilities []string, args ...interface{}
 	return false
 }
 
-// AuthorizePolicy checks authorization using a registered policy
+// AuthorizePolicy checks authorization using a registered policy.
+//
+// Snapshot pattern: copy the policy reference and the before-callback slice
+// under a brief RLock, then release the lock and invoke user callbacks
+// OUTSIDE any lock. A panic inside a before callback would otherwise leak
+// the RLock permanently (sync.RWMutex is not goroutine-attached and does
+// not unwind on panic), wedging every future Gate.Define/Before/After
+// writer and every reader queued behind it, a permanent authorization DoS.
+// Mirrors the snapshot already used by runAfterCallbacks below.
 func (g *Gate) AuthorizePolicy(user Authenticatable, resourceType, action string, resource interface{}) bool {
 	g.mu.RLock()
 	policy, ok := g.policies[resourceType]
+	// Snapshot before-callback slice. append() inside Before() either grows
+	// into a new backing array (leaving ours untouched) or appends within
+	// existing capacity. To stay safe against the in-cap-append case we
+	// copy the slice header contents into a fresh slice.
+	beforeCallbacks := make([]BeforeCallback, len(g.before))
+	copy(beforeCallbacks, g.before)
 	g.mu.RUnlock()
 
 	if !ok {
 		return false
 	}
 
-	// Run before callbacks
-	g.mu.RLock()
-	for _, before := range g.before {
+	// Run before callbacks OUTSIDE the lock. A panic here can be recovered
+	// upstream without leaving g.mu in a wedged state.
+	for _, before := range beforeCallbacks {
 		if result := before(user, action, resource); result != nil {
-			g.mu.RUnlock()
 			return g.runAfterCallbacks(user, action, *result, resource)
 		}
 	}
-	g.mu.RUnlock()
 
 	result := policy.Authorize(user, action, resource)
 	return g.runAfterCallbacks(user, action, result, resource)

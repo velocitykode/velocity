@@ -49,28 +49,48 @@ func (b *Bond) ClearShared() {
 
 // mergeSharedProps combines shared props with component props
 // Order: static shared -> dynamic shared -> sharePropsFunc -> component (component wins)
+//
+// Snapshot pattern: copy sharedProps/sharedFuncs into local variables under a
+// brief RLock, release the lock, then invoke user-supplied SharedPropFunc
+// callbacks OUTSIDE any lock. A panic inside a user callback would otherwise
+// leak the RLock permanently (sync.RWMutex is not goroutine-attached and does
+// not unwind on panic), wedging every future writer and every reader queued
+// behind it. Mirrors the safeInvokeForUntil pattern in events/dispatcher.go
+// and flashFor in bond/flash_v2.go.
 func (b *Bond) mergeSharedProps(r *http.Request, componentProps Props) Props {
 	b.mu.RLock()
 	sharePropsFunc := b.sharePropsFunc
+	// Snapshot static shared props.
+	staticProps := make(Props, len(b.sharedProps))
+	for k, v := range b.sharedProps {
+		staticProps[k] = v
+	}
+	// Snapshot dynamic shared func references. Closures themselves are not
+	// copied (they're function values) but the map entries are, so a
+	// concurrent ShareFunc/ClearShared will not race with our iteration.
+	dynamicFuncs := make(map[string]SharedPropFunc, len(b.sharedFuncs))
+	for k, fn := range b.sharedFuncs {
+		dynamicFuncs[k] = fn
+	}
 	b.mu.RUnlock()
 
-	merged := make(Props)
+	merged := make(Props, len(staticProps)+len(dynamicFuncs)+len(componentProps))
 
-	// 1. Add static shared props (need lock)
-	b.mu.RLock()
-	for k, v := range b.sharedProps {
+	// 1. Add static shared props.
+	for k, v := range staticProps {
 		merged[k] = v
 	}
 
-	// 2. Evaluate and add dynamic shared props
-	for k, fn := range b.sharedFuncs {
+	// 2. Evaluate and add dynamic shared props OUTSIDE the lock. A panic in
+	// fn here can be recovered by an upstream defer without leaving the
+	// Bond's RWMutex in a wedged state.
+	for k, fn := range dynamicFuncs {
 		if val, err := fn(r); err == nil {
 			merged[k] = val
 		}
 	}
-	b.mu.RUnlock()
 
-	// 3. Evaluate SharePropsFunc if set (outside lock to avoid deadlock)
+	// 3. Evaluate SharePropsFunc if set (already outside lock).
 	if sharePropsFunc != nil {
 		if props, err := sharePropsFunc(r); err == nil && props != nil {
 			for k, v := range props {
@@ -79,7 +99,7 @@ func (b *Bond) mergeSharedProps(r *http.Request, componentProps Props) Props {
 		}
 	}
 
-	// 4. Component props override shared props
+	// 4. Component props override shared props.
 	for k, v := range componentProps {
 		merged[k] = v
 	}
