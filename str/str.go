@@ -326,18 +326,69 @@ func Mask(str string, character rune, index int, length ...int) string {
 }
 
 // Match performs a pattern match on the string.
+//
+// Deprecated: panics if pattern is malformed. Use MatchSafe with any
+// user-controlled pattern.
 func Match(pattern, value string) bool {
 	return mustMatch(pattern, value)
 }
 
 // MatchAll performs a global pattern match on the string.
+//
+// Deprecated: panics if pattern is malformed. Use MatchAllSafe with any
+// user-controlled pattern.
 func MatchAll(pattern, subject string) [][]string {
 	return mustFindAll(pattern, subject)
 }
 
 // Test checks if the string matches the given pattern.
+//
+// Deprecated: panics if pattern is malformed. Use TestSafe with any
+// user-controlled pattern.
 func Test(pattern, value string) bool {
 	return Match(pattern, value)
+}
+
+// MatchSafe performs a pattern match. Returns an error if the pattern is
+// malformed instead of panicking. Always prefer this over Match when the
+// pattern can come from a user or external input.
+func MatchSafe(pattern, value string) (bool, error) {
+	re, err := getRegexE(pattern)
+	if err != nil {
+		return false, err
+	}
+	return re.MatchString(value), nil
+}
+
+// MatchAllSafe performs a global pattern match. Returns an error if the
+// pattern is malformed. Always prefer this over MatchAll when the pattern
+// can come from a user or external input.
+func MatchAllSafe(pattern, subject string) ([][]string, error) {
+	re, err := getRegexE(pattern)
+	if err != nil {
+		return nil, err
+	}
+	return re.FindAllStringSubmatch(subject, -1), nil
+}
+
+// TestSafe is an alias for MatchSafe matching the existing Test/Match
+// naming pair.
+func TestSafe(pattern, value string) (bool, error) {
+	return MatchSafe(pattern, value)
+}
+
+// IsSafe is like Is but returns an error if the resulting regex cannot be
+// compiled. Always prefer this over Is when the pattern is user-controlled.
+func IsSafe(pattern, value string) (bool, error) {
+	if pattern == value {
+		return true, nil
+	}
+	// Convert glob pattern to regex (mirrors Is).
+	p := strings.ReplaceAll(pattern, ".", "\\.")
+	p = strings.ReplaceAll(p, "*", ".*")
+	p = strings.ReplaceAll(p, "?", ".")
+	p = "^" + p + "$"
+	return MatchSafe(p, value)
 }
 
 // PadBoth pads both sides of the string.

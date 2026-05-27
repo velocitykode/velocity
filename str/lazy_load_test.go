@@ -2,17 +2,14 @@ package str
 
 import (
 	"fmt"
-	"regexp"
 	"testing"
 )
 
 func TestLazyLoading(t *testing.T) {
 	t.Run("regex patterns are cached", func(t *testing.T) {
 		// Clear cache for test isolation
-		regexCache.Lock()
-		regexCache.patterns = make(map[string]*regexp.Regexp)
-		initialCount := len(regexCache.patterns)
-		regexCache.Unlock()
+		regexCache.clear()
+		initialCount := regexCache.len()
 
 		// First call should compile and cache the regex
 		result1 := Slug("Hello World!", "-")
@@ -20,11 +17,7 @@ func TestLazyLoading(t *testing.T) {
 			t.Errorf("Slug failed: got %q", result1)
 		}
 
-		// Check cache has grown
-		regexCache.RLock()
-		afterFirstCall := len(regexCache.patterns)
-		regexCache.RUnlock()
-
+		afterFirstCall := regexCache.len()
 		if afterFirstCall <= initialCount {
 			t.Error("Regex pattern was not cached after first use")
 		}
@@ -35,20 +28,14 @@ func TestLazyLoading(t *testing.T) {
 			t.Errorf("Slug failed: got %q", result2)
 		}
 
-		// Cache size should be the same (reusing patterns)
-		regexCache.RLock()
-		afterSecondCall := len(regexCache.patterns)
-		regexCache.RUnlock()
-
+		afterSecondCall := regexCache.len()
 		if afterSecondCall != afterFirstCall {
 			t.Errorf("Cache grew unexpectedly: before=%d, after=%d", afterFirstCall, afterSecondCall)
 		}
 	})
 
 	t.Run("different patterns are cached separately", func(t *testing.T) {
-		regexCache.Lock()
-		regexCache.patterns = make(map[string]*regexp.Regexp)
-		regexCache.Unlock()
+		regexCache.clear()
 
 		// Use InlineMarkdown which uses multiple regex patterns
 		result := InlineMarkdown("**bold** and *italic* text")
@@ -56,11 +43,7 @@ func TestLazyLoading(t *testing.T) {
 			t.Error("InlineMarkdown failed")
 		}
 
-		regexCache.RLock()
-		patternsAfterMarkdown := len(regexCache.patterns)
-		regexCache.RUnlock()
-
-		if patternsAfterMarkdown < 2 {
+		if patternsAfterMarkdown := regexCache.len(); patternsAfterMarkdown < 2 {
 			t.Errorf("Expected multiple patterns cached, got %d", patternsAfterMarkdown)
 		}
 	})
@@ -88,21 +71,15 @@ func TestLazyLoading(t *testing.T) {
 	})
 
 	t.Run("patterns are only compiled once", func(t *testing.T) {
-		regexCache.Lock()
-		regexCache.patterns = make(map[string]*regexp.Regexp)
-		regexCache.Unlock()
+		regexCache.clear()
 
 		// Call a function multiple times with same pattern needs
 		for i := 0; i < 5; i++ {
 			_ = Slug("Test String", "-")
 		}
 
-		regexCache.RLock()
-		finalCount := len(regexCache.patterns)
-		regexCache.RUnlock()
-
 		// Should only have patterns needed for Slug, not 5x
-		if finalCount > 2 {
+		if finalCount := regexCache.len(); finalCount > 2 {
 			t.Errorf("Patterns were recompiled: expected <=2, got %d", finalCount)
 		}
 	})

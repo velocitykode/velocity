@@ -1887,3 +1887,110 @@ func TestBasenameWithSuffix(t *testing.T) {
 		t.Errorf("Basename with suffix = %q", result)
 	}
 }
+
+// TestRegexCache_LRUEviction inserts more than regexCacheMax distinct
+// patterns and confirms the cache stays bounded.
+func TestRegexCache_LRUEviction(t *testing.T) {
+	regexCache.clear()
+
+	const overflow = regexCacheMax + 250
+	for i := 0; i < overflow; i++ {
+		// Each pattern is unique. Use a literal that compiles cheaply.
+		pattern := "^test" + Random_forCacheKey(i) + "$"
+		if _, err := getRegexE(pattern); err != nil {
+			t.Fatalf("getRegexE(%q) error: %v", pattern, err)
+		}
+	}
+
+	if got := regexCache.len(); got > regexCacheMax {
+		t.Errorf("cache size = %d; want <= %d", got, regexCacheMax)
+	}
+}
+
+// Random_forCacheKey produces a unique-enough deterministic suffix for the
+// LRU eviction test. We avoid using Random() so we do not consume entropy.
+func Random_forCacheKey(i int) string {
+	// Cheap base36-ish encoding.
+	const alpha = "abcdefghijklmnopqrstuvwxyz0123456789"
+	if i == 0 {
+		return string(alpha[0])
+	}
+	var out []byte
+	for i > 0 {
+		out = append(out, alpha[i%len(alpha)])
+		i /= len(alpha)
+	}
+	return string(out)
+}
+
+func TestMatchSafe_ValidPattern(t *testing.T) {
+	ok, err := MatchSafe(`^abc$`, "abc")
+	if err != nil {
+		t.Fatalf("MatchSafe error: %v", err)
+	}
+	if !ok {
+		t.Error("MatchSafe(^abc$, abc) = false; want true")
+	}
+}
+
+func TestMatchSafe_MalformedPatternReturnsError(t *testing.T) {
+	// "(unclosed" is malformed: open paren with no close.
+	ok, err := MatchSafe("(unclosed", "abc")
+	if err == nil {
+		t.Fatalf("MatchSafe with malformed pattern: want error, got ok=%v", ok)
+	}
+	if ok {
+		t.Errorf("MatchSafe with malformed pattern returned true")
+	}
+}
+
+func TestMatchAllSafe_MalformedPatternReturnsError(t *testing.T) {
+	got, err := MatchAllSafe("(unclosed", "abc")
+	if err == nil {
+		t.Fatalf("MatchAllSafe with malformed pattern: want error, got %v", got)
+	}
+	if got != nil {
+		t.Errorf("MatchAllSafe with malformed pattern: want nil, got %v", got)
+	}
+}
+
+func TestTestSafe_MalformedPatternReturnsError(t *testing.T) {
+	if _, err := TestSafe("[", "x"); err == nil {
+		t.Fatal("TestSafe with malformed pattern: want error, got nil")
+	}
+}
+
+func TestIsSafe_MalformedPatternReturnsError(t *testing.T) {
+	// "(" becomes "^(.$" after glob escaping, which is still malformed.
+	if _, err := IsSafe("(", "x"); err == nil {
+		t.Fatal("IsSafe with malformed pattern: want error, got nil")
+	}
+}
+
+func TestIsSafe_ValidPatternMatches(t *testing.T) {
+	// Is uses glob syntax: * matches any sequence.
+	ok, err := IsSafe("foo*", "foo123")
+	if err != nil {
+		t.Fatalf("IsSafe error: %v", err)
+	}
+	if !ok {
+		t.Error("IsSafe(foo*, foo123) = false; want true")
+	}
+}
+
+// TestMatch_ExistingBehavior is a sanity check that Match still works for
+// valid patterns after the cache refactor.
+func TestMatch_ExistingBehavior(t *testing.T) {
+	if !Match(`^hello$`, "hello") {
+		t.Error("Match(^hello$, hello) = false; want true")
+	}
+	if MatchAll(`\d+`, "a1b22c333") == nil {
+		t.Error("MatchAll returned nil for valid pattern")
+	}
+	if !Test(`world`, "hello world") {
+		t.Error("Test(world, hello world) = false; want true")
+	}
+	if !Is("foo*", "foo123") {
+		t.Error("Is(foo*, foo123) = false; want true")
+	}
+}
