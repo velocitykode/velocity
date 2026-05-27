@@ -3,6 +3,8 @@ package str
 import (
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
+	"io"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -414,26 +416,53 @@ func Position(haystack, needle string) int {
 	return strings.Index(haystack, needle)
 }
 
+// randReader is the entropy source used by Random. It is a variable so tests
+// can swap it for a faulty reader. Callers in production code should not
+// reassign this.
+var randReader io.Reader = rand.Reader
+
+// randomLetters is the alphabet used by Random. 62 characters means we use
+// rejection sampling against 248 (the largest multiple of 62 below 256) to
+// avoid modulo bias.
+const randomLetters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
 // Random generates a cryptographically random alphanumeric string of the
-// specified length (default 16). Panics if the system entropy source fails.
-func Random(length ...int) string {
+// specified length (default 16). Returns an error if the system entropy source
+// fails. Uses rejection sampling to avoid modulo bias across the 62-character
+// alphabet, so every letter has equal probability.
+func Random(length ...int) (string, error) {
 	n := 16
 	if len(length) > 0 {
 		n = length[0]
 	}
 	if n <= 0 {
-		return ""
+		return "", nil
 	}
 
-	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	const alphabetLen = byte(len(randomLetters)) // 62
+	// 256 mod 62 = 8, so the largest multiple of 62 that fits in a byte is 248.
+	// Any byte value >= 248 is rejected to keep the distribution uniform.
+	const rejectThreshold = byte(256 - (256 % int(alphabetLen))) // 248
+
+	out := make([]byte, 0, n)
+	// Pull bytes in chunks. Most will be accepted, so chunk size n is usually
+	// enough. Loop reads more on heavy rejection.
 	buf := make([]byte, n)
-	if _, err := rand.Read(buf); err != nil {
-		panic("str.Random: crypto/rand failed: " + err.Error())
+	for len(out) < n {
+		if _, err := io.ReadFull(randReader, buf); err != nil {
+			return "", fmt.Errorf("str.Random: read entropy: %w", err)
+		}
+		for _, b := range buf {
+			if b >= rejectThreshold {
+				continue
+			}
+			out = append(out, randomLetters[b%alphabetLen])
+			if len(out) == n {
+				break
+			}
+		}
 	}
-	for i, b := range buf {
-		buf[i] = letters[int(b)%len(letters)]
-	}
-	return string(buf)
+	return string(out), nil
 }
 
 // Repeat repeats the string.

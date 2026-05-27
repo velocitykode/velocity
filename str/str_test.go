@@ -735,27 +735,44 @@ func TestSquishFast(t *testing.T) {
 }
 
 func TestRandom(t *testing.T) {
-	result := Random(10)
+	result, err := Random(10)
+	if err != nil {
+		t.Fatalf("Random(10) returned error: %v", err)
+	}
 	if len(result) != 10 {
 		t.Errorf("Random length = %d; want 10", len(result))
 	}
 }
 
 func TestRandom_Default(t *testing.T) {
-	if got := len(Random()); got != 16 {
-		t.Errorf("Random() length = %d; want 16", got)
+	got, err := Random()
+	if err != nil {
+		t.Fatalf("Random() returned error: %v", err)
+	}
+	if len(got) != 16 {
+		t.Errorf("Random() length = %d; want 16", len(got))
 	}
 }
 
 func TestRandom_Zero(t *testing.T) {
-	if got := Random(0); got != "" {
+	got, err := Random(0)
+	if err != nil {
+		t.Fatalf("Random(0) returned error: %v", err)
+	}
+	if got != "" {
 		t.Errorf("Random(0) = %q; want empty string", got)
 	}
 }
 
 func TestRandom_NotDeterministic(t *testing.T) {
-	a := Random(32)
-	b := Random(32)
+	a, err := Random(32)
+	if err != nil {
+		t.Fatalf("Random(32) returned error: %v", err)
+	}
+	b, err := Random(32)
+	if err != nil {
+		t.Fatalf("Random(32) returned error: %v", err)
+	}
 	if a == b {
 		t.Fatalf("Random(32) returned identical strings on consecutive calls: %q", a)
 	}
@@ -763,7 +780,10 @@ func TestRandom_NotDeterministic(t *testing.T) {
 
 func TestRandom_AlphabetMembership(t *testing.T) {
 	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	out := Random(64)
+	out, err := Random(64)
+	if err != nil {
+		t.Fatalf("Random(64) returned error: %v", err)
+	}
 	if len(out) != 64 {
 		t.Fatalf("Random(64) length = %d; want 64", len(out))
 	}
@@ -773,6 +793,69 @@ func TestRandom_AlphabetMembership(t *testing.T) {
 		}
 	}
 }
+
+// TestRandom_EntropyFailure swaps the entropy source for a reader that always
+// fails. Random must return an error rather than panicking.
+func TestRandom_EntropyFailure(t *testing.T) {
+	orig := randReader
+	t.Cleanup(func() { randReader = orig })
+
+	randReader = errReader{}
+	got, err := Random(16)
+	if err == nil {
+		t.Fatalf("Random with failing entropy: want error, got %q", got)
+	}
+	if got != "" {
+		t.Errorf("Random with failing entropy: want empty string, got %q", got)
+	}
+}
+
+// TestRandom_Distribution draws a large sample and checks every letter in the
+// 62-character alphabet appears within a tight tolerance of the uniform
+// expectation. Modulo bias would skew 8 letters by 1.25x relative to the
+// rest; the tolerance below would fail in that case.
+func TestRandom_Distribution(t *testing.T) {
+	if testing.Short() {
+		t.Skip("distribution test takes ~1M samples")
+	}
+	const total = 1_000_000
+	out, err := Random(total)
+	if err != nil {
+		t.Fatalf("Random(%d) error: %v", total, err)
+	}
+	counts := make(map[rune]int, 62)
+	for _, r := range out {
+		counts[r]++
+	}
+	if len(counts) != 62 {
+		t.Fatalf("alphabet coverage: got %d distinct letters, want 62", len(counts))
+	}
+	expected := float64(total) / 62.0
+	// Tolerance of 10% catches the 1.25x modulo-bias signature easily and
+	// stays well above the natural binomial noise at this sample size.
+	const tolerance = 0.10
+	for r, c := range counts {
+		ratio := float64(c) / expected
+		if ratio < 1-tolerance || ratio > 1+tolerance {
+			t.Errorf("letter %q count = %d (ratio %.3f vs expected %.0f); outside +/-%.0f%%",
+				r, c, ratio, expected, tolerance*100)
+		}
+	}
+}
+
+// errReader implements io.Reader and always returns an error. Used to
+// exercise the entropy-failure path in Random.
+type errReader struct{}
+
+func (errReader) Read(_ []byte) (int, error) {
+	return 0, errReaderErr
+}
+
+var errReaderErr = errReaderError("simulated entropy failure")
+
+type errReaderError string
+
+func (e errReaderError) Error() string { return string(e) }
 
 func TestRepeat(t *testing.T) {
 	if Repeat("a", 3) != "aaa" {
