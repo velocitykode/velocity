@@ -106,6 +106,14 @@ func buildExistsSQL(driver, table, column string) string {
 
 // newSQLiteOrm spins up an in-memory SQLite ORM Manager with a users and
 // teams table seeded for unique/exists assertions.
+//
+// mattn/go-sqlite3 is a CGO package. When the test binary is built with
+// CGO_ENABLED=0 (cross-compile, hermetic CI, API-only deployments) the
+// driver compiles as a stub and rejects every connect with an error
+// message containing "CGO_ENABLED=0". We detect that string and skip
+// the integration test rather than fail it: the validation package
+// itself stays CGO-free post the M-09-1 F1 fix, and these tests
+// exercise live-DB behaviour which is not testable without CGO.
 func newSQLiteOrm(t *testing.T) orm.Database {
 	t.Helper()
 	m, err := orm.NewManager(orm.ManagerConfig{
@@ -113,6 +121,9 @@ func newSQLiteOrm(t *testing.T) orm.Database {
 		Database: ":memory:",
 	})
 	if err != nil {
+		if strings.Contains(err.Error(), "CGO_ENABLED=0") {
+			t.Skipf("skipping SQLite integration: %v", err)
+		}
 		t.Fatalf("orm.NewManager: %v", err)
 	}
 	t.Cleanup(func() { _ = m.Shutdown(context.Background()) })

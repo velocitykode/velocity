@@ -7,7 +7,6 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/lib/pq"
-	"github.com/mattn/go-sqlite3"
 )
 
 // TestAsValidationError_PostgresUniqueViolation pins the Postgres SQLSTATE
@@ -97,40 +96,39 @@ func TestAsValidationError_MySQL_ER_DUP_ENTRY_WITH_KEY_NAME(t *testing.T) {
 	}
 }
 
-// TestAsValidationError_SQLiteUniqueViolation pins the SQLite
-// SQLITE_CONSTRAINT_UNIQUE (extended code 2067) path. The message embeds
-// the column as "users.email"; extractSQLiteColumn pulls "email" out.
+// TestAsValidationError_SQLiteUniqueViolation pins the SQLite path. The
+// validation package matches SQLite errors by the canonical
+// "UNIQUE constraint failed" message rather than a typed assertion,
+// because mattn/go-sqlite3 requires CGO and pulling that import into the
+// base package would force every caller of validation onto CGO_ENABLED=1.
+// The driver still writes this exact prefix, and pure-Go alternatives
+// (modernc.org/sqlite, etc.) emit the same shape via .Error(), so the
+// message match is portable across drivers.
 func TestAsValidationError_SQLiteUniqueViolation(t *testing.T) {
-	err := sqlite3.Error{
-		Code:         sqlite3.ErrConstraint,
-		ExtendedCode: sqlite3.ErrConstraintUnique,
-	}
+	err := errors.New("UNIQUE constraint failed: users.email")
 
 	verr, ok := AsValidationError(err, map[string]string{"email": "unique"})
 	if !ok || verr == nil {
 		t.Fatalf("expected detection; ok=%v", ok)
 	}
-	// No column hint in this artificial error (sqlite3.Error.Error()
-	// without a sqlite-supplied err string returns the generic
-	// constraint message), so the single-field branch attributes to
-	// "email".
 	if !verr.HasError("email") {
-		t.Errorf("expected email error from single-field fallback; got %v", verr.All())
+		t.Errorf("expected email error from sqlite column hint; got %v", verr.All())
 	}
 }
 
-// TestAsValidationError_SQLiteUniqueViolation_BaseCodeWithMessage pins the
-// older SQLite path where extended codes are not surfaced and the only
-// signal is the message text "UNIQUE constraint failed: users.email".
-// The string-fallback branch must still pick this up.
-func TestAsValidationError_SQLiteUniqueViolation_BaseCodeWithMessage(t *testing.T) {
-	err := errors.New("UNIQUE constraint failed: users.email")
+// TestAsValidationError_SQLiteUniqueViolation_NoColumnHint pins the
+// fallback where the SQLite message carries no "table.column" suffix
+// (for example: a driver-translated error or an older sqlite version).
+// With no column hint and a single-entry fieldRules, the single-field
+// branch must still attribute to that entry.
+func TestAsValidationError_SQLiteUniqueViolation_NoColumnHint(t *testing.T) {
+	err := errors.New("UNIQUE constraint failed")
 	verr, ok := AsValidationError(err, map[string]string{"email": "unique"})
 	if !ok || verr == nil {
 		t.Fatalf("expected detection via string fallback; ok=%v", ok)
 	}
 	if !verr.HasError("email") {
-		t.Errorf("expected email error; got %v", verr.All())
+		t.Errorf("expected email error from single-field fallback; got %v", verr.All())
 	}
 }
 
@@ -168,11 +166,12 @@ func TestAsValidationError_NonUniqueErrors_BoolFalse(t *testing.T) {
 			err:  &mysql.MySQLError{Number: 1064, Message: "syntax error"},
 		},
 		{
-			name: "sqlite FK constraint",
-			err: sqlite3.Error{
-				Code:         sqlite3.ErrConstraint,
-				ExtendedCode: sqlite3.ErrConstraintForeignKey,
-			},
+			name: "sqlite FK constraint (string)",
+			err:  errors.New("FOREIGN KEY constraint failed"),
+		},
+		{
+			name: "sqlite NOT NULL constraint (string)",
+			err:  errors.New("NOT NULL constraint failed: users.email"),
 		},
 		{
 			name: "plain error",

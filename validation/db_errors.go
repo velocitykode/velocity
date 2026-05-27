@@ -6,7 +6,6 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/lib/pq"
-	"github.com/mattn/go-sqlite3"
 )
 
 // AsValidationError inspects err for a driver-specific UNIQUE-constraint
@@ -80,6 +79,12 @@ func AsValidationError(err error, fieldRules map[string]string) (*ValidationErro
 // column name (Postgres, SQLite) or an index name (MySQL); callers
 // match it against field names with selectFields.
 //
+// Postgres + MySQL use errors.As against the driver-typed error
+// (*pq.Error, *mysql.MySQLError) for type-safe matching. SQLite is
+// matched by message-string only so the base validation package stays
+// CGO-free (see note inline). Wrapped / driver-erased errors of any
+// origin fall through to the same string-fallback switch.
+//
 // Returns ("", false) for any other error, including other constraint
 // violations (FK, NOT NULL, CHECK).
 func uniqueViolationColumn(err error) (string, bool) {
@@ -109,25 +114,23 @@ func uniqueViolationColumn(err error) (string, bool) {
 		return "", false
 	}
 
-	// SQLite (mattn/go-sqlite3): extended code 2067
-	// (SQLITE_CONSTRAINT_UNIQUE) or base 19 (SQLITE_CONSTRAINT) with a
-	// "UNIQUE constraint failed" message.
-	var sqliteErr sqlite3.Error
-	if errors.As(err, &sqliteErr) {
-		if sqliteErr.ExtendedCode == sqlite3.ErrConstraintUnique ||
-			sqliteErr.ExtendedCode == sqlite3.ErrConstraintPrimaryKey {
-			return extractSQLiteColumn(sqliteErr.Error()), true
-		}
-		if sqliteErr.Code == sqlite3.ErrConstraint &&
-			strings.Contains(sqliteErr.Error(), "UNIQUE constraint failed") {
-			return extractSQLiteColumn(sqliteErr.Error()), true
-		}
-		return "", false
-	}
+	// SQLite: matched via the canonical "UNIQUE constraint failed" message
+	// the engine writes regardless of driver. We deliberately do NOT take a
+	// typed dependency on mattn/go-sqlite3 here because that package
+	// requires CGO; pulling it into the base validation package would force
+	// every caller (including API-only deployments and cross-compiled
+	// builds) onto CGO_ENABLED=1. The string match is also more portable:
+	// modernc.org/sqlite and other pure-Go drivers emit the same message
+	// via .Error(), so callers using a non-mattn driver are covered by the
+	// same branch instead of slipping past a typed check.
+	//
+	// This match is handled by the string-fallback switch below alongside
+	// the Postgres / MySQL wrapped-error patterns.
 
-	// String fallback for wrapped / driver-erased errors. Conservative:
-	// only the canonical phrases each driver emits. This is intentionally
-	// after the typed checks so the fast path stays type-safe.
+	// String fallback for wrapped / driver-erased errors and for SQLite
+	// (see note above). Conservative: only the canonical phrases each
+	// driver emits. This is intentionally after the typed checks so the
+	// Postgres + MySQL fast paths stay type-safe.
 	msg := err.Error()
 	switch {
 	case strings.Contains(msg, "SQLSTATE 23505"):
