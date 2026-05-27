@@ -10,6 +10,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/pipeline"
+	"github.com/velocitykode/velocity/queue"
 )
 
 // CommandDispatching is fired before a command is handled.
@@ -61,11 +62,17 @@ type Bus struct {
 	mu            sync.RWMutex
 }
 
-// New creates a new Bus instance.
+// New creates a new Bus instance. The newly created bus is also installed as
+// the package-level default bus so cross-process queue workers that hydrate a
+// commandJob from JSON bytes have a bus to dispatch through. Apps that need
+// to coordinate multiple buses should call SetDefaultBus explicitly after
+// construction.
 func New() *Bus {
-	return &Bus{
+	b := &Bus{
 		handlers: make(map[reflect.Type]any),
 	}
+	SetDefaultBus(b)
+	return b
 }
 
 // Register registers a typed handler for a command type.
@@ -73,6 +80,12 @@ func New() *Bus {
 // Panics with *contract.RegistrationError if handler is nil, a handler for the
 // same command type is already registered, or the command type cannot be
 // JSON-marshalled (required for async dispatch over queues).
+//
+// Register also installs a package-level factory keyed on the command's type
+// name so cross-process queue workers can rehydrate the command from the
+// serialized commandJob payload. Without that factory, DispatchAsync against
+// a durable driver (Redis or database) would silently fall through to
+// ErrJobNotFound on the consumer side.
 func Register[T any](b *Bus, handler Handler[T]) {
 	if handler == nil {
 		panic(contract.NewRegistrationError("bus", fmt.Sprintf("nil handler for command type %s", reflect.TypeFor[T]().String())))
@@ -100,6 +113,16 @@ func Register[T any](b *Bus, handler Handler[T]) {
 		}
 		return handler(typed)
 	}
+
+	// Install a package-level factory so a queue worker (possibly in another
+	// process) can rebuild the concrete command value from the serialized
+	// commandJob payload. The key is the same string reflect.TypeOf(cmd)
+	// produces on the producer side, so producer and consumer sides agree by
+	// construction.
+	registerCommandFactory(cmdType, func() Command {
+		var v T
+		return v
+	})
 }
 
 // Through adds middleware stages to the bus pipeline.
@@ -144,7 +167,7 @@ func (b *Bus) Dispatch(cmd Command) error {
 
 	cmdType := reflect.TypeOf(cmd).String()
 
-	// Event dispatch errors are intentionally ignored — events are best-effort
+	// Event dispatch errors are intentionally ignored, events are best-effort
 	// and must not affect command execution flow.
 	if dispatchEvent != nil {
 		_ = dispatchEvent(&CommandDispatching{CommandType: cmdType})
@@ -173,6 +196,13 @@ func (b *Bus) Dispatch(cmd Command) error {
 }
 
 // DispatchAsync wraps the command as a job and pushes it to the queue.
+//
+// The command must be JSON-marshallable and must have been registered via
+// Register[T] (or have a manually-installed factory). DispatchAsync refuses
+// to enqueue otherwise so the silent-drop hole on durable drivers (Redis,
+// database) is closed at the producer side. With the factory in place the
+// consumer process can rehydrate the command from the persisted commandJob
+// payload and call Bus.Dispatch against the locally-installed default bus.
 func (b *Bus) DispatchAsync(cmd Command) error {
 	b.mu.RLock()
 	q, queueName, dispatchEvent := b.queue, b.queueName, b.dispatchEvent
@@ -182,7 +212,32 @@ func (b *Bus) DispatchAsync(cmd Command) error {
 		return fmt.Errorf("bus: queue not configured for async dispatch")
 	}
 
-	job := &commandJob{cmd: cmd, bus: b, cmdType: reflect.TypeOf(cmd)}
+	cmdType := reflect.TypeOf(cmd)
+	if cmdType == nil {
+		return fmt.Errorf("bus: cannot dispatch nil command")
+	}
+
+	// Refuse to enqueue when no factory is registered. The consumer side
+	// would otherwise return ErrJobNotFound or, worse, unmarshal into a
+	// zero-value commandJob and silently drop the work. We surface the
+	// configuration error here so a missing Register call is caught at
+	// dispatch time rather than discovered by the user when a job vanishes.
+	if _, ok := lookupCommandFactory(cmdType); !ok {
+		return fmt.Errorf("velocity/bus: refusing to async-dispatch command %s: no factory registered (call bus.Register before DispatchAsync)", cmdType.String())
+	}
+
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return fmt.Errorf("velocity/bus: failed to marshal command %s: %w", cmdType.String(), err)
+	}
+
+	job := &commandJob{
+		Type:    cmdType.String(),
+		Data:    data,
+		cmd:     cmd,
+		bus:     b,
+		cmdType: cmdType,
+	}
 
 	var args []string
 	if queueName != "" {
@@ -193,9 +248,8 @@ func (b *Bus) DispatchAsync(cmd Command) error {
 		return fmt.Errorf("bus: failed to push command to queue: %w", err)
 	}
 
-	cmdType := reflect.TypeOf(cmd).String()
 	if dispatchEvent != nil {
-		_ = dispatchEvent(&CommandQueued{CommandType: cmdType})
+		_ = dispatchEvent(&CommandQueued{CommandType: cmdType.String()})
 	}
 
 	return nil
@@ -238,32 +292,195 @@ func (b *Bus) copyMiddleware() []pipeline.Stage[Command] {
 }
 
 // commandJob wraps a command as a queue job for async dispatch.
+//
+// Wire format: Type is the reflect.TypeOf(cmd).String() identifier registered
+// via Register[T]; Data is the JSON-encoded command bytes. Both round-trip
+// through encoding/json so durable drivers (Redis, database) can persist the
+// payload and rehydrate the concrete command on any worker, in any process.
+//
+// The unexported cmd/bus/cmdType fields are an in-process fast path. The
+// memory queue driver retains the live pointer across a same-process Pop so
+// the worker can dispatch without consulting the package-level factory
+// registry. Cross-process pops always have cmd == nil after json.Unmarshal
+// and Handle reconstructs the value from Type + Data via the registry.
 type commandJob struct {
+	Type string          `json:"type"`
+	Data json.RawMessage `json:"data"`
+
+	// cmd, bus, cmdType are populated on the producer side for the in-process
+	// fast path. They are never sent on the wire.
 	cmd     Command
 	bus     *Bus
 	cmdType reflect.Type
 }
 
-// Handle dispatches the wrapped command. It verifies that the queue-decoded
-// command value still matches the expected type before invoking Dispatch —
-// this guards against queue-driver corruption or accidental swaps where the
-// serialized payload was restored into a different Go type.
+// Handle dispatches the wrapped command. When the in-process fast-path
+// fields are populated (memory driver, same process as the producer),
+// Handle dispatches the live command pointer directly. When the fields
+// are nil (cross-process worker), Handle reconstructs the command from
+// Type + Data via the package-level factory registry and dispatches it
+// through the default bus.
 func (j *commandJob) Handle() error {
-	if j.cmdType != nil && reflect.TypeOf(j.cmd) != j.cmdType {
-		return fmt.Errorf("velocity/bus: command type mismatch in queued job: got %T, want %s", j.cmd, j.cmdType.String())
+	cmd, b, err := j.resolveCommand()
+	if err != nil {
+		return err
 	}
-	return j.bus.Dispatch(j.cmd)
+	if j.cmdType != nil && reflect.TypeOf(cmd) != j.cmdType {
+		return fmt.Errorf("velocity/bus: command type mismatch in queued job: got %T, want %s", cmd, j.cmdType.String())
+	}
+	return b.Dispatch(cmd)
+}
+
+// resolveCommand recovers the concrete command value and the bus to dispatch
+// through. The in-process producer-side pointer is preferred when set;
+// otherwise the command is rebuilt from Type + Data via the package registry
+// and dispatched against the default bus.
+//
+// A missing factory or missing default bus is a real error and surfaces to
+// the worker so the job can be routed to failed_jobs / events. Returning a
+// nil command with a nil error would reopen the silent-drop hole this fix
+// closes.
+func (j *commandJob) resolveCommand() (Command, *Bus, error) {
+	if j.cmd != nil && j.bus != nil {
+		return j.cmd, j.bus, nil
+	}
+
+	if j.Type == "" {
+		return nil, nil, fmt.Errorf("velocity/bus: commandJob payload missing type")
+	}
+
+	factory, ok := lookupCommandFactoryByName(j.Type)
+	if !ok {
+		return nil, nil, fmt.Errorf("velocity/bus: no factory registered for command type %q (did you call bus.Register on the worker side?)", j.Type)
+	}
+
+	cmd := factory()
+	if cmd == nil {
+		return nil, nil, fmt.Errorf("velocity/bus: command factory for %q returned nil", j.Type)
+	}
+
+	// json.Unmarshal needs an addressable target. The factory returns a
+	// zero value of the command type (typically a struct), so we take its
+	// address, unmarshal into it, then deref back to the value form the
+	// producer dispatched.
+	target := reflect.New(reflect.TypeOf(cmd))
+	target.Elem().Set(reflect.ValueOf(cmd))
+	if len(j.Data) > 0 {
+		if err := json.Unmarshal(j.Data, target.Interface()); err != nil {
+			return nil, nil, fmt.Errorf("velocity/bus: failed to unmarshal command payload into %q: %w", j.Type, err)
+		}
+	}
+	cmd = target.Elem().Interface()
+
+	b := getDefaultBus()
+	if b == nil {
+		return nil, nil, fmt.Errorf("velocity/bus: no default bus installed; call bus.SetDefaultBus on the worker side before processing queued commands")
+	}
+	return cmd, b, nil
 }
 
 func (j *commandJob) Failed(err error) {
-	j.bus.mu.RLock()
-	dispatchEvent := j.bus.dispatchEvent
-	j.bus.mu.RUnlock()
+	b := j.bus
+	if b == nil {
+		b = getDefaultBus()
+	}
+	if b == nil {
+		return
+	}
+
+	b.mu.RLock()
+	dispatchEvent := b.dispatchEvent
+	b.mu.RUnlock()
 
 	if dispatchEvent != nil {
-		cmdType := reflect.TypeOf(j.cmd).String()
-		// Event dispatch errors are intentionally ignored — event dispatch is
+		cmdType := j.Type
+		if cmdType == "" && j.cmd != nil {
+			cmdType = reflect.TypeOf(j.cmd).String()
+		}
+		// Event dispatch errors are intentionally ignored, event dispatch is
 		// best-effort and must not interfere with queue worker error handling.
 		_ = dispatchEvent(&CommandFailed{CommandType: cmdType, Error: err.Error()})
 	}
+}
+
+// --- package-level command factory + default-bus registries ---------------
+
+var (
+	commandFactoryMu sync.RWMutex
+	// commandFactories maps reflect.TypeOf(cmd).String() to a factory that
+	// returns a fresh zero value of the command type. The factory shape
+	// returns Command (any) rather than a typed value so the registry can
+	// hold heterogeneous command kinds; resolveCommand uses reflect to
+	// build an addressable target for json.Unmarshal.
+	commandFactories = make(map[string]func() Command)
+	// commandTypes mirrors commandFactories but keyed on reflect.Type so
+	// the producer side (DispatchAsync) can answer "is there a factory
+	// for this command?" without paying the reflect.Type -> string cost
+	// on every dispatch.
+	commandTypes = make(map[reflect.Type]struct{})
+
+	defaultBusMu sync.RWMutex
+	defaultBus   *Bus
+)
+
+func registerCommandFactory(cmdType reflect.Type, factory func() Command) {
+	if cmdType == nil || factory == nil {
+		return
+	}
+	commandFactoryMu.Lock()
+	commandFactories[cmdType.String()] = factory
+	commandTypes[cmdType] = struct{}{}
+	commandFactoryMu.Unlock()
+}
+
+func lookupCommandFactory(cmdType reflect.Type) (func() Command, bool) {
+	if cmdType == nil {
+		return nil, false
+	}
+	commandFactoryMu.RLock()
+	_, ok := commandTypes[cmdType]
+	commandFactoryMu.RUnlock()
+	if !ok {
+		return nil, false
+	}
+	return lookupCommandFactoryByName(cmdType.String())
+}
+
+func lookupCommandFactoryByName(name string) (func() Command, bool) {
+	commandFactoryMu.RLock()
+	factory, ok := commandFactories[name]
+	commandFactoryMu.RUnlock()
+	return factory, ok
+}
+
+// SetDefaultBus installs the bus that cross-process queue workers dispatch
+// hydrated commands through. New() calls this automatically with the bus it
+// returns; apps that construct multiple buses can call SetDefaultBus to pin
+// the one workers should use.
+func SetDefaultBus(b *Bus) {
+	defaultBusMu.Lock()
+	defaultBus = b
+	defaultBusMu.Unlock()
+}
+
+func getDefaultBus() *Bus {
+	defaultBusMu.RLock()
+	defer defaultBusMu.RUnlock()
+	return defaultBus
+}
+
+// commandJobFactory is registered with queue.RegisterJob in init() so durable
+// queue drivers can rehydrate a *commandJob from persisted JSON bytes. The
+// hydrated job has cmd / bus / cmdType == nil and Handle reconstructs the
+// command via the package-level factory registry plus the default bus.
+func commandJobFactory(data []byte) (*commandJob, error) {
+	job := &commandJob{}
+	if err := json.Unmarshal(data, job); err != nil {
+		return nil, fmt.Errorf("velocity/bus: failed to unmarshal commandJob payload: %w", err)
+	}
+	return job, nil
+}
+
+func init() {
+	queue.RegisterJob(commandJobFactory)
 }
