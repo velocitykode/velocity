@@ -358,12 +358,19 @@ func (d *AESDriver) EncryptBytesWithAAD(plaintext, aad []byte) (string, error) {
 // DecryptBytesWithAAD decrypts an AAD-bound GCM payload. See the
 // crypto.Encryptor interface doc for full semantics. CBC ciphers return
 // ErrInvalidCipher. Empty or non-v1 envelopes return ErrInvalidPayload.
-// Any GCM auth failure returns ErrAADMismatch (cannot distinguish wrong
-// key, wrong aad, tamper, or AAD-vs-no-AAD payload mixing).
+// Any GCM auth failure under every configured key returns ErrAADMismatch
+// (cannot distinguish wrong key, wrong aad, tamper, or AAD-vs-no-AAD
+// payload mixing).
 //
-// Key rotation via PreviousKeys is intentionally not iterated here: the
-// spec scopes rotation to the non-AAD path. Callers that need to rotate
-// AAD-bound ciphertexts must re-encrypt explicitly.
+// Key rotation via PreviousKeys IS iterated here: a flash cookie or
+// signed-AAD payload encrypted under a rotated-out key would otherwise
+// silently fail across the rotation window even though the operator
+// kept the previous key in Config.PreviousKeys for exactly this case.
+// The active key is attempted first; on AAD/tag mismatch, each previous
+// master is HKDF-expanded to its encryption subkey and re-tried with
+// the same aad. First success wins. Iteration stops immediately on a
+// structural envelope error (ErrInvalidPayload) since the defect is
+// key-independent.
 func (d *AESDriver) DecryptBytesWithAAD(payload string, aad []byte) ([]byte, error) {
 	if !strings.Contains(d.cipher, "GCM") {
 		return nil, ErrInvalidCipher
@@ -385,19 +392,39 @@ func (d *AESDriver) DecryptBytesWithAAD(payload string, aad []byte) ([]byte, err
 		return nil, err
 	}
 
+	// Try the active key first.
 	plaintext, err := d.decryptGCMWithAAD(p, d.key, aad)
-	if err != nil {
-		// Structural envelope errors (malformed nonce length, missing /
-		// undersized tag) surface as ErrInvalidPayload so callers can
-		// distinguish malformed input from a genuine AAD/tag mismatch.
-		// All other failures collapse to ErrAADMismatch per the
-		// documented contract.
+	if err == nil {
+		return plaintext, nil
+	}
+	// Structural envelope errors (malformed nonce length, missing /
+	// undersized tag) are key-independent: short-circuit so the caller
+	// sees ErrInvalidPayload instead of an opaque ErrAADMismatch after
+	// every rotation key also fails.
+	if errors.Is(err, ErrInvalidPayload) {
+		return nil, ErrInvalidPayload
+	}
+
+	// Try previous keys for rotation support. Each entry in
+	// d.previousKeys is a master key; the encryption subkey is derived
+	// via the same HKDF info string ("encryption") the active key used,
+	// so a ciphertext sealed under the previous active key decrypts
+	// cleanly once that master is reachable here.
+	for _, masterKey := range d.previousKeys {
+		encKey, ekErr := deriveSubkey(masterKey, d.keySize, []byte("encryption"))
+		if ekErr != nil {
+			continue
+		}
+		plaintext, err = d.decryptGCMWithAAD(p, encKey, aad)
+		if err == nil {
+			return plaintext, nil
+		}
 		if errors.Is(err, ErrInvalidPayload) {
 			return nil, ErrInvalidPayload
 		}
-		return nil, ErrAADMismatch
 	}
-	return plaintext, nil
+
+	return nil, ErrAADMismatch
 }
 
 // encryptGCMWithAAD encrypts using GCM with additional authenticated data.

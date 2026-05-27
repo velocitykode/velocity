@@ -76,6 +76,10 @@ type Encryptor interface {
 	// operators investigating an unexpected mismatch should check key
 	// rotation, ciphertext integrity, and aad construction together.
 	//
+	// Key rotation via Config.PreviousKeys is supported: the active key
+	// is attempted first, then each previous master in turn (with the
+	// same aad). Matches the rotation semantics of DecryptBytes.
+	//
 	// Returns ErrInvalidPayload when the envelope is empty or not
 	// produced by EncryptBytesWithAAD (only the v1 wire format is
 	// accepted on this path; legacy v0 payloads are rejected up-front).

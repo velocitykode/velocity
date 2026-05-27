@@ -1343,6 +1343,78 @@ func TestDecryptBytesWithAAD_NilEmptyEquivalent(t *testing.T) {
 	}
 }
 
+// TestDecryptBytesWithAAD_PreviousKeyRotation pins M-04-9: an AAD-bound
+// payload sealed under a master key that has since been demoted into
+// Config.PreviousKeys must still decrypt cleanly when the same aad is
+// supplied. Without rotation iteration on this path, a flash cookie /
+// signed-AAD payload encrypted just before a key rotation would silently
+// fail across the rotation window even though the operator kept the old
+// master available for exactly this case.
+func TestDecryptBytesWithAAD_PreviousKeyRotation(t *testing.T) {
+	// Two distinct 32-byte master keys: oldMaster will encrypt; the
+	// driver under test treats it as the previous (rotated-out) key
+	// while newMaster is the active key.
+	oldMaster := make([]byte, 32)
+	for i := range oldMaster {
+		oldMaster[i] = byte(i + 1)
+	}
+	newMaster := make([]byte, 32)
+	for i := range newMaster {
+		newMaster[i] = byte(0xA0 ^ i)
+	}
+
+	// Pre-rotation driver: seals under oldMaster.
+	preRotation, err := NewAESDriver(oldMaster, nil, "AES-256-GCM")
+	if err != nil {
+		t.Fatalf("NewAESDriver(pre): %v", err)
+	}
+	aad := []byte("team:42|cred:7")
+	plaintext := []byte("rotation-window-payload")
+	env, err := preRotation.EncryptBytesWithAAD(plaintext, aad)
+	if err != nil {
+		t.Fatalf("EncryptBytesWithAAD: %v", err)
+	}
+
+	// Post-rotation driver: newMaster is active, oldMaster is in
+	// PreviousKeys. The AAD-bound ciphertext must still decrypt.
+	postRotation, err := NewAESDriver(newMaster, [][]byte{oldMaster}, "AES-256-GCM")
+	if err != nil {
+		t.Fatalf("NewAESDriver(post): %v", err)
+	}
+	got, err := postRotation.DecryptBytesWithAAD(env, aad)
+	if err != nil {
+		t.Fatalf("DecryptBytesWithAAD across rotation: %v", err)
+	}
+	if string(got) != string(plaintext) {
+		t.Fatalf("plaintext mismatch after rotation: got %q want %q", got, plaintext)
+	}
+
+	// Negative case: wrong aad still fails after iterating every key.
+	// All keys exhaust to ErrAADMismatch, not a false positive.
+	if _, err := postRotation.DecryptBytesWithAAD(env, []byte("wrong-aad")); !errors.Is(err, ErrAADMismatch) {
+		t.Fatalf("wrong aad across rotation: want ErrAADMismatch, got %v", err)
+	}
+
+	// Negative case: an entirely foreign key (neither active nor
+	// previous) must not silently decrypt. Construct a driver whose
+	// active and previous keys are both unrelated to oldMaster.
+	foreignActive := make([]byte, 32)
+	for i := range foreignActive {
+		foreignActive[i] = byte(0xFF ^ i)
+	}
+	foreignPrev := make([]byte, 32)
+	for i := range foreignPrev {
+		foreignPrev[i] = byte(0x7E ^ i)
+	}
+	foreign, err := NewAESDriver(foreignActive, [][]byte{foreignPrev}, "AES-256-GCM")
+	if err != nil {
+		t.Fatalf("NewAESDriver(foreign): %v", err)
+	}
+	if _, err := foreign.DecryptBytesWithAAD(env, aad); !errors.Is(err, ErrAADMismatch) {
+		t.Fatalf("foreign keys: want ErrAADMismatch, got %v", err)
+	}
+}
+
 func TestDecryptBytesWithAAD_RejectsLegacyAndEmpty(t *testing.T) {
 	d, err := NewAESDriver(make([]byte, 32), nil, "AES-256-GCM")
 	if err != nil {
