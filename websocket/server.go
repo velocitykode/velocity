@@ -52,6 +52,12 @@ type Server struct {
 	onDisconnect DisconnectFunc
 	onError      func(*Client, error)
 
+	// disconnectListeners receives every client disconnect in addition to
+	// onDisconnect. Used by adapters (e.g. broadcast/drivers.WebSocketDriver)
+	// to purge their own state without contending with the application's
+	// single onDisconnect callback. Mutex-protected via s.mu.
+	disconnectListeners []DisconnectFunc
+
 	// Stats
 	stats Stats
 
@@ -324,10 +330,21 @@ func (s *Server) handleRegister(client *Client) {
 	}
 }
 
-// handleUnregister removes a client
+// handleUnregister removes a client.
+//
+// Disconnect listeners (and the single onDisconnect callback) fire BEFORE
+// close(client.Send) so adapters such as broadcast/drivers.WebSocketDriver
+// can purge their own state while client.Send is still a live channel.
+// Closing first would let a concurrent Broadcast hit `send on closed channel`
+// before the listener could clear the stale pointer (audit D-01).
+//
+// Each listener runs under its own deferred recover so a single panicking
+// listener cannot abort the unregister sequence or take the server-side
+// run loop down.
 func (s *Server) handleUnregister(client *Client) {
 	s.mu.Lock()
-	if _, ok := s.clients[client.ID]; ok {
+	_, present := s.clients[client.ID]
+	if present {
 		delete(s.clients, client.ID)
 
 		// Remove from all groups
@@ -339,20 +356,54 @@ func (s *Server) handleUnregister(client *Client) {
 				}
 			}
 		}
-
-		close(client.Send)
 	}
+	// Snapshot listener list under the same lock so adapters registered
+	// concurrently with disconnect see the current set.
+	listeners := make([]DisconnectFunc, len(s.disconnectListeners))
+	copy(listeners, s.disconnectListeners)
+	onDisconnect := s.onDisconnect
 	s.mu.Unlock()
+
+	if !present {
+		// Duplicate unregister - nothing to clean up.
+		return
+	}
+
+	// Fire listeners BEFORE close(client.Send). Each is invoked under its
+	// own recover so a misbehaving listener cannot derail the rest of the
+	// teardown sequence (recovered panics are logged but not re-raised).
+	for _, fn := range listeners {
+		s.invokeDisconnectListener(fn, client)
+	}
+	if onDisconnect != nil {
+		s.invokeDisconnectListener(onDisconnect, client)
+	}
+
+	// Now that every listener has had a chance to purge its references,
+	// close the Send channel. Any send that races with this close is
+	// defended against by the caller's recover (see broadcast/drivers
+	// sendOrDrop) plus the listener-driven purge that just ran. We do not
+	// re-acquire s.mu: the client is already removed from s.clients, so
+	// no other server-side path can reach Send by name, and adapters
+	// either purged via the listener or rely on the documented recover.
+	close(client.Send)
 
 	s.logInfo("Client disconnected", "client_id", client.ID)
 
-	// Call disconnect callback
-	if s.onDisconnect != nil {
-		s.onDisconnect(client)
-	}
-
 	// Update stats
 	atomic.AddInt64(&s.stats.ConnectedClients, -1)
+}
+
+// invokeDisconnectListener calls fn(client) under a recover so a panicking
+// listener is contained. Recovered panics are logged when a logger is
+// installed and otherwise swallowed.
+func (s *Server) invokeDisconnectListener(fn DisconnectFunc, client *Client) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.logError("websocket disconnect listener panic recovered", "client_id", client.ID, "error", fmt.Sprintf("%v", r))
+		}
+	}()
+	fn(client)
 }
 
 // handleBroadcast sends message to all clients
@@ -457,6 +508,23 @@ func (s *Server) OnConnect(fn func(*Client)) {
 // OnDisconnect sets the disconnect callback
 func (s *Server) OnDisconnect(fn DisconnectFunc) {
 	s.onDisconnect = fn
+}
+
+// AddOnDisconnect appends a disconnect listener that fires alongside the
+// single OnDisconnect callback. Listeners are invoked BEFORE client.Send is
+// closed so adapters can drop stale references and avoid `send on closed
+// channel` panics from concurrent broadcasts (audit D-01).
+//
+// Multiple listeners may be registered; they fire in registration order.
+// A nil fn is rejected to keep the unregister path total. Safe to call
+// concurrently.
+func (s *Server) AddOnDisconnect(fn DisconnectFunc) {
+	if fn == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.disconnectListeners = append(s.disconnectListeners, fn)
 }
 
 // OnError sets the error callback
