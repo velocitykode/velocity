@@ -335,17 +335,24 @@ func New(opts ...Option) (*App, error) {
 		}
 	})
 
-	// NOTE: The CSRF token rotator is wired into the auth manager from
-	// bootstrap() AFTER the chain providers' Boot() phase runs, not here.
-	// A consumer Boot() may replace s.CSRF with a customised instance
-	// (different store, different config, decorator wrapping the
-	// framework-built CSRF). If we wired the rotator now, the auth
-	// manager would keep pointing at the original framework-built
-	// instance even after the consumer swap, and Login/Logout/remember
-	// rotations would silently target a CSRF store no longer in the
-	// request path -> first POST after login 419s. See
-	// installCSRFTokenRotator in bootstrap.go and
-	// TestCSRFRotator_PointsToBootReplacement.
+	// Wire the CSRF token rotator into the auth manager so direct
+	// New() consumers (no Bootstrap(), no Serve()) still get session
+	// lifecycle rotation: Login regenerates the per-session token,
+	// Logout revokes it, the remember-cookie revival path rotates it
+	// across recall. This covers embed-mode apps, tests, and scripts
+	// that hold an *App without calling the declarative chain.
+	//
+	// bootstrap() re-runs the same install AFTER chain providers' Boot
+	// so consumers that legitimately replace s.CSRF in their Boot have
+	// their replacement honored. The install helper is idempotent
+	// (just sets a function pointer on auth.Manager protected by mu),
+	// so calling it twice is safe; the last call wins, which is the
+	// bootstrap-time call when a chain provider participated.
+	//
+	// See installCSRFTokenRotator in bootstrap.go,
+	// TestCSRFRotator_PointsToBootReplacement (chain-provider path),
+	// and TestCSRFRotator_WiredByNewWithoutBootstrap (direct-New path).
+	installCSRFTokenRotator(a)
 
 	// 8. Initialize view/bond engine
 	if a.config.View.RootTemplate != "" {

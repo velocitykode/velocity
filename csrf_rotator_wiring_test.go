@@ -173,3 +173,58 @@ func TestCSRFRotator_PointsToBootReplacement(t *testing.T) {
 			got, replacement, originalCSRF)
 	}
 }
+
+// TestCSRFRotator_WiredByNewWithoutBootstrap pins the direct-New
+// audience: consumers that hold an *App returned by velocity.New() but
+// never call Bootstrap()/Serve() (embed-mode apps, tests, scripts that
+// drive auth/csrf operations directly). For this audience the
+// framework-built s.CSRF must still be wired into auth.Manager at New()
+// time so SessionGuard.Login / Logout / remember-cookie revival keep
+// the CSRF token store aligned with the session lifecycle.
+//
+// Regression model: an earlier follow-up moved the install out of
+// New() entirely into bootstrap(); the bootstrap-only install is
+// correct for chain-provider Boot swaps but silently broke this
+// audience because their code path never ran bootstrap(). The current
+// fix installs in BOTH places (New() and bootstrap()) and this test
+// guards the New-only half.
+//
+// Observation strategy mirrors TestCSRFRotator_PointsToBootReplacement:
+// register a spy guard on the auth manager and check
+// RegisterGuard propagated a non-nil rotator pointing at the
+// framework-built s.CSRF (because no consumer Boot ran to swap it).
+func TestCSRFRotator_WiredByNewWithoutBootstrap(t *testing.T) {
+	a, err := NewTestApp()
+	if err != nil {
+		t.Fatalf("NewTestApp() error: %v", err)
+	}
+	// IMPORTANT: this test deliberately does NOT call a.Bootstrap().
+	// It verifies that New() alone is enough to wire the rotator for
+	// the direct-New audience.
+
+	if a.CSRF == nil {
+		t.Fatal("framework-built a.CSRF is nil; cannot verify wiring")
+	}
+
+	mgr, ok := a.Auth.(*auth.Manager)
+	if !ok {
+		t.Fatalf("a.Auth is not *auth.Manager: %T", a.Auth)
+	}
+
+	spy := &recorderGuard{}
+	mgr.RegisterGuard("csrf-rotator-spy-new-only", spy)
+
+	got := spy.lastRotator()
+	if got == nil {
+		t.Fatal("auth.Manager carries no CSRF token rotator after New() alone; direct-New consumers (no Bootstrap) lose session lifecycle rotation")
+	}
+	// The framework-built s.CSRF satisfies contract.CSRFTokenRotator.
+	// Assert the spy received THAT instance, not some other.
+	want, ok := a.CSRF.(contract.CSRFTokenRotator)
+	if !ok {
+		t.Fatalf("a.CSRF (%T) does not satisfy contract.CSRFTokenRotator; framework-built CSRF should always implement it", a.CSRF)
+	}
+	if got != want {
+		t.Errorf("auth.Manager rotator mismatch:\n  got  = %#v\n  want = %#v (framework-built a.CSRF)", got, want)
+	}
+}

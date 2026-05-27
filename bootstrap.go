@@ -37,14 +37,20 @@ func (a *App) bootstrap() error {
 		return err
 	}
 
-	// 1a. Install the CSRF token rotator on the auth manager NOW, AFTER
-	// every chain provider's Boot() has had a chance to replace s.CSRF
-	// with a customised instance. Installing in New() (before providers
-	// run) would freeze the rotator to the framework-built CSRF even
-	// when a consumer swaps in a different one during Boot, and Login/
-	// Logout/remember-cookie rotations would silently target a dead
-	// store -> first POST after login 419s. See app.go for the matching
-	// comment at the deferred site.
+	// 1a. Re-install the CSRF token rotator on the auth manager NOW,
+	// AFTER every chain provider's Boot() has had a chance to replace
+	// s.CSRF with a customised instance. New() already wired the
+	// rotator at construction time so direct-New consumers (no
+	// Bootstrap, no Serve) still get session lifecycle rotation; this
+	// second call lets a Boot-phase swap of s.CSRF win. The helper is
+	// idempotent (sets a mutex-protected function pointer on
+	// auth.Manager); double-install is safe, the last call wins.
+	//
+	// Without this re-install, a consumer Boot that replaces s.CSRF
+	// would leave the auth manager rotating a store no longer in the
+	// request path -> Login/Logout rotations silently target a dead
+	// store and the first POST after login 419s. See app.go for the
+	// matching install at the New-time site.
 	installCSRFTokenRotator(a)
 
 	// 2. Build middleware stack
