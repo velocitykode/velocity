@@ -422,13 +422,24 @@ func (j *Job) runInternal(ctx context.Context, shutdownGrace time.Duration, rele
 		if j.outputFile != "" {
 			var openErr error
 			if j.appendOutput {
-				outFile, openErr = os.OpenFile(j.outputFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+				outFile, openErr = os.OpenFile(j.outputFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 			} else {
-				outFile, openErr = os.OpenFile(j.outputFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+				outFile, openErr = os.OpenFile(j.outputFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 			}
 			if openErr == nil && outFile != nil {
-				cmd.Stdout = outFile
-				cmd.Stderr = outFile
+				// os.OpenFile does NOT chmod a pre-existing file: an output file
+				// laid down by an older binary at 0o644 would stay world-readable
+				// and leak scheduled-job stdout (PII, tracebacks, partial secrets).
+				// Force the mode invariant on every open so a stale loose file is
+				// tightened, not preserved.
+				if chmodErr := os.Chmod(j.outputFile, 0o600); chmodErr != nil {
+					_ = outFile.Close()
+					outFile = nil
+					err = chmodErr
+				} else {
+					cmd.Stdout = outFile
+					cmd.Stderr = outFile
+				}
 			} else if openErr != nil {
 				err = openErr
 			}
