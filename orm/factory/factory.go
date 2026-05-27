@@ -11,9 +11,16 @@ import (
 	"github.com/velocitykode/velocity/orm"
 )
 
-// Factory represents a model factory for generating test data
+// Factory represents a model factory for generating test data.
+//
+// Concurrency: every field is read/written under mu. mu is a sync.RWMutex
+// so generateOne can snapshot the state / sequence maps via RLock while
+// Count / State / DefineState / Sequence / Make / Create writers hold
+// the write lock. Cross-cutting map mutex sweep, rule #3: the state and
+// sequence maps must not be read without the lock, otherwise a concurrent
+// DefineState fires "concurrent map read and map write" under -race.
 type Factory struct {
-	mu          sync.Mutex
+	mu          sync.RWMutex
 	manager     *orm.Manager
 	tableName   string
 	definition  func() map[string]interface{}
@@ -51,13 +58,19 @@ func (f *Factory) Count(n int) *Factory {
 
 // State applies a named state to the factory.
 // Panics if the state has not been defined via DefineState.
+//
+// The presence-check and the activeState write share the same critical
+// section so a concurrent DefineState cannot race with the read. Previously
+// the presence-check ran without a lock; combined with the lock-held write
+// in DefineState this fired "concurrent map read and map write" under
+// -race (cross-cutting map mutex sweep, rule #3).
 func (f *Factory) State(name string) *Factory {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if _, exists := f.states[name]; !exists {
 		panic(fmt.Sprintf("unknown state: %s", name))
 	}
-	f.mu.Lock()
 	f.activeState = name
-	f.mu.Unlock()
 	return f
 }
 
@@ -136,23 +149,49 @@ func (f *Factory) Create(ctx context.Context, overrides ...map[string]interface{
 	return results
 }
 
-// generateOne generates a single record's data
+// generateOne generates a single record's data.
+//
+// Reads f.states and f.sequences under f.mu.RLock so a concurrent
+// DefineState / Sequence cannot race the iteration. The state and
+// sequence maps are snapshotted (state via a per-key copy, sequence
+// generators via a slice of closures) so the user-supplied generator
+// closures and override copies happen outside the lock without
+// blocking concurrent factory configuration on slow generators.
 func (f *Factory) generateOne(activeState string, index int, overrides ...map[string]interface{}) map[string]interface{} {
 	// Start with definition
 	data := f.definition()
 
-	// Apply active state
+	// Snapshot state + sequence maps under RLock so the inner loops
+	// run without holding the lock. Map iteration vs concurrent
+	// assignment is the runtime-fatal race we need to close here.
+	var stateCopy map[string]interface{}
+	var seqCopy map[string]func(int) interface{}
+	f.mu.RLock()
 	if activeState != "" {
 		if state, exists := f.states[activeState]; exists {
+			stateCopy = make(map[string]interface{}, len(state))
 			for k, v := range state {
-				data[k] = v
+				stateCopy[k] = v
 			}
 		}
 	}
+	if len(f.sequences) > 0 {
+		seqCopy = make(map[string]func(int) interface{}, len(f.sequences))
+		for k, gen := range f.sequences {
+			seqCopy[k] = gen
+		}
+	}
+	f.mu.RUnlock()
 
-	// Apply sequences
-	for field, generator := range f.sequences {
-		data[field] = generator(index + 1) // 1-based indexing for sequences
+	// Apply active state from the snapshot.
+	for k, v := range stateCopy {
+		data[k] = v
+	}
+
+	// Apply sequences. 1-based indexing for compatibility with the
+	// pre-mutex behaviour.
+	for field, generator := range seqCopy {
+		data[field] = generator(index + 1)
 	}
 
 	// Apply overrides

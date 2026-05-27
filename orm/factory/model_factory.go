@@ -28,7 +28,12 @@ type ModelFactory[T any] struct {
 	states      map[string]func(*T)
 	count       int
 	activeState string
-	mu          sync.Mutex
+	// mu is a sync.RWMutex so makeOne can snapshot the active state
+	// modifier via RLock while concurrent DefineState writers take Lock.
+	// Cross-cutting map mutex sweep, rule #3: previously State()'s
+	// presence-check and makeOne()'s state read ran outside the lock,
+	// racing the DefineState assignment.
+	mu sync.RWMutex
 }
 
 // NewModelFactory creates a new type-safe model factory
@@ -55,13 +60,19 @@ func (f *ModelFactory[T]) Count(n int) *ModelFactory[T] {
 
 // State applies a named state modifier to the factory.
 // Panics if the state has not been defined via DefineState (programming error).
+//
+// The presence-check and the activeState write share the same critical
+// section so a concurrent DefineState cannot race with the read.
+// Previously the presence-check ran without a lock; combined with the
+// lock-held write in DefineState this fired "concurrent map read and
+// map write" under -race.
 func (f *ModelFactory[T]) State(name string) *ModelFactory[T] {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if _, exists := f.states[name]; !exists {
 		panic("unknown state: " + name)
 	}
-	f.mu.Lock()
 	f.activeState = name
-	f.mu.Unlock()
 	return f
 }
 
@@ -174,13 +185,22 @@ func (f *ModelFactory[T]) MakeOne(overrides *T) *T {
 	return f.makeOne(activeState, overrides)
 }
 
-// makeOne generates a single model without persisting
+// makeOne generates a single model without persisting.
+//
+// The state lookup runs under f.mu.RLock so a concurrent DefineState
+// cannot race the map read. The modifier closure itself fires outside
+// the lock so user code (which may take its own locks) cannot deadlock
+// against the factory's mutex.
 func (f *ModelFactory[T]) makeOne(activeState string, overrides *T) *T {
 	model := f.definition()
 
-	// Apply state modifier if set
+	// Apply state modifier if set. Snapshot the modifier under RLock
+	// so map iteration does not race a concurrent DefineState write.
 	if activeState != "" {
-		if modifier, exists := f.states[activeState]; exists {
+		f.mu.RLock()
+		modifier, exists := f.states[activeState]
+		f.mu.RUnlock()
+		if exists {
 			modifier(model)
 		}
 	}
