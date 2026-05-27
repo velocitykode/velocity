@@ -4,6 +4,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // TestServices_ExtensionsConcurrentRegisterAndRead is the regression test for
@@ -114,6 +115,45 @@ func TestServices_RangeExtensionsEarlyStop(t *testing.T) {
 	})
 	if seen != 1 {
 		t.Fatalf("RangeExtensions early stop: visited %d, want 1", seen)
+	}
+}
+
+// TestServices_RangeExtensionsDoesNotHoldLockAcrossFn is the F1 regression
+// test for the Tier 4 re-audit finding: RangeExtensions must NOT hold extMu
+// across the user-supplied fn, because (a) a slow fn would block
+// RegisterExtension writers, and (b) fn calling back into RegisterExtension
+// would deadlock on re-entrant Lock against the held RLock.
+//
+// The harness pre-registers one extension, then inside fn (a) acquires a
+// write lock via RegisterExtension on a fresh key and (b) reads the map
+// via ExtensionAs. Both must succeed without deadlocking. Test runs under
+// a 2-second timeout via a watchdog goroutine.
+func TestServices_RangeExtensionsDoesNotHoldLockAcrossFn(t *testing.T) {
+	t.Parallel()
+	s := &Services{}
+	if err := RegisterExtension[string](s, "seed", "v"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		s.RangeExtensions(func(_ string, _ any) bool {
+			if err := RegisterExtension[string](s, "from-fn", "x"); err != nil {
+				t.Errorf("register inside fn: %v", err)
+			}
+			if _, err := ExtensionAs[string](s, "seed"); err != nil {
+				t.Errorf("read inside fn: %v", err)
+			}
+			return true
+		})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("RangeExtensions held lock across fn; deadlock on re-entrant Register")
+	}
+	if _, err := ExtensionAs[string](s, "from-fn"); err != nil {
+		t.Fatalf("post-Range registration not visible: %v", err)
 	}
 }
 

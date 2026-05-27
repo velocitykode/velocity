@@ -110,19 +110,27 @@ func ExtensionAs[T any](s *Services, key string) (T, error) {
 	return typed, nil
 }
 
-// RangeExtensions calls fn for every registered extension under s.extMu.RLock.
-// fn must NOT call RegisterExtension or any other Services method that
-// acquires extMu (re-entrant Lock on a held RLock deadlocks). If fn needs to
-// register something, capture the keys/values during Range and register
-// after Range returns. Returns false from fn to halt iteration early.
+// RangeExtensions calls fn for every registered extension. fn is invoked
+// OUTSIDE the extMu critical section: the map is snapshotted under RLock,
+// the lock is released, and fn iterates the snapshot. This means fn is
+// free to call RegisterExtension or any other Services method without
+// deadlocking, and a slow fn cannot block concurrent RegisterExtension
+// writes. Extensions added after the snapshot is taken will not be
+// visible to this iteration; call Range again to see them.
+//
+// Returns false from fn to halt iteration early.
 //
 // The framework uses this from bootstrap.wireInstanceEvents to push the
 // instance event dispatcher into every extension that implements
 // contract.EventDispatcherAware.
 func (s *Services) RangeExtensions(fn func(key string, v any) bool) {
 	s.extMu.RLock()
-	defer s.extMu.RUnlock()
+	snapshot := make(map[string]any, len(s.Extensions))
 	for k, v := range s.Extensions {
+		snapshot[k] = v
+	}
+	s.extMu.RUnlock()
+	for k, v := range snapshot {
 		if !fn(k, v) {
 			return
 		}
