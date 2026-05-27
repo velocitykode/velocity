@@ -88,7 +88,13 @@ func denyUnauthenticated(manager *Manager, c *router.Context) error {
 		redirectURL += "?" + c.Request.URL.RawQuery
 	}
 	escapedURL := url.QueryEscape(redirectURL)
-	return c.Redirect(http.StatusSeeOther, "/login?redirect="+escapedURL)
+	// router.IntendedRedirectQueryKey is the canonical query key the
+	// consumer side (ctx.Intended / ctx.RedirectToIntended) reads from.
+	// Keeping the name centralised in router/ closes the gap where a
+	// login handler that hand-rolled "?redirect=..." would silently
+	// stop honouring the post-login destination if the key ever
+	// changes.
+	return c.Redirect(http.StatusSeeOther, "/login?"+router.IntendedRedirectQueryKey+"="+escapedURL)
 }
 
 // denyForbidden returns a 403 JSON response for API requests or a plain 403

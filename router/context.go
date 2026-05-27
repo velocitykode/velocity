@@ -361,6 +361,76 @@ func (c *Context) Redirect(status int, rawURL string) error {
 	return nil
 }
 
+// IntendedRedirectQueryKey is the request query parameter name used by
+// auth middleware (and any other gate that wants to "remember" the
+// originally requested URL) to stash the destination for post-login
+// redirection. Centralising the name here keeps producer (auth's
+// /login?redirect=...) and consumer (ctx.Intended) in sync, and makes
+// the value available to packages outside auth without an import cycle.
+const IntendedRedirectQueryKey = "redirect"
+
+// Intended returns the safe redirect target for the "intended" post-login
+// destination, falling back to fallback when no such target is set or
+// when the stored value fails open-redirect validation.
+//
+// Resolution order:
+//
+//  1. The query parameter named by IntendedRedirectQueryKey (default
+//     "redirect"). This is the value auth middleware writes when it
+//     bounces an unauthenticated browser through /login?redirect=...
+//  2. fallback, if the stored value is missing, empty, or rejected by
+//     the same open-redirect sanitiser that gates ctx.Redirect.
+//
+// The returned string is ALWAYS safe to pass straight to ctx.Redirect:
+// it has been validated through the router's allowlist + scheme +
+// slash-lookalike pipeline (see sanitizeRedirect). Callers MUST NOT
+// concatenate user input into the result without re-sanitizing, but
+// the canonical caller is ctx.RedirectToIntended which handles this
+// internally.
+//
+// Contract:
+//   - Safe relative paths ("/dashboard", "/admin/users") pass through.
+//   - Absolute URLs to a host outside Router.RedirectAllowedHosts fall
+//     back to fallback.
+//   - Backslash and Unicode-slash lookalikes ("/\evil", "/／evil") fall
+//     back to fallback.
+//   - Empty / missing query param falls back to fallback.
+//   - fallback itself is also sanitised so a buggy caller cannot
+//     introduce its own open redirect via the fallback string.
+func (c *Context) Intended(fallback string) string {
+	fallback = sanitizeRedirect(fallback, c.redirectAllowedHosts)
+	raw := c.Request.URL.Query().Get(IntendedRedirectQueryKey)
+	if raw == "" {
+		return fallback
+	}
+	safe := sanitizeRedirect(raw, c.redirectAllowedHosts)
+	// sanitizeRedirect returns "/" for any rejected input. Distinguish
+	// "stored value rejected" from "stored value was literally /" by
+	// re-comparing: if the raw input was anything other than "/" but
+	// sanitised to "/", treat that as a rejection and prefer fallback.
+	if safe == "/" && raw != "/" {
+		return fallback
+	}
+	return safe
+}
+
+// RedirectToIntended issues a 303 See Other to the safe Intended()
+// target (or fallback). This is the canonical caller for post-login
+// flows: the auth middleware bounces the browser through
+// /login?redirect=<original>, the login handler verifies the
+// credentials, then calls ctx.RedirectToIntended("/") to ship the
+// user back to where they were headed.
+//
+// The destination is open-redirect-safe by construction: ctx.Intended
+// runs both the query value and the fallback through the same
+// sanitiser ctx.Redirect uses. Handlers MUST NOT bypass this helper by
+// reading the "redirect" query param directly, that string is
+// untrusted user input and feeding it to ctx.Redirect via string
+// concatenation would re-introduce the open redirect.
+func (c *Context) RedirectToIntended(fallback string) error {
+	return c.Redirect(http.StatusSeeOther, c.Intended(fallback))
+}
+
 // Status sends a response with just a status code
 func (c *Context) Status(status int) error {
 	c.Response.WriteHeader(status)
