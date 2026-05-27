@@ -7,7 +7,10 @@ import (
 )
 
 func TestGenerateTraceID(t *testing.T) {
-	id := GenerateTraceID()
+	id, err := GenerateTraceID()
+	if err != nil {
+		t.Fatalf("GenerateTraceID: unexpected error: %v", err)
+	}
 
 	// Should be 32 hex characters (16 bytes * 2)
 	if len(id) != 32 {
@@ -22,14 +25,20 @@ func TestGenerateTraceID(t *testing.T) {
 	}
 
 	// Each call should generate a unique ID
-	id2 := GenerateTraceID()
+	id2, err := GenerateTraceID()
+	if err != nil {
+		t.Fatalf("GenerateTraceID (2nd call): unexpected error: %v", err)
+	}
 	if id == id2 {
 		t.Error("Expected unique trace IDs")
 	}
 }
 
 func TestGenerateSpanID(t *testing.T) {
-	id := GenerateSpanID()
+	id, err := GenerateSpanID()
+	if err != nil {
+		t.Fatalf("GenerateSpanID: unexpected error: %v", err)
+	}
 
 	// Should be 16 hex characters (8 bytes * 2)
 	if len(id) != 16 {
@@ -44,7 +53,10 @@ func TestGenerateSpanID(t *testing.T) {
 	}
 
 	// Each call should generate a unique ID
-	id2 := GenerateSpanID()
+	id2, err := GenerateSpanID()
+	if err != nil {
+		t.Fatalf("GenerateSpanID (2nd call): unexpected error: %v", err)
+	}
 	if id == id2 {
 		t.Error("Expected unique span IDs")
 	}
@@ -98,8 +110,14 @@ func TestWithSpan_SetsParentID(t *testing.T) {
 
 func TestWithNewSpan(t *testing.T) {
 	ctx := context.Background()
-	traceID := GenerateTraceID()
-	parentSpan := GenerateSpanID()
+	traceID, err := GenerateTraceID()
+	if err != nil {
+		t.Fatalf("GenerateTraceID: %v", err)
+	}
+	parentSpan, err := GenerateSpanID()
+	if err != nil {
+		t.Fatalf("GenerateSpanID: %v", err)
+	}
 
 	ctx = WithTrace(ctx, traceID, parentSpan)
 
@@ -174,8 +192,14 @@ func TestStartTrace(t *testing.T) {
 
 func TestContinueTrace_ExistingTrace(t *testing.T) {
 	ctx := context.Background()
-	originalTrace := GenerateTraceID()
-	originalSpan := GenerateSpanID()
+	originalTrace, err := GenerateTraceID()
+	if err != nil {
+		t.Fatalf("GenerateTraceID: %v", err)
+	}
+	originalSpan, err := GenerateSpanID()
+	if err != nil {
+		t.Fatalf("GenerateSpanID: %v", err)
+	}
 
 	ctx = WithTrace(ctx, originalTrace, originalSpan)
 

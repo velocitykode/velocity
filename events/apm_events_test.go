@@ -144,13 +144,19 @@ func TestTraceHelperReexports(t *testing.T) {
 	ctx := context.Background()
 
 	// Test GenerateTraceID
-	traceID := GenerateTraceID()
+	traceID, err := GenerateTraceID()
+	if err != nil {
+		t.Fatalf("GenerateTraceID: %v", err)
+	}
 	if len(traceID) != 32 {
 		t.Errorf("Expected trace ID length 32, got %d", len(traceID))
 	}
 
 	// Test GenerateSpanID
-	spanID := GenerateSpanID()
+	spanID, err := GenerateSpanID()
+	if err != nil {
+		t.Fatalf("GenerateSpanID: %v", err)
+	}
 	if len(spanID) != 16 {
 		t.Errorf("Expected span ID length 16, got %d", len(spanID))
 	}

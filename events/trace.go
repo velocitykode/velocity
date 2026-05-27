@@ -10,13 +10,29 @@ import (
 // The actual implementations are in pkg/trace to avoid circular imports.
 
 // GenerateTraceID generates a new random trace ID (32 hex characters).
-func GenerateTraceID() string {
+// Returns an error if crypto/rand is unavailable.
+func GenerateTraceID() (string, error) {
 	return trace.GenerateTraceID()
 }
 
 // GenerateSpanID generates a new random span ID (16 hex characters).
-func GenerateSpanID() string {
+// Returns an error if crypto/rand is unavailable.
+func GenerateSpanID() (string, error) {
 	return trace.GenerateSpanID()
+}
+
+// MustGenerateTraceID returns a trace ID, falling back to a
+// distinguishable marker (see trace.FallbackTraceID) after a single
+// retry if crypto/rand is unavailable. Intended for hot paths that
+// cannot propagate errors.
+func MustGenerateTraceID() string {
+	return trace.MustGenerateTraceID()
+}
+
+// MustGenerateSpanID returns a span ID with the same retry-and-fallback
+// semantics as MustGenerateTraceID.
+func MustGenerateSpanID() string {
+	return trace.MustGenerateSpanID()
 }
 
 // WithTrace returns a new context with the given trace ID and span ID.

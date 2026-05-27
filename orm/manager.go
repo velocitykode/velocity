@@ -294,10 +294,14 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 	}
 	txTrace := trace.GetTraceID(ctx)
 	if txTrace == "" {
-		txTrace = trace.GenerateTraceID()
+		// Use Must* helpers: a transaction must not fail because of a
+		// transient entropy outage. On rand failure the IDs degrade to
+		// the distinguishable fallback markers (not all-zero hex), so
+		// downstream APM cannot conflate fake with real traces.
+		txTrace = trace.MustGenerateTraceID()
 	}
-	txSpanID := trace.GenerateSpanID()
-	stmtRootSpan := trace.GenerateSpanID()
+	txSpanID := trace.MustGenerateSpanID()
+	stmtRootSpan := trace.MustGenerateSpanID()
 	txTraceCtx := trace.WithFullContext(ctx, txTrace, stmtRootSpan, txSpanID)
 	txTraceCtx = withTxSpanID(txTraceCtx, txSpanID)
 	txStmtCounter := &atomic.Int32{}
