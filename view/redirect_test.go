@@ -56,16 +56,16 @@ func (s *fakeSession) saves() int {
 
 // The remaining auth.Session methods are unused by view.ReqEngine and return
 // zero values.
-func (s *fakeSession) ID() string                            { return "fake-session" }
-func (s *fakeSession) Get(string) any                        { return nil }
-func (s *fakeSession) Put(string, any)                       {}
-func (s *fakeSession) Has(string) bool                       { return false }
-func (s *fakeSession) Remove(string)                         {}
-func (s *fakeSession) Clear()                                {}
-func (s *fakeSession) Regenerate() error                     { return nil }
-func (s *fakeSession) Invalidate() error                     { return nil }
-func (s *fakeSession) GetFlash(string) any                   { return nil }
-func (s *fakeSession) FlushFlash() map[string]any            { return nil }
+func (s *fakeSession) ID() string                 { return "fake-session" }
+func (s *fakeSession) Get(string) any             { return nil }
+func (s *fakeSession) Put(string, any)            {}
+func (s *fakeSession) Has(string) bool            { return false }
+func (s *fakeSession) Remove(string)              {}
+func (s *fakeSession) Clear()                     {}
+func (s *fakeSession) Regenerate() error          { return nil }
+func (s *fakeSession) Invalidate() error          { return nil }
+func (s *fakeSession) GetFlash(string) any        { return nil }
+func (s *fakeSession) FlushFlash() map[string]any { return nil }
 
 var _ auth.Session = (*fakeSession)(nil)
 
@@ -75,10 +75,10 @@ type sessionAwareGuard struct {
 	session auth.Session
 }
 
-func (g *sessionAwareGuard) Check(*http.Request) bool                  { return false }
-func (g *sessionAwareGuard) User(*http.Request) auth.Authenticatable   { return nil }
-func (g *sessionAwareGuard) ID(*http.Request) any                      { return nil }
-func (g *sessionAwareGuard) SetProvider(auth.UserProvider)             {}
+func (g *sessionAwareGuard) Check(*http.Request) bool                { return false }
+func (g *sessionAwareGuard) User(*http.Request) auth.Authenticatable { return nil }
+func (g *sessionAwareGuard) ID(*http.Request) any                    { return nil }
+func (g *sessionAwareGuard) SetProvider(auth.UserProvider)           {}
 func (g *sessionAwareGuard) Logout(http.ResponseWriter, *http.Request) error {
 	return nil
 }
