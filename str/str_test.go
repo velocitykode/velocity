@@ -2076,6 +2076,58 @@ func TestMarkdown_AllowsMailtoLink(t *testing.T) {
 	}
 }
 
+func TestMarkdown_EscapesRawImg(t *testing.T) {
+	got := Markdown("<img src=x onerror=alert(1)>")
+	if strings.Contains(got, "<img") {
+		t.Errorf("Markdown leaked raw <img>: %q", got)
+	}
+	if !strings.Contains(got, "&lt;img") {
+		t.Errorf("Markdown did not escape <img>: %q", got)
+	}
+}
+
+func TestMarkdown_EscapesRawScriptOutsideConstruct(t *testing.T) {
+	got := Markdown("hello <script>alert(1)</script> world")
+	if strings.Contains(got, "<script>") {
+		t.Errorf("Markdown leaked raw <script>: %q", got)
+	}
+	if !strings.Contains(got, "&lt;script&gt;") {
+		t.Errorf("Markdown did not escape <script>: %q", got)
+	}
+}
+
+func TestMarkdown_EscapesBareAngleAndAmp(t *testing.T) {
+	got := Markdown("a < b && b > c")
+	want := "a &lt; b &amp;&amp; b &gt; c"
+	if got != want {
+		t.Errorf("Markdown(%q) = %q; want %q", "a < b && b > c", got, want)
+	}
+}
+
+func TestMarkdown_MixesPlainTextAndMarkdown(t *testing.T) {
+	// Raw HTML must be escaped while the markdown construct still renders.
+	got := Markdown("**bold** <script>alert(1)</script>")
+	if strings.Contains(got, "<script>") {
+		t.Errorf("Markdown leaked <script> alongside markdown: %q", got)
+	}
+	if !strings.Contains(got, "<strong>bold</strong>") {
+		t.Errorf("Markdown lost <strong> rendering: %q", got)
+	}
+	if !strings.Contains(got, "&lt;script&gt;") {
+		t.Errorf("Markdown did not escape <script>: %q", got)
+	}
+}
+
+func TestMarkdown_LinkAlongsideRawHTML(t *testing.T) {
+	got := Markdown("[home](https://example.com) <img src=x>")
+	if !strings.Contains(got, `<a href="https://example.com">home</a>`) {
+		t.Errorf("Markdown lost link rendering: %q", got)
+	}
+	if strings.Contains(got, "<img") {
+		t.Errorf("Markdown leaked <img>: %q", got)
+	}
+}
+
 func TestMarkdown_ValidSanity(t *testing.T) {
 	// Plain valid markdown round-trips into expected HTML.
 	cases := map[string]string{
