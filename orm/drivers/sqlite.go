@@ -54,11 +54,20 @@ func (d *SQLiteDriver) Connect(config ConnectionConfig) error {
 		dsn = cleanPath
 	}
 
-	// Create directory if it doesn't exist (for file-based databases)
+	// Create directory if it doesn't exist (for file-based databases).
+	// The directory will hold the SQLite file containing user records,
+	// session state, queue payloads, and every other framework table; it
+	// must not be world-readable on a multi-tenant host.
 	if dsn != ":memory:" && strings.Contains(dsn, "/") {
 		dir := filepath.Dir(dsn)
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return fmt.Errorf("failed to create database directory: %w", err)
+		}
+		// MkdirAll preserves the perms of a pre-existing directory. Force
+		// the tight mode on every open so an older binary's 0o755 dir does
+		// not stay world-readable across upgrades.
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return fmt.Errorf("failed to tighten database directory permissions: %w", err)
 		}
 	}
 
