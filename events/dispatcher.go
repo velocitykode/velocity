@@ -284,7 +284,15 @@ func (d *DefaultDispatcher) DispatchAfter(ctx context.Context, event interface{}
 	})
 }
 
-// Until dispatches events until the first non-nil return
+// Until dispatches events until the first non-nil return.
+//
+// Each listener invocation is wrapped in a panic-recovery shim (see
+// [DefaultDispatcher.safeInvokeForUntil]) so a panicking listener cannot
+// unwind into the caller. A recovered panic is converted to an error via
+// panicerr.FromRecovered and treated like a normal listener error: Until
+// short-circuits and returns the error so callers (and the recovery
+// listener pipeline shared with processListener) observe a complete chain
+// rather than a vanished panic value.
 func (d *DefaultDispatcher) Until(ctx context.Context, event interface{}) (interface{}, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -292,22 +300,39 @@ func (d *DefaultDispatcher) Until(ctx context.Context, event interface{}) (inter
 	listeners := d.getListenersForEvent(event)
 
 	for _, listener := range listeners {
-		// For Until, we need a special listener type that returns a value
-		if handler, ok := listener.(interface {
-			HandleWithResult(ctx context.Context, event interface{}) (interface{}, error)
-		}); ok {
-			if result, err := handler.HandleWithResult(ctx, event); err != nil || result != nil {
-				return result, err
-			}
-		} else {
-			// Regular listener, just check for error
-			if err := listener.Handle(ctx, event); err != nil {
-				return nil, err
-			}
+		result, err := d.safeInvokeForUntil(ctx, event, listener)
+		if err != nil || result != nil {
+			return result, err
 		}
 	}
 
 	return nil, nil
+}
+
+// safeInvokeForUntil routes a single listener invocation for [Until]
+// through the same recover-wrapped path that [processListener] uses. The
+// recover block converts a panic into an error via panicerr.FromRecovered
+// so callers see a typed *panicerr.Error in the error chain instead of
+// the panic unwinding through the dispatcher into the caller's stack.
+//
+// A listener that implements HandleWithResult (used by Until's
+// short-circuit semantics) is invoked through that method; everything
+// else falls back to the regular Listener.Handle path. The shape mirrors
+// processListener so the two recover blocks stay aligned if either is
+// extended (e.g. ShouldHandle gating).
+func (d *DefaultDispatcher) safeInvokeForUntil(ctx context.Context, event interface{}, listener Listener) (result interface{}, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = panicerr.FromRecovered(p)
+		}
+	}()
+
+	if handler, ok := listener.(interface {
+		HandleWithResult(ctx context.Context, event interface{}) (interface{}, error)
+	}); ok {
+		return handler.HandleWithResult(ctx, event)
+	}
+	return nil, listener.Handle(ctx, event)
 }
 
 // Flush removes all listeners for an event
