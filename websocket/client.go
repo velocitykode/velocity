@@ -11,7 +11,16 @@ import (
 // readPump pumps messages from the websocket connection to the server
 func (c *Client) readPump() {
 	defer func() {
-		c.Server.unregister <- c
+		// Select on stopChan so that during Shutdown, when the run loop
+		// has already exited and is no longer draining s.unregister, this
+		// goroutine still exits cleanly instead of blocking forever on a
+		// full (cap 256) unregister channel. Without the stopChan branch,
+		// every readPump past the buffer cap leaks (audit D-02), pinning
+		// the *Client, *websocket.Conn, and all per-client buffers.
+		select {
+		case c.Server.unregister <- c:
+		case <-c.Server.stopChan:
+		}
 		c.Conn.Close()
 	}()
 	defer func() {
