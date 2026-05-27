@@ -272,3 +272,81 @@ func TestAllWithError_StillPropagates(t *testing.T) {
 		t.Fatalf("AllWithError did not propagate error correctly: %v", err)
 	}
 }
+
+// X-04 follow-up: AllWithError previously discarded the panic-converted
+// error from Run on its Result.Get call. A panicking fn produced a
+// zero-value resultPair (pair.err == nil) so the loop fell through to
+// values[i] = pair.value with no error signal. Same security shape as the
+// original X-04: panic in fn silently looked like success.
+func TestAllWithError_PanicSurfacedAsError(t *testing.T) {
+	values, err := AllWithError(
+		func() (int, error) { return 1, nil },
+		func() (int, error) { panic("boom") },
+		func() (int, error) { return 3, nil },
+	)
+	if err == nil {
+		t.Fatalf("AllWithError swallowed panic, expected non-nil error")
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("error should reference the panic value, got %q", err.Error())
+	}
+	if values != nil {
+		t.Fatalf("on error AllWithError should return nil values, got %v", values)
+	}
+}
+
+// X-04 follow-up regression: the normal-error path (fn returns an error)
+// must continue to surface. This is the case TestAllWithError_StillPropagates
+// also covers; included separately so the failure mode is unambiguous in
+// the test output if AllWithError regresses on either flavour.
+func TestAllWithError_NormalErrorStillSurfaced(t *testing.T) {
+	values, err := AllWithError(
+		func() (int, error) { return 1, nil },
+		func() (int, error) { return 0, errors.New("normal-error") },
+	)
+	if err == nil || err.Error() != "normal-error" {
+		t.Fatalf("expected normal-error, got %v", err)
+	}
+	if values != nil {
+		t.Fatalf("on error AllWithError should return nil values, got %v", values)
+	}
+}
+
+// X-04 follow-up: when one fn panics and another returns a normal error
+// AllWithError must still surface SOME error. Submission order wins: the
+// returned error is the first non-nil seen while iterating results in
+// index order. This matches the documented "first error" semantics of
+// AllWithError and the new All/Map. Documented in AllWithError's godoc.
+func TestAllWithError_MixedPanicAndError(t *testing.T) {
+	t.Run("panic first wins", func(t *testing.T) {
+		values, err := AllWithError(
+			func() (int, error) { panic("first-panic") },
+			func() (int, error) { return 0, errors.New("second-error") },
+		)
+		if err == nil {
+			t.Fatalf("expected non-nil error from mixed panic+error")
+		}
+		if !strings.Contains(err.Error(), "first-panic") {
+			t.Fatalf("submission-order-first error should win; got %q", err.Error())
+		}
+		if values != nil {
+			t.Fatalf("expected nil values on error, got %v", values)
+		}
+	})
+
+	t.Run("normal-error first wins", func(t *testing.T) {
+		values, err := AllWithError(
+			func() (int, error) { return 0, errors.New("first-error") },
+			func() (int, error) { panic("second-panic") },
+		)
+		if err == nil {
+			t.Fatalf("expected non-nil error from mixed error+panic")
+		}
+		if err.Error() != "first-error" {
+			t.Fatalf("submission-order-first error should win; got %q", err.Error())
+		}
+		if values != nil {
+			t.Fatalf("expected nil values on error, got %v", values)
+		}
+	})
+}

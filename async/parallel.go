@@ -40,7 +40,21 @@ func All[T any](fns ...func() T) ([]T, error) {
 	return values, firstErr
 }
 
-// AllWithError runs functions in parallel, returns first error
+// AllWithError runs functions in parallel and returns the first non-nil
+// error encountered, where "error" is one of:
+//
+//  1. A panic recovered inside fn (surfaced via Run's deferred recover and
+//     observed on the Result's error channel as r.Get's second return).
+//  2. A normal error returned by fn (carried inside the resultPair).
+//
+// The panic-converted error is checked first so a panicking fn cannot be
+// masked by a later fn's normal error. If any fn panics or returns an
+// error, AllWithError returns nil values and that error; otherwise it
+// returns the collected values in submission order.
+//
+// AllWithError always waits for every fn to finish so spawned goroutines
+// do not leak. (X-04 follow-up: previously the Get error was discarded,
+// so a panic in fn could be silently swallowed into a zero-value entry.)
 func AllWithError[T any](fns ...func() (T, error)) ([]T, error) {
 	type resultPair struct {
 		value T
@@ -57,13 +71,30 @@ func AllWithError[T any](fns ...func() (T, error)) ([]T, error) {
 		})
 	}
 
+	// Drain every Result before returning so no goroutine is left holding a
+	// send on a buffered chan. Track the first error of either flavour.
 	values := make([]T, len(fns))
+	var firstErr error
 	for i, r := range results {
-		pair, _ := r.Get()
+		pair, err := r.Get()
+		// Panic-converted errors take precedence: they indicate fn never
+		// produced a meaningful pair (Run sends on errorCh, not valueCh).
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
 		if pair.err != nil {
-			return nil, pair.err
+			if firstErr == nil {
+				firstErr = pair.err
+			}
+			continue
 		}
 		values[i] = pair.value
+	}
+	if firstErr != nil {
+		return nil, firstErr
 	}
 
 	return values, nil
