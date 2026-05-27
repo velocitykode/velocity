@@ -2,7 +2,6 @@ package str
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 	"unicode"
 )
@@ -391,10 +390,23 @@ func (s *Stringable) ReplaceLast(search, replace string) *Stringable {
 }
 
 // ReplaceMatches replaces matches of the pattern with the replacement.
+// If the pattern is malformed the value is left unchanged (no panic). Use
+// ReplaceMatchesSafe to surface the compilation error.
 func (s *Stringable) ReplaceMatches(pattern, replace string) *Stringable {
-	re := regexp.MustCompile(pattern)
-	s.value = re.ReplaceAllString(s.value, replace)
+	_ = s.ReplaceMatchesSafe(pattern, replace)
 	return s
+}
+
+// ReplaceMatchesSafe is like ReplaceMatches but returns an error if the
+// pattern cannot be compiled. Always prefer this when the pattern can come
+// from a user or external input.
+func (s *Stringable) ReplaceMatchesSafe(pattern, replace string) error {
+	re, err := getRegexE(pattern)
+	if err != nil {
+		return err
+	}
+	s.value = re.ReplaceAllString(s.value, replace)
+	return nil
 }
 
 // Reverse reverses the string.

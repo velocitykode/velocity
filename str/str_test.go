@@ -2219,3 +2219,43 @@ func TestIs_MalformedPatternReturnsFalse(t *testing.T) {
 		t.Errorf("Is with malformed pattern = true; want false")
 	}
 }
+
+func TestStringableReplaceMatches_MalformedPatternNoPanic(t *testing.T) {
+	// Malformed pattern must not panic. The value is left unchanged.
+	var got string
+	noPanic(t, func() {
+		got = Of("foo123").ReplaceMatches("(unclosed", "X").String()
+	})
+	if got != "foo123" {
+		t.Errorf("Stringable.ReplaceMatches with malformed pattern = %q; want %q", got, "foo123")
+	}
+}
+
+func TestStringableReplaceMatches_ValidPatternStillWorks(t *testing.T) {
+	// Sanity: the happy path still works after the refactor.
+	got := Of("foo123bar456").ReplaceMatches("[0-9]+", "X").String()
+	if got != "fooXbarX" {
+		t.Errorf("Stringable.ReplaceMatches = %q; want %q", got, "fooXbarX")
+	}
+}
+
+func TestStringableReplaceMatchesSafe_MalformedPatternReturnsError(t *testing.T) {
+	s := Of("foo123")
+	err := s.ReplaceMatchesSafe("(unclosed", "X")
+	if err == nil {
+		t.Fatal("ReplaceMatchesSafe with malformed pattern: want error, got nil")
+	}
+	if s.String() != "foo123" {
+		t.Errorf("ReplaceMatchesSafe with malformed pattern mutated value: got %q", s.String())
+	}
+}
+
+func TestStringableReplaceMatchesSafe_ValidPatternReturnsNil(t *testing.T) {
+	s := Of("foo123")
+	if err := s.ReplaceMatchesSafe("[0-9]+", "X"); err != nil {
+		t.Fatalf("ReplaceMatchesSafe error: %v", err)
+	}
+	if s.String() != "fooX" {
+		t.Errorf("ReplaceMatchesSafe value = %q; want %q", s.String(), "fooX")
+	}
+}
