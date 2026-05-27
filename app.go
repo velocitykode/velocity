@@ -335,21 +335,17 @@ func New(opts ...Option) (*App, error) {
 		}
 	})
 
-	// Wire the CSRF token rotator into the auth manager so session
-	// guards keep the per-session CSRF token aligned with the session
-	// lifecycle: Login rotates the token across session.Regenerate,
-	// Logout revokes it before session.Invalidate, and the remember-
-	// cookie revival path rotates it across the recall regenerate (H-02).
-	// Without this hook, orphan tokens linger in the CSRF store past
-	// session boundaries. The dependency direction is csrf -> contract
-	// <- auth, so auth has no compile-time knowledge of *csrf.CSRF.
-	if rotator, ok := a.CSRF.(contract.CSRFTokenRotator); ok {
-		if authMgr, ok := a.Auth.(interface {
-			SetCSRFTokenRotator(contract.CSRFTokenRotator)
-		}); ok {
-			authMgr.SetCSRFTokenRotator(rotator)
-		}
-	}
+	// NOTE: The CSRF token rotator is wired into the auth manager from
+	// bootstrap() AFTER the chain providers' Boot() phase runs, not here.
+	// A consumer Boot() may replace s.CSRF with a customised instance
+	// (different store, different config, decorator wrapping the
+	// framework-built CSRF). If we wired the rotator now, the auth
+	// manager would keep pointing at the original framework-built
+	// instance even after the consumer swap, and Login/Logout/remember
+	// rotations would silently target a CSRF store no longer in the
+	// request path -> first POST after login 419s. See
+	// installCSRFTokenRotator in bootstrap.go and
+	// TestCSRFRotator_PointsToBootReplacement.
 
 	// 8. Initialize view/bond engine
 	if a.config.View.RootTemplate != "" {

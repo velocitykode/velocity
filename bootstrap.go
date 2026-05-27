@@ -37,6 +37,16 @@ func (a *App) bootstrap() error {
 		return err
 	}
 
+	// 1a. Install the CSRF token rotator on the auth manager NOW, AFTER
+	// every chain provider's Boot() has had a chance to replace s.CSRF
+	// with a customised instance. Installing in New() (before providers
+	// run) would freeze the rotator to the framework-built CSRF even
+	// when a consumer swaps in a different one during Boot, and Login/
+	// Logout/remember-cookie rotations would silently target a dead
+	// store -> first POST after login 419s. See app.go for the matching
+	// comment at the deferred site.
+	installCSRFTokenRotator(a)
+
 	// 2. Build middleware stack
 	mwStack := chain.NewMiddlewareStack(a.Services)
 
@@ -286,4 +296,43 @@ func installSessionMiddleware(a *App) {
 		return
 	}
 	a.Router.Use(sg.SessionMiddleware())
+}
+
+// installCSRFTokenRotator wires the final s.CSRF instance (post chain
+// provider Boot) into the auth manager as a contract.CSRFTokenRotator so
+// SessionGuard.Login regenerates the per-session CSRF token alongside the
+// session id, SessionGuard.Logout revokes it before the session is
+// invalidated, and the remember-cookie revival path rotates it across the
+// recall regenerate. See contract.CSRFTokenRotator for the full contract.
+//
+// Boot-order rationale: a chain provider may legitimately replace s.CSRF
+// in its Boot() (custom store, different mode, decorator wrapping the
+// framework-built instance). Running this install BEFORE Boot would
+// freeze the rotator to the original framework-built CSRF, and any
+// subsequent consumer swap would leave the auth manager rotating a
+// store no longer in the request path -> orphan tokens, first-POST 419.
+// So this install runs AFTER runProviderLifecycle returns.
+//
+// No-op when:
+//   - a.CSRF does not implement contract.CSRFTokenRotator (custom
+//     CSRFProtector not derived from *csrf.CSRF), or
+//   - a.Auth does not expose SetCSRFTokenRotator (custom AuthManager,
+//     test fakes that satisfy only contract.AuthManager).
+//
+// Idempotent: bootstrap() guards against double-run via a.bootstrapped.
+func installCSRFTokenRotator(a *App) {
+	if a == nil || a.Services == nil {
+		return
+	}
+	rotator, ok := a.CSRF.(contract.CSRFTokenRotator)
+	if !ok {
+		return
+	}
+	authMgr, ok := a.Auth.(interface {
+		SetCSRFTokenRotator(contract.CSRFTokenRotator)
+	})
+	if !ok {
+		return
+	}
+	authMgr.SetCSRFTokenRotator(rotator)
 }
