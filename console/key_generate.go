@@ -18,7 +18,12 @@ func KeyGenerate() error {
 		return fmt.Errorf("failed to generate key: %w", err)
 	}
 
-	encodedKey := base64.StdEncoding.EncodeToString(key)
+	// crypto.parseKey only base64-decodes values prefixed with "base64:".
+	// Without the prefix the 44-char standard-base64 string is consumed as
+	// 44 raw bytes and NewAESDriver rejects with ErrInvalidKeyLength
+	// (cipher AES-256-GCM requires exactly 32 bytes). Emit the prefix so
+	// the generated key survives parseKey -> base64 decode -> length check.
+	encodedKey := "base64:" + base64.StdEncoding.EncodeToString(key)
 
 	envPath := ".env"
 	content, err := os.ReadFile(envPath)

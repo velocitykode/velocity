@@ -6,6 +6,9 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/velocitykode/velocity/crypto"
+	_ "github.com/velocitykode/velocity/crypto/drivers"
 )
 
 func TestKeyGenerate_CreatesEnvFile(t *testing.T) {
@@ -20,17 +23,64 @@ func TestKeyGenerate_CreatesEnvFile(t *testing.T) {
 		t.Fatalf("Failed to read .env: %v", err)
 	}
 
-	if !strings.HasPrefix(string(content), "APP_KEY=") {
-		t.Errorf("expected APP_KEY= prefix, got: %s", content)
+	if !strings.HasPrefix(string(content), "APP_KEY=base64:") {
+		t.Errorf("expected APP_KEY=base64: prefix, got: %s", content)
 	}
 
-	key := strings.TrimPrefix(strings.TrimSpace(string(content)), "APP_KEY=")
+	key := strings.TrimPrefix(strings.TrimSpace(string(content)), "APP_KEY=base64:")
 	decoded, err := base64.StdEncoding.DecodeString(key)
 	if err != nil {
 		t.Fatalf("Key is not valid base64: %v", err)
 	}
 	if len(decoded) != 32 {
 		t.Errorf("key length = %d, want 32", len(decoded))
+	}
+}
+
+// TestKeyGenerate_WritesBase64Prefix is the M-class regression for the
+// velship-surfaced bug: the generated APP_KEY value must carry the
+// "base64:" prefix so crypto.parseKey base64-decodes it back to 32 raw
+// bytes. Without the prefix the 44-char standard-base64 string is
+// consumed as 44 raw bytes and NewAESDriver rejects with
+// ErrInvalidKeyLength on boot.
+func TestKeyGenerate_WritesBase64Prefix(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	if err := KeyGenerate(); err != nil {
+		t.Fatalf("KeyGenerate() error = %v", err)
+	}
+
+	content, err := os.ReadFile(".env")
+	if err != nil {
+		t.Fatalf("read .env: %v", err)
+	}
+
+	line := strings.TrimSpace(string(content))
+	if !strings.HasPrefix(line, "APP_KEY=base64:") {
+		t.Fatalf("APP_KEY line missing base64: prefix; got %q", line)
+	}
+}
+
+// TestKeyGenerate_OutputBootsThroughNewEncryptor proves end to end that
+// the value KeyGenerate writes to .env is accepted by the crypto driver
+// the framework would actually instantiate at boot. Pins the velship
+// integration regression.
+func TestKeyGenerate_OutputBootsThroughNewEncryptor(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	if err := KeyGenerate(); err != nil {
+		t.Fatalf("KeyGenerate() error = %v", err)
+	}
+
+	content, err := os.ReadFile(".env")
+	if err != nil {
+		t.Fatalf("read .env: %v", err)
+	}
+	value := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(content)), "APP_KEY="))
+
+	_, err = crypto.NewEncryptor(crypto.Config{Key: value, Cipher: "AES-256-GCM"})
+	if err != nil {
+		t.Fatalf("NewEncryptor rejected KeyGenerate output: %v", err)
 	}
 }
 
