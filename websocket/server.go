@@ -75,6 +75,11 @@ type Server struct {
 	// that already hold s.mu (e.g. JoinGroup) without risking deadlock
 	// via re-entrant locking.
 	logger atomic.Value // holds loggerHolder{Logger}
+
+	// recoveredPanics counts how many times callWithRecover has caught a
+	// panic in a single handler dispatch. Exposed via RecoveredPanics for
+	// observability and tests. Audit D-04 follow-up.
+	recoveredPanics atomic.Uint64
 }
 
 // loggerHolder wraps a Logger so atomic.Value stores a single concrete type.
@@ -238,23 +243,66 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 }
 
-// run is the main event loop
+// run is the main event loop.
+//
+// Audit D-04 follow-up: every dispatch into handleRegister / handleUnregister
+// / handleBroadcast is wrapped in callWithRecover so a single panicking
+// handler call does NOT terminate the consumer goroutine. Without this
+// inner recover, async.Go's outer wrapper still contains the panic at the
+// process level, but the run goroutine exits and the register / unregister
+// / broadcast channels back up forever (Start cannot relaunch because
+// s.running stays true). The recover keeps the for-loop alive across
+// recoverable handler failures (closed-channel sends, callback hot-swap
+// nil derefs, transient map races) and counts them via panicCount so
+// operators can observe the failure rate.
 func (s *Server) run() {
 	for {
 		select {
 		case client := <-s.register:
-			s.handleRegister(client)
+			s.callWithRecover("handleRegister", func() { s.handleRegister(client) })
 
 		case client := <-s.unregister:
-			s.handleUnregister(client)
+			s.callWithRecover("handleUnregister", func() { s.handleUnregister(client) })
 
 		case message := <-s.broadcast:
-			s.handleBroadcast(message)
+			s.callWithRecover("handleBroadcast", func() { s.handleBroadcast(message) })
 
 		case <-s.stopChan:
 			return
 		}
 	}
+}
+
+// callWithRecover invokes fn with a deferred recover so a panic in a single
+// handler dispatch does not exit the run loop. Recovered panics are logged
+// via the Server's configured logger (when present) and counted on
+// s.recoveredPanics for observability. The outer async.Go wrapper installed
+// by Start remains in place as a final safety net for panics that escape
+// this seam (e.g. a panic in the for/select frame itself, vanishingly
+// rare in practice).
+func (s *Server) callWithRecover(site string, fn func()) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		s.recoveredPanics.Add(1)
+		// async.FromRecovered tags the recovered value with the calling
+		// goroutine's stack so log readers can locate the panic site.
+		s.logError(
+			"websocket run-loop panic recovered",
+			"site", site,
+			"error", async.FromRecovered(r),
+		)
+	}()
+	fn()
+}
+
+// RecoveredPanics returns the number of times the run loop's inner recover
+// has caught a panic in a single handler dispatch. Exposed for observability
+// and tests; safe to call concurrently. Audit D-04 follow-up.
+func (s *Server) RecoveredPanics() uint64 {
+	return s.recoveredPanics.Load()
 }
 
 // HandleConnection upgrades HTTP connection to WebSocket
