@@ -132,4 +132,3 @@ func mustMatch(pattern, text string) bool {
 func mustReplace(pattern, text, replacement string) string {
 	return getRegex(pattern).ReplaceAllString(text, replacement)
 }
-

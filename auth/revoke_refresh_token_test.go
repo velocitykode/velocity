@@ -27,9 +27,9 @@ func (g *fakeRefreshRevokerGuard) RevokeAllRefreshTokensForUser(_ context.Contex
 
 // Stub Guard methods - RevokeAllSessions only inspects the
 // RefreshTokenRevoker interface; the rest can be panics or no-ops.
-func (g *fakeRefreshRevokerGuard) Check(*http.Request) bool                 { return false }
-func (g *fakeRefreshRevokerGuard) User(*http.Request) Authenticatable       { return nil }
-func (g *fakeRefreshRevokerGuard) ID(*http.Request) interface{}             { return nil }
+func (g *fakeRefreshRevokerGuard) Check(*http.Request) bool           { return false }
+func (g *fakeRefreshRevokerGuard) User(*http.Request) Authenticatable { return nil }
+func (g *fakeRefreshRevokerGuard) ID(*http.Request) interface{}       { return nil }
 func (g *fakeRefreshRevokerGuard) Login(http.ResponseWriter, *http.Request, Authenticatable, ...bool) error {
 	return nil
 }

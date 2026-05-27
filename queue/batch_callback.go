@@ -418,4 +418,3 @@ func callbackQueueName() string {
 	}
 	return "default"
 }
-
