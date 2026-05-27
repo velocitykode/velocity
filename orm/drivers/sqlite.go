@@ -184,20 +184,37 @@ func (g *SQLiteGrammar) CompileSelect(query *SelectQuery) (string, []any) {
 		sql.WriteString("DISTINCT ")
 	}
 
-	// Columns
+	// Columns. Defence-in-depth: re-validate every projection here
+	// even though Query[T].Select rejects them upstream. Any code path
+	// that constructs SelectQuery directly (tests, future call sites)
+	// must not bypass the whitelist. RawColumns is the trusted escape
+	// hatch and is emitted separately below.
+	wroteCol := false
 	if len(query.Columns) > 0 {
-		for i, col := range query.Columns {
-			if i > 0 {
+		for _, col := range query.Columns {
+			if err := ValidateSelectColumn(col); err != nil {
+				return "/* orm: rejected select column: " + sanitizeForComment(err.Error()) + " */ SELECT 1 WHERE 1=0", nil
+			}
+			if wroteCol {
 				sql.WriteString(", ")
 			}
-			// Don't quote expressions like COUNT(*) or wildcard *
 			if strings.Contains(col, "(") || col == "*" {
 				sql.WriteString(col)
 			} else {
 				sql.WriteString(g.QuoteIdentifier(col))
 			}
+			wroteCol = true
 		}
-	} else {
+	}
+	for _, raw := range query.RawColumns {
+		if wroteCol {
+			sql.WriteString(", ")
+		}
+		sql.WriteString(raw.Expr)
+		args = append(args, raw.Args...)
+		wroteCol = true
+	}
+	if !wroteCol {
 		sql.WriteString("*")
 	}
 

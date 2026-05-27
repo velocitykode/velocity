@@ -41,11 +41,15 @@ func (q *Query[T]) aggregate(ctx context.Context, fn, column string) (float64, e
 	}
 	q.bindTxFromContextValue(ctx)
 
-	q.columns = []string{fmt.Sprintf("%s(%s) as agg", fn, q.driver.Grammar().QuoteIdentifier(column))}
+	// Framework-built aggregate projection: emit through the trusted
+	// RawColumns path so the user-facing Columns whitelist (which
+	// forbids quotes and backticks) does not need to admit
+	// QuoteIdentifier output.
+	rawExpr := fmt.Sprintf("%s(%s) AS agg", fn, q.driver.Grammar().QuoteIdentifier(column))
 
 	selectQuery := &drivers.SelectQuery{
 		Table:      q.table,
-		Columns:    q.columns,
+		RawColumns: []drivers.RawColumn{{Expr: rawExpr}},
 		Conditions: q.conditions,
 		Joins:      q.joins,
 		Distinct:   q.distinct,

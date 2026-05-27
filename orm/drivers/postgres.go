@@ -221,20 +221,39 @@ func (g *PostgresGrammar) CompileSelect(query *SelectQuery) (string, []any) {
 		sql.WriteString("DISTINCT ")
 	}
 
-	// Columns
+	// Columns. Defence-in-depth: re-validate every projection here
+	// even though Query[T].Select rejects them upstream. Any code path
+	// that constructs SelectQuery directly (tests, future call sites)
+	// must not bypass the whitelist. RawColumns is the trusted escape
+	// hatch and is emitted separately below, with "?" placeholders
+	// renumbered to PostgreSQL's $N form.
+	wroteCol := false
 	if len(query.Columns) > 0 {
-		for i, col := range query.Columns {
-			if i > 0 {
+		for _, col := range query.Columns {
+			if err := ValidateSelectColumn(col); err != nil {
+				return "/* orm: rejected select column: " + sanitizeForComment(err.Error()) + " */ SELECT 1 WHERE 1=0", nil
+			}
+			if wroteCol {
 				sql.WriteString(", ")
 			}
-			// Handle special columns like COUNT(*)
 			if strings.Contains(col, "(") || col == "*" {
 				sql.WriteString(col)
 			} else {
 				sql.WriteString(g.QuoteIdentifier(col))
 			}
+			wroteCol = true
 		}
-	} else {
+	}
+	for _, raw := range query.RawColumns {
+		if wroteCol {
+			sql.WriteString(", ")
+		}
+		rewritten, _ := rewriteQuestionMarksToDollar(raw.Expr, len(args)+1)
+		sql.WriteString(rewritten)
+		args = append(args, raw.Args...)
+		wroteCol = true
+	}
+	if !wroteCol {
 		sql.WriteString("*")
 	}
 
@@ -255,7 +274,10 @@ func (g *PostgresGrammar) CompileSelect(query *SelectQuery) (string, []any) {
 	// WHERE
 	if len(query.Conditions) > 0 {
 		sql.WriteString(" WHERE ")
-		argIndex := 1
+		// Args may already contain RawColumn parameters bound in
+		// the projection list, so start WHERE's $N counter from
+		// the current parameter count rather than 1.
+		argIndex := len(args) + 1
 		argIndex = g.compileConditions(&sql, &args, query.Conditions, argIndex)
 		_ = argIndex
 	}
@@ -696,4 +718,43 @@ func (g *PostgresGrammar) getPostgresType(column Column) string {
 		}
 		return column.Type
 	}
+}
+
+// rewriteQuestionMarksToDollar walks expr and replaces every unquoted
+// "?" with PostgreSQL's $N placeholder starting from startIdx. It
+// returns the rewritten expression and the next available index.
+//
+// SelectRaw expressions are NOT parsed as SQL; this rewriter only
+// recognises single-quoted and double-quoted regions to avoid
+// substituting question marks that appear inside literals/identifiers.
+// Backslash escapes inside quotes are not interpreted (PostgreSQL uses
+// doubled quotes for escaping, which leaves and re-enters the quoted
+// region naturally).
+func rewriteQuestionMarksToDollar(expr string, startIdx int) (string, int) {
+	if !strings.ContainsRune(expr, '?') {
+		return expr, startIdx
+	}
+	var b strings.Builder
+	b.Grow(len(expr) + 4)
+	idx := startIdx
+	inSingle := false
+	inDouble := false
+	for i := 0; i < len(expr); i++ {
+		c := expr[i]
+		switch {
+		case c == '\'' && !inDouble:
+			inSingle = !inSingle
+			b.WriteByte(c)
+		case c == '"' && !inSingle:
+			inDouble = !inDouble
+			b.WriteByte(c)
+		case c == '?' && !inSingle && !inDouble:
+			b.WriteByte('$')
+			b.WriteString(fmt.Sprintf("%d", idx))
+			idx++
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String(), idx
 }

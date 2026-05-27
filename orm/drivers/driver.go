@@ -109,8 +109,20 @@ type ReturningGrammar interface {
 
 // SelectQuery represents a SELECT query structure
 type SelectQuery struct {
-	Table         string
-	Columns       []string
+	Table   string
+	Columns []string
+	// RawColumns are trusted raw SQL projections appended to the
+	// SELECT list after Columns. Each RawColumn carries its own
+	// bound arguments; grammars emit Expr verbatim and append Args
+	// to the parameter list. Grammars whose dialect uses numbered
+	// placeholders (e.g. PostgreSQL) rewrite any "?" inside Expr to
+	// the appropriate placeholder at compile time.
+	//
+	// Populated by Query[T].SelectRaw; framework-internal aggregates
+	// (Count, Sum, Avg, ...) also build their projection through
+	// this field so the Columns whitelist can stay strict for
+	// untrusted input.
+	RawColumns    []RawColumn
 	Conditions    []Condition
 	Orders        []Order
 	Groups        []string

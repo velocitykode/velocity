@@ -98,6 +98,7 @@ type Query[T any] struct {
 	limit         *int
 	offset        *int
 	columns       []string
+	rawColumns    []drivers.RawColumn
 	distinct      bool
 	preloads      []string
 	withTrashed   bool
@@ -251,6 +252,9 @@ func (q *Query[T]) Clone() *Query[T] {
 	}
 	if q.columns != nil {
 		clone.columns = append([]string(nil), q.columns...)
+	}
+	if q.rawColumns != nil {
+		clone.rawColumns = append([]drivers.RawColumn(nil), q.rawColumns...)
 	}
 	if q.preloads != nil {
 		clone.preloads = append([]string(nil), q.preloads...)
@@ -678,11 +682,47 @@ func (q *Query[T]) RightJoin(table, first, operator, second string) *Query[T] {
 	return q
 }
 
-// Select specifies columns to select
+// Select specifies columns to select.
+//
+// Each column must be one of:
+//
+//   - a plain identifier matching ^[a-zA-Z_][a-zA-Z0-9_.]*$ (e.g. "id",
+//     "users.email", "created_at"); these are quoted by the dialect's
+//     QuoteIdentifier at compile time.
+//   - the wildcard "*".
+//   - an aggregate expression using EXACTLY ONE of the five SQL
+//     standard aggregate functions (uppercase only): COUNT, SUM, AVG,
+//     MIN, MAX. Examples: "COUNT(*)", "COUNT(id)", "SUM(amount)",
+//     "AVG(price)", "MIN(orders.total) AS min_total", "MAX(price) as
+//     max_price". The AS clause is optional and case-insensitive.
+//
+// All other function names, including but not limited to CONCAT,
+// VERSION, CURRENT_DATABASE, PG_SLEEP, USER, LOAD_FILE, NOW, IF,
+// LENGTH, LOWER, SUBSTR, and any user-defined function, are rejected
+// here. Anything outside the five-aggregate allowlist must be
+// expressed through SelectRaw with bound parameters.
+//
+// The aggregate whitelist also forbids quotes, backticks, semicolons,
+// comments (-- and /* */), and the keywords SELECT, UNION, INSERT,
+// UPDATE, DELETE, DROP, TRUNCATE, EXEC, EXECUTE, FROM, WHERE, JOIN,
+// INTO, VALUES, ALTER, CREATE, GRANT, REVOKE. Anything outside the
+// allowlist is captured as a deferred error on the query (terminal
+// methods return it) and no SQL is issued.
+//
+// For arbitrary SQL projections (other functions, window functions,
+// CASE expressions, dialect-specific syntax, sub-selects), use
+// SelectRaw with bound parameters.
 func (q *Query[T]) Select(columns ...string) *Query[T] {
 	for _, col := range columns {
-		// Skip validation for raw expressions (e.g., "COUNT(*)", "SUM(amount)")
-		if strings.Contains(col, "(") {
+		if strings.Contains(col, "(") || col == "*" {
+			// Aggregate-or-wildcard path: enforce the projection
+			// whitelist. ValidateSelectColumn rejects quotes,
+			// comments, dangerous keywords, and any shape outside
+			// the COUNT/SUM/MIN/MAX/AVG-style aggregate grammar.
+			if err := drivers.ValidateSelectColumn(col); err != nil {
+				q.setErr("Select", err)
+				return q
+			}
 			continue
 		}
 		if err := validateIdentifier(col); err != nil {
@@ -691,6 +731,32 @@ func (q *Query[T]) Select(columns ...string) *Query[T] {
 		}
 	}
 	q.columns = columns
+	return q
+}
+
+// SelectRaw appends a trusted raw SQL expression to the projection list
+// with bound parameters. The expression is emitted verbatim into the
+// SELECT clause; "?" placeholders inside Expr are replaced with the
+// dialect's placeholder syntax (literal "?" for MySQL/SQLite, "$N" for
+// PostgreSQL) and Args are appended to the parameter list in order.
+//
+// SelectRaw is the escape hatch for projections that the strict Select
+// whitelist cannot express: window functions, CASE expressions, vendor
+// extensions, sub-selects. The caller assumes full responsibility for
+// the safety of Expr; values that originate from user input MUST flow
+// through Args, never through string interpolation into Expr.
+//
+//	q.SelectRaw("COUNT(*) AS n")
+//	q.SelectRaw("CASE WHEN amount > ? THEN 'big' ELSE 'small' END AS bucket", 100)
+//	q.SelectRaw("ROW_NUMBER() OVER (PARTITION BY tenant_id ORDER BY id) AS rn")
+//
+// Multiple SelectRaw calls accumulate; they are emitted after any
+// columns configured by Select, in the order they were registered.
+func (q *Query[T]) SelectRaw(expr string, args ...any) *Query[T] {
+	q.rawColumns = append(q.rawColumns, drivers.RawColumn{
+		Expr: expr,
+		Args: append([]any(nil), args...),
+	})
 	return q
 }
 
@@ -1007,6 +1073,7 @@ func (q *Query[T]) Get(ctx context.Context) ([]T, error) {
 	selectQuery := &drivers.SelectQuery{
 		Table:         q.table,
 		Columns:       q.columns,
+		RawColumns:    q.rawColumns,
 		Conditions:    q.conditions,
 		Orders:        q.orders,
 		Groups:        q.groups,
@@ -1106,11 +1173,12 @@ func (q *Query[T]) Count(ctx context.Context) (int, error) {
 	}
 	q.bindTxFromContextValue(ctx)
 	q.applySoftDeleteScope(ctx)
-	q.columns = []string{"COUNT(*) as count"}
-
+	// COUNT(*) is a framework-generated projection: emit it through
+	// the trusted RawColumns path so the user-facing Columns whitelist
+	// stays strict for untrusted input.
 	selectQuery := &drivers.SelectQuery{
 		Table:      q.table,
-		Columns:    q.columns,
+		RawColumns: []drivers.RawColumn{{Expr: "COUNT(*) AS count"}},
 		Conditions: q.conditions,
 		Joins:      q.joins,
 		Distinct:   q.distinct,
@@ -1148,6 +1216,7 @@ func (q *Query[T]) Pluck(ctx context.Context, column string) ([]any, error) {
 	selectQuery := &drivers.SelectQuery{
 		Table:      q.table,
 		Columns:    q.columns,
+		RawColumns: q.rawColumns,
 		Conditions: q.conditions,
 		Orders:     q.orders,
 		Joins:      q.joins,
