@@ -29,6 +29,12 @@ func (b *Bond) Redirect(w http.ResponseWriter, r *http.Request, url string) {
 // same-host URLs are allowed. Use Location() for external redirects.
 func (b *Bond) RedirectWithStatus(w http.ResponseWriter, r *http.Request, rawURL string, status int) {
 	rawURL = sanitizeRedirectURL(rawURL, b.allowedHostsFor(r))
+	// stripCRLF before any Header().Set defends in depth against header
+	// injection. Go's net/http catches CR/LF in header values at write
+	// time, but relying on that is fragile (the panic surfaces only when
+	// the response is committed, and middleware that inspects the header
+	// in the meantime sees the raw value). Sanitise at the source.
+	rawURL = stripCRLF(rawURL)
 	if isInertiaRequest(r) {
 		// For Inertia requests, set the location header for client-side handling
 		w.Header().Set("X-Inertia-Location", rawURL)
@@ -40,6 +46,10 @@ func (b *Bond) RedirectWithStatus(w http.ResponseWriter, r *http.Request, rawURL
 // This breaks out of the SPA and performs a full navigation
 // Use for external URLs or when you need to break out of Inertia
 func (b *Bond) Location(w http.ResponseWriter, r *http.Request, url string) {
+	// Defence-in-depth: strip CR/LF before any Header().Set even though
+	// net/http will reject them at write time. Same rationale as
+	// RedirectWithStatus above; see stripCRLF.
+	url = stripCRLF(url)
 	if isInertiaRequest(r) {
 		// 409 Conflict with X-Inertia-Location triggers full page reload
 		w.Header().Set("X-Inertia-Location", url)
@@ -48,6 +58,22 @@ func (b *Bond) Location(w http.ResponseWriter, r *http.Request, url string) {
 	}
 	// For non-Inertia requests, use standard redirect
 	http.Redirect(w, r, url, http.StatusFound)
+}
+
+// stripCRLF removes ASCII CR and LF bytes from a header value. Returns
+// the original string when no CR/LF is present (avoids the allocation
+// on the happy path). This is a defence-in-depth helper applied at
+// every Header().Set sink that writes a URL coming from a non-trivial
+// source (the redirect path, the buffered Location rewrite in
+// Middleware, etc.). It mirrors the CRLF reject performed by mail's
+// Address.Validate and router's Context.SetHeader, so bond cannot
+// regress to a strictly-weaker stance than the rest of the framework.
+func stripCRLF(s string) string {
+	if !strings.ContainsAny(s, "\r\n") {
+		return s
+	}
+	r := strings.NewReplacer("\r", "", "\n", "")
+	return r.Replace(s)
 }
 
 // Back redirects to the previous page using the Referer header.

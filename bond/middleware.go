@@ -22,13 +22,17 @@ func (b *Bond) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Check for version mismatch — GET only.
+		// Check for version mismatch, GET only.
 		// POST/PUT/PATCH/DELETE skip this to avoid discarding form data with a 409.
 		// The mutation processes normally, redirects, and the next GET catches it.
 		if r.Method == http.MethodGet {
 			clientVersion := r.Header.Get(HeaderVersion)
 			if clientVersion != "" && clientVersion != b.version {
-				w.Header().Set(HeaderLocation, r.URL.String())
+				// Defence-in-depth CRLF strip on the URL before
+				// Header().Set. net/http rejects CR/LF at write time,
+				// but a hostile or fuzzed request URI should never
+				// reach a header-set sink raw. See stripCRLF.
+				w.Header().Set(HeaderLocation, stripCRLF(r.URL.String()))
 				w.WriteHeader(http.StatusConflict)
 				return
 			}
