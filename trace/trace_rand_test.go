@@ -25,11 +25,10 @@ func withRandReader(t *testing.T, r io.Reader) {
 	t.Helper()
 	prev := randReader
 	randReader = r
-	prevOnce := randFallbackWarnOnce
 	randFallbackWarnOnce = sync.Once{}
 	t.Cleanup(func() {
 		randReader = prev
-		randFallbackWarnOnce = prevOnce
+		randFallbackWarnOnce = sync.Once{}
 	})
 }
 
