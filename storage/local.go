@@ -195,6 +195,16 @@ func (d *LocalDriver) PutStream(path string, stream io.Reader) error {
 		if err != nil {
 			return fmt.Errorf("velocity/storage: create file: %w", mapOpenError(err))
 		}
+		// root.Create resolves the file's mode through the process
+		// umask (typically yielding 0o644 / 0o664). Tighten to 0o600
+		// before any bytes are written so request bodies, uploads,
+		// and any incidental PII landing on disk are owner-only by
+		// default, matching the invariant Put already maintains.
+		if chmodErr := file.Chmod(0o600); chmodErr != nil {
+			_ = file.Close()
+			_ = root.Remove(tmp)
+			return fmt.Errorf("velocity/storage: chmod file: %w", chmodErr)
+		}
 		limited := io.LimitReader(stream, d.maxFileSize+1)
 		written, copyErr := io.Copy(file, limited)
 		closeErr := file.Close()
@@ -318,6 +328,12 @@ func (d *LocalDriver) Copy(from, to string) error {
 			return fmt.Errorf("velocity/storage: create destination: %w", mapOpenError(err))
 		}
 		defer dest.Close()
+		// Tighten umask-derived mode (~0o644) down to 0o600 so the
+		// copy inherits the same owner-only invariant Put applies on
+		// initial write.
+		if chmodErr := dest.Chmod(0o600); chmodErr != nil {
+			return fmt.Errorf("velocity/storage: chmod destination: %w", chmodErr)
+		}
 		if _, err := io.Copy(dest, source); err != nil {
 			return fmt.Errorf("velocity/storage: copy: %w", err)
 		}

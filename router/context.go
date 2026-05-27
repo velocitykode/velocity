@@ -1348,7 +1348,12 @@ func (c *Context) SaveFile(fh *multipart.FileHeader, dst string, opts ...FileVal
 	}
 	defer src.Close()
 
-	out, err := root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	// Default to owner-only (0o600) so uploaded request bodies do not
+	// land on disk world-readable. Mirrors storage.LocalDriver.Put.
+	// Note: OpenFile filters mode through umask AND preserves the
+	// mode of a pre-existing target, so we follow up with Chmod to
+	// pin the invariant regardless of starting state.
+	out, err := root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return err
@@ -1356,6 +1361,10 @@ func (c *Context) SaveFile(fh *multipart.FileHeader, dst string, opts ...FileVal
 		return fmt.Errorf("velocity/router: path %q escapes root: %w", rel, errors.Join(ErrPathOutsideRoot, err))
 	}
 	defer out.Close()
+	if chmodErr := out.Chmod(0o600); chmodErr != nil {
+		_ = root.Remove(rel)
+		return fmt.Errorf("velocity/router: chmod uploaded file: %w", chmodErr)
+	}
 
 	written, err := io.Copy(out, io.LimitReader(src, sizeCap+1))
 	if err != nil {
