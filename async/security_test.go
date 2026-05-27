@@ -350,3 +350,239 @@ func TestAllWithError_MixedPanicAndError(t *testing.T) {
 		}
 	})
 }
+
+// X-02 regression: All / Map / AllWithError used to spawn one goroutine per
+// input item, which is a fan-out DoS when the slice is attacker-controlled
+// (10k IDs from a request body becomes 10k goroutines). The fix is twofold:
+//
+//   1. AllN / MapN / AllWithErrorN expose an explicit concurrency parameter,
+//      matching the shape of ForEach / TryForEach.
+//   2. The original All / Map / AllWithError apply an internal hard cap
+//      (defaultUnboundedCap, currently 1024) so callers that pass huge
+//      slices self-throttle without code changes.
+//
+// The tests below cover both: the bounded variants honour the requested
+// cap, the unbounded variants honour the internal cap.
+
+// inFlightTracker observes peak concurrency across a fan-out so a test can
+// assert the semaphore cap held.
+type inFlightTracker struct {
+	current atomic.Int32
+	peak    atomic.Int32
+}
+
+func (t *inFlightTracker) enter() {
+	c := t.current.Add(1)
+	for {
+		p := t.peak.Load()
+		if c <= p || t.peak.CompareAndSwap(p, c) {
+			return
+		}
+	}
+}
+
+func (t *inFlightTracker) leave() { t.current.Add(-1) }
+
+func TestAllN_RespectsConcurrencyCap(t *testing.T) {
+	const items = 200
+	const cap = 4
+
+	var tracker inFlightTracker
+	fns := make([]func() int, items)
+	for i := range fns {
+		fns[i] = func() int {
+			tracker.enter()
+			defer tracker.leave()
+			// Give the scheduler time to wedge more workers in if the cap
+			// isn't enforced. Without the sleep a fast machine can serially
+			// release the semaphore between spawns and hide the bug.
+			time.Sleep(2 * time.Millisecond)
+			return 1
+		}
+	}
+
+	values, err := AllN(cap, fns...)
+	if err != nil {
+		t.Fatalf("AllN returned unexpected error: %v", err)
+	}
+	if len(values) != items {
+		t.Fatalf("expected %d values, got %d", items, len(values))
+	}
+	if got := tracker.peak.Load(); got > int32(cap) {
+		t.Fatalf("AllN exceeded concurrency cap: peak=%d cap=%d", got, cap)
+	}
+}
+
+func TestMapN_RespectsConcurrencyCap(t *testing.T) {
+	const items = 200
+	const cap = 3
+
+	var tracker inFlightTracker
+	in := make([]int, items)
+	for i := range in {
+		in[i] = i
+	}
+
+	values, err := MapN(cap, in, func(i int) int {
+		tracker.enter()
+		defer tracker.leave()
+		time.Sleep(2 * time.Millisecond)
+		return i + 1
+	})
+	if err != nil {
+		t.Fatalf("MapN returned unexpected error: %v", err)
+	}
+	if len(values) != items {
+		t.Fatalf("expected %d values, got %d", items, len(values))
+	}
+	if got := tracker.peak.Load(); got > int32(cap) {
+		t.Fatalf("MapN exceeded concurrency cap: peak=%d cap=%d", got, cap)
+	}
+	// Sanity-check ordering: MapN must preserve input order despite bounded
+	// concurrency.
+	for i, v := range values {
+		if v != i+1 {
+			t.Fatalf("MapN dropped ordering at i=%d: got %d", i, v)
+		}
+	}
+}
+
+func TestAllWithErrorN_RespectsConcurrencyCap(t *testing.T) {
+	const items = 200
+	const cap = 5
+
+	var tracker inFlightTracker
+	fns := make([]func() (int, error), items)
+	for i := range fns {
+		i := i
+		fns[i] = func() (int, error) {
+			tracker.enter()
+			defer tracker.leave()
+			time.Sleep(2 * time.Millisecond)
+			return i, nil
+		}
+	}
+
+	values, err := AllWithErrorN(cap, fns...)
+	if err != nil {
+		t.Fatalf("AllWithErrorN returned unexpected error: %v", err)
+	}
+	if len(values) != items {
+		t.Fatalf("expected %d values, got %d", items, len(values))
+	}
+	if got := tracker.peak.Load(); got > int32(cap) {
+		t.Fatalf("AllWithErrorN exceeded concurrency cap: peak=%d cap=%d", got, cap)
+	}
+}
+
+// X-02 hard-cap regression: passing more items than defaultUnboundedCap
+// to the unbounded helpers must not exceed the internal cap. We use a
+// modest overshoot rather than a true attacker payload to keep the test
+// fast; the peak observed must equal defaultUnboundedCap (or less) and
+// never grow without bound with the slice size.
+func TestAll_AppliesInternalHardCap(t *testing.T) {
+	items := defaultUnboundedCap + 256
+	var tracker inFlightTracker
+	fns := make([]func() int, items)
+	for i := range fns {
+		fns[i] = func() int {
+			tracker.enter()
+			defer tracker.leave()
+			time.Sleep(500 * time.Microsecond)
+			return 1
+		}
+	}
+
+	values, err := All(fns...)
+	if err != nil {
+		t.Fatalf("All returned unexpected error: %v", err)
+	}
+	if len(values) != items {
+		t.Fatalf("expected %d values, got %d", items, len(values))
+	}
+	if got := tracker.peak.Load(); got > int32(defaultUnboundedCap) {
+		t.Fatalf("All breached internal cap: peak=%d cap=%d", got, defaultUnboundedCap)
+	}
+}
+
+func TestMap_AppliesInternalHardCap(t *testing.T) {
+	items := defaultUnboundedCap + 256
+	in := make([]int, items)
+	for i := range in {
+		in[i] = i
+	}
+	var tracker inFlightTracker
+	values, err := Map(in, func(i int) int {
+		tracker.enter()
+		defer tracker.leave()
+		time.Sleep(500 * time.Microsecond)
+		return i + 1
+	})
+	if err != nil {
+		t.Fatalf("Map returned unexpected error: %v", err)
+	}
+	if len(values) != items {
+		t.Fatalf("expected %d values, got %d", items, len(values))
+	}
+	if got := tracker.peak.Load(); got > int32(defaultUnboundedCap) {
+		t.Fatalf("Map breached internal cap: peak=%d cap=%d", got, defaultUnboundedCap)
+	}
+}
+
+func TestAllWithError_AppliesInternalHardCap(t *testing.T) {
+	items := defaultUnboundedCap + 256
+	fns := make([]func() (int, error), items)
+	var tracker inFlightTracker
+	for i := range fns {
+		i := i
+		fns[i] = func() (int, error) {
+			tracker.enter()
+			defer tracker.leave()
+			time.Sleep(500 * time.Microsecond)
+			return i, nil
+		}
+	}
+	values, err := AllWithError(fns...)
+	if err != nil {
+		t.Fatalf("AllWithError returned unexpected error: %v", err)
+	}
+	if len(values) != items {
+		t.Fatalf("expected %d values, got %d", items, len(values))
+	}
+	if got := tracker.peak.Load(); got > int32(defaultUnboundedCap) {
+		t.Fatalf("AllWithError breached internal cap: peak=%d cap=%d", got, defaultUnboundedCap)
+	}
+}
+
+// Empty-input edge cases must not deadlock or panic. effectiveCap returns
+// 0 when n == 0, and the for-range loop is skipped, so the semaphore is
+// never built. Lock that contract in.
+func TestAllN_EmptyInput(t *testing.T) {
+	values, err := AllN[int](4)
+	if err != nil {
+		t.Fatalf("empty AllN returned error: %v", err)
+	}
+	if len(values) != 0 {
+		t.Fatalf("empty AllN returned non-empty slice: %v", values)
+	}
+}
+
+func TestMapN_EmptyInput(t *testing.T) {
+	values, err := MapN(4, []int{}, func(i int) int { return i })
+	if err != nil {
+		t.Fatalf("empty MapN returned error: %v", err)
+	}
+	if len(values) != 0 {
+		t.Fatalf("empty MapN returned non-empty slice: %v", values)
+	}
+}
+
+func TestAllWithErrorN_EmptyInput(t *testing.T) {
+	values, err := AllWithErrorN[int](4)
+	if err != nil {
+		t.Fatalf("empty AllWithErrorN returned error: %v", err)
+	}
+	if len(values) != 0 {
+		t.Fatalf("empty AllWithErrorN returned non-empty slice: %v", values)
+	}
+}
