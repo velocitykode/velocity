@@ -24,8 +24,14 @@ func KeyGenerate() error {
 	content, err := os.ReadFile(envPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			if err := os.WriteFile(envPath, []byte(fmt.Sprintf("APP_KEY=%s\n", encodedKey)), 0600); err != nil {
+			if err := os.WriteFile(envPath, []byte(fmt.Sprintf("APP_KEY=%s\n", encodedKey)), 0o600); err != nil {
 				return fmt.Errorf("failed to create .env: %w", err)
+			}
+			// os.WriteFile does NOT chmod a pre-existing file; the file may
+			// have been raced into existence between Stat and WriteFile.
+			// Force the tight mode so a loose pre-existing .env is tightened.
+			if err := os.Chmod(envPath, 0o600); err != nil {
+				return fmt.Errorf("failed to tighten .env permissions: %w", err)
 			}
 			cli.Success("Created .env with APP_KEY")
 			return nil
@@ -47,8 +53,14 @@ func KeyGenerate() error {
 		lines = append([]string{fmt.Sprintf("APP_KEY=%s", encodedKey)}, lines...)
 	}
 
-	if err := os.WriteFile(envPath, []byte(strings.Join(lines, "\n")), 0600); err != nil {
+	if err := os.WriteFile(envPath, []byte(strings.Join(lines, "\n")), 0o600); err != nil {
 		return fmt.Errorf("failed to update .env: %w", err)
+	}
+	// .env carries APP_KEY and other secrets; os.WriteFile preserves the
+	// perms of a pre-existing file, so an older 0o644 .env would stay
+	// world-readable across a key:generate run. Force the tight mode.
+	if err := os.Chmod(envPath, 0o600); err != nil {
+		return fmt.Errorf("failed to tighten .env permissions: %w", err)
 	}
 
 	cli.Success("Application key set successfully")

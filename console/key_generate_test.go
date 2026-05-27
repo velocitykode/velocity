@@ -3,6 +3,7 @@ package console
 import (
 	"encoding/base64"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -71,5 +72,58 @@ func TestKeyGenerate_AddsKeyWhenMissing(t *testing.T) {
 	}
 	if !strings.Contains(string(content), "DB_HOST=localhost") {
 		t.Error("existing content should be preserved")
+	}
+}
+
+// TestKeyGenerate_CreatedEnvHasTightPerms verifies that the fresh-create
+// path lands the .env file at 0o600. The file holds APP_KEY (used to
+// derive cookie encryption + signed-URL + CSRF secrets) and must never
+// default to world-readable.
+func TestKeyGenerate_CreatedEnvHasTightPerms(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits not enforced on Windows")
+	}
+	t.Chdir(t.TempDir())
+
+	if err := KeyGenerate(); err != nil {
+		t.Fatalf("KeyGenerate() error = %v", err)
+	}
+
+	info, err := os.Stat(".env")
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf(".env mode = %#o, want 0600", got)
+	}
+}
+
+// TestKeyGenerate_TightensPreExistingLooseEnv verifies that a .env laid
+// down by an editor or older binary at 0o644 is tightened to 0o600 by
+// the next KeyGenerate run. os.WriteFile preserves pre-existing perms,
+// so the explicit post-write Chmod is the only guarantee.
+func TestKeyGenerate_TightensPreExistingLooseEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits not enforced on Windows")
+	}
+	t.Chdir(t.TempDir())
+
+	if err := os.WriteFile(".env", []byte("DB_HOST=localhost\nAPP_KEY=old\n"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := os.Chmod(".env", 0o644); err != nil {
+		t.Fatalf("seed chmod: %v", err)
+	}
+
+	if err := KeyGenerate(); err != nil {
+		t.Fatalf("KeyGenerate() error = %v", err)
+	}
+
+	info, err := os.Stat(".env")
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf(".env mode = %#o, want 0600 (pre-existing loose mode must be tightened)", got)
 	}
 }

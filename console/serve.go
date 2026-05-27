@@ -104,7 +104,10 @@ func runServer(opts ServeOptions) error {
 	os.Setenv("APP_ENV", opts.Env)
 	os.Setenv("APP_PORT", opts.Port)
 
-	os.MkdirAll(".vel/tmp", 0755)
+	// .vel/tmp holds the compiled server binary which embeds build-time
+	// secrets and configuration; keep it owner-only on multi-user dev hosts.
+	_ = os.MkdirAll(".vel/tmp", 0o700)
+	_ = os.Chmod(".vel/tmp", 0o700)
 
 	buildArgs := []string{"build", "-o", ".vel/tmp/server"}
 	if opts.BuildTags != "" {
@@ -132,7 +135,10 @@ func runServer(opts ServeOptions) error {
 }
 
 func runWithWatcher(opts ServeOptions) error {
-	os.MkdirAll(".vel/tmp", 0755)
+	// .vel/tmp holds the compiled server binary which embeds build-time
+	// secrets and configuration; keep it owner-only on multi-user dev hosts.
+	_ = os.MkdirAll(".vel/tmp", 0o700)
+	_ = os.Chmod(".vel/tmp", 0o700)
 
 	rebuild := make(chan bool, 1)
 	errChan := make(chan error, 1)
