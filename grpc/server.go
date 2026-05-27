@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"sync"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/reflection"
 
 	"github.com/velocitykode/velocity/async"
@@ -25,6 +27,12 @@ type Server struct {
 	running          bool
 	serverOptions    []grpc.ServerOption
 	logger           log.Logger
+
+	// tlsOpted tracks whether the caller supplied transport credentials via
+	// WithCreds or WithServerOption(grpc.Creds(...)). Build uses this together
+	// with the environment and the GRPC_INSECURE escape hatch to decide
+	// whether to refuse a cleartext production start.
+	tlsOpted bool
 
 	// Interceptors
 	unaryInterceptors  []grpc.UnaryServerInterceptor
@@ -53,6 +61,7 @@ func NewServer(opts ...ServerOption) *Server {
 	s := &Server{
 		port:               cfg.ServerPort,
 		enableReflection:   cfg.EnableReflection,
+		environment:        os.Getenv("APP_ENV"),
 		unaryInterceptors:  make([]grpc.UnaryServerInterceptor, 0),
 		streamInterceptors: make([]grpc.StreamServerInterceptor, 0),
 		registrations:      make([]RegistrationFunc, 0),
@@ -96,10 +105,26 @@ func WithReflection(enabled bool) ServerOption {
 	}
 }
 
-// WithServerOption adds a grpc.ServerOption to the server
+// WithServerOption adds a grpc.ServerOption to the server.
+//
+// If the option carries transport credentials (e.g., grpc.Creds(...)), prefer
+// WithCreds so the production TLS guard in Build recognises the opt-in. Using
+// this hook for credentials requires also calling WithCreds (or setting
+// GRPC_INSECURE=true) to avoid the production guard refusing the start.
 func WithServerOption(opt grpc.ServerOption) ServerOption {
 	return func(s *Server) {
 		s.serverOptions = append(s.serverOptions, opt)
+	}
+}
+
+// WithCreds attaches transport credentials to the gRPC server and marks the
+// server as having opted into TLS so the production guard in Build does not
+// refuse the start. Pass credentials produced via credentials.NewTLS,
+// credentials.NewServerTLSFromFile, or any other source.
+func WithCreds(creds credentials.TransportCredentials) ServerOption {
+	return func(s *Server) {
+		s.serverOptions = append(s.serverOptions, grpc.Creds(creds))
+		s.tlsOpted = true
 	}
 }
 
@@ -178,9 +203,16 @@ func (s *Server) RegisterService(regFunc RegistrationFunc) *Server {
 
 // Build constructs the gRPC server with all configured options.
 // This is called automatically by Start() if not called explicitly.
-// Build returns an error if the logger is nil — a nil logger causes silent
+// Build returns an error if the logger is nil. A nil logger causes silent
 // NPEs later (reflection warning, start/stop messages, panic recovery
 // interceptor) so we fail fast.
+//
+// Build also enforces the production TLS guard: when the environment is
+// "production" (APP_ENV=production or WithEnvironment("production")) and no
+// transport credentials were attached via WithCreds or WithServerOption,
+// Build returns an error unless GRPC_INSECURE=true opts the deployment out
+// for a known-internal mTLS mesh or a sidecar-terminated mesh. Outside
+// production, a missing creds configuration only emits a one-shot warning.
 func (s *Server) Build() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -190,7 +222,21 @@ func (s *Server) Build() error {
 	}
 
 	if s.logger == nil {
-		return fmt.Errorf("velocity/grpc: logger is required — use WithLogger(...) or accept the default console logger")
+		return fmt.Errorf("velocity/grpc: logger is required. Use WithLogger(...) or accept the default console logger")
+	}
+
+	// Enforce the production TLS guard before we start binding sockets so the
+	// error is unambiguous when an operator forgets to wire credentials.
+	if !s.tlsOpted {
+		insecureOptOut := os.Getenv("GRPC_INSECURE") == "true"
+		if s.environment == "production" && !insecureOptOut {
+			return fmt.Errorf("velocity/grpc: TLS credentials are required in production (set GRPC_INSECURE=true to opt out for a known-internal mTLS mesh)")
+		}
+		if s.environment != "production" {
+			s.logger.Warn("gRPC server starting without TLS credentials. Configure WithCreds before deploying to production",
+				"port", s.port,
+			)
+		}
 	}
 
 	// Create listener

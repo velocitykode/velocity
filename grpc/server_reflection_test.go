@@ -8,8 +8,11 @@ import (
 )
 
 // TestBuild_RefusesReflectionInProduction covers Task 8a: enabling reflection
-// in production must be a hard failure, not a silent downgrade.
+// in production must be a hard failure, not a silent downgrade. The TLS guard
+// (I-02) fires earlier than the reflection guard, so the test opts out of it
+// via GRPC_INSECURE so the reflection check is the one exercised here.
 func TestBuild_RefusesReflectionInProduction(t *testing.T) {
+	t.Setenv("GRPC_INSECURE", "true")
 	logger, _ := log.NewLogger(log.LogConfig{Driver: "null"})
 	s := NewServer(
 		WithPort("0"),
