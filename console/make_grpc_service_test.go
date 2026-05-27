@@ -119,3 +119,44 @@ func TestMakeGRPCService_MissingGoMod(t *testing.T) {
 		t.Error("expected error when go.mod missing")
 	}
 }
+
+func TestMakeGRPCService_RejectsTraversal(t *testing.T) {
+	cases := []string{
+		"../../tmp/owned",
+		"../tmp",
+		"foo/../../../etc",
+	}
+	for _, name := range cases {
+		t.Run(name, func(t *testing.T) {
+			tmp := t.TempDir()
+			t.Chdir(tmp)
+			writeFakeGoMod(t, "acme/app")
+
+			err := MakeGRPCService(name, MakeGRPCServiceOptions{})
+			if err == nil {
+				t.Fatalf("expected error for %q", name)
+			}
+			if !strings.Contains(err.Error(), "invalid") && !strings.Contains(err.Error(), "parent traversal") {
+				t.Errorf("expected traversal-rejection error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestMakeGRPCService_RejectsAbsolute(t *testing.T) {
+	t.Chdir(t.TempDir())
+	writeFakeGoMod(t, "acme/app")
+
+	if err := MakeGRPCService("/tmp/Foo", MakeGRPCServiceOptions{}); err == nil {
+		t.Fatal("expected error for absolute path service name")
+	}
+}
+
+func TestMakeGRPCService_RejectsHiddenSegment(t *testing.T) {
+	t.Chdir(t.TempDir())
+	writeFakeGoMod(t, "acme/app")
+
+	if err := MakeGRPCService(".hidden/Foo", MakeGRPCServiceOptions{}); err == nil {
+		t.Fatal("expected error for hidden-prefixed segment")
+	}
+}

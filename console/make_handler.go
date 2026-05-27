@@ -22,10 +22,15 @@ type MakeHandlerOptions struct {
 
 // MakeHandler generates a new handler file from a stub template.
 func MakeHandler(name string, opts MakeHandlerOptions) error {
+	if err := validateMakeName(name); err != nil {
+		return err
+	}
+
 	handlerName := toHandlerName(name)
 
 	packageName := "handlers"
-	outputDir := "internal/handlers"
+	handlerRoot := "internal/handlers"
+	outputDir := handlerRoot
 
 	if strings.Contains(name, "/") {
 		parts := strings.Split(name, "/")
@@ -34,7 +39,14 @@ func MakeHandler(name string, opts MakeHandlerOptions) error {
 		for i := range parts[:len(parts)-1] {
 			parts[i] = strings.ToLower(parts[i])
 		}
-		outputDir = filepath.Join("internal/handlers", filepath.Join(parts[:len(parts)-1]...))
+		outputDir = filepath.Join(handlerRoot, filepath.Join(parts[:len(parts)-1]...))
+	}
+
+	// Defence in depth: even though validateMakeName rejects the known
+	// traversal shapes, recompute and confirm the resolved directory still
+	// lives inside the handler root before writing anything to disk.
+	if err := ensureWithinRoot(handlerRoot, outputDir); err != nil {
+		return fmt.Errorf("invalid handler name %q: %w", name, err)
 	}
 
 	if err := os.MkdirAll(outputDir, 0755); err != nil {

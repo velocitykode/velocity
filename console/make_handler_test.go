@@ -65,6 +65,60 @@ func TestMakeHandler_StripsSuffix(t *testing.T) {
 	}
 }
 
+func TestMakeHandler_RejectsTraversal(t *testing.T) {
+	cases := []string{
+		"../../tmp/owned",
+		"../tmp",
+		"foo/../../../etc",
+	}
+	for _, name := range cases {
+		t.Run(name, func(t *testing.T) {
+			tmp := t.TempDir()
+			t.Chdir(tmp)
+
+			err := MakeHandler(name, MakeHandlerOptions{})
+			if err == nil {
+				t.Fatalf("expected error for %q", name)
+			}
+			if !strings.Contains(err.Error(), "invalid") && !strings.Contains(err.Error(), "parent traversal") {
+				t.Errorf("expected traversal-rejection error, got %v", err)
+			}
+			// Confirm nothing was written outside the handler root.
+			if _, statErr := os.Stat(filepath.Join(tmp, "..", "owned")); statErr == nil {
+				t.Errorf("file written outside project root for %q", name)
+			}
+		})
+	}
+}
+
+func TestMakeHandler_RejectsAbsolutePath(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	abs := "/tmp/velocity-test-abs"
+	if err := MakeHandler(abs, MakeHandlerOptions{}); err == nil {
+		t.Fatalf("expected error for absolute path %q", abs)
+	}
+}
+
+func TestMakeHandler_RejectsHiddenSegment(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	if err := MakeHandler(".hidden/foo", MakeHandlerOptions{}); err == nil {
+		t.Fatal("expected error for hidden-prefixed segment")
+	}
+}
+
+func TestMakeHandler_AllowsValidNamespace(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	if err := MakeHandler("admin/users", MakeHandlerOptions{}); err != nil {
+		t.Fatalf("expected admin/users to be accepted, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join("internal/handlers/admin", "users.go")); err != nil {
+		t.Errorf("expected admin/users.go to be created: %v", err)
+	}
+}
+
 func TestToSnakeCase(t *testing.T) {
 	tests := []struct {
 		input    string

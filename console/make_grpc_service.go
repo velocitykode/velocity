@@ -20,9 +20,21 @@ type MakeGRPCServiceOptions struct{}
 // registrations at the // vel:grpc:imports and // vel:grpc:services marker
 // comments.
 func MakeGRPCService(name string, opts MakeGRPCServiceOptions) error {
+	if err := validateMakeName(name); err != nil {
+		return err
+	}
+
 	serviceName := grpcServiceName(name)
 	packageName := grpcPackageName(name)
 	protoAlias := grpcProtoAlias(packageName)
+
+	// Re-validate the derived package name. grpcPackageName lower-cases the
+	// input but does not strip path separators or "..", so a sufficiently
+	// crafted argument could still smuggle a traversal segment into the
+	// derived directories built below.
+	if err := validateMakeName(packageName); err != nil {
+		return fmt.Errorf("derived package name %q from %q is unsafe: %w", packageName, name, err)
+	}
 
 	modulePath, err := readModulePath()
 	if err != nil {
@@ -53,7 +65,11 @@ func MakeGRPCService(name string, opts MakeGRPCServiceOptions) error {
 }
 
 func writeProtoFile(packageName, serviceName, protoAlias, modulePath string) error {
-	dir := filepath.Join("api", "proto", packageName, "v1")
+	protoRoot := filepath.Join("api", "proto")
+	dir := filepath.Join(protoRoot, packageName, "v1")
+	if err := ensureWithinRoot(protoRoot, dir); err != nil {
+		return fmt.Errorf("invalid package name %q: %w", packageName, err)
+	}
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create proto dir: %w", err)
 	}
@@ -145,6 +161,9 @@ func writeServiceImpl(packageName, serviceName, protoAlias, modulePath string) e
 		return fmt.Errorf("create services dir: %w", err)
 	}
 	path := filepath.Join(dir, packageName+".go")
+	if err := ensureWithinRoot(dir, path); err != nil {
+		return fmt.Errorf("invalid package name %q: %w", packageName, err)
+	}
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf("service already exists: %s", path)
 	}
