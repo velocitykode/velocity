@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"testing"
 
 	"github.com/velocitykode/velocity/csrf/stores"
+	"github.com/velocitykode/velocity/router"
 )
 
 // countingStore wraps a real Store and counts Get / Set calls so the
@@ -266,5 +268,108 @@ func TestMiddleware_AttachesTokenStateAutomatically(t *testing.T) {
 	// explicit handler reads = one Store.Get total.
 	if got := store.getCalls.Load(); got != 1 {
 		t.Errorf("Store.Get called %d times across middleware + 2 handler reads; want 1 (cookie write and both handler reads should share one cached token)", got)
+	}
+}
+
+// TestRouterCSRFMiddleware_AttachesTokenStateOnSafeMethods pins the
+// fix to router.CSRFMiddleware. Pre-fix the router adapter
+// short-circuited GET/HEAD/OPTIONS by returning next(c) directly,
+// which bypassed csrf.Middleware entirely on safe methods. That left
+// the request without:
+//   - the request-scoped token state, so TokenForRequest returned
+//     ErrNoTokenState and the bond sharePropsFunc fell back to a
+//     direct GetToken read (or to nothing), and
+//   - the XSRF-TOKEN bootstrap cookie, so the SPA had no token to echo
+//     on the next POST.
+//
+// Both side effects matter on safe methods because that is exactly
+// when the SPA fetches the page that needs the token. The fix is to
+// drop the safe-method short-circuit in the router adapter and route
+// every method through csrf.Middleware, which itself decides what to
+// validate.
+//
+// Assertions:
+//   - GET via router.CSRFMiddleware(realCSRF) reaches the handler.
+//   - csrf.TokenForRequest(c.Request) returns a non-empty token (state
+//     was attached).
+//   - The XSRF-TOKEN cookie was written on the response.
+//   - The cookie value (URL-decoded) equals the token TokenForRequest
+//     returned (no drift between cookie and props reader).
+func TestRouterCSRFMiddleware_AttachesTokenStateOnSafeMethods(t *testing.T) {
+	store := newCountingStore()
+	c := buildTestCSRF(t, store)
+
+	var (
+		handlerCalled bool
+		tokenSeen     string
+		tokenErr      error
+	)
+
+	rtr := router.New()
+	rtr.Use(router.CSRFMiddleware(c))
+	rtr.Get("/page", func(ctx *router.Context) error {
+		handlerCalled = true
+		tokenSeen, tokenErr = TokenForRequest(ctx.Request)
+		return ctx.String(http.StatusOK, "ok")
+	})
+
+	req := requestWithSession(http.MethodGet, "/page", "sess-router")
+	w := httptest.NewRecorder()
+	rtr.ServeHTTP(w, req)
+
+	if !handlerCalled {
+		t.Fatalf("handler not called; response status=%d body=%q", w.Code, w.Body.String())
+	}
+	if tokenErr != nil {
+		t.Fatalf("TokenForRequest after router.CSRFMiddleware: %v (state should be attached by csrf.Middleware via the adapter)", tokenErr)
+	}
+	if tokenSeen == "" {
+		t.Fatal("TokenForRequest returned empty token; safe-method path through router.CSRFMiddleware did not seed the cache")
+	}
+
+	// Verify the XSRF-TOKEN cookie was written and matches the token
+	// the handler observed via TokenForRequest. The cookie value is
+	// URL-encoded (axios echoes verbatim into X-XSRF-TOKEN); decode
+	// before comparing.
+	var xsrfCookie *http.Cookie
+	for _, ck := range w.Result().Cookies() {
+		if ck.Name == "XSRF-TOKEN" {
+			xsrfCookie = ck
+			break
+		}
+	}
+	if xsrfCookie == nil {
+		t.Fatal("router.CSRFMiddleware on GET did not produce an XSRF-TOKEN cookie; the safe-method bootstrap path was bypassed")
+	}
+	decoded, err := url.QueryUnescape(xsrfCookie.Value)
+	if err != nil {
+		t.Fatalf("url.QueryUnescape(XSRF-TOKEN): %v", err)
+	}
+	if decoded != tokenSeen {
+		t.Errorf("XSRF-TOKEN cookie value drifted from TokenForRequest:\n  cookie  = %q (url-decoded)\n  handler = %q\nthe per-request memoisation must keep cookie and props in lockstep", decoded, tokenSeen)
+	}
+}
+
+// TestRouterCSRFMiddleware_StillRejectsUnsafeWithoutToken pins the
+// no-regression half: the safe-method short-circuit removal must NOT
+// weaken validation on state-changing methods. A POST without a token
+// must still be rejected by csrf.Middleware.
+func TestRouterCSRFMiddleware_StillRejectsUnsafeWithoutToken(t *testing.T) {
+	store := newCountingStore()
+	c := buildTestCSRF(t, store)
+
+	rtr := router.New()
+	rtr.Use(router.CSRFMiddleware(c))
+	rtr.Post("/submit", func(ctx *router.Context) error {
+		t.Fatal("handler must not be called when CSRF rejects an unauthenticated POST")
+		return nil
+	})
+
+	req := requestWithSession(http.MethodPost, "/submit", "sess-router")
+	w := httptest.NewRecorder()
+	rtr.ServeHTTP(w, req)
+
+	if w.Code != 419 {
+		t.Errorf("expected 419 on POST without token, got %d (body=%q)", w.Code, w.Body.String())
 	}
 }
