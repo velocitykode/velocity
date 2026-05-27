@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	grpcgo "google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
 	"github.com/velocitykode/velocity/grpc"
@@ -142,5 +143,66 @@ func TestServerBuild_DevWarnsWithoutCreds(t *testing.T) {
 	defer s.Stop()
 	if err := s.Build(); err != nil {
 		t.Fatalf("Build outside production should not fail with missing creds, got %v", err)
+	}
+}
+
+// TestServerBuild_ProductionRejectsLegacyServerOptionCreds covers the I-02
+// follow-up: a caller that pre-existed WithCreds and supplied TLS credentials
+// via WithServerOption(grpc.Creds(...)) is opaque to the production guard
+// because grpc.ServerOption hides its concrete type behind unexported
+// wrappers. The guard must still refuse to start, and the error must point
+// the operator at WithExplicitTLS so they can opt the legacy path back in.
+func TestServerBuild_ProductionRejectsLegacyServerOptionCreds(t *testing.T) {
+	t.Setenv("GRPC_INSECURE", "")
+	s := grpc.NewServer(
+		grpc.WithPort("0"),
+		grpc.WithEnvironment("production"),
+		grpc.WithLogger(nullServerLogger(t)),
+		grpc.WithServerOption(grpcgo.Creds(selfSignedTLSCreds(t))),
+	)
+	err := s.Build()
+	if err == nil {
+		t.Fatal("Build must refuse production start when creds are supplied via WithServerOption without WithExplicitTLS")
+	}
+	if !strings.Contains(err.Error(), "WithExplicitTLS") {
+		t.Errorf("error must point at WithExplicitTLS for legacy callers, got %q", err.Error())
+	}
+}
+
+// TestServerBuild_WithExplicitTLSUnblocksWithServerOption verifies the escape
+// hatch: a caller can route TLS credentials through WithServerOption as
+// before, then declare intent with WithExplicitTLS and the production guard
+// stands aside.
+func TestServerBuild_WithExplicitTLSUnblocksWithServerOption(t *testing.T) {
+	t.Setenv("GRPC_INSECURE", "")
+	s := grpc.NewServer(
+		grpc.WithPort("0"),
+		grpc.WithEnvironment("production"),
+		grpc.WithLogger(nullServerLogger(t)),
+		grpc.WithServerOption(grpcgo.Creds(selfSignedTLSCreds(t))),
+		grpc.WithExplicitTLS(),
+	)
+	defer s.Stop()
+	if err := s.Build(); err != nil {
+		t.Fatalf("Build with WithExplicitTLS must succeed in production, got %v", err)
+	}
+}
+
+// TestServerBuild_WithExplicitTLSAlone covers the documented intent: the
+// caller asserts TLS is configured somewhere the guard cannot see. The guard
+// trusts that assertion. Used standalone the option behaves like
+// GRPC_INSECURE=true but with explicit intent at the call site rather than
+// in the environment.
+func TestServerBuild_WithExplicitTLSAlone(t *testing.T) {
+	t.Setenv("GRPC_INSECURE", "")
+	s := grpc.NewServer(
+		grpc.WithPort("0"),
+		grpc.WithEnvironment("production"),
+		grpc.WithLogger(nullServerLogger(t)),
+		grpc.WithExplicitTLS(),
+	)
+	defer s.Stop()
+	if err := s.Build(); err != nil {
+		t.Fatalf("Build with WithExplicitTLS alone must succeed in production, got %v", err)
 	}
 }

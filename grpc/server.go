@@ -107,10 +107,13 @@ func WithReflection(enabled bool) ServerOption {
 
 // WithServerOption adds a grpc.ServerOption to the server.
 //
-// If the option carries transport credentials (e.g., grpc.Creds(...)), prefer
-// WithCreds so the production TLS guard in Build recognises the opt-in. Using
-// this hook for credentials requires also calling WithCreds (or setting
-// GRPC_INSECURE=true) to avoid the production guard refusing the start.
+// If the option carries transport credentials (e.g., grpc.Creds(...)), the
+// production TLS guard in Build cannot detect that fact: grpc.ServerOption is
+// an opaque interface whose concrete type lives behind unexported wrappers in
+// google.golang.org/grpc. Callers that route credentials through this hook
+// must also call WithExplicitTLS() so the guard recognises the opt-in.
+// Prefer WithCreds for new code; it both attaches the credentials and marks
+// the server as TLS-configured in a single step.
 func WithServerOption(opt grpc.ServerOption) ServerOption {
 	return func(s *Server) {
 		s.serverOptions = append(s.serverOptions, opt)
@@ -124,6 +127,19 @@ func WithServerOption(opt grpc.ServerOption) ServerOption {
 func WithCreds(creds credentials.TransportCredentials) ServerOption {
 	return func(s *Server) {
 		s.serverOptions = append(s.serverOptions, grpc.Creds(creds))
+		s.tlsOpted = true
+	}
+}
+
+// WithExplicitTLS marks the server as having opted into TLS without attaching
+// any credentials itself. It is the escape hatch for callers that route
+// credentials via WithServerOption(grpc.Creds(...)) or any other path the
+// production guard cannot inspect (e.g., a custom grpc.ServerOption wrapper).
+// Without this option, the production guard in Build refuses to start a
+// server whose TLS configuration it cannot see, even when the caller has
+// configured TLS correctly.
+func WithExplicitTLS() ServerOption {
+	return func(s *Server) {
 		s.tlsOpted = true
 	}
 }
@@ -209,7 +225,8 @@ func (s *Server) RegisterService(regFunc RegistrationFunc) *Server {
 //
 // Build also enforces the production TLS guard: when the environment is
 // "production" (APP_ENV=production or WithEnvironment("production")) and no
-// transport credentials were attached via WithCreds or WithServerOption,
+// transport credentials were attached via WithCreds (or signalled via
+// WithExplicitTLS for legacy WithServerOption(grpc.Creds(...)) callers),
 // Build returns an error unless GRPC_INSECURE=true opts the deployment out
 // for a known-internal mTLS mesh or a sidecar-terminated mesh. Outside
 // production, a missing creds configuration only emits a one-shot warning.
@@ -230,7 +247,7 @@ func (s *Server) Build() error {
 	if !s.tlsOpted {
 		insecureOptOut := os.Getenv("GRPC_INSECURE") == "true"
 		if s.environment == "production" && !insecureOptOut {
-			return fmt.Errorf("velocity/grpc: TLS credentials are required in production (set GRPC_INSECURE=true to opt out for a known-internal mTLS mesh)")
+			return fmt.Errorf("velocity/grpc: TLS credentials are required in production. Use WithCreds, or call WithExplicitTLS if you supplied credentials via WithServerOption(grpc.Creds(...)). Set GRPC_INSECURE=true to opt out for a known-internal mTLS mesh")
 		}
 		if s.environment != "production" {
 			s.logger.Warn("gRPC server starting without TLS credentials. Configure WithCreds before deploying to production",
