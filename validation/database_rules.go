@@ -1,3 +1,33 @@
+// Package validation provides Velocity's validation rules engine.
+//
+// # Best-effort uniqueness: ToCToU on the unique: rule
+//
+// The unique: rule (UniqueRule / UniqueRuleCtx) issues a SELECT COUNT(*)
+// to confirm no row already holds the candidate value, then returns to
+// the caller, which typically follows up with an INSERT. The window
+// between SELECT and INSERT is a classic Time-of-Check to Time-of-Use
+// race: two concurrent requests that both pass the SELECT proceed to
+// race on the INSERT.
+//
+// This is the same baseline behavior as Laravel's Illuminate/Validation
+// (see ValidatesAttributes::validateUnique). Velocity does NOT lock or
+// serialize the query, by design: uniqueness enforcement at scale is
+// the database's job, not the validator's.
+//
+// To make uniqueness authoritative you MUST add a UNIQUE constraint at
+// the database layer (CREATE UNIQUE INDEX, or UNIQUE in the column
+// definition). The validator's job is to convert "the value is already
+// taken" into a friendly field-level message before the insert; the
+// constraint's job is to refuse the race-loser at write time. Without
+// the constraint, the unique: rule is advisory and two rows with the
+// same value can persist after a race.
+//
+// When the constraint fires, the INSERT fails with a driver-specific
+// error (Postgres SQLSTATE 23505, MySQL errno 1062, SQLite extended
+// code 2067 / base code 19). Use AsValidationError in this package to
+// map those errors back onto the offending field so the user sees the
+// same "has already been taken" message they would have seen if the
+// validator had won the race.
 package validation
 
 import (
@@ -74,6 +104,20 @@ func placeholder(driver string, n int) string {
 // Callers that want request-scoped cancellation (so a slow query is dropped
 // when the client disconnects) should use UniqueRuleCtx and pass the
 // request's context.
+//
+// # Best-effort: a UNIQUE constraint at the DB layer is required for correctness
+//
+// This rule is ADVISORY, not authoritative. It runs a SELECT COUNT(*) and
+// returns; the caller's subsequent INSERT races any other request that
+// passed the same SELECT in the same window (ToCToU). Two concurrent
+// signups for the same email will both pass and both attempt to insert.
+//
+// To make uniqueness real you MUST add a UNIQUE constraint at the
+// database layer. When the constraint fires on the INSERT, use
+// AsValidationError to convert the driver-specific error (Postgres
+// SQLSTATE 23505, MySQL errno 1062, SQLite extended code 2067 / base
+// code 19) back into a field-level "has already been taken" message
+// the user can read. See the package doc for the full rationale.
 func UniqueRule(db orm.Database) RuleHandler {
 	return UniqueRuleCtx(context.Background(), db)
 }
@@ -88,6 +132,12 @@ func UniqueRule(db orm.Database) RuleHandler {
 // and query text are server-side details that must not surface to a
 // validation error string visible to the client. The underlying error is
 // logged via slog.Default() at ERROR level so operators retain a trail.
+//
+// # Best-effort: see UniqueRule for the ToCToU caveat
+//
+// The same race window applies here. Add a UNIQUE constraint at the DB
+// layer and route INSERT failures through AsValidationError to recover
+// the field-level message after a race-loss.
 func UniqueRuleCtx(ctx context.Context, db orm.Database) RuleHandler {
 	if ctx == nil {
 		ctx = context.Background()
