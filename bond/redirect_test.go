@@ -341,9 +341,9 @@ func TestSanitizeRedirectURL(t *testing.T) {
 			want:   "/safe/path",
 		},
 		{
-			name:   "empty string falls through to parse and returns empty",
+			name:   "empty string collapses to safe default",
 			target: "",
-			want:   "",
+			want:   "/",
 		},
 	}
 

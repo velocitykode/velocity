@@ -104,9 +104,22 @@ func (b *Bond) allowedHostsFor(r *http.Request) []string {
 // sanitizeRedirectURL validates a redirect URL to prevent open redirects.
 // Returns "/" if the URL is absolute and points to a host outside
 // allowedHosts, uses a dangerous scheme (javascript:, data:, vbscript:,
-// file:, etc.), or fails to parse. An empty allowedHosts list rejects
-// every absolute URL (relative paths still flow through).
+// file:, etc.), or fails to parse. An empty target also collapses to
+// the safe default "/" so callers that thread an unvalidated value
+// through Redirect/Back never end up writing an empty Location header
+// (the browser would treat that as a refresh of the current page,
+// which on a POST-rewritten 303 leaves the user on a phantom URL). An
+// empty allowedHosts list rejects every absolute URL (relative paths
+// still flow through).
 func sanitizeRedirectURL(target string, allowedHosts []string) string {
+	// Empty target -> safe default. Matches the router-side
+	// sanitizeRedirect helper (see router/context.go) so bond.Redirect
+	// and ctx.Redirect agree on the empty-input contract: callers do
+	// not have to guard the input, both layers fail safe to "/".
+	if target == "" {
+		return "/"
+	}
+
 	// Reject any protocol-relative or network-path target up front. This
 	// covers "//evil.com", "///evil.com/path", "////evil.com", etc.
 	// Browsers treat all of these as cross-origin.
