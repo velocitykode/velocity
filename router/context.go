@@ -1035,10 +1035,31 @@ func (c *Context) fileRootOrError() (*os.Root, error) {
 	return c.fileRoot, nil
 }
 
+// defaultPrivateNoStore sets `Cache-Control: private, no-store` on the
+// response if (and only if) the caller has not already set the header.
+// File / Download serve auth-gated bytes; without an explicit cache
+// directive, shared intermediaries (corporate proxies, CDNs) may cache
+// the body keyed on URL alone, leaking it to subsequent unauthenticated
+// requesters. Caller-set values are preserved so a handler that wants
+// public caching can override with c.SetHeader before invoking.
+func (c *Context) defaultPrivateNoStore() {
+	if c.Response == nil {
+		return
+	}
+	h := c.Response.Header()
+	if h.Get("Cache-Control") != "" {
+		return
+	}
+	h.Set("Cache-Control", "private, no-store")
+}
+
 // File serves a file from the given path, resolved relative to the
 // router's FileRoot. Containment is kernel-enforced via *os.Root, so
 // a symlink swap between path validation and the actual open cannot
 // escape the root.
+//
+// Sets `Cache-Control: private, no-store` by default; a caller-set
+// Cache-Control header is preserved.
 func (c *Context) File(path string) error {
 	root, err := c.fileRootOrError()
 	if err != nil {
@@ -1060,6 +1081,7 @@ func (c *Context) File(path string) error {
 	if info.IsDir() {
 		return fmt.Errorf("velocity/router: path is a directory")
 	}
+	c.defaultPrivateNoStore()
 	http.ServeContent(c.Response, c.Request, filepath.Base(rel), info.ModTime(), f)
 	return nil
 }
@@ -1072,6 +1094,9 @@ func (c *Context) File(path string) error {
 // an RFC 5987 / 2231 encoded filename* parameter, so non-ASCII
 // characters (e.g. "résumé.pdf") round-trip to modern clients while
 // pre-RFC 5987 clients still receive a sensible ASCII name.
+//
+// Sets `Cache-Control: private, no-store` by default; a caller-set
+// Cache-Control header is preserved.
 func (c *Context) Download(path string, filename string) error {
 	root, err := c.fileRootOrError()
 	if err != nil {
@@ -1093,6 +1118,7 @@ func (c *Context) Download(path string, filename string) error {
 	if info.IsDir() {
 		return fmt.Errorf("velocity/router: path is a directory")
 	}
+	c.defaultPrivateNoStore()
 	c.Response.Header().Set("Content-Disposition", buildContentDisposition(filename))
 	http.ServeContent(c.Response, c.Request, filepath.Base(rel), info.ModTime(), f)
 	return nil
