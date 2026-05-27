@@ -1978,6 +1978,125 @@ func TestIsSafe_ValidPatternMatches(t *testing.T) {
 	}
 }
 
+func TestMarkdown_EscapesHeaderContent(t *testing.T) {
+	got := Markdown("# <script>alert(1)</script>")
+	if strings.Contains(got, "<script>") {
+		t.Errorf("Markdown leaked raw <script> tag: %q", got)
+	}
+	if !strings.Contains(got, "&lt;script&gt;") {
+		t.Errorf("Markdown did not escape <script>: %q", got)
+	}
+}
+
+func TestMarkdown_EscapesBoldContent(t *testing.T) {
+	got := Markdown("**<img onerror=alert(1)>**")
+	if strings.Contains(got, "<img") {
+		t.Errorf("Markdown leaked raw <img>: %q", got)
+	}
+	if !strings.Contains(got, "<strong>") {
+		t.Errorf("Markdown lost <strong> wrapping: %q", got)
+	}
+}
+
+func TestMarkdown_EscapesCodeContent(t *testing.T) {
+	got := Markdown("`<b>x</b>`")
+	if strings.Contains(got, "<b>") {
+		t.Errorf("Markdown leaked raw <b> in code: %q", got)
+	}
+	if !strings.Contains(got, "<code>&lt;b&gt;") {
+		t.Errorf("Markdown code did not escape: %q", got)
+	}
+}
+
+func TestMarkdown_RejectsJavascriptLink(t *testing.T) {
+	got := Markdown("[click](javascript:alert(1))")
+	if strings.Contains(strings.ToLower(got), "javascript:") {
+		t.Errorf("Markdown leaked javascript: URI: %q", got)
+	}
+	if strings.Contains(got, "<a ") {
+		t.Errorf("Markdown rendered <a> tag for javascript: URI: %q", got)
+	}
+	// Link text must still be present (as escaped plain text).
+	if !strings.Contains(got, "click") {
+		t.Errorf("Markdown dropped link text: %q", got)
+	}
+}
+
+func TestMarkdown_RejectsDataLink(t *testing.T) {
+	got := Markdown("[x](data:text/html,<script>alert(1)</script>)")
+	if strings.Contains(strings.ToLower(got), "data:") {
+		t.Errorf("Markdown leaked data: URI: %q", got)
+	}
+	if strings.Contains(got, "<script>") {
+		t.Errorf("Markdown leaked <script>: %q", got)
+	}
+}
+
+func TestMarkdown_RejectsVbscriptLink(t *testing.T) {
+	got := Markdown("[x](vbscript:msgbox)")
+	if strings.Contains(strings.ToLower(got), "vbscript:") {
+		t.Errorf("Markdown leaked vbscript: URI: %q", got)
+	}
+}
+
+func TestMarkdown_AttributeInjectionEscaped(t *testing.T) {
+	// Attacker tries to break out of href with quote injection.
+	got := Markdown(`[x]("onclick=alert(1) ")`)
+	// The literal sequence must not become a real attribute.
+	if strings.Contains(got, "onclick=alert") {
+		t.Errorf("Markdown allowed attribute injection: %q", got)
+	}
+	// The whole URL is not in the allowlist so the link is dropped to text.
+	if strings.Contains(got, "<a ") {
+		t.Errorf("Markdown rendered <a> for unsafe URL: %q", got)
+	}
+}
+
+func TestMarkdown_AllowsHttpsLink(t *testing.T) {
+	got := Markdown("[home](https://example.com)")
+	if !strings.Contains(got, `<a href="https://example.com">home</a>`) {
+		t.Errorf("Markdown https link rendering wrong: %q", got)
+	}
+}
+
+func TestMarkdown_AllowsRelativeLink(t *testing.T) {
+	cases := []string{"/about", "#section", "./next", "../up"}
+	for _, c := range cases {
+		got := Markdown("[x](" + c + ")")
+		if !strings.Contains(got, `<a href="`+c+`">x</a>`) {
+			t.Errorf("Markdown did not render relative link %q: got %q", c, got)
+		}
+	}
+}
+
+func TestMarkdown_AllowsMailtoLink(t *testing.T) {
+	got := Markdown("[mail](mailto:a@b.com)")
+	if !strings.Contains(got, `<a href="mailto:a@b.com">mail</a>`) {
+		t.Errorf("Markdown mailto link rendering wrong: %q", got)
+	}
+}
+
+func TestMarkdown_ValidSanity(t *testing.T) {
+	// Plain valid markdown round-trips into expected HTML.
+	cases := map[string]string{
+		"# Hello":           "<h1>Hello</h1>",
+		"## Heading":        "<h2>Heading</h2>",
+		"### H3":            "<h3>H3</h3>",
+		"**bold**":          "<strong>bold</strong>",
+		"__bold__":          "<strong>bold</strong>",
+		"*italic*":          "<em>italic</em>",
+		"_italic_":          "<em>italic</em>",
+		"`code`":            "<code>code</code>",
+		"[link](https://x)": `<a href="https://x">link</a>`,
+	}
+	for in, want := range cases {
+		got := Markdown(in)
+		if got != want {
+			t.Errorf("Markdown(%q) = %q; want %q", in, got, want)
+		}
+	}
+}
+
 // TestMatch_ExistingBehavior is a sanity check that Match still works for
 // valid patterns after the cache refactor.
 func TestMatch_ExistingBehavior(t *testing.T) {

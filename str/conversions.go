@@ -1,6 +1,7 @@
 package str
 
 import (
+	"html"
 	"regexp"
 	"strings"
 	"unicode"
@@ -176,31 +177,125 @@ func InlineMarkdown(str string) string {
 	return strings.TrimSpace(str)
 }
 
-// Markdown converts inline Markdown to HTML.
+// Markdown converts a small subset of inline Markdown to HTML. All captured
+// content is HTML-escaped before substitution, so user input cannot inject
+// tags or attributes. Link hrefs are restricted to a safe URI allowlist
+// (http, https, mailto, plus relative paths and fragments); anything else
+// renders as plain text.
+//
+// This is intentionally a thin converter for safe rendering of trusted-ish
+// markdown content. For full CommonMark support, use a dedicated library.
 func Markdown(str string) string {
-	// Basic Markdown to HTML conversion
-	// For a complete implementation, a proper Markdown library should be used
-
-	// Headers
-	str = mustReplace(`^### (.+)$`, str, "<h3>$1</h3>")
-	str = mustReplace(`^## (.+)$`, str, "<h2>$1</h2>")
-	str = mustReplace(`^# (.+)$`, str, "<h1>$1</h1>")
+	// Headers. Match the captured group then re-render with escaping.
+	str = replaceWithEscape(`^### (.+)$`, str, "<h3>", "</h3>")
+	str = replaceWithEscape(`^## (.+)$`, str, "<h2>", "</h2>")
+	str = replaceWithEscape(`^# (.+)$`, str, "<h1>", "</h1>")
 
 	// Bold
-	str = mustReplace(`\*\*([^*]+)\*\*`, str, "<strong>$1</strong>")
-	str = mustReplace(`__([^_]+)__`, str, "<strong>$1</strong>")
+	str = replaceWithEscape(`\*\*([^*]+)\*\*`, str, "<strong>", "</strong>")
+	str = replaceWithEscape(`__([^_]+)__`, str, "<strong>", "</strong>")
 
 	// Italic
-	str = mustReplace(`\*([^*]+)\*`, str, "<em>$1</em>")
-	str = mustReplace(`_([^_]+)_`, str, "<em>$1</em>")
+	str = replaceWithEscape(`\*([^*]+)\*`, str, "<em>", "</em>")
+	str = replaceWithEscape(`_([^_]+)_`, str, "<em>", "</em>")
 
 	// Code
-	str = mustReplace("`([^`]+)`", str, "<code>$1</code>")
+	str = replaceWithEscape("`([^`]+)`", str, "<code>", "</code>")
 
-	// Links
-	str = mustReplace(`\[([^\]]+)\]\(([^)]+)\)`, str, `<a href="$2">$1</a>`)
+	// Links. Replace by hand so we can escape both the text and the URL,
+	// and reject hrefs whose scheme is not in the allowlist.
+	str = renderMarkdownLinks(str)
 
 	return str
+}
+
+// replaceWithEscape compiles pattern (must contain exactly one capture
+// group), and replaces each match by wrapping the HTML-escaped capture
+// between open and close. Escaping prevents tag and attribute injection from
+// the captured text.
+func replaceWithEscape(pattern, subject, open, close string) string {
+	re := getRegex(pattern)
+	return re.ReplaceAllStringFunc(subject, func(match string) string {
+		// FindStringSubmatch on the already-matched string gives us the
+		// capture group without rescanning the whole subject.
+		groups := re.FindStringSubmatch(match)
+		if len(groups) < 2 {
+			return match
+		}
+		return open + html.EscapeString(groups[1]) + close
+	})
+}
+
+// markdownLinkRE matches a Markdown link "[text](url)". The url group stops
+// at the first close paren, matching the simple converter we are replacing.
+var markdownLinkRE = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
+
+// renderMarkdownLinks converts each [text](url) to <a href="url">text</a>
+// with HTML escaping on both fields. Disallowed schemes render as plain
+// text.
+func renderMarkdownLinks(s string) string {
+	return markdownLinkRE.ReplaceAllStringFunc(s, func(match string) string {
+		groups := markdownLinkRE.FindStringSubmatch(match)
+		if len(groups) < 3 {
+			return match
+		}
+		text := groups[1]
+		url := strings.TrimSpace(groups[2])
+
+		if !isSafeMarkdownURL(url) {
+			// Render the link text only. This neutralises javascript:,
+			// data:, vbscript:, and anything else not in the allowlist.
+			return html.EscapeString(text)
+		}
+		// html.EscapeString escapes & " < > ' in attributes too, which is
+		// what we want for href values inside double quotes.
+		return `<a href="` + html.EscapeString(url) + `">` + html.EscapeString(text) + `</a>`
+	})
+}
+
+// isSafeMarkdownURL reports whether url is acceptable as a link target.
+// Allowed: http://, https://, mailto:, fragments (#...), relative paths
+// (/..., ./..., ../...). Everything else (including javascript:, data:,
+// vbscript:, file:) is rejected.
+//
+// We also reject any URL containing characters that should never appear in
+// a real URL (quotes, angle brackets, whitespace, control bytes). Those
+// would not enable injection thanks to HTML escaping, but they are a strong
+// signal of an attacker probing for attribute breakout and rejecting them
+// keeps the rendered HTML clean.
+func isSafeMarkdownURL(url string) bool {
+	if url == "" {
+		return false
+	}
+	for _, r := range url {
+		if r <= 0x20 || r == '"' || r == '\'' || r == '<' || r == '>' || r == '`' || r == 0x7f {
+			return false
+		}
+	}
+	// Fragment-only and relative paths are safe.
+	if strings.HasPrefix(url, "#") ||
+		strings.HasPrefix(url, "/") ||
+		strings.HasPrefix(url, "./") ||
+		strings.HasPrefix(url, "../") {
+		return true
+	}
+	// Check for a scheme. If there is no colon before any path separator,
+	// it is a relative URL with no scheme: safe.
+	colon := strings.Index(url, ":")
+	if colon == -1 {
+		return true
+	}
+	slash := strings.Index(url, "/")
+	if slash != -1 && slash < colon {
+		// Path appears before colon, so there is no scheme.
+		return true
+	}
+	scheme := strings.ToLower(url[:colon])
+	switch scheme {
+	case "http", "https", "mailto":
+		return true
+	}
+	return false
 }
 
 // SquishFast removes all extraneous white space from a string quickly.
