@@ -279,6 +279,10 @@ func TestBus_DispatchAsync_QueueError(t *testing.T) {
 	q := &mockQueuePusher{err: errors.New("queue full")}
 	b.SetQueue(q)
 
+	// Register so DispatchAsync passes the factory guard and reaches the
+	// queue push path under test.
+	Register(b, func(cmd createUser) error { return nil })
+
 	err := b.DispatchAsync(createUser{})
 	if err == nil {
 		t.Fatal("expected error when queue push fails")
@@ -293,6 +297,10 @@ func TestBus_DispatchAsync_WithQueueName(t *testing.T) {
 	q := &mockQueuePusher{}
 	b.SetQueue(q)
 	b.SetQueueName("commands")
+
+	// Register so DispatchAsync passes the factory guard and reaches the
+	// queue push path under test.
+	Register(b, func(cmd createUser) error { return nil })
 
 	err := b.DispatchAsync(createUser{Name: "Named"})
 	if err != nil {
@@ -376,6 +384,10 @@ func TestBus_Events_Queued(t *testing.T) {
 	b := New()
 	q := &mockQueuePusher{}
 	b.SetQueue(q)
+
+	// Register so DispatchAsync passes the factory guard and the
+	// CommandQueued event fires.
+	Register(b, func(cmd createUser) error { return nil })
 
 	var events []string
 	b.SetEventDispatcher(func(event any) error {
