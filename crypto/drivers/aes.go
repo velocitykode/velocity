@@ -269,6 +269,14 @@ func (d *AESDriver) DecryptBytes(payload string) ([]byte, error) {
 		d.noteLegacyIfV0(version)
 		return plaintext, nil
 	}
+	// Structural envelope errors (e.g. v1-GCM payload too short to carry
+	// a tag) cannot be resolved by trying a rotation key: the input was
+	// never produced by this package's encrypt path. Short-circuit so the
+	// caller sees ErrInvalidPayload, not a generic ErrDecrypt collapsed
+	// across every key attempt.
+	if errors.Is(err, ErrInvalidPayload) {
+		return nil, ErrInvalidPayload
+	}
 
 	// Try previous keys for rotation support (derive subkeys directly from each master key)
 	for _, masterKey := range d.previousKeys {
@@ -379,6 +387,14 @@ func (d *AESDriver) DecryptBytesWithAAD(payload string, aad []byte) ([]byte, err
 
 	plaintext, err := d.decryptGCMWithAAD(p, d.key, aad)
 	if err != nil {
+		// Structural envelope errors (malformed nonce length, missing /
+		// undersized tag) surface as ErrInvalidPayload so callers can
+		// distinguish malformed input from a genuine AAD/tag mismatch.
+		// All other failures collapse to ErrAADMismatch per the
+		// documented contract.
+		if errors.Is(err, ErrInvalidPayload) {
+			return nil, ErrInvalidPayload
+		}
 		return nil, ErrAADMismatch
 	}
 	return plaintext, nil
@@ -454,6 +470,14 @@ func (d *AESDriver) decryptGCMWithAAD(p *Payload, key, aad []byte) ([]byte, erro
 		return nil, err
 	}
 	if len(nonce) != gcm.NonceSize() {
+		return nil, ErrInvalidPayload
+	}
+	// Pre-validate that the combined ciphertext+tag input carries at
+	// least gcm.Overhead() bytes (the GCM tag). A malformed AAD payload
+	// with a stripped or undersized tag would otherwise surface as a fake
+	// AAD mismatch via gcm.Open; collapse it into the structural
+	// ErrInvalidPayload category instead.
+	if len(ciphertext) < gcm.Overhead() {
 		return nil, ErrInvalidPayload
 	}
 	return gcm.Open(nil, nonce, ciphertext, aad)
@@ -687,6 +711,19 @@ func (d *AESDriver) decryptGCMWithKey(p *Payload, key []byte) ([]byte, error) {
 	if len(nonce) != gcm.NonceSize() {
 		debugDecryptFailure("gcm-nonce-length", nil)
 		return nil, ErrDecrypt
+	}
+
+	// Pre-validate that the combined ciphertext+tag input carries at
+	// least gcm.Overhead() bytes (the GCM tag). A v1-GCM payload with a
+	// stripped or undersized tag would otherwise surface as ErrDecrypt
+	// via gcm.Open; collapsing it here into the structural ErrInvalidPayload
+	// category keeps malformed-payload telemetry distinct from genuine
+	// crypto failures and refuses payloads that cannot, by construction,
+	// have come from this package's encrypt path (which always appends a
+	// full tag).
+	if len(ciphertext) < gcm.Overhead() {
+		debugDecryptFailure("gcm-tag-length", nil)
+		return nil, ErrInvalidPayload
 	}
 
 	// Decrypt and verify

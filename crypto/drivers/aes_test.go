@@ -1433,3 +1433,39 @@ func TestDecryptGCM_MalformedNonceDoesNotPanic(t *testing.T) {
 		})
 	}
 }
+
+// TestDecryptGCM_ShortPayloadRejectedAsInvalidPayload pins M-04-8: a v1-GCM
+// payload whose combined ciphertext+tag is shorter than gcm.Overhead() (16
+// bytes) cannot, by construction, carry a GCM authentication tag. The
+// driver must reject it as ErrInvalidPayload pre-gcm.Open rather than let
+// it surface as a generic ErrDecrypt / ErrAADMismatch via the underlying
+// crypto/cipher.gcm.Open failure. This keeps malformed-payload telemetry
+// distinct from genuine crypto failures and refuses payloads that this
+// package's encrypt path could never produce.
+func TestDecryptGCM_ShortPayloadRejectedAsInvalidPayload(t *testing.T) {
+	d, err := NewAESDriver(make([]byte, 32), nil, "AES-256-GCM")
+	if err != nil {
+		t.Fatalf("NewAESDriver: %v", err)
+	}
+	// 12-byte nonce (matches gcm.NonceSize()) so the nonce-length gate
+	// upstream passes. Combined value+tag = 5 bytes, well under the
+	// 16-byte gcm.Overhead() floor.
+	nonce := make([]byte, 12)
+	value := []byte{}            // empty body
+	tag := []byte{1, 2, 3, 4, 5} // 5-byte truncated tag
+	env := makeEnvelope(nonce, value, tag)
+
+	// Non-AAD path: decryptGCMWithKey surfaces ErrInvalidPayload, and
+	// DecryptBytes returns it unchanged (structural envelope error, not
+	// a cryptographic failure).
+	if _, err := d.DecryptBytes(env); !errors.Is(err, ErrInvalidPayload) {
+		t.Fatalf("DecryptBytes short tag: want ErrInvalidPayload, got %v", err)
+	}
+
+	// AAD path: same structural rejection, propagated through the
+	// DecryptBytesWithAAD ErrInvalidPayload pass-through (not wrapped as
+	// ErrAADMismatch).
+	if _, err := d.DecryptBytesWithAAD(env, []byte("aad")); !errors.Is(err, ErrInvalidPayload) {
+		t.Fatalf("DecryptBytesWithAAD short tag: want ErrInvalidPayload, got %v", err)
+	}
+}
