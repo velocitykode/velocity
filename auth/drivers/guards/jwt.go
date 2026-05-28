@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/clientip"
@@ -205,9 +206,10 @@ func NewJWTGuard(provider auth.UserProvider, config auth.JWTConfig) (*JWTGuard, 
 // use StopCleanup() to stop it.
 func (g *JWTGuard) Start(ctx ...context.Context) {
 	if len(ctx) > 0 && ctx[0] != nil {
-		go g.cleanupLoopWithContext(ctx[0])
+		bg := ctx[0]
+		async.Go(func() { g.cleanupLoopWithContext(bg) })
 	} else {
-		go g.cleanupLoop()
+		async.Go(func() { g.cleanupLoop() })
 	}
 }
 

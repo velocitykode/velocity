@@ -250,7 +250,7 @@ func (g *HTTPGateway) Dispatch(ctx context.Context, page Page) (*SSRResponse, er
 	// we can distinguish "exactly at the cap" from "over the cap" and
 	// refuse the latter rather than silently truncating a JSON payload
 	// into something that may or may not parse.
-	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, ssrResponseCap+1))
+	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, ssrResponseCap+1)) //nolint:forbidigo // bounded by io.LimitReader above
 	if readErr != nil {
 		return g.handleFailure(ctx, page, ssrServerError{
 			Error: readErr.Error(),

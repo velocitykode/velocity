@@ -26,7 +26,7 @@ func MakeCommand(name string, opts MakeCommandOptions) error {
 	kebabName := toKebabCase(commandName)
 
 	outputDir := "internal/commands"
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
+	if err := os.MkdirAll(outputDir, defaultDirMode); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
@@ -90,7 +90,7 @@ func (c {{ .Name }}Command) Handle(s *app.Services, args []string) error {
 		return fmt.Errorf("failed to execute template: %w", err)
 	}
 
-	if err := os.WriteFile(outputPath, buf.Bytes(), 0644); err != nil {
+	if err := os.WriteFile(outputPath, buf.Bytes(), defaultFileMode); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 

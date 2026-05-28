@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/async"
 )
 
 // batchEntry pairs a buffered event with the ctx that originally dispatched
@@ -41,7 +43,7 @@ func NewBatchingDispatcher(batchSize int, flushInterval time.Duration) *Batching
 // batched events. Must be called after construction.
 func (d *BatchingDispatcher) Start() {
 	d.wg.Add(1)
-	go d.flushLoop()
+	async.Go(d.flushLoop)
 }
 
 // flushLoop periodically flushes the batch

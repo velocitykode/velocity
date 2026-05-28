@@ -48,6 +48,15 @@ const (
 	DefaultManifestSubdir   = ""
 )
 
+// hotFileMode / hotDirMode are the perms used when writing the Vite "hot"
+// dev-server marker file. The file holds the dev-server origin (no secret
+// material); standard public-file perms are appropriate so other tooling
+// running as a different local user can still read it.
+const (
+	hotFileMode os.FileMode = 0o644
+	hotDirMode  os.FileMode = 0o755
+)
+
 // ErrManifestNotFound is returned when the Vite manifest is missing in
 // production mode. The caller is almost always the root template, so the
 // message includes the resolved path to make misconfigured deployments
@@ -422,10 +431,10 @@ func WriteHotFile(publicPath, hotName, devURL string) error {
 	if publicPath == "" {
 		publicPath = DefaultPublicPath
 	}
-	if err := os.MkdirAll(publicPath, 0o755); err != nil {
+	if err := os.MkdirAll(publicPath, hotDirMode); err != nil {
 		return fmt.Errorf("vite: mkdir public: %w", err)
 	}
-	return os.WriteFile(filepath.Join(publicPath, hotName), []byte(devURL+"\n"), 0o644)
+	return os.WriteFile(filepath.Join(publicPath, hotName), []byte(devURL+"\n"), hotFileMode)
 }
 
 // RemoveHotFile removes the hot file, switching the helper back to

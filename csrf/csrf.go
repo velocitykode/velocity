@@ -522,7 +522,7 @@ func (c *CSRF) getTokenFromRequest(w http.ResponseWriter, r *http.Request) (stri
 	// "complete" body.
 	origBody := r.Body
 	limited := http.MaxBytesReader(w, origBody, cap)
-	buf, readErr := io.ReadAll(limited)
+	buf, readErr := io.ReadAll(limited) //nolint:forbidigo // bounded by http.MaxBytesReader on `limited` above
 	if readErr != nil {
 		// MaxBytesReader returns *http.MaxBytesError on overflow.
 		var maxErr *http.MaxBytesError

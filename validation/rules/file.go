@@ -542,7 +542,7 @@ func validateSVG(o openable) error {
 	// Read one byte past the cap so we can distinguish "fits within the
 	// cap" from "too large to scan". A read that returns exactly
 	// svgScanCap+1 bytes means the file exceeded the cap.
-	buf, err := io.ReadAll(io.LimitReader(f, svgScanCap+1))
+	buf, err := io.ReadAll(io.LimitReader(f, svgScanCap+1)) //nolint:forbidigo // bounded by io.LimitReader above
 	if err != nil {
 		return err
 	}

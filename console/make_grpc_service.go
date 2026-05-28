@@ -70,7 +70,7 @@ func writeProtoFile(packageName, serviceName, protoAlias, modulePath string) err
 	if err := ensureWithinRoot(protoRoot, dir); err != nil {
 		return fmt.Errorf("invalid package name %q: %w", packageName, err)
 	}
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, defaultDirMode); err != nil {
 		return fmt.Errorf("create proto dir: %w", err)
 	}
 	path := filepath.Join(dir, packageName+".proto")
@@ -99,7 +99,7 @@ func writeProtoFile(packageName, serviceName, protoAlias, modulePath string) err
 	if err := tmpl.Execute(&buf, data); err != nil {
 		return fmt.Errorf("render proto: %w", err)
 	}
-	if err := os.WriteFile(path, buf.Bytes(), 0644); err != nil {
+	if err := os.WriteFile(path, buf.Bytes(), defaultFileMode); err != nil {
 		return fmt.Errorf("write proto: %w", err)
 	}
 	cli.Success(fmt.Sprintf("Created: %s", path))
@@ -112,7 +112,7 @@ func writeProtoFile(packageName, serviceName, protoAlias, modulePath string) err
 // otherwise reports success while leaving generation broken.
 func ensureBufConfigs() error {
 	protoRoot := filepath.Join("api", "proto")
-	if err := os.MkdirAll(protoRoot, 0755); err != nil {
+	if err := os.MkdirAll(protoRoot, defaultDirMode); err != nil {
 		return fmt.Errorf("create %s: %w", protoRoot, err)
 	}
 
@@ -128,7 +128,7 @@ breaking:
   use:
     - FILE
 `
-		if err := os.WriteFile(bufYaml, []byte(content), 0644); err != nil {
+		if err := os.WriteFile(bufYaml, []byte(content), defaultFileMode); err != nil {
 			return fmt.Errorf("write %s: %w", bufYaml, err)
 		}
 		cli.Success(fmt.Sprintf("Created: %s", bufYaml))
@@ -147,7 +147,7 @@ plugins:
       - paths=source_relative
       - require_unimplemented_servers=false
 `
-		if err := os.WriteFile(bufGen, []byte(content), 0644); err != nil {
+		if err := os.WriteFile(bufGen, []byte(content), defaultFileMode); err != nil {
 			return fmt.Errorf("write %s: %w", bufGen, err)
 		}
 		cli.Success(fmt.Sprintf("Created: %s", bufGen))
@@ -157,7 +157,7 @@ plugins:
 
 func writeServiceImpl(packageName, serviceName, protoAlias, modulePath string) error {
 	dir := filepath.Join("internal", "grpc", "services")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, defaultDirMode); err != nil {
 		return fmt.Errorf("create services dir: %w", err)
 	}
 	path := filepath.Join(dir, packageName+".go")
@@ -189,7 +189,7 @@ func writeServiceImpl(packageName, serviceName, protoAlias, modulePath string) e
 	if err := tmpl.Execute(&buf, data); err != nil {
 		return fmt.Errorf("render service: %w", err)
 	}
-	if err := os.WriteFile(path, buf.Bytes(), 0644); err != nil {
+	if err := os.WriteFile(path, buf.Bytes(), defaultFileMode); err != nil {
 		return fmt.Errorf("write service: %w", err)
 	}
 	cli.Success(fmt.Sprintf("Created: %s", path))

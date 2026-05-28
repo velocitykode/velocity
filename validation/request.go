@@ -242,7 +242,7 @@ func extractRequestDataW(w http.ResponseWriter, r *http.Request, n int64) (map[s
 		// the type-assertion in maxBytesReader.Read when w is nil.
 		r.Body = http.MaxBytesReader(w, r.Body, n)
 		var data map[string]interface{}
-		body, err := io.ReadAll(r.Body)
+		body, err := io.ReadAll(r.Body) //nolint:forbidigo // bounded by http.MaxBytesReader installed on r.Body above
 		if err != nil {
 			// MaxBytesError or any other read failure: surface up so
 			// CheckW can flip the result into a validation error

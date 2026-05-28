@@ -141,10 +141,11 @@ func (m *Manager) Broadcast(ctx context.Context, channels []string, msg *Message
 
 	for _, channel := range channels {
 		wg.Add(1)
-		// Recover from panics in Send so one bad channel does not tear
-		// down the broadcast fan-out; surface as MailFailed event and
-		// an error on errChan.
-		go func(ch string) {
+		// Not async.Go: needs channel-scoped recovery so a panic on one
+		// mailer surfaces a per-channel MailFailed event and a typed
+		// errChan entry rather than the package logger only. The
+		// goroutine is bound to wg.Wait() in this call frame.
+		go func(ch string) { //safe-goroutine: channel-scoped recovery dispatches MailFailed and errChan entry, see comment above
 			defer wg.Done()
 			defer func() {
 				if r := recover(); r != nil {

@@ -30,7 +30,7 @@ func MakeModel(name string, opts MakeModelOptions) error {
 	tableName := toTableName(modelName)
 
 	outputDir := "internal/models"
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
+	if err := os.MkdirAll(outputDir, defaultDirMode); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
@@ -66,7 +66,7 @@ func MakeModel(name string, opts MakeModelOptions) error {
 		return fmt.Errorf("failed to execute template: %w", err)
 	}
 
-	if err := os.WriteFile(outputPath, buf.Bytes(), 0644); err != nil {
+	if err := os.WriteFile(outputPath, buf.Bytes(), defaultFileMode); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 

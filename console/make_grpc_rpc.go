@@ -133,7 +133,7 @@ func appendRPCToProto(path, serviceName, rpcName string, kind grpcRPCKind) error
 	}
 	updated += msgBlock
 
-	if err := os.WriteFile(path, []byte(updated), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(updated), defaultFileMode); err != nil {
 		return fmt.Errorf("write proto: %w", err)
 	}
 	cli.Success(fmt.Sprintf("Added rpc %s to %s", rpcName, path))
@@ -167,7 +167,7 @@ func appendMethodToImpl(path, serviceName, rpcName, protoAlias string, kind grpc
 	}
 	content += "\n" + signature + " {\n" + body + "\n}\n"
 
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), defaultFileMode); err != nil {
 		return fmt.Errorf("write impl: %w", err)
 	}
 	cli.Success(fmt.Sprintf("Added method %s to %s", rpcName, path))

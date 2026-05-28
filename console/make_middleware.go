@@ -24,7 +24,7 @@ func MakeMiddleware(name string, opts MakeMiddlewareOptions) error {
 	middlewareName := toMiddlewareName(name)
 
 	outputDir := "internal/middleware"
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
+	if err := os.MkdirAll(outputDir, defaultDirMode); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
@@ -69,7 +69,7 @@ func {{ .Name }}(next router.HandlerFunc) router.HandlerFunc {
 		return fmt.Errorf("failed to execute template: %w", err)
 	}
 
-	if err := os.WriteFile(outputPath, buf.Bytes(), 0644); err != nil {
+	if err := os.WriteFile(outputPath, buf.Bytes(), defaultFileMode); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 

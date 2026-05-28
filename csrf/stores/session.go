@@ -6,6 +6,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/async"
 )
 
 var (
@@ -57,7 +59,7 @@ func NewSessionStore(args ...any) *SessionStore {
 func (s *SessionStore) Start(ctx context.Context) {
 	innerCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
-	go s.cleanup(innerCtx)
+	async.Go(func() { s.cleanup(innerCtx) })
 }
 
 // Shutdown stops the background cleanup goroutine. It is safe to call

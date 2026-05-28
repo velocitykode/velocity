@@ -416,7 +416,7 @@ func (m *Message) AttachFile(path string) (*Message, error) {
 	// Read at most limit+1 bytes so a file that grew after Stat still trips
 	// the size check rather than being silently truncated or consuming
 	// unbounded memory.
-	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	data, err := io.ReadAll(io.LimitReader(f, limit+1)) //nolint:forbidigo // bounded by io.LimitReader above
 	if err != nil {
 		wrapped := fmt.Errorf("mail: failed to read attachment %q: %w", path, err)
 		m.setErr(wrapped)

@@ -25,6 +25,7 @@ import (
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/exceptions"
+	"github.com/velocitykode/velocity/internal/clientip"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/notification"
@@ -466,15 +467,15 @@ func (c *Context) Path() string {
 
 // IP returns the client IP address from RemoteAddr (with port stripped).
 // If trusted proxies are configured and the remote address is trusted,
-// X-Forwarded-For is consulted and the right-most untrusted hop is
-// returned per RFC 7239.
+// the RFC 7239 Forwarded header (preferred) or X-Forwarded-For /
+// X-Real-IP (legacy) are consulted via internal/clientip.Extract so
+// the framework speaks one IP-resolution policy across rate limit,
+// throttle, audit log, exceptions, and this accessor.
 func (c *Context) IP() string {
-	host := stripPortHost(c.Request.RemoteAddr)
-	if c.trustedProxies == nil || c.trustedProxies.Len() == 0 {
-		return host
+	if ip := clientip.ExtractString(c.Request, c.trustedProxies.IPNets()); ip != "" {
+		return ip
 	}
-	xff := c.Request.Header.Get("X-Forwarded-For")
-	return c.trustedProxies.ClientIP(host, xff)
+	return stripPortHost(c.Request.RemoteAddr)
 }
 
 // TrustedProxyNets returns the router-level trusted proxy networks
@@ -1299,6 +1300,12 @@ func (c *Context) FormValue(key string) string {
 // http.MaxBytesReader on the request body (see FormFile below).
 const formFileMaxMemory int64 = 1 << 20 // 1 MiB
 
+// uploadedFileMode is the secret-tier permission used for files saved by
+// (*Context).SaveUploadedFile. Uploaded payloads may carry PII or
+// partial secrets, so other local users must not be able to read them.
+// Mirrors storage.LocalDriver's invariant.
+const uploadedFileMode os.FileMode = 0o600
+
 // FormFile returns the first file for the provided form key.
 //
 // Unless the BodyLimit middleware has already wrapped the request body,
@@ -1379,7 +1386,7 @@ func (c *Context) SaveFile(fh *multipart.FileHeader, dst string, opts ...FileVal
 	// Note: OpenFile filters mode through umask AND preserves the
 	// mode of a pre-existing target, so we follow up with Chmod to
 	// pin the invariant regardless of starting state.
-	out, err := root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	out, err := root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, uploadedFileMode)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return err
@@ -1387,7 +1394,7 @@ func (c *Context) SaveFile(fh *multipart.FileHeader, dst string, opts ...FileVal
 		return fmt.Errorf("velocity/router: path %q escapes root: %w", rel, errors.Join(ErrPathOutsideRoot, err))
 	}
 	defer out.Close()
-	if chmodErr := out.Chmod(0o600); chmodErr != nil {
+	if chmodErr := out.Chmod(uploadedFileMode); chmodErr != nil {
 		_ = root.Remove(rel)
 		return fmt.Errorf("velocity/router: chmod uploaded file: %w", chmodErr)
 	}

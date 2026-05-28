@@ -20,6 +20,16 @@ import (
 // defaultMaxFileSize is the default maximum file size for local storage (100MB)
 const defaultMaxFileSize = 100 * 1024 * 1024
 
+// storageFileMode / storageDirMode are the secret-tier permissions applied
+// to every file and directory the LocalDriver writes. Uploaded content may
+// be user data, signed assets, or partial secrets, so other local users
+// must not be able to read it. Public-visibility files are reachable via
+// the URL surface, not via the filesystem layout.
+const (
+	storageFileMode os.FileMode = 0o600
+	storageDirMode  os.FileMode = 0o700
+)
+
 func init() {
 	Drivers().Register("local", func(_ context.Context, cfg DiskConfig) (Driver, error) {
 		return NewLocalDriver(cfg), nil
@@ -69,7 +79,7 @@ func NewLocalDriver(config DiskConfig) *LocalDriver {
 	// Ensure the directory exists with restricted permissions before
 	// handing it to os.OpenRoot — OpenRoot refuses to open a missing
 	// directory.
-	_ = os.MkdirAll(root, 0o700)
+	_ = os.MkdirAll(root, storageDirMode)
 
 	visibility := Private
 	if config.Visibility == "public" {
@@ -169,7 +179,7 @@ func (d *LocalDriver) Put(path string, contents []byte) error {
 		}
 		// Atomic write: temp in same directory, rename.
 		tmp := rel + ".tmp"
-		if err := root.WriteFile(tmp, contents, 0o600); err != nil {
+		if err := root.WriteFile(tmp, contents, storageFileMode); err != nil {
 			return fmt.Errorf("velocity/storage: write file: %w", mapOpenError(err))
 		}
 		if err := root.Rename(tmp, rel); err != nil {
@@ -200,7 +210,7 @@ func (d *LocalDriver) PutStream(path string, stream io.Reader) error {
 		// before any bytes are written so request bodies, uploads,
 		// and any incidental PII landing on disk are owner-only by
 		// default, matching the invariant Put already maintains.
-		if chmodErr := file.Chmod(0o600); chmodErr != nil {
+		if chmodErr := file.Chmod(storageFileMode); chmodErr != nil {
 			_ = file.Close()
 			_ = root.Remove(tmp)
 			return fmt.Errorf("velocity/storage: chmod file: %w", chmodErr)
@@ -331,7 +341,7 @@ func (d *LocalDriver) Copy(from, to string) error {
 		// Tighten umask-derived mode (~0o644) down to 0o600 so the
 		// copy inherits the same owner-only invariant Put applies on
 		// initial write.
-		if chmodErr := dest.Chmod(0o600); chmodErr != nil {
+		if chmodErr := dest.Chmod(storageFileMode); chmodErr != nil {
 			return fmt.Errorf("velocity/storage: chmod destination: %w", chmodErr)
 		}
 		if _, err := io.Copy(dest, source); err != nil {
@@ -599,7 +609,7 @@ func mkdirAllIn(root *os.Root, rel string) error {
 	if rel == "." || rel == "" {
 		return nil
 	}
-	if err := root.MkdirAll(rel, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+	if err := root.MkdirAll(rel, storageDirMode); err != nil && !errors.Is(err, os.ErrExist) {
 		return mapOpenError(err)
 	}
 	return nil

@@ -41,7 +41,7 @@ func Down(opts DownOptions) error {
 	if err != nil {
 		return fmt.Errorf("resolve maintenance root: %w", err)
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, secretDirMode); err != nil {
 		return fmt.Errorf("failed to create %s directory: %w", maintpath.MarkerDir, err)
 	}
 
@@ -57,7 +57,7 @@ func Down(opts DownOptions) error {
 	}
 
 	path := filepath.Join(dir, maintpath.MarkerFile)
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := os.WriteFile(path, data, secretFileMode); err != nil {
 		return fmt.Errorf("failed to write maintenance file: %w", err)
 	}
 	// os.WriteFile does NOT chmod a pre-existing file: a marker laid down
@@ -65,13 +65,13 @@ func Down(opts DownOptions) error {
 	// them across re-runs. Force the perm explicitly so 0o600 is the
 	// invariant the next reader can rely on. Defends against the same
 	// drift seen in the H-31 audit note about M-40 being stale.
-	if err := os.Chmod(path, 0o600); err != nil {
+	if err := os.Chmod(path, secretFileMode); err != nil {
 		return fmt.Errorf("failed to chmod maintenance file: %w", err)
 	}
 	// MkdirAll also leaves an existing directory's perms alone. Force
 	// 0o700 here so a pre-existing world-readable .vel does not leak the
 	// bypass secret through a second-hand directory listing.
-	if err := os.Chmod(dir, 0o700); err != nil {
+	if err := os.Chmod(dir, secretDirMode); err != nil {
 		return fmt.Errorf("failed to chmod maintenance dir: %w", err)
 	}
 

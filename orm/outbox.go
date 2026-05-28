@@ -654,7 +654,10 @@ func (r *Relay) Start(ctx context.Context) error {
 	r.doneCh = make(chan struct{})
 	r.mu.Unlock()
 
-	go func() {
+	// Not async.Go: must close(r.doneCh) on panic so Stop's wait on doneCh
+	// never blocks shutdown waiting on a goroutine that already died, and
+	// the panic is logged with the relay's own structured logger.
+	go func() { //safe-goroutine: close(r.doneCh) on panic + relay-scoped logger, see comment above
 		defer close(r.doneCh)
 		defer func() {
 			if rec := recover(); rec != nil {
@@ -715,8 +718,9 @@ func (r *Relay) Stop(ctx context.Context) error {
 		}
 	}
 	// Wait for any in-flight dispatch goroutines.
+	// Not async.Go: trivial WaitGroup waiter, no user code runs here.
 	wait := make(chan struct{})
-	go func() {
+	go func() { //safe-goroutine: trivial WaitGroup waiter, no user code runs here
 		r.inFlight.Wait()
 		close(wait)
 	}()
@@ -782,7 +786,10 @@ func (r *Relay) tick(ctx context.Context, sem chan struct{}) {
 		}
 		r.inFlight.Add(1)
 		row := row
-		go func() {
+		// Not async.Go: must release the semaphore, decrement inFlight,
+		// and record per-row failure / clear partition reservation on
+		// panic, none of which generic recovery can do.
+		go func() { //safe-goroutine: per-row resource release on panic, see comment above
 			defer r.inFlight.Done()
 			defer func() { <-sem }()
 			defer func() {

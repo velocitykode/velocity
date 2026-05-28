@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/velocitykode/velocity/internal/clientip"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -66,6 +67,22 @@ func hashRemoteAddr(remote string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
+// hashClientIP resolves the client IP via internal/clientip (so forwarded
+// headers are honoured when manager has trusted proxies configured) and
+// returns the salted hash. Falls back to the raw RemoteAddr when manager
+// is nil so this still works in test paths that bypass full wiring.
+func hashClientIP(manager *Manager, r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if manager != nil {
+		if ip := clientip.ExtractString(r, manager.TrustedProxies()); ip != "" {
+			return hashRemoteAddr(ip)
+		}
+	}
+	return hashRemoteAddr(r.RemoteAddr)
+}
+
 // wantsJSON returns true if the request expects a JSON response.
 func wantsJSON(r *http.Request) bool {
 	if r.Header.Get("X-Requested-With") == "XMLHttpRequest" {
@@ -79,7 +96,7 @@ func wantsJSON(r *http.Request) bool {
 // to /login for HTML requests. Shared by all auth-requiring middleware.
 // The manager's logger records the denial when installed.
 func denyUnauthenticated(manager *Manager, c *router.Context) error {
-	manager.logWarn("velocity/auth: authentication required", "method", c.Request.Method, "path", c.Request.URL.Path, "ip_hash", hashRemoteAddr(c.Request.RemoteAddr))
+	manager.logWarn("velocity/auth: authentication required", "method", c.Request.Method, "path", c.Request.URL.Path, "ip_hash", hashClientIP(manager, c.Request))
 	if wantsJSON(c.Request) {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthenticated."})
 	}
@@ -101,7 +118,7 @@ func denyUnauthenticated(manager *Manager, c *router.Context) error {
 // status for HTML requests. The manager's logger records the denial when
 // installed.
 func denyForbidden(manager *Manager, c *router.Context) error {
-	manager.logWarn("velocity/auth: authorization denied", "method", c.Request.Method, "path", c.Request.URL.Path, "ip_hash", hashRemoteAddr(c.Request.RemoteAddr))
+	manager.logWarn("velocity/auth: authorization denied", "method", c.Request.Method, "path", c.Request.URL.Path, "ip_hash", hashClientIP(manager, c.Request))
 	if wantsJSON(c.Request) {
 		return c.JSON(http.StatusForbidden, map[string]string{"error": "Forbidden."})
 	}

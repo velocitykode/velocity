@@ -153,7 +153,7 @@ func (d *MailgunDriver) Send(ctx context.Context, msg *mail.Message) error {
 	// the preview with an explicit "...(truncated)" suffix so operators
 	// see that the surfaced text is partial.
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, mailgunErrorPreview+1))
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, mailgunErrorPreview+1)) //nolint:forbidigo // bounded by io.LimitReader above
 		truncated := len(bodyBytes) > mailgunErrorPreview
 		if truncated {
 			bodyBytes = bodyBytes[:mailgunErrorPreview]

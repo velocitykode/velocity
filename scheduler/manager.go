@@ -131,9 +131,10 @@ func (m *Manager) RunAll(ctx context.Context) error {
 
 	for _, s := range schedulers {
 		wg.Add(1)
-		// Recover from panics inside Scheduler.Run so one sub-scheduler
-		// crashing does not deadlock the fan-in on wg.Wait.
-		go func(scheduler *Scheduler) {
+		// Not async.Go: needs per-scheduler recovery so a panic surfaces
+		// on errChan rather than only the package logger, keeping the
+		// caller's `select` informed.
+		go func(scheduler *Scheduler) { //safe-goroutine: forwards panic via errChan, see comment above
 			defer wg.Done()
 			defer func() {
 				if r := recover(); r != nil {
@@ -150,7 +151,9 @@ func (m *Manager) RunAll(ctx context.Context) error {
 
 	// Recover from panics in wg.Wait so errChan always closes and the
 	// reader select below is never starved.
-	go func() {
+	// Not async.Go: must close(errChan) on panic so the fan-in reader
+	// loop terminates instead of deadlocking the caller.
+	go func() { //safe-goroutine: close(errChan) on panic, see comment above
 		defer func() {
 			if r := recover(); r != nil {
 				m.logError("velocity/scheduler: manager wait panic recovered", "error", panicerr.FromRecovered(r))

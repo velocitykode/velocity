@@ -23,7 +23,7 @@ const (
 // instead of mutating user code.
 func wireGRPCProvider(packageName, serviceName, protoAlias, modulePath string) error {
 	dir := filepath.Join("internal", "providers")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, defaultDirMode); err != nil {
 		return fmt.Errorf("create providers dir: %w", err)
 	}
 	path := filepath.Join(dir, "grpc_provider.go")
@@ -57,7 +57,7 @@ func writeNewGRPCProvider(path, packageName, serviceName, protoAlias, modulePath
 	if err := tmpl.Execute(&buf, data); err != nil {
 		return fmt.Errorf("render provider: %w", err)
 	}
-	if err := os.WriteFile(path, buf.Bytes(), 0644); err != nil {
+	if err := os.WriteFile(path, buf.Bytes(), defaultFileMode); err != nil {
 		return fmt.Errorf("write provider: %w", err)
 	}
 	cli.Success(fmt.Sprintf("Created: %s", path))
@@ -99,7 +99,7 @@ func injectGRPCServiceRegistration(path, packageName, serviceName, protoAlias, m
 	}, "\n")
 	content = injectAfterMarker(content, grpcServicesMarker, regBlock)
 
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), defaultFileMode); err != nil {
 		return fmt.Errorf("write provider: %w", err)
 	}
 	cli.Success(fmt.Sprintf("Wired: %s", path))

@@ -65,7 +65,7 @@ type fileLockStore struct {
 
 func newFileLockStore(cacheDir string) (*fileLockStore, error) {
 	lockDir := filepath.Join(cacheDir, "locks")
-	if err := os.MkdirAll(lockDir, 0700); err != nil {
+	if err := os.MkdirAll(lockDir, cacheDirMode); err != nil {
 		return nil, fmt.Errorf("velocity/cache: failed to create lock directory: %w", err)
 	}
 	return &fileLockStore{
@@ -132,7 +132,7 @@ func (s *fileLockStore) writeMetadata(path string, md fileLockMetadata) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0600)
+	return os.WriteFile(path, data, cacheFileMode)
 }
 
 // NewFileLock creates a new FileLock bound to the given lock store.
@@ -192,7 +192,7 @@ func (l *FileLock) GetWithErr(ctx context.Context) (bool, error) {
 	}
 
 	path := l.store.pathFor(l.key)
-	fd, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0600)
+	fd, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, cacheFileMode)
 	if err != nil {
 		l.store.release(l.key, l.owner)
 		return false, fmt.Errorf("velocity/cache: open lock file: %w", err)

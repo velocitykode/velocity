@@ -209,7 +209,10 @@ func HTTPSRedirect(opts ...HTTPSRedirectOption) MiddlewareFunc {
 				return next(c)
 			}
 
-			// Check X-Forwarded-Proto from trusted proxies
+			// Check X-Forwarded-Proto from trusted proxies.
+			// Intentionally uses raw RemoteAddr (not clientip.Extract):
+			// we are asking whether the immediate peer is a trusted
+			// proxy, not who the original client is.
 			if cfg.trustedProxies != nil && cfg.trustedProxies.Len() > 0 {
 				remoteIP := stripPortHost(c.Request.RemoteAddr)
 				if cfg.trustedProxies.Contains(remoteIP) {

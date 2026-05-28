@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/log/internal/sanitize"
 )
 
@@ -169,7 +170,7 @@ func (f *FileLogger) ensureFile() error {
 
 	// Clean up old log files on rotation (date changed)
 	if f.days > 0 && oldDate != currentDate {
-		go f.cleanup()
+		async.Go(f.cleanup)
 	}
 
 	return nil

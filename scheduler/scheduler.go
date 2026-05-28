@@ -502,8 +502,10 @@ func (s *Scheduler) Shutdown(ctx context.Context) error {
 
 	// Wait for in-flight jobs with ctx deadline. Recover from panics so
 	// Shutdown always signals completion via done.
+	// Not async.Go: must close(done) on panic so the outer select
+	// never blocks shutdown waiting on a goroutine that already died.
 	done := make(chan struct{})
-	go func() {
+	go func() { //safe-goroutine: close(done) on panic for shutdown, see comment above
 		defer func() {
 			if r := recover(); r != nil {
 				s.log().Error("velocity/scheduler: shutdown wait panic recovered", "error", panicerr.FromRecovered(r))
@@ -684,7 +686,10 @@ func (s *Scheduler) runDueJobs() {
 			})
 		}
 
-		go func(j *Job, oneServerLock Lock, release func()) {
+		// Not async.Go: must call release() on panic so the
+		// overlap-lock and runWg counter are freed even if the framing
+		// panics outside Job.runInternal's own recovery.
+		go func(j *Job, oneServerLock Lock, release func()) { //safe-goroutine: release() on panic frees overlap-lock + runWg, see comment above
 			// Recover any panic from logger.Debug or other framing so
 			// the release path always runs. Note: Job.runInternal's
 			// inner panics are already recovered by Job.Run itself.

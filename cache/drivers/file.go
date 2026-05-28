@@ -28,6 +28,15 @@ func newAddOwnerID() string {
 // DefaultFileCleanupInterval is the default period between expired-file sweeps.
 const DefaultFileCleanupInterval = 5 * time.Minute
 
+// cacheFileMode / cacheDirMode are the secret-tier permissions used for
+// every file the FileStore writes. Cached values may carry session
+// payloads, user data, or auth state, so other local users must not be
+// able to read them.
+const (
+	cacheFileMode os.FileMode = 0o600
+	cacheDirMode  os.FileMode = 0o700
+)
+
 // FileStore implements a file-based cache store
 type FileStore struct {
 	mu              sync.RWMutex
@@ -74,7 +83,7 @@ func NewFileStoreWithOptions(prefix, path string, cleanupInterval time.Duration)
 	// Create cache root up-front. Callers that add new shard directories
 	// later (see getCacheFilePath) also MkdirAll, but the common case is
 	// covered here and avoids the system call on every Put.
-	if err := os.MkdirAll(path, 0700); err != nil {
+	if err := os.MkdirAll(path, cacheDirMode); err != nil {
 		return nil, fmt.Errorf("velocity/cache: failed to create cache directory: %w", err)
 	}
 
@@ -166,7 +175,7 @@ func (s *FileStore) getCacheFilePath(key string) string {
 	if _, seen := s.shardDirs.Load(shard); !seen {
 		// Ignore error: subsequent writes will surface it if the dir is
 		// unusable. Cache the shard regardless to avoid repeated syscalls.
-		_ = os.MkdirAll(dir, 0700)
+		_ = os.MkdirAll(dir, cacheDirMode)
 		s.shardDirs.Store(shard, struct{}{})
 	}
 
@@ -239,7 +248,7 @@ func (s *FileStore) Put(key string, value interface{}, ttl time.Duration) error 
 
 	// Write to file
 	path := s.getCacheFilePath(key)
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	if err := os.WriteFile(path, data, cacheFileMode); err != nil {
 		return fmt.Errorf("velocity/cache: failed to write cache file: %w", err)
 	}
 
@@ -291,7 +300,7 @@ func (s *FileStore) Add(key string, value interface{}, ttl time.Duration) (bool,
 	// Atomic create-if-absent. O_EXCL is enforced by the kernel; the
 	// two-process race that prior best-effort code could lose is closed
 	// for the fresh-key path.
-	if f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600); err == nil {
+	if f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, cacheFileMode); err == nil {
 		_, werr := f.Write(data)
 		cerr := f.Close()
 		if werr != nil {
@@ -378,7 +387,7 @@ func (s *FileStore) Add(key string, value interface{}, ttl time.Duration) (bool,
 		}
 	}
 
-	if werr := os.WriteFile(path, data, 0600); werr != nil {
+	if werr := os.WriteFile(path, data, cacheFileMode); werr != nil {
 		return false, fmt.Errorf("velocity/cache: failed to write cache file: %w", werr)
 	}
 	return true, nil
@@ -408,7 +417,7 @@ func (s *FileStore) Forever(key string, value interface{}) error {
 
 	// Write to file
 	path := s.getCacheFilePath(key)
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	if err := os.WriteFile(path, data, cacheFileMode); err != nil {
 		return fmt.Errorf("velocity/cache: failed to write cache file: %w", err)
 	}
 
@@ -504,7 +513,7 @@ func (s *FileStore) Increment(key string, value int64) (int64, error) {
 		return 0, err
 	}
 
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	if err := os.WriteFile(path, data, cacheFileMode); err != nil {
 		return 0, err
 	}
 

@@ -12,8 +12,8 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/internal/clientip"
-	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // RateLimitConfig holds configuration for rate limiting middleware.
@@ -116,17 +116,11 @@ func newKeyedRateLimiter(requests int, window time.Duration, burst int, cleanupI
 		stopCh:   make(chan struct{}),
 	}
 
-	// Start cleanup goroutine. Recover from panics so a stray failure
-	// (e.g. inside the map iteration) does not leave stale entries
-	// accumulating forever.
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("velocity/router: rate limit cleanup panic recovered: %v", panicerr.FromRecovered(r))
-			}
-		}()
+	// Start cleanup goroutine. async.Go's recover keeps stale entries
+	// from accumulating forever if the map iteration trips.
+	async.Go(func() {
 		krl.cleanup(cleanupInterval)
-	}()
+	})
 
 	return krl
 }

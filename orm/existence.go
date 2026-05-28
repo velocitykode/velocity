@@ -6,6 +6,8 @@ import (
 	"time"
 	"unsafe"
 	"weak"
+
+	"github.com/velocitykode/velocity/async"
 )
 
 // existenceStore is the package-level side-channel for per-instance
@@ -60,7 +62,7 @@ var sweepStarted sync.Once
 // lazily on first store.
 func startSweep() {
 	sweepStarted.Do(func() {
-		go func() {
+		async.Go(func() {
 			t := time.NewTicker(30 * time.Second)
 			defer t.Stop()
 			for range t.C {
@@ -71,7 +73,7 @@ func startSweep() {
 					return true
 				})
 			}
-		}()
+		})
 	})
 }
 

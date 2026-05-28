@@ -230,7 +230,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.mu.RUnlock()
 
 	done := make(chan struct{})
-	go func() {
+	// Not async.Go: trivial WaitGroup waiter, no user code runs here.
+	go func() { //safe-goroutine: trivial WaitGroup waiter, no user code runs here
 		s.wg.Wait()
 		close(done)
 	}()

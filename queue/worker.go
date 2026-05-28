@@ -421,7 +421,10 @@ func (w *Worker) processJob() error {
 	}
 
 	done := make(chan error, 1)
-	go func() {
+	// Not async.Go: must forward a recovered panic value through `done`
+	// so the outer select reports it as the job error (and counts toward
+	// retries) instead of swallowing it into the package logger only.
+	go func() { //safe-goroutine: forwards panic via done for retry accounting, see comment above
 		defer func() {
 			if r := recover(); r != nil {
 				done <- panicerr.FromRecovered(r)

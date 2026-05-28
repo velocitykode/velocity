@@ -79,6 +79,10 @@ func (r *VelocityRouterV2) startEventWorkers(ch <-chan asyncDispatchItem, fn fun
 	var wg sync.WaitGroup
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
+		// Not async.Go: each invocation is wrapped by safeInvokeListener,
+		// which already recovers per listener and routes failures through
+		// r.onListenerFailure for drop accounting. async.Go would log
+		// panics in addition but bypass the drop counter.
 		go func() {
 			defer wg.Done()
 			r.runEventWorker(ch, fn)
@@ -144,6 +148,8 @@ func makeDrainCloser(ch chan asyncDispatchItem, wg *sync.WaitGroup) func(context
 		stopOnce.Do(func() {
 			close(ch)
 			done := make(chan struct{})
+			// Not async.Go: must close(done) on panic so Shutdown never
+			// blocks waiting on a goroutine that already died.
 			go func() {
 				defer func() {
 					// Workers finish draining even if we panic below.

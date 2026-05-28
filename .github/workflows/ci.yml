@@ -99,6 +99,39 @@ jobs:
             exit 1
           fi
 
+  # Greps for raw `go` statements that bypass async.Go's panic recovery.
+  # forbidigo cannot enforce this (its regexes match expression strings,
+  # not GoStmt nodes), so the invariant lives in a grep script. See
+  # CONTRIBUTING.md "Cross-cutting invariants" and the script header.
+  goroutine-lint:
+    name: raw-goroutine lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Grep for raw goroutines outside async.Go
+        run: |
+          set -e
+          if ! scripts/ci/check-raw-goroutines.sh; then
+            echo "::error::raw goroutine found outside async.Go; route through async.Go or add //nolint:forbidigo with a one-line rationale"
+            exit 1
+          fi
+
+  # Runs golangci-lint to enforce the forbidigo rule for unbounded
+  # io.ReadAll. See .golangci.yml for the scope rationale (forbidigo
+  # only; vet/gofmt/staticcheck have their own jobs above).
+  golangci-lint:
+    name: golangci-lint (forbidigo)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.3"
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.11
+
   # Coverage floors for packages where we've invested in deep test coverage.
   # New code under these packages can't drop below these numbers without
   # a companion lift. The thresholds are intentionally below the current
@@ -150,7 +183,7 @@ jobs:
     # Release only on direct push to main. PRs and the weekly cron
     # don't publish anything.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [vet, staticcheck, race-tests, skip-lint, coverage-floors]
+    needs: [vet, staticcheck, race-tests, skip-lint, goroutine-lint, golangci-lint, coverage-floors]
     runs-on: ubuntu-latest
     permissions:
       contents: write

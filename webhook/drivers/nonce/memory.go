@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/async"
 )
 
 // Memory is an in-process NonceStore. The zero value is not usable; call
@@ -46,7 +48,14 @@ func NewMemory(interval time.Duration) *Memory {
 		stoppedCh: make(chan struct{}),
 	}
 	if interval > 0 {
-		go m.sweep(interval)
+		// sweep() carries its own per-tick recover so a transient
+		// panic does not kill replay protection (the inner recover
+		// is scoped to tickWithRecover, not the loop). async.Go
+		// wraps the whole sweep call in an outer panic-safe shell:
+		// the two layers compose, the inner recover keeps the loop
+		// alive and the outer recover catches any future panic
+		// raised outside tickWithRecover (today there is none).
+		async.Go(func() { m.sweep(interval) })
 	} else {
 		// No sweep goroutine: stoppedCh signals immediately.
 		close(m.stoppedCh)

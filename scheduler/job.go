@@ -13,6 +13,11 @@ import (
 	"github.com/velocitykode/velocity/trace"
 )
 
+// jobOutputFileMode is the secret-tier permission used for scheduled-job
+// stdout/stderr capture files. Output may include PII, tracebacks, or
+// partial secrets, so other local users must not be able to read it.
+const jobOutputFileMode os.FileMode = 0o600
+
 // Job represents a scheduled task
 type Job struct {
 	mu sync.RWMutex
@@ -422,9 +427,9 @@ func (j *Job) runInternal(ctx context.Context, shutdownGrace time.Duration, rele
 		if j.outputFile != "" {
 			var openErr error
 			if j.appendOutput {
-				outFile, openErr = os.OpenFile(j.outputFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+				outFile, openErr = os.OpenFile(j.outputFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, jobOutputFileMode)
 			} else {
-				outFile, openErr = os.OpenFile(j.outputFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+				outFile, openErr = os.OpenFile(j.outputFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, jobOutputFileMode)
 			}
 			if openErr == nil && outFile != nil {
 				// os.OpenFile does NOT chmod a pre-existing file: an output file
@@ -432,7 +437,7 @@ func (j *Job) runInternal(ctx context.Context, shutdownGrace time.Duration, rele
 				// and leak scheduled-job stdout (PII, tracebacks, partial secrets).
 				// Force the mode invariant on every open so a stale loose file is
 				// tightened, not preserved.
-				if chmodErr := os.Chmod(j.outputFile, 0o600); chmodErr != nil {
+				if chmodErr := os.Chmod(j.outputFile, jobOutputFileMode); chmodErr != nil {
 					_ = outFile.Close()
 					outFile = nil
 					err = chmodErr
@@ -506,7 +511,10 @@ func (j *Job) spawnBackgroundWaiter(
 	clearRunningFlag func(),
 	release func(),
 ) {
-	go func() {
+	// Not async.Go: the supervisor needs a job-scoped recover that
+	// dispatches ScheduledTaskFailed and runs the resource-release
+	// teardown (outFile.Close, clearRunningFlag, release) even on panic.
+	go func() { //safe-goroutine: job-scoped recovery + resource release, see comment above
 		// Panic-safe: a misbehaving callback must not leak the lock.
 		defer func() {
 			if r := recover(); r != nil {
@@ -525,8 +533,11 @@ func (j *Job) spawnBackgroundWaiter(
 
 		// Wait for the command in a sub-goroutine so the outer select
 		// can observe ctx.Done concurrently.
+		// Not async.Go: must forward a recovered panic value through
+		// waitDone so the outer select reports it as the exec error
+		// instead of swallowing it into the package logger.
 		waitDone := make(chan error, 1)
-		go func() {
+		go func() { //safe-goroutine: forwards panic via waitDone, see comment above
 			defer func() {
 				if r := recover(); r != nil {
 					waitDone <- panicerr.FromRecovered(r)

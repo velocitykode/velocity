@@ -575,7 +575,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		Context:    req.Context(),
 		Method:     req.Method,
 		Path:       req.URL.Path,
-		RemoteAddr: req.RemoteAddr,
+		RemoteAddr: req.RemoteAddr, // raw RemoteAddr field; consumers needing the originating client should use clientip.Extract themselves.
 		UserAgent:  req.UserAgent(),
 		RequestID:  meta.id,
 		StartedAt:  meta.startedAt,

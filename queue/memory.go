@@ -667,7 +667,9 @@ func (m *MemoryDriver) Shutdown(ctx context.Context) error {
 	done := make(chan struct{})
 	// Recover so Shutdown always signals completion to the select below
 	// even if wg.Wait panics (e.g. negative wait-group counter).
-	go func() {
+	// Not async.Go: must close(done) on panic so the outer select never
+	// blocks shutdown waiting on a goroutine that already died.
+	go func() { //safe-goroutine: close(done) on panic for shutdown, see comment above
 		defer func() {
 			if r := recover(); r != nil {
 				if logger := m.log(); logger != nil {

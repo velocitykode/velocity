@@ -76,7 +76,7 @@ func TestSubscribe_ChannelCapIdempotent(t *testing.T) {
 // installs DefaultMaxChannelsPerClient when no option is supplied.
 func TestSubscribe_ChannelCapDefaultApplied(t *testing.T) {
 	d := NewWebSocketDriver(websocket.DefaultConfig())
-	defer d.server.Shutdown(context.Background()) //nolint:errcheck
+	defer d.server.Shutdown(context.Background()) //nolint:errcheck // test teardown, shutdown failure is non-actionable here
 
 	if d.maxChannelsPerClient != DefaultMaxChannelsPerClient {
 		t.Errorf("default cap not applied: got %d, want %d", d.maxChannelsPerClient, DefaultMaxChannelsPerClient)
@@ -90,7 +90,7 @@ func TestSubscribe_ChannelCapDefaultApplied(t *testing.T) {
 // out) lets a client subscribe past the default ceiling.
 func TestSubscribe_ChannelCapDisabled(t *testing.T) {
 	d := NewWebSocketDriver(websocket.DefaultConfig(), WithMaxChannelsPerClient(-1))
-	defer d.server.Shutdown(context.Background()) //nolint:errcheck
+	defer d.server.Shutdown(context.Background()) //nolint:errcheck // test teardown, shutdown failure is non-actionable here
 
 	client := createTestClient("c1")
 	// 200 subscriptions, well past the default of 100.
@@ -178,7 +178,7 @@ func TestSubscribe_DirectCallEnforcesNameLengthCap(t *testing.T) {
 // accept long channel names.
 func TestSubscribe_DirectCallLengthCapDisabled(t *testing.T) {
 	d := NewWebSocketDriver(websocket.DefaultConfig(), WithMaxChannelNameLength(-1))
-	defer d.server.Shutdown(context.Background()) //nolint:errcheck
+	defer d.server.Shutdown(context.Background()) //nolint:errcheck // test teardown, shutdown failure is non-actionable here
 
 	client := createTestClient("c1")
 	long := strings.Repeat("z", 4096)

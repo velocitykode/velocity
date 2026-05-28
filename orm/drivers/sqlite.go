@@ -10,6 +10,12 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+// sqliteDirMode is the secret-tier permission applied to the directory
+// holding the SQLite database file. The database carries user records,
+// session state, queue payloads, and other framework tables, so it must
+// not be world-readable on a multi-tenant host.
+const sqliteDirMode os.FileMode = 0o700
+
 // hasDotDotTraversal checks if a cleaned path still contains ".." traversal components.
 func hasDotDotTraversal(path string) bool {
 	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
@@ -60,13 +66,13 @@ func (d *SQLiteDriver) Connect(config ConnectionConfig) error {
 	// must not be world-readable on a multi-tenant host.
 	if dsn != ":memory:" && strings.Contains(dsn, "/") {
 		dir := filepath.Dir(dsn)
-		if err := os.MkdirAll(dir, 0o700); err != nil {
+		if err := os.MkdirAll(dir, sqliteDirMode); err != nil {
 			return fmt.Errorf("failed to create database directory: %w", err)
 		}
 		// MkdirAll preserves the perms of a pre-existing directory. Force
 		// the tight mode on every open so an older binary's 0o755 dir does
 		// not stay world-readable across upgrades.
-		if err := os.Chmod(dir, 0o700); err != nil {
+		if err := os.Chmod(dir, sqliteDirMode); err != nil {
 			return fmt.Errorf("failed to tighten database directory permissions: %w", err)
 		}
 	}

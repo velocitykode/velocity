@@ -321,11 +321,30 @@ Every goroutine spawned from library code MUST either:
 An unrecovered goroutine panic terminates the entire process. This is
 non-negotiable for long-running services.
 
-**Lint enforcement.** The `forbidigo` linter in `.golangci.yml` rejects
-raw `go func(` outside `async.Go`. Test files (`_test.go`) and the
-`async/` / `router/event_dispatcher.go` packages (which implement the
+**Lint enforcement.** The `goroutine-lint` CI job runs
+`scripts/ci/check-raw-goroutines.sh`, which greps for raw `go `
+statements outside `async.Go`. Both the anonymous form
+(`go func(...)`) and the method/function form (`go m.sweep(...)`)
+are caught. Test files (`_test.go`) and the `async/` /
+`router/event_dispatcher.go` packages (which implement the
 panic-safe primitives themselves) are exempt. To add a legitimate
-exception, extend the `exclude-rules` block.
+exception on a specific line, append a same-line
+`//safe-goroutine: <one-line rationale>` directive. The rationale
+must be at least 5 characters; a bare `//safe-goroutine:` does NOT
+suppress.
+
+The `//safe-goroutine:` marker is intentionally **distinct** from
+`//nolint:forbidigo`. nolintlint in `.golangci.yml` is configured
+with `allow-unused: false`, which means `//nolint:forbidigo` is
+only valid on lines forbidigo actually fires on (in practice,
+`io.ReadAll` callsites). Goroutine sites need a separate token so
+the two enforcers' suppression vocabularies do not collide.
+
+`forbidigo` itself cannot enforce this rule directly because its
+patterns match against AST expression strings (e.g. `fmt.Println`),
+and a `go` statement is a `GoStmt`, not an expression. The CI
+script is the source of truth; `.golangci.yml` carries an
+explanatory note pointing back here.
 
 Example of the acceptable patterns:
 
@@ -338,7 +357,7 @@ async.Go(func() {
 })
 
 // When you need to dispatch a typed failure event on panic:
-go func(n interface{}) {
+go func(n interface{}) { //safe-goroutine: dispatches NotificationFailed on panic
     defer func() {
         if r := recover(); r != nil {
             err := panicerr.FromRecovered(r)
@@ -349,6 +368,61 @@ go func(n interface{}) {
     // ... work ...
 }(notifiable)
 ```
+
+### Cross-cutting invariants
+
+The four rules below are enforced framework-wide and verified during code
+review. Each has a one-stop home so reviewers and contributors do not
+have to re-derive the policy per package.
+
+1. **File modes.** The `console/file_mode.go` constants
+   (`defaultFileMode` `0644`, `defaultDirMode` `0755`, `secretFileMode`
+   `0600`, `secretDirMode` `0700`) are the canonical values for every
+   file the framework writes. Console generators must use them
+   verbatim. Other packages that touch the filesystem keep their own
+   package-local named constants (e.g. `cacheFileMode`,
+   `storageFileMode`, `jobOutputFileMode`, `sqliteDirMode`) with a
+   one-paragraph doc comment justifying the tier. Raw `0644` / `0755`
+   / `0o600` / `0o700` literals in non-test code are not allowed;
+   replace with a named constant or add a one-line comment if a literal
+   is genuinely justified.
+
+2. **`io.ReadAll` is forbidden.** Every call site must wrap its source
+   in `http.MaxBytesReader` (HTTP request bodies) or `io.LimitReader`
+   (any other reader, with a sensible package-local cap such as
+   `postmarkErrorPreview` / `ssrResponseCap` / `svgScanCap`) and tag
+   the call with `//nolint:forbidigo // bounded by <wrapper>`. The
+   `forbidigo` rule in `.golangci.yml` enforces the lint via the
+   `golangci-lint` CI job in `.github/workflows/ci.yml`. nolintlint
+   (also enabled there) rejects bare `//nolint:`, requires a
+   rationale comment after the linter name, and refuses
+   `//nolint:forbidigo` directives that do not actually suppress a
+   forbidigo finding (`allow-unused: false`).
+
+3. **Long-lived goroutines use `async.Go`.** Worker pools, scheduler
+   ticks, websocket pumps, cache sweepers, log rotators, and any
+   other goroutine that outlives a single request handler MUST go
+   through `async.Go` so panics are recovered through the framework
+   logger. Short-lived per-request goroutines may use a raw `go`
+   when they need bespoke recovery semantics (e.g. forwarding a
+   recovered panic value through a result channel), in which case
+   add a same-line `//safe-goroutine: <rationale>` marker (rationale
+   text must be at least 5 characters) plus a `// Not async.Go:`
+   comment explaining why. Enforced by the `goroutine-lint` CI job
+   via `scripts/ci/check-raw-goroutines.sh`. The `//safe-goroutine:`
+   token is intentionally distinct from `//nolint:forbidigo` so the
+   two enforcers' suppression vocabularies do not collide (see
+   "Goroutines and panic recovery" above for the full story).
+
+4. **Client IP via `internal/clientip`.** Rate limiting, login
+   throttling, audit logging, abuse heuristics, and the public
+   `(*router.Context).IP()` accessor MUST resolve the originating
+   client through `clientip.Extract` / `clientip.ExtractString` so
+   the framework speaks one trust-proxy policy. Reading raw
+   `r.RemoteAddr` is acceptable only for debug logging, raw
+   instrumentation event fields, or trust-proxy checks where the
+   immediate peer (not the original client) is the question; tag
+   such sites with a one-line comment.
 
 ## Questions?
 

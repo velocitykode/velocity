@@ -113,7 +113,7 @@ func (d *PostmarkDriver) Send(ctx context.Context, msg *mail.Message) error {
 	// ErrorCode (if present) are surfaced, to avoid leaking response content
 	// through to clients via wrapped errors.
 	if resp.StatusCode != http.StatusOK {
-		body, readErr := io.ReadAll(io.LimitReader(resp.Body, postmarkErrorPreview+1))
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, postmarkErrorPreview+1)) //nolint:forbidigo // bounded by io.LimitReader above
 		if readErr != nil {
 			return fmt.Errorf("velocity/mail: postmark api error (status %d): read failed: %w", resp.StatusCode, readErr)
 		}

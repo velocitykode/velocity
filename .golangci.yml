@@ -1,66 +1,106 @@
-# golangci-lint configuration for Velocity.
+# golangci-lint configuration for Velocity (v2 schema).
 #
-# Enforces two framework conventions:
+# Scope: this config runs forbidigo + nolintlint only. govet, gofmt,
+# and staticcheck have their own dedicated CI jobs in
+# .github/workflows/ci.yml (the `vet`, `gofmt` autoformat step, and
+# `staticcheck` jobs) and run standalone there. Bundling them through
+# golangci-lint would duplicate the work AND surface a divergent
+# bundled-staticcheck output (different inlined version than the
+# standalone tool), so we keep golangci-lint narrowly focused on the
+# rules sweep 4 introduced.
 #
-#   1. Error-string prefix (sweep/error-wrap-shutdown): every fmt.Errorf /
-#      errors.New message must begin with "velocity/<pkg>: " and be
-#      lowercase. See CLAUDE.md "Security Rules (MANDATORY)".
+# Cross-cutting invariants enforced by this file and its CI siblings:
 #
-#   2. Panic-safe goroutines (sweep/panic-recovery): every goroutine
-#      spawned from library code must go through `async.Go` or include an
-#      explicit `defer recover()` that dispatches a `<pkg>.OperationFailed`
-#      event or logs via the manager's logger. See CONTRIBUTING.md
-#      ("Goroutines and panic recovery").
+#   1. Unbounded io.ReadAll is forbidden (CONTRIBUTING.md
+#      "Cross-cutting invariants"). Every call site must wrap its
+#      source in http.MaxBytesReader (request bodies) or
+#      io.LimitReader (any other reader) and tag the line with
+#      //nolint:forbidigo // bounded by <wrapper>. The forbidigo
+#      rule below enforces this directly.
+#
+#   2. Suppression directives must carry a rationale and name a
+#      specific linter. nolintlint with require-explanation and
+#      require-specific enforces "no bare //nolint:" and "no
+#      //nolint:forbidigo without a // <reason>". allow-unused: false
+#      keeps stale nolint markers from accumulating: every
+#      //nolint:forbidigo must sit on a line forbidigo actually fires
+#      on (in practice, only io.ReadAll callsites).
+#
+#   3. Framework-owned long-lived goroutines MUST go through
+#      async.Go. forbidigo cannot enforce this: its patterns match
+#      AST expression names (e.g. `fmt.Println`), and a `go`
+#      statement is a GoStmt, not an expression. The invariant
+#      lives in scripts/ci/check-raw-goroutines.sh, wired into
+#      ci.yml as the `goroutine-lint` job. Legitimate raw goroutines
+#      that need bespoke recovery semantics carry a same-line
+#      //safe-goroutine: <rationale> marker (a distinct token from
+#      //nolint:forbidigo so the two enforcers never share suppress
+#      vocab and nolintlint's allow-unused stays strict).
+#
+#   4. Error-string prefix (CLAUDE.md "Security Rules"): every
+#      fmt.Errorf / errors.New message should begin with
+#      "velocity/<pkg>: " and be lowercase. forbidigo CANNOT
+#      enforce this either: its patterns match against the
+#      expression-callee text (`fmt.Errorf`), never against the
+#      argument string. Earlier configs tried
+#      `fmt\.Errorf\("(?!velocity/)[a-zA-Z]` and `fmt\.Errorf\("[A-Z]`;
+#      the first was rejected at config-load (RE2 has no negative
+#      lookahead) and the second matched zero issues because forbidigo
+#      never sees the argument. Codebase compliance is currently
+#      partial (~585 lowercase non-`velocity/` callsites in non-test
+#      code); rolling that out plus building an AST analyser is
+#      tracked outside sweep 4.
+
+version: "2"
 
 run:
   timeout: 5m
   tests: true
 
 linters:
-  disable-all: true
+  default: none
   enable:
     - forbidigo
-    - govet
-    - gofmt
-    - staticcheck
+    - nolintlint
 
-linters-settings:
-  forbidigo:
-    forbid:
-      # Error strings must use the velocity/<pkg>: lowercase format.
-      - p: 'fmt\.Errorf\("(?!velocity/)[a-zA-Z]'
-        msg: 'error strings must use fmt.Errorf("velocity/<pkg>: lowercase msg: %w", err)'
-      - p: 'errors\.New\("(?!velocity/)[a-zA-Z]'
-        msg: 'error sentinels must use errors.New("velocity/<pkg>: lowercase msg")'
-      # Raw `go func(` goroutines bypass panic recovery.
-      # Matches the statement regardless of leading indentation, since Go
-      # code always indents goroutine sites inside a function body. The
-      # earlier `^go func\(` pattern (without \s*) matched nothing in real
-      # source — see the P0 re-review note.
-      - p: '(?m)^\s*go func\('
-        msg: "use async.Go or an explicit defer recover() — see CONTRIBUTING.md 'Goroutines and panic recovery'"
-    analyze-types: false
-    exclude-godoc-examples: true
+  settings:
+    forbidigo:
+      forbid:
+        - pattern: '^io\.ReadAll$'
+          msg: 'io.ReadAll is forbidden, wrap with io.LimitReader or http.MaxBytesReader first and tag with //nolint:forbidigo // bounded by <wrapper>'
+      analyze-types: false
+      exclude-godoc-examples: true
+
+    nolintlint:
+      # Bare //nolint: without naming a linter is rejected. Every
+      # directive must specify the linter being suppressed (e.g.
+      # //nolint:forbidigo).
+      require-specific: true
+      # Every nolint directive must include an explanation comment
+      # after the linter name (e.g.
+      # //nolint:forbidigo // bounded by io.LimitReader above).
+      require-explanation: true
+      # Reject stale nolint markers: every directive must actually
+      # silence a real diagnostic from the named linter. Combined
+      # with require-specific + require-explanation, this also means
+      # the //nolint:forbidigo token CANNOT be used as a generic
+      # "trust me" marker for raw goroutines, which carry their own
+      # //safe-goroutine: marker enforced by
+      # scripts/ci/check-raw-goroutines.sh.
+      allow-unused: false
+
+  exclusions:
+    rules:
+      # Tests: descriptive ReadAll use is fine.
+      - path: _test\.go
+        linters:
+          - forbidigo
+      # async/ is the canonical panic-safe implementation, its
+      # internals are exempt.
+      - path: ^async/
+        linters:
+          - forbidigo
 
 issues:
-  exclude-rules:
-    # validation/ surfaces user-facing messages, not framework errors.
-    - path: ^validation/
-      linters:
-        - forbidigo
-    # Tests: descriptive error strings + free goroutine use are fine.
-    - path: _test\.go
-      linters:
-        - forbidigo
-    # async/ is the canonical panic-safe implementation — its internals
-    # legitimately use `go func(` to implement async.Go, async.Run, etc.
-    - path: ^async/
-      linters:
-        - forbidigo
-    # router/event_dispatcher.go wraps listener invocation with
-    # safeInvokeListener (see that file for the recovery logic).
-    - path: ^router/event_dispatcher\.go
-      linters:
-        - forbidigo
   max-issues-per-linter: 0
   max-same-issues: 0

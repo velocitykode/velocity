@@ -178,7 +178,10 @@ func RegexRule(field string, value interface{}, params []string, data map[string
 	// timeout is belt-and-suspenders for unforeseen edge cases.
 	type result struct{ matched bool }
 	done := make(chan result, 1)
-	go func() {
+	// Not async.Go: must forward a recovered panic value through `done`
+	// so the outer select treats the regex run as a validation failure
+	// (not an ignored panic that hangs validation until the timeout).
+	go func() { //safe-goroutine: forwards panic via done so outer select reports validation failure, see comment above
 		defer func() {
 			if r := recover(); r != nil {
 				done <- result{matched: false}
