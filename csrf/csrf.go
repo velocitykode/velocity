@@ -718,6 +718,8 @@ func (c *CSRF) RotateToken(oldID, newID string) error {
 // XSRF-TOKEN in place. Production (HTTPS) flows get Secure=true; dev
 // (HTTP) flows get Secure=false. r is required for this reason; the
 // call is a no-op when r is nil.
+//
+// Called from SessionGuard.Logout right after RevokeToken.
 func (c *CSRF) ClearXSRFCookie(w http.ResponseWriter, r *http.Request) {
 	if c == nil || c.config == nil || w == nil || r == nil {
 		return
