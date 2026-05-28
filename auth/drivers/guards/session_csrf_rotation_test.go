@@ -16,11 +16,12 @@ import (
 // Login, Logout, and remember-cookie revival, and to verify the
 // post-rotation XSRF cookie write (M-04).
 type fakeCSRFRotator struct {
-	mu        sync.Mutex
-	rotated   []rotateCall
-	revoked   []string
-	xsrfWrote []string
-	rotateErr error
+	mu         sync.Mutex
+	rotated    []rotateCall
+	revoked    []string
+	xsrfWrote  []string
+	xsrfCleared int
+	rotateErr  error
 }
 
 type rotateCall struct {
@@ -45,6 +46,12 @@ func (f *fakeCSRFRotator) WriteXSRFCookie(_ http.ResponseWriter, sessionID strin
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.xsrfWrote = append(f.xsrfWrote, sessionID)
+}
+
+func (f *fakeCSRFRotator) ClearXSRFCookie(_ http.ResponseWriter, _ *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.xsrfCleared++
 }
 
 // compile-time guarantee SessionGuard satisfies the propagation shape.
@@ -151,6 +158,14 @@ func TestSessionGuard_LogoutRevokesCSRFToken(t *testing.T) {
 	}
 	if rotator.revoked[0] == "" {
 		t.Error("RevokeToken called with empty id; the session id captured BEFORE Invalidate must be passed")
+	}
+	// Logout MUST also clear the XSRF-TOKEN cookie. Without this the
+	// browser keeps the stale token bound to the just-revoked session;
+	// the follow-up POST (e.g. the immediate next login) echoes the
+	// stale value and the server 419s. See Logout teardown symmetry vs
+	// Login's WriteXSRFCookie.
+	if got := rotator.xsrfCleared; got != 1 {
+		t.Fatalf("expected exactly 1 ClearXSRFCookie call, got %d", got)
 	}
 }
 

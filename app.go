@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/velocitykode/velocity/app"
+	"github.com/velocitykode/velocity/auth/drivers/guards"
 	"github.com/velocitykode/velocity/chain"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
@@ -326,6 +327,20 @@ func New(opts ...Option) (*App, error) {
 		encryptor := a.Crypto
 		sessionCookieName := a.config.Session.Name
 		a.config.CSRF.SessionIDResolver = func(r *http.Request) (string, error) {
+			// Prefer the session attached to the request by the
+			// guards.SessionMiddleware eager bootstrap. This covers
+			// the first anonymous GET on a host with no prior cookie:
+			// SessionMiddleware mints a fresh session via
+			// store.Create("") and caches it on the request holder
+			// BEFORE the CSRF safe-method bootstrap runs. Without
+			// this fallback the resolver would only see the (empty)
+			// inbound cookie, return ErrNoSession, and skip writing
+			// XSRF-TOKEN, so the first POST after that visit 419s.
+			if sess := guards.SessionFromRequest(r); sess != nil {
+				if id := sess.ID(); id != "" {
+					return id, nil
+				}
+			}
 			c, err := r.Cookie(sessionCookieName)
 			if err != nil || c.Value == "" {
 				return "", csrf.ErrNoSession

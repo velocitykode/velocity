@@ -93,6 +93,28 @@ type CSRFTokenRotator interface {
 	//   - SingleUse is enabled (the cookie would carry a value about to
 	//     be consumed on the next unsafe request).
 	WriteXSRFCookie(w http.ResponseWriter, sessionID string)
+
+	// ClearXSRFCookie writes a delete-Set-Cookie (Max-Age=-1) for the
+	// XSRF-TOKEN cookie so the browser drops any value bound to a
+	// just-revoked session. The cookie attributes (Name, Path,
+	// SameSite, Secure) MUST match those written by the safe-method
+	// bootstrap so the user agent considers it the same cookie and
+	// removes it. Implementations derive Secure from the incoming
+	// request (r.TLS != nil) so a plain-HTTP dev cookie is matched by
+	// a plain-HTTP delete and the browser actually honours it (browsers
+	// ignore Secure Set-Cookie received over HTTP, leaving the stale
+	// value in place).
+	//
+	// Session guards MUST call this from Logout right after RevokeToken
+	// and before session teardown. Without it the browser keeps the
+	// stale XSRF-TOKEN value, and the next POST after logout (e.g. the
+	// follow-up login) echoes it as X-XSRF-TOKEN; the server has no
+	// matching token in the store for the post-logout session id, and
+	// the request 419s with no useful signal to the SPA.
+	//
+	// No-op when w or r is nil, or when the rotator's configuration
+	// disables cookie writes (WriteXSRFCookie=false).
+	ClearXSRFCookie(w http.ResponseWriter, r *http.Request)
 }
 
 // ViewEngine defines the contract for the view/rendering layer.

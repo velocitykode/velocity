@@ -114,6 +114,21 @@ func sessionFromHolder(r *http.Request) auth.Session {
 	return holder.getSession()
 }
 
+// SessionFromRequest returns the session attached to r via
+// WithSessionContext + SessionMiddleware (eager-bootstrap or
+// handler-resolved), or nil when no session has been bound yet.
+//
+// Exported so cross-package wiring (specifically the framework's
+// default csrf.Config.SessionIDResolver) can read the freshly minted
+// id of an anonymous visitor's just-bootstrapped session BEFORE the
+// session cookie is written on the response. Without this hook, the
+// CSRF middleware's safe-method bootstrap reads only the inbound
+// cookie, sees nothing on the very first anonymous request, and
+// never mints a token for the new id.
+func SessionFromRequest(r *http.Request) auth.Session {
+	return sessionFromHolder(r)
+}
+
 // modifiedSession is the optional capability the save-at-end middleware uses
 // to skip writing a Set-Cookie header for sessions that no handler touched.
 // *auth.BaseSession (and therefore session.CookieSession via embedding)
@@ -819,10 +834,20 @@ func (g *SessionGuard) Logout(w http.ResponseWriter, r *http.Request) error {
 	// logged-out session id. A revoke failure is logged and swallowed:
 	// logout must not refuse to clear the cookie because a downstream
 	// store is unavailable.
-	if rotator := g.getCSRFTokenRotator(); rotator != nil && sessionID != "" {
-		if err := rotator.RevokeToken(sessionID); err != nil {
-			g.logWarn("velocity/auth: csrf token revoke (logout) failed", "session_id", sessionID, "error", err)
+	if rotator := g.getCSRFTokenRotator(); rotator != nil {
+		if sessionID != "" {
+			if err := rotator.RevokeToken(sessionID); err != nil {
+				g.logWarn("velocity/auth: csrf token revoke (logout) failed", "session_id", sessionID, "error", err)
+			}
 		}
+		// Clear the client-side XSRF-TOKEN cookie too. Without this the
+		// browser keeps the stale value bound to the just-revoked
+		// session; the next POST after logout (typically the follow-up
+		// login) echoes it as X-XSRF-TOKEN and the server returns 419
+		// because no token bound to the new (anonymous) session id
+		// matches. Mirrors Login's WriteXSRFCookie symmetry: each side
+		// of the session lifecycle teardown owns the cookie it minted.
+		rotator.ClearXSRFCookie(w, r)
 	}
 
 	// Cycle the persisted remember-me token (H-06 fix). Laravel's

@@ -66,6 +66,23 @@ func (g *SessionGuard) SessionMiddleware() router.MiddlewareFunc {
 				c.Request = r
 			}
 
+			// Eagerly bind a session to the request so anonymous-but-
+			// stateful concerns (CSRF token mint, flash bag, anything
+			// that wants a stable per-visitor id) have something to bind
+			// to before the handler runs. Without this the lazy
+			// SessionGuard.getSession path means a handler that never
+			// touches the session (a plain Inertia page render, a static
+			// dashboard, the login form GET) leaves the response with no
+			// Set-Cookie, so the next POST arrives with no session id and
+			// CSRF middleware has nothing to validate against (419 on the
+			// first state-changing request).
+			//
+			// Order: load existing session first; only Create on miss so
+			// we never overwrite a returning visitor's id. The created
+			// session is marked modified so the doSave path below writes
+			// the cookie even when the handler never touched the bag.
+			ensureSession(g, c.Request)
+
 			// saved guards both the pre-commit hook AND the defer
 			// fallback so the session writes Set-Cookie at most once
 			// per request. Without this gate a handler that calls
@@ -114,6 +131,23 @@ func (g *SessionGuard) SessionMiddleware() router.MiddlewareFunc {
 			return err
 		}
 	}
+}
+
+// ensureSession is the eager-bootstrap helper used by SessionMiddleware.
+// It triggers the guard's normal getSession path, which loads an
+// existing session from cookie OR mints a fresh one via
+// auth.GetSessionFromRequest's store.Create("") fallback. The session
+// is cached in the request-scoped sessionHolder so downstream
+// getSession callers observe the same instance, and (for freshly
+// minted ids) BaseSession sets modified=true so the post-handler
+// doSave path writes the Set-Cookie even when the handler never
+// touches the bag.
+//
+// Exists as a package-level var so test fixtures that stub guard
+// internals can override it, mirroring saveSessionFromMiddleware's
+// seam.
+var ensureSession = func(g *SessionGuard, r *http.Request) {
+	_ = g.getSession(r)
 }
 
 // saveSessionFromMiddleware is a small indirection so tests can override

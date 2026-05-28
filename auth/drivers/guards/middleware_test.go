@@ -151,6 +151,42 @@ func TestSessionMiddleware_NoopWhenSessionNeverAccessed(t *testing.T) {
 	}
 }
 
+// TestSessionMiddleware_EagerlyBootstrapsForAnonymousVisitor pins the
+// eager-bootstrap fix. SessionMiddleware MUST resolve (loading or
+// creating) a session for every request even when the handler never
+// touches it, so an anonymous visitor's first response carries a
+// Set-Cookie. Without this, the CSRF middleware's safe-method
+// XSRF-TOKEN bootstrap has no session id to bind to and the very
+// next POST 419's with no useful token state.
+//
+// The test fixture uses a freshly minted session (auth.NewSession("")
+// → modified=true) so the post-handler doSave path actually fires.
+// The pre-fix middleware skipped getSession entirely when no handler
+// called it, so the trackingStore never observed a Save() call.
+func TestSessionMiddleware_EagerlyBootstrapsForAnonymousVisitor(t *testing.T) {
+	store := &trackingStore{session: &trackingSession{BaseSession: auth.NewSession("")}}
+	g := newGuardForMiddleware(t, store)
+
+	mw := g.SessionMiddleware()
+	handler := mw(func(c *router.Context) error {
+		// Handler never touches the session. Eager bootstrap must
+		// still ensure Save fires because store.Create("") returned a
+		// freshly minted, modified session.
+		return nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/login", nil)
+	rec := httptest.NewRecorder()
+	c := router.NewContext(rec, req)
+
+	if err := handler(c); err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if got := atomic.LoadInt32(&store.session.saves); got != 1 {
+		t.Fatalf("expected eager bootstrap to call Save() once for anonymous visitor, got %d", got)
+	}
+}
+
 func TestSessionMiddleware_FlashWriteIsPersisted(t *testing.T) {
 	// Flash() mutates the bag and marks modified. The middleware MUST
 	// pick that up the same as a Put. Laravel-equivalent flash messages

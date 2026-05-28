@@ -702,6 +702,44 @@ func (c *CSRF) RotateToken(oldID, newID string) error {
 	return nil
 }
 
+// ClearXSRFCookie implements contract.CSRFTokenRotator. Writes a
+// delete-Set-Cookie (Max-Age=-1) for XSRF-TOKEN so the browser drops
+// the value tied to a just-revoked session.
+//
+// The cookie attributes (Name, Path, SameSite) MUST match those written
+// by writeXSRFCookieForSession so the user agent treats this as the
+// same cookie and actually removes it. Domain is intentionally left at
+// the default (host-only) to match the write path, which also does not
+// set Domain.
+//
+// Secure mirrors the request scheme (r.TLS != nil) for the same reason
+// the safe-method bootstrap does: browsers reject a Secure Set-Cookie
+// received over plain HTTP, which on a dev box would leave the stale
+// XSRF-TOKEN in place. Production (HTTPS) flows get Secure=true; dev
+// (HTTP) flows get Secure=false. r is required for this reason; the
+// call is a no-op when r is nil.
+func (c *CSRF) ClearXSRFCookie(w http.ResponseWriter, r *http.Request) {
+	if c == nil || c.config == nil || w == nil || r == nil {
+		return
+	}
+	if !c.config.WriteXSRFCookie {
+		return
+	}
+	cookieName := c.config.XSRFCookieName
+	if cookieName == "" {
+		cookieName = "XSRF-TOKEN"
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     cookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: false,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
 // RevokeToken implements contract.CSRFTokenRotator. It deletes the token
 // bound to id. Session guards call this from Logout (before
 // Session.Invalidate) so the token does not survive the session in the

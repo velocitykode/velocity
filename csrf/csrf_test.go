@@ -2,6 +2,7 @@ package csrf
 
 import (
 	"bytes"
+	"crypto/tls"
 	"errors"
 	"io"
 	"log"
@@ -1594,5 +1595,108 @@ func TestRevokeToken_DeletesEntry(t *testing.T) {
 
 	if err := c.RevokeToken(""); err != nil {
 		t.Errorf("RevokeToken with empty id must be a no-op, got %v", err)
+	}
+}
+
+// TestClearXSRFCookie_WritesDeleteCookie pins the Logout cookie-cleanup
+// symmetry. After Logout, the response MUST carry a delete-Set-Cookie
+// for XSRF-TOKEN whose attributes (Name, Path, SameSite) match the
+// write path, so the browser drops the stale value bound to the
+// just-revoked session. Without this the next POST after logout
+// echoes the stale token as X-XSRF-TOKEN and the server 419's with
+// no useful signal to the SPA.
+func TestClearXSRFCookie_WritesDeleteCookie(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.SessionIDResolver = testCookieResolver("session_id")
+	cfg.Store = stores.NewSessionStore()
+	c := New(cfg)
+
+	req := httptest.NewRequest("POST", "/logout", nil)
+	w := httptest.NewRecorder()
+	c.ClearXSRFCookie(w, req)
+
+	cookies := w.Result().Cookies()
+	var xsrf *http.Cookie
+	for _, k := range cookies {
+		if k.Name == "XSRF-TOKEN" {
+			xsrf = k
+		}
+	}
+	if xsrf == nil {
+		t.Fatalf("ClearXSRFCookie did not write an XSRF-TOKEN Set-Cookie; cookies=%v", cookies)
+	}
+	if xsrf.MaxAge != -1 {
+		t.Errorf("expected MaxAge=-1 (delete), got %d", xsrf.MaxAge)
+	}
+	if xsrf.Value != "" {
+		t.Errorf("expected empty Value on delete, got %q", xsrf.Value)
+	}
+	if xsrf.Path != "/" {
+		t.Errorf("expected Path=/, got %q (must match writeXSRFCookieForSession so browser treats as same cookie)", xsrf.Path)
+	}
+	if xsrf.SameSite != http.SameSiteLaxMode {
+		t.Errorf("expected SameSite=Lax, got %v (must match write path)", xsrf.SameSite)
+	}
+	if xsrf.HttpOnly {
+		t.Error("expected HttpOnly=false, got true (must match write path)")
+	}
+	// httptest.NewRequest produces a plain-HTTP request (TLS=nil) so
+	// Secure must be false; the write path uses the same r.TLS check
+	// and a Secure delete-cookie over HTTP would be ignored by the
+	// browser, leaving the stale value in place.
+	if xsrf.Secure {
+		t.Error("expected Secure=false on plain-HTTP request (must mirror safe-method bootstrap to actually delete)")
+	}
+}
+
+// TestClearXSRFCookie_SecureMatchesScheme pins the dev/prod parity. On
+// HTTPS requests the delete-cookie MUST be Secure=true so it matches a
+// production-issued Secure XSRF-TOKEN and the browser honours the
+// deletion. Without scheme matching, an HTTP delete sent for an HTTPS
+// cookie (or vice versa) is rejected and the stale value persists.
+func TestClearXSRFCookie_SecureMatchesScheme(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.SessionIDResolver = testCookieResolver("session_id")
+	cfg.Store = stores.NewSessionStore()
+	c := New(cfg)
+
+	req := httptest.NewRequest("POST", "https://example.com/logout", nil)
+	req.TLS = &tls.ConnectionState{} // simulate HTTPS
+	w := httptest.NewRecorder()
+	c.ClearXSRFCookie(w, req)
+
+	var xsrf *http.Cookie
+	for _, k := range w.Result().Cookies() {
+		if k.Name == "XSRF-TOKEN" {
+			xsrf = k
+		}
+	}
+	if xsrf == nil {
+		t.Fatalf("ClearXSRFCookie did not write an XSRF-TOKEN Set-Cookie on HTTPS")
+	}
+	if !xsrf.Secure {
+		t.Error("expected Secure=true on HTTPS request (must mirror safe-method bootstrap)")
+	}
+}
+
+// TestClearXSRFCookie_NoopWhenDisabled pins the WriteXSRFCookie=false
+// opt-out: operators that disable the XSRF cookie write must not
+// observe a delete-cookie either, since they never minted one to
+// begin with.
+func TestClearXSRFCookie_NoopWhenDisabled(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.SessionIDResolver = testCookieResolver("session_id")
+	cfg.Store = stores.NewSessionStore()
+	cfg.WriteXSRFCookie = false
+	c := New(cfg)
+
+	req := httptest.NewRequest("POST", "/logout", nil)
+	w := httptest.NewRecorder()
+	c.ClearXSRFCookie(w, req)
+
+	for _, k := range w.Result().Cookies() {
+		if k.Name == "XSRF-TOKEN" {
+			t.Fatalf("ClearXSRFCookie wrote XSRF-TOKEN despite WriteXSRFCookie=false (%+v)", k)
+		}
 	}
 }
