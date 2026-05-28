@@ -49,7 +49,10 @@ func RunDriverContractTests(t *testing.T, factory DriverFactory) {
 			}
 		}()
 		// Drivers MAY treat nil ctx as Background or return an error;
-		// the invariant is "never panic".
+		// the invariant is "never panic". Using a typed nil here is the
+		// adversarial test fixture; production callers should pass
+		// context.Background or a real request ctx.
+		//lint:ignore SA1012 contract probe: nil-ctx defensive guard is what's under test
 		_ = d.BroadcastCtx(nil, []string{"any"}, "evt", "data")
 	})
 

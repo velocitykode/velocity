@@ -287,15 +287,7 @@ func (m *Manager) GetWithContext(ctx context.Context, key string) (interface{}, 
 	if err != nil {
 		return nil, false
 	}
-	var (
-		value interface{}
-		found bool
-	)
-	if cs, ok := store.(ContextStore); ok {
-		value, found = cs.GetCtx(ctx, key)
-	} else {
-		value, found = store.Get(key)
-	}
+	value, found := store.GetCtx(ctx, key)
 	if found {
 		m.dispatchCacheHit(ctx, key, m.defaultStore)
 	} else {
@@ -325,14 +317,8 @@ func (m *Manager) PutWithContext(ctx context.Context, key string, value interfac
 	if err != nil {
 		return err
 	}
-	if cs, ok := store.(ContextStore); ok {
-		if err := cs.PutCtx(ctx, key, value, ttl); err != nil {
-			return err
-		}
-	} else {
-		if err := store.Put(key, value, ttl); err != nil {
-			return err
-		}
+	if err := store.PutCtx(ctx, key, value, ttl); err != nil {
+		return err
 	}
 	m.dispatchCacheWritten(ctx, key, m.defaultStore, ttl)
 	return nil
@@ -352,15 +338,7 @@ func (m *Manager) AddWithContext(ctx context.Context, key string, value interfac
 	if err != nil {
 		return false, err
 	}
-	var (
-		inserted bool
-		addErr   error
-	)
-	if cs, ok := store.(ContextStore); ok {
-		inserted, addErr = cs.AddCtx(ctx, key, value, ttl)
-	} else {
-		inserted, addErr = store.Add(key, value, ttl)
-	}
+	inserted, addErr := store.AddCtx(ctx, key, value, ttl)
 	if addErr != nil {
 		return false, addErr
 	}
@@ -382,14 +360,8 @@ func (m *Manager) ForeverWithContext(ctx context.Context, key string, value inte
 	if err != nil {
 		return err
 	}
-	if cs, ok := store.(ContextStore); ok {
-		if err := cs.ForeverCtx(ctx, key, value); err != nil {
-			return err
-		}
-	} else {
-		if err := store.Forever(key, value); err != nil {
-			return err
-		}
+	if err := store.ForeverCtx(ctx, key, value); err != nil {
+		return err
 	}
 	m.dispatchCacheWritten(ctx, key, m.defaultStore, 0) // TTL=0 means forever
 	return nil
@@ -407,14 +379,8 @@ func (m *Manager) ForgetWithContext(ctx context.Context, key string) error {
 	if err != nil {
 		return err
 	}
-	if cs, ok := store.(ContextStore); ok {
-		if err := cs.ForgetCtx(ctx, key); err != nil {
-			return err
-		}
-	} else {
-		if err := store.Forget(key); err != nil {
-			return err
-		}
+	if err := store.ForgetCtx(ctx, key); err != nil {
+		return err
 	}
 	m.dispatchCacheForgotten(ctx, key, m.defaultStore)
 	return nil
@@ -545,31 +511,17 @@ func (m *Manager) RememberEWithContext(ctx context.Context, key string, ttl time
 	if err != nil {
 		return nil, err
 	}
-	cs, hasCtx := store.(ContextStore)
-
 	getFn := func() (interface{}, bool) {
-		if hasCtx {
-			return cs.GetCtx(ctx, key)
-		}
-		return store.Get(key)
+		return store.GetCtx(ctx, key)
 	}
 	addFn := func(v interface{}, addTTL time.Duration) (bool, error) {
-		if hasCtx {
-			return cs.AddCtx(ctx, key, v, addTTL)
-		}
-		return store.Add(key, v, addTTL)
+		return store.AddCtx(ctx, key, v, addTTL)
 	}
 	putFn := func(v interface{}) error {
-		if hasCtx {
-			return cs.PutCtx(ctx, key, v, ttl)
-		}
-		return store.Put(key, v, ttl)
+		return store.PutCtx(ctx, key, v, ttl)
 	}
 	forgetFn := func() error {
-		if hasCtx {
-			return cs.ForgetCtx(ctx, key)
-		}
-		return store.Forget(key)
+		return store.ForgetCtx(ctx, key)
 	}
 
 	if val, found := getFn(); found {
@@ -671,31 +623,17 @@ func (m *Manager) RememberForeverEWithContext(ctx context.Context, key string, c
 	if err != nil {
 		return nil, err
 	}
-	cs, hasCtx := store.(ContextStore)
-
 	getFn := func() (interface{}, bool) {
-		if hasCtx {
-			return cs.GetCtx(ctx, key)
-		}
-		return store.Get(key)
+		return store.GetCtx(ctx, key)
 	}
 	addFn := func(v interface{}, addTTL time.Duration) (bool, error) {
-		if hasCtx {
-			return cs.AddCtx(ctx, key, v, addTTL)
-		}
-		return store.Add(key, v, addTTL)
+		return store.AddCtx(ctx, key, v, addTTL)
 	}
 	foreverFn := func(v interface{}) error {
-		if hasCtx {
-			return cs.ForeverCtx(ctx, key, v)
-		}
-		return store.Forever(key, v)
+		return store.ForeverCtx(ctx, key, v)
 	}
 	forgetFn := func() error {
-		if hasCtx {
-			return cs.ForgetCtx(ctx, key)
-		}
-		return store.Forget(key)
+		return store.ForgetCtx(ctx, key)
 	}
 
 	if val, found := getFn(); found {
