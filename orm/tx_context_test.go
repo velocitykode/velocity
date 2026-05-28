@@ -15,6 +15,13 @@ import (
 func setupTxContextTest(t *testing.T) (*Manager, func()) {
 	t.Helper()
 	m := newTestManager(t)
+	// sqlite `:memory:` gives each pool connection its own private
+	// database. Tx-cancellation tests grab a fresh connection for the
+	// post-rollback COUNT verification and intermittently land on one
+	// that never saw the CREATE TABLE, surfacing "no such table". Pin
+	// to a single connection so every query in the test sees the same
+	// in-memory state.
+	m.DB().SetMaxOpenConns(1)
 	prev := Default()
 	SetDefault(m)
 	mustExec := func(sqlStmt string) {
