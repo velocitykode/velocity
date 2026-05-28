@@ -459,7 +459,7 @@ func (g *SessionGuard) CheckWithError(r *http.Request) (bool, error) {
 		return true, nil
 	}
 
-	user, err := g.loadProvider().FindByID(userID)
+	user, err := g.loadProvider().FindByIDCtx(r.Context(), userID)
 	if err != nil || user == nil {
 		return false, nil
 	}
@@ -505,7 +505,7 @@ func (g *SessionGuard) User(r *http.Request) auth.Authenticatable {
 		return user
 	}
 
-	user, err := g.loadProvider().FindByID(userID)
+	user, err := g.loadProvider().FindByIDCtx(r.Context(), userID)
 	if err != nil {
 		return nil
 	}
@@ -648,7 +648,7 @@ func (g *SessionGuard) Login(w http.ResponseWriter, r *http.Request, user auth.A
 
 	// Handle remember me
 	if len(remember) > 0 && remember[0] {
-		if err := g.setRememberCookie(w, user); err != nil {
+		if err := g.setRememberCookie(r.Context(), w, user); err != nil {
 			return err
 		}
 	}
@@ -664,7 +664,7 @@ func (g *SessionGuard) Login(w http.ResponseWriter, r *http.Request, user auth.A
 
 // LoginByID logs in a user by ID
 func (g *SessionGuard) LoginByID(w http.ResponseWriter, r *http.Request, id interface{}, remember ...bool) error {
-	user, err := g.loadProvider().FindByID(id)
+	user, err := g.loadProvider().FindByIDCtx(r.Context(), id)
 	if err != nil {
 		return err
 	}
@@ -713,7 +713,7 @@ func (g *SessionGuard) Attempt(w http.ResponseWriter, r *http.Request, credentia
 	dummyHash := dummyHashForHasher(hasher)
 
 	auth.Timebox(g.effectiveAttemptFloor(), func() {
-		user, findErr = provider.FindByCredentials(credentials)
+		user, findErr = provider.FindByCredentialsCtx(r.Context(), credentials)
 		password, passwordTypedOK = credentials["password"].(string)
 
 		if findErr != nil || user == nil {
@@ -839,8 +839,8 @@ func (g *SessionGuard) Logout(w http.ResponseWriter, r *http.Request) error {
 	// reconcile.
 	if userID := session.Get("user_id"); userID != nil {
 		provider := g.loadProvider()
-		if user, err := provider.FindByID(userID); err == nil && user != nil {
-			if err := provider.UpdateRememberToken(user, ""); err != nil {
+		if user, err := provider.FindByIDCtx(r.Context(), userID); err == nil && user != nil {
+			if err := provider.UpdateRememberTokenCtx(r.Context(), user, ""); err != nil {
 				g.logWarn("velocity/auth: clear remember token (logout) failed", "user_id", userID, "error", err)
 			}
 		}
@@ -1070,11 +1070,11 @@ func (g *SessionGuard) recordServerSession(r *http.Request, session auth.Session
 // deliberately does NOT call this method.
 func (g *SessionGuard) ClearRememberTokensForUser(ctx context.Context, userID string) error {
 	provider := g.loadProvider()
-	user, err := provider.FindByID(userID)
+	user, err := provider.FindByIDCtx(ctx, userID)
 	if err != nil || user == nil {
 		return nil
 	}
-	return provider.UpdateRememberToken(user, "")
+	return provider.UpdateRememberTokenCtx(ctx, user, "")
 }
 
 // clientIP returns the originating client IP for r, honouring the
@@ -1119,7 +1119,7 @@ func (g *SessionGuard) checkRememberCookie(r *http.Request) auth.Authenticatable
 	token := parts[1]
 
 	// Look up user by ID
-	user, err := g.loadProvider().FindByID(userID)
+	user, err := g.loadProvider().FindByIDCtx(r.Context(), userID)
 	if err != nil || user == nil {
 		return nil
 	}
@@ -1161,7 +1161,9 @@ func (g *SessionGuard) rememberCookieLifetime() (time.Duration, error) {
 // The raw token is encrypted into the cookie; only its SHA-256 hash is
 // persisted on the user record. Cookie TTL is min(session lifetime,
 // 30 days). Refuses to issue a cookie when the session lifetime is zero.
-func (g *SessionGuard) setRememberCookie(w http.ResponseWriter, user auth.Authenticatable) error {
+// ctx is threaded into the UserProvider write so a request cancellation
+// aborts the persistence call instead of pinning a DB connection.
+func (g *SessionGuard) setRememberCookie(ctx context.Context, w http.ResponseWriter, user auth.Authenticatable) error {
 	ttl, err := g.rememberCookieLifetime()
 	if err != nil {
 		return err
@@ -1176,7 +1178,7 @@ func (g *SessionGuard) setRememberCookie(w http.ResponseWriter, user auth.Authen
 	// Store only the hash of the token on the user record.
 	hashed := hashRememberToken(token)
 	user.SetRememberToken(hashed)
-	if err := g.loadProvider().UpdateRememberToken(user, hashed); err != nil {
+	if err := g.loadProvider().UpdateRememberTokenCtx(ctx, user, hashed); err != nil {
 		return err
 	}
 

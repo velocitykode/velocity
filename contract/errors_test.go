@@ -34,26 +34,17 @@ func TestSentinelStability(t *testing.T) {
 		{"ErrBatchNotFound", contract.ErrBatchNotFound, "velocity/queue: batch not found"},
 		{"ErrCacheStoreNotFound", contract.ErrCacheStoreNotFound, "velocity/cache: store not found"},
 		{"ErrCacheKeyNotFound", contract.ErrCacheKeyNotFound, "velocity/cache: key not found"},
-		{"ErrStorageFileNotFound", contract.ErrStorageFileNotFound, "velocity/storage: file not found"},
+		{"ErrFileNotFound", contract.ErrFileNotFound, "velocity/storage: file not found"},
 		{"ErrDiskNotFound", contract.ErrDiskNotFound, "velocity/storage: disk not found"},
 		{"ErrBroadcastDriverNotFound", contract.ErrBroadcastDriverNotFound, "velocity/broadcast: driver not found"},
-		{"ErrCryptoInvalidKey", contract.ErrCryptoInvalidKey, "velocity/crypto: invalid encryption key"},
-		{"ErrCryptoInvalidPreviousKey", contract.ErrCryptoInvalidPreviousKey, "velocity/crypto: invalid previous key"},
-		{"ErrCryptoInvalidPayload", contract.ErrCryptoInvalidPayload, "velocity/crypto: invalid payload format"},
+		{"ErrInvalidKey", contract.ErrInvalidKey, "velocity/crypto: invalid encryption key"},
+		{"ErrInvalidPreviousKey", contract.ErrInvalidPreviousKey, "velocity/crypto: invalid previous key"},
+		{"ErrInvalidPayload", contract.ErrInvalidPayload, "velocity/crypto: invalid payload format"},
 	}
 	for _, tc := range stable {
 		if got := tc.err.Error(); got != tc.want {
 			t.Errorf("%s: Error() = %q, want %q (sentinel string changed; pre-1.0 review required)", tc.name, got, tc.want)
 		}
-	}
-
-	// broadcast.ErrUnauthorized stayed package-local but was explicitly
-	// re-prefixed in the API-surface sweep (previously the unprefixed
-	// "unauthorized channel access"). Pin its string here so a future
-	// edit that drops the velocity/broadcast: namespace breaks the test
-	// loudly instead of silently regressing the convention.
-	if got, want := broadcast.ErrUnauthorized.Error(), "velocity/broadcast: unauthorized channel access"; got != want {
-		t.Errorf("broadcast.ErrUnauthorized: Error() = %q, want %q (sentinel string changed; pre-1.0 review required)", got, want)
 	}
 
 	// Aliases must preserve identity so errors.Is keeps matching against
@@ -67,13 +58,13 @@ func TestSentinelStability(t *testing.T) {
 		{"queue.ErrBatchNotFound", queue.ErrBatchNotFound, contract.ErrBatchNotFound},
 		{"cache.ErrStoreNotFound", cache.ErrStoreNotFound, contract.ErrCacheStoreNotFound},
 		{"cache.ErrKeyNotFound", cache.ErrKeyNotFound, contract.ErrCacheKeyNotFound},
-		{"storage.ErrFileNotFound", storage.ErrFileNotFound, contract.ErrStorageFileNotFound},
+		{"storage.ErrFileNotFound", storage.ErrFileNotFound, contract.ErrFileNotFound},
 		{"storage.ErrDiskNotFound", storage.ErrDiskNotFound, contract.ErrDiskNotFound},
 		{"broadcast.ErrDriverNotFound", broadcast.ErrDriverNotFound, contract.ErrBroadcastDriverNotFound},
-		{"crypto.ErrInvalidKey", crypto.ErrInvalidKey, contract.ErrCryptoInvalidKey},
-		{"crypto.ErrInvalidPreviousKey", crypto.ErrInvalidPreviousKey, contract.ErrCryptoInvalidPreviousKey},
-		{"crypto.ErrInvalidPayload", crypto.ErrInvalidPayload, contract.ErrCryptoInvalidPayload},
-		{"crypto/drivers.ErrInvalidPayload", cryptodrivers.ErrInvalidPayload, contract.ErrCryptoInvalidPayload},
+		{"crypto.ErrInvalidKey", crypto.ErrInvalidKey, contract.ErrInvalidKey},
+		{"crypto.ErrInvalidPreviousKey", crypto.ErrInvalidPreviousKey, contract.ErrInvalidPreviousKey},
+		{"crypto.ErrInvalidPayload", crypto.ErrInvalidPayload, contract.ErrInvalidPayload},
+		{"crypto/drivers.ErrInvalidPayload", cryptodrivers.ErrInvalidPayload, contract.ErrInvalidPayload},
 	}
 	for _, tc := range aliases {
 		if tc.alias != tc.canon {

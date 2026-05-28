@@ -26,10 +26,9 @@ var (
 	// itself (empty input, non-base64 outer, malformed JSON, wrong wire
 	// version). The payload never reached the AEAD/CBC decrypt path.
 	//
-	// Aliased to contract.ErrCryptoInvalidPayload so callers can
-	// errors.Is against the shared identity without importing
-	// crypto/drivers.
-	ErrInvalidPayload = contract.ErrCryptoInvalidPayload
+	// Aliased to contract.ErrInvalidPayload so callers can errors.Is
+	// against the shared identity without importing crypto/drivers.
+	ErrInvalidPayload = contract.ErrInvalidPayload
 	// ErrDecrypt is the single sentinel returned for any decrypt failure
 	// where the inner envelope parsed but the cryptographic check failed
 	// or could not be safely performed. CBC paths used to surface six

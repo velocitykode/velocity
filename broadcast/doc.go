@@ -17,12 +17,5 @@
 //	                      driver would silently accept unsigned
 //	                      subscribes.
 //
-// # Lifecycle hooks
-//
-// Cross-cutting lifecycle hooks (contract.ShutdownAware) are defined in
-// the contract package and apply uniformly to every Velocity manager
-// that holds background resources; they are not duplicated in each
-// package's capability table.
-//
 // Capability detection is a plain type assertion at the call site.
 package broadcast

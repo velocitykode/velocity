@@ -27,6 +27,10 @@ type captureCall struct {
 }
 
 func (d *captureDriver) Broadcast(channels []string, event string, data interface{}) error {
+	return d.BroadcastCtx(context.Background(), channels, event, data)
+}
+
+func (d *captureDriver) BroadcastCtx(_ context.Context, channels []string, event string, data interface{}) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	cp := make([]string, len(channels))
@@ -35,8 +39,12 @@ func (d *captureDriver) Broadcast(channels []string, event string, data interfac
 	return d.emitErr
 }
 
-func (d *captureDriver) BroadcastExcept(channels []string, event string, data interface{}, _ string) error {
-	return d.Broadcast(channels, event, data)
+func (d *captureDriver) BroadcastExcept(channels []string, event string, data interface{}, socketID string) error {
+	return d.BroadcastExceptCtx(context.Background(), channels, event, data, socketID)
+}
+
+func (d *captureDriver) BroadcastExceptCtx(ctx context.Context, channels []string, event string, data interface{}, _ string) error {
+	return d.BroadcastCtx(ctx, channels, event, data)
 }
 
 func (d *captureDriver) GetClients(_ string) []string { return nil }

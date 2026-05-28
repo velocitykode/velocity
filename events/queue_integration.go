@@ -516,6 +516,13 @@ type FailureReporter func(job *EventListenerJob, err error)
 // job registry (queue.RegisterJob) so cross-process workers can rehydrate
 // jobs from JSON bytes. The registry key is derived from the job type, so
 // producer and consumer paths stay symmetric by construction.
+//
+// Deprecated: this is a bootstrap-only hook wired exactly once from
+// velocity.App.bootstrap. The canonical entry point now lives at
+// github.com/velocitykode/velocity/internal/eventqueue.InitializeQueueIntegration
+// so that consumer code cannot import it. The shim here is retained so
+// the white-box tests in this package keep compiling without an import
+// cycle; new framework callers MUST import the internal package.
 func InitializeQueueIntegration(dispatcher *QueueIntegratedDispatcher, driver queue.Driver, reporter FailureReporter) {
 	queue.RegisterJob(func(data []byte) (*EventListenerJob, error) {
 		var job EventListenerJob

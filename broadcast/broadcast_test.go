@@ -1,6 +1,7 @@
 package broadcast
 
 import (
+	"context"
 	"testing"
 )
 
@@ -25,6 +26,10 @@ func NewMockDriver() *MockDriver {
 }
 
 func (m *MockDriver) Broadcast(channels []string, event string, data interface{}) error {
+	return m.BroadcastCtx(context.Background(), channels, event, data)
+}
+
+func (m *MockDriver) BroadcastCtx(_ context.Context, channels []string, event string, data interface{}) error {
 	m.broadcasts = append(m.broadcasts, BroadcastCall{
 		Channels: channels,
 		Event:    event,
@@ -34,6 +39,10 @@ func (m *MockDriver) Broadcast(channels []string, event string, data interface{}
 }
 
 func (m *MockDriver) BroadcastExcept(channels []string, event string, data interface{}, socketID string) error {
+	return m.BroadcastExceptCtx(context.Background(), channels, event, data, socketID)
+}
+
+func (m *MockDriver) BroadcastExceptCtx(_ context.Context, channels []string, event string, data interface{}, socketID string) error {
 	m.broadcasts = append(m.broadcasts, BroadcastCall{
 		Channels: channels,
 		Event:    event,

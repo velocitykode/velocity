@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -26,13 +27,22 @@ type jwtRefreshTestProvider struct {
 func (p *jwtRefreshTestProvider) FindByID(id interface{}) (Authenticatable, error) {
 	return p.user, nil
 }
+func (p *jwtRefreshTestProvider) FindByIDCtx(context.Context, interface{}) (Authenticatable, error) {
+	return p.user, nil
+}
 func (p *jwtRefreshTestProvider) FindByCredentials(map[string]interface{}) (Authenticatable, error) {
+	return p.user, nil
+}
+func (p *jwtRefreshTestProvider) FindByCredentialsCtx(context.Context, map[string]interface{}) (Authenticatable, error) {
 	return p.user, nil
 }
 func (p *jwtRefreshTestProvider) ValidateCredentials(Authenticatable, map[string]interface{}) bool {
 	return true
 }
 func (p *jwtRefreshTestProvider) UpdateRememberToken(Authenticatable, string) error { return nil }
+func (p *jwtRefreshTestProvider) UpdateRememberTokenCtx(context.Context, Authenticatable, string) error {
+	return nil
+}
 
 // newJWTManagerForRefresh constructs a JWTManager wired with the in-memory
 // refresh-generation store the H-07 fix added by default.

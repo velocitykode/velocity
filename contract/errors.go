@@ -53,9 +53,9 @@ var (
 	// the key is absent. Hoisted from cache.ErrKeyNotFound.
 	ErrCacheKeyNotFound = errors.New("velocity/cache: key not found")
 
-	// ErrStorageFileNotFound is returned by storage drivers when a path
-	// does not exist. Hoisted from storage.ErrFileNotFound.
-	ErrStorageFileNotFound = errors.New("velocity/storage: file not found")
+	// ErrFileNotFound is returned by storage drivers when a path does not
+	// exist. Hoisted from storage.ErrFileNotFound.
+	ErrFileNotFound = errors.New("velocity/storage: file not found")
 
 	// ErrDiskNotFound is returned by the storage manager when a named disk
 	// has not been configured. Hoisted from storage.ErrDiskNotFound.
@@ -66,19 +66,19 @@ var (
 	// broadcast.ErrDriverNotFound.
 	ErrBroadcastDriverNotFound = errors.New("velocity/broadcast: driver not found")
 
-	// ErrCryptoInvalidKey is returned by the crypto subsystem when an
-	// encryption key is empty, malformed, or the wrong length for the
-	// configured cipher. Hoisted from crypto.ErrInvalidKey.
-	ErrCryptoInvalidKey = errors.New("velocity/crypto: invalid encryption key")
+	// ErrInvalidKey is returned by the crypto subsystem when an encryption
+	// key is empty, malformed, or the wrong length for the configured
+	// cipher. Hoisted from crypto.ErrInvalidKey.
+	ErrInvalidKey = errors.New("velocity/crypto: invalid encryption key")
 
-	// ErrCryptoInvalidPreviousKey is returned when an entry in
-	// Config.PreviousKeys is malformed (bad base64, wrong length, etc.).
-	// Hoisted from crypto.ErrInvalidPreviousKey.
-	ErrCryptoInvalidPreviousKey = errors.New("velocity/crypto: invalid previous key")
+	// ErrInvalidPreviousKey is returned when an entry in Config.PreviousKeys
+	// is malformed (bad base64, wrong length, etc.). Hoisted from
+	// crypto.ErrInvalidPreviousKey.
+	ErrInvalidPreviousKey = errors.New("velocity/crypto: invalid previous key")
 
-	// ErrCryptoInvalidPayload is returned by crypto drivers when the
-	// ciphertext envelope is structurally invalid (empty, wrong version,
-	// truncated). Distinct from ErrDecrypt: structural defects vs.
-	// cryptographic failure. Hoisted from crypto/drivers.ErrInvalidPayload.
-	ErrCryptoInvalidPayload = errors.New("velocity/crypto: invalid payload format")
+	// ErrInvalidPayload is returned by crypto drivers when the ciphertext
+	// envelope is structurally invalid (empty, wrong version, truncated).
+	// Distinct from ErrDecrypt: structural defects vs. cryptographic failure.
+	// Hoisted from crypto/drivers.ErrInvalidPayload.
+	ErrInvalidPayload = errors.New("velocity/crypto: invalid payload format")
 )

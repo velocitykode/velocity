@@ -1,6 +1,7 @@
 package guards
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -26,11 +27,19 @@ func (p *mockSessionGuardUserProvider) FindByID(id interface{}) (auth.Authentica
 	return &mockSessionGuardUser{id: id, password: "hashedpassword"}, nil
 }
 
+func (p *mockSessionGuardUserProvider) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+	return p.FindByID(id)
+}
+
 func (p *mockSessionGuardUserProvider) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
 	if p.findByCredentialsFunc != nil {
 		return p.findByCredentialsFunc(credentials)
 	}
 	return &mockSessionGuardUser{id: "user123", email: "test@example.com", password: "hashedpassword"}, nil
+}
+
+func (p *mockSessionGuardUserProvider) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+	return p.FindByCredentials(credentials)
 }
 
 func (p *mockSessionGuardUserProvider) ValidateCredentials(user auth.Authenticatable, credentials map[string]interface{}) bool {
@@ -45,6 +54,10 @@ func (p *mockSessionGuardUserProvider) UpdateRememberToken(user auth.Authenticat
 		return p.updateRememberTokenFunc(user, token)
 	}
 	return nil
+}
+
+func (p *mockSessionGuardUserProvider) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+	return p.UpdateRememberToken(user, token)
 }
 
 // mockSessionGuardUser implements auth.Authenticatable for session guard tests

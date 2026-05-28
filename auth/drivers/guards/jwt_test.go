@@ -1,6 +1,7 @@
 package guards
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -1270,4 +1271,15 @@ func TestJWTGuard_ValidateToken_NegativeTable(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Ctx-suffixed shims for auth.UserProvider, added in Sweep 1b.
+func (p *mockJWTUserProvider) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+	return p.FindByID(id)
+}
+func (p *mockJWTUserProvider) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+	return p.FindByCredentials(credentials)
+}
+func (p *mockJWTUserProvider) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+	return p.UpdateRememberToken(user, token)
 }

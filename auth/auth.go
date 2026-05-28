@@ -157,18 +157,39 @@ type Authenticatable interface {
 	SetRememberToken(token string)
 }
 
-// UserProvider handles user retrieval and validation
+// UserProvider handles user retrieval and validation.
+//
+// Every method that performs I/O (database query, identity provider RPC,
+// etc.) comes in pairs: a `Ctx`-suffixed variant that threads the caller's
+// context.Context through to the underlying store so a request cancellation
+// (client disconnect, timeout middleware) aborts the lookup, and a non-Ctx
+// Deprecated shim that calls the Ctx variant with context.Background().
+// New code MUST call the Ctx variants.
+//
+// ValidateCredentials does no I/O (it compares a candidate password to the
+// already-loaded user's stored hash), so it has no Ctx variant.
 type UserProvider interface {
-	// Retrieve user by ID
+	// FindByIDCtx retrieves a user by ID using the provided context.
+	FindByIDCtx(ctx context.Context, id interface{}) (Authenticatable, error)
+
+	// Deprecated: use FindByIDCtx with a request-scoped context.Context.
 	FindByID(id interface{}) (Authenticatable, error)
 
-	// Retrieve user by credentials
+	// FindByCredentialsCtx retrieves a user by credentials (e.g. email).
+	FindByCredentialsCtx(ctx context.Context, credentials map[string]interface{}) (Authenticatable, error)
+
+	// Deprecated: use FindByCredentialsCtx with a request-scoped context.Context.
 	FindByCredentials(credentials map[string]interface{}) (Authenticatable, error)
 
-	// Validate user credentials
+	// ValidateCredentials validates user credentials against the in-memory user
+	// representation. Pure CPU work (bcrypt compare), so no Ctx variant.
 	ValidateCredentials(user Authenticatable, credentials map[string]interface{}) bool
 
-	// Update remember token
+	// UpdateRememberTokenCtx persists the remember token through the provider's
+	// backing store.
+	UpdateRememberTokenCtx(ctx context.Context, user Authenticatable, token string) error
+
+	// Deprecated: use UpdateRememberTokenCtx with a request-scoped context.Context.
 	UpdateRememberToken(user Authenticatable, token string) error
 }
 

@@ -187,8 +187,13 @@ func (s *FileStore) prefixedKey(key string) string {
 	return PrefixKey(s.prefix, key)
 }
 
-// Get retrieves a value from the cache
-func (s *FileStore) Get(key string) (interface{}, bool) {
+// GetCtx retrieves a value from the cache. The file store performs only
+// local disk I/O that is not cancellable through context, so ctx is
+// honoured as a pre-flight cancellation check but otherwise unused.
+func (s *FileStore) GetCtx(ctx context.Context, key string) (interface{}, bool) {
+	if ctx != nil && ctx.Err() != nil {
+		return nil, false
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -218,13 +223,40 @@ func (s *FileStore) Get(key string) (interface{}, bool) {
 	return value, true
 }
 
-// GetString retrieves a string value from the cache.
-func (s *FileStore) GetString(key string) (string, bool) {
-	return GetStringFrom(s, key)
+// Get retrieves a value from the cache.
+//
+// Deprecated: use GetCtx with a request-scoped context.Context.
+func (s *FileStore) Get(key string) (interface{}, bool) {
+	return s.GetCtx(context.Background(), key)
 }
 
-// Put stores a value in the cache with a TTL
-func (s *FileStore) Put(key string, value interface{}, ttl time.Duration) error {
+// GetStringCtx retrieves a string value from the cache.
+func (s *FileStore) GetStringCtx(ctx context.Context, key string) (string, bool) {
+	val, found := s.GetCtx(ctx, key)
+	if !found {
+		return "", false
+	}
+	str, ok := val.(string)
+	if !ok {
+		return "", false
+	}
+	return str, true
+}
+
+// GetString retrieves a string value from the cache.
+//
+// Deprecated: use GetStringCtx with a request-scoped context.Context.
+func (s *FileStore) GetString(key string) (string, bool) {
+	return s.GetStringCtx(context.Background(), key)
+}
+
+// PutCtx stores a value in the cache with a TTL.
+func (s *FileStore) PutCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -255,6 +287,13 @@ func (s *FileStore) Put(key string, value interface{}, ttl time.Duration) error 
 	return nil
 }
 
+// Put stores a value in the cache with a TTL.
+//
+// Deprecated: use PutCtx with a request-scoped context.Context.
+func (s *FileStore) Put(key string, value interface{}, ttl time.Duration) error {
+	return s.PutCtx(context.Background(), key, value, ttl)
+}
+
 // Add atomically stores a value only if the key does not already
 // exist (or its existing entry is expired). Returns true if inserted,
 // false if a non-expired entry was already present or if another
@@ -278,7 +317,12 @@ func (s *FileStore) Put(key string, value interface{}, ttl time.Duration) error 
 // that preserves the SETNX contract; operators that need cross-process
 // single-flight on Windows should use the Redis driver. The fresh-key
 // create path is still O_EXCL-protected on every platform.
-func (s *FileStore) Add(key string, value interface{}, ttl time.Duration) (bool, error) {
+func (s *FileStore) AddCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) (bool, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -353,7 +397,9 @@ func (s *FileStore) Add(key string, value interface{}, ttl time.Duration) (bool,
 	}
 	owner := newAddOwnerID()
 	lock := NewFileLock(lockStore, PrefixKey(s.prefix, "add:"+key), owner, 30*time.Second)
-	ctx := context.Background()
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	acquired, aerr := lock.GetWithErr(ctx)
 	if aerr != nil {
 		// Backend failure on the lock store itself (filesystem
@@ -393,8 +439,20 @@ func (s *FileStore) Add(key string, value interface{}, ttl time.Duration) (bool,
 	return true, nil
 }
 
-// Forever stores a value in the cache indefinitely
-func (s *FileStore) Forever(key string, value interface{}) error {
+// Add atomically stores a value only if the key does not already exist.
+//
+// Deprecated: use AddCtx with a request-scoped context.Context.
+func (s *FileStore) Add(key string, value interface{}, ttl time.Duration) (bool, error) {
+	return s.AddCtx(context.Background(), key, value, ttl)
+}
+
+// ForeverCtx stores a value in the cache indefinitely.
+func (s *FileStore) ForeverCtx(ctx context.Context, key string, value interface{}) error {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -424,8 +482,20 @@ func (s *FileStore) Forever(key string, value interface{}) error {
 	return nil
 }
 
-// Forget removes a value from the cache
-func (s *FileStore) Forget(key string) error {
+// Forever stores a value in the cache indefinitely.
+//
+// Deprecated: use ForeverCtx with a request-scoped context.Context.
+func (s *FileStore) Forever(key string, value interface{}) error {
+	return s.ForeverCtx(context.Background(), key, value)
+}
+
+// ForgetCtx removes a value from the cache.
+func (s *FileStore) ForgetCtx(ctx context.Context, key string) error {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -437,8 +507,20 @@ func (s *FileStore) Forget(key string) error {
 	return nil
 }
 
-// Flush removes all values from the cache
-func (s *FileStore) Flush() error {
+// Forget removes a value from the cache.
+//
+// Deprecated: use ForgetCtx with a request-scoped context.Context.
+func (s *FileStore) Forget(key string) error {
+	return s.ForgetCtx(context.Background(), key)
+}
+
+// FlushCtx removes all values from the cache.
+func (s *FileStore) FlushCtx(ctx context.Context) error {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -454,8 +536,20 @@ func (s *FileStore) Flush() error {
 	})
 }
 
-// Increment increments a numeric value
-func (s *FileStore) Increment(key string, value int64) (int64, error) {
+// Flush removes all values from the cache.
+//
+// Deprecated: use FlushCtx with a request-scoped context.Context.
+func (s *FileStore) Flush() error {
+	return s.FlushCtx(context.Background())
+}
+
+// IncrementCtx increments a numeric value.
+func (s *FileStore) IncrementCtx(ctx context.Context, key string, value int64) (int64, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -520,9 +614,23 @@ func (s *FileStore) Increment(key string, value int64) (int64, error) {
 	return newValue, nil
 }
 
-// Decrement decrements a numeric value
+// Increment increments a numeric value.
+//
+// Deprecated: use IncrementCtx with a request-scoped context.Context.
+func (s *FileStore) Increment(key string, value int64) (int64, error) {
+	return s.IncrementCtx(context.Background(), key, value)
+}
+
+// DecrementCtx decrements a numeric value.
+func (s *FileStore) DecrementCtx(ctx context.Context, key string, value int64) (int64, error) {
+	return s.IncrementCtx(ctx, key, -value)
+}
+
+// Decrement decrements a numeric value.
+//
+// Deprecated: use DecrementCtx with a request-scoped context.Context.
 func (s *FileStore) Decrement(key string, value int64) (int64, error) {
-	return s.Increment(key, -value)
+	return s.DecrementCtx(context.Background(), key, value)
 }
 
 // Remember gets from cache or computes and stores.
@@ -535,30 +643,52 @@ func (s *FileStore) RememberForever(key string, callback func() interface{}) (in
 	return RememberForeverFrom(s, s, key, callback)
 }
 
-// Many retrieves multiple values
-func (s *FileStore) Many(keys []string) map[string]interface{} {
+// ManyCtx retrieves multiple values.
+func (s *FileStore) ManyCtx(ctx context.Context, keys []string) map[string]interface{} {
 	result := make(map[string]interface{})
 	for _, key := range keys {
-		if val, found := s.Get(key); found {
+		if val, found := s.GetCtx(ctx, key); found {
 			result[key] = val
 		}
 	}
 	return result
 }
 
-// PutMany stores multiple values
-func (s *FileStore) PutMany(items map[string]interface{}, ttl time.Duration) error {
+// Many retrieves multiple values.
+//
+// Deprecated: use ManyCtx with a request-scoped context.Context.
+func (s *FileStore) Many(keys []string) map[string]interface{} {
+	return s.ManyCtx(context.Background(), keys)
+}
+
+// PutManyCtx stores multiple values.
+func (s *FileStore) PutManyCtx(ctx context.Context, items map[string]interface{}, ttl time.Duration) error {
 	for key, value := range items {
-		if err := s.Put(key, value, ttl); err != nil {
+		if err := s.PutCtx(ctx, key, value, ttl); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+// PutMany stores multiple values.
+//
+// Deprecated: use PutManyCtx with a request-scoped context.Context.
+func (s *FileStore) PutMany(items map[string]interface{}, ttl time.Duration) error {
+	return s.PutManyCtx(context.Background(), items, ttl)
+}
+
+// HasCtx checks if a key exists.
+func (s *FileStore) HasCtx(ctx context.Context, key string) bool {
+	_, found := s.GetCtx(ctx, key)
+	return found
+}
+
 // Has checks if a key exists.
+//
+// Deprecated: use HasCtx with a request-scoped context.Context.
 func (s *FileStore) Has(key string) bool {
-	return HasFrom(s, key)
+	return s.HasCtx(context.Background(), key)
 }
 
 // GetPrefix returns the cache prefix

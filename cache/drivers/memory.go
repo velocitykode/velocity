@@ -91,8 +91,10 @@ func (s *MemoryStore) prefixedKey(key string) string {
 	return PrefixKey(s.prefix, key)
 }
 
-// Get retrieves a value from the cache
-func (s *MemoryStore) Get(key string) (interface{}, bool) {
+// GetCtx retrieves a value from the cache. The memory store does no I/O so
+// ctx is accepted for interface symmetry but otherwise unused.
+func (s *MemoryStore) GetCtx(ctx context.Context, key string) (interface{}, bool) {
+	_ = ctx
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -109,13 +111,36 @@ func (s *MemoryStore) Get(key string) (interface{}, bool) {
 	return item.value, true
 }
 
-// GetString retrieves a string value from the cache.
-func (s *MemoryStore) GetString(key string) (string, bool) {
-	return GetStringFrom(s, key)
+// Get retrieves a value from the cache.
+//
+// Deprecated: use GetCtx with a request-scoped context.Context.
+func (s *MemoryStore) Get(key string) (interface{}, bool) {
+	return s.GetCtx(context.Background(), key)
 }
 
-// Put stores a value in the cache with a TTL
-func (s *MemoryStore) Put(key string, value interface{}, ttl time.Duration) error {
+// GetStringCtx retrieves a string value from the cache.
+func (s *MemoryStore) GetStringCtx(ctx context.Context, key string) (string, bool) {
+	val, found := s.GetCtx(ctx, key)
+	if !found {
+		return "", false
+	}
+	str, ok := val.(string)
+	if !ok {
+		return "", false
+	}
+	return str, true
+}
+
+// GetString retrieves a string value from the cache.
+//
+// Deprecated: use GetStringCtx with a request-scoped context.Context.
+func (s *MemoryStore) GetString(key string) (string, bool) {
+	return s.GetStringCtx(context.Background(), key)
+}
+
+// PutCtx stores a value in the cache with a TTL.
+func (s *MemoryStore) PutCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
+	_ = ctx
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -128,12 +153,20 @@ func (s *MemoryStore) Put(key string, value interface{}, ttl time.Duration) erro
 	return nil
 }
 
-// Add atomically stores a value only if the key does not already exist.
+// Put stores a value in the cache with a TTL.
+//
+// Deprecated: use PutCtx with a request-scoped context.Context.
+func (s *MemoryStore) Put(key string, value interface{}, ttl time.Duration) error {
+	return s.PutCtx(context.Background(), key, value, ttl)
+}
+
+// AddCtx atomically stores a value only if the key does not already exist.
 // Returns true if inserted, false on contention (key already present).
 // Expired entries are treated as absent and overwritten. The atomic
 // check-and-set runs under the store's existing mutex so concurrent
 // callers cannot race past the existence check.
-func (s *MemoryStore) Add(key string, value interface{}, ttl time.Duration) (bool, error) {
+func (s *MemoryStore) AddCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) (bool, error) {
+	_ = ctx
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -152,8 +185,16 @@ func (s *MemoryStore) Add(key string, value interface{}, ttl time.Duration) (boo
 	return true, nil
 }
 
-// Forever stores a value in the cache indefinitely
-func (s *MemoryStore) Forever(key string, value interface{}) error {
+// Add atomically stores a value only if the key does not already exist.
+//
+// Deprecated: use AddCtx with a request-scoped context.Context.
+func (s *MemoryStore) Add(key string, value interface{}, ttl time.Duration) (bool, error) {
+	return s.AddCtx(context.Background(), key, value, ttl)
+}
+
+// ForeverCtx stores a value in the cache indefinitely.
+func (s *MemoryStore) ForeverCtx(ctx context.Context, key string, value interface{}) error {
+	_ = ctx
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -165,8 +206,16 @@ func (s *MemoryStore) Forever(key string, value interface{}) error {
 	return nil
 }
 
-// Forget removes a value from the cache
-func (s *MemoryStore) Forget(key string) error {
+// Forever stores a value in the cache indefinitely.
+//
+// Deprecated: use ForeverCtx with a request-scoped context.Context.
+func (s *MemoryStore) Forever(key string, value interface{}) error {
+	return s.ForeverCtx(context.Background(), key, value)
+}
+
+// ForgetCtx removes a value from the cache.
+func (s *MemoryStore) ForgetCtx(ctx context.Context, key string) error {
+	_ = ctx
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -174,8 +223,16 @@ func (s *MemoryStore) Forget(key string) error {
 	return nil
 }
 
-// Flush removes all values from the cache
-func (s *MemoryStore) Flush() error {
+// Forget removes a value from the cache.
+//
+// Deprecated: use ForgetCtx with a request-scoped context.Context.
+func (s *MemoryStore) Forget(key string) error {
+	return s.ForgetCtx(context.Background(), key)
+}
+
+// FlushCtx removes all values from the cache.
+func (s *MemoryStore) FlushCtx(ctx context.Context) error {
+	_ = ctx
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -183,8 +240,16 @@ func (s *MemoryStore) Flush() error {
 	return nil
 }
 
-// Increment increments a numeric value
-func (s *MemoryStore) Increment(key string, value int64) (int64, error) {
+// Flush removes all values from the cache.
+//
+// Deprecated: use FlushCtx with a request-scoped context.Context.
+func (s *MemoryStore) Flush() error {
+	return s.FlushCtx(context.Background())
+}
+
+// IncrementCtx increments a numeric value.
+func (s *MemoryStore) IncrementCtx(ctx context.Context, key string, value int64) (int64, error) {
+	_ = ctx
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -223,9 +288,23 @@ func (s *MemoryStore) Increment(key string, value int64) (int64, error) {
 	return newValue, nil
 }
 
-// Decrement decrements a numeric value
+// Increment increments a numeric value.
+//
+// Deprecated: use IncrementCtx with a request-scoped context.Context.
+func (s *MemoryStore) Increment(key string, value int64) (int64, error) {
+	return s.IncrementCtx(context.Background(), key, value)
+}
+
+// DecrementCtx decrements a numeric value.
+func (s *MemoryStore) DecrementCtx(ctx context.Context, key string, value int64) (int64, error) {
+	return s.IncrementCtx(ctx, key, -value)
+}
+
+// Decrement decrements a numeric value.
+//
+// Deprecated: use DecrementCtx with a request-scoped context.Context.
 func (s *MemoryStore) Decrement(key string, value int64) (int64, error) {
-	return s.Increment(key, -value)
+	return s.DecrementCtx(context.Background(), key, value)
 }
 
 // Remember gets from cache or computes and stores.
@@ -238,8 +317,9 @@ func (s *MemoryStore) RememberForever(key string, callback func() interface{}) (
 	return RememberForeverFrom(s, s, key, callback)
 }
 
-// Many retrieves multiple values
-func (s *MemoryStore) Many(keys []string) map[string]interface{} {
+// ManyCtx retrieves multiple values.
+func (s *MemoryStore) ManyCtx(ctx context.Context, keys []string) map[string]interface{} {
+	_ = ctx
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -256,14 +336,22 @@ func (s *MemoryStore) Many(keys []string) map[string]interface{} {
 	return result
 }
 
-// PutMany stores multiple values.
+// Many retrieves multiple values.
+//
+// Deprecated: use ManyCtx with a request-scoped context.Context.
+func (s *MemoryStore) Many(keys []string) map[string]interface{} {
+	return s.ManyCtx(context.Background(), keys)
+}
+
+// PutManyCtx stores multiple values.
 // Computes expiration inside the per-item loop so each stored entry carries
 // a pointer to its own *time.Time. The previous implementation shared one
 // *time.Time across every item in the batch, which meant later Increment
 // calls (which preserve the pointer) could extend TTLs unexpectedly, and
 // produced surprising behaviour if the loop body grew to compute per-item
 // expirations.
-func (s *MemoryStore) PutMany(items map[string]interface{}, ttl time.Duration) error {
+func (s *MemoryStore) PutManyCtx(ctx context.Context, items map[string]interface{}, ttl time.Duration) error {
+	_ = ctx
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -278,9 +366,24 @@ func (s *MemoryStore) PutMany(items map[string]interface{}, ttl time.Duration) e
 	return nil
 }
 
+// PutMany stores multiple values.
+//
+// Deprecated: use PutManyCtx with a request-scoped context.Context.
+func (s *MemoryStore) PutMany(items map[string]interface{}, ttl time.Duration) error {
+	return s.PutManyCtx(context.Background(), items, ttl)
+}
+
+// HasCtx checks if a key exists.
+func (s *MemoryStore) HasCtx(ctx context.Context, key string) bool {
+	_, found := s.GetCtx(ctx, key)
+	return found
+}
+
 // Has checks if a key exists.
+//
+// Deprecated: use HasCtx with a request-scoped context.Context.
 func (s *MemoryStore) Has(key string) bool {
-	return HasFrom(s, key)
+	return s.HasCtx(context.Background(), key)
 }
 
 // GetPrefix returns the cache prefix

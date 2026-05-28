@@ -1,6 +1,7 @@
 package guards
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -187,4 +188,15 @@ func TestTimebox_NoFloorSkipsSleep(t *testing.T) {
 	if time.Since(start) > 5*time.Millisecond {
 		t.Fatalf("Timebox(0) slept %v; expected near-zero", time.Since(start))
 	}
+}
+
+// Ctx-suffixed shims for auth.UserProvider, added in Sweep 1b.
+func (p *timingTestProvider) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+	return p.FindByID(id)
+}
+func (p *timingTestProvider) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+	return p.FindByCredentials(credentials)
+}
+func (p *timingTestProvider) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+	return p.UpdateRememberToken(user, token)
 }

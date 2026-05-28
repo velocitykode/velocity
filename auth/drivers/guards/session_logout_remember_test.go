@@ -1,6 +1,7 @@
 package guards
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -120,4 +121,15 @@ func TestSessionGuard_Logout_NoUserInSessionSkipsClear(t *testing.T) {
 	if got := atomic.LoadInt32(&provider.updated); got != 0 {
 		t.Fatalf("expected no UpdateRememberToken call for anonymous Logout, got %d", got)
 	}
+}
+
+// Ctx-suffixed shims for auth.UserProvider, added in Sweep 1b.
+func (p *rememberClearingProvider) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+	return p.FindByID(id)
+}
+func (p *rememberClearingProvider) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+	return p.FindByCredentials(credentials)
+}
+func (p *rememberClearingProvider) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+	return p.UpdateRememberToken(user, token)
 }

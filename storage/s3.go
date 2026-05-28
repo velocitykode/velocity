@@ -143,8 +143,9 @@ func NewS3DriverWithContext(ctx context.Context, diskConfig DiskConfig) (*S3Driv
 	}, nil
 }
 
-// Put stores content at the given path (uses context.Background()).
-// Prefer PutCtx in code paths that have a request-scoped context.
+// Put stores content at the given path.
+//
+// Deprecated: use PutCtx with a request-scoped context.Context.
 func (d *S3Driver) Put(path string, contents []byte) error {
 	return d.PutCtx(context.Background(), path, contents)
 }
@@ -169,7 +170,9 @@ const mimeSniffSize = 512
 // generic SDK transport errors.
 var ErrStreamTooLarge = errors.New("velocity/storage: stream exceeds maximum size")
 
-// PutStream stores a stream at the given path (uses context.Background()).
+// PutStream stores a stream at the given path.
+//
+// Deprecated: use PutStreamCtx with a request-scoped context.Context.
 func (d *S3Driver) PutStream(path string, stream io.Reader) error {
 	return d.PutStreamCtx(context.Background(), path, stream)
 }
@@ -312,7 +315,9 @@ func (c *capReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// Get retrieves content from the given path (uses context.Background()).
+// Get retrieves content from the given path.
+//
+// Deprecated: use GetCtx with a request-scoped context.Context.
 func (d *S3Driver) Get(path string) ([]byte, error) {
 	return d.GetCtx(context.Background(), path)
 }
@@ -333,7 +338,9 @@ func (d *S3Driver) GetCtx(ctx context.Context, path string) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// GetStream retrieves a stream from the given path (uses context.Background()).
+// GetStream retrieves a stream from the given path.
+//
+// Deprecated: use GetStreamCtx with a request-scoped context.Context.
 func (d *S3Driver) GetStream(path string) (io.ReadCloser, error) {
 	return d.GetStreamCtx(context.Background(), path)
 }
@@ -363,7 +370,9 @@ func (d *S3Driver) GetStreamCtx(ctx context.Context, path string) (io.ReadCloser
 	return result.Body, nil
 }
 
-// Exists checks if a file exists at the given path (uses context.Background()).
+// Exists checks if a file exists at the given path.
+//
+// Deprecated: use ExistsCtx with a request-scoped context.Context.
 func (d *S3Driver) Exists(path string) bool {
 	return d.ExistsCtx(context.Background(), path)
 }
@@ -384,7 +393,9 @@ func (d *S3Driver) ExistsCtx(ctx context.Context, path string) bool {
 	return err == nil
 }
 
-// Delete removes files at the given paths (uses context.Background()).
+// Delete removes files at the given paths.
+//
+// Deprecated: use DeleteCtx with a request-scoped context.Context.
 func (d *S3Driver) Delete(paths ...string) error {
 	return d.DeleteCtx(context.Background(), paths...)
 }
@@ -423,7 +434,9 @@ func (d *S3Driver) DeleteCtx(ctx context.Context, paths ...string) error {
 	return nil
 }
 
-// Copy copies a file from one path to another (uses context.Background()).
+// Copy copies a file from one path to another.
+//
+// Deprecated: use CopyCtx with a request-scoped context.Context.
 func (d *S3Driver) Copy(from, to string) error {
 	return d.CopyCtx(context.Background(), from, to)
 }
@@ -460,7 +473,9 @@ func (d *S3Driver) CopyCtx(ctx context.Context, from, to string) error {
 	return nil
 }
 
-// Move moves a file from one path to another (uses context.Background()).
+// Move moves a file from one path to another.
+//
+// Deprecated: use MoveCtx with a request-scoped context.Context.
 func (d *S3Driver) Move(from, to string) error {
 	return d.MoveCtx(context.Background(), from, to)
 }
@@ -473,7 +488,9 @@ func (d *S3Driver) MoveCtx(ctx context.Context, from, to string) error {
 	return d.DeleteCtx(ctx, from)
 }
 
-// Size returns the size of a file at the given path (uses context.Background()).
+// Size returns the size of a file at the given path.
+//
+// Deprecated: use SizeCtx with a request-scoped context.Context.
 func (d *S3Driver) Size(path string) (int64, error) {
 	return d.SizeCtx(context.Background(), path)
 }
@@ -501,7 +518,9 @@ func (d *S3Driver) SizeCtx(ctx context.Context, path string) (int64, error) {
 	return *result.ContentLength, nil
 }
 
-// LastModified returns the last modified time of a file (uses context.Background()).
+// LastModified returns the last modified time of a file.
+//
+// Deprecated: use LastModifiedCtx with a request-scoped context.Context.
 func (d *S3Driver) LastModified(path string) (time.Time, error) {
 	return d.LastModifiedCtx(context.Background(), path)
 }
@@ -529,7 +548,9 @@ func (d *S3Driver) LastModifiedCtx(ctx context.Context, path string) (time.Time,
 	return *result.LastModified, nil
 }
 
-// MimeType returns the MIME type of a file (uses context.Background()).
+// MimeType returns the MIME type of a file.
+//
+// Deprecated: use MimeTypeCtx with a request-scoped context.Context.
 func (d *S3Driver) MimeType(path string) (string, error) {
 	return d.MimeTypeCtx(context.Background(), path)
 }
@@ -561,7 +582,9 @@ func (d *S3Driver) MimeTypeCtx(ctx context.Context, path string) (string, error)
 	return "application/octet-stream", nil
 }
 
-// Files lists files in a directory (uses context.Background()).
+// Files lists files in a directory.
+//
+// Deprecated: use FilesCtx with a request-scoped context.Context.
 func (d *S3Driver) Files(directory string) ([]string, error) {
 	return d.FilesCtx(context.Background(), directory)
 }
@@ -604,7 +627,9 @@ func (d *S3Driver) FilesCtx(ctx context.Context, directory string) ([]string, er
 	return files, nil
 }
 
-// AllFiles lists all files recursively in a directory (uses context.Background()).
+// AllFiles lists all files recursively in a directory.
+//
+// Deprecated: use AllFilesCtx with a request-scoped context.Context.
 func (d *S3Driver) AllFiles(directory string) ([]string, error) {
 	return d.AllFilesCtx(context.Background(), directory)
 }
@@ -646,7 +671,9 @@ func (d *S3Driver) AllFilesCtx(ctx context.Context, directory string) ([]string,
 	return files, nil
 }
 
-// Directories lists directories (uses context.Background()).
+// Directories lists directories.
+//
+// Deprecated: use DirectoriesCtx with a request-scoped context.Context.
 func (d *S3Driver) Directories(directory string) ([]string, error) {
 	return d.DirectoriesCtx(context.Background(), directory)
 }
@@ -684,7 +711,9 @@ func (d *S3Driver) DirectoriesCtx(ctx context.Context, directory string) ([]stri
 	return dirs, nil
 }
 
-// AllDirectories lists all directories recursively (uses context.Background()).
+// AllDirectories lists all directories recursively.
+//
+// Deprecated: use AllDirectoriesCtx with a request-scoped context.Context.
 func (d *S3Driver) AllDirectories(directory string) ([]string, error) {
 	return d.AllDirectoriesCtx(context.Background(), directory)
 }
@@ -724,15 +753,28 @@ func (d *S3Driver) AllDirectoriesCtx(ctx context.Context, directory string) ([]s
 	return dirs, nil
 }
 
-// MakeDirectory creates a directory (no-op for S3)
+// MakeDirectory creates a directory (no-op for S3).
+//
+// Deprecated: use MakeDirectoryCtx with a request-scoped context.Context.
 func (d *S3Driver) MakeDirectory(path string) error {
-	// S3 doesn't have real directories
-	// Some tools create zero-byte objects with trailing slash
-	// We'll do nothing here as directories are implicit
+	return d.MakeDirectoryCtx(context.Background(), path)
+}
+
+// MakeDirectoryCtx is the ctx-aware variant of MakeDirectory. S3 does not
+// have real directories, so this is a no-op that only honours pre-flight
+// context cancellation for interface uniformity.
+func (d *S3Driver) MakeDirectoryCtx(ctx context.Context, path string) error {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
-// DeleteDirectory deletes a directory and all its contents (uses context.Background()).
+// DeleteDirectory deletes a directory and all its contents.
+//
+// Deprecated: use DeleteDirectoryCtx with a request-scoped context.Context.
 func (d *S3Driver) DeleteDirectory(directory string) error {
 	return d.DeleteDirectoryCtx(context.Background(), directory)
 }
@@ -777,11 +819,13 @@ func (d *S3Driver) URL(path string) string {
 	return fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", d.bucket, d.region, escaped)
 }
 
-// TemporaryURL returns a temporary presigned URL for a file (uses context.Background()).
+// TemporaryURL returns a temporary presigned URL for a file.
 // Returns ErrExpirationTooLong if expiration > 7 days (AWS SigV4 cap) or
 // ErrExpirationNonPositive if expiration <= 0. Operators who previously
 // passed 30-day durations and relied on silent 7-day clamping now get a
-// loud failure — cap the value at your call site before invoking.
+// loud failure: cap the value at your call site before invoking.
+//
+// Deprecated: use TemporaryURLCtx with a request-scoped context.Context.
 func (d *S3Driver) TemporaryURL(path string, expiration time.Duration) (string, error) {
 	return d.TemporaryURLCtx(context.Background(), path, expiration)
 }

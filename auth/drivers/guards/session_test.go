@@ -1,6 +1,7 @@
 package guards
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -76,10 +77,18 @@ func (s *mockSessionStore) GarbageCollect(maxLifetime time.Duration) error {
 type mockUserProvider struct{}
 
 func (p *mockUserProvider) FindByID(id interface{}) (auth.Authenticatable, error) {
+	return p.FindByIDCtx(context.Background(), id)
+}
+
+func (p *mockUserProvider) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
 	return &auth.AuthUser{ID: id, Name: "Test", Email: "test@test.com"}, nil
 }
 
 func (p *mockUserProvider) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
+	return p.FindByCredentialsCtx(context.Background(), credentials)
+}
+
+func (p *mockUserProvider) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
 	return &auth.AuthUser{ID: 1, Name: "Test", Email: "test@test.com"}, nil
 }
 
@@ -88,6 +97,10 @@ func (p *mockUserProvider) ValidateCredentials(user auth.Authenticatable, creden
 }
 
 func (p *mockUserProvider) UpdateRememberToken(user auth.Authenticatable, token string) error {
+	return nil
+}
+
+func (p *mockUserProvider) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
 	return nil
 }
 

@@ -1,6 +1,7 @@
 package guards
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -251,4 +252,15 @@ func TestGetDummyBcryptHash_ClampsCost(t *testing.T) {
 	if h := auth.GetDummyBcryptHash(1); len(h) == 0 {
 		t.Fatal("GetDummyBcryptHash(1) returned empty; expected clamped MinCost hash")
 	}
+}
+
+// Ctx-suffixed shims for auth.UserProvider, added in Sweep 1b.
+func (p *bcryptVerifyingProvider) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+	return p.FindByID(id)
+}
+func (p *bcryptVerifyingProvider) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+	return p.FindByCredentials(credentials)
+}
+func (p *bcryptVerifyingProvider) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+	return p.UpdateRememberToken(user, token)
 }

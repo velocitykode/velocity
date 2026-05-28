@@ -6,18 +6,34 @@ import (
 	"time"
 )
 
-// Cache defines the interface for cache operations
+// Cache defines the interface for cache operations.
+//
+// Methods come in pairs: a `Ctx`-suffixed variant that threads the caller's
+// context.Context through to the underlying driver (so a slow Redis GET or
+// disk fsync can be cancelled when the request context is cancelled), and a
+// non-Ctx Deprecated shim that calls the Ctx variant with context.Background().
+// New code MUST call the Ctx variant; non-Ctx methods remain for
+// backward compatibility through the next release.
 type Cache interface {
-	// Get retrieves a value from the cache
+	// GetCtx retrieves a value from the cache.
+	GetCtx(ctx context.Context, key string) (interface{}, bool)
+
+	// Deprecated: use GetCtx with a request-scoped context.Context.
 	Get(key string) (interface{}, bool)
 
-	// GetString retrieves a string value from the cache
+	// GetStringCtx retrieves a string value from the cache.
+	GetStringCtx(ctx context.Context, key string) (string, bool)
+
+	// Deprecated: use GetStringCtx with a request-scoped context.Context.
 	GetString(key string) (string, bool)
 
-	// Put stores a value in the cache with a TTL
+	// PutCtx stores a value in the cache with a TTL.
+	PutCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) error
+
+	// Deprecated: use PutCtx with a request-scoped context.Context.
 	Put(key string, value interface{}, ttl time.Duration) error
 
-	// Add atomically stores a value in the cache with a TTL only if the
+	// AddCtx atomically stores a value in the cache with a TTL only if the
 	// key does not already exist. Returns true if the value was inserted,
 	// false if the key already existed (no write performed). Returns an
 	// error only on backend failure; contention (key already present) is
@@ -26,69 +42,83 @@ type Cache interface {
 	// Add is the SETNX primitive that lets callers gate single-flight
 	// populates over the cache layer itself, avoiding the thundering-herd
 	// problem on Remember-style cache-miss paths.
+	AddCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) (bool, error)
+
+	// Deprecated: use AddCtx with a request-scoped context.Context.
 	Add(key string, value interface{}, ttl time.Duration) (bool, error)
 
-	// Forever stores a value in the cache indefinitely
+	// ForeverCtx stores a value in the cache indefinitely.
+	ForeverCtx(ctx context.Context, key string, value interface{}) error
+
+	// Deprecated: use ForeverCtx with a request-scoped context.Context.
 	Forever(key string, value interface{}) error
 
-	// Forget removes a value from the cache
+	// ForgetCtx removes a value from the cache.
+	ForgetCtx(ctx context.Context, key string) error
+
+	// Deprecated: use ForgetCtx with a request-scoped context.Context.
 	Forget(key string) error
 
-	// Flush removes all values from the cache
+	// FlushCtx removes all values from the cache.
+	FlushCtx(ctx context.Context) error
+
+	// Deprecated: use FlushCtx with a request-scoped context.Context.
 	Flush() error
 
-	// Increment increments a numeric value
+	// IncrementCtx increments a numeric value.
+	IncrementCtx(ctx context.Context, key string, value int64) (int64, error)
+
+	// Deprecated: use IncrementCtx with a request-scoped context.Context.
 	Increment(key string, value int64) (int64, error)
 
-	// Decrement decrements a numeric value
+	// DecrementCtx decrements a numeric value.
+	DecrementCtx(ctx context.Context, key string, value int64) (int64, error)
+
+	// Deprecated: use DecrementCtx with a request-scoped context.Context.
 	Decrement(key string, value int64) (int64, error)
 
-	// Remember gets from cache or computes and stores
+	// Remember gets from cache or computes and stores. Pure-CPU callback;
+	// no ctx threading point on the callback boundary itself, so no Ctx
+	// variant on the Cache interface (Manager exposes RememberWithContext
+	// at the consumer level).
 	Remember(key string, ttl time.Duration, callback func() interface{}) (interface{}, error)
 
-	// RememberForever gets from cache or computes and stores forever
+	// RememberForever gets from cache or computes and stores forever.
 	RememberForever(key string, callback func() interface{}) (interface{}, error)
 
-	// Many retrieves multiple values
+	// ManyCtx retrieves multiple values.
+	ManyCtx(ctx context.Context, keys []string) map[string]interface{}
+
+	// Deprecated: use ManyCtx with a request-scoped context.Context.
 	Many(keys []string) map[string]interface{}
 
-	// PutMany stores multiple values
+	// PutManyCtx stores multiple values.
+	PutManyCtx(ctx context.Context, items map[string]interface{}, ttl time.Duration) error
+
+	// Deprecated: use PutManyCtx with a request-scoped context.Context.
 	PutMany(items map[string]interface{}, ttl time.Duration) error
 
-	// Has checks if a key exists
+	// HasCtx checks if a key exists.
+	HasCtx(ctx context.Context, key string) bool
+
+	// Deprecated: use HasCtx with a request-scoped context.Context.
 	Has(key string) bool
 }
 
-// Store represents a cache store with a prefix
+// Store represents a cache store with a prefix.
 type Store interface {
 	Cache
 	GetPrefix() string
 }
 
-// ContextStore is an optional extension of Store that threads the caller's
-// context.Context through to the underlying driver. Stores that implement
-// this interface allow the cache manager to cancel long-running operations
-// (e.g. Redis GETs across a slow network) when the request context is cancelled.
+// ContextStore is a deprecated alias for Store. The ctx-aware methods that
+// previously lived on this extension interface have been promoted into Store
+// itself; all drivers now satisfy ContextStore by satisfying Store. Kept for
+// one release so existing type assertions keep compiling.
 //
-// The Manager uses contract assertions to call these methods when available
-// and falls back to the plain Store methods otherwise, so drivers may adopt
-// ContextStore incrementally.
-type ContextStore interface {
-	Store
-
-	GetCtx(ctx context.Context, key string) (interface{}, bool)
-	GetStringCtx(ctx context.Context, key string) (string, bool)
-	PutCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) error
-	AddCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) (bool, error)
-	ForeverCtx(ctx context.Context, key string, value interface{}) error
-	ForgetCtx(ctx context.Context, key string) error
-	FlushCtx(ctx context.Context) error
-	HasCtx(ctx context.Context, key string) bool
-	IncrementCtx(ctx context.Context, key string, value int64) (int64, error)
-	DecrementCtx(ctx context.Context, key string, value int64) (int64, error)
-	ManyCtx(ctx context.Context, keys []string) map[string]interface{}
-	PutManyCtx(ctx context.Context, items map[string]interface{}, ttl time.Duration) error
-}
+// Deprecated: use Store directly; every Store now exposes the Ctx-suffixed
+// methods.
+type ContextStore = Store
 
 // Driver types
 const (

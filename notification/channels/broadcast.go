@@ -149,5 +149,5 @@ func (c *BroadcastChannel) Send(ctx context.Context, notifiable interface{}, n n
 		channels = filtered
 	}
 
-	return c.broadcaster.Channel(channels...).Emit(broadcastMsg.Event, broadcastMsg.Data)
+	return c.broadcaster.Channel(channels...).EmitCtx(ctx, broadcastMsg.Event, broadcastMsg.Data)
 }

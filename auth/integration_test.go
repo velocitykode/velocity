@@ -81,8 +81,12 @@ type pgUserProvider struct {
 }
 
 func (p *pgUserProvider) FindByID(id interface{}) (auth.Authenticatable, error) {
+	return p.FindByIDCtx(context.Background(), id)
+}
+
+func (p *pgUserProvider) FindByIDCtx(ctx context.Context, id interface{}) (auth.Authenticatable, error) {
 	q := fmt.Sprintf("SELECT id, email, password, remember_token FROM %s WHERE id=$1", p.table)
-	row := p.db.QueryRow(q, id)
+	row := p.db.QueryRowContext(ctx, q, id)
 	u := &auth.AuthUser{}
 	var remember sql.NullString
 	if err := row.Scan(&u.ID, &u.Email, &u.Password, &remember); err != nil {
@@ -96,9 +100,13 @@ func (p *pgUserProvider) FindByID(id interface{}) (auth.Authenticatable, error) 
 }
 
 func (p *pgUserProvider) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
+	return p.FindByCredentialsCtx(context.Background(), credentials)
+}
+
+func (p *pgUserProvider) FindByCredentialsCtx(ctx context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
 	email, _ := credentials["email"].(string)
 	q := fmt.Sprintf("SELECT id, email, password, remember_token FROM %s WHERE email=$1", p.table)
-	row := p.db.QueryRow(q, email)
+	row := p.db.QueryRowContext(ctx, q, email)
 	u := &auth.AuthUser{}
 	var remember sql.NullString
 	if err := row.Scan(&u.ID, &u.Email, &u.Password, &remember); err != nil {
@@ -117,8 +125,12 @@ func (p *pgUserProvider) ValidateCredentials(user auth.Authenticatable, credenti
 }
 
 func (p *pgUserProvider) UpdateRememberToken(user auth.Authenticatable, token string) error {
+	return p.UpdateRememberTokenCtx(context.Background(), user, token)
+}
+
+func (p *pgUserProvider) UpdateRememberTokenCtx(ctx context.Context, user auth.Authenticatable, token string) error {
 	q := fmt.Sprintf("UPDATE %s SET remember_token=$1 WHERE id=$2", p.table)
-	_, err := p.db.Exec(q, token, user.GetAuthIdentifier())
+	_, err := p.db.ExecContext(ctx, q, token, user.GetAuthIdentifier())
 	return err
 }
 

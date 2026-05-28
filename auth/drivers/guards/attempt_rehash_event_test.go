@@ -191,3 +191,14 @@ func TestManager_SetEventDispatcher_PropagatesToGuards(t *testing.T) {
 		t.Error("Manager.SetEventDispatcher must propagate to registered guards")
 	}
 }
+
+// Ctx-suffixed shims for auth.UserProvider, added in Sweep 1b.
+func (p *rehashStubProvider) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+	return p.FindByID(id)
+}
+func (p *rehashStubProvider) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+	return p.FindByCredentials(credentials)
+}
+func (p *rehashStubProvider) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+	return p.UpdateRememberToken(user, token)
+}

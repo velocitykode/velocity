@@ -1,7 +1,6 @@
 package bus
 
 import (
-	"context"
 	"fmt"
 	"reflect"
 	"sync"
@@ -28,21 +27,12 @@ func (f *FakeBus) Dispatch(cmd Command) error {
 	return nil
 }
 
-// DispatchAsyncCtx records an async dispatch. The context argument is
-// recorded by being accepted but not retained; FakeBus only tracks the
-// command identity for AssertAsyncDispatched.
-func (f *FakeBus) DispatchAsyncCtx(_ context.Context, cmd Command) error {
+// DispatchAsync records an async dispatch.
+func (f *FakeBus) DispatchAsync(cmd Command) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.asyncDispatched = append(f.asyncDispatched, cmd)
 	return nil
-}
-
-// DispatchAsync records an async dispatch.
-//
-// Deprecated: use DispatchAsyncCtx with a request-scoped context.Context.
-func (f *FakeBus) DispatchAsync(cmd Command) error {
-	return f.DispatchAsyncCtx(context.Background(), cmd)
 }
 
 // AssertDispatched asserts that a command of the given type was dispatched at least once.

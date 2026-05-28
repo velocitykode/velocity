@@ -64,13 +64,22 @@ func newAppWithSessionGuard(t *testing.T, env string) *App {
 type stubProvider struct{}
 
 func (stubProvider) FindByID(interface{}) (auth.Authenticatable, error) { return nil, nil }
+func (stubProvider) FindByIDCtx(context.Context, interface{}) (auth.Authenticatable, error) {
+	return nil, nil
+}
 func (stubProvider) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
+	return nil, nil
+}
+func (stubProvider) FindByCredentialsCtx(context.Context, map[string]interface{}) (auth.Authenticatable, error) {
 	return nil, nil
 }
 func (stubProvider) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
 	return false
 }
 func (stubProvider) UpdateRememberToken(auth.Authenticatable, string) error { return nil }
+func (stubProvider) UpdateRememberTokenCtx(context.Context, auth.Authenticatable, string) error {
+	return nil
+}
 
 // TestValidateSessionStoreForProduction_RefusesCookieStoreWithoutOptIn is the
 // H-04 regression test: APP_ENV=production with the default CookieStore and

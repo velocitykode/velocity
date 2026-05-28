@@ -1,6 +1,7 @@
 package guards
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -212,4 +213,15 @@ func TestJWTGuard_SetRefreshGenerationStore_NilReverts(t *testing.T) {
 	if _, err := guard.RefreshToken(rt); err != nil {
 		t.Fatalf("RefreshToken after nil-reset: %v", err)
 	}
+}
+
+// Ctx-suffixed shims for auth.UserProvider, added in Sweep 1b.
+func (p *jwtSharedStoreProvider) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+	return p.FindByID(id)
+}
+func (p *jwtSharedStoreProvider) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+	return p.FindByCredentials(credentials)
+}
+func (p *jwtSharedStoreProvider) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+	return p.UpdateRememberToken(user, token)
 }

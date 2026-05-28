@@ -44,20 +44,10 @@
 //	                    counting across serialisation boundaries.
 //
 //	OnQueuer            OnQueue() selects a non-default queue when no
-//	                    explicit name is passed to PushCtx /
-//	                    PushDelayedCtx.
+//	                    explicit name is passed to Push/PushDelayed.
 //
 //	Batchable           Sets/reads the BatchID so the worker can update
 //	                    batch progress on success/failure.
-//
-// # Lifecycle hooks
-//
-// Cross-cutting lifecycle hooks (contract.ShutdownAware) are defined in
-// the contract package and apply uniformly to every Velocity manager
-// that holds background resources; they are not duplicated in each
-// package's capability table. The Driver interface's Shutdown(ctx)
-// method is the queue-specific equivalent and is invoked by the App
-// shutdown sequence with the configured deadline.
 //
 // Capability detection uses a plain type assertion at the call site
 // (e.g. `if d, ok := driver.(ReservationDriver); ok { ... }`); no

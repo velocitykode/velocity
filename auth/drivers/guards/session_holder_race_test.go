@@ -17,14 +17,23 @@ type holderRaceUserProvider struct{}
 func (p *holderRaceUserProvider) FindByID(id interface{}) (auth.Authenticatable, error) {
 	return &auth.AuthUser{ID: id, Name: "Test", Email: "t@example.com"}, nil
 }
-func (p *holderRaceUserProvider) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
+func (p *holderRaceUserProvider) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+	return p.FindByID(id)
+}
+func (p *holderRaceUserProvider) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
 	return &auth.AuthUser{ID: "1", Name: "Test", Email: "t@example.com"}, nil
+}
+func (p *holderRaceUserProvider) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+	return p.FindByCredentials(credentials)
 }
 func (p *holderRaceUserProvider) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
 	return true
 }
 func (p *holderRaceUserProvider) UpdateRememberToken(auth.Authenticatable, string) error {
 	return nil
+}
+func (p *holderRaceUserProvider) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+	return p.UpdateRememberToken(user, token)
 }
 
 // holderRaceStore lets a Get block until released and then returns a stable

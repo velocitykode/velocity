@@ -17,6 +17,7 @@ import (
 	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/exceptions"
 	"github.com/velocitykode/velocity/internal/clientip"
+	"github.com/velocitykode/velocity/internal/eventqueue"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/orm"
@@ -421,7 +422,7 @@ func New(opts ...Option) (*App, error) {
 		// H-22: clear the queued-listener failure reporter so a new
 		// app instance does not inherit a stale callback bound to the
 		// previous Exceptions handler.
-		events.InitializeQueueIntegration(nil, nil, nil)
+		eventqueue.InitializeQueueIntegration(nil, nil, nil)
 	})
 
 	// H-22: register the EventListenerJob factory with the queue's typed
@@ -446,7 +447,7 @@ func New(opts ...Option) (*App, error) {
 			exHandler.Report(jobErr, exCtx)
 		}
 	}
-	events.InitializeQueueIntegration(nil, a.Queue, reporter)
+	eventqueue.InitializeQueueIntegration(nil, a.Queue, reporter)
 
 	// 11. Initialize storage with disk drivers
 	a.Storage = initStorage(a.config.Storage, a.Log)

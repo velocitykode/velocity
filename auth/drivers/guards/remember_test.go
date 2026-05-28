@@ -1,6 +1,7 @@
 package guards
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -96,7 +97,7 @@ func TestSetRememberCookie_StoresHashedToken(t *testing.T) {
 	user := &mockRememberUser{id: "u1"}
 	w := httptest.NewRecorder()
 
-	if err := g.setRememberCookie(w, user); err != nil {
+	if err := g.setRememberCookie(context.Background(), w, user); err != nil {
 		t.Fatalf("setRememberCookie: %v", err)
 	}
 
@@ -133,7 +134,7 @@ func TestSetRememberCookie_RefusesZeroLifetime(t *testing.T) {
 	}()
 	user := &mockRememberUser{id: "u1"}
 	w := httptest.NewRecorder()
-	err := g.setRememberCookie(w, user)
+	err := g.setRememberCookie(context.Background(), w, user)
 	if err == nil {
 		t.Fatal("expected error for zero session lifetime")
 	}
@@ -194,3 +195,23 @@ func (p *remLookupProvider) ValidateCredentials(auth.Authenticatable, map[string
 	return false
 }
 func (p *remLookupProvider) UpdateRememberToken(auth.Authenticatable, string) error { return nil }
+
+// Ctx-suffixed shims for auth.UserProvider, added in Sweep 1b.
+func (p *mockRememberProvider) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+	return p.FindByID(id)
+}
+func (p *remLookupProvider) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+	return p.FindByID(id)
+}
+func (p *mockRememberProvider) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+	return p.FindByCredentials(credentials)
+}
+func (p *remLookupProvider) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+	return p.FindByCredentials(credentials)
+}
+func (p *mockRememberProvider) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+	return p.UpdateRememberToken(user, token)
+}
+func (p *remLookupProvider) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+	return p.UpdateRememberToken(user, token)
+}

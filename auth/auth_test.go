@@ -283,13 +283,22 @@ func (g *mockGuard) Attempt(http.ResponseWriter, *http.Request, map[string]inter
 type mockProvider struct{}
 
 func (p *mockProvider) FindByID(interface{}) (Authenticatable, error) { return nil, nil }
+func (p *mockProvider) FindByIDCtx(context.Context, interface{}) (Authenticatable, error) {
+	return nil, nil
+}
 func (p *mockProvider) FindByCredentials(map[string]interface{}) (Authenticatable, error) {
+	return nil, nil
+}
+func (p *mockProvider) FindByCredentialsCtx(context.Context, map[string]interface{}) (Authenticatable, error) {
 	return nil, nil
 }
 func (p *mockProvider) ValidateCredentials(Authenticatable, map[string]interface{}) bool {
 	return false
 }
 func (p *mockProvider) UpdateRememberToken(Authenticatable, string) error { return nil }
+func (p *mockProvider) UpdateRememberTokenCtx(context.Context, Authenticatable, string) error {
+	return nil
+}
 
 func TestNewManager(t *testing.T) {
 	m := NewManager()

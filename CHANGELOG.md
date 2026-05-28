@@ -172,6 +172,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `maintenance.go:mintMaintenanceBypassCookie` godoc comment
     updated to quote the canonical vocabulary (the implementation
     already routed through `app.IsDevOrTestEnv`).
+### 1.0 readiness: BREAKING for implementers (Ctx-suffix interface lockdown)
+
+The pre-1.0 surface-freeze sweep promoted ctx-aware `Ctx`-suffixed methods
+into five plug-in interfaces. The non-`Ctx` methods stay on each interface
+as `// Deprecated:` shims so existing **callers** keep compiling for the
+v0.x line, but **external types that previously implemented only the
+non-Ctx methods no longer satisfy the interfaces** and will not compile
+against the v0.49+ framework. Breakage is intentional, it is what makes
+the v1.0 surface freezable, and it surfaces here so operators know what
+to expect during the upgrade.
+
+The non-Ctx methods on each interface are deprecated and will be removed
+in the v2.0 major. New implementations should write the Ctx variant as
+the load-bearing one and keep the non-Ctx as a thin shim.
+
+Recommended migration shape (inverse of the framework's own shim
+direction, the implementer's Ctx body does the real work and the non-Ctx
+shim delegates with `context.Background()` so existing callers keep
+compiling):
+
+```go
+func (s *MyStore) GetCtx(ctx context.Context, key string) (any, bool) {
+    // real work here, threading ctx into the backing store
+}
+
+func (s *MyStore) Get(key string) (any, bool) {
+    return s.GetCtx(context.Background(), key)
+}
+```
+
+The five affected interfaces and the methods that became required:
+
+- **`auth.UserProvider`** (`auth/auth.go`). Added: `FindByIDCtx(ctx, id) (Authenticatable, error)`,
+  `FindByCredentialsCtx(ctx, credentials) (Authenticatable, error)`,
+  `UpdateRememberTokenCtx(ctx, user, token) error`. `ValidateCredentials`
+  is unchanged (pure-CPU bcrypt compare, no ctx threading point).
+- **`cache.Store`** (`cache/cache.go`, transitively `cache.Cache`). Added:
+  `GetCtx`, `GetStringCtx`, `PutCtx`, `AddCtx`, `ForeverCtx`, `ForgetCtx`,
+  `FlushCtx`, `IncrementCtx`, `DecrementCtx`, `ManyCtx`, `PutManyCtx`,
+  `HasCtx`. `Remember` and `RememberForever` are unchanged on the interface
+  (the callback boundary itself is the only ctx threading point and the
+  Manager already exposes `RememberWithContext` at the consumer level).
+  `cache.ContextStore` is now a deprecated type alias for `cache.Store`;
+  existing type assertions against it keep compiling.
+- **`broadcast.Driver`** (`broadcast/broadcast.go`). Added: `BroadcastCtx(ctx, channels, event, data) error`,
+  `BroadcastExceptCtx(ctx, channels, event, data, socketID) error`. `GetClients`
+  is unchanged (pure in-memory snapshot in the built-in drivers; future
+  cluster-aware drivers may expose their own `GetClientsCtx` as an optional
+  extension interface rather than promoting it into the core).
+- **`storage.Driver`** (`storage/types.go`). Added 18 Ctx methods covering every
+  I/O entry point: `PutCtx`, `PutStreamCtx`, `GetCtx`, `GetStreamCtx`,
+  `ExistsCtx`, `DeleteCtx`, `CopyCtx`, `MoveCtx`, `SizeCtx`, `LastModifiedCtx`,
+  `MimeTypeCtx`, `FilesCtx`, `AllFilesCtx`, `DirectoriesCtx`, `AllDirectoriesCtx`,
+  `MakeDirectoryCtx`, `DeleteDirectoryCtx`, `TemporaryURLCtx`. `URL` stays
+  non-Ctx (pure string transformation, no I/O).
+- **`queue.Driver`** (`queue/types.go`). Added: `SizeCtx(ctx, queue) (int64, error)`,
+  `ClearCtx(ctx, queue) error`, `FailedCtx(ctx, job, err, queue) error`. The
+  `Push`/`PushDelayed`/`Pop` family was already Ctx-only since the queue
+  sweep that predates this lockdown; `Shutdown` already takes ctx and is
+  unchanged.
+
+If you maintain a third-party implementation of any of these interfaces,
+add the corresponding `*Ctx` method(s) before upgrading. The build will
+not compile against v0.49+ otherwise, and the type-assertion error from
+`go build` names the exact missing method, which is the canonical
+checklist for the migration.
 
 ### Breaking changes
 

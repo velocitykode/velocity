@@ -117,6 +117,8 @@ func (s *RedisStore) GetCtx(ctx context.Context, key string) (interface{}, bool)
 }
 
 // Get retrieves a value from the cache.
+//
+// Deprecated: use GetCtx with a request-scoped context.Context.
 func (s *RedisStore) Get(key string) (interface{}, bool) {
 	return s.GetCtx(context.Background(), key)
 }
@@ -131,6 +133,8 @@ func (s *RedisStore) GetStringCtx(ctx context.Context, key string) (string, bool
 }
 
 // GetString retrieves a string value from the cache.
+//
+// Deprecated: use GetStringCtx with a request-scoped context.Context.
 func (s *RedisStore) GetString(key string) (string, bool) {
 	return s.GetStringCtx(context.Background(), key)
 }
@@ -149,6 +153,8 @@ func (s *RedisStore) PutCtx(ctx context.Context, key string, value interface{}, 
 }
 
 // Put stores a value in the cache with a TTL.
+//
+// Deprecated: use PutCtx with a request-scoped context.Context.
 func (s *RedisStore) Put(key string, value interface{}, ttl time.Duration) error {
 	return s.PutCtx(context.Background(), key, value, ttl)
 }
@@ -170,6 +176,8 @@ func (s *RedisStore) AddCtx(ctx context.Context, key string, value interface{}, 
 }
 
 // Add atomically stores a value only if the key does not already exist.
+//
+// Deprecated: use AddCtx with a request-scoped context.Context.
 func (s *RedisStore) Add(key string, value interface{}, ttl time.Duration) (bool, error) {
 	return s.AddCtx(context.Background(), key, value, ttl)
 }
@@ -180,6 +188,8 @@ func (s *RedisStore) ForeverCtx(ctx context.Context, key string, value interface
 }
 
 // Forever stores a value in the cache indefinitely.
+//
+// Deprecated: use ForeverCtx with a request-scoped context.Context.
 func (s *RedisStore) Forever(key string, value interface{}) error {
 	return s.ForeverCtx(context.Background(), key, value)
 }
@@ -193,6 +203,8 @@ func (s *RedisStore) ForgetCtx(ctx context.Context, key string) error {
 }
 
 // Forget removes a value from the cache.
+//
+// Deprecated: use ForgetCtx with a request-scoped context.Context.
 func (s *RedisStore) Forget(key string) error {
 	return s.ForgetCtx(context.Background(), key)
 }
@@ -211,6 +223,8 @@ func (s *RedisStore) FlushCtx(ctx context.Context) error {
 }
 
 // Flush removes all cache keys matching the configured prefix.
+//
+// Deprecated: use FlushCtx with a request-scoped context.Context.
 func (s *RedisStore) Flush() error {
 	return s.FlushCtx(context.Background())
 }
@@ -263,6 +277,8 @@ func (s *RedisStore) HasCtx(ctx context.Context, key string) bool {
 }
 
 // Has checks if a key exists in the cache.
+//
+// Deprecated: use HasCtx with a request-scoped context.Context.
 func (s *RedisStore) Has(key string) bool {
 	return s.HasCtx(context.Background(), key)
 }
@@ -273,6 +289,8 @@ func (s *RedisStore) IncrementCtx(ctx context.Context, key string, value int64) 
 }
 
 // Increment increments a numeric value.
+//
+// Deprecated: use IncrementCtx with a request-scoped context.Context.
 func (s *RedisStore) Increment(key string, value int64) (int64, error) {
 	return s.IncrementCtx(context.Background(), key, value)
 }
@@ -283,6 +301,8 @@ func (s *RedisStore) DecrementCtx(ctx context.Context, key string, value int64) 
 }
 
 // Decrement decrements a numeric value.
+//
+// Deprecated: use DecrementCtx with a request-scoped context.Context.
 func (s *RedisStore) Decrement(key string, value int64) (int64, error) {
 	return s.DecrementCtx(context.Background(), key, value)
 }
@@ -328,6 +348,8 @@ func (s *RedisStore) ManyCtx(ctx context.Context, keys []string) map[string]inte
 }
 
 // Many retrieves multiple values.
+//
+// Deprecated: use ManyCtx with a request-scoped context.Context.
 func (s *RedisStore) Many(keys []string) map[string]interface{} {
 	return s.ManyCtx(context.Background(), keys)
 }
@@ -351,6 +373,8 @@ func (s *RedisStore) PutManyCtx(ctx context.Context, items map[string]interface{
 }
 
 // PutMany stores multiple values using a pipeline.
+//
+// Deprecated: use PutManyCtx with a request-scoped context.Context.
 func (s *RedisStore) PutMany(items map[string]interface{}, ttl time.Duration) error {
 	return s.PutManyCtx(context.Background(), items, ttl)
 }

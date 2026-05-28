@@ -98,7 +98,7 @@ v.Router.Post("/signup", func(c *router.Context) error {
         return err
     }
 
-    v.Queue.PushCtx(c.Request.Context(), &jobs.SendWelcomeEmail{UserID: user.ID})
+    v.Queue.Push(jobs.SendWelcomeEmail{UserID: user.ID})
 
     return c.JSON(201, user)
 })

@@ -313,7 +313,7 @@ func (g *JWTGuard) Check(r *http.Request) bool {
 	}
 
 	// Validate user still exists
-	user, err := g.loadProvider().FindByID(claims.UserID)
+	user, err := g.loadProvider().FindByIDCtx(r.Context(), claims.UserID)
 	if err != nil || user == nil {
 		return false
 	}
@@ -340,7 +340,7 @@ func (g *JWTGuard) User(r *http.Request) auth.Authenticatable {
 		return nil
 	}
 
-	user, err := g.loadProvider().FindByID(claims.UserID)
+	user, err := g.loadProvider().FindByIDCtx(r.Context(), claims.UserID)
 	if err != nil {
 		return nil
 	}
@@ -392,7 +392,7 @@ func (g *JWTGuard) Login(w http.ResponseWriter, r *http.Request, user auth.Authe
 
 // LoginByID logs in a user by ID and generates JWT
 func (g *JWTGuard) LoginByID(w http.ResponseWriter, r *http.Request, id interface{}, remember ...bool) error {
-	user, err := g.loadProvider().FindByID(id)
+	user, err := g.loadProvider().FindByIDCtx(r.Context(), id)
 	if err != nil {
 		return err
 	}
@@ -433,7 +433,7 @@ func (g *JWTGuard) Attempt(w http.ResponseWriter, r *http.Request, credentials m
 	// Size the dummy hash to the configured bcrypt cost (F2 fix).
 	dummyHash := dummyHashForHasher(hasher)
 	auth.Timebox(g.effectiveAttemptFloor(), func() {
-		user, findErr = provider.FindByCredentials(credentials)
+		user, findErr = provider.FindByCredentialsCtx(r.Context(), credentials)
 		password, passwordTypedOK = credentials["password"].(string)
 
 		if findErr != nil || user == nil {
@@ -607,9 +607,21 @@ func (g *JWTGuard) GenerateRefreshToken(user auth.Authenticatable) (string, erro
 	return g.jwtManager.GenerateRefreshToken(user)
 }
 
-// RefreshToken refreshes an access token using refresh token
+// RefreshToken refreshes an access token using refresh token.
+//
+// Deprecated: use RefreshTokenCtx with a request-scoped context.Context so
+// the UserProvider lookup inside JWTManager.RefreshTokenCtx honours request
+// cancellation.
 func (g *JWTGuard) RefreshToken(refreshToken string) (string, error) {
 	return g.jwtManager.RefreshToken(refreshToken, g.loadProvider())
+}
+
+// RefreshTokenCtx refreshes an access token using the provided context.
+// The ctx is threaded into the UserProvider lookup inside the JWT manager
+// so a slow DB/IDP call can be cancelled when the request context is
+// cancelled.
+func (g *JWTGuard) RefreshTokenCtx(ctx context.Context, refreshToken string) (string, error) {
+	return g.jwtManager.RefreshTokenCtx(ctx, refreshToken, g.loadProvider())
 }
 
 // ValidateToken validates a JWT token

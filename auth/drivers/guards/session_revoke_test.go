@@ -636,3 +636,14 @@ func TestManager_RevokeAllSessions_ClearerErrorReturnsPartial(t *testing.T) {
 		t.Errorf("store sessions must be deleted even when clearer fails, got %d", len(list))
 	}
 }
+
+// Ctx-suffixed shims for auth.UserProvider, added in Sweep 1b.
+func (p *revokeTestProvider) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+	return p.FindByID(id)
+}
+func (p *revokeTestProvider) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+	return p.FindByCredentials(credentials)
+}
+func (p *revokeTestProvider) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+	return p.UpdateRememberToken(user, token)
+}

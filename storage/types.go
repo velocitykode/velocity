@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -10,11 +11,10 @@ import (
 )
 
 // Common errors. ErrFileNotFound and ErrDiskNotFound are aliases for the
-// hoisted contract.ErrStorageFileNotFound / contract.ErrDiskNotFound so
-// callers can errors.Is against the shared identity without importing
-// storage.
+// hoisted contract.ErrFileNotFound / contract.ErrDiskNotFound so callers can
+// errors.Is against the shared identity without importing storage.
 var (
-	ErrFileNotFound  = contract.ErrStorageFileNotFound
+	ErrFileNotFound  = contract.ErrFileNotFound
 	ErrDiskNotFound  = contract.ErrDiskNotFound
 	ErrInvalidPath   = errors.New("velocity/storage: invalid file path")
 	ErrQuotaExceeded = errors.New("velocity/storage: quota exceeded")
@@ -39,35 +39,95 @@ type FileInfo struct {
 	Visibility   Visibility
 }
 
-// Driver defines the storage driver interface
+// Driver defines the storage driver interface.
+//
+// Every method that performs I/O (local fs, network/S3, etc.) comes in
+// pairs: a `Ctx`-suffixed variant that threads the caller's context.Context
+// through to the underlying SDK call (so a slow S3 GET or a hung fsync can
+// be cancelled when the request context is cancelled), and a non-Ctx
+// Deprecated shim that calls the Ctx variant with context.Background().
+// New code MUST call the Ctx variants.
+//
+// URL is excluded from the rule, since it is a pure string operation with
+// no I/O.
 type Driver interface {
 	// Basic operations
+	PutCtx(ctx context.Context, path string, contents []byte) error
+	// Deprecated: use PutCtx with a request-scoped context.Context.
 	Put(path string, contents []byte) error
+
+	PutStreamCtx(ctx context.Context, path string, stream io.Reader) error
+	// Deprecated: use PutStreamCtx with a request-scoped context.Context.
 	PutStream(path string, stream io.Reader) error
+
+	GetCtx(ctx context.Context, path string) ([]byte, error)
+	// Deprecated: use GetCtx with a request-scoped context.Context.
 	Get(path string) ([]byte, error)
+
+	GetStreamCtx(ctx context.Context, path string) (io.ReadCloser, error)
+	// Deprecated: use GetStreamCtx with a request-scoped context.Context.
 	GetStream(path string) (io.ReadCloser, error)
 
 	// File management
+	ExistsCtx(ctx context.Context, path string) bool
+	// Deprecated: use ExistsCtx with a request-scoped context.Context.
 	Exists(path string) bool
+
+	DeleteCtx(ctx context.Context, paths ...string) error
+	// Deprecated: use DeleteCtx with a request-scoped context.Context.
 	Delete(paths ...string) error
+
+	CopyCtx(ctx context.Context, from, to string) error
+	// Deprecated: use CopyCtx with a request-scoped context.Context.
 	Copy(from, to string) error
+
+	MoveCtx(ctx context.Context, from, to string) error
+	// Deprecated: use MoveCtx with a request-scoped context.Context.
 	Move(from, to string) error
 
 	// File information
+	SizeCtx(ctx context.Context, path string) (int64, error)
+	// Deprecated: use SizeCtx with a request-scoped context.Context.
 	Size(path string) (int64, error)
+
+	LastModifiedCtx(ctx context.Context, path string) (time.Time, error)
+	// Deprecated: use LastModifiedCtx with a request-scoped context.Context.
 	LastModified(path string) (time.Time, error)
+
+	MimeTypeCtx(ctx context.Context, path string) (string, error)
+	// Deprecated: use MimeTypeCtx with a request-scoped context.Context.
 	MimeType(path string) (string, error)
 
 	// Directory operations
+	FilesCtx(ctx context.Context, directory string) ([]string, error)
+	// Deprecated: use FilesCtx with a request-scoped context.Context.
 	Files(directory string) ([]string, error)
+
+	AllFilesCtx(ctx context.Context, directory string) ([]string, error)
+	// Deprecated: use AllFilesCtx with a request-scoped context.Context.
 	AllFiles(directory string) ([]string, error)
+
+	DirectoriesCtx(ctx context.Context, directory string) ([]string, error)
+	// Deprecated: use DirectoriesCtx with a request-scoped context.Context.
 	Directories(directory string) ([]string, error)
+
+	AllDirectoriesCtx(ctx context.Context, directory string) ([]string, error)
+	// Deprecated: use AllDirectoriesCtx with a request-scoped context.Context.
 	AllDirectories(directory string) ([]string, error)
+
+	MakeDirectoryCtx(ctx context.Context, path string) error
+	// Deprecated: use MakeDirectoryCtx with a request-scoped context.Context.
 	MakeDirectory(path string) error
+
+	DeleteDirectoryCtx(ctx context.Context, directory string) error
+	// Deprecated: use DeleteDirectoryCtx with a request-scoped context.Context.
 	DeleteDirectory(directory string) error
 
-	// URL operations
+	// URL is a pure string transformation, so no Ctx variant.
 	URL(path string) string
+
+	TemporaryURLCtx(ctx context.Context, path string, expiration time.Duration) (string, error)
+	// Deprecated: use TemporaryURLCtx with a request-scoped context.Context.
 	TemporaryURL(path string, expiration time.Duration) (string, error)
 }
 

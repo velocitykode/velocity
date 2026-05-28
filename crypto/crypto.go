@@ -15,11 +15,10 @@ import (
 // Errors. Sentinels owned by crypto/drivers are re-exported here under
 // the same identity so callers can use errors.Is against either package.
 // ErrInvalidKey, ErrInvalidPreviousKey, and ErrInvalidPayload are hoisted
-// to the contract package (under crypto-qualified names) and aliased
-// here so existing errors.Is(err, crypto.ErrInvalidKey) calls keep
-// matching.
+// to the contract package; the aliases below preserve identity so
+// existing errors.Is(err, crypto.ErrInvalidKey) calls keep matching.
 var (
-	ErrInvalidKey     = contract.ErrCryptoInvalidKey
+	ErrInvalidKey     = contract.ErrInvalidKey
 	ErrNotInitialized = errors.New("velocity/crypto: encryptor not initialized")
 	ErrInvalidCipher  = drivers.ErrInvalidCipher
 	ErrInvalidPayload = drivers.ErrInvalidPayload
@@ -29,7 +28,7 @@ var (
 	// typo in APP_PREVIOUS_KEY does not silently disable key rotation.
 	// Operators who need the legacy "skip and continue" behaviour (e.g.
 	// transient migrations) can set CRYPTO_IGNORE_INVALID_PREVIOUS_KEYS=true.
-	ErrInvalidPreviousKey = contract.ErrCryptoInvalidPreviousKey
+	ErrInvalidPreviousKey = contract.ErrInvalidPreviousKey
 	// ErrDecrypt is the single sentinel for any cryptographic decrypt
 	// failure (wrong key, wrong MAC, bad padding, malformed IV bytes).
 	// Callers MUST NOT include the error message in user-visible output;

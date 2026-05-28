@@ -1,6 +1,7 @@
 package broadcast
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -40,6 +41,7 @@ type ChannelBuilder struct {
 	broadcaster *BroadcastManager
 	toOthers    string // Socket ID to exclude
 	condition   bool
+	ctx         context.Context
 }
 
 // BroadcastManager is the default implementation
@@ -51,15 +53,29 @@ type BroadcastManager struct {
 	mu         sync.RWMutex
 }
 
-// Driver defines the interface for broadcast drivers
+// Driver defines the interface for broadcast drivers. Methods that fan out
+// over a network or a blocking send loop come in pairs: a `Ctx`-suffixed
+// variant that threads the caller's context.Context through so a slow client
+// cannot pin the request goroutine, and a non-Ctx Deprecated shim that calls
+// the Ctx variant with context.Background(). New code MUST call the Ctx
+// variants.
 type Driver interface {
-	// Broadcast sends an event to channels
+	// BroadcastCtx sends an event to channels.
+	BroadcastCtx(ctx context.Context, channels []string, event string, data interface{}) error
+
+	// Deprecated: use BroadcastCtx with a request-scoped context.Context.
 	Broadcast(channels []string, event string, data interface{}) error
 
-	// BroadcastExcept broadcasts to all except specified socket
+	// BroadcastExceptCtx broadcasts to all except specified socket.
+	BroadcastExceptCtx(ctx context.Context, channels []string, event string, data interface{}, socketID string) error
+
+	// Deprecated: use BroadcastExceptCtx with a request-scoped context.Context.
 	BroadcastExcept(channels []string, event string, data interface{}, socketID string) error
 
-	// GetClients returns clients in a channel
+	// GetClients returns clients in a channel. This is a pure in-memory snapshot
+	// in built-in drivers, so no Ctx variant is required on the interface;
+	// future drivers that perform a cluster lookup may expose their own
+	// GetClientsCtx as an optional extension.
 	GetClients(channel string) []string
 }
 
@@ -140,17 +156,36 @@ func (cb *ChannelBuilder) When(condition bool) *ChannelBuilder {
 	return cb
 }
 
-// Emit broadcasts an event to the channels
+// WithContext threads the caller's context.Context through Emit so a slow
+// broadcast can be cancelled when the request context is cancelled.
+func (cb *ChannelBuilder) WithContext(ctx context.Context) *ChannelBuilder {
+	cb.ctx = ctx
+	return cb
+}
+
+// Emit broadcasts an event to the channels.
+//
+// Deprecated: use EmitCtx with a request-scoped context.Context, or chain
+// WithContext on the builder.
 func (cb *ChannelBuilder) Emit(event string, data interface{}) error {
+	ctx := cb.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return cb.EmitCtx(ctx, event, data)
+}
+
+// EmitCtx broadcasts an event to the channels using the provided context.
+func (cb *ChannelBuilder) EmitCtx(ctx context.Context, event string, data interface{}) error {
 	if !cb.condition {
 		return nil
 	}
 
 	if cb.toOthers != "" {
-		return cb.broadcaster.driver.BroadcastExcept(cb.channels, event, data, cb.toOthers)
+		return cb.broadcaster.driver.BroadcastExceptCtx(ctx, cb.channels, event, data, cb.toOthers)
 	}
 
-	return cb.broadcaster.driver.Broadcast(cb.channels, event, data)
+	return cb.broadcaster.driver.BroadcastCtx(ctx, cb.channels, event, data)
 }
 
 // Auth handles channel authorization. Private- and presence- channels always

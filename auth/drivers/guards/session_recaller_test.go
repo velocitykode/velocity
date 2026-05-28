@@ -165,3 +165,14 @@ func TestSessionGuard_RememberRevival_RotatesSessionID(t *testing.T) {
 		t.Fatal("revived session has no user_id anchored")
 	}
 }
+
+// Ctx-suffixed shims for auth.UserProvider, added in Sweep 1b.
+func (p *rememberRevivalProvider) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+	return p.FindByID(id)
+}
+func (p *rememberRevivalProvider) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+	return p.FindByCredentials(credentials)
+}
+func (p *rememberRevivalProvider) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+	return p.UpdateRememberToken(user, token)
+}
