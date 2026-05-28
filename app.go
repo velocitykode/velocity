@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/chain"
@@ -38,10 +39,15 @@ var BuildInfo = struct {
 	Date:    "unknown",
 }
 
-// ErrNoAppKey is returned from New when APP_KEY (or CRYPTO_KEY) is unset in
-// a non-testing, non-development environment. The fix is to generate one
-// via `vel key:generate` and set it in the environment before boot.
-var ErrNoAppKey = errors.New("velocity: APP_KEY is required outside APP_ENV=testing or APP_ENV=development (run `vel key:generate`)")
+// ErrNoAppKey is returned from New when APP_KEY (or CRYPTO_KEY) is unset
+// outside the canonical non-production environments (per
+// contract.NonProdEnvNames). The fix is to generate one via
+// `vel key:generate` and set it in the environment before boot.
+//
+// Built from contract.NonProdEnvNames so the relaxation vocabulary lives
+// in exactly one place: a rename or addition there flows through to this
+// error text automatically.
+var ErrNoAppKey = errors.New("velocity: APP_KEY is required outside " + strings.Join(contract.NonProdEnvNames(), "/") + " environments (run `vel key:generate`)")
 
 // App represents the Velocity application container.
 // It owns all framework subsystem instances and provides them to the consumer.
@@ -138,6 +144,14 @@ func New(opts ...Option) (*App, error) {
 	// path, Shutdown() cancels it.
 	cleanups = append(cleanups, func() { cancel() })
 
+	// Fast-fail config validation. Catches typo'd driver names, malformed
+	// ports, and negative timeouts before we allocate file handles or
+	// database connections. Session/CSRF/Crypto get a second pass below
+	// where they may emit env-aware warnings instead of hard failures.
+	if err := a.config.Validate(); err != nil {
+		return nil, err
+	}
+
 	// 1. Initialize logger first (everything else may need to log)
 	logger, err := log.NewLogger(a.config.Log)
 	if err != nil {
@@ -187,11 +201,17 @@ func New(opts ...Option) (*App, error) {
 
 	// 3. Initialize crypto (auth/csrf may need it). Crypto is stateless
 	// after construction, no cleanup needed.
+	//
+	// APP_KEY is mandatory in every environment except testing and
+	// development (per the canonical vocabulary in app/env.go). "local",
+	// "dev", "test", "testing" all opt out of the requirement;
+	// "production", "prod", "staging", and any unknown value fail closed
+	// with ErrNoAppKey.
 	if a.config.Crypto.Key == "" {
-		switch a.config.Env {
-		case "testing":
+		switch {
+		case app.IsTestingEnv(a.config.Env):
 			// Silent bypass, test harness wires its own keys as needed.
-		case "development":
+		case app.IsDevOrTestEnv(a.config.Env):
 			a.Log.Warn("APP_KEY is unset, crypto subsystem disabled. Run `vel key:generate` before exercising auth/csrf/session flows.")
 		default:
 			return nil, ErrNoAppKey
@@ -218,26 +238,31 @@ func New(opts ...Option) (*App, error) {
 		})
 	}
 
-	// 5. Validate cookie-related configs (session, CSRF). Fail-loud in
-	// production; warn in development. Testing env is permissive so
-	// bare-minimum test setups keep working.
+	// 5. Validate cookie-related configs (session, CSRF). The
+	// classification routes through the canonical vocabulary so "test"
+	// and "testing" are silent, every other documented non-prod profile
+	// ("dev", "development", "local") warns, and only true production
+	// classes ("production", "prod", "staging", or any unknown value)
+	// fail closed. Previously the switch matched only the two literal
+	// strings "testing" and "development", which made APP_ENV=dev /
+	// APP_ENV=local behave identically to production.
 	if err := a.config.Session.Validate(a.config.Env); err != nil {
-		switch a.config.Env {
-		case "development":
-			a.Log.Warn("Insecure session cookie config (dev only, will fail in production)", "error", err)
-		case "testing":
+		switch {
+		case app.IsTestingEnv(a.config.Env):
 			// silent
+		case app.IsDevOrTestEnv(a.config.Env):
+			a.Log.Warn("Insecure session cookie config (dev only, will fail in production)", "error", err)
 		default:
 			cancel()
 			return nil, fmt.Errorf("velocity: %w", err)
 		}
 	}
 	if err := a.config.CSRF.Validate(a.config.Env); err != nil {
-		switch a.config.Env {
-		case "development":
-			a.Log.Warn("Insecure CSRF cookie config (dev only, will fail in production)", "error", err)
-		case "testing":
+		switch {
+		case app.IsTestingEnv(a.config.Env):
 			// silent
+		case app.IsDevOrTestEnv(a.config.Env):
+			a.Log.Warn("Insecure CSRF cookie config (dev only, will fail in production)", "error", err)
 		default:
 			cancel()
 			return nil, fmt.Errorf("velocity: %w", err)
@@ -447,6 +472,24 @@ func New(opts ...Option) (*App, error) {
 	// deployments retain InMemoryLocker (single-process scope matches
 	// the cache's scope).
 	installSchedulerLocker(sched, a.Cache, a.config.Cache.Driver, a.Log)
+	// Sweep 3 (configuration lock-in): warn loudly when running in
+	// production with the default in-memory scheduler locker still in
+	// place. WithoutOverlapping / OnOneServer guarantees degrade to
+	// single-process semantics on a multi-host fleet; the warning gives
+	// operators a chance to wire a shared-backend Locker via
+	// scheduler.SetLocker before the first scheduled tick. We do not
+	// panic: single-host production deployments are a legitimate use
+	// case and the framework cannot tell them apart from a misconfigured
+	// HA cluster.
+	if app.IsProductionEnv(a.config.Env) {
+		if _, isInMem := sched.Locker().(*scheduler.InMemoryLocker); isInMem {
+			a.Log.Warn(
+				"Scheduler using in-memory Locker in production; OnOneServer / WithoutOverlapping will NOT enforce cross-host guarantees. Wire a shared-backend Locker via scheduler.SetLocker, or run only one scheduler worker process.",
+				"app_env", a.config.Env,
+				"cache_driver", a.config.Cache.Driver,
+			)
+		}
+	}
 	a.Scheduler = sched
 	cleanups = append(cleanups, func() {
 		if a.Scheduler != nil {
@@ -526,16 +569,19 @@ func New(opts ...Option) (*App, error) {
 	// empty even if CRYPTO_KEY is set. The previous behaviour silently
 	// skipped derivation here whenever a.config.Key was empty, and the
 	// router middleware then failed open, so a protected signed route
-	// downgraded to an unsigned route. Mirror the APP_KEY check at line
-	// ~190 (Crypto.Key gating): permit testing/development to run
-	// without APP_KEY so local-dev does not require `vel key:generate`,
-	// but every other environment must have APP_KEY set explicitly.
+	// downgraded to an unsigned route. Mirror the APP_KEY check earlier
+	// in New() (Crypto.Key gating): permit the canonical dev/test
+	// profiles to run without APP_KEY so local-dev does not require
+	// `vel key:generate`, but every other environment must have
+	// APP_KEY set explicitly. Routes through the canonical helpers so
+	// "dev", "test", "local" behave the same way as "development" /
+	// "testing".
 	if a.config.Key == "" {
-		switch a.config.Env {
-		case "testing":
+		switch {
+		case app.IsTestingEnv(a.config.Env):
 			// Silent bypass; test harnesses wire keys explicitly via
 			// router.SetSignedURLKey when they need signed URLs.
-		case "development":
+		case app.IsDevOrTestEnv(a.config.Env):
 			a.Log.Warn("APP_KEY is unset, router signed-URL middleware will fail closed (403) on every signed route. Run `vel key:generate` before exercising signed-URL flows.")
 		default:
 			cancel()

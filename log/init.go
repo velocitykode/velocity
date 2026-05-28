@@ -22,6 +22,18 @@ type LogConfig struct {
 	Config map[string]any
 }
 
+// Validate checks structural requirements: empty Driver is treated as
+// "console" by NewLogger so it is accepted. Per-driver field validation
+// (path for file, stack list for stack) lives in each driver's factory
+// because the registry is open for third-party drivers; LogConfig.Validate
+// does not introspect the Config map.
+func (c LogConfig) Validate() error {
+	// Reserved for future structural checks. Driver name resolution is
+	// driver-registry's job (Drivers().Resolve returns a typed error when
+	// the name is unknown), so we do not duplicate that allowlist here.
+	return nil
+}
+
 // driverRegistry is the canonical Velocity driver registry for loggers.
 // Built-in drivers (console, file/daily, stack, null) self-register from
 // this file's init(); third-party drivers can register additional

@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"sync"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/clientip"
 )
 
@@ -107,7 +108,7 @@ func NewHandler(opts ...Option) *Handler {
 	}
 
 	// Force-disable debug mode in production to prevent exposing stack traces and source code
-	if h.environment == "production" && h.debug {
+	if contract.IsProductionEnv(h.environment) && h.debug {
 		h.debug = false
 		h.logger.Warn("APP_DEBUG=true is ignored in production — debug mode has been force-disabled to prevent exposing stack traces and source code in error responses")
 	} else if h.debug {
@@ -198,7 +199,7 @@ func WithAPIPrefixes(prefixes ...string) Option {
 func (h *Handler) SetDebug(debug bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if debug && h.environment == "production" {
+	if debug && contract.IsProductionEnv(h.environment) {
 		log.Println("[WARN] Refusing to enable debug mode in production environment — stack traces and source code will not be exposed")
 		return
 	}

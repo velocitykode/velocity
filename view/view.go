@@ -84,6 +84,20 @@ type Config struct {
 	Funcs template.FuncMap
 }
 
+// Validate checks the view Config for structural problems. Empty
+// RootTemplate / Version are accepted (NewEngine fills in defaults). When
+// SSR is enabled the timeout must be strictly positive; a zero or
+// negative value would leak the per-render HTTP call into an indefinite
+// wait (net/http treats a zero Timeout as "no deadline"). SSRURL is not
+// enforced here because NewEngine populates it from the framework
+// default when blank.
+func (c Config) Validate() error {
+	if c.SSREnabled && c.SSRTimeout <= 0 {
+		return fmt.Errorf("velocity/view: VIEW_SSR_TIMEOUT must be > 0 when VIEW_SSR_ENABLED=true (got %s)", c.SSRTimeout)
+	}
+	return nil
+}
+
 // Engine wraps a bond.Bond instance and provides the view layer API.
 type Engine struct {
 	bond *bond.Bond
@@ -91,6 +105,9 @@ type Engine struct {
 
 // NewEngine creates a new view Engine with the given configuration.
 func NewEngine(config Config) (*Engine, error) {
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
 	if config.RootTemplate == "" {
 		config.RootTemplate = defaultTemplate
 	}

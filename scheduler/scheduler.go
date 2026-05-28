@@ -215,10 +215,12 @@ func (s *Scheduler) log() Logger {
 
 // SetEnv sets the application environment (e.g. "production", "staging") used by
 // jobs with environment constraints. Called during app initialization.
+// The value is normalised (lowercased + trimmed) so the Job.Environments
+// filter does a like-for-like compare regardless of casing on either side.
 func (s *Scheduler) SetEnv(env string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.appEnv = env
+	s.appEnv = strings.ToLower(strings.TrimSpace(env))
 }
 
 // SetTimezone sets the timezone for the scheduler

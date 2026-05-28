@@ -75,6 +75,18 @@ type MailConfig struct {
 	Local    LocalConfig
 }
 
+// Validate checks the MailConfig for structural problems. An empty Driver
+// is accepted; NewMailer defaults to "log". Per-driver credential checks
+// (Mailgun.Secret, Postmark.Token, Local.Host) are not enforced here so
+// test fixtures can construct partial configs; missing credentials will
+// surface at Send time via the driver's own error path.
+func (c MailConfig) Validate() error {
+	if c.MaxAttachmentSize < 0 {
+		return fmt.Errorf("velocity/mail: MAIL_MAX_ATTACHMENT_SIZE must be non-negative, got %d", c.MaxAttachmentSize)
+	}
+	return nil
+}
+
 // MailgunConfig holds Mailgun-specific configuration.
 type MailgunConfig struct {
 	Domain            string
@@ -115,6 +127,9 @@ func NewMailer(config MailConfig) (Mailer, error) {
 // is forwarded to the driver factory so drivers that perform network I/O
 // during construction can honour deadlines.
 func NewMailerWithContext(ctx context.Context, config MailConfig) (Mailer, error) {
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
 	driver := config.Driver
 	if driver == "" {
 		driver = "log"

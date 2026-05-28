@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/joho/godotenv"
+	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/console"
 )
 
@@ -150,7 +151,7 @@ func (serveCmd) run(a *App, args []string) error {
 	if port == "" {
 		port = "4000"
 	}
-	env := os.Getenv("APP_ENV")
+	env := app.Env()
 	if env == "" {
 		env = "development"
 	}

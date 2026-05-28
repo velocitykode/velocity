@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // Mode selects how CSRF tokens are bound to the requesting client.
@@ -177,14 +179,15 @@ func DefaultConfig() *Config {
 const DefaultMaxFormBodyBytes int64 = 1 << 20
 
 // Validate checks the Config for insecure defaults. Pass env to enable
-// environment-aware rules: Secure=false is allowed when env is "testing"
-// or "development", rejected otherwise. An empty env is treated as
+// environment-aware rules: Secure=false is allowed when env is a dev or
+// test profile (per contract.IsDevOrTestEnv: "development", "dev", "test",
+// "testing", "local"), rejected otherwise. An empty env is treated as
 // production for strict validation.
 //
 // Rules:
 //   - Mode must be ModeSession (ModeDoubleSubmit is reserved)
 //   - HttpOnly must be true unless AllowJSAccess is set
-//   - Secure must be true outside testing/development
+//   - Secure must be true outside the canonical dev/test profiles
 //   - SameSite must be set (non-zero value)
 //   - SameSite=None requires Secure=true
 func (c *Config) Validate(env string) error {
@@ -197,11 +200,11 @@ func (c *Config) Validate(env string) error {
 	if !c.HttpOnly && !c.AllowJSAccess {
 		return fmt.Errorf("%w: HttpOnly=false requires AllowJSAccess=true opt-in", ErrInsecureCSRFConfig)
 	}
-	if !c.Secure && !isNonProdEnv(env) {
-		return fmt.Errorf("%w: Secure=false is not permitted in %q env (set APP_ENV=testing or development to allow)", ErrInsecureCSRFConfig, env)
+	if !c.Secure && !contract.IsDevOrTestEnv(env) {
+		return fmt.Errorf("%w: Secure=false is not permitted in %q env (set APP_ENV to a dev or test profile to allow)", ErrInsecureCSRFConfig, env)
 	}
-	// SameSite is an int enum. SameSiteDefaultMode (0) is ambiguous —
-	// browsers differ. Require an explicit value.
+	// SameSite is an int enum. SameSiteDefaultMode (0) is ambiguous (browsers
+	// differ). Require an explicit value.
 	if c.SameSite == http.SameSiteDefaultMode {
 		return fmt.Errorf("%w: SameSite must be set to Lax, Strict, or None (got default/zero)", ErrInsecureCSRFConfig)
 	}
@@ -209,14 +212,4 @@ func (c *Config) Validate(env string) error {
 		return fmt.Errorf("%w: SameSite=None requires Secure=true", ErrInsecureCSRFConfig)
 	}
 	return nil
-}
-
-// isNonProdEnv reports whether env is a non-production environment that
-// may relax the Secure cookie requirement.
-func isNonProdEnv(env string) bool {
-	switch env {
-	case "testing", "development":
-		return true
-	}
-	return false
 }

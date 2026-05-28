@@ -243,8 +243,10 @@ func validateSessionStoreForProduction(a *App) error {
 	if a == nil || a.config == nil {
 		return nil
 	}
-	switch a.config.Env {
-	case "testing", "development":
+	// Route through the canonical helper so "dev", "test", "local"
+	// behave the same way as "development" / "testing": all dev/test
+	// profiles skip the production-only gate.
+	if contract.IsDevOrTestEnv(a.config.Env) {
 		return nil
 	}
 	if a.config.Session.AllowCookieStoreInProduction {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/guards"
 	"github.com/velocitykode/velocity/cache"
@@ -253,7 +254,7 @@ func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey strin
 	// log path stays so the choice is visible in startup logs.
 	if err := queue.ConfigureSigningWith(signingKey, appKey, queue.SigningOptions{
 		AcceptUnsigned:     queueAcceptUnsigned(),
-		AllowUnsignedInDev: isDevOrTestEnvProfile(appEnv),
+		AllowUnsignedInDev: app.IsDevOrTestEnv(appEnv),
 	}); err != nil {
 		return nil, err
 	}
@@ -346,30 +347,12 @@ func initNotification(mailer mail.Mailer, db *sql.DB, dbDriver string) *notifica
 	return mgr
 }
 
-// isDevOrTestEnvProfile reports whether appEnv names a development or
-// test profile. Used by initQueue to relax the fail-closed signing-key
-// requirement so unit tests and local dev runs do not need a signing
-// key configured; production environments (Config.Env unset or anything
-// else) must supply one or opt in via QUEUE_ACCEPT_UNSIGNED.
-//
-// We take appEnv as a parameter (not via os.Getenv) so test fixtures
-// that build a Config in-memory with Env="testing" get the relaxation
-// without having to also export APP_ENV into the process environment.
-//
-// The values mirror auth's APP_KEY guard and maintenance's bypass-cookie
-// gate so operators do not learn a third spelling for "this is a
-// non-prod profile".
-func isDevOrTestEnvProfile(appEnv string) bool {
-	switch strings.ToLower(strings.TrimSpace(appEnv)) {
-	case "local", "development", "dev", "test", "testing":
-		return true
-	}
-	return false
-}
-
 // queueAcceptUnsigned reports whether the operator has explicitly opted
 // into running the queue without payload signing. Recognises the common
 // truthy spellings so a typo does not silently disable the guard.
+//
+// final: do not rename. QUEUE_ACCEPT_UNSIGNED is the 1.0 surface name for
+// the queue payload-signing opt-out.
 func queueAcceptUnsigned() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("QUEUE_ACCEPT_UNSIGNED"))) {
 	case "1", "true", "yes", "on":

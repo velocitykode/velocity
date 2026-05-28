@@ -7,6 +7,172 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 1.0 readiness
+
+- **Sweep 3: configuration surface lock-in.** Inventoried every `os.Getenv` /
+  `os.LookupEnv` read site and pinned the 1.0 environment-variable surface.
+  Names below are final and will not change without a deprecation cycle.
+  Full table in `docs/configuration.md`.
+- **New `app/env.go` canonical reader.** `app.Env()`, `app.IsProduction()`,
+  `app.IsTesting()`, and the parameterised `app.IsProductionEnv(env)` /
+  `app.IsTestingEnv(env)` / `app.IsDevOrTestEnv(env)` helpers replace
+  ad-hoc `os.Getenv("APP_ENV")` and `strings.ToLower(env) == "production"`
+  checks. Subsystems that already accept `env` as an explicit string
+  (auth, csrf, queue signing) keep doing so for cycle-break reasons and
+  route through the parameterised helpers. Vocabulary is final: `production`,
+  `prod`, `staging` all return `true` from `IsProduction`; `development`,
+  `dev`, `test`, `testing`, `local`, and empty return `false`; anything
+  unknown is treated as production (fail-secure).
+- **`Config.Validate()` on the root `velocity.Config`** plus new
+  `DBConfig.Validate()`, `CacheConfig.Validate()`, `QueueConfig.Validate()`
+  (root), `StorageConfig.Validate()` (root). Called as the very first
+  step of `velocity.New()` so unknown driver names (`CACHE_DRIVER=redus`),
+  malformed ports (`APP_PORT=eighty`), and negative timeouts fail fast
+  with a typed error wrapping `velocity.ErrInvalidConfig`. Session, CSRF,
+  and Crypto validation are intentionally NOT folded into root Validate
+  because they have env-aware dev-mode warning paths that would be
+  short-circuited; those run later in `New()`.
+- **New `Validate()` methods on subsystem Configs that previously had
+  none:** `log.LogConfig.Validate()` (reserved for future use),
+  `mail.MailConfig.Validate()` (rejects negative `MAX_ATTACHMENT_SIZE`),
+  `view.Config.Validate()` (rejects negative SSR timeout), and a fail-fast
+  `queue.QueueConfig.Validate()` (database driver requires `DB` +
+  `DBDriver`). Wired into `mail.NewMailerWithContext`, `view.NewEngine`,
+  and `queue.NewQueueWithContext` as a fail-fast guard before driver
+  resolution.
+- **Loud startup warning when scheduler runs the default in-memory
+  Locker in production.** `velocity.New()` checks
+  `app.IsProductionEnv(Config.Env)` after `installSchedulerLocker` and
+  emits a `Log.Warn` when the configured Locker is still the
+  process-local `scheduler.InMemoryLocker`. Does NOT panic: single-host
+  production deployments are a legitimate use case the framework cannot
+  distinguish from misconfigured HA.
+- **Final 1.0 names marked in-code with `// final: do not rename`
+  comments at the read site.** Names tagged: `GRPC_INSECURE` (gRPC TLS
+  opt-out), `QUEUE_ACCEPT_UNSIGNED` (queue payload-signing opt-out).
+  These read fine but look unusual; pinning them in comments prevents
+  drive-by renames during 1.0 surface reviews.
+- **Maintenance bypass-cookie `Secure` flag now reads through
+  `app.IsDevOrTestEnv(app.Env())`** instead of duplicating a switch
+  over `APP_ENV` literals. Same semantics, single source of truth.
+- **Queue payload-signing dev/test detection routed through
+  `app.IsDevOrTestEnv`** instead of the package-local
+  `isDevOrTestEnvProfile`. Removed the duplicate helper.
+- **Sweep 3 follow-up: closed the cycle-break excuses with a leaf
+  `contract/env.go`.** Moved the env-classification logic from
+  `app/env.go` to the `contract` package (stdlib-only leaf) so every
+  subsystem can call `contract.IsProductionEnv`, `contract.IsTestingEnv`,
+  `contract.IsDevelopmentEnv`, `contract.IsDevOrTestEnv` regardless of
+  position in the import graph. `app/env.go` re-exports the helpers for
+  callers that already depend on `app`. Vocabulary unchanged.
+- **HIGH-1 fix - exceptions handler:** `exceptions.Handler` now routes
+  `h.environment` through `contract.IsProductionEnv` instead of literal
+  equality, so debug-mode is force-disabled and SetDebug refuses to
+  enable when APP_ENV is `production`, `prod`, OR `staging` (and any
+  unknown value). Previously only the literal `"production"` triggered
+  the gate, leaving `APP_ENV=prod` and `APP_ENV=staging` exposed.
+- **HIGH-2 fix - gRPC guards:** `grpc.Server.Build` (TLS + reflection)
+  and `grpc.Gateway.Build` (TLS) now route through
+  `contract.IsProductionEnv`. `APP_ENV=prod` and `APP_ENV=staging` are
+  now refused alongside `production`. The previous
+  `TestBuild_AllowsReflectionInStaging` (which asserted the opposite)
+  was replaced with `TestBuild_RefusesReflectionInStaging` and a new
+  `TestBuild_AllowsReflectionInDevelopment` to keep dev ergonomics
+  covered.
+- **MEDIUM-1 fix - app.go env relaxation:** the missing-APP_KEY and
+  insecure-Session/CSRF branches in `velocity.New` previously matched
+  only the literal strings `"testing"` and `"development"`, so
+  `APP_ENV=dev` / `APP_ENV=local` failed identically to production.
+  Now route through `app.IsTestingEnv` (silent) and `app.IsDevOrTestEnv`
+  (warn), with everything else failing closed. The canonical vocabulary
+  applies end-to-end.
+- **MEDIUM-2 fix - CACHE_DRIVER=database is now rejected at
+  `CacheConfig.Validate()`.** `factories.go:initCache` had no database
+  branch (no driver implementation exists yet) and silently fell through
+  to memory, defeating the fail-fast goal. Documented in
+  `docs/configuration.md`; when a database-backed cache driver lands,
+  add the wiring AND the case to the validator switch in the same commit.
+- **csrf and auth.session env helpers consolidated through `contract`.**
+  `csrf.isNonProdEnv` and `auth.isNonProdEnvSession` are deleted;
+  `csrf.Config.Validate` and `auth.SessionConfig.Validate` now call
+  `contract.IsDevOrTestEnv(env)`. The relaxation surface widens from
+  `{testing, development}` to the canonical 5-name set
+  `{development, dev, test, testing, local}`, matching every other
+  env-gated relaxation in the framework.
+- **orm/testing safety panics consolidated through `contract`.**
+  `RefreshDatabase` and `TestCase.ensureSafeEnvironment` now panic when
+  `contract.IsProductionEnv(APP_ENV)` reports true, so staging / prod
+  / typo'd APP_ENV values all refuse to run destructive helpers (closes
+  the test-fixture leak that the prior literal `"production"` check
+  left open). `contract.IsTestingEnv` is the new "explicitly testing"
+  gate.
+- **Sweep 3 round-3 - LOW-1: `contract.GetEnv()` canonical reader.** New
+  helper in `contract/env.go` returns the lowercased+trimmed APP_ENV
+  value. Every `os.Getenv("APP_ENV")` / `envOrDefault("APP_ENV", ...)`
+  call site in framework code now routes through it (or through the
+  `app.Env()` re-export that delegates to `contract.GetEnv`).
+  Touched: `grpc/server.go`, `grpc/gateway.go`,
+  `orm/testing/{refresh,testcase}.go`, `cmd_ops.go`, `config.go`. The
+  `console/serve.go` Setenv / subprocess-env-format sites now use the
+  new `contract.EnvVar` constant so the literal "APP_ENV" lives in
+  exactly one file. `app.EnvVar` re-exports `contract.EnvVar`.
+- **Sweep 3 round-3 - LOW-2: `ErrNoAppKey` message drift fixed.** The
+  error text now reads "APP_KEY is required outside
+  development/dev/test/testing/local environments (run `vel
+  key:generate`)" with the vocabulary built from
+  `contract.NonProdEnvNames()` via `strings.Join` so future
+  vocabulary changes flow through automatically. Previously it
+  hard-coded "testing or development", which lied to operators who
+  had widened to the canonical 5-name set in MEDIUM-1.
+- **`contract.NonProdEnvNames()` exported.** Returns the canonical list
+  recognised by `IsDevOrTestEnv` so error messages and validator hints
+  quote the vocabulary from one source. Order matches the helper's
+  switch declaration; do not depend on it beyond display.
+- **Acceptance grep status.** After this commit, the audit grep
+  `grep -rn 'os\.Getenv.*APP_ENV\|os\.LookupEnv.*APP_ENV\|os\.Setenv.*APP_ENV\|envOrDefault.*APP_ENV\|"APP_ENV='`
+  (excluding `_test.go`, `app/env.go`, `contract/env.go`) is empty.
+  The looser `grep -rn 'APP_ENV'` still returns matches in godoc
+  comments, panic message text, and CHANGELOG itself; these are
+  intentional human-readable references to the env-var name and not
+  programmatic reads. Surfacing as a decision: the reviewer's
+  "must be empty" target was interpreted as "zero programmatic
+  reads/writes/format-strings of the env-var", not "zero textual
+  occurrences of the string 'APP_ENV' anywhere in the source tree".
+- **Sweep 3 round-4 - finding 1:** the signed-URL APP_KEY gate in
+  `velocity.New` (formerly `app.go:577`) routed through the same
+  literal `"testing"` / `"development"` switch that round-2 already
+  fixed elsewhere. Replaced with the canonical `app.IsTestingEnv` /
+  `app.IsDevOrTestEnv` helpers so `APP_ENV=dev` / `APP_ENV=test` /
+  `APP_ENV=local` behave consistently with the earlier crypto-key
+  gate. Same vocabulary across the two APP_KEY gates.
+- **Sweep 3 round-4 - finding 2:** `ConfigFromEnv` (config.go) now
+  reads `APP_ENV` through `app.Env()` so `Config.Env` is the
+  normalised (lowercased + trimmed) value, matching what every
+  classifier helper produces internally. Downstream consumers that
+  do exact-string compares (the only one was
+  `scheduler/job.go:185`'s environment-filter loop) were audited;
+  `Scheduler.SetEnv` and `Job.Environments` were both updated to
+  normalise their inputs the same way, so the runtime compare is
+  case- and whitespace-insensitive on both sides. No consumers broke.
+- **Sweep 3 round-4 - finding 3:** `view.Config.Validate` now rejects
+  `SSRTimeout <= 0` when `SSREnabled=true`, matching the godoc
+  ("must be positive"). The previous `< 0` check let zero through,
+  which `net/http` interprets as "no deadline" and would leak the
+  per-render call into an indefinite wait.
+- **Sweep 3 round-4 - finding 4:** `docs/configuration.md` Notes
+  columns for `APP_KEY`, `SESSION_SECURE`, and `CSRF_SECURE` updated
+  to quote the canonical 5-name vocabulary from
+  `contract.NonProdEnvNames()` instead of the obsolete
+  "testing or development" pair.
+- **Sweep 3 round-4 - bonus sweep:**
+  - `bootstrap.go:validateSessionStoreForProduction` literal
+    `case "testing", "development":` switch replaced with
+    `contract.IsDevOrTestEnv`. Closes the same vocabulary gap (a
+    production gate that didn't fire on `dev`/`test`/`local`).
+  - `maintenance.go:mintMaintenanceBypassCookie` godoc comment
+    updated to quote the canonical vocabulary (the implementation
+    already routed through `app.IsDevOrTestEnv`).
+
 ### Breaking changes
 
 - **New framework table `job_dedupe` for queue-layer at-most-once enqueue.** Backs the new `queue.DedupeAwarePusher` optional driver interface and its `PushIfNotExistsCtx(ctx, job, dedupeKey, queue...)` method. The `DatabaseDriver` implementation INSERTs into `job_dedupe` under a PRIMARY KEY (postgres `ON CONFLICT DO NOTHING`, mysql `INSERT IGNORE`, sqlite `INSERT OR IGNORE`) inside the same transaction as the `jobs` insert; a row already present in `job_dedupe` is treated as success without touching `jobs`. This is what makes the batch-callback reaper idempotent at the storage layer even when `MarkCallbackDispatched` (the bookkeeping write after a successful push) fails. Deployed apps must run an `ALTER TABLE`-equivalent migration to create the sidecar table before upgrading. Example for Postgres:
@@ -84,7 +250,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `MAIL_POSTMARK_TOKEN`, `MAIL_POSTMARK_MESSAGE_STREAM` (old: `POSTMARK_*`)
   - `DB_MYSQL_TLS` is still read, but now via `ConfigFromEnv` → `DBConfig.TLS`; the mysql driver no longer reaches for `os.Getenv`.
   - `DB_SSL_MODE` is still read, but now via `ConfigFromEnv` → `DBConfig.SSLMode`; the postgres driver no longer reaches for `os.Getenv`.
-- **`APP_KEY` is mandatory outside `APP_ENV=testing` and `APP_ENV=development`.** `velocity.New` returns `velocity.ErrNoAppKey` when the key is missing in any other environment (including unset `APP_ENV`, which most production deployments have). `APP_ENV=testing` bypasses the check silently; `APP_ENV=development` bypasses it with a boot-time `a.Log.Warn(...)` so developers see that crypto is disabled without being blocked. Generate a key with `vel key:generate`.
+- **`APP_KEY` is mandatory outside the canonical dev/test profiles.** `velocity.New` returns `velocity.ErrNoAppKey` when the key is missing in any other environment (including unset `APP_ENV`, which most production deployments have). Test profiles (`test`, `testing`) bypass the check silently; the wider dev profiles (`development`, `dev`, `local`) bypass it with a boot-time `a.Log.Warn(...)` so developers see that crypto is disabled without being blocked. Generate a key with `vel key:generate`. **Update (Unreleased / sweep 3):** this 0.32.0 entry originally said only "`APP_ENV=testing` and `APP_ENV=development`"; sweep 3 widened the relaxation surface to the canonical 5-name set `{development, dev, test, testing, local}` per `contract.NonProdEnvNames()`.
 - **Queue driver startup never falls back silently.** `QUEUE_DRIVER=redis` with an unreachable Redis, or `QUEUE_DRIVER=database` without a DB connection, now fail app boot. To keep the in-memory driver, set `QUEUE_DRIVER=memory` explicitly.
 - **ORM query builder returns errors instead of panicking.** Every chain step (`Where`, `WhereIn`, `OrderBy`, `GroupBy`, `Having`, `Select`, `Pluck`, …) captures its first validation error into `Query[T].err`. Terminal methods (`Get`, `First`, `Count`, `Update`, `Delete`, `ForceDelete`, `Pluck`, `InsertGetId`) return `q.err` ahead of executing. Call `q.Err()` for mid-chain inspection. Tests that used `require.Panics` on malformed identifiers must switch to asserting an error return.
 - **ORM `Manager` methods now take a `context.Context`.** `Raw`, `Exec`, `Begin`, `Transaction` are context-aware. Pass `ctx` from the request handler or `context.Background()` from startup code. `Manager.Close()` is removed — use `Shutdown(ctx)`. Note: the query builder (`orm.Query[T]`) remains permissive — it falls back to `context.Background()` when `.WithContext(ctx)` is not called. For cancellation in request handlers, call `.WithContext(ctx)` explicitly; the tighter `Manager`-level context discipline does not propagate into the builder chain automatically.
@@ -95,7 +261,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`queue.Worker.Start` now requires a `context.Context`.** The worker's internal ctx is derived from it so application-level shutdown contexts propagate into job-execution contexts. Previously `w.ctx` was rooted at `context.Background()` and ignored any caller-supplied lifecycle ctx — only an explicit `Worker.Stop()` could abort an in-flight job. **Migration:** change `worker.Start()` call sites to `worker.Start(ctx)`. The framework's built-in `queue:work` command already passes the correct ctx.
 - **`cache/drivers.Lock` interface methods now require `context.Context`.** `Get(ctx)`, `Release(ctx)`, `Run(ctx, cb)`, `Block(ctx, timeout, cb)`, `ForceRelease(ctx)` — previously ctx-less, so request cancellation never reached Redis. `Owner()` is unchanged. The `cache.Manager.Lock(key, ttl...)` / `RestoreLock(key, owner)` surface is unchanged — ctx flows through the returned lock's methods. **Migration:** update every `lock.Get()` → `lock.Get(ctx)`, etc. In HTTP handlers use `ctx.Request.Context()`; elsewhere use the relevant request- or job-scoped ctx, or `context.Background()` if no cancellation is desired.
 - **CSRF middleware refuses requests without a session cookie** (in the default `ModeSession`). Previously the middleware generated a per-request ephemeral session ID for any unsessioned request and issued a CSRF token scoped to it — letting an attacker bind a token to a self-chosen ID and replay it. Requests without a session cookie now receive `ErrNoSession` → 419. **Migration:** ensure session middleware runs upstream of the CSRF middleware for all CSRF-protected routes. Apps that genuinely need CSRF without server-side sessions must wait for `csrf.ModeDoubleSubmit` (reserved; not yet implemented) or supply their own token strategy. The new `csrf.NewE(cfg) (*CSRF, error)` constructor is preferred over `csrf.New(cfg)` for fail-fast Mode validation.
-- **Session and CSRF cookie configs are validated at boot.** `auth.SessionConfig.Validate(env)` and `csrf.Config.Validate(env)` enforce: `HttpOnly=true` (unless the new `AllowJSAccess=true` opt-in), `Secure=true` outside `APP_ENV=testing` / `APP_ENV=development`, non-zero `SameSite`, and `SameSite=None` requires `Secure=true`. `velocity.New()` fails boot on violation in production, logs `a.Log.Warn` in development, stays silent in testing. **Migration:** apps that shipped with `SESSION_SECURE=false` / `CSRF_SECURE=false` / `SESSION_HTTP_ONLY=false` / `CSRF_HTTP_ONLY=false` in production will fail to boot until the config is fixed. Recommended fix is to set those to their secure defaults; the `AllowJSAccess=true` escape hatch exists for rare cases that genuinely need client-side access.
+- **Session and CSRF cookie configs are validated at boot.** `auth.SessionConfig.Validate(env)` and `csrf.Config.Validate(env)` enforce: `HttpOnly=true` (unless the new `AllowJSAccess=true` opt-in), `Secure=true` outside the canonical dev/test profiles, non-zero `SameSite`, and `SameSite=None` requires `Secure=true`. `velocity.New()` fails boot on violation in production, logs `a.Log.Warn` in development, stays silent in testing. **Migration:** apps that shipped with `SESSION_SECURE=false` / `CSRF_SECURE=false` / `SESSION_HTTP_ONLY=false` / `CSRF_HTTP_ONLY=false` in production will fail to boot until the config is fixed. Recommended fix is to set those to their secure defaults; the `AllowJSAccess=true` escape hatch exists for rare cases that genuinely need client-side access. **Update (Unreleased / sweep 3):** the dev/test relaxation surface widened from `{testing, development}` to the canonical 5-name set `{development, dev, test, testing, local}` per `contract.NonProdEnvNames()`; this entry originally said only "testing or development".
 - **JWT algorithm validation is strict.** `auth` no longer falls through to HS256 for unknown algorithm strings. `GenerateToken` / `GenerateRefreshToken` return `ErrUnsupportedSigningMethod` when `AUTH_JWT_ALGO` is a typo or unimplemented alg. **Migration:** verify `AUTH_JWT_ALGO` is one of the supported values (HS256/HS384/HS512, RS256/RS384/RS512, ES256/ES384/ES512 — whatever the JWT guard actually implements).
 - **`velocity.NewTestApp` moved.** The public constructor is now `velocitytest.NewApp` (in `github.com/velocitykode/velocity/velocitytest`). The old name remains only as a test-only internal helper and does not ship in production binaries.
 - **Declarative bootstrap types re-homed in `chain/` and `app/` for import-cycle reasons; consumer-facing names unchanged.** `velocity.Routing`, `velocity.Commands`, `velocity.MiddlewareStack`, `velocity.ProviderRegistry`, `velocity.Services`, `velocity.ServiceProvider`, and the optional provider interfaces (`velocity.RouteProvider`, `velocity.MiddlewareProvider`, `velocity.EventProvider`, `velocity.ScheduleProvider`, `velocity.CommandProvider`) all remain at their 0.x import paths. They are now type aliases for types in `chain/` (declarative bootstrap) and `app/` (service container), which is where framework internals reference them. Existing consumer code using `velocity.X` needs no changes; packages that already migrated to `chain.X` during the rc cycle keep working because both paths resolve to the same Go type. `App.Exceptions(fn)` is unchanged — `exceptions.ExceptionHandler` already lives in the leaf `exceptions/` package.
@@ -114,7 +280,7 @@ Everything else — the Close()/Stop() shims, legacy env-var fallbacks, ORM `Eve
 ### Added
 
 - **`velocity.BuildInfo`** — single source of truth for version metadata (`Version`, `Commit`, `Date`). Populated at build time via `-ldflags` from the `Makefile` `build` target and `console.Build`. Defaults to `"devel"`/`"devel"`/`"unknown"` for `go run` / tests.
-- **`velocity.ErrNoAppKey`** — sentinel returned by `New` when `APP_KEY`/`CRYPTO_KEY` is unset outside `APP_ENV=testing` / `APP_ENV=development` (the dev bypass logs a boot-time WARN instead of erroring, so local workflows aren't blocked).
+- **`velocity.ErrNoAppKey`**: sentinel returned by `New` when `APP_KEY`/`CRYPTO_KEY` is unset outside the canonical dev/test profiles. Test profiles (`test`, `testing`) bypass the check silently; the wider dev profiles (`development`, `dev`, `local`) bypass it with a boot-time WARN so local workflows aren't blocked. **Update (Unreleased / sweep 3 round 3):** this 0.32.0 entry originally said only "`APP_ENV=testing` / `APP_ENV=development`"; the canonical set per `contract.NonProdEnvNames()` is `{development, dev, test, testing, local}`.
 - **`contract.EventDispatcherAware`** — uniform `SetEventDispatcher(func(any) error)` interface. Every subsystem (cache, queue, scheduler, router, ORM, mail, csrf, view/bond, crypto, notification) implements it; bootstrap wires them all via a single interface assertion. A new `event_dispatcher_aware.go` holds compile-time `var _ contract.EventDispatcherAware = (*X)(nil)` checks so signature drift fails the build.
 - **`app.RegisterExtension[T]` / `app.ExtensionAs[T]`** — generic typed accessors for `Services.Extensions`. `RegisterExtension` errors on duplicate keys; `ExtensionAs` returns a wrapped error for missing keys or type mismatches. The underlying `map[string]any` is still accessible but callers are encouraged to use the helpers.
 - **`SERVER_READ_HEADER_TIMEOUT`** (default 10s) controls `http.Server.ReadHeaderTimeout`. `BaseContext` now returns the app-level shutdown context so handlers observe graceful shutdown.
@@ -148,7 +314,7 @@ Everything else — the Close()/Stop() shims, legacy env-var fallbacks, ORM `Eve
   - `view.SimpleFlashProvider`, `view.SimpleValidationProvider` — in-memory scaffolding never wired to production; cookie-based flash (`ctx.WithErrors` / `ctx.WithInput` + `bond/flash.go`) is the supported flow.
   - `view.Success`, `view.Error` — placeholder helpers that only called `http.Redirect`. Call `http.Redirect` or `(*view.Engine).Redirect` directly.
   - `view.LoadTemplateFromFile` — a two-line `os.ReadFile` wrapper.
-  - `view.DefaultViewConfig`, `view.Config.Validate` — unused.
+  - `view.DefaultViewConfig`: unused. **Update (Unreleased / sweep 3 round 4+5):** this 0.32.0 entry also listed `view.Config.Validate` as unused, but sweep 3 reintroduced it. `view.Config.Validate` now rejects `SSRTimeout <= 0` when `SSREnabled=true` and is chained from `velocity.Config.Validate` unconditionally (see `config.go`), so the SSR fast-fail fires even when no view engine is constructed.
   - `(*view.Engine).RenderWithErrors` — unused; cookie-flash injection handles the flow at render time.
 
   Files removed: `view/helpers.go`, `view/helpers_test.go`.
@@ -338,7 +504,7 @@ A pre-1.0 review surfaced five MUST FIX clusters across bootstrap, ORM, queue, c
 - **Session guard**: `Login()` now aborts when `session.Regenerate()` fails, closing a session-fixation window where the user was bound to the attacker-chosen session ID on store I/O error.
 - **Rate limiter**: `X-Real-IP` is now strictly parsed as a single IP (rejecting comma / whitespace / tab separated payloads) to prevent throttle-key spoofing via injected multi-value headers. Only honoured when the immediate peer is in the trusted-proxy list.
 - **CSRF**: middleware no longer generates ephemeral session IDs when no session cookie is present — requests without a session are rejected with `ErrNoSession` (419 response). New `csrf.Mode` enum makes the binding strategy explicit; only `ModeSession` is implemented. `csrf.ModeDoubleSubmit` is reserved for a future release. See Migration.
-- **Cookie config**: `auth.SessionConfig` and `csrf.Config` now carry `Validate(env string) error` methods enforcing `HttpOnly=true` (unless `AllowJSAccess=true` opt-in), `Secure=true` outside testing/development, non-zero `SameSite`, and `SameSite=None ⇒ Secure=true`. Wired into `velocity.New()` — production boot fails on violation, development logs a warning, testing is silent. See Migration.
+- **Cookie config**: `auth.SessionConfig` and `csrf.Config` now carry `Validate(env string) error` methods enforcing `HttpOnly=true` (unless `AllowJSAccess=true` opt-in), `Secure=true` outside the canonical dev/test profiles, non-zero `SameSite`, and `SameSite=None => Secure=true`. Wired into `velocity.New()`: production boot fails on violation, development logs a warning, testing is silent. See Migration. **Update (Unreleased / sweep 3):** the relaxation set widened from `{testing, development}` to the canonical 5-name set `{development, dev, test, testing, local}` per `contract.NonProdEnvNames()`.
 
 ### Changed — Shutdown contract consolidation
 - Every ad-hoc `interface{ Shutdown(context.Context) error }` assertion in `serve.go` (5 sites), `csrf/csrf.go`, `cache/manager.go`, and `storage/storage.go` now uses `contract.ShutdownAware` directly. The contract already existed (see Added for 0.32.0); it's just the single source of truth now rather than a parallel inline pattern. No behavioural change — type-asserting against `contract.ShutdownAware` is identical at runtime to the inline form. The benefit is that future subsystem additions only have to look at one place to know the shape, and signature drift fails at compile time instead of silently failing the type assertion.

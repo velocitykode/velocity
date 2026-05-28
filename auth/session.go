@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // ErrInsecureSessionConfig is returned from SessionConfig.Validate when the
@@ -399,8 +401,8 @@ func (c SessionConfig) Validate(env string) error {
 	if !c.HttpOnly && !c.AllowJSAccess {
 		return fmt.Errorf("%w: HttpOnly=false requires AllowJSAccess=true opt-in", ErrInsecureSessionConfig)
 	}
-	if !c.Secure && !isNonProdEnvSession(env) {
-		return fmt.Errorf("%w: Secure=false is not permitted in %q env (set APP_ENV=testing or development to allow)", ErrInsecureSessionConfig, env)
+	if !c.Secure && !contract.IsDevOrTestEnv(env) {
+		return fmt.Errorf("%w: Secure=false is not permitted in %q env (set APP_ENV to a dev or test profile to allow)", ErrInsecureSessionConfig, env)
 	}
 	if c.SameSite == http.SameSiteDefaultMode {
 		return fmt.Errorf("%w: SameSite must be set to Lax, Strict, or None (got default/zero)", ErrInsecureSessionConfig)
@@ -409,17 +411,6 @@ func (c SessionConfig) Validate(env string) error {
 		return fmt.Errorf("%w: SameSite=None requires Secure=true", ErrInsecureSessionConfig)
 	}
 	return nil
-}
-
-// isNonProdEnvSession reports whether env is a non-production environment
-// that may relax the Secure cookie requirement. Mirrors the csrf helper but
-// kept package-local to avoid an import cycle.
-func isNonProdEnvSession(env string) bool {
-	switch env {
-	case "testing", "development":
-		return true
-	}
-	return false
 }
 
 // GetSessionFromRequest gets session from request

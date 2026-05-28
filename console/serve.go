@@ -14,6 +14,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	cli "github.com/velocitykode/velocity-cli"
 	"github.com/velocitykode/velocity/async"
+	"github.com/velocitykode/velocity/contract"
 )
 
 // ServeOptions holds flags for the serve command.
@@ -101,7 +102,7 @@ func setupGracefulShutdown(viteCmd *exec.Cmd) {
 }
 
 func runServer(opts ServeOptions) error {
-	os.Setenv("APP_ENV", opts.Env)
+	os.Setenv(contract.EnvVar, opts.Env)
 	os.Setenv("APP_PORT", opts.Port)
 
 	// .vel/tmp holds the compiled server binary which embeds build-time
@@ -196,7 +197,7 @@ func runWithWatcher(opts ServeOptions) error {
 		serverCmd.Stdout = os.Stdout
 		serverCmd.Stderr = os.Stderr
 		serverCmd.Env = append(os.Environ(),
-			fmt.Sprintf("APP_ENV=%s", opts.Env),
+			fmt.Sprintf("%s=%s", contract.EnvVar, opts.Env),
 			fmt.Sprintf("APP_PORT=%s", opts.Port),
 		)
 

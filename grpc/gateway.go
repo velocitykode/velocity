@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/velocitykode/velocity/async"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/log"
 )
@@ -70,7 +71,7 @@ func NewGateway(opts ...GatewayOption) *Gateway {
 	g := &Gateway{
 		port:          cfg.GatewayPort,
 		grpcEndpoint:  cfg.GRPCEndpoint,
-		environment:   os.Getenv("APP_ENV"),
+		environment:   contract.GetEnv(),
 		registrations: make([]GatewayRegistrationFunc, 0),
 		muxOptions: []runtime.ServeMuxOption{
 			// Use JSON names and emit defaults
@@ -307,7 +308,10 @@ func (g *Gateway) Build(ctx context.Context) error {
 	// Enforce the production TLS guard before any other validation so the
 	// error is unambiguous when an operator forgets to wire credentials.
 	if !g.credsOpted {
-		if g.environment == "production" {
+		// Routed through contract.IsProductionEnv so "prod" and "staging"
+		// are refused alongside "production". A typo'd APP_ENV cannot
+		// silently downgrade the gateway to insecure dial credentials.
+		if contract.IsProductionEnv(g.environment) {
 			return fmt.Errorf("velocity/grpc: gateway TLS credentials are required in production. Use GatewayWithTLS, GatewayWithTransportConfig, or GatewayWithInsecure to opt out for a known-internal mesh")
 		}
 		g.logger.Warn("gRPC gateway dialling upstream with insecure credentials. Configure TLS via GatewayWithTLS or GatewayWithTransportConfig before deploying to production",

@@ -1,6 +1,8 @@
 package velocity
 
 import (
+	"errors"
+	"fmt"
 	stdlog "log"
 	"net/http"
 	"os"
@@ -18,6 +20,13 @@ import (
 	"github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/view"
 )
+
+// ErrInvalidConfig is the sentinel for configuration validation failures.
+// Sub-config Validate() methods wrap their own sentinels (e.g.
+// auth.ErrInsecureSessionConfig, crypto.ErrInvalidKey) so callers can branch
+// on the specific failure; the root Config.Validate() wraps this so a
+// generic "is the config valid?" check needs only one errors.Is target.
+var ErrInvalidConfig = errors.New("velocity: invalid configuration")
 
 // Config holds all configuration for a Velocity application.
 // It replaces the scattered os.Getenv() calls across packages.
@@ -242,8 +251,18 @@ func ConfigFromEnv() Config {
 		}
 	}
 
+	// Read APP_ENV through the canonical reader so Config.Env is the
+	// normalised (lowercased + trimmed) value. Every downstream consumer
+	// reads Config.Env via app.IsProductionEnv / app.IsDevOrTestEnv etc.
+	// which would normalise again - storing the canonical form once at
+	// the boundary keeps the exact-match consumers (scheduler.Job
+	// environment filter, exceptions.Handler) seeing the same string.
+	envValue := app.Env()
+	if envValue == "" {
+		envValue = "development"
+	}
 	config := Config{
-		Env:      envOrDefault("APP_ENV", "development"),
+		Env:      envValue,
 		Debug:    envOrDefault("APP_DEBUG", "false") == "true",
 		Port:     envOrDefault("APP_PORT", "4000"),
 		Key:      os.Getenv("APP_KEY"),
@@ -571,4 +590,149 @@ func parseSameSite(value string) http.SameSite {
 	default:
 		return http.SameSiteLaxMode
 	}
+}
+
+// Validate checks the root Config for structural problems and delegates to
+// per-subsystem Validate() methods that have no environment-aware
+// relaxations. Called from New() before any resource is allocated so
+// configuration typos (unknown driver names, malformed ports, negative
+// timeouts) fail fast with a clear error.
+//
+// Session, CSRF, and Crypto validation are intentionally NOT chained here:
+// those checks have dev-mode warning paths (Session/CSRF) or an
+// env-conditional fallback (Crypto.Key empty => warn in dev) that New()
+// applies after the logger is up. Calling them here would short-circuit
+// the dev relaxations and break test fixtures that boot with permissive
+// configs.
+//
+// Returns nil on success. On failure the returned error wraps
+// ErrInvalidConfig so callers that want a generic "is this config OK?"
+// branch can use errors.Is(err, ErrInvalidConfig).
+func (c Config) Validate() error {
+	if c.Port != "" {
+		if _, err := strconv.Atoi(c.Port); err != nil {
+			return fmt.Errorf("%w: APP_PORT=%q is not a valid port number", ErrInvalidConfig, c.Port)
+		}
+	}
+	if c.ReadTimeout < 0 || c.WriteTimeout < 0 || c.IdleTimeout < 0 || c.ReadHeaderTimeout < 0 {
+		return fmt.Errorf("%w: server timeouts must be non-negative", ErrInvalidConfig)
+	}
+	if err := c.DB.Validate(); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+	}
+	if err := c.Cache.Validate(); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+	}
+	if err := c.Queue.Validate(); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+	}
+	if err := c.Storage.Validate(); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+	}
+	// View validation must run unconditionally at the root level: New()
+	// only constructs view.NewEngine when RootTemplate != "" (see app.go),
+	// so without this hook a VIEW_SSR_ENABLED=true + VIEW_SSR_TIMEOUT=0
+	// config would bypass the fast-fail check entirely.
+	if err := c.View.Validate(); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+	}
+	return nil
+}
+
+// Validate checks the DBConfig for structural problems. A zero-value
+// DBConfig (no Connection) is valid: the framework treats it as "no
+// database configured" and skips initDB. When Connection is set it must
+// name a supported driver.
+func (c DBConfig) Validate() error {
+	if c.Connection == "" {
+		return nil
+	}
+	switch c.Connection {
+	case "sqlite", "postgres", "mysql":
+		// OK
+	default:
+		return fmt.Errorf("DB_CONNECTION=%q is not a supported driver (want sqlite, postgres, or mysql)", c.Connection)
+	}
+	if c.MaxIdleConns < 0 || c.MaxOpenConns < 0 {
+		return fmt.Errorf("DB_MAX_IDLE_CONNS / DB_MAX_OPEN_CONNS must be non-negative")
+	}
+	if c.ConnMaxLifetime < 0 || c.SlowThreshold < 0 {
+		return fmt.Errorf("DB_CONN_MAX_LIFETIME / DB_SLOW_QUERY_THRESHOLD must be non-negative")
+	}
+	return nil
+}
+
+// Validate checks the CacheConfig for structural problems. An empty Driver
+// is treated as "memory" by initCache; Validate accepts that. A non-empty
+// driver must name a recognised value to keep typos from silently falling
+// through to the in-memory store in production.
+//
+// "database" is rejected. initCache (factories.go) has no database branch:
+// the switch falls through to the memory store, which is exactly the
+// fail-fast hole this validator exists to close. When a database-backed
+// cache driver lands, add the wiring in initCache AND the case to this
+// switch in the same commit.
+func (c CacheConfig) Validate() error {
+	if c.Driver == "" {
+		return nil
+	}
+	switch c.Driver {
+	case "memory", "file", "redis":
+		// OK
+	case "database":
+		return fmt.Errorf("CACHE_DRIVER=database is not implemented; use memory, file, or redis")
+	default:
+		return fmt.Errorf("CACHE_DRIVER=%q is not a recognised driver (want memory, file, or redis)", c.Driver)
+	}
+	if c.Driver == "file" && c.Path == "" {
+		// File driver requires CACHE_PATH so the store has a directory to
+		// write into; an empty path resolves to the process CWD which
+		// silently pollutes the deployment.
+		return fmt.Errorf("CACHE_PATH is required when CACHE_DRIVER=file")
+	}
+	if c.RedisPort < 0 || c.RedisDatabase < 0 {
+		return fmt.Errorf("REDIS_PORT / REDIS_DATABASE must be non-negative")
+	}
+	return nil
+}
+
+// Validate checks the QueueConfig for structural problems. An empty Driver
+// is accepted (initQueue defaults to memory); a non-empty driver must name
+// a recognised value.
+func (c QueueConfig) Validate() error {
+	if c.Driver == "" {
+		return nil
+	}
+	switch c.Driver {
+	case "memory", "redis", "database":
+		// OK
+	default:
+		return fmt.Errorf("QUEUE_DRIVER=%q is not a recognised driver (want memory, redis, or database)", c.Driver)
+	}
+	return nil
+}
+
+// Validate checks the StorageConfig for structural problems. Each disk
+// must name a recognised driver and the default disk (if set) must exist
+// in the Disks map.
+func (c StorageConfig) Validate() error {
+	for name, disk := range c.Disks {
+		switch disk.Driver {
+		case "local", "s3", "memory":
+			// OK
+		case "":
+			return fmt.Errorf("storage disk %q has empty driver", name)
+		default:
+			return fmt.Errorf("storage disk %q has unrecognised driver %q (want local, s3, or memory)", name, disk.Driver)
+		}
+		if disk.Driver == "s3" && disk.Bucket == "" {
+			return fmt.Errorf("storage disk %q uses s3 driver but Bucket is empty", name)
+		}
+	}
+	if c.Default != "" {
+		if _, ok := c.Disks[c.Default]; !ok && len(c.Disks) > 0 {
+			return fmt.Errorf("STORAGE_DRIVER=%q does not match any configured disk", c.Default)
+		}
+	}
+	return nil
 }

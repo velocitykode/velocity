@@ -2,10 +2,11 @@ package testing
 
 import (
 	"database/sql"
-	"os"
+	"fmt"
 	"sync"
 	"testing"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/orm/migrate"
 )
@@ -99,15 +100,17 @@ func (tc *TestCase) DB() *sql.DB {
 	return tc.db
 }
 
-// ensureSafeEnvironment checks we're in test mode
+// ensureSafeEnvironment checks we're in test mode. Production-class APP_ENV
+// values (production, prod, staging) panic outright; everything else requires
+// either APP_ENV=testing/test or a database name that looks like a test fixture.
 func (tc *TestCase) ensureSafeEnvironment() {
-	appEnv := os.Getenv("APP_ENV")
+	appEnv := contract.GetEnv()
 
-	if appEnv == "production" {
-		panic("Tests cannot run in production environment")
+	if contract.IsProductionEnv(appEnv) {
+		panic(fmt.Sprintf("Tests cannot run with APP_ENV=%q (production class)", appEnv))
 	}
 
-	if appEnv != "testing" {
+	if !contract.IsTestingEnv(appEnv) {
 		dbName := tc.manager.DatabaseName()
 		if !isTestDatabase(dbName) {
 			panic("Not in testing environment and database doesn't look like a test database.\nTip: Set APP_ENV=testing in .env.testing")

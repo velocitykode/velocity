@@ -19,6 +19,7 @@ import (
 
 	"golang.org/x/crypto/hkdf"
 
+	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/internal/maintpath"
 	"github.com/velocitykode/velocity/router"
 )
@@ -307,7 +308,8 @@ func computeMaintenanceMAC(macKey []byte, expiresUnix int64) []byte {
 
 // mintMaintenanceBypassCookie returns a signed bypass cookie. The cookie
 // value is base64(expires_unix : hex(mac)). HttpOnly is always set; Secure
-// is set unless APP_ENV is "development" or "testing".
+// is set unless APP_ENV names a dev/test profile per
+// contract.IsDevOrTestEnv (development, dev, test, testing, local).
 func mintMaintenanceBypassCookie(secret string, ttl time.Duration) *http.Cookie {
 	expires := time.Now().Add(ttl).Unix()
 	macKey, err := deriveMaintenanceMACKey(secret)
@@ -384,13 +386,9 @@ func hasValidBypassCookie(r *http.Request, secret string) bool {
 }
 
 // shouldUseSecureBypassCookie reports whether the bypass cookie should set
-// the Secure attribute. Defaults to true; relaxed only when APP_ENV is
-// "development" or "testing" to keep local HTTP flows usable.
+// the Secure attribute. Defaults to true; relaxed only when APP_ENV names
+// a dev or test profile (per app.IsDevOrTestEnv) so local HTTP flows stay
+// usable.
 func shouldUseSecureBypassCookie() bool {
-	switch strings.ToLower(os.Getenv("APP_ENV")) {
-	case "development", "dev", "testing", "test":
-		return false
-	default:
-		return true
-	}
+	return !app.IsDevOrTestEnv(app.Env())
 }

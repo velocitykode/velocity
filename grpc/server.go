@@ -12,6 +12,7 @@ import (
 	"google.golang.org/grpc/reflection"
 
 	"github.com/velocitykode/velocity/async"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/log"
 )
@@ -61,7 +62,7 @@ func NewServer(opts ...ServerOption) *Server {
 	s := &Server{
 		port:               cfg.ServerPort,
 		enableReflection:   cfg.EnableReflection,
-		environment:        os.Getenv("APP_ENV"),
+		environment:        contract.GetEnv(),
 		unaryInterceptors:  make([]grpc.UnaryServerInterceptor, 0),
 		streamInterceptors: make([]grpc.StreamServerInterceptor, 0),
 		registrations:      make([]RegistrationFunc, 0),
@@ -245,11 +246,19 @@ func (s *Server) Build() error {
 	// Enforce the production TLS guard before we start binding sockets so the
 	// error is unambiguous when an operator forgets to wire credentials.
 	if !s.tlsOpted {
+		// final: do not rename. GRPC_INSECURE is the 1.0 surface name for
+		// the production TLS opt-out; downstream operators may already key
+		// off it.
+		//
+		// "production", "prod", and "staging" all fold into the locked-down
+		// branch via contract.IsProductionEnv so a typo'd APP_ENV cannot
+		// silently bypass the TLS requirement.
 		insecureOptOut := os.Getenv("GRPC_INSECURE") == "true"
-		if s.environment == "production" && !insecureOptOut {
+		isProd := contract.IsProductionEnv(s.environment)
+		if isProd && !insecureOptOut {
 			return fmt.Errorf("velocity/grpc: TLS credentials are required in production. Use WithCreds, or call WithExplicitTLS if you supplied credentials via WithServerOption(grpc.Creds(...)). Set GRPC_INSECURE=true to opt out for a known-internal mTLS mesh")
 		}
-		if s.environment != "production" {
+		if !isProd {
 			s.logger.Warn("gRPC server starting without TLS credentials. Configure WithCreds before deploying to production",
 				"port", s.port,
 			)
@@ -286,7 +295,11 @@ func (s *Server) Build() error {
 	// downgrading to "reflection disabled" lets misconfigured deployments ship
 	// with a false sense of security (operators think reflection is on).
 	if s.enableReflection {
-		if s.environment == "production" {
+		// Routed through contract.IsProductionEnv so "prod" and "staging"
+		// are both refused alongside "production": reflection exposes the
+		// full service surface and a typo'd APP_ENV must not silently
+		// re-enable it.
+		if contract.IsProductionEnv(s.environment) {
 			return fmt.Errorf("velocity/grpc: reflection must not be enabled in production (set GRPC_REFLECTION=false or build without WithReflection(true))")
 		}
 		s.logger.Warn("gRPC reflection is enabled — disable in production (GRPC_REFLECTION=false)")

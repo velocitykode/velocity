@@ -3,11 +3,11 @@ package testing
 import (
 	"database/sql"
 	"fmt"
-	"os"
 	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/orm/migrate"
 )
@@ -231,9 +231,10 @@ func isTestDatabase(name string) bool {
 // 3. Runs all registered migrations via migrate.Up()
 //
 // Safety checks:
-// - Requires testing.T (only callable from tests)
-// - Checks APP_ENV != "production"
-// - Verifies database name contains "test" or is ":memory:"
+//   - Requires testing.T (only callable from tests)
+//   - Panics when APP_ENV names a production class (production, prod, staging)
+//     via contract.IsProductionEnv
+//   - Verifies database name contains "test" or is ":memory:"
 //
 // Usage:
 //
@@ -260,18 +261,21 @@ func RefreshDatabase(t *testing.T, manager *orm.Manager) *sql.DB {
 
 	dbName := manager.DatabaseName()
 
-	// Safety check: Verify we're in testing environment
-	appEnv := os.Getenv("APP_ENV")
+	// Safety check: Verify we're in testing environment. Production-class
+	// names (production, prod, staging) panic so RefreshDatabase cannot
+	// silently destroy a real database when APP_ENV is set to one of the
+	// canonical prod aliases.
+	appEnv := contract.GetEnv()
 
-	if appEnv == "production" {
-		panic("RefreshDatabase cannot run in production environment")
+	if contract.IsProductionEnv(appEnv) {
+		panic(fmt.Sprintf("RefreshDatabase refuses to run with APP_ENV=%q (production class)", appEnv))
 	}
 
-	// Best practice: APP_ENV should be "testing" (set via .env.testing)
-	if appEnv == "testing" {
+	// Best practice: APP_ENV should be "testing" or "test" (set via .env.testing).
+	if contract.IsTestingEnv(appEnv) {
 		// Explicitly in testing mode - safe to proceed
 	} else {
-		// Not explicitly "testing" - verify database name as fallback safety
+		// Not explicitly testing - verify database name as fallback safety
 		if !isTestDatabase(dbName) {
 			panic(fmt.Sprintf("database '%s' doesn't look like a test database - name must contain 'test' or be ':memory:'\nTip: Set APP_ENV=testing in .env.testing file", dbName))
 		}

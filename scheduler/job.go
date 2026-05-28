@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -852,11 +853,18 @@ func (j *Job) UnlessBetween(start, end string) *Job {
 	return j
 }
 
-// Environments limits execution to specific environments
+// Environments limits execution to specific environments. Each entry is
+// normalised (lowercased + trimmed) so the runtime compare against
+// Scheduler.appEnv (also normalised on SetEnv) is case- and
+// whitespace-insensitive, matching the canonical APP_ENV vocabulary.
 func (j *Job) Environments(environments ...string) *Job {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	j.environments = environments
+	normalised := make([]string, len(environments))
+	for i, e := range environments {
+		normalised[i] = strings.ToLower(strings.TrimSpace(e))
+	}
+	j.environments = normalised
 	return j
 }
 

@@ -24,6 +24,26 @@ type QueueConfig struct {
 	DBDriver string
 }
 
+// Validate checks the QueueConfig for structural problems before NewQueue
+// resolves a driver factory. The database driver requires DB and DBDriver
+// to be set; the redis driver does not validate Redis credentials here so
+// dev fixtures can boot with empty defaults that the local redis allows.
+// Per-driver factory errors still surface from Drivers().Resolve.
+func (c QueueConfig) Validate() error {
+	if c.Driver == "" {
+		return nil
+	}
+	if c.Driver == "database" {
+		if c.DB == nil {
+			return fmt.Errorf("velocity/queue: QUEUE_DRIVER=database requires a non-nil *sql.DB")
+		}
+		if c.DBDriver == "" {
+			return fmt.Errorf("velocity/queue: QUEUE_DRIVER=database requires DBDriver (postgres, mysql, or sqlite)")
+		}
+	}
+	return nil
+}
+
 // drivers is the canonical Velocity driver registry for queues. Built-in
 // drivers (memory, redis, database) self-register from this file's init();
 // third-party queue backends can register additional factories.
@@ -74,6 +94,9 @@ func NewQueue(config QueueConfig) (Driver, error) {
 // is forwarded to the driver factory so drivers performing network I/O
 // at construction can honour deadlines.
 func NewQueueWithContext(ctx context.Context, config QueueConfig) (Driver, error) {
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
 	driver := config.Driver
 	if driver == "" {
 		driver = "memory"

@@ -33,9 +33,13 @@ func TestBuild_RefusesReflectionInProduction(t *testing.T) {
 	}
 }
 
-// TestBuild_AllowsReflectionInStaging ensures the guard is targeted and does
-// not regress the staging / dev ergonomics.
-func TestBuild_AllowsReflectionInStaging(t *testing.T) {
+// TestBuild_RefusesReflectionInStaging ensures the production guard folds
+// "staging" into the locked-down branch. Sweep 3 of the 1.0 readiness work
+// updated the gRPC guards to route through contract.IsProductionEnv, which
+// classifies staging as production: a typo'd APP_ENV must not silently
+// re-enable reflection.
+func TestBuild_RefusesReflectionInStaging(t *testing.T) {
+	t.Setenv("GRPC_INSECURE", "true")
 	logger, _ := log.NewLogger(log.LogConfig{Driver: "null"})
 	s := NewServer(
 		WithPort("0"),
@@ -45,8 +49,30 @@ func TestBuild_AllowsReflectionInStaging(t *testing.T) {
 	)
 	defer s.Stop()
 
+	err := s.Build()
+	if err == nil {
+		t.Fatal("expected Build to fail when reflection is enabled with APP_ENV=staging")
+	}
+	if !strings.Contains(err.Error(), "reflection") {
+		t.Errorf("error should mention reflection, got %q", err.Error())
+	}
+}
+
+// TestBuild_AllowsReflectionInDevelopment ensures dev ergonomics still work
+// after the staging tightening above. "development" is the unambiguous non-
+// prod label and reflection is welcome there.
+func TestBuild_AllowsReflectionInDevelopment(t *testing.T) {
+	logger, _ := log.NewLogger(log.LogConfig{Driver: "null"})
+	s := NewServer(
+		WithPort("0"),
+		WithReflection(true),
+		WithEnvironment("development"),
+		WithLogger(logger),
+	)
+	defer s.Stop()
+
 	if err := s.Build(); err != nil {
-		t.Fatalf("staging Build: unexpected error %v", err)
+		t.Fatalf("development Build: unexpected error %v", err)
 	}
 }
 
