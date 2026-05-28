@@ -95,6 +95,14 @@ linters:
       - path: _test\.go
         linters:
           - forbidigo
+      # <pkg>test/ contract-test runner packages (queuetest, cachetest,
+      # storagetest, schedulertest, etc.): test infrastructure imported
+      # by both framework and third parties; treated like *_test.go.
+      # Matches any directory segment ending in `test`; does NOT match
+      # `testing/` (ends in `ing`).
+      - path: (^|/)[a-z]*test/[^/]+\.go$
+        linters:
+          - forbidigo
       # async/ is the canonical panic-safe implementation, its
       # internals are exempt.
       - path: ^async/
