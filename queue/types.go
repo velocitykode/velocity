@@ -29,11 +29,13 @@ type HandleCtxer interface {
 
 // Driver defines the interface for queue drivers.
 //
-// The Ctx-suffixed methods are the primary API — they propagate the caller's
-// context through to the underlying store so workers can abort in flight
-// (shutdown, deadline) instead of blocking on a network round-trip. The
-// All driver methods are context-aware; callers thread a context through so
-// cancellation flows down to the backing store.
+// Every method that performs I/O (network round-trip to Redis, SQL transaction
+// to Postgres/MySQL) carries the `Ctx` suffix and accepts a context.Context
+// as its first parameter so workers can abort in flight (shutdown, deadline)
+// instead of blocking on a remote round-trip. Non-Ctx variants are kept as
+// `// Deprecated:` shims that call the Ctx form with context.Background()
+// so existing callers keep compiling during the v0.x line. New code MUST
+// call the Ctx variants.
 type Driver interface {
 	// PushCtx adds a job to the queue. Cancellation of ctx aborts the push
 	// before it reaches the backing store (e.g. during graceful shutdown).
@@ -47,13 +49,19 @@ type Driver interface {
 	// Pop returns a wrapped ctx.Err() and the worker loop exits cleanly.
 	PopCtx(ctx context.Context, queue string) (Job, error)
 
-	// Size returns the number of jobs in the queue
+	// SizeCtx returns the number of jobs in the queue.
+	SizeCtx(ctx context.Context, queue string) (int64, error)
+	// Deprecated: use SizeCtx with a request-scoped context.Context.
 	Size(queue string) (int64, error)
 
-	// Clear removes all jobs from the queue
+	// ClearCtx removes all jobs from the queue.
+	ClearCtx(ctx context.Context, queue string) error
+	// Deprecated: use ClearCtx with a request-scoped context.Context.
 	Clear(queue string) error
 
-	// Failed moves a job to the failed queue
+	// FailedCtx moves a job to the failed queue.
+	FailedCtx(ctx context.Context, job Job, err error, queue string) error
+	// Deprecated: use FailedCtx with a request-scoped context.Context.
 	Failed(job Job, err error, queue string) error
 
 	// Shutdown gracefully shuts down the driver, honoring the context deadline.

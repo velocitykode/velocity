@@ -48,8 +48,17 @@ type CommandQueued struct {
 func (e *CommandQueued) Name() string { return "command.queued" }
 
 // Dispatcher is the interface for dispatching commands.
+//
+// The Ctx-suffixed methods are the primary API: they thread the caller's
+// context through to the underlying queue driver so a producer-side
+// cancellation aborts the enqueue round-trip instead of blocking. The
+// non-Ctx variants are retained as `// Deprecated:` shims that pass
+// context.Background() so callers compiled against earlier sweep-1
+// commits keep working.
 type Dispatcher interface {
 	Dispatch(cmd Command) error
+	DispatchAsyncCtx(ctx context.Context, cmd Command) error
+	// Deprecated: use DispatchAsyncCtx with a request-scoped context.Context.
 	DispatchAsync(cmd Command) error
 }
 
@@ -247,15 +256,20 @@ func (b *Bus) Dispatch(cmd Command) error {
 	return err
 }
 
-// DispatchAsync wraps the command as a job and pushes it to the queue.
+// DispatchAsyncCtx wraps the command as a job and pushes it to the queue,
+// threading ctx through the queue driver's PushCtx so a producer-side
+// cancellation aborts the enqueue round-trip cleanly.
 //
 // The command must be JSON-marshallable and must have been registered via
-// Register[T] on THIS bus. DispatchAsync refuses to enqueue otherwise so
+// Register[T] on THIS bus. DispatchAsyncCtx refuses to enqueue otherwise so
 // the silent-drop hole on durable drivers (Redis, database) is closed at
 // the producer side. The wire payload carries the bus's id so the
 // consumer-side hydration path routes through the same bus, never a
 // different one that happens to hold a handler for the type.
-func (b *Bus) DispatchAsync(cmd Command) error {
+func (b *Bus) DispatchAsyncCtx(ctx context.Context, cmd Command) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	b.mu.RLock()
 	q, queueName, dispatchEvent := b.queue, b.queueName, b.dispatchEvent
 	hasFactory := false
@@ -279,7 +293,7 @@ func (b *Bus) DispatchAsync(cmd Command) error {
 	// job to failed_jobs. We surface the configuration error here so a
 	// missing Register call is caught synchronously.
 	if !hasFactory {
-		return fmt.Errorf("velocity/bus: refusing to async-dispatch command %s: no factory registered on bus %s (call bus.Register before DispatchAsync)", cmdType.String(), b.id)
+		return fmt.Errorf("velocity/bus: refusing to async-dispatch command %s: no factory registered on bus %s (call bus.Register before DispatchAsyncCtx)", cmdType.String(), b.id)
 	}
 
 	data, err := json.Marshal(cmd)
@@ -301,7 +315,7 @@ func (b *Bus) DispatchAsync(cmd Command) error {
 		args = []string{queueName}
 	}
 
-	if err := q.Push(job, args...); err != nil {
+	if err := q.PushCtx(ctx, job, args...); err != nil {
 		return fmt.Errorf("bus: failed to push command to queue: %w", err)
 	}
 
@@ -310,6 +324,16 @@ func (b *Bus) DispatchAsync(cmd Command) error {
 	}
 
 	return nil
+}
+
+// DispatchAsync wraps the command as a job and pushes it to the queue
+// with a background context.
+//
+// Deprecated: use DispatchAsyncCtx with a request-scoped context.Context
+// so producer-side cancellation aborts the enqueue round-trip instead of
+// blocking the caller until the queue round-trip times out internally.
+func (b *Bus) DispatchAsync(cmd Command) error {
+	return b.DispatchAsyncCtx(context.Background(), cmd)
 }
 
 // safeExecute runs fn and converts any panic into a returned error.

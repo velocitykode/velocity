@@ -89,7 +89,7 @@ func TestMemoryDriver_MoveReadyJobs_HeapOrdering(t *testing.T) {
 	}
 	var got []string
 	for e := q.Front(); e != nil; e = e.Next() {
-		got = append(got, e.Value.(*JobWrapper).Job.(*TestJob).ID)
+		got = append(got, e.Value.(*jobWrapper).Job.(*TestJob).ID)
 	}
 	d.mu.Unlock()
 

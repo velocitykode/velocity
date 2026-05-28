@@ -38,9 +38,9 @@ func TestRegister_NormalizesPointerAndPackageQualifiedNames(t *testing.T) {
 		return j, nil
 	})
 
-	wrapper, err := CreateJobWrapper(&registryRoundTripJob{N: 7}, "default")
+	wrapper, err := createJobWrapper(&registryRoundTripJob{N: 7}, "default")
 	if err != nil {
-		t.Fatalf("CreateJobWrapper: %v", err)
+		t.Fatalf("createJobWrapper: %v", err)
 	}
 	if wrapper.Payload.Type != "registryRoundTripJob" {
 		t.Fatalf("payload.Type not normalized: got %q want %q",
@@ -164,9 +164,9 @@ func TestRegisterJob_KeyMatchesDispatchedPayload(t *testing.T) {
 
 	// Producer side: dispatching &registryTypedJob{} must serialize to a
 	// payload whose Type the typed registration can decode.
-	wrapper, err := CreateJobWrapper(&registryTypedJob{N: 11}, "default")
+	wrapper, err := createJobWrapper(&registryTypedJob{N: 11}, "default")
 	if err != nil {
-		t.Fatalf("CreateJobWrapper: %v", err)
+		t.Fatalf("createJobWrapper: %v", err)
 	}
 	if wrapper.Payload.Type != "registryTypedJob" {
 		t.Fatalf("payload.Type = %q, want %q", wrapper.Payload.Type, "registryTypedJob")
@@ -236,7 +236,7 @@ func TestRegisterJob_TypoIsImpossible(t *testing.T) {
 	})
 
 	// A consumer that uses RegisterJob[T] cannot register against the wrong
-	// key: the key is derived from T. The producer (CreateJobWrapper) uses
+	// key: the key is derived from T. The producer (createJobWrapper) uses
 	// the same fmt.Sprintf("%T", v) + normalizeJobType pipeline, so any T
 	// the consumer registers will line up with what a producer dispatching
 	// the same type emits.
@@ -250,9 +250,9 @@ func TestRegisterJob_TypoIsImpossible(t *testing.T) {
 	}
 
 	// And the registered type resolves cleanly.
-	wrapper, err := CreateJobWrapper(&registryTypedJob{}, "default")
+	wrapper, err := createJobWrapper(&registryTypedJob{}, "default")
 	if err != nil {
-		t.Fatalf("CreateJobWrapper: %v", err)
+		t.Fatalf("createJobWrapper: %v", err)
 	}
 	if _, err := registry.Deserialize(wrapper.Payload); err != nil {
 		t.Fatalf("Deserialize: %v", err)
@@ -273,9 +273,9 @@ func TestRegisterJob_FactoryErrorPropagates(t *testing.T) {
 		return nil, sentinel
 	})
 
-	wrapper, err := CreateJobWrapper(&registryTypedJob{}, "default")
+	wrapper, err := createJobWrapper(&registryTypedJob{}, "default")
 	if err != nil {
-		t.Fatalf("CreateJobWrapper: %v", err)
+		t.Fatalf("createJobWrapper: %v", err)
 	}
 
 	job, err := registry.Deserialize(wrapper.Payload)
@@ -304,9 +304,9 @@ func TestRegisterJob_LastRegistrationWins(t *testing.T) {
 		return &registryTypedJob{N: 2}, nil
 	})
 
-	wrapper, err := CreateJobWrapper(&registryTypedJob{}, "default")
+	wrapper, err := createJobWrapper(&registryTypedJob{}, "default")
 	if err != nil {
-		t.Fatalf("CreateJobWrapper: %v", err)
+		t.Fatalf("createJobWrapper: %v", err)
 	}
 	job, err := registry.Deserialize(wrapper.Payload)
 	if err != nil {
@@ -334,9 +334,9 @@ func TestRegisterJob_StringRegisterOverridesTyped(t *testing.T) {
 		return &registryTypedJob{N: 99}, nil
 	})
 
-	wrapper, err := CreateJobWrapper(&registryTypedJob{}, "default")
+	wrapper, err := createJobWrapper(&registryTypedJob{}, "default")
 	if err != nil {
-		t.Fatalf("CreateJobWrapper: %v", err)
+		t.Fatalf("createJobWrapper: %v", err)
 	}
 	job, err := registry.Deserialize(wrapper.Payload)
 	if err != nil {
@@ -395,7 +395,7 @@ func TestRegisterJob_MemoryDriverRoundTrip(t *testing.T) {
 		if len(data) == 0 {
 			return j, nil
 		}
-		// MemoryDriver hands back the live Job pointer via JobWrapper.Job
+		// MemoryDriver hands back the live Job pointer via jobWrapper.Job
 		// (in-process fast path), so this factory is NOT invoked on a
 		// same-process push/pop. It runs only for durable drivers that
 		// hydrate from Payload.Data bytes. Even so, registering it lets

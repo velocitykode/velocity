@@ -1,11 +1,19 @@
 package queue
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/velocitykode/velocity/contract"
+)
 
 var (
-	ErrNoJobAvailable    = errors.New("velocity/queue: no job available")
-	ErrJobNotFound       = errors.New("velocity/queue: job not found")
-	ErrBatchNotFound     = errors.New("velocity/queue: batch not found")
+	ErrNoJobAvailable = errors.New("velocity/queue: no job available")
+	// ErrJobNotFound is an alias for contract.ErrJobNotFound. Hoisted to
+	// the contract package so callers can errors.Is against the shared
+	// identity without importing queue.
+	ErrJobNotFound = contract.ErrJobNotFound
+	// ErrBatchNotFound is an alias for contract.ErrBatchNotFound.
+	ErrBatchNotFound     = contract.ErrBatchNotFound
 	ErrSigningKeyMissing = errors.New("velocity/queue: signing key not configured")
 	// ErrSigningKeyRequired is returned by ConfigureSigning when no signing
 	// key is available in a production-like environment and the operator

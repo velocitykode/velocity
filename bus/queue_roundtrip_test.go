@@ -41,23 +41,14 @@ type contamCmdB struct {
 	Value string
 }
 
-// memoryQueueAdapter wraps a queue.Driver so it satisfies the bus's
-// QueuePusher interface (a Push method with the bus's job shape).
-type memoryQueueAdapter struct {
-	d queue.Driver
-}
-
-func (m memoryQueueAdapter) Push(job interface {
-	Handle() error
-	Failed(error)
-}, qname ...string) error {
-	return m.d.PushCtx(context.Background(), job.(queue.Job), qname...)
-}
-
 // TestDispatchAsync_MemoryQueueRoundTrip exercises the in-process memory
 // driver path. The producer-side commandJob retains live cmd / bus /
 // cmdType fields so the worker dispatches the original pointer without a
 // JSON round-trip.
+//
+// Note: as of sweep 1 the bus.QueuePusher interface is satisfied by
+// queue.Driver directly (PushCtx signature match), so no adapter is
+// needed here; the previous memoryQueueAdapter wrapper was deleted.
 func TestDispatchAsync_MemoryQueueRoundTrip(t *testing.T) {
 	b := New()
 	defer b.Close()
@@ -65,7 +56,7 @@ func TestDispatchAsync_MemoryQueueRoundTrip(t *testing.T) {
 	driver.Start()
 	defer driver.Shutdown(context.Background())
 
-	b.SetQueue(memoryQueueAdapter{driver})
+	b.SetQueue(driver)
 
 	var got roundTripCmd
 	var mu sync.Mutex

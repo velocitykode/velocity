@@ -17,11 +17,11 @@ import (
 //
 // The test uses an annotated proto roughly shaped like grpc-gateway output
 // and asserts that:
-//   1. the new rpc appears at the correct nesting level (top-level inside
-//      service, NOT inside another rpc),
-//   2. the existing rpc's option block is preserved unchanged,
-//   3. only one closing brace exists at column 0 (the service's), proving
-//      the brace structure is still balanced.
+//  1. the new rpc appears at the correct nesting level (top-level inside
+//     service, NOT inside another rpc),
+//  2. the existing rpc's option block is preserved unchanged,
+//  3. only one closing brace exists at column 0 (the service's), proving
+//     the brace structure is still balanced.
 func TestAppendRPCToProto_RpcWithOptionsBlockNotConfusedWithService(t *testing.T) {
 	t.Chdir(t.TempDir())
 	dir := filepath.Join("api", "proto", "foo", "v1")

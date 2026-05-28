@@ -74,7 +74,7 @@ type MemoryDriver struct {
 // fresh copy) means Attempts written on the wrapper inside Pop is the
 // same value seen on Release / Ack / FailReserved.
 type memReservation struct {
-	wrapper *JobWrapper
+	wrapper *jobWrapper
 	queue   string
 }
 
@@ -108,7 +108,7 @@ func (m *MemoryDriver) log() Logger {
 }
 
 type delayedJob struct {
-	wrapper *JobWrapper
+	wrapper *jobWrapper
 	runAt   time.Time
 	index   int // heap position, maintained by container/heap
 }
@@ -148,7 +148,7 @@ func (h *delayedHeap) peek() *delayedJob {
 }
 
 type failedJob struct {
-	wrapper  *JobWrapper
+	wrapper  *jobWrapper
 	job      Job
 	error    string
 	failedAt time.Time
@@ -248,7 +248,7 @@ func (m *MemoryDriver) PushCtx(ctx context.Context, job Job, queueName ...string
 	m.warnIfNonIdentifiable(job)
 	name := resolveQueueName(job, queueName...)
 
-	wrapper, err := CreateJobWrapper(job, name)
+	wrapper, err := createJobWrapper(job, name)
 	if err != nil {
 		return err
 	}
@@ -278,7 +278,7 @@ func (m *MemoryDriver) PushDelayedCtx(ctx context.Context, job Job, delay time.D
 	m.warnIfNonIdentifiable(job)
 	name := resolveQueueName(job, queueName...)
 
-	wrapper, err := CreateJobWrapper(job, name)
+	wrapper, err := createJobWrapper(job, name)
 	if err != nil {
 		return err
 	}
@@ -331,7 +331,7 @@ func (m *MemoryDriver) popLocked(queueName string) (Job, TraceContext, error) {
 	element := q.Front()
 	q.Remove(element)
 
-	wrapper, ok := element.Value.(*JobWrapper)
+	wrapper, ok := element.Value.(*jobWrapper)
 	if !ok {
 		return nil, TraceContext{}, fmt.Errorf("invalid wrapper type")
 	}
@@ -356,9 +356,9 @@ func (m *MemoryDriver) popLocked(queueName string) (Job, TraceContext, error) {
 	}
 
 	// Same-process pop: wrapper.Job is non-nil and is returned directly via
-	// the fast path inside GetJobFromWrapper. Error path covers wrappers
+	// the fast path inside getJobFromWrapper. Error path covers wrappers
 	// rebuilt from bytes (defensive; the memory driver never produces those).
-	job, err := GetJobFromWrapper(wrapper)
+	job, err := getJobFromWrapper(wrapper)
 	if err != nil {
 		return nil, tc, fmt.Errorf("velocity/queue: failed to restore job from wrapper: %w", err)
 	}
@@ -396,7 +396,7 @@ func (m *MemoryDriver) PopCtxReserved(ctx context.Context, queueName string) (Jo
 	element := q.Front()
 	q.Remove(element)
 
-	wrapper, ok := element.Value.(*JobWrapper)
+	wrapper, ok := element.Value.(*jobWrapper)
 	if !ok {
 		return nil, ReservationToken{}, TraceContext{}, fmt.Errorf("invalid wrapper type")
 	}
@@ -411,7 +411,7 @@ func (m *MemoryDriver) PopCtxReserved(ctx context.Context, queueName string) (Jo
 		wrapper.Payload.Attempts++
 	}
 
-	job, err := GetJobFromWrapper(wrapper)
+	job, err := getJobFromWrapper(wrapper)
 	if err != nil {
 		return nil, ReservationToken{}, tc, fmt.Errorf("velocity/queue: failed to restore job from wrapper: %w", err)
 	}
@@ -492,7 +492,7 @@ func (m *MemoryDriver) ReleaseCtx(ctx context.Context, token ReservationToken, d
 // Implements ReservationDriver.
 func (m *MemoryDriver) FailReservedCtx(ctx context.Context, token ReservationToken, job Job, jobErr error, queueName string) error {
 	if token.IsZero() {
-		return m.Failed(job, jobErr, queueName)
+		return m.FailedCtx(ctx, job, jobErr, queueName)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -545,7 +545,7 @@ func (m *MemoryDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupeKe
 	m.warnIfNonIdentifiable(job)
 	name := resolveQueueName(job, queueName...)
 
-	wrapper, err := CreateJobWrapper(job, name)
+	wrapper, err := createJobWrapper(job, name)
 	if err != nil {
 		return err
 	}
@@ -572,8 +572,15 @@ func (m *MemoryDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupeKe
 	return nil
 }
 
-// Size returns the number of jobs in the queue
-func (m *MemoryDriver) Size(queueName string) (int64, error) {
+// SizeCtx returns the number of jobs in the queue. The memory driver does
+// no I/O so ctx is accepted for interface symmetry and honoured only as a
+// pre-flight cancellation check.
+func (m *MemoryDriver) SizeCtx(ctx context.Context, queueName string) (int64, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -584,8 +591,20 @@ func (m *MemoryDriver) Size(queueName string) (int64, error) {
 	return 0, nil
 }
 
-// Clear removes all jobs from the queue
-func (m *MemoryDriver) Clear(queueName string) error {
+// Size returns the number of jobs in the queue.
+//
+// Deprecated: use SizeCtx with a request-scoped context.Context.
+func (m *MemoryDriver) Size(queueName string) (int64, error) {
+	return m.SizeCtx(context.Background(), queueName)
+}
+
+// ClearCtx removes all jobs from the queue.
+func (m *MemoryDriver) ClearCtx(ctx context.Context, queueName string) error {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -594,7 +613,7 @@ func (m *MemoryDriver) Clear(queueName string) error {
 	// row rather than silently no-op'ing against a stale entry.
 	if q, ok := m.queues[queueName]; ok {
 		for e := q.Front(); e != nil; e = e.Next() {
-			if w, ok := e.Value.(*JobWrapper); ok && w.DedupeKey != "" {
+			if w, ok := e.Value.(*jobWrapper); ok && w.DedupeKey != "" {
 				delete(m.dedupeKeys, w.DedupeKey)
 			}
 		}
@@ -613,9 +632,21 @@ func (m *MemoryDriver) Clear(queueName string) error {
 	return nil
 }
 
-// Failed moves a job to the failed queue
-func (m *MemoryDriver) Failed(job Job, err error, queueName string) error {
-	wrapper, serr := CreateJobWrapper(job, queueName)
+// Clear removes all jobs from the queue.
+//
+// Deprecated: use ClearCtx with a request-scoped context.Context.
+func (m *MemoryDriver) Clear(queueName string) error {
+	return m.ClearCtx(context.Background(), queueName)
+}
+
+// FailedCtx moves a job to the failed queue.
+func (m *MemoryDriver) FailedCtx(ctx context.Context, job Job, err error, queueName string) error {
+	if ctx != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
+	}
+	wrapper, serr := createJobWrapper(job, queueName)
 	if serr != nil {
 		return serr
 	}
@@ -638,6 +669,13 @@ func (m *MemoryDriver) Failed(job Job, err error, queueName string) error {
 	job.Failed(err)
 
 	return nil
+}
+
+// Failed moves a job to the failed queue.
+//
+// Deprecated: use FailedCtx with a request-scoped context.Context.
+func (m *MemoryDriver) Failed(job Job, err error, queueName string) error {
+	return m.FailedCtx(context.Background(), job, err, queueName)
 }
 
 // GetFailed returns all failed jobs for a queue

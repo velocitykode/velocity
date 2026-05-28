@@ -65,9 +65,9 @@ type stubSessionStore struct{}
 func (stubSessionStore) Get(context.Context, string) (*auth.StoredSession, error) {
 	return nil, auth.ErrSessionNotFound
 }
-func (stubSessionStore) Put(context.Context, *auth.StoredSession) error    { return nil }
-func (stubSessionStore) Delete(context.Context, string) error              { return nil }
-func (stubSessionStore) DeleteAllForUser(context.Context, string) error    { return nil }
+func (stubSessionStore) Put(context.Context, *auth.StoredSession) error { return nil }
+func (stubSessionStore) Delete(context.Context, string) error           { return nil }
+func (stubSessionStore) DeleteAllForUser(context.Context, string) error { return nil }
 func (stubSessionStore) ListForUser(context.Context, string) ([]*auth.SessionMeta, error) {
 	return nil, nil
 }

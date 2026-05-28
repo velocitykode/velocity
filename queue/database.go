@@ -232,7 +232,7 @@ func (d *DatabaseDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupe
 		return nil
 	}
 
-	wrapper, err := CreateJobWrapper(job, name)
+	wrapper, err := createJobWrapper(job, name)
 	if err != nil {
 		return fmt.Errorf("velocity/queue: failed to create job wrapper: %w", err)
 	}
@@ -280,7 +280,7 @@ func (d *DatabaseDriver) PushDelayedCtx(ctx context.Context, job Job, delay time
 		return fmt.Errorf("velocity/queue: database not initialized")
 	}
 
-	wrapper, err := CreateJobWrapper(job, name)
+	wrapper, err := createJobWrapper(job, name)
 	if err != nil {
 		return fmt.Errorf("velocity/queue: failed to create job wrapper: %w", err)
 	}
@@ -472,7 +472,7 @@ func (d *DatabaseDriver) popSelectLocked(ctx context.Context, queueName string, 
 	// Quarantine path for unrecoverable pop-time failures (inherited
 	// from C-01). Runs BEFORE the reservation UPDATE so a poison row
 	// never gets reserved; the next pop just selects the next row.
-	var wrapper JobWrapper
+	var wrapper jobWrapper
 	if err := json.Unmarshal([]byte(jobRecord.Payload), &wrapper); err != nil {
 		j, qtc, qerr := d.quarantineAndReturn(tx, tc, jobRecord, queueName,
 			fmt.Errorf("velocity/queue: failed to deserialize job: %w", err))
@@ -499,7 +499,7 @@ func (d *DatabaseDriver) popSelectLocked(ctx context.Context, queueName string, 
 		}
 	}
 
-	job, err := GetJobFromWrapper(&wrapper)
+	job, err := getJobFromWrapper(&wrapper)
 	if err != nil {
 		j, qtc, qerr := d.quarantineAndReturn(tx, tc, jobRecord, queueName,
 			fmt.Errorf("velocity/queue: failed to restore job from wrapper: %w", err))
@@ -618,15 +618,15 @@ func (d *DatabaseDriver) ReleaseCtx(ctx context.Context, token ReservationToken,
 // returns [ErrLeaseLost]. Implements [ReservationDriver].
 func (d *DatabaseDriver) FailReservedCtx(ctx context.Context, token ReservationToken, job Job, jobErr error, queueName string) error {
 	if token.IsZero() {
-		// No reservation to clean up; fall back to the bare Failed path
+		// No reservation to clean up; fall back to the bare FailedCtx path
 		// so a failed_jobs row is still recorded.
-		return d.Failed(job, jobErr, queueName)
+		return d.FailedCtx(ctx, job, jobErr, queueName)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	wrapper, wrapErr := CreateJobWrapper(job, queueName)
+	wrapper, wrapErr := createJobWrapper(job, queueName)
 	if wrapErr != nil {
 		return fmt.Errorf("velocity/queue: failed to create job wrapper: %w", wrapErr)
 	}
@@ -702,11 +702,16 @@ func assertFenced(res sql.Result, op string) error {
 	return nil
 }
 
-// Size returns the number of jobs in the queue
-func (d *DatabaseDriver) Size(queueName string) (int64, error) {
+// SizeCtx returns the number of jobs in the queue, threading ctx through
+// the SELECT COUNT(*) round-trip so a slow database can be preempted on
+// request cancellation.
+func (d *DatabaseDriver) SizeCtx(ctx context.Context, queueName string) (int64, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var count int64
 	query := d.rewriteQuery("SELECT COUNT(*) FROM jobs WHERE queue = $1 AND reserved_at IS NULL AND failed_at IS NULL")
-	err := d.db.QueryRow(query, queueName).Scan(&count)
+	err := d.db.QueryRowContext(ctx, query, queueName).Scan(&count)
 
 	if err != nil {
 		return 0, fmt.Errorf("velocity/queue: failed to count jobs: %w", err)
@@ -715,10 +720,21 @@ func (d *DatabaseDriver) Size(queueName string) (int64, error) {
 	return count, nil
 }
 
-// Clear removes all jobs from a queue
-func (d *DatabaseDriver) Clear(queueName string) error {
+// Size returns the number of jobs in the queue.
+//
+// Deprecated: use SizeCtx with a request-scoped context.Context.
+func (d *DatabaseDriver) Size(queueName string) (int64, error) {
+	return d.SizeCtx(context.Background(), queueName)
+}
+
+// ClearCtx removes all jobs from a queue, threading ctx through the DELETE
+// round-trip.
+func (d *DatabaseDriver) ClearCtx(ctx context.Context, queueName string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	query := d.rewriteQuery("DELETE FROM jobs WHERE queue = $1")
-	_, err := d.db.Exec(query, queueName)
+	_, err := d.db.ExecContext(ctx, query, queueName)
 
 	if err != nil {
 		return fmt.Errorf("velocity/queue: failed to clear queue: %w", err)
@@ -727,10 +743,21 @@ func (d *DatabaseDriver) Clear(queueName string) error {
 	return nil
 }
 
-// Failed marks a job as failed
-func (d *DatabaseDriver) Failed(job Job, err error, queueName string) error {
+// Clear removes all jobs from a queue.
+//
+// Deprecated: use ClearCtx with a request-scoped context.Context.
+func (d *DatabaseDriver) Clear(queueName string) error {
+	return d.ClearCtx(context.Background(), queueName)
+}
+
+// FailedCtx marks a job as failed, threading ctx through the INSERT
+// round-trip into failed_jobs.
+func (d *DatabaseDriver) FailedCtx(ctx context.Context, job Job, err error, queueName string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// Create job wrapper for serialization
-	wrapper, wrapErr := CreateJobWrapper(job, queueName)
+	wrapper, wrapErr := createJobWrapper(job, queueName)
 	if wrapErr != nil {
 		return fmt.Errorf("velocity/queue: failed to create job wrapper: %w", wrapErr)
 	}
@@ -752,7 +779,8 @@ func (d *DatabaseDriver) Failed(job Job, err error, queueName string) error {
 	insertQuery := d.rewriteQuery(
 		"INSERT INTO failed_jobs (queue, payload, exception, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
 	)
-	_, dbErr := d.db.Exec(
+	_, dbErr := d.db.ExecContext(
+		ctx,
 		insertQuery,
 		failedJob.Queue, failedJob.Payload, failedJob.Exception, time.Now(), time.Now(),
 	)
@@ -761,6 +789,13 @@ func (d *DatabaseDriver) Failed(job Job, err error, queueName string) error {
 	}
 
 	return nil
+}
+
+// Failed marks a job as failed.
+//
+// Deprecated: use FailedCtx with a request-scoped context.Context.
+func (d *DatabaseDriver) Failed(job Job, err error, queueName string) error {
+	return d.FailedCtx(context.Background(), job, err, queueName)
 }
 
 // GetDelayedJobs returns the number of delayed jobs

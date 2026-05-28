@@ -5,12 +5,17 @@ import (
 	"fmt"
 	"io"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
-// Common errors
+// Common errors. ErrFileNotFound and ErrDiskNotFound are aliases for the
+// hoisted contract.ErrStorageFileNotFound / contract.ErrDiskNotFound so
+// callers can errors.Is against the shared identity without importing
+// storage.
 var (
-	ErrFileNotFound  = errors.New("velocity/storage: file not found")
-	ErrDiskNotFound  = errors.New("velocity/storage: disk not found")
+	ErrFileNotFound  = contract.ErrStorageFileNotFound
+	ErrDiskNotFound  = contract.ErrDiskNotFound
 	ErrInvalidPath   = errors.New("velocity/storage: invalid file path")
 	ErrQuotaExceeded = errors.New("velocity/storage: quota exceeded")
 	ErrAccessDenied  = errors.New("velocity/storage: access denied")

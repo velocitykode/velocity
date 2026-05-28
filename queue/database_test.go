@@ -73,7 +73,7 @@ func newSQLiteQueueDB(t *testing.T) (*DatabaseDriver, func()) {
 	}
 
 	driver := NewDatabaseDriver(db, "sqlite")
-	// Register TestJob so GetJobFromWrapper can restore it.
+	// Register TestJob so getJobFromWrapper can restore it.
 	Register("*queue.TestJob", func(data []byte) (Job, error) {
 		j := &TestJob{}
 		if err := json.Unmarshal(data, j); err != nil {

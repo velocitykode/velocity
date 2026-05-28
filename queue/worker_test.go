@@ -780,7 +780,7 @@ func TestWorker_RetryPushBoundedDuringShutdown(t *testing.T) {
 type ctxAwareJob struct {
 	ID string `json:"id"`
 	// In-process test-only fields. Excluded from JSON: the memory driver
-	// keeps the live pointer on JobWrapper.Job for same-process pops, so
+	// keeps the live pointer on jobWrapper.Job for same-process pops, so
 	// these channels / atomic values survive without going through the
 	// payload bytes (which now carry only ID for cross-process workers).
 	started    chan struct{} `json:"-"`

@@ -17,7 +17,7 @@ import (
 //
 // MarshalJob is the canonical entry point for persisting jobs. All durable
 // drivers (Redis, database) must route through it (directly or via
-// [CreateJobWrapper]). Tests and other intra-package callers can also use it
+// [createJobWrapper]). Tests and other intra-package callers can also use it
 // directly.
 //
 // Returns an error when json.Marshal of the job fails (e.g. unsupported field

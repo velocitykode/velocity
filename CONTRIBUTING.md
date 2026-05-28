@@ -286,6 +286,51 @@ func Get(key string) (interface{}, error) {
 }
 ```
 
+### Exported API conventions
+
+These rules apply to every exported symbol in a non-`internal/` package.
+Pre-1.0 they are guidelines reviewers enforce; at 1.0 they freeze.
+
+**Context propagation: the `Ctx` suffix.** Every method that performs I/O
+(network call, disk read/write, database query, queue push/pop) MUST accept
+a `context.Context` as its first parameter and carry the `Ctx` suffix
+(e.g. `PushCtx`, `GetCtx`, `SendCtx`). Non-context variants are allowed as
+backwards-compatibility shims marked `// Deprecated:` that call the
+ctx-aware method with `context.Background()`.
+
+Rationale: callers thread cancellation through the request lifetime so a
+slow Redis GET or DB SELECT does not pin a worker after the client
+disconnects. The suffix is preferred over an unsuffixed `Push(ctx, ...)`
+because `database/sql` and `os/exec` set the same precedent in the
+standard library and because it lets the deprecated non-context API
+coexist on the same type without naming collisions during the transition.
+
+Apply to: `queue.Driver` (already conforms), `cache.Store` / driver
+implementations, `mail.Mailer` (already conforms), `broadcast.Driver`,
+`storage.Driver`, `auth.UserProvider`, validation DB rules.
+
+Optional capability interfaces follow the same rule: extension
+interfaces that adopt context-awareness use `Ctx`-suffixed method names
+(e.g. `cache.ContextStore.GetCtx`, `queue.DedupeAwarePusher.PushIfNotExistsCtx`).
+
+**Cross-package sentinel errors.** Error values that callers
+`errors.Is` against from outside the defining package live in
+`contract/errors.go`. Each owning package re-exports the contract
+identity under its conventional local name
+(`queue.ErrJobNotFound = contract.ErrJobNotFound`) so existing
+`errors.Is(err, queue.ErrJobNotFound)` keeps matching. New cross-package
+sentinels MUST land in `contract/` first; package-local sentinels stay
+local. Stability is pinned by `TestSentinelStability` in `contract/`.
+
+**Manager return types.** Exported `New*` constructors return concrete
+`*Manager`-style structs by default. Return an interface only when the
+package documents a plug-in seam (e.g. `queue.Driver`, `cache.Store`,
+`storage.Driver`) where third-party implementations are an expected
+extension point. Concrete returns let callers reach for typed helper
+methods without losing the dependency-injection seam (callers can still
+wrap the concrete type in their own interface at the boundary they
+choose).
+
 ### Code Style
 
 - Run `gofmt` before committing (formats code automatically)

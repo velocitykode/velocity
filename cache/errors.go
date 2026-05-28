@@ -1,14 +1,17 @@
 package cache
 
 import (
-	"errors"
-
 	"github.com/velocitykode/velocity/cache/drivers"
+	"github.com/velocitykode/velocity/contract"
 )
 
 var (
-	ErrStoreNotFound = errors.New("velocity/cache: store not found")
-	ErrKeyNotFound   = errors.New("velocity/cache: key not found")
+	// ErrStoreNotFound is an alias for contract.ErrCacheStoreNotFound.
+	// Hoisted to the contract package so callers can errors.Is against
+	// the shared identity without importing cache.
+	ErrStoreNotFound = contract.ErrCacheStoreNotFound
+	// ErrKeyNotFound is an alias for contract.ErrCacheKeyNotFound.
+	ErrKeyNotFound = contract.ErrCacheKeyNotFound
 
 	// ErrCannotFlushUnprefixed is re-exported from the drivers package so
 	// callers can errors.Is against cache.ErrCannotFlushUnprefixed without

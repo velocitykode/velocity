@@ -1,5 +1,3 @@
-// Package broadcast provides a high-level broadcasting system for real-time communication
-// built on top of the WebSocket package and supporting multiple drivers
 package broadcast
 
 import (

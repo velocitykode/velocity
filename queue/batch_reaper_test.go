@@ -55,10 +55,13 @@ func (d *flakyDriver) PopCtx(ctx context.Context, queue string) (Job, error) {
 	d.pushedJobs = d.pushedJobs[1:]
 	return job, nil
 }
-func (d *flakyDriver) Failed(Job, error, string) error { return nil }
-func (d *flakyDriver) Size(string) (int64, error)      { return 0, nil }
-func (d *flakyDriver) Clear(string) error              { return nil }
-func (d *flakyDriver) Shutdown(context.Context) error  { return nil }
+func (d *flakyDriver) Failed(Job, error, string) error                     { return nil }
+func (d *flakyDriver) FailedCtx(context.Context, Job, error, string) error { return nil }
+func (d *flakyDriver) Size(string) (int64, error)                          { return 0, nil }
+func (d *flakyDriver) SizeCtx(context.Context, string) (int64, error)      { return 0, nil }
+func (d *flakyDriver) Clear(string) error                                  { return nil }
+func (d *flakyDriver) ClearCtx(context.Context, string) error              { return nil }
+func (d *flakyDriver) Shutdown(context.Context) error                      { return nil }
 
 func (d *flakyDriver) successCount() int {
 	d.mu.Lock()

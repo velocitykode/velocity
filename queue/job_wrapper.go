@@ -1,6 +1,6 @@
 package queue
 
-// JobWrapper bundles a job with its persisted [Payload] for transport between
+// jobWrapper bundles a job with its persisted [Payload] for transport between
 // the producer and the worker.
 //
 // Wire format: only Payload is serialized (the Job field is `json:"-"`). The
@@ -15,9 +15,12 @@ package queue
 // `{"job_id":"..."}` in Payload.Data and stashed the live Job in a
 // package-global map, causing every cross-process pop to silently fall
 // through to a no-op stub.
-type JobWrapper struct {
+//
+// Unexported in the API-surface sweep; previously JobWrapper. Used only
+// inside the queue package; no external caller verified.
+type jobWrapper struct {
 	// Job is the live producer-side job pointer. Always nil after JSON
-	// round-trip; only populated by [CreateJobWrapper] on the producer side
+	// round-trip; only populated by [createJobWrapper] on the producer side
 	// so the memory driver can fast-path same-process pops.
 	Job     Job      `json:"-"`
 	Payload *Payload `json:"payload"`
@@ -33,7 +36,7 @@ type JobWrapper struct {
 	DedupeKey string `json:"dedupe_key,omitempty"`
 }
 
-// CreateJobWrapper builds a [JobWrapper] for a job. The job is marshalled into
+// createJobWrapper builds a [jobWrapper] for a job. The job is marshalled into
 // Payload.Data via [MarshalJob] so durable drivers can hydrate the job from
 // payload bytes alone on any worker, in any process. The live Job pointer is
 // also retained on the wrapper as an in-process fast path for the memory
@@ -42,18 +45,18 @@ type JobWrapper struct {
 // Returns an error when the job cannot be marshalled. Callers MUST surface
 // this rather than enqueueing a partially-formed wrapper: a job that cannot
 // be marshalled cannot survive a cross-process pop either.
-func CreateJobWrapper(job Job, queueName string) (*JobWrapper, error) {
+func createJobWrapper(job Job, queueName string) (*jobWrapper, error) {
 	payload, err := MarshalJob(job, queueName)
 	if err != nil {
 		return nil, err
 	}
-	return &JobWrapper{
+	return &jobWrapper{
 		Job:     job,
 		Payload: payload,
 	}, nil
 }
 
-// GetJobFromWrapper recovers a runnable [Job] from a wrapper.
+// getJobFromWrapper recovers a runnable [Job] from a wrapper.
 //
 // In-process fast path: when wrapper.Job is non-nil (memory driver, same
 // process as the producer), it is returned directly. No registry lookup, no
@@ -68,7 +71,7 @@ func CreateJobWrapper(job Job, queueName string) (*JobWrapper, error) {
 // previous implementation looked up a package-global map and fell through
 // to an empty &GenericJob{}, dropping the job in silence on cross-process
 // pops.
-func GetJobFromWrapper(wrapper *JobWrapper) (Job, error) {
+func getJobFromWrapper(wrapper *jobWrapper) (Job, error) {
 	if wrapper == nil {
 		return nil, ErrJobNotFound
 	}

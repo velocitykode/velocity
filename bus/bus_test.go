@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/pipeline"
+	"github.com/velocitykode/velocity/queue"
 )
 
 // --- test types ---
@@ -39,17 +41,11 @@ func (s *selfHandlingErrCmd) Handle() error {
 
 type mockQueuePusher struct {
 	mu   sync.Mutex
-	jobs []interface {
-		Handle() error
-		Failed(error)
-	}
-	err error // optional error to return
+	jobs []queue.Job
+	err  error // optional error to return
 }
 
-func (m *mockQueuePusher) Push(job interface {
-	Handle() error
-	Failed(error)
-}, queue ...string) error {
+func (m *mockQueuePusher) PushCtx(_ context.Context, job queue.Job, _ ...string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.err != nil {

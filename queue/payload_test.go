@@ -38,7 +38,7 @@ func (j *crossProcessJob) Failed(err error) {}
 // DatabaseDriver instance that shares only the backing SQLite database (no
 // shared package-global jobStore, no shared in-memory pointers).
 //
-// Before the fix, CreateJobWrapper stashed the live Job pointer in a
+// Before the fix, createJobWrapper stashed the live Job pointer in a
 // package-level map keyed by an opaque job_id and wrote only that opaque
 // id into Payload.Data. Because the registry/jobStore was process-local,
 // a worker hydrating the wrapper from the DB row would miss the lookup and
@@ -128,7 +128,7 @@ func TestC01_DatabaseDriver_CrossProcessHydration(t *testing.T) {
 	if err := row.Scan(&rawPayload); err != nil {
 		t.Fatalf("scan payload: %v", err)
 	}
-	var wrapperOnTheWire JobWrapper
+	var wrapperOnTheWire jobWrapper
 	if err := json.Unmarshal([]byte(rawPayload), &wrapperOnTheWire); err != nil {
 		t.Fatalf("unmarshal wire payload: %v", err)
 	}
@@ -321,7 +321,7 @@ func TestC01_DatabaseDriver_PoisonRowDoesNotStarveFollowups(t *testing.T) {
 
 // TestC01_DatabaseDriver_MalformedJSONIsQuarantined exercises the second
 // non-hydration quarantine path that C-01-fb4 introduced: a row whose
-// stored payload is not even parseable as a JobWrapper. Before fb4 this
+// stored payload is not even parseable as a jobWrapper. Before fb4 this
 // returned a plain error and left the row live, head-of-line starving
 // every other due job. After fb4 it routes through quarantineAndReturn:
 // row moved to failed_jobs with the json-unmarshal error in the exception

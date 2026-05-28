@@ -73,8 +73,9 @@ func Register(jobType string, handler func([]byte) (Job, error)) {
 //	})
 //
 // T is typically a pointer type (e.g. *SendMailJob), matching how jobs are
-// dispatched (`q.Push(&SendMailJob{...})`). The factory's typed return is
-// adapted to the registry's `func([]byte) (Job, error)` shape internally.
+// dispatched (`q.PushCtx(ctx, &SendMailJob{...})`). The factory's typed
+// return is adapted to the registry's `func([]byte) (Job, error)` shape
+// internally.
 func RegisterJob[T Job](factory func([]byte) (T, error)) {
 	// Derive the key from a zero T. For pointer types this is a typed nil,
 	// which is sufficient for fmt's reflection to emit "*pkg.Foo".

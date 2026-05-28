@@ -1,6 +1,10 @@
 package drivers
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/velocitykode/velocity/contract"
+)
 
 // Sentinel errors returned by the driver. They live here (not in the
 // parent crypto package) so the driver does not need a runtime setter
@@ -21,7 +25,11 @@ var (
 	// ErrInvalidPayload signals a structural problem with the envelope
 	// itself (empty input, non-base64 outer, malformed JSON, wrong wire
 	// version). The payload never reached the AEAD/CBC decrypt path.
-	ErrInvalidPayload = errors.New("velocity/crypto: invalid payload format")
+	//
+	// Aliased to contract.ErrCryptoInvalidPayload so callers can
+	// errors.Is against the shared identity without importing
+	// crypto/drivers.
+	ErrInvalidPayload = contract.ErrCryptoInvalidPayload
 	// ErrDecrypt is the single sentinel returned for any decrypt failure
 	// where the inner envelope parsed but the cryptographic check failed
 	// or could not be safely performed. CBC paths used to surface six

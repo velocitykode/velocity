@@ -4,6 +4,8 @@ import (
 	"crypto/subtle"
 	"errors"
 	"strings"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // SecureCompareToken compares two private/presence channel tokens in
@@ -19,11 +21,16 @@ func SecureCompareToken(a, b string) bool {
 }
 
 var (
-	// ErrUnauthorized is returned when channel authorization fails
-	ErrUnauthorized = errors.New("unauthorized channel access")
+	// ErrUnauthorized is returned when channel authorization fails.
+	// Carries the velocity/broadcast: prefix used by every other sentinel
+	// in the framework (drive-by fix in the API-surface sweep; older
+	// versions returned an unprefixed "unauthorized channel access").
+	ErrUnauthorized = errors.New("velocity/broadcast: unauthorized channel access")
 
-	// ErrDriverNotFound is returned when a driver is not found
-	ErrDriverNotFound = errors.New("broadcast driver not found")
+	// ErrDriverNotFound is an alias for contract.ErrBroadcastDriverNotFound.
+	// Hoisted so callers can errors.Is against the shared identity without
+	// importing broadcast.
+	ErrDriverNotFound = contract.ErrBroadcastDriverNotFound
 )
 
 // isPrivateChannel checks if a channel is private

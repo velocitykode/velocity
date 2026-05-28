@@ -352,19 +352,24 @@ func (r *RedisDriver) quarantinePoisonedPayload(ctx context.Context, queueName, 
 	return nil, tc, errors.Join(ErrPoisonJob, poisonErr)
 }
 
-// Size returns the number of jobs in the queue
-func (r *RedisDriver) Size(queueName string) (int64, error) {
+// SizeCtx returns the number of jobs in the queue, threading the caller's
+// ctx through the Redis LLEN + ZCARD round-trips so a slow node can be
+// preempted on request cancellation.
+func (r *RedisDriver) SizeCtx(ctx context.Context, queueName string) (int64, error) {
+	if ctx == nil {
+		ctx = r.ctx
+	}
 	queueKey := r.getQueueKey(queueName)
 	delayedKey := r.getDelayedKey(queueName)
 
 	// Get the size of the main queue
-	mainSize, err := r.client.LLen(r.ctx, queueKey).Result()
+	mainSize, err := r.client.LLen(ctx, queueKey).Result()
 	if err != nil {
 		return 0, err
 	}
 
 	// Get the size of the delayed queue
-	delayedSize, err := r.client.ZCard(r.ctx, delayedKey).Result()
+	delayedSize, err := r.client.ZCard(ctx, delayedKey).Result()
 	if err != nil {
 		return mainSize, nil // Return main size even if delayed fails
 	}
@@ -372,23 +377,45 @@ func (r *RedisDriver) Size(queueName string) (int64, error) {
 	return mainSize + delayedSize, nil
 }
 
-// Clear removes all jobs from the queue
-func (r *RedisDriver) Clear(queueName string) error {
+// Size returns the number of jobs in the queue.
+//
+// Deprecated: use SizeCtx with a request-scoped context.Context.
+func (r *RedisDriver) Size(queueName string) (int64, error) {
+	return r.SizeCtx(r.ctx, queueName)
+}
+
+// ClearCtx removes all jobs from the queue, threading ctx through the
+// pipelined DEL so a slow node can be preempted on request cancellation.
+func (r *RedisDriver) ClearCtx(ctx context.Context, queueName string) error {
+	if ctx == nil {
+		ctx = r.ctx
+	}
 	queueKey := r.getQueueKey(queueName)
 	delayedKey := r.getDelayedKey(queueName)
 	failedKey := r.getFailedKey(queueName)
 
 	pipe := r.client.Pipeline()
-	pipe.Del(r.ctx, queueKey)
-	pipe.Del(r.ctx, delayedKey)
-	pipe.Del(r.ctx, failedKey)
+	pipe.Del(ctx, queueKey)
+	pipe.Del(ctx, delayedKey)
+	pipe.Del(ctx, failedKey)
 
-	_, err := pipe.Exec(r.ctx)
+	_, err := pipe.Exec(ctx)
 	return err
 }
 
-// Failed moves a job to the failed queue
-func (r *RedisDriver) Failed(job Job, err error, queueName string) error {
+// Clear removes all jobs from the queue.
+//
+// Deprecated: use ClearCtx with a request-scoped context.Context.
+func (r *RedisDriver) Clear(queueName string) error {
+	return r.ClearCtx(r.ctx, queueName)
+}
+
+// FailedCtx moves a job to the failed queue, threading ctx through the
+// Redis RPUSH round-trip.
+func (r *RedisDriver) FailedCtx(ctx context.Context, job Job, err error, queueName string) error {
+	if ctx == nil {
+		ctx = r.ctx
+	}
 	failedKey := r.getFailedKey(queueName)
 
 	payload, serr := SerializeJob(job, queueName)
@@ -409,7 +436,7 @@ func (r *RedisDriver) Failed(job Job, err error, queueName string) error {
 	}
 
 	// Store in failed queue
-	if pusherr := r.client.RPush(r.ctx, failedKey, data).Err(); pusherr != nil {
+	if pusherr := r.client.RPush(ctx, failedKey, data).Err(); pusherr != nil {
 		return pusherr
 	}
 
@@ -417,6 +444,13 @@ func (r *RedisDriver) Failed(job Job, err error, queueName string) error {
 	job.Failed(err)
 
 	return nil
+}
+
+// Failed moves a job to the failed queue.
+//
+// Deprecated: use FailedCtx with a request-scoped context.Context.
+func (r *RedisDriver) Failed(job Job, err error, queueName string) error {
+	return r.FailedCtx(r.ctx, job, err, queueName)
 }
 
 // moveDelayedJobs moves ready delayed jobs to the main queue. The supplied
