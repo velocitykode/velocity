@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -14,14 +15,22 @@ import (
 // below rely on.
 func setupTxContextTest(t *testing.T) (*Manager, func()) {
 	t.Helper()
-	m := newTestManager(t)
 	// sqlite `:memory:` gives each pool connection its own private
-	// database. Tx-cancellation tests grab a fresh connection for the
-	// post-rollback COUNT verification and intermittently land on one
-	// that never saw the CREATE TABLE, surfacing "no such table". Pin
-	// to a single connection so every query in the test sees the same
-	// in-memory state.
-	m.DB().SetMaxOpenConns(1)
+	// database, so the tx-cancellation COUNT verification (issued on a
+	// fresh pool connection) intermittently hits "no such table" when
+	// it lands on a connection that never saw CREATE TABLE. Pinning to
+	// one connection deadlocks TestTransaction_ReadsSeeUncommittedWrites
+	// (tx holds the connection while a sibling pool read needs another).
+	// Use a per-test file under t.TempDir() so every connection in the
+	// pool sees the same database; the file is wiped automatically on
+	// test cleanup.
+	m, err := NewManager(ManagerConfig{
+		Driver:   "sqlite",
+		Database: filepath.Join(t.TempDir(), "txctx.db"),
+	})
+	if err != nil {
+		t.Fatalf("Failed to initialize ORM: %v", err)
+	}
 	prev := Default()
 	SetDefault(m)
 	mustExec := func(sqlStmt string) {
