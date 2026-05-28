@@ -94,28 +94,16 @@ func (d *memoryDriver) PopCtx(ctx context.Context, queue string) (Job, error) {
 }
 
 func (d *memoryDriver) Failed(job Job, err error, queue string) error {
-	return d.FailedCtx(context.Background(), job, err, queue)
-}
-
-func (d *memoryDriver) FailedCtx(_ context.Context, job Job, err error, queue string) error {
 	return nil
 }
 
 func (d *memoryDriver) Size(queue string) (int64, error) {
-	return d.SizeCtx(context.Background(), queue)
-}
-
-func (d *memoryDriver) SizeCtx(_ context.Context, queue string) (int64, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return int64(len(d.jobs[queue])), nil
 }
 
 func (d *memoryDriver) Clear(queue string) error {
-	return d.ClearCtx(context.Background(), queue)
-}
-
-func (d *memoryDriver) ClearCtx(_ context.Context, queue string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	delete(d.jobs, queue)
@@ -745,17 +733,14 @@ func (d *failingDriver) Push(job Job, queue ...string) error {
 func (d *failingDriver) PushDelayedCtx(context.Context, Job, time.Duration, ...string) error {
 	return nil
 }
-func (d *failingDriver) PushDelayed(Job, time.Duration, ...string) error     { return nil }
-func (d *failingDriver) PopCtx(context.Context, string) (Job, error)         { return nil, nil }
-func (d *failingDriver) Pop(string) (Job, error)                             { return nil, nil }
-func (d *failingDriver) Size(string) (int64, error)                          { return 0, nil }
-func (d *failingDriver) SizeCtx(context.Context, string) (int64, error)      { return 0, nil }
-func (d *failingDriver) Clear(string) error                                  { return nil }
-func (d *failingDriver) ClearCtx(context.Context, string) error              { return nil }
-func (d *failingDriver) Failed(Job, error, string) error                     { return nil }
-func (d *failingDriver) FailedCtx(context.Context, Job, error, string) error { return nil }
-func (d *failingDriver) Shutdown(context.Context) error                      { return nil }
-func (d *failingDriver) Close() error                                        { return nil }
+func (d *failingDriver) PushDelayed(Job, time.Duration, ...string) error { return nil }
+func (d *failingDriver) PopCtx(context.Context, string) (Job, error)     { return nil, nil }
+func (d *failingDriver) Pop(string) (Job, error)                         { return nil, nil }
+func (d *failingDriver) Size(string) (int64, error)                      { return 0, nil }
+func (d *failingDriver) Clear(string) error                              { return nil }
+func (d *failingDriver) Failed(Job, error, string) error                 { return nil }
+func (d *failingDriver) Shutdown(context.Context) error                  { return nil }
+func (d *failingDriver) Close() error                                    { return nil }
 
 // testOnQueuerJob implements both Batchable and OnQueuer
 type testOnQueuerJob struct {

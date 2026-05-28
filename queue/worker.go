@@ -807,7 +807,7 @@ func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error
 		// against. Run side effects regardless of Failed()'s outcome
 		// so alerting pipelines still see the failure when the
 		// failed_jobs sink itself is degraded.
-		if failErr := w.queue.FailedCtx(ctx, job, err, w.queueName); failErr != nil {
+		if failErr := w.queue.Failed(job, err, w.queueName); failErr != nil {
 			w.logger.Error("Failed to mark job as failed", "error", failErr)
 		}
 	}

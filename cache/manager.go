@@ -36,7 +36,6 @@ type CacheManager interface {
 	Get(key string) (interface{}, bool)
 	GetWithContext(ctx context.Context, key string) (interface{}, bool)
 	GetString(key string) (string, bool)
-	GetStringWithContext(ctx context.Context, key string) (string, bool)
 	Put(key string, value interface{}, ttl time.Duration) error
 	PutWithContext(ctx context.Context, key string, value interface{}, ttl time.Duration) error
 	Add(key string, value interface{}, ttl time.Duration) (bool, error)
@@ -46,13 +45,9 @@ type CacheManager interface {
 	Forget(key string) error
 	ForgetWithContext(ctx context.Context, key string) error
 	Flush() error
-	FlushWithContext(ctx context.Context) error
 	Has(key string) bool
-	HasWithContext(ctx context.Context, key string) bool
 	Increment(key string, value int64) (int64, error)
-	IncrementWithContext(ctx context.Context, key string, value int64) (int64, error)
 	Decrement(key string, value int64) (int64, error)
-	DecrementWithContext(ctx context.Context, key string, value int64) (int64, error)
 	Remember(key string, ttl time.Duration, callback func() interface{}) (interface{}, error)
 	RememberWithContext(ctx context.Context, key string, ttl time.Duration, callback func() interface{}) (interface{}, error)
 	RememberE(key string, ttl time.Duration, callback func() (interface{}, error)) (interface{}, error)
@@ -62,9 +57,7 @@ type CacheManager interface {
 	RememberForeverE(key string, callback func() (interface{}, error)) (interface{}, error)
 	RememberForeverEWithContext(ctx context.Context, key string, callback func() (interface{}, error)) (interface{}, error)
 	Many(keys []string) map[string]interface{}
-	ManyWithContext(ctx context.Context, keys []string) map[string]interface{}
 	PutMany(items map[string]interface{}, ttl time.Duration) error
-	PutManyWithContext(ctx context.Context, items map[string]interface{}, ttl time.Duration) error
 
 	// Store management.
 	Store(name string) (Store, error)
@@ -285,16 +278,24 @@ func (m *Manager) Get(key string) (interface{}, bool) {
 	return m.GetWithContext(context.Background(), key)
 }
 
-// GetWithContext retrieves a value from the default cache store with
-// context. Since ContextStore is a type alias for Store post-Sweep 1b,
-// the ctx threads unconditionally to the driver so remote lookups
-// (e.g. Redis) can be cancelled on request cancellation.
+// GetWithContext retrieves a value from the default cache store with context.
+// When the underlying store implements ContextStore the ctx is threaded through
+// to the driver so remote lookups (e.g. Redis) can be cancelled on request
+// cancellation; otherwise falls back to the plain Get.
 func (m *Manager) GetWithContext(ctx context.Context, key string) (interface{}, bool) {
 	store, err := m.DefaultStoreWithContext(ctx)
 	if err != nil {
 		return nil, false
 	}
-	value, found := store.GetCtx(ctx, key)
+	var (
+		value interface{}
+		found bool
+	)
+	if cs, ok := store.(ContextStore); ok {
+		value, found = cs.GetCtx(ctx, key)
+	} else {
+		value, found = store.Get(key)
+	}
 	if found {
 		m.dispatchCacheHit(ctx, key, m.defaultStore)
 	} else {
@@ -303,19 +304,13 @@ func (m *Manager) GetWithContext(ctx context.Context, key string) (interface{}, 
 	return value, found
 }
 
-// GetString retrieves a string value from the default cache store.
+// GetString retrieves a string value from the default cache store
 func (m *Manager) GetString(key string) (string, bool) {
-	return m.GetStringWithContext(context.Background(), key)
-}
-
-// GetStringWithContext retrieves a string value from the default cache
-// store, threading ctx through to the driver.
-func (m *Manager) GetStringWithContext(ctx context.Context, key string) (string, bool) {
-	store, err := m.DefaultStoreWithContext(ctx)
+	store, err := m.DefaultStore()
 	if err != nil {
 		return "", false
 	}
-	return store.GetStringCtx(ctx, key)
+	return store.GetString(key)
 }
 
 // Put stores a value in the default cache store
@@ -324,13 +319,20 @@ func (m *Manager) Put(key string, value interface{}, ttl time.Duration) error {
 }
 
 // PutWithContext stores a value in the default cache store with context.
+// Threads ctx through when the underlying store implements ContextStore.
 func (m *Manager) PutWithContext(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
 	store, err := m.DefaultStoreWithContext(ctx)
 	if err != nil {
 		return err
 	}
-	if err := store.PutCtx(ctx, key, value, ttl); err != nil {
-		return err
+	if cs, ok := store.(ContextStore); ok {
+		if err := cs.PutCtx(ctx, key, value, ttl); err != nil {
+			return err
+		}
+	} else {
+		if err := store.Put(key, value, ttl); err != nil {
+			return err
+		}
 	}
 	m.dispatchCacheWritten(ctx, key, m.defaultStore, ttl)
 	return nil
@@ -342,14 +344,23 @@ func (m *Manager) Add(key string, value interface{}, ttl time.Duration) (bool, e
 	return m.AddWithContext(context.Background(), key, value, ttl)
 }
 
-// AddWithContext is the ctx-aware variant of Add. The underlying SETNX
-// can be cancelled in-flight via ctx.
+// AddWithContext is the ctx-aware variant of Add. Threads ctx through
+// when the store implements ContextStore so the underlying SETNX can be
+// cancelled in-flight.
 func (m *Manager) AddWithContext(ctx context.Context, key string, value interface{}, ttl time.Duration) (bool, error) {
 	store, err := m.DefaultStoreWithContext(ctx)
 	if err != nil {
 		return false, err
 	}
-	inserted, addErr := store.AddCtx(ctx, key, value, ttl)
+	var (
+		inserted bool
+		addErr   error
+	)
+	if cs, ok := store.(ContextStore); ok {
+		inserted, addErr = cs.AddCtx(ctx, key, value, ttl)
+	} else {
+		inserted, addErr = store.Add(key, value, ttl)
+	}
 	if addErr != nil {
 		return false, addErr
 	}
@@ -365,13 +376,20 @@ func (m *Manager) Forever(key string, value interface{}) error {
 }
 
 // ForeverWithContext stores a value in the default cache store indefinitely with context.
+// Threads ctx through when the underlying store implements ContextStore.
 func (m *Manager) ForeverWithContext(ctx context.Context, key string, value interface{}) error {
 	store, err := m.DefaultStoreWithContext(ctx)
 	if err != nil {
 		return err
 	}
-	if err := store.ForeverCtx(ctx, key, value); err != nil {
-		return err
+	if cs, ok := store.(ContextStore); ok {
+		if err := cs.ForeverCtx(ctx, key, value); err != nil {
+			return err
+		}
+	} else {
+		if err := store.Forever(key, value); err != nil {
+			return err
+		}
 	}
 	m.dispatchCacheWritten(ctx, key, m.defaultStore, 0) // TTL=0 means forever
 	return nil
@@ -383,61 +401,50 @@ func (m *Manager) Forget(key string) error {
 }
 
 // ForgetWithContext removes a value from the default cache store with context.
+// Threads ctx through when the underlying store implements ContextStore.
 func (m *Manager) ForgetWithContext(ctx context.Context, key string) error {
 	store, err := m.DefaultStoreWithContext(ctx)
 	if err != nil {
 		return err
 	}
-	if err := store.ForgetCtx(ctx, key); err != nil {
-		return err
+	if cs, ok := store.(ContextStore); ok {
+		if err := cs.ForgetCtx(ctx, key); err != nil {
+			return err
+		}
+	} else {
+		if err := store.Forget(key); err != nil {
+			return err
+		}
 	}
 	m.dispatchCacheForgotten(ctx, key, m.defaultStore)
 	return nil
 }
 
-// Flush removes all values from the default cache store.
+// Flush removes all values from the default cache store
 func (m *Manager) Flush() error {
-	return m.FlushWithContext(context.Background())
-}
-
-// FlushWithContext removes all values from the default cache store,
-// threading ctx through to the driver (Redis FLUSHDB / SCAN+DEL on the
-// prefix becomes cancellable; memory and file drivers honour ctx as a
-// pre-flight cancellation check).
-func (m *Manager) FlushWithContext(ctx context.Context) error {
-	store, err := m.DefaultStoreWithContext(ctx)
+	store, err := m.DefaultStore()
 	if err != nil {
 		return err
 	}
-	return store.FlushCtx(ctx)
+	return store.Flush()
 }
 
-// Increment increments a numeric value in the default cache store.
+// Increment increments a numeric value in the default cache store
 func (m *Manager) Increment(key string, value int64) (int64, error) {
-	return m.IncrementWithContext(context.Background(), key, value)
-}
-
-// IncrementWithContext is the ctx-aware variant of Increment.
-func (m *Manager) IncrementWithContext(ctx context.Context, key string, value int64) (int64, error) {
-	store, err := m.DefaultStoreWithContext(ctx)
+	store, err := m.DefaultStore()
 	if err != nil {
 		return 0, err
 	}
-	return store.IncrementCtx(ctx, key, value)
+	return store.Increment(key, value)
 }
 
-// Decrement decrements a numeric value in the default cache store.
+// Decrement decrements a numeric value in the default cache store
 func (m *Manager) Decrement(key string, value int64) (int64, error) {
-	return m.DecrementWithContext(context.Background(), key, value)
-}
-
-// DecrementWithContext is the ctx-aware variant of Decrement.
-func (m *Manager) DecrementWithContext(ctx context.Context, key string, value int64) (int64, error) {
-	store, err := m.DefaultStoreWithContext(ctx)
+	store, err := m.DefaultStore()
 	if err != nil {
 		return 0, err
 	}
-	return store.DecrementCtx(ctx, key, value)
+	return store.Decrement(key, value)
 }
 
 // Remember gets from default cache or computes and stores. The callback has
@@ -538,21 +545,31 @@ func (m *Manager) RememberEWithContext(ctx context.Context, key string, ttl time
 	if err != nil {
 		return nil, err
 	}
+	cs, hasCtx := store.(ContextStore)
 
-	// ContextStore is now a type alias for Store, so every Store satisfies
-	// the ctx-aware contract. The closures below thread ctx through
-	// unconditionally; the pre-Sweep-1b hasCtx branch is gone.
 	getFn := func() (interface{}, bool) {
-		return store.GetCtx(ctx, key)
+		if hasCtx {
+			return cs.GetCtx(ctx, key)
+		}
+		return store.Get(key)
 	}
 	addFn := func(v interface{}, addTTL time.Duration) (bool, error) {
-		return store.AddCtx(ctx, key, v, addTTL)
+		if hasCtx {
+			return cs.AddCtx(ctx, key, v, addTTL)
+		}
+		return store.Add(key, v, addTTL)
 	}
 	putFn := func(v interface{}) error {
-		return store.PutCtx(ctx, key, v, ttl)
+		if hasCtx {
+			return cs.PutCtx(ctx, key, v, ttl)
+		}
+		return store.Put(key, v, ttl)
 	}
 	forgetFn := func() error {
-		return store.ForgetCtx(ctx, key)
+		if hasCtx {
+			return cs.ForgetCtx(ctx, key)
+		}
+		return store.Forget(key)
 	}
 
 	if val, found := getFn(); found {
@@ -654,20 +671,31 @@ func (m *Manager) RememberForeverEWithContext(ctx context.Context, key string, c
 	if err != nil {
 		return nil, err
 	}
+	cs, hasCtx := store.(ContextStore)
 
-	// ContextStore is now a type alias for Store, so every Store satisfies
-	// the ctx-aware contract; closures thread ctx unconditionally.
 	getFn := func() (interface{}, bool) {
-		return store.GetCtx(ctx, key)
+		if hasCtx {
+			return cs.GetCtx(ctx, key)
+		}
+		return store.Get(key)
 	}
 	addFn := func(v interface{}, addTTL time.Duration) (bool, error) {
-		return store.AddCtx(ctx, key, v, addTTL)
+		if hasCtx {
+			return cs.AddCtx(ctx, key, v, addTTL)
+		}
+		return store.Add(key, v, addTTL)
 	}
 	foreverFn := func(v interface{}) error {
-		return store.ForeverCtx(ctx, key, v)
+		if hasCtx {
+			return cs.ForeverCtx(ctx, key, v)
+		}
+		return store.Forever(key, v)
 	}
 	forgetFn := func() error {
-		return store.ForgetCtx(ctx, key)
+		if hasCtx {
+			return cs.ForgetCtx(ctx, key)
+		}
+		return store.Forget(key)
 	}
 
 	if val, found := getFn(); found {
@@ -719,46 +747,31 @@ func (m *Manager) RememberForeverEWithContext(ctx context.Context, key string, c
 	return value, nil
 }
 
-// Many retrieves multiple values from the default cache store.
+// Many retrieves multiple values from the default cache store
 func (m *Manager) Many(keys []string) map[string]interface{} {
-	return m.ManyWithContext(context.Background(), keys)
-}
-
-// ManyWithContext is the ctx-aware variant of Many.
-func (m *Manager) ManyWithContext(ctx context.Context, keys []string) map[string]interface{} {
-	store, err := m.DefaultStoreWithContext(ctx)
+	store, err := m.DefaultStore()
 	if err != nil {
 		return make(map[string]interface{})
 	}
-	return store.ManyCtx(ctx, keys)
+	return store.Many(keys)
 }
 
-// PutMany stores multiple values in the default cache store.
+// PutMany stores multiple values in the default cache store
 func (m *Manager) PutMany(items map[string]interface{}, ttl time.Duration) error {
-	return m.PutManyWithContext(context.Background(), items, ttl)
-}
-
-// PutManyWithContext is the ctx-aware variant of PutMany.
-func (m *Manager) PutManyWithContext(ctx context.Context, items map[string]interface{}, ttl time.Duration) error {
-	store, err := m.DefaultStoreWithContext(ctx)
+	store, err := m.DefaultStore()
 	if err != nil {
 		return err
 	}
-	return store.PutManyCtx(ctx, items, ttl)
+	return store.PutMany(items, ttl)
 }
 
-// Has checks if a key exists in the default cache store.
+// Has checks if a key exists in the default cache store
 func (m *Manager) Has(key string) bool {
-	return m.HasWithContext(context.Background(), key)
-}
-
-// HasWithContext is the ctx-aware variant of Has.
-func (m *Manager) HasWithContext(ctx context.Context, key string) bool {
-	store, err := m.DefaultStoreWithContext(ctx)
+	store, err := m.DefaultStore()
 	if err != nil {
 		return false
 	}
-	return store.HasCtx(ctx, key)
+	return store.Has(key)
 }
 
 // Lock creates a new lock for the given key on the default store.

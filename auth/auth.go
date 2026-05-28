@@ -168,6 +168,9 @@ type Authenticatable interface {
 //
 // ValidateCredentials does no I/O (it compares a candidate password to the
 // already-loaded user's stored hash), so it has no Ctx variant.
+//
+// Implementations must pass authtest.RunUserProviderContractTests. See
+// authtest for the executable specification.
 type UserProvider interface {
 	// FindByIDCtx retrieves a user by ID using the provided context.
 	FindByIDCtx(ctx context.Context, id interface{}) (Authenticatable, error)

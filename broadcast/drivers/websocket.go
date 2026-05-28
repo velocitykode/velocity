@@ -242,22 +242,7 @@ func (d *WebSocketDriver) BroadcastCtx(ctx context.Context, channels []string, e
 				return err
 			}
 		}
-		d.sendOrDrop(ctx, t.client, t.channel, event, data)
-	}
-	// Post-loop cancellation check: if ctx was cancelled while sendOrDrop
-	// was waiting on the final (or only) slow client, the inner-loop
-	// pre-check above never fires for that iteration because there is no
-	// next target to gate on. sendOrDrop swallows the cancellation as a
-	// drop without surfacing it, so we have to re-observe ctx.Err() here
-	// and return it as the operation result. A Ctx-suffixed API must
-	// surface ctx.Err() whenever cancellation aborted the work, not just
-	// when it aborted further work; otherwise callers cannot distinguish
-	// "completed normally with some drops" from "request cancelled with
-	// some drops" - the round-5 reviewer finding.
-	if ctx != nil {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
+		d.sendOrDrop(t.client, t.channel, event, data)
 	}
 	return nil
 }
@@ -284,16 +269,7 @@ func (d *WebSocketDriver) BroadcastExceptCtx(ctx context.Context, channels []str
 				return err
 			}
 		}
-		d.sendOrDrop(ctx, t.client, t.channel, event, data)
-	}
-	// Post-loop cancellation check: same rationale as BroadcastCtx. If
-	// ctx was cancelled while sendOrDrop was waiting on the final slow
-	// client, sendOrDrop swallowed the cancellation as a drop; re-observe
-	// ctx.Err() here so the caller sees the cancellation as the op result.
-	if ctx != nil {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
+		d.sendOrDrop(t.client, t.channel, event, data)
 	}
 	return nil
 }
@@ -359,19 +335,6 @@ func (d *WebSocketDriver) snapshotTargets(channels []string, exceptSocketID stri
 // it drops immediately on full buffer. Drops increment droppedCount and
 // trigger the onDrop callback (if set).
 //
-// ctx is honoured on both paths so request cancellation preempts the wait
-// window:
-//
-//   - Non-blocking path (blockingSendTO <= 0): ctx is checked pre-flight;
-//     if already cancelled the send is skipped and the message is counted
-//     as a drop. The send itself is non-blocking so no in-flight wait
-//     exists.
-//   - Blocking path: the select races the send against (a) the per-send
-//     timeout, (b) ctx.Done(). A cancellation observed during the wait
-//     counts as a drop and returns immediately, so a slow client cannot
-//     pin the caller goroutine for the full blockingSendTO after the
-//     caller's ctx has been cancelled.
-//
 // Audit D-01 defensive guard: a `send on closed channel` panic is the
 // symptom of a stale pointer surviving the OnDisconnect window. The primary
 // defence (the purgeClient listener installed in NewWebSocketDriver) closes
@@ -382,7 +345,7 @@ func (d *WebSocketDriver) snapshotTargets(channels []string, exceptSocketID stri
 // as a drop, and re-run purgeClient synchronously so a misbehaving consumer
 // or a missed listener cannot leave the map poisoned for subsequent
 // broadcasts.
-func (d *WebSocketDriver) sendOrDrop(ctx context.Context, client *websocket.Client, channel, event string, data interface{}) {
+func (d *WebSocketDriver) sendOrDrop(client *websocket.Client, channel, event string, data interface{}) {
 	defer func() {
 		if r := recover(); r != nil {
 			// Count the dropped message and clear the stale pointer.
@@ -394,17 +357,6 @@ func (d *WebSocketDriver) sendOrDrop(ctx context.Context, client *websocket.Clie
 			}
 		}
 	}()
-
-	// Pre-flight cancellation check. Drops cancelled-ctx messages without
-	// even attempting the send, so a cancelled BroadcastCtx never delivers
-	// half its fan-out. Records the drop so observability (DroppedCount /
-	// onDrop) still reflects the message.
-	if ctx != nil {
-		if err := ctx.Err(); err != nil {
-			d.recordDrop(client.ID, channel, event)
-			return
-		}
-	}
 
 	msg := websocket.Message{Type: event, Data: data}
 
@@ -423,26 +375,10 @@ func (d *WebSocketDriver) sendOrDrop(ctx context.Context, client *websocket.Clie
 	t := time.NewTimer(d.blockingSendTO)
 	defer t.Stop()
 
-	// The select races the send against the per-send timeout AND the
-	// caller's ctx. A cancellation observed mid-wait counts as a drop and
-	// returns immediately; without this case a slow client could pin the
-	// broadcast goroutine for the full blockingSendTO after the caller
-	// had already given up.
-	//
-	// ctx may be nil in tests that bypass the public BroadcastCtx entry
-	// point; the nil-guard via a never-firing channel keeps the select
-	// arity identical without panicking on a nil ctx.Done().
-	var done <-chan struct{}
-	if ctx != nil {
-		done = ctx.Done()
-	}
-
 	select {
 	case client.Send <- msg:
 		return
 	case <-t.C:
-		d.recordDrop(client.ID, channel, event)
-	case <-done:
 		d.recordDrop(client.ID, channel, event)
 	}
 }

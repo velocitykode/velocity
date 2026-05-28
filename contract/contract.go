@@ -136,6 +136,9 @@ type RedirectAllowlist interface {
 //     implementation clears any failure counters for the key.
 //
 // The key is typically a composite such as "<username>|<remote-ip>".
+//
+// Implementations must pass authtest.RunLoginThrottlerContractTests. See
+// authtest for the executable specification.
 type LoginThrottler interface {
 	Allow(r *http.Request, key string) bool
 	RecordFailure(r *http.Request, key string)

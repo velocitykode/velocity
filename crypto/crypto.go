@@ -48,7 +48,10 @@ var (
 	ErrLegacyPayloadDisabled = drivers.ErrLegacyPayloadDisabled
 )
 
-// Encryptor interface defines encryption operations
+// Encryptor interface defines encryption operations.
+//
+// Implementations must pass cryptotest.RunEncryptorContractTests. See
+// cryptotest for the executable specification.
 type Encryptor interface {
 	// Encrypt encrypts plaintext and returns a base64 encoded payload
 	Encrypt(plaintext string) (string, error)
@@ -84,9 +87,15 @@ type Encryptor interface {
 	// is attempted first, then each previous master in turn (with the
 	// same aad). Matches the rotation semantics of DecryptBytes.
 	//
-	// Returns ErrInvalidPayload when the envelope is empty or not
-	// produced by EncryptBytesWithAAD (only the v1 wire format is
-	// accepted on this path; legacy v0 payloads are rejected up-front).
+	// Returns ErrInvalidPayload only for STRUCTURAL envelope defects:
+	// empty payload, legacy v0 wire format, or a v1 envelope whose
+	// nonce / tag fields are missing or undersized. A non-AAD envelope
+	// (produced by EncryptBytes) is NOT structurally distinguishable
+	// from an EncryptBytesWithAAD envelope once decoded, so the GCM auth
+	// tag check is the only available probe; supplying a non-AAD payload
+	// on this path therefore collapses to ErrAADMismatch, not
+	// ErrInvalidPayload. Callers that need the distinction must track
+	// which path produced each ciphertext at the application layer.
 	//
 	// Returns ErrInvalidCipher when the configured cipher is non-AEAD
 	// (any CBC mode); the rejection is symmetric with

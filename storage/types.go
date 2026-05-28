@@ -50,6 +50,9 @@ type FileInfo struct {
 //
 // URL is excluded from the rule, since it is a pure string operation with
 // no I/O.
+//
+// Implementations must pass storagetest.RunDriverContractTests. See
+// storagetest for the executable specification.
 type Driver interface {
 	// Basic operations
 	PutCtx(ctx context.Context, path string, contents []byte) error

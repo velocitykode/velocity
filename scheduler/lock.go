@@ -10,16 +10,22 @@ import (
 
 // Lock is a named mutual-exclusion primitive that a scheduler job can acquire
 // so only one runner at a time executes a task across a distributed fleet.
-// Implementations MUST issue a monotonically increasing fencing token for
-// every successful Acquire call — the token lets downstream systems reject
-// writes from an expired holder and is the canonical defence against the
-// "stale lock" problem (see https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html).
+//
+// Fencing tokens (per-name monotonicity): for each lock name, every
+// successful Acquire call must return a strictly increasing FencingToken.
+// Tokens across different lock names are independent, so a backend that
+// maintains a per-name counter (rather than a single global counter) is
+// conformant. The token lets downstream systems reject writes from an
+// expired holder and is the canonical defence against the "stale lock"
+// problem (see https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html).
+// This is enforced by schedulertest.FencingToken_StrictlyIncreasing_PerName.
 type Lock interface {
 	// Name returns the lock name (e.g. the job name it guards).
 	Name() string
 
 	// FencingToken returns the token issued at Acquire time. The value is
-	// strictly increasing across successful acquisitions of the same name.
+	// strictly increasing across successful acquisitions of the same name;
+	// tokens across different names are independent.
 	FencingToken() uint64
 
 	// Release drops the lock. Implementations MUST be idempotent — releasing
@@ -30,6 +36,9 @@ type Lock interface {
 // Locker acquires named locks. It is intentionally narrow so backends
 // (in-memory, Redis SET NX, ZooKeeper, etcd, database advisory locks) can be
 // swapped without changing call sites.
+//
+// Implementations must pass schedulertest.RunLockerContractTests. See
+// schedulertest for the executable specification.
 type Locker interface {
 	// Acquire takes the lock. The ttl bounds how long the holder may hold it
 	// before implementations may reclaim it. Returns a non-nil Lock on

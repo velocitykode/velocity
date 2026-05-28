@@ -95,6 +95,9 @@ type Lock interface {
 // when the holding process crashes. The variadic shape is preserved
 // for source-compat with earlier callers, but supplying zero ttls is
 // now an error.
+//
+// Implementations must pass cachetest.RunLockerContractTests. See
+// cachetest for the executable specification.
 type Locker interface {
 	Lock(key string, ttl ...time.Duration) Lock
 	RestoreLock(key string, owner string) Lock

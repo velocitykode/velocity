@@ -65,13 +65,18 @@ type Cache interface {
 	// Deprecated: use FlushCtx with a request-scoped context.Context.
 	Flush() error
 
-	// IncrementCtx increments a numeric value.
+	// IncrementCtx increments a numeric value, treating a missing key as
+	// zero so the post-increment result equals the supplied delta on
+	// first call. The new value is returned. Enforced by
+	// cachetest.IncrementCtx_NewKey_StartsFromZero.
 	IncrementCtx(ctx context.Context, key string, value int64) (int64, error)
 
 	// Deprecated: use IncrementCtx with a request-scoped context.Context.
 	Increment(key string, value int64) (int64, error)
 
-	// DecrementCtx decrements a numeric value.
+	// DecrementCtx decrements a numeric value, treating a missing key as
+	// zero (a Decrement on a fresh key returns -delta). Symmetric with
+	// IncrementCtx.
 	DecrementCtx(ctx context.Context, key string, value int64) (int64, error)
 
 	// Deprecated: use DecrementCtx with a request-scoped context.Context.
@@ -106,6 +111,11 @@ type Cache interface {
 }
 
 // Store represents a cache store with a prefix.
+//
+// Implementations must pass cachetest.RunStoreContractTests. Stores that
+// additionally implement drivers.Locker must pass
+// cachetest.RunLockerContractTests. See cachetest for the executable
+// specification.
 type Store interface {
 	Cache
 	GetPrefix() string

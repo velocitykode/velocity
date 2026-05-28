@@ -59,14 +59,23 @@ type BroadcastManager struct {
 // cannot pin the request goroutine, and a non-Ctx Deprecated shim that calls
 // the Ctx variant with context.Background(). New code MUST call the Ctx
 // variants.
+//
+// Implementations must pass broadcasttest.RunDriverContractTests. See
+// broadcasttest for the executable specification.
 type Driver interface {
-	// BroadcastCtx sends an event to channels.
+	// BroadcastCtx sends an event to channels. Implementations MUST
+	// honour ctx cancellation: a ctx whose Err() is already non-nil at
+	// call time MUST return that error before touching the wire.
+	// Enforced by broadcasttest.BroadcastCtx_CancelledCtx_ReturnsError.
 	BroadcastCtx(ctx context.Context, channels []string, event string, data interface{}) error
 
 	// Deprecated: use BroadcastCtx with a request-scoped context.Context.
 	Broadcast(channels []string, event string, data interface{}) error
 
-	// BroadcastExceptCtx broadcasts to all except specified socket.
+	// BroadcastExceptCtx broadcasts to all except specified socket. Same
+	// ctx-cancellation contract as BroadcastCtx; a pre-cancelled ctx
+	// MUST surface ctx.Err() before any send. Enforced by
+	// broadcasttest.BroadcastExceptCtx_CancelledCtx_ReturnsError.
 	BroadcastExceptCtx(ctx context.Context, channels []string, event string, data interface{}, socketID string) error
 
 	// Deprecated: use BroadcastExceptCtx with a request-scoped context.Context.

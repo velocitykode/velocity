@@ -492,7 +492,7 @@ func (m *MemoryDriver) ReleaseCtx(ctx context.Context, token ReservationToken, d
 // Implements ReservationDriver.
 func (m *MemoryDriver) FailReservedCtx(ctx context.Context, token ReservationToken, job Job, jobErr error, queueName string) error {
 	if token.IsZero() {
-		return m.FailedCtx(ctx, job, jobErr, queueName)
+		return m.Failed(job, jobErr, queueName)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -572,15 +572,8 @@ func (m *MemoryDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupeKe
 	return nil
 }
 
-// SizeCtx returns the number of jobs in the queue. The memory driver does
-// no I/O so ctx is accepted for interface symmetry and honoured only as a
-// pre-flight cancellation check.
-func (m *MemoryDriver) SizeCtx(ctx context.Context, queueName string) (int64, error) {
-	if ctx != nil {
-		if err := ctx.Err(); err != nil {
-			return 0, err
-		}
-	}
+// Size returns the number of jobs in the queue
+func (m *MemoryDriver) Size(queueName string) (int64, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -591,20 +584,8 @@ func (m *MemoryDriver) SizeCtx(ctx context.Context, queueName string) (int64, er
 	return 0, nil
 }
 
-// Size returns the number of jobs in the queue.
-//
-// Deprecated: use SizeCtx with a request-scoped context.Context.
-func (m *MemoryDriver) Size(queueName string) (int64, error) {
-	return m.SizeCtx(context.Background(), queueName)
-}
-
-// ClearCtx removes all jobs from the queue.
-func (m *MemoryDriver) ClearCtx(ctx context.Context, queueName string) error {
-	if ctx != nil {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-	}
+// Clear removes all jobs from the queue
+func (m *MemoryDriver) Clear(queueName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -632,20 +613,8 @@ func (m *MemoryDriver) ClearCtx(ctx context.Context, queueName string) error {
 	return nil
 }
 
-// Clear removes all jobs from the queue.
-//
-// Deprecated: use ClearCtx with a request-scoped context.Context.
-func (m *MemoryDriver) Clear(queueName string) error {
-	return m.ClearCtx(context.Background(), queueName)
-}
-
-// FailedCtx moves a job to the failed queue.
-func (m *MemoryDriver) FailedCtx(ctx context.Context, job Job, err error, queueName string) error {
-	if ctx != nil {
-		if cerr := ctx.Err(); cerr != nil {
-			return cerr
-		}
-	}
+// Failed moves a job to the failed queue
+func (m *MemoryDriver) Failed(job Job, err error, queueName string) error {
 	wrapper, serr := createJobWrapper(job, queueName)
 	if serr != nil {
 		return serr
@@ -669,13 +638,6 @@ func (m *MemoryDriver) FailedCtx(ctx context.Context, job Job, err error, queueN
 	job.Failed(err)
 
 	return nil
-}
-
-// Failed moves a job to the failed queue.
-//
-// Deprecated: use FailedCtx with a request-scoped context.Context.
-func (m *MemoryDriver) Failed(job Job, err error, queueName string) error {
-	return m.FailedCtx(context.Background(), job, err, queueName)
 }
 
 // GetFailed returns all failed jobs for a queue

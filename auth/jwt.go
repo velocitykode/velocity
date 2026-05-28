@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
@@ -613,20 +612,7 @@ func (j *JWTManager) ValidateToken(tokenString string) (*Claims, error) {
 // H-07 fix uses this to invalidate every outstanding refresh token on
 // Logout: bumping the counter immediately stales all prior refresh
 // tokens for that user, without writing each JTI to a blacklist.
-//
-// Deprecated: use RefreshTokenCtx with a request-scoped context.Context so
-// the UserProvider lookup honours request cancellation.
 func (j *JWTManager) RefreshToken(refreshTokenString string, provider UserProvider) (string, error) {
-	return j.RefreshTokenCtx(context.Background(), refreshTokenString, provider)
-}
-
-// RefreshTokenCtx is the context-aware variant of RefreshToken. The ctx is
-// threaded into the UserProvider.FindByIDCtx call so a slow IDP/DB lookup
-// can be cancelled when the request context is cancelled. The semantics are
-// otherwise identical to RefreshToken: ErrRefreshGenerationStale on a
-// rotated generation, ValidateToken errors on a malformed refresh token,
-// and provider-surfaced errors on a missing user.
-func (j *JWTManager) RefreshTokenCtx(ctx context.Context, refreshTokenString string, provider UserProvider) (string, error) {
 	// Validate refresh token
 	claims, err := j.ValidateToken(refreshTokenString)
 	if err != nil {
@@ -652,7 +638,7 @@ func (j *JWTManager) RefreshTokenCtx(ctx context.Context, refreshTokenString str
 	}
 
 	// Get user
-	user, err := provider.FindByIDCtx(ctx, claims.UserID)
+	user, err := provider.FindByID(claims.UserID)
 	if err != nil {
 		return "", err
 	}

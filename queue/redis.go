@@ -352,24 +352,19 @@ func (r *RedisDriver) quarantinePoisonedPayload(ctx context.Context, queueName, 
 	return nil, tc, errors.Join(ErrPoisonJob, poisonErr)
 }
 
-// SizeCtx returns the number of jobs in the queue, threading the caller's
-// ctx through the Redis LLEN + ZCARD round-trips so a slow node can be
-// preempted on request cancellation.
-func (r *RedisDriver) SizeCtx(ctx context.Context, queueName string) (int64, error) {
-	if ctx == nil {
-		ctx = r.ctx
-	}
+// Size returns the number of jobs in the queue
+func (r *RedisDriver) Size(queueName string) (int64, error) {
 	queueKey := r.getQueueKey(queueName)
 	delayedKey := r.getDelayedKey(queueName)
 
 	// Get the size of the main queue
-	mainSize, err := r.client.LLen(ctx, queueKey).Result()
+	mainSize, err := r.client.LLen(r.ctx, queueKey).Result()
 	if err != nil {
 		return 0, err
 	}
 
 	// Get the size of the delayed queue
-	delayedSize, err := r.client.ZCard(ctx, delayedKey).Result()
+	delayedSize, err := r.client.ZCard(r.ctx, delayedKey).Result()
 	if err != nil {
 		return mainSize, nil // Return main size even if delayed fails
 	}
@@ -377,45 +372,23 @@ func (r *RedisDriver) SizeCtx(ctx context.Context, queueName string) (int64, err
 	return mainSize + delayedSize, nil
 }
 
-// Size returns the number of jobs in the queue.
-//
-// Deprecated: use SizeCtx with a request-scoped context.Context.
-func (r *RedisDriver) Size(queueName string) (int64, error) {
-	return r.SizeCtx(r.ctx, queueName)
-}
-
-// ClearCtx removes all jobs from the queue, threading ctx through the
-// pipelined DEL so a slow node can be preempted on request cancellation.
-func (r *RedisDriver) ClearCtx(ctx context.Context, queueName string) error {
-	if ctx == nil {
-		ctx = r.ctx
-	}
+// Clear removes all jobs from the queue
+func (r *RedisDriver) Clear(queueName string) error {
 	queueKey := r.getQueueKey(queueName)
 	delayedKey := r.getDelayedKey(queueName)
 	failedKey := r.getFailedKey(queueName)
 
 	pipe := r.client.Pipeline()
-	pipe.Del(ctx, queueKey)
-	pipe.Del(ctx, delayedKey)
-	pipe.Del(ctx, failedKey)
+	pipe.Del(r.ctx, queueKey)
+	pipe.Del(r.ctx, delayedKey)
+	pipe.Del(r.ctx, failedKey)
 
-	_, err := pipe.Exec(ctx)
+	_, err := pipe.Exec(r.ctx)
 	return err
 }
 
-// Clear removes all jobs from the queue.
-//
-// Deprecated: use ClearCtx with a request-scoped context.Context.
-func (r *RedisDriver) Clear(queueName string) error {
-	return r.ClearCtx(r.ctx, queueName)
-}
-
-// FailedCtx moves a job to the failed queue, threading ctx through the
-// Redis RPUSH round-trip.
-func (r *RedisDriver) FailedCtx(ctx context.Context, job Job, err error, queueName string) error {
-	if ctx == nil {
-		ctx = r.ctx
-	}
+// Failed moves a job to the failed queue
+func (r *RedisDriver) Failed(job Job, err error, queueName string) error {
 	failedKey := r.getFailedKey(queueName)
 
 	payload, serr := SerializeJob(job, queueName)
@@ -436,7 +409,7 @@ func (r *RedisDriver) FailedCtx(ctx context.Context, job Job, err error, queueNa
 	}
 
 	// Store in failed queue
-	if pusherr := r.client.RPush(ctx, failedKey, data).Err(); pusherr != nil {
+	if pusherr := r.client.RPush(r.ctx, failedKey, data).Err(); pusherr != nil {
 		return pusherr
 	}
 
@@ -444,13 +417,6 @@ func (r *RedisDriver) FailedCtx(ctx context.Context, job Job, err error, queueNa
 	job.Failed(err)
 
 	return nil
-}
-
-// Failed moves a job to the failed queue.
-//
-// Deprecated: use FailedCtx with a request-scoped context.Context.
-func (r *RedisDriver) Failed(job Job, err error, queueName string) error {
-	return r.FailedCtx(r.ctx, job, err, queueName)
 }
 
 // moveDelayedJobs moves ready delayed jobs to the main queue. The supplied
@@ -531,12 +497,23 @@ func (r *RedisDriver) moveDelayedJobs(ctx context.Context, queueName string) err
 }
 
 // Shutdown closes the Redis connection, honoring the context deadline.
+//
+// Idempotent per the contract.ShutdownAware contract: a second call after
+// the underlying client is already closed returns nil rather than the
+// "redis: client is closed" error the go-redis library raises on
+// double-close. The provider registry and App.Shutdown invoke this in
+// reverse order and may call it on retry paths; treating "already closed"
+// as success keeps the contract clean.
 func (r *RedisDriver) Shutdown(ctx context.Context) error {
 	// The batch repository is process-wide (see queue/batch_repository.go)
 	// and is owned by the app, not the queue driver. We no longer close
 	// it here so sibling drivers (e.g. apps that fan out to multiple
 	// Redis hosts) keep working after one driver shuts down.
-	return r.client.Close()
+	err := r.client.Close()
+	if err != nil && errors.Is(err, redis.ErrClosed) {
+		return nil
+	}
+	return err
 }
 
 // redisDedupePushScript is the Lua source for the at-most-once enqueue.

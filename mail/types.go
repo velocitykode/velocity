@@ -7,7 +7,10 @@ import (
 	"strings"
 )
 
-// Mailer interface that all mail drivers must implement
+// Mailer interface that all mail drivers must implement.
+//
+// Implementations must pass mailtest.RunDriverContractTests. See mailtest
+// for the executable specification.
 type Mailer interface {
 	Send(ctx context.Context, msg *Message) error
 }

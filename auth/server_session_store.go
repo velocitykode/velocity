@@ -86,6 +86,9 @@ type SessionMeta struct {
 // per-request serialization, while ServerSessionStore underwrites
 // administrative operations like "log out every device" and "list my
 // active sessions". Implementations must be safe for concurrent use.
+//
+// Implementations must pass authtest.RunServerSessionStoreContractTests.
+// See authtest for the executable specification.
 type ServerSessionStore interface {
 	// Get returns the StoredSession for id. Returns ErrSessionNotFound
 	// when no record exists; returns ErrSessionExpired (and removes the

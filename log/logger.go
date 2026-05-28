@@ -21,7 +21,10 @@ const (
 	FATAL
 )
 
-// Logger defines the interface for all log implementations
+// Logger defines the interface for all log implementations.
+//
+// Implementations must pass logtest.RunLoggerContractTests. See logtest
+// for the executable specification.
 type Logger interface {
 	Debug(msg string, kvs ...any)
 	Info(msg string, kvs ...any)
