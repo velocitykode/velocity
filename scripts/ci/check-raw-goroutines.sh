@@ -41,6 +41,11 @@
 # Exclusions:
 #
 #   - _test.go: descriptive goroutines in tests are fine
+#   - <pkg>test/ contract-test runner packages (e.g. queuetest, cachetest,
+#     schedulertest): test infrastructure imported by both framework and
+#     third parties. Treated as test-only code, same policy as *_test.go.
+#     Matched via --exclude-dir='*test'; does NOT match `testing/`
+#     (ends in `ing`).
 #   - async/: canonical panic-safe primitives, raw goroutines are the
 #     implementation, not the policy violation
 #   - router/event_dispatcher.go: safeInvokeListener wraps every
@@ -64,6 +69,7 @@ OFFENDERS=$(
 		--include='*.go' \
 		--exclude='*_test.go' \
 		--exclude-dir=async \
+		--exclude-dir='*test' \
 		. 2>/dev/null \
 	| grep -v 'router/event_dispatcher\.go' \
 	| grep -vE '//safe-goroutine:[[:space:]]+.{5,}' \
