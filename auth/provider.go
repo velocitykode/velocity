@@ -39,9 +39,12 @@ func (p *ORMUserProvider) FindByIDCtx(ctx context.Context, id interface{}) (Auth
 		return nil, errors.New("database not initialized")
 	}
 
-	var user AuthUser
-	row := p.db.QueryRowContext(ctx, "SELECT id, name, email, password FROM users WHERE id = $1", id)
-	err := row.Scan(&user.ID, &user.Name, &user.Email, &user.Password)
+	var (
+		user     AuthUser
+		remember sql.NullString
+	)
+	row := p.db.QueryRowContext(ctx, "SELECT id, name, email, password, remember_token FROM users WHERE id = $1", id)
+	err := row.Scan(&user.ID, &user.Name, &user.Email, &user.Password, &remember)
 	if err == sql.ErrNoRows {
 		return nil, ErrUserNotFound
 	}
@@ -49,6 +52,7 @@ func (p *ORMUserProvider) FindByIDCtx(ctx context.Context, id interface{}) (Auth
 		return nil, err
 	}
 	user.ID = normalizeID(user.ID)
+	user.RememberToken = remember.String
 
 	return &user, nil
 }
@@ -72,9 +76,12 @@ func (p *ORMUserProvider) FindByCredentialsCtx(ctx context.Context, credentials 
 		return nil, errors.New("database not initialized")
 	}
 
-	var user AuthUser
-	row := p.db.QueryRowContext(ctx, "SELECT id, name, email, password FROM users WHERE email = $1", email)
-	err := row.Scan(&user.ID, &user.Name, &user.Email, &user.Password)
+	var (
+		user     AuthUser
+		remember sql.NullString
+	)
+	row := p.db.QueryRowContext(ctx, "SELECT id, name, email, password, remember_token FROM users WHERE email = $1", email)
+	err := row.Scan(&user.ID, &user.Name, &user.Email, &user.Password, &remember)
 	if err == sql.ErrNoRows {
 		return nil, ErrUserNotFound
 	}
@@ -82,6 +89,7 @@ func (p *ORMUserProvider) FindByCredentialsCtx(ctx context.Context, credentials 
 		return nil, err
 	}
 	user.ID = normalizeID(user.ID)
+	user.RememberToken = remember.String
 
 	return &user, nil
 }

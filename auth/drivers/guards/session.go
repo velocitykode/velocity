@@ -661,16 +661,27 @@ func (g *SessionGuard) Login(w http.ResponseWriter, r *http.Request, user auth.A
 	// Store user ID in session
 	session.Put("user_id", user.GetAuthIdentifier())
 
-	// Handle remember me
-	if len(remember) > 0 && remember[0] {
-		if err := g.setRememberCookie(w, user); err != nil {
-			return err
-		}
-	}
-
-	// Save session
+	// Save the session BEFORE handling remember-me. The session id has
+	// already been regenerated and the CSRF token rotated (with the new
+	// XSRF-TOKEN cookie written) above. If a remember-cookie write failed
+	// before Save, the client would be left holding an XSRF-TOKEN cookie
+	// bound to a session id that was never persisted and a CSRF store
+	// rotated off the live session, so the very next request would 419.
+	// Persisting first keeps login atomic with respect to the rotation.
 	if err := session.Save(w); err != nil {
 		return err
+	}
+
+	// Handle remember me as best-effort. A failure here (e.g. the users
+	// table lacks a remember_token column, the provider cannot persist,
+	// or the identifier cannot be encoded) must NOT fail an otherwise-
+	// successful login, and must not undo the already-committed session
+	// and CSRF rotation. Log and continue: the user is authenticated for
+	// this session, just not recalled across a new one.
+	if len(remember) > 0 && remember[0] {
+		if err := g.setRememberCookie(w, user); err != nil {
+			g.logWarn("velocity/auth: remember-me cookie not set; login still succeeded", "error", err)
+		}
 	}
 
 	g.recordServerSession(r, session, user)
@@ -1206,10 +1217,13 @@ func (g *SessionGuard) setRememberCookie(w http.ResponseWriter, user auth.Authen
 	}
 
 	// Create cookie value: userID|token (raw token; cookie is encrypted).
-	userID, ok := user.GetAuthIdentifier().(string)
-	if !ok {
-		return fmt.Errorf("velocity/auth: expected string user identifier, got %T", user.GetAuthIdentifier())
-	}
+	// GetAuthIdentifier returns interface{}: a uint for the default
+	// integer primary key (ORMUserProvider.normalizeID) and a string for
+	// UUID keys. Encode whatever it is as a string so both round-trip;
+	// checkRememberCookie reads it back and hands it to FindByID, which
+	// accepts either form. A bare .(string) assertion here silently broke
+	// remember-me for every integer-PK app (the default shape).
+	userID := fmt.Sprint(user.GetAuthIdentifier())
 	value := userID + "|" + token
 
 	// Encrypt value

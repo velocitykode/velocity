@@ -121,6 +121,52 @@ func TestSetRememberCookie_StoresHashedToken(t *testing.T) {
 	}
 }
 
+// uintIDUser mirrors a user loaded from an integer primary key, where
+// ORMUserProvider.normalizeID hands back a uint (not a string). This is
+// the default app shape; a prior bare .(string) assertion in
+// setRememberCookie failed here and silently broke remember-me.
+type uintIDUser struct {
+	id            uint
+	password      string
+	rememberToken string
+}
+
+func (u *uintIDUser) GetAuthIdentifier() interface{} { return u.id }
+func (u *uintIDUser) GetAuthPassword() string        { return u.password }
+func (u *uintIDUser) GetRememberToken() string       { return u.rememberToken }
+func (u *uintIDUser) SetRememberToken(tok string)    { u.rememberToken = tok }
+
+func TestSetRememberCookie_NonStringIdentifier(t *testing.T) {
+	enc := newRememberEncryptor(t)
+	provider := &mockRememberProvider{}
+	g := &SessionGuard{
+		config:    auth.SessionConfig{Name: "sess", Lifetime: 60},
+		encryptor: enc,
+	}
+	g.provider.Store(&providerHolder{p: provider})
+	g.throttler.Store(&throttlerHolder{t: auth.NoopLoginThrottler{}})
+
+	user := &uintIDUser{id: 42}
+	w := httptest.NewRecorder()
+
+	if err := g.setRememberCookie(w, user); err != nil {
+		t.Fatalf("setRememberCookie with uint identifier: %v", err)
+	}
+
+	cookies := w.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("expected 1 cookie, got %d", len(cookies))
+	}
+	decrypted, err := enc.Decrypt(cookies[0].Value)
+	if err != nil {
+		t.Fatalf("decrypt cookie: %v", err)
+	}
+	// Cookie value is "userID|token"; the uint id must round-trip as "42".
+	if id := strings.SplitN(decrypted, "|", 2)[0]; id != "42" {
+		t.Errorf("encoded user id = %q, want %q", id, "42")
+	}
+}
+
 func TestSetRememberCookie_RefusesZeroLifetime(t *testing.T) {
 	enc := newRememberEncryptor(t)
 	g := func() *SessionGuard {
