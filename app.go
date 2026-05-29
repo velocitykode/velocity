@@ -633,6 +633,26 @@ func New(opts ...Option) (*App, error) {
 		return router.ErrValidationAborted
 	})
 
+	// Wire the intended-redirect resolver: ctx.Intended pulls the URL that
+	// auth's denyUnauthenticated stashed under router.IntendedSessionKey
+	// before bouncing the unauthenticated request to a clean /login.
+	// Reading is one-shot so a later navigation cannot replay a stale
+	// destination. Uses guards.SessionFromRequest so router need not import
+	// auth (same bridge the CSRF resolver above uses).
+	a.Router.SetIntendedResolver(func(c *router.Context) string {
+		sess := guards.SessionFromRequest(c.Request)
+		if sess == nil {
+			return ""
+		}
+		raw, _ := sess.Get(router.IntendedSessionKey).(string)
+		if raw == "" {
+			return ""
+		}
+		sess.Remove(router.IntendedSessionKey)
+		_ = sess.Save(c.Response)
+		return raw
+	})
+
 	// 16. Initialize validator
 	a.Validator = validation.NewValidator()
 

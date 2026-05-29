@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 
@@ -83,13 +82,25 @@ func hashClientIP(manager *Manager, r *http.Request) string {
 	return hashRemoteAddr(r.RemoteAddr)
 }
 
-// wantsJSON returns true if the request expects a JSON response.
+// wantsJSON returns true if the request negotiates a JSON response via its
+// Accept header. We deliberately do NOT key on X-Requested-With:
+// XMLHttpRequest: that is a legacy, client-spoofable jQuery convention, not
+// content negotiation, and it would misclassify Inertia.js visits (which
+// are XHR but expect an HTML/redirect response). An API client that wants
+// JSON must say so with Accept: application/json.
 func wantsJSON(r *http.Request) bool {
-	if r.Header.Get("X-Requested-With") == "XMLHttpRequest" {
-		return true
-	}
-	accept := r.Header.Get("Accept")
-	return strings.Contains(accept, "application/json")
+	return strings.Contains(r.Header.Get("Accept"), "application/json")
+}
+
+// isInertia reports whether the request is an Inertia.js XHR visit. Used
+// only by denyForbidden: a forbidden response has no redirect target, and a
+// bare 403 body would make the Inertia client throw "All Inertia requests
+// must receive a valid Inertia response", so that path emits an
+// X-Inertia-Location full reload instead. The redirecting deny paths
+// (guest, unauthenticated) need no Inertia check: Inertia sends
+// Accept: text/html, so wantsJSON is already false and they redirect.
+func isInertia(r *http.Request) bool {
+	return r.Header.Get("X-Inertia") == "true"
 }
 
 // denyUnauthenticated returns a 401 JSON response for API requests or redirects
@@ -100,18 +111,25 @@ func denyUnauthenticated(manager *Manager, c *router.Context) error {
 	if wantsJSON(c.Request) {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthenticated."})
 	}
-	redirectURL := c.Request.URL.Path
-	if c.Request.URL.RawQuery != "" {
-		redirectURL += "?" + c.Request.URL.RawQuery
+	// Intended stash: remember the originally requested URL server-side in
+	// the session, then bounce to a clean /login. The URL bar never exposes
+	// the destination and an attacker cannot inject one via ?redirect=.
+	// ctx.RedirectToIntended pulls it back after login.
+	//
+	// Only stash safe GET navigations (Inertia visits are GET). A POST/PUT
+	// that lands here lost its body to the redirect anyway, and stashing it
+	// would replay the wrong intent after login.
+	if c.Request.Method == http.MethodGet {
+		if sess := manager.Session(c.Request); sess != nil {
+			redirectURL := c.Request.URL.Path
+			if c.Request.URL.RawQuery != "" {
+				redirectURL += "?" + c.Request.URL.RawQuery
+			}
+			sess.Put(router.IntendedSessionKey, redirectURL)
+			_ = sess.Save(c.Response)
+		}
 	}
-	escapedURL := url.QueryEscape(redirectURL)
-	// router.IntendedRedirectQueryKey is the canonical query key the
-	// consumer side (ctx.Intended / ctx.RedirectToIntended) reads from.
-	// Keeping the name centralised in router/ closes the gap where a
-	// login handler that hand-rolled "?redirect=..." would silently
-	// stop honouring the post-login destination if the key ever
-	// changes.
-	return c.Redirect(http.StatusSeeOther, "/login?"+router.IntendedRedirectQueryKey+"="+escapedURL)
+	return c.Redirect(http.StatusSeeOther, "/login")
 }
 
 // denyForbidden returns a 403 JSON response for API requests or a plain 403
@@ -119,6 +137,15 @@ func denyUnauthenticated(manager *Manager, c *router.Context) error {
 // installed.
 func denyForbidden(manager *Manager, c *router.Context) error {
 	manager.logWarn("velocity/auth: authorization denied", "method", c.Request.Method, "path", c.Request.URL.Path, "ip_hash", hashClientIP(manager, c.Request))
+	if isInertia(c.Request) {
+		// No redirect target fits a forbidden response, and a bare 403
+		// body would make the Inertia client throw. Force a full-page
+		// reload of the current URL (bond's X-Inertia-Location idiom) so
+		// the browser renders the real 403 as a document instead.
+		c.Response.Header().Set("X-Inertia-Location", c.Request.URL.String())
+		c.Response.WriteHeader(http.StatusConflict)
+		return nil
+	}
 	if wantsJSON(c.Request) {
 		return c.JSON(http.StatusForbidden, map[string]string{"error": "Forbidden."})
 	}
@@ -242,6 +269,7 @@ func GuestMiddlewareWithRedirect(manager *Manager, redirectTo string) router.Mid
 				if wantsJSON(c.Request) {
 					return c.JSON(http.StatusForbidden, map[string]string{"error": "Already authenticated."})
 				}
+				// Browser/Inertia: redirect (Inertia follows as a fresh visit).
 				return c.Redirect(http.StatusSeeOther, redirectTo)
 			}
 			return next(c)

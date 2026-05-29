@@ -101,8 +101,11 @@ func TestAuthMiddleware_RedirectsUnauthenticated(t *testing.T) {
 	if loc == "" {
 		t.Fatal("expected Location header for redirect")
 	}
-	if loc != "/login?redirect=%2Fdashboard" {
-		t.Errorf("Location = %q, want /login?redirect=%%2Fdashboard", loc)
+	// The destination is stashed server-side in the session (when one
+	// exists) and the browser is bounced to a clean /login. The URL no
+	// longer carries a ?redirect= query.
+	if loc != "/login" {
+		t.Errorf("Location = %q, want /login", loc)
 	}
 }
 
@@ -138,7 +141,13 @@ func TestAuthMiddleware_ReturnsJSONForAPIRequests(t *testing.T) {
 	}
 }
 
-func TestAuthMiddleware_ReturnsJSONForXHR(t *testing.T) {
+// TestAuthMiddleware_XHRWithoutJSONAcceptRedirects pins the content-
+// negotiation contract: a bare X-Requested-With XHR (no Accept: json) is
+// NOT treated as a JSON client. X-Requested-With is a legacy, spoofable
+// convention, not content negotiation, so the request falls to the browser
+// branch and is redirected to /login. An API client must send
+// Accept: application/json to get a 401 JSON body.
+func TestAuthMiddleware_XHRWithoutJSONAcceptRedirects(t *testing.T) {
 	m := newManagerWithGuard(false)
 	mw := AuthMiddleware(m)
 
@@ -152,21 +161,34 @@ func TestAuthMiddleware_ReturnsJSONForXHR(t *testing.T) {
 	r.Header.Set("X-Requested-With", "XMLHttpRequest")
 	c := router.NewContext(w, r)
 
-	err := handler(c)
-	if err != nil {
+	if err := handler(c); err != nil {
 		t.Fatalf("handler returned error: %v", err)
 	}
-
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	if w.Code != http.StatusSeeOther {
+		t.Errorf("status = %d, want %d (X-Requested-With alone is not JSON)", w.Code, http.StatusSeeOther)
+	}
+	if loc := w.Header().Get("Location"); loc != "/login" {
+		t.Errorf("Location = %q, want /login", loc)
 	}
 }
 
-func TestAuthMiddleware_PreservesQueryParams(t *testing.T) {
-	m := newManagerWithGuard(false)
+// sessionAwareGuard is a mock guard that also satisfies SessionAware so
+// manager.Session(r) returns a real session the stash path can write to.
+type sessionAwareGuard struct {
+	mockGuardForMiddleware
+	sess Session
+}
+
+func (g *sessionAwareGuard) Session(*http.Request) Session { return g.sess }
+
+func TestAuthMiddleware_StashesIntendedInSession(t *testing.T) {
+	sess := NewSession("sid")
+	m := NewManager()
+	m.RegisterGuard("web", &sessionAwareGuard{mockGuardForMiddleware{authenticated: false}, sess})
 	mw := AuthMiddleware(m)
 
 	handler := mw(func(c *router.Context) error {
+		t.Error("next handler should not be called")
 		return nil
 	})
 
@@ -175,15 +197,19 @@ func TestAuthMiddleware_PreservesQueryParams(t *testing.T) {
 	r.Header.Set("Accept", "text/html")
 	c := router.NewContext(w, r)
 
-	err := handler(c)
-	if err != nil {
+	if err := handler(c); err != nil {
 		t.Fatalf("handler returned error: %v", err)
 	}
 
-	loc := w.Header().Get("Location")
-	expected := "/login?redirect=%2Fsettings%3Ftab%3Dprofile%26page%3D2"
-	if loc != expected {
-		t.Errorf("Location = %q, want %q", loc, expected)
+	// The browser is bounced to a clean /login: the destination no longer
+	// leaks into the URL as a ?redirect= query.
+	if loc := w.Header().Get("Location"); loc != "/login" {
+		t.Errorf("Location = %q, want /login (no ?redirect= leak)", loc)
+	}
+	// The full path+query is preserved server-side in the session instead.
+	got, _ := sess.Get(router.IntendedSessionKey).(string)
+	if got != "/settings?tab=profile&page=2" {
+		t.Errorf("stashed intended = %q, want /settings?tab=profile&page=2", got)
 	}
 }
 
@@ -723,6 +749,87 @@ func TestGuestMiddleware_ReturnsForbiddenForJSON(t *testing.T) {
 	}
 	if body["error"] != "Already authenticated." {
 		t.Errorf("error = %q, want %q", body["error"], "Already authenticated.")
+	}
+}
+
+// setInertia marks a request as an Inertia.js XHR visit: X-Inertia plus the
+// Accept: text/html that real Inertia clients send (so wantsJSON is false).
+// These requests must get a redirect/409, never a bare JSON or 403 body the
+// client cannot render.
+func setInertia(r *http.Request) {
+	r.Header.Set("X-Inertia", "true")
+	r.Header.Set("X-Requested-With", "XMLHttpRequest")
+	r.Header.Set("Accept", "text/html, application/xhtml+xml")
+}
+
+func TestGuestMiddleware_InertiaRedirectsInsteadOfJSON(t *testing.T) {
+	m := newManagerWithGuard(true)
+	handler := GuestMiddlewareWithRedirect(m, "/dashboard")(func(c *router.Context) error {
+		t.Error("next handler should not be called")
+		return nil
+	})
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/login", nil)
+	setInertia(r)
+	c := router.NewContext(w, r)
+
+	if err := handler(c); err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if w.Code != http.StatusSeeOther {
+		t.Errorf("status = %d, want %d (Inertia must redirect, not 403 JSON)", w.Code, http.StatusSeeOther)
+	}
+	if loc := w.Header().Get("Location"); loc != "/dashboard" {
+		t.Errorf("Location = %q, want /dashboard", loc)
+	}
+}
+
+func TestAuthMiddleware_InertiaRedirectsToLogin(t *testing.T) {
+	m := newManagerWithGuard(false)
+	handler := AuthMiddleware(m)(func(c *router.Context) error {
+		t.Error("next handler should not be called")
+		return nil
+	})
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/dashboard", nil)
+	setInertia(r)
+	c := router.NewContext(w, r)
+
+	if err := handler(c); err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if w.Code != http.StatusSeeOther {
+		t.Errorf("status = %d, want %d (Inertia must redirect, not 401 JSON)", w.Code, http.StatusSeeOther)
+	}
+	if loc := w.Header().Get("Location"); loc != "/login" {
+		t.Errorf("Location = %q, want /login", loc)
+	}
+}
+
+func TestDenyForbidden_InertiaEmitsLocationReload(t *testing.T) {
+	m := newManagerWithUser(&mockUser{id: "u1"})
+	handler := RequireRole(m, "admin")(func(c *router.Context) error {
+		t.Error("next handler should not be called")
+		return nil
+	})
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/admin", nil)
+	setInertia(r)
+	c := router.NewContext(w, r)
+
+	if err := handler(c); err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	// A bare 403 body would make the Inertia client throw. Instead a 409 +
+	// X-Inertia-Location forces a full-page reload of the current URL.
+	if w.Code != http.StatusConflict {
+		t.Errorf("status = %d, want %d (Inertia forbidden must be a 409 reload)", w.Code, http.StatusConflict)
+	}
+	if loc := w.Header().Get("X-Inertia-Location"); loc == "" {
+		t.Error("expected X-Inertia-Location header on Inertia 403")
 	}
 }
 

@@ -97,6 +97,10 @@ type Context struct {
 	// by the router, the context never closes it.
 	fileRoot   *os.Root
 	validateFn func(c *Context, rules map[string][]string, messages ...map[string]string) error
+	// intendedFn pulls the post-login "intended" URL from the session.
+	// Wired during app init via Router.SetIntendedResolver so router need
+	// not import auth. Returns "" when nothing is stashed.
+	intendedFn func(c *Context) string
 }
 
 // NewContext creates a new Context from http.Request and http.ResponseWriter.
@@ -362,32 +366,29 @@ func (c *Context) Redirect(status int, rawURL string) error {
 	return nil
 }
 
-// IntendedRedirectQueryKey is the request query parameter name used by
-// auth middleware (and any other gate that wants to "remember" the
-// originally requested URL) to stash the destination for post-login
-// redirection. Centralising the name here keeps producer (auth's
-// /login?redirect=...) and consumer (ctx.Intended) in sync, and makes
-// the value available to packages outside auth without an import cycle.
-const IntendedRedirectQueryKey = "redirect"
+// IntendedSessionKey is the session-bag key under which auth middleware
+// stashes the originally requested URL before bouncing an unauthenticated
+// browser to a clean /login. Centralising the name here keeps the producer
+// (auth's denyUnauthenticated) and the consumer (ctx.Intended, via the
+// wired intendedFn resolver) in sync without an import cycle.
+const IntendedSessionKey = "url.intended"
 
 // Intended returns the safe redirect target for the "intended" post-login
 // destination, falling back to fallback when no such target is set or
 // when the stored value fails open-redirect validation.
 //
-// Resolution order:
-//
-//  1. The query parameter named by IntendedRedirectQueryKey (default
-//     "redirect"). This is the value auth middleware writes when it
-//     bounces an unauthenticated browser through /login?redirect=...
-//  2. fallback, if the stored value is missing, empty, or rejected by
-//     the same open-redirect sanitiser that gates ctx.Redirect.
+// The destination is read (and consumed) from the session via the
+// resolver wired by Router.SetIntendedResolver during app init: auth
+// middleware stashed it under IntendedSessionKey when it bounced the
+// unauthenticated request to /login. Reading is one-shot (pull): the
+// resolver removes the key so a later navigation does not replay a stale
+// destination. When no resolver is wired or nothing was stashed, fallback
+// is used.
 //
 // The returned string is ALWAYS safe to pass straight to ctx.Redirect:
 // it has been validated through the router's allowlist + scheme +
-// slash-lookalike pipeline (see sanitizeRedirect). Callers MUST NOT
-// concatenate user input into the result without re-sanitizing, but
-// the canonical caller is ctx.RedirectToIntended which handles this
-// internally.
+// slash-lookalike pipeline (see sanitizeRedirect). The canonical caller
+// is ctx.RedirectToIntended.
 //
 // Contract:
 //   - Safe relative paths ("/dashboard", "/admin/users") pass through.
@@ -395,12 +396,15 @@ const IntendedRedirectQueryKey = "redirect"
 //     back to fallback.
 //   - Backslash and Unicode-slash lookalikes ("/\evil", "/／evil") fall
 //     back to fallback.
-//   - Empty / missing query param falls back to fallback.
+//   - No stashed value (or no resolver wired) falls back to fallback.
 //   - fallback itself is also sanitised so a buggy caller cannot
 //     introduce its own open redirect via the fallback string.
 func (c *Context) Intended(fallback string) string {
 	fallback = sanitizeRedirect(fallback, c.redirectAllowedHosts)
-	raw := c.Request.URL.Query().Get(IntendedRedirectQueryKey)
+	if c.intendedFn == nil {
+		return fallback
+	}
+	raw := c.intendedFn(c)
 	if raw == "" {
 		return fallback
 	}
@@ -504,6 +508,7 @@ func (c *Context) reset() {
 	c.redirectAllowedHosts = nil
 	c.fileRoot = nil
 	c.validateFn = nil
+	c.intendedFn = nil
 }
 
 // IsAjax returns true if the request is an AJAX request

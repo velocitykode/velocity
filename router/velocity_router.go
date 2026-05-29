@@ -123,6 +123,11 @@ type VelocityRouterV2 struct {
 	// validateFn is wired during app init to run validation with DB support.
 	validateFn func(c *Context, rules map[string][]string, messages ...map[string]string) error
 
+	// intendedFn is wired during app init to pull the "intended" post-login
+	// URL from the session (auth's denyUnauthenticated stashes it). Lets
+	// ctx.Intended read the session without router importing auth.
+	intendedFn func(c *Context) string
+
 	// signedURLKey holds the HKDF-derived HMAC subkey used by
 	// SignedURL / ValidateSignature. Populated by SetSignedURLKey
 	// during velocity.New() after APP_KEY is loaded; nil when the
@@ -185,6 +190,15 @@ func (r *VelocityRouterV2) AllowedRedirectHosts() []string {
 // SetValidator sets the validation function used by ctx.Validate().
 func (r *VelocityRouterV2) SetValidator(fn func(c *Context, rules map[string][]string, messages ...map[string]string) error) {
 	r.validateFn = fn
+}
+
+// SetIntendedResolver wires the resolver ctx.Intended uses to pull the
+// post-login "intended" URL from the session. The resolver must read the
+// IntendedSessionKey value, remove it (one-shot), persist the session, and
+// return the URL (or "" when none). Wired during velocity.New() so router
+// need not import auth.
+func (r *VelocityRouterV2) SetIntendedResolver(fn func(c *Context) string) {
+	r.intendedFn = fn
 }
 
 // SetFileRoot configures the absolute directory under which Context.File,
@@ -723,6 +737,7 @@ func (r *VelocityRouterV2) handleNotFound(rw *responseWriter, req *http.Request,
 	ctx.redirectAllowedHosts = r.RedirectAllowedHosts
 	ctx.fileRoot = r.FileRootHandle()
 	ctx.validateFn = r.validateFn
+	ctx.intendedFn = r.intendedFn
 
 	var handlerErr error
 	defer func() {
@@ -798,6 +813,7 @@ func (r *VelocityRouterV2) acquireContext(rw *responseWriter, req *http.Request,
 	ctx.redirectAllowedHosts = r.RedirectAllowedHosts
 	ctx.fileRoot = r.FileRootHandle()
 	ctx.validateFn = r.validateFn
+	ctx.intendedFn = r.intendedFn
 
 	if result.segments != nil {
 		ctx.params = ctx.params[:0]
