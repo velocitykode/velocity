@@ -3,7 +3,6 @@ package queue
 import (
 	"context"
 	"fmt"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -322,11 +321,4 @@ func benchmarkDriver(b *testing.B, driver Driver) {
 		b.StopTimer()
 		driver.Clear("bench-queue")
 	})
-}
-
-func getEnvOrDefault(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
 }
