@@ -135,77 +135,27 @@ func TestCheckData_Invalid(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// CheckWithDB(), without a real DB (nil), only non-DB rules are tested
-// ---------------------------------------------------------------------------
-
-func TestCheckWithDB_NilDB(t *testing.T) {
+// TestCheck_BothFormsConverge confirms that PipeRules->NewRules path and a
+// hand-written slice literal produce identical validation outcomes.
+func TestCheck_BothFormsConverge(t *testing.T) {
 	form := url.Values{}
-	form.Set("name", "Alice")
-	form.Set("email", "alice@example.com")
+	form.Set("name", "Al") // too short
+	r1 := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(form.Encode()))
+	r1.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r2 := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(form.Encode()))
+	r2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(form.Encode()))
-	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	slice := Rules{"name": {"required", "min:3"}}
+	pipe := NewRules(PipeRules{"name": "required|min:3"})
 
-	result := CheckWithDB(r, Rules{
-		"name":  {"required"},
-		"email": {"required|email"},
-	}, nil)
+	a := Check(r1, slice)
+	b := Check(r2, pipe)
 
-	if result.HasErrors() {
-		t.Fatalf("expected no errors, got: %v", result.All())
+	if a.HasErrors() != b.HasErrors() {
+		t.Fatalf("convergence mismatch: slice=%v pipe=%v", a.HasErrors(), b.HasErrors())
 	}
-}
-
-func TestCheckWithDB_NilDB_Invalid(t *testing.T) {
-	form := url.Values{}
-	form.Set("email", "bad")
-
-	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(form.Encode()))
-	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	result := CheckWithDB(r, Rules{
-		"name":  {"required"},
-		"email": {"required|email"},
-	}, nil)
-
-	if !result.HasErrors() {
-		t.Fatal("expected errors")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// CheckDataWithDB() tests
-// ---------------------------------------------------------------------------
-
-func TestCheckDataWithDB_NilDB_Valid(t *testing.T) {
-	data := map[string]interface{}{
-		"name": "Alice",
-	}
-
-	result := CheckDataWithDB(data, Rules{
-		"name": {"required|min:3"},
-	}, nil)
-
-	if result.HasErrors() {
-		t.Fatalf("expected no errors, got: %v", result.All())
-	}
-}
-
-func TestCheckDataWithDB_NilDB_Invalid(t *testing.T) {
-	data := map[string]interface{}{
-		"name": "Al",
-	}
-
-	result := CheckDataWithDB(data, Rules{
-		"name": {"required|min:3"},
-	}, nil)
-
-	if !result.HasErrors() {
-		t.Fatal("expected errors")
-	}
-	if result.First("name") == "" {
-		t.Error("expected error for name")
+	if a.First("name") != b.First("name") {
+		t.Errorf("messages diverge: slice=%q pipe=%q", a.First("name"), b.First("name"))
 	}
 }
 

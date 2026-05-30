@@ -26,6 +26,7 @@ import (
 	"github.com/velocitykode/velocity/router"
 	"github.com/velocitykode/velocity/scheduler"
 	"github.com/velocitykode/velocity/validation"
+	"github.com/velocitykode/velocity/validation/dbrules"
 	"github.com/velocitykode/velocity/view"
 )
 
@@ -621,7 +622,7 @@ func New(opts ...Option) (*App, error) {
 		// path so http.MaxBytesReader can fire its requestTooLarge
 		// connection-close hint on oversized bodies (rule 5: limit all
 		// request body reads).
-		result := validation.CheckWithDBW(c.Response, c.Request, validation.Rules(rules), c.DB(), msgs...)
+		result := dbrules.CheckWithDBW(c.Response, c.Request, validation.Rules(rules), c.DB(), msgs...)
 		if !result.HasErrors() {
 			return nil
 		}

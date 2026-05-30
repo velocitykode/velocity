@@ -2,14 +2,11 @@ package validation
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"strings"
-
-	"github.com/velocitykode/velocity/orm"
 )
 
 // DefaultMaxBodyBytes is the hard cap applied to JSON / form bodies the
@@ -36,51 +33,55 @@ func Check(r *http.Request, rules Rules, messages ...Messages) *Result {
 // a sentinel field-level error on oversized body (rather than truncating
 // silently the way io.LimitReader did).
 func CheckW(w http.ResponseWriter, r *http.Request, rules Rules, messages ...Messages) *Result {
-	data, bodyErr := extractRequestDataW(w, r, DefaultMaxBodyBytes)
-	if bodyErr != nil {
-		return resultForBodyError(bodyErr)
-	}
-	return run(r.Context(), data, rules, nil, messages...)
+	return CheckWithRulesW(w, r, rules, nil, messages...)
 }
 
 // CheckData validates a pre-extracted data map against rules.
 func CheckData(data map[string]interface{}, rules Rules, messages ...Messages) *Result {
-	return run(context.Background(), data, rules, nil, messages...)
+	return CheckDataWithRules(data, rules, nil, messages...)
 }
 
-// CheckWithDB validates request data with database rules (unique, exists) available.
-// The request's context is threaded into the database rules so unique/exists
-// queries are cancelled when the client disconnects or a timeout fires; this
-// prevents slow-query goroutine pile-up on the request hot path.
+// DB-backed validation (the unique / exists rules, plus the driver-error
+// mapper AsValidationError) now lives in the validation/dbrules subpackage so
+// this core package stays free of orm and SQL-driver dependencies. New code
+// should call the dbrules variants:
 //
-// Prefer CheckWithDBW(w, r, ...) when a *http.ResponseWriter is available.
-func CheckWithDB(r *http.Request, rules Rules, db orm.Database, messages ...Messages) *Result {
-	return CheckWithDBW(nil, r, rules, db, messages...)
-}
+//	validation.CheckWithDB      -> dbrules.CheckWithDB
+//	validation.CheckWithDBW     -> dbrules.CheckWithDBW
+//	validation.CheckDataWithDB  -> dbrules.CheckDataWithDB
+//	validation.CheckDataWithDBCtx -> dbrules.CheckDataWithDBCtx
+//	validation.UniqueRule/Ctx   -> dbrules.UniqueRule/Ctx
+//	validation.ExistsRule/Ctx   -> dbrules.ExistsRule/Ctx
+//	validation.AsValidationError -> dbrules.AsValidationError
+//
+// The old validation.* names are retained as DEPRECATED, orm-free
+// compatibility shims in dbrules_compat.go (they reach the database
+// structurally via reflection) so existing callers keep compiling and
+// working. See CHANGELOG "DB-backed validation API moved out of validation"
+// for the rationale (decoupling orm/driver deps from the core package).
 
-// CheckWithDBW is CheckWithDB plus a *http.ResponseWriter for MaxBytesReader
-// wiring. See CheckW for body-size handling.
-func CheckWithDBW(w http.ResponseWriter, r *http.Request, rules Rules, db orm.Database, messages ...Messages) *Result {
+// CheckWithRulesW is the engine behind DB-backed Check helpers that live in
+// subpackages (e.g. validation/dbrules) so the core validation package need
+// not import orm or a SQL driver. It extracts the request body via the same
+// MaxBytesReader-wrapped path as CheckW, then runs validation with the
+// supplied extra rule handlers registered on the validator.
+//
+// extra maps rule name -> handler; a nil or empty map runs the standard,
+// orm-free rule set only. Subpackages pass DB-backed handlers (unique,
+// exists) here so cancellation and quoting live with the orm dependency.
+func CheckWithRulesW(w http.ResponseWriter, r *http.Request, rules Rules, extra map[string]RuleHandler, messages ...Messages) *Result {
 	data, bodyErr := extractRequestDataW(w, r, DefaultMaxBodyBytes)
 	if bodyErr != nil {
 		return resultForBodyError(bodyErr)
 	}
-	return run(r.Context(), data, rules, db, messages...)
+	return runWithRules(data, rules, extra, messages...)
 }
 
-// CheckDataWithDB validates a data map with database rules available.
-func CheckDataWithDB(data map[string]interface{}, rules Rules, db orm.Database, messages ...Messages) *Result {
-	return run(context.Background(), data, rules, db, messages...)
-}
-
-// CheckDataWithDBCtx is like CheckDataWithDB but uses the caller-supplied
-// context for unique/exists query cancellation. Use this in non-HTTP code
-// paths (workers, jobs) that still need to validate against the DB.
-func CheckDataWithDBCtx(ctx context.Context, data map[string]interface{}, rules Rules, db orm.Database, messages ...Messages) *Result {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return run(ctx, data, rules, db, messages...)
+// CheckDataWithRules is the pre-extracted-data variant of CheckWithRulesW.
+// extra maps rule name -> handler; a nil or empty map runs the standard
+// rule set only.
+func CheckDataWithRules(data map[string]interface{}, rules Rules, extra map[string]RuleHandler, messages ...Messages) *Result {
+	return runWithRules(data, rules, extra, messages...)
 }
 
 // Result holds the outcome of a validation check.
@@ -166,18 +167,16 @@ func (r *Result) Old() map[string]interface{} {
 	return old
 }
 
-// run validates data against rules using a fresh validator. ctx is threaded
-// into database-backed rules (unique, exists) so their queries are
-// cancellable; for non-DB rules it is unused but cheap to plumb.
-func run(ctx context.Context, data map[string]interface{}, rules Rules, db orm.Database, messages ...Messages) *Result {
+// runWithRules validates data against rules using a fresh validator. Any
+// handlers in extra are registered on the validator before validation runs.
+// This is how DB-backed rules (unique, exists), which live in the
+// validation/dbrules subpackage so the core package stays orm-free, get
+// wired in without core taking an orm dependency.
+func runWithRules(data map[string]interface{}, rules Rules, extra map[string]RuleHandler, messages ...Messages) *Result {
 	v := NewValidator()
 
-	// Register database rules when DB is available. The ctx variants thread
-	// request cancellation into the SQL round-trip so a slow query gets
-	// dropped instead of piling up goroutines + connections.
-	if db != nil {
-		v.RegisterRule("unique", UniqueRuleCtx(ctx, db))
-		v.RegisterRule("exists", ExistsRuleCtx(ctx, db))
+	for name, handler := range extra {
+		v.RegisterRule(name, handler)
 	}
 
 	if len(messages) > 0 {

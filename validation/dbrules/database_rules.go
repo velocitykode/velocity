@@ -1,4 +1,13 @@
-// Package validation provides Velocity's validation rules engine.
+// Package dbrules holds the DB-backed validation rules (unique, exists) and
+// the driver-error mapper (AsValidationError). These are split out of the
+// core validation package so that core depends only on contract,
+// validation/rules, and the standard library; the orm and SQL-driver
+// dependencies live here instead.
+//
+// The rules return validation.RuleHandler values and are wired into the core
+// validator via the CheckWithDB / CheckWithDBW / CheckDataWithDB helpers in
+// this package, which delegate to validation.CheckWithRulesW /
+// validation.CheckDataWithRules with the unique/exists handlers registered.
 //
 // # Best-effort uniqueness: ToCToU on the unique: rule
 //
@@ -9,10 +18,8 @@
 // race: two concurrent requests that both pass the SELECT proceed to
 // race on the INSERT.
 //
-// This is the same baseline behavior as Laravel's Illuminate/Validation
-// (see ValidatesAttributes::validateUnique). Velocity does NOT lock or
-// serialize the query, by design: uniqueness enforcement at scale is
-// the database's job, not the validator's.
+// Velocity does NOT lock or serialize the query, by design: uniqueness
+// enforcement at scale is the database's job, not the validator's.
 //
 // To make uniqueness authoritative you MUST add a UNIQUE constraint at
 // the database layer (CREATE UNIQUE INDEX, or UNIQUE in the column
@@ -28,7 +35,7 @@
 // map those errors back onto the offending field so the user sees the
 // same "has already been taken" message they would have seen if the
 // validator had won the race.
-package validation
+package dbrules
 
 import (
 	"context"
@@ -39,6 +46,7 @@ import (
 	"strings"
 
 	"github.com/velocitykode/velocity/orm"
+	"github.com/velocitykode/velocity/validation"
 )
 
 // identifierRegex validates SQL table/column names. The regex allows dots so
@@ -46,7 +54,7 @@ import (
 // references like "users.email"; validateIdentifier then relies on
 // quoteIdentifier to split on each dot and quote the parts individually so
 // that "schema.table" becomes `"schema"."table"` (or "`schema`.`table`" on
-// MySQL/SQLite) — not `"schema.table"`.
+// MySQL/SQLite) , not `"schema.table"`.
 var identifierRegex = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$`)
 
 func validateIdentifier(name string) error {
@@ -68,7 +76,7 @@ func validateIdentifier(name string) error {
 // Backticks/double-quotes embedded in an individual segment are escaped by
 // doubling them (standard SQL identifier-quoting rules). validateIdentifier
 // refuses any character outside [a-zA-Z0-9_.] so escaping here is
-// conservative — it exists to close the door on future inputs that might
+// conservative: it exists to close the door on future inputs that might
 // relax the allowlist.
 func quoteIdentifier(name, driver string) string {
 	parts := strings.Split(name, ".")
@@ -118,7 +126,7 @@ func placeholder(driver string, n int) string {
 // SQLSTATE 23505, MySQL errno 1062, SQLite extended code 2067 / base
 // code 19) back into a field-level "has already been taken" message
 // the user can read. See the package doc for the full rationale.
-func UniqueRule(db orm.Database) RuleHandler {
+func UniqueRule(db orm.Database) validation.RuleHandler {
 	return UniqueRuleCtx(context.Background(), db)
 }
 
@@ -138,7 +146,7 @@ func UniqueRule(db orm.Database) RuleHandler {
 // The same race window applies here. Add a UNIQUE constraint at the DB
 // layer and route INSERT failures through AsValidationError to recover
 // the field-level message after a race-loss.
-func UniqueRuleCtx(ctx context.Context, db orm.Database) RuleHandler {
+func UniqueRuleCtx(ctx context.Context, db orm.Database) validation.RuleHandler {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -205,14 +213,14 @@ func UniqueRuleCtx(ctx context.Context, db orm.Database) RuleHandler {
 //
 // The returned handler uses context.Background() for the underlying query.
 // Use ExistsRuleCtx with the request's context for cancellation propagation.
-func ExistsRule(db orm.Database) RuleHandler {
+func ExistsRule(db orm.Database) validation.RuleHandler {
 	return ExistsRuleCtx(context.Background(), db)
 }
 
 // ExistsRuleCtx is the context-aware variant of ExistsRule. Same semantics
 // as UniqueRuleCtx: the query runs under ctx and raw DB errors are
 // suppressed in the client-visible message but logged via slog.Default().
-func ExistsRuleCtx(ctx context.Context, db orm.Database) RuleHandler {
+func ExistsRuleCtx(ctx context.Context, db orm.Database) validation.RuleHandler {
 	if ctx == nil {
 		ctx = context.Background()
 	}

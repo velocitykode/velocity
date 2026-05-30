@@ -1,4 +1,4 @@
-package validation
+package dbrules
 
 import (
 	"errors"
@@ -6,12 +6,14 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/lib/pq"
+
+	"github.com/velocitykode/velocity/validation"
 )
 
 // AsValidationError inspects err for a driver-specific UNIQUE-constraint
-// violation and, when one is detected, returns a *ValidationErrors keyed by
-// the offending field with the same "has already been taken" message the
-// unique: validator rule would have produced.
+// violation and, when one is detected, returns a *validation.ValidationErrors
+// keyed by the offending field with the same "has already been taken" message
+// the unique: validator rule would have produced.
 //
 // fieldRules is a map of field name to rule name. Pass the rules that
 // correspond to columns covered by the UNIQUE constraint(s) you expect to
@@ -24,7 +26,7 @@ import (
 // Example: convert an INSERT race-loss into a 422 field error.
 //
 //	if err := db.Insert(user); err != nil {
-//	    if verr, ok := validation.AsValidationError(err, map[string]string{
+//	    if verr, ok := dbrules.AsValidationError(err, map[string]string{
 //	        "email": "unique",
 //	    }); ok {
 //	        return ctx.JSON(422, verr)
@@ -48,7 +50,7 @@ import (
 // non-unique constraint violations (FK, NOT NULL, CHECK) so callers can
 // distinguish "race loss the user can recover from" from "structural
 // failure that needs a 500".
-func AsValidationError(err error, fieldRules map[string]string) (*ValidationErrors, bool) {
+func AsValidationError(err error, fieldRules map[string]string) (*validation.ValidationErrors, bool) {
 	if err == nil || len(fieldRules) == 0 {
 		return nil, false
 	}
@@ -63,13 +65,14 @@ func AsValidationError(err error, fieldRules map[string]string) (*ValidationErro
 		return nil, false
 	}
 
-	ve := &ValidationErrors{
+	ve := &validation.ValidationErrors{
 		Errors:       make(map[string][]string, len(fields)),
 		RulesByField: make(map[string][]string, len(fields)),
 	}
 	for _, f := range fields {
 		rule := fieldRules[f]
-		ve.addError(f, messageForRule(f, rule), rule)
+		ve.Errors[f] = append(ve.Errors[f], messageForRule(f, rule))
+		ve.RulesByField[f] = append(ve.RulesByField[f], rule)
 	}
 	return ve, true
 }
@@ -81,9 +84,9 @@ func AsValidationError(err error, fieldRules map[string]string) (*ValidationErro
 //
 // Postgres + MySQL use errors.As against the driver-typed error
 // (*pq.Error, *mysql.MySQLError) for type-safe matching. SQLite is
-// matched by message-string only so the base validation package stays
-// CGO-free (see note inline). Wrapped / driver-erased errors of any
-// origin fall through to the same string-fallback switch.
+// matched by message-string only so this package stays CGO-free (see
+// note inline). Wrapped / driver-erased errors of any origin fall
+// through to the same string-fallback switch.
 //
 // Returns ("", false) for any other error, including other constraint
 // violations (FK, NOT NULL, CHECK).
@@ -117,9 +120,9 @@ func uniqueViolationColumn(err error) (string, bool) {
 	// SQLite: matched via the canonical "UNIQUE constraint failed" message
 	// the engine writes regardless of driver. We deliberately do NOT take a
 	// typed dependency on mattn/go-sqlite3 here because that package
-	// requires CGO; pulling it into the base validation package would force
-	// every caller (including API-only deployments and cross-compiled
-	// builds) onto CGO_ENABLED=1. The string match is also more portable:
+	// requires CGO; pulling it into this package would force every caller
+	// (including API-only deployments and cross-compiled builds) onto
+	// CGO_ENABLED=1. The string match is also more portable:
 	// modernc.org/sqlite and other pure-Go drivers emit the same message
 	// via .Error(), so callers using a non-mattn driver are covered by the
 	// same branch instead of slipping past a typed check.

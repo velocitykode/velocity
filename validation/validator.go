@@ -1,3 +1,11 @@
+// Package validation provides Velocity's validation rules engine.
+//
+// The core package depends only on contract, validation/rules, and the
+// standard library; it carries no orm or SQL-driver dependency. DB-backed
+// rules (unique, exists) and the driver-error mapper (AsValidationError)
+// live in the validation/dbrules subpackage, which imports orm and the SQL
+// drivers and wires its handlers into the core engine via CheckWithRulesW /
+// CheckDataWithRules.
 package validation
 
 import (

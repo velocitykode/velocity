@@ -1,4 +1,4 @@
-package validation
+package dbrules
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 
 	"github.com/velocitykode/velocity/orm"
+	"github.com/velocitykode/velocity/validation"
 )
 
 // ---------------------------------------------------------------------------
@@ -111,9 +112,9 @@ func buildExistsSQL(driver, table, column string) string {
 // CGO_ENABLED=0 (cross-compile, hermetic CI, API-only deployments) the
 // driver compiles as a stub and rejects every connect with an error
 // message containing "CGO_ENABLED=0". We detect that string and skip
-// the integration test rather than fail it: the validation package
-// itself stays CGO-free post the M-09-1 F1 fix, and these tests
-// exercise live-DB behaviour which is not testable without CGO.
+// the integration test rather than fail it: the dbrules package's own
+// SQL assembly stays CGO-free, and these tests exercise live-DB
+// behaviour which is not testable without CGO.
 func newSQLiteOrm(t *testing.T) orm.Database {
 	t.Helper()
 	m, err := orm.NewManager(orm.ManagerConfig{
@@ -200,8 +201,8 @@ func TestExistsRule_SQLite_Integration(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Full Check pipeline with a real SQLite DB: validates that unique: and
-// exists: hooks fire through Check / CheckWithDB end-to-end with the
-// canonical Rules slice form.
+// exists: hooks fire through CheckWithDB end-to-end with the canonical
+// Rules slice form.
 // ---------------------------------------------------------------------------
 
 func TestCheckWithDB_UniqueExists_SQLite_EndToEnd(t *testing.T) {
@@ -215,7 +216,7 @@ func TestCheckWithDB_UniqueExists_SQLite_EndToEnd(t *testing.T) {
 
 	// canonical Rules form (slice per field), exercising both unique and
 	// exists in a single CheckWithDB call.
-	rules := Rules{
+	rules := validation.Rules{
 		"email":   {"required", "unique:users,email"},
 		"team_id": {"required", "exists:teams,id"},
 	}
@@ -294,29 +295,5 @@ func TestUniqueRule_DBErrorDoesNotLeakToClient(t *testing.T) {
 	}
 	if !strings.Contains(msg, "Unable to validate") {
 		t.Errorf("expected generic 'Unable to validate' message, got: %q", msg)
-	}
-}
-
-// TestCheck_BothFormsConverge confirms that PipeRules->NewRules path and a
-// hand-written slice literal produce identical validation outcomes.
-func TestCheck_BothFormsConverge(t *testing.T) {
-	form := url.Values{}
-	form.Set("name", "Al") // too short
-	r1 := httptest.NewRequest("POST", "/", strings.NewReader(form.Encode()))
-	r1.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	r2 := httptest.NewRequest("POST", "/", strings.NewReader(form.Encode()))
-	r2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	slice := Rules{"name": {"required", "min:3"}}
-	pipe := NewRules(PipeRules{"name": "required|min:3"})
-
-	a := Check(r1, slice)
-	b := Check(r2, pipe)
-
-	if a.HasErrors() != b.HasErrors() {
-		t.Fatalf("convergence mismatch: slice=%v pipe=%v", a.HasErrors(), b.HasErrors())
-	}
-	if a.First("name") != b.First("name") {
-		t.Errorf("messages diverge: slice=%q pipe=%q", a.First("name"), b.First("name"))
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/router"
 	"github.com/velocitykode/velocity/validation"
+	"github.com/velocitykode/velocity/validation/dbrules"
 )
 
 // FormRequest defines validation rules for a request. Implement this on a
@@ -18,7 +19,7 @@ import (
 // validation.Rules type (map[string][]string).
 //
 // The return type is validation.Rules so the same value can be passed
-// straight into validation.Check / CheckWithDB without intermediate
+// straight into validation.Check / dbrules.CheckWithDB without intermediate
 // conversion.
 type FormRequest interface {
 	Rules() validation.Rules
@@ -81,7 +82,7 @@ func Validate[T any](ctx *router.Context) (*T, *Result, error) {
 	// CheckWithDBW threads ctx.Response into the body-read path so
 	// http.MaxBytesReader can signal a connection-close hint on
 	// oversized bodies (rule 5).
-	result := validation.CheckWithDBW(ctx.Response, ctx.Request, rules, safeDB(ctx), msgs...)
+	result := dbrules.CheckWithDBW(ctx.Response, ctx.Request, rules, safeDB(ctx), msgs...)
 	if result.HasErrors() {
 		return new(T), result, nil
 	}
