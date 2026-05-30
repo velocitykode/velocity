@@ -146,6 +146,39 @@ type RedirectAllowlist interface {
 	AllowedRedirectHosts() []string
 }
 
+// Logger is the subset of the logging contract the router depends on.
+// Implemented by every log.Logger (the log package's Logger interface is
+// a superset: Debug/Info/Warn/Error/Fatal), so *log.StackLogger,
+// log.NullLogger, and the redacting logger all satisfy it for free.
+//
+// The router only emits warnings (dropped-event and async-listener
+// diagnostics in event_dispatcher.go / velocity_router.go), so the
+// contract is intentionally narrow: a single Warn method. Keeping it
+// minimal lets the contract leaf stay stdlib-only.
+//
+// kvs carries alternating key/value pairs (structured fields):
+// Warn("msg", "error", err.Error()).
+type Logger interface {
+	Warn(msg string, kvs ...any)
+}
+
+// Encryptor is the contract for symmetric encryption of raw byte
+// payloads. Implemented by the concrete crypto driver
+// (*crypto/drivers.AESDriver) and the crypto.Encryptor facade.
+//
+// Signatures mirror the concrete crypto type exactly so it satisfies
+// this interface with no adapter: the Encrypt* methods return the
+// base64 envelope string, and the Decrypt* methods take that envelope
+// string back. The *WithAAD variants bind additional authenticated
+// data to the ciphertext; non-AEAD ciphers reject them with
+// ErrInvalidCipher.
+type Encryptor interface {
+	EncryptBytes(plaintext []byte) (string, error)
+	EncryptBytesWithAAD(plaintext, aad []byte) (string, error)
+	DecryptBytes(payload string) ([]byte, error)
+	DecryptBytesWithAAD(payload string, aad []byte) ([]byte, error)
+}
+
 // LoginThrottler rate-limits login attempts. Implementations should be safe
 // for concurrent use. The default no-op implementation lives in the auth
 // package as auth.NoopLoginThrottler.
