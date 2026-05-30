@@ -100,10 +100,12 @@ func Validate[T any](ctx *router.Context) (*T, *Result, error) {
 // short-circuit when no DB is attached.
 func safeDB(ctx *router.Context) orm.Database {
 	s := ctx.ServicesIfSet()
-	if s == nil {
+	if s == nil || s.DB == nil {
 		return nil
 	}
-	return s.DB
+	// s.DB is the stdlib-only contract.Database; the stored value is always
+	// the concrete *orm.Manager, which also satisfies the richer orm.Database.
+	return s.DB.(orm.Database)
 }
 
 // Form binds the request body into a fresh *T, validates using T.Rules() if

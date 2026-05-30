@@ -6,13 +6,10 @@ import (
 
 	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/contract"
-	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/exceptions"
-	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/notification"
-	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/scheduler"
 	"github.com/velocitykode/velocity/storage"
@@ -24,13 +21,16 @@ import (
 // leaf package, avoiding import cycles.
 //
 // Auth, CSRF, and View are typed as contract interfaces (not concrete types)
-// because those packages import router. The contract package is a leaf that
-// both sides can import without cycles.
+// because those packages import router. Log, Crypto, and DB are likewise
+// contract-typed so this leaf need not import log, crypto, or orm; the
+// concrete *log logger, *crypto encryptor, and *orm.Manager satisfy the
+// matching contract interface with no adapter. The contract package is a
+// leaf that both sides can import without cycles.
 type Services struct {
-	Log        log.Logger
+	Log        contract.Logger
 	Exceptions exceptions.ExceptionHandler
-	Crypto     crypto.Encryptor
-	DB         orm.Database
+	Crypto     contract.Encryptor
+	DB         contract.Database
 	Auth       contract.AuthManager
 	CSRF       contract.CSRFProtector
 	View       contract.ViewEngine

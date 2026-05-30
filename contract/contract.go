@@ -2,6 +2,7 @@ package contract
 
 import (
 	"context"
+	"database/sql"
 	"net/http"
 )
 
@@ -146,37 +147,84 @@ type RedirectAllowlist interface {
 	AllowedRedirectHosts() []string
 }
 
-// Logger is the subset of the logging contract the router depends on.
-// Implemented by every log.Logger (the log package's Logger interface is
-// a superset: Debug/Info/Warn/Error/Fatal), so *log.StackLogger,
-// log.NullLogger, and the redacting logger all satisfy it for free.
+// Logger is the logging contract shared across the framework. It mirrors
+// the log package's Logger interface exactly (Debug/Info/Warn/Error/Fatal),
+// so *log.StackLogger, log.NullLogger, and the redacting logger all satisfy
+// it with no adapter, and a Logger value is interchangeable with a
+// log.Logger anywhere a concrete logger is expected.
 //
-// The router only emits warnings (dropped-event and async-listener
-// diagnostics in event_dispatcher.go / velocity_router.go), so the
-// contract is intentionally narrow: a single Warn method. Keeping it
-// minimal lets the contract leaf stay stdlib-only.
+// app.Services types its Log field as this contract so the app leaf need
+// not import log; the router only emits warnings (dropped-event and
+// async-listener diagnostics in event_dispatcher.go / velocity_router.go)
+// but the full set keeps the field usable by callers that log at every
+// level (e.g. serve.go startup/shutdown Info/Error). Every signature uses
+// only stdlib types, so the contract leaf stays stdlib-only.
 //
 // kvs carries alternating key/value pairs (structured fields):
 // Warn("msg", "error", err.Error()).
 type Logger interface {
+	Debug(msg string, kvs ...any)
+	Info(msg string, kvs ...any)
 	Warn(msg string, kvs ...any)
+	Error(msg string, kvs ...any)
+	Fatal(msg string, kvs ...any)
 }
 
-// Encryptor is the contract for symmetric encryption of raw byte
-// payloads. Implemented by the concrete crypto driver
-// (*crypto/drivers.AESDriver) and the crypto.Encryptor facade.
+// Encryptor is the contract for symmetric encryption. Implemented by the
+// concrete crypto driver (*crypto/drivers.AESDriver) and the crypto.Encryptor
+// facade.
 //
-// Signatures mirror the concrete crypto type exactly so it satisfies
-// this interface with no adapter: the Encrypt* methods return the
-// base64 envelope string, and the Decrypt* methods take that envelope
-// string back. The *WithAAD variants bind additional authenticated
-// data to the ciphertext; non-AEAD ciphers reject them with
-// ErrInvalidCipher.
+// Signatures mirror the concrete crypto.Encryptor interface exactly so it
+// satisfies this contract with no adapter, and an Encryptor value is
+// interchangeable with a crypto.Encryptor anywhere the concrete interface
+// is expected (router.Context.Crypto, the bond flash encryptor, the CSRF
+// session-id resolver). The Encrypt* methods return the base64 envelope
+// string and the Decrypt* methods take that envelope string back; the
+// *WithAAD variants bind additional authenticated data to the ciphertext
+// and non-AEAD ciphers reject them with ErrInvalidCipher. Every signature
+// uses only stdlib types, so the contract leaf stays stdlib-only.
 type Encryptor interface {
+	Encrypt(plaintext string) (string, error)
 	EncryptBytes(plaintext []byte) (string, error)
-	EncryptBytesWithAAD(plaintext, aad []byte) (string, error)
+	Decrypt(payload string) (string, error)
 	DecryptBytes(payload string) ([]byte, error)
+	EncryptBytesWithAAD(plaintext, aad []byte) (string, error)
 	DecryptBytesWithAAD(payload string, aad []byte) ([]byte, error)
+	GenerateKey() (string, error)
+}
+
+// Database is the contract for the ORM database value held by app.Services
+// and surfaced through router.Context.DB(). It is the stdlib-only subset of
+// the *orm.Manager method set (orm.Database): every method the app leaf and
+// other contract consumers need, with no driver-typed methods. The concrete
+// manager satisfies it with no adapter.
+//
+// app.Services types its DB field as this contract so the app leaf need not
+// import orm. The driver-facing methods on orm.Database (DefaultDriver,
+// Connection, AddConnection) expose orm/drivers.Driver and are deliberately
+// omitted here so the contract leaf stays stdlib-only. Code that genuinely
+// needs them (the router's DB() accessor) type-asserts the stored value back
+// to orm.Database, which is always the concrete *orm.Manager.
+//
+// Transaction takes a closure that receives the per-tx context. The
+// returned ctx carries a *sql.Tx that any ORM terminal observing it
+// automatically participates in; callers needing the raw *sql.Tx extract
+// it via the orm package's TxFromContext.
+type Database interface {
+	DB() *sql.DB
+	Raw(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	Exec(ctx context.Context, query string, args ...any) (sql.Result, error)
+	Transaction(ctx context.Context, fn func(ctx context.Context) error) error
+	Begin(ctx context.Context) (*sql.Tx, error)
+	Shutdown(ctx context.Context) error
+	Ping() error
+	DriverName() string
+	DatabaseName() string
+	Stats() sql.DBStats
+	// SetEventDispatcher wires the event dispatcher used by ORM internals
+	// to surface query and transaction lifecycle events. The fn receives
+	// ctx so listeners observe request- / tx-scoped values.
+	SetEventDispatcher(fn func(ctx context.Context, event any) error)
 }
 
 // LoginThrottler rate-limits login attempts. Implementations should be safe

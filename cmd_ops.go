@@ -21,7 +21,7 @@ func (dbWipeCmd) run(a *App, args []string) error {
 	if err := a.Bootstrap(); err != nil {
 		return err
 	}
-	return console.DBWipe(a.DB)
+	return console.DBWipe(a.ormDB())
 }
 
 // --- Cache ---
