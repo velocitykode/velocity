@@ -239,6 +239,28 @@ not compile against v0.49+ otherwise, and the type-assertion error from
 `go build` names the exact missing method, which is the canonical
 checklist for the migration.
 
+### 1.0 readiness: `router.Context.DB()` returns the stdlib-only contract
+
+`router.Context.DB()` now returns `contract.Database` instead of
+`orm.Database`. This is a deliberate narrowing that keeps heavy ORM driver
+packages out of `./router`'s dependency graph (`go list -deps ./router`).
+The returned method set omits the driver-facing methods `DefaultDriver`,
+`Connection`, and `AddConnection`.
+
+**Migration:** handlers that called `c.DB().Connection(...)`,
+`c.DB().DefaultDriver()`, or `c.DB().AddConnection(...)` directly recover the
+full surface with a single type assertion to the wider `orm.Database`
+interface, which still carries those methods:
+
+```go
+db, ok := c.DB().(orm.Database) // ok == true; the stored value is *orm.Manager
+```
+
+There is no `orm.FromContext` helper for this: `orm` importing `router` would
+create an import cycle (`router` → `validation`, whose tests import `orm`), so
+the type assertion is the canonical, supported recovery path. No first-party
+handler depends on the dropped methods, so most apps need no change.
+
 ### Breaking changes
 
 - **New framework table `job_dedupe` for queue-layer at-most-once enqueue.** Backs the new `queue.DedupeAwarePusher` optional driver interface and its `PushIfNotExistsCtx(ctx, job, dedupeKey, queue...)` method. The `DatabaseDriver` implementation INSERTs into `job_dedupe` under a PRIMARY KEY (postgres `ON CONFLICT DO NOTHING`, mysql `INSERT IGNORE`, sqlite `INSERT OR IGNORE`) inside the same transaction as the `jobs` insert; a row already present in `job_dedupe` is treated as success without touching `jobs`. This is what makes the batch-callback reaper idempotent at the storage layer even when `MarkCallbackDispatched` (the bookkeeping write after a successful push) fails. Deployed apps must run an `ALTER TABLE`-equivalent migration to create the sidecar table before upgrading. Example for Postgres:

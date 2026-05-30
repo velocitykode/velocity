@@ -622,7 +622,10 @@ func New(opts ...Option) (*App, error) {
 		// path so http.MaxBytesReader can fire its requestTooLarge
 		// connection-close hint on oversized bodies (rule 5: limit all
 		// request body reads).
-		result := dbrules.CheckWithDBW(c.Response, c.Request, validation.Rules(rules), c.DB(), msgs...)
+		// c.DB() returns the stdlib-only contract.Database; the orm-aware
+		// dbrules path needs the driver-facing orm.Database. The stored
+		// value is always the concrete *orm.Manager, so the assertion holds.
+		result := dbrules.CheckWithDBW(c.Response, c.Request, validation.Rules(rules), c.DB().(orm.Database), msgs...)
 		if !result.HasErrors() {
 			return nil
 		}

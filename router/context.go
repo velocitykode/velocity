@@ -22,14 +22,11 @@ import (
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/contract"
-	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/exceptions"
 	"github.com/velocitykode/velocity/internal/clientip"
-	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/notification"
-	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/resource"
 	"github.com/velocitykode/velocity/scheduler"
@@ -699,14 +696,24 @@ func (c *Context) ServicesIfSet() *app.Services {
 	return c.services
 }
 
-// DB returns the ORM database interface. s.DB is typed as the stdlib-only
-// contract.Database; the stored value is always the concrete *orm.Manager,
-// which also satisfies the richer orm.Database (the driver-facing methods
-// the contract omits), so the assertion holds.
-func (c *Context) DB() orm.Database {
+// DB returns the ORM database interface as the stdlib-only contract.Database.
+// The stored value is always the concrete *orm.Manager, which satisfies this
+// contract with no adapter.
+//
+// contract.Database intentionally omits the driver-facing methods
+// (DefaultDriver, Connection, AddConnection) so that ./router carries no heavy
+// driver packages. This is a deliberate narrowing of the surface, not an
+// accidental capability loss. Handlers that need those methods recover the
+// wider interface with the supported escape hatch:
+//
+//	db, ok := c.DB().(orm.Database) // orm.Database includes the driver methods
+//
+// (orm cannot expose a FromContext helper here: orm importing router would
+// create an import cycle, so the type assertion is the canonical recovery path.)
+func (c *Context) DB() contract.Database {
 	s := c.mustServices()
 	requireService(c, s.DB, "database")
-	return s.DB.(orm.Database)
+	return s.DB
 }
 
 // Cache returns the cache manager interface.
@@ -717,7 +724,7 @@ func (c *Context) Cache() cache.CacheManager {
 }
 
 // Log returns the logger.
-func (c *Context) Log() log.Logger {
+func (c *Context) Log() contract.Logger {
 	s := c.mustServices()
 	requireService(c, s.Log, "log")
 	return s.Log
@@ -759,7 +766,7 @@ func (c *Context) Events() events.Dispatcher {
 }
 
 // Crypto returns the encryptor.
-func (c *Context) Crypto() crypto.Encryptor {
+func (c *Context) Crypto() contract.Encryptor {
 	s := c.mustServices()
 	requireService(c, s.Crypto, "crypto")
 	return s.Crypto
@@ -1497,7 +1504,7 @@ func (c *Context) WithInput(input any) {
 // flashEncryptor returns the app's crypto.Encryptor when services are
 // wired, else nil. Callers must handle nil by skipping the cookie write
 // rather than emitting an unauthenticated payload.
-func (c *Context) flashEncryptor() crypto.Encryptor {
+func (c *Context) flashEncryptor() contract.Encryptor {
 	if c.services == nil {
 		return nil
 	}
@@ -1513,7 +1520,7 @@ func (c *Context) flashEncryptor() crypto.Encryptor {
 // Exposed so packages that read or write flash cookies outside the
 // router pipeline (e.g. bond/flash.go on the read path) can produce
 // payloads that this package will accept on the next request.
-func SealFlash(enc crypto.Encryptor, name string, value any) (string, error) {
+func SealFlash(enc contract.Encryptor, name string, value any) (string, error) {
 	if enc == nil {
 		return "", errors.New("velocity/router: flash encryptor not configured")
 	}
@@ -1534,7 +1541,7 @@ func SealFlash(enc crypto.Encryptor, name string, value any) (string, error) {
 	// payload format. The AAD domain separation is lost on CBC, an
 	// accepted trade-off for backward compatibility with apps that pin
 	// to a CBC cipher.
-	if errors.Is(err, crypto.ErrInvalidCipher) {
+	if errors.Is(err, contract.ErrInvalidCipher) {
 		return enc.EncryptBytes(plaintext)
 	}
 	return "", err
@@ -1545,7 +1552,7 @@ func SealFlash(enc crypto.Encryptor, name string, value any) (string, error) {
 // binding for name, is over MaxFlashCookieSize, fails decryption, or
 // does not contain valid JSON. Callers MUST treat any error as "no
 // flash data" and never surface the error to the client.
-func OpenFlash(enc crypto.Encryptor, name, cookieValue string) (any, error) {
+func OpenFlash(enc contract.Encryptor, name, cookieValue string) (any, error) {
 	if enc == nil {
 		return nil, errors.New("velocity/router: flash encryptor not configured")
 	}
@@ -1565,7 +1572,7 @@ func OpenFlash(enc crypto.Encryptor, name, cookieValue string) (any, error) {
 		// the read side must mirror that path. DecryptBytes accepts any
 		// ciphertext shape the encryptor produced and surfaces the
 		// underlying authentication failure as an error.
-		if errors.Is(err, crypto.ErrInvalidCipher) || errors.Is(err, crypto.ErrInvalidPayload) {
+		if errors.Is(err, contract.ErrInvalidCipher) || errors.Is(err, contract.ErrInvalidPayload) {
 			plaintext, err = enc.DecryptBytes(cookieValue)
 			if err != nil {
 				return nil, err
@@ -1586,7 +1593,7 @@ func OpenFlash(enc crypto.Encryptor, name, cookieValue string) (any, error) {
 // encryption fails so the handler never blocks on a flash-write
 // failure (the missing cookie surfaces on the next render as the
 // absence of flashed errors / old input).
-func writeFlashCookie(w http.ResponseWriter, enc crypto.Encryptor, name string, value any) {
+func writeFlashCookie(w http.ResponseWriter, enc contract.Encryptor, name string, value any) {
 	sealed, err := SealFlash(enc, name, value)
 	if err != nil {
 		return
