@@ -357,18 +357,28 @@ func AsValidationError(err error, fieldRules map[string]string) (*ValidationErro
 }
 
 // dbUniqueViolationColumn returns (columnHint, true) for a UNIQUE-constraint
-// violation, matched by the canonical phrase each driver emits. The hint may
-// be empty (Postgres) or a column/index name (MySQL/SQLite).
+// violation. Typed classifiers registered by the orm/postgres and orm/mysql
+// leaves (via the classifier registry) get first say, so this shim gains the
+// same typed *pq.Error / *mysql.MySQLError matching dbrules has when those
+// drivers are wired, without core importing any SQL driver. When no classifier
+// matches, it falls back to the canonical phrase each driver emits. The hint
+// may be empty (Postgres) or a column/index name (MySQL/SQLite).
 func dbUniqueViolationColumn(err error) (string, bool) {
+	if hint, isUnique, matched := ClassifyUniqueViolation(err); matched {
+		return hint, isUnique
+	}
+
 	msg := err.Error()
 	switch {
-	case strings.Contains(msg, "SQLSTATE 23505"):
-		return "", true
-	case strings.Contains(msg, "duplicate key value violates unique constraint"):
-		// (*pq.Error).Error() returns "pq: " + Message and omits the
-		// SQLSTATE code, so the 23505 branch misses real pq errors. Match
-		// pq's canonical unique-violation phrase and recover the column
-		// hint from the quoted constraint name it embeds.
+	case strings.Contains(msg, "SQLSTATE 23505") ||
+		strings.Contains(msg, "duplicate key value violates unique constraint"):
+		// Postgres unique violation. Either form may carry the canonical
+		// `... unique constraint "name"` phrase: pgx surfaces it alongside
+		// SQLSTATE 23505, and (*pq.Error).Error() returns "pq: " + Message
+		// (omitting the SQLSTATE code) when orm/postgres is not imported.
+		// Recover the column hint from the quoted constraint name whenever
+		// present so multi-field callers are not attributed to every
+		// candidate. dbExtractPostgresConstraint returns "" when absent.
 		return dbExtractPostgresConstraint(msg), true
 	case strings.Contains(msg, "Error 1062") || strings.Contains(msg, "ER_DUP_ENTRY"):
 		return dbExtractMySQLKeyName(msg), true

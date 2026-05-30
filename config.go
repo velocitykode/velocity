@@ -639,19 +639,20 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// Validate checks the DBConfig for structural problems. A zero-value
-// DBConfig (no Connection) is valid: the framework treats it as "no
-// database configured" and skips initDB. When Connection is set it must
-// name a supported driver.
+// Validate checks the DBConfig for STRUCTURAL problems only. A zero-value
+// DBConfig (no Connection) is valid: the framework treats it as "no database
+// configured" and skips initDB.
+//
+// Validate deliberately does NOT check the driver name against an allowlist.
+// Whether a named driver is actually wired is the orm driver registry's
+// concern: initDB resolves the driver via orm.NewManager, and an unknown or
+// unwired name surfaces as a typed driverregistry.NotFoundError at that point
+// (which also lists the drivers that ARE registered). Consulting the registry
+// here would couple config loading to import order and produce a worse error
+// than the registry's own.
 func (c DBConfig) Validate() error {
 	if c.Connection == "" {
 		return nil
-	}
-	switch c.Connection {
-	case "sqlite", "sqlite3", "postgres", "mysql":
-		// OK
-	default:
-		return fmt.Errorf("DB_CONNECTION=%q is not a supported driver (want sqlite, sqlite3, postgres, or mysql)", c.Connection)
 	}
 	if c.MaxIdleConns < 0 || c.MaxOpenConns < 0 {
 		return fmt.Errorf("DB_MAX_IDLE_CONNS / DB_MAX_OPEN_CONNS must be non-negative")
@@ -662,27 +663,16 @@ func (c DBConfig) Validate() error {
 	return nil
 }
 
-// Validate checks the CacheConfig for structural problems. An empty Driver
-// is treated as "memory" by initCache; Validate accepts that. A non-empty
-// driver must name a recognised value to keep typos from silently falling
-// through to the in-memory store in production.
+// Validate checks the CacheConfig for STRUCTURAL problems only. An empty
+// Driver is treated as "memory" by initCache; Validate accepts that.
 //
-// "database" is rejected. initCache (factories.go) has no database branch:
-// the switch falls through to the memory store, which is exactly the
-// fail-fast hole this validator exists to close. When a database-backed
-// cache driver lands, add the wiring in initCache AND the case to this
-// switch in the same commit.
+// The driver name is not checked against an allowlist: an unknown or unwired
+// driver is the cache driver registry's concern and surfaces as a typed
+// NotFoundError at resolution time. Validate only enforces the per-driver
+// structural requirements (file needs a path) and numeric sanity.
 func (c CacheConfig) Validate() error {
 	if c.Driver == "" {
 		return nil
-	}
-	switch c.Driver {
-	case "memory", "file", "redis":
-		// OK
-	case "database":
-		return fmt.Errorf("CACHE_DRIVER=database is not implemented; use memory, file, or redis")
-	default:
-		return fmt.Errorf("CACHE_DRIVER=%q is not a recognised driver (want memory, file, or redis)", c.Driver)
 	}
 	if c.Driver == "file" && c.Path == "" {
 		// File driver requires CACHE_PATH so the store has a directory to
@@ -696,34 +686,27 @@ func (c CacheConfig) Validate() error {
 	return nil
 }
 
-// Validate checks the QueueConfig for structural problems. An empty Driver
-// is accepted (initQueue defaults to memory); a non-empty driver must name
-// a recognised value.
+// Validate checks the QueueConfig for STRUCTURAL problems only. An empty
+// Driver is accepted (initQueue defaults to memory). The driver name is not
+// checked against an allowlist: an unknown or unwired driver surfaces as a
+// typed NotFoundError when the queue driver registry resolves it. The config
+// carries no other structurally-constrained queue fields, so a well-formed
+// QueueConfig is always valid here.
 func (c QueueConfig) Validate() error {
-	if c.Driver == "" {
-		return nil
-	}
-	switch c.Driver {
-	case "memory", "redis", "database":
-		// OK
-	default:
-		return fmt.Errorf("QUEUE_DRIVER=%q is not a recognised driver (want memory, redis, or database)", c.Driver)
-	}
 	return nil
 }
 
-// Validate checks the StorageConfig for structural problems. Each disk
-// must name a recognised driver and the default disk (if set) must exist
-// in the Disks map.
+// Validate checks the StorageConfig for STRUCTURAL problems only. Each disk
+// must name a non-empty driver and satisfy that driver's required fields (s3
+// needs a bucket), and the default disk (if set) must exist in the Disks map.
+//
+// The driver name is not checked against an allowlist: an unknown or unwired
+// disk driver surfaces as a typed NotFoundError when the storage driver
+// registry resolves it.
 func (c StorageConfig) Validate() error {
 	for name, disk := range c.Disks {
-		switch disk.Driver {
-		case "local", "s3", "memory":
-			// OK
-		case "":
+		if disk.Driver == "" {
 			return fmt.Errorf("storage disk %q has empty driver", name)
-		default:
-			return fmt.Errorf("storage disk %q has unrecognised driver %q (want local, s3, or memory)", name, disk.Driver)
 		}
 		if disk.Driver == "s3" && disk.Bucket == "" {
 			return fmt.Errorf("storage disk %q uses s3 driver but Bucket is empty", name)

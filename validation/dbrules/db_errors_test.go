@@ -7,6 +7,15 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/lib/pq"
+
+	// Wire the typed *pq.Error / *mysql.MySQLError classifiers into the
+	// registry so AsValidationError exercises the same typed fast path an
+	// app gets when it imports these driver leaves. Without these blank
+	// imports the registry is empty and typed errors with no usable message
+	// string (e.g. &pq.Error{Code:"23505"}) would slip past the string
+	// fallback.
+	_ "github.com/velocitykode/velocity/orm/mysql"
+	_ "github.com/velocitykode/velocity/orm/postgres"
 )
 
 // TestAsValidationError_PostgresUniqueViolation pins the Postgres SQLSTATE

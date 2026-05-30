@@ -1,11 +1,7 @@
 package dbrules
 
 import (
-	"errors"
 	"strings"
-
-	"github.com/go-sql-driver/mysql"
-	"github.com/lib/pq"
 
 	"github.com/velocitykode/velocity/validation"
 )
@@ -78,66 +74,51 @@ func AsValidationError(err error, fieldRules map[string]string) (*validation.Val
 }
 
 // uniqueViolationColumn returns (columnHint, true) when err is a
-// driver-specific UNIQUE-constraint violation. columnHint may be the
-// column name (Postgres, SQLite) or an index name (MySQL); callers
-// match it against field names with selectFields.
+// UNIQUE-constraint violation. columnHint may be the column name
+// (Postgres, SQLite) or an index name (MySQL); callers match it against
+// field names with selectFields.
 //
-// Postgres + MySQL use errors.As against the driver-typed error
-// (*pq.Error, *mysql.MySQLError) for type-safe matching. SQLite is
-// matched by message-string only so this package stays CGO-free (see
-// note inline). Wrapped / driver-erased errors of any origin fall
-// through to the same string-fallback switch.
+// Driver-typed matching (*pq.Error, *mysql.MySQLError) is delegated to the
+// classifier registry in the core validation package. The orm/postgres and
+// orm/mysql leaf packages register typed classifiers from init(), so when an
+// app wires one of those drivers (directly or via orm/standard) the typed
+// fast path runs and this package needs no SQL-driver import of its own. When
+// no classifier recognises err, the function falls back to matching the
+// canonical error string each driver emits (which also covers SQLite and
+// wrapped / driver-erased errors).
 //
 // Returns ("", false) for any other error, including other constraint
-// violations (FK, NOT NULL, CHECK).
+// violations (FK, NOT NULL, CHECK): a classifier that recognises err as its
+// driver's error but not a unique violation returns matched=true so the
+// string fallback is skipped and the error is never misread as unique.
 func uniqueViolationColumn(err error) (string, bool) {
-	// Postgres: SQLSTATE 23505 (unique_violation).
-	var pgErr *pq.Error
-	if errors.As(err, &pgErr) {
-		if pgErr.Code == "23505" {
-			// pq populates Column from the error response field when
-			// PostgreSQL provides it. Constraint name is a useful
-			// fallback when Column is empty (most real schemas).
-			if pgErr.Column != "" {
-				return pgErr.Column, true
-			}
-			return pgErr.Constraint, true
-		}
-		return "", false
+	// Typed classifiers (registered by orm/postgres, orm/mysql) get first
+	// and authoritative say. An empty registry (no driver wired) simply
+	// reports matched=false and we drop to the string fallback below.
+	if hint, isUnique, matched := validation.ClassifyUniqueViolation(err); matched {
+		return hint, isUnique
 	}
 
-	// MySQL: errno 1062 (ER_DUP_ENTRY) or 1586 (ER_DUP_ENTRY_WITH_KEY_NAME).
-	var myErr *mysql.MySQLError
-	if errors.As(err, &myErr) {
-		if myErr.Number == 1062 || myErr.Number == 1586 {
-			// MySQL embeds the key name as `for key '<name>'`. Parse it
-			// out so callers can match an index named after the column.
-			return extractMySQLKeyName(myErr.Message), true
-		}
-		return "", false
-	}
-
-	// SQLite: matched via the canonical "UNIQUE constraint failed" message
-	// the engine writes regardless of driver. We deliberately do NOT take a
-	// typed dependency on mattn/go-sqlite3 here because that package
-	// requires CGO; pulling it into this package would force every caller
-	// (including API-only deployments and cross-compiled builds) onto
-	// CGO_ENABLED=1. The string match is also more portable:
-	// modernc.org/sqlite and other pure-Go drivers emit the same message
-	// via .Error(), so callers using a non-mattn driver are covered by the
-	// same branch instead of slipping past a typed check.
+	// String fallback for wrapped / driver-erased errors, for SQLite, and
+	// for Postgres / MySQL when their leaf packages are not imported.
+	// Conservative: only the canonical phrases each driver emits.
 	//
-	// This match is handled by the string-fallback switch below alongside
-	// the Postgres / MySQL wrapped-error patterns.
-
-	// String fallback for wrapped / driver-erased errors and for SQLite
-	// (see note above). Conservative: only the canonical phrases each
-	// driver emits. This is intentionally after the typed checks so the
-	// Postgres + MySQL fast paths stay type-safe.
+	// SQLite is intentionally string-only: a typed dependency on
+	// mattn/go-sqlite3 would force CGO on every caller. The pure-Go
+	// modernc.org/sqlite driver emits the same "UNIQUE constraint failed"
+	// message via .Error(), so both are covered by the one branch.
 	msg := err.Error()
 	switch {
-	case strings.Contains(msg, "SQLSTATE 23505"):
-		return "", true
+	case strings.Contains(msg, "SQLSTATE 23505") ||
+		strings.Contains(msg, "duplicate key value violates unique constraint"):
+		// Postgres unique violation. Either form may carry the canonical
+		// `... unique constraint "name"` phrase: pgx surfaces it alongside
+		// SQLSTATE 23505, and (*pq.Error).Error() returns "pq: " + Message
+		// (omitting the SQLSTATE code) when orm/postgres is not imported.
+		// Recover the column hint from the quoted constraint name whenever
+		// it is present so multi-field callers are not attributed to every
+		// candidate. extractPostgresConstraint returns "" when absent.
+		return extractPostgresConstraint(msg), true
 	case strings.Contains(msg, "Error 1062") || strings.Contains(msg, "ER_DUP_ENTRY"):
 		return extractMySQLKeyName(msg), true
 	case strings.Contains(msg, "UNIQUE constraint failed"):
@@ -145,6 +126,29 @@ func uniqueViolationColumn(err error) (string, bool) {
 	}
 
 	return "", false
+}
+
+// extractPostgresConstraint pulls the constraint name out of pq's canonical
+// unique-violation message, which embeds it in double quotes, e.g.
+// `duplicate key value violates unique constraint "users_email_key"`.
+// Returns "" when no quoted name is present.
+func extractPostgresConstraint(msg string) string {
+	const marker = "unique constraint "
+	i := strings.Index(msg, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := msg[i+len(marker):]
+	open := strings.Index(rest, `"`)
+	if open < 0 {
+		return ""
+	}
+	rest = rest[open+1:]
+	closeIdx := strings.Index(rest, `"`)
+	if closeIdx < 0 {
+		return ""
+	}
+	return rest[:closeIdx]
 }
 
 // extractMySQLKeyName pulls the index name out of a MySQL ER_DUP_ENTRY
