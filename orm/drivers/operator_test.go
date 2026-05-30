@@ -5,54 +5,40 @@ import (
 	"testing"
 )
 
-// TestOperatorRegistry_PerDriver pins the per-driver registry shape so a
-// future change cannot silently widen or shrink the dialect-specific
-// operator surface without touching this test.
-func TestOperatorRegistry_PerDriver(t *testing.T) {
-	t.Run("postgres registers JSONB / FTS / array overlap", func(t *testing.T) {
-		d := &PostgresDriver{}
-		reg := d.OperatorRegistry()
-		if reg == nil {
-			t.Fatal("postgres registry should not be nil")
-		}
-		want := []string{"@>", "<@", "?", "?|", "?&", "@@", "&&"}
-		for _, op := range want {
-			if _, ok := reg[op]; !ok {
-				t.Errorf("postgres registry missing operator %q", op)
-			}
-		}
-		// Ensure every spec carries a non-empty Template (compile renders it).
-		for op, spec := range reg {
-			if spec.Template == "" {
-				t.Errorf("postgres operator %q has empty Template", op)
-			}
-			if spec.Op != op {
-				t.Errorf("postgres operator %q stored under spec.Op=%q", op, spec.Op)
-			}
-		}
-	})
+// postgresTestOperators mirrors the spec set the orm/postgres leaf registers
+// via PostgresDriver.OperatorRegistry. It is duplicated here as a fixture so
+// the renderOperatorTemplate behaviour (unexported, must be exercised from
+// inside package drivers) can be pinned against postgres-shaped specs without
+// importing the leaf. The leaf has its own test asserting the live registry
+// shape matches.
+var postgresTestOperators = map[string]OperatorSpec{
+	"@>": {Op: "@>", Arity: 1, ParamShape: ParamJSON, Template: "{{lhs}} @> {{rhs}}::jsonb"},
+	"<@": {Op: "<@", Arity: 1, ParamShape: ParamJSON, Template: "{{lhs}} <@ {{rhs}}::jsonb"},
+	"?":  {Op: "?", Arity: 1, ParamShape: ParamScalar, Template: "{{lhs}} ? {{rhs}}"},
+	"?|": {Op: "?|", Arity: 1, ParamShape: ParamArray, Template: "{{lhs}} ?| {{rhs}}"},
+	"?&": {Op: "?&", Arity: 1, ParamShape: ParamArray, Template: "{{lhs}} ?& {{rhs}}"},
+	"@@": {Op: "@@", Arity: 1, ParamShape: ParamScalar, Template: "{{lhs}} @@ to_tsquery({{rhs}})"},
+	"&&": {Op: "&&", Arity: 1, ParamShape: ParamArray, Template: "{{lhs}} && {{rhs}}"},
+}
 
-	t.Run("sqlite returns nil", func(t *testing.T) {
-		d := &SQLiteDriver{}
-		if got := d.OperatorRegistry(); got != nil {
-			t.Errorf("sqlite registry: got %v, want nil", got)
-		}
-	})
-
-	t.Run("mysql returns nil", func(t *testing.T) {
-		d := &MySQLDriver{}
-		if got := d.OperatorRegistry(); got != nil {
-			t.Errorf("mysql registry: got %v, want nil", got)
-		}
-	})
+// TestOperatorRegistry_SQLiteNil pins that the SQLite driver (whose connector
+// stays in this package) declares no extension operators. The postgres and
+// mysql registry-shape assertions live with their connectors in the
+// orm/postgres and orm/mysql leaf packages.
+func TestOperatorRegistry_SQLiteNil(t *testing.T) {
+	d := &SQLiteDriver{}
+	if got := d.OperatorRegistry(); got != nil {
+		t.Errorf("sqlite registry: got %v, want nil", got)
+	}
 }
 
 // TestRenderOperatorTemplate_Postgres pins the SQL fragment + bound-param
-// shape for each registered postgres operator so a future grammar tweak
-// surfaces here as a test diff.
+// shape for each postgres operator so a future grammar tweak surfaces here as
+// a test diff. It uses the PostgresGrammar (which stays in package drivers)
+// and the postgresTestOperators fixture.
 func TestRenderOperatorTemplate_Postgres(t *testing.T) {
 	g := &PostgresGrammar{}
-	reg := (&PostgresDriver{}).OperatorRegistry()
+	reg := postgresTestOperators
 
 	tests := []struct {
 		name     string

@@ -1,8 +1,10 @@
-package drivers
+package mysql
 
 import (
 	"strings"
 	"testing"
+
+	"github.com/velocitykode/velocity/orm/drivers"
 )
 
 // TestResolveMySQLTLS_DefaultsToPreferred asserts MySQL connections pick
@@ -56,7 +58,7 @@ func TestRedactMySQLDSN(t *testing.T) {
 // TestMySQLDriver_DSNParamsIncludeTLSDefault verifies Connect wires the
 // default tls=preferred into the query string portion of the DSN.
 func TestMySQLDriver_DSNParamsIncludeTLSDefault(t *testing.T) {
-	params := buildMySQLParamsForTest(ConnectionConfig{})
+	params := buildMySQLParamsForTest(drivers.ConnectionConfig{})
 	if !strings.Contains(params, "tls=preferred") {
 		t.Errorf("expected params to contain tls=preferred, got %q", params)
 	}
@@ -65,7 +67,7 @@ func TestMySQLDriver_DSNParamsIncludeTLSDefault(t *testing.T) {
 // buildMySQLParamsForTest mirrors the DSN-parameter assembly in Connect so
 // we can inspect the resulting query string without opening a network
 // connection. Keep in sync with MySQLDriver.Connect.
-func buildMySQLParamsForTest(config ConnectionConfig) string {
+func buildMySQLParamsForTest(config drivers.ConnectionConfig) string {
 	params := []string{"parseTime=true"}
 	if config.Charset != "" {
 		params = append(params, "charset="+config.Charset)

@@ -7,11 +7,16 @@ import (
 	"github.com/velocitykode/velocity/cache/drivers"
 )
 
-// init wires the framework's built-in cache stores into the canonical
+// init wires the framework's built-in light cache stores into the canonical
 // driver registry. Registrations happen at package import time so that
-// importing cache anywhere (directly or transitively) makes the standard
+// importing cache anywhere (directly or transitively) makes the light
 // drivers available without needing a blank import. Third-party stores
 // can register additional factories via cache.Drivers().Register(...).
+//
+// The redis store is NOT registered here. It lives in the cache/redis leaf
+// package (which carries the go-redis dependency) and self-registers from
+// its own init(). Blank-import github.com/velocitykode/velocity/cache/redis
+// or github.com/velocitykode/velocity/cache/standard to enable it.
 //
 // Each factory closure consumes the resolved StoreConfig (see
 // Manager.createStore which merges global + store-local prefix into a
@@ -23,10 +28,6 @@ func init() {
 
 	Drivers().Register(DriverFile, func(_ context.Context, cfg StoreConfig) (Store, error) {
 		return drivers.NewFileStore(cfg.Prefix, cfg.Path)
-	})
-
-	Drivers().Register(DriverRedis, func(ctx context.Context, cfg StoreConfig) (Store, error) {
-		return drivers.NewRedisStore(ctx, cfg.Prefix, cfg.Host, cfg.Port, cfg.Password, cfg.Database, cfg.TLS)
 	})
 
 	Drivers().Register(DriverDatabase, func(_ context.Context, _ StoreConfig) (Store, error) {

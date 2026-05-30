@@ -1,4 +1,4 @@
-package drivers
+package redis
 
 import (
 	"context"
@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+
+	"github.com/velocitykode/velocity/cache/drivers"
 )
 
 func setupRedisForLock(t *testing.T) (*RedisStore, *miniredis.Miniredis, func()) {
@@ -129,7 +131,7 @@ func TestRedisLock(t *testing.T) {
 		err := lock.Run(ctx, func() {
 			t.Error("callback should not be called when lock not acquired")
 		})
-		if err != ErrLockNotAcquired {
+		if err != drivers.ErrLockNotAcquired {
 			t.Errorf("Run() error = %v, want ErrLockNotAcquired", err)
 		}
 	})
@@ -175,7 +177,7 @@ func TestRedisLock(t *testing.T) {
 		err := lock.Block(ctx, 250*time.Millisecond, func() {
 			t.Error("callback should not be called on timeout")
 		})
-		if err != ErrLockTimeout {
+		if err != drivers.ErrLockTimeout {
 			t.Errorf("Block() error = %v, want ErrLockTimeout", err)
 		}
 	})
@@ -571,7 +573,7 @@ func TestRedisLock_ZeroTTLRejected(t *testing.T) {
 	defer lock.ForceRelease(ctx)
 
 	acquired, err := lock.GetWithErr(ctx)
-	if !errors.Is(err, ErrInvalidLockTTL) {
+	if !errors.Is(err, drivers.ErrInvalidLockTTL) {
 		t.Fatalf("GetWithErr err = %v; want ErrInvalidLockTTL", err)
 	}
 	if acquired {

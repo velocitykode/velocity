@@ -20,6 +20,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/cache/drivers"
+	"github.com/velocitykode/velocity/cache/redis"
 )
 
 // FakeRedis creates a fake Redis store backed by miniredis for testing.
@@ -35,7 +36,7 @@ import (
 //	    value, found := store.Get("user:1")
 //	    // ...
 //	}
-func FakeRedis(t testing.TB, prefix string) (*drivers.RedisStore, func()) {
+func FakeRedis(t testing.TB, prefix string) (*redis.RedisStore, func()) {
 	t.Helper()
 
 	mr, err := miniredis.Run()
@@ -43,7 +44,7 @@ func FakeRedis(t testing.TB, prefix string) (*drivers.RedisStore, func()) {
 		t.Fatalf("failed to start miniredis: %v", err)
 	}
 
-	store, err := drivers.NewRedisStore(context.Background(), prefix, mr.Host(), mr.Server().Addr().Port, "", 0, false)
+	store, err := redis.NewRedisStore(context.Background(), prefix, mr.Host(), mr.Server().Addr().Port, "", 0, false)
 	if err != nil {
 		mr.Close()
 		t.Fatalf("failed to create redis store: %v", err)
@@ -74,7 +75,7 @@ func FakeRedis(t testing.TB, prefix string) (*drivers.RedisStore, func()) {
 //	        t.Error("expected key to be expired")
 //	    }
 //	}
-func FakeRedisWithServer(t testing.TB, prefix string) (*drivers.RedisStore, *miniredis.Miniredis, func()) {
+func FakeRedisWithServer(t testing.TB, prefix string) (*redis.RedisStore, *miniredis.Miniredis, func()) {
 	t.Helper()
 
 	mr, err := miniredis.Run()
@@ -82,7 +83,7 @@ func FakeRedisWithServer(t testing.TB, prefix string) (*drivers.RedisStore, *min
 		t.Fatalf("failed to start miniredis: %v", err)
 	}
 
-	store, err := drivers.NewRedisStore(context.Background(), prefix, mr.Host(), mr.Server().Addr().Port, "", 0, false)
+	store, err := redis.NewRedisStore(context.Background(), prefix, mr.Host(), mr.Server().Addr().Port, "", 0, false)
 	if err != nil {
 		mr.Close()
 		t.Fatalf("failed to create redis store: %v", err)

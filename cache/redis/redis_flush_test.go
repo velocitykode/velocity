@@ -1,4 +1,4 @@
-package drivers
+package redis
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+
+	"github.com/velocitykode/velocity/cache/drivers"
 )
 
 // TestRedisStore_Flush_EmptyPrefix_Refuses verifies that calling Flush
@@ -38,7 +40,7 @@ func TestRedisStore_Flush_EmptyPrefix_Refuses(t *testing.T) {
 	mr.Set("other-app-key", "other-app-value")
 
 	err = store.Flush()
-	if !errors.Is(err, ErrCannotFlushUnprefixed) {
+	if !errors.Is(err, drivers.ErrCannotFlushUnprefixed) {
 		t.Fatalf("Flush with empty prefix: err=%v, want ErrCannotFlushUnprefixed", err)
 	}
 	if !mr.Exists("other-app-key") {

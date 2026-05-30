@@ -5,8 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
-
 	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/cache/cachetest"
 	"github.com/velocitykode/velocity/cache/drivers"
@@ -65,38 +63,9 @@ func TestFileStore_LockerContract(t *testing.T) {
 	})
 }
 
-// TestRedisStore_Contract runs the cachetest.Store spec against the Redis
-// store backed by miniredis. Uses the clock-aware factory so the TTL
-// invariant can FastForward miniredis past the entry's expiry.
-func TestRedisStore_Contract(t *testing.T) {
-	// Share a single miniredis instance across the sub-tests via a
-	// closure-captured pointer so Advance can call FastForward on it.
-	// Each sub-test still gets a fresh prefix-namespaced store from
-	// New (the same miniredis serves all sub-tests but each operates
-	// under its own prefix, which is how the FileStore factory works
-	// today too).
-	var mrPtr *miniredis.Miniredis
-	cachetest.RunStoreContractTestsWithClock(t, cachetest.StoreFactoryWithClock{
-		New: func(t *testing.T) cache.Store {
-			s, mr := newMiniredisStore(t)
-			mrPtr = mr
-			return s
-		},
-		Advance: func(d time.Duration) {
-			if mrPtr != nil {
-				mrPtr.FastForward(d)
-			}
-		},
-	})
-}
-
-// TestRedisStore_LockerContract runs the locker spec against RedisStore.
-func TestRedisStore_LockerContract(t *testing.T) {
-	cachetest.RunLockerContractTests(t, func(t *testing.T) drivers.Locker {
-		s, _ := newMiniredisStore(t)
-		return s
-	})
-}
+// Redis store contract tests live in the cache/redis leaf package
+// (cache/redis/contract_test.go) so the cache core test binary does not
+// pull in the go-redis dependency.
 
 // probeTTL is the duration used by capability probes; long enough to
 // outlive the probe call, short enough that a forgotten probe times out
@@ -110,21 +79,4 @@ func mustFileStore(t *testing.T, root string) *drivers.FileStore {
 		t.Fatalf("NewFileStore: %v", err)
 	}
 	return s
-}
-
-// newMiniredisStore spins a per-test miniredis instance and wires a
-// RedisStore against it.
-func newMiniredisStore(t *testing.T) (*drivers.RedisStore, *miniredis.Miniredis) {
-	t.Helper()
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("start miniredis: %v", err)
-	}
-	t.Cleanup(mr.Close)
-	store, err := drivers.NewRedisStore(context.Background(), "contract", mr.Host(), mr.Server().Addr().Port, "", 0, false)
-	if err != nil {
-		t.Fatalf("NewRedisStore: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Shutdown(context.Background()) })
-	return store, mr
 }

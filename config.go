@@ -648,10 +648,10 @@ func (c DBConfig) Validate() error {
 		return nil
 	}
 	switch c.Connection {
-	case "sqlite", "postgres", "mysql":
+	case "sqlite", "sqlite3", "postgres", "mysql":
 		// OK
 	default:
-		return fmt.Errorf("DB_CONNECTION=%q is not a supported driver (want sqlite, postgres, or mysql)", c.Connection)
+		return fmt.Errorf("DB_CONNECTION=%q is not a supported driver (want sqlite, sqlite3, postgres, or mysql)", c.Connection)
 	}
 	if c.MaxIdleConns < 0 || c.MaxOpenConns < 0 {
 		return fmt.Errorf("DB_MAX_IDLE_CONNS / DB_MAX_OPEN_CONNS must be non-negative")

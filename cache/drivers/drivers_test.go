@@ -1611,7 +1611,7 @@ func TestFileStore_ConcurrentAccess(t *testing.T) {
 	})
 }
 
-// RedisStore tests are in redis_test.go
+// RedisStore tests live in the cache/redis leaf package.
 
 func TestMemoryStore_Many_SkipsExpired(t *testing.T) {
 	t.Run("skips expired keys when retrieving many", func(t *testing.T) {

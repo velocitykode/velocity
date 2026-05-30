@@ -9,39 +9,10 @@ import (
 // Driver Constructor Tests
 // =============================================================================
 
-func TestNewMySQLDriver_ReturnsDriverInterface(t *testing.T) {
-	tests := []struct {
-		name string
-	}{
-		{"implements Driver interface"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var driver Driver = NewMySQLDriver()
-			if driver == nil {
-				t.Error("NewMySQLDriver() returned nil")
-			}
-		})
-	}
-}
-
-func TestNewPostgresDriver_ReturnsDriverInterface(t *testing.T) {
-	tests := []struct {
-		name string
-	}{
-		{"implements Driver interface"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var driver Driver = NewPostgresDriver()
-			if driver == nil {
-				t.Error("NewPostgresDriver() returned nil")
-			}
-		})
-	}
-}
+// The MySQL and PostgreSQL constructor / before-connect tests live with their
+// connectors in the orm/mysql and orm/postgres leaf packages. SQLite's
+// connector stays in this package (it backs the pure-Go default), so its
+// driver-level tests stay here.
 
 func TestNewSQLiteDriver_ReturnsDriverInterface(t *testing.T) {
 	tests := []struct {
@@ -586,8 +557,6 @@ func TestAllDrivers_DriverName(t *testing.T) {
 		driver   Driver
 		wantName string
 	}{
-		{"MySQL driver name", NewMySQLDriver(), "mysql"},
-		{"PostgreSQL driver name", NewPostgresDriver(), "postgres"},
 		{"SQLite driver name", NewSQLiteDriver(), "sqlite"},
 	}
 
@@ -610,8 +579,6 @@ func TestAllDrivers_GrammarImplementsInterface(t *testing.T) {
 		name   string
 		driver Driver
 	}{
-		{"MySQL grammar implements interface", NewMySQLDriver()},
-		{"PostgreSQL grammar implements interface", NewPostgresDriver()},
 		{"SQLite grammar implements interface", NewSQLiteDriver()},
 	}
 
@@ -646,8 +613,6 @@ func TestAllDrivers_DBReturnsNilBeforeConnect(t *testing.T) {
 		name   string
 		driver Driver
 	}{
-		{"MySQL returns nil DB before connect", NewMySQLDriver()},
-		{"PostgreSQL returns nil DB before connect", NewPostgresDriver()},
 		{"SQLite returns nil DB before connect", NewSQLiteDriver()},
 	}
 
@@ -665,8 +630,6 @@ func TestAllDrivers_PingFailsBeforeConnect(t *testing.T) {
 		name   string
 		driver Driver
 	}{
-		{"MySQL ping fails before connect", NewMySQLDriver()},
-		{"PostgreSQL ping fails before connect", NewPostgresDriver()},
 		{"SQLite ping fails before connect", NewSQLiteDriver()},
 	}
 
@@ -685,8 +648,6 @@ func TestAllDrivers_CloseSucceedsBeforeConnect(t *testing.T) {
 		name   string
 		driver Driver
 	}{
-		{"MySQL close succeeds before connect", NewMySQLDriver()},
-		{"PostgreSQL close succeeds before connect", NewPostgresDriver()},
 		{"SQLite close succeeds before connect", NewSQLiteDriver()},
 	}
 

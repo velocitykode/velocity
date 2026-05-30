@@ -1,23 +1,27 @@
-package drivers
+// Package redis is the per-driver leaf that backs Velocity's cache with
+// Redis. It lives outside cache/drivers so the cache core never pulls in the
+// go-redis client: importing this package (directly or via cache/standard)
+// registers the "redis" cache store factory and attaches go-redis only to the
+// binaries that ask for it.
+//
+//	import _ "github.com/velocitykode/velocity/cache/redis"
+//
+// The store self-registers into cache.Drivers() from init(); use New for a
+// standalone store without going through the registry.
+package redis
 
 import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/redis/go-redis/v9"
-)
 
-// ErrCannotFlushUnprefixed is returned by RedisStore.Flush when the store
-// was configured with an empty prefix. SCAN with pattern "*" iterates the
-// entire Redis database and DEL deletes every key returned, which on a
-// shared Redis instance wipes every other application's data. Operators
-// who genuinely want this behaviour must opt in via FlushAllUnsafe.
-var ErrCannotFlushUnprefixed = errors.New("velocity/cache: refusing to Flush a Redis store with empty prefix (would wipe entire DB); set Prefix or call FlushAllUnsafe")
+	"github.com/velocitykode/velocity/cache/drivers"
+)
 
 // RedisStore implements a Redis-based cache store
 type RedisStore struct {
@@ -98,7 +102,7 @@ func (s *RedisStore) Shutdown(ctx context.Context) error {
 
 // prefixedKey returns the key with prefix.
 func (s *RedisStore) prefixedKey(key string) string {
-	return PrefixKey(s.prefix, key)
+	return drivers.PrefixKey(s.prefix, key)
 }
 
 // GetCtx retrieves a value from the cache using the provided context.
@@ -217,7 +221,7 @@ func (s *RedisStore) Forget(key string) error {
 // FlushAllUnsafeCtx explicitly.
 func (s *RedisStore) FlushCtx(ctx context.Context) error {
 	if s.prefix == "" {
-		return ErrCannotFlushUnprefixed
+		return drivers.ErrCannotFlushUnprefixed
 	}
 	return s.flushPattern(ctx, s.prefix+":*")
 }
@@ -381,12 +385,12 @@ func (s *RedisStore) PutMany(items map[string]interface{}, ttl time.Duration) er
 
 // Remember gets from cache or computes and stores.
 func (s *RedisStore) Remember(key string, ttl time.Duration, callback func() interface{}) (interface{}, error) {
-	return RememberFrom(s, s, key, ttl, callback)
+	return drivers.RememberFrom(s, s, key, ttl, callback)
 }
 
 // RememberForever gets from cache or computes and stores forever.
 func (s *RedisStore) RememberForever(key string, callback func() interface{}) (interface{}, error) {
-	return RememberForeverFrom(s, s, key, callback)
+	return drivers.RememberForeverFrom(s, s, key, callback)
 }
 
 // GetPrefix returns the cache prefix

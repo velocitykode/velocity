@@ -12,7 +12,7 @@
 // Redis is a real server (not miniredis) — miniredis doesn't implement
 // every command go-redis uses, so parity against it isn't parity against
 // what prod actually runs.
-package drivers
+package redis
 
 import (
 	"context"
@@ -22,6 +22,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/cache/drivers"
 )
 
 var cacheRequiredEnv = []string{
@@ -65,10 +67,10 @@ type cacheFixture struct {
 func cacheFixtures(t *testing.T) []cacheFixture {
 	t.Helper()
 
-	mem := NewMemoryStore("")
+	mem := drivers.NewMemoryStore("")
 	mem.Start()
 
-	file, err := NewFileStore("", t.TempDir())
+	file, err := drivers.NewFileStore("", t.TempDir())
 	if err != nil {
 		t.Fatalf("NewFileStore: %v", err)
 	}

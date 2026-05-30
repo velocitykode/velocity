@@ -7,8 +7,17 @@ import (
 	"path/filepath"
 	"strings"
 
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/velocitykode/velocity/orm/internal/sqlitebackend"
 )
+
+// init installs the backend-selecting SQLite constructor on the internal
+// seam so the cgo leaf (orm/sqlite) can build a "sqlite3"-backed driver
+// without orm/drivers exporting that constructor publicly.
+func init() {
+	sqlitebackend.New = func(sqlDriver string) any {
+		return &SQLiteDriver{sqlDriver: sqlDriver}
+	}
+}
 
 // sqliteDirMode is the secret-tier permission applied to the directory
 // holding the SQLite database file. The database carries user records,
@@ -26,14 +35,37 @@ func hasDotDotTraversal(path string) bool {
 	return false
 }
 
-// SQLiteDriver implements the Driver interface for SQLite
+// SQLiteDriver implements the Driver interface for SQLite. The dial logic
+// (DSN building, directory creation, PRAGMAs) is dialect-only and stdlib-bound;
+// the single thing that varies between the pure-Go and cgo backends is the
+// database/sql driver name to open, carried in sqlDriver. This lets the same
+// connector back both the always-on modernc default ("sqlite") in the orm root
+// and the opt-in cgo leaf ("sqlite3", orm/sqlite) without duplicating the
+// security-sensitive directory-permission logic.
 type SQLiteDriver struct {
 	BaseDriver
+	// sqlDriver is the database/sql driver name passed to sql.Open. Set by
+	// NewSQLiteDriver (pure-Go "sqlite") or, for the cgo leaf, the
+	// sqlitebackend seam ("sqlite3"); empty is treated as the pure-Go
+	// default "sqlite".
+	sqlDriver string
 }
 
-// NewSQLiteDriver creates a new SQLite driver instance
+// NewSQLiteDriver creates a new SQLite driver instance backed by the pure-Go
+// modernc database/sql driver ("sqlite"). The modernc driver must be
+// registered with database/sql (it self-registers from a blank import in the
+// orm root) for Connect to succeed.
 func NewSQLiteDriver() Driver {
-	return &SQLiteDriver{}
+	return &SQLiteDriver{sqlDriver: "sqlite"}
+}
+
+// sqlDriverName returns the database/sql driver name to open, defaulting to
+// the pure-Go "sqlite" when the driver was constructed without one.
+func (d *SQLiteDriver) sqlDriverName() string {
+	if d.sqlDriver == "" {
+		return "sqlite"
+	}
+	return d.sqlDriver
 }
 
 // Connect establishes a connection to SQLite database
@@ -87,7 +119,7 @@ func (d *SQLiteDriver) Connect(config ConnectionConfig) error {
 		dsn += "?" + strings.Join(params, "&")
 	}
 
-	db, err := sql.Open("sqlite3", dsn)
+	db, err := sql.Open(d.sqlDriverName(), dsn)
 	if err != nil {
 		return err
 	}

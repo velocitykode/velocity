@@ -84,16 +84,27 @@ func (b *BaseDriver) ConfigurePool(db *sql.DB) {
 	}
 }
 
-// openAndPing opens a database connection and verifies it with a ping.
-func openAndPing(driverName, dsn string) (*sql.DB, error) {
+// OpenAndPing opens a database connection via the named database/sql driver,
+// verifies it with a ping, applies the pool configuration from b.Config, and
+// installs the handle on the receiver. It is the shared connect helper the
+// per-driver leaf packages (orm/postgres, orm/mysql) reuse so the dial+ping
+// logic and the unexported db field live in one place; b.Config must be set
+// before calling.
+//
+// On any failure the handle is left nil and the error is returned wrapped;
+// leaves add dialect-specific context (e.g. a redacted DSN) on top.
+func (b *BaseDriver) OpenAndPing(driverName, dsn string) error {
 	db, err := sql.Open(driverName, dsn)
 	if err != nil {
-		return nil, fmt.Errorf("velocity/orm: failed to open database: %w", err)
+		return fmt.Errorf("velocity/orm: failed to open database: %w", err)
 	}
 	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("velocity/orm: failed to ping database: %w", err)
+		_ = db.Close()
+		return fmt.Errorf("velocity/orm: failed to ping database: %w", err)
 	}
-	return db, nil
+	b.ConfigurePool(db)
+	b.db = db
+	return nil
 }
 
 // CreateTableWith creates a new table using the provided grammar.

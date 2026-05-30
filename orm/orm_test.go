@@ -42,13 +42,20 @@ func TestNewManager(t *testing.T) {
 }
 
 func TestDriverCreation(t *testing.T) {
-	// Verify that known drivers are registered. The registry holds factories,
-	// not constructed drivers, so the assertion is on Has rather than calling
-	// the factory (which would require a working database connection for
-	// postgres / mysql).
-	for _, name := range []string{"sqlite", "sqlite3", "postgres", "mysql"} {
+	// Only the pure-Go modernc SQLite default is registered in the orm root,
+	// under both "sqlite" and "sqlite3". postgres, mysql, and the cgo SQLite
+	// backend live in the orm/{postgres,mysql,sqlite} leaf packages and only
+	// register when blank-imported, so they must NOT appear here. The registry
+	// holds factories, not constructed drivers, so the assertion is on Has.
+	for _, name := range []string{"sqlite", "sqlite3"} {
 		if !Drivers().Has(name) {
 			t.Errorf("Expected built-in driver %q to be registered", name)
+		}
+	}
+
+	for _, name := range []string{"postgres", "mysql"} {
+		if Drivers().Has(name) {
+			t.Errorf("Expected opt-in leaf driver %q to NOT be registered in the orm root", name)
 		}
 	}
 

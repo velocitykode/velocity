@@ -77,10 +77,6 @@ type CacheManager interface {
 // Verify *Manager implements CacheManager at compile time.
 var _ CacheManager = (*Manager)(nil)
 
-// Verify *drivers.RedisStore implements ContextStore at compile time so the
-// Manager's optional-interface assertion picks it up for ctx-aware operations.
-var _ ContextStore = (*drivers.RedisStore)(nil)
-
 // Manager manages multiple cache stores
 type Manager struct {
 	mu              sync.RWMutex

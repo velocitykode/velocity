@@ -1,9 +1,11 @@
-package drivers
+package postgres
 
 import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/velocitykode/velocity/orm/drivers"
 )
 
 // TestResolveSSLMode_DefaultsToRequire verifies that callers who do not
@@ -29,7 +31,7 @@ func TestResolveSSLMode_ConfigOverride(t *testing.T) {
 // openAndPing through a mock substitution is overkill; instead we build
 // the DSN the same way Connect does and assert the expected substring.
 func TestPostgresDriver_DSNIncludesRequireByDefault(t *testing.T) {
-	cfg := ConnectionConfig{
+	cfg := drivers.ConnectionConfig{
 		Host:     "db.example.com",
 		Port:     "5432",
 		Database: "app",
@@ -50,7 +52,7 @@ func TestPostgresDriver_DSNIncludesRequireByDefault(t *testing.T) {
 // buildPostgresDSNForTest constructs the same DSN string that
 // PostgresDriver.Connect would produce, without opening a real connection.
 // It mirrors the logic in Connect so it is covered by the same tests.
-func buildPostgresDSNForTest(config ConnectionConfig) string {
+func buildPostgresDSNForTest(config drivers.ConnectionConfig) string {
 	dsn := "host=" + escapePgDSNValue(config.Host) +
 		" port=" + escapePgDSNValue(config.Port) +
 		" user=" + escapePgDSNValue(config.Username) +

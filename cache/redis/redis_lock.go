@@ -1,4 +1,4 @@
-package drivers
+package redis
 
 import (
 	"context"
@@ -6,6 +6,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/velocitykode/velocity/cache/drivers"
 )
 
 var releaseLockScript = redis.NewScript(`
@@ -65,7 +67,7 @@ func (l *RedisLock) Get(ctx context.Context) bool {
 // indefinitely. Callers MUST pass a positive ttl to RedisStore.Lock.
 func (l *RedisLock) GetWithErr(ctx context.Context) (bool, error) {
 	if l.ttl <= 0 {
-		return false, ErrInvalidLockTTL
+		return false, drivers.ErrInvalidLockTTL
 	}
 	result, err := l.client.SetNX(ctx, l.key, l.owner, l.ttl).Result()
 	if err != nil {
@@ -87,7 +89,7 @@ func (l *RedisLock) Release(ctx context.Context) bool {
 // If the callback panics, the lock is still released and the panic propagates.
 func (l *RedisLock) Run(ctx context.Context, callback func()) error {
 	if !l.Get(ctx) {
-		return ErrLockNotAcquired
+		return drivers.ErrLockNotAcquired
 	}
 	// Release always runs, even on panic. We deliberately re-use the caller's
 	// ctx - if they cancelled it, releasing through a dead ctx is acceptable
@@ -118,7 +120,7 @@ func (l *RedisLock) Block(ctx context.Context, timeout time.Duration, callback f
 		}
 
 		if time.Now().After(deadline) {
-			return ErrLockTimeout
+			return drivers.ErrLockTimeout
 		}
 
 		// Sleep but wake early if ctx is cancelled so Block honors ctx promptly.
@@ -142,7 +144,7 @@ func (l *RedisLock) ForceRelease(ctx context.Context) error {
 }
 
 // Lock creates a new lock for the given key with an optional TTL.
-func (s *RedisStore) Lock(key string, ttl ...time.Duration) Lock {
+func (s *RedisStore) Lock(key string, ttl ...time.Duration) drivers.Lock {
 	lockTTL := time.Duration(0)
 	if len(ttl) > 0 {
 		lockTTL = ttl[0]
@@ -152,6 +154,6 @@ func (s *RedisStore) Lock(key string, ttl ...time.Duration) Lock {
 }
 
 // RestoreLock restores a lock instance for the given key and owner without acquiring it.
-func (s *RedisStore) RestoreLock(key string, owner string) Lock {
+func (s *RedisStore) RestoreLock(key string, owner string) drivers.Lock {
 	return NewRedisLock(s.client, s.prefixedKey("lock:"+key), owner, 0)
 }

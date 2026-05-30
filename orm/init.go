@@ -4,6 +4,13 @@ import (
 	"context"
 	"fmt"
 
+	// modernc.org/sqlite is the pure-Go SQLite driver. It self-registers with
+	// database/sql under the name "sqlite" and is the always-on, cgo-free
+	// default so zero-config apps and `go test ./...` get a working DB without
+	// a blank import. The cgo mattn backend and postgres/mysql are opt-in via
+	// their orm/{sqlite,postgres,mysql} leaf packages.
+	_ "modernc.org/sqlite"
+
 	"github.com/velocitykode/velocity/driverregistry"
 	"github.com/velocitykode/velocity/orm/drivers"
 )
@@ -47,8 +54,16 @@ func init() {
 		})
 	}
 
+	// Only the pure-Go modernc SQLite default is registered in the root, under
+	// both "sqlite" and "sqlite3". drivers.NewSQLiteDriver opens the modernc
+	// "sqlite" database/sql driver (blank-imported above), so a zero-config app
+	// gets a working DB with no cgo and no extra blank import.
+	//
+	// postgres, mysql, and the cgo mattn SQLite backend are NOT registered
+	// here. They live in the orm/postgres, orm/mysql, and orm/sqlite leaf
+	// packages (which carry lib/pq, go-sql-driver/mysql, and the cgo
+	// dependency respectively) and self-register from their own init(). Blank-
+	// import the specific leaf, or orm/standard for the full set.
 	registerSQL("sqlite", drivers.NewSQLiteDriver)
 	registerSQL("sqlite3", drivers.NewSQLiteDriver)
-	registerSQL("postgres", drivers.NewPostgresDriver)
-	registerSQL("mysql", drivers.NewMySQLDriver)
 }
