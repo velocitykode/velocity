@@ -16,12 +16,12 @@ import (
 // Login, Logout, and remember-cookie revival, and to verify the
 // post-rotation XSRF cookie write (M-04).
 type fakeCSRFRotator struct {
-	mu         sync.Mutex
-	rotated    []rotateCall
-	revoked    []string
-	xsrfWrote  []string
+	mu          sync.Mutex
+	rotated     []rotateCall
+	revoked     []string
+	xsrfWrote   []string
 	xsrfCleared int
-	rotateErr  error
+	rotateErr   error
 }
 
 type rotateCall struct {
