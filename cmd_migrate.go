@@ -4,7 +4,17 @@ import (
 	"strconv"
 
 	"github.com/velocitykode/velocity/console"
+	"github.com/velocitykode/velocity/orm"
 )
+
+// ormDB returns the database as the richer orm.Database. a.DB is typed as the
+// stdlib-only contract.Database (so the app leaf need not import orm); the
+// stored value is always the concrete *orm.Manager, which also satisfies
+// orm.Database. Returns nil when no database is configured.
+func (a *App) ormDB() orm.Database {
+	db, _ := a.DB.(orm.Database)
+	return db
+}
 
 type routeListCmd struct{}
 
@@ -31,7 +41,7 @@ func (migrateCmd) run(a *App, args []string) error {
 			opts.Pretend = true
 		}
 	}
-	return console.Migrate(a.DB, opts)
+	return console.Migrate(a.ormDB(), opts)
 }
 
 type migrateFreshCmd struct{}
@@ -42,7 +52,7 @@ func (migrateFreshCmd) run(a *App, args []string) error {
 	if err := a.Bootstrap(); err != nil {
 		return err
 	}
-	return console.MigrateFresh(a.DB)
+	return console.MigrateFresh(a.ormDB())
 }
 
 type migrateRollbackCmd struct{}
@@ -59,7 +69,7 @@ func (migrateRollbackCmd) run(a *App, args []string) error {
 			steps = n
 		}
 	}
-	return console.MigrateRollback(a.DB, steps)
+	return console.MigrateRollback(a.ormDB(), steps)
 }
 
 type migrateStatusCmd struct{}
@@ -70,5 +80,5 @@ func (migrateStatusCmd) run(a *App, args []string) error {
 	if err := a.Bootstrap(); err != nil {
 		return err
 	}
-	return console.MigrateStatus(a.DB)
+	return console.MigrateStatus(a.ormDB())
 }

@@ -699,11 +699,14 @@ func (c *Context) ServicesIfSet() *app.Services {
 	return c.services
 }
 
-// DB returns the ORM database interface.
+// DB returns the ORM database interface. s.DB is typed as the stdlib-only
+// contract.Database; the stored value is always the concrete *orm.Manager,
+// which also satisfies the richer orm.Database (the driver-facing methods
+// the contract omits), so the assertion holds.
 func (c *Context) DB() orm.Database {
 	s := c.mustServices()
 	requireService(c, s.DB, "database")
-	return s.DB
+	return s.DB.(orm.Database)
 }
 
 // Cache returns the cache manager interface.
