@@ -81,4 +81,10 @@ var (
 	// Distinct from ErrDecrypt: structural defects vs. cryptographic failure.
 	// Hoisted from crypto/drivers.ErrInvalidPayload.
 	ErrInvalidPayload = errors.New("velocity/crypto: invalid payload format")
+
+	// ErrInvalidCipher is returned by crypto drivers when the configured
+	// cipher is unknown or cannot perform the requested operation, e.g. a
+	// non-AEAD (CBC) cipher asked to bind AAD via EncryptBytesWithAAD.
+	// Hoisted from crypto/drivers.ErrInvalidCipher.
+	ErrInvalidCipher = errors.New("velocity/crypto: unsupported cipher")
 )

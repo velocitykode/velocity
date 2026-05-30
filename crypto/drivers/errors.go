@@ -12,7 +12,10 @@ import (
 // under the same identity, so errors.Is(err, crypto.ErrInvalidCipher)
 // works against errors returned from this package.
 var (
-	ErrInvalidCipher = errors.New("velocity/crypto: unsupported cipher")
+	// ErrInvalidCipher is aliased to contract.ErrInvalidCipher so callers
+	// can errors.Is against the shared identity without importing
+	// crypto/drivers (same hoisting pattern as ErrInvalidPayload below).
+	ErrInvalidCipher = contract.ErrInvalidCipher
 	ErrAADMismatch   = errors.New("velocity/crypto: AAD mismatch")
 	// ErrLegacyPayloadDisabled is returned when a v0 (pre-domain-separated
 	// MAC) payload is presented to a driver that has v0 decoding turned
