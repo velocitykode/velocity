@@ -1,4 +1,4 @@
-package queue
+package redis
 
 import (
 	"context"
@@ -6,7 +6,24 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+
+	"github.com/velocitykode/velocity/queue"
 )
+
+// saveAndRestoreSigningState captures the current signing state and
+// restores it after the test, so signing-key mutations do not leak
+// between tests. The leaf test binary starts with signing disabled, so
+// resetting via the exported SetSigningKey is a faithful restore.
+func saveAndRestoreSigningState(t *testing.T) {
+	t.Helper()
+	orig := queue.IsSigningEnabled()
+	reset := queue.SetSigningKey
+	t.Cleanup(func() {
+		if !orig {
+			reset(nil)
+		}
+	})
+}
 
 // newMiniRedisDriver spins up a fresh miniredis backing a RedisDriver
 // configured to talk to it. The driver and the miniredis handle are
@@ -22,7 +39,7 @@ func newMiniRedisDriver(t *testing.T) (*RedisDriver, *miniredis.Miniredis) {
 	}
 	t.Cleanup(mr.Close)
 
-	driver, err := NewRedisDriver(RedisConfig{
+	driver, err := NewRedisDriver(queue.RedisConfig{
 		Host: mr.Host(),
 		Port: mr.Port(),
 		DB:   "0",
@@ -42,11 +59,11 @@ func newMiniRedisDriver(t *testing.T) (*RedisDriver, *miniredis.Miniredis) {
 // together on the first call.
 func TestRedisDriver_PushIfNotExistsCtx_AtomicViaScript(t *testing.T) {
 	saveAndRestoreSigningState(t)
-	SetSigningKey(nil) // simplify payload verification surface
+	queue.SetSigningKey(nil) // simplify payload verification surface
 
 	driver, mr := newMiniRedisDriver(t)
 
-	job1 := &BatchCallbackJob{BatchID: "batch_atomic", Kind: CallbackThen, Name: "noop"}
+	job1 := &queue.BatchCallbackJob{BatchID: "batch_atomic", Kind: queue.CallbackThen, Name: "noop"}
 	dedupe := job1.DedupeKey()
 
 	// First push: must create the sentinel AND queue the payload in
@@ -82,7 +99,7 @@ func TestRedisDriver_PushIfNotExistsCtx_AtomicViaScript(t *testing.T) {
 
 	// Second push with identical dedupe key: must be a no-op. The
 	// script returns 0; no second RPUSH; sentinel TTL untouched.
-	job2 := &BatchCallbackJob{BatchID: "batch_atomic", Kind: CallbackThen, Name: "noop"}
+	job2 := &queue.BatchCallbackJob{BatchID: "batch_atomic", Kind: queue.CallbackThen, Name: "noop"}
 	if err := driver.PushIfNotExistsCtx(context.Background(), job2, dedupe, "default"); err != nil {
 		t.Fatalf("second push: %v", err)
 	}
@@ -117,11 +134,11 @@ func TestRedisDriver_PushIfNotExistsCtx_AtomicViaScript(t *testing.T) {
 // return a NOSCRIPT error.
 func TestRedisDriver_PushIfNotExistsCtx_NoScriptReload(t *testing.T) {
 	saveAndRestoreSigningState(t)
-	SetSigningKey(nil)
+	queue.SetSigningKey(nil)
 
 	driver, mr := newMiniRedisDriver(t)
 
-	jobA := &BatchCallbackJob{BatchID: "batch_no_a", Kind: CallbackThen, Name: "noop"}
+	jobA := &queue.BatchCallbackJob{BatchID: "batch_no_a", Kind: queue.CallbackThen, Name: "noop"}
 	if err := driver.PushIfNotExistsCtx(context.Background(), jobA, jobA.DedupeKey(), "default"); err != nil {
 		t.Fatalf("first push (loads script): %v", err)
 	}
@@ -138,7 +155,7 @@ func TestRedisDriver_PushIfNotExistsCtx_NoScriptReload(t *testing.T) {
 	// Different key so the EXISTS branch returns 0 and the script
 	// has to actually run end-to-end. After FLUSH the first EVALSHA
 	// returns NOSCRIPT; *Script.Run transparently falls back to EVAL.
-	jobB := &BatchCallbackJob{BatchID: "batch_no_b", Kind: CallbackThen, Name: "noop"}
+	jobB := &queue.BatchCallbackJob{BatchID: "batch_no_b", Kind: queue.CallbackThen, Name: "noop"}
 	if err := driver.PushIfNotExistsCtx(context.Background(), jobB, jobB.DedupeKey(), "default"); err != nil {
 		t.Fatalf("push after SCRIPT FLUSH (NOSCRIPT fallback): %v", err)
 	}
@@ -150,7 +167,7 @@ func TestRedisDriver_PushIfNotExistsCtx_NoScriptReload(t *testing.T) {
 	// EVALSHA cleanly because Eval re-caches the SHA1. We cannot
 	// directly assert which command was used without instrumenting
 	// the client; success is sufficient.
-	jobC := &BatchCallbackJob{BatchID: "batch_no_c", Kind: CallbackThen, Name: "noop"}
+	jobC := &queue.BatchCallbackJob{BatchID: "batch_no_c", Kind: queue.CallbackThen, Name: "noop"}
 	if err := driver.PushIfNotExistsCtx(context.Background(), jobC, jobC.DedupeKey(), "default"); err != nil {
 		t.Fatalf("third push (post-NOSCRIPT recovery): %v", err)
 	}
@@ -170,13 +187,13 @@ func TestRedisDriver_PushIfNotExistsCtx_NoScriptReload(t *testing.T) {
 // call.
 func TestRedisDriver_PushIfNotExistsCtx_AmbiguousNetworkError(t *testing.T) {
 	saveAndRestoreSigningState(t)
-	SetSigningKey(nil)
+	queue.SetSigningKey(nil)
 
 	driver, mr := newMiniRedisDriver(t)
 
 	mr.SetError("simulated transient network error")
 
-	job := &BatchCallbackJob{BatchID: "batch_neterr", Kind: CallbackThen, Name: "noop"}
+	job := &queue.BatchCallbackJob{BatchID: "batch_neterr", Kind: queue.CallbackThen, Name: "noop"}
 	dedupe := job.DedupeKey()
 	err := driver.PushIfNotExistsCtx(context.Background(), job, dedupe, "default")
 	if err == nil {
@@ -232,7 +249,7 @@ func TestRedisDriver_PushIfNotExistsCtx_AmbiguousNetworkError(t *testing.T) {
 // (still the poisoned string).
 func TestRedisDriver_PushIfNotExistsCtx_RPUSHErrorRollsBackSentinel(t *testing.T) {
 	saveAndRestoreSigningState(t)
-	SetSigningKey(nil)
+	queue.SetSigningKey(nil)
 
 	driver, mr := newMiniRedisDriver(t)
 
@@ -244,7 +261,7 @@ func TestRedisDriver_PushIfNotExistsCtx_RPUSHErrorRollsBackSentinel(t *testing.T
 		t.Fatalf("seed poison key: %v", err)
 	}
 
-	job := &BatchCallbackJob{BatchID: "batch_wrongtype", Kind: CallbackThen, Name: "noop"}
+	job := &queue.BatchCallbackJob{BatchID: "batch_wrongtype", Kind: queue.CallbackThen, Name: "noop"}
 	dedupe := job.DedupeKey()
 	sentinelKey := driver.getDedupeKey(dedupe)
 

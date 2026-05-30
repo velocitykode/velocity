@@ -1,4 +1,4 @@
-package storage
+package s3
 
 import (
 	"bytes"
@@ -12,6 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+
+	"github.com/velocitykode/velocity/storage"
 )
 
 // mockS3Client implements s3API for testing
@@ -213,7 +215,7 @@ func TestS3DriverWithMock(t *testing.T) {
 			bucket:     "test-bucket",
 			region:     "us-east-1",
 			url:        "https://test-bucket.s3.amazonaws.com",
-			visibility: Private,
+			visibility: storage.Private,
 		},
 		mock: mock,
 	}
@@ -502,7 +504,7 @@ func TestS3DriverWithMock(t *testing.T) {
 func TestNewS3Driver(t *testing.T) {
 	// Test with minimal config (will fail but tests the path)
 	t.Run("MinimalConfig", func(t *testing.T) {
-		_, err := NewS3Driver(DiskConfig{
+		_, err := NewS3Driver(storage.DiskConfig{
 			Driver: "s3",
 			Bucket: "test-bucket",
 			Region: "us-east-1",
@@ -513,7 +515,7 @@ func TestNewS3Driver(t *testing.T) {
 
 	// Test with full config (will fail but tests the path)
 	t.Run("FullConfig", func(t *testing.T) {
-		_, err := NewS3Driver(DiskConfig{
+		_, err := NewS3Driver(storage.DiskConfig{
 			Driver:     "s3",
 			Key:        "test-key",
 			Secret:     "test-secret",
@@ -530,7 +532,7 @@ func TestNewS3Driver(t *testing.T) {
 // TestNewS3DriverValidation ensures config validation runs before any AWS I/O.
 func TestNewS3DriverValidation(t *testing.T) {
 	t.Run("MissingRegion", func(t *testing.T) {
-		_, err := NewS3Driver(DiskConfig{
+		_, err := NewS3Driver(storage.DiskConfig{
 			Driver: "s3",
 			Bucket: "test-bucket",
 		})
@@ -543,7 +545,7 @@ func TestNewS3DriverValidation(t *testing.T) {
 	})
 
 	t.Run("MissingBucket", func(t *testing.T) {
-		_, err := NewS3Driver(DiskConfig{
+		_, err := NewS3Driver(storage.DiskConfig{
 			Driver: "s3",
 			Region: "us-east-1",
 		})
@@ -556,7 +558,7 @@ func TestNewS3DriverValidation(t *testing.T) {
 	})
 
 	t.Run("InvalidURLScheme", func(t *testing.T) {
-		_, err := NewS3Driver(DiskConfig{
+		_, err := NewS3Driver(storage.DiskConfig{
 			Driver: "s3",
 			Region: "us-east-1",
 			Bucket: "test-bucket",
@@ -571,7 +573,7 @@ func TestNewS3DriverValidation(t *testing.T) {
 	})
 
 	t.Run("MalformedURL", func(t *testing.T) {
-		_, err := NewS3Driver(DiskConfig{
+		_, err := NewS3Driver(storage.DiskConfig{
 			Driver: "s3",
 			Region: "us-east-1",
 			Bucket: "test-bucket",
@@ -589,12 +591,12 @@ func TestS3DefaultVisibilityPrivate(t *testing.T) {
 	cases := []struct {
 		name       string
 		visibility string
-		want       Visibility
+		want       storage.Visibility
 	}{
-		{"DefaultEmpty", "", Private},
-		{"ExplicitPrivate", "private", Private},
-		{"ExplicitPublic", "public", Public},
-		{"UnknownValueDefaultsPrivate", "world-readable", Private},
+		{"DefaultEmpty", "", storage.Private},
+		{"ExplicitPrivate", "private", storage.Private},
+		{"ExplicitPublic", "public", storage.Public},
+		{"UnknownValueDefaultsPrivate", "world-readable", storage.Private},
 	}
 
 	for _, tc := range cases {
@@ -602,10 +604,10 @@ func TestS3DefaultVisibilityPrivate(t *testing.T) {
 			d := &S3Driver{}
 			// Simulate the assignment performed in NewS3Driver without requiring
 			// AWS credentials or network access.
-			if tc.visibility == string(Public) {
-				d.visibility = Public
+			if tc.visibility == string(storage.Public) {
+				d.visibility = storage.Public
 			} else {
-				d.visibility = Private
+				d.visibility = storage.Private
 			}
 			if d.visibility != tc.want {
 				t.Errorf("visibility = %q, want %q", d.visibility, tc.want)

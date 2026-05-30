@@ -32,7 +32,8 @@ var (
 	_ contract.EventDispatcherAware = (*orm.Manager)(nil)
 	_ contract.EventDispatcherAware = (*queue.DatabaseDriver)(nil)
 	_ contract.EventDispatcherAware = (*queue.MemoryDriver)(nil)
-	_ contract.EventDispatcherAware = (*queue.RedisDriver)(nil)
+	// The redis driver lives in the queue/redis leaf (to keep go-redis out of
+	// core); its EventDispatcherAware conformance is asserted there.
 	_ contract.EventDispatcherAware = (*queue.Worker)(nil)
 	_ contract.EventDispatcherAware = (*router.VelocityRouterV2)(nil)
 	_ contract.EventDispatcherAware = (*scheduler.Scheduler)(nil)

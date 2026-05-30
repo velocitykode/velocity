@@ -1,4 +1,4 @@
-package storage
+package s3
 
 import (
 	"bytes"
@@ -12,6 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+
+	"github.com/velocitykode/velocity/storage"
 )
 
 // uploadMockClient implements manager.UploadAPIClient for tests that need
@@ -96,7 +98,7 @@ func (m *uploadMockClient) ListObjectsV2(_ context.Context, _ *s3.ListObjectsV2I
 // newS3DriverWithUploadMock wires both client AND uploader against the
 // shared mock so PutStreamCtx exercises the real manager.Uploader code
 // path (sniff -> cap -> SDK chunker -> mock PutObject).
-func newS3DriverWithUploadMock(visibility Visibility) (*S3Driver, *uploadMockClient) {
+func newS3DriverWithUploadMock(visibility storage.Visibility) (*S3Driver, *uploadMockClient) {
 	mock := newUploadMockClient()
 	driver := &S3Driver{
 		client:     mock,
@@ -110,7 +112,7 @@ func newS3DriverWithUploadMock(visibility Visibility) (*S3Driver, *uploadMockCli
 }
 
 func TestS3PutStream_SuccessBelowCap(t *testing.T) {
-	driver, mock := newS3DriverWithUploadMock(Private)
+	driver, mock := newS3DriverWithUploadMock(storage.Private)
 	body := []byte("hello world from a small stream")
 	if err := driver.PutStream("docs/hello.txt", bytes.NewReader(body)); err != nil {
 		t.Fatalf("PutStream: %v", err)
@@ -150,7 +152,7 @@ func TestS3PutStream_RefusesOverCap(t *testing.T) {
 		}),
 		bucket:     "test-bucket",
 		region:     "us-east-1",
-		visibility: Private,
+		visibility: storage.Private,
 	}
 	// Reader that yields max+1 bytes of NUL data. We must NOT buffer
 	// the whole 100+ MiB up front (defeats the point of the test);
@@ -187,7 +189,7 @@ func TestS3PutStream_AcceptsExactlyAtCap(t *testing.T) {
 		}),
 		bucket:     "test-bucket",
 		region:     "us-east-1",
-		visibility: Private,
+		visibility: storage.Private,
 	}
 	stream := &repeatingReader{remaining: maxS3StreamSize}
 	if err := driver.PutStream("atcap.bin", stream); err != nil {
@@ -208,7 +210,7 @@ func TestS3PutStream_AcceptsExactlyAtCap(t *testing.T) {
 // works when the source stream is shorter than mimeSniffSize (the +1
 // lookahead read is well below 512 bytes here).
 func TestS3PutStream_MIMESniffOnShortStream(t *testing.T) {
-	driver, mock := newS3DriverWithUploadMock(Private)
+	driver, mock := newS3DriverWithUploadMock(storage.Private)
 	// 3-byte gzip magic + nothing else.
 	body := []byte{0x1f, 0x8b, 0x08}
 	if err := driver.PutStream("tiny.bin", bytes.NewReader(body)); err != nil {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/queue/queuetest"
+	redisdriver "github.com/velocitykode/velocity/queue/redis"
 )
 
 // contractShutdownCtx is a short-deadline ctx used to Shutdown the driver
@@ -162,7 +163,7 @@ func newMiniredisContractDriver(t *testing.T) queue.Driver {
 	}
 	t.Cleanup(mr.Close)
 
-	d, err := queue.NewRedisDriver(queue.RedisConfig{
+	d, err := redisdriver.New(queue.RedisConfig{
 		Host: mr.Host(),
 		Port: mr.Port(),
 		DB:   "0",

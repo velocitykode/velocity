@@ -1,4 +1,4 @@
-package queue
+package redis
 
 import (
 	"context"
@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/queue"
 )
 
 // captureRedisJobFailed installs a JobFailed-capturing dispatcher onto
@@ -16,21 +18,21 @@ import (
 // Used by every poison-payload test in this file so they all converge on
 // the same shape: dispatcher recorded under the driver's atomic.Pointer,
 // captured events readable from the test goroutine without races.
-func captureRedisJobFailed(driver *RedisDriver) (snapshot func() []*JobFailed) {
+func captureRedisJobFailed(driver *RedisDriver) (snapshot func() []*queue.JobFailed) {
 	var mu sync.Mutex
-	var events []*JobFailed
+	var events []*queue.JobFailed
 	driver.SetEventDispatcher(func(ctx context.Context, e interface{}) error {
-		if jf, ok := e.(*JobFailed); ok {
+		if jf, ok := e.(*queue.JobFailed); ok {
 			mu.Lock()
 			events = append(events, jf)
 			mu.Unlock()
 		}
 		return nil
 	})
-	return func() []*JobFailed {
+	return func() []*queue.JobFailed {
 		mu.Lock()
 		defer mu.Unlock()
-		cp := make([]*JobFailed, len(events))
+		cp := make([]*queue.JobFailed, len(events))
 		copy(cp, events)
 		return cp
 	}
@@ -73,7 +75,7 @@ func readRedisFailedQuarantineRecord(t *testing.T, driver *RedisDriver, queueNam
 // the function returned an error with no breadcrumbs.
 func TestRedisDriver_PopCtxWithTrace_MalformedJSONQuarantined(t *testing.T) {
 	saveAndRestoreSigningState(t)
-	SetSigningKey(nil)
+	queue.SetSigningKey(nil)
 
 	driver, mr := newMiniRedisDriver(t)
 	snapshot := captureRedisJobFailed(driver)
@@ -92,7 +94,7 @@ func TestRedisDriver_PopCtxWithTrace_MalformedJSONQuarantined(t *testing.T) {
 	if err == nil {
 		t.Fatalf("PopCtxWithTrace accepted malformed payload: job=%T", job)
 	}
-	if !errors.Is(err, ErrPoisonJob) {
+	if !errors.Is(err, queue.ErrPoisonJob) {
 		t.Errorf("malformed-JSON pop error did not wrap ErrPoisonJob (worker would not treat as recoverable): %v", err)
 	}
 	if job != nil {
@@ -138,7 +140,7 @@ func TestRedisDriver_PopCtxWithTrace_MalformedJSONQuarantined(t *testing.T) {
 // failed-jobs list and dispatch JobFailed.
 func TestRedisDriver_PopCtxWithTrace_BadSignatureQuarantined(t *testing.T) {
 	saveAndRestoreSigningState(t)
-	SetSigningKey([]byte("test-key-for-poison-redis"))
+	queue.SetSigningKey([]byte("test-key-for-poison-redis"))
 
 	driver, mr := newMiniRedisDriver(t)
 	snapshot := captureRedisJobFailed(driver)
@@ -149,7 +151,7 @@ func TestRedisDriver_PopCtxWithTrace_BadSignatureQuarantined(t *testing.T) {
 	// Build a structurally valid payload that has a signature on the
 	// wire but the signature does NOT match the bytes (forged producer
 	// or in-transit tampering).
-	payload := Payload{
+	payload := queue.Payload{
 		Type:      "TamperedJob",
 		Data:      json.RawMessage(`{"x":1}`),
 		Queue:     queueName,
@@ -168,7 +170,7 @@ func TestRedisDriver_PopCtxWithTrace_BadSignatureQuarantined(t *testing.T) {
 	if err == nil {
 		t.Fatalf("PopCtxWithTrace accepted bad signature: job=%T", job)
 	}
-	if !errors.Is(err, ErrPoisonJob) {
+	if !errors.Is(err, queue.ErrPoisonJob) {
 		t.Errorf("bad-signature pop error did not wrap ErrPoisonJob: %v", err)
 	}
 	if job != nil {
@@ -208,7 +210,7 @@ func TestRedisDriver_PopCtxWithTrace_BadSignatureQuarantined(t *testing.T) {
 // surfaces it the same as the other poison paths.
 func TestRedisDriver_PopCtxWithTrace_UnregisteredJobTypeQuarantined(t *testing.T) {
 	saveAndRestoreSigningState(t)
-	SetSigningKey(nil)
+	queue.SetSigningKey(nil)
 
 	driver, mr := newMiniRedisDriver(t)
 	snapshot := captureRedisJobFailed(driver)
@@ -219,7 +221,7 @@ func TestRedisDriver_PopCtxWithTrace_UnregisteredJobTypeQuarantined(t *testing.T
 	// A wire-valid payload whose Type has no handler registered. The
 	// unique string here prevents collisions with other tests that
 	// register job types into the package-level registry.
-	payload := Payload{
+	payload := queue.Payload{
 		Type:      "RedisPoisonNeverRegisteredJob",
 		Data:      json.RawMessage(`{}`),
 		Queue:     queueName,
@@ -237,10 +239,10 @@ func TestRedisDriver_PopCtxWithTrace_UnregisteredJobTypeQuarantined(t *testing.T
 	if err == nil {
 		t.Fatalf("PopCtxWithTrace accepted unregistered job: job=%T", job)
 	}
-	if !errors.Is(err, ErrPoisonJob) {
+	if !errors.Is(err, queue.ErrPoisonJob) {
 		t.Errorf("unregistered-type pop error did not wrap ErrPoisonJob: %v", err)
 	}
-	if !errors.Is(err, ErrJobNotFound) {
+	if !errors.Is(err, queue.ErrJobNotFound) {
 		t.Errorf("unregistered-type pop error did not wrap ErrJobNotFound (specific cause): %v", err)
 	}
 	if job != nil {

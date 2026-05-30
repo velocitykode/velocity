@@ -11,8 +11,8 @@
 // path-style addressing (bucket in the URL path, not the subdomain) which
 // this package's production NewS3Driver does not configure — so the test
 // constructs an *S3Driver directly with a path-style *s3.Client. Tests live
-// in `package storage` so unexported fields are accessible.
-package storage
+// in `package s3` so the driver's unexported fields are accessible.
+package s3
 
 import (
 	"bytes"
@@ -27,6 +27,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+
+	"github.com/velocitykode/velocity/storage"
 )
 
 // requiredEnv is checked once in TestMain. Missing any of these fails the
@@ -94,7 +96,7 @@ func newMinIOS3Driver(t *testing.T) *S3Driver {
 		downloader:    manager.NewDownloader(client),
 		bucket:        bucket,
 		region:        os.Getenv("MINIO_REGION"),
-		visibility:    Private,
+		visibility:    storage.Private,
 	}
 }
 
@@ -102,7 +104,7 @@ func newMinIOS3Driver(t *testing.T) *S3Driver {
 // wipe state between subtests without leaking files or S3 objects.
 type driverFixture struct {
 	name    string
-	driver  Driver
+	driver  storage.Driver
 	cleanup func()
 }
 
@@ -110,7 +112,7 @@ func fixtures(t *testing.T) []driverFixture {
 	t.Helper()
 
 	localDir := t.TempDir()
-	local := NewLocalDriver(DiskConfig{Driver: "local", Root: localDir})
+	local := storage.NewLocalDriver(storage.DiskConfig{Driver: "local", Root: localDir})
 
 	s3d := newMinIOS3Driver(t)
 	s3Prefix := fmt.Sprintf("integration-test-%d/", os.Getpid())
@@ -139,7 +141,7 @@ func fixtures(t *testing.T) []driverFixture {
 // prefix so integration runs against a shared S3 bucket don't collide.
 // It only implements the subset of Driver methods the parity suite uses.
 type prefixedDriver struct {
-	Driver
+	storage.Driver
 	prefix string
 }
 

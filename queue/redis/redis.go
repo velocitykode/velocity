@@ -1,4 +1,4 @@
-package queue
+package redis
 
 import (
 	"context"
@@ -13,29 +13,30 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/trace"
 )
 
-// RedisConfig holds Redis connection configuration.
-// The Password field contains sensitive credentials and must not be logged.
-type RedisConfig struct {
-	Host     string
-	Port     string
-	Password string // SENSITIVE: do not log
-	DB       string
-	TLS      bool // Enable TLS connections
+// init registers the redis queue driver into the canonical queue registry.
+// The redis driver lives in this leaf package so the queue root never pulls
+// in the go-redis dependency; importing this package (directly or via
+// queue/standard) wires the "redis" factory.
+func init() {
+	queue.Drivers().Register("redis", func(_ context.Context, cfg queue.QueueConfig) (queue.Driver, error) {
+		return NewRedisDriver(cfg.Redis)
+	})
 }
 
-// String returns a safe representation with credentials redacted.
-func (c RedisConfig) String() string {
-	return fmt.Sprintf("RedisConfig{Host:%s, Port:%s, DB:%s, Password:[REDACTED]}", c.Host, c.Port, c.DB)
-}
+// dispatcherFn is the local event-dispatcher shape stored under the driver's
+// atomic.Pointer. It mirrors the queue package's dispatcher signature so the
+// lock-free SetEventDispatcher path is preserved verbatim.
+type dispatcherFn func(ctx context.Context, event interface{}) error
 
-// RedisDriver implements Queue interface using Redis
+// RedisDriver implements the queue.Driver interface using Redis.
 type RedisDriver struct {
 	client *redis.Client
 	ctx    context.Context
-	config RedisConfig
+	config queue.RedisConfig
 	// eventDispatcher is stored via atomic.Pointer so the dispatcher path
 	// never acquires a lock. This keeps SetEventDispatcher safe to call
 	// from any context (including callers that may already hold other
@@ -44,8 +45,15 @@ type RedisDriver struct {
 	eventDispatcher atomic.Pointer[dispatcherFn]
 }
 
+// New constructs a Redis queue driver from cfg for standalone use without
+// going through the queue driver registry. It returns the same driver the
+// registry path produces, so both routes are equivalent.
+func New(cfg queue.RedisConfig) (queue.Driver, error) {
+	return NewRedisDriver(cfg)
+}
+
 // NewRedisDriver creates a new Redis queue driver.
-func NewRedisDriver(config RedisConfig) (*RedisDriver, error) {
+func NewRedisDriver(config queue.RedisConfig) (*RedisDriver, error) {
 	db, err := strconv.Atoi(config.DB)
 	if err != nil {
 		db = 0
@@ -108,14 +116,14 @@ func (r *RedisDriver) dispatchEvent(ctx context.Context, event interface{}) {
 }
 
 // PushCtx adds a job to the queue using the caller's context.
-func (r *RedisDriver) PushCtx(ctx context.Context, job Job, queueName ...string) error {
+func (r *RedisDriver) PushCtx(ctx context.Context, job queue.Job, queueName ...string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	name := resolveQueueName(job, queueName...)
+	name := queue.ResolveQueueName(job, queueName...)
 	queueKey := r.getQueueKey(name)
 
-	payload, err := SerializeJob(job, name)
+	payload, err := queue.SerializeJob(job, name)
 	if err != nil {
 		return err
 	}
@@ -126,7 +134,7 @@ func (r *RedisDriver) PushCtx(ctx context.Context, job Job, queueName ...string)
 		return fmt.Errorf("velocity/queue: failed to marshal payload: %w", err)
 	}
 
-	if sig := signPayload(data); sig != "" {
+	if sig := queue.SignPayload(data); sig != "" {
 		payload.Signature = sig
 		data, err = json.Marshal(payload)
 		if err != nil {
@@ -138,19 +146,19 @@ func (r *RedisDriver) PushCtx(ctx context.Context, job Job, queueName ...string)
 		return err
 	}
 
-	dispatchJobQueued(r.dispatchEvent, ctx, payload.Type, name, false, 0)
+	queue.DispatchJobQueued(r.dispatchEvent, ctx, payload.Type, name, false, 0)
 	return nil
 }
 
 // PushDelayedCtx adds a delayed job using the caller's context.
-func (r *RedisDriver) PushDelayedCtx(ctx context.Context, job Job, delay time.Duration, queueName ...string) error {
+func (r *RedisDriver) PushDelayedCtx(ctx context.Context, job queue.Job, delay time.Duration, queueName ...string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	name := resolveQueueName(job, queueName...)
+	name := queue.ResolveQueueName(job, queueName...)
 	delayedKey := r.getDelayedKey(name)
 
-	payload, err := SerializeJob(job, name)
+	payload, err := queue.SerializeJob(job, name)
 	if err != nil {
 		return err
 	}
@@ -161,7 +169,7 @@ func (r *RedisDriver) PushDelayedCtx(ctx context.Context, job Job, delay time.Du
 		return fmt.Errorf("velocity/queue: failed to marshal payload: %w", err)
 	}
 
-	if sig := signPayload(data); sig != "" {
+	if sig := queue.SignPayload(data); sig != "" {
 		payload.Signature = sig
 		data, err = json.Marshal(payload)
 		if err != nil {
@@ -177,14 +185,14 @@ func (r *RedisDriver) PushDelayedCtx(ctx context.Context, job Job, delay time.Du
 		return err
 	}
 
-	dispatchJobQueued(r.dispatchEvent, ctx, payload.Type, name, true, delay)
+	queue.DispatchJobQueued(r.dispatchEvent, ctx, payload.Type, name, true, delay)
 	return nil
 }
 
 // PopCtx retrieves and removes the next job, honouring ctx cancellation on
 // the BLPOP round-trip so worker shutdown aborts without waiting the full
 // BLPOP timeout.
-func (r *RedisDriver) PopCtx(ctx context.Context, queueName string) (Job, error) {
+func (r *RedisDriver) PopCtx(ctx context.Context, queueName string) (queue.Job, error) {
 	job, _, err := r.PopCtxWithTrace(ctx, queueName)
 	return job, err
 }
@@ -202,8 +210,8 @@ func (r *RedisDriver) PopCtx(ctx context.Context, queueName string) (Job, error)
 // (`velocity:queue:<name>:failed`), a JobFailed event is dispatched so
 // observers can alert, and the wrapped error includes ErrPoisonJob so
 // workers treat it as a recoverable pop error rather than a hard failure.
-func (r *RedisDriver) PopCtxWithTrace(ctx context.Context, queueName string) (Job, TraceContext, error) {
-	var tc TraceContext
+func (r *RedisDriver) PopCtxWithTrace(ctx context.Context, queueName string) (queue.Job, queue.TraceContext, error) {
+	var tc queue.TraceContext
 	if err := ctx.Err(); err != nil {
 		return nil, tc, err
 	}
@@ -229,7 +237,7 @@ func (r *RedisDriver) PopCtxWithTrace(ctx context.Context, queueName string) (Jo
 
 	rawPayload := result[1]
 
-	var payload Payload
+	var payload queue.Payload
 	if err := json.Unmarshal([]byte(rawPayload), &payload); err != nil {
 		return r.quarantinePoisonedPayload(ctx, queueName, rawPayload, "unknown",
 			fmt.Errorf("velocity/queue: failed to unmarshal payload: %w", err))
@@ -243,12 +251,12 @@ func (r *RedisDriver) PopCtxWithTrace(ctx context.Context, queueName string) (Jo
 		return r.quarantinePoisonedPayload(ctx, queueName, rawPayload, payload.Type,
 			fmt.Errorf("velocity/queue: failed to marshal payload for verification: %w", err))
 	}
-	if err := verifyPayload(verifyData, sig); err != nil {
+	if err := queue.VerifyPayload(verifyData, sig); err != nil {
 		return r.quarantinePoisonedPayload(ctx, queueName, rawPayload, payload.Type,
 			fmt.Errorf("velocity/queue: queue integrity check failed: %w", err))
 	}
 
-	tc = TraceContext{TraceID: payload.TraceID, SpanID: payload.SpanID, ParentID: payload.ParentID}
+	tc = queue.TraceContext{TraceID: payload.TraceID, SpanID: payload.SpanID, ParentID: payload.ParentID}
 
 	// The dedupe sentinel is INTENTIONALLY NOT released here.
 	// Holding the SETNX key past Pop is what keeps the at-most-once
@@ -261,14 +269,14 @@ func (r *RedisDriver) PopCtxWithTrace(ctx context.Context, queueName string) (Jo
 	_ = payload.DedupeKey
 
 	// Deserialize the job using the registry
-	job, err := registry.Deserialize(&payload)
+	job, err := queue.Deserialize(&payload)
 	if err != nil {
 		j, qtc, qerr := r.quarantinePoisonedPayload(ctx, queueName, rawPayload, payload.Type,
 			fmt.Errorf("velocity/queue: failed to deserialize job: %w", err))
 		// Preserve the trace context recovered from the verified payload
 		// even though the job itself could not be hydrated; observers
 		// correlating the failure to the producer span need it.
-		if qtc == (TraceContext{}) {
+		if qtc == (queue.TraceContext{}) {
 			qtc = tc
 		}
 		return j, qtc, qerr
@@ -300,8 +308,8 @@ func (r *RedisDriver) PopCtxWithTrace(ctx context.Context, queueName string) (Jo
 // loop in an infinite cycle or risk an additional duplicate; preserving
 // the original error chain lets the worker log a complete forensic
 // trail while still making progress on the next pop.
-func (r *RedisDriver) quarantinePoisonedPayload(ctx context.Context, queueName, rawPayload, jobType string, poisonErr error) (Job, TraceContext, error) {
-	var tc TraceContext
+func (r *RedisDriver) quarantinePoisonedPayload(ctx context.Context, queueName, rawPayload, jobType string, poisonErr error) (queue.Job, queue.TraceContext, error) {
+	var tc queue.TraceContext
 
 	failedKey := r.getFailedKey(queueName)
 	record := map[string]interface{}{
@@ -344,12 +352,12 @@ func (r *RedisDriver) quarantinePoisonedPayload(ctx context.Context, queueName, 
 	if jobType == "" {
 		jobType = "unknown"
 	}
-	dispatchJobFailed(r.dispatchEvent, ctx, jobType, queueName, poisonErr, 0)
+	queue.DispatchJobFailed(r.dispatchEvent, ctx, jobType, queueName, poisonErr, 0)
 
 	if writeErr != nil {
-		return nil, tc, errors.Join(ErrPoisonJob, poisonErr, writeErr)
+		return nil, tc, errors.Join(queue.ErrPoisonJob, poisonErr, writeErr)
 	}
-	return nil, tc, errors.Join(ErrPoisonJob, poisonErr)
+	return nil, tc, errors.Join(queue.ErrPoisonJob, poisonErr)
 }
 
 // Size returns the number of jobs in the queue
@@ -388,10 +396,10 @@ func (r *RedisDriver) Clear(queueName string) error {
 }
 
 // Failed moves a job to the failed queue
-func (r *RedisDriver) Failed(job Job, err error, queueName string) error {
+func (r *RedisDriver) Failed(job queue.Job, err error, queueName string) error {
 	failedKey := r.getFailedKey(queueName)
 
-	payload, serr := SerializeJob(job, queueName)
+	payload, serr := queue.SerializeJob(job, queueName)
 	if serr != nil {
 		return serr
 	}
@@ -462,7 +470,7 @@ func (r *RedisDriver) moveDelayedJobs(ctx context.Context, queueName string) err
 		// the delayed set.
 		member, ok := result[0].Member.(string)
 		if !ok {
-			dispatchJobFailed(
+			queue.DispatchJobFailed(
 				r.dispatchEvent,
 				ctx,
 				"unknown",
@@ -601,18 +609,18 @@ var redisDedupePushScriptCompiled = redis.NewScript(redisDedupePushScript)
 // Empty dedupeKey falls through to PushCtx for parity with the memory
 // and database drivers; that is treated as a programmer error rather
 // than a silent no-dedupe push.
-func (r *RedisDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupeKey string, queueName ...string) error {
+func (r *RedisDriver) PushIfNotExistsCtx(ctx context.Context, job queue.Job, dedupeKey string, queueName ...string) error {
 	if dedupeKey == "" {
 		return r.PushCtx(ctx, job, queueName...)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	name := resolveQueueName(job, queueName...)
+	name := queue.ResolveQueueName(job, queueName...)
 	queueKey := r.getQueueKey(name)
 	sentinelKey := r.getDedupeKey(dedupeKey)
 
-	payload, err := SerializeJob(job, name)
+	payload, err := queue.SerializeJob(job, name)
 	if err != nil {
 		return err
 	}
@@ -623,7 +631,7 @@ func (r *RedisDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupeKey
 	if err != nil {
 		return fmt.Errorf("velocity/queue: failed to marshal payload: %w", err)
 	}
-	if sig := signPayload(data); sig != "" {
+	if sig := queue.SignPayload(data); sig != "" {
 		payload.Signature = sig
 		data, err = json.Marshal(payload)
 		if err != nil {
@@ -664,7 +672,7 @@ func (r *RedisDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupeKey
 		return nil
 	}
 
-	dispatchJobQueued(r.dispatchEvent, ctx, payload.Type, name, false, 0)
+	queue.DispatchJobQueued(r.dispatchEvent, ctx, payload.Type, name, false, 0)
 	return nil
 }
 

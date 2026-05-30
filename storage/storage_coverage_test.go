@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/driverregistry"
 )
 
 // TestManagerAPICompleteCoverage tests all Manager API functions using an instance
@@ -581,8 +583,11 @@ func TestConfigurationDriver(t *testing.T) {
 		}
 	})
 
-	// Test S3 driver creation (will fail without credentials)
-	t.Run("S3Driver", func(t *testing.T) {
+	// The root storage package does not import the storage/s3 leaf, so the
+	// "s3" driver is unregistered here and construction must fail with a
+	// driver-not-found error. S3 wiring/construction is exercised in
+	// storage/s3 (see register_test.go and s3_test.go).
+	t.Run("S3DriverUnwired", func(t *testing.T) {
 		_, err := createDriverWithContext(context.Background(), DiskConfig{
 			Driver: "s3",
 			Key:    "test",
@@ -590,8 +595,10 @@ func TestConfigurationDriver(t *testing.T) {
 			Region: "us-east-1",
 			Bucket: "test",
 		})
-		// S3 driver creation might fail, but we're testing the code path
-		_ = err
+		var notFound *driverregistry.NotFoundError
+		if !errors.As(err, &notFound) {
+			t.Fatalf("expected *driverregistry.NotFoundError for unwired s3 driver, got %v", err)
+		}
 	})
 
 	// Test memory driver with default size

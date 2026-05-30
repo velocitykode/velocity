@@ -253,36 +253,7 @@ func TestAllDrivers(t *testing.T) {
 	})
 
 	// Database driver is covered by TestIntegrationDatabaseDriver (PostgreSQL-gated).
-
-	// Test Redis Driver (if Redis is available)
-	t.Run("RedisDriver", func(t *testing.T) {
-		// Skip if no Redis configuration
-		if os.Getenv("QUEUE_REDIS_HOST") == "" {
-			t.Skip("Skipping Redis driver test: QUEUE_REDIS_HOST not set")
-		}
-
-		config := RedisConfig{
-			Host:     getEnvOrDefault("QUEUE_REDIS_HOST", "localhost"),
-			Port:     getEnvOrDefault("QUEUE_REDIS_PORT", "6379"),
-			Password: os.Getenv("QUEUE_REDIS_PASSWORD"),
-			DB:       getEnvOrDefault("QUEUE_REDIS_DB", "0"),
-		}
-
-		driver, err := NewRedisDriver(config)
-		if err != nil {
-			t.Skipf("Skipping Redis driver test: cannot connect to Redis: %v", err)
-		}
-
-		// Clear any existing data
-		driver.Clear("test-queue")
-		driver.Clear("delayed-queue")
-		driver.Clear("queue1")
-		driver.Clear("queue2")
-		driver.Clear("clear-queue")
-		driver.Clear("concurrent")
-
-		testDriver(t, driver, "Redis")
-	})
+	// The Redis driver contract test lives in the queue/redis leaf package.
 }
 
 // TestDriverConfiguration tests that drivers can be configured from environment
@@ -304,22 +275,7 @@ func TestDriverConfiguration(t *testing.T) {
 		}
 	})
 
-	t.Run("RedisDriverConfig", func(t *testing.T) {
-		// Test with explicit config
-		config := RedisConfig{
-			Host:     "localhost",
-			Port:     "6379",
-			Password: "",
-			DB:       "0",
-		}
-
-		// This will fail if Redis is not running, which is expected
-		_, err := NewRedisDriver(config)
-		if err != nil {
-			// Expected if Redis is not running
-			t.Logf("Redis driver creation failed (expected if Redis not running): %v", err)
-		}
-	})
+	// RedisDriverConfig is exercised in the queue/redis leaf package.
 }
 
 // BenchmarkDrivers benchmarks all available drivers

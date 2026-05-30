@@ -444,22 +444,12 @@ func TestReaper_ProcessCrashAfterPush_DedupeOnRecover(t *testing.T) {
 	}
 }
 
-// ----- Redis sanity (skip if no Redis available) ---------------------------
-
-// TestRedisDriver_PushIfNotExistsCtx_DocumentsContract is a compile-
-// time check that the Redis driver implements DedupeAwarePusher.
-// A live Redis test would require a connection, which is out of scope
-// for unit tests.
-func TestRedisDriver_PushIfNotExistsCtx_DocumentsContract(t *testing.T) {
-	var _ DedupeAwarePusher = (*RedisDriver)(nil)
-}
-
 // TestMemoryDriver_DedupeAwarePusher_InterfaceAssertion and the
-// database one too.
+// database one too. The Redis driver's assertion lives in the
+// queue/redis leaf package alongside the driver itself.
 func TestDrivers_AllImplementDedupeAwarePusher(t *testing.T) {
 	var _ DedupeAwarePusher = (*MemoryDriver)(nil)
 	var _ DedupeAwarePusher = (*DatabaseDriver)(nil)
-	var _ DedupeAwarePusher = (*RedisDriver)(nil)
 }
 
 // Trailing helpers to avoid unused-import warnings for sync and

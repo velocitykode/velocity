@@ -66,9 +66,10 @@ func init() {
 		return d, nil
 	})
 
-	Drivers().Register("redis", func(_ context.Context, cfg QueueConfig) (Driver, error) {
-		return NewRedisDriver(cfg.Redis)
-	})
+	// The redis driver is NOT registered here. It lives in the queue/redis
+	// leaf package (which carries the go-redis dependency) and self-registers
+	// from its own init(). Blank-import github.com/velocitykode/velocity/queue/redis
+	// or github.com/velocitykode/velocity/queue/standard to enable it.
 
 	Drivers().Register("database", func(_ context.Context, cfg QueueConfig) (Driver, error) {
 		if cfg.DB == nil {

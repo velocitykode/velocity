@@ -1,4 +1,4 @@
-package storage
+package s3
 
 import (
 	"bytes"
@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -16,6 +17,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+
+	"github.com/velocitykode/velocity/storage"
 )
 
 // s3API defines the S3 operations used by the driver.
@@ -34,9 +37,16 @@ type s3API interface {
 const maxS3PresignExpiration = 7 * 24 * time.Hour
 
 func init() {
-	Drivers().Register("s3", func(ctx context.Context, cfg DiskConfig) (Driver, error) {
+	storage.Drivers().Register("s3", func(ctx context.Context, cfg storage.DiskConfig) (storage.Driver, error) {
 		return NewS3DriverWithContext(ctx, cfg)
 	})
+}
+
+// New constructs an S3 driver from cfg for standalone use without going
+// through the storage driver registry. It returns the same driver the
+// registry path produces ("s3" factory), so both routes are equivalent.
+func New(cfg storage.DiskConfig) (storage.Driver, error) {
+	return NewS3DriverWithContext(context.Background(), cfg)
 }
 
 // ErrExpirationTooLong is returned by TemporaryURL / TemporaryURLCtx when
@@ -64,7 +74,7 @@ type S3Driver struct {
 	bucket        string
 	region        string
 	url           string
-	visibility    Visibility
+	visibility    storage.Visibility
 }
 
 // NewS3Driver creates a new S3 storage driver.
@@ -73,13 +83,13 @@ type S3Driver struct {
 // and any non-empty URL must parse as an http(s) endpoint.
 // Visibility defaults to Private; Public must be opted in explicitly
 // by setting DiskConfig.Visibility == "public".
-func NewS3Driver(diskConfig DiskConfig) (*S3Driver, error) {
+func NewS3Driver(diskConfig storage.DiskConfig) (*S3Driver, error) {
 	return NewS3DriverWithContext(context.Background(), diskConfig)
 }
 
 // NewS3DriverWithContext is the context-aware variant of NewS3Driver.
 // The provided context governs AWS config loading and the HeadBucket call.
-func NewS3DriverWithContext(ctx context.Context, diskConfig DiskConfig) (*S3Driver, error) {
+func NewS3DriverWithContext(ctx context.Context, diskConfig storage.DiskConfig) (*S3Driver, error) {
 	if strings.TrimSpace(diskConfig.Region) == "" {
 		return nil, fmt.Errorf("velocity/storage: s3 region is required")
 	}
@@ -126,9 +136,9 @@ func NewS3DriverWithContext(ctx context.Context, diskConfig DiskConfig) (*S3Driv
 	}
 
 	// Default to Private. Public visibility must be opt-in.
-	visibility := Private
-	if diskConfig.Visibility == string(Public) {
-		visibility = Public
+	visibility := storage.Private
+	if diskConfig.Visibility == string(storage.Public) {
+		visibility = storage.Public
 	}
 
 	return &S3Driver{
@@ -243,7 +253,7 @@ func (d *S3Driver) PutStreamCtx(ctx context.Context, path string, stream io.Read
 	// response-headers policy in front of the bucket). See the
 	// roadmap entry for a framework-owned Storage.Serve handler that
 	// will set nosniff, no-store, and a CSP sandbox.
-	if d.visibility == Public {
+	if d.visibility == storage.Public {
 		input.ACL = types.ObjectCannedACLPublicRead
 	} else {
 		input.ACL = types.ObjectCannedACLPrivate
@@ -362,7 +372,7 @@ func (d *S3Driver) GetStreamCtx(ctx context.Context, path string) (io.ReadCloser
 			return nil, err
 		}
 		if isNotFoundError(err) {
-			return nil, ErrFileNotFound
+			return nil, storage.ErrFileNotFound
 		}
 		return nil, fmt.Errorf("velocity/storage: failed to get object from s3: %w", err)
 	}
@@ -465,7 +475,7 @@ func (d *S3Driver) CopyCtx(ctx context.Context, from, to string) error {
 
 	if err != nil {
 		if isNotFoundError(err) {
-			return ErrFileNotFound
+			return storage.ErrFileNotFound
 		}
 		return fmt.Errorf("velocity/storage: failed to copy object in s3: %w", err)
 	}
@@ -510,7 +520,7 @@ func (d *S3Driver) SizeCtx(ctx context.Context, path string) (int64, error) {
 
 	if err != nil {
 		if isNotFoundError(err) {
-			return 0, ErrFileNotFound
+			return 0, storage.ErrFileNotFound
 		}
 		return 0, fmt.Errorf("velocity/storage: failed to get object metadata from s3: %w", err)
 	}
@@ -540,7 +550,7 @@ func (d *S3Driver) LastModifiedCtx(ctx context.Context, path string) (time.Time,
 
 	if err != nil {
 		if isNotFoundError(err) {
-			return time.Time{}, ErrFileNotFound
+			return time.Time{}, storage.ErrFileNotFound
 		}
 		return time.Time{}, fmt.Errorf("velocity/storage: failed to get object metadata from s3: %w", err)
 	}
@@ -570,7 +580,7 @@ func (d *S3Driver) MimeTypeCtx(ctx context.Context, path string) (string, error)
 
 	if err != nil {
 		if isNotFoundError(err) {
-			return "", ErrFileNotFound
+			return "", storage.ErrFileNotFound
 		}
 		return "", fmt.Errorf("velocity/storage: failed to get object metadata from s3: %w", err)
 	}
@@ -884,4 +894,36 @@ func isNotFoundError(err error) bool {
 	}
 	return strings.Contains(err.Error(), "NotFound") ||
 		strings.Contains(err.Error(), "NoSuchKey")
+}
+
+// detectMimeType detects the MIME type from content using the standard
+// library sniffer (net/http.DetectContentType), which implements the
+// Mozilla "sniffing" rules. Sniffing only the first 512 bytes mirrors
+// http.DetectContentType's own contract and bounds the work for very
+// large objects.
+func detectMimeType(content []byte) string {
+	if len(content) == 0 {
+		return "application/octet-stream"
+	}
+	n := len(content)
+	if n > 512 {
+		n = 512
+	}
+	return http.DetectContentType(content[:n])
+}
+
+// escapeURLPathSegments percent-encodes each `/`-delimited segment of
+// path so reserved characters in keys cannot inject query / fragment
+// state. `url.PathEscape` does NOT escape `/`, so a blanket call would
+// destroy the separators; splitting first preserves the path shape
+// while encoding every segment individually.
+func escapeURLPathSegments(path string) string {
+	if path == "" {
+		return ""
+	}
+	segs := strings.Split(path, "/")
+	for i, seg := range segs {
+		segs[i] = url.PathEscape(seg)
+	}
+	return strings.Join(segs, "/")
 }
