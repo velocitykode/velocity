@@ -4,22 +4,12 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/log"
 )
 
 // ExceptionContext contains contextual information about where an exception occurred.
-type ExceptionContext struct {
-	RequestID  string
-	TraceID    string
-	UserID     string
-	URL        string
-	Method     string
-	IP         string
-	UserAgent  string
-	Timestamp  time.Time
-	StackTrace *StackTrace
-	Extra      map[string]any
-}
+type ExceptionContext = contract.ExceptionContext
 
 // NewExceptionContext creates a new ExceptionContext with the current timestamp.
 func NewExceptionContext() *ExceptionContext {
@@ -29,47 +19,15 @@ func NewExceptionContext() *ExceptionContext {
 	}
 }
 
-// WithRequestInfo adds request information to the context.
-func (c *ExceptionContext) WithRequestInfo(method, url, ip, userAgent string) *ExceptionContext {
-	c.Method = method
-	c.URL = url
-	c.IP = ip
-	c.UserAgent = userAgent
-	return c
-}
-
-// WithIDs adds request and trace IDs to the context.
-func (c *ExceptionContext) WithIDs(requestID, traceID string) *ExceptionContext {
-	c.RequestID = requestID
-	c.TraceID = traceID
-	return c
-}
-
-// WithUserID adds user ID to the context.
-func (c *ExceptionContext) WithUserID(userID string) *ExceptionContext {
-	c.UserID = userID
-	return c
-}
-
-// WithStackTrace adds a stack trace to the context.
-func (c *ExceptionContext) WithStackTrace(st *StackTrace) *ExceptionContext {
-	c.StackTrace = st
-	return c
-}
-
-// WithExtra adds extra data to the context.
-func (c *ExceptionContext) WithExtra(key string, value any) *ExceptionContext {
-	if c.Extra == nil {
-		c.Extra = make(map[string]any)
-	}
-	c.Extra[key] = value
-	return c
-}
-
 // Reporter is the interface for exception reporters.
-type Reporter interface {
-	Report(err error, ctx *ExceptionContext)
-}
+type Reporter = contract.Reporter
+
+// Conformance assertions for the concrete reporters.
+var (
+	_ contract.Reporter = (*LogReporter)(nil)
+	_ contract.Reporter = (*CallbackReporter)(nil)
+	_ contract.Reporter = (*MultiReporter)(nil)
+)
 
 // LogReporter reports exceptions to the log package.
 type LogReporter struct {
