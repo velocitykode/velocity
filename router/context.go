@@ -20,18 +20,10 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/app"
-	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/contract"
-	"github.com/velocitykode/velocity/events"
-	"github.com/velocitykode/velocity/exceptions"
 	"github.com/velocitykode/velocity/internal/clientip"
-	"github.com/velocitykode/velocity/mail"
-	"github.com/velocitykode/velocity/notification"
-	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/resource"
 	"github.com/velocitykode/velocity/scheduler"
-	"github.com/velocitykode/velocity/storage"
-	"github.com/velocitykode/velocity/validation"
 )
 
 // HandlerFunc is the Velocity handler function signature
@@ -717,7 +709,7 @@ func (c *Context) DB() contract.Database {
 }
 
 // Cache returns the cache manager interface.
-func (c *Context) Cache() cache.CacheManager {
+func (c *Context) Cache() contract.CacheManager {
 	s := c.mustServices()
 	requireService(c, s.Cache, "cache")
 	return s.Cache
@@ -731,35 +723,35 @@ func (c *Context) Log() contract.Logger {
 }
 
 // Queue returns the queue driver.
-func (c *Context) Queue() queue.Driver {
+func (c *Context) Queue() contract.QueueDriver {
 	s := c.mustServices()
 	requireService(c, s.Queue, "queue")
 	return s.Queue
 }
 
 // Storage returns the storage manager interface.
-func (c *Context) Storage() storage.StorageManager {
+func (c *Context) Storage() contract.StorageManager {
 	s := c.mustServices()
 	requireService(c, s.Storage, "storage")
 	return s.Storage
 }
 
 // Mail returns the mailer.
-func (c *Context) Mail() mail.Mailer {
+func (c *Context) Mail() contract.Mailer {
 	s := c.mustServices()
 	requireService(c, s.Mail, "mail")
 	return s.Mail
 }
 
 // Notification returns the notification interface.
-func (c *Context) Notification() notification.Notifier {
+func (c *Context) Notification() contract.Notifier {
 	s := c.mustServices()
 	requireService(c, s.Notification, "notification")
 	return s.Notification
 }
 
 // Events returns the event dispatcher.
-func (c *Context) Events() events.Dispatcher {
+func (c *Context) Events() contract.Dispatcher {
 	s := c.mustServices()
 	requireService(c, s.Events, "events")
 	return s.Events
@@ -773,14 +765,14 @@ func (c *Context) Crypto() contract.Encryptor {
 }
 
 // Validator returns the validator.
-func (c *Context) Validator() validation.Validator {
+func (c *Context) Validator() contract.Validator {
 	s := c.mustServices()
 	requireService(c, s.Validator, "validator")
 	return s.Validator
 }
 
 // Exceptions returns the exception handler interface.
-func (c *Context) Exceptions() exceptions.ExceptionHandler {
+func (c *Context) Exceptions() contract.ExceptionHandler {
 	s := c.mustServices()
 	requireService(c, s.Exceptions, "exceptions")
 	return s.Exceptions
@@ -889,7 +881,7 @@ func (c *Context) BindAuto(v interface{}) error {
 
 // Validatable is implemented by structs that define their own validation rules.
 type Validatable interface {
-	ValidationRules() validation.Rules
+	ValidationRules() contract.ValidationRules
 }
 
 // BindValid binds JSON then validates using the struct's own rules (if any).

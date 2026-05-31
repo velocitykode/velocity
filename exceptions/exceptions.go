@@ -4,6 +4,8 @@ package exceptions
 
 import (
 	"fmt"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // Exception is the base interface for all exceptions.
@@ -26,15 +28,7 @@ type Renderable interface {
 }
 
 // RenderContext provides the context needed for rendering exceptions.
-type RenderContext interface {
-	WriteHeader(statusCode int)
-	Write(data []byte) (int, error)
-	SetHeader(key, value string)
-	GetHeader(key string) string
-	RequestPath() string
-	RequestMethod() string
-	WantsJSON() bool
-}
+type RenderContext = contract.RenderContext
 
 // BaseException provides a base implementation of the Exception interface.
 type BaseException struct {

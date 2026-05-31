@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -16,6 +17,11 @@ type Manager struct {
 	mu              sync.RWMutex
 	eventDispatcher func(ctx context.Context, event interface{}) error
 }
+
+// Manager must satisfy the contract mail manager interface. The assertion
+// checks the contract boundary: every method below routes the aliased mail
+// API (contract.Mailer, *contract.Message) through the named channels.
+var _ contract.MailManager = (*Manager)(nil)
 
 // SetAttachmentRoot registers the process-wide attachment root used by
 // Message.AttachFile, equivalent to SetDefaultAttachmentRoot. Exposed as

@@ -9,22 +9,16 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/async"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // Notifier is the interface satisfied by *Manager. It covers the methods
 // used through app.Services and router.Context for sending notifications.
-type Notifier interface {
-	Send(ctx context.Context, notifiable interface{}, notification Notification) error
-	SendMany(ctx context.Context, notifiables []interface{}, notification Notification) error
-	Channel(name string) (Channel, error)
-	SetChannel(name string, ch Channel)
-	SetEventDispatcher(fn func(ctx context.Context, event interface{}) error)
-	Shutdown(ctx context.Context) error
-}
+type Notifier = contract.Notifier
 
 // Verify *Manager implements Notifier at compile time.
-var _ Notifier = (*Manager)(nil)
+var _ contract.Notifier = (*Manager)(nil)
 
 // Manager orchestrates sending notifications across multiple channels.
 type Manager struct {

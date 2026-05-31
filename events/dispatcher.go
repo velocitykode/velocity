@@ -13,6 +13,14 @@ import (
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
+// Conformance assertions: both dispatcher implementations satisfy the
+// stdlib-only contract.Dispatcher closure. FakeDispatcher lives in fake.go;
+// its assertion is placed here to avoid importing contract into that file.
+var (
+	_ contract.Dispatcher = (*DefaultDispatcher)(nil)
+	_ contract.Dispatcher = (*FakeDispatcher)(nil)
+)
+
 // DefaultDispatcher is the default event dispatcher implementation
 type DefaultDispatcher struct {
 	mu           sync.RWMutex

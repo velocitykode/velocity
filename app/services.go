@@ -4,16 +4,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/contract"
-	"github.com/velocitykode/velocity/events"
-	"github.com/velocitykode/velocity/exceptions"
-	"github.com/velocitykode/velocity/mail"
-	"github.com/velocitykode/velocity/notification"
-	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/scheduler"
-	"github.com/velocitykode/velocity/storage"
-	"github.com/velocitykode/velocity/validation"
 )
 
 // Services holds references to all framework service instances.
@@ -28,21 +20,21 @@ import (
 // leaf that both sides can import without cycles.
 type Services struct {
 	Log        contract.Logger
-	Exceptions exceptions.ExceptionHandler
+	Exceptions contract.ExceptionHandler
 	Crypto     contract.Encryptor
 	DB         contract.Database
 	Auth       contract.AuthManager
 	CSRF       contract.CSRFProtector
 	View       contract.ViewEngine
 
-	Cache        cache.CacheManager
-	Events       events.Dispatcher
-	Queue        queue.Driver
-	Storage      storage.StorageManager
+	Cache        contract.CacheManager
+	Events       contract.Dispatcher
+	Queue        contract.QueueDriver
+	Storage      contract.StorageManager
 	Scheduler    scheduler.TaskScheduler
-	Mail         mail.Mailer
-	Notification notification.Notifier
-	Validator    validation.Validator
+	Mail         contract.Mailer
+	Notification contract.Notifier
+	Validator    contract.Validator
 
 	// RedirectAllowlist exposes the operator-configured cross-origin
 	// host allowlist (Router.RedirectAllowedHosts) to redirect helpers

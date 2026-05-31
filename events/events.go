@@ -3,6 +3,8 @@ package events
 import (
 	"context"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // Event represents an event that can be dispatched
@@ -11,17 +13,9 @@ type Event interface {
 	Name() string
 }
 
-// Listener handles events when they are dispatched. Implementations receive
-// the caller-supplied context as the first argument so deadlines, trace IDs,
-// and tx scopes flow through to listener bodies; listeners that block on I/O
-// should honor ctx.Done().
-type Listener interface {
-	// Handle processes the event
-	Handle(ctx context.Context, event interface{}) error
-
-	// ShouldQueue determines if this listener should be queued
-	ShouldQueue() bool
-}
+// Listener is an alias for the stdlib-only contract.EventListener interface.
+// The canonical definition lives in the contract leaf.
+type Listener = contract.EventListener
 
 // QueuedListener extends Listener with queue configuration
 type QueuedListener interface {
@@ -40,84 +34,13 @@ type QueuedListener interface {
 	Tries() int
 }
 
-// Subscriber registers multiple event listeners
-type Subscriber interface {
-	// Subscribe registers the subscriber's listeners
-	Subscribe(dispatcher Dispatcher)
-}
+// Subscriber is an alias for the stdlib-only contract.EventSubscriber
+// interface. The canonical definition lives in the contract leaf.
+type Subscriber = contract.EventSubscriber
 
-// Dispatcher manages event dispatching to listeners. All dispatch methods
-// accept a context.Context so request-scoped values (transactions, trace IDs,
-// deadlines) propagate to every listener.
-type Dispatcher interface {
-	// Listen registers a listener for one or more events and returns a listener ID.
-	// The ID can be used with Off() to unregister the specific listener.
-	Listen(events interface{}, listener Listener) int
-
-	// Off removes a listener by its ID.
-	// Returns true if the listener was found and removed, false otherwise.
-	Off(id int) bool
-
-	// Subscribe registers an event subscriber
-	Subscribe(subscriber Subscriber)
-
-	// Dispatch fires an event to all registered listeners
-	Dispatch(ctx context.Context, event interface{}) error
-
-	// DispatchNow fires an event synchronously
-	DispatchNow(ctx context.Context, event interface{}) error
-
-	// DispatchAsync fires an event asynchronously.
-	//
-	// Context semantics: the ctx passed to listeners is derived from the
-	// caller's ctx via context.WithoutCancel. This means request-scoped
-	// values (trace IDs, tenant IDs, anything stored via context.WithValue)
-	// flow through to listeners, but the caller's cancellation and deadline
-	// do NOT. A listener invoked through DispatchAsync may outlive the
-	// caller. For example, an async listener will keep running after the
-	// originating HTTP request has returned to the client.
-	//
-	// Callers who need cancellation to propagate (e.g. background workers
-	// that must abort when their parent ctx is cancelled) should not use
-	// DispatchAsync. Use Dispatch instead and have the listener perform its
-	// own backgrounding (e.g. spawn a goroutine that observes ctx.Done()),
-	// or push a job onto the queue directly with the cancellation contract
-	// you want.
-	DispatchAsync(ctx context.Context, event interface{}) error
-
-	// DispatchAfter fires an event after a delay.
-	//
-	// Context semantics: the ctx passed to listeners is derived from the
-	// caller's ctx via context.WithoutCancel. Request-scoped values (trace
-	// IDs, tenant IDs, anything stored via context.WithValue) flow through
-	// to listeners, but the caller's cancellation and deadline do NOT. The
-	// listener fires after delay has elapsed and will routinely outlive
-	// the caller. For example, a 30s delayed listener kicked off from an
-	// HTTP request will keep running long after the response has flushed.
-	//
-	// Callers who need cancellation to propagate (e.g. background workers
-	// that must abort when their parent ctx is cancelled) should not use
-	// DispatchAfter. Use Dispatch instead and have the listener perform its
-	// own backgrounding (e.g. spawn a goroutine that observes ctx.Done()),
-	// or push a job onto the queue directly with the cancellation contract
-	// you want.
-	DispatchAfter(ctx context.Context, event interface{}, delay time.Duration) error
-
-	// Until dispatches events until the first non-nil return
-	Until(ctx context.Context, event interface{}) (interface{}, error)
-
-	// Flush removes all listeners for an event
-	Flush(event string)
-
-	// Forget removes specific listeners
-	Forget(event string)
-
-	// HasListeners checks if an event has listeners
-	HasListeners(event interface{}) bool
-
-	// GetListeners returns all listeners for an event
-	GetListeners(event interface{}) []Listener
-}
+// Dispatcher is an alias for the stdlib-only contract.Dispatcher interface.
+// The canonical definition lives in the contract leaf.
+type Dispatcher = contract.Dispatcher
 
 // Broadcastable represents an event that should be broadcast
 type Broadcastable interface {

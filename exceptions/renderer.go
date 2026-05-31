@@ -5,13 +5,18 @@ import (
 	"html/template"
 	"net/http"
 	"strings"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // Renderer is the interface for exception renderers.
-type Renderer interface {
-	Render(ctx RenderContext, err error, exCtx *ExceptionContext, debug bool) error
-	ContentType() string
-}
+type Renderer = contract.Renderer
+
+// Conformance assertions for the concrete renderers.
+var (
+	_ contract.Renderer = (*JSONRenderer)(nil)
+	_ contract.Renderer = (*HTMLRenderer)(nil)
+)
 
 // JSONRenderer renders exceptions as JSON.
 type JSONRenderer struct{}

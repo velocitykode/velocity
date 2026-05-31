@@ -8,8 +8,9 @@ import (
 	"github.com/velocitykode/velocity/validation/rules"
 )
 
-// RuleHandler defines a validation rule function
-type RuleHandler func(field string, value interface{}, params []string, data map[string]interface{}) error
+// RuleHandler defines a validation rule function. Canonical declaration lives
+// in the stdlib-only contract leaf.
+type RuleHandler = contract.RuleHandler
 
 // RuleRegistry manages validation rules.
 //

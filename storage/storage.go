@@ -25,17 +25,18 @@ func Drivers() *driverregistry.Registry[Driver, DiskConfig] { return drivers }
 
 // StorageManager is the interface satisfied by *Manager. It covers the
 // methods used through app.Services and router.Context for disk management.
-type StorageManager interface {
-	Disk(name string) (Driver, error)
-	Default() (Driver, error)
-	AddDisk(name string, driver Driver)
-	SetDefault(name string) error
-	Configure(config Config) error
-	Shutdown(ctx context.Context) error
-}
+// The canonical declaration lives in the stdlib-only contract leaf.
+type StorageManager = contract.StorageManager
 
 // Verify *Manager implements StorageManager at compile time.
-var _ StorageManager = (*Manager)(nil)
+var _ contract.StorageManager = (*Manager)(nil)
+
+// Verify the in-package storage drivers satisfy the contract driver interface.
+// The s3 driver lives in its own storage/s3 package and is left untouched here.
+var (
+	_ contract.StorageDriver = (*LocalDriver)(nil)
+	_ contract.StorageDriver = (*MemoryDriver)(nil)
+)
 
 // Manager manages multiple storage disks
 type Manager struct {
