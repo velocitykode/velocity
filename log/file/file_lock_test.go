@@ -1,6 +1,7 @@
 package file
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,7 +19,7 @@ func TestFileLock_MultiProcess(t *testing.T) {
 		// Child mode: write many locked records to the shared file.
 		dir := os.Getenv("VELOCITY_LOCK_DIR")
 		logger := NewFileLogger(dir, 0, 0, WithFileLock())
-		defer logger.Shutdown(nil)
+		defer logger.Shutdown(context.TODO())
 		for i := 0; i < 200; i++ {
 			logger.Info("child record", "pid", os.Getpid(), "i", i)
 		}
