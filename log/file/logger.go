@@ -1,4 +1,4 @@
-package drivers
+package file
 
 import (
 	"context"
@@ -16,10 +16,9 @@ import (
 // directory. Log files routinely capture request bodies, error stack
 // traces, headers, and the occasional session ID or PII shape; on a
 // multi-tenant host the previous 0o644 / 0o755 defaults let any local
-// user grep through every record. 0o600 / 0o700 is the principle of
-// least privilege for files holding sensitive material (CLAUDE.md
-// rule 4). Operators who need group/world read can opt in with
-// WithFileMode.
+// user grep through every record. 0o600 / 0o700 applies least
+// privilege for files holding sensitive material. Operators who need
+// group/world read can opt in with WithFileMode.
 const (
 	defaultFileMode os.FileMode = 0o600
 	defaultDirMode  os.FileMode = 0o700
@@ -143,7 +142,7 @@ func (f *FileLogger) ensureFile() error {
 	// MkdirAll preserves the perms of a pre-existing directory. Force
 	// the configured dirMode here so a stale 0o755 .vel/logs from an
 	// older binary tightens on next boot instead of staying world-
-	// listable. Same defense as the M-40 maintenance follow-up.
+	// listable.
 	if err := os.Chmod(f.path, f.dirMode); err != nil {
 		return err
 	}
@@ -191,7 +190,7 @@ func (f *FileLogger) log(level, msg string, kvs ...any) {
 	// Sanitise the user-controlled msg before emit. Without this, a
 	// caller passing an HTTP URL path or any other request-derived
 	// string can drop a literal CRLF into the log file and forge a
-	// second record. See log/internal/sanitize and audit finding H-30.
+	// second record. See log/internal/sanitize.
 	logLine := fmt.Sprintf("[%s] %s: %s", timestamp, level, sanitize.Value(msg))
 
 	if len(kvs) > 0 {

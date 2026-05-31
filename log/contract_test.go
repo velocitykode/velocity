@@ -6,6 +6,7 @@ import (
 
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/log/drivers"
+	"github.com/velocitykode/velocity/log/file"
 	"github.com/velocitykode/velocity/log/logtest"
 )
 
@@ -24,7 +25,7 @@ func TestConsoleLogger_Contract(t *testing.T) {
 func TestFileLogger_Contract(t *testing.T) {
 	logtest.RunLoggerContractTests(t, func(t *testing.T) log.Logger {
 		path := filepath.Join(t.TempDir(), "contract.log")
-		return drivers.NewFileLogger(path, 7, 0)
+		return file.NewFileLogger(path, 7, 0)
 	})
 }
 
@@ -46,7 +47,7 @@ func TestStackLogger_Contract(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "stack.log")
 		return log.NewStackLogger(
 			log.NewNullLogger(),
-			drivers.NewFileLogger(path, 7, 0),
+			file.NewFileLogger(path, 7, 0),
 		)
 	})
 }
