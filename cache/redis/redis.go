@@ -21,6 +21,13 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/velocitykode/velocity/cache/drivers"
+	"github.com/velocitykode/velocity/contract"
+)
+
+// Conformance assertions: the Redis driver satisfies the contract interfaces.
+var (
+	_ contract.CacheStore = (*RedisStore)(nil)
+	_ contract.CacheLock  = (*RedisLock)(nil)
 )
 
 // RedisStore implements a Redis-based cache store

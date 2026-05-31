@@ -28,54 +28,13 @@ var driverRegistry = driverregistry.New[Store, StoreConfig]("cache")
 //	}
 func Drivers() *driverregistry.Registry[Store, StoreConfig] { return driverRegistry }
 
-// CacheManager is the interface satisfied by *Manager. It covers the methods
-// used through app.Services and router.Context for cache operations,
-// store management, locking, and event wiring.
-type CacheManager interface {
-	// Basic operations on the default store.
-	Get(key string) (interface{}, bool)
-	GetWithContext(ctx context.Context, key string) (interface{}, bool)
-	GetString(key string) (string, bool)
-	Put(key string, value interface{}, ttl time.Duration) error
-	PutWithContext(ctx context.Context, key string, value interface{}, ttl time.Duration) error
-	Add(key string, value interface{}, ttl time.Duration) (bool, error)
-	AddWithContext(ctx context.Context, key string, value interface{}, ttl time.Duration) (bool, error)
-	Forever(key string, value interface{}) error
-	ForeverWithContext(ctx context.Context, key string, value interface{}) error
-	Forget(key string) error
-	ForgetWithContext(ctx context.Context, key string) error
-	Flush() error
-	Has(key string) bool
-	Increment(key string, value int64) (int64, error)
-	Decrement(key string, value int64) (int64, error)
-	Remember(key string, ttl time.Duration, callback func() interface{}) (interface{}, error)
-	RememberWithContext(ctx context.Context, key string, ttl time.Duration, callback func() interface{}) (interface{}, error)
-	RememberE(key string, ttl time.Duration, callback func() (interface{}, error)) (interface{}, error)
-	RememberEWithContext(ctx context.Context, key string, ttl time.Duration, callback func() (interface{}, error)) (interface{}, error)
-	RememberForever(key string, callback func() interface{}) (interface{}, error)
-	RememberForeverWithContext(ctx context.Context, key string, callback func() interface{}) (interface{}, error)
-	RememberForeverE(key string, callback func() (interface{}, error)) (interface{}, error)
-	RememberForeverEWithContext(ctx context.Context, key string, callback func() (interface{}, error)) (interface{}, error)
-	Many(keys []string) map[string]interface{}
-	PutMany(items map[string]interface{}, ttl time.Duration) error
-
-	// Store management.
-	Store(name string) (Store, error)
-	StoreWithContext(ctx context.Context, name string) (Store, error)
-	DefaultStore() (Store, error)
-	DefaultStoreWithContext(ctx context.Context) (Store, error)
-	Shutdown(ctx context.Context) error
-
-	// Distributed locking.
-	Lock(key string, ttl ...time.Duration) Lock
-	RestoreLock(key string, owner string) Lock
-
-	// Event wiring.
-	SetEventDispatcher(fn func(ctx context.Context, event interface{}) error)
-}
+// CacheManager is the interface satisfied by *Manager. Canonical declaration
+// lives in the stdlib-only contract leaf; this alias keeps the cache API
+// byte-identical for existing callers.
+type CacheManager = contract.CacheManager
 
 // Verify *Manager implements CacheManager at compile time.
-var _ CacheManager = (*Manager)(nil)
+var _ contract.CacheManager = (*Manager)(nil)
 
 // Manager manages multiple cache stores
 type Manager struct {

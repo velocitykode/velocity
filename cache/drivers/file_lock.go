@@ -16,7 +16,13 @@ import (
 
 	"github.com/google/uuid"
 	"golang.org/x/sys/unix"
+
+	"github.com/velocitykode/velocity/contract"
 )
+
+// Conformance assertion: FileLock satisfies the contract lock interface.
+// Kept under the unix build tag with the type it asserts.
+var _ contract.CacheLock = (*FileLock)(nil)
 
 // fileLockMetadata is written to the on-disk lock file so that a
 // recovering ForceRelease (or a peer process inspecting state) can see
