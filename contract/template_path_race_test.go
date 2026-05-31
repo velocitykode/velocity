@@ -1,4 +1,4 @@
-package mail
+package contract
 
 import (
 	"os"
