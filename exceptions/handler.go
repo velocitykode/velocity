@@ -14,38 +14,10 @@ import (
 
 // ExceptionHandler is the interface satisfied by *Handler. It covers the
 // methods used through app.Services and router.Context.
-type ExceptionHandler interface {
-	// Handle reports and renders an exception in one call.
-	Handle(ctx RenderContext, err error)
-	// HandleWithContext reports and renders with a provided exception context.
-	HandleWithContext(ctx RenderContext, err error, exCtx *ExceptionContext)
-	// HandlePanic handles a recovered panic value.
-	HandlePanic(ctx RenderContext, recovered any)
-	// Report reports an exception to all configured reporters.
-	Report(err error, ctx *ExceptionContext)
-	// Render renders an exception response.
-	Render(ctx RenderContext, err error, exCtx *ExceptionContext)
-	// ShouldReport determines if an exception should be reported.
-	ShouldReport(err error) bool
-
-	// Configuration methods used during bootstrap.
-	SetDebug(debug bool)
-	IsDebug() bool
-	SetEnvironment(env string)
-	GetEnvironment() string
-	AddReporter(reporter Reporter)
-	SetReporters(reporters ...Reporter)
-	AddRenderer(contentType string, renderer Renderer)
-	DontReport(exceptionType string)
-	SetAPIMode(enabled bool)
-	IsAPIMode() bool
-	SetAPIPrefixes(prefixes ...string)
-	GetAPIPrefixes() []string
-	RegisterCustomHandler(exceptionType any, handler func(RenderContext, error, *ExceptionContext))
-}
+type ExceptionHandler = contract.ExceptionHandler
 
 // Verify *Handler implements ExceptionHandler at compile time.
-var _ ExceptionHandler = (*Handler)(nil)
+var _ contract.ExceptionHandler = (*Handler)(nil)
 
 // Logger is the logging interface for the exception handler.
 type Logger interface {
