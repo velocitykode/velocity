@@ -4,122 +4,23 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
-// Cache defines the interface for cache operations.
-//
-// Methods come in pairs: a `Ctx`-suffixed variant that threads the caller's
-// context.Context through to the underlying driver (so a slow Redis GET or
-// disk fsync can be cancelled when the request context is cancelled), and a
-// non-Ctx Deprecated shim that calls the Ctx variant with context.Background().
-// New code MUST call the Ctx variant; non-Ctx methods remain for
-// backward compatibility through the next release.
-type Cache interface {
-	// GetCtx retrieves a value from the cache.
-	GetCtx(ctx context.Context, key string) (interface{}, bool)
+// Cache defines the interface for cache operations. Canonical declaration
+// lives in the stdlib-only contract leaf; this alias keeps the cache API
+// byte-identical for existing callers.
+type Cache = contract.Cache
 
-	// Deprecated: use GetCtx with a request-scoped context.Context.
-	Get(key string) (interface{}, bool)
-
-	// GetStringCtx retrieves a string value from the cache.
-	GetStringCtx(ctx context.Context, key string) (string, bool)
-
-	// Deprecated: use GetStringCtx with a request-scoped context.Context.
-	GetString(key string) (string, bool)
-
-	// PutCtx stores a value in the cache with a TTL.
-	PutCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) error
-
-	// Deprecated: use PutCtx with a request-scoped context.Context.
-	Put(key string, value interface{}, ttl time.Duration) error
-
-	// AddCtx atomically stores a value in the cache with a TTL only if the
-	// key does not already exist. Returns true if the value was inserted,
-	// false if the key already existed (no write performed). Returns an
-	// error only on backend failure; contention (key already present) is
-	// reported as (false, nil).
-	//
-	// Add is the SETNX primitive that lets callers gate single-flight
-	// populates over the cache layer itself, avoiding the thundering-herd
-	// problem on Remember-style cache-miss paths.
-	AddCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) (bool, error)
-
-	// Deprecated: use AddCtx with a request-scoped context.Context.
-	Add(key string, value interface{}, ttl time.Duration) (bool, error)
-
-	// ForeverCtx stores a value in the cache indefinitely.
-	ForeverCtx(ctx context.Context, key string, value interface{}) error
-
-	// Deprecated: use ForeverCtx with a request-scoped context.Context.
-	Forever(key string, value interface{}) error
-
-	// ForgetCtx removes a value from the cache.
-	ForgetCtx(ctx context.Context, key string) error
-
-	// Deprecated: use ForgetCtx with a request-scoped context.Context.
-	Forget(key string) error
-
-	// FlushCtx removes all values from the cache.
-	FlushCtx(ctx context.Context) error
-
-	// Deprecated: use FlushCtx with a request-scoped context.Context.
-	Flush() error
-
-	// IncrementCtx increments a numeric value, treating a missing key as
-	// zero so the post-increment result equals the supplied delta on
-	// first call. The new value is returned. Enforced by
-	// cachetest.IncrementCtx_NewKey_StartsFromZero.
-	IncrementCtx(ctx context.Context, key string, value int64) (int64, error)
-
-	// Deprecated: use IncrementCtx with a request-scoped context.Context.
-	Increment(key string, value int64) (int64, error)
-
-	// DecrementCtx decrements a numeric value, treating a missing key as
-	// zero (a Decrement on a fresh key returns -delta). Symmetric with
-	// IncrementCtx.
-	DecrementCtx(ctx context.Context, key string, value int64) (int64, error)
-
-	// Deprecated: use DecrementCtx with a request-scoped context.Context.
-	Decrement(key string, value int64) (int64, error)
-
-	// Remember gets from cache or computes and stores. Pure-CPU callback;
-	// no ctx threading point on the callback boundary itself, so no Ctx
-	// variant on the Cache interface (Manager exposes RememberWithContext
-	// at the consumer level).
-	Remember(key string, ttl time.Duration, callback func() interface{}) (interface{}, error)
-
-	// RememberForever gets from cache or computes and stores forever.
-	RememberForever(key string, callback func() interface{}) (interface{}, error)
-
-	// ManyCtx retrieves multiple values.
-	ManyCtx(ctx context.Context, keys []string) map[string]interface{}
-
-	// Deprecated: use ManyCtx with a request-scoped context.Context.
-	Many(keys []string) map[string]interface{}
-
-	// PutManyCtx stores multiple values.
-	PutManyCtx(ctx context.Context, items map[string]interface{}, ttl time.Duration) error
-
-	// Deprecated: use PutManyCtx with a request-scoped context.Context.
-	PutMany(items map[string]interface{}, ttl time.Duration) error
-
-	// HasCtx checks if a key exists.
-	HasCtx(ctx context.Context, key string) bool
-
-	// Deprecated: use HasCtx with a request-scoped context.Context.
-	Has(key string) bool
-}
-
-// Store represents a cache store with a prefix.
+// Store represents a cache store with a prefix. Canonical declaration lives
+// in the contract leaf as CacheStore.
 //
 // Implementations must pass cachetest.RunStoreContractTests. Stores that
 // additionally implement drivers.Locker must pass
 // cachetest.RunLockerContractTests. See cachetest for the executable
 // specification.
-type Store interface {
-	Cache
-	GetPrefix() string
-}
+type Store = contract.CacheStore
 
 // ContextStore is a deprecated alias for Store. The ctx-aware methods that
 // previously lived on this extension interface have been promoted into Store
