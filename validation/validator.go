@@ -11,27 +11,21 @@ package validation
 import (
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
-// Validator provides validation functionality.
-//
-// Note: Velocity ships English-only messages. Historical SetLocale/Locale
-// fields were removed in the validation consolidation, use SetMessages to
-// override any message the built-in rules emit.
-type Validator interface {
-	Validate(data interface{}, rules Rules) (*ValidatedData, error)
-	ValidateRequest(r *http.Request, rules Rules) (*ValidatedData, error)
-	ValidateValue(value interface{}, rule string) error
-	RegisterRule(name string, handler RuleHandler)
-	SetMessages(messages Messages)
-}
+// Validator provides validation functionality. The canonical declaration
+// lives in the stdlib-only contract leaf; this alias keeps the validation
+// API byte-identical for existing callers.
+type Validator = contract.Validator
 
 // Rules defines validation rules per field. Rules is the canonical adopter
 // facing type and matches the shape returned by vform.FormRequest.Rules():
-// each field maps to a slice of individual rule strings.
+// each field maps to a slice of individual rule strings. Canonical
+// declaration lives in the contract leaf as ValidationRules.
 //
 //	rules := validation.Rules{
 //	    "email":    {"required", "email"},
@@ -58,7 +52,7 @@ type Validator interface {
 // vform.FormRequest). Using a defined type here would cause those
 // methods to silently fail the interface assertion in vform, skipping
 // validation entirely.
-type Rules = map[string][]string
+type Rules = contract.ValidationRules
 
 // PipeRules is the legacy pipe-string form of validation rules. Each field
 // maps to a single string of '|'-delimited rule tokens. Convert to the
@@ -98,67 +92,13 @@ func splitPipe(s string) []string {
 	return out
 }
 
-// Messages defines custom error messages
-type Messages map[string]string
+// Messages defines custom error messages. Canonical declaration lives in the
+// contract leaf as ValidationMessages.
+type Messages = contract.ValidationMessages
 
-// ValidatedData contains validated and cleaned data
-type ValidatedData struct {
-	data   map[string]interface{}
-	errors ValidationErrors
-}
-
-// Get retrieves a validated value by key
-func (v *ValidatedData) Get(key string) interface{} {
-	return v.data[key]
-}
-
-// GetString retrieves a string value
-func (v *ValidatedData) GetString(key string) string {
-	if val, ok := v.data[key].(string); ok {
-		return val
-	}
-	return ""
-}
-
-// GetInt retrieves an integer value
-func (v *ValidatedData) GetInt(key string) int {
-	switch val := v.data[key].(type) {
-	case int:
-		return val
-	case int64:
-		return int(val)
-	case float64:
-		return int(val)
-	case string:
-		if intVal, err := strconv.Atoi(val); err == nil {
-			return intVal
-		}
-	}
-	return 0
-}
-
-// GetBool retrieves a boolean value
-func (v *ValidatedData) GetBool(key string) bool {
-	if val, ok := v.data[key].(bool); ok {
-		return val
-	}
-	return false
-}
-
-// All returns all validated data
-func (v *ValidatedData) All() map[string]interface{} {
-	return v.data
-}
-
-// HasErrors returns true if validation failed
-func (v *ValidatedData) HasErrors() bool {
-	return len(v.errors.Errors) > 0
-}
-
-// Errors returns validation errors
-func (v *ValidatedData) Errors() ValidationErrors {
-	return v.errors
-}
+// ValidatedData contains validated and cleaned data. Canonical declaration
+// (struct and methods) lives in the stdlib-only contract leaf.
+type ValidatedData = contract.ValidatedData
 
 // defaultValidator is the default validator implementation
 type defaultValidator struct {
@@ -166,6 +106,9 @@ type defaultValidator struct {
 	messages Messages
 	mu       sync.RWMutex
 }
+
+// defaultValidator must satisfy the contract Validator interface.
+var _ contract.Validator = (*defaultValidator)(nil)
 
 // NewValidator creates a new Validator instance.
 func NewValidator() Validator {
@@ -189,13 +132,7 @@ func (v *defaultValidator) Validate(data interface{}, rules Rules) (*ValidatedDa
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 
-	validated := &ValidatedData{
-		data: make(map[string]interface{}),
-		errors: ValidationErrors{
-			Errors:       make(map[string][]string),
-			RulesByField: make(map[string][]string),
-		},
-	}
+	validated := contract.NewValidatedData()
 
 	// Convert data to map
 	dataMap, err := toMap(data)
@@ -213,19 +150,19 @@ func (v *defaultValidator) Validate(data interface{}, rules Rules) (*ValidatedDa
 
 		for _, rule := range fieldRules {
 			if err := v.validateField(field, value, rule, dataMap); err != nil {
-				validated.errors.addError(field, err.Error(), rule.name)
+				validated.AddError(field, err.Error(), rule.name)
 				break // Stop on first error for this field
 			}
 		}
 
 		// Add to validated data if no errors
-		if !validated.errors.HasError(field) {
-			validated.data[field] = value
+		if !validated.Errors().HasError(field) {
+			validated.Set(field, value)
 		}
 	}
 
 	if validated.HasErrors() {
-		return validated, validated.errors
+		return validated, validated.Errors()
 	}
 
 	return validated, nil
