@@ -15,7 +15,6 @@ import (
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/notification"
-	"github.com/velocitykode/velocity/notification/channels"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/storage"
@@ -86,7 +85,7 @@ func initStorage(config StorageConfig, logger log.Logger) *storage.Manager {
 
 // initAuth builds the auth manager by registering user providers (ORM-backed) and
 // guards (session, JWT) from config. Misconfigured guards are skipped with a warning
-// so the app can still start — only the broken guard is unavailable at runtime.
+// so the app can still start - only the broken guard is unavailable at runtime.
 func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger log.Logger, db *sql.DB, enc crypto.Encryptor) *auth.Manager {
 	manager := auth.NewManager()
 
@@ -322,14 +321,14 @@ func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey strin
 
 // initNotification creates the notification manager and wires the mail and database
 // channels with their dependencies. Channels whose dependencies are nil (no mailer
-// configured, no DB connection) are silently left unwired — they'll error at send time.
+// configured, no DB connection) are silently left unwired - they'll error at send time.
 func initNotification(mailer mail.Mailer, db *sql.DB, dbDriver string) *notification.Manager {
 	mgr := notification.NewManager()
 
 	// Wire the mail channel with the framework's mailer
 	if mailer != nil {
 		if ch, err := mgr.Channel("mail"); err == nil {
-			if mc, ok := ch.(*channels.MailChannel); ok {
+			if mc, ok := ch.(notification.MailerAware); ok {
 				mc.SetMailer(mailer)
 			}
 		}
@@ -338,7 +337,7 @@ func initNotification(mailer mail.Mailer, db *sql.DB, dbDriver string) *notifica
 	// Wire the database channel with the framework's DB
 	if db != nil {
 		if ch, err := mgr.Channel("database"); err == nil {
-			if dc, ok := ch.(*channels.DatabaseChannel); ok {
+			if dc, ok := ch.(notification.DBAware); ok {
 				dc.SetDB(db, dbDriver)
 			}
 		}

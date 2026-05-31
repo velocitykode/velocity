@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// panicChannel panics on Send — used to verify SendMany recovers.
+// panicChannel panics on Send - used to verify SendMany recovers.
 type panicChannel struct{}
 
 func (panicChannel) Send(ctx context.Context, notifiable interface{}, notification Notification) error {

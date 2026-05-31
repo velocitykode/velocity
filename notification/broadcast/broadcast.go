@@ -1,4 +1,4 @@
-package channels
+package broadcast
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/velocitykode/velocity/broadcast"
+	velbroadcast "github.com/velocitykode/velocity/broadcast"
 	"github.com/velocitykode/velocity/notification"
 )
 
@@ -43,7 +43,7 @@ func (f BroadcastChannelAuthorizerFunc) Authorize(notifiable interface{}, channe
 
 // BroadcastChannel delivers notifications via real-time broadcasting (WebSocket).
 type BroadcastChannel struct {
-	broadcaster *broadcast.BroadcastManager
+	broadcaster *velbroadcast.BroadcastManager
 
 	authMu     sync.RWMutex
 	authorizer BroadcastChannelAuthorizer
@@ -59,7 +59,7 @@ func NewBroadcastChannel() *BroadcastChannel {
 }
 
 // SetBroadcaster sets the broadcast manager used to deliver notifications.
-func (c *BroadcastChannel) SetBroadcaster(b *broadcast.BroadcastManager) {
+func (c *BroadcastChannel) SetBroadcaster(b *velbroadcast.BroadcastManager) {
 	c.broadcaster = b
 }
 

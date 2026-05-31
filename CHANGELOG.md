@@ -565,7 +565,7 @@ A second re-review surfaced five remaining MUST FIX items. All landed in one bat
 - Compile-time `var _ contract.ShutdownAware = (*websocket.Server)(nil)` assertion in `event_dispatcher_aware.go`.
 - **Migration:** every `server.Stop()` call becomes `server.Shutdown(context.Background())` (or a bounded ctx for graceful drain).
 
-**Mail (`mail/message.go`, `mail/init.go`, `notification/channels/mail.go`)**
+**Mail (`mail/message.go`, `mail/init.go`, `notification/mail/mail.go`)**
 - Attachment DoS cap: `AttachFile` / `AttachData` now reject payloads larger than `MailConfig.MaxAttachmentSize` (default 25 MiB, tunable via `MAIL_MAX_ATTACHMENT_SIZE`). New `ErrAttachmentTooLarge` typed error. Zero-value config resolves to the default — "unlimited" is not expressible through config.
 - SMTP header injection: `Header`, `Subject`, `From`, `To`, `CC`, `BCC`, `ReplyTo` now reject CR, LF, NUL, and C0 control characters in any value. `Header` additionally enforces RFC 5322 §3.2.3 name grammar. Violations are stored as a deferred error on `*Message` and surfaced from `Manager.Send`, the `NewMailer`-returned `checkedMailer`, and the notification mail channel before any driver sees the message. New `ErrInvalidHeader` typed error and `Message.Err()` accessor. No RFC 5322 folding support in 1.0 (conservative stance).
 

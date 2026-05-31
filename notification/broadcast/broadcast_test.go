@@ -1,4 +1,4 @@
-package channels
+package broadcast
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/velocitykode/velocity/broadcast"
+	velbroadcast "github.com/velocitykode/velocity/broadcast"
 	"github.com/velocitykode/velocity/notification"
 )
 
@@ -90,7 +90,7 @@ func (n *multiChannelNotification) ToBroadcast(_ interface{}) *notification.Broa
 func newWiredBroadcastChannel(t *testing.T) (*BroadcastChannel, *captureDriver) {
 	t.Helper()
 	drv := &captureDriver{}
-	mgr := broadcast.New(drv)
+	mgr := velbroadcast.New(drv)
 	ch := NewBroadcastChannel()
 	ch.SetBroadcaster(mgr)
 	return ch, drv

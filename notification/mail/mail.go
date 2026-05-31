@@ -1,4 +1,4 @@
-package channels
+package mail
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"html"
 	"strings"
 
-	"github.com/velocitykode/velocity/mail"
+	velmail "github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/notification"
 )
 
@@ -19,7 +19,7 @@ func init() {
 // MailChannel delivers notifications via the mail system.
 // It requires a mail.Mailer to be set before sending.
 type MailChannel struct {
-	mailer mail.Mailer
+	mailer velmail.Mailer
 }
 
 // NewMailChannel creates a new mail notification channel.
@@ -28,7 +28,7 @@ func NewMailChannel() *MailChannel {
 }
 
 // SetMailer sets the mailer used to deliver notifications.
-func (c *MailChannel) SetMailer(mailer mail.Mailer) {
+func (c *MailChannel) SetMailer(mailer velmail.Mailer) {
 	c.mailer = mailer
 }
 
@@ -49,7 +49,7 @@ func (c *MailChannel) Send(ctx context.Context, notifiable interface{}, n notifi
 	}
 
 	// Build the mail.Message from the notification's MailMessage
-	msg := mail.NewMessage()
+	msg := velmail.NewMessage()
 
 	// Set from
 	from := mailMsg.GetFrom()
@@ -57,7 +57,7 @@ func (c *MailChannel) Send(ctx context.Context, notifiable interface{}, n notifi
 		msg.From(from.Email, from.Name)
 	}
 
-	// Set recipients — use notification-specified To, or fall back to notifiable route
+	// Set recipients - use notification-specified To, or fall back to notifiable route
 	toAddrs := mailMsg.GetTo()
 	if len(toAddrs) > 0 {
 		for _, addr := range toAddrs {
@@ -88,7 +88,7 @@ func (c *MailChannel) Send(ctx context.Context, notifiable interface{}, n notifi
 	// Subject
 	msg.Subject(mailMsg.GetSubject())
 
-	// Body — use custom body if set, otherwise render from greeting/lines/action
+	// Body - use custom body if set, otherwise render from greeting/lines/action
 	if htmlBody := mailMsg.GetHTMLBody(); htmlBody != "" {
 		msg.HTMLBody(htmlBody)
 	} else {
@@ -115,7 +115,7 @@ func (c *MailChannel) Send(ctx context.Context, notifiable interface{}, n notifi
 	// Priority
 	msg.Priority(mailMsg.GetPriority())
 
-	// Headers — Message.Header records a deferred error on the *Message
+	// Headers - Message.Header records a deferred error on the *Message
 	// when it detects CRLF injection or an invalid header name, so we do
 	// not interrupt the loop. We surface the error immediately after,
 	// before handing the message to the mailer. This is the enforcement

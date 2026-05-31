@@ -1,4 +1,4 @@
-package channels
+package mail
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/velocitykode/velocity/mail"
+	velmail "github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/notification"
 )
 
@@ -58,7 +58,7 @@ func TestMailChannel_ActionHTMLEscaped(t *testing.T) {
 }
 
 // crlfHeaderNotification emits a MailMessage whose Header() carries a CRLF
-// payload — the canonical SMTP header-injection attack. The notification
+// payload - the canonical SMTP header-injection attack. The notification
 // channel must surface this as an ErrInvalidHeader and must NOT deliver the
 // message to the mailer.
 type crlfHeaderNotification struct{}
@@ -81,7 +81,7 @@ func TestMailChannel_RejectsCRLFInjectedHeaders(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected CRLF-injected header to be rejected, got nil")
 	}
-	if !errors.Is(err, mail.ErrInvalidHeader) {
+	if !errors.Is(err, velmail.ErrInvalidHeader) {
 		t.Errorf("expected ErrInvalidHeader, got %v", err)
 	}
 	if len(m.sent) != 0 {

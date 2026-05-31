@@ -88,7 +88,7 @@ func (m *Manager) Channel(name string) (Channel, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Re-check — another goroutine may have created it while we waited.
+	// Re-check - another goroutine may have created it while we waited.
 	if ch, exists = m.channels[name]; exists {
 		return ch, nil
 	}

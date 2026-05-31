@@ -1,4 +1,4 @@
-package channels
+package database
 
 import (
 	"context"
@@ -106,9 +106,9 @@ func TestDatabaseChannel_NotifiableTypePopulated(t *testing.T) {
 	if err := row.Scan(&notifiableType); err != nil {
 		t.Fatalf("scan notifiable_type: %v", err)
 	}
-	// inferNotifiableType unwraps pointers, so we expect "channels.databaseTestNotifiable".
-	if notifiableType != "channels.databaseTestNotifiable" {
-		t.Errorf("notifiable_type = %q, want %q", notifiableType, "channels.databaseTestNotifiable")
+	// inferNotifiableType unwraps pointers, so we expect "database.databaseTestNotifiable".
+	if notifiableType != "database.databaseTestNotifiable" {
+		t.Errorf("notifiable_type = %q, want %q", notifiableType, "database.databaseTestNotifiable")
 	}
 }
 
@@ -302,8 +302,8 @@ func TestDatabaseChannel_FallbackIDWhenCalledWithoutManager(t *testing.T) {
 func TestInferNotifiableType_UnwrapsPointer(t *testing.T) {
 	type someUser struct{}
 	got := inferNotifiableType(&someUser{})
-	if got != "channels.someUser" {
-		t.Errorf("expected pointer to unwrap to channels.someUser, got %q", got)
+	if got != "database.someUser" {
+		t.Errorf("expected pointer to unwrap to database.someUser, got %q", got)
 	}
 }
 

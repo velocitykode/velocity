@@ -286,7 +286,7 @@ type DatabaseMessage struct {
 	// NotifiableType is the polymorphic type of the recipient
 	// (e.g. "App.Models.User"). Stored alongside notifiable_id so
 	// applications can host notifications for heterogeneous recipient
-	// types in one table, matching Laravel's notifications schema.
+	// types in one table, matching framework-compatible notifications schema.
 	// When empty, channels infer the type from the notifiable's runtime
 	// type (e.g. "*models.User").
 	NotifiableType string

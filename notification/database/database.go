@@ -1,4 +1,4 @@
-package channels
+package database
 
 import (
 	"context"
