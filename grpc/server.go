@@ -17,6 +17,11 @@ import (
 	"github.com/velocitykode/velocity/log"
 )
 
+var (
+	_ contract.EventDispatcherAware = (*Server)(nil)
+	_ contract.ShutdownAware        = (*Server)(nil)
+)
+
 // Server wraps a gRPC server with Velocity patterns
 type Server struct {
 	mu               sync.RWMutex

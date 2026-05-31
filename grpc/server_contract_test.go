@@ -10,8 +10,7 @@ import (
 )
 
 // TestServer_ImplementsShutdownAware documents intent at the test layer;
-// the canonical enforcement is the compile-time assertion in
-// event_dispatcher_aware.go at the repo root.
+// the canonical enforcement is the compile-time assertion in server.go.
 func TestServer_ImplementsShutdownAware(t *testing.T) {
 	var _ contract.ShutdownAware = (*Server)(nil)
 }
