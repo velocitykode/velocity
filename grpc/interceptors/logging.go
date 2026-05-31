@@ -189,7 +189,7 @@ func logRequest(ctx context.Context, method string, start time.Time, err error, 
 	}
 }
 
-// Event dispatching helpers — shared between unary and stream variants.
+// Event dispatching helpers, shared between unary and stream variants.
 
 // redactMetadata returns a copy of md with sensitive headers redacted
 func redactMetadata(md map[string][]string) map[string][]string {

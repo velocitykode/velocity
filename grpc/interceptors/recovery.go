@@ -147,7 +147,7 @@ func handlePanic(ctx context.Context, p interface{}, method string, cfg *Recover
 		})
 	}
 
-	// Call custom handler if set. The custom handler ALWAYS wins — we return
+	// Call custom handler if set. The custom handler ALWAYS wins; we return
 	// whatever it produces (including a nil error, which swallows the panic).
 	// Never silently fall through to the default 500 path on nil, because
 	// that would mask the application's explicit intent.

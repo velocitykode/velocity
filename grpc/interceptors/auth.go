@@ -247,7 +247,7 @@ func maskToken(token string) string {
 }
 
 // isPublicMethod decides whether method is in the allow-list. It deliberately
-// does NOT use a bare strings.HasPrefix — that would let an entry like
+// does NOT use a bare strings.HasPrefix; that would let an entry like
 // "/admin" match "/administrator/DoDangerous" and grant free access. The
 // contract is:
 //   - entries ending in "/" are treated as service-level prefixes: the method

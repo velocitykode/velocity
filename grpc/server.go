@@ -296,7 +296,7 @@ func (s *Server) Build() error {
 		regFunc(s.grpcServer)
 	}
 
-	// Enable reflection if configured. Hard-fail in production — silently
+	// Enable reflection if configured. Hard-fail in production; silently
 	// downgrading to "reflection disabled" lets misconfigured deployments ship
 	// with a false sense of security (operators think reflection is on).
 	if s.enableReflection {
@@ -397,7 +397,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// Run GracefulStop through async.GoWithRecover. The inner defer
 	// close(done) runs in both normal return and panic paths (Go defers
 	// fire LIFO before the panic propagates to the wrapper's recover), so
-	// the select below always unblocks — no need to close(done) in the
+	// the select below always unblocks; no need to close(done) in the
 	// recover callback, which would double-close.
 	async.GoWithRecover(func() {
 		defer close(done)
