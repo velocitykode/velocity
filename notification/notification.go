@@ -16,15 +16,12 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/mail"
 )
 
 // Notification defines a notification that can be sent through one or more channels.
-type Notification interface {
-	// Via returns the channel names this notification should be delivered through.
-	// Channel names correspond to registered Channel drivers (e.g., "mail", "database", "broadcast", "slack").
-	Via(notifiable interface{}) []string
-}
+type Notification = contract.Notification
 
 // WithID is an optional Notification capability. When a notification
 // implements ID(), its value is treated as the shared identifier for
@@ -86,10 +83,7 @@ type Notifiable interface {
 
 // Channel is a notification delivery mechanism.
 // Each channel knows how to deliver a notification through its transport (mail, DB, etc.).
-type Channel interface {
-	// Send delivers the notification to the notifiable via this channel.
-	Send(ctx context.Context, notifiable interface{}, notification Notification) error
-}
+type Channel = contract.NotificationChannel
 
 // MailNotification is implemented by notifications that can be sent via mail.
 type MailNotification interface {
