@@ -16,11 +16,11 @@ func TestNewMessage(t *testing.T) {
 		t.Fatal("Expected message to be created")
 	}
 
-	if msg.priority != NormalPriority {
+	if msg.GetPriority() != NormalPriority {
 		t.Error("Expected default priority to be NormalPriority")
 	}
 
-	if msg.to == nil || msg.cc == nil || msg.bcc == nil {
+	if msg.GetTo() == nil || msg.GetCC() == nil || msg.GetBCC() == nil {
 		t.Error("Expected slices to be initialized")
 	}
 }
