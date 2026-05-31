@@ -1,4 +1,4 @@
-package drivers
+package local
 
 import (
 	"bytes"
@@ -248,10 +248,8 @@ func (d *LocalDriver) runSMTP(client *smtp.Client, auth smtp.Auth, from string, 
 
 // sendViaSendmail sends email via sendmail command
 func (d *LocalDriver) sendViaSendmail(ctx context.Context, msg *mail.Message) error {
-	// Build message
 	body := d.buildMessage(msg)
 
-	// Collect recipients for sendmail
 	recipients := make([]string, 0)
 	for _, addr := range msg.GetTo() {
 		recipients = append(recipients, addr.Email)

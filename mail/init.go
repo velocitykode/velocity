@@ -113,7 +113,7 @@ type LocalConfig struct {
 
 // NewMailer creates a new Mailer from the given configuration.
 // Drivers must be registered via Drivers().Register before calling this
-// function (typically through a blank import of mail/alldrivers).
+// function (typically through a blank import of mail/standard).
 //
 // As a side-effect, NewMailer promotes config.MaxAttachmentSize (or the
 // DefaultMaxAttachmentSize when zero/negative) to the package-level default

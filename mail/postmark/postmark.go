@@ -1,4 +1,4 @@
-package drivers
+package postmark
 
 import (
 	"bytes"
@@ -9,11 +9,38 @@ import (
 	"io"
 	"net/http"
 	netmail "net/mail"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/velocitykode/velocity/mail"
 )
+
+// sanitizeHeader drops every C0 control character (U+0000..U+001F) except
+// horizontal tab from a header value. NUL in particular can truncate strings
+// in downstream parsers and enable header-injection vectors a simple CRLF
+// check misses; DEL (U+007F) is dropped as well since several older MTAs
+// choke on it.
+func sanitizeHeader(value string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\t' {
+			return r
+		}
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, value)
+}
+
+// sanitizeFilename removes characters that could cause injection in MIME headers.
+func sanitizeFilename(name string) string {
+	name = strings.ReplaceAll(name, "\r", "")
+	name = strings.ReplaceAll(name, "\n", "")
+	name = strings.ReplaceAll(name, "\"", "")
+	name = strings.ReplaceAll(name, "\\", "")
+	return name
+}
 
 // postmarkErrorPreview caps how many bytes of an unexpected error response
 // body we surface in a returned error. The body is redacted from the returned
@@ -81,16 +108,13 @@ func (d *PostmarkDriver) Send(ctx context.Context, msg *mail.Message) error {
 		return err
 	}
 
-	// Build Postmark request
 	payload := d.buildPayload(msg)
 
-	// Marshal to JSON
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("mail: failed to marshal postmark request: %w", err)
 	}
 
-	// Create HTTP request
 	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.postmarkapp.com/email", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return fmt.Errorf("mail: failed to create postmark request: %w", err)

@@ -1,4 +1,4 @@
-package drivers
+package mailgun
 
 import (
 	"bytes"
@@ -20,6 +20,23 @@ import (
 
 	"github.com/velocitykode/velocity/mail"
 )
+
+// sanitizeHeader drops every C0 control character (U+0000..U+001F) except
+// horizontal tab from a header value. NUL in particular can truncate strings
+// in downstream parsers and enable header-injection vectors a simple CRLF
+// check misses; DEL (U+007F) is dropped as well since several older MTAs
+// choke on it.
+func sanitizeHeader(value string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\t' {
+			return r
+		}
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, value)
+}
 
 // mailgunErrorPreview caps how many bytes of an unexpected error response
 // body we read from Mailgun. Without a cap a misbehaving or malicious proxy
@@ -114,23 +131,19 @@ func (d *MailgunDriver) Send(ctx context.Context, msg *mail.Message) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// Build multipart form data
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 
-	// Add fields
 	if err := d.addFields(writer, msg); err != nil {
 		return fmt.Errorf("mail: failed to build mailgun request: %w", err)
 	}
 
-	// Add attachments
 	if err := d.addAttachments(writer, msg); err != nil {
 		return fmt.Errorf("mail: failed to add attachments: %w", err)
 	}
 
 	writer.Close()
 
-	// Create HTTP request
 	url := fmt.Sprintf("%s/%s/messages", d.endpoint, d.domain)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, body)
 	if err != nil {
@@ -140,7 +153,6 @@ func (d *MailgunDriver) Send(ctx context.Context, msg *mail.Message) error {
 	req.SetBasicAuth("api", d.apiKey)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
-	// Send request
 	resp, err := d.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("mail: mailgun request failed: %w", err)

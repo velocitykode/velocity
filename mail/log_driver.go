@@ -8,11 +8,8 @@ import (
 	"sync"
 )
 
-// The log driver lives inside the mail package (rather than under
-// mail/drivers) so it's registered as soon as anything imports the
-// mail package. That matches the MAIL_DRIVER=log default — users who
-// never opt into a real provider still get a working, zero-dependency
-// mailer without needing blank imports in their main.go.
+// The log driver registers from the mail root so MAIL_DRIVER=log works with
+// only package mail imported.
 func init() {
 	Drivers().Register("log", func(_ context.Context, cfg MailConfig) (Mailer, error) {
 		return NewLogDriver(), nil

@@ -26,10 +26,10 @@ import (
 // (and the SignedMiddleware that wraps it) verifies the signature in
 // constant time, rejects expired URLs, and rejects any tampering of the
 // path, expires value, or auxiliary query parameters. The primitives
-// mirror Laravel's UrlGenerator::signedRoute / hasValidSignature and
-// `signed` middleware so consumer apps porting from PHP get the same
-// surface (password reset links, email verification, unsubscribe URLs,
-// time-limited download links).
+// (SignedURL, ValidateSignature, and the `signed` middleware) give
+// consumer apps a ready-made surface for common use cases (password
+// reset links, email verification, unsubscribe URLs, time-limited
+// download links).
 //
 // The signing key is derived from APP_KEY via HKDF-SHA256 with the info
 // label "velocity-signed-url-v1" so that signed-URL signatures never
@@ -41,10 +41,10 @@ import (
 const (
 	// signedURLExpiresParam is the canonical name for the absolute
 	// Unix-second expiry timestamp embedded in signed URLs. Lower-case
-	// to match Laravel's convention.
+	// by convention.
 	signedURLExpiresParam = "expires"
 	// signedURLSignatureParam is the canonical name for the hex-encoded
-	// HMAC-SHA256 tag. Lower-case to match Laravel's convention.
+	// HMAC-SHA256 tag. Lower-case by convention.
 	signedURLSignatureParam = "signature"
 	// signedURLHKDFInfo separates this subsystem's HMAC key from every
 	// other HKDF-derived key in the framework. Version suffix lets us

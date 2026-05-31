@@ -6,8 +6,7 @@ import (
 
 	"github.com/velocitykode/velocity/mail"
 
-	// Import drivers to register them
-	_ "github.com/velocitykode/velocity/mail/drivers"
+	_ "github.com/velocitykode/velocity/mail/standard"
 )
 
 func TestNewMailer(t *testing.T) {
