@@ -853,9 +853,38 @@ func TestJWTGuard_getTokenFromRequest(t *testing.T) {
 			wantToken: "query-token",
 		},
 		{
+			name: "extracts token from Sec-WebSocket-Protocol for WebSocket requests",
+			setupReq: func() *http.Request {
+				req := httptest.NewRequest("GET", "/", nil)
+				req.Header.Set("Upgrade", "websocket")
+				req.Header.Set("Sec-WebSocket-Protocol", "chat, bearer.ws-header-token")
+				return req
+			},
+			wantToken: "ws-header-token",
+		},
+		{
+			name: "Sec-WebSocket-Protocol takes precedence over query parameter for WebSocket requests",
+			setupReq: func() *http.Request {
+				req := httptest.NewRequest("GET", "/?token=query-token", nil)
+				req.Header.Set("Upgrade", "websocket")
+				req.Header.Set("Sec-WebSocket-Protocol", "bearer.ws-header-token")
+				return req
+			},
+			wantToken: "ws-header-token",
+		},
+		{
 			name: "rejects query parameter for non-WebSocket requests",
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("GET", "/?token=query-token", nil)
+				return req
+			},
+			wantToken: "",
+		},
+		{
+			name: "rejects Sec-WebSocket-Protocol token for non-WebSocket requests",
+			setupReq: func() *http.Request {
+				req := httptest.NewRequest("GET", "/", nil)
+				req.Header.Set("Sec-WebSocket-Protocol", "bearer.ws-header-token")
 				return req
 			},
 			wantToken: "",

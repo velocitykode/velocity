@@ -619,7 +619,14 @@ func (g *JWTGuard) ValidateToken(token string) (*auth.Claims, error) {
 	return g.jwtManager.ValidateToken(token)
 }
 
-// getTokenFromRequest extracts JWT token from request
+// getTokenFromRequest extracts JWT token from request.
+//
+// For WebSocket upgrade requests, clients should prefer carrying the access
+// token in the Sec-WebSocket-Protocol header as a comma-separated subprotocol
+// value with the form "bearer.<token>". The legacy token query parameter is
+// still accepted for WebSocket upgrades only, but it is deprecated because
+// query-string credentials can leak through access logs, proxy logs, browser
+// history, and Referer headers.
 func (g *JWTGuard) getTokenFromRequest(r *http.Request) string {
 	// Check Authorization header — only accept "Bearer <token>" format
 	authHeader := r.Header.Get("Authorization")
@@ -635,8 +642,13 @@ func (g *JWTGuard) getTokenFromRequest(r *http.Request) string {
 		return token
 	}
 
-	// Check query parameter (restricted to WebSocket upgrade requests only)
+	// Check WebSocket-specific token sources. Prefer Sec-WebSocket-Protocol
+	// over the deprecated query-parameter fallback to avoid URL credential
+	// leakage in clients that support subprotocol-based token transport.
 	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		if token := tokenFromWebSocketSubprotocol(r.Header.Values("Sec-WebSocket-Protocol")); token != "" {
+			return token
+		}
 		if token := r.URL.Query().Get("token"); token != "" {
 			return token
 		}
@@ -646,6 +658,24 @@ func (g *JWTGuard) getTokenFromRequest(r *http.Request) string {
 	if r.Method == "POST" {
 		if token := r.FormValue("token"); token != "" {
 			return token
+		}
+	}
+
+	return ""
+}
+
+func tokenFromWebSocketSubprotocol(values []string) string {
+	const bearerPrefix = "bearer."
+
+	for _, headerValue := range values {
+		for _, value := range strings.Split(headerValue, ",") {
+			value = strings.TrimSpace(value)
+			if strings.HasPrefix(value, bearerPrefix) {
+				token := strings.TrimPrefix(value, bearerPrefix)
+				if token != "" {
+					return token
+				}
+			}
 		}
 	}
 
