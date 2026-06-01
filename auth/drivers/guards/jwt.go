@@ -330,14 +330,17 @@ func (g *JWTGuard) User(r *http.Request) auth.Authenticatable {
 		return nil
 	}
 
-	// Check cache first
-	if user, ok := g.getCachedUser(token); ok {
-		return user
-	}
-
+	// Validate on EVERY call: a token blacklisted or expired since it was
+	// first seen must stop authenticating immediately, not after the cache
+	// TTL. The cache may only memoize the provider lookup, never the
+	// validity decision (audit: revocation/expiry bypass window).
 	claims, err := g.jwtManager.ValidateAccessToken(token)
 	if err != nil {
 		return nil
+	}
+
+	if user, ok := g.getCachedUser(token); ok {
+		return user
 	}
 
 	user, err := g.loadProvider().FindByID(claims.UserID)
@@ -345,7 +348,6 @@ func (g *JWTGuard) User(r *http.Request) auth.Authenticatable {
 		return nil
 	}
 
-	// Cache for subsequent calls
 	g.cacheUser(token, user)
 	return user
 }

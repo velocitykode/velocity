@@ -345,17 +345,46 @@ func TestJWTGuard_User(t *testing.T) {
 			name: "returns cached user on subsequent calls",
 			setupGuard: func() *JWTGuard {
 				guard := mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
-				// Pre-cache a user
-				guard.userCache["cached-token"] = cachedUser{user: &mockJWTUser{id: "cached-user"}, cachedAt: time.Now()}
+				user := &mockJWTUser{id: "user123"}
+				token, _ := guard.jwtManager.GenerateToken(user)
+				guard.userCache[token] = cachedUser{user: &mockJWTUser{id: "cached-user"}, cachedAt: time.Now()}
 				return guard
 			},
 			setupReq: func(guard *JWTGuard) *http.Request {
+				var token string
+				for cachedToken := range guard.userCache {
+					token = cachedToken
+					break
+				}
 				req := httptest.NewRequest("GET", "/", nil)
-				req.Header.Set("Authorization", "Bearer cached-token")
+				req.Header.Set("Authorization", "Bearer "+token)
 				return req
 			},
 			wantNil: false,
 			wantID:  "cached-user",
+		},
+		{
+			name: "returns nil for revoked token even when user is cached",
+			setupGuard: func() *JWTGuard {
+				guard := mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+				user := &mockJWTUser{id: "user123"}
+				token, _ := guard.jwtManager.GenerateToken(user)
+				claims, _ := guard.jwtManager.ValidateToken(token)
+				guard.userCache[token] = cachedUser{user: &mockJWTUser{id: "cached-user"}, cachedAt: time.Now()}
+				guard.jwtManager.RevokeToken(claims.ID, claims.ExpiresAt.Time)
+				return guard
+			},
+			setupReq: func(guard *JWTGuard) *http.Request {
+				var token string
+				for cachedToken := range guard.userCache {
+					token = cachedToken
+					break
+				}
+				req := httptest.NewRequest("GET", "/", nil)
+				req.Header.Set("Authorization", "Bearer "+token)
+				return req
+			},
+			wantNil: true,
 		},
 	}
 
