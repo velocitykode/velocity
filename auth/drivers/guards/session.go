@@ -600,14 +600,16 @@ func (g *SessionGuard) anchorRecalledUser(r *http.Request, session auth.Session,
 	return true
 }
 
-// ID returns the authenticated user ID
+// ID returns the authenticated user ID. It enforces the same server-side
+// revocation, user-existence, and remember-cookie revival checks as User and
+// CheckWithError, so a revoked session or deleted user is not trusted for
+// authorization.
 func (g *SessionGuard) ID(r *http.Request) interface{} {
-	session := g.getSession(r)
-	if session == nil {
+	user := g.User(r)
+	if user == nil {
 		return nil
 	}
-
-	return session.Get("user_id")
+	return user.GetAuthIdentifier()
 }
 
 // Login logs in a user
