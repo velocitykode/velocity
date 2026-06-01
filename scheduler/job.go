@@ -143,6 +143,19 @@ func (j *Job) markFired(t time.Time) {
 }
 
 // ShouldRun checks if the job should run based on constraints
+// withinDailyRange reports whether the "HH:MM" time now falls inside the daily
+// window [start, end]. When start <= end it is a same-day window; when start >
+// end the window wraps past midnight (e.g. "23:00".."01:00"), so a time is in
+// range if it is at/after start OR at/before end. A naive start<=now<=end test
+// silently drops every overnight window, which broke Between/UnlessBetween for
+// jobs scheduled across midnight.
+func withinDailyRange(now, start, end string) bool {
+	if start <= end {
+		return now >= start && now <= end
+	}
+	return now >= start || now <= end
+}
+
 func (j *Job) ShouldRun() bool {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
@@ -168,14 +181,14 @@ func (j *Job) ShouldRun() bool {
 
 	// Check between constraint
 	if j.between[0] != "" && j.between[1] != "" {
-		if nowStr < j.between[0] || nowStr > j.between[1] {
+		if !withinDailyRange(nowStr, j.between[0], j.between[1]) {
 			return false
 		}
 	}
 
 	// Check unlessBetween constraint
 	if j.unlessBetween[0] != "" && j.unlessBetween[1] != "" {
-		if nowStr >= j.unlessBetween[0] && nowStr <= j.unlessBetween[1] {
+		if withinDailyRange(nowStr, j.unlessBetween[0], j.unlessBetween[1]) {
 			return false
 		}
 	}

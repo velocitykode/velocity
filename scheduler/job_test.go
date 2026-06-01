@@ -265,3 +265,29 @@ func TestJob(t *testing.T) {
 		}
 	})
 }
+
+func TestWithinDailyRange(t *testing.T) {
+	cases := []struct {
+		name            string
+		now, start, end string
+		want            bool
+	}{
+		{"same-day in range", "12:00", "09:00", "17:00", true},
+		{"same-day before start", "08:59", "09:00", "17:00", false},
+		{"same-day after end", "17:01", "09:00", "17:00", false},
+		{"same-day on start", "09:00", "09:00", "17:00", true},
+		{"same-day on end", "17:00", "09:00", "17:00", true},
+		{"wrap after midnight in range", "00:10", "23:10", "01:10", true},
+		{"wrap before midnight in range", "23:30", "23:10", "01:10", true},
+		{"wrap outside range", "12:00", "23:10", "01:10", false},
+		{"wrap on start", "23:10", "23:10", "01:10", true},
+		{"wrap on end", "01:10", "23:10", "01:10", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := withinDailyRange(tc.now, tc.start, tc.end); got != tc.want {
+				t.Errorf("withinDailyRange(%q,%q,%q) = %v, want %v", tc.now, tc.start, tc.end, got, tc.want)
+			}
+		})
+	}
+}
