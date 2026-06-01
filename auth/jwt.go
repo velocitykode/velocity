@@ -605,6 +605,22 @@ func (j *JWTManager) ValidateToken(tokenString string) (*Claims, error) {
 	return claims, nil
 }
 
+// ValidateAccessToken validates a token AND asserts it is an access
+// token. The authentication accessors (Check/User/ID) must use this so a
+// refresh token cannot be replayed as a Bearer access credential
+// (audit finding: refresh-as-access). RefreshToken keeps using
+// ValidateToken because it intentionally consumes refresh tokens.
+func (j *JWTManager) ValidateAccessToken(tokenString string) (*Claims, error) {
+	claims, err := j.ValidateToken(tokenString)
+	if err != nil {
+		return nil, err
+	}
+	if claims.TokenType != "access" {
+		return nil, errors.New("velocity/auth: token is not an access token")
+	}
+	return claims, nil
+}
+
 // RefreshToken creates a new token from a refresh token.
 //
 // Returns ErrRefreshGenerationStale when the refresh token's embedded

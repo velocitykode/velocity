@@ -307,7 +307,7 @@ func (g *JWTGuard) Check(r *http.Request) bool {
 		return false
 	}
 
-	claims, err := g.jwtManager.ValidateToken(token)
+	claims, err := g.jwtManager.ValidateAccessToken(token)
 	if err != nil {
 		return false
 	}
@@ -335,7 +335,7 @@ func (g *JWTGuard) User(r *http.Request) auth.Authenticatable {
 		return user
 	}
 
-	claims, err := g.jwtManager.ValidateToken(token)
+	claims, err := g.jwtManager.ValidateAccessToken(token)
 	if err != nil {
 		return nil
 	}
@@ -357,7 +357,7 @@ func (g *JWTGuard) ID(r *http.Request) interface{} {
 		return nil
 	}
 
-	claims, err := g.jwtManager.ValidateToken(token)
+	claims, err := g.jwtManager.ValidateAccessToken(token)
 	if err != nil {
 		return nil
 	}
