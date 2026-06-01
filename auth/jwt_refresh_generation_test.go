@@ -21,10 +21,12 @@ func (u *jwtRefreshTestUser) SetRememberToken(string)        {}
 // jwtRefreshTestProvider returns the user for any id so the
 // RefreshToken path can resolve through it.
 type jwtRefreshTestProvider struct {
-	user *jwtRefreshTestUser
+	user          *jwtRefreshTestUser
+	findByIDCalls int
 }
 
 func (p *jwtRefreshTestProvider) FindByID(id interface{}) (Authenticatable, error) {
+	p.findByIDCalls++
 	return p.user, nil
 }
 func (p *jwtRefreshTestProvider) FindByIDCtx(context.Context, interface{}) (Authenticatable, error) {
@@ -42,6 +44,18 @@ func (p *jwtRefreshTestProvider) ValidateCredentials(Authenticatable, map[string
 func (p *jwtRefreshTestProvider) UpdateRememberToken(Authenticatable, string) error { return nil }
 func (p *jwtRefreshTestProvider) UpdateRememberTokenCtx(context.Context, Authenticatable, string) error {
 	return nil
+}
+
+type erroringRefreshGenerationStore struct {
+	err error
+}
+
+func (s erroringRefreshGenerationStore) Current(string) (int64, error) {
+	return 0, s.err
+}
+
+func (s erroringRefreshGenerationStore) Bump(string) (int64, error) {
+	return 0, s.err
 }
 
 // newJWTManagerForRefresh constructs a JWTManager wired with the in-memory
@@ -92,6 +106,37 @@ func TestJWT_RefreshToken_StaleAfterBump(t *testing.T) {
 	}
 	if !errors.Is(err, ErrRefreshGenerationStale) {
 		t.Fatalf("expected ErrRefreshGenerationStale, got %v", err)
+	}
+}
+
+func TestJWT_RefreshToken_FailsClosedWhenGenerationStoreErrors(t *testing.T) {
+	mgr := newJWTManagerForRefresh(t)
+	user := &jwtRefreshTestUser{id: "user-store-error"}
+	provider := &jwtRefreshTestProvider{user: user}
+
+	rt, err := mgr.GenerateRefreshToken(user)
+	if err != nil {
+		t.Fatalf("GenerateRefreshToken: %v", err)
+	}
+
+	storeErr := errors.New("refresh generation store transport error")
+	mgr.SetRefreshGenerationStore(erroringRefreshGenerationStore{err: storeErr})
+
+	token, err := mgr.RefreshToken(rt, provider)
+	if err == nil {
+		t.Fatal("RefreshToken returned nil error; expected store failure")
+	}
+	if token != "" {
+		t.Fatalf("RefreshToken returned token %q; expected empty token", token)
+	}
+	if errors.Is(err, storeErr) {
+		t.Fatalf("RefreshToken exposed store error %v", err)
+	}
+	if got, want := err.Error(), "velocity/auth: refresh generation store unavailable"; got != want {
+		t.Fatalf("RefreshToken error = %q; want %q", got, want)
+	}
+	if provider.findByIDCalls != 0 {
+		t.Fatalf("FindByID called %d times; want 0", provider.findByIDCalls)
 	}
 }
 

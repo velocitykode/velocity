@@ -649,7 +649,12 @@ func (j *JWTManager) RefreshToken(refreshTokenString string, provider UserProvid
 		userIDStr = fmt.Sprintf("%v", claims.UserID)
 	}
 	current, cgErr := j.refreshGenStore().Current(userIDStr)
-	if cgErr == nil && claims.RefreshGeneration < current {
+	if cgErr != nil {
+		// Fail closed: a store outage must not silently re-enable refresh
+		// tokens administratively revoked by Logout/RevokeAll.
+		return "", errors.New("velocity/auth: refresh generation store unavailable")
+	}
+	if claims.RefreshGeneration < current {
 		return "", ErrRefreshGenerationStale
 	}
 
