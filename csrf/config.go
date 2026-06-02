@@ -94,9 +94,11 @@ type Config struct {
 	// Security notes:
 	//   - The cookie is intentionally NOT HttpOnly: SPA JS must read it
 	//     to echo into the header on unsafe requests.
-	//   - Secure is set true when the request scheme is https. In HTTP
-	//     dev environments Secure is false (the browser would otherwise
-	//     drop the cookie); production runs over TLS by policy.
+	//   - Secure is true when the request scheme is https OR when
+	//     Config.Secure is set (the default), so the token cookie is
+	//     Secure behind a TLS-terminating proxy. Only an explicit
+	//     Secure=false dev/test config emits a non-Secure cookie over
+	//     plain HTTP.
 	//   - SameSite=Lax matches the Set-Cookie semantics most SPAs need
 	//     (the cookie travels on top-level POST navigations from the
 	//     same site but not cross-site).

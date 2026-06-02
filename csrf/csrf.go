@@ -216,7 +216,7 @@ func (c *CSRF) Middleware(next http.Handler) http.Handler {
 // the per-session CSRF token for the request's session, IF a session is
 // resolvable. Used by the safe-method bootstrap path inside Middleware.
 //
-// Secure is derived from the incoming request scheme (r.TLS != nil).
+// Secure is true when the request is HTTPS or Config.Secure is set.
 // See writeXSRFCookieForSession for the cookie attribute details.
 func (c *CSRF) maybeWriteXSRFCookie(w http.ResponseWriter, r *http.Request) {
 	if c == nil || c.config == nil {
@@ -236,7 +236,7 @@ func (c *CSRF) maybeWriteXSRFCookie(w http.ResponseWriter, r *http.Request) {
 	// Without this, the cookie and the page-prop could diverge if the
 	// store mints the token twice (transient inconsistency, or a slow
 	// race between Get and Set). See request_token.go.
-	c.writeXSRFCookieForSession(w, r, sessionID, r.TLS != nil)
+	c.writeXSRFCookieForSession(w, r, sessionID, r.TLS != nil || c.config.Secure)
 }
 
 // WriteXSRFCookie writes the XSRF-TOKEN cookie for sessionID to w. It
@@ -712,12 +712,11 @@ func (c *CSRF) RotateToken(oldID, newID string) error {
 // the default (host-only) to match the write path, which also does not
 // set Domain.
 //
-// Secure mirrors the request scheme (r.TLS != nil) for the same reason
-// the safe-method bootstrap does: browsers reject a Secure Set-Cookie
-// received over plain HTTP, which on a dev box would leave the stale
-// XSRF-TOKEN in place. Production (HTTPS) flows get Secure=true; dev
-// (HTTP) flows get Secure=false. r is required for this reason; the
-// call is a no-op when r is nil.
+// Secure mirrors the safe-method bootstrap path: Secure=true when the
+// request is HTTPS or Config.Secure is true. This keeps production
+// proxy-terminated TLS deployments secure even though r.TLS is nil in
+// the Go process, while still allowing explicit Secure=false dev/test
+// configs to delete a plain-HTTP cookie.
 //
 // Called from SessionGuard.Logout right after RevokeToken.
 func (c *CSRF) ClearXSRFCookie(w http.ResponseWriter, r *http.Request) {
@@ -737,7 +736,7 @@ func (c *CSRF) ClearXSRFCookie(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: false,
-		Secure:   r.TLS != nil,
+		Secure:   r.TLS != nil || c.config.Secure,
 		SameSite: http.SameSiteLaxMode,
 	})
 }
