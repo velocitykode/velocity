@@ -30,16 +30,18 @@ type Config struct {
 // LoadConfig loads gRPC configuration from environment variables:
 //   - GRPC_PORT: gRPC server port (default: 50051)
 //   - GRPC_REFLECTION: Enable reflection (default: false)
-//   - GRPC_MAX_RECV_SIZE: Max receive message size in bytes (default: 4MB)
-//   - GRPC_MAX_SEND_SIZE: Max send message size in bytes (default: 4MB)
+//   - GRPC_MAX_RECV_SIZE: Max receive message size in bytes (default: 4MB).
+//     Non-positive or unparseable values fall back to the 4MB default.
+//   - GRPC_MAX_SEND_SIZE: Max send message size in bytes (default: 4MB).
+//     Non-positive or unparseable values fall back to the 4MB default.
 //   - GATEWAY_PORT: HTTP gateway port (default: 8080)
 //   - GRPC_ENDPOINT: gRPC endpoint for gateway (default: localhost:50051)
 func LoadConfig() *Config {
 	return &Config{
 		ServerPort:       envOr("GRPC_PORT", defaultGRPCPort),
 		EnableReflection: envOr("GRPC_REFLECTION", "false") == "true",
-		MaxRecvMsgSize:   envInt("GRPC_MAX_RECV_SIZE", defaultMaxMsgSize),
-		MaxSendMsgSize:   envInt("GRPC_MAX_SEND_SIZE", defaultMaxMsgSize),
+		MaxRecvMsgSize:   envPositiveInt("GRPC_MAX_RECV_SIZE", defaultMaxMsgSize),
+		MaxSendMsgSize:   envPositiveInt("GRPC_MAX_SEND_SIZE", defaultMaxMsgSize),
 		GatewayPort:      envOr("GATEWAY_PORT", defaultGatewayPort),
 		GRPCEndpoint:     envOr("GRPC_ENDPOINT", defaultGRPCEndpoint),
 	}
@@ -53,10 +55,15 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-// envInt parses an environment variable as int with a default fallback.
-func envInt(key string, defaultValue int) int {
+// envPositiveInt parses an environment variable as a positive int. It returns
+// defaultValue when the variable is unset, unparseable, or non-positive (<= 0).
+// The positive floor matters for message-size limits: in grpc-go a negative
+// MaxRecvMsgSize means UNLIMITED, which would silently remove the message-size
+// DoS guard, and 0 is nonsensical. Falling back to the default preserves that
+// protection against operator misconfiguration.
+func envPositiveInt(key string, defaultValue int) int {
 	if v := os.Getenv(key); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
+		if i, err := strconv.Atoi(v); err == nil && i > 0 {
 			return i
 		}
 	}
