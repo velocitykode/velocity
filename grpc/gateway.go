@@ -23,6 +23,19 @@ import (
 	"github.com/velocitykode/velocity/log"
 )
 
+// Conservative defaults for the internet-facing HTTP gateway's http.Server.
+// Without full timeouts a client can drip a request body (Slowloris-style) or
+// hold idle/slow-write connections to exhaust goroutines and connections, and
+// the downstream gRPC MaxRecvMsgSize does not bound how long a connection is
+// held at the gateway. These are secure-by-default and overridable via the
+// GatewayWith* options below.
+const (
+	defaultGatewayReadTimeout    = 30 * time.Second
+	defaultGatewayWriteTimeout   = 60 * time.Second
+	defaultGatewayIdleTimeout    = 120 * time.Second
+	defaultGatewayMaxHeaderBytes = 1 << 20 // 1 MiB
+)
+
 // Gateway wraps an HTTP gateway that proxies to a gRPC server
 type Gateway struct {
 	mu           sync.RWMutex
@@ -33,6 +46,14 @@ type Gateway struct {
 	dialOptions  []grpc.DialOption
 	running      bool
 	logger       log.Logger
+
+	// HTTP server timeout/header bounds applied to httpServer in Build().
+	// Defaulted in NewGateway() to the conservative package constants so a
+	// zero-option Gateway is secure by default; overridable via GatewayWith*.
+	readTimeout    time.Duration
+	writeTimeout   time.Duration
+	idleTimeout    time.Duration
+	maxHeaderBytes int
 
 	// environment is the deployment environment (e.g., "production", "staging").
 	// When set to "production", Build() refuses to start without explicitly
@@ -69,10 +90,14 @@ type GatewayOption func(*Gateway)
 func NewGateway(opts ...GatewayOption) *Gateway {
 	cfg := LoadConfig()
 	g := &Gateway{
-		port:          cfg.GatewayPort,
-		grpcEndpoint:  cfg.GRPCEndpoint,
-		environment:   contract.GetEnv(),
-		registrations: make([]GatewayRegistrationFunc, 0),
+		port:           cfg.GatewayPort,
+		grpcEndpoint:   cfg.GRPCEndpoint,
+		environment:    contract.GetEnv(),
+		readTimeout:    defaultGatewayReadTimeout,
+		writeTimeout:   defaultGatewayWriteTimeout,
+		idleTimeout:    defaultGatewayIdleTimeout,
+		maxHeaderBytes: defaultGatewayMaxHeaderBytes,
+		registrations:  make([]GatewayRegistrationFunc, 0),
 		muxOptions: []runtime.ServeMuxOption{
 			// Use JSON names and emit defaults
 			runtime.WithMarshalerOption(runtime.MIMEWildcard, &runtime.JSONPb{
@@ -224,6 +249,43 @@ func GatewayWithLogger(logger log.Logger) GatewayOption {
 	}
 }
 
+// GatewayWithReadTimeout sets the maximum duration for reading the entire
+// request, including the body, on the gateway's HTTP server. Operators running
+// the gateway behind an L7 proxy that already enforces request timeouts may
+// relax this.
+func GatewayWithReadTimeout(d time.Duration) GatewayOption {
+	return func(g *Gateway) {
+		g.readTimeout = d
+	}
+}
+
+// GatewayWithWriteTimeout sets the maximum duration before timing out writes of
+// the response on the gateway's HTTP server. Operators behind an L7 proxy that
+// enforces its own response timeouts may relax this.
+func GatewayWithWriteTimeout(d time.Duration) GatewayOption {
+	return func(g *Gateway) {
+		g.writeTimeout = d
+	}
+}
+
+// GatewayWithIdleTimeout sets the maximum time to wait for the next request on a
+// keep-alive connection on the gateway's HTTP server. Operators behind an L7
+// proxy that manages connection reuse may relax this.
+func GatewayWithIdleTimeout(d time.Duration) GatewayOption {
+	return func(g *Gateway) {
+		g.idleTimeout = d
+	}
+}
+
+// GatewayWithMaxHeaderBytes sets the maximum number of bytes the gateway's HTTP
+// server will read parsing request headers. Operators behind an L7 proxy that
+// already bounds header size may relax this.
+func GatewayWithMaxHeaderBytes(n int) GatewayOption {
+	return func(g *Gateway) {
+		g.maxHeaderBytes = n
+	}
+}
+
 // GatewayWithInsecure explicitly configures the gateway to use insecure credentials.
 // This should only be used for local development.
 func GatewayWithInsecure() GatewayOption {
@@ -353,6 +415,10 @@ func (g *Gateway) Build(ctx context.Context) error {
 		Addr:              ":" + g.port,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       g.readTimeout,
+		WriteTimeout:      g.writeTimeout,
+		IdleTimeout:       g.idleTimeout,
+		MaxHeaderBytes:    g.maxHeaderBytes,
 	}
 
 	return nil
