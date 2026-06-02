@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -196,9 +197,9 @@ func Headline(value string) string {
 	return Title(string(result))
 }
 
-// Is checks if the string matches the given glob pattern. Returns false if
-// the pattern would compile to a malformed regex (no panic). Use IsSafe to
-// surface the compilation error.
+// Is checks if the string matches the given glob pattern. Only * and ? are
+// treated as wildcards; all other characters are treated literally. Prefer
+// Exactly or HasPrefix for security-sensitive allow/deny checks when possible.
 func Is(pattern, value string) bool {
 	ok, _ := IsSafe(pattern, value)
 	return ok
@@ -370,15 +371,16 @@ func TestSafe(pattern, value string) (bool, error) {
 }
 
 // IsSafe is like Is but returns an error if the resulting regex cannot be
-// compiled. Always prefer this over Is when the pattern is user-controlled.
+// compiled. Only * and ? are treated as glob wildcards; all other characters
+// are treated literally. Prefer Exactly or HasPrefix for security-sensitive
+// allow/deny checks when possible.
 func IsSafe(pattern, value string) (bool, error) {
 	if pattern == value {
 		return true, nil
 	}
-	// Convert glob pattern to regex (mirrors Is).
-	p := strings.ReplaceAll(pattern, ".", "\\.")
-	p = strings.ReplaceAll(p, "*", ".*")
-	p = strings.ReplaceAll(p, "?", ".")
+	p := regexp.QuoteMeta(pattern)
+	p = strings.ReplaceAll(p, `\*`, ".*")
+	p = strings.ReplaceAll(p, `\?`, ".")
 	p = "^" + p + "$"
 	return MatchSafe(p, value)
 }

@@ -570,19 +570,30 @@ func TestHeadline(t *testing.T) {
 
 func TestIs(t *testing.T) {
 	tests := []struct {
+		name     string
 		pattern  string
 		value    string
 		expected bool
 	}{
-		{"foo*", "foobar", true},
-		{"foo*", "barfoo", false},
-		{"*bar", "foobar", true},
+		{"star suffix", "foo*", "foobar", true},
+		{"star suffix mismatch", "foo*", "barfoo", false},
+		{"star prefix", "*bar", "foobar", true},
+		{"a[bc] literal match", "a[bc]", "a[bc]", true},
+		{"a[bc] does not act as character class", "a[bc]", "ab", false},
+		{"a+ literal match", "a+", "a+", true},
+		{"a+ does not act as quantifier", "a+", "aaa", false},
+		{"dot literal match", "a.b", "a.b", true},
+		{"dot does not act as wildcard", "a.b", "axb", false},
+		{"star wildcard still matches", "a*", "abc", true},
+		{"question wildcard still matches", "a?c", "abc", true},
 	}
 	for _, tt := range tests {
-		result := Is(tt.pattern, tt.value)
-		if result != tt.expected {
-			t.Errorf("Is(%q, %q) = %v; want %v", tt.pattern, tt.value, result, tt.expected)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			result := Is(tt.pattern, tt.value)
+			if result != tt.expected {
+				t.Errorf("Is(%q, %q) = %v; want %v", tt.pattern, tt.value, result, tt.expected)
+			}
+		})
 	}
 }
 
@@ -1995,10 +2006,13 @@ func TestTestSafe_MalformedPatternReturnsError(t *testing.T) {
 	}
 }
 
-func TestIsSafe_MalformedPatternReturnsError(t *testing.T) {
-	// "(" becomes "^(.$" after glob escaping, which is still malformed.
-	if _, err := IsSafe("(", "x"); err == nil {
-		t.Fatal("IsSafe with malformed pattern: want error, got nil")
+func TestIsSafe_RegexMetacharactersAreLiteral(t *testing.T) {
+	ok, err := IsSafe("(", "(")
+	if err != nil {
+		t.Fatalf("IsSafe error: %v", err)
+	}
+	if !ok {
+		t.Error("IsSafe should treat regex metacharacters as literals")
 	}
 }
 
@@ -2289,15 +2303,13 @@ func TestTest_MalformedPatternReturnsFalse(t *testing.T) {
 	}
 }
 
-func TestIs_MalformedPatternReturnsFalse(t *testing.T) {
-	// A bare "(" becomes "^(.$" after glob-to-regex conversion, which is
-	// malformed regex. Before this fix it panicked.
+func TestIs_RegexMetacharactersAreLiteral(t *testing.T) {
 	var got bool
 	noPanic(t, func() {
-		got = Is("(", "x")
+		got = Is("(", "(")
 	})
-	if got {
-		t.Errorf("Is with malformed pattern = true; want false")
+	if !got {
+		t.Errorf("Is should treat regex metacharacters as literals")
 	}
 }
 
