@@ -307,6 +307,89 @@ func TestHTTPSRedirect_PreservesQueryString(t *testing.T) {
 	}
 }
 
+func TestHTTPSRedirect_UsesCanonicalHostForSpoofedHost(t *testing.T) {
+	mw := HTTPSRedirect(
+		WithHTTPSRedirectAllowedHosts("app.example.com"),
+		WithHTTPSRedirectCanonicalHost("app.example.com"),
+	)
+	c, w := NewTestContext("GET", "/dashboard?tab=home")
+	c.Request.Host = "evil.com"
+
+	handler := mw(func(c *Context) error { return nil })
+
+	if err := handler(c); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	loc := w.Header().Get("Location")
+	if loc != "https://app.example.com/dashboard?tab=home" {
+		t.Errorf("Location = %q, want canonical host", loc)
+	}
+	if loc == "https://evil.com/dashboard?tab=home" {
+		t.Errorf("Location reflected spoofed Host evil.com")
+	}
+	if got := w.Header().Get("Vary"); got != "Host" {
+		t.Errorf("Vary = %q, want Host", got)
+	}
+}
+
+func TestHTTPSRedirect_ReflectsAllowedHost(t *testing.T) {
+	mw := HTTPSRedirect(WithHTTPSRedirectAllowedHosts("app.example.com"))
+	c, w := NewTestContext("GET", "/dashboard")
+	c.Request.Host = "app.example.com"
+
+	handler := mw(func(c *Context) error { return nil })
+
+	if err := handler(c); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	loc := w.Header().Get("Location")
+	if loc != "https://app.example.com/dashboard" {
+		t.Errorf("Location = %q, want allow-listed request host", loc)
+	}
+}
+
+func TestHTTPSRedirect_UsesFirstAllowedHostForSpoofedHostWithoutCanonical(t *testing.T) {
+	mw := HTTPSRedirect(WithHTTPSRedirectAllowedHosts("app.example.com", "admin.example.com"))
+	c, w := NewTestContext("GET", "/dashboard")
+	c.Request.Host = "evil.com"
+
+	handler := mw(func(c *Context) error { return nil })
+
+	if err := handler(c); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	loc := w.Header().Get("Location")
+	if loc != "https://app.example.com/dashboard" {
+		t.Errorf("Location = %q, want first configured allowed host", loc)
+	}
+	if loc == "https://evil.com/dashboard" {
+		t.Errorf("Location reflected spoofed Host evil.com")
+	}
+}
+
+func TestHTTPSRedirect_NoAllowlistPreservesRequestHostAndSetsVary(t *testing.T) {
+	mw := HTTPSRedirect()
+	c, w := NewTestContext("GET", "/dashboard")
+	c.Request.Host = "evil.com"
+
+	handler := mw(func(c *Context) error { return nil })
+
+	if err := handler(c); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	loc := w.Header().Get("Location")
+	if loc != "https://evil.com/dashboard" {
+		t.Errorf("Location = %q, want current request Host behavior", loc)
+	}
+	if got := w.Header().Get("Vary"); got != "Host" {
+		t.Errorf("Vary = %q, want Host", got)
+	}
+}
+
 func TestHTTPSRedirect_TrustedProxyCIDR(t *testing.T) {
 	mw := HTTPSRedirect(
 		WithHTTPSRedirectTrustedProxies([]string{"10.0.0.0/8"}),

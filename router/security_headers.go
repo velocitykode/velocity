@@ -142,8 +142,11 @@ type httpsRedirectConfig struct {
 	// trustedProxyErr is carried from WithHTTPSRedirectTrustedProxies so
 	// HTTPSRedirect can fail-fast at construction rather than silently
 	// ignoring a malformed CIDR.
-	trustedProxyErr error
-	excludePaths    map[string]bool
+	trustedProxyErr  error
+	excludePaths     map[string]bool
+	allowedHosts     map[string]bool
+	canonicalHost    string
+	firstAllowedHost string
 }
 
 // HTTPSRedirectOption is a functional option for configuring HTTPSRedirect.
@@ -179,9 +182,36 @@ func WithExcludePaths(paths ...string) HTTPSRedirectOption {
 	}
 }
 
+// WithHTTPSRedirectAllowedHosts sets hosts that may be reflected into HTTPS
+// redirect Location headers.
+func WithHTTPSRedirectAllowedHosts(hosts ...string) HTTPSRedirectOption {
+	return func(cfg *httpsRedirectConfig) {
+		if cfg.allowedHosts == nil {
+			cfg.allowedHosts = make(map[string]bool)
+		}
+		for _, host := range hosts {
+			if cfg.firstAllowedHost == "" {
+				cfg.firstAllowedHost = host
+			}
+			cfg.allowedHosts[host] = true
+		}
+	}
+}
+
+// WithHTTPSRedirectCanonicalHost sets the host to use when the request Host is
+// not allow-listed.
+func WithHTTPSRedirectCanonicalHost(host string) HTTPSRedirectOption {
+	return func(cfg *httpsRedirectConfig) {
+		cfg.canonicalHost = host
+	}
+}
+
 // HTTPSRedirect returns a middleware that redirects HTTP requests to HTTPS.
 // It checks X-Forwarded-Proto only when trusted proxies are configured and the
 // direct connection comes from a trusted proxy. Excluded paths skip the redirect.
+// Operators SHOULD configure WithHTTPSRedirectAllowedHosts, or enforce a host
+// allowlist at the edge, to fully close Host-header injection exposure in
+// redirect Location headers.
 //
 // Panics with a wrapped ErrInvalidTrustedProxy if any
 // WithHTTPSRedirectTrustedProxies entry was malformed — boot-time
@@ -223,7 +253,16 @@ func HTTPSRedirect(opts ...HTTPSRedirectOption) MiddlewareFunc {
 			}
 
 			// Redirect to HTTPS
-			httpsURL := "https://" + c.Request.Host + c.Request.RequestURI
+			host := c.Request.Host
+			if len(cfg.allowedHosts) > 0 && !cfg.allowedHosts[host] {
+				if cfg.canonicalHost != "" {
+					host = cfg.canonicalHost
+				} else {
+					host = cfg.firstAllowedHost
+				}
+			}
+			httpsURL := "https://" + host + c.Request.RequestURI
+			c.SetHeader("Vary", "Host")
 			c.SetHeader("Location", httpsURL)
 			c.Response.WriteHeader(http.StatusMovedPermanently)
 			return nil
