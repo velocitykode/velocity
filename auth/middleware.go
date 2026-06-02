@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/velocitykode/velocity/internal/clientip"
 	"github.com/velocitykode/velocity/router"
@@ -19,22 +20,19 @@ import (
 // different runs cannot be correlated by IP.
 var (
 	auditSaltOnce sync.Once
-	auditSalt     []byte
+	auditSalt     atomic.Pointer[[]byte]
 )
 
 // SetAuditSalt allows tests (or an operator with a fixed-salt requirement)
 // to install a deterministic salt for the PII hasher. In production, leave
 // this unset so a random salt is generated lazily.
 func SetAuditSalt(salt []byte) {
-	auditSaltOnce.Do(func() {}) // mark as initialized
-	auditSalt = append(auditSalt[:0], salt...)
+	cp := append([]byte(nil), salt...)
+	auditSalt.Store(&cp)
 }
 
 func getAuditSalt() []byte {
 	auditSaltOnce.Do(func() {
-		if auditSalt != nil {
-			return
-		}
 		buf := make([]byte, 32)
 		if _, err := rand.Read(buf); err != nil {
 			// Degrade to an empty salt rather than panicking; the hash
@@ -42,9 +40,13 @@ func getAuditSalt() []byte {
 			// because of log-line instrumentation.
 			buf = []byte{}
 		}
-		auditSalt = buf
+		auditSalt.CompareAndSwap(nil, &buf)
 	})
-	return auditSalt
+	p := auditSalt.Load()
+	if p == nil {
+		return nil
+	}
+	return *p
 }
 
 // hashRemoteAddr produces a short hex digest of the client IP using a

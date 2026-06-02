@@ -4,10 +4,58 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/velocitykode/velocity/router"
 )
+
+func TestAuditSalt_DeterministicAfterSet(t *testing.T) {
+	SetAuditSalt([]byte("abc"))
+
+	first := hashRemoteAddr("1.2.3.4")
+	second := hashRemoteAddr("1.2.3.4")
+
+	if first != second {
+		t.Fatalf("hashRemoteAddr returned unstable digest: first=%q second=%q", first, second)
+	}
+	if first != "257d18a9bc09bc44" {
+		t.Fatalf("hashRemoteAddr digest = %q, want %q", first, "257d18a9bc09bc44")
+	}
+}
+
+func TestAuditSalt_ConcurrentSetAndGet(t *testing.T) {
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "1.2.3.4:5555"
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for j := 0; j < 100; j++ {
+				SetAuditSalt([]byte("fixed"))
+			}
+		}()
+	}
+
+	for i := 0; i < 64; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for j := 0; j < 100; j++ {
+				_ = hashClientIP(nil, req)
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+}
 
 // mockGuardForMiddleware implements Guard for middleware tests.
 type mockGuardForMiddleware struct {
