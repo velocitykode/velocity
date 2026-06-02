@@ -607,13 +607,11 @@ func TestConnectionLimit_DecrementsOnDisconnect(t *testing.T) {
 		return s.GetStats().ConnectedClients == int64(config.MaxConnections-2)
 	}, 2*time.Second, "closed connections released slots")
 
-	replacements := make([]*websocket.Conn, 0, 2)
 	for i := 0; i < 2; i++ {
 		ws, _, err := websocket.DefaultDialer.Dial(wsURL, originHeader(ts.URL))
 		if err != nil {
 			t.Fatalf("dial replacement %d: %v", i, err)
 		}
-		replacements = append(replacements, ws)
 		defer ws.Close()
 	}
 
