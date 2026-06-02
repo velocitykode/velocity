@@ -17,6 +17,7 @@ func TestString_PassthroughPrintable(t *testing.T) {
 		"col1\tcol2\tcol3",
 		"key=value foo=bar",
 		"unicode-passthrough: café résumé",
+		"unicode-passthrough: Zoë 🚀",
 	}
 	for _, in := range cases {
 		got := String(in)
@@ -35,6 +36,35 @@ func TestString_EscapesCRLF(t *testing.T) {
 	want := `before\x0d\x0aafter`
 	if got != want {
 		t.Errorf("String(%q) = %q, want %q", in, got, want)
+	}
+}
+
+// TestString_EscapesUnicodeLineBreaks covers UTF-8 encoded separators
+// that some log viewers, JSON-line tooling, SIEM normalisers, and
+// JavaScript-based UIs treat as line breaks even though they are not
+// ASCII CR/LF. They must be escaped to keep one input record to one
+// emitted log line.
+func TestString_EscapesUnicodeLineBreaks(t *testing.T) {
+	cases := []struct {
+		name string
+		sep  string
+		want string
+	}{
+		{"nel", "\u0085", `before\u0085after`},
+		{"line-separator", "\u2028", `before\u2028after`},
+		{"paragraph-separator", "\u2029", `before\u2029after`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := "before" + tc.sep + "after"
+			got := String(in)
+			if got != tc.want {
+				t.Fatalf("String(%q) = %q, want %q", in, got, tc.want)
+			}
+			if strings.Contains(got, tc.sep) {
+				t.Errorf("String(%q) retained raw Unicode line break: %q", in, got)
+			}
+		})
 	}
 }
 
