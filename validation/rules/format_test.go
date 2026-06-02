@@ -1,6 +1,8 @@
 package rules
 
 import (
+	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -54,6 +56,42 @@ func TestRegexRule_RejoinsComma(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected pattern to rejoin on commas and match, got: %v", err)
 	}
+}
+
+func TestCompileAnchored_RegexCacheStopsAtMaxEntries(t *testing.T) {
+	regexCacheMu.Lock()
+	originalCache := regexCache
+	regexCache = map[string]*regexp.Regexp{}
+	regexCacheMu.Unlock()
+	defer func() {
+		regexCacheMu.Lock()
+		regexCache = originalCache
+		regexCacheMu.Unlock()
+	}()
+
+	for i := 0; i <= maxRegexCacheEntries; i++ {
+		literal := fmt.Sprintf("cache_bound_%04d", i)
+		re, err := compileAnchored("^" + literal + "$")
+		if err != nil {
+			t.Fatalf("compileAnchored pattern %d returned error: %v", i, err)
+		}
+		if !re.MatchString(literal) {
+			t.Fatalf("compileAnchored pattern %d returned regex that does not match its literal", i)
+		}
+		if got := regexCacheLen(); got > maxRegexCacheEntries {
+			t.Fatalf("regexCache len=%d, want <= %d", got, maxRegexCacheEntries)
+		}
+	}
+
+	if got := regexCacheLen(); got != maxRegexCacheEntries {
+		t.Fatalf("regexCache len=%d, want %d", got, maxRegexCacheEntries)
+	}
+}
+
+func regexCacheLen() int {
+	regexCacheMu.RLock()
+	defer regexCacheMu.RUnlock()
+	return len(regexCache)
 }
 
 // TestRegexRule_CatastrophicBacktrackingTimeout synthesizes a pattern that

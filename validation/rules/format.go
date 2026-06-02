@@ -31,6 +31,15 @@ const regexEvalTimeout = 10 * time.Millisecond
 // regexp matcher cannot be preempted once started.
 const maxRegexInputBytes = 4096
 
+// maxRegexCacheEntries bounds process-wide memoization of developer-supplied
+// validation regexes. 1024 keeps normal static rule sets cached while avoiding
+// unbounded growth if an adopter incorrectly builds regex: parameters from
+// request input.
+const maxRegexCacheEntries = 1024
+
+// regexCache memoizes compiled anchored regex: patterns up to
+// maxRegexCacheEntries. regex: patterns must be static/developer-controlled
+// and never built from request input.
 var (
 	regexCacheMu sync.RWMutex
 	regexCache   = map[string]*regexp.Regexp{}
@@ -122,6 +131,10 @@ func isUnboundedRepetition(re *syntax.Regexp) bool {
 // pathological match, it only abandons the goroutine that keeps burning
 // CPU. Pre-rejecting risky shapes here means the runtime select+timeout in
 // `RegexRule` is belt-and-suspenders, not the only line of defence.
+//
+// Compiled patterns are memoized in a bounded process-global cache. Once the
+// cache reaches maxRegexCacheEntries, misses fall back to compile-without-store
+// so the caller still receives a valid regexp without permanent memory growth.
 func compileAnchored(pattern string) (*regexp.Regexp, error) {
 	if !strings.HasPrefix(pattern, "^") || !strings.HasSuffix(pattern, "$") {
 		return nil, fmt.Errorf("regex must be anchored with ^ and $")
@@ -143,6 +156,10 @@ func compileAnchored(pattern string) (*regexp.Regexp, error) {
 	}
 
 	regexCacheMu.Lock()
+	if len(regexCache) >= maxRegexCacheEntries {
+		regexCacheMu.Unlock()
+		return re, nil
+	}
 	regexCache[pattern] = re
 	regexCacheMu.Unlock()
 	return re, nil
@@ -154,6 +171,9 @@ func compileAnchored(pattern string) (*regexp.Regexp, error) {
 //
 // The pattern MUST be anchored (start with `^` and end with `$`) and MUST
 // NOT contain obvious catastrophic-backtracking shapes like `(X+)+`. Each
+// regex: pattern MUST be static/developer-controlled and never built from
+// request input; dynamic request-derived patterns can defeat cache locality.
+//
 // Values over 4 KiB are rejected before evaluation because Go's regexp
 // matcher cannot be preempted once started. Each call is also bounded to
 // 10ms of wall clock time as a fallback for unforeseen edge cases, but that
