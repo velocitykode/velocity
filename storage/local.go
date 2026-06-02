@@ -597,9 +597,11 @@ func escapeURLPathSegments(path string) string {
 	return strings.Join(segs, "/")
 }
 
-// TemporaryURL returns a temporary URL for a file (not supported for local)
+// TemporaryURL is not supported by the local driver because local URLs are not
+// signed or expiring. Callers must handle ErrNotSupported explicitly instead of
+// receiving a permanent public URL.
 func (d *LocalDriver) TemporaryURL(path string, expiration time.Duration) (string, error) {
-	return d.URL(path), nil
+	return "", ErrNotSupported
 }
 
 // mkdirAllIn creates directory rel inside root, including intermediate

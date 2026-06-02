@@ -191,9 +191,13 @@ func TestManagerAPICompleteCoverage(t *testing.T) {
 	// Test TemporaryURL
 	t.Run("TemporaryURL", func(t *testing.T) {
 		// Local driver doesn't support temporary URLs
-		_, err := d.TemporaryURL("public.txt", 1*time.Hour)
-		// We expect an error or empty string for local driver
-		_ = err
+		url, err := d.TemporaryURL("public.txt", 1*time.Hour)
+		if !errors.Is(err, ErrNotSupported) {
+			t.Errorf("TemporaryURL should return ErrNotSupported, got: %v", err)
+		}
+		if url != "" {
+			t.Error("TemporaryURL should return empty for local driver")
+		}
 	})
 
 	// Test Disk with nonexistent name
@@ -481,16 +485,15 @@ func TestLocalDriverAdditional(t *testing.T) {
 		}
 	})
 
-	// Test TemporaryURL: local driver falls back to returning URL(path) since
-	// there's no presigning concept — callers that care should enforce that
-	// only remote drivers expose time-limited URLs.
+	// Test TemporaryURL: local driver cannot produce signed, expiring URLs and
+	// must fail explicitly instead of returning a permanent public URL.
 	t.Run("TemporaryURL", func(t *testing.T) {
 		url, err := driver.TemporaryURL("test.txt", 1*time.Hour)
-		if err != nil {
-			t.Errorf("TemporaryURL should not error, got: %v", err)
+		if !errors.Is(err, ErrNotSupported) {
+			t.Errorf("TemporaryURL should return ErrNotSupported, got: %v", err)
 		}
-		if url == "" {
-			t.Error("TemporaryURL should return non-empty URL when base URL is configured")
+		if url != "" {
+			t.Error("TemporaryURL should return empty for local driver")
 		}
 	})
 
