@@ -96,6 +96,22 @@ func TestNew_StagingRefusesBootWithoutAppKey(t *testing.T) {
 	}
 }
 
+// TestNew_UnsetEnvRefusesBootWithoutAppKey proves unset APP_ENV follows
+// the fail-closed boot path instead of being treated as development.
+func TestNew_UnsetEnvRefusesBootWithoutAppKey(t *testing.T) {
+	cfg := baseSignedURLBootConfig()
+	cfg.Env = ""
+	cfg.Key = ""
+
+	_, err := New(WithConfig(cfg))
+	if err == nil {
+		t.Fatal("expected New() to refuse boot when APP_ENV and APP_KEY are unset")
+	}
+	if !errors.Is(err, ErrNoAppKey) {
+		t.Fatalf("expected error to wrap ErrNoAppKey, got %v", err)
+	}
+}
+
 // TestNew_DevelopmentBootsWithoutAppKey verifies the dev-ergonomics
 // escape hatch survives the fix. A fresh project before `vel
 // key:generate` must still boot, and the middleware must be in the

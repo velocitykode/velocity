@@ -32,7 +32,7 @@ var ErrInvalidConfig = errors.New("velocity: invalid configuration")
 // It replaces the scattered os.Getenv() calls across packages.
 type Config struct {
 	// App
-	Env   string // APP_ENV, default "development"
+	Env   string // APP_ENV, empty when unset
 	Debug bool   // APP_DEBUG, default false
 	Port  string // APP_PORT, default "4000"
 	Key   string // APP_KEY (used for crypto)
@@ -252,15 +252,13 @@ func ConfigFromEnv() Config {
 	}
 
 	// Read APP_ENV through the canonical reader so Config.Env is the
-	// normalised (lowercased + trimmed) value. Every downstream consumer
-	// reads Config.Env via app.IsProductionEnv / app.IsDevOrTestEnv etc.
-	// which would normalise again - storing the canonical form once at
-	// the boundary keeps the exact-match consumers (scheduler.Job
-	// environment filter, exceptions.Handler) seeing the same string.
+	// normalised (lowercased + trimmed) value. Leave unset APP_ENV empty:
+	// security gates key off IsTestingEnv / IsDevOrTestEnv, where "" is
+	// neither, so unset deployments fail closed instead of inheriting
+	// development relaxations. Storing the canonical form once at the
+	// boundary keeps the exact-match consumers (scheduler.Job environment
+	// filter, exceptions.Handler) seeing the same string.
 	envValue := app.Env()
-	if envValue == "" {
-		envValue = "development"
-	}
 	config := Config{
 		Env:      envValue,
 		Debug:    envOrDefault("APP_DEBUG", "false") == "true",
