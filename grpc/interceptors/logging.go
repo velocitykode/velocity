@@ -236,7 +236,7 @@ func detectProtocol(ctx context.Context) grpcevents.Protocol {
 	// Check for user-agent containing grpc-gateway
 	if ua, hasUA := md["user-agent"]; hasUA && len(ua) > 0 {
 		for _, agent := range ua {
-			if len(agent) > 0 && (agent == "grpc-go" || agent[:4] != "grpc") {
+			if agent != "" && !strings.HasPrefix(agent, "grpc") {
 				// Non-grpc user agent likely means HTTP
 				return grpcevents.ProtocolHTTP
 			}
