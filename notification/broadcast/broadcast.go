@@ -126,7 +126,7 @@ func (c *BroadcastChannel) Send(ctx context.Context, notifiable interface{}, n n
 	// onto a foreign tenant's channel; without it, broadcastMsg.On(...)
 	// has full trust.
 	if auth := c.authorizerOrWarn(); auth != nil {
-		filtered := channels[:0]
+		filtered := make([]string, 0, len(channels))
 		var denied []string
 		for _, name := range channels {
 			if auth.Authorize(notifiable, name) {

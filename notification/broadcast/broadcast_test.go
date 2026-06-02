@@ -3,6 +3,7 @@ package broadcast
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -85,6 +86,16 @@ func (n *multiChannelNotification) ToBroadcast(_ interface{}) *notification.Broa
 	msg.On(n.channels...)
 	msg.Set("payload", "hello")
 	return msg
+}
+
+type sharedBroadcastNotification struct {
+	msg *notification.BroadcastMessage
+}
+
+func (n *sharedBroadcastNotification) Via(_ interface{}) []string { return []string{"broadcast"} }
+
+func (n *sharedBroadcastNotification) ToBroadcast(_ interface{}) *notification.BroadcastMessage {
+	return n.msg
 }
 
 func newWiredBroadcastChannel(t *testing.T) (*BroadcastChannel, *captureDriver) {
@@ -175,6 +186,84 @@ func TestBroadcastChannel_Authorizer_FiltersMixedChannels(t *testing.T) {
 	got := calls[0].channels
 	if len(got) != 2 || got[0] != "private-tenant-A-user-1" || got[1] != "private-tenant-A-user-2" {
 		t.Errorf("expected filtered channels [A-1 A-2], got %v", got)
+	}
+}
+
+func TestBroadcastChannel_Send_DoesNotMutateCallerChannels(t *testing.T) {
+	ch, drv := newWiredBroadcastChannel(t)
+	ch.SetAuthorizer(BroadcastChannelAuthorizerFunc(func(_ interface{}, channel string) bool {
+		return channel != "b"
+	}))
+
+	broadcastMsg := notification.NewBroadcastMessage("tenant.event").On("a", "b", "c")
+	broadcastMsg.Set("payload", "hello")
+	originalChannels := slices.Clone(broadcastMsg.Channels)
+	originalLen := len(broadcastMsg.Channels)
+	notification := &sharedBroadcastNotification{msg: broadcastMsg}
+
+	if err := ch.Send(context.Background(), &tenantNotifiable{tenantID: "A", userID: "1"}, notification); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	if len(broadcastMsg.Channels) != originalLen {
+		t.Fatalf("broadcast message channels len = %d, want %d", len(broadcastMsg.Channels), originalLen)
+	}
+	if !slices.Equal(broadcastMsg.Channels, originalChannels) {
+		t.Fatalf("broadcast message channels mutated: got %v, want %v", broadcastMsg.Channels, originalChannels)
+	}
+
+	calls := drv.recorded()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 broadcast, got %d", len(calls))
+	}
+	if !slices.Equal(calls[0].channels, []string{"a", "c"}) {
+		t.Fatalf("emitted channels = %v, want [a c]", calls[0].channels)
+	}
+}
+
+func TestBroadcastChannel_Send_SharedMessageConcurrent(t *testing.T) {
+	ch, drv := newWiredBroadcastChannel(t)
+	ch.SetAuthorizer(BroadcastChannelAuthorizerFunc(func(_ interface{}, channel string) bool {
+		return channel != "b" && channel != "d"
+	}))
+
+	broadcastMsg := notification.NewBroadcastMessage("tenant.event").On("a", "b", "c", "d", "e")
+	broadcastMsg.Set("payload", "hello")
+	originalChannels := slices.Clone(broadcastMsg.Channels)
+	notification := &sharedBroadcastNotification{msg: broadcastMsg}
+	notifiable := &tenantNotifiable{tenantID: "A", userID: "1"}
+
+	const sends = 32
+	var wg sync.WaitGroup
+	errs := make(chan error, sends)
+	for i := 0; i < sends; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- ch.Send(context.Background(), notifiable, notification)
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("send: %v", err)
+		}
+	}
+	if !slices.Equal(broadcastMsg.Channels, originalChannels) {
+		t.Fatalf("broadcast message channels mutated: got %v, want %v", broadcastMsg.Channels, originalChannels)
+	}
+
+	calls := drv.recorded()
+	if len(calls) != sends {
+		t.Fatalf("expected %d broadcasts, got %d", sends, len(calls))
+	}
+	wantChannels := []string{"a", "c", "e"}
+	for i, call := range calls {
+		if !slices.Equal(call.channels, wantChannels) {
+			t.Fatalf("call %d emitted channels = %v, want %v", i, call.channels, wantChannels)
+		}
 	}
 }
 
