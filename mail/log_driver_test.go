@@ -2,6 +2,7 @@ package mail
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -182,6 +183,31 @@ func TestLogDriverGetLog(t *testing.T) {
 	log2 := driver.GetLog()
 	if log2[0] == "modified" {
 		t.Error("GetLog should return a copy, not the original slice")
+	}
+}
+
+func TestLogDriverRetainsOnlyMostRecentEntries(t *testing.T) {
+	driver := NewLogDriver()
+
+	for i := 0; i < logDriverMaxEntries+5; i++ {
+		msg := NewMessage().
+			To("test@example.com").
+			Subject(fmt.Sprintf("Test %03d", i))
+		if err := driver.Send(context.Background(), msg); err != nil {
+			t.Fatalf("Send failed: %v", err)
+		}
+	}
+
+	log := driver.GetLog()
+	if len(log) != logDriverMaxEntries {
+		t.Fatalf("Expected %d log entries, got %d", logDriverMaxEntries, len(log))
+	}
+
+	if !strings.Contains(log[0], "Test 005") {
+		t.Errorf("Expected first retained entry to be the oldest entry inside the cap, got %q", log[0])
+	}
+	if !strings.Contains(log[len(log)-1], "Test 104") {
+		t.Errorf("Expected last retained entry to be the most recent send, got %q", log[len(log)-1])
 	}
 }
 

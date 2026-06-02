@@ -16,7 +16,13 @@ func init() {
 	})
 }
 
-// LogDriver logs emails instead of sending them (for development).
+// logDriverMaxEntries bounds the dev/test inspection buffer. It is not an
+// audit log.
+const logDriverMaxEntries = 100
+
+// LogDriver logs emails instead of sending them (for development). The retained
+// log is a bounded ring of the last logDriverMaxEntries entries for dev/test
+// inspection.
 type LogDriver struct {
 	mu  sync.Mutex
 	log []string
@@ -101,6 +107,11 @@ func (d *LogDriver) Send(ctx context.Context, msg *Message) error {
 
 	logEntry := strings.Join(parts, " | ")
 	d.log = append(d.log, logEntry)
+	if len(d.log) > logDriverMaxEntries {
+		retained := make([]string, logDriverMaxEntries)
+		copy(retained, d.log[len(d.log)-logDriverMaxEntries:])
+		d.log = retained
+	}
 	stdlog.Printf("[MAIL] %s", logEntry)
 	return nil
 }
