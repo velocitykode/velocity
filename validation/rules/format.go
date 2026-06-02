@@ -26,6 +26,11 @@ var ulidRegex = regexp.MustCompile(`^[0-9A-HJKMNP-TV-Z]{26}$`)
 // braces bound.
 const regexEvalTimeout = 10 * time.Millisecond
 
+// maxRegexInputBytes caps the user-controlled value before regexp evaluation.
+// Anchored format validation rarely needs more than a few KiB, and Go's
+// regexp matcher cannot be preempted once started.
+const maxRegexInputBytes = 4096
+
 var (
 	regexCacheMu sync.RWMutex
 	regexCache   = map[string]*regexp.Regexp{}
@@ -149,7 +154,10 @@ func compileAnchored(pattern string) (*regexp.Regexp, error) {
 //
 // The pattern MUST be anchored (start with `^` and end with `$`) and MUST
 // NOT contain obvious catastrophic-backtracking shapes like `(X+)+`. Each
-// call is also bounded to 10ms of wall clock time to cap runaway evaluation.
+// Values over 4 KiB are rejected before evaluation because Go's regexp
+// matcher cannot be preempted once started. Each call is also bounded to
+// 10ms of wall clock time as a fallback for unforeseen edge cases, but that
+// timeout cannot stop the worker goroutine after MatchString begins.
 func RegexRule(field string, value interface{}, params []string, data map[string]interface{}) error {
 	if value == nil {
 		return nil
@@ -170,12 +178,17 @@ func RegexRule(field string, value interface{}, params []string, data map[string
 	if !ok {
 		return fmt.Errorf("The %s field format is invalid.", field)
 	}
+	if len(str) > maxRegexInputBytes {
+		return fmt.Errorf("The %s field format is invalid.", field)
+	}
 
 	// Bound evaluation on a goroutine. Note: Go's `regexp` package has no
 	// preemption, so this select abandons the result but the worker goroutine
-	// keeps burning CPU until MatchString returns. The primary defence is
-	// the AST-level ReDoS check in compileAnchored (analyzeReDoSRisk); this
-	// timeout is belt-and-suspenders for unforeseen edge cases.
+	// keeps burning CPU until MatchString returns. The input-size cap above
+	// prevents large user-controlled values from reaching the matcher; the
+	// AST-level ReDoS check in compileAnchored (analyzeReDoSRisk) rejects
+	// risky patterns. This timeout is only a fallback for unforeseen edge
+	// cases.
 	type result struct{ matched bool }
 	done := make(chan result, 1)
 	// Not async.Go: must forward a recovered panic value through `done`

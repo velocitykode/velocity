@@ -12,23 +12,34 @@ func TestRegexRule_BasicMatch(t *testing.T) {
 		value   interface{}
 		params  []string
 		wantErr bool
+		wantMsg string
+		maxTime time.Duration
 	}{
-		{"nil ok", nil, []string{`^[A-Z]+$`}, false},
-		{"no pattern", "abc", nil, true},
-		{"pattern matches", "ABC", []string{`^[A-Z]+$`}, false},
-		{"pattern mismatch", "abc", []string{`^[A-Z]+$`}, true},
-		{"non-string value", 1, []string{`^[A-Z]+$`}, true},
-		{"unanchored rejected (no ^)", "abc", []string{`[A-Z]+$`}, true},
-		{"unanchored rejected (no $)", "abc", []string{`^[A-Z]+`}, true},
-		{"nested quantifier rejected", "aaaa", []string{`^(a+)+$`}, true},
-		{"nested star rejected", "aaaa", []string{`^(a*)*$`}, true},
-		{"invalid syntax rejected", "abc", []string{`^(a$`}, true},
+		{"nil ok", nil, []string{`^[A-Z]+$`}, false, "", 0},
+		{"no pattern", "abc", nil, true, "", 0},
+		{"pattern matches", "ABC", []string{`^[A-Z]+$`}, false, "", 0},
+		{"pattern mismatch", "abc", []string{`^[A-Z]+$`}, true, "", 0},
+		{"non-string value", 1, []string{`^[A-Z]+$`}, true, "", 0},
+		{"oversized input rejected generically", strings.Repeat("A", maxRegexInputBytes+1), []string{`^[A-Z]+$`}, true, "The code field format is invalid.", 100 * time.Millisecond},
+		{"unanchored rejected (no ^)", "abc", []string{`[A-Z]+$`}, true, "", 0},
+		{"unanchored rejected (no $)", "abc", []string{`^[A-Z]+`}, true, "", 0},
+		{"nested quantifier rejected", "aaaa", []string{`^(a+)+$`}, true, "", 0},
+		{"nested star rejected", "aaaa", []string{`^(a*)*$`}, true, "", 0},
+		{"invalid syntax rejected", "abc", []string{`^(a$`}, true, "", 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			start := time.Now()
 			err := RegexRule("code", tt.value, tt.params, nil)
+			elapsed := time.Since(start)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("want err=%v, got %v", tt.wantErr, err)
+			}
+			if tt.wantMsg != "" && err.Error() != tt.wantMsg {
+				t.Fatalf("want error %q, got %q", tt.wantMsg, err.Error())
+			}
+			if tt.maxTime > 0 && elapsed >= tt.maxTime {
+				t.Fatalf("RegexRule took %v (>= %v)", elapsed, tt.maxTime)
 			}
 		})
 	}
