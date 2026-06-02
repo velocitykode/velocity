@@ -167,8 +167,8 @@ func (c *Client) handleMessage(msg Message) {
 	// Execute handler
 	if err := handler(c, msg); err != nil {
 		// Handle error
-		if c.Server.onError != nil {
-			c.Server.onError(c, err)
+		if p := c.Server.onError.Load(); p != nil {
+			(*p)(c, err)
 		} else {
 			// Send generic error — avoid leaking internal error details to clients
 			c.Send <- Message{

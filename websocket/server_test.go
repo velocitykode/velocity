@@ -2,11 +2,13 @@ package websocket
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -471,6 +473,139 @@ func TestConnectionLimit(t *testing.T) {
 
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("Expected status 503, got %d", resp.StatusCode)
+	}
+}
+
+func TestServer_Callbacks_ConcurrentSetAndConnect(t *testing.T) {
+	s := New(DefaultConfig())
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer s.Shutdown(context.Background())
+
+	ts := httptest.NewServer(http.HandlerFunc(s.HandleConnection))
+	defer ts.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
+	done := make(chan struct{})
+	var setters sync.WaitGroup
+	setters.Add(1)
+	go func() {
+		defer setters.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+
+			s.OnConnect(func(*Client) {})
+			s.OnDisconnect(func(*Client) {})
+			s.OnError(func(*Client, error) {})
+			s.OnConnect(nil)
+			s.OnDisconnect(nil)
+			s.OnError(nil)
+		}
+	}()
+
+	for i := 0; i < 25; i++ {
+		ws, _, err := websocket.DefaultDialer.Dial(wsURL, originHeader(ts.URL))
+		if err != nil {
+			close(done)
+			setters.Wait()
+			t.Fatalf("Dial %d: %v", i, err)
+		}
+
+		var welcome Message
+		if err := ws.ReadJSON(&welcome); err != nil {
+			ws.Close()
+			close(done)
+			setters.Wait()
+			t.Fatalf("Read welcome %d: %v", i, err)
+		}
+		ws.Close()
+	}
+
+	close(done)
+	setters.Wait()
+	testsync.Eventually(t, func() bool { return s.GetStats().ConnectedClients == 0 }, 2*time.Second, "clients disconnected")
+}
+
+func TestServer_OnErrorCallbackAndGenericFallback(t *testing.T) {
+	s := New(DefaultConfig())
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer s.Shutdown(context.Background())
+
+	s.On("fail", func(*Client, Message) error {
+		return errors.New("sensitive handler failure")
+	})
+
+	ts := httptest.NewServer(http.HandlerFunc(s.HandleConnection))
+	defer ts.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
+
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL, originHeader(ts.URL))
+	if err != nil {
+		t.Fatalf("Dial generic fallback client: %v", err)
+	}
+	var welcome Message
+	if err := ws.ReadJSON(&welcome); err != nil {
+		ws.Close()
+		t.Fatalf("Read welcome: %v", err)
+	}
+	if err := ws.WriteJSON(Message{Type: "fail"}); err != nil {
+		ws.Close()
+		t.Fatalf("Write fail message: %v", err)
+	}
+	var response Message
+	if err := ws.ReadJSON(&response); err != nil {
+		ws.Close()
+		t.Fatalf("Read generic error: %v", err)
+	}
+	ws.Close()
+	if response.Type != "error" {
+		t.Fatalf("Expected generic error response, got %s", response.Type)
+	}
+	data, ok := response.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected response data map, got %T", response.Data)
+	}
+	if data["message"] != "internal error" {
+		t.Fatalf("Expected generic internal error message, got %v", data["message"])
+	}
+
+	var errorCalls atomic.Int64
+	errorSeen := make(chan struct{}, 1)
+	s.OnError(func(*Client, error) {
+		errorCalls.Add(1)
+		select {
+		case errorSeen <- struct{}{}:
+		default:
+		}
+	})
+
+	wsWithCallback, _, err := websocket.DefaultDialer.Dial(wsURL, originHeader(ts.URL))
+	if err != nil {
+		t.Fatalf("Dial callback client: %v", err)
+	}
+	defer wsWithCallback.Close()
+	if err := wsWithCallback.ReadJSON(&welcome); err != nil {
+		t.Fatalf("Read callback welcome: %v", err)
+	}
+	if err := wsWithCallback.WriteJSON(Message{Type: "fail"}); err != nil {
+		t.Fatalf("Write callback fail message: %v", err)
+	}
+
+	select {
+	case <-errorSeen:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Expected OnError callback to run")
+	}
+	if got := errorCalls.Load(); got != 1 {
+		t.Fatalf("Expected 1 OnError call, got %d", got)
 	}
 }
 

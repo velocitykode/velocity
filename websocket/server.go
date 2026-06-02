@@ -49,9 +49,9 @@ type Server struct {
 	middleware []Middleware
 
 	// Callbacks
-	onConnect    func(*Client)
-	onDisconnect DisconnectFunc
-	onError      func(*Client, error)
+	onConnect    atomic.Pointer[func(*Client)]
+	onDisconnect atomic.Pointer[DisconnectFunc]
+	onError      atomic.Pointer[func(*Client, error)]
 
 	// disconnectListeners receives every client disconnect in addition to
 	// onDisconnect. Used by adapters (e.g. broadcast/drivers.WebSocketDriver)
@@ -375,8 +375,8 @@ func (s *Server) HandleConnection(w http.ResponseWriter, r *http.Request) {
 	})
 
 	// Call connect callback
-	if s.onConnect != nil {
-		s.onConnect(client)
+	if p := s.onConnect.Load(); p != nil {
+		(*p)(client)
 	}
 
 	// Update stats
@@ -432,12 +432,16 @@ func (s *Server) handleUnregister(client *Client) {
 	// concurrently with disconnect see the current set.
 	listeners := make([]DisconnectFunc, len(s.disconnectListeners))
 	copy(listeners, s.disconnectListeners)
-	onDisconnect := s.onDisconnect
 	s.mu.Unlock()
 
 	if !present {
 		// Duplicate unregister - nothing to clean up.
 		return
+	}
+
+	var onDisconnect DisconnectFunc
+	if p := s.onDisconnect.Load(); p != nil {
+		onDisconnect = *p
 	}
 
 	// Fire listeners BEFORE close(client.Send). Each is invoked under its
@@ -573,12 +577,20 @@ func (s *Server) Use(middleware Middleware) {
 
 // OnConnect sets the connect callback
 func (s *Server) OnConnect(fn func(*Client)) {
-	s.onConnect = fn
+	if fn == nil {
+		s.onConnect.Store(nil)
+		return
+	}
+	s.onConnect.Store(&fn)
 }
 
 // OnDisconnect sets the disconnect callback
 func (s *Server) OnDisconnect(fn DisconnectFunc) {
-	s.onDisconnect = fn
+	if fn == nil {
+		s.onDisconnect.Store(nil)
+		return
+	}
+	s.onDisconnect.Store(&fn)
 }
 
 // AddOnDisconnect appends a disconnect listener that fires alongside the
@@ -600,7 +612,11 @@ func (s *Server) AddOnDisconnect(fn DisconnectFunc) {
 
 // OnError sets the error callback
 func (s *Server) OnError(fn func(*Client, error)) {
-	s.onError = fn
+	if fn == nil {
+		s.onError.Store(nil)
+		return
+	}
+	s.onError.Store(&fn)
 }
 
 // Broadcast sends a message to all connected clients
