@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/velocitykode/velocity/app"
+	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/guards"
 	"github.com/velocitykode/velocity/chain"
 	"github.com/velocitykode/velocity/contract"
@@ -288,6 +289,9 @@ func New(opts ...Option) (*App, error) {
 			_ = a.Cache.Shutdown(context.Background())
 		}
 	})
+	if authManager, ok := a.Auth.(*auth.Manager); ok {
+		installLoginThrottler(authManager, a.Cache, a.Log)
+	}
 
 	// 8. Initialize CSRF
 	//

@@ -271,6 +271,11 @@ type Manager struct {
 	// Nil means "no proxies trusted" (forwarded headers are ignored).
 	trustedProxies []*net.IPNet
 
+	// loginThrottler is the framework-wide login throttler propagated
+	// to every guard that supports Attempt throttling. Nil means guards
+	// keep their own default/fallback behavior.
+	loginThrottler contract.LoginThrottler
+
 	// csrfRotator hooks the CSRF token store to the session lifecycle so
 	// Login regenerates / mints the per-session token, Logout revokes
 	// it, and the remember-cookie revival path rotates it across the
@@ -318,6 +323,7 @@ func (m *Manager) RegisterGuard(name string, guard Guard) {
 	m.guards[name] = guard
 	store := m.serverSessions
 	proxies := m.trustedProxies
+	throttler := m.loginThrottler
 	rotator := m.csrfRotator
 	m.mu.Unlock()
 
@@ -338,6 +344,11 @@ func (m *Manager) RegisterGuard(name string, guard Guard) {
 			// the manager's snapshot (or any sibling guard's) by
 			// mutating the list it receives.
 			r.SetTrustedProxies(clientip.CloneIPNets(proxies))
+		}
+	}
+	if throttler != nil {
+		if r, ok := guard.(LoginThrottlerReceiver); ok {
+			r.SetLoginThrottler(throttler)
 		}
 	}
 	if rotator != nil {
@@ -655,6 +666,18 @@ type TrustedProxiesReceiver interface {
 	SetTrustedProxies(proxies []*net.IPNet)
 }
 
+// LoginThrottlerReceiver is an optional capability interface
+// implemented by guards that throttle credential-based login attempts.
+// Manager.SetLoginThrottler propagates the throttler to every
+// registered guard that satisfies this interface so all Attempt
+// implementations share the same brute-force protection policy.
+//
+// Guards that have no credential-checking surface leave this
+// unimplemented; Manager silently skips them.
+type LoginThrottlerReceiver interface {
+	SetLoginThrottler(t contract.LoginThrottler)
+}
+
 // SetTrustedProxies installs the parsed proxy network list used for
 // client-IP resolution across the auth package. Pass nil to clear a
 // previously installed list (reverts to "trust nothing"). Safe for
@@ -688,6 +711,29 @@ func (m *Manager) SetTrustedProxies(proxies []*net.IPNet) {
 	// receivers would let one guard's later mutation reach the others.
 	for _, r := range receivers {
 		r.SetTrustedProxies(clientip.CloneIPNets(cloned))
+	}
+}
+
+// SetLoginThrottler installs the login throttler used across the auth
+// package. Pass nil to clear a previously installed throttler (guards
+// revert to their own fallback). Safe for concurrent use.
+//
+// Every registered guard implementing LoginThrottlerReceiver is
+// notified immediately; guards registered later inherit the throttler
+// at registration time (see RegisterGuard).
+func (m *Manager) SetLoginThrottler(t contract.LoginThrottler) {
+	m.mu.Lock()
+	m.loginThrottler = t
+	receivers := make([]LoginThrottlerReceiver, 0, len(m.guards))
+	for _, g := range m.guards {
+		if r, ok := g.(LoginThrottlerReceiver); ok {
+			receivers = append(receivers, r)
+		}
+	}
+	m.mu.Unlock()
+
+	for _, r := range receivers {
+		r.SetLoginThrottler(t)
 	}
 }
 
