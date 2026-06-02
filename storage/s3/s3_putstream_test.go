@@ -22,16 +22,18 @@ import (
 // PartSize); the multipart methods are present so the interface is
 // satisfied if a test pushes a larger body.
 type uploadMockClient struct {
-	mu          sync.Mutex
-	puts        map[string][]byte
-	contentType map[string]string
-	failPutOnce bool
+	mu                 sync.Mutex
+	puts               map[string][]byte
+	contentType        map[string]string
+	contentDisposition map[string]string
+	failPutOnce        bool
 }
 
 func newUploadMockClient() *uploadMockClient {
 	return &uploadMockClient{
-		puts:        make(map[string][]byte),
-		contentType: make(map[string]string),
+		puts:               make(map[string][]byte),
+		contentType:        make(map[string]string),
+		contentDisposition: make(map[string]string),
 	}
 }
 
@@ -53,6 +55,7 @@ func (m *uploadMockClient) PutObject(_ context.Context, input *s3.PutObjectInput
 	key := aws.ToString(input.Key)
 	m.puts[key] = buf.Bytes()
 	m.contentType[key] = aws.ToString(input.ContentType)
+	m.contentDisposition[key] = aws.ToString(input.ContentDisposition)
 	return &s3.PutObjectOutput{}, nil
 }
 
@@ -129,6 +132,86 @@ func TestS3PutStream_SuccessBelowCap(t *testing.T) {
 	// MIME sniffing should classify ASCII text as text/plain.
 	if ct := mock.contentType["docs/hello.txt"]; !strings.HasPrefix(ct, "text/plain") {
 		t.Errorf("content-type should start with text/plain, got %q", ct)
+	}
+	if cd := mock.contentDisposition["docs/hello.txt"]; cd != "attachment" {
+		t.Errorf("content-disposition should be attachment for private upload, got %q", cd)
+	}
+}
+
+func TestS3PutStream_PublicVisibilityContentSafety(t *testing.T) {
+	cases := []struct {
+		name                   string
+		visibility             storage.Visibility
+		path                   string
+		body                   []byte
+		wantContentType        string
+		wantContentTypePrefix  string
+		wantContentDisposition string
+	}{
+		{
+			name:                   "public html downgraded and forced attachment",
+			visibility:             storage.Public,
+			path:                   "public/attack.html",
+			body:                   []byte("<html><body><script>alert(1)</script></body></html>"),
+			wantContentType:        "application/octet-stream",
+			wantContentDisposition: "attachment",
+		},
+		{
+			name:                   "public svg downgraded and forced attachment",
+			visibility:             storage.Public,
+			path:                   "public/attack.svg",
+			body:                   []byte("<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>"),
+			wantContentType:        "application/octet-stream",
+			wantContentDisposition: "attachment",
+		},
+		{
+			name:                   "public png keeps inline content type",
+			visibility:             storage.Public,
+			path:                   "public/pixel.png",
+			body:                   []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00"),
+			wantContentType:        "image/png",
+			wantContentDisposition: "",
+		},
+		{
+			name:                   "public plain text keeps detected content type",
+			visibility:             storage.Public,
+			path:                   "public/readme.txt",
+			body:                   []byte("plain ascii text"),
+			wantContentTypePrefix:  "text/plain",
+			wantContentDisposition: "",
+		},
+		{
+			name:                   "private html still forced attachment",
+			visibility:             storage.Private,
+			path:                   "private/attack.html",
+			body:                   []byte("<html><body><script>alert(1)</script></body></html>"),
+			wantContentTypePrefix:  "text/html",
+			wantContentDisposition: "attachment",
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			driver, mock := newS3DriverWithUploadMock(tt.visibility)
+			if err := driver.PutStream(tt.path, bytes.NewReader(tt.body)); err != nil {
+				t.Fatalf("PutStream: %v", err)
+			}
+
+			mock.mu.Lock()
+			defer mock.mu.Unlock()
+
+			gotContentType := mock.contentType[tt.path]
+			if tt.wantContentType != "" && gotContentType != tt.wantContentType {
+				t.Errorf("content-type mismatch: got %q, want %q", gotContentType, tt.wantContentType)
+			}
+			if tt.wantContentTypePrefix != "" && !strings.HasPrefix(gotContentType, tt.wantContentTypePrefix) {
+				t.Errorf("content-type mismatch: got %q, want prefix %q", gotContentType, tt.wantContentTypePrefix)
+			}
+
+			if got := mock.contentDisposition[tt.path]; got != tt.wantContentDisposition {
+				t.Errorf("content-disposition mismatch: got %q, want %q", got, tt.wantContentDisposition)
+			}
+		})
 	}
 }
 

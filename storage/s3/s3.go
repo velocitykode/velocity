@@ -174,6 +174,14 @@ const maxS3StreamSize = 100 * 1024 * 1024
 // upload into memory first.
 const mimeSniffSize = 512
 
+const safePublicContentType = "application/octet-stream"
+
+var publicAttachmentContentTypePrefixes = []string{
+	"text/html",
+	"image/svg+xml",
+	"application/xhtml+xml",
+}
+
 // ErrStreamTooLarge is returned by PutStream / PutStreamCtx when the
 // uploaded body would exceed maxS3StreamSize. Surfacing this as a typed
 // sentinel lets callers distinguish "client uploaded too much" from
@@ -217,6 +225,7 @@ func (d *S3Driver) PutStreamCtx(ctx context.Context, path string, stream io.Read
 	}
 	sniff = sniff[:n]
 	contentType := detectMimeType(sniff)
+	var contentDisposition *string
 
 	// Re-attach the sniffed bytes to the front of the remaining stream
 	// and wrap with a cap-enforcing reader sized to maxS3StreamSize+1.
@@ -227,18 +236,18 @@ func (d *S3Driver) PutStreamCtx(ctx context.Context, path string, stream io.Read
 	body := io.MultiReader(bytes.NewReader(sniff), stream)
 	capped := &capReader{r: body, max: maxS3StreamSize}
 
-	input := &s3.PutObjectInput{
-		Bucket:      aws.String(d.bucket),
-		Key:         aws.String(path),
-		Body:        capped,
-		ContentType: aws.String(contentType),
-	}
-
 	// Set ACL based on visibility. Private uploads also get
 	// Content-Disposition: attachment so that any presigned GET or
 	// proxy serve path defaults to download semantics rather than
 	// inline rendering, defanging stored-XSS via Content-Type
 	// spoofing for non-image payloads.
+	//
+	// Public uploads preserve the detected Content-Type for ordinary
+	// inline-safe objects such as images and plain text. Renderable
+	// browser document types are stored as application/octet-stream and
+	// forced to attachment so the public S3/CloudFront path does not
+	// execute attacker-controlled HTML, SVG, or XHTML in the bucket
+	// origin.
 	//
 	// X-Content-Type-Options: nosniff CANNOT be persisted on the
 	// object: the S3 PutObject API only honours a fixed set of
@@ -250,14 +259,28 @@ func (d *S3Driver) PutStreamCtx(ctx context.Context, path string, stream io.Read
 	// for MIME-sniffing protection. Real X-Content-Type-Options
 	// enforcement therefore MUST live at the serve layer (the
 	// application's HTTP handler, a reverse proxy, or a CloudFront
-	// response-headers policy in front of the bucket). See the
-	// roadmap entry for a framework-owned Storage.Serve handler that
-	// will set nosniff, no-store, and a CSP sandbox.
+	// response-headers policy in front of the bucket).
+	if d.visibility == storage.Public {
+		if publicContentTypeRequiresAttachment(contentType) {
+			contentType = safePublicContentType
+			contentDisposition = aws.String("attachment")
+		}
+	} else {
+		contentDisposition = aws.String("attachment")
+	}
+
+	input := &s3.PutObjectInput{
+		Bucket:             aws.String(d.bucket),
+		Key:                aws.String(path),
+		Body:               capped,
+		ContentType:        aws.String(contentType),
+		ContentDisposition: contentDisposition,
+	}
+
 	if d.visibility == storage.Public {
 		input.ACL = types.ObjectCannedACLPublicRead
 	} else {
 		input.ACL = types.ObjectCannedACLPrivate
-		input.ContentDisposition = aws.String("attachment")
 	}
 
 	_, err = d.uploader.Upload(ctx, input)
@@ -897,10 +920,10 @@ func isNotFoundError(err error) bool {
 }
 
 // detectMimeType detects the MIME type from content using the standard
-// library sniffer (net/http.DetectContentType), which implements the
-// Mozilla "sniffing" rules. Sniffing only the first 512 bytes mirrors
-// http.DetectContentType's own contract and bounds the work for very
-// large objects.
+// library sniffer (net/http.DetectContentType), with a narrow SVG
+// correction for markup the sniffer classifies as plain text. Sniffing
+// only the first 512 bytes mirrors http.DetectContentType's own contract
+// and bounds the work for very large objects.
 func detectMimeType(content []byte) string {
 	if len(content) == 0 {
 		return "application/octet-stream"
@@ -909,7 +932,28 @@ func detectMimeType(content []byte) string {
 	if n > 512 {
 		n = 512
 	}
-	return http.DetectContentType(content[:n])
+	sample := content[:n]
+	contentType := http.DetectContentType(sample)
+	if strings.HasPrefix(strings.ToLower(contentType), "text/plain") && looksLikeSVG(sample) {
+		return "image/svg+xml"
+	}
+	return contentType
+}
+
+func looksLikeSVG(content []byte) bool {
+	s := strings.TrimSpace(strings.ToLower(string(content)))
+	return strings.HasPrefix(s, "<svg") ||
+		(strings.HasPrefix(s, "<?xml") && strings.Contains(s, "<svg"))
+}
+
+func publicContentTypeRequiresAttachment(contentType string) bool {
+	contentType = strings.ToLower(contentType)
+	for _, prefix := range publicAttachmentContentTypePrefixes {
+		if strings.HasPrefix(contentType, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // escapeURLPathSegments percent-encodes each `/`-delimited segment of
