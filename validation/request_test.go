@@ -267,6 +267,96 @@ func TestResult_Old_CaseInsensitiveSensitiveFields(t *testing.T) {
 			rejectKeys: []string{"Password", "Api_Token", "ClientSecret"},
 		},
 		{
+			name: "pin stripped",
+			input: map[string]interface{}{
+				"name": "Ali",
+				"pin":  "1234",
+			},
+			wantKeys:   []string{"name"},
+			rejectKeys: []string{"pin"},
+		},
+		{
+			name: "cvv stripped",
+			input: map[string]interface{}{
+				"name": "Ali",
+				"cvv":  "123",
+			},
+			wantKeys:   []string{"name"},
+			rejectKeys: []string{"cvv"},
+		},
+		{
+			name: "card_number stripped",
+			input: map[string]interface{}{
+				"name":        "Ali",
+				"card_number": "4111111111111111",
+			},
+			wantKeys:   []string{"name"},
+			rejectKeys: []string{"card_number"},
+		},
+		{
+			name: "ssn stripped",
+			input: map[string]interface{}{
+				"name": "Ali",
+				"ssn":  "123-45-6789",
+			},
+			wantKeys:   []string{"name"},
+			rejectKeys: []string{"ssn"},
+		},
+		{
+			name: "otp stripped",
+			input: map[string]interface{}{
+				"name": "Ali",
+				"otp":  "000000",
+			},
+			wantKeys:   []string{"name"},
+			rejectKeys: []string{"otp"},
+		},
+		{
+			name: "api_key stripped",
+			input: map[string]interface{}{
+				"name":    "Ali",
+				"api_key": "key",
+			},
+			wantKeys:   []string{"name"},
+			rejectKeys: []string{"api_key"},
+		},
+		{
+			name: "private_key stripped",
+			input: map[string]interface{}{
+				"name":        "Ali",
+				"private_key": "key",
+			},
+			wantKeys:   []string{"name"},
+			rejectKeys: []string{"private_key"},
+		},
+		{
+			name: "credentials stripped",
+			input: map[string]interface{}{
+				"name":        "Ali",
+				"credentials": "creds",
+			},
+			wantKeys:   []string{"name"},
+			rejectKeys: []string{"credentials"},
+		},
+		{
+			name: "passcode stripped",
+			input: map[string]interface{}{
+				"name":     "Ali",
+				"passcode": "123456",
+			},
+			wantKeys:   []string{"name"},
+			rejectKeys: []string{"passcode"},
+		},
+		{
+			name: "benign fields retained",
+			input: map[string]interface{}{
+				"name":  "Ali",
+				"email": "a@b.com",
+			},
+			wantKeys:   []string{"name", "email"},
+			rejectKeys: nil,
+		},
+		{
 			name:       "empty input",
 			input:      map[string]interface{}{},
 			wantKeys:   nil,

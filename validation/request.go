@@ -16,6 +16,30 @@ import (
 // a custom limit through ExtractRequestDataLimited.
 const DefaultMaxBodyBytes int64 = 10 * 1024 * 1024
 
+// sensitiveFieldSubstrings is the best-effort list of field-name substrings
+// that Result.Old redacts before returning input for client-side form replay.
+// Keep this list auditable and extend it when new sensitive naming conventions
+// are identified.
+var sensitiveFieldSubstrings = []string{
+	"password",
+	"passwd",
+	"passcode",
+	"secret",
+	"token",
+	"pin",
+	"cvv",
+	"cvc",
+	"card",
+	"ssn",
+	"otp",
+	"credential",
+	"credentials",
+	"api_key",
+	"apikey",
+	"private_key",
+	"privatekey",
+}
+
 // Check validates request data against the given rules.
 // It extracts form values or JSON body from the request automatically.
 //
@@ -152,16 +176,27 @@ func (e *resultError) As(target interface{}) bool {
 }
 
 // Old returns the original input data with sensitive fields removed.
-// Password, secret, and token fields are stripped automatically (case-insensitive).
+// Field names containing password, passwd, passcode, secret, token, pin, cvv,
+// cvc, card, ssn, otp, credential, credentials, api_key, apikey, private_key,
+// or privatekey are stripped automatically (case-insensitive). This is
+// best-effort substring redaction, not an allowlist; adopters with unusually
+// named sensitive fields should redact those values server-side before form
+// replay.
 func (r *Result) Old() map[string]interface{} {
 	old := make(map[string]interface{}, len(r.input))
 	for k, v := range r.input {
 		lower := strings.ToLower(k)
-		if strings.Contains(lower, "password") ||
-			strings.Contains(lower, "secret") ||
-			strings.Contains(lower, "token") {
+		redacted := false
+		for _, sensitive := range sensitiveFieldSubstrings {
+			if strings.Contains(lower, sensitive) {
+				redacted = true
+				break
+			}
+		}
+		if redacted {
 			continue
 		}
+
 		old[k] = v
 	}
 	return old
