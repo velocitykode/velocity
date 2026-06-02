@@ -187,7 +187,8 @@ func (m *MailMessage) Line(line string) *MailMessage {
 	return m
 }
 
-// Action adds a call-to-action button.
+// Action adds a call-to-action button. Mail HTML rendering links only absolute
+// http/https URLs; other schemes are rendered as text.
 func (m *MailMessage) Action(text, url string) *MailMessage {
 	m.action = &MailAction{Text: text, URL: url}
 	return m

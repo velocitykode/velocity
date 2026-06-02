@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"html"
+	"net/url"
 	"strings"
 
 	velmail "github.com/velocitykode/velocity/mail"
@@ -171,10 +172,14 @@ func renderMailHTML(m *notification.MailMessage) string {
 	}
 
 	if action := m.GetAction(); action != nil {
-		parts = append(parts, fmt.Sprintf(
-			`<p><a href="%s" style="display:inline-block;padding:10px 20px;background:#3490dc;color:#fff;text-decoration:none;border-radius:4px;">%s</a></p>`,
-			html.EscapeString(action.URL), html.EscapeString(action.Text),
-		))
+		if isSafeActionURL(action.URL) {
+			parts = append(parts, fmt.Sprintf(
+				`<p><a href="%s" style="display:inline-block;padding:10px 20px;background:#3490dc;color:#fff;text-decoration:none;border-radius:4px;">%s</a></p>`,
+				html.EscapeString(action.URL), html.EscapeString(action.Text),
+			))
+		} else {
+			parts = append(parts, "<p>"+html.EscapeString(action.Text)+"</p>")
+		}
 	}
 
 	for _, line := range m.GetOutro() {
@@ -186,4 +191,18 @@ func renderMailHTML(m *notification.MailMessage) string {
 	}
 
 	return strings.Join(parts, "\n")
+}
+
+func isSafeActionURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+		return u.IsAbs()
+	default:
+		return false
+	}
 }

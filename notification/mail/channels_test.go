@@ -275,6 +275,53 @@ func TestRenderMailHTML(t *testing.T) {
 	}
 }
 
+func TestRenderMailHTMLActionURLScheme(t *testing.T) {
+	tests := []struct {
+		name          string
+		actionURL     string
+		wantAnchor    string
+		forbiddenHref string
+	}{
+		{
+			name:       "absolute https action URL renders anchor",
+			actionURL:  "https://example.com/verify",
+			wantAnchor: `href="https://example.com/verify"`,
+		},
+		{
+			name:          "javascript attack URL renders text only",
+			actionURL:     "javascript:alert(1)",
+			forbiddenHref: `href="javascript:`,
+		},
+		{
+			name:          "data html attack URL renders text only",
+			actionURL:     "data:text/html,<script>alert(1)</script>",
+			forbiddenHref: `href="data:`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := notification.NewMailMessage().
+				Action("Verify Account", tt.actionURL)
+
+			html := renderMailHTML(msg)
+
+			if !strings.Contains(html, "Verify Account") {
+				t.Fatal("expected action text in html")
+			}
+			if tt.wantAnchor != "" && !strings.Contains(html, tt.wantAnchor) {
+				t.Fatalf("expected html to contain %q, got %s", tt.wantAnchor, html)
+			}
+			if tt.forbiddenHref != "" && strings.Contains(html, tt.forbiddenHref) {
+				t.Fatalf("expected html not to contain %q, got %s", tt.forbiddenHref, html)
+			}
+			if tt.forbiddenHref != "" && strings.Contains(html, "<a ") {
+				t.Fatalf("expected unsafe action URL to render without an anchor, got %s", html)
+			}
+		})
+	}
+}
+
 func TestRenderMailEmptyMessage(t *testing.T) {
 	msg := notification.NewMailMessage()
 

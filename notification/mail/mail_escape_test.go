@@ -47,13 +47,14 @@ func TestMailChannel_ActionHTMLEscaped(t *testing.T) {
 	if strings.Contains(html, `"/><img`) {
 		t.Errorf("action.URL was not escaped: %q", html)
 	}
+	if strings.Contains(html, "<a ") || strings.Contains(html, `href=`) {
+		t.Errorf("unsafe action.URL should not render as a link: %q", html)
+	}
 
-	// Their escaped forms should be present.
+	// The escaped action text should still be present even when the unsafe URL
+	// is omitted from the rendered HTML.
 	if !strings.Contains(html, "&lt;script&gt;") {
 		t.Errorf("expected escaped <script>, got %q", html)
-	}
-	if !strings.Contains(html, "&#34;/&gt;&lt;img") {
-		t.Errorf("expected escaped break-out chars, got %q", html)
 	}
 }
 
