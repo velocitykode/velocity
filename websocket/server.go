@@ -62,6 +62,10 @@ type Server struct {
 	// Stats
 	stats Stats
 
+	// activeConns counts live clients plus admitted connections pending
+	// registration, so MaxConnections is enforced at admission time.
+	activeConns atomic.Int64
+
 	mu       sync.RWMutex
 	running  bool
 	stopChan chan struct{}
@@ -318,17 +322,21 @@ func (s *Server) HandleConnection(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Server not running", http.StatusServiceUnavailable)
 		return
 	}
-	if len(s.clients) >= s.config.MaxConnections {
-		s.mu.RUnlock()
+	s.wg.Add(2)
+	s.mu.RUnlock()
+
+	n := s.activeConns.Add(1)
+	if s.config.MaxConnections > 0 && n > int64(s.config.MaxConnections) {
+		s.activeConns.Add(-1)
+		s.wg.Add(-2)
 		http.Error(w, "Connection limit reached", http.StatusServiceUnavailable)
 		return
 	}
-	s.wg.Add(2)
-	s.mu.RUnlock()
 
 	// Authenticate before upgrading if an auth function is configured
 	if s.config.AuthFunc != nil {
 		if err := s.config.AuthFunc(r); err != nil {
+			s.activeConns.Add(-1)
 			s.wg.Add(-2)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
@@ -338,6 +346,7 @@ func (s *Server) HandleConnection(w http.ResponseWriter, r *http.Request) {
 	// Upgrade connection
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		s.activeConns.Add(-1)
 		s.wg.Add(-2)
 		s.logError("Failed to upgrade connection", "error", err)
 		return
@@ -466,6 +475,7 @@ func (s *Server) handleUnregister(client *Client) {
 	s.logInfo("Client disconnected", "client_id", client.ID)
 
 	// Update stats
+	s.activeConns.Add(-1)
 	atomic.AddInt64(&s.stats.ConnectedClients, -1)
 }
 

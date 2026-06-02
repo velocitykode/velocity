@@ -476,6 +476,152 @@ func TestConnectionLimit(t *testing.T) {
 	}
 }
 
+func TestConnectionLimit_Concurrent(t *testing.T) {
+	config := DefaultConfig()
+	config.MaxConnections = 5
+	s := New(config)
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer s.Shutdown(context.Background())
+
+	ts := httptest.NewServer(http.HandlerFunc(s.HandleConnection))
+	defer ts.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
+	const attempts = 30
+
+	start := make(chan struct{})
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	var acceptedMu sync.Mutex
+	accepted := make([]*websocket.Conn, 0, config.MaxConnections)
+	var rejected atomic.Int64
+	var unexpected atomic.Int64
+	var maxObserved atomic.Int64
+
+	go func() {
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				observed := s.GetStats().ConnectedClients
+				for {
+					current := maxObserved.Load()
+					if observed <= current || maxObserved.CompareAndSwap(current, observed) {
+						break
+					}
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	wg.Add(attempts)
+	for i := 0; i < attempts; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+
+			ws, resp, err := websocket.DefaultDialer.Dial(wsURL, originHeader(ts.URL))
+			if err == nil {
+				acceptedMu.Lock()
+				accepted = append(accepted, ws)
+				acceptedMu.Unlock()
+				return
+			}
+			if resp != nil && resp.StatusCode == http.StatusServiceUnavailable {
+				rejected.Add(1)
+				return
+			}
+			unexpected.Add(1)
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(done)
+
+	acceptedMu.Lock()
+	acceptedCount := len(accepted)
+	for _, ws := range accepted {
+		defer ws.Close()
+	}
+	acceptedMu.Unlock()
+
+	if unexpected.Load() != 0 {
+		t.Fatalf("unexpected dial failures: %d", unexpected.Load())
+	}
+	if acceptedCount > config.MaxConnections {
+		t.Fatalf("accepted %d connections, want at most %d", acceptedCount, config.MaxConnections)
+	}
+	if rejected.Load() != attempts-int64(acceptedCount) {
+		t.Fatalf("rejected %d connections, want %d", rejected.Load(), attempts-acceptedCount)
+	}
+
+	testsync.Eventually(t, func() bool {
+		return s.GetStats().ConnectedClients == int64(acceptedCount)
+	}, 2*time.Second, "accepted connections registered")
+
+	if got := s.GetStats().ConnectedClients; got > int64(config.MaxConnections) {
+		t.Fatalf("ConnectedClients = %d, want at most %d", got, config.MaxConnections)
+	}
+	if got := maxObserved.Load(); got > int64(config.MaxConnections) {
+		t.Fatalf("observed ConnectedClients peak %d, want at most %d", got, config.MaxConnections)
+	}
+}
+
+func TestConnectionLimit_DecrementsOnDisconnect(t *testing.T) {
+	config := DefaultConfig()
+	config.MaxConnections = 3
+	s := New(config)
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer s.Shutdown(context.Background())
+
+	ts := httptest.NewServer(http.HandlerFunc(s.HandleConnection))
+	defer ts.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
+	clients := make([]*websocket.Conn, 0, config.MaxConnections)
+	for i := 0; i < config.MaxConnections; i++ {
+		ws, _, err := websocket.DefaultDialer.Dial(wsURL, originHeader(ts.URL))
+		if err != nil {
+			t.Fatalf("dial client %d: %v", i, err)
+		}
+		clients = append(clients, ws)
+		defer ws.Close()
+	}
+
+	testsync.Eventually(t, func() bool {
+		return s.GetStats().ConnectedClients == int64(config.MaxConnections)
+	}, 2*time.Second, "connections reached cap")
+
+	clients[0].Close()
+	clients[1].Close()
+
+	testsync.Eventually(t, func() bool {
+		return s.GetStats().ConnectedClients == int64(config.MaxConnections-2)
+	}, 2*time.Second, "closed connections released slots")
+
+	replacements := make([]*websocket.Conn, 0, 2)
+	for i := 0; i < 2; i++ {
+		ws, _, err := websocket.DefaultDialer.Dial(wsURL, originHeader(ts.URL))
+		if err != nil {
+			t.Fatalf("dial replacement %d: %v", i, err)
+		}
+		replacements = append(replacements, ws)
+		defer ws.Close()
+	}
+
+	testsync.Eventually(t, func() bool {
+		return s.GetStats().ConnectedClients == int64(config.MaxConnections)
+	}, 2*time.Second, "replacement connections admitted")
+}
+
 func TestServer_Callbacks_ConcurrentSetAndConnect(t *testing.T) {
 	s := New(DefaultConfig())
 	if err := s.Start(); err != nil {
