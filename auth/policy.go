@@ -99,22 +99,27 @@ func (g *Gate) SetRoleChecker(checker RoleChecker) {
 // Allows checks if a user is allowed to perform an ability
 func (g *Gate) Allows(user Authenticatable, ability string, args ...interface{}) bool {
 	g.mu.RLock()
-	defer g.mu.RUnlock()
+	beforeCallbacks := make([]BeforeCallback, len(g.before))
+	copy(beforeCallbacks, g.before)
+	afterCallbacks := make([]AfterCallback, len(g.after))
+	copy(afterCallbacks, g.after)
+	callback, ok := g.gates[ability]
+	g.mu.RUnlock()
 
 	// Run before callbacks
-	for _, before := range g.before {
+	for _, before := range beforeCallbacks {
 		if result := before(user, ability, args...); result != nil {
-			return g.runAfterCallbacks(user, ability, *result, args...)
+			return runAfter(afterCallbacks, user, ability, *result, args...)
 		}
 	}
 
 	// Check gate
-	if callback, ok := g.gates[ability]; ok {
+	if ok {
 		result := callback(user, args...)
-		return g.runAfterCallbacks(user, ability, result, args...)
+		return runAfter(afterCallbacks, user, ability, result, args...)
 	}
 
-	return g.runAfterCallbacks(user, ability, false, args...)
+	return runAfter(afterCallbacks, user, ability, false, args...)
 }
 
 // Denies checks if a user is denied from performing an ability
@@ -150,7 +155,7 @@ func (g *Gate) Any(user Authenticatable, abilities []string, args ...interface{}
 // the RLock permanently (sync.RWMutex is not goroutine-attached and does
 // not unwind on panic), wedging every future Gate.Define/Before/After
 // writer and every reader queued behind it, a permanent authorization DoS.
-// Mirrors the snapshot already used by runAfterCallbacks below.
+// Mirrors the snapshot used by runAfterCallbacks below.
 func (g *Gate) AuthorizePolicy(user Authenticatable, resourceType, action string, resource interface{}) bool {
 	g.mu.RLock()
 	policy, ok := g.policies[resourceType]
@@ -213,9 +218,14 @@ func (g *Gate) HasAllRoles(user Authenticatable, roles ...string) bool {
 // runAfterCallbacks runs after callbacks and returns the final result
 func (g *Gate) runAfterCallbacks(user Authenticatable, ability string, result bool, args ...interface{}) bool {
 	g.mu.RLock()
-	afterCallbacks := g.after
+	afterCallbacks := make([]AfterCallback, len(g.after))
+	copy(afterCallbacks, g.after)
 	g.mu.RUnlock()
 
+	return runAfter(afterCallbacks, user, ability, result, args...)
+}
+
+func runAfter(afterCallbacks []AfterCallback, user Authenticatable, ability string, result bool, args ...interface{}) bool {
 	for _, after := range afterCallbacks {
 		result = after(user, ability, result, args...)
 	}

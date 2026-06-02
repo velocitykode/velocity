@@ -1,7 +1,10 @@
 package auth
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // mockUser implements Authenticatable for testing
@@ -165,6 +168,110 @@ func TestGate_After(t *testing.T) {
 
 	if !afterCalled {
 		t.Error("expected after callback to be called")
+	}
+}
+
+func TestGate_Allows_NoDeadlockUnderConcurrentDefine(t *testing.T) {
+	gate := NewGate()
+	gate.Define("x", func(user Authenticatable, args ...interface{}) bool {
+		return true
+	})
+
+	user := &mockUser{id: 1}
+	const (
+		allowGoroutines = 50
+		allowIterations = 200
+		writeGoroutines = 10
+		writeIterations = 100
+	)
+
+	var wg sync.WaitGroup
+	var denied atomic.Bool
+
+	for i := 0; i < allowGoroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < allowIterations; j++ {
+				if !gate.Allows(user, "x") {
+					denied.Store(true)
+				}
+			}
+		}()
+	}
+
+	for i := 0; i < writeGoroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < writeIterations; j++ {
+				gate.Define("x", func(user Authenticatable, args ...interface{}) bool {
+					return true
+				})
+				gate.Before(func(user Authenticatable, ability string, args ...interface{}) *bool {
+					return nil
+				})
+				gate.After(func(user Authenticatable, ability string, result bool, args ...interface{}) bool {
+					return result
+				})
+			}
+		}()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("concurrent Allows and gate mutation did not complete")
+	}
+
+	if denied.Load() {
+		t.Error("expected all Allows calls to succeed")
+	}
+}
+
+func TestGate_Allows_BeforeCallbackPanicDoesNotWedgeGate(t *testing.T) {
+	gate := NewGate()
+	user := &mockUser{id: 1}
+	var shouldPanic atomic.Bool
+	shouldPanic.Store(true)
+
+	gate.Before(func(user Authenticatable, ability string, args ...interface{}) *bool {
+		if shouldPanic.Swap(false) {
+			panic("before callback panic")
+		}
+		return nil
+	})
+
+	func() {
+		defer func() {
+			if recovered := recover(); recovered == nil {
+				t.Fatal("expected before callback panic")
+			}
+		}()
+		gate.Allows(user, "x")
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		gate.Define("x", func(user Authenticatable, args ...interface{}) bool {
+			return true
+		})
+		if !gate.Allows(user, "x") {
+			t.Error("expected subsequent Allows call to succeed")
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("gate remained wedged after before callback panic")
 	}
 }
 
