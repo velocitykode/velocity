@@ -61,6 +61,9 @@ type Config struct {
 	// Session
 	Session auth.SessionConfig
 
+	sessionSameSiteRaw string
+	csrfSameSiteRaw    string
+
 	// View
 	View view.Config
 
@@ -286,6 +289,8 @@ func ConfigFromEnv() Config {
 		SlowThreshold:   envDurationOrDefault("DB_SLOW_QUERY_THRESHOLD", 0),
 	}
 
+	sessionSameSiteRaw := os.Getenv("SESSION_SAME_SITE")
+
 	// Session
 	config.Session = auth.SessionConfig{
 		Name:     envOrDefault("SESSION_NAME", "velocity_session"),
@@ -294,8 +299,9 @@ func ConfigFromEnv() Config {
 		Domain:   os.Getenv("SESSION_DOMAIN"),
 		Secure:   os.Getenv("SESSION_SECURE") != "false",
 		HttpOnly: envOrDefault("SESSION_HTTP_ONLY", "true") == "true",
-		SameSite: parseSameSite(os.Getenv("SESSION_SAME_SITE")),
+		SameSite: parseSameSite(sessionSameSiteRaw),
 	}
+	config.sessionSameSiteRaw = sessionSameSiteRaw
 
 	// Auth
 	config.Auth = auth.Config{
@@ -366,9 +372,11 @@ func ConfigFromEnv() Config {
 	csrfCfg.FormField = envOrDefault("CSRF_FORM_FIELD", csrfCfg.FormField)
 	csrfCfg.CookieName = envOrDefault("CSRF_COOKIE_NAME", csrfCfg.CookieName)
 	csrfCfg.SessionCookieName = envOrDefault("CSRF_SESSION_COOKIE", config.Session.Name)
-	if v := os.Getenv("CSRF_SAME_SITE"); v != "" {
-		csrfCfg.SameSite = parseSameSite(v)
+	csrfSameSiteRaw := os.Getenv("CSRF_SAME_SITE")
+	if csrfSameSiteRaw != "" {
+		csrfCfg.SameSite = parseSameSite(csrfSameSiteRaw)
 	}
+	config.csrfSameSiteRaw = csrfSameSiteRaw
 	csrfCfg.Secure = os.Getenv("CSRF_SECURE") != "false"
 	csrfCfg.HttpOnly = envOrDefault("CSRF_HTTP_ONLY", "true") == "true"
 	csrfCfg.SingleUse = os.Getenv("CSRF_SINGLE_USE") == "true"
@@ -590,6 +598,21 @@ func parseSameSite(value string) http.SameSite {
 	}
 }
 
+func parseSameSiteStrict(envName, value string) (http.SameSite, error) {
+	switch value {
+	case "":
+		return http.SameSiteLaxMode, nil
+	case "strict":
+		return http.SameSiteStrictMode, nil
+	case "lax":
+		return http.SameSiteLaxMode, nil
+	case "none":
+		return http.SameSiteNoneMode, nil
+	default:
+		return http.SameSiteLaxMode, fmt.Errorf("%w: %s=%q is not one of strict|lax|none", ErrInvalidConfig, envName, value)
+	}
+}
+
 // Validate checks the root Config for structural problems and delegates to
 // per-subsystem Validate() methods that have no environment-aware
 // relaxations. Called from New() before any resource is allocated so
@@ -614,6 +637,12 @@ func (c Config) Validate() error {
 	}
 	if c.ReadTimeout < 0 || c.WriteTimeout < 0 || c.IdleTimeout < 0 || c.ReadHeaderTimeout < 0 {
 		return fmt.Errorf("%w: server timeouts must be non-negative", ErrInvalidConfig)
+	}
+	if _, err := parseSameSiteStrict("SESSION_SAME_SITE", c.sessionSameSiteRaw); err != nil {
+		return err
+	}
+	if _, err := parseSameSiteStrict("CSRF_SAME_SITE", c.csrfSameSiteRaw); err != nil {
+		return err
 	}
 	if err := c.DB.Validate(); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
