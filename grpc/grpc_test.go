@@ -592,6 +592,35 @@ func TestLoadConfig(t *testing.T) {
 			t.Error("EnableReflection should be false by default")
 		}
 	})
+
+	t.Run("message size validation", func(t *testing.T) {
+		// defaultMaxMsgSize is unexported; assert against the literal 4MB.
+		const defaultMaxMsgSize = 4 * 1024 * 1024
+		cases := []struct {
+			name string
+			env  string
+			want int
+		}{
+			{"unset falls back to default", "", defaultMaxMsgSize},
+			{"negative falls back to default (would mean UNLIMITED in grpc-go)", "-1", defaultMaxMsgSize},
+			{"zero falls back to default", "0", defaultMaxMsgSize},
+			{"unparseable falls back to default", "notanint", defaultMaxMsgSize},
+			{"valid positive value is honored", "8388608", 8388608},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Setenv("GRPC_MAX_RECV_SIZE", tc.env)
+				t.Setenv("GRPC_MAX_SEND_SIZE", tc.env)
+				cfg := grpc.LoadConfig()
+				if cfg.MaxRecvMsgSize != tc.want {
+					t.Errorf("MaxRecvMsgSize = %v, want %v", cfg.MaxRecvMsgSize, tc.want)
+				}
+				if cfg.MaxSendMsgSize != tc.want {
+					t.Errorf("MaxSendMsgSize = %v, want %v", cfg.MaxSendMsgSize, tc.want)
+				}
+			})
+		}
+	})
 }
 
 func TestTimeConverters(t *testing.T) {
