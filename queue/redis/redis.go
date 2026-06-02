@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -32,6 +34,8 @@ func init() {
 // lock-free SetEventDispatcher path is preserved verbatim.
 type dispatcherFn func(ctx context.Context, event interface{}) error
 
+const redisPoppedAttemptsMaxEntries = 1024
+
 // RedisDriver implements the queue.Driver interface using Redis.
 type RedisDriver struct {
 	client *redis.Client
@@ -43,6 +47,29 @@ type RedisDriver struct {
 	// locks) and avoids a self-deadlock against future critical sections
 	// that wrap PushCtx/PopCtx.
 	eventDispatcher atomic.Pointer[dispatcherFn]
+
+	// poppedAttempts carries Payload.Attempts across the Redis delete-on-pop
+	// boundary long enough for the worker's retry PushDelayedCtx call to
+	// persist the next attempt count. Entries are best-effort metadata keyed
+	// by the popped job object; PushDelayedCtx and Failed remove entries for
+	// paths that terminate through the driver. Successful jobs do not route
+	// back through Redis, so the map is bounded and opportunistically pruned
+	// on pop.
+	poppedAttempts      sync.Map // keyed by job object, value int
+	poppedAttemptsCount int64
+
+	// nonIdentifiableWarned ensures the advisory for jobs without a stable
+	// JobID logs at most once per distinct job type.
+	nonIdentifiableWarned sync.Map // keyed by job type string
+
+	logger atomic.Value // holds redisLoggerHolder{Logger}
+}
+
+type redisLoggerHolder struct{ Logger queue.Logger }
+
+type poppedAttemptsKey struct {
+	typ reflect.Type
+	ptr uintptr
 }
 
 // New constructs a Redis queue driver from cfg for standalone use without
@@ -98,6 +125,98 @@ func (r *RedisDriver) SetEventDispatcher(fn func(ctx context.Context, event inte
 	}
 	f := dispatcherFn(fn)
 	r.eventDispatcher.Store(&f)
+}
+
+// SetLogger installs a logger for Redis-driver operational advisories. Nil
+// disables logging. Safe to call concurrently.
+func (r *RedisDriver) SetLogger(l queue.Logger) {
+	r.logger.Store(redisLoggerHolder{Logger: l})
+}
+
+func (r *RedisDriver) log() queue.Logger {
+	v := r.logger.Load()
+	if v == nil {
+		return nil
+	}
+	return v.(redisLoggerHolder).Logger
+}
+
+func (r *RedisDriver) warnIfNonIdentifiable(job queue.Job) {
+	if _, ok := job.(queue.Identifiable); ok {
+		return
+	}
+	typ := fmt.Sprintf("%T", job)
+	if _, loaded := r.nonIdentifiableWarned.LoadOrStore(typ, struct{}{}); loaded {
+		return
+	}
+	if logger := r.log(); logger != nil {
+		logger.Warn("velocity/queue: job type does not implement Identifiable; MaxAttempts cannot be enforced reliably across redelivery. Implement queue.Identifiable.JobID() to fix.",
+			"type", typ,
+		)
+	}
+}
+
+func (r *RedisDriver) rememberPoppedAttempts(job queue.Job, attempts int) {
+	key, ok := redisPoppedAttemptsKey(job)
+	if !ok {
+		return
+	}
+	if _, loaded := r.poppedAttempts.LoadOrStore(key, attempts); loaded {
+		r.poppedAttempts.Store(key, attempts)
+		return
+	}
+	if atomic.AddInt64(&r.poppedAttemptsCount, 1) > redisPoppedAttemptsMaxEntries {
+		r.prunePoppedAttempts(redisPoppedAttemptsMaxEntries / 2)
+	}
+}
+
+func (r *RedisDriver) takePoppedAttempts(job queue.Job) (int, bool) {
+	key, ok := redisPoppedAttemptsKey(job)
+	if !ok {
+		return 0, false
+	}
+	v, ok := r.poppedAttempts.LoadAndDelete(key)
+	if !ok {
+		return 0, false
+	}
+	atomic.AddInt64(&r.poppedAttemptsCount, -1)
+	attempts, ok := v.(int)
+	return attempts, ok
+}
+
+func (r *RedisDriver) prunePoppedAttempts(target int64) {
+	excess := atomic.LoadInt64(&r.poppedAttemptsCount) - target
+	if excess <= 0 {
+		return
+	}
+	var deleted int64
+	r.poppedAttempts.Range(func(key, _ any) bool {
+		if deleted >= excess {
+			return false
+		}
+		if _, ok := r.poppedAttempts.LoadAndDelete(key); ok {
+			deleted++
+		}
+		return true
+	})
+	if deleted > 0 {
+		atomic.AddInt64(&r.poppedAttemptsCount, -deleted)
+	}
+}
+
+func redisPoppedAttemptsKey(job queue.Job) (interface{}, bool) {
+	if job == nil {
+		return nil, false
+	}
+	v := reflect.ValueOf(job)
+	t := v.Type()
+	if t.Kind() == reflect.Ptr {
+		return poppedAttemptsKey{typ: t, ptr: v.Pointer()}, true
+	}
+	if t.Comparable() {
+		return job, true
+	}
+	return nil, false
 }
 
 // dispatchEvent dispatches an event if a dispatcher is configured. The
@@ -161,6 +280,9 @@ func (r *RedisDriver) PushDelayedCtx(ctx context.Context, job queue.Job, delay t
 	payload, err := queue.SerializeJob(job, name)
 	if err != nil {
 		return err
+	}
+	if attempts, ok := r.takePoppedAttempts(job); ok {
+		payload.Attempts = attempts + 1
 	}
 	payload.TraceID, payload.SpanID, payload.ParentID = trace.GetTraceContext(ctx)
 
@@ -281,6 +403,8 @@ func (r *RedisDriver) PopCtxWithTrace(ctx context.Context, queueName string) (qu
 		}
 		return j, qtc, qerr
 	}
+	r.rememberPoppedAttempts(job, payload.Attempts)
+	r.warnIfNonIdentifiable(job)
 	return job, tc, nil
 }
 
@@ -398,6 +522,7 @@ func (r *RedisDriver) Clear(queueName string) error {
 // Failed moves a job to the failed queue
 func (r *RedisDriver) Failed(job queue.Job, err error, queueName string) error {
 	failedKey := r.getFailedKey(queueName)
+	r.takePoppedAttempts(job)
 
 	payload, serr := queue.SerializeJob(job, queueName)
 	if serr != nil {
