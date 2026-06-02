@@ -213,6 +213,14 @@ func (d *MemoryDriver) Move(from, to string) error {
 		return ErrFileNotFound
 	}
 
+	if from == to {
+		return nil
+	}
+
+	if existingFile, exists := d.files[to]; exists {
+		d.used -= int64(len(existingFile.Content))
+	}
+
 	// Move is just reassigning the pointer
 	d.files[to] = file
 	delete(d.files, from)
