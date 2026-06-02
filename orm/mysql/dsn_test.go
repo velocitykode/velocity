@@ -7,18 +7,46 @@ import (
 	"github.com/velocitykode/velocity/orm/drivers"
 )
 
-// TestResolveMySQLTLS_DefaultsToPreferred asserts MySQL connections pick
-// tls=preferred when the configured value is empty.
-func TestResolveMySQLTLS_DefaultsToPreferred(t *testing.T) {
-	if got := resolveMySQLTLS(""); got != "preferred" {
-		t.Fatalf("resolveMySQLTLS = %q, want %q", got, "preferred")
+// TestResolveMySQLTLS verifies empty TLS config now defaults to tls=true as a
+// security hardening change while explicit opt-outs and named profiles pass
+// through unchanged.
+func TestResolveMySQLTLS(t *testing.T) {
+	cases := []struct {
+		name       string
+		configured string
+		want       string
+	}{
+		{
+			name: "empty defaults to required TLS",
+			want: "true",
+		},
+		{
+			name:       "explicit false",
+			configured: "false",
+			want:       "false",
+		},
+		{
+			name:       "explicit skip verify",
+			configured: "skip-verify",
+			want:       "skip-verify",
+		},
+		{
+			name:       "explicit preferred",
+			configured: "preferred",
+			want:       "preferred",
+		},
+		{
+			name:       "named tls profile",
+			configured: "local-dev-profile",
+			want:       "local-dev-profile",
+		},
 	}
-}
-
-// TestResolveMySQLTLS_Override verifies the configured value wins.
-func TestResolveMySQLTLS_Override(t *testing.T) {
-	if got := resolveMySQLTLS("false"); got != "false" {
-		t.Fatalf("resolveMySQLTLS = %q, want %q", got, "false")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveMySQLTLS(tc.configured); got != tc.want {
+				t.Fatalf("resolveMySQLTLS(%q) = %q, want %q", tc.configured, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -56,11 +84,11 @@ func TestRedactMySQLDSN(t *testing.T) {
 }
 
 // TestMySQLDriver_DSNParamsIncludeTLSDefault verifies Connect wires the
-// default tls=preferred into the query string portion of the DSN.
+// hardened default tls=true into the query string portion of the DSN.
 func TestMySQLDriver_DSNParamsIncludeTLSDefault(t *testing.T) {
 	params := buildMySQLParamsForTest(drivers.ConnectionConfig{})
-	if !strings.Contains(params, "tls=preferred") {
-		t.Errorf("expected params to contain tls=preferred, got %q", params)
+	if !strings.Contains(params, "tls=true") {
+		t.Errorf("expected params to contain tls=true, got %q", params)
 	}
 }
 
