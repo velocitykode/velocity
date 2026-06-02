@@ -41,11 +41,13 @@ var privateNetworks []*net.IPNet
 
 func init() {
 	cidrs := []string{
+		"0.0.0.0/8",      // "this host" / unspecified, routes to localhost on Linux
 		"127.0.0.0/8",    // IPv4 loopback
 		"10.0.0.0/8",     // RFC1918
 		"172.16.0.0/12",  // RFC1918
 		"192.168.0.0/16", // RFC1918
 		"169.254.0.0/16", // Link-local
+		"100.64.0.0/10",  // CGNAT / cloud shared address space
 		"::1/128",        // IPv6 loopback
 		"fc00::/7",       // IPv6 unique local
 		"fe80::/10",      // IPv6 link-local
@@ -143,8 +145,12 @@ func URLRule(field string, value interface{}, params []string, data map[string]i
 }
 
 // URLPublicRule validates that a value is a valid URL pointing to a public
-// (non-internal) host. Rejects private/internal IPs: 127.0.0.0/8, 10.0.0.0/8,
-// 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, ::1, fc00::/7, fe80::/10.
+// (non-internal) host. Rejects private/internal IPs: 0.0.0.0/8, 127.0.0.0/8,
+// 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16,
+// 100.64.0.0/10, ::1, fc00::/7, fe80::/10.
+// This rule is validation-time only: it resolves DNS once at validation and
+// does not defend against DNS rebinding at fetch time; a fetching client must
+// re-check at dial time (the httpclient denyPrivateIPs path does this).
 //
 // The DNS lookup is bounded by urlResolveTimeout (5s) to prevent a slow or
 // adversarial resolver from hanging the calling handler indefinitely.
@@ -177,6 +183,10 @@ func URLPublicRule(field string, value interface{}, params []string, data map[st
 	}
 
 	for _, ip := range ips {
+		if ip.IP.IsUnspecified() || ip.IP.IsLoopback() || ip.IP.IsPrivate() ||
+			ip.IP.IsLinkLocalUnicast() || ip.IP.IsLinkLocalMulticast() {
+			return fmt.Errorf("The %s field must not point to a private or internal address.", field)
+		}
 		for _, network := range privateNetworks {
 			if network.Contains(ip.IP) {
 				return fmt.Errorf("The %s field must not point to a private or internal address.", field)

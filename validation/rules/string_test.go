@@ -267,6 +267,64 @@ func TestURLRule(t *testing.T) {
 	}
 }
 
+func TestURLPublicRule_LiteralIPHosts(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{
+			name:    "rejects unspecified this-host address",
+			value:   "http://0.0.0.0:6379/",
+			wantErr: true,
+		},
+		{
+			name:    "rejects unspecified this-host block",
+			value:   "http://0.1.2.3/",
+			wantErr: true,
+		},
+		{
+			name:    "rejects CGNAT shared address space",
+			value:   "http://100.64.0.1/",
+			wantErr: true,
+		},
+		{
+			name:    "rejects IPv4 loopback",
+			value:   "http://127.0.0.1/",
+			wantErr: true,
+		},
+		{
+			name:    "rejects RFC1918 private address",
+			value:   "http://10.0.0.1/",
+			wantErr: true,
+		},
+		{
+			name:    "rejects IPv6 loopback",
+			value:   "http://[::1]/",
+			wantErr: true,
+		},
+		{
+			name:    "allows public Cloudflare resolver address",
+			value:   "http://1.1.1.1/",
+			wantErr: false,
+		},
+		{
+			name:    "allows public Google resolver address",
+			value:   "https://8.8.8.8/",
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := URLPublicRule("website", tt.value, nil, nil)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("URLPublicRule() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestAlphaRule(t *testing.T) {
 	tests := []struct {
 		name    string
