@@ -621,12 +621,12 @@ func (g *JWTGuard) ValidateToken(token string) (*auth.Claims, error) {
 
 // getTokenFromRequest extracts JWT token from request.
 //
-// For WebSocket upgrade requests, clients should prefer carrying the access
-// token in the Sec-WebSocket-Protocol header as a comma-separated subprotocol
-// value with the form "bearer.<token>". The legacy token query parameter is
-// still accepted for WebSocket upgrades only, but it is deprecated because
-// query-string credentials can leak through access logs, proxy logs, browser
-// history, and Referer headers.
+// For WebSocket upgrade requests, clients should carry the access token in the
+// Sec-WebSocket-Protocol header as a comma-separated subprotocol value with the
+// form "bearer.<token>". The legacy "?token=" query parameter is accepted for
+// WebSocket upgrades ONLY when JWTConfig.AllowQueryToken is explicitly enabled;
+// it is off by default because query-string credentials can leak through access
+// logs, proxy logs, browser history, and Referer headers.
 func (g *JWTGuard) getTokenFromRequest(r *http.Request) string {
 	// Check Authorization header — only accept "Bearer <token>" format
 	authHeader := r.Header.Get("Authorization")
@@ -642,15 +642,19 @@ func (g *JWTGuard) getTokenFromRequest(r *http.Request) string {
 		return token
 	}
 
-	// Check WebSocket-specific token sources. Prefer Sec-WebSocket-Protocol
-	// over the deprecated query-parameter fallback to avoid URL credential
-	// leakage in clients that support subprotocol-based token transport.
+	// Check WebSocket-specific token sources. Sec-WebSocket-Protocol
+	// ("bearer.<token>") is always accepted. The "?token=" query parameter is
+	// accepted ONLY when JWTConfig.AllowQueryToken is explicitly enabled
+	// (default off): query-string credentials leak into LB/proxy/access logs,
+	// browser history, and Referer headers.
 	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
 		if token := tokenFromWebSocketSubprotocol(r.Header.Values("Sec-WebSocket-Protocol")); token != "" {
 			return token
 		}
-		if token := r.URL.Query().Get("token"); token != "" {
-			return token
+		if g.config.AllowQueryToken {
+			if token := r.URL.Query().Get("token"); token != "" {
+				return token
+			}
 		}
 	}
 

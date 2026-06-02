@@ -94,6 +94,15 @@ type JWTConfig struct {
 	BlacklistEnabled bool
 	BlacklistStore   BlacklistStore // Optional persistent store; defaults to in-memory
 
+	// AllowQueryToken opts into accepting the access token from the
+	// "?token=<jwt>" query parameter on WebSocket upgrade requests. It
+	// defaults to false (off): query-string credentials leak into load
+	// balancer / proxy / access logs, browser history, and Referer headers.
+	// Prefer the Sec-WebSocket-Protocol "bearer.<token>" transport,
+	// which is always accepted. Enable this only for legacy clients that
+	// cannot set the subprotocol header.
+	AllowQueryToken bool
+
 	// RefreshGenerationStore lets the operator install a shared
 	// (typically Redis-backed) per-user refresh-generation counter so
 	// Logout-driven bumps from H-07 propagate across hosts. Without

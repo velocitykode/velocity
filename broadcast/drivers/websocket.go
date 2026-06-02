@@ -87,6 +87,14 @@ type WebSocketDriver struct {
 	// two channels gets two unlinkable opaque IDs.
 	opaqueSeedOnce sync.Once
 	opaqueSeed     [32]byte
+
+	// clientEventMu guards clientEventBuckets, the per-client token buckets
+	// that rate-limit client events ("whispers"). Kept separate from d.mu so
+	// the whisper path never contends the channel-membership lock. Buckets are
+	// evicted in purgeClient on disconnect, so the map stays bounded by live
+	// connections.
+	clientEventMu      sync.Mutex
+	clientEventBuckets map[string]*clientEventBucket
 }
 
 // loggerHolder wraps a Logger so atomic.Value stores a single concrete type.
@@ -408,6 +416,12 @@ func (d *WebSocketDriver) purgeClient(clientID string) {
 	// Drop the per-client subscription bookkeeping so a disconnect frees
 	// the D-03 cap budget for any future reconnect of the same ID.
 	delete(d.clientSubs, clientID)
+
+	// Evict the client-event rate-limit bucket so the map stays bounded by
+	// live connections.
+	d.clientEventMu.Lock()
+	delete(d.clientEventBuckets, clientID)
+	d.clientEventMu.Unlock()
 }
 
 func (d *WebSocketDriver) recordDrop(clientID, channel, event string) {
@@ -693,7 +707,51 @@ const (
 	// limit to bound within-authz fan-out amplification.
 	maxClientEventNameLen      = 128
 	maxClientEventPayloadBytes = 8192
+
+	// clientEventBurst caps a single connection's burst of client events;
+	// clientEventRefillPerSec is the sustained refill rate. Together they bound
+	// whisper fan-out amplification beyond the per-event name/payload caps: a
+	// legitimate presence member can no longer loop near-cap whispers to every
+	// peer without limit.
+	clientEventBurst        = 30.0
+	clientEventRefillPerSec = 30.0
 )
+
+// clientEventBucket is a per-client token bucket for the client-event rate
+// limit. Refill is lazy (computed from elapsed time on each access).
+type clientEventBucket struct {
+	tokens float64
+	last   time.Time
+}
+
+// allowClientEvent applies the per-client token-bucket rate limit, returning
+// false when the connection has exhausted its whisper budget. The bucket is
+// created on first use and removed in purgeClient on disconnect.
+func (d *WebSocketDriver) allowClientEvent(clientID string) bool {
+	now := time.Now()
+	d.clientEventMu.Lock()
+	defer d.clientEventMu.Unlock()
+	if d.clientEventBuckets == nil {
+		d.clientEventBuckets = make(map[string]*clientEventBucket)
+	}
+	b := d.clientEventBuckets[clientID]
+	if b == nil {
+		b = &clientEventBucket{tokens: clientEventBurst, last: now}
+		d.clientEventBuckets[clientID] = b
+	}
+	if elapsed := now.Sub(b.last).Seconds(); elapsed > 0 {
+		b.tokens += elapsed * clientEventRefillPerSec
+		if b.tokens > clientEventBurst {
+			b.tokens = clientEventBurst
+		}
+		b.last = now
+	}
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
+}
 
 // handleClientEvent handles client-to-client events.
 //
@@ -742,6 +800,12 @@ func (d *WebSocketDriver) handleClientEvent(client *websocket.Client, msg websoc
 	}
 	if payloadBytes > maxClientEventPayloadBytes {
 		return fmt.Errorf("velocity/broadcast: client event payload too large")
+	}
+
+	// Per-client rate limit: bound how fast an authorized member can whisper,
+	// independent of the per-event name/payload caps.
+	if !d.allowClientEvent(client.ID) {
+		return fmt.Errorf("velocity/broadcast: client event rate limit exceeded")
 	}
 
 	// Broadcast to channel except sender. The handler has no request context

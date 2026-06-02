@@ -14,6 +14,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/velocitykode/velocity/contract"
@@ -187,11 +189,36 @@ func (m *MailMessage) Line(line string) *MailMessage {
 	return m
 }
 
-// Action adds a call-to-action button. Mail HTML rendering links only absolute
-// http/https URLs; other schemes are rendered as text.
-func (m *MailMessage) Action(text, url string) *MailMessage {
-	m.action = &MailAction{Text: text, URL: url}
+// Action adds a call-to-action button. The URL is validated at construction
+// (defense in depth, F20): only absolute http/https URLs are stored. A
+// javascript:, data:, or other dangerous-scheme URL is dropped to "" at the
+// source so it can never reach an href in mail HTML, in-app previews, or admin
+// dashboards that render the action. The button text is always preserved.
+func (m *MailMessage) Action(text, actionURL string) *MailMessage {
+	if !isSafeActionURL(actionURL) {
+		actionURL = ""
+	}
+	m.action = &MailAction{Text: text, URL: actionURL}
 	return m
+}
+
+// isSafeActionURL reports whether raw is an absolute http(s) URL. Mirrors the
+// check in the mail renderer so a dangerous scheme is rejected at the data
+// source as well as at render time.
+func isSafeActionURL(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+		return u.IsAbs()
+	default:
+		return false
+	}
 }
 
 // Outro adds a line of text after the action.

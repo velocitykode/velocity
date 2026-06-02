@@ -236,6 +236,12 @@ func New(opts ...Option) (*App, error) {
 	if dbManager != nil {
 		a.DB = dbManager
 		orm.SetDefault(dbManager)
+		// Surface the mass-assignment-open default: warn once per model type
+		// the first time a model with no Fillable()/Guarded() policy is filled
+		// from a client-supplied map.
+		orm.SetMassAssignmentWarner(func(modelType string) {
+			a.Log.Warn("mass-assignment-open model used with map-based Create/Update; declare Fillable() (allowlist) or Guarded() (denylist) to deny sensitive columns by default", "model", modelType)
+		})
 		cleanups = append(cleanups, func() {
 			_ = a.DB.Shutdown(context.Background())
 			orm.ResetDefault()
@@ -520,6 +526,13 @@ func New(opts ...Option) (*App, error) {
 
 	// 13. Initialize mail
 	if a.config.Mail.Driver != "" {
+		// The "log" driver discards mail (it only records it in-process). It is
+		// the default when MAIL_DRIVER is unset, so a production deploy that
+		// forgets to configure a real driver silently drops every email. Warn
+		// loudly rather than fail so dev/test stay frictionless.
+		if a.config.Mail.Driver == "log" && contract.IsProductionEnv(a.config.Env) {
+			a.Log.Warn("mail driver is 'log' in production: all outbound email will be DISCARDED. Set MAIL_DRIVER to a real driver (postmark, mailgun, ...)")
+		}
 		mailer, err := mail.NewMailer(a.config.Mail)
 		if err != nil {
 			a.Log.Warn("Failed to initialize mailer", "error", err)

@@ -13,6 +13,7 @@ import (
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/grpc/interceptors"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/log"
 )
@@ -43,6 +44,13 @@ type Server struct {
 	// Interceptors
 	unaryInterceptors  []grpc.UnaryServerInterceptor
 	streamInterceptors []grpc.StreamServerInterceptor
+
+	// disableDefaultRecovery suppresses the panic-recovery interceptor that
+	// Build installs outermost by default. grpc-go does NOT auto-recover
+	// interceptor/handler panics, so without this the first panic crashes the
+	// serve loop; the default keeps a server alive out of the box. Set via
+	// WithoutDefaultRecovery for callers that wire their own outermost recovery.
+	disableDefaultRecovery bool
 
 	// Registration functions to call after server is built
 	registrations []RegistrationFunc
@@ -84,6 +92,13 @@ func NewServer(opts ...ServerOption) *Server {
 	// Default to console logger if none provided
 	if s.logger == nil {
 		s.logger, _ = log.NewLogger(log.LogConfig{Driver: "console"})
+	}
+
+	// Surface any env-parsing diagnostics now that a logger exists, so a
+	// non-positive / unparseable / oversize GRPC_MAX_*_SIZE is never silently
+	// clamped without the operator knowing.
+	for _, w := range cfg.Warnings {
+		s.logger.Warn(w)
 	}
 
 	return s
@@ -150,17 +165,31 @@ func WithExplicitTLS() ServerOption {
 	}
 }
 
-// WithMaxRecvMsgSize sets the maximum receive message size
+// WithMaxRecvMsgSize sets the maximum receive message size. The value is
+// sanitized via clampMsgSize: a non-positive size (which grpc-go would read as
+// UNLIMITED, removing the message-size DoS guard) falls back to the 4MB
+// default, and an oversize value is clamped to the 1 GiB ceiling.
 func WithMaxRecvMsgSize(size int) ServerOption {
 	return func(s *Server) {
-		s.serverOptions = append(s.serverOptions, grpc.MaxRecvMsgSize(size))
+		s.serverOptions = append(s.serverOptions, grpc.MaxRecvMsgSize(clampMsgSize(size)))
 	}
 }
 
-// WithMaxSendMsgSize sets the maximum send message size
+// WithMaxSendMsgSize sets the maximum send message size. Sanitized via
+// clampMsgSize on the same floor/ceiling as WithMaxRecvMsgSize.
 func WithMaxSendMsgSize(size int) ServerOption {
 	return func(s *Server) {
-		s.serverOptions = append(s.serverOptions, grpc.MaxSendMsgSize(size))
+		s.serverOptions = append(s.serverOptions, grpc.MaxSendMsgSize(clampMsgSize(size)))
+	}
+}
+
+// WithoutDefaultRecovery disables the panic-recovery interceptor that Build
+// installs outermost by default. Use it only when you wire your own recovery
+// interceptor first in the chain; otherwise an interceptor/handler panic
+// crashes the gRPC serve loop (grpc-go does not auto-recover).
+func WithoutDefaultRecovery() ServerOption {
+	return func(s *Server) {
+		s.disableDefaultRecovery = true
 	}
 }
 
@@ -277,15 +306,28 @@ func (s *Server) Build() error {
 	}
 	s.listener = lis
 
-	// Build server options with interceptor chains
+	// Build server options with interceptor chains. The panic-recovery
+	// interceptor is prepended OUTERMOST by default so a panic in any other
+	// interceptor (e.g. logging's user-agent handling) or in a handler is
+	// converted to codes.Internal instead of crashing the serve loop: grpc-go
+	// does not auto-recover interceptor panics. Local slices keep s.* fields
+	// unmutated so a second Build (or inspection) sees the configured set.
 	opts := make([]grpc.ServerOption, 0, len(s.serverOptions)+2)
 	opts = append(opts, s.serverOptions...)
 
-	if len(s.unaryInterceptors) > 0 {
-		opts = append(opts, grpc.ChainUnaryInterceptor(s.unaryInterceptors...))
+	unary := s.unaryInterceptors
+	stream := s.streamInterceptors
+	if !s.disableDefaultRecovery {
+		rec := interceptors.Recovery(interceptors.WithRecoveryLogger(s.logger))
+		unary = append([]grpc.UnaryServerInterceptor{rec.Unary}, unary...)
+		stream = append([]grpc.StreamServerInterceptor{rec.Stream}, stream...)
 	}
-	if len(s.streamInterceptors) > 0 {
-		opts = append(opts, grpc.ChainStreamInterceptor(s.streamInterceptors...))
+
+	if len(unary) > 0 {
+		opts = append(opts, grpc.ChainUnaryInterceptor(unary...))
+	}
+	if len(stream) > 0 {
+		opts = append(opts, grpc.ChainStreamInterceptor(stream...))
 	}
 
 	// Create server

@@ -2,6 +2,8 @@ package queue
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -841,7 +843,19 @@ func (w *Worker) jobKey(job Job) interface{} {
 	if id, ok := job.(Identifiable); ok {
 		return id.JobID()
 	}
-	// Fallback to pointer identity (works for memory driver)
+	// Non-Identifiable jobs re-hydrate to a fresh pointer on every pop from a
+	// delete-on-pop driver (redis): pointer identity changes each attempt, so
+	// the in-process attempt counter would never advance and a perpetually
+	// failing job would retry forever, never reaching failed_jobs. Derive a
+	// stable content key from the marshaled job so repeated pops of the same
+	// payload share one counter and MaxAttempts is enforced. Two distinct jobs
+	// with byte-identical content share a counter, which only ever fails one
+	// slightly early; that is acceptable next to unbounded retries.
+	if b, err := json.Marshal(job); err == nil {
+		sum := sha256.Sum256(b)
+		return string(sum[:])
+	}
+	// Last resort: pointer identity (memory-driver semantics).
 	return job
 }
 

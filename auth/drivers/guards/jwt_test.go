@@ -844,13 +844,13 @@ func TestJWTGuard_getTokenFromRequest(t *testing.T) {
 			wantToken: "x-auth-token-value",
 		},
 		{
-			name: "extracts token from query parameter for WebSocket requests",
+			name: "ignores query parameter for WebSocket requests when AllowQueryToken is off (default)",
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("GET", "/?token=query-token", nil)
 				req.Header.Set("Upgrade", "websocket")
 				return req
 			},
-			wantToken: "query-token",
+			wantToken: "",
 		},
 		{
 			name: "extracts token from Sec-WebSocket-Protocol for WebSocket requests",
@@ -977,6 +977,36 @@ func TestJWTGuard_getTokenFromRequest(t *testing.T) {
 				t.Errorf("getTokenFromRequest() = %q, want %q", got, tt.wantToken)
 			}
 		})
+	}
+}
+
+func TestJWTGuard_getTokenFromRequest_AllowQueryToken(t *testing.T) {
+	wsReq := func() *http.Request {
+		req := httptest.NewRequest("GET", "/?token=query-token", nil)
+		req.Header.Set("Upgrade", "websocket")
+		return req
+	}
+
+	// Default (AllowQueryToken off): the query token is rejected on WS upgrades.
+	off := mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+	if got := off.getTokenFromRequest(wsReq()); got != "" {
+		t.Errorf("AllowQueryToken off: getTokenFromRequest() = %q, want \"\"", got)
+	}
+
+	// Opt-in: the query token is accepted on WS upgrades.
+	cfg := newTestJWTConfig()
+	cfg.AllowQueryToken = true
+	on := mustNewJWTGuard(&mockJWTUserProvider{}, cfg)
+	if got := on.getTokenFromRequest(wsReq()); got != "query-token" {
+		t.Errorf("AllowQueryToken on: getTokenFromRequest() = %q, want %q", got, "query-token")
+	}
+
+	// Even with opt-in, the Sec-WebSocket-Protocol transport takes precedence.
+	subReq := httptest.NewRequest("GET", "/?token=query-token", nil)
+	subReq.Header.Set("Upgrade", "websocket")
+	subReq.Header.Set("Sec-WebSocket-Protocol", "bearer.ws-header-token")
+	if got := on.getTokenFromRequest(subReq); got != "ws-header-token" {
+		t.Errorf("subprotocol precedence: getTokenFromRequest() = %q, want %q", got, "ws-header-token")
 	}
 }
 

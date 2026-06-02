@@ -3,6 +3,7 @@ package router
 import (
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 // SecurityHeadersConfig holds configuration for the SecurityHeaders middleware.
@@ -216,6 +217,53 @@ func WithHTTPSRedirectCanonicalHost(host string) HTTPSRedirectOption {
 // Panics with a wrapped ErrInvalidTrustedProxy if any
 // WithHTTPSRedirectTrustedProxies entry was malformed — boot-time
 // misconfiguration should not ship.
+// httpsRedirectHost decides which Host to reflect into the HTTPS redirect
+// Location. It validates the requested Host against BOTH the middleware-local
+// allowlist (WithHTTPSRedirectAllowedHosts) and the router-level
+// Router.RedirectAllowedHosts, so an app that configured the router allowlist
+// is protected here too without repeating it, and the two cannot diverge.
+// When an allowlist is configured and the requested Host is not on it, the
+// configured canonical host (or the first allowlisted host) is reflected
+// instead of the raw, attacker-controlled Host. With no allowlist configured
+// anywhere, the requested Host is reflected unchanged (documented residual:
+// configure an allowlist or a canonical host to close it).
+func httpsRedirectHost(requested string, cfg *httpsRedirectConfig, routerHosts []string) string {
+	reqLower := strings.ToLower(requested)
+	allowed := false
+	listPresent := false
+	for h := range cfg.allowedHosts {
+		listPresent = true
+		if strings.ToLower(h) == reqLower {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		for _, h := range routerHosts {
+			listPresent = true
+			if strings.ToLower(h) == reqLower {
+				allowed = true
+				break
+			}
+		}
+	}
+	if !listPresent || allowed {
+		return requested
+	}
+	// Not allowlisted: fall back to a configured-safe host rather than
+	// reflecting the raw Host.
+	if cfg.canonicalHost != "" {
+		return cfg.canonicalHost
+	}
+	if cfg.firstAllowedHost != "" {
+		return cfg.firstAllowedHost
+	}
+	if len(routerHosts) > 0 {
+		return routerHosts[0]
+	}
+	return requested
+}
+
 func HTTPSRedirect(opts ...HTTPSRedirectOption) MiddlewareFunc {
 	cfg := &httpsRedirectConfig{
 		excludePaths: make(map[string]bool),
@@ -252,15 +300,11 @@ func HTTPSRedirect(opts ...HTTPSRedirectOption) MiddlewareFunc {
 				}
 			}
 
-			// Redirect to HTTPS
-			host := c.Request.Host
-			if len(cfg.allowedHosts) > 0 && !cfg.allowedHosts[host] {
-				if cfg.canonicalHost != "" {
-					host = cfg.canonicalHost
-				} else {
-					host = cfg.firstAllowedHost
-				}
-			}
+			// Redirect to HTTPS. Validate the Host against the configured
+			// allowlists before reflecting it so an attacker-controlled Host
+			// cannot be echoed into the Location header (cache-poisoning /
+			// host-header injection, F34).
+			host := httpsRedirectHost(c.Request.Host, cfg, c.redirectAllowedHosts)
 			httpsURL := "https://" + host + c.Request.RequestURI
 			c.SetHeader("Vary", "Host")
 			c.SetHeader("Location", httpsURL)

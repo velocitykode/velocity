@@ -1044,6 +1044,11 @@ func mapToStruct(m map[string]any, s any) error {
 		return nil
 	}
 	policy := PolicyFor(s)
+	if !policy.HasFillable && !policy.HasGuarded {
+		// Open policy on the map path: every client-supplied key that resolves
+		// to a column will be written, including sensitive names. Warn once.
+		warnOpenMassAssignment(s)
+	}
 
 	for _, col := range meta.Columns() {
 		val, ok := m[col.Column]

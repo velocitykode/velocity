@@ -279,6 +279,56 @@ func TestBypass_SecretPathMinting(t *testing.T) {
 	}
 }
 
+// TestBypass_SecretHeaderMinting asserts the header-based activation: the
+// secret carried in X-Maintenance-Bypass mints a cookie + redirect without the
+// secret ever appearing in the URL path (and therefore in access logs), while a
+// wrong header value stays in maintenance.
+func TestBypass_SecretHeaderMinting(t *testing.T) {
+	useTempMaintRoot(t)
+	t.Setenv("APP_ENV", "testing")
+	createMarker(t, `{"secret":"letmein","time":"2026-01-01T00:00:00Z"}`)
+
+	mw := PreventRequestsDuringMaintenance()
+	nextCalled := false
+	handler := mw(func(c *router.Context) error {
+		nextCalled = true
+		return nil
+	})
+
+	// Correct secret via header on a normal (non-secret) path.
+	c, w := router.NewTestContext("GET", "/dashboard")
+	c.Request.Header.Set(maintenanceBypassHeader, "letmein")
+	if err := handler(c); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if w.Code != http.StatusFound {
+		t.Fatalf("status: got %d, want %d", w.Code, http.StatusFound)
+	}
+	if nextCalled {
+		t.Error("next handler should not run during bypass mint")
+	}
+	var bypass *http.Cookie
+	for _, ck := range w.Result().Cookies() {
+		if ck.Name == maintenanceBypassCookie {
+			bypass = ck
+			break
+		}
+	}
+	if bypass == nil {
+		t.Fatal("expected bypass cookie from header activation")
+	}
+
+	// Wrong header value does not mint and stays in maintenance.
+	c2, w2 := router.NewTestContext("GET", "/dashboard")
+	c2.Request.Header.Set(maintenanceBypassHeader, "nope")
+	if err := handler(c2); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if w2.Code != http.StatusServiceUnavailable {
+		t.Fatalf("wrong header: got %d, want %d", w2.Code, http.StatusServiceUnavailable)
+	}
+}
+
 // TestBypass_ValidCookieSkipsMaintenance asserts that a request carrying a
 // freshly minted bypass cookie passes through to the inner handler.
 func TestBypass_ValidCookieSkipsMaintenance(t *testing.T) {

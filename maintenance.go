@@ -29,8 +29,13 @@ const (
 	// maintenanceBypassCookie is the cookie name used to grant a browser
 	// bypass while the application is in maintenance mode.
 	maintenanceBypassCookie = "velocity_maintenance_bypass"
+	// maintenanceBypassHeader carries the bypass secret out-of-band so it
+	// stays out of the URL path (and therefore out of access/proxy logs,
+	// Referer, and browser history). Preferred over the legacy GET /<secret>
+	// activation, which leaks the secret into those logs.
+	maintenanceBypassHeader = "X-Maintenance-Bypass"
 	// maintenanceBypassDefaultTTL is the default lifetime of a freshly
-	// minted bypass cookie. Mirrors Laravel's 12h window.
+	// minted bypass cookie (12h).
 	maintenanceBypassDefaultTTL = 12 * time.Hour
 	// maintenanceMarkerMaxSize bounds reads of the down-file.
 	maintenanceMarkerMaxSize = 64 << 10
@@ -241,12 +246,17 @@ func PreventRequestsDuringMaintenance(opts ...MaintenanceOption) router.Middlewa
 				return next(c)
 			}
 
-			// Bypass mint: secret-equals-path mints a cookie + redirect.
-			// The secret travels in the URL path for this activation flow, so it
-			// can appear in upstream access logs, reverse-proxy logs, Referer
-			// headers, and browser history. Treat it as short-lived and rotate
-			// after use by bringing maintenance up/down with a fresh secret.
-			candidate := strings.TrimPrefix(c.Request.URL.Path, "/")
+			// Bypass mint: a matching secret mints a cookie + redirect.
+			// Prefer the X-Maintenance-Bypass header so the secret stays out
+			// of the URL path (and therefore out of access/proxy logs, Referer,
+			// and browser history). The legacy GET /<secret> path activation is
+			// still honored for compatibility but leaks the secret into those
+			// logs, so treat it as short-lived and rotate after use by bringing
+			// maintenance up/down with a fresh secret.
+			candidate := c.Request.Header.Get(maintenanceBypassHeader)
+			if candidate == "" {
+				candidate = strings.TrimPrefix(c.Request.URL.Path, "/")
+			}
 			if payload.Secret != "" && subtle.ConstantTimeCompare([]byte(candidate), []byte(payload.Secret)) == 1 {
 				cookie := mintMaintenanceBypassCookie(payload.Secret, maintenanceBypassDefaultTTL)
 				c.SetCookie(cookie)

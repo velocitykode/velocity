@@ -33,6 +33,7 @@
 package orm
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -607,6 +608,41 @@ func PolicyFor(s any) FillablePolicy {
 		}
 	}
 	return p
+}
+
+var (
+	massAssignmentWarnerMu sync.RWMutex
+	massAssignmentWarner   func(modelType string)
+	massAssignmentWarnOnce sync.Map // modelType -> struct{}, so each type warns once
+)
+
+// SetMassAssignmentWarner installs a callback invoked the first time a model
+// declaring neither Fillable() nor Guarded() (nor opting into
+// StrictMassAssignment) is used with map-based Create/Update. The zero policy
+// is mass-assignment-open, so this surfaces the silently-insecure default
+// without changing behaviour. nil (the default) disables the warning; the
+// framework wires it to its logger at startup. Safe for concurrent use.
+func SetMassAssignmentWarner(fn func(modelType string)) {
+	massAssignmentWarnerMu.Lock()
+	massAssignmentWarner = fn
+	massAssignmentWarnerMu.Unlock()
+}
+
+// warnOpenMassAssignment fires the configured warner once per model type. It is
+// called only from the map-based assignment path, where an open policy means
+// arbitrary client keys can set arbitrary columns.
+func warnOpenMassAssignment(s any) {
+	massAssignmentWarnerMu.RLock()
+	fn := massAssignmentWarner
+	massAssignmentWarnerMu.RUnlock()
+	if fn == nil {
+		return
+	}
+	t := fmt.Sprintf("%T", s)
+	if _, loaded := massAssignmentWarnOnce.LoadOrStore(t, struct{}{}); loaded {
+		return
+	}
+	fn(t)
 }
 
 // Allows reports whether the policy permits writing to fieldNameKey
