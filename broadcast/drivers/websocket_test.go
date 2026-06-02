@@ -2,6 +2,7 @@ package drivers
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
@@ -866,7 +867,7 @@ func TestWebSocketDriver_handleClientEvent(t *testing.T) {
 			wantErrMsg: "velocity/broadcast: not a member of presence-lobby",
 		},
 		{
-			name: "allows client event on presence channel when subscribed",
+			name: "broadcasts normal small client event on presence channel by member",
 			setupChannels: map[string][]string{
 				"presence-lobby": {"client-1", "client-2"},
 			},
@@ -874,10 +875,39 @@ func TestWebSocketDriver_handleClientEvent(t *testing.T) {
 			msgData: map[string]interface{}{
 				"channel": "presence-lobby",
 				"event":   "wave",
+				"data":    "hello",
 			},
 			wantErr:       false,
 			wantEvent:     "client-wave",
 			wantReceivers: []string{"client-2"},
+		},
+		{
+			name: "rejects oversized event name attack case",
+			setupChannels: map[string][]string{
+				"presence-lobby": {"client-1", "client-2"},
+			},
+			clientID: "client-1",
+			msgData: map[string]interface{}{
+				"channel": "presence-lobby",
+				"event":   strings.Repeat("a", maxClientEventNameLen+1),
+				"data":    "hello",
+			},
+			wantErr:    true,
+			wantErrMsg: "velocity/broadcast: client event name too long",
+		},
+		{
+			name: "rejects oversized payload attack case",
+			setupChannels: map[string][]string{
+				"presence-lobby": {"client-1", "client-2"},
+			},
+			clientID: "client-1",
+			msgData: map[string]interface{}{
+				"channel": "presence-lobby",
+				"event":   "wave",
+				"data":    strings.Repeat("x", maxClientEventPayloadBytes+1),
+			},
+			wantErr:    true,
+			wantErrMsg: "velocity/broadcast: client event payload too large",
 		},
 	}
 
@@ -920,6 +950,11 @@ func TestWebSocketDriver_handleClientEvent(t *testing.T) {
 				}
 				if err.Error() != tt.wantErrMsg {
 					t.Errorf("got error %q, want %q", err.Error(), tt.wantErrMsg)
+				}
+				for id, client := range allClients {
+					if msgs := drainMessages(client); len(msgs) != 0 {
+						t.Errorf("client %q received %d messages after rejected event, want 0", id, len(msgs))
+					}
 				}
 				return
 			}

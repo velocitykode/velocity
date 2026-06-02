@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -686,6 +687,14 @@ func (d *WebSocketDriver) handleUnsubscribe(client *websocket.Client, msg websoc
 	})
 }
 
+const (
+	// Client events are short signalling messages ("whispers"), not a bulk
+	// transfer path. Keep these caps tighter than the 512 KiB connection read
+	// limit to bound within-authz fan-out amplification.
+	maxClientEventNameLen      = 128
+	maxClientEventPayloadBytes = 8192
+)
+
 // handleClientEvent handles client-to-client events.
 //
 // Per audit H-26, client events (a.k.a. "whisper" in the Pusher protocol)
@@ -707,6 +716,9 @@ func (d *WebSocketDriver) handleClientEvent(client *websocket.Client, msg websoc
 	if !ok {
 		return fmt.Errorf("event not specified")
 	}
+	if len(event) > maxClientEventNameLen {
+		return fmt.Errorf("velocity/broadcast: client event name too long")
+	}
 
 	// Reject client events on public channels: Pusher's "client events" rule
 	// only permits them on private/presence channels.
@@ -724,10 +736,33 @@ func (d *WebSocketDriver) handleClientEvent(client *websocket.Client, msg websoc
 		return fmt.Errorf("velocity/broadcast: not a member of %s", channel)
 	}
 
+	payloadBytes, err := clientEventPayloadLen(data["data"])
+	if err != nil {
+		return err
+	}
+	if payloadBytes > maxClientEventPayloadBytes {
+		return fmt.Errorf("velocity/broadcast: client event payload too large")
+	}
+
 	// Broadcast to channel except sender. The handler has no request context
 	// available here (client-event delivery is server-initiated from the
 	// websocket read loop), so context.Background is the correct floor.
 	return d.BroadcastExceptCtx(context.Background(), []string{channel}, "client-"+event, data["data"], client.ID)
+}
+
+func clientEventPayloadLen(payload interface{}) (int, error) {
+	switch v := payload.(type) {
+	case string:
+		return len(v), nil
+	case []byte:
+		return len(v), nil
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return 0, fmt.Errorf("velocity/broadcast: invalid client event payload")
+		}
+		return len(b), nil
+	}
 }
 
 // SetAuthorizer sets the channel authorizer for private/presence channels.
