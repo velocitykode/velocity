@@ -188,6 +188,15 @@ func sanitizeRedirectURL(target string, allowedHosts []string) string {
 		return "/"
 	}
 
+	// An opaque or scheme-only URL (e.g. "http:evil.com", which parses
+	// to Scheme="http", Opaque="evil.com", Host="") has no host for the
+	// allowlist check to run against, yet the browser may still navigate
+	// to it. Reject any non-empty scheme that lacks a host, mirroring the
+	// router-side sanitizeRedirect helper.
+	if u.Scheme != "" && u.Host == "" {
+		return "/"
+	}
+
 	// Reject cross-host absolute URLs. The host must appear in the
 	// caller-supplied allowlist; we deliberately do not consult r.Host
 	// here because a misconfigured fronting proxy could copy an

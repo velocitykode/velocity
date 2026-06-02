@@ -236,9 +236,10 @@ func TestSanitizeRedirectURL(t *testing.T) {
 	const host = "same.com"
 
 	tests := []struct {
-		name   string
-		target string
-		want   string
+		name    string
+		target  string
+		allowed []string
+		want    string
 	}{
 		{
 			name:   "javascript scheme rejected",
@@ -266,6 +267,21 @@ func TestSanitizeRedirectURL(t *testing.T) {
 			want:   "/",
 		},
 		{
+			name:   "opaque http URL rejected",
+			target: "http:evil.com",
+			want:   "/",
+		},
+		{
+			name:   "opaque https URL rejected",
+			target: "https:evil.com",
+			want:   "/",
+		},
+		{
+			name:   "opaque http URL with path rejected",
+			target: "http:evil.com/path",
+			want:   "/",
+		},
+		{
 			name:   "cross-host http rejected",
 			target: "http://other.com/path",
 			want:   "/",
@@ -279,6 +295,12 @@ func TestSanitizeRedirectURL(t *testing.T) {
 			name:   "same-host https allowed",
 			target: "https://same.com/path",
 			want:   "https://same.com/path",
+		},
+		{
+			name:    "trusted absolute URL allowed",
+			target:  "https://trusted.example/x",
+			allowed: []string{"trusted.example"},
+			want:    "https://trusted.example/x",
 		},
 		{
 			name:   "relative path allowed",
@@ -350,9 +372,14 @@ func TestSanitizeRedirectURL(t *testing.T) {
 	allowed := []string{host}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := sanitizeRedirectURL(tt.target, allowed)
+			allowedHosts := allowed
+			if tt.allowed != nil {
+				allowedHosts = tt.allowed
+			}
+
+			got := sanitizeRedirectURL(tt.target, allowedHosts)
 			if got != tt.want {
-				t.Errorf("sanitizeRedirectURL(%q, %v) = %q, want %q", tt.target, allowed, got, tt.want)
+				t.Errorf("sanitizeRedirectURL(%q, %v) = %q, want %q", tt.target, allowedHosts, got, tt.want)
 			}
 		})
 	}
