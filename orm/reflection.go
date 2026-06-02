@@ -555,9 +555,33 @@ type FillablePolicy struct {
 	Guarded     map[string]bool
 }
 
+// StrictMassAssignment is an opt-in compatibility escape hatch for models
+// that want deny-by-default mass-assignment behavior without declaring a
+// Fillable() allowlist. When StrictMassAssignment() returns true and the model
+// declares neither Fillable() nor Guarded(), PolicyFor resolves the model as an
+// empty Fillable allowlist: map-based mass assignment denies every application
+// field unless another policy is declared.
+type StrictMassAssignment interface {
+	StrictMassAssignment() bool
+}
+
 // PolicyFor extracts mass-assignment policy from a model instance.
-// Returns a zero FillablePolicy (allow everything) when neither the
-// Fillable nor Guarded interface is implemented.
+//
+// Compatibility warning: when a model declares neither Fillable() nor
+// Guarded(), PolicyFor returns a zero FillablePolicy. That zero policy is
+// mass-assignment-open: FillablePolicy.Allows returns true for every column
+// writable from a map. This affects Query[T].Create(map),
+// Query[T].Update(map), Model[T].Update, and FirstOrCreate/UpdateOrCreate.
+// Treat this as a security footgun for models that receive user-controlled
+// maps because sensitive persisted columns such as role or is_admin are
+// writable by default.
+//
+// Any model used with map-based Create/Update should declare Fillable()
+// (allowlist, deny-by-default) or Guarded() (denylist). As an opt-in safer
+// default that preserves the package's permissive zero-policy compatibility,
+// a model may implement StrictMassAssignment and return true; if it declares
+// neither Fillable() nor Guarded(), PolicyFor resolves it as an empty Fillable
+// allowlist so all application fields are denied by default.
 func PolicyFor(s any) FillablePolicy {
 	p := FillablePolicy{}
 	if f, ok := s.(Fillable); ok {
@@ -576,12 +600,26 @@ func PolicyFor(s any) FillablePolicy {
 		p.Guarded = set
 		p.HasGuarded = true
 	}
+	if !p.HasFillable && !p.HasGuarded {
+		if strict, ok := s.(StrictMassAssignment); ok && strict.StrictMassAssignment() {
+			p.Fillable = map[string]bool{}
+			p.HasFillable = true
+		}
+	}
 	return p
 }
 
 // Allows reports whether the policy permits writing to fieldNameKey
-// (the snake_case'd Go field name). When neither list is set, every
-// field is allowed.
+// (the snake_case'd Go field name).
+//
+// Compatibility warning: when neither Fillable() nor Guarded() is declared,
+// the zero FillablePolicy is mass-assignment-open and Allows returns true for
+// every field. Query[T].Create(map), Query[T].Update(map), Model[T].Update,
+// and FirstOrCreate/UpdateOrCreate will therefore accept arbitrary map keys
+// that resolve to persisted columns, including sensitive names such as role or
+// is_admin. Models used with user-controlled map-based Create/Update should
+// declare Fillable() (allowlist, deny-by-default), Guarded() (denylist), or
+// opt in to StrictMassAssignment.
 func (p FillablePolicy) Allows(fieldNameKey string) bool {
 	if p.HasFillable && !p.Fillable[fieldNameKey] {
 		return false
