@@ -22,6 +22,8 @@ import (
 	"net"
 	"net/url"
 	"strings"
+
+	"golang.org/x/net/publicsuffix"
 )
 
 // ErrPrivateHost is the sentinel returned when a host resolves to a
@@ -161,24 +163,29 @@ func ValidateURLHost(ctx context.Context, resolver *net.Resolver, rawURL string)
 	return nil
 }
 
-// ETLDPlusOne returns a best-effort eTLD+1 for host. It is intentionally
-// simple (no PSL dependency): it returns the last two labels for plain
-// hostnames and the literal IP for IP inputs. Use only for cross-host
-// comparison in redirect stripping where a false-negative (stripping too
+// ETLDPlusOne returns the Public Suffix List-backed eTLD+1 for host via
+// publicsuffix.EffectiveTLDPlusOne. Literal IPs are returned in canonical
+// form. On PSL lookup failure, including public suffixes with no registrable
+// label, it returns the full normalized host so comparisons fail closed. Use
+// only for cross-host comparison where a false-negative (stripping too
 // aggressively) is safer than a false-positive.
 func ETLDPlusOne(host string) string {
-	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	host = strings.ToLower(host)
+	if strings.HasPrefix(host, "[") {
+		if i := strings.LastIndex(host, "]"); i >= 0 {
+			host = host[1:i]
+		}
+	} else if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	} else if i := strings.LastIndex(host, ":"); i >= 0 && strings.Count(host, ":") == 1 {
+		host = host[:i]
+	}
 	if ip := net.ParseIP(host); ip != nil {
 		return ip.String()
 	}
-	host = strings.ToLower(host)
-	// Strip port if present.
-	if i := strings.LastIndex(host, ":"); i >= 0 && !strings.Contains(host[i+1:], ":") {
-		host = host[:i]
-	}
-	labels := strings.Split(host, ".")
-	if len(labels) <= 2 {
+	etldPlusOne, err := publicsuffix.EffectiveTLDPlusOne(host)
+	if err != nil {
 		return host
 	}
-	return strings.Join(labels[len(labels)-2:], ".")
+	return etldPlusOne
 }

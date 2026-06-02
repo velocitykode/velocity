@@ -137,13 +137,21 @@ func TestValidateURLHost_BadScheme(t *testing.T) {
 
 func TestETLDPlusOne(t *testing.T) {
 	cases := map[string]string{
-		"example.com":          "example.com",
-		"www.example.com":      "example.com",
-		"a.b.c.example.com":    "example.com",
-		"evil.co.uk":           "co.uk", // best-effort
-		"127.0.0.1":            "127.0.0.1",
-		"[::1]":                "::1",
-		"api.example.com:8080": "example.com",
+		"example.com":             "example.com",
+		"foo.example.com":         "example.com",
+		"bar.example.com":         "example.com",
+		"a.b.c.example.com":       "example.com",
+		"api.victim.co.uk":        "victim.co.uk",
+		"attacker.co.uk":          "attacker.co.uk",
+		"co.uk":                   "co.uk",
+		"127.0.0.1":               "127.0.0.1",
+		"[::1]":                   "::1",
+		"[::1]:8080":              "::1",
+		"api.example.com:8080":    "example.com",
+		"API.VICTIM.CO.UK:8443":   "victim.co.uk",
+		"2001:4860:4860::8888":    "2001:4860:4860::8888",
+		"[2001:4860:4860::8888]":  "2001:4860:4860::8888",
+		"[2001:4860:4860::8888]:": "2001:4860:4860::8888",
 	}
 	for in, want := range cases {
 		if got := ETLDPlusOne(in); got != want {

@@ -117,6 +117,48 @@ func TestSameHostRedirect_PreservesHeaders(t *testing.T) {
 	}
 }
 
+func TestRedirect_CrossSuffixAttackPair_StripsSensitiveHeaders(t *testing.T) {
+	c := New(WithoutPrivateIPDeny())
+
+	orig, _ := http.NewRequest("GET", "https://api.victim.co.uk/", nil)
+	orig.Header.Set("Authorization", "Bearer secret")
+	orig.Header.Set("Cookie", "sid=abc")
+	orig.Header.Set("Proxy-Authorization", "Basic dXNlcjpwYXNz")
+
+	next, _ := http.NewRequest("GET", "https://attacker.co.uk/", nil)
+	next.Header = orig.Header.Clone()
+
+	if err := c.checkRedirect(next, []*http.Request{orig}); err != nil {
+		t.Fatalf("checkRedirect: %v", err)
+	}
+	for _, header := range sensitiveHeaders {
+		if got := next.Header.Get(header); got != "" {
+			t.Errorf("%s must be stripped for cross-suffix attack pair, got %q", header, got)
+		}
+	}
+}
+
+func TestRedirect_SameRegistrableDomain_PreservesSensitiveHeaders(t *testing.T) {
+	c := New(WithoutPrivateIPDeny())
+
+	orig, _ := http.NewRequest("GET", "https://api.example.com/", nil)
+	orig.Header.Set("Authorization", "Bearer secret")
+	orig.Header.Set("Cookie", "sid=abc")
+	orig.Header.Set("Proxy-Authorization", "Basic dXNlcjpwYXNz")
+
+	next, _ := http.NewRequest("GET", "https://app.example.com/", nil)
+	next.Header = orig.Header.Clone()
+
+	if err := c.checkRedirect(next, []*http.Request{orig}); err != nil {
+		t.Fatalf("checkRedirect: %v", err)
+	}
+	for _, header := range sensitiveHeaders {
+		if got := next.Header.Get(header); got != orig.Header.Get(header) {
+			t.Errorf("%s = %q, want %q", header, got, orig.Header.Get(header))
+		}
+	}
+}
+
 func TestRedirect_CapsAtMax(t *testing.T) {
 	c := New(WithMaxRedirects(3))
 
