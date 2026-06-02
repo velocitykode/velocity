@@ -188,54 +188,94 @@ func TestIsDownForMaintenance(t *testing.T) {
 	}
 }
 
-// TestBypass_SecretPathMintsCookieAndRedirects asserts that hitting "/" + secret
-// while in maintenance mode mints a bypass cookie and 302-redirects to "/".
-func TestBypass_SecretPathMintsCookieAndRedirects(t *testing.T) {
-	useTempMaintRoot(t)
-	t.Setenv("APP_ENV", "testing")
-	createMarker(t, `{"secret":"letmein","time":"2026-01-01T00:00:00Z"}`)
-
-	mw := PreventRequestsDuringMaintenance()
-	nextCalled := false
-	handler := mw(func(c *router.Context) error {
-		nextCalled = true
-		return nil
-	})
-
-	c, w := router.NewTestContext("GET", "/letmein")
-	if err := handler(c); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+// TestBypass_SecretPathMinting asserts the path-based activation behavior:
+// the correct secret mints a bypass cookie and redirects, while wrong or empty
+// secrets stay in maintenance and do not mint.
+func TestBypass_SecretPathMinting(t *testing.T) {
+	cases := []struct {
+		name       string
+		markerJSON string
+		path       string
+		wantStatus int
+		wantCookie bool
+	}{
+		{
+			name:       "correct secret",
+			markerJSON: `{"secret":"letmein","time":"2026-01-01T00:00:00Z"}`,
+			path:       "/letmein",
+			wantStatus: http.StatusFound,
+			wantCookie: true,
+		},
+		{
+			name:       "wrong secret",
+			markerJSON: `{"secret":"letmein","time":"2026-01-01T00:00:00Z"}`,
+			path:       "/wrong-secret",
+			wantStatus: http.StatusServiceUnavailable,
+			wantCookie: false,
+		},
+		{
+			name:       "empty secret",
+			markerJSON: `{"time":"2026-01-01T00:00:00Z"}`,
+			path:       "/",
+			wantStatus: http.StatusServiceUnavailable,
+			wantCookie: false,
+		},
 	}
 
-	if w.Code != http.StatusFound {
-		t.Fatalf("status: got %d, want %d", w.Code, http.StatusFound)
-	}
-	if loc := w.Header().Get("Location"); loc != "/" {
-		t.Errorf("Location: got %q, want %q", loc, "/")
-	}
-	if nextCalled {
-		t.Error("next handler should not be invoked on the mint path")
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			useTempMaintRoot(t)
+			t.Setenv("APP_ENV", "testing")
+			createMarker(t, tc.markerJSON)
 
-	cookies := w.Result().Cookies()
-	var bypass *http.Cookie
-	for _, ck := range cookies {
-		if ck.Name == maintenanceBypassCookie {
-			bypass = ck
-			break
-		}
-	}
-	if bypass == nil {
-		t.Fatal("expected bypass cookie to be set")
-	}
-	if !bypass.HttpOnly {
-		t.Error("bypass cookie must be HttpOnly")
-	}
-	if bypass.SameSite != http.SameSiteLaxMode {
-		t.Errorf("SameSite: got %v, want Lax", bypass.SameSite)
-	}
-	if bypass.Path != "/" {
-		t.Errorf("Path: got %q, want %q", bypass.Path, "/")
+			mw := PreventRequestsDuringMaintenance()
+			nextCalled := false
+			handler := mw(func(c *router.Context) error {
+				nextCalled = true
+				return nil
+			})
+
+			c, w := router.NewTestContext("GET", tc.path)
+			if err := handler(c); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if w.Code != tc.wantStatus {
+				t.Fatalf("status: got %d, want %d", w.Code, tc.wantStatus)
+			}
+			if nextCalled {
+				t.Error("next handler should not be invoked during maintenance path handling")
+			}
+
+			var bypass *http.Cookie
+			for _, ck := range w.Result().Cookies() {
+				if ck.Name == maintenanceBypassCookie {
+					bypass = ck
+					break
+				}
+			}
+			if tc.wantCookie && bypass == nil {
+				t.Fatal("expected bypass cookie to be set")
+			}
+			if !tc.wantCookie && bypass != nil {
+				t.Fatalf("unexpected bypass cookie: %q", bypass.Value)
+			}
+			if !tc.wantCookie {
+				return
+			}
+			if loc := w.Header().Get("Location"); loc != "/" {
+				t.Errorf("Location: got %q, want %q", loc, "/")
+			}
+			if !bypass.HttpOnly {
+				t.Error("bypass cookie must be HttpOnly")
+			}
+			if bypass.SameSite != http.SameSiteLaxMode {
+				t.Errorf("SameSite: got %v, want Lax", bypass.SameSite)
+			}
+			if bypass.Path != "/" {
+				t.Errorf("Path: got %q, want %q", bypass.Path, "/")
+			}
+		})
 	}
 }
 

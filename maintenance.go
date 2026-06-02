@@ -242,7 +242,12 @@ func PreventRequestsDuringMaintenance(opts ...MaintenanceOption) router.Middlewa
 			}
 
 			// Bypass mint: secret-equals-path mints a cookie + redirect.
-			if payload.Secret != "" && c.Request.URL.Path == "/"+payload.Secret {
+			// The secret travels in the URL path for this activation flow, so it
+			// can appear in upstream access logs, reverse-proxy logs, Referer
+			// headers, and browser history. Treat it as short-lived and rotate
+			// after use by bringing maintenance up/down with a fresh secret.
+			candidate := strings.TrimPrefix(c.Request.URL.Path, "/")
+			if payload.Secret != "" && subtle.ConstantTimeCompare([]byte(candidate), []byte(payload.Secret)) == 1 {
 				cookie := mintMaintenanceBypassCookie(payload.Secret, maintenanceBypassDefaultTTL)
 				c.SetCookie(cookie)
 				// Redirect via http.Redirect directly because c.Redirect
