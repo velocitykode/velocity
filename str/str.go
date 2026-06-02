@@ -437,7 +437,7 @@ func Plural(value string, count ...float64) string {
 	}
 
 	// Common patterns
-	if strings.HasSuffix(value, "y") && !isVowel(rune(value[len(value)-2])) {
+	if len(value) >= 2 && strings.HasSuffix(value, "y") && !isVowel(rune(value[len(value)-2])) {
 		return value[:len(value)-1] + "ies"
 	}
 	if strings.HasSuffix(value, "s") || strings.HasSuffix(value, "x") ||

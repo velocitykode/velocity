@@ -687,11 +687,27 @@ func TestPadRight(t *testing.T) {
 }
 
 func TestPlural(t *testing.T) {
-	if Plural("car", 1) != "car" {
-		t.Error("Plural with count 1 should return singular")
+	tests := []struct {
+		name     string
+		value    string
+		count    []float64
+		expected string
+	}{
+		{"empty", "", nil, "s"},
+		{"single y", "y", nil, "ys"},
+		{"vowel before y", "day", nil, "days"},
+		{"consonant before y", "city", nil, "cities"},
+		{"count one", "car", []float64{1}, "car"},
+		{"count plural", "car", []float64{2}, "cars"},
 	}
-	if Plural("car", 2) != "cars" {
-		t.Error("Plural with count 2 should return plural")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := Plural(tt.value, tt.count...)
+			if result != tt.expected {
+				t.Errorf("Plural(%q, %v) = %q; want %q", tt.value, tt.count, result, tt.expected)
+			}
+		})
 	}
 }
 
@@ -892,8 +908,27 @@ func TestReplaceLast(t *testing.T) {
 }
 
 func TestSingular(t *testing.T) {
-	if Singular("cars") != "car" {
-		t.Error("Singular failed")
+	tests := []struct {
+		name     string
+		value    string
+		expected string
+	}{
+		{"empty", "", ""},
+		{"single y", "y", "y"},
+		{"single s", "s", ""},
+		{"plural y", "ys", "y"},
+		{"vowel before y plural", "days", "day"},
+		{"consonant before y plural", "cities", "city"},
+		{"basic", "cars", "car"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := Singular(tt.value)
+			if result != tt.expected {
+				t.Errorf("Singular(%q) = %q; want %q", tt.value, result, tt.expected)
+			}
+		})
 	}
 }
 
