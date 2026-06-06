@@ -28,6 +28,17 @@ func newAddOwnerID() string {
 // DefaultFileCleanupInterval is the default period between expired-file sweeps.
 const DefaultFileCleanupInterval = 5 * time.Minute
 
+// fileUnreadableGrace is how long an unreadable file (corrupt, legacy-format,
+// or mid-write) must have been untouched before cleanup will purge it. Writes
+// in this package are not atomic across instances/processes -- a plain Put
+// truncates-then-writes, and AddCtx's O_EXCL create leaves a zero-byte file
+// until its payload is flushed -- so a freshly-modified unreadable file may be
+// an in-flight write by another FileStore instance or process sharing the
+// path. Purging only files older than this grace avoids deleting such live
+// writes while still self-healing genuinely corrupt/legacy/crashed entries.
+// The grace dwarfs any real write window yet keeps cleanup reasonably prompt.
+const fileUnreadableGrace = time.Minute
+
 // cacheFileMode / cacheDirMode are the secret-tier permissions used for
 // every file the FileStore writes. Cached values may carry session
 // payloads, user data, or auth state, so other local users must not be
@@ -57,10 +68,15 @@ type FileStore struct {
 	lockErr   error
 }
 
-// fileCacheItem represents a cached item stored in file
+// fileCacheItem represents a cached item stored in file.
+//
+// Value holds the bytes produced by MarshalValue, which for invalid-UTF-8
+// strings is a raw 0x00-framed payload rather than valid JSON. It is therefore
+// typed []byte (encoded as base64 in the item JSON) instead of json.RawMessage,
+// which would reject the non-JSON framed bytes on marshal.
 type fileCacheItem struct {
-	Value      json.RawMessage `json:"value"`
-	Expiration *time.Time      `json:"expiration,omitempty"`
+	Value      []byte     `json:"value"`
+	Expiration *time.Time `json:"expiration,omitempty"`
 }
 
 // NewFileStore creates a new file cache store.
@@ -146,6 +162,17 @@ func (s *FileStore) cleanupExpired() {
 
 				var item fileCacheItem
 				if err := json.Unmarshal(data, &item); err != nil {
+					// Unreadable: corrupt, partially written, a legacy
+					// on-disk schema from before the value-encoding change, or
+					// an in-flight write by another instance/process sharing
+					// this path (a non-atomic Put mid-write, or an AddCtx
+					// O_EXCL zero-byte file before its payload lands). GetCtx
+					// can never serve it, so purge it to avoid leaking the
+					// file forever -- but only once it is older than the grace
+					// window, so a live concurrent write is never deleted.
+					if time.Since(info.ModTime()) > fileUnreadableGrace {
+						os.Remove(path)
+					}
 					return nil
 				}
 
@@ -214,9 +241,9 @@ func (s *FileStore) GetCtx(ctx context.Context, key string) (interface{}, bool) 
 		return nil, false
 	}
 
-	// Unmarshal the actual value
-	var value interface{}
-	if err := json.Unmarshal(item.Value, &value); err != nil {
+	// Unmarshal the actual value (decoding the base64 string envelope when present)
+	value, err := UnmarshalValue(item.Value)
+	if err != nil {
 		return nil, false
 	}
 
@@ -261,7 +288,7 @@ func (s *FileStore) PutCtx(ctx context.Context, key string, value interface{}, t
 	defer s.mu.Unlock()
 
 	// Marshal the value
-	valueData, err := json.Marshal(value)
+	valueData, err := MarshalValue(value)
 	if err != nil {
 		return fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
 	}
@@ -327,7 +354,7 @@ func (s *FileStore) AddCtx(ctx context.Context, key string, value interface{}, t
 	defer s.mu.Unlock()
 
 	path := s.getCacheFilePath(key)
-	valueData, err := json.Marshal(value)
+	valueData, err := MarshalValue(value)
 	if err != nil {
 		return false, fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
 	}
@@ -457,7 +484,7 @@ func (s *FileStore) ForeverCtx(ctx context.Context, key string, value interface{
 	defer s.mu.Unlock()
 
 	// Marshal the value
-	valueData, err := json.Marshal(value)
+	valueData, err := MarshalValue(value)
 	if err != nil {
 		return fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
 	}
@@ -570,18 +597,23 @@ func (s *FileStore) IncrementCtx(ctx context.Context, key string, value int64) (
 			// Check expiration — expired entries fall through with current=0,
 			// same as nonexistent files. Both are legitimate "start from 0" paths.
 			if item.Expiration == nil || time.Now().Before(*item.Expiration) {
-				var val interface{}
-				if err := json.Unmarshal(item.Value, &val); err == nil {
-					switch v := val.(type) {
-					case float64:
-						current = int64(v)
-					case int64:
-						current = v
-					case int:
-						current = int64(v)
-					default:
-						return 0, fmt.Errorf("velocity/cache: value is not numeric")
-					}
+				// Decode through the shared serializer so 0x00-framed binary
+				// strings are recognised. A decode failure on an existing,
+				// unexpired entry is surfaced as a non-numeric error rather
+				// than silently resetting the counter to zero.
+				val, derr := UnmarshalValue(item.Value)
+				if derr != nil {
+					return 0, fmt.Errorf("velocity/cache: value is not numeric")
+				}
+				switch v := val.(type) {
+				case float64:
+					current = int64(v)
+				case int64:
+					current = v
+				case int:
+					current = int64(v)
+				default:
+					return 0, fmt.Errorf("velocity/cache: value is not numeric")
 				}
 				expiration = item.Expiration
 			}

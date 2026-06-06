@@ -15,6 +15,15 @@ import (
 // backward compatibility through the next release.
 type Cache interface {
 	// GetCtx retrieves a value from the cache.
+	//
+	// Concrete-type fidelity depends on the driver. The in-memory store keeps
+	// live Go values and returns the exact concrete type that was Put. The
+	// serializing stores (redis, file) round-trip values through JSON, so a
+	// struct comes back as map[string]interface{} and a number as float64,
+	// regardless of the type originally stored. Callers that need the original
+	// concrete type back across all drivers should use cache.GetAs[T], which
+	// re-decodes into T on the serializing path. (Strings, including binary /
+	// invalid-UTF-8 strings, do round-trip byte-identically on every driver.)
 	GetCtx(ctx context.Context, key string) (interface{}, bool)
 
 	// Deprecated: use GetCtx with a request-scoped context.Context.

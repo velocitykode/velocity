@@ -13,7 +13,6 @@ package redis
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -119,8 +118,8 @@ func (s *RedisStore) GetCtx(ctx context.Context, key string) (interface{}, bool)
 		return nil, false
 	}
 
-	var value interface{}
-	if err := json.Unmarshal(data, &value); err != nil {
+	value, err := drivers.UnmarshalValue(data)
+	if err != nil {
 		return nil, false
 	}
 
@@ -135,12 +134,22 @@ func (s *RedisStore) Get(key string) (interface{}, bool) {
 }
 
 // GetStringCtx retrieves a string value from the cache using the provided context.
+//
+// PutCtx JSON-encodes every value, so a stored string lands on the wire as a
+// quoted JSON string. GetStringCtx therefore routes through GetCtx (which
+// unmarshals) and type-asserts, mirroring the memory and file drivers. Reading
+// the raw bytes would return the still-quoted form and break Put/GetString
+// round-tripping.
 func (s *RedisStore) GetStringCtx(ctx context.Context, key string) (string, bool) {
-	val, err := s.client.Get(ctx, s.prefixedKey(key)).Result()
-	if err != nil {
+	val, found := s.GetCtx(ctx, key)
+	if !found {
 		return "", false
 	}
-	return val, true
+	str, ok := val.(string)
+	if !ok {
+		return "", false
+	}
+	return str, true
 }
 
 // GetString retrieves a string value from the cache.
@@ -152,7 +161,7 @@ func (s *RedisStore) GetString(key string) (string, bool) {
 
 // PutCtx stores a value in the cache with a TTL using the provided context.
 func (s *RedisStore) PutCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
-	data, err := json.Marshal(value)
+	data, err := drivers.MarshalValue(value)
 	if err != nil {
 		return fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
 	}
@@ -175,7 +184,7 @@ func (s *RedisStore) Put(key string, value interface{}, ttl time.Duration) error
 // the key was inserted, false on contention (key already present). The
 // caller's ctx is propagated so the SETNX can be cancelled in-flight.
 func (s *RedisStore) AddCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) (bool, error) {
-	data, err := json.Marshal(value)
+	data, err := drivers.MarshalValue(value)
 	if err != nil {
 		return false, fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
 	}
@@ -347,8 +356,8 @@ func (s *RedisStore) ManyCtx(ctx context.Context, keys []string) map[string]inte
 			continue
 		}
 
-		var decoded interface{}
-		if err := json.Unmarshal([]byte(strVal), &decoded); err != nil {
+		decoded, err := drivers.UnmarshalValue([]byte(strVal))
+		if err != nil {
 			continue
 		}
 
@@ -370,7 +379,7 @@ func (s *RedisStore) PutManyCtx(ctx context.Context, items map[string]interface{
 	pipe := s.client.Pipeline()
 
 	for key, value := range items {
-		data, err := json.Marshal(value)
+		data, err := drivers.MarshalValue(value)
 		if err != nil {
 			return fmt.Errorf("velocity/cache: failed to marshal value for key %s: %w", key, err)
 		}

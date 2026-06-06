@@ -198,10 +198,11 @@ func TestRedisStore_GetString(t *testing.T) {
 		wantFound bool
 	}{
 		{
-			name: "returns string value when key exists",
+			name: "round-trips string stored via Put",
 			setup: func(s *RedisStore, mr *miniredis.Miniredis) {
-				// Use raw string set for GetString (not JSON)
-				mr.Set(s.prefixedKey("key1"), "hello")
+				// Put JSON-encodes on the wire; GetString must decode back to
+				// the original string, not return the quoted form.
+				s.Put("key1", "hello", time.Hour)
 			},
 			key:       "key1",
 			wantValue: "hello",
@@ -215,13 +216,13 @@ func TestRedisStore_GetString(t *testing.T) {
 			wantFound: false,
 		},
 		{
-			name: "returns JSON string from Put",
+			name: "returns false for non-string value",
 			setup: func(s *RedisStore, mr *miniredis.Miniredis) {
-				s.Put("key1", "world", time.Hour)
+				s.Put("key1", map[string]any{"a": 1}, time.Hour)
 			},
 			key:       "key1",
-			wantValue: `"world"`, // JSON encoded string
-			wantFound: true,
+			wantValue: "",
+			wantFound: false,
 		},
 	}
 

@@ -2,11 +2,67 @@ package cache
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
 )
+
+// GetAs retrieves a value from the store and returns it typed as T. It bridges
+// the type-fidelity gap between drivers: the in-memory store keeps live Go
+// values and returns the concrete type directly, while the serializing stores
+// (redis, file) round-trip values through JSON and therefore hand back decoded
+// shapes -- map[string]interface{} for a struct, float64 for an integer. GetAs
+// returns T regardless of driver:
+//
+//   - if the stored value is already a T (memory, or a builtin match), it is
+//     returned as-is, with no re-encoding;
+//   - otherwise the JSON-decoded value is re-encoded and decoded into T, so a
+//     struct stored on redis/file comes back as the concrete struct and an
+//     integer comes back as the requested integer type.
+//
+// Returns (zero, false) on a miss or when the stored value cannot be converted
+// to T.
+//
+// Precision caveat: on the serializing drivers (redis, file) GetCtx decodes JSON
+// numbers into float64 before GetAs runs, so an integer larger than 2^53 stored
+// on those drivers may already have lost precision by the time GetAs re-decodes
+// it -- GetAs cannot recover bits that JSON decoding dropped. The in-memory
+// store keeps the exact value, so GetAs[int64] there is exact. If you need exact
+// large integers on a serializing driver, store them as a string and parse on
+// read.
+//
+// Go 1.26 method generics have not shipped, so this is a package-level function
+// rather than a Store method (same shape as RememberT).
+func GetAs[T any](store Store, key string) (T, bool) {
+	return GetAsWithContext[T](context.Background(), store, key)
+}
+
+// GetAsWithContext is the ctx-aware counterpart of GetAs, threading ctx through
+// to the store's GetCtx.
+func GetAsWithContext[T any](ctx context.Context, store Store, key string) (T, bool) {
+	var zero T
+	v, ok := store.GetCtx(ctx, key)
+	if !ok {
+		return zero, false
+	}
+	// Fast path: already the concrete type (memory driver, or a builtin that
+	// survived JSON as T such as string/bool).
+	if typed, ok := v.(T); ok {
+		return typed, true
+	}
+	// Slow path: re-encode the JSON-decoded shape into the concrete T.
+	data, err := json.Marshal(v)
+	if err != nil {
+		return zero, false
+	}
+	var out T
+	if err := json.Unmarshal(data, &out); err != nil {
+		return zero, false
+	}
+	return out, true
+}
 
 // Cache defines the interface for cache operations. Canonical declaration
 // lives in the stdlib-only contract leaf; this alias keeps the cache API

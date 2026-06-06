@@ -88,6 +88,88 @@ func RunStoreContractTestsWithClock(t *testing.T, f StoreFactoryWithClock) {
 		}
 	})
 
+	t.Run("PutCtx_Then_GetStringCtx_RoundTripsString", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		// A string stored via PutCtx must come back byte-identical through
+		// GetStringCtx. Serializing drivers (file, redis) JSON-encode on Put;
+		// GetStringCtx must undo that, not return the quoted/escaped form.
+		const want = `hello "world"` + "\n\t\\ end"
+		if err := s.PutCtx(ctx, "gs-str", want, time.Minute); err != nil {
+			t.Fatalf("PutCtx: %v", err)
+		}
+		got, ok := s.GetStringCtx(ctx, "gs-str")
+		if !ok {
+			t.Fatal("expected hit after Put")
+		}
+		if got != want {
+			t.Fatalf("GetStringCtx round-trip: got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("PutCtx_Then_GetStringCtx_RoundTripsBinaryString", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		// A string carrying invalid UTF-8 (binary bytes) must survive
+		// byte-identically. Serializing drivers must not coerce invalid
+		// UTF-8 to the U+FFFD replacement rune via plain JSON encoding.
+		want := string([]byte{0xff, 0x00, 'x', 0xfe, 0x80})
+		if err := s.PutCtx(ctx, "gs-bin", want, time.Minute); err != nil {
+			t.Fatalf("PutCtx: %v", err)
+		}
+		got, ok := s.GetStringCtx(ctx, "gs-bin")
+		if !ok {
+			t.Fatal("expected hit after Put")
+		}
+		if got != want {
+			t.Fatalf("binary string round-trip: got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("PutCtx_Then_GetCtx_RoundTripsMapValueVerbatim", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		// The serialization layer reserves no value shape: a plain map must
+		// round-trip as a map, never be coerced into a string. This guards
+		// against an internal string-envelope collision -- the map below
+		// deliberately resembles a former envelope shape.
+		in := map[string]interface{}{"__velocity_cache_b64str__": "eA=="}
+		if err := s.PutCtx(ctx, "mapval", in, time.Minute); err != nil {
+			t.Fatalf("PutCtx: %v", err)
+		}
+		v, ok := s.GetCtx(ctx, "mapval")
+		if !ok {
+			t.Fatal("expected hit after Put")
+		}
+		m, ok := v.(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected map value, got %T (%v)", v, v)
+		}
+		if m["__velocity_cache_b64str__"] != "eA==" {
+			t.Fatalf("map value corrupted on round-trip: %v", m)
+		}
+	})
+
+	t.Run("GetStringCtx_NonStringValue_ReadsAsMiss", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		// GetStringCtx is the typed string accessor: a slot holding a
+		// non-string value must report (\"\", false), not a coerced form.
+		if err := s.PutCtx(ctx, "gs-obj", map[string]any{"a": 1}, time.Minute); err != nil {
+			t.Fatalf("PutCtx: %v", err)
+		}
+		if v, ok := s.GetStringCtx(ctx, "gs-obj"); ok {
+			t.Fatalf("expected non-string slot to miss GetStringCtx, got %q", v)
+		}
+	})
+
+	t.Run("GetStringCtx_AbsentKey_ReadsAsMiss", func(t *testing.T) {
+		s := factory(t)
+		if v, ok := s.GetStringCtx(context.Background(), "gs-absent"); ok {
+			t.Fatalf("expected miss for absent key, got %q", v)
+		}
+	})
+
 	t.Run("PutCtx_ExpiredTTL_ReadsAsMiss", func(t *testing.T) {
 		s := factory(t)
 		ctx := context.Background()
@@ -207,6 +289,30 @@ func RunStoreContractTestsWithClock(t *testing.T, f StoreFactoryWithClock) {
 		v, _ := s.IncrementCtx(ctx, "inc-acc", 3)
 		if v != 6 {
 			t.Fatalf("expected 6, got %d", v)
+		}
+	})
+
+	t.Run("IncrementCtx_NonNumericValue_Errors", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		// Incrementing a key holding a non-numeric value must error, never
+		// silently reset the counter to the increment amount. Covers a plain
+		// string and a binary (0x00-framed on serializing drivers) string.
+		if err := s.PutCtx(ctx, "inc-str", "hello", time.Minute); err != nil {
+			t.Fatalf("PutCtx: %v", err)
+		}
+		if _, err := s.IncrementCtx(ctx, "inc-str", 1); err == nil {
+			t.Fatal("expected error incrementing a string value")
+		}
+		if v, ok := s.GetStringCtx(ctx, "inc-str"); !ok || v != "hello" {
+			t.Fatalf("string value must survive a failed Increment: got %q ok=%v", v, ok)
+		}
+
+		if err := s.PutCtx(ctx, "inc-bin", string([]byte{0xff, 0x00, 'x'}), time.Minute); err != nil {
+			t.Fatalf("PutCtx: %v", err)
+		}
+		if _, err := s.IncrementCtx(ctx, "inc-bin", 1); err == nil {
+			t.Fatal("expected error incrementing a binary string value")
 		}
 	})
 
