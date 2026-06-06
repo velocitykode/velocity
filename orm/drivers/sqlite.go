@@ -314,6 +314,18 @@ func (g *SQLiteGrammar) CompileSelect(query *SelectQuery) (string, []any) {
 			if i > 0 {
 				sql.WriteString(", ")
 			}
+			// Raw-expression ordering: SQLite uses "?" placeholders verbatim, so
+			// the Expr is emitted as-is and its Args appended after the
+			// WHERE/HAVING args to keep positional binding contiguous.
+			if order.Expr != "" {
+				sql.WriteString(order.Expr)
+				args = append(args, order.Args...)
+				if order.Direction != "" {
+					sql.WriteString(" ")
+					sql.WriteString(order.Direction)
+				}
+				continue
+			}
 			sql.WriteString(g.QuoteIdentifier(order.Column))
 			sql.WriteString(" ")
 			sql.WriteString(order.Direction)

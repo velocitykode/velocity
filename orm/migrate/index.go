@@ -9,14 +9,17 @@ import (
 // allowedPostgresIndexMethods enumerates the index access methods that
 // IndexBuilder.Using accepts for the postgres driver. The value is appended
 // raw to the generated SQL, so the allowlist is the only thing standing
-// between a caller and SQL injection via this field.
+// between a caller and SQL injection via this field. hnsw and ivfflat are the
+// pgvector access methods.
 var allowedPostgresIndexMethods = map[string]struct{}{
-	"btree":  {},
-	"hash":   {},
-	"gin":    {},
-	"gist":   {},
-	"brin":   {},
-	"spgist": {},
+	"btree":   {},
+	"hash":    {},
+	"gin":     {},
+	"gist":    {},
+	"brin":    {},
+	"spgist":  {},
+	"hnsw":    {},
+	"ivfflat": {},
 }
 
 // validatePostgresIndexMethod returns an error when method is not one of the
@@ -27,7 +30,37 @@ func validatePostgresIndexMethod(method string) error {
 		return nil
 	}
 	if _, ok := allowedPostgresIndexMethods[method]; !ok {
-		return fmt.Errorf("invalid postgres index method %q: allowed values are btree, hash, gin, gist, brin, spgist", method)
+		return fmt.Errorf("invalid postgres index method %q: allowed values are btree, hash, gin, gist, brin, spgist, hnsw, ivfflat", method)
+	}
+	return nil
+}
+
+// allowedVectorOpClasses enumerates the operator classes that
+// IndexBuilder.OperatorClass accepts. Like the index method, the value is
+// appended raw to the generated SQL, so this allowlist is the sole injection
+// guard for the operator-class clause.
+//
+// Only the vector(N) operator classes are listed, because vector(N) is the
+// only vector column type this package can declare. The halfvec_*/bit_*
+// classes would pair with halfvec/bit columns that have no builder support, so
+// admitting them here would only let a caller build DDL that fails at the
+// database (a vector column indexed with bit_hamming_ops). Add them alongside
+// the corresponding column types if those land.
+var allowedVectorOpClasses = map[string]struct{}{
+	"vector_l2_ops":     {},
+	"vector_ip_ops":     {},
+	"vector_cosine_ops": {},
+	"vector_l1_ops":     {},
+}
+
+// validateVectorOpClass returns an error when opClass is not a known pgvector
+// operator class. Empty is allowed (no operator-class clause is emitted).
+func validateVectorOpClass(opClass string) error {
+	if opClass == "" {
+		return nil
+	}
+	if _, ok := allowedVectorOpClasses[opClass]; !ok {
+		return fmt.Errorf("invalid vector operator class %q", opClass)
 	}
 	return nil
 }
@@ -170,15 +203,16 @@ func validatePartialIndexWhere(where string) error {
 
 // IndexBuilder provides a fluent API for creating database indexes
 type IndexBuilder struct {
-	name        string
-	table       string
-	columns     []string
-	unique      bool
-	where       string   // Partial index condition (PostgreSQL, SQLite)
-	include     []string // Covering index columns (PostgreSQL 11+)
-	using       string   // Index type: btree, hash, gin, gist, brin, spgist (PostgreSQL)
-	driver      string
-	ifNotExists bool
+	name          string
+	table         string
+	columns       []string
+	unique        bool
+	where         string   // Partial index condition (PostgreSQL, SQLite)
+	include       []string // Covering index columns (PostgreSQL 11+)
+	using         string   // Index type: btree, hash, gin, gist, brin, spgist, hnsw, ivfflat (PostgreSQL)
+	operatorClass string   // pgvector operator class, e.g. vector_cosine_ops (PostgreSQL, single column)
+	driver        string
+	ifNotExists   bool
 	// err captures the first builder-side validation failure (e.g. an
 	// invalid Using() method or Where() predicate). ToSQL surfaces it so
 	// the caller sees a useful error at migration time even though the
@@ -242,8 +276,8 @@ func (b *IndexBuilder) Include(cols ...string) *IndexBuilder {
 }
 
 // Using sets the index access method (PostgreSQL only).
-// Supported: btree (default), hash, gin, gist, brin, spgist. Any other
-// value is rejected at builder time and surfaces from ToSQL.
+// Supported: btree (default), hash, gin, gist, brin, spgist, hnsw, ivfflat. Any
+// other value is rejected at builder time and surfaces from ToSQL.
 func (b *IndexBuilder) Using(indexType string) *IndexBuilder {
 	if err := validatePostgresIndexMethod(indexType); err != nil {
 		if b.err == nil {
@@ -252,6 +286,21 @@ func (b *IndexBuilder) Using(indexType string) *IndexBuilder {
 		return b
 	}
 	b.using = indexType
+	return b
+}
+
+// OperatorClass sets the pgvector operator class for the index (PostgreSQL
+// only), e.g. vector_cosine_ops. It applies to a single-column index and is
+// emitted as `(column opclass)`. The value is allowlisted; an unknown operator
+// class is rejected at builder time and surfaces from ToSQL.
+func (b *IndexBuilder) OperatorClass(opClass string) *IndexBuilder {
+	if err := validateVectorOpClass(opClass); err != nil {
+		if b.err == nil {
+			b.err = err
+		}
+		return b
+	}
+	b.operatorClass = opClass
 	return b
 }
 
@@ -273,6 +322,21 @@ func (b *IndexBuilder) ToSQL() (string, error) {
 	// case a caller mutated them through reflection or a future setter.
 	if err := validatePostgresIndexMethod(b.using); err != nil && b.driver == "postgres" {
 		return "", err
+	}
+	if err := validateVectorOpClass(b.operatorClass); err != nil {
+		return "", err
+	}
+	// Vector-only features have no meaning on non-postgres dialects, whose
+	// CompileSelect-style emitters silently drop an unknown USING method and
+	// never emit an operator class. Reject them here so a vector index on
+	// mysql/sqlite fails loudly instead of degrading to a plain index.
+	if b.driver != "postgres" {
+		if b.operatorClass != "" {
+			return "", fmt.Errorf("operator class is only supported on postgres (driver %q)", b.driver)
+		}
+		if b.using == "hnsw" || b.using == "ivfflat" {
+			return "", fmt.Errorf("index method %q is only supported on postgres (driver %q)", b.using, b.driver)
+		}
 	}
 	if err := validatePartialIndexWhere(b.where); err != nil {
 		return "", err
@@ -324,14 +388,31 @@ func (b *IndexBuilder) toPostgresSQL() (string, error) {
 		sql.WriteString(b.using)
 	}
 
-	// Columns
-	cols, err := quoteIdentifierList(b.columns, b.driver)
-	if err != nil {
-		return "", fmt.Errorf("invalid index column: %w", err)
+	// Columns. A vector operator class (pgvector) attaches to a single column
+	// and is emitted as `(column opclass)`; the opclass is allowlisted by
+	// OperatorClass/validateVectorOpClass and appended raw. Without an operator
+	// class the column list is quoted and joined normally.
+	if b.operatorClass != "" {
+		if len(b.columns) != 1 {
+			return "", fmt.Errorf("operator class requires exactly one index column, got %d", len(b.columns))
+		}
+		if !ddlIdentifierRegex.MatchString(b.columns[0]) {
+			return "", fmt.Errorf("invalid index column: %q", b.columns[0])
+		}
+		sql.WriteString(" (")
+		sql.WriteString(quoteIdentifier(b.columns[0], b.driver))
+		sql.WriteString(" ")
+		sql.WriteString(b.operatorClass)
+		sql.WriteString(")")
+	} else {
+		cols, err := quoteIdentifierList(b.columns, b.driver)
+		if err != nil {
+			return "", fmt.Errorf("invalid index column: %w", err)
+		}
+		sql.WriteString(" (")
+		sql.WriteString(cols)
+		sql.WriteString(")")
 	}
-	sql.WriteString(" (")
-	sql.WriteString(cols)
-	sql.WriteString(")")
 
 	// Include columns (PostgreSQL 11+)
 	if len(b.include) > 0 {
@@ -502,5 +583,26 @@ func (m *Migrator) UniqueIndex(table string, columns ...string) error {
 	name := fmt.Sprintf("idx_%s_%s_unique", table, strings.Join(columns, "_"))
 	return m.CreateIndex(name, table, func(b *IndexBuilder) {
 		b.Columns(columns...).Unique()
+	})
+}
+
+// VectorIndex is a shorthand for creating a pgvector approximate-nearest-
+// neighbour index on a single column. method is the access method (hnsw or
+// ivfflat) and opClass the operator class matching the distance metric the
+// queries use (vector_cosine_ops, vector_l2_ops, vector_ip_ops, ...). Both are
+// allowlisted; an invalid value surfaces as an error from the build. The index
+// name is auto-generated as idx_<table>_<column>_<method>. PostgreSQL only.
+//
+//	m.VectorIndex("documents", "embedding", "hnsw", "vector_cosine_ops")
+//
+// generates: CREATE INDEX "idx_documents_embedding_hnsw" ON "documents"
+// USING hnsw ("embedding" vector_cosine_ops)
+func (m *Migrator) VectorIndex(table, column, method, opClass string) error {
+	if m.driver != "postgres" {
+		return fmt.Errorf("vector indexes are only supported on postgres (driver %q)", m.driver)
+	}
+	name := fmt.Sprintf("idx_%s_%s_%s", table, column, method)
+	return m.CreateIndex(name, table, func(b *IndexBuilder) {
+		b.Columns(column).Using(method).OperatorClass(opClass)
 	})
 }

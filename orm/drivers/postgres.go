@@ -128,6 +128,21 @@ func (g *PostgresGrammar) CompileSelect(query *SelectQuery) (string, []any) {
 			if i > 0 {
 				sql.WriteString(", ")
 			}
+			// Raw-expression ordering (e.g. vector distance). Emitted verbatim
+			// with "?" rewritten to $N starting after the params bound so far,
+			// and its Args appended to the stream. ORDER BY is compiled after
+			// WHERE/HAVING, so deriving the start index from len(args) keeps the
+			// placeholder numbering contiguous.
+			if order.Expr != "" {
+				rewritten, _ := rewriteQuestionMarksToDollar(order.Expr, len(args)+1)
+				sql.WriteString(rewritten)
+				args = append(args, order.Args...)
+				if order.Direction != "" {
+					sql.WriteString(" ")
+					sql.WriteString(order.Direction)
+				}
+				continue
+			}
 			sql.WriteString(g.QuoteIdentifier(order.Column))
 			sql.WriteString(" ")
 			sql.WriteString(order.Direction)
@@ -280,6 +295,33 @@ func (g *PostgresGrammar) CompileUpdateReturning(table string, values map[string
 func (g *PostgresGrammar) CompileDeleteReturning(table string, conditions []Condition, pkCol string) (string, []any) {
 	sql, args := g.CompileDelete(table, conditions)
 	return sql + " RETURNING " + g.QuoteIdentifier(pkCol), args
+}
+
+// postgresVectorOperators maps a distance metric name to its pgvector operator.
+// The operator is appended raw to generated SQL, so this allowlist is the only
+// guard against an arbitrary metric string reaching the statement. Callers pass
+// the metric through VectorDistanceExpr and never interpolate it themselves.
+var postgresVectorOperators = map[string]string{
+	"l2":            "<->", // Euclidean / L2 distance
+	"euclidean":     "<->",
+	"cosine":        "<=>", // cosine distance
+	"inner_product": "<#>", // negative inner product
+	"ip":            "<#>",
+	"l1":            "<+>", // taxicab / L1 distance (pgvector 0.7+)
+	"manhattan":     "<+>",
+}
+
+// VectorDistanceExpr implements drivers.VectorGrammar for PostgreSQL. It emits
+// `<quotedColumn> <op> ?::vector`, where <op> is the pgvector distance operator
+// selected by metric. The "?" is rewritten to $N by the caller's compile pass,
+// and the bound parameter is the pgvector text literal (orm.Vector's
+// driver.Valuer output), which the ::vector cast converts server-side.
+func (g *PostgresGrammar) VectorDistanceExpr(quotedColumn, metric string) (string, error) {
+	op, ok := postgresVectorOperators[strings.ToLower(strings.TrimSpace(metric))]
+	if !ok {
+		return "", fmt.Errorf("unsupported vector distance metric %q: allowed values are l2, cosine, inner_product, l1", metric)
+	}
+	return quotedColumn + " " + op + " ?::vector", nil
 }
 
 // compileConditions renders a list of WHERE/HAVING conditions into sql,

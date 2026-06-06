@@ -593,6 +593,9 @@ func (m *Migrator) CreateTable(name string, fn func(*TableBuilder)) error {
 		if !ddlIdentifierRegex.MatchString(col.Name) {
 			return fmt.Errorf("invalid column name: %q", col.Name)
 		}
+		if err := validateVectorColumn(col, m.driver); err != nil {
+			return err
+		}
 	}
 	for _, col := range builder.compositePrimaryKey {
 		if !ddlIdentifierRegex.MatchString(col) {
@@ -650,6 +653,18 @@ func (m *Migrator) Raw(sql string) error {
 	})
 }
 
+// CreateVectorExtension ensures the pgvector extension is installed
+// (CREATE EXTENSION IF NOT EXISTS vector). Call it before creating vector
+// columns or indexes. PostgreSQL only: on any other driver it returns an error
+// rather than emitting DDL the dialect cannot run. Honors pretend mode and the
+// migration lock (it routes through Raw).
+func (m *Migrator) CreateVectorExtension() error {
+	if m.driver != "postgres" {
+		return fmt.Errorf("vector extension is only supported on postgres (driver %q)", m.driver)
+	}
+	return m.Raw("CREATE EXTENSION IF NOT EXISTS vector")
+}
+
 // Table modifies an existing table using the same TableBuilder API as CreateTable.
 // Each column added via the builder generates an ALTER TABLE ADD COLUMN statement.
 // Primary key columns (ID, UUIDPrimary) are rejected since they cannot be added to existing tables.
@@ -671,6 +686,9 @@ func (m *Migrator) Table(name string, fn func(*TableBuilder)) error {
 		}
 		if !ddlIdentifierRegex.MatchString(col.Name) {
 			return fmt.Errorf("invalid column name: %q", col.Name)
+		}
+		if err := validateVectorColumn(col, m.driver); err != nil {
+			return err
 		}
 		colSQL := columnToSQL(col, m.driver)
 		stmts = append(stmts, stmt{
@@ -702,7 +720,11 @@ func (m *Migrator) AddColumn(table, column string, fn func(*ColumnBuilder)) erro
 	}
 	fn(builder)
 
-	sql := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", quoteIdentifier(table, m.driver), builder.ToSQL())
+	colSQL, err := builder.ToSQL()
+	if err != nil {
+		return err
+	}
+	sql := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", quoteIdentifier(table, m.driver), colSQL)
 	return m.withMigrationLock(func() error {
 		if err := m.exec(sql); err != nil {
 			return fmt.Errorf("failed to add column %s to table %s: %w", column, table, err)
@@ -734,6 +756,7 @@ type ColumnBuilder struct {
 	driver     string
 	colType    string
 	length     int
+	dims       int // For vector types
 	nullable   bool
 	defValue   interface{}
 	hasDefault bool
@@ -767,6 +790,13 @@ func (c *ColumnBuilder) String(length ...int) *ColumnBuilder {
 // Integer sets the column type to INTEGER
 func (c *ColumnBuilder) Integer() *ColumnBuilder {
 	c.colType = "integer"
+	return c
+}
+
+// Vector sets the column type to pgvector vector(dimensions). PostgreSQL only.
+func (c *ColumnBuilder) Vector(dimensions int) *ColumnBuilder {
+	c.colType = "vector"
+	c.dims = dimensions
 	return c
 }
 
@@ -837,8 +867,15 @@ func (c *ColumnBuilder) Unique() *ColumnBuilder {
 	return c
 }
 
-// ToSQL generates the column definition SQL fragment
-func (c *ColumnBuilder) ToSQL() string {
+// ToSQL generates the column definition SQL fragment. It returns an error when
+// the column cannot be expressed on the active driver (e.g. a vector column on
+// a non-postgres driver, or an out-of-range dimension), so direct ColumnBuilder
+// use fails loudly instead of degrading a vector column to TEXT.
+func (c *ColumnBuilder) ToSQL() (string, error) {
+	if err := validateVectorColumn(Column{Name: c.name, Type: c.colType, Dimensions: c.dims}, c.driver); err != nil {
+		return "", err
+	}
+
 	var sql string
 
 	// Column name
@@ -869,7 +906,7 @@ func (c *ColumnBuilder) ToSQL() string {
 		sql += " DEFAULT " + formatDefaultValue(c.defValue, c.colType, c.driver)
 	}
 
-	return sql
+	return sql, nil
 }
 
 func (c *ColumnBuilder) toSQLiteType() string {
@@ -915,6 +952,8 @@ func (c *ColumnBuilder) toPostgresType() string {
 		return "DATE"
 	case "uuid":
 		return "UUID"
+	case "vector":
+		return fmt.Sprintf("vector(%d)", c.dims)
 	case "json":
 		return "JSON"
 	case "jsonb":
@@ -965,6 +1004,7 @@ type Column struct {
 	Length        int
 	Precision     int // For decimal types
 	Scale         int // For decimal types
+	Dimensions    int // For vector types
 	Nullable      bool
 	Default       interface{}
 	Unique        bool
@@ -1135,6 +1175,24 @@ func (t *TableBuilder) Decimal(name string, precision, scale int) *TableBuilder 
 		Precision: precision,
 		Scale:     scale,
 		Nullable:  false,
+	}
+	t.columns = append(t.columns, col)
+	t.lastColumn = &t.columns[len(t.columns)-1]
+	return t
+}
+
+// Vector creates a pgvector column of the given fixed dimension,
+// e.g. Vector("embedding", 1536) = vector(1536). PostgreSQL only (the column
+// requires the pgvector extension; see Migrator.CreateVectorExtension). The
+// dimension is validated when the table is created/altered (1..16000, the
+// pgvector limit); creating a vector column on a non-postgres driver is a
+// migration error. Chains the usual modifiers: Vector("e", 768).Nullable().
+func (t *TableBuilder) Vector(name string, dimensions int) *TableBuilder {
+	col := Column{
+		Name:       name,
+		Type:       "vector",
+		Dimensions: dimensions,
+		Nullable:   false,
 	}
 	t.columns = append(t.columns, col)
 	t.lastColumn = &t.columns[len(t.columns)-1]
@@ -1374,6 +1432,8 @@ func (t *TableBuilder) toPostgresSyntax() string {
 			}
 		case "decimal":
 			sql += fmt.Sprintf("NUMERIC(%d,%d)", col.Precision, col.Scale)
+		case "vector":
+			sql += fmt.Sprintf("vector(%d)", col.Dimensions)
 		case "json":
 			sql += "JSON"
 		case "jsonb":
@@ -1498,6 +1558,28 @@ func (t *TableBuilder) toMySQLSyntax() string {
 	return sql
 }
 
+// pgvectorMaxDimensions is the maximum dimension count pgvector permits for the
+// vector type.
+const pgvectorMaxDimensions = 16000
+
+// validateVectorColumn enforces pgvector's constraints for a vector column:
+// postgres only, with a dimension in [1, pgvectorMaxDimensions]. It returns nil
+// for non-vector columns. The dimension is rendered into DDL via fmt %d, so
+// this is the guard that prevents emitting vector(0)/vector(-1) or a vector type
+// on a dialect that cannot parse it.
+func validateVectorColumn(col Column, driver string) error {
+	if col.Type != "vector" {
+		return nil
+	}
+	if driver != "postgres" {
+		return fmt.Errorf("vector column %q is only supported on postgres (driver %q)", col.Name, driver)
+	}
+	if col.Dimensions < 1 || col.Dimensions > pgvectorMaxDimensions {
+		return fmt.Errorf("vector column %q: dimensions must be between 1 and %d, got %d", col.Name, pgvectorMaxDimensions, col.Dimensions)
+	}
+	return nil
+}
+
 // columnToSQL generates a driver-aware column definition SQL fragment from a Column struct.
 // Used by Table() to produce ALTER TABLE ADD COLUMN statements.
 // Column names are validated by the caller (Table()) before reaching this function.
@@ -1602,6 +1684,8 @@ func columnTypePostgres(col Column) string {
 		return "UUID"
 	case "decimal":
 		return fmt.Sprintf("NUMERIC(%d,%d)", col.Precision, col.Scale)
+	case "vector":
+		return fmt.Sprintf("vector(%d)", col.Dimensions)
 	case "json":
 		return "JSON"
 	case "jsonb":

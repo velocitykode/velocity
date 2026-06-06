@@ -107,6 +107,32 @@ type ReturningGrammar interface {
 	CompileDeleteReturning(table string, conditions []Condition, pkCol string) (string, []any)
 }
 
+// VectorGrammar is implemented by grammars whose dialect supports vector
+// similarity search (e.g. PostgreSQL with the pgvector extension). It is an
+// optional capability, mirroring ReturningGrammar: it is NOT part of the
+// mandatory QueryGrammar contract, and callers detect it by type-asserting the
+// value returned from Driver.Grammar(). Grammars whose dialect cannot evaluate
+// vector distances must NOT implement it, so a vector query on such a driver
+// fails with a clear "unsupported" error rather than degrading to broken SQL.
+//
+// Unlike ReturningGrammar (which has a valid non-RETURNING fallback), a vector
+// query has no meaningful fallback on a non-vector dialect, so the query
+// builder returns an error when the assertion fails instead of silently
+// dropping the clause.
+type VectorGrammar interface {
+	// VectorDistanceExpr returns a SQL expression that computes the distance
+	// between quotedColumn (an already-quoted identifier produced by
+	// QuoteIdentifier) and a single bound vector parameter, represented by one
+	// "?" placeholder. metric selects the distance function; an unsupported
+	// metric returns an error. The bound parameter is supplied separately as a
+	// driver.Valuer (orm.Vector) that renders the pgvector text literal, and the
+	// returned expression casts the placeholder to the dialect's vector type.
+	//
+	// Example (postgres): VectorDistanceExpr(`"embedding"`, "cosine") returns
+	// `"embedding" <=> ?::vector`.
+	VectorDistanceExpr(quotedColumn, metric string) (string, error)
+}
+
 // SelectQuery represents a SELECT query structure
 type SelectQuery struct {
 	Table   string
@@ -162,10 +188,31 @@ type Condition struct {
 	Spec *OperatorSpec
 }
 
-// Order represents an ORDER BY clause
+// Order represents an ORDER BY clause.
+//
+// An Order is either a plain column sort (Column/Direction populated) or a
+// raw-expression sort (Expr/Args populated). When Expr is non-empty it is
+// emitted verbatim into the ORDER BY list and its bound Args are appended to
+// the statement's parameter stream after the WHERE/HAVING args, mirroring how
+// RawColumn projects a raw expression. Grammars that use numbered placeholders
+// (PostgreSQL) rewrite any "?" inside Expr to the appropriate $N at compile
+// time. Column is ignored when Expr is set; Direction still applies.
+//
+// SECURITY: Expr is emitted verbatim and is therefore a SQL-injection vector if
+// built from user input. Only server-constructed, trusted SQL belongs in Expr;
+// user-controlled values belong in Args as bound parameters. The vector
+// similarity helpers (Query.OrderByDistance) build Expr from an allowlisted
+// distance operator and a grammar-quoted identifier, never from raw input.
 type Order struct {
 	Column    string
 	Direction string
+
+	// Expr, when non-empty, is a trusted raw SQL ordering expression with "?"
+	// placeholders, e.g. `"embedding" <=> ?::vector`. Takes precedence over
+	// Column.
+	Expr string
+	// Args are the bound parameters referenced by "?" placeholders in Expr.
+	Args []any
 }
 
 // Join represents a JOIN clause

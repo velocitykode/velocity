@@ -3,6 +3,7 @@ package orm
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"reflect"
@@ -1193,10 +1194,17 @@ func structToMap(s any) map[string]any {
 		// and never persist; byte slices/arrays are scalars (bytea,
 		// hashes) unless tagged JSON. A nil byte slice on a non-JSON
 		// column is dropped so the DB default applies.
+		//
+		// A non-byte slice whose type knows how to serialize itself for
+		// the driver (driver.Valuer, e.g. orm.Vector) is a scalar DB
+		// value, not a relation payload, so it must be emitted: the
+		// driver calls Value() at bind time. Relation slices ([]Model)
+		// are not Valuers and stay dropped.
 		switch fv.Kind() {
 		case reflect.Slice, reflect.Array:
 			isByteSeq := fv.Type().Elem().Kind() == reflect.Uint8
-			if !col.IsJSON && !isByteSeq {
+			_, isValuer := fv.Interface().(driver.Valuer)
+			if !col.IsJSON && !isByteSeq && !isValuer {
 				continue
 			}
 			if isByteSeq && !col.IsJSON && fv.Kind() == reflect.Slice && fv.IsNil() {
