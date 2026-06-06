@@ -23,6 +23,23 @@ const (
 	DistanceL1 DistanceMetric = "l1"
 )
 
+// stripReadOnlyKeys removes any read_only column from a map-based update set,
+// keyed by both the SQL column name and the snake-cased field name so either
+// form a caller used is covered. A nil meta is a no-op. This keeps the
+// read_only "never emitted on write" contract true for Query.Update, which
+// compiles the caller's map directly instead of going through structToMap.
+func stripReadOnlyKeys(updates map[string]any, meta *ModelMeta) {
+	if meta == nil {
+		return
+	}
+	for _, col := range meta.Columns() {
+		if col.ReadOnly {
+			delete(updates, col.Column)
+			delete(updates, col.FieldNameKey)
+		}
+	}
+}
+
 // vectorGrammar resolves the active driver's VectorGrammar capability, or
 // returns a clear error when the dialect does not support vector search. A
 // vector query has no meaningful fallback on a non-vector driver, so callers
@@ -124,4 +141,68 @@ func (q *Query[T]) SelectDistance(column string, vec Vector, metric DistanceMetr
 		Args: []any{vec},
 	})
 	return q
+}
+
+// Model[T] entry points. These mirror the Where/OrderBy/With forwarders so a
+// vector search can start from the model zero value, e.g.
+// Model[Document]{}.NearestNeighbors("embedding", vec, orm.DistanceCosine, 10).
+
+// OrderByDistance starts a query ordered by vector distance. See Query.OrderByDistance.
+func (Model[T]) OrderByDistance(column string, vec Vector, metric DistanceMetric) *Query[T] {
+	return newQuery[T]().OrderByDistance(column, vec, metric)
+}
+
+// NearestNeighbors starts a k-nearest-neighbour query. See Query.NearestNeighbors.
+func (Model[T]) NearestNeighbors(column string, vec Vector, metric DistanceMetric, k int) *Query[T] {
+	return newQuery[T]().NearestNeighbors(column, vec, metric, k)
+}
+
+// SelectDistance starts a query projecting a vector distance score. See Query.SelectDistance.
+func (Model[T]) SelectDistance(column string, vec Vector, metric DistanceMetric, alias string) *Query[T] {
+	return newQuery[T]().SelectDistance(column, vec, metric, alias)
+}
+
+// OrderByDistance starts a query ordered by vector distance. See Query.OrderByDistance.
+func (UUIDModel[T]) OrderByDistance(column string, vec Vector, metric DistanceMetric) *Query[T] {
+	return newQuery[T]().OrderByDistance(column, vec, metric)
+}
+
+// NearestNeighbors starts a k-nearest-neighbour query. See Query.NearestNeighbors.
+func (UUIDModel[T]) NearestNeighbors(column string, vec Vector, metric DistanceMetric, k int) *Query[T] {
+	return newQuery[T]().NearestNeighbors(column, vec, metric, k)
+}
+
+// SelectDistance starts a query projecting a vector distance score. See Query.SelectDistance.
+func (UUIDModel[T]) SelectDistance(column string, vec Vector, metric DistanceMetric, alias string) *Query[T] {
+	return newQuery[T]().SelectDistance(column, vec, metric, alias)
+}
+
+// OrderByDistance starts a query ordered by vector distance. See Query.OrderByDistance.
+func (SoftDeleteModel[T]) OrderByDistance(column string, vec Vector, metric DistanceMetric) *Query[T] {
+	return newQuery[T]().OrderByDistance(column, vec, metric)
+}
+
+// NearestNeighbors starts a k-nearest-neighbour query. See Query.NearestNeighbors.
+func (SoftDeleteModel[T]) NearestNeighbors(column string, vec Vector, metric DistanceMetric, k int) *Query[T] {
+	return newQuery[T]().NearestNeighbors(column, vec, metric, k)
+}
+
+// SelectDistance starts a query projecting a vector distance score. See Query.SelectDistance.
+func (SoftDeleteModel[T]) SelectDistance(column string, vec Vector, metric DistanceMetric, alias string) *Query[T] {
+	return newQuery[T]().SelectDistance(column, vec, metric, alias)
+}
+
+// OrderByDistance starts a query ordered by vector distance. See Query.OrderByDistance.
+func (SoftDeleteUUIDModel[T]) OrderByDistance(column string, vec Vector, metric DistanceMetric) *Query[T] {
+	return newQuery[T]().OrderByDistance(column, vec, metric)
+}
+
+// NearestNeighbors starts a k-nearest-neighbour query. See Query.NearestNeighbors.
+func (SoftDeleteUUIDModel[T]) NearestNeighbors(column string, vec Vector, metric DistanceMetric, k int) *Query[T] {
+	return newQuery[T]().NearestNeighbors(column, vec, metric, k)
+}
+
+// SelectDistance starts a query projecting a vector distance score. See Query.SelectDistance.
+func (SoftDeleteUUIDModel[T]) SelectDistance(column string, vec Vector, metric DistanceMetric, alias string) *Query[T] {
+	return newQuery[T]().SelectDistance(column, vec, metric, alias)
 }

@@ -81,6 +81,15 @@ type ColumnDef struct {
 	// so write-path zero-value omission applies.
 	IsJSON bool
 
+	// ReadOnly is true when the orm tag carries read_only. The column is
+	// hydrated on read (scanIntoStruct still maps a result column of this
+	// name onto the field) but never emitted on write, so a DB-computed
+	// projection such as a vector distance score (SelectDistance ... AS
+	// distance) can land in a model field without that field being sent
+	// back in INSERT/UPDATE. Distinct from orm:"-", which drops the field
+	// from the column set entirely (no read mapping either).
+	ReadOnly bool
+
 	// IsAutoIncrement is true when the orm tag carries autoIncrement;
 	// used by the save path to skip the ID on insert.
 	IsAutoIncrement bool
@@ -463,6 +472,8 @@ func buildColumnDef(field reflect.StructField, path []int, fromEmbedded bool) Co
 			def.IsCreatedAt = true
 		case part == "autoUpdateTime":
 			def.IsUpdatedAt = true
+		case part == "read_only":
+			def.ReadOnly = true
 		}
 	}
 

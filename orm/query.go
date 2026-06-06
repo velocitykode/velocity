@@ -1331,6 +1331,16 @@ func (q *Query[T]) bulkUpdate(ctx context.Context, updates map[string]any, op Bu
 		copyOfUpdates[k] = v
 	}
 
+	// Drop read_only columns (e.g. a SelectDistance score) so a map-based
+	// Update cannot target a column the model marks read-only. This mirrors
+	// structToMap's write-path skip, keeping the "never emitted on write"
+	// contract true for the map API as well.
+	var zero T
+	stripReadOnlyKeys(copyOfUpdates, MetaForValue(reflect.ValueOf(zero)))
+	if len(copyOfUpdates) == 0 {
+		return 0, errors.New("no updatable columns provided (all keys are read-only)")
+	}
+
 	// Inject the driver-appropriate "current timestamp" sentinel for
 	// updated_at. Using the typed [RawSQL] marker (not a raw string)
 	// means the grammar emits it verbatim without pattern-matching

@@ -131,6 +131,72 @@ func TestSelectDistance_ProjectsScoreAndKeepsStar(t *testing.T) {
 	}
 }
 
+// Read-only columns (e.g. a SelectDistance score) must be hydrated on read but
+// never emitted on write, so a computed model field does not break inserts.
+type vecScoredModel struct {
+	Model[vecScoredModel]
+	Embedding Vector  `orm:"type:vector(3)"`
+	Distance  float64 `orm:"column:distance;read_only"`
+}
+
+func (vecScoredModel) TableName() string { return "vec_scored" }
+
+func TestStructToMap_SkipsReadOnly(t *testing.T) {
+	m := vecScoredModel{Embedding: Vector{1, 2, 3}, Distance: 0.42}
+	out := structToMap(&m)
+	if _, ok := out["distance"]; ok {
+		t.Error("read_only column 'distance' must not be emitted on write")
+	}
+	if _, ok := out["embedding"]; !ok {
+		t.Error("non-read_only embedding should still be emitted")
+	}
+}
+
+// Map-based Update must also honor read_only: the score column is dropped from
+// the update set so it never reaches SET, and an update consisting only of
+// read_only keys is rejected rather than emitting an empty/invalid statement.
+func TestStripReadOnlyKeys(t *testing.T) {
+	meta := MetaForValue(reflect.ValueOf(vecScoredModel{}))
+	if meta == nil {
+		t.Fatal("nil meta for vecScoredModel")
+	}
+	updates := map[string]any{"embedding": Vector{1, 2, 3}, "distance": 0.5}
+	stripReadOnlyKeys(updates, meta)
+	if _, ok := updates["distance"]; ok {
+		t.Error("read_only 'distance' must be stripped from the update set")
+	}
+	if _, ok := updates["embedding"]; !ok {
+		t.Error("non-read_only 'embedding' must survive")
+	}
+}
+
+// The Model[T] zero value must expose the vector entry points directly, the way
+// Where/OrderBy/With are forwarded, so a search can start without a stub filter.
+func TestModelForwarders_Compile(t *testing.T) {
+	// Compile-time check that each base variant forwards the methods.
+	var (
+		_ func(string, Vector, DistanceMetric) *Query[vecDocM]         = Model[vecDocM]{}.OrderByDistance
+		_ func(string, Vector, DistanceMetric, int) *Query[vecDocM]    = Model[vecDocM]{}.NearestNeighbors
+		_ func(string, Vector, DistanceMetric, string) *Query[vecDocM] = Model[vecDocM]{}.SelectDistance
+		_ func(string, Vector, DistanceMetric, int) *Query[vecDocU]    = UUIDModel[vecDocU]{}.NearestNeighbors
+		_ func(string, Vector, DistanceMetric, int) *Query[vecDocSD]   = SoftDeleteModel[vecDocSD]{}.NearestNeighbors
+		_ func(string, Vector, DistanceMetric, int) *Query[vecDocSDU]  = SoftDeleteUUIDModel[vecDocSDU]{}.NearestNeighbors
+	)
+}
+
+type vecDocM struct {
+	Model[vecDocM]
+}
+type vecDocU struct {
+	UUIDModel[vecDocU]
+}
+type vecDocSD struct {
+	SoftDeleteModel[vecDocSD]
+}
+type vecDocSDU struct {
+	SoftDeleteUUIDModel[vecDocSDU]
+}
+
 // End-to-end: OrderByDistance + a WHERE filter must compile to a single SELECT
 // with contiguous placeholder numbering ($1 for WHERE, $2 for the vector in
 // ORDER BY) and the bound args in the matching order.

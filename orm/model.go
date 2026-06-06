@@ -1185,6 +1185,12 @@ func structToMap(s any) map[string]any {
 	}
 
 	for _, col := range meta.Columns() {
+		// Read-only columns (e.g. a SelectDistance score) are hydrated on
+		// read but never persisted: skip them on every write path.
+		if col.ReadOnly {
+			continue
+		}
+
 		fv := v.FieldByIndex(col.IndexPath)
 		if !fv.IsValid() {
 			continue
