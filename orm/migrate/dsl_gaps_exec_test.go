@@ -369,3 +369,50 @@ func TestDSLGaps_CheckNameValidation(t *testing.T) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
+
+// TestMigrator_Pretend_IndexDDL is the regression guard for the bug where
+// CreateIndex/DropIndex called execContext directly, bypassing the pretend
+// gate and mutating the live database during a dry run. In pretend mode the
+// DDL must be collected in the pretend log and never executed.
+func TestMigrator_Pretend_IndexDDL(t *testing.T) {
+	manager := newTestManager(t)
+	defer manager.Shutdown(context.Background())
+
+	db := manager.DB()
+	m := migrate.NewMigrator(db, manager.DriverName())
+
+	if err := m.CreateTable("gadgets", func(tb *migrate.TableBuilder) {
+		tb.ID()
+		tb.String("sku")
+	}); err != nil {
+		t.Fatalf("CreateTable: %v", err)
+	}
+
+	m.SetPretend(true)
+	if err := m.CreateIndex("idx_gadgets_sku", "gadgets", func(b *migrate.IndexBuilder) {
+		b.Columns("sku")
+	}); err != nil {
+		t.Fatalf("CreateIndex (pretend): %v", err)
+	}
+	if err := m.DropIndex("idx_gadgets_sku"); err != nil {
+		t.Fatalf("DropIndex (pretend): %v", err)
+	}
+
+	joined := strings.Join(m.PretendLog(), "\n")
+	for _, want := range []string{
+		"CREATE INDEX `idx_gadgets_sku` ON `gadgets` (`sku`)",
+		"DROP INDEX IF EXISTS `idx_gadgets_sku`",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing %q in pretend log:\n%s", want, joined)
+		}
+	}
+
+	// The index must not exist on disk: a dry run must not touch the database.
+	var name string
+	if err := db.QueryRow(
+		"SELECT name FROM sqlite_master WHERE type='index' AND name='idx_gadgets_sku'",
+	).Scan(&name); err == nil {
+		t.Errorf("index was created during pretend mode: %q", name)
+	}
+}

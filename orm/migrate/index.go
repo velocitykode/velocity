@@ -524,6 +524,14 @@ func (m *Migrator) CreateIndex(name, table string, fn func(*IndexBuilder)) error
 		return fmt.Errorf("failed to build index SQL for %s: %w", name, err)
 	}
 
+	// Pretend mode collects the DDL instead of executing it, matching
+	// CreateTable/Raw. Return before withMigrationLock so a dry-run never
+	// acquires the migration advisory lock.
+	if m.pretend {
+		m.pretendLog = append(m.pretendLog, sql)
+		return nil
+	}
+
 	return m.withMigrationLock(func() error {
 		if _, err := m.execContext(context.Background(), sql); err != nil {
 			return fmt.Errorf("failed to create index %s: %w", name, err)
@@ -559,6 +567,14 @@ func (m *Migrator) DropIndex(name string, table ...string) error {
 		sql = "DROP INDEX IF EXISTS " + quotedName
 	default:
 		sql = "DROP INDEX IF EXISTS " + quotedName
+	}
+
+	// Pretend mode collects the DDL instead of executing it, matching
+	// CreateTable/Raw. Return before withMigrationLock so a dry-run never
+	// acquires the migration advisory lock.
+	if m.pretend {
+		m.pretendLog = append(m.pretendLog, sql)
+		return nil
 	}
 
 	return m.withMigrationLock(func() error {
