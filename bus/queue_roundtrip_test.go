@@ -191,7 +191,7 @@ func TestDispatchAsync_DurableRoundTrip_QueueRegistry(t *testing.T) {
 	pushed := mock.jobs[0]
 	mock.mu.Unlock()
 
-	payload, err := queue.MarshalJob(pushed.(queue.Job), "default")
+	payload, err := queue.MarshalJob(pushed, "default")
 	if err != nil {
 		t.Fatalf("MarshalJob: %v", err)
 	}
