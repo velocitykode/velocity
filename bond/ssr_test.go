@@ -476,6 +476,12 @@ func TestHTTPGateway_Dispatch_OversizedResponse_RefusedNotTruncated(t *testing.T
 	defer server.Close()
 
 	gw := NewHTTPGateway(server.URL)
+	// 30s budget so draining the 10 MiB body finishes before the 3s
+	// default SSR deadline under -race on a loaded CI runner. Otherwise
+	// the read races the timeout and surfaces "context deadline exceeded"
+	// instead of the ssrResponseCap refusal this test pins.
+	gw.Timeout = 30 * time.Second
+	gw.Client = &http.Client{Timeout: 30 * time.Second}
 	events := collectSSREvents(gw)
 
 	resp, err := gw.Dispatch(context.Background(), Page{Component: "Home", URL: "/"})
@@ -510,6 +516,10 @@ func TestHTTPGateway_Dispatch_OversizedResponse_ThrowOnError(t *testing.T) {
 	defer server.Close()
 
 	gw := NewHTTPGateway(server.URL)
+	// 30s budget: drain 10 MiB before the 3s default deadline under -race
+	// so the cap refusal fires, not a read timeout (see RefusedNotTruncated).
+	gw.Timeout = 30 * time.Second
+	gw.Client = &http.Client{Timeout: 30 * time.Second}
 	gw.ThrowOnError = true
 
 	resp, err := gw.Dispatch(context.Background(), Page{Component: "Home", URL: "/"})
@@ -549,6 +559,11 @@ func TestHTTPGateway_Dispatch_AtCap_StillSucceeds(t *testing.T) {
 	defer server.Close()
 
 	gw := NewHTTPGateway(server.URL)
+	// 30s budget: a payload of exactly ssrResponseCap must finish reading
+	// before the 3s default deadline under -race, else this boundary test
+	// flakes on "context deadline exceeded" rather than parsing the body.
+	gw.Timeout = 30 * time.Second
+	gw.Client = &http.Client{Timeout: 30 * time.Second}
 	resp, err := gw.Dispatch(context.Background(), Page{Component: "Home", URL: "/"})
 	if err != nil {
 		t.Fatalf("unexpected error at exactly cap: %v", err)
