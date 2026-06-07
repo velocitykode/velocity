@@ -602,6 +602,11 @@ func (m *Migrator) CreateTable(name string, fn func(*TableBuilder)) error {
 			return fmt.Errorf("invalid primary key column name: %q", col)
 		}
 	}
+	for _, ck := range builder.checks {
+		if !ddlIdentifierRegex.MatchString(ck.name) {
+			return fmt.Errorf("invalid check constraint name: %q", ck.name)
+		}
+	}
 
 	sql := builder.ToSQL()
 	return m.withMigrationLock(func() error {
@@ -676,10 +681,7 @@ func (m *Migrator) Table(name string, fn func(*TableBuilder)) error {
 	builder := newTableBuilder(name, m.driver)
 	fn(builder)
 
-	type stmt struct {
-		sql string
-	}
-	stmts := make([]stmt, 0, len(builder.columns))
+	colStmts := make([]string, 0, len(builder.columns))
 	for _, col := range builder.columns {
 		if col.PrimaryKey {
 			return fmt.Errorf("cannot add primary key column %q to existing table %q via ALTER TABLE", col.Name, name)
@@ -690,20 +692,198 @@ func (m *Migrator) Table(name string, fn func(*TableBuilder)) error {
 		if err := validateVectorColumn(col, m.driver); err != nil {
 			return err
 		}
-		colSQL := columnToSQL(col, m.driver)
-		stmts = append(stmts, stmt{
-			sql: fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", quoteIdentifier(name, m.driver), colSQL),
-		})
+		colStmts = append(colStmts, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", quoteIdentifier(name, m.driver), columnToSQL(col, m.driver)))
+	}
+
+	// Named CHECK constraints. Postgres/MySQL add them via ALTER TABLE ...
+	// ADD CONSTRAINT. SQLite has no ADD CONSTRAINT, so its checks are applied
+	// by rebuilding the table (sqliteRebuildWithChecks), which also runs the
+	// column adds inside the same transaction so the whole Table() call is
+	// atomic and on a single connection.
+	checkStmts := make([]string, 0, len(builder.checks))
+	for _, ck := range builder.checks {
+		if !ddlIdentifierRegex.MatchString(ck.name) {
+			return fmt.Errorf("invalid check constraint name: %q", ck.name)
+		}
+		if m.driver != "sqlite" {
+			checkStmts = append(checkStmts, fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s CHECK (%s)", quoteIdentifier(name, m.driver), quoteIdentifier(ck.name, m.driver), ck.expr))
+		}
 	}
 
 	return m.withMigrationLock(func() error {
-		for _, s := range stmts {
-			if err := m.exec(s.sql); err != nil {
+		if m.driver == "sqlite" && len(builder.checks) > 0 {
+			if err := m.sqliteRebuildWithChecks(name, colStmts, builder.checks); err != nil {
+				return fmt.Errorf("failed to alter table %s: %w", name, err)
+			}
+			return nil
+		}
+		for _, s := range colStmts {
+			if err := m.exec(s); err != nil {
+				return fmt.Errorf("failed to alter table %s: %w", name, err)
+			}
+		}
+		for _, s := range checkStmts {
+			if err := m.exec(s); err != nil {
 				return fmt.Errorf("failed to alter table %s: %w", name, err)
 			}
 		}
 		return nil
 	})
+}
+
+// sqliteRebuildWithChecks applies a Table() call that adds CHECK constraints on
+// SQLite, which has no ALTER TABLE ADD CONSTRAINT. It follows SQLite's
+// documented "other kinds of table schema changes" procedure
+// (https://sqlite.org/lang_altertable.html): run any pending ALTER TABLE ADD
+// COLUMN statements, build a new table whose schema is the (post-add) original
+// plus the new constraints, copy the rows across, drop the original, rename the
+// new table into its place, then recreate the original's explicit indexes and
+// triggers.
+//
+// The ENTIRE operation (column adds + rebuild) runs on a single pinned
+// connection inside ONE transaction with foreign keys disabled (the manual's
+// requirement). This makes the whole Table() call atomic: if the new
+// constraint is violated by existing rows, the transaction rolls back and the
+// column adds are undone too. The connection's prior foreign_keys setting is
+// restored before it returns to the pool.
+//
+// The rebuilt schema is derived from the original's stored CREATE TABLE text in
+// sqlite_master: everything between the first '(' and the last ')' (the column
+// and constraint list) is reused verbatim, so existing columns, defaults, and
+// constraints are preserved exactly; any trailing table options (WITHOUT
+// ROWID, STRICT) are carried over too. This relies on the table name being a
+// plain identifier (no embedded parentheses), which the framework guarantees
+// for tables it creates.
+func (m *Migrator) sqliteRebuildWithChecks(name string, preStmts []string, checks []checkConstraint) error {
+	ctx := context.Background()
+
+	if m.pretend {
+		m.pretendLog = append(m.pretendLog, preStmts...)
+		for _, ck := range checks {
+			m.pretendLog = append(m.pretendLog,
+				fmt.Sprintf("-- sqlite: rebuild %s to add CONSTRAINT %s CHECK (%s)",
+					quoteIdentifier(name, m.driver), quoteIdentifier(ck.name, m.driver), ck.expr))
+		}
+		return nil
+	}
+
+	conn, err := m.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("pin sqlite conn: %w", err)
+	}
+	defer conn.Close()
+
+	// foreign_keys is per-connection and cannot be toggled inside a
+	// transaction; capture the prior value, disable it for the rebuild, and
+	// restore it before the connection goes back to the pool.
+	var fkPrior int
+	_ = conn.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&fkPrior)
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys=OFF"); err != nil {
+		return fmt.Errorf("disable foreign keys: %w", err)
+	}
+	defer conn.ExecContext(ctx, fmt.Sprintf("PRAGMA foreign_keys=%d", fkPrior))
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin rebuild tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	// Column adds run first, inside the same transaction, so the rebuilt
+	// schema below includes them.
+	for _, s := range preStmts {
+		if _, err := tx.ExecContext(ctx, s); err != nil {
+			return fmt.Errorf("add column failed (%s): %w", s, err)
+		}
+	}
+
+	// Original schema + the DDL of explicit indexes/triggers, captured before
+	// the drop removes their sqlite_master rows.
+	var createSQL string
+	if err := tx.QueryRowContext(ctx,
+		"SELECT sql FROM sqlite_master WHERE type='table' AND name=?", name).Scan(&createSQL); err != nil {
+		return fmt.Errorf("read schema for %q: %w", name, err)
+	}
+	rows, err := tx.QueryContext(ctx,
+		"SELECT sql FROM sqlite_master WHERE tbl_name=? AND type IN ('index','trigger') AND sql IS NOT NULL", name)
+	if err != nil {
+		return fmt.Errorf("read indexes/triggers for %q: %w", name, err)
+	}
+	var auxDDL []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan index/trigger ddl: %w", err)
+		}
+		auxDDL = append(auxDDL, s)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read indexes/triggers for %q: %w", name, err)
+	}
+
+	open := strings.Index(createSQL, "(")
+	closeIdx := strings.LastIndex(createSQL, ")")
+	if open < 0 || closeIdx <= open {
+		return fmt.Errorf("cannot parse stored CREATE TABLE for %q", name)
+	}
+	body := createSQL[open+1 : closeIdx]
+	suffix := strings.TrimSpace(createSQL[closeIdx+1:])
+
+	var extra strings.Builder
+	for _, ck := range checks {
+		extra.WriteString(", CONSTRAINT ")
+		extra.WriteString(quoteIdentifier(ck.name, m.driver))
+		extra.WriteString(" CHECK (")
+		extra.WriteString(ck.expr)
+		extra.WriteString(")")
+	}
+
+	tmp := name + "_velocity_rebuild"
+	newCreate := "CREATE TABLE " + quoteIdentifier(tmp, m.driver) + " (" + body + extra.String() + ")"
+	if suffix != "" {
+		newCreate += " " + suffix
+	}
+
+	steps := []string{
+		newCreate,
+		"INSERT INTO " + quoteIdentifier(tmp, m.driver) + " SELECT * FROM " + quoteIdentifier(name, m.driver),
+		"DROP TABLE " + quoteIdentifier(name, m.driver),
+		"ALTER TABLE " + quoteIdentifier(tmp, m.driver) + " RENAME TO " + quoteIdentifier(name, m.driver),
+	}
+	steps = append(steps, auxDDL...) // index/trigger DDL references name; valid post-rename
+	for _, s := range steps {
+		if _, err := tx.ExecContext(ctx, s); err != nil {
+			return fmt.Errorf("rebuild step failed (%s): %w", s, err)
+		}
+	}
+
+	// PRAGMA foreign_key_check reports violations as result ROWS, not an
+	// error, so it must be queried rather than Exec'd.
+	fkRows, err := tx.QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		return fmt.Errorf("foreign key check after rebuild: %w", err)
+	}
+	violated := fkRows.Next()
+	fkErr := fkRows.Err()
+	fkRows.Close()
+	if fkErr != nil {
+		return fmt.Errorf("foreign key check after rebuild: %w", fkErr)
+	}
+	if violated {
+		return fmt.Errorf("rebuild of %q would violate foreign key constraints", name)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit rebuild: %w", err)
+	}
+	committed = true
+	return nil
 }
 
 // AddColumn adds a column to an existing table. Input is validated
@@ -806,6 +986,18 @@ func (c *ColumnBuilder) BigInteger() *ColumnBuilder {
 	return c
 }
 
+// SmallInteger sets the column type to SMALLINT (INTEGER on SQLite)
+func (c *ColumnBuilder) SmallInteger() *ColumnBuilder {
+	c.colType = "smallinteger"
+	return c
+}
+
+// Binary sets the column type to a binary blob (BYTEA/LONGBLOB/BLOB)
+func (c *ColumnBuilder) Binary() *ColumnBuilder {
+	c.colType = "binary"
+	return c
+}
+
 // Text sets the column type to TEXT
 func (c *ColumnBuilder) Text() *ColumnBuilder {
 	c.colType = "text"
@@ -821,6 +1013,13 @@ func (c *ColumnBuilder) Boolean() *ColumnBuilder {
 // Timestamp sets the column type to TIMESTAMP
 func (c *ColumnBuilder) Timestamp() *ColumnBuilder {
 	c.colType = "timestamp"
+	return c
+}
+
+// TimestampTz sets the column type to timestamp-with-time-zone
+// (TIMESTAMPTZ/TIMESTAMP/DATETIME by driver)
+func (c *ColumnBuilder) TimestampTz() *ColumnBuilder {
+	c.colType = "timestamptz"
 	return c
 }
 
@@ -857,6 +1056,17 @@ func (c *ColumnBuilder) Nullable() *ColumnBuilder {
 // Default sets a default value for the column
 func (c *ColumnBuilder) Default(v interface{}) *ColumnBuilder {
 	c.defValue = v
+	c.hasDefault = true
+	return c
+}
+
+// DefaultRaw sets a raw SQL expression as the column default, emitted unquoted
+// (e.g. "gen_random_uuid()", "now()").
+//
+// WARNING: the expression is inlined into DDL verbatim with no escaping or
+// validation. Pass only trusted, developer-authored SQL, never user input.
+func (c *ColumnBuilder) DefaultRaw(expr string) *ColumnBuilder {
+	c.defValue = rawExpr(expr)
 	c.hasDefault = true
 	return c
 }
@@ -915,13 +1125,23 @@ func (c *ColumnBuilder) toSQLiteType() string {
 		return "INTEGER"
 	case "biginteger":
 		return "INTEGER"
+	case "smallinteger":
+		return "INTEGER"
 	case "string":
 		return fmt.Sprintf("VARCHAR(%d)", c.length)
 	case "text":
 		return "TEXT"
+	case "binary":
+		return "BLOB"
 	case "boolean":
 		return "INTEGER"
-	case "timestamp":
+	case "timestamp", "timestamptz":
+		// No managed default here: SQLite's ALTER TABLE ADD COLUMN rejects a
+		// non-constant default (CURRENT_TIMESTAMP) and also rejects NOT NULL
+		// without a constant default, so a non-null timestamp simply cannot be
+		// added to an existing SQLite table. Postgres/MySQL accept a volatile
+		// default on ADD COLUMN, so they get the managed one (see those
+		// type methods).
 		return "DATETIME"
 	case "date":
 		return "DATE"
@@ -940,14 +1160,26 @@ func (c *ColumnBuilder) toPostgresType() string {
 		return "INTEGER"
 	case "biginteger":
 		return "BIGINT"
+	case "smallinteger":
+		return "SMALLINT"
 	case "string":
 		return fmt.Sprintf("VARCHAR(%d)", c.length)
 	case "text":
 		return "TEXT"
+	case "binary":
+		return "BYTEA"
 	case "boolean":
 		return "BOOLEAN"
 	case "timestamp":
+		if !c.nullable && !c.hasDefault {
+			return "TIMESTAMP DEFAULT NOW()"
+		}
 		return "TIMESTAMP"
+	case "timestamptz":
+		if !c.nullable && !c.hasDefault {
+			return "TIMESTAMPTZ DEFAULT NOW()"
+		}
+		return "TIMESTAMPTZ"
 	case "date":
 		return "DATE"
 	case "uuid":
@@ -969,13 +1201,20 @@ func (c *ColumnBuilder) toMySQLType() string {
 		return "INT"
 	case "biginteger":
 		return "BIGINT"
+	case "smallinteger":
+		return "SMALLINT"
 	case "string":
 		return fmt.Sprintf("VARCHAR(%d)", c.length)
 	case "text":
 		return "TEXT"
+	case "binary":
+		return "LONGBLOB"
 	case "boolean":
 		return "BOOLEAN"
-	case "timestamp":
+	case "timestamp", "timestamptz":
+		if !c.nullable && !c.hasDefault {
+			return "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+		}
 		return "TIMESTAMP"
 	case "date":
 		return "DATE"
@@ -993,9 +1232,24 @@ type TableBuilder struct {
 	tableName           string
 	driver              string
 	columns             []Column
-	lastColumn          *Column  // Track last column for chaining modifiers
-	compositePrimaryKey []string // For composite primary keys
+	lastColumn          *Column           // Track last column for chaining modifiers
+	compositePrimaryKey []string          // For composite primary keys
+	checks              []checkConstraint // Table-level CHECK constraints
 }
+
+// checkConstraint is a named table-level CHECK constraint. The expression is
+// emitted verbatim (see TableBuilder.Check), so callers are responsible for its
+// correctness; the name is validated as a DDL identifier by CreateTable.
+type checkConstraint struct {
+	name string
+	expr string
+}
+
+// rawExpr marks a column default that must be emitted as unquoted SQL rather
+// than a quoted literal (e.g. gen_random_uuid(), now(), '[]'::jsonb). It flows
+// through Column.Default / ColumnBuilder default and is recognised by
+// formatDefaultValue. Set it via DefaultRaw, never by quoting user input.
+type rawExpr string
 
 // Column represents a table column definition
 type Column struct {
@@ -1026,6 +1280,23 @@ func (t *TableBuilder) ID() *TableBuilder {
 	col := Column{
 		Name:          "id",
 		Type:          "integer",
+		PrimaryKey:    true,
+		AutoIncrement: true,
+		Nullable:      false,
+	}
+	t.columns = append(t.columns, col)
+	t.lastColumn = &t.columns[len(t.columns)-1]
+	return t
+}
+
+// BigID adds an auto-increment BIGINT primary key column named 'id'.
+// Postgres emits BIGSERIAL, MySQL BIGINT AUTO_INCREMENT, SQLite INTEGER
+// PRIMARY KEY AUTOINCREMENT (SQLite rowids are always 64-bit). Use this over
+// ID() when the table is expected to exceed ~2.1 billion rows.
+func (t *TableBuilder) BigID() *TableBuilder {
+	col := Column{
+		Name:          "id",
+		Type:          "biginteger",
 		PrimaryKey:    true,
 		AutoIncrement: true,
 		Nullable:      false,
@@ -1129,6 +1400,22 @@ func (t *TableBuilder) Timestamp(name string) *TableBuilder {
 	return t
 }
 
+// TimestampTz adds a single timestamp-with-time-zone column. Postgres emits
+// TIMESTAMPTZ; MySQL maps it to TIMESTAMP (which it stores in UTC and converts
+// per session zone); SQLite has no zone-aware type so it falls back to
+// DATETIME. Like Timestamp, a non-nullable column receives a DEFAULT of the
+// current time; mark it Nullable() to omit that.
+func (t *TableBuilder) TimestampTz(name string) *TableBuilder {
+	col := Column{
+		Name:     name,
+		Type:     "timestamptz",
+		Nullable: false,
+	}
+	t.columns = append(t.columns, col)
+	t.lastColumn = &t.columns[len(t.columns)-1]
+	return t
+}
+
 // Date adds a DATE column
 func (t *TableBuilder) Date(name string) *TableBuilder {
 	col := Column{
@@ -1146,6 +1433,32 @@ func (t *TableBuilder) BigInteger(name string) *TableBuilder {
 	col := Column{
 		Name:     name,
 		Type:     "biginteger",
+		Nullable: false,
+	}
+	t.columns = append(t.columns, col)
+	t.lastColumn = &t.columns[len(t.columns)-1]
+	return t
+}
+
+// SmallInteger adds a SMALLINT column (16-bit). SQLite stores it as INTEGER
+// (all integer widths share one storage class).
+func (t *TableBuilder) SmallInteger(name string) *TableBuilder {
+	col := Column{
+		Name:     name,
+		Type:     "smallinteger",
+		Nullable: false,
+	}
+	t.columns = append(t.columns, col)
+	t.lastColumn = &t.columns[len(t.columns)-1]
+	return t
+}
+
+// Binary adds a binary blob column. Postgres emits BYTEA, MySQL LONGBLOB,
+// SQLite BLOB.
+func (t *TableBuilder) Binary(name string) *TableBuilder {
+	col := Column{
+		Name:     name,
+		Type:     "binary",
 		Nullable: false,
 	}
 	t.columns = append(t.columns, col)
@@ -1246,6 +1559,24 @@ func (t *TableBuilder) Timestamps() *TableBuilder {
 	return t
 }
 
+// TimestampsTz adds created_at and updated_at columns typed as
+// timestamp-with-time-zone (see TimestampTz for per-driver mapping).
+func (t *TableBuilder) TimestampsTz() *TableBuilder {
+	createdAt := Column{
+		Name:     "created_at",
+		Type:     "timestamptz",
+		Nullable: false,
+	}
+	updatedAt := Column{
+		Name:     "updated_at",
+		Type:     "timestamptz",
+		Nullable: false,
+	}
+	t.columns = append(t.columns, createdAt, updatedAt)
+	// Don't set lastColumn since this adds multiple columns.
+	return t
+}
+
 // SoftDeletes adds a deleted_at column for soft delete support
 func (t *TableBuilder) SoftDeletes() *TableBuilder {
 	col := Column{
@@ -1282,6 +1613,32 @@ func (t *TableBuilder) Default(value interface{}) *TableBuilder {
 	return t
 }
 
+// DefaultRaw sets a raw SQL expression as the previous column's default,
+// emitted unquoted (e.g. "gen_random_uuid()", "now()", "'[]'::jsonb").
+//
+// WARNING: the expression is inlined into DDL verbatim with no escaping or
+// validation. Pass only trusted, developer-authored SQL, never user input.
+// Use Default for ordinary literal values, which are quoted/escaped for you.
+//
+// On timestamp/timestamptz columns an explicit default set here overrides the
+// builder's managed CURRENT_TIMESTAMP/NOW() default.
+func (t *TableBuilder) DefaultRaw(expr string) *TableBuilder {
+	if t.lastColumn != nil {
+		t.lastColumn.Default = rawExpr(expr)
+	}
+	return t
+}
+
+// Check adds a named table-level CHECK constraint.
+//
+// WARNING: the expression is inlined into DDL verbatim with no escaping or
+// validation. Pass only trusted, developer-authored SQL, never user input.
+// The name is validated as a DDL identifier when the table is created.
+func (t *TableBuilder) Check(name, expr string) *TableBuilder {
+	t.checks = append(t.checks, checkConstraint{name: name, expr: expr})
+	return t
+}
+
 // Primary makes the current column a primary key (for 1:1 relations where FK is the PK)
 func (t *TableBuilder) Primary() *TableBuilder {
 	if t.lastColumn != nil {
@@ -1294,6 +1651,25 @@ func (t *TableBuilder) Primary() *TableBuilder {
 func (t *TableBuilder) PrimaryKey(columns ...string) *TableBuilder {
 	t.compositePrimaryKey = columns
 	return t
+}
+
+// extraClauses returns the table-level clauses that render after the column
+// list (composite PRIMARY KEY first, then CHECK constraints), already
+// quoted/escaped for the active driver. Returned in deterministic order so DDL
+// output is stable. CHECK expressions are emitted verbatim (see Check).
+func (t *TableBuilder) extraClauses() []string {
+	var clauses []string
+	if len(t.compositePrimaryKey) > 0 {
+		parts := make([]string, len(t.compositePrimaryKey))
+		for i, col := range t.compositePrimaryKey {
+			parts[i] = quoteIdentifier(col, t.driver)
+		}
+		clauses = append(clauses, "PRIMARY KEY ("+strings.Join(parts, ", ")+")")
+	}
+	for _, ck := range t.checks {
+		clauses = append(clauses, "CONSTRAINT "+quoteIdentifier(ck.name, t.driver)+" CHECK ("+ck.expr+")")
+	}
+	return clauses
 }
 
 // ToSQL generates driver-specific CREATE TABLE SQL
@@ -1317,6 +1693,8 @@ func (t *TableBuilder) ToSQL() string {
 func (t *TableBuilder) toSQLiteSyntax() string {
 	sql := "CREATE TABLE " + quoteIdentifier(t.tableName, t.driver) + " (\n"
 
+	extras := t.extraClauses()
+
 	for i, col := range t.columns {
 		sql += "  " + quoteIdentifier(col.Name, t.driver) + " "
 
@@ -1332,16 +1710,27 @@ func (t *TableBuilder) toSQLiteSyntax() string {
 				}
 			}
 		case "biginteger":
-			sql += "INTEGER" // SQLite uses INTEGER for all int sizes
+			// SQLite uses INTEGER for all int sizes; its rowid PK is 64-bit.
+			if col.PrimaryKey && col.AutoIncrement {
+				sql += "INTEGER PRIMARY KEY AUTOINCREMENT"
+			} else {
+				sql += "INTEGER"
+			}
+		case "smallinteger":
+			sql += "INTEGER" // SQLite has one integer storage class
 		case "string":
 			sql += "VARCHAR(" + fmt.Sprintf("%d", col.Length) + ")"
 		case "text":
 			sql += "TEXT"
+		case "binary":
+			sql += "BLOB"
 		case "boolean":
 			sql += "INTEGER" // SQLite uses 0/1 for boolean
-		case "timestamp":
-			sql += "DATETIME"
-			if !col.Nullable {
+		case "timestamp", "timestamptz":
+			sql += "DATETIME" // SQLite has no zone-aware type
+			// Managed default only when the caller did not set one; an
+			// explicit Default/DefaultRaw is emitted by the generic block.
+			if !col.Nullable && col.Default == nil {
 				sql += " DEFAULT CURRENT_TIMESTAMP"
 			}
 		case "date":
@@ -1366,26 +1755,23 @@ func (t *TableBuilder) toSQLiteSyntax() string {
 			sql += " UNIQUE"
 		}
 
-		if col.Default != nil && col.Type != "timestamp" {
+		if col.Default != nil {
 			sql += " DEFAULT " + formatDefaultValue(col.Default, col.Type, "sqlite")
 		}
 
-		if i < len(t.columns)-1 || len(t.compositePrimaryKey) > 0 {
+		if i < len(t.columns)-1 || len(extras) > 0 {
 			sql += ","
 		}
 		sql += "\n"
 	}
 
-	// Add composite primary key constraint
-	if len(t.compositePrimaryKey) > 0 {
-		sql += "  PRIMARY KEY ("
-		for i, col := range t.compositePrimaryKey {
-			if i > 0 {
-				sql += ", "
-			}
-			sql += quoteIdentifier(col, t.driver)
+	// Table-level clauses (composite PRIMARY KEY, CHECK constraints).
+	for j, clause := range extras {
+		sql += "  " + clause
+		if j < len(extras)-1 {
+			sql += ","
 		}
-		sql += ")\n"
+		sql += "\n"
 	}
 
 	sql += ")"
@@ -1394,6 +1780,8 @@ func (t *TableBuilder) toSQLiteSyntax() string {
 
 func (t *TableBuilder) toPostgresSyntax() string {
 	sql := "CREATE TABLE " + quoteIdentifier(t.tableName, t.driver) + " (\n"
+
+	extras := t.extraClauses()
 
 	for i, col := range t.columns {
 		sql += "  " + quoteIdentifier(col.Name, t.driver) + " "
@@ -1410,16 +1798,29 @@ func (t *TableBuilder) toPostgresSyntax() string {
 				}
 			}
 		case "biginteger":
-			sql += "BIGINT"
+			if col.PrimaryKey && col.AutoIncrement {
+				sql += "BIGSERIAL PRIMARY KEY"
+			} else {
+				sql += "BIGINT"
+			}
+		case "smallinteger":
+			sql += "SMALLINT"
 		case "string":
 			sql += "VARCHAR(" + fmt.Sprintf("%d", col.Length) + ")"
 		case "text":
 			sql += "TEXT"
+		case "binary":
+			sql += "BYTEA"
 		case "boolean":
 			sql += "BOOLEAN"
 		case "timestamp":
 			sql += "TIMESTAMP"
-			if !col.Nullable {
+			if !col.Nullable && col.Default == nil {
+				sql += " DEFAULT NOW()"
+			}
+		case "timestamptz":
+			sql += "TIMESTAMPTZ"
+			if !col.Nullable && col.Default == nil {
 				sql += " DEFAULT NOW()"
 			}
 		case "date":
@@ -1450,27 +1851,24 @@ func (t *TableBuilder) toPostgresSyntax() string {
 				sql += " UNIQUE"
 			}
 
-			if col.Default != nil && col.Type != "timestamp" {
+			if col.Default != nil {
 				sql += " DEFAULT " + formatDefaultValue(col.Default, col.Type, "postgres")
 			}
 		}
 
-		if i < len(t.columns)-1 || len(t.compositePrimaryKey) > 0 {
+		if i < len(t.columns)-1 || len(extras) > 0 {
 			sql += ","
 		}
 		sql += "\n"
 	}
 
-	// Add composite primary key constraint
-	if len(t.compositePrimaryKey) > 0 {
-		sql += "  PRIMARY KEY ("
-		for i, col := range t.compositePrimaryKey {
-			if i > 0 {
-				sql += ", "
-			}
-			sql += quoteIdentifier(col, t.driver)
+	// Table-level clauses (composite PRIMARY KEY, CHECK constraints).
+	for j, clause := range extras {
+		sql += "  " + clause
+		if j < len(extras)-1 {
+			sql += ","
 		}
-		sql += ")\n"
+		sql += "\n"
 	}
 
 	sql += ")"
@@ -1479,6 +1877,8 @@ func (t *TableBuilder) toPostgresSyntax() string {
 
 func (t *TableBuilder) toMySQLSyntax() string {
 	sql := "CREATE TABLE " + quoteIdentifier(t.tableName, t.driver) + " (\n"
+
+	extras := t.extraClauses()
 
 	for i, col := range t.columns {
 		sql += "  " + quoteIdentifier(col.Name, t.driver) + " "
@@ -1495,16 +1895,26 @@ func (t *TableBuilder) toMySQLSyntax() string {
 				}
 			}
 		case "biginteger":
-			sql += "BIGINT"
+			if col.PrimaryKey && col.AutoIncrement {
+				sql += "BIGINT AUTO_INCREMENT PRIMARY KEY"
+			} else {
+				sql += "BIGINT"
+			}
+		case "smallinteger":
+			sql += "SMALLINT"
 		case "string":
 			sql += "VARCHAR(" + fmt.Sprintf("%d", col.Length) + ")"
 		case "text":
 			sql += "TEXT"
+		case "binary":
+			sql += "LONGBLOB"
 		case "boolean":
 			sql += "BOOLEAN"
-		case "timestamp":
+		case "timestamp", "timestamptz":
+			// MySQL has no separate zone-aware type; TIMESTAMP is stored in
+			// UTC and converted per session time zone.
 			sql += "TIMESTAMP"
-			if !col.Nullable {
+			if !col.Nullable && col.Default == nil {
 				sql += " DEFAULT CURRENT_TIMESTAMP"
 			}
 		case "date":
@@ -1531,27 +1941,24 @@ func (t *TableBuilder) toMySQLSyntax() string {
 				sql += " UNIQUE"
 			}
 
-			if col.Default != nil && col.Type != "timestamp" {
+			if col.Default != nil {
 				sql += " DEFAULT " + formatDefaultValue(col.Default, col.Type, "mysql")
 			}
 		}
 
-		if i < len(t.columns)-1 || len(t.compositePrimaryKey) > 0 {
+		if i < len(t.columns)-1 || len(extras) > 0 {
 			sql += ","
 		}
 		sql += "\n"
 	}
 
-	// Add composite primary key constraint
-	if len(t.compositePrimaryKey) > 0 {
-		sql += "  PRIMARY KEY ("
-		for i, col := range t.compositePrimaryKey {
-			if i > 0 {
-				sql += ", "
-			}
-			sql += quoteIdentifier(col, t.driver)
+	// Table-level clauses (composite PRIMARY KEY, CHECK constraints).
+	for j, clause := range extras {
+		sql += "  " + clause
+		if j < len(extras)-1 {
+			sql += ","
 		}
-		sql += ")\n"
+		sql += "\n"
 	}
 
 	sql += ")"
@@ -1610,7 +2017,7 @@ func columnToSQL(col Column, driver string) string {
 	if col.Unique && !col.PrimaryKey {
 		sql += " UNIQUE"
 	}
-	if col.Default != nil && col.Type != "timestamp" {
+	if col.Default != nil {
 		sql += " DEFAULT " + formatDefaultValue(col.Default, col.Type, driver)
 	}
 
@@ -1626,15 +2033,19 @@ func columnTypeSQLite(col Column) string {
 		return "INTEGER"
 	case "biginteger":
 		return "INTEGER"
+	case "smallinteger":
+		return "INTEGER"
 	case "string":
 		return fmt.Sprintf("VARCHAR(%d)", col.Length)
 	case "text":
 		return "TEXT"
+	case "binary":
+		return "BLOB"
 	case "boolean":
 		return "INTEGER"
-	case "timestamp":
+	case "timestamp", "timestamptz":
 		s := "DATETIME"
-		if !col.Nullable {
+		if !col.Nullable && col.Default == nil {
 			s += " DEFAULT CURRENT_TIMESTAMP"
 		}
 		return s
@@ -1663,15 +2074,25 @@ func columnTypePostgres(col Column) string {
 		return "INTEGER"
 	case "biginteger":
 		return "BIGINT"
+	case "smallinteger":
+		return "SMALLINT"
 	case "string":
 		return fmt.Sprintf("VARCHAR(%d)", col.Length)
 	case "text":
 		return "TEXT"
+	case "binary":
+		return "BYTEA"
 	case "boolean":
 		return "BOOLEAN"
 	case "timestamp":
 		s := "TIMESTAMP"
-		if !col.Nullable {
+		if !col.Nullable && col.Default == nil {
+			s += " DEFAULT NOW()"
+		}
+		return s
+	case "timestamptz":
+		s := "TIMESTAMPTZ"
+		if !col.Nullable && col.Default == nil {
 			s += " DEFAULT NOW()"
 		}
 		return s
@@ -1704,15 +2125,19 @@ func columnTypeMySQL(col Column) string {
 		return "INT"
 	case "biginteger":
 		return "BIGINT"
+	case "smallinteger":
+		return "SMALLINT"
 	case "string":
 		return fmt.Sprintf("VARCHAR(%d)", col.Length)
 	case "text":
 		return "TEXT"
+	case "binary":
+		return "LONGBLOB"
 	case "boolean":
 		return "BOOLEAN"
-	case "timestamp":
+	case "timestamp", "timestamptz":
 		s := "TIMESTAMP"
-		if !col.Nullable {
+		if !col.Nullable && col.Default == nil {
 			s += " DEFAULT CURRENT_TIMESTAMP"
 		}
 		return s
@@ -1734,6 +2159,10 @@ func columnTypeMySQL(col Column) string {
 
 func formatDefaultValue(value interface{}, colType string, driver string) string {
 	switch v := value.(type) {
+	case rawExpr:
+		// Raw SQL expression, emitted unquoted (see DefaultRaw). Caller owns
+		// its correctness and safety.
+		return string(v)
 	case string:
 		return "'" + strings.ReplaceAll(v, "'", "''") + "'"
 	case int, int64, int32:
