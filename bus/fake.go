@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"sync"
@@ -33,6 +34,12 @@ func (f *FakeBus) DispatchAsync(cmd Command) error {
 	defer f.mu.Unlock()
 	f.asyncDispatched = append(f.asyncDispatched, cmd)
 	return nil
+}
+
+// DispatchAsyncCtx records an async dispatch, ignoring ctx. It exists so
+// *FakeBus satisfies the Dispatcher interface alongside the real *Bus.
+func (f *FakeBus) DispatchAsyncCtx(_ context.Context, cmd Command) error {
+	return f.DispatchAsync(cmd)
 }
 
 // AssertDispatched asserts that a command of the given type was dispatched at least once.
