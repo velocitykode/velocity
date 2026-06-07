@@ -614,6 +614,16 @@ func (g *SessionGuard) ID(r *http.Request) interface{} {
 
 // Login logs in a user
 func (g *SessionGuard) Login(w http.ResponseWriter, r *http.Request, user auth.Authenticatable, remember ...bool) error {
+	// Guard the nil user before any session work. user is deref'd below
+	// (session.Put("user_id", user.GetAuthIdentifier())), so a nil here would
+	// panic. UserProvider.FindByID is contractually allowed to return
+	// (nil, nil) for a not-found id, so LoginByID and any external caller can
+	// reach this with a nil user. Return a normal error instead of panicking
+	// on a runtime condition.
+	if user == nil {
+		return auth.ErrUserNotFound
+	}
+
 	session := g.getSession(r)
 	if session == nil {
 		var err error
@@ -695,6 +705,12 @@ func (g *SessionGuard) LoginByID(w http.ResponseWriter, r *http.Request, id inte
 	user, err := g.loadProvider().FindByID(id)
 	if err != nil {
 		return err
+	}
+	// FindByID may return (nil, nil) for an unknown id. Surface that as an
+	// error here so we never pass a nil user into Login (which would panic
+	// on the user_id deref).
+	if user == nil {
+		return auth.ErrUserNotFound
 	}
 
 	return g.Login(w, r, user, remember...)

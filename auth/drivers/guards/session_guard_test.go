@@ -1628,3 +1628,75 @@ func TestLogin_RegenerateErrorFailsLogin(t *testing.T) {
 		t.Errorf("no cookie should be written when Login fails pre-Save")
 	}
 }
+
+// TestSessionGuard_LoginByID_UnknownID is the regression for the nil-user
+// panic: UserProvider.FindByID is contractually allowed to return (nil, nil)
+// for an unknown id. LoginByID must surface that as auth.ErrUserNotFound
+// instead of passing the nil user into Login and panicking on the user_id
+// deref. Nothing may be written to the response.
+func TestSessionGuard_LoginByID_UnknownID(t *testing.T) {
+	provider := &mockSessionGuardUserProvider{
+		findByIDFunc: func(id interface{}) (auth.Authenticatable, error) {
+			return nil, nil // not found, no error: contract-permitted
+		},
+	}
+	g := &SessionGuard{
+		store:  &mockSessionGuardStore{},
+		config: newTestSessionConfig(),
+		hasher: auth.NewBcryptHasher(10),
+	}
+	g.provider.Store(&providerHolder{p: provider})
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/login", nil)
+
+	var err error
+	func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				t.Fatalf("LoginByID panicked on unknown id: %v", rec)
+			}
+		}()
+		err = g.LoginByID(w, r, "ghost")
+	}()
+
+	if !errors.Is(err, auth.ErrUserNotFound) {
+		t.Fatalf("LoginByID error = %v, want auth.ErrUserNotFound", err)
+	}
+	if cookies := w.Result().Cookies(); len(cookies) != 0 {
+		t.Fatalf("LoginByID wrote %d cookie(s) for an unknown id, want 0", len(cookies))
+	}
+}
+
+// TestSessionGuard_Login_NilUser guards the deref site directly: Login is
+// exported, so any caller (not just LoginByID) can reach it with a nil user.
+// It must return auth.ErrUserNotFound before touching the session, never
+// panic, and write nothing.
+func TestSessionGuard_Login_NilUser(t *testing.T) {
+	g := &SessionGuard{
+		store:  &mockSessionGuardStore{},
+		config: newTestSessionConfig(),
+		hasher: auth.NewBcryptHasher(10),
+	}
+	g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/login", nil)
+
+	var err error
+	func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				t.Fatalf("Login panicked on nil user: %v", rec)
+			}
+		}()
+		err = g.Login(w, r, nil)
+	}()
+
+	if !errors.Is(err, auth.ErrUserNotFound) {
+		t.Fatalf("Login(nil) error = %v, want auth.ErrUserNotFound", err)
+	}
+	if cookies := w.Result().Cookies(); len(cookies) != 0 {
+		t.Fatalf("Login(nil) wrote %d cookie(s), want 0", len(cookies))
+	}
+}

@@ -51,6 +51,7 @@ func (e *CommandQueued) Name() string { return "command.queued" }
 type Dispatcher interface {
 	Dispatch(cmd Command) error
 	DispatchAsync(cmd Command) error
+	DispatchAsyncCtx(ctx context.Context, cmd Command) error
 }
 
 // Bus dispatches commands to their registered handlers through optional
@@ -247,15 +248,24 @@ func (b *Bus) Dispatch(cmd Command) error {
 	return err
 }
 
-// DispatchAsync wraps the command as a job and pushes it to the queue.
+// DispatchAsync wraps the command as a job and pushes it to the queue using a
+// background context. Prefer DispatchAsyncCtx so a request cancellation aborts
+// the push before it reaches the backing store.
+func (b *Bus) DispatchAsync(cmd Command) error {
+	return b.DispatchAsyncCtx(context.Background(), cmd)
+}
+
+// DispatchAsyncCtx wraps the command as a job and pushes it to the queue,
+// threading ctx through to the driver's PushCtx so cancellation (client
+// disconnect, deadline, graceful shutdown) aborts the enqueue.
 //
 // The command must be JSON-marshallable and must have been registered via
-// Register[T] on THIS bus. DispatchAsync refuses to enqueue otherwise so
+// Register[T] on THIS bus. DispatchAsyncCtx refuses to enqueue otherwise so
 // the silent-drop hole on durable drivers (Redis, database) is closed at
 // the producer side. The wire payload carries the bus's id so the
 // consumer-side hydration path routes through the same bus, never a
 // different one that happens to hold a handler for the type.
-func (b *Bus) DispatchAsync(cmd Command) error {
+func (b *Bus) DispatchAsyncCtx(ctx context.Context, cmd Command) error {
 	b.mu.RLock()
 	q, queueName, dispatchEvent := b.queue, b.queueName, b.dispatchEvent
 	hasFactory := false
@@ -301,7 +311,7 @@ func (b *Bus) DispatchAsync(cmd Command) error {
 		args = []string{queueName}
 	}
 
-	if err := q.Push(job, args...); err != nil {
+	if err := q.PushCtx(ctx, job, args...); err != nil {
 		return fmt.Errorf("bus: failed to push command to queue: %w", err)
 	}
 
