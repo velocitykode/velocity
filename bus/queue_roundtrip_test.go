@@ -41,23 +41,12 @@ type contamCmdB struct {
 	Value string
 }
 
-// memoryQueueAdapter wraps a queue.Driver so it satisfies the bus's
-// QueuePusher interface (a Push method with the bus's job shape).
-type memoryQueueAdapter struct {
-	d queue.Driver
-}
-
-func (m memoryQueueAdapter) Push(job interface {
-	Handle() error
-	Failed(error)
-}, qname ...string) error {
-	return m.d.PushCtx(context.Background(), job.(queue.Job), qname...)
-}
-
 // TestDispatchAsync_MemoryQueueRoundTrip exercises the in-process memory
 // driver path. The producer-side commandJob retains live cmd / bus /
 // cmdType fields so the worker dispatches the original pointer without a
-// JSON round-trip.
+// JSON round-trip. The real queue.MemoryDriver is passed straight to
+// SetQueue: it satisfies QueuePusher (contract.QueueDriver.PushCtx) with no
+// adapter, which is the whole point of aligning the two interfaces.
 func TestDispatchAsync_MemoryQueueRoundTrip(t *testing.T) {
 	b := New()
 	defer b.Close()
@@ -65,7 +54,7 @@ func TestDispatchAsync_MemoryQueueRoundTrip(t *testing.T) {
 	driver.Start()
 	defer driver.Shutdown(context.Background())
 
-	b.SetQueue(memoryQueueAdapter{driver})
+	b.SetQueue(driver)
 
 	var got roundTripCmd
 	var mu sync.Mutex
@@ -202,7 +191,7 @@ func TestDispatchAsync_DurableRoundTrip_QueueRegistry(t *testing.T) {
 	pushed := mock.jobs[0]
 	mock.mu.Unlock()
 
-	payload, err := queue.MarshalJob(pushed.(queue.Job), "default")
+	payload, err := queue.MarshalJob(pushed, "default")
 	if err != nil {
 		t.Fatalf("MarshalJob: %v", err)
 	}
@@ -598,6 +587,64 @@ func TestClose_RemovesFromRegistry(t *testing.T) {
 	b.Close()
 	if _, ok := lookupBus("close-test"); ok {
 		t.Fatal("bus still in registry after Close")
+	}
+}
+
+// TestSetQueue_RealMemoryDriver_Enqueues is the regression for the QueuePusher
+// mismatch. Before the fix QueuePusher required a non-Ctx Push(job, queue...)
+// that no shipped driver implemented, so this SetQueue call would not compile
+// and the async path was dead. Now a real contract.QueueDriver installs with
+// no adapter and DispatchAsync lands the job on it.
+func TestSetQueue_RealMemoryDriver_Enqueues(t *testing.T) {
+	b := New()
+	defer b.Close()
+	driver := queue.NewMemoryDriver()
+	driver.Start()
+	defer driver.Shutdown(context.Background())
+
+	b.SetQueue(driver) // compiles only because QueuePusher is now PushCtx
+
+	Register(b, func(cmd roundTripCmd) error { return nil })
+
+	if err := b.DispatchAsync(roundTripCmd{Name: "enqueue", Count: 1}); err != nil {
+		t.Fatalf("DispatchAsync: %v", err)
+	}
+
+	size, err := driver.Size("default")
+	if err != nil {
+		t.Fatalf("Size: %v", err)
+	}
+	if size != 1 {
+		t.Fatalf("queue size = %d, want 1", size)
+	}
+}
+
+// TestDispatchAsyncCtx_CancelledContext_Aborts proves ctx is threaded through
+// to the driver's PushCtx: a cancelled context aborts the enqueue before the
+// job reaches the backing store, so nothing lands on the queue.
+func TestDispatchAsyncCtx_CancelledContext_Aborts(t *testing.T) {
+	b := New()
+	defer b.Close()
+	driver := queue.NewMemoryDriver()
+	driver.Start()
+	defer driver.Shutdown(context.Background())
+	b.SetQueue(driver)
+
+	Register(b, func(cmd roundTripCmd) error { return nil })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := b.DispatchAsyncCtx(ctx, roundTripCmd{Name: "cancelled"}); err == nil {
+		t.Fatal("expected DispatchAsyncCtx to fail on a cancelled context")
+	}
+
+	size, err := driver.Size("default")
+	if err != nil {
+		t.Fatalf("Size: %v", err)
+	}
+	if size != 0 {
+		t.Fatalf("queue size = %d, want 0 (push must have aborted)", size)
 	}
 }
 
