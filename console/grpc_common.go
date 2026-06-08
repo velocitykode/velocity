@@ -48,10 +48,24 @@ func grpcPackageName(name string) string {
 	return strings.ToLower(toPascalCase(name))
 }
 
-// grpcProtoAlias returns the import alias used for the generated proto
-// package (e.g. "foo" → "foov1").
+// grpcBaseName returns the PascalCase service base with any "Service" suffix
+// stripped (e.g. "fooService" / "Foo" → "Foo", "template_control" →
+// "TemplateControl"). It is the seed for the generated file names: the proto
+// file is the lower-cased base and the impl file is its snake_case form.
+func grpcBaseName(name string) string {
+	name = strings.TrimSuffix(name, "Service")
+	name = strings.TrimSuffix(name, "service")
+	return toPascalCase(name)
+}
+
+// grpcProtoAlias returns the default import alias used at the call site for
+// the generated proto package (e.g. "foo" → "foopb"). The generated package
+// itself is named "<leaf>v1" via the proto go_package option; the alias is
+// purely the local name code refers to it by, and the house convention is
+// "<leaf>pb". A caller can override it with the --alias flag on
+// make:grpc:service.
 func grpcProtoAlias(packageName string) string {
-	return packageName + "v1"
+	return packageName + "pb"
 }
 
 // grpcRPCKind describes whether an rpc is unary or one of the three

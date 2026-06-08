@@ -1,8 +1,8 @@
 syntax = "proto3";
 
-package {{ .PackageName }}.v1;
+package {{ .WirePackage }};
 
-option go_package = "{{ .ModulePath }}/api/gen/go/{{ .PackageName }}/v1;{{ .PackageName }}v1";
+option go_package = "{{ .ModulePath }}/api/gen/go/{{ .Leaf }}/{{ .Version }};{{ .GenPkgName }}";
 
 service {{ .ServiceName }} {
 {{- range .RPCs }}

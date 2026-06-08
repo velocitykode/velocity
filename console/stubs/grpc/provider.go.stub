@@ -5,8 +5,8 @@ import (
 	"os"
 
 	// vel:grpc:imports
-	{{ .ProtoAlias }} "{{ .ModulePath }}/api/gen/go/{{ .PackageName }}/v1"
-	"{{ .ModulePath }}/internal/grpc/services"
+	{{ .Alias }} "{{ .ModulePath }}/api/gen/go/{{ .Leaf }}/{{ .Version }}"
+	"{{ .ServicesImport }}"
 
 	"github.com/velocitykode/velocity"
 	velgrpc "github.com/velocitykode/velocity/grpc"
@@ -31,7 +31,7 @@ func (p *GRPCProvider) Register(s *velocity.Services) error {
 	// vel:grpc:services
 	{{ .VarName }} := services.New{{ .ServiceName }}()
 	p.server.RegisterService(func(srv interface{}) {
-		{{ .ProtoAlias }}.Register{{ .ServiceName }}Server(srv.(*googleGrpc.Server), {{ .VarName }})
+		{{ .Alias }}.Register{{ .ServiceName }}Server(srv.(*googleGrpc.Server), {{ .VarName }})
 	})
 
 	return nil

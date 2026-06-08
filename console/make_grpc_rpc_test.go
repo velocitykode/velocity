@@ -35,7 +35,7 @@ func TestMakeGRPCRPC_UnaryAddsRpcAndMethod(t *testing.T) {
 	}
 
 	impl, _ := os.ReadFile(filepath.Join("internal", "grpc", "services", "foo.go"))
-	if !strings.Contains(string(impl), "func (s *FooService) Hello(ctx context.Context, req *foov1.HelloRequest) (*foov1.HelloResponse, error)") {
+	if !strings.Contains(string(impl), "func (s *FooService) Hello(ctx context.Context, req *foopb.HelloRequest) (*foopb.HelloResponse, error)") {
 		t.Errorf("impl missing unary Hello method, got:\n%s", impl)
 	}
 }
@@ -52,7 +52,7 @@ func TestMakeGRPCRPC_ServerStream(t *testing.T) {
 		t.Errorf("proto missing server-stream rpc, got:\n%s", proto)
 	}
 	impl, _ := os.ReadFile(filepath.Join("internal", "grpc", "services", "foo.go"))
-	if !strings.Contains(string(impl), "func (s *FooService) Tail(req *foov1.TailRequest, stream foov1.FooService_TailServer) error") {
+	if !strings.Contains(string(impl), "func (s *FooService) Tail(req *foopb.TailRequest, stream foopb.FooService_TailServer) error") {
 		t.Errorf("impl missing server-stream method, got:\n%s", impl)
 	}
 }
@@ -69,7 +69,7 @@ func TestMakeGRPCRPC_ClientStream(t *testing.T) {
 		t.Errorf("proto missing client-stream rpc, got:\n%s", proto)
 	}
 	impl, _ := os.ReadFile(filepath.Join("internal", "grpc", "services", "foo.go"))
-	if !strings.Contains(string(impl), "func (s *FooService) Upload(stream foov1.FooService_UploadServer) error") {
+	if !strings.Contains(string(impl), "func (s *FooService) Upload(stream foopb.FooService_UploadServer) error") {
 		t.Errorf("impl missing client-stream method, got:\n%s", impl)
 	}
 }
@@ -86,7 +86,7 @@ func TestMakeGRPCRPC_Bidi(t *testing.T) {
 		t.Errorf("proto missing bidi rpc, got:\n%s", proto)
 	}
 	impl, _ := os.ReadFile(filepath.Join("internal", "grpc", "services", "foo.go"))
-	if !strings.Contains(string(impl), "func (s *FooService) Chat(stream foov1.FooService_ChatServer) error") {
+	if !strings.Contains(string(impl), "func (s *FooService) Chat(stream foopb.FooService_ChatServer) error") {
 		t.Errorf("impl missing bidi method, got:\n%s", impl)
 	}
 }

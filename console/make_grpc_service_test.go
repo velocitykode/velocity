@@ -31,9 +31,9 @@ func TestMakeGRPCService_CreatesAll(t *testing.T) {
 		},
 		filepath.Join("internal", "grpc", "services", "foo.go"): {
 			"package services",
-			`foov1 "acme/app/api/gen/go/foo/v1"`,
+			`foopb "acme/app/api/gen/go/foo/v1"`,
 			"type FooService struct {",
-			"foov1.UnimplementedFooServiceServer",
+			"foopb.UnimplementedFooServiceServer",
 			"func NewFooService() *FooService",
 		},
 		filepath.Join("internal", "providers", "grpc_provider.go"): {
@@ -91,8 +91,8 @@ func TestMakeGRPCService_TwoServicesWireBoth(t *testing.T) {
 	for _, n := range []string{
 		"RegisterFooServiceServer(",
 		"RegisterBarServiceServer(",
-		`foov1 "acme/app/api/gen/go/foo/v1"`,
-		`barv1 "acme/app/api/gen/go/bar/v1"`,
+		`foopb "acme/app/api/gen/go/foo/v1"`,
+		`barpb "acme/app/api/gen/go/bar/v1"`,
 	} {
 		if !strings.Contains(s, n) {
 			t.Errorf("provider missing %q", n)

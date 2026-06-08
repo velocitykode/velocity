@@ -103,7 +103,11 @@ func TestWireGRPCProvider_SkipsWhenServiceAlreadyRegistered(t *testing.T) {
 	providerPath := writeProvider(t, provider)
 	original, _ := os.ReadFile(providerPath)
 
-	if err := wireGRPCProvider("foo", "FooService", "foov1", "acme/app"); err != nil {
+	if err := wireGRPCProvider(grpcScaffold{
+		ServiceName: "FooService", Leaf: "foo", Version: "v1", Alias: "foopb",
+		GenPkgName: "foov1", ModulePath: "acme/app",
+		ServicesImport: "acme/app/internal/grpc/services", VarName: "foo",
+	}); err != nil {
 		t.Fatalf("wireGRPCProvider: %v", err)
 	}
 
@@ -132,7 +136,11 @@ func TestWireGRPCProvider_InjectsAtMarkersInOrder(t *testing.T) {
 		1)
 	providerPath := writeProvider(t, provider)
 
-	if err := wireGRPCProvider("foo", "FooService", "foov1", "acme/app"); err != nil {
+	if err := wireGRPCProvider(grpcScaffold{
+		ServiceName: "FooService", Leaf: "foo", Version: "v1", Alias: "foopb",
+		GenPkgName: "foov1", ModulePath: "acme/app",
+		ServicesImport: "acme/app/internal/grpc/services", VarName: "foo",
+	}); err != nil {
 		t.Fatalf("wireGRPCProvider: %v", err)
 	}
 
@@ -140,7 +148,7 @@ func TestWireGRPCProvider_InjectsAtMarkersInOrder(t *testing.T) {
 	s := string(after)
 
 	importIdx := strings.Index(s, grpcImportsMarker)
-	importLineIdx := strings.Index(s, `foov1 "acme/app/api/gen/go/foo/v1"`)
+	importLineIdx := strings.Index(s, `foopb "acme/app/api/gen/go/foo/v1"`)
 	servicesIdx := strings.Index(s, grpcServicesMarker)
 	registerIdx := strings.Index(s, "RegisterFooServiceServer(")
 

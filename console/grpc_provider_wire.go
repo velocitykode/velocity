@@ -3,8 +3,10 @@ package console
 import (
 	"bytes"
 	"fmt"
+	"go/format"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -17,27 +19,67 @@ const (
 	grpcServicesMarker = "// vel:grpc:services"
 )
 
+// grpcProviderPath is the fixed location of the generated provider.
+func grpcProviderPath() string {
+	return filepath.Join("internal", "providers", "grpc_provider.go")
+}
+
+// preflightProviderWiring rejects an unsupported provider wire before any
+// proto/impl files are written, so a failure leaves the working tree clean and
+// the suggested remedy (re-run with --no-provider) is actually runnable. It
+// only fails on the one predictable precondition wireGRPCProvider cannot honor:
+// an existing, marker-bearing provider whose single `services` import does not
+// match this service's impl dir. All other cases (no provider yet, no markers,
+// already registered, matching dir) are wireable and pass.
+func preflightProviderWiring(sc grpcScaffold) error {
+	if sc.NoProvider {
+		return nil
+	}
+	raw, err := os.ReadFile(grpcProviderPath())
+	if os.IsNotExist(err) {
+		return nil // first service creates the provider fresh
+	}
+	if err != nil {
+		return fmt.Errorf("read provider: %w", err)
+	}
+	return checkProviderServicesImport(string(raw), sc)
+}
+
+// checkProviderServicesImport returns the services-dir mismatch error when, and
+// only when, the existing provider would actually be mutated (markers present,
+// service not already registered) but imports a different impl package.
+func checkProviderServicesImport(content string, sc grpcScaffold) error {
+	if !strings.Contains(content, grpcImportsMarker) || !strings.Contains(content, grpcServicesMarker) {
+		return nil // no markers: a manual snippet is printed, nothing is mutated
+	}
+	if strings.Contains(content, fmt.Sprintf("Register%sServer(", sc.ServiceName)) {
+		return nil // already registered: wire is a no-op
+	}
+	if sc.ServicesImport != "" && !strings.Contains(content, strconv.Quote(sc.ServicesImport)) {
+		return fmt.Errorf("provider %s imports a different services package than %q; "+
+			"re-run %s with --no-provider and wire it manually", grpcProviderPath(), sc.ServicesImport, sc.ServiceName)
+	}
+	return nil
+}
+
 // wireGRPCProvider creates internal/providers/grpc_provider.go if missing or
 // injects a new service registration at the marker comments if it exists.
 // When the file exists without markers, a manual wire snippet is printed
 // instead of mutating user code.
-func wireGRPCProvider(packageName, serviceName, protoAlias, modulePath string) error {
-	dir := filepath.Join("internal", "providers")
-	if err := os.MkdirAll(dir, defaultDirMode); err != nil {
+func wireGRPCProvider(sc grpcScaffold) error {
+	path := grpcProviderPath()
+	if err := os.MkdirAll(filepath.Dir(path), defaultDirMode); err != nil {
 		return fmt.Errorf("create providers dir: %w", err)
 	}
-	path := filepath.Join(dir, "grpc_provider.go")
-
-	varName := strings.ToLower(packageName)
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return writeNewGRPCProvider(path, packageName, serviceName, protoAlias, modulePath, varName)
+		return writeNewGRPCProvider(path, sc)
 	}
 
-	return injectGRPCServiceRegistration(path, packageName, serviceName, protoAlias, modulePath, varName)
+	return injectGRPCServiceRegistration(path, sc)
 }
 
-func writeNewGRPCProvider(path, packageName, serviceName, protoAlias, modulePath, varName string) error {
+func writeNewGRPCProvider(path string, sc grpcScaffold) error {
 	stub, err := stubs.Get("grpc/provider.go.stub")
 	if err != nil {
 		return fmt.Errorf("load provider stub: %w", err)
@@ -47,17 +89,19 @@ func writeNewGRPCProvider(path, packageName, serviceName, protoAlias, modulePath
 		return fmt.Errorf("parse provider stub: %w", err)
 	}
 	data := map[string]string{
-		"PackageName": packageName,
-		"ServiceName": serviceName,
-		"ProtoAlias":  protoAlias,
-		"ModulePath":  modulePath,
-		"VarName":     varName,
+		"Alias":          sc.Alias,
+		"ServiceName":    sc.ServiceName,
+		"Leaf":           sc.Leaf,
+		"Version":        sc.Version,
+		"ModulePath":     sc.ModulePath,
+		"ServicesImport": sc.ServicesImport,
+		"VarName":        sc.VarName,
 	}
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
 		return fmt.Errorf("render provider: %w", err)
 	}
-	if err := os.WriteFile(path, buf.Bytes(), defaultFileMode); err != nil {
+	if err := writeFormattedGo(path, buf.Bytes()); err != nil {
 		return fmt.Errorf("write provider: %w", err)
 	}
 	cli.Success(fmt.Sprintf("Created: %s", path))
@@ -65,45 +109,101 @@ func writeNewGRPCProvider(path, packageName, serviceName, protoAlias, modulePath
 	return nil
 }
 
-func injectGRPCServiceRegistration(path, packageName, serviceName, protoAlias, modulePath, varName string) error {
+func injectGRPCServiceRegistration(path string, sc grpcScaffold) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read provider: %w", err)
 	}
 	content := string(raw)
 
-	if strings.Contains(content, fmt.Sprintf("Register%sServer(", serviceName)) {
-		cli.Muted(fmt.Sprintf("Provider already registers %s, skipping wire", serviceName))
+	if strings.Contains(content, fmt.Sprintf("Register%sServer(", sc.ServiceName)) {
+		cli.Muted(fmt.Sprintf("Provider already registers %s, skipping wire", sc.ServiceName))
 		return nil
 	}
 
+	importPath := fmt.Sprintf("%s/api/gen/go/%s/%s", sc.ModulePath, sc.Leaf, sc.Version)
+
 	if !strings.Contains(content, grpcImportsMarker) || !strings.Contains(content, grpcServicesMarker) {
 		cli.Muted("grpc_provider.go missing markers; add the following manually:")
-		cli.Muted(fmt.Sprintf("  import: %s \"%s/api/gen/go/%s/v1\"", protoAlias, modulePath, packageName))
-		cli.Muted(fmt.Sprintf("  in Register(): %s := services.New%s()", varName, serviceName))
+		cli.Muted(fmt.Sprintf("  import: %s \"%s\"", sc.Alias, importPath))
+		cli.Muted(fmt.Sprintf("  in Register(): %s := services.New%s()", sc.VarName, sc.ServiceName))
 		cli.Muted("                 p.server.RegisterService(func(srv interface{}) {")
-		cli.Muted(fmt.Sprintf("                     %s.Register%sServer(srv.(*googleGrpc.Server), %s)", protoAlias, serviceName, varName))
+		cli.Muted(fmt.Sprintf("                     %s.Register%sServer(srv.(*googleGrpc.Server), %s)", sc.Alias, sc.ServiceName, sc.VarName))
 		cli.Muted("                 })")
 		return nil
 	}
 
-	importLine := fmt.Sprintf("\t%s \"%s/api/gen/go/%s/v1\"", protoAlias, modulePath, packageName)
-	content = injectAfterMarker(content, grpcImportsMarker, importLine)
+	// The provider imports exactly one impl package (the generated `services`
+	// package). Auto-wiring cannot safely register a service whose impl lives
+	// in a different directory: the registration calls services.NewX() against
+	// that single import, and adding a second `services` package would clash.
+	// MakeGRPCService preflights this before writing files; the check is
+	// repeated here as the last line of defense for direct callers.
+	if err := checkProviderServicesImport(content, sc); err != nil {
+		return err
+	}
+
+	// Reuse the alias already bound to this generated package when it is
+	// already imported (two services sharing a --package leaf). Emitting a
+	// second import for the same path would be a duplicate, and emitting the
+	// new --alias while skipping the import would reference an undefined name.
+	regAlias := sc.Alias
+	if existing, ok := existingImportAlias(content, importPath, sc.GenPkgName); ok {
+		if existing != sc.Alias {
+			cli.Muted(fmt.Sprintf("provider already imports %s as %s; reusing that alias", importPath, existing))
+		}
+		regAlias = existing
+	} else {
+		importLine := fmt.Sprintf("\t%s %s", sc.Alias, strconv.Quote(importPath))
+		content = injectAfterMarker(content, grpcImportsMarker, importLine)
+	}
 
 	regBlock := strings.Join([]string{
-		fmt.Sprintf("\t%s := services.New%s()", varName, serviceName),
+		fmt.Sprintf("\t%s := services.New%s()", sc.VarName, sc.ServiceName),
 		"\tp.server.RegisterService(func(srv interface{}) {",
-		fmt.Sprintf("\t\t%s.Register%sServer(srv.(*googleGrpc.Server), %s)", protoAlias, serviceName, varName),
+		fmt.Sprintf("\t\t%s.Register%sServer(srv.(*googleGrpc.Server), %s)", regAlias, sc.ServiceName, sc.VarName),
 		"\t})",
 		"",
 	}, "\n")
 	content = injectAfterMarker(content, grpcServicesMarker, regBlock)
 
-	if err := os.WriteFile(path, []byte(content), defaultFileMode); err != nil {
+	if err := writeFormattedGo(path, []byte(content)); err != nil {
 		return fmt.Errorf("write provider: %w", err)
 	}
 	cli.Success(fmt.Sprintf("Wired: %s", path))
 	return nil
+}
+
+// existingImportAlias reports the local name an already-present import of
+// importPath is bound to, and whether the import was found. An aliased import
+// (`adminpb "…/admin/v1"`) returns its alias; an unaliased import returns
+// genPkgName, the package's own declared name, which is how call sites refer
+// to it.
+func existingImportAlias(content, importPath, genPkgName string) (string, bool) {
+	quoted := strconv.Quote(importPath)
+	for _, ln := range strings.Split(content, "\n") {
+		t := strings.TrimSpace(ln)
+		if !strings.HasSuffix(t, quoted) {
+			continue
+		}
+		if prefix := strings.TrimSpace(strings.TrimSuffix(t, quoted)); prefix != "" {
+			return prefix, true
+		}
+		return genPkgName, true
+	}
+	return "", false
+}
+
+// writeFormattedGo gofmt-formats src before writing it to path so the
+// generated/mutated provider stays canonical (notably keeping the injected
+// imports sorted). If formatting fails (e.g. a user hand-edit left the file
+// unparseable) the original bytes are written so the wire still lands.
+func writeFormattedGo(path string, src []byte) error {
+	out := src
+	if formatted, err := format.Source(src); err == nil {
+		out = formatted
+	}
+	return os.WriteFile(path, out, defaultFileMode)
 }
 
 // injectAfterMarker inserts injectLine immediately after the first line that

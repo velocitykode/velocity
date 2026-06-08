@@ -1,18 +1,19 @@
 package services
 
 import (
-	{{ .ProtoAlias }} "{{ .ModulePath }}/api/gen/go/{{ .PackageName }}/v1"
+	{{ .Alias }} "{{ .ModulePath }}/api/gen/go/{{ .Leaf }}/{{ .Version }}"
 )
 
 type {{ .ServiceName }} struct {
-	{{ .ProtoAlias }}.Unimplemented{{ .ServiceName }}Server
+	{{ .Alias }}.Unimplemented{{ .ServiceName }}Server
 }
 
 func New{{ .ServiceName }}() *{{ .ServiceName }} {
 	return &{{ .ServiceName }}{}
 }
-{{ range .Methods }}
+{{- range .Methods }}
+
 {{ .Signature }} {
 {{ .Body }}
 }
-{{ end }}
+{{- end }}
