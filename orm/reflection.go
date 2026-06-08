@@ -265,6 +265,14 @@ func buildMeta(t reflect.Type) *ModelMeta {
 		byField:  make(map[string]int),
 	}
 
+	// Per-model timestamps opt-out: when the model declares
+	// UsesTimestamps() bool returning false, its created_at/updated_at
+	// columns are dropped from the set entirely (see buildColumnDef). The
+	// opt-out is a per-type constant, so it is resolved once here and
+	// threaded into the per-field builder, which otherwise has no handle on
+	// the model type.
+	optOut := modelOptsOutOfTimestamps(t)
+
 	// Pre-scan the outer struct's directly-declared field names so the
 	// embedded-walk can suppress shadowed fields. This matches Go's
 	// promotion semantics: the outer declaration always wins.
@@ -286,7 +294,7 @@ func buildMeta(t reflect.Type) *ModelMeta {
 
 		// Embedded ORM base type: walk its fields, mark FromEmbedded.
 		if isEmbeddedBaseType(field) {
-			meta.appendEmbedded(field, path, outerFieldNames)
+			meta.appendEmbedded(field, path, outerFieldNames, optOut)
 			continue
 		}
 
@@ -294,11 +302,11 @@ func buildMeta(t reflect.Type) *ModelMeta {
 		// promoted fields participate. time.Time is a special case:
 		// it's a struct but conceptually a scalar value.
 		if field.Anonymous && field.Type.Kind() == reflect.Struct && field.Type.String() != "time.Time" {
-			meta.appendAnonymous(field, path, outerFieldNames)
+			meta.appendAnonymous(field, path, outerFieldNames, optOut)
 			continue
 		}
 
-		col := buildColumnDef(field, path, false)
+		col := buildColumnDef(field, path, false, optOut)
 		if col.Column == "" {
 			continue
 		}
@@ -330,7 +338,7 @@ func (m *ModelMeta) appendColumn(col ColumnDef) {
 // nesting depth contribute their columns. Honors field shadowing: any
 // embedded field whose name appears in shadowedByOuter is skipped
 // because Go's field promotion gives the outer declaration priority.
-func (m *ModelMeta) appendEmbedded(parent reflect.StructField, parentPath []int, shadowedByOuter map[string]bool) {
+func (m *ModelMeta) appendEmbedded(parent reflect.StructField, parentPath []int, shadowedByOuter map[string]bool, optOut bool) {
 	embeddedType := parent.Type
 	if embeddedType.Kind() == reflect.Ptr {
 		embeddedType = embeddedType.Elem()
@@ -352,14 +360,14 @@ func (m *ModelMeta) appendEmbedded(parent reflect.StructField, parentPath []int,
 		// (Model[T] embeds IDInt[T]+Timestamps+Existence) flatten.
 		if f.Anonymous && f.Type.Kind() == reflect.Struct && f.Type.String() != "time.Time" {
 			if isFrameworkType(f.Type) {
-				m.appendEmbedded(f, path, shadowedByOuter)
+				m.appendEmbedded(f, path, shadowedByOuter, optOut)
 			} else {
-				m.appendAnonymous(f, path, shadowedByOuter)
+				m.appendAnonymous(f, path, shadowedByOuter, optOut)
 			}
 			continue
 		}
 
-		col := buildColumnDef(f, path, true)
+		col := buildColumnDef(f, path, true, optOut)
 		if col.Column == "" {
 			continue
 		}
@@ -372,7 +380,7 @@ func (m *ModelMeta) appendEmbedded(parent reflect.StructField, parentPath []int,
 // Recurses one level: nested embeddings are handled by the recursive
 // call, which itself may delegate to appendEmbedded when it hits a base
 // type prefix.
-func (m *ModelMeta) appendAnonymous(parent reflect.StructField, parentPath []int, shadowedByOuter map[string]bool) {
+func (m *ModelMeta) appendAnonymous(parent reflect.StructField, parentPath []int, shadowedByOuter map[string]bool, optOut bool) {
 	innerType := parent.Type
 	if innerType.Kind() == reflect.Ptr {
 		innerType = innerType.Elem()
@@ -397,14 +405,14 @@ func (m *ModelMeta) appendAnonymous(parent reflect.StructField, parentPath []int
 		}
 		path := append(append([]int{}, parentPath...), i)
 		if isEmbeddedBaseType(f) {
-			m.appendEmbedded(f, path, innerOuterFieldNames)
+			m.appendEmbedded(f, path, innerOuterFieldNames, optOut)
 			continue
 		}
 		if f.Anonymous && f.Type.Kind() == reflect.Struct && f.Type.String() != "time.Time" {
-			m.appendAnonymous(f, path, innerOuterFieldNames)
+			m.appendAnonymous(f, path, innerOuterFieldNames, optOut)
 			continue
 		}
-		col := buildColumnDef(f, path, false)
+		col := buildColumnDef(f, path, false, optOut)
 		if col.Column == "" {
 			continue
 		}
@@ -416,7 +424,7 @@ func (m *ModelMeta) appendAnonymous(parent reflect.StructField, parentPath []int
 // Returns a zero-Column ColumnDef when the field is not persistent
 // (orm:"-", relation tag, many-to-many, polymorphic morph). Callers
 // must skip such entries.
-func buildColumnDef(field reflect.StructField, path []int, fromEmbedded bool) ColumnDef {
+func buildColumnDef(field reflect.StructField, path []int, fromEmbedded bool, optOut bool) ColumnDef {
 	tag := field.Tag.Get("orm")
 
 	// Skip orm:"-" and relation kinds outright. These are the same skip
@@ -491,6 +499,16 @@ func buildColumnDef(field reflect.StructField, path []int, fromEmbedded bool) Co
 	}
 	if !def.IsDeletedAt && field.Name == "DeletedAt" {
 		def.IsDeletedAt = true
+	}
+
+	// Timestamps opt-out: a model that declares UsesTimestamps() bool
+	// returning false drops its created_at/updated_at columns from the set
+	// entirely, so no read or write path references them and a table
+	// without those columns is fully queryable. Returning a zero-Column
+	// def makes every caller skip this field. deleted_at (soft delete) is
+	// a separate concern and is deliberately left intact.
+	if optOut && (def.IsCreatedAt || def.IsUpdatedAt) {
+		return ColumnDef{}
 	}
 
 	return def

@@ -253,7 +253,7 @@ func (ImmutableUUIDModel[T]) Count(ctx context.Context) (int, error) {
 // saveImmutableModel handles auto-increment-id immutable inserts. There
 // is no update branch: callers reaching here with isInsert=false get
 // ErrImmutableModelUpdate.
-func saveImmutableModel[T any](ctx context.Context, drv drivers.Driver, model *T, modelField, idField, existsField reflect.Value, tableName string, isInsert bool) error {
+func saveImmutableModel[T any](ctx context.Context, drv drivers.Driver, model *T, modelField, idField, existsField reflect.Value, tableName string, isInsert bool, skipTimestamps bool) error {
 	if !isInsert {
 		return ErrImmutableModelUpdate
 	}
@@ -261,10 +261,13 @@ func saveImmutableModel[T any](ctx context.Context, drv drivers.Driver, model *T
 	// Respect caller-set CreatedAt; only stamp when zero. The field is
 	// optional (AppendOnly without CreatedAtOnly is a valid composition,
 	// e.g. a model that wants no auto-managed timestamp at all) so each
-	// access is gated on validity.
-	if createdAtField := modelField.FieldByName("CreatedAt"); createdAtField.IsValid() {
-		if createdAtField.Interface().(time.Time).IsZero() {
-			createdAtField.Set(reflect.ValueOf(time.Now()))
+	// access is gated on validity. Skipped when the model opted out of
+	// timestamps.
+	if !skipTimestamps {
+		if createdAtField := modelField.FieldByName("CreatedAt"); createdAtField.IsValid() {
+			if createdAtField.Interface().(time.Time).IsZero() {
+				createdAtField.Set(reflect.ValueOf(time.Now()))
+			}
 		}
 	}
 
@@ -299,7 +302,7 @@ func saveImmutableModel[T any](ctx context.Context, drv drivers.Driver, model *T
 }
 
 // saveImmutableUUIDModel handles UUID-keyed immutable inserts.
-func saveImmutableUUIDModel[T any](ctx context.Context, drv drivers.Driver, model *T, modelField, idField, existsField reflect.Value, tableName string, isInsert bool) error {
+func saveImmutableUUIDModel[T any](ctx context.Context, drv drivers.Driver, model *T, modelField, idField, existsField reflect.Value, tableName string, isInsert bool, skipTimestamps bool) error {
 	if !isInsert {
 		return ErrImmutableModelUpdate
 	}
@@ -308,10 +311,13 @@ func saveImmutableUUIDModel[T any](ctx context.Context, drv drivers.Driver, mode
 		idField.SetString(uuid.New().String())
 	}
 	// Respect caller-set CreatedAt; only stamp when zero. Optional field
-	// per the trait composition rules (see saveImmutableModel).
-	if createdAtField := modelField.FieldByName("CreatedAt"); createdAtField.IsValid() {
-		if createdAtField.Interface().(time.Time).IsZero() {
-			createdAtField.Set(reflect.ValueOf(time.Now()))
+	// per the trait composition rules (see saveImmutableModel). Skipped
+	// when the model opted out of timestamps.
+	if !skipTimestamps {
+		if createdAtField := modelField.FieldByName("CreatedAt"); createdAtField.IsValid() {
+			if createdAtField.Interface().(time.Time).IsZero() {
+				createdAtField.Set(reflect.ValueOf(time.Now()))
+			}
 		}
 	}
 

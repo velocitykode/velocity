@@ -20,6 +20,13 @@ type modelFeatures struct {
 	hasDeletedAt bool
 	appendOnly   bool
 
+	// timestampsOptOut records that the model declared
+	// UsesTimestamps() bool returning false (see TimestampsToggler). When
+	// set, hasCreatedAt and hasUpdatedAt are forced false above so no write
+	// path stamps or injects created_at/updated_at, and the save layer
+	// skips the in-memory field stamping. deleted_at is unaffected.
+	timestampsOptOut bool
+
 	// hasAnyTrait records whether at least one orm trait sentinel was
 	// found. Used as the trigger for implicit existence tracking: a
 	// model with no traits at all is plain data, not an orm-managed row.
@@ -181,7 +188,42 @@ func detectFeatures(t reflect.Type) (modelFeatures, error) {
 	if err := walkTraits(t, nil, &feats, t.String()); err != nil {
 		return modelFeatures{}, err
 	}
+	// Per-model timestamps opt-out: a model that declares
+	// UsesTimestamps() bool returning false keeps its PK and soft-delete
+	// behavior but drops auto-managed created_at/updated_at. Clearing the
+	// flags here is the single point that makes the bulk-Update injection
+	// (q.hasUpdatedAt) and the save-path stamping honor the opt-out.
+	if modelOptsOutOfTimestamps(t) {
+		feats.timestampsOptOut = true
+		feats.hasCreatedAt = false
+		feats.hasUpdatedAt = false
+	}
 	return feats, nil
+}
+
+// modelOptsOutOfTimestamps reports whether the model type t declares
+// UsesTimestamps() bool returning false (see TimestampsToggler). The method
+// returns a per-type constant, so calling it on a fresh zero value is safe
+// and the result is invariant - callers cache it via the per-type meta and
+// feature caches. A type that does not implement the method (the default)
+// manages timestamps as usual, so existing models are unaffected.
+//
+// A pointer to a fresh zero value is used for the assertion so the method is
+// found whether it has a value or pointer receiver.
+func modelOptsOutOfTimestamps(t reflect.Type) bool {
+	if t == nil {
+		return false
+	}
+	for t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return false
+	}
+	if m, ok := reflect.New(t).Interface().(TimestampsToggler); ok {
+		return !m.UsesTimestamps()
+	}
+	return false
 }
 
 // walkTraits is the recursion engine for detectFeatures. It walks

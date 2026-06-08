@@ -55,9 +55,11 @@ type ormTraitSoftDeletes struct{}
 type ormTraitAppendOnly struct{}
 
 // IDInt declares an auto-increment integer primary key (uint). The
-// generic parameter T is the concrete model so the static-like helpers
-// (Find, Where, All, Create, ...) attached to this trait return the
-// caller's row type.
+// generic parameter T is the concrete model. The static-like query
+// helpers (Find, Where, All, Create, ...) are NOT attached to this trait;
+// they hang off the convenience compositions (Model[T], SoftDeleteModel[T],
+// ...). T is carried here only so those compositions resolve their row
+// type to the caller's model. IDInt itself contributes just the id column.
 type IDInt[T any] struct {
 	_  ormTraitIDInt
 	ID uint `orm:"primaryKey;autoIncrement" json:"id"`
@@ -79,6 +81,27 @@ type Timestamps struct {
 	_         ormTraitTimestamps
 	CreatedAt time.Time `orm:"autoCreateTime" json:"created_at"`
 	UpdatedAt time.Time `orm:"autoUpdateTime" json:"updated_at"`
+}
+
+// TimestampsToggler lets a model that embeds a timestamps-bearing base
+// (Model[T], UUIDModel[T], SoftDeleteModel[T], SoftDeleteUUIDModel[T], or a
+// hand-rolled orm.Timestamps / orm.CreatedAtOnly composition) opt OUT of
+// automatic created_at / updated_at management by declaring:
+//
+//	func (M) UsesTimestamps() bool { return false }
+//
+// The method is expected to return a per-type constant. A model that does
+// not implement it, or returns true, keeps its timestamps managed - so every
+// existing model is unaffected by default. When it returns false the
+// framework drops created_at/updated_at from the model's column set
+// entirely: inserts never stamp or write them, bulk updates never inject
+// updated_at, and a table that has no such columns is fully queryable. The
+// soft-delete deleted_at column is a separate concern and is left intact.
+//
+// Naming note: the method is UsesTimestamps (not Timestamps), because
+// Timestamps is the embedded trait's field name and would collide.
+type TimestampsToggler interface {
+	UsesTimestamps() bool
 }
 
 // CreatedAtOnly carries CreatedAt but no UpdatedAt. Use this when the

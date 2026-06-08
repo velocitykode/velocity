@@ -180,6 +180,30 @@ func modelHasUpdatedAt[T any]() bool {
 	return feats.hasUpdatedAt
 }
 
+// modelHasCreatedAt reports whether T manages a created_at column. It is
+// false for a model that opted out of timestamps via UsesTimestamps(),
+// because featuresFor clears hasCreatedAt in that case. Used by the UUID
+// Last() helpers to choose an ordering column that the table actually has.
+func modelHasCreatedAt[T any]() bool {
+	feats, err := featuresForT[T]()
+	if err != nil {
+		return false
+	}
+	return feats.hasCreatedAt
+}
+
+// lastOrderColumn returns the column the UUID Last() helpers order by:
+// created_at when the model manages timestamps, otherwise id. UUID primary
+// keys are non-monotonic, so created_at is the meaningful insertion-order
+// proxy; a timestamps-opted-out model has no created_at column, so id is the
+// only ordering guaranteed to exist on the table.
+func lastOrderColumn[T any]() string {
+	if modelHasCreatedAt[T]() {
+		return "created_at"
+	}
+	return "id"
+}
+
 // modelHasSoftDelete reports whether T embeds a SoftDeletes trait.
 // Routes through the trait fingerprint cache.
 func modelHasSoftDelete[T any]() bool {

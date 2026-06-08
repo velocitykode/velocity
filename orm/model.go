@@ -310,12 +310,16 @@ func (UUIDModel[T]) First(ctx context.Context) (*T, error) {
 	return &model, nil
 }
 
-// Last retrieves the last record (by created_at descending). Takes ctx
-// as the first argument.
+// Last retrieves the last record. UUID primary keys are non-monotonic, so
+// "last" orders by created_at descending when the model manages timestamps.
+// A model that opts out of timestamps (UsesTimestamps()==false) has no
+// created_at column, so Last falls back to ordering by id to honor the
+// opt-out contract that no read references a timestamp column. Takes ctx as
+// the first argument.
 func (UUIDModel[T]) Last(ctx context.Context) (*T, error) {
 	var model T
 	query := newQuery[T]()
-	err := query.OrderBy("created_at", "DESC").First(ctx, &model)
+	err := query.OrderBy(lastOrderColumn[T](), "DESC").First(ctx, &model)
 	if err != nil {
 		return nil, err
 	}
@@ -726,12 +730,14 @@ func (SoftDeleteUUIDModel[T]) First(ctx context.Context) (*T, error) {
 	return &model, nil
 }
 
-// Last retrieves the last record (by created_at descending). Takes ctx
-// as the first argument.
+// Last retrieves the last record. As with UUIDModel, ordering is by
+// created_at descending when timestamps are managed, falling back to id when
+// the model opted out of timestamps so no read references a missing column.
+// Takes ctx as the first argument.
 func (SoftDeleteUUIDModel[T]) Last(ctx context.Context) (*T, error) {
 	var model T
 	query := newQuery[T]()
-	err := query.OrderBy("created_at", "DESC").First(ctx, &model)
+	err := query.OrderBy(lastOrderColumn[T](), "DESC").First(ctx, &model)
 	if err != nil {
 		return nil, err
 	}
@@ -1343,16 +1349,23 @@ func saveWithDriver[T any](ctx context.Context, drv drivers.Driver, model *T) er
 		return ErrImmutableModelUpdate
 	}
 
+	// skipTimestamps is set when the model opted out via UsesTimestamps().
+	// featuresFor has already forced hasCreatedAt/hasUpdatedAt false; this
+	// bool additionally suppresses the in-memory CreatedAt/UpdatedAt field
+	// stamping so an opted-out model never carries a spurious timestamp for
+	// a column that does not exist.
+	skipTimestamps := feats.timestampsOptOut
+
 	var saveErr error
 	switch {
 	case feats.appendOnly && feats.hasUUIDPK:
-		saveErr = saveImmutableUUIDModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert)
+		saveErr = saveImmutableUUIDModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert, skipTimestamps)
 	case feats.appendOnly:
-		saveErr = saveImmutableModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert)
+		saveErr = saveImmutableModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert, skipTimestamps)
 	case feats.hasUUIDPK:
-		saveErr = saveUUIDModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert)
+		saveErr = saveUUIDModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert, skipTimestamps)
 	default:
-		saveErr = saveModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert)
+		saveErr = saveModel(ctx, drv, model, modelField, idField, existsField, tableName, isInsert, skipTimestamps)
 	}
 	if saveErr == nil {
 		// Wire model AfterCommit / AfterRollback hooks against the
@@ -1365,28 +1378,31 @@ func saveWithDriver[T any](ctx context.Context, drv drivers.Driver, model *T) er
 }
 
 // saveModel handles saving for auto-increment ID models
-func saveModel[T any](ctx context.Context, drv drivers.Driver, model *T, modelField, idField, existsField reflect.Value, tableName string, isInsert bool) error {
+func saveModel[T any](ctx context.Context, drv drivers.Driver, model *T, modelField, idField, existsField reflect.Value, tableName string, isInsert bool, skipTimestamps bool) error {
 	if isInsert {
 		// Set timestamps: respect caller-set CreatedAt; only stamp when zero.
 		// UpdatedAt mirrors CreatedAt on insert for consistency. Both fields
 		// are optional (CreatedAtOnly composition has CreatedAt but not
 		// UpdatedAt; some custom shapes may have neither) so each is gated
-		// on validity.
-		createdAtField := modelField.FieldByName("CreatedAt")
-		updatedAtField := modelField.FieldByName("UpdatedAt")
-		var createdAt time.Time
-		if createdAtField.IsValid() {
-			createdAt = createdAtField.Interface().(time.Time)
-			if createdAt.IsZero() {
-				createdAt = time.Now()
-				createdAtField.Set(reflect.ValueOf(createdAt))
+		// on validity. Skipped entirely when the model opted out of
+		// timestamps (the columns are not in the table).
+		if !skipTimestamps {
+			createdAtField := modelField.FieldByName("CreatedAt")
+			updatedAtField := modelField.FieldByName("UpdatedAt")
+			var createdAt time.Time
+			if createdAtField.IsValid() {
+				createdAt = createdAtField.Interface().(time.Time)
+				if createdAt.IsZero() {
+					createdAt = time.Now()
+					createdAtField.Set(reflect.ValueOf(createdAt))
+				}
 			}
-		}
-		if updatedAtField.IsValid() && updatedAtField.Interface().(time.Time).IsZero() {
-			if createdAt.IsZero() {
-				createdAt = time.Now()
+			if updatedAtField.IsValid() && updatedAtField.Interface().(time.Time).IsZero() {
+				if createdAt.IsZero() {
+					createdAt = time.Now()
+				}
+				updatedAtField.Set(reflect.ValueOf(createdAt))
 			}
-			updatedAtField.Set(reflect.ValueOf(createdAt))
 		}
 
 		// Call BeforeCreate hook if exists
@@ -1423,9 +1439,12 @@ func saveModel[T any](ctx context.Context, drv drivers.Driver, model *T, modelFi
 		}
 	} else {
 		// Update existing record. UpdatedAt is optional (CreatedAtOnly
-		// without AppendOnly composes here too).
-		if updatedAtField := modelField.FieldByName("UpdatedAt"); updatedAtField.IsValid() {
-			updatedAtField.Set(reflect.ValueOf(time.Now()))
+		// without AppendOnly composes here too) and is skipped when the
+		// model opted out of timestamps.
+		if !skipTimestamps {
+			if updatedAtField := modelField.FieldByName("UpdatedAt"); updatedAtField.IsValid() {
+				updatedAtField.Set(reflect.ValueOf(time.Now()))
+			}
 		}
 
 		// Call BeforeUpdate hook if exists
@@ -1464,7 +1483,7 @@ func saveModel[T any](ctx context.Context, drv drivers.Driver, model *T, modelFi
 }
 
 // saveUUIDModel handles saving for UUID primary key models
-func saveUUIDModel[T any](ctx context.Context, drv drivers.Driver, model *T, modelField, idField, existsField reflect.Value, tableName string, isInsert bool) error {
+func saveUUIDModel[T any](ctx context.Context, drv drivers.Driver, model *T, modelField, idField, existsField reflect.Value, tableName string, isInsert bool, skipTimestamps bool) error {
 	if isInsert {
 		// Generate UUID if not already set
 		if idField.String() == "" {
@@ -1473,22 +1492,25 @@ func saveUUIDModel[T any](ctx context.Context, drv drivers.Driver, model *T, mod
 
 		// Set timestamps: respect caller-set CreatedAt; only stamp when zero.
 		// UpdatedAt mirrors CreatedAt on insert for consistency. Both fields
-		// are optional (custom compositions may omit one or both).
-		createdAtField := modelField.FieldByName("CreatedAt")
-		updatedAtField := modelField.FieldByName("UpdatedAt")
-		var createdAt time.Time
-		if createdAtField.IsValid() {
-			createdAt = createdAtField.Interface().(time.Time)
-			if createdAt.IsZero() {
-				createdAt = time.Now()
-				createdAtField.Set(reflect.ValueOf(createdAt))
+		// are optional (custom compositions may omit one or both). Skipped
+		// entirely when the model opted out of timestamps.
+		if !skipTimestamps {
+			createdAtField := modelField.FieldByName("CreatedAt")
+			updatedAtField := modelField.FieldByName("UpdatedAt")
+			var createdAt time.Time
+			if createdAtField.IsValid() {
+				createdAt = createdAtField.Interface().(time.Time)
+				if createdAt.IsZero() {
+					createdAt = time.Now()
+					createdAtField.Set(reflect.ValueOf(createdAt))
+				}
 			}
-		}
-		if updatedAtField.IsValid() && updatedAtField.Interface().(time.Time).IsZero() {
-			if createdAt.IsZero() {
-				createdAt = time.Now()
+			if updatedAtField.IsValid() && updatedAtField.Interface().(time.Time).IsZero() {
+				if createdAt.IsZero() {
+					createdAt = time.Now()
+				}
+				updatedAtField.Set(reflect.ValueOf(createdAt))
 			}
-			updatedAtField.Set(reflect.ValueOf(createdAt))
 		}
 
 		// Call BeforeCreate hook if exists
@@ -1521,9 +1543,12 @@ func saveUUIDModel[T any](ctx context.Context, drv drivers.Driver, model *T, mod
 			}
 		}
 	} else {
-		// Update existing record. UpdatedAt is optional.
-		if updatedAtField := modelField.FieldByName("UpdatedAt"); updatedAtField.IsValid() {
-			updatedAtField.Set(reflect.ValueOf(time.Now()))
+		// Update existing record. UpdatedAt is optional and is skipped when
+		// the model opted out of timestamps.
+		if !skipTimestamps {
+			if updatedAtField := modelField.FieldByName("UpdatedAt"); updatedAtField.IsValid() {
+				updatedAtField.Set(reflect.ValueOf(time.Now()))
+			}
 		}
 
 		// Call BeforeUpdate hook if exists
