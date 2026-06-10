@@ -60,6 +60,9 @@ func (q *Query[T]) Paginate(ctx context.Context, page, perPage int) (*PaginatedR
 	if perPage < 1 {
 		perPage = 15
 	}
+	if q.err != nil {
+		return nil, q.err
+	}
 	q.bindTxFromContextValue(ctx)
 
 	// Apply global scopes once on q so the count and data queries use
@@ -68,6 +71,12 @@ func (q *Query[T]) Paginate(ctx context.Context, page, perPage int) (*PaginatedR
 	// This is safe because Paginate is a terminal method, the query is
 	// not reused afterward.
 	q.applyGlobalScopes(ctx)
+	// A scope predicate that fails validation sets q.err during apply.
+	// Surface it before issuing the count SELECT so a broken scope cannot
+	// silently drop its predicate.
+	if q.err != nil {
+		return nil, q.err
+	}
 
 	// Copy conditions for the count query so Count()'s column mutation
 	// does not affect the data query.
@@ -82,7 +91,8 @@ func (q *Query[T]) Paginate(ctx context.Context, page, perPage int) (*PaginatedR
 		groups:              q.groups,
 		having:              q.having,
 		distinct:            q.distinct,
-		columns:             []string{"*"},
+		columns:             q.columns,
+		rawColumns:          q.rawColumns,
 		globalScopesApplied: true,
 	}
 

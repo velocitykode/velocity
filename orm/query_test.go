@@ -586,3 +586,301 @@ func TestWhere_RegisteredOperatorParamShapeMismatch(t *testing.T) {
 		t.Errorf("error: got %q, want containing 'JSON'", q.err.Error())
 	}
 }
+
+// namedDriver overrides nopDriver's DriverName so dialect-gated paths
+// (e.g. the ILIKE gate) can be tested per driver.
+type namedDriver struct {
+	nopDriver
+	name string
+}
+
+func (d *namedDriver) DriverName() string { return d.name }
+
+// newDetachedQuery builds a driver-bound Query without a database
+// connection for parse/compile-level Where tests.
+func newDetachedQuery(grammar drivers.QueryGrammar) *Query[TestUser] {
+	return &Query[TestUser]{
+		driver:  &nopDriver{grammar: grammar},
+		table:   "test_users",
+		columns: []string{"*"},
+	}
+}
+
+// TestWhere_ThreeArgForm_RegressionB6 covers the Eloquent-style
+// three-argument form Where(column, operator, value). Before the B6 fix
+// this parsed as column="age", operator="=", value=">" — the operator
+// string was bound as the value and 18 was silently dropped.
+func TestWhere_ThreeArgForm_RegressionB6(t *testing.T) {
+	q := newDetachedQuery(&drivers.SQLiteGrammar{})
+	q.Where("age", ">", 18)
+	if q.Err() != nil {
+		t.Fatalf("three-argument Where returned error: %v", q.Err())
+	}
+	if len(q.conditions) != 1 {
+		t.Fatalf("conditions: got %d, want 1", len(q.conditions))
+	}
+	cond := q.conditions[0]
+	if cond.Column != "age" || cond.Operator != ">" || cond.Value != 18 {
+		t.Errorf("condition = {%q %q %v}, want {age > 18}", cond.Column, cond.Operator, cond.Value)
+	}
+
+	sql, args := (&drivers.SQLiteGrammar{}).CompileSelect(&drivers.SelectQuery{
+		Table:      "test_users",
+		Conditions: q.conditions,
+	})
+	if !strings.Contains(sql, "`age` > ?") {
+		t.Errorf("SQL missing \"`age` > ?\"; got %q", sql)
+	}
+	if len(args) != 1 || args[0] != 18 {
+		t.Errorf("args = %v, want [18]", args)
+	}
+}
+
+// TestWhere_ThreeArgForm_RegistryOperator confirms the three-argument
+// form also recognises driver-registered operators, not just the
+// built-in allowlist.
+func TestWhere_ThreeArgForm_RegistryOperator(t *testing.T) {
+	defer withStubRegistryDriver(t, map[string]drivers.OperatorSpec{
+		"@>": {Op: "@>", Arity: 1, ParamShape: drivers.ParamJSON, Template: "{{lhs}} @> {{rhs}}::jsonb"},
+	})()
+
+	q := Model[TestUser]{}.Where("processes", "@>", `{"key":"value"}`)
+	if q.err != nil {
+		t.Fatalf("three-argument Where with registry operator errored: %v", q.err)
+	}
+	if len(q.conditions) != 1 || q.conditions[0].Operator != "@>" {
+		t.Fatalf("conditions = %+v, want one @> condition", q.conditions)
+	}
+	if q.conditions[0].Spec == nil {
+		t.Error("Condition.Spec is nil; registry operator did not resolve")
+	}
+}
+
+// TestWhere_ThreeArgNonOperatorRejected_RegressionB6: a bare column with
+// two extra arguments whose first is not an operator string is a hard
+// error. Before the fix args[1] was silently dropped and args[0] bound
+// as the value.
+func TestWhere_ThreeArgNonOperatorRejected_RegressionB6(t *testing.T) {
+	for _, args := range [][]any{
+		{1, 2},        // first arg not a string
+		{"bogus", 18}, // first arg not an operator
+	} {
+		q := newDetachedQuery(&drivers.SQLiteGrammar{})
+		q.Where("age", args...)
+		if q.Err() == nil {
+			t.Errorf("Where(\"age\", %v...): expected error, got nil", args)
+			continue
+		}
+		if !strings.Contains(q.Err().Error(), "three-argument form") {
+			t.Errorf("error %q does not mention the three-argument form", q.Err().Error())
+		}
+	}
+}
+
+// TestWhere_BareColumnTooManyArgs_RegressionB6: more than two extra
+// arguments on a bare column is a hard error (previously all but the
+// first were silently dropped).
+func TestWhere_BareColumnTooManyArgs_RegressionB6(t *testing.T) {
+	q := newDetachedQuery(&drivers.SQLiteGrammar{})
+	q.Where("age", ">", 18, 19)
+	if q.Err() == nil {
+		t.Fatal("expected error for bare column with three extra args")
+	}
+	if !strings.Contains(q.Err().Error(), "too many arguments") {
+		t.Errorf("error %q does not mention too many arguments", q.Err().Error())
+	}
+}
+
+// TestWhere_CompoundConditionRejected_RegressionB6 is the headline B6
+// regression: "a = ? AND b = ?" used to silently drop everything after
+// the first predicate (and its bound arg), broadening the result set.
+func TestWhere_CompoundConditionRejected_RegressionB6(t *testing.T) {
+	q := newDetachedQuery(&drivers.SQLiteGrammar{})
+	q.Where("a = ? AND b = ?", 1, 2)
+	if q.Err() == nil {
+		t.Fatal("expected error for compound condition string")
+	}
+	if !strings.Contains(q.Err().Error(), "WhereGroup") {
+		t.Errorf("error %q should point the caller at WhereGroup/chained Where", q.Err().Error())
+	}
+	if len(q.conditions) != 0 {
+		t.Errorf("rejected condition still appended: %+v", q.conditions)
+	}
+}
+
+// TestOrWhere_CompoundConditionRejected_RegressionB6 keeps OrWhere
+// symmetric with Where; both share parseCondition.
+func TestOrWhere_CompoundConditionRejected_RegressionB6(t *testing.T) {
+	q := newDetachedQuery(&drivers.SQLiteGrammar{})
+	q.Where("a = ?", 1).OrWhere("b = ? OR c = ?", 2, 3)
+	if q.Err() == nil {
+		t.Fatal("expected error for compound OrWhere condition string")
+	}
+}
+
+// TestHaving_CompoundConditionRejected_RegressionB6 keeps Having
+// symmetric with Where; both share parseCondition.
+func TestHaving_CompoundConditionRejected_RegressionB6(t *testing.T) {
+	q := newDetachedQuery(&drivers.SQLiteGrammar{})
+	q.GroupBy("age").Having("age > ? AND id > ?", 18, 5)
+	if q.Err() == nil {
+		t.Fatal("expected error for compound Having condition string")
+	}
+}
+
+// TestWhere_InlineLiteralRejected_RegressionB6: "age > 18" used to parse
+// as operator ">" with the literal discarded, emitting "age > NULL".
+func TestWhere_InlineLiteralRejected_RegressionB6(t *testing.T) {
+	q := newDetachedQuery(&drivers.SQLiteGrammar{})
+	q.Where("age > 18")
+	if q.Err() == nil {
+		t.Fatal("expected error for inline literal in condition string")
+	}
+	if !strings.Contains(q.Err().Error(), "bind values with ?") {
+		t.Errorf("error %q should tell the caller to bind via ? placeholders", q.Err().Error())
+	}
+}
+
+// TestWhere_IsNullCompoundRejected_RegressionB6: an IS NULL form followed
+// by more predicate used to match the IS NULL fast path and silently drop
+// the remainder.
+func TestWhere_IsNullCompoundRejected_RegressionB6(t *testing.T) {
+	q := newDetachedQuery(&drivers.SQLiteGrammar{})
+	q.Where("deleted_at IS NULL OR id = ?", 1)
+	if q.Err() == nil {
+		t.Fatal("expected error for compound condition after IS NULL")
+	}
+	if len(q.conditions) != 0 {
+		t.Errorf("rejected condition still appended: %+v", q.conditions)
+	}
+}
+
+// TestWhere_NullPredicateExtraArgsRejected: IS NULL / IS NOT NULL take no
+// bind values; extra Go arguments used to be silently dropped.
+func TestWhere_NullPredicateExtraArgsRejected(t *testing.T) {
+	for _, cond := range []string{"deleted_at IS NULL", "deleted_at IS NOT NULL"} {
+		q := newDetachedQuery(&drivers.SQLiteGrammar{})
+		q.Where(cond, 1)
+		if q.Err() == nil {
+			t.Errorf("Where(%q, 1): expected error for extra argument", cond)
+		}
+		if len(q.conditions) != 0 {
+			t.Errorf("Where(%q, 1): rejected condition still appended: %+v", cond, q.conditions)
+		}
+	}
+}
+
+// TestWhere_PlaceholderArityRejected: a single-placeholder predicate takes
+// exactly one bind value; extra arguments used to be silently dropped and a
+// missing argument silently bound NULL.
+func TestWhere_PlaceholderArityRejected(t *testing.T) {
+	t.Run("too many args", func(t *testing.T) {
+		q := newDetachedQuery(&drivers.SQLiteGrammar{})
+		q.Where("age > ?", 18, 19)
+		if q.Err() == nil {
+			t.Fatal("expected error for extra argument with single placeholder")
+		}
+		if len(q.conditions) != 0 {
+			t.Errorf("rejected condition still appended: %+v", q.conditions)
+		}
+	})
+	t.Run("missing arg", func(t *testing.T) {
+		q := newDetachedQuery(&drivers.SQLiteGrammar{})
+		q.Where("age > ?")
+		if q.Err() == nil {
+			t.Fatal("expected error for placeholder with no argument")
+		}
+	})
+	t.Run("no placeholder with arg", func(t *testing.T) {
+		q := newDetachedQuery(&drivers.SQLiteGrammar{})
+		q.Where("age >", 18)
+		if q.Err() == nil {
+			t.Fatal("expected error for argument without placeholder")
+		}
+	})
+}
+
+// TestWhere_NotLike_RegressionB6: multi-word operators used to be
+// unparseable — "name NOT LIKE ?" split into operator "NOT" and failed
+// operator validation despite NOT LIKE being in the allowlist.
+func TestWhere_NotLike_RegressionB6(t *testing.T) {
+	for _, cond := range []string{"name NOT LIKE ?", "name not like ?"} {
+		q := newDetachedQuery(&drivers.SQLiteGrammar{})
+		q.Where(cond, "%foo%")
+		if q.Err() != nil {
+			t.Errorf("Where(%q) errored: %v", cond, q.Err())
+			continue
+		}
+		if got := q.conditions[0].Operator; got != "NOT LIKE" {
+			t.Errorf("Where(%q) operator = %q, want NOT LIKE", cond, got)
+			continue
+		}
+		sql, args := (&drivers.SQLiteGrammar{}).CompileSelect(&drivers.SelectQuery{
+			Table:      "test_users",
+			Conditions: q.conditions,
+		})
+		if !strings.Contains(sql, "`name` NOT LIKE ?") {
+			t.Errorf("SQL missing NOT LIKE predicate; got %q", sql)
+		}
+		if len(args) != 1 || args[0] != "%foo%" {
+			t.Errorf("args = %v, want [%%foo%%]", args)
+		}
+	}
+}
+
+// TestWhere_NotIn_MultiWordOperator confirms the longest-match operator
+// path keeps the exact uppercase form grammars special-case for slice
+// expansion.
+func TestWhere_NotIn_MultiWordOperator(t *testing.T) {
+	q := newDetachedQuery(&drivers.SQLiteGrammar{})
+	q.Where("id not in ?", []any{1, 2, 3})
+	if q.Err() != nil {
+		t.Fatalf("Where with NOT IN errored: %v", q.Err())
+	}
+	sql, args := (&drivers.SQLiteGrammar{}).CompileSelect(&drivers.SelectQuery{
+		Table:      "test_users",
+		Conditions: q.conditions,
+	})
+	if !strings.Contains(sql, "`id` NOT IN (?, ?, ?)") {
+		t.Errorf("SQL missing expanded NOT IN; got %q", sql)
+	}
+	if len(args) != 3 {
+		t.Errorf("args = %v, want 3 expanded values", args)
+	}
+}
+
+// TestWhere_ILIKE_DriverGated_RegressionB6: ILIKE is PostgreSQL-only.
+// Driver-bound builders on other dialects must reject it instead of
+// shipping SQL that fails at execute time; detached builders (nil
+// driver) keep accepting it because the dialect is not yet known.
+func TestWhere_ILIKE_DriverGated_RegressionB6(t *testing.T) {
+	gated := func(name string, grammar drivers.QueryGrammar) *Query[TestUser] {
+		return &Query[TestUser]{
+			driver:  &namedDriver{nopDriver: nopDriver{grammar: grammar}, name: name},
+			table:   "test_users",
+			columns: []string{"*"},
+		}
+	}
+
+	for _, name := range []string{"sqlite", "mysql"} {
+		q := gated(name, &drivers.SQLiteGrammar{})
+		q.Where("name ILIKE ?", "%foo%")
+		if q.Err() == nil {
+			t.Errorf("driver %q: expected ILIKE rejection, got nil error", name)
+		} else if !strings.Contains(q.Err().Error(), "PostgreSQL-only") {
+			t.Errorf("driver %q: error %q should say ILIKE is PostgreSQL-only", name, q.Err().Error())
+		}
+	}
+
+	pg := gated("postgres", &drivers.PostgresGrammar{})
+	pg.Where("name ILIKE ?", "%foo%")
+	if pg.Err() != nil {
+		t.Errorf("postgres: ILIKE rejected: %v", pg.Err())
+	}
+
+	detached := &Query[TestUser]{table: "test_users", columns: []string{"*"}}
+	detached.Where("name ILIKE ?", "%foo%")
+	if detached.Err() != nil {
+		t.Errorf("nil driver: ILIKE rejected: %v", detached.Err())
+	}
+}

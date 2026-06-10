@@ -262,38 +262,12 @@ func extractRelationValue(tag string) string {
 	return ""
 }
 
-// resolveTableNameReflect resolves the table name for a type using reflection.
-// Checks for TableName() method, falls back to lowercase+s convention.
+// resolveTableNameReflect resolves the table name for a type using
+// reflection. Delegates to the canonical deriveTableName so the relation
+// resolver agrees with the read and write paths; preserves the historical
+// contract of returning "" for an unnamed type.
 func resolveTableNameReflect(t reflect.Type) string {
-	// Try value receiver first (most common for TableName)
-	if method, ok := t.MethodByName("TableName"); ok {
-		if method.Type.NumIn() == 1 && method.Type.NumOut() == 1 && method.Type.Out(0).Kind() == reflect.String {
-			receiver := reflect.New(t).Elem()
-			result := method.Func.Call([]reflect.Value{receiver})
-			if name, ok := result[0].Interface().(string); ok && name != "" {
-				return name
-			}
-		}
-	}
-
-	// Try pointer receiver
-	ptrType := reflect.PointerTo(t)
-	if method, ok := ptrType.MethodByName("TableName"); ok {
-		if method.Type.NumIn() == 1 && method.Type.NumOut() == 1 && method.Type.Out(0).Kind() == reflect.String {
-			receiver := reflect.New(t)
-			result := method.Func.Call([]reflect.Value{receiver})
-			if name, ok := result[0].Interface().(string); ok && name != "" {
-				return name
-			}
-		}
-	}
-
-	// Default: lowercase + "s"
-	name := t.Name()
-	if name == "" {
-		return ""
-	}
-	return strings.ToLower(name) + "s"
+	return deriveTableName(t)
 }
 
 // getFieldValueByColumn extracts the value of a struct field matching the

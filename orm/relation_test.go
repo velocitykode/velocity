@@ -261,7 +261,12 @@ func TestResolveTableNameReflect(t *testing.T) {
 	}{
 		{name: "WithTableNameMethod", typ: reflect.TypeOf(RelUser{}), wantName: "rel_users"},
 		{name: "WithTableNameMethod_Post", typ: reflect.TypeOf(RelPost{}), wantName: "rel_posts"},
-		{name: "WithoutTableNameMethod", typ: reflect.TypeOf(NoTableNameModel{}), wantName: "notablenamemodels"},
+		// B7 unification: the fallback is now str.Plural(ToSnakeCase(name)),
+		// so a multi-word type name pluralizes to snake_case. Previously this
+		// path produced the lowercase-concatenated "notablenamemodels"; the
+		// write path already produced "no_table_name_models", and the two now
+		// agree. Override TableName() to pin a legacy name.
+		{name: "WithoutTableNameMethod", typ: reflect.TypeOf(NoTableNameModel{}), wantName: "no_table_name_models"},
 		{name: "AnonymousStruct", typ: reflect.TypeOf(struct{ X int }{}), wantName: ""},
 	}
 

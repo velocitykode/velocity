@@ -103,9 +103,16 @@ func safeDB(ctx *router.Context) orm.Database {
 	if s == nil || s.DB == nil {
 		return nil
 	}
-	// s.DB is the stdlib-only contract.Database; the stored value is always
+	// s.DB is the stdlib-only contract.Database; the framework always stores
 	// the concrete *orm.Manager, which also satisfies the richer orm.Database.
-	return s.DB.(orm.Database)
+	// An adopter could install a different contract.Database, so assert with
+	// comma-ok and treat a mismatch as "no DB" rather than panicking in
+	// library code.
+	db, ok := s.DB.(orm.Database)
+	if !ok {
+		return nil
+	}
+	return db
 }
 
 // Form binds the request body into a fresh *T, validates using T.Rules() if

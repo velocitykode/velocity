@@ -80,8 +80,26 @@ func TestSQLiteGrammar_CompileSelect(t *testing.T) {
 					{Type: "INNER", Table: "posts", On: "users.id = posts.user_id"},
 				},
 			},
-			wantSQL:  "SELECT `users.id`, `posts.title` FROM `users` INNER JOIN `posts` ON users.id = posts.user_id",
+			wantSQL:  "SELECT `users`.`id`, `posts`.`title` FROM `users` INNER JOIN `posts` ON users.id = posts.user_id",
 			wantArgs: nil,
+		},
+		{
+			name: "select with dotted columns in projection, WHERE and ORDER BY",
+			query: &SelectQuery{
+				Table:   "users",
+				Columns: []string{"users.*", "posts.title"},
+				Joins: []Join{
+					{Type: "INNER", Table: "posts", On: "users.id = posts.user_id"},
+				},
+				Conditions: []Condition{
+					{Column: "users.email", Operator: "=", Value: "a@b.c", Type: "and"},
+				},
+				Orders: []Order{
+					{Column: "posts.created_at", Direction: "DESC"},
+				},
+			},
+			wantSQL:  "SELECT `users`.*, `posts`.`title` FROM `users` INNER JOIN `posts` ON users.id = posts.user_id WHERE `users`.`email` = ? ORDER BY `posts`.`created_at` DESC",
+			wantArgs: []any{"a@b.c"},
 		},
 		{
 			name: "select with ORDER BY",
@@ -392,6 +410,9 @@ func TestSQLiteGrammar_QuoteIdentifier(t *testing.T) {
 	}{
 		{"simple identifier", "users", "`users`"},
 		{"identifier with underscore", "user_roles", "`user_roles`"},
+		{"dotted identifier", "users.email", "`users`.`email`"},
+		{"dotted star projection", "users.*", "`users`.*"},
+		{"backtick escaped per segment", "us`ers.em`ail", "`us``ers`.`em``ail`"},
 	}
 
 	for _, tt := range tests {
@@ -576,6 +597,24 @@ func TestMySQLGrammar_CompileSelect(t *testing.T) {
 			},
 			wantSQL:  "SELECT * FROM `users` LEFT JOIN `posts` ON users.id = posts.user_id",
 			wantArgs: nil,
+		},
+		{
+			name: "select with dotted columns in projection, WHERE and ORDER BY",
+			query: &SelectQuery{
+				Table:   "users",
+				Columns: []string{"users.*", "posts.title"},
+				Joins: []Join{
+					{Type: "INNER", Table: "posts", On: "users.id = posts.user_id"},
+				},
+				Conditions: []Condition{
+					{Column: "users.email", Operator: "=", Value: "a@b.c", Type: "and"},
+				},
+				Orders: []Order{
+					{Column: "posts.created_at", Direction: "DESC"},
+				},
+			},
+			wantSQL:  "SELECT `users`.*, `posts`.`title` FROM `users` INNER JOIN `posts` ON users.id = posts.user_id WHERE `users`.`email` = ? ORDER BY `posts`.`created_at` DESC",
+			wantArgs: []any{"a@b.c"},
 		},
 		{
 			name: "select with ORDER BY",
@@ -888,6 +927,9 @@ func TestMySQLGrammar_QuoteIdentifier(t *testing.T) {
 	}{
 		{"simple identifier", "users", "`users`"},
 		{"identifier with underscore", "user_roles", "`user_roles`"},
+		{"dotted identifier", "users.email", "`users`.`email`"},
+		{"dotted star projection", "users.*", "`users`.*"},
+		{"backtick escaped per segment", "us`ers.em`ail", "`us``ers`.`em``ail`"},
 	}
 
 	for _, tt := range tests {
@@ -1076,6 +1118,24 @@ func TestPostgresGrammar_CompileSelect(t *testing.T) {
 			},
 			wantSQL:  `SELECT * FROM "users" LEFT JOIN "posts" ON users.id = posts.user_id`,
 			wantArgs: nil,
+		},
+		{
+			name: "select with dotted columns in projection, WHERE and ORDER BY",
+			query: &SelectQuery{
+				Table:   "users",
+				Columns: []string{"users.*", "posts.title"},
+				Joins: []Join{
+					{Type: "INNER", Table: "posts", On: "users.id = posts.user_id"},
+				},
+				Conditions: []Condition{
+					{Column: "users.email", Operator: "=", Value: "a@b.c", Type: "and"},
+				},
+				Orders: []Order{
+					{Column: "posts.created_at", Direction: "DESC"},
+				},
+			},
+			wantSQL:  `SELECT "users".*, "posts"."title" FROM "users" INNER JOIN "posts" ON users.id = posts.user_id WHERE "users"."email" = $1 ORDER BY "posts"."created_at" DESC`,
+			wantArgs: []any{"a@b.c"},
 		},
 		{
 			name: "select with ORDER BY",
@@ -1569,6 +1629,9 @@ func TestPostgresGrammar_QuoteIdentifier(t *testing.T) {
 	}{
 		{"simple identifier", "users", `"users"`},
 		{"identifier with underscore", "user_roles", `"user_roles"`},
+		{"dotted identifier", "users.email", `"users"."email"`},
+		{"dotted star projection", "users.*", `"users".*`},
+		{"double quote escaped per segment", `us"ers.em"ail`, `"us""ers"."em""ail"`},
 	}
 
 	for _, tt := range tests {
@@ -1710,6 +1773,9 @@ func TestGrammar_QuoteIdentifierDifferences(t *testing.T) {
 		{"SQLite uses backticks", &SQLiteGrammar{}, "users", "`users`"},
 		{"MySQL uses backticks", &MySQLGrammar{}, "users", "`users`"},
 		{"Postgres uses double quotes", &PostgresGrammar{}, "users", `"users"`},
+		{"SQLite quotes dotted per segment", &SQLiteGrammar{}, "users.id", "`users`.`id`"},
+		{"MySQL quotes dotted per segment", &MySQLGrammar{}, "users.id", "`users`.`id`"},
+		{"Postgres quotes dotted per segment", &PostgresGrammar{}, "users.id", `"users"."id"`},
 	}
 
 	for _, tt := range tests {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -301,9 +302,18 @@ func (q *Query[T]) Clone() *Query[T] {
 	return clone
 }
 
+// operatorRegistry returns the active driver's operator registry, or nil
+// when the query is detached from a driver (e.g. WhereGroup sub-builders).
+func (q *Query[T]) operatorRegistry() map[string]drivers.OperatorSpec {
+	if q.driver == nil {
+		return nil
+	}
+	return q.driver.OperatorRegistry()
+}
+
 // Where adds a WHERE condition
 func (q *Query[T]) Where(condition string, args ...any) *Query[T] {
-	col, op, val, err := parseCondition(condition, args)
+	col, op, val, err := parseCondition(condition, args, q.operatorRegistry())
 	if err != nil {
 		q.setErr("Where", err)
 		return q
@@ -312,6 +322,12 @@ func (q *Query[T]) Where(condition string, args ...any) *Query[T] {
 	if err != nil {
 		q.setErr("Where", err)
 		return q
+	}
+	if spec == nil {
+		if val, err = normalizeMultiValue(op, val); err != nil {
+			q.setErr("Where", err)
+			return q
+		}
 	}
 	q.conditions = append(q.conditions, drivers.Condition{
 		Column:   col,
@@ -325,7 +341,7 @@ func (q *Query[T]) Where(condition string, args ...any) *Query[T] {
 
 // OrWhere adds an OR WHERE condition
 func (q *Query[T]) OrWhere(condition string, args ...any) *Query[T] {
-	col, op, val, err := parseCondition(condition, args)
+	col, op, val, err := parseCondition(condition, args, q.operatorRegistry())
 	if err != nil {
 		q.setErr("OrWhere", err)
 		return q
@@ -334,6 +350,12 @@ func (q *Query[T]) OrWhere(condition string, args ...any) *Query[T] {
 	if err != nil {
 		q.setErr("OrWhere", err)
 		return q
+	}
+	if spec == nil {
+		if val, err = normalizeMultiValue(op, val); err != nil {
+			q.setErr("OrWhere", err)
+			return q
+		}
 	}
 	q.conditions = append(q.conditions, drivers.Condition{
 		Column:   col,
@@ -479,65 +501,162 @@ func (q *Query[T]) WhereBetween(field string, start, end any) *Query[T] {
 
 // parseCondition parses a condition string and args into column, operator, and value.
 // Handles formats like:
-//   - "col = ?", val        -> col, "=", val
-//   - "col", val            -> col, "=", val (default operator)
-//   - "col IS NULL"         -> col, "IS NULL", nil
-//   - "col IS NOT NULL"     -> col, "IS NOT NULL", nil
-//   - "col > ?", val        -> col, ">", val
-func parseCondition(condition string, args []any) (column, operator string, value any, err error) {
+//   - "col = ?", val         -> col, "=", val
+//   - "col", val             -> col, "=", val (default operator)
+//   - "col", op, val         -> col, op, val (three-argument convenience form)
+//   - "col IS NULL"          -> col, "IS NULL", nil
+//   - "col IS NOT NULL"      -> col, "IS NOT NULL", nil
+//   - "col NOT LIKE ?", val  -> col, "NOT LIKE", val (multi-word operators)
+//
+// Anything in the condition string beyond column, operator, and a single
+// trailing "?" placeholder is a hard error: inline literals ("age > 18")
+// and compound predicates ("a = ? AND b = ?") were previously truncated
+// silently, dropping predicates and broadening result sets.
+//
+// registry is the active driver's operator registry (nil when the query
+// is detached from a driver). It only widens which tokens count as an
+// operator during parsing; admissibility is still decided by the caller
+// via resolveOperator, which has the driver in hand.
+func parseCondition(condition string, args []any, registry map[string]drivers.OperatorSpec) (column, operator string, value any, err error) {
 	condition = strings.TrimSpace(condition)
 
-	// Check for IS NULL / IS NOT NULL patterns (case-insensitive)
+	// IS NULL / IS NOT NULL must be the entire condition (case-insensitive).
+	// A mid-string match means a compound predicate follows; that falls
+	// through to the token parser below and is rejected there.
 	upperCond := strings.ToUpper(condition)
-	if idx := strings.Index(upperCond, " IS NOT NULL"); idx != -1 {
-		col := strings.TrimSpace(condition[:idx])
+	if strings.HasSuffix(upperCond, " IS NOT NULL") {
+		if len(args) > 0 {
+			return "", "", nil, fmt.Errorf(
+				"condition %q takes no bind values but %d argument(s) were given", condition, len(args))
+		}
+		col := strings.TrimSpace(condition[:len(condition)-len(" IS NOT NULL")])
 		if err := validateIdentifier(col); err != nil {
 			return "", "", nil, err
 		}
 		return col, "IS NOT NULL", nil, nil
 	}
-	if idx := strings.Index(upperCond, " IS NULL"); idx != -1 {
-		col := strings.TrimSpace(condition[:idx])
+	if strings.HasSuffix(upperCond, " IS NULL") {
+		if len(args) > 0 {
+			return "", "", nil, fmt.Errorf(
+				"condition %q takes no bind values but %d argument(s) were given", condition, len(args))
+		}
+		col := strings.TrimSpace(condition[:len(condition)-len(" IS NULL")])
 		if err := validateIdentifier(col); err != nil {
 			return "", "", nil, err
 		}
 		return col, "IS NULL", nil, nil
 	}
 
-	// Split into parts: column, operator, rest
-	parts := strings.SplitN(condition, " ", 3)
+	parts := strings.Fields(condition)
+	if len(parts) == 0 {
+		return "", "", nil, fmt.Errorf("empty condition")
+	}
 
 	if len(parts) == 1 {
-		// Only column provided, default to "="
+		// Bare column: "col", val (implicit =) or the three-argument
+		// convenience form "col", op, val.
 		if err := validateIdentifier(parts[0]); err != nil {
 			return "", "", nil, err
 		}
-		if len(args) > 0 {
+		switch len(args) {
+		case 0:
+			return parts[0], "=", nil, nil
+		case 1:
 			return parts[0], "=", args[0], nil
+		case 2:
+			op, ok := args[0].(string)
+			if !ok || !operatorToken(op, registry) {
+				return "", "", nil, fmt.Errorf(
+					"condition %q with two arguments is the three-argument form (column, operator, value), but %#v is not a SQL operator",
+					condition, args[0])
+			}
+			op = strings.TrimSpace(op)
+			if isValidOperator(op) {
+				// Grammars special-case multi-value operators (IN, NOT IN,
+				// BETWEEN, ...) by exact uppercase match; normalise so a
+				// lowercase operator string still hits those cases.
+				op = strings.ToUpper(op)
+			}
+			return parts[0], op, args[1], nil
+		default:
+			return "", "", nil, fmt.Errorf(
+				"condition %q: too many arguments (%d); use the three-argument form (column, operator, value) or chain Where calls",
+				condition, len(args))
 		}
-		return parts[0], "=", nil, nil
 	}
 
-	// Column and operator provided
 	column = parts[0]
-	operator = parts[1]
-
-	// Validate column name
 	if err := validateIdentifier(column); err != nil {
 		return "", "", nil, err
 	}
 
-	// Operator validation is intentionally deferred to the caller, which
-	// has the active driver in hand and can consult its OperatorRegistry
-	// before rejecting the operator. parseCondition only normalises the
-	// surface shape (column, operator, value); the caller decides whether
-	// the operator is admissible.
+	// Longest-match operator: try the two-token form first so NOT LIKE,
+	// NOT IN, IS NOT and NOT BETWEEN parse as a single operator.
+	operator = parts[1]
+	rest := parts[2:]
+	if len(parts) >= 3 {
+		if twoTok := parts[1] + " " + parts[2]; operatorToken(twoTok, registry) {
+			operator = twoTok
+			if isValidOperator(twoTok) {
+				// Grammars special-case multi-word operators (NOT IN,
+				// NOT BETWEEN, ...) by exact uppercase match.
+				operator = strings.ToUpper(twoTok)
+			}
+			rest = parts[3:]
+		}
+	}
 
-	if len(args) > 0 {
+	// After column and operator the only legal remainder is a single "?"
+	// placeholder (or nothing).
+	if len(rest) > 1 || (len(rest) == 1 && rest[0] != "?") {
+		return "", "", nil, fmt.Errorf(
+			"unparseable condition %q: a condition is a single \"column operator ?\" predicate; bind values with ? (not inline literals), chain Where/OrWhere or use WhereGroup for compound predicates, and use WhereBetween/WhereIn for multi-value operators",
+			condition)
+	}
+
+	// Operator admissibility is intentionally deferred to the caller,
+	// which has the active driver in hand and can consult its
+	// OperatorRegistry before rejecting the operator.
+
+	if len(rest) == 1 {
+		if len(args) != 1 {
+			return "", "", nil, fmt.Errorf(
+				"condition %q has one placeholder but %d argument(s) were given", condition, len(args))
+		}
 		value = args[0]
+	} else {
+		if len(args) > 0 {
+			return "", "", nil, fmt.Errorf(
+				"condition %q has no placeholder but %d argument(s) were given; bind values with ?", condition, len(args))
+		}
+		// Every operator reaching this path binds a value; the nullary
+		// forms (IS NULL / IS NOT NULL) returned from the fast path above,
+		// except when unusual whitespace routes them through tokenisation.
+		// A dangling operator with no placeholder would otherwise compile
+		// to a NULL-bound predicate (e.g. age > NULL).
+		if upper := strings.ToUpper(strings.TrimSpace(operator)); upper != "IS NULL" && upper != "IS NOT NULL" {
+			return "", "", nil, fmt.Errorf(
+				"condition %q: operator %q requires a bound value; add a ? placeholder and argument (use WhereNull/WhereNotNull for null checks)",
+				condition, operator)
+		}
 	}
 
 	return column, operator, value, nil
+}
+
+// operatorToken reports whether op names a known operator, either in the
+// built-in allowlist or in the supplied driver registry. It only decides
+// how a condition tokenises; admissibility is resolveOperator's call.
+func operatorToken(op string, registry map[string]drivers.OperatorSpec) bool {
+	if isValidOperator(op) {
+		return true
+	}
+	op = strings.TrimSpace(op)
+	if _, ok := registry[strings.ToUpper(op)]; ok {
+		return true
+	}
+	_, ok := registry[op]
+	return ok
 }
 
 // resolveOperator decides whether an operator is admissible. Built-in scalar
@@ -547,6 +666,13 @@ func parseCondition(condition string, args []any) (column, operator string, valu
 // rejection surface stays unchanged for callers that don't extend it.
 func (q *Query[T]) resolveOperator(op string, val any) (*drivers.OperatorSpec, error) {
 	if isValidOperator(op) {
+		// ILIKE is PostgreSQL-only. A detached builder (nil driver, e.g.
+		// WhereGroup sub-builders) cannot know its dialect yet, so it
+		// keeps accepting ILIKE; a driver-bound builder rejects it on
+		// any other dialect instead of shipping broken SQL.
+		if strings.EqualFold(strings.TrimSpace(op), "ILIKE") && q.driver != nil && q.driver.DriverName() != "postgres" {
+			return nil, fmt.Errorf("operator ILIKE is PostgreSQL-only; driver %q does not support it (use LIKE)", q.driver.DriverName())
+		}
 		return nil, nil
 	}
 	if q.driver == nil {
@@ -594,6 +720,56 @@ func validateOperatorValue(spec *drivers.OperatorSpec, val any) error {
 	return nil
 }
 
+// normalizeMultiValue coerces the bound value of a built-in multi-value
+// operator (IN, NOT IN, BETWEEN, NOT BETWEEN) to []any. The grammars
+// type-assert cond.Value.([]any) when expanding placeholders; a typed
+// slice ([]int, []string, ...) fails that assertion and was previously
+// indistinguishable from an EMPTY list, so the empty-list constant
+// rewrite kicked in: Where("id NOT IN ?", []int{1}) compiled to the
+// always-true 1=1 and the IN form to the never-true 1=0. Reflection
+// flattens any slice or array kind to []any; non-slice values and
+// wrong-arity BETWEEN bounds are build-time errors so a malformed
+// predicate never reaches SQL. Driver-registered operators (Spec != nil)
+// are excluded: validateOperatorValue already enforces []any for them.
+func normalizeMultiValue(op string, val any) (any, error) {
+	switch strings.ToUpper(strings.TrimSpace(op)) {
+	case "IN", "NOT IN":
+		return toAnySlice(op, val)
+	case "BETWEEN", "NOT BETWEEN":
+		vs, err := toAnySlice(op, val)
+		if err != nil {
+			return nil, err
+		}
+		if len(vs) != 2 {
+			return nil, fmt.Errorf("operator %s requires exactly two values (start, end), got %d", op, len(vs))
+		}
+		return vs, nil
+	}
+	return val, nil
+}
+
+// toAnySlice converts a slice or array value of any element type to
+// []any. []byte is rejected explicitly: in database terms it is a
+// scalar blob, never a list of values, so accepting it would bind one
+// placeholder per byte.
+func toAnySlice(op string, val any) ([]any, error) {
+	if vs, ok := val.([]any); ok {
+		return vs, nil
+	}
+	if _, ok := val.([]byte); ok {
+		return nil, fmt.Errorf("operator %s requires a slice of values, got []byte (a scalar blob); bind it with a scalar operator instead", op)
+	}
+	rv := reflect.ValueOf(val)
+	if !rv.IsValid() || (rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array) {
+		return nil, fmt.Errorf("operator %s requires a slice of values (e.g. []any{...}), got %T", op, val)
+	}
+	out := make([]any, rv.Len())
+	for i := range out {
+		out[i] = rv.Index(i).Interface()
+	}
+	return out, nil
+}
+
 // OrderBy adds an ORDER BY clause
 func (q *Query[T]) OrderBy(column, direction string) *Query[T] {
 	if err := validateIdentifier(column); err != nil {
@@ -630,7 +806,7 @@ func (q *Query[T]) GroupBy(columns ...string) *Query[T] {
 
 // Having adds a HAVING condition
 func (q *Query[T]) Having(condition string, args ...any) *Query[T] {
-	col, op, val, err := parseCondition(condition, args)
+	col, op, val, err := parseCondition(condition, args, q.operatorRegistry())
 	if err != nil {
 		q.setErr("Having", err)
 		return q
@@ -643,6 +819,12 @@ func (q *Query[T]) Having(condition string, args ...any) *Query[T] {
 	if err != nil {
 		q.setErr("Having", err)
 		return q
+	}
+	if spec == nil {
+		if val, err = normalizeMultiValue(op, val); err != nil {
+			q.setErr("Having", err)
+			return q
+		}
 	}
 	q.having = append(q.having, drivers.Condition{
 		Column:   col,
@@ -658,6 +840,12 @@ func (q *Query[T]) Having(condition string, args ...any) *Query[T] {
 // Returns the built clause and a validation error if either identifier or
 // operator is invalid; callers funnel the error into q.err via setErr.
 func (q *Query[T]) buildJoinOn(first, operator, second string) (string, error) {
+	if err := validateIdentifier(first); err != nil {
+		return "", err
+	}
+	if err := validateIdentifier(second); err != nil {
+		return "", err
+	}
 	if !isValidOperator(operator) {
 		return "", fmt.Errorf("invalid JOIN operator: %q", operator)
 	}
@@ -667,6 +855,10 @@ func (q *Query[T]) buildJoinOn(first, operator, second string) (string, error) {
 
 // Join adds an INNER JOIN
 func (q *Query[T]) Join(table, first, operator, second string) *Query[T] {
+	if err := validateIdentifier(table); err != nil {
+		q.setErr("Join", err)
+		return q
+	}
 	on, err := q.buildJoinOn(first, operator, second)
 	if err != nil {
 		q.setErr("Join", err)
@@ -682,6 +874,10 @@ func (q *Query[T]) Join(table, first, operator, second string) *Query[T] {
 
 // LeftJoin adds a LEFT JOIN
 func (q *Query[T]) LeftJoin(table, first, operator, second string) *Query[T] {
+	if err := validateIdentifier(table); err != nil {
+		q.setErr("LeftJoin", err)
+		return q
+	}
 	on, err := q.buildJoinOn(first, operator, second)
 	if err != nil {
 		q.setErr("LeftJoin", err)
@@ -697,6 +893,10 @@ func (q *Query[T]) LeftJoin(table, first, operator, second string) *Query[T] {
 
 // RightJoin adds a RIGHT JOIN
 func (q *Query[T]) RightJoin(table, first, operator, second string) *Query[T] {
+	if err := validateIdentifier(table); err != nil {
+		q.setErr("RightJoin", err)
+		return q
+	}
 	on, err := q.buildJoinOn(first, operator, second)
 	if err != nil {
 		q.setErr("RightJoin", err)
@@ -1152,6 +1352,13 @@ func (q *Query[T]) Get(ctx context.Context) ([]T, error) {
 		}
 		results = append(results, model)
 	}
+	// A driver error mid-iteration surfaces via rows.Err(), not via
+	// rows.Next()/Scan. Without this check a truncated result set would
+	// be returned as success.
+	if err := rows.Err(); err != nil {
+		dispatchQueryExecuted(ctx, sql, args, duration, int64(len(results)), q.driver.DriverName(), 2)
+		return nil, err
+	}
 	// Side-channel existence is keyed by pointer. Mark each slice
 	// element AFTER all appends so the slice's backing array is final
 	// (a mid-loop append could grow the slice, invalidating
@@ -1214,18 +1421,49 @@ func (q *Query[T]) Count(ctx context.Context) (int, error) {
 	if q.err != nil {
 		return 0, q.err
 	}
-	// COUNT(*) is a framework-generated projection: emit it through
-	// the trusted RawColumns path so the user-facing Columns whitelist
-	// stays strict for untrusted input.
-	selectQuery := &drivers.SelectQuery{
-		Table:      q.table,
-		RawColumns: []drivers.RawColumn{{Expr: "COUNT(*) AS count"}},
-		Conditions: q.conditions,
-		Joins:      q.joins,
-		Distinct:   q.distinct,
+	var sql string
+	var args []any
+	if len(q.groups) > 0 || q.distinct {
+		// GROUP BY collapses rows after aggregation, so a flat COUNT(*)
+		// returns one count per group instead of the number of groups;
+		// DISTINCT applied to a COUNT(*) projection is a no-op. Both
+		// need the row set materialized first: compile the full inner
+		// select and count its rows through a derived table. The wrapper
+		// text is constant; everything user-supplied is validated and
+		// compiled by the grammar inside the inner select.
+		inner := &drivers.SelectQuery{
+			Table:      q.table,
+			Columns:    q.columns,
+			RawColumns: q.rawColumns,
+			Conditions: q.conditions,
+			Joins:      q.joins,
+			Groups:     q.groups,
+			Having:     q.having,
+			Distinct:   q.distinct,
+		}
+		// SELECT * with GROUP BY is rejected by PostgreSQL (every
+		// projected column must appear in GROUP BY); project the
+		// grouping columns instead, which every dialect accepts and
+		// which preserves the row count exactly.
+		wildcard := len(q.columns) == 0 || (len(q.columns) == 1 && q.columns[0] == "*")
+		if len(q.groups) > 0 && len(q.rawColumns) == 0 && wildcard {
+			inner.Columns = q.groups
+		}
+		innerSQL, innerArgs := q.driver.Grammar().CompileSelect(inner)
+		sql = "SELECT COUNT(*) AS count FROM (" + innerSQL + ") AS count_sub"
+		args = innerArgs
+	} else {
+		// COUNT(*) is a framework-generated projection: emit it through
+		// the trusted RawColumns path so the user-facing Columns whitelist
+		// stays strict for untrusted input.
+		selectQuery := &drivers.SelectQuery{
+			Table:      q.table,
+			RawColumns: []drivers.RawColumn{{Expr: "COUNT(*) AS count"}},
+			Conditions: q.conditions,
+			Joins:      q.joins,
+		}
+		sql, args = q.driver.Grammar().CompileSelect(selectQuery)
 	}
-
-	sql, args := q.driver.Grammar().CompileSelect(selectQuery)
 
 	start := time.Now()
 	var count int64
@@ -1236,9 +1474,14 @@ func (q *Query[T]) Count(ctx context.Context) (int, error) {
 }
 
 // Exists checks if any records match. Takes ctx as the first argument.
-func (q *Query[T]) Exists(ctx context.Context) bool {
-	count, _ := q.Count(ctx)
-	return count > 0
+// A failed query returns (false, err) rather than silently reporting
+// absence.
+func (q *Query[T]) Exists(ctx context.Context) (bool, error) {
+	count, err := q.Count(ctx)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 // Pluck retrieves values of a single column. Takes ctx as the first
@@ -1292,6 +1535,12 @@ func (q *Query[T]) Pluck(ctx context.Context, column string) ([]any, error) {
 			return nil, err
 		}
 		results = append(results, value)
+	}
+	// A driver error mid-iteration surfaces via rows.Err(), not via
+	// rows.Next()/Scan.
+	if err := rows.Err(); err != nil {
+		dispatchQueryExecuted(ctx, sql, args, time.Since(start), int64(len(results)), q.driver.DriverName(), 2)
+		return nil, err
 	}
 
 	dispatchQueryExecuted(ctx, sql, args, time.Since(start), int64(len(results)), q.driver.DriverName(), 2)
@@ -1494,6 +1743,39 @@ func (q *Query[T]) bulkUpdate(ctx context.Context, updates map[string]any, op Bu
 	return rowsAffected, nil
 }
 
+// compileInsertSQL builds a single-row INSERT through the driver
+// grammar: the table and column identifiers are grammar-quoted and the
+// columns are emitted in sorted order so the generated SQL is
+// deterministic regardless of map iteration order.
+func (q *Query[T]) compileInsertSQL(data map[string]any) (string, []any, error) {
+	columns := make([]string, 0, len(data))
+	for col := range data {
+		if err := validateIdentifier(col); err != nil {
+			return "", nil, err
+		}
+		columns = append(columns, col)
+	}
+	sort.Strings(columns)
+
+	grammar := q.driver.Grammar()
+	quoted := make([]string, len(columns))
+	placeholders := make([]string, len(columns))
+	values := make([]any, len(columns))
+	for i, col := range columns {
+		quoted[i] = grammar.QuoteIdentifier(col)
+		placeholders[i] = grammar.Placeholder(i + 1)
+		values[i] = data[col]
+	}
+
+	sqlStr := fmt.Sprintf(
+		"INSERT INTO %s (%s) VALUES (%s)",
+		grammar.QuoteIdentifier(q.table),
+		strings.Join(quoted, ", "),
+		strings.Join(placeholders, ", "),
+	)
+	return sqlStr, values, nil
+}
+
 // InsertGetId inserts a record and returns the ID. Takes ctx as the
 // first argument so transaction enrollment is mandatory and explicit;
 // see Query.Save for the rationale.
@@ -1506,20 +1788,9 @@ func (q *Query[T]) InsertGetId(ctx context.Context, data map[string]any) (int64,
 		return 0, errors.New("no data provided for insert")
 	}
 
-	// Build the INSERT query
-	columns := make([]string, 0, len(data))
-	values := make([]any, 0, len(data))
-	placeholders := make([]string, 0, len(data))
-
-	i := 1
-	for col, val := range data {
-		if err := validateIdentifier(col); err != nil {
-			return 0, fmt.Errorf("velocity/orm: insertGetId: %w", err)
-		}
-		columns = append(columns, col)
-		values = append(values, val)
-		placeholders = append(placeholders, q.driver.Grammar().Placeholder(i))
-		i++
+	sqlStr, values, err := q.compileInsertSQL(data)
+	if err != nil {
+		return 0, fmt.Errorf("velocity/orm: insertGetId: %w", err)
 	}
 
 	driverName := q.driver.DriverName()
@@ -1527,47 +1798,68 @@ func (q *Query[T]) InsertGetId(ctx context.Context, data map[string]any) (int64,
 	// Check driver type to determine how to get last insert ID
 	if driverName == "sqlite" || driverName == "mysql" {
 		// SQLite/MySQL: Use standard INSERT and get last insert ID from result
-		sql := fmt.Sprintf(
-			"INSERT INTO %s (%s) VALUES (%s)",
-			q.table,
-			strings.Join(columns, ", "),
-			strings.Join(placeholders, ", "),
-		)
-
 		start := time.Now()
-		result, err := q.driver.ExecContext(ctx, sql, values...)
+		result, err := q.driver.ExecContext(ctx, sqlStr, values...)
 		duration := time.Since(start)
 
 		if err != nil {
-			dispatchQueryExecuted(ctx, sql, values, duration, 0, driverName, 2)
+			dispatchQueryExecuted(ctx, sqlStr, values, duration, 0, driverName, 2)
 			return 0, err
 		}
 
 		lastID, _ := result.LastInsertId()
-		dispatchQueryExecuted(ctx, sql, values, duration, 1, driverName, 2)
-		return lastID, nil
-	} else {
-		// PostgreSQL: Use RETURNING id clause
-		sql := fmt.Sprintf(
-			"INSERT INTO %s (%s) VALUES (%s) RETURNING id",
-			q.table,
-			strings.Join(columns, ", "),
-			strings.Join(placeholders, ", "),
-		)
-
-		start := time.Now()
-		var lastID int64
-		err := q.driver.QueryRowContext(ctx, sql, values...).Scan(&lastID)
-		duration := time.Since(start)
-
-		if err != nil {
-			dispatchQueryExecuted(ctx, sql, values, duration, 0, driverName, 2)
-			return 0, err
-		}
-
-		dispatchQueryExecuted(ctx, sql, values, duration, 1, driverName, 2)
+		dispatchQueryExecuted(ctx, sqlStr, values, duration, 1, driverName, 2)
 		return lastID, nil
 	}
+
+	// PostgreSQL: append a grammar-quoted RETURNING id clause and scan it
+	sqlStr += " RETURNING " + q.driver.Grammar().QuoteIdentifier("id")
+
+	start := time.Now()
+	var lastID int64
+	err = q.driver.QueryRowContext(ctx, sqlStr, values...).Scan(&lastID)
+	duration := time.Since(start)
+
+	if err != nil {
+		dispatchQueryExecuted(ctx, sqlStr, values, duration, 0, driverName, 2)
+		return 0, err
+	}
+
+	dispatchQueryExecuted(ctx, sqlStr, values, duration, 1, driverName, 2)
+	return lastID, nil
+}
+
+// insertExec runs a grammar-compiled INSERT via ExecContext with no
+// RETURNING clause or last-insert-id handling. Used by save paths whose
+// primary key is set by the caller (UUID models), where scanning a
+// database-generated integer id would be wrong.
+func (q *Query[T]) insertExec(ctx context.Context, data map[string]any) error {
+	if q.err != nil {
+		return q.err
+	}
+	q.bindTxFromContextValue(ctx)
+	if len(data) == 0 {
+		return errors.New("no data provided for insert")
+	}
+
+	sqlStr, values, err := q.compileInsertSQL(data)
+	if err != nil {
+		return fmt.Errorf("velocity/orm: insert: %w", err)
+	}
+
+	driverName := q.driver.DriverName()
+	start := time.Now()
+	result, err := q.driver.ExecContext(ctx, sqlStr, values...)
+	duration := time.Since(start)
+
+	if err != nil {
+		dispatchQueryExecuted(ctx, sqlStr, values, duration, 0, driverName, 2)
+		return err
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	dispatchQueryExecuted(ctx, sqlStr, values, duration, rowsAffected, driverName, 2)
+	return nil
 }
 
 // Delete soft deletes matching records (if model supports soft
@@ -1726,32 +2018,11 @@ func (q *Query[T]) ToSQL() (string, []any) {
 // Helper functions
 
 func getTableName[T any]() string {
-	var model T
-	t := reflect.TypeOf(model)
-
-	// Handle pointer types
-	if t.Kind() == reflect.Ptr {
-		t = t.Elem()
+	if name := deriveTableName(modelTypeFor[T]()); name != "" {
+		return name
 	}
-
-	// Check for TableName method
-	v := reflect.ValueOf(model)
-	if method := v.MethodByName("TableName"); method.IsValid() {
-		result := method.Call(nil)
-		if len(result) > 0 {
-			if tableName, ok := result[0].Interface().(string); ok {
-				return tableName
-			}
-		}
-	}
-
-	// Default to plural lowercase type name
-	name := t.Name()
-	if name == "" {
-		// For generic types, use a default
-		return "records"
-	}
-	return strings.ToLower(name) + "s"
+	// Anonymous/unnamed generic instantiation: no type name to pluralize.
+	return "records"
 }
 
 // scanIntoStruct hydrates dest from the next row of rows. Resolves columns
@@ -1906,13 +2177,6 @@ func ToSnakeCase(str string) string {
 		result = append(result, []byte(strings.ToLower(string(r)))...)
 	}
 	return string(result)
-}
-
-// toSnakeCase is the legacy package-private alias kept so internal callers
-// in this package don't have to change. New cross-package callers should use
-// ToSnakeCase.
-func toSnakeCase(str string) string {
-	return ToSnakeCase(str)
 }
 
 // RawQuery represents a raw SQL query that can be executed with First() or Get()
@@ -2108,6 +2372,12 @@ func (r *RawQuery[T]) Get(ctx context.Context) ([]T, error) {
 			return nil, err
 		}
 		results = append(results, model)
+	}
+	// A driver error mid-iteration surfaces via rows.Err(), not via
+	// rows.Next()/Scan.
+	if err := rows.Err(); err != nil {
+		dispatchQueryExecuted(ctx, r.sql, r.args, duration, int64(len(results)), r.driver.DriverName(), 2)
+		return nil, err
 	}
 	// Mark each slice element AFTER all appends so the backing array
 	// is final - same reasoning as Query[T].Get above.

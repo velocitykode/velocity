@@ -93,24 +93,11 @@ func (g *MySQLGrammar) CompileSelect(query *SelectQuery) (string, []any) {
 		}
 	}
 
-	// HAVING
+	// HAVING: same condition machinery as WHERE so IN lists, BETWEEN
+	// and sub-groups compile identically in both clauses.
 	if len(query.Having) > 0 {
 		sql.WriteString(" HAVING ")
-		for i, cond := range query.Having {
-			if i > 0 {
-				sql.WriteString(" ")
-				sql.WriteString(strings.ToUpper(cond.Type))
-				sql.WriteString(" ")
-			}
-
-			sql.WriteString(g.QuoteIdentifier(cond.Column))
-			sql.WriteString(" ")
-			sql.WriteString(cond.Operator)
-			if cond.Operator != "IS NULL" && cond.Operator != "IS NOT NULL" {
-				sql.WriteString(" ?")
-				args = append(args, cond.Value)
-			}
-		}
+		g.compileConditions(&sql, &args, query.Having)
 	}
 
 	// ORDER BY
@@ -283,6 +270,24 @@ func (g *MySQLGrammar) compileConditions(sql *strings.Builder, args *[]any, cond
 			continue
 		}
 
+		// Empty IN/NOT IN list is invalid SQL ("col IN ()" parses but
+		// behaves inconsistently across engines). Emit a constant boolean
+		// instead so the predicate is well-formed and produces the
+		// semantically correct result:
+		//   WhereIn(col, [])    -> 1=0  (never matches)
+		//   WhereNotIn(col, []) -> 1=1  (always matches)
+		if cond.Operator == "IN" || cond.Operator == "NOT IN" {
+			values, _ := cond.Value.([]any)
+			if len(values) == 0 {
+				if cond.Operator == "IN" {
+					sql.WriteString("1 = 0")
+				} else {
+					sql.WriteString("1 = 1")
+				}
+				continue
+			}
+		}
+
 		sql.WriteString(g.QuoteIdentifier(cond.Column))
 		sql.WriteString(" ")
 		sql.WriteString(cond.Operator)
@@ -291,18 +296,18 @@ func (g *MySQLGrammar) compileConditions(sql *strings.Builder, args *[]any, cond
 		case "IS NULL", "IS NOT NULL":
 			// No placeholder needed
 		case "IN", "NOT IN":
-			if values, ok := cond.Value.([]any); ok {
-				sql.WriteString(" (")
-				for j := range values {
-					if j > 0 {
-						sql.WriteString(", ")
-					}
-					sql.WriteString("?")
-					*args = append(*args, values[j])
+			// Empty-list case handled above; here len(values) > 0.
+			values, _ := cond.Value.([]any)
+			sql.WriteString(" (")
+			for j := range values {
+				if j > 0 {
+					sql.WriteString(", ")
 				}
-				sql.WriteString(")")
+				sql.WriteString("?")
+				*args = append(*args, values[j])
 			}
-		case "BETWEEN":
+			sql.WriteString(")")
+		case "BETWEEN", "NOT BETWEEN":
 			if values, ok := cond.Value.([]any); ok && len(values) == 2 {
 				sql.WriteString(" ? AND ?")
 				*args = append(*args, values[0], values[1])
@@ -401,9 +406,12 @@ func (g *MySQLGrammar) CompileHasColumn(table, column string) string {
 		AND column_name = ?`
 }
 
-// QuoteIdentifier quotes a database identifier for MySQL
+// QuoteIdentifier quotes a database identifier for MySQL.
+// Dot-qualified names are quoted per segment: users.email -> `users`.`email`.
 func (g *MySQLGrammar) QuoteIdentifier(name string) string {
-	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
+	return quoteQualified(name, func(seg string) string {
+		return "`" + strings.ReplaceAll(seg, "`", "``") + "`"
+	})
 }
 
 // QuoteString quotes a string value for MySQL

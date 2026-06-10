@@ -1,6 +1,8 @@
 package vform
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/app"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/router"
 	"github.com/velocitykode/velocity/validation"
@@ -570,4 +573,45 @@ func cookieNames(cs []*http.Cookie) []string {
 		out[i] = c.Name
 	}
 	return out
+}
+
+// ---------------------------------------------------------------------------
+// safeDB: non-orm contract.Database must yield nil, not panic
+// ---------------------------------------------------------------------------
+
+// stubContractDB satisfies contract.Database but deliberately is NOT an
+// *orm.Manager and does not implement the richer orm.Database, modeling an
+// adopter that installs a different database implementation.
+type stubContractDB struct{}
+
+func (stubContractDB) DB() *sql.DB { return nil }
+func (stubContractDB) Raw(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return nil, nil
+}
+func (stubContractDB) Exec(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return nil, nil
+}
+func (stubContractDB) Transaction(ctx context.Context, fn func(ctx context.Context) error) error {
+	return nil
+}
+func (stubContractDB) Begin(ctx context.Context) (*sql.Tx, error)                       { return nil, nil }
+func (stubContractDB) Shutdown(ctx context.Context) error                               { return nil }
+func (stubContractDB) Ping() error                                                      { return nil }
+func (stubContractDB) DriverName() string                                               { return "stub" }
+func (stubContractDB) DatabaseName() string                                             { return "stub" }
+func (stubContractDB) Stats() sql.DBStats                                               { return sql.DBStats{} }
+func (stubContractDB) SetEventDispatcher(fn func(ctx context.Context, event any) error) {}
+
+// compile-time assertion that the stub satisfies contract.Database.
+var _ contract.Database = stubContractDB{}
+
+func TestSafeDB_NonORMDatabase_ReturnsNilNoPanic(t *testing.T) {
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{}`))
+	ctx := router.NewContext(w, r)
+	ctx.SetServices(&app.Services{DB: stubContractDB{}})
+
+	if got := safeDB(ctx); got != nil {
+		t.Fatalf("safeDB() on a non-orm contract.Database = %v, want nil", got)
+	}
 }

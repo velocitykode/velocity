@@ -541,7 +541,7 @@ func TestMorph_Resolve_NilReceiver(t *testing.T) {
 func TestPolymorphic_EagerLoad_NoMatchingRows(t *testing.T) {
 	cleanup := withPolymorphicDB(t)
 	defer cleanup()
-	logs, err := MorphAudit{}.With("Resource").Where("id < 0").Get(context.Background())
+	logs, err := MorphAudit{}.With("Resource").Where("id < ?", 0).Get(context.Background())
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}

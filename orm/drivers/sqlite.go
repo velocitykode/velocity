@@ -124,10 +124,10 @@ func (d *SQLiteDriver) Connect(config ConnectionConfig) error {
 		return err
 	}
 
-	// Configure connection pool
-	db.SetMaxIdleConns(config.MaxIdleConns)
-	db.SetMaxOpenConns(config.MaxOpenConns)
-	db.SetConnMaxLifetime(config.ConnMaxLifetime)
+	// Configure connection pool. d.Config was set at the top of Connect, so
+	// ConfigurePool sees the same values and also applies ConnMaxIdleTime and
+	// the >0 guards the inline version dropped.
+	d.ConfigurePool(db)
 
 	// Enable foreign keys
 	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
@@ -157,7 +157,9 @@ func (d *SQLiteDriver) HasTable(name string) bool {
 // HasColumn checks if a column exists in a table
 func (d *SQLiteDriver) HasColumn(table, column string) bool {
 	sql := d.Grammar().CompileHasColumn(table, column)
-	rows, err := d.db.Query(sql, table)
+	// CompileHasColumn bakes the quoted table name into the PRAGMA, so the
+	// statement carries zero placeholders; passing a bind arg here is a bug.
+	rows, err := d.db.Query(sql)
 	if err != nil {
 		return false
 	}
@@ -287,24 +289,11 @@ func (g *SQLiteGrammar) CompileSelect(query *SelectQuery) (string, []any) {
 		}
 	}
 
-	// HAVING
+	// HAVING: same condition machinery as WHERE so IN lists, BETWEEN
+	// and sub-groups compile identically in both clauses.
 	if len(query.Having) > 0 {
 		sql.WriteString(" HAVING ")
-		for i, cond := range query.Having {
-			if i > 0 {
-				sql.WriteString(" ")
-				sql.WriteString(strings.ToUpper(cond.Type))
-				sql.WriteString(" ")
-			}
-
-			sql.WriteString(g.QuoteIdentifier(cond.Column))
-			sql.WriteString(" ")
-			sql.WriteString(cond.Operator)
-			if cond.Operator != "IS NULL" && cond.Operator != "IS NOT NULL" {
-				sql.WriteString(" ?")
-				args = append(args, cond.Value)
-			}
-		}
+		g.compileConditions(&sql, &args, query.Having)
 	}
 
 	// ORDER BY
@@ -586,9 +575,12 @@ func (g *SQLiteGrammar) CompileHasColumn(table, column string) string {
 	return fmt.Sprintf("PRAGMA table_info(%s)", g.QuoteIdentifier(table))
 }
 
-// QuoteIdentifier quotes a database identifier
+// QuoteIdentifier quotes a database identifier.
+// Dot-qualified names are quoted per segment: users.email -> `users`.`email`.
 func (g *SQLiteGrammar) QuoteIdentifier(name string) string {
-	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
+	return quoteQualified(name, func(seg string) string {
+		return "`" + strings.ReplaceAll(seg, "`", "``") + "`"
+	})
 }
 
 // QuoteString quotes a string value

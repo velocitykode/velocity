@@ -96,29 +96,14 @@ func (g *PostgresGrammar) CompileSelect(query *SelectQuery) (string, []any) {
 		}
 	}
 
-	// HAVING
+	// HAVING: same condition machinery as WHERE so IN lists, BETWEEN
+	// and sub-groups compile identically in both clauses. The $N counter
+	// continues from the parameters bound so far (projection + WHERE).
 	if len(query.Having) > 0 {
 		sql.WriteString(" HAVING ")
 		argIndex := len(args) + 1
-		for i, cond := range query.Having {
-			if i > 0 {
-				sql.WriteString(" ")
-				sql.WriteString(strings.ToUpper(cond.Type))
-				sql.WriteString(" ")
-			}
-
-			sql.WriteString(g.QuoteIdentifier(cond.Column))
-			sql.WriteString(" ")
-			sql.WriteString(cond.Operator)
-			switch cond.Operator {
-			case "IS NULL", "IS NOT NULL":
-				// No placeholder needed
-			default:
-				sql.WriteString(fmt.Sprintf(" $%d", argIndex))
-				args = append(args, cond.Value)
-				argIndex++
-			}
-		}
+		argIndex = g.compileConditions(&sql, &args, query.Having, argIndex)
+		_ = argIndex
 	}
 
 	// ORDER BY
@@ -359,6 +344,24 @@ func (g *PostgresGrammar) compileConditions(sql *strings.Builder, args *[]any, c
 			continue
 		}
 
+		// Empty IN/NOT IN list is invalid SQL ("col IN ()" parses but
+		// behaves inconsistently across engines). Emit a constant boolean
+		// instead so the predicate is well-formed and produces the
+		// semantically correct result:
+		//   WhereIn(col, [])    -> 1=0  (never matches)
+		//   WhereNotIn(col, []) -> 1=1  (always matches)
+		if cond.Operator == "IN" || cond.Operator == "NOT IN" {
+			values, _ := cond.Value.([]any)
+			if len(values) == 0 {
+				if cond.Operator == "IN" {
+					sql.WriteString("1 = 0")
+				} else {
+					sql.WriteString("1 = 1")
+				}
+				continue
+			}
+		}
+
 		sql.WriteString(g.QuoteIdentifier(cond.Column))
 		sql.WriteString(" ")
 		sql.WriteString(cond.Operator)
@@ -367,19 +370,19 @@ func (g *PostgresGrammar) compileConditions(sql *strings.Builder, args *[]any, c
 		case "IS NULL", "IS NOT NULL":
 			// No placeholder needed
 		case "IN", "NOT IN":
-			if values, ok := cond.Value.([]any); ok {
-				sql.WriteString(" (")
-				for j := range values {
-					if j > 0 {
-						sql.WriteString(", ")
-					}
-					sql.WriteString(fmt.Sprintf("$%d", argIndex))
-					argIndex++
-					*args = append(*args, values[j])
+			// Empty-list case handled above; here len(values) > 0.
+			values, _ := cond.Value.([]any)
+			sql.WriteString(" (")
+			for j := range values {
+				if j > 0 {
+					sql.WriteString(", ")
 				}
-				sql.WriteString(")")
+				sql.WriteString(fmt.Sprintf("$%d", argIndex))
+				argIndex++
+				*args = append(*args, values[j])
 			}
-		case "BETWEEN":
+			sql.WriteString(")")
+		case "BETWEEN", "NOT BETWEEN":
 			if values, ok := cond.Value.([]any); ok && len(values) == 2 {
 				sql.WriteString(fmt.Sprintf(" $%d AND $%d", argIndex, argIndex+1))
 				*args = append(*args, values[0], values[1])
@@ -483,9 +486,12 @@ func (g *PostgresGrammar) CompileHasColumn(table, column string) string {
 		AND column_name = $2`
 }
 
-// QuoteIdentifier quotes a database identifier for PostgreSQL
+// QuoteIdentifier quotes a database identifier for PostgreSQL.
+// Dot-qualified names are quoted per segment: users.email -> "users"."email".
 func (g *PostgresGrammar) QuoteIdentifier(name string) string {
-	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+	return quoteQualified(name, func(seg string) string {
+		return `"` + strings.ReplaceAll(seg, `"`, `""`) + `"`
+	})
 }
 
 // QuoteString quotes a string value for PostgreSQL

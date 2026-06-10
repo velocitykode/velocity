@@ -3,22 +3,40 @@ package orm
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
+
+// pgPlaceholderPattern matches a complete postgres placeholder ($1, $12,
+// ...) so renumbering rewrites each one exactly once. A sequential
+// ReplaceAll per index is unsafe here: replacing "$1" textually also
+// matches the prefix of an already-renumbered "$10"/"$11".
+var pgPlaceholderPattern = regexp.MustCompile(`\$(\d+)`)
+
+// modelIncrement / modelDecrement hold the single canonical static-side
+// implementation; every base's Increment/Decrement is a one-line delegation.
+func modelIncrement[T any](ctx context.Context, column string, amount ...int) error {
+	return newQuery[T]().Increment(ctx, column, amount...)
+}
+
+func modelDecrement[T any](ctx context.Context, column string, amount ...int) error {
+	return newQuery[T]().Decrement(ctx, column, amount...)
+}
 
 // --- Model[T] ---
 
 // Increment atomically increments a column by amount (default 1) for all records of this type.
 // Takes ctx as the first argument so transaction enrollment is mandatory and explicit.
 func (Model[T]) Increment(ctx context.Context, column string, amount ...int) error {
-	return newQuery[T]().Increment(ctx, column, amount...)
+	return modelIncrement[T](ctx, column, amount...)
 }
 
 // Decrement atomically decrements a column by amount (default 1) for all records of this type.
 // Takes ctx as the first argument.
 func (Model[T]) Decrement(ctx context.Context, column string, amount ...int) error {
-	return newQuery[T]().Decrement(ctx, column, amount...)
+	return modelDecrement[T](ctx, column, amount...)
 }
 
 // --- UUIDModel[T] ---
@@ -26,13 +44,13 @@ func (Model[T]) Decrement(ctx context.Context, column string, amount ...int) err
 // Increment atomically increments a column by amount (default 1) for all records of this type.
 // Takes ctx as the first argument.
 func (UUIDModel[T]) Increment(ctx context.Context, column string, amount ...int) error {
-	return newQuery[T]().Increment(ctx, column, amount...)
+	return modelIncrement[T](ctx, column, amount...)
 }
 
 // Decrement atomically decrements a column by amount (default 1) for all records of this type.
 // Takes ctx as the first argument.
 func (UUIDModel[T]) Decrement(ctx context.Context, column string, amount ...int) error {
-	return newQuery[T]().Decrement(ctx, column, amount...)
+	return modelDecrement[T](ctx, column, amount...)
 }
 
 // --- SoftDeleteModel[T] ---
@@ -40,13 +58,13 @@ func (UUIDModel[T]) Decrement(ctx context.Context, column string, amount ...int)
 // Increment atomically increments a column by amount (default 1) for all records of this type.
 // Takes ctx as the first argument.
 func (SoftDeleteModel[T]) Increment(ctx context.Context, column string, amount ...int) error {
-	return newQuery[T]().Increment(ctx, column, amount...)
+	return modelIncrement[T](ctx, column, amount...)
 }
 
 // Decrement atomically decrements a column by amount (default 1) for all records of this type.
 // Takes ctx as the first argument.
 func (SoftDeleteModel[T]) Decrement(ctx context.Context, column string, amount ...int) error {
-	return newQuery[T]().Decrement(ctx, column, amount...)
+	return modelDecrement[T](ctx, column, amount...)
 }
 
 // --- SoftDeleteUUIDModel[T] ---
@@ -54,13 +72,13 @@ func (SoftDeleteModel[T]) Decrement(ctx context.Context, column string, amount .
 // Increment atomically increments a column by amount (default 1) for all records of this type.
 // Takes ctx as the first argument.
 func (SoftDeleteUUIDModel[T]) Increment(ctx context.Context, column string, amount ...int) error {
-	return newQuery[T]().Increment(ctx, column, amount...)
+	return modelIncrement[T](ctx, column, amount...)
 }
 
 // Decrement atomically decrements a column by amount (default 1) for all records of this type.
 // Takes ctx as the first argument.
 func (SoftDeleteUUIDModel[T]) Decrement(ctx context.Context, column string, amount ...int) error {
-	return newQuery[T]().Decrement(ctx, column, amount...)
+	return modelDecrement[T](ctx, column, amount...)
 }
 
 // --- Query[T] ---
@@ -139,13 +157,16 @@ func (q *Query[T]) incrementOrDecrement(ctx context.Context, column, op string, 
 	if idx := strings.Index(deleteSQL, " WHERE "); idx >= 0 {
 		whereClause := deleteSQL[idx:]
 		// For Postgres ($N placeholders), re-number: $1 → $2, $2 → $3, etc.
-		// since the amount parameter occupies $1.
+		// since the amount parameter occupies $1. Each placeholder is
+		// rewritten in a single pass; see pgPlaceholderPattern.
 		if q.driver.DriverName() == "postgres" {
-			for i := len(condArgs); i >= 1; i-- {
-				whereClause = strings.ReplaceAll(whereClause,
-					fmt.Sprintf("$%d", i),
-					fmt.Sprintf("$%d", i+1))
-			}
+			whereClause = pgPlaceholderPattern.ReplaceAllStringFunc(whereClause, func(m string) string {
+				n, err := strconv.Atoi(m[1:])
+				if err != nil {
+					return m
+				}
+				return "$" + strconv.Itoa(n+1)
+			})
 		}
 		sqlBuilder.WriteString(whereClause)
 	}

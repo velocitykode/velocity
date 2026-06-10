@@ -1566,7 +1566,7 @@ func TestSQLiteGrammar_CompileSelect_JOINQueries(t *testing.T) {
 					{Type: "INNER", Table: "roles", On: "users.role_id = roles.id"},
 				},
 			},
-			wantSQL:  "SELECT `users.id`, `users.name`, `roles.name` FROM `users` INNER JOIN `roles` ON users.role_id = roles.id",
+			wantSQL:  "SELECT `users`.`id`, `users`.`name`, `roles`.`name` FROM `users` INNER JOIN `roles` ON users.role_id = roles.id",
 			wantArgs: nil,
 		},
 		{
@@ -1578,7 +1578,7 @@ func TestSQLiteGrammar_CompileSelect_JOINQueries(t *testing.T) {
 					{Type: "LEFT", Table: "profiles", On: "users.id = profiles.user_id"},
 				},
 			},
-			wantSQL:  "SELECT `users.*`, `profiles.bio` FROM `users` LEFT JOIN `profiles` ON users.id = profiles.user_id",
+			wantSQL:  "SELECT `users`.*, `profiles`.`bio` FROM `users` LEFT JOIN `profiles` ON users.id = profiles.user_id",
 			wantArgs: nil,
 		},
 		{
@@ -1603,7 +1603,7 @@ func TestSQLiteGrammar_CompileSelect_JOINQueries(t *testing.T) {
 					{Type: "LEFT", Table: "products", On: "orders.product_id = products.id"},
 				},
 			},
-			wantSQL:  "SELECT `orders.id`, `users.name`, `products.title` FROM `orders` INNER JOIN `users` ON orders.user_id = users.id LEFT JOIN `products` ON orders.product_id = products.id",
+			wantSQL:  "SELECT `orders`.`id`, `users`.`name`, `products`.`title` FROM `orders` INNER JOIN `users` ON orders.user_id = users.id LEFT JOIN `products` ON orders.product_id = products.id",
 			wantArgs: nil,
 		},
 		{
@@ -1618,7 +1618,7 @@ func TestSQLiteGrammar_CompileSelect_JOINQueries(t *testing.T) {
 					{Column: "orders.status", Operator: "=", Value: "completed", Type: "and"},
 				},
 			},
-			wantSQL:  "SELECT `users.name`, `orders.total` FROM `users` LEFT JOIN `orders` ON users.id = orders.user_id WHERE `orders.status` = ?",
+			wantSQL:  "SELECT `users`.`name`, `orders`.`total` FROM `users` LEFT JOIN `orders` ON users.id = orders.user_id WHERE `orders`.`status` = ?",
 			wantArgs: []any{"completed"},
 		},
 	}

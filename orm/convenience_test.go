@@ -551,11 +551,19 @@ func TestWhen_Chaining(t *testing.T) {
 func TestDoesntExist_EmptyTable(t *testing.T) {
 	setupConvenienceTests(t)
 
-	if !newQuery[TestUser]().DoesntExist(context.Background()) {
+	absent, err := newQuery[TestUser]().DoesntExist(context.Background())
+	if err != nil {
+		t.Fatalf("DoesntExist returned error: %v", err)
+	}
+	if !absent {
 		t.Error("expected DoesntExist() = true for empty table")
 	}
 	m := Model[TestUser]{}
-	if !m.DoesntExist(context.Background()) {
+	absent, err = m.DoesntExist(context.Background())
+	if err != nil {
+		t.Fatalf("Model.DoesntExist returned error: %v", err)
+	}
+	if !absent {
 		t.Error("expected Model.DoesntExist() = true for empty table")
 	}
 }
@@ -564,11 +572,19 @@ func TestDoesntExist_NonEmptyTable(t *testing.T) {
 	setupConvenienceTests(t)
 	seedUser(t, Default(), "Exists", "exists@example.com", 25)
 
-	if newQuery[TestUser]().DoesntExist(context.Background()) {
+	absent, err := newQuery[TestUser]().DoesntExist(context.Background())
+	if err != nil {
+		t.Fatalf("DoesntExist returned error: %v", err)
+	}
+	if absent {
 		t.Error("expected DoesntExist() = false for non-empty table")
 	}
 	m2 := Model[TestUser]{}
-	if m2.DoesntExist(context.Background()) {
+	absent, err = m2.DoesntExist(context.Background())
+	if err != nil {
+		t.Fatalf("Model.DoesntExist returned error: %v", err)
+	}
+	if absent {
 		t.Error("expected Model.DoesntExist() = false for non-empty table")
 	}
 }
@@ -578,12 +594,20 @@ func TestDoesntExist_WithConditions(t *testing.T) {
 	seedUser(t, Default(), "Present", "present@example.com", 25)
 
 	// Condition that matches no rows
-	if !newQuery[TestUser]().Where("name = ?", "ghost").DoesntExist(context.Background()) {
+	absent, err := newQuery[TestUser]().Where("name = ?", "ghost").DoesntExist(context.Background())
+	if err != nil {
+		t.Fatalf("DoesntExist returned error: %v", err)
+	}
+	if !absent {
 		t.Error("expected DoesntExist() = true for non-matching condition")
 	}
 
 	// Condition that matches
-	if newQuery[TestUser]().Where("name = ?", "Present").DoesntExist(context.Background()) {
+	absent, err = newQuery[TestUser]().Where("name = ?", "Present").DoesntExist(context.Background())
+	if err != nil {
+		t.Fatalf("DoesntExist returned error: %v", err)
+	}
+	if absent {
 		t.Error("expected DoesntExist() = false for matching condition")
 	}
 }
@@ -805,13 +829,21 @@ func TestUUIDModel_UpdateOrCreate(t *testing.T) {
 func TestUUIDModel_DoesntExist(t *testing.T) {
 	setupUUIDConvenienceTests(t)
 
-	if !(UUIDModel[TestProject]{}).DoesntExist(context.Background()) {
+	absent, err := (UUIDModel[TestProject]{}).DoesntExist(context.Background())
+	if err != nil {
+		t.Fatalf("DoesntExist returned error: %v", err)
+	}
+	if !absent {
 		t.Error("expected DoesntExist() = true for empty table")
 	}
 
 	seedProject(t, Default(), "uuid-ex", "Exists", "yes")
 
-	if (UUIDModel[TestProject]{}).DoesntExist(context.Background()) {
+	absent, err = (UUIDModel[TestProject]{}).DoesntExist(context.Background())
+	if err != nil {
+		t.Fatalf("DoesntExist returned error: %v", err)
+	}
+	if absent {
 		t.Error("expected DoesntExist() = false after seeding")
 	}
 }
@@ -931,7 +963,11 @@ func TestSoftDeleteModel_Increment(t *testing.T) {
 func TestSoftDeleteModel_DoesntExist(t *testing.T) {
 	setupSoftDeleteConvenienceTests(t)
 
-	if !(SoftDeleteModel[SoftDeleteUser]{}).DoesntExist(context.Background()) {
+	absent, err := (SoftDeleteModel[SoftDeleteUser]{}).DoesntExist(context.Background())
+	if err != nil {
+		t.Fatalf("DoesntExist returned error: %v", err)
+	}
+	if !absent {
 		t.Error("expected DoesntExist() = true for empty table")
 	}
 }

@@ -17,6 +17,9 @@ func (q *Query[T]) Value(ctx context.Context, column string) (any, error) {
 	if err := validateIdentifier(column); err != nil {
 		return nil, fmt.Errorf("velocity/orm: value: %w", err)
 	}
+	if q.err != nil {
+		return nil, q.err
+	}
 	q.bindTxFromContextValue(ctx)
 
 	q.columns = []string{column}
