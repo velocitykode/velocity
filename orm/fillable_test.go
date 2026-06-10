@@ -41,15 +41,15 @@ func (guardedAdminPolicyModel) Guarded() []string {
 	return []string{"is_admin"}
 }
 
-type strictPolicyModel struct {
-	Model[strictPolicyModel]
+type openPolicyModel struct {
+	Model[openPolicyModel]
 	Name    string `orm:"column:name"`
 	IsAdmin bool   `orm:"column:is_admin"`
 	Role    string `orm:"column:role"`
 }
 
-func (strictPolicyModel) TableName() string { return "strict_policy_models" }
-func (strictPolicyModel) StrictMassAssignment() bool {
+func (openPolicyModel) TableName() string { return "open_policy_models" }
+func (openPolicyModel) AllowAllColumns() bool {
 	return true
 }
 
@@ -117,15 +117,21 @@ func TestFillablePolicyAllows_DocumentsMassAssignmentDefaults(t *testing.T) {
 		want     bool
 	}{
 		{
-			name:     "neither_interface_allows_is_admin_attack_column",
+			name:     "neither_interface_denies_is_admin_attack_column",
 			model:    &plainModel{},
 			fieldKey: "is_admin",
-			want:     true,
+			want:     false,
 		},
 		{
-			name:     "neither_interface_allows_role_attack_column",
+			name:     "neither_interface_denies_role_attack_column",
 			model:    &plainModel{},
 			fieldKey: "role",
+			want:     false,
+		},
+		{
+			name:     "allow_all_columns_optin_allows_is_admin",
+			model:    &openPolicyModel{},
+			fieldKey: "is_admin",
 			want:     true,
 		},
 		{
@@ -158,15 +164,25 @@ func TestFillablePolicyAllows_DocumentsMassAssignmentDefaults(t *testing.T) {
 	}
 }
 
-func TestFillablePolicyAllows_StrictMassAssignmentOptInDeniesByDefault(t *testing.T) {
-	policy := PolicyFor(&strictPolicyModel{})
-	if policy.Allows("is_admin") {
-		t.Fatal("StrictMassAssignment model without Fillable or Guarded should deny is_admin by default")
-	}
-	if policy.Allows("role") {
-		t.Fatal("StrictMassAssignment model without Fillable or Guarded should deny role by default")
+func TestPolicyFor_UndeclaredModelDeniesByDefault(t *testing.T) {
+	policy := PolicyFor(&plainModel{})
+	if policy.Allows("name") {
+		t.Fatal("model without Fillable or Guarded should deny every application field by default")
 	}
 	if !policy.HasFillable || policy.HasGuarded {
-		t.Fatalf("strict policy should resolve as an empty Fillable allowlist; got HasFillable=%v HasGuarded=%v", policy.HasFillable, policy.HasGuarded)
+		t.Fatalf("undeclared policy should resolve as an empty Fillable allowlist; got HasFillable=%v HasGuarded=%v", policy.HasFillable, policy.HasGuarded)
+	}
+	if !policy.implicitDeny {
+		t.Fatal("undeclared policy should be marked implicitDeny so map paths reject and struct paths no-op")
+	}
+}
+
+func TestPolicyFor_AllowAllColumnsRestoresOpenPolicy(t *testing.T) {
+	policy := PolicyFor(&openPolicyModel{})
+	if !policy.Allows("is_admin") || !policy.Allows("role") {
+		t.Fatal("AllowAllColumns opt-in should allow every field")
+	}
+	if policy.HasFillable || policy.HasGuarded || policy.implicitDeny {
+		t.Fatalf("AllowAllColumns opt-in should resolve as the open zero policy; got %+v", policy)
 	}
 }

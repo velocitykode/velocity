@@ -33,7 +33,6 @@
 package orm
 
 import (
-	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -583,35 +582,42 @@ type FillablePolicy struct {
 	HasGuarded  bool
 	Fillable    map[string]bool
 	Guarded     map[string]bool
+
+	// implicitDeny marks a policy that resolved to the empty Fillable
+	// allowlist because the model declares neither Fillable() nor
+	// Guarded() and does not opt out via AllowAllColumns. Map-based
+	// writes reject such models with *MassAssignmentError. Struct-based
+	// writes (Create(*T)) ignore an implicit policy: the caller built
+	// the value field-by-field in code, so there is no attacker-shaped
+	// map to police.
+	implicitDeny bool
 }
 
-// StrictMassAssignment is an opt-in compatibility escape hatch for models
-// that want deny-by-default mass-assignment behavior without declaring a
-// Fillable() allowlist. When StrictMassAssignment() returns true and the model
-// declares neither Fillable() nor Guarded(), PolicyFor resolves the model as an
-// empty Fillable allowlist: map-based mass assignment denies every application
-// field unless another policy is declared.
-type StrictMassAssignment interface {
-	StrictMassAssignment() bool
+// AllowAllColumns is the explicit escape hatch from deny-by-default mass
+// assignment. A model that declares neither Fillable() nor Guarded() but
+// implements AllowAllColumns() returning true resolves to an open policy:
+// every application column is writable from a map-based write, restoring
+// the pre-deny-by-default behavior. When a model also declares Fillable()
+// or Guarded(), the declared policy wins and this marker has no effect.
+type AllowAllColumns interface {
+	AllowAllColumns() bool
 }
 
 // PolicyFor extracts mass-assignment policy from a model instance.
 //
-// Compatibility warning: when a model declares neither Fillable() nor
-// Guarded(), PolicyFor returns a zero FillablePolicy. That zero policy is
-// mass-assignment-open: FillablePolicy.Allows returns true for every column
-// writable from a map. This affects Query[T].Create(map),
-// Query[T].Update(map), Model[T].Update, and FirstOrCreate/UpdateOrCreate.
-// Treat this as a security footgun for models that receive user-controlled
-// maps because sensitive persisted columns such as role or is_admin are
-// writable by default.
+// Deny-by-default: when a model declares neither Fillable() nor Guarded(),
+// PolicyFor resolves it as an EMPTY Fillable allowlist, so Allows returns
+// false for every application field. The map-based write paths
+// (Query[T].Create(map), Model[T].Create(map), FirstOrCreate,
+// UpdateOrCreate) surface that as a *MassAssignmentError naming the model
+// and the offending keys rather than writing anything. Framework-managed
+// embedded columns (id, created_at, updated_at, deleted_at) bypass policy
+// by design and are unaffected.
 //
-// Any model used with map-based Create/Update should declare Fillable()
-// (allowlist, deny-by-default) or Guarded() (denylist). As an opt-in safer
-// default that preserves the package's permissive zero-policy compatibility,
-// a model may implement StrictMassAssignment and return true; if it declares
-// neither Fillable() nor Guarded(), PolicyFor resolves it as an empty Fillable
-// allowlist so all application fields are denied by default.
+// Escape hatches for models that genuinely want every column writable
+// from a map: implement AllowAllColumns() bool returning true (explicit
+// marker, preferred), or declare Guarded() with an empty slice (an empty
+// denylist guards nothing, so everything is allowed).
 func PolicyFor(s any) FillablePolicy {
 	p := FillablePolicy{}
 	if f, ok := s.(Fillable); ok {
@@ -631,60 +637,24 @@ func PolicyFor(s any) FillablePolicy {
 		p.HasGuarded = true
 	}
 	if !p.HasFillable && !p.HasGuarded {
-		if strict, ok := s.(StrictMassAssignment); ok && strict.StrictMassAssignment() {
-			p.Fillable = map[string]bool{}
-			p.HasFillable = true
+		if open, ok := s.(AllowAllColumns); ok && open.AllowAllColumns() {
+			// Explicit opt-in to the open policy: zero maps, Allows
+			// returns true for everything.
+			return p
 		}
+		p.Fillable = map[string]bool{}
+		p.HasFillable = true
+		p.implicitDeny = true
 	}
 	return p
-}
-
-var (
-	massAssignmentWarnerMu sync.RWMutex
-	massAssignmentWarner   func(modelType string)
-	massAssignmentWarnOnce sync.Map // modelType -> struct{}, so each type warns once
-)
-
-// SetMassAssignmentWarner installs a callback invoked the first time a model
-// declaring neither Fillable() nor Guarded() (nor opting into
-// StrictMassAssignment) is used with map-based Create/Update. The zero policy
-// is mass-assignment-open, so this surfaces the silently-insecure default
-// without changing behaviour. nil (the default) disables the warning; the
-// framework wires it to its logger at startup. Safe for concurrent use.
-func SetMassAssignmentWarner(fn func(modelType string)) {
-	massAssignmentWarnerMu.Lock()
-	massAssignmentWarner = fn
-	massAssignmentWarnerMu.Unlock()
-}
-
-// warnOpenMassAssignment fires the configured warner once per model type. It is
-// called only from the map-based assignment path, where an open policy means
-// arbitrary client keys can set arbitrary columns.
-func warnOpenMassAssignment(s any) {
-	massAssignmentWarnerMu.RLock()
-	fn := massAssignmentWarner
-	massAssignmentWarnerMu.RUnlock()
-	if fn == nil {
-		return
-	}
-	t := fmt.Sprintf("%T", s)
-	if _, loaded := massAssignmentWarnOnce.LoadOrStore(t, struct{}{}); loaded {
-		return
-	}
-	fn(t)
 }
 
 // Allows reports whether the policy permits writing to fieldNameKey
 // (the snake_case'd Go field name).
 //
-// Compatibility warning: when neither Fillable() nor Guarded() is declared,
-// the zero FillablePolicy is mass-assignment-open and Allows returns true for
-// every field. Query[T].Create(map), Query[T].Update(map), Model[T].Update,
-// and FirstOrCreate/UpdateOrCreate will therefore accept arbitrary map keys
-// that resolve to persisted columns, including sensitive names such as role or
-// is_admin. Models used with user-controlled map-based Create/Update should
-// declare Fillable() (allowlist, deny-by-default), Guarded() (denylist), or
-// opt in to StrictMassAssignment.
+// For a model with no declared policy and no AllowAllColumns opt-in,
+// PolicyFor resolves an empty allowlist, so Allows returns false for
+// every application field (deny-by-default).
 func (p FillablePolicy) Allows(fieldNameKey string) bool {
 	if p.HasFillable && !p.Fillable[fieldNameKey] {
 		return false

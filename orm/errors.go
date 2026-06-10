@@ -1,6 +1,10 @@
 package orm
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
 
 var (
 	ErrNoRows         = errors.New("velocity/orm: no rows found")
@@ -13,3 +17,30 @@ var (
 	// so callers can branch on it to fall back to inline execution.
 	ErrNoTxCallbacks = errors.New("velocity/orm: no active tx callbacks holder; wrap ctx with orm.PrepareTxCallbacks before Transaction")
 )
+
+// MassAssignmentError is returned by map-based writes (Create(map),
+// FirstOrCreate, UpdateOrCreate) when the target model declares no
+// mass-assignment policy. Mass assignment is deny-by-default: a model
+// must declare Fillable() (allowlist) or Guarded() (denylist) before any
+// application column can be written from a map, or explicitly opt back
+// into the open behavior via AllowAllColumns.
+//
+// The message names the model and the rejected keys for developers and
+// logs. Do not echo it to HTTP clients: the framework's production error
+// renderer already collapses 5xx errors to a generic status text, and
+// custom handlers should do the same.
+type MassAssignmentError struct {
+	// Model is the Go type of the rejected model, e.g. "models.User".
+	Model string
+	// Keys are the map keys that resolved to application columns and
+	// were therefore rejected. Keys that match no column are ignored,
+	// and framework-managed embedded columns (id, timestamps,
+	// deleted_at) bypass policy and never appear here.
+	Keys []string
+}
+
+func (e *MassAssignmentError) Error() string {
+	return fmt.Sprintf(
+		"velocity/orm: mass assignment denied for model %s: keys [%s] rejected because the model declares no mass-assignment policy; declare Fillable() (allowlist) or Guarded() (denylist), or restore the previous allow-all behavior by implementing AllowAllColumns() bool { return true }",
+		e.Model, strings.Join(e.Keys, ", "))
+}

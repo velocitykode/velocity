@@ -599,16 +599,26 @@ func TestEncryptorAAD_MismatchSentinel(t *testing.T) {
 	}
 }
 
-func TestEncryptorAAD_CBCInvalidCipher(t *testing.T) {
+func TestEncryptorAAD_CBCSupported(t *testing.T) {
+	// CBC binds AAD into the encrypt-then-MAC HMAC framing (V2-12), so
+	// the facade no longer rejects the *WithAAD methods on CBC ciphers.
 	enc, err := NewEncryptor(Config{Key: "12345678901234567890123456789012", Cipher: "AES-256-CBC"})
 	if err != nil {
 		t.Fatalf("NewEncryptor: %v", err)
 	}
-	if _, err := enc.EncryptBytesWithAAD([]byte("x"), []byte("a")); !errors.Is(err, ErrInvalidCipher) {
-		t.Fatalf("EncryptBytesWithAAD: want ErrInvalidCipher, got %v", err)
+	env, err := enc.EncryptBytesWithAAD([]byte("x"), []byte("a"))
+	if err != nil {
+		t.Fatalf("EncryptBytesWithAAD on CBC: %v", err)
 	}
-	if _, err := enc.DecryptBytesWithAAD("v1:abc", []byte("a")); !errors.Is(err, ErrInvalidCipher) {
-		t.Fatalf("DecryptBytesWithAAD: want ErrInvalidCipher, got %v", err)
+	got, err := enc.DecryptBytesWithAAD(env, []byte("a"))
+	if err != nil {
+		t.Fatalf("DecryptBytesWithAAD on CBC: %v", err)
+	}
+	if string(got) != "x" {
+		t.Fatalf("CBC AAD round-trip mismatch: %q", got)
+	}
+	if _, err := enc.DecryptBytesWithAAD(env, []byte("b")); !errors.Is(err, ErrAADMismatch) {
+		t.Fatalf("CBC wrong aad: want ErrAADMismatch, got %v", err)
 	}
 }
 

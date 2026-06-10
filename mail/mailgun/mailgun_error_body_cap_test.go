@@ -30,12 +30,83 @@ func newMailgunDriverAgainstServer(t *testing.T, ts *httptest.Server) *MailgunDr
 	return driver
 }
 
-// TestMailgunDriverErrorBodyCappedAtPreview verifies that an oversized
+func sendTestMessage(t *testing.T, driver *MailgunDriver) error {
+	t.Helper()
+	msg := mail.NewMessage().
+		To("to@example.com").
+		Subject("Subject").
+		TextBody("body")
+	return driver.Send(context.Background(), msg)
+}
+
+// TestMailgunDriverErrorBodyRedacted verifies that a JSON error response
+// body is never echoed into the returned error. Mailgun error bodies can
+// carry sensitive detail (domain names, account identifiers, upstream
+// diagnostics); only the HTTP status code may surface.
+func TestMailgunDriverErrorBodyRedacted(t *testing.T) {
+	const secret = "sk-super-secret-token-do-not-leak"
+	body := `{"message":"auth failed for key ` + secret + `"}`
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer ts.Close()
+
+	driver := newMailgunDriverAgainstServer(t, ts)
+
+	err := sendTestMessage(t, driver)
+	if err == nil {
+		t.Fatalf("expected error from non-200 response, got nil")
+	}
+
+	errStr := err.Error()
+	// The status code must still surface so callers can tell what happened.
+	if !strings.Contains(errStr, "401") {
+		t.Errorf("expected status code 401 in error, got: %q", errStr)
+	}
+	// No fragment of the response body may leak into the error.
+	if strings.Contains(errStr, secret) {
+		t.Errorf("error leaked secret from response body: %q", errStr)
+	}
+	if strings.Contains(errStr, "auth failed") {
+		t.Errorf("error leaked message text from response body: %q", errStr)
+	}
+}
+
+// TestMailgunDriverErrorBodyNonJSONStatusOnly verifies that a malformed
+// (non-JSON) error body degrades to a status-only error with none of the
+// body content included.
+func TestMailgunDriverErrorBodyNonJSONStatusOnly(t *testing.T) {
+	const body = "<html>internal gateway secret: hunter2</html>"
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer ts.Close()
+
+	driver := newMailgunDriverAgainstServer(t, ts)
+
+	err := sendTestMessage(t, driver)
+	if err == nil {
+		t.Fatalf("expected error from non-200 response, got nil")
+	}
+
+	errStr := err.Error()
+	if !strings.Contains(errStr, "502") {
+		t.Errorf("expected status code 502 in error, got: %q", errStr)
+	}
+	if strings.Contains(errStr, "hunter2") || strings.Contains(errStr, "<html>") {
+		t.Errorf("error leaked non-JSON response body: %q", errStr)
+	}
+}
+
+// TestMailgunDriverErrorBodyOversizedBounded verifies that an oversized
 // error response body is read at most up to the preview cap and that the
-// returned error carries the truncation marker. Without the cap a
-// misbehaving Mailgun proxy could exhaust memory by streaming an
-// unbounded body that is then concatenated into the returned error.
-func TestMailgunDriverErrorBodyCappedAtPreview(t *testing.T) {
+// returned error stays small and body-free. Without the cap a misbehaving
+// Mailgun proxy could exhaust memory by streaming an unbounded body.
+func TestMailgunDriverErrorBodyOversizedBounded(t *testing.T) {
 	// 1 MiB of 'A' is dramatically larger than the cap and would have been
 	// fully read+stringified by the old io.ReadAll(resp.Body) call.
 	const bodySize = 1 << 20
@@ -49,93 +120,20 @@ func TestMailgunDriverErrorBodyCappedAtPreview(t *testing.T) {
 
 	driver := newMailgunDriverAgainstServer(t, ts)
 
-	msg := mail.NewMessage().
-		To("to@example.com").
-		Subject("Subject").
-		TextBody("body")
-
-	err := driver.Send(context.Background(), msg)
+	err := sendTestMessage(t, driver)
 	if err == nil {
 		t.Fatalf("expected error from non-200 response, got nil")
 	}
 
 	errStr := err.Error()
-	// The status code must still surface so callers can tell what happened.
 	if !strings.Contains(errStr, "500") {
 		t.Errorf("expected status code 500 in error, got: %q", errStr)
 	}
-	// The truncation marker must appear when the body exceeds the cap.
-	if !strings.Contains(errStr, "...(truncated)") {
-		t.Errorf("expected truncation marker in error, got: %q", errStr)
+	if strings.Contains(errStr, "AAAA") {
+		t.Errorf("error leaked oversized response body content: %q", errStr)
 	}
-	// The error message must not contain anywhere near the full body. We
-	// allow some overhead (status code wrapping, marker, prefix) but assert
-	// the total error is well under bodySize.
-	const overhead = 4096 // ample room for prefix + marker + preview cap
-	if len(errStr) > mailgunErrorPreview+overhead {
-		t.Errorf("error length %d exceeds cap+overhead %d; body cap not enforced",
-			len(errStr), mailgunErrorPreview+overhead)
-	}
-}
-
-// TestMailgunDriverErrorBodySmallBodyPreserved verifies that small error
-// bodies (well under the cap) flow through verbatim with no truncation
-// marker. The cap must not change behaviour on the common path.
-func TestMailgunDriverErrorBodySmallBodyPreserved(t *testing.T) {
-	const small = `{"message":"Domain not found: mg.example.com"}`
-
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(small))
-	}))
-	defer ts.Close()
-
-	driver := newMailgunDriverAgainstServer(t, ts)
-
-	msg := mail.NewMessage().
-		To("to@example.com").
-		Subject("Subject").
-		TextBody("body")
-
-	err := driver.Send(context.Background(), msg)
-	if err == nil {
-		t.Fatalf("expected error from non-200 response, got nil")
-	}
-
-	errStr := err.Error()
-	if !strings.Contains(errStr, small) {
-		t.Errorf("expected full small body to appear in error, got: %q", errStr)
-	}
-	if strings.Contains(errStr, "...(truncated)") {
-		t.Errorf("small body should not be marked truncated, got: %q", errStr)
-	}
-}
-
-// TestMailgunDriverErrorBodyAtExactCap verifies the boundary condition: a
-// body whose size equals the cap exactly is preserved verbatim and not
-// marked truncated. Only bodies strictly larger than the cap trigger the
-// marker.
-func TestMailgunDriverErrorBodyAtExactCap(t *testing.T) {
-	body := strings.Repeat("X", mailgunErrorPreview)
-
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadGateway)
-		_, _ = w.Write([]byte(body))
-	}))
-	defer ts.Close()
-
-	driver := newMailgunDriverAgainstServer(t, ts)
-
-	msg := mail.NewMessage().
-		To("to@example.com").
-		Subject("Subject").
-		TextBody("body")
-
-	err := driver.Send(context.Background(), msg)
-	if err == nil {
-		t.Fatalf("expected error from non-200 response, got nil")
-	}
-	if strings.Contains(err.Error(), "...(truncated)") {
-		t.Errorf("body of exactly the cap size should not be marked truncated")
+	// The error must be a short fixed-shape message, nowhere near body size.
+	if len(errStr) > 256 {
+		t.Errorf("error length %d unexpectedly large; body content may have leaked", len(errStr))
 	}
 }

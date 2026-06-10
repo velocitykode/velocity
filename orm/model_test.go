@@ -20,6 +20,10 @@ func (TestUser) TableName() string {
 	return "test_users"
 }
 
+func (TestUser) Fillable() []string {
+	return []string{"name", "email", "age", "is_active"}
+}
+
 func TestModelSave(t *testing.T) {
 	manager := newTestManager(t)
 	defer manager.Shutdown(context.Background())
@@ -225,6 +229,10 @@ type TestProject struct {
 
 func (TestProject) TableName() string {
 	return "test_projects"
+}
+
+func (TestProject) Fillable() []string {
+	return []string{"name", "description"}
 }
 
 func TestUUIDModelSave(t *testing.T) {
@@ -622,6 +630,10 @@ type legacyColumnModel struct {
 }
 
 func (legacyColumnModel) TableName() string { return "legacy_column_models" }
+
+// AllowAllColumns: these tests exercise column-tag mapping mechanics, not
+// policy, so the model opts back into the open mass-assignment behavior.
+func (legacyColumnModel) AllowAllColumns() bool { return true }
 
 func TestMapToStruct_HonorsColumnTag(t *testing.T) {
 	var dst legacyColumnModel

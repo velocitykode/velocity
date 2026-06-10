@@ -82,9 +82,12 @@ var (
 	// Hoisted from crypto/drivers.ErrInvalidPayload.
 	ErrInvalidPayload = errors.New("velocity/crypto: invalid payload format")
 
-	// ErrInvalidCipher is returned by crypto drivers when the configured
-	// cipher is unknown or cannot perform the requested operation, e.g. a
-	// non-AEAD (CBC) cipher asked to bind AAD via EncryptBytesWithAAD.
+	// ErrInvalidCipher is returned when the configured cipher name is
+	// unknown (config validation, driver construction). The framework's
+	// AES driver binds AAD in both GCM (AEAD tag) and CBC (HMAC framing)
+	// modes, so the *WithAAD methods no longer reject CBC with this
+	// sentinel; third-party drivers without any way to authenticate AAD
+	// may still return it from those methods.
 	// Hoisted from crypto/drivers.ErrInvalidCipher.
 	ErrInvalidCipher = errors.New("velocity/crypto: unsupported cipher")
 )

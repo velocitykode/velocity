@@ -83,6 +83,10 @@ func migratePretend(migrator *migrate.Migrator, pending []migrate.Migration) err
 }
 
 // MigrateFresh drops all tables and re-runs all migrations.
+//
+// Like DBWipe, this is the unguarded programmatic primitive: no environment
+// check or confirmation. The production gate lives in the `vel migrate:fresh`
+// CLI command.
 func MigrateFresh(db orm.Database) error {
 	if db == nil {
 		cli.Warning("No database configured (DB_CONNECTION not set), skipping migrations")
@@ -115,6 +119,10 @@ func MigrateFresh(db orm.Database) error {
 }
 
 // MigrateRollback rolls back the last batch of migrations.
+//
+// Like DBWipe, this is the unguarded programmatic primitive: no environment
+// check or confirmation. The production gate lives in the
+// `vel migrate:rollback` CLI command.
 func MigrateRollback(db orm.Database, steps int) error {
 	if db == nil {
 		cli.Warning("No database configured (DB_CONNECTION not set), skipping rollback")

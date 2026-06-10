@@ -486,8 +486,10 @@ func (d *S3Driver) CopyCtx(ctx context.Context, from, to string) error {
 		return err
 	}
 
-	// Create copy source
-	source := fmt.Sprintf("%s/%s", d.bucket, from)
+	// Create copy source. AWS requires CopySource to be URL-encoded;
+	// encode the key per path segment (bucket names cannot contain
+	// characters that need encoding).
+	source := fmt.Sprintf("%s/%s", d.bucket, escapeURLPathSegments(from))
 
 	// Copy object
 	_, err = d.client.CopyObject(ctx, &s3.CopyObjectInput{

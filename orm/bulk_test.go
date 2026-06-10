@@ -104,6 +104,11 @@ func (BulkUser) TableName() string {
 	return "bulk_users"
 }
 
+// AllowAllColumns: these tests exercise the bulk-write machinery (hooks,
+// locks, RETURNING), not mass-assignment policy, so the fixture opts out
+// of the map-write deny-by-default.
+func (BulkUser) AllowAllColumns() bool { return true }
+
 func (BulkUser) BulkAfterCommit(_ context.Context, ids []any, op BulkOp) error {
 	bulkHookMu.Lock()
 	r := bulkHookActive

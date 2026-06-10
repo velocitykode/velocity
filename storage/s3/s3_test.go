@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -18,8 +19,9 @@ import (
 
 // mockS3Client implements s3API for testing
 type mockS3Client struct {
-	files       map[string][]byte
-	shouldError bool
+	files          map[string][]byte
+	shouldError    bool
+	lastCopySource string
 }
 
 func (m *mockS3Client) PutObject(_ context.Context, input *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
@@ -101,12 +103,17 @@ func (m *mockS3Client) CopyObject(_ context.Context, input *s3.CopyObjectInput, 
 	}
 
 	source := aws.ToString(input.CopySource)
+	m.lastCopySource = source
 	parts := strings.SplitN(source, "/", 2)
 	if len(parts) != 2 {
 		return nil, errors.New("invalid copy source")
 	}
 
-	sourceKey := parts[1]
+	// Real S3 URL-decodes CopySource before resolving the key.
+	sourceKey, err := url.PathUnescape(parts[1])
+	if err != nil {
+		return nil, errors.New("invalid copy source encoding")
+	}
 	destKey := aws.ToString(input.Key)
 
 	data, exists := m.files[sourceKey]
@@ -498,6 +505,39 @@ func TestS3DriverWithMock(t *testing.T) {
 		}
 	})
 
+}
+
+// TestS3Driver_CopyEncodesSource pins V2-25(c): AWS requires the
+// CopySource header to be URL-encoded. Keys containing spaces, %, or
+// other reserved characters must be percent-encoded per path segment,
+// while the destination Key (a plain SDK field) stays raw.
+func TestS3Driver_CopyEncodesSource(t *testing.T) {
+	mock := &mockS3Client{files: make(map[string][]byte)}
+	driver := &S3Driver{
+		client: mock,
+		bucket: "test-bucket",
+		region: "us-east-1",
+	}
+
+	const key = "dir name/report 100% & co.txt"
+	mock.files[key] = []byte("data")
+
+	if err := driver.CopyCtx(context.Background(), key, "dest.txt"); err != nil {
+		t.Fatalf("CopyCtx failed: %v", err)
+	}
+
+	// url.PathEscape encodes space and %, leaves & (an allowed
+	// sub-delim in path segments) literal, and preserves the / shape.
+	want := "test-bucket/dir%20name/report%20100%25%20&%20co.txt"
+	if mock.lastCopySource != want {
+		t.Errorf("CopySource = %q, want %q", mock.lastCopySource, want)
+	}
+	if _, ok := mock.files["dest.txt"]; !ok {
+		t.Error("destination object missing after copy")
+	}
+	if string(mock.files["dest.txt"]) != "data" {
+		t.Errorf("destination content = %q, want %q", mock.files["dest.txt"], "data")
+	}
 }
 
 // TestNewS3Driver tests S3 driver creation

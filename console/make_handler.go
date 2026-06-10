@@ -22,7 +22,9 @@ type MakeHandlerOptions struct {
 
 // MakeHandler generates a new handler file from a stub template.
 func MakeHandler(name string, opts MakeHandlerOptions) error {
-	if err := validateMakeName(name); err != nil {
+	// Handlers support namespaced names like "Admin/Users" that map to
+	// nested output directories, so the slash-permitting validator applies.
+	if err := validateMakeNestedName(name); err != nil {
 		return err
 	}
 

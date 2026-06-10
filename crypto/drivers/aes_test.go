@@ -1022,7 +1022,7 @@ func TestComputeMAC(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mac := driver.computeMAC(tt.iv, tt.ct)
+			mac := computeMACWith(tt.iv, tt.ct, driver.hmacKey)
 
 			if mac == "" {
 				t.Error("MAC should not be empty")
@@ -1040,7 +1040,7 @@ func TestComputeMAC(t *testing.T) {
 			}
 
 			// Verify determinism - same inputs should produce same MAC
-			mac2 := driver.computeMAC(tt.iv, tt.ct)
+			mac2 := computeMACWith(tt.iv, tt.ct, driver.hmacKey)
 			if mac != mac2 {
 				t.Error("MAC should be deterministic")
 			}
@@ -1228,6 +1228,9 @@ func TestEncryptDecryptWithAAD_RoundTrip(t *testing.T) {
 		{"AES-128-GCM", 16},
 		{"AES-192-GCM", 24},
 		{"AES-256-GCM", 32},
+		{"AES-128-CBC", 16},
+		{"AES-192-CBC", 24},
+		{"AES-256-CBC", 32},
 	}
 	for _, tc := range cases {
 		t.Run(tc.cipher, func(t *testing.T) {
@@ -1252,7 +1255,11 @@ func TestEncryptDecryptWithAAD_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestEncryptBytesWithAAD_CBCRejected(t *testing.T) {
+// TestCBC_AADBinding pins V2-12: CBC mode binds AAD into the HMAC
+// framing, so the AAD invariants GCM gets from its tag hold for CBC too.
+// Wrong aad fails, AAD-bound ciphertexts do not verify on the plain
+// decrypt path, and plain ciphertexts do not verify on the AAD path.
+func TestCBC_AADBinding(t *testing.T) {
 	cases := []struct {
 		cipher  string
 		keySize int
@@ -1267,11 +1274,35 @@ func TestEncryptBytesWithAAD_CBCRejected(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewAESDriver: %v", err)
 			}
-			if _, err := d.EncryptBytesWithAAD([]byte("x"), []byte("a")); !errors.Is(err, ErrInvalidCipher) {
-				t.Fatalf("EncryptBytesWithAAD: want ErrInvalidCipher, got %v", err)
+
+			env, err := d.EncryptBytesWithAAD([]byte("secret"), []byte("aad-A"))
+			if err != nil {
+				t.Fatalf("EncryptBytesWithAAD: %v", err)
 			}
-			if _, err := d.DecryptBytesWithAAD("v1:abc", []byte("a")); !errors.Is(err, ErrInvalidCipher) {
-				t.Fatalf("DecryptBytesWithAAD: want ErrInvalidCipher, got %v", err)
+
+			// Wrong aad must fail with ErrAADMismatch.
+			if _, err := d.DecryptBytesWithAAD(env, []byte("aad-B")); !errors.Is(err, ErrAADMismatch) {
+				t.Fatalf("wrong aad: want ErrAADMismatch, got %v", err)
+			}
+			// Empty aad must not verify an AAD-bound ciphertext either.
+			if _, err := d.DecryptBytesWithAAD(env, nil); !errors.Is(err, ErrAADMismatch) {
+				t.Fatalf("nil aad on AAD payload: want ErrAADMismatch, got %v", err)
+			}
+
+			// Domain separation: an AAD-bound CBC payload must NOT
+			// decrypt via the plain path (its MAC uses the AAD framing).
+			if _, err := d.DecryptBytes(env); !errors.Is(err, ErrDecrypt) {
+				t.Fatalf("DecryptBytes on AAD payload: want ErrDecrypt, got %v", err)
+			}
+
+			// And the converse: a plain EncryptBytes payload must not
+			// verify on the AAD path under a non-empty aad.
+			plain, err := d.EncryptBytes([]byte("plain"))
+			if err != nil {
+				t.Fatalf("EncryptBytes: %v", err)
+			}
+			if _, err := d.DecryptBytesWithAAD(plain, []byte("aad-A")); !errors.Is(err, ErrAADMismatch) {
+				t.Fatalf("AAD path on plain payload: want ErrAADMismatch, got %v", err)
 			}
 		})
 	}
@@ -1322,6 +1353,9 @@ func TestDecryptBytesWithAAD_NilEmptyEquivalent(t *testing.T) {
 		{"AES-128-GCM", 16},
 		{"AES-192-GCM", 24},
 		{"AES-256-GCM", 32},
+		{"AES-128-CBC", 16},
+		{"AES-192-CBC", 24},
+		{"AES-256-CBC", 32},
 	}
 	for _, tc := range cases {
 		t.Run(tc.cipher, func(t *testing.T) {
@@ -1339,6 +1373,11 @@ func TestDecryptBytesWithAAD_NilEmptyEquivalent(t *testing.T) {
 			if _, err := d.DecryptBytesWithAAD(env, nil); err != nil {
 				t.Fatalf("DecryptBytesWithAAD nil aad: %v", err)
 			}
+			// Empty aad is defined as equivalent to no aad in both
+			// modes, so the plain decrypt path accepts the payload too.
+			if _, err := d.DecryptBytes(env); err != nil {
+				t.Fatalf("DecryptBytes on nil-aad payload: %v", err)
+			}
 		})
 	}
 }
@@ -1351,86 +1390,99 @@ func TestDecryptBytesWithAAD_NilEmptyEquivalent(t *testing.T) {
 // fail across the rotation window even though the operator kept the old
 // master available for exactly this case.
 func TestDecryptBytesWithAAD_PreviousKeyRotation(t *testing.T) {
-	// Two distinct 32-byte master keys: oldMaster will encrypt; the
-	// driver under test treats it as the previous (rotated-out) key
-	// while newMaster is the active key.
-	oldMaster := make([]byte, 32)
-	for i := range oldMaster {
-		oldMaster[i] = byte(i + 1)
-	}
-	newMaster := make([]byte, 32)
-	for i := range newMaster {
-		newMaster[i] = byte(0xA0 ^ i)
-	}
+	// Both modes iterate PreviousKeys on the AAD path: GCM re-derives
+	// the encryption subkey per master, CBC re-derives encryption AND
+	// HMAC subkeys per master.
+	for _, cipher := range []string{"AES-256-GCM", "AES-256-CBC"} {
+		t.Run(cipher, func(t *testing.T) {
+			// Two distinct 32-byte master keys: oldMaster will encrypt;
+			// the driver under test treats it as the previous
+			// (rotated-out) key while newMaster is the active key.
+			oldMaster := make([]byte, 32)
+			for i := range oldMaster {
+				oldMaster[i] = byte(i + 1)
+			}
+			newMaster := make([]byte, 32)
+			for i := range newMaster {
+				newMaster[i] = byte(0xA0 ^ i)
+			}
 
-	// Pre-rotation driver: seals under oldMaster.
-	preRotation, err := NewAESDriver(oldMaster, nil, "AES-256-GCM")
-	if err != nil {
-		t.Fatalf("NewAESDriver(pre): %v", err)
-	}
-	aad := []byte("team:42|cred:7")
-	plaintext := []byte("rotation-window-payload")
-	env, err := preRotation.EncryptBytesWithAAD(plaintext, aad)
-	if err != nil {
-		t.Fatalf("EncryptBytesWithAAD: %v", err)
-	}
+			// Pre-rotation driver: seals under oldMaster.
+			preRotation, err := NewAESDriver(oldMaster, nil, cipher)
+			if err != nil {
+				t.Fatalf("NewAESDriver(pre): %v", err)
+			}
+			aad := []byte("team:42|cred:7")
+			plaintext := []byte("rotation-window-payload")
+			env, err := preRotation.EncryptBytesWithAAD(plaintext, aad)
+			if err != nil {
+				t.Fatalf("EncryptBytesWithAAD: %v", err)
+			}
 
-	// Post-rotation driver: newMaster is active, oldMaster is in
-	// PreviousKeys. The AAD-bound ciphertext must still decrypt.
-	postRotation, err := NewAESDriver(newMaster, [][]byte{oldMaster}, "AES-256-GCM")
-	if err != nil {
-		t.Fatalf("NewAESDriver(post): %v", err)
-	}
-	got, err := postRotation.DecryptBytesWithAAD(env, aad)
-	if err != nil {
-		t.Fatalf("DecryptBytesWithAAD across rotation: %v", err)
-	}
-	if string(got) != string(plaintext) {
-		t.Fatalf("plaintext mismatch after rotation: got %q want %q", got, plaintext)
-	}
+			// Post-rotation driver: newMaster is active, oldMaster is in
+			// PreviousKeys. The AAD-bound ciphertext must still decrypt.
+			postRotation, err := NewAESDriver(newMaster, [][]byte{oldMaster}, cipher)
+			if err != nil {
+				t.Fatalf("NewAESDriver(post): %v", err)
+			}
+			got, err := postRotation.DecryptBytesWithAAD(env, aad)
+			if err != nil {
+				t.Fatalf("DecryptBytesWithAAD across rotation: %v", err)
+			}
+			if string(got) != string(plaintext) {
+				t.Fatalf("plaintext mismatch after rotation: got %q want %q", got, plaintext)
+			}
 
-	// Negative case: wrong aad still fails after iterating every key.
-	// All keys exhaust to ErrAADMismatch, not a false positive.
-	if _, err := postRotation.DecryptBytesWithAAD(env, []byte("wrong-aad")); !errors.Is(err, ErrAADMismatch) {
-		t.Fatalf("wrong aad across rotation: want ErrAADMismatch, got %v", err)
-	}
+			// Negative case: wrong aad still fails after iterating every
+			// key. All keys exhaust to ErrAADMismatch, not a false
+			// positive.
+			if _, err := postRotation.DecryptBytesWithAAD(env, []byte("wrong-aad")); !errors.Is(err, ErrAADMismatch) {
+				t.Fatalf("wrong aad across rotation: want ErrAADMismatch, got %v", err)
+			}
 
-	// Negative case: an entirely foreign key (neither active nor
-	// previous) must not silently decrypt. Construct a driver whose
-	// active and previous keys are both unrelated to oldMaster.
-	foreignActive := make([]byte, 32)
-	for i := range foreignActive {
-		foreignActive[i] = byte(0xFF ^ i)
-	}
-	foreignPrev := make([]byte, 32)
-	for i := range foreignPrev {
-		foreignPrev[i] = byte(0x7E ^ i)
-	}
-	foreign, err := NewAESDriver(foreignActive, [][]byte{foreignPrev}, "AES-256-GCM")
-	if err != nil {
-		t.Fatalf("NewAESDriver(foreign): %v", err)
-	}
-	if _, err := foreign.DecryptBytesWithAAD(env, aad); !errors.Is(err, ErrAADMismatch) {
-		t.Fatalf("foreign keys: want ErrAADMismatch, got %v", err)
+			// Negative case: an entirely foreign key (neither active nor
+			// previous) must not silently decrypt. Construct a driver
+			// whose active and previous keys are both unrelated to
+			// oldMaster.
+			foreignActive := make([]byte, 32)
+			for i := range foreignActive {
+				foreignActive[i] = byte(0xFF ^ i)
+			}
+			foreignPrev := make([]byte, 32)
+			for i := range foreignPrev {
+				foreignPrev[i] = byte(0x7E ^ i)
+			}
+			foreign, err := NewAESDriver(foreignActive, [][]byte{foreignPrev}, cipher)
+			if err != nil {
+				t.Fatalf("NewAESDriver(foreign): %v", err)
+			}
+			if _, err := foreign.DecryptBytesWithAAD(env, aad); !errors.Is(err, ErrAADMismatch) {
+				t.Fatalf("foreign keys: want ErrAADMismatch, got %v", err)
+			}
+		})
 	}
 }
 
 func TestDecryptBytesWithAAD_RejectsLegacyAndEmpty(t *testing.T) {
-	d, err := NewAESDriver(make([]byte, 32), nil, "AES-256-GCM")
-	if err != nil {
-		t.Fatalf("NewAESDriver: %v", err)
-	}
-	if _, err := d.DecryptBytesWithAAD("", []byte("aad")); !errors.Is(err, ErrInvalidPayload) {
-		t.Fatalf("empty payload: want ErrInvalidPayload, got %v", err)
-	}
-	// Any envelope without the v1 sentinel must be rejected before the
-	// GCM Open path so a legacy ciphertext does not surface as a fake
-	// AAD mismatch. The version gate trips before deserialize, so the
-	// envelope contents are irrelevant; what matters is the missing
-	// "v1:" prefix.
-	notV1 := "anything-without-v1-prefix"
-	if _, err := d.DecryptBytesWithAAD(notV1, []byte("aad")); !errors.Is(err, ErrInvalidPayload) {
-		t.Fatalf("non-v1 payload: want ErrInvalidPayload, got %v", err)
+	for _, cipher := range []string{"AES-256-GCM", "AES-256-CBC"} {
+		t.Run(cipher, func(t *testing.T) {
+			d, err := NewAESDriver(make([]byte, 32), nil, cipher)
+			if err != nil {
+				t.Fatalf("NewAESDriver: %v", err)
+			}
+			if _, err := d.DecryptBytesWithAAD("", []byte("aad")); !errors.Is(err, ErrInvalidPayload) {
+				t.Fatalf("empty payload: want ErrInvalidPayload, got %v", err)
+			}
+			// Any envelope without the v1 sentinel must be rejected
+			// before the decrypt path so a legacy ciphertext does not
+			// surface as a fake AAD mismatch. The version gate trips
+			// before deserialize, so the envelope contents are
+			// irrelevant; what matters is the missing "v1:" prefix.
+			notV1 := "anything-without-v1-prefix"
+			if _, err := d.DecryptBytesWithAAD(notV1, []byte("aad")); !errors.Is(err, ErrInvalidPayload) {
+				t.Fatalf("non-v1 payload: want ErrInvalidPayload, got %v", err)
+			}
+		})
 	}
 }
 

@@ -18,6 +18,21 @@
 //	v1 MAC: HMAC-SHA256(hmacKey, "velocity\x00" || iv || ciphertext)
 //	v0 MAC: HMAC-SHA256(hmacKey, "base64:"+base64(ciphertext)+"."+base64(iv))
 //
+// CBC payloads sealed with additional authenticated data (the *WithAAD
+// methods) bind the AAD into the MAC under a distinct domain prefix with
+// an explicit length frame:
+//
+//	v1 AAD MAC: HMAC-SHA256(hmacKey, "velocity-aad\x00" || be64(len(aad)) || aad || iv || ciphertext)
+//
+// The separate prefix keeps AAD-bound and plain CBC ciphertexts mutually
+// unverifiable (an AAD payload never decrypts on the plain path and vice
+// versa), and the 8-byte big-endian length prefix prevents bytes from
+// shifting between the aad and iv fields of the MAC input. A zero-length
+// aad is defined as equivalent to no aad (matching GCM, where an empty
+// AAD produces the same tag as none), so only the non-empty case uses
+// the AAD framing. AAD-bound CBC payloads are always v1; the AAD methods
+// reject v0 envelopes outright.
+//
 // GCM-mode payloads share the same outer sentinel plumbing but the
 // authenticated tag is cipher-provided, so v0 and v1 are decoded the same
 // way once the sentinel is stripped. Adding the sentinel to GCM payloads
@@ -40,6 +55,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -218,7 +234,7 @@ func (d *AESDriver) EncryptBytes(plaintext []byte) (string, error) {
 	if strings.Contains(d.cipher, "GCM") {
 		return d.encryptGCM(plaintext)
 	}
-	return d.encryptCBC(plaintext)
+	return d.encryptCBC(plaintext, nil)
 }
 
 // Decrypt decrypts a payload
@@ -345,20 +361,23 @@ func (d *AESDriver) GenerateKey() (string, error) {
 	return "base64:" + base64.StdEncoding.EncodeToString(key), nil
 }
 
-// EncryptBytesWithAAD encrypts plaintext under the GCM tag with aad bound
-// in. CBC ciphers return ErrInvalidCipher (no AEAD). aad is not persisted
-// in the payload; the caller supplies the same aad on decrypt.
+// EncryptBytesWithAAD encrypts plaintext with aad bound into the
+// authentication check. GCM binds aad into the AEAD tag; CBC mixes it
+// into the encrypt-then-MAC HMAC input under a dedicated domain prefix
+// (see the package doc for the exact framing). In both modes the aad is
+// not persisted in the payload; the caller supplies the same aad on
+// decrypt. A nil or zero-length aad is equivalent to EncryptBytes.
 func (d *AESDriver) EncryptBytesWithAAD(plaintext, aad []byte) (string, error) {
-	if !strings.Contains(d.cipher, "GCM") {
-		return "", ErrInvalidCipher
+	if strings.Contains(d.cipher, "GCM") {
+		return d.encryptGCMWithAAD(plaintext, aad)
 	}
-	return d.encryptGCMWithAAD(plaintext, aad)
+	return d.encryptCBC(plaintext, aad)
 }
 
-// DecryptBytesWithAAD decrypts an AAD-bound GCM payload. See the
-// crypto.Encryptor interface doc for full semantics. CBC ciphers return
-// ErrInvalidCipher. Empty or non-v1 envelopes return ErrInvalidPayload.
-// Any GCM auth failure under every configured key returns ErrAADMismatch
+// DecryptBytesWithAAD decrypts an AAD-bound payload. See the
+// crypto.Encryptor interface doc for full semantics. Empty or non-v1
+// envelopes return ErrInvalidPayload. Any authentication failure (GCM
+// tag or CBC HMAC) under every configured key returns ErrAADMismatch
 // (cannot distinguish wrong key, wrong aad, tamper, or AAD-vs-no-AAD
 // payload mixing).
 //
@@ -366,15 +385,11 @@ func (d *AESDriver) EncryptBytesWithAAD(plaintext, aad []byte) (string, error) {
 // signed-AAD payload encrypted under a rotated-out key would otherwise
 // silently fail across the rotation window even though the operator
 // kept the previous key in Config.PreviousKeys for exactly this case.
-// The active key is attempted first; on AAD/tag mismatch, each previous
-// master is HKDF-expanded to its encryption subkey and re-tried with
-// the same aad. First success wins. Iteration stops immediately on a
-// structural envelope error (ErrInvalidPayload) since the defect is
-// key-independent.
+// The active key is attempted first; on auth mismatch, each previous
+// master is HKDF-expanded to its subkeys and re-tried with the same
+// aad. First success wins. Iteration stops immediately on a structural
+// envelope error (ErrInvalidPayload) since the defect is key-independent.
 func (d *AESDriver) DecryptBytesWithAAD(payload string, aad []byte) ([]byte, error) {
-	if !strings.Contains(d.cipher, "GCM") {
-		return nil, ErrInvalidCipher
-	}
 	if payload == "" {
 		return nil, ErrInvalidPayload
 	}
@@ -393,7 +408,7 @@ func (d *AESDriver) DecryptBytesWithAAD(payload string, aad []byte) ([]byte, err
 	}
 
 	// Try the active key first.
-	plaintext, err := d.decryptGCMWithAAD(p, d.key, aad)
+	plaintext, err := d.decryptWithKeysAAD(p, d.key, d.hmacKey, aad)
 	if err == nil {
 		return plaintext, nil
 	}
@@ -406,16 +421,17 @@ func (d *AESDriver) DecryptBytesWithAAD(payload string, aad []byte) ([]byte, err
 	}
 
 	// Try previous keys for rotation support. Each entry in
-	// d.previousKeys is a master key; the encryption subkey is derived
-	// via the same HKDF info string ("encryption") the active key used,
+	// d.previousKeys is a master key; the encryption and HMAC subkeys
+	// are derived via the same HKDF info strings the active key used,
 	// so a ciphertext sealed under the previous active key decrypts
 	// cleanly once that master is reachable here.
 	for _, masterKey := range d.previousKeys {
 		encKey, ekErr := deriveSubkey(masterKey, d.keySize, []byte("encryption"))
-		if ekErr != nil {
+		hk, hkErr := deriveSubkey(masterKey, 32, []byte("hmac"))
+		if ekErr != nil || hkErr != nil {
 			continue
 		}
-		plaintext, err = d.decryptGCMWithAAD(p, encKey, aad)
+		plaintext, err = d.decryptWithKeysAAD(p, encKey, hk, aad)
 		if err == nil {
 			return plaintext, nil
 		}
@@ -425,6 +441,17 @@ func (d *AESDriver) DecryptBytesWithAAD(payload string, aad []byte) ([]byte, err
 	}
 
 	return nil, ErrAADMismatch
+}
+
+// decryptWithKeysAAD attempts an AAD-bound decrypt with specific
+// encryption and HMAC keys. GCM ignores hmacKey (the tag is
+// cipher-provided); CBC verifies the AAD-framed HMAC. The AAD path only
+// admits v1 envelopes, so no version parameter is needed.
+func (d *AESDriver) decryptWithKeysAAD(p *Payload, encKey, hmacKey, aad []byte) ([]byte, error) {
+	if strings.Contains(d.cipher, "GCM") {
+		return d.decryptGCMWithAAD(p, encKey, aad)
+	}
+	return d.decryptCBCWithKey(p, encKey, hmacKey, 1, aad)
 }
 
 // encryptGCMWithAAD encrypts using GCM with additional authenticated data.
@@ -510,8 +537,10 @@ func (d *AESDriver) decryptGCMWithAAD(p *Payload, key, aad []byte) ([]byte, erro
 	return gcm.Open(nil, nonce, ciphertext, aad)
 }
 
-// encryptCBC encrypts using CBC mode (v1 wire format).
-func (d *AESDriver) encryptCBC(plaintext []byte) (string, error) {
+// encryptCBC encrypts using CBC mode (v1 wire format). A non-empty aad
+// is bound into the HMAC via the AAD framing; nil/empty aad produces the
+// plain v1 MAC.
+func (d *AESDriver) encryptCBC(plaintext, aad []byte) (string, error) {
 	// Create cipher block
 	block, err := aes.NewCipher(d.key)
 	if err != nil {
@@ -534,7 +563,9 @@ func (d *AESDriver) encryptCBC(plaintext []byte) (string, error) {
 
 	// Generate MAC for integrity over the raw (unencoded) IV and ciphertext,
 	// using domain-separated binary writes instead of string formatting.
-	mac := d.computeMAC(iv, ciphertext)
+	// A non-empty aad selects the AAD framing (distinct domain prefix +
+	// length-prefixed aad bytes).
+	mac := computeMACWithAAD(iv, ciphertext, aad, d.hmacKey)
 
 	// Create payload
 	p := &Payload{
@@ -599,19 +630,21 @@ func (d *AESDriver) decryptWithKeys(p *Payload, encKey, hmacKey []byte, version 
 	if strings.Contains(d.cipher, "GCM") {
 		return d.decryptGCMWithKey(p, encKey)
 	}
-	return d.decryptCBCWithKey(p, encKey, hmacKey, version)
+	return d.decryptCBCWithKey(p, encKey, hmacKey, version, nil)
 }
 
 // decryptCBCWithKey decrypts CBC mode with separate encryption and HMAC keys.
 // version == 1 uses the domain-separated MAC; version == 0 uses the
-// pre-sweep fmt-concatenated MAC for backwards compatibility.
+// pre-sweep fmt-concatenated MAC for backwards compatibility. A non-empty
+// aad selects the v1 AAD framing (and is rejected for v0, which predates
+// AAD support entirely).
 //
 // Every failure returns ErrDecrypt (single sentinel). The actual cause is
 // surfaced via debugDecryptFailure(stage, err) for operator-side
 // debugging only. This collapse is deliberate: six distinct error strings
 // reachable from a single payload form a padding-oracle precursor if any
 // caller forwards the error message back to a client.
-func (d *AESDriver) decryptCBCWithKey(p *Payload, encKey, hmacKey []byte, version int) ([]byte, error) {
+func (d *AESDriver) decryptCBCWithKey(p *Payload, encKey, hmacKey []byte, version int, aad []byte) ([]byte, error) {
 	// MAC is required for CBC decryption to ensure integrity
 	if p.MAC == "" {
 		debugDecryptFailure("cbc-mac-missing", nil)
@@ -635,8 +668,16 @@ func (d *AESDriver) decryptCBCWithKey(p *Payload, encKey, hmacKey []byte, versio
 	var expectedMAC string
 	switch version {
 	case 1:
-		expectedMAC = computeMACWith(iv, ciphertext, hmacKey)
+		expectedMAC = computeMACWithAAD(iv, ciphertext, aad, hmacKey)
 	case 0:
+		// v0 predates AAD support; an AAD-bound decrypt of a v0 envelope
+		// is rejected upstream (DecryptBytesWithAAD only admits v1), so
+		// aad is always empty here. Guard anyway so a future caller
+		// cannot silently verify a v0 MAC while believing aad is bound.
+		if len(aad) > 0 {
+			debugDecryptFailure("cbc-v0-aad-unsupported", nil)
+			return nil, ErrDecrypt
+		}
 		expectedMAC = computeLegacyMACWith(p.Value, p.IV, hmacKey)
 	default:
 		debugDecryptFailure("cbc-version-unsupported", nil)
@@ -768,17 +809,41 @@ func (d *AESDriver) decryptGCMWithKey(p *Payload, key []byte) ([]byte, error) {
 // prefix is never confused with IV bytes in HMAC input.
 var macDomainPrefix = []byte("velocity\x00")
 
-// computeMAC generates HMAC for CBC mode using the derived HMAC key,
-// over domain-separated raw bytes: prefix || iv || ciphertext.
-func (d *AESDriver) computeMAC(iv, ct []byte) string {
-	return computeMACWith(iv, ct, d.hmacKey)
-}
+// macAADDomainPrefix is the domain-separation tag for AAD-bound CBC MACs.
+// It is distinct from macDomainPrefix at a fixed byte offset, so a MAC
+// computed under one framing can never verify under the other: an
+// AAD-bound ciphertext is rejected by the plain decrypt path and a plain
+// ciphertext is rejected by the AAD path, mirroring GCM's tag semantics.
+var macAADDomainPrefix = []byte("velocity-aad\x00")
 
 // computeMACWith generates the v1 HMAC with the provided HMAC key, using
 // domain-separated writes rather than string concatenation.
 func computeMACWith(iv, ct, hmacKey []byte) string {
 	mac := hmac.New(sha256.New, hmacKey)
 	mac.Write(macDomainPrefix)
+	mac.Write(iv)
+	mac.Write(ct)
+	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// computeMACWithAAD generates the v1 HMAC with aad bound in:
+//
+//	HMAC(hmacKey, "velocity-aad\x00" || be64(len(aad)) || aad || iv || ciphertext)
+//
+// The 8-byte big-endian length prefix fixes the aad/iv boundary so bytes
+// cannot shift between the two fields (concatenation ambiguity). An empty
+// aad falls through to the plain v1 framing, defining nil and zero-length
+// aad as equivalent to no aad, the same equivalence GCM provides.
+func computeMACWithAAD(iv, ct, aad, hmacKey []byte) string {
+	if len(aad) == 0 {
+		return computeMACWith(iv, ct, hmacKey)
+	}
+	var aadLen [8]byte
+	binary.BigEndian.PutUint64(aadLen[:], uint64(len(aad)))
+	mac := hmac.New(sha256.New, hmacKey)
+	mac.Write(macAADDomainPrefix)
+	mac.Write(aadLen[:])
+	mac.Write(aad)
 	mac.Write(iv)
 	mac.Write(ct)
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))

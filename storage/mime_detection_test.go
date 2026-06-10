@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"io"
 	"strings"
 	"testing"
 )
@@ -95,6 +96,58 @@ func TestDetectMimeType_HtmlNotClassifiedAsPlain(t *testing.T) {
 	mime := detectMimeType(html)
 	if strings.HasPrefix(mime, "text/plain") {
 		t.Errorf("HTML must not be sniffed as text/plain, got %q", mime)
+	}
+}
+
+// chunkedReader returns at most one byte per Read, exercising the
+// io.Reader contract clause that a Read may legally return short.
+type chunkedReader struct {
+	data []byte
+}
+
+func (c *chunkedReader) Read(p []byte) (int, error) {
+	if len(c.data) == 0 {
+		return 0, io.EOF
+	}
+	p[0] = c.data[0]
+	c.data = c.data[1:]
+	return 1, nil
+}
+
+// TestSniffMimeType_ShortReads pins the MimeType under-read fix: a
+// single file.Read may return fewer than 512 bytes even when more are
+// available, truncating the sniff window. With a one-byte-per-Read
+// reader the old code saw only "<" and classified HTML as text/plain;
+// io.ReadFull keeps reading until the window is full or EOF.
+func TestSniffMimeType_ShortReads(t *testing.T) {
+	html := []byte("<!doctype html><script>x()</script>")
+
+	got, err := sniffMimeType(&chunkedReader{data: html})
+	if err != nil {
+		t.Fatalf("sniffMimeType failed: %v", err)
+	}
+	if !strings.HasPrefix(got, "text/html") {
+		t.Errorf("sniffMimeType on chunked reader = %q, want prefix text/html", got)
+	}
+
+	// Streams shorter than the 512-byte window must still detect.
+	got, err = sniffMimeType(&chunkedReader{data: []byte("GIF89a")})
+	if err != nil {
+		t.Fatalf("sniffMimeType failed on short stream: %v", err)
+	}
+	if !strings.HasPrefix(got, "image/gif") {
+		t.Errorf("sniffMimeType on short stream = %q, want prefix image/gif", got)
+	}
+
+	// Empty stream: io.ReadFull returns io.EOF, which must be tolerated.
+	// http.DetectContentType returns text/plain for empty input by
+	// contract, matching the previous single-Read behavior.
+	got, err = sniffMimeType(&chunkedReader{})
+	if err != nil {
+		t.Fatalf("sniffMimeType failed on empty stream: %v", err)
+	}
+	if !strings.HasPrefix(got, "text/plain") {
+		t.Errorf("sniffMimeType on empty stream = %q, want prefix text/plain", got)
 	}
 }
 

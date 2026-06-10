@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"reflect"
 
 	"github.com/velocitykode/velocity/orm/drivers"
 )
@@ -104,6 +105,9 @@ func firstOrCreateWithDriver[T any](ctx context.Context, drv drivers.Driver, con
 			return nil, fmt.Errorf("velocity/orm: firstOrCreate: %w", err)
 		}
 	}
+	if err := denyUndeclaredMapKeys[T](conditions, values); err != nil {
+		return nil, err
+	}
 
 	q := newQuery[T]()
 	q.driver = drv
@@ -156,6 +160,9 @@ func updateOrCreateWithDriver[T any](ctx context.Context, drv drivers.Driver, co
 		if err := validateIdentifier(key); err != nil {
 			return nil, fmt.Errorf("velocity/orm: updateOrCreate: %w", err)
 		}
+	}
+	if err := denyUndeclaredMapKeys[T](conditions, values); err != nil {
+		return nil, err
 	}
 
 	q := newQuery[T]()
@@ -216,6 +223,38 @@ func defaultDriverOrErr(op string) (drivers.Driver, error) {
 // receivers are needed.
 func markExisting[T any](model *T) {
 	markModelExisting(model)
+}
+
+// denyUndeclaredMapKeys enforces deny-by-default mass assignment for the
+// FirstOrCreate/UpdateOrCreate helpers. Both take two caller maps -
+// conditions and values - and either map can target application columns:
+// values is written on every branch, and conditions is merged into the
+// insert on the miss branch. Checking the combined key set up front, before
+// the lookup query runs, guarantees the hit branch rejects exactly like the
+// miss branch instead of returning (FirstOrCreate) or updating
+// (UpdateOrCreate) without ever policing conditions.
+//
+// Matching uses bulk Update's deniedUpdateKeys: both maps end up as SQL
+// identifiers (conditions in the lookup WHERE, values in the write),
+// where most dialects fold unquoted identifier case, so keys
+// are matched case-insensitively against both the SQL column name and the
+// snake-cased Go field name. Unknown keys and framework-managed embedded
+// columns (id, created_at, ...) pass through. The offending caller keys are
+// reported verbatim, in column order, so the error is stable.
+func denyUndeclaredMapKeys[T any](conditions, values map[string]any) error {
+	var zero T
+	if !PolicyFor(&zero).implicitDeny {
+		return nil
+	}
+	meta := MetaFor(reflect.TypeOf(zero))
+	if meta == nil {
+		return nil
+	}
+	denied := deniedUpdateKeys(mergeConditionsAndValues(conditions, values), meta)
+	if len(denied) > 0 {
+		return &MassAssignmentError{Model: reflect.TypeOf(zero).String(), Keys: denied}
+	}
+	return nil
 }
 
 // mergeConditionsAndValues creates a new map with conditions as base and values overlaid.

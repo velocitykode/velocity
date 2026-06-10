@@ -425,7 +425,7 @@ func (g *PostgresGrammar) CompileCreateTable(name string, table *Table) string {
 			sql.WriteString(" DEFAULT ")
 			switch v := column.Default.(type) {
 			case string:
-				sql.WriteString(fmt.Sprintf("'%s'", v))
+				sql.WriteString(g.QuoteString(v))
 			case bool:
 				if v {
 					sql.WriteString("TRUE")

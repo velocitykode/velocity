@@ -26,6 +26,12 @@ func MakeMigration(name string, opts MakeMigrationOptions) error {
 	if err := validateMakeName(name); err != nil {
 		return err
 	}
+	if err := validateTableName("--create", opts.Create); err != nil {
+		return err
+	}
+	if err := validateTableName("--table", opts.Table); err != nil {
+		return err
+	}
 
 	version := time.Now().Format("20060102150405")
 	snakeName := toSnakeCase(toPascalCase(name))
@@ -82,6 +88,31 @@ func MakeMigration(name string, opts MakeMigrationOptions) error {
 	}
 
 	cli.Success(fmt.Sprintf("Created: %s", outputPath))
+	return nil
+}
+
+// validateTableName ensures a --create/--table flag value is a plain SQL
+// identifier: [A-Za-z_][A-Za-z0-9_]*. The value lands verbatim in the
+// generated migration's TableName via text/template with no escaping, so
+// quotes, backticks, semicolons, or newlines would otherwise be written
+// straight into Go source. Empty means the flag was not passed.
+func validateTableName(flag, table string) error {
+	if table == "" {
+		return nil
+	}
+	for i, r := range table {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_':
+			// letters and '_' allowed anywhere
+		case i > 0 && r >= '0' && r <= '9':
+			// digits allowed after the first character
+		default:
+			if i == 0 {
+				return fmt.Errorf("invalid %s value %q: must start with a letter or underscore, found %q", flag, table, r)
+			}
+			return fmt.Errorf("invalid %s value %q: character %q not allowed (table names must match [A-Za-z_][A-Za-z0-9_]*)", flag, table, r)
+		}
+	}
 	return nil
 }
 
