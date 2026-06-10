@@ -276,10 +276,16 @@ func New(opts ...Option) (*App, error) {
 	// registration: *auth.Manager does not currently expose Shutdown.
 	// JWT guard cleanup goroutines are tied to the process lifetime.
 	var sqlDB *sql.DB
+	// The provider dialect must originate from the initialized database
+	// contract, not from configuration: a.DB.DriverName() reflects the
+	// driver actually in use. Fall back to the configured connection name
+	// only when no database manager was initialized.
+	dbDialect := a.config.DB.Connection
 	if a.DB != nil {
 		sqlDB = a.DB.DB()
+		dbDialect = a.DB.DriverName()
 	}
-	a.Auth = initAuth(a.config.Auth, a.config.Session, a.Log, sqlDB, a.Crypto, a.config.DB.Connection)
+	a.Auth = initAuth(a.config.Auth, a.config.Session, a.Log, sqlDB, a.Crypto, dbDialect)
 
 	// 7. Initialize cache
 	a.Cache = initCache(a.config.Cache)
@@ -570,6 +576,15 @@ func New(opts ...Option) (*App, error) {
 	// immediately, and any pooled Context carries the same Services
 	// pointer.
 	a.Services.RedirectAllowlist = a.Router
+	// Flash cookies (validation errors / old input) follow the session
+	// cookie's Secure stance. The session config was validated at step 5:
+	// Secure=false survives only in dev/test profiles, so this opt-out
+	// can never reach production. Stored inverted on Services (zero value
+	// = Secure) and read by the router's flash write path, Context cookie
+	// deletion, and bond's flash clear path, keeping the Secure attribute
+	// identical across all of them. Set BEFORE SetServices for the same
+	// reason as RedirectAllowlist above.
+	a.Services.InsecureFlashCookies = !a.config.Session.Secure
 	a.Router.SetServices(a.Services)
 	// V2-15: the router's default error path used to write a generic 500
 	// with no logging at all, so out of the box every handler error and

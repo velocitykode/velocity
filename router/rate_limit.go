@@ -86,10 +86,14 @@ func WithTrustedProxies(proxies []string) RateLimitOption {
 	}
 }
 
-// limiterEntry holds a rate limiter and its last access time.
+// limiterEntry holds a rate limiter, its last access time, and the start of
+// its current rate-limit window. windowStart lives alongside the limiter so
+// eviction and cleanup prune the per-key window state together with the
+// limiter rather than leaking it in a parallel, unbounded map.
 type limiterEntry struct {
-	limiter    *rate.Limiter
-	lastAccess atomic.Int64 // Unix nano timestamp for atomic access
+	limiter     *rate.Limiter
+	lastAccess  atomic.Int64 // Unix nano timestamp for atomic access
+	windowStart atomic.Int64 // Unix nano timestamp of the current window start
 }
 
 // maxRateLimitEntries is the maximum number of per-key rate limiters to prevent memory exhaustion.
@@ -125,14 +129,16 @@ func newKeyedRateLimiter(requests int, window time.Duration, burst int, cleanupI
 	return krl
 }
 
-// getLimiter returns the rate limiter for the given key, creating one if needed.
-func (krl *keyedRateLimiter) getLimiter(key string) *rate.Limiter {
+// getLimiter returns the entry for the given key, creating one if needed.
+// The entry (not just its limiter) is returned so the middleware can read and
+// rotate the per-key window start that lives on it.
+func (krl *keyedRateLimiter) getLimiter(key string) *limiterEntry {
 	krl.mu.RLock()
 	entry, exists := krl.limiters[key]
 	if exists {
 		entry.lastAccess.Store(time.Now().UnixNano())
 		krl.mu.RUnlock()
-		return entry.limiter
+		return entry
 	}
 	krl.mu.RUnlock()
 
@@ -142,7 +148,7 @@ func (krl *keyedRateLimiter) getLimiter(key string) *rate.Limiter {
 	// Double-check after acquiring write lock
 	if entry, exists := krl.limiters[key]; exists {
 		entry.lastAccess.Store(time.Now().UnixNano())
-		return entry.limiter
+		return entry
 	}
 
 	// Evict oldest entry if at capacity to prevent memory exhaustion
@@ -150,12 +156,14 @@ func (krl *keyedRateLimiter) getLimiter(key string) *rate.Limiter {
 		krl.evictOldest()
 	}
 
+	now := time.Now().UnixNano()
 	entry = &limiterEntry{
 		limiter: rate.NewLimiter(krl.rate, krl.burst),
 	}
-	entry.lastAccess.Store(time.Now().UnixNano())
+	entry.lastAccess.Store(now)
+	entry.windowStart.Store(now)
 	krl.limiters[key] = entry
-	return entry.limiter
+	return entry
 }
 
 // evictOldest removes the least recently accessed limiter entry.
@@ -294,9 +302,12 @@ func RateLimit(requests int, window time.Duration, opts ...RateLimitOption) Midd
 	}
 }
 
-// RateLimitByKey creates a per-key rate limiter middleware.
-// Each unique key (returned by keyFunc) has its own rate limit.
-func RateLimitByKey(requests int, window time.Duration, keyFunc func(*Context) string, opts ...RateLimitOption) MiddlewareFunc {
+// newRateLimitByKey builds the shared per-key rate-limit machinery used by
+// both RateLimitByKey and RateLimitByKeyWithCleanupControl. It returns the
+// underlying keyedRateLimiter (so the cleanup-control variant can expose it to
+// tests) and the middleware itself, ensuring both entry points exercise the
+// exact same request path instead of a hand-copied fork.
+func newRateLimitByKey(requests int, window time.Duration, keyFunc func(*Context) string, opts ...RateLimitOption) (*keyedRateLimiter, MiddlewareFunc) {
 	cfg := &RateLimitConfig{
 		Burst:           requests,
 		Message:         "Rate limit exceeded",
@@ -308,10 +319,7 @@ func RateLimitByKey(requests int, window time.Duration, keyFunc func(*Context) s
 
 	krl := newKeyedRateLimiter(requests, window, cfg.Burst, cfg.CleanupInterval)
 
-	// Track window starts per key
-	windowStarts := &sync.Map{}
-
-	return func(next HandlerFunc) HandlerFunc {
+	mw := func(next HandlerFunc) HandlerFunc {
 		return func(c *Context) error {
 			// Check skip function
 			if cfg.Skip != nil && cfg.Skip(c) {
@@ -319,20 +327,21 @@ func RateLimitByKey(requests int, window time.Duration, keyFunc func(*Context) s
 			}
 
 			key := keyFunc(c)
-			limiter := krl.getLimiter(key)
+			entry := krl.getLimiter(key)
 
 			now := time.Now()
-			// Get or create window start for this key
-			wsInterface, _ := windowStarts.LoadOrStore(key, now)
-			ws := wsInterface.(time.Time)
+			// Rotate the per-key window start when the current window has
+			// elapsed. The window start is seeded at entry creation, so a
+			// freshly seen key gets a window beginning at its first request.
+			ws := time.Unix(0, entry.windowStart.Load())
 			if now.Sub(ws) >= window {
-				windowStarts.Store(key, now)
+				entry.windowStart.Store(now.UnixNano())
 				ws = now
 			}
 			resetTime := ws.Add(window)
 
-			allowed := limiter.Allow()
-			tokens := int(limiter.Tokens())
+			allowed := entry.limiter.Allow()
+			tokens := int(entry.limiter.Tokens())
 			if tokens < 0 {
 				tokens = 0
 			}
@@ -348,6 +357,15 @@ func RateLimitByKey(requests int, window time.Duration, keyFunc func(*Context) s
 			return next(c)
 		}
 	}
+
+	return krl, mw
+}
+
+// RateLimitByKey creates a per-key rate limiter middleware.
+// Each unique key (returned by keyFunc) has its own rate limit.
+func RateLimitByKey(requests int, window time.Duration, keyFunc func(*Context) string, opts ...RateLimitOption) MiddlewareFunc {
+	_, mw := newRateLimitByKey(requests, window, keyFunc, opts...)
+	return mw
 }
 
 // RateLimitByIP creates a per-IP rate limiter middleware.
@@ -584,55 +602,9 @@ type rateLimiterWithCleanup struct {
 }
 
 // RateLimitByKeyWithCleanupControl creates a per-key rate limiter with cleanup control for testing.
+// It wraps the same builder as RateLimitByKey so tests exercise the production code path.
 func RateLimitByKeyWithCleanupControl(requests int, window time.Duration, keyFunc func(*Context) string, opts ...RateLimitOption) (*rateLimiterWithCleanup, MiddlewareFunc) {
-	cfg := &RateLimitConfig{
-		Burst:           requests,
-		Message:         "Rate limit exceeded",
-		CleanupInterval: 5 * time.Minute,
-	}
-	for _, opt := range opts {
-		opt(cfg)
-	}
-
-	krl := newKeyedRateLimiter(requests, window, cfg.Burst, cfg.CleanupInterval)
-	windowStarts := &sync.Map{}
-
-	mw := func(next HandlerFunc) HandlerFunc {
-		return func(c *Context) error {
-			if cfg.Skip != nil && cfg.Skip(c) {
-				return next(c)
-			}
-
-			key := keyFunc(c)
-			limiter := krl.getLimiter(key)
-
-			now := time.Now()
-			wsInterface, _ := windowStarts.LoadOrStore(key, now)
-			ws := wsInterface.(time.Time)
-			if now.Sub(ws) >= window {
-				windowStarts.Store(key, now)
-				ws = now
-			}
-			resetTime := ws.Add(window)
-
-			allowed := limiter.Allow()
-			tokens := int(limiter.Tokens())
-			if tokens < 0 {
-				tokens = 0
-			}
-
-			if !allowed {
-				if cfg.OnLimitReached != nil {
-					cfg.OnLimitReached(c)
-				}
-				return rateLimitResponse(c, requests, 0, resetTime, cfg.Message)
-			}
-
-			setRateLimitHeaders(c, requests, tokens, resetTime)
-			return next(c)
-		}
-	}
-
+	krl, mw := newRateLimitByKey(requests, window, keyFunc, opts...)
 	return &rateLimiterWithCleanup{krl: krl, mw: mw}, mw
 }
 

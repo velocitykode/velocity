@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -61,7 +62,12 @@ type RouteParam struct {
 	Value string
 }
 
-// Context wraps http.Request and http.ResponseWriter with helper methods
+// Context wraps http.Request and http.ResponseWriter with helper methods.
+//
+// Router-owned wiring fields (services, trustedProxies,
+// redirectAllowedHosts, fileRoot, validateFn, intendedFn) flow through
+// ctxWiring; any new wiring field must be added to ctxWiring (and its
+// applyWiring/snapshotWiring methods) AND to reset().
 type Context struct {
 	Response http.ResponseWriter
 	Request  *http.Request
@@ -90,6 +96,11 @@ type Context struct {
 	// Wired during app init via Router.SetIntendedResolver so router need
 	// not import auth. Returns "" when nothing is stashed.
 	intendedFn func(c *Context) string
+	// insecureFlashCookies opts flash cookies out of the Secure
+	// attribute. Carried from app.Services.InsecureFlashCookies (a
+	// validated dev/test-only opt-out). Stored inverted so the pool's
+	// zero value after reset() means Secure.
+	insecureFlashCookies bool
 }
 
 // NewContext creates a new Context from http.Request and http.ResponseWriter.
@@ -115,6 +126,9 @@ func NewContext(w http.ResponseWriter, r *http.Request) *Context {
 		params:   params,
 		values:   make(map[string]interface{}),
 		services: svc,
+		// Inherit the flash-cookie Secure decision with the services so
+		// Wrap-built contexts agree with pool-built ones.
+		insecureFlashCookies: svc != nil && svc.InsecureFlashCookies,
 	}
 }
 
@@ -254,8 +268,11 @@ func (c *Context) QueryFloat64(name string, defaultValue ...float64) float64 {
 		return 0
 	}
 	f, err := strconv.ParseFloat(val, 64)
-	if err != nil && len(defaultValue) > 0 {
-		return defaultValue[0]
+	if err != nil || math.IsInf(f, 0) {
+		if len(defaultValue) > 0 {
+			return defaultValue[0]
+		}
+		return 0
 	}
 	return f
 }
@@ -299,6 +316,16 @@ func (c *Context) SetHeader(name, value string) {
 		return
 	}
 	c.Response.Header().Set(name, value)
+}
+
+// AddHeader appends a response header value, preserving values already
+// set by other middleware (use for list-valued headers like Vary).
+// Names and values containing \r or \n are rejected to prevent header injection.
+func (c *Context) AddHeader(name, value string) {
+	if strings.ContainsAny(name, "\r\n") || strings.ContainsAny(value, "\r\n") {
+		return
+	}
+	c.Response.Header().Add(name, value)
 }
 
 // Cookie returns a cookie by name
@@ -484,7 +511,51 @@ func (c *Context) TrustedProxyNets() []*net.IPNet {
 	return c.trustedProxies.IPNets()
 }
 
-// reset clears the context for reuse by the sync.Pool.
+// ctxWiring is the canonical carrier for the router-owned per-request
+// wiring on a Context. Every site that populates a Context from router
+// state (matched routes, static dispatch, not-found, and the Timeout
+// clone) goes through applyWiring so the field list lives in exactly
+// one place. Any new wiring field must be added here, to applyWiring
+// and snapshotWiring, AND to reset().
+type ctxWiring struct {
+	services             *app.Services
+	trustedProxies       *TrustedProxies
+	redirectAllowedHosts []string
+	fileRoot             *os.Root
+	validateFn           func(c *Context, rules map[string][]string, messages ...map[string]string) error
+	intendedFn           func(c *Context) string
+	insecureFlashCookies bool
+}
+
+// applyWiring installs the router-owned wiring fields on the context.
+func (c *Context) applyWiring(w ctxWiring) {
+	c.services = w.services
+	c.trustedProxies = w.trustedProxies
+	c.redirectAllowedHosts = w.redirectAllowedHosts
+	c.fileRoot = w.fileRoot
+	c.validateFn = w.validateFn
+	c.intendedFn = w.intendedFn
+	c.insecureFlashCookies = w.insecureFlashCookies
+}
+
+// snapshotWiring captures the context's wiring so it can be copied onto
+// another Context (e.g. the Timeout clone) without listing fields at
+// the call site.
+func (c *Context) snapshotWiring() ctxWiring {
+	return ctxWiring{
+		services:             c.services,
+		trustedProxies:       c.trustedProxies,
+		redirectAllowedHosts: c.redirectAllowedHosts,
+		fileRoot:             c.fileRoot,
+		validateFn:           c.validateFn,
+		intendedFn:           c.intendedFn,
+		insecureFlashCookies: c.insecureFlashCookies,
+	}
+}
+
+// reset clears the context for reuse by the sync.Pool. Every wiring
+// field carried by ctxWiring must be zeroed here as well; a field
+// missing from reset() leaks state across pooled requests.
 func (c *Context) reset() {
 	c.Response = nil
 	c.Request = nil
@@ -499,6 +570,7 @@ func (c *Context) reset() {
 	c.fileRoot = nil
 	c.validateFn = nil
 	c.intendedFn = nil
+	c.insecureFlashCookies = false
 }
 
 // IsAjax returns true if the request is an AJAX request
@@ -512,11 +584,26 @@ func (c *Context) WantsJSON() bool {
 	return accept == "application/json" || c.Request.Header.Get("X-Inertia") != ""
 }
 
-// Wrap converts a HandlerFunc to http.HandlerFunc
+// Wrap converts a HandlerFunc to http.HandlerFunc.
+//
+// Error mapping mirrors the router's default handleError path: a
+// *HTTPError (direct or wrapped) responds with its code, echoing its
+// message only for 4xx (client-facing by design); 5xx and non-HTTPError
+// errors produce a generic body so server-side detail never reaches the
+// client.
 func Wrap(h HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		c := NewContext(w, r)
 		if err := h(c); err != nil {
+			var he *HTTPError
+			if errors.As(err, &he) {
+				if he.Code >= http.StatusInternalServerError {
+					http.Error(w, http.StatusText(he.Code), he.Code)
+				} else {
+					http.Error(w, he.Message, he.Code)
+				}
+				return
+			}
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		}
 	}
@@ -622,6 +709,15 @@ func sanitizeRedirect(target string, allowedHosts []string) string {
 	return target
 }
 
+// SanitizeRedirect validates a redirect URL against an explicit host
+// allowlist, rewriting anything unsafe to "/". It is the canonical
+// open-redirect sanitizer for the framework; packages that perform
+// their own redirects (e.g. bond) delegate to it rather than keeping a
+// parallel copy. See sanitizeRedirect for the exact rules.
+func SanitizeRedirect(target string, allowedHosts []string) string {
+	return sanitizeRedirect(target, allowedHosts)
+}
+
 // containsSlashLookalike reports whether target contains a backslash or a
 // Unicode codepoint that some clients or intermediaries normalise to "/".
 // These are rejected before the path-vs-host decision because a leading
@@ -654,6 +750,7 @@ func (c *Context) Forbidden(message ...string) error {
 // on r.Context() so that any downstream Wrap / NewContext inherits it.
 func (c *Context) SetServices(s *app.Services) {
 	c.services = s
+	c.insecureFlashCookies = s != nil && s.InsecureFlashCookies
 	if s != nil {
 		c.Request = WithServices(c.Request, s)
 	}
@@ -1443,15 +1540,13 @@ func (c *Context) SaveFile(fh *multipart.FileHeader, dst string, opts ...FileVal
 // Cookie delete helper
 // ---------------------------------------------------------------------------
 
-// DeleteCookie expires a cookie by name.
+// DeleteCookie expires a cookie by name. The deletion cookie carries the
+// same Secure/SameSite attributes as the framework's other cookie
+// deletions: Secure follows the validated app cookie config (a Secure
+// deletion sent over plain HTTP is dropped by browsers, so the dev/test
+// opt-out must apply here too), SameSite is Lax.
 func (c *Context) DeleteCookie(name string) {
-	c.SetCookie(&http.Cookie{
-		Name:     name,
-		Value:    "",
-		Path:     "/",
-		MaxAge:   -1,
-		HttpOnly: true,
-	})
+	c.SetCookie(FlashCookie(name, "", -1, !c.insecureFlashCookies))
 }
 
 // ---------------------------------------------------------------------------
@@ -1506,14 +1601,14 @@ func flashAADFor(name string) string {
 // a missing encryptor as a configuration bug; the lack of a flash
 // cookie on the response is the visible symptom.
 func (c *Context) WithErrors(errors any) {
-	writeFlashCookie(c.Response, c.flashEncryptor(), FlashErrorsCookie, errors)
+	writeFlashCookie(c.Response, c.flashEncryptor(), FlashErrorsCookie, errors, !c.insecureFlashCookies)
 }
 
 // WithInput stashes old form input as a flash cookie so it survives
 // a redirect and is available on the next request. See WithErrors for
 // authentication and configuration notes.
 func (c *Context) WithInput(input any) {
-	writeFlashCookie(c.Response, c.flashEncryptor(), FlashInputCookie, input)
+	writeFlashCookie(c.Response, c.flashEncryptor(), FlashInputCookie, input, !c.insecureFlashCookies)
 }
 
 // flashEncryptor returns the app's crypto.Encryptor when services are
@@ -1588,25 +1683,42 @@ func OpenFlash(enc contract.Encryptor, name, cookieValue string) (any, error) {
 	return result, nil
 }
 
-// writeFlashCookie encrypts value with enc and sets it as a Secure,
-// HttpOnly, SameSite=Lax cookie. Silently no-ops when enc is nil or
-// encryption fails so the handler never blocks on a flash-write
-// failure (the missing cookie surfaces on the next render as the
-// absence of flashed errors / old input).
-func writeFlashCookie(w http.ResponseWriter, enc contract.Encryptor, name string, value any) {
+// FlashCookie builds the canonical framework cookie: Path=/, HttpOnly,
+// SameSite=Lax, with the given Secure attribute. Every site that writes
+// or clears a flash cookie (writeFlashCookie here, bond's clear path)
+// and DeleteCookie MUST build it through this helper so the attributes
+// - Secure in particular - never diverge between write and clear: a
+// Secure write paired with a non-Secure clear (or vice versa over plain
+// HTTP, where browsers drop Secure cookies) leaves the cookie
+// unclearable.
+//
+// secure should be true unless the app's validated session-cookie
+// config opted out (app.Services.InsecureFlashCookies, dev/test only).
+// Pass a negative maxAge to delete the cookie.
+func FlashCookie(name, value string, maxAge int, secure bool) *http.Cookie {
+	return &http.Cookie{
+		Name:     name,
+		Value:    value,
+		Path:     "/",
+		MaxAge:   maxAge,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+	}
+}
+
+// writeFlashCookie encrypts value with enc and sets it as an HttpOnly,
+// SameSite=Lax cookie with the given Secure attribute. Silently no-ops
+// when enc is nil or encryption fails so the handler never blocks on a
+// flash-write failure (the missing cookie surfaces on the next render
+// as the absence of flashed errors / old input).
+func writeFlashCookie(w http.ResponseWriter, enc contract.Encryptor, name string, value any, secure bool) {
 	sealed, err := SealFlash(enc, name, value)
 	if err != nil {
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     name,
-		Value:    sealed,
-		Path:     "/",
-		MaxAge:   300, // 5 minutes; cleared on read
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteLaxMode,
-	})
+	// 5 minutes; cleared on read.
+	http.SetCookie(w, FlashCookie(name, sealed, 300, secure))
 }
 
 // Validate checks the request against rules and automatically redirects back

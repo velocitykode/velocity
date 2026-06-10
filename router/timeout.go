@@ -199,16 +199,16 @@ func Timeout(duration time.Duration) MiddlewareFunc {
 			// for the handler goroutine. The handler must not share
 			// mutable state with the pooled parent Context, which
 			// may be reset and recycled the moment Timeout returns.
+			// The clone is intentionally never pooled, reset, or
+			// Put back: the handler goroutine may still hold it
+			// after this middleware returns.
 			clone := &Context{
-				Response:             tw,
-				Request:              c.Request.WithContext(ctx),
-				params:               append([]RouteParam(nil), c.params...),
-				values:               cloneValues(c.values),
-				services:             c.services,
-				trustedProxies:       c.trustedProxies,
-				redirectAllowedHosts: c.redirectAllowedHosts,
-				validateFn:           c.validateFn,
+				Response: tw,
+				Request:  c.Request.WithContext(ctx),
+				params:   append([]RouteParam(nil), c.params...),
+				values:   cloneValues(c.values),
 			}
+			clone.applyWiring(c.snapshotWiring())
 
 			done := make(chan error, 1)
 			// Not async.Go: must forward a recovered panic value through

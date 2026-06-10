@@ -341,7 +341,9 @@ func TestApplyFlashData_NoFlashCookies(t *testing.T) {
 func TestClearFlashCookies_ExpiresBothCookies(t *testing.T) {
 	w := httptest.NewRecorder()
 
-	clearFlashCookies(w)
+	// No services on the request: the clear must stay Secure
+	// (secure-by-default, matching the write path's fallback).
+	clearFlashCookies(w, httptest.NewRequest(http.MethodGet, "/", nil))
 
 	cookies := w.Result().Cookies()
 	if len(cookies) != 2 {
@@ -376,6 +378,31 @@ func TestClearFlashCookies_ExpiresBothCookies(t *testing.T) {
 	}
 	if !found[flashInputCookie] {
 		t.Errorf("expected %s cookie to be cleared", flashInputCookie)
+	}
+}
+
+// The clear path must reach the same Secure decision as the router's
+// write path (both read app.Services.InsecureFlashCookies): a Secure
+// clear over plain HTTP is dropped by browsers, so a mismatch would
+// leave the flash cookie unclearable in a dev Secure=false deployment.
+func TestClearFlashCookies_InsecureOptOutFollowsServices(t *testing.T) {
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r = router.WithServices(r, &app.Services{InsecureFlashCookies: true})
+
+	clearFlashCookies(w, r)
+
+	cookies := w.Result().Cookies()
+	if len(cookies) != 2 {
+		t.Fatalf("expected 2 clear cookies, got %d", len(cookies))
+	}
+	for _, c := range cookies {
+		if c.Secure {
+			t.Errorf("cookie %s: expected Secure=false under InsecureFlashCookies opt-out", c.Name)
+		}
+		if c.MaxAge != -1 || !c.HttpOnly || c.SameSite != http.SameSiteLaxMode || c.Path != "/" {
+			t.Errorf("cookie %s: non-Secure attributes must be unchanged: %#v", c.Name, c)
+		}
 	}
 }
 
@@ -420,6 +447,67 @@ func TestApplyFlashData_DoesNotClearWhenNoFlashData(t *testing.T) {
 	cookies := w.Result().Cookies()
 	if len(cookies) != 0 {
 		t.Errorf("expected no Set-Cookie headers when no flash data, got %d", len(cookies))
+	}
+}
+
+func TestApplyFlashData_ClearsTamperedCookie(t *testing.T) {
+	// A cookie that fails authentication must still be expired,
+	// otherwise the browser replays the garbage value on every
+	// subsequent request and bond re-processes it forever.
+	enc := testFlashEncryptor(t)
+	r := requestWithServices(t, enc)
+	r.AddCookie(&http.Cookie{Name: flashErrorsCookie, Value: "v1:bm90LWEtdmFsaWQtY2lwaGVydGV4dA=="})
+	w := httptest.NewRecorder()
+	props := Props{}
+
+	applyFlashData(w, r, props)
+
+	if _, ok := props["errors"]; ok {
+		t.Error("expected no errors prop from a tampered cookie")
+	}
+	var cleared bool
+	for _, c := range w.Result().Cookies() {
+		if c.Name == flashErrorsCookie && c.MaxAge == -1 {
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Error("expected tampered errors cookie to be cleared")
+	}
+}
+
+// TestRender_TamperedFlashCookie_ClearedAndNoErrorsProp pins the full
+// render path: a garbage flash cookie yields an expiring Set-Cookie and
+// a page without an errors prop.
+func TestRender_TamperedFlashCookie_ClearedAndNoErrorsProp(t *testing.T) {
+	enc := testFlashEncryptor(t)
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := requestWithServices(t, enc)
+	r.Header.Set("X-Inertia", "true")
+	r.AddCookie(&http.Cookie{Name: flashErrorsCookie, Value: "%%%garbage%%%"})
+
+	if err := b.Render(w, r, "Home", Props{}); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	var page Page
+	if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode page: %v", err)
+	}
+	if _, ok := page.Props["errors"]; ok {
+		t.Errorf("expected no errors prop, got %v", page.Props["errors"])
+	}
+
+	var cleared bool
+	for _, c := range w.Result().Cookies() {
+		if c.Name == flashErrorsCookie && c.MaxAge == -1 && c.Value == "" {
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Error("expected response to carry an expiring Set-Cookie for the tampered flash cookie")
 	}
 }
 

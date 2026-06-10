@@ -371,33 +371,14 @@ func (c *CSRF) getSessionIDQuiet(r *http.Request) (string, error) {
 
 // RouterMiddleware returns a router.MiddlewareFunc that validates CSRF tokens.
 // This is the instance-based alternative to the global Middleware() function.
+//
+// It delegates to router.CSRFMiddleware so the two adapters cannot drift:
+// both reuse the ORIGINAL *router.Context (preserving validateFn, fileRoot,
+// intendedFn) and capture the request as csrf.Middleware augmented it.
+// Middleware passes the ResponseWriter through unwrapped, so the Context's
+// Response field needs no reassignment.
 func (c *CSRF) RouterMiddleware() router.MiddlewareFunc {
-	return func(next router.HandlerFunc) router.HandlerFunc {
-		return func(ctx *router.Context) error {
-			// Track whether the inner handler was called (CSRF passed)
-			var called bool
-			var handlerErr error
-			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				called = true
-				ctx.Response = w
-				ctx.Request = r
-				handlerErr = next(ctx)
-			})
-			c.Middleware(inner).ServeHTTP(ctx.Response, ctx.Request)
-			if !called {
-				// CSRF middleware already wrote the 419 response (via
-				// handleError). Returning a non-nil error here would
-				// trigger the router's ErrorHandler, which calls
-				// http.Error and appends "Internal Server Error\n" to
-				// the body. The status is guarded by responseWriter
-				// but the body is not. Return nil so the router skips
-				// its error path; the rejection is already fully sent.
-				log.Printf("velocity/csrf: request blocked for %s %s", ctx.Request.Method, ctx.Request.URL.Path)
-				return nil
-			}
-			return handlerErr
-		}
-	}
+	return router.CSRFMiddleware(c)
 }
 
 // validateToken validates the CSRF token in the request.
@@ -831,6 +812,14 @@ func (c *CSRF) GetToken(sessionID string) (string, error) {
 	if err == nil {
 		return token, nil
 	}
+	if !errors.Is(err, stores.ErrTokenNotFound) {
+		// Transient store failure (network, timeout). Minting a fresh
+		// token here would overwrite the stored one and silently
+		// invalidate the token every other tab/client already holds
+		// (their next POST 419s). Surface the error instead; only a
+		// genuine miss mints.
+		return "", err
+	}
 
 	// Generate new token
 	token, err = GenerateToken()
@@ -862,9 +851,15 @@ func matchPath(path, pattern string) bool {
 }
 
 // FromContext extracts the *CSRF from a router.Context.
-// Returns nil if CSRF is not configured.
+// Returns nil if CSRF is not configured, including when the context has
+// no service container at all (e.g. a bare test context), so callers
+// can rely on the documented nil contract instead of a panic.
 func FromContext(ctx *router.Context) *CSRF {
-	c, _ := ctx.CSRF().(*CSRF)
+	s := ctx.ServicesIfSet()
+	if s == nil || s.CSRF == nil {
+		return nil
+	}
+	c, _ := s.CSRF.(*CSRF)
 	return c
 }
 

@@ -430,6 +430,68 @@ func TestRateLimitByKey_CleanupRemovesExpiredLimiters(t *testing.T) {
 	}
 }
 
+// TestRateLimitByKey_WindowStatePrunedWithLimiter verifies that per-key window
+// state is stored on the limiter entry (not a parallel unbounded map) so it is
+// pruned together with the limiter on cleanup, and that a re-seen key gets a
+// fresh window rather than reviving stale state.
+func TestRateLimitByKey_WindowStatePrunedWithLimiter(t *testing.T) {
+	window := 1100 * time.Millisecond
+	cleanupInterval := time.Hour // never fires on its own; we drive ForceCleanup
+
+	rlc, middleware := RateLimitByKeyWithCleanupControl(10, window, func(c *Context) string {
+		return c.Header("X-API-Key")
+	}, WithCleanupInterval(cleanupInterval))
+	defer rlc.Stop()
+
+	handler := middleware(successHandler)
+
+	// Seed window state for many keys.
+	const numKeys = 50
+	keys := make([]string, numKeys)
+	for i := range keys {
+		keys[i] = "key" + strconv.Itoa(i)
+	}
+	var firstReset string
+	for i, key := range keys {
+		ctx, rec := createTestContext("GET", "/test", map[string]string{"X-API-Key": key})
+		_ = handler(ctx)
+		if i == 0 {
+			firstReset = rec.Header().Get("X-RateLimit-Reset")
+		}
+	}
+	if rlc.Count() != numKeys {
+		t.Fatalf("Expected %d limiters, got %d", numKeys, rlc.Count())
+	}
+
+	// Age every key so ForceCleanup removes them all.
+	old := time.Now().Add(-window * 3)
+	for _, key := range keys {
+		rlc.SetLastAccess(key, old)
+	}
+	rlc.ForceCleanup()
+
+	// With window state living on the entry, zero entries means zero leaked
+	// window state: there is no second map left to grow unbounded.
+	if rlc.Count() != 0 {
+		t.Fatalf("Expected 0 limiters after cleanup, got %d (window state would leak in a parallel map)", rlc.Count())
+	}
+
+	// A re-seen key must get a fresh window starting now, not revive stale state.
+	time.Sleep(1100 * time.Millisecond)
+	ctx, rec := createTestContext("GET", "/test", map[string]string{"X-API-Key": keys[0]})
+	_ = handler(ctx)
+	if rlc.Count() != 1 {
+		t.Fatalf("Expected 1 limiter after re-seeing key, got %d", rlc.Count())
+	}
+	secondReset := rec.Header().Get("X-RateLimit-Reset")
+	if firstReset == "" || secondReset == "" {
+		t.Fatalf("Expected reset headers to be set, got %q and %q", firstReset, secondReset)
+	}
+	if secondReset <= firstReset {
+		t.Errorf("Re-seen key should get a fresh (later) window: first reset %s, second reset %s", firstReset, secondReset)
+	}
+}
+
 func TestRateLimit_ConcurrentRequests(t *testing.T) {
 	middleware := RateLimit(100, time.Second)
 	handler := middleware(successHandler)

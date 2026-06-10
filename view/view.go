@@ -230,8 +230,14 @@ func Render(ctx *router.Context, component string, props ...Props) error {
 }
 
 // FromContext extracts the *Engine from a router.Context.
-// Returns nil if view is not configured.
+// Returns nil if view is not configured, including when the context has
+// no service container at all (e.g. a bare test context), so callers
+// can rely on the documented nil contract instead of a panic.
 func FromContext(ctx *router.Context) *Engine {
-	e, _ := ctx.View().(*Engine)
+	s := ctx.ServicesIfSet()
+	if s == nil || s.View == nil {
+		return nil
+	}
+	e, _ := s.View.(*Engine)
 	return e
 }

@@ -128,54 +128,31 @@ func (b *Bond) allowedHostsFor(r *http.Request) []string {
 }
 
 // sanitizeRedirectURL validates a redirect URL to prevent open redirects.
-// Returns "/" if the URL is absolute and points to a host outside
-// allowedHosts, uses a dangerous scheme (javascript:, data:, vbscript:,
-// file:, etc.), or fails to parse. An empty target also collapses to
-// the safe default "/" so callers that thread an unvalidated value
-// through Redirect/Back never end up writing an empty Location header
-// (the browser would treat that as a refresh of the current page,
-// which on a POST-rewritten 303 leaves the user on a phantom URL). An
-// empty allowedHosts list rejects every absolute URL (relative paths
-// still flow through).
+// It delegates the shared checks (empty input, slash lookalikes,
+// protocol-relative references, scheme-without-host, host allowlist) to
+// the canonical router.SanitizeRedirect, then layers two bond-specific
+// STRICTER rules on absolute URLs:
+//
+//   - only http/https schemes are accepted even for allowlisted hosts
+//     (the router accepts any scheme once the host passes the allowlist);
+//   - a parsed path beginning with "//" is rejected, because some
+//     intermediaries normalise it back into a network-path reference.
+//
+// Returns "/" for anything rejected. An empty allowedHosts list rejects
+// every absolute URL (relative paths still flow through).
 func sanitizeRedirectURL(target string, allowedHosts []string) string {
-	// Empty target -> safe default. Matches the router-side
-	// sanitizeRedirect helper (see router/context.go) so bond.Redirect
-	// and ctx.Redirect agree on the empty-input contract: callers do
-	// not have to guard the input, both layers fail safe to "/".
-	if target == "" {
+	// router.SanitizeRedirect returns target verbatim when accepted and
+	// "/" when rejected, so any change means rejection ("/" itself is
+	// accepted unchanged).
+	if router.SanitizeRedirect(target, allowedHosts) != target {
 		return "/"
 	}
 
-	// Reject any protocol-relative or network-path target up front. This
-	// covers "//evil.com", "///evil.com/path", "////evil.com", etc.
-	// Browsers treat all of these as cross-origin.
-	if strings.HasPrefix(target, "//") {
-		return "/"
-	}
-
-	// Reject backslash variants and Unicode-similar slash codepoints up
-	// front. Some browsers and intermediaries normalise these to ASCII
-	// "/", turning a leading "/\evil" or "/／evil" into the network-path
-	// reference "//evil" (open redirect). Matches the router-side
-	// sanitizeRedirect helper so bond.Back and Inertia redirects close
-	// the same parity gap.
-	//
-	// Codepoints covered:
-	//   - U+005C  REVERSE SOLIDUS (ASCII backslash)
-	//   - U+FF0F  FULLWIDTH SOLIDUS
-	//   - U+29F8  BIG SOLIDUS
-	//   - U+2044  FRACTION SLASH
-	//   - U+2215  DIVISION SLASH
-	if containsSlashLookalike(target) {
-		return "/"
-	}
-
-	// Allow relative paths
+	// Relative paths need none of the absolute-URL extras.
 	if strings.HasPrefix(target, "/") {
 		return target
 	}
 
-	// Parse and validate absolute URLs
 	u, err := url.Parse(target)
 	if err != nil {
 		return "/"
@@ -188,25 +165,6 @@ func sanitizeRedirectURL(target string, allowedHosts []string) string {
 		return "/"
 	}
 
-	// An opaque or scheme-only URL (e.g. "http:evil.com", which parses
-	// to Scheme="http", Opaque="evil.com", Host="") has no host for the
-	// allowlist check to run against, yet the browser may still navigate
-	// to it. Reject any non-empty scheme that lacks a host, mirroring the
-	// router-side sanitizeRedirect helper.
-	if u.Scheme != "" && u.Host == "" {
-		return "/"
-	}
-
-	// Reject cross-host absolute URLs. The host must appear in the
-	// caller-supplied allowlist; we deliberately do not consult r.Host
-	// here because a misconfigured fronting proxy could copy an
-	// attacker-supplied X-Forwarded-Host into r.Host and bypass this
-	// check. allowedHostsFor is the single source of truth for what
-	// counts as "same-origin".
-	if u.Host != "" && !hostInAllowlist(u.Host, allowedHosts) {
-		return "/"
-	}
-
 	// Some inputs parse with an empty host but a path that starts with "//".
 	// Browsers and some intermediaries may normalise these back into a
 	// network-path reference, so reject them.
@@ -215,32 +173,6 @@ func sanitizeRedirectURL(target string, allowedHosts []string) string {
 	}
 
 	return target
-}
-
-// hostInAllowlist reports whether host appears in allowed. Exact match
-// only; allowlist semantics intentionally do not include suffix or
-// wildcard matching, matching the router's RedirectAllowedHosts contract.
-// containsSlashLookalike reports whether target contains a backslash or
-// a Unicode codepoint that some clients or intermediaries normalise to
-// "/". Mirrors the router-side helper of the same name so bond and
-// router agree on which redirect targets are safe.
-func containsSlashLookalike(target string) bool {
-	for _, r := range target {
-		switch r {
-		case '\\', '／', '⧸', '⁄', '∕':
-			return true
-		}
-	}
-	return false
-}
-
-func hostInAllowlist(host string, allowed []string) bool {
-	for _, h := range allowed {
-		if h != "" && host == h {
-			return true
-		}
-	}
-	return false
 }
 
 // redirectAllowlistFromRequest returns the operator-configured allowlist

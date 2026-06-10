@@ -26,6 +26,7 @@ func DefaultResourceConfig() []ResourceConfig {
 		{"GET", "Show", "/{id}", true},
 		{"GET", "Edit", "/{id}/edit", true},
 		{"PUT", "Update", "/{id}", true},
+		{"PATCH", "Update", "/{id}", true},
 		{"DELETE", "Destroy", "/{id}", true},
 	}
 }

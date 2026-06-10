@@ -308,6 +308,7 @@ func (s *InMemoryRefreshGenerationStore) Bump(userID string) (int64, error) {
 type JWTManager struct {
 	config             JWTConfig
 	blacklistStore     BlacklistStore
+	blMu               sync.RWMutex // protects blacklistStore swaps
 	refreshGenerations RefreshGenerationStore
 	rgMu               sync.RWMutex // protects refreshGenerations swaps
 }
@@ -347,9 +348,40 @@ func NewJWTManager(config JWTConfig) (*JWTManager, error) {
 	}, nil
 }
 
-// SetBlacklistStore replaces the blacklist store (e.g., swap in a Redis-backed store).
+// SetBlacklistStore replaces the blacklist store (e.g., swap in a
+// Redis-backed store). Passing nil reverts to the in-process
+// InMemoryBlacklistStore. Safe for concurrent use: the swap is
+// mutex-guarded and readers go through blStore so a concurrent
+// RevokeToken / IsBlacklisted cannot tear the interface read (same
+// pattern as SetRefreshGenerationStore below).
 func (j *JWTManager) SetBlacklistStore(store BlacklistStore) {
+	j.blMu.Lock()
+	defer j.blMu.Unlock()
+	if store == nil {
+		j.blacklistStore = NewInMemoryBlacklistStore()
+		return
+	}
 	j.blacklistStore = store
+}
+
+// blStore returns the active blacklist store under a read lock so a
+// concurrent SetBlacklistStore call cannot tear the underlying interface
+// read. Defensively lazy-initialises on first read so callers that
+// construct *JWTManager by literal struct (test helpers in the existing
+// suite) do not nil-deref.
+func (j *JWTManager) blStore() BlacklistStore {
+	j.blMu.RLock()
+	store := j.blacklistStore
+	j.blMu.RUnlock()
+	if store != nil {
+		return store
+	}
+	j.blMu.Lock()
+	defer j.blMu.Unlock()
+	if j.blacklistStore == nil {
+		j.blacklistStore = NewInMemoryBlacklistStore()
+	}
+	return j.blacklistStore
 }
 
 // SetRefreshGenerationStore installs a refresh-generation counter store.
@@ -672,6 +704,12 @@ func (j *JWTManager) RefreshToken(refreshTokenString string, provider UserProvid
 	if err != nil {
 		return "", err
 	}
+	// FindByID may return (nil, nil) for an unknown id (user deleted since
+	// the refresh token was minted). Surface that as an error so the
+	// GenerateToken claims deref below never sees a nil user.
+	if user == nil {
+		return "", ErrUserNotFound
+	}
 
 	// Blacklist old refresh token using its actual expiry
 	if j.config.BlacklistEnabled {
@@ -692,7 +730,7 @@ func (j *JWTManager) RevokeToken(jti string, expiresAt ...time.Time) {
 		} else {
 			expiry = time.Now().Add(time.Duration(j.config.TTL) * time.Minute)
 		}
-		j.blacklistStore.Add(jti, expiry)
+		j.blStore().Add(jti, expiry)
 	}
 }
 
@@ -701,12 +739,12 @@ func (j *JWTManager) IsBlacklisted(jti string) bool {
 	if !j.config.BlacklistEnabled {
 		return false
 	}
-	return j.blacklistStore.IsBlacklisted(jti)
+	return j.blStore().IsBlacklisted(jti)
 }
 
 // CleanupBlacklist removes expired entries from blacklist
 func (j *JWTManager) CleanupBlacklist() {
-	j.blacklistStore.Cleanup()
+	j.blStore().Cleanup()
 }
 
 // getSigningMethod returns the signing method for the configured algorithm.

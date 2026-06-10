@@ -156,9 +156,15 @@ func denyForbidden(manager *Manager, c *router.Context) error {
 }
 
 // FromContext extracts the *Manager from a router.Context.
-// Returns nil if auth is not configured.
+// Returns nil if auth is not configured, including when the context has
+// no service container at all (e.g. a bare test context), so callers
+// can rely on the documented nil contract instead of a panic.
 func FromContext(ctx *router.Context) *Manager {
-	m, _ := ctx.Auth().(*Manager)
+	s := ctx.ServicesIfSet()
+	if s == nil || s.Auth == nil {
+		return nil
+	}
+	m, _ := s.Auth.(*Manager)
 	return m
 }
 

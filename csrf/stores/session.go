@@ -19,7 +19,10 @@ type SessionStore struct {
 	tokens   map[string]*tokenEntry
 	mu       sync.RWMutex
 	lifetime time.Duration
-	cancel   context.CancelFunc
+
+	// lifecycleMu guards cancel so Start/Shutdown can race safely.
+	lifecycleMu sync.Mutex
+	cancel      context.CancelFunc
 }
 
 type tokenEntry struct {
@@ -45,29 +48,41 @@ func NewSessionStore(args ...any) *SessionStore {
 		}
 	}
 
-	_, cancel := context.WithCancel(context.Background())
 	return &SessionStore{
 		tokens:   make(map[string]*tokenEntry),
 		lifetime: ttl,
-		cancel:   cancel,
 	}
 }
 
 // Start begins the background goroutine that periodically removes expired
 // tokens. The provided context controls the goroutine lifetime; pass
-// context.Background() if you intend to stop it via Close() instead.
+// context.Background() if you intend to stop it via Shutdown() instead.
+//
+// Calling Start again cancels the previous cleanup goroutine and replaces
+// it, so repeated Start calls never leak goroutines.
 func (s *SessionStore) Start(ctx context.Context) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.cancel != nil {
+		s.cancel()
+	}
 	innerCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
 	async.Go(func() { s.cleanup(innerCtx) })
 }
 
 // Shutdown stops the background cleanup goroutine. It is safe to call
-// more than once and honours the supplied context deadline for
-// uniformity with other ShutdownAware types. Stop is instantaneous —
-// the deadline is only consulted when it is already cancelled.
+// more than once (and before Start) and honours the supplied context
+// deadline for uniformity with other ShutdownAware types. Stop is
+// instantaneous; the deadline is only consulted when it is already
+// cancelled.
 func (s *SessionStore) Shutdown(ctx context.Context) error {
-	s.cancel()
+	s.lifecycleMu.Lock()
+	if s.cancel != nil {
+		s.cancel()
+		s.cancel = nil
+	}
+	s.lifecycleMu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return err
 	}

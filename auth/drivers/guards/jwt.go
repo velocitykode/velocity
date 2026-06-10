@@ -1,10 +1,14 @@
 package guards
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +24,12 @@ const (
 	jwtCacheTTL        = 5 * time.Minute
 	jwtCacheMaxSize    = 10000
 	jwtCleanupInterval = 1 * time.Minute
+
+	// jwtMaxFormBodyBytes caps how much of a POST body the form-token
+	// extractor will buffer while looking for a "token" field. Mirrors
+	// csrf.DefaultMaxFormBodyBytes; bodies beyond the cap are never
+	// slurped into memory and yield no token.
+	jwtMaxFormBodyBytes = 1 << 20 // 1 MiB
 )
 
 type cachedUser struct {
@@ -40,6 +50,7 @@ type JWTGuard struct {
 	mu             sync.RWMutex
 	userCache      map[string]cachedUser
 	stopCleanup    chan struct{}
+	stopOnce       sync.Once
 	trustedProxies []*net.IPNet
 	// attemptFloor is the wall-clock floor for Attempt (H-09 fix).
 	// Zero falls back to auth.DefaultAttemptFloor.
@@ -213,14 +224,14 @@ func (g *JWTGuard) Start(ctx ...context.Context) {
 	}
 }
 
-// StopCleanup stops the background cache cleanup goroutine.
+// StopCleanup stops the background cache cleanup goroutine. Idempotent
+// and safe for concurrent use: the close is guarded by a sync.Once
+// because the previous select-then-close pattern let two concurrent
+// callers both observe "not closed" and both reach close (panic).
 func (g *JWTGuard) StopCleanup() {
-	select {
-	case <-g.stopCleanup:
-		// already closed
-	default:
+	g.stopOnce.Do(func() {
 		close(g.stopCleanup)
-	}
+	})
 }
 
 func (g *JWTGuard) cleanupLoop() {
@@ -313,7 +324,7 @@ func (g *JWTGuard) Check(r *http.Request) bool {
 	}
 
 	// Validate user still exists
-	user, err := g.loadProvider().FindByID(claims.UserID)
+	user, err := g.loadProvider().FindByIDCtx(r.Context(), claims.UserID)
 	if err != nil || user == nil {
 		return false
 	}
@@ -343,8 +354,10 @@ func (g *JWTGuard) User(r *http.Request) auth.Authenticatable {
 		return user
 	}
 
-	user, err := g.loadProvider().FindByID(claims.UserID)
-	if err != nil {
+	user, err := g.loadProvider().FindByIDCtx(r.Context(), claims.UserID)
+	if err != nil || user == nil {
+		// FindByIDCtx may return (nil, nil) for an unknown id; a nil
+		// user must not be cached as an authenticated entry.
 		return nil
 	}
 
@@ -394,9 +407,15 @@ func (g *JWTGuard) Login(w http.ResponseWriter, r *http.Request, user auth.Authe
 
 // LoginByID logs in a user by ID and generates JWT
 func (g *JWTGuard) LoginByID(w http.ResponseWriter, r *http.Request, id interface{}, remember ...bool) error {
-	user, err := g.loadProvider().FindByID(id)
+	user, err := g.loadProvider().FindByIDCtx(r.Context(), id)
 	if err != nil {
 		return err
+	}
+	// FindByIDCtx may return (nil, nil) for an unknown id. Surface that as
+	// an error here so we never pass a nil user into Login (which would
+	// panic on the GenerateToken claims deref).
+	if user == nil {
+		return auth.ErrUserNotFound
 	}
 
 	return g.Login(w, r, user, remember...)
@@ -411,106 +430,15 @@ func (g *JWTGuard) LoginByID(w http.ResponseWriter, r *http.Request, id interfac
 // duration (H-09 fix). The dummy bcrypt run on the missing-user branch
 // matches the CPU profile of the bcrypt verify branch.
 func (g *JWTGuard) Attempt(w http.ResponseWriter, r *http.Request, credentials map[string]interface{}, remember ...bool) (bool, error) {
+	// Snapshot throttler, provider, and hasher once so the credential
+	// check and the success tail below see consistent references even if
+	// a concurrent Set* call swaps one mid-call.
 	throttler := g.loadThrottler()
-	// One key per throttle dimension (pair / identifier / IP, see
-	// auth.ThrottleKeys). The pair and IP dimensions deny before the
-	// credential check. The identifier dimension is shared across all
-	// source IPs, so a pre-check denial would let an attacker lock a
-	// victim out of their account from throwaway IPs; instead an
-	// over-cap identifier bucket runs the credential check and denies
-	// only when the credentials are wrong. The error is the same
-	// regardless of which dimension tripped so a caller cannot tell a
-	// per-IP lockout from a per-account one.
-	keys := auth.ThrottleKeys(r, credentials, g.getTrustedProxies())
-	// Consult every dimension even after one denies, so the denial path
-	// does the same number of Allow lookups regardless of which dimension
-	// tripped (no per-dimension oracle).
-	hardDenied := false
-	identifierDenied := false
-	for _, key := range keys {
-		if !throttler.Allow(r, key) {
-			if strings.HasPrefix(key, auth.ThrottleKeyIdentifierPrefix) {
-				identifierDenied = true
-			} else {
-				hardDenied = true
-			}
-		}
-	}
-	if hardDenied {
-		// Pad the pre-check denial to the attempt floor so it is not
-		// separable by timing from an identifier-dimension denial,
-		// which runs the full (timeboxed) credential check below.
-		auth.Timebox(g.effectiveAttemptFloor(), func() {})
-		return false, auth.ErrLoginThrottled
-	}
-	recordFailure := func() {
-		for _, key := range keys {
-			throttler.RecordFailure(r, key)
-		}
-	}
-
-	// Snapshot the provider once so the timebox closure and the
-	// post-timebox branches see a consistent reference even if a
-	// concurrent SetProvider call swaps the pointer mid-call.
-	provider := g.loadProvider()
-
-	var (
-		user            auth.Authenticatable
-		findErr         error
-		credentialsOK   bool
-		invalidCredErr  error
-		password        string
-		passwordTypedOK bool
-	)
-
 	hasher := g.effectiveHasher()
-	// Size the dummy hash to the configured bcrypt cost (F2 fix).
-	dummyHash := dummyHashForHasher(hasher)
-	auth.Timebox(g.effectiveAttemptFloor(), func() {
-		user, findErr = provider.FindByCredentials(credentials)
-		password, passwordTypedOK = credentials["password"].(string)
-
-		if findErr != nil || user == nil {
-			if passwordTypedOK {
-				_ = hasher.Verify(password, string(dummyHash))
-			} else {
-				_ = hasher.Verify("", string(dummyHash))
-			}
-			return
-		}
-		if !passwordTypedOK {
-			_ = hasher.Verify("", string(dummyHash))
-			invalidCredErr = auth.ErrInvalidCredentials
-			return
-		}
-		credentialsOK = provider.ValidateCredentials(user, map[string]interface{}{"password": password})
-	})
-
-	if findErr != nil || user == nil {
-		recordFailure()
-		if identifierDenied {
-			return false, auth.ErrLoginThrottled
-		}
-		return false, nil // User not found
+	user, keys, ok, err := attemptCredentials(r, credentials, g.loadProvider(), hasher, throttler, g.effectiveAttemptFloor(), g.getTrustedProxies())
+	if !ok {
+		return false, err
 	}
-	if invalidCredErr != nil {
-		recordFailure()
-		if identifierDenied {
-			return false, auth.ErrLoginThrottled
-		}
-		return false, invalidCredErr
-	}
-	if !credentialsOK {
-		recordFailure()
-		if identifierDenied {
-			return false, auth.ErrLoginThrottled
-		}
-		return false, nil // Invalid password
-	}
-
-	// Valid credentials proceed even when the identifier dimension is
-	// over cap: that bucket exists to cap distributed guessing, not to
-	// lock the account holder out. RecordSuccess below clears it.
 
 	// Generate token (post-timebox; success path varies by token
 	// generation time, which leaks "succeeded" but not user identity).
@@ -519,32 +447,15 @@ func (g *JWTGuard) Attempt(w http.ResponseWriter, r *http.Request, credentials m
 	}
 
 	// Hash-staleness check (M-08): emit PasswordNeedsRehashEvent when the
-	// stored hash no longer matches the configured Hasher parameters.
-	g.maybeEmitRehashEvent(r.Context(), hasher, user)
+	// stored hash no longer matches the configured Hasher parameters. A
+	// dispatch error is swallowed (nil warn): a transient subscriber
+	// failure must not block the already-successful login.
+	maybeEmitRehashEvent(r.Context(), g.getEventDispatcher(), hasher, user, "jwt", nil)
 
 	for _, key := range keys {
 		throttler.RecordSuccess(r, key)
 	}
 	return true, nil
-}
-
-// maybeEmitRehashEvent fires auth.PasswordNeedsRehashEvent through the
-// installed dispatcher when hasher.NeedsRehash reports the stored hash
-// is out of date. No-op when no dispatcher has been wired. A dispatcher
-// error is swallowed: a transient subscriber failure must not block the
-// already-successful login.
-func (g *JWTGuard) maybeEmitRehashEvent(ctx context.Context, hasher auth.Hasher, user auth.Authenticatable) {
-	dispatcher := g.getEventDispatcher()
-	if dispatcher == nil || hasher == nil || user == nil {
-		return
-	}
-	if !hasher.NeedsRehash(user.GetAuthPassword()) {
-		return
-	}
-	_ = dispatcher(ctx, auth.PasswordNeedsRehashEvent{
-		UserID:    user.GetAuthIdentifier(),
-		GuardName: "jwt",
-	})
 }
 
 // RevokeAllRefreshTokensForUser implements auth.RefreshTokenRevoker. It
@@ -705,14 +616,81 @@ func (g *JWTGuard) getTokenFromRequest(r *http.Request) string {
 		}
 	}
 
-	// Check form value
-	if r.Method == "POST" {
-		if token := r.FormValue("token"); token != "" {
+	// Check form value (bounded; see tokenFromFormBody).
+	if r.Method == http.MethodPost {
+		if token := tokenFromFormBody(r); token != "" {
 			return token
 		}
 	}
 
 	return ""
+}
+
+// tokenFromFormBody extracts a "token" field from a POST form body
+// without the unbounded read and body consumption of r.FormValue.
+//
+// Only application/x-www-form-urlencoded bodies are parsed; multipart
+// bodies are never touched (r.FormValue would invoke ParseMultipartForm
+// with its 32 MiB default memory limit before any auth decision, and
+// would also consume the stream the handler needs). Query-string tokens
+// are NOT consulted: outside the WebSocket AllowQueryToken opt-in,
+// query-string credentials leak into access logs and Referer headers.
+//
+// The read is capped at jwtMaxFormBodyBytes via io.LimitReader (not
+// http.MaxBytesReader: on overflow MaxBytesReader truncates the byte
+// count of its final Read, so the consumed prefix could not be restored
+// losslessly). Within the cap, r.Body is restored as a re-readable
+// buffer so the downstream handler still sees the full body. On overflow
+// or a transport error, extraction bails (no token) and r.Body is
+// restored as the consumed prefix stitched to the unread remainder.
+func tokenFromFormBody(r *http.Request) string {
+	if r.Body == nil || r.Body == http.NoBody {
+		return ""
+	}
+
+	ct := r.Header.Get("Content-Type")
+	if ct == "" {
+		return ""
+	}
+	mediaType, _, err := mime.ParseMediaType(ct)
+	if err != nil || mediaType != "application/x-www-form-urlencoded" {
+		return ""
+	}
+
+	origBody := r.Body
+	// Read at most cap+1 bytes: a full cap+1 read means the body exceeds
+	// the cap. LimitReader never drops bytes, so whatever was consumed
+	// can be stitched back in front of the remainder below.
+	buf, readErr := io.ReadAll(io.LimitReader(origBody, jwtMaxFormBodyBytes+1)) //nolint:forbidigo // bounded by io.LimitReader above
+	if readErr != nil || int64(len(buf)) > jwtMaxFormBodyBytes {
+		// Oversize or failed mid-read: bail without parsing. Restore the
+		// consumed prefix ahead of the unread remainder so a downstream
+		// reader still observes the original stream.
+		r.Body = struct {
+			io.Reader
+			io.Closer
+		}{
+			Reader: io.MultiReader(bytes.NewReader(buf), origBody),
+			Closer: origBody,
+		}
+		return ""
+	}
+
+	// Within the cap: restore r.Body as a re-readable buffer so the
+	// handler can re-parse the form.
+	r.Body = struct {
+		io.Reader
+		io.Closer
+	}{
+		Reader: bytes.NewReader(buf),
+		Closer: origBody,
+	}
+
+	values, err := url.ParseQuery(string(buf))
+	if err != nil {
+		return ""
+	}
+	return values.Get("token")
 }
 
 func tokenFromWebSocketSubprotocol(values []string) string {

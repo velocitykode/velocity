@@ -112,6 +112,8 @@ func (b *Bond) SetEncryptor(enc interface {
 	Encrypt(string) (string, error)
 	Decrypt(string) (string, error)
 }) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.encryptor = enc
 }
 

@@ -14,9 +14,9 @@ type ORMUserProvider struct {
 	db        *sql.DB
 	modelType string
 	hasher    Hasher
-	// dialect selects the SQL placeholder style: "postgres" uses $N,
-	// everything else uses ?. SQLite accepts both forms; MySQL accepts
-	// only ?.
+	// dialect selects the SQL placeholder style: "mysql" and "sqlite" use
+	// ?, every other value (including "postgres", "", and unknown driver
+	// names) uses $N. SQLite accepts both forms; MySQL accepts only ?.
 	dialect string
 }
 
@@ -45,10 +45,12 @@ func NewORMUserProviderForDialect(db *sql.DB, modelType string, hasher Hasher, d
 // ph returns the placeholder for the n-th (1-based) bind parameter in the
 // provider's dialect.
 func (p *ORMUserProvider) ph(n int) string {
-	if p.dialect == "postgres" {
+	switch p.dialect {
+	case "mysql", "sqlite":
+		return "?"
+	default:
 		return fmt.Sprintf("$%d", n)
 	}
-	return "?"
 }
 
 // FindByIDCtx finds user by ID using the provided context.

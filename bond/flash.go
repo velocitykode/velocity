@@ -23,20 +23,29 @@ const (
 // were missing: no prop is set and no error reaches the client. This
 // is the only safe handling for unauthenticated user-supplied state.
 func applyFlashData(w http.ResponseWriter, r *http.Request, props Props) {
-	applied := false
+	// Clear whenever the request CARRIED either flash cookie, not only
+	// when a read succeeded: a tampered, oversized, or undecryptable
+	// cookie must still be expired, or the client replays the garbage
+	// value on every subsequent request.
+	carried := hasCookie(r, flashErrorsCookie) || hasCookie(r, flashInputCookie)
 
 	if errors, ok := readFlashCookie(r, flashErrorsCookie); ok {
 		props["errors"] = errors
-		applied = true
 	}
 	if old, ok := readFlashCookie(r, flashInputCookie); ok {
 		props["old"] = old
-		applied = true
 	}
 
-	if applied {
-		clearFlashCookies(w)
+	if carried {
+		clearFlashCookies(w, r)
 	}
+}
+
+// hasCookie reports whether the request carried the named cookie,
+// regardless of whether its value decodes.
+func hasCookie(r *http.Request, name string) bool {
+	_, err := r.Cookie(name)
+	return err == nil
 }
 
 // readFlashCookie reads an authenticated flash cookie produced by
@@ -79,24 +88,18 @@ func flashEncryptorFor(r *http.Request) crypto.Encryptor {
 	return services.Crypto
 }
 
-// clearFlashCookies expires the flash cookies so they are consumed only once.
-func clearFlashCookies(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     flashErrorsCookie,
-		Value:    "",
-		Path:     "/",
-		MaxAge:   -1,
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteLaxMode,
-	})
-	http.SetCookie(w, &http.Cookie{
-		Name:     flashInputCookie,
-		Value:    "",
-		Path:     "/",
-		MaxAge:   -1,
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteLaxMode,
-	})
+// clearFlashCookies expires the flash cookies so they are consumed only
+// once. Built through router.FlashCookie with the same Secure decision
+// as the write path (router reads the identical Services field): a
+// clear whose Secure attribute differs from the write's is dropped by
+// browsers over plain HTTP, so the cookie would never clear in a
+// dev/test Secure=false deployment. Without routed services the clear
+// stays Secure, matching the write path's secure-by-default.
+func clearFlashCookies(w http.ResponseWriter, r *http.Request) {
+	secure := true
+	if services := router.ServicesFromRequest(r); services != nil && services.InsecureFlashCookies {
+		secure = false
+	}
+	http.SetCookie(w, router.FlashCookie(flashErrorsCookie, "", -1, secure))
+	http.SetCookie(w, router.FlashCookie(flashInputCookie, "", -1, secure))
 }

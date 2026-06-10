@@ -646,16 +646,18 @@ func TestORMUserProviderCompareAndSwapRememberToken(t *testing.T) {
 }
 
 // TestORMUserProviderPlaceholderDialect pins the placeholder selection:
-// "postgres" emits $N, everything else emits ?. Pre-fix every provider
-// statement hardcoded $N, which is a syntax error on MySQL; combined with
-// the fail-closed rotate-on-use recall, every remember-cookie recall on
-// MySQL was silently rejected.
+// only "mysql" and "sqlite" emit ?; every other value (including "postgres",
+// "", and unknown driver names) emits $N, preserving the historical
+// PostgreSQL syntax. Pre-fix every provider statement hardcoded $N, which is
+// a syntax error on MySQL; combined with the fail-closed rotate-on-use
+// recall, every remember-cookie recall on MySQL was silently rejected.
 func TestORMUserProviderPlaceholderDialect(t *testing.T) {
 	for dialect, want1 := range map[string]string{
-		"postgres": "$1",
-		"mysql":    "?",
-		"sqlite":   "?",
-		"":         "?",
+		"postgres":  "$1",
+		"mysql":     "?",
+		"sqlite":    "?",
+		"":          "$1",
+		"cockroach": "$1",
 	} {
 		p := NewORMUserProviderForDialect(nil, "User", nil, dialect)
 		if got := p.ph(1); got != want1 {

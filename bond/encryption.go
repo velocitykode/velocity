@@ -12,7 +12,10 @@ func (b *Bond) EncryptHistoryState(page Page) (string, error) {
 		return "", nil
 	}
 
-	if b.encryptor == nil {
+	b.mu.RLock()
+	enc := b.encryptor
+	b.mu.RUnlock()
+	if enc == nil {
 		return "", fmt.Errorf("bond: encryptor not configured for history encryption")
 	}
 
@@ -22,16 +25,19 @@ func (b *Bond) EncryptHistoryState(page Page) (string, error) {
 		return "", err
 	}
 
-	return b.encryptor.Encrypt(string(data))
+	return enc.Encrypt(string(data))
 }
 
 // DecryptHistoryState decrypts page data from encrypted browser history
 func (b *Bond) DecryptHistoryState(encrypted string) (*Page, error) {
-	if b.encryptor == nil {
+	b.mu.RLock()
+	enc := b.encryptor
+	b.mu.RUnlock()
+	if enc == nil {
 		return nil, fmt.Errorf("bond: encryptor not configured for history decryption")
 	}
 
-	decrypted, err := b.encryptor.Decrypt(encrypted)
+	decrypted, err := enc.Decrypt(encrypted)
 	if err != nil {
 		return nil, err
 	}

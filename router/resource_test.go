@@ -445,3 +445,35 @@ func (c *WrongSignatureResourceController) Index() error { // Wrong: missing *Co
 func (c *WrongSignatureResourceController) Show(ctx *Context) error { // Correct signature
 	return ctx.String(http.StatusOK, "show")
 }
+
+// PATCH must reach Update alongside PUT: bond rewrites PATCH 302s to
+// 303 (method-preserving redirects), so a PUT-only Update left every
+// Inertia PATCH form submission as a 404.
+func TestResource_PatchRoutesToUpdate(t *testing.T) {
+	router := NewV2()
+	controller := NewTestUserController()
+	router.Resource("/users", controller)
+
+	req := httptest.NewRequest("PATCH", "/users/123", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for PATCH update, got %d", w.Code)
+	}
+	if w.Body.String() != "update" {
+		t.Errorf("expected body 'update', got %q", w.Body.String())
+	}
+	if !controller.called["update"] {
+		t.Error("expected Update to be called for PATCH")
+	}
+
+	// Both verbs map to the same controller action; PUT must keep working.
+	req = httptest.NewRequest("PUT", "/users/123", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK || w.Body.String() != "update" {
+		t.Errorf("expected PUT update to keep working, got %d %q", w.Code, w.Body.String())
+	}
+}

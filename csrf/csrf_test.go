@@ -497,6 +497,69 @@ func TestGetToken(t *testing.T) {
 	}
 }
 
+// flakyGetStore wraps a SessionStore and, while failGet is set, returns a
+// non-sentinel error from Get to simulate a transient backend failure
+// (network, timeout). Set/Delete/Exists pass through.
+type flakyGetStore struct {
+	inner   *stores.SessionStore
+	failGet atomic.Bool
+}
+
+var errStoreTransient = errors.New("transient store failure")
+
+func (s *flakyGetStore) Get(id string) (string, error) {
+	if s.failGet.Load() {
+		return "", errStoreTransient
+	}
+	return s.inner.Get(id)
+}
+func (s *flakyGetStore) Set(id, token string) error { return s.inner.Set(id, token) }
+func (s *flakyGetStore) Delete(id string) error     { return s.inner.Delete(id) }
+func (s *flakyGetStore) Exists(id string) bool      { return s.inner.Exists(id) }
+
+// TestGetToken_TransientStoreError pins the regression where GetToken
+// treated ANY Store.Get error as a miss and minted+stored a fresh token,
+// silently invalidating the token every other tab/client already held.
+func TestGetToken_TransientStoreError(t *testing.T) {
+	store := &flakyGetStore{inner: stores.NewSessionStore()}
+	config := DefaultConfig()
+	config.SessionIDResolver = testCookieResolver("session_id")
+	config.Store = store
+	csrf := New(config)
+
+	sessionID := "test-session"
+
+	// Seed a token the "other tabs" hold.
+	seeded, err := csrf.GetToken(sessionID)
+	if err != nil {
+		t.Fatalf("seed GetToken: %v", err)
+	}
+
+	// Transient failure: error must surface, token must NOT rotate.
+	store.failGet.Store(true)
+	if _, err := csrf.GetToken(sessionID); !errors.Is(err, errStoreTransient) {
+		t.Fatalf("expected transient store error to surface, got %v", err)
+	}
+	store.failGet.Store(false)
+
+	got, err := csrf.GetToken(sessionID)
+	if err != nil {
+		t.Fatalf("GetToken after recovery: %v", err)
+	}
+	if got != seeded {
+		t.Error("transient store error rotated the stored token; seeded token expected")
+	}
+
+	// A genuine miss (sentinel) still mints.
+	minted, err := csrf.GetToken("fresh-session")
+	if err != nil {
+		t.Fatalf("GetToken on true miss: %v", err)
+	}
+	if minted == "" {
+		t.Error("true miss should mint a token")
+	}
+}
+
 func TestMatchPath(t *testing.T) {
 	tests := []struct {
 		path    string
@@ -1668,7 +1731,8 @@ func (s *nonAtomicStore) Get(id string) (string, error) {
 	if v, ok := s.tokens[id]; ok {
 		return v, nil
 	}
-	return "", errors.New("not found")
+	// Sentinel, not a bare error: GetToken only mints on a genuine miss.
+	return "", stores.ErrTokenNotFound
 }
 func (s *nonAtomicStore) Set(id string, token string) error {
 	s.mu.Lock()

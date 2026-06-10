@@ -474,38 +474,64 @@ func (g *SessionGuard) Check(r *http.Request) bool {
 // Use this from middleware to deliver a "your session was signed out
 // remotely" UX without breaking the Guard interface.
 func (g *SessionGuard) CheckWithError(r *http.Request) (bool, error) {
+	// Surface the consultServerStore error to the caller (asymmetric
+	// with User, which swallows it to nil).
+	_, ok, err := g.resolveAuthenticatedUser(r)
+	return ok, err
+}
+
+// resolveAuthenticatedUser walks the authentication ladder shared by
+// CheckWithError and User:
+//
+//  1. Session lookup; no session means unauthenticated.
+//  2. No user_id in the session: remember-cookie fallback, treated as a
+//     full re-authentication (H-08 fix). Rotate the session id, anchor
+//     user_id, and consult the server store on the rotated id when one
+//     is installed (checkRememberCookie -> anchorRecalledUser). Without
+//     this, an attacker holding a valid remember cookie could
+//     authenticate one request even after administrative revocation
+//     cleared the server-side record.
+//  3. user_id present: resolve the user via the provider; a lookup error
+//     or vanished user means unauthenticated.
+//  4. Consult the server-side store (when installed); a store failure or
+//     revoked record fails closed.
+//
+// Returns the resolved user, whether the request is authenticated, and
+// the consultServerStore error from step 4 (nil on every other
+// unauthenticated path). Error policy is owned by the callers:
+// CheckWithError surfaces err while User swallows everything to nil.
+func (g *SessionGuard) resolveAuthenticatedUser(r *http.Request) (auth.Authenticatable, bool, error) {
 	session := g.getSession(r)
 	if session == nil {
-		return false, nil
+		return nil, false, nil
 	}
 
 	userID := session.Get("user_id")
 	if userID == nil {
-		// Remember-cookie fallback: treat as a full re-authentication
-		// (H-08 fix). Rotate the session id, anchor user_id, and
-		// consult the server store on the rotated id when one is
-		// installed. Without this, an attacker holding a valid
-		// remember cookie could authenticate one request even after
-		// administrative revocation cleared the server-side record.
+		// Try remember cookie. On success, anchor the recovered user
+		// as a fresh authenticated session: the cookie itself is
+		// flushed by the save-at-end session middleware (H-05); this
+		// path mutates the in-memory session AND, when a server store
+		// is configured, writes a record keyed on the rotated id.
 		user := g.checkRememberCookie(r)
 		if user == nil {
-			return false, nil
+			return nil, false, nil
 		}
 		if !g.anchorRecalledUser(r, session, user) {
-			return false, nil
+			return nil, false, nil
 		}
-		return true, nil
+		return user, true, nil
 	}
 
-	user, err := g.loadProvider().FindByID(userID)
+	user, err := g.loadProvider().FindByIDCtx(r.Context(), userID)
 	if err != nil || user == nil {
-		return false, nil
+		return nil, false, nil
 	}
 
 	if err := g.consultServerStore(r, session); err != nil {
-		return false, err
+		return nil, false, err
 	}
-	return true, nil
+	return user, true, nil
 }
 
 // User returns the authenticated user, or nil when the request is not
@@ -520,35 +546,10 @@ func (g *SessionGuard) CheckWithError(r *http.Request) (bool, error) {
 // store (when configured) is consulted on the rotated ID. If the store is
 // configured and the write/lookup fails, User returns nil.
 func (g *SessionGuard) User(r *http.Request) auth.Authenticatable {
-	session := g.getSession(r)
-	if session == nil {
-		return nil
-	}
-
-	userID := session.Get("user_id")
-	if userID == nil {
-		// Try remember cookie
-		user := g.checkRememberCookie(r)
-		if user == nil {
-			return nil
-		}
-		// Anchor the recovered user as a fresh authenticated session.
-		// The cookie itself is flushed by the save-at-end session
-		// middleware (H-05); this path mutates the in-memory session
-		// AND, when a server store is configured, writes a record
-		// keyed on the rotated id.
-		if !g.anchorRecalledUser(r, session, user) {
-			return nil
-		}
-		return user
-	}
-
-	user, err := g.loadProvider().FindByID(userID)
-	if err != nil {
-		return nil
-	}
-
-	if err := g.consultServerStore(r, session); err != nil {
+	// Swallow the consultServerStore error to nil (asymmetric with
+	// CheckWithError, which surfaces it).
+	user, ok, _ := g.resolveAuthenticatedUser(r)
+	if !ok {
 		return nil
 	}
 	return user
@@ -810,7 +811,7 @@ func (g *SessionGuard) Login(w http.ResponseWriter, r *http.Request, user auth.A
 	// and CSRF rotation. Log and continue: the user is authenticated for
 	// this session, just not recalled across a new one.
 	if len(remember) > 0 && remember[0] {
-		if err := g.setRememberCookie(w, user); err != nil {
+		if err := g.setRememberCookie(r.Context(), w, user); err != nil {
 			g.logWarn("velocity/auth: remember-me cookie not set; login still succeeded", "error", err)
 		}
 	}
@@ -821,7 +822,7 @@ func (g *SessionGuard) Login(w http.ResponseWriter, r *http.Request, user auth.A
 
 // LoginByID logs in a user by ID
 func (g *SessionGuard) LoginByID(w http.ResponseWriter, r *http.Request, id interface{}, remember ...bool) error {
-	user, err := g.loadProvider().FindByID(id)
+	user, err := g.loadProvider().FindByIDCtx(r.Context(), id)
 	if err != nil {
 		return err
 	}
@@ -846,118 +847,15 @@ func (g *SessionGuard) LoginByID(w http.ResponseWriter, r *http.Request, id inte
 // the CPU cost also matches; without this an attacker can probe valid
 // emails by measuring response time even with a constant-time floor.
 func (g *SessionGuard) Attempt(w http.ResponseWriter, r *http.Request, credentials map[string]interface{}, remember ...bool) (bool, error) {
+	// Snapshot throttler, provider, and hasher once so the credential
+	// check and the success tail below see consistent references even if
+	// a concurrent Set* call swaps one mid-call.
 	throttler := g.loadThrottler()
-	// One key per throttle dimension (pair / identifier / IP, see
-	// auth.ThrottleKeys). The pair and IP dimensions deny before the
-	// credential check. The identifier dimension is shared across all
-	// source IPs, so a pre-check denial would let an attacker lock a
-	// victim out of their account from throwaway IPs; instead an
-	// over-cap identifier bucket runs the credential check and denies
-	// only when the credentials are wrong. The error is the same
-	// regardless of which dimension tripped so a caller cannot tell a
-	// per-IP lockout from a per-account one.
-	keys := auth.ThrottleKeys(r, credentials, g.getTrustedProxies())
-	// Consult every dimension even after one denies, so the denial path
-	// does the same number of Allow lookups regardless of which dimension
-	// tripped (no per-dimension oracle).
-	hardDenied := false
-	identifierDenied := false
-	for _, key := range keys {
-		if !throttler.Allow(r, key) {
-			if strings.HasPrefix(key, auth.ThrottleKeyIdentifierPrefix) {
-				identifierDenied = true
-			} else {
-				hardDenied = true
-			}
-		}
-	}
-	if hardDenied {
-		// Pad the pre-check denial to the attempt floor so it is not
-		// separable by timing from an identifier-dimension denial,
-		// which runs the full (timeboxed) credential check below.
-		auth.Timebox(g.effectiveAttemptFloor(), func() {})
-		return false, auth.ErrLoginThrottled
-	}
-	recordFailure := func() {
-		for _, key := range keys {
-			throttler.RecordFailure(r, key)
-		}
-	}
-
-	// Snapshot the provider once so the timebox closure and the
-	// post-timebox branches see a consistent reference even if a
-	// concurrent SetProvider call swaps the pointer mid-call.
-	provider := g.loadProvider()
-
-	var (
-		user            auth.Authenticatable
-		credentialsOK   bool
-		invalidCredErr  error
-		findErr         error
-		password        string
-		passwordTypedOK bool
-	)
-
-	// Snapshot the hasher once so the closure sees a consistent value
-	// across a concurrent SetHasher call. Size the dummy hash to the
-	// configured bcrypt cost so the missing-user CPU profile matches
-	// the wrong-password CPU profile: a cost-10 dummy against a
-	// cost-14 real verify would leak ~400ms of timing difference even
-	// with the AttemptFloor in place (F2 fix).
 	hasher := g.effectiveHasher()
-	dummyHash := dummyHashForHasher(hasher)
-
-	auth.Timebox(g.effectiveAttemptFloor(), func() {
-		user, findErr = provider.FindByCredentials(credentials)
-		password, passwordTypedOK = credentials["password"].(string)
-
-		if findErr != nil || user == nil {
-			// User does not exist: still run the hasher against
-			// a dummy hash so the CPU profile matches the
-			// wrong-password branch. The result is discarded.
-			if passwordTypedOK {
-				_ = hasher.Verify(password, string(dummyHash))
-			} else {
-				_ = hasher.Verify("", string(dummyHash))
-			}
-			return
-		}
-		if !passwordTypedOK {
-			// Credential dict lacked a "password" string. Treat
-			// as invalid; still run the dummy hash so timing
-			// stays uniform across the branch.
-			_ = hasher.Verify("", string(dummyHash))
-			invalidCredErr = auth.ErrInvalidCredentials
-			return
-		}
-		credentialsOK = provider.ValidateCredentials(user, map[string]interface{}{"password": password})
-	})
-
-	if findErr != nil || user == nil {
-		recordFailure()
-		if identifierDenied {
-			return false, auth.ErrLoginThrottled
-		}
-		return false, nil // User not found
+	user, keys, ok, err := attemptCredentials(r, credentials, g.loadProvider(), hasher, throttler, g.effectiveAttemptFloor(), g.getTrustedProxies())
+	if !ok {
+		return false, err
 	}
-	if invalidCredErr != nil {
-		recordFailure()
-		if identifierDenied {
-			return false, auth.ErrLoginThrottled
-		}
-		return false, invalidCredErr
-	}
-	if !credentialsOK {
-		recordFailure()
-		if identifierDenied {
-			return false, auth.ErrLoginThrottled
-		}
-		return false, nil // Invalid password
-	}
-
-	// Valid credentials proceed even when the identifier dimension is
-	// over cap: that bucket exists to cap distributed guessing, not to
-	// lock the account holder out. RecordSuccess below clears it.
 
 	// Login user (post-timebox; the success path's residual delay is
 	// the login pipeline itself, which is the same on every successful
@@ -972,33 +870,12 @@ func (g *SessionGuard) Attempt(w http.ResponseWriter, r *http.Request, credentia
 	// listeners can re-hash on the next login. The event carries the
 	// user identifier only; the plaintext stays inside this stack
 	// frame and is not surfaced to subscribers.
-	g.maybeEmitRehashEvent(r.Context(), hasher, user)
+	maybeEmitRehashEvent(r.Context(), g.getEventDispatcher(), hasher, user, "session", g.logWarn)
 
 	for _, key := range keys {
 		throttler.RecordSuccess(r, key)
 	}
 	return true, nil
-}
-
-// maybeEmitRehashEvent fires auth.PasswordNeedsRehashEvent through the
-// installed dispatcher when hasher.NeedsRehash reports the stored hash
-// is out of date. No-op when no dispatcher has been wired. A dispatcher
-// error is swallowed: a transient subscriber failure must not block the
-// already-successful login.
-func (g *SessionGuard) maybeEmitRehashEvent(ctx context.Context, hasher auth.Hasher, user auth.Authenticatable) {
-	dispatcher := g.getEventDispatcher()
-	if dispatcher == nil || hasher == nil || user == nil {
-		return
-	}
-	if !hasher.NeedsRehash(user.GetAuthPassword()) {
-		return
-	}
-	if err := dispatcher(ctx, auth.PasswordNeedsRehashEvent{
-		UserID:    user.GetAuthIdentifier(),
-		GuardName: "session",
-	}); err != nil {
-		g.logWarn("velocity/auth: password needs-rehash event dispatch failed", "user_id", user.GetAuthIdentifier(), "error", err)
-	}
 }
 
 // sessionRevoker is the optional capability the H-04 fix relies on when no
@@ -1059,8 +936,8 @@ func (g *SessionGuard) Logout(w http.ResponseWriter, r *http.Request) error {
 	// reconcile.
 	if userID := session.Get("user_id"); userID != nil {
 		provider := g.loadProvider()
-		if user, err := provider.FindByID(userID); err == nil && user != nil {
-			if err := provider.UpdateRememberToken(user, ""); err != nil {
+		if user, err := provider.FindByIDCtx(r.Context(), userID); err == nil && user != nil {
+			if err := provider.UpdateRememberTokenCtx(r.Context(), user, ""); err != nil {
 				g.logWarn("velocity/auth: clear remember token (logout) failed", "user_id", userID, "error", err)
 			}
 		}
@@ -1290,11 +1167,11 @@ func (g *SessionGuard) recordServerSession(r *http.Request, session auth.Session
 // deliberately does NOT call this method.
 func (g *SessionGuard) ClearRememberTokensForUser(ctx context.Context, userID string) error {
 	provider := g.loadProvider()
-	user, err := provider.FindByID(userID)
+	user, err := provider.FindByIDCtx(ctx, userID)
 	if err != nil || user == nil {
 		return nil
 	}
-	return provider.UpdateRememberToken(user, "")
+	return provider.UpdateRememberTokenCtx(ctx, user, "")
 }
 
 // clientIP returns the originating client IP for r, honouring the
@@ -1343,7 +1220,7 @@ func (g *SessionGuard) checkRememberCookie(r *http.Request) auth.Authenticatable
 	token := parts[1]
 
 	// Look up user by ID
-	user, err := g.loadProvider().FindByID(userID)
+	user, err := g.loadProvider().FindByIDCtx(r.Context(), userID)
 	if err != nil || user == nil {
 		return nil
 	}
@@ -1383,10 +1260,11 @@ func (g *SessionGuard) rememberCookieLifetime() (time.Duration, error) {
 
 // setRememberCookie sets the remember me cookie at login, persisting the
 // new token hash unconditionally through the provider (there is no prior
-// credential to guard against; login may always overwrite).
-func (g *SessionGuard) setRememberCookie(w http.ResponseWriter, user auth.Authenticatable) error {
+// credential to guard against; login may always overwrite). ctx is the
+// request context so a client disconnect aborts the provider write.
+func (g *SessionGuard) setRememberCookie(ctx context.Context, w http.ResponseWriter, user auth.Authenticatable) error {
 	return g.issueRememberCookie(w, user, func(hashed string) error {
-		return g.loadProvider().UpdateRememberToken(user, hashed)
+		return g.loadProvider().UpdateRememberTokenCtx(ctx, user, hashed)
 	})
 }
 

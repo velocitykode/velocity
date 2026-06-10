@@ -97,7 +97,7 @@ func TestSetRememberCookie_StoresHashedToken(t *testing.T) {
 	user := &mockRememberUser{id: "u1"}
 	w := httptest.NewRecorder()
 
-	if err := g.setRememberCookie(w, user); err != nil {
+	if err := g.setRememberCookie(context.Background(), w, user); err != nil {
 		t.Fatalf("setRememberCookie: %v", err)
 	}
 
@@ -149,7 +149,7 @@ func TestSetRememberCookie_NonStringIdentifier(t *testing.T) {
 	user := &uintIDUser{id: 42}
 	w := httptest.NewRecorder()
 
-	if err := g.setRememberCookie(w, user); err != nil {
+	if err := g.setRememberCookie(context.Background(), w, user); err != nil {
 		t.Fatalf("setRememberCookie with uint identifier: %v", err)
 	}
 
@@ -180,7 +180,7 @@ func TestSetRememberCookie_RefusesZeroLifetime(t *testing.T) {
 	}()
 	user := &mockRememberUser{id: "u1"}
 	w := httptest.NewRecorder()
-	err := g.setRememberCookie(w, user)
+	err := g.setRememberCookie(context.Background(), w, user)
 	if err == nil {
 		t.Fatal("expected error for zero session lifetime")
 	}

@@ -522,18 +522,16 @@ func TestRender_PackageLevel(t *testing.T) {
 	}
 }
 
-func TestRender_PackageLevel_NoEngine_Panics(t *testing.T) {
+// FromContext returns nil when no engine is configured, so the
+// package-level Render surfaces that as an error instead of the old
+// panic out of ctx.View().
+func TestRender_PackageLevel_NoEngine_ReturnsError(t *testing.T) {
 	ctx, _ := router.NewTestContext("GET", "/")
 	ctx.SetServices(&app.Services{})
 
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic when view engine is not configured")
-		}
-	}()
-
-	Render(ctx, "Test")
+	if err := Render(ctx, "Test"); err == nil {
+		t.Fatal("expected error when view engine is not configured")
+	}
 }
 
 func TestMiddleware_Integration(t *testing.T) {

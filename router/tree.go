@@ -225,13 +225,15 @@ func (n *Node) matchStatic(part string, remaining []string, method string, match
 	return child.match(remaining, method, matchedValues)
 }
 
-// matchRegex walks the regex-constrained children.
+// matchRegex walks the regex-constrained children. The constraint is
+// evaluated against the encoded wire-form segment; the captured value
+// is PathUnescaped so handlers see the decoded form.
 func (n *Node) matchRegex(part string, remaining []string, method string, matchedValues []string, depth int) *MatchResult {
 	for _, child := range n.regexChildren {
 		if !child.segment.Match(part) {
 			continue
 		}
-		newValues := append(matchedValues[:depth:depth], part)
+		newValues := append(matchedValues[:depth:depth], unescapeCapture(part))
 		if result := child.match(remaining, method, newValues); result != nil {
 			return result
 		}
@@ -239,12 +241,13 @@ func (n *Node) matchRegex(part string, remaining []string, method string, matche
 	return nil
 }
 
-// matchParam tries the plain-param child, capturing the current part.
+// matchParam tries the plain-param child, capturing the current part
+// PathUnescaped so handlers see the decoded form.
 func (n *Node) matchParam(part string, remaining []string, method string, matchedValues []string, depth int) *MatchResult {
 	if n.paramChild == nil {
 		return nil
 	}
-	newValues := append(matchedValues[:depth:depth], part)
+	newValues := append(matchedValues[:depth:depth], unescapeCapture(part))
 	return n.paramChild.match(remaining, method, newValues)
 }
 
@@ -258,12 +261,18 @@ func (n *Node) matchWildcard(parts []string, method string, matchedValues []stri
 	if !ok {
 		return nil
 	}
-	wildcardValue := strings.Join(parts, "/")
-	if decoded, err := url.PathUnescape(wildcardValue); err == nil {
-		wildcardValue = decoded
-	}
+	wildcardValue := unescapeCapture(strings.Join(parts, "/"))
 	newValues := append(matchedValues[:depth:depth], wildcardValue)
 	return buildMatchResult(result, newValues)
+}
+
+// unescapeCapture decodes a matched segment for delivery to handlers,
+// falling back to the encoded form when it is not valid percent-encoding.
+func unescapeCapture(part string) string {
+	if decoded, err := url.PathUnescape(part); err == nil {
+		return decoded
+	}
+	return part
 }
 
 // buildMatchResult constructs a MatchResult with params map built from

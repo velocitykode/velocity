@@ -306,7 +306,7 @@ func HTTPSRedirect(opts ...HTTPSRedirectOption) MiddlewareFunc {
 			// host-header injection, F34).
 			host := httpsRedirectHost(c.Request.Host, cfg, c.redirectAllowedHosts)
 			httpsURL := "https://" + host + c.Request.RequestURI
-			c.SetHeader("Vary", "Host")
+			c.AddHeader("Vary", "Host")
 			c.SetHeader("Location", httpsURL)
 			c.Response.WriteHeader(http.StatusMovedPermanently)
 			return nil

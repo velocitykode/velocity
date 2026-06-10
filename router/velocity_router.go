@@ -698,12 +698,7 @@ func (r *VelocityRouterV2) dispatchStatic(rw *responseWriter, req *http.Request,
 	ctx := r.ctxPool.Get().(*Context)
 	ctx.Response = rw
 	ctx.Request = req
-	ctx.services = r.services
-	ctx.trustedProxies = r.trustedProxiesOrParse()
-	ctx.redirectAllowedHosts = r.RedirectAllowedHosts
-	ctx.fileRoot = r.FileRootHandle()
-	ctx.validateFn = r.validateFn
-	ctx.intendedFn = r.intendedFn
+	ctx.applyWiring(r.currentWiring())
 
 	var handlerErr error
 	defer func() {
@@ -755,8 +750,13 @@ func (r *VelocityRouterV2) dispatchStatic(rw *responseWriter, req *http.Request,
 
 // matchRoute tries the compiled fast-path, then the tree. Both reads
 // are lock-free via atomic.Pointer.
+//
+// Matching runs on the escaped (wire-form) path so regex constraints
+// see the encoded form and an encoded slash (%2F) cannot split a
+// segment before a {param} capture sees it; captured param values are
+// PathUnescaped after the match (see tree.go).
 func (r *VelocityRouterV2) matchRoute(req *http.Request) *MatchResult {
-	path := req.URL.Path
+	path := req.URL.EscapedPath()
 	tree := r.tree.Load()
 	if compiled := r.compiledRoutes.Load(); compiled != nil {
 		if m := (*compiled)[req.Method+" "+path]; m != nil {
@@ -803,12 +803,7 @@ func (r *VelocityRouterV2) handleNotFound(rw *responseWriter, req *http.Request,
 	ctx := r.ctxPool.Get().(*Context)
 	ctx.Response = rw
 	ctx.Request = req
-	ctx.services = r.services
-	ctx.trustedProxies = r.trustedProxiesOrParse()
-	ctx.redirectAllowedHosts = r.RedirectAllowedHosts
-	ctx.fileRoot = r.FileRootHandle()
-	ctx.validateFn = r.validateFn
-	ctx.intendedFn = r.intendedFn
+	ctx.applyWiring(r.currentWiring())
 
 	var handlerErr error
 	defer func() {
@@ -873,18 +868,28 @@ func (r *VelocityRouterV2) enrichRequest(req *http.Request, result *MatchResult)
 	return req
 }
 
+// currentWiring builds the per-request wiring snapshot handed to every
+// Context this router populates (matched routes, static dispatch, and
+// not-found all apply the same set).
+func (r *VelocityRouterV2) currentWiring() ctxWiring {
+	return ctxWiring{
+		services:             r.services,
+		trustedProxies:       r.trustedProxiesOrParse(),
+		redirectAllowedHosts: r.RedirectAllowedHosts,
+		fileRoot:             r.FileRootHandle(),
+		validateFn:           r.validateFn,
+		intendedFn:           r.intendedFn,
+		insecureFlashCookies: r.services != nil && r.services.InsecureFlashCookies,
+	}
+}
+
 // acquireContext pulls a Context from the pool and populates it with
 // per-request wiring (services, trusted proxies, params).
 func (r *VelocityRouterV2) acquireContext(rw *responseWriter, req *http.Request, result *MatchResult) *Context {
 	ctx := r.ctxPool.Get().(*Context)
 	ctx.Response = rw
 	ctx.Request = req
-	ctx.services = r.services
-	ctx.trustedProxies = r.trustedProxiesOrParse()
-	ctx.redirectAllowedHosts = r.RedirectAllowedHosts
-	ctx.fileRoot = r.FileRootHandle()
-	ctx.validateFn = r.validateFn
-	ctx.intendedFn = r.intendedFn
+	ctx.applyWiring(r.currentWiring())
 
 	if result.segments != nil {
 		ctx.params = ctx.params[:0]
@@ -1204,12 +1209,18 @@ func (g *groupRouterV2) addRoute(method, path string, handler HandlerFunc) Route
 	if handler == nil {
 		panic(contract.NewRegistrationError("router", fmt.Sprintf("nil handler for %s %s", method, path)))
 	}
+	if g.router.frozen {
+		log.Println("velocity: route registered after server start, this route will not be served")
+	}
 	// Store relative path - full path is calculated during CommitToTree
 	route := g.group.AddRoute(method, path, handler)
 	return &routeConfigV2{route: route, router: g.router}
 }
 
 func (g *groupRouterV2) Group(prefix string, fn ...func(Router)) Router {
+	if g.router.frozen {
+		log.Println("velocity: route registered after server start, this route will not be served")
+	}
 	child := g.group.AddChild(prefix)
 	childRouter := &groupRouterV2{
 		group:  child,
@@ -1224,6 +1235,9 @@ func (g *groupRouterV2) Group(prefix string, fn ...func(Router)) Router {
 }
 
 func (g *groupRouterV2) Use(middlewares ...MiddlewareFunc) Router {
+	if g.router.frozen {
+		log.Println("velocity: middleware registered after server start, this middleware will not be applied")
+	}
 	g.group.Use(middlewares...)
 	return g
 }
@@ -1234,6 +1248,9 @@ func (g *groupRouterV2) Prefix(prefix string) {
 }
 
 func (g *groupRouterV2) Resource(path string, controller interface{}) ResourceRoute {
+	if g.router.frozen {
+		log.Println("velocity: resource registered after server start, this resource will not be served")
+	}
 	rr := &resourceWrapperV2{
 		router:     g.router,
 		path:       g.group.FullPrefix() + path,

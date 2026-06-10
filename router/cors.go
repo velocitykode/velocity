@@ -111,7 +111,7 @@ func CORS(config CORSConfig) MiddlewareFunc {
 				c.SetHeader("Access-Control-Allow-Origin", "*")
 			} else {
 				c.SetHeader("Access-Control-Allow-Origin", origin)
-				c.SetHeader("Vary", "Origin")
+				c.AddHeader("Vary", "Origin")
 			}
 
 			if config.AllowCredentials {
