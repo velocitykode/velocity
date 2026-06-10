@@ -170,16 +170,18 @@ func TestMigrator_Fresh_SerialisesAgainstUp(t *testing.T) {
 // TestMigrator_Fresh_HoldsLockAcrossDropAndUp asserts the
 // "single-acquire-spanning-drop+up" requirement from finding O-05.
 // Inside Fresh's body the nested Up() call must NOT release the lock
-// between phases. We pin this directly by hooking into the test's own
-// observation point: an outer caller takes the migration lock via
-// withMigrationLock, then calls Fresh-like sub-operations and verifies
-// that lockDepth never returns to 0 across the sequence.
+// between phases.
 //
-// The test runs Fresh on one migrator while a second migrator races to
-// acquire the same driver lock. Because the second migrator's acquire
-// would land inside Fresh's drop-to-Up window if Fresh released early,
-// we count how many distinct "lock holders" Fresh saw by inspecting
-// whether m2's acquire happened before m1.Fresh returned.
+// A second migrator waits until Fresh's migrator actually holds the
+// driver lock (observed via lockDepth, not a scheduling-dependent
+// sleep), then contends for it. If Fresh held one acquire across the
+// whole drop-then-Up pipeline, the contender can only enter after Up
+// completed, so it must observe the fully-migrated schema. If Fresh
+// wrongly released between phases, the contender lands in the
+// drop-to-Up window and sees the dropped (table-less) schema. The
+// schema observation is the assertion: it does not depend on goroutine
+// return ordering, which made an earlier version of this test flake on
+// slow runners.
 func TestMigrator_Fresh_HoldsLockAcrossDropAndUp(t *testing.T) {
 	db := openSQLiteForLockTest(t)
 
@@ -187,8 +189,8 @@ func TestMigrator_Fresh_HoldsLockAcrossDropAndUp(t *testing.T) {
 	m2 := NewMigrator(db, "sqlite")
 
 	var (
-		m1FreshReturned atomic.Bool
-		m2AcquiredEarly atomic.Bool
+		m1FreshReturned   atomic.Bool
+		sawMigratedSchema atomic.Bool
 	)
 
 	var wg sync.WaitGroup
@@ -202,25 +204,43 @@ func TestMigrator_Fresh_HoldsLockAcrossDropAndUp(t *testing.T) {
 	}()
 	go func() {
 		defer wg.Done()
-		// Stagger so Fresh has a chance to grab the lock first.
-		time.Sleep(10 * time.Millisecond)
-		if err := m2.withMigrationLock(func() error {
-			// Record whether we got into the critical section before
-			// Fresh returned. If Fresh held the lock across both
-			// phases (drop and Up) as required by O-05, we must have
-			// been blocked until after m1FreshReturned was set.
-			if !m1FreshReturned.Load() {
-				m2AcquiredEarly.Store(true)
+		// Wait until Fresh actually holds the lock (or has already
+		// finished) so the contention below is deterministic. A fixed
+		// sleep here let slow runners start the contender before Fresh
+		// had acquired, failing the test spuriously.
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) && !m1FreshReturned.Load() {
+			m1.lockMu.Lock()
+			held := m1.lockDepth > 0
+			m1.lockMu.Unlock()
+			if held {
+				break
 			}
-			return nil
+			time.Sleep(time.Millisecond)
+		}
+		if err := m2.withMigrationLock(func() error {
+			// The registered 20260102000001 migration creates
+			// reentrancy_test. Seeing it proves Up completed before
+			// this critical section; its absence means we entered
+			// Fresh's drop-to-Up window.
+			var name string
+			err := db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='reentrancy_test'").Scan(&name)
+			if err == nil {
+				sawMigratedSchema.Store(true)
+				return nil
+			}
+			if err == sql.ErrNoRows {
+				return nil
+			}
+			return err
 		}); err != nil {
 			t.Errorf("m2.withMigrationLock: %v", err)
 		}
 	}()
 	wg.Wait()
 
-	if m2AcquiredEarly.Load() {
-		t.Fatal("second migrator acquired the lock before Fresh() returned; " +
+	if !sawMigratedSchema.Load() {
+		t.Fatal("second migrator observed an unmigrated schema inside its critical section; " +
 			"Fresh did not hold the lock across the drop-then-Up pipeline (O-05)")
 	}
 }

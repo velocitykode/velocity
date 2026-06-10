@@ -521,8 +521,15 @@ func (m *Migrator) Fresh() error {
 			return fmt.Errorf("failed to get tables: %w", err)
 		}
 
-		// Drop all tables
+		// Drop all tables except the lock table: on MySQL/SQLite the
+		// migration lock guarding this very Fresh call is a row in
+		// migrations_lock, so dropping it would destroy the held lock
+		// and let a concurrent migrator re-seed the table and enter
+		// the drop-to-Up window.
 		for _, table := range tables {
+			if table == migrationsLockTableName {
+				continue
+			}
 			if err := m.dropTable(table); err != nil {
 				return fmt.Errorf("failed to drop table %s: %w", table, err)
 			}
