@@ -32,6 +32,38 @@ func VerifyPayload(data []byte, signature string) error {
 	return verifyPayload(data, signature)
 }
 
+// SealPayload encrypts p.Data in place using the process-wide payload
+// encryptor (no-op when encryption is disabled). Producers must call this
+// BEFORE marshalling and signing the payload so the signature covers the
+// ciphertext (encrypt-then-sign; see encryption.go).
+func SealPayload(p *Payload) error {
+	return sealPayload(p)
+}
+
+// OpenPayload decrypts p.Data in place after signature verification.
+// signatureVerified must be true only when the payload carried a real
+// signature that verified; it gates acceptance of legacy plaintext
+// payloads while QUEUE_ENCRYPT is being rolled out (see encryption.go).
+func OpenPayload(p *Payload, signatureVerified bool) error {
+	return openPayload(p, signatureVerified)
+}
+
+// SealQuarantineBlob protects raw poison-payload bytes before a driver
+// persists them to failed-job storage. Pass-through (sealed=false) when
+// encryption is disabled; AAD-bound ciphertext, or a hash-only redaction
+// stub on seal failure, when enabled. Plaintext never reaches failed
+// storage while an encryptor is installed.
+func SealQuarantineBlob(raw string) (string, bool) {
+	return sealQuarantineBlob(raw)
+}
+
+// OpenQuarantineBlob decrypts a sealed quarantine blob for operator
+// inspection. Errors when encryption is disabled or the blob is a
+// redaction stub.
+func OpenQuarantineBlob(blob string) ([]byte, error) {
+	return openQuarantineBlob(blob)
+}
+
 // Deserialize converts a payload back into a Job using the shared default
 // job registry (the same registry queue.Register / queue.RegisterJob
 // populate) so leaf drivers resolve the identical handler set.

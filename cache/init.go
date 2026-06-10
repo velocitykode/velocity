@@ -23,11 +23,14 @@ import (
 // per-call StoreConfig copy before calling Resolve).
 func init() {
 	Drivers().Register(DriverMemory, func(_ context.Context, cfg StoreConfig) (Store, error) {
-		return drivers.NewMemoryStore(cfg.Prefix), nil
+		return drivers.NewMemoryStore(cfg.Prefix,
+			drivers.WithMaxEntries(cfg.MaxEntries),
+			drivers.WithMaxValueBytes(cfg.MaxValueBytes)), nil
 	})
 
 	Drivers().Register(DriverFile, func(_ context.Context, cfg StoreConfig) (Store, error) {
-		return drivers.NewFileStore(cfg.Prefix, cfg.Path)
+		return drivers.NewFileStore(cfg.Prefix, cfg.Path,
+			drivers.WithFileMaxValueBytes(cfg.MaxValueBytes))
 	})
 
 	Drivers().Register(DriverDatabase, func(_ context.Context, _ StoreConfig) (Store, error) {

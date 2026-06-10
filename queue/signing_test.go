@@ -336,11 +336,66 @@ func TestConfigureSigningWith_KeyEnablesSigning(t *testing.T) {
 
 	// A real signing key with no opts (production defaults) must enable
 	// signing without returning an error.
-	if err := ConfigureSigningWith("queue-signing-key", "", SigningOptions{}); err != nil {
+	if err := ConfigureSigningWith("queue-signing-key-32-bytes-long!", "", SigningOptions{}); err != nil {
 		t.Fatalf("expected nil error with a real signing key, got %v", err)
 	}
 	if !IsSigningEnabled() {
 		t.Fatal("signing must be enabled when QUEUE_SIGNING_KEY is set")
+	}
+}
+
+func TestConfigureSigningWith_ShortRawKeyRejected(t *testing.T) {
+	saveAndRestoreSigningState(t)
+
+	// A raw QUEUE_SIGNING_KEY is used verbatim as the HMAC-SHA256 key, so
+	// a key under 32 bytes must refuse to boot rather than silently run
+	// with a weak signing barrier.
+	shortKey := "31-byte-key-aaaaaaaaaaaaaaaaaaa"
+	if len(shortKey) != 31 {
+		t.Fatalf("test setup: expected 31-byte key, got %d", len(shortKey))
+	}
+
+	err := ConfigureSigningWith(shortKey, "", SigningOptions{})
+	if !errors.Is(err, ErrSigningKeyTooShort) {
+		t.Fatalf("expected ErrSigningKeyTooShort for 31-byte key, got %v", err)
+	}
+	wantMsg := "velocity/queue: QUEUE_SIGNING_KEY must be at least 32 bytes for hmac signing (got 31)"
+	if err.Error() != wantMsg {
+		t.Fatalf("error text changed:\n got: %q\nwant: %q", err, wantMsg)
+	}
+	if IsSigningEnabled() {
+		t.Fatal("signing must remain disabled after a rejected short key")
+	}
+}
+
+func TestConfigureSigningWith_ExactMinimumRawKeyAccepted(t *testing.T) {
+	saveAndRestoreSigningState(t)
+
+	// Exactly 32 bytes is the floor, not below it: must be accepted.
+	minKey := "32-byte-key-aaaaaaaaaaaaaaaaaaaa"
+	if len(minKey) != 32 {
+		t.Fatalf("test setup: expected 32-byte key, got %d", len(minKey))
+	}
+
+	if err := ConfigureSigningWith(minKey, "", SigningOptions{}); err != nil {
+		t.Fatalf("expected nil error for 32-byte key, got %v", err)
+	}
+	if !IsSigningEnabled() {
+		t.Fatal("signing must be enabled with a 32-byte key")
+	}
+}
+
+func TestConfigureSigningWith_ShortAppKeyFallbackStillDerives(t *testing.T) {
+	saveAndRestoreSigningState(t)
+
+	// The floor applies only to the raw QUEUE_SIGNING_KEY path. The
+	// APP_KEY fallback HKDF-expands to 32 bytes regardless of input
+	// length, so a short APP_KEY must keep working as before.
+	if err := ConfigureSigningWith("", "short-app-key", SigningOptions{}); err != nil {
+		t.Fatalf("expected short APP_KEY fallback to succeed via HKDF, got %v", err)
+	}
+	if !IsSigningEnabled() {
+		t.Fatal("signing must be enabled after APP_KEY fallback")
 	}
 }
 
@@ -364,7 +419,7 @@ func TestConfigureSigningWith_AcceptUnsignedDoesNotShadowRealKey(t *testing.T) {
 	// is supplied the normal sign-enabled path must still run so a
 	// production fleet that accidentally leaves the flag set still gets
 	// HMAC verification.
-	if err := ConfigureSigningWith("queue-signing-key", "", SigningOptions{AcceptUnsigned: true}); err != nil {
+	if err := ConfigureSigningWith("queue-signing-key-32-bytes-long!", "", SigningOptions{AcceptUnsigned: true}); err != nil {
 		t.Fatalf("expected nil error when a real key is supplied alongside AcceptUnsigned, got %v", err)
 	}
 	if !IsSigningEnabled() {

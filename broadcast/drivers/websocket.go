@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -47,11 +48,19 @@ func denyAllChannelAuthorizer(client *websocket.Client, channel string) bool {
 
 // WebSocketDriver adapts the existing WebSocket server for broadcasting
 type WebSocketDriver struct {
-	server         *websocket.Server
-	channels       map[string]map[string]*websocket.Client // channel -> socketID -> client
-	clientSubs     map[string]map[string]struct{}          // clientID -> channel set (audit D-03)
-	authorizer     ChannelAuthorizer
-	verifier       TokenVerifier
+	server     *websocket.Server
+	channels   map[string]map[string]*websocket.Client // channel -> socketID -> client
+	clientSubs map[string]map[string]struct{}          // clientID -> channel set (audit D-03)
+	authorizer ChannelAuthorizer
+	verifier   TokenVerifier
+	// customAuthorizer records that SetAuthorizer installed a non-nil
+	// application authorizer (as opposed to the deny-all default the driver
+	// is constructed with). Guarded by mu alongside authorizer/verifier.
+	// Consulted by handleSubscribe for the V2-17 missing-token warning.
+	customAuthorizer bool
+	// tokenWarnOnce makes the authorizer-without-token-verifier WARN
+	// (audit V2-17) fire at most once per driver instance.
+	tokenWarnOnce  sync.Once
 	mu             sync.RWMutex
 	droppedCount   atomic.Uint64
 	blockingSendTO time.Duration // 0 means non-blocking (drop on full)
@@ -646,9 +655,19 @@ func (d *WebSocketDriver) handleSubscribe(client *websocket.Client, msg websocke
 		d.mu.RLock()
 		auth := d.authorizer
 		verify := d.verifier
+		custom := d.customAuthorizer
 		d.mu.RUnlock()
 		if auth == nil {
 			auth = denyAllChannelAuthorizer
+		}
+
+		// Audit V2-17: an application authorizer with no token verifier means
+		// restricted-channel access rests solely on that authorizer, with no
+		// cryptographic binding between the HTTP-authenticated user and this
+		// socket. Surface the gap once; do not block (token-less deployments
+		// are a supported configuration).
+		if custom && verify == nil {
+			d.warnAuthorizerWithoutVerifier()
 		}
 		if !auth(client, channel) {
 			return fmt.Errorf("velocity/broadcast: unauthorized to subscribe to channel %s", channel)
@@ -831,10 +850,37 @@ func clientEventPayloadLen(payload interface{}) (int, error) {
 
 // SetAuthorizer sets the channel authorizer for private/presence channels.
 // Without an authorizer, subscriptions to private- and presence- channels are rejected.
+//
+// When an authorizer is installed but no token verifier is (see
+// SetTokenVerifier / BroadcastManager.SetAuthSecret), the first restricted
+// subscribe emits a one-shot WARN: the authorizer alone gates access and
+// nothing cryptographically binds the socket to an authenticated user.
+// Audit V2-17.
 func (d *WebSocketDriver) SetAuthorizer(fn ChannelAuthorizer) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.authorizer = fn
+	d.customAuthorizer = fn != nil
+}
+
+// warnAuthorizerWithoutVerifier emits a one-shot WARN when a restricted
+// subscribe is gated only by the application ChannelAuthorizer because no
+// token verifier is installed (audit V2-17). The authorizer receives just the
+// raw *websocket.Client, so without the HMAC token from
+// BroadcastManager.SetAuthSecret there is no cryptographic binding between
+// the HTTP-authenticated user and the socket - a permissive authorizer admits
+// any connection. Logs via the installed driver logger, falling back to
+// slog.Default so the warning is not silently lost when SetLogger was never
+// called.
+func (d *WebSocketDriver) warnAuthorizerWithoutVerifier() {
+	d.tokenWarnOnce.Do(func() {
+		const msg = "velocity/broadcast: private/presence channels are gated only by the channel authorizer; no auth-token verifier is installed, so subscribes are not cryptographically bound to authenticated users (call BroadcastManager.SetAuthSecret to enable token verification)"
+		if logger := d.log(); logger != nil {
+			logger.Warn(msg)
+			return
+		}
+		slog.Default().Warn(msg)
+	})
 }
 
 // SetTokenVerifier installs an HMAC token verifier consulted on every

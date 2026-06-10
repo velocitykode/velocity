@@ -39,11 +39,23 @@ type Verifier struct {
 	// Tolerance is the maximum age of a signature header (positive duration).
 	// Signatures whose timestamp is more than Tolerance behind or ahead of
 	// the current clock are rejected with ErrTimestampOutOfTolerance.
-	// Zero disables the timestamp check.
+	// Zero (the zero value) means the default of 5 minutes; the check
+	// cannot be disabled by zeroing this field. Set DisableTimestampCheck
+	// for the rare legitimate opt-out.
 	Tolerance time.Duration
+	// DisableTimestampCheck skips signature freshness validation entirely.
+	//
+	// WARNING: with this set, a correctly signed payload verifies forever.
+	// Without a NonceStore in Nonces the replay window is unbounded: any
+	// captured delivery can be re-sent indefinitely. Only set this when an
+	// upstream provider cannot produce timestamps AND replay is mitigated
+	// elsewhere (ideally by also setting Nonces).
+	DisableTimestampCheck bool
 	// Nonces, when non-nil, enables replay rejection. The hex signature is
 	// used as the nonce; the TTL written to the store equals Tolerance
-	// (or 5 minutes when Tolerance is zero).
+	// (or 5 minutes when Tolerance is zero). Note the TTL stays finite even
+	// with DisableTimestampCheck set, so a replay arriving after the nonce
+	// expires is accepted again.
 	Nonces NonceStore
 	// Now overrides the timestamp source for tests. When nil, time.Now is used.
 	Now func() time.Time
@@ -56,8 +68,21 @@ func NewVerifier(secret []byte) *Verifier {
 	return &Verifier{
 		Algorithm: HMACSHA256,
 		Secret:    secret,
-		Tolerance: 5 * time.Minute,
+		Tolerance: defaultTolerance,
 	}
+}
+
+// defaultTolerance is the freshness window applied when Tolerance is left
+// at its zero value, so a zero-value Verifier still rejects stale signatures.
+const defaultTolerance = 5 * time.Minute
+
+// tolerance returns the effective freshness window: Tolerance when positive,
+// defaultTolerance otherwise.
+func (v *Verifier) tolerance() time.Duration {
+	if v.Tolerance > 0 {
+		return v.Tolerance
+	}
+	return defaultTolerance
 }
 
 // now returns the configured time source or wall-clock time.
@@ -94,13 +119,13 @@ func (v *Verifier) VerifyContext(ctx context.Context, payload []byte, header str
 		return err
 	}
 
-	if v.Tolerance > 0 {
+	if !v.DisableTimestampCheck {
 		signedAt := time.Unix(ts, 0)
 		delta := v.now().Sub(signedAt)
 		if delta < 0 {
 			delta = -delta
 		}
-		if delta > v.Tolerance {
+		if delta > v.tolerance() {
 			return ErrTimestampOutOfTolerance
 		}
 	}
@@ -116,11 +141,7 @@ func (v *Verifier) VerifyContext(ctx context.Context, payload []byte, header str
 	}
 
 	if v.Nonces != nil {
-		ttl := v.Tolerance
-		if ttl <= 0 {
-			ttl = 5 * time.Minute
-		}
-		seen, err := v.Nonces.CheckAndMark(ctx, sigHex, ttl)
+		seen, err := v.Nonces.CheckAndMark(ctx, sigHex, v.tolerance())
 		if err != nil {
 			return err
 		}

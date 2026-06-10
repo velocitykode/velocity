@@ -15,6 +15,8 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log/slog"
+	"net"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -86,10 +88,49 @@ func NewRedisStore(ctx context.Context, prefix string, host string, port int, pa
 		)
 	}
 
+	// A non-loopback Redis without TLS sends every command (including the
+	// AUTH password and cached values) in cleartext, and without a password
+	// anyone who can reach the host can read and write the cache. Warn
+	// loudly at startup like the empty-prefix case above; do not refuse to
+	// boot, since the operator may secure the link elsewhere (VPC, tunnel).
+	warnIfInsecure(host, password, tlsEnabled)
+
 	return &RedisStore{
 		client: client,
 		prefix: prefix,
 	}, nil
+}
+
+// isLoopbackHost reports whether host clearly names the local machine:
+// "localhost" or a literal loopback IP (127.0.0.0/8, ::1). Hostnames are
+// deliberately not DNS-resolved at construction, so any other name counts
+// as remote.
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// warnIfInsecure logs a startup warning when the store connects to a
+// non-loopback host with TLS disabled or with no password.
+func warnIfInsecure(host, password string, tlsEnabled bool) {
+	if isLoopbackHost(host) {
+		return
+	}
+	if !tlsEnabled {
+		slog.Default().Warn(
+			"velocity/cache: redis store connecting to non-loopback host without TLS; traffic (including the password and cached values) is sent in cleartext. Set REDIS_TLS=true or per-store TLS.",
+			"host", host,
+		)
+	}
+	if password == "" {
+		slog.Default().Warn(
+			"velocity/cache: redis store connecting to non-loopback host without a password; anyone who can reach the host can read and write cache data. Set REDIS_PASSWORD or per-store Password.",
+			"host", host,
+		)
+	}
 }
 
 // Shutdown closes the Redis client connection. The context is accepted

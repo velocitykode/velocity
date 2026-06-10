@@ -53,5 +53,12 @@ func HydrateJob(payload *Payload) (Job, error) {
 	if payload == nil {
 		return nil, fmt.Errorf("velocity/queue: cannot hydrate job from nil payload")
 	}
+	if payload.Encrypted {
+		// Drivers must run the openPayload decrypt step (after signature
+		// verification) before hydration. Hitting this means a code path
+		// skipped it; fail loudly rather than letting the registry try to
+		// decode ciphertext.
+		return nil, fmt.Errorf("velocity/queue: cannot hydrate encrypted payload; decrypt it before hydration")
+	}
 	return registry.Deserialize(payload)
 }

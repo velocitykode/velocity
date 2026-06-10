@@ -23,6 +23,20 @@ var (
 	// injection on the jobs table) lets arbitrary jobs into the worker
 	// pipeline, so the boot path must refuse rather than silently warn.
 	ErrSigningKeyRequired = errors.New("velocity/queue: signing key required (set QUEUE_SIGNING_KEY or APP_KEY, or set QUEUE_ACCEPT_UNSIGNED=true to acknowledge the risk)")
+	// ErrSigningKeyTooShort is returned by ConfigureSigning when
+	// QUEUE_SIGNING_KEY is set but shorter than 32 bytes. The raw key is
+	// used verbatim as the HMAC-SHA256 key, so its length is the entire
+	// security margin; the floor matches the 32-byte minimum auth enforces
+	// for JWT HMAC secrets. Fail-closed at boot, like ErrSigningKeyRequired.
+	// The APP_KEY fallback is unaffected: that path always HKDF-expands to
+	// 32 bytes.
+	ErrSigningKeyTooShort = errors.New("velocity/queue: QUEUE_SIGNING_KEY must be at least 32 bytes for hmac signing")
+	// ErrEncryptorRequired is returned by the framework boot path when
+	// QUEUE_ENCRYPT=true but no app encryptor exists (APP_KEY unset /
+	// crypto subsystem disabled). Fail-closed at boot, like
+	// ErrSigningKeyRequired: an operator who asked for encrypted payloads
+	// must not silently get plaintext ones.
+	ErrEncryptorRequired = errors.New("velocity/queue: QUEUE_ENCRYPT=true requires the crypto subsystem (set APP_KEY)")
 	// ErrPoisonJob is returned by a driver's Pop path when a row is
 	// unrecoverably broken AND the driver has already quarantined it
 	// (moved it to failed_jobs and removed it from the live queue). The

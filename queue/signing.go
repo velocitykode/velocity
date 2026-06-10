@@ -12,6 +12,12 @@ import (
 	"golang.org/x/crypto/hkdf"
 )
 
+// minSigningKeyBytes is the floor for a raw QUEUE_SIGNING_KEY. HMAC-SHA256
+// keys shorter than the hash output add no work for a brute-force attacker
+// beyond their own length, so anything under 32 bytes weakens the only
+// barrier between a store-writing attacker and the worker pipeline.
+const minSigningKeyBytes = 32
+
 var (
 	signingMu      sync.RWMutex
 	signingKey     []byte
@@ -64,6 +70,8 @@ func ConfigureSigning(rawSigningKey, appKey string) error {
 // neither AcceptUnsigned nor AllowUnsignedInDev is set; this is the
 // fail-closed default that protects against an attacker who can write to
 // the queue store enqueueing arbitrary jobs into an unverifying worker.
+// Returns ErrSigningKeyTooShort when rawSigningKey is set but shorter
+// than 32 bytes, since the raw key is used verbatim as the HMAC key.
 //
 // Must be called from velocity.New() after config is loaded.
 func ConfigureSigningWith(rawSigningKey, appKey string, opts SigningOptions) error {
@@ -122,6 +130,15 @@ func ConfigureSigningWith(rawSigningKey, appKey string, opts SigningOptions) err
 		}
 		signingKey = derived
 	} else {
+		// The raw key is used verbatim as the HMAC-SHA256 key, so enforce
+		// the same 32-byte floor auth applies to JWT HMAC secrets. Reject
+		// rather than HKDF-expand: changing the derivation for existing
+		// valid keys would invalidate signatures on in-flight jobs.
+		if len(key) < minSigningKeyBytes {
+			signingKey = nil
+			signingEnabled = false
+			return fmt.Errorf("%w (got %d)", ErrSigningKeyTooShort, len(key))
+		}
 		signingKey = []byte(key)
 	}
 	signingEnabled = true

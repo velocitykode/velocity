@@ -29,7 +29,7 @@ func TestInitQueue_FailsClosedOnEmptyKeyInProduction(t *testing.T) {
 	resetQueueSigningState(t)
 	t.Setenv("QUEUE_ACCEPT_UNSIGNED", "")
 
-	_, err := initQueue(QueueConfig{Driver: "memory"}, nil, "", "", "", "production", log.NewNullLogger())
+	_, err := initQueue(QueueConfig{Driver: "memory"}, nil, "", "", "", "production", nil, log.NewNullLogger())
 	if !errors.Is(err, queue.ErrSigningKeyRequired) {
 		t.Fatalf("expected ErrSigningKeyRequired, got %v", err)
 	}
@@ -44,7 +44,7 @@ func TestInitQueue_QueueAcceptUnsignedAllowsEmptyKey(t *testing.T) {
 	resetQueueSigningState(t)
 	t.Setenv("QUEUE_ACCEPT_UNSIGNED", "true")
 
-	d, err := initQueue(QueueConfig{Driver: "memory"}, nil, "", "", "", "production", log.NewNullLogger())
+	d, err := initQueue(QueueConfig{Driver: "memory"}, nil, "", "", "", "production", nil, log.NewNullLogger())
 	if err != nil {
 		t.Fatalf("expected nil error with QUEUE_ACCEPT_UNSIGNED=true, got %v", err)
 	}
@@ -63,7 +63,7 @@ func TestInitQueue_ValidSigningKeyEnablesSigning(t *testing.T) {
 	resetQueueSigningState(t)
 	t.Setenv("QUEUE_ACCEPT_UNSIGNED", "")
 
-	d, err := initQueue(QueueConfig{Driver: "memory", SigningKey: "real-signing-key"}, nil, "", "real-signing-key", "", "production", log.NewNullLogger())
+	d, err := initQueue(QueueConfig{Driver: "memory", SigningKey: "real-signing-key-32-bytes-long!!"}, nil, "", "real-signing-key-32-bytes-long!!", "", "production", nil, log.NewNullLogger())
 	if err != nil {
 		t.Fatalf("expected nil error with a real signing key, got %v", err)
 	}
@@ -75,6 +75,24 @@ func TestInitQueue_ValidSigningKeyEnablesSigning(t *testing.T) {
 	}
 }
 
+// TestInitQueue_ShortSigningKeyFailsClosed asserts the 32-byte floor on a
+// raw QUEUE_SIGNING_KEY (V2-13): the raw key is used verbatim as the
+// HMAC-SHA256 key, so a short key must stop boot with
+// queue.ErrSigningKeyTooShort instead of running with a weak barrier.
+func TestInitQueue_ShortSigningKeyFailsClosed(t *testing.T) {
+	resetQueueSigningState(t)
+	t.Setenv("QUEUE_ACCEPT_UNSIGNED", "")
+
+	shortKey := "31-byte-key-aaaaaaaaaaaaaaaaaaa"
+	_, err := initQueue(QueueConfig{Driver: "memory", SigningKey: shortKey}, nil, "", shortKey, "", "production", nil, log.NewNullLogger())
+	if !errors.Is(err, queue.ErrSigningKeyTooShort) {
+		t.Fatalf("expected ErrSigningKeyTooShort, got %v", err)
+	}
+	if queue.IsSigningEnabled() {
+		t.Fatal("signing must remain disabled after a rejected short key")
+	}
+}
+
 // TestInitQueue_DevEnvAllowsEmptyKey asserts the dev/test relaxation:
 // appEnv "local" with no signing key must not break unit tests or local
 // runs that simply do not wire a key. Production callers don't hit this
@@ -83,7 +101,7 @@ func TestInitQueue_DevEnvAllowsEmptyKey(t *testing.T) {
 	resetQueueSigningState(t)
 	t.Setenv("QUEUE_ACCEPT_UNSIGNED", "")
 
-	d, err := initQueue(QueueConfig{Driver: "memory"}, nil, "", "", "", "local", log.NewNullLogger())
+	d, err := initQueue(QueueConfig{Driver: "memory"}, nil, "", "", "", "local", nil, log.NewNullLogger())
 	if err != nil {
 		t.Fatalf("expected nil error in dev env, got %v", err)
 	}

@@ -788,6 +788,16 @@ func (j *Job) Saturdays() *Job {
 // ValidateJobs), not here, so chains like
 // s.Call(fn).WithoutOverlapping().Name("nightly") settle before being
 // inspected.
+//
+// The guard is a TTL-based lock (set-if-not-exists with expiry), NOT a
+// fenced lease: if a run outlives the lock TTL -- default 24h, or the
+// value given to WithoutOverlappingFor -- or the holding process stalls
+// past it (GC pause, VM freeze, SIGSTOP), the lock expires while the
+// job is still running and another process acquires it, so two
+// instances run concurrently. The expired holder's work is not fenced
+// or rejected (Lock.FencingToken is process-local and informational
+// only). Jobs guarded by WithoutOverlapping MUST therefore be
+// idempotent, or at least safe under occasional concurrent execution.
 func (j *Job) WithoutOverlapping() *Job {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -798,8 +808,12 @@ func (j *Job) WithoutOverlapping() *Job {
 // WithoutOverlappingFor is the TTL-configurable form of WithoutOverlapping.
 // The distributed lock acquired before running the job auto-expires after
 // ttl; a crashed process therefore cannot wedge the job forever. Default
-// (when WithoutOverlapping() is used without this method) is 24h, matching
-// Laravel's $expiresAt = 1440 minutes.
+// (when WithoutOverlapping() is used without this method) is 24h.
+//
+// The TTL is also the double-run window: a run (or process stall) longer
+// than ttl lets the lock expire mid-run and a second instance start. Pick
+// a ttl comfortably above the job's worst-case runtime, and keep the job
+// idempotent -- see WithoutOverlapping for the full caveat.
 func (j *Job) WithoutOverlappingFor(ttl time.Duration) *Job {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -810,7 +824,21 @@ func (j *Job) WithoutOverlappingFor(ttl time.Duration) *Job {
 	return j
 }
 
-// OnOneServer ensures job runs on only one server (requires distributed lock)
+// OnOneServer restricts each scheduled firing to a single server. It
+// requires a shared-backend Locker (see Scheduler.SetLocker); with the
+// default process-local InMemoryLocker every host runs the job.
+//
+// The guarantee is best-effort, not absolute: the per-minute contest is
+// decided by a TTL-based lock (set-if-not-exists with expiry, default
+// TTL 1h), not a fenced lease. The lock is left to expire by TTL rather
+// than released, so within one scheduled minute a second host can only
+// win after the TTL lapses -- which the 1h default makes implausible --
+// but cross-host clock skew approaching the TTL, a backend that drops
+// the key early, or an operator-shortened TTL reopens the double-run
+// window. Lock.FencingToken is process-local and informational only; an
+// expired holder's work is never fenced or rejected. Jobs guarded by
+// OnOneServer MUST therefore be idempotent, or at least safe under
+// occasional duplicate execution.
 func (j *Job) OnOneServer() *Job {
 	j.mu.Lock()
 	defer j.mu.Unlock()

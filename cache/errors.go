@@ -19,4 +19,11 @@ var (
 	// when prefix is empty (preventing accidental wipe of an entire shared
 	// Redis DB).
 	ErrCannotFlushUnprefixed = drivers.ErrCannotFlushUnprefixed
+
+	// ErrValueTooLarge is re-exported from the drivers package so callers
+	// can errors.Is against cache.ErrValueTooLarge without importing the
+	// drivers subpackage. Returned by Put/Add/Forever on memory and file
+	// stores configured with a MaxValueBytes cap when a single serialized
+	// value exceeds it.
+	ErrValueTooLarge = drivers.ErrValueTooLarge
 )

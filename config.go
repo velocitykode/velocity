@@ -112,9 +112,16 @@ type DBConfig struct {
 // Kept as a root type because it uses a flat structure (single driver)
 // while cache.Config uses a multi-store map pattern.
 type CacheConfig struct {
-	Driver        string // CACHE_DRIVER: memory, file, redis, database
-	Prefix        string // CACHE_PREFIX, default "velocity_cache"
-	Path          string // CACHE_PATH (for file driver)
+	Driver string // CACHE_DRIVER: memory, file, redis, database
+	Prefix string // CACHE_PREFIX, default "velocity_cache"
+	Path   string // CACHE_PATH (for file driver)
+	// MemoryMaxEntries caps the memory driver's entry count.
+	// CACHE_MEMORY_MAX_ENTRIES: 0 = default (1,000,000), negative = unlimited.
+	MemoryMaxEntries int
+	// MaxValueBytes caps the serialized size of a single cached value for
+	// the memory and file drivers.
+	// CACHE_MAX_VALUE_BYTES: 0 (default) = unlimited.
+	MaxValueBytes int64
 	RedisHost     string // REDIS_HOST, default "127.0.0.1"
 	RedisPort     int    // REDIS_PORT, default 6379
 	RedisPassword string // REDIS_PASSWORD
@@ -133,6 +140,7 @@ type QueueConfig struct {
 	RedisDB       string // QUEUE_REDIS_DB, default "0"
 	RedisTLS      bool   // REDIS_TLS: enable TLS for Redis connections
 	SigningKey    string // QUEUE_SIGNING_KEY: HMAC key for payload signing (SENSITIVE)
+	Encrypt       bool   // QUEUE_ENCRYPT: encrypt job-state payload data at rest with the app encryptor
 }
 
 // StorageConfig holds storage configuration.
@@ -392,14 +400,16 @@ func ConfigFromEnv() Config {
 	// Cache
 	redisTLS := os.Getenv("REDIS_TLS") == "true"
 	config.Cache = CacheConfig{
-		Driver:        envOrDefault("CACHE_DRIVER", "memory"),
-		Prefix:        envOrDefault("CACHE_PREFIX", "velocity_cache"),
-		Path:          os.Getenv("CACHE_PATH"),
-		RedisHost:     envOrDefault("REDIS_HOST", "127.0.0.1"),
-		RedisPort:     envIntOrDefault("REDIS_PORT", 6379),
-		RedisPassword: os.Getenv("REDIS_PASSWORD"),
-		RedisDatabase: envIntOrDefault("REDIS_DATABASE", 0),
-		RedisTLS:      redisTLS,
+		Driver:           envOrDefault("CACHE_DRIVER", "memory"),
+		Prefix:           envOrDefault("CACHE_PREFIX", "velocity_cache"),
+		Path:             os.Getenv("CACHE_PATH"),
+		MemoryMaxEntries: envIntOrDefault("CACHE_MEMORY_MAX_ENTRIES", 0),
+		MaxValueBytes:    envInt64OrDefault("CACHE_MAX_VALUE_BYTES", 0),
+		RedisHost:        envOrDefault("REDIS_HOST", "127.0.0.1"),
+		RedisPort:        envIntOrDefault("REDIS_PORT", 6379),
+		RedisPassword:    os.Getenv("REDIS_PASSWORD"),
+		RedisDatabase:    envIntOrDefault("REDIS_DATABASE", 0),
+		RedisTLS:         redisTLS,
 	}
 
 	// Log
@@ -444,6 +454,7 @@ func ConfigFromEnv() Config {
 		RedisDB:       envOrDefault("QUEUE_REDIS_DB", "0"),
 		RedisTLS:      redisTLS,
 		SigningKey:    os.Getenv("QUEUE_SIGNING_KEY"),
+		Encrypt:       os.Getenv("QUEUE_ENCRYPT") == "true",
 	}
 
 	// Storage
