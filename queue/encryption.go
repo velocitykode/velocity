@@ -26,8 +26,9 @@ import (
 // ciphertext as AAD (mirroring the flash-cookie pattern in
 // router.SealFlash) so a ciphertext cannot be transplanted onto a
 // different job type. That binding is mandatory: queue encryption
-// requires an AEAD cipher (AES-GCM). Non-AEAD (CBC) ciphers reject AAD
-// with ErrInvalidCipher and sealing fails closed rather than degrading
+// requires a cipher that authenticates AAD: AES-GCM (AEAD) or the CBC
+// encrypt-then-MAC construction, which binds AAD into its HMAC. Ciphers
+// that cannot authenticate AAD fail sealing closed rather than degrading
 // to an unbound EncryptBytes envelope, because without the type binding
 // a valid ciphertext for one job type could be replayed as the Data of
 // another. (router.SealFlash accepts that degradation for flash cookies;

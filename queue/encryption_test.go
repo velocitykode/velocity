@@ -77,11 +77,15 @@ func TestSealOpenPayload_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestSealPayload_CBCRejected exercises the non-AEAD path: CBC ciphers
-// reject AAD, and sealing must fail closed rather than fall back to an
-// EncryptBytes envelope that is not bound to the job type (which would
-// re-open the cross-job-type ciphertext swap AAD exists to block).
-func TestSealPayload_CBCRejected(t *testing.T) {
+// TestSealPayload_CBCSupported pins the integrated behaviour of payload
+// encryption with the CBC AAD work: CBC is encrypt-then-MAC with the AAD
+// bound into the HMAC, so sealing under a CBC cipher is authenticated and
+// type-bound exactly like GCM. The round trip must hold and the type
+// binding must still reject a cross-type swap. (Before CBC carried AAD,
+// sealing failed closed with ErrInvalidCipher; that guard is now the
+// dead-cipher fallback path in sealPayload, kept for future non-AEAD,
+// non-MAC ciphers.)
+func TestSealPayload_CBCSupported(t *testing.T) {
 	saveAndRestoreEncryptionState(t)
 	SetPayloadEncryptor(newTestEncryptor(t, "AES-256-CBC"))
 
@@ -90,17 +94,30 @@ func TestSealPayload_CBCRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MarshalJob: %v", err)
 	}
-	before := string(payload.Data)
 
-	err = sealPayload(payload)
-	if err == nil {
-		t.Fatal("sealPayload must fail closed on a non-AEAD cipher")
+	if err := sealPayload(payload); err != nil {
+		t.Fatalf("sealPayload under CBC+AAD must succeed: %v", err)
 	}
-	if !errors.Is(err, contract.ErrInvalidCipher) {
-		t.Fatalf("sealPayload on CBC: want ErrInvalidCipher, got %v", err)
+	if !payload.Encrypted {
+		t.Fatal("payload must be marked encrypted")
 	}
-	if payload.Encrypted || string(payload.Data) != before {
-		t.Fatal("failed seal must leave the payload unmodified")
+	if strings.Contains(string(payload.Data), "cbc-secret") {
+		t.Fatal("sealed payload still contains plaintext")
+	}
+
+	// Type binding: the CBC MAC covers the AAD, so retyping the payload
+	// must fail to open.
+	swapped := *payload
+	swapped.Type = "OtherJob"
+	if err := openPayload(&swapped, true); err == nil {
+		t.Fatal("CBC-sealed payload must not open under a different job type")
+	}
+
+	if err := openPayload(payload, true); err != nil {
+		t.Fatalf("openPayload: %v", err)
+	}
+	if !strings.Contains(string(payload.Data), "cbc-secret") {
+		t.Fatal("round trip lost the original payload data")
 	}
 }
 

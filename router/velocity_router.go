@@ -749,7 +749,7 @@ func (r *VelocityRouterV2) dispatchStatic(rw *responseWriter, req *http.Request,
 	}
 	handlerErr = (*handler)(ctx)
 	if handlerErr != nil && !errors.Is(handlerErr, ErrValidationAborted) {
-		r.handleError(ctx, rw, handlerErr)
+		r.handleError(ctx, rw, handlerErr, "")
 	}
 }
 
