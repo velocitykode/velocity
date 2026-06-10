@@ -289,7 +289,7 @@ func New(opts ...Option) (*App, error) {
 	if a.DB != nil {
 		sqlDB = a.DB.DB()
 	}
-	a.Auth = initAuth(a.config.Auth, a.config.Session, a.Log, sqlDB, a.Crypto)
+	a.Auth = initAuth(a.config.Auth, a.config.Session, a.Log, sqlDB, a.Crypto, a.config.DB.Connection)
 
 	// 7. Initialize cache
 	a.Cache = initCache(a.config.Cache)

@@ -413,21 +413,34 @@ func (g *JWTGuard) LoginByID(w http.ResponseWriter, r *http.Request, id interfac
 func (g *JWTGuard) Attempt(w http.ResponseWriter, r *http.Request, credentials map[string]interface{}, remember ...bool) (bool, error) {
 	throttler := g.loadThrottler()
 	// One key per throttle dimension (pair / identifier / IP, see
-	// auth.ThrottleKeys). The attempt is rejected when ANY dimension is
-	// over its cap; the error is the same regardless of which dimension
-	// tripped so a caller cannot tell a per-IP lockout from a
-	// per-account one.
+	// auth.ThrottleKeys). The pair and IP dimensions deny before the
+	// credential check. The identifier dimension is shared across all
+	// source IPs, so a pre-check denial would let an attacker lock a
+	// victim out of their account from throwaway IPs; instead an
+	// over-cap identifier bucket runs the credential check and denies
+	// only when the credentials are wrong. The error is the same
+	// regardless of which dimension tripped so a caller cannot tell a
+	// per-IP lockout from a per-account one.
 	keys := auth.ThrottleKeys(r, credentials, g.getTrustedProxies())
 	// Consult every dimension even after one denies, so the denial path
 	// does the same number of Allow lookups regardless of which dimension
 	// tripped (no per-dimension oracle).
-	denied := false
+	hardDenied := false
+	identifierDenied := false
 	for _, key := range keys {
 		if !throttler.Allow(r, key) {
-			denied = true
+			if strings.HasPrefix(key, auth.ThrottleKeyIdentifierPrefix) {
+				identifierDenied = true
+			} else {
+				hardDenied = true
+			}
 		}
 	}
-	if denied {
+	if hardDenied {
+		// Pad the pre-check denial to the attempt floor so it is not
+		// separable by timing from an identifier-dimension denial,
+		// which runs the full (timeboxed) credential check below.
+		auth.Timebox(g.effectiveAttemptFloor(), func() {})
 		return false, auth.ErrLoginThrottled
 	}
 	recordFailure := func() {
@@ -475,16 +488,29 @@ func (g *JWTGuard) Attempt(w http.ResponseWriter, r *http.Request, credentials m
 
 	if findErr != nil || user == nil {
 		recordFailure()
+		if identifierDenied {
+			return false, auth.ErrLoginThrottled
+		}
 		return false, nil // User not found
 	}
 	if invalidCredErr != nil {
 		recordFailure()
+		if identifierDenied {
+			return false, auth.ErrLoginThrottled
+		}
 		return false, invalidCredErr
 	}
 	if !credentialsOK {
 		recordFailure()
+		if identifierDenied {
+			return false, auth.ErrLoginThrottled
+		}
 		return false, nil // Invalid password
 	}
+
+	// Valid credentials proceed even when the identifier dimension is
+	// over cap: that bucket exists to cap distributed guessing, not to
+	// lock the account holder out. RecordSuccess below clears it.
 
 	// Generate token (post-timebox; success path varies by token
 	// generation time, which leaks "succeeded" but not user identity).

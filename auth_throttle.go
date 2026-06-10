@@ -18,9 +18,13 @@ const (
 	// passwords for one account from one IP). The identifier and IP
 	// caps are deliberately looser: they aggregate unrelated traffic
 	// (one account across all IPs, one IP across all accounts), so a
-	// tight cap would let an attacker lock out a victim's account or a
-	// shared NAT egress cheaply. They exist to cap distributed brute
-	// force and password spraying, not to replace the pair limit.
+	// tight cap would penalise a victim's account or a shared NAT
+	// egress cheaply. They exist to cap distributed brute force and
+	// password spraying, not to replace the pair limit. The identifier
+	// dimension is additionally verify-first in the guards (see
+	// auth.ThrottleKeys): an over-cap identifier bucket denies only
+	// wrong-credential attempts, so it cannot lock the account holder
+	// out.
 	defaultLoginThrottleMaxAttempts           = 5
 	defaultLoginThrottleIdentifierMaxAttempts = 20
 	defaultLoginThrottleIPMaxAttempts         = 50

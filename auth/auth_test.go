@@ -645,6 +645,92 @@ func TestORMUserProviderCompareAndSwapRememberToken(t *testing.T) {
 	}
 }
 
+// TestORMUserProviderPlaceholderDialect pins the placeholder selection:
+// "postgres" emits $N, everything else emits ?. Pre-fix every provider
+// statement hardcoded $N, which is a syntax error on MySQL; combined with
+// the fail-closed rotate-on-use recall, every remember-cookie recall on
+// MySQL was silently rejected.
+func TestORMUserProviderPlaceholderDialect(t *testing.T) {
+	for dialect, want1 := range map[string]string{
+		"postgres": "$1",
+		"mysql":    "?",
+		"sqlite":   "?",
+		"":         "?",
+	} {
+		p := NewORMUserProviderForDialect(nil, "User", nil, dialect)
+		if got := p.ph(1); got != want1 {
+			t.Errorf("dialect %q: ph(1) = %q, want %q", dialect, got, want1)
+		}
+	}
+	if got := NewORMUserProviderForDialect(nil, "User", nil, "postgres").ph(3); got != "$3" {
+		t.Errorf(`postgres ph(3) = %q, want "$3"`, got)
+	}
+	// The plain constructor keeps the historical PostgreSQL syntax.
+	if got := NewORMUserProvider(nil, "User", nil).ph(2); got != "$2" {
+		t.Errorf(`default ph(2) = %q, want "$2"`, got)
+	}
+}
+
+// TestORMUserProviderQuestionMarkDialectEndToEnd runs every provider
+// statement (FindByID, FindByCredentials, UpdateRememberToken,
+// CompareAndSwapRememberToken) through a ?-placeholder provider against
+// SQLite, which accepts ? but would also accept $N, so the point of this
+// test is that the rewritten statements bind correctly with ? ordering.
+func TestORMUserProviderQuestionMarkDialectEndToEnd(t *testing.T) {
+	manager, err := orm.NewManager(orm.ManagerConfig{
+		Driver:   "sqlite",
+		Database: ":memory:",
+	})
+	if err != nil {
+		t.Fatalf("Failed to initialize ORM: %v", err)
+	}
+	defer manager.Shutdown(context.Background())
+
+	db := manager.DB()
+	if _, err = db.Exec(`
+		CREATE TABLE users (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL DEFAULT '',
+			email TEXT UNIQUE NOT NULL,
+			password TEXT NOT NULL,
+			remember_token TEXT
+		)
+	`); err != nil {
+		t.Fatalf("Failed to create users table: %v", err)
+	}
+	if _, err = db.Exec("INSERT INTO users (name, email, password, remember_token) VALUES (?, ?, ?, ?)", "Test User", "test@example.com", "hash", "old-hash"); err != nil {
+		t.Fatalf("Failed to insert test user: %v", err)
+	}
+
+	provider := NewORMUserProviderForDialect(db, "User", nil, "sqlite")
+
+	user, err := provider.FindByID(1)
+	if err != nil || user == nil {
+		t.Fatalf("FindByID: user=%v err=%v", user, err)
+	}
+	byEmail, err := provider.FindByCredentials(map[string]interface{}{"email": "test@example.com"})
+	if err != nil || byEmail == nil {
+		t.Fatalf("FindByCredentials: user=%v err=%v", byEmail, err)
+	}
+	if err := provider.UpdateRememberToken(user, "updated-hash"); err != nil {
+		t.Fatalf("UpdateRememberToken: %v", err)
+	}
+	swapped, err := provider.CompareAndSwapRememberToken(context.Background(), user, "updated-hash", "swapped-hash")
+	if err != nil {
+		t.Fatalf("CompareAndSwapRememberToken: %v", err)
+	}
+	if !swapped {
+		t.Fatal("swap with matching old token should succeed")
+	}
+	final, err := provider.FindByID(1)
+	if err != nil || final == nil {
+		t.Fatalf("FindByID after swap: user=%v err=%v", final, err)
+	}
+	if final.GetRememberToken() != "swapped-hash" {
+		t.Errorf("persisted token = %q, want %q", final.GetRememberToken(), "swapped-hash")
+	}
+}
+
 func TestManagerGate(t *testing.T) {
 	m := NewManager()
 

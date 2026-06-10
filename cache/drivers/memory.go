@@ -1,10 +1,10 @@
 package drivers
 
 import (
-	"container/list"
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/velocitykode/velocity/async"
@@ -20,21 +20,28 @@ const DefaultMaxEntries = 1_000_000
 // MemoryStore implements an in-memory cache store.
 //
 // The store holds at most maxEntries items. When an insert would exceed the
-// cap, the least-recently-used entry is evicted. Eviction is exact LRU via a
-// doubly-linked recency list (O(1) per operation) rather than sampled-random
-// eviction: the per-entry overhead is one list element, and exact LRU keeps
-// hot entries deterministically resident. The trade-off is that reads on a
-// bounded store take the write lock, because a cache hit moves the entry to
-// the front of the recency list.
+// cap, an approximately least-recently-used entry is evicted: every hit
+// stamps the item with a monotonically increasing access sequence (a single
+// atomic store, valid under the shared read lock), and eviction samples up
+// to evictionSampleSize map entries and removes the stalest (preferring any
+// already-expired entry it sees). Recency tracking therefore never mutates
+// shared structure on reads, so cache hits stay on RLock and run
+// concurrently; exact LRU would require moving a recency-list node on every
+// hit under the exclusive lock, serializing all reads on the default
+// (bounded) configuration. Stores holding no more entries than the sample
+// size are evicted with exact LRU, since the sample covers the whole map.
 type MemoryStore struct {
 	mu        sync.RWMutex
 	items     map[string]*cacheItem
-	lru       *list.List // most-recently-used at front; nil when unbounded
 	prefix    string
 	ticker    *time.Ticker
 	done      chan bool
 	closeOnce sync.Once
 	lockStore *memoryLockStore
+
+	// accessSeq is the global recency clock; each hit stamps the item
+	// with the next value. A uint64 cannot plausibly wrap.
+	accessSeq atomic.Uint64
 
 	// maxEntries is the resolved entry cap; 0 means unbounded.
 	maxEntries int
@@ -44,11 +51,20 @@ type MemoryStore struct {
 	maxValueBytes int64
 }
 
+// evictionSampleSize bounds how many map entries one eviction examines.
+// Sampling trades exactness for keeping reads off the write lock; 16 keeps
+// the stale-entry hit rate high (Redis defaults to 5) while keeping each
+// eviction O(1)-ish.
+const evictionSampleSize = 16
+
 // cacheItem represents a cached item with expiration
 type cacheItem struct {
 	value      interface{}
 	expiration *time.Time
-	elem       *list.Element // position in the LRU list; nil when unbounded
+	// lastAccess is the accessSeq stamp of the most recent hit or write.
+	// Written atomically under RLock by reads; eviction reads it under
+	// the exclusive lock.
+	lastAccess atomic.Uint64
 }
 
 // MemoryOption configures a MemoryStore at construction time.
@@ -102,9 +118,6 @@ func NewMemoryStore(prefix string, opts ...MemoryOption) *MemoryStore {
 	}
 	for _, opt := range opts {
 		opt(s)
-	}
-	if s.maxEntries > 0 {
-		s.lru = list.New()
 	}
 	return s
 }
@@ -193,73 +206,91 @@ func (s *MemoryStore) prefixedKey(key string) string {
 }
 
 // setLocked inserts or replaces the (already prefixed) key while maintaining
-// the LRU order and the entry cap. Replacing an existing key never evicts;
-// inserting a new key at capacity evicts the least-recently-used entry first.
-// Callers must hold the write lock.
+// recency and the entry cap. Replacing an existing key never evicts;
+// inserting a new key at capacity evicts a sampled least-recently-used entry
+// first. Callers must hold the write lock.
 func (s *MemoryStore) setLocked(key string, value interface{}, expiration *time.Time) {
 	if item, exists := s.items[key]; exists {
 		item.value = value
 		item.expiration = expiration
-		s.touchLocked(item)
+		s.touch(item)
 		return
 	}
 
-	item := &cacheItem{value: value, expiration: expiration}
 	if s.maxEntries > 0 {
 		for len(s.items) >= s.maxEntries {
-			if !s.evictLRULocked() {
+			if !s.evictSampledLocked() {
 				break
 			}
 		}
-		item.elem = s.lru.PushFront(key)
 	}
+	item := &cacheItem{value: value, expiration: expiration}
+	s.touch(item)
 	s.items[key] = item
 }
 
-// touchLocked moves the item to the front of the LRU list. No-op on an
-// unbounded store. Callers must hold the write lock.
-func (s *MemoryStore) touchLocked(item *cacheItem) {
-	if item.elem != nil {
-		s.lru.MoveToFront(item.elem)
+// touch stamps the item with the next access-sequence value, marking it
+// most recently used. The stamp is a single atomic store, so callers may
+// hold either the read or the write lock. No-op on an unbounded store,
+// which never consults recency.
+func (s *MemoryStore) touch(item *cacheItem) {
+	if s.maxEntries > 0 {
+		item.lastAccess.Store(s.accessSeq.Add(1))
 	}
 }
 
-// evictLRULocked removes the least-recently-used entry, reporting whether
-// anything was evicted. Callers must hold the write lock.
-func (s *MemoryStore) evictLRULocked() bool {
-	back := s.lru.Back()
-	if back == nil {
+// evictSampledLocked removes an approximately least-recently-used entry,
+// reporting whether anything was evicted. It examines up to
+// evictionSampleSize entries (Go map iteration order is randomized, so this
+// is a cheap random sample), evicting the first already-expired entry it
+// sees, otherwise the sampled entry with the oldest access stamp. When the
+// store holds no more entries than the sample size this is exact LRU.
+// Callers must hold the write lock.
+func (s *MemoryStore) evictSampledLocked() bool {
+	var (
+		victimKey string
+		victimSeq uint64
+		found     bool
+	)
+	now := time.Now()
+	examined := 0
+	for key, item := range s.items {
+		if item.expiration != nil && now.After(*item.expiration) {
+			delete(s.items, key)
+			return true
+		}
+		if seq := item.lastAccess.Load(); !found || seq < victimSeq {
+			victimKey, victimSeq, found = key, seq, true
+		}
+		examined++
+		if examined >= evictionSampleSize {
+			break
+		}
+	}
+	if !found {
 		return false
 	}
-	delete(s.items, back.Value.(string))
-	s.lru.Remove(back)
+	delete(s.items, victimKey)
 	return true
 }
 
-// removeLocked deletes the (already prefixed) key and its LRU list element.
+// removeLocked deletes the (already prefixed) key.
 // Callers must hold the write lock.
 func (s *MemoryStore) removeLocked(key string, item *cacheItem) {
-	if item.elem != nil {
-		s.lru.Remove(item.elem)
-	}
+	_ = item
 	delete(s.items, key)
 }
 
 // GetCtx retrieves a value from the cache. The memory store does no I/O so
 // ctx is accepted for interface symmetry but otherwise unused.
 //
-// On a bounded store a hit refreshes the key's LRU recency, which mutates the
-// recency list, so the write lock is taken; unbounded stores keep the shared
-// read lock.
+// Hits refresh the key's recency with an atomic stamp, so reads stay on the
+// shared read lock and run concurrently on bounded and unbounded stores
+// alike.
 func (s *MemoryStore) GetCtx(ctx context.Context, key string) (interface{}, bool) {
 	_ = ctx
-	if s.maxEntries > 0 {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-	} else {
-		s.mu.RLock()
-		defer s.mu.RUnlock()
-	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	item, exists := s.items[s.prefixedKey(key)]
 	if !exists {
@@ -271,7 +302,7 @@ func (s *MemoryStore) GetCtx(ctx context.Context, key string) (interface{}, bool
 		return nil, false
 	}
 
-	s.touchLocked(item)
+	s.touch(item)
 	return item.value, true
 }
 
@@ -410,9 +441,6 @@ func (s *MemoryStore) FlushCtx(ctx context.Context) error {
 	defer s.mu.Unlock()
 
 	s.items = make(map[string]*cacheItem)
-	if s.lru != nil {
-		s.lru.Init()
-	}
 	return nil
 }
 
@@ -487,17 +515,12 @@ func (s *MemoryStore) RememberForever(key string, callback func() interface{}) (
 	return RememberForeverFrom(s, s, key, callback)
 }
 
-// ManyCtx retrieves multiple values. Like GetCtx, hits on a bounded store
-// refresh LRU recency, so the write lock is taken there.
+// ManyCtx retrieves multiple values. Like GetCtx, hits refresh recency via
+// atomic stamps, so the shared read lock suffices.
 func (s *MemoryStore) ManyCtx(ctx context.Context, keys []string) map[string]interface{} {
 	_ = ctx
-	if s.maxEntries > 0 {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-	} else {
-		s.mu.RLock()
-		defer s.mu.RUnlock()
-	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	result := make(map[string]interface{}, len(keys))
 	now := time.Now()
@@ -505,7 +528,7 @@ func (s *MemoryStore) ManyCtx(ctx context.Context, keys []string) map[string]int
 	for _, key := range keys {
 		item, exists := s.items[s.prefixedKey(key)]
 		if exists && (item.expiration == nil || now.Before(*item.expiration)) {
-			s.touchLocked(item)
+			s.touch(item)
 			result[key] = item.value
 		}
 	}

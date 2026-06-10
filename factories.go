@@ -90,7 +90,7 @@ func initStorage(config StorageConfig, logger log.Logger) *storage.Manager {
 // initAuth builds the auth manager by registering user providers (ORM-backed) and
 // guards (session, JWT) from config. Misconfigured guards are skipped with a warning
 // so the app can still start - only the broken guard is unavailable at runtime.
-func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger log.Logger, db *sql.DB, enc crypto.Encryptor) *auth.Manager {
+func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger log.Logger, db *sql.DB, enc crypto.Encryptor, dbDialect string) *auth.Manager {
 	manager := auth.NewManager()
 
 	// Route auth diagnostics (authentication/authorization denials, hasher
@@ -136,7 +136,7 @@ func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger log.Logger
 			if model == "" {
 				model = "User"
 			}
-			manager.RegisterProvider(name, auth.NewORMUserProvider(db, model, manager.GetHasher()))
+			manager.RegisterProvider(name, auth.NewORMUserProviderForDialect(db, model, manager.GetHasher(), dbDialect))
 		}
 	}
 

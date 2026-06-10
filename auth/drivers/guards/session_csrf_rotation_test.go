@@ -236,6 +236,43 @@ func TestSessionGuard_RememberRevival_RotatesCSRFToken(t *testing.T) {
 	}
 }
 
+// TestSessionGuard_RememberRevival_WritesXSRFCookie pins the cookie half
+// of the revival rotation. The rotator contract requires
+// WriteXSRFCookie after RotateToken on the remember-cookie revival path
+// too: the rotation deletes the token bound to the pre-revival id, so
+// without a fresh XSRF-TOKEN cookie the client keeps echoing a stale
+// value and its next state-changing request 419s. Pre-fix the revival
+// path rotated without writing the cookie.
+func TestSessionGuard_RememberRevival_WritesXSRFCookie(t *testing.T) {
+	rotator := &fakeCSRFRotator{}
+	guard, _ := newRevokeGuard(t, nil)
+	provider := &rememberRevivalProvider{user: &revokeTestUser{id: "u1"}}
+	guard.SetProvider(provider)
+	guard.SetCSRFTokenRotator(rotator)
+
+	rememberCookie := mintRememberCookie(t, guard)
+	// Login above also rotated and wrote a cookie; discard so the
+	// revival assertions below are on a clean slate.
+	rotator.rotated = nil
+	rotator.xsrfWrote = nil
+
+	req := rememberRecallRequest(t, rememberCookie, httptest.NewRecorder())
+
+	if u := guard.User(req); u == nil {
+		t.Fatal("User(req) returned nil; revival must succeed without a server store")
+	}
+
+	if got := len(rotator.xsrfWrote); got != 1 {
+		t.Fatalf("expected exactly 1 WriteXSRFCookie call from revival, got %d", got)
+	}
+	if len(rotator.rotated) != 1 {
+		t.Fatalf("expected exactly 1 RotateToken call from revival, got %d", len(rotator.rotated))
+	}
+	if rotator.xsrfWrote[0] != rotator.rotated[0].newID {
+		t.Errorf("WriteXSRFCookie sessionID = %q, want post-rotation id %q", rotator.xsrfWrote[0], rotator.rotated[0].newID)
+	}
+}
+
 // TestSessionGuard_RememberRevival_AbortsOnRotateFailure pins fail-
 // closed semantics on the revival path. When the rotator errors during
 // recall the guard must refuse to authenticate the request, mirroring

@@ -39,16 +39,13 @@ func TestMemoryStoreCapEnforced(t *testing.T) {
 
 	store.mu.RLock()
 	size := len(store.items)
-	lruLen := store.lru.Len()
 	store.mu.RUnlock()
 	if size != 3 {
 		t.Fatalf("store holds %d entries, want 3", size)
 	}
-	if lruLen != size {
-		t.Fatalf("lru list len %d diverged from map len %d", lruLen, size)
-	}
 
-	// key0 was least recently used and must have been evicted.
+	// key0 was least recently used and must have been evicted. (The cap
+	// is below evictionSampleSize, so eviction is exact LRU here.)
 	if _, found := store.Get("key0"); found {
 		t.Fatal("key0 should have been evicted")
 	}
@@ -109,6 +106,35 @@ func TestMemoryStoreForeverEntriesEvictable(t *testing.T) {
 	}
 }
 
+// TestMemoryStoreEvictionPrefersExpired proves eviction removes an
+// already-expired entry over the least-recently-used live one.
+func TestMemoryStoreEvictionPrefersExpired(t *testing.T) {
+	store := NewMemoryStore("", WithMaxEntries(2))
+
+	// "live" is the LRU victim by recency; "dead" expires first.
+	if err := store.Put("live", 1, time.Minute); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := store.Put("dead", 2, time.Millisecond); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	time.Sleep(5 * time.Millisecond)
+
+	if err := store.Put("fresh", 3, time.Minute); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	if _, found := store.Get("live"); !found {
+		t.Fatal("live entry evicted while an expired entry was available")
+	}
+	if _, found := store.Get("dead"); found {
+		t.Fatal("expired entry should have been evicted")
+	}
+	if _, found := store.Get("fresh"); !found {
+		t.Fatal("fresh should be present")
+	}
+}
+
 func TestMemoryStoreUnlimitedSentinel(t *testing.T) {
 	store := NewMemoryStore("", WithMaxEntries(-1))
 
@@ -121,13 +147,9 @@ func TestMemoryStoreUnlimitedSentinel(t *testing.T) {
 
 	store.mu.RLock()
 	size := len(store.items)
-	lru := store.lru
 	store.mu.RUnlock()
 	if size != n {
 		t.Fatalf("unbounded store holds %d entries, want %d", size, n)
-	}
-	if lru != nil {
-		t.Fatal("unbounded store should not maintain an LRU list")
 	}
 }
 
@@ -230,7 +252,7 @@ func TestMemoryStoreAddAtCapEvicts(t *testing.T) {
 	}
 }
 
-func TestMemoryStoreForgetMaintainsLRUList(t *testing.T) {
+func TestMemoryStoreForgetFlushMaintainBound(t *testing.T) {
 	store := NewMemoryStore("", WithMaxEntries(3))
 
 	for i := 0; i < 3; i++ {
@@ -247,10 +269,9 @@ func TestMemoryStoreForgetMaintainsLRUList(t *testing.T) {
 
 	store.mu.RLock()
 	size := len(store.items)
-	lruLen := store.lru.Len()
 	store.mu.RUnlock()
-	if size != 0 || lruLen != 0 {
-		t.Fatalf("after Forget+Flush: map len %d, lru len %d, want 0/0", size, lruLen)
+	if size != 0 {
+		t.Fatalf("after Forget+Flush: map len %d, want 0", size)
 	}
 
 	// Store still usable and bounded after Flush.
@@ -261,16 +282,16 @@ func TestMemoryStoreForgetMaintainsLRUList(t *testing.T) {
 	}
 	store.mu.RLock()
 	size = len(store.items)
-	lruLen = store.lru.Len()
 	store.mu.RUnlock()
-	if size != 3 || lruLen != 3 {
-		t.Fatalf("after refill: map len %d, lru len %d, want 3/3", size, lruLen)
+	if size != 3 {
+		t.Fatalf("after refill: map len %d, want 3", size)
 	}
 }
 
 // TestMemoryStoreBoundedConcurrent hammers a small bounded store from many
-// goroutines across every mutating path. Run under -race; also asserts the
-// cap held and the LRU list stayed in sync with the map.
+// goroutines across every mutating path. Run under -race (reads stamp
+// recency atomically under RLock concurrently with sampled eviction under
+// the write lock); also asserts the cap held.
 func TestMemoryStoreBoundedConcurrent(t *testing.T) {
 	const cap = 100
 	store := NewMemoryStore("", WithMaxEntries(cap))
@@ -303,12 +324,8 @@ func TestMemoryStoreBoundedConcurrent(t *testing.T) {
 
 	store.mu.RLock()
 	size := len(store.items)
-	lruLen := store.lru.Len()
 	store.mu.RUnlock()
 	if size > cap {
 		t.Fatalf("store holds %d entries, cap is %d", size, cap)
-	}
-	if size != lruLen {
-		t.Fatalf("map len %d diverged from lru len %d", size, lruLen)
 	}
 }

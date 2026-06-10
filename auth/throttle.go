@@ -134,9 +134,13 @@ func pairThrottleKey(ident, ip string) string {
 //     password spraying from one source. Omitted when the client IP
 //     cannot be resolved.
 //
-// Guards check Allow for every returned key and reject the attempt when
-// any dimension is over its cap, record failures against every key, and
-// clear every key on success. Each dimension carries its prefix
+// Guards check Allow for every returned key, record failures against
+// every key, and clear every key on success. The pair and IP dimensions
+// deny before the credential check; the identifier dimension is
+// verify-first: it denies only attempts whose credentials are wrong, so
+// an attacker spraying a victim's identifier from many IPs cannot lock
+// the account holder (who presents the correct password) out (the
+// account-lockout DoS). Each dimension carries its prefix
 // (ThrottleKeyPairPrefix / ThrottleKeyIdentifierPrefix /
 // ThrottleKeyIPPrefix) so throttler implementations can apply
 // per-dimension limits. Identifier normalisation, IP resolution, and

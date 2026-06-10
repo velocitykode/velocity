@@ -14,11 +14,23 @@ type ORMUserProvider struct {
 	db        *sql.DB
 	modelType string
 	hasher    Hasher
+	// dialect selects the SQL placeholder style: "postgres" uses $N,
+	// everything else uses ?. SQLite accepts both forms; MySQL accepts
+	// only ?.
+	dialect string
 }
 
-// NewORMUserProvider creates a new ORM user provider.
-// If hasher is nil, a default bcrypt hasher is used.
+// NewORMUserProvider creates a new ORM user provider with PostgreSQL
+// placeholder syntax. If hasher is nil, a default bcrypt hasher is used.
+// For MySQL or SQLite use NewORMUserProviderForDialect.
 func NewORMUserProvider(db *sql.DB, modelType string, hasher Hasher) *ORMUserProvider {
+	return NewORMUserProviderForDialect(db, modelType, hasher, "postgres")
+}
+
+// NewORMUserProviderForDialect creates an ORM user provider whose queries
+// use the placeholder syntax of the given dialect ("postgres", "mysql",
+// "sqlite"). If hasher is nil, a default bcrypt hasher is used.
+func NewORMUserProviderForDialect(db *sql.DB, modelType string, hasher Hasher, dialect string) *ORMUserProvider {
 	if hasher == nil {
 		hasher = NewBcryptHasher(bcrypt.DefaultCost)
 	}
@@ -26,7 +38,17 @@ func NewORMUserProvider(db *sql.DB, modelType string, hasher Hasher) *ORMUserPro
 		db:        db,
 		modelType: modelType,
 		hasher:    hasher,
+		dialect:   dialect,
 	}
+}
+
+// ph returns the placeholder for the n-th (1-based) bind parameter in the
+// provider's dialect.
+func (p *ORMUserProvider) ph(n int) string {
+	if p.dialect == "postgres" {
+		return fmt.Sprintf("$%d", n)
+	}
+	return "?"
 }
 
 // FindByIDCtx finds user by ID using the provided context.
@@ -43,7 +65,7 @@ func (p *ORMUserProvider) FindByIDCtx(ctx context.Context, id interface{}) (Auth
 		user     AuthUser
 		remember sql.NullString
 	)
-	row := p.db.QueryRowContext(ctx, "SELECT id, name, email, password, remember_token FROM users WHERE id = $1", id)
+	row := p.db.QueryRowContext(ctx, "SELECT id, name, email, password, remember_token FROM users WHERE id = "+p.ph(1), id)
 	err := row.Scan(&user.ID, &user.Name, &user.Email, &user.Password, &remember)
 	if err == sql.ErrNoRows {
 		return nil, ErrUserNotFound
@@ -80,7 +102,7 @@ func (p *ORMUserProvider) FindByCredentialsCtx(ctx context.Context, credentials 
 		user     AuthUser
 		remember sql.NullString
 	)
-	row := p.db.QueryRowContext(ctx, "SELECT id, name, email, password, remember_token FROM users WHERE email = $1", email)
+	row := p.db.QueryRowContext(ctx, "SELECT id, name, email, password, remember_token FROM users WHERE email = "+p.ph(1), email)
 	err := row.Scan(&user.ID, &user.Name, &user.Email, &user.Password, &remember)
 	if err == sql.ErrNoRows {
 		return nil, ErrUserNotFound
@@ -120,7 +142,7 @@ func (p *ORMUserProvider) UpdateRememberTokenCtx(ctx context.Context, user Authe
 		return errors.New("database not initialized")
 	}
 
-	_, err := p.db.ExecContext(ctx, "UPDATE users SET remember_token = $1 WHERE id = $2", token, user.GetAuthIdentifier())
+	_, err := p.db.ExecContext(ctx, "UPDATE users SET remember_token = "+p.ph(1)+" WHERE id = "+p.ph(2), token, user.GetAuthIdentifier())
 	return err
 }
 
@@ -142,7 +164,7 @@ func (p *ORMUserProvider) CompareAndSwapRememberToken(ctx context.Context, user 
 		return false, errors.New("database not initialized")
 	}
 
-	res, err := p.db.ExecContext(ctx, "UPDATE users SET remember_token = $1 WHERE id = $2 AND remember_token = $3", newToken, user.GetAuthIdentifier(), oldToken)
+	res, err := p.db.ExecContext(ctx, "UPDATE users SET remember_token = "+p.ph(1)+" WHERE id = "+p.ph(2)+" AND remember_token = "+p.ph(3), newToken, user.GetAuthIdentifier(), oldToken)
 	if err != nil {
 		return false, err
 	}
