@@ -18,12 +18,14 @@ import (
 type eventCollector struct {
 	mu     sync.Mutex
 	events []interface{}
+	ctxs   []context.Context
 }
 
-func (c *eventCollector) dispatch(event interface{}) error {
+func (c *eventCollector) dispatch(ctx context.Context, event any) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.events = append(c.events, event)
+	c.ctxs = append(c.ctxs, ctx)
 	return nil
 }
 
@@ -32,6 +34,14 @@ func (c *eventCollector) snapshot() []interface{} {
 	defer c.mu.Unlock()
 	out := make([]interface{}, len(c.events))
 	copy(out, c.events)
+	return out
+}
+
+func (c *eventCollector) contexts() []context.Context {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]context.Context, len(c.ctxs))
+	copy(out, c.ctxs)
 	return out
 }
 
@@ -71,6 +81,14 @@ func TestLoggingUnary_TraceMintedWhenNoIncomingTrace(t *testing.T) {
 	}
 	if !sawStarted || !sawCompleted {
 		t.Errorf("missing events: started=%v completed=%v", sawStarted, sawCompleted)
+	}
+
+	// The dispatcher must receive the request ctx, not a detached one: each
+	// dispatched ctx carries the trace minted for this request.
+	for i, ctx := range collector.contexts() {
+		if trace.GetTraceID(ctx) == "" {
+			t.Errorf("dispatcher ctx %d missing trace id: request ctx not passed through", i)
+		}
 	}
 }
 
@@ -272,7 +290,7 @@ func (r *recordingStream) SendHeader(md metadata.MD) error { r.sendHdrCalls++; r
 func (r *recordingStream) SetTrailer(md metadata.MD)       { r.setTrlrCalls++ }
 
 func TestLoggingStream_ForwardsAllServerStreamMethods(t *testing.T) {
-	pair := interceptors.Logging(interceptors.WithEventDispatcher(func(interface{}) error { return nil }))
+	pair := interceptors.Logging(interceptors.WithEventDispatcher(func(context.Context, any) error { return nil }))
 
 	rec := &recordingStream{ctx: context.Background()}
 

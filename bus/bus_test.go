@@ -313,7 +313,7 @@ func TestBus_Events_DispatchingAndCompleted(t *testing.T) {
 	b := New()
 
 	var events []string
-	b.SetEventDispatcher(func(event any) error {
+	b.SetEventDispatcher(func(_ context.Context, event any) error {
 		switch e := event.(type) {
 		case *CommandDispatching:
 			events = append(events, "dispatching:"+e.CommandType)
@@ -349,7 +349,7 @@ func TestBus_Events_Failed(t *testing.T) {
 	b := New()
 
 	var events []string
-	b.SetEventDispatcher(func(event any) error {
+	b.SetEventDispatcher(func(_ context.Context, event any) error {
 		switch e := event.(type) {
 		case *CommandDispatching:
 			events = append(events, "dispatching")
@@ -385,7 +385,7 @@ func TestBus_Events_Queued(t *testing.T) {
 	Register(b, func(cmd createUser) error { return nil })
 
 	var events []string
-	b.SetEventDispatcher(func(event any) error {
+	b.SetEventDispatcher(func(_ context.Context, event any) error {
 		switch event.(type) {
 		case *CommandQueued:
 			events = append(events, "queued")
@@ -397,6 +397,84 @@ func TestBus_Events_Queued(t *testing.T) {
 
 	if len(events) != 1 || events[0] != "queued" {
 		t.Fatalf("expected [queued], got %v", events)
+	}
+}
+
+func TestBus_Events_CtxAndContextField(t *testing.T) {
+	b := New()
+
+	type received struct {
+		name     string
+		ctx      context.Context
+		eventCtx context.Context
+	}
+	var got []received
+	b.SetEventDispatcher(func(ctx context.Context, event any) error {
+		switch e := event.(type) {
+		case *CommandDispatching:
+			got = append(got, received{"dispatching", ctx, e.Context})
+		case *CommandCompleted:
+			got = append(got, received{"completed", ctx, e.Context})
+		}
+		return nil
+	})
+
+	Register(b, func(cmd createUser) error { return nil })
+
+	if err := b.Dispatch(createUser{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := []string{"dispatching", "completed"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d events, got %d: %+v", len(want), len(got), got)
+	}
+	for i, r := range got {
+		if r.name != want[i] {
+			t.Fatalf("event[%d] = %q, want %q", i, r.name, want[i])
+		}
+		if r.ctx == nil {
+			t.Fatalf("event %q: dispatcher received nil ctx", r.name)
+		}
+		if r.eventCtx == nil {
+			t.Fatalf("event %q: Context field not populated", r.name)
+		}
+	}
+}
+
+type ctxKey string
+
+func TestBus_DispatchAsyncCtx_ThreadsCtxToEvent(t *testing.T) {
+	b := New()
+	q := &mockQueuePusher{}
+	b.SetQueue(q)
+
+	Register(b, func(cmd createUser) error { return nil })
+
+	ctx := context.WithValue(context.Background(), ctxKey("sentinel"), "value-42")
+
+	var gotCtx context.Context
+	var gotEventCtx context.Context
+	b.SetEventDispatcher(func(ctx context.Context, event any) error {
+		if e, ok := event.(*CommandQueued); ok {
+			gotCtx = ctx
+			gotEventCtx = e.Context
+		}
+		return nil
+	})
+
+	if err := b.DispatchAsyncCtx(ctx, createUser{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if gotCtx == nil {
+		t.Fatal("CommandQueued not observed by dispatcher")
+	}
+	if v, _ := gotCtx.Value(ctxKey("sentinel")).(string); v != "value-42" {
+		t.Fatalf("dispatcher ctx sentinel = %q, want value-42", v)
+	}
+	if gotEventCtx != ctx {
+		t.Fatalf("event Context field = %v, want the exact ctx passed to DispatchAsyncCtx", gotEventCtx)
 	}
 }
 
@@ -582,7 +660,7 @@ func TestCommandJob_Failed_FiresEvent(t *testing.T) {
 	b := New()
 
 	var events []string
-	b.SetEventDispatcher(func(event any) error {
+	b.SetEventDispatcher(func(_ context.Context, event any) error {
 		switch e := event.(type) {
 		case *CommandFailed:
 			events = append(events, "failed:"+e.Error)

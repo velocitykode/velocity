@@ -3,6 +3,7 @@ package velocity
 import (
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/bond"
+	"github.com/velocitykode/velocity/bus"
 	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/contract"
 	cryptodrv "github.com/velocitykode/velocity/crypto/drivers"
@@ -23,6 +24,7 @@ import (
 var (
 	_ contract.EventDispatcherAware = (*auth.Manager)(nil)
 	_ contract.EventDispatcherAware = (*bond.Bond)(nil)
+	_ contract.EventDispatcherAware = (*bus.Bus)(nil)
 	_ contract.EventDispatcherAware = (*cache.Manager)(nil)
 	_ contract.EventDispatcherAware = (*cryptodrv.AESDriver)(nil)
 	_ contract.EventDispatcherAware = (*csrf.CSRF)(nil)

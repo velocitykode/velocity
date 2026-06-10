@@ -19,8 +19,10 @@ const (
 	ProtocolHTTP Protocol = "http"
 )
 
-// EventDispatchFunc is a function type for dispatching events.
-type EventDispatchFunc func(event interface{}) error
+// EventDispatchFunc is a function type for dispatching events. The ctx is
+// the request (or server-lifecycle) context in scope at the emission site,
+// matching the dispatcher signature used across the framework.
+type EventDispatchFunc func(ctx context.Context, event any) error
 
 // RequestStarted is dispatched when a gRPC request begins
 type RequestStarted struct {

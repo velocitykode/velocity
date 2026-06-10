@@ -69,7 +69,7 @@ func dispatchRequestStarted(ctx context.Context, method string, start time.Time,
 	}
 
 	traceID, spanID, parentID := trace.GetTraceContext(ctx)
-	dispatchEvent(dispatcher, &grpcevents.RequestStarted{
+	dispatchEvent(ctx, dispatcher, &grpcevents.RequestStarted{
 		Method:    method,
 		Protocol:  protocol,
 		StartTime: start,
@@ -107,7 +107,7 @@ func dispatchRequestCompleted(ctx context.Context, method string, start time.Tim
 
 	traceID, spanID, parentID := trace.GetTraceContext(ctx)
 	if err != nil {
-		dispatchEvent(dispatcher, &grpcevents.RequestFailed{
+		dispatchEvent(ctx, dispatcher, &grpcevents.RequestFailed{
 			Method:     method,
 			Protocol:   protocol,
 			StartTime:  start,
@@ -123,7 +123,7 @@ func dispatchRequestCompleted(ctx context.Context, method string, start time.Tim
 			ParentID:   parentID,
 		})
 	} else {
-		dispatchEvent(dispatcher, &grpcevents.RequestCompleted{
+		dispatchEvent(ctx, dispatcher, &grpcevents.RequestCompleted{
 			Method:     method,
 			Protocol:   protocol,
 			StartTime:  start,

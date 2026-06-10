@@ -50,7 +50,9 @@ const (
 // maintenancePathLogOnce guards the one-time WARN log emitted on first
 // resolution of the marker path. Operators see exactly one line per process
 // announcing which directory is being watched, removing the silent-cwd-drift
-// failure mode the M-39 finding flagged.
+// failure mode the M-39 finding flagged. The contract is one warn per process,
+// so the logger of the first middleware instance to resolve the path wins;
+// loggers configured on later instances do not re-emit this line.
 var maintenancePathLogOnce sync.Once
 
 // maintenanceMarkerPath returns the absolute path of the down-file. The
@@ -62,18 +64,21 @@ var maintenancePathLogOnce sync.Once
 // Returns ("", err) when VELOCITY_MAINTENANCE_ROOT is set but fails
 // validation. Callers treat that as "no marker file present" so an
 // operator typo cannot accidentally pin the app into maintenance.
-func maintenanceMarkerPath() (string, error) {
+func maintenanceMarkerPath(logger *slog.Logger) (string, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	p, err := maintpath.MarkerPath()
 	maintenancePathLogOnce.Do(func() {
 		if err != nil {
-			slog.Default().Warn(
+			logger.Warn(
 				"maintenance marker path resolution failed",
 				"error", err.Error(),
 				"source", maintpath.Source(),
 			)
 			return
 		}
-		slog.Default().Warn(
+		logger.Warn(
 			"maintenance marker path resolved",
 			"path", p,
 			"source", maintpath.Source(),
@@ -140,6 +145,13 @@ type maintenanceConfig struct {
 	// request; on the order of a handful of entries so prefix-trie not
 	// warranted.
 	excludePaths []string
+	// salt is the HKDF salt for the bypass MAC, captured once at middleware
+	// construction (see maintenanceSalt) so the per-request bypass paths
+	// perform no environment reads.
+	salt []byte
+	// logger receives the one-time marker-path resolution warning. Defaults
+	// to slog.Default(); overridable via WithMaintenanceLogger.
+	logger *slog.Logger
 }
 
 // WithMaintenanceExcludePaths appends path prefixes to the bypass list.
@@ -158,11 +170,27 @@ func WithMaintenanceExcludePaths(paths ...string) MaintenanceOption {
 	}
 }
 
+// WithMaintenanceLogger sets the logger used for the one-time marker-path
+// resolution warning. Defaults to slog.Default(). Because that warning fires
+// at most once per process (see maintenancePathLogOnce), the logger supplied
+// to the FIRST middleware instance that resolves the path wins; loggers on
+// any later instance are not consulted for that line. A nil logger is ignored
+// so the default stands.
+func WithMaintenanceLogger(logger *slog.Logger) MaintenanceOption {
+	return func(c *maintenanceConfig) {
+		if logger != nil {
+			c.logger = logger
+		}
+	}
+}
+
 // resolveMaintenanceConfig builds the per-instance config. Order:
 // defaults -> env -> caller options. Caller options always win.
 func resolveMaintenanceConfig(opts ...MaintenanceOption) *maintenanceConfig {
 	cfg := &maintenanceConfig{
 		excludePaths: append([]string{}, defaultMaintenanceExcludePaths...),
+		salt:         maintenanceSalt(),
+		logger:       slog.Default(),
 	}
 	if raw, ok := os.LookupEnv("VELOCITY_MAINTENANCE_EXCLUDE_PATHS"); ok {
 		for _, p := range strings.Split(raw, ",") {
@@ -226,7 +254,7 @@ func PreventRequestsDuringMaintenance(opts ...MaintenanceOption) router.Middlewa
 	cfg := resolveMaintenanceConfig(opts...)
 	return func(next router.HandlerFunc) router.HandlerFunc {
 		return func(c *router.Context) error {
-			path, err := maintenanceMarkerPath()
+			path, err := maintenanceMarkerPath(cfg.logger)
 			if err != nil {
 				// Misconfigured root: treat as "not in maintenance" so a
 				// bad env var cannot lock everyone out. The error is
@@ -258,7 +286,7 @@ func PreventRequestsDuringMaintenance(opts ...MaintenanceOption) router.Middlewa
 				candidate = strings.TrimPrefix(c.Request.URL.Path, "/")
 			}
 			if payload.Secret != "" && subtle.ConstantTimeCompare([]byte(candidate), []byte(payload.Secret)) == 1 {
-				cookie := mintMaintenanceBypassCookie(payload.Secret, maintenanceBypassDefaultTTL)
+				cookie := mintMaintenanceBypassCookieWithSalt(payload.Secret, maintenanceBypassDefaultTTL, cfg.salt)
 				c.SetCookie(cookie)
 				// Redirect via http.Redirect directly because c.Redirect
 				// rewrites cross-host targets; "/" is always safe but
@@ -268,7 +296,7 @@ func PreventRequestsDuringMaintenance(opts ...MaintenanceOption) router.Middlewa
 			}
 
 			// Bypass check: valid cookie skips maintenance.
-			if payload.Secret != "" && hasValidBypassCookie(c.Request, payload.Secret) {
+			if payload.Secret != "" && hasValidBypassCookie(c.Request, payload.Secret, cfg.salt) {
 				return next(c)
 			}
 
@@ -283,7 +311,7 @@ func PreventRequestsDuringMaintenance(opts ...MaintenanceOption) router.Middlewa
 // Retained for backwards compatibility with callers that only need a
 // boolean status check.
 func isDownForMaintenance() bool {
-	path, err := maintenanceMarkerPath()
+	path, err := maintenanceMarkerPath(slog.Default())
 	if err != nil {
 		return false
 	}
@@ -291,18 +319,26 @@ func isDownForMaintenance() bool {
 	return statErr == nil
 }
 
-// deriveMaintenanceMACKey derives a 32-byte HMAC key from the operator-
-// supplied secret. APP_KEY is mixed in as HKDF salt when available so a
-// stolen secret on its own is not sufficient to forge a bypass on a
-// different application, but a leaked APP_KEY cannot grant a bypass
-// without the secret either.
-func deriveMaintenanceMACKey(secret string) ([]byte, error) {
-	if secret == "" {
-		return nil, errors.New("velocity/maintenance: empty secret")
-	}
+// maintenanceSalt returns the HKDF salt for the bypass MAC: APP_KEY when set,
+// otherwise a fixed default. It is read once at middleware construction (see
+// resolveMaintenanceConfig) and threaded down as a parameter so the per-request
+// bypass paths perform no environment reads.
+func maintenanceSalt() []byte {
 	salt := []byte(os.Getenv("APP_KEY"))
 	if len(salt) == 0 {
 		salt = []byte("velocity-maintenance-bypass-default-salt")
+	}
+	return salt
+}
+
+// deriveMaintenanceMACKeyWithSalt derives a 32-byte HMAC key from the operator-
+// supplied secret and the supplied HKDF salt. APP_KEY is mixed in as the salt
+// (via maintenanceSalt) so a stolen secret on its own is not sufficient to
+// forge a bypass on a different application, but a leaked APP_KEY cannot grant
+// a bypass without the secret either.
+func deriveMaintenanceMACKeyWithSalt(secret string, salt []byte) ([]byte, error) {
+	if secret == "" {
+		return nil, errors.New("velocity/maintenance: empty secret")
 	}
 	r := hkdf.New(sha256.New, []byte(secret), salt, []byte(maintenanceBypassInfo))
 	out := make([]byte, 32)
@@ -310,6 +346,13 @@ func deriveMaintenanceMACKey(secret string) ([]byte, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// deriveMaintenanceMACKey derives the bypass MAC key using the process-wide
+// salt (maintenanceSalt). Retained for callers outside the request path that
+// have no captured salt to thread through.
+func deriveMaintenanceMACKey(secret string) ([]byte, error) {
+	return deriveMaintenanceMACKeyWithSalt(secret, maintenanceSalt())
 }
 
 // computeMaintenanceMAC returns HMAC-SHA256(macKey, context || expires) as
@@ -326,8 +369,15 @@ func computeMaintenanceMAC(macKey []byte, expiresUnix int64) []byte {
 // is set unless APP_ENV names a dev/test profile per
 // contract.IsDevOrTestEnv (development, dev, test, testing, local).
 func mintMaintenanceBypassCookie(secret string, ttl time.Duration) *http.Cookie {
+	return mintMaintenanceBypassCookieWithSalt(secret, ttl, maintenanceSalt())
+}
+
+// mintMaintenanceBypassCookieWithSalt is the salt-parameterized core of
+// mintMaintenanceBypassCookie. The request path passes the salt captured at
+// middleware construction so it performs no environment read.
+func mintMaintenanceBypassCookieWithSalt(secret string, ttl time.Duration, salt []byte) *http.Cookie {
 	expires := time.Now().Add(ttl).Unix()
-	macKey, err := deriveMaintenanceMACKey(secret)
+	macKey, err := deriveMaintenanceMACKeyWithSalt(secret, salt)
 	if err != nil {
 		// Fall back to a deliberately invalid cookie. The middleware will
 		// reject it on the next request, which is preferable to panicking
@@ -360,7 +410,7 @@ func mintMaintenanceBypassCookie(secret string, ttl time.Duration) *http.Cookie 
 // comparisons are constant-time. Any failure is silently treated as "no
 // valid cookie". The middleware MUST NOT leak diagnostic information
 // about why a cookie was rejected.
-func hasValidBypassCookie(r *http.Request, secret string) bool {
+func hasValidBypassCookie(r *http.Request, secret string, salt []byte) bool {
 	if secret == "" {
 		return false
 	}
@@ -384,7 +434,7 @@ func hasValidBypassCookie(r *http.Request, secret string) bool {
 	if err != nil {
 		return false
 	}
-	macKey, err := deriveMaintenanceMACKey(secret)
+	macKey, err := deriveMaintenanceMACKeyWithSalt(secret, salt)
 	if err != nil {
 		return false
 	}

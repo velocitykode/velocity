@@ -94,14 +94,16 @@ func TestNew_ProviderRegisterFailure_UnwindsEarlierProviders(t *testing.T) {
 	if !good.registered.Load() {
 		t.Fatal("expected first provider to have registered")
 	}
-	// Providers in the registration pass receive Shutdown during unwind
+	// Providers whose Register completed receive Shutdown during unwind
 	// even if their own Boot never ran (resources they opened during
-	// Register still need releasing).
+	// Register still need releasing). The provider whose Register FAILED
+	// must not: it is required to clean up before returning the error,
+	// and calling Shutdown on it would tear down state it never owned.
 	if got := good.shutdowns.Load(); got != 1 {
 		t.Errorf("good provider Shutdown called %d times, want 1 on register failure", got)
 	}
-	if got := bad.shutdowns.Load(); got != 1 {
-		t.Errorf("bad provider Shutdown called %d times, want 1 on register failure", got)
+	if got := bad.shutdowns.Load(); got != 0 {
+		t.Errorf("failing provider Shutdown called %d times, want 0 on its own register failure", got)
 	}
 }
 

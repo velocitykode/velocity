@@ -40,12 +40,21 @@ var _ TaskScheduler = (*Scheduler)(nil)
 
 // Scheduler manages and executes scheduled jobs
 type Scheduler struct {
-	mu              sync.RWMutex
-	jobs            []*Job
-	ticker          *time.Ticker
-	stop            chan struct{}
-	stopped         chan struct{} // closed when Run() exits
-	running         bool
+	mu      sync.RWMutex
+	jobs    []*Job
+	ticker  *time.Ticker
+	stop    chan struct{}
+	stopped chan struct{} // closed when Run() exits
+	running bool
+	// terminated is set by Shutdown and never cleared: a Scheduler is
+	// single-use. Run checks it under s.mu and refuses to start once
+	// Shutdown has been called, even when Shutdown ran BEFORE Run ever
+	// started. Without this, a Shutdown that races ahead of a
+	// goroutine-spawned Run (e.g. Serve fails fast on ListenAndServe and
+	// tears the app down before the scheduler goroutine entered Run) was
+	// a no-op (!running), and Run then started fresh against
+	// already-closed services and ticked forever.
+	terminated      bool
 	timezone        *time.Location
 	maintenanceMode bool
 	appEnv          string
@@ -387,10 +396,15 @@ func (s *Scheduler) Command(command string, args ...string) *Job {
 	return s.Add(job)
 }
 
-// Run starts the scheduler
+// Run starts the scheduler. It returns nil immediately when the
+// scheduler is already running or when Shutdown has already been
+// called: a Scheduler is single-use, so a Run that loses the race
+// against Shutdown (the in-process scheduler goroutine spawned by
+// Serve, with Serve failing fast and tearing down) must not start
+// ticking against already-closed services.
 func (s *Scheduler) Run(ctx context.Context) error {
 	s.mu.Lock()
-	if s.running {
+	if s.running || s.terminated {
 		s.mu.Unlock()
 		return nil
 	}
@@ -485,6 +499,10 @@ func (s *Scheduler) ValidateJobs() {
 // believed shutdown completed.
 func (s *Scheduler) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
+	// Mark the scheduler terminated even when it never started: a Run
+	// that arrives after this point (goroutine scheduled late) must see
+	// the flag and refuse to start. See the terminated field comment.
+	s.terminated = true
 	if !s.running {
 		s.mu.Unlock()
 		return nil

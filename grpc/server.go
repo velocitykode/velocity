@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/grpc/grpcevents"
 	"github.com/velocitykode/velocity/grpc/interceptors"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/log"
@@ -34,6 +36,13 @@ type Server struct {
 	running          bool
 	serverOptions    []grpc.ServerOption
 	logger           log.Logger
+
+	// startTime records when the server last started serving; zero when the
+	// server has not started or has already emitted its ServerStopped event.
+	// Guarded by mu like the running flag. The zero check is what keeps a
+	// stop-without-start silent and prevents Shutdown (which delegates to
+	// GracefulStop) from double-emitting ServerStopped.
+	startTime time.Time
 
 	// tlsOpted tracks whether the caller supplied transport credentials via
 	// WithCreds or WithServerOption(grpc.Creds(...)). Build uses this together
@@ -318,7 +327,10 @@ func (s *Server) Build() error {
 	unary := s.unaryInterceptors
 	stream := s.streamInterceptors
 	if !s.disableDefaultRecovery {
-		rec := interceptors.Recovery(interceptors.WithRecoveryLogger(s.logger))
+		rec := interceptors.Recovery(
+			interceptors.WithRecoveryLogger(s.logger),
+			interceptors.WithRecoveryEventDispatcher(s.eventDispatchFunc()),
+		)
 		unary = append([]grpc.UnaryServerInterceptor{rec.Unary}, unary...)
 		stream = append([]grpc.StreamServerInterceptor{rec.Stream}, stream...)
 	}
@@ -369,8 +381,11 @@ func (s *Server) Start() error {
 		return ErrServerAlreadyRunning
 	}
 	s.running = true
+	s.startTime = time.Now()
+	started := &grpcevents.ServerStarted{Port: s.port, StartTime: s.startTime}
 	s.mu.Unlock()
 
+	s.dispatchEvent(context.Background(), started)
 	s.logger.Info("gRPC server starting", "address", s.listener.Addr().String())
 	return s.grpcServer.Serve(s.listener)
 }
@@ -388,12 +403,15 @@ func (s *Server) StartAsync() error {
 		return ErrServerAlreadyRunning
 	}
 	s.running = true
+	s.startTime = time.Now()
+	started := &grpcevents.ServerStarted{Port: s.port, StartTime: s.startTime}
 	s.mu.Unlock()
 
 	// Run through async.GoWithRecover so the recover path flows through
 	// the canonical async package while still resetting s.running so the
 	// server can be restarted after a crash.
 	async.GoWithRecover(func() {
+		s.dispatchEvent(context.Background(), started)
 		s.logger.Info("gRPC server starting", "address", s.listener.Addr().String())
 		if err := s.grpcServer.Serve(s.listener); err != nil {
 			s.logger.Error("gRPC server error", "error", err)
@@ -411,25 +429,55 @@ func (s *Server) StartAsync() error {
 // Stop stops the gRPC server immediately
 func (s *Server) Stop() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
+	var stopped *grpcevents.ServerStopped
 	if s.grpcServer != nil && s.running {
 		s.logger.Info("gRPC server stopping")
 		s.grpcServer.Stop()
 		s.running = false
+		stopped = s.stoppedEventLocked()
+	}
+	s.mu.Unlock()
+
+	if stopped != nil {
+		s.dispatchEvent(context.Background(), stopped)
 	}
 }
 
 // GracefulStop gracefully stops the gRPC server
 func (s *Server) GracefulStop() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
+	var stopped *grpcevents.ServerStopped
 	if s.grpcServer != nil && s.running {
 		s.logger.Info("gRPC server gracefully stopping")
 		s.grpcServer.GracefulStop()
 		s.running = false
+		stopped = s.stoppedEventLocked()
 	}
+	s.mu.Unlock()
+
+	if stopped != nil {
+		s.dispatchEvent(context.Background(), stopped)
+	}
+}
+
+// stoppedEventLocked builds the ServerStopped event for the current uptime
+// and clears startTime so a subsequent stop path (e.g. Shutdown delegating
+// to GracefulStop, or the Shutdown timeout falling back to Stop) emits
+// nothing. Returns nil when no start was recorded. Caller must hold s.mu;
+// the event is dispatched after the lock is released so a listener that
+// calls back into the Server cannot deadlock.
+func (s *Server) stoppedEventLocked() *grpcevents.ServerStopped {
+	if s.startTime.IsZero() {
+		return nil
+	}
+	now := time.Now()
+	evt := &grpcevents.ServerStopped{
+		Port:     s.port,
+		StopTime: now,
+		Duration: now.Sub(s.startTime),
+	}
+	s.startTime = time.Time{}
+	return evt
 }
 
 // Shutdown gracefully stops the server with a context deadline
@@ -471,8 +519,8 @@ func (s *Server) SetEventDispatcher(fn func(ctx context.Context, event any) erro
 
 // dispatchEvent fires an event if a dispatcher is configured. The
 // caller-supplied ctx is propagated so listeners observe request-scoped
-// values. Failures from the dispatcher are swallowed: the gRPC request
-// path must never fail because of an event sink.
+// values. Failures from the dispatcher, errors and panics alike, are
+// swallowed: the gRPC request path must never fail because of an event sink.
 func (s *Server) dispatchEvent(ctx context.Context, evt any) {
 	s.eventMu.RLock()
 	fn := s.eventDispatcher
@@ -483,7 +531,20 @@ func (s *Server) dispatchEvent(ctx context.Context, evt any) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	defer func() { _ = recover() }()
 	_ = fn(ctx, evt)
+}
+
+// eventDispatchFunc adapts the Server's dispatcher to the interceptors
+// packages' grpcevents.EventDispatchFunc. The returned func reads the
+// dispatcher at call time, so SetEventDispatcher wiring after Build still
+// takes effect, and it always returns nil: an interceptor must never fail
+// a request because of an event-sink error.
+func (s *Server) eventDispatchFunc() grpcevents.EventDispatchFunc {
+	return func(ctx context.Context, event any) error {
+		s.dispatchEvent(ctx, event)
+		return nil
+	}
 }
 
 // Address returns the address the server is listening on.

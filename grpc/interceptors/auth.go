@@ -225,7 +225,7 @@ func dispatchAuthFailed(ctx context.Context, method, token string, err error, cf
 		return
 	}
 	traceID, spanID, parentID := trace.GetTraceContext(ctx)
-	dispatchEvent(cfg.EventDispatcher, &grpcevents.AuthFailed{
+	dispatchEvent(ctx, cfg.EventDispatcher, &grpcevents.AuthFailed{
 		Method:   method,
 		Token:    maskToken(token),
 		Reason:   err.Error(),

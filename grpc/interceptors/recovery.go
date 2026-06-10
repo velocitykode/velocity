@@ -135,7 +135,7 @@ func handlePanic(ctx context.Context, p interface{}, method string, cfg *Recover
 
 	if cfg.EventDispatcher != nil {
 		traceID, spanID, parentID := trace.GetTraceContext(ctx)
-		dispatchEvent(cfg.EventDispatcher, &grpcevents.PanicRecovered{
+		dispatchEvent(ctx, cfg.EventDispatcher, &grpcevents.PanicRecovered{
 			Method:     method,
 			Panic:      p,
 			StackTrace: stack,

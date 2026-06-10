@@ -244,9 +244,10 @@ func WithProviders(providers ...app.ServiceProvider) Option {
 // off so jobs are not duplicated.
 //
 // The scheduler is started after Router.Freeze() and before
-// http.Server.ListenAndServe; it is bound to the App's shutdownCtx so
-// signal-driven shutdown stops the loop and Shutdown() drains in-flight
-// jobs through the existing scheduler.Shutdown teardown.
+// http.Server.ListenAndServe. The loop runs against context.Background()
+// rather than the App's shutdownCtx; teardown happens via App.Shutdown ->
+// Scheduler.Shutdown(ctx), which closes the stop channel and waits for
+// in-flight jobs to drain.
 func WithSchedulerInProcess() Option {
 	return func(a *App) {
 		a.runScheduler = true

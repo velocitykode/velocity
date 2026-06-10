@@ -670,3 +670,101 @@ func TestBootstrap_BackwardCompat_MixedOldNew(t *testing.T) {
 		t.Errorf("/new status = %d, want 200", w.Code)
 	}
 }
+
+// TestBootstrap_FailureIsSticky proves that a failed bootstrap latches its
+// error: the second Bootstrap() call must return the SAME non-nil error
+// instead of nil (re-running a partially-completed bootstrap would
+// double-register middleware and routes, so sticky-error is the only safe
+// semantics).
+func TestBootstrap_FailureIsSticky(t *testing.T) {
+	a, err := NewTestApp()
+	if err != nil {
+		t.Fatalf("NewTestApp() error: %v", err)
+	}
+
+	wantErr := errors.New("register boom")
+	var calls []string
+	a.Providers(func(r *chain.ProviderRegistry) {
+		r.Add(&trackingProvider{name: "A", calls: &calls, registerErr: wantErr})
+	})
+
+	first := a.Bootstrap()
+	if !errors.Is(first, wantErr) {
+		t.Fatalf("first Bootstrap() = %v, want wrapped %v", first, wantErr)
+	}
+
+	second := a.Bootstrap()
+	if second == nil {
+		t.Fatal("second Bootstrap() = nil, want the sticky error from the first call")
+	}
+	if !errors.Is(second, wantErr) {
+		t.Fatalf("second Bootstrap() = %v, want wrapped %v", second, wantErr)
+	}
+	if first.Error() != second.Error() {
+		t.Errorf("second Bootstrap() error %q differs from first %q", second, first)
+	}
+
+	// The provider must not have been re-registered by the second call.
+	registers := 0
+	for _, c := range calls {
+		if c == "A:register" {
+			registers++
+		}
+	}
+	if registers != 1 {
+		t.Errorf("Register called %d times, want 1 (failed bootstrap must not re-run)", registers)
+	}
+}
+
+// TestRunCmd_AfterFailedBootstrap_NoPanic proves the run-command path fails
+// cleanly after a failed bootstrap. Before the sticky-error latch, the second
+// bootstrap() returned nil, runCmd.run proceeded with a.commands == nil, and
+// a.commands.Get panicked with a nil dereference.
+func TestRunCmd_AfterFailedBootstrap_NoPanic(t *testing.T) {
+	a, err := NewTestApp()
+	if err != nil {
+		t.Fatalf("NewTestApp() error: %v", err)
+	}
+
+	wantErr := errors.New("register boom")
+	var calls []string
+	a.Providers(func(r *chain.ProviderRegistry) {
+		r.Add(&trackingProvider{name: "A", calls: &calls, registerErr: wantErr})
+	})
+
+	if err := a.Bootstrap(); !errors.Is(err, wantErr) {
+		t.Fatalf("Bootstrap() = %v, want wrapped %v", err, wantErr)
+	}
+
+	runErr := runCmd{}.run(a, []string{"nothing"})
+	if runErr == nil {
+		t.Fatal("runCmd.run after failed bootstrap = nil, want error")
+	}
+	if !errors.Is(runErr, wantErr) {
+		t.Errorf("runCmd.run = %v, want the sticky bootstrap error %v", runErr, wantErr)
+	}
+}
+
+// TestBootstrap_WithoutEvents_SkipsEventCallbacks proves that under
+// WithoutEvents (nil dispatcher) bootstrap skips the event registration
+// callbacks instead of invoking them with a nil dispatcher, which would
+// panic on the first d.Listen call inside consumer code.
+func TestBootstrap_WithoutEvents_SkipsEventCallbacks(t *testing.T) {
+	a, err := NewTestApp(WithoutEvents())
+	if err != nil {
+		t.Fatalf("NewTestApp(WithoutEvents()) error: %v", err)
+	}
+
+	eventsCalled := false
+	a.Events(func(d events.Dispatcher) {
+		eventsCalled = true
+		d.Listen("x", &testListener{})
+	})
+
+	if err := a.Bootstrap(); err != nil {
+		t.Fatalf("Bootstrap() error: %v", err)
+	}
+	if eventsCalled {
+		t.Error("events callback invoked despite WithoutEvents; would panic on nil dispatcher")
+	}
+}

@@ -15,17 +15,25 @@ import (
 
 // Bootstrap runs the declarative chain (providers, middleware, routes, events,
 // schedule, exceptions) without starting the HTTP server. Safe to call multiple
-// times — subsequent calls are no-ops.
+// times, but only the first call does the work. The result is sticky: after a
+// successful run subsequent calls return nil, and after a failed run they
+// return the same error (a partially-completed bootstrap is never re-run,
+// because providers, middleware and routes registered before the failure
+// would be registered twice).
 func (a *App) Bootstrap() error {
 	return a.bootstrap()
 }
 
 func (a *App) bootstrap() error {
 	if a.bootstrapped {
-		return nil
+		return a.bootstrapErr
 	}
 	a.bootstrapped = true
+	a.bootstrapErr = a.runBootstrap()
+	return a.bootstrapErr
+}
 
+func (a *App) runBootstrap() error {
 	// 1. Collect and run chain providers
 	if a.providersFn != nil {
 		reg := &chain.ProviderRegistry{}
@@ -33,9 +41,29 @@ func (a *App) bootstrap() error {
 		a.chainProviders = reg.Providers()
 	}
 
-	if err := runProviderLifecycle(a.chainProviders, a.Services, "chain provider"); err != nil {
+	if registered, err := runProviderLifecycle(a.chainProviders, a.Services, "chain provider"); err != nil {
+		// Unwind providers whose Register completed, in reverse order,
+		// mirroring the New() failure path: a direct Bootstrap() caller
+		// gets a full provider teardown without having to call Shutdown.
+		// The provider that failed Register and any after it are excluded
+		// (a failing Register must release anything it opened before
+		// returning; later providers never ran at all). Empty the slice
+		// afterwards so the Shutdown that follows a failed bootstrap
+		// (serveHTTP error path) does not tear the same providers down a
+		// second time.
+		for i := registered - 1; i >= 0; i-- {
+			_ = a.chainProviders[i].Shutdown(context.Background())
+		}
+		a.chainProviders = nil
 		return err
 	}
+
+	// Chain providers may have registered extensions or replaced service
+	// instances (e.g. s.CSRF) during Register/Boot; the wireInstanceEvents
+	// sweep in New() ran before any of them existed, so re-sweep services
+	// and extensions so the final instances receive the dispatcher. Every
+	// wiring setter is an idempotent overwrite, so re-running is safe.
+	wireInstanceEvents(a)
 
 	// 1a. Re-install the CSRF token rotator on the auth manager NOW,
 	// AFTER every chain provider's Boot() has had a chance to replace
@@ -88,12 +116,28 @@ func (a *App) bootstrap() error {
 		a.routesFn(routing)
 	}
 
-	// 4. Register events
-	dispatchProviderCallback(a.chainProviders, func(ep chain.EventProvider) {
-		ep.Events(a.Services.Events)
-	})
-	if a.eventsFn != nil {
-		a.eventsFn(a.Services.Events)
+	// 4. Register events. Under WithoutEvents the dispatcher is nil
+	// (New skips creating it), and invoking the registration callbacks
+	// with a nil dispatcher would panic on first use inside consumer
+	// code, so skip them entirely and warn when any were registered.
+	if a.Services.Events != nil {
+		dispatchProviderCallback(a.chainProviders, func(ep chain.EventProvider) {
+			ep.Events(a.Services.Events)
+		})
+		if a.eventsFn != nil {
+			a.eventsFn(a.Services.Events)
+		}
+	} else {
+		hasProviderEvents := false
+		for _, p := range a.chainProviders {
+			if _, ok := p.(chain.EventProvider); ok {
+				hasProviderEvents = true
+				break
+			}
+		}
+		if a.eventsFn != nil || hasProviderEvents {
+			a.Log.Warn("events are disabled via WithoutEvents; skipping event listener registration callbacks")
+		}
 	}
 
 	// 5. Register scheduled jobs
@@ -135,15 +179,9 @@ func (a *App) bootstrap() error {
 // gets the dispatcher set on its instance; subsystems that don't implement
 // the contract are skipped silently (e.g. when a feature is disabled).
 func wireInstanceEvents(a *App) {
-	if a.Services.Events == nil {
+	dispatch := buildEventDispatch(a)
+	if dispatch == nil {
 		return
-	}
-
-	dispatch := func(ctx context.Context, event any) error {
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		return a.Services.Events.Dispatch(ctx, event)
 	}
 
 	a.Router.SetEventDispatcher(dispatch)
@@ -158,8 +196,7 @@ func wireInstanceEvents(a *App) {
 	// see the notification regardless of which host fired the CAS.
 	queue.SetGlobalEventDispatcher(dispatch)
 
-	candidates := []any{a.DB, a.Cache, a.Notification, a.View, a.Mail, a.Queue, a.Scheduler, a.Auth, a.Crypto}
-	for _, svc := range candidates {
+	for _, svc := range eventWiringCandidates(a) {
 		if svc == nil {
 			continue
 		}
@@ -175,10 +212,54 @@ func wireInstanceEvents(a *App) {
 		mgr.SetTxEventBus(a.Services.Events)
 	}
 
-	// Wire events into any extension that supports it. Iterate under the
-	// Services extMu RLock via RangeExtensions so a concurrent
-	// RegisterExtension cannot race the iteration (cross-cutting map
-	// mutex sweep, rule #3).
+	wireExtensionEvents(a)
+}
+
+// eventWiringCandidates returns every service instance the wireInstanceEvents
+// sweep offers the dispatcher to. Each entry that implements
+// contract.EventDispatcherAware gets the dispatcher set; nil entries and
+// non-aware instances are skipped by the caller.
+//
+// Every Services field whose value can implement the contract MUST appear
+// here (the Router is wired directly in wireInstanceEvents because it lives
+// on App, not Services; Services.Events IS the dispatcher). The conformance
+// test in wiring_conformance_test.go sweeps app.Services by reflection and
+// fails when an aware field is missing from this slice.
+func eventWiringCandidates(a *App) []any {
+	return []any{a.DB, a.Cache, a.Notification, a.View, a.Mail, a.Queue, a.Scheduler, a.Auth, a.Crypto, a.CSRF}
+}
+
+// buildEventDispatch returns the canonical dispatch closure wrapping
+// a.Services.Events with nil-ctx defaulting, or nil when events are
+// disabled (WithoutEvents) so callers can skip wiring entirely.
+func buildEventDispatch(a *App) func(ctx context.Context, event any) error {
+	if a.Services.Events == nil {
+		return nil
+	}
+	return func(ctx context.Context, event any) error {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		return a.Services.Events.Dispatch(ctx, event)
+	}
+}
+
+// wireExtensionEvents wires the event dispatcher into any extension that
+// supports it. Called from wireInstanceEvents, which itself runs again after
+// each provider lifecycle (WithProviders in New, chain providers in
+// bootstrap) because providers register extensions only during Register/Boot,
+// so a single sweep at construction time would always see an empty map.
+// SetEventDispatcher overwrite is idempotent on every conforming type, so
+// re-sweeping already wired extensions is safe.
+//
+// Iterate under the Services extMu RLock via RangeExtensions so a
+// concurrent RegisterExtension cannot race the iteration (cross-cutting
+// map mutex sweep, rule #3).
+func wireExtensionEvents(a *App) {
+	dispatch := buildEventDispatch(a)
+	if dispatch == nil {
+		return
+	}
 	a.Services.RangeExtensions(func(_ string, ext any) bool {
 		if s, ok := ext.(contract.EventDispatcherAware); ok {
 			s.SetEventDispatcher(dispatch)
@@ -191,18 +272,24 @@ func wireInstanceEvents(a *App) {
 // run first (bind services, no cross-provider usage), then all Boot() calls (wire
 // dependencies, all services available). This ordering guarantees that Boot() can
 // safely reference services registered by other providers.
-func runProviderLifecycle(providers []app.ServiceProvider, services *app.Services, label string) error {
-	for _, p := range providers {
+//
+// The returned count is the number of providers whose Register COMPLETED, so
+// failure-path unwinds can scope Shutdown to providers[:registered]. A provider
+// whose own Register returns an error is NOT counted (it must release anything
+// it opened before returning), and providers after it never ran at all. On a
+// Boot failure every Register already completed, so the count is len(providers).
+func runProviderLifecycle(providers []app.ServiceProvider, services *app.Services, label string) (int, error) {
+	for i, p := range providers {
 		if err := p.Register(services); err != nil {
-			return fmt.Errorf("velocity: %s register failed: %w", label, err)
+			return i, fmt.Errorf("velocity: %s register failed: %w", label, err)
 		}
 	}
 	for _, p := range providers {
 		if err := p.Boot(services); err != nil {
-			return fmt.Errorf("velocity: %s boot failed: %w", label, err)
+			return len(providers), fmt.Errorf("velocity: %s boot failed: %w", label, err)
 		}
 	}
-	return nil
+	return len(providers), nil
 }
 
 // dispatchProviderCallback invokes fn on each provider that implements the optional

@@ -239,10 +239,23 @@ func initDB(config DBConfig) (*orm.Manager, error) {
 // DB for the database driver prevents the requested driver from starting,
 // so boot fails loudly rather than silently downgrading to the in-memory
 // driver.
-func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey string, appKey string, appEnv string, encryptor contract.Encryptor, logger log.Logger) (queue.Driver, error) {
+func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey string, appKey string, appEnv string, encryptor contract.Encryptor, logger log.Logger) (_ queue.Driver, err error) {
 	// Route queue-signing diagnostics through the framework logger before
 	// configuring so missing/APP_KEY fallbacks are surfaced consistently.
 	queue.SetSigningLogger(logger)
+
+	// The signing logger above and the payload encryptor below are
+	// process-global hooks installed before the fallible driver/repo
+	// construction steps. The caller's cleanup stack only learns about
+	// them once initQueue returns successfully, so on any error roll
+	// them back here; otherwise a failed New() would leave hooks
+	// retaining the torn-down app's logger/encryptor.
+	defer func() {
+		if err != nil {
+			queue.SetSigningLogger(nil)
+			queue.SetPayloadEncryptor(nil)
+		}
+	}()
 
 	// Configure payload signing now that .env has been loaded. This used
 	// to run in queue's package init(), which fired before godotenv.Load

@@ -76,7 +76,7 @@ type Bus struct {
 	middleware    []pipeline.Stage[Command]
 	queue         QueuePusher
 	queueName     string
-	dispatchEvent func(event any) error
+	dispatchEvent func(ctx context.Context, event any) error
 	mu            sync.RWMutex
 }
 
@@ -202,7 +202,7 @@ func (b *Bus) SetQueueName(name string) {
 
 // SetEventDispatcher sets the event dispatcher function.
 // This follows the same instance-based event pattern as other velocity packages.
-func (b *Bus) SetEventDispatcher(fn func(event any) error) {
+func (b *Bus) SetEventDispatcher(fn func(ctx context.Context, event any) error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.dispatchEvent = fn
@@ -220,10 +220,14 @@ func (b *Bus) Dispatch(cmd Command) error {
 
 	cmdType := reflect.TypeOf(cmd).String()
 
+	// Dispatch has no caller-supplied context (the public signature is
+	// ctx-less), so Background is the most-relevant ctx in scope here.
+	ctx := context.Background()
+
 	// Event dispatch errors are intentionally ignored, events are best-effort
 	// and must not affect command execution flow.
 	if dispatchEvent != nil {
-		_ = dispatchEvent(&CommandDispatching{CommandType: cmdType})
+		_ = dispatchEvent(ctx, &CommandDispatching{Context: ctx, CommandType: cmdType})
 	}
 
 	var err error
@@ -239,9 +243,9 @@ func (b *Bus) Dispatch(cmd Command) error {
 
 	if dispatchEvent != nil {
 		if err != nil {
-			_ = dispatchEvent(&CommandFailed{CommandType: cmdType, Error: err.Error()})
+			_ = dispatchEvent(ctx, &CommandFailed{Context: ctx, CommandType: cmdType, Error: err.Error()})
 		} else {
-			_ = dispatchEvent(&CommandCompleted{CommandType: cmdType})
+			_ = dispatchEvent(ctx, &CommandCompleted{Context: ctx, CommandType: cmdType})
 		}
 	}
 
@@ -266,6 +270,9 @@ func (b *Bus) DispatchAsync(cmd Command) error {
 // consumer-side hydration path routes through the same bus, never a
 // different one that happens to hold a handler for the type.
 func (b *Bus) DispatchAsyncCtx(ctx context.Context, cmd Command) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	b.mu.RLock()
 	q, queueName, dispatchEvent := b.queue, b.queueName, b.dispatchEvent
 	hasFactory := false
@@ -316,7 +323,7 @@ func (b *Bus) DispatchAsyncCtx(ctx context.Context, cmd Command) error {
 	}
 
 	if dispatchEvent != nil {
-		_ = dispatchEvent(&CommandQueued{CommandType: cmdType.String()})
+		_ = dispatchEvent(ctx, &CommandQueued{Context: ctx, CommandType: cmdType.String()})
 	}
 
 	return nil
@@ -489,9 +496,12 @@ func (j *commandJob) Failed(err error) {
 		if cmdType == "" && j.cmd != nil {
 			cmdType = reflect.TypeOf(j.cmd).String()
 		}
+		// Failed is invoked by the queue worker with no context in scope,
+		// so Background is the most-relevant ctx available.
+		ctx := context.Background()
 		// Event dispatch errors are intentionally ignored, event dispatch is
 		// best-effort and must not interfere with queue worker error handling.
-		_ = dispatchEvent(&CommandFailed{CommandType: cmdType, Error: err.Error()})
+		_ = dispatchEvent(ctx, &CommandFailed{Context: ctx, CommandType: cmdType, Error: err.Error()})
 	}
 }
 

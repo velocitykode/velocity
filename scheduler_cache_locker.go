@@ -243,10 +243,10 @@ func installSchedulerLocker(sched *scheduler.Scheduler, cm cache.CacheManager, d
 	// on every platform because Lock is defined in both the unix and
 	// non-unix build files, but the non-unix variant returns nil. A
 	// nil result would otherwise look like a backend error on the
-	// first scheduler tick. Probe with a throwaway key to confirm the
-	// driver actually issues working locks; allow the lock to expire
-	// by TTL rather than releasing explicitly (cheap, side-effect free
-	// across runs).
+	// first scheduler tick. Lock only constructs a lock handle --
+	// nothing is acquired, so there is nothing to release and no TTL
+	// is consumed; the probe merely verifies the constructor returns
+	// a non-nil handle on this platform.
 	if probe := lc.Lock("__velocity_locker_probe__", time.Second); probe == nil {
 		if log != nil {
 			log.Warn(

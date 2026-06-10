@@ -84,6 +84,11 @@ type App struct {
 	commands       *chain.Commands
 	exceptionsFn   func(exceptions.ExceptionHandler)
 	bootstrapped   bool
+	// bootstrapErr is the sticky result of the first bootstrap() run.
+	// A failed bootstrap must NOT be re-run (providers, middleware and
+	// routes registered before the failure would double-register), so
+	// every subsequent bootstrap() call returns this same error.
+	bootstrapErr error
 
 	// outboxRelay is an optional ORM transactional-outbox relay registered
 	// via UseOutboxRelay. Shutdown stops it before tearing down the queue
@@ -146,6 +151,8 @@ func New(opts ...Option) (*App, error) {
 	// so any goroutine observing shutdownCtx.Done() (e.g. a BaseContext
 	// consumer spawned by a provider) unwinds promptly. On the success
 	// path, Shutdown() cancels it.
+	// As cleanups[0], the deferred reverse walk runs this cancel() on every
+	// failure return below, so later sites need no explicit cancel() call.
 	cleanups = append(cleanups, func() { cancel() })
 
 	// Fast-fail config validation. Catches typo'd driver names, malformed
@@ -221,13 +228,8 @@ func New(opts ...Option) (*App, error) {
 	// "production", "prod", "staging", and any unknown value fail closed
 	// with ErrNoAppKey.
 	if a.config.Crypto.Key == "" {
-		switch {
-		case app.IsTestingEnv(a.config.Env):
-			// Silent bypass, test harness wires its own keys as needed.
-		case app.IsDevOrTestEnv(a.config.Env):
-			a.Log.Warn("APP_KEY is unset, crypto subsystem disabled. Run `vel key:generate` before exercising auth/csrf/session flows.")
-		default:
-			return nil, ErrNoAppKey
+		if err := a.envGatedSecurityCheck("APP_KEY is unset, crypto subsystem disabled. Run `vel key:generate` before exercising auth/csrf/session flows.", nil, ErrNoAppKey); err != nil {
+			return nil, err
 		}
 	} else {
 		enc, err := crypto.NewEncryptor(a.config.Crypto)
@@ -260,25 +262,13 @@ func New(opts ...Option) (*App, error) {
 	// strings "testing" and "development", which made APP_ENV=dev /
 	// APP_ENV=local behave identically to production.
 	if err := a.config.Session.Validate(a.config.Env); err != nil {
-		switch {
-		case app.IsTestingEnv(a.config.Env):
-			// silent
-		case app.IsDevOrTestEnv(a.config.Env):
-			a.Log.Warn("Insecure session cookie config (dev only, will fail in production)", "error", err)
-		default:
-			cancel()
-			return nil, fmt.Errorf("velocity: %w", err)
+		if e := a.envGatedSecurityCheck("Insecure session cookie config (dev only, will fail in production)", []any{"error", err}, fmt.Errorf("velocity: %w", err)); e != nil {
+			return nil, e
 		}
 	}
 	if err := a.config.CSRF.Validate(a.config.Env); err != nil {
-		switch {
-		case app.IsTestingEnv(a.config.Env):
-			// silent
-		case app.IsDevOrTestEnv(a.config.Env):
-			a.Log.Warn("Insecure CSRF cookie config (dev only, will fail in production)", "error", err)
-		default:
-			cancel()
-			return nil, fmt.Errorf("velocity: %w", err)
+		if e := a.envGatedSecurityCheck("Insecure CSRF cookie config (dev only, will fail in production)", []any{"error", err}, fmt.Errorf("velocity: %w", err)); e != nil {
+			return nil, e
 		}
 	}
 
@@ -380,7 +370,6 @@ func New(opts ...Option) (*App, error) {
 	}
 	csrfInstance, err := csrf.NewE(&a.config.CSRF)
 	if err != nil {
-		cancel()
 		return nil, fmt.Errorf("velocity: failed to initialize csrf: %w", err)
 	}
 	a.CSRF = csrfInstance
@@ -409,7 +398,7 @@ func New(opts ...Option) (*App, error) {
 	// and TestCSRFRotator_WiredByNewWithoutBootstrap (direct-New path).
 	installCSRFTokenRotator(a)
 
-	// 8. Initialize view/bond engine
+	// 9. Initialize view/bond engine
 	if a.config.View.RootTemplate != "" {
 		viewEngine, err := view.NewEngine(a.config.View)
 		if err != nil {
@@ -423,14 +412,14 @@ func New(opts ...Option) (*App, error) {
 		})
 	}
 
-	// 9. Initialize events dispatcher (skip if WithoutEvents was used, keep if pre-set by WithFakeEvents).
+	// 10. Initialize events dispatcher (skip if WithoutEvents was used, keep if pre-set by WithFakeEvents).
 	// The dispatcher itself has no Shutdown today; the router drains async
 	// workers via ShutdownEventDispatcher once wired (see wireInstanceEvents).
 	if !a.noEvents && a.Services.Events == nil {
 		a.Services.Events = events.NewDispatcher()
 	}
 
-	// 10. Initialize queue, pass DB for database driver
+	// 11. Initialize queue, pass DB for database driver
 	queueDriver, err := initQueue(a.config.Queue, sqlDB, a.config.DB.Connection, a.config.Queue.SigningKey, a.config.Key, a.config.Env, a.Crypto, a.Log)
 	if err != nil {
 		return nil, fmt.Errorf("velocity: failed to initialize queue: %w", err)
@@ -452,6 +441,13 @@ func New(opts ...Option) (*App, error) {
 		// app instance does not inherit a stale callback bound to the
 		// previous Exceptions handler.
 		eventqueue.InitializeQueueIntegration(nil, nil, nil)
+		// Drop the queue signing logger installed by initQueue so it
+		// does not retain the torn-down logger (nil-safe setter), and
+		// the payload encryptor installed when QUEUE_ENCRYPT=true so
+		// it does not retain the torn-down app's encryptor; mirrors
+		// the happy-path Shutdown in serve.go.
+		queue.SetSigningLogger(nil)
+		queue.SetPayloadEncryptor(nil)
 	})
 
 	// H-22: register the EventListenerJob factory with the queue's typed
@@ -478,7 +474,7 @@ func New(opts ...Option) (*App, error) {
 	}
 	eventqueue.InitializeQueueIntegration(nil, a.Queue, reporter)
 
-	// 11. Initialize storage with disk drivers
+	// 12. Initialize storage with disk drivers
 	a.Storage = initStorage(a.config.Storage, a.Log)
 	cleanups = append(cleanups, func() {
 		if sd, ok := a.Storage.(contract.ShutdownAware); ok {
@@ -486,7 +482,7 @@ func New(opts ...Option) (*App, error) {
 		}
 	})
 
-	// 12. Initialize scheduler
+	// 13. Initialize scheduler
 	sched := scheduler.New()
 	sched.SetEnv(a.config.Env)
 	sched.SetLogger(a.Log)
@@ -527,7 +523,7 @@ func New(opts ...Option) (*App, error) {
 		}
 	})
 
-	// 13. Initialize mail
+	// 14. Initialize mail
 	if a.config.Mail.Driver != "" {
 		// The "log" driver discards mail (it only records it in-process). It is
 		// the default when MAIL_DRIVER is unset, so a production deploy that
@@ -538,6 +534,12 @@ func New(opts ...Option) (*App, error) {
 		}
 		mailer, err := mail.NewMailer(a.config.Mail)
 		if err != nil {
+			// Fail-soft (PRD decision): mail is an optional subsystem and an
+			// app must be able to boot without a mailer. A misconfiguration
+			// is surfaced by this startup warn and again on the first send,
+			// matching initStorage's warn-not-fail policy. Queue, view,
+			// crypto and CSRF stay fail-hard because the app cannot run
+			// safely without them.
 			a.Log.Warn("Failed to initialize mailer", "error", err)
 		} else {
 			a.Mail = mailer
@@ -549,7 +551,7 @@ func New(opts ...Option) (*App, error) {
 		}
 	}
 
-	// 14. Initialize notification manager
+	// 15. Initialize notification manager
 	a.Notification = initNotification(a.Mail, sqlDB, a.config.DB.Connection)
 	cleanups = append(cleanups, func() {
 		if sd, ok := a.Notification.(contract.ShutdownAware); ok {
@@ -557,7 +559,7 @@ func New(opts ...Option) (*App, error) {
 		}
 	})
 
-	// 15. Create router and inject services. The router has no external
+	// 16. Create router and inject services. The router has no external
 	// resources at this point (no listener bound) so no cleanup is needed.
 	a.Router = router.New()
 	// Publish the router as the canonical redirect-allowlist source so
@@ -628,20 +630,12 @@ func New(opts ...Option) (*App, error) {
 	// "dev", "test", "local" behave the same way as "development" /
 	// "testing".
 	if a.config.Key == "" {
-		switch {
-		case app.IsTestingEnv(a.config.Env):
-			// Silent bypass; test harnesses wire keys explicitly via
-			// router.SetSignedURLKey when they need signed URLs.
-		case app.IsDevOrTestEnv(a.config.Env):
-			a.Log.Warn("APP_KEY is unset, router signed-URL middleware will fail closed (403) on every signed route. Run `vel key:generate` before exercising signed-URL flows.")
-		default:
-			cancel()
-			return nil, fmt.Errorf("velocity: %w", ErrNoAppKey)
+		if err := a.envGatedSecurityCheck("APP_KEY is unset, router signed-URL middleware will fail closed (403) on every signed route. Run `vel key:generate` before exercising signed-URL flows.", nil, fmt.Errorf("velocity: %w", ErrNoAppKey)); err != nil {
+			return nil, err
 		}
 	} else {
 		signedKey, err := router.DeriveSignedURLKey([]byte(a.config.Key))
 		if err != nil {
-			cancel()
 			return nil, fmt.Errorf("velocity: failed to derive signed URL key: %w", err)
 		}
 		a.Router.SetSignedURLKey(signedKey)
@@ -691,30 +685,62 @@ func New(opts ...Option) (*App, error) {
 		return raw
 	})
 
-	// 16. Initialize validator
+	// 17. Initialize validator
 	a.Validator = validation.NewValidator()
 
 	// Wire event dispatchers into service instances
 	wireInstanceEvents(a)
 
 	// Run provider lifecycle: Register all, then Boot all. On failure,
-	// providers that already completed Register/Boot will be unwound by
+	// providers that already completed Register will be unwound by
 	// calling Shutdown in reverse registration order, same behaviour as
-	// App.Shutdown so consumers see a single, consistent teardown.
-	if err := runProviderLifecycle(a.providers, a.Services, "provider"); err != nil {
+	// App.Shutdown so consumers see a single, consistent teardown. The
+	// provider that failed and any after it are excluded: a failing
+	// Register must clean up before returning, and later providers
+	// never ran at all.
+	if registered, err := runProviderLifecycle(a.providers, a.Services, "provider"); err != nil {
 		cleanups = append(cleanups, func() {
 			shutdownCtx := context.Background()
-			for i := len(a.providers) - 1; i >= 0; i-- {
+			for i := registered - 1; i >= 0; i-- {
 				_ = a.providers[i].Shutdown(shutdownCtx)
 			}
 		})
 		return nil, err
 	}
 
+	// Providers may have registered extensions or replaced service
+	// instances (e.g. Services.CSRF) during Register/Boot; the
+	// wireInstanceEvents sweep above ran before the lifecycle, so it saw
+	// an empty extensions map and the original instances. Re-sweep now
+	// that registrations are done; every wiring setter is an idempotent
+	// overwrite, so re-running the full sweep is safe.
+	wireInstanceEvents(a)
+
 	// Success path: disarm the cleanup stack. From here on, resources are
 	// owned by the *App and released via Shutdown().
 	cleanups = nil
 	return a, nil
+}
+
+// envGatedSecurityCheck applies the shared environment classification used by
+// the security-sensitive boot switches (crypto key, session/CSRF cookie
+// validation, signed-URL key). The canonical testing environments skip the
+// check silently; the other documented non-prod profiles (dev/development/
+// local) log warnMsg/warnArgs through the app logger and continue; every
+// production-class or unknown environment returns prodErr so New() fails
+// closed. A nil return means "proceed". Callers wrap the prodErr return in
+// their own `return nil, err` so each call site keeps its existing error
+// value byte-for-byte.
+func (a *App) envGatedSecurityCheck(warnMsg string, warnArgs []any, prodErr error) error {
+	switch {
+	case app.IsTestingEnv(a.config.Env):
+		// silent
+	case app.IsDevOrTestEnv(a.config.Env):
+		a.Log.Warn(warnMsg, warnArgs...)
+	default:
+		return prodErr
+	}
+	return nil
 }
 
 // Version returns the framework version.

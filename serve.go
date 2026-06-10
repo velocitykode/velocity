@@ -13,6 +13,7 @@ import (
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventqueue"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/queue"
 )
@@ -97,6 +98,13 @@ func (a *App) serveHTTP() error {
 	// shutdownCtx first, scheduler.Run then calls its own Shutdown with
 	// the cancelled ctx and returns immediately without draining
 	// runWg, leaving in-flight jobs orphaned.
+	//
+	// Start-after-teardown race: if ListenAndServe fails fast, the
+	// errCh path below calls a.Shutdown before this goroutine may have
+	// entered Run. Scheduler.Shutdown marks the scheduler terminated
+	// even when it is not yet running, and Run refuses to start once
+	// terminated, so a late-scheduled Run cannot begin ticking against
+	// already-closed services.
 	if a.runScheduler && a.Scheduler != nil {
 		async.Go(func() {
 			a.Log.Info("Scheduler started in-process")
@@ -118,7 +126,17 @@ func (a *App) serveHTTP() error {
 
 	select {
 	case err := <-errCh:
-		return fmt.Errorf("velocity: server error: %w", err)
+		// ListenAndServe failed (port in use, bad addr, ...). Bootstrap
+		// fully wired every subsystem before we got here, so tear it all
+		// down just like the bootstrap-failure path above; the shutdown
+		// error (if any) is joined onto the server error.
+		serveErr := fmt.Errorf("velocity: server error: %w", err)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if sdErr := a.Shutdown(shutdownCtx); sdErr != nil {
+			return errors.Join(serveErr, sdErr)
+		}
+		return serveErr
 	case sig := <-quit:
 		a.Log.Info("Shutting down server", "signal", sig.String())
 	}
@@ -130,7 +148,13 @@ func (a *App) serveHTTP() error {
 	return a.Shutdown(ctx)
 }
 
-// Shutdown gracefully shuts down all services in reverse initialization order.
+// Shutdown gracefully shuts down all services in reverse initialization order:
+// HTTP server, event dispatcher and file root, scheduler, outbox relay, then
+// chain providers and WithProviders providers (reverse registration order),
+// then queue, cache, CSRF, mail, storage, notification, view, DB, and the
+// logger last. Providers tear down before queue/cache/DB because they
+// Register/Boot after all core services; unwinding them first keeps those
+// services alive for final flushes and matches the New() failure-path order.
 // Every subsystem's Shutdown is called even if an earlier one fails; all errors
 // are aggregated via errors.Join.
 func (a *App) Shutdown(ctx context.Context) error {
@@ -173,12 +197,25 @@ func (a *App) Shutdown(ctx context.Context) error {
 		collect(a.outboxRelay.Stop(ctx))
 	}
 
-	// 4. Close queue driver
+	// 4. Shutdown chain providers in reverse order, then WithProviders
+	// providers in reverse registration order. Providers Register/Boot
+	// AFTER all core services, so reverse-order teardown unwinds them
+	// first, while queue/cache/DB are still alive for final flushes;
+	// this matches the New() failure path, where the provider-unwind
+	// closure is pushed last onto the cleanup stack and runs first.
+	for i := len(a.chainProviders) - 1; i >= 0; i-- {
+		collect(a.chainProviders[i].Shutdown(ctx))
+	}
+	for i := len(a.providers) - 1; i >= 0; i-- {
+		collect(a.providers[i].Shutdown(ctx))
+	}
+
+	// 5. Close queue driver
 	if a.Queue != nil {
 		collect(a.Queue.Shutdown(ctx))
 	}
 
-	// 4a. C-03-fb2 HIGH 2: drop any auto-installed batch repository
+	// 5a. C-03-fb2 HIGH 2: drop any auto-installed batch repository
 	// back to the package-init in-memory default so a subsequent
 	// velocity.New on the same process installs its own DB-backed
 	// repo against the new *sql.DB. User-installed repos
@@ -192,57 +229,65 @@ func (a *App) Shutdown(ctx context.Context) error {
 	queue.ResetAutoInstalledBatchRepository()
 	queue.SetGlobalEventDispatcher(nil)
 	queue.SetBatchCallbackQueue(nil, "")
+	// H-22: clear the queued-listener failure reporter so a new app
+	// instance does not inherit a stale callback bound to the
+	// torn-down Exceptions handler; mirrors the New() failure-path
+	// queue cleanup closure. Also drop the queue signing logger
+	// installed by initQueue so it does not retain the torn-down
+	// logger (nil-safe setter), and the payload encryptor installed
+	// when QUEUE_ENCRYPT=true so it does not retain the torn-down
+	// app's encryptor.
+	eventqueue.InitializeQueueIntegration(nil, nil, nil)
+	queue.SetSigningLogger(nil)
+	queue.SetPayloadEncryptor(nil)
 
-	// 5. Close cache connections
+	// 6. Close cache connections
 	if a.Cache != nil {
 		collect(a.Cache.Shutdown(ctx))
 	}
 
-	// 5a. Close CSRF store (stops cleanup goroutine).
+	// 6a. Close CSRF store (stops cleanup goroutine).
 	if a.CSRF != nil {
 		if sd, ok := a.CSRF.(contract.ShutdownAware); ok {
 			collect(sd.Shutdown(ctx))
 		}
 	}
 
-	// 5b. Shutdown mail manager.
+	// 6b. Shutdown mail manager.
 	if a.Mail != nil {
 		if sd, ok := a.Mail.(contract.ShutdownAware); ok {
 			collect(sd.Shutdown(ctx))
 		}
 	}
 
-	// 5c. Shutdown storage manager.
+	// 6c. Shutdown storage manager.
 	if a.Storage != nil {
 		if sd, ok := a.Storage.(contract.ShutdownAware); ok {
 			collect(sd.Shutdown(ctx))
 		}
 	}
 
-	// 5d. Shutdown notification manager.
+	// 6d. Shutdown notification manager.
 	if a.Notification != nil {
 		if sd, ok := a.Notification.(contract.ShutdownAware); ok {
 			collect(sd.Shutdown(ctx))
 		}
 	}
 
-	// 6. Close database connections
+	// 6e. Shutdown view engine; mirrors the New() failure-path cleanup.
+	if a.View != nil {
+		if sd, ok := a.View.(contract.ShutdownAware); ok {
+			collect(sd.Shutdown(ctx))
+		}
+	}
+
+	// 7. Close database connections
 	if a.DB != nil {
 		collect(a.DB.Shutdown(ctx))
 		orm.ResetDefault()
 	}
 
-	// 7. Shutdown chain providers in reverse order
-	for i := len(a.chainProviders) - 1; i >= 0; i-- {
-		collect(a.chainProviders[i].Shutdown(ctx))
-	}
-
-	// 8. Shutdown WithProviders providers in reverse registration order
-	for i := len(a.providers) - 1; i >= 0; i-- {
-		collect(a.providers[i].Shutdown(ctx))
-	}
-
-	// 9. Close logger last so all prior steps can still log.
+	// 8. Close logger last so all prior steps can still log.
 	if a.Log != nil {
 		if sd, ok := a.Log.(contract.ShutdownAware); ok {
 			collect(sd.Shutdown(ctx))

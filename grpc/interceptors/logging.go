@@ -209,10 +209,14 @@ func redactMetadata(md map[string][]string) map[string][]string {
 	return redacted
 }
 
-func dispatchEvent(dispatcher grpcevents.EventDispatchFunc, event interface{}) {
-	if dispatcher != nil {
-		_ = dispatcher(event)
+// dispatchEvent swallows dispatcher errors and panics: an event sink must
+// never fail or panic a request.
+func dispatchEvent(ctx context.Context, dispatcher grpcevents.EventDispatchFunc, event interface{}) {
+	if dispatcher == nil {
+		return
 	}
+	defer func() { _ = recover() }()
+	_ = dispatcher(ctx, event)
 }
 
 // detectProtocol determines if the request came via HTTP gateway or direct gRPC
