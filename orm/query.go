@@ -1298,6 +1298,33 @@ func (q *Query[T]) Pluck(ctx context.Context, column string) ([]any, error) {
 	return results, nil
 }
 
+// deniedUpdateKeys returns the map keys that resolve to an application
+// (non-embedded) column of meta. Matching is case-insensitive against
+// both the SQL column name and the snake-cased Go field name: an
+// exact-match check alone would let "IS_ADMIN" or an aliased column name
+// slip past the implicit-deny gate (into compiled SQL on the bulk Update
+// path, or past mapToStruct's preflight on the Create(map) path). Keys
+// are returned in column order so the resulting *MassAssignmentError is
+// stable.
+func deniedUpdateKeys(updates map[string]any, meta *ModelMeta) []string {
+	if meta == nil {
+		return nil
+	}
+	var denied []string
+	for _, col := range meta.Columns() {
+		if col.FromEmbedded {
+			continue
+		}
+		for key := range updates {
+			lower := strings.ToLower(key)
+			if lower == strings.ToLower(col.Column) || lower == strings.ToLower(col.FieldNameKey) {
+				denied = append(denied, key)
+			}
+		}
+	}
+	return denied
+}
+
 // Update updates matching records. Takes ctx as the first argument so
 // transaction enrollment is mandatory and explicit: passing a ctx
 // returned by Manager.Transaction enrolls the UPDATE in the caller's
@@ -1316,6 +1343,28 @@ func (q *Query[T]) Pluck(ctx context.Context, column string) ([]any, error) {
 //   - Chain [Query.WithRowHooks] to fan out per-row hooks at the cost of
 //     an extra SELECT and N model allocations.
 func (q *Query[T]) Update(ctx context.Context, updates map[string]any) (int64, error) {
+	// Mass-assignment policy: a map passed to Update is attacker-shaped
+	// input exactly like a map passed to Create, so a model with no
+	// declared Fillable/Guarded policy (and no AllowAllColumns opt-in)
+	// rejects any key that resolves to an application column with
+	// *MassAssignmentError before SQL compilation. Matching is
+	// case-insensitive and covers both the SQL column name and the
+	// snake-cased field name, so neither a casing variant nor a column
+	// alias slips into the compiled SQL. Framework-managed embedded
+	// columns bypass policy by design. Models with a declared policy or
+	// AllowAllColumns keep their established Update semantics unchanged.
+	//
+	// The check lives here on the public entry point, not in bulkUpdate:
+	// internal struct-based writes (Save's update branch, which builds
+	// its map via structToMap from a caller-constructed *T) and the
+	// soft-delete branch of Delete call bulkUpdate directly and are not
+	// policed, mirroring the Create(*T) scoping.
+	var zero T
+	if PolicyFor(&zero).implicitDeny {
+		if denied := deniedUpdateKeys(updates, MetaForValue(reflect.ValueOf(zero))); len(denied) > 0 {
+			return 0, &MassAssignmentError{Model: reflect.TypeOf(zero).String(), Keys: denied}
+		}
+	}
 	return q.bulkUpdate(ctx, updates, BulkOpUpdate)
 }
 

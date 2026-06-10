@@ -20,8 +20,10 @@ import (
 type EncryptorFactory func(t *testing.T) crypto.Encryptor
 
 // RunEncryptorContractTests is the executable specification of
-// [crypto.Encryptor]. Some sub-tests are skipped automatically when the
-// driver does not support a specific capability (AAD on CBC).
+// [crypto.Encryptor]. The framework's AES driver binds AAD in both GCM
+// and CBC modes; the AAD sub-tests self-skip only for third-party
+// drivers that signal ErrInvalidCipher because they cannot authenticate
+// AAD at all.
 func RunEncryptorContractTests(t *testing.T, factory EncryptorFactory) {
 	t.Helper()
 
@@ -173,11 +175,11 @@ func RunEncryptorContractTests(t *testing.T, factory EncryptorFactory) {
 		// Encrypt via the non-AAD path; decrypting that envelope on the
 		// AAD path must be rejected. Per the Encryptor godoc a non-AAD
 		// envelope is structurally identical to an EncryptBytesWithAAD
-		// envelope, so the GCM auth tag check collapses to
-		// ErrAADMismatch on AEAD drivers. Non-AEAD drivers (CBC) reject
-		// the path up-front with ErrInvalidCipher. Either is fail-closed
-		// and conformant; the invariant is "non-AAD payload does not
-		// decrypt cleanly on the AAD path".
+		// envelope, so the auth check (GCM tag or CBC HMAC framing)
+		// collapses to ErrAADMismatch. Third-party drivers with no AAD
+		// support may reject up-front with ErrInvalidCipher. Either is
+		// fail-closed and conformant; the invariant is "non-AAD payload
+		// does not decrypt cleanly on the AAD path".
 		ct, err := e.EncryptBytes([]byte("plain"))
 		if err != nil {
 			t.Fatalf("EncryptBytes: %v", err)

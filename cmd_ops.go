@@ -18,6 +18,9 @@ type dbWipeCmd struct{}
 func (dbWipeCmd) name() string        { return "db:wipe" }
 func (dbWipeCmd) description() string { return "Drop all tables" }
 func (dbWipeCmd) run(a *App, args []string) error {
+	if err := guardProductionDataLoss(a, "db:wipe", args); err != nil {
+		return err
+	}
 	if err := a.Bootstrap(); err != nil {
 		return err
 	}

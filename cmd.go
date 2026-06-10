@@ -5,6 +5,7 @@ import (
 	"os"
 
 	cli "github.com/velocitykode/velocity-cli"
+	"github.com/velocitykode/velocity/contract"
 )
 
 // command is the internal interface for built-in CLI commands. Each root
@@ -102,6 +103,43 @@ func (r *commandRegistry) add(cmds ...command) {
 func (r *commandRegistry) get(name string) (command, bool) {
 	c, ok := r.byName[name]
 	return c, ok
+}
+
+// hasForceFlag reports whether args carries the --force / -f flag used to
+// override guardProductionDataLoss.
+func hasForceFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "--force" || arg == "-f" {
+			return true
+		}
+	}
+	return false
+}
+
+// guardProductionDataLoss refuses to run a command that destroys database
+// data (db:wipe, migrate:fresh, migrate:rollback) in a production-class
+// environment unless the operator passed --force. Same fail-secure stance
+// as the other production gates (session store validation, gRPC reflection,
+// mail log-driver warning): contract.IsProductionEnv treats "production",
+// "prod", "staging", and any unrecognised APP_ENV value as production, so a
+// typo'd APP_ENV cannot disable the gate.
+//
+// The guard lives in the cmd layer by design and runs BEFORE Bootstrap so a
+// refused command never executes the provider lifecycle. Programmatic
+// callers of console.DBWipe / console.MigrateFresh / console.MigrateRollback
+// are unaffected; those functions are unguarded by contract.
+func guardProductionDataLoss(a *App, name string, args []string) error {
+	if hasForceFlag(args) {
+		return nil
+	}
+	env := ""
+	if a != nil && a.config != nil {
+		env = a.config.Env
+	}
+	if !contract.IsProductionEnv(env) {
+		return nil
+	}
+	return fmt.Errorf("vel: refusing to run %q in a production environment (APP_ENV=%q): this command destroys database data; pass --force to proceed", name, env)
 }
 
 // Run dispatches CLI commands or starts the HTTP server.

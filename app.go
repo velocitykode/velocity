@@ -197,10 +197,19 @@ func New(opts ...Option) (*App, error) {
 		trustedProxyNets = nil
 	}
 
+	// V2-15: NewHandler's built-in default reporter is a LogReporter with
+	// no logger, which silently drops every Report. The app logger exists
+	// by this point (step 1), so replace the default with one bound to
+	// a.Log; the reporter count stays at one and consumers can still
+	// fully replace it via the Exceptions() chain method (SetReporters).
+	// WithHandlerLogger routes the handler's own boot-time warnings
+	// (debug-mode notices) through a.Log as well.
 	a.Services.Exceptions = exceptions.NewHandler(
 		exceptions.WithDebug(a.config.Debug),
 		exceptions.WithEnvironment(a.config.Env),
 		exceptions.WithTrustedProxies(clientip.CloneIPNets(trustedProxyNets)),
+		exceptions.WithHandlerLogger(a.Log),
+		exceptions.WithReporters(exceptions.NewLogReporter(exceptions.WithLogger(a.Log))),
 	)
 
 	// 3. Initialize crypto (auth/csrf may need it). Crypto is stateless
@@ -236,12 +245,6 @@ func New(opts ...Option) (*App, error) {
 	if dbManager != nil {
 		a.DB = dbManager
 		orm.SetDefault(dbManager)
-		// Surface the mass-assignment-open default: warn once per model type
-		// the first time a model with no Fillable()/Guarded() policy is filled
-		// from a client-supplied map.
-		orm.SetMassAssignmentWarner(func(modelType string) {
-			a.Log.Warn("mass-assignment-open model used with map-based Create/Update; declare Fillable() (allowlist) or Guarded() (denylist) to deny sensitive columns by default", "model", modelType)
-		})
 		cleanups = append(cleanups, func() {
 			_ = a.DB.Shutdown(context.Background())
 			orm.ResetDefault()
@@ -566,6 +569,20 @@ func New(opts ...Option) (*App, error) {
 	// pointer.
 	a.Services.RedirectAllowlist = a.Router
 	a.Router.SetServices(a.Services)
+	// V2-15: the router's default error path used to write a generic 500
+	// with no logging at all, so out of the box every handler error and
+	// recovered panic vanished. Wire the app logger so the default path
+	// emits exactly one error-level entry per 500-class failure (panics
+	// include the stack). Logging ownership is documented on
+	// router.SetErrorLogger: a consumer-installed Router.ErrorHandler
+	// suppresses this default and owns reporting itself (typically by
+	// routing to ctx.Exceptions(), whose LogReporter is wired to a.Log
+	// above); the two paths never both fire for the same request.
+	// Closure (not a.Log.Error method value) so tests that swap a.Log
+	// after New() observe the replacement.
+	a.Router.SetErrorLogger(func(msg string, kvs ...any) {
+		a.Log.Error(msg, kvs...)
+	})
 	// Propagate the deployment-level trusted-proxy list parsed at step 2
 	// so Context.IP(), per-IP rate limits, and any future client-IP
 	// surface in the router agree with the throttle/exception layers.

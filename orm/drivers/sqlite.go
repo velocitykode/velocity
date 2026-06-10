@@ -557,7 +557,12 @@ func (g *SQLiteGrammar) CompileCreateTable(name string, table *Table) string {
 		}
 		if column.Default != nil {
 			sql.WriteString(" DEFAULT ")
-			sql.WriteString(fmt.Sprintf("%v", column.Default))
+			switch v := column.Default.(type) {
+			case string:
+				sql.WriteString(g.QuoteString(v))
+			default:
+				sql.WriteString(fmt.Sprintf("%v", v))
+			}
 		}
 	}
 

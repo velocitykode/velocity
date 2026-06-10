@@ -14,12 +14,13 @@ func ({{ .ModelName }}) TableName() string {
 	return "{{ .TableName }}"
 }
 
-// Fillable is the mass-assignment allowlist: only the columns listed here may
-// be set from a client-supplied map via Create(map) / Update(map). This is
-// deny-by-default, the secure choice. A model that declares NEITHER Fillable()
-// nor Guarded() is mass-assignment-OPEN (every column settable, including
-// sensitive ones like role or is_admin), so keep this list as the explicit
-// set of user-writable columns. Use Guarded() instead if you prefer a denylist.
+// Fillable is the mass-assignment allowlist: only the fields listed here
+// (snake_case Go field names) may be set from a client-supplied map via
+// Create(map) / FirstOrCreate / UpdateOrCreate. Mass assignment is
+// deny-by-default: a model that declares neither Fillable() nor Guarded()
+// rejects every map-based write with an error. Use Guarded() instead if you
+// prefer a denylist, or opt a model out entirely with
+// AllowAllColumns() bool { return true }.
 func ({{ .ModelName }}) Fillable() []string {
 	return []string{
 		// "name",

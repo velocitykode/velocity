@@ -65,19 +65,21 @@ type Encryptor interface {
 	// DecryptBytes decrypts a base64 encoded payload and returns bytes
 	DecryptBytes(payload string) ([]byte, error)
 
-	// EncryptBytesWithAAD encrypts plaintext and binds aad into the AEAD
-	// authentication tag. Decryption with a different aad fails. aad is
-	// not stored in the payload; the caller supplies the same aad on
-	// DecryptBytesWithAAD. nil and zero-length aad are equivalent.
-	// Returns ErrInvalidCipher when the configured cipher is non-AEAD
-	// (any CBC mode).
+	// EncryptBytesWithAAD encrypts plaintext and binds aad into the
+	// authentication check: GCM folds it into the AEAD tag, CBC mixes
+	// it into the encrypt-then-MAC HMAC input under a dedicated domain
+	// prefix (see crypto/drivers package doc for the exact framing).
+	// Decryption with a different aad fails in both modes. aad is not
+	// stored in the payload; the caller supplies the same aad on
+	// DecryptBytesWithAAD. nil and zero-length aad are equivalent (an
+	// empty aad produces the same ciphertext semantics as EncryptBytes).
 	EncryptBytesWithAAD(plaintext, aad []byte) (string, error)
 
 	// DecryptBytesWithAAD decrypts a payload produced by
 	// EncryptBytesWithAAD.
 	//
-	// Returns ErrAADMismatch on any GCM authentication failure under the
-	// supplied aad. GCM is one-shot AEAD: the tag check cannot
+	// Returns ErrAADMismatch on any authentication failure under the
+	// supplied aad. The auth check (GCM tag or CBC HMAC) cannot
 	// distinguish wrong key, wrong aad, AAD-vs-no-AAD payload mixing, or
 	// ciphertext tamper. All four collapse to ErrAADMismatch by design;
 	// operators investigating an unexpected mismatch should check key
@@ -91,15 +93,12 @@ type Encryptor interface {
 	// empty payload, legacy v0 wire format, or a v1 envelope whose
 	// nonce / tag fields are missing or undersized. A non-AAD envelope
 	// (produced by EncryptBytes) is NOT structurally distinguishable
-	// from an EncryptBytesWithAAD envelope once decoded, so the GCM auth
-	// tag check is the only available probe; supplying a non-AAD payload
-	// on this path therefore collapses to ErrAADMismatch, not
-	// ErrInvalidPayload. Callers that need the distinction must track
-	// which path produced each ciphertext at the application layer.
-	//
-	// Returns ErrInvalidCipher when the configured cipher is non-AEAD
-	// (any CBC mode); the rejection is symmetric with
-	// EncryptBytesWithAAD.
+	// from an EncryptBytesWithAAD envelope once decoded, so the auth
+	// check is the only available probe; supplying a non-AAD payload
+	// on this path with a non-empty aad therefore collapses to
+	// ErrAADMismatch, not ErrInvalidPayload. Callers that need the
+	// distinction must track which path produced each ciphertext at the
+	// application layer.
 	DecryptBytesWithAAD(payload string, aad []byte) ([]byte, error)
 
 	// GenerateKey generates a new encryption key for the cipher

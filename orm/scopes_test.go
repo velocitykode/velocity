@@ -22,6 +22,11 @@ func (ScopeUser) TableName() string {
 	return "scope_users"
 }
 
+// AllowAllColumns: these tests exercise global-scope behavior, not
+// mass-assignment policy, so the fixture opts out of the map-write
+// deny-by-default.
+func (ScopeUser) AllowAllColumns() bool { return true }
+
 // setupScopeTests builds an in-memory sqlite database with a
 // scope_users table seeded with a small fixture, sets it as Default,
 // and clears any previously-registered global scopes for ScopeUser.

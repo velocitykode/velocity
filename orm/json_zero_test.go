@@ -16,6 +16,8 @@ type jsonbStringModel struct {
 
 func (jsonbStringModel) TableName() string { return "jsonb_string_models" }
 
+func (jsonbStringModel) Fillable() []string { return []string{"name", "settings"} }
+
 type jsonStringModel struct {
 	Model[jsonStringModel]
 	Name string `orm:"column:name"`

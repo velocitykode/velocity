@@ -19,6 +19,10 @@ func (User) TableName() string {
 	return "users"
 }
 
+func (User) Fillable() []string {
+	return []string{"name", "email", "age"}
+}
+
 func newTestManager(t testing.TB) *Manager {
 	t.Helper()
 	m, err := NewManager(ManagerConfig{

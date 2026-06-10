@@ -832,6 +832,10 @@ func (SoftDeleteUser) TableName() string {
 	return "soft_delete_users"
 }
 
+func (SoftDeleteUser) Fillable() []string {
+	return []string{"name", "email", "age"}
+}
+
 func setupSoftDeleteConvenienceTests(t *testing.T) *Manager {
 	t.Helper()
 	manager := newTestManager(t)

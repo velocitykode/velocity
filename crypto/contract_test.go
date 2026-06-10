@@ -34,7 +34,7 @@ func TestAES256GCM_Contract(t *testing.T) {
 }
 
 // TestAES256CBC_Contract runs the cryptotest spec against AES-256-CBC.
-// CBC drivers do not support AEAD, so the AAD invariants self-skip.
+// CBC binds AAD via the HMAC framing, so the AAD invariants run here too.
 func TestAES256CBC_Contract(t *testing.T) {
 	cryptotest.RunEncryptorContractTests(t, func(t *testing.T) crypto.Encryptor {
 		e, err := crypto.NewEncryptor(crypto.Config{

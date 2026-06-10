@@ -49,6 +49,9 @@ type migrateFreshCmd struct{}
 func (migrateFreshCmd) name() string        { return "migrate:fresh" }
 func (migrateFreshCmd) description() string { return "Drop all tables and re-run migrations" }
 func (migrateFreshCmd) run(a *App, args []string) error {
+	if err := guardProductionDataLoss(a, "migrate:fresh", args); err != nil {
+		return err
+	}
 	if err := a.Bootstrap(); err != nil {
 		return err
 	}
@@ -60,13 +63,21 @@ type migrateRollbackCmd struct{}
 func (migrateRollbackCmd) name() string        { return "migrate:rollback" }
 func (migrateRollbackCmd) description() string { return "Rollback the last migration batch" }
 func (migrateRollbackCmd) run(a *App, args []string) error {
+	if err := guardProductionDataLoss(a, "migrate:rollback", args); err != nil {
+		return err
+	}
 	if err := a.Bootstrap(); err != nil {
 		return err
 	}
+	// Scan rather than require --step at args[0] so it composes with
+	// --force in any order.
 	steps := 1
-	if len(args) >= 2 && (args[0] == "--step" || args[0] == "-s") {
-		if n, err := strconv.Atoi(args[1]); err == nil {
-			steps = n
+	for i := 0; i < len(args); i++ {
+		if (args[i] == "--step" || args[i] == "-s") && i+1 < len(args) {
+			if n, err := strconv.Atoi(args[i+1]); err == nil {
+				steps = n
+			}
+			i++
 		}
 	}
 	return console.MigrateRollback(a.ormDB(), steps)

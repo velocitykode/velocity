@@ -196,7 +196,10 @@ func resolveGRPCScaffold(name string, opts MakeGRPCServiceOptions) (grpcScaffold
 
 	implDir := filepath.Join("internal", "grpc", "services")
 	if opts.Dir != "" {
-		if err := validateMakeName(opts.Dir); err != nil {
+		// --dir is a relative output directory, so nested paths are
+		// legitimate here; only this flag uses the slash-permitting
+		// validator.
+		if err := validateMakeNestedName(opts.Dir); err != nil {
 			return sc, fmt.Errorf("invalid --dir %q: %w", opts.Dir, err)
 		}
 		implDir = filepath.Clean(opts.Dir)
@@ -284,17 +287,10 @@ func validateGoIdent(s string) error {
 }
 
 // validateFileBase ensures a file base name is a single, traversal-safe path
-// segment. It reuses validateMakeName (which rejects "..", absolute paths,
-// hidden segments, backslashes, and NUL) and additionally forbids "/" so the
-// base cannot smuggle in a subdirectory.
+// segment. validateMakeName rejects "..", absolute paths, hidden segments,
+// backslashes, NUL, and "/", so the base cannot smuggle in a subdirectory.
 func validateFileBase(s string) error {
-	if err := validateMakeName(s); err != nil {
-		return err
-	}
-	if strings.Contains(s, "/") {
-		return fmt.Errorf("invalid name %q: must be a single path segment (no '/')", s)
-	}
-	return nil
+	return validateMakeName(s)
 }
 
 // lowerFirst lower-cases the first rune of s, producing a lowerCamelCase local

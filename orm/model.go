@@ -969,6 +969,12 @@ type Guarded interface {
 // when the model declares a Fillable allowlist that omits them.
 func applyFillableToStruct(s any) error {
 	policy := PolicyFor(s)
+	if policy.implicitDeny {
+		// No declared policy. Deny-by-default applies only to map-based
+		// writes; a *T the caller constructed field-by-field in code is
+		// not attacker-shaped input, so it persists untouched.
+		return nil
+	}
 	if !policy.HasFillable && !policy.HasGuarded {
 		return nil
 	}
@@ -1035,6 +1041,13 @@ func fieldColumnName(field reflect.StructField) string {
 // FillablePolicy keyed on the snake_case'd Go field name, so attackers
 // cannot bypass a guard by submitting the column-tag value instead.
 //
+// Deny-by-default: a model that declares neither Fillable() nor Guarded()
+// (and does not opt out via AllowAllColumns) rejects the write with a
+// *MassAssignmentError naming the model and the offending keys, rather
+// than silently skipping or - worse - writing them. Models with a
+// declared policy keep the established semantics: disallowed keys are
+// silently skipped.
+//
 // Embedded base columns (id, created_at, updated_at, deleted_at) bypass
 // the Fillable/Guarded check by design: they are framework-managed and
 // users never key policy on them.
@@ -1051,10 +1064,17 @@ func mapToStruct(m map[string]any, s any) error {
 		return nil
 	}
 	policy := PolicyFor(s)
-	if !policy.HasFillable && !policy.HasGuarded {
-		// Open policy on the map path: every client-supplied key that resolves
-		// to a column will be written, including sensitive names. Warn once.
-		warnOpenMassAssignment(s)
+	if policy.implicitDeny {
+		// No declared policy: reject every map key that resolves to an
+		// application column. Collected before any write so the caller
+		// never observes a partially hydrated model alongside the error.
+		// Matching reuses deniedUpdateKeys' case-insensitive column-or-
+		// field resolution: an exact-match check alone would treat
+		// "IS_ADMIN", or the snake-cased field name of a column-tag
+		// aliased field, as having no offending key and proceed.
+		if denied := deniedUpdateKeys(m, meta); len(denied) > 0 {
+			return &MassAssignmentError{Model: v.Type().String(), Keys: denied}
+		}
 	}
 
 	for _, col := range meta.Columns() {
@@ -1467,7 +1487,10 @@ func saveModel[T any](ctx context.Context, drv drivers.Driver, model *T, modelFi
 			driver: drv,
 		}
 
-		_, err := query.Where("id = ?", idField.Uint()).Update(ctx, data)
+		// bulkUpdate, not Update: this map came from structToMap on a
+		// caller-constructed *T, so the map-write mass-assignment policy
+		// does not apply (same scoping as Create(*T)).
+		_, err := query.Where("id = ?", idField.Uint()).bulkUpdate(ctx, data, BulkOpUpdate)
 		if err != nil {
 			return err
 		}
@@ -1568,7 +1591,10 @@ func saveUUIDModel[T any](ctx context.Context, drv drivers.Driver, model *T, mod
 			driver: drv,
 		}
 
-		_, err := query.Where("id = ?", idField.String()).Update(ctx, data)
+		// bulkUpdate, not Update: this map came from structToMap on a
+		// caller-constructed *T, so the map-write mass-assignment policy
+		// does not apply (same scoping as Create(*T)).
+		_, err := query.Where("id = ?", idField.String()).bulkUpdate(ctx, data, BulkOpUpdate)
 		if err != nil {
 			return err
 		}

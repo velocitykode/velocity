@@ -1751,3 +1751,37 @@ func TestGrammar_InsertReturningDifference(t *testing.T) {
 		}
 	})
 }
+
+// TestCompileCreateTable_EscapesStringDefault pins V2-25(e): string
+// column defaults are emitted through QuoteString so an embedded single
+// quote is doubled instead of terminating the literal mid-DDL. Defaults
+// are developer-authored, so this is defense-in-depth; quote-free
+// defaults compile to identical SQL as before.
+func TestCompileCreateTable_EscapesStringDefault(t *testing.T) {
+	table := &Table{
+		Columns: []Column{
+			{Name: "status", Type: "VARCHAR", Size: 32, Default: "it's", Nullable: true},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		compile func() string
+	}{
+		{"postgres", func() string { return (&PostgresGrammar{}).CompileCreateTable("things", table) }},
+		{"mysql", func() string { return (&MySQLGrammar{}).CompileCreateTable("things", table) }},
+		{"sqlite", func() string { return (&SQLiteGrammar{}).CompileCreateTable("things", table) }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.compile()
+			if !strings.Contains(got, "DEFAULT 'it''s'") {
+				t.Errorf("CompileCreateTable() = %q, want DEFAULT 'it''s'", got)
+			}
+			if strings.Contains(got, "DEFAULT 'it's'") {
+				t.Errorf("CompileCreateTable() emitted unescaped quote: %q", got)
+			}
+		})
+	}
+}

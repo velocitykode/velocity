@@ -26,9 +26,9 @@ func newFlashEncryptor(t *testing.T) crypto.Encryptor {
 	return enc
 }
 
-// newCBCEncryptor exercises the CBC fallback path inside SealFlash.
-// CBC ciphers reject EncryptBytesWithAAD; the sealer must degrade to
-// EncryptBytes so apps pinned to CBC still get authenticated cookies.
+// newCBCEncryptor exercises the CBC path inside SealFlash. CBC binds the
+// per-cookie AAD into the HMAC framing, so apps pinned to CBC get the
+// same domain separation as GCM (no EncryptBytes fallback exists).
 func newCBCEncryptor(t *testing.T) crypto.Encryptor {
 	t.Helper()
 	enc, err := crypto.NewEncryptor(crypto.Config{
@@ -66,7 +66,7 @@ func TestSealOpenFlash_Roundtrip(t *testing.T) {
 	}
 }
 
-func TestSealOpenFlash_RoundtripCBCFallback(t *testing.T) {
+func TestSealOpenFlash_RoundtripCBC(t *testing.T) {
 	enc := newCBCEncryptor(t)
 	input := map[string]any{"k": "v"}
 
@@ -80,7 +80,7 @@ func TestSealOpenFlash_RoundtripCBCFallback(t *testing.T) {
 	}
 	m, _ := out.(map[string]any)
 	if m["k"] != "v" {
-		t.Errorf("CBC fallback roundtrip lost data: %v", out)
+		t.Errorf("CBC roundtrip lost data: %v", out)
 	}
 }
 
@@ -270,35 +270,72 @@ func TestContextWithInput_SetsAuthenticatedCookie(t *testing.T) {
 
 func TestSealOpenFlash_DistinctNamesProduceIncompatiblePayloads(t *testing.T) {
 	// Domain separation: the same plaintext sealed under two different
-	// flash names must yield ciphertexts that cannot be substituted
-	// for one another. (GCM AAD enforces this; CBC fallback does not
-	// but is documented as such.)
-	enc := newFlashEncryptor(t)
-	plain := map[string]any{"v": 1}
+	// flash names must yield ciphertexts that cannot be substituted for
+	// one another. GCM enforces this via the AEAD tag; CBC via the
+	// AAD-bound HMAC framing (V2-12). Both modes must hold.
+	for _, tc := range []struct {
+		name string
+		enc  func(*testing.T) crypto.Encryptor
+	}{
+		{"GCM", newFlashEncryptor},
+		{"CBC", newCBCEncryptor},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			enc := tc.enc(t)
+			plain := map[string]any{"v": 1}
 
-	a, err := SealFlash(enc, FlashErrorsCookie, plain)
-	if err != nil {
-		t.Fatalf("SealFlash A: %v", err)
-	}
-	// Try to open A's ciphertext under the wrong name.
-	if _, err := OpenFlash(enc, FlashInputCookie, a); err == nil {
-		t.Error("ciphertext sealed under errors must not open under input")
-	}
+			a, err := SealFlash(enc, FlashErrorsCookie, plain)
+			if err != nil {
+				t.Fatalf("SealFlash A: %v", err)
+			}
+			// Try to open A's ciphertext under the wrong name.
+			if _, err := OpenFlash(enc, FlashInputCookie, a); err == nil {
+				t.Error("ciphertext sealed under errors must not open under input")
+			}
 
-	b, err := SealFlash(enc, FlashInputCookie, plain)
-	if err != nil {
-		t.Fatalf("SealFlash B: %v", err)
-	}
-	if _, err := OpenFlash(enc, FlashErrorsCookie, b); err == nil {
-		t.Error("ciphertext sealed under input must not open under errors")
+			b, err := SealFlash(enc, FlashInputCookie, plain)
+			if err != nil {
+				t.Fatalf("SealFlash B: %v", err)
+			}
+			if _, err := OpenFlash(enc, FlashErrorsCookie, b); err == nil {
+				t.Error("ciphertext sealed under input must not open under errors")
+			}
+		})
 	}
 }
 
-// TestSealFlash_PropagatesNonCipherErrors guards the fallback path so it
-// only kicks in for ErrInvalidCipher. Other errors (e.g. a marshal
-// failure on the plaintext) must surface to the caller without being
-// silently swallowed.
-func TestSealFlash_PropagatesNonCipherErrors(t *testing.T) {
+// TestOpenFlash_PlainEncryptBytesCookieRejected pins the removal of the
+// CBC fallback: a cookie sealed via plain EncryptBytes (the shape the
+// pre-V2-12 SealFlash fallback produced) must no longer open under any
+// flash name, because nothing binds it to one cookie or the other.
+func TestOpenFlash_PlainEncryptBytesCookieRejected(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		enc  func(*testing.T) crypto.Encryptor
+	}{
+		{"GCM", newFlashEncryptor},
+		{"CBC", newCBCEncryptor},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			enc := tc.enc(t)
+			sealed, err := enc.EncryptBytes([]byte(`{"k":"v"}`))
+			if err != nil {
+				t.Fatalf("EncryptBytes: %v", err)
+			}
+			if _, err := OpenFlash(enc, FlashErrorsCookie, sealed); err == nil {
+				t.Error("plain EncryptBytes cookie must not open under errors")
+			}
+			if _, err := OpenFlash(enc, FlashInputCookie, sealed); err == nil {
+				t.Error("plain EncryptBytes cookie must not open under input")
+			}
+		})
+	}
+}
+
+// TestSealFlash_PropagatesMarshalErrors: errors from JSON-encoding the
+// flash value (e.g. an unsupported type) must surface to the caller
+// without being silently swallowed.
+func TestSealFlash_PropagatesMarshalErrors(t *testing.T) {
 	enc := newFlashEncryptor(t)
 	_, err := SealFlash(enc, FlashErrorsCookie, make(chan int))
 	if err == nil {

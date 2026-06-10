@@ -427,15 +427,23 @@ func (d *LocalDriver) MimeType(path string) (string, error) {
 			return mapOpenError(err)
 		}
 		defer file.Close()
-		buf := make([]byte, 512)
-		n, err := file.Read(buf)
-		if err != nil && err != io.EOF {
-			return fmt.Errorf("velocity/storage: read file: %w", err)
-		}
-		detected = http.DetectContentType(buf[:n])
-		return nil
+		detected, err = sniffMimeType(file)
+		return err
 	})
 	return detected, err
+}
+
+// sniffMimeType reads up to 512 bytes from r and detects the content
+// type. io.ReadFull instead of a single Read: a Read may legally return
+// fewer bytes than available, truncating the sniff window and
+// misdetecting the type.
+func sniffMimeType(r io.Reader) (string, error) {
+	buf := make([]byte, 512)
+	n, err := io.ReadFull(r, buf)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return "", fmt.Errorf("velocity/storage: read file: %w", err)
+	}
+	return http.DetectContentType(buf[:n]), nil
 }
 
 // Files lists files in a directory

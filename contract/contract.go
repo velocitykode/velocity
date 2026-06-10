@@ -181,7 +181,7 @@ type Logger interface {
 // session-id resolver). The Encrypt* methods return the base64 envelope
 // string and the Decrypt* methods take that envelope string back; the
 // *WithAAD variants bind additional authenticated data to the ciphertext
-// and non-AEAD ciphers reject them with ErrInvalidCipher. Every signature
+// (GCM via the AEAD tag, CBC via the HMAC framing). Every signature
 // uses only stdlib types, so the contract leaf stays stdlib-only.
 type Encryptor interface {
 	Encrypt(plaintext string) (string, error)

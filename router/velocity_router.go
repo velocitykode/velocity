@@ -125,6 +125,14 @@ type VelocityRouterV2 struct {
 	// validateFn is wired during app init to run validation with DB support.
 	validateFn func(c *Context, rules map[string][]string, messages ...map[string]string) error
 
+	// errorLogger is wired during app init (see SetErrorLogger) so the
+	// default error path logs 500-class handler errors and recovered
+	// panics instead of writing a silent generic 500. Nil means no
+	// logging (standalone router usage). Suppressed entirely when a
+	// custom ErrorHandler is installed: the ErrorHandler owns the whole
+	// error pipeline, including logging.
+	errorLogger func(msg string, kvs ...any)
+
 	// intendedFn is wired during app init to pull the "intended" post-login
 	// URL from the session (auth's denyUnauthenticated stashes it). Lets
 	// ctx.Intended read the session without router importing auth.
@@ -204,6 +212,27 @@ func (r *VelocityRouterV2) AllowedRedirectHosts() []string {
 // SetValidator sets the validation function used by ctx.Validate().
 func (r *VelocityRouterV2) SetValidator(fn func(c *Context, rules map[string][]string, messages ...map[string]string) error) {
 	r.validateFn = fn
+}
+
+// SetErrorLogger wires the function the default error path uses to log
+// 500-class handler errors and recovered panics. The signature matches
+// log.Logger.Error so the framework can pass its logger straight through.
+// Wired during velocity.New() so the router need not import log.
+//
+// Logging policy (single owner, no double-logging):
+//   - default path (ErrorHandler == nil): exactly one error-level entry
+//     per failed request: non-HTTPError errors, *HTTPError with a 5xx
+//     code, and recovered panics (with stack). 4xx HTTPErrors are
+//     deliberate responses, not failures, and are not logged.
+//   - custom ErrorHandler installed: default logging is suppressed; the
+//     ErrorHandler replaces the whole error pipeline (rendering AND
+//     reporting). Consumers typically route to the exceptions handler,
+//     whose reporters then own logging.
+//
+// Like SetValidator, this must be called before serving begins; it is
+// not synchronized for concurrent mutation at runtime.
+func (r *VelocityRouterV2) SetErrorLogger(fn func(msg string, kvs ...any)) {
+	r.errorLogger = fn
 }
 
 // SetIntendedResolver wires the resolver ctx.Intended uses to pull the
@@ -826,7 +855,7 @@ func (r *VelocityRouterV2) handleNotFound(rw *responseWriter, req *http.Request,
 	}
 	handlerErr = (*handler)(ctx)
 	if handlerErr != nil && !errors.Is(handlerErr, ErrValidationAborted) {
-		r.handleError(ctx, rw, handlerErr)
+		r.handleError(ctx, rw, handlerErr, "")
 	}
 }
 
@@ -913,7 +942,7 @@ func (r *VelocityRouterV2) invokeHandler(ctx *Context, rw *responseWriter, req *
 
 	handlerErr = result.Handler(ctx)
 	if handlerErr != nil && !errors.Is(handlerErr, ErrValidationAborted) {
-		r.handleError(ctx, rw, handlerErr)
+		r.handleError(ctx, rw, handlerErr, "")
 	}
 }
 
@@ -936,12 +965,15 @@ func (r *VelocityRouterV2) onPanic(ctx *Context, rw *responseWriter, req *http.R
 		SpanID:    meta.spanID,
 		ParentID:  meta.parentID,
 	})
-	r.handleError(ctx, rw, err)
+	r.handleError(ctx, rw, err, string(buf[:n]))
 }
 
 // handleError writes an error response using the custom ErrorHandler if set,
-// or falls back to the default HTTP 500 behavior.
-func (r *VelocityRouterV2) handleError(ctx *Context, rw *responseWriter, err error) {
+// or falls back to the default HTTP 500 behavior. On the default path,
+// 500-class failures are logged via the wired errorLogger (see
+// SetErrorLogger for the full logging-ownership policy); stack is
+// non-empty only on the panic-recovery path.
+func (r *VelocityRouterV2) handleError(ctx *Context, rw *responseWriter, err error, stack string) {
 	if r.ErrorHandler != nil {
 		r.ErrorHandler(ctx, err)
 		return
@@ -949,11 +981,38 @@ func (r *VelocityRouterV2) handleError(ctx *Context, rw *responseWriter, err err
 
 	// Check for HTTPError type
 	if he, ok := err.(*HTTPError); ok {
+		if he.Code >= http.StatusInternalServerError {
+			// 5xx messages are server-side detail: log them, but never
+			// echo handler-supplied text to the client (generic-error
+			// house rule). 4xx messages are client-facing by design
+			// (validation hints, etc.) and pass through unchanged.
+			r.logServerError(ctx, err, stack)
+			http.Error(rw, http.StatusText(he.Code), he.Code)
+			return
+		}
 		http.Error(rw, he.Message, he.Code)
 		return
 	}
 
+	r.logServerError(ctx, err, stack)
 	http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
+}
+
+// logServerError emits the single default-path error log entry for a
+// failed request. No-op when no errorLogger is wired (standalone router).
+func (r *VelocityRouterV2) logServerError(ctx *Context, err error, stack string) {
+	fn := r.errorLogger
+	if fn == nil {
+		return
+	}
+	kvs := []any{"error", err.Error()}
+	if ctx != nil && ctx.Request != nil {
+		kvs = append(kvs, "method", ctx.Request.Method, "path", ctx.Request.URL.Path)
+	}
+	if stack != "" {
+		kvs = append(kvs, "stack", stack)
+	}
+	fn("unhandled error in HTTP handler", kvs...)
 }
 
 // (panicError and toString removed — use internal/panicerr.FromRecovered)

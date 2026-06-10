@@ -19,6 +19,11 @@ type AuditLog struct {
 
 func (AuditLog) TableName() string { return "audit_logs" }
 
+// AllowAllColumns: these tests exercise immutable-model semantics, not
+// mass-assignment policy, so the fixture opts out of the map-write
+// deny-by-default.
+func (AuditLog) AllowAllColumns() bool { return true }
+
 // AuditLogUUID is the UUID-keyed counterpart for ImmutableUUIDModel
 // coverage.
 type AuditLogUUID struct {

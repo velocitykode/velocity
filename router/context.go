@@ -1494,9 +1494,11 @@ func flashAADFor(name string) string {
 // WithErrors stashes validation errors as a flash cookie so they survive
 // a redirect and are available on the next request. The cookie payload is
 // encrypted with the app key via AES-GCM (or AES-CBC+HMAC, whichever the
-// app's crypto.Encryptor was configured with) so a sibling-domain cookie
-// injection cannot forge errors that bond would inject into props on the
-// next render.
+// app's crypto.Encryptor was configured with), with the cookie name's AAD
+// label bound into the authentication check in both modes, so a
+// sibling-domain cookie injection cannot forge errors that bond would
+// inject into props on the next render, and an errors ciphertext can
+// never be replayed as old input (or vice versa).
 //
 // Silently no-ops when the app has no crypto.Encryptor wired (e.g. raw
 // test contexts) so callers do not have to handle a failure mode that
@@ -1545,19 +1547,10 @@ func SealFlash(enc contract.Encryptor, name string, value any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	sealed, err := enc.EncryptBytesWithAAD(plaintext, []byte(aad))
-	if err == nil {
-		return sealed, nil
-	}
-	// CBC ciphers reject EncryptBytesWithAAD. Fall back to the universal
-	// EncryptBytes path; integrity is still enforced via the CBC+HMAC
-	// payload format. The AAD domain separation is lost on CBC, an
-	// accepted trade-off for backward compatibility with apps that pin
-	// to a CBC cipher.
-	if errors.Is(err, contract.ErrInvalidCipher) {
-		return enc.EncryptBytes(plaintext)
-	}
-	return "", err
+	// Both AES modes bind the AAD: GCM via the AEAD tag, CBC via the
+	// HMAC framing. No non-AAD fallback exists; a ciphertext sealed
+	// under one cookie name can never verify under the other.
+	return enc.EncryptBytesWithAAD(plaintext, []byte(aad))
 }
 
 // OpenFlash inverts SealFlash. Returns the decoded JSON value on
@@ -1579,20 +1572,14 @@ func OpenFlash(enc contract.Encryptor, name, cookieValue string) (any, error) {
 	if aad == "" {
 		return nil, fmt.Errorf("velocity/router: unknown flash cookie name %q", name)
 	}
+	// No non-AAD fallback: a cookie that does not verify under this
+	// name's AAD (wrong name, tampered, or sealed via plain
+	// EncryptBytes) is rejected outright. Flash cookies sealed by the
+	// pre-AAD CBC fallback stop decoding after an upgrade, which only
+	// drops in-flight flash data (5-minute cookies) once per deploy.
 	plaintext, err := enc.DecryptBytesWithAAD(cookieValue, []byte(aad))
 	if err != nil {
-		// CBC fallback: SealFlash falls back to EncryptBytes on CBC, so
-		// the read side must mirror that path. DecryptBytes accepts any
-		// ciphertext shape the encryptor produced and surfaces the
-		// underlying authentication failure as an error.
-		if errors.Is(err, contract.ErrInvalidCipher) || errors.Is(err, contract.ErrInvalidPayload) {
-			plaintext, err = enc.DecryptBytes(cookieValue)
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			return nil, err
-		}
+		return nil, err
 	}
 	var result any
 	if err := json.Unmarshal(plaintext, &result); err != nil {
