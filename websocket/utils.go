@@ -21,11 +21,20 @@ var (
 // negative value to explicitly opt out. Audit D-03.
 const DefaultMessageRateLimit = 10
 
-// generateID generates a unique ID for clients
-func generateID() string {
+// randRead is a seam over crypto/rand.Read so tests can simulate a failing
+// randomness source.
+var randRead = rand.Read
+
+// generateID generates a unique ID for clients. It fails closed: when the
+// randomness source errors, the caller must refuse the connection rather
+// than proceed with a predictable ID, since socket IDs bind channel-auth
+// signatures.
+func generateID() (string, error) {
 	b := make([]byte, 16)
-	rand.Read(b)
-	return hex.EncodeToString(b)
+	if _, err := randRead(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // DefaultConfig returns a default configuration.

@@ -240,6 +240,12 @@ func (d *DatabaseDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupe
 	wrapper.Payload.TraceID, wrapper.Payload.SpanID, wrapper.Payload.ParentID = trace.GetTraceContext(ctx)
 	wrapper.Payload.DedupeKey = dedupeKey
 
+	// Encrypt-then-sign: seal Data before the wrapper is marshalled so the
+	// signature below covers the ciphertext (see encryption.go).
+	if err := sealPayload(wrapper.Payload); err != nil {
+		return err
+	}
+
 	payload, err := json.Marshal(wrapper)
 	if err != nil {
 		return fmt.Errorf("velocity/queue: failed to serialize job: %w", err)
@@ -286,6 +292,12 @@ func (d *DatabaseDriver) PushDelayedCtx(ctx context.Context, job Job, delay time
 	}
 
 	wrapper.Payload.TraceID, wrapper.Payload.SpanID, wrapper.Payload.ParentID = trace.GetTraceContext(ctx)
+
+	// Encrypt-then-sign: seal Data before the wrapper is marshalled so the
+	// signature below covers the ciphertext (see encryption.go).
+	if err := sealPayload(wrapper.Payload); err != nil {
+		return err
+	}
 
 	payload, err := json.Marshal(wrapper)
 	if err != nil {
@@ -492,6 +504,14 @@ func (d *DatabaseDriver) popSelectLocked(ctx context.Context, queueName string, 
 				fmt.Errorf("velocity/queue: queue integrity check failed: %w", err))
 			return j, ReservationToken{}, qtc, qerr
 		}
+		// Decrypt AFTER the signature check so verification never runs on
+		// undecrypted attacker bytes (encrypt-then-sign; see encryption.go).
+		// sig != "" means a real signature verified above, which gates the
+		// legacy-plaintext transition path inside openPayload.
+		if err := openPayload(wrapper.Payload, sig != ""); err != nil {
+			j, qtc, qerr := d.quarantineAndReturn(tx, tc, jobRecord, queueName, err)
+			return j, ReservationToken{}, qtc, qerr
+		}
 		tc = TraceContext{
 			TraceID:  wrapper.Payload.TraceID,
 			SpanID:   wrapper.Payload.SpanID,
@@ -630,6 +650,12 @@ func (d *DatabaseDriver) FailReservedCtx(ctx context.Context, token ReservationT
 	if wrapErr != nil {
 		return fmt.Errorf("velocity/queue: failed to create job wrapper: %w", wrapErr)
 	}
+	// Seal the failed row's Data too: failed_jobs retains payloads
+	// indefinitely, so it must not become the plaintext copy of an
+	// otherwise-encrypted queue (see encryption.go).
+	if err := sealPayload(wrapper.Payload); err != nil {
+		return err
+	}
 	payload, serErr := json.Marshal(wrapper)
 	if serErr != nil {
 		return fmt.Errorf("velocity/queue: failed to serialize job: %w", serErr)
@@ -733,6 +759,13 @@ func (d *DatabaseDriver) Failed(job Job, err error, queueName string) error {
 	wrapper, wrapErr := createJobWrapper(job, queueName)
 	if wrapErr != nil {
 		return fmt.Errorf("velocity/queue: failed to create job wrapper: %w", wrapErr)
+	}
+
+	// Seal the failed row's Data too: failed_jobs retains payloads
+	// indefinitely, so it must not become the plaintext copy of an
+	// otherwise-encrypted queue (see encryption.go).
+	if sealErr := sealPayload(wrapper.Payload); sealErr != nil {
+		return sealErr
 	}
 
 	// Serialize the wrapper
@@ -906,9 +939,13 @@ const quarantinePoisonTimeout = 10 * time.Second
 // expected to roll back; the row remains in `jobs` and will be retried.
 //
 // Schema note: failed_jobs has columns (id, queue, payload, exception,
-// created_at, updated_at). We persist the raw on-wire payload so an operator
+// created_at, updated_at). We persist the on-wire payload so an operator
 // can inspect what came off the queue, and the hydration error string as the
-// exception so the failure mode is self-documenting.
+// exception so the failure mode is self-documenting. With payload encryption
+// enabled the stored blob is sealed first (sealQuarantineBlob): poison bytes
+// are attacker-shaped plaintext by definition, and copying them verbatim
+// into the long-lived failed_jobs table would bypass the at-rest
+// confidentiality QUEUE_ENCRYPT promises.
 func (d *DatabaseDriver) quarantinePoisonLocked(tx *sql.Tx, jobID uint, rawPayload, queueName string, hydrationErr error) error {
 	ctx, cancel := context.WithTimeout(context.Background(), quarantinePoisonTimeout)
 	defer cancel()
@@ -918,11 +955,13 @@ func (d *DatabaseDriver) quarantinePoisonLocked(tx *sql.Tx, jobID uint, rawPaylo
 		return fmt.Errorf("velocity/queue: failed to delete poison row %d: %w", jobID, err)
 	}
 
+	storedPayload, _ := sealQuarantineBlob(rawPayload)
+
 	now := time.Now()
 	insertQuery := d.rewriteQuery(
 		"INSERT INTO failed_jobs (queue, payload, exception, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
 	)
-	if _, err := tx.ExecContext(ctx, insertQuery, queueName, rawPayload, hydrationErr.Error(), now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, insertQuery, queueName, storedPayload, hydrationErr.Error(), now, now); err != nil {
 		return fmt.Errorf("velocity/queue: failed to record poison row %d in failed_jobs: %w", jobID, err)
 	}
 	return nil

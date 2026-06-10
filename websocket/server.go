@@ -343,6 +343,18 @@ func (s *Server) HandleConnection(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Generate the client ID before upgrading so a randomness failure can
+	// refuse the connection with a plain HTTP error instead of issuing a
+	// predictable ID (socket IDs bind channel-auth signatures).
+	id, err := generateID()
+	if err != nil {
+		s.activeConns.Add(-1)
+		s.wg.Add(-2)
+		s.logError("Failed to generate client ID", "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
 	// Upgrade connection
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -354,7 +366,7 @@ func (s *Server) HandleConnection(w http.ResponseWriter, r *http.Request) {
 
 	// Create client
 	client := &Client{
-		ID:       generateID(),
+		ID:       id,
 		Conn:     conn,
 		Send:     make(chan Message, 256),
 		Server:   s,

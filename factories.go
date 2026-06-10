@@ -10,6 +10,7 @@ import (
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/guards"
 	"github.com/velocitykode/velocity/cache"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/internal/clientip"
 	"github.com/velocitykode/velocity/log"
@@ -32,8 +33,9 @@ func initCache(config CacheConfig) *cache.Manager {
 	switch config.Driver {
 	case "file":
 		cacheConfig.Stores["default"] = cache.StoreConfig{
-			Driver: "file",
-			Path:   config.Path,
+			Driver:        "file",
+			Path:          config.Path,
+			MaxValueBytes: config.MaxValueBytes,
 		}
 	case "redis":
 		cacheConfig.Stores["default"] = cache.StoreConfig{
@@ -46,7 +48,9 @@ func initCache(config CacheConfig) *cache.Manager {
 		}
 	default:
 		cacheConfig.Stores["default"] = cache.StoreConfig{
-			Driver: "memory",
+			Driver:        "memory",
+			MaxEntries:    config.MemoryMaxEntries,
+			MaxValueBytes: config.MaxValueBytes,
 		}
 	}
 
@@ -235,7 +239,7 @@ func initDB(config DBConfig) (*orm.Manager, error) {
 // DB for the database driver prevents the requested driver from starting,
 // so boot fails loudly rather than silently downgrading to the in-memory
 // driver.
-func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey string, appKey string, appEnv string, logger log.Logger) (queue.Driver, error) {
+func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey string, appKey string, appEnv string, encryptor contract.Encryptor, logger log.Logger) (queue.Driver, error) {
 	// Route queue-signing diagnostics through the framework logger before
 	// configuring so missing/APP_KEY fallbacks are surfaced consistently.
 	queue.SetSigningLogger(logger)
@@ -256,6 +260,22 @@ func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey strin
 		AllowUnsignedInDev: app.IsDevOrTestEnv(appEnv),
 	}); err != nil {
 		return nil, err
+	}
+
+	// Opt-in payload encryption (QUEUE_ENCRYPT=true): seal Payload.Data at
+	// rest with the app encryptor. Fail-closed when the operator asked for
+	// encryption but the crypto subsystem is unavailable (APP_KEY unset);
+	// silently proceeding would persist plaintext the operator believes is
+	// encrypted. The else branch always clears the package state so a
+	// previous app instance in the same process (tests, embed mode) cannot
+	// leak its encryptor into this one.
+	if config.Encrypt {
+		if encryptor == nil {
+			return nil, queue.ErrEncryptorRequired
+		}
+		queue.SetPayloadEncryptor(encryptor)
+	} else {
+		queue.SetPayloadEncryptor(nil)
 	}
 
 	d, err := queue.NewQueue(queue.QueueConfig{

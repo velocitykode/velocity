@@ -7,8 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -108,11 +111,52 @@ func NewRedisDriver(config queue.RedisConfig) (*RedisDriver, error) {
 		return nil, fmt.Errorf("velocity/queue: failed to connect to redis: %w", err)
 	}
 
+	// A non-loopback Redis without TLS sends every command (including the
+	// AUTH password and job payloads) in cleartext, and without a password
+	// anyone who can reach the host can read and inject jobs. Warn loudly
+	// at startup; do not refuse to boot, since the operator may secure the
+	// link elsewhere (VPC, tunnel). The driver's SetLogger seam is only
+	// installed after construction, so this goes through slog like the
+	// cache driver's startup warnings.
+	warnIfInsecure(config.Host, config.Password, config.TLS)
+
 	return &RedisDriver{
 		client: client,
 		ctx:    ctx,
 		config: config,
 	}, nil
+}
+
+// isLoopbackHost reports whether host clearly names the local machine:
+// "localhost" or a literal loopback IP (127.0.0.0/8, ::1). Hostnames are
+// deliberately not DNS-resolved at construction, so any other name counts
+// as remote.
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// warnIfInsecure logs a startup warning when the driver connects to a
+// non-loopback host with TLS disabled or with no password.
+func warnIfInsecure(host, password string, tlsEnabled bool) {
+	if isLoopbackHost(host) {
+		return
+	}
+	if !tlsEnabled {
+		slog.Default().Warn(
+			"velocity/queue: redis driver connecting to non-loopback host without TLS; traffic (including the password and job payloads) is sent in cleartext. Set REDIS_TLS=true or RedisConfig.TLS.",
+			"host", host,
+		)
+	}
+	if password == "" {
+		slog.Default().Warn(
+			"velocity/queue: redis driver connecting to non-loopback host without a password; anyone who can reach the host can read and inject jobs. Set QUEUE_REDIS_PASSWORD or RedisConfig.Password.",
+			"host", host,
+		)
+	}
 }
 
 // SetEventDispatcher installs the event dispatcher. The assignment goes
@@ -248,6 +292,12 @@ func (r *RedisDriver) PushCtx(ctx context.Context, job queue.Job, queueName ...s
 	}
 	payload.TraceID, payload.SpanID, payload.ParentID = trace.GetTraceContext(ctx)
 
+	// Encrypt-then-sign: seal Data before marshalling so the signature
+	// below covers the ciphertext (see queue/encryption.go).
+	if err := queue.SealPayload(payload); err != nil {
+		return err
+	}
+
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("velocity/queue: failed to marshal payload: %w", err)
@@ -285,6 +335,12 @@ func (r *RedisDriver) PushDelayedCtx(ctx context.Context, job queue.Job, delay t
 		payload.Attempts = attempts + 1
 	}
 	payload.TraceID, payload.SpanID, payload.ParentID = trace.GetTraceContext(ctx)
+
+	// Encrypt-then-sign: seal Data before marshalling so the signature
+	// below covers the ciphertext (see queue/encryption.go).
+	if err := queue.SealPayload(payload); err != nil {
+		return err
+	}
 
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -378,6 +434,15 @@ func (r *RedisDriver) PopCtxWithTrace(ctx context.Context, queueName string) (qu
 			fmt.Errorf("velocity/queue: queue integrity check failed: %w", err))
 	}
 
+	// Decrypt AFTER the signature check so verification never runs on
+	// undecrypted attacker bytes (encrypt-then-sign; see
+	// queue/encryption.go). sig != "" means a real signature verified
+	// above, which gates the legacy-plaintext transition path inside
+	// OpenPayload.
+	if err := queue.OpenPayload(&payload, sig != ""); err != nil {
+		return r.quarantinePoisonedPayload(ctx, queueName, rawPayload, payload.Type, err)
+	}
+
 	tc = queue.TraceContext{TraceID: payload.TraceID, SpanID: payload.SpanID, ParentID: payload.ParentID}
 
 	// The dedupe sentinel is INTENTIONALLY NOT released here.
@@ -417,7 +482,8 @@ func (r *RedisDriver) PopCtxWithTrace(ctx context.Context, queueName string) (qu
 // the failure as recoverable (the entry is already gone from the live
 // list; the next pop picks up the next eligible job).
 //
-// The raw payload is stored as a base64-encoded blob alongside the
+// The payload (sealed first when encryption is on; see below) is
+// stored as a base64-encoded blob alongside the
 // queue name, error message, and timestamp. Base64 is used because the
 // bytes that arrived on the wire are not necessarily valid UTF-8 (a
 // classic poison vector), and storing them verbatim would corrupt the
@@ -436,12 +502,22 @@ func (r *RedisDriver) quarantinePoisonedPayload(ctx context.Context, queueName, 
 	var tc queue.TraceContext
 
 	failedKey := r.getFailedKey(queueName)
+	// With payload encryption enabled the poison bytes are sealed before
+	// they reach the failed list (queue.SealQuarantineBlob): verbatim
+	// plaintext in a long-lived Redis list would bypass the at-rest
+	// confidentiality QUEUE_ENCRYPT promises. The "encrypted" marker tells
+	// operator tooling to run the blob through queue.OpenQuarantineBlob
+	// after base64-decoding.
+	storedPayload, sealed := queue.SealQuarantineBlob(rawPayload)
 	record := map[string]interface{}{
 		"queue":       queueName,
-		"payload_b64": base64.StdEncoding.EncodeToString([]byte(rawPayload)),
+		"payload_b64": base64.StdEncoding.EncodeToString([]byte(storedPayload)),
 		"exception":   poisonErr.Error(),
 		"failed_at":   time.Now().UTC(),
 		"poison":      true,
+	}
+	if sealed {
+		record["encrypted"] = true
 	}
 	data, merr := json.Marshal(record)
 
@@ -527,6 +603,13 @@ func (r *RedisDriver) Failed(job queue.Job, err error, queueName string) error {
 	payload, serr := queue.SerializeJob(job, queueName)
 	if serr != nil {
 		return serr
+	}
+
+	// Seal the failed entry's Data too: the failed list retains payloads
+	// indefinitely, so it must not become the plaintext copy of an
+	// otherwise-encrypted queue (see queue/encryption.go).
+	if err := queue.SealPayload(payload); err != nil {
+		return err
 	}
 
 	// Add failure information
@@ -751,6 +834,12 @@ func (r *RedisDriver) PushIfNotExistsCtx(ctx context.Context, job queue.Job, ded
 	}
 	payload.TraceID, payload.SpanID, payload.ParentID = trace.GetTraceContext(ctx)
 	payload.DedupeKey = dedupeKey
+
+	// Encrypt-then-sign: seal Data before marshalling so the signature
+	// below covers the ciphertext (see queue/encryption.go).
+	if err := queue.SealPayload(payload); err != nil {
+		return err
+	}
 
 	data, err := json.Marshal(payload)
 	if err != nil {

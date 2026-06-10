@@ -45,6 +45,7 @@ type Payload struct {
 	SpanID     string          `json:"span_id,omitempty"`    // Producer-side APM span ID
 	ParentID   string          `json:"parent_id,omitempty"`  // Producer-side parent span ID
 	Signature  string          `json:"signature,omitempty"`  // HMAC-SHA256 integrity signature
+	Encrypted  bool            `json:"encrypted,omitempty"`  // Data is sealed by the payload encryptor (see encryption.go)
 	DedupeKey  string          `json:"dedupe_key,omitempty"` // Queue-layer dedupe key for at-most-once enqueue
 	DatabaseID int64           `json:"-"`                    // Internal use for database driver
 }

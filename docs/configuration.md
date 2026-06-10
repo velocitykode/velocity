@@ -101,6 +101,7 @@ that cannot import `app`).
 | `CACHE_DRIVER` | `config.go` | `memory` | recommended (redis on HA) | per-process state on multi-host | one of `memory`, `file`, `redis`. `database` is reserved but not implemented; setting it is rejected at boot |
 | `CACHE_PREFIX` | `config.go` | `velocity_cache` | no | none | |
 | `CACHE_PATH` | `config.go` | empty | only if file driver | path traversal if attacker-controlled | |
+| `CACHE_MEMORY_MAX_ENTRIES` | `config.go` | `0` (= 1,000,000) | no | unbounded cache map is OOM-able via attacker-influenceable keys | memory driver entry cap with LRU eviction. `0` = default cap, negative = unlimited (escape hatch) |
 | `REDIS_HOST` | `config.go` | `127.0.0.1` | only if redis | binding 0.0.0.0 inadvertently | |
 | `REDIS_PORT` | `config.go` | `6379` | only if redis | none | |
 | `REDIS_PASSWORD` | `config.go` | empty | YES (redis in prod) | unauthenticated redis | SENSITIVE |

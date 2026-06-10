@@ -52,4 +52,27 @@
 // Capability detection uses a plain type assertion at the call site
 // (e.g. `if d, ok := driver.(ReservationDriver); ok { ... }`); no
 // framework-level helper is provided.
+//
+// # Payload protection
+//
+// Two independent, composable layers protect persisted payloads:
+//
+//	Signing      HMAC-SHA256 over the marshalled payload, configured from
+//	             QUEUE_SIGNING_KEY (or APP_KEY via HKDF). Integrity only:
+//	             a worker refuses payloads an attacker wrote directly to
+//	             the store. See signing.go.
+//
+//	Encryption   Opt-in via QUEUE_ENCRYPT=true. Payload.Data (the
+//	             job-state JSON) is sealed with the app encryptor before
+//	             persist and opened after the integrity check on pop, so
+//	             jobs / failed_jobs rows and Redis lists hold ciphertext
+//	             instead of plaintext job state. Envelope metadata (type,
+//	             queue, attempts, trace ids) stays readable for routing.
+//	             Encrypt-then-sign: the signature covers the ciphertext,
+//	             so verification never touches undecrypted bytes.
+//	             Requires an AEAD cipher (AES-GCM): the job type is bound
+//	             into the ciphertext as AAD and non-AEAD (CBC) ciphers
+//	             fail closed. See encryption.go for the deploy-transition
+//	             rules; the memory driver skips encryption because its
+//	             state never leaves process memory.
 package queue

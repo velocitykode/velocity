@@ -58,6 +58,15 @@ type FileStore struct {
 	done            chan struct{}
 	closeOnce       sync.Once
 
+	// maxValueBytes caps the serialized size of a single value accepted by
+	// Put/Add/Forever; 0 means unlimited. Immutable after construction.
+	maxValueBytes int64
+
+	// walkHook, when non-nil, is invoked once per file visited by the
+	// lock-free walks in sweepExpired and FlushCtx. Test instrumentation
+	// only: lets tests prove the store mutex is not held during the walk.
+	walkHook func()
+
 	// lockStore and friends back FileStore.Lock with flock(2) so the
 	// file driver satisfies the Locker capability. Created lazily on
 	// first Lock call; lockErr captures any initialisation failure so
@@ -79,19 +88,37 @@ type fileCacheItem struct {
 	Expiration *time.Time `json:"expiration,omitempty"`
 }
 
+// FileOption configures a FileStore at construction time.
+type FileOption func(*FileStore)
+
+// WithFileMaxValueBytes caps the serialized size of a single cached value.
+// n > 0 rejects oversized Put/Add/Forever with ErrValueTooLarge; n <= 0
+// (the default) means unlimited, preserving historical behaviour. The cap
+// is per-value; aggregate growth is bounded separately (entry caps,
+// expired-file cleanup).
+func WithFileMaxValueBytes(n int64) FileOption {
+	return func(s *FileStore) {
+		if n > 0 {
+			s.maxValueBytes = n
+		} else {
+			s.maxValueBytes = 0
+		}
+	}
+}
+
 // NewFileStore creates a new file cache store.
 // The cache root directory is created up-front so individual Put calls don't
 // have to MkdirAll on every write. Call Start() to begin the background
 // expired-item cleanup goroutine.
-func NewFileStore(prefix, path string) (*FileStore, error) {
-	return NewFileStoreWithOptions(prefix, path, DefaultFileCleanupInterval)
+func NewFileStore(prefix, path string, opts ...FileOption) (*FileStore, error) {
+	return NewFileStoreWithOptions(prefix, path, DefaultFileCleanupInterval, opts...)
 }
 
 // NewFileStoreWithOptions creates a new file cache store with a configurable
 // cleanup interval. Pass 0 to use DefaultFileCleanupInterval. This exists so
 // tests (and callers that want to tune memory/disk tradeoffs) don't have to
 // wait for the 5-minute default.
-func NewFileStoreWithOptions(prefix, path string, cleanupInterval time.Duration) (*FileStore, error) {
+func NewFileStoreWithOptions(prefix, path string, cleanupInterval time.Duration, opts ...FileOption) (*FileStore, error) {
 	if path == "" {
 		path = "storage/framework/cache/data"
 	}
@@ -107,12 +134,30 @@ func NewFileStoreWithOptions(prefix, path string, cleanupInterval time.Duration)
 		cleanupInterval = DefaultFileCleanupInterval
 	}
 
-	return &FileStore{
+	s := &FileStore{
 		path:            path,
 		prefix:          prefix,
 		cleanupInterval: cleanupInterval,
 		done:            make(chan struct{}),
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s, nil
+}
+
+// MaxValueBytes reports the store's per-value size cap; 0 means unlimited.
+func (s *FileStore) MaxValueBytes() int64 {
+	return s.maxValueBytes
+}
+
+// checkValueSize enforces the optional per-value cap against the serialized
+// value bytes. Returns nil when no cap is configured.
+func (s *FileStore) checkValueSize(valueData []byte) error {
+	if s.maxValueBytes > 0 && int64(len(valueData)) > s.maxValueBytes {
+		return fmt.Errorf("velocity/cache: value size %d exceeds maximum of %d bytes: %w", len(valueData), s.maxValueBytes, ErrValueTooLarge)
+	}
+	return nil
 }
 
 // Start begins the background goroutine that periodically removes expired
@@ -148,43 +193,90 @@ func (s *FileStore) cleanupExpired() {
 		case <-s.done:
 			return
 		case <-ticker.C:
-			s.mu.Lock()
-			filepath.Walk(s.path, func(path string, info os.FileInfo, err error) error {
-				if err != nil || info.IsDir() {
-					return nil
-				}
-
-				// Read file to check expiration
-				data, err := os.ReadFile(path)
-				if err != nil {
-					return nil
-				}
-
-				var item fileCacheItem
-				if err := json.Unmarshal(data, &item); err != nil {
-					// Unreadable: corrupt, partially written, a legacy
-					// on-disk schema from before the value-encoding change, or
-					// an in-flight write by another instance/process sharing
-					// this path (a non-atomic Put mid-write, or an AddCtx
-					// O_EXCL zero-byte file before its payload lands). GetCtx
-					// can never serve it, so purge it to avoid leaking the
-					// file forever -- but only once it is older than the grace
-					// window, so a live concurrent write is never deleted.
-					if time.Since(info.ModTime()) > fileUnreadableGrace {
-						os.Remove(path)
-					}
-					return nil
-				}
-
-				// Remove if expired
-				if item.Expiration != nil && time.Now().After(*item.Expiration) {
-					os.Remove(path)
-				}
-
-				return nil
-			})
-			s.mu.Unlock()
+			s.sweepExpired()
 		}
+	}
+}
+
+// sweepExpired performs one cleanup pass. The full-tree walk -- including
+// the per-file read and JSON decode -- runs WITHOUT the store mutex, so a
+// large cache no longer stalls every Get/Put for the duration of the sweep.
+// The walk only collects candidate paths; each candidate is then re-verified
+// and removed under a briefly-held lock (see removeIfEligible), which closes
+// the race where a concurrent Put refreshes an entry between the lock-free
+// observation and the removal.
+func (s *FileStore) sweepExpired() {
+	var candidates []string
+	filepath.Walk(s.path, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		if s.walkHook != nil {
+			s.walkHook()
+		}
+
+		// Read file to check expiration
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+
+		var item fileCacheItem
+		if err := json.Unmarshal(data, &item); err != nil {
+			// Unreadable: corrupt, partially written, a legacy
+			// on-disk schema from before the value-encoding change, or
+			// an in-flight write by another instance/process sharing
+			// this path (a non-atomic Put mid-write, or an AddCtx
+			// O_EXCL zero-byte file before its payload lands). GetCtx
+			// can never serve it, so purge it to avoid leaking the
+			// file forever -- but only once it is older than the grace
+			// window, so a live concurrent write is never deleted.
+			if time.Since(info.ModTime()) > fileUnreadableGrace {
+				candidates = append(candidates, path)
+			}
+			return nil
+		}
+
+		// Collect if expired
+		if item.Expiration != nil && time.Now().After(*item.Expiration) {
+			candidates = append(candidates, path)
+		}
+
+		return nil
+	})
+
+	for _, path := range candidates {
+		s.removeIfEligible(path)
+	}
+}
+
+// removeIfEligible re-reads a cleanup candidate under the write lock and
+// deletes it only if it is still expired (or still unreadable past the
+// grace window). Holding the lock for a single read+remove keeps the
+// critical section bounded while excluding same-process writers: a Put
+// or Add that refreshed the entry after the lock-free walk observed it
+// either completed before we acquired the lock (re-check sees the fresh
+// entry and skips) or is queued behind us (its write lands after our
+// remove, exactly as if it had raced a Forget).
+func (s *FileStore) removeIfEligible(path string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return // already gone (or unreadable at the FS level); nothing to do
+	}
+
+	var item fileCacheItem
+	if err := json.Unmarshal(data, &item); err != nil {
+		if info, serr := os.Stat(path); serr == nil && time.Since(info.ModTime()) > fileUnreadableGrace {
+			os.Remove(path)
+		}
+		return
+	}
+
+	if item.Expiration != nil && time.Now().After(*item.Expiration) {
+		os.Remove(path)
 	}
 }
 
@@ -292,6 +384,9 @@ func (s *FileStore) PutCtx(ctx context.Context, key string, value interface{}, t
 	if err != nil {
 		return fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
 	}
+	if err := s.checkValueSize(valueData); err != nil {
+		return err
+	}
 
 	expiration := time.Now().Add(ttl)
 	item := fileCacheItem{
@@ -357,6 +452,9 @@ func (s *FileStore) AddCtx(ctx context.Context, key string, value interface{}, t
 	valueData, err := MarshalValue(value)
 	if err != nil {
 		return false, fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
+	}
+	if err := s.checkValueSize(valueData); err != nil {
+		return false, err
 	}
 	expiration := time.Now().Add(ttl)
 	item := fileCacheItem{
@@ -488,6 +586,9 @@ func (s *FileStore) ForeverCtx(ctx context.Context, key string, value interface{
 	if err != nil {
 		return fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
 	}
+	if err := s.checkValueSize(valueData); err != nil {
+		return err
+	}
 
 	item := fileCacheItem{
 		Value:      valueData,
@@ -542,25 +643,56 @@ func (s *FileStore) Forget(key string) error {
 }
 
 // FlushCtx removes all values from the cache.
+//
+// The directory walk runs WITHOUT the store mutex so a flush over a large
+// cache does not stall concurrent Get/Put for the whole traversal; the lock
+// is taken only around each individual os.Remove. A write that races the
+// walk (lands in a shard the walk already passed) survives the flush --
+// observationally identical to the same Put issued just after Flush
+// returned, which the previous whole-walk lock allowed too.
 func (s *FileStore) FlushCtx(ctx context.Context) error {
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
-	// Remove all files in cache directory
-	return filepath.Walk(s.path, func(path string, info os.FileInfo, err error) error {
+	// Collect every file path lock-free.
+	var paths []string
+	err := filepath.Walk(s.path, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			// Entries can vanish mid-walk now that concurrent ops (expired
+			// Get removal, Forget) proceed during the traversal.
+			if os.IsNotExist(err) {
+				return nil
+			}
 			return err
 		}
 		if !info.IsDir() {
-			return os.Remove(path)
+			if s.walkHook != nil {
+				s.walkHook()
+			}
+			paths = append(paths, path)
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+
+	// Delete per-file under a briefly-held lock. Holding the mutex for each
+	// removal (rather than not at all) keeps Flush excluded from a same-
+	// process AddCtx between its O_EXCL create and payload write, so a
+	// successful Add is never silently emptied by a concurrent Flush.
+	for _, path := range paths {
+		s.mu.Lock()
+		rmErr := os.Remove(path)
+		s.mu.Unlock()
+		if rmErr != nil && !os.IsNotExist(rmErr) {
+			return rmErr
+		}
+	}
+	return nil
 }
 
 // Flush removes all values from the cache.

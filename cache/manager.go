@@ -86,6 +86,15 @@ type StoreConfig struct {
 	Password string // For Redis driver
 	Database int    // For Redis driver
 	TLS      bool   // Enable TLS for Redis connections
+	// MaxEntries bounds the memory driver's entry count so unbounded key
+	// growth cannot OOM the process. 0 applies drivers.DefaultMaxEntries
+	// (1,000,000); negative disables the bound. Ignored by other drivers.
+	MaxEntries int
+	// MaxValueBytes caps the serialized size of a single cached value for
+	// the memory and file drivers; oversized Put/Add/Forever calls fail
+	// with cache.ErrValueTooLarge. 0 (the default) means unlimited.
+	// Ignored by other drivers.
+	MaxValueBytes int64
 }
 
 // Validate checks that a driver name is present. Per-driver field validation

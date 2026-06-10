@@ -187,9 +187,9 @@ func TestVerifier_Verify_RejectsMissingConfig(t *testing.T) {
 func TestVerifier_Verify_MalformedHeader(t *testing.T) {
 	t.Parallel()
 
-	// Tolerance=0 disables the timestamp check so we exercise the parse +
-	// hex paths without timestamp interference.
-	v := &Verifier{Algorithm: HMACSHA256, Secret: []byte("k"), Tolerance: 0}
+	// DisableTimestampCheck so we exercise the parse + hex paths without
+	// timestamp interference (Tolerance=0 now means the 5-minute default).
+	v := &Verifier{Algorithm: HMACSHA256, Secret: []byte("k"), DisableTimestampCheck: true}
 	cases := []string{
 		"",
 		"garbage",
@@ -210,10 +210,13 @@ func TestVerifier_Verify_MalformedHeader(t *testing.T) {
 	}
 }
 
-func TestVerifier_Verify_ZeroToleranceSkipsTimestampCheck(t *testing.T) {
+// TestVerifier_Verify_ZeroToleranceDefaultsToFiveMinutes is the regression
+// test for the fail-open bug where Tolerance=0 (e.g. a struct-literal
+// Verifier that bypassed NewVerifier) disabled the freshness check entirely.
+func TestVerifier_Verify_ZeroToleranceDefaultsToFiveMinutes(t *testing.T) {
 	t.Parallel()
 
-	signed := time.Unix(1, 0) // ancient
+	signed := time.Unix(1714000000, 0)
 	signer := &Signer{Algorithm: HMACSHA256, Secret: []byte("k"), Now: func() time.Time { return signed }}
 	header, _ := signer.Header([]byte("p"))
 
@@ -221,10 +224,46 @@ func TestVerifier_Verify_ZeroToleranceSkipsTimestampCheck(t *testing.T) {
 		Algorithm: HMACSHA256,
 		Secret:    []byte("k"),
 		Tolerance: 0,
-		Now:       func() time.Time { return signed.Add(100 * 365 * 24 * time.Hour) },
+		Now:       func() time.Time { return signed.Add(6 * time.Minute) },
+	}
+	if err := v.Verify([]byte("p"), header); !errors.Is(err, ErrTimestampOutOfTolerance) {
+		t.Fatalf("Tolerance=0 must apply the 5m default: want ErrTimestampOutOfTolerance, got %v", err)
+	}
+
+	// Inside the default window the same verifier accepts.
+	v.Now = func() time.Time { return signed.Add(4 * time.Minute) }
+	if err := v.Verify([]byte("p"), header); err != nil {
+		t.Fatalf("expected acceptance within default tolerance, got %v", err)
+	}
+}
+
+func TestVerifier_Verify_DisableTimestampCheck_AcceptsStale(t *testing.T) {
+	t.Parallel()
+
+	signed := time.Unix(1, 0) // ancient
+	signer := &Signer{Algorithm: HMACSHA256, Secret: []byte("k"), Now: func() time.Time { return signed }}
+	header, _ := signer.Header([]byte("p"))
+
+	v := &Verifier{
+		Algorithm:             HMACSHA256,
+		Secret:                []byte("k"),
+		DisableTimestampCheck: true,
+		Now:                   func() time.Time { return signed.Add(100 * 365 * 24 * time.Hour) },
 	}
 	if err := v.Verify([]byte("p"), header); err != nil {
-		t.Fatalf("expected no error with Tolerance=0, got %v", err)
+		t.Fatalf("expected no error with DisableTimestampCheck, got %v", err)
+	}
+}
+
+func TestNewVerifier_DefaultsToleranceExplicitly(t *testing.T) {
+	t.Parallel()
+
+	v := NewVerifier([]byte("k"))
+	if v.Tolerance != 5*time.Minute {
+		t.Fatalf("NewVerifier Tolerance = %v, want 5m", v.Tolerance)
+	}
+	if v.DisableTimestampCheck {
+		t.Fatal("NewVerifier must not disable the timestamp check")
 	}
 }
 
