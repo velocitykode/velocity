@@ -46,6 +46,15 @@ func (p *rememberRevivalProvider) UpdateRememberToken(user auth.Authenticatable,
 	return nil
 }
 
+// CompareAndSwapRememberToken implements the capability the guard now
+// requires for recall rotation; recalls fail closed without it.
+func (p *rememberRevivalProvider) CompareAndSwapRememberToken(_ context.Context, user auth.Authenticatable, oldToken, newToken string) (bool, error) {
+	if p.user == nil || p.user.rememberToken != oldToken {
+		return false, nil
+	}
+	return true, p.UpdateRememberToken(user, newToken)
+}
+
 // mintRememberCookie returns the remember cookie set by a fresh Login that
 // passed remember=true. The session cookie is discarded so the revival path
 // runs with ONLY the remember cookie present.
@@ -138,9 +147,7 @@ func TestSessionGuard_RememberRevival_RotatesSessionID(t *testing.T) {
 		preID = preSession.ID()
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.AddCookie(rememberCookie)
-	req = WithSessionContext(req)
+	req := rememberRecallRequest(t, rememberCookie, httptest.NewRecorder())
 
 	if u := guard.User(req); u == nil {
 		t.Fatal("User(req) returned nil; expected revival to succeed without server store")

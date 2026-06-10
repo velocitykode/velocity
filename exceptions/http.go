@@ -158,7 +158,7 @@ func (e *ValidationException) ShouldReport() bool {
 
 // Render implements Renderable for custom JSON response.
 func (e *ValidationException) Render(ctx RenderContext) error {
-	ctx.SetHeader("Content-Type", "application/json")
+	setJSONHeaders(ctx)
 	ctx.WriteHeader(e.StatusCode)
 
 	response := map[string]any{

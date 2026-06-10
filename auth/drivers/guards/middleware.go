@@ -66,6 +66,14 @@ func (g *SessionGuard) SessionMiddleware() router.MiddlewareFunc {
 				c.Request = r
 			}
 
+			// Hand the response writer to the holder so guard read paths
+			// (User/Check) can emit Set-Cookie during remember-cookie
+			// revival: rotate-on-use needs to deliver the replacement
+			// remember cookie, and those methods only see the request.
+			if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok && holder != nil {
+				holder.setResponseWriter(c.Response)
+			}
+
 			// Eagerly bind a session to the request so anonymous-but-
 			// stateful concerns (CSRF token mint, flash bag, anything
 			// that wants a stable per-visitor id) have something to bind

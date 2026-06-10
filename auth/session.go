@@ -365,6 +365,19 @@ type SessionConfig struct {
 	HttpOnly bool
 	SameSite http.SameSite
 
+	// AbsoluteLifetime caps a session's total age in minutes, measured from
+	// its first creation, regardless of activity. The rolling Lifetime
+	// window refreshes on every Save, so an active session would otherwise
+	// live forever; this cap ends it unconditionally.
+	//
+	// Zero means "use the framework default" (30 days), NOT disabled:
+	// leaving the field unset still bounds session age (fail-secure). A
+	// NEGATIVE value is the explicit opt-out that disables the absolute
+	// cap entirely; only set this deliberately, it restores the
+	// unbounded-session behaviour. When positive it must be >= Lifetime
+	// (Validate rejects an absolute cap shorter than the rolling window).
+	AbsoluteLifetime int // Minutes; 0 = default (30 days), negative = no cap (explicit opt-out)
+
 	// AllowJSAccess opts in to HttpOnly=false. Without this flag the
 	// session cookie MUST be HttpOnly, otherwise JavaScript (and any
 	// injected script) can steal the session ID. Name is intentionally
@@ -394,9 +407,14 @@ type SessionConfig struct {
 //   - SameSite must be set (non-zero value)
 //   - SameSite=None requires Secure=true
 //   - Lifetime must be >= 0 (negative produces an already-expired cookie)
+//   - AbsoluteLifetime, when positive, must be >= Lifetime (an absolute cap
+//     shorter than the rolling window is a misconfiguration)
 func (c SessionConfig) Validate(env string) error {
 	if c.Lifetime < 0 {
 		return fmt.Errorf("%w: got %d minutes", ErrInvalidLifetime, c.Lifetime)
+	}
+	if c.AbsoluteLifetime > 0 && c.AbsoluteLifetime < c.Lifetime {
+		return fmt.Errorf("%w: AbsoluteLifetime %d minutes is shorter than Lifetime %d minutes", ErrInvalidLifetime, c.AbsoluteLifetime, c.Lifetime)
 	}
 	if !c.HttpOnly && !c.AllowJSAccess {
 		return fmt.Errorf("%w: HttpOnly=false requires AllowJSAccess=true opt-in", ErrInsecureSessionConfig)

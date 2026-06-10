@@ -314,6 +314,7 @@ func (c *Context) SetCookie(cookie *http.Cookie) {
 // JSON sends a JSON response with the given status code
 func (c *Context) JSON(status int, data interface{}) error {
 	c.Response.Header().Set("Content-Type", "application/json")
+	c.Response.Header().Set("X-Content-Type-Options", "nosniff")
 	c.Response.WriteHeader(status)
 	return json.NewEncoder(c.Response).Encode(data)
 }
@@ -840,11 +841,13 @@ func (c *Context) Authorize(ability string, args ...interface{}) error {
 
 // BindForm parses form data and maps it to v using `form` struct tags.
 func (c *Context) BindForm(v interface{}) error {
-	limit := DefaultMaxBodySize
-	if l, ok := c.Get(bodyLimitKey).(int64); ok {
-		limit = l
+	// Wrap only when the BodyLimit middleware has not already installed
+	// its own MaxBytesReader (bodyLimitKey set). Wrapping again would
+	// stack a second reader on top of the middleware's and re-apply a
+	// limit over the operator-configured one.
+	if c.Get(bodyLimitKey) == nil {
+		c.Request.Body = http.MaxBytesReader(c.Response, c.Request.Body, DefaultMaxBodySize)
 	}
-	c.Request.Body = http.MaxBytesReader(c.Response, c.Request.Body, limit)
 	if err := c.Request.ParseForm(); err != nil {
 		return err
 	}
@@ -1218,7 +1221,14 @@ func rfc5987Encode(s string) string {
 // Bounded session length should be implemented at the handler level (a
 // ticker that returns a clean nil) rather than via a write deadline, which
 // would cut bytes mid-frame and surface as a corrupt stream to the client.
+//
+// Event names containing \r or \n are rejected with an error before anything
+// is written, to prevent injection of extra SSE fields. Data is JSON-encoded
+// and therefore newline-safe.
 func (c *Context) SSE(event string, data interface{}) error {
+	if strings.ContainsAny(event, "\r\n") {
+		return fmt.Errorf("router: SSE event name %q contains \\r or \\n; rejected to prevent SSE field injection", event)
+	}
 	if !c.sseStarted {
 		PrepareStreamHeaders(c.Response)
 		c.sseStarted = true
@@ -1296,7 +1306,18 @@ func PrepareStreamHeaders(w http.ResponseWriter) {
 // ---------------------------------------------------------------------------
 
 // FormValue returns a form value by key.
+//
+// Unless the BodyLimit middleware has already wrapped the request body,
+// FormValue caps the payload at DefaultMaxBodySize via http.MaxBytesReader
+// before delegating to (*Request).FormValue. Without the cap a
+// multipart/form-data request would be parsed with no overall body bound,
+// spilling unbounded data to os.TempDir(). When the limit is exceeded the
+// underlying parse fails and the empty string is returned, matching the
+// stdlib behavior for unparseable bodies.
 func (c *Context) FormValue(key string) string {
+	if c.Get(bodyLimitKey) == nil {
+		c.Request.Body = http.MaxBytesReader(c.Response, c.Request.Body, DefaultMaxBodySize)
+	}
 	return c.Request.FormValue(key)
 }
 

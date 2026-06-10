@@ -41,6 +41,9 @@ func TestJSONRenderer_Render_HttpException(t *testing.T) {
 	if ctx.headers["Content-Type"] != "application/json" {
 		t.Error("Content-Type not set")
 	}
+	if ctx.headers["X-Content-Type-Options"] != "nosniff" {
+		t.Error("X-Content-Type-Options not set")
+	}
 	if ctx.headers["X-Custom"] != "value" {
 		t.Error("Custom header not set")
 	}

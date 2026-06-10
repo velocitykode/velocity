@@ -239,6 +239,7 @@ func buildTemplateData(ctx context.Context, base map[string]any) map[string]any 
 // renderJSON renders a JSON response for Inertia XHR requests
 func (b *Bond) renderJSON(w http.ResponseWriter, page Page) error {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Inertia", "true")
 	w.Header().Set("Vary", "X-Inertia")
 

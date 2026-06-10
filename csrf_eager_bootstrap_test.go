@@ -144,9 +144,11 @@ func TestCSRF_EagerBootstrap_AnonymousGETMintsTokenAndCookie(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetToken(%q): %v", resolvedID, err)
 	}
-	if decoded != stored {
-		t.Errorf("XSRF-TOKEN cookie value (decoded=%q) does not match token stored under resolved session id %q (stored=%q)",
-			decoded, resolvedID, stored)
+	// The cookie carries the per-response masked form (BREACH hardening);
+	// unmask before comparing against the raw stored token.
+	if unmasked := csrf.UnmaskToken(decoded); unmasked != stored {
+		t.Errorf("XSRF-TOKEN cookie value (decoded=%q, unmasked=%q) does not match token stored under resolved session id %q (stored=%q)",
+			decoded, unmasked, resolvedID, stored)
 	}
 }
 

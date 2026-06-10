@@ -58,6 +58,17 @@ func (p *revokeTestProvider) UpdateRememberToken(user auth.Authenticatable, toke
 	return nil
 }
 
+// CompareAndSwapRememberToken implements the capability the guard now
+// requires for recall rotation; recalls fail closed without it.
+func (p *revokeTestProvider) CompareAndSwapRememberToken(_ context.Context, user auth.Authenticatable, oldToken, newToken string) (bool, error) {
+	id, _ := user.GetAuthIdentifier().(string)
+	u, ok := p.users[id]
+	if !ok || u.rememberToken != oldToken {
+		return false, nil
+	}
+	return true, p.UpdateRememberToken(user, newToken)
+}
+
 // newRevokeGuard constructs a SessionGuard backed by a real cookie store
 // and AES-256-GCM encryptor. When store is non-nil it is installed via
 // SetServerSessionStore.
@@ -462,10 +473,17 @@ func loginAndCookies(t *testing.T, guard *SessionGuard, userID string) (sess, re
 
 // requestWithRememberOnly returns a request carrying only the remember
 // cookie, exercising the checkRememberCookie path (no session cookie).
+// A recorder is installed as the response writer the way SessionMiddleware
+// does, because recall success now requires delivering a rotated remember
+// cookie (V2-08).
 func requestWithRememberOnly(rem *http.Cookie) *http.Request {
 	r := httptest.NewRequest("GET", "/", nil)
 	r.AddCookie(rem)
-	return WithSessionContext(r)
+	r = WithSessionContext(r)
+	if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok && holder != nil {
+		holder.setResponseWriter(httptest.NewRecorder())
+	}
+	return r
 }
 
 // TestManager_RevokeAllSessions_ClearsRememberToken verifies the Option C

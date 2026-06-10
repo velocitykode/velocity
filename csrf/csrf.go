@@ -28,6 +28,12 @@ import (
 // middleware boundary.
 var ErrFormBodyTooLarge = errors.New("velocity/csrf: form body exceeds CSRF lookup limit")
 
+// xsrfHeaderName is the request header axios/Angular-style clients use to
+// echo the XSRF-TOKEN cookie value. It is intentionally not configurable:
+// the cookie/header pair is a cross-client convention, and operators who
+// need a custom header already have Config.HeaderName.
+const xsrfHeaderName = "X-XSRF-TOKEN"
+
 var (
 	ErrTokenMissing = errors.New("velocity/csrf: token missing")
 	ErrTokenInvalid = errors.New("velocity/csrf: token invalid")
@@ -300,10 +306,16 @@ func (c *CSRF) writeXSRFCookieForSession(w http.ResponseWriter, r *http.Request,
 		// Route through the request-scoped cache. The session id
 		// argument is implied (TokenForRequest resolves it from the
 		// same SessionIDResolver), so the (sessionID, cached token)
-		// pair stays internally consistent.
+		// pair stays internally consistent. The cache already holds
+		// the per-response masked form, so no further masking here.
 		token, err = TokenForRequest(r)
 	} else {
 		token, err = c.GetToken(sessionID)
+		if err == nil && token != "" {
+			// No request-scoped cache on this path; mask at the sink
+			// so the cookie never carries the raw stored token.
+			token, err = MaskToken(token)
+		}
 	}
 	if err != nil || token == "" {
 		return
@@ -407,6 +419,23 @@ func (c *CSRF) validateToken(w http.ResponseWriter, r *http.Request) error {
 		return ErrTokenMissing
 	}
 
+	// Emission points wrap the token in a per-response mask (MaskToken)
+	// so identical bytes never repeat across responses. Clients echo
+	// whatever they were given, so the request may carry either form:
+	// masked (decodes to exactly 2x the token length, unwrapped here) or
+	// raw framework-length (legacy clients / values captured before
+	// masking shipped, passed through unchanged). Anything else - bad
+	// base64, truncated or wrong-length masked encodings - is malformed
+	// and treated exactly like an absent token, before any store lookup,
+	// so a custom ErrorHandler cannot distinguish a garbled submission
+	// from no submission. For the two accepted forms, decoding decides
+	// nothing; the terminal accept/reject check remains the constant-
+	// time comparison below (ValidateToken / the store's ConsumeIfMatch).
+	requestToken, encoding := decodeRequestToken(requestToken)
+	if encoding == encodingMalformed {
+		return ErrTokenMissing
+	}
+
 	// Get expected token from store
 	sessionID, err := c.getSessionID(r)
 	if err != nil {
@@ -464,8 +493,14 @@ func (c *CSRF) validateToken(w http.ResponseWriter, r *http.Request) error {
 // getTokenFromRequest extracts the CSRF token from the request.
 //
 // Token lookup order:
-//  1. Header (always checked first, no body read).
-//  2. application/x-www-form-urlencoded body, capped at
+//  1. Configured header (Config.HeaderName, always checked first, no
+//     body read).
+//  2. X-XSRF-TOKEN header (axios/Angular convention). These clients echo
+//     the XSRF-TOKEN cookie value verbatim, and the cookie is written
+//     URL-encoded (see writeXSRFCookieForSession), so the value is
+//     url.QueryUnescape'd here. A value that fails to unescape is treated
+//     as absent (fall through to the form field), never as an error.
+//  3. application/x-www-form-urlencoded body, capped at
 //     Config.MaxFormBodyBytes (default 1 MiB). The body is wrapped with
 //     http.MaxBytesReader so an oversize body errors cleanly at read
 //     time without ever buffering the prefix downstream. On successful
@@ -487,6 +522,16 @@ func (c *CSRF) getTokenFromRequest(w http.ResponseWriter, r *http.Request) (stri
 	// Try header first; this is always safe and never reads the body.
 	if token := r.Header.Get(c.config.HeaderName); token != "" {
 		return token, nil
+	}
+
+	// X-XSRF-TOKEN: clients like axios echo the XSRF-TOKEN cookie value
+	// verbatim. The cookie is written URL-encoded, so unescape before
+	// validation; an unescape failure means the value cannot be a token
+	// the framework issued, so treat it as absent rather than erroring.
+	if raw := r.Header.Get(xsrfHeaderName); raw != "" {
+		if token, err := url.QueryUnescape(raw); err == nil && token != "" {
+			return token, nil
+		}
 	}
 
 	// No body, nothing else to inspect.
@@ -660,10 +705,19 @@ func (c *CSRF) RefreshHandler() http.HandlerFunc {
 			return
 		}
 
+		// Emit the per-response masked form, never the raw stored
+		// token (see MaskToken). The client echoes it verbatim and
+		// validation unmasks before comparing.
+		masked, err := MaskToken(token)
+		if err != nil {
+			http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+			return
+		}
+
 		// Return token as JSON
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{
-			"token": token,
+			"token": masked,
 		})
 	}
 }
@@ -759,7 +813,14 @@ func (c *CSRF) RevokeToken(id string) error {
 	return c.config.Store.Delete(id)
 }
 
-// GetToken retrieves or generates a token for the given session ID
+// GetToken retrieves or generates a token for the given session ID.
+//
+// The return value is the RAW stored token. Do not write it into a
+// response verbatim: every emission sink must wrap it with MaskToken so
+// the same bytes never repeat across responses (the built-in sinks -
+// XSRF-TOKEN cookie writes, TokenForRequest, RefreshHandler - already
+// do). Raw values remain valid on submission, so existing callers that
+// compare or replay the raw token keep working.
 func (c *CSRF) GetToken(sessionID string) (string, error) {
 	if c.config.Store == nil {
 		return "", ErrNoStore

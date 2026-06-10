@@ -118,3 +118,44 @@ func TestSessionConfig_Validate_RejectsInsecureDefaults(t *testing.T) {
 		})
 	}
 }
+
+// TestSessionConfig_Validate_AbsoluteLifetime pins the V2-09 config rule: a
+// positive absolute cap shorter than the rolling Lifetime window is a
+// misconfiguration; zero (default) and negative (explicit opt-out) pass.
+func TestSessionConfig_Validate_AbsoluteLifetime(t *testing.T) {
+	base := SessionConfig{
+		Name:     "velocity_session",
+		Lifetime: 120,
+		Path:     "/",
+		Secure:   true,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	}
+
+	tests := []struct {
+		name     string
+		absolute int
+		wantErr  bool
+	}{
+		{name: "zero (framework default) accepted", absolute: 0, wantErr: false},
+		{name: "negative (explicit opt-out) accepted", absolute: -1, wantErr: false},
+		{name: "equal to Lifetime accepted", absolute: 120, wantErr: false},
+		{name: "greater than Lifetime accepted", absolute: 43200, wantErr: false},
+		{name: "shorter than Lifetime rejected", absolute: 60, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := base
+			cfg.AbsoluteLifetime = tt.absolute
+			err := cfg.Validate("production")
+			if tt.wantErr {
+				if !errors.Is(err, ErrInvalidLifetime) {
+					t.Fatalf("expected ErrInvalidLifetime, got %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}

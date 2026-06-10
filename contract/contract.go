@@ -238,7 +238,14 @@ type Database interface {
 //   - RecordSuccess(r, key) is called after a successful login; a good
 //     implementation clears any failure counters for the key.
 //
-// The key is typically a composite such as "<username>|<remote-ip>".
+// A single login attempt may consult several keys, one per throttle
+// dimension: the built-in guards derive them via auth.ThrottleKeys
+// ((identifier, IP) pair, identifier-only, IP-only; each a hashed,
+// prefix-tagged digest), call Allow for each and deny when any returns
+// false, and fan RecordFailure/RecordSuccess out to every key.
+// Implementations may apply distinct limits per dimension by inspecting
+// the auth.ThrottleKey*Prefix on the key; treating every key uniformly
+// is also valid.
 //
 // Implementations must pass authtest.RunLoginThrottlerContractTests. See
 // authtest for the executable specification.

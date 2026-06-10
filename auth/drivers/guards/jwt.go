@@ -412,9 +412,28 @@ func (g *JWTGuard) LoginByID(w http.ResponseWriter, r *http.Request, id interfac
 // matches the CPU profile of the bcrypt verify branch.
 func (g *JWTGuard) Attempt(w http.ResponseWriter, r *http.Request, credentials map[string]interface{}, remember ...bool) (bool, error) {
 	throttler := g.loadThrottler()
-	key := auth.ThrottleKey(r, credentials, g.getTrustedProxies())
-	if !throttler.Allow(r, key) {
+	// One key per throttle dimension (pair / identifier / IP, see
+	// auth.ThrottleKeys). The attempt is rejected when ANY dimension is
+	// over its cap; the error is the same regardless of which dimension
+	// tripped so a caller cannot tell a per-IP lockout from a
+	// per-account one.
+	keys := auth.ThrottleKeys(r, credentials, g.getTrustedProxies())
+	// Consult every dimension even after one denies, so the denial path
+	// does the same number of Allow lookups regardless of which dimension
+	// tripped (no per-dimension oracle).
+	denied := false
+	for _, key := range keys {
+		if !throttler.Allow(r, key) {
+			denied = true
+		}
+	}
+	if denied {
 		return false, auth.ErrLoginThrottled
+	}
+	recordFailure := func() {
+		for _, key := range keys {
+			throttler.RecordFailure(r, key)
+		}
 	}
 
 	// Snapshot the provider once so the timebox closure and the
@@ -455,15 +474,15 @@ func (g *JWTGuard) Attempt(w http.ResponseWriter, r *http.Request, credentials m
 	})
 
 	if findErr != nil || user == nil {
-		throttler.RecordFailure(r, key)
+		recordFailure()
 		return false, nil // User not found
 	}
 	if invalidCredErr != nil {
-		throttler.RecordFailure(r, key)
+		recordFailure()
 		return false, invalidCredErr
 	}
 	if !credentialsOK {
-		throttler.RecordFailure(r, key)
+		recordFailure()
 		return false, nil // Invalid password
 	}
 
@@ -477,7 +496,9 @@ func (g *JWTGuard) Attempt(w http.ResponseWriter, r *http.Request, credentials m
 	// stored hash no longer matches the configured Hasher parameters.
 	g.maybeEmitRehashEvent(r.Context(), hasher, user)
 
-	throttler.RecordSuccess(r, key)
+	for _, key := range keys {
+		throttler.RecordSuccess(r, key)
+	}
 	return true, nil
 }
 

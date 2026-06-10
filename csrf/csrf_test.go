@@ -153,6 +153,203 @@ func TestMiddleware_ValidToken_FormField(t *testing.T) {
 	}
 }
 
+// TestMiddleware_ValidToken_XSRFHeader covers the axios/Angular flow: the
+// client reads the XSRF-TOKEN cookie (URL-encoded value) and echoes it
+// verbatim as X-XSRF-TOKEN. The middleware must unescape and validate it.
+func TestMiddleware_ValidToken_XSRFHeader(t *testing.T) {
+	config := DefaultConfig()
+	config.SessionIDResolver = testCookieResolver("session_id")
+	config.Store = stores.NewSessionStore()
+	csrf := New(config)
+
+	sessionID := "test-session"
+	token, _ := GenerateToken()
+	csrf.config.Store.Set(sessionID, token)
+
+	handler := csrf.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Echo the cookie value exactly as axios would: URL-encoded.
+	req := httptest.NewRequest("POST", "/test", nil)
+	req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+	req.Header.Set("X-XSRF-TOKEN", url.QueryEscape(token))
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200 with valid X-XSRF-TOKEN, got %d", w.Code)
+	}
+}
+
+// TestMiddleware_XSRFHeader_Tampered: a syntactically valid but wrong
+// X-XSRF-TOKEN value must fail with 419, not fall through to "missing".
+func TestMiddleware_XSRFHeader_Tampered(t *testing.T) {
+	config := DefaultConfig()
+	config.SessionIDResolver = testCookieResolver("session_id")
+	config.Store = stores.NewSessionStore()
+	csrf := New(config)
+
+	sessionID := "test-session"
+	token, _ := GenerateToken()
+	csrf.config.Store.Set(sessionID, token)
+
+	handler := csrf.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("POST", "/test", nil)
+	req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+	req.Header.Set("X-XSRF-TOKEN", url.QueryEscape(token+"tampered"))
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 419 {
+		t.Errorf("Expected status 419 with tampered X-XSRF-TOKEN, got %d", w.Code)
+	}
+}
+
+// TestMiddleware_XSRFHeader_Precedence documents the lookup order: the
+// configured header (HeaderName) is read before X-XSRF-TOKEN. A valid
+// X-XSRF-TOKEN cannot rescue a request whose X-CSRF-Token is wrong, and a
+// garbage X-XSRF-TOKEN does not break a request whose X-CSRF-Token is valid.
+func TestMiddleware_XSRFHeader_Precedence(t *testing.T) {
+	newHandler := func() (http.Handler, string, string) {
+		config := DefaultConfig()
+		config.SessionIDResolver = testCookieResolver("session_id")
+		config.Store = stores.NewSessionStore()
+		csrf := New(config)
+
+		sessionID := "test-session"
+		token, _ := GenerateToken()
+		csrf.config.Store.Set(sessionID, token)
+
+		handler := csrf.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		return handler, sessionID, token
+	}
+
+	t.Run("invalid configured header wins over valid XSRF header", func(t *testing.T) {
+		handler, sessionID, token := newHandler()
+		req := httptest.NewRequest("POST", "/test", nil)
+		req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+		req.Header.Set("X-CSRF-Token", "wrong-token")
+		req.Header.Set("X-XSRF-TOKEN", url.QueryEscape(token))
+
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+
+		if w.Code != 419 {
+			t.Errorf("Expected 419 (configured header read first), got %d", w.Code)
+		}
+	})
+
+	t.Run("valid configured header wins over garbage XSRF header", func(t *testing.T) {
+		handler, sessionID, token := newHandler()
+		req := httptest.NewRequest("POST", "/test", nil)
+		req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+		req.Header.Set("X-CSRF-Token", token)
+		req.Header.Set("X-XSRF-TOKEN", "garbage")
+
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("Expected 200 (configured header read first), got %d", w.Code)
+		}
+	})
+}
+
+// TestMiddleware_XSRFHeader_BadEscape: a value that fails
+// url.QueryUnescape is treated as absent, so the lookup falls through to
+// the form field rather than erroring out.
+func TestMiddleware_XSRFHeader_BadEscape(t *testing.T) {
+	config := DefaultConfig()
+	config.SessionIDResolver = testCookieResolver("session_id")
+	config.Store = stores.NewSessionStore()
+	csrf := New(config)
+
+	sessionID := "test-session"
+	token, _ := GenerateToken()
+	csrf.config.Store.Set(sessionID, token)
+
+	handler := csrf.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	t.Run("falls through to valid form token", func(t *testing.T) {
+		formData := url.Values{}
+		formData.Set("_token", token)
+		req := httptest.NewRequest("POST", "/test", strings.NewReader(formData.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+		req.Header.Set("X-XSRF-TOKEN", "%zz-not-valid-escaping")
+
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("Expected 200 (bad escape falls through to form field), got %d", w.Code)
+		}
+	})
+
+	t.Run("alone yields 419 token missing", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/test", nil)
+		req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+		req.Header.Set("X-XSRF-TOKEN", "%zz-not-valid-escaping")
+
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+
+		if w.Code != 419 {
+			t.Errorf("Expected 419 (unparseable XSRF header treated as absent), got %d", w.Code)
+		}
+	})
+}
+
+// TestMiddleware_XSRFHeader_CookieRoundTrip proves the full SPA loop with
+// no hand-encoding: GET bootstraps the XSRF-TOKEN cookie, the raw cookie
+// value is echoed verbatim as X-XSRF-TOKEN (exactly what axios does), and
+// the POST passes.
+func TestMiddleware_XSRFHeader_CookieRoundTrip(t *testing.T) {
+	config := DefaultConfig()
+	config.SessionIDResolver = testCookieResolver("session_id")
+	config.Store = stores.NewSessionStore()
+	csrf := New(config)
+
+	handler := csrf.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	sessionID := "test-session"
+
+	// Bootstrap: safe GET writes the XSRF-TOKEN cookie.
+	get := httptest.NewRequest("GET", "/test", nil)
+	get.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+	getW := httptest.NewRecorder()
+	handler.ServeHTTP(getW, get)
+
+	xsrf := findXSRFCookie(getW.Result().Cookies())
+	if xsrf == nil {
+		t.Fatalf("GET did not set XSRF-TOKEN cookie; cookies=%v", getW.Result().Cookies())
+	}
+
+	// Echo the raw cookie value, no decoding, exactly as axios does.
+	post := httptest.NewRequest("POST", "/test", nil)
+	post.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+	post.Header.Set("X-XSRF-TOKEN", xsrf.Value)
+
+	postW := httptest.NewRecorder()
+	handler.ServeHTTP(postW, post)
+
+	if postW.Code != http.StatusOK {
+		t.Errorf("Expected 200 echoing raw XSRF-TOKEN cookie value, got %d", postW.Code)
+	}
+}
+
 func TestMiddleware_InvalidToken(t *testing.T) {
 	config := DefaultConfig()
 	config.SessionIDResolver = testCookieResolver("session_id")
@@ -850,13 +1047,17 @@ func TestXSRFCookie_WrittenOnSafeMethodWithSession(t *testing.T) {
 	if xsrf.Path != "/" {
 		t.Errorf("XSRF-TOKEN cookie Path=%q, want /", xsrf.Path)
 	}
-	// Value must be URL-encoded form of the token.
+	// Value must be the URL-encoded MASKED form of the token: never the
+	// raw stored bytes (BREACH), but unmasking must recover them.
 	decoded, err := url.QueryUnescape(xsrf.Value)
 	if err != nil {
 		t.Fatalf("XSRF-TOKEN value not URL-encoded: %v", err)
 	}
-	if decoded != token {
-		t.Errorf("XSRF-TOKEN decoded=%q, want token=%q", decoded, token)
+	if decoded == token {
+		t.Error("XSRF-TOKEN carries the raw stored token; cookie emission must be masked per response")
+	}
+	if got := UnmaskToken(decoded); got != token {
+		t.Errorf("UnmaskToken(XSRF-TOKEN)=%q, want token=%q", got, token)
 	}
 	if !xsrf.Secure {
 		t.Error("XSRF-TOKEN cookie Secure should be true with default Config.Secure even on plain HTTP")
@@ -1331,7 +1532,9 @@ func TestWriteXSRFCookie_PostRotation(t *testing.T) {
 	if xsrf.HttpOnly {
 		t.Error("XSRF-TOKEN cookie must NOT be HttpOnly")
 	}
-	// Decoded value must equal the token RotateToken minted.
+	// Decoded value must be the masked form of the token RotateToken
+	// minted: raw emission is a BREACH surface, but unmasking must
+	// recover the stored token exactly.
 	tokenInStore, err := c.config.Store.Get(sessionID)
 	if err != nil {
 		t.Fatalf("store.Get post-rotation: %v", err)
@@ -1340,8 +1543,11 @@ func TestWriteXSRFCookie_PostRotation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("XSRF-TOKEN value not URL-encoded: %v", err)
 	}
-	if got != tokenInStore {
-		t.Errorf("XSRF-TOKEN decoded=%q, want token in store=%q", got, tokenInStore)
+	if got == tokenInStore {
+		t.Error("post-rotation XSRF-TOKEN carries the raw stored token; emission must be masked")
+	}
+	if unmasked := UnmaskToken(got); unmasked != tokenInStore {
+		t.Errorf("UnmaskToken(XSRF-TOKEN)=%q, want token in store=%q", unmasked, tokenInStore)
 	}
 }
 

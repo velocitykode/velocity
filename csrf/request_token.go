@@ -31,6 +31,12 @@ type tokenStateKey struct{}
 // returns the same error on every subsequent call within the request,
 // which is the desired behaviour: callers see one stable signal per
 // request rather than a flaky pair where the second read drifts.
+//
+// token holds the EMISSION form: the stored token wrapped in this
+// request's mask (see MaskToken). Masking once at load time, rather
+// than per reader, keeps the cookie and every props/meta reader
+// byte-identical within the response while still giving each response
+// a unique byte string.
 type requestTokenState struct {
 	csrf *CSRF
 
@@ -75,9 +81,18 @@ func tokenStateFromContext(ctx context.Context) *requestTokenState {
 // the safe-method bootstrap path) seed one.
 var ErrNoTokenState = errors.New("velocity/csrf: no request-scoped CSRF state on request (middleware did not run)")
 
-// TokenForRequest returns the CSRF token for the request's session,
-// memoized for the request lifetime so multiple readers see
-// byte-identical values.
+// TokenForRequest returns the CSRF token for the request's session in
+// its per-response MASKED form (see MaskToken), memoized for the
+// request lifetime so multiple readers see byte-identical values.
+//
+// The returned value is safe to embed anywhere in the response (cookie,
+// <meta> tag, page props) and validates like the raw token: the
+// middleware unmasks before its constant-time comparison. Two requests
+// for the same session receive different byte strings even though the
+// stored token is unchanged, which defeats compression-oracle (BREACH)
+// extraction of the token from response bodies. Do NOT compare the
+// returned value against the stored token directly; unmask first with
+// UnmaskToken or validate via the middleware.
 //
 // Why this exists: server-rendered pages frequently expose the CSRF
 // token in two places per request, a <meta name="csrf-token"> tag in
@@ -101,8 +116,8 @@ var ErrNoTokenState = errors.New("velocity/csrf: no request-scoped CSRF state on
 // caches (one per request).
 //
 // Return values:
-//   - (token, nil) on the happy path. token is the value GetToken would
-//     have produced; never empty.
+//   - (token, nil) on the happy path. token is the masked form of the
+//     value GetToken would have produced; never empty.
 //   - ("", nil) when the request carries no resolvable session id (the
 //     caller is rendering an anonymous page; no CSRF token to embed
 //     yet). The XSRF-TOKEN cookie will be seeded by the next
@@ -156,8 +171,17 @@ func TokenForRequest(r *http.Request) (string, error) {
 		state.err = err
 		return "", err
 	}
-	state.token = token
-	return token, nil
+	// Cache the masked emission form, not the raw stored token: every
+	// reader on this request (cookie write, meta tag, props) must emit
+	// the same bytes, and those bytes must differ from every other
+	// response's emission of the same stored token.
+	masked, err := MaskToken(token)
+	if err != nil {
+		state.err = err
+		return "", err
+	}
+	state.token = masked
+	return masked, nil
 }
 
 // WithCSRFTokenState attaches a request-scoped CSRF token cache to ctx

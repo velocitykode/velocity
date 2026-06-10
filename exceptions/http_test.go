@@ -236,6 +236,9 @@ func TestValidationException_Render(t *testing.T) {
 	if ctx.headers["Content-Type"] != "application/json" {
 		t.Error("Content-Type not set")
 	}
+	if ctx.headers["X-Content-Type-Options"] != "nosniff" {
+		t.Error("X-Content-Type-Options not set")
+	}
 	if len(ctx.written) == 0 {
 		t.Error("No data written")
 	}

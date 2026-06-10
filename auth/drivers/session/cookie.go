@@ -124,6 +124,26 @@ func (s *CookieStore) Create(id string) (auth.Session, error) {
 // never reassign this; it exists solely as a test seam.
 var cookieNowFn = time.Now
 
+// defaultAbsoluteLifetime is the absolute session-age cap applied when
+// SessionConfig.AbsoluteLifetime is zero (unset). Fail-secure: an
+// unconfigured field still bounds total session age instead of leaving
+// kept-warm sessions immortal (V2-09).
+const defaultAbsoluteLifetime = 30 * 24 * time.Hour
+
+// absoluteLifetime resolves the configured absolute cap. Positive config
+// values are minutes; zero falls back to defaultAbsoluteLifetime; negative
+// is the explicit "no absolute cap" opt-out and returns 0 (disabled).
+func (s *CookieStore) absoluteLifetime() time.Duration {
+	switch {
+	case s.config.AbsoluteLifetime > 0:
+		return time.Duration(s.config.AbsoluteLifetime) * time.Minute
+	case s.config.AbsoluteLifetime < 0:
+		return 0
+	default:
+		return defaultAbsoluteLifetime
+	}
+}
+
 // Get gets session from request
 //
 // Cookie payloads include an IssuedAt timestamp that is enforced server-side:
@@ -132,10 +152,18 @@ var cookieNowFn = time.Now
 // replayable indefinitely (until APP_KEY rotates) even if the client-side
 // MaxAge/Expires says otherwise, since curl/replay tools ignore those.
 //
+// Payloads also carry an immutable CreatedAt stamped at first Save. Because
+// IssuedAt slides forward on every Save, an actively-used session would
+// otherwise never expire; Get additionally rejects any cookie whose total
+// age exceeds the absolute cap (SessionConfig.AbsoluteLifetime, default 30
+// days when unset, negative to disable).
+//
 // Legacy payloads without IssuedAt (zero time) are accepted to preserve
 // rolling-deploy compatibility: the next Save() bumps IssuedAt, after which
-// the new value enforces. Operators who want strict cutoff can rotate
-// APP_KEY which invalidates every prior cookie.
+// the new value enforces. Payloads without CreatedAt fall back to IssuedAt
+// for the absolute check and have it persisted on the next Save. Operators
+// who want strict cutoff can rotate APP_KEY which invalidates every prior
+// cookie.
 func (s *CookieStore) Get(r *http.Request, id string) (auth.Session, error) {
 	// Get cookie
 	cookie, err := r.Cookie(s.config.Name)
@@ -151,10 +179,11 @@ func (s *CookieStore) Get(r *http.Request, id string) (auth.Session, error) {
 
 	// Deserialize session data
 	var sessionData struct {
-		ID       string                 `json:"id"`
-		Data     map[string]interface{} `json:"data"`
-		Flash    map[string]interface{} `json:"flash"`
-		IssuedAt time.Time              `json:"iat,omitempty"`
+		ID        string                 `json:"id"`
+		Data      map[string]interface{} `json:"data"`
+		Flash     map[string]interface{} `json:"flash"`
+		IssuedAt  time.Time              `json:"iat,omitempty"`
+		CreatedAt time.Time              `json:"cat,omitempty"`
 	}
 
 	if err := json.Unmarshal([]byte(decrypted), &sessionData); err != nil {
@@ -180,10 +209,29 @@ func (s *CookieStore) Get(r *http.Request, id string) (auth.Session, error) {
 		}
 	}
 
+	// Absolute lifetime enforcement (V2-09). IssuedAt slides forward on
+	// every Save, so the rolling Lifetime window alone never ends an
+	// actively-used session. CreatedAt is stamped once at first Save and
+	// copied forward verbatim thereafter; reject when total session age
+	// exceeds the absolute cap. Payloads minted before this field existed
+	// have no CreatedAt: fall back to IssuedAt (the oldest timestamp we
+	// hold) so live sessions survive the deploy and gain a cap immediately;
+	// the next Save persists the fallback as the permanent CreatedAt.
+	createdAt := sessionData.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = sessionData.IssuedAt
+	}
+	if abs := s.absoluteLifetime(); abs > 0 && !createdAt.IsZero() {
+		if cookieNowFn().After(createdAt.Add(abs)) {
+			return s.Create("")
+		}
+	}
+
 	// Create session with data
 	session := &CookieSession{
 		BaseSession: auth.NewSession(sessionData.ID),
 		store:       s,
+		createdAt:   createdAt,
 	}
 	session.SetData(sessionData.Data)
 	session.SetFlashData(sessionData.Flash)
@@ -229,19 +277,31 @@ func (s *CookieStore) Save(w http.ResponseWriter, session auth.Session) error {
 		return nil
 	}
 
+	// CreatedAt is immutable: stamp it once for sessions that have never
+	// been persisted (zero value here means new session, or a legacy load
+	// that carried no timestamp at all), then copy the loaded value forward
+	// verbatim on every subsequent Save. IssuedAt keeps bumping; CreatedAt
+	// is the anchor the absolute-lifetime check in Get enforces against.
+	createdAt := cookieSession.createdAt
+	if createdAt.IsZero() {
+		createdAt = cookieNowFn()
+	}
+
 	// Serialize session data. IssuedAt bumps on every Save so a rolling
 	// active session keeps refreshing its server-side expiry window;
 	// captured-and-replayed cookies past Lifetime are rejected in Get.
 	sessionData := struct {
-		ID       string                 `json:"id"`
-		Data     map[string]interface{} `json:"data"`
-		Flash    map[string]interface{} `json:"flash"`
-		IssuedAt time.Time              `json:"iat,omitempty"`
+		ID        string                 `json:"id"`
+		Data      map[string]interface{} `json:"data"`
+		Flash     map[string]interface{} `json:"flash"`
+		IssuedAt  time.Time              `json:"iat,omitempty"`
+		CreatedAt time.Time              `json:"cat,omitempty"`
 	}{
-		ID:       cookieSession.ID(),
-		Data:     cookieSession.GetData(),
-		Flash:    cookieSession.GetFlashData(),
-		IssuedAt: cookieNowFn(),
+		ID:        cookieSession.ID(),
+		Data:      cookieSession.GetData(),
+		Flash:     cookieSession.GetFlashData(),
+		IssuedAt:  cookieNowFn(),
+		CreatedAt: createdAt,
 	}
 
 	data, err := json.Marshal(sessionData)
@@ -274,9 +334,14 @@ func (s *CookieStore) Save(w http.ResponseWriter, session auth.Session) error {
 	}
 	if s.config.Lifetime > 0 {
 		cookie.MaxAge = s.config.Lifetime * 60
-		cookie.Expires = time.Now().Add(time.Duration(s.config.Lifetime) * time.Minute)
+		cookie.Expires = cookieNowFn().Add(time.Duration(s.config.Lifetime) * time.Minute)
 	}
 	http.SetCookie(w, cookie)
+
+	// Persist the (possibly just-stamped) CreatedAt on the in-memory
+	// session so further Saves within the same request copy it forward
+	// instead of re-stamping.
+	cookieSession.createdAt = createdAt
 
 	// Clear the modified flag so a second Save() on the same session
 	// without intervening writes does not rotate the cookie. The check at
@@ -303,6 +368,11 @@ func (s *CookieStore) GarbageCollect(maxLifetime time.Duration) error {
 type CookieSession struct {
 	*auth.BaseSession
 	store *CookieStore
+
+	// createdAt carries the immutable first-creation timestamp from Get to
+	// Save so the absolute-lifetime cap (V2-09) survives Save round-trips.
+	// Zero means "never persisted yet": Save stamps it exactly once.
+	createdAt time.Time
 }
 
 // Save saves session to cookie

@@ -55,6 +55,27 @@ const maxIdentifierBytes = 254
 // lets the attacker poison or share a victim's rate-limit bucket.
 const throttleKeySep = "\x1f"
 
+// Throttle key prefixes for the three independent rate-limit dimensions.
+// A single (identifier, IP) pair bucket alone leaves two attack shapes
+// unthrottled: password spraying (one IP rotating identifiers, so every
+// attempt lands in a fresh pair bucket) and distributed brute force (one
+// identifier attacked from many IPs, same effect). The per-identifier
+// and per-IP dimensions close both; throttlers apply an independent,
+// higher cap to each dimension and deny when any cap is exceeded. See
+// V2-04.
+//
+// The id/ip prefixes are checked with strings.HasPrefix by limit
+// selectors, so ThrottleKeyPairPrefix (a prefix of both) must be
+// matched last.
+const (
+	// ThrottleKeyPairPrefix prefixes the (identifier, IP) pair dimension.
+	ThrottleKeyPairPrefix = "login:"
+	// ThrottleKeyIdentifierPrefix prefixes the per-identifier dimension.
+	ThrottleKeyIdentifierPrefix = "login:id:"
+	// ThrottleKeyIPPrefix prefixes the per-client-IP dimension.
+	ThrottleKeyIPPrefix = "login:ip:"
+)
+
 // ThrottleKey derives the rate-limiting key used for a login attempt.
 //
 // The key is a stable, length-bounded SHA-256 hex digest over the
@@ -85,13 +106,57 @@ func ThrottleKey(r *http.Request, credentials map[string]interface{}, trustedPro
 	// unique-per-connection key.
 	ip := clientip.ExtractString(r, trustedProxies)
 
-	// throttleKeySep (ASCII Unit Separator 0x1f) cannot appear in any
-	// canonical IP textual representation and is normalised out of any
-	// sane credential identifier. Using it as the separator stops a
-	// crafted identifier "victim<sep>198.51.100.1" from colliding with
-	// the throttle key for ("victim", "198.51.100.1"). See M-46.
+	return pairThrottleKey(ident, ip)
+}
+
+// pairThrottleKey hashes the (identifier, IP) pair dimension.
+//
+// throttleKeySep (ASCII Unit Separator 0x1f) cannot appear in any
+// canonical IP textual representation and is normalised out of any
+// sane credential identifier. Using it as the separator stops a
+// crafted identifier "victim<sep>198.51.100.1" from colliding with
+// the throttle key for ("victim", "198.51.100.1"). See M-46.
+func pairThrottleKey(ident, ip string) string {
 	sum := sha256.Sum256([]byte(ident + throttleKeySep + ip))
-	return "login:" + hex.EncodeToString(sum[:8])
+	return ThrottleKeyPairPrefix + hex.EncodeToString(sum[:8])
+}
+
+// ThrottleKeys derives every rate-limiting key consulted for a login
+// attempt, one per throttle dimension:
+//
+//   - pair: identical to ThrottleKey, the (identifier, IP) bucket.
+//     Always present.
+//   - identifier: the normalised identifier alone, shared across all
+//     source IPs. Caps distributed brute force against one account.
+//     Omitted when the request carries no recognisable identifier
+//     (an empty-identifier bucket would pool unrelated traffic).
+//   - IP: the client IP alone, shared across all identifiers. Caps
+//     password spraying from one source. Omitted when the client IP
+//     cannot be resolved.
+//
+// Guards check Allow for every returned key and reject the attempt when
+// any dimension is over its cap, record failures against every key, and
+// clear every key on success. Each dimension carries its prefix
+// (ThrottleKeyPairPrefix / ThrottleKeyIdentifierPrefix /
+// ThrottleKeyIPPrefix) so throttler implementations can apply
+// per-dimension limits. Identifier normalisation, IP resolution, and
+// the hashed/length-bounded output format match ThrottleKey; raw
+// identifiers and IPs never appear in keys.
+func ThrottleKeys(r *http.Request, credentials map[string]interface{}, trustedProxies []*net.IPNet) []string {
+	ident := normaliseIdentifier(credentials)
+	ip := clientip.ExtractString(r, trustedProxies)
+
+	keys := make([]string, 0, 3)
+	keys = append(keys, pairThrottleKey(ident, ip))
+	if ident != "" {
+		sum := sha256.Sum256([]byte(ident))
+		keys = append(keys, ThrottleKeyIdentifierPrefix+hex.EncodeToString(sum[:8]))
+	}
+	if ip != "" {
+		sum := sha256.Sum256([]byte(ip))
+		keys = append(keys, ThrottleKeyIPPrefix+hex.EncodeToString(sum[:8]))
+	}
+	return keys
 }
 
 // normaliseIdentifier extracts the first non-empty value among the

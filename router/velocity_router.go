@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
+	"path"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -144,6 +146,18 @@ type VelocityRouterV2 struct {
 	// etc.). Stored via atomic.Pointer so the read on the hot path is
 	// lock-free; written only under mu inside commitOnce / ClearRoutes.
 	notFoundHandler atomic.Pointer[HandlerFunc]
+
+	// staticHandler is the global middleware chain wrapped around a
+	// terminal handler that invokes the static FileServer. Built once
+	// during commitOnce (alongside notFoundHandler) so static responses
+	// pass through every Use(...) middleware (security headers, rate
+	// limits, body limits) instead of bypassing them (OWASP finding
+	// V2-01). ServeHTTP only dispatches into this handler after
+	// staticProbe has confirmed the FileServer will produce a response,
+	// which preserves the invariant that the global chain runs exactly
+	// once per request: here, in the matched route's handler, or in the
+	// 404 handler, never twice.
+	staticHandler atomic.Pointer[HandlerFunc]
 }
 
 // NewV2 creates a new tree-based router instance
@@ -489,21 +503,22 @@ func (r *VelocityRouterV2) Resource(path string, controller interface{}) Resourc
 
 // Static serves static files from the specified directory.
 //
-// IMPORTANT: when the underlying http.FileServer responds with 404,
-// Velocity swallows that response and re-dispatches the request
-// through route matching so routes can take precedence over missing
-// files. That means:
+// Static responses run through the full global middleware chain
+// (Router.Use), same as matched routes and 404s.
 //
-//   - the FileServer will have fully consumed the (bounded-by-Go)
-//     response body into a discard sink before the router attempts
-//     the route match; and
-//   - any bytes the FileServer wrote to the internal capture buffer
-//     are thrown away.
+// IMPORTANT: before dispatching to the FileServer, the router probes
+// the directory for the requested path. When the file is absent the
+// request falls through to route matching so routes can take
+// precedence over missing files; the FileServer is never invoked and
+// no middleware has run yet, so the matched route's chain is the only
+// one that executes. When the probe finds the file, the request is
+// served inside the middleware chain; if the file disappears between
+// probe and serve (a rare race), the FileServer's 404 is returned
+// as-is rather than falling through.
 //
 // For a typical deployment (routes matched first, Static as last
-// resort) this is fine. If you need zero-consumption fallthrough
-// or want to guarantee routes always win, call StaticFallback
-// explicitly instead.
+// resort) this is fine. If you want to guarantee routes always win,
+// call StaticFallback explicitly instead.
 //
 // The underlying http.Dir follows symlinks by default. Ensure the
 // directory does not contain symlinks pointing outside the intended
@@ -523,49 +538,6 @@ func (r *VelocityRouterV2) StaticFallback(directory string) {
 	r.staticFS = http.FileServer(http.Dir(directory))
 	r.staticEnabled = true
 	r.staticFallbackOnly = true
-}
-
-// statusCaptureWriter wraps http.ResponseWriter to capture the status code
-// without writing through to the underlying writer when the status is 404.
-// This is used for static file serving to allow fallthrough to route matching.
-type statusCaptureWriter struct {
-	http.ResponseWriter
-	status   int
-	wrote    bool
-	suppress bool
-}
-
-func (w *statusCaptureWriter) WriteHeader(code int) {
-	if w.wrote {
-		return
-	}
-	w.status = code
-	w.wrote = true
-	if code == http.StatusNotFound {
-		w.suppress = true
-		return
-	}
-	w.ResponseWriter.WriteHeader(code)
-}
-
-func (w *statusCaptureWriter) Write(b []byte) (int, error) {
-	if !w.wrote {
-		w.WriteHeader(http.StatusOK)
-	}
-	if w.suppress {
-		return len(b), nil // discard
-	}
-	return w.ResponseWriter.Write(b)
-}
-
-func (w *statusCaptureWriter) ReadFrom(r io.Reader) (int64, error) {
-	if !w.wrote {
-		w.WriteHeader(http.StatusOK)
-	}
-	if w.suppress {
-		return io.Copy(io.Discard, r)
-	}
-	return io.Copy(w.ResponseWriter, r)
 }
 
 // requestMeta holds the per-request metadata that ServeHTTP threads
@@ -598,21 +570,23 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		ParentID:   meta.parentID,
 	})
 
-	// Static-first path (Static): FileServer gets a crack before route
-	// matching. Returns true if the file served the request.
-	if r.staticEnabled && !r.staticFallbackOnly {
-		if r.serveStatic(rw, req, meta) {
-			return
-		}
+	// Static-first path (Static): if the probe says the FileServer will
+	// produce a response for this path, dispatch it through the global
+	// middleware chain. The probe runs BEFORE the chain so a static miss
+	// falls through to route matching with no middleware having run;
+	// the chain executes exactly once per request, in whichever terminal
+	// (static, matched route, 404) ends up handling it (V2-01).
+	if r.staticEnabled && !r.staticFallbackOnly && r.staticProbe(req) {
+		r.dispatchStatic(rw, req, meta)
+		return
 	}
 
 	result := r.matchRoute(req)
 	if result == nil {
 		// Last-chance static (StaticFallback): only try files if no route matched.
-		if r.staticEnabled && r.staticFallbackOnly {
-			if r.serveStatic(rw, req, meta) {
-				return
-			}
+		if r.staticEnabled && r.staticFallbackOnly && r.staticProbe(req) {
+			r.dispatchStatic(rw, req, meta)
+			return
 		}
 		r.handleNotFound(rw, req, meta)
 		return
@@ -648,38 +622,106 @@ func (r *VelocityRouterV2) beginRequest(req *http.Request) (requestMeta, *http.R
 	return meta, req.WithContext(reqCtx)
 }
 
-// serveStatic attempts to serve a static file via the configured
-// FileServer. Returns true if the response was produced (success or
-// non-404 error); false when the FileServer returned 404 and the
-// router should fall through to route matching.
-func (r *VelocityRouterV2) serveStatic(rw *responseWriter, req *http.Request, meta requestMeta) bool {
-	cw := &statusCaptureWriter{ResponseWriter: rw}
+// staticProbe reports whether the static FileServer would produce a
+// response (anything other than a not-found) for this request path,
+// mirroring http.FileServer's path normalization. Only a missing file
+// returns false (fall through to route matching); permission and other
+// open errors return true so the FileServer's 403/500 is produced
+// inside the middleware chain, matching what the FileServer itself
+// would do. The probe costs one extra Open per static hit (probe +
+// serve), the price of deciding fallthrough before any middleware runs.
+func (r *VelocityRouterV2) staticProbe(req *http.Request) bool {
+	upath := req.URL.Path
+	if !strings.HasPrefix(upath, "/") {
+		upath = "/" + upath
+	}
+	// http.FileServer path.Cleans before opening (".." segments are
+	// resolved, not rejected; the 400 rejection lives in http.ServeFile,
+	// which is not used here), so the probe must Clean identically.
+	f, err := http.Dir(r.staticDir).Open(path.Clean(upath))
+	if err != nil {
+		return !errors.Is(err, fs.ErrNotExist)
+	}
+	_ = f.Close()
+	return true
+}
+
+// dispatchStatic runs the middleware-wrapped static handler built by
+// commitOnce. Called only after staticProbe confirmed the FileServer
+// will produce a response, so the global chain never runs twice for a
+// request that misses static and then matches a route. Mirrors the
+// handleNotFound structure: Context acquired/released exactly once,
+// RequestRouted/RequestHandled fire exactly once with Route "[static]".
+func (r *VelocityRouterV2) dispatchStatic(rw *responseWriter, req *http.Request, meta requestMeta) {
 	r.dispatchInstanceEvent(req.Context(), &RequestRouted{
 		Context:   req.Context(),
 		RequestID: meta.id,
 		Route:     "[static]",
 		Matched:   true,
 	})
-	r.staticFS.ServeHTTP(cw, req)
-	if cw.suppress {
-		// 404 — FileServer already consumed + discarded its body;
-		// signal the caller to fall through to route matching.
-		return false
+
+	// Attach services so middleware that pulls from ServicesFromRequest
+	// sees the configured container, matching the matched-route path.
+	if r.services != nil {
+		req = WithServices(req, r.services)
 	}
-	r.dispatchInstanceEvent(req.Context(), &RequestHandled{
-		Context:      req.Context(),
-		RequestID:    meta.id,
-		Method:       req.Method,
-		Path:         req.URL.Path,
-		Route:        "[static]",
-		StatusCode:   rw.Status(),
-		BytesWritten: rw.BytesWritten(),
-		Duration:     time.Since(meta.startedAt),
-		TraceID:      meta.traceID,
-		SpanID:       meta.spanID,
-		ParentID:     meta.parentID,
-	})
-	return true
+
+	ctx := r.ctxPool.Get().(*Context)
+	ctx.Response = rw
+	ctx.Request = req
+	ctx.services = r.services
+	ctx.trustedProxies = r.trustedProxiesOrParse()
+	ctx.redirectAllowedHosts = r.RedirectAllowedHosts
+	ctx.fileRoot = r.FileRootHandle()
+	ctx.validateFn = r.validateFn
+	ctx.intendedFn = r.intendedFn
+
+	var handlerErr error
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			r.onPanic(ctx, rw, req, meta, recovered)
+		} else if handlerErr != nil && !errors.Is(handlerErr, ErrValidationAborted) {
+			r.dispatchInstanceEvent(req.Context(), &RequestFailed{
+				Context:   req.Context(),
+				RequestID: meta.id,
+				Method:    req.Method,
+				Path:      req.URL.Path,
+				Error:     handlerErr,
+				Recovered: false,
+				TraceID:   meta.traceID,
+				SpanID:    meta.spanID,
+				ParentID:  meta.parentID,
+			})
+		}
+		r.dispatchInstanceEvent(req.Context(), &RequestHandled{
+			Context:      req.Context(),
+			RequestID:    meta.id,
+			Method:       req.Method,
+			Path:         req.URL.Path,
+			Route:        "[static]",
+			StatusCode:   rw.Status(),
+			BytesWritten: rw.BytesWritten(),
+			Duration:     time.Since(meta.startedAt),
+			TraceID:      meta.traceID,
+			SpanID:       meta.spanID,
+			ParentID:     meta.parentID,
+		})
+		ctx.reset()
+		r.ctxPool.Put(ctx)
+	}()
+
+	handler := r.staticHandler.Load()
+	if handler == nil {
+		// commitOnce has not run (or ClearRoutes wiped state). Effectively
+		// unreachable from ServeHTTP because commitOnce runs at the top of
+		// every request; degrade to an unwrapped serve rather than panic.
+		r.staticFS.ServeHTTP(rw, req)
+		return
+	}
+	handlerErr = (*handler)(ctx)
+	if handlerErr != nil && !errors.Is(handlerErr, ErrValidationAborted) {
+		r.handleError(ctx, rw, handlerErr)
+	}
 }
 
 // matchRoute tries the compiled fast-path, then the tree. Both reads
@@ -968,6 +1010,20 @@ func (r *VelocityRouterV2) commitOnce() {
 	wrapped := applyMiddlewareChain(terminal, r.middlewares)
 	r.notFoundHandler.Store(&wrapped)
 
+	// Build the static handler with the same global chain so static
+	// responses cannot bypass Use(...) middleware (V2-01, mirrors the
+	// E-01 treatment of the 404 handler above). The terminal reads
+	// r.staticFS at request time, so it is built unconditionally and a
+	// Static() call works whenever staticEnabled gates the dispatch.
+	// ServeHTTP guards entry with staticProbe, so a static miss falls
+	// through to route matching without this chain ever starting.
+	staticTerminal := HandlerFunc(func(c *Context) error {
+		r.staticFS.ServeHTTP(c.Response, c.Request)
+		return nil
+	})
+	wrappedStatic := applyMiddlewareChain(staticTerminal, r.middlewares)
+	r.staticHandler.Store(&wrappedStatic)
+
 	r.committed = true
 	r.frozen = true
 }
@@ -990,6 +1046,7 @@ func (r *VelocityRouterV2) ClearRoutes() {
 	r.resources = nil
 	r.compiledRoutes.Store(nil)
 	r.notFoundHandler.Store(nil)
+	r.staticHandler.Store(nil)
 	r.committed = false
 	r.frozen = false
 }

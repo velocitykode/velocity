@@ -196,6 +196,24 @@ type UserProvider interface {
 	UpdateRememberToken(user Authenticatable, token string) error
 }
 
+// RememberTokenCompareAndSwapper is a UserProvider capability required for
+// atomic rotate-on-use of the remember-me credential.
+// CompareAndSwapRememberToken must replace the persisted remember token
+// with newToken only when the currently stored value still equals
+// oldToken, and report swapped=false (with a nil error) when it does not.
+//
+// SessionGuard's remember-cookie recall persists rotation exclusively
+// through this interface: two parallel recalls presenting the same cookie
+// both validate before either write, but only one swap can succeed, so
+// the loser is rejected instead of minting a second valid credential via
+// last-writer-wins. A provider that does not implement it fails every
+// recall closed (remember cookies are still issued at login but can
+// never revive a session); the unconditional UpdateRememberTokenCtx is used
+// only on the login path, where no prior token is being consumed.
+type RememberTokenCompareAndSwapper interface {
+	CompareAndSwapRememberToken(ctx context.Context, user Authenticatable, oldToken, newToken string) (swapped bool, err error)
+}
+
 // SessionAware is an optional capability interface implemented by guards
 // that back authentication with a request-scoped Session. Guards that do
 // not have a session (e.g. JWT/bearer-token) leave this unimplemented;

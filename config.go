@@ -295,11 +295,15 @@ func ConfigFromEnv() Config {
 	config.Session = auth.SessionConfig{
 		Name:     envOrDefault("SESSION_NAME", "velocity_session"),
 		Lifetime: envIntOrDefault("SESSION_LIFETIME", 120),
-		Path:     envOrDefault("SESSION_PATH", "/"),
-		Domain:   os.Getenv("SESSION_DOMAIN"),
-		Secure:   os.Getenv("SESSION_SECURE") != "false",
-		HttpOnly: envOrDefault("SESSION_HTTP_ONLY", "true") == "true",
-		SameSite: parseSameSite(sessionSameSiteRaw),
+		// Absolute session-age cap in minutes, independent of activity.
+		// 0 (the default) applies the framework default of 30 days;
+		// negative explicitly disables the cap (unbounded sessions).
+		AbsoluteLifetime: envIntOrDefault("SESSION_ABSOLUTE_LIFETIME", 0),
+		Path:             envOrDefault("SESSION_PATH", "/"),
+		Domain:           os.Getenv("SESSION_DOMAIN"),
+		Secure:           os.Getenv("SESSION_SECURE") != "false",
+		HttpOnly:         envOrDefault("SESSION_HTTP_ONLY", "true") == "true",
+		SameSite:         parseSameSite(sessionSameSiteRaw),
 	}
 	config.sessionSameSiteRaw = sessionSameSiteRaw
 

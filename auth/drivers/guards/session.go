@@ -47,6 +47,13 @@ type sessionHolder struct {
 	storeOnce bool
 	storeRec  *auth.StoredSession
 	storeErr  error
+	// respWriter is the response writer for the in-flight request,
+	// installed by SessionMiddleware. The remember-cookie revival path
+	// (anchorRecalledUser → rotateRememberToken) needs it to deliver the
+	// replacement cookie when rotating the remember token, because the
+	// Guard read methods (User, Check) only receive the *http.Request.
+	// Nil when the guard is driven outside the middleware.
+	respWriter http.ResponseWriter
 }
 
 // getSession returns the cached session under a read lock.
@@ -81,6 +88,22 @@ func (h *sessionHolder) setStoreCache(rec *auth.StoredSession, err error) {
 	h.storeOnce = true
 	h.storeRec = rec
 	h.storeErr = err
+}
+
+// getResponseWriter returns the response writer installed by
+// SessionMiddleware, or nil when the request is being driven outside it.
+func (h *sessionHolder) getResponseWriter() http.ResponseWriter {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.respWriter
+}
+
+// setResponseWriter records the in-flight request's response writer so
+// guard read paths can emit cookies (remember-token rotation).
+func (h *sessionHolder) setResponseWriter(w http.ResponseWriter) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.respWriter = w
 }
 
 // resetStoreCache drops the server-store lookup cache so consultServerStore
@@ -540,10 +563,10 @@ func (g *SessionGuard) User(r *http.Request) auth.Authenticatable {
 // Returns true when the request may proceed authenticated. Returns false
 // (forcing User to return nil) when:
 //   - session ID regeneration failed, OR
-//   - server-side store write failed AND a store is configured.
-//
-// When no server store is wired, write failure cannot happen and the
-// rotation alone is enough.
+//   - server-side store write failed AND a store is configured, OR
+//   - the remember-token rotation could not complete (V2-08; see
+//     rotateRememberToken). Recall success is conditional on the
+//     presented credential being burned and a replacement delivered.
 func (g *SessionGuard) anchorRecalledUser(r *http.Request, session auth.Session, user auth.Authenticatable) bool {
 	// Capture the pre-rotation id so the CSRF rotator (when wired) can
 	// drop any token bound to the planted id. Required to keep the
@@ -597,7 +620,92 @@ func (g *SessionGuard) anchorRecalledUser(r *http.Request, session auth.Session,
 			return false
 		}
 	}
+
+	// Rotate the remember token now that the revival is fully anchored
+	// (V2-08). The presented token authenticated this request; minting a
+	// replacement here makes the remember credential single-use, so a
+	// stolen cookie cannot replay silently for its full 30-day lifetime.
+	// Rotation is part of the recall contract: when the replacement cannot
+	// be minted, persisted, or delivered (no response writer, provider
+	// failure, or a concurrent rotation already burned the presented
+	// token), the recall fails closed. user_id is removed again so the
+	// save-at-end middleware does not persist an authenticated session
+	// that would bypass rotation on the next request.
+	if err := g.rotateRememberToken(r, user); err != nil {
+		g.logWarn("velocity/auth: remember-cookie revival: remember-token rotation failed; rejecting recall", "error", err)
+		session.Remove("user_id")
+		return false
+	}
+
 	return true
+}
+
+// errRememberTokenStale reports a lost rotate-on-use race: the presented
+// remember token validated, but its stored hash was replaced by a
+// concurrent rotation before this request's compare-and-swap landed.
+var errRememberTokenStale = errors.New("velocity/auth: remember token rotated concurrently; presented credential is stale")
+
+// rotateRememberToken implements rotate-on-use for the remember-me
+// credential (V2-08). Each successful remember-cookie recall reissues the
+// credential through issueRememberCookie, the same mint-encrypt-persist-set
+// path used at login: a fresh random token is generated, its SHA-256 hash
+// replaces the old one on the user record, and the new cookie is written
+// to the response. The presented (old) token dies with the overwritten
+// hash.
+//
+// Rotation is mandatory for a recall to succeed. A non-nil error means
+// the replacement credential was not fully issued and the caller
+// (anchorRecalledUser) must reject the recall:
+//
+//   - no response writer is available (bare guard reads outside
+//     SessionMiddleware have nowhere to deliver the replacement cookie),
+//   - minting or encrypting the replacement failed,
+//   - persisting the new hash failed,
+//   - the provider does not implement auth.RememberTokenCompareAndSwapper, or
+//   - the stored hash no longer matches the presented token.
+//
+// The compare-and-swap is what closes the parallel-recall race: two
+// requests presenting the same old cookie both validate before either
+// write, but only one swap can land; the loser fails here instead of
+// minting a second valid credential via last-writer-wins. An unconditional
+// UpdateRememberTokenCtx cannot give that guarantee, so a provider without
+// the capability fails the recall closed rather than silently downgrading
+// to last-writer-wins; the unconditional update remains in use only on the
+// login path, where no previously issued token is being consumed.
+//
+// Rotation is strict; there is no grace window for the previous token.
+// The storage shape (a single remember_token hash on the user record)
+// offers no durable slot for a previous-token grace entry, and guard-local
+// memory would not survive multi-host deployments, so we fail secure: at
+// worst the user signs in again.
+func (g *SessionGuard) rotateRememberToken(r *http.Request, user auth.Authenticatable) error {
+	holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder)
+	if !ok || holder == nil {
+		return errors.New("velocity/auth: no session holder on request; cannot deliver rotated remember cookie")
+	}
+	w := holder.getResponseWriter()
+	if w == nil {
+		return errors.New("velocity/auth: no response writer on request; cannot deliver rotated remember cookie")
+	}
+
+	// The stored hash the presented token matched in checkRememberCookie;
+	// the compare-and-swap below anchors on it.
+	oldToken := user.GetRememberToken()
+
+	return g.issueRememberCookie(w, user, func(hashed string) error {
+		cas, ok := g.loadProvider().(auth.RememberTokenCompareAndSwapper)
+		if !ok {
+			return errors.New("velocity/auth: user provider does not implement RememberTokenCompareAndSwapper; cannot rotate remember token atomically")
+		}
+		swapped, err := cas.CompareAndSwapRememberToken(r.Context(), user, oldToken, hashed)
+		if err != nil {
+			return err
+		}
+		if !swapped {
+			return errRememberTokenStale
+		}
+		return nil
+	})
 }
 
 // ID returns the authenticated user ID. It enforces the same server-side
@@ -728,9 +836,28 @@ func (g *SessionGuard) LoginByID(w http.ResponseWriter, r *http.Request, id inte
 // emails by measuring response time even with a constant-time floor.
 func (g *SessionGuard) Attempt(w http.ResponseWriter, r *http.Request, credentials map[string]interface{}, remember ...bool) (bool, error) {
 	throttler := g.loadThrottler()
-	key := auth.ThrottleKey(r, credentials, g.getTrustedProxies())
-	if !throttler.Allow(r, key) {
+	// One key per throttle dimension (pair / identifier / IP, see
+	// auth.ThrottleKeys). The attempt is rejected when ANY dimension is
+	// over its cap; the error is the same regardless of which dimension
+	// tripped so a caller cannot tell a per-IP lockout from a
+	// per-account one.
+	keys := auth.ThrottleKeys(r, credentials, g.getTrustedProxies())
+	// Consult every dimension even after one denies, so the denial path
+	// does the same number of Allow lookups regardless of which dimension
+	// tripped (no per-dimension oracle).
+	denied := false
+	for _, key := range keys {
+		if !throttler.Allow(r, key) {
+			denied = true
+		}
+	}
+	if denied {
 		return false, auth.ErrLoginThrottled
+	}
+	recordFailure := func() {
+		for _, key := range keys {
+			throttler.RecordFailure(r, key)
+		}
 	}
 
 	// Snapshot the provider once so the timebox closure and the
@@ -783,15 +910,15 @@ func (g *SessionGuard) Attempt(w http.ResponseWriter, r *http.Request, credentia
 	})
 
 	if findErr != nil || user == nil {
-		throttler.RecordFailure(r, key)
+		recordFailure()
 		return false, nil // User not found
 	}
 	if invalidCredErr != nil {
-		throttler.RecordFailure(r, key)
+		recordFailure()
 		return false, invalidCredErr
 	}
 	if !credentialsOK {
-		throttler.RecordFailure(r, key)
+		recordFailure()
 		return false, nil // Invalid password
 	}
 
@@ -810,7 +937,9 @@ func (g *SessionGuard) Attempt(w http.ResponseWriter, r *http.Request, credentia
 	// frame and is not surfaced to subscribers.
 	g.maybeEmitRehashEvent(r.Context(), hasher, user)
 
-	throttler.RecordSuccess(r, key)
+	for _, key := range keys {
+		throttler.RecordSuccess(r, key)
+	}
 	return true, nil
 }
 
@@ -1148,6 +1277,10 @@ func (g *SessionGuard) clientIP(r *http.Request) string {
 
 // checkRememberCookie checks and validates remember cookie.
 // Returns the authenticated user if the cookie is valid, nil otherwise.
+//
+// Validation only: rotate-on-use (V2-08) happens in anchorRecalledUser,
+// which calls rotateRememberToken once the revival fully anchors, so a
+// recall that fails fixation/store checks does not burn the token.
 func (g *SessionGuard) checkRememberCookie(r *http.Request) auth.Authenticatable {
 	cookie, err := r.Cookie("remember_" + g.config.Name)
 	if err != nil {
@@ -1211,11 +1344,25 @@ func (g *SessionGuard) rememberCookieLifetime() (time.Duration, error) {
 	return defaultRememberDuration, nil
 }
 
-// setRememberCookie sets remember me cookie.
-// The raw token is encrypted into the cookie; only its SHA-256 hash is
-// persisted on the user record. Cookie TTL is min(session lifetime,
-// 30 days). Refuses to issue a cookie when the session lifetime is zero.
+// setRememberCookie sets the remember me cookie at login, persisting the
+// new token hash unconditionally through the provider (there is no prior
+// credential to guard against; login may always overwrite).
 func (g *SessionGuard) setRememberCookie(w http.ResponseWriter, user auth.Authenticatable) error {
+	return g.issueRememberCookie(w, user, func(hashed string) error {
+		return g.loadProvider().UpdateRememberToken(user, hashed)
+	})
+}
+
+// issueRememberCookie mints a fresh remember token, encrypts the cookie
+// payload, persists the token's SHA-256 hash through persist, and writes
+// the cookie. The raw token is encrypted into the cookie; only its hash
+// reaches the user record. Cookie TTL is min(session lifetime, 30 days).
+// Refuses to issue a cookie when the session lifetime is zero.
+//
+// Encryption runs BEFORE persist so an encryptor failure cannot strand
+// the user: overwriting the stored hash while unable to deliver the
+// replacement cookie would silently sign the device out.
+func (g *SessionGuard) issueRememberCookie(w http.ResponseWriter, user auth.Authenticatable, persist func(hashed string) error) error {
 	ttl, err := g.rememberCookieLifetime()
 	if err != nil {
 		return err
@@ -1224,13 +1371,6 @@ func (g *SessionGuard) setRememberCookie(w http.ResponseWriter, user auth.Authen
 	// Generate remember token.
 	token, err := generateRememberToken()
 	if err != nil {
-		return err
-	}
-
-	// Store only the hash of the token on the user record.
-	hashed := hashRememberToken(token)
-	user.SetRememberToken(hashed)
-	if err := g.loadProvider().UpdateRememberToken(user, hashed); err != nil {
 		return err
 	}
 
@@ -1252,6 +1392,16 @@ func (g *SessionGuard) setRememberCookie(w http.ResponseWriter, user auth.Authen
 	if err != nil {
 		return err
 	}
+
+	// Store only the hash of the token on the user record. The in-memory
+	// user is mutated only after a successful persist so a failed (or
+	// lost-race) write leaves the object holding the hash that is still
+	// authoritative in the store.
+	hashed := hashRememberToken(token)
+	if err := persist(hashed); err != nil {
+		return err
+	}
+	user.SetRememberToken(hashed)
 
 	// Set cookie
 	http.SetCookie(w, &http.Cookie{

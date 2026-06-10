@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -159,6 +160,9 @@ func TestContext_JSON(t *testing.T) {
 	}
 	if w.Header().Get("Content-Type") != "application/json" {
 		t.Error("Expected Content-Type to be application/json")
+	}
+	if w.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Error("Expected X-Content-Type-Options to be nosniff")
 	}
 
 	var result map[string]string
@@ -1205,6 +1209,39 @@ func TestContext_PrepareStream(t *testing.T) {
 	}
 }
 
+func TestContext_SSE_ValidEventName(t *testing.T) {
+	c, w := NewTestContext("GET", "/events")
+
+	if err := c.SSE("user.created", "payload"); err != nil {
+		t.Fatalf("SSE error: %v", err)
+	}
+	if !strings.Contains(w.Body.String(), "event: user.created\n") {
+		t.Errorf("expected event name verbatim in body, got %q", w.Body.String())
+	}
+}
+
+func TestContext_SSE_EventNameInjection(t *testing.T) {
+	for name, event := range map[string]string{
+		"newline":         "msg\ndata: injected",
+		"carriage_return": "msg\rdata: injected",
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, w := NewTestContext("GET", "/events")
+
+			err := c.SSE(event, "payload")
+			if err == nil {
+				t.Fatal("expected error for event name containing CR/LF, got nil")
+			}
+			if w.Body.Len() != 0 {
+				t.Errorf("expected nothing written to body, got %q", w.Body.String())
+			}
+			if got := w.Header().Get("Content-Type"); got != "" {
+				t.Errorf("expected no headers set, got Content-Type=%q", got)
+			}
+		})
+	}
+}
+
 func TestContext_SSE_MultipleEvents(t *testing.T) {
 	req := httptest.NewRequest("GET", "/events", nil)
 	w := httptest.NewRecorder()
@@ -1235,6 +1272,168 @@ func TestContext_FormValue(t *testing.T) {
 	}
 	if c.FormValue("missing") != "" {
 		t.Error("expected empty for missing key")
+	}
+}
+
+// countingReader counts the bytes actually read from the underlying
+// request body so tests can assert that FormValue's MaxBytesReader cap
+// stops consumption at (or just past) the limit instead of buffering an
+// arbitrarily large body to os.TempDir.
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
+// repeatReader yields an endless stream of 'A' bytes; bound it with
+// io.LimitReader to simulate a large upload without allocating it.
+type repeatReader struct{}
+
+func (repeatReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 'A'
+	}
+	return len(p), nil
+}
+
+// smallMultipart builds a multipart body holding a single "email" field.
+func smallMultipart(t *testing.T) (io.Reader, string) {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	if err := mw.WriteField("email", "test@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return &buf, mw.FormDataContentType()
+}
+
+// overCapMultipart streams a multipart body whose total wire size is
+// 3x DefaultMaxBodySize without ever materializing it: a fixed prologue,
+// a repeating payload, and the closing boundary.
+func overCapMultipart() (io.Reader, string) {
+	const boundary = "formvaluecapboundary"
+	prologue := "--" + boundary + "\r\n" +
+		"Content-Disposition: form-data; name=\"big\"; filename=\"big.bin\"\r\n" +
+		"Content-Type: application/octet-stream\r\n\r\n"
+	epilogue := "\r\n--" + boundary + "--\r\n"
+	body := io.MultiReader(
+		strings.NewReader(prologue),
+		io.LimitReader(repeatReader{}, 3*DefaultMaxBodySize),
+		strings.NewReader(epilogue),
+	)
+	return body, "multipart/form-data; boundary=" + boundary
+}
+
+// midSizeMultipart builds a multipart body with an "email" field followed
+// by a filler part that pushes the total size past DefaultMaxBodySize but
+// under the given middleware limit. Used to prove FormValue does not
+// re-wrap a body already capped by BodyLimit middleware.
+func midSizeMultipart(t *testing.T) (io.Reader, string) {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	if err := mw.WriteField("email", "test@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	fw, err := mw.CreateFormFile("filler", "filler.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fw.Write(make([]byte, DefaultMaxBodySize+1<<20)); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return &buf, mw.FormDataContentType()
+}
+
+// TestContext_FormValue_BodyCap pins the V2-02 fix: FormValue must apply
+// http.MaxBytesReader(DefaultMaxBodySize) before delegating to
+// (*Request).FormValue (which triggers an uncapped ParseMultipartForm for
+// multipart bodies), unless BodyLimit middleware already wrapped the body.
+func TestContext_FormValue_BodyCap(t *testing.T) {
+	tests := []struct {
+		name string
+		body func(t *testing.T) (io.Reader, string)
+		// bodyLimit, when non-zero, wraps the lookup in BodyLimit middleware.
+		bodyLimit int64
+		key       string
+		want      string
+		// maxRead, when non-zero, asserts total bytes consumed from the
+		// body never exceed it.
+		maxRead int64
+	}{
+		{
+			name: "urlencoded small body works",
+			body: func(t *testing.T) (io.Reader, string) {
+				return strings.NewReader("email=test%40example.com"), "application/x-www-form-urlencoded"
+			},
+			key:  "email",
+			want: "test@example.com",
+		},
+		{
+			name: "multipart small body works",
+			body: smallMultipart,
+			key:  "email",
+			want: "test@example.com",
+		},
+		{
+			name: "multipart over cap stops reading at the limit",
+			body: func(t *testing.T) (io.Reader, string) { return overCapMultipart() },
+			key:  "big",
+			want: "",
+			// MaxBytesReader hands out at most limit+1 bytes; allow a
+			// little slack for rounding in intermediate buffers.
+			maxRead: DefaultMaxBodySize + 1024,
+		},
+		{
+			name: "explicit BodyLimit middleware is not double-wrapped",
+			body: midSizeMultipart,
+			// Over DefaultMaxBodySize, under this. If FormValue re-wrapped
+			// at DefaultMaxBodySize the parse would fail and want would
+			// come back empty.
+			bodyLimit: 3 * DefaultMaxBodySize,
+			key:       "email",
+			want:      "test@example.com",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, contentType := tt.body(t)
+			cr := &countingReader{r: body}
+			req := httptest.NewRequest(http.MethodPost, "/test", cr)
+			req.Header.Set("Content-Type", contentType)
+			w := httptest.NewRecorder()
+			c := NewContext(w, req)
+
+			lookup := func(c *Context) error {
+				if got := c.FormValue(tt.key); got != tt.want {
+					t.Errorf("FormValue(%q) = %q, want %q", tt.key, got, tt.want)
+				}
+				return nil
+			}
+			handler := lookup
+			if tt.bodyLimit > 0 {
+				handler = BodyLimit(tt.bodyLimit)(lookup)
+			}
+			if err := handler(c); err != nil {
+				t.Fatalf("handler error: %v", err)
+			}
+
+			if tt.maxRead > 0 && cr.n > tt.maxRead {
+				t.Errorf("read %d bytes from body, want at most %d", cr.n, tt.maxRead)
+			}
+		})
 	}
 }
 
@@ -1933,4 +2132,49 @@ func TestContext_reset_clearsAllFields(t *testing.T) {
 	if c.validateFn != nil {
 		t.Error("reset did not clear validateFn")
 	}
+}
+
+// TestContext_BindForm_BodyLimitNotDoubleWrapped pins BindForm to the same
+// no-double-wrap contract as Bind/BindXML/FormValue/FormFile: when the
+// BodyLimit middleware already wrapped the body, BindForm must trust that
+// wrapper instead of stacking a second MaxBytesReader and re-shrinking the
+// operator-configured limit.
+func TestContext_BindForm_BodyLimitNotDoubleWrapped(t *testing.T) {
+	type form struct {
+		Email string `form:"email"`
+	}
+
+	// Urlencoded body over DefaultMaxBodySize, under the middleware limit.
+	bigBody := func() string {
+		pad := strings.Repeat("A", int(DefaultMaxBodySize)+1024)
+		return "email=test%40example.com&pad=" + pad
+	}
+
+	t.Run("BodyLimit above default governs", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(bigBody()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		c := NewContext(httptest.NewRecorder(), req)
+
+		var f form
+		handler := BodyLimit(3 * DefaultMaxBodySize)(func(c *Context) error {
+			return c.BindForm(&f)
+		})
+		if err := handler(c); err != nil {
+			t.Fatalf("BindForm under a raised BodyLimit must succeed, got: %v", err)
+		}
+		if f.Email != "test@example.com" {
+			t.Fatalf("bound email = %q, want test@example.com", f.Email)
+		}
+	})
+
+	t.Run("default cap still applies without middleware", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(bigBody()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		c := NewContext(httptest.NewRecorder(), req)
+
+		var f form
+		if err := c.BindForm(&f); err == nil {
+			t.Fatal("BindForm without middleware must enforce DefaultMaxBodySize")
+		}
+	})
 }

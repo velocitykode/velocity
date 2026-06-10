@@ -212,9 +212,7 @@ func TestSessionGuard_RememberRevival_RotatesCSRFToken(t *testing.T) {
 	// revival assertion below is on a clean slate.
 	rotator.rotated = nil
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.AddCookie(rememberCookie)
-	req = WithSessionContext(req)
+	req := rememberRecallRequest(t, rememberCookie, httptest.NewRecorder())
 
 	// Capture pre-revival id by loading the session once (no user_id).
 	preID := guard.getSession(req).ID()

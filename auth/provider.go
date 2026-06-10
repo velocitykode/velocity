@@ -131,6 +131,33 @@ func (p *ORMUserProvider) UpdateRememberToken(user Authenticatable, token string
 	return p.UpdateRememberTokenCtx(context.Background(), user, token)
 }
 
+// CompareAndSwapRememberToken implements RememberTokenCompareAndSwapper.
+// The stored remember token is replaced with newToken only when the row
+// still holds oldToken, in a single conditional UPDATE so concurrent
+// rotations cannot both succeed. Returns false with a nil error when the
+// row was not updated (a concurrent rotation won, or the token was
+// cleared); the in-memory user is only mutated on a successful swap.
+func (p *ORMUserProvider) CompareAndSwapRememberToken(ctx context.Context, user Authenticatable, oldToken, newToken string) (bool, error) {
+	if p.db == nil {
+		return false, errors.New("database not initialized")
+	}
+
+	res, err := p.db.ExecContext(ctx, "UPDATE users SET remember_token = $1 WHERE id = $2 AND remember_token = $3", newToken, user.GetAuthIdentifier(), oldToken)
+	if err != nil {
+		return false, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if affected == 0 {
+		return false, nil
+	}
+
+	user.SetRememberToken(newToken)
+	return true, nil
+}
+
 // normalizeID converts numeric ID values from database drivers into uint
 // so that GetAuthIdentifier() always returns a consistent type regardless
 // of the underlying database driver.

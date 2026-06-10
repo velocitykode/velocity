@@ -559,6 +559,92 @@ func TestORMUserProvider(t *testing.T) {
 	}
 }
 
+func TestORMUserProviderCompareAndSwapRememberToken(t *testing.T) {
+	manager, err := orm.NewManager(orm.ManagerConfig{
+		Driver:   "sqlite",
+		Database: ":memory:",
+	})
+	if err != nil {
+		t.Fatalf("Failed to initialize ORM: %v", err)
+	}
+	defer manager.Shutdown(context.Background())
+
+	db := manager.DB()
+	_, err = db.Exec(`
+		CREATE TABLE users (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL DEFAULT '',
+			email TEXT UNIQUE NOT NULL,
+			password TEXT NOT NULL,
+			remember_token TEXT
+		)
+	`)
+	if err != nil {
+		t.Fatalf("Failed to create users table: %v", err)
+	}
+	_, err = db.Exec("INSERT INTO users (name, email, password, remember_token) VALUES ($1, $2, $3, $4)", "Test User", "test@example.com", "hash", "old-hash")
+	if err != nil {
+		t.Fatalf("Failed to insert test user: %v", err)
+	}
+
+	provider := NewORMUserProvider(db, "User", nil)
+
+	// The optional capability must be implemented so SessionGuard's
+	// recall path takes the atomic branch for the default provider.
+	var _ RememberTokenCompareAndSwapper = provider
+
+	user, err := provider.FindByID(1)
+	if err != nil || user == nil {
+		t.Fatalf("FindByID: user=%v err=%v", user, err)
+	}
+
+	// Matching old token: swap succeeds and persists.
+	swapped, err := provider.CompareAndSwapRememberToken(context.Background(), user, "old-hash", "new-hash")
+	if err != nil {
+		t.Fatalf("CompareAndSwapRememberToken: %v", err)
+	}
+	if !swapped {
+		t.Fatal("swap with matching old token should succeed")
+	}
+	if user.GetRememberToken() != "new-hash" {
+		t.Errorf("in-memory token = %q, want %q", user.GetRememberToken(), "new-hash")
+	}
+	reloaded, err := provider.FindByID(1)
+	if err != nil || reloaded == nil {
+		t.Fatalf("FindByID after swap: user=%v err=%v", reloaded, err)
+	}
+	if reloaded.GetRememberToken() != "new-hash" {
+		t.Errorf("persisted token = %q, want %q", reloaded.GetRememberToken(), "new-hash")
+	}
+
+	// Stale old token (a concurrent rotation already replaced it): the
+	// swap must report false, leave the row untouched, and not mutate
+	// the in-memory user.
+	swapped, err = provider.CompareAndSwapRememberToken(context.Background(), reloaded, "old-hash", "loser-hash")
+	if err != nil {
+		t.Fatalf("CompareAndSwapRememberToken (stale): %v", err)
+	}
+	if swapped {
+		t.Fatal("swap with stale old token must report false")
+	}
+	if reloaded.GetRememberToken() != "new-hash" {
+		t.Errorf("in-memory token mutated on failed swap: %q", reloaded.GetRememberToken())
+	}
+	final, err := provider.FindByID(1)
+	if err != nil || final == nil {
+		t.Fatalf("FindByID after stale swap: user=%v err=%v", final, err)
+	}
+	if final.GetRememberToken() != "new-hash" {
+		t.Errorf("persisted token after stale swap = %q, want %q", final.GetRememberToken(), "new-hash")
+	}
+
+	// Uninitialized DB errors instead of reporting a clean miss.
+	nilProvider := NewORMUserProvider(nil, "User", nil)
+	if _, err := nilProvider.CompareAndSwapRememberToken(context.Background(), user, "a", "b"); err == nil {
+		t.Error("expected error for uninitialized database")
+	}
+}
+
 func TestManagerGate(t *testing.T) {
 	m := NewManager()
 

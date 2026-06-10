@@ -93,19 +93,18 @@ func TestSessionGuard_RememberRevival_RegenBeforePut(t *testing.T) {
 	provider := &rememberRevivalProvider{user: &revokeTestUser{id: "u1"}}
 	guard.SetProvider(provider)
 
-	// Mint the remember cookie via a real Login (uses the real store).
-	rememberCookie := mintRememberCookie(t, guard)
-
-	// Now swap in the tracking store so the revival path operates on
-	// our instrumented session.
+	// Swap in the tracking store so the revival path operates on our
+	// instrumented session.
 	tracker := &orderTrackingStore{inner: guard.store}
 	guard.store = tracker
 
 	for _, method := range []string{"User", "Check"} {
 		t.Run(method, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/", nil)
-			req.AddCookie(rememberCookie)
-			req = WithSessionContext(req)
+			// Mint a fresh remember cookie per subtest: recall now
+			// rotates the token (V2-08), so a cookie consumed by the
+			// previous subtest no longer authenticates.
+			rememberCookie := mintRememberCookie(t, guard)
+			req := rememberRecallRequest(t, rememberCookie, httptest.NewRecorder())
 
 			switch method {
 			case "User":

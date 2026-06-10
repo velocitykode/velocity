@@ -18,6 +18,12 @@ var (
 	_ contract.Renderer = (*HTMLRenderer)(nil)
 )
 
+// setJSONHeaders sets the headers shared by every JSON exception writer.
+func setJSONHeaders(ctx RenderContext) {
+	ctx.SetHeader("Content-Type", "application/json")
+	ctx.SetHeader("X-Content-Type-Options", "nosniff")
+}
+
 // JSONRenderer renders exceptions as JSON.
 type JSONRenderer struct{}
 
@@ -85,7 +91,7 @@ func (r *JSONRenderer) Render(ctx RenderContext, err error, exCtx *ExceptionCont
 		}
 	}
 
-	ctx.SetHeader("Content-Type", "application/json")
+	setJSONHeaders(ctx)
 	ctx.WriteHeader(statusCode)
 
 	data, jsonErr := json.Marshal(response)

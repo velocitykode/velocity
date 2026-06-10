@@ -112,11 +112,16 @@ func TestInstallLoginThrottler_InstallsCacheBackedDefault(t *testing.T) {
 
 func newTestLoginThrottler(t *testing.T, maxAttempts int) *cacheLoginThrottler {
 	t.Helper()
+	return newTestDimensionedLoginThrottler(t, maxAttempts, 0, 0)
+}
+
+func newTestDimensionedLoginThrottler(t *testing.T, pair, identifier, ip int) *cacheLoginThrottler {
+	t.Helper()
 	store, err := newMemoryCacheManager().DefaultStore()
 	if err != nil {
 		t.Fatalf("DefaultStore: %v", err)
 	}
-	return newCacheLoginThrottler(store, maxAttempts, time.Minute)
+	return newCacheLoginThrottler(store, pair, identifier, ip, time.Minute)
 }
 
 func newMemoryCacheManager() *cache.Manager {

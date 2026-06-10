@@ -65,6 +65,10 @@ func TestRender_JSONResponse_InertiaRequest(t *testing.T) {
 		t.Error("expected X-Inertia header to be set")
 	}
 
+	if w.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Error("expected X-Content-Type-Options header to be nosniff")
+	}
+
 	if w.Header().Get("Vary") != "X-Inertia" {
 		t.Error("expected Vary header to be set")
 	}
