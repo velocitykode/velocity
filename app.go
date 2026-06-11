@@ -738,6 +738,29 @@ func New(opts ...Option) (*App, error) {
 	// overwrite, so re-running the full sweep is safe.
 	wireInstanceEvents(a)
 
+	// Run registered boot hooks (zero-config instrumentation that
+	// self-registers via app.OnBoot from a blank-imported package). Hooks
+	// run last so they see the final service set, after providers have
+	// registered and booted. Components a hook registers via app.Register
+	// are covered by the ShutdownAware sweep in App.Shutdown but NOT by
+	// the wireInstanceEvents sweeps above (already run); a hook needing
+	// the dispatcher reads s.Events directly. On error, mirror the
+	// provider-failure teardown: providers unwind first (reverse push
+	// order), then the component sweep releases hook/provider-registered
+	// values.
+	if err := app.RunBootHooks(a.Services); err != nil {
+		cleanups = append(cleanups, func() {
+			shutdownComponents(context.Background(), a.Services, func(error) {})
+		})
+		cleanups = append(cleanups, func() {
+			shutdownCtx := context.Background()
+			for i := len(a.providers) - 1; i >= 0; i-- {
+				_ = a.providers[i].Shutdown(shutdownCtx)
+			}
+		})
+		return nil, fmt.Errorf("velocity: boot hook failed: %w", err)
+	}
+
 	// Success path: disarm the cleanup stack. From here on, resources are
 	// owned by the *App and released via Shutdown().
 	cleanups = nil
