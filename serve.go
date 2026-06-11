@@ -8,12 +8,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"reflect"
 	"syscall"
 	"time"
 
+	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/eventqueue"
+	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/queue"
 )
@@ -151,10 +154,14 @@ func (a *App) serveHTTP() error {
 // Shutdown gracefully shuts down all services in reverse initialization order:
 // HTTP server, event dispatcher and file root, scheduler, outbox relay, then
 // chain providers and WithProviders providers (reverse registration order),
-// then queue, cache, CSRF, mail, storage, notification, view, DB, and the
-// logger last. Providers tear down before queue/cache/DB because they
-// Register/Boot after all core services; unwinding them first keeps those
-// services alive for final flushes and matches the New() failure-path order.
+// then registry components (reverse registration order), then queue, cache,
+// CSRF, mail, storage, notification, view, DB, and the logger last. Providers
+// tear down before queue/cache/DB because they Register/Boot after all core
+// services; unwinding them first keeps those services alive for final flushes
+// and matches the New() failure-path order. Registry components sweep after
+// providers (so a provider can flush using a value it registered) and before
+// queue/cache/DB (so a component can still reach core services during its own
+// teardown); the registry owns teardown of registered values.
 // Every subsystem's Shutdown is called even if an earlier one fails; all errors
 // are aggregated via errors.Join.
 func (a *App) Shutdown(ctx context.Context) error {
@@ -209,6 +216,14 @@ func (a *App) Shutdown(ctx context.Context) error {
 	for i := len(a.providers) - 1; i >= 0; i-- {
 		collect(a.providers[i].Shutdown(ctx))
 	}
+
+	// 4a. Sweep registry components in reverse registration order. The
+	// registry owns teardown of registered values: a provider that
+	// registers a value MUST NOT also close it in its own Shutdown (see
+	// app.Register). This runs after provider Shutdown so a provider can
+	// flush using a value it registered, and before queue/cache/DB close so
+	// a component can still reach core services during its own teardown.
+	shutdownComponents(ctx, a.Services, collect)
 
 	// 5. Close queue driver
 	if a.Queue != nil {
@@ -297,4 +312,72 @@ func (a *App) Shutdown(ctx context.Context) error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// shutdownComponents sweeps the type-keyed component registry in REVERSE
+// registration order, calling Shutdown on every registered value and every
+// hook adapter that implements contract.ShutdownAware. Errors are handed to
+// collect for aggregation.
+//
+// Exactly-once: the same instance may be registered under multiple keys
+// (concrete + interface opt-in) and may also appear as its own hook. A seen-set
+// guards against shutting one instance down more than once across both values
+// and hooks. Only comparable dynamic types enter the seen-set; inserting an
+// uncomparable type into a map panics, so an uncomparable value falls back to
+// per-entry shutdown and may be shut down more than once. The inverse edge
+// also exists: dedupe is by interface equality, so two DISTINCT comparable
+// non-pointer values whose fields compare equal would falsely dedupe and the
+// second would be skipped. Both edges are documented limitations, expected to
+// be rare since registered values are typically pointers (always distinct
+// unless actually the same instance).
+//
+// Each Shutdown call is panic-guarded (see safeComponentShutdown) so a
+// misbehaving third-party Close cannot abort the remaining teardown.
+func shutdownComponents(ctx context.Context, s *app.Services, collect func(error)) {
+	if s == nil {
+		return
+	}
+
+	type entry struct {
+		value any
+		hooks []any
+	}
+	var entries []entry
+	s.RangeComponents(func(_ app.ComponentKey, v any, hooks []any) bool {
+		entries = append(entries, entry{value: v, hooks: hooks})
+		return true
+	})
+
+	seen := map[any]struct{}{}
+	shutdownOne := func(v any) {
+		sd, ok := v.(contract.ShutdownAware)
+		if !ok {
+			return
+		}
+		if reflect.TypeOf(v).Comparable() {
+			if _, dup := seen[v]; dup {
+				return
+			}
+			seen[v] = struct{}{}
+		}
+		collect(safeComponentShutdown(ctx, sd))
+	}
+
+	for i := len(entries) - 1; i >= 0; i-- {
+		shutdownOne(entries[i].value)
+		for _, h := range entries[i].hooks {
+			shutdownOne(h)
+		}
+	}
+}
+
+// safeComponentShutdown calls sd.Shutdown(ctx), converting a panic from a
+// third-party Close into an error so one bad component cannot abort the sweep.
+func safeComponentShutdown(ctx context.Context, sd contract.ShutdownAware) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = panicerr.FromRecovered(r)
+		}
+	}()
+	return sd.Shutdown(ctx)
 }

@@ -58,10 +58,10 @@ func (a *App) runBootstrap() error {
 		return err
 	}
 
-	// Chain providers may have registered extensions or replaced service
-	// instances (e.g. s.CSRF) during Register/Boot; the wireInstanceEvents
+	// Chain providers may have registered registry components or replaced
+	// service instances (e.g. s.CSRF) during Register/Boot; the wireInstanceEvents
 	// sweep in New() ran before any of them existed, so re-sweep services
-	// and extensions so the final instances receive the dispatcher. Every
+	// and components so the final instances receive the dispatcher. Every
 	// wiring setter is an idempotent overwrite, so re-running is safe.
 	wireInstanceEvents(a)
 
@@ -212,7 +212,7 @@ func wireInstanceEvents(a *App) {
 		mgr.SetTxEventBus(a.Services.Events)
 	}
 
-	wireExtensionEvents(a)
+	wireComponentEvents(a)
 }
 
 // eventWiringCandidates returns every service instance the wireInstanceEvents
@@ -244,25 +244,37 @@ func buildEventDispatch(a *App) func(ctx context.Context, event any) error {
 	}
 }
 
-// wireExtensionEvents wires the event dispatcher into any extension that
-// supports it. Called from wireInstanceEvents, which itself runs again after
-// each provider lifecycle (WithProviders in New, chain providers in
-// bootstrap) because providers register extensions only during Register/Boot,
-// so a single sweep at construction time would always see an empty map.
-// SetEventDispatcher overwrite is idempotent on every conforming type, so
-// re-sweeping already wired extensions is safe.
+// wireComponentEvents wires the event dispatcher into every registry entry
+// (registered value plus its hook adapters) that implements
+// contract.EventDispatcherAware. It is called from wireInstanceEvents so it
+// re-runs after each provider lifecycle (WithProviders in New, chain providers
+// in bootstrap): providers
+// register components only during Register/Boot, so the New-time sweep would
+// always see an empty registry. SetEventDispatcher overwrite is idempotent on
+// every conforming type, so re-sweeping already wired components is safe.
 //
-// Iterate under the Services extMu RLock via RangeExtensions so a
-// concurrent RegisterExtension cannot race the iteration (cross-cutting
-// map mutex sweep, rule #3).
-func wireExtensionEvents(a *App) {
+// Iteration uses RangeComponents, which snapshots under the Services compMu
+// RLock so a concurrent Register cannot race the sweep (rule #3).
+//
+// The value and the hooks are wired independently with no hook == value
+// dedupe: interface equality on an uncomparable dynamic type panics, so an
+// integrator who passes the value itself as a hook would crash a naive guard.
+// Instead the setter is simply called twice in that case, which is safe
+// because SetEventDispatcher implementations are required to be synchronized
+// (CLAUDE.md security rule #3); the last write wins and there is no race.
+func wireComponentEvents(a *App) {
 	dispatch := buildEventDispatch(a)
 	if dispatch == nil {
 		return
 	}
-	a.Services.RangeExtensions(func(_ string, ext any) bool {
-		if s, ok := ext.(contract.EventDispatcherAware); ok {
+	a.Services.RangeComponents(func(_ app.ComponentKey, v any, hooks []any) bool {
+		if s, ok := v.(contract.EventDispatcherAware); ok {
 			s.SetEventDispatcher(dispatch)
+		}
+		for _, h := range hooks {
+			if s, ok := h.(contract.EventDispatcherAware); ok {
+				s.SetEventDispatcher(dispatch)
+			}
 		}
 		return true
 	})

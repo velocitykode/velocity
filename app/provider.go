@@ -15,5 +15,11 @@ type ServiceProvider interface {
 
 	// Shutdown gracefully tears down provider resources.
 	// Called in reverse registration order.
+	//
+	// Ownership rule: a provider that registers a value into the component
+	// registry (Register/RegisterFor) MUST NOT also close that value here.
+	// The registry sweep in App.Shutdown owns teardown of registered values
+	// and runs immediately after provider Shutdown; closing it in both places
+	// is a double-close.
 	Shutdown(ctx context.Context) error
 }

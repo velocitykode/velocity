@@ -2,14 +2,14 @@ package velocity
 
 // Event-wiring conformance tests. Event wiring has regressed several
 // independent ways (B3 bus never autowired, B12 provider-registered
-// extensions swept against an empty map, B13 CSRF missing from the
+// components swept against an empty registry, B13 CSRF missing from the
 // candidate slice, B47 dispatcher wiring drift); these tests pin the
 // contract so the next drift fails CI instead of silently dropping events:
 //
 //   - Part A sweeps app.Services by reflection and requires every
 //     dispatcher-aware field to appear in eventWiringCandidates.
-//   - Part B pins the extension wiring path end to end.
 //   - Part C pins the bus autowire path end to end (B3+B12 jointly).
+//   - Part D pins the component wiring path end to end.
 
 import (
 	"context"
@@ -182,7 +182,8 @@ func TestConformance_ServicesEventWiringCandidates(t *testing.T) {
 	st := sv.Type()
 	for i := 0; i < st.NumField(); i++ {
 		field := st.Field(i)
-		// Unexported fields (extMu) can never hold wireable services.
+		// Unexported fields (compMu, the registry maps) can never hold
+		// wireable services reachable through eventWiringCandidates.
 		if !field.IsExported() {
 			continue
 		}
@@ -192,10 +193,11 @@ func TestConformance_ServicesEventWiringCandidates(t *testing.T) {
 			continue
 		}
 		// A field whose static type is neither an interface nor an
-		// implementation of the contract (the Extensions map) can never
-		// hold a dispatcher-aware value. Every interface field stays in
-		// scope regardless of its declared method set, because a concrete
-		// implementation may opt into the contract at runtime.
+		// implementation of the contract (e.g. the InsecureFlashCookies
+		// bool) can never hold a dispatcher-aware value. Every interface
+		// field stays in scope regardless of its declared method set,
+		// because a concrete implementation may opt into the contract at
+		// runtime.
 		if field.Type.Kind() != reflect.Interface && !field.Type.Implements(awareType) {
 			continue
 		}
@@ -226,48 +228,49 @@ func TestConformance_ServicesEventWiringCandidates(t *testing.T) {
 	}
 }
 
-// conformanceExtensionProvider registers a dispatcher-aware extension during
-// Register, the way a third-party package opts into framework events.
-type conformanceExtensionProvider struct {
-	probe *dispatcherProbe
+// conformanceComponentProvider registers a dispatcher-aware value in the
+// type-keyed component registry during Register, the way a first-party SDK
+// module opts into framework events.
+type conformanceComponentProvider struct {
+	probe *componentProbe
 }
 
-func (p *conformanceExtensionProvider) Register(s *app.Services) error {
-	return app.RegisterExtension(s, "conformance-event-probe", p.probe)
+func (p *conformanceComponentProvider) Register(s *app.Services) error {
+	return app.Register(s, p.probe)
 }
 
-func (p *conformanceExtensionProvider) Boot(_ *app.Services) error       { return nil }
-func (p *conformanceExtensionProvider) Shutdown(_ context.Context) error { return nil }
+func (p *conformanceComponentProvider) Boot(_ *app.Services) error       { return nil }
+func (p *conformanceComponentProvider) Shutdown(_ context.Context) error { return nil }
 
-// Part B: canonical pin of the extension wiring contract (B12). A
-// dispatcher-aware extension registered by a provider must receive the
-// dispatcher, and a dispatch through it must land in the app dispatcher.
-// Overlaps the B12 regression tests in extension_event_wiring_test.go by
-// design; this is the contract pin, those are the bug regressions.
-func TestConformance_ExtensionReceivesDispatcher(t *testing.T) {
+// Part D: canonical pin of the component wiring contract. A dispatcher-aware
+// value registered in the type-keyed registry by a provider must receive the
+// dispatcher, and a dispatch through it must land in the app dispatcher. This
+// guards future SDKs that self-register via app.Register against a wiring
+// regression in wireComponentEvents.
+func TestConformance_ComponentReceivesDispatcher(t *testing.T) {
 	fake := events.NewFakeDispatcher()
-	probe := &dispatcherProbe{}
+	probe := &componentProbe{}
 
 	a, err := NewTestApp(
 		WithFakeEvents(fake),
-		WithProviders(&conformanceExtensionProvider{probe: probe}),
+		WithProviders(&conformanceComponentProvider{probe: probe}),
 	)
 	if err != nil {
 		t.Fatalf("NewTestApp() error: %v", err)
 	}
 	defer a.Shutdown(context.Background())
 
-	assertProbeDispatches(t, probe, fake)
+	assertProbeDispatches(t, &probe.dispatcherProbe, fake)
 }
 
-// busRegisteringProvider registers an application bus under the
-// conventional "bus" extension key.
+// busRegisteringProvider registers an application bus in the type-keyed
+// component registry via the typed app.Register API.
 type busRegisteringProvider struct {
 	bus *bus.Bus
 }
 
 func (p *busRegisteringProvider) Register(s *app.Services) error {
-	return app.RegisterExtension(s, "bus", p.bus)
+	return app.Register[*bus.Bus](s, p.bus)
 }
 
 func (p *busRegisteringProvider) Boot(_ *app.Services) error       { return nil }
@@ -277,9 +280,9 @@ type conformanceCommand struct {
 	ID int
 }
 
-// Part C: bus end to end (pins B3+B12 jointly). A bus registered as the
-// "bus" extension must be autowired into the app dispatcher, so command
-// lifecycle events from Dispatch reach it without any manual
+// Part C: bus end to end (pins B3+B12 jointly). A bus registered in the
+// type-keyed component registry must be autowired into the app dispatcher,
+// so command lifecycle events from Dispatch reach it without any manual
 // SetEventDispatcher call.
 func TestConformance_BusCommandEventsReachDispatcher(t *testing.T) {
 	fake := events.NewFakeDispatcher()

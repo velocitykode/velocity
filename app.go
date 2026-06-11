@@ -117,9 +117,7 @@ type App struct {
 func New(opts ...Option) (*App, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &App{
-		Services: &app.Services{
-			Extensions: make(map[string]any),
-		},
+		Services:       &app.Services{},
 		version:        BuildInfo.Version,
 		shutdownCtx:    ctx,
 		shutdownCancel: cancel,
@@ -714,6 +712,15 @@ func New(opts ...Option) (*App, error) {
 	// Register must clean up before returning, and later providers
 	// never ran at all.
 	if registered, err := runProviderLifecycle(a.providers, a.Services, "provider"); err != nil {
+		// Mirror App.Shutdown: providers unwind first, then the registry
+		// sweep tears down any values providers registered before failing.
+		// The cleanup stack runs in reverse push order, so push the
+		// component sweep BEFORE the provider unwind to have the unwind run
+		// first and the sweep immediately after. Failure-path teardown is
+		// best-effort, so errors are discarded (New returns the original err).
+		cleanups = append(cleanups, func() {
+			shutdownComponents(context.Background(), a.Services, func(error) {})
+		})
 		cleanups = append(cleanups, func() {
 			shutdownCtx := context.Background()
 			for i := registered - 1; i >= 0; i-- {
@@ -723,10 +730,10 @@ func New(opts ...Option) (*App, error) {
 		return nil, err
 	}
 
-	// Providers may have registered extensions or replaced service
+	// Providers may have registered components or replaced service
 	// instances (e.g. Services.CSRF) during Register/Boot; the
 	// wireInstanceEvents sweep above ran before the lifecycle, so it saw
-	// an empty extensions map and the original instances. Re-sweep now
+	// an empty component registry and the original instances. Re-sweep now
 	// that registrations are done; every wiring setter is an idempotent
 	// overwrite, so re-running the full sweep is safe.
 	wireInstanceEvents(a)

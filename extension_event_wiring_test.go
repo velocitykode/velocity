@@ -38,19 +38,6 @@ type csrfProbe struct {
 
 func (p *csrfProbe) Middleware(next http.Handler) http.Handler { return next }
 
-// extensionRegisteringProvider registers a dispatcher-aware extension during
-// Register, mimicking a third-party package that wants framework events.
-type extensionRegisteringProvider struct {
-	probe *dispatcherProbe
-}
-
-func (p *extensionRegisteringProvider) Register(s *app.Services) error {
-	return app.RegisterExtension(s, "ext-event-probe", p.probe)
-}
-
-func (p *extensionRegisteringProvider) Boot(_ *app.Services) error       { return nil }
-func (p *extensionRegisteringProvider) Shutdown(_ context.Context) error { return nil }
-
 // assertProbeDispatches verifies the probe holds a dispatcher and that an
 // event sent through it lands in the fake dispatcher.
 func assertProbeDispatches(t *testing.T, probe *dispatcherProbe, fake *events.FakeDispatcher) {
@@ -70,6 +57,146 @@ func assertProbeDispatches(t *testing.T, probe *dispatcherProbe, fake *events.Fa
 	t.Fatalf("probe event not recorded by fake dispatcher; got %v", fake.GetDispatchedEvents())
 }
 
+// componentProbe is a first-party SDK stand-in: a value that implements
+// contract.EventDispatcherAware directly (via the embedded dispatcherProbe) and
+// self-registers in the type-keyed component registry.
+type componentProbe struct {
+	dispatcherProbe
+}
+
+// plainValue is a velocity-unaware third-party value: it implements none of the
+// framework contract interfaces. It can only be wired through a hook adapter.
+type plainValue struct {
+	name string
+}
+
+// componentRegisteringProvider registers a dispatcher-aware value in the
+// component registry during Register, mimicking a first-party SDK module.
+type componentRegisteringProvider struct {
+	probe *componentProbe
+}
+
+func (p *componentRegisteringProvider) Register(s *app.Services) error {
+	return app.Register(s, p.probe)
+}
+
+func (p *componentRegisteringProvider) Boot(_ *app.Services) error       { return nil }
+func (p *componentRegisteringProvider) Shutdown(_ context.Context) error { return nil }
+
+// hookedValueProvider registers a velocity-unaware value alongside a
+// dispatcher-aware hook adapter, the WithHooks bridging pattern.
+type hookedValueProvider struct {
+	value   *plainValue
+	adapter *dispatcherProbe
+}
+
+func (p *hookedValueProvider) Register(s *app.Services) error {
+	return app.Register(s, p.value, app.WithHooks(p.adapter))
+}
+
+func (p *hookedValueProvider) Boot(_ *app.Services) error       { return nil }
+func (p *hookedValueProvider) Shutdown(_ context.Context) error { return nil }
+
+// (a) A first-party component implementing EventDispatcherAware, registered via
+// a WithProviders provider's Register, receives the dispatcher after New.
+func TestNew_WithProviders_ComponentReceivesDispatcher(t *testing.T) {
+	fake := events.NewFakeDispatcher()
+	probe := &componentProbe{}
+
+	a, err := NewTestApp(
+		WithFakeEvents(fake),
+		WithProviders(&componentRegisteringProvider{probe: probe}),
+	)
+	if err != nil {
+		t.Fatalf("NewTestApp() error: %v", err)
+	}
+	defer a.Shutdown(context.Background())
+
+	assertProbeDispatches(t, &probe.dispatcherProbe, fake)
+}
+
+// (b) A velocity-unaware value registered with a dispatcher-aware hook adapter:
+// the adapter receives the dispatcher, the raw value is untouched and returned
+// verbatim by Get.
+func TestNew_WithProviders_HookAdapterReceivesDispatcher(t *testing.T) {
+	fake := events.NewFakeDispatcher()
+	value := &plainValue{name: "third-party"}
+	adapter := &dispatcherProbe{}
+
+	a, err := NewTestApp(
+		WithFakeEvents(fake),
+		WithProviders(&hookedValueProvider{value: value, adapter: adapter}),
+	)
+	if err != nil {
+		t.Fatalf("NewTestApp() error: %v", err)
+	}
+	defer a.Shutdown(context.Background())
+
+	// The adapter is wired and dispatches through to the app dispatcher.
+	assertProbeDispatches(t, adapter, fake)
+
+	// Get returns the RAW registered value, never the hook, and the value is
+	// the exact pointer registered (untouched by the sweep).
+	got, err := app.Get[*plainValue](a.Services)
+	if err != nil {
+		t.Fatalf("Get[*plainValue]: %v", err)
+	}
+	if got != value {
+		t.Fatalf("Get returned %p, want raw registered value %p", got, value)
+	}
+}
+
+// (c) A component registered by a chain provider during bootstrap() is wired by
+// the bootstrap.go re-sweep that runs after the chain provider lifecycle.
+func TestBootstrap_ChainProviderComponentReceivesDispatcher(t *testing.T) {
+	fake := events.NewFakeDispatcher()
+	probe := &componentProbe{}
+
+	a, err := NewTestApp(WithFakeEvents(fake))
+	if err != nil {
+		t.Fatalf("NewTestApp() error: %v", err)
+	}
+	defer a.Shutdown(context.Background())
+
+	a.Providers(func(r *chain.ProviderRegistry) {
+		r.Add(&componentRegisteringProvider{probe: probe})
+	})
+
+	if err := a.Bootstrap(); err != nil {
+		t.Fatalf("Bootstrap() error: %v", err)
+	}
+
+	assertProbeDispatches(t, &probe.dispatcherProbe, fake)
+}
+
+// (d) Re-running wireInstanceEvents is safe: the SetEventDispatcher setter is
+// simply called again (no value == hook dedupe), with no panic and no race
+// under -race. Registering the same probe as both value and hook exercises the
+// double-call path the wiring comment documents as safe.
+func TestWireInstanceEvents_ComponentRewireIdempotent(t *testing.T) {
+	fake := events.NewFakeDispatcher()
+	a, err := NewTestApp(WithFakeEvents(fake))
+	if err != nil {
+		t.Fatalf("NewTestApp() error: %v", err)
+	}
+	defer a.Shutdown(context.Background())
+
+	probe := &componentProbe{}
+	// The probe is both the registered value AND a hook, so each sweep calls
+	// its setter twice. This is exactly the case the wiring code refuses to
+	// dedupe (a value == hook comparison would panic for an uncomparable
+	// dynamic type), relying instead on SetEventDispatcher being synchronized;
+	// the double call must be harmless.
+	if err := app.Register(a.Services, probe, app.WithHooks(probe)); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	wireInstanceEvents(a)
+	wireInstanceEvents(a)
+
+	assertProbeDispatches(t, &probe.dispatcherProbe, fake)
+}
+
 // B13 regression: CSRF was missing from the wireInstanceEvents candidate
 // slice, so csrf-fired events (e.g. session fallback) were never dispatched.
 func TestWireInstanceEvents_CSRFReceivesDispatcher(t *testing.T) {
@@ -87,52 +214,13 @@ func TestWireInstanceEvents_CSRFReceivesDispatcher(t *testing.T) {
 	}
 }
 
-// B12 regression (WithProviders path): wireInstanceEvents runs in New()
-// before the provider lifecycle, so extensions registered by providers were
-// swept against an empty map and never got the dispatcher.
-func TestNew_WithProviders_ExtensionReceivesDispatcher(t *testing.T) {
-	fake := events.NewFakeDispatcher()
-	probe := &dispatcherProbe{}
-
-	a, err := NewTestApp(
-		WithFakeEvents(fake),
-		WithProviders(&extensionRegisteringProvider{probe: probe}),
-	)
-	if err != nil {
-		t.Fatalf("NewTestApp() error: %v", err)
-	}
-	defer a.Shutdown(context.Background())
-
-	assertProbeDispatches(t, probe, fake)
-}
-
-// B12 regression (chain path): extensions registered by chain providers
-// during Bootstrap() must also be wired after their lifecycle completes.
-func TestBootstrap_ChainProviderExtensionReceivesDispatcher(t *testing.T) {
-	fake := events.NewFakeDispatcher()
-	probe := &dispatcherProbe{}
-
-	a, err := NewTestApp(WithFakeEvents(fake))
-	if err != nil {
-		t.Fatalf("NewTestApp() error: %v", err)
-	}
-	defer a.Shutdown(context.Background())
-
-	a.Providers(func(r *chain.ProviderRegistry) {
-		r.Add(&extensionRegisteringProvider{probe: probe})
-	})
-
-	if err := a.Bootstrap(); err != nil {
-		t.Fatalf("Bootstrap() error: %v", err)
-	}
-
-	assertProbeDispatches(t, probe, fake)
-}
-
-// Under WithoutEvents the dispatcher is nil; the bootstrap-time extension
-// sweep must no-op cleanly instead of wiring a nil closure.
-func TestBootstrap_WithoutEvents_ExtensionSweepNoOps(t *testing.T) {
-	probe := &dispatcherProbe{}
+// Under WithoutEvents the dispatcher is nil; the bootstrap-time component
+// sweep must no-op cleanly instead of wiring a nil closure. Ported from the
+// removed string-extension SweepNoOps test (the B12 WithProviders and chain
+// paths it shared a helper with are already covered by the Component
+// equivalents above).
+func TestBootstrap_WithoutEvents_ComponentSweepNoOps(t *testing.T) {
+	probe := &componentProbe{}
 
 	a, err := NewTestApp(WithoutEvents())
 	if err != nil {
@@ -141,7 +229,7 @@ func TestBootstrap_WithoutEvents_ExtensionSweepNoOps(t *testing.T) {
 	defer a.Shutdown(context.Background())
 
 	a.Providers(func(r *chain.ProviderRegistry) {
-		r.Add(&extensionRegisteringProvider{probe: probe})
+		r.Add(&componentRegisteringProvider{probe: probe})
 	})
 
 	if err := a.Bootstrap(); err != nil {
