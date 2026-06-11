@@ -188,7 +188,7 @@ func TestRegisterNilValues(t *testing.T) {
 	}
 
 	// typed nils of other nilable kinds are rejected the same way.
-	var nilFn func() //nolint:staticcheck
+	var nilFn func() //nolint:staticcheck // nil func literal is the test subject; SA4023 flags it as always-nil
 	if err := app.Register(s, nilFn); err == nil {
 		t.Fatal("typed-nil func Register should error")
 	}
