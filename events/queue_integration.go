@@ -218,11 +218,18 @@ func (d *QueueIntegratedDispatcher) RegisterListenerFactory(listenerType string,
 	RegisterListenerFactory(listenerType, factory)
 }
 
-// Dispatch fires an event to all registered listeners with enhanced queue support
+// Dispatch fires an event to all registered listeners with enhanced queue support.
+//
+// This override of the embedded DefaultDispatcher.Dispatch must keep the
+// failure-reporter bridge: SetFailureReporter is inherited from the embedded
+// dispatcher, so bootstrap installs the hook on this type too, and a
+// FailureEvent dispatched here has to reach the Reporter chain exactly like
+// one dispatched through DefaultDispatcher.
 func (d *QueueIntegratedDispatcher) Dispatch(ctx context.Context, event interface{}) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = d.reportFailure(ctx, event)
 	listeners := d.getListenersForEvent(event)
 
 	for _, listener := range listeners {

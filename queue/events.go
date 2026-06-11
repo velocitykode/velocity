@@ -2,8 +2,10 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/trace"
 )
 
@@ -70,6 +72,16 @@ type JobFailed struct {
 // Name returns the event name
 func (e *JobFailed) Name() string {
 	return "job.failed"
+}
+
+// FailureError implements contract.FailureEvent: a permanently failed job
+// (retries exhausted) has no caller observing the error, so the dispatcher
+// bridges it to the exception Reporter chain.
+func (e *JobFailed) FailureError() error {
+	if e.Error == "" {
+		return nil
+	}
+	return errors.New(e.Error)
 }
 
 // JobRetrying is dispatched when a failed job is being retried
@@ -187,3 +199,6 @@ func dispatchJobRetrying(dispatch func(context.Context, interface{}), ctx contex
 		ParentID:    parentID,
 	})
 }
+
+// Conformance: JobFailed participates in the failure-report bridge.
+var _ contract.FailureEvent = (*JobFailed)(nil)

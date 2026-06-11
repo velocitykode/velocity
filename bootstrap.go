@@ -3,6 +3,7 @@ package velocity
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/auth"
@@ -11,6 +12,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/queue"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // Bootstrap runs the declarative chain (providers, middleware, routes, events,
@@ -212,7 +214,43 @@ func wireInstanceEvents(a *App) {
 		mgr.SetTxEventBus(a.Services.Events)
 	}
 
+	// Bridge contract.FailureEvent dispatches to the exception Reporter
+	// chain. Wired on the dispatcher itself (not the dispatch closure) so
+	// EVERY dispatch path is covered: service-fired events, registry
+	// components, and app code calling Services.Events.Dispatch directly.
+	// Optional-interface detection, same convention as the Aware sweeps;
+	// a custom contract.Dispatcher without SetFailureReporter simply has
+	// no bridge.
+	if fr, ok := a.Services.Events.(interface {
+		SetFailureReporter(fn func(ctx context.Context, event interface{}, err error))
+	}); ok {
+		fr.SetFailureReporter(buildFailureReporter(a))
+	}
+
 	wireComponentEvents(a)
+}
+
+// buildFailureReporter returns the bridge target for FailureEvent
+// dispatches: it forwards the failure to ExceptionHandler.Report with an
+// ExceptionContext carrying the trace ID and event name. It reads
+// a.Services.Exceptions at call time, so a handler swapped in during a
+// provider Boot phase wins.
+func buildFailureReporter(a *App) func(ctx context.Context, event interface{}, err error) {
+	return func(ctx context.Context, event interface{}, err error) {
+		h := a.Services.Exceptions
+		if h == nil {
+			return
+		}
+		exCtx := &contract.ExceptionContext{
+			Timestamp: time.Now(),
+			TraceID:   trace.GetTraceID(ctx),
+			Extra:     map[string]any{},
+		}
+		if n, ok := event.(interface{ Name() string }); ok {
+			exCtx.Extra["event"] = n.Name()
+		}
+		h.Report(err, exCtx)
+	}
 }
 
 // eventWiringCandidates returns every service instance the wireInstanceEvents

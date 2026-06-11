@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/velocitykode/velocity/async"
@@ -29,6 +32,22 @@ type DefaultDispatcher struct {
 	queue        QueueDispatcher // Optional queue dispatcher for async events
 	nextID       int             // Counter for generating listener IDs
 	listenerByID map[int]string  // Maps listener ID to event name for removal
+
+	// failureReporter, when set, receives every dispatched event that
+	// implements contract.FailureEvent, synchronously, before listener
+	// fan-out. The framework wires it to ExceptionHandler.Report at
+	// bootstrap so background failures (failed jobs, scheduled tasks,
+	// async listeners) reach the Reporter chain reliably even though
+	// listener delivery may be asynchronous or best-effort.
+	failureReporter func(ctx context.Context, event interface{}, err error)
+
+	// reportingMu guards reporting. reporting holds the IDs of goroutines
+	// currently inside a failureReporter call; reportFailure consults it so
+	// a reporter that synchronously re-dispatches a failure event cannot
+	// recurse through the bridge EVEN IF it swaps in a fresh context
+	// (context.Background()), which the ctx marker alone cannot catch.
+	reportingMu sync.Mutex
+	reporting   map[uint64]struct{}
 }
 
 // listenerEntry wraps a Listener with an ID for tracking
@@ -56,6 +75,161 @@ func (d *DefaultDispatcher) SetQueueDispatcher(qd QueueDispatcher) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.queue = qd
+}
+
+// failureReportedKey carries the failure event instance that has already
+// been reported under this context. The marker is EVENT-IDENTITY scoped: it
+// suppresses only a re-dispatch of that SAME event instance (a listener or
+// reporter looping the event back with the ctx it received). A DIFFERENT
+// failure event dispatched with that ctx still reports normally; blanket
+// suppression of everything under a marked ctx would silently swallow
+// listener-originated terminal failures. The bridge-internal fallback
+// re-dispatches do not rely on this marker at all; they skip the bridge
+// deterministically via the report flag on dispatch/dispatchNow.
+type failureReportedKey struct{}
+
+// SetFailureReporter installs the bridge that forwards FailureEvent
+// dispatches to the exception Reporter chain. Pass nil to disable.
+// Safe for concurrent use with Dispatch.
+func (d *DefaultDispatcher) SetFailureReporter(fn func(ctx context.Context, event interface{}, err error)) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.failureReporter = fn
+}
+
+// reportFailure forwards event to the failure reporter when event
+// implements contract.FailureEvent. It runs synchronously on the
+// dispatching goroutine (reliable, unlike best-effort listener delivery).
+// Every public dispatch path (Dispatch, DispatchNow, DispatchAsync,
+// DispatchAfter, Until, and QueueIntegratedDispatcher.Dispatch) calls it
+// at its entry point so a FailureEvent is reported at the point of
+// dispatch regardless of how it is routed.
+//
+// Two guards keep "exactly once" honest without swallowing real failures:
+//
+//  1. Event-identity ctx marker: the returned context records THIS event as
+//     reported. Callers continue dispatching with it, so a listener or
+//     reporter that loops the same event instance back with the ctx it
+//     received skips the report, while a different failure event dispatched
+//     downstream with the same ctx still reports. (The bridge-internal
+//     fallback re-dispatches skip the bridge deterministically via the
+//     report flag instead and do not depend on this identity check.)
+//
+//  2. Per-goroutine reporter guard: while a reporter call is in flight on a
+//     goroutine, any failure event dispatched synchronously from inside it is
+//     bridged-to-listeners only, regardless of the context the reporter
+//     supplies. The ctx marker cannot catch a reporter that re-dispatches
+//     with context.Background(); this guard can, and it is released even if
+//     the reporter panics. A reporter that hands the event to ANOTHER
+//     goroutine with a fresh context is the one loop neither guard can see;
+//     reporters must propagate the ctx they were given when they re-dispatch
+//     asynchronously.
+func (d *DefaultDispatcher) reportFailure(ctx context.Context, event interface{}) context.Context {
+	fe, ok := event.(contract.FailureEvent)
+	if !ok {
+		return ctx
+	}
+	if sameFailureEvent(ctx.Value(failureReportedKey{}), event) {
+		return ctx
+	}
+
+	gid := goroutineID()
+	d.reportingMu.Lock()
+	_, inReporter := d.reporting[gid]
+	d.reportingMu.Unlock()
+	if inReporter {
+		return ctx
+	}
+
+	d.mu.RLock()
+	report := d.failureReporter
+	d.mu.RUnlock()
+	if report == nil {
+		return ctx
+	}
+	err := fe.FailureError()
+	if err == nil {
+		return ctx
+	}
+
+	marked := context.WithValue(ctx, failureReportedKey{}, event)
+
+	d.reportingMu.Lock()
+	if d.reporting == nil {
+		d.reporting = make(map[uint64]struct{})
+	}
+	d.reporting[gid] = struct{}{}
+	d.reportingMu.Unlock()
+	defer func() {
+		d.reportingMu.Lock()
+		delete(d.reporting, gid)
+		d.reportingMu.Unlock()
+	}()
+
+	report(marked, event, err)
+	return marked
+}
+
+// sameFailureEvent reports whether the ctx marker value records the same
+// event instance as the one being dispatched. Interface equality on an
+// uncomparable dynamic type panics, so uncomparable events are treated as
+// distinct, which errs on the side of not losing a failure. The bridge-
+// internal fallback paths do not depend on this comparison (they skip the
+// bridge deterministically via the report flag on dispatch/dispatchNow);
+// the marker only dedupes a LISTENER or REPORTER re-dispatching the same
+// event instance with the ctx it received, where pointer events compare by
+// identity and an uncomparable value event would at worst re-report.
+func sameFailureEvent(marker, event interface{}) bool {
+	if marker == nil || event == nil {
+		return false
+	}
+	mt, et := reflect.TypeOf(marker), reflect.TypeOf(event)
+	if mt != et || !mt.Comparable() {
+		return false
+	}
+	return marker == event
+}
+
+// gidParseFallback feeds goroutineID's failure path with unique sentinels.
+// Sentinels live above 1<<63 so they can never collide with a real goroutine
+// ID within the lifetime of a process.
+var gidParseFallback atomic.Uint64
+
+// goroutineID returns the running goroutine's ID by parsing the first line
+// of runtime.Stack ("goroutine N [...]"). Used only on the failure-report
+// path, which is rare by construction; the cost is acceptable there and the
+// per-goroutine guard it enables cannot be built from context alone.
+//
+// The header format is not a formally stable runtime API (though it has been
+// stable in practice for many releases and is relied on by widely used
+// libraries), so the failure mode is chosen deliberately: if parsing ever
+// fails, the function returns a process-unique sentinel instead of a shared
+// zero value. A shared zero would make every unparsed goroutine look like
+// the same goroutine and falsely suppress unrelated reports whenever any
+// reporter is active; a unique sentinel merely degrades the recursion guard
+// to a no-op for that one call (the ctx-marker guard still applies), which
+// errs on the side of reporting rather than suppressing.
+func goroutineID() uint64 {
+	var buf [64]byte
+	n := runtime.Stack(buf[:], false)
+	const prefix = "goroutine "
+	s := buf[:n]
+	if len(s) <= len(prefix) {
+		return 1<<63 | gidParseFallback.Add(1)
+	}
+	var id uint64
+	digits := 0
+	for _, c := range s[len(prefix):] {
+		if c < '0' || c > '9' {
+			break
+		}
+		id = id*10 + uint64(c-'0')
+		digits++
+	}
+	if digits == 0 {
+		return 1<<63 | gidParseFallback.Add(1)
+	}
+	return id
 }
 
 // Listen adds a listener for the given events. Multiple listeners may be registered
@@ -166,11 +340,23 @@ func (d *DefaultDispatcher) Subscribe(subscriber Subscriber) {
 // always fire inline (or via the queue if ShouldQueue is true) regardless
 // of the after-commit queue state.
 func (d *DefaultDispatcher) Dispatch(ctx context.Context, event interface{}) error {
+	return d.dispatch(ctx, event, true)
+}
+
+// dispatch is the Dispatch core. report selects whether the failure-reporter
+// bridge runs: every public entry point passes true; the bridge-internal
+// re-dispatch paths (DispatchAfter's no-queue timer fallback) pass false so
+// "exactly once" holds DETERMINISTICALLY for every event value, comparable or
+// not, instead of depending on the ctx marker's identity comparison.
+func (d *DefaultDispatcher) dispatch(ctx context.Context, event interface{}, report bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if event == nil {
 		return fmt.Errorf("events: cannot dispatch nil event")
+	}
+	if report {
+		ctx = d.reportFailure(ctx, event)
 	}
 	d.mu.RLock()
 	q := d.queue
@@ -232,8 +418,18 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, event interface{}) err
 
 // DispatchNow fires an event synchronously to all listeners.
 func (d *DefaultDispatcher) DispatchNow(ctx context.Context, event interface{}) error {
+	return d.dispatchNow(ctx, event, true)
+}
+
+// dispatchNow is the DispatchNow core; see dispatch for the report flag.
+// DispatchAsync's no-queue goroutine fallback passes false because the public
+// DispatchAsync call already reported synchronously at the point of dispatch.
+func (d *DefaultDispatcher) dispatchNow(ctx context.Context, event interface{}, report bool) error {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if report {
+		ctx = d.reportFailure(ctx, event)
 	}
 	return d.dispatchToListeners(event, func(listener Listener) error {
 		return d.processListener(ctx, event, listener)
@@ -246,15 +442,21 @@ func (d *DefaultDispatcher) DispatchAsync(ctx context.Context, event interface{}
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// Report synchronously at the point of dispatch, before the event is
+	// queued or detached onto a goroutine.
+	ctx = d.reportFailure(ctx, event)
 	d.mu.RLock()
 	q := d.queue
 	d.mu.RUnlock()
 	if q == nil {
 		// Detach from request lifetime so the goroutine can outlive the
 		// caller, while still preserving values via context.WithoutCancel.
+		// report=false: the failure was already reported above; skipping
+		// the bridge here is deterministic and does not depend on the ctx
+		// marker's identity comparison (uncomparable events included).
 		bgCtx := context.WithoutCancel(ctx)
 		async.Go(func() {
-			_ = d.DispatchNow(bgCtx, event)
+			_ = d.dispatchNow(bgCtx, event, false)
 		})
 		return nil
 	}
@@ -273,13 +475,19 @@ func (d *DefaultDispatcher) DispatchAfter(ctx context.Context, event interface{}
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// Report synchronously NOW, not after the delay: the failure exists at
+	// the point of dispatch.
+	ctx = d.reportFailure(ctx, event)
 	d.mu.RLock()
 	q := d.queue
 	d.mu.RUnlock()
 	if q == nil {
 		bgCtx := context.WithoutCancel(ctx)
+		// report=false: already reported above; the deterministic skip
+		// replaces reliance on the ctx marker's identity comparison, which
+		// cannot dedupe uncomparable event values.
 		time.AfterFunc(delay, func() {
-			_ = d.Dispatch(bgCtx, event)
+			_ = d.dispatch(bgCtx, event, false)
 		})
 		return nil
 	}
@@ -305,6 +513,7 @@ func (d *DefaultDispatcher) Until(ctx context.Context, event interface{}) (inter
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = d.reportFailure(ctx, event)
 	listeners := d.getListenersForEvent(event)
 
 	for _, listener := range listeners {

@@ -95,3 +95,21 @@ type Dispatcher interface {
 	// GetListeners returns all listeners for an event
 	GetListeners(event interface{}) []EventListener
 }
+
+// FailureEvent is implemented by events that represent a terminal failure
+// which should reach the exception Reporter chain in addition to event
+// listeners. The dispatcher bridges such events to ExceptionHandler.Report
+// synchronously at dispatch time, so reporting stays reliable even when
+// listener delivery is asynchronous or best-effort.
+//
+// Implement this ONLY on events whose error has no live caller observing
+// it (background work: failed queue jobs, scheduled tasks, async
+// listeners). Events whose error is returned to calling code (failed
+// queries, outbound HTTP, request handler errors) must NOT implement it:
+// the caller's boundary owns reporting, and bridging them would
+// double-report. router.RequestFailed is deliberately excluded for this
+// reason; request errors reach Report through the exceptions handler.
+type FailureEvent interface {
+	// FailureError returns the failure as an error for reporting.
+	FailureError() error
+}

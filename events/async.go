@@ -3,11 +3,13 @@ package events
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/velocitykode/velocity/async"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -31,6 +33,16 @@ type AsyncFailed struct {
 
 // Name returns the event name.
 func (e *AsyncFailed) Name() string { return "events.async_failed" }
+
+// FailureError implements contract.FailureEvent: a listener that panicked
+// or errored on an async goroutine has no caller observing the failure, so
+// the dispatcher bridges it to the exception Reporter chain.
+func (e *AsyncFailed) FailureError() error {
+	if e.Error == "" {
+		return nil
+	}
+	return errors.New(e.Error)
+}
 
 // NewAsyncDispatcher creates a new async dispatcher
 func NewAsyncDispatcher() *AsyncDispatcher {
@@ -311,3 +323,6 @@ func (t *TransactionalDispatcher) DispatchAfterCommit(ctx context.Context, event
 	// the caller can react instead of silently swallowing it.
 	return t.Dispatcher.Dispatch(ctx, event)
 }
+
+// Conformance: AsyncFailed participates in the failure-report bridge.
+var _ contract.FailureEvent = (*AsyncFailed)(nil)

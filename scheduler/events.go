@@ -2,8 +2,10 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/trace"
 )
 
@@ -66,6 +68,16 @@ func (e *ScheduledTaskFailed) Name() string {
 	return "scheduled.failed"
 }
 
+// FailureError implements contract.FailureEvent: a failed scheduled task
+// has no caller observing the error, so the dispatcher bridges it to the
+// exception Reporter chain.
+func (e *ScheduledTaskFailed) FailureError() error {
+	if e.Error == "" {
+		return nil
+	}
+	return errors.New(e.Error)
+}
+
 // dispatchScheduledTaskStarting dispatches a ScheduledTaskStarting event
 func dispatchScheduledTaskStarting(dispatch func(context.Context, interface{}), ctx context.Context, name string) {
 	if dispatch == nil {
@@ -117,3 +129,6 @@ func dispatchScheduledTaskFailed(dispatch func(context.Context, interface{}), ct
 		ParentID:   parentID,
 	})
 }
+
+// Conformance: ScheduledTaskFailed participates in the failure-report bridge.
+var _ contract.FailureEvent = (*ScheduledTaskFailed)(nil)
