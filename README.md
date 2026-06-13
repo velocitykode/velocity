@@ -19,11 +19,11 @@ One binary. No external runtime. No Docker required for development.
 ## Get Started
 
 ```bash
-brew tap velocitykode/tap && brew install velocity
+brew install --cask velocitykode/tap/velocity
 ```
 
 ```bash
-velocity new myapp && cd myapp && vel serve
+velocity new myapp --stack=react && cd myapp && ./vel serve
 ```
 
 Or add to an existing project:
@@ -72,7 +72,7 @@ func main() {
         Events(app.Events(v.Log)).          // your event listeners
         Schedule(schedule.Configure).       // your scheduled jobs
         Exceptions(app.ExceptionHandler).   // your custom error handler
-        Run(); err != nil {                 // serves HTTP, or runs a `vel ...` command
+        Run(); err != nil {                 // serves HTTP, or runs a `./vel ...` command
         log.Fatal(err)
     }
 }
@@ -179,7 +179,7 @@ command bus, task scheduler, multi-channel notifications
 HTTP gateway, Inertia.js adapter, AES-256-GCM
 encryption with key rotation, CSRF protection, distributed tracing,
 structured exceptions with debug pages, maintenance mode, graceful
-shutdown, live reload, `vel make:*` scaffolding, and a standard
+shutdown, live reload, `./vel make:*` scaffolding, and a standard
 library of collections, string, async, and pipeline helpers.
 
 ## Requirements
