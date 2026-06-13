@@ -218,7 +218,7 @@ Each project builds a `./vel` binary for development and code generation.
 ./vel make:model User    # scaffold (model, handler, job, policy, provider, migration, ...)
 ```
 
-Full reference: [velocity.velocitykode.com/docs](https://velocity.velocitykode.com/docs).
+Full reference: [vel.build/docs](https://vel.build/docs).
 
 ## Requirements
 
@@ -233,7 +233,7 @@ always documented in [CHANGELOG.md](CHANGELOG.md) under the version's
 
 ## Documentation
 
-[velocity.velocitykode.com/docs](https://velocity.velocitykode.com/docs)
+[vel.build/docs](https://vel.build/docs)
 
 ## AI-Assisted Development
 
