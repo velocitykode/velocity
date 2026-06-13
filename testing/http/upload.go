@@ -291,8 +291,8 @@ func TestUploadHandler(storage *storageTesting.FakeStorage) http.HandlerFunc {
 				}
 				defer file.Close()
 
-				// Read content
-				content, err := io.ReadAll(file)
+				// Read content, bounded by the declared part size.
+				content, err := io.ReadAll(io.LimitReader(file, fileHeader.Size)) //nolint:forbidigo // bounded by fileHeader.Size via io.LimitReader
 				if err != nil {
 					response.Success = false
 					response.Message = "Failed to read file"
