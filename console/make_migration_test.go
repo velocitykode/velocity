@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMakeMigration_CreatesFile(t *testing.T) {
@@ -169,6 +170,50 @@ func TestMakeMigration_AlreadyExists(t *testing.T) {
 		t.Errorf("unexpected error: %v", err)
 	}
 	_ = existingPath
+}
+
+func TestMakeMigration_DistinctVersionsSameSecond(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	// Pin the clock so both calls deterministically compute the SAME second.
+	// Without the collision guard both would derive an identical 14-digit
+	// version, which makes migrate.Register panic ("duplicate migration
+	// version") at app boot. The guard must bump the second so the versions
+	// are distinct. Pinning (rather than relying on wall-clock back-to-back
+	// timing) forces the collision every run, including the boundary case
+	// where a real second would roll over between the two calls.
+	fixed := time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC)
+	orig := timeNow
+	timeNow = func() time.Time { return fixed }
+	t.Cleanup(func() { timeNow = orig })
+
+	if err := MakeMigration("create_first", MakeMigrationOptions{}); err != nil {
+		t.Fatalf("first MakeMigration() error = %v", err)
+	}
+	if err := MakeMigration("create_second", MakeMigrationOptions{}); err != nil {
+		t.Fatalf("second MakeMigration() error = %v", err)
+	}
+
+	entries, err := os.ReadDir("database/migrations")
+	if err != nil {
+		t.Fatalf("Failed to read migrations directory: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 migration files, got %d", len(entries))
+	}
+
+	seen := map[string]bool{}
+	for _, e := range entries {
+		name := e.Name()
+		if len(name) < 14 {
+			t.Fatalf("migration filename %q too short for a 14-digit version", name)
+		}
+		version := name[:14]
+		if seen[version] {
+			t.Errorf("duplicate migration version prefix %q across migrations (collision)", version)
+		}
+		seen[version] = true
+	}
 }
 
 func TestToDescription(t *testing.T) {

@@ -15,18 +15,31 @@ func makeNameUsageHint(usage string) {
 }
 
 // requireMakeName returns an error when args is empty, after printing the
-// standard usage hint. Callers that receive a nil error may safely index
-// args[0]. Returning (instead of os.Exit) lets deferred cleanup in the
-// CLI dispatcher and caller run before the process exits.
-func requireMakeName(args []string, label, usage string) error {
+// unified usage block (a leading blank line, the one-line usage, and, when
+// examples are supplied, an "Examples:" list). Callers that receive a nil
+// error may safely index args[0]. Returning (instead of os.Exit) lets
+// deferred cleanup in the CLI dispatcher and caller run before the process
+// exits.
+func requireMakeName(args []string, label, usage string, examples ...string) error {
+	printUsage := func() {
+		cli.Newline()
+		cli.Muted("Usage: vel " + usage + " [name]")
+		if len(examples) > 0 {
+			cli.Newline()
+			cli.Muted("Examples:")
+			for _, ex := range examples {
+				cli.Muted(ex)
+			}
+		}
+	}
 	if len(args) == 0 {
-		makeNameUsageHint(usage)
+		printUsage()
 		return fmt.Errorf("%s name is required", strings.ToLower(label))
 	}
 	// A flag-like first token is a typo, not the artifact name: reject it
 	// instead of generating an artifact literally named "--bogus".
 	if strings.HasPrefix(args[0], "-") {
-		makeNameUsageHint(usage)
+		printUsage()
 		return unknownToken(args[0], args[0])
 	}
 	return nil
@@ -47,13 +60,11 @@ func makeHandlerUsage() {
 }
 
 func (makeHandlerCmd) run(a *App, args []string) error {
-	if len(args) == 0 {
-		makeHandlerUsage()
-		return fmt.Errorf("handler name is required")
-	}
-	if strings.HasPrefix(args[0], "-") {
-		makeHandlerUsage()
-		return unknownToken(args[0], args[0])
+	if err := requireMakeName(args, "Handler", "make:handler",
+		"  vel make:handler User",
+		"  vel make:handler Admin/Dashboard --resource",
+		"  vel make:handler User --dir internal/web/handlers"); err != nil {
+		return err
 	}
 	opts, err := parseMakeHandlerArgs(args[1:])
 	if err != nil {
@@ -79,13 +90,12 @@ func makeModelUsage() {
 }
 
 func (makeModelCmd) run(a *App, args []string) error {
-	if len(args) == 0 {
-		makeModelUsage()
-		return fmt.Errorf("model name is required")
-	}
-	if strings.HasPrefix(args[0], "-") {
-		makeModelUsage()
-		return unknownToken(args[0], args[0])
+	if err := requireMakeName(args, "Model", "make:model",
+		"  vel make:model User",
+		"  vel make:model Post --uuid --soft-deletes",
+		"  vel make:model Comment --migration",
+		"  vel make:model Invoice --dir internal/billing/models"); err != nil {
+		return err
 	}
 	opts, err := parseMakeModelArgs(args[1:])
 	if err != nil {
@@ -111,13 +121,12 @@ func makeMigrationUsage() {
 }
 
 func (makeMigrationCmd) run(a *App, args []string) error {
-	if len(args) == 0 {
-		makeMigrationUsage()
-		return fmt.Errorf("migration name is required")
-	}
-	if strings.HasPrefix(args[0], "-") {
-		makeMigrationUsage()
-		return unknownToken(args[0], args[0])
+	if err := requireMakeName(args, "Migration", "make:migration",
+		"  vel make:migration create_posts",
+		"  vel make:migration add_slug_to_posts --table=posts",
+		"  vel make:migration create_comments --create=comments",
+		"  vel make:migration create_posts --dir db/migrations"); err != nil {
+		return err
 	}
 	opts, err := parseMakeMigrationArgs(args[1:])
 	if err != nil {

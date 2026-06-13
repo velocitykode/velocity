@@ -21,26 +21,13 @@ func MakeEvent(name string, opts MakeEventOptions) error {
 	eventName := toEventName(name)
 	dotName := toDotSeparated(eventName)
 
-	fallback := []byte(`package {{ .Package }}
-
-// {{ .Name }} event
-type {{ .Name }} struct {
-	// Add event data fields here
-}
-
-// Name returns the event name
-func (e {{ .Name }}) Name() string {
-	return "{{ .EventName }}"
-}
-`)
-
 	data := map[string]interface{}{
 		"Package":   "events",
 		"Name":      eventName,
 		"EventName": dotName,
 	}
 
-	return writeScaffoldedFile(name, opts.Dir, "internal/events", "event", toSnakeCase(eventName)+".go", "internal/events/event.go.stub", fallback, data)
+	return writeScaffoldedFile(name, opts.Dir, "internal/events", "event", toSnakeCase(eventName)+".go", "internal/events/event.go.stub", data)
 }
 
 func toEventName(name string) string {

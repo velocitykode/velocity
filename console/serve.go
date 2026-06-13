@@ -17,6 +17,12 @@ import (
 	"github.com/velocitykode/velocity/contract"
 )
 
+// defaultServeEnv is the APP_ENV applied when vel serve is started without one.
+// vel serve is the development server, so the unset case resolves here. This is
+// the single source of truth for the default: normalizeServeEnv and the warning
+// text both read it.
+const defaultServeEnv = "development"
+
 // ServeOptions holds flags for the serve command.
 type ServeOptions struct {
 	Port      string
@@ -30,8 +36,10 @@ func Serve(opts ServeOptions) error {
 	if opts.Port == "" {
 		opts.Port = "4000"
 	}
-	if opts.Env == "" {
-		opts.Env = "development"
+	env, defaulted := normalizeServeEnv(opts.Env)
+	opts.Env = env
+	if defaulted {
+		cli.Warning(fmt.Sprintf("APP_ENV not set; vel serve is defaulting to %s (set APP_ENV explicitly for non-dev use)", defaultServeEnv))
 	}
 
 	if opts.Watch {
@@ -53,6 +61,18 @@ func Serve(opts ServeOptions) error {
 		return runWithWatcher(opts)
 	}
 	return runServer(opts)
+}
+
+// normalizeServeEnv applies the dev-server default for APP_ENV: vel serve is
+// the development server, so an unset env becomes "development". It returns the
+// resolved env and whether the default was applied (so the caller can warn
+// once). The input is already normalised (lowercased/trimmed) by ConfigFromEnv
+// via app.Env, so this does not re-normalise.
+func normalizeServeEnv(env string) (string, bool) {
+	if env == "" {
+		return defaultServeEnv, true
+	}
+	return env, false
 }
 
 func startVite() *exec.Cmd {

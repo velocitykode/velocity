@@ -2,11 +2,17 @@ package console
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/velocitykode/velocity/console/scaffold"
 )
+
+// timeNow is the clock source for migration versions. It is a package
+// variable so tests can pin it to a fixed instant and deterministically
+// exercise the same-second collision guard.
+var timeNow = time.Now
 
 // MakeMigrationOptions holds flags for the make:migration command.
 type MakeMigrationOptions struct {
@@ -29,8 +35,37 @@ func MakeMigration(name string, opts MakeMigrationOptions) error {
 		return err
 	}
 
-	version := time.Now().Format("20060102150405")
+	version := timeNow().Format("20060102150405")
 	snakeName := toSnakeCase(toPascalCase(name))
+
+	// The version is second-resolution, so two migrations scaffolded in the
+	// same second would share a version and make migrate.Register panic with
+	// "duplicate migration version" at app boot. Probe the target directory
+	// (resolved the same way the scaffold leaf will resolve it, honoring
+	// opts.Dir) and bump the version forward a second at a time until no file
+	// carries that version prefix. Capped so a pathological directory can't
+	// spin forever.
+	outputDir, err := scaffold.ResolveDir("database/migrations", opts.Dir)
+	if err != nil {
+		return err
+	}
+	for attempts := 0; ; attempts++ {
+		matches, err := filepath.Glob(filepath.Join(outputDir, version+"*"))
+		if err != nil {
+			return err
+		}
+		if len(matches) == 0 {
+			break
+		}
+		if attempts >= 60 {
+			return fmt.Errorf("could not allocate a unique migration version in %s after 60 attempts", outputDir)
+		}
+		t, err := time.Parse("20060102150405", version)
+		if err != nil {
+			return err
+		}
+		version = t.Add(time.Second).Format("20060102150405")
+	}
 
 	filename := version + "_" + snakeName + ".go"
 	description := toDescription(snakeName)
@@ -50,7 +85,7 @@ func MakeMigration(name string, opts MakeMigrationOptions) error {
 		data["TableName"] = opts.Table
 	}
 
-	return writeScaffoldedFile(name, opts.Dir, "database/migrations", "migration", filename, "database/migrations/migration.go.stub", nil, data)
+	return writeScaffoldedFile(name, opts.Dir, "database/migrations", "migration", filename, "database/migrations/migration.go.stub", data)
 }
 
 // validateTableName ensures a --create/--table flag value is a plain SQL

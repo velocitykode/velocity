@@ -2,11 +2,8 @@ package velocity
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
-	"github.com/joho/godotenv"
-	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/console"
 )
 
@@ -126,22 +123,14 @@ type serveCmd struct{}
 func (serveCmd) name() string        { return "serve" }
 func (serveCmd) description() string { return "Start the development server" }
 func (serveCmd) run(a *App, args []string) error {
-	// Load .env so APP_PORT/APP_ENV from the project's env file are
-	// honored before defaulting. godotenv.Load() does not override
-	// existing env.
-	_ = godotenv.Load()
-
-	port := os.Getenv("APP_PORT")
-	if port == "" {
-		port = "4000"
-	}
-	env := app.Env()
-	if env == "" {
-		env = "development"
-	}
+	// ConfigFromEnv owns .env loading plus the APP_PORT/APP_ENV reads,
+	// including the parse-failure warning and the deliberately fail-closed
+	// empty APP_ENV. Pass cfg.Env through unchanged (even when empty) so the
+	// single dev-server default lives in console.Serve, not here.
+	cfg := ConfigFromEnv()
 	opts, err := parseServeArgs(console.ServeOptions{
-		Port:  port,
-		Env:   env,
+		Port:  cfg.Port,
+		Env:   cfg.Env,
 		Watch: true,
 	}, args)
 	if err != nil {

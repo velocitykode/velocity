@@ -1,17 +1,11 @@
 package console
 
 import (
-	"bytes"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
-	"text/template"
 
 	"github.com/velocitykode/velocity/console/scaffold"
-
-	cli "github.com/velocitykode/velocity-cli"
-	"github.com/velocitykode/velocity/console/stubs"
 )
 
 // MakeHandlerOptions holds flags for the make:handler command.
@@ -63,33 +57,7 @@ func MakeHandler(name string, opts MakeHandlerOptions) error {
 		return fmt.Errorf("invalid handler output dir %q: %w", outputDir, err)
 	}
 
-	if err := os.MkdirAll(outputDir, defaultDirMode); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
 	filename := toSnakeCase(handlerName) + ".go"
-	outputPath := filepath.Join(outputDir, filename)
-
-	if err := scaffold.EnsureWritableTarget(outputPath, "handler"); err != nil {
-		return err
-	}
-
-	stubContent, err := stubs.Get("internal/handlers/handler.go.stub")
-	if err != nil {
-		stubContent = []byte(`package {{ .Package }}
-
-import "github.com/velocitykode/velocity/router"
-
-func {{ .HandlerName }}(ctx *router.Context) error {
-	return ctx.String(200, "{{ .HandlerName }}")
-}
-`)
-	}
-
-	tmpl, err := template.New("handler").Parse(string(stubContent))
-	if err != nil {
-		return fmt.Errorf("failed to parse template: %w", err)
-	}
 
 	data := map[string]interface{}{
 		"Package":     packageName,
@@ -98,17 +66,11 @@ func {{ .HandlerName }}(ctx *router.Context) error {
 		"API":         opts.API,
 	}
 
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return fmt.Errorf("failed to execute template: %w", err)
-	}
-
-	if err := os.WriteFile(outputPath, buf.Bytes(), defaultFileMode); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
-	}
-
-	cli.Success(fmt.Sprintf("Created: %s", outputPath))
-	return nil
+	// Route the write through the shared generator. The name-derived nested
+	// directory is passed as the resolved default dir (no further override),
+	// and handlerName is a validated PascalCase segment so the generator's
+	// own ValidateName accepts it. A missing embedded stub hard-fails.
+	return writeScaffoldedFile(handlerName, "", outputDir, "handler", filename, "internal/handlers/handler.go.stub", data)
 }
 
 func toHandlerName(name string) string {

@@ -24,7 +24,7 @@ func MakeJob(name string, opts MakeJobOptions) error {
 		"Name":    jobName,
 	}
 
-	return writeScaffoldedFile(name, opts.Dir, "internal/jobs", "job", toSnakeCase(jobName)+".go", "internal/jobs/job.go.stub", nil, data)
+	return writeScaffoldedFile(name, opts.Dir, "internal/jobs", "job", toSnakeCase(jobName)+".go", "internal/jobs/job.go.stub", data)
 }
 
 func toJobName(name string) string {

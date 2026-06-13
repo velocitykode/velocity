@@ -19,39 +19,12 @@ func MakeProvider(name string, opts MakeProviderOptions) error {
 
 	providerName := toProviderName(name)
 
-	fallback := []byte(`package {{ .Package }}
-
-import (
-	"context"
-
-	"github.com/velocitykode/velocity/app"
-)
-
-// {{ .Name }}ServiceProvider registers and boots the {{ .Name }} service.
-type {{ .Name }}ServiceProvider struct{}
-
-// Register binds services into the container.
-func (p *{{ .Name }}ServiceProvider) Register(s *app.Services) error {
-	return nil
-}
-
-// Boot is called after all providers have been registered.
-func (p *{{ .Name }}ServiceProvider) Boot(s *app.Services) error {
-	return nil
-}
-
-// Shutdown gracefully tears down provider resources.
-func (p *{{ .Name }}ServiceProvider) Shutdown(ctx context.Context) error {
-	return nil
-}
-`)
-
 	data := map[string]interface{}{
 		"Package": "providers",
 		"Name":    providerName,
 	}
 
-	return writeScaffoldedFile(name, opts.Dir, "internal/providers", "provider", toSnakeCase(providerName)+".go", "internal/providers/provider.go.stub", fallback, data)
+	return writeScaffoldedFile(name, opts.Dir, "internal/providers", "provider", toSnakeCase(providerName)+".go", "internal/providers/provider.go.stub", data)
 }
 
 func toProviderName(name string) string {

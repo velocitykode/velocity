@@ -17,13 +17,10 @@ func runScaffoldGenerator(g scaffold.Generator, name, dirOverride string, data m
 	return result, nil
 }
 
-func writeScaffoldedFile(name, dirOverride, defaultDir, kind, filename, stubPath string, fallback []byte, data map[string]any) error {
+func writeScaffoldedFile(name, dirOverride, defaultDir, kind, filename, stubPath string, data map[string]any) error {
 	stubContent, err := stubs.Get(stubPath)
 	if err != nil {
-		if fallback == nil {
-			return fmt.Errorf("failed to read stub: %w", err)
-		}
-		stubContent = fallback
+		return fmt.Errorf("failed to read stub: %w", err)
 	}
 
 	_, err = runScaffoldGenerator(scaffold.Generator{

@@ -32,7 +32,7 @@ func MakeModel(name string, opts MakeModelOptions) error {
 		"SoftDeletes": opts.SoftDeletes,
 	}
 
-	if err := writeScaffoldedFile(name, opts.Dir, "internal/models", "model", toSnakeCase(modelName)+".go", "internal/models/model.go.stub", nil, data); err != nil {
+	if err := writeScaffoldedFile(name, opts.Dir, "internal/models", "model", toSnakeCase(modelName)+".go", "internal/models/model.go.stub", data); err != nil {
 		return err
 	}
 

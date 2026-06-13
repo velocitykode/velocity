@@ -19,21 +19,12 @@ func MakeListener(name string, opts MakeListenerOptions) error {
 
 	listenerName := toListenerName(name)
 
-	fallback := []byte(`package {{ .Package }}
-
-// {{ .Name }} handles an event
-func {{ .Name }}(event interface{}) error {
-	// Handle the event
-	return nil
-}
-`)
-
 	data := map[string]interface{}{
 		"Package": "listeners",
 		"Name":    listenerName,
 	}
 
-	return writeScaffoldedFile(name, opts.Dir, "internal/listeners", "listener", toSnakeCase(listenerName)+".go", "internal/listeners/listener.go.stub", fallback, data)
+	return writeScaffoldedFile(name, opts.Dir, "internal/listeners", "listener", toSnakeCase(listenerName)+".go", "internal/listeners/listener.go.stub", data)
 }
 
 func toListenerName(name string) string {

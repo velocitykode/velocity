@@ -24,7 +24,7 @@ func MakeMail(name string, opts MakeMailOptions) error {
 		"Name":    mailName,
 	}
 
-	return writeScaffoldedFile(name, opts.Dir, "internal/mail", "mailable", toSnakeCase(mailName)+".go", "internal/mail/mailable.go.stub", nil, data)
+	return writeScaffoldedFile(name, opts.Dir, "internal/mail", "mailable", toSnakeCase(mailName)+".go", "internal/mail/mailable.go.stub", data)
 }
 
 func toMailName(name string) string {

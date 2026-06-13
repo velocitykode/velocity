@@ -24,7 +24,7 @@ func MakeNotification(name string, opts MakeNotificationOptions) error {
 		"Name":    notificationName,
 	}
 
-	return writeScaffoldedFile(name, opts.Dir, "internal/notifications", "notification", toSnakeCase(notificationName)+".go", "internal/notifications/notification.go.stub", nil, data)
+	return writeScaffoldedFile(name, opts.Dir, "internal/notifications", "notification", toSnakeCase(notificationName)+".go", "internal/notifications/notification.go.stub", data)
 }
 
 func toNotificationName(name string) string {
