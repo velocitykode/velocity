@@ -1,16 +1,11 @@
 package console
 
 import (
-	"bytes"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
-	"text/template"
 	"time"
 
-	cli "github.com/velocitykode/velocity-cli"
-	"github.com/velocitykode/velocity/console/stubs"
+	"github.com/velocitykode/velocity/console/scaffold"
 )
 
 // MakeMigrationOptions holds flags for the make:migration command.
@@ -24,7 +19,7 @@ type MakeMigrationOptions struct {
 
 // MakeMigration generates a new timestamped migration file from a stub template.
 func MakeMigration(name string, opts MakeMigrationOptions) error {
-	if err := validateMakeName(name); err != nil {
+	if err := scaffold.ValidateName(name); err != nil {
 		return err
 	}
 	if err := validateTableName("--create", opts.Create); err != nil {
@@ -37,34 +32,7 @@ func MakeMigration(name string, opts MakeMigrationOptions) error {
 	version := time.Now().Format("20060102150405")
 	snakeName := toSnakeCase(toPascalCase(name))
 
-	outputDir, err := resolveMakeDir("database/migrations", opts.Dir)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(outputDir, defaultDirMode); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
 	filename := version + "_" + snakeName + ".go"
-	outputPath := filepath.Join(outputDir, filename)
-	if err := ensureWithinRoot(outputDir, outputPath); err != nil {
-		return fmt.Errorf("invalid migration name %q: %w", name, err)
-	}
-
-	if err := ensureWritableTarget(outputPath, "migration"); err != nil {
-		return err
-	}
-
-	stubContent, err := stubs.Get("database/migrations/migration.go.stub")
-	if err != nil {
-		return fmt.Errorf("failed to read stub: %w", err)
-	}
-
-	tmpl, err := template.New("migration").Parse(string(stubContent))
-	if err != nil {
-		return fmt.Errorf("failed to parse template: %w", err)
-	}
-
 	description := toDescription(snakeName)
 
 	data := map[string]interface{}{
@@ -82,17 +50,7 @@ func MakeMigration(name string, opts MakeMigrationOptions) error {
 		data["TableName"] = opts.Table
 	}
 
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return fmt.Errorf("failed to execute template: %w", err)
-	}
-
-	if err := os.WriteFile(outputPath, buf.Bytes(), defaultFileMode); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
-	}
-
-	cli.Success(fmt.Sprintf("Created: %s", outputPath))
-	return nil
+	return writeScaffoldedFile(name, opts.Dir, "database/migrations", "migration", filename, "database/migrations/migration.go.stub", nil, data)
 }
 
 // validateTableName ensures a --create/--table flag value is a plain SQL

@@ -1,15 +1,9 @@
 package console
 
 import (
-	"bytes"
-	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
-	"text/template"
 
-	cli "github.com/velocitykode/velocity-cli"
-	"github.com/velocitykode/velocity/console/stubs"
+	"github.com/velocitykode/velocity/console/scaffold"
 )
 
 // MakeMailOptions holds flags for the make:mail command.
@@ -19,56 +13,18 @@ type MakeMailOptions struct {
 
 // MakeMail generates a new mailable file from a stub template.
 func MakeMail(name string, opts MakeMailOptions) error {
-	if err := validateMakeName(name); err != nil {
+	if err := scaffold.ValidateName(name); err != nil {
 		return err
 	}
 
 	mailName := toMailName(name)
-
-	outputDir, err := resolveMakeDir("internal/mail", opts.Dir)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(outputDir, defaultDirMode); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	filename := toSnakeCase(mailName) + ".go"
-	outputPath := filepath.Join(outputDir, filename)
-	if err := ensureWithinRoot(outputDir, outputPath); err != nil {
-		return fmt.Errorf("invalid mail name %q: %w", name, err)
-	}
-
-	if err := ensureWritableTarget(outputPath, "mailable"); err != nil {
-		return err
-	}
-
-	stubContent, err := stubs.Get("internal/mail/mailable.go.stub")
-	if err != nil {
-		return fmt.Errorf("failed to read stub: %w", err)
-	}
-
-	tmpl, err := template.New("mailable").Parse(string(stubContent))
-	if err != nil {
-		return fmt.Errorf("failed to parse template: %w", err)
-	}
 
 	data := map[string]interface{}{
 		"Package": "mail",
 		"Name":    mailName,
 	}
 
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return fmt.Errorf("failed to execute template: %w", err)
-	}
-
-	if err := os.WriteFile(outputPath, buf.Bytes(), defaultFileMode); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
-	}
-
-	cli.Success(fmt.Sprintf("Created: %s", outputPath))
-	return nil
+	return writeScaffoldedFile(name, opts.Dir, "internal/mail", "mailable", toSnakeCase(mailName)+".go", "internal/mail/mailable.go.stub", nil, data)
 }
 
 func toMailName(name string) string {

@@ -1,15 +1,9 @@
 package console
 
 import (
-	"bytes"
-	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
-	"text/template"
 
-	cli "github.com/velocitykode/velocity-cli"
-	"github.com/velocitykode/velocity/console/stubs"
+	"github.com/velocitykode/velocity/console/scaffold"
 )
 
 // MakeResourceOptions holds flags for the make:resource command.
@@ -19,33 +13,13 @@ type MakeResourceOptions struct {
 
 // MakeResource generates a new resource file from a stub template.
 func MakeResource(name string, opts MakeResourceOptions) error {
-	if err := validateMakeName(name); err != nil {
+	if err := scaffold.ValidateName(name); err != nil {
 		return err
 	}
 
 	resourceName := toResourceName(name)
 
-	outputDir, err := resolveMakeDir("internal/resources", opts.Dir)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(outputDir, defaultDirMode); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	filename := toSnakeCase(resourceName) + ".go"
-	outputPath := filepath.Join(outputDir, filename)
-	if err := ensureWithinRoot(outputDir, outputPath); err != nil {
-		return fmt.Errorf("invalid resource name %q: %w", name, err)
-	}
-
-	if err := ensureWritableTarget(outputPath, "resource"); err != nil {
-		return err
-	}
-
-	stubContent, err := stubs.Get("internal/resources/resource.go.stub")
-	if err != nil {
-		stubContent = []byte(`package {{ .Package }}
+	fallback := []byte(`package {{ .Package }}
 
 // {{ .Name }}Resource transforms a {{ .Name }} into an API response.
 // Add fields from the {{ .Name }} model to control what gets serialized.
@@ -58,29 +32,13 @@ func (r {{ .Name }}Resource) ToResource() map[string]any {
 	return map[string]any{}
 }
 `)
-	}
-
-	tmpl, err := template.New("resource").Parse(string(stubContent))
-	if err != nil {
-		return fmt.Errorf("failed to parse template: %w", err)
-	}
 
 	data := map[string]interface{}{
 		"Package": "resources",
 		"Name":    resourceName,
 	}
 
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return fmt.Errorf("failed to execute template: %w", err)
-	}
-
-	if err := os.WriteFile(outputPath, buf.Bytes(), defaultFileMode); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
-	}
-
-	cli.Success(fmt.Sprintf("Created: %s", outputPath))
-	return nil
+	return writeScaffoldedFile(name, opts.Dir, "internal/resources", "resource", toSnakeCase(resourceName)+".go", "internal/resources/resource.go.stub", fallback, data)
 }
 
 func toResourceName(name string) string {

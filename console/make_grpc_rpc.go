@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/velocitykode/velocity/console/scaffold"
+
 	cli "github.com/velocitykode/velocity-cli"
 )
 
@@ -48,10 +50,10 @@ func MakeGRPCRPC(serviceArg, rpcArg string, opts MakeGRPCRPCOptions) error {
 		return err
 	}
 
-	if err := validateMakeName(serviceArg); err != nil {
+	if err := scaffold.ValidateName(serviceArg); err != nil {
 		return fmt.Errorf("service argument: %w", err)
 	}
-	if err := validateMakeName(rpcArg); err != nil {
+	if err := scaffold.ValidateName(rpcArg); err != nil {
 		return fmt.Errorf("rpc argument: %w", err)
 	}
 
@@ -64,13 +66,13 @@ func MakeGRPCRPC(serviceArg, rpcArg string, opts MakeGRPCRPCOptions) error {
 	// the input but does not strip "/" or "..", so a sufficiently crafted
 	// argument could still smuggle a traversal segment into the proto and
 	// impl paths constructed below.
-	if err := validateMakeName(packageName); err != nil {
+	if err := scaffold.ValidateName(packageName); err != nil {
 		return fmt.Errorf("derived package name %q from %q is unsafe: %w", packageName, serviceArg, err)
 	}
 
 	protoRoot := filepath.Join("api", "proto")
 	protoPath := filepath.Join(protoRoot, packageName, "v1", packageName+".proto")
-	if err := ensureWithinRoot(protoRoot, protoPath); err != nil {
+	if err := scaffold.EnsureWithinRoot(protoRoot, protoPath); err != nil {
 		return fmt.Errorf("invalid service name %q: %w", serviceArg, err)
 	}
 	if _, err := os.Stat(protoPath); os.IsNotExist(err) {
@@ -79,7 +81,7 @@ func MakeGRPCRPC(serviceArg, rpcArg string, opts MakeGRPCRPCOptions) error {
 
 	implRoot := filepath.Join("internal", "grpc", "services")
 	implPath := filepath.Join(implRoot, packageName+".go")
-	if err := ensureWithinRoot(implRoot, implPath); err != nil {
+	if err := scaffold.EnsureWithinRoot(implRoot, implPath); err != nil {
 		return fmt.Errorf("invalid service name %q: %w", serviceArg, err)
 	}
 	if _, err := os.Stat(implPath); os.IsNotExist(err) {

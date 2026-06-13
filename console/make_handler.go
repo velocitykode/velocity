@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 	"text/template"
-	"unicode"
+
+	"github.com/velocitykode/velocity/console/scaffold"
 
 	cli "github.com/velocitykode/velocity-cli"
 	"github.com/velocitykode/velocity/console/stubs"
-	"github.com/velocitykode/velocity/orm"
 )
 
 // MakeHandlerOptions holds flags for the make:handler command.
@@ -25,14 +25,14 @@ type MakeHandlerOptions struct {
 func MakeHandler(name string, opts MakeHandlerOptions) error {
 	// Handlers support namespaced names like "Admin/Users" that map to
 	// nested output directories, so the slash-permitting validator applies.
-	if err := validateMakeNestedName(name); err != nil {
+	if err := scaffold.ValidateNestedName(name); err != nil {
 		return err
 	}
 
 	handlerName := toHandlerName(name)
 
 	packageName := "handlers"
-	handlerRoot, err := resolveMakeDir("internal/handlers", opts.Dir)
+	handlerRoot, err := scaffold.ResolveDir("internal/handlers", opts.Dir)
 	if err != nil {
 		return err
 	}
@@ -48,18 +48,18 @@ func MakeHandler(name string, opts MakeHandlerOptions) error {
 		outputDir = filepath.Join(handlerRoot, filepath.Join(parts[:len(parts)-1]...))
 	}
 
-	// Defence in depth: even though validateMakeName rejects the known
+	// Defence in depth: even though scaffold.ValidateName rejects the known
 	// traversal shapes, recompute and confirm the resolved directory still
 	// lives inside the handler root before writing anything to disk.
-	if err := ensureWithinRoot(handlerRoot, outputDir); err != nil {
+	if err := scaffold.EnsureWithinRoot(handlerRoot, outputDir); err != nil {
 		return fmt.Errorf("invalid handler name %q: %w", name, err)
 	}
 
-	// ensureWithinRoot is lexical only. The name-derived subdirectory (and the
+	// scaffold.EnsureWithinRoot is lexical only. The name-derived subdirectory (and the
 	// --dir root) may include a pre-existing symlink that redirects the write
 	// outside the tree, so re-run the symlink-component guard on the final,
 	// fully-assembled output directory before creating or writing anything.
-	if err := ensureNoSymlinkComponents(outputDir); err != nil {
+	if err := scaffold.EnsureNoSymlinkComponents(outputDir); err != nil {
 		return fmt.Errorf("invalid handler output dir %q: %w", outputDir, err)
 	}
 
@@ -70,7 +70,7 @@ func MakeHandler(name string, opts MakeHandlerOptions) error {
 	filename := toSnakeCase(handlerName) + ".go"
 	outputPath := filepath.Join(outputDir, filename)
 
-	if err := ensureWritableTarget(outputPath, "handler"); err != nil {
+	if err := scaffold.EnsureWritableTarget(outputPath, "handler"); err != nil {
 		return err
 	}
 
@@ -120,48 +120,11 @@ func toHandlerName(name string) string {
 }
 
 func toPascalCase(s string) string {
-	words := splitWords(s)
-	for i, word := range words {
-		word = strings.ToLower(word)
-		if word == "" {
-			continue
-		}
-		words[i] = strings.ToUpper(word[:1]) + word[1:]
-	}
-	return strings.Join(words, "")
+	return scaffold.PascalCase(s)
 }
 
-// toSnakeCase delegates to orm.ToSnakeCase so the scaffolder and the
-// runtime ORM agree on column/table name derivation. Previously this had
-// its own naive implementation that inserted an underscore before every
-// uppercase letter, which produced different filenames from the table
-// names the ORM would query at runtime (e.g. "SSHKey" -> "s_s_h_key" here
-// vs "ssh_key" in the ORM).
+// toSnakeCase delegates to scaffold.SnakeCase so first-party generators share
+// the same file/table naming behavior without importing the ORM package.
 func toSnakeCase(s string) string {
-	return orm.ToSnakeCase(s)
-}
-
-func splitWords(s string) []string {
-	var words []string
-	var current []rune
-
-	for _, r := range s {
-		if r == '_' || r == '-' || r == ' ' {
-			if len(current) > 0 {
-				words = append(words, string(current))
-				current = nil
-			}
-		} else if unicode.IsUpper(r) && len(current) > 0 {
-			words = append(words, string(current))
-			current = []rune{r}
-		} else {
-			current = append(current, r)
-		}
-	}
-
-	if len(current) > 0 {
-		words = append(words, string(current))
-	}
-
-	return words
+	return scaffold.SnakeCase(s)
 }

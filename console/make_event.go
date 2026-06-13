@@ -1,16 +1,10 @@
 package console
 
 import (
-	"bytes"
-	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
-	"text/template"
 	"unicode"
 
-	cli "github.com/velocitykode/velocity-cli"
-	"github.com/velocitykode/velocity/console/stubs"
+	"github.com/velocitykode/velocity/console/scaffold"
 )
 
 // MakeEventOptions holds flags for the make:event command.
@@ -20,34 +14,14 @@ type MakeEventOptions struct {
 
 // MakeEvent generates a new event file from a stub template.
 func MakeEvent(name string, opts MakeEventOptions) error {
-	if err := validateMakeName(name); err != nil {
+	if err := scaffold.ValidateName(name); err != nil {
 		return err
 	}
 
 	eventName := toEventName(name)
 	dotName := toDotSeparated(eventName)
 
-	outputDir, err := resolveMakeDir("internal/events", opts.Dir)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(outputDir, defaultDirMode); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	filename := toSnakeCase(eventName) + ".go"
-	outputPath := filepath.Join(outputDir, filename)
-	if err := ensureWithinRoot(outputDir, outputPath); err != nil {
-		return fmt.Errorf("invalid event name %q: %w", name, err)
-	}
-
-	if err := ensureWritableTarget(outputPath, "event"); err != nil {
-		return err
-	}
-
-	stubContent, err := stubs.Get("internal/events/event.go.stub")
-	if err != nil {
-		stubContent = []byte(`package {{ .Package }}
+	fallback := []byte(`package {{ .Package }}
 
 // {{ .Name }} event
 type {{ .Name }} struct {
@@ -59,12 +33,6 @@ func (e {{ .Name }}) Name() string {
 	return "{{ .EventName }}"
 }
 `)
-	}
-
-	tmpl, err := template.New("event").Parse(string(stubContent))
-	if err != nil {
-		return fmt.Errorf("failed to parse template: %w", err)
-	}
 
 	data := map[string]interface{}{
 		"Package":   "events",
@@ -72,17 +40,7 @@ func (e {{ .Name }}) Name() string {
 		"EventName": dotName,
 	}
 
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return fmt.Errorf("failed to execute template: %w", err)
-	}
-
-	if err := os.WriteFile(outputPath, buf.Bytes(), defaultFileMode); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
-	}
-
-	cli.Success(fmt.Sprintf("Created: %s", outputPath))
-	return nil
+	return writeScaffoldedFile(name, opts.Dir, "internal/events", "event", toSnakeCase(eventName)+".go", "internal/events/event.go.stub", fallback, data)
 }
 
 func toEventName(name string) string {

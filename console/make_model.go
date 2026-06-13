@@ -1,15 +1,10 @@
 package console
 
 import (
-	"bytes"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
-	"text/template"
 
-	cli "github.com/velocitykode/velocity-cli"
-	"github.com/velocitykode/velocity/console/stubs"
+	"github.com/velocitykode/velocity/console/scaffold"
 	"github.com/velocitykode/velocity/str"
 )
 
@@ -23,40 +18,12 @@ type MakeModelOptions struct {
 
 // MakeModel generates a new model file from a stub template.
 func MakeModel(name string, opts MakeModelOptions) error {
-	if err := validateMakeName(name); err != nil {
+	if err := scaffold.ValidateName(name); err != nil {
 		return err
 	}
 
 	modelName := toModelName(name)
 	tableName := toTableName(modelName)
-
-	outputDir, err := resolveMakeDir("internal/models", opts.Dir)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(outputDir, defaultDirMode); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	filename := toSnakeCase(modelName) + ".go"
-	outputPath := filepath.Join(outputDir, filename)
-	if err := ensureWithinRoot(outputDir, outputPath); err != nil {
-		return fmt.Errorf("invalid model name %q: %w", name, err)
-	}
-
-	if err := ensureWritableTarget(outputPath, "model"); err != nil {
-		return err
-	}
-
-	stubContent, err := stubs.Get("internal/models/model.go.stub")
-	if err != nil {
-		return fmt.Errorf("failed to read stub: %w", err)
-	}
-
-	tmpl, err := template.New("model").Parse(string(stubContent))
-	if err != nil {
-		return fmt.Errorf("failed to parse template: %w", err)
-	}
 
 	data := map[string]interface{}{
 		"ModelName":   modelName,
@@ -65,16 +32,9 @@ func MakeModel(name string, opts MakeModelOptions) error {
 		"SoftDeletes": opts.SoftDeletes,
 	}
 
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return fmt.Errorf("failed to execute template: %w", err)
+	if err := writeScaffoldedFile(name, opts.Dir, "internal/models", "model", toSnakeCase(modelName)+".go", "internal/models/model.go.stub", nil, data); err != nil {
+		return err
 	}
-
-	if err := os.WriteFile(outputPath, buf.Bytes(), defaultFileMode); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
-	}
-
-	cli.Success(fmt.Sprintf("Created: %s", outputPath))
 
 	if opts.Migration {
 		migrationName := "create_" + tableName

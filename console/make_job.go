@@ -1,15 +1,9 @@
 package console
 
 import (
-	"bytes"
-	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
-	"text/template"
 
-	cli "github.com/velocitykode/velocity-cli"
-	"github.com/velocitykode/velocity/console/stubs"
+	"github.com/velocitykode/velocity/console/scaffold"
 )
 
 // MakeJobOptions holds flags for the make:job command.
@@ -19,56 +13,18 @@ type MakeJobOptions struct {
 
 // MakeJob generates a new queue job file from a stub template.
 func MakeJob(name string, opts MakeJobOptions) error {
-	if err := validateMakeName(name); err != nil {
+	if err := scaffold.ValidateName(name); err != nil {
 		return err
 	}
 
 	jobName := toJobName(name)
-
-	outputDir, err := resolveMakeDir("internal/jobs", opts.Dir)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(outputDir, defaultDirMode); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	filename := toSnakeCase(jobName) + ".go"
-	outputPath := filepath.Join(outputDir, filename)
-	if err := ensureWithinRoot(outputDir, outputPath); err != nil {
-		return fmt.Errorf("invalid job name %q: %w", name, err)
-	}
-
-	if err := ensureWritableTarget(outputPath, "job"); err != nil {
-		return err
-	}
-
-	stubContent, err := stubs.Get("internal/jobs/job.go.stub")
-	if err != nil {
-		return fmt.Errorf("failed to read stub: %w", err)
-	}
-
-	tmpl, err := template.New("job").Parse(string(stubContent))
-	if err != nil {
-		return fmt.Errorf("failed to parse template: %w", err)
-	}
 
 	data := map[string]interface{}{
 		"Package": "jobs",
 		"Name":    jobName,
 	}
 
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return fmt.Errorf("failed to execute template: %w", err)
-	}
-
-	if err := os.WriteFile(outputPath, buf.Bytes(), defaultFileMode); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
-	}
-
-	cli.Success(fmt.Sprintf("Created: %s", outputPath))
-	return nil
+	return writeScaffoldedFile(name, opts.Dir, "internal/jobs", "job", toSnakeCase(jobName)+".go", "internal/jobs/job.go.stub", nil, data)
 }
 
 func toJobName(name string) string {

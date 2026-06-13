@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/velocitykode/velocity/console/scaffold"
 )
 
 // TestResolveMakeDir covers the shared --dir resolver that every make:*
@@ -31,10 +33,10 @@ func TestResolveMakeDir(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := resolveMakeDir(tc.defaultDir, tc.override)
+			got, err := scaffold.ResolveDir(tc.defaultDir, tc.override)
 			if tc.wantErr {
 				if err == nil {
-					t.Fatalf("resolveMakeDir(%q, %q) = %q, want error", tc.defaultDir, tc.override, got)
+					t.Fatalf("scaffold.ResolveDir(%q, %q) = %q, want error", tc.defaultDir, tc.override, got)
 				}
 				if !strings.Contains(err.Error(), "--dir") {
 					t.Errorf("error should name the --dir flag, got %v", err)
@@ -42,10 +44,10 @@ func TestResolveMakeDir(t *testing.T) {
 				return
 			}
 			if err != nil {
-				t.Fatalf("resolveMakeDir(%q, %q) unexpected error: %v", tc.defaultDir, tc.override, err)
+				t.Fatalf("scaffold.ResolveDir(%q, %q) unexpected error: %v", tc.defaultDir, tc.override, err)
 			}
 			if got != tc.want {
-				t.Errorf("resolveMakeDir(%q, %q) = %q, want %q", tc.defaultDir, tc.override, got, tc.want)
+				t.Errorf("scaffold.ResolveDir(%q, %q) = %q, want %q", tc.defaultDir, tc.override, got, tc.want)
 			}
 		})
 	}
@@ -54,7 +56,7 @@ func TestResolveMakeDir(t *testing.T) {
 // TestMake_DirFlag_WritesToCustomDir confirms each generator honours a --dir
 // override end-to-end: the generated file lands under the custom directory and
 // NOT under the package default. One row per generator so a future command
-// that forgets to thread opts.Dir through resolveMakeDir is caught here.
+// that forgets to thread opts.Dir through scaffold.ResolveDir is caught here.
 func TestMake_DirFlag_WritesToCustomDir(t *testing.T) {
 	const dir = "custom/output"
 
@@ -117,8 +119,8 @@ func TestResolveMakeDir_RejectsSymlinkComponent(t *testing.T) {
 		t.Fatalf("setup symlink: %v", err)
 	}
 
-	if _, err := resolveMakeDir("internal/models", "custom/models"); err == nil {
-		t.Fatal("resolveMakeDir accepted a --dir routed through a symlink")
+	if _, err := scaffold.ResolveDir("internal/models", "custom/models"); err == nil {
+		t.Fatal("scaffold.ResolveDir accepted a --dir routed through a symlink")
 	}
 
 	// And end-to-end: the generator must write nothing through the link.

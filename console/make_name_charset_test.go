@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/velocitykode/velocity/console/scaffold"
 )
 
 // TestValidateMakeName_Charset locks the identifier charset contract for
@@ -25,8 +27,8 @@ func TestValidateMakeName_Charset(t *testing.T) {
 		"H2Database",
 	}
 	for _, name := range accepted {
-		if err := validateMakeName(name); err != nil {
-			t.Errorf("validateMakeName(%q) = %v, want nil", name, err)
+		if err := scaffold.ValidateName(name); err != nil {
+			t.Errorf("scaffold.ValidateName(%q) = %v, want nil", name, err)
 		}
 	}
 
@@ -56,13 +58,13 @@ func TestValidateMakeName_Charset(t *testing.T) {
 		{"Admin/", "empty path segment"},          // trailing slash
 	}
 	for _, tc := range rejected {
-		err := validateMakeName(tc.name)
+		err := scaffold.ValidateName(tc.name)
 		if err == nil {
-			t.Errorf("validateMakeName(%q) = nil, want charset rejection", tc.name)
+			t.Errorf("scaffold.ValidateName(%q) = nil, want charset rejection", tc.name)
 			continue
 		}
 		if !strings.Contains(err.Error(), tc.offends) {
-			t.Errorf("validateMakeName(%q) error %q does not name offender %q", tc.name, err, tc.offends)
+			t.Errorf("scaffold.ValidateName(%q) error %q does not name offender %q", tc.name, err, tc.offends)
 		}
 	}
 }
@@ -79,8 +81,8 @@ func TestValidateMakeNestedName(t *testing.T) {
 		"internal/shared/grpc/services",
 	}
 	for _, name := range accepted {
-		if err := validateMakeNestedName(name); err != nil {
-			t.Errorf("validateMakeNestedName(%q) = %v, want nil", name, err)
+		if err := scaffold.ValidateNestedName(name); err != nil {
+			t.Errorf("scaffold.ValidateNestedName(%q) = %v, want nil", name, err)
 		}
 	}
 
@@ -97,13 +99,13 @@ func TestValidateMakeNestedName(t *testing.T) {
 		{".hidden/Foo", "starts with '.'"},
 	}
 	for _, tc := range rejected {
-		err := validateMakeNestedName(tc.name)
+		err := scaffold.ValidateNestedName(tc.name)
 		if err == nil {
-			t.Errorf("validateMakeNestedName(%q) = nil, want rejection", tc.name)
+			t.Errorf("scaffold.ValidateNestedName(%q) = nil, want rejection", tc.name)
 			continue
 		}
 		if !strings.Contains(err.Error(), tc.offends) {
-			t.Errorf("validateMakeNestedName(%q) error %q does not name offender %q", tc.name, err, tc.offends)
+			t.Errorf("scaffold.ValidateNestedName(%q) error %q does not name offender %q", tc.name, err, tc.offends)
 		}
 	}
 }
@@ -111,7 +113,7 @@ func TestValidateMakeNestedName(t *testing.T) {
 // TestMake_RejectsSourceInjection asserts every Make* generator rejects a
 // name whose characters would survive into generated Go source. It mirrors
 // TestMake_RejectsTraversal: one row per command so a future generator that
-// skips validateMakeName fails here.
+// skips scaffold.ValidateName fails here.
 func TestMake_RejectsSourceInjection(t *testing.T) {
 	// A double quote plus newline: enough to break out of any string literal
 	// or identifier position in a stub template.

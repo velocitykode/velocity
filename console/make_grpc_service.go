@@ -9,6 +9,8 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/velocitykode/velocity/console/scaffold"
+
 	cli "github.com/velocitykode/velocity-cli"
 	"github.com/velocitykode/velocity/console/stubs"
 )
@@ -126,7 +128,7 @@ func MakeGRPCService(name string, opts MakeGRPCServiceOptions) error {
 // without re-checking.
 func resolveGRPCScaffold(name string, opts MakeGRPCServiceOptions) (grpcScaffold, error) {
 	var sc grpcScaffold
-	if err := validateMakeName(name); err != nil {
+	if err := scaffold.ValidateName(name); err != nil {
 		return sc, err
 	}
 	sc.ServiceName = grpcServiceName(name)
@@ -194,9 +196,9 @@ func resolveGRPCScaffold(name string, opts MakeGRPCServiceOptions) (grpcScaffold
 	}
 	sc.ImplFile = implFile
 
-	// --dir is a relative output directory override; resolveMakeDir validates
+	// --dir is a relative output directory override; scaffold.ResolveDir validates
 	// (nested segments allowed), cleans, and confirms it stays in the tree.
-	implDir, err := resolveMakeDir(filepath.Join("internal", "grpc", "services"), opts.Dir)
+	implDir, err := scaffold.ResolveDir(filepath.Join("internal", "grpc", "services"), opts.Dir)
 	if err != nil {
 		return sc, err
 	}
@@ -283,10 +285,10 @@ func validateGoIdent(s string) error {
 }
 
 // validateFileBase ensures a file base name is a single, traversal-safe path
-// segment. validateMakeName rejects "..", absolute paths, hidden segments,
+// segment. scaffold.ValidateName rejects "..", absolute paths, hidden segments,
 // backslashes, NUL, and "/", so the base cannot smuggle in a subdirectory.
 func validateFileBase(s string) error {
-	return validateMakeName(s)
+	return scaffold.ValidateName(s)
 }
 
 // lowerFirst lower-cases the first rune of s, producing a lowerCamelCase local
@@ -301,14 +303,14 @@ func lowerFirst(s string) string {
 func writeProtoFile(sc grpcScaffold) error {
 	protoRoot := filepath.Join("api", "proto")
 	dir := filepath.Join(protoRoot, sc.Leaf, sc.Version)
-	if err := ensureWithinRoot(protoRoot, dir); err != nil {
+	if err := scaffold.EnsureWithinRoot(protoRoot, dir); err != nil {
 		return fmt.Errorf("invalid package leaf %q: %w", sc.Leaf, err)
 	}
 	if err := os.MkdirAll(dir, defaultDirMode); err != nil {
 		return fmt.Errorf("create proto dir: %w", err)
 	}
 	path := filepath.Join(dir, sc.ProtoFile+".proto")
-	if err := ensureWritableTarget(path, "proto"); err != nil {
+	if err := scaffold.EnsureWritableTarget(path, "proto"); err != nil {
 		return err
 	}
 
@@ -398,16 +400,16 @@ func writeServiceImpl(sc grpcScaffold) error {
 		return fmt.Errorf("create services dir: %w", err)
 	}
 	path := filepath.Join(dir, sc.ImplFile+".go")
-	if err := ensureWithinRoot(dir, path); err != nil {
+	if err := scaffold.EnsureWithinRoot(dir, path); err != nil {
 		return fmt.Errorf("invalid impl file name %q: %w", sc.ImplFile, err)
 	}
-	// Guard the custom --dir against escaping the project root. validateMakeName
+	// Guard the custom --dir against escaping the project root. scaffold.ValidateName
 	// already rejected "../" and absolute dirs, but resolving against the
 	// working directory is the authoritative path-traversal check.
-	if err := ensureWithinRoot(".", path); err != nil {
+	if err := scaffold.EnsureWithinRoot(".", path); err != nil {
 		return fmt.Errorf("invalid --dir %q: %w", dir, err)
 	}
-	if err := ensureWritableTarget(path, "service"); err != nil {
+	if err := scaffold.EnsureWritableTarget(path, "service"); err != nil {
 		return err
 	}
 

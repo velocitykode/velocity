@@ -1,15 +1,9 @@
 package console
 
 import (
-	"bytes"
-	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
-	"text/template"
 
-	cli "github.com/velocitykode/velocity-cli"
-	"github.com/velocitykode/velocity/console/stubs"
+	"github.com/velocitykode/velocity/console/scaffold"
 )
 
 // MakeProviderOptions holds flags for the make:provider command.
@@ -19,33 +13,13 @@ type MakeProviderOptions struct {
 
 // MakeProvider generates a new service provider file from a stub template.
 func MakeProvider(name string, opts MakeProviderOptions) error {
-	if err := validateMakeName(name); err != nil {
+	if err := scaffold.ValidateName(name); err != nil {
 		return err
 	}
 
 	providerName := toProviderName(name)
 
-	outputDir, err := resolveMakeDir("internal/providers", opts.Dir)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(outputDir, defaultDirMode); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	filename := toSnakeCase(providerName) + ".go"
-	outputPath := filepath.Join(outputDir, filename)
-	if err := ensureWithinRoot(outputDir, outputPath); err != nil {
-		return fmt.Errorf("invalid provider name %q: %w", name, err)
-	}
-
-	if err := ensureWritableTarget(outputPath, "provider"); err != nil {
-		return err
-	}
-
-	stubContent, err := stubs.Get("internal/providers/provider.go.stub")
-	if err != nil {
-		stubContent = []byte(`package {{ .Package }}
+	fallback := []byte(`package {{ .Package }}
 
 import (
 	"context"
@@ -71,29 +45,13 @@ func (p *{{ .Name }}ServiceProvider) Shutdown(ctx context.Context) error {
 	return nil
 }
 `)
-	}
-
-	tmpl, err := template.New("provider").Parse(string(stubContent))
-	if err != nil {
-		return fmt.Errorf("failed to parse template: %w", err)
-	}
 
 	data := map[string]interface{}{
 		"Package": "providers",
 		"Name":    providerName,
 	}
 
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return fmt.Errorf("failed to execute template: %w", err)
-	}
-
-	if err := os.WriteFile(outputPath, buf.Bytes(), defaultFileMode); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
-	}
-
-	cli.Success(fmt.Sprintf("Created: %s", outputPath))
-	return nil
+	return writeScaffoldedFile(name, opts.Dir, "internal/providers", "provider", toSnakeCase(providerName)+".go", "internal/providers/provider.go.stub", fallback, data)
 }
 
 func toProviderName(name string) string {
