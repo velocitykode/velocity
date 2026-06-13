@@ -371,6 +371,7 @@ jobs:
 
       - name: Trigger velocity-mcp release
         if: steps.check.outputs.skip == 'false'
+        continue-on-error: true
         run: |
           gh workflow run release.yml --repo velocitykode/velocity-mcp -f velocity_version=v${{ steps.version.outputs.new }}
         env:
@@ -378,6 +379,7 @@ jobs:
 
       - name: Trigger velocity-arrow release
         if: steps.check.outputs.skip == 'false'
+        continue-on-error: true
         run: |
           gh workflow run release.yml --repo velocitykode/velocity-arrow -f velocity_version=v${{ steps.version.outputs.new }}
         env:
@@ -385,6 +387,7 @@ jobs:
 
       - name: Trigger velocity-ai release
         if: steps.check.outputs.skip == 'false'
+        continue-on-error: true
         run: |
           gh workflow run release.yml --repo velocitykode/velocity-ai -f velocity_version=v${{ steps.version.outputs.new }}
         env:
@@ -392,6 +395,7 @@ jobs:
 
       - name: Trigger velwatch-go release
         if: steps.check.outputs.skip == 'false'
+        continue-on-error: true
         run: |
           gh workflow run release.yml --repo velocitykode/velwatch-go -f velocity_version=v${{ steps.version.outputs.new }}
         env:
@@ -399,13 +403,15 @@ jobs:
 
       - name: Trigger velwatch.com release
         if: steps.check.outputs.skip == 'false'
+        continue-on-error: true
         run: |
-          gh workflow run release.yml --repo velocitykode/velwatch.com -f velocity_version=v${{ steps.version.outputs.new }}
+          gh workflow run release.yml --repo velocitykode/velwatch.com --ref main -f velocity_version=v${{ steps.version.outputs.new }}
         env:
           GH_TOKEN: ${{ secrets.VELOCITY_TOKEN }}
 
       - name: Trigger velocity-installer release
         if: steps.check.outputs.skip == 'false'
+        continue-on-error: true
         run: |
           gh workflow run ci.yml --repo velocitykode/velocity-installer
         env:
