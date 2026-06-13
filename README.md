@@ -11,6 +11,8 @@ Everything you need to build, ship, and run web applications — routing,
 ORM, authentication, cache, queues, mail, storage, real-time, and more.
 One binary. No external runtime. No Docker required for development.
 
+Requires Go 1.26+.
+
 > **Status:** Pre-1.0 (currently v0.62.x). API is still in flux — breaking
 > changes may occur between minor releases. See [RELEASES.md](RELEASES.md)
 > for the versioning policy and [CHANGELOG.md](CHANGELOG.md) for per-release
@@ -127,14 +129,6 @@ Validation, ORM, queue, and router — designed to work together.
 
 ## Why Velocity
 
-### Everything Included
-
-Data (ORM, cache, queue), auth (sessions, JWT, gates, policies),
-messaging (mail, events, notifications, WebSockets, gRPC), and ops
-(scheduling, encryption, validation, maintenance mode). All built in,
-all designed to work together. No hunting for compatible third-party
-packages.
-
 ### Type-Safe ORM
 
 Generic models return `[]User`, not `[]interface{}`. Queries are
@@ -178,28 +172,16 @@ says.
 
 ## What's Included
 
-All major services ship as pluggable drivers — switch backends via
-config, no code changes.
+- **HTTP**: radix-tree router, middleware, validation, CSRF, gRPC with HTTP gateway
+- **Data**: generic ORM (migrations, eager loading), cache, queues with job batching
+- **Auth**: session/JWT guards, gates, policies
+- **Messaging**: events, typed command bus, notifications (mail/database/broadcast/Slack), WebSocket broadcasting
+- **Frontend**: Inertia.js adapter for server-driven SPAs
+- **Ops**: task scheduler, AES-256-GCM encryption, distributed tracing, maintenance mode, graceful shutdown
+- **DX**: live reload, `./vel make:*` scaffolding, and collection/string/async/pipeline helpers
 
-| Pluggable    | Drivers                          |
-| ------------ | -------------------------------- |
-| **Database** | MySQL, Postgres, SQLite          |
-| **Cache**    | Memory, file, Redis, database    |
-| **Queue**    | Memory, Redis, database          |
-| **Log**      | Console, file, stack, null       |
-| **Storage**  | Local, S3                        |
-| **Mail**     | Postmark, Mailgun, log           |
-
-Also included: radix-tree HTTP router with middleware, generic ORM
-with migrations and eager loading, auth (session/JWT guards, gates,
-policies), validation with database-aware rules, events and typed
-command bus, task scheduler, multi-channel notifications
-(mail/database/broadcast/Slack), WebSocket broadcasting, gRPC with
-HTTP gateway, Inertia.js adapter, AES-256-GCM
-encryption with key rotation, CSRF protection, distributed tracing,
-structured exceptions with debug pages, maintenance mode, graceful
-shutdown, live reload, `./vel make:*` scaffolding, and a standard
-library of collections, string, async, and pipeline helpers.
+Every subsystem is an importable package, usable on its own.
+See [vel.build/docs](https://vel.build/docs) for the full list.
 
 ## Commands
 
@@ -219,10 +201,6 @@ Each project builds a `./vel` binary for development and code generation.
 ```
 
 Full reference: [vel.build/docs](https://vel.build/docs).
-
-## Requirements
-
-Go 1.26 or higher.
 
 ## Versioning
 
