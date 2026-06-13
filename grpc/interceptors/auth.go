@@ -272,6 +272,14 @@ func isPublicMethod(method string, publicMethods []string) bool {
 }
 
 func defaultTokenExtractor(ctx context.Context) (string, error) {
+	return BearerTokenFromContext(ctx)
+}
+
+// BearerTokenFromContext extracts a bearer token from the incoming gRPC
+// metadata's "authorization" header. It is the canonical extractor that
+// AuthConfig uses by default. Returns a codes.Unauthenticated status error
+// when metadata, the header, or the "Bearer " prefix is missing.
+func BearerTokenFromContext(ctx context.Context) (string, error) {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
 		return "", status.Error(codes.Unauthenticated, "missing metadata")

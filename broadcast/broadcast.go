@@ -103,6 +103,27 @@ type TokenVerifierSetter interface {
 	SetTokenVerifier(fn func(socketID, channel, token string) bool)
 }
 
+// Unsubscriber is an optional driver capability that removes a single client
+// from a channel. BroadcastManager.Leave type-asserts the driver against it
+// (drivers satisfy it structurally, no explicit declaration needed) and
+// returns ErrLeaveUnsupported when the driver does not implement it - a leave
+// on a presence channel must never be a silent success.
+//
+// clientID is the raw socket ID, the same identifier the Auth flow signs and
+// the websocket driver keys its channel-membership map by - NOT the opaque
+// per-(channel, socket) identifier GetClients returns to channel peers.
+type Unsubscriber interface {
+	Unsubscribe(channel, clientID string) error
+}
+
+// Shutdowner is an optional driver capability that gracefully stops the
+// driver's underlying transport. BroadcastManager.Shutdown type-asserts the
+// driver against it and no-ops when the driver does not implement it (a
+// driver with nothing to tear down has nothing to shut down).
+type Shutdowner interface {
+	Shutdown(ctx context.Context) error
+}
+
 // Authorizer is a function that authorizes channel access
 type Authorizer func(channel string, user interface{}) bool
 
@@ -251,10 +272,32 @@ func (b *BroadcastManager) Auth(channel string, socketID string, user interface{
 	return resp, nil
 }
 
-// Leave handles user leaving presence channel
+// Leave removes a socket from a channel by delegating to the driver's
+// Unsubscriber capability. socketID is the raw socket ID (the identifier the
+// Auth flow signs and the driver keys membership by), not an opaque
+// GetClients identifier.
+//
+// Returns ErrLeaveUnsupported (wrapping errors.ErrUnsupported) when the
+// configured driver does not implement Unsubscriber. A silent no-op on a
+// presence channel would let a departed member linger in every peer's
+// presence list, so the unsupported case is surfaced rather than swallowed.
 func (b *BroadcastManager) Leave(channel string, socketID string) error {
-	// Implementation depends on driver
-	return nil
+	u, ok := b.driver.(Unsubscriber)
+	if !ok {
+		return ErrLeaveUnsupported
+	}
+	return u.Unsubscribe(channel, socketID)
+}
+
+// Shutdown gracefully stops the driver when it implements the Shutdowner
+// capability, bounded by ctx. Drivers without a transport to tear down (the
+// type-assert fails) no-op and return nil.
+func (b *BroadcastManager) Shutdown(ctx context.Context) error {
+	s, ok := b.driver.(Shutdowner)
+	if !ok {
+		return nil
+	}
+	return s.Shutdown(ctx)
 }
 
 // SetAuthorizer sets the channel authorizer

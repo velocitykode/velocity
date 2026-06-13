@@ -2,7 +2,6 @@ package websocket
 
 import (
 	"fmt"
-	"sync/atomic"
 )
 
 // JoinGroup adds a client to a group
@@ -12,7 +11,7 @@ func (s *Server) JoinGroup(clientID, groupName string) error {
 
 	client, ok := s.clients[clientID]
 	if !ok {
-		return fmt.Errorf("client %s not found", clientID)
+		return fmt.Errorf("client %s not found: %w", sanitizeForLog(clientID), ErrClientNotFound)
 	}
 
 	// Add to server groups
@@ -37,7 +36,7 @@ func (s *Server) LeaveGroup(clientID, groupName string) error {
 
 	client, ok := s.clients[clientID]
 	if !ok {
-		return fmt.Errorf("client %s not found", clientID)
+		return fmt.Errorf("client %s not found: %w", sanitizeForLog(clientID), ErrClientNotFound)
 	}
 
 	// Remove from server groups
@@ -133,7 +132,7 @@ func (s *Server) BroadcastToGroup(groupName string, message Message) error {
 	group, ok := s.groups[groupName]
 	if !ok {
 		s.mu.RUnlock()
-		return fmt.Errorf("group %s not found", groupName)
+		return fmt.Errorf("group %s not found: %w", sanitizeForLog(groupName), ErrGroupNotFound)
 	}
 
 	// Copy clients to avoid holding lock during send
@@ -143,18 +142,16 @@ func (s *Server) BroadcastToGroup(groupName string, message Message) error {
 	}
 	s.mu.RUnlock()
 
-	// Send to all clients in group
-	sent := 0
+	// Send to all clients in group. MessagesSent is counted once at the wire
+	// write in writePump, not here at enqueue.
 	for _, client := range clients {
 		select {
 		case client.Send <- message:
-			sent++
 		default:
 			s.logWarn("Client send channel full, skipping message", "client_id", client.ID)
 		}
 	}
 
-	atomic.AddInt64(&s.stats.MessagesSent, int64(sent))
 	return nil
 }
 
@@ -169,7 +166,7 @@ func (s *Server) SendToOthersInGroup(groupName, senderID string, message Message
 	group, ok := s.groups[groupName]
 	if !ok {
 		s.mu.RUnlock()
-		return fmt.Errorf("group %s not found", groupName)
+		return fmt.Errorf("group %s not found: %w", sanitizeForLog(groupName), ErrGroupNotFound)
 	}
 
 	// Copy clients except sender
@@ -181,18 +178,16 @@ func (s *Server) SendToOthersInGroup(groupName, senderID string, message Message
 	}
 	s.mu.RUnlock()
 
-	// Send to all clients except sender
-	sent := 0
+	// Send to all clients except sender. MessagesSent is counted once at the
+	// wire write in writePump, not here at enqueue.
 	for _, client := range clients {
 		select {
 		case client.Send <- message:
-			sent++
 		default:
 			s.logWarn("Client send channel full, skipping message", "client_id", client.ID)
 		}
 	}
 
-	atomic.AddInt64(&s.stats.MessagesSent, int64(sent))
 	return nil
 }
 

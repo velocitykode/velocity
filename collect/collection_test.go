@@ -3,6 +3,7 @@ package collect
 import (
 	"reflect"
 	"slices"
+	"sync"
 	"testing"
 )
 
@@ -42,6 +43,24 @@ func TestAll(t *testing.T) {
 	c := From([]int{1, 2, 3})
 	result := c.All()
 	assertSlice(t, result, []int{1, 2, 3})
+}
+
+func TestAll_ReturnsCopy(t *testing.T) {
+	c := From([]int{1, 2, 3})
+	first := c.All()
+	first[0] = 99
+	// A second read must reflect the unmodified collection.
+	assertSlice(t, c.All(), []int{1, 2, 3})
+}
+
+func TestAll_DistinctBackingArray(t *testing.T) {
+	c := From([]int{1, 2, 3})
+	a := c.All()
+	b := c.All()
+	a[0] = 99
+	if b[0] == 99 {
+		t.Error("All() returned slices sharing a backing array")
+	}
 }
 
 // --- Count ------------------------------------------------------------------
@@ -349,6 +368,16 @@ func TestCollectionTap(t *testing.T) {
 	}
 }
 
+func TestCollectionTap_MutationDoesNotAffectCollection(t *testing.T) {
+	c := From([]int{1, 2, 3})
+	c.Tap(func(items []int) {
+		for i := range items {
+			items[i] = 99
+		}
+	})
+	assertSlice(t, c.All(), []int{1, 2, 3})
+}
+
 // --- When -------------------------------------------------------------------
 
 func TestCollectionWhen(t *testing.T) {
@@ -375,6 +404,50 @@ func TestCollectionWhen_Immutability(t *testing.T) {
 		return Filter(items, func(n int) bool { return n > 1 })
 	})
 	assertSlice(t, c.All(), []int{1, 2, 3})
+}
+
+func TestCollectionWhen_FnMutatesArgInPlace(t *testing.T) {
+	c := From([]int{1, 2, 3})
+	// fn mutates its argument in place and returns it. Because When passes a
+	// copy, the original collection must remain intact.
+	result := c.When(true, func(items []int) []int {
+		for i := range items {
+			items[i] *= 10
+		}
+		return items
+	})
+	assertSlice(t, c.All(), []int{1, 2, 3})
+	assertSlice(t, result.All(), []int{10, 20, 30})
+}
+
+func TestCollectionWhen_FalseSharesSafely(t *testing.T) {
+	c := From([]int{1, 2, 3})
+	result := c.When(false, func(items []int) []int { return items })
+	// Mutating one collection's read copy must not affect the other.
+	got := result.All()
+	got[0] = 99
+	assertSlice(t, c.All(), []int{1, 2, 3})
+	assertSlice(t, result.All(), []int{1, 2, 3})
+}
+
+// --- Concurrency ------------------------------------------------------------
+
+func TestCollectionAll_ConcurrentReaders(t *testing.T) {
+	c := From([]int{1, 2, 3, 4, 5})
+	const readers = 8
+	var wg sync.WaitGroup
+	wg.Add(readers)
+	for i := 0; i < readers; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 1000; j++ {
+				s := c.All()
+				s[0] = 99 // mutate the private copy; must not race other readers
+			}
+		}()
+	}
+	wg.Wait()
+	assertSlice(t, c.All(), []int{1, 2, 3, 4, 5})
 }
 
 // --- Chaining ---------------------------------------------------------------

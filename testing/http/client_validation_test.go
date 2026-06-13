@@ -184,6 +184,24 @@ func TestAssertValid(t *testing.T) {
 			wantError: false,
 		},
 		{
+			name:      "ok with HTML body",
+			status:    http.StatusOK,
+			body:      `<html><body>ok</body></html>`,
+			wantError: false,
+		},
+		{
+			name:      "ok with empty body",
+			status:    http.StatusOK,
+			body:      ``,
+			wantError: false,
+		},
+		{
+			name:      "ok with JSON array body",
+			status:    http.StatusOK,
+			body:      `[1,2,3]`,
+			wantError: false,
+		},
+		{
 			name:      "422 reports error",
 			status:    http.StatusUnprocessableEntity,
 			body:      validationBody,

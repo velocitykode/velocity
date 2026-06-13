@@ -228,11 +228,9 @@ func (s *Server) UseStream(interceptors ...grpc.StreamServerInterceptor) *Server
 }
 
 // InterceptorPair holds both unary and stream interceptor variants.
-// Many interceptors need both variants, so this groups them together.
-type InterceptorPair struct {
-	Unary  grpc.UnaryServerInterceptor
-	Stream grpc.StreamServerInterceptor
-}
+// It is an alias for interceptors.InterceptorPair so the pairs returned by
+// interceptors.Recovery/Logging/Auth can be passed straight to UseAll.
+type InterceptorPair = interceptors.InterceptorPair
 
 // UseAll adds both unary and stream interceptor pairs.
 // This is convenient for interceptors that have both unary and stream variants.

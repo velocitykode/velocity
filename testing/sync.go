@@ -27,6 +27,15 @@
 // If a reviewer can't tell which bucket a sleep falls into from the
 // surrounding comment, the sleep is probably wait-and-hope and should be
 // replaced.
+//
+// # Naming debt (acknowledged, deferred to v1.0)
+//
+// This directory is testing/ but the package is testsync, a deliberate
+// directory/package name mismatch. The sibling testing/http is package http,
+// which collides with net/http and is imported under an alias such as
+// velhttp. The consumer-facing entry point for the testing toolkit is the
+// velocitytest package. Both non-matching names are recognized pre-1.0 naming
+// debt; any rename is deferred to the v1.0 boundary.
 package testsync
 
 import (

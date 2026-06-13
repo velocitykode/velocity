@@ -2,6 +2,7 @@ package http
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -114,10 +115,25 @@ func (b *TestUploadBuilder) Build(method, url string) (*http.Request, error) {
 	return req, nil
 }
 
-// BuildTest creates a test request for httptest
-func (b *TestUploadBuilder) BuildTest(method, url string) *http.Request {
-	req, _ := b.Build(method, url)
-	return httptest.NewRequest(method, url, req.Body)
+// BuildTest creates an *http.Request suitable for httptest-based handler tests.
+// Unlike Build it returns no error: on a build failure it reports via t.Errorf
+// and returns nil. On success it copies every header from the built request,
+// including the multipart Content-Type carrying the boundary, so handlers that
+// call ParseMultipartForm parse the body correctly.
+func (b *TestUploadBuilder) BuildTest(t TestingT, method, url string) *http.Request {
+	t.Helper()
+	built, err := b.Build(method, url)
+	if err != nil {
+		t.Errorf("BuildTest: failed to build request: %v", err)
+		return nil
+	}
+	req := httptest.NewRequest(method, url, built.Body)
+	for key, values := range built.Header {
+		for _, v := range values {
+			req.Header.Add(key, v)
+		}
+	}
+	return req
 }
 
 // createFormFile creates a form file with custom MIME type
@@ -196,8 +212,11 @@ func GetUploadedFiles(r *http.Request, fieldName string) ([]*multipart.FileHeade
 	return files, nil
 }
 
-// SaveUploadedFile saves an uploaded file to storage (helper for handlers)
-func SaveUploadedFile(file multipart.File, header *multipart.FileHeader, basePath string) (string, error) {
+// SaveUploadedFile reads an uploaded file and stores it under basePath in the
+// given fake storage, returning the stored path. The filename is sanitized with
+// filepath.Base and the joined path is verified to stay within basePath
+// (defense in depth, even though FakeStorage is memory-backed).
+func SaveUploadedFile(file multipart.File, header *multipart.FileHeader, basePath string, storage *storageTesting.FakeStorage) (string, error) {
 	defer file.Close()
 
 	// Read file content
@@ -206,17 +225,26 @@ func SaveUploadedFile(file multipart.File, header *multipart.FileHeader, basePat
 		return "", fmt.Errorf("failed to read file: %w", err)
 	}
 
+	// Reject the originally requested filename if it would escape basePath
+	// (e.g. "../secret.txt"). Validate before sanitizing, since filepath.Base
+	// would otherwise strip the traversal and silently accept it.
+	cleanBase := filepath.Clean(basePath)
+	requestedPath := filepath.Join(basePath, header.Filename)
+	if requestedPath != cleanBase && !strings.HasPrefix(requestedPath, cleanBase+string(filepath.Separator)) {
+		return "", fmt.Errorf("invalid upload path %q escapes base %q", header.Filename, basePath)
+	}
+
 	// Generate safe filename
 	filename := filepath.Base(header.Filename)
 	if filename == "." || filename == "/" {
 		filename = "file"
 	}
 
-	// Create full path
 	fullPath := filepath.Join(basePath, filename)
 
-	// In a real implementation, you would save to storage here
-	// For testing, we just return the path
+	if err := storage.Put(fullPath, buf.Bytes()); err != nil {
+		return "", fmt.Errorf("failed to store file: %w", err)
+	}
 
 	return fullPath, nil
 }
@@ -264,8 +292,12 @@ func TestUploadHandler(storage *storageTesting.FakeStorage) http.HandlerFunc {
 				defer file.Close()
 
 				// Read content
-				content := make([]byte, fileHeader.Size)
-				file.Read(content)
+				content, err := io.ReadAll(file)
+				if err != nil {
+					response.Success = false
+					response.Message = "Failed to read file"
+					continue
+				}
 
 				// Store in fake storage
 				path := fmt.Sprintf("uploads/%s", fileHeader.Filename)
@@ -295,8 +327,7 @@ func TestUploadHandler(storage *storageTesting.FakeStorage) http.HandlerFunc {
 		} else {
 			w.WriteHeader(http.StatusBadRequest)
 		}
-
-		// In real code, you would use json.NewEncoder(w).Encode(response)
+		_ = json.NewEncoder(w).Encode(response)
 	}
 }
 

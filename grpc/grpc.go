@@ -2,18 +2,25 @@
 //
 // The package follows Velocity's patterns:
 //   - Interface-first design with pluggable auth validators
-//   - Global singleton with GetServer() function
-//   - Auto-init from environment variables
-//   - Builder pattern for configuration
+//   - Option-function configuration sourced from environment variables
+//   - Builder pattern for assembling servers and gateways
 //
-// Basic usage:
+// Interceptors live in the grpc/interceptors subpackage and are added via
+// UseAll, which accepts interceptors.InterceptorPair values directly.
+//
+// Basic usage (the registration callback receives the underlying
+// *google.golang.org/grpc.Server, aliased here as googlegrpc):
+//
+//	import googlegrpc "google.golang.org/grpc"
 //
 //	server := grpc.NewServer(
 //	    grpc.WithPort("50051"),
 //	    grpc.WithReflection(true),
 //	)
-//	server.Use(grpc.RecoveryInterceptor(), grpc.LoggingInterceptor())
-//	server.RegisterService(&myService{})
+//	server.UseAll(interceptors.Recovery(), interceptors.Logging())
+//	server.RegisterService(func(srv interface{}) {
+//	    pb.RegisterMyServiceServer(srv.(*googlegrpc.Server), &myService{})
+//	})
 //	server.Start()
 package grpc
 

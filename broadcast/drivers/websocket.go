@@ -48,7 +48,18 @@ func denyAllChannelAuthorizer(client *websocket.Client, channel string) bool {
 
 // WebSocketDriver adapts the existing WebSocket server for broadcasting
 type WebSocketDriver struct {
-	server     *websocket.Server
+	server *websocket.Server
+
+	// startErr captures the error returned by server.Start() in the
+	// constructor. NewWebSocketDriver cannot return an error without breaking
+	// 42 call sites, and a fresh server's Start can only fail on the one-shot
+	// lifecycle (effectively never here), so instead of discarding it we store
+	// it and surface it from the first wire-touching operation
+	// (BroadcastCtx/BroadcastExceptCtx/Subscribe) - a failed-start driver is
+	// loud on first use rather than silently dead. Written once in the
+	// constructor before any concurrent access, so it needs no lock.
+	startErr error
+
 	channels   map[string]map[string]*websocket.Client // channel -> socketID -> client
 	clientSubs map[string]map[string]struct{}          // clientID -> channel set (audit D-03)
 	authorizer ChannelAuthorizer
@@ -218,8 +229,10 @@ func NewWebSocketDriver(config websocket.Config, opts ...DriverOption) *WebSocke
 		driver.purgeClient(c.ID)
 	})
 
-	// Start the server
-	server.Start()
+	// Start the server. The constructor signature cannot surface an error
+	// (42 call sites), so capture it for the wire paths to report on first
+	// use instead of discarding it.
+	driver.startErr = server.Start()
 
 	return driver
 }
@@ -253,6 +266,9 @@ func (d *WebSocketDriver) BroadcastCtx(ctx context.Context, channels []string, e
 			return err
 		}
 	}
+	if d.startErr != nil {
+		return d.startErr
+	}
 	targets := d.snapshotTargets(channels, "")
 	for _, t := range targets {
 		if ctx != nil {
@@ -279,6 +295,9 @@ func (d *WebSocketDriver) BroadcastExceptCtx(ctx context.Context, channels []str
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+	}
+	if d.startErr != nil {
+		return d.startErr
 	}
 	targets := d.snapshotTargets(channels, socketID)
 	for _, t := range targets {
@@ -549,6 +568,12 @@ var ErrChannelNameTooLong = fmt.Errorf("velocity/broadcast: channel name exceeds
 // cap; idempotent for re-subscribes (already-subscribed channels do not
 // count against the cap a second time).
 func (d *WebSocketDriver) Subscribe(channel string, client *websocket.Client) error {
+	// A failed-start driver is dead; refuse subscribes before touching the
+	// channels map so a wedged server cannot accumulate membership state.
+	if d.startErr != nil {
+		return d.startErr
+	}
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -600,6 +625,12 @@ func (d *WebSocketDriver) Subscribe(channel string, client *websocket.Client) er
 
 // Unsubscribe removes a client from a channel
 func (d *WebSocketDriver) Unsubscribe(channel string, clientID string) error {
+	// A failed-start driver is dead; surface the start error so a Leave on a
+	// wedged server does not silently succeed before touching membership.
+	if d.startErr != nil {
+		return d.startErr
+	}
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -902,4 +933,13 @@ func (d *WebSocketDriver) SetTokenVerifier(fn func(socketID, channel, token stri
 // GetServer returns the underlying WebSocket server
 func (d *WebSocketDriver) GetServer() *websocket.Server {
 	return d.server
+}
+
+// Shutdown gracefully stops the underlying WebSocket server, bounded by ctx.
+// It delegates to websocket.Server.Shutdown, which is terminal and one-shot:
+// after it returns, HandleConnection rejects new connections with 503 and a
+// later Start returns ErrServerClosed. Satisfies broadcast.Shutdowner so
+// BroadcastManager.Shutdown reaches it via the optional-capability assert.
+func (d *WebSocketDriver) Shutdown(ctx context.Context) error {
+	return d.server.Shutdown(ctx)
 }

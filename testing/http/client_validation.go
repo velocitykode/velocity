@@ -1,6 +1,7 @@
 package http
 
 import (
+	"encoding/json"
 	"net/http"
 )
 
@@ -104,7 +105,10 @@ func (r *TestResponse) AssertValidationErrors(expected map[string][]string) *Tes
 }
 
 // AssertValid asserts the response is not a 422 and carries no non-empty errors
-// object.
+// object. A non-JSON or empty success body is valid by definition: only a body
+// that decodes to a JSON object is inspected for an "errors" entry. Unlike the
+// other validation assertions this does not call decodeJSON, which would fail
+// the test on any non-object body.
 func (r *TestResponse) AssertValid() *TestResponse {
 	r.t.Helper()
 
@@ -112,8 +116,9 @@ func (r *TestResponse) AssertValid() *TestResponse {
 		r.t.Errorf("expected a valid response, got status %d", r.recorder.Code)
 	}
 
-	body := r.decodeJSON()
-	if body == nil {
+	var body map[string]any
+	if err := json.Unmarshal(r.recorder.Body.Bytes(), &body); err != nil || body == nil {
+		// Non-JSON, JSON-array, or empty success body: nothing to inspect.
 		return r
 	}
 	if raw, ok := body["errors"]; ok {

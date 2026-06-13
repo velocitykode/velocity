@@ -13,6 +13,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // Logger is the minimal logging interface used by the WebSocket server.
@@ -66,8 +67,12 @@ type Server struct {
 	// registration, so MaxConnections is enforced at admission time.
 	activeConns atomic.Int64
 
-	mu       sync.RWMutex
-	running  bool
+	mu      sync.RWMutex
+	running bool
+	// stopped marks a terminal, one-shot lifecycle: once Shutdown sets it,
+	// the server cannot be restarted (stopChan is closed once and never
+	// recreated). Start returns ErrServerClosed when stopped. Guarded by s.mu.
+	stopped  bool
 	stopChan chan struct{}
 
 	// wg tracks the run-loop goroutine and every per-client read/write
@@ -127,7 +132,11 @@ func (s *Server) logError(msg string, kvs ...any) {
 	}
 }
 
-// New creates a new WebSocket server
+// New creates a new WebSocket server.
+//
+// The server lifecycle is one-shot: Start runs it, Shutdown stops it
+// permanently. A server cannot be restarted after Shutdown - call New for a
+// fresh instance. See Start and Shutdown.
 func New(config Config) *Server {
 	// Set defaults
 	if config.MaxConnections == 0 {
@@ -181,12 +190,21 @@ func New(config Config) *Server {
 	return s
 }
 
-// Start begins processing WebSocket connections
+// Start begins processing WebSocket connections.
+//
+// The lifecycle is one-shot: once Shutdown has been called, Start returns
+// ErrServerClosed and the server stays dead. Use errors.Is(err,
+// ErrServerClosed) to detect a restart attempt. A second Start on a still
+// running server returns ErrServerAlreadyRunning.
 func (s *Server) Start() error {
 	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return ErrServerClosed
+	}
 	if s.running {
 		s.mu.Unlock()
-		return fmt.Errorf("server already running")
+		return ErrServerAlreadyRunning
 	}
 	s.running = true
 	s.mu.Unlock()
@@ -215,15 +233,35 @@ func (s *Server) Start() error {
 // goroutines finish, Shutdown returns ctx.Err(); otherwise it returns nil.
 // Shutdown is safe to call more than once - subsequent calls are no-ops that
 // return nil.
+//
+// Shutdown is terminal: it marks the server stopped so a later Start returns
+// ErrServerClosed. The lifecycle is one-shot - create a new Server with New to
+// run again.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
-	if !s.running {
+	// Mark the lifecycle terminal regardless of whether the server ever
+	// started: any Shutdown is one-shot, so a later Start must return
+	// ErrServerClosed even if Shutdown ran before Start. Close stopChan on the
+	// first terminal shutdown - including a shutdown-before-start - so Broadcast
+	// always observes a closed stopChan and drops instead of wedging on the
+	// undrained buffer. Guard on the prior stopped flag so it is closed exactly
+	// once across repeated Shutdown calls.
+	alreadyStopped := s.stopped
+	wasRunning := s.running
+	s.running = false
+	s.stopped = true
+	if alreadyStopped {
 		s.mu.Unlock()
 		return nil
 	}
-	s.running = false
 	close(s.stopChan)
 	s.mu.Unlock()
+
+	if !wasRunning {
+		// Never started: no run loop, clients, or pumps to drain. The closed
+		// stopChan above is enough to make Broadcast drop.
+		return nil
+	}
 
 	// Close each live connection so readPump's blocked ReadJSON fails and
 	// returns. writePump independently observes stopChan being closed.
@@ -292,12 +330,12 @@ func (s *Server) callWithRecover(site string, fn func()) {
 			return
 		}
 		s.recoveredPanics.Add(1)
-		// async.FromRecovered tags the recovered value with the calling
+		// panicerr.FromRecovered tags the recovered value with the calling
 		// goroutine's stack so log readers can locate the panic site.
 		s.logError(
 			"websocket run-loop panic recovered",
 			"site", site,
-			"error", async.FromRecovered(r),
+			"error", panicerr.FromRecovered(r),
 		)
 	}()
 	fn()
@@ -395,10 +433,10 @@ func (s *Server) HandleConnection(w http.ResponseWriter, r *http.Request) {
 		client.readPump()
 	})
 
-	// Call connect callback
-	if p := s.onConnect.Load(); p != nil {
-		(*p)(client)
-	}
+	// The connect callback is NOT invoked here. It fires at the end of
+	// handleRegister, on the run-loop goroutine, after the client is in
+	// s.clients - so a callback that calls JoinGroup/SendToClient no longer
+	// races registration with a "client not found" error (B49).
 
 	// Update stats
 	atomic.AddInt64(&s.stats.ConnectedClients, 1)
@@ -412,14 +450,42 @@ func (s *Server) handleRegister(client *Client) {
 
 	s.logInfo("Client connected", "client_id", client.ID)
 
-	// Send welcome message
-	client.Send <- Message{
+	// Send welcome message. Non-blocking: handleRegister runs on the run-loop
+	// goroutine, so a blocking send into a full channel would stall the entire
+	// server (no register/unregister/broadcast would drain). Mirror the
+	// select/default used in handleBroadcast.
+	select {
+	case client.Send <- Message{
 		Type: "welcome",
 		Data: map[string]interface{}{
 			"id":      client.ID,
 			"version": "1.0.0",
 		},
+	}:
+	default:
+		s.logWarn("Client send channel full, dropping welcome message", "client_id", client.ID)
 	}
+
+	// Fire the connect callback now that the client is registered. Running it
+	// here (on the run-loop goroutine, after s.clients is set) lets the
+	// callback call JoinGroup/SendToClient without racing registration (B49).
+	// Wrapped in a recover so a panicking callback cannot take the run loop
+	// down - mirrors invokeDisconnectListener.
+	if p := s.onConnect.Load(); p != nil {
+		s.invokeConnectListener(*p, client)
+	}
+}
+
+// invokeConnectListener calls fn(client) under a recover so a panicking
+// connect callback is contained. Recovered panics are logged when a logger is
+// installed and otherwise swallowed. Mirrors invokeDisconnectListener.
+func (s *Server) invokeConnectListener(fn func(*Client), client *Client) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.logError("websocket connect listener panic recovered", "client_id", client.ID, "error", panicerr.FromRecovered(r))
+		}
+	}()
+	fn(client)
 }
 
 // handleUnregister removes a client.
@@ -439,7 +505,11 @@ func (s *Server) handleUnregister(client *Client) {
 	if present {
 		delete(s.clients, client.ID)
 
-		// Remove from all groups
+		// Remove from all groups. client.Groups is guarded by client.mu
+		// (see groups.go JoinGroup/LeaveGroup and client.go IsInGroup), so
+		// read it under client.mu even though we hold s.mu. Lock order is
+		// s.mu -> client.mu, matching JoinGroup/LeaveGroup; no inversion (B51).
+		client.mu.Lock()
 		for groupName := range client.Groups {
 			if group, ok := s.groups[groupName]; ok {
 				delete(group, client.ID)
@@ -448,6 +518,7 @@ func (s *Server) handleUnregister(client *Client) {
 				}
 			}
 		}
+		client.mu.Unlock()
 	}
 	// Snapshot listener list under the same lock so adapters registered
 	// concurrently with disconnect see the current set.
@@ -497,7 +568,7 @@ func (s *Server) handleUnregister(client *Client) {
 func (s *Server) invokeDisconnectListener(fn DisconnectFunc, client *Client) {
 	defer func() {
 		if r := recover(); r != nil {
-			s.logError("websocket disconnect listener panic recovered", "client_id", client.ID, "error", fmt.Sprintf("%v", r))
+			s.logError("websocket disconnect listener panic recovered", "client_id", client.ID, "error", panicerr.FromRecovered(r))
 		}
 	}()
 	fn(client)
@@ -516,26 +587,34 @@ func (s *Server) handleBroadcast(message Message) {
 			s.logWarn("Client send channel full, skipping message", "client_id", client.ID)
 		}
 	}
-
-	atomic.AddInt64(&s.stats.MessagesSent, int64(len(s.clients)))
+	// MessagesSent is counted once at the actual wire write in writePump, not
+	// here at enqueue (which would double-count, and previously also counted
+	// clients skipped for a full buffer).
 }
 
 // checkOrigin validates the origin of the connection.
 // If no AllowedOrigins are configured, only same-origin requests are accepted:
 // the Origin header host (case-insensitive) must match the request Host. A
 // missing Origin header is rejected unless AllowEmptyOrigin is explicitly set.
-// Use AllowedOrigins: []string{"*"} to allow all origins.
+// Use AllowedOrigins: []string{"*"} to allow all non-empty origins.
+//
+// A missing Origin header is governed solely by AllowEmptyOrigin, ahead of
+// both the same-origin and allowlist paths. In particular AllowedOrigins
+// []string{"*"} does NOT accept an empty Origin on its own; it still requires
+// AllowEmptyOrigin=true (default-to-secure).
 func (s *Server) checkOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 
+	// Empty Origin is decided up front for every configuration. Browsers
+	// always send Origin on WS upgrades, so an empty Origin almost always
+	// means a non-browser client. Treat as untrusted unless the application
+	// opted in - this overrides even an AllowedOrigins "*" wildcard.
+	if origin == "" {
+		return s.config.AllowEmptyOrigin
+	}
+
 	// If no allowed origins specified, only allow same-origin.
 	if len(s.config.AllowedOrigins) == 0 {
-		if origin == "" {
-			// Browsers always send Origin on WS upgrades, so an empty
-			// Origin almost always means a non-browser client. Treat as
-			// untrusted unless the application opted in.
-			return s.config.AllowEmptyOrigin
-		}
 		o, err := url.Parse(origin)
 		if err != nil || o.Host == "" {
 			return false
@@ -597,7 +676,14 @@ func (s *Server) Use(middleware Middleware) {
 	s.middleware = append(s.middleware, middleware)
 }
 
-// OnConnect sets the connect callback
+// OnConnect sets the connect callback.
+//
+// The callback runs on the run-loop goroutine after registration completes, so
+// the client is already in s.clients - JoinGroup, SendToClient, and the other
+// lookup-by-ID helpers work from inside it. Because it runs on the run loop, a
+// slow callback delays message routing (register/unregister/broadcast) for all
+// clients; keep it fast or hand off heavy work to another goroutine. A panic in
+// the callback is recovered and logged, not propagated.
 func (s *Server) OnConnect(fn func(*Client)) {
 	if fn == nil {
 		s.onConnect.Store(nil)
@@ -641,9 +727,19 @@ func (s *Server) OnError(fn func(*Client, error)) {
 	s.onError.Store(&fn)
 }
 
-// Broadcast sends a message to all connected clients
+// Broadcast sends a message to all connected clients.
+//
+// Once the server is shut down the run loop no longer drains the broadcast
+// channel, so a plain send would block forever after the 256-slot buffer
+// fills. Broadcast selects on stopChan (closed exactly once by Shutdown and
+// never reassigned, so the read is race-free) and drops the message instead of
+// wedging the caller.
 func (s *Server) Broadcast(message Message) {
-	s.broadcast <- message
+	select {
+	case s.broadcast <- message:
+	case <-s.stopChan:
+		// Server is stopped; drop rather than block on an undrained channel.
+	}
 }
 
 // SendToClient sends a message to a specific client
@@ -653,14 +749,14 @@ func (s *Server) SendToClient(clientID string, message Message) error {
 	s.mu.RUnlock()
 
 	if !ok {
-		return fmt.Errorf("client %s not found", clientID)
+		return fmt.Errorf("client %s not found: %w", sanitizeForLog(clientID), ErrClientNotFound)
 	}
 
 	select {
 	case client.Send <- message:
-		atomic.AddInt64(&s.stats.MessagesSent, 1)
+		// Counted once at the wire write in writePump, not here at enqueue.
 	default:
-		return fmt.Errorf("client %s send channel full", clientID)
+		return fmt.Errorf("client %s send channel full: %w", sanitizeForLog(clientID), ErrSendChannelFull)
 	}
 
 	return nil
@@ -686,16 +782,86 @@ func (s *Server) GetClient(id string) (*Client, bool) {
 }
 
 // HandleRaw upgrades the HTTP connection to a WebSocket and returns the raw
-// connection. Unlike HandleConnection, it does NOT register a managed Client,
-// does NOT start readPump/writePump goroutines, and does NOT enter the
-// message routing system. The caller owns the connection and is responsible
-// for reading, writing, and closing it.
-func (s *Server) HandleRaw(w http.ResponseWriter, r *http.Request) (*websocket.Conn, error) {
+// connection together with a release func. Unlike HandleConnection, it does
+// NOT register a managed Client, does NOT start readPump/writePump
+// goroutines, and does NOT enter the message routing system. The caller owns
+// the connection and is responsible for reading, writing, and closing it.
+//
+// HandleRaw is always gated and enforces the same admission policy as
+// HandleConnection, in order: the running lifecycle (ErrServerNotRunning
+// before Start, ErrServerClosed after Shutdown), the configured AuthFunc
+// (HTTP 401 on reject), and MaxConnections (ErrConnectionLimit on overflow).
+// Origin checking applies through the server's shared upgrader and is NOT
+// weakened here.
+//
+// The returned release func decrements the active-connection count and MUST
+// be called exactly once when the caller is done with the conn - typically
+// deferred next to conn.Close:
+//
+//	conn, release, err := s.HandleRaw(w, r)
+//	if err != nil {
+//	    return
+//	}
+//	defer release()
+//	defer conn.Close()
+//
+// On any error the returned conn is nil and release is a no-op, so callers may
+// defer release before checking err if they prefer. release is idempotent.
+//
+// Escape hatch: to perform an unchecked upgrade (no running gate, no auth, no
+// connection limit), construct your own gorilla websocket.Upgrader directly
+// and call Upgrade - this method is always gated.
+func (s *Server) HandleRaw(w http.ResponseWriter, r *http.Request) (*websocket.Conn, func(), error) {
+	noop := func() {}
+
+	// Running gate: mirror HandleConnection. A terminal Shutdown reports
+	// ErrServerClosed (one-shot lifecycle); a server that never started
+	// reports ErrServerNotRunning.
+	s.mu.RLock()
+	if s.stopped {
+		s.mu.RUnlock()
+		http.Error(w, "Server closed", http.StatusServiceUnavailable)
+		return nil, noop, ErrServerClosed
+	}
+	if !s.running {
+		s.mu.RUnlock()
+		http.Error(w, "Server not running", http.StatusServiceUnavailable)
+		return nil, noop, ErrServerNotRunning
+	}
+	s.mu.RUnlock()
+
+	// Authenticate before upgrading if an auth function is configured.
+	if s.config.AuthFunc != nil {
+		if err := s.config.AuthFunc(r); err != nil {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return nil, noop, fmt.Errorf("websocket auth: %w", err)
+		}
+	}
+
+	// Reserve a connection slot, enforcing MaxConnections with rollback. Do
+	// NOT touch s.wg: no pumps run for a raw conn, so there is nothing for
+	// Shutdown to drain.
+	n := s.activeConns.Add(1)
+	if s.config.MaxConnections > 0 && n > int64(s.config.MaxConnections) {
+		s.activeConns.Add(-1)
+		http.Error(w, "Connection limit reached", http.StatusServiceUnavailable)
+		return nil, noop, ErrConnectionLimit
+	}
+
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		return nil, fmt.Errorf("websocket upgrade: %w", err)
+		s.activeConns.Add(-1)
+		return nil, noop, fmt.Errorf("websocket upgrade: %w", err)
 	}
-	return conn, nil
+
+	// release rolls the activeConns reservation back when the caller is done.
+	// sync.Once keeps it idempotent so a double-deferred release cannot drive
+	// the count negative and silently inflate the available headroom.
+	var once sync.Once
+	release := func() {
+		once.Do(func() { s.activeConns.Add(-1) })
+	}
+	return conn, release, nil
 }
 
 // GetClients returns all connected clients

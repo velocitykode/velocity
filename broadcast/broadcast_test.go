@@ -2,6 +2,7 @@ package broadcast
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -471,28 +472,66 @@ func TestAuth_PresenceChannelWithoutPresenceFunc(t *testing.T) {
 	}
 }
 
-func TestLeave(t *testing.T) {
+// TestLeave_UnsupportedDriver: MockDriver does not implement the Unsubscriber
+// capability, so Leave must surface ErrLeaveUnsupported (wrapping
+// errors.ErrUnsupported) rather than silently no-op.
+func TestLeave_UnsupportedDriver(t *testing.T) {
 	tests := []struct {
 		name     string
 		channel  string
 		socketID string
-		wantErr  bool
 	}{
-		{"returns nil for leave operation", "presence-room.1", "socket-1", false},
-		{"handles empty channel", "", "socket-1", false},
-		{"handles empty socket ID", "presence-room.1", "", false},
+		{"presence channel", "presence-room.1", "socket-1"},
+		{"empty channel", "", "socket-1"},
+		{"empty socket ID", "presence-room.1", ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			driver := NewMockDriver()
-			b := New(driver)
+			b := New(NewMockDriver())
 
 			err := b.Leave(tt.channel, tt.socketID)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("Leave() error = %v, wantErr %v", err, tt.wantErr)
+			if !errors.Is(err, ErrLeaveUnsupported) {
+				t.Errorf("Leave() error = %v, want ErrLeaveUnsupported", err)
+			}
+			if !errors.Is(err, errors.ErrUnsupported) {
+				t.Errorf("Leave() error = %v, want it to wrap errors.ErrUnsupported", err)
 			}
 		})
+	}
+}
+
+// unsubscribeDriver is a MockDriver that records Unsubscribe calls, so Leave
+// can be observed delegating through the Unsubscriber capability.
+type unsubscribeDriver struct {
+	*MockDriver
+	calls []struct{ channel, clientID string }
+}
+
+func (u *unsubscribeDriver) Unsubscribe(channel, clientID string) error {
+	u.calls = append(u.calls, struct{ channel, clientID string }{channel, clientID})
+	return nil
+}
+
+// TestLeave_DelegatesToUnsubscriber: a driver implementing Unsubscriber gets
+// the raw (channel, socketID) forwarded verbatim.
+func TestLeave_DelegatesToUnsubscriber(t *testing.T) {
+	d := &unsubscribeDriver{MockDriver: NewMockDriver()}
+	b := New(d)
+
+	if err := b.Leave("presence-room.1", "socket-7"); err != nil {
+		t.Fatalf("Leave() error = %v, want nil", err)
+	}
+	if len(d.calls) != 1 || d.calls[0].channel != "presence-room.1" || d.calls[0].clientID != "socket-7" {
+		t.Fatalf("Unsubscribe calls = %+v, want one (presence-room.1, socket-7)", d.calls)
+	}
+}
+
+// TestShutdown_NoopWithoutCapability: a driver lacking Shutdowner is a no-op.
+func TestShutdown_NoopWithoutCapability(t *testing.T) {
+	b := New(NewMockDriver())
+	if err := b.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown() error = %v, want nil", err)
 	}
 }
 

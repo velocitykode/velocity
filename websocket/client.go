@@ -154,12 +154,18 @@ func (c *Client) handleMessage(msg Message) {
 	c.Server.mu.RUnlock()
 
 	if !ok {
-		// No handler registered — use generic error to avoid reflecting user input
-		c.Send <- Message{
+		// No handler registered: use generic error to avoid reflecting user input.
+		// Non-blocking send. handleMessage runs on readPump's goroutine; if
+		// writePump has died with Send full, a blocking send wedges readPump
+		// forever (close(c.Send) only fires after readPump returns via the
+		// unregister path), leaking the connection. Drop the reply instead.
+		if err := c.SendMessage(Message{
 			Type: "error",
 			Data: map[string]interface{}{
 				"message": "unknown message type",
 			},
+		}); err != nil {
+			c.Server.logWarn("websocket dropping unknown-type error reply, send channel full", "client_id", c.ID)
 		}
 		return
 	}
@@ -170,12 +176,16 @@ func (c *Client) handleMessage(msg Message) {
 		if p := c.Server.onError.Load(); p != nil {
 			(*p)(c, err)
 		} else {
-			// Send generic error — avoid leaking internal error details to clients
-			c.Send <- Message{
+			// Send generic error, avoid leaking internal error details to clients.
+			// Non-blocking for the same readPump-wedge reason as the unknown-type
+			// reply above.
+			if err := c.SendMessage(Message{
 				Type: "error",
 				Data: map[string]interface{}{
 					"message": "internal error",
 				},
+			}); err != nil {
+				c.Server.logWarn("websocket dropping handler-error reply, send channel full", "client_id", c.ID)
 			}
 		}
 	}

@@ -97,22 +97,13 @@ func (c *TestClient) callJSON(method, path string, data any) *TestResponse {
 		return &TestResponse{t: c.t, recorder: httptest.NewRecorder()}
 	}
 	req := httptest.NewRequest(method, path, bytes.NewReader(body))
-	// Apply client headers first, then force Content-Type for JSON.
+	// Apply client headers first, then force Content-Type for JSON so a
+	// WithHeader("Content-Type", ...) default cannot override it.
 	for key, value := range c.headers {
 		req.Header.Set(key, value)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	for _, cookie := range c.cookies {
-		req.AddCookie(cookie)
-	}
-
-	rec := httptest.NewRecorder()
-	c.router.ServeHTTP(rec, req)
-
-	return &TestResponse{
-		t:        c.t,
-		recorder: rec,
-	}
+	return c.send(req)
 }
 
 // call builds the request and sends it through the router.
@@ -121,11 +112,18 @@ func (c *TestClient) call(method, path string, body io.Reader) *TestResponse {
 	return c.doRequest(req)
 }
 
-// doRequest applies headers/cookies and executes the request.
+// doRequest applies the client's default headers and executes the request.
 func (c *TestClient) doRequest(req *http.Request) *TestResponse {
 	for key, value := range c.headers {
 		req.Header.Set(key, value)
 	}
+	return c.send(req)
+}
+
+// send applies cookies, runs the request through the router, and wraps the
+// recorder. Header application is left to the caller because callJSON must
+// force its Content-Type after the client's default headers (see callJSON).
+func (c *TestClient) send(req *http.Request) *TestResponse {
 	for _, cookie := range c.cookies {
 		req.AddCookie(cookie)
 	}

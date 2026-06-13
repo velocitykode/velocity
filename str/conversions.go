@@ -166,13 +166,13 @@ func InlineMarkdown(str string) string {
 	str = mustReplace(`!\[([^\]]*)\]\([^)]+\)`, str, "$1")
 
 	// Remove headers
-	str = mustReplace(`^#{1,6}\s+`, str, "")
+	str = mustReplace(`(?m)^#{1,6}\s+`, str, "")
 
 	// Remove blockquotes
-	str = mustReplace(`^>\s+`, str, "")
+	str = mustReplace(`(?m)^>\s+`, str, "")
 
 	// Remove horizontal rules
-	str = mustReplace(`^[-*_]{3,}$`, str, "")
+	str = mustReplace(`(?m)^[-*_]{3,}$`, str, "")
 
 	return strings.TrimSpace(str)
 }
@@ -207,9 +207,9 @@ func Markdown(str string) string {
 
 	// Step 3: run markdown passes. The capture groups are now pre-escaped,
 	// so we substitute them in directly without an extra escape step.
-	str = replaceCapture(`^### (.+)$`, str, "<h3>", "</h3>")
-	str = replaceCapture(`^## (.+)$`, str, "<h2>", "</h2>")
-	str = replaceCapture(`^# (.+)$`, str, "<h1>", "</h1>")
+	str = replaceCapture(`(?m)^### (.+)$`, str, "<h3>", "</h3>")
+	str = replaceCapture(`(?m)^## (.+)$`, str, "<h2>", "</h2>")
+	str = replaceCapture(`(?m)^# (.+)$`, str, "<h1>", "</h1>")
 
 	str = applyInlineMarkdown(str)
 

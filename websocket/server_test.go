@@ -297,14 +297,17 @@ func TestBroadcast(t *testing.T) {
 
 func TestHandleRaw(t *testing.T) {
 	s := New(DefaultConfig())
+	s.Start()
+	defer s.Shutdown(context.Background())
 
 	// Create test server
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := s.HandleRaw(w, r)
+		conn, release, err := s.HandleRaw(w, r)
 		if err != nil {
 			t.Errorf("HandleRaw failed: %v", err)
 			return
 		}
+		defer release()
 		defer conn.Close()
 
 		// Echo raw messages back
@@ -374,11 +377,12 @@ func TestHandleRaw_DoesNotRegisterClient(t *testing.T) {
 
 	// Create test server using HandleRaw
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := s.HandleRaw(w, r)
+		conn, release, err := s.HandleRaw(w, r)
 		if err != nil {
 			t.Errorf("HandleRaw failed: %v", err)
 			return
 		}
+		defer release()
 		defer conn.Close()
 
 		// Keep connection open briefly
@@ -411,12 +415,15 @@ func TestHandleRaw_RespectsOriginCheck(t *testing.T) {
 	config := DefaultConfig()
 	config.AllowedOrigins = []string{"https://allowed.example.com"}
 	s := New(config)
+	s.Start()
+	defer s.Shutdown(context.Background())
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := s.HandleRaw(w, r)
+		conn, release, err := s.HandleRaw(w, r)
 		if err != nil {
 			return
 		}
+		defer release()
 		conn.Close()
 	}))
 	defer ts.Close()

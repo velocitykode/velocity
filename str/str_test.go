@@ -3,6 +3,7 @@ package str
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestAfter(t *testing.T) {
@@ -238,8 +239,9 @@ func TestContains(t *testing.T) {
 	}{
 		{"single found", "This is my name", []string{"my"}, true},
 		{"single not found", "This is my name", []string{"foo"}, false},
-		{"multiple all found", "This is my name", []string{"is", "my"}, true},
-		{"multiple one missing", "This is my name", []string{"is", "foo"}, false},
+		{"any: all present", "This is my name", []string{"is", "my"}, true},
+		{"any: one of several present", "This is my name", []string{"foo", "my"}, true},
+		{"any: none of several present", "This is my name", []string{"foo", "bar"}, false},
 		{"case sensitive", "This is my name", []string{"MY"}, false},
 		{"empty needle", "This is my name", []string{""}, true},
 	}
@@ -315,6 +317,8 @@ func TestLimit(t *testing.T) {
 		{"exact limit", "12345", 5, "...", "12345"},
 		{"custom ending", "The quick brown fox", 10, " >>", "The quick  >>"},
 		{"utf8 aware", "你好世界测试", 3, "...", "你好世..."},
+		{"zero limit", "The quick brown fox", 0, "...", "..."},
+		{"negative limit clamps to zero", "The quick brown fox", -5, "...", "..."},
 	}
 
 	for _, tt := range tests {
@@ -527,6 +531,20 @@ func TestContainsAll(t *testing.T) {
 	}
 }
 
+func TestContainsAnyVsContainsAll(t *testing.T) {
+	haystack := "This is my name"
+	needles := []string{"my", "absent"}
+
+	// Contains is any-match: one present needle is enough.
+	if !Contains(haystack, needles...) {
+		t.Errorf("Contains(%q, %v) = false; want true (any-match)", haystack, needles)
+	}
+	// ContainsAll is all-match: a missing needle makes it false.
+	if ContainsAll(haystack, needles) {
+		t.Errorf("ContainsAll(%q, %v) = true; want false (all-match)", haystack, needles)
+	}
+}
+
 func TestExactly(t *testing.T) {
 	if !Exactly("Velocity", "Velocity") {
 		t.Error("Exactly should return true for identical strings")
@@ -540,6 +558,61 @@ func TestExcerpt(t *testing.T) {
 	result := Excerpt("This is my name", "my", ExcerptOptions{Radius: 3})
 	if !Contains(result, "my") {
 		t.Errorf("Excerpt should contain 'my': %q", result)
+	}
+}
+
+func TestExcerptAsciiPinned(t *testing.T) {
+	tests := []struct {
+		name     string
+		text     string
+		phrase   string
+		opt      ExcerptOptions
+		expected string
+	}{
+		{"radius around match", "This is my name", "my", ExcerptOptions{Radius: 3, Omission: "..."}, "...is my na..."},
+		{"phrase absent", "This is my name", "xyz", ExcerptOptions{Radius: 3, Omission: "..."}, ""},
+		{"no trimming needed at bounds", "abc", "b", ExcerptOptions{Radius: 5, Omission: "..."}, "abc"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := Excerpt(tt.text, tt.phrase, tt.opt)
+			if result != tt.expected {
+				t.Errorf("Excerpt(%q, %q) = %q; want %q", tt.text, tt.phrase, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestExcerptMultibyte(t *testing.T) {
+	tests := []struct {
+		name   string
+		text   string
+		phrase string
+		radius int
+	}{
+		{"cjk", "你好世界测试中文字符串内容", "世界", 2},
+		{"accented case-insensitive", "Café au lait avec CRÈME fraîche", "crème", 4},
+		{"emoji surrounding", "start 🎉 party time 🎊 end", "party", 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := Excerpt(tt.text, tt.phrase, ExcerptOptions{Radius: tt.radius, Omission: "..."})
+			if result == "" {
+				t.Fatalf("Excerpt(%q, %q) returned empty; phrase should match", tt.text, tt.phrase)
+			}
+			if !utf8.ValidString(result) {
+				t.Errorf("Excerpt produced invalid UTF-8: %q", result)
+			}
+			// Radius is measured in runes around the (case-folded) match.
+			// Strip omissions, then bound the rune count: phrase + at most
+			// 2*radius context runes.
+			body := strings.TrimSuffix(strings.TrimPrefix(result, "..."), "...")
+			body = strings.TrimSpace(body)
+			maxRunes := utf8.RuneCountInString(tt.phrase) + 2*tt.radius
+			if got := utf8.RuneCountInString(body); got > maxRunes {
+				t.Errorf("Excerpt body rune count = %d; want <= %d (%q)", got, maxRunes, body)
+			}
+		})
 	}
 }
 
@@ -646,9 +719,25 @@ func TestLower(t *testing.T) {
 }
 
 func TestWords(t *testing.T) {
-	result := Words("This is my name", 2)
-	if result != "This is..." {
-		t.Errorf("Words = %q; want %q", result, "This is...")
+	tests := []struct {
+		name     string
+		value    string
+		words    int
+		expected string
+	}{
+		{"truncate", "This is my name", 2, "This is..."},
+		{"no truncate needed", "This is my name", 10, "This is my name"},
+		{"zero words", "This is my name", 0, "..."},
+		{"negative words clamps to zero", "This is my name", -3, "..."},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := Words(tt.value, tt.words)
+			if result != tt.expected {
+				t.Errorf("Words(%q, %d) = %q; want %q", tt.value, tt.words, result, tt.expected)
+			}
+		})
 	}
 }
 
@@ -697,6 +786,43 @@ func TestPadRight(t *testing.T) {
 	}
 }
 
+func TestPadMultiCharAndMultibyte(t *testing.T) {
+	tests := []struct {
+		name     string
+		fn       func(string, int, ...string) string
+		value    string
+		length   int
+		pad      string
+		expected string
+	}{
+		// Multi-char pad cycles and truncates to the exact rune count
+		// instead of repeating whole copies.
+		{"right multi-char pad", PadRight, "ab", 5, "xy", "abxyx"},
+		{"left multi-char pad", PadLeft, "ab", 5, "xy", "xyxab"},
+		{"both multi-char pad", PadBoth, "ab", 7, "xy", "xyabxyx"},
+		// Length is measured in runes, so multi-byte values pad correctly.
+		{"right multibyte value", PadRight, "héllo", 8, "-", "héllo---"},
+		{"left multibyte value", PadLeft, "héllo", 8, "-", "---héllo"},
+		{"multibyte pad runes", PadRight, "ab", 5, "→", "ab→→→"},
+		// Empty pad returns the value unchanged (infinite-loop guard).
+		{"empty pad", PadRight, "ab", 10, "", "ab"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.fn(tt.value, tt.length, tt.pad)
+			if result != tt.expected {
+				t.Errorf("pad = %q; want %q", result, tt.expected)
+			}
+			// Exact rune length when padding actually occurred.
+			if tt.pad != "" && utf8.RuneCountInString(tt.value) < tt.length {
+				if got := utf8.RuneCountInString(result); got != tt.length {
+					t.Errorf("pad rune length = %d; want %d (%q)", got, tt.length, result)
+				}
+			}
+		})
+	}
+}
+
 func TestPlural(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -742,6 +868,37 @@ func TestMarkdown(t *testing.T) {
 	result := Markdown("# Velocity")
 	if !Contains(result, "Velocity") {
 		t.Error("Markdown should contain 'Velocity'")
+	}
+}
+
+func TestMarkdownMultiLineHeaders(t *testing.T) {
+	input := "# First\nsome text\n## Second\n### Third"
+	result := Markdown(input)
+	for _, want := range []string{"<h1>First</h1>", "<h2>Second</h2>", "<h3>Third</h3>"} {
+		if !strings.Contains(result, want) {
+			t.Errorf("Markdown(%q) = %q; missing %q", input, result, want)
+		}
+	}
+}
+
+func TestInlineMarkdownMultiLineBlocks(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      string
+		wantAbsent []string
+	}{
+		{"headers on later lines", "intro\n## Heading\n### Sub", []string{"#"}},
+		{"blockquotes on later lines", "intro\n> quoted\n> more", []string{">"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := InlineMarkdown(tt.input)
+			for _, marker := range tt.wantAbsent {
+				if strings.Contains(result, marker) {
+					t.Errorf("InlineMarkdown(%q) = %q; should not contain %q", tt.input, result, marker)
+				}
+			}
+		})
 	}
 }
 

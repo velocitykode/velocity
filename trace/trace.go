@@ -46,6 +46,10 @@ const FallbackSpanIDPrefix = "velocity_span_norand_"
 // randReader is the entropy source used by the package. It is exposed as
 // a package-level variable so tests can inject a faulty reader. Defaults
 // to crypto/rand.Reader.
+//
+// str/str.go has a parallel randReader seam. They are intentionally NOT
+// shared: trace must never fail a request and emits fallback markers plus a
+// one-shot warn on entropy failure, while str.Random returns an error.
 var randReader io.Reader = rand.Reader
 
 // randFallbackWarnOnce guards the one-time WARN log emitted by the Must*

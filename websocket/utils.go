@@ -13,7 +13,19 @@ var (
 	ErrGroupNotFound    = errors.New("group not found")
 	ErrSendChannelFull  = errors.New("send channel full")
 	ErrConnectionLimit  = errors.New("connection limit reached")
-	ErrInvalidMessage   = errors.New("invalid message")
+	// ErrInvalidMessage is reserved for a future message-validation call site;
+	// no server method wraps it yet.
+	ErrInvalidMessage = errors.New("invalid message")
+
+	// ErrServerClosed is returned by Start when called on a server that has
+	// already been shut down. The lifecycle is one-shot: a Server cannot be
+	// restarted after Shutdown (the stop channel is closed once and never
+	// recreated). Mirrors net/http.ErrServerClosed.
+	ErrServerClosed = errors.New("websocket: server closed")
+
+	// ErrServerAlreadyRunning is returned by Start when the server is already
+	// running. Start is not idempotent; call it exactly once per lifecycle.
+	ErrServerAlreadyRunning = errors.New("websocket: server already running")
 )
 
 // DefaultMessageRateLimit is the per-client inbound messages-per-second cap

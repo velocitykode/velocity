@@ -65,21 +65,21 @@ func TeamIDFromContext(ctx context.Context) uint {
 // contextKey is a type for context keys to avoid collisions
 type contextKey string
 
-const (
-	requestIDKey contextKey = "grpc_request_id"
-	methodKey    contextKey = "grpc_method"
-)
+const methodKey contextKey = "grpc_method"
 
-// ContextWithRequestID adds a request ID to the context
+// ContextWithRequestID adds a request ID to the context.
+// This is a convenience wrapper around interceptors.ContextWithRequestID;
+// the request ID is stored under the interceptors package's key so a value
+// set here is visible to RequestIDFromContext and the logging interceptor.
 func ContextWithRequestID(ctx context.Context, requestID string) context.Context {
-	return context.WithValue(ctx, requestIDKey, requestID)
+	return interceptors.ContextWithRequestID(ctx, requestID)
 }
 
 // RequestIDFromContext extracts the request ID from the context.
 // Returns empty string if no request ID is present.
+// This is a convenience wrapper around interceptors.RequestIDFromContext.
 func RequestIDFromContext(ctx context.Context) string {
-	id, _ := ctx.Value(requestIDKey).(string)
-	return id
+	return interceptors.RequestIDFromContext(ctx)
 }
 
 // ContextWithMethod adds the gRPC method to the context
@@ -101,24 +101,15 @@ func GenerateRequestID() string {
 
 // ExtractBearerToken extracts a bearer token from gRPC metadata.
 // Returns empty string if no token is found.
+// This is a convenience wrapper around interceptors.BearerTokenFromContext
+// (the same extractor AuthConfig uses by default); any extraction error is
+// flattened to the empty string.
 func ExtractBearerToken(ctx context.Context) string {
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok {
+	token, err := interceptors.BearerTokenFromContext(ctx)
+	if err != nil {
 		return ""
 	}
-
-	authHeaders := md.Get("authorization")
-	if len(authHeaders) == 0 {
-		return ""
-	}
-
-	token := authHeaders[0]
-	const bearerPrefix = "Bearer "
-	if len(token) > len(bearerPrefix) && token[:len(bearerPrefix)] == bearerPrefix {
-		return token[len(bearerPrefix):]
-	}
-
-	return ""
+	return token
 }
 
 // ExtractMetadata extracts a specific metadata value from context.

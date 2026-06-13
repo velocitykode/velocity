@@ -18,9 +18,12 @@ func From[T any](items []T) *Collection[T] {
 	return &Collection[T]{items: cp}
 }
 
-// All returns the underlying slice.
+// All returns a copy of the underlying slice. The copy ensures that mutating
+// the returned slice does not affect the collection.
 func (c *Collection[T]) All() []T {
-	return c.items
+	cp := make([]T, len(c.items))
+	copy(cp, c.items)
+	return cp
 }
 
 // Count returns the number of items.
@@ -127,15 +130,32 @@ func (c *Collection[T]) Push(items ...T) *Collection[T] {
 	return &Collection[T]{items: Push(c.items, items...)}
 }
 
-// Tap calls fn with the underlying slice for inspection and returns the
-// same Collection for chaining.
+// Tap calls fn with a copy of the underlying slice for inspection and returns
+// the same Collection for chaining. The slice passed to fn is for inspection;
+// mutations do not affect the collection.
 func (c *Collection[T]) Tap(fn func([]T)) *Collection[T] {
-	fn(c.items)
+	cp := make([]T, len(c.items))
+	copy(cp, c.items)
+	fn(cp)
 	return c
 }
 
-// When applies fn if condition is true, otherwise returns the Collection unchanged.
+// When applies fn if condition is true, otherwise returns the Collection
+// unchanged. The returned Collection always gets its own copy of the backing
+// array: on the false path it copies the original items, and on the true path
+// it copies the slice fn returns. This ensures fn can neither mutate the
+// original backing array nor retain an alias to the returned Collection's
+// internal slice.
 func (c *Collection[T]) When(condition bool, fn func([]T) []T) *Collection[T] {
-	result := When(c.items, condition, fn)
-	return &Collection[T]{items: result}
+	if !condition {
+		cp := make([]T, len(c.items))
+		copy(cp, c.items)
+		return &Collection[T]{items: cp}
+	}
+	cp := make([]T, len(c.items))
+	copy(cp, c.items)
+	out := fn(cp)
+	res := make([]T, len(out))
+	copy(res, out)
+	return &Collection[T]{items: res}
 }

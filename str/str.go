@@ -93,14 +93,16 @@ func BetweenFirst(subject, from, to string) string {
 	return Between(subject, from, to)
 }
 
-// Contains checks if the string contains the given value(s).
+// Contains checks if the string contains any of the given values. Mirrors the
+// any-match semantics of StartsWith and EndsWith. Use ContainsAll to require
+// every value.
 func Contains(haystack string, needles ...string) bool {
 	for _, needle := range needles {
-		if !strings.Contains(haystack, needle) {
-			return false
+		if strings.Contains(haystack, needle) {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 // ContainsAll checks if the string contains all of the given values.
@@ -143,7 +145,23 @@ func Excerpt(text, phrase string, options ...ExcerptOptions) string {
 		opt = options[0]
 	}
 
-	index := strings.Index(strings.ToLower(text), strings.ToLower(phrase))
+	// Work in runes so the radius is measured in characters and slicing
+	// never splits a multi-byte rune. Lower per-rune with unicode.ToLower:
+	// unlike strings.ToLower it preserves the rune COUNT (no special
+	// casing), so offsets in the lowered slice map 1:1 onto the original.
+	textRunes := []rune(text)
+	phraseRunes := []rune(phrase)
+
+	lowerText := make([]rune, len(textRunes))
+	for i, r := range textRunes {
+		lowerText[i] = unicode.ToLower(r)
+	}
+	lowerPhrase := make([]rune, len(phraseRunes))
+	for i, r := range phraseRunes {
+		lowerPhrase[i] = unicode.ToLower(r)
+	}
+
+	index := runeIndex(lowerText, lowerPhrase)
 	if index == -1 {
 		return ""
 	}
@@ -153,20 +171,42 @@ func Excerpt(text, phrase string, options ...ExcerptOptions) string {
 		start = 0
 	}
 
-	end := index + len(phrase) + opt.Radius
-	if end > len(text) {
-		end = len(text)
+	end := index + len(phraseRunes) + opt.Radius
+	if end > len(textRunes) {
+		end = len(textRunes)
 	}
 
-	result := text[start:end]
+	result := string(textRunes[start:end])
 	if start > 0 {
 		result = opt.Omission + strings.TrimLeft(result, " ")
 	}
-	if end < len(text) {
+	if end < len(textRunes) {
 		result = strings.TrimRight(result, " ") + opt.Omission
 	}
 
 	return result
+}
+
+// runeIndex returns the index of the first occurrence of needle in haystack,
+// comparing rune by rune, or -1 if absent. An empty needle returns 0 to match
+// strings.Index semantics.
+func runeIndex(haystack, needle []rune) int {
+	if len(needle) == 0 {
+		return 0
+	}
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		match := true
+		for j := range needle {
+			if haystack[i+j] != needle[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i
+		}
+	}
+	return -1
 }
 
 // Finish ensures a string ends with a given value.
@@ -259,6 +299,10 @@ func Limit(value string, limit int, end ...string) string {
 		suffix = end[0]
 	}
 
+	if limit < 0 {
+		limit = 0
+	}
+
 	runes := []rune(value)
 	if len(runes) <= limit {
 		return value
@@ -277,6 +321,10 @@ func Words(value string, words int, end ...string) string {
 	suffix := "..."
 	if len(end) > 0 {
 		suffix = end[0]
+	}
+
+	if words < 0 {
+		words = 0
 	}
 
 	wordList := strings.Fields(value)
@@ -385,50 +433,69 @@ func IsSafe(pattern, value string) (bool, error) {
 	return MatchSafe(p, value)
 }
 
-// PadBoth pads both sides of the string.
+// padRunes builds a pad string of exactly count runes by cycling padStr's
+// runes and truncating, so a multi-rune pad fills the gap to the exact width
+// rather than repeating whole copies. Returns "" if count <= 0 or padStr is
+// empty (the empty padStr guard also avoids an infinite cycle).
+func padRunes(padStr string, count int) string {
+	if count <= 0 || padStr == "" {
+		return ""
+	}
+	padded := []rune(padStr)
+	out := make([]rune, count)
+	for i := 0; i < count; i++ {
+		out[i] = padded[i%len(padded)]
+	}
+	return string(out)
+}
+
+// PadBoth pads both sides of the string to the given rune length.
 func PadBoth(value string, length int, pad ...string) string {
 	padStr := " "
 	if len(pad) > 0 {
 		padStr = pad[0]
 	}
 
-	if len(value) >= length {
+	valLen := utf8.RuneCountInString(value)
+	if valLen >= length || padStr == "" {
 		return value
 	}
 
-	totalPad := length - len(value)
+	totalPad := length - valLen
 	leftPad := totalPad / 2
 	rightPad := totalPad - leftPad
 
-	return strings.Repeat(padStr, leftPad) + value + strings.Repeat(padStr, rightPad)
+	return padRunes(padStr, leftPad) + value + padRunes(padStr, rightPad)
 }
 
-// PadLeft pads the left side of the string.
+// PadLeft pads the left side of the string to the given rune length.
 func PadLeft(value string, length int, pad ...string) string {
 	padStr := " "
 	if len(pad) > 0 {
 		padStr = pad[0]
 	}
 
-	if len(value) >= length {
+	valLen := utf8.RuneCountInString(value)
+	if valLen >= length || padStr == "" {
 		return value
 	}
 
-	return strings.Repeat(padStr, length-len(value)) + value
+	return padRunes(padStr, length-valLen) + value
 }
 
-// PadRight pads the right side of the string.
+// PadRight pads the right side of the string to the given rune length.
 func PadRight(value string, length int, pad ...string) string {
 	padStr := " "
 	if len(pad) > 0 {
 		padStr = pad[0]
 	}
 
-	if len(value) >= length {
+	valLen := utf8.RuneCountInString(value)
+	if valLen >= length || padStr == "" {
 		return value
 	}
 
-	return value + strings.Repeat(padStr, length-len(value))
+	return value + padRunes(padStr, length-valLen)
 }
 
 // Plural returns the plural form of a word.
@@ -464,6 +531,10 @@ func Position(haystack, needle string) int {
 // randReader is the entropy source used by Random. It is a variable so tests
 // can swap it for a faulty reader. Callers in production code should not
 // reassign this.
+//
+// trace/trace.go has a parallel randReader seam. They are intentionally NOT
+// shared: str.Random returns an error on entropy failure, while trace must
+// never fail a request and instead emits fallback markers plus a one-shot warn.
 var randReader io.Reader = rand.Reader
 
 // randomLetters is the alphabet used by Random. 62 characters means we use

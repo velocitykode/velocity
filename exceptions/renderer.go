@@ -2,8 +2,10 @@ package exceptions
 
 import (
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"net/http"
+	"reflect"
 	"strings"
 
 	"github.com/velocitykode/velocity/contract"
@@ -238,106 +240,29 @@ func getErrorMessage(err error, debug bool) string {
 	return "An error occurred"
 }
 
-// getExceptionType returns the type name of the exception.
+// getExceptionType returns a type name for err. The framework's own builtin
+// exception types render under their bare names (e.g. "ValidationException")
+// with the leading pointer marker and "exceptions." qualifier stripped. Every
+// other error keeps its full %T name, pointer marker and all (e.g.
+// "*mypkg.MyError", "*errors.errorString" for errors.New), so it stays
+// matchable via fmt.Sprintf("%T", err) in WithDontReport. Returns "" for a nil
+// error.
 func getExceptionType(err error) string {
-	t := strings.TrimPrefix(strings.TrimPrefix(
-		strings.Replace(
-			strings.Replace(
-				getTypeName(err),
-				"*", "", -1),
-			"exceptions.", "", -1),
-		"velocity/"), "")
-	return t
-}
-
-// getTypeName returns the full type name of an error.
-func getTypeName(err error) string {
 	if err == nil {
 		return ""
 	}
-	return strings.TrimPrefix(
-		strings.Replace(
-			getTypeString(err),
-			"*", "", -1),
-		"&")
-}
-
-// getTypeString returns the type as a string.
-func getTypeString(v any) string {
-	if v == nil {
-		return ""
+	raw := fmt.Sprintf("%T", err)
+	// Only the framework's own exceptions package gets its decoration stripped;
+	// a third-party type from a package also named "exceptions" keeps its full
+	// %T name so it stays matchable by that name.
+	t := reflect.TypeOf(err)
+	for t != nil && t.Kind() == reflect.Ptr {
+		t = t.Elem()
 	}
-	return strings.Replace(
-		strings.Replace(
-			strings.TrimPrefix(
-				strings.TrimPrefix(
-					getFullTypeName(v),
-					"*"),
-				"&"),
-			"(", "", -1),
-		")", "", -1)
-}
-
-// getFullTypeName returns the full type name using reflection-free method.
-func getFullTypeName(v any) string {
-	if v == nil {
-		return ""
+	if t != nil && t.PkgPath() == "github.com/velocitykode/velocity/exceptions" {
+		return strings.TrimPrefix(strings.TrimLeft(raw, "*&"), "exceptions.")
 	}
-	// Use %T format verb to get type name
-	return strings.TrimPrefix(
-		strings.TrimPrefix(
-			formatType(v),
-			"*"),
-		"&")
-}
-
-// formatType formats the type of a value.
-func formatType(v any) string {
-	return strings.Replace(
-		strings.Replace(
-			getType(v),
-			"(", "", -1),
-		")", "", -1)
-}
-
-// getType uses fmt to get the type name.
-func getType(v any) string {
-	if v == nil {
-		return ""
-	}
-	// Simple type extraction using string formatting
-	s := ""
-	switch v.(type) {
-	case *HttpException:
-		s = "HttpException"
-	case *NotFoundHttpException:
-		s = "NotFoundHttpException"
-	case *UnauthorizedHttpException:
-		s = "UnauthorizedHttpException"
-	case *ForbiddenHttpException:
-		s = "ForbiddenHttpException"
-	case *ValidationException:
-		s = "ValidationException"
-	case *TooManyRequestsException:
-		s = "TooManyRequestsException"
-	case *ServiceUnavailableException:
-		s = "ServiceUnavailableException"
-	case *MethodNotAllowedHttpException:
-		s = "MethodNotAllowedHttpException"
-	case *ConflictHttpException:
-		s = "ConflictHttpException"
-	case *GoneHttpException:
-		s = "GoneHttpException"
-	case *BadRequestHttpException:
-		s = "BadRequestHttpException"
-	case *InternalServerErrorException:
-		s = "InternalServerErrorException"
-	case *BaseException:
-		s = "BaseException"
-	default:
-		s = "error"
-	}
-	return s
+	return raw
 }
 
 // NegotiateRenderer selects the appropriate renderer based on content negotiation.

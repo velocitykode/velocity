@@ -2,7 +2,9 @@ package exceptions
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
 	"sync"
 	"testing"
 )
@@ -541,5 +543,48 @@ func TestHandler_Render_APIPrefixes(t *testing.T) {
 
 	if ctx.headers["Content-Type"] != "application/json" {
 		t.Errorf("Content-Type = %q, want application/json", ctx.headers["Content-Type"])
+	}
+}
+
+// dontReportCustomError is a custom error type used to pin that WithDontReport
+// matches on the %T-derived type name rather than the old hardcoded "error".
+type dontReportCustomError struct{}
+
+func (dontReportCustomError) Error() string { return "custom boom" }
+
+func TestWithDontReport_CustomTypeSuppressed(t *testing.T) {
+	var reported bool
+	rec := NewCallbackReporter(func(error, *ExceptionContext) { reported = true })
+
+	// A pointer error from a non-framework package: its real %T name is
+	// "*url.Error", and WithDontReport must suppress it using exactly that
+	// name (no stripping of the pointer marker or package qualifier).
+	err := &url.Error{Op: "Get", URL: "x", Err: errors.New("boom")}
+	h := NewHandler(WithReporters(rec), WithDontReport(fmt.Sprintf("%T", err)))
+
+	if h.ShouldReport(err) {
+		t.Error("ShouldReport should be false for a dont-report custom type")
+	}
+	h.Report(err, NewExceptionContext())
+	if reported {
+		t.Error("custom error in dontReport list must not be reported")
+	}
+}
+
+func TestWithDontReport_LiteralErrorNoLongerSuppresses(t *testing.T) {
+	var reported bool
+	rec := NewCallbackReporter(func(error, *ExceptionContext) { reported = true })
+
+	// Pre-fix every non-builtin error collapsed to "error", so this would have
+	// suppressed the custom type. It must no longer match.
+	h := NewHandler(WithReporters(rec), WithDontReport("error"))
+
+	err := &dontReportCustomError{}
+	if !h.ShouldReport(err) {
+		t.Error("ShouldReport should be true: \"error\" must not match a real type name")
+	}
+	h.Report(err, NewExceptionContext())
+	if !reported {
+		t.Error("custom error must be reported when only \"error\" is in dontReport")
 	}
 }

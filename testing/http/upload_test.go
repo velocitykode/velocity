@@ -2,6 +2,7 @@ package http
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -252,12 +253,17 @@ func TestUploadBuilder_BuildTest(t *testing.T) {
 	builder := NewUploadBuilder()
 	builder.AddRawFile("file", "test.txt", []byte("content"), "text/plain")
 
-	req := builder.BuildTest("POST", "/upload")
+	req := builder.BuildTest(t, "POST", "/upload")
 	if req == nil {
 		t.Fatal("BuildTest returned nil")
 	}
 	if req.Method != "POST" {
 		t.Errorf("Method = %q, want POST", req.Method)
+	}
+	// The multipart Content-Type (with boundary) must survive the copy so
+	// handlers calling ParseMultipartForm can parse the body.
+	if ct := req.Header.Get("Content-Type"); !bytes.Contains([]byte(ct), []byte("multipart/form-data")) {
+		t.Errorf("Content-Type = %q, want multipart/form-data with boundary", ct)
 	}
 }
 
@@ -459,12 +465,23 @@ func TestSaveUploadedFile(t *testing.T) {
 		t.Fatalf("GetUploadedFile() error = %v", err)
 	}
 
-	path, err := SaveUploadedFile(file, header, "/uploads")
+	storage := storageTesting.StorageFake()
+	path, err := SaveUploadedFile(file, header, "/uploads", storage)
 	if err != nil {
 		t.Fatalf("SaveUploadedFile() error = %v", err)
 	}
 	if path != "/uploads/test.txt" {
 		t.Errorf("path = %q, want /uploads/test.txt", path)
+	}
+	if !storage.Exists(path) {
+		t.Errorf("expected file stored at %q", path)
+	}
+	got, err := storage.Get(path)
+	if err != nil {
+		t.Fatalf("storage.Get(%q) error = %v", path, err)
+	}
+	if !bytes.Equal(got, []byte("hello")) {
+		t.Errorf("stored content = %q, want %q", got, "hello")
 	}
 }
 
@@ -489,12 +506,46 @@ func TestSaveUploadedFile_InvalidFilename(t *testing.T) {
 			// Override header filename for test
 			header.Filename = tt.filename
 
-			path, err := SaveUploadedFile(file, header, "/uploads")
+			storage := storageTesting.StorageFake()
+			path, err := SaveUploadedFile(file, header, "/uploads", storage)
 			if err != nil {
 				t.Fatalf("SaveUploadedFile() error = %v", err)
 			}
 			if path != tt.wantPath {
 				t.Errorf("path = %q, want %q", path, tt.wantPath)
+			}
+			if !storage.Exists(path) {
+				t.Errorf("expected file stored at %q", path)
+			}
+		})
+	}
+}
+
+func TestSaveUploadedFile_TraversalRejected(t *testing.T) {
+	tests := []struct {
+		name     string
+		filename string
+	}{
+		{"parent traversal", "../secret.txt"},
+		{"nested traversal", "../../secret.txt"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			builder := NewUploadBuilder()
+			builder.AddRawFile("doc", "safe.txt", []byte("content"), "text/plain")
+			req, _ := builder.Build("POST", "/upload")
+
+			file, header, _ := GetUploadedFile(req, "doc")
+			header.Filename = tt.filename
+
+			storage := storageTesting.StorageFake()
+			path, err := SaveUploadedFile(file, header, "/uploads", storage)
+			if err == nil {
+				t.Fatalf("SaveUploadedFile() error = nil, want traversal rejection (path = %q)", path)
+			}
+			if storage.Exists("/uploads/secret.txt") || storage.Exists("/secret.txt") {
+				t.Errorf("traversal filename %q was stored", tt.filename)
 			}
 		})
 	}
@@ -531,6 +582,43 @@ func TestTestUploadHandler_InvalidRequest(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
+}
+
+// TestUploadRoundTrip exercises the full path: build a multipart request via
+// BuildTest, run it through TestUploadHandler, decode the JSON response body,
+// and confirm the file landed in fake storage with the right content.
+func TestUploadRoundTrip(t *testing.T) {
+	storage := storageTesting.StorageFake()
+	handler := TestUploadHandler(storage)
+
+	content := []byte("round trip content")
+	req := NewUploadBuilder().
+		AddRawFile("file", "doc.txt", content, "text/plain").
+		BuildTest(t, "POST", "/upload")
+	if req == nil {
+		t.Fatal("BuildTest returned nil")
+	}
+
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp UploadResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response body: %v; body=%s", err, rec.Body.String())
+	}
+	if !resp.Success {
+		t.Errorf("response success = false, want true")
+	}
+	if len(resp.Files) != 1 || resp.Files[0].Name != "doc.txt" {
+		t.Fatalf("expected one file doc.txt in response, got %+v", resp.Files)
+	}
+
+	AssertFileUploaded(t, storage, "uploads/doc.txt")
+	AssertFileContent(t, storage, "uploads/doc.txt", content)
 }
 
 type mockT struct {

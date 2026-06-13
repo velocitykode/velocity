@@ -127,7 +127,8 @@ func (s *Stringable) ClassBasename() *Stringable {
 	return s
 }
 
-// Contains checks if the string contains the given value(s).
+// Contains checks if the string contains any of the given values. Use
+// ContainsAll to require every value.
 func (s *Stringable) Contains(needles ...string) bool {
 	return Contains(s.value, needles...)
 }

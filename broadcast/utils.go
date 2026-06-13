@@ -3,6 +3,7 @@ package broadcast
 import (
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/velocitykode/velocity/contract"
@@ -31,6 +32,12 @@ var (
 	// Hoisted so callers can errors.Is against the shared identity without
 	// importing broadcast.
 	ErrDriverNotFound = contract.ErrBroadcastDriverNotFound
+
+	// ErrLeaveUnsupported is returned by BroadcastManager.Leave when the
+	// configured driver does not implement the Unsubscriber capability. It
+	// wraps errors.ErrUnsupported so callers can errors.Is either this
+	// sentinel or the standard unsupported-operation marker.
+	ErrLeaveUnsupported = fmt.Errorf("velocity/broadcast: leave unsupported by driver: %w", errors.ErrUnsupported)
 )
 
 // isPrivateChannel checks if a channel is private

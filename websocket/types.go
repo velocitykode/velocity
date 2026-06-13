@@ -57,6 +57,11 @@ type Config struct {
 	// missing Origin only happens with non-browser clients (curl, custom Go
 	// or Python clients). The secure default is to reject such requests; set
 	// to true only for trusted non-browser integrations.
+	//
+	// This applies uniformly: an empty Origin is governed solely by
+	// AllowEmptyOrigin regardless of whether AllowedOrigins is set. In
+	// particular AllowedOrigins []string{"*"} no longer accepts a missing
+	// Origin header on its own - it also requires AllowEmptyOrigin=true.
 	AllowEmptyOrigin bool
 }
 
@@ -74,9 +79,6 @@ type MessageHandler func(client *Client, message Message) error
 
 // Middleware wraps message handlers
 type Middleware func(next MessageHandler) MessageHandler
-
-// AuthFunc handles client authentication
-type AuthFunc func(client *Client, data interface{}) error
 
 // DisconnectFunc handles client disconnection
 type DisconnectFunc func(client *Client)

@@ -1,7 +1,6 @@
 package exceptions
 
 import (
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -10,6 +9,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/clientip"
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // ExceptionHandler is the interface satisfied by *Handler. It covers the
@@ -127,7 +127,12 @@ func WithRenderers(renderers map[string]Renderer) Option {
 	}
 }
 
-// WithDontReport sets exception types that should not be reported.
+// WithDontReport sets exception types that should not be reported. Each name
+// is matched against the error's runtime type as produced by fmt.Sprintf("%T",
+// err) with leading '*'/'&' and the framework's own "exceptions." package
+// qualifier stripped (see getExceptionType). So a builtin is named bare
+// ("ValidationException"), a custom type keeps its package qualifier
+// ("mypkg.MyError"), and errors.New values are "errors.errorString".
 func WithDontReport(types ...string) Option {
 	return func(h *Handler) {
 		for _, t := range types {
@@ -433,15 +438,7 @@ func (h *Handler) RegisterCustomHandler(exceptionType any, handler func(RenderCo
 
 // HandlePanic handles a recovered panic value.
 func (h *Handler) HandlePanic(ctx RenderContext, recovered any) {
-	var err error
-	switch v := recovered.(type) {
-	case error:
-		err = v
-	case string:
-		err = fmt.Errorf("panic: %s", v)
-	default:
-		err = fmt.Errorf("panic: %v", v)
-	}
+	err := panicerr.FromRecovered(recovered)
 
 	exCtx := NewExceptionContext()
 	// Skip more frames for panic recovery path

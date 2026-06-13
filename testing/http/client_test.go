@@ -101,6 +101,10 @@ func newTestRouter() *router.VelocityRouterV2 {
 		return c.JSON(201, map[string]any{"id": 1})
 	})
 
+	r.Post("/content-type", func(c *router.Context) error {
+		return c.JSON(200, map[string]any{"content-type": c.Header("Content-Type")})
+	})
+
 	r.Get("/header-echo", func(c *router.Context) error {
 		return c.JSON(200, map[string]any{
 			"auth":         c.Header("Authorization"),
@@ -326,6 +330,16 @@ func TestWithHeader(t *testing.T) {
 	client.WithHeader("X-Custom", "test-value")
 	resp := client.Get("/header-echo")
 	resp.AssertOk().AssertJSON("x-custom", "test-value")
+}
+
+// TestPostJSON_OverridesContentTypeHeader pins the ordering subtlety in
+// callJSON: a WithHeader("Content-Type", ...) default must not override the
+// application/json content type that JSON requests require.
+func TestPostJSON_OverridesContentTypeHeader(t *testing.T) {
+	client := velhttp.NewTestClient(t, newTestRouter()).
+		WithHeader("Content-Type", "text/plain")
+	resp := client.PostJSON("/content-type", map[string]any{"k": "v"})
+	resp.AssertOk().AssertJSON("content-type", "application/json")
 }
 
 func TestWithToken(t *testing.T) {

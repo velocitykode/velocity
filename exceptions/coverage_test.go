@@ -11,7 +11,11 @@ import (
 
 // Additional tests for 100% coverage
 
-func TestGetType_AllTypes(t *testing.T) {
+// TestGetExceptionType_BuiltinNamesUnchanged pins the invariant that every
+// builtin exception type renders under its bare name (no "exceptions."
+// qualifier) in the debug JSON / ErrorReport, while a standard library error
+// keeps its package qualifier.
+func TestGetExceptionType_BuiltinNamesUnchanged(t *testing.T) {
 	tests := []struct {
 		err  error
 		want string
@@ -29,13 +33,13 @@ func TestGetType_AllTypes(t *testing.T) {
 		{NewBadRequestHttpException(), "BadRequestHttpException"},
 		{NewInternalServerErrorException(), "InternalServerErrorException"},
 		{NewBaseException("test", 0), "BaseException"},
-		{errors.New("standard error"), "error"},
+		{errors.New("standard error"), "*errors.errorString"},
 	}
 
 	for _, tt := range tests {
-		got := getType(tt.err)
+		got := getExceptionType(tt.err)
 		if got != tt.want {
-			t.Errorf("getType(%T) = %q, want %q", tt.err, got, tt.want)
+			t.Errorf("getExceptionType(%T) = %q, want %q", tt.err, got, tt.want)
 		}
 	}
 }

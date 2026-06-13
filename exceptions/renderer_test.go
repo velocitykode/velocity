@@ -391,22 +391,23 @@ func TestNegotiateRenderer_OnlyJSON(t *testing.T) {
 	}
 }
 
-func TestGetType(t *testing.T) {
+func TestGetExceptionType_NilAndForeignQualifier(t *testing.T) {
 	tests := []struct {
 		name string
-		val  any
+		err  error
 		want string
 	}{
 		{"nil", nil, ""},
-		{"HttpException", NewHttpException(500, ""), "HttpException"},
-		{"unknown type", errors.New("test"), "error"},
+		{"builtin HttpException stripped", NewHttpException(500, ""), "HttpException"},
+		{"builtin ValidationException stripped", NewValidationException(nil), "ValidationException"},
+		{"stdlib errors keep full %T name", errors.New("test"), "*errors.errorString"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := getType(tt.val)
+			got := getExceptionType(tt.err)
 			if got != tt.want {
-				t.Errorf("getType() = %q, want %q", got, tt.want)
+				t.Errorf("getExceptionType() = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -437,34 +438,5 @@ func TestResponseWriter_Write(t *testing.T) {
 	}
 	if string(ctx.written) != "test" {
 		t.Error("Data not written correctly")
-	}
-}
-
-func TestGetTypeName_Nil(t *testing.T) {
-	result := getTypeName(nil)
-	if result != "" {
-		t.Errorf("getTypeName(nil) = %q, want empty", result)
-	}
-}
-
-func TestGetFullTypeName_Nil(t *testing.T) {
-	result := getFullTypeName(nil)
-	if result != "" {
-		t.Errorf("getFullTypeName(nil) = %q, want empty", result)
-	}
-}
-
-func TestGetTypeString_Nil(t *testing.T) {
-	result := getTypeString(nil)
-	if result != "" {
-		t.Errorf("getTypeString(nil) = %q, want empty", result)
-	}
-}
-
-func TestFormatType(t *testing.T) {
-	// Test with various types
-	result := formatType(NewHttpException(500, ""))
-	if result != "HttpException" {
-		t.Errorf("formatType() = %q, want HttpException", result)
 	}
 }
