@@ -11,7 +11,7 @@ Everything you need to build, ship, and run web applications — routing,
 ORM, authentication, cache, queues, mail, storage, real-time, and more.
 One binary. No external runtime. No Docker required for development.
 
-> **Status:** Pre-1.0 (currently v0.32.x). API is still in flux — breaking
+> **Status:** Pre-1.0 (currently v0.62.x). API is still in flux — breaking
 > changes may occur between minor releases. See [RELEASES.md](RELEASES.md)
 > for the versioning policy and [CHANGELOG.md](CHANGELOG.md) for per-release
 > breaking-change notes.
@@ -176,7 +176,7 @@ with migrations and eager loading, auth (session/JWT guards, gates,
 policies), validation with database-aware rules, events and typed
 command bus, task scheduler, multi-channel notifications
 (mail/database/broadcast/Slack), WebSocket broadcasting, gRPC with
-HTTP gateway, Inertia.js adapter with optional SSR, AES-256-GCM
+HTTP gateway, Inertia.js adapter, AES-256-GCM
 encryption with key rotation, CSRF protection, distributed tracing,
 structured exceptions with debug pages, maintenance mode, graceful
 shutdown, live reload, `vel make:*` scaffolding, and a standard
