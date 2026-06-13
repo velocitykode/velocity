@@ -369,6 +369,41 @@ jobs:
             git push
           fi
 
+      - name: Trigger velocity-mcp release
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          gh workflow run release.yml --repo velocitykode/velocity-mcp -f velocity_version=v${{ steps.version.outputs.new }}
+        env:
+          GH_TOKEN: ${{ secrets.VELOCITY_TOKEN }}
+
+      - name: Trigger velocity-arrow release
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          gh workflow run release.yml --repo velocitykode/velocity-arrow -f velocity_version=v${{ steps.version.outputs.new }}
+        env:
+          GH_TOKEN: ${{ secrets.VELOCITY_TOKEN }}
+
+      - name: Trigger velocity-ai release
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          gh workflow run release.yml --repo velocitykode/velocity-ai -f velocity_version=v${{ steps.version.outputs.new }}
+        env:
+          GH_TOKEN: ${{ secrets.VELOCITY_TOKEN }}
+
+      - name: Trigger velwatch-go release
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          gh workflow run release.yml --repo velocitykode/velwatch-go -f velocity_version=v${{ steps.version.outputs.new }}
+        env:
+          GH_TOKEN: ${{ secrets.VELOCITY_TOKEN }}
+
+      - name: Trigger velwatch.com release
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          gh workflow run release.yml --repo velocitykode/velwatch.com -f velocity_version=v${{ steps.version.outputs.new }}
+        env:
+          GH_TOKEN: ${{ secrets.VELOCITY_TOKEN }}
+
       - name: Trigger velocity-installer release
         if: steps.check.outputs.skip == 'false'
         run: |
