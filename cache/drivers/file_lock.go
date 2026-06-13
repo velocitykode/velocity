@@ -320,44 +320,14 @@ func (l *FileLock) ForceRelease(ctx context.Context) error {
 // Returns ErrLockNotAcquired if the lock cannot be acquired. The lock
 // is released even if the callback panics; the panic propagates.
 func (l *FileLock) Run(ctx context.Context, callback func()) error {
-	if !l.Get(ctx) {
-		return ErrLockNotAcquired
-	}
-	defer l.Release(ctx)
-	callback()
-	return nil
+	return RunLock(ctx, l, callback)
 }
 
 // Block polls for the lock up to timeout (every 100ms) then runs the
 // callback under the lock. Returns ErrLockTimeout on timeout, or
 // ctx.Err() if ctx is cancelled before acquisition.
 func (l *FileLock) Block(ctx context.Context, timeout time.Duration, callback func()) error {
-	deadline := time.Now().Add(timeout)
-
-	for {
-		if ctx != nil {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-		}
-		if l.Get(ctx) {
-			defer l.Release(ctx)
-			callback()
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return ErrLockTimeout
-		}
-		if ctx != nil {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(100 * time.Millisecond):
-			}
-		} else {
-			time.Sleep(100 * time.Millisecond)
-		}
-	}
+	return BlockLock(ctx, l, timeout, callback)
 }
 
 // Owner returns the owner identifier of this lock instance.

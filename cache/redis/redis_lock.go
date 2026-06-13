@@ -88,16 +88,10 @@ func (l *RedisLock) Release(ctx context.Context) bool {
 // Returns ErrLockNotAcquired if the lock cannot be acquired.
 // If the callback panics, the lock is still released and the panic propagates.
 func (l *RedisLock) Run(ctx context.Context, callback func()) error {
-	if !l.Get(ctx) {
-		return drivers.ErrLockNotAcquired
-	}
 	// Release always runs, even on panic. We deliberately re-use the caller's
 	// ctx - if they cancelled it, releasing through a dead ctx is acceptable
 	// because the lock will eventually expire on its TTL.
-	defer l.Release(ctx)
-
-	callback()
-	return nil
+	return drivers.RunLock(ctx, l, callback)
 }
 
 // Block attempts to acquire the lock within the given timeout, retrying every 100ms.
@@ -106,30 +100,12 @@ func (l *RedisLock) Run(ctx context.Context, callback func()) error {
 // or ctx.Err() if ctx is cancelled before acquisition.
 // If the callback panics, the lock is still released and the panic propagates.
 func (l *RedisLock) Block(ctx context.Context, timeout time.Duration, callback func()) error {
-	deadline := time.Now().Add(timeout)
-
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-
-		if l.Get(ctx) {
-			defer l.Release(ctx)
-			callback()
-			return nil
-		}
-
-		if time.Now().After(deadline) {
-			return drivers.ErrLockTimeout
-		}
-
-		// Sleep but wake early if ctx is cancelled so Block honors ctx promptly.
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
+	// Preserve the pre-extraction contract: Redis Block dereferenced ctx
+	// unconditionally, so a nil ctx panics here. Unlike the memory/file locks
+	// (and the shared BlockLock helper), Redis does not tolerate a nil ctx;
+	// this guard keeps that stricter behavior unchanged after extraction.
+	_ = ctx.Err()
+	return drivers.BlockLock(ctx, l, timeout, callback)
 }
 
 // Owner returns the owner identifier of this lock.

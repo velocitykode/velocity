@@ -141,13 +141,7 @@ func (l *MemoryLock) Release(ctx context.Context) bool {
 // Returns ErrLockNotAcquired if the lock cannot be acquired.
 // If the callback panics, the lock is still released and the panic propagates.
 func (l *MemoryLock) Run(ctx context.Context, callback func()) error {
-	if !l.Get(ctx) {
-		return ErrLockNotAcquired
-	}
-	defer l.Release(ctx)
-
-	callback()
-	return nil
+	return RunLock(ctx, l, callback)
 }
 
 // Block attempts to acquire the lock within the given timeout, retrying every 100ms.
@@ -156,36 +150,7 @@ func (l *MemoryLock) Run(ctx context.Context, callback func()) error {
 // or ctx.Err() if ctx is cancelled before acquisition.
 // If the callback panics, the lock is still released and the panic propagates.
 func (l *MemoryLock) Block(ctx context.Context, timeout time.Duration, callback func()) error {
-	deadline := time.Now().Add(timeout)
-
-	for {
-		if ctx != nil {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-		}
-
-		if l.Get(ctx) {
-			defer l.Release(ctx)
-			callback()
-			return nil
-		}
-
-		if time.Now().After(deadline) {
-			return ErrLockTimeout
-		}
-
-		// Sleep but wake early on ctx cancellation so Block returns promptly.
-		if ctx != nil {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(100 * time.Millisecond):
-			}
-		} else {
-			time.Sleep(100 * time.Millisecond)
-		}
-	}
+	return BlockLock(ctx, l, timeout, callback)
 }
 
 // Owner returns the owner identifier of this lock.

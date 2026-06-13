@@ -482,24 +482,6 @@ func (m *Manager) RememberEWithContext(ctx context.Context, key string, ttl time
 		return nil, err
 	}
 	lockKey := rememberLockKey(key)
-	getFn := func() (interface{}, bool) {
-		return store.GetCtx(ctx, key)
-	}
-	lockFn := func(lockTTL time.Duration) (bool, error) {
-		return store.AddCtx(ctx, lockKey, "1", lockTTL)
-	}
-	putFn := func(v interface{}) error {
-		return store.PutCtx(ctx, key, v, ttl)
-	}
-	unlockFn := func() error {
-		return store.ForgetCtx(ctx, lockKey)
-	}
-
-	if val, found := getFn(); found {
-		m.dispatchCacheHit(ctx, key, m.defaultStore)
-		return val, nil
-	}
-	m.dispatchCacheMiss(ctx, key, m.defaultStore)
 
 	// Pick the lock TTL: never longer than the caller's intended TTL (so a
 	// misbehaving short-TTL key is not pinned for 30s by the lock) and never
@@ -508,6 +490,42 @@ func (m *Manager) RememberEWithContext(ctx context.Context, key string, ttl time
 	if ttl > 0 && ttl < lockTTL {
 		lockTTL = ttl
 	}
+
+	return m.rememberWith(ctx, key, lockTTL, ttl,
+		func() (interface{}, bool) { return store.GetCtx(ctx, key) },
+		func(lt time.Duration) (bool, error) { return store.AddCtx(ctx, lockKey, "1", lt) },
+		func(v interface{}) error { return store.PutCtx(ctx, key, v, ttl) },
+		func() error { return store.ForgetCtx(ctx, lockKey) },
+		callback,
+	)
+}
+
+// rememberWith is the shared single-flight populater-election skeleton behind
+// RememberEWithContext and RememberForeverEWithContext. The two variants differ
+// only in the write step (PutCtx with a clamped lock TTL vs ForeverCtx with the
+// fixed rememberLockTTL) and the TTL reported in the CacheWritten event, which
+// the caller supplies via lockTTL/writtenTTL and the writeFn closure. The
+// hit/miss/written dispatch order and arguments, the loser poll with ctx
+// cancellation checks, the fall-through-to-callback timeout, and the
+// no-write-on-callback-error rule are identical for both and live here.
+func (m *Manager) rememberWith(
+	ctx context.Context,
+	key string,
+	lockTTL time.Duration,
+	writtenTTL time.Duration,
+	getFn func() (interface{}, bool),
+	lockFn func(time.Duration) (bool, error),
+	writeFn func(interface{}) error,
+	unlockFn func() error,
+	callback func() (interface{}, error),
+) (interface{}, error) {
+	lockKey := rememberLockKey(key)
+
+	if val, found := getFn(); found {
+		m.dispatchCacheHit(ctx, key, m.defaultStore)
+		return val, nil
+	}
+	m.dispatchCacheMiss(ctx, key, m.defaultStore)
 
 	won, addErr := lockFn(lockTTL)
 	if addErr != nil {
@@ -523,13 +541,13 @@ func (m *Manager) RememberEWithContext(ctx context.Context, key string, ttl time
 			_ = unlockFn()
 			return nil, cbErr
 		}
-		if err := putFn(value); err != nil {
+		if err := writeFn(value); err != nil {
 			_ = unlockFn()
 			m.dispatchCacheOperationFailed(ctx, m.defaultStore, "put", key, err)
 			return nil, err
 		}
 		_ = unlockFn()
-		m.dispatchCacheWritten(ctx, key, m.defaultStore, ttl)
+		m.dispatchCacheWritten(ctx, key, m.defaultStore, writtenTTL)
 		return value, nil
 	}
 
@@ -593,65 +611,14 @@ func (m *Manager) RememberForeverEWithContext(ctx context.Context, key string, c
 		return nil, err
 	}
 	lockKey := rememberLockKey(key)
-	getFn := func() (interface{}, bool) {
-		return store.GetCtx(ctx, key)
-	}
-	lockFn := func(lockTTL time.Duration) (bool, error) {
-		return store.AddCtx(ctx, lockKey, "1", lockTTL)
-	}
-	foreverFn := func(v interface{}) error {
-		return store.ForeverCtx(ctx, key, v)
-	}
-	unlockFn := func() error {
-		return store.ForgetCtx(ctx, lockKey)
-	}
 
-	if val, found := getFn(); found {
-		m.dispatchCacheHit(ctx, key, m.defaultStore)
-		return val, nil
-	}
-	m.dispatchCacheMiss(ctx, key, m.defaultStore)
-
-	won, addErr := lockFn(rememberLockTTL)
-	if addErr != nil {
-		m.dispatchCacheOperationFailed(ctx, m.defaultStore, "add", lockKey, addErr)
-		return nil, addErr
-	}
-	if won {
-		value, cbErr := callback()
-		if cbErr != nil {
-			_ = unlockFn()
-			return nil, cbErr
-		}
-		if err := foreverFn(value); err != nil {
-			_ = unlockFn()
-			m.dispatchCacheOperationFailed(ctx, m.defaultStore, "put", key, err)
-			return nil, err
-		}
-		_ = unlockFn()
-		m.dispatchCacheWritten(ctx, key, m.defaultStore, 0)
-		return value, nil
-	}
-
-	for attempt := 0; attempt < rememberLoserPollAttempts; attempt++ {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if val, found := getFn(); found {
-			m.dispatchCacheHit(ctx, key, m.defaultStore)
-			return val, nil
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(rememberLoserPollInterval):
-		}
-	}
-	value, cbErr := callback()
-	if cbErr != nil {
-		return nil, cbErr
-	}
-	return value, nil
+	return m.rememberWith(ctx, key, rememberLockTTL, 0,
+		func() (interface{}, bool) { return store.GetCtx(ctx, key) },
+		func(lt time.Duration) (bool, error) { return store.AddCtx(ctx, lockKey, "1", lt) },
+		func(v interface{}) error { return store.ForeverCtx(ctx, key, v) },
+		func() error { return store.ForgetCtx(ctx, lockKey) },
+		callback,
+	)
 }
 
 // Many retrieves multiple values from the default cache store
