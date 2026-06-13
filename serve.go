@@ -332,7 +332,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 // unless actually the same instance).
 //
 // Each Shutdown call is panic-guarded (see safeComponentShutdown) so a
-// misbehaving third-party Close cannot abort the remaining teardown.
+// misbehaving third-party Close cannot abort the remaining teardown. The
+// sweep runs after provider Shutdowns and before core services close, so
+// hooks may still flush through the queue, cache, or DB.
 func shutdownComponents(ctx context.Context, s *app.Services, collect func(error)) {
 	if s == nil {
 		return
