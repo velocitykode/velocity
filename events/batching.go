@@ -23,12 +23,19 @@ type BatchingDispatcher struct {
 	flushInterval time.Duration
 	batch         []batchEntry
 	batchMu       sync.Mutex
+	flushing      bool
 	stopCh        chan struct{}
+	stopOnce      sync.Once
 	wg            sync.WaitGroup
 }
 
 // NewBatchingDispatcher creates a new batching dispatcher.
-// Call Start() to begin the background flush goroutine.
+//
+// The background flush goroutine is NOT started automatically: the caller
+// must invoke Start() explicitly after construction (explicit-Start
+// convention). Until Start is called, events accumulate only up to batchSize
+// and flush synchronously when the batch fills; the interval-based flush does
+// not run.
 func NewBatchingDispatcher(batchSize int, flushInterval time.Duration) *BatchingDispatcher {
 	return &BatchingDispatcher{
 		DefaultDispatcher: NewDispatcher(),
@@ -94,9 +101,25 @@ func (d *BatchingDispatcher) Dispatch(ctx context.Context, event interface{}) er
 	return nil
 }
 
-// Flush dispatches all batched events
+// Flush dispatches all batched events.
+//
+// Partial-failure semantics: if a dispatch fails at entry i, the failing
+// entry plus every entry after it are spliced back into the batch ahead of
+// any events recorded re-entrantly during the flush, and the error is
+// returned so a subsequent Flush resumes from the failed entry. Successful
+// entries (0..i-1) are not redelivered.
 func (d *BatchingDispatcher) Flush() error {
 	d.batchMu.Lock()
+	// A flush already in progress (re-entrant or concurrent call) must be a
+	// no-op: the outer Flush retains exclusive control of its snapshot so it
+	// can splice a failed entry plus the remainder ahead of any events
+	// recorded re-entrantly by listeners during the flush. Letting a nested
+	// Flush drain the batch here would deliver those re-entrant events before
+	// the outer snapshot's remainder, violating ordering.
+	if d.flushing {
+		d.batchMu.Unlock()
+		return nil
+	}
 	if len(d.batch) == 0 {
 		d.batchMu.Unlock()
 		return nil
@@ -105,21 +128,47 @@ func (d *BatchingDispatcher) Flush() error {
 	entries := make([]batchEntry, len(d.batch))
 	copy(entries, d.batch)
 	d.batch = d.batch[:0]
+	d.flushing = true
 	d.batchMu.Unlock()
 
 	// Dispatch all events
-	for _, entry := range entries {
+	for i, entry := range entries {
 		if err := d.DefaultDispatcher.Dispatch(entry.ctx, entry.event); err != nil {
+			// Put the failing entry plus the remainder back ahead of any
+			// events recorded re-entrantly during this flush so a retry
+			// resumes from the failure without losing later entries.
+			remainder := entries[i:]
+			d.batchMu.Lock()
+			if len(d.batch) > 0 {
+				combined := make([]batchEntry, 0, len(remainder)+len(d.batch))
+				combined = append(combined, remainder...)
+				combined = append(combined, d.batch...)
+				d.batch = combined
+			} else {
+				// Copy to detach from the snapshot's backing array.
+				dup := make([]batchEntry, len(remainder))
+				copy(dup, remainder)
+				d.batch = dup
+			}
+			d.flushing = false
+			d.batchMu.Unlock()
 			return err
 		}
 	}
 
+	d.batchMu.Lock()
+	d.flushing = false
+	d.batchMu.Unlock()
+
 	return nil
 }
 
-// Stop stops the batching dispatcher
+// Stop stops the batching dispatcher. Safe to call more than once; the
+// stopOnce guard prevents a panic on double close of stopCh.
 func (d *BatchingDispatcher) Stop() {
-	close(d.stopCh)
+	d.stopOnce.Do(func() {
+		close(d.stopCh)
+	})
 	d.wg.Wait()
 }
 
@@ -311,8 +360,11 @@ func (d *RateLimitedDispatcher) Dispatch(ctx context.Context, event interface{})
 	}
 	eventName := d.getEventName(event)
 
+	// Compute the admit/deny decision and record the timestamp under the
+	// lock, then release it BEFORE fanning out. Holding countMu across
+	// DefaultDispatcher.Dispatch would deadlock a listener that re-enters
+	// the same dispatcher.
 	d.countMu.Lock()
-	defer d.countMu.Unlock()
 
 	now := time.Now()
 	cutoff := now.Add(-d.window)
@@ -330,12 +382,14 @@ func (d *RateLimitedDispatcher) Dispatch(ctx context.Context, event interface{})
 
 	// Check rate limit
 	if len(validTimestamps) >= d.maxEvents {
+		d.countMu.Unlock()
 		return ErrRateLimitExceeded
 	}
 
 	// Add current timestamp
 	validTimestamps = append(validTimestamps, now)
 	d.eventCount[eventName] = validTimestamps
+	d.countMu.Unlock()
 
 	return d.DefaultDispatcher.Dispatch(ctx, event)
 }
@@ -372,7 +426,6 @@ type CoalescingDispatcher struct {
 	pendingMu sync.RWMutex
 	ctx       context.Context
 	cancel    context.CancelFunc
-	wg        sync.WaitGroup
 }
 
 type coalescedEvent struct {
@@ -472,7 +525,13 @@ func (d *CoalescingDispatcher) GetCoalescedCount(eventName string) int {
 	return 0
 }
 
-// Stop stops the coalescing dispatcher
+// Stop stops the coalescing dispatcher by cancelling its context and
+// stopping every pending coalesce timer.
+//
+// Stop does NOT wait for an in-flight dispatchCoalesced to finish: a timer
+// that has already fired runs its AfterFunc goroutine to completion
+// independently, and that goroutine is not tracked. Stop only guarantees
+// that timers which have not yet fired will not fire.
 func (d *CoalescingDispatcher) Stop() {
 	d.cancel()
 	d.pendingMu.Lock()
@@ -481,7 +540,6 @@ func (d *CoalescingDispatcher) Stop() {
 	}
 	d.pending = make(map[string]*coalescedEvent)
 	d.pendingMu.Unlock()
-	d.wg.Wait()
 }
 
 // ErrRateLimitExceeded is returned when rate limit is exceeded

@@ -32,24 +32,19 @@ func init() {
 	})
 }
 
-// dispatcherFn is the local event-dispatcher shape stored under the driver's
-// atomic.Pointer. It mirrors the queue package's dispatcher signature so the
-// lock-free SetEventDispatcher path is preserved verbatim.
-type dispatcherFn func(ctx context.Context, event interface{}) error
-
 const redisPoppedAttemptsMaxEntries = 1024
 
 // RedisDriver implements the queue.Driver interface using Redis.
 type RedisDriver struct {
+	// DriverCore supplies the lock-free event-dispatch slot (SetEventDispatcher
+	// / DispatchEvent) shared by every built-in driver. Embedded so the
+	// promoted SetEventDispatcher satisfies contract.EventDispatcherAware (the
+	// conformance is asserted in contracts.go).
+	queue.DriverCore
+
 	client *redis.Client
 	ctx    context.Context
 	config queue.RedisConfig
-	// eventDispatcher is stored via atomic.Pointer so the dispatcher path
-	// never acquires a lock. This keeps SetEventDispatcher safe to call
-	// from any context (including callers that may already hold other
-	// locks) and avoids a self-deadlock against future critical sections
-	// that wrap PushCtx/PopCtx.
-	eventDispatcher atomic.Pointer[dispatcherFn]
 
 	// poppedAttempts carries Payload.Attempts across the Redis delete-on-pop
 	// boundary long enough for the worker's retry PushDelayedCtx call to
@@ -159,18 +154,6 @@ func warnIfInsecure(host, password string, tlsEnabled bool) {
 	}
 }
 
-// SetEventDispatcher installs the event dispatcher. The assignment goes
-// through atomic.Pointer and never touches any lock, so it is safe to call
-// from inside callers that already hold unrelated mutexes.
-func (r *RedisDriver) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
-	if fn == nil {
-		r.eventDispatcher.Store(nil)
-		return
-	}
-	f := dispatcherFn(fn)
-	r.eventDispatcher.Store(&f)
-}
-
 // SetLogger installs a logger for Redis-driver operational advisories. Nil
 // disables logging. Safe to call concurrently.
 func (r *RedisDriver) SetLogger(l queue.Logger) {
@@ -263,21 +246,6 @@ func redisPoppedAttemptsKey(job queue.Job) (interface{}, bool) {
 	return nil, false
 }
 
-// dispatchEvent dispatches an event if a dispatcher is configured. The
-// caller-supplied ctx is propagated so listeners observe request-scoped
-// values. The dispatcher pointer is loaded atomically and invoked outside
-// any lock.
-func (r *RedisDriver) dispatchEvent(ctx context.Context, event interface{}) {
-	p := r.eventDispatcher.Load()
-	if p == nil {
-		return
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	(*p)(ctx, event)
-}
-
 // PushCtx adds a job to the queue using the caller's context.
 func (r *RedisDriver) PushCtx(ctx context.Context, job queue.Job, queueName ...string) error {
 	if err := ctx.Err(); err != nil {
@@ -298,24 +266,18 @@ func (r *RedisDriver) PushCtx(ctx context.Context, job queue.Job, queueName ...s
 		return err
 	}
 
-	data, err := json.Marshal(payload)
+	data, err := queue.MarshalSigned(payload, func(sig string) { payload.Signature = sig },
+		"velocity/queue: failed to marshal payload",
+		"velocity/queue: failed to marshal signed payload")
 	if err != nil {
-		return fmt.Errorf("velocity/queue: failed to marshal payload: %w", err)
-	}
-
-	if sig := queue.SignPayload(data); sig != "" {
-		payload.Signature = sig
-		data, err = json.Marshal(payload)
-		if err != nil {
-			return fmt.Errorf("velocity/queue: failed to marshal signed payload: %w", err)
-		}
+		return err
 	}
 
 	if err := r.client.RPush(ctx, queueKey, data).Err(); err != nil {
 		return err
 	}
 
-	queue.DispatchJobQueued(r.dispatchEvent, ctx, payload.Type, name, false, 0)
+	queue.DispatchJobQueued(r.DispatchEvent, ctx, payload.Type, name, false, 0)
 	return nil
 }
 
@@ -342,17 +304,11 @@ func (r *RedisDriver) PushDelayedCtx(ctx context.Context, job queue.Job, delay t
 		return err
 	}
 
-	data, err := json.Marshal(payload)
+	data, err := queue.MarshalSigned(payload, func(sig string) { payload.Signature = sig },
+		"velocity/queue: failed to marshal payload",
+		"velocity/queue: failed to marshal signed payload")
 	if err != nil {
-		return fmt.Errorf("velocity/queue: failed to marshal payload: %w", err)
-	}
-
-	if sig := queue.SignPayload(data); sig != "" {
-		payload.Signature = sig
-		data, err = json.Marshal(payload)
-		if err != nil {
-			return fmt.Errorf("velocity/queue: failed to marshal signed payload: %w", err)
-		}
+		return err
 	}
 
 	score := float64(time.Now().Add(delay).Unix())
@@ -363,7 +319,7 @@ func (r *RedisDriver) PushDelayedCtx(ctx context.Context, job queue.Job, delay t
 		return err
 	}
 
-	queue.DispatchJobQueued(r.dispatchEvent, ctx, payload.Type, name, true, delay)
+	queue.DispatchJobQueued(r.DispatchEvent, ctx, payload.Type, name, true, delay)
 	return nil
 }
 
@@ -552,7 +508,7 @@ func (r *RedisDriver) quarantinePoisonedPayload(ctx context.Context, queueName, 
 	if jobType == "" {
 		jobType = "unknown"
 	}
-	queue.DispatchJobFailed(r.dispatchEvent, ctx, jobType, queueName, poisonErr, 0)
+	queue.DispatchJobFailed(r.DispatchEvent, ctx, jobType, queueName, poisonErr, 0)
 
 	if writeErr != nil {
 		return nil, tc, errors.Join(queue.ErrPoisonJob, poisonErr, writeErr)
@@ -580,7 +536,21 @@ func (r *RedisDriver) Size(queueName string) (int64, error) {
 	return mainSize + delayedSize, nil
 }
 
-// Clear removes all jobs from the queue
+// Clear removes all jobs from the queue (main list, delayed ZSET, and
+// failed list).
+//
+// Dedupe sentinels are NOT cleared, a deliberate residual divergence
+// from the memory and database drivers, which release queue-scoped
+// dedupe state on Clear. The sentinel key is `velocity:queue:dedupe:<key>`
+// (see getDedupeKey) and its value is a constant '1' (see
+// redisDedupePushScript): neither the key nor the value records the
+// owning queue, so a queue-scoped delete would require an unbounded
+// SCAN of `velocity:queue:dedupe:*` and could still not attribute a
+// sentinel to this queue. Rather than pay that cost, we let the
+// sentinels lapse via their 7-day TTL. Consequence: a PushIfNotExistsCtx
+// for a key pushed before Clear no-ops until the TTL expires. Dedupe
+// keys are deterministic per (batchID, kind) with UUID v7 batch IDs, so
+// this is not hit in practice.
 func (r *RedisDriver) Clear(queueName string) error {
 	queueKey := r.getQueueKey(queueName)
 	delayedKey := r.getDelayedKey(queueName)
@@ -679,7 +649,7 @@ func (r *RedisDriver) moveDelayedJobs(ctx context.Context, queueName string) err
 		member, ok := result[0].Member.(string)
 		if !ok {
 			queue.DispatchJobFailed(
-				r.dispatchEvent,
+				r.DispatchEvent,
 				ctx,
 				"unknown",
 				queueName,
@@ -841,16 +811,11 @@ func (r *RedisDriver) PushIfNotExistsCtx(ctx context.Context, job queue.Job, ded
 		return err
 	}
 
-	data, err := json.Marshal(payload)
+	data, err := queue.MarshalSigned(payload, func(sig string) { payload.Signature = sig },
+		"velocity/queue: failed to marshal payload",
+		"velocity/queue: failed to marshal signed payload")
 	if err != nil {
-		return fmt.Errorf("velocity/queue: failed to marshal payload: %w", err)
-	}
-	if sig := queue.SignPayload(data); sig != "" {
-		payload.Signature = sig
-		data, err = json.Marshal(payload)
-		if err != nil {
-			return fmt.Errorf("velocity/queue: failed to marshal signed payload: %w", err)
-		}
+		return err
 	}
 
 	const ttlSeconds = int64(7 * 24 * 60 * 60)
@@ -886,7 +851,7 @@ func (r *RedisDriver) PushIfNotExistsCtx(ctx context.Context, job queue.Job, ded
 		return nil
 	}
 
-	queue.DispatchJobQueued(r.dispatchEvent, ctx, payload.Type, name, false, 0)
+	queue.DispatchJobQueued(r.DispatchEvent, ctx, payload.Type, name, false, 0)
 	return nil
 }
 

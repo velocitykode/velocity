@@ -2,7 +2,6 @@ package events
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -110,109 +109,6 @@ func (a *AsyncDispatcher) dispatchFailure(ctx context.Context, event interface{}
 	})
 }
 
-// EventJob represents a queued event job
-type EventJob struct {
-	Event        interface{}       `json:"event"`
-	ListenerType string            `json:"listener_type"`
-	Timestamp    time.Time         `json:"timestamp"`
-	Attempts     int               `json:"attempts"`
-	Metadata     map[string]string `json:"metadata,omitempty"`
-}
-
-// EventWorker processes queued events
-type EventWorker struct {
-	dispatcher Dispatcher
-	// mu guards the listeners map. Without this, concurrent RegisterListener
-	// and Process calls race on the map and trigger a fatal runtime panic
-	// ("concurrent map read and map write"). The factory itself is invoked
-	// outside the lock so listener Handle() calls cannot deadlock with
-	// registration.
-	mu        sync.RWMutex
-	listeners map[string]func() Listener // Factory functions for listeners
-}
-
-// NewEventWorker creates a new event worker
-func NewEventWorker(dispatcher Dispatcher) *EventWorker {
-	return &EventWorker{
-		dispatcher: dispatcher,
-		listeners:  make(map[string]func() Listener),
-	}
-}
-
-// RegisterListener registers a listener factory for async processing
-func (w *EventWorker) RegisterListener(listenerType string, factory func() Listener) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.listeners[listenerType] = factory
-}
-
-// Process processes a queued event job
-func (w *EventWorker) Process(ctx context.Context, jobData string) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	// Unmarshal the job
-	var job EventJob
-	if err := json.Unmarshal([]byte(jobData), &job); err != nil {
-		return fmt.Errorf("failed to unmarshal event job: %w", err)
-	}
-
-	// Get the listener factory under read lock, then release before calling
-	// the factory or the listener. Holding the lock across user code would
-	// risk deadlocks (e.g. a listener that registers another listener) and
-	// block unrelated registrations for the duration of Handle().
-	w.mu.RLock()
-	factory, ok := w.listeners[job.ListenerType]
-	w.mu.RUnlock()
-	if !ok {
-		return fmt.Errorf("velocity/events: unknown listener type %s: %w", job.ListenerType, ErrListenerNotFound)
-	}
-
-	// Create the listener instance
-	listener := factory()
-
-	// Handle the event
-	return listener.Handle(ctx, job.Event)
-}
-
-// AsyncEventBus combines sync and async dispatching
-type AsyncEventBus struct {
-	*DefaultDispatcher
-	asyncDispatcher *AsyncDispatcher
-	worker          *EventWorker
-}
-
-// NewAsyncEventBus creates a new async event bus
-func NewAsyncEventBus() *AsyncEventBus {
-	dispatcher := NewDispatcher()
-	asyncDispatcher := NewAsyncDispatcher()
-	worker := NewEventWorker(dispatcher)
-
-	// Set the queue dispatcher
-	dispatcher.SetQueueDispatcher(asyncDispatcher)
-
-	return &AsyncEventBus{
-		DefaultDispatcher: dispatcher,
-		asyncDispatcher:   asyncDispatcher,
-		worker:            worker,
-	}
-}
-
-// RegisterQueuedListener registers a queued listener with its factory
-func (b *AsyncEventBus) RegisterQueuedListener(event string, listener QueuedListener, factory func() Listener) {
-	// Register with dispatcher
-	b.Listen(event, listener)
-
-	// Register factory for async processing
-	listenerType := fmt.Sprintf("%T", listener)
-	b.worker.RegisterListener(listenerType, factory)
-}
-
-// ProcessQueuedEvent processes a queued event (called by queue workers)
-func (b *AsyncEventBus) ProcessQueuedEvent(ctx context.Context, jobData string) error {
-	return b.worker.Process(ctx, jobData)
-}
-
 // PendingEvents tracks events that should be dispatched after database commit
 type PendingEvents struct {
 	events []interface{}
@@ -265,14 +161,28 @@ func NewTransactionalDispatcher(dispatcher Dispatcher) *TransactionalDispatcher 
 	}
 }
 
-// BeginTransaction marks the start of a transaction
+// BeginTransaction marks the start of a transaction.
+//
+// inTransaction is a single per-instance flag shared across all goroutines
+// using this dispatcher: there is one flag for all concurrent transactions,
+// not one per goroutine or per logical transaction. A TransactionalDispatcher
+// therefore models a single ambient transaction scope, not isolated
+// concurrent transactions; callers needing per-goroutine isolation should
+// use the ctx-scoped BufferedDispatcher instead.
 func (t *TransactionalDispatcher) BeginTransaction() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.inTransaction = true
 }
 
-// Commit commits the transaction and dispatches pending events
+// Commit commits the transaction and dispatches pending events.
+//
+// Partial-failure semantics: pending events are drained up front, then
+// dispatched in order. If a dispatch fails at index i, the failing event
+// plus every event after it are re-added to the pending buffer (the failed
+// event is included to match BufferedDispatcher's retry contract) and the
+// error is returned. Commit may therefore be retried: a subsequent Commit
+// replays the remaining events from the failure point.
 func (t *TransactionalDispatcher) Commit(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -282,8 +192,14 @@ func (t *TransactionalDispatcher) Commit(ctx context.Context) error {
 	t.mu.Unlock()
 
 	// Dispatch all pending events
-	for _, event := range t.pending.Flush() {
+	events := t.pending.Flush()
+	for i, event := range events {
 		if err := t.Dispatcher.Dispatch(ctx, event); err != nil {
+			// Re-add the failing event and the remainder so a retry Commit
+			// can replay them; successful events (0..i-1) already fired.
+			for _, remaining := range events[i:] {
+				t.pending.Add(remaining)
+			}
 			return err
 		}
 	}

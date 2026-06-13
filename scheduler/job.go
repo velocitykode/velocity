@@ -103,6 +103,22 @@ func (j *Job) getDispatch() func(context.Context, interface{}) {
 	return nil
 }
 
+// runHookIsolated runs a single scheduler hook (Before/After/OnSuccess/
+// OnFailure callback, or a scheduler-level Before/After callback) inside
+// its own panic-recovered scope so one misbehaving hook does not skip the
+// remaining hooks or bypass the caller's teardown. A recovered panic is
+// converted to an error via panicerr and handed to onPanic, which decides
+// how to surface it (dispatch scheduled.failed on the job paths, or log at
+// the scheduler level).
+func runHookIsolated(onPanic func(error), fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			onPanic(panicerr.FromRecovered(r))
+		}
+	}()
+	fn()
+}
+
 // IsDue checks if the job should run at the given time
 func (j *Job) IsDue(t time.Time) bool {
 	j.mu.RLock()
@@ -197,7 +213,7 @@ func (j *Job) ShouldRun() bool {
 	if len(j.environments) > 0 {
 		currentEnv := ""
 		if j.scheduler != nil {
-			currentEnv = j.scheduler.appEnv
+			currentEnv = j.scheduler.env()
 		}
 		found := false
 		for _, env := range j.environments {
@@ -325,21 +341,20 @@ func (j *Job) runInternal(ctx context.Context, shutdownGrace time.Duration, rele
 	dispatchScheduledTaskStarting(j.getDispatch(), tctx, jobName)
 	startTime := time.Now()
 
+	// onHookPanic surfaces a panicking hook as a scheduled.failed event,
+	// matching the legacy per-hook behaviour. Shared by the Before hooks
+	// and the After/OnSuccess/OnFailure hooks run from finishSync.
+	onHookPanic := func(hookErr error) {
+		dispatchScheduledTaskFailed(j.getDispatch(), tctx, jobName, hookErr, time.Since(startTime))
+	}
+
 	// Run before callbacks. Each callback is isolated in its own
 	// panic-recovered scope so one misbehaving hook does not skip the
 	// remaining hooks (and so the panic does not bypass the deferred
 	// cleanup, which runs anyway). A panicking Before hook is logged
 	// via the scheduled.failed event and treated as a job failure.
 	for _, callback := range beforeCallbacks {
-		func(cb func()) {
-			defer func() {
-				if r := recover(); r != nil {
-					hookErr := panicerr.FromRecovered(r)
-					dispatchScheduledTaskFailed(j.getDispatch(), tctx, jobName, hookErr, time.Since(startTime))
-				}
-			}()
-			cb()
-		}(callback)
+		runHookIsolated(onHookPanic, callback)
 	}
 
 	// finishSync runs the after-callbacks, success/failure callbacks,
@@ -352,42 +367,19 @@ func (j *Job) runInternal(ctx context.Context, shutdownGrace time.Duration, rele
 	finishSync := func(err error, panicDispatched bool) {
 		duration := time.Since(startTime)
 		for _, callback := range afterCallbacks {
-			func(cb func()) {
-				defer func() {
-					if r := recover(); r != nil {
-						hookErr := panicerr.FromRecovered(r)
-						dispatchScheduledTaskFailed(j.getDispatch(), tctx, jobName, hookErr, time.Since(startTime))
-					}
-				}()
-				cb()
-			}(callback)
+			runHookIsolated(onHookPanic, callback)
 		}
 		if err != nil {
 			for _, callback := range onFailureCallbacks {
-				func(cb func(error)) {
-					defer func() {
-						if r := recover(); r != nil {
-							hookErr := panicerr.FromRecovered(r)
-							dispatchScheduledTaskFailed(j.getDispatch(), tctx, jobName, hookErr, time.Since(startTime))
-						}
-					}()
-					cb(err)
-				}(callback)
+				cb := callback
+				runHookIsolated(onHookPanic, func() { cb(err) })
 			}
 			if !panicDispatched {
 				dispatchScheduledTaskFailed(j.getDispatch(), tctx, jobName, err, duration)
 			}
 		} else {
 			for _, callback := range onSuccessCallbacks {
-				func(cb func()) {
-					defer func() {
-						if r := recover(); r != nil {
-							hookErr := panicerr.FromRecovered(r)
-							dispatchScheduledTaskFailed(j.getDispatch(), tctx, jobName, hookErr, time.Since(startTime))
-						}
-					}()
-					cb()
-				}(callback)
+				runHookIsolated(onHookPanic, callback)
 			}
 			dispatchScheduledTaskFinished(j.getDispatch(), tctx, jobName, duration)
 		}
@@ -577,17 +569,25 @@ func (j *Job) spawnBackgroundWaiter(
 		}
 
 		duration := time.Since(startTime)
+		// Isolate each hook so a panicking After/OnSuccess/OnFailure
+		// callback dispatches scheduled.failed (matching the synchronous
+		// path) without aborting the remaining hooks or the completion
+		// event. Mirrors finishSync's onHookPanic.
+		onHookPanic := func(hookErr error) {
+			dispatchScheduledTaskFailed(j.getDispatch(), tctx, jobName, hookErr, time.Since(startTime))
+		}
 		for _, callback := range afterCallbacks {
-			callback()
+			runHookIsolated(onHookPanic, callback)
 		}
 		if err != nil {
 			for _, callback := range onFailureCallbacks {
-				callback(err)
+				cb := callback
+				runHookIsolated(onHookPanic, func() { cb(err) })
 			}
 			dispatchScheduledTaskFailed(j.getDispatch(), tctx, jobName, err, duration)
 		} else {
 			for _, callback := range onSuccessCallbacks {
-				callback()
+				runHookIsolated(onHookPanic, callback)
 			}
 			dispatchScheduledTaskFinished(j.getDispatch(), tctx, jobName, duration)
 		}

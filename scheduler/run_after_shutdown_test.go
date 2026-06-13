@@ -50,6 +50,59 @@ func TestScheduler_RunAfterShutdown_DoesNotStart(t *testing.T) {
 	}
 }
 
+// A scheduler that has actually run is reusable: Run -> Shutdown -> Run
+// must start the second run rather than no-op on a stale terminated flag
+// or an already-closed stop channel.
+func TestScheduler_RunAfterRunShutdown_Restarts(t *testing.T) {
+	s := New()
+	s.Call(func() {}).EveryMinute()
+
+	// First run/shutdown cycle.
+	first := make(chan error, 1)
+	go func() { first <- s.Run(context.Background()) }()
+	waitRunning(t, s, true)
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("first Shutdown: %v", err)
+	}
+	select {
+	case <-first:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first Run did not return after Shutdown")
+	}
+
+	// Second run must start.
+	second := make(chan error, 1)
+	go func() { second <- s.Run(context.Background()) }()
+	waitRunning(t, s, true)
+
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("second Shutdown: %v", err)
+	}
+	select {
+	case <-second:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second Run did not return after Shutdown")
+	}
+}
+
+func waitRunning(t *testing.T, s *Scheduler, want bool) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		s.mu.RLock()
+		running := s.running
+		s.mu.RUnlock()
+		if running == want {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("scheduler running=%v, want %v", running, want)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
 // A second Shutdown (or a Shutdown racing Run's own ctx-cancel Shutdown)
 // must stay a clean no-op.
 func TestScheduler_ShutdownTwice_NoOp(t *testing.T) {

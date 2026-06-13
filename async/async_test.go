@@ -228,6 +228,89 @@ func TestRace(t *testing.T) {
 	})
 }
 
+// getWithin drains result.Get() but fails the test (instead of hanging the
+// whole run) if Get does not return within d. Used by the all-panic / zero-fn
+// Race tests, which would block Get forever before the B38 fix.
+func getWithin[T any](t *testing.T, result *Result[T], d time.Duration) (T, error) {
+	t.Helper()
+	type outcome struct {
+		v   T
+		err error
+	}
+	ch := make(chan outcome, 1)
+	go func() {
+		v, err := result.Get()
+		ch <- outcome{v, err}
+	}()
+	select {
+	case o := <-ch:
+		return o.v, o.err
+	case <-time.After(d):
+		var zero T
+		t.Fatalf("Get did not return within %v (deadlock)", d)
+		return zero, nil
+	}
+}
+
+func TestRace_FailureModes(t *testing.T) {
+	t.Run("all panic returns error", func(t *testing.T) {
+		result := Race(
+			func() int { panic("boom-1") },
+			func() int { panic("boom-2") },
+			func() int { panic("boom-3") },
+		)
+		_, err := getWithin(t, result, 2*time.Second)
+		if err == nil {
+			t.Fatal("expected non-nil error when every fn panics")
+		}
+	})
+
+	t.Run("zero fns errors", func(t *testing.T) {
+		result := Race[int]()
+		_, err := getWithin(t, result, 2*time.Second)
+		if err == nil {
+			t.Fatal("expected error when Race called with zero functions")
+		}
+	})
+
+	t.Run("winner among panicking losers", func(t *testing.T) {
+		result := Race(
+			func() string { panic("loser-1") },
+			func() string { time.Sleep(30 * time.Millisecond); return "winner" },
+			func() string { panic("loser-2") },
+		)
+		value, err := getWithin(t, result, 2*time.Second)
+		if err != nil {
+			t.Fatalf("unexpected error with a live winner: %v", err)
+		}
+		if value != "winner" {
+			t.Fatalf("expected 'winner', got %q", value)
+		}
+	})
+
+	t.Run("all panic routes through handlePanic", func(t *testing.T) {
+		cap := withLogger(t)
+		result := Race(
+			func() int { panic("logged-1") },
+			func() int { panic("logged-2") },
+		)
+		if _, err := getWithin(t, result, 2*time.Second); err == nil {
+			t.Fatal("expected error from all-panic Race")
+		}
+		// handlePanic logs "async: panic recovered"; confirm parity with Run.
+		deadline := time.Now().Add(time.Second)
+		for time.Now().Before(deadline) {
+			for _, e := range cap.snapshot() {
+				if e.msg == "async: panic recovered" {
+					return
+				}
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("expected handlePanic log; got: %+v", cap.snapshot())
+	})
+}
+
 func TestRaceWithTimeout(t *testing.T) {
 	t.Run("completes before timeout", func(t *testing.T) {
 		// orchestration: closure sleeps are test input — work that finishes
@@ -260,6 +343,23 @@ func TestRaceWithTimeout(t *testing.T) {
 		_, err := result.Get()
 		if err == nil {
 			t.Error("Expected timeout error")
+		}
+		if !result.TimedOut() {
+			t.Error("Should have timed out")
+		}
+	})
+
+	t.Run("all panic terminates at deadline", func(t *testing.T) {
+		// RaceWithTimeout's ctx.Done branch already unblocks Get; confirm an
+		// all-panic race still terminates (with DeadlineExceeded) rather than
+		// hanging.
+		result := RaceWithTimeout(50*time.Millisecond,
+			func() int { panic("boom-1") },
+			func() int { panic("boom-2") },
+		)
+		_, err := getWithin(t, result, 2*time.Second)
+		if err == nil {
+			t.Fatal("expected timeout error from all-panic RaceWithTimeout")
 		}
 		if !result.TimedOut() {
 			t.Error("Should have timed out")

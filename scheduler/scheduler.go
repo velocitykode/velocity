@@ -44,22 +44,31 @@ type Scheduler struct {
 	jobs    []*Job
 	ticker  *time.Ticker
 	stop    chan struct{}
-	stopped chan struct{} // closed when Run() exits
 	running bool
-	// terminated is set by Shutdown and never cleared: a Scheduler is
-	// single-use. Run checks it under s.mu and refuses to start once
-	// Shutdown has been called, even when Shutdown ran BEFORE Run ever
-	// started. Without this, a Shutdown that races ahead of a
-	// goroutine-spawned Run (e.g. Serve fails fast on ListenAndServe and
-	// tears the app down before the scheduler goroutine entered Run) was
-	// a no-op (!running), and Run then started fresh against
-	// already-closed services and ticked forever.
+	// started records whether the scheduler has entered Run at least
+	// once. It distinguishes a genuine reuse (Run -> Shutdown -> Run,
+	// which must work) from a Shutdown that races ahead of a
+	// goroutine-spawned Run that never started (e.g. Serve fails fast on
+	// ListenAndServe and tears the app down before the scheduler
+	// goroutine entered Run).
+	started bool
+	// terminated blocks Run only when Shutdown was called before the
+	// scheduler ever ran (the Serve fail-fast race above). A normal
+	// reusable scheduler that has actually run is NOT terminated by
+	// Shutdown, so it can Run again afterward.
 	terminated      bool
 	timezone        *time.Location
 	maintenanceMode bool
-	appEnv          string
 	beforeCallbacks []func()
 	afterCallbacks  []func()
+
+	// appEnv holds the normalised application environment (lowercased +
+	// trimmed) used by Job.ShouldRun's Environments() filter. Stored via
+	// atomic.Pointer so ShouldRun can read it lock-free: ShouldRun runs
+	// under Job.mu, and ValidateJobs takes s.mu THEN Job.mu, so reading
+	// appEnv under s.mu from inside ShouldRun would invert that lock order
+	// and risk deadlock. A nil pointer means SetEnv was never called.
+	appEnv atomic.Pointer[string]
 
 	// logger is stored via atomic.Value so the Run/runDueJobs hot paths
 	// can read it lock-free and SetLogger doesn't contend with s.mu.
@@ -167,7 +176,6 @@ func New() *Scheduler {
 	s := &Scheduler{
 		jobs:          make([]*Job, 0),
 		stop:          make(chan struct{}),
-		stopped:       make(chan struct{}),
 		timezone:      time.Local,
 		locker:        NewInMemoryLocker(),
 		oneServerTTL:  1 * time.Hour,
@@ -227,9 +235,18 @@ func (s *Scheduler) log() Logger {
 // The value is normalised (lowercased + trimmed) so the Job.Environments
 // filter does a like-for-like compare regardless of casing on either side.
 func (s *Scheduler) SetEnv(env string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.appEnv = strings.ToLower(strings.TrimSpace(env))
+	normalised := strings.ToLower(strings.TrimSpace(env))
+	s.appEnv.Store(&normalised)
+}
+
+// env returns the normalised application environment, or "" when SetEnv
+// has never been called. Read lock-free by Job.ShouldRun; see the appEnv
+// field comment for the lock-order rationale.
+func (s *Scheduler) env() string {
+	if p := s.appEnv.Load(); p != nil {
+		return *p
+	}
+	return ""
 }
 
 // SetTimezone sets the timezone for the scheduler
@@ -397,11 +414,12 @@ func (s *Scheduler) Command(command string, args ...string) *Job {
 }
 
 // Run starts the scheduler. It returns nil immediately when the
-// scheduler is already running or when Shutdown has already been
-// called: a Scheduler is single-use, so a Run that loses the race
-// against Shutdown (the in-process scheduler goroutine spawned by
-// Serve, with Serve failing fast and tearing down) must not start
-// ticking against already-closed services.
+// scheduler is already running, or when Shutdown was called before the
+// scheduler ever ran (a Run that loses the race against Shutdown: the
+// in-process scheduler goroutine spawned by Serve, with Serve failing
+// fast and tearing down, must not start ticking against already-closed
+// services). A scheduler that has run before can Run again after
+// Shutdown: each Run builds fresh per-run state below.
 func (s *Scheduler) Run(ctx context.Context) error {
 	s.mu.Lock()
 	if s.running || s.terminated {
@@ -409,6 +427,12 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		return nil
 	}
 	s.running = true
+	s.started = true
+	// Fresh per-run stop channel so a Run after a prior Shutdown (which
+	// closed the previous channel) blocks correctly instead of returning
+	// immediately on the already-closed channel.
+	s.stop = make(chan struct{})
+	stop := s.stop
 	s.ticker = time.NewTicker(1 * time.Minute) // Check every minute
 	// Derive a cancellable run-context from the caller's ctx. Shutdown
 	// cancels this so any in-progress Locker.Acquire on a slow remote
@@ -432,7 +456,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			_ = s.Shutdown(ctx)
 			return ctx.Err()
-		case <-s.stop:
+		case <-stop:
 			return nil
 		case <-s.ticker.C:
 			s.runDueJobs()
@@ -499,11 +523,15 @@ func (s *Scheduler) ValidateJobs() {
 // believed shutdown completed.
 func (s *Scheduler) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
-	// Mark the scheduler terminated even when it never started: a Run
-	// that arrives after this point (goroutine scheduled late) must see
-	// the flag and refuse to start. See the terminated field comment.
-	s.terminated = true
 	if !s.running {
+		// Shutdown before the scheduler ever ran: a Run that arrives
+		// after this point (goroutine scheduled late) must see the flag
+		// and refuse to start against torn-down services. Once the
+		// scheduler has actually run, Shutdown leaves it reusable. See
+		// the terminated field comment.
+		if !s.started {
+			s.terminated = true
+		}
 		s.mu.Unlock()
 		return nil
 	}
@@ -588,9 +616,18 @@ func (s *Scheduler) runDueJobs() {
 	}
 	now := time.Now().In(tz)
 
+	// Scheduler-level Before/After callbacks run on the ticker goroutine
+	// (runDueJobs is driven by Run's select loop). A bare panic in one
+	// would kill the whole scheduler, so each is isolated; there is no
+	// per-job context here, so a panic is logged rather than dispatched
+	// as scheduled.failed.
+	onCallbackPanic := func(err error) {
+		s.log().Error("velocity/scheduler: scheduler-level callback panicked", "error", err)
+	}
+
 	// Run before callbacks
 	for _, callback := range beforeCallbacks {
-		callback()
+		runHookIsolated(onCallbackPanic, callback)
 	}
 
 	// Check and run each job. runWg tracks in-flight goroutines so Shutdown()
@@ -733,9 +770,10 @@ func (s *Scheduler) runDueJobs() {
 	}
 
 	// Run after callbacks, these fire per tick, not per job, and must not
-	// block on in-flight job goroutines (see docstring).
+	// block on in-flight job goroutines (see docstring). Isolated like the
+	// before callbacks so a panic cannot tear down the ticker goroutine.
 	for _, callback := range afterCallbacks {
-		callback()
+		runHookIsolated(onCallbackPanic, callback)
 	}
 }
 

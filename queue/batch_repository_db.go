@@ -227,51 +227,32 @@ func (r *DatabaseBatchRepository) reaperTick() {
 	}
 }
 
-// rewriteQuery converts `$N` placeholders to `?` for mysql/sqlite.
-// Identical to DatabaseDriver.rewriteQuery; duplicated here so the
-// repository does not depend on a Driver instance (callers may use
-// it without the queue driver).
+// rewriteQuery converts `$N` placeholders to `?` for mysql/sqlite. Thin
+// method over the package-level rewriteQueryFor so the repository does not
+// depend on a Driver instance (callers may use it without the queue driver).
 func (r *DatabaseBatchRepository) rewriteQuery(q string) string {
-	if r.dbDriver == "postgres" {
-		return q
-	}
-	var b strings.Builder
-	b.Grow(len(q))
-	for i := 0; i < len(q); i++ {
-		if q[i] == '$' && i+1 < len(q) && q[i+1] >= '0' && q[i+1] <= '9' {
-			j := i + 1
-			for j < len(q) && q[j] >= '0' && q[j] <= '9' {
-				j++
-			}
-			b.WriteByte('?')
-			i = j - 1
-			continue
-		}
-		b.WriteByte(q[i])
-	}
-	return b.String()
+	return rewriteQueryFor(r.dbDriver, q)
 }
 
-// Find loads a batch row and reconstructs an in-process *Batch from it.
-// The reconstructed Batch carries the persisted counters (pending,
-// completed, failed) and flags (cancelled, finished). Local callback
-// closures are populated from the global registry when present so that
-// a worker process which is also the dispatcher process can fire
-// Then/Catch/Finally directly without a separate event hop.
-func (r *DatabaseBatchRepository) Find(ctx context.Context, id BatchID) (*Batch, error) {
-	if err := r.closedErr(); err != nil {
-		return nil, err
-	}
-	if err := ctxErr(ctx); err != nil {
-		return nil, err
-	}
-	const q = `SELECT id, total_jobs, pending_jobs, completed_jobs, failed_jobs,
-	                  allow_failures, queue, then_callback, catch_callback, finally_callback,
-	                  then_dispatched, catch_dispatched, finally_dispatched,
-	                  cancelled_at, completed_at, last_error
-	           FROM job_batches WHERE id = $1`
-	row := r.db.QueryRowContext(ctx, r.rewriteQuery(q), string(id))
+// batchRowScanner is the minimal surface shared by *sql.Row and *sql.Rows;
+// scanBatchRow accepts either.
+type batchRowScanner interface{ Scan(dest ...any) error }
 
+// scanBatchRow reconstructs an in-process *Batch from a row selected with
+// the canonical column list. The column order MUST match the SELECT lists
+// in Find and incrementCounter exactly:
+//
+//	id, total_jobs, pending_jobs, completed_jobs, failed_jobs,
+//	allow_failures, queue, then_callback, catch_callback, finally_callback,
+//	then_dispatched, catch_dispatched, finally_dispatched,
+//	cancelled_at, completed_at, last_error
+//
+// Local callback closures are attached from the global registry when this
+// process dispatched the batch; cross-process workers get nil closures and
+// rely on the persisted callback names instead. The raw Scan error is
+// returned unwrapped so callers can apply their own context (and detect
+// sql.ErrNoRows).
+func scanBatchRow(scanner batchRowScanner) (*Batch, error) {
 	var (
 		rid               string
 		totalJobs         int
@@ -290,14 +271,11 @@ func (r *DatabaseBatchRepository) Find(ctx context.Context, id BatchID) (*Batch,
 		completedAt       sql.NullTime
 		lastError         sql.NullString
 	)
-	if err := row.Scan(&rid, &totalJobs, &pendingJobs, &completedJobs, &failedJobs,
+	if err := scanner.Scan(&rid, &totalJobs, &pendingJobs, &completedJobs, &failedJobs,
 		&allowFailures, &queueName, &thenCallback, &catchCallback, &finallyCallback,
 		&thenDispatched, &catchDispatched, &finallyDispatched,
 		&cancelledAt, &completedAt, &lastError); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("velocity/queue: batch find: %w", err)
+		return nil, err
 	}
 
 	b := &Batch{
@@ -341,7 +319,36 @@ func (r *DatabaseBatchRepository) Find(ctx context.Context, id BatchID) (*Batch,
 		b.finallyFn = entry.finallyFn
 		b.dispatchEvent = entry.dispatchEvent
 	}
+	return b, nil
+}
 
+// Find loads a batch row and reconstructs an in-process *Batch from it.
+// The reconstructed Batch carries the persisted counters (pending,
+// completed, failed) and flags (cancelled, finished). Local callback
+// closures are populated from the global registry when present so that
+// a worker process which is also the dispatcher process can fire
+// Then/Catch/Finally directly without a separate event hop.
+func (r *DatabaseBatchRepository) Find(ctx context.Context, id BatchID) (*Batch, error) {
+	if err := r.closedErr(); err != nil {
+		return nil, err
+	}
+	if err := ctxErr(ctx); err != nil {
+		return nil, err
+	}
+	const q = `SELECT id, total_jobs, pending_jobs, completed_jobs, failed_jobs,
+	                  allow_failures, queue, then_callback, catch_callback, finally_callback,
+	                  then_dispatched, catch_dispatched, finally_dispatched,
+	                  cancelled_at, completed_at, last_error
+	           FROM job_batches WHERE id = $1`
+	row := r.db.QueryRowContext(ctx, r.rewriteQuery(q), string(id))
+
+	b, err := scanBatchRow(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("velocity/queue: batch find: %w", err)
+	}
 	return b, nil
 }
 
@@ -502,77 +509,19 @@ func (r *DatabaseBatchRepository) incrementCounter(ctx context.Context, id Batch
 	// BatchCallbackJob instances on terminal completion. The dispatched
 	// flags are also returned so callers can short-circuit re-enqueue
 	// when a previous tick (or a sibling worker) already pushed the job.
-	const selQ = `SELECT total_jobs, pending_jobs, completed_jobs, failed_jobs,
+	const selQ = `SELECT id, total_jobs, pending_jobs, completed_jobs, failed_jobs,
 	                     allow_failures, queue, then_callback, catch_callback, finally_callback,
 	                     then_dispatched, catch_dispatched, finally_dispatched,
 	                     cancelled_at, completed_at, last_error
 	              FROM job_batches WHERE id = $1`
 	row := tx.QueryRowContext(ctx, r.rewriteQuery(selQ), string(id))
-	var (
-		totalJobs         int
-		pendingJobs       int32
-		completedJobs     int32
-		failedJobs        int32
-		allowFailures     bool
-		queueName         string
-		thenCallback      sql.NullString
-		catchCallback     sql.NullString
-		finallyCallback   sql.NullString
-		thenDispatched    bool
-		catchDispatched   bool
-		finallyDispatched bool
-		cancelledAt       sql.NullTime
-		completedAt       sql.NullTime
-		lastError         sql.NullString
-	)
-	if scanErr := row.Scan(&totalJobs, &pendingJobs, &completedJobs, &failedJobs,
-		&allowFailures, &queueName, &thenCallback, &catchCallback, &finallyCallback,
-		&thenDispatched, &catchDispatched, &finallyDispatched,
-		&cancelledAt, &completedAt, &lastError); scanErr != nil {
+	b, scanErr := scanBatchRow(row)
+	if scanErr != nil {
 		return nil, false, fmt.Errorf("velocity/queue: batch increment readback: %w", scanErr)
 	}
 
 	if err := tx.Commit(); err != nil {
 		return nil, false, fmt.Errorf("velocity/queue: batch increment commit: %w", err)
-	}
-
-	b := &Batch{
-		id:            id,
-		totalJobs:     totalJobs,
-		allowFailures: allowFailures,
-		queue:         queueName,
-	}
-	b.pendingJobs.Store(pendingJobs)
-	b.completedJobs.Store(completedJobs)
-	b.failedJobs.Store(failedJobs)
-	if thenCallback.Valid {
-		b.thenName = thenCallback.String
-	}
-	if catchCallback.Valid {
-		b.catchName = catchCallback.String
-	}
-	if finallyCallback.Valid {
-		b.finallyName = finallyCallback.String
-	}
-	b.thenDispatched.Store(thenDispatched)
-	b.catchDispatched.Store(catchDispatched)
-	b.finallyDispatched.Store(finallyDispatched)
-	if cancelledAt.Valid {
-		b.cancelled.Store(true)
-	}
-	if completedAt.Valid {
-		b.finished.Store(true)
-		b.finishedAt = completedAt.Time
-	}
-	if lastError.Valid {
-		b.lastError = lastError.String
-	}
-
-	if entry := globalCallbacks.get(id); entry != nil {
-		b.thenFn = entry.thenFn
-		b.catchFn = entry.catchFn
-		b.finallyFn = entry.finallyFn
-		b.dispatchEvent = entry.dispatchEvent
 	}
 
 	return b, justFinished, nil

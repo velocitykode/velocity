@@ -14,12 +14,14 @@ import (
 	"github.com/velocitykode/velocity/trace"
 )
 
-// rewriteQuery expands `$N`-style placeholders in a query template into the
-// driver-appropriate form. All queries in this file are authored with `$N`
-// placeholders; `rewriteQuery` replaces them with `?` for MySQL/SQLite while
-// leaving them intact for Postgres.
-func (d *DatabaseDriver) rewriteQuery(q string) string {
-	if d.dbDriver == "postgres" {
+// rewriteQueryFor expands `$N`-style placeholders in a query template into the
+// driver-appropriate form. Queries in this package are authored with `$N`
+// placeholders; rewriteQueryFor replaces them with `?` for MySQL/SQLite while
+// leaving them intact for Postgres. It takes the driver name (rather than a
+// *DatabaseDriver) so the batch repository can reuse it without holding a
+// Driver instance.
+func rewriteQueryFor(dbDriver, q string) string {
+	if dbDriver == "postgres" {
 		return q
 	}
 	// Replace $1..$99 with ?
@@ -39,6 +41,12 @@ func (d *DatabaseDriver) rewriteQuery(q string) string {
 		b.WriteByte(q[i])
 	}
 	return b.String()
+}
+
+// rewriteQuery rewrites `$N` placeholders for d's database driver. Thin method
+// over rewriteQueryFor so call sites keep the d.rewriteQuery(...) spelling.
+func (d *DatabaseDriver) rewriteQuery(q string) string {
+	return rewriteQueryFor(d.dbDriver, q)
 }
 
 // JobRecord represents a job in the database
@@ -86,6 +94,11 @@ var (
 
 // DatabaseDriver implements the Driver interface using database
 type DatabaseDriver struct {
+	// DriverCore supplies the lock-free event-dispatch slot (SetEventDispatcher
+	// / DispatchEvent) shared by every built-in driver. Embedded so the
+	// promoted SetEventDispatcher satisfies contract.EventDispatcherAware.
+	DriverCore
+
 	mu       sync.RWMutex
 	db       *sql.DB
 	workerID string
@@ -96,12 +109,6 @@ type DatabaseDriver struct {
 	// atomic.Int64 so SetRetryAfter is lock-free and safe to invoke
 	// concurrently with pumping workers.
 	retryAfterNanos atomic.Int64
-	// eventDispatcher is stored via atomic.Pointer so the dispatcher path
-	// never acquires d.mu. PushDelayedCtx may grab d.mu under future
-	// refactors (and PopCtxWithTrace already does); routing dispatch
-	// through an atomic load keeps SetEventDispatcher lock-free and
-	// deadlock-proof regardless of the caller's lock state.
-	eventDispatcher atomic.Pointer[dispatcherFn]
 }
 
 // NewDatabaseDriver creates a new database queue driver with an injected *sql.DB.
@@ -141,33 +148,6 @@ func (d *DatabaseDriver) retryAfter() time.Duration {
 	return time.Duration(v)
 }
 
-// SetEventDispatcher installs the event dispatcher. The assignment goes
-// through atomic.Pointer and never touches d.mu, so it is safe to call from
-// inside callers that already hold the queue lock.
-func (d *DatabaseDriver) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
-	if fn == nil {
-		d.eventDispatcher.Store(nil)
-		return
-	}
-	f := dispatcherFn(fn)
-	d.eventDispatcher.Store(&f)
-}
-
-// dispatchEvent dispatches an event if a dispatcher is configured. The
-// caller-supplied ctx is propagated so listeners observe request-scoped
-// values. The dispatcher pointer is loaded atomically, so this method is
-// safe to invoke from paths that already hold d.mu.
-func (d *DatabaseDriver) dispatchEvent(ctx context.Context, event interface{}) {
-	p := d.eventDispatcher.Load()
-	if p == nil {
-		return
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	(*p)(ctx, event)
-}
-
 // PushCtx adds a job to the queue.
 func (d *DatabaseDriver) PushCtx(ctx context.Context, job Job, queueName ...string) error {
 	return d.PushDelayedCtx(ctx, job, 0, queueName...)
@@ -199,6 +179,13 @@ func (d *DatabaseDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupe
 	if db == nil {
 		return fmt.Errorf("velocity/queue: database not initialized")
 	}
+
+	// Hold d.mu across the whole claim+insert transaction so a concurrent
+	// Clear cannot interleave between the jobs and job_dedupe deletes and
+	// strand a dedupe-less jobs row (which would let a later same-key push
+	// enqueue a duplicate and break at-most-once). Clear takes the same lock.
+	d.mu.Lock()
+	defer d.mu.Unlock()
 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -246,16 +233,11 @@ func (d *DatabaseDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupe
 		return err
 	}
 
-	payload, err := json.Marshal(wrapper)
+	payload, err := marshalSigned(wrapper, func(sig string) { wrapper.Payload.Signature = sig },
+		"velocity/queue: failed to serialize job",
+		"velocity/queue: failed to serialize signed job")
 	if err != nil {
-		return fmt.Errorf("velocity/queue: failed to serialize job: %w", err)
-	}
-	if sig := signPayload(payload); sig != "" {
-		wrapper.Payload.Signature = sig
-		payload, err = json.Marshal(wrapper)
-		if err != nil {
-			return fmt.Errorf("velocity/queue: failed to serialize signed job: %w", err)
-		}
+		return err
 	}
 
 	now := time.Now()
@@ -269,7 +251,7 @@ func (d *DatabaseDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupe
 		return fmt.Errorf("velocity/queue: PushIfNotExistsCtx commit: %w", err)
 	}
 
-	dispatchJobQueued(d.dispatchEvent, ctx, wrapper.Payload.Type, name, false, 0)
+	dispatchJobQueued(d.DispatchEvent, ctx, wrapper.Payload.Type, name, false, 0)
 	return nil
 }
 
@@ -299,17 +281,11 @@ func (d *DatabaseDriver) PushDelayedCtx(ctx context.Context, job Job, delay time
 		return err
 	}
 
-	payload, err := json.Marshal(wrapper)
+	payload, err := marshalSigned(wrapper, func(sig string) { wrapper.Payload.Signature = sig },
+		"velocity/queue: failed to serialize job",
+		"velocity/queue: failed to serialize signed job")
 	if err != nil {
-		return fmt.Errorf("velocity/queue: failed to serialize job: %w", err)
-	}
-
-	if sig := signPayload(payload); sig != "" {
-		wrapper.Payload.Signature = sig
-		payload, err = json.Marshal(wrapper)
-		if err != nil {
-			return fmt.Errorf("velocity/queue: failed to serialize signed job: %w", err)
-		}
+		return err
 	}
 
 	scheduledAt := time.Now()
@@ -338,7 +314,7 @@ func (d *DatabaseDriver) PushDelayedCtx(ctx context.Context, job Job, delay time
 	}
 	_ = jobID
 
-	dispatchJobQueued(d.dispatchEvent, ctx, wrapper.Payload.Type, name, delay > 0, delay)
+	dispatchJobQueued(d.DispatchEvent, ctx, wrapper.Payload.Type, name, delay > 0, delay)
 	return nil
 }
 
@@ -741,16 +717,61 @@ func (d *DatabaseDriver) Size(queueName string) (int64, error) {
 	return count, nil
 }
 
-// Clear removes all jobs from a queue
+// Clear removes all jobs from a queue, including the queue's dedupe
+// rows. Deleting the job_dedupe rows for this queue keeps Clear aligned
+// with the memory driver (which releases queue-scoped dedupe keys): a
+// post-Clear PushIfNotExistsCtx with a previously seen key inserts a
+// fresh row instead of silently no-op'ing against a stale sentinel.
+// job_dedupe carries a queue column (see the INSERT in PushIfNotExistsCtx)
+// so the delete is precisely scoped to this queue.
+//
+// job_dedupe is an OPTIONAL sidecar: it is not part of the base jobs
+// schema and is provisioned only by apps that opt into dedupe/batch
+// features (EnsureJobBatchesTable or a dedicated migration). A jobs-only
+// deployment has no such table and therefore no dedupe rows to release,
+// so a "table missing" error from the dedupe delete is treated as
+// success; any other error propagates.
 func (d *DatabaseDriver) Clear(queueName string) error {
-	query := d.rewriteQuery("DELETE FROM jobs WHERE queue = $1")
-	_, err := d.db.Exec(query, queueName)
+	// Serialize against PushIfNotExistsCtx (which holds d.mu for its full
+	// claim+insert transaction) so the two jobs/job_dedupe deletes below
+	// cannot straddle a concurrent dedupe push and orphan its jobs row.
+	d.mu.Lock()
+	defer d.mu.Unlock()
 
-	if err != nil {
+	query := d.rewriteQuery("DELETE FROM jobs WHERE queue = $1")
+	if _, err := d.db.Exec(query, queueName); err != nil {
 		return fmt.Errorf("velocity/queue: failed to clear queue: %w", err)
 	}
 
+	dedupeQuery := d.rewriteQuery("DELETE FROM job_dedupe WHERE queue = $1")
+	if _, err := d.db.Exec(dedupeQuery, queueName); err != nil && !dedupeTableMissing(err) {
+		return fmt.Errorf("velocity/queue: failed to clear queue dedupe keys: %w", err)
+	}
+
 	return nil
+}
+
+// dedupeTableMissing reports whether err from the job_dedupe delete in
+// Clear indicates the optional sidecar table is absent rather than a
+// genuine failure. Matched on message text because the three backends
+// report this differently (sqlite "no such table: job_dedupe", postgres
+// SQLSTATE 42P01 "relation \"job_dedupe\" does not exist", mysql 1146
+// "Table '...job_dedupe' doesn't exist") and this package does not import
+// the driver libraries to assert on typed codes. The "missing" phrase
+// must co-occur with the job_dedupe table name so a missing-column error
+// (e.g. postgres "column \"queue\" does not exist" from an older
+// mis-migrated table) is not mistaken for a missing table and swallowed.
+func dedupeTableMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "job_dedupe") {
+		return false
+	}
+	return strings.Contains(msg, "no such table") ||
+		strings.Contains(msg, "does not exist") ||
+		strings.Contains(msg, "doesn't exist")
 }
 
 // Failed marks a job as failed

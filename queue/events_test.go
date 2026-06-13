@@ -66,7 +66,7 @@ func TestDispatcher(t *testing.T) {
 		q.SetEventDispatcher(nil)
 
 		// Should not panic - dispatch function checks for nil
-		q.dispatchEvent(context.Background(), &JobQueued{})
+		q.DispatchEvent(context.Background(), &JobQueued{})
 	})
 
 	t.Run("dispatchEvent with error returning dispatcher", func(t *testing.T) {
@@ -78,7 +78,7 @@ func TestDispatcher(t *testing.T) {
 		})
 
 		// Should not panic, errors are ignored
-		q.dispatchEvent(context.Background(), &JobQueued{})
+		q.DispatchEvent(context.Background(), &JobQueued{})
 
 		q.SetEventDispatcher(nil)
 	})

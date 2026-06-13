@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"sync"
@@ -180,6 +181,32 @@ func signPayload(data []byte) string {
 	mac := hmac.New(sha256.New, signingKey)
 	mac.Write(data)
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// marshalSigned marshals v to JSON, signs those bytes, and (when signing is
+// enabled) calls setSig with the signature and re-marshals so the returned
+// bytes carry the Signature field. The signature is computed over the UNSIGNED
+// marshal; the signed bytes are the same value re-encoded with only the
+// Signature field added. This is the shared producer-side serialize/sign/
+// re-serialize dance used by every driver push path.
+//
+// unsignedErrMsg and signedErrMsg are the full error prefixes each call site
+// wraps its two json.Marshal failures with, preserved verbatim so the helper
+// is byte-for-byte and error-for-error equivalent to the inline code it
+// replaces.
+func marshalSigned(v any, setSig func(string), unsignedErrMsg, signedErrMsg string) ([]byte, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", unsignedErrMsg, err)
+	}
+	if sig := signPayload(data); sig != "" {
+		setSig(sig)
+		data, err = json.Marshal(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", signedErrMsg, err)
+		}
+	}
+	return data, nil
 }
 
 // verifyPayload checks the HMAC signature of the given data.

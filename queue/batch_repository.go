@@ -378,7 +378,20 @@ func (r *inMemoryBatchRepository) PruneStale(ctx context.Context, olderThan time
 	defer r.mu.Unlock()
 	removed := 0
 	for id, b := range r.batches {
-		if b.finished.Load() && b.finishedAt.Before(cutoff) {
+		if !b.finished.Load() {
+			continue
+		}
+		finishedAt := b.finishedAtSnapshot()
+		// finished is CAS'd true a hair BEFORE finishedAt is assigned, so a
+		// zero finishedAt means the completing goroutine has not yet finished
+		// the transition (and fireTerminalCallbacks has not run). Zero time is
+		// Before any cutoff, so reaping here would delete the batch and its
+		// globalCallbacks entry out from under the pending callback fire.
+		// Skip it; the next prune cycle sees a populated finishedAt.
+		if finishedAt.IsZero() {
+			continue
+		}
+		if finishedAt.Before(cutoff) {
 			delete(r.batches, id)
 			globalCallbacks.remove(id)
 			removed++
@@ -436,7 +449,7 @@ func (r *inMemoryBatchRepository) FindUndispatchedCallbacks(ctx context.Context,
 				BatchID: b.id,
 				Kind:    CallbackCatch,
 				Name:    b.catchName,
-				ErrMsg:  b.lastError,
+				ErrMsg:  b.lastErrorSnapshot(),
 			})
 			if len(out) >= limit {
 				break
@@ -460,7 +473,7 @@ func (r *inMemoryBatchRepository) FindUndispatchedCallbacks(ctx context.Context,
 				BatchID: b.id,
 				Kind:    CallbackFinally,
 				Name:    b.finallyName,
-				ErrMsg:  b.lastError,
+				ErrMsg:  b.lastErrorSnapshot(),
 			})
 		}
 	}

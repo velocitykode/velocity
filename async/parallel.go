@@ -2,7 +2,9 @@ package async
 
 import (
 	"context"
+	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/velocitykode/velocity/internal/panicerr"
@@ -191,12 +193,37 @@ func AllWithErrorN[T any](concurrency int, fns ...func() (T, error)) ([]T, error
 	return values, nil
 }
 
-// Race returns first completed result
+// Race returns first completed result.
+//
+// Winner-takes-all: the first fn to return successfully sends its value and
+// cancels the rest via ctx; losing goroutines observe ctx.Done and exit.
+//
+// Failure modes that would otherwise leave Get blocked forever are surfaced
+// as errors (runtime conditions, not panics, per the package panic policy):
+//   - zero fns passed: Get returns a descriptive error.
+//   - every fn panics: each panic is routed through handlePanic (logging +
+//     SetPanicHook parity with Run/ForEach) and converted via
+//     panicerr.FromRecovered; the first recorded panic error is delivered on
+//     errorCh once the supervisor observes that no goroutine won.
 func Race[T any](fns ...func() T) *Result[T] {
 	r := NewResult[T]()
+
+	// Zero fns: no goroutine can ever send, so Get would block forever.
+	// Surface a runtime error instead.
+	if len(fns) == 0 {
+		r.errorCh <- errors.New("async: Race called with zero functions")
+		return r
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 
-	var wg sync.WaitGroup
+	var (
+		wg       sync.WaitGroup
+		won      atomic.Bool // set once a goroutine wins the valueCh send
+		panicMu  sync.Mutex
+		panicErr error // first recorded panic, guarded by panicMu
+	)
+
 	for _, fn := range fns {
 		fn := fn // capture for closure
 		wg.Add(1)
@@ -204,8 +231,15 @@ func Race[T any](fns ...func() T) *Result[T] {
 			defer wg.Done()
 			defer func() {
 				if p := recover(); p != nil {
-					// Ignore panics in losing goroutines
-					return
+					// Route the panic through the package handler for
+					// logging + SetPanicHook parity, and record it so the
+					// supervisor can surface it if every fn panics.
+					handlePanic(p)
+					panicMu.Lock()
+					if panicErr == nil {
+						panicErr = panicerr.FromRecovered(p)
+					}
+					panicMu.Unlock()
 				}
 			}()
 
@@ -216,6 +250,7 @@ func Race[T any](fns ...func() T) *Result[T] {
 				value := fn()
 				select {
 				case r.valueCh <- value:
+					won.Store(true)
 					cancel() // Cancel other goroutines
 				case <-ctx.Done():
 					return
@@ -224,10 +259,22 @@ func Race[T any](fns ...func() T) *Result[T] {
 		}()
 	}
 
-	// Guarantee the cancelCtx is released even if every fn panics or
-	// none reaches the send. Safe to call cancel twice.
+	// Supervisor: once every goroutine has settled, guarantee Get unblocks.
+	// If a winner sent its value, just release the ctx. If none won (every
+	// fn panicked, or each lost the send race to a cancelled ctx), deliver
+	// the recorded panic error - or a generic one if somehow none was
+	// recorded - so Get does not hang. Safe to call cancel twice.
 	go func() {
 		wg.Wait()
+		if !won.Load() {
+			panicMu.Lock()
+			err := panicErr
+			panicMu.Unlock()
+			if err == nil {
+				err = errors.New("async: all Race functions failed without producing a value")
+			}
+			r.errorCh <- err
+		}
 		cancel()
 	}()
 

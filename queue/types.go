@@ -167,12 +167,12 @@ type ReservationDriver interface {
 //     dispatch.
 //   - PushIfNotExistsCtx returns a non-nil error only on transport
 //     failures (DB unreachable, ctx cancelled, etc.).
-//   - "Live row" means the dedupe key is still in the driver's
-//     enqueue store. A queue row that has been consumed and deleted
-//     is NOT live, so a re-Push with the same key after consume will
-//     insert a fresh row. Callers that need exactly-once across the
-//     consume boundary must also gate the handler on application-level
-//     dedupe state (see BatchCallbackJob.HandleCtx).
+//   - Dedupe state may outlive Pop/consume. Drivers retain the key
+//     after the queue row is consumed (memory/database/redis keep it
+//     for roughly a 7-day retention horizon) so a same-key Push during
+//     that window no-ops instead of inserting a fresh row, preserving
+//     at-most-once across the consume boundary. The key stops gating
+//     pushes only after Clear or once the retention horizon elapses.
 //
 // Used by the C-03 follow-up batch callback path: deterministic
 // (batchID, kind) UUIDs survive crashes between push and

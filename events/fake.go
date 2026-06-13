@@ -106,25 +106,13 @@ func (f *FakeDispatcher) Dispatch(ctx context.Context, event interface{}) error 
 		f.mu.Unlock()
 		return nil
 	}
-
-	// Not faking: snapshot the listener set under the lock so concurrent
-	// Listen/Off cannot mutate the slice we are about to iterate, then
-	// release the lock so listener bodies are free to re-enter the
-	// dispatcher (AssertDispatched, Dispatch follow-ups, etc.).
-	eventName := f.getEventName(event)
-	entries := f.listeners[eventName]
-	listeners := make([]Listener, len(entries))
-	for i, entry := range entries {
-		listeners[i] = entry.listener
-	}
 	f.mu.Unlock()
 
-	for _, listener := range listeners {
-		if err := listener.Handle(ctx, event); err != nil {
-			return err
-		}
-	}
-	return nil
+	// Not faking: run listeners for real. executeListeners re-acquires the
+	// lock as an RLock to snapshot the listener set, then releases it before
+	// invoking listener bodies so a listener that re-enters the dispatcher
+	// (AssertDispatched, Dispatch follow-ups, etc.) does not deadlock.
+	return f.executeListeners(ctx, event)
 }
 
 // DispatchNow records the event synchronously
@@ -144,7 +132,9 @@ func (f *FakeDispatcher) DispatchAfter(ctx context.Context, event interface{}, d
 
 // Until dispatches events until the first non-nil return
 func (f *FakeDispatcher) Until(ctx context.Context, event interface{}) (interface{}, error) {
-	f.Dispatch(ctx, event)
+	if err := f.Dispatch(ctx, event); err != nil {
+		return nil, err
+	}
 	return nil, nil
 }
 

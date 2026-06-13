@@ -125,7 +125,26 @@ type Batch struct {
 
 	dispatchEvent func(ctx context.Context, event interface{})
 
-	mu sync.Mutex // protects finishedAt and lastError
+	mu sync.RWMutex // protects finishedAt and lastError
+}
+
+// finishedAtSnapshot returns finishedAt under the lock. Every reader
+// outside the methods that already hold b.mu MUST route through this so
+// the field is never read while a concurrent IncrementSuccess/Failure or
+// DecrementPending is assigning it.
+func (b *Batch) finishedAtSnapshot() time.Time {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.finishedAt
+}
+
+// lastErrorSnapshot returns lastError under the lock. Same contract as
+// finishedAtSnapshot: it guards the bare reads that previously raced with
+// IncrementFailure writing the field.
+func (b *Batch) lastErrorSnapshot() string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.lastError
 }
 
 // ID returns the batch identifier
@@ -329,12 +348,16 @@ func (b *Batch) copyCountersFrom(src *Batch) {
 	}
 	if src.finished.Load() {
 		b.finished.Store(true)
+		// Snapshot src under its own lock BEFORE taking the receiver's mu
+		// so we never hold two batch locks at once.
+		srcFinishedAt := src.finishedAtSnapshot()
+		srcLastError := src.lastErrorSnapshot()
 		b.mu.Lock()
 		if b.finishedAt.IsZero() {
-			b.finishedAt = src.finishedAt
+			b.finishedAt = srcFinishedAt
 		}
-		if src.lastError != "" {
-			b.lastError = src.lastError
+		if srcLastError != "" {
+			b.lastError = srcLastError
 		}
 		b.mu.Unlock()
 	}
@@ -384,7 +407,7 @@ func (b *Batch) fireTerminalCallbacks(ctx context.Context, updated *Batch) {
 	if name := b.useFinallyName(updated); name != "" {
 		errMsg := ""
 		if updated != nil {
-			errMsg = updated.lastError
+			errMsg = updated.lastErrorSnapshot()
 		}
 		dispatchBatchCallbackJob(ctx, name, CallbackFinally, b.id, errMsg)
 	}
@@ -611,14 +634,29 @@ func (pb *PendingBatch) Dispatch(ctx context.Context, driver Driver) (*Batch, er
 			// Adjust pendingJobs to reflect only the jobs that were actually pushed,
 			// then cancel the batch so it can still reach Finished state.
 			unpushed := len(pb.jobs) - pushed
+			anyFinished := false
 			for i := 0; i < unpushed; i++ {
-				_, _, _ = repo.DecrementPending(ctx, batch.id)
+				_, justFinished, derr := repo.DecrementPending(ctx, batch.id)
+				if derr == nil && justFinished {
+					anyFinished = true
+				}
 			}
 			// Reflect the repository's view onto the local Batch for callers.
-			if refreshed, ferr := repo.Find(ctx, batch.id); ferr == nil && refreshed != nil {
+			var refreshed *Batch
+			if found, ferr := repo.Find(ctx, batch.id); ferr == nil && found != nil {
+				refreshed = found
 				batch.copyCountersFrom(refreshed)
 			}
 			batch.CancelCtx(ctx)
+			// Draining the unpushed slots can be what drives the batch to its
+			// terminal state - notably when the very FIRST push fails, every
+			// slot is drained here and no worker will ever observe completion.
+			// Fire terminal callbacks exactly as recordSkip/recordFailure do,
+			// or Finally/BatchCompleted never fire for a batch that failed to
+			// dispatch. Ordering mirrors recordFailure: cancel, then fire.
+			if anyFinished {
+				batch.fireTerminalCallbacks(ctx, refreshed)
+			}
 			return batch, fmt.Errorf("batch: failed to push job %d/%d: %w", pushed+1, len(pb.jobs), err)
 		}
 		pushed++

@@ -126,10 +126,12 @@ func JobBatchesMigrationSQL(driver string) []string {
 // into `jobs`, so the reaper retry is idempotent at the storage layer
 // even when MarkCallbackDispatched fails after a successful push.
 //
-// Rows are removed when the matching `jobs` row is popped (so a
-// legitimate later dispatch for the same key is not blocked) and when
-// PruneStaleDedupeKeys is run on a periodic schedule (defensive sweep
-// for orphaned rows after a worker crash mid-pop).
+// Dedupe rows intentionally survive Pop: the at-most-once contract
+// requires the key to remain claimed after the job is dispatched, so
+// Pop deletes only from `jobs`. Rows are reclaimed by Clear, which
+// deletes the queue's `job_dedupe` rows. The idx_job_dedupe_created_at
+// index backs an intended created_at-horizon prune for rows orphaned by
+// a worker crash mid-pop; that periodic prune is not yet implemented.
 func JobDedupeMigrationSQL(driver string) []string {
 	switch driver {
 	case "postgres":

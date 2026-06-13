@@ -42,14 +42,18 @@ func (f *FakeBus) DispatchAsyncCtx(_ context.Context, cmd Command) error {
 	return f.DispatchAsync(cmd)
 }
 
-// AssertDispatched asserts that a command of the given type was dispatched at least once.
-func (f *FakeBus) AssertDispatched(cmd Command) error {
+// AssertDispatched asserts that a command of the given type was dispatched at
+// least once. When callback is non-nil, a matching command must also satisfy
+// it; a nil callback matches on type alone.
+func (f *FakeBus) AssertDispatched(cmd Command, callback func(Command) bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	cmdType := reflect.TypeOf(cmd)
 	for _, d := range f.dispatched {
 		if reflect.TypeOf(d) == cmdType {
-			return nil
+			if callback == nil || callback(d) {
+				return nil
+			}
 		}
 	}
 	return fmt.Errorf("expected command %T to be dispatched, but it was not", cmd)
@@ -95,17 +99,62 @@ func (f *FakeBus) AssertNothingDispatched() error {
 	return nil
 }
 
-// AssertAsyncDispatched asserts that a command type was dispatched async at least once.
-func (f *FakeBus) AssertAsyncDispatched(cmd Command) error {
+// AssertAsyncDispatched asserts that a command type was dispatched async at
+// least once. When callback is non-nil, a matching command must also satisfy
+// it; a nil callback matches on type alone.
+func (f *FakeBus) AssertAsyncDispatched(cmd Command, callback func(Command) bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	cmdType := reflect.TypeOf(cmd)
 	for _, d := range f.asyncDispatched {
 		if reflect.TypeOf(d) == cmdType {
-			return nil
+			if callback == nil || callback(d) {
+				return nil
+			}
 		}
 	}
 	return fmt.Errorf("expected command %T to be async dispatched, but it was not", cmd)
+}
+
+// AssertAsyncDispatchedTimes asserts that a command type was dispatched async
+// exactly n times.
+func (f *FakeBus) AssertAsyncDispatchedTimes(cmd Command, n int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cmdType := reflect.TypeOf(cmd)
+	count := 0
+	for _, d := range f.asyncDispatched {
+		if reflect.TypeOf(d) == cmdType {
+			count++
+		}
+	}
+	if count != n {
+		return fmt.Errorf("expected command %T to be async dispatched %d times, got %d", cmd, n, count)
+	}
+	return nil
+}
+
+// AssertAsyncNotDispatched asserts that a command type was never dispatched async.
+func (f *FakeBus) AssertAsyncNotDispatched(cmd Command) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cmdType := reflect.TypeOf(cmd)
+	for _, d := range f.asyncDispatched {
+		if reflect.TypeOf(d) == cmdType {
+			return fmt.Errorf("expected command %T not to be async dispatched, but it was", cmd)
+		}
+	}
+	return nil
+}
+
+// AssertNothingAsyncDispatched asserts that no commands were dispatched async.
+func (f *FakeBus) AssertNothingAsyncDispatched() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.asyncDispatched) > 0 {
+		return fmt.Errorf("expected no commands async dispatched, got %d", len(f.asyncDispatched))
+	}
+	return nil
 }
 
 // GetDispatched returns all synchronously dispatched commands.
@@ -114,6 +163,15 @@ func (f *FakeBus) GetDispatched() []Command {
 	defer f.mu.Unlock()
 	cp := make([]Command, len(f.dispatched))
 	copy(cp, f.dispatched)
+	return cp
+}
+
+// GetAsyncDispatched returns all asynchronously dispatched commands.
+func (f *FakeBus) GetAsyncDispatched() []Command {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cp := make([]Command, len(f.asyncDispatched))
+	copy(cp, f.asyncDispatched)
 	return cp
 }
 

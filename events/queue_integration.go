@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"sync"
@@ -159,6 +160,25 @@ func (j *EventListenerJob) hydrateEvent() (interface{}, error) {
 	return value, nil
 }
 
+// MaxAttempts reports the job's retry budget so the queue worker honours the
+// QueuedListener's Tries() value. The worker derives a job's budget solely
+// from the queue.MaxAttempter interface; without this method every queued
+// listener silently fell back to the worker's package default regardless of
+// Tries(). MaxRetries is populated by pushToQueue from QueuedListener.Tries()
+// (default 3) and round-trips through JSON (json:"max_retries"), so a job
+// hydrated in a different worker process carries the same budget.
+//
+// Guard: a non-positive MaxRetries (legacy or hand-built payloads that never
+// set the field) returns the package default of 3 rather than 0, which the
+// worker would read as "no retries allowed" and fail the job on first error.
+// This preserves the pre-fix behaviour for those payloads.
+func (j *EventListenerJob) MaxAttempts() int {
+	if j.MaxRetries <= 0 {
+		return 3
+	}
+	return j.MaxRetries
+}
+
 // Failed is invoked by the queue driver once the job has exhausted its retry
 // budget. The previous no-op silently dropped queued security / audit
 // listeners. Route the error through the package-level failure reporter so
@@ -186,14 +206,28 @@ type QueueIntegratedDispatcher struct {
 	qmu              sync.RWMutex
 	listenerRegistry map[string]func() Listener // Registry of listener factories
 	queueDriver      queue.Driver               // Injected queue driver
+
+	// listenersFor resolves the ordered listener slice Dispatch iterates.
+	// It MUST be used instead of calling d.getListenersForEvent directly
+	// from Dispatch: Go binds method calls on the embedded *DefaultDispatcher
+	// statically, so a subtype that overrides getListenersForEvent (e.g.
+	// PriorityDispatcher) could never have its override observed through the
+	// inherited Dispatch method -- the call inside Dispatch always sees the
+	// *QueueIntegratedDispatcher receiver and the promoted default. This hook
+	// gives subtypes a virtual-dispatch seam: NewQueueIntegratedDispatcher
+	// defaults it to the promoted default, NewPriorityDispatcher rebinds it
+	// to the priority-sorting variant.
+	listenersFor func(event interface{}) []Listener
 }
 
 // NewQueueIntegratedDispatcher creates a new queue-integrated dispatcher
 func NewQueueIntegratedDispatcher() *QueueIntegratedDispatcher {
-	return &QueueIntegratedDispatcher{
+	d := &QueueIntegratedDispatcher{
 		DefaultDispatcher: NewDispatcher(),
 		listenerRegistry:  make(map[string]func() Listener),
 	}
+	d.listenersFor = d.getListenersForEvent
+	return d
 }
 
 // SetQueueDriver sets the queue driver for dispatching queued listeners.
@@ -225,28 +259,65 @@ func (d *QueueIntegratedDispatcher) RegisterListenerFactory(listenerType string,
 // dispatcher, so bootstrap installs the hook on this type too, and a
 // FailureEvent dispatched here has to reach the Reporter chain exactly like
 // one dispatched through DefaultDispatcher.
+//
+// Three behaviours are aligned with DefaultDispatcher.Dispatch:
+//   - Listener resolution goes through the listenersFor hook so a subtype's
+//     getListenersForEvent override (PriorityDispatcher's priority sort) is
+//     honoured. Calling d.getListenersForEvent directly would bind to the
+//     promoted default and silently ignore the override.
+//   - A listener that opts into ShouldDispatchAfterCommit is deferred onto
+//     the after-commit queue via EnqueueAfterCommit and replayed at commit
+//     (through pushToQueue when it also ShouldQueue, otherwise inline),
+//     mirroring dispatcher.go. Outside a transaction the gate collapses to
+//     the inline / queue branches.
+//   - Listener errors are aggregated with errors.Join rather than returned
+//     first-wins, so one failing listener does not mask the rest.
 func (d *QueueIntegratedDispatcher) Dispatch(ctx context.Context, event interface{}) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	ctx = d.reportFailure(ctx, event)
-	listeners := d.getListenersForEvent(event)
+	listeners := d.listenersFor(event)
 
+	var errs []error
 	for _, listener := range listeners {
+		// After-commit gate runs FIRST: a listener that opts into
+		// post-commit delivery must not reach the queue or inline branch
+		// while the transaction is still in flight. EnqueueAfterCommit
+		// returns false when no queue is installed (or it already drained),
+		// collapsing the gate into the branches below.
+		if ac, ok := listener.(ShouldDispatchAfterCommit); ok && ac.ShouldDispatchAfterCommit() {
+			ev := event
+			ln := listener
+			if EnqueueAfterCommit(ctx, func(replayCtx context.Context) error {
+				if ln.ShouldQueue() {
+					if err := d.pushToQueue(replayCtx, ev, ln); err != nil {
+						return fmt.Errorf("failed to queue listener: %w", err)
+					}
+					return nil
+				}
+				return d.processListener(replayCtx, ev, ln)
+			}) {
+				continue
+			}
+			// Fall through: no queue installed or already drained; the
+			// listener fires inline / via queue just like a non-opt-in one.
+		}
+
 		if listener.ShouldQueue() {
 			// Enhanced queue integration
 			if err := d.pushToQueue(ctx, event, listener); err != nil {
-				return fmt.Errorf("failed to queue listener: %w", err)
+				errs = append(errs, fmt.Errorf("failed to queue listener: %w", err))
 			}
 		} else {
 			// Process synchronously
 			if err := d.processListener(ctx, event, listener); err != nil {
-				return err
+				errs = append(errs, err)
 			}
 		}
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 // pushToQueue pushes a listener to the queue with proper event serialization.
@@ -687,9 +758,14 @@ type PriorityDispatcher struct {
 
 // NewPriorityDispatcher creates a new priority-aware dispatcher
 func NewPriorityDispatcher() *PriorityDispatcher {
-	return &PriorityDispatcher{
+	d := &PriorityDispatcher{
 		QueueIntegratedDispatcher: NewQueueIntegratedDispatcher(),
 	}
+	// Rebind the embedded dispatcher's listener-resolution hook to the
+	// priority-sorting override so the inherited Dispatch observes it (Go
+	// would otherwise bind statically to the promoted default).
+	d.QueueIntegratedDispatcher.listenersFor = d.getListenersForEvent
+	return d
 }
 
 // getListenersForEvent retrieves all listeners for an event, sorted by priority
@@ -754,13 +830,22 @@ func NewStoppablePropagationDispatcher() *StoppablePropagationDispatcher {
 	}
 }
 
-// Dispatch fires an event with support for stopping propagation
+// Dispatch fires an event with support for stopping propagation.
+//
+// Listener resolution here is already correct without the listenersFor hook:
+// this is the subtype's OWN Dispatch, so d.getListenersForEvent binds to the
+// promoted PriorityDispatcher override under the *StoppablePropagationDispatcher
+// receiver. The after-commit gate and errors.Join aggregation are aligned with
+// DefaultDispatcher.Dispatch; the StoppableEvent break is preserved (checked
+// before each listener so a prior synchronous listener that called
+// StopPropagation halts the chain).
 func (d *StoppablePropagationDispatcher) Dispatch(ctx context.Context, event interface{}) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	listeners := d.getListenersForEvent(event)
 
+	var errs []error
 	for _, listener := range listeners {
 		// Check if we should stop propagation
 		if stoppable, ok := event.(StoppableEvent); ok {
@@ -769,20 +854,45 @@ func (d *StoppablePropagationDispatcher) Dispatch(ctx context.Context, event int
 			}
 		}
 
+		// After-commit gate runs before the queue / inline branches, exactly
+		// as in QueueIntegratedDispatcher.Dispatch. The replay closure uses
+		// this type's processListener (propagation-aware) for the inline path.
+		if ac, ok := listener.(ShouldDispatchAfterCommit); ok && ac.ShouldDispatchAfterCommit() {
+			ev := event
+			ln := listener
+			if EnqueueAfterCommit(ctx, func(replayCtx context.Context) error {
+				// Re-check propagation at replay time so an earlier after-commit
+				// StoppablePropagationListener that called StopPropagation halts
+				// the already-enqueued later listeners, matching the inline path.
+				if stoppable, ok := ev.(StoppableEvent); ok && stoppable.ShouldStopPropagation() {
+					return nil
+				}
+				if ln.ShouldQueue() {
+					if err := d.pushToQueue(replayCtx, ev, ln); err != nil {
+						return fmt.Errorf("failed to queue listener: %w", err)
+					}
+					return nil
+				}
+				return d.processListener(replayCtx, ev, ln)
+			}) {
+				continue
+			}
+		}
+
 		if listener.ShouldQueue() {
 			// For queued listeners, we don't stop propagation since they're async
 			if err := d.pushToQueue(ctx, event, listener); err != nil {
-				return fmt.Errorf("failed to queue listener: %w", err)
+				errs = append(errs, fmt.Errorf("failed to queue listener: %w", err))
 			}
 		} else {
 			// Process synchronously
 			if err := d.processListener(ctx, event, listener); err != nil {
-				return err
+				errs = append(errs, err)
 			}
 		}
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 // StoppablePropagationListener can signal to stop event propagation

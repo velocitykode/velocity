@@ -14,13 +14,28 @@ import (
 	"github.com/velocitykode/velocity/trace"
 )
 
-// dispatcherFn is the typed function pointer used for atomic.Pointer storage.
-// Defined at package scope so all drivers in this package share the same
-// underlying type for the dispatcher slot.
-type dispatcherFn func(ctx context.Context, event interface{}) error
+// dedupeKeyRetention is the horizon past which a dedupe key recorded by
+// PushIfNotExistsCtx is swept from m.dedupeKeys. Matches the redis
+// sentinel TTL (queue/redis: 7*24*60*60s) and the database job_dedupe
+// prune horizon so the three drivers converge on one at-most-once
+// memory window. Keys are held this long (well past any callback's
+// execution window) so a stale reaper re-push after the original entry
+// was consumed cannot re-enqueue it; see popLocked.
+const dedupeKeyRetention = 7 * 24 * time.Hour
+
+// dedupeSweepInterval is how often processDelayedJobs prunes stale
+// dedupe keys. Coarse relative to the 1s delayed-job tick: the set is
+// small and entries live for dedupeKeyRetention, so an hourly sweep
+// bounds growth without scanning the map every second.
+const dedupeSweepInterval = time.Hour
 
 // MemoryDriver implements Queue interface using in-memory storage
 type MemoryDriver struct {
+	// DriverCore supplies the lock-free event-dispatch slot (SetEventDispatcher
+	// / DispatchEvent) shared by every built-in driver. Embedded so the
+	// promoted SetEventDispatcher satisfies contract.EventDispatcherAware.
+	DriverCore
+
 	mu       sync.RWMutex
 	queues   map[string]*list.List
 	delayed  map[string]*delayedHeap
@@ -28,13 +43,19 @@ type MemoryDriver struct {
 	stopChan chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
-	// dedupeKeys tracks the dedupe identifiers of jobs currently live in
-	// the queue (queues + delayed). Implements DedupeAwarePusher: a
-	// PushIfNotExistsCtx whose key is already present returns nil
-	// without inserting. Entries are removed when the matching job is
-	// popped or cleared. Guarded by m.mu (same as queues / delayed) so
-	// the lookup and the insert are atomic against concurrent Push.
-	dedupeKeys map[string]struct{}
+	// dedupeKeys tracks the dedupe identifiers of jobs that have been
+	// pushed via PushIfNotExistsCtx, mapped to their insertion time.
+	// Implements DedupeAwarePusher: a PushIfNotExistsCtx whose key is
+	// already present returns nil without inserting. Entries are
+	// INTENTIONALLY retained past Pop (see popLocked) to close the C-03
+	// fb4 re-push hole; they are removed only by Clear (queue-scoped) and
+	// by the background sweep in processDelayedJobs, which prunes entries
+	// older than dedupeKeyRetention (7 days) ONLY once they no longer
+	// belong to a live job (see sweepStaleDedupeKeys), matching the redis
+	// sentinel TTL and the database job_dedupe prune horizon. Guarded by m.mu
+	// (same as queues / delayed) so the lookup and the insert are atomic
+	// against concurrent Push.
+	dedupeKeys map[string]time.Time
 	// reservations holds wrappers leased to a worker by PopCtxReserved
 	// keyed by the ReservationToken.ID. The wrapper carries the
 	// persisted attempts counter (Payload.Attempts) which the pop path
@@ -50,11 +71,6 @@ type MemoryDriver struct {
 	// Starts at 1 so 0 stays reserved for the IsZero contract. Read and
 	// written under m.mu.
 	nextReservationID int64
-	// eventDispatcher is stored via atomic.Pointer so the dispatcher path
-	// never acquires m.mu. This is critical: PushCtx/PushDelayedCtx hold
-	// m.mu.Lock() while calling dispatchEvent, so any RLock attempt on the
-	// dispatcher path would self-deadlock against the writer lock.
-	eventDispatcher atomic.Pointer[dispatcherFn]
 
 	// nonIdentifiableWarned ensures the "this job kind cannot reliably
 	// hit MaxAttempts across processes" advisory fires at most once per
@@ -161,7 +177,7 @@ func NewMemoryDriver() *MemoryDriver {
 		queues:       make(map[string]*list.List),
 		delayed:      make(map[string]*delayedHeap),
 		failed:       make(map[string][]*failedJob),
-		dedupeKeys:   make(map[string]struct{}),
+		dedupeKeys:   make(map[string]time.Time),
 		reservations: make(map[int64]*memReservation),
 		stopChan:     make(chan struct{}),
 	}
@@ -177,34 +193,6 @@ func (m *MemoryDriver) Start() {
 		defer m.wg.Done()
 		m.processDelayedJobs()
 	})
-}
-
-// SetEventDispatcher installs the event dispatcher. Safe to call concurrently
-// with PushCtx/PushDelayedCtx (and from inside callers that already hold
-// m.mu) because the assignment goes through atomic.Pointer and never touches
-// the queue lock.
-func (m *MemoryDriver) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
-	if fn == nil {
-		m.eventDispatcher.Store(nil)
-		return
-	}
-	f := dispatcherFn(fn)
-	m.eventDispatcher.Store(&f)
-}
-
-// dispatchEvent dispatches an event if a dispatcher is configured. The
-// caller-supplied ctx is propagated so listeners observe request-scoped
-// values. The dispatcher pointer is loaded atomically, so this method is
-// safe to invoke from PushCtx/PushDelayedCtx while they hold m.mu.
-func (m *MemoryDriver) dispatchEvent(ctx context.Context, event interface{}) {
-	p := m.eventDispatcher.Load()
-	if p == nil {
-		return
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	(*p)(ctx, event)
 }
 
 // warnIfNonIdentifiable emits a one-time warning per distinct job type
@@ -264,7 +252,7 @@ func (m *MemoryDriver) PushCtx(ctx context.Context, job Job, queueName ...string
 
 	// Dispatch events outside the lock so listeners that call back into
 	// the driver (e.g. Push/Size) do not deadlock.
-	dispatchJobQueued(m.dispatchEvent, ctx, jobType, name, false, 0)
+	dispatchJobQueued(m.DispatchEvent, ctx, jobType, name, false, 0)
 	return nil
 }
 
@@ -299,7 +287,7 @@ func (m *MemoryDriver) PushDelayedCtx(ctx context.Context, job Job, delay time.D
 
 	// Dispatch events outside the lock so listeners that call back into
 	// the driver (e.g. Push/Size) do not deadlock.
-	dispatchJobQueued(m.dispatchEvent, ctx, jobType, name, true, delay)
+	dispatchJobQueued(m.DispatchEvent, ctx, jobType, name, true, delay)
 	return nil
 }
 
@@ -342,10 +330,10 @@ func (m *MemoryDriver) popLocked(queueName string) (Job, TraceContext, error) {
 	// successful push whose MarkCallbackDispatched then failed, the
 	// worker consumes and runs the callback to completion, and a
 	// stale reaper tick later attempts a re-push. With the key still
-	// present, PushIfNotExistsCtx no-ops on the retry. The memory
-	// driver does not currently prune the set; ResetDedupeKeysForTest
-	// clears it for test isolation, and production usage relies on
-	// each (batchID, kind) being naturally unique (UUID v7 batches).
+	// present, PushIfNotExistsCtx no-ops on the retry. The set does not
+	// leak: the background sweep in processDelayedJobs prunes keys older
+	// than dedupeKeyRetention (7 days), which is well past any callback's
+	// execution window and matches the redis/database sibling horizons.
 	_ = wrapper.DedupeKey
 
 	tc := TraceContext{}
@@ -564,11 +552,11 @@ func (m *MemoryDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupeKe
 		m.queues[name] = list.New()
 	}
 	m.queues[name].PushBack(wrapper)
-	m.dedupeKeys[dedupeKey] = struct{}{}
+	m.dedupeKeys[dedupeKey] = time.Now()
 	jobType := wrapper.Payload.Type
 	m.mu.Unlock()
 
-	dispatchJobQueued(m.dispatchEvent, ctx, jobType, name, false, 0)
+	dispatchJobQueued(m.DispatchEvent, ctx, jobType, name, false, 0)
 	return nil
 }
 
@@ -606,6 +594,19 @@ func (m *MemoryDriver) Clear(queueName string) error {
 			}
 		}
 	}
+	// Reservations leased out of this queue still pin their dedupe key.
+	// Release the key and drop the reservation so a later AckCtx surfaces
+	// ErrLeaseLost (matching its "already cleared" contract) instead of
+	// the key lingering and no-op'ing a same-key PushIfNotExistsCtx.
+	for id, r := range m.reservations {
+		if r.queue != queueName {
+			continue
+		}
+		if r.wrapper != nil && r.wrapper.DedupeKey != "" {
+			delete(m.dedupeKeys, r.wrapper.DedupeKey)
+		}
+		delete(m.reservations, id)
+	}
 
 	delete(m.queues, queueName)
 	delete(m.delayed, queueName)
@@ -621,7 +622,6 @@ func (m *MemoryDriver) Failed(job Job, err error, queueName string) error {
 	}
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	if _, exists := m.failed[queueName]; !exists {
 		m.failed[queueName] = make([]*failedJob, 0)
@@ -633,8 +633,10 @@ func (m *MemoryDriver) Failed(job Job, err error, queueName string) error {
 		error:    err.Error(),
 		failedAt: time.Now(),
 	})
+	m.mu.Unlock()
 
-	// Call the job's Failed method
+	// Job.Failed runs outside the lock so a handler that re-enters the
+	// driver (Push/Size) does not self-deadlock. Mirrors FailReservedCtx.
 	job.Failed(err)
 
 	return nil
@@ -694,15 +696,74 @@ func (m *MemoryDriver) Shutdown(ctx context.Context) error {
 func (m *MemoryDriver) processDelayedJobs() {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
+	sweepTicker := time.NewTicker(dedupeSweepInterval)
+	defer sweepTicker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
 			m.moveReadyJobs()
+		case <-sweepTicker.C:
+			m.sweepStaleDedupeKeys(time.Now())
 		case <-m.stopChan:
 			return
 		}
 	}
+}
+
+// sweepStaleDedupeKeys prunes dedupe keys whose insertion time is older
+// than dedupeKeyRetention AND that no longer belong to a live job. Without
+// this the set grows for the lifetime of the process: keys are
+// intentionally held past Pop (see popLocked) and released elsewhere only
+// by Clear. The `now` argument is a seam for deterministic tests. Runs
+// under m.mu, the same lock guarding the map.
+//
+// A key is pruned only when it is a consumed tombstone: a job that long
+// outlives the horizon while still queued, delayed, or reserved (e.g. a
+// job repeatedly released with backoff) keeps its key so a second
+// PushIfNotExistsCtx with the same key cannot enqueue a duplicate while
+// the original is still in flight.
+func (m *MemoryDriver) sweepStaleDedupeKeys(now time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	live := m.liveDedupeKeysLocked()
+	for key, inserted := range m.dedupeKeys {
+		if _, isLive := live[key]; isLive {
+			continue
+		}
+		if now.Sub(inserted) >= dedupeKeyRetention {
+			delete(m.dedupeKeys, key)
+		}
+	}
+}
+
+// liveDedupeKeysLocked returns the set of dedupe keys currently attached
+// to a live job: queued, delayed, or reserved. Callers must hold m.mu.
+// Failed jobs are terminal and deliberately excluded, so their key
+// becomes a prunable tombstone once the horizon passes.
+func (m *MemoryDriver) liveDedupeKeysLocked() map[string]struct{} {
+	live := make(map[string]struct{})
+	for _, q := range m.queues {
+		for e := q.Front(); e != nil; e = e.Next() {
+			if w, ok := e.Value.(*jobWrapper); ok && w.DedupeKey != "" {
+				live[w.DedupeKey] = struct{}{}
+			}
+		}
+	}
+	for _, h := range m.delayed {
+		for _, dj := range h.items {
+			if dj.wrapper != nil && dj.wrapper.DedupeKey != "" {
+				live[dj.wrapper.DedupeKey] = struct{}{}
+			}
+		}
+	}
+	for _, r := range m.reservations {
+		if r.wrapper != nil && r.wrapper.DedupeKey != "" {
+			live[r.wrapper.DedupeKey] = struct{}{}
+		}
+	}
+	return live
 }
 
 // moveReadyJobs pops every ready delayed job from each per-queue heap and

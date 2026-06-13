@@ -32,6 +32,17 @@ func VerifyPayload(data []byte, signature string) error {
 	return verifyPayload(data, signature)
 }
 
+// MarshalSigned marshals v, signs the marshalled bytes, and (when signing is
+// enabled) calls setSig with the signature and re-marshals so the returned
+// bytes carry the Signature field. The signature is computed over the UNSIGNED
+// marshal; the signed bytes differ only by the added Signature field. Leaf
+// drivers use this to run the identical serialize/sign/re-serialize dance the
+// built-in drivers use. unsignedErrMsg and signedErrMsg are the error prefixes
+// applied to the respective json.Marshal failures.
+func MarshalSigned(v any, setSig func(string), unsignedErrMsg, signedErrMsg string) ([]byte, error) {
+	return marshalSigned(v, setSig, unsignedErrMsg, signedErrMsg)
+}
+
 // SealPayload encrypts p.Data in place using the process-wide payload
 // encryptor (no-op when encryption is disabled). Producers must call this
 // BEFORE marshalling and signing the payload so the signature covers the
