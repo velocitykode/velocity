@@ -282,6 +282,7 @@ func (m *Manager) PutWithContext(ctx context.Context, key string, value interfac
 		return err
 	}
 	if err := store.PutCtx(ctx, key, value, ttl); err != nil {
+		m.dispatchCacheOperationFailed(ctx, m.defaultStore, "put", key, err)
 		return err
 	}
 	m.dispatchCacheWritten(ctx, key, m.defaultStore, ttl)
@@ -304,6 +305,7 @@ func (m *Manager) AddWithContext(ctx context.Context, key string, value interfac
 	}
 	inserted, addErr := store.AddCtx(ctx, key, value, ttl)
 	if addErr != nil {
+		m.dispatchCacheOperationFailed(ctx, m.defaultStore, "add", key, addErr)
 		return false, addErr
 	}
 	if inserted {
@@ -325,6 +327,7 @@ func (m *Manager) ForeverWithContext(ctx context.Context, key string, value inte
 		return err
 	}
 	if err := store.ForeverCtx(ctx, key, value); err != nil {
+		m.dispatchCacheOperationFailed(ctx, m.defaultStore, "put", key, err)
 		return err
 	}
 	m.dispatchCacheWritten(ctx, key, m.defaultStore, 0) // TTL=0 means forever
@@ -344,6 +347,7 @@ func (m *Manager) ForgetWithContext(ctx context.Context, key string) error {
 		return err
 	}
 	if err := store.ForgetCtx(ctx, key); err != nil {
+		m.dispatchCacheOperationFailed(ctx, m.defaultStore, "forget", key, err)
 		return err
 	}
 	m.dispatchCacheForgotten(ctx, key, m.defaultStore)
@@ -356,7 +360,11 @@ func (m *Manager) Flush() error {
 	if err != nil {
 		return err
 	}
-	return store.Flush()
+	if err := store.Flush(); err != nil {
+		m.dispatchCacheOperationFailed(context.Background(), m.defaultStore, "flush", "", err)
+		return err
+	}
+	return nil
 }
 
 // Increment increments a numeric value in the default cache store
@@ -365,7 +373,12 @@ func (m *Manager) Increment(key string, value int64) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return store.Increment(key, value)
+	result, incErr := store.Increment(key, value)
+	if incErr != nil {
+		m.dispatchCacheOperationFailed(context.Background(), m.defaultStore, "increment", key, incErr)
+		return 0, incErr
+	}
+	return result, nil
 }
 
 // Decrement decrements a numeric value in the default cache store
@@ -374,7 +387,12 @@ func (m *Manager) Decrement(key string, value int64) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return store.Decrement(key, value)
+	result, decErr := store.Decrement(key, value)
+	if decErr != nil {
+		m.dispatchCacheOperationFailed(context.Background(), m.defaultStore, "decrement", key, decErr)
+		return 0, decErr
+	}
+	return result, nil
 }
 
 // Remember gets from default cache or computes and stores. The callback has
@@ -493,6 +511,7 @@ func (m *Manager) RememberEWithContext(ctx context.Context, key string, ttl time
 
 	won, addErr := lockFn(lockTTL)
 	if addErr != nil {
+		m.dispatchCacheOperationFailed(ctx, m.defaultStore, "add", lockKey, addErr)
 		return nil, addErr
 	}
 	if won {
@@ -506,6 +525,7 @@ func (m *Manager) RememberEWithContext(ctx context.Context, key string, ttl time
 		}
 		if err := putFn(value); err != nil {
 			_ = unlockFn()
+			m.dispatchCacheOperationFailed(ctx, m.defaultStore, "put", key, err)
 			return nil, err
 		}
 		_ = unlockFn()
@@ -594,6 +614,7 @@ func (m *Manager) RememberForeverEWithContext(ctx context.Context, key string, c
 
 	won, addErr := lockFn(rememberLockTTL)
 	if addErr != nil {
+		m.dispatchCacheOperationFailed(ctx, m.defaultStore, "add", lockKey, addErr)
 		return nil, addErr
 	}
 	if won {
@@ -604,6 +625,7 @@ func (m *Manager) RememberForeverEWithContext(ctx context.Context, key string, c
 		}
 		if err := foreverFn(value); err != nil {
 			_ = unlockFn()
+			m.dispatchCacheOperationFailed(ctx, m.defaultStore, "put", key, err)
 			return nil, err
 		}
 		_ = unlockFn()
@@ -647,7 +669,11 @@ func (m *Manager) PutMany(items map[string]interface{}, ttl time.Duration) error
 	if err != nil {
 		return err
 	}
-	return store.PutMany(items, ttl)
+	if err := store.PutMany(items, ttl); err != nil {
+		m.dispatchCacheOperationFailed(context.Background(), m.defaultStore, "put_many", "", err)
+		return err
+	}
+	return nil
 }
 
 // Has checks if a key exists in the default cache store

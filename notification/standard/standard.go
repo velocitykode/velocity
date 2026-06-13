@@ -3,19 +3,20 @@
 //
 //	import _ "github.com/velocitykode/velocity/notification/standard"
 //
-// Importing this package registers the light root driver plus the leaf
-// drivers (mail, database, slack, broadcast) and their transitive
-// dependencies. Applications that want a smaller dependency footprint
-// should blank-import only the specific leaves they need instead.
+// Importing this package blank-imports every leaf channel driver
+// (broadcast, database, mail, slack), each of which registers its factory
+// into the notification registry from its own init() and pulls in the
+// notification root and its transitive dependencies. Applications that want
+// a smaller dependency footprint should blank-import only the specific
+// leaves they need instead.
 //
 // This aggregator MUST NOT be imported by core, router, or app packages
 // because it pulls in provider dependencies.
 package standard
 
 import (
-	// Light root driver self-registers from notification's init.
-	_ "github.com/velocitykode/velocity/notification"
-	// Leaf drivers.
+	// Leaf channel drivers; each self-registers from its init() and pulls
+	// in the notification root transitively.
 	_ "github.com/velocitykode/velocity/notification/broadcast"
 	_ "github.com/velocitykode/velocity/notification/database"
 	_ "github.com/velocitykode/velocity/notification/mail"

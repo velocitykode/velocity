@@ -72,7 +72,7 @@ func (e *CacheForgotten) Name() string {
 type CacheOperationFailed struct {
 	Context  context.Context
 	Store    string
-	Op       string // "get", "put", "forget", "flush"
+	Op       string // "put", "put_many", "add", "forget", "flush", "increment", "decrement"
 	Key      string
 	Error    string
 	At       time.Time
@@ -133,6 +133,24 @@ func (m *Manager) dispatchCacheForgotten(ctx context.Context, key, store string)
 		Context:  ctx,
 		Key:      key,
 		Store:    store,
+		TraceID:  traceID,
+		SpanID:   spanID,
+		ParentID: parentID,
+	})
+}
+
+// dispatchCacheOperationFailed dispatches a CacheOperationFailed event for a
+// failed store operation. op is one of the lowercase verbs documented on
+// CacheOperationFailed; key is empty for keyless operations (flush).
+func (m *Manager) dispatchCacheOperationFailed(ctx context.Context, store, op, key string, opErr error) {
+	traceID, spanID, parentID := trace.GetTraceContext(ctx)
+	m.dispatchEvent(ctx, &CacheOperationFailed{
+		Context:  ctx,
+		Store:    store,
+		Op:       op,
+		Key:      key,
+		Error:    opErr.Error(),
+		At:       time.Now(),
 		TraceID:  traceID,
 		SpanID:   spanID,
 		ParentID: parentID,
