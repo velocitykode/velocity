@@ -58,6 +58,25 @@ func main() {
 }
 ```
 
+### Or just one package
+
+Every subsystem is an importable subpackage. Pull in only what you
+need: you own the lifecycle, and you compile only what you import.
+
+```go
+import "github.com/velocitykode/velocity/cache"
+
+mgr := cache.NewManager(&cache.Config{
+    Default: "memory",
+    Stores:  map[string]cache.StoreConfig{"memory": {Driver: cache.DriverMemory}},
+})
+
+mgr.Put("greeting", "hello", 5*time.Minute)
+v, _ := mgr.Get("greeting") // "hello"
+```
+
+See [Standalone packages](https://vel.build/docs/getting-started/standalone).
+
 For larger apps, declare bootstrap concerns up-front and chain them.
 The callbacks below live in your own `app` and `routes` packages —
 `velocity new` scaffolds them for you, or you can write them by hand.
@@ -182,6 +201,25 @@ structured exceptions with debug pages, maintenance mode, graceful
 shutdown, live reload, `./vel make:*` scaffolding, and a standard
 library of collections, string, async, and pipeline helpers.
 
+## Commands
+
+Each project builds a `./vel` binary for development and code generation.
+
+```bash
+./vel serve              # dev server with live reload
+./vel build              # compile the production binary
+./vel migrate            # run migrations (also :fresh, :rollback, :status)
+./vel queue:work         # process queued jobs
+./vel schedule:work      # run the scheduler
+./vel route:list         # list registered routes
+./vel cache:clear        # flush the cache
+./vel key:generate       # generate the app encryption key
+./vel up / ./vel down    # toggle maintenance mode
+./vel make:model User    # scaffold (model, handler, job, policy, provider, migration, ...)
+```
+
+Full reference: [velocity.velocitykode.com/docs](https://velocity.velocitykode.com/docs).
+
 ## Requirements
 
 Go 1.26 or higher.
@@ -196,6 +234,18 @@ always documented in [CHANGELOG.md](CHANGELOG.md) under the version's
 ## Documentation
 
 [velocity.velocitykode.com/docs](https://velocity.velocitykode.com/docs)
+
+## AI-Assisted Development
+
+[Arrow](https://github.com/velocitykode/velocity-arrow) is a Velocity-aware
+MCP server that gives AI agents (Claude Code, Cursor, Codex, and more) the
+context to write correct Velocity code: app info, database schema, route
+listing, doc search, log reading, and config inspection, plus auto-generated
+guidelines and skills matched to your project.
+
+```bash
+go install github.com/velocitykode/velocity-arrow@latest
+```
 
 ## Community
 
