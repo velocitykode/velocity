@@ -194,15 +194,11 @@ func resolveGRPCScaffold(name string, opts MakeGRPCServiceOptions) (grpcScaffold
 	}
 	sc.ImplFile = implFile
 
-	implDir := filepath.Join("internal", "grpc", "services")
-	if opts.Dir != "" {
-		// --dir is a relative output directory, so nested paths are
-		// legitimate here; only this flag uses the slash-permitting
-		// validator.
-		if err := validateMakeNestedName(opts.Dir); err != nil {
-			return sc, fmt.Errorf("invalid --dir %q: %w", opts.Dir, err)
-		}
-		implDir = filepath.Clean(opts.Dir)
+	// --dir is a relative output directory override; resolveMakeDir validates
+	// (nested segments allowed), cleans, and confirms it stays in the tree.
+	implDir, err := resolveMakeDir(filepath.Join("internal", "grpc", "services"), opts.Dir)
+	if err != nil {
+		return sc, err
 	}
 	sc.ImplDir = implDir
 
@@ -312,8 +308,8 @@ func writeProtoFile(sc grpcScaffold) error {
 		return fmt.Errorf("create proto dir: %w", err)
 	}
 	path := filepath.Join(dir, sc.ProtoFile+".proto")
-	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("proto already exists: %s", path)
+	if err := ensureWritableTarget(path, "proto"); err != nil {
+		return err
 	}
 
 	stub, err := stubs.Get("grpc/proto.proto.stub")
@@ -411,8 +407,8 @@ func writeServiceImpl(sc grpcScaffold) error {
 	if err := ensureWithinRoot(".", path); err != nil {
 		return fmt.Errorf("invalid --dir %q: %w", dir, err)
 	}
-	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("service already exists: %s", path)
+	if err := ensureWritableTarget(path, "service"); err != nil {
+		return err
 	}
 
 	stub, err := stubs.Get("grpc/service.go.stub")

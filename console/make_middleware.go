@@ -13,7 +13,9 @@ import (
 )
 
 // MakeMiddlewareOptions holds flags for the make:middleware command.
-type MakeMiddlewareOptions struct{}
+type MakeMiddlewareOptions struct {
+	Dir string // --dir output directory override (default internal/middleware)
+}
 
 // MakeMiddleware generates a new middleware file from a stub template.
 func MakeMiddleware(name string, opts MakeMiddlewareOptions) error {
@@ -23,7 +25,10 @@ func MakeMiddleware(name string, opts MakeMiddlewareOptions) error {
 
 	middlewareName := toMiddlewareName(name)
 
-	outputDir := "internal/middleware"
+	outputDir, err := resolveMakeDir("internal/middleware", opts.Dir)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(outputDir, defaultDirMode); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
@@ -34,8 +39,8 @@ func MakeMiddleware(name string, opts MakeMiddlewareOptions) error {
 		return fmt.Errorf("invalid middleware name %q: %w", name, err)
 	}
 
-	if _, err := os.Stat(outputPath); err == nil {
-		return fmt.Errorf("middleware already exists: %s", outputPath)
+	if err := ensureWritableTarget(outputPath, "middleware"); err != nil {
+		return err
 	}
 
 	stubContent, err := stubs.Get("internal/middleware/generated.go.stub")

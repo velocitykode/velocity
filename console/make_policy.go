@@ -13,7 +13,9 @@ import (
 )
 
 // MakePolicyOptions holds flags for the make:policy command.
-type MakePolicyOptions struct{}
+type MakePolicyOptions struct {
+	Dir string // --dir output directory override (default internal/policies)
+}
 
 // MakePolicy generates a new policy file from a stub template.
 func MakePolicy(name string, opts MakePolicyOptions) error {
@@ -23,7 +25,10 @@ func MakePolicy(name string, opts MakePolicyOptions) error {
 
 	policyName := toPolicyName(name)
 
-	outputDir := "internal/policies"
+	outputDir, err := resolveMakeDir("internal/policies", opts.Dir)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(outputDir, defaultDirMode); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
@@ -34,8 +39,8 @@ func MakePolicy(name string, opts MakePolicyOptions) error {
 		return fmt.Errorf("invalid policy name %q: %w", name, err)
 	}
 
-	if _, err := os.Stat(outputPath); err == nil {
-		return fmt.Errorf("policy already exists: %s", outputPath)
+	if err := ensureWritableTarget(outputPath, "policy"); err != nil {
+		return err
 	}
 
 	stubContent, err := stubs.Get("internal/policies/policy.go.stub")

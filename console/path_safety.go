@@ -107,6 +107,82 @@ func validateNameSegment(name, seg string) error {
 	return nil
 }
 
+// resolveMakeDir resolves the output directory a make:* generator should
+// write to. When override (the value of the --dir flag) is empty the caller's
+// defaultDir is returned unchanged. Otherwise the override is treated as a
+// project-relative directory: validated against the make:* name charset
+// (nested segments allowed, traversal/absolute/dot-prefixed segments
+// rejected), cleaned, and confirmed to stay inside the working tree before it
+// is returned. It does NOT create the directory; callers MkdirAll the result.
+//
+// Centralising this keeps the path-traversal guard (CLAUDE.md security rule 4)
+// in one audited place rather than duplicated across every generator.
+func resolveMakeDir(defaultDir, override string) (string, error) {
+	if override == "" {
+		return defaultDir, nil
+	}
+	if err := validateMakeNestedName(override); err != nil {
+		return "", fmt.Errorf("invalid --dir %q: %w", override, err)
+	}
+	dir := filepath.Clean(override)
+	if err := ensureWithinRoot(".", dir); err != nil {
+		return "", fmt.Errorf("invalid --dir %q: %w", override, err)
+	}
+	// ensureWithinRoot only compares lexical absolute paths; it does not follow
+	// symlinks. A pre-existing symlink component (e.g. custom -> /tmp/outside)
+	// would pass that check yet redirect the eventual write outside the tree.
+	// Reject any existing symlink in the override's path so the sandbox holds.
+	if err := ensureNoSymlinkComponents(dir); err != nil {
+		return "", fmt.Errorf("invalid --dir %q: %w", override, err)
+	}
+	return dir, nil
+}
+
+// ensureWritableTarget rejects when the final output file path is already
+// occupied. It uses os.Lstat rather than os.Stat so a symlink at the target,
+// including a dangling one (which Stat reports as not-existing), is detected
+// and refused instead of being silently followed by the subsequent write,
+// which would place the generated file wherever the link points, outside the
+// project root. A genuinely absent path returns nil so the caller may write.
+// kind names the artifact for the diagnostic.
+func ensureWritableTarget(path, kind string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("inspect %s path %q: %w", kind, path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s path %q is a symlink", kind, path)
+	}
+	return fmt.Errorf("%s already exists: %s", kind, path)
+}
+
+// ensureNoSymlinkComponents walks the existing leading components of a
+// project-relative directory and rejects any that is a symlink. Once a
+// component does not yet exist the walk stops: the remaining path will be
+// materialised by MkdirAll as real directories, which cannot redirect a write
+// elsewhere. This closes the symlink-traversal gap that a purely lexical
+// within-root check leaves open.
+func ensureNoSymlinkComponents(dir string) error {
+	cur := "."
+	for _, seg := range strings.Split(dir, string(os.PathSeparator)) {
+		cur = filepath.Join(cur, seg)
+		info, err := os.Lstat(cur)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return fmt.Errorf("inspect path %q: %w", cur, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("path component %q is a symlink", cur)
+		}
+	}
+	return nil
+}
+
 // ensureWithinRoot verifies that a path resolves inside the given root after
 // any "." / ".." cleaning. Both arguments are resolved to absolute paths
 // before comparison so a working directory containing symlinks still produces

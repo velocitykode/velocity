@@ -18,6 +18,7 @@ type MakeModelOptions struct {
 	UUID        bool
 	SoftDeletes bool
 	Migration   bool
+	Dir         string // --dir output directory override (default internal/models)
 }
 
 // MakeModel generates a new model file from a stub template.
@@ -29,7 +30,10 @@ func MakeModel(name string, opts MakeModelOptions) error {
 	modelName := toModelName(name)
 	tableName := toTableName(modelName)
 
-	outputDir := "internal/models"
+	outputDir, err := resolveMakeDir("internal/models", opts.Dir)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(outputDir, defaultDirMode); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
@@ -40,8 +44,8 @@ func MakeModel(name string, opts MakeModelOptions) error {
 		return fmt.Errorf("invalid model name %q: %w", name, err)
 	}
 
-	if _, err := os.Stat(outputPath); err == nil {
-		return fmt.Errorf("model already exists: %s", outputPath)
+	if err := ensureWritableTarget(outputPath, "model"); err != nil {
+		return err
 	}
 
 	stubContent, err := stubs.Get("internal/models/model.go.stub")

@@ -13,7 +13,9 @@ import (
 )
 
 // MakeMailOptions holds flags for the make:mail command.
-type MakeMailOptions struct{}
+type MakeMailOptions struct {
+	Dir string // --dir output directory override (default internal/mail)
+}
 
 // MakeMail generates a new mailable file from a stub template.
 func MakeMail(name string, opts MakeMailOptions) error {
@@ -23,7 +25,10 @@ func MakeMail(name string, opts MakeMailOptions) error {
 
 	mailName := toMailName(name)
 
-	outputDir := "internal/mail"
+	outputDir, err := resolveMakeDir("internal/mail", opts.Dir)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(outputDir, defaultDirMode); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
@@ -34,8 +39,8 @@ func MakeMail(name string, opts MakeMailOptions) error {
 		return fmt.Errorf("invalid mail name %q: %w", name, err)
 	}
 
-	if _, err := os.Stat(outputPath); err == nil {
-		return fmt.Errorf("mailable already exists: %s", outputPath)
+	if err := ensureWritableTarget(outputPath, "mailable"); err != nil {
+		return err
 	}
 
 	stubContent, err := stubs.Get("internal/mail/mailable.go.stub")

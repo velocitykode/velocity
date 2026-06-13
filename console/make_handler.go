@@ -18,6 +18,7 @@ import (
 type MakeHandlerOptions struct {
 	Resource bool
 	API      bool
+	Dir      string // --dir output root override (default internal/handlers); name-based nesting still applies under it
 }
 
 // MakeHandler generates a new handler file from a stub template.
@@ -31,7 +32,10 @@ func MakeHandler(name string, opts MakeHandlerOptions) error {
 	handlerName := toHandlerName(name)
 
 	packageName := "handlers"
-	handlerRoot := "internal/handlers"
+	handlerRoot, err := resolveMakeDir("internal/handlers", opts.Dir)
+	if err != nil {
+		return err
+	}
 	outputDir := handlerRoot
 
 	if strings.Contains(name, "/") {
@@ -51,6 +55,14 @@ func MakeHandler(name string, opts MakeHandlerOptions) error {
 		return fmt.Errorf("invalid handler name %q: %w", name, err)
 	}
 
+	// ensureWithinRoot is lexical only. The name-derived subdirectory (and the
+	// --dir root) may include a pre-existing symlink that redirects the write
+	// outside the tree, so re-run the symlink-component guard on the final,
+	// fully-assembled output directory before creating or writing anything.
+	if err := ensureNoSymlinkComponents(outputDir); err != nil {
+		return fmt.Errorf("invalid handler output dir %q: %w", outputDir, err)
+	}
+
 	if err := os.MkdirAll(outputDir, defaultDirMode); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
@@ -58,8 +70,8 @@ func MakeHandler(name string, opts MakeHandlerOptions) error {
 	filename := toSnakeCase(handlerName) + ".go"
 	outputPath := filepath.Join(outputDir, filename)
 
-	if _, err := os.Stat(outputPath); err == nil {
-		return fmt.Errorf("handler already exists: %s", outputPath)
+	if err := ensureWritableTarget(outputPath, "handler"); err != nil {
+		return err
 	}
 
 	stubContent, err := stubs.Get("internal/handlers/handler.go.stub")

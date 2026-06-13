@@ -13,7 +13,9 @@ import (
 )
 
 // MakeProviderOptions holds flags for the make:provider command.
-type MakeProviderOptions struct{}
+type MakeProviderOptions struct {
+	Dir string // --dir output directory override (default internal/providers)
+}
 
 // MakeProvider generates a new service provider file from a stub template.
 func MakeProvider(name string, opts MakeProviderOptions) error {
@@ -23,7 +25,10 @@ func MakeProvider(name string, opts MakeProviderOptions) error {
 
 	providerName := toProviderName(name)
 
-	outputDir := "internal/providers"
+	outputDir, err := resolveMakeDir("internal/providers", opts.Dir)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(outputDir, defaultDirMode); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
@@ -34,8 +39,8 @@ func MakeProvider(name string, opts MakeProviderOptions) error {
 		return fmt.Errorf("invalid provider name %q: %w", name, err)
 	}
 
-	if _, err := os.Stat(outputPath); err == nil {
-		return fmt.Errorf("provider already exists: %s", outputPath)
+	if err := ensureWritableTarget(outputPath, "provider"); err != nil {
+		return err
 	}
 
 	stubContent, err := stubs.Get("internal/providers/provider.go.stub")

@@ -13,7 +13,9 @@ import (
 )
 
 // MakeNotificationOptions holds flags for the make:notification command.
-type MakeNotificationOptions struct{}
+type MakeNotificationOptions struct {
+	Dir string // --dir output directory override (default internal/notifications)
+}
 
 // MakeNotification generates a new notification file from a stub template.
 func MakeNotification(name string, opts MakeNotificationOptions) error {
@@ -23,7 +25,10 @@ func MakeNotification(name string, opts MakeNotificationOptions) error {
 
 	notificationName := toNotificationName(name)
 
-	outputDir := "internal/notifications"
+	outputDir, err := resolveMakeDir("internal/notifications", opts.Dir)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(outputDir, defaultDirMode); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
@@ -34,8 +39,8 @@ func MakeNotification(name string, opts MakeNotificationOptions) error {
 		return fmt.Errorf("invalid notification name %q: %w", name, err)
 	}
 
-	if _, err := os.Stat(outputPath); err == nil {
-		return fmt.Errorf("notification already exists: %s", outputPath)
+	if err := ensureWritableTarget(outputPath, "notification"); err != nil {
+		return err
 	}
 
 	stubContent, err := stubs.Get("internal/notifications/notification.go.stub")

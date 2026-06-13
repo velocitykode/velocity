@@ -14,7 +14,9 @@ import (
 )
 
 // MakeCommandOptions holds flags for the make:command command.
-type MakeCommandOptions struct{}
+type MakeCommandOptions struct {
+	Dir string // --dir output directory override (default internal/commands)
+}
 
 // MakeCommand generates a new command file from a stub template.
 func MakeCommand(name string, opts MakeCommandOptions) error {
@@ -25,7 +27,10 @@ func MakeCommand(name string, opts MakeCommandOptions) error {
 	commandName := toCommandStructName(name)
 	kebabName := toKebabCase(commandName)
 
-	outputDir := "internal/commands"
+	outputDir, err := resolveMakeDir("internal/commands", opts.Dir)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(outputDir, defaultDirMode); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
@@ -36,8 +41,8 @@ func MakeCommand(name string, opts MakeCommandOptions) error {
 		return fmt.Errorf("invalid command name %q: %w", name, err)
 	}
 
-	if _, err := os.Stat(outputPath); err == nil {
-		return fmt.Errorf("command already exists: %s", outputPath)
+	if err := ensureWritableTarget(outputPath, "command"); err != nil {
+		return err
 	}
 
 	stubContent, err := stubs.Get("internal/commands/command.go.stub")

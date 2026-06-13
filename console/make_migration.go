@@ -19,6 +19,7 @@ type MakeMigrationOptions struct {
 	Table       string // table name for alter-table boilerplate
 	UUID        bool   // use UUIDPrimary instead of ID
 	SoftDeletes bool   // include SoftDeletes column
+	Dir         string // --dir output directory override (default database/migrations)
 }
 
 // MakeMigration generates a new timestamped migration file from a stub template.
@@ -36,7 +37,10 @@ func MakeMigration(name string, opts MakeMigrationOptions) error {
 	version := time.Now().Format("20060102150405")
 	snakeName := toSnakeCase(toPascalCase(name))
 
-	outputDir := "database/migrations"
+	outputDir, err := resolveMakeDir("database/migrations", opts.Dir)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(outputDir, defaultDirMode); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
@@ -47,8 +51,8 @@ func MakeMigration(name string, opts MakeMigrationOptions) error {
 		return fmt.Errorf("invalid migration name %q: %w", name, err)
 	}
 
-	if _, err := os.Stat(outputPath); err == nil {
-		return fmt.Errorf("migration already exists: %s", outputPath)
+	if err := ensureWritableTarget(outputPath, "migration"); err != nil {
+		return err
 	}
 
 	stubContent, err := stubs.Get("database/migrations/migration.go.stub")

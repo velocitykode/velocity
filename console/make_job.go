@@ -13,7 +13,9 @@ import (
 )
 
 // MakeJobOptions holds flags for the make:job command.
-type MakeJobOptions struct{}
+type MakeJobOptions struct {
+	Dir string // --dir output directory override (default internal/jobs)
+}
 
 // MakeJob generates a new queue job file from a stub template.
 func MakeJob(name string, opts MakeJobOptions) error {
@@ -23,7 +25,10 @@ func MakeJob(name string, opts MakeJobOptions) error {
 
 	jobName := toJobName(name)
 
-	outputDir := "internal/jobs"
+	outputDir, err := resolveMakeDir("internal/jobs", opts.Dir)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(outputDir, defaultDirMode); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
@@ -34,8 +39,8 @@ func MakeJob(name string, opts MakeJobOptions) error {
 		return fmt.Errorf("invalid job name %q: %w", name, err)
 	}
 
-	if _, err := os.Stat(outputPath); err == nil {
-		return fmt.Errorf("job already exists: %s", outputPath)
+	if err := ensureWritableTarget(outputPath, "job"); err != nil {
+		return err
 	}
 
 	stubContent, err := stubs.Get("internal/jobs/job.go.stub")

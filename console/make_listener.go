@@ -13,7 +13,9 @@ import (
 )
 
 // MakeListenerOptions holds flags for the make:listener command.
-type MakeListenerOptions struct{}
+type MakeListenerOptions struct {
+	Dir string // --dir output directory override (default internal/listeners)
+}
 
 // MakeListener generates a new listener file from a stub template.
 func MakeListener(name string, opts MakeListenerOptions) error {
@@ -23,7 +25,10 @@ func MakeListener(name string, opts MakeListenerOptions) error {
 
 	listenerName := toListenerName(name)
 
-	outputDir := "internal/listeners"
+	outputDir, err := resolveMakeDir("internal/listeners", opts.Dir)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(outputDir, defaultDirMode); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
@@ -34,8 +39,8 @@ func MakeListener(name string, opts MakeListenerOptions) error {
 		return fmt.Errorf("invalid listener name %q: %w", name, err)
 	}
 
-	if _, err := os.Stat(outputPath); err == nil {
-		return fmt.Errorf("listener already exists: %s", outputPath)
+	if err := ensureWritableTarget(outputPath, "listener"); err != nil {
+		return err
 	}
 
 	stubContent, err := stubs.Get("internal/listeners/listener.go.stub")

@@ -13,7 +13,9 @@ import (
 )
 
 // MakeResourceOptions holds flags for the make:resource command.
-type MakeResourceOptions struct{}
+type MakeResourceOptions struct {
+	Dir string // --dir output directory override (default internal/resources)
+}
 
 // MakeResource generates a new resource file from a stub template.
 func MakeResource(name string, opts MakeResourceOptions) error {
@@ -23,7 +25,10 @@ func MakeResource(name string, opts MakeResourceOptions) error {
 
 	resourceName := toResourceName(name)
 
-	outputDir := "internal/resources"
+	outputDir, err := resolveMakeDir("internal/resources", opts.Dir)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(outputDir, defaultDirMode); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
@@ -34,8 +39,8 @@ func MakeResource(name string, opts MakeResourceOptions) error {
 		return fmt.Errorf("invalid resource name %q: %w", name, err)
 	}
 
-	if _, err := os.Stat(outputPath); err == nil {
-		return fmt.Errorf("resource already exists: %s", outputPath)
+	if err := ensureWritableTarget(outputPath, "resource"); err != nil {
+		return err
 	}
 
 	stubContent, err := stubs.Get("internal/resources/resource.go.stub")

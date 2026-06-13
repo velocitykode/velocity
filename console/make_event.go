@@ -14,7 +14,9 @@ import (
 )
 
 // MakeEventOptions holds flags for the make:event command.
-type MakeEventOptions struct{}
+type MakeEventOptions struct {
+	Dir string // --dir output directory override (default internal/events)
+}
 
 // MakeEvent generates a new event file from a stub template.
 func MakeEvent(name string, opts MakeEventOptions) error {
@@ -25,7 +27,10 @@ func MakeEvent(name string, opts MakeEventOptions) error {
 	eventName := toEventName(name)
 	dotName := toDotSeparated(eventName)
 
-	outputDir := "internal/events"
+	outputDir, err := resolveMakeDir("internal/events", opts.Dir)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(outputDir, defaultDirMode); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
@@ -36,8 +41,8 @@ func MakeEvent(name string, opts MakeEventOptions) error {
 		return fmt.Errorf("invalid event name %q: %w", name, err)
 	}
 
-	if _, err := os.Stat(outputPath); err == nil {
-		return fmt.Errorf("event already exists: %s", outputPath)
+	if err := ensureWritableTarget(outputPath, "event"); err != nil {
+		return err
 	}
 
 	stubContent, err := stubs.Get("internal/events/event.go.stub")
