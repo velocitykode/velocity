@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -182,6 +183,77 @@ func (d *SQLiteDriver) HasColumn(table, column string) bool {
 		}
 	}
 	return false
+}
+
+// ListTables returns user tables in the connected SQLite database.
+func (d *SQLiteDriver) ListTables(ctx context.Context) ([]string, error) {
+	grammar, ok := d.Grammar().(IntrospectionGrammar)
+	if !ok {
+		return nil, fmt.Errorf("sqlite grammar does not support schema introspection")
+	}
+	rows, err := d.QueryContext(ctx, grammar.CompileListTables())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tables := make([]string, 0)
+	for rows.Next() {
+		var table string
+		if err := rows.Scan(&table); err != nil {
+			return nil, err
+		}
+		tables = append(tables, table)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return tables, nil
+}
+
+// DescribeTable returns column metadata for a SQLite table in ordinal order.
+func (d *SQLiteDriver) DescribeTable(ctx context.Context, table string) ([]ColumnSchema, error) {
+	if err := ValidateSchemaIdentifier(table); err != nil {
+		return nil, err
+	}
+
+	grammar, ok := d.Grammar().(IntrospectionGrammar)
+	if !ok {
+		return nil, fmt.Errorf("sqlite grammar does not support schema introspection")
+	}
+	rows, err := d.QueryContext(ctx, grammar.CompileDescribeTable(table))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	columns := make([]ColumnSchema, 0)
+	for rows.Next() {
+		var cid int
+		var name string
+		var typ string
+		var notnull int
+		var dfltValue *string
+		var pk int
+
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dfltValue, &pk); err != nil {
+			return nil, err
+		}
+		columns = append(columns, ColumnSchema{
+			Name:       name,
+			DataType:   typ,
+			Nullable:   notnull == 0 && pk == 0,
+			Default:    dfltValue,
+			PrimaryKey: pk > 0,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(columns) == 0 {
+		return nil, fmt.Errorf("sqlite table %q not found", table)
+	}
+	return columns, nil
 }
 
 // CreateTable creates a new table
@@ -572,6 +644,16 @@ func (g *SQLiteGrammar) CompileHasTable(name string) string {
 
 // CompileHasColumn compiles a query to check if column exists
 func (g *SQLiteGrammar) CompileHasColumn(table, column string) string {
+	return fmt.Sprintf("PRAGMA table_info(%s)", g.QuoteIdentifier(table))
+}
+
+// CompileListTables compiles a query to list user tables in SQLite.
+func (g *SQLiteGrammar) CompileListTables() string {
+	return "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+}
+
+// CompileDescribeTable compiles a query to describe columns in a SQLite table.
+func (g *SQLiteGrammar) CompileDescribeTable(table string) string {
 	return fmt.Sprintf("PRAGMA table_info(%s)", g.QuoteIdentifier(table))
 }
 

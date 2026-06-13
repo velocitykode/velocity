@@ -184,6 +184,71 @@ func (m *Manager) AddConnection(name string, driver drivers.Driver) {
 	m.connections[name] = driver
 }
 
+// Introspector returns the schema introspector for the default connection.
+func (m *Manager) Introspector() (drivers.SchemaIntrospector, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.defaultDriver == nil {
+		return nil, errors.New("orm: no database connection")
+	}
+	introspector, ok := m.defaultDriver.(drivers.SchemaIntrospector)
+	if !ok {
+		return nil, fmt.Errorf("orm: driver %s does not support schema introspection", m.defaultDriver.DriverName())
+	}
+	return introspector, nil
+}
+
+// ConnectionIntrospector returns the schema introspector for a named connection.
+func (m *Manager) ConnectionIntrospector(name string) (drivers.SchemaIntrospector, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	driver, exists := m.connections[name]
+	if !exists {
+		return nil, fmt.Errorf("orm: connection %s not found", name)
+	}
+	introspector, ok := driver.(drivers.SchemaIntrospector)
+	if !ok {
+		return nil, fmt.Errorf("orm: driver %s does not support schema introspection", driver.DriverName())
+	}
+	return introspector, nil
+}
+
+// ListTables returns user tables from the default connection.
+func (m *Manager) ListTables(ctx context.Context) ([]string, error) {
+	introspector, err := m.Introspector()
+	if err != nil {
+		return nil, err
+	}
+	return introspector.ListTables(ctx)
+}
+
+// DescribeTable returns column metadata for a table on the default connection.
+func (m *Manager) DescribeTable(ctx context.Context, table string) ([]drivers.ColumnSchema, error) {
+	introspector, err := m.Introspector()
+	if err != nil {
+		return nil, err
+	}
+	return introspector.DescribeTable(ctx, table)
+}
+
+// ListTablesOn returns user tables from a named connection.
+func (m *Manager) ListTablesOn(ctx context.Context, name string) ([]string, error) {
+	introspector, err := m.ConnectionIntrospector(name)
+	if err != nil {
+		return nil, err
+	}
+	return introspector.ListTables(ctx)
+}
+
+// DescribeTableOn returns column metadata for a table on a named connection.
+func (m *Manager) DescribeTableOn(ctx context.Context, name, table string) ([]drivers.ColumnSchema, error) {
+	introspector, err := m.ConnectionIntrospector(name)
+	if err != nil {
+		return nil, err
+	}
+	return introspector.DescribeTable(ctx, table)
+}
+
 // Raw executes a raw SQL query and returns the resulting rows.
 //
 // WARNING: The caller is responsible for preventing SQL injection by using

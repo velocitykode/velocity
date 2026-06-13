@@ -12,6 +12,7 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 
@@ -188,6 +189,92 @@ func (d *PostgresDriver) HasColumn(table, column string) bool {
 	var count int
 	err := d.DB().QueryRow(sql, table, column).Scan(&count)
 	return err == nil && count > 0
+}
+
+func (d *PostgresDriver) introspectionSchema() string {
+	schema := d.Config.Schema
+	if schema == "" {
+		return "public"
+	}
+	schema, _, _ = strings.Cut(schema, ",")
+	return strings.TrimSpace(schema)
+}
+
+// ListTables returns user tables in the configured PostgreSQL schema.
+func (d *PostgresDriver) ListTables(ctx context.Context) ([]string, error) {
+	schema := d.introspectionSchema()
+	grammar, ok := d.Grammar().(drivers.IntrospectionGrammar)
+	if !ok {
+		return nil, fmt.Errorf("postgres grammar does not support schema introspection")
+	}
+	rows, err := d.QueryContext(ctx, grammar.CompileListTables(), schema)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tables := make([]string, 0)
+	for rows.Next() {
+		var table string
+		if err := rows.Scan(&table); err != nil {
+			return nil, err
+		}
+		tables = append(tables, table)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return tables, nil
+}
+
+// DescribeTable returns column metadata for a PostgreSQL table in ordinal order.
+func (d *PostgresDriver) DescribeTable(ctx context.Context, table string) ([]drivers.ColumnSchema, error) {
+	if err := drivers.ValidateSchemaIdentifier(table); err != nil {
+		return nil, err
+	}
+	schema := d.introspectionSchema()
+
+	grammar, ok := d.Grammar().(drivers.IntrospectionGrammar)
+	if !ok {
+		return nil, fmt.Errorf("postgres grammar does not support schema introspection")
+	}
+	rows, err := d.QueryContext(ctx, grammar.CompileDescribeTable(table), schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	columns := make([]drivers.ColumnSchema, 0)
+	for rows.Next() {
+		var name string
+		var dataType string
+		var nullable string
+		var defaultValue sql.NullString
+		var primaryKey bool
+
+		if err := rows.Scan(&name, &dataType, &nullable, &defaultValue, &primaryKey); err != nil {
+			return nil, err
+		}
+		var defaultPtr *string
+		if defaultValue.Valid {
+			value := defaultValue.String
+			defaultPtr = &value
+		}
+		columns = append(columns, drivers.ColumnSchema{
+			Name:       name,
+			DataType:   dataType,
+			Nullable:   nullable == "YES",
+			Default:    defaultPtr,
+			PrimaryKey: primaryKey,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(columns) == 0 {
+		return nil, fmt.Errorf("postgres table %q not found", table)
+	}
+	return columns, nil
 }
 
 // CreateTable creates a new table

@@ -84,6 +84,40 @@ type QueryGrammar interface {
 	Placeholder(index int) string
 }
 
+// ColumnSchema describes one column as read from a live database schema.
+// It is distinct from model-derived column metadata, which is inferred from
+// Go structs rather than introspected from the connected database. DataType
+// and Default preserve the dialect's reported values rather than normalizing
+// them, so callers may see values such as PostgreSQL "character varying",
+// MySQL "varchar(255)", and SQLite's declared type.
+type ColumnSchema struct {
+	Name string
+	// DataType is the raw dialect-reported column type, not a normalized
+	// framework type.
+	DataType string
+	Nullable bool
+	// Default is the raw dialect-reported default expression. It is nil when
+	// the database reports no default.
+	Default    *string
+	PrimaryKey bool
+}
+
+// SchemaIntrospector is implemented by drivers that can inspect their live
+// database schema through a dialect-agnostic API.
+type SchemaIntrospector interface {
+	ListTables(ctx context.Context) ([]string, error)
+	DescribeTable(ctx context.Context, table string) ([]ColumnSchema, error)
+}
+
+// IntrospectionGrammar is implemented by grammars that compile schema
+// introspection SQL. It is optional so third-party QueryGrammar
+// implementations are not forced to add methods when they do not support
+// introspection.
+type IntrospectionGrammar interface {
+	CompileListTables() string
+	CompileDescribeTable(table string) string
+}
+
 // ReturningGrammar is implemented by grammars whose dialect supports
 // RETURNING on UPDATE / DELETE statements (currently PostgreSQL; SQLite
 // 3.35+ and MariaDB 10.5+ are additional candidates).

@@ -406,6 +406,29 @@ func (g *MySQLGrammar) CompileHasColumn(table, column string) string {
 		AND column_name = ?`
 }
 
+// CompileListTables compiles a query to list user tables in a MySQL database.
+func (g *MySQLGrammar) CompileListTables() string {
+	return `SELECT t.table_name
+		FROM information_schema.tables AS t
+		WHERE t.table_schema = ?
+		AND t.table_type = 'BASE TABLE'
+		ORDER BY t.table_name`
+}
+
+// CompileDescribeTable compiles a query to describe columns in a MySQL table.
+func (g *MySQLGrammar) CompileDescribeTable(_ string) string {
+	return `SELECT
+			c.column_name,
+			c.column_type,
+			c.is_nullable,
+			c.column_default,
+			c.column_key
+		FROM information_schema.columns AS c
+		WHERE c.table_schema = ?
+		AND c.table_name = ?
+		ORDER BY c.ordinal_position`
+}
+
 // QuoteIdentifier quotes a database identifier for MySQL.
 // Dot-qualified names are quoted per segment: users.email -> `users`.`email`.
 func (g *MySQLGrammar) QuoteIdentifier(name string) string {

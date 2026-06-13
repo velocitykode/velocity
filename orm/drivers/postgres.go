@@ -486,6 +486,45 @@ func (g *PostgresGrammar) CompileHasColumn(table, column string) string {
 		AND column_name = $2`
 }
 
+// CompileListTables compiles a query to list user tables in a PostgreSQL schema.
+func (g *PostgresGrammar) CompileListTables() string {
+	return `SELECT t.table_name
+		FROM information_schema.tables AS t
+		WHERE t.table_schema = $1
+		AND t.table_type = 'BASE TABLE'
+		ORDER BY t.table_name`
+}
+
+// CompileDescribeTable compiles a query to describe columns in a PostgreSQL table.
+func (g *PostgresGrammar) CompileDescribeTable(_ string) string {
+	return `SELECT
+			c.column_name,
+			c.data_type,
+			c.is_nullable,
+			c.column_default,
+			(pk.column_name IS NOT NULL) AS primary_key
+		FROM information_schema.columns AS c
+		LEFT JOIN (
+			SELECT
+				kcu.table_schema,
+				kcu.table_name,
+				kcu.column_name
+			FROM information_schema.table_constraints AS tc
+			INNER JOIN information_schema.key_column_usage AS kcu
+				ON kcu.constraint_schema = tc.constraint_schema
+				AND kcu.constraint_name = tc.constraint_name
+				AND kcu.table_schema = tc.table_schema
+				AND kcu.table_name = tc.table_name
+			WHERE tc.constraint_type = 'PRIMARY KEY'
+		) AS pk
+			ON pk.table_schema = c.table_schema
+			AND pk.table_name = c.table_name
+			AND pk.column_name = c.column_name
+		WHERE c.table_schema = $1
+		AND c.table_name = $2
+		ORDER BY c.ordinal_position`
+}
+
 // QuoteIdentifier quotes a database identifier for PostgreSQL.
 // Dot-qualified names are quoted per segment: users.email -> "users"."email".
 func (g *PostgresGrammar) QuoteIdentifier(name string) string {
