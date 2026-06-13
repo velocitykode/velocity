@@ -135,14 +135,18 @@ func TestDebouncingDispatcher(t *testing.T) {
 func TestThrottlingDispatcher(t *testing.T) {
 	t.Run("throttles events to max rate", func(t *testing.T) {
 		var count int32
-		dispatcher := NewThrottlingDispatcher(50 * time.Millisecond)
+		// A very large window makes the rapid burst below deterministic: every
+		// dispatch after the first lands well inside the window regardless of
+		// scheduler/-race overhead, so exactly one must get through. The old
+		// version raced a 50ms window against five 10ms sleeps, which flaked
+		// whenever load pushed the cumulative sleep past the window.
+		dispatcher := NewThrottlingDispatcher(time.Hour)
 
 		dispatcher.Listen("test.event", &countingListener{counter: &count})
 
-		// Dispatch rapidly
+		// Burst with no waits: only the first dispatch is outside the window.
 		for i := 0; i < 5; i++ {
 			dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
-			time.Sleep(10 * time.Millisecond)
 		}
 
 		// Should only dispatch once (first one within throttle window)
@@ -150,8 +154,9 @@ func TestThrottlingDispatcher(t *testing.T) {
 			t.Errorf("Expected 1 event during throttle window, got %d", atomic.LoadInt32(&count))
 		}
 
-		// Wait past throttle window (50ms), then the next dispatch should fire
-		time.Sleep(60 * time.Millisecond)
+		// Clear the window deterministically (instead of sleeping past it), then
+		// the next dispatch must fire.
+		dispatcher.Reset("test.event")
 
 		dispatcher.Dispatch(context.Background(), &simpleEvent{name: "test.event"})
 		testsync.EventuallyEqual(t, func() int32 { return atomic.LoadInt32(&count) }, int32(2), 500*time.Millisecond, "throttle releases")
