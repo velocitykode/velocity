@@ -12,7 +12,6 @@ import (
 	"net/smtp"
 	"os/exec"
 	"strings"
-	"sync"
 
 	"github.com/velocitykode/velocity/mail"
 )
@@ -38,6 +37,9 @@ var ErrPlainAuthRefused = errors.New("velocity/mail: plain-auth refused")
 
 // LocalDriver sends emails via SMTP or sendmail.
 // The username and password fields contain sensitive credentials and must not be logged.
+//
+// All fields are set once at construction and never mutated, so the driver
+// is stateless and safe for concurrent Send calls.
 type LocalDriver struct {
 	host       string
 	port       string
@@ -47,7 +49,6 @@ type LocalDriver struct {
 	sendmail   string
 	fromAddr   string
 	fromName   string
-	mu         sync.Mutex
 }
 
 // String returns a safe representation with credentials redacted.
@@ -80,9 +81,6 @@ func NewLocalDriver(config mail.LocalConfig, fromAddr, fromName string) (*LocalD
 
 // Send sends an email via SMTP or sendmail
 func (d *LocalDriver) Send(ctx context.Context, msg *mail.Message) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
 	// Defence in depth: reject any address that carries CR/LF before
 	// the SMTP envelope is built. Setter-built messages pass this
 	// trivially (validateAddressField blocks the same characters);

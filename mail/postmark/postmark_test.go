@@ -290,8 +290,8 @@ func TestPostmarkDriverCRLFInjection(t *testing.T) {
 // TestPostmarkDriverRejectsDisallowedStream verifies the message-stream
 // allowlist.
 func TestPostmarkDriverRejectsDisallowedStream(t *testing.T) {
-	mail.ConfigureAllowedPostmarkStreams([]string{"outbound"})
-	defer mail.ConfigureAllowedPostmarkStreams(nil)
+	ConfigureAllowedStreams([]string{"outbound"})
+	defer ConfigureAllowedStreams(nil)
 
 	_, err := NewPostmarkDriver(mail.PostmarkConfig{
 		Token:         "t",
@@ -305,7 +305,7 @@ func TestPostmarkDriverRejectsDisallowedStream(t *testing.T) {
 	}
 
 	// Allow broadcast now, should succeed.
-	mail.ConfigureAllowedPostmarkStreams([]string{"broadcast"})
+	ConfigureAllowedStreams([]string{"broadcast"})
 	_, err = NewPostmarkDriver(mail.PostmarkConfig{
 		Token:         "t",
 		MessageStream: "broadcast",

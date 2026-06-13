@@ -11,23 +11,12 @@ import (
 )
 
 // newMailgunDriverAgainstServer constructs a driver pointing at the given
-// test server. The driver is configured with an https-looking endpoint and
-// then mutated to use the test server's URL because NewMailgunDriver
-// rejects http endpoints by design.
+// test server. The endpoint is supplied at construction time, sidestepping
+// NewMailgunDriver's https-only constraint (which Send does not enforce when
+// dialing) without mutating any field after the driver is built.
 func newMailgunDriverAgainstServer(t *testing.T, ts *httptest.Server) *MailgunDriver {
 	t.Helper()
-	driver, err := NewMailgunDriver(mail.MailgunConfig{
-		Domain:   "mg.example.com",
-		Secret:   "key",
-		Endpoint: "https://api.mailgun.net/v3",
-	}, "from@example.com", "From Name")
-	if err != nil {
-		t.Fatalf("NewMailgunDriver: %v", err)
-	}
-	// Repoint at the test server. The https constraint is only enforced at
-	// construction, not when Send dials.
-	driver.endpoint = ts.URL
-	return driver
+	return newTestDriver(ts.URL, ts.Client())
 }
 
 func sendTestMessage(t *testing.T, driver *MailgunDriver) error {

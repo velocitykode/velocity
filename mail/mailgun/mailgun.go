@@ -15,7 +15,6 @@ import (
 	netmail "net/mail"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/velocitykode/velocity/mail"
@@ -49,6 +48,9 @@ func init() {
 
 // MailgunDriver sends emails via Mailgun API.
 // The apiKey and webhookSigningKey fields contain sensitive credentials and must not be logged.
+//
+// All fields are set once at construction and never mutated, so the driver
+// is stateless and safe for concurrent Send calls.
 type MailgunDriver struct {
 	domain            string
 	apiKey            string // SENSITIVE: do not log
@@ -57,7 +59,6 @@ type MailgunDriver struct {
 	fromAddr          string
 	fromName          string
 	client            *http.Client
-	mu                sync.Mutex
 }
 
 // String returns a safe representation with credentials redacted.
@@ -106,9 +107,6 @@ func NewMailgunDriver(config mail.MailgunConfig, fromAddr, fromName string) (*Ma
 
 // Send sends an email via Mailgun API
 func (d *MailgunDriver) Send(ctx context.Context, msg *mail.Message) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 

@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	netmail "net/mail"
-	"sync"
 	"time"
 
 	"github.com/velocitykode/velocity/mail"
@@ -28,13 +27,15 @@ func init() {
 
 // PostmarkDriver sends emails via Postmark API.
 // The token field contains sensitive credentials and must not be logged.
+//
+// All fields are set once at construction and never mutated, so the driver
+// is stateless and safe for concurrent Send calls.
 type PostmarkDriver struct {
 	token         string // SENSITIVE: do not log
 	messageStream string
 	fromAddr      string
 	fromName      string
 	client        *http.Client
-	mu            sync.Mutex
 }
 
 // String returns a safe representation with credentials redacted.
@@ -44,7 +45,7 @@ func (d *PostmarkDriver) String() string {
 
 // NewPostmarkDriver creates a new Postmark driver from the provided config.
 // If MessageStream is non-empty it is validated against the configured
-// allowlist (see mail.IsAllowedPostmarkStream).
+// allowlist (see IsAllowedStream).
 func NewPostmarkDriver(config mail.PostmarkConfig, fromAddr, fromName string) (*PostmarkDriver, error) {
 	if config.Token == "" {
 		return nil, fmt.Errorf("velocity/mail: POSTMARK_TOKEN is required for postmark driver")
@@ -54,7 +55,7 @@ func NewPostmarkDriver(config mail.PostmarkConfig, fromAddr, fromName string) (*
 	if messageStream == "" {
 		messageStream = "outbound"
 	}
-	if !mail.IsAllowedPostmarkStream(messageStream) {
+	if !IsAllowedStream(messageStream) {
 		return nil, fmt.Errorf("velocity/mail: postmark message stream %q is not allowed", messageStream)
 	}
 
@@ -71,9 +72,6 @@ func NewPostmarkDriver(config mail.PostmarkConfig, fromAddr, fromName string) (*
 
 // Send sends an email via Postmark API
 func (d *PostmarkDriver) Send(ctx context.Context, msg *mail.Message) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
 	// Defence in depth: reject any address that carries CR/LF before
 	// we serialise. Setter-built messages already pass this; literal-
 	// constructed mail.Address values are the failure mode covered here.

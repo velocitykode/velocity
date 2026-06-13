@@ -3,43 +3,9 @@ package mail
 import (
 	"context"
 	"fmt"
-	"strings"
-	"sync"
 
 	"github.com/velocitykode/velocity/driverregistry"
 )
-
-// allowedPostmarkStreams enumerates the Message Streams recognised by default.
-// Callers that use custom broadcast streams can configure AllowedPostmarkStreams
-// via ConfigureAllowedPostmarkStreams.
-var (
-	allowedPostmarkStreams   = map[string]struct{}{"outbound": {}, "broadcast": {}, "transactional": {}, "inbound": {}}
-	allowedPostmarkStreamsMu sync.RWMutex
-)
-
-// ConfigureAllowedPostmarkStreams replaces the set of allowed Postmark message
-// streams. Names are lower-cased. Passing an empty slice restores the defaults.
-func ConfigureAllowedPostmarkStreams(streams []string) {
-	allowedPostmarkStreamsMu.Lock()
-	defer allowedPostmarkStreamsMu.Unlock()
-	if len(streams) == 0 {
-		allowedPostmarkStreams = map[string]struct{}{"outbound": {}, "broadcast": {}, "transactional": {}, "inbound": {}}
-		return
-	}
-	next := make(map[string]struct{}, len(streams))
-	for _, s := range streams {
-		next[strings.ToLower(strings.TrimSpace(s))] = struct{}{}
-	}
-	allowedPostmarkStreams = next
-}
-
-// IsAllowedPostmarkStream reports whether a stream name passes the allowlist.
-func IsAllowedPostmarkStream(name string) bool {
-	allowedPostmarkStreamsMu.RLock()
-	defer allowedPostmarkStreamsMu.RUnlock()
-	_, ok := allowedPostmarkStreams[strings.ToLower(strings.TrimSpace(name))]
-	return ok
-}
 
 // drivers is the canonical Velocity driver registry for mail. Driver
 // authors call Drivers().Register("name", factory) from an init(). The
@@ -115,10 +81,9 @@ type LocalConfig struct {
 // Drivers must be registered via Drivers().Register before calling this
 // function (typically through a blank import of mail/standard).
 //
-// As a side-effect, NewMailer promotes config.MaxAttachmentSize (or the
-// DefaultMaxAttachmentSize when zero/negative) to the package-level default
-// used by NewMessage. This means freshly-constructed *Message values inherit
-// the limit configured for the app without having to thread it explicitly.
+// NewMailer does NOT mutate any process-wide state. To promote a config's
+// MaxAttachmentSize to the package-level default used by NewMessage, call
+// SetDefaultMaxAttachmentSize once at the app's single construction site.
 func NewMailer(config MailConfig) (Mailer, error) {
 	return NewMailerWithContext(context.Background(), config)
 }
@@ -126,6 +91,11 @@ func NewMailer(config MailConfig) (Mailer, error) {
 // NewMailerWithContext is the context-aware variant of NewMailer. The ctx
 // is forwarded to the driver factory so drivers that perform network I/O
 // during construction can honour deadlines.
+//
+// Like NewMailer, it does NOT mutate any process-wide state and never calls
+// SetDefaultMaxAttachmentSize. To promote a config's MaxAttachmentSize to the
+// package-level default used by NewMessage, call SetDefaultMaxAttachmentSize
+// once at the app's single construction site.
 func NewMailerWithContext(ctx context.Context, config MailConfig) (Mailer, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
@@ -134,9 +104,6 @@ func NewMailerWithContext(ctx context.Context, config MailConfig) (Mailer, error
 	if driver == "" {
 		driver = "log"
 	}
-
-	// Promote config limit to the package default so NewMessage() picks it up.
-	SetDefaultMaxAttachmentSize(config.MaxAttachmentSize)
 
 	m, err := drivers.Resolve(ctx, driver, config)
 	if err != nil {

@@ -536,6 +536,10 @@ func New(opts ...Option) (*App, error) {
 		if a.config.Mail.Driver == "log" && contract.IsProductionEnv(a.config.Env) {
 			a.Log.Warn("mail driver is 'log' in production: all outbound email will be DISCARDED. Set MAIL_DRIVER to a real driver (postmark, mailgun, ...)")
 		}
+		// Promote the configured attachment limit to the package default so
+		// NewMessage() picks it up. This is the single app-wide construction
+		// site; NewMailer itself no longer mutates this process-wide state.
+		mail.SetDefaultMaxAttachmentSize(a.config.Mail.MaxAttachmentSize)
 		mailer, err := mail.NewMailer(a.config.Mail)
 		if err != nil {
 			// Fail-soft (PRD decision): mail is an optional subsystem and an
