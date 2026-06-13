@@ -190,13 +190,20 @@ See [vel.build/docs](https://vel.build/docs) for the full list.
 
 ## Testing
 
-An in-memory app harness, a fluent HTTP client, and fakes for events and
-the command bus. Drive a route, then chain assertions against the response:
+An in-memory app harness, model factories, database refresh, a fluent HTTP
+client, and fakes for events and the command bus. Refresh the schema, seed
+with a factory, drive a route, then chain assertions against the response:
 
 ```go
-client := velhttp.NewTestClient(t, router)
+tc := ormtesting.NewTestCase(t, manager)
+tc.LazyRefreshDatabase() // migrate once, truncate per test
 
-client.ActingAs(guard, user).
+ormtesting.NewModelFactory[User](manager, newUser).
+    State("admin").
+    CreateOne(ctx, nil) // seed test data
+
+velhttp.NewTestClient(t, router).
+    ActingAs(guard, user).
     PostJSON("/signup", map[string]any{"email": "a@b.com"}).
     AssertCreated().
     AssertJSONPath("user.email", "a@b.com")
