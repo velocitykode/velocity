@@ -160,8 +160,15 @@ variables.
 | Auth         | Sessions, JWT (plus gates and policies on top)           |
 | Broadcasting | WebSocket (additional drivers planned)                   |
 
-SQLite in development, PostgreSQL in production. One env var.
-[How drivers work](https://vel.build/docs/advanced/driver-registry).
+SQLite in development, PostgreSQL in production. One env var:
+
+```env
+DB_CONNECTION=sqlite    # or postgres, mysql
+CACHE_DRIVER=redis      # or memory, file, database
+QUEUE_DRIVER=redis      # or memory, database
+STORAGE_DRIVER=s3       # or local, memory
+MAIL_DRIVER=postmark    # or mailgun, local, log
+```
 
 ### Secure by Default
 
