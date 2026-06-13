@@ -3,7 +3,6 @@ package velocity
 import (
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/joho/godotenv"
@@ -18,6 +17,10 @@ type dbWipeCmd struct{}
 func (dbWipeCmd) name() string        { return "db:wipe" }
 func (dbWipeCmd) description() string { return "Drop all tables" }
 func (dbWipeCmd) run(a *App, args []string) error {
+	// Only --force / -f is legal; reject any other token before the guard.
+	if err := parseForceOnlyArgs(args); err != nil {
+		return err
+	}
 	if err := guardProductionDataLoss(a, "db:wipe", args); err != nil {
 		return err
 	}
@@ -34,6 +37,9 @@ type cacheClearCmd struct{}
 func (cacheClearCmd) name() string        { return "cache:clear" }
 func (cacheClearCmd) description() string { return "Flush the application cache" }
 func (cacheClearCmd) run(a *App, args []string) error {
+	if err := rejectNoArgs(args); err != nil {
+		return err
+	}
 	if err := a.Bootstrap(); err != nil {
 		return err
 	}
@@ -47,35 +53,16 @@ type queueWorkCmd struct{}
 func (queueWorkCmd) name() string        { return "queue:work" }
 func (queueWorkCmd) description() string { return "Start processing queue jobs" }
 func (queueWorkCmd) run(a *App, args []string) error {
+	// Parse before Bootstrap so a typo fails fast without starting providers.
+	opts, err := parseQueueWorkArgs(args)
+	if err != nil {
+		return err
+	}
 	if err := a.Bootstrap(); err != nil {
 		return err
 	}
-	opts := console.QueueWorkOptions{}
 	if a.Log != nil {
 		opts.Logger = a.Log
-	}
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--queue", "-q":
-			if i+1 < len(args) {
-				opts.Queue = args[i+1]
-				i++
-			}
-		case "--tries":
-			if i+1 < len(args) {
-				if n, err := strconv.Atoi(args[i+1]); err == nil {
-					opts.Tries = n
-				}
-				i++
-			}
-		case "--timeout":
-			if i+1 < len(args) {
-				if n, err := strconv.Atoi(args[i+1]); err == nil {
-					opts.Timeout = n
-				}
-				i++
-			}
-		}
 	}
 	return console.QueueWork(a.Queue, opts)
 }
@@ -85,6 +72,9 @@ type scheduleWorkCmd struct{}
 func (scheduleWorkCmd) name() string        { return "schedule:work" }
 func (scheduleWorkCmd) description() string { return "Start the task scheduler" }
 func (scheduleWorkCmd) run(a *App, args []string) error {
+	if err := rejectNoArgs(args); err != nil {
+		return err
+	}
 	if err := a.Bootstrap(); err != nil {
 		return err
 	}
@@ -98,24 +88,9 @@ type downCmd struct{}
 func (downCmd) name() string        { return "down" }
 func (downCmd) description() string { return "Put the application into maintenance mode" }
 func (downCmd) run(a *App, args []string) error {
-	opts := console.DownOptions{}
-	for i := 0; i < len(args); i++ {
-		switch {
-		case strings.HasPrefix(args[i], "--secret="):
-			opts.Secret = strings.TrimPrefix(args[i], "--secret=")
-		case args[i] == "--secret" && i+1 < len(args):
-			i++
-			opts.Secret = args[i]
-		case strings.HasPrefix(args[i], "--retry="):
-			if n, err := strconv.Atoi(strings.TrimPrefix(args[i], "--retry=")); err == nil {
-				opts.RetryAfter = n
-			}
-		case args[i] == "--retry" && i+1 < len(args):
-			i++
-			if n, err := strconv.Atoi(args[i]); err == nil {
-				opts.RetryAfter = n
-			}
-		}
+	opts, err := parseDownArgs(args)
+	if err != nil {
+		return err
 	}
 	return console.Down(opts)
 }
@@ -125,6 +100,9 @@ type upCmd struct{}
 func (upCmd) name() string        { return "up" }
 func (upCmd) description() string { return "Bring the application out of maintenance mode" }
 func (upCmd) run(a *App, args []string) error {
+	if err := rejectNoArgs(args); err != nil {
+		return err
+	}
 	return console.Up()
 }
 
@@ -135,6 +113,9 @@ type keyGenerateCmd struct{}
 func (keyGenerateCmd) name() string        { return "key:generate" }
 func (keyGenerateCmd) description() string { return "Generate a new application key" }
 func (keyGenerateCmd) run(a *App, args []string) error {
+	if err := rejectNoArgs(args); err != nil {
+		return err
+	}
 	return console.KeyGenerate()
 }
 
@@ -158,31 +139,13 @@ func (serveCmd) run(a *App, args []string) error {
 	if env == "" {
 		env = "development"
 	}
-	opts := console.ServeOptions{
+	opts, err := parseServeArgs(console.ServeOptions{
 		Port:  port,
 		Env:   env,
 		Watch: true,
-	}
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--port", "-p":
-			if i+1 < len(args) {
-				opts.Port = args[i+1]
-				i++
-			}
-		case "--env", "-e":
-			if i+1 < len(args) {
-				opts.Env = args[i+1]
-				i++
-			}
-		case "--no-watch":
-			opts.Watch = false
-		case "--tags":
-			if i+1 < len(args) {
-				opts.BuildTags = args[i+1]
-				i++
-			}
-		}
+	}, args)
+	if err != nil {
+		return err
 	}
 	return console.Serve(opts)
 }
@@ -192,30 +155,9 @@ type buildCmd struct{}
 func (buildCmd) name() string        { return "build" }
 func (buildCmd) description() string { return "Build for production" }
 func (buildCmd) run(a *App, args []string) error {
-	opts := console.BuildOptions{}
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--output", "-o":
-			if i+1 < len(args) {
-				opts.Output = args[i+1]
-				i++
-			}
-		case "--os":
-			if i+1 < len(args) {
-				opts.OS = args[i+1]
-				i++
-			}
-		case "--arch":
-			if i+1 < len(args) {
-				opts.Arch = args[i+1]
-				i++
-			}
-		case "--tags":
-			if i+1 < len(args) {
-				opts.Tags = args[i+1]
-				i++
-			}
-		}
+	opts, err := parseBuildArgs(args)
+	if err != nil {
+		return err
 	}
 	return console.Build(opts)
 }
@@ -226,7 +168,18 @@ type runCmd struct{}
 
 func (runCmd) name() string        { return "run" }
 func (runCmd) description() string { return "Run a custom command" }
+
+// usageToken renders "run <command>" in help, signalling the required
+// positional argument, while name() stays "run" for dispatch.
+func (runCmd) usageToken() string { return "run <command>" }
 func (runCmd) run(a *App, args []string) error {
+	// Reject a flag-like first token before Bootstrap so `vel run --bogus`
+	// fails fast like the other built-ins instead of starting providers and
+	// reporting it as an unknown custom command.
+	if len(args) > 0 && strings.HasPrefix(args[0], "-") {
+		key, _, _ := strings.Cut(args[0], "=")
+		return unknownToken(args[0], key)
+	}
 	if err := a.Bootstrap(); err != nil {
 		return err
 	}
@@ -254,6 +207,9 @@ type helpCmd struct{ name_ string }
 func (h helpCmd) name() string        { return h.name_ }
 func (h helpCmd) description() string { return "" }
 func (h helpCmd) run(a *App, args []string) error {
+	if err := rejectNoArgs(args); err != nil {
+		return err
+	}
 	a.printHelp()
 	return nil
 }
@@ -271,5 +227,8 @@ type serveRunCmd struct{}
 func (serveRunCmd) name() string        { return "serve:run" }
 func (serveRunCmd) description() string { return "" }
 func (serveRunCmd) run(a *App, args []string) error {
+	if err := rejectNoArgs(args); err != nil {
+		return err
+	}
 	return a.serveHTTP()
 }

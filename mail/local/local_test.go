@@ -87,7 +87,7 @@ func TestLocalDriverBuildMessage(t *testing.T) {
 		Subject("Test Subject").
 		Body("Test body")
 
-	body := driver.buildMessage(msg)
+	body := driver.buildMessage(msg, false)
 	bodyStr := string(body)
 
 	if !strings.Contains(bodyStr, `From: "From Name" <from@example.com>`) {
@@ -119,7 +119,7 @@ func TestLocalDriverBuildMessageWithCC(t *testing.T) {
 		CC("cc@example.com", "CC Name").
 		Subject("Test")
 
-	body := driver.buildMessage(msg)
+	body := driver.buildMessage(msg, false)
 	bodyStr := string(body)
 
 	if !strings.Contains(bodyStr, `Cc: "CC Name" <cc@example.com>`) {
@@ -139,7 +139,7 @@ func TestLocalDriverBuildMessageWithReplyTo(t *testing.T) {
 		ReplyTo("reply@example.com", "Reply Name").
 		Subject("Test")
 
-	body := driver.buildMessage(msg)
+	body := driver.buildMessage(msg, false)
 	bodyStr := string(body)
 
 	if !strings.Contains(bodyStr, `Reply-To: "Reply Name" <reply@example.com>`) {
@@ -160,7 +160,7 @@ func TestLocalDriverBuildMessageWithPriority(t *testing.T) {
 			Subject("Test").
 			Priority(mail.HighPriority)
 
-		body := driver.buildMessage(msg)
+		body := driver.buildMessage(msg, false)
 		bodyStr := string(body)
 
 		if !strings.Contains(bodyStr, "X-Priority: 1") {
@@ -174,7 +174,7 @@ func TestLocalDriverBuildMessageWithPriority(t *testing.T) {
 			Subject("Test").
 			Priority(mail.LowPriority)
 
-		body := driver.buildMessage(msg)
+		body := driver.buildMessage(msg, false)
 		bodyStr := string(body)
 
 		if !strings.Contains(bodyStr, "X-Priority: 5") {
@@ -195,7 +195,7 @@ func TestLocalDriverBuildMessageWithCustomHeaders(t *testing.T) {
 		Subject("Test").
 		Header("X-Custom-Header", "custom-value")
 
-	body := driver.buildMessage(msg)
+	body := driver.buildMessage(msg, false)
 	bodyStr := string(body)
 
 	if !strings.Contains(bodyStr, "X-Custom-Header: custom-value") {
@@ -215,7 +215,7 @@ func TestLocalDriverBuildMessageWithHTMLBody(t *testing.T) {
 		Subject("Test").
 		HTMLBody("<h1>HTML Content</h1>")
 
-	body := driver.buildMessage(msg)
+	body := driver.buildMessage(msg, false)
 	bodyStr := string(body)
 
 	if !strings.Contains(bodyStr, "Content-Type: text/html") {
@@ -240,7 +240,7 @@ func TestLocalDriverBuildMessageWithBothBodies(t *testing.T) {
 		TextBody("Plain text").
 		HTMLBody("<h1>HTML</h1>")
 
-	body := driver.buildMessage(msg)
+	body := driver.buildMessage(msg, false)
 	bodyStr := string(body)
 
 	if !strings.Contains(bodyStr, "multipart/alternative") {
@@ -269,7 +269,7 @@ func TestLocalDriverBuildMessageWithAttachments(t *testing.T) {
 		Body("Body with attachment").
 		AttachData([]byte("file content"), "test.txt", "text/plain")
 
-	body := driver.buildMessage(msg)
+	body := driver.buildMessage(msg, false)
 	bodyStr := string(body)
 
 	if !strings.Contains(bodyStr, "multipart/mixed") {
@@ -297,7 +297,7 @@ func TestLocalDriverBuildMessageFromConfig(t *testing.T) {
 		To("to@example.com").
 		Subject("Test")
 
-	body := driver.buildMessage(msg)
+	body := driver.buildMessage(msg, false)
 	bodyStr := string(body)
 
 	if !strings.Contains(bodyStr, `From: "Default Sender" <default@example.com>`) {
@@ -340,6 +340,29 @@ func TestLocalDriverSendViaSendmailNoRecipients(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "no recipients") {
 		t.Errorf("Expected 'no recipients' error, got %v", err)
+	}
+}
+
+// TestLocalDriverBuildMessageBccSendmailOnly asserts that the Bcc header is
+// emitted only on the sendmail path (includeBcc=true), where sendmail -t reads
+// recipients from headers and strips Bcc before delivery, and never on the SMTP
+// path (includeBcc=false), where blind recipients travel in the envelope.
+func TestLocalDriverBuildMessageBccSendmailOnly(t *testing.T) {
+	driver, _ := NewLocalDriver(mail.LocalConfig{Host: "localhost"}, "", "")
+
+	msg := mail.NewMessage().
+		To("to@example.com").
+		BCC("bcc@example.com", "BCC Name").
+		Subject("Test")
+
+	sendmailBody := string(driver.buildMessage(msg, true))
+	if !strings.Contains(sendmailBody, `Bcc: "BCC Name" <bcc@example.com>`) {
+		t.Errorf("sendmail path: expected sanitized Bcc header, got: %s", sendmailBody)
+	}
+
+	smtpBody := string(driver.buildMessage(msg, false))
+	if strings.Contains(smtpBody, "Bcc:") || strings.Contains(smtpBody, "bcc@example.com") {
+		t.Errorf("SMTP path: expected no Bcc in serialized message, got: %s", smtpBody)
 	}
 }
 

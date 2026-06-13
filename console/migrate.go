@@ -1,8 +1,8 @@
 package console
 
 import (
-	"database/sql"
 	"fmt"
+	"sort"
 
 	cli "github.com/velocitykode/velocity-cli"
 	"github.com/velocitykode/velocity/orm"
@@ -34,7 +34,7 @@ func Migrate(db orm.Database, opts ...MigrateOptions) error {
 
 	migrator := migrate.NewMigrator(db.DB(), db.DriverName())
 
-	pending, err := getPendingMigrations(db.DB(), migrations)
+	pending, err := migrate.Pending(db.DB(), db.DriverName())
 	if err != nil {
 		return fmt.Errorf("velocity/console: failed to get pending migrations: %w", err)
 	}
@@ -109,8 +109,20 @@ func MigrateFresh(db orm.Database) error {
 
 	cli.Info("Running migrations...")
 
+	statuses, err := migrator.Status()
+	if err != nil {
+		return fmt.Errorf("velocity/console: failed to read migration status: %w", err)
+	}
+
+	descriptions := make(map[string]string, len(migrations))
 	for _, m := range migrations {
-		cli.Success(fmt.Sprintf("%s_%s", m.Version, m.Description))
+		descriptions[m.Version] = m.Description
+	}
+
+	for _, s := range statuses {
+		if s.State == "Applied" {
+			cli.Success(fmt.Sprintf("%s_%s", s.Version, descriptions[s.Version]))
+		}
 	}
 
 	cli.Newline()
@@ -137,15 +149,44 @@ func MigrateRollback(db orm.Database, steps int) error {
 
 	migrator := migrate.NewMigrator(db.DB(), db.DriverName())
 
-	rollbackVersions, err := getRollbackMigrations(db.DB(), steps)
+	statuses, err := migrator.Status()
 	if err != nil {
 		return fmt.Errorf("velocity/console: failed to get rollback migrations: %w", err)
+	}
+
+	// A non-positive step count rolls back a single batch, matching Down's
+	// own normalization; keep the display selection in sync.
+	if steps <= 0 {
+		steps = 1
+	}
+
+	// The last batch to keep is everything at or below this cutoff; Down
+	// rolls back the `steps` highest batches.
+	maxBatch := 0
+	for _, s := range statuses {
+		if s.State == "Applied" && s.Batch > maxBatch {
+			maxBatch = s.Batch
+		}
+	}
+
+	cutoff := maxBatch - steps
+	var rollbackVersions []string
+	for _, s := range statuses {
+		if s.State == "Applied" && s.Batch > cutoff {
+			rollbackVersions = append(rollbackVersions, s.Version)
+		}
 	}
 
 	if len(rollbackVersions) == 0 {
 		cli.Info("Nothing to rollback")
 		return nil
 	}
+
+	// Status returns registry order (ascending); the rollback display has
+	// always been newest-first.
+	sort.Slice(rollbackVersions, func(i, j int) bool {
+		return rollbackVersions[i] > rollbackVersions[j]
+	})
 
 	cli.Info("Rolling back migrations...")
 
@@ -160,70 +201,4 @@ func MigrateRollback(db orm.Database, steps int) error {
 	cli.Newline()
 	cli.Success("Done")
 	return nil
-}
-
-func getPendingMigrations(db *sql.DB, all []migrate.Migration) ([]migrate.Migration, error) {
-	appliedVersions := make(map[string]bool)
-
-	rows, err := db.Query("SELECT version FROM migrations")
-	if err != nil {
-		return all, nil
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var version string
-		if err := rows.Scan(&version); err != nil {
-			continue
-		}
-		appliedVersions[version] = true
-	}
-
-	var pending []migrate.Migration
-	for _, m := range all {
-		if !appliedVersions[m.Version] {
-			pending = append(pending, m)
-		}
-	}
-
-	return pending, nil
-}
-
-func getRollbackMigrations(db *sql.DB, steps int) ([]string, error) {
-	rows, err := db.Query("SELECT version, batch FROM migrations ORDER BY version DESC")
-	if err != nil {
-		return nil, nil
-	}
-	defer rows.Close()
-
-	type migrationRecord struct {
-		version string
-		batch   int
-	}
-	var records []migrationRecord
-	maxBatch := 0
-	for rows.Next() {
-		var r migrationRecord
-		if err := rows.Scan(&r.version, &r.batch); err != nil {
-			continue
-		}
-		records = append(records, r)
-		if r.batch > maxBatch {
-			maxBatch = r.batch
-		}
-	}
-
-	if maxBatch == 0 {
-		return nil, nil
-	}
-
-	cutoff := maxBatch - steps
-	var versions []string
-	for _, r := range records {
-		if r.batch > cutoff {
-			versions = append(versions, r.version)
-		}
-	}
-
-	return versions, nil
 }

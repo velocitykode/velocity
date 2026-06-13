@@ -388,10 +388,12 @@ func (s *FileStore) PutCtx(ctx context.Context, key string, value interface{}, t
 		return err
 	}
 
-	expiration := time.Now().Add(ttl)
+	// ttl <= 0 means store forever (nil expiration), matching ForeverCtx;
+	// computing time.Now().Add(ttl) unconditionally would persist an
+	// already-expired entry for ttl=0.
 	item := fileCacheItem{
 		Value:      valueData,
-		Expiration: &expiration,
+		Expiration: expirationFor(ttl),
 	}
 
 	// Marshal the cache item
@@ -456,10 +458,11 @@ func (s *FileStore) AddCtx(ctx context.Context, key string, value interface{}, t
 	if err := s.checkValueSize(valueData); err != nil {
 		return false, err
 	}
-	expiration := time.Now().Add(ttl)
+	// ttl <= 0 means store forever (nil expiration); an Add with ttl=0 must
+	// insert a retrievable entry, not an already-expired one.
 	item := fileCacheItem{
 		Value:      valueData,
-		Expiration: &expiration,
+		Expiration: expirationFor(ttl),
 	}
 	data, err := json.Marshal(item)
 	if err != nil {

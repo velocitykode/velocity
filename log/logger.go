@@ -39,6 +39,8 @@ type Logger interface {
 // The driver name is resolved through the canonical driver registry, so
 // third-party drivers registered via Drivers().Register are available
 // alongside the built-in console / file / daily / stack / null drivers.
+// An empty config.Driver defaults to "console"; if the console driver is
+// not registered the registry still returns a clear unknown-driver error.
 func NewLogger(config LogConfig) (Logger, error) {
 	return NewLoggerWithContext(context.Background(), config)
 }
@@ -46,8 +48,17 @@ func NewLogger(config LogConfig) (Logger, error) {
 // NewLoggerWithContext is the context-aware variant of NewLogger. The
 // ctx is forwarded to the driver factory; the stack driver propagates it
 // when resolving its child channels.
+//
+// An empty config.Driver defaults to "console" (the always-registered
+// light root driver) so a zero-value LogConfig produces a working logger
+// rather than an unknown-driver error.
 func NewLoggerWithContext(ctx context.Context, config LogConfig) (Logger, error) {
-	return driverRegistry.Resolve(ctx, config.Driver, config)
+	driver := config.Driver
+	if driver == "" {
+		driver = "console"
+		config.Driver = driver
+	}
+	return driverRegistry.Resolve(ctx, driver, config)
 }
 
 // parseLevel converts a level string to its numeric value.

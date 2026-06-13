@@ -8,70 +8,58 @@ import (
 	"github.com/velocitykode/velocity/console"
 )
 
+// makeNameUsageHint prints the one-line usage shown by the name-only make:*
+// commands. usage is the command token, e.g. "make:middleware".
+func makeNameUsageHint(usage string) {
+	cli.Muted("  Usage: vel " + usage + " [name]")
+}
+
 // requireMakeName returns an error when args is empty, after printing the
 // standard usage hint. Callers that receive a nil error may safely index
 // args[0]. Returning (instead of os.Exit) lets deferred cleanup in the
 // CLI dispatcher and caller run before the process exits.
 func requireMakeName(args []string, label, usage string) error {
-	if len(args) > 0 {
-		return nil
+	if len(args) == 0 {
+		makeNameUsageHint(usage)
+		return fmt.Errorf("%s name is required", strings.ToLower(label))
 	}
-	cli.Muted("  Usage: vel " + usage + " [name]")
-	return fmt.Errorf("%s name is required", strings.ToLower(label))
-}
-
-// parseDirFlag extracts the value of a --dir / --dir=VALUE flag from the
-// post-name argument slice, returning "" when absent. When set, generated
-// files are written to this project-relative directory instead of the
-// command's default. The console package validates and sandboxes the value.
-func parseDirFlag(args []string) (string, error) {
-	for i := 0; i < len(args); i++ {
-		switch {
-		case strings.HasPrefix(args[i], "--dir="):
-			v := strings.TrimPrefix(args[i], "--dir=")
-			if v == "" {
-				return "", fmt.Errorf("flag --dir needs a value")
-			}
-			return v, nil
-		case args[i] == "--dir":
-			if i+1 >= len(args) || args[i+1] == "" {
-				return "", fmt.Errorf("flag --dir needs a value")
-			}
-			return args[i+1], nil
-		}
+	// A flag-like first token is a typo, not the artifact name: reject it
+	// instead of generating an artifact literally named "--bogus".
+	if strings.HasPrefix(args[0], "-") {
+		makeNameUsageHint(usage)
+		return unknownToken(args[0], args[0])
 	}
-	return "", nil
+	return nil
 }
 
 type makeHandlerCmd struct{}
 
 func (makeHandlerCmd) name() string        { return "make:handler" }
 func (makeHandlerCmd) description() string { return "Create a new handler" }
+func makeHandlerUsage() {
+	cli.Newline()
+	cli.Muted("Usage: vel make:handler [name]")
+	cli.Newline()
+	cli.Muted("Examples:")
+	cli.Muted("  vel make:handler User")
+	cli.Muted("  vel make:handler Admin/Dashboard --resource")
+	cli.Muted("  vel make:handler User --dir internal/web/handlers")
+}
+
 func (makeHandlerCmd) run(a *App, args []string) error {
 	if len(args) == 0 {
-		cli.Newline()
-		cli.Muted("Usage: vel make:handler [name]")
-		cli.Newline()
-		cli.Muted("Examples:")
-		cli.Muted("  vel make:handler User")
-		cli.Muted("  vel make:handler Admin/Dashboard --resource")
-		cli.Muted("  vel make:handler User --dir internal/web/handlers")
+		makeHandlerUsage()
 		return fmt.Errorf("handler name is required")
 	}
-	opts := console.MakeHandlerOptions{}
-	for _, arg := range args[1:] {
-		switch arg {
-		case "--resource", "-r":
-			opts.Resource = true
-		case "--api":
-			opts.API = true
-		}
+	if strings.HasPrefix(args[0], "-") {
+		makeHandlerUsage()
+		return unknownToken(args[0], args[0])
 	}
-	dir, err := parseDirFlag(args[1:])
+	opts, err := parseMakeHandlerArgs(args[1:])
 	if err != nil {
+		makeHandlerUsage()
 		return err
 	}
-	opts.Dir = dir
 	return console.MakeHandler(args[0], opts)
 }
 
@@ -79,34 +67,31 @@ type makeModelCmd struct{}
 
 func (makeModelCmd) name() string        { return "make:model" }
 func (makeModelCmd) description() string { return "Create a new model" }
+func makeModelUsage() {
+	cli.Newline()
+	cli.Muted("Usage: vel make:model [name]")
+	cli.Newline()
+	cli.Muted("Examples:")
+	cli.Muted("  vel make:model User")
+	cli.Muted("  vel make:model Post --uuid --soft-deletes")
+	cli.Muted("  vel make:model Comment --migration")
+	cli.Muted("  vel make:model Invoice --dir internal/billing/models")
+}
+
 func (makeModelCmd) run(a *App, args []string) error {
 	if len(args) == 0 {
-		cli.Newline()
-		cli.Muted("Usage: vel make:model [name]")
-		cli.Newline()
-		cli.Muted("Examples:")
-		cli.Muted("  vel make:model User")
-		cli.Muted("  vel make:model Post --uuid --soft-deletes")
-		cli.Muted("  vel make:model Comment --migration")
-		cli.Muted("  vel make:model Invoice --dir internal/billing/models")
+		makeModelUsage()
 		return fmt.Errorf("model name is required")
 	}
-	opts := console.MakeModelOptions{}
-	for _, arg := range args[1:] {
-		switch arg {
-		case "--uuid":
-			opts.UUID = true
-		case "--soft-deletes":
-			opts.SoftDeletes = true
-		case "--migration", "-m":
-			opts.Migration = true
-		}
+	if strings.HasPrefix(args[0], "-") {
+		makeModelUsage()
+		return unknownToken(args[0], args[0])
 	}
-	dir, err := parseDirFlag(args[1:])
+	opts, err := parseMakeModelArgs(args[1:])
 	if err != nil {
+		makeModelUsage()
 		return err
 	}
-	opts.Dir = dir
 	return console.MakeModel(args[0], opts)
 }
 
@@ -114,48 +99,30 @@ type makeMigrationCmd struct{}
 
 func (makeMigrationCmd) name() string        { return "make:migration" }
 func (makeMigrationCmd) description() string { return "Create a new migration" }
+func makeMigrationUsage() {
+	cli.Newline()
+	cli.Muted("Usage: vel make:migration [name]")
+	cli.Newline()
+	cli.Muted("Examples:")
+	cli.Muted("  vel make:migration create_posts")
+	cli.Muted("  vel make:migration add_slug_to_posts --table=posts")
+	cli.Muted("  vel make:migration create_comments --create=comments")
+	cli.Muted("  vel make:migration create_posts --dir db/migrations")
+}
+
 func (makeMigrationCmd) run(a *App, args []string) error {
 	if len(args) == 0 {
-		cli.Newline()
-		cli.Muted("Usage: vel make:migration [name]")
-		cli.Newline()
-		cli.Muted("Examples:")
-		cli.Muted("  vel make:migration create_posts")
-		cli.Muted("  vel make:migration add_slug_to_posts --table=posts")
-		cli.Muted("  vel make:migration create_comments --create=comments")
-		cli.Muted("  vel make:migration create_posts --dir db/migrations")
+		makeMigrationUsage()
 		return fmt.Errorf("migration name is required")
 	}
-	opts := console.MakeMigrationOptions{}
-	for i := 1; i < len(args); i++ {
-		arg := args[i]
-		switch {
-		case arg == "--uuid":
-			opts.UUID = true
-		case arg == "--soft-deletes":
-			opts.SoftDeletes = true
-		case strings.HasPrefix(arg, "--create="):
-			opts.Create = strings.TrimPrefix(arg, "--create=")
-		case arg == "--create" && i+1 < len(args):
-			i++
-			opts.Create = args[i]
-		case strings.HasPrefix(arg, "--table="):
-			opts.Table = strings.TrimPrefix(arg, "--table=")
-		case arg == "--table" && i+1 < len(args):
-			i++
-			opts.Table = args[i]
-		case strings.HasPrefix(arg, "--dir="):
-			opts.Dir = strings.TrimPrefix(arg, "--dir=")
-			if opts.Dir == "" {
-				return fmt.Errorf("flag --dir needs a value")
-			}
-		case arg == "--dir":
-			if i+1 >= len(args) || args[i+1] == "" {
-				return fmt.Errorf("flag --dir needs a value")
-			}
-			i++
-			opts.Dir = args[i]
-		}
+	if strings.HasPrefix(args[0], "-") {
+		makeMigrationUsage()
+		return unknownToken(args[0], args[0])
+	}
+	opts, err := parseMakeMigrationArgs(args[1:])
+	if err != nil {
+		makeMigrationUsage()
+		return err
 	}
 	return console.MakeMigration(args[0], opts)
 }
@@ -168,8 +135,9 @@ func (makeMiddlewareCmd) run(a *App, args []string) error {
 	if err := requireMakeName(args, "Middleware", "make:middleware"); err != nil {
 		return err
 	}
-	dir, err := parseDirFlag(args[1:])
+	dir, err := parseDirOnlyArgs(args[1:])
 	if err != nil {
+		makeNameUsageHint("make:middleware")
 		return err
 	}
 	return console.MakeMiddleware(args[0], console.MakeMiddlewareOptions{Dir: dir})
@@ -183,8 +151,9 @@ func (makeEventCmd) run(a *App, args []string) error {
 	if err := requireMakeName(args, "Event", "make:event"); err != nil {
 		return err
 	}
-	dir, err := parseDirFlag(args[1:])
+	dir, err := parseDirOnlyArgs(args[1:])
 	if err != nil {
+		makeNameUsageHint("make:event")
 		return err
 	}
 	return console.MakeEvent(args[0], console.MakeEventOptions{Dir: dir})
@@ -198,8 +167,9 @@ func (makeListenerCmd) run(a *App, args []string) error {
 	if err := requireMakeName(args, "Listener", "make:listener"); err != nil {
 		return err
 	}
-	dir, err := parseDirFlag(args[1:])
+	dir, err := parseDirOnlyArgs(args[1:])
 	if err != nil {
+		makeNameUsageHint("make:listener")
 		return err
 	}
 	return console.MakeListener(args[0], console.MakeListenerOptions{Dir: dir})
@@ -213,8 +183,9 @@ func (makeJobCmd) run(a *App, args []string) error {
 	if err := requireMakeName(args, "Job", "make:job"); err != nil {
 		return err
 	}
-	dir, err := parseDirFlag(args[1:])
+	dir, err := parseDirOnlyArgs(args[1:])
 	if err != nil {
+		makeNameUsageHint("make:job")
 		return err
 	}
 	return console.MakeJob(args[0], console.MakeJobOptions{Dir: dir})
@@ -228,8 +199,9 @@ func (makeMailCmd) run(a *App, args []string) error {
 	if err := requireMakeName(args, "Mail", "make:mail"); err != nil {
 		return err
 	}
-	dir, err := parseDirFlag(args[1:])
+	dir, err := parseDirOnlyArgs(args[1:])
 	if err != nil {
+		makeNameUsageHint("make:mail")
 		return err
 	}
 	return console.MakeMail(args[0], console.MakeMailOptions{Dir: dir})
@@ -243,8 +215,9 @@ func (makeNotificationCmd) run(a *App, args []string) error {
 	if err := requireMakeName(args, "Notification", "make:notification"); err != nil {
 		return err
 	}
-	dir, err := parseDirFlag(args[1:])
+	dir, err := parseDirOnlyArgs(args[1:])
 	if err != nil {
+		makeNameUsageHint("make:notification")
 		return err
 	}
 	return console.MakeNotification(args[0], console.MakeNotificationOptions{Dir: dir})
@@ -258,8 +231,9 @@ func (makeResourceCmd) run(a *App, args []string) error {
 	if err := requireMakeName(args, "Resource", "make:resource"); err != nil {
 		return err
 	}
-	dir, err := parseDirFlag(args[1:])
+	dir, err := parseDirOnlyArgs(args[1:])
 	if err != nil {
+		makeNameUsageHint("make:resource")
 		return err
 	}
 	return console.MakeResource(args[0], console.MakeResourceOptions{Dir: dir})
@@ -273,8 +247,9 @@ func (makePolicyCmd) run(a *App, args []string) error {
 	if err := requireMakeName(args, "Policy", "make:policy"); err != nil {
 		return err
 	}
-	dir, err := parseDirFlag(args[1:])
+	dir, err := parseDirOnlyArgs(args[1:])
 	if err != nil {
+		makeNameUsageHint("make:policy")
 		return err
 	}
 	return console.MakePolicy(args[0], console.MakePolicyOptions{Dir: dir})
@@ -288,8 +263,9 @@ func (makeProviderCmd) run(a *App, args []string) error {
 	if err := requireMakeName(args, "Provider", "make:provider"); err != nil {
 		return err
 	}
-	dir, err := parseDirFlag(args[1:])
+	dir, err := parseDirOnlyArgs(args[1:])
 	if err != nil {
+		makeNameUsageHint("make:provider")
 		return err
 	}
 	return console.MakeProvider(args[0], console.MakeProviderOptions{Dir: dir})
@@ -303,8 +279,9 @@ func (makeCommandCmd) run(a *App, args []string) error {
 	if err := requireMakeName(args, "Command", "make:command"); err != nil {
 		return err
 	}
-	dir, err := parseDirFlag(args[1:])
+	dir, err := parseDirOnlyArgs(args[1:])
 	if err != nil {
+		makeNameUsageHint("make:command")
 		return err
 	}
 	return console.MakeCommand(args[0], console.MakeCommandOptions{Dir: dir})

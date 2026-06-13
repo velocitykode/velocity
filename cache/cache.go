@@ -72,6 +72,11 @@ type Cache = contract.Cache
 // Store represents a cache store with a prefix. Canonical declaration lives
 // in the contract leaf as CacheStore.
 //
+// TTL contract: across every Store method that takes a ttl (PutCtx, AddCtx,
+// PutManyCtx), ttl > 0 sets an expiration that far ahead and ttl <= 0 stores
+// the value forever -- never an already-expired entry. ForeverCtx is the
+// explicit forever form. Enforced by cachetest.
+//
 // Implementations must pass cachetest.RunStoreContractTests. Stores that
 // additionally implement drivers.Locker must pass
 // cachetest.RunLockerContractTests. See cachetest for the executable

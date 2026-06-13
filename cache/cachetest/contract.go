@@ -185,6 +185,78 @@ func RunStoreContractTestsWithClock(t *testing.T, f StoreFactoryWithClock) {
 		}
 	})
 
+	t.Run("PutCtx_ZeroTTL_StoresForever", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		// ttl == 0 means store forever, not store-already-expired. The value
+		// must survive a clock advance.
+		if err := s.PutCtx(ctx, "ttl-zero", "v", 0); err != nil {
+			t.Fatalf("PutCtx: %v", err)
+		}
+		advance(50 * time.Millisecond)
+		v, ok := s.GetCtx(ctx, "ttl-zero")
+		if !ok {
+			t.Fatal("ttl=0 entry must persist forever, got miss")
+		}
+		if v != "v" {
+			t.Fatalf("expected v, got %v", v)
+		}
+	})
+
+	t.Run("PutCtx_NegativeTTL_StoresForever", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		// A negative ttl is clamped to the forever contract, never the redis
+		// KeepTTL sentinel or a past deadline.
+		if err := s.PutCtx(ctx, "ttl-neg", "v", -time.Second); err != nil {
+			t.Fatalf("PutCtx: %v", err)
+		}
+		advance(50 * time.Millisecond)
+		if _, ok := s.GetCtx(ctx, "ttl-neg"); !ok {
+			t.Fatal("ttl<0 entry must persist forever, got miss")
+		}
+	})
+
+	t.Run("AddCtx_ZeroTTL_InsertsRetrievable", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		// Add with ttl == 0 must insert a retrievable forever entry, not an
+		// already-expired one that immediately reads as a miss.
+		inserted, err := s.AddCtx(ctx, "add-zero", "v", 0)
+		if err != nil {
+			t.Fatalf("AddCtx: %v", err)
+		}
+		if !inserted {
+			t.Fatal("expected AddCtx with ttl=0 to insert")
+		}
+		if _, ok := s.GetCtx(ctx, "add-zero"); !ok {
+			t.Fatal("ttl=0 Add must store a retrievable entry, got miss")
+		}
+	})
+
+	t.Run("IncrementCtx_AfterExpiry_StartsFresh", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		// Seed a counter with a short TTL, let it expire, then Increment. The
+		// post-expiry Increment must start from zero (returning the delta), and
+		// the new counter must be retrievable -- an expired entry must not
+		// resurrect its old deadline and leave the fresh counter unreadable.
+		if err := s.PutCtx(ctx, "inc-exp", int64(5), 10*time.Millisecond); err != nil {
+			t.Fatalf("PutCtx: %v", err)
+		}
+		advance(50 * time.Millisecond)
+		got, err := s.IncrementCtx(ctx, "inc-exp", 3)
+		if err != nil {
+			t.Fatalf("IncrementCtx: %v", err)
+		}
+		if got != 3 {
+			t.Fatalf("expected counter to start fresh at 3 after expiry, got %d", got)
+		}
+		if _, ok := s.GetCtx(ctx, "inc-exp"); !ok {
+			t.Fatal("counter unreadable after post-expiry Increment")
+		}
+	})
+
 	t.Run("ForgetCtx_RemovesValue", func(t *testing.T) {
 		s := factory(t)
 		ctx := context.Background()

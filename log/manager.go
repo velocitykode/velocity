@@ -57,8 +57,27 @@ func (m *Manager) Channel(name string) (Logger, error) {
 		return nil, fmt.Errorf("failed to create logger for channel %s: %w", name, err)
 	}
 
-	// Re-acquire lock to store the logger
+	// Re-acquire lock to store the logger. We released the lock during
+	// createLogger (to avoid a stack-driver deadlock), so a concurrent
+	// caller may have built and stored the same channel meanwhile. If so,
+	// prefer the already-stored instance and discard ours; otherwise two
+	// callers would receive different loggers and the loser's resources
+	// (e.g. FileLogger descriptors) would leak. Best-effort Shutdown the
+	// duplicate outside the lock via the optional Shutdowner interface.
+	//
+	// Every discarded duplicate, including a *StackLogger, gets a Shutdown
+	// attempt. A manager-built stack does not own its children (they are
+	// shared, manager-owned channels resolved via m.Channel above), so its
+	// Shutdown is non-destructive and will not close those shared children
+	// out from under the winning stack.
 	m.mu.Lock()
+	if existing, exists := m.channels[name]; exists {
+		m.mu.Unlock()
+		if sd, ok := logger.(Shutdowner); ok {
+			_ = sd.Shutdown(context.Background())
+		}
+		return existing, nil
+	}
 	m.channels[name] = logger
 	m.mu.Unlock()
 
@@ -82,7 +101,7 @@ func (m *Manager) Default() (Logger, error) {
 // the registered factory uses the same fields as standalone NewLogger.
 func (m *Manager) createLogger(cfg ChannelConfig) (Logger, error) {
 	if cfg.Driver == "stack" {
-		channelNames, ok := cfg.Options["channels"].([]string)
+		channelNames, ok := ToStringSlice(cfg.Options["channels"])
 		if !ok {
 			return nil, fmt.Errorf("velocity/log: stack driver requires options.channels []string")
 		}
@@ -109,7 +128,7 @@ func (m *Manager) createLogger(cfg ChannelConfig) (Logger, error) {
 		if len(loggers) == 0 {
 			return nil, fmt.Errorf("velocity/log: stack driver: no valid channels configured")
 		}
-		return NewStackLogger(loggers...), nil
+		return newManagerStackLogger(loggers...), nil
 	}
 
 	driverConfig := map[string]any{
@@ -127,16 +146,59 @@ func (m *Manager) createLogger(cfg ChannelConfig) (Logger, error) {
 	return driverRegistry.Resolve(context.Background(), cfg.Driver, LogConfig{Driver: cfg.Driver, Config: driverConfig})
 }
 
+// ToStringSlice coerces a config value into a []string, accepting both a
+// native []string and a []any whose every element is a string (the shape
+// JSON / env decoding produces). It returns false when v is nil, not a
+// slice, or holds a non-string element, so call sites can fail loudly on a
+// malformed value instead of silently dropping it.
+//
+// Exported so leaf driver packages (log/stack) coerce channel lists the
+// same way the Manager does, keeping the "channels" config key behaving
+// identically across both stack implementations.
+func ToStringSlice(v any) ([]string, bool) {
+	switch s := v.(type) {
+	case []string:
+		return s, true
+	case []any:
+		out := make([]string, 0, len(s))
+		for _, e := range s {
+			str, ok := e.(string)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, str)
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
 // StackLogger logs to multiple loggers simultaneously.
 // Useful for logging to multiple destinations (e.g., file and console)
 type StackLogger struct {
 	loggers []Logger
+	// ownsChildren reports whether this stack created its children
+	// exclusively (true for NewStackLogger, used by the standalone stack
+	// driver, which resolves fresh siblings) or merely references shared,
+	// externally-owned channels (false for a Manager-built stack, whose
+	// children are independent manager channels). Only an owning stack
+	// cascades Shutdown to its children.
+	ownsChildren bool
 }
 
 // NewStackLogger creates a logger that writes to multiple loggers.
-// All provided loggers will receive the same log messages
+// All provided loggers will receive the same log messages. The returned
+// stack owns its children: Shutdown cascades to them.
 func NewStackLogger(loggers ...Logger) *StackLogger {
-	return &StackLogger{loggers: loggers}
+	return &StackLogger{loggers: loggers, ownsChildren: true}
+}
+
+// newManagerStackLogger creates a stack whose children are shared,
+// manager-owned channels. Its Shutdown is non-destructive: the children are
+// shut down via their own channel entries, not cascaded from here.
+func newManagerStackLogger(loggers ...Logger) *StackLogger {
+	return &StackLogger{loggers: loggers, ownsChildren: false}
 }
 
 // Debug logs a debug message to all configured loggers
@@ -175,8 +237,13 @@ func (s *StackLogger) Fatal(msg string, kvs ...any) {
 }
 
 // Shutdown closes all underlying loggers that support it, honoring the
-// context deadline.
+// context deadline. A stack that does not own its children (a Manager-built
+// stack referencing shared channels) shuts nothing down here, leaving those
+// channels to be closed via their own entries.
 func (s *StackLogger) Shutdown(ctx context.Context) error {
+	if !s.ownsChildren {
+		return nil
+	}
 	var firstErr error
 	for _, l := range s.loggers {
 		if shutdowner, ok := l.(Shutdowner); ok {

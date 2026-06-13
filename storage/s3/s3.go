@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 
 	"github.com/velocitykode/velocity/storage"
 )
@@ -224,7 +224,7 @@ func (d *S3Driver) PutStreamCtx(ctx context.Context, path string, stream io.Read
 		return fmt.Errorf("velocity/storage: failed to read stream: %w", err)
 	}
 	sniff = sniff[:n]
-	contentType := detectMimeType(sniff)
+	contentType := storage.DetectMimeType(sniff)
 	var contentDisposition *string
 
 	// Re-attach the sniffed bytes to the front of the remaining stream
@@ -489,7 +489,7 @@ func (d *S3Driver) CopyCtx(ctx context.Context, from, to string) error {
 	// Create copy source. AWS requires CopySource to be URL-encoded;
 	// encode the key per path segment (bucket names cannot contain
 	// characters that need encoding).
-	source := fmt.Sprintf("%s/%s", d.bucket, escapeURLPathSegments(from))
+	source := fmt.Sprintf("%s/%s", d.bucket, storage.EscapeURLPathSegments(from))
 
 	// Copy object
 	_, err = d.client.CopyObject(ctx, &s3.CopyObjectInput{
@@ -844,7 +844,7 @@ func (d *S3Driver) URL(path string) string {
 		return ""
 	}
 
-	escaped := escapeURLPathSegments(path)
+	escaped := storage.EscapeURLPathSegments(path)
 	if d.url != "" {
 		// Use custom URL if configured
 		return d.url + "/" + escaped
@@ -912,40 +912,35 @@ func (d *S3Driver) cleanPath(path string) (string, error) {
 	return path, nil
 }
 
-// isNotFoundError checks if an error is a "not found" error
+// isNotFoundError reports whether err represents an S3 "not found"
+// condition. It matches the typed SDK errors (*types.NoSuchKey for
+// GetObject, *types.NotFound for HeadObject) and falls back to the
+// smithy API error code so transport-shaped errors that never
+// deserialize into a concrete type are still recognised.
 func isNotFoundError(err error) bool {
 	if err == nil {
 		return false
 	}
-	return strings.Contains(err.Error(), "NotFound") ||
-		strings.Contains(err.Error(), "NoSuchKey")
-}
 
-// detectMimeType detects the MIME type from content using the standard
-// library sniffer (net/http.DetectContentType), with a narrow SVG
-// correction for markup the sniffer classifies as plain text. Sniffing
-// only the first 512 bytes mirrors http.DetectContentType's own contract
-// and bounds the work for very large objects.
-func detectMimeType(content []byte) string {
-	if len(content) == 0 {
-		return "application/octet-stream"
+	var noSuchKey *types.NoSuchKey
+	if errors.As(err, &noSuchKey) {
+		return true
 	}
-	n := len(content)
-	if n > 512 {
-		n = 512
-	}
-	sample := content[:n]
-	contentType := http.DetectContentType(sample)
-	if strings.HasPrefix(strings.ToLower(contentType), "text/plain") && looksLikeSVG(sample) {
-		return "image/svg+xml"
-	}
-	return contentType
-}
 
-func looksLikeSVG(content []byte) bool {
-	s := strings.TrimSpace(strings.ToLower(string(content)))
-	return strings.HasPrefix(s, "<svg") ||
-		(strings.HasPrefix(s, "<?xml") && strings.Contains(s, "<svg"))
+	var notFound *types.NotFound
+	if errors.As(err, &notFound) {
+		return true
+	}
+
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.ErrorCode() {
+		case "NoSuchKey", "NotFound":
+			return true
+		}
+	}
+
+	return false
 }
 
 func publicContentTypeRequiresAttachment(contentType string) bool {
@@ -956,20 +951,4 @@ func publicContentTypeRequiresAttachment(contentType string) bool {
 		}
 	}
 	return false
-}
-
-// escapeURLPathSegments percent-encodes each `/`-delimited segment of
-// path so reserved characters in keys cannot inject query / fragment
-// state. `url.PathEscape` does NOT escape `/`, so a blanket call would
-// destroy the separators; splitting first preserves the path shape
-// while encoding every segment individually.
-func escapeURLPathSegments(path string) string {
-	if path == "" {
-		return ""
-	}
-	segs := strings.Split(path, "/")
-	for i, seg := range segs {
-		segs[i] = url.PathEscape(seg)
-	}
-	return strings.Join(segs, "/")
 }

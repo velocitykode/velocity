@@ -32,6 +32,13 @@ var (
 	// Aliased to contract.ErrInvalidPayload so callers can errors.Is
 	// against the shared identity without importing crypto/drivers.
 	ErrInvalidPayload = contract.ErrInvalidPayload
+	// ErrInvalidPreviousKey signals a rotation key that could not be used:
+	// here, one whose raw byte length does not match the cipher. Aliased to
+	// contract.ErrInvalidPreviousKey so errors.Is(err, crypto.ErrInvalidPreviousKey)
+	// matches errors returned from this package. NewAESDriver fails fast on
+	// such keys rather than dropping them; the crypto package performs the
+	// same check at the configuration layer.
+	ErrInvalidPreviousKey = contract.ErrInvalidPreviousKey
 	// ErrDecrypt is the single sentinel returned for any decrypt failure
 	// where the inner envelope parsed but the cryptographic check failed
 	// or could not be safely performed. CBC paths used to surface six

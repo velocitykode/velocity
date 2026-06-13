@@ -249,6 +249,29 @@ func TestMalformedPayloads_AllReturnErrors(t *testing.T) {
 	}
 }
 
+// TestV1DoubledSentinel_Rejected pins canonical sentinel handling: the wire
+// format is exactly one "v1:" (or bare v0). A payload shaped
+// "v1:v1:<valid-envelope>" must be rejected. splitVersion strips one
+// sentinel, and the inner decoder must NOT quietly strip the second.
+func TestV1DoubledSentinel_Rejected(t *testing.T) {
+	d, _ := NewAESDriver([]byte("0123456789abcdef"), nil, "AES-128-CBC")
+
+	v1, err := d.Encrypt("canonical sentinel")
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+	// Sanity: the single-sentinel form decrypts.
+	if _, err := d.Decrypt(v1); err != nil {
+		t.Fatalf("single-sentinel Decrypt: %v", err)
+	}
+
+	// doubled = "v1:" + v1, i.e. "v1:v1:<envelope>".
+	doubled := "v1:" + v1
+	if _, err := d.Decrypt(doubled); err == nil {
+		t.Fatal("doubled sentinel v1:v1:<envelope> must be rejected")
+	}
+}
+
 // TestLegacyEventFiresWithMultipleCalls verifies the dispatcher wiring is
 // safe under concurrent use (SetEventDispatcher is mutex-protected). This
 // guards against a concurrent-map/pointer-race regression if someone adds

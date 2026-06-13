@@ -21,23 +21,6 @@ import (
 	"github.com/velocitykode/velocity/mail"
 )
 
-// sanitizeHeader drops every C0 control character (U+0000..U+001F) except
-// horizontal tab from a header value. NUL in particular can truncate strings
-// in downstream parsers and enable header-injection vectors a simple CRLF
-// check misses; DEL (U+007F) is dropped as well since several older MTAs
-// choke on it.
-func sanitizeHeader(value string) string {
-	return strings.Map(func(r rune) rune {
-		if r == '\t' {
-			return r
-		}
-		if r < 0x20 || r == 0x7f {
-			return -1
-		}
-		return r
-	}, value)
-}
-
 // mailgunErrorPreview caps how many bytes of an unexpected error response
 // body we read from Mailgun for JSON decoding. The body is redacted from
 // the returned message to avoid leaking sensitive Mailgun error text to
@@ -50,7 +33,7 @@ const mailgunErrorPreview = 256
 // content is also stripped of C0 control bytes via sanitizeHeader as a
 // belt-and-braces against callers that bypass the Message validators.
 func formatAddress(name, email string) string {
-	clean := sanitizeHeader(name)
+	clean := mail.SanitizeHeader(name)
 	if clean == "" {
 		return email
 	}
@@ -280,7 +263,7 @@ func (d *MailgunDriver) writePriority(writer *multipart.Writer, msg *mail.Messag
 // writeCustomHeaders writes user-supplied headers with CRLF sanitisation.
 func (d *MailgunDriver) writeCustomHeaders(writer *multipart.Writer, msg *mail.Message) error {
 	for key, value := range msg.GetHeaders() {
-		if err := writer.WriteField(fmt.Sprintf("h:%s", sanitizeHeader(key)), sanitizeHeader(value)); err != nil {
+		if err := writer.WriteField(fmt.Sprintf("h:%s", mail.SanitizeHeader(key)), mail.SanitizeHeader(value)); err != nil {
 			return err
 		}
 	}
@@ -291,8 +274,10 @@ func (d *MailgunDriver) writeCustomHeaders(writer *multipart.Writer, msg *mail.M
 func (d *MailgunDriver) addAttachments(writer *multipart.Writer, msg *mail.Message) error {
 	attachments := msg.GetAttachments()
 	for _, att := range attachments {
-		// Create file field
-		part, err := writer.CreateFormFile("attachment", att.Name)
+		// Create file field. CreateFormFile's escapeQuotes handles quotes and
+		// backslashes but not CR/LF, so a newline in att.Name would otherwise
+		// reach the Content-Disposition line; sanitise it first.
+		part, err := writer.CreateFormFile("attachment", mail.SanitizeFilename(att.Name))
 		if err != nil {
 			return err
 		}

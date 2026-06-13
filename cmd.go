@@ -30,26 +30,67 @@ type command interface {
 	run(a *App, args []string) error
 }
 
+// usageTokener is an optional interface a command may implement to render a
+// help token different from its name() - e.g. "run <command>" instead of
+// "run". Commands that don't implement it fall back to name(). Same
+// optional-interface pattern as the command interface above.
+type usageTokener interface {
+	usageToken() string
+}
+
+// usageToken returns the token printHelp displays for c: its usageToken() when
+// the command implements usageTokener, otherwise its name().
+func usageToken(c command) string {
+	if t, ok := c.(usageTokener); ok {
+		return t.usageToken()
+	}
+	return c.name()
+}
+
+// commandSection is one titled group of commands in the help output. The
+// section list is the single source of truth for both dispatch (every
+// command is registered) and printHelp (titled sections render in order). A
+// section with an empty title is hidden from help - used for the help aliases
+// and the internal serve:run entry point, which are dispatchable but not
+// documented.
+type commandSection struct {
+	title string
+	cmds  []command
+}
+
 // commandRegistry holds the built-in command set. It's constructed once per
-// App.Run call (cheap — each command is a zero-sized struct) and looked up
+// App.Run call (cheap - each command is a zero-sized struct) and looked up
 // by name. Built-ins win over chain commands, but chain commands remain
 // reachable through the "run" command.
 type commandRegistry struct {
-	byName map[string]command
-	order  []command
+	byName   map[string]command
+	order    []command
+	sections []commandSection
 }
 
 func newCommandRegistry() *commandRegistry {
 	r := &commandRegistry{byName: make(map[string]command)}
-	r.add(
-		// Routes
-		routeListCmd{},
-		// Migrations
+	r.addSection("Server",
+		serveCmd{},
+		buildCmd{},
+		downCmd{},
+		upCmd{},
+	)
+	r.addSection("Database",
 		migrateCmd{},
 		migrateFreshCmd{},
 		migrateRollbackCmd{},
 		migrateStatusCmd{},
-		// Code generation
+		dbWipeCmd{},
+	)
+	r.addSection("Queue & Scheduler",
+		queueWorkCmd{},
+		scheduleWorkCmd{},
+	)
+	r.addSection("Cache",
+		cacheClearCmd{},
+	)
+	r.addSection("Code Generation",
 		makeHandlerCmd{},
 		makeModelCmd{},
 		makeMigrationCmd{},
@@ -66,38 +107,60 @@ func newCommandRegistry() *commandRegistry {
 		makeGRPCServiceCmd{},
 		makeGRPCRPCCmd{},
 		makeGRPCGenCmd{},
-		// Database
-		dbWipeCmd{},
-		// Cache
-		cacheClearCmd{},
-		// Queue & scheduler
-		queueWorkCmd{},
-		scheduleWorkCmd{},
-		// Maintenance mode
-		downCmd{},
-		upCmd{},
-		// Keys
-		keyGenerateCmd{},
-		// Server / build
-		serveCmd{},
-		buildCmd{},
-		// Custom command runner
+	)
+	r.addSection("Custom Commands",
 		runCmd{},
-		// Help
+	)
+	r.addSection("Other",
+		routeListCmd{},
+		keyGenerateCmd{},
+	)
+	// Hidden group (empty title): help aliases and the internal subprocess
+	// entry. Registered for dispatch and order coverage, omitted from help.
+	r.addSection("",
 		helpCmd{name_: "help"},
 		helpCmd{name_: "--help"},
 		helpCmd{name_: "-h"},
-		// Internal subprocess entry (not in help output)
 		serveRunCmd{},
 	)
 	return r
 }
 
+func (r *commandRegistry) addSection(title string, cmds ...command) {
+	r.sections = append(r.sections, commandSection{title: title, cmds: cmds})
+	r.add(cmds...)
+	// r.order is the flattened section sequence - the sections are the single
+	// source of truth for dispatch, help, and registry iteration alike, so
+	// removing a command from a section drops it from all three with no other
+	// edit.
+	r.order = append(r.order, cmds...)
+}
+
 func (r *commandRegistry) add(cmds ...command) {
 	for _, c := range cmds {
 		r.byName[c.name()] = c
-		r.order = append(r.order, c)
 	}
+}
+
+// helpPadWidth returns the column width printHelp left-pads command tokens to:
+// the longest rendered token among help-visible commands (those in a titled
+// section with a non-empty description), plus two spaces of gutter.
+func (r *commandRegistry) helpPadWidth() int {
+	max := 0
+	for _, sec := range r.sections {
+		if sec.title == "" {
+			continue
+		}
+		for _, c := range sec.cmds {
+			if c.description() == "" {
+				continue
+			}
+			if n := len(usageToken(c)); n > max {
+				max = n
+			}
+		}
+	}
+	return max + 2
 }
 
 func (r *commandRegistry) get(name string) (command, bool) {
@@ -174,57 +237,21 @@ func (a *App) printHelp() {
 	cli.Muted("  vel <command> [arguments]")
 	cli.Newline()
 
-	cli.Info("Server")
-	cli.Muted("  serve              Start the development server")
-	cli.Muted("  build              Build for production")
-	cli.Muted("  down               Put the application into maintenance mode")
-	cli.Muted("  up                 Bring the application out of maintenance mode")
-	cli.Newline()
-
-	cli.Info("Database")
-	cli.Muted("  migrate            Run database migrations")
-	cli.Muted("  migrate:fresh      Drop all tables and re-run migrations")
-	cli.Muted("  migrate:rollback   Rollback the last migration batch")
-	cli.Muted("  migrate:status     Show migration status")
-	cli.Muted("  db:wipe            Drop all tables")
-	cli.Newline()
-
-	cli.Info("Queue & Scheduler")
-	cli.Muted("  queue:work         Start processing queue jobs")
-	cli.Muted("  schedule:work      Start the task scheduler")
-	cli.Newline()
-
-	cli.Info("Cache")
-	cli.Muted("  cache:clear        Flush the application cache")
-	cli.Newline()
-
-	cli.Info("Code Generation")
-	cli.Muted("  make:handler       Create a new handler")
-	cli.Muted("  make:model         Create a new model")
-	cli.Muted("  make:migration     Create a new migration")
-	cli.Muted("  make:middleware     Create a new middleware")
-	cli.Muted("  make:event         Create a new event")
-	cli.Muted("  make:listener      Create a new listener")
-	cli.Muted("  make:job           Create a new job")
-	cli.Muted("  make:mail          Create a new mailable")
-	cli.Muted("  make:notification  Create a new notification")
-	cli.Muted("  make:resource      Create a new API resource")
-	cli.Muted("  make:policy        Create a new policy")
-	cli.Muted("  make:provider      Create a new service provider")
-	cli.Muted("  make:command       Create a new command")
-	cli.Muted("  make:grpc:service  Scaffold a gRPC service (proto + impl + provider)")
-	cli.Muted("  make:grpc:rpc      Add an rpc to an existing gRPC service")
-	cli.Muted("  make:grpc:gen      Run `buf generate` in api/proto")
-	cli.Newline()
-
-	cli.Info("Custom Commands")
-	cli.Muted("  run <command>      Run a custom command")
-	cli.Newline()
-
-	cli.Info("Other")
-	cli.Muted("  route:list         List all registered routes")
-	cli.Muted("  key:generate       Generate a new application key")
-	cli.Newline()
+	reg := newCommandRegistry()
+	width := reg.helpPadWidth()
+	for _, sec := range reg.sections {
+		if sec.title == "" {
+			continue
+		}
+		cli.Info(sec.title)
+		for _, c := range sec.cmds {
+			if c.description() == "" {
+				continue
+			}
+			cli.Muted(fmt.Sprintf("  %-*s%s", width, usageToken(c), c.description()))
+		}
+		cli.Newline()
+	}
 }
 
 // printUserCommands lists all registered user commands with their descriptions.

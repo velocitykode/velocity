@@ -7,7 +7,6 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -586,23 +585,7 @@ func (d *LocalDriver) URL(path string) string {
 		return ""
 	}
 	path = strings.ReplaceAll(path, string(filepath.Separator), "/")
-	return d.url + "/" + escapeURLPathSegments(path)
-}
-
-// escapeURLPathSegments percent-encodes each `/`-delimited segment of
-// path so reserved characters in keys cannot inject query / fragment
-// state. `url.PathEscape` does NOT escape `/`, so a blanket call would
-// destroy the separators; splitting first preserves the path shape
-// while encoding every segment individually.
-func escapeURLPathSegments(path string) string {
-	if path == "" {
-		return ""
-	}
-	segs := strings.Split(path, "/")
-	for i, seg := range segs {
-		segs[i] = url.PathEscape(seg)
-	}
-	return strings.Join(segs, "/")
+	return d.url + "/" + EscapeURLPathSegments(path)
 }
 
 // TemporaryURL is not supported by the local driver because local URLs are not

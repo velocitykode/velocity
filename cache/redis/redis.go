@@ -152,6 +152,20 @@ func (s *RedisStore) prefixedKey(key string) string {
 	return drivers.PrefixKey(s.prefix, key)
 }
 
+// clampTTL normalises a TTL for go-redis SET/SETNX. A zero expiration is
+// sent as a plain SET with no expiry (forever), which matches the Store
+// contract for ttl == 0. A negative duration is unsafe: go-redis treats the
+// sentinel value -1 (redis.KeepTTL) as the KEEPTTL flag, which preserves the
+// existing key's TTL instead of storing forever. Clamping every ttl < 0 to 0
+// keeps "ttl <= 0 means store forever" uniform across drivers and never lets
+// a negative TTL reach the KeepTTL path.
+func clampTTL(ttl time.Duration) time.Duration {
+	if ttl < 0 {
+		return 0
+	}
+	return ttl
+}
+
 // GetCtx retrieves a value from the cache using the provided context.
 func (s *RedisStore) GetCtx(ctx context.Context, key string) (interface{}, bool) {
 	data, err := s.client.Get(ctx, s.prefixedKey(key)).Bytes()
@@ -207,7 +221,7 @@ func (s *RedisStore) PutCtx(ctx context.Context, key string, value interface{}, 
 		return fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
 	}
 
-	if err := s.client.Set(ctx, s.prefixedKey(key), data, ttl).Err(); err != nil {
+	if err := s.client.Set(ctx, s.prefixedKey(key), data, clampTTL(ttl)).Err(); err != nil {
 		return fmt.Errorf("velocity/cache: redis set failed: %w", err)
 	}
 	return nil
@@ -229,7 +243,7 @@ func (s *RedisStore) AddCtx(ctx context.Context, key string, value interface{}, 
 	if err != nil {
 		return false, fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
 	}
-	ok, err := s.client.SetNX(ctx, s.prefixedKey(key), data, ttl).Result()
+	ok, err := s.client.SetNX(ctx, s.prefixedKey(key), data, clampTTL(ttl)).Result()
 	if err != nil {
 		return false, fmt.Errorf("velocity/cache: redis setnx failed: %w", err)
 	}
@@ -424,7 +438,7 @@ func (s *RedisStore) PutManyCtx(ctx context.Context, items map[string]interface{
 		if err != nil {
 			return fmt.Errorf("velocity/cache: failed to marshal value for key %s: %w", key, err)
 		}
-		pipe.Set(ctx, s.prefixedKey(key), data, ttl)
+		pipe.Set(ctx, s.prefixedKey(key), data, clampTTL(ttl))
 	}
 
 	if _, err := pipe.Exec(ctx); err != nil {

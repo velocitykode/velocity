@@ -104,8 +104,8 @@ func TestEscapeURLPathSegments_PreservesSlashSeparators(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
-			if got := escapeURLPathSegments(tc.in); got != tc.want {
-				t.Errorf("escapeURLPathSegments(%q) = %q, want %q", tc.in, got, tc.want)
+			if got := EscapeURLPathSegments(tc.in); got != tc.want {
+				t.Errorf("EscapeURLPathSegments(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
 	}

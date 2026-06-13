@@ -2,10 +2,51 @@ package mail
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
 )
+
+// nilGuardMailer records whether its Send was ever reached. Used to prove the
+// nil-message guard short-circuits before any driver call.
+type nilGuardMailer struct{ called bool }
+
+func (m *nilGuardMailer) Send(_ context.Context, _ *Message) error {
+	m.called = true
+	return nil
+}
+
+// TestManagerSendNilMessage asserts a nil message returns ErrNilMessage without
+// panicking and before the channel lookup or driver Send is reached.
+func TestManagerSendNilMessage(t *testing.T) {
+	manager := NewManager()
+	inner := &nilGuardMailer{}
+	manager.SetChannel("c", inner)
+
+	err := manager.Send(context.Background(), "c", nil)
+	if !errors.Is(err, ErrNilMessage) {
+		t.Errorf("expected ErrNilMessage, got %v", err)
+	}
+	if inner.called {
+		t.Error("driver Send was reached despite nil message")
+	}
+}
+
+// TestCheckedMailerSendNilMessage asserts the checkedMailer backstop rejects a
+// nil message before forwarding to the inner driver.
+func TestCheckedMailerSendNilMessage(t *testing.T) {
+	inner := &nilGuardMailer{}
+	cm := &checkedMailer{inner: inner}
+
+	err := cm.Send(context.Background(), nil)
+	if !errors.Is(err, ErrNilMessage) {
+		t.Errorf("expected ErrNilMessage, got %v", err)
+	}
+	if inner.called {
+		t.Error("inner Send was reached despite nil message")
+	}
+}
 
 func TestNewManager(t *testing.T) {
 	manager := NewManager()

@@ -18,11 +18,30 @@ import (
 // "daily") requires the file leaf, so log/standard wires both leaves together.
 func init() {
 	log.Drivers().Register("stack", func(ctx context.Context, cfg log.LogConfig) (log.Logger, error) {
+		// Prefer the unified "channels" key (what the Manager's stack uses),
+		// falling back to the legacy "stack" key. Coerce via log.ToStringSlice
+		// so a []any-of-string (the shape JSON/env decoding yields) is accepted
+		// the same as a native []string. A present-but-malformed value is a
+		// loud error, matching the Manager's fail-loud stance rather than
+		// silently degrading to the default child set.
 		var channels []string
-		if ch, ok := cfg.Config["stack"].([]string); ok {
-			channels = ch
+		raw, ok := cfg.Config["channels"]
+		if !ok {
+			raw, ok = cfg.Config["stack"]
 		}
-		if len(channels) == 0 {
+		if ok {
+			ch, valid := log.ToStringSlice(raw)
+			if !valid {
+				return nil, fmt.Errorf("velocity/log: stack driver: channels must be a list of strings")
+			}
+			if len(ch) == 0 {
+				// A present key that coerces to an empty list is a loud
+				// error, matching the Manager path; only an absent key
+				// falls back to the default child set.
+				return nil, fmt.Errorf("velocity/log: stack driver: no valid channels configured")
+			}
+			channels = ch
+		} else {
 			channels = []string{"console", "daily"}
 		}
 		// Resolve every requested child; aggregate failures with errors.Join

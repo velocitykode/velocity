@@ -154,10 +154,12 @@ type checkedMailer struct {
 }
 
 func (cm *checkedMailer) Send(ctx context.Context, msg *Message) error {
-	if msg != nil {
-		if err := msg.Err(); err != nil {
-			return err
-		}
+	// Guard nil before forwarding to the driver, which would dereference it.
+	if msg == nil {
+		return ErrNilMessage
+	}
+	if err := msg.Err(); err != nil {
+		return err
 	}
 	return cm.inner.Send(ctx, msg)
 }

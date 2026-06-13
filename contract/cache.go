@@ -36,6 +36,11 @@ type Cache interface {
 	GetString(key string) (string, bool)
 
 	// PutCtx stores a value in the cache with a TTL.
+	//
+	// TTL contract: ttl > 0 expires the entry after that duration; ttl <= 0
+	// stores the value forever (no expiration), identical to ForeverCtx. A
+	// ttl of 0 therefore never writes an already-expired entry. Every Store
+	// implementation honours this; it is enforced by cachetest.
 	PutCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) error
 
 	// Deprecated: use PutCtx with a request-scoped context.Context.
@@ -46,6 +51,9 @@ type Cache interface {
 	// false if the key already existed (no write performed). Returns an
 	// error only on backend failure; contention (key already present) is
 	// reported as (false, nil).
+	//
+	// The same TTL contract as PutCtx applies: ttl <= 0 inserts the entry
+	// forever rather than already-expired.
 	//
 	// Add is the SETNX primitive that lets callers gate single-flight
 	// populates over the cache layer itself, avoiding the thundering-herd
@@ -105,7 +113,8 @@ type Cache interface {
 	// Deprecated: use ManyCtx with a request-scoped context.Context.
 	Many(keys []string) map[string]interface{}
 
-	// PutManyCtx stores multiple values.
+	// PutManyCtx stores multiple values. The PutCtx TTL contract applies to
+	// every entry in the batch: ttl <= 0 stores them all forever.
 	PutManyCtx(ctx context.Context, items map[string]interface{}, ttl time.Duration) error
 
 	// Deprecated: use PutManyCtx with a request-scoped context.Context.

@@ -820,7 +820,7 @@ func TestSerializePayload(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := serializePayload(tt.payload)
+			result, err := SerializePayload(tt.payload)
 			if tt.wantErr {
 				if err == nil {
 					t.Error("expected error, got nil")
@@ -902,7 +902,7 @@ func TestDeserializePayload(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := deserializePayload(tt.input)
+			got, err := DeserializePayload(tt.input)
 			if tt.wantErr {
 				if err == nil {
 					t.Error("expected error, got nil")
@@ -1184,9 +1184,9 @@ func TestCBCPayloadHasMAC(t *testing.T) {
 	}
 
 	// Deserialize and check for MAC
-	payload, err := deserializePayload(encrypted)
+	payload, err := DeserializePayload(encrypted)
 	if err != nil {
-		t.Fatalf("deserializePayload() error: %v", err)
+		t.Fatalf("DeserializePayload() error: %v", err)
 	}
 
 	if payload.MAC == "" {
@@ -1207,9 +1207,9 @@ func TestGCMPayloadHasTag(t *testing.T) {
 	}
 
 	// Deserialize and check for Tag
-	payload, err := deserializePayload(encrypted)
+	payload, err := DeserializePayload(encrypted)
 	if err != nil {
-		t.Fatalf("deserializePayload() error: %v", err)
+		t.Fatalf("DeserializePayload() error: %v", err)
 	}
 
 	if payload.Tag == "" {
@@ -1321,7 +1321,7 @@ func TestDecryptBytesWithAAD_TamperFails(t *testing.T) {
 
 	// Mutate one byte of the inner Value to force a tag failure.
 	_, inner := splitVersion(env)
-	p, err := deserializePayload(inner)
+	p, err := DeserializePayload(inner)
 	if err != nil {
 		t.Fatalf("deserializePayload: %v", err)
 	}
@@ -1334,7 +1334,7 @@ func TestDecryptBytesWithAAD_TamperFails(t *testing.T) {
 	}
 	raw[0] ^= 0xFF
 	p.Value = base64.StdEncoding.EncodeToString(raw)
-	tampered, err := serializePayload(p)
+	tampered, err := SerializePayload(p)
 	if err != nil {
 		t.Fatalf("serializePayload: %v", err)
 	}
@@ -1591,5 +1591,25 @@ func TestDecryptGCM_ShortPayloadRejectedAsInvalidPayload(t *testing.T) {
 	// ErrAADMismatch).
 	if _, err := d.DecryptBytesWithAAD(env, []byte("aad")); !errors.Is(err, ErrInvalidPayload) {
 		t.Fatalf("DecryptBytesWithAAD short tag: want ErrInvalidPayload, got %v", err)
+	}
+}
+
+// TestNewAESDriver_RejectsWrongLengthPreviousKey pins the unified fail-fast
+// contract: a wrong-length previous key is rejected with
+// ErrInvalidPreviousKey rather than silently dropped. The earlier driver
+// behaviour filtered such entries out of previousKeys, which could mask a
+// misconfigured rotation window (current-key decrypts keep working while
+// pre-rotation ciphertexts fail with no signal). crypto.NewEncryptor
+// already enforces this at the configuration layer; direct NewAESDriver
+// callers get the strict check here.
+func TestNewAESDriver_RejectsWrongLengthPreviousKey(t *testing.T) {
+	active := make([]byte, 32)    // valid AES-256 key
+	shortPrev := make([]byte, 16) // wrong length for AES-256
+	_, err := NewAESDriver(active, [][]byte{shortPrev}, "AES-256-GCM")
+	if err == nil {
+		t.Fatal("expected ErrInvalidPreviousKey, got nil")
+	}
+	if !errors.Is(err, ErrInvalidPreviousKey) {
+		t.Fatalf("expected ErrInvalidPreviousKey, got %v", err)
 	}
 }

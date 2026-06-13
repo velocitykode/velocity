@@ -137,6 +137,35 @@ func TestString_PreservesHighBytes(t *testing.T) {
 	}
 }
 
+// TestString_RuneAwareCSI covers the 0x9B handling regression: the byte
+// 0x9B is a legal UTF-8 continuation byte, so it must only be escaped
+// when it is a bare/invalid byte or the real Unicode CSI control
+// (U+009B), never when it is part of an unrelated valid multi-byte rune.
+func TestString_RuneAwareCSI(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		// U+011B 'ě' encodes as 0xC4 0x9B. The 0x9B is a continuation
+		// byte of a valid rune and must survive byte-for-byte.
+		{"continuation-byte-passthrough", "\xc4\x9b", "\xc4\x9b"},
+		{"continuation-byte-in-word", "d\xc4\x9bkuji", "d\xc4\x9bkuji"},
+		// Bare 0x9B is an invalid lone byte: keep the single-byte escape.
+		{"bare-9b", "\x9b", `\x9b`},
+		// U+009B (0xC2 0x9B) is the real Unicode CSI control.
+		{"unicode-csi", "\xc2\x9b", "\\u009b"},
+		{"unicode-csi-in-context", "x\xc2\x9by", "x\\u009by"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := String(tc.in); got != tc.want {
+				t.Errorf("String(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestValue_DelegatesToString documents that Value is an alias
 // today; the test fails immediately if a future change diverges them
 // without updating drivers that import Value.

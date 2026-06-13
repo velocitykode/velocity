@@ -135,16 +135,13 @@ func NewAESDriver(key []byte, previousKeys [][]byte, cipher string) (*AESDriver,
 	}
 
 	// Determine required key size. Only AES-128/192/256 are permitted.
-	switch d.cipher {
-	case "AES-128-CBC", "AES-128-GCM":
-		d.keySize = 16
-	case "AES-192-CBC", "AES-192-GCM":
-		d.keySize = 24
-	case "AES-256-CBC", "AES-256-GCM":
-		d.keySize = 32
-	default:
-		return nil, fmt.Errorf("velocity/crypto: unsupported cipher: %s", cipher)
+	// KeySize is the single source of the cipher -> key-length mapping
+	// shared with the crypto package's Config.Validate / newDriver.
+	keySize, err := KeySize(d.cipher)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", err, cipher)
 	}
+	d.keySize = keySize
 
 	// Enforce raw key length against the cipher. Empty, undersized, and
 	// oversized keys all reject through the same sentinel so callers can
@@ -153,18 +150,19 @@ func NewAESDriver(key []byte, previousKeys [][]byte, cipher string) (*AESDriver,
 		return nil, fmt.Errorf("%w: cipher %s requires %d-byte key, got %d", ErrInvalidKeyLength, d.cipher, d.keySize, len(key))
 	}
 
-	// Validate previous keys with the same rule. A rotated-out key that
-	// does not match the cipher's size is dropped rather than silently
-	// accepted; bad entries here would mask a misconfigured rotation
-	// window. The driver still accepts an empty PreviousKeys slice.
-	validPrev := make([][]byte, 0, len(previousKeys))
-	for _, pk := range previousKeys {
+	// Validate previous keys with the same rule, failing fast on any
+	// wrong-length entry rather than silently dropping it. A dropped key
+	// would mask a misconfigured rotation window: encrypts and current-key
+	// decrypts keep working while pre-rotation ciphertexts fail with no
+	// signal. Callers routed through crypto.NewEncryptor have already had
+	// these validated at the configuration layer; direct NewAESDriver
+	// callers get the strict check here. The driver still accepts an empty
+	// slice.
+	for i, pk := range previousKeys {
 		if len(pk) != d.keySize {
-			continue
+			return nil, fmt.Errorf("%w: index %d: cipher %s requires %d-byte key, got %d", ErrInvalidPreviousKey, i, d.cipher, d.keySize, len(pk))
 		}
-		validPrev = append(validPrev, pk)
 	}
-	d.previousKeys = validPrev
 
 	// Derive separate encryption and HMAC subkeys from the validated master
 	// via HKDF with distinct info strings. HKDF here is a subkey separator,
@@ -183,6 +181,27 @@ func NewAESDriver(key []byte, previousKeys [][]byte, cipher string) (*AESDriver,
 	d.hmacKey = hmacKey
 
 	return d, nil
+}
+
+// KeySize returns the required raw key length in bytes for a supported AES
+// cipher identifier. The cipher name must already be upper-cased by the
+// caller (NewAESDriver and crypto.Config.Validate both upper-case before
+// calling). Returns ErrInvalidCipher for any unsupported cipher name.
+//
+// This is the single source of the cipher -> key-length mapping; the crypto
+// package routes Config.Validate and newDriver through it so the config
+// layer and the driver can never disagree on what a cipher requires.
+func KeySize(cipher string) (int, error) {
+	switch cipher {
+	case "AES-128-CBC", "AES-128-GCM":
+		return 16, nil
+	case "AES-192-CBC", "AES-192-GCM":
+		return 24, nil
+	case "AES-256-CBC", "AES-256-GCM":
+		return 32, nil
+	default:
+		return 0, ErrInvalidCipher
+	}
 }
 
 // hkdfSalt is a static salt for HKDF key derivation.
@@ -273,8 +292,10 @@ func (d *AESDriver) DecryptBytes(payload string) ([]byte, error) {
 		return nil, ErrLegacyPayloadDisabled
 	}
 
-	// Parse the inner base64+JSON envelope.
-	p, err := deserializePayload(envelope)
+	// Parse the inner base64+JSON envelope. Use the no-strip decoder:
+	// splitVersion already removed the single sentinel, so a doubled
+	// "v1:v1:" payload must NOT have a second sentinel quietly stripped.
+	p, err := decodeEnvelope(envelope)
 	if err != nil {
 		return nil, err
 	}
@@ -402,7 +423,7 @@ func (d *AESDriver) DecryptBytesWithAAD(payload string, aad []byte) ([]byte, err
 		return nil, ErrInvalidPayload
 	}
 
-	p, err := deserializePayload(envelope)
+	p, err := decodeEnvelope(envelope)
 	if err != nil {
 		return nil, err
 	}
@@ -484,7 +505,7 @@ func (d *AESDriver) encryptGCMWithAAD(plaintext, aad []byte) (string, error) {
 		Tag:   base64.StdEncoding.EncodeToString(tag),
 	}
 
-	env, err := serializePayload(p)
+	env, err := SerializePayload(p)
 	if err != nil {
 		return "", err
 	}
@@ -574,7 +595,7 @@ func (d *AESDriver) encryptCBC(plaintext, aad []byte) (string, error) {
 		MAC:   mac,
 	}
 
-	env, err := serializePayload(p)
+	env, err := SerializePayload(p)
 	if err != nil {
 		return "", err
 	}
@@ -616,7 +637,7 @@ func (d *AESDriver) encryptGCM(plaintext []byte) (string, error) {
 		Tag:   base64.StdEncoding.EncodeToString(tag),
 	}
 
-	env, err := serializePayload(p)
+	env, err := SerializePayload(p)
 	if err != nil {
 		return "", err
 	}
@@ -913,8 +934,9 @@ type Payload struct {
 	Tag   string `json:"tag,omitempty"`
 }
 
-// serializePayload converts a payload to base64 JSON
-func serializePayload(p *Payload) (string, error) {
+// SerializePayload converts a payload to base64 JSON. This is the canonical
+// implementation; crypto.SerializePayload delegates here.
+func SerializePayload(p *Payload) (string, error) {
 	data, err := json.Marshal(p)
 	if err != nil {
 		return "", err
@@ -922,7 +944,7 @@ func serializePayload(p *Payload) (string, error) {
 	return base64.URLEncoding.EncodeToString(data), nil
 }
 
-// deserializePayload converts base64 JSON to a payload. Accepts both v1
+// DeserializePayload converts base64 JSON to a payload. Accepts both v1
 // ("v1:"-prefixed) and v0 (bare base64) envelopes. The inner parser does
 // not need to know which version it is; that information is used by the
 // caller to select the correct MAC verifier.
@@ -930,10 +952,20 @@ func serializePayload(p *Payload) (string, error) {
 // Returns ErrInvalidPayload for structural failures (non-base64 outer,
 // non-JSON inner). This is distinct from ErrDecrypt: callers that wish
 // to distinguish "bad envelope shape" from "wrong key / tampered" can
-// branch on the two sentinels.
-func deserializePayload(encoded string) (*Payload, error) {
-	encoded = strings.TrimPrefix(encoded, v1Sentinel)
+// branch on the two sentinels. This is the canonical implementation;
+// crypto.DeserializePayload delegates here.
+func DeserializePayload(encoded string) (*Payload, error) {
+	return decodeEnvelope(strings.TrimPrefix(encoded, v1Sentinel))
+}
 
+// decodeEnvelope parses a base64+JSON envelope that has ALREADY had its
+// version sentinel removed by splitVersion. It does NOT strip a leading
+// "v1:" so a doubled sentinel (e.g. "v1:v1:<envelope>") cannot slip
+// through: the second "v1:" is treated as ordinary base64 input and fails
+// to decode, yielding ErrInvalidPayload. Decrypt callers that have run
+// splitVersion MUST use this rather than DeserializePayload, which strips
+// one sentinel for external callers passing a full wire payload.
+func decodeEnvelope(encoded string) (*Payload, error) {
 	// Try URL encoding first, then standard encoding
 	data, err := base64.URLEncoding.DecodeString(encoded)
 	if err != nil {

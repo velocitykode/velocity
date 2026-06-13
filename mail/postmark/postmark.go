@@ -9,38 +9,11 @@ import (
 	"io"
 	"net/http"
 	netmail "net/mail"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/velocitykode/velocity/mail"
 )
-
-// sanitizeHeader drops every C0 control character (U+0000..U+001F) except
-// horizontal tab from a header value. NUL in particular can truncate strings
-// in downstream parsers and enable header-injection vectors a simple CRLF
-// check misses; DEL (U+007F) is dropped as well since several older MTAs
-// choke on it.
-func sanitizeHeader(value string) string {
-	return strings.Map(func(r rune) rune {
-		if r == '\t' {
-			return r
-		}
-		if r < 0x20 || r == 0x7f {
-			return -1
-		}
-		return r
-	}, value)
-}
-
-// sanitizeFilename removes characters that could cause injection in MIME headers.
-func sanitizeFilename(name string) string {
-	name = strings.ReplaceAll(name, "\r", "")
-	name = strings.ReplaceAll(name, "\n", "")
-	name = strings.ReplaceAll(name, "\"", "")
-	name = strings.ReplaceAll(name, "\\", "")
-	return name
-}
 
 // postmarkErrorPreview caps how many bytes of an unexpected error response
 // body we surface in a returned error. The body is redacted from the returned
@@ -216,7 +189,7 @@ func validatePostmarkAddresses(msg *mail.Message) error {
 // sanitizeHeader as a belt-and-braces against callers that bypass the
 // Message validators.
 func formatPostmarkAddress(name, email string) string {
-	clean := sanitizeHeader(name)
+	clean := mail.SanitizeHeader(name)
 	if clean == "" {
 		return email
 	}
@@ -295,8 +268,8 @@ func (d *PostmarkDriver) addHeaders(payload map[string]interface{}, msg *mail.Me
 	headers := make([]map[string]string, 0, len(hs))
 	for key, value := range hs {
 		headers = append(headers, map[string]string{
-			"Name":  sanitizeHeader(key),
-			"Value": sanitizeHeader(value),
+			"Name":  mail.SanitizeHeader(key),
+			"Value": mail.SanitizeHeader(value),
 		})
 	}
 	payload["Headers"] = headers
@@ -312,9 +285,9 @@ func (d *PostmarkDriver) addAttachments(payload map[string]interface{}, msg *mai
 	postmarkAttachments := make([]map[string]interface{}, len(attachments))
 	for i, att := range attachments {
 		postmarkAttachments[i] = map[string]interface{}{
-			"Name":        sanitizeFilename(att.Name),
+			"Name":        mail.SanitizeFilename(att.Name),
 			"Content":     base64.StdEncoding.EncodeToString(att.Data),
-			"ContentType": sanitizeHeader(att.ContentType),
+			"ContentType": mail.SanitizeHeader(att.ContentType),
 		}
 	}
 	payload["Attachments"] = postmarkAttachments

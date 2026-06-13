@@ -519,16 +519,16 @@ func TestS3Driver_CopyEncodesSource(t *testing.T) {
 		region: "us-east-1",
 	}
 
-	const key = "dir name/report 100% & co.txt"
+	const key = "dir name/report 100%#? & co.txt"
 	mock.files[key] = []byte("data")
 
 	if err := driver.CopyCtx(context.Background(), key, "dest.txt"); err != nil {
 		t.Fatalf("CopyCtx failed: %v", err)
 	}
 
-	// url.PathEscape encodes space and %, leaves & (an allowed
+	// url.PathEscape encodes space, %, #, and ?, leaves & (an allowed
 	// sub-delim in path segments) literal, and preserves the / shape.
-	want := "test-bucket/dir%20name/report%20100%25%20&%20co.txt"
+	want := "test-bucket/dir%20name/report%20100%25%23%3F%20&%20co.txt"
 	if mock.lastCopySource != want {
 		t.Errorf("CopySource = %q, want %q", mock.lastCopySource, want)
 	}

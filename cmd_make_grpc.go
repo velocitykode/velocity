@@ -69,11 +69,12 @@ func parseMakeGRPCServiceArgs(args []string) (string, console.MakeGRPCServiceOpt
 				if hasEq {
 					return val, nil
 				}
-				if i+1 >= len(args) {
-					return "", fmt.Errorf("flag %s needs a value", key)
+				v, ni, err := spacedValue(args, i, key)
+				if err != nil {
+					return "", err
 				}
-				i++
-				return args[i], nil
+				i = ni
+				return v, nil
 			}
 			var err error
 			switch key {
@@ -97,6 +98,11 @@ func parseMakeGRPCServiceArgs(args []string) (string, console.MakeGRPCServiceOpt
 			}
 			continue
 		}
+		// A single-dash token here is a flag typo, not the service name
+		// (double-dash tokens are handled above): reject it.
+		if strings.HasPrefix(arg, "-") {
+			return "", opts, fmt.Errorf("unknown flag: %s", arg)
+		}
 		if name != "" {
 			return "", opts, fmt.Errorf("unexpected argument: %s", arg)
 		}
@@ -113,20 +119,43 @@ func (makeGRPCRPCCmd) name() string {
 func (makeGRPCRPCCmd) description() string {
 	return "Add an rpc to an existing gRPC service"
 }
+func grpcRPCUsage() {
+	cli.Newline()
+	cli.Muted("Usage: vel make:grpc:rpc [Service] [RPC] [--stream|--client-stream|--bidi]")
+	cli.Newline()
+	cli.Muted("Examples:")
+	cli.Muted("  vel make:grpc:rpc Foo Hello")
+	cli.Muted("  vel make:grpc:rpc Foo Tail --stream")
+	cli.Muted("  vel make:grpc:rpc Foo Upload --client-stream")
+	cli.Muted("  vel make:grpc:rpc Foo Chat --bidi")
+}
+
 func (makeGRPCRPCCmd) run(a *App, args []string) error {
 	if len(args) < 2 {
-		cli.Newline()
-		cli.Muted("Usage: vel make:grpc:rpc [Service] [RPC] [--stream|--client-stream|--bidi]")
-		cli.Newline()
-		cli.Muted("Examples:")
-		cli.Muted("  vel make:grpc:rpc Foo Hello")
-		cli.Muted("  vel make:grpc:rpc Foo Tail --stream")
-		cli.Muted("  vel make:grpc:rpc Foo Upload --client-stream")
-		cli.Muted("  vel make:grpc:rpc Foo Chat --bidi")
+		grpcRPCUsage()
 		return fmt.Errorf("service and rpc name are required")
 	}
-	opts := console.MakeGRPCRPCOptions{}
-	for _, arg := range args[2:] {
+	// The first two positionals are the service and rpc names; a flag-like
+	// token in either slot is a typo, not a name.
+	for _, n := range args[:2] {
+		if strings.HasPrefix(n, "-") {
+			grpcRPCUsage()
+			return unknownToken(n, n)
+		}
+	}
+	opts, err := parseMakeGRPCRPCArgs(args[2:])
+	if err != nil {
+		grpcRPCUsage()
+		return err
+	}
+	return console.MakeGRPCRPC(args[0], args[1], opts)
+}
+
+// parseMakeGRPCRPCArgs parses the streaming flags that follow the service and
+// rpc names. Unknown flags and stray positionals (a third name) are rejected.
+func parseMakeGRPCRPCArgs(args []string) (console.MakeGRPCRPCOptions, error) {
+	var opts console.MakeGRPCRPCOptions
+	for _, arg := range args {
 		switch arg {
 		case "--stream", "--server-stream":
 			opts.Stream = true
@@ -134,9 +163,14 @@ func (makeGRPCRPCCmd) run(a *App, args []string) error {
 			opts.ClientStream = true
 		case "--bidi", "--bidirectional":
 			opts.Bidi = true
+		default:
+			if strings.HasPrefix(arg, "-") {
+				return opts, fmt.Errorf("unknown flag: %s", arg)
+			}
+			return opts, fmt.Errorf("unexpected argument: %s", arg)
 		}
 	}
-	return console.MakeGRPCRPC(args[0], args[1], opts)
+	return opts, nil
 }
 
 type makeGRPCGenCmd struct{}
@@ -148,5 +182,8 @@ func (makeGRPCGenCmd) description() string {
 	return "Run `buf generate` in api/proto"
 }
 func (makeGRPCGenCmd) run(a *App, args []string) error {
+	if err := rejectNoArgs(args); err != nil {
+		return err
+	}
 	return console.MakeGRPCGen()
 }

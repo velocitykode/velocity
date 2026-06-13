@@ -135,7 +135,9 @@ func validateMessageAddresses(msg *mail.Message) error {
 // configuration in the presence of credentials returns ErrPlainAuthRefused to
 // prevent credential leakage over cleartext.
 func (d *LocalDriver) sendViaSMTP(ctx context.Context, msg *mail.Message) error {
-	body := d.buildMessage(msg)
+	// SMTP recipients travel in the envelope (MAIL FROM / RCPT TO), so the
+	// serialised message must stay Bcc-free to keep blind recipients hidden.
+	body := d.buildMessage(msg, false)
 
 	recipients := make([]string, 0)
 	for _, addr := range msg.GetTo() {
@@ -248,7 +250,11 @@ func (d *LocalDriver) runSMTP(client *smtp.Client, auth smtp.Auth, from string, 
 
 // sendViaSendmail sends email via sendmail command
 func (d *LocalDriver) sendViaSendmail(ctx context.Context, msg *mail.Message) error {
-	body := d.buildMessage(msg)
+	// sendmail -t reads recipients from the message headers. Without a Bcc
+	// header the collected blind recipients below would be silently dropped,
+	// so the serialised message must carry it. sendmail consumes and strips
+	// the Bcc header before delivery, keeping blind recipients hidden.
+	body := d.buildMessage(msg, true)
 
 	recipients := make([]string, 0)
 	for _, addr := range msg.GetTo() {
@@ -277,33 +283,6 @@ func (d *LocalDriver) sendViaSendmail(ctx context.Context, msg *mail.Message) er
 	return nil
 }
 
-// sanitizeHeader drops every C0 control character (U+0000..U+001F) except
-// horizontal tab from a header value. The previous implementation stripped
-// only CR/LF, which let NUL and other C0 bytes through — NUL in particular
-// can truncate strings in downstream C parsers (e.g. sendmail, libesmtp)
-// and enable header-injection vectors a simple CRLF check misses.
-// DEL (U+007F) is dropped as well since several older MTAs choke on it.
-func sanitizeHeader(value string) string {
-	return strings.Map(func(r rune) rune {
-		if r == '\t' {
-			return r
-		}
-		if r < 0x20 || r == 0x7f {
-			return -1
-		}
-		return r
-	}, value)
-}
-
-// sanitizeFilename removes characters that could cause injection in MIME headers
-func sanitizeFilename(name string) string {
-	name = strings.ReplaceAll(name, "\r", "")
-	name = strings.ReplaceAll(name, "\n", "")
-	name = strings.ReplaceAll(name, "\"", "")
-	name = strings.ReplaceAll(name, "\\", "")
-	return name
-}
-
 // generateBoundary generates a random MIME boundary
 func generateBoundary() string {
 	b := make([]byte, 24)
@@ -317,10 +296,10 @@ func generateBoundary() string {
 
 // buildMessage builds the RFC 822 email message.
 // Composed from writeHeaders / writeBody / writeAttachments helpers.
-func (d *LocalDriver) buildMessage(msg *mail.Message) []byte {
+func (d *LocalDriver) buildMessage(msg *mail.Message, includeBcc bool) []byte {
 	var buf bytes.Buffer
 
-	d.writeHeaders(&buf, msg)
+	d.writeHeaders(&buf, msg, includeBcc)
 
 	attachments := msg.GetAttachments()
 	if len(attachments) > 0 {
@@ -344,21 +323,21 @@ func (d *LocalDriver) buildMessage(msg *mail.Message) []byte {
 // writeHeaders writes the From/To/Cc/Reply-To/Subject/Priority/custom headers
 // and the MIME-Version line. Callers are expected to follow up with body
 // and (optional) attachment sections.
-func (d *LocalDriver) writeHeaders(buf *bytes.Buffer, msg *mail.Message) {
+func (d *LocalDriver) writeHeaders(buf *bytes.Buffer, msg *mail.Message, includeBcc bool) {
 	// From header
 	from := msg.GetFrom()
 	if from.Email == "" {
 		from.Email = d.fromAddr
 		from.Name = d.fromName
 	}
-	buf.WriteString(fmt.Sprintf("From: %s\r\n", sanitizeHeader(from.String())))
+	buf.WriteString(fmt.Sprintf("From: %s\r\n", mail.SanitizeHeader(from.String())))
 
 	// To header
 	to := msg.GetTo()
 	if len(to) > 0 {
 		toAddrs := make([]string, len(to))
 		for i, addr := range to {
-			toAddrs[i] = sanitizeHeader(addr.String())
+			toAddrs[i] = mail.SanitizeHeader(addr.String())
 		}
 		buf.WriteString(fmt.Sprintf("To: %s\r\n", strings.Join(toAddrs, ", ")))
 	}
@@ -368,9 +347,23 @@ func (d *LocalDriver) writeHeaders(buf *bytes.Buffer, msg *mail.Message) {
 	if len(cc) > 0 {
 		ccAddrs := make([]string, len(cc))
 		for i, addr := range cc {
-			ccAddrs[i] = sanitizeHeader(addr.String())
+			ccAddrs[i] = mail.SanitizeHeader(addr.String())
 		}
 		buf.WriteString(fmt.Sprintf("Cc: %s\r\n", strings.Join(ccAddrs, ", ")))
+	}
+
+	// Bcc header (sendmail path only). sendmail -t reads recipients from the
+	// headers and strips Bcc before delivery; on the SMTP path the blind
+	// recipients travel in the envelope instead, so the header is omitted.
+	if includeBcc {
+		bcc := msg.GetBCC()
+		if len(bcc) > 0 {
+			bccAddrs := make([]string, len(bcc))
+			for i, addr := range bcc {
+				bccAddrs[i] = mail.SanitizeHeader(addr.String())
+			}
+			buf.WriteString(fmt.Sprintf("Bcc: %s\r\n", strings.Join(bccAddrs, ", ")))
+		}
 	}
 
 	// Reply-To header
@@ -378,13 +371,13 @@ func (d *LocalDriver) writeHeaders(buf *bytes.Buffer, msg *mail.Message) {
 	if len(replyTo) > 0 {
 		replyToAddrs := make([]string, len(replyTo))
 		for i, addr := range replyTo {
-			replyToAddrs[i] = sanitizeHeader(addr.String())
+			replyToAddrs[i] = mail.SanitizeHeader(addr.String())
 		}
 		buf.WriteString(fmt.Sprintf("Reply-To: %s\r\n", strings.Join(replyToAddrs, ", ")))
 	}
 
 	// Subject header
-	buf.WriteString(fmt.Sprintf("Subject: %s\r\n", sanitizeHeader(msg.GetSubject())))
+	buf.WriteString(fmt.Sprintf("Subject: %s\r\n", mail.SanitizeHeader(msg.GetSubject())))
 
 	// Priority header
 	switch msg.GetPriority() {
@@ -396,7 +389,7 @@ func (d *LocalDriver) writeHeaders(buf *bytes.Buffer, msg *mail.Message) {
 
 	// Custom headers
 	for key, value := range msg.GetHeaders() {
-		buf.WriteString(fmt.Sprintf("%s: %s\r\n", sanitizeHeader(key), sanitizeHeader(value)))
+		buf.WriteString(fmt.Sprintf("%s: %s\r\n", mail.SanitizeHeader(key), mail.SanitizeHeader(value)))
 	}
 
 	buf.WriteString("MIME-Version: 1.0\r\n")
@@ -437,9 +430,9 @@ func (d *LocalDriver) writeBody(buf *bytes.Buffer, msg *mail.Message) {
 // writeAttachments writes the base64-encoded attachment parts.
 func (d *LocalDriver) writeAttachments(buf *bytes.Buffer, attachments []mail.Attachment, boundary string) {
 	for _, att := range attachments {
-		safeName := sanitizeFilename(att.Name)
+		safeName := mail.SanitizeFilename(att.Name)
 		buf.WriteString(fmt.Sprintf("\r\n--%s\r\n", boundary))
-		buf.WriteString(fmt.Sprintf("Content-Type: %s; name=\"%s\"\r\n", sanitizeHeader(att.ContentType), safeName))
+		buf.WriteString(fmt.Sprintf("Content-Type: %s; name=\"%s\"\r\n", mail.SanitizeHeader(att.ContentType), safeName))
 		buf.WriteString("Content-Transfer-Encoding: base64\r\n")
 		buf.WriteString(fmt.Sprintf("Content-Disposition: attachment; filename=\"%s\"\r\n\r\n", safeName))
 

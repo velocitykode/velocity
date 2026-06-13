@@ -5,8 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/http"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -48,10 +46,18 @@ func NewMemoryDriver(config DiskConfig) *MemoryDriver {
 
 // Put stores content at the given path
 func (d *MemoryDriver) Put(path string, contents []byte) error {
+	path, err := d.cleanPath(path)
+	if err != nil {
+		return err
+	}
+	return d.putCleaned(path, contents)
+}
+
+// putCleaned stores content at an already-cleaned path.
+func (d *MemoryDriver) putCleaned(path string, contents []byte) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	path = d.cleanPath(path)
 	size := int64(len(contents))
 
 	// Check if we have enough space
@@ -76,7 +82,7 @@ func (d *MemoryDriver) Put(path string, contents []byte) error {
 	d.files[path] = &MemoryFile{
 		Content:      contents,
 		LastModified: time.Now(),
-		MimeType:     detectMimeType(contents),
+		MimeType:     DetectMimeType(contents),
 	}
 
 	return nil
@@ -84,6 +90,13 @@ func (d *MemoryDriver) Put(path string, contents []byte) error {
 
 // PutStream stores a stream at the given path
 func (d *MemoryDriver) PutStream(path string, stream io.Reader) error {
+	// Validate the path before consuming the stream so traversal rejection is
+	// consistent regardless of stream/quota errors.
+	path, err := d.cleanPath(path)
+	if err != nil {
+		return err
+	}
+
 	// Limit stream size to the configured max to prevent unbounded memory usage
 	limit := d.maxSize
 	if limit <= 0 {
@@ -98,7 +111,7 @@ func (d *MemoryDriver) PutStream(path string, stream io.Reader) error {
 		return fmt.Errorf("stream exceeds maximum size of %d bytes", limit)
 	}
 
-	return d.Put(path, buf.Bytes())
+	return d.putCleaned(path, buf.Bytes())
 }
 
 // Get retrieves content from the given path
@@ -106,7 +119,10 @@ func (d *MemoryDriver) Get(path string) ([]byte, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	path = d.cleanPath(path)
+	path, err := d.cleanPath(path)
+	if err != nil {
+		return nil, err
+	}
 	file, exists := d.files[path]
 	if !exists {
 		return nil, ErrFileNotFound
@@ -133,7 +149,10 @@ func (d *MemoryDriver) Exists(path string) bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	path = d.cleanPath(path)
+	path, err := d.cleanPath(path)
+	if err != nil {
+		return false
+	}
 	_, exists := d.files[path]
 	return exists
 }
@@ -143,11 +162,18 @@ func (d *MemoryDriver) Delete(paths ...string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	for _, path := range paths {
-		path = d.cleanPath(path)
-		if file, exists := d.files[path]; exists {
+	cleanedPaths := make([]string, len(paths))
+	for i, path := range paths {
+		cleaned, err := d.cleanPath(path)
+		if err != nil {
+			return err
+		}
+		cleanedPaths[i] = cleaned
+	}
+	for _, cleaned := range cleanedPaths {
+		if file, exists := d.files[cleaned]; exists {
 			d.used -= int64(len(file.Content))
-			delete(d.files, path)
+			delete(d.files, cleaned)
 		}
 	}
 	return nil
@@ -158,8 +184,14 @@ func (d *MemoryDriver) Copy(from, to string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	from = d.cleanPath(from)
-	to = d.cleanPath(to)
+	from, err := d.cleanPath(from)
+	if err != nil {
+		return err
+	}
+	to, err = d.cleanPath(to)
+	if err != nil {
+		return err
+	}
 
 	sourceFile, exists := d.files[from]
 	if !exists {
@@ -205,8 +237,14 @@ func (d *MemoryDriver) Move(from, to string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	from = d.cleanPath(from)
-	to = d.cleanPath(to)
+	from, err := d.cleanPath(from)
+	if err != nil {
+		return err
+	}
+	to, err = d.cleanPath(to)
+	if err != nil {
+		return err
+	}
 
 	file, exists := d.files[from]
 	if !exists {
@@ -234,7 +272,10 @@ func (d *MemoryDriver) Size(path string) (int64, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	path = d.cleanPath(path)
+	path, err := d.cleanPath(path)
+	if err != nil {
+		return 0, err
+	}
 	file, exists := d.files[path]
 	if !exists {
 		return 0, ErrFileNotFound
@@ -248,7 +289,10 @@ func (d *MemoryDriver) LastModified(path string) (time.Time, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	path = d.cleanPath(path)
+	path, err := d.cleanPath(path)
+	if err != nil {
+		return time.Time{}, err
+	}
 	file, exists := d.files[path]
 	if !exists {
 		return time.Time{}, ErrFileNotFound
@@ -262,7 +306,10 @@ func (d *MemoryDriver) MimeType(path string) (string, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	path = d.cleanPath(path)
+	path, err := d.cleanPath(path)
+	if err != nil {
+		return "", err
+	}
 	file, exists := d.files[path]
 	if !exists {
 		return "", ErrFileNotFound
@@ -276,7 +323,10 @@ func (d *MemoryDriver) Files(directory string) ([]string, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	directory = d.cleanPath(directory)
+	directory, err := d.cleanPath(directory)
+	if err != nil {
+		return nil, err
+	}
 	if directory != "" && !strings.HasSuffix(directory, "/") {
 		directory += "/"
 	}
@@ -301,7 +351,10 @@ func (d *MemoryDriver) AllFiles(directory string) ([]string, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	directory = d.cleanPath(directory)
+	directory, err := d.cleanPath(directory)
+	if err != nil {
+		return nil, err
+	}
 	if directory != "" && !strings.HasSuffix(directory, "/") {
 		directory += "/"
 	}
@@ -322,7 +375,11 @@ func (d *MemoryDriver) Directories(directory string) ([]string, error) {
 	defer d.mu.RUnlock()
 
 	if directory != "" {
-		directory = d.cleanPath(directory)
+		cleaned, err := d.cleanPath(directory)
+		if err != nil {
+			return nil, err
+		}
+		directory = cleaned
 	}
 	prefix := ""
 	if directory != "" {
@@ -367,7 +424,10 @@ func (d *MemoryDriver) AllDirectories(directory string) ([]string, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	directory = d.cleanPath(directory)
+	directory, err := d.cleanPath(directory)
+	if err != nil {
+		return nil, err
+	}
 	if directory != "" && !strings.HasSuffix(directory, "/") {
 		directory += "/"
 	}
@@ -397,6 +457,9 @@ func (d *MemoryDriver) AllDirectories(directory string) ([]string, error) {
 
 // MakeDirectory creates a directory (no-op for memory driver)
 func (d *MemoryDriver) MakeDirectory(path string) error {
+	if _, err := d.cleanPath(path); err != nil {
+		return err
+	}
 	// Directories are implicit in memory driver
 	return nil
 }
@@ -406,7 +469,10 @@ func (d *MemoryDriver) DeleteDirectory(directory string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	directory = d.cleanPath(directory)
+	directory, err := d.cleanPath(directory)
+	if err != nil {
+		return err
+	}
 	if directory != "" && !strings.HasSuffix(directory, "/") {
 		directory += "/"
 	}
@@ -430,33 +496,31 @@ func (d *MemoryDriver) URL(path string) string {
 
 // TemporaryURL returns a temporary URL for a file (not supported for memory)
 func (d *MemoryDriver) TemporaryURL(path string, expiration time.Duration) (string, error) {
+	// Reject path traversal before reporting lack of support.
+	if _, err := d.cleanPath(path); err != nil {
+		return "", err
+	}
 	// Memory driver doesn't support URLs
 	return "", ErrNotSupported
 }
 
-// cleanPath cleans and normalizes a path
-func (d *MemoryDriver) cleanPath(path string) string {
-	// Remove leading/trailing slashes and clean path
-	path = strings.Trim(filepath.ToSlash(filepath.Clean(path)), "/")
-	return path
-}
+// cleanPath cleans and normalizes a path, rejecting paths containing
+// ".." components to prevent path traversal. This mirrors the s3 driver's
+// path policy so that keys accepted by the in-memory driver behave
+// identically on a real filesystem-backed disk.
+func (d *MemoryDriver) cleanPath(path string) (string, error) {
+	// Remove leading/trailing slashes and normalize separators.
+	path = strings.Trim(path, "/")
+	path = strings.ReplaceAll(path, "\\", "/")
 
-// detectMimeType detects the MIME type from content using the standard
-// library sniffer (net/http.DetectContentType), which implements the
-// Mozilla "sniffing" rules and recognises ~30 common formats including
-// HTML, SVG, MP4, ZIP, OOXML, and EXE in addition to JPEG/PNG/GIF/PDF.
-//
-// Sniffing only the first 512 bytes mirrors http.DetectContentType's
-// own contract and bounds the work for very large objects.
-func detectMimeType(content []byte) string {
-	if len(content) == 0 {
-		return "application/octet-stream"
+	// Reject path traversal.
+	for _, segment := range strings.Split(path, "/") {
+		if segment == ".." {
+			return "", fmt.Errorf("velocity/storage: path traversal detected")
+		}
 	}
-	n := len(content)
-	if n > 512 {
-		n = 512
-	}
-	return http.DetectContentType(content[:n])
+
+	return path, nil
 }
 
 // Stats returns memory usage statistics

@@ -205,6 +205,17 @@ func (s *MemoryStore) prefixedKey(key string) string {
 	return PrefixKey(s.prefix, key)
 }
 
+// expirationFor maps a TTL to an absolute expiration pointer. A ttl <= 0
+// means "store forever" per the Store contract, so it returns nil (no
+// expiration) rather than an instant-in-the-past deadline.
+func expirationFor(ttl time.Duration) *time.Time {
+	if ttl <= 0 {
+		return nil
+	}
+	exp := time.Now().Add(ttl)
+	return &exp
+}
+
 // setLocked inserts or replaces the (already prefixed) key while maintaining
 // recency and the entry cap. Replacing an existing key never evicts;
 // inserting a new key at capacity evicts a sampled least-recently-used entry
@@ -342,8 +353,10 @@ func (s *MemoryStore) PutCtx(ctx context.Context, key string, value interface{},
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	expiration := time.Now().Add(ttl)
-	s.setLocked(s.prefixedKey(key), value, &expiration)
+	// ttl <= 0 means store forever (nil expiration), matching ForeverCtx.
+	// Computing time.Now().Add(ttl) unconditionally would make ttl=0 write
+	// an already-expired entry.
+	s.setLocked(s.prefixedKey(key), value, expirationFor(ttl))
 
 	return nil
 }
@@ -378,8 +391,9 @@ func (s *MemoryStore) AddCtx(ctx context.Context, key string, value interface{},
 		}
 	}
 
-	expiration := time.Now().Add(ttl)
-	s.setLocked(prefixedKey, value, &expiration)
+	// ttl <= 0 means store forever (nil expiration), so Add with ttl=0
+	// inserts a retrievable entry rather than an already-expired one.
+	s.setLocked(prefixedKey, value, expirationFor(ttl))
 	return true, nil
 }
 
@@ -460,8 +474,13 @@ func (s *MemoryStore) IncrementCtx(ctx context.Context, key string, value int64)
 	prefixedKey := s.prefixedKey(key)
 	item, exists := s.items[prefixedKey]
 
+	// An entry only counts as a base for the increment if it is live; an
+	// expired entry is treated as absent (current=0). Capture liveness once
+	// so the write-back below does not resurrect a past deadline.
+	live := exists && (item.expiration == nil || time.Now().Before(*item.expiration))
+
 	var current int64
-	if exists && (item.expiration == nil || time.Now().Before(*item.expiration)) {
+	if live {
 		switch v := item.value.(type) {
 		case int64:
 			current = v
@@ -476,12 +495,16 @@ func (s *MemoryStore) IncrementCtx(ctx context.Context, key string, value int64)
 
 	newValue := current + value
 
-	// Preserve expiration if it exists
-	if exists && item.expiration != nil {
-		s.setLocked(prefixedKey, newValue, item.expiration)
-	} else {
-		s.setLocked(prefixedKey, newValue, nil)
+	// Preserve the expiration only for a live entry. An expired entry starts
+	// fresh with no expiration -- reusing item.expiration would write the
+	// counter under an already-past deadline, leaving it unreadable. Matches
+	// FileStore.IncrementCtx, where expired entries fall through with a nil
+	// expiration.
+	var expiration *time.Time
+	if live {
+		expiration = item.expiration
 	}
+	s.setLocked(prefixedKey, newValue, expiration)
 
 	return newValue, nil
 }
@@ -563,8 +586,7 @@ func (s *MemoryStore) PutManyCtx(ctx context.Context, items map[string]interface
 	defer s.mu.Unlock()
 
 	for key, value := range items {
-		expiration := time.Now().Add(ttl)
-		s.setLocked(s.prefixedKey(key), value, &expiration)
+		s.setLocked(s.prefixedKey(key), value, expirationFor(ttl))
 	}
 
 	return nil

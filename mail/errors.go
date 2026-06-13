@@ -10,6 +10,11 @@ var (
 	ErrDriverNotConfigured = errors.New("velocity/mail: driver not configured")
 	ErrChannelNotFound     = errors.New("velocity/mail: channel not found")
 
+	// ErrNilMessage is returned by Send when the message argument is nil,
+	// before any channel lookup or driver call, so a nil never reaches a
+	// driver and panics on a GetTo/GetSubject dereference.
+	ErrNilMessage = errors.New("velocity/mail: message is nil")
+
 	// The following sentinels are owned by the contract leaf (the Message
 	// type that references them lives there). They are re-exported here as
 	// aliases so existing errors.Is(err, mail.ErrInvalidHeader) checks keep

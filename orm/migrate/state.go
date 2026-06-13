@@ -167,6 +167,12 @@ func (m *Migrator) getMigrationsByBatch(batch int) ([]string, error) {
 	return versions, nil
 }
 
+// AllTables returns all user table names in the database for the configured
+// driver, propagating any query or row-iteration error.
+func (m *Migrator) AllTables() ([]string, error) {
+	return m.getAllTables()
+}
+
 // getAllTables returns all table names in the database
 func (m *Migrator) getAllTables() ([]string, error) {
 	var query string

@@ -1,6 +1,10 @@
 package local
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/velocitykode/velocity/mail"
+)
 
 func TestSanitizeHeader_DropsC0Controls(t *testing.T) {
 	tests := []struct {
@@ -21,9 +25,9 @@ func TestSanitizeHeader_DropsC0Controls(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := sanitizeHeader(tc.in)
+			got := mail.SanitizeHeader(tc.in)
 			if got != tc.want {
-				t.Errorf("sanitizeHeader(%q) = %q, want %q", tc.in, got, tc.want)
+				t.Errorf("SanitizeHeader(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
 	}

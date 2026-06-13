@@ -33,9 +33,19 @@ func TestDetectMimeType_StdlibSniffer(t *testing.T) {
 			wantPrefix: "text/html",
 		},
 		{
-			name:       "svg",
+			// XML-declared SVG: the stdlib sniffer already commits to
+			// text/xml, so the SVG correction does not fire.
+			name:       "svg_xml_prolog",
 			content:    []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"></svg>`),
 			wantPrefix: "text/xml",
+		},
+		{
+			// Bare SVG markup sniffs as text/plain; the SVG correction
+			// reclassifies it as image/svg+xml so it is not served as
+			// inline text. This is the memory-driver behavior change.
+			name:       "svg_bare",
+			content:    []byte(`<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>`),
+			wantPrefix: "image/svg+xml",
 		},
 		{
 			name:       "png",
@@ -76,9 +86,9 @@ func TestDetectMimeType_StdlibSniffer(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := detectMimeType(tc.content)
+			got := DetectMimeType(tc.content)
 			if !strings.HasPrefix(got, tc.wantPrefix) {
-				t.Errorf("detectMimeType(%s) = %q, want prefix %q", tc.name, got, tc.wantPrefix)
+				t.Errorf("DetectMimeType(%s) = %q, want prefix %q", tc.name, got, tc.wantPrefix)
 			}
 		})
 	}
@@ -93,7 +103,7 @@ func TestDetectMimeType_StdlibSniffer(t *testing.T) {
 // the script when served from the application origin.
 func TestDetectMimeType_HtmlNotClassifiedAsPlain(t *testing.T) {
 	html := []byte("<!doctype html><script>x()</script>")
-	mime := detectMimeType(html)
+	mime := DetectMimeType(html)
 	if strings.HasPrefix(mime, "text/plain") {
 		t.Errorf("HTML must not be sniffed as text/plain, got %q", mime)
 	}
@@ -159,8 +169,8 @@ func TestDetectMimeType_OnlyReadsFirst512Bytes(t *testing.T) {
 	prefix := []byte("<!doctype html>")
 	big := append(prefix, make([]byte, 1<<20)...)
 
-	want := detectMimeType(prefix)
-	got := detectMimeType(big)
+	want := DetectMimeType(prefix)
+	got := DetectMimeType(big)
 	if got != want {
 		t.Errorf("sniffer must be bounded to first 512 bytes; got %q want %q", got, want)
 	}

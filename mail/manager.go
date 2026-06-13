@@ -106,12 +106,16 @@ func (m *Manager) GetChannels() []string {
 
 // Send sends a message using a specific channel
 func (m *Manager) Send(ctx context.Context, channel string, msg *Message) error {
+	// A nil message would panic at the GetTo/GetSubject calls below (and in
+	// the driver), so reject it up front before the channel lookup.
+	if msg == nil {
+		return ErrNilMessage
+	}
+
 	// Reject messages that accumulated a setter error (CRLF injection in
 	// a header, oversized attachment, ...) before any driver sees them.
-	if msg != nil {
-		if err := msg.Err(); err != nil {
-			return err
-		}
+	if err := msg.Err(); err != nil {
+		return err
 	}
 
 	mailer, err := m.Channel(channel)

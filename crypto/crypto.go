@@ -2,10 +2,8 @@ package crypto
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/velocitykode/velocity/contract"
@@ -26,8 +24,8 @@ var (
 	// Config.PreviousKeys could not be parsed (malformed base64,
 	// wrong-length decoded bytes, etc.). The constructor fails fast so a
 	// typo in APP_PREVIOUS_KEY does not silently disable key rotation.
-	// Operators who need the legacy "skip and continue" behaviour (e.g.
-	// transient migrations) can set CRYPTO_IGNORE_INVALID_PREVIOUS_KEYS=true.
+	// Every non-empty malformed or wrong-length previous key is rejected;
+	// there is no opt-out.
 	ErrInvalidPreviousKey = contract.ErrInvalidPreviousKey
 	// ErrDecrypt is the single sentinel for any cryptographic decrypt
 	// failure (wrong key, wrong MAC, bad padding, malformed IV bytes).
@@ -105,13 +103,11 @@ type Encryptor interface {
 	GenerateKey() (string, error)
 }
 
-// Payload represents the encrypted data structure
-type Payload struct {
-	IV    string `json:"iv"`            // Initialization vector (base64)
-	Value string `json:"value"`         // Encrypted value (base64)
-	MAC   string `json:"mac,omitempty"` // HMAC for CBC modes (base64)
-	Tag   string `json:"tag,omitempty"` // Authentication tag for GCM modes (base64)
-}
+// Payload represents the encrypted data structure. It aliases
+// drivers.Payload (the canonical definition) so the wire shape has a single
+// source; the alias keeps crypto.Payload usable by repo callers without an
+// import of crypto/drivers.
+type Payload = drivers.Payload
 
 // Config holds encryption configuration
 type Config struct {
@@ -137,17 +133,10 @@ func (c Config) Validate() error {
 	if c.Key == "" {
 		return ErrInvalidKey
 	}
-	cipher := strings.ToUpper(c.Cipher)
-	var want int
-	switch cipher {
-	case "AES-128-CBC", "AES-128-GCM":
-		want = 16
-	case "AES-192-CBC", "AES-192-GCM":
-		want = 24
-	case "AES-256-CBC", "AES-256-GCM":
-		want = 32
-	default:
-		return ErrInvalidCipher
+	cipher := normalizeCipher(c.Cipher)
+	want, err := drivers.KeySize(cipher)
+	if err != nil {
+		return err
 	}
 	raw, err := parseKey(c.Key)
 	if err != nil {
@@ -164,23 +153,33 @@ func (c Config) Validate() error {
 	// primary key; otherwise Validate would accept a config that
 	// NewEncryptor later rejects, breaking the documented symmetry and
 	// letting startup validators sign off on configs that fail at
-	// runtime. Helper handles the CRYPTO_IGNORE_INVALID_PREVIOUS_KEYS
-	// opt-out so the env knob covers both call sites uniformly.
+	// runtime.
 	if _, err := validatePreviousKeys(c.PreviousKeys, cipher, want); err != nil {
 		return err
 	}
 	return nil
 }
 
+// normalizeCipher applies the shared cipher normalization policy: an
+// empty cipher defaults to AES-256-GCM, and the name is upper-cased.
+// Validate and newDriver both run config through this before calling
+// drivers.KeySize so the two paths share one normalization policy; a
+// config that NewEncryptor would run with cannot be rejected by Validate
+// (or vice versa) due to a default applied in only one place.
+func normalizeCipher(cipher string) string {
+	if cipher == "" {
+		cipher = "AES-256-GCM"
+	}
+	return strings.ToUpper(cipher)
+}
+
 // validatePreviousKeys parses and length-checks rotation keys against
-// the cipher's required raw key length, honoring the
-// CRYPTO_IGNORE_INVALID_PREVIOUS_KEYS=true opt-out for transient
-// migrations. Returns the parsed valid keys; callers that only need
-// pass/fail (Validate) can discard the slice. Empty PreviousKeys
-// entries are silent no-ops since they model empty slots in
-// comma-split env values.
+// the cipher's required raw key length. Every non-empty malformed or
+// wrong-length key returns ErrInvalidPreviousKey; there is no opt-out.
+// Returns the parsed valid keys; callers that only need pass/fail
+// (Validate) can discard the slice. Empty PreviousKeys entries are
+// silent no-ops since they model empty slots in comma-split env values.
 func validatePreviousKeys(prev []string, cipher string, keySize int) ([][]byte, error) {
-	ignoreInvalid := os.Getenv("CRYPTO_IGNORE_INVALID_PREVIOUS_KEYS") == "true"
 	var parsed [][]byte
 	for i, k := range prev {
 		if k == "" {
@@ -188,15 +187,9 @@ func validatePreviousKeys(prev []string, cipher string, keySize int) ([][]byte, 
 		}
 		prevKey, err := parseKey(k)
 		if err != nil {
-			if ignoreInvalid {
-				continue
-			}
 			return nil, fmt.Errorf("%w: index %d: %v", ErrInvalidPreviousKey, i, err)
 		}
 		if len(prevKey) != keySize {
-			if ignoreInvalid {
-				continue
-			}
 			return nil, fmt.Errorf("%w: index %d: cipher %s requires %d-byte key, got %d", ErrInvalidPreviousKey, i, cipher, keySize, len(prevKey))
 		}
 		parsed = append(parsed, prevKey)
@@ -208,9 +201,6 @@ func validatePreviousKeys(prev []string, cipher string, keySize int) ([][]byte, 
 // The config is validated before constructing the driver; missing keys or
 // unsupported ciphers are rejected up-front.
 func NewEncryptor(config Config) (Encryptor, error) {
-	if config.Cipher == "" {
-		config.Cipher = "AES-256-GCM"
-	}
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
@@ -219,37 +209,26 @@ func NewEncryptor(config Config) (Encryptor, error) {
 
 // newDriver creates the appropriate driver based on cipher
 func newDriver(config Config) (Encryptor, error) {
-	// Default to AES-256-GCM if no cipher specified
-	if config.Cipher == "" {
-		config.Cipher = "AES-256-GCM"
-	}
-
 	// Parse the key
 	key, err := parseKey(config.Key)
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse previous keys for rotation. Default behaviour is fail-fast:
-	// any malformed entry rejects the entire constructor so an operator's
-	// typo cannot silently disable key rotation (e.g. APP_PREVIOUS_KEY
-	// shape "base64:..." with a corrupted suffix would otherwise drop the
-	// rotation entry and leave decrypts of pre-rotation ciphertexts
-	// failing in production while the env looks healthy).
-	//
-	// Operators with a transient migration that legitimately needs to
-	// tolerate parse failures (e.g. removing a retired key from the list
-	// before redeploying) can set CRYPTO_IGNORE_INVALID_PREVIOUS_KEYS=true.
-	// The opt-out is intentionally an env var, not a Config field, so it
-	// is reviewable in deployment manifests.
-	cipher := strings.ToUpper(config.Cipher)
+	// Parse previous keys for rotation. Fail-fast: any malformed entry
+	// rejects the entire constructor so an operator's typo cannot silently
+	// disable key rotation (e.g. APP_PREVIOUS_KEY shape "base64:..." with a
+	// corrupted suffix would otherwise drop the rotation entry and leave
+	// decrypts of pre-rotation ciphertexts failing in production while the
+	// env looks healthy).
+	cipher := normalizeCipher(config.Cipher)
 
 	// Validate cipher and determine required key size. Resolved early so
 	// the previous-keys loop below can length-check each entry against
 	// the cipher; otherwise a wrong-length entry that decoded cleanly
 	// would silently slip past NewEncryptor and only get filtered out
 	// inside NewAESDriver, defeating M-13's fail-fast contract.
-	keySize, err := cipherKeySize(cipher)
+	keySize, err := drivers.KeySize(cipher)
 	if err != nil {
 		return nil, err
 	}
@@ -260,24 +239,6 @@ func newDriver(config Config) (Encryptor, error) {
 	}
 
 	return drivers.NewAESDriver(key, previousKeys, cipher)
-}
-
-// cipherKeySize returns the required raw key length for a supported
-// cipher identifier. Returns ErrInvalidCipher for unknown ciphers. Used
-// by NewEncryptor to length-check PreviousKeys at the configuration
-// layer, matching the strict per-key length check NewAESDriver already
-// performs on the primary key.
-func cipherKeySize(cipher string) (int, error) {
-	switch cipher {
-	case "AES-128-CBC", "AES-128-GCM":
-		return 16, nil
-	case "AES-192-CBC", "AES-192-GCM":
-		return 24, nil
-	case "AES-256-CBC", "AES-256-GCM":
-		return 32, nil
-	default:
-		return 0, ErrInvalidCipher
-	}
 }
 
 // parseKey parses a key string which may be base64 encoded. The returned
@@ -301,35 +262,18 @@ func parseKey(keyStr string) ([]byte, error) {
 	return []byte(keyStr), nil
 }
 
-// SerializePayload converts a payload to base64 JSON
+// SerializePayload converts a payload to base64 JSON. Delegates to
+// drivers.SerializePayload (the canonical implementation); retained here so
+// existing crypto.SerializePayload callers keep compiling.
 func SerializePayload(p *Payload) (string, error) {
-	data, err := json.Marshal(p)
-	if err != nil {
-		return "", err
-	}
-	return base64.URLEncoding.EncodeToString(data), nil
+	return drivers.SerializePayload(p)
 }
 
 // DeserializePayload converts base64 JSON to a payload. Accepts both v1
 // ("v1:"-prefixed) and v0 (bare base64) envelopes so tooling that inspects
-// stored ciphertexts does not need to know the wire version.
+// stored ciphertexts does not need to know the wire version. Delegates to
+// drivers.DeserializePayload (the canonical implementation); retained here
+// so existing crypto.DeserializePayload callers keep compiling.
 func DeserializePayload(encoded string) (*Payload, error) {
-	// Strip the v1 sentinel if present; legacy v0 payloads are bare base64.
-	encoded = strings.TrimPrefix(encoded, "v1:")
-
-	// Try URL encoding first, then standard encoding
-	data, err := base64.URLEncoding.DecodeString(encoded)
-	if err != nil {
-		data, err = base64.StdEncoding.DecodeString(encoded)
-		if err != nil {
-			return nil, ErrInvalidPayload
-		}
-	}
-
-	var p Payload
-	if err := json.Unmarshal(data, &p); err != nil {
-		return nil, ErrInvalidPayload
-	}
-
-	return &p, nil
+	return drivers.DeserializePayload(encoded)
 }

@@ -2,10 +2,31 @@ package drivers
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"testing"
 	"time"
 )
+
+// writeExpiredFile seeds an already-expired cache file directly on disk.
+// A negative ttl now means "store forever" per the Store contract, so it can
+// no longer be used as a shortcut to create an expired entry; these sweep
+// tests need a genuinely past-deadline file, so write one explicitly.
+func writeExpiredFile(t *testing.T, s *FileStore, key, value string) {
+	t.Helper()
+	past := time.Now().Add(-time.Hour)
+	valueData, err := MarshalValue(value)
+	if err != nil {
+		t.Fatalf("MarshalValue: %v", err)
+	}
+	raw, err := json.Marshal(fileCacheItem{Value: valueData, Expiration: &past})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if err := os.WriteFile(s.getCacheFilePath(key), raw, cacheFileMode); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+}
 
 // TestFileStore_SweepWalkDoesNotHoldLock proves the cleanup walk runs
 // without the store mutex: the walk hook (invoked once per visited file,
@@ -21,9 +42,7 @@ func TestFileStore_SweepWalkDoesNotHoldLock(t *testing.T) {
 	if err := s.Put("fresh", "alive", time.Hour); err != nil {
 		t.Fatalf("Put fresh: %v", err)
 	}
-	if err := s.Put("expired", "dead", -time.Hour); err != nil {
-		t.Fatalf("Put expired: %v", err)
-	}
+	writeExpiredFile(t, s, "expired", "dead")
 
 	hookRuns := 0
 	s.walkHook = func() {
@@ -104,9 +123,7 @@ func TestFileStore_CleanupRecheckSparesRefreshedEntry(t *testing.T) {
 		t.Fatalf("NewFileStore: %v", err)
 	}
 
-	if err := s.Put("key", "old", -time.Hour); err != nil {
-		t.Fatalf("Put expired: %v", err)
-	}
+	writeExpiredFile(t, s, "key", "old")
 	path := s.getCacheFilePath("key")
 
 	// Simulate: walk collected the path as expired, then a Put refreshed
@@ -121,9 +138,7 @@ func TestFileStore_CleanupRecheckSparesRefreshedEntry(t *testing.T) {
 	}
 
 	// Control: without the refresh, the same candidate is removed.
-	if err := s.Put("gone", "old", -time.Hour); err != nil {
-		t.Fatalf("Put expired control: %v", err)
-	}
+	writeExpiredFile(t, s, "gone", "old")
 	gonePath := s.getCacheFilePath("gone")
 	s.removeIfEligible(gonePath)
 	if _, err := os.Stat(gonePath); !os.IsNotExist(err) {

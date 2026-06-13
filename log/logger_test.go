@@ -18,6 +18,21 @@ func TestNewLogger_ConsoleDriver(t *testing.T) {
 	}
 }
 
+func TestNewLogger_EmptyDriverDefaultsToConsole(t *testing.T) {
+	// An empty Driver must default to the always-registered "console"
+	// driver rather than erroring on an unknown-driver lookup, so a
+	// zero-value LogConfig produces a working logger.
+	logger, err := NewLogger(LogConfig{Config: map[string]any{}})
+	if err != nil {
+		t.Fatalf("NewLogger(empty driver) error = %v", err)
+	}
+	if logger == nil {
+		t.Fatal("NewLogger(empty driver) returned nil")
+	}
+	// Should not panic and should behave like a console logger.
+	logger.Info("empty-driver defaulted to console")
+}
+
 func TestNewLogger_FileDriver(t *testing.T) {
 	tests := []struct {
 		name   string

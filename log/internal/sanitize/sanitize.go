@@ -17,13 +17,19 @@
 //   - hijack the operator's terminal via ANSI escapes when tailing a
 //     file driver's output, or when watching stdout in dev.
 //
-// String walks the input once and replaces every byte less than 0x20
-// (except TAB so columnar logs still align), every 0x7F (DEL), and
-// CSI single-byte 0x9B with a \xHH escape sequence. It also escapes
-// the UTF-8 encodings of U+0085 (NEL), U+2028 (line separator), and
-// U+2029 (paragraph separator), because downstream UTF-8-aware log
-// viewers and normalisers can treat them as real line breaks. Other
-// bytes pass through verbatim. The output is a printable, single-line
+// String walks the input once (rune by rune) and replaces every byte
+// less than 0x20 (except TAB so columnar logs still align) and every
+// 0x7F (DEL) with a \xHH escape sequence. The CSI control is handled
+// rune-aware: the Unicode control U+009B (UTF-8 0xC2 0x9B) is escaped
+// to its U+009B form (backslash-u-009b) because terminals interpret it
+// like ESC '[', while a bare or otherwise-invalid 0x9B byte is escaped
+// to \x9b. A 0x9B byte that is a legitimate UTF-8 continuation byte
+// (e.g. U+011B encodes 0xC4 0x9B) passes through untouched. Every other
+// high byte (valid multi-byte rune or lone non-0x9B byte) also passes
+// through verbatim. It also escapes the UTF-8 encodings of U+0085
+// (NEL), U+2028 (line separator), and U+2029 (paragraph separator),
+// because downstream UTF-8-aware log viewers and normalisers can treat
+// them as real line breaks. The output is a printable, single-line
 // representation of the input that preserves the visible content but
 // strips every control-character side channel.
 //
@@ -33,7 +39,10 @@
 // user-tainted).
 package sanitize
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 // String returns s with control characters replaced by their hex
 // escape form (e.g. "\x0a" for newline). TAB (0x09) is preserved so
@@ -51,18 +60,43 @@ func String(s string) string {
 	}
 	var b strings.Builder
 	b.Grow(len(s) + 8)
-	for i := 0; i < len(s); i++ {
+	for i := 0; i < len(s); {
 		if esc, n := unicodeLineBreakEscape(s, i); n > 0 {
 			b.WriteString(esc)
-			i += n - 1
+			i += n
 			continue
 		}
 		c := s[i]
-		if shouldEscape(c) {
-			b.WriteString(hexEscape(c))
+		if c < 0x80 {
+			// ASCII: apply the single-byte control policy.
+			if shouldEscape(c) {
+				b.WriteString(hexEscape(c))
+			} else {
+				b.WriteByte(c)
+			}
+			i++
 			continue
 		}
-		b.WriteByte(c)
+		// High byte: decode a rune only to resolve the 0x9B ambiguity.
+		// Every other high byte keeps the historic passthrough so
+		// non-ASCII text (UTF-8 or legacy bytes) is logged verbatim.
+		r, size := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r == 0x9B:
+			// Real Unicode CSI U+009B (UTF-8 0xC2 0x9B): terminals
+			// interpret it like ESC '['. Escape it.
+			b.WriteString("\\u009b")
+		case r == utf8.RuneError && size == 1 && c == 0x9B:
+			// Bare 0x9B byte (not part of a valid rune): keep the
+			// single-byte CSI escape.
+			b.WriteString(hexEscape(c))
+		default:
+			// A valid multi-byte rune (which may legitimately contain a
+			// 0x9B continuation byte, e.g. U+011B = 0xC4 0x9B) or any
+			// other lone high byte: pass through unchanged.
+			b.WriteString(s[i : i+size])
+		}
+		i += size
 	}
 	return b.String()
 }
@@ -89,36 +123,48 @@ func KV(key, value string) (string, string) {
 	return String(key), String(value)
 }
 
-// needsEscape reports whether s contains any byte or UTF-8 line-break
-// sequence that String would rewrite. Used to skip the Builder
-// allocation on the common path where the input is already printable.
+// needsEscape reports whether s contains any byte or UTF-8 sequence that
+// String would rewrite. Used to skip the Builder allocation on the
+// common path where the input is already printable. The scan is
+// rune-aware so a 0x9B continuation byte inside a valid multi-byte rune
+// is not mistaken for the CSI control.
 func needsEscape(s string) bool {
-	for i := 0; i < len(s); i++ {
+	for i := 0; i < len(s); {
 		if _, n := unicodeLineBreakEscape(s, i); n > 0 {
 			return true
 		}
-		if shouldEscape(s[i]) {
-			return true
+		c := s[i]
+		if c < 0x80 {
+			if shouldEscape(c) {
+				return true
+			}
+			i++
+			continue
 		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r == 0x9B:
+			return true // U+009B CSI control (0xC2 0x9B)
+		case r == utf8.RuneError && size == 1 && c == 0x9B:
+			return true // bare 0x9B byte
+		}
+		i += size
 	}
 	return false
 }
 
-// shouldEscape reports whether byte c must be replaced with a hex
-// escape. UTF-8 line-break sequences for U+0085, U+2028, and U+2029
-// are handled by String before this byte-level policy is applied.
-// The byte policy:
+// shouldEscape reports whether an ASCII byte c (c < 0x80) must be
+// replaced with a hex escape. String and needsEscape only call it for
+// the ASCII range; high bytes (>= 0x80) are handled by the rune-aware
+// branch in String, which passes valid multi-byte runes and lone high
+// bytes through verbatim and special-cases only U+009B / bare 0x9B. The
+// ASCII byte policy:
 //
 //   - bytes < 0x20 are control characters and are escaped, except
 //     TAB (0x09) which is preserved so columnar logs still align;
-//   - 0x7F (DEL) is escaped;
-//   - 0x9B (CSI, ANSI single-byte control sequence introducer) is
-//     escaped because terminals interpret it the same as ESC '['.
+//   - 0x7F (DEL) is escaped.
 //
-// All other bytes (including 0x20-0x7E ASCII printables, 0x80-0x9A
-// and 0x9C-0xFF, which covers UTF-8 continuation bytes) pass through
-// unchanged so non-ASCII text in URLs, user-agents, etc. is logged
-// verbatim.
+// All other ASCII bytes (0x20-0x7E printables) pass through unchanged.
 func shouldEscape(c byte) bool {
 	if c == '\t' {
 		return false
@@ -129,9 +175,6 @@ func shouldEscape(c byte) bool {
 	if c == 0x7F {
 		return true
 	}
-	if c == 0x9B {
-		return true
-	}
 	return false
 }
 
@@ -140,22 +183,22 @@ func shouldEscape(c byte) bool {
 // may treat as a record boundary.
 func unicodeLineBreakEscape(s string, i int) (string, int) {
 	if len(s)-i >= 2 && s[i] == 0xc2 && s[i+1] == 0x85 {
-		return `\u0085`, 2
+		return "\\u0085", 2
 	}
 	if len(s)-i >= 3 && s[i] == 0xe2 && s[i+1] == 0x80 {
 		switch s[i+2] {
 		case 0xa8:
-			return `\u2028`, 3
+			return "\\u2028", 3
 		case 0xa9:
-			return `\u2029`, 3
+			return "\\u2029", 3
 		}
 	}
 	return "", 0
 }
 
-// hexEscape returns the two-byte \xHH form for c. Pre-rendered for
-// the 0x00-0x1F + 0x7F + 0x9B set so String avoids fmt.Sprintf in the
-// hot path.
+// hexEscape returns the two-byte \xHH form for c. Pre-rendered for the
+// 0x00-0x1F + 0x7F set and for bare/invalid high bytes (e.g. a lone
+// 0x9B) so String avoids fmt.Sprintf in the hot path.
 func hexEscape(c byte) string {
 	const hex = "0123456789abcdef"
 	return `\x` + string([]byte{hex[c>>4], hex[c&0x0f]})
