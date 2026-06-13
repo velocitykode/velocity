@@ -183,10 +183,27 @@ says.
 - **Messaging**: [events](https://vel.build/docs/advanced/events), [command bus](https://vel.build/docs/advanced/bus), [notifications](https://vel.build/docs/advanced/notifications), [broadcasting](https://vel.build/docs/realtime/broadcast)
 - **Frontend**: [Inertia.js adapter](https://vel.build/docs/frontend/inertia)
 - **Ops**: [scheduler](https://vel.build/docs/advanced/scheduler), [encryption](https://vel.build/docs/core/crypto), [tracing](https://vel.build/docs/advanced/trace), [storage](https://vel.build/docs/advanced/storage)
-- **DX**: [CLI](https://vel.build/docs/cli/commands), live reload, and [string](https://vel.build/docs/core/string-utilities)/[async](https://vel.build/docs/core/async)/[pipeline](https://vel.build/docs/advanced/pipeline) helpers
+- **DX**: [CLI](https://vel.build/docs/cli/commands), live reload, [test helpers](https://vel.build/docs/testing), and [string](https://vel.build/docs/core/string-utilities)/[async](https://vel.build/docs/core/async)/[pipeline](https://vel.build/docs/advanced/pipeline) helpers
 
 Every subsystem is an importable package, usable on its own.
 See [vel.build/docs](https://vel.build/docs) for the full list.
+
+## Testing
+
+An in-memory app harness, a fluent HTTP client, and fakes for events and
+the command bus. Drive a route, then chain assertions against the response:
+
+```go
+client := velhttp.NewTestClient(t, router)
+
+client.ActingAs(guard, user).
+    PostJSON("/signup", map[string]any{"email": "a@b.com"}).
+    AssertCreated().
+    AssertJSONPath("user.email", "a@b.com")
+```
+
+Status, header, cookie, body, JSON-path, validation, and auth assertions
+all chain. [Testing docs](https://vel.build/docs/testing).
 
 ## Commands
 
