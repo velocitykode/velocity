@@ -220,10 +220,12 @@ func (m *Manager) DefaultStoreWithContext(ctx context.Context) (Store, error) {
 // callers cannot accidentally reuse a half-torn-down Manager.
 func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	stores := m.stores
+	m.stores = make(map[string]Store)
+	m.mu.Unlock()
 
 	var errs []error
-	for name, store := range m.stores {
+	for name, store := range stores {
 		if sd, ok := store.(contract.ShutdownAware); ok {
 			if err := sd.Shutdown(ctx); err != nil {
 				errs = append(errs, fmt.Errorf("cache store %q shutdown: %w", name, err))
@@ -231,7 +233,6 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 		}
 	}
 
-	m.stores = make(map[string]Store)
 	return errors.Join(errs...)
 }
 

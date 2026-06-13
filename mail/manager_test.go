@@ -256,12 +256,12 @@ func TestManagerConcurrency(t *testing.T) {
 // shutdownableMockMailer satisfies ShutdownableMailer for Shutdown tests.
 type shutdownableMockMailer struct {
 	mockMailer
-	shutdownCalled bool
-	shutdownErr    error
+	shutdownCalls int
+	shutdownErr   error
 }
 
 func (m *shutdownableMockMailer) Shutdown(ctx context.Context) error {
-	m.shutdownCalled = true
+	m.shutdownCalls++
 	return m.shutdownErr
 }
 
@@ -276,22 +276,47 @@ func TestManagerShutdown(t *testing.T) {
 		if err := manager.Shutdown(context.Background()); err != nil {
 			t.Fatalf("shutdown: %v", err)
 		}
-		if !sm.shutdownCalled {
-			t.Error("expected ShutdownableMailer.Shutdown to be called")
+		if sm.shutdownCalls != 1 {
+			t.Errorf("expected ShutdownableMailer.Shutdown called once, got %d", sm.shutdownCalls)
 		}
 		if manager.HasChannel("shut") || manager.HasChannel("plain") {
 			t.Error("expected channels to be cleared after shutdown")
 		}
 	})
 
-	t.Run("returns first error", func(t *testing.T) {
+	t.Run("attempts all and joins errors, idempotent", func(t *testing.T) {
 		manager := NewManager()
-		sm := &shutdownableMockMailer{shutdownErr: fmt.Errorf("boom")}
-		manager.SetChannel("broken", sm)
+		errA := fmt.Errorf("a boom")
+		errB := fmt.Errorf("b boom")
+		a := &shutdownableMockMailer{shutdownErr: errA}
+		b := &shutdownableMockMailer{shutdownErr: errB}
+		ok := &shutdownableMockMailer{}
+		manager.SetChannel("a", a)
+		manager.SetChannel("b", b)
+		manager.SetChannel("ok", ok)
 
 		err := manager.Shutdown(context.Background())
 		if err == nil {
-			t.Fatal("expected error")
+			t.Fatal("expected joined error")
+		}
+		// All children attempted despite earlier failures.
+		if a.shutdownCalls != 1 || b.shutdownCalls != 1 || ok.shutdownCalls != 1 {
+			t.Fatalf("expected each channel shut down once, got a=%d b=%d ok=%d", a.shutdownCalls, b.shutdownCalls, ok.shutdownCalls)
+		}
+		// errors.Is finds each child error in the joined result.
+		if !errors.Is(err, errA) || !errors.Is(err, errB) {
+			t.Errorf("joined error missing a child: %v", err)
+		}
+		// Post-shutdown channel resolution fails.
+		if _, cerr := manager.Channel("a"); cerr == nil {
+			t.Error("expected Channel(a) to fail after shutdown")
+		}
+		// Second call is a no-op returning nil without re-calling children.
+		if err := manager.Shutdown(context.Background()); err != nil {
+			t.Fatalf("second Shutdown should be nil, got %v", err)
+		}
+		if a.shutdownCalls != 1 || b.shutdownCalls != 1 || ok.shutdownCalls != 1 {
+			t.Fatalf("second Shutdown re-called children: a=%d b=%d ok=%d", a.shutdownCalls, b.shutdownCalls, ok.shutdownCalls)
 		}
 	})
 }

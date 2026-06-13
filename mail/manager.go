@@ -2,6 +2,7 @@ package mail
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -207,19 +208,19 @@ func (m *Manager) ClearChannels() {
 // ShutdownableMailer is implemented by mailers that need to release resources
 // (connection pools, background goroutines) when the application shuts down.
 // The *http.Client based drivers (Mailgun, Postmark) do not implement this
-// today — the idle-connection cleanup is handled by the underlying transport.
-type ShutdownableMailer interface {
-	Shutdown(ctx context.Context) error
-}
+// today; the idle-connection cleanup is handled by the underlying transport.
+//
+// It aliases contract.ShutdownAware so a single canonical shutdown contract
+// covers every framework manager; the contract leaf is stdlib-only, so
+// importing it here is legal.
+type ShutdownableMailer = contract.ShutdownAware
 
 // Shutdown tears down per-channel mailers that opt into ShutdownableMailer and
-// clears the channel registry. The first error encountered is returned; other
-// errors are reported via the event dispatcher so callers can act on partial
-// failures without masking them.
+// clears the channel registry. Every opted-in channel gets a Shutdown attempt
+// even if an earlier one fails; the errors are aggregated via errors.Join so
+// the caller sees every partial failure without any being masked. Clearing the
+// registry up front makes a second call a no-op that returns nil.
 func (m *Manager) Shutdown(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
 	m.mu.Lock()
 	channels := make(map[string]Mailer, len(m.channels))
 	for k, v := range m.channels {
@@ -230,18 +231,15 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	m.channels = make(map[string]Mailer)
 	m.mu.Unlock()
 
-	var firstErr error
+	var errs []error
 	for name, mailer := range channels {
 		sm, ok := mailer.(ShutdownableMailer)
 		if !ok {
 			continue
 		}
 		if err := sm.Shutdown(ctx); err != nil {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("velocity/mail: shutdown channel %q: %w", name, err)
-			}
-			m.dispatchEvent(ctx, fmt.Errorf("velocity/mail: shutdown channel %q: %w", name, err))
+			errs = append(errs, fmt.Errorf("velocity/mail: shutdown channel %q: %w", name, err))
 		}
 	}
-	return firstErr
+	return errors.Join(errs...)
 }

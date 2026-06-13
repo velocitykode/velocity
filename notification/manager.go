@@ -65,10 +65,32 @@ func (m *Manager) dispatchEvent(ctx context.Context, event interface{}) {
 	}
 }
 
-// Shutdown is a no-op for the notification manager; channel drivers do not
-// hold long-lived connections that need draining.
+// Shutdown tears down every channel that implements contract.ShutdownAware and
+// clears the channel registry. Channels that hold no long-lived resources do
+// not implement the interface and are skipped. Every opted-in channel gets a
+// Shutdown attempt even if an earlier one fails, and the errors are aggregated
+// via errors.Join so no partial failure is masked. Clearing the registry makes
+// a second call a no-op returning nil.
 func (m *Manager) Shutdown(ctx context.Context) error {
-	return nil
+	m.mu.Lock()
+	channels := make(map[string]Channel, len(m.channels))
+	for k, v := range m.channels {
+		channels[k] = v
+	}
+	m.channels = make(map[string]Channel)
+	m.mu.Unlock()
+
+	var errs []error
+	for name, ch := range channels {
+		sd, ok := ch.(contract.ShutdownAware)
+		if !ok {
+			continue
+		}
+		if err := sd.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("velocity/notification: shutdown channel %q: %w", name, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // Channel returns a registered channel driver by name, creating it from the

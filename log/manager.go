@@ -89,6 +89,38 @@ func (m *Manager) Default() (Logger, error) {
 	return m.Channel(m.config.Default)
 }
 
+// Shutdown closes every channel logger that implements Shutdowner and clears
+// the channel registry. Loggers that hold no resources do not implement the
+// interface and are skipped. Every opted-in channel gets a Shutdown attempt
+// even if an earlier one fails, and the errors are aggregated via errors.Join
+// so no partial failure is masked. Clearing the registry makes a second call a
+// no-op returning nil.
+//
+// A Manager-built stack channel references shared, manager-owned children, so
+// its non-destructive Shutdown will not close those children out from under
+// their own channel entries (see newManagerStackLogger / StackLogger.Shutdown).
+func (m *Manager) Shutdown(ctx context.Context) error {
+	m.mu.Lock()
+	channels := make(map[string]Logger, len(m.channels))
+	for k, v := range m.channels {
+		channels[k] = v
+	}
+	m.channels = make(map[string]Logger)
+	m.mu.Unlock()
+
+	var errs []error
+	for name, logger := range channels {
+		sd, ok := logger.(Shutdowner)
+		if !ok {
+			continue
+		}
+		if err := sd.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("velocity/log: shutdown channel %q: %w", name, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // createLogger creates a logger instance based on the channel configuration.
 // The Manager wires its multi-channel "stack" semantics differently from
 // the standalone log.NewLogger stack: stack channels here resolve other

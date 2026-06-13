@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -123,23 +124,28 @@ func (m *Manager) SetDefault(name string) error {
 // Shutdown drains each configured disk driver. Drivers that implement
 // contract.ShutdownAware (e.g. LocalDriver, which holds an *os.Root
 // file descriptor) get their Shutdown called; drivers that don't are
-// skipped. The first non-nil error is returned, but every driver's
-// Shutdown is attempted first so resources never leak because of an
-// earlier failure.
+// skipped. Every driver's Shutdown is attempted even if an earlier one
+// fails, and the errors are aggregated via errors.Join so no partial
+// failure is masked. The disk registry is cleared regardless of errors
+// so a closed driver is no longer resolvable via Disk() and a second
+// call is a no-op returning nil.
 func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	var firstErr error
-	for name, driver := range m.disks {
+	disks := m.disks
+	m.disks = make(map[string]Driver)
+	m.mu.Unlock()
+
+	var errs []error
+	for name, driver := range disks {
 		sd, ok := driver.(contract.ShutdownAware)
 		if !ok {
 			continue
 		}
-		if err := sd.Shutdown(ctx); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("velocity/storage: shutdown disk %q: %w", name, err)
+		if err := sd.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("velocity/storage: shutdown disk %q: %w", name, err))
 		}
 	}
-	return firstErr
+	return errors.Join(errs...)
 }
 
 // createDriverWithContext creates a driver using the provided context for
