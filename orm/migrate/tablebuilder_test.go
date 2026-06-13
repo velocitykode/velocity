@@ -134,6 +134,82 @@ func TestTableBuilder_SoftDeletes_SQL(t *testing.T) {
 	}
 }
 
+// TestTableBuilder_TimestampsResetsLastColumn is a regression test for a
+// stale-lastColumn bug: Timestamps()/TimestampsTz() append two columns but used
+// to leave t.lastColumn pointing at the column added *before* them, so a
+// trailing Nullable()/Unique()/Default() silently mutated the wrong column
+// instead of no-opping.
+//
+// The leading columns are deliberate. They give the columns slice spare
+// capacity so the two-column append inside Timestamps does NOT reallocate the
+// backing array; that keeps the stale pointer aliasing a live column ("target")
+// so the corruption is observable here. (With a reallocation the stale pointer
+// would dangle into an abandoned array and the bug would be silently invisible
+// in this case.) After the fix (lastColumn = nil) Nullable() is a no-op
+// regardless of capacity.
+func TestTableBuilder_TimestampsResetsLastColumn(t *testing.T) {
+	tests := []struct {
+		name string
+		add  func(tb *migrate.TableBuilder)
+	}{
+		{"Timestamps", func(tb *migrate.TableBuilder) { tb.Timestamps() }},
+		{"TimestampsTz", func(tb *migrate.TableBuilder) { tb.TimestampsTz() }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager, err := orm.NewManager(orm.ManagerConfig{
+				Driver:   "sqlite",
+				Database: ":memory:",
+			})
+			if err != nil {
+				t.Fatalf("failed to init ORM: %v", err)
+			}
+			defer manager.Shutdown(context.Background())
+
+			db := manager.DB()
+			migrator := migrate.NewMigrator(db, manager.DriverName())
+
+			var generatedSQL string
+			if err := migrator.CreateTable("ts_reset", func(tb *migrate.TableBuilder) {
+				tb.ID()
+				tb.String("a")
+				tb.String("b")
+				tb.String("c")
+				tb.String("target")
+				tt.add(tb)
+				tb.Nullable() // must no-op: it follows a multi-column helper
+				generatedSQL = tb.ToSQL()
+			}); err != nil {
+				t.Fatalf("CreateTable failed: %v", err)
+			}
+
+			// "target" was added before the timestamp helper; the trailing
+			// Nullable() must not have leaked onto it.
+			if !columnLineHasNotNull(generatedSQL, "target") {
+				t.Errorf("Nullable() after %s() leaked onto 'target'; want NOT NULL.\n%s", tt.name, generatedSQL)
+			}
+			// The managed timestamp columns must stay NOT NULL.
+			for _, col := range []string{"created_at", "updated_at"} {
+				if !columnLineHasNotNull(generatedSQL, col) {
+					t.Errorf("%s must remain NOT NULL.\n%s", col, generatedSQL)
+				}
+			}
+		})
+	}
+}
+
+// columnLineHasNotNull reports whether the CREATE TABLE line defining the named
+// column carries a NOT NULL constraint.
+func columnLineHasNotNull(sql, column string) bool {
+	for _, line := range strings.Split(sql, "\n") {
+		if strings.Contains(line, "`"+column+"`") {
+			return strings.Contains(line, "NOT NULL")
+		}
+	}
+	return false
+}
+
 func TestTableBuilder_AllColumns(t *testing.T) {
 	manager := newTestManager(t)
 	defer manager.Shutdown(context.Background())

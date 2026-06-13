@@ -435,6 +435,20 @@ func (b *IndexBuilder) toPostgresSQL() (string, error) {
 }
 
 func (b *IndexBuilder) toMySQLSQL() (string, error) {
+	// MySQL has no CREATE INDEX IF NOT EXISTS, no INCLUDE columns, and no
+	// partial-index WHERE clause. Silently dropping these would change index
+	// semantics: a dropped WHERE on a UNIQUE index widens the constraint over
+	// the whole table (a data-integrity hazard), so fail loud instead.
+	if b.ifNotExists {
+		return "", fmt.Errorf("IF NOT EXISTS is not supported for indexes on driver %q", b.driver)
+	}
+	if len(b.include) > 0 {
+		return "", fmt.Errorf("INCLUDE columns are not supported for indexes on driver %q", b.driver)
+	}
+	if b.where != "" {
+		return "", fmt.Errorf("partial index WHERE is not supported for indexes on driver %q", b.driver)
+	}
+
 	var sql strings.Builder
 
 	sql.WriteString("CREATE ")
@@ -446,7 +460,10 @@ func (b *IndexBuilder) toMySQLSQL() (string, error) {
 	sql.WriteString(" ON ")
 	sql.WriteString(quoteIdentifier(b.table, b.driver))
 
-	// Index type (MySQL uses different syntax)
+	// Index type (USING). An unrecognized access-path hint is dropped rather
+	// than rejected: USING selects an index implementation, not index
+	// semantics, so omitting it yields the same logical index on the engine's
+	// default access path.
 	if b.using != "" && (b.using == "btree" || b.using == "hash") {
 		sql.WriteString(" USING ")
 		sql.WriteString(strings.ToUpper(b.using))
@@ -461,13 +478,17 @@ func (b *IndexBuilder) toMySQLSQL() (string, error) {
 	sql.WriteString(cols)
 	sql.WriteString(")")
 
-	// MySQL doesn't support INCLUDE or WHERE (partial indexes)
-	// These are silently ignored
-
 	return sql.String(), nil
 }
 
 func (b *IndexBuilder) toSQLiteSQL() (string, error) {
+	// SQLite has no INCLUDE columns. Silently dropping them would change index
+	// semantics (covered-index coverage), so fail loud instead. USING is a
+	// dropped access-path hint (see below), not a semantics change.
+	if len(b.include) > 0 {
+		return "", fmt.Errorf("INCLUDE columns are not supported for indexes on driver %q", b.driver)
+	}
+
 	var sql strings.Builder
 
 	sql.WriteString("CREATE ")
@@ -497,8 +518,9 @@ func (b *IndexBuilder) toSQLiteSQL() (string, error) {
 		sql.WriteString(b.where)
 	}
 
-	// SQLite doesn't support INCLUDE or USING
-	// These are silently ignored
+	// USING is dropped here: SQLite has no USING clause on CREATE INDEX. It is
+	// an access-path hint, not index semantics, so omitting it yields the same
+	// logical index. (INCLUDE, which would change semantics, is rejected above.)
 
 	return sql.String(), nil
 }

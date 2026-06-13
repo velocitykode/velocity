@@ -228,7 +228,7 @@ func isTestDatabase(name string) bool {
 // This function:
 // 1. Validates it's safe to run (test database, not production)
 // 2. Drops all existing tables
-// 3. Runs all registered migrations via migrate.Up()
+// 3. Runs all registered migrations via migrator.Up()
 //
 // Safety checks:
 //   - Requires testing.T (only callable from tests)

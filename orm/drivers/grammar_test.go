@@ -1851,3 +1851,38 @@ func TestCompileCreateTable_EscapesStringDefault(t *testing.T) {
 		})
 	}
 }
+
+// TestCompileCreateTable_EscapesStringDefault_OBrien locks in the per-driver
+// string-default escaping for a default containing a single quote (O'Brien):
+// every grammar routes the string case through its own QuoteString, doubling
+// the embedded quote to 'O”Brien'. Additive coverage alongside the it's case;
+// it pins that none of the three string-default paths regress to an unescaped
+// literal.
+func TestCompileCreateTable_EscapesStringDefault_OBrien(t *testing.T) {
+	table := &Table{
+		Columns: []Column{
+			{Name: "owner", Type: "VARCHAR", Size: 64, Default: "O'Brien", Nullable: true},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		compile func() string
+	}{
+		{"postgres", func() string { return (&PostgresGrammar{}).CompileCreateTable("people", table) }},
+		{"mysql", func() string { return (&MySQLGrammar{}).CompileCreateTable("people", table) }},
+		{"sqlite", func() string { return (&SQLiteGrammar{}).CompileCreateTable("people", table) }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.compile()
+			if !strings.Contains(got, "DEFAULT 'O''Brien'") {
+				t.Errorf("CompileCreateTable() = %q, want DEFAULT 'O''Brien'", got)
+			}
+			if strings.Contains(got, "DEFAULT 'O'Brien'") {
+				t.Errorf("CompileCreateTable() emitted unescaped quote: %q", got)
+			}
+		})
+	}
+}

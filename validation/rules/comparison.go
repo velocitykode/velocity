@@ -100,9 +100,8 @@ func NotInRule(field string, value interface{}, params []string, data map[string
 // Error attribution: when the values do not match (or the confirmation
 // field is missing), the returned error is attached by the validator to
 // the ORIGINAL field key (e.g. "password"), NOT to the sibling
-// "<field>_confirmation". This intentionally matches Laravel's behavior
-// (https://laravel.com/docs/validation#rule-confirmed) so frontends
-// migrated from Laravel can keep their existing error-binding logic.
+// "<field>_confirmation". Attributing the error to the primary field lets
+// frontends bind validation messages to the input the user actually edits.
 //
 // In practice, a failing `confirmed` rule on "password" produces an
 // errors map shaped like:

@@ -148,6 +148,14 @@ func (v *defaultValidator) Validate(data interface{}, rules Rules) (*ValidatedDa
 		value := getFieldValue(dataMap, field)
 		fieldRules := parseRuleSlice(fieldRuleStrings)
 
+		// "nullable" short-circuit: a field carrying "nullable" whose value is
+		// empty (nil or "") skips ALL other rules - including "required" - and
+		// is recorded as validated. See nullableRule for the semantics.
+		if rulesContainNullable(fieldRules) && isNullableEmpty(value) {
+			validated.Set(field, value)
+			continue
+		}
+
 		for _, rule := range fieldRules {
 			if err := v.validateField(field, value, rule, dataMap); err != nil {
 				validated.AddError(field, err.Error(), rule.name)
@@ -194,6 +202,13 @@ func (v *defaultValidator) ValidateValue(value interface{}, rule string) error {
 	defer v.mu.RUnlock()
 
 	fieldRules := parseRules(rule)
+
+	// Mirror the engine's "nullable" short-circuit: an empty value (nil or "")
+	// with "nullable" skips every other rule. See nullableRule.
+	if rulesContainNullable(fieldRules) && isNullableEmpty(value) {
+		return nil
+	}
+
 	for _, r := range fieldRules {
 		if err := v.validateField("value", value, r, nil); err != nil {
 			return err
@@ -283,6 +298,31 @@ func getFieldValue(data map[string]interface{}, field string) interface{} {
 	}
 
 	return nil
+}
+
+// fieldExists reports whether a (possibly dotted) field path is present in
+// data, walking nested map[string]interface{} segments. Unlike getFieldValue
+// it distinguishes "missing" from "present with a nil value": a leaf key that
+// exists with a nil value reports true. A missing key, or a non-map
+// intermediate segment, reports false.
+func fieldExists(data map[string]interface{}, field string) bool {
+	parts := strings.Split(field, ".")
+	current := data
+
+	for i, part := range parts {
+		if i == len(parts)-1 {
+			_, ok := current[part]
+			return ok
+		}
+
+		next, ok := current[part].(map[string]interface{})
+		if !ok {
+			return false
+		}
+		current = next
+	}
+
+	return false
 }
 
 // toMap converts various data types to map[string]interface{}

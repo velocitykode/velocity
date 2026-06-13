@@ -118,6 +118,20 @@ type IntrospectionGrammar interface {
 	CompileDescribeTable(table string) string
 }
 
+// CreateIndexGrammar is implemented by grammars whose dialect declares indexes
+// as separate CREATE INDEX statements rather than inline in CREATE TABLE.
+// PostgreSQL and SQLite reject the MySQL-style inline "INDEX name (cols)" clause,
+// so their grammars compile each Table.Index into its own statement here and
+// CreateTableWith executes them after the table statement. It is optional: a
+// grammar that does not implement it (e.g. MySQL, which emits inline INDEX
+// clauses) keeps whatever index handling its CompileCreateTable performs.
+type CreateIndexGrammar interface {
+	// CompileCreateIndexes returns one CREATE [UNIQUE] INDEX statement per entry
+	// in table.Indexes, targeting the table named name. It returns nil when
+	// table.Indexes is empty.
+	CompileCreateIndexes(name string, table *Table) []string
+}
+
 // ReturningGrammar is implemented by grammars whose dialect supports
 // RETURNING on UPDATE / DELETE statements (currently PostgreSQL; SQLite
 // 3.35+ and MariaDB 10.5+ are additional candidates).

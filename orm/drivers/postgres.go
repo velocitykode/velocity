@@ -441,14 +441,29 @@ func (g *PostgresGrammar) CompileCreateTable(name string, table *Table) string {
 		}
 	}
 
-	// Add indexes
+	sql.WriteString(")")
+
+	return sql.String()
+}
+
+// CompileCreateIndexes compiles each Table.Index into a standalone PostgreSQL
+// CREATE [UNIQUE] INDEX statement. PostgreSQL has no inline INDEX clause inside
+// CREATE TABLE, so CreateTableWith runs these after the table statement.
+func (g *PostgresGrammar) CompileCreateIndexes(name string, table *Table) []string {
+	if len(table.Indexes) == 0 {
+		return nil
+	}
+	stmts := make([]string, 0, len(table.Indexes))
 	for _, index := range table.Indexes {
-		sql.WriteString(", ")
+		var sql strings.Builder
+		sql.WriteString("CREATE ")
 		if index.Unique {
 			sql.WriteString("UNIQUE ")
 		}
 		sql.WriteString("INDEX ")
 		sql.WriteString(g.QuoteIdentifier(index.Name))
+		sql.WriteString(" ON ")
+		sql.WriteString(g.QuoteIdentifier(name))
 		sql.WriteString(" (")
 		for j, col := range index.Columns {
 			if j > 0 {
@@ -457,11 +472,9 @@ func (g *PostgresGrammar) CompileCreateTable(name string, table *Table) string {
 			sql.WriteString(g.QuoteIdentifier(col))
 		}
 		sql.WriteString(")")
+		stmts = append(stmts, sql.String())
 	}
-
-	sql.WriteString(")")
-
-	return sql.String()
+	return stmts
 }
 
 // CompileDropTable compiles a DROP TABLE query for PostgreSQL

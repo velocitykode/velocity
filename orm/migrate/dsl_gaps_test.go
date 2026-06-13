@@ -315,6 +315,43 @@ func TestColumnToSQL_TimestampTz_NotNull_NoDoubleDefault(t *testing.T) {
 	}
 }
 
+// TestColumnToSQL_AddColumnContext pins B31: Table() generates its ALTER TABLE
+// ADD COLUMN column SQL via columnToSQL, which now renders under the add-column
+// context. So SQLite emits a bare DATETIME NOT NULL (no managed CURRENT_TIMESTAMP
+// default, which SQLite rejects on ADD COLUMN), while postgres/mysql keep their
+// managed default. The fragment must also match the ColumnBuilder AddColumn path
+// for the same spec, proving the two add paths stay consistent.
+func TestColumnToSQL_AddColumnContext(t *testing.T) {
+	tests := []struct {
+		driver      string
+		want        string
+		wantManaged bool
+	}{
+		{"sqlite", "`ts` DATETIME NOT NULL", false},
+		{"postgres", `"ts" TIMESTAMPTZ DEFAULT NOW() NOT NULL`, true},
+		{"mysql", "`ts` TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.driver, func(t *testing.T) {
+			got := columnToSQL(Column{Name: "ts", Type: "timestamptz", Nullable: false}, tt.driver)
+			if got != tt.want {
+				t.Errorf("columnToSQL = %q, want %q", got, tt.want)
+			}
+			if !tt.wantManaged && strings.Contains(got, "CURRENT_TIMESTAMP") {
+				t.Errorf("add-column path must not carry a non-constant default: %q", got)
+			}
+			// Table()'s column fragment must equal the AddColumn fragment.
+			builderSQL, err := NewColumnBuilder("ts", tt.driver).TimestampTz().ToSQL()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != builderSQL {
+				t.Errorf("Table() fragment %q != AddColumn fragment %q", got, builderSQL)
+			}
+		})
+	}
+}
+
 func TestColumnBuilder_NewTypes(t *testing.T) {
 	t.Run("binary nullable", func(t *testing.T) {
 		sql, err := NewColumnBuilder("data", "postgres").Binary().Nullable().ToSQL()

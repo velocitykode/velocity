@@ -159,6 +159,117 @@ func TestValidate(t *testing.T) {
 			wantError: false,
 		},
 		{
+			// B33: an untouched optional HTML form field submits "".
+			// nullable must skip url so the empty value passes.
+			name: "nullable url empty string passes",
+			data: map[string]interface{}{
+				"website": "",
+			},
+			rules: Rules{
+				"website": {"nullable", "url"},
+			},
+			wantError: false,
+		},
+		{
+			name: "nullable url nil passes",
+			data: map[string]interface{}{
+				"website": nil,
+			},
+			rules: Rules{
+				"website": {"nullable", "url"},
+			},
+			wantError: false,
+		},
+		{
+			// Non-empty value still runs the downstream rules.
+			name: "nullable url invalid still fails",
+			data: map[string]interface{}{
+				"website": "not-a-url",
+			},
+			rules: Rules{
+				"website": {"nullable", "url"},
+			},
+			wantError:   true,
+			errorFields: []string{"website"},
+			errorRules:  map[string]string{"website": "url"},
+		},
+		{
+			name: "nullable url valid passes",
+			data: map[string]interface{}{
+				"website": "https://example.com",
+			},
+			rules: Rules{
+				"website": {"nullable", "url"},
+			},
+			wantError: false,
+		},
+		{
+			// Documented semantics: nullable wins over required when empty.
+			name: "required nullable empty passes (nullable wins)",
+			data: map[string]interface{}{
+				"website": "",
+			},
+			rules: Rules{
+				"website": {"required", "nullable", "url"},
+			},
+			wantError: false,
+		},
+		{
+			// Pipe-delimited token form must be detected on parsed rules.
+			name: "nullable pipe form empty passes",
+			data: map[string]interface{}{
+				"website": "",
+			},
+			rules: Rules{
+				"website": {"nullable|url"},
+			},
+			wantError: false,
+		},
+		{
+			name: "present dotted path present passes",
+			data: map[string]interface{}{
+				"address": map[string]interface{}{"city": "Berlin"},
+			},
+			rules: Rules{
+				"address.city": {"present"},
+			},
+			wantError: false,
+		},
+		{
+			name: "present dotted path nil leaf passes",
+			data: map[string]interface{}{
+				"address": map[string]interface{}{"city": nil},
+			},
+			rules: Rules{
+				"address.city": {"present"},
+			},
+			wantError: false,
+		},
+		{
+			name: "present dotted path missing leaf fails",
+			data: map[string]interface{}{
+				"address": map[string]interface{}{"zip": "10115"},
+			},
+			rules: Rules{
+				"address.city": {"present"},
+			},
+			wantError:   true,
+			errorFields: []string{"address.city"},
+			errorRules:  map[string]string{"address.city": "present"},
+		},
+		{
+			name: "present dotted path missing intermediate fails",
+			data: map[string]interface{}{
+				"name": "John",
+			},
+			rules: Rules{
+				"address.city": {"present"},
+			},
+			wantError:   true,
+			errorFields: []string{"address.city"},
+			errorRules:  map[string]string{"address.city": "present"},
+		},
+		{
 			name: "alpha validation",
 			data: map[string]interface{}{
 				"name": "JohnDoe",

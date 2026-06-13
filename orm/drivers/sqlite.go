@@ -632,6 +632,37 @@ func (g *SQLiteGrammar) CompileCreateTable(name string, table *Table) string {
 	return sql.String()
 }
 
+// CompileCreateIndexes compiles each Table.Index into a standalone SQLite
+// CREATE [UNIQUE] INDEX statement. SQLite has no inline INDEX clause inside
+// CREATE TABLE, so CreateTableWith runs these after the table statement.
+func (g *SQLiteGrammar) CompileCreateIndexes(name string, table *Table) []string {
+	if len(table.Indexes) == 0 {
+		return nil
+	}
+	stmts := make([]string, 0, len(table.Indexes))
+	for _, index := range table.Indexes {
+		var sql strings.Builder
+		sql.WriteString("CREATE ")
+		if index.Unique {
+			sql.WriteString("UNIQUE ")
+		}
+		sql.WriteString("INDEX ")
+		sql.WriteString(g.QuoteIdentifier(index.Name))
+		sql.WriteString(" ON ")
+		sql.WriteString(g.QuoteIdentifier(name))
+		sql.WriteString(" (")
+		for j, col := range index.Columns {
+			if j > 0 {
+				sql.WriteString(", ")
+			}
+			sql.WriteString(g.QuoteIdentifier(col))
+		}
+		sql.WriteString(")")
+		stmts = append(stmts, sql.String())
+	}
+	return stmts
+}
+
 // CompileDropTable compiles a DROP TABLE query
 func (g *SQLiteGrammar) CompileDropTable(name string) string {
 	return fmt.Sprintf("DROP TABLE IF EXISTS %s", g.QuoteIdentifier(name))

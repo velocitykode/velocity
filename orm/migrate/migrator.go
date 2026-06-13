@@ -12,9 +12,11 @@ import (
 )
 
 // migrationLockKey is a fixed 64-bit integer used with pg_advisory_lock.
-// Any constant works as long as it is stable across runners; this value
-// is the FNV-1a hash of "velocity.migrate.lock" (precomputed) and is
-// highly unlikely to collide with user-defined advisory lock keys.
+// Any constant works as long as it is stable across runners; this value is
+// the eight ASCII bytes of "velmigra" ('v'=0x76, 'e'=0x65, 'l'=0x6c,
+// 'm'=0x6d, 'i'=0x69, 'g'=0x67, 'r'=0x72, 'a'=0x61) packed big-endian into
+// an int64. It is readable in pg_locks and unlikely to collide with
+// user-defined advisory lock keys.
 const migrationLockKey int64 = 0x76656c6d69677261 // "velmigra" as bytes
 
 // migrationsLockTableName is the name of the helper row used for MySQL and
@@ -42,6 +44,15 @@ type Migrator struct {
 	// pick any connection from the pool, which is fine for drivers
 	// whose locks are not session-scoped (MySQL row-lock tx, SQLite CAS row).
 	conn *sql.Conn
+
+	// tx is an optional active per-migration transaction. When set,
+	// execContext/queryContext/queryRowContext route through it ahead of
+	// conn and db so the migration body, the re-entrant DDL helpers it
+	// invokes, and the recordMigration/removeMigration bookkeeping all run
+	// inside the same transaction. Only the Postgres path populates this
+	// (transactional DDL on the pinned lock conn); see runMigrationUp. It
+	// is set for the duration of a single migration and cleared afterward.
+	tx *sql.Tx
 
 	// lockMu serializes lock acquire/release on this Migrator instance and
 	// guards lockDepth + lockRelease. The migration lock itself is held by
@@ -109,11 +120,15 @@ func (m *Migrator) exec(sql string) error {
 	return err
 }
 
-// execContext routes an Exec through the pinned *sql.Conn when present,
-// falling back to the pooled *sql.DB. All migration SQL that may run
-// while a session-scoped lock is held must go through this helper so
-// the lock and the work share the same backend connection.
+// execContext routes an Exec through the active per-migration transaction
+// when present, then the pinned *sql.Conn, then the pooled *sql.DB. All
+// migration SQL that may run while a session-scoped lock or a wrapping
+// transaction is in effect must go through this helper so the lock, the
+// transaction, and the work share the same backend connection.
 func (m *Migrator) execContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	if m.tx != nil {
+		return m.tx.ExecContext(ctx, query, args...)
+	}
 	if m.conn != nil {
 		return m.conn.ExecContext(ctx, query, args...)
 	}
@@ -122,6 +137,9 @@ func (m *Migrator) execContext(ctx context.Context, query string, args ...any) (
 
 // queryContext mirrors execContext for SELECT statements that return rows.
 func (m *Migrator) queryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	if m.tx != nil {
+		return m.tx.QueryContext(ctx, query, args...)
+	}
 	if m.conn != nil {
 		return m.conn.QueryContext(ctx, query, args...)
 	}
@@ -130,6 +148,9 @@ func (m *Migrator) queryContext(ctx context.Context, query string, args ...any) 
 
 // queryRowContext mirrors execContext for single-row SELECT statements.
 func (m *Migrator) queryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	if m.tx != nil {
+		return m.tx.QueryRowContext(ctx, query, args...)
+	}
 	if m.conn != nil {
 		return m.conn.QueryRowContext(ctx, query, args...)
 	}
@@ -146,12 +167,24 @@ func (m *Migrator) SetMigrationsPath(path string) {
 // Locking strategy:
 //   - Postgres: pg_advisory_lock(migrationLockKey), session-scoped lock
 //     released via pg_advisory_unlock when Up returns.
-//   - MySQL/SQLite: a dedicated single-row "migrations_lock" table is
-//     created on demand and acquired via SELECT ... FOR UPDATE inside a
-//     transaction that is held for the duration of Up. Releasing is as
-//     simple as rolling back (on error) or committing (on success) the
-//     lock transaction. SQLite serializes writes at the database level;
-//     acquiring the row lock is effectively equivalent.
+//   - MySQL: a dedicated single-row "migrations_lock" table is created on
+//     demand and acquired via SELECT ... FOR UPDATE inside a transaction
+//     held for the duration of Up. Releasing is as simple as committing
+//     (on success) or rolling back (on error) the lock transaction.
+//   - SQLite: the same single-row "migrations_lock" table is claimed with
+//     an atomic compare-and-set UPDATE rather than an open transaction,
+//     because SQLite's single-writer model would deadlock the migration
+//     body against a held lock transaction. A crashed holder is recovered
+//     via the row's locked_at timestamp (see sqliteAcquireLock).
+//
+// Per-migration transactions: on Postgres, where DDL is transactional,
+// each migration body and its bookkeeping row are wrapped in one
+// transaction on the pinned lock connection (see runMigrationUp), so a
+// mid-migration failure cannot leave a half-applied migration recorded as
+// applied. MySQL DDL auto-commits each statement, so a wrapping
+// transaction would be misleading and is deliberately omitted; SQLite is
+// left unwrapped to avoid nesting against sqliteRebuildWithChecks, which
+// manages its own connection, PRAGMA foreign_keys toggle, and transaction.
 //
 // When the lock cannot be acquired (e.g. network partition), Up returns
 // the underlying error. When it can be acquired but has already been
@@ -271,16 +304,59 @@ func (m *Migrator) runUp() error {
 
 	// Execute each pending migration
 	for _, migration := range pending {
-		if err := migration.Up(m); err != nil {
+		if err := m.runMigrationUp(migration, nextBatch); err != nil {
 			return err // Stop on first failure
-		}
-
-		// Record successful migration
-		if err := m.recordMigration(migration.Version, nextBatch); err != nil {
-			return err
 		}
 	}
 
+	return nil
+}
+
+// useTx reports whether the active driver and mode get per-migration
+// transactions. Only Postgres qualifies: its DDL is transactional and the
+// session-scoped advisory lock already pins a connection (m.conn) the
+// transaction can live on. MySQL DDL auto-commits, so a wrapping
+// transaction is misleading; SQLite is left unwrapped to avoid nesting
+// against sqliteRebuildWithChecks (its own conn/PRAGMA/transaction).
+// Pretend mode collects SQL without a pinned connection, so it never wraps.
+func (m *Migrator) useTx() bool {
+	return !m.pretend && m.driver == "postgres" && m.conn != nil
+}
+
+// runMigrationUp applies one migration and records it in the migrations
+// table. On Postgres the body and its bookkeeping INSERT run inside a single
+// transaction on the pinned lock connection, so a mid-migration failure
+// rolls back both: the schema change is undone and the migration is NOT
+// recorded as applied. The re-entrant DDL helpers the body invokes route
+// their SQL through m.tx (see execContext), joining the same transaction.
+// On every other driver/mode the body and record run unwrapped, exactly as
+// before (see useTx for why).
+func (m *Migrator) runMigrationUp(migration Migration, batch int) error {
+	if !m.useTx() {
+		if err := migration.Up(m); err != nil {
+			return err
+		}
+		return m.recordMigration(migration.Version, batch)
+	}
+
+	tx, err := m.conn.BeginTx(context.Background(), nil)
+	if err != nil {
+		return fmt.Errorf("velocity/orm: begin migration %s tx: %w", migration.Version, err)
+	}
+	m.tx = tx
+	defer func() { m.tx = nil }()
+
+	if err := migration.Up(m); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := m.recordMigration(migration.Version, batch); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("velocity/orm: commit migration %s: %w", migration.Version, err)
+	}
 	return nil
 }
 
@@ -337,14 +413,17 @@ func (m *Migrator) acquireMigrationLock() (release func(), err error) {
 		if err != nil {
 			return nil, fmt.Errorf("velocity/orm: begin lock tx: %w", err)
 		}
+		lockTable := quoteIdentifier(migrationsLockTableName, m.driver)
+		colID := quoteIdentifier("id", m.driver)
+		colLocked := quoteIdentifier("locked", m.driver)
 		if _, err := tx.Exec(
-			"INSERT IGNORE INTO " + quoteIdentifier(migrationsLockTableName, m.driver) + " (id, locked) VALUES (1, 0)",
+			"INSERT IGNORE INTO " + lockTable + " (" + colID + ", " + colLocked + ") VALUES (1, 0)",
 		); err != nil {
 			_ = tx.Rollback()
 			return nil, fmt.Errorf("velocity/orm: seed lock row: %w", err)
 		}
 		if _, err := tx.Exec(
-			"SELECT id FROM " + quoteIdentifier(migrationsLockTableName, m.driver) + " WHERE id = 1 FOR UPDATE",
+			"SELECT " + colID + " FROM " + lockTable + " WHERE " + colID + " = 1 FOR UPDATE",
 		); err != nil {
 			_ = tx.Rollback()
 			return nil, fmt.Errorf("velocity/orm: select for update lock: %w", err)
@@ -366,8 +445,12 @@ func (m *Migrator) acquireMigrationLock() (release func(), err error) {
 			return nil, err
 		}
 		return func() {
+			lockTable := quoteIdentifier(migrationsLockTableName, m.driver)
+			colLocked := quoteIdentifier("locked", m.driver)
+			colLockedAt := quoteIdentifier("locked_at", m.driver)
+			colID := quoteIdentifier("id", m.driver)
 			_, _ = m.db.Exec(
-				"UPDATE " + quoteIdentifier(migrationsLockTableName, m.driver) + " SET locked = 0 WHERE id = 1",
+				"UPDATE " + lockTable + " SET " + colLocked + " = 0, " + colLockedAt + " = 0 WHERE " + colID + " = 1",
 			)
 		}, nil
 
@@ -382,10 +465,13 @@ func (m *Migrator) acquireMigrationLock() (release func(), err error) {
 // exist. Safe to call concurrently: the SELECT guard keeps the INSERT
 // idempotent even when two callers race.
 func (m *Migrator) seedLockRow() error {
+	lockTable := quoteIdentifier(migrationsLockTableName, m.driver)
+	colID := quoteIdentifier("id", m.driver)
+	colLocked := quoteIdentifier("locked", m.driver)
 	_, err := m.db.Exec(
-		"INSERT INTO " + quoteIdentifier(migrationsLockTableName, m.driver) +
-			" (id, locked) SELECT 1, 0 WHERE NOT EXISTS (SELECT 1 FROM " +
-			quoteIdentifier(migrationsLockTableName, m.driver) + " WHERE id = 1)",
+		"INSERT INTO " + lockTable +
+			" (" + colID + ", " + colLocked + ") SELECT 1, 0 WHERE NOT EXISTS (SELECT 1 FROM " +
+			lockTable + " WHERE " + colID + " = 1)",
 	)
 	if err != nil {
 		return fmt.Errorf("velocity/orm: seed lock row: %w", err)
@@ -393,23 +479,46 @@ func (m *Migrator) seedLockRow() error {
 	return nil
 }
 
-// sqliteAcquireLock performs a bounded compare-and-set spin to acquire
-// the migration lock. The UPDATE is atomic at the row level in SQLite,
-// so the caller whose UPDATE affects 1 row owns the lock; all others
-// see 0 and retry after a short sleep.
+// sqliteLockStaleAfter is how long a held SQLite migration lock may sit
+// before a new runner treats it as abandoned and steals it. The row-CAS
+// release (acquireMigrationLock's sqlite branch) is best-effort: a runner
+// that crashes after marking the row locked never clears it, which without
+// recovery would brick every future migration on that database. The cutoff
+// is deliberately generous so a long-but-live migration is never stolen out
+// from under itself; it only needs to outlast the longest plausible
+// migration, not be tight.
+const sqliteLockStaleAfter = 10 * time.Minute
+
+// sqliteAcquireLock performs a bounded compare-and-set spin to acquire the
+// migration lock. The UPDATE is atomic at the row level in SQLite, so the
+// caller whose UPDATE affects 1 row owns the lock; all others see 0 and
+// retry after a short sleep.
 //
-// Timeout is generous (30s) to accommodate long-running migrations
-// without pathological lockups.
+// A lock is claimable when it is free (locked = 0) OR when it is held but
+// its locked_at timestamp is older than sqliteLockStaleAfter, which steals
+// a lock abandoned by a crashed holder. Acquiring stamps locked_at with the
+// current time so the holder's own freshness is tracked while it works.
+//
+// Timeout is generous (30s) to accommodate long-running migrations without
+// pathological lockups.
 func (m *Migrator) sqliteAcquireLock() error {
 	const (
 		attemptCap    = 600
 		backoffMs     = 50
 		timeoutErrFmt = "velocity/orm: sqlite migration lock timeout after %d attempts"
 	)
+	table := quoteIdentifier(migrationsLockTableName, m.driver)
+	colID := quoteIdentifier("id", m.driver)
+	colLocked := quoteIdentifier("locked", m.driver)
+	colLockedAt := quoteIdentifier("locked_at", m.driver)
 	for i := 0; i < attemptCap; i++ {
+		now := time.Now().Unix()
+		staleCutoff := now - int64(sqliteLockStaleAfter/time.Second)
 		res, err := m.db.Exec(
-			"UPDATE " + quoteIdentifier(migrationsLockTableName, m.driver) +
-				" SET locked = 1 WHERE id = 1 AND locked = 0",
+			"UPDATE "+table+
+				" SET "+colLocked+" = 1, "+colLockedAt+" = ? WHERE "+colID+
+				" = 1 AND ("+colLocked+" = 0 OR "+colLockedAt+" < ?)",
+			now, staleCutoff,
 		)
 		if err != nil {
 			return fmt.Errorf("velocity/orm: acquire lock row: %w", err)
@@ -427,19 +536,73 @@ func (m *Migrator) sqliteAcquireLock() error {
 }
 
 // ensureLockTable creates the single-row table used by the MySQL and
-// SQLite advisory-lock strategies. Safe to call concurrently.
+// SQLite advisory-lock strategies. Safe to call concurrently. On SQLite it
+// also backfills the locked_at crash-recovery column on tables created
+// before that column existed.
 func (m *Migrator) ensureLockTable() error {
 	var createSQL string
+	lockTable := quoteIdentifier(migrationsLockTableName, m.driver)
+	colID := quoteIdentifier("id", m.driver)
+	colLocked := quoteIdentifier("locked", m.driver)
+	colLockedAt := quoteIdentifier("locked_at", m.driver)
 	switch m.driver {
 	case "mysql":
-		createSQL = "CREATE TABLE IF NOT EXISTS " + quoteIdentifier(migrationsLockTableName, m.driver) + " (id INT PRIMARY KEY, locked TINYINT NOT NULL DEFAULT 0) ENGINE=InnoDB"
+		createSQL = "CREATE TABLE IF NOT EXISTS " + lockTable + " (" + colID + " INT PRIMARY KEY, " + colLocked + " TINYINT NOT NULL DEFAULT 0) ENGINE=InnoDB"
 	case "sqlite":
-		createSQL = "CREATE TABLE IF NOT EXISTS " + quoteIdentifier(migrationsLockTableName, m.driver) + " (id INTEGER PRIMARY KEY, locked INTEGER NOT NULL DEFAULT 0)"
+		createSQL = "CREATE TABLE IF NOT EXISTS " + lockTable + " (" + colID + " INTEGER PRIMARY KEY, " + colLocked + " INTEGER NOT NULL DEFAULT 0, " + colLockedAt + " INTEGER NOT NULL DEFAULT 0)"
 	default:
 		return nil
 	}
 	if _, err := m.db.Exec(createSQL); err != nil {
 		return fmt.Errorf("velocity/orm: ensure lock table: %w", err)
+	}
+	if m.driver == "sqlite" {
+		if err := m.ensureSqliteLockedAtColumn(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ensureSqliteLockedAtColumn backfills the locked_at column on a
+// migrations_lock table that predates crash recovery. New tables already
+// declare it (see ensureLockTable); deployments created before this change
+// have only (id, locked), so we probe with PRAGMA table_info and ADD COLUMN
+// when it is missing. The column is NOT NULL DEFAULT 0, a constant default
+// SQLite accepts on ADD COLUMN, so every pre-existing row gets locked_at = 0
+// (epoch). The stale-steal predicate in sqliteAcquireLock treats that as
+// immediately reclaimable: any lock still held at upgrade time is assumed
+// abandoned, recovering a row a crashed old runner left stuck at locked = 1.
+func (m *Migrator) ensureSqliteLockedAtColumn() error {
+	table := quoteIdentifier(migrationsLockTableName, m.driver)
+	rows, err := m.db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return fmt.Errorf("velocity/orm: inspect lock table: %w", err)
+	}
+	hasLockedAt := false
+	for rows.Next() {
+		var (
+			cid, notnull, pk int
+			name, ctype      string
+			dflt             sql.NullString
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return fmt.Errorf("velocity/orm: scan lock table info: %w", err)
+		}
+		if name == "locked_at" {
+			hasLockedAt = true
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("velocity/orm: inspect lock table: %w", err)
+	}
+	if hasLockedAt {
+		return nil
+	}
+	if _, err := m.db.Exec("ALTER TABLE " + table + " ADD COLUMN " + quoteIdentifier("locked_at", m.driver) + " INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return fmt.Errorf("velocity/orm: add locked_at column: %w", err)
 	}
 	return nil
 }
@@ -490,19 +653,49 @@ func (m *Migrator) runDown(steps int) error {
 				return errors.New("migration " + version + " does not have a Down method")
 			}
 
-			if err := migration.Down(m); err != nil {
+			if err := m.runMigrationDown(*migration, version); err != nil {
 				return err // Stop on first failure
-			}
-
-			// Remove migration record
-			if err := m.removeMigration(version); err != nil {
-				return err
 			}
 		}
 
 		lastBatch--
 	}
 
+	return nil
+}
+
+// runMigrationDown rolls back one migration and deletes its record. Mirrors
+// runMigrationUp: on Postgres the Down() body and its bookkeeping DELETE run
+// in one transaction on the pinned lock connection, so a failed rollback
+// leaves neither a partially-reverted schema nor a dangling migrations row;
+// other drivers/modes run unwrapped (see useTx). The caller guarantees a
+// non-nil Down.
+func (m *Migrator) runMigrationDown(migration Migration, version string) error {
+	if !m.useTx() {
+		if err := migration.Down(m); err != nil {
+			return err
+		}
+		return m.removeMigration(version)
+	}
+
+	tx, err := m.conn.BeginTx(context.Background(), nil)
+	if err != nil {
+		return fmt.Errorf("velocity/orm: begin rollback %s tx: %w", version, err)
+	}
+	m.tx = tx
+	defer func() { m.tx = nil }()
+
+	if err := migration.Down(m); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := m.removeMigration(version); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("velocity/orm: commit rollback %s: %w", version, err)
+	}
 	return nil
 }
 
@@ -1098,17 +1291,14 @@ func (c *ColumnBuilder) ToSQL() (string, error) {
 	// Column name
 	sql = quoteIdentifier(c.name, c.driver) + " "
 
-	// Type mapping based on driver
-	switch c.driver {
-	case "sqlite":
-		sql += c.toSQLiteType()
-	case "postgres":
-		sql += c.toPostgresType()
-	case "mysql":
-		sql += c.toMySQLType()
-	default:
-		sql += c.toSQLiteType()
-	}
+	// Type mapping based on driver. ColumnBuilder drives ALTER TABLE ADD COLUMN,
+	// so it uses the add-column context (SQLite omits the managed timestamp
+	// default). It carries no precision/scale/primary-key/auto-increment state,
+	// so it passes the no-precision sentinel (decimal therefore degrades to
+	// TEXT) and the canonical mapping reproduces the builder's historical output
+	// exactly. Its own hasDefault flag (not a Default==nil check) gates the
+	// managed default, preserving the Default(nil) edge.
+	sql += sqlColumnType(c.driver, c.colType, c.length, decimalPrecisionUnset, 0, c.dims, c.nullable, c.hasDefault, ddlAddColumn)
 
 	// Constraints
 	if !c.nullable {
@@ -1124,114 +1314,6 @@ func (c *ColumnBuilder) ToSQL() (string, error) {
 	}
 
 	return sql, nil
-}
-
-func (c *ColumnBuilder) toSQLiteType() string {
-	switch c.colType {
-	case "integer":
-		return "INTEGER"
-	case "biginteger":
-		return "INTEGER"
-	case "smallinteger":
-		return "INTEGER"
-	case "string":
-		return fmt.Sprintf("VARCHAR(%d)", c.length)
-	case "text":
-		return "TEXT"
-	case "binary":
-		return "BLOB"
-	case "boolean":
-		return "INTEGER"
-	case "timestamp", "timestamptz":
-		// No managed default here: SQLite's ALTER TABLE ADD COLUMN rejects a
-		// non-constant default (CURRENT_TIMESTAMP) and also rejects NOT NULL
-		// without a constant default, so a non-null timestamp simply cannot be
-		// added to an existing SQLite table. Postgres/MySQL accept a volatile
-		// default on ADD COLUMN, so they get the managed one (see those
-		// type methods).
-		return "DATETIME"
-	case "date":
-		return "DATE"
-	case "uuid":
-		return "TEXT"
-	case "json", "jsonb":
-		return "TEXT"
-	default:
-		return "TEXT"
-	}
-}
-
-func (c *ColumnBuilder) toPostgresType() string {
-	switch c.colType {
-	case "integer":
-		return "INTEGER"
-	case "biginteger":
-		return "BIGINT"
-	case "smallinteger":
-		return "SMALLINT"
-	case "string":
-		return fmt.Sprintf("VARCHAR(%d)", c.length)
-	case "text":
-		return "TEXT"
-	case "binary":
-		return "BYTEA"
-	case "boolean":
-		return "BOOLEAN"
-	case "timestamp":
-		if !c.nullable && !c.hasDefault {
-			return "TIMESTAMP DEFAULT NOW()"
-		}
-		return "TIMESTAMP"
-	case "timestamptz":
-		if !c.nullable && !c.hasDefault {
-			return "TIMESTAMPTZ DEFAULT NOW()"
-		}
-		return "TIMESTAMPTZ"
-	case "date":
-		return "DATE"
-	case "uuid":
-		return "UUID"
-	case "vector":
-		return fmt.Sprintf("vector(%d)", c.dims)
-	case "json":
-		return "JSON"
-	case "jsonb":
-		return "JSONB"
-	default:
-		return "TEXT"
-	}
-}
-
-func (c *ColumnBuilder) toMySQLType() string {
-	switch c.colType {
-	case "integer":
-		return "INT"
-	case "biginteger":
-		return "BIGINT"
-	case "smallinteger":
-		return "SMALLINT"
-	case "string":
-		return fmt.Sprintf("VARCHAR(%d)", c.length)
-	case "text":
-		return "TEXT"
-	case "binary":
-		return "LONGBLOB"
-	case "boolean":
-		return "BOOLEAN"
-	case "timestamp", "timestamptz":
-		if !c.nullable && !c.hasDefault {
-			return "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
-		}
-		return "TIMESTAMP"
-	case "date":
-		return "DATE"
-	case "uuid":
-		return "CHAR(36)"
-	case "json", "jsonb":
-		return "JSON"
-	default:
-		return "TEXT"
-	}
 }
 
 // TableBuilder provides a fluent API for defining database tables
@@ -1562,7 +1644,12 @@ func (t *TableBuilder) Timestamps() *TableBuilder {
 		Nullable: false,
 	}
 	t.columns = append(t.columns, createdAt, updatedAt)
-	// Don't set lastColumn for Timestamps since it adds multiple columns
+	// Clear lastColumn: this adds two columns, so a following modifier
+	// (Unique/Nullable/Default/Primary) has no single column to attach to.
+	// nil makes those modifiers no-op rather than silently mutate the
+	// column added before Timestamps (whose pointer may also be stale after
+	// the append above reallocates the backing array).
+	t.lastColumn = nil
 	return t
 }
 
@@ -1580,7 +1667,9 @@ func (t *TableBuilder) TimestampsTz() *TableBuilder {
 		Nullable: false,
 	}
 	t.columns = append(t.columns, createdAt, updatedAt)
-	// Don't set lastColumn since this adds multiple columns.
+	// Clear lastColumn: this adds two columns, so a following modifier has no
+	// single column to attach to (see Timestamps for the full rationale).
+	t.lastColumn = nil
 	return t
 }
 
@@ -1705,52 +1794,19 @@ func (t *TableBuilder) toSQLiteSyntax() string {
 	for i, col := range t.columns {
 		sql += "  " + quoteIdentifier(col.Name, t.driver) + " "
 
-		// Type mapping
-		switch col.Type {
-		case "integer":
-			if col.PrimaryKey && col.AutoIncrement {
-				sql += "INTEGER PRIMARY KEY AUTOINCREMENT"
-			} else {
-				sql += "INTEGER"
-				if col.PrimaryKey && len(t.compositePrimaryKey) == 0 {
-					sql += " PRIMARY KEY"
-				}
-			}
-		case "biginteger":
-			// SQLite uses INTEGER for all int sizes; its rowid PK is 64-bit.
-			if col.PrimaryKey && col.AutoIncrement {
-				sql += "INTEGER PRIMARY KEY AUTOINCREMENT"
-			} else {
-				sql += "INTEGER"
-			}
-		case "smallinteger":
-			sql += "INTEGER" // SQLite has one integer storage class
-		case "string":
-			sql += "VARCHAR(" + fmt.Sprintf("%d", col.Length) + ")"
-		case "text":
-			sql += "TEXT"
-		case "binary":
-			sql += "BLOB"
-		case "boolean":
-			sql += "INTEGER" // SQLite uses 0/1 for boolean
-		case "timestamp", "timestamptz":
-			sql += "DATETIME" // SQLite has no zone-aware type
-			// Managed default only when the caller did not set one; an
-			// explicit Default/DefaultRaw is emitted by the generic block.
-			if !col.Nullable && col.Default == nil {
-				sql += " DEFAULT CURRENT_TIMESTAMP"
-			}
-		case "date":
-			sql += "DATE"
-		case "uuid":
-			sql += "TEXT" // SQLite doesn't have native UUID, use TEXT
-			if col.PrimaryKey && len(t.compositePrimaryKey) == 0 {
+		// Type mapping. The plain type token (and managed timestamp default)
+		// comes from the canonical sqlColumnType; only the structural inline
+		// PRIMARY KEY / AUTOINCREMENT placement, which differs per call site,
+		// stays here.
+		switch {
+		case col.PrimaryKey && col.AutoIncrement && (col.Type == "integer" || col.Type == "biginteger"):
+			// SQLite stores every int width as INTEGER; its rowid PK is 64-bit.
+			sql += "INTEGER PRIMARY KEY AUTOINCREMENT"
+		default:
+			sql += sqlColumnType("sqlite", col.Type, col.Length, col.Precision, col.Scale, col.Dimensions, col.Nullable, col.Default != nil, ddlCreateTable)
+			if col.PrimaryKey && len(t.compositePrimaryKey) == 0 && (col.Type == "integer" || col.Type == "uuid") {
 				sql += " PRIMARY KEY"
 			}
-		case "decimal":
-			sql += fmt.Sprintf("NUMERIC(%d,%d)", col.Precision, col.Scale)
-		case "json", "jsonb":
-			sql += "TEXT" // SQLite has no native JSON type
 		}
 
 		// Constraints
@@ -1793,59 +1849,22 @@ func (t *TableBuilder) toPostgresSyntax() string {
 	for i, col := range t.columns {
 		sql += "  " + quoteIdentifier(col.Name, t.driver) + " "
 
-		// Type mapping
-		switch col.Type {
-		case "integer":
-			if col.PrimaryKey && col.AutoIncrement {
-				sql += "SERIAL PRIMARY KEY"
-			} else {
-				sql += "INTEGER"
-				if col.PrimaryKey && len(t.compositePrimaryKey) == 0 {
-					sql += " PRIMARY KEY"
-				}
+		// Type mapping. The plain type token (and managed timestamp default)
+		// comes from the canonical sqlColumnType; only the structural inline
+		// SERIAL / BIGSERIAL and UUID PRIMARY KEY forms, which differ per call
+		// site, stay here.
+		switch {
+		case col.Type == "integer" && col.PrimaryKey && col.AutoIncrement:
+			sql += "SERIAL PRIMARY KEY"
+		case col.Type == "biginteger" && col.PrimaryKey && col.AutoIncrement:
+			sql += "BIGSERIAL PRIMARY KEY"
+		case col.Type == "uuid" && col.PrimaryKey && len(t.compositePrimaryKey) == 0:
+			sql += "UUID PRIMARY KEY DEFAULT gen_random_uuid()"
+		default:
+			sql += sqlColumnType("postgres", col.Type, col.Length, col.Precision, col.Scale, col.Dimensions, col.Nullable, col.Default != nil, ddlCreateTable)
+			if col.Type == "integer" && col.PrimaryKey && len(t.compositePrimaryKey) == 0 {
+				sql += " PRIMARY KEY"
 			}
-		case "biginteger":
-			if col.PrimaryKey && col.AutoIncrement {
-				sql += "BIGSERIAL PRIMARY KEY"
-			} else {
-				sql += "BIGINT"
-			}
-		case "smallinteger":
-			sql += "SMALLINT"
-		case "string":
-			sql += "VARCHAR(" + fmt.Sprintf("%d", col.Length) + ")"
-		case "text":
-			sql += "TEXT"
-		case "binary":
-			sql += "BYTEA"
-		case "boolean":
-			sql += "BOOLEAN"
-		case "timestamp":
-			sql += "TIMESTAMP"
-			if !col.Nullable && col.Default == nil {
-				sql += " DEFAULT NOW()"
-			}
-		case "timestamptz":
-			sql += "TIMESTAMPTZ"
-			if !col.Nullable && col.Default == nil {
-				sql += " DEFAULT NOW()"
-			}
-		case "date":
-			sql += "DATE"
-		case "uuid":
-			if col.PrimaryKey && len(t.compositePrimaryKey) == 0 {
-				sql += "UUID PRIMARY KEY DEFAULT gen_random_uuid()"
-			} else {
-				sql += "UUID"
-			}
-		case "decimal":
-			sql += fmt.Sprintf("NUMERIC(%d,%d)", col.Precision, col.Scale)
-		case "vector":
-			sql += fmt.Sprintf("vector(%d)", col.Dimensions)
-		case "json":
-			sql += "JSON"
-		case "jsonb":
-			sql += "JSONB"
 		}
 
 		// Constraints (skip if already handled by SERIAL PRIMARY KEY or UUID PRIMARY KEY)
@@ -1890,52 +1909,22 @@ func (t *TableBuilder) toMySQLSyntax() string {
 	for i, col := range t.columns {
 		sql += "  " + quoteIdentifier(col.Name, t.driver) + " "
 
-		// Type mapping
-		switch col.Type {
-		case "integer":
-			if col.PrimaryKey && col.AutoIncrement {
-				sql += "INT AUTO_INCREMENT PRIMARY KEY"
-			} else {
-				sql += "INT"
-				if col.PrimaryKey && len(t.compositePrimaryKey) == 0 {
-					sql += " PRIMARY KEY"
-				}
+		// Type mapping. The plain type token (and managed timestamp default)
+		// comes from the canonical sqlColumnType; only the structural inline
+		// AUTO_INCREMENT and UUID PRIMARY KEY forms, which differ per call site,
+		// stay here.
+		switch {
+		case col.Type == "integer" && col.PrimaryKey && col.AutoIncrement:
+			sql += "INT AUTO_INCREMENT PRIMARY KEY"
+		case col.Type == "biginteger" && col.PrimaryKey && col.AutoIncrement:
+			sql += "BIGINT AUTO_INCREMENT PRIMARY KEY"
+		case col.Type == "uuid" && col.PrimaryKey && len(t.compositePrimaryKey) == 0:
+			sql += "CHAR(36) PRIMARY KEY"
+		default:
+			sql += sqlColumnType("mysql", col.Type, col.Length, col.Precision, col.Scale, col.Dimensions, col.Nullable, col.Default != nil, ddlCreateTable)
+			if col.Type == "integer" && col.PrimaryKey && len(t.compositePrimaryKey) == 0 {
+				sql += " PRIMARY KEY"
 			}
-		case "biginteger":
-			if col.PrimaryKey && col.AutoIncrement {
-				sql += "BIGINT AUTO_INCREMENT PRIMARY KEY"
-			} else {
-				sql += "BIGINT"
-			}
-		case "smallinteger":
-			sql += "SMALLINT"
-		case "string":
-			sql += "VARCHAR(" + fmt.Sprintf("%d", col.Length) + ")"
-		case "text":
-			sql += "TEXT"
-		case "binary":
-			sql += "LONGBLOB"
-		case "boolean":
-			sql += "BOOLEAN"
-		case "timestamp", "timestamptz":
-			// MySQL has no separate zone-aware type; TIMESTAMP is stored in
-			// UTC and converted per session time zone.
-			sql += "TIMESTAMP"
-			if !col.Nullable && col.Default == nil {
-				sql += " DEFAULT CURRENT_TIMESTAMP"
-			}
-		case "date":
-			sql += "DATE"
-		case "uuid":
-			if col.PrimaryKey && len(t.compositePrimaryKey) == 0 {
-				sql += "CHAR(36) PRIMARY KEY"
-			} else {
-				sql += "CHAR(36)"
-			}
-		case "decimal":
-			sql += fmt.Sprintf("DECIMAL(%d,%d)", col.Precision, col.Scale)
-		case "json", "jsonb":
-			sql += "JSON" // MySQL has no separate JSONB type
 		}
 
 		// Constraints (skip if already handled by AUTO_INCREMENT PRIMARY KEY or UUID PRIMARY KEY)
@@ -2001,14 +1990,7 @@ func columnToSQL(col Column, driver string) string {
 	var sql string
 	sql = quoteIdentifier(col.Name, driver) + " "
 
-	switch driver {
-	case "postgres":
-		sql += columnTypePostgres(col)
-	case "mysql":
-		sql += columnTypeMySQL(col)
-	default: // sqlite
-		sql += columnTypeSQLite(col)
-	}
+	sql += alterColumnType(col, driver)
 
 	// Skip constraints if already embedded in the type string (e.g. SERIAL PRIMARY KEY)
 	if col.PrimaryKey && col.AutoIncrement {
@@ -2031,137 +2013,208 @@ func columnToSQL(col Column, driver string) string {
 	return sql
 }
 
-func columnTypeSQLite(col Column) string {
-	switch col.Type {
-	case "integer":
-		if col.PrimaryKey && col.AutoIncrement {
-			return "INTEGER PRIMARY KEY AUTOINCREMENT"
+// ddlContext selects the DDL statement a column type is being rendered for. It
+// gates ONLY whether the framework-managed timestamp default is emitted; every
+// other token is identical across contexts.
+type ddlContext int
+
+const (
+	// ddlCreateTable renders a column for CREATE TABLE. A non-null timestamp
+	// with no explicit default receives the managed CURRENT_TIMESTAMP/NOW()
+	// default on every driver.
+	ddlCreateTable ddlContext = iota
+	// ddlAddColumn renders a column for ALTER TABLE ADD COLUMN. SQLite omits
+	// the managed timestamp default here: it rejects a volatile default (and
+	// rejects NOT NULL without a constant default) on ADD COLUMN, so a non-null
+	// timestamp simply cannot be backfilled on an existing SQLite table.
+	// Postgres/MySQL accept a volatile default on ADD COLUMN, so they still
+	// emit the managed one.
+	ddlAddColumn
+)
+
+// decimalPrecisionUnset is the precision a caller passes when it carries no
+// decimal precision/scale (the ColumnBuilder ADD COLUMN path). sqlColumnType
+// degrades such a decimal to TEXT, reproducing the builder's historical output.
+// Callers that carry real precision (TableBuilder, the Column ALTER paths) pass
+// it verbatim, so a precision-0 decimal still renders as NUMERIC/DECIMAL(0,0).
+const decimalPrecisionUnset = -1
+
+// sqlColumnType is the single source of truth mapping a semantic column type to
+// its driver-specific SQL type token, plus the framework-managed timestamp
+// default where the dialect and DDL context permit it. All column-DDL call
+// sites (ColumnBuilder.ToSQL, the CREATE TABLE TableBuilder.to*Syntax methods,
+// and the ALTER TABLE alterColumnType path) route through it so the type
+// vocabulary lives in exactly one place.
+//
+// It emits ONLY the type token and that one managed default. NOT NULL / UNIQUE /
+// explicit DEFAULT, and PRIMARY KEY / AUTOINCREMENT placement (SERIAL,
+// AUTO_INCREMENT, UUID PRIMARY KEY, ...), are assembled by callers, whose
+// constraint structure differs.
+//
+// hasDefault is the caller's own "an explicit default is set" predicate. The
+// builder passes its hasDefault flag; the Column paths pass col.Default != nil.
+// They are not interchangeable (Default(nil) sets the builder flag while leaving
+// the value nil), so each site passes its exact predicate to preserve that edge.
+//
+// A decimal whose precision is the decimalPrecisionUnset sentinel degrades to
+// the default token (TEXT); this reproduces the builder path, which carries no
+// precision/scale and historically rendered such columns as TEXT. Callers that
+// carry real precision pass it through verbatim, so NUMERIC/DECIMAL(0,0) is
+// still emitted for an explicit precision-0 decimal.
+//
+// This is unrelated to the schema-introspection get*Type helpers in
+// orm/drivers, which translate driver SQL type names (not these semantic names)
+// in the reverse direction; the two intentionally do not share a mapping.
+func sqlColumnType(driver, colType string, length, precision, scale, dims int, nullable, hasDefault bool, ctx ddlContext) string {
+	// The managed timestamp default applies to a non-null timestamp with no
+	// explicit default, on every driver/context except SQLite ADD COLUMN.
+	// Unknown drivers map through the SQLite (default) type branch below, so the
+	// suppression must cover any non-postgres/mysql driver, not just "sqlite".
+	managedTimestamp := !nullable && !hasDefault && !(ctx == ddlAddColumn && driver != "postgres" && driver != "mysql")
+
+	switch driver {
+	case "postgres":
+		switch colType {
+		case "integer":
+			return "INTEGER"
+		case "biginteger":
+			return "BIGINT"
+		case "smallinteger":
+			return "SMALLINT"
+		case "string":
+			return fmt.Sprintf("VARCHAR(%d)", length)
+		case "text":
+			return "TEXT"
+		case "binary":
+			return "BYTEA"
+		case "boolean":
+			return "BOOLEAN"
+		case "timestamp":
+			if managedTimestamp {
+				return "TIMESTAMP DEFAULT NOW()"
+			}
+			return "TIMESTAMP"
+		case "timestamptz":
+			if managedTimestamp {
+				return "TIMESTAMPTZ DEFAULT NOW()"
+			}
+			return "TIMESTAMPTZ"
+		case "date":
+			return "DATE"
+		case "uuid":
+			return "UUID"
+		case "decimal":
+			if precision >= 0 {
+				return fmt.Sprintf("NUMERIC(%d,%d)", precision, scale)
+			}
+		case "vector":
+			return fmt.Sprintf("vector(%d)", dims)
+		case "json":
+			return "JSON"
+		case "jsonb":
+			return "JSONB"
 		}
-		return "INTEGER"
-	case "biginteger":
-		return "INTEGER"
-	case "smallinteger":
-		return "INTEGER"
-	case "string":
-		return fmt.Sprintf("VARCHAR(%d)", col.Length)
-	case "text":
 		return "TEXT"
-	case "binary":
-		return "BLOB"
-	case "boolean":
-		return "INTEGER"
-	case "timestamp", "timestamptz":
-		s := "DATETIME"
-		if !col.Nullable && col.Default == nil {
-			s += " DEFAULT CURRENT_TIMESTAMP"
+
+	case "mysql":
+		switch colType {
+		case "integer":
+			return "INT"
+		case "biginteger":
+			return "BIGINT"
+		case "smallinteger":
+			return "SMALLINT"
+		case "string":
+			return fmt.Sprintf("VARCHAR(%d)", length)
+		case "text":
+			return "TEXT"
+		case "binary":
+			return "LONGBLOB"
+		case "boolean":
+			return "BOOLEAN"
+		case "timestamp", "timestamptz":
+			// MySQL has no separate zone-aware type; TIMESTAMP is stored in UTC
+			// and converted per session time zone.
+			if managedTimestamp {
+				return "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+			}
+			return "TIMESTAMP"
+		case "date":
+			return "DATE"
+		case "uuid":
+			return "CHAR(36)"
+		case "decimal":
+			if precision >= 0 {
+				return fmt.Sprintf("DECIMAL(%d,%d)", precision, scale)
+			}
+		case "json", "jsonb":
+			return "JSON" // MySQL has no separate JSONB type
 		}
-		return s
-	case "date":
-		return "DATE"
-	case "uuid":
-		if col.PrimaryKey {
-			return "TEXT PRIMARY KEY"
+		return "TEXT"
+
+	default: // sqlite
+		switch colType {
+		case "integer", "biginteger", "smallinteger", "boolean":
+			// SQLite has one integer storage class and uses 0/1 for boolean.
+			return "INTEGER"
+		case "string":
+			return fmt.Sprintf("VARCHAR(%d)", length)
+		case "text":
+			return "TEXT"
+		case "binary":
+			return "BLOB"
+		case "timestamp", "timestamptz":
+			if managedTimestamp { // SQLite has no zone-aware type
+				return "DATETIME DEFAULT CURRENT_TIMESTAMP"
+			}
+			return "DATETIME"
+		case "date":
+			return "DATE"
+		case "uuid":
+			return "TEXT" // SQLite has no native UUID type
+		case "decimal":
+			if precision >= 0 {
+				return fmt.Sprintf("NUMERIC(%d,%d)", precision, scale)
+			}
 		}
-		return "TEXT"
-	case "decimal":
-		return fmt.Sprintf("NUMERIC(%d,%d)", col.Precision, col.Scale)
-	case "json", "jsonb":
-		return "TEXT"
-	default:
-		return "TEXT"
+		return "TEXT" // SQLite has no native JSON type either
 	}
 }
 
-func columnTypePostgres(col Column) string {
-	switch col.Type {
-	case "integer":
-		if col.PrimaryKey && col.AutoIncrement {
+// alterColumnType builds the type token for an ALTER TABLE ADD COLUMN column.
+// It keeps the inline PRIMARY KEY / AUTOINCREMENT forms that columnToSQL's
+// constraint-skip guards depend on (these differ per driver), and routes every
+// other type through the canonical sqlColumnType under the add-column context.
+// That keeps Table() (which builds ALTER TABLE ADD COLUMN via columnToSQL) and
+// the ColumnBuilder AddColumn path emitting identical column SQL: SQLite gets no
+// managed timestamp default (it rejects a volatile default and NOT NULL without
+// a constant default on ADD COLUMN), while Postgres/MySQL keep DEFAULT
+// NOW()/CURRENT_TIMESTAMP.
+func alterColumnType(col Column, driver string) string {
+	switch driver {
+	case "postgres":
+		if col.Type == "integer" && col.PrimaryKey && col.AutoIncrement {
 			return "SERIAL PRIMARY KEY"
 		}
-		return "INTEGER"
-	case "biginteger":
-		return "BIGINT"
-	case "smallinteger":
-		return "SMALLINT"
-	case "string":
-		return fmt.Sprintf("VARCHAR(%d)", col.Length)
-	case "text":
-		return "TEXT"
-	case "binary":
-		return "BYTEA"
-	case "boolean":
-		return "BOOLEAN"
-	case "timestamp":
-		s := "TIMESTAMP"
-		if !col.Nullable && col.Default == nil {
-			s += " DEFAULT NOW()"
-		}
-		return s
-	case "timestamptz":
-		s := "TIMESTAMPTZ"
-		if !col.Nullable && col.Default == nil {
-			s += " DEFAULT NOW()"
-		}
-		return s
-	case "date":
-		return "DATE"
-	case "uuid":
-		if col.PrimaryKey {
+		if col.Type == "uuid" && col.PrimaryKey {
 			return "UUID PRIMARY KEY DEFAULT gen_random_uuid()"
 		}
-		return "UUID"
-	case "decimal":
-		return fmt.Sprintf("NUMERIC(%d,%d)", col.Precision, col.Scale)
-	case "vector":
-		return fmt.Sprintf("vector(%d)", col.Dimensions)
-	case "json":
-		return "JSON"
-	case "jsonb":
-		return "JSONB"
-	default:
-		return "TEXT"
-	}
-}
-
-func columnTypeMySQL(col Column) string {
-	switch col.Type {
-	case "integer":
-		if col.PrimaryKey && col.AutoIncrement {
+	case "mysql":
+		if col.Type == "integer" && col.PrimaryKey && col.AutoIncrement {
 			return "INT AUTO_INCREMENT PRIMARY KEY"
 		}
-		return "INT"
-	case "biginteger":
-		return "BIGINT"
-	case "smallinteger":
-		return "SMALLINT"
-	case "string":
-		return fmt.Sprintf("VARCHAR(%d)", col.Length)
-	case "text":
-		return "TEXT"
-	case "binary":
-		return "LONGBLOB"
-	case "boolean":
-		return "BOOLEAN"
-	case "timestamp", "timestamptz":
-		s := "TIMESTAMP"
-		if !col.Nullable && col.Default == nil {
-			s += " DEFAULT CURRENT_TIMESTAMP"
-		}
-		return s
-	case "date":
-		return "DATE"
-	case "uuid":
-		if col.PrimaryKey {
+		if col.Type == "uuid" && col.PrimaryKey {
 			return "CHAR(36) PRIMARY KEY"
 		}
-		return "CHAR(36)"
-	case "decimal":
-		return fmt.Sprintf("DECIMAL(%d,%d)", col.Precision, col.Scale)
-	case "json", "jsonb":
-		return "JSON"
-	default:
-		return "TEXT"
+	default: // sqlite
+		if col.Type == "integer" && col.PrimaryKey && col.AutoIncrement {
+			return "INTEGER PRIMARY KEY AUTOINCREMENT"
+		}
+		if col.Type == "uuid" && col.PrimaryKey {
+			return "TEXT PRIMARY KEY"
+		}
 	}
+	return sqlColumnType(driver, col.Type, col.Length, col.Precision, col.Scale, col.Dimensions, col.Nullable, col.Default != nil, ddlAddColumn)
 }
 
 func formatDefaultValue(value interface{}, colType string, driver string) string {

@@ -96,15 +96,8 @@ func TestIndexBuilder_SQLGeneration(t *testing.T) {
 			where:     "deleted_at IS NULL",
 			contains:  []string{"WHERE deleted_at IS NULL"},
 		},
-		{
-			name:        "partial index mysql - not supported",
-			driver:      "mysql",
-			indexName:   "idx_users_active",
-			table:       "users",
-			columns:     []string{"email"},
-			where:       "deleted_at IS NULL",
-			notContains: []string{"WHERE"},
-		},
+		// Unsupported-modifier fail-loud behavior (MySQL partial WHERE, SQLite
+		// INCLUDE) is covered by TestIndexBuilder_UnsupportedModifiersFailLoud.
 
 		// Covering indexes (INCLUDE clause - PostgreSQL 11+)
 		{
@@ -115,15 +108,6 @@ func TestIndexBuilder_SQLGeneration(t *testing.T) {
 			columns:   []string{"email"},
 			include:   []string{"id", "name", "avatar_url"},
 			contains:  []string{`INCLUDE ("id", "name", "avatar_url")`},
-		},
-		{
-			name:        "covering index sqlite - not supported",
-			driver:      "sqlite",
-			indexName:   "idx_users_covering",
-			table:       "users",
-			columns:     []string{"email"},
-			include:     []string{"id", "name"},
-			notContains: []string{"INCLUDE"},
 		},
 
 		// Index types (USING clause)
@@ -300,6 +284,63 @@ func TestIndexBuilder_WhereRejectsInjection(t *testing.T) {
 			b.Columns("col").Where(tc.predicate)
 			if _, err := b.ToSQL(); err == nil {
 				t.Fatalf("expected ToSQL to reject Where(%q)", tc.predicate)
+			}
+		})
+	}
+}
+
+// TestIndexBuilder_UnsupportedModifiersFailLoud verifies that semantics-changing
+// modifiers are rejected (not silently dropped) on drivers that cannot express
+// them: MySQL has no IF NOT EXISTS, INCLUDE, or partial-index WHERE; SQLite has
+// no INCLUDE. The error must name both the modifier and the driver.
+func TestIndexBuilder_UnsupportedModifiersFailLoud(t *testing.T) {
+	cases := []struct {
+		name     string
+		driver   string
+		build    func(b *migrate.IndexBuilder)
+		wantText string
+	}{
+		{"mysql if not exists", "mysql", func(b *migrate.IndexBuilder) { b.Columns("col").IfNotExists() }, "IF NOT EXISTS"},
+		{"mysql include", "mysql", func(b *migrate.IndexBuilder) { b.Columns("col").Include("other") }, "INCLUDE"},
+		{"mysql where", "mysql", func(b *migrate.IndexBuilder) { b.Columns("col").Where("deleted_at IS NULL") }, "WHERE"},
+		{"sqlite include", "sqlite", func(b *migrate.IndexBuilder) { b.Columns("col").Include("other") }, "INCLUDE"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := migrate.NewIndexBuilder("idx_x", "tbl", tc.driver)
+			tc.build(b)
+			_, err := b.ToSQL()
+			if err == nil {
+				t.Fatalf("expected ToSQL to reject %s on %s", tc.wantText, tc.driver)
+			}
+			if !strings.Contains(err.Error(), tc.wantText) {
+				t.Errorf("error should name modifier %q, got: %v", tc.wantText, err)
+			}
+			if !strings.Contains(err.Error(), tc.driver) {
+				t.Errorf("error should name driver %q, got: %v", tc.driver, err)
+			}
+		})
+	}
+}
+
+// TestIndexBuilder_UsingLenient verifies that USING (an access-path hint, not a
+// semantics change) is dropped rather than rejected on SQLite, and dropped for
+// unrecognized methods on MySQL.
+func TestIndexBuilder_UsingLenient(t *testing.T) {
+	cases := []struct{ name, driver, using string }{
+		{"sqlite drops using", "sqlite", "btree"},
+		{"mysql drops unknown using", "mysql", "gin"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := migrate.NewIndexBuilder("idx_x", "tbl", tc.driver)
+			b.Columns("col").Using(tc.using)
+			sql, err := b.ToSQL()
+			if err != nil {
+				t.Fatalf("expected USING(%q) to be lenient on %s, got error: %v", tc.using, tc.driver, err)
+			}
+			if strings.Contains(sql, "USING") {
+				t.Errorf("expected USING to be dropped on %s, got:\n%s", tc.driver, sql)
 			}
 		})
 	}

@@ -140,8 +140,21 @@ func (b *BaseDriver) CreateTableWith(grammar QueryGrammar, name string, definiti
 	definition(table)
 
 	sql := grammar.CompileCreateTable(name, table)
-	_, err := b.db.Exec(sql)
-	return err
+	if _, err := b.db.Exec(sql); err != nil {
+		return err
+	}
+
+	// Grammars whose dialect declares indexes as separate CREATE INDEX
+	// statements (PostgreSQL, SQLite) emit them here; MySQL folds indexes
+	// inline into CompileCreateTable and does not implement this interface.
+	if ig, ok := grammar.(CreateIndexGrammar); ok {
+		for _, stmt := range ig.CompileCreateIndexes(name, table) {
+			if _, err := b.db.Exec(stmt); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // DropTableWith drops a table using the provided grammar.

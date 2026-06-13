@@ -151,10 +151,49 @@ func requiredRule(field string, value interface{}, params []string, data map[str
 	return nil
 }
 
-// nullableRule allows a field to be null
+// nullableRule marks a field as nullable. The rule itself is a pure
+// pass-through (it never reports an error), so an explicit
+// ValidateValue(v, "nullable") call always resolves a handler. Its real
+// effect lives in the engine loop: when a field carries "nullable" and its
+// value is empty, the engine short-circuits and skips every other rule for
+// that field.
+//
+// Emptiness here is deliberately narrow: nil or the empty string "". This is
+// the HTML-form case that motivates the rule - an untouched optional text
+// input submits "", which would otherwise fail rules like "url" or "email".
+// It intentionally does NOT adopt requiredRule's broader empty-slice / map /
+// empty-collection notion of emptiness.
+//
+// The short-circuit overrides ALL other rules for the field, INCLUDING
+// "required". Combining "required" with "nullable" is contradictory; nullable
+// wins, so a {"required", "nullable"} field with an empty value passes.
 func nullableRule(field string, value interface{}, params []string, data map[string]interface{}) error {
-	// This rule always passes - it just marks a field as nullable
+	// Pass-through: the skip-when-empty behavior is implemented in the engine.
 	return nil
+}
+
+// isNullableEmpty reports whether value counts as empty for the purposes of
+// the "nullable" short-circuit: nil or the empty string "". Deliberately
+// narrower than requiredRule's emptiness (no empty-slice/map handling) - see
+// nullableRule.
+func isNullableEmpty(value interface{}) bool {
+	if value == nil {
+		return true
+	}
+	s, ok := value.(string)
+	return ok && s == ""
+}
+
+// rulesContainNullable reports whether the parsed rule list includes the
+// "nullable" rule. Detection is done on parsed rules (not raw strings) so
+// pipe-delimited tokens like "nullable|url" are handled correctly.
+func rulesContainNullable(rules []parsedRule) bool {
+	for _, r := range rules {
+		if r.name == "nullable" {
+			return true
+		}
+	}
+	return false
 }
 
 // filledRule validates that if a field is present, it must not be empty
@@ -177,13 +216,13 @@ func filledRule(field string, value interface{}, params []string, data map[strin
 	return nil
 }
 
-// presentRule validates that a field is present (but may be empty)
+// presentRule validates that a field is present (but may be empty). Presence
+// is resolved through fieldExists, which traverses dotted paths
+// ("address.city") the same way the engine resolves field values, and treats
+// a key present with a nil value as present.
 func presentRule(field string, value interface{}, params []string, data map[string]interface{}) error {
-	// Check if field exists in data map
-	if data != nil {
-		if _, exists := data[field]; !exists {
-			return fmt.Errorf("The %s field must be present.", field)
-		}
+	if data != nil && !fieldExists(data, field) {
+		return fmt.Errorf("The %s field must be present.", field)
 	}
 	return nil
 }

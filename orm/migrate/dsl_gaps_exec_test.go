@@ -96,6 +96,110 @@ func TestDSLGaps_Functional_SQLite(t *testing.T) {
 	}
 }
 
+// TestDSLGaps_TablePath_TimestampAddColumn pins B31 at the Table() statement
+// level: Table() builds ALTER TABLE ADD COLUMN via the add-column context, so a
+// non-nullable timestamp on SQLite carries no managed CURRENT_TIMESTAMP default
+// (SQLite rejects a non-constant default on ADD COLUMN) and emits the same SQL
+// as the ColumnBuilder AddColumn path; postgres/mysql keep their managed default.
+func TestDSLGaps_TablePath_TimestampAddColumn(t *testing.T) {
+	manager := newTestManager(t)
+	defer manager.Shutdown(context.Background())
+
+	t.Run("sqlite Table() omits managed default and matches AddColumn", func(t *testing.T) {
+		mt := migrate.NewMigrator(manager.DB(), "sqlite")
+		mt.SetPretend(true)
+		if err := mt.Table("events", func(tb *migrate.TableBuilder) {
+			tb.TimestampTz("ts")
+		}); err != nil {
+			t.Fatalf("Table: %v", err)
+		}
+		tableLog := strings.Join(mt.PretendLog(), "\n")
+		if strings.Contains(tableLog, "CURRENT_TIMESTAMP") {
+			t.Errorf("sqlite Table() ADD COLUMN must not carry CURRENT_TIMESTAMP: %s", tableLog)
+		}
+
+		ma := migrate.NewMigrator(manager.DB(), "sqlite")
+		ma.SetPretend(true)
+		if err := ma.AddColumn("events", "ts", func(cb *migrate.ColumnBuilder) {
+			cb.TimestampTz()
+		}); err != nil {
+			t.Fatalf("AddColumn: %v", err)
+		}
+		addLog := strings.Join(ma.PretendLog(), "\n")
+		if tableLog != addLog {
+			t.Errorf("Table() log %q != AddColumn log %q", tableLog, addLog)
+		}
+	})
+
+	t.Run("postgres/mysql Table() keep managed default", func(t *testing.T) {
+		cases := []struct{ driver, want string }{
+			{"postgres", "DEFAULT NOW()"},
+			{"mysql", "DEFAULT CURRENT_TIMESTAMP"},
+		}
+		for _, c := range cases {
+			m := migrate.NewMigrator(manager.DB(), c.driver)
+			m.SetPretend(true)
+			if err := m.Table("events", func(tb *migrate.TableBuilder) {
+				tb.TimestampTz("ts")
+			}); err != nil {
+				t.Fatalf("[%s] Table: %v", c.driver, err)
+			}
+			log := strings.Join(m.PretendLog(), "\n")
+			if !strings.Contains(log, c.want) {
+				t.Errorf("[%s] expected %q in pretend log: %s", c.driver, c.want, log)
+			}
+		}
+	})
+}
+
+// TestDSLGaps_TablePath_TimestampExec_SQLite proves the B31 fix against a live
+// SQLite database: a nullable timestamp added via Table() executes, and a
+// non-nullable timestamp - whose pre-fix SQL carried a CURRENT_TIMESTAMP default
+// that SQLite rejects on ADD COLUMN - now emits a bare DATETIME NOT NULL that an
+// empty table accepts.
+func TestDSLGaps_TablePath_TimestampExec_SQLite(t *testing.T) {
+	manager := newTestManager(t)
+	defer manager.Shutdown(context.Background())
+
+	db := manager.DB()
+	m := migrate.NewMigrator(db, manager.DriverName())
+
+	if err := m.CreateTable("logs", func(tb *migrate.TableBuilder) {
+		tb.ID()
+	}); err != nil {
+		t.Fatalf("CreateTable: %v", err)
+	}
+
+	// Nullable timestamp: no NOT NULL, no default - always executable.
+	if err := m.Table("logs", func(tb *migrate.TableBuilder) {
+		tb.TimestampTz("seen_at").Nullable()
+	}); err != nil {
+		t.Fatalf("Table add nullable timestamp: %v", err)
+	}
+
+	// Non-null timestamp: pre-fix emitted DATETIME DEFAULT CURRENT_TIMESTAMP,
+	// which SQLite rejects on ADD COLUMN regardless of row count. Post-fix it is
+	// a bare DATETIME NOT NULL, accepted on this empty table.
+	if err := m.Table("logs", func(tb *migrate.TableBuilder) {
+		tb.TimestampTz("created_ts")
+	}); err != nil {
+		t.Fatalf("Table add non-null timestamp must be accepted post-fix: %v", err)
+	}
+
+	// Both columns exist.
+	for _, col := range []string{"seen_at", "created_ts"} {
+		var cnt int
+		if err := db.QueryRow(
+			"SELECT COUNT(*) FROM pragma_table_info('logs') WHERE name = ?", col,
+		).Scan(&cnt); err != nil {
+			t.Fatalf("table_info(%s): %v", col, err)
+		}
+		if cnt != 1 {
+			t.Errorf("column %q missing after Table() add", col)
+		}
+	}
+}
+
 // TestDSLGaps_Check_TablePath verifies that CHECK constraints are wired into
 // the ALTER path (Migrator.Table), not just CreateTable.
 func TestDSLGaps_Check_TablePath(t *testing.T) {
