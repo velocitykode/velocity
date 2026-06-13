@@ -141,6 +141,10 @@ users, _ := User{}.Where("active = ?", true).
     Get()
 ```
 
+[Queries](https://vel.build/docs/database/queries) ·
+[Relationships](https://vel.build/docs/database/relationships) ·
+[Migrations](https://vel.build/docs/database/migrations)
+
 ### Swap Drivers, Not Code
 
 Every subsystem uses pluggable drivers configured through environment
@@ -157,6 +161,7 @@ variables.
 | Broadcasting | WebSocket (additional drivers planned)                   |
 
 SQLite in development, PostgreSQL in production. One env var.
+[How drivers work](https://vel.build/docs/advanced/driver-registry).
 
 ### Secure by Default
 
@@ -172,13 +177,13 @@ says.
 
 ## What's Included
 
-- **HTTP**: radix-tree router, middleware, validation, CSRF, gRPC with HTTP gateway
-- **Data**: generic ORM (migrations, eager loading), cache, queues with job batching
-- **Auth**: session/JWT guards, gates, policies
-- **Messaging**: events, typed command bus, notifications (mail/database/broadcast/Slack), WebSocket broadcasting
-- **Frontend**: Inertia.js adapter for server-driven SPAs
-- **Ops**: task scheduler, AES-256-GCM encryption, distributed tracing, maintenance mode, graceful shutdown
-- **DX**: live reload, `./vel make:*` scaffolding, and collection/string/async/pipeline helpers
+- **HTTP**: [router](https://vel.build/docs/core/http-router), [middleware](https://vel.build/docs/core/middleware), [validation](https://vel.build/docs/core/validation), [CSRF](https://vel.build/docs/core/csrf), [gRPC](https://vel.build/docs/advanced/grpc)
+- **Data**: [ORM](https://vel.build/docs/database/getting-started), [cache](https://vel.build/docs/core/cache), [queues](https://vel.build/docs/advanced/queue)
+- **Auth**: [guards, gates, policies](https://vel.build/docs/core/authentication)
+- **Messaging**: [events](https://vel.build/docs/advanced/events), [command bus](https://vel.build/docs/advanced/bus), [notifications](https://vel.build/docs/advanced/notifications), [broadcasting](https://vel.build/docs/realtime/broadcast)
+- **Frontend**: [Inertia.js adapter](https://vel.build/docs/frontend/inertia)
+- **Ops**: [scheduler](https://vel.build/docs/advanced/scheduler), [encryption](https://vel.build/docs/core/crypto), [tracing](https://vel.build/docs/advanced/trace), [storage](https://vel.build/docs/advanced/storage)
+- **DX**: [CLI](https://vel.build/docs/cli/commands), live reload, and [string](https://vel.build/docs/core/string-utilities)/[async](https://vel.build/docs/core/async)/[pipeline](https://vel.build/docs/advanced/pipeline) helpers
 
 Every subsystem is an importable package, usable on its own.
 See [vel.build/docs](https://vel.build/docs) for the full list.
@@ -200,7 +205,7 @@ Each project builds a `./vel` binary for development and code generation.
 ./vel make:model User    # scaffold (model, handler, job, policy, provider, migration, ...)
 ```
 
-Full reference: [vel.build/docs](https://vel.build/docs).
+Full reference: [vel.build/docs/cli/commands](https://vel.build/docs/cli/commands).
 
 ## Versioning
 
