@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/velocitykode/velocity/contract"
 )
@@ -231,7 +232,16 @@ func (v *defaultValidator) validateField(field string, value interface{}, rule p
 		return fmt.Errorf("unknown validation rule: %s", rule.name)
 	}
 
-	if err := handler(field, value, rule.params, data); err != nil {
+	// rule.params may be backed by a slice shared from the parse cache (see
+	// ruleCache). Hand the handler its own copy so a custom rule that mutates
+	// params in place cannot corrupt cached entries or race other goroutines
+	// validating the same rule set. No-param rules pay nothing.
+	params := rule.params
+	if len(params) > 0 {
+		params = append([]string(nil), params...)
+	}
+
+	if err := handler(field, value, params, data); err != nil {
 		// Check for custom message
 		messageKey := fmt.Sprintf("%s.%s", field, rule.name)
 		if customMsg, ok := v.messages[messageKey]; ok {
@@ -251,10 +261,68 @@ func parseRules(ruleString string) []parsedRule {
 	return parseRuleSlice(splitPipe(ruleString))
 }
 
+// ruleCache memoizes parsed rule slices keyed by their token list. Rule sets
+// are authored by application code (FormRequest.Rules() methods, inline
+// Validate calls), not by request input, so the key space is bounded by the
+// app's distinct rule definitions. Without the cache, parseRuleSlice re-split
+// and re-allocated an identical parsedRule slice on every Validate call
+// (~65% of Validate's allocations). Cached entries are shared across calls and
+// goroutines, so they must be treated as immutable: validateField hands each
+// handler a defensive copy of rule.params (a custom rule may mutate params in
+// place), and nothing else writes through a cached slice. ruleCacheCap bounds
+// growth defensively; past the cap, parsing still happens, it just is not memoized.
+var (
+	ruleCache     sync.Map // map[string][]parsedRule
+	ruleCacheSize atomic.Int64
+)
+
+const ruleCacheCap = 4096
+
 // parseRuleSlice parses an ordered slice of rule tokens into parsedRule
 // values. Each token may itself contain '|' (legacy pipe-string form) and
 // is re-split before parsing. Empty / whitespace-only tokens are dropped.
+// Results are memoized in ruleCache keyed by the token list.
 func parseRuleSlice(tokens []string) []parsedRule {
+	if len(tokens) == 0 {
+		return nil
+	}
+	key := ruleCacheKey(tokens)
+	if cached, ok := ruleCache.Load(key); ok {
+		return cached.([]parsedRule)
+	}
+	rules := parseRuleSliceUncached(tokens)
+	if ruleCacheSize.Load() < ruleCacheCap {
+		if _, loaded := ruleCache.LoadOrStore(key, rules); !loaded {
+			ruleCacheSize.Add(1)
+		}
+	}
+	return rules
+}
+
+// ruleCacheKey builds a collision-free key for a token list by joining tokens
+// with a NUL separator (never present in rule strings). The single-token case
+// returns the token directly, avoiding an allocation.
+func ruleCacheKey(tokens []string) string {
+	if len(tokens) == 1 {
+		return tokens[0]
+	}
+	n := len(tokens) - 1
+	for _, t := range tokens {
+		n += len(t)
+	}
+	var b strings.Builder
+	b.Grow(n)
+	for i, t := range tokens {
+		if i > 0 {
+			b.WriteByte(0)
+		}
+		b.WriteString(t)
+	}
+	return b.String()
+}
+
+// parseRuleSliceUncached is the raw parser behind parseRuleSlice's cache.
+func parseRuleSliceUncached(tokens []string) []parsedRule {
 	var rules []parsedRule
 	for _, raw := range tokens {
 		// Each slice element may itself be a pipe-delimited compound rule.

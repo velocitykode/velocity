@@ -116,6 +116,42 @@ type AESDriver struct {
 	mu              sync.RWMutex
 	eventDispatcher func(ctx context.Context, event interface{}) error
 	legacyWarnOnce  sync.Once
+
+	// gcmOnce builds the AEAD for the primary key exactly once. The key is
+	// immutable after NewAESDriver, and a GCM cipher.AEAD is safe for
+	// concurrent Seal/Open, so caching it removes the per-call aes.NewCipher
+	// + cipher.NewGCM allocations on the encrypt/decrypt hot paths.
+	gcmOnce sync.Once
+	gcmAEAD cipher.AEAD
+	gcmErr  error
+}
+
+// primaryGCM returns the cached AEAD bound to the primary key, building it on
+// first use. Errors from cipher construction are memoized alongside it.
+func (d *AESDriver) primaryGCM() (cipher.AEAD, error) {
+	d.gcmOnce.Do(func() {
+		block, err := aes.NewCipher(d.key)
+		if err != nil {
+			d.gcmErr = err
+			return
+		}
+		d.gcmAEAD, d.gcmErr = cipher.NewGCM(block)
+	})
+	return d.gcmAEAD, d.gcmErr
+}
+
+// gcmForKey returns the cached primary AEAD when key is the primary key,
+// otherwise it builds a fresh AEAD (the rotation-key decrypt path). bytes.Equal
+// is constant-work relative to the avoided cipher construction.
+func (d *AESDriver) gcmForKey(key []byte) (cipher.AEAD, error) {
+	if bytes.Equal(key, d.key) {
+		return d.primaryGCM()
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
 }
 
 // NewAESDriver creates a new AES driver. The supplied master key MUST have
@@ -479,12 +515,7 @@ func (d *AESDriver) decryptWithKeysAAD(p *Payload, encKey, hmacKey, aad []byte) 
 // encryptGCMWithAAD encrypts using GCM with additional authenticated data.
 // Wire format is identical to encryptGCM (the AAD is not stored).
 func (d *AESDriver) encryptGCMWithAAD(plaintext, aad []byte) (string, error) {
-	block, err := aes.NewCipher(d.key)
-	if err != nil {
-		return "", err
-	}
-
-	gcm, err := cipher.NewGCM(block)
+	gcm, err := d.primaryGCM()
 	if err != nil {
 		return "", err
 	}
@@ -537,11 +568,7 @@ func (d *AESDriver) decryptGCMWithAAD(p *Payload, key, aad []byte) ([]byte, erro
 	}
 	ciphertext = append(ciphertext, tag...)
 
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := cipher.NewGCM(block)
+	gcm, err := d.gcmForKey(key)
 	if err != nil {
 		return nil, err
 	}
@@ -605,14 +632,8 @@ func (d *AESDriver) encryptCBC(plaintext, aad []byte) (string, error) {
 
 // encryptGCM encrypts using GCM mode (v1 wire format).
 func (d *AESDriver) encryptGCM(plaintext []byte) (string, error) {
-	// Create cipher block
-	block, err := aes.NewCipher(d.key)
-	if err != nil {
-		return "", err
-	}
-
-	// Create GCM
-	gcm, err := cipher.NewGCM(block)
+	// Reuse the cached AEAD for the primary key.
+	gcm, err := d.primaryGCM()
 	if err != nil {
 		return "", err
 	}
@@ -784,17 +805,10 @@ func (d *AESDriver) decryptGCMWithKey(p *Payload, key []byte) ([]byte, error) {
 	// Append tag to ciphertext for GCM
 	ciphertext = append(ciphertext, tag...)
 
-	// Create cipher block
-	block, err := aes.NewCipher(key)
+	// Reuse the cached AEAD when key is the primary key; build otherwise.
+	gcm, err := d.gcmForKey(key)
 	if err != nil {
 		debugDecryptFailure("gcm-new-cipher", err)
-		return nil, ErrDecrypt
-	}
-
-	// Create GCM
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		debugDecryptFailure("gcm-new-gcm", err)
 		return nil, ErrDecrypt
 	}
 
