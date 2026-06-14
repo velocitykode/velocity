@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	cli "github.com/velocitykode/velocity-cli"
+	"github.com/velocitykode/prism"
 )
 
 // KeyGenerate generates a new APP_KEY and writes it to .env.
@@ -38,7 +38,7 @@ func KeyGenerate() error {
 			if err := os.Chmod(envPath, secretFileMode); err != nil {
 				return fmt.Errorf("failed to tighten .env permissions: %w", err)
 			}
-			cli.Success("Created .env with APP_KEY")
+			prism.Success("Created .env with APP_KEY")
 			return nil
 		}
 		return fmt.Errorf("failed to read .env: %w", err)
@@ -68,6 +68,6 @@ func KeyGenerate() error {
 		return fmt.Errorf("failed to tighten .env permissions: %w", err)
 	}
 
-	cli.Success("Application key set successfully")
+	prism.Success("Application key set successfully")
 	return nil
 }

@@ -9,7 +9,7 @@ import (
 
 	"github.com/velocitykode/velocity/console/scaffold"
 
-	cli "github.com/velocitykode/velocity-cli"
+	"github.com/velocitykode/prism"
 )
 
 // MakeGRPCRPCOptions selects the streaming variant for the new rpc. At most
@@ -109,7 +109,7 @@ func appendRPCToProto(path, serviceName, rpcName string, kind grpcRPCKind) error
 
 	rpcSig := fmt.Sprintf("rpc %s(", rpcName)
 	if strings.Contains(content, rpcSig) {
-		cli.Muted(fmt.Sprintf("rpc %s already exists in %s, skipping", rpcName, path))
+		prism.Muted(fmt.Sprintf("rpc %s already exists in %s, skipping", rpcName, path))
 		return nil
 	}
 
@@ -138,7 +138,7 @@ func appendRPCToProto(path, serviceName, rpcName string, kind grpcRPCKind) error
 	if err := os.WriteFile(path, []byte(updated), defaultFileMode); err != nil {
 		return fmt.Errorf("write proto: %w", err)
 	}
-	cli.Success(fmt.Sprintf("Added rpc %s to %s", rpcName, path))
+	prism.Success(fmt.Sprintf("Added rpc %s to %s", rpcName, path))
 	return nil
 }
 
@@ -153,7 +153,7 @@ func appendMethodToImpl(path, serviceName, rpcName, protoAlias string, kind grpc
 
 	methodMarker := fmt.Sprintf(") %s(", rpcName)
 	if strings.Contains(content, methodMarker) {
-		cli.Muted(fmt.Sprintf("method %s already exists in %s, skipping", rpcName, path))
+		prism.Muted(fmt.Sprintf("method %s already exists in %s, skipping", rpcName, path))
 		return nil
 	}
 
@@ -172,7 +172,7 @@ func appendMethodToImpl(path, serviceName, rpcName, protoAlias string, kind grpc
 	if err := os.WriteFile(path, []byte(content), defaultFileMode); err != nil {
 		return fmt.Errorf("write impl: %w", err)
 	}
-	cli.Success(fmt.Sprintf("Added method %s to %s", rpcName, path))
+	prism.Success(fmt.Sprintf("Added method %s to %s", rpcName, path))
 	return nil
 }
 

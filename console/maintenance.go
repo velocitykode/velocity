@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
-	cli "github.com/velocitykode/velocity-cli"
+	"github.com/velocitykode/prism"
 	"github.com/velocitykode/velocity/internal/maintpath"
 )
 
@@ -75,7 +75,7 @@ func Down(opts DownOptions) error {
 		return fmt.Errorf("failed to chmod maintenance dir: %w", err)
 	}
 
-	cli.Success(fmt.Sprintf("Application is now in maintenance mode (marker: %s).", path))
+	prism.Success(fmt.Sprintf("Application is now in maintenance mode (marker: %s).", path))
 	return nil
 }
 
@@ -92,6 +92,6 @@ func Up() error {
 		return fmt.Errorf("failed to remove maintenance file: %w", err)
 	}
 
-	cli.Success("Application is now live.")
+	prism.Success("Application is now live.")
 	return nil
 }

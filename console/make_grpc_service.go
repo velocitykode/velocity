@@ -11,7 +11,7 @@ import (
 
 	"github.com/velocitykode/velocity/console/scaffold"
 
-	cli "github.com/velocitykode/velocity-cli"
+	"github.com/velocitykode/prism"
 	"github.com/velocitykode/velocity/console/stubs"
 )
 
@@ -117,8 +117,8 @@ func MakeGRPCService(name string, opts MakeGRPCServiceOptions) error {
 		}
 	}
 
-	cli.Newline()
-	cli.Muted("Next: vel make:grpc:gen  (generate Go code from .proto)")
+	prism.Newline()
+	prism.Muted("Next: vel make:grpc:gen  (generate Go code from .proto)")
 	return nil
 }
 
@@ -341,7 +341,7 @@ func writeProtoFile(sc grpcScaffold) error {
 	if err := os.WriteFile(path, buf.Bytes(), defaultFileMode); err != nil {
 		return fmt.Errorf("write proto: %w", err)
 	}
-	cli.Success(fmt.Sprintf("Created: %s", path))
+	prism.Success(fmt.Sprintf("Created: %s", path))
 	return nil
 }
 
@@ -370,7 +370,7 @@ breaking:
 		if err := os.WriteFile(bufYaml, []byte(content), defaultFileMode); err != nil {
 			return fmt.Errorf("write %s: %w", bufYaml, err)
 		}
-		cli.Success(fmt.Sprintf("Created: %s", bufYaml))
+		prism.Success(fmt.Sprintf("Created: %s", bufYaml))
 	}
 
 	bufGen := filepath.Join(protoRoot, "buf.gen.yaml")
@@ -389,7 +389,7 @@ plugins:
 		if err := os.WriteFile(bufGen, []byte(content), defaultFileMode); err != nil {
 			return fmt.Errorf("write %s: %w", bufGen, err)
 		}
-		cli.Success(fmt.Sprintf("Created: %s", bufGen))
+		prism.Success(fmt.Sprintf("Created: %s", bufGen))
 	}
 	return nil
 }
@@ -438,6 +438,6 @@ func writeServiceImpl(sc grpcScaffold) error {
 	if err := os.WriteFile(path, buf.Bytes(), defaultFileMode); err != nil {
 		return fmt.Errorf("write service: %w", err)
 	}
-	cli.Success(fmt.Sprintf("Created: %s", path))
+	prism.Success(fmt.Sprintf("Created: %s", path))
 	return nil
 }

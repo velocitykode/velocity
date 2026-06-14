@@ -10,7 +10,7 @@ import (
 	"strings"
 	"text/template"
 
-	cli "github.com/velocitykode/velocity-cli"
+	"github.com/velocitykode/prism"
 	"github.com/velocitykode/velocity/console/stubs"
 )
 
@@ -104,8 +104,8 @@ func writeNewGRPCProvider(path string, sc grpcScaffold) error {
 	if err := writeFormattedGo(path, buf.Bytes()); err != nil {
 		return fmt.Errorf("write provider: %w", err)
 	}
-	cli.Success(fmt.Sprintf("Created: %s", path))
-	cli.Muted("  Register in internal/app/bootstrap.go: providers.GRPCProvider{}")
+	prism.Success(fmt.Sprintf("Created: %s", path))
+	prism.Muted("  Register in internal/app/bootstrap.go: providers.GRPCProvider{}")
 	return nil
 }
 
@@ -117,19 +117,19 @@ func injectGRPCServiceRegistration(path string, sc grpcScaffold) error {
 	content := string(raw)
 
 	if strings.Contains(content, fmt.Sprintf("Register%sServer(", sc.ServiceName)) {
-		cli.Muted(fmt.Sprintf("Provider already registers %s, skipping wire", sc.ServiceName))
+		prism.Muted(fmt.Sprintf("Provider already registers %s, skipping wire", sc.ServiceName))
 		return nil
 	}
 
 	importPath := fmt.Sprintf("%s/api/gen/go/%s/%s", sc.ModulePath, sc.Leaf, sc.Version)
 
 	if !strings.Contains(content, grpcImportsMarker) || !strings.Contains(content, grpcServicesMarker) {
-		cli.Muted("grpc_provider.go missing markers; add the following manually:")
-		cli.Muted(fmt.Sprintf("  import: %s \"%s\"", sc.Alias, importPath))
-		cli.Muted(fmt.Sprintf("  in Register(): %s := services.New%s()", sc.VarName, sc.ServiceName))
-		cli.Muted("                 p.server.RegisterService(func(srv interface{}) {")
-		cli.Muted(fmt.Sprintf("                     %s.Register%sServer(srv.(*googleGrpc.Server), %s)", sc.Alias, sc.ServiceName, sc.VarName))
-		cli.Muted("                 })")
+		prism.Muted("grpc_provider.go missing markers; add the following manually:")
+		prism.Muted(fmt.Sprintf("  import: %s \"%s\"", sc.Alias, importPath))
+		prism.Muted(fmt.Sprintf("  in Register(): %s := services.New%s()", sc.VarName, sc.ServiceName))
+		prism.Muted("                 p.server.RegisterService(func(srv interface{}) {")
+		prism.Muted(fmt.Sprintf("                     %s.Register%sServer(srv.(*googleGrpc.Server), %s)", sc.Alias, sc.ServiceName, sc.VarName))
+		prism.Muted("                 })")
 		return nil
 	}
 
@@ -150,7 +150,7 @@ func injectGRPCServiceRegistration(path string, sc grpcScaffold) error {
 	regAlias := sc.Alias
 	if existing, ok := existingImportAlias(content, importPath, sc.GenPkgName); ok {
 		if existing != sc.Alias {
-			cli.Muted(fmt.Sprintf("provider already imports %s as %s; reusing that alias", importPath, existing))
+			prism.Muted(fmt.Sprintf("provider already imports %s as %s; reusing that alias", importPath, existing))
 		}
 		regAlias = existing
 	} else {
@@ -170,7 +170,7 @@ func injectGRPCServiceRegistration(path string, sc grpcScaffold) error {
 	if err := writeFormattedGo(path, []byte(content)); err != nil {
 		return fmt.Errorf("write provider: %w", err)
 	}
-	cli.Success(fmt.Sprintf("Wired: %s", path))
+	prism.Success(fmt.Sprintf("Wired: %s", path))
 	return nil
 }
 

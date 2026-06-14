@@ -3,7 +3,7 @@ package console
 import (
 	"fmt"
 
-	cli "github.com/velocitykode/velocity-cli"
+	"github.com/velocitykode/prism"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/orm/migrate"
 )
@@ -16,7 +16,7 @@ import (
 // own safeguards.
 func DBWipe(db orm.Database) error {
 	if db == nil {
-		cli.Warning("No database configured")
+		prism.Warning("No database configured")
 		return nil
 	}
 
@@ -28,7 +28,7 @@ func DBWipe(db orm.Database) error {
 	}
 
 	if len(tables) == 0 {
-		cli.Info("No tables to drop")
+		prism.Info("No tables to drop")
 		return nil
 	}
 
@@ -38,6 +38,6 @@ func DBWipe(db orm.Database) error {
 		}
 	}
 
-	cli.Success("All tables dropped successfully.")
+	prism.Success("All tables dropped successfully.")
 	return nil
 }

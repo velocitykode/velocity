@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	cli "github.com/velocitykode/velocity-cli"
+	"github.com/velocitykode/prism"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/orm/migrate"
 )
@@ -97,8 +97,8 @@ func TestMigrateFresh_PrintsOnlyApplied(t *testing.T) {
 	db := newMigrateTestManager(t)
 
 	var buf bytes.Buffer
-	cli.SetWriter(&buf)
-	defer cli.SetWriter(nil)
+	prism.SetWriter(&buf)
+	defer prism.SetWriter(nil)
 
 	if err := MigrateFresh(db); err != nil {
 		t.Fatalf("MigrateFresh: %v", err)

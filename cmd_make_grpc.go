@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	cli "github.com/velocitykode/velocity-cli"
+	"github.com/velocitykode/prism"
 	"github.com/velocitykode/velocity/console"
 )
 
@@ -30,22 +30,22 @@ func (makeGRPCServiceCmd) run(a *App, args []string) error {
 }
 
 func grpcServiceUsage() {
-	cli.Newline()
-	cli.Muted("Usage: vel make:grpc:service [Name] [flags]")
-	cli.Newline()
-	cli.Muted("Flags:")
-	cli.Muted("  --package <leaf>          dir leaf under api/proto and api/gen/go (default: from Name)")
-	cli.Muted("  --proto-package <pkg>     full wire package, e.g. velship.admin.v1 (default: <leaf>.v1)")
-	cli.Muted("  --dir <path>              Go impl output dir (default: internal/grpc/services)")
-	cli.Muted("  --alias <ident>           proto import alias (default: <leaf>pb)")
-	cli.Muted("  --proto-name <base>       proto file base name (default: lowercased Name)")
-	cli.Muted("  --impl-name <base>        impl file base name (default: snake_case Name)")
-	cli.Muted("  --no-provider             skip provider scaffolding/wiring")
-	cli.Newline()
-	cli.Muted("Examples:")
-	cli.Muted("  vel make:grpc:service Foo")
-	cli.Muted("  vel make:grpc:service TemplateControl --package admin \\")
-	cli.Muted("    --proto-package velship.admin.v1 --dir internal/shared/grpc/services --no-provider")
+	prism.Newline()
+	prism.Muted("Usage: vel make:grpc:service [Name] [flags]")
+	prism.Newline()
+	prism.Muted("Flags:")
+	prism.Muted("  --package <leaf>          dir leaf under api/proto and api/gen/go (default: from Name)")
+	prism.Muted("  --proto-package <pkg>     full wire package, e.g. velship.admin.v1 (default: <leaf>.v1)")
+	prism.Muted("  --dir <path>              Go impl output dir (default: internal/grpc/services)")
+	prism.Muted("  --alias <ident>           proto import alias (default: <leaf>pb)")
+	prism.Muted("  --proto-name <base>       proto file base name (default: lowercased Name)")
+	prism.Muted("  --impl-name <base>        impl file base name (default: snake_case Name)")
+	prism.Muted("  --no-provider             skip provider scaffolding/wiring")
+	prism.Newline()
+	prism.Muted("Examples:")
+	prism.Muted("  vel make:grpc:service Foo")
+	prism.Muted("  vel make:grpc:service TemplateControl --package admin \\")
+	prism.Muted("    --proto-package velship.admin.v1 --dir internal/shared/grpc/services --no-provider")
 }
 
 // parseMakeGRPCServiceArgs parses the positional service name and the optional
@@ -120,14 +120,14 @@ func (makeGRPCRPCCmd) description() string {
 	return "Add an rpc to an existing gRPC service"
 }
 func grpcRPCUsage() {
-	cli.Newline()
-	cli.Muted("Usage: vel make:grpc:rpc [Service] [RPC] [--stream|--client-stream|--bidi]")
-	cli.Newline()
-	cli.Muted("Examples:")
-	cli.Muted("  vel make:grpc:rpc Foo Hello")
-	cli.Muted("  vel make:grpc:rpc Foo Tail --stream")
-	cli.Muted("  vel make:grpc:rpc Foo Upload --client-stream")
-	cli.Muted("  vel make:grpc:rpc Foo Chat --bidi")
+	prism.Newline()
+	prism.Muted("Usage: vel make:grpc:rpc [Service] [RPC] [--stream|--client-stream|--bidi]")
+	prism.Newline()
+	prism.Muted("Examples:")
+	prism.Muted("  vel make:grpc:rpc Foo Hello")
+	prism.Muted("  vel make:grpc:rpc Foo Tail --stream")
+	prism.Muted("  vel make:grpc:rpc Foo Upload --client-stream")
+	prism.Muted("  vel make:grpc:rpc Foo Chat --bidi")
 }
 
 func (makeGRPCRPCCmd) run(a *App, args []string) error {

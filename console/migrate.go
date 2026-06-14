@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sort"
 
-	cli "github.com/velocitykode/velocity-cli"
+	"github.com/velocitykode/prism"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/orm/migrate"
 )
@@ -17,7 +17,7 @@ type MigrateOptions struct {
 // Migrate runs all pending database migrations.
 func Migrate(db orm.Database, opts ...MigrateOptions) error {
 	if db == nil {
-		cli.Warning("No database configured (DB_CONNECTION not set), skipping migrations")
+		prism.Warning("No database configured (DB_CONNECTION not set), skipping migrations")
 		return nil
 	}
 
@@ -28,7 +28,7 @@ func Migrate(db orm.Database, opts ...MigrateOptions) error {
 
 	migrations := migrate.All()
 	if len(migrations) == 0 {
-		cli.Warning("No migrations found")
+		prism.Warning("No migrations found")
 		return nil
 	}
 
@@ -40,7 +40,7 @@ func Migrate(db orm.Database, opts ...MigrateOptions) error {
 	}
 
 	if len(pending) == 0 {
-		cli.Info("Nothing to migrate")
+		prism.Info("Nothing to migrate")
 		return nil
 	}
 
@@ -48,18 +48,18 @@ func Migrate(db orm.Database, opts ...MigrateOptions) error {
 		return migratePretend(migrator, pending)
 	}
 
-	cli.Info("Running migrations...")
+	prism.Info("Running migrations...")
 
 	if err := migrator.Up(); err != nil {
 		return fmt.Errorf("velocity/console: migration failed: %w", err)
 	}
 
 	for _, m := range pending {
-		cli.Success(fmt.Sprintf("%s_%s", m.Version, m.Description))
+		prism.Success(fmt.Sprintf("%s_%s", m.Version, m.Description))
 	}
 
-	cli.Newline()
-	cli.Success("Done")
+	prism.Newline()
+	prism.Success("Done")
 	return nil
 }
 
@@ -72,11 +72,11 @@ func migratePretend(migrator *migrate.Migrator, pending []migrate.Migration) err
 			return fmt.Errorf("velocity/console: pretend failed for %s: %w", m.Version, err)
 		}
 
-		cli.Info(fmt.Sprintf("%s_%s:", m.Version, m.Description))
+		prism.Info(fmt.Sprintf("%s_%s:", m.Version, m.Description))
 		for _, sql := range migrator.PretendLog() {
-			cli.Muted(sql)
+			prism.Muted(sql)
 		}
-		cli.Newline()
+		prism.Newline()
 	}
 
 	return nil
@@ -89,25 +89,25 @@ func migratePretend(migrator *migrate.Migrator, pending []migrate.Migration) err
 // CLI command.
 func MigrateFresh(db orm.Database) error {
 	if db == nil {
-		cli.Warning("No database configured (DB_CONNECTION not set), skipping migrations")
+		prism.Warning("No database configured (DB_CONNECTION not set), skipping migrations")
 		return nil
 	}
 
 	migrations := migrate.All()
 	if len(migrations) == 0 {
-		cli.Warning("No migrations found")
+		prism.Warning("No migrations found")
 		return nil
 	}
 
 	migrator := migrate.NewMigrator(db.DB(), db.DriverName())
 
-	cli.Info("Dropping all tables...")
+	prism.Info("Dropping all tables...")
 
 	if err := migrator.Fresh(); err != nil {
 		return fmt.Errorf("velocity/console: fresh migration failed: %w", err)
 	}
 
-	cli.Info("Running migrations...")
+	prism.Info("Running migrations...")
 
 	statuses, err := migrator.Status()
 	if err != nil {
@@ -121,12 +121,12 @@ func MigrateFresh(db orm.Database) error {
 
 	for _, s := range statuses {
 		if s.State == "Applied" {
-			cli.Success(fmt.Sprintf("%s_%s", s.Version, descriptions[s.Version]))
+			prism.Success(fmt.Sprintf("%s_%s", s.Version, descriptions[s.Version]))
 		}
 	}
 
-	cli.Newline()
-	cli.Success("Done")
+	prism.Newline()
+	prism.Success("Done")
 	return nil
 }
 
@@ -137,13 +137,13 @@ func MigrateFresh(db orm.Database) error {
 // `vel migrate:rollback` CLI command.
 func MigrateRollback(db orm.Database, steps int) error {
 	if db == nil {
-		cli.Warning("No database configured (DB_CONNECTION not set), skipping rollback")
+		prism.Warning("No database configured (DB_CONNECTION not set), skipping rollback")
 		return nil
 	}
 
 	migrations := migrate.All()
 	if len(migrations) == 0 {
-		cli.Warning("No migrations found")
+		prism.Warning("No migrations found")
 		return nil
 	}
 
@@ -178,7 +178,7 @@ func MigrateRollback(db orm.Database, steps int) error {
 	}
 
 	if len(rollbackVersions) == 0 {
-		cli.Info("Nothing to rollback")
+		prism.Info("Nothing to rollback")
 		return nil
 	}
 
@@ -188,17 +188,17 @@ func MigrateRollback(db orm.Database, steps int) error {
 		return rollbackVersions[i] > rollbackVersions[j]
 	})
 
-	cli.Info("Rolling back migrations...")
+	prism.Info("Rolling back migrations...")
 
 	if err := migrator.Down(steps); err != nil {
 		return fmt.Errorf("velocity/console: rollback failed: %w", err)
 	}
 
 	for _, version := range rollbackVersions {
-		cli.Success(version)
+		prism.Success(version)
 	}
 
-	cli.Newline()
-	cli.Success("Done")
+	prism.Newline()
+	prism.Success("Done")
 	return nil
 }

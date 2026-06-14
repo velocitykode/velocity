@@ -3,7 +3,7 @@ package console
 import (
 	"fmt"
 
-	cli "github.com/velocitykode/velocity-cli"
+	"github.com/velocitykode/prism"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/orm/migrate"
 )
@@ -11,13 +11,13 @@ import (
 // MigrateStatus displays the status of all registered migrations.
 func MigrateStatus(db orm.Database) error {
 	if db == nil {
-		cli.Warning("No database configured")
+		prism.Warning("No database configured")
 		return nil
 	}
 
 	migrations := migrate.All()
 	if len(migrations) == 0 {
-		cli.Warning("No migrations found")
+		prism.Warning("No migrations found")
 		return nil
 	}
 
@@ -47,6 +47,6 @@ func MigrateStatus(db orm.Database) error {
 		rows = append(rows, []string{s.Version, desc, status, batchStr})
 	}
 
-	cli.Table(headers, rows)
+	prism.Table(headers, rows)
 	return nil
 }

@@ -3,7 +3,7 @@ package console
 import (
 	"fmt"
 
-	cli "github.com/velocitykode/velocity-cli"
+	"github.com/velocitykode/prism"
 	"github.com/velocitykode/velocity/console/scaffold"
 	"github.com/velocitykode/velocity/console/stubs"
 )
@@ -13,7 +13,7 @@ func runScaffoldGenerator(g scaffold.Generator, name, dirOverride string, data m
 	if err != nil {
 		return scaffold.Result{}, err
 	}
-	cli.Success(fmt.Sprintf("Created: %s", result.Path))
+	prism.Success(fmt.Sprintf("Created: %s", result.Path))
 	return result, nil
 }
 

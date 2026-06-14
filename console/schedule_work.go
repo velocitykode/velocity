@@ -6,7 +6,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	cli "github.com/velocitykode/velocity-cli"
+	"github.com/velocitykode/prism"
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/scheduler"
 )
@@ -14,11 +14,11 @@ import (
 // ScheduleWork starts the scheduler to run scheduled tasks.
 func ScheduleWork(s scheduler.TaskScheduler) error {
 	if s == nil {
-		cli.Warning("No scheduler configured")
+		prism.Warning("No scheduler configured")
 		return nil
 	}
 
-	cli.Info("Running scheduled tasks...")
+	prism.Info("Running scheduled tasks...")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -35,10 +35,10 @@ func ScheduleWork(s scheduler.TaskScheduler) error {
 
 	select {
 	case <-quit:
-		cli.Info("Shutting down scheduler...")
+		prism.Info("Shutting down scheduler...")
 		cancel()
 		<-errCh
-		cli.Success("Done")
+		prism.Success("Done")
 		return nil
 	case err := <-errCh:
 		return err

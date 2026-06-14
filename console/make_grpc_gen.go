@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	cli "github.com/velocitykode/velocity-cli"
+	"github.com/velocitykode/prism"
 )
 
 // MakeGRPCGen runs `buf generate` inside api/proto. It surfaces buf's stdout
@@ -20,7 +20,7 @@ func MakeGRPCGen() error {
 		return fmt.Errorf("buf not found in PATH; install from https://buf.build/docs/installation")
 	}
 
-	cli.Muted("cd api/proto && buf generate")
+	prism.Muted("cd api/proto && buf generate")
 	cmd := exec.Command("buf", "generate")
 	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
@@ -28,6 +28,6 @@ func MakeGRPCGen() error {
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("buf generate failed: %w", err)
 	}
-	cli.Success("Generated Go code in api/gen/go/")
+	prism.Success("Generated Go code in api/gen/go/")
 	return nil
 }

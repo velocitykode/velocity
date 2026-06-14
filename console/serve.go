@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	cli "github.com/velocitykode/velocity-cli"
+	"github.com/velocitykode/prism"
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
 )
@@ -39,13 +39,13 @@ func Serve(opts ServeOptions) error {
 	env, defaulted := normalizeServeEnv(opts.Env)
 	opts.Env = env
 	if defaulted {
-		cli.Warning(fmt.Sprintf("APP_ENV not set; vel serve is defaulting to %s (set APP_ENV explicitly for non-dev use)", defaultServeEnv))
+		prism.Warning(fmt.Sprintf("APP_ENV not set; vel serve is defaulting to %s (set APP_ENV explicitly for non-dev use)", defaultServeEnv))
 	}
 
 	if opts.Watch {
-		cli.Info(fmt.Sprintf("Starting on port %s with hot reload...", opts.Port))
+		prism.Info(fmt.Sprintf("Starting on port %s with hot reload...", opts.Port))
 	} else {
-		cli.Info(fmt.Sprintf("Starting on port %s...", opts.Port))
+		prism.Info(fmt.Sprintf("Starting on port %s...", opts.Port))
 	}
 
 	// Start Vite dev server if package.json exists
@@ -83,14 +83,14 @@ func startVite() *exec.Cmd {
 		}
 	}
 
-	cli.Info(fmt.Sprintf("Starting Vite (%s run dev)...", runner))
+	prism.Info(fmt.Sprintf("Starting Vite (%s run dev)...", runner))
 	cmd := exec.Command(runner, "run", "dev")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := cmd.Start(); err != nil {
-		cli.Warning(fmt.Sprintf("Failed to start Vite: %v", err))
+		prism.Warning(fmt.Sprintf("Failed to start Vite: %v", err))
 		return nil
 	}
 
@@ -109,7 +109,7 @@ func setupGracefulShutdown(viteCmd *exec.Cmd) {
 	// panic here does not leave the dev server with no shutdown path.
 	async.Go(func() {
 		<-c
-		cli.Info("Shutting down...")
+		prism.Info("Shutting down...")
 		if viteCmd != nil && viteCmd.Process != nil {
 			// SIGTERM the Vite process group; the velocity vite
 			// plugin's own SIGINT/SIGTERM/SIGHUP handlers remove
@@ -184,7 +184,7 @@ func runWithWatcher(opts ServeOptions) error {
 			serverCmd.Wait()
 		}
 
-		cli.Info("Building...")
+		prism.Info("Building...")
 		buildArgs := []string{"build", "-o", ".vel/tmp/server"}
 		if opts.BuildTags != "" {
 			buildArgs = append(buildArgs, "-tags", opts.BuildTags)
@@ -193,7 +193,7 @@ func runWithWatcher(opts ServeOptions) error {
 
 		buildCmd := exec.Command("go", buildArgs...)
 		if output, err := buildCmd.CombinedOutput(); err != nil {
-			cli.Error(fmt.Sprintf("Build failed:\n%s", string(output)))
+			prism.Error(fmt.Sprintf("Build failed:\n%s", string(output)))
 			return err
 		}
 
@@ -209,10 +209,10 @@ func runWithWatcher(opts ServeOptions) error {
 		}
 		velArgs = append(velArgs, ".")
 		if output, err := exec.Command("go", velArgs...).CombinedOutput(); err != nil {
-			cli.Warning(fmt.Sprintf("./vel refresh failed (server keeps running on previous): %s", strings.TrimSpace(string(output))))
+			prism.Warning(fmt.Sprintf("./vel refresh failed (server keeps running on previous): %s", strings.TrimSpace(string(output))))
 		}
 
-		cli.Info(fmt.Sprintf("Starting server on port %s...", opts.Port))
+		prism.Info(fmt.Sprintf("Starting server on port %s...", opts.Port))
 		serverCmd = exec.Command(".vel/tmp/server", "serve:run")
 		serverCmd.Stdout = os.Stdout
 		serverCmd.Stderr = os.Stderr
@@ -236,7 +236,7 @@ func runWithWatcher(opts ServeOptions) error {
 		case err := <-errChan:
 			return err
 		case <-rebuild:
-			cli.Warning("File changed, reloading...")
+			prism.Warning("File changed, reloading...")
 			time.Sleep(100 * time.Millisecond)
 			startServer()
 		}
@@ -291,7 +291,7 @@ func watchFiles(rebuild chan bool) error {
 			if !ok {
 				return nil
 			}
-			cli.Error(fmt.Sprintf("Watcher error: %v", err))
+			prism.Error(fmt.Sprintf("Watcher error: %v", err))
 		}
 	}
 }

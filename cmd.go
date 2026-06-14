@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	cli "github.com/velocitykode/velocity-cli"
+	"github.com/velocitykode/prism"
 	"github.com/velocitykode/velocity/contract"
 )
 
@@ -230,12 +230,12 @@ func (a *App) runCommand(name string, args []string) error {
 }
 
 func (a *App) printHelp() {
-	cli.Newline()
-	cli.Bold("  Velocity Framework")
-	cli.Newline()
-	cli.Muted("Usage:")
-	cli.Muted("  vel <command> [arguments]")
-	cli.Newline()
+	prism.Newline()
+	prism.Bold("  Velocity Framework")
+	prism.Newline()
+	prism.Muted("Usage:")
+	prism.Muted("  vel <command> [arguments]")
+	prism.Newline()
 
 	reg := newCommandRegistry()
 	width := reg.helpPadWidth()
@@ -243,34 +243,34 @@ func (a *App) printHelp() {
 		if sec.title == "" {
 			continue
 		}
-		cli.Info(sec.title)
+		prism.Info(sec.title)
 		for _, c := range sec.cmds {
 			if c.description() == "" {
 				continue
 			}
-			cli.Muted(fmt.Sprintf("  %-*s%s", width, usageToken(c), c.description()))
+			prism.Muted(fmt.Sprintf("  %-*s%s", width, usageToken(c), c.description()))
 		}
-		cli.Newline()
+		prism.Newline()
 	}
 }
 
 // printUserCommands lists all registered user commands with their descriptions.
 func (a *App) printUserCommands() {
 	if a.commands == nil || len(a.commands.All()) == 0 {
-		cli.Newline()
-		cli.Muted("No custom commands registered.")
-		cli.Newline()
-		cli.Muted("Create one with: vel make:command <Name>")
-		cli.Newline()
+		prism.Newline()
+		prism.Muted("No custom commands registered.")
+		prism.Newline()
+		prism.Muted("Create one with: vel make:command <Name>")
+		prism.Newline()
 		return
 	}
 
-	cli.Newline()
-	cli.Bold("  Custom Commands")
-	cli.Newline()
+	prism.Newline()
+	prism.Bold("  Custom Commands")
+	prism.Newline()
 
 	for _, cmd := range a.commands.All() {
-		cli.Muted(fmt.Sprintf("  %-20s%s", cmd.Name(), cmd.Description()))
+		prism.Muted(fmt.Sprintf("  %-20s%s", cmd.Name(), cmd.Description()))
 	}
-	cli.Newline()
+	prism.Newline()
 }

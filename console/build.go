@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	cli "github.com/velocitykode/velocity-cli"
+	"github.com/velocitykode/prism"
 )
 
 // ldflagsValueRe is the allowlist for values interpolated into the -ldflags
@@ -64,7 +64,7 @@ func Build(opts BuildOptions) error {
 		}
 	}
 
-	cli.Info(fmt.Sprintf("Building for %s/%s...", opts.OS, opts.Arch))
+	prism.Info(fmt.Sprintf("Building for %s/%s...", opts.OS, opts.Arch))
 
 	env := os.Environ()
 	env = append(env, fmt.Sprintf("GOOS=%s", opts.OS))
@@ -116,7 +116,7 @@ func Build(opts BuildOptions) error {
 		return fmt.Errorf("build failed: %w", err)
 	}
 
-	cli.Success(fmt.Sprintf("Built: %s", output))
+	prism.Success(fmt.Sprintf("Built: %s", output))
 	return nil
 }
 

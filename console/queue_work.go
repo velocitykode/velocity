@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"time"
 
-	cli "github.com/velocitykode/velocity-cli"
+	"github.com/velocitykode/prism"
 	"github.com/velocitykode/velocity/queue"
 )
 
@@ -28,7 +28,7 @@ type QueueWorkOptions struct {
 // QueueWork starts a queue worker that processes jobs from the given driver.
 func QueueWork(driver queue.Driver, opts QueueWorkOptions) error {
 	if driver == nil {
-		cli.Warning("No queue configured")
+		prism.Warning("No queue configured")
 		return nil
 	}
 
@@ -54,7 +54,7 @@ func QueueWork(driver queue.Driver, opts QueueWorkOptions) error {
 
 	w := queue.NewWorker(driver, queueName, handler, workerOpts...)
 
-	cli.Info(fmt.Sprintf("Processing jobs from queue: %s", queueName))
+	prism.Info(fmt.Sprintf("Processing jobs from queue: %s", queueName))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -64,10 +64,10 @@ func QueueWork(driver queue.Driver, opts QueueWorkOptions) error {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	cli.Info("Shutting down worker...")
+	prism.Info("Shutting down worker...")
 	cancel()
 	w.Stop()
-	cli.Success("Done")
+	prism.Success("Done")
 
 	return nil
 }

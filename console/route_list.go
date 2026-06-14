@@ -1,7 +1,7 @@
 package console
 
 import (
-	cli "github.com/velocitykode/velocity-cli"
+	"github.com/velocitykode/prism"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -10,7 +10,7 @@ func RouteList(r *router.VelocityRouterV2) error {
 	routes := r.AllRoutes()
 
 	if len(routes) == 0 {
-		cli.Info("No routes registered.")
+		prism.Info("No routes registered.")
 		return nil
 	}
 
@@ -20,6 +20,6 @@ func RouteList(r *router.VelocityRouterV2) error {
 		rows = append(rows, []string{route.Method, route.Path, route.Name})
 	}
 
-	cli.Table(headers, rows)
+	prism.Table(headers, rows)
 	return nil
 }

@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// printHelp writes straight to stdout through the velocity-cli helpers, so
+// printHelp writes straight to stdout through the prism helpers, so
 // these tests exercise the underlying data and pure functions the renderer
 // consumes (section layout, command placement, pad width) rather than
 // capturing styled stdout.

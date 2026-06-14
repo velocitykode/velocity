@@ -5,14 +5,14 @@ import (
 	"strings"
 	"testing"
 
-	cli "github.com/velocitykode/velocity-cli"
+	"github.com/velocitykode/prism"
 	"github.com/velocitykode/velocity/router"
 )
 
 func captureOutput(fn func()) string {
 	var buf bytes.Buffer
-	cli.SetWriter(&buf)
-	defer cli.SetWriter(nil)
+	prism.SetWriter(&buf)
+	defer prism.SetWriter(nil)
 
 	fn()
 

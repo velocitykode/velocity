@@ -11,7 +11,7 @@
 // Commands, Services, ServiceProvider, and the provider interfaces) are
 // re-exported from this package as type aliases; their implementation homes
 // (chain/ and app/) are framework-internal concerns driven by import-cycle
-// constraints, not public API. Sibling packages (velocity-cli, generated
+// constraints, not public API. Sibling packages (prism, generated
 // scaffolding, examples, templates) all use the velocity.X names.
 //
 // Framework-internal code and third-party service providers that need to

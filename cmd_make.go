@@ -4,14 +4,14 @@ import (
 	"fmt"
 	"strings"
 
-	cli "github.com/velocitykode/velocity-cli"
+	"github.com/velocitykode/prism"
 	"github.com/velocitykode/velocity/console"
 )
 
 // makeNameUsageHint prints the one-line usage shown by the name-only make:*
 // commands. usage is the command token, e.g. "make:middleware".
 func makeNameUsageHint(usage string) {
-	cli.Muted("  Usage: vel " + usage + " [name]")
+	prism.Muted("  Usage: vel " + usage + " [name]")
 }
 
 // requireMakeName returns an error when args is empty, after printing the
@@ -22,13 +22,13 @@ func makeNameUsageHint(usage string) {
 // exits.
 func requireMakeName(args []string, label, usage string, examples ...string) error {
 	printUsage := func() {
-		cli.Newline()
-		cli.Muted("Usage: vel " + usage + " [name]")
+		prism.Newline()
+		prism.Muted("Usage: vel " + usage + " [name]")
 		if len(examples) > 0 {
-			cli.Newline()
-			cli.Muted("Examples:")
+			prism.Newline()
+			prism.Muted("Examples:")
 			for _, ex := range examples {
-				cli.Muted(ex)
+				prism.Muted(ex)
 			}
 		}
 	}
@@ -50,13 +50,13 @@ type makeHandlerCmd struct{}
 func (makeHandlerCmd) name() string        { return "make:handler" }
 func (makeHandlerCmd) description() string { return "Create a new handler" }
 func makeHandlerUsage() {
-	cli.Newline()
-	cli.Muted("Usage: vel make:handler [name]")
-	cli.Newline()
-	cli.Muted("Examples:")
-	cli.Muted("  vel make:handler User")
-	cli.Muted("  vel make:handler Admin/Dashboard --resource")
-	cli.Muted("  vel make:handler User --dir internal/web/handlers")
+	prism.Newline()
+	prism.Muted("Usage: vel make:handler [name]")
+	prism.Newline()
+	prism.Muted("Examples:")
+	prism.Muted("  vel make:handler User")
+	prism.Muted("  vel make:handler Admin/Dashboard --resource")
+	prism.Muted("  vel make:handler User --dir internal/web/handlers")
 }
 
 func (makeHandlerCmd) run(a *App, args []string) error {
@@ -79,14 +79,14 @@ type makeModelCmd struct{}
 func (makeModelCmd) name() string        { return "make:model" }
 func (makeModelCmd) description() string { return "Create a new model" }
 func makeModelUsage() {
-	cli.Newline()
-	cli.Muted("Usage: vel make:model [name]")
-	cli.Newline()
-	cli.Muted("Examples:")
-	cli.Muted("  vel make:model User")
-	cli.Muted("  vel make:model Post --uuid --soft-deletes")
-	cli.Muted("  vel make:model Comment --migration")
-	cli.Muted("  vel make:model Invoice --dir internal/billing/models")
+	prism.Newline()
+	prism.Muted("Usage: vel make:model [name]")
+	prism.Newline()
+	prism.Muted("Examples:")
+	prism.Muted("  vel make:model User")
+	prism.Muted("  vel make:model Post --uuid --soft-deletes")
+	prism.Muted("  vel make:model Comment --migration")
+	prism.Muted("  vel make:model Invoice --dir internal/billing/models")
 }
 
 func (makeModelCmd) run(a *App, args []string) error {
@@ -110,14 +110,14 @@ type makeMigrationCmd struct{}
 func (makeMigrationCmd) name() string        { return "make:migration" }
 func (makeMigrationCmd) description() string { return "Create a new migration" }
 func makeMigrationUsage() {
-	cli.Newline()
-	cli.Muted("Usage: vel make:migration [name]")
-	cli.Newline()
-	cli.Muted("Examples:")
-	cli.Muted("  vel make:migration create_posts")
-	cli.Muted("  vel make:migration add_slug_to_posts --table=posts")
-	cli.Muted("  vel make:migration create_comments --create=comments")
-	cli.Muted("  vel make:migration create_posts --dir db/migrations")
+	prism.Newline()
+	prism.Muted("Usage: vel make:migration [name]")
+	prism.Newline()
+	prism.Muted("Examples:")
+	prism.Muted("  vel make:migration create_posts")
+	prism.Muted("  vel make:migration add_slug_to_posts --table=posts")
+	prism.Muted("  vel make:migration create_comments --create=comments")
+	prism.Muted("  vel make:migration create_posts --dir db/migrations")
 }
 
 func (makeMigrationCmd) run(a *App, args []string) error {
