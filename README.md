@@ -172,9 +172,29 @@ MAIL_DRIVER=postmark    # or mailgun, local, log
 
 ### Secure by Default
 
-Security headers, HTTPS redirect, CORS, CSRF, rate limiting. All built
-in with safe defaults. CORS rejects all cross-origin requests until
-you explicitly allow them.
+Safe defaults you opt out of, not into. Cookies ship `Secure`, `HttpOnly`,
+and `SameSite=Lax`. CORS rejects every cross-origin request until you name
+the origins you trust. CSRF is on for every state-changing method. The app
+won't start without an `APP_KEY`, and `APP_DEBUG=true` is ignored in
+production so stack traces never leak. The destructive CLI commands
+(`db:wipe`, `migrate:fresh`, `migrate:rollback`) refuse to touch a
+production database unless you pass `--force`.
+
+The lower-level pieces are conservative too:
+
+| Area        | Default                                                                          |
+| ----------- | ------------------------------------------------------------------------------- |
+| Crypto      | AES-256-GCM, random nonces, constant-time compares, HKDF subkey separation      |
+| Passwords   | bcrypt with an enforced cost floor                                              |
+| Auth        | JWT rejects `alg=none` and algorithm substitution; session ID rotates on login  |
+| Tokens      | 32-byte `crypto/rand` session and CSRF tokens                                    |
+| ORM         | parameterized queries, validated identifiers, deny-by-default mass assignment    |
+| Storage     | `os.Root` path containment (openat2 on Linux), no traversal or symlink escape    |
+| HTTP client | SSRF guard blocks private and link-local ranges by default, TLS 1.2 floor        |
+
+Security headers (HSTS, CSP), HTTPS redirect, and request throttling ship as
+middleware you wire into the stack. Insecure modes exist, but you ask for them
+by name (`InsecureAllowAllCORS`, `GRPC_INSECURE`).
 
 ### No Magic
 
