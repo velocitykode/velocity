@@ -109,8 +109,17 @@ func toDelimited(s string, delimiter rune) string {
 	s = strings.ReplaceAll(s, ".", string(delimiter))
 
 	// Handle camelCase and PascalCase
-	var result []rune
 	runes := []rune(s)
+	result := make([]rune, 0, len(runes))
+
+	// emitDelimiter appends a delimiter only when the previous emitted rune
+	// is not already a delimiter. This collapses consecutive delimiters
+	// during the single rune pass, so no post-loop rescan is needed.
+	emitDelimiter := func() {
+		if len(result) > 0 && result[len(result)-1] != delimiter {
+			result = append(result, delimiter)
+		}
+	}
 
 	for i := 0; i < len(runes); i++ {
 		char := runes[i]
@@ -122,31 +131,24 @@ func toDelimited(s string, delimiter rune) string {
 				// Check if this is the start of an acronym or a new word
 				if i+1 < len(runes) && unicode.IsLower(runes[i+1]) {
 					// This is the start of a new word
-					result = append(result, delimiter)
-				} else if i > 0 && unicode.IsLower(runes[i-1]) {
+					emitDelimiter()
+				} else if unicode.IsLower(runes[i-1]) {
 					// Previous was lowercase, this is a new word
-					result = append(result, delimiter)
+					emitDelimiter()
 				}
 			}
 			result = append(result, unicode.ToLower(char))
-		} else if char != delimiter || (len(result) > 0 && result[len(result)-1] != delimiter) {
-			// Add non-delimiter chars or single delimiter
+		} else if char == delimiter {
+			// Collapse consecutive delimiters in the same pass.
+			emitDelimiter()
+		} else {
+			// Pass through non-delimiter characters unchanged.
 			result = append(result, char)
 		}
 	}
 
-	// Convert to string and clean up
-	str := string(result)
-
-	// Remove leading/trailing delimiters
-	str = strings.Trim(str, string(delimiter))
-
-	// Remove consecutive delimiters
-	for strings.Contains(str, string(delimiter)+string(delimiter)) {
-		str = strings.ReplaceAll(str, string(delimiter)+string(delimiter), string(delimiter))
-	}
-
-	return str
+	// Remove leading/trailing delimiters.
+	return strings.Trim(string(result), string(delimiter))
 }
 
 // InlineMarkdown removes all Markdown formatting from the given string.

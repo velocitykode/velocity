@@ -25,12 +25,36 @@ type responseWriter struct {
 	beforeFirstWriteFn   func()
 }
 
-// newResponseWriter creates a new response writer wrapper
-func newResponseWriter(w http.ResponseWriter) *responseWriter {
-	return &responseWriter{
-		ResponseWriter: w,
-		status:         http.StatusOK, // Default status
-	}
+// responseWriterPool recycles responseWriter wrappers across requests so
+// ServeHTTP does not heap-allocate one per request. Acquire resets every
+// field (including a fresh sync.Once) so no state leaks between requests.
+var responseWriterPool = sync.Pool{
+	New: func() any { return &responseWriter{} },
+}
+
+// acquireResponseWriter pulls a responseWriter from the pool and resets
+// it to wrap w with a clean state: default 200 status, zero bytes, no
+// header written, an un-fired BeforeFirstWrite gate.
+func acquireResponseWriter(w http.ResponseWriter) *responseWriter {
+	rw := responseWriterPool.Get().(*responseWriter)
+	rw.ResponseWriter = w
+	rw.status = http.StatusOK // Default status
+	rw.bytesWritten = 0
+	rw.wroteHeader = false
+	// A used sync.Once cannot be re-armed; assign a fresh one so the
+	// BeforeFirstWrite hook can fire again for this request.
+	rw.beforeFirstWriteOnce = sync.Once{}
+	rw.beforeFirstWriteFn = nil
+	return rw
+}
+
+// releaseResponseWriter returns rw to the pool after the response
+// completes. Clears references so the pooled wrapper does not pin the
+// previous request's ResponseWriter or hook closure.
+func releaseResponseWriter(rw *responseWriter) {
+	rw.ResponseWriter = nil
+	rw.beforeFirstWriteFn = nil
+	responseWriterPool.Put(rw)
 }
 
 // BeforeFirstWrite registers fn to run exactly once, just before the

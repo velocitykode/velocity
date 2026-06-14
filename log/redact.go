@@ -394,6 +394,22 @@ func BuildDefaultRedactors() Redactor {
 type redactingLogger struct {
 	inner    Logger
 	redactor Redactor
+	// level exposes the inner logger's active minimum severity so a call
+	// the inner logger would discard by level skips redaction entirely
+	// (the full regex passes + per-kv fmt.Sprintf are the cost being
+	// avoided). nil when the inner logger does not expose a level, in
+	// which case gating is disabled and redaction always runs, preserving
+	// the original always-redact behaviour for null / third-party drivers.
+	level leveler
+}
+
+// leveler is the optional interface a wrapped Logger implements to report
+// its active minimum severity (0=debug .. 4=fatal). redactingLogger reads
+// it fresh on every call rather than caching at construction, so a driver
+// that adjusts its level at runtime stays correct. The lookup is a plain
+// field read on the built-in drivers, so gating is effectively free.
+type leveler interface {
+	Level() int
 }
 
 // WithRedactors wraps logger so every Debug/Info/Warn/Error/Fatal call
@@ -412,7 +428,30 @@ func WithRedactors(logger Logger, redactors ...Redactor) Logger {
 	if len(redactors) == 0 {
 		return logger
 	}
-	return &redactingLogger{inner: logger, redactor: Chain(redactors...)}
+	r := &redactingLogger{inner: logger, redactor: Chain(redactors...)}
+	// Capture the inner logger's level source when it exposes one. The
+	// interface is read on every call (not the int snapshotted here), so
+	// runtime level changes are honoured.
+	if lv, ok := logger.(leveler); ok {
+		r.level = lv
+	}
+	return r
+}
+
+// suppressed reports whether a record emitted at callLevel would be
+// discarded by the inner logger's level filter. When the inner logger does
+// not expose a level (r.level == nil) gating is disabled and this always
+// returns false, so redaction runs exactly as it did before. The threshold
+// is read fresh on every call to honour runtime level changes.
+//
+// The comparison mirrors each driver's own guard: a driver discards when
+// its threshold exceeds the call's severity (e.g. console Debug returns
+// early when level > DEBUG), which is precisely callLevel < threshold.
+func (r *redactingLogger) suppressed(callLevel Level) bool {
+	if r.level == nil {
+		return false
+	}
+	return int(callLevel) < r.level.Level()
 }
 
 // redact applies the chain to msg and every kv pair, returning the
@@ -443,25 +482,39 @@ func (r *redactingLogger) redact(msg string, kvs []any) (string, []any) {
 }
 
 func (r *redactingLogger) Debug(msg string, kvs ...any) {
+	if r.suppressed(DEBUG) {
+		return
+	}
 	m, k := r.redact(msg, kvs)
 	r.inner.Debug(m, k...)
 }
 
 func (r *redactingLogger) Info(msg string, kvs ...any) {
+	if r.suppressed(INFO) {
+		return
+	}
 	m, k := r.redact(msg, kvs)
 	r.inner.Info(m, k...)
 }
 
 func (r *redactingLogger) Warn(msg string, kvs ...any) {
+	if r.suppressed(WARN) {
+		return
+	}
 	m, k := r.redact(msg, kvs)
 	r.inner.Warn(m, k...)
 }
 
 func (r *redactingLogger) Error(msg string, kvs ...any) {
+	if r.suppressed(ERROR) {
+		return
+	}
 	m, k := r.redact(msg, kvs)
 	r.inner.Error(m, k...)
 }
 
+// Fatal is never gated: every driver emits Fatal regardless of level and
+// then terminates, so redaction must always run here.
 func (r *redactingLogger) Fatal(msg string, kvs ...any) {
 	m, k := r.redact(msg, kvs)
 	r.inner.Fatal(m, k...)

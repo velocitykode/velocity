@@ -47,6 +47,7 @@
 package drivers
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -934,9 +935,64 @@ type Payload struct {
 	Tag   string `json:"tag,omitempty"`
 }
 
+// payloadBufPool reuses scratch buffers for the SerializePayload fast path.
+// The marshaled JSON is consumed locally (base64-encoded) and then discarded,
+// so each buffer can be returned to the pool after use.
+var payloadBufPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
+
+// jsonSafeBase64 reports whether s contains only characters that
+// encoding/json emits verbatim inside a string (no escaping). The base64
+// URL and standard alphabets plus '=' padding all qualify, so every
+// well-formed Payload field passes. Anything else routes through the
+// reference json.Marshal path so output stays byte-identical.
+func jsonSafeBase64(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		case c == '+', c == '/', c == '=', c == '-', c == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // SerializePayload converts a payload to base64 JSON. This is the canonical
 // implementation; crypto.SerializePayload delegates here.
+//
+// Fast path: the produced JSON is consumed locally (base64-encoded below)
+// then discarded, so it is hand-built into a pooled buffer that is returned
+// to the pool afterward. This genuinely saves the result allocation, unlike
+// call sites that hand the marshaled bytes onward (Go 1.26 json.Marshal
+// already pools its internal scratch buffer, so pooling there is a no-op).
+// Output is byte-identical to json.Marshal(p): same field order, same
+// omitempty handling for MAC/Tag. Fields are base64 (no JSON escaping), and
+// any field that would require escaping falls back to the reference path.
 func SerializePayload(p *Payload) (string, error) {
+	if p != nil && jsonSafeBase64(p.IV) && jsonSafeBase64(p.Value) && jsonSafeBase64(p.MAC) && jsonSafeBase64(p.Tag) {
+		buf := payloadBufPool.Get().(*bytes.Buffer)
+		buf.Reset()
+		buf.WriteString(`{"iv":"`)
+		buf.WriteString(p.IV)
+		buf.WriteString(`","value":"`)
+		buf.WriteString(p.Value)
+		buf.WriteByte('"')
+		if p.MAC != "" {
+			buf.WriteString(`,"mac":"`)
+			buf.WriteString(p.MAC)
+			buf.WriteByte('"')
+		}
+		if p.Tag != "" {
+			buf.WriteString(`,"tag":"`)
+			buf.WriteString(p.Tag)
+			buf.WriteByte('"')
+		}
+		buf.WriteByte('}')
+		out := base64.URLEncoding.EncodeToString(buf.Bytes())
+		payloadBufPool.Put(buf)
+		return out, nil
+	}
 	data, err := json.Marshal(p)
 	if err != nil {
 		return "", err

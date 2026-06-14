@@ -191,6 +191,40 @@ func (c *Client) handleMessage(msg Message) {
 	}
 }
 
+// trySend attempts a non-blocking enqueue onto c.Send while holding c.mu,
+// coordinating with closeSend so the run loop's unregister close cannot race a
+// broadcast fan-out send (both serialize on c.mu). It reports whether the
+// message was queued and, when not, whether the channel was already closed (vs
+// merely full) so the caller can log the right reason. A send is only attempted
+// when c.closed is false; the caller's recover remains a backstop for a Send
+// channel closed out-of-band (without the flag set).
+func (c *Client) trySend(msg Message) (queued, closed bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return false, true
+	}
+	select {
+	case c.Send <- msg:
+		return true, false
+	default:
+		return false, false
+	}
+}
+
+// closeSend marks the Send channel closed and closes it under c.mu so a
+// concurrent fan-out send (trySend) observes the closed flag instead of racing
+// the close. Idempotent: a duplicate close is a no-op.
+func (c *Client) closeSend() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return
+	}
+	c.closed = true
+	close(c.Send)
+}
+
 // SendMessage sends a message to the client
 func (c *Client) SendMessage(msg Message) error {
 	select {

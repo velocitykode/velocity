@@ -167,12 +167,18 @@ func RunWithTimeout[T any](timeout time.Duration, fn func() T) *Result[T] {
 			done <- fn()
 		}()
 
+		// time.NewTimer + defer Stop instead of time.After: time.After's
+		// underlying timer is not collected until it fires, leaking it for
+		// the full timeout even when fn finishes first.
+		t := time.NewTimer(timeout)
+		defer t.Stop()
+
 		select {
 		case v := <-done:
 			r.valueCh <- v
 		case err := <-panicCh:
 			r.errorCh <- err
-		case <-time.After(timeout):
+		case <-t.C:
 			r.setTimedOut()
 			r.errorCh <- fmt.Errorf("operation timed out after %v", timeout)
 		}

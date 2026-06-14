@@ -268,6 +268,33 @@ func (s *StackLogger) Fatal(msg string, kvs ...any) {
 	}
 }
 
+// Level reports the stack's effective minimum severity so the below-level
+// redaction gate (see redactingLogger / WithRedactors) can skip redaction for
+// a record every child would discard. A stack fans each record out to all
+// children, so it drops a record only when every child drops it; the stack
+// threshold is therefore the minimum of its children's thresholds.
+//
+// If ANY child does not expose a level, that child's emit-floor is unknown and
+// it might emit the record, so the stack reports DEBUG (the lowest severity) to
+// disable gating and preserve always-redact for that child. An empty stack
+// reports DEBUG for the same conservative reason.
+func (s *StackLogger) Level() int {
+	min := -1
+	for _, l := range s.loggers {
+		lv, ok := l.(leveler)
+		if !ok {
+			return int(DEBUG)
+		}
+		if min == -1 || lv.Level() < min {
+			min = lv.Level()
+		}
+	}
+	if min == -1 {
+		return int(DEBUG)
+	}
+	return min
+}
+
 // Shutdown closes all underlying loggers that support it, honoring the
 // context deadline. A stack that does not own its children (a Manager-built
 // stack referencing shared channels) shuts nothing down here, leaving those

@@ -60,6 +60,23 @@ func (b *Bond) ClearShared() {
 func (b *Bond) mergeSharedProps(r *http.Request, componentProps Props) Props {
 	b.mu.RLock()
 	sharePropsFunc := b.sharePropsFunc
+
+	// Fast path: no shared static props, no shared funcs, and no
+	// SharePropsFunc means the merge contributes nothing, so the result is
+	// just the component props. Copy them into a fresh map rather than
+	// returning componentProps directly: Render mutates the returned map in
+	// place (applyFlashData writes "errors"/"old"), and the caller's props
+	// map must not be written through. Skips the staticProps/dynamicFuncs
+	// snapshot maps and their copy loops entirely.
+	if len(b.sharedProps) == 0 && len(b.sharedFuncs) == 0 && sharePropsFunc == nil {
+		b.mu.RUnlock()
+		merged := make(Props, len(componentProps))
+		for k, v := range componentProps {
+			merged[k] = v
+		}
+		return merged
+	}
+
 	// Snapshot static shared props.
 	staticProps := make(Props, len(b.sharedProps))
 	for k, v := range b.sharedProps {

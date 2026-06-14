@@ -185,10 +185,9 @@ func (b *Bond) renderHTML(ctx context.Context, w http.ResponseWriter, page Page)
 	if err != nil {
 		return err
 	}
-	pageJSONAttr, err := page.ToHTMLAttr()
-	if err != nil {
-		return err
-	}
+	// Derive the data-page attribute form from the bytes already marshaled
+	// above instead of re-marshaling the whole Page via ToHTMLAttr.
+	pageJSONAttr := htmlAttrEscape(pageJSONRaw)
 
 	return b.template.Execute(w, buildTemplateData(ctx, map[string]any{
 		"inertia":     template.HTML(b.buildInertiaContainer(pageJSONRaw, pageJSONAttr, cspNonceFromContext(ctx))),
@@ -243,6 +242,11 @@ func (b *Bond) renderJSON(w http.ResponseWriter, page Page) error {
 	w.Header().Set("X-Inertia", "true")
 	appendVary(w.Header(), "X-Inertia")
 
+	// No buffer pooling here: Go 1.26 json.Marshal/Encoder already pools its
+	// internal scratch buffer, and the encoded bytes are streamed straight to
+	// the response writer (they escape), so an extra pool would buy nothing
+	// while adding newline/escaping risk. Contrast crypto's SerializePayload,
+	// where the JSON is consumed locally and discarded.
 	return json.NewEncoder(w).Encode(page)
 }
 

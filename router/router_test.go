@@ -543,3 +543,66 @@ func BenchmarkRouter_MissFallback(b *testing.B) {
 		r.ServeHTTP(w, req)
 	}
 }
+
+// BenchmarkClientIP_Concurrent drives parallel requests through the full
+// proxy-resolution path (currentWiring -> trustedProxiesOrParse -> IP()).
+// Before the atomic.Pointer migration, every request took r.mu inside
+// currentWiring, so this benchmark serialized on that single mutex and
+// ns/op rose with -cpu. With the lock-free read the per-request snapshot
+// no longer contends, so throughput scales with GOMAXPROCS.
+//
+// Run: go test ./router -run '^$' -bench BenchmarkClientIP_Concurrent -cpu 1,4,8
+func BenchmarkClientIP_Concurrent(b *testing.B) {
+	r := New()
+	r.TrustedProxies = []string{"10.0.0.0/8"}
+	if err := r.ValidateConfig(); err != nil {
+		b.Fatalf("ValidateConfig: %v", err)
+	}
+	r.Get("/ping", func(c *Context) error {
+		_ = c.IP() // exercise trusted-proxy resolution
+		c.Response.WriteHeader(http.StatusOK)
+		return nil
+	})
+	r.Freeze()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		req := httptest.NewRequest("GET", "/ping", nil)
+		req.RemoteAddr = "10.0.0.1:443" // trusted LB
+		req.Header.Set("X-Forwarded-For", "203.0.113.9")
+		for pb.Next() {
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+		}
+	})
+}
+
+// BenchmarkCurrentWiring_Concurrent isolates the contended call:
+// currentWiring builds the per-request snapshot and is invoked once per
+// request from ServeHTTP. The full-request benchmark above is dominated
+// by httptest allocations, which mask the wiring cost; this one calls
+// currentWiring directly so the mutex-vs-atomic delta is visible.
+//
+// Old (r.mu.Lock per call) serializes every parallel goroutine on one
+// mutex, so ns/op stays flat or worsens with more cores. The lock-free
+// atomic.Pointer load scales down as -cpu rises.
+//
+// Run: go test ./router -run '^$' -bench BenchmarkCurrentWiring_Concurrent -cpu 1,4,8
+func BenchmarkCurrentWiring_Concurrent(b *testing.B) {
+	r := New()
+	r.TrustedProxies = []string{"10.0.0.0/8"}
+	if err := r.ValidateConfig(); err != nil {
+		b.Fatalf("ValidateConfig: %v", err)
+	}
+	r.Get("/ping", func(c *Context) error { return nil })
+	r.Freeze()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_ = r.currentWiring()
+		}
+	})
+}

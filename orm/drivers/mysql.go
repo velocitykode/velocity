@@ -265,7 +265,7 @@ func (g *MySQLGrammar) compileConditions(sql *strings.Builder, args *[]any, cond
 		// this branch is dead, but the seam stays in place for the
 		// JSON_CONTAINS / JSON_OVERLAPS follow-ups.
 		if cond.Spec != nil {
-			fragment, _ := renderOperatorTemplate(g, cond, 0, args, "?")
+			fragment, _ := renderOperatorTemplate(g, cond, 0, args, questionPlaceholder)
 			sql.WriteString(fragment)
 			continue
 		}

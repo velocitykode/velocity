@@ -98,6 +98,21 @@ func BenchmarkMap(b *testing.B) {
 	}
 }
 
+func BenchmarkMapN(b *testing.B) {
+	items := make([]int, 100)
+	for i := range items {
+		items[i] = i
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = MapN(16, items, func(item int) int {
+			return item * 2
+		})
+	}
+}
+
 func BenchmarkGo(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		done := make(chan struct{})

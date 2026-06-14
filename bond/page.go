@@ -49,11 +49,17 @@ func (p Page) ToHTMLAttr() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Escape HTML entities for safe embedding in data-page='...'
-	// html.EscapeString handles <, >, &, " but NOT single quotes.
-	// Since we embed in a single-quoted attribute, also escape ' to prevent
-	// attribute breakout (e.g. prop values like "O'Brien").
+	return htmlAttrEscape(jsonStr), nil
+}
+
+// htmlAttrEscape escapes already-marshaled page JSON for safe embedding in a
+// single-quoted data-page='...' attribute. Callers that have the JSON bytes in
+// hand use this directly to avoid re-marshaling the Page.
+//
+// html.EscapeString handles <, >, &, " but NOT single quotes. Since we embed in
+// a single-quoted attribute, also escape ' to prevent attribute breakout (e.g.
+// prop values like "O'Brien").
+func htmlAttrEscape(jsonStr string) string {
 	escaped := html.EscapeString(jsonStr)
-	escaped = strings.ReplaceAll(escaped, "'", "&#39;")
-	return escaped, nil
+	return strings.ReplaceAll(escaped, "'", "&#39;")
 }

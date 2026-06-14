@@ -262,3 +262,53 @@ func TestShareMultiple_InitializesNilMap(t *testing.T) {
 		t.Errorf("expected key 'value', got %v", b.sharedProps["key"])
 	}
 }
+
+// TestMergeSharedProps_NoSharedDoesNotAliasComponentProps guards the fast
+// path: with no shared props/funcs the result must be a fresh map, not the
+// caller's componentProps, since Render mutates the returned map in place.
+func TestMergeSharedProps_NoSharedDoesNotAliasComponentProps(t *testing.T) {
+	b := setupBond(t)
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	componentProps := Props{"component": "value"}
+
+	merged := b.mergeSharedProps(r, componentProps)
+
+	if merged["component"] != "value" {
+		t.Errorf("expected component 'value', got %v", merged["component"])
+	}
+	// Mutating the merged map (as applyFlashData does) must not write back.
+	merged["errors"] = "injected"
+	if _, ok := componentProps["errors"]; ok {
+		t.Error("fast path aliased componentProps: mutation leaked to caller's map")
+	}
+}
+
+// TestMergeSharedProps_NoSharedNilComponentProps ensures the fast path returns
+// a non-nil writable map even when componentProps is nil.
+func TestMergeSharedProps_NoSharedNilComponentProps(t *testing.T) {
+	b := setupBond(t)
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	merged := b.mergeSharedProps(r, nil)
+
+	if merged == nil {
+		t.Fatal("expected non-nil map from fast path with nil componentProps")
+	}
+	merged["errors"] = "ok" // must not panic on nil map
+}
+
+func BenchmarkMergeSharedProps_NoShared(b *testing.B) {
+	bond, err := New(Config{RootTemplate: validTemplate, Version: "1.0.0"})
+	if err != nil {
+		b.Fatalf("failed to create Bond: %v", err)
+	}
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	componentProps := Props{"user": "alice", "count": 42}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = bond.mergeSharedProps(r, componentProps)
+	}
+}

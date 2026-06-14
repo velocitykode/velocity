@@ -230,6 +230,11 @@ func (f *FileLogger) log(level, msg string, kvs ...any) {
 	}
 }
 
+// Level returns the configured minimum severity (0=debug .. 4=fatal). A
+// redacting wrapper reads this to skip redaction work for records this
+// logger would discard by level.
+func (f *FileLogger) Level() int { return f.level }
+
 // Debug logs a debug-level message to file
 func (f *FileLogger) Debug(msg string, kvs ...any) {
 	if f.level > 0 {

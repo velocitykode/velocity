@@ -79,14 +79,20 @@ func AllN[T any](concurrency int, fns ...func() T) ([]T, error) {
 		wg.Add(1)
 		semaphore <- struct{}{} // acquire before spawning so the cap is enforced
 		go func() {
+			// Run fn directly in the worker with an inline recover (same
+			// panic-as-error contract as Run) and write straight into the
+			// preallocated slices by index, avoiding a per-item Result +
+			// two channels + a relay goroutine. On panic values[i] keeps its
+			// zero value, matching Run's "no value delivered" semantics.
 			defer func() {
+				if p := recover(); p != nil {
+					handlePanic(p)
+					errs[i] = panicerr.FromRecovered(p)
+				}
 				<-semaphore
 				wg.Done()
 			}()
-			r := Run(fn)
-			v, err := r.Get()
-			values[i] = v
-			errs[i] = err
+			values[i] = fn()
 		}()
 	}
 
@@ -480,16 +486,20 @@ func MapN[T, R any](concurrency int, items []T, fn func(T) R) ([]R, error) {
 		wg.Add(1)
 		semaphore <- struct{}{} // acquire before spawning so the cap is enforced
 		go func() {
+			// Run fn directly in the worker with an inline recover (same
+			// panic-as-error contract as Run) and write straight into the
+			// preallocated slices by index, avoiding a per-item Result +
+			// two channels + a relay goroutine. On panic values[i] keeps its
+			// zero value, matching Run's "no value delivered" semantics.
 			defer func() {
+				if p := recover(); p != nil {
+					handlePanic(p)
+					errs[i] = panicerr.FromRecovered(p)
+				}
 				<-semaphore
 				wg.Done()
 			}()
-			r := Run(func() R {
-				return fn(item)
-			})
-			v, err := r.Get()
-			values[i] = v
-			errs[i] = err
+			values[i] = fn(item)
 		}()
 	}
 

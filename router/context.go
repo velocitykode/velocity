@@ -50,8 +50,13 @@ func ServicesFromRequest(r *http.Request) *app.Services {
 	if r == nil {
 		return nil
 	}
+	// A WithServices override layered above the matched route wins
+	// (last-writer-wins); fall back to the bundled routeData otherwise.
 	if s, ok := r.Context().Value(servicesCtxKey{}).(*app.Services); ok {
 		return s
+	}
+	if rd, ok := r.Context().Value(routeDataKey{}).(*routeData); ok && rd.services != nil {
+		return rd.services
 	}
 	return nil
 }
@@ -107,10 +112,9 @@ type Context struct {
 // If services were previously stashed on r.Context() (via the router pipeline),
 // they are inherited automatically.
 func NewContext(w http.ResponseWriter, r *http.Request) *Context {
-	var svc *app.Services
-	if s, ok := r.Context().Value(servicesCtxKey{}).(*app.Services); ok {
-		svc = s
-	}
+	// Inherit services from either the bundled routeData (matched path)
+	// or a standalone WithServices (not-found/static/external).
+	svc := ServicesFromRequest(r)
 	// Convert map params from request context to []RouteParam
 	mapParams := GetParams(r)
 	var params []RouteParam

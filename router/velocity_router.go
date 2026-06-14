@@ -87,9 +87,11 @@ type VelocityRouterV2 struct {
 	// parsedTrustedProxies; validate up-front with Router.ValidateConfig.
 	TrustedProxies []string
 
-	// parsedTrustedProxies caches the parsed form. Populated by
-	// ValidateConfig or on first Freeze(); guarded by mu.
-	parsedTrustedProxies *TrustedProxies
+	// parsedTrustedProxies caches the parsed form. Populated eagerly by
+	// ValidateConfig / commitOnce, or lazily on first request. Stored via
+	// atomic.Pointer so the request path (currentWiring) reads it lock-free
+	// instead of contending on mu, which also guards boot config.
+	parsedTrustedProxies atomic.Pointer[TrustedProxies]
 
 	// RedirectAllowedHosts, when non-empty, extends same-origin redirect
 	// validation to these hosts. Relative paths are always allowed.
@@ -359,33 +361,37 @@ func (r *VelocityRouterV2) reportDispatchError(err error, event Event) {
 //
 // Safe to call multiple times; each call re-parses.
 func (r *VelocityRouterV2) ValidateConfig() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	tp, err := ParseTrustedProxies(r.TrustedProxies)
 	if err != nil {
 		return fmt.Errorf("velocity/router: trusted proxies: %w", err)
 	}
-	r.parsedTrustedProxies = tp
+	r.parsedTrustedProxies.Store(tp)
 	return nil
 }
 
 // trustedProxiesOrParse returns the parsed TrustedProxies, parsing
 // lazily on first use if ValidateConfig has not been called. A parse
-// error yields an empty set (no proxies trusted) — operators who want
+// error yields an empty set (no proxies trusted), operators who want
 // fail-fast should call ValidateConfig at boot.
+//
+// The read is lock-free: it loads an atomic.Pointer rather than taking
+// r.mu, so concurrent requests on the hot path do not serialize against
+// each other or against boot config. The lazy populate races benignly,
+// losers of the CompareAndSwap discard their parse and adopt the winner.
 func (r *VelocityRouterV2) trustedProxiesOrParse() *TrustedProxies {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.parsedTrustedProxies != nil {
-		return r.parsedTrustedProxies
+	if tp := r.parsedTrustedProxies.Load(); tp != nil {
+		return tp
 	}
 	tp, err := ParseTrustedProxies(r.TrustedProxies)
 	if err != nil {
 		// Best-effort: never trust anything on misconfiguration.
 		tp = &TrustedProxies{}
 	}
-	r.parsedTrustedProxies = tp
-	return tp
+	if r.parsedTrustedProxies.CompareAndSwap(nil, tp) {
+		return tp
+	}
+	// Another goroutine populated it first; use that.
+	return r.parsedTrustedProxies.Load()
 }
 
 // DroppedEventCount returns the total number of events for which the
@@ -584,7 +590,8 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.commitOnce()
 
 	meta, req := r.beginRequest(req)
-	rw := newResponseWriter(w)
+	rw := acquireResponseWriter(w)
+	defer releaseResponseWriter(rw)
 
 	r.dispatchInstanceEvent(req.Context(), &RequestStarted{
 		Context:    req.Context(),
@@ -621,16 +628,25 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	r.dispatchInstanceEvent(req.Context(), &RequestRouted{
-		Context:   req.Context(),
-		RequestID: meta.id,
-		Route:     result.Path,
-		RouteName: result.Name,
-		Params:    result.Params,
-		Matched:   true,
-	})
+	// Bundle the per-route context values once. The params map is built
+	// lazily and cached on this bundle, so event population and any later
+	// Params/GetParams consumers share one map instead of rebuilding it.
+	rd := &routeData{result: result, services: r.services}
 
-	req = r.enrichRequest(req, result)
+	// Materialize the param map only when an event consumer exists; with
+	// no dispatcher wired the map is never built (R3 laziness).
+	if r.eventDispatcher != nil {
+		r.dispatchInstanceEvent(req.Context(), &RequestRouted{
+			Context:   req.Context(),
+			RequestID: meta.id,
+			Route:     result.Path,
+			RouteName: result.Name,
+			Params:    rd.paramsMap(),
+			Matched:   true,
+		})
+	}
+
+	req = r.enrichRequest(req, rd)
 	ctx := r.acquireContext(rw, req, result)
 	r.invokeHandler(ctx, rw, req, result, meta)
 }
@@ -640,14 +656,25 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 // updated request.
 func (r *VelocityRouterV2) beginRequest(req *http.Request) (requestMeta, *http.Request) {
 	reqCtx, traceID, spanID := trace.StartTrace(req.Context())
+	lazyID := &lazyRequestID{}
 	meta := requestMeta{
-		id:        generateRequestID(),
 		startedAt: time.Now(),
 		traceID:   traceID,
 		spanID:    spanID,
 		parentID:  trace.GetParentID(reqCtx),
 	}
-	reqCtx = context.WithValue(reqCtx, RequestIDKey, meta.id)
+	// The dispatched request events all carry the ID, so materialize it
+	// eagerly only when an event dispatcher is wired. With no consumer,
+	// the ID stays unresolved until GetRequestID reads it (if ever).
+	// Both paths share the same holder, so the event ID and any later
+	// GetRequestID read are guaranteed identical and stable.
+	if r.eventDispatcher != nil {
+		meta.id = lazyID.get()
+	}
+	// Wrap rather than WithValue so RequestIDKey resolves to the
+	// materialized string (preserving the exported key's value type)
+	// while keeping generation lazy.
+	reqCtx = requestIDContext{Context: reqCtx, lazy: lazyID}
 	return meta, req.WithContext(reqCtx)
 }
 
@@ -766,10 +793,10 @@ func (r *VelocityRouterV2) matchRoute(req *http.Request) *MatchResult {
 			return m
 		}
 	}
-	if m := tree.Match(req.Method, path); m != nil {
+	if m := tree.matchLazy(req.Method, path); m != nil {
 		return m
 	}
-	return tree.Match("ANY", path)
+	return tree.matchLazy("ANY", path)
 }
 
 // handleNotFound runs the unmatched-path response through the global
@@ -855,17 +882,13 @@ func (r *VelocityRouterV2) handleNotFound(rw *responseWriter, req *http.Request,
 }
 
 // enrichRequest attaches route params, name, pattern, and services to
-// the request context. Returns the updated request.
-func (r *VelocityRouterV2) enrichRequest(req *http.Request, result *MatchResult) *http.Request {
-	req = SetParams(req, result.Params)
-	if result.Name != "" {
-		req = SetRouteName(req, result.Name)
-	}
-	req = req.WithContext(context.WithValue(req.Context(), RoutePatternKey, result.Path))
-	if r.services != nil {
-		req = WithServices(req, r.services)
-	}
-	return req
+// the request context. The four per-route values are bundled into a
+// single routeData carried by one context.WithValue, so a matched
+// request clones its context once for routing data instead of once per
+// value. The corresponding getters (GetParams, GetRouteName,
+// GetRoutePattern, ServicesFromRequest) read from the bundle.
+func (r *VelocityRouterV2) enrichRequest(req *http.Request, rd *routeData) *http.Request {
+	return req.WithContext(routeDataContext{Context: req.Context(), rd: rd})
 }
 
 // currentWiring builds the per-request wiring snapshot handed to every
@@ -1087,6 +1110,11 @@ func (r *VelocityRouterV2) commitOnce() {
 	})
 	wrappedStatic := applyMiddlewareChain(staticTerminal, r.middlewares)
 	r.staticHandler.Store(&wrappedStatic)
+
+	// Eagerly populate the parsed trusted-proxy set so the first request
+	// does not pay the parse (and the lazy CompareAndSwap is a no-op).
+	// Lock-free store; safe under mu.
+	r.trustedProxiesOrParse()
 
 	r.committed = true
 	r.frozen = true

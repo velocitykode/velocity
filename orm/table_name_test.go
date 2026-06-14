@@ -98,3 +98,48 @@ func TestTableNameDerivation_ScaffolderParity_B7(t *testing.T) {
 			runtime, scaffolder, sample)
 	}
 }
+
+// TestDeriveTableName_CacheParity proves a custom-TableName type and a
+// default-pluralized type both resolve identically whether the call is a
+// cold miss (cache cleared) or a warm hit, and that *T and T share an entry.
+func TestDeriveTableName_CacheParity(t *testing.T) {
+	cases := []struct {
+		typ  reflect.Type
+		want string
+	}{
+		{reflect.TypeOf(b7ValueTable{}), "b7_custom_value"},
+		{reflect.TypeOf(b7PtrTable{}), "b7_custom_ptr"},
+		{reflect.TypeOf(b7UserProfile{}), str.Plural(ToSnakeCase("b7UserProfile"))},
+	}
+	for _, tc := range cases {
+		tableNameCache.Delete(tc.typ) // force cold path
+		cold := deriveTableName(tc.typ)
+		warm := deriveTableName(tc.typ)                   // cached
+		ptr := deriveTableName(reflect.PointerTo(tc.typ)) // deref to same key
+		if cold != tc.want || warm != tc.want || ptr != tc.want {
+			t.Fatalf("%s: cold=%q warm=%q ptr=%q want %q",
+				tc.typ, cold, warm, ptr, tc.want)
+		}
+	}
+}
+
+// BenchmarkDeriveTableName measures the warm (cached) path: the type is
+// resolved once before the loop so every iteration is a sync.Map hit.
+func BenchmarkDeriveTableName(b *testing.B) {
+	t := reflect.TypeOf(b7UserProfile{})
+	deriveTableName(t) // warm the cache
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = deriveTableName(t)
+	}
+}
+
+// BenchmarkDeriveTableNameCold measures the uncached derivation by deleting
+// the cache entry each iteration, for contrast with the warm path.
+func BenchmarkDeriveTableNameCold(b *testing.B) {
+	t := reflect.TypeOf(b7UserProfile{})
+	for i := 0; i < b.N; i++ {
+		tableNameCache.Delete(t)
+		_ = deriveTableName(t)
+	}
+}

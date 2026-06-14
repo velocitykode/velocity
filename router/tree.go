@@ -4,9 +4,22 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 
 	"github.com/velocitykode/velocity/contract"
 )
+
+// pathPartsPool recycles the []string segment buffer used per Match so
+// the dynamic/404 path does not allocate a fresh slice header array per
+// request. The backing array is reused; Match copies anything it needs
+// to retain into the result, so returning the buffer to the pool after
+// the walk is safe.
+var pathPartsPool = sync.Pool{
+	New: func() any {
+		s := make([]string, 0, 8)
+		return &s
+	},
+}
 
 // Tree is a radix tree for route matching
 type Tree struct {
@@ -34,12 +47,22 @@ type Node struct {
 
 // MatchResult contains the matched route info
 type MatchResult struct {
-	Handler       HandlerFunc
+	Handler HandlerFunc
+	// Params holds the name->value map. The public Tree.Match populates
+	// it; the matchLazy hot path leaves it nil and reads params from the
+	// matchedValues slice instead (see acquireContext), materializing the
+	// map lazily via paramMap only when a consumer asks for it.
 	Params        map[string]string
 	Name          string
 	Path          string
 	segments      []Segment // internal: for param name extraction
 	matchedValues []string  // internal: raw matched values for pool-based context init
+	// treeMatched marks a per-request result built by buildMatchResult
+	// (as opposed to a shared compiled/registered MatchResult). It gates
+	// empty-map materialization: a no-capture tree match still yields a
+	// non-nil empty params map, matching Tree.Match's prior contract,
+	// while shared compiled static results keep returning a nil map.
+	treeMatched bool
 }
 
 // NewTree creates a new routing tree
@@ -135,8 +158,22 @@ func (n *Node) getOrCreateChild(seg Segment) *Node {
 	return nil
 }
 
-// Match finds a route for the given method and path
+// Match finds a route for the given method and path. The returned
+// MatchResult has its exported Params field populated for any dynamic,
+// regex, or wildcard captures, preserving the public API contract.
+// The router hot path uses matchLazy instead, which defers the map
+// build (see ServeHTTP / acquireContext).
 func (t *Tree) Match(method, path string) *MatchResult {
+	result := t.matchLazy(method, path)
+	if result != nil {
+		result.Params = result.paramMap()
+	}
+	return result
+}
+
+// matchLazy finds a route without materializing the Params map. Used by
+// the router hot path, which reads captures from matchedValues directly.
+func (t *Tree) matchLazy(method, path string) *MatchResult {
 	// Normalize path
 	path = strings.Trim(path, "/")
 
@@ -144,33 +181,42 @@ func (t *Tree) Match(method, path string) *MatchResult {
 	if path == "" {
 		if t.root.handlers != nil {
 			if result, ok := t.root.handlers[method]; ok {
-				return &MatchResult{
-					Handler:  result.Handler,
-					Params:   make(map[string]string),
-					Name:     result.Name,
-					Path:     result.Path,
-					segments: result.segments,
-				}
+				return buildMatchResult(result, nil)
 			}
 		}
 		return nil
 	}
 
-	parts := strings.Split(path, "/")
-	// Remove empty parts (from trailing slash) — reuse the same slice
-	n := 0
-	for _, p := range parts {
-		if p != "" {
-			parts[n] = p
-			n++
+	// Split the path on '/' boundaries with an index scan into a pooled
+	// buffer, skipping empty segments (collapsed "//" and any residual
+	// trailing slash). Avoids strings.Split's per-request slice
+	// allocation on the dynamic/404 hot path.
+	partsPtr := pathPartsPool.Get().(*[]string)
+	parts := (*partsPtr)[:0]
+	start := 0
+	for i := 0; i < len(path); i++ {
+		if path[i] == '/' {
+			if i > start {
+				parts = append(parts, path[start:i])
+			}
+			start = i + 1
 		}
 	}
-	parts = parts[:n]
+	if len(path) > start {
+		parts = append(parts, path[start:])
+	}
 
 	// Pre-allocate matched values buffer with typical capacity
 	matchedValues := make([]string, 0, 4)
 
-	return t.root.match(parts, method, matchedValues)
+	result := t.root.match(parts, method, matchedValues)
+
+	// Return the buffer (possibly grown during append) to the pool. The
+	// result retains only copied values, never the parts backing array.
+	*partsPtr = parts[:0]
+	pathPartsPool.Put(partsPtr)
+
+	return result
 }
 
 // match recursively matches path parts against the tree.
@@ -275,20 +321,29 @@ func unescapeCapture(part string) string {
 	return part
 }
 
-// buildMatchResult constructs a MatchResult with params map built from
-// the registered segments and a defensive snapshot of matchedValues.
+// buildMatchResult constructs a MatchResult with a defensive snapshot of
+// matchedValues. The param name->value map is NOT built here: the Context
+// hot path reads params from a []RouteParam slice (see acquireContext),
+// so the map() form is materialized lazily via paramMap only when an
+// event consumer or GetParams actually asks for it.
 func buildMatchResult(registered *MatchResult, matchedValues []string) *MatchResult {
-	params := buildParams(registered.segments, matchedValues)
 	snapshot := make([]string, len(matchedValues))
 	copy(snapshot, matchedValues)
 	return &MatchResult{
 		Handler:       registered.Handler,
-		Params:        params,
 		Name:          registered.Name,
 		Path:          registered.Path,
 		segments:      registered.segments,
 		matchedValues: snapshot,
+		treeMatched:   true,
 	}
+}
+
+// paramMap builds the param name->value map on demand from the matched
+// segments and captured values. Off the hot path: called only when an
+// event consumer (RequestRouted) or GetParams needs the map form.
+func (m *MatchResult) paramMap() map[string]string {
+	return buildParams(m.segments, m.matchedValues)
 }
 
 // buildParams creates a params map from segments and matched values

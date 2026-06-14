@@ -110,6 +110,43 @@ func TestBus_Dispatch_SelfHandling_Error(t *testing.T) {
 	}
 }
 
+// TestBus_Dispatch_SelfHandlingThenRegister guards against a stale composed
+// chain: a self-handling command dispatched through middleware once, then a
+// typed handler registered for the same type, must route to the registered
+// handler on the next dispatch (not the baked-in SelfHandling terminal).
+func TestBus_Dispatch_SelfHandlingThenRegister(t *testing.T) {
+	b := New()
+	b.Through(Middleware(func(cmd Command, next func(Command) error) error {
+		return next(cmd)
+	}))
+
+	// First dispatch resolves and (previously) cached the self-handling terminal.
+	first := &selfHandlingCmd{}
+	if err := b.Dispatch(first); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !first.called {
+		t.Fatal("SelfHandling.Handle() was not called on first dispatch")
+	}
+
+	var handled bool
+	Register(b, func(cmd *selfHandlingCmd) error {
+		handled = true
+		return nil
+	})
+
+	second := &selfHandlingCmd{}
+	if err := b.Dispatch(second); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !handled {
+		t.Fatal("registered handler was not called after Register")
+	}
+	if second.called {
+		t.Fatal("SelfHandling.Handle() called instead of the registered handler")
+	}
+}
+
 func TestBus_Dispatch_NoHandler(t *testing.T) {
 	b := New()
 
@@ -158,6 +195,47 @@ func TestBus_Dispatch_WithMiddleware(t *testing.T) {
 	}
 
 	expected := []string{"before", "handler", "after"}
+	if len(order) != len(expected) {
+		t.Fatalf("got order %v, want %v", order, expected)
+	}
+	for i, v := range expected {
+		if order[i] != v {
+			t.Fatalf("order[%d] = %q, want %q", i, order[i], v)
+		}
+	}
+}
+
+// TestBus_Through_AfterDispatch_Invalidates ensures the lazily-built composed
+// middleware cache is invalidated when Through adds middleware after the first
+// Dispatch has already built the cache.
+func TestBus_Through_AfterDispatch_Invalidates(t *testing.T) {
+	b := New()
+
+	var order []string
+	Register(b, func(cmd createUser) error {
+		order = append(order, "handler")
+		return nil
+	})
+
+	// First dispatch builds the composed cache with no middleware.
+	if err := b.Dispatch(createUser{Name: "Test"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(order) != 1 || order[0] != "handler" {
+		t.Fatalf("got order %v, want [handler]", order)
+	}
+
+	// Adding middleware after the cache was built must take effect.
+	b.Through(Middleware(func(cmd Command, next func(Command) error) error {
+		order = append(order, "before")
+		return next(cmd)
+	}))
+
+	order = nil
+	if err := b.Dispatch(createUser{Name: "Test"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := []string{"before", "handler"}
 	if len(order) != len(expected) {
 		t.Fatalf("got order %v, want %v", order, expected)
 	}

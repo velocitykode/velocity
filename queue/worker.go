@@ -492,8 +492,10 @@ func (w *Worker) processJob() error {
 		// for every slow-handler / lease-loss combination.
 		owned := w.ackReservation(reservation)
 		// removeAttempts is local cache cleanup, safe to do regardless
-		// of ownership.
-		w.removeAttempts(job)
+		// of ownership. The key is derived once here and skipped entirely
+		// (nil) when the reservation already carries the persisted attempt
+		// count; see attemptKey.
+		w.removeAttempts(w.attemptKey(job, reservation))
 		if !owned {
 			return nil
 		}
@@ -651,13 +653,17 @@ func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, 
 
 	// Determine the attempt number for the MaxAttempts decision. Durable
 	// drivers report the persisted, post-increment value on the token;
-	// non-durable drivers fall through to the in-memory cache.
-	attempt := w.attemptNumber(job, reservation)
+	// non-durable drivers fall through to the in-memory cache. Derive the
+	// attempt-tracking key once here and thread it to attemptNumber and
+	// failJob so the content hash runs at most once per job lifecycle (and
+	// not at all when the reservation already carries Attempts).
+	key := w.attemptKey(job, reservation)
+	attempt := w.attemptNumber(key, reservation)
 
 	// Check if the job opts out of retrying this specific error
 	if rd, ok := job.(RetryDecider); ok {
 		if !rd.ShouldRetry(err) {
-			w.failJob(ctx, job, jobType, err, duration, attempt, maxAttempts, reservation)
+			w.failJob(ctx, job, jobType, err, duration, attempt, maxAttempts, key, reservation)
 			return
 		}
 	}
@@ -703,7 +709,7 @@ func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, 
 				return
 			}
 			w.logger.Error("Failed to re-queue job for retry", "error", requeueErr)
-			w.failJob(ctx, job, jobType, err, duration, attempt, maxAttempts, reservation)
+			w.failJob(ctx, job, jobType, err, duration, attempt, maxAttempts, key, reservation)
 			return
 		}
 		// Requeue confirmed (or no lease to lose): now safe to fire
@@ -719,7 +725,7 @@ func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, 
 		return
 	}
 
-	w.failJob(ctx, job, jobType, err, duration, attempt, maxAttempts, reservation)
+	w.failJob(ctx, job, jobType, err, duration, attempt, maxAttempts, key, reservation)
 }
 
 // attemptNumber returns the authoritative attempt count for MaxAttempts
@@ -728,16 +734,29 @@ func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, 
 // the in-memory cache is bumped for parity but its return value is
 // ignored. For non-reservation drivers the in-memory counter is the only
 // source available.
-func (w *Worker) attemptNumber(job Job, token ReservationToken) int {
+func (w *Worker) attemptNumber(key interface{}, token ReservationToken) int {
 	if !token.IsZero() && token.Attempts > 0 {
-		// Keep the in-memory cache in sync with the persisted view so
-		// it remains a usable fast-path for diagnostics and so a later
-		// non-reservation call site reads a sane value. The return is
-		// discarded; the persisted column wins.
-		w.incrementAttempts(job)
+		// Persisted column wins. key is nil on this path (attemptKey
+		// skipped the hash): the in-memory counter is not authoritative
+		// for reservation drivers and is never read here, so there is no
+		// cache to bump.
 		return token.Attempts
 	}
-	return w.incrementAttempts(job)
+	return w.incrementAttempts(key)
+}
+
+// attemptKey derives the attempt-tracking key for a job exactly once per
+// failure/cleanup and is threaded to attemptNumber / removeAttempts /
+// failJob so the content hash in jobKey runs at most once per job
+// lifecycle. Returns nil when the reservation already carries the persisted
+// attempt count: that value is authoritative for reservation drivers, so
+// the in-memory cache (and therefore the hash) is unnecessary. A nil key
+// makes incrementAttempts / removeAttempts no-op against the cache.
+func (w *Worker) attemptKey(job Job, token ReservationToken) interface{} {
+	if !token.IsZero() && token.Attempts > 0 {
+		return nil
+	}
+	return w.jobKey(job)
 }
 
 // failJob permanently fails a job after exhausting retries.
@@ -763,10 +782,12 @@ func (w *Worker) attemptNumber(job Job, token ReservationToken) int {
 // Event dispatch still uses ctx so trace ids and request-scoped values
 // propagate; only the database mutation runs under the detached
 // terminalCleanupTimeout budget.
-func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error, duration time.Duration, attempt, maxAttempts int, reservation ReservationToken) {
+func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error, duration time.Duration, attempt, maxAttempts int, key interface{}, reservation ReservationToken) {
 	// Cleanup attempt cache regardless of ownership; this is pure
-	// per-worker state.
-	w.removeAttempts(job)
+	// per-worker state. key is the precomputed attempt-tracking key
+	// threaded from handleJobFailure (nil when the reservation already
+	// carries Attempts and no cache entry was ever stored).
+	w.removeAttempts(key)
 
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), terminalCleanupTimeout)
 	defer cleanupCancel()
@@ -859,15 +880,26 @@ func (w *Worker) jobKey(job Job) interface{} {
 	return job
 }
 
-// incrementAttempts atomically increments and returns the attempt count for a job.
-func (w *Worker) incrementAttempts(job Job) int {
-	key := w.jobKey(job)
+// incrementAttempts atomically increments and returns the attempt count
+// for the given precomputed key (see attemptKey / jobKey). A nil key means
+// the caller is on the reservation-authoritative path where the persisted
+// column wins and the in-memory cache is intentionally skipped; it returns
+// 0 and the value is discarded.
+func (w *Worker) incrementAttempts(key interface{}) int {
+	if key == nil {
+		return 0
+	}
 	val, _ := w.attempts.LoadOrStore(key, new(int32))
 	counter := val.(*int32)
 	return int(atomic.AddInt32(counter, 1))
 }
 
-// removeAttempts cleans up attempt tracking for a job.
-func (w *Worker) removeAttempts(job Job) {
-	w.attempts.Delete(w.jobKey(job))
+// removeAttempts cleans up attempt tracking for the given precomputed key.
+// A nil key is a no-op: nothing was stored on the reservation-authoritative
+// path.
+func (w *Worker) removeAttempts(key interface{}) {
+	if key == nil {
+		return
+	}
+	w.attempts.Delete(key)
 }

@@ -770,7 +770,11 @@ func NewPriorityDispatcher() *PriorityDispatcher {
 
 // getListenersForEvent retrieves all listeners for an event, sorted by priority
 func (d *PriorityDispatcher) getListenersForEvent(event interface{}) []Listener {
-	listeners := d.QueueIntegratedDispatcher.getListenersForEvent(event)
+	// The base slice is shared with the resolved-listener cache; clone before
+	// sorting in place so the cached order is not corrupted.
+	base := d.QueueIntegratedDispatcher.getListenersForEvent(event)
+	listeners := make([]Listener, len(base))
+	copy(listeners, base)
 
 	// Sort by priority (higher priority first)
 	for i := 0; i < len(listeners)-1; i++ {

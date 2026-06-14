@@ -48,6 +48,11 @@ func (c *ConsoleLogger) formatMessage(level, msg string, kvs ...any) string {
 	return logLine
 }
 
+// Level returns the configured minimum severity (0=debug .. 4=fatal). A
+// redacting wrapper reads this to skip redaction work for records this
+// logger would discard by level.
+func (c *ConsoleLogger) Level() int { return c.level }
+
 // Debug logs a debug-level message to console
 func (c *ConsoleLogger) Debug(msg string, kvs ...any) {
 	if c.level > 0 {

@@ -49,6 +49,27 @@ type Server struct {
 	handlers   map[string]MessageHandler
 	middleware []Middleware
 
+	// Fan-out handoff. handleBroadcast (on the run loop) snapshots clients and
+	// appends a broadcastJob to fanoutQ under fanoutMu, then pings fanoutSig.
+	// The append is the only thing the run loop does for a broadcast, so it can
+	// never block on a slow or paused fan-out: fanoutQ is unbounded and fanoutMu
+	// is held only for the O(1) append/swap, never across a send. fanoutSig is a
+	// cap-1 wakeup that coalesces (a buffered token is enough to make the fanout
+	// goroutine drain the whole queue), so signalling is non-blocking too. This
+	// replaces the earlier bounded `fanout chan broadcastJob`, whose 256-slot
+	// buffer let a backed-up fan-out block the run loop's enqueue and starve
+	// register/unregister.
+	fanoutMu  sync.Mutex
+	fanoutQ   []broadcastJob
+	fanoutSig chan struct{}
+
+	// fanoutHook, when non-nil, runs at the start of each broadcast fan-out
+	// on the fanout goroutine. Test-only seam to hold a fan-out open so
+	// concurrent registration on the run loop can be observed; nil (and free)
+	// in production. Set before Start so the fanout goroutine observes it
+	// without a data race (goroutine creation establishes happens-before).
+	fanoutHook func()
+
 	// Callbacks
 	onConnect    atomic.Pointer[func(*Client)]
 	onDisconnect atomic.Pointer[DisconnectFunc]
@@ -93,6 +114,15 @@ type Server struct {
 
 // loggerHolder wraps a Logger so atomic.Value stores a single concrete type.
 type loggerHolder struct{ Logger }
+
+// broadcastJob carries a broadcast message together with the client snapshot
+// taken under s.mu on the run-loop goroutine. The fan-out (the actual sends)
+// runs on the dedicated fanout goroutine so the run loop can keep draining
+// register/unregister/broadcast while sends proceed.
+type broadcastJob struct {
+	message Message
+	clients []*Client
+}
 
 // SetLogger installs a logger for operational events (connects, disconnects,
 // rate-limit violations, recovered panics). Nil disables logging. Safe to
@@ -175,6 +205,7 @@ func New(config Config) *Server {
 		clients:    make(map[string]*Client),
 		groups:     make(map[string]map[string]*Client),
 		broadcast:  make(chan Message, 256),
+		fanoutSig:  make(chan struct{}, 1),
 		register:   make(chan *Client, 256),
 		unregister: make(chan *Client, 256),
 		handlers:   make(map[string]MessageHandler),
@@ -220,6 +251,18 @@ func (s *Server) Start() error {
 	async.Go(func() {
 		defer s.wg.Done()
 		s.run()
+	})
+
+	// Dedicated fan-out goroutine. handleBroadcast snapshots clients under
+	// s.mu on the run loop, then hands the snapshot here so the actual sends
+	// happen off the run-loop dispatch path - the run loop keeps draining
+	// register/unregister/broadcast while a fan-out is in flight. Tracked on
+	// s.wg so Shutdown waits for it to drain. Wrapped in async.Go for the
+	// same process-level panic containment as the run loop.
+	s.wg.Add(1)
+	async.Go(func() {
+		defer s.wg.Done()
+		s.fanoutLoop()
 	})
 	return nil
 }
@@ -341,9 +384,10 @@ func (s *Server) callWithRecover(site string, fn func()) {
 	fn()
 }
 
-// RecoveredPanics returns the number of times the run loop's inner recover
-// has caught a panic in a single handler dispatch. Exposed for observability
-// and tests; safe to call concurrently. Audit D-04 follow-up.
+// RecoveredPanics returns the number of times a panic has been caught and
+// contained - by the run loop's inner recover in a single handler dispatch, or
+// by the per-client recover in the broadcast fan-out (sendOrDrop). Exposed for
+// observability and tests; safe to call concurrently. Audit D-04 follow-up.
 func (s *Server) RecoveredPanics() uint64 {
 	return s.recoveredPanics.Load()
 }
@@ -547,13 +591,15 @@ func (s *Server) handleUnregister(client *Client) {
 	}
 
 	// Now that every listener has had a chance to purge its references,
-	// close the Send channel. Any send that races with this close is
-	// defended against by the caller's recover (see broadcast/drivers
-	// sendOrDrop) plus the listener-driven purge that just ran. We do not
-	// re-acquire s.mu: the client is already removed from s.clients, so
-	// no other server-side path can reach Send by name, and adapters
-	// either purged via the listener or rely on the documented recover.
-	close(client.Send)
+	// close the Send channel via closeSend, which sets client.closed and
+	// closes under client.mu. The broadcast fan-out's sendOrDrop serializes on
+	// the same client.mu (via trySend) and observes the closed flag instead of
+	// racing the close, so the concurrent-disconnect path is -race clean rather
+	// than relying solely on a recover. The listener-driven purge that just ran
+	// still clears adapter references. We do not re-acquire s.mu: the client is
+	// already removed from s.clients, so no other server-side path can reach
+	// Send by name.
+	client.closeSend()
 
 	s.logInfo("Client disconnected", "client_id", client.ID)
 
@@ -574,22 +620,132 @@ func (s *Server) invokeDisconnectListener(fn DisconnectFunc, client *Client) {
 	fn(client)
 }
 
-// handleBroadcast sends message to all clients
+// handleBroadcast snapshots the current clients and hands the fan-out to the
+// dedicated fanout goroutine.
+//
+// Snapshot-then-send (mirrors broadcast/drivers.WebSocketDriver.snapshotTargets):
+// copy the client references into a local slice under a brief RLock, release the
+// lock, then enqueue the snapshot for the fanout goroutine to send. The snapshot
+// stays under s.mu (an O(len(clients)) pointer-copy), but the sends - which are
+// O(fan-out) and would otherwise occupy the run-loop goroutine for their whole
+// duration - run on the fanout goroutine. That keeps run() free to drain
+// register/unregister so a newly connected client queued on s.register is
+// registered while the previous broadcast is still being delivered.
+//
+// The handoff is append-to-queue + non-blocking signal, never a bounded-channel
+// send: even if the fanout goroutine is paused or slow and the queue has grown
+// past any threshold, the run loop only ever takes fanoutMu for an O(1) append
+// and pings the cap-1 fanoutSig with a default fall-through. So the run loop can
+// never block here, and register/unregister keep draining regardless of fan-out
+// backlog. Delivery is preserved: every enqueued job is drained by fanoutLoop.
 func (s *Server) handleBroadcast(message Message) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-
+	clients := make([]*Client, 0, len(s.clients))
 	for _, client := range s.clients {
+		clients = append(clients, client)
+	}
+	s.mu.RUnlock()
+
+	s.fanoutMu.Lock()
+	s.fanoutQ = append(s.fanoutQ, broadcastJob{message: message, clients: clients})
+	s.fanoutMu.Unlock()
+
+	// Non-blocking wakeup. A cap-1 buffered token coalesces multiple enqueues
+	// into a single pending signal; fanoutLoop drains the whole queue per wake,
+	// so one buffered token suffices and a full buffer means a wake is already
+	// pending.
+	select {
+	case s.fanoutSig <- struct{}{}:
+	default:
+	}
+}
+
+// fanoutLoop drains broadcast snapshots and performs the sends off the
+// run-loop goroutine. It wakes on fanoutSig, drains every queued job, then
+// blocks again; it exits when stopChan is closed. Each job is wrapped in
+// callWithRecover as a backstop for non-send panics (e.g. a panicking
+// fanoutHook); the targeted send panic is handled per-client in sendOrDrop.
+func (s *Server) fanoutLoop() {
+	for {
 		select {
-		case client.Send <- message:
-		default:
-			// Client's send channel is full, skip
-			s.logWarn("Client send channel full, skipping message", "client_id", client.ID)
+		case <-s.fanoutSig:
+			s.drainFanout()
+		case <-s.stopChan:
+			return
 		}
+	}
+}
+
+// drainFanout delivers every queued broadcast job, looping until the queue is
+// empty. It swaps the whole pending slice out under fanoutMu (O(1)) and delivers
+// the batch with the lock released, so handleBroadcast's concurrent append never
+// waits on a send. Re-checking after each batch catches jobs appended while the
+// previous batch was in flight.
+func (s *Server) drainFanout() {
+	for {
+		s.fanoutMu.Lock()
+		if len(s.fanoutQ) == 0 {
+			s.fanoutMu.Unlock()
+			return
+		}
+		batch := s.fanoutQ
+		s.fanoutQ = nil
+		s.fanoutMu.Unlock()
+
+		for _, job := range batch {
+			s.callWithRecover("fanout", func() { s.deliver(job) })
+		}
+	}
+}
+
+// deliver fans a snapshotted broadcast out to every client, sending through
+// sendOrDrop so neither a full nor a closed Send channel can abort the loop.
+func (s *Server) deliver(job broadcastJob) {
+	if hook := s.fanoutHook; hook != nil {
+		hook()
+	}
+	for _, client := range job.clients {
+		s.sendOrDrop(client, job.message)
 	}
 	// MessagesSent is counted once at the actual wire write in writePump, not
 	// here at enqueue (which would double-count, and previously also counted
 	// clients skipped for a full buffer).
+}
+
+// sendOrDrop enqueues message onto client.Send without blocking and without
+// letting one stale client abort the rest of the fan-out. It delegates to
+// client.trySend, which serializes the send against handleUnregister's
+// closeSend on client.mu: when the client unregistered between the snapshot and
+// this send (the snapshot and send run on different goroutines - run loop vs
+// fanout - so that race is real), trySend observes client.closed under the lock
+// and skips the send instead of racing the close. A full buffer is skipped and
+// warned. Either way iteration continues so every other snapshot-time client
+// still receives the message - preserving the all-snapshot-clients invariant.
+//
+// The deferred recover remains a backstop for a Send channel closed out-of-band
+// (without client.closed set, e.g. a caller that closes Send directly). Such a
+// recovered panic is counted on s.recoveredPanics (same counter as the run
+// loop) and logged.
+func (s *Server) sendOrDrop(client *Client, message Message) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.recoveredPanics.Add(1)
+			s.logError(
+				"websocket broadcast send recovered",
+				"client_id", client.ID,
+				"error", panicerr.FromRecovered(r),
+			)
+		}
+	}()
+	switch queued, closed := client.trySend(message); {
+	case queued:
+	case closed:
+		// Client unregistered between snapshot and send; drop.
+		s.logWarn("Client send channel closed, skipping message", "client_id", client.ID)
+	default:
+		// Client's send channel is full, skip.
+		s.logWarn("Client send channel full, skipping message", "client_id", client.ID)
+	}
 }
 
 // checkOrigin validates the origin of the connection.

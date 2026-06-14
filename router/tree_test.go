@@ -131,8 +131,8 @@ func TestTree_InsertAndMatch_ParameterRoutes(t *testing.T) {
 			t.Fatal("expected match for /users/123")
 		}
 
-		if result.Params["id"] != "123" {
-			t.Errorf("expected id=123, got %q", result.Params["id"])
+		if result.paramMap()["id"] != "123" {
+			t.Errorf("expected id=123, got %q", result.paramMap()["id"])
 		}
 	})
 
@@ -145,11 +145,11 @@ func TestTree_InsertAndMatch_ParameterRoutes(t *testing.T) {
 			t.Fatal("expected match")
 		}
 
-		if result.Params["userId"] != "1" {
-			t.Errorf("expected userId=1, got %q", result.Params["userId"])
+		if result.paramMap()["userId"] != "1" {
+			t.Errorf("expected userId=1, got %q", result.paramMap()["userId"])
 		}
-		if result.Params["postId"] != "99" {
-			t.Errorf("expected postId=99, got %q", result.Params["postId"])
+		if result.paramMap()["postId"] != "99" {
+			t.Errorf("expected postId=99, got %q", result.paramMap()["postId"])
 		}
 	})
 
@@ -164,8 +164,8 @@ func TestTree_InsertAndMatch_ParameterRoutes(t *testing.T) {
 				t.Errorf("should match /users/%s", val)
 				continue
 			}
-			if result.Params["id"] != val {
-				t.Errorf("expected id=%s, got %q", val, result.Params["id"])
+			if result.paramMap()["id"] != val {
+				t.Errorf("expected id=%s, got %q", val, result.paramMap()["id"])
 			}
 		}
 	})
@@ -195,8 +195,8 @@ func TestTree_InsertAndMatch_RegexConstrainedRoutes(t *testing.T) {
 		if result == nil {
 			t.Fatal("expected match for numeric id")
 		}
-		if result.Params["id"] != "123" {
-			t.Errorf("expected id=123, got %q", result.Params["id"])
+		if result.paramMap()["id"] != "123" {
+			t.Errorf("expected id=123, got %q", result.paramMap()["id"])
 		}
 	})
 
@@ -264,8 +264,8 @@ func TestTree_InsertAndMatch_WildcardRoutes(t *testing.T) {
 		if result == nil {
 			t.Fatal("expected match for wildcard")
 		}
-		if result.Params["path"] != "dir/subdir/file.txt" {
-			t.Errorf("expected path=dir/subdir/file.txt, got %q", result.Params["path"])
+		if result.paramMap()["path"] != "dir/subdir/file.txt" {
+			t.Errorf("expected path=dir/subdir/file.txt, got %q", result.paramMap()["path"])
 		}
 	})
 
@@ -277,8 +277,8 @@ func TestTree_InsertAndMatch_WildcardRoutes(t *testing.T) {
 		if result == nil {
 			t.Fatal("expected match for empty wildcard")
 		}
-		if result.Params["path"] != "" {
-			t.Errorf("expected empty path, got %q", result.Params["path"])
+		if result.paramMap()["path"] != "" {
+			t.Errorf("expected empty path, got %q", result.paramMap()["path"])
 		}
 	})
 
@@ -394,7 +394,7 @@ func TestTree_MatchPriority(t *testing.T) {
 		if regexResult == nil {
 			t.Fatal("should match regex")
 		}
-		if regexResult.Params["id"] != "123" {
+		if regexResult.paramMap()["id"] != "123" {
 			t.Error("regex should capture id param")
 		}
 
@@ -403,7 +403,7 @@ func TestTree_MatchPriority(t *testing.T) {
 		if paramResult == nil {
 			t.Fatal("should match param")
 		}
-		if paramResult.Params["name"] != "johndoe" {
+		if paramResult.paramMap()["name"] != "johndoe" {
 			t.Error("param should capture name param")
 		}
 	})
@@ -449,8 +449,8 @@ func TestTree_ComplexRoutes(t *testing.T) {
 			}
 
 			for key, expectedVal := range tt.params {
-				if result.Params[key] != expectedVal {
-					t.Errorf("%s %s: expected %s=%s, got %s", tt.method, tt.path, key, expectedVal, result.Params[key])
+				if result.paramMap()[key] != expectedVal {
+					t.Errorf("%s %s: expected %s=%s, got %s", tt.method, tt.path, key, expectedVal, result.paramMap()[key])
 				}
 			}
 		}
@@ -467,8 +467,8 @@ func TestTree_ComplexRoutes(t *testing.T) {
 		if result == nil {
 			t.Fatal("should match v1")
 		}
-		if result.Params["version"] != "v1" {
-			t.Errorf("expected version=v1, got %q", result.Params["version"])
+		if result.paramMap()["version"] != "v1" {
+			t.Errorf("expected version=v1, got %q", result.paramMap()["version"])
 		}
 
 		// Invalid version format

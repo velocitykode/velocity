@@ -379,3 +379,127 @@ func TestPostgresGrammar_CompileSelect_WithGroupByAndHaving(t *testing.T) {
 		})
 	}
 }
+
+// TestPostgresPlaceholderGolden pins byte-identical generated SQL for the
+// placeholder-emitting paths after switching from fmt.Sprintf to
+// strconv.AppendInt. Covers a multi-column INSERT, a single-column UPDATE
+// (deterministic, no map-order ambiguity), and a multi-condition WHERE with
+// IN and BETWEEN to exercise every $N site.
+func TestPostgresPlaceholderGolden(t *testing.T) {
+	grammar := &PostgresGrammar{}
+
+	t.Run("MultiColumnInsert", func(t *testing.T) {
+		sql, _ := grammar.CompileInsert(
+			"users",
+			[]string{"name", "email", "active"},
+			[][]any{
+				{"John", "john@example.com", true},
+				{"Jane", "jane@example.com", false},
+			},
+		)
+		want := `INSERT INTO "users" ("name", "email", "active") VALUES ($1, $2, $3), ($4, $5, $6) RETURNING id`
+		if sql != want {
+			t.Errorf("INSERT SQL =\n%q\nwant:\n%q", sql, want)
+		}
+	})
+
+	t.Run("SingleColumnUpdate", func(t *testing.T) {
+		sql, _ := grammar.CompileUpdate(
+			"users",
+			map[string]any{"name": "Updated"},
+			[]Condition{{Column: "id", Operator: "=", Value: 1, Type: "and"}},
+		)
+		want := `UPDATE "users" SET "name" = $1 WHERE "id" = $2`
+		if sql != want {
+			t.Errorf("UPDATE SQL =\n%q\nwant:\n%q", sql, want)
+		}
+	})
+
+	t.Run("MultiConditionWhere", func(t *testing.T) {
+		sql, _ := grammar.CompileSelect(&SelectQuery{
+			Table:   "users",
+			Columns: []string{"id"},
+			Conditions: []Condition{
+				{Column: "active", Operator: "=", Value: true, Type: "and"},
+				{Column: "role", Operator: "IN", Value: []any{"admin", "user"}, Type: "and"},
+				{Column: "age", Operator: "BETWEEN", Value: []any{18, 65}, Type: "and"},
+			},
+		})
+		want := `SELECT "id" FROM "users" WHERE "active" = $1 AND "role" IN ($2, $3) AND "age" BETWEEN $4 AND $5`
+		if sql != want {
+			t.Errorf("WHERE SQL =\n%q\nwant:\n%q", sql, want)
+		}
+	})
+}
+
+// TestPostgresOperatorWhereGolden pins the $N placeholder rendering on the
+// registered-operator WHERE path (compileConditions -> renderOperatorTemplate
+// -> dollarPlaceholder). It covers a scalar JSONB operator (@>) and a variadic
+// array operator (&&) so both the single-placeholder and per-element expansion
+// branches are exercised off the fmt.Sprintf path.
+func TestPostgresOperatorWhereGolden(t *testing.T) {
+	grammar := &PostgresGrammar{}
+
+	jsonbSpec := OperatorSpec{Op: "@>", Arity: 1, ParamShape: ParamJSON, Template: "{{lhs}} @> {{rhs}}::jsonb"}
+	overlapSpec := OperatorSpec{Op: "&&", Arity: 1, ParamShape: ParamArray, Template: "{{lhs}} && {{rhs}}"}
+
+	sql, args := grammar.CompileSelect(&SelectQuery{
+		Table:   "apps",
+		Columns: []string{"id"},
+		Conditions: []Condition{
+			{Column: "processes", Operator: "@>", Value: `{"key":"value"}`, Spec: &jsonbSpec, Type: "and"},
+			{Column: "tags", Operator: "&&", Value: []any{1, 2, 3}, Spec: &overlapSpec, Type: "and"},
+		},
+	})
+
+	wantSQL := `SELECT "id" FROM "apps" WHERE "processes" @> $1::jsonb AND "tags" && ARRAY[$2, $3, $4]`
+	if sql != wantSQL {
+		t.Errorf("WHERE SQL =\n%q\nwant:\n%q", sql, wantSQL)
+	}
+	wantArgs := []any{`{"key":"value"}`, 1, 2, 3}
+	if len(args) != len(wantArgs) {
+		t.Fatalf("args length: got %d, want %d", len(args), len(wantArgs))
+	}
+	for i := range args {
+		if args[i] != wantArgs[i] {
+			t.Errorf("args[%d]: got %v, want %v", i, args[i], wantArgs[i])
+		}
+	}
+}
+
+// BenchmarkPostgresOperatorWhere measures the registered-operator WHERE path
+// to confirm placeholder rendering stays off fmt.Sprintf.
+func BenchmarkPostgresOperatorWhere(b *testing.B) {
+	grammar := &PostgresGrammar{}
+	jsonbSpec := OperatorSpec{Op: "@>", Arity: 1, ParamShape: ParamJSON, Template: "{{lhs}} @> {{rhs}}::jsonb"}
+	overlapSpec := OperatorSpec{Op: "&&", Arity: 1, ParamShape: ParamArray, Template: "{{lhs}} && {{rhs}}"}
+	query := &SelectQuery{
+		Table:   "apps",
+		Columns: []string{"id"},
+		Conditions: []Condition{
+			{Column: "processes", Operator: "@>", Value: `{"key":"value"}`, Spec: &jsonbSpec, Type: "and"},
+			{Column: "tags", Operator: "&&", Value: []any{1, 2, 3}, Spec: &overlapSpec, Type: "and"},
+		},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = grammar.CompileSelect(query)
+	}
+}
+
+func BenchmarkPostgresCompileInsert(b *testing.B) {
+	grammar := &PostgresGrammar{}
+	columns := []string{"name", "email", "active", "age", "created_at"}
+	values := [][]any{
+		{"John", "john@example.com", true, 30, "2026-01-01"},
+		{"Jane", "jane@example.com", false, 28, "2026-01-02"},
+		{"Jack", "jack@example.com", true, 41, "2026-01-03"},
+		{"Jill", "jill@example.com", false, 35, "2026-01-04"},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = grammar.CompileInsert("users", columns, values)
+	}
+}

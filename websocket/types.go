@@ -25,6 +25,11 @@ type Client struct {
 	Groups   map[string]bool
 	Metadata map[string]interface{}
 	mu       sync.RWMutex
+	// closed guards the Send channel's lifecycle. It is set true (and Send
+	// closed) exactly once by closeSend under mu; trySend checks it under the
+	// same mu so a broadcast fan-out send cannot race the unregister close.
+	// See websocket/server.go handleUnregister and sendOrDrop.
+	closed bool
 }
 
 // Config holds WebSocket server configuration

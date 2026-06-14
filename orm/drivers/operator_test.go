@@ -99,7 +99,7 @@ func TestRenderOperatorTemplate_Postgres(t *testing.T) {
 			}
 			cond := Condition{Column: column, Operator: tt.op, Value: tt.val, Spec: &spec}
 			args := []any{}
-			fragment, nextIdx := renderOperatorTemplate(g, cond, 1, &args, "$%d")
+			fragment, nextIdx := renderOperatorTemplate(g, cond, 1, &args, dollarPlaceholder)
 
 			if fragment != tt.wantSQL {
 				t.Errorf("SQL: got %q, want %q", fragment, tt.wantSQL)
@@ -135,7 +135,7 @@ func TestRenderOperatorTemplate_NonIndexedPlaceholder(t *testing.T) {
 	}
 	cond := Condition{Column: "processes", Operator: "@>", Value: "x", Spec: &spec}
 	args := []any{}
-	fragment, _ := renderOperatorTemplate(g, cond, 1, &args, "?")
+	fragment, _ := renderOperatorTemplate(g, cond, 1, &args, questionPlaceholder)
 
 	if !strings.Contains(fragment, "?") {
 		t.Errorf("fragment missing literal placeholder: %q", fragment)

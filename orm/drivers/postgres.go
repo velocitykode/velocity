@@ -2,8 +2,30 @@ package drivers
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
+
+// appendDollarN writes a PostgreSQL positional placeholder ("$N") into sql
+// without the reflection/alloc cost of fmt.Sprintf. The scratch array stays
+// on the stack; strings.Builder.Write copies the digits out, so nothing
+// escapes per call. Output is byte-identical to fmt.Sprintf("$%d", n).
+func appendDollarN(sql *strings.Builder, n int) {
+	sql.WriteByte('$')
+	var buf [20]byte
+	sql.Write(strconv.AppendInt(buf[:0], int64(n), 10))
+}
+
+// dollarPlaceholder is the placeholderFunc for the registered-operator path
+// (renderOperatorTemplate). It builds "$N" via strconv.AppendInt rather than
+// fmt.Sprintf("$%d", n), matching appendDollarN, so Postgres JSON/array
+// operators (@>, ?|, ?&, &&) bind their placeholders without the reflection
+// and per-call allocation cost fmt imposes on the hot WHERE path.
+func dollarPlaceholder(n int) string {
+	var buf [21]byte
+	buf[0] = '$'
+	return string(strconv.AppendInt(buf[:1], int64(n), 10))
+}
 
 // PostgresGrammar implements QueryGrammar for PostgreSQL.
 //
@@ -186,7 +208,7 @@ func (g *PostgresGrammar) CompileInsert(table string, columns []string, values [
 			if j > 0 {
 				sql.WriteString(", ")
 			}
-			sql.WriteString(fmt.Sprintf("$%d", argIndex))
+			appendDollarN(&sql, argIndex)
 			args = append(args, row[j])
 			argIndex++
 		}
@@ -220,7 +242,8 @@ func (g *PostgresGrammar) CompileUpdate(table string, values map[string]any, con
 			sql.WriteString(" = ")
 			sql.WriteString(string(rawVal))
 		} else {
-			sql.WriteString(fmt.Sprintf(" = $%d", argIndex))
+			sql.WriteString(" = ")
+			appendDollarN(&sql, argIndex)
 			args = append(args, value)
 			argIndex++
 		}
@@ -338,7 +361,7 @@ func (g *PostgresGrammar) compileConditions(sql *strings.Builder, args *[]any, c
 		// the column, operator literal, and bound-parameter form so dialect
 		// quirks (e.g. JSONB cast) live in the template, not the call site.
 		if cond.Spec != nil {
-			fragment, newIdx := renderOperatorTemplate(g, cond, argIndex, args, "$%d")
+			fragment, newIdx := renderOperatorTemplate(g, cond, argIndex, args, dollarPlaceholder)
 			sql.WriteString(fragment)
 			argIndex = newIdx
 			continue
@@ -377,19 +400,23 @@ func (g *PostgresGrammar) compileConditions(sql *strings.Builder, args *[]any, c
 				if j > 0 {
 					sql.WriteString(", ")
 				}
-				sql.WriteString(fmt.Sprintf("$%d", argIndex))
+				appendDollarN(sql, argIndex)
 				argIndex++
 				*args = append(*args, values[j])
 			}
 			sql.WriteString(")")
 		case "BETWEEN", "NOT BETWEEN":
 			if values, ok := cond.Value.([]any); ok && len(values) == 2 {
-				sql.WriteString(fmt.Sprintf(" $%d AND $%d", argIndex, argIndex+1))
+				sql.WriteString(" ")
+				appendDollarN(sql, argIndex)
+				sql.WriteString(" AND ")
+				appendDollarN(sql, argIndex+1)
 				*args = append(*args, values[0], values[1])
 				argIndex += 2
 			}
 		default:
-			sql.WriteString(fmt.Sprintf(" $%d", argIndex))
+			sql.WriteString(" ")
+			appendDollarN(sql, argIndex)
 			*args = append(*args, cond.Value)
 			argIndex++
 		}

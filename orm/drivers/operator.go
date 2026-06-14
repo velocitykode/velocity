@@ -1,7 +1,6 @@
 package drivers
 
 import (
-	"fmt"
 	"strings"
 )
 
@@ -72,21 +71,32 @@ type OperatorSpec struct {
 	Template string
 }
 
+// placeholderFunc renders a single bound-parameter placeholder for the
+// active dialect given the 1-based parameter index. Indexed dialects
+// (postgres) build "$1", "$2", ... via strconv (no fmt); non-indexed
+// dialects (mysql, sqlite) ignore the index and return a literal "?".
+type placeholderFunc func(argIndex int) string
+
+// questionPlaceholder is the placeholderFunc for non-indexed dialects
+// (mysql, sqlite): every bound parameter is a literal "?". The argIndex is
+// irrelevant because the driver assigns positions by ordinal at execute time.
+func questionPlaceholder(int) string { return "?" }
+
 // renderOperatorTemplate compiles a Condition with cond.Spec set into a SQL
 // fragment plus appended bound parameters. The grammar passes its quote
-// helper, the next free placeholder index, and a placeholderFmt formatted
-// the way the dialect emits parameters ("$%d" for postgres, "?" for the
+// helper, the next free placeholder index, and a placeholder builder that
+// emits parameters the way the dialect expects ($N for postgres, "?" for the
 // wildcard dialects). Returns the rendered fragment and the next free
 // placeholder index.
 //
 // Variadic / slice / array shapes expand one placeholder per element so a
 // single ?| call binds N parameters; ARRAY[...] bracketing in the template
 // keeps the SQL syntactically valid for postgres array overlap.
-func renderOperatorTemplate(g QueryGrammar, cond Condition, argIndex int, args *[]any, placeholderFmt string) (string, int) {
+func renderOperatorTemplate(g QueryGrammar, cond Condition, argIndex int, args *[]any, placeholder placeholderFunc) (string, int) {
 	spec := cond.Spec
 	lhs := g.QuoteIdentifier(cond.Column)
 
-	rhs, nextIdx := bindOperatorValue(spec, cond.Value, argIndex, args, placeholderFmt)
+	rhs, nextIdx := bindOperatorValue(spec, cond.Value, argIndex, args, placeholder)
 
 	out := spec.Template
 	out = strings.ReplaceAll(out, "{{lhs}}", lhs)
@@ -100,22 +110,22 @@ func renderOperatorTemplate(g QueryGrammar, cond Condition, argIndex int, args *
 // form. Scalar and JSON shapes consume one placeholder; slice / array
 // shapes expand to a comma-separated list, with ARRAY[...] bracketing for
 // ParamArray (the postgres array literal form).
-func bindOperatorValue(spec *OperatorSpec, val any, argIndex int, args *[]any, placeholderFmt string) (string, int) {
+func bindOperatorValue(spec *OperatorSpec, val any, argIndex int, args *[]any, placeholder placeholderFunc) (string, int) {
 	switch spec.ParamShape {
 	case ParamScalar, ParamJSON:
-		ph := renderPlaceholder(placeholderFmt, argIndex)
+		ph := placeholder(argIndex)
 		*args = append(*args, val)
 		return ph, argIndex + 1
 	case ParamSlice, ParamArray:
 		values, ok := val.([]any)
 		if !ok || len(values) == 0 {
-			ph := renderPlaceholder(placeholderFmt, argIndex)
+			ph := placeholder(argIndex)
 			*args = append(*args, val)
 			return ph, argIndex + 1
 		}
 		var parts []string
 		for _, v := range values {
-			parts = append(parts, renderPlaceholder(placeholderFmt, argIndex))
+			parts = append(parts, placeholder(argIndex))
 			argIndex++
 			*args = append(*args, v)
 		}
@@ -125,22 +135,7 @@ func bindOperatorValue(spec *OperatorSpec, val any, argIndex int, args *[]any, p
 		}
 		return "(" + joined + ")", argIndex
 	}
-	ph := renderPlaceholder(placeholderFmt, argIndex)
+	ph := placeholder(argIndex)
 	*args = append(*args, val)
 	return ph, argIndex + 1
-}
-
-// renderPlaceholder formats a single bound-parameter placeholder for the
-// active dialect. Indexed dialects (postgres) pass a format string with a
-// %d verb ("$%d") that resolves to "$1", "$2", ... Non-indexed dialects
-// (mysql, sqlite) pass a literal placeholder ("?") that has no verb to
-// substitute; passing such a literal through fmt.Sprintf with an extra int
-// would emit "?%!(EXTRA int=N)" and corrupt the SQL the moment either
-// driver registers an extension operator. Detect the no-verb case and
-// return the placeholder verbatim.
-func renderPlaceholder(placeholderFmt string, argIndex int) string {
-	if strings.Contains(placeholderFmt, "%") {
-		return fmt.Sprintf(placeholderFmt, argIndex)
-	}
-	return placeholderFmt
 }

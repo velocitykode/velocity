@@ -23,6 +23,17 @@ const rawStringFrame byte = 0x00
 // MarshalValue serializes a cache value to bytes for a serializing store.
 // Invalid-UTF-8 strings are framed verbatim behind a 0x00 marker byte; every
 // other value uses plain JSON.
+//
+// Buffer pooling (as applied to crypto's SerializePayload) is deliberately NOT
+// used here. Pooling only pays off when the marshaled bytes are consumed and
+// discarded inside the same call, so the scratch buffer can be returned to the
+// pool before it returns; SerializePayload qualifies because it base64-encodes
+// the JSON locally and never lets it escape. MarshalValue instead returns the
+// raw JSON bytes to the calling store driver (redis SET, file write), so the
+// slice escapes the function and could not be safely returned to a pool. On top
+// of that, Go's json.Marshal already pools its own internal scratch buffer; the
+// only remaining allocation is the result slice itself, which must escape by
+// contract. There is no per-call allocation left here for pooling to remove.
 func MarshalValue(value interface{}) ([]byte, error) {
 	if s, ok := value.(string); ok && !utf8.ValidString(s) {
 		framed := make([]byte, 0, len(s)+1)

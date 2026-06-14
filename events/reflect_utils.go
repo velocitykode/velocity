@@ -3,7 +3,16 @@ package events
 import (
 	"reflect"
 	"strings"
+	"sync"
 )
+
+// eventNameCache memoizes the dot-notation event name derived for a
+// reflect.Type, so resolveEventName's reflect.TypeOf + camelToDot work runs
+// once per concrete event type instead of on every Dispatch. reflect.Type
+// values are comparable and interned by the runtime, making them safe sync.Map
+// keys. Distinct types (e.g. T and *T) cache separately even though they
+// resolve to the same name.
+var eventNameCache sync.Map // reflect.Type -> string
 
 // resolveEventName extracts the event name from various types.
 // For types implementing Event, returns Event.Name().
@@ -20,8 +29,13 @@ func resolveEventName(event interface{}) string {
 		return s
 	}
 
-	name := reflectTypeName(event)
-	return camelToDot(name)
+	t := reflect.TypeOf(event)
+	if cached, ok := eventNameCache.Load(t); ok {
+		return cached.(string)
+	}
+	name := camelToDot(reflectTypeNameFromType(t))
+	eventNameCache.Store(t, name)
+	return name
 }
 
 // resolveEventNameRaw extracts the event name without case conversion.
@@ -43,7 +57,12 @@ func resolveEventNameRaw(event interface{}) string {
 
 // reflectTypeName returns the short type name of a value, dereferencing pointers.
 func reflectTypeName(v interface{}) string {
-	t := reflect.TypeOf(v)
+	return reflectTypeNameFromType(reflect.TypeOf(v))
+}
+
+// reflectTypeNameFromType returns the short type name for a reflect.Type,
+// dereferencing pointers.
+func reflectTypeNameFromType(t reflect.Type) string {
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
 	}

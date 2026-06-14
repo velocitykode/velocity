@@ -760,3 +760,202 @@ func (s *shutdownCapture) Shutdown(_ context.Context) error {
 	s.called = true
 	return nil
 }
+
+// leveledCapturingLogger is a capturingLogger that also exposes a Level so
+// the redacting wrapper engages its below-level gate. The embedded
+// capturingLogger does NOT itself gate by level (it records every call),
+// so any record that fails to reach it was dropped by the wrapper, not the
+// inner logger - exactly what the gate tests want to observe.
+type leveledCapturingLogger struct {
+	capturingLogger
+	lvl int
+}
+
+func (l *leveledCapturingLogger) Level() int { return l.lvl }
+
+// countingRedactor records how many times Redact was invoked so a test can
+// prove the wrapper performed zero redaction work for a gated record. It
+// otherwise returns the input untouched.
+type countingRedactor struct{ calls int }
+
+func (c *countingRedactor) Redact(s string) string {
+	c.calls++
+	return s
+}
+
+// TestRedactingLogger_BelowLevelSkipsRedaction proves a Debug call against
+// a wrapper whose inner logger is at INFO performs no redaction work and
+// does not reach the inner logger.
+func TestRedactingLogger_BelowLevelSkipsRedaction(t *testing.T) {
+	inner := &leveledCapturingLogger{lvl: int(INFO)}
+	counter := &countingRedactor{}
+	wrapped := WithRedactors(inner, counter)
+
+	wrapped.Debug("Authorization: Bearer secret", "token", "eyJ0.eyJ1.sig")
+
+	if counter.calls != 0 {
+		t.Errorf("Debug-at-INFO ran %d redactions, want 0", counter.calls)
+	}
+	if inner.level != "" {
+		t.Errorf("suppressed Debug reached inner logger as %q", inner.level)
+	}
+}
+
+// TestRedactingLogger_AtOrAboveLevelByteIdentical confirms a record that
+// passes the level filter is redacted byte-for-byte identically to the
+// un-gated wrapper, so the optimisation never changes emitted output.
+func TestRedactingLogger_AtOrAboveLevelByteIdentical(t *testing.T) {
+	const msg = "Authorization: Bearer secret"
+	args := []any{"token", "eyJ0.eyJ1.sig_value", "user_id", 42}
+
+	// Gated wrapper: inner logger sits at INFO.
+	gatedInner := &leveledCapturingLogger{lvl: int(INFO)}
+	gated := WithRedactors(gatedInner, HeaderRedactor(), JWTRedactor())
+
+	// Reference wrapper: plain capturingLogger exposes no level, so gating
+	// is disabled and redaction always runs (the pre-change behaviour).
+	refInner := &capturingLogger{}
+	ref := WithRedactors(refInner, HeaderRedactor(), JWTRedactor())
+
+	gated.Info(msg, args...)
+	ref.Info(msg, args...)
+
+	if gatedInner.msg != refInner.msg {
+		t.Errorf("msg differs: gated %q vs ref %q", gatedInner.msg, refInner.msg)
+	}
+	if len(gatedInner.kvs) != len(refInner.kvs) {
+		t.Fatalf("kv count differs: gated %d vs ref %d", len(gatedInner.kvs), len(refInner.kvs))
+	}
+	for i := range gatedInner.kvs {
+		if gatedInner.kvs[i] != refInner.kvs[i] {
+			t.Errorf("kv[%d] differs: gated %v vs ref %v", i, gatedInner.kvs[i], refInner.kvs[i])
+		}
+	}
+}
+
+// TestRedactingLogger_FatalAlwaysRedacts confirms Fatal is never gated:
+// even when the inner level suppresses every lower severity, Fatal still
+// reaches the inner logger with its content redacted.
+func TestRedactingLogger_FatalAlwaysRedacts(t *testing.T) {
+	inner := &leveledCapturingLogger{lvl: int(FATAL)}
+	wrapped := WithRedactors(inner, HeaderRedactor())
+
+	wrapped.Fatal("Authorization: Bearer secret")
+
+	if inner.level != "FATAL" {
+		t.Fatalf("Fatal did not reach inner logger (level %q)", inner.level)
+	}
+	if inner.msg != "Authorization: [REDACTED]" {
+		t.Errorf("Fatal msg not redacted: %q", inner.msg)
+	}
+}
+
+// TestRedactingLogger_NoLevelGatingDisabled confirms an inner logger that
+// does not expose a level always runs redaction (no gating), preserving
+// the original behaviour for null / third-party drivers.
+func TestRedactingLogger_NoLevelGatingDisabled(t *testing.T) {
+	inner := &capturingLogger{}
+	counter := &countingRedactor{}
+	wrapped := WithRedactors(inner, counter)
+
+	wrapped.Debug("anything")
+
+	if counter.calls == 0 {
+		t.Error("Debug ran 0 redactions; gating should be disabled without a level source")
+	}
+}
+
+// BenchmarkRedactingLogger_BelowLevel measures the cost of a Debug call
+// that the inner INFO-level logger would discard. With the level gate it
+// should perform no redaction (no regex passes, no per-kv Sprintf).
+func BenchmarkRedactingLogger_BelowLevel(b *testing.B) {
+	inner := &leveledCapturingLogger{lvl: int(INFO)}
+	wrapped := WithRedactors(inner, BuildDefaultRedactors())
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		wrapped.Debug("Authorization: Bearer secret", "token", "eyJ0.eyJ1.sig", "n", i)
+	}
+}
+
+// TestRedactingLogger_StackBelowLevelSkipsRedaction proves the below-level
+// gate engages for a *StackLogger whose children all expose a level. A Debug
+// call against a stack of INFO-level children performs no redaction and
+// reaches none of the children.
+func TestRedactingLogger_StackBelowLevelSkipsRedaction(t *testing.T) {
+	c1 := &leveledCapturingLogger{lvl: int(INFO)}
+	c2 := &leveledCapturingLogger{lvl: int(INFO)}
+	stack := NewStackLogger(c1, c2)
+	counter := &countingRedactor{}
+	wrapped := WithRedactors(stack, counter)
+
+	wrapped.Debug("Authorization: Bearer secret", "token", "eyJ0.eyJ1.sig")
+
+	if counter.calls != 0 {
+		t.Errorf("Debug-at-INFO stack ran %d redactions, want 0", counter.calls)
+	}
+	if c1.level != "" || c2.level != "" {
+		t.Errorf("suppressed Debug reached stack children: %q / %q", c1.level, c2.level)
+	}
+}
+
+// TestRedactingLogger_StackLevelIsMinChild confirms the stack threshold is the
+// minimum of its children: a record below the lowest child level is gated,
+// while one at that level still fans out.
+func TestRedactingLogger_StackLevelIsMinChild(t *testing.T) {
+	info := &leveledCapturingLogger{lvl: int(INFO)}
+	warn := &leveledCapturingLogger{lvl: int(WARN)}
+	stack := NewStackLogger(info, warn)
+	counter := &countingRedactor{}
+	wrapped := WithRedactors(stack, counter)
+
+	// Debug is below INFO (the min child level) - gated.
+	wrapped.Debug("secret")
+	if counter.calls != 0 {
+		t.Errorf("Debug below min child level ran %d redactions, want 0", counter.calls)
+	}
+
+	// Info is at the min child level - redaction runs and the INFO child sees it.
+	wrapped.Info("secret")
+	if counter.calls == 0 {
+		t.Error("Info at min child level ran 0 redactions; gate should pass it through")
+	}
+	if info.level != "INFO" {
+		t.Errorf("Info did not reach min-level child (level %q)", info.level)
+	}
+}
+
+// TestRedactingLogger_StackUnknownChildDisablesGate confirms that a stack with
+// even one child that does not expose a level disables gating entirely, so
+// redaction always runs (the conservative always-redact path).
+func TestRedactingLogger_StackUnknownChildDisablesGate(t *testing.T) {
+	leveled := &leveledCapturingLogger{lvl: int(INFO)}
+	plain := &capturingLogger{} // no Level() method
+	stack := NewStackLogger(leveled, plain)
+	counter := &countingRedactor{}
+	wrapped := WithRedactors(stack, counter)
+
+	wrapped.Debug("anything")
+
+	if counter.calls == 0 {
+		t.Error("Debug ran 0 redactions; an unknown-level child must disable gating")
+	}
+}
+
+// BenchmarkRedactingLogger_StackBelowLevel measures a Debug call against a
+// stack of INFO-level children. With the stack-wide level gate it should
+// perform no redaction (no regex passes, no per-kv Sprintf).
+func BenchmarkRedactingLogger_StackBelowLevel(b *testing.B) {
+	stack := NewStackLogger(
+		&leveledCapturingLogger{lvl: int(INFO)},
+		&leveledCapturingLogger{lvl: int(INFO)},
+	)
+	wrapped := WithRedactors(stack, BuildDefaultRedactors())
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		wrapped.Debug("Authorization: Bearer secret", "token", "eyJ0.eyJ1.sig", "n", i)
+	}
+}

@@ -265,3 +265,38 @@ func BenchmarkManagerExec(b *testing.B) {
 		m.Raw(context.Background(), "SELECT * FROM users WHERE age > ? ORDER BY id DESC LIMIT 10", 20)
 	}
 }
+
+// BenchmarkModelSave exercises the insert save path (saveCore) on an
+// in-memory SQLite database. Each iteration saves a fresh *TestUser, so the
+// path resolves the ID/CreatedAt/UpdatedAt fields and stamps timestamps. The
+// field resolution now goes through the cached ModelMeta IndexPaths instead
+// of per-save reflect.Value.FieldByName lookups; ReportAllocs surfaces the
+// reduced reflection overhead.
+func BenchmarkModelSave(b *testing.B) {
+	m := newTestManager(b)
+	defer m.Shutdown(context.Background())
+
+	if _, err := m.DB().Exec(`CREATE TABLE test_users (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL,
+		email TEXT,
+		age INTEGER,
+		is_active BOOLEAN,
+		created_at DATETIME,
+		updated_at DATETIME,
+		deleted_at DATETIME
+	)`); err != nil {
+		b.Fatalf("create table: %v", err)
+	}
+
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		u := &TestUser{Name: "User", Email: "user@example.com", Age: 25, IsActive: true}
+		if err := Save(ctx, m, u); err != nil {
+			b.Fatalf("save: %v", err)
+		}
+	}
+}

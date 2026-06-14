@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 	"github.com/velocitykode/velocity/contract"
@@ -69,11 +70,17 @@ type Dispatcher interface {
 // that run workers in a separate process from the producer must pin a
 // stable id with NewWithID so producer and consumer agree.
 type Bus struct {
-	id            string
-	handlers      map[reflect.Type]any      // type -> handler wrapper func(Command) error
-	factories     map[string]func() Command // typename -> command factory for async hydration
-	factoryTypes  map[reflect.Type]struct{} // mirrors factories keyed on reflect.Type for cheap lookup
-	middleware    []pipeline.Stage[Command]
+	id           string
+	handlers     map[reflect.Type]any      // type -> handler wrapper func(Command) error
+	factories    map[string]func() Command // typename -> command factory for async hydration
+	factoryTypes map[reflect.Type]struct{} // mirrors factories keyed on reflect.Type for cheap lookup
+	middleware   []pipeline.Stage[Command]
+	// composed caches the precompiled middleware invocation chain so Dispatch
+	// reads it lock-free on the hot path instead of rebuilding the pipeline on
+	// every dispatch. It is built lazily on first Dispatch and invalidated
+	// (Store(nil)) under mu whenever Through appends middleware. A non-nil
+	// *compiledPipeline with empty stages means "built, no middleware".
+	composed      atomic.Pointer[compiledPipeline]
 	queue         QueuePusher
 	queueName     string
 	dispatchEvent func(ctx context.Context, event any) error
@@ -183,6 +190,9 @@ func (b *Bus) Through(stages ...pipeline.Stage[Command]) *Bus {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.middleware = append(b.middleware, stages...)
+	// Invalidate the cached chain; next Dispatch rebuilds it from the
+	// updated middleware under the lock.
+	b.composed.Store(nil)
 	return b
 }
 
@@ -210,15 +220,23 @@ func (b *Bus) SetEventDispatcher(fn func(ctx context.Context, event any) error) 
 
 // Dispatch dispatches a command synchronously through middleware to its handler.
 func (b *Bus) Dispatch(cmd Command) error {
+	// Read the precompiled middleware chain lock-free off the hot path.
+	pipe := b.compiledPipeline()
+
 	b.mu.RLock()
-	handler, middleware, dispatchEvent := b.resolveHandler(cmd), b.copyMiddleware(), b.dispatchEvent
+	handler, dispatchEvent := b.resolveHandler(cmd), b.dispatchEvent
 	b.mu.RUnlock()
 
 	if handler == nil {
 		return fmt.Errorf("bus: no handler registered for %T", cmd)
 	}
 
-	cmdType := reflect.TypeOf(cmd).String()
+	// The command type name is only needed to label the command.* events, so
+	// only pay for the reflect+String allocation when a dispatcher is set.
+	var cmdType string
+	if dispatchEvent != nil {
+		cmdType = reflect.TypeOf(cmd).String()
+	}
 
 	// Dispatch has no caller-supplied context (the public signature is
 	// ctx-less), so Background is the most-relevant ctx in scope here.
@@ -231,14 +249,12 @@ func (b *Bus) Dispatch(cmd Command) error {
 	}
 
 	var err error
-	if len(middleware) > 0 {
-		err = b.safeExecute(func() error {
-			return pipeline.New[Command]().Send(cmd).Through(middleware...).Then(handler)
-		})
+	if pipe.composed != nil {
+		// The composed chain is built once and re-resolves the handler at its
+		// terminal, so dispatch reuses it directly without rebuilding closures.
+		err = b.safeExecuteCmd(pipe.composed, cmd)
 	} else {
-		err = b.safeExecute(func() error {
-			return handler(cmd)
-		})
+		err = b.safeExecuteCmd(handler, cmd)
 	}
 
 	if dispatchEvent != nil {
@@ -329,14 +345,24 @@ func (b *Bus) DispatchAsyncCtx(ctx context.Context, cmd Command) error {
 	return nil
 }
 
-// safeExecute runs fn and converts any panic into a returned error.
-func (b *Bus) safeExecute(fn func() error) (err error) {
+// safeExecuteCmd runs fn(cmd) and converts any panic into a returned error.
+// It takes the callable and command separately so the hot path does not
+// allocate a closure to bind cmd on every dispatch.
+func (b *Bus) safeExecuteCmd(fn func(Command) error, cmd Command) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = panicerr.FromRecovered(r)
 		}
 	}()
-	return fn()
+	return fn(cmd)
+}
+
+// selfHandlingDispatch is the shared terminal for SelfHandling commands. It is
+// a package-level value so resolveHandler can hand it back without allocating a
+// fresh closure per call (the middleware terminal re-resolves on every
+// dispatch).
+var selfHandlingDispatch = func(c Command) error {
+	return c.(SelfHandling).Handle()
 }
 
 // resolveHandler finds the handler for a command. Must be called under RLock.
@@ -347,21 +373,72 @@ func (b *Bus) resolveHandler(cmd Command) func(Command) error {
 	}
 
 	if _, ok := cmd.(SelfHandling); ok {
-		return func(c Command) error {
-			return c.(SelfHandling).Handle()
-		}
+		return selfHandlingDispatch
 	}
 
 	return nil
 }
 
-// copyMiddleware returns a snapshot of middleware. Must be called under RLock.
-func (b *Bus) copyMiddleware() []pipeline.Stage[Command] {
-	if len(b.middleware) == 0 {
-		return nil
+// dispatchToHandler is the terminal of every compiled middleware chain. It
+// resolves the live handler for cmd at call time instead of capturing one, so
+// a handler registered after the chain was compiled is still seen and the
+// cached chain never needs invalidating on Register.
+func (b *Bus) dispatchToHandler(cmd Command) error {
+	b.mu.RLock()
+	h := b.resolveHandler(cmd)
+	b.mu.RUnlock()
+	if h == nil {
+		return fmt.Errorf("bus: no handler registered for %T", cmd)
 	}
-	cp := make([]pipeline.Stage[Command], len(b.middleware))
-	copy(cp, b.middleware)
+	return h(cmd)
+}
+
+// compiledPipeline holds the precompiled middleware composition for a bus.
+// The middleware snapshot is captured once (so reading it stays off the
+// dispatch lock) and only changes when middleware changes. The composed
+// invocation chain is built once around dispatchToHandler, which re-resolves
+// the live handler at its terminal, so a handler registered after the chain was
+// compiled takes effect immediately without rebuilding the chain per dispatch.
+// A nil composed (and empty stages) means the bus has no middleware and
+// Dispatch calls the handler directly.
+type compiledPipeline struct {
+	stages   []pipeline.Stage[Command]
+	composed func(Command) error
+}
+
+// compiledPipeline returns the cached invocation chain, building it lazily on
+// first call. The fast path is a single lock-free atomic load; the chain is
+// only recompiled under the lock after Through invalidates the cache.
+func (b *Bus) compiledPipeline() *compiledPipeline {
+	if p := b.composed.Load(); p != nil {
+		return p
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	// Re-check after acquiring the lock in case another goroutine built it.
+	if p := b.composed.Load(); p != nil {
+		return p
+	}
+	cp := b.buildPipeline()
+	b.composed.Store(cp)
+	return cp
+}
+
+// buildPipeline snapshots the current middleware into a reusable composition.
+// Must be called under the lock. The returned compiledPipeline holds an
+// immutable stage snapshot and a composed callable built once around
+// dispatchToHandler. Because the terminal re-resolves the handler at call time,
+// a handler registered after an earlier dispatch takes effect immediately.
+// Through discards the whole compiledPipeline so an added stage can never serve
+// a stale snapshot.
+func (b *Bus) buildPipeline() *compiledPipeline {
+	if len(b.middleware) == 0 {
+		return &compiledPipeline{}
+	}
+	stages := make([]pipeline.Stage[Command], len(b.middleware))
+	copy(stages, b.middleware)
+	cp := &compiledPipeline{stages: stages}
+	cp.composed = pipeline.New[Command]().Through(stages...).Build(b.dispatchToHandler)
 	return cp
 }
 

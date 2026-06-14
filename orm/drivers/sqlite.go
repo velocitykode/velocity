@@ -533,7 +533,7 @@ func (g *SQLiteGrammar) compileConditions(sql *strings.Builder, args *[]any, con
 		// this branch is dead, but the seam stays in place for json1 / fts5
 		// follow-ups that need the same template machinery.
 		if cond.Spec != nil {
-			fragment, _ := renderOperatorTemplate(g, cond, 0, args, "?")
+			fragment, _ := renderOperatorTemplate(g, cond, 0, args, questionPlaceholder)
 			sql.WriteString(fragment)
 			continue
 		}

@@ -1216,7 +1216,25 @@ func saveWithDriver[T any](ctx context.Context, drv drivers.Driver, model *T) er
 
 	tableName := deriveTableName(t)
 
-	idField := modelField.FieldByName("ID")
+	// Resolve the ID/timestamp fields through the cached ModelMeta IndexPath
+	// rather than reflective FieldByName lookups on every Save, but keyed on
+	// the exact Go field names the legacy FieldByName path touched - "ID",
+	// "CreatedAt", "UpdatedAt" - NOT on the autoCreateTime/autoUpdateTime role
+	// flags. Keying on the role flags would stamp/mutate a differently-named
+	// tagged field (e.g. `TouchedAt time.Time `orm:"autoUpdateTime"``) that the
+	// old path skipped, and could panic if such a field is not time.Time. The
+	// cached IndexPath still walks promoted/embedded fields exactly as
+	// FieldByName did, so this stays an O(1) lookup with identical reach. The
+	// role flag is asserted only as a guard; the FieldByName fallback is off
+	// the hot path and only covers a degenerate shape with no flagged PK.
+	meta := MetaFor(t)
+
+	var idField reflect.Value
+	if pk, ok := meta.ColumnByField("ID"); ok && pk.IsPrimaryKey {
+		idField = modelField.FieldByIndex(pk.IndexPath)
+	} else {
+		idField = modelField.FieldByName("ID")
+	}
 	isInsert := !isModelExisting(model)
 
 	// AppendOnly: an existing-row Save is rejected outright. The
@@ -1237,13 +1255,13 @@ func saveWithDriver[T any](ctx context.Context, drv drivers.Driver, model *T) er
 	var saveErr error
 	switch {
 	case feats.appendOnly && feats.hasUUIDPK:
-		saveErr = saveCore(ctx, drv, model, modelField, idField, tableName, isInsert, skipTimestamps, saveOpts{pk: pkUUID, appendOnly: true})
+		saveErr = saveCore(ctx, drv, model, meta, modelField, idField, tableName, isInsert, skipTimestamps, saveOpts{pk: pkUUID, appendOnly: true})
 	case feats.appendOnly:
-		saveErr = saveCore(ctx, drv, model, modelField, idField, tableName, isInsert, skipTimestamps, saveOpts{pk: pkInt, appendOnly: true})
+		saveErr = saveCore(ctx, drv, model, meta, modelField, idField, tableName, isInsert, skipTimestamps, saveOpts{pk: pkInt, appendOnly: true})
 	case feats.hasUUIDPK:
-		saveErr = saveCore(ctx, drv, model, modelField, idField, tableName, isInsert, skipTimestamps, saveOpts{pk: pkUUID})
+		saveErr = saveCore(ctx, drv, model, meta, modelField, idField, tableName, isInsert, skipTimestamps, saveOpts{pk: pkUUID})
 	default:
-		saveErr = saveCore(ctx, drv, model, modelField, idField, tableName, isInsert, skipTimestamps, saveOpts{pk: pkInt})
+		saveErr = saveCore(ctx, drv, model, meta, modelField, idField, tableName, isInsert, skipTimestamps, saveOpts{pk: pkInt})
 	}
 	if saveErr == nil {
 		// Wire model AfterCommit / AfterRollback hooks against the
@@ -1278,7 +1296,7 @@ type saveOpts struct {
 // BeforeUpdate/AfterUpdate on update), timestamp stamping rules,
 // skipTimestamps, the by-PK global-scope bypass on update, and existence
 // marking are all preserved.
-func saveCore[T any](ctx context.Context, drv drivers.Driver, model *T, modelField, idField reflect.Value, tableName string, isInsert, skipTimestamps bool, opts saveOpts) error {
+func saveCore[T any](ctx context.Context, drv drivers.Driver, model *T, meta *ModelMeta, modelField, idField reflect.Value, tableName string, isInsert, skipTimestamps bool, opts saveOpts) error {
 	// AppendOnly: an existing-row Save is rejected outright. saveWithDriver
 	// already gates this before dispatch; the check is repeated here so the
 	// invariant travels with the implementation.
@@ -1299,10 +1317,16 @@ func saveCore[T any](ctx context.Context, drv drivers.Driver, model *T, modelFie
 		// Each field is gated on validity since compositions may omit either.
 		// Skipped entirely when the model opted out of timestamps (the
 		// columns are not in the table).
+		// Stamping is keyed off the persistent column metadata, so a field
+		// named CreatedAt/UpdatedAt that is explicitly non-persistent
+		// (tagged orm:"-") is intentionally not stamped: a column the user
+		// excluded should not be mutated. (The pre-cache path stamped such
+		// shadow fields in-memory via FieldByName even though they were
+		// never persisted; this is a deliberate, more-correct divergence.)
 		if !skipTimestamps {
-			createdAtField := modelField.FieldByName("CreatedAt")
 			var createdAt time.Time
-			if createdAtField.IsValid() {
+			if col, ok := meta.ColumnByField("CreatedAt"); ok && col.IsCreatedAt {
+				createdAtField := modelField.FieldByIndex(col.IndexPath)
 				createdAt = createdAtField.Interface().(time.Time)
 				if createdAt.IsZero() {
 					createdAt = time.Now()
@@ -1310,12 +1334,14 @@ func saveCore[T any](ctx context.Context, drv drivers.Driver, model *T, modelFie
 				}
 			}
 			if !opts.appendOnly {
-				updatedAtField := modelField.FieldByName("UpdatedAt")
-				if updatedAtField.IsValid() && updatedAtField.Interface().(time.Time).IsZero() {
-					if createdAt.IsZero() {
-						createdAt = time.Now()
+				if col, ok := meta.ColumnByField("UpdatedAt"); ok && col.IsUpdatedAt {
+					updatedAtField := modelField.FieldByIndex(col.IndexPath)
+					if updatedAtField.Interface().(time.Time).IsZero() {
+						if createdAt.IsZero() {
+							createdAt = time.Now()
+						}
+						updatedAtField.Set(reflect.ValueOf(createdAt))
 					}
-					updatedAtField.Set(reflect.ValueOf(createdAt))
 				}
 			}
 		}
@@ -1368,8 +1394,8 @@ func saveCore[T any](ctx context.Context, drv drivers.Driver, model *T, modelFie
 	// AppendOnly composes here too) and is skipped when the model opted out
 	// of timestamps.
 	if !skipTimestamps {
-		if updatedAtField := modelField.FieldByName("UpdatedAt"); updatedAtField.IsValid() {
-			updatedAtField.Set(reflect.ValueOf(time.Now()))
+		if col, ok := meta.ColumnByField("UpdatedAt"); ok && col.IsUpdatedAt {
+			modelField.FieldByIndex(col.IndexPath).Set(reflect.ValueOf(time.Now()))
 		}
 	}
 

@@ -33,6 +33,24 @@ type DefaultDispatcher struct {
 	nextID       int             // Counter for generating listener IDs
 	listenerByID map[int]string  // Maps listener ID to event name for removal
 
+	// resolvedCache memoizes the fully-resolved []Listener slice (exact +
+	// wildcard matches) keyed by event name, so the hot Dispatch path skips
+	// the per-call slice allocation and double scan of d.wildcards. It is a
+	// sync.Map (security rule #3: a shared map needs its own protection)
+	// rather than data guarded by d.mu so the common cache-hit path needs no
+	// d.mu at all.
+	//
+	// Each entry is tagged with the cacheEpoch under which it was built.
+	// Every listener/wildcard mutation (Listen, Off, Flush) bumps cacheEpoch
+	// under d.mu.Lock BEFORE it mutates listener state, so a concurrent
+	// cache-hit dispatch (which bypasses d.mu) observing the new epoch finds
+	// its entry stale and falls back to the locked resolve path -- where it
+	// blocks behind the writer and sees the completed mutation. This restores
+	// the pre-cache property that a dispatch starting after a writer takes
+	// d.mu.Lock cannot fire a removed listener or miss a newly added one.
+	resolvedCache sync.Map // event name (string) -> resolvedListeners
+	cacheEpoch    atomic.Uint64
+
 	// failureReporter, when set, receives every dispatched event that
 	// implements contract.FailureEvent, synchronously, before listener
 	// fan-out. The framework wires it to ExceptionHandler.Report at
@@ -54,6 +72,15 @@ type DefaultDispatcher struct {
 type listenerEntry struct {
 	id       int
 	listener Listener
+}
+
+// resolvedListeners is a resolvedCache value: the memoized listener slice plus
+// the cacheEpoch it was built under. A cache hit is only valid while its epoch
+// matches the live cacheEpoch; a writer bumps the epoch before mutating, which
+// invalidates every outstanding entry.
+type resolvedListeners struct {
+	epoch     uint64
+	listeners []Listener
 }
 
 // QueueDispatcher handles queued event dispatching
@@ -243,6 +270,10 @@ func (d *DefaultDispatcher) Listen(events interface{}, listener Listener) int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	// Invalidate the resolved cache before touching listener state so a
+	// concurrent fast-path dispatch cannot keep using a pre-mutation slice.
+	d.cacheEpoch.Add(1)
+
 	// Generate a unique ID for this listener
 	d.nextID++
 	id := d.nextID
@@ -289,6 +320,9 @@ func (d *DefaultDispatcher) Off(id int) bool {
 	if !exists {
 		return false
 	}
+
+	// Invalidate the resolved cache before mutating listener state.
+	d.cacheEpoch.Add(1)
 
 	// Remove from the appropriate map based on whether it's a wildcard
 	var removed bool
@@ -557,6 +591,9 @@ func (d *DefaultDispatcher) Flush(event string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	// Invalidate the resolved cache before mutating listener state.
+	d.cacheEpoch.Add(1)
+
 	// Remove listener ID mappings for this event
 	if entries, ok := d.listeners[event]; ok {
 		for _, entry := range entries {
@@ -586,18 +623,55 @@ func (d *DefaultDispatcher) HasListeners(event interface{}) bool {
 	return len(d.getListenersForEvent(event)) > 0
 }
 
-// GetListeners returns all listeners for an event
+// GetListeners returns all listeners for an event.
+//
+// The returned slice is a copy: getListenersForEvent shares its result with
+// the resolved-listener cache and with future dispatches, so a public caller
+// that reorders or replaces elements must not be able to corrupt dispatch
+// state. The internal hot path uses getListenersForEvent directly and treats
+// the slice as read-only.
 func (d *DefaultDispatcher) GetListeners(event interface{}) []Listener {
-	return d.getListenersForEvent(event)
+	internal := d.getListenersForEvent(event)
+	out := make([]Listener, len(internal))
+	copy(out, internal)
+	return out
 }
 
 // getListenersForEvent retrieves all listeners for an event.
-// Pre-allocates the result slice to avoid repeated grow-and-copy in hot paths.
+//
+// The fully-resolved slice is memoized in resolvedCache keyed by event name,
+// so the common exact-match path returns the cached slice with no map scan and
+// no per-dispatch allocation. On a miss it builds the slice once (exact +
+// wildcard matches) under d.mu.RLock and stores it. Callers must treat the
+// returned slice as read-only: it is shared with the cache. The only in-place
+// mutator, PriorityDispatcher.getListenersForEvent, clones before sorting.
 func (d *DefaultDispatcher) getListenersForEvent(event interface{}) []Listener {
+	eventName := d.getEventName(event)
+
+	epoch := d.cacheEpoch.Load()
+
+	// Fast path: no d.mu, no map scan, no alloc. The epoch tag rejects any
+	// entry built before an in-progress or completed mutation, so a hit can
+	// never return a pre-mutation slice once a writer has bumped the epoch.
+	if cached, ok := d.resolvedCache.Load(eventName); ok {
+		if entry := cached.(resolvedListeners); entry.epoch == epoch {
+			return entry.listeners
+		}
+	}
+
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	eventName := d.getEventName(event)
+	// Re-read the epoch under the lock. No writer can be mid-mutation while we
+	// hold RLock, so this value is stable for the build+store below.
+	epoch = d.cacheEpoch.Load()
+
+	// Re-check under the lock: a concurrent miss may have populated it.
+	if cached, ok := d.resolvedCache.Load(eventName); ok {
+		if entry := cached.(resolvedListeners); entry.epoch == epoch {
+			return entry.listeners
+		}
+	}
 
 	// Pre-compute capacity to avoid repeated slice growth
 	capacity := len(d.listeners[eventName])
@@ -625,6 +699,7 @@ func (d *DefaultDispatcher) getListenersForEvent(event interface{}) []Listener {
 		}
 	}
 
+	d.resolvedCache.Store(eventName, resolvedListeners{epoch: epoch, listeners: result})
 	return result
 }
 

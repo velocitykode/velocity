@@ -2,9 +2,28 @@ package orm
 
 import (
 	"reflect"
+	"sync"
 
 	"github.com/velocitykode/velocity/str"
 )
+
+// tableNameCache memoizes the resolved table name per concrete (deref'd)
+// reflect.Type. The derivation walks the method set and, for a custom
+// TableName(), allocates a receiver and calls it on every newQuery/save;
+// the result is invariant for a given type, so it is cached the same way
+// MetaFor caches ModelMeta. Holds the FINAL string, including any
+// TableName() override result.
+//
+// The map value is a *tableNameEntry whose sync.Once serializes the miss
+// path, so concurrent cold misses for the same type run resolveTableName
+// (and thus any custom TableName()) exactly once.
+var tableNameCache sync.Map // map[reflect.Type]*tableNameEntry
+
+// tableNameEntry holds the once-derived table name for a single type.
+type tableNameEntry struct {
+	once sync.Once
+	name string
+}
 
 // deriveTableName resolves the table name for a model type. It honors a
 // TableName() string method declared on EITHER the value or the pointer
@@ -36,6 +55,20 @@ func deriveTableName(t reflect.Type) string {
 		t = t.Elem()
 	}
 
+	v, ok := tableNameCache.Load(t)
+	if !ok {
+		v, _ = tableNameCache.LoadOrStore(t, &tableNameEntry{})
+	}
+	entry := v.(*tableNameEntry)
+	entry.once.Do(func() {
+		entry.name = resolveTableName(t)
+	})
+	return entry.name
+}
+
+// resolveTableName performs the uncached derivation for an already-deref'd
+// type t. Split out so deriveTableName owns the cache lookup/store.
+func resolveTableName(t reflect.Type) string {
 	// Value receiver first (most common for TableName), then pointer
 	// receiver, so a method declared with either receiver set wins over
 	// the naming convention.

@@ -121,6 +121,16 @@ type ModelMeta struct {
 	// byColumn, original FieldName for byField).
 	byColumn map[string]int
 	byField  map[string]int
+
+	// pkIndex / createdAtIndex / updatedAtIndex cache the column slice
+	// position of the primary-key, created-at, and updated-at columns
+	// (first match by the IsPrimaryKey/IsCreatedAt/IsUpdatedAt flags), or
+	// -1 when the model has no such column. The save path resolves these
+	// fields once per type via FieldByIndex(IndexPath) instead of doing a
+	// reflective FieldByName lookup on every Save.
+	pkIndex        int
+	createdAtIndex int
+	updatedAtIndex int
 }
 
 // metaCache caches ModelMeta per concrete reflect.Type. sync.Map is used
@@ -226,6 +236,37 @@ func (m *ModelMeta) ColumnByField(fieldName string) (ColumnDef, bool) {
 	return ColumnDef{}, false
 }
 
+// PrimaryKeyColumn returns the ColumnDef flagged IsPrimaryKey (the first,
+// if a composition somehow declared more than one) and true, or the zero
+// value and false when the model has no primary key. The lookup is O(1):
+// the index is cached at build time. The save path uses the returned
+// IndexPath with FieldByIndex to read/write the PK without FieldByName.
+func (m *ModelMeta) PrimaryKeyColumn() (ColumnDef, bool) {
+	if m == nil || m.pkIndex < 0 {
+		return ColumnDef{}, false
+	}
+	return m.columns[m.pkIndex], true
+}
+
+// CreatedAtColumn returns the ColumnDef flagged IsCreatedAt and true, or
+// the zero value and false when the model has no created-at column (no
+// timestamps trait, or timestamps opted out so the column was dropped).
+func (m *ModelMeta) CreatedAtColumn() (ColumnDef, bool) {
+	if m == nil || m.createdAtIndex < 0 {
+		return ColumnDef{}, false
+	}
+	return m.columns[m.createdAtIndex], true
+}
+
+// UpdatedAtColumn returns the ColumnDef flagged IsUpdatedAt and true, or
+// the zero value and false when the model has no updated-at column.
+func (m *ModelMeta) UpdatedAtColumn() (ColumnDef, bool) {
+	if m == nil || m.updatedAtIndex < 0 {
+		return ColumnDef{}, false
+	}
+	return m.columns[m.updatedAtIndex], true
+}
+
 // ----------------------------------------------------------------------------
 // Builder
 // ----------------------------------------------------------------------------
@@ -259,9 +300,12 @@ func isEmbeddedBaseType(field reflect.StructField) bool {
 //     same field-name shadowing rules.
 func buildMeta(t reflect.Type) *ModelMeta {
 	meta := &ModelMeta{
-		Type:     t,
-		byColumn: make(map[string]int),
-		byField:  make(map[string]int),
+		Type:           t,
+		byColumn:       make(map[string]int),
+		byField:        make(map[string]int),
+		pkIndex:        -1,
+		createdAtIndex: -1,
+		updatedAtIndex: -1,
 	}
 
 	// Per-model timestamps opt-out: when the model declares
@@ -327,6 +371,17 @@ func (m *ModelMeta) appendColumn(col ColumnDef) {
 	}
 	if _, exists := m.byField[col.FieldName]; !exists {
 		m.byField[col.FieldName] = idx
+	}
+	// Cache the save-path role columns on first match so the hot Save path
+	// can fetch their field via FieldByIndex without a FieldByName walk.
+	if col.IsPrimaryKey && m.pkIndex < 0 {
+		m.pkIndex = idx
+	}
+	if col.IsCreatedAt && m.createdAtIndex < 0 {
+		m.createdAtIndex = idx
+	}
+	if col.IsUpdatedAt && m.updatedAtIndex < 0 {
+		m.updatedAtIndex = idx
 	}
 }
 

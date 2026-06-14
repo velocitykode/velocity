@@ -1,8 +1,10 @@
 package str
 
 import (
+	"strconv"
 	"strings"
 	"testing"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -175,6 +177,56 @@ func TestKebab(t *testing.T) {
 			result := Kebab(tt.input)
 			if result != tt.expected {
 				t.Errorf("Kebab(%q) = %q; want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+// delimiterGolden holds byte-exact expected outputs for the single-pass
+// delimiter collapse. Cases cover leading/trailing/repeated mixed delimiters,
+// camel/Pascal boundaries, digits, and acronym transitions. Expected values
+// are pinned to the previous implementation's output so a regression in the
+// collapse logic is caught.
+var delimiterGolden = []struct {
+	name  string
+	input string
+	snake string
+	kebab string
+}{
+	{"repeated mixed delimiters", "--Foo__Bar..", "foo_bar", "foo-bar"},
+	{"repeated underscore", "foo__bar", "foo_bar", "foo-bar"},
+	{"leading delimiters", "__leading", "leading", "leading"},
+	{"trailing delimiters", "trailing__", "trailing", "trailing"},
+	{"mixed delimiter run", "foo..bar--baz__qux", "foo_bar_baz_qux", "foo-bar-baz-qux"},
+	{"leading trailing spaces", " Foo Bar ", "foo_bar", "foo-bar"},
+	{"multi-delimiter chars", "a-b_c.d e", "a_b_c_d_e", "a-b-c-d-e"},
+	{"acronym then word", "IOError", "io_error", "io-error"},
+	{"trailing acronym", "XMLHttpRequest", "xml_http_request", "xml-http-request"},
+	{"interior acronym", "getHTTPResponse", "get_http_response", "get-http-response"},
+	{"all caps", "ABC", "abc", "abc"},
+	{"camel boundary", "fooBar", "foo_bar", "foo-bar"},
+	{"pascal boundary", "FooBar", "foo_bar", "foo-bar"},
+	{"acronym with digit", "HTTP2Server", "http2_server", "http2-server"},
+	{"acronym digit lower boundary", "userID2Value", "user_id2_value", "user-id2-value"},
+	{"digit before caps", "Foo123Bar", "foo123_bar", "foo123-bar"},
+	{"word with digit", "version2Point0", "version2_point0", "version2-point0"},
+}
+
+func TestSnakeGolden(t *testing.T) {
+	for _, tt := range delimiterGolden {
+		t.Run(tt.name, func(t *testing.T) {
+			if result := Snake(tt.input); result != tt.snake {
+				t.Errorf("Snake(%q) = %q; want %q", tt.input, result, tt.snake)
+			}
+		})
+	}
+}
+
+func TestKebabGolden(t *testing.T) {
+	for _, tt := range delimiterGolden {
+		t.Run(tt.name, func(t *testing.T) {
+			if result := Kebab(tt.input); result != tt.kebab {
+				t.Errorf("Kebab(%q) = %q; want %q", tt.input, result, tt.kebab)
 			}
 		})
 	}
@@ -2110,6 +2162,25 @@ func TestRegexCache_LRUEviction(t *testing.T) {
 	}
 }
 
+// BenchmarkRegexCache_Hit_Parallel exercises the cache-hit path from many
+// goroutines at once. Hits take only the shared read lock and refresh recency
+// with an atomic stamp, so this should show no exclusive-lock contention.
+func BenchmarkRegexCache_Hit_Parallel(b *testing.B) {
+	const pattern = "^[a-z0-9]+$"
+	// Prime the cache so every iteration is a hit.
+	if _, err := getRegexE(pattern); err != nil {
+		b.Fatalf("getRegexE(%q) error: %v", pattern, err)
+	}
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if _, ok := regexCache.get(pattern); !ok {
+				b.Fatal("expected cache hit")
+			}
+		}
+	})
+}
+
 // Random_forCacheKey produces a unique-enough deterministic suffix for the
 // LRU eviction test. We avoid using Random() so we do not consume entropy.
 func Random_forCacheKey(i int) string {
@@ -2507,5 +2578,96 @@ func TestStringableReplaceMatchesSafe_ValidPatternReturnsNil(t *testing.T) {
 	}
 	if s.String() != "fooX" {
 		t.Errorf("ReplaceMatchesSafe value = %q; want %q", s.String(), "fooX")
+	}
+}
+
+// toDelimitedTwoPass reproduces the previous two-pass shape of toDelimited:
+// it builds the result without collapsing, then rescans to squeeze runs of
+// consecutive delimiters. It exists only as a benchmark baseline so the
+// single-pass collapse can be compared against it on repeated-delimiter input.
+func toDelimitedTwoPass(s string, delimiter rune) string {
+	if s == "" {
+		return s
+	}
+
+	s = strings.ReplaceAll(s, "_", string(delimiter))
+	s = strings.ReplaceAll(s, "-", string(delimiter))
+	s = strings.ReplaceAll(s, " ", string(delimiter))
+	s = strings.ReplaceAll(s, ".", string(delimiter))
+
+	runes := []rune(s)
+	result := make([]rune, 0, len(runes))
+
+	for i := 0; i < len(runes); i++ {
+		char := runes[i]
+		if unicode.IsUpper(char) {
+			if i > 0 && runes[i-1] != delimiter {
+				if i+1 < len(runes) && unicode.IsLower(runes[i+1]) {
+					result = append(result, delimiter)
+				} else if unicode.IsLower(runes[i-1]) {
+					result = append(result, delimiter)
+				}
+			}
+			result = append(result, unicode.ToLower(char))
+		} else {
+			result = append(result, char)
+		}
+	}
+
+	// Second pass: collapse runs of consecutive delimiters.
+	collapsed := make([]rune, 0, len(result))
+	for _, r := range result {
+		if r == delimiter && len(collapsed) > 0 && collapsed[len(collapsed)-1] == delimiter {
+			continue
+		}
+		collapsed = append(collapsed, r)
+	}
+
+	return strings.Trim(string(collapsed), string(delimiter))
+}
+
+// delimiterBenchInputs builds repeated-delimiter inputs of increasing size to
+// exercise the collapse path. Each repeats a mixed-delimiter unit n times.
+func delimiterBenchInput(n int) string {
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		b.WriteString("--Foo__Bar..bazQux  ")
+	}
+	return b.String()
+}
+
+func BenchmarkSnake(b *testing.B) {
+	for _, n := range []int{1, 16, 256} {
+		in := delimiterBenchInput(n)
+		b.Run("singlepass/n="+strconv.Itoa(n), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = Snake(in)
+			}
+		})
+		b.Run("twopass/n="+strconv.Itoa(n), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = toDelimitedTwoPass(in, '_')
+			}
+		})
+	}
+}
+
+func BenchmarkKebab(b *testing.B) {
+	for _, n := range []int{1, 16, 256} {
+		in := delimiterBenchInput(n)
+		b.Run("singlepass/n="+strconv.Itoa(n), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = Kebab(in)
+			}
+		})
+		b.Run("twopass/n="+strconv.Itoa(n), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = toDelimitedTwoPass(in, '-')
+			}
+		})
 	}
 }
