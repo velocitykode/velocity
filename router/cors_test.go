@@ -3,6 +3,7 @@ package router
 import (
 	"net/http"
 	"testing"
+	"time"
 )
 
 func TestDefaultCORSConfig_EmptyOrigins(t *testing.T) {
@@ -278,6 +279,112 @@ func TestCORS_WildcardWithCredentials_EchoesOrigin(t *testing.T) {
 	}
 	if got := rec.Header().Get("Vary"); got != "Origin" {
 		t.Errorf("Vary = %q, want %q (must vary by origin when echoing)", got, "Origin")
+	}
+}
+
+func TestCORS_DisallowedOrigin_PreflightShortCircuits(t *testing.T) {
+	// A disallowed-origin OPTIONS preflight must not fall through to app
+	// handlers or 404 logic. It should return 204 with no CORS grant headers.
+	cfg := CORSConfig{
+		AllowedOrigins: []string{"https://example.com"},
+		AllowedMethods: []string{"GET", "POST"},
+		AllowedHeaders: []string{"Content-Type"},
+	}
+	handler := CORS(cfg)(func(c *Context) error {
+		t.Error("next handler should not be called for disallowed preflight")
+		return nil
+	})
+
+	ctx, rec := NewTestContext("OPTIONS", "/test")
+	ctx.Request.Header.Set("Origin", "https://evil.com")
+
+	if err := handler(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want empty for disallowed preflight", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Methods"); got != "" {
+		t.Errorf("Access-Control-Allow-Methods = %q, want empty for disallowed preflight", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Headers"); got != "" {
+		t.Errorf("Access-Control-Allow-Headers = %q, want empty for disallowed preflight", got)
+	}
+}
+
+func TestCORS_DisallowedOrigin_NonPreflightFallsThrough(t *testing.T) {
+	// A disallowed-origin non-OPTIONS request must still fall through to the
+	// app handler unchanged (the browser blocks the response because no ACAO
+	// header is present).
+	cfg := CORSConfig{
+		AllowedOrigins: []string{"https://example.com"},
+		AllowedMethods: []string{"GET", "POST"},
+		AllowedHeaders: []string{"Content-Type"},
+	}
+
+	nextCalled := false
+	handler := CORS(cfg)(func(c *Context) error {
+		nextCalled = true
+		return nil
+	})
+
+	ctx, rec := NewTestContext("GET", "/test")
+	ctx.Request.Header.Set("Origin", "https://evil.com")
+
+	if err := handler(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !nextCalled {
+		t.Error("expected next handler to be called for disallowed non-preflight request")
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want empty for disallowed origin", got)
+	}
+}
+
+func TestCORS_AllowedOrigin_PreflightUnchanged(t *testing.T) {
+	// An allowed-origin preflight should still receive the full set of CORS
+	// grant headers and a 204 response.
+	cfg := CORSConfig{
+		AllowedOrigins: []string{"https://example.com"},
+		AllowedMethods: []string{"GET", "POST"},
+		AllowedHeaders: []string{"Content-Type"},
+		MaxAge:         time.Hour,
+	}
+	handler := CORS(cfg)(func(c *Context) error {
+		t.Error("next handler should not be called for preflight")
+		return nil
+	})
+
+	ctx, rec := NewTestContext("OPTIONS", "/test")
+	ctx.Request.Header.Set("Origin", "https://example.com")
+
+	if err := handler(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://example.com" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, "https://example.com")
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Methods"); got != "GET, POST" {
+		t.Errorf("Access-Control-Allow-Methods = %q, want %q", got, "GET, POST")
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Headers"); got != "Content-Type" {
+		t.Errorf("Access-Control-Allow-Headers = %q, want %q", got, "Content-Type")
+	}
+	if got := rec.Header().Get("Access-Control-Max-Age"); got == "" {
+		t.Error("expected Access-Control-Max-Age header to be set")
+	}
+	if got := rec.Header().Get("Vary"); got != "Origin" {
+		t.Errorf("Vary = %q, want %q", got, "Origin")
 	}
 }
 

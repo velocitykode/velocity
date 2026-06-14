@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"log"
 	"sync"
 )
 
@@ -51,6 +52,22 @@ type BroadcastManager struct {
 	presence   PresenceDataFunc
 	authSecret []byte
 	mu         sync.RWMutex
+
+	// customAuthorizer records whether SetAuthorizer has installed a
+	// non-deny authorizer. It distinguishes the secure deny-all default
+	// from an app-provided authorizer so the "no auth secret" misconfig
+	// warning fires only for the latter.
+	customAuthorizer bool
+
+	// logger is an optional one-arg sink for one-time configuration
+	// warnings. nil means fall back to the stdlib log package. Guarded by
+	// mu like the rest of the manager state.
+	logger func(string)
+
+	// noSecretWarned ensures the "authorizer without auth secret" warning
+	// is emitted at most once for the life of the manager, so a hot
+	// reconfigure loop cannot spam the log.
+	noSecretWarned sync.Once
 }
 
 // Driver defines the interface for broadcast drivers. Methods that fan out
@@ -300,11 +317,53 @@ func (b *BroadcastManager) Shutdown(ctx context.Context) error {
 	return s.Shutdown(ctx)
 }
 
-// SetAuthorizer sets the channel authorizer
+// SetAuthorizer sets the channel authorizer.
+//
+// Installing a non-nil authorizer while no auth secret has been configured via
+// SetAuthSecret means private- and presence- channels will be authorized
+// purely on the authorizer's verdict, with no cryptographic binding between
+// the HTTP-authenticated user and the WebSocket connection (the Auth response
+// carries no "auth" HMAC). That is a footgun, so this case emits a one-time
+// warning pointing the app at SetAuthSecret. Passing nil (or leaving the
+// secure deny-all default in place) is not flagged.
 func (b *BroadcastManager) SetAuthorizer(fn Authorizer) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	b.authorizer = fn
+	b.customAuthorizer = fn != nil
+	warn := b.customAuthorizer && len(b.authSecret) == 0
+	b.mu.Unlock()
+
+	if warn {
+		b.warnAuthorizerWithoutSecret()
+	}
+}
+
+// SetLogger installs an optional one-argument sink for one-time configuration
+// warnings. Passing nil restores the stdlib log fallback. It is safe to call
+// concurrently with the rest of the manager API.
+func (b *BroadcastManager) SetLogger(fn func(string)) {
+	b.mu.Lock()
+	b.logger = fn
+	b.mu.Unlock()
+}
+
+// warnAuthorizerWithoutSecret emits the authorizer-without-secret warning at
+// most once. The log sink is read under b.mu so a concurrent SetLogger is
+// observed safely; the stdlib log package is the nil-safe fallback.
+func (b *BroadcastManager) warnAuthorizerWithoutSecret() {
+	b.noSecretWarned.Do(func() {
+		const msg = "broadcast: custom authorizer installed without an auth secret; " +
+			"private/presence channels will be authorized without a socket-binding HMAC. " +
+			"Call SetAuthSecret to bind the authenticated user to the WebSocket connection."
+		b.mu.RLock()
+		sink := b.logger
+		b.mu.RUnlock()
+		if sink != nil {
+			sink(msg)
+			return
+		}
+		log.Print(msg)
+	})
 }
 
 // SetPresenceData sets the presence data function
@@ -324,6 +383,12 @@ func (b *BroadcastManager) SetPresenceData(fn PresenceDataFunc) {
 // verifier so the driver returns to authorizer-only mode. This guarantees
 // that any consumer that installs a secret is protected against the
 // audit H-25 default-bypass without an extra explicit wiring step.
+//
+// Clearing the secret (empty input) while a custom authorizer is still
+// installed drops private/presence channels back to authorizer-only mode
+// with no socket-binding HMAC, so that transition emits the same one-time
+// warning SetAuthorizer does. A config reload that calls SetAuthSecret(nil)
+// must not silently re-open the unauthenticated-subscribe gap.
 func (b *BroadcastManager) SetAuthSecret(secret []byte) {
 	b.mu.Lock()
 	if len(secret) == 0 {
@@ -335,7 +400,12 @@ func (b *BroadcastManager) SetAuthSecret(secret []byte) {
 	}
 	setter, _ := b.driver.(TokenVerifierSetter)
 	hasSecret := len(b.authSecret) > 0
+	warn := !hasSecret && b.customAuthorizer
 	b.mu.Unlock()
+
+	if warn {
+		b.warnAuthorizerWithoutSecret()
+	}
 
 	if setter == nil {
 		return

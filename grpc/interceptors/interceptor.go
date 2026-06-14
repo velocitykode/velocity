@@ -36,6 +36,13 @@ import (
 type InterceptorPair struct {
 	Unary  grpc.UnaryServerInterceptor
 	Stream grpc.StreamServerInterceptor
+
+	// IsAuth marks the pair as an authentication interceptor. The Auth
+	// constructor sets it so the server can detect, at Build time, whether
+	// authentication has been wired and warn when an entire service surface
+	// would otherwise be served unauthenticated. Plain (non-auth) pairs leave
+	// it false.
+	IsAuth bool
 }
 
 // Interceptor is a function that returns an InterceptorPair.

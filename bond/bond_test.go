@@ -220,7 +220,7 @@ func TestBond_Location(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.Header.Set("X-Inertia", "true")
 
-	b.Location(w, r, "https://external.com")
+	b.LocationExternal(w, r, "https://external.com")
 
 	if w.Code != http.StatusConflict {
 		t.Errorf("expected status 409, got %d", w.Code)

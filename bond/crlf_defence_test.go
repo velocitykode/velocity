@@ -70,7 +70,7 @@ func TestLocation_StripsCRLFFromXInertiaLocation(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.Header.Set("X-Inertia", "true")
 
-	b.Location(w, r, "https://external.example/\r\nX-Injected: 1")
+	b.LocationExternal(w, r, "https://external.example/\r\nX-Injected: 1")
 
 	if w.Header().Get("X-Injected") != "" {
 		t.Errorf("X-Injected header present: %q", w.Header().Get("X-Injected"))

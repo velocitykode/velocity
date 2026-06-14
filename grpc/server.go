@@ -54,6 +54,14 @@ type Server struct {
 	unaryInterceptors  []grpc.UnaryServerInterceptor
 	streamInterceptors []grpc.StreamServerInterceptor
 
+	// authConfigured records whether an authentication interceptor has been
+	// wired. UseAll sets it when it sees an interceptors pair with IsAuth=true;
+	// callers that install auth via the bare Use/UseStream funcs or a custom
+	// interceptor signal it explicitly with MarkAuthConfigured. Build reads it
+	// to decide whether to warn that the whole service surface is unauthenticated.
+	// Guarded by mu.
+	authConfigured bool
+
 	// disableDefaultRecovery suppresses the panic-recovery interceptor that
 	// Build installs outermost by default. grpc-go does NOT auto-recover
 	// interceptor/handler panics, so without this the first panic crashes the
@@ -240,7 +248,23 @@ func (s *Server) UseAll(pairs ...InterceptorPair) *Server {
 	for _, pair := range pairs {
 		s.unaryInterceptors = append(s.unaryInterceptors, pair.Unary)
 		s.streamInterceptors = append(s.streamInterceptors, pair.Stream)
+		if pair.IsAuth {
+			s.authConfigured = true
+		}
 	}
+	return s
+}
+
+// MarkAuthConfigured records that authentication has been wired by hand, e.g.
+// when the auth interceptor is installed via the bare Use/UseStream funcs
+// (s.Use(auth.Unary)) or by a custom interceptor that UseAll cannot tag. It
+// suppresses the unauthenticated-surface warning Build emits when no auth
+// interceptor is detected. UseAll(interceptors.Auth(...)) marks the server
+// automatically and does not need this call.
+func (s *Server) MarkAuthConfigured() *Server {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.authConfigured = true
 	return s
 }
 
@@ -272,6 +296,12 @@ func (s *Server) RegisterService(regFunc RegistrationFunc) *Server {
 // Build returns an error unless GRPC_INSECURE=true opts the deployment out
 // for a known-internal mTLS mesh or a sidecar-terminated mesh. Outside
 // production, a missing creds configuration only emits a one-shot warning.
+//
+// Authentication is opt-in. When services are registered but no auth
+// interceptor was detected (via UseAll(interceptors.Auth(...)) or an explicit
+// MarkAuthConfigured), Build emits a one-shot warning that all RPCs are served
+// unauthenticated. It does not force auth: the start is fail-open with
+// visibility so the operator can add an auth interceptor.
 func (s *Server) Build() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -346,6 +376,21 @@ func (s *Server) Build() error {
 	// Register all services
 	for _, regFunc := range s.registrations {
 		regFunc(s.grpcServer)
+	}
+
+	// Warn (fail-open with visibility) when a service surface is exposed with
+	// no authentication interceptor wired. gRPC auth is opt-in: a server that
+	// registers services without an auth interceptor serves every RPC
+	// unauthenticated, and nothing else surfaces that. We only warn when there
+	// is something to protect (at least one registered service) and no auth was
+	// detected via UseAll(interceptors.Auth(...)) or MarkAuthConfigured. The
+	// warning fires once per Build; Build is idempotent (early-returns when the
+	// server is already built) so it never repeats for a given server.
+	if len(s.registrations) > 0 && !s.authConfigured {
+		s.logger.Warn("gRPC server is serving all RPCs unauthenticated: no auth interceptor detected. Add one via UseAll(interceptors.Auth(...)), or call MarkAuthConfigured() if you wired auth by hand",
+			"services", len(s.registrations),
+			"port", s.port,
+		)
 	}
 
 	// Enable reflection if configured. Hard-fail in production; silently

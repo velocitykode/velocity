@@ -178,9 +178,19 @@ func (e *Engine) Redirect(w http.ResponseWriter, r *http.Request, url string) {
 	e.bond.Redirect(w, r, url)
 }
 
-// Location performs an external redirect (forces full page load).
+// Location performs a same-origin full-page reload. The target is validated
+// against the redirect host allowlist, so it is safe for user-controlled
+// input; an external host collapses to "/". Use LocationExternal for a
+// deliberate cross-origin redirect.
 func (e *Engine) Location(w http.ResponseWriter, r *http.Request, url string) {
 	e.bond.Location(w, r, url)
+}
+
+// LocationExternal performs a full-page reload to an arbitrary external
+// http/https host (the explicit opt-out of Location's same-origin
+// allowlist). SECURITY: only pass trusted or statically-known URLs.
+func (e *Engine) LocationExternal(w http.ResponseWriter, r *http.Request, url string) {
+	e.bond.LocationExternal(w, r, url)
 }
 
 // Back redirects back (SPA navigation).

@@ -138,6 +138,7 @@ func Auth(validator AuthValidator, opts ...AuthOption) InterceptorPair {
 	return InterceptorPair{
 		Unary:  authUnary(cfg),
 		Stream: authStream(cfg),
+		IsAuth: true,
 	}
 }
 

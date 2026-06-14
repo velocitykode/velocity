@@ -15,11 +15,21 @@ func Redirect(ctx *router.Context, url string) {
 	}
 }
 
-// Location performs an external redirect that forces a full-page reload.
-// No-op when no view engine is wired.
+// Location performs a same-origin full-page reload. The target is validated
+// against the redirect host allowlist (safe for user-controlled input; an
+// external host collapses to "/"). No-op when no view engine is wired.
 func Location(ctx *router.Context, url string) {
 	if e := FromContext(ctx); e != nil {
 		e.Location(ctx.Response, ctx.Request, url)
+	}
+}
+
+// LocationExternal performs a full-page reload to an arbitrary external host
+// (the explicit opt-out of Location's allowlist). SECURITY: only pass trusted
+// or statically-known URLs. No-op when no view engine is wired.
+func LocationExternal(ctx *router.Context, url string) {
+	if e := FromContext(ctx); e != nil {
+		e.LocationExternal(ctx.Response, ctx.Request, url)
 	}
 }
 
@@ -107,14 +117,25 @@ func (re *ReqEngine) Redirect(url string) {
 	re.e.Redirect(re.w, re.r, url)
 }
 
-// Location performs an external redirect (full-page reload), persisting
-// any pending flash bag first.
+// Location performs a same-origin full-page reload (allowlist-validated,
+// safe for user-controlled input), persisting any pending flash bag first.
 func (re *ReqEngine) Location(url string) {
 	if re == nil {
 		return
 	}
 	re.commitSession()
 	re.e.Location(re.w, re.r, url)
+}
+
+// LocationExternal performs a full-page reload to an arbitrary external host
+// (the explicit opt-out of Location's allowlist), persisting any pending
+// flash bag first. SECURITY: only pass trusted or statically-known URLs.
+func (re *ReqEngine) LocationExternal(url string) {
+	if re == nil {
+		return
+	}
+	re.commitSession()
+	re.e.LocationExternal(re.w, re.r, url)
 }
 
 // Back redirects to the Referer (or "/"), persisting any pending flash

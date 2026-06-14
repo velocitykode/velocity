@@ -42,10 +42,45 @@ func (b *Bond) RedirectWithStatus(w http.ResponseWriter, r *http.Request, rawURL
 	http.Redirect(w, r, rawURL, status)
 }
 
-// Location forces a full page reload (external redirect)
-// This breaks out of the SPA and performs a full navigation
-// Use for external URLs or when you need to break out of Inertia
-func (b *Bond) Location(w http.ResponseWriter, r *http.Request, url string) {
+// Location forces a full page reload (breaks out of the SPA) to a
+// SAME-ORIGIN target. It is safe to feed user-controlled input (a ?next=
+// return URL, etc.): the target is validated against the same host
+// allowlist as Redirect/Back, so an external or attacker-supplied host
+// collapses to "/". Relative paths pass through.
+//
+// For a deliberate cross-origin full-page redirect (an OAuth provider, a
+// payment gateway), use LocationExternal, which is the explicit
+// opt-out of the allowlist.
+func (b *Bond) Location(w http.ResponseWriter, r *http.Request, target string) {
+	// Allowlist + scheme validation, identical to Redirect/Back. An
+	// external host or dangerous scheme collapses to "/".
+	url := sanitizeRedirectURL(target, b.allowedHostsFor(r))
+	b.emitLocation(w, r, url)
+}
+
+// LocationExternal forces a full page reload to an arbitrary external
+// http/https host. This is the explicit escape hatch from Location's
+// same-origin allowlist; the Inertia protocol uses it for cross-origin
+// navigation.
+//
+// SECURITY: only pass trusted or statically-known URLs. Unlike Location
+// it does NOT consult the host allowlist, so passing user-controlled
+// input here re-introduces the open-redirect (phishing) risk. It still
+// rejects dangerous URL schemes: the Inertia client performs
+// window.location = url from the X-Inertia-Location header on the 409
+// path, so a javascript:, data:, or vbscript: target would execute as
+// reflected/stored XSS. Only empty (relative), http, and https schemes
+// are accepted; anything else falls back to "/".
+func (b *Bond) LocationExternal(w http.ResponseWriter, r *http.Request, target string) {
+	// Reject non-http(s) schemes before they can reach the client, but
+	// permit external hosts (the point of this method).
+	url := sanitizeLocationScheme(target)
+	b.emitLocation(w, r, url)
+}
+
+// emitLocation writes an already-sanitized full-page-reload target as
+// either an Inertia 409 (X-Inertia-Location) or a standard 302 redirect.
+func (b *Bond) emitLocation(w http.ResponseWriter, r *http.Request, url string) {
 	// Defence-in-depth: strip CR/LF before any Header().Set even though
 	// net/http will reject them at write time. Same rationale as
 	// RedirectWithStatus above; see stripCRLF.
@@ -125,6 +160,40 @@ func (b *Bond) allowedHostsFor(r *http.Request) []string {
 		return nil
 	}
 	return []string{r.Host}
+}
+
+// sanitizeLocationScheme guards the Location() full-page-reload path.
+// Location intentionally allows external hosts, so it does NOT apply the
+// same-host allowlist that sanitizeRedirectURL enforces. It only blocks
+// dangerous URL schemes: the Inertia client assigns the value to
+// window.location, so a javascript:, data:, or vbscript: target would be
+// executed as XSS. Only an empty scheme (relative URL) or http/https is
+// accepted; everything else collapses to "/" to match the convention
+// sanitizeRedirectURL uses for rejected targets.
+func sanitizeLocationScheme(target string) string {
+	if target == "" {
+		return "/"
+	}
+
+	// Relative paths carry no scheme and are always safe here. Parsing
+	// would otherwise produce an empty scheme too, but short-circuiting
+	// avoids edge cases where a path segment contains a colon.
+	if strings.HasPrefix(target, "/") {
+		return target
+	}
+
+	u, err := url.Parse(target)
+	if err != nil {
+		return "/"
+	}
+
+	// url.Parse lowercases the scheme, so this comparison is case
+	// insensitive (e.g. "JavaScript:" parses to scheme "javascript").
+	if u.Scheme != "" && u.Scheme != "http" && u.Scheme != "https" {
+		return "/"
+	}
+
+	return target
 }
 
 // sanitizeRedirectURL validates a redirect URL to prevent open redirects.

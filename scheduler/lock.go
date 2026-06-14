@@ -26,6 +26,16 @@ type Lock interface {
 	// FencingToken returns the token issued at Acquire time. The value is
 	// strictly increasing across successful acquisitions of the same name;
 	// tokens across different names are independent.
+	//
+	// Monotonicity is only as wide as the issuing backend's scope. A
+	// distributed Locker (Redis/ZooKeeper/etcd/DB) whose backend issues
+	// cluster-wide tokens gives multi-host monotonicity, which is what
+	// downstream fencing actually requires. A process-local Locker such as
+	// InMemoryLocker only guarantees monotonicity within a single process:
+	// two hosts each running their own InMemoryLocker will mint overlapping
+	// tokens, so the token cannot be relied on to fence stale holders across
+	// hosts. Use a distributed Locker whenever the token crosses a process
+	// boundary.
 	FencingToken() uint64
 
 	// Release drops the lock. Implementations MUST be idempotent — releasing
@@ -36,6 +46,13 @@ type Lock interface {
 // Locker acquires named locks. It is intentionally narrow so backends
 // (in-memory, Redis SET NX, ZooKeeper, etcd, database advisory locks) can be
 // swapped without changing call sites.
+//
+// Fencing-token scope: the per-name monotonicity guarantee on
+// Lock.FencingToken holds only within the scope of the issuing backend. A
+// process-local backend (InMemoryLocker) issues tokens monotonic per process,
+// NOT per cluster; multi-host fencing and the cross-host OnOneServer /
+// WithoutOverlapping guarantees require a distributed Locker whose backend
+// hands out cluster-wide monotonic tokens.
 //
 // Implementations must pass schedulertest.RunLockerContractTests. See
 // schedulertest for the executable specification.
@@ -50,11 +67,21 @@ type Locker interface {
 var ErrLockHeld = fmt.Errorf("velocity/scheduler: lock already held")
 
 // InMemoryLocker is a process-local Locker suitable for single-instance
-// deployments and tests. It is NOT safe to use across multiple processes —
+// deployments and tests. It is NOT safe to use across multiple processes -
 // plug in a real distributed backend (Redis/ZooKeeper/etcd) for production.
+//
+// Fencing-token caveat: the token counter is a single per-process atomic, so
+// fencing tokens are monotonic only WITHIN this process. Two hosts each
+// running their own InMemoryLocker start their counters independently and will
+// mint overlapping tokens for the same lock name, defeating cross-host
+// fencing. Consequently InMemoryLocker MUST NOT back OnOneServer or
+// WithoutOverlapping when more than one host runs the scheduler: across hosts
+// it provides no mutual exclusion at all, and its tokens cannot fence a stale
+// holder running on another host. For multi-host deployments use a distributed
+// Locker whose shared backend issues cluster-wide monotonic tokens.
 type InMemoryLocker struct {
 	mu    sync.Mutex
-	token atomic.Uint64 // monotonically increasing fencing token
+	token atomic.Uint64 // process-wide monotonic fencing token; NOT cluster-wide
 	locks map[string]*inMemoryLock
 	nowFn func() time.Time // overridable for tests
 }

@@ -103,10 +103,22 @@ func CORS(config CORSConfig) MiddlewareFunc {
 			}
 
 			if !allowed {
+				// A disallowed preflight must not reach app handlers or the
+				// 404 logic. Short-circuit with 204 and emit no
+				// Access-Control-Allow-* headers, so the browser sees an empty
+				// response with no CORS grant. Non-OPTIONS requests still fall
+				// through unchanged (the browser blocks the response itself
+				// when the ACAO header is absent).
+				if c.Request.Method == http.MethodOptions {
+					return c.NoContent()
+				}
 				return next(c)
 			}
 
-			// Set origin header
+			// Set origin header. The wildcard "*" is only emitted when
+			// credentials are disabled; every path that reflects a concrete
+			// origin back must also set "Vary: Origin" so shared caches do not
+			// serve one origin's grant to another.
 			if allowAll && !config.AllowCredentials {
 				c.SetHeader("Access-Control-Allow-Origin", "*")
 			} else {
