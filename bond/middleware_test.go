@@ -3,10 +3,70 @@ package bond
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/velocitykode/velocity/router"
 )
+
+// precommitWriter models the router responseWriter's BeforeFirstWrite
+// contract: a hook registered by an outer middleware (the session guard
+// writing its Set-Cookie is the real case) fires when the response is first
+// committed, and writes to whatever the Context's response currently is. The
+// bond buffered (Inertia) path must have c.Response pointing at this real
+// writer when the hook fires; if it still points at the drained buffer the
+// late Set-Cookie is lost. See MiddlewareFunc.
+type precommitWriter struct {
+	http.ResponseWriter
+	hook  func()
+	fired bool
+}
+
+func (p *precommitWriter) WriteHeader(code int) {
+	if !p.fired {
+		p.fired = true
+		if p.hook != nil {
+			p.hook()
+		}
+	}
+	p.ResponseWriter.WriteHeader(code)
+}
+
+// TestMiddlewareFunc_PrecommitHookReachesRealWriter pins the fix for the
+// bond-buffering bug where a session-guard precommit Set-Cookie was dropped on
+// Inertia responses: the hook fired during flush's orig.WriteHeader while
+// c.Response still pointed at the buffer, so the cookie landed in the buffer's
+// header map after flush had already copied headers out. Symptom downstream:
+// the CSRF token bound to the fresh session id round-tripped no session cookie,
+// 419ing the next POST.
+func TestMiddlewareFunc_PrecommitHookReachesRealWriter(t *testing.T) {
+	b := setupBond(t)
+	rec := httptest.NewRecorder()
+	orig := &precommitWriter{ResponseWriter: rec}
+	r := httptest.NewRequest(http.MethodGet, "/login", nil)
+	r.Header.Set("X-Inertia", "true")
+	c := router.NewContext(orig, r)
+
+	// Outer-middleware precommit: writes a Set-Cookie to the LIVE c.Response
+	// at commit time, exactly as the session guard's deferred save does.
+	orig.hook = func() {
+		http.SetCookie(c.Response, &http.Cookie{Name: "velship_session", Value: "s1", Path: "/"})
+	}
+
+	mw := b.MiddlewareFunc()
+	h := mw(func(c *router.Context) error {
+		// Inertia JSON body; the handler never touches the session cookie.
+		_, err := c.Response.Write([]byte(`{"component":"Auth/Login"}`))
+		return err
+	})
+	if err := h(c); err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+
+	if got := rec.Header().Get("Set-Cookie"); !strings.Contains(got, "velship_session=s1") {
+		t.Fatalf("precommit Set-Cookie dropped through buffered flush; Set-Cookie=%q", got)
+	}
+}
 
 func TestMiddleware_SetsVaryHeader(t *testing.T) {
 	b := setupBond(t)
