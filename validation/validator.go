@@ -9,6 +9,7 @@
 package validation
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net/http"
 	"strings"
@@ -271,9 +272,15 @@ func parseRules(ruleString string) []parsedRule {
 // handler a defensive copy of rule.params (a custom rule may mutate params in
 // place), and nothing else writes through a cached slice. ruleCacheCap bounds
 // growth defensively; past the cap, parsing still happens, it just is not memoized.
+// Single- and multi-token rule sets cache into separate maps so the common
+// single-token case keys on the raw token (zero-alloc lookup) while multi-token
+// sets key on a collision-free length-framed encoding. Separate namespaces mean
+// a raw single token can never collide with a framed multi-token key. A shared
+// size counter bounds combined growth.
 var (
-	ruleCache     sync.Map // map[string][]parsedRule
-	ruleCacheSize atomic.Int64
+	ruleCacheSingle sync.Map // map[string][]parsedRule, key = raw single token
+	ruleCacheMulti  sync.Map // map[string][]parsedRule, key = ruleCacheKey(tokens)
+	ruleCacheSize   atomic.Int64
 )
 
 const ruleCacheCap = 4096
@@ -286,39 +293,56 @@ func parseRuleSlice(tokens []string) []parsedRule {
 	if len(tokens) == 0 {
 		return nil
 	}
-	key := ruleCacheKey(tokens)
-	if cached, ok := ruleCache.Load(key); ok {
+	cache := &ruleCacheMulti
+	var key string
+	if len(tokens) == 1 {
+		cache = &ruleCacheSingle
+		key = tokens[0] // zero-alloc: raw token, separate namespace from framed keys
+	} else {
+		key = ruleCacheKey(tokens)
+	}
+	if cached, ok := cache.Load(key); ok {
 		return cached.([]parsedRule)
 	}
 	rules := parseRuleSliceUncached(tokens)
 	if ruleCacheSize.Load() < ruleCacheCap {
-		if _, loaded := ruleCache.LoadOrStore(key, rules); !loaded {
+		if _, loaded := cache.LoadOrStore(key, rules); !loaded {
 			ruleCacheSize.Add(1)
 		}
 	}
 	return rules
 }
 
-// ruleCacheKey builds a collision-free key for a token list by joining tokens
-// with a NUL separator (never present in rule strings). The single-token case
-// returns the token directly, avoiding an allocation.
+// ruleCacheKey builds a collision-free key for a token list. Each token is
+// length-prefixed with an unsigned varint, so distinct token lists always
+// produce distinct keys regardless of token content. A bare separator byte
+// (e.g. NUL) is unsafe: rule strings may contain any byte, including NUL, so
+// a separator can collide a multi-token join with a single-token string that
+// happens to contain that byte. Length framing has no such ambiguity.
 func ruleCacheKey(tokens []string) string {
-	if len(tokens) == 1 {
-		return tokens[0]
-	}
-	n := len(tokens) - 1
+	n := 0
 	for _, t := range tokens {
-		n += len(t)
+		n += uvarintLen(uint64(len(t))) + len(t)
 	}
 	var b strings.Builder
 	b.Grow(n)
-	for i, t := range tokens {
-		if i > 0 {
-			b.WriteByte(0)
-		}
+	var lenbuf [binary.MaxVarintLen64]byte
+	for _, t := range tokens {
+		m := binary.PutUvarint(lenbuf[:], uint64(len(t)))
+		b.Write(lenbuf[:m])
 		b.WriteString(t)
 	}
 	return b.String()
+}
+
+// uvarintLen returns the number of bytes binary.PutUvarint writes for x.
+func uvarintLen(x uint64) int {
+	n := 1
+	for x >= 0x80 {
+		x >>= 7
+		n++
+	}
+	return n
 }
 
 // parseRuleSliceUncached is the raw parser behind parseRuleSlice's cache.
