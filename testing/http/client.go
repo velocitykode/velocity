@@ -6,7 +6,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 )
 
@@ -16,6 +18,10 @@ type TestClient struct {
 	router  http.Handler
 	headers map[string]string
 	cookies []*http.Cookie
+	form    url.Values
+
+	followRedirects bool
+	maxRedirects    int
 }
 
 // NewTestClient creates a test client that sends requests through the given router.
@@ -25,7 +31,25 @@ func NewTestClient(t TestingT, router http.Handler) *TestClient {
 		router:  router,
 		headers: make(map[string]string),
 		cookies: make([]*http.Cookie, 0),
+		form:    make(url.Values),
 	}
+}
+
+// FollowingRedirects enables automatic following of 3xx redirects, up to a cap
+// of 10 hops. Each followed request is issued as a GET to the Location header,
+// carrying both the client's own cookies and any cookies set by the redirecting
+// response.
+//
+// The follow-chain cookie handling is deliberately minimal: cookies are keyed by
+// name and carried forward for the duration of the chain only. It does not honor
+// cookie deletion (MaxAge<0 / expiry) or Path/Domain scoping, and cookies set
+// mid-chain are not persisted back onto the client for later independent
+// requests. This suits same-host relative redirects in tests; it is not a full
+// http.CookieJar.
+func (c *TestClient) FollowingRedirects() *TestClient {
+	c.followRedirects = true
+	c.maxRedirects = 10
+	return c
 }
 
 // WithHeader sets a default header for all requests.
@@ -130,6 +154,57 @@ func (c *TestClient) send(req *http.Request) *TestResponse {
 
 	rec := httptest.NewRecorder()
 	c.router.ServeHTTP(rec, req)
+
+	if c.followRedirects {
+		remaining := c.maxRedirects
+		// Accumulate cookies across the whole follow chain, seeded with
+		// the client's own cookies. Each redirect's Set-Cookie values
+		// update the jar before the next hop so a cookie set early in a
+		// 3xx chain is still carried to later requests.
+		jar := make(map[string]*http.Cookie, len(c.cookies))
+		order := make([]string, 0, len(c.cookies))
+		addCookie := func(cookie *http.Cookie) {
+			if _, ok := jar[cookie.Name]; !ok {
+				order = append(order, cookie.Name)
+			}
+			jar[cookie.Name] = cookie
+		}
+		for _, cookie := range c.cookies {
+			addCookie(cookie)
+		}
+		cur := req
+		for rec.Code >= 300 && rec.Code < 400 {
+			location := rec.Header().Get("Location")
+			if location == "" || remaining <= 0 {
+				break
+			}
+			remaining--
+
+			for _, cookie := range rec.Result().Cookies() {
+				addCookie(cookie)
+			}
+
+			// Resolve the Location against the current request URL so bare
+			// relative redirects (e.g. "next") work, then build a
+			// server-style request matching the rest of TestClient.
+			target, err := cur.URL.Parse(location)
+			if err != nil {
+				c.t.Errorf("following redirect: invalid Location %q: %v", location, err)
+				break
+			}
+			next := httptest.NewRequest(http.MethodGet, target.String(), nil)
+			cur = next
+			for key, value := range c.headers {
+				next.Header.Set(key, value)
+			}
+			for _, name := range order {
+				next.AddCookie(jar[name])
+			}
+
+			rec = httptest.NewRecorder()
+			c.router.ServeHTTP(rec, next)
+		}
+	}
 
 	return &TestResponse{
 		t:        c.t,
@@ -326,7 +401,23 @@ func (r *TestResponse) AssertJSONPath(path string, expected any) *TestResponse {
 	parts := strings.Split(path, ".")
 	var current any = decoded
 	for _, part := range parts {
+		// Dispatch on the actual type of the current node, NOT on whether the
+		// segment looks numeric: a numeric segment only indexes an array, while
+		// a map keyed by a numeric string (e.g. {"0":...}) must still resolve as
+		// a normal key lookup.
 		switch v := current.(type) {
+		case []any:
+			// Arrays are addressed by a numeric segment (e.g. "items.0.name").
+			idx, err := strconv.Atoi(part)
+			if err != nil {
+				r.t.Errorf("JSON path %q: cannot index array with non-numeric segment %q", path, part)
+				return r
+			}
+			if idx < 0 || idx >= len(v) {
+				r.t.Errorf("JSON path %q: index %d out of range (len %d) at segment %q", path, idx, len(v), part)
+				return r
+			}
+			current = v[idx]
 		case map[string]any:
 			val, ok := v[part]
 			if !ok {
