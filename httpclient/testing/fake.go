@@ -40,6 +40,11 @@ import (
 	"github.com/velocitykode/velocity/httpclient"
 )
 
+// maxFakeBodyBytes caps the request/response bodies the fake reads into memory
+// when recording requests and cloning stub responses. Test payloads are small;
+// the bound is defense in depth so a pathological body cannot exhaust memory.
+const maxFakeBodyBytes = 10 << 20 // 10 MiB
+
 // Matcher reports whether a request should be served by a given stub.
 type Matcher func(*http.Request) bool
 
@@ -192,7 +197,7 @@ func NewResponse(status int, body []byte) *http.Response {
 func recordRequest(req *http.Request) *http.Request {
 	rec := req.Clone(req.Context())
 	if req.Body != nil && req.Body != http.NoBody {
-		body, err := io.ReadAll(req.Body)
+		body, err := io.ReadAll(io.LimitReader(req.Body, maxFakeBodyBytes)) //nolint:forbidigo // bounded by io.LimitReader
 		if err == nil {
 			req.Body = io.NopCloser(bytes.NewReader(body))
 			rec.Body = io.NopCloser(bytes.NewReader(body))
@@ -213,7 +218,7 @@ func cloneResponse(resp *http.Response) *http.Response {
 
 	var body []byte
 	if resp.Body != nil {
-		body, _ = io.ReadAll(resp.Body)
+		body, _ = io.ReadAll(io.LimitReader(resp.Body, maxFakeBodyBytes)) //nolint:forbidigo // bounded by io.LimitReader
 		// Restore the source body so the stub can be served again.
 		resp.Body = io.NopCloser(bytes.NewReader(body))
 	}
