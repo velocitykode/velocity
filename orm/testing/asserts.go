@@ -65,11 +65,13 @@ func buildCountQuery(driver, table string, criteria map[string]any, extra string
 }
 
 // countRows runs a parameterized COUNT query and returns the scanned count.
-// On any query/scan error it reports via t.Errorf and returns ok=false.
-func countRows(t TestingT, m *orm.Manager, query string, args []any) (int, bool) {
+// On any query/scan error it reports via t.Errorf and returns ok=false. ctx is
+// threaded into m.Raw so a tx-carrying context (the transaction-rollback test
+// helper) reads through the transaction and sees its uncommitted writes.
+func countRows(t TestingT, ctx context.Context, m *orm.Manager, query string, args []any) (int, bool) {
 	t.Helper()
 
-	rows, err := m.Raw(context.Background(), query, args...)
+	rows, err := m.Raw(ctx, query, args...)
 	if err != nil {
 		t.Errorf("query failed: %v\nquery: %s", err, query)
 		return 0, false
@@ -93,12 +95,21 @@ func countRows(t TestingT, m *orm.Manager, query string, args []any) (int, bool)
 }
 
 // AssertDatabaseHas asserts that at least one row in table matches criteria.
+// It reads through the pool; inside a transaction-rollback test use
+// AssertDatabaseHasCtx with the test's tx context.
 func AssertDatabaseHas(t TestingT, m *orm.Manager, table string, criteria map[string]any) {
+	t.Helper()
+	AssertDatabaseHasCtx(t, context.Background(), m, table, criteria)
+}
+
+// AssertDatabaseHasCtx is AssertDatabaseHas that reads through ctx, so a
+// tx-carrying context observes the transaction's uncommitted writes.
+func AssertDatabaseHasCtx(t TestingT, ctx context.Context, m *orm.Manager, table string, criteria map[string]any) {
 	t.Helper()
 
 	driver := m.DriverName()
 	query, args := buildCountQuery(driver, table, criteria, "")
-	count, ok := countRows(t, m, query, args)
+	count, ok := countRows(t, ctx, m, query, args)
 	if !ok {
 		return
 	}
@@ -110,10 +121,16 @@ func AssertDatabaseHas(t TestingT, m *orm.Manager, table string, criteria map[st
 // AssertDatabaseMissing asserts that no row in table matches criteria.
 func AssertDatabaseMissing(t TestingT, m *orm.Manager, table string, criteria map[string]any) {
 	t.Helper()
+	AssertDatabaseMissingCtx(t, context.Background(), m, table, criteria)
+}
+
+// AssertDatabaseMissingCtx is AssertDatabaseMissing that reads through ctx.
+func AssertDatabaseMissingCtx(t TestingT, ctx context.Context, m *orm.Manager, table string, criteria map[string]any) {
+	t.Helper()
 
 	driver := m.DriverName()
 	query, args := buildCountQuery(driver, table, criteria, "")
-	count, ok := countRows(t, m, query, args)
+	count, ok := countRows(t, ctx, m, query, args)
 	if !ok {
 		return
 	}
@@ -125,10 +142,16 @@ func AssertDatabaseMissing(t TestingT, m *orm.Manager, table string, criteria ma
 // AssertDatabaseCount asserts that table contains exactly expected rows.
 func AssertDatabaseCount(t TestingT, m *orm.Manager, table string, expected int) {
 	t.Helper()
+	AssertDatabaseCountCtx(t, context.Background(), m, table, expected)
+}
+
+// AssertDatabaseCountCtx is AssertDatabaseCount that reads through ctx.
+func AssertDatabaseCountCtx(t TestingT, ctx context.Context, m *orm.Manager, table string, expected int) {
+	t.Helper()
 
 	driver := m.DriverName()
 	query, args := buildCountQuery(driver, table, nil, "")
-	count, ok := countRows(t, m, query, args)
+	count, ok := countRows(t, ctx, m, query, args)
 	if !ok {
 		return
 	}
@@ -141,11 +164,17 @@ func AssertDatabaseCount(t TestingT, m *orm.Manager, table string, expected int)
 // NOT NULL) in table matches criteria.
 func AssertSoftDeleted(t TestingT, m *orm.Manager, table string, criteria map[string]any) {
 	t.Helper()
+	AssertSoftDeletedCtx(t, context.Background(), m, table, criteria)
+}
+
+// AssertSoftDeletedCtx is AssertSoftDeleted that reads through ctx.
+func AssertSoftDeletedCtx(t TestingT, ctx context.Context, m *orm.Manager, table string, criteria map[string]any) {
+	t.Helper()
 
 	driver := m.DriverName()
 	predicate := quoteIdentifier("deleted_at", driver) + " IS NOT NULL"
 	query, args := buildCountQuery(driver, table, criteria, predicate)
-	count, ok := countRows(t, m, query, args)
+	count, ok := countRows(t, ctx, m, query, args)
 	if !ok {
 		return
 	}
@@ -158,11 +187,17 @@ func AssertSoftDeleted(t TestingT, m *orm.Manager, table string, criteria map[st
 // (deleted_at IS NULL) in table matches criteria.
 func AssertNotSoftDeleted(t TestingT, m *orm.Manager, table string, criteria map[string]any) {
 	t.Helper()
+	AssertNotSoftDeletedCtx(t, context.Background(), m, table, criteria)
+}
+
+// AssertNotSoftDeletedCtx is AssertNotSoftDeleted that reads through ctx.
+func AssertNotSoftDeletedCtx(t TestingT, ctx context.Context, m *orm.Manager, table string, criteria map[string]any) {
+	t.Helper()
 
 	driver := m.DriverName()
 	predicate := quoteIdentifier("deleted_at", driver) + " IS NULL"
 	query, args := buildCountQuery(driver, table, criteria, predicate)
-	count, ok := countRows(t, m, query, args)
+	count, ok := countRows(t, ctx, m, query, args)
 	if !ok {
 		return
 	}

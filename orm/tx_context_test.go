@@ -552,17 +552,14 @@ func TestTxFromContext_NoTx(t *testing.T) {
 }
 
 // TestTransaction_NestedInnerTxIsolatedFromOuterCtx documents the
-// nested-Transaction contract: the inner closure receives a ctx whose
-// tx slot is the inner *sql.Tx, not the outer one. Inner ORM calls
-// chain off the inner ctx and so participate in the inner tx.
-//
-// This is the savepoint-style boundary the framework offers: each
-// Transaction call gets its own *sql.Tx (the underlying driver is
-// responsible for issuing real SAVEPOINTs if the pool is shared and
-// the dialect supports them; on per-connection pools like SQLite
-// memory each tx lives on its own connection). Either way, the
-// assertion the framework guarantees is that inner ORM calls bind to
-// the INNER tx rather than escaping back to the outer one.
+// nested-Transaction contract: a nested Transaction REUSES the outer
+// *sql.Tx and demarcates its scope with a SAVEPOINT, rather than opening
+// a second independent transaction on the pool. The inner closure
+// receives a ctx whose tx slot is that same *sql.Tx, and inner ORM calls
+// chain off it (the no-bypass invariant). Savepoint nesting is what lets
+// a nested Transaction roll back independently (ROLLBACK TO SAVEPOINT)
+// while the parent transaction stays open, and it is required for the
+// transaction-rollback test helper to work on a single-connection pool.
 func TestTransaction_NestedInnerTxIsolatedFromOuterCtx(t *testing.T) {
 	m, cleanup := setupTxContextTest(t)
 	defer cleanup()
@@ -579,12 +576,12 @@ func TestTransaction_NestedInnerTxIsolatedFromOuterCtx(t *testing.T) {
 			if !ok || innerTx == nil {
 				t.Fatal("inner ctx missing tx slot")
 			}
-			if innerTx == outerTx {
-				t.Error("inner tx == outer tx; expected a fresh *sql.Tx for the nested scope")
+			// Savepoint nesting: the inner scope reuses the outer tx.
+			if innerTx != outerTx {
+				t.Error("inner tx != outer tx; nested scope should reuse the outer tx via savepoint")
 			}
-			// A terminal rooted at innerCtx must bind to innerTx, not
-			// outerTx, which is the no-bypass invariant the rest of
-			// the suite relies on.
+			// A terminal rooted at innerCtx must bind to that tx, the
+			// no-bypass invariant the rest of the suite relies on.
 			q := newQuery[User]()
 			q.bindTxFromContextValue(innerCtx)
 			drv, ok := q.driver.(*txDriver)
@@ -592,7 +589,7 @@ func TestTransaction_NestedInnerTxIsolatedFromOuterCtx(t *testing.T) {
 				t.Fatalf("inner chain driver = %T, want *txDriver", q.driver)
 			}
 			if drv.tx != innerTx {
-				t.Error("inner chain bound to outer tx; nested ctx propagation regressed")
+				t.Error("inner chain bound to wrong tx; nested ctx propagation regressed")
 			}
 			return nil
 		})
@@ -767,5 +764,83 @@ func TestWrite_OptOutPlainCtxBindsPoolDriver(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Transaction: %v", err)
+	}
+}
+
+// TestTransaction_SavepointNesting_InnerRollbackKeepsOuter verifies the
+// DB-level effect of savepoint nesting: when a nested Transaction rolls back
+// (ROLLBACK TO SAVEPOINT), only its writes are discarded; the outer
+// transaction's writes survive its commit. This is the behavior that makes
+// nested transactions and the transaction-rollback test helper correct.
+func TestTransaction_SavepointNesting_InnerRollbackKeepsOuter(t *testing.T) {
+	m, cleanup := setupTxContextTest(t)
+	defer cleanup()
+
+	err := m.Transaction(context.Background(), func(outerCtx context.Context) error {
+		otx, ok := TxFromContext(outerCtx)
+		if !ok {
+			t.Fatal("outer ctx missing tx")
+		}
+		if _, e := otx.ExecContext(outerCtx,
+			`INSERT INTO users (name, email) VALUES (?, ?)`, "outer", "outer@x.com"); e != nil {
+			return e
+		}
+		// Nested transaction inserts then fails: ROLLBACK TO SAVEPOINT must
+		// discard only the inner row, leaving the outer row intact.
+		innerErr := m.Transaction(outerCtx, func(innerCtx context.Context) error {
+			itx, _ := TxFromContext(innerCtx)
+			if _, e := itx.ExecContext(innerCtx,
+				`INSERT INTO users (name, email) VALUES (?, ?)`, "inner", "inner@x.com"); e != nil {
+				return e
+			}
+			return errors.New("boom")
+		})
+		if innerErr == nil {
+			t.Error("expected inner transaction to return error")
+		}
+		return nil // outer commits
+	})
+	if err != nil {
+		t.Fatalf("outer transaction: %v", err)
+	}
+
+	var n int
+	if e := m.DB().QueryRow(`SELECT COUNT(*) FROM users`).Scan(&n); e != nil {
+		t.Fatalf("count: %v", e)
+	}
+	if n != 1 {
+		t.Fatalf("want 1 row (outer survived, inner rolled back), got %d", n)
+	}
+	var name string
+	if e := m.DB().QueryRow(`SELECT name FROM users`).Scan(&name); e != nil {
+		t.Fatalf("select: %v", e)
+	}
+	if name != "outer" {
+		t.Fatalf("want outer row to survive, got %q", name)
+	}
+}
+
+// TestTransaction_AutoEnrollsExec pins that Manager.Exec honors a tx carried in
+// ctx: a raw Exec inside a transaction must roll back with it, not auto-commit
+// on the pool. This is the write-side counterpart to the tx-aware Raw read path.
+func TestTransaction_AutoEnrollsExec(t *testing.T) {
+	m, cleanup := setupTxContextTest(t)
+	defer cleanup()
+
+	sentinel := errors.New("rollback")
+	_ = m.Transaction(context.Background(), func(ctx context.Context) error {
+		if _, e := m.Exec(ctx,
+			`INSERT INTO users (name, email) VALUES (?, ?)`, "ghost", "ghost@x.com"); e != nil {
+			return e
+		}
+		return sentinel
+	})
+
+	var n int
+	if e := m.DB().QueryRow(`SELECT COUNT(*) FROM users`).Scan(&n); e != nil {
+		t.Fatalf("count: %v", e)
+	}
+	if n != 0 {
+		t.Errorf("post-rollback count = %d, want 0 (Manager.Exec escaped the tx)", n)
 	}
 }

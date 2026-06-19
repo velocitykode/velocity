@@ -187,3 +187,33 @@ func TestTestCaseWithSequence(t *testing.T) {
 		}
 	}
 }
+
+// TestTestCaseBeginTransaction exercises the transaction-rollback isolation
+// helper: writes made through the returned ctx are visible to the *Ctx
+// assertions (which read through the same tx), and are rolled back via
+// t.Cleanup at test end. Asserted as a delta so it is independent of rows
+// other tests in the package may have committed into the shared table.
+func TestTestCaseBeginTransaction(t *testing.T) {
+	tc := NewTestCase(t, testManager)
+	ctx := tc.BeginTransaction()
+
+	tx, ok := orm.TxFromContext(ctx)
+	if !ok {
+		t.Fatal("BeginTransaction ctx is missing its tx")
+	}
+
+	var before int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM test_users`).Scan(&before); err != nil {
+		t.Fatalf("baseline count: %v", err)
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO test_users (name, email) VALUES (?, ?)`, "Ada", "ada@begin.tx"); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// The Ctx assertions read THROUGH the tx, so they observe the
+	// uncommitted insert. The non-ctx variants would hit the pool and miss it.
+	AssertDatabaseCountCtx(t, ctx, testManager, "test_users", before+1)
+	AssertDatabaseHasCtx(t, ctx, testManager, "test_users", map[string]any{"email": "ada@begin.tx"})
+}

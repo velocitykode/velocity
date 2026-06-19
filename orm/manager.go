@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -254,6 +255,21 @@ func (m *Manager) DescribeTableOn(ctx context.Context, name, table string) ([]dr
 // WARNING: The caller is responsible for preventing SQL injection by using
 // parameterized queries. Never concatenate user input into the query string.
 func (m *Manager) Raw(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	// Honor a tx carried in ctx (set by Manager.Transaction or
+	// WithTxContext): route the read through the tx so it observes
+	// uncommitted writes from the same transaction, mirroring how the
+	// ORM terminals enroll via bindTxFromContextValue. Without this a
+	// raw read inside a transaction (e.g. a test using the
+	// transaction-rollback helper) would escape to the pool and miss
+	// the transaction's own writes.
+	if tx, ok := TxFromContext(ctx); ok {
+		rows, err := tx.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("orm: raw query failed: %w", err)
+		}
+		return rows, nil
+	}
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if m.defaultDriver == nil {
@@ -271,6 +287,19 @@ func (m *Manager) Raw(ctx context.Context, query string, args ...any) (*sql.Rows
 // WARNING: The caller is responsible for preventing SQL injection by using
 // parameterized queries. Never concatenate user input into the query string.
 func (m *Manager) Exec(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	// Honor a tx carried in ctx (set by Manager.Transaction or
+	// WithTxContext): route the write through the tx so it participates in
+	// the caller's transaction instead of auto-committing on the pool.
+	// Without this a raw Exec inside a transaction (e.g. a test using the
+	// transaction-rollback helper) would escape and never roll back.
+	if tx, ok := TxFromContext(ctx); ok {
+		res, err := tx.ExecContext(ctx, query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("orm: exec failed: %w", err)
+		}
+		return res, nil
+	}
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if m.defaultDriver == nil {
@@ -338,9 +367,50 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 		return errors.New("velocity/orm: no database connection")
 	}
 
-	tx, err := driver.BeginTx(ctx, nil)
-	if err != nil {
-		return err
+	// Savepoint nesting: when ctx already carries a *sql.Tx (set by an
+	// outer Manager.Transaction, or by WithTxContext - e.g. the test
+	// transaction-rollback helper), nest as a SAVEPOINT on that tx
+	// instead of opening a second real transaction on the pool. A second
+	// pool transaction would commit independently (escaping the outer
+	// rollback) and, with a single-connection pool, deadlock waiting for
+	// the connection the outer tx holds.
+	parentTx, nested := TxFromContext(ctx)
+	var tx *sql.Tx
+	var savepoint string
+	if nested {
+		tx = parentTx
+		savepoint = nextSavepointName()
+		if _, spErr := tx.ExecContext(ctx, "SAVEPOINT "+savepoint); spErr != nil {
+			return spErr
+		}
+	} else {
+		var beginErr error
+		tx, beginErr = driver.BeginTx(ctx, nil)
+		if beginErr != nil {
+			return beginErr
+		}
+	}
+
+	// commit / rollback primitives differ for the savepoint path: RELEASE
+	// SAVEPOINT commits the nested scope; ROLLBACK TO + RELEASE discards
+	// it; the parent transaction stays open either way. For a real
+	// (non-nested) transaction these are plain Commit / Rollback.
+	doCommit := func() error {
+		if nested {
+			_, e := tx.ExecContext(ctx, "RELEASE SAVEPOINT "+savepoint)
+			return e
+		}
+		return tx.Commit()
+	}
+	doRollback := func() error {
+		if nested {
+			if _, e := tx.ExecContext(ctx, "ROLLBACK TO SAVEPOINT "+savepoint); e != nil {
+				return e
+			}
+			_, e := tx.ExecContext(ctx, "RELEASE SAVEPOINT "+savepoint)
+			return e
+		}
+		return tx.Rollback()
 	}
 
 	// Mint a fresh span for the tx body so every QueryExecuted event running
@@ -500,7 +570,7 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 			// propagates so a deferred Reportable / outbox enqueue
 			// cannot leak side effects.
 			dropAfterCommit()
-			if rbErr := tx.Rollback(); rbErr != nil {
+			if rbErr := doRollback(); rbErr != nil {
 				// Surface rollback failure through the configured logger
 				// when available; otherwise fire a typed event so callers
 				// with a dispatcher wired up still observe the failure.
@@ -526,7 +596,7 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 	if err := fn(txCtx); err != nil {
 		buffer.Drop()
 		dropAfterCommit()
-		if rbErr := tx.Rollback(); rbErr != nil {
+		if rbErr := doRollback(); rbErr != nil {
 			if logger != nil {
 				logger.Error("velocity/orm: rollback failed", "error", rbErr, "original_error", err)
 			}
@@ -541,7 +611,7 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 		return err
 	}
 
-	if cmErr := tx.Commit(); cmErr != nil {
+	if cmErr := doCommit(); cmErr != nil {
 		buffer.Drop()
 		// Commit failed: the tx is in an AMBIGUOUS state. The database
 		// may have committed but the network failed before the client
@@ -560,6 +630,22 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 		drainOnCommitFailure(cmErr)
 		return cmErr
 	}
+
+	// A savepoint RELEASE is not a durable commit boundary: the enclosing
+	// real transaction may still roll back. So a nested (savepoint)
+	// transaction must NOT flush buffered events, fire after-commit
+	// listeners, or run OnCommit callbacks here. Those side effects stay
+	// accumulated against the real outer transaction's holders and fire
+	// only when it commits; if there is no real outer transaction (e.g. a
+	// raw WithTxContext from the transaction-rollback test helper) they
+	// correctly never fire, because the data is never durably committed.
+	// Inner-scope entries are still discarded on the rollback paths above
+	// (buffer.Drop / dropAfterCommit), so this only gates the success path.
+	if nested {
+		dispatchTxExecuted("")
+		return nil
+	}
+
 	if flushErr := buffer.Flush(); flushErr != nil {
 		// The tx itself committed; buffered-event flush failed. Still
 		// drain commit callbacks so outbox / cache invalidation runs:
@@ -593,6 +679,17 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 	dispatchTxExecuted("")
 	drainOnCommit()
 	return nil
+}
+
+// savepointCounter generates process-unique savepoint names. A monotonic
+// counter guarantees uniqueness among the savepoints active within any single
+// transaction (the only scope where collisions would matter).
+var savepointCounter atomic.Int64
+
+// nextSavepointName returns a fresh, SQL-safe savepoint identifier. The name is
+// generated (never user input) so it needs no quoting and cannot inject.
+func nextSavepointName() string {
+	return "vsp_" + strconv.FormatInt(savepointCounter.Add(1), 10)
 }
 
 // Begin starts a new transaction.

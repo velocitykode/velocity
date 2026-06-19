@@ -542,3 +542,45 @@ func TestTransaction_TripleNested_InnerRollback_MidAndOuterCommit(t *testing.T) 
 		t.Errorf("inner.event fired %d times after inner rollback; want 0", got)
 	}
 }
+
+// TestTransaction_SavepointRelease_NoAfterCommitOnOuterRollback pins the
+// transaction-rollback test-helper shape: the outer "transaction" is a raw
+// *sql.Tx threaded via WithTxContext (no Manager.Transaction, so no event /
+// after-commit holders in ctx). A Manager.Transaction inside it nests as a
+// savepoint. Releasing that savepoint is NOT a durable commit, so after-commit
+// listeners must NOT fire - the real outer tx is rolled back by the helper.
+// Without tying side-effect ownership to the real outer boundary, the inner
+// scope would wrongly own the after-commit queue and fire on RELEASE SAVEPOINT.
+func TestTransaction_SavepointRelease_NoAfterCommitOnOuterRollback(t *testing.T) {
+	m := newTestManager(t)
+	defer m.Shutdown(context.Background())
+
+	d := events.NewDispatcher()
+	listener := &afterCommitTestListener{defer_: true}
+	d.Listen("user.created", listener)
+
+	tx, err := m.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	ctx := WithTxContext(context.Background(), tx)
+
+	if err := m.Transaction(ctx, func(innerCtx context.Context) error {
+		return d.Dispatch(innerCtx, "user.created")
+	}); err != nil {
+		t.Fatalf("nested Transaction: %v", err)
+	}
+
+	// Savepoint released, but nothing is durable yet.
+	if got := listener.invocations.Load(); got != 0 {
+		t.Errorf("listener fired %d times on savepoint release; want 0 (not a durable commit)", got)
+	}
+
+	// The helper rolls the real outer tx back: side effects must never fire.
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	if got := listener.invocations.Load(); got != 0 {
+		t.Errorf("listener fired %d times after outer rollback; want 0", got)
+	}
+}
