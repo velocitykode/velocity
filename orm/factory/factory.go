@@ -121,9 +121,18 @@ func (f *Factory) Create(ctx context.Context, overrides ...map[string]interface{
 		panic("ORM manager not set - pass *orm.Manager to NewFactory for database persistence")
 	}
 
-	exec := f.manager.DB()
-	if exec == nil {
+	db := f.manager.DB()
+	if db == nil {
 		panic("ORM not connected - manager has no active database connection")
+	}
+
+	// Enroll in the caller's transaction when ctx carries one (e.g. the
+	// transaction-rollback test isolation in orm/testing), mirroring how the
+	// manager's own write terminals resolve the executor. Without this the
+	// insert runs on the pool and autocommits, escaping the surrounding tx.
+	var exec sqlExecer = db
+	if tx, ok := orm.TxFromContext(ctx); ok {
+		exec = tx
 	}
 
 	driver := f.manager.DriverName()
@@ -204,11 +213,19 @@ func (f *Factory) generateOne(activeState string, index int, overrides ...map[st
 	return data
 }
 
-// persistOne generates and persists a single record. ctx threads
-// through the underlying ExecContext / QueryRowContext call so a
-// caller-supplied *sql.Tx in ctx enrolls the insert in the surrounding
-// transaction.
-func (f *Factory) persistOne(ctx context.Context, exec *sql.DB, driver, activeState string, index int, overrides ...map[string]interface{}) map[string]interface{} {
+// sqlExecer is the write surface shared by *sql.DB and *sql.Tx, so persistOne
+// runs the insert either on the pool or on a caller-supplied transaction
+// resolved from ctx (orm.TxFromContext) without branching on the concrete type.
+type sqlExecer interface {
+	QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
+}
+
+// persistOne generates and persists a single record. exec is the pool or the
+// caller's transaction (resolved from ctx in Create), so a *sql.Tx in ctx
+// enrolls the insert in the surrounding transaction; ctx also threads through
+// the underlying ExecContext / QueryRowContext call.
+func (f *Factory) persistOne(ctx context.Context, exec sqlExecer, driver, activeState string, index int, overrides ...map[string]interface{}) map[string]interface{} {
 	data := f.generateOne(activeState, index, overrides...)
 
 	// Build INSERT query
