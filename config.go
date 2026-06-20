@@ -18,6 +18,7 @@ import (
 	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
+	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/view"
 )
 
@@ -224,6 +225,26 @@ func WithoutEvents() Option {
 func WithFakeEvents(fake *events.FakeDispatcher) Option {
 	return func(a *App) {
 		a.Services.Events = fake
+	}
+}
+
+// WithFakeQueue replaces the queue driver with one supplied by the test
+// (typically queuetest.NewFakeQueue()) so pushed jobs are recorded for
+// assertions instead of dispatched to a real broker. Mirrors WithFakeEvents.
+func WithFakeQueue(fake queue.Driver) Option {
+	return func(a *App) {
+		a.Services.Queue = fake
+	}
+}
+
+// WithFakeMail replaces the mailer with one supplied by the test (typically
+// mailtest.NewFakeMailer()) so sent messages are recorded for assertions
+// instead of dispatched to a real transport. Mirrors WithFakeQueue. The
+// notification manager is built from this mailer, so notifications routed via
+// mail are recorded too.
+func WithFakeMail(fake mail.Mailer) Option {
+	return func(a *App) {
+		a.Services.Mail = fake
 	}
 }
 

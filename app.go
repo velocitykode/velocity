@@ -427,10 +427,25 @@ func New(opts ...Option) (*App, error) {
 		a.Services.Events = events.NewDispatcher()
 	}
 
-	// 11. Initialize queue, pass DB for database driver
-	queueDriver, err := initQueue(a.config.Queue, sqlDB, a.config.DB.Connection, a.config.Queue.SigningKey, a.config.Key, a.config.Env, a.Crypto, a.Log)
-	if err != nil {
-		return nil, fmt.Errorf("velocity: failed to initialize queue: %w", err)
+	// 11. Initialize queue (skip if a driver was pre-set by WithFakeQueue).
+	// In any real boot Services.Queue is nil and initQueue runs as before;
+	// the guard only changes behavior when a test pre-sets a fake driver.
+	var queueDriver queue.Driver
+	if a.Services.Queue != nil {
+		queueDriver = a.Services.Queue
+		// initQueue wires the batch-callback queue for the constructed
+		// driver; mirror that for a pre-set (fake) driver so name-registered
+		// batch callbacks enqueue BatchCallbackJob through it instead of
+		// silently skipping. The signing logger and payload encryptor hooks
+		// are intentionally NOT installed: a fake records raw jobs and never
+		// serializes a payload to sign or seal. The existing cleanup closure
+		// already resets SetBatchCallbackQueue(nil, "") on teardown.
+		queue.SetBatchCallbackQueue(queueDriver, "default")
+	} else {
+		queueDriver, err = initQueue(a.config.Queue, sqlDB, a.config.DB.Connection, a.config.Queue.SigningKey, a.config.Key, a.config.Env, a.Crypto, a.Log)
+		if err != nil {
+			return nil, fmt.Errorf("velocity: failed to initialize queue: %w", err)
+		}
 	}
 	a.Queue = queueDriver
 	cleanups = append(cleanups, func() {
@@ -531,8 +546,19 @@ func New(opts ...Option) (*App, error) {
 		}
 	})
 
-	// 14. Initialize mail
+	// 14. Initialize mail (skip construction if a mailer was pre-set by
+	// WithFakeMail). In any real boot Services.Mail is nil and the configured
+	// driver is built as before; the a.Mail guard only changes behavior when a
+	// test pre-sets a fake mailer.
 	if a.config.Mail.Driver != "" {
+		// Promote the configured attachment limit to the package default so
+		// NewMessage() picks it up. This is process-global and independent of
+		// the mailer instance, so it runs even when a fake mailer is pre-set;
+		// otherwise a test app with a fake mailer would keep a stale default.
+		// NewMailer itself no longer mutates this process-wide state.
+		mail.SetDefaultMaxAttachmentSize(a.config.Mail.MaxAttachmentSize)
+	}
+	if a.Mail == nil && a.config.Mail.Driver != "" {
 		// The "log" driver discards mail (it only records it in-process). It is
 		// the default when MAIL_DRIVER is unset, so a production deploy that
 		// forgets to configure a real driver silently drops every email. Warn
@@ -540,10 +566,6 @@ func New(opts ...Option) (*App, error) {
 		if a.config.Mail.Driver == "log" && contract.IsProductionEnv(a.config.Env) {
 			a.Log.Warn("mail driver is 'log' in production: all outbound email will be DISCARDED. Set MAIL_DRIVER to a real driver (postmark, mailgun, ...)")
 		}
-		// Promote the configured attachment limit to the package default so
-		// NewMessage() picks it up. This is the single app-wide construction
-		// site; NewMailer itself no longer mutates this process-wide state.
-		mail.SetDefaultMaxAttachmentSize(a.config.Mail.MaxAttachmentSize)
 		mailer, err := mail.NewMailer(a.config.Mail)
 		if err != nil {
 			// Fail-soft (PRD decision): mail is an optional subsystem and an
