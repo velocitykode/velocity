@@ -57,6 +57,18 @@ type Config struct {
 	CookieName        string
 	SessionCookieName string // Name of the session cookie to read session ID from
 
+	// Env is the application environment (APP_ENV), set by the framework from
+	// the app Config at construction (App.bootstrap copies a.config.Env here
+	// before csrf.NewE). It drives env-aware behaviour WITHOUT a per-request
+	// os.Getenv: when Env names a test profile (contract.IsTestingEnv:
+	// "test"/"testing") the middleware bypasses token validation on unsafe
+	// requests, mirroring Laravel's PreventRequestForgery.runningUnitTests() so
+	// HTTP feature tests need no token round-trip. The zero value "" enforces;
+	// because a Config built directly (as csrf's own unit tests do) leaves Env
+	// empty, the bypass is strictly opt-in per instance and never leaks into the
+	// package's own test profile, even under `APP_ENV=testing go test ./csrf`.
+	Env string
+
 	// MaxFormBodyBytes bounds how many bytes of an
 	// application/x-www-form-urlencoded request body the CSRF middleware
 	// is allowed to buffer while looking for a token. Bodies larger than

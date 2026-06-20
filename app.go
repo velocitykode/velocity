@@ -372,6 +372,10 @@ func New(opts ...Option) (*App, error) {
 			return "", csrf.ErrNoSession
 		}
 	}
+	// Propagate the app environment into the CSRF config so the middleware's
+	// testing bypass keys off the app's configured Env (which velocitytest.NewApp
+	// sets in code, not via OS APP_ENV) rather than a per-request os.Getenv.
+	a.config.CSRF.Env = a.config.Env
 	csrfInstance, err := csrf.NewE(&a.config.CSRF)
 	if err != nil {
 		return nil, fmt.Errorf("velocity: failed to initialize csrf: %w", err)
