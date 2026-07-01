@@ -32,10 +32,28 @@ type Server struct {
 	listener         net.Listener
 	port             string
 	enableReflection bool
+
+	// bindNetwork / bindAddress override the default "tcp" + ":"+port listen
+	// target so a caller can bind loopback ("tcp","127.0.0.1:50051") or a unix
+	// socket ("unix","/run/svc.sock") instead of all interfaces. Empty means the
+	// legacy default. providedListener, when non-nil, takes precedence over both
+	// and over port: the caller supplies a fully-constructed net.Listener and
+	// owns its options. See WithBindAddress and WithListener.
+	bindNetwork      string
+	bindAddress      string
+	providedListener net.Listener
 	environment      string
 	running          bool
-	serverOptions    []grpc.ServerOption
-	logger           log.Logger
+
+	// served records that the listener was handed to grpc-go's Serve (Start or
+	// StartAsync ran). Once true, the serve goroutine owns the listener and may
+	// read it without the lock, so Stop/GracefulStop must never write s.listener.
+	// It stays true across a stop so a second Stop cannot mistake a just-stopped
+	// server for a built-but-never-served one and race that read. Distinct from
+	// running, which toggles off on stop.
+	served        bool
+	serverOptions []grpc.ServerOption
+	logger        log.Logger
 
 	// startTime records when the server last started serving; zero when the
 	// server has not started or has already emitted its ServerStopped event.
@@ -125,6 +143,31 @@ func NewServer(opts ...ServerOption) *Server {
 func WithPort(port string) ServerOption {
 	return func(s *Server) {
 		s.port = port
+	}
+}
+
+// WithBindAddress overrides where the server listens. By default the server
+// binds "tcp" on ":"+port, i.e. all interfaces. Pass ("tcp", "127.0.0.1:50051")
+// to bind loopback only, or ("unix", "/run/velvm.sock") for a unix-domain
+// socket: the right choice for a control API that must not be reachable off the
+// host. When set, it supersedes WithPort for the bind target (WithPort's value
+// still labels lifecycle events/logs). WithListener takes precedence over this.
+func WithBindAddress(network, address string) ServerOption {
+	return func(s *Server) {
+		s.bindNetwork = network
+		s.bindAddress = address
+	}
+}
+
+// WithListener makes the server serve on a caller-supplied net.Listener instead
+// of dialing net.Listen itself. It is the most general bind hook: the caller
+// constructs the listener (unix socket with specific permissions, a loopback
+// TCP listener, a test listener, etc.) and the server just serves on it. Takes
+// precedence over WithBindAddress and WithPort for the bind target. The server
+// closes the listener on Stop/GracefulStop as it would its own.
+func WithListener(lis net.Listener) ServerOption {
+	return func(s *Server) {
+		s.providedListener = lis
 	}
 }
 
@@ -336,10 +379,21 @@ func (s *Server) Build() error {
 		}
 	}
 
-	// Create listener
-	lis, err := net.Listen("tcp", ":"+s.port)
+	// Reflection-in-production is a hard failure. Validate it BEFORE binding the
+	// socket so every fallible check returns while s.listener and s.grpcServer are
+	// still nil. Otherwise a failure here would leave an opened (or caller-supplied)
+	// listener behind, and a retried Build early-returns nil (grpcServer set),
+	// leaking it. The actual reflection.Register happens after the server is built.
+	if s.enableReflection && contract.IsProductionEnv(s.environment) {
+		return fmt.Errorf("velocity/grpc: reflection must not be enabled in production (set GRPC_REFLECTION=false or build without WithReflection(true))")
+	}
+
+	// Create listener (or adopt a caller-supplied one). No fallible check may
+	// follow this point: past here Build must run to completion so the listener
+	// and grpcServer are never left set on an error return.
+	lis, err := s.newListener()
 	if err != nil {
-		return fmt.Errorf("velocity/grpc: failed to listen on port %s: %w", s.port, err)
+		return err
 	}
 	s.listener = lis
 
@@ -393,22 +447,38 @@ func (s *Server) Build() error {
 		)
 	}
 
-	// Enable reflection if configured. Hard-fail in production; silently
-	// downgrading to "reflection disabled" lets misconfigured deployments ship
-	// with a false sense of security (operators think reflection is on).
+	// Enable reflection if configured. The production hard-fail already ran
+	// before the listener was bound (see above), so here reflection is known to
+	// be non-production: just warn and register.
 	if s.enableReflection {
-		// Routed through contract.IsProductionEnv so "prod" and "staging"
-		// are both refused alongside "production": reflection exposes the
-		// full service surface and a typo'd APP_ENV must not silently
-		// re-enable it.
-		if contract.IsProductionEnv(s.environment) {
-			return fmt.Errorf("velocity/grpc: reflection must not be enabled in production (set GRPC_REFLECTION=false or build without WithReflection(true))")
-		}
-		s.logger.Warn("gRPC reflection is enabled — disable in production (GRPC_REFLECTION=false)")
+		s.logger.Warn("gRPC reflection is enabled - disable in production (GRPC_REFLECTION=false)")
 		reflection.Register(s.grpcServer)
 	}
 
 	return nil
+}
+
+// newListener resolves the bind target set by the options, in precedence order:
+// a caller-supplied listener (WithListener) wins; else an explicit
+// network+address (WithBindAddress); else the legacy default of "tcp" on
+// ":"+port (all interfaces). Called under s.mu from Build.
+func (s *Server) newListener() (net.Listener, error) {
+	if s.providedListener != nil {
+		return s.providedListener, nil
+	}
+	network := s.bindNetwork
+	address := s.bindAddress
+	if network == "" {
+		network = "tcp"
+	}
+	if address == "" {
+		address = ":" + s.port
+	}
+	lis, err := net.Listen(network, address)
+	if err != nil {
+		return nil, fmt.Errorf("velocity/grpc: failed to listen on %s %s: %w", network, address, err)
+	}
+	return lis, nil
 }
 
 // Start builds (if not already built) and starts the gRPC server.
@@ -424,6 +494,7 @@ func (s *Server) Start() error {
 		return ErrServerAlreadyRunning
 	}
 	s.running = true
+	s.served = true
 	s.startTime = time.Now()
 	started := &grpcevents.ServerStarted{Port: s.port, StartTime: s.startTime}
 	s.mu.Unlock()
@@ -446,6 +517,7 @@ func (s *Server) StartAsync() error {
 		return ErrServerAlreadyRunning
 	}
 	s.running = true
+	s.served = true
 	s.startTime = time.Now()
 	started := &grpcevents.ServerStarted{Port: s.port, StartTime: s.startTime}
 	s.mu.Unlock()
@@ -469,15 +541,33 @@ func (s *Server) StartAsync() error {
 	return nil
 }
 
-// Stop stops the gRPC server immediately
+// Stop stops the gRPC server immediately. It also releases a listener that was
+// bound by Build but never served (Build succeeded, Start was never called, or
+// the caller abandoned the server), so a built-but-unstarted server does not
+// leak its socket.
 func (s *Server) Stop() {
 	s.mu.Lock()
 	var stopped *grpcevents.ServerStopped
 	if s.grpcServer != nil && s.running {
 		s.logger.Info("gRPC server stopping")
+		// grpc-go closes the serving listener. Do NOT touch s.listener here: the
+		// StartAsync serve goroutine reads it without the lock, so writing it
+		// would race that read.
 		s.grpcServer.Stop()
 		s.running = false
 		stopped = s.stoppedEventLocked()
+	} else if !s.served && s.listener != nil {
+		// Built but never served (Start/StartAsync never ran): grpc-go never took
+		// ownership of this listener, so the bound socket leaks until exit unless
+		// closed here. Gated on !served, not merely !running, so a second Stop
+		// after a running server stopped does NOT enter here and race the serve
+		// goroutine's unlocked read of s.listener. Reset grpcServer too so the
+		// state stays all-or-nothing: a non-nil grpcServer must never outlive its
+		// listener, or a later Build() early-returns and Start() panics on a nil
+		// listener.
+		_ = s.listener.Close()
+		s.listener = nil
+		s.grpcServer = nil
 	}
 	s.mu.Unlock()
 
@@ -486,15 +576,27 @@ func (s *Server) Stop() {
 	}
 }
 
-// GracefulStop gracefully stops the gRPC server
+// GracefulStop gracefully stops the gRPC server. Like Stop, it also releases a
+// listener bound by Build but never served, so a built-but-unstarted server does
+// not leak its socket.
 func (s *Server) GracefulStop() {
 	s.mu.Lock()
 	var stopped *grpcevents.ServerStopped
 	if s.grpcServer != nil && s.running {
 		s.logger.Info("gRPC server gracefully stopping")
+		// grpc-go closes the serving listener; leave s.listener untouched to
+		// avoid racing the StartAsync serve goroutine's unlocked read.
 		s.grpcServer.GracefulStop()
 		s.running = false
 		stopped = s.stoppedEventLocked()
+	} else if !s.served && s.listener != nil {
+		// Built but never served: release the bound socket grpc-go never owned,
+		// and reset grpcServer so it never outlives its listener. Gated on
+		// !served so a second GracefulStop after a running stop cannot race the
+		// serve goroutine's unlocked listener read.
+		_ = s.listener.Close()
+		s.listener = nil
+		s.grpcServer = nil
 	}
 	s.mu.Unlock()
 
