@@ -301,6 +301,17 @@ func getFieldValueByColumn(v reflect.Value, columnName string) (any, bool) {
 	if !fv.IsValid() {
 		return nil, false
 	}
+	// Dereference a pointer field (a nullable FK/key modelled as e.g. *uint) to
+	// its underlying value: relation eager-loading groups parent and child keys
+	// through a map[any], where a *uint address never equals the parent's uint
+	// value, so a nullable FK would silently load nothing. A nil pointer is a
+	// null key and matches no parent.
+	if fv.Kind() == reflect.Ptr {
+		if fv.IsNil() {
+			return nil, false
+		}
+		fv = fv.Elem()
+	}
 	return fv.Interface(), true
 }
 
