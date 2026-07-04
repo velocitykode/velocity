@@ -121,8 +121,16 @@ func (d *MySQLDriver) Connect(config drivers.ConnectionConfig) error {
 	if config.Collation != "" {
 		params = append(params, "collation="+config.Collation)
 	}
+	// The go-sql-driver time codec is pinned to its default Loc=UTC:
+	// time.Time params are converted to UTC on the wire and scanned
+	// timestamps come back located in time.UTC (storage contract:
+	// instants are stored UTC). Never emit `loc=` - it would rebase both
+	// directions into that zone and silently break the contract.
+	// TimeZone is session-only, matching postgres's `TimeZone=` DSN
+	// setting: it affects in-database functions (NOW()) and TIMESTAMP
+	// rendering, never the encoding of bound time values.
 	if config.TimeZone != "" {
-		params = append(params, "loc="+config.TimeZone)
+		params = append(params, "time_zone="+url.QueryEscape("'"+config.TimeZone+"'"))
 	}
 	// tls defaults to true, requiring TLS with certificate verification.
 	params = append(params, "tls="+resolveMySQLTLS(config.TLS))

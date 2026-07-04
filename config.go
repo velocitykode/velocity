@@ -37,6 +37,11 @@ type Config struct {
 	Debug bool   // APP_DEBUG, default false
 	Port  string // APP_PORT, default "4000"
 	Key   string // APP_KEY (used for crypto)
+	// Timezone is the application's PRESENTATION timezone (APP_TIMEZONE,
+	// default "UTC"): an IANA location name applied at bootstrap to
+	// time.Local and to scheduler cron evaluation. Persistence never
+	// reads it - ORM/queue storage is unconditionally UTC.
+	Timezone string // APP_TIMEZONE, default "UTC"
 
 	// Database
 	DB DBConfig
@@ -102,6 +107,7 @@ type DBConfig struct {
 	Charset         string        // DB_CHARSET
 	SSLMode         string        // DB_SSL_MODE (postgres)
 	TLS             string        // DB_MYSQL_TLS (mysql: true/false/skip-verify/preferred)
+	TimeZone        string        // DB_TIMEZONE: database SESSION timezone only (postgres TimeZone=, mysql time_zone='...'); never affects storage encoding, which is unconditionally UTC
 	MaxIdleConns    int           // DB_MAX_IDLE_CONNS, default 10
 	MaxOpenConns    int           // DB_MAX_OPEN_CONNS, default 100
 	ConnMaxLifetime time.Duration // DB_CONN_MAX_LIFETIME, default 3600s
@@ -298,6 +304,7 @@ func ConfigFromEnv() Config {
 		Port:     envOrDefault("APP_PORT", "4000"),
 		Key:      os.Getenv("APP_KEY"),
 		FileRoot: os.Getenv("FILE_ROOT"),
+		Timezone: envOrDefault("APP_TIMEZONE", "UTC"),
 	}
 
 	// Database
@@ -312,6 +319,7 @@ func ConfigFromEnv() Config {
 		Charset:         os.Getenv("DB_CHARSET"),
 		SSLMode:         os.Getenv("DB_SSL_MODE"),
 		TLS:             os.Getenv("DB_MYSQL_TLS"),
+		TimeZone:        os.Getenv("DB_TIMEZONE"),
 		MaxIdleConns:    envIntOrDefault("DB_MAX_IDLE_CONNS", 10),
 		MaxOpenConns:    envIntOrDefault("DB_MAX_OPEN_CONNS", 100),
 		ConnMaxLifetime: time.Duration(envIntOrDefault("DB_CONN_MAX_LIFETIME", 3600)) * time.Second,

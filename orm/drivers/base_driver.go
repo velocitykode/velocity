@@ -72,21 +72,21 @@ func (b *BaseDriver) DB() *sql.DB {
 // for cancellation and deadlines.
 func (b *BaseDriver) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
 	b.logQuery(query, len(args))
-	return b.db.QueryContext(ctx, query, args...)
+	return b.db.QueryContext(ctx, query, NormalizeTimeArgs(args)...)
 }
 
 // QueryRowContext executes a query that returns at most one row, honoring
 // the context for cancellation and deadlines.
 func (b *BaseDriver) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
 	b.logQuery(query, len(args))
-	return b.db.QueryRowContext(ctx, query, args...)
+	return b.db.QueryRowContext(ctx, query, NormalizeTimeArgs(args)...)
 }
 
 // ExecContext executes a query that doesn't return rows, honoring the
 // context for cancellation and deadlines.
 func (b *BaseDriver) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
 	b.logQuery(query, len(args))
-	return b.db.ExecContext(ctx, query, args...)
+	return b.db.ExecContext(ctx, query, NormalizeTimeArgs(args)...)
 }
 
 // BeginTx starts a transaction with the given context and options. Pass

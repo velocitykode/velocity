@@ -260,7 +260,10 @@ func TestC01_DatabaseDriver_PoisonRowDoesNotStarveFollowups(t *testing.T) {
 	// type the registry does not know. This simulates a deploy where the
 	// producer pushed type X but the consumer process never registered X.
 	poisonPayload := `{"payload":{"type":"VanishedJob","data":{"who":"cares"},"queue":"starvation-test","attempts":0,"created_at":"2026-05-26T00:00:00Z"}}`
-	now := time.Now()
+	// Direct-SQL seeds must stamp UTC like every other writer under the
+	// storage contract; a local wall clock here diverges from the
+	// driver's UTC-normalized binds on non-UTC hosts.
+	now := time.Now().UTC()
 	if _, err := driver.db.Exec(
 		`INSERT INTO jobs (queue, payload, attempts, scheduled_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
 		"starvation-test", poisonPayload, 0, now.Add(-2*time.Second), now, now,
@@ -334,7 +337,10 @@ func TestC01_DatabaseDriver_MalformedJSONIsQuarantined(t *testing.T) {
 	defer cleanup()
 
 	// Insert a row whose payload column is not valid JSON.
-	now := time.Now()
+	// Direct-SQL seeds must stamp UTC like every other writer under the
+	// storage contract; a local wall clock here diverges from the
+	// driver's UTC-normalized binds on non-UTC hosts.
+	now := time.Now().UTC()
 	if _, err := driver.db.Exec(
 		`INSERT INTO jobs (queue, payload, attempts, scheduled_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
 		"malformed-queue", `{this is not json at all`, 0, now.Add(-time.Second), now, now,
@@ -419,7 +425,10 @@ func TestC01_DatabaseDriver_PoisonRowSurvivesCallerCancellation(t *testing.T) {
 	// registry. Use the same on-wire shape PushCtx writes so the SELECT
 	// branch happily picks it up.
 	poisonPayload := `{"payload":{"type":"UnknownByDesign","data":{"k":"v"},"queue":"cancel-test","attempts":0,"created_at":"2026-05-26T00:00:00Z"}}`
-	now := time.Now()
+	// Direct-SQL seeds must stamp UTC like every other writer under the
+	// storage contract; a local wall clock here diverges from the
+	// driver's UTC-normalized binds on non-UTC hosts.
+	now := time.Now().UTC()
 	if _, err := driver.db.Exec(
 		`INSERT INTO jobs (queue, payload, attempts, scheduled_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
 		"cancel-test", poisonPayload, 0, now.Add(-time.Second), now, now,

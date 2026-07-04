@@ -208,6 +208,12 @@ func (g *PostgresGrammar) CompileInsert(table string, columns []string, values [
 			if j > 0 {
 				sql.WriteString(", ")
 			}
+			// Raw SQL values (e.g. orm.NOW) emit as UTC-pinned
+			// expressions instead of binding, matching CompileUpdate.
+			if raw, ok := row[j].(RawSQL); ok {
+				sql.WriteString(pgRawSQLExpr(raw))
+				continue
+			}
 			appendDollarN(&sql, argIndex)
 			args = append(args, row[j])
 			argIndex++
@@ -237,10 +243,12 @@ func (g *PostgresGrammar) CompileUpdate(table string, values map[string]any, con
 		}
 		sql.WriteString(g.QuoteIdentifier(column))
 
-		// Raw SQL values (e.g. orm.NOW) emit verbatim; all other values bind.
+		// Raw SQL values (e.g. orm.NOW) emit verbatim, with the well-known
+		// current-timestamp sentinels pinned to a UTC wall clock; all other
+		// values bind.
 		if rawVal, ok := value.(RawSQL); ok {
 			sql.WriteString(" = ")
-			sql.WriteString(string(rawVal))
+			sql.WriteString(pgRawSQLExpr(rawVal))
 		} else {
 			sql.WriteString(" = ")
 			appendDollarN(&sql, argIndex)

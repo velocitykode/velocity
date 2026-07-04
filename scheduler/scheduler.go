@@ -257,6 +257,13 @@ func (s *Scheduler) SetTimezone(tz *time.Location) *Scheduler {
 	return s
 }
 
+// Timezone returns the timezone cron expressions evaluate in.
+func (s *Scheduler) Timezone() *time.Location {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.timezone
+}
+
 // SetLogger sets a custom logger
 func (s *Scheduler) SetLogger(logger Logger) *Scheduler {
 	if logger == nil {

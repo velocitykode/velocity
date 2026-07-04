@@ -240,7 +240,7 @@ func (d *DatabaseDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupe
 		return err
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 	insertQ := d.rewriteQuery(`INSERT INTO jobs (queue, payload, attempts, scheduled_at, created_at, updated_at)
 	          VALUES ($1, $2, $3, $4, $5, $6)`)
 	if _, err := tx.ExecContext(ctx, insertQ, name, string(payload), 0, now, now, now); err != nil {
@@ -288,12 +288,12 @@ func (d *DatabaseDriver) PushDelayedCtx(ctx context.Context, job Job, delay time
 		return err
 	}
 
-	scheduledAt := time.Now()
+	scheduledAt := time.Now().UTC()
 	if delay > 0 {
 		scheduledAt = scheduledAt.Add(delay)
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 	var jobID uint
 	if d.dbDriver == "postgres" {
 		query := d.rewriteQuery(`INSERT INTO jobs (queue, payload, attempts, scheduled_at, created_at, updated_at)
@@ -408,7 +408,7 @@ func (d *DatabaseDriver) popSelectLocked(ctx context.Context, queueName string, 
 	// Rollback is a no-op if Commit already succeeded.
 	defer func() { _ = tx.Rollback() }()
 
-	now := time.Now()
+	now := time.Now().UTC()
 	reclaimCutoff := now.Add(-d.retryAfter())
 
 	// Reservation predicate (Laravel parity): a row is poppable if it is
@@ -593,7 +593,7 @@ func (d *DatabaseDriver) ReleaseCtx(ctx context.Context, token ReservationToken,
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	now := time.Now()
+	now := time.Now().UTC()
 	scheduledAt := now.Add(delay)
 	query := d.rewriteQuery(`UPDATE jobs
 		SET reserved_at = NULL, reserved_by = NULL, scheduled_at = $1, updated_at = $2
@@ -659,7 +659,7 @@ func (d *DatabaseDriver) FailReservedCtx(ctx context.Context, token ReservationT
 		return err
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 	insertQuery := d.rewriteQuery(
 		"INSERT INTO failed_jobs (queue, payload, exception, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
 	)
@@ -808,7 +808,7 @@ func (d *DatabaseDriver) Failed(job Job, err error, queueName string) error {
 	)
 	_, dbErr := d.db.Exec(
 		insertQuery,
-		failedJob.Queue, failedJob.Payload, failedJob.Exception, time.Now(), time.Now(),
+		failedJob.Queue, failedJob.Payload, failedJob.Exception, time.Now().UTC(), time.Now().UTC(),
 	)
 	if dbErr != nil {
 		return fmt.Errorf("velocity/queue: failed to record failed job: %w", dbErr)
@@ -823,7 +823,7 @@ func (d *DatabaseDriver) GetDelayedJobs(queueName string) (int64, error) {
 	query := d.rewriteQuery(
 		"SELECT COUNT(*) FROM jobs WHERE queue = $1 AND scheduled_at > $2 AND reserved_at IS NULL AND failed_at IS NULL",
 	)
-	err := d.db.QueryRow(query, queueName, time.Now()).Scan(&count)
+	err := d.db.QueryRow(query, queueName, time.Now().UTC()).Scan(&count)
 
 	if err != nil {
 		return 0, fmt.Errorf("velocity/queue: failed to count delayed jobs: %w", err)
@@ -978,7 +978,7 @@ func (d *DatabaseDriver) quarantinePoisonLocked(tx *sql.Tx, jobID uint, rawPaylo
 
 	storedPayload, _ := sealQuarantineBlob(rawPayload)
 
-	now := time.Now()
+	now := time.Now().UTC()
 	insertQuery := d.rewriteQuery(
 		"INSERT INTO failed_jobs (queue, payload, exception, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
 	)

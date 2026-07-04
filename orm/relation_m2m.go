@@ -314,6 +314,9 @@ func queryPivotRows(driver drivers.Driver, ctx context.Context, meta *m2mMeta, p
 			if b, ok := val.([]byte); ok {
 				val = string(b)
 			}
+			// Pivot timestamps bypass scanIntoStruct; rebase to UTC so
+			// they match the storage contract like every other read.
+			val = rebaseAnyTimeUTC(val)
 			switch c {
 			case meta.localFK:
 				parentID = val
@@ -727,6 +730,11 @@ func (a *M2MAccessor) deleteRelated(ctx context.Context, tx queryRunner, ids []a
 	return nil
 }
 
+// runTx executes fn inside a raw *sql.Tx. NOTE: statements issued through
+// this tx bypass the driver-interface seam where time args are rebased to
+// UTC (drivers.NormalizeTimeArgs). Today no M2M statement binds a time
+// value (pivot rows carry only FK pairs); if pivot timestamps are ever
+// added, normalize the args here explicitly.
 func (a *M2MAccessor) runTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	tx, err := a.driver.BeginTx(ctx, nil)
 	if err != nil {

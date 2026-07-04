@@ -1329,7 +1329,9 @@ func saveCore[T any](ctx context.Context, drv drivers.Driver, model *T, meta *Mo
 				createdAtField := modelField.FieldByIndex(col.IndexPath)
 				createdAt = createdAtField.Interface().(time.Time)
 				if createdAt.IsZero() {
-					createdAt = time.Now()
+					// Stamps are UTC so the stored wall clock never
+					// depends on the writer's process timezone.
+					createdAt = time.Now().UTC()
 					createdAtField.Set(reflect.ValueOf(createdAt))
 				}
 			}
@@ -1338,7 +1340,7 @@ func saveCore[T any](ctx context.Context, drv drivers.Driver, model *T, meta *Mo
 					updatedAtField := modelField.FieldByIndex(col.IndexPath)
 					if updatedAtField.Interface().(time.Time).IsZero() {
 						if createdAt.IsZero() {
-							createdAt = time.Now()
+							createdAt = time.Now().UTC()
 						}
 						updatedAtField.Set(reflect.ValueOf(createdAt))
 					}
@@ -1395,7 +1397,7 @@ func saveCore[T any](ctx context.Context, drv drivers.Driver, model *T, meta *Mo
 	// of timestamps.
 	if !skipTimestamps {
 		if col, ok := meta.ColumnByField("UpdatedAt"); ok && col.IsUpdatedAt {
-			modelField.FieldByIndex(col.IndexPath).Set(reflect.ValueOf(time.Now()))
+			modelField.FieldByIndex(col.IndexPath).Set(reflect.ValueOf(time.Now().UTC()))
 		}
 	}
 

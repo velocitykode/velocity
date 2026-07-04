@@ -28,30 +28,27 @@ import (
 // grammars see the same underlying type without importing each other.
 type RawSQL = drivers.RawSQL
 
-// NOW is a [RawSQL] sentinel for the database's current-timestamp function
-// on MySQL/MariaDB and PostgreSQL. Pass it as a value in an Update or Insert
-// map to have the grammar emit `NOW()` verbatim rather than bind the
-// literal string `"NOW()"` as a parameter.
+// NOW is a [RawSQL] sentinel for the database's current timestamp. Pass it
+// as a value in an Update or Insert map to have the grammar emit a
+// database-clock expression rather than bind a literal string.
 //
-// For SQLite, which does not expose a NOW() function, use
-// [CurrentTimestamp]. The ORM's built-in timestamp injection in Update
-// automatically picks the driver-appropriate sentinel.
-const NOW RawSQL = "NOW()"
+// Contract: DB clock, UTC wall clock. Each grammar pins the emitted SQL to
+// UTC (`(NOW() AT TIME ZONE 'UTC')` on PostgreSQL, `UTC_TIMESTAMP()` on
+// MySQL, `CURRENT_TIMESTAMP` on SQLite) so the stored value in a naive
+// timestamp column is independent of the session timezone. Caveat: into a
+// timestamptz column under a hand-set non-UTC session TimeZone the naive
+// UTC value is misinterpreted; use an app-side stamp or raw `NOW()` there.
+//
+// ORM-managed lifecycle columns (created_at/updated_at/deleted_at) do NOT
+// use this sentinel; they are stamped app-side with time.Now().UTC().
+const NOW = drivers.NOW
 
 // CurrentTimestamp is a [RawSQL] sentinel for the database's
-// current-timestamp keyword. It is supported on all three drivers
-// (MySQL, PostgreSQL, SQLite) and is the portable counterpart to [NOW].
-const CurrentTimestamp RawSQL = "CURRENT_TIMESTAMP"
-
-// currentTimestampSentinel returns the driver-appropriate [RawSQL] value
-// for "set this column to the database's current timestamp". MySQL and
-// PostgreSQL use NOW(); SQLite uses CURRENT_TIMESTAMP.
-func currentTimestampSentinel(driverName string) RawSQL {
-	if driverName == "sqlite" {
-		return CurrentTimestamp
-	}
-	return NOW
-}
+// current-timestamp keyword, the portable counterpart to [NOW]. It carries
+// the same contract: DB clock, UTC wall clock (grammars pin the emitted
+// SQL to UTC on PostgreSQL and MySQL; SQLite's CURRENT_TIMESTAMP is
+// already UTC).
+const CurrentTimestamp = drivers.CurrentTimestamp
 
 // validOperators is the allowlist of valid SQL operators
 var validOperators = map[string]bool{
@@ -1534,7 +1531,7 @@ func (q *Query[T]) Pluck(ctx context.Context, column string) ([]any, error) {
 			dispatchQueryExecuted(ctx, sql, args, time.Since(start), int64(len(results)), q.driver.DriverName(), 2)
 			return nil, err
 		}
-		results = append(results, value)
+		results = append(results, rebaseAnyTimeUTC(value))
 	}
 	// A driver error mid-iteration surfaces via rows.Err(), not via
 	// rows.Next()/Scan.
@@ -1663,17 +1660,16 @@ func (q *Query[T]) bulkUpdate(ctx context.Context, updates map[string]any, op Bu
 		return 0, errors.New("no updatable columns provided (all keys are read-only)")
 	}
 
-	// Inject the driver-appropriate "current timestamp" sentinel for
-	// updated_at. Using the typed [RawSQL] marker (not a raw string)
-	// means the grammar emits it verbatim without pattern-matching
-	// string contents, closing the SQL-injection vector that the old
-	// "NOW()" string sentinel opened.
+	// Stamp updated_at app-side in UTC, the same clock the struct Save
+	// path uses, so every ORM-managed lifecycle column carries one
+	// invariant: app clock, UTC wall clock, independent of the writer's
+	// process timezone and the database session timezone.
 	//
-	// Skip the injection when the model has no UpdatedAt column
+	// Skip the stamp when the model has no UpdatedAt column
 	// (ImmutableModel/ImmutableUUIDModel) so the generated UPDATE does
 	// not target a non-existent column.
 	if q.hasUpdatedAt {
-		copyOfUpdates["updated_at"] = currentTimestampSentinel(q.driver.DriverName())
+		copyOfUpdates["updated_at"] = time.Now().UTC()
 	}
 
 	// Resolve the bulk hook plan. On Postgres + Tier B the plan asks
@@ -1746,7 +1742,10 @@ func (q *Query[T]) bulkUpdate(ctx context.Context, updates map[string]any, op Bu
 // compileInsertSQL builds a single-row INSERT through the driver
 // grammar: the table and column identifiers are grammar-quoted and the
 // columns are emitted in sorted order so the generated SQL is
-// deterministic regardless of map iteration order.
+// deterministic regardless of map iteration order. Typed [RawSQL] values
+// (e.g. orm.NOW) emit as UTC-pinned SQL expressions instead of binding,
+// matching the Update-map behavior; placeholder numbering counts bound
+// values only so Postgres $N stays consecutive.
 func (q *Query[T]) compileInsertSQL(data map[string]any) (string, []any, error) {
 	columns := make([]string, 0, len(data))
 	for col := range data {
@@ -1758,13 +1757,20 @@ func (q *Query[T]) compileInsertSQL(data map[string]any) (string, []any, error) 
 	sort.Strings(columns)
 
 	grammar := q.driver.Grammar()
+	driverName := q.driver.DriverName()
 	quoted := make([]string, len(columns))
 	placeholders := make([]string, len(columns))
-	values := make([]any, len(columns))
+	values := make([]any, 0, len(columns))
+	argIndex := 1
 	for i, col := range columns {
 		quoted[i] = grammar.QuoteIdentifier(col)
-		placeholders[i] = grammar.Placeholder(i + 1)
-		values[i] = data[col]
+		if raw, ok := data[col].(RawSQL); ok {
+			placeholders[i] = drivers.RawSQLExprFor(driverName, raw)
+			continue
+		}
+		placeholders[i] = grammar.Placeholder(argIndex)
+		values = append(values, data[col])
+		argIndex++
 	}
 
 	sqlStr := fmt.Sprintf(
@@ -1876,13 +1882,13 @@ func (q *Query[T]) Delete(ctx context.Context) (int64, error) {
 	}
 	// Check if model has soft deletes
 	if q.hasSoftDelete {
-		// Soft delete, use the driver-appropriate RawSQL sentinel so the
-		// grammar emits it verbatim (not as a bound parameter). Route
+		// Soft delete stamps deleted_at app-side in UTC, matching every
+		// other ORM-managed lifecycle column (one clock: app, UTC). Route
 		// through bulkUpdate (not Update) so BulkAfterCommitHook listeners
 		// receive op=BulkOpDelete instead of op=BulkOpUpdate.
 		q.bindTxFromContextValue(ctx)
 		return q.bulkUpdate(ctx, map[string]any{
-			"deleted_at": currentTimestampSentinel(q.driver.DriverName()),
+			"deleted_at": time.Now().UTC(),
 		}, BulkOpDelete)
 	}
 
@@ -2092,6 +2098,13 @@ func scanIntoStruct(rows *sql.Rows, dest any) error {
 		}
 	}
 
+	// Time-typed destinations are remembered so they can be rebased to
+	// UTC after Scan. Drivers surface naive timestamps in inconsistent
+	// locations (lib/pq uses FixedZone("", 0), modernc sqlite preserves
+	// whatever offset was stored), so round-trips are only stable across
+	// hosts if scanned times uniformly carry time.UTC.
+	var timeFields []reflect.Value
+
 	for i, column := range columns {
 		var path []int
 		if mp, ok := morphPaths[column]; ok {
@@ -2108,12 +2121,42 @@ func scanIntoStruct(rows *sql.Rows, dest any) error {
 		field := destValue.FieldByIndex(path)
 		if field.CanSet() {
 			valuePtrs[i] = field.Addr().Interface()
+			if ft := field.Type(); ft == timeType || (ft.Kind() == reflect.Ptr && ft.Elem() == timeType) {
+				timeFields = append(timeFields, field)
+			}
 		} else {
 			valuePtrs[i] = &values[i]
 		}
 	}
 
-	return rows.Scan(valuePtrs...)
+	if err := rows.Scan(valuePtrs...); err != nil {
+		return err
+	}
+	rebaseScannedTimesUTC(timeFields)
+	return nil
+}
+
+// timeType is the reflect.Type of time.Time, used to recognize time-typed
+// scan destinations.
+var timeType = reflect.TypeOf(time.Time{})
+
+// rebaseScannedTimesUTC sets every scanned time field to the same instant
+// in time.UTC (read side of the storage contract: instants are stored UTC;
+// zones are presentation). Fields are freshly hydrated by rows.Scan, so
+// mutating them in place is safe.
+func rebaseScannedTimesUTC(fields []reflect.Value) {
+	for _, f := range fields {
+		if f.Kind() == reflect.Ptr {
+			if f.IsNil() {
+				continue
+			}
+			f = f.Elem()
+		}
+		t := f.Interface().(time.Time)
+		if t.Location() != time.UTC {
+			f.Set(reflect.ValueOf(t.In(time.UTC)))
+		}
+	}
 }
 
 // ToSnakeCase converts a CamelCase / acronym-cased identifier to snake_case.

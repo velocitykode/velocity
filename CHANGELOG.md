@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### UTC timestamp normalization (storage contract)
+
+Instants are now stored UTC on every persistence path; zones are
+presentation. Storage no longer depends on the writer's process timezone
+(previously two hosts in different zones writing the same logical row
+produced different wall clocks in naive timestamp columns).
+
+- **Managed stamps are UTC.** `created_at`/`updated_at` (struct `Save`) now
+  use `time.Now().UTC()`.
+- **Bulk `Update` `updated_at` and soft-delete `deleted_at` moved from the
+  DB clock (`NOW()`/`CURRENT_TIMESTAMP` sentinel) to the app clock in UTC**,
+  collapsing the previous two-clock mix with the `Save` path. Values in
+  these columns now come from the application host's clock.
+- **All bound `time.Time` args are rebased to UTC** at the driver seam
+  (`drivers.NormalizeTimeArgs`): `time.Time`, non-nil `*time.Time`, valid
+  `sql.NullTime`, `sql.NamedArg` values (rebased recursively, name
+  preserved), and custom `driver.Valuer` types whose `Value()` yields a
+  `time.Time`, including raw `Manager.Exec`/`Raw` and the database queue
+  and batch tables. Contract change: writers relying on local wall clocks
+  in naive columns will observe UTC wall clocks instead. UTC hosts are
+  unaffected (identical writes).
+- **Scanned timestamps surface in `time.UTC`** across struct scans, `Value`,
+  `Pluck`, and m2m pivot extras, with the instant preserved - lib/pq's
+  `FixedZone("", 0)` and modernc sqlite's stored-offset locations no longer
+  leak into application code.
+- **`orm.NOW` / `orm.CurrentTimestamp` are UTC-pinned**: grammars emit
+  `(NOW() AT TIME ZONE 'UTC')` (postgres), `UTC_TIMESTAMP()` (mysql),
+  `CURRENT_TIMESTAMP` (sqlite; `orm.NOW` now maps there too instead of
+  emitting invalid SQL). Contract: DB clock, UTC wall clock. Sentinels now
+  also work in INSERT maps (`InsertGetId`/`insertExec` previously bound
+  them as string parameters instead of emitting SQL).
+- **MySQL DSN never emits the `loc=` codec parameter**;
+  `drivers.ConnectionConfig.TimeZone` now uniformly means SESSION timezone
+  (postgres `TimeZone=`, mysql `time_zone='...'`) and the sqlite `_loc=`
+  param is gone. Codec stays pinned to UTC on all drivers.
+- **`DB_TIMEZONE` is back, session-only**: it was removed in 0.32.0 as dead
+  config (read but never forwarded). It now flows env ->
+  `DBConfig.TimeZone` -> `orm.ManagerConfig.TimeZone` ->
+  `drivers.ConnectionConfig.TimeZone` with one cross-driver meaning: the
+  database session timezone for in-database functions and
+  timestamptz/TIMESTAMP rendering. It never affects storage encoding.
+  Ignored by SQLite.
+- **New `APP_TIMEZONE` (default `UTC`)**: presentation-only knob applied at
+  bootstrap to `time.Local` and scheduler cron evaluation. On non-UTC hosts
+  this means cron expressions now evaluate in UTC unless `APP_TIMEZONE`
+  says otherwise. Persistence never reads it. Invalid values fail `New()`.
+  Empty `Timezone` via programmatic `WithConfig` leaves the process
+  timezone untouched.
+- **Existing rows written by non-UTC hosts are data, not code**: they are
+  not rewritten; their wall clocks keep the original host offset. Storage
+  contract details in `docs/configuration.md`; new schemas should prefer
+  `TimestampsTz()`.
+
 ### 1.0 readiness
 
 - **Sweep 3: configuration surface lock-in.** Inventoried every `os.Getenv` /

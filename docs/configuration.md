@@ -30,6 +30,7 @@ that cannot import `app`).
 | `APP_DEBUG` | `config.go` | `false` | no (force-disabled in prod by `exceptions.Handler`) | leaks stack traces and source if enabled in prod | |
 | `APP_PORT` | `config.go`, `cmd_ops.go` | `4000` | no | none | |
 | `APP_KEY` | `config.go`, `maintenance.go` | empty | YES (errors out unless `APP_ENV` is one of `development`, `dev`, `test`, `testing`, `local` per `contract.NonProdEnvNames()`) | crypto/session/CSRF/queue-signing all key off this; weak key compromises every secret | Generate via `vel key:generate` |
+| `APP_TIMEZONE` | `config.go`, `app.go` | `UTC` | no | none | IANA name. PRESENTATION only: applied to `time.Local` and scheduler cron evaluation at bootstrap. Persistence never reads it (see "Timestamp storage contract" below). Invalid value fails `New()`. Programmatic `WithConfig` with an empty `Timezone` leaves the process timezone untouched. |
 
 ## Database
 
@@ -44,11 +45,27 @@ that cannot import `app`).
 | `DB_CHARSET` | `config.go` | empty | no | none | |
 | `DB_SSL_MODE` | `config.go` | empty | recommended | unencrypted DB traffic in prod | postgres only; defaults to `prefer` at driver layer |
 | `DB_MYSQL_TLS` | `config.go` | empty | recommended | unencrypted DB traffic in prod | mysql only |
+| `DB_TIMEZONE` | `config.go` | empty | no | none | database SESSION timezone only (postgres `TimeZone=`, mysql `time_zone='...'`); never affects storage encoding, which is unconditionally UTC (see below); ignored by sqlite |
 | `DB_MAX_IDLE_CONNS` | `config.go` | `10` | no | none | |
 | `DB_MAX_OPEN_CONNS` | `config.go` | `100` | no | none | |
 | `DB_CONN_MAX_LIFETIME` | `config.go` | `3600s` | no | none | seconds |
 | `DB_LOG_QUERIES` | `config.go` | `false` | no | logs SQL with bound args if enabled | |
 | `DB_SLOW_QUERY_THRESHOLD` | `config.go` | `0` | no | none | duration syntax |
+
+### Timestamp storage contract
+
+**Instants are stored UTC; zones are presentation.** Concretely:
+
+- **Managed lifecycle columns** (`created_at`, `updated_at`, `deleted_at`) are stamped app-side with `time.Now().UTC()` - one clock (the app's), one zone (UTC), on every write path (struct `Save`, map `Update`, soft `Delete`).
+- **Every bound `time.Time` argument** (including `*time.Time`, valid `sql.NullTime`, `sql.Named(...)` values, custom `driver.Valuer` types whose `Value()` yields a `time.Time`, raw `Manager.Exec`/`Raw` args, and queue tables) is rebased to UTC at the driver seam (`drivers.NormalizeTimeArgs`) before encoding, so user-supplied times also land as UTC wall clocks in naive `timestamp`/`DATETIME` columns. `timestamptz` columns are instant-preserving, so the rebase is a no-op for them.
+- **Scanned timestamps surface located in `time.UTC`** (struct scans, `Value`, `Pluck`, pivot extras), so round-trips are stable across hosts regardless of what location the underlying driver returns.
+- **SQL sentinels** `orm.NOW` / `orm.CurrentTimestamp` mean "DB clock, UTC wall clock" in both Update and Insert maps: grammars emit `(NOW() AT TIME ZONE 'UTC')` (postgres), `UTC_TIMESTAMP()` (mysql), `CURRENT_TIMESTAMP` (sqlite). Caveat: into a `timestamptz` column under a hand-set non-UTC session timezone the naive UTC value is misread - use an app-side stamp or raw `NOW()` there.
+- **Session timezone** (`DB_TIMEZONE` -> `drivers.ConnectionConfig.TimeZone`; postgres `TimeZone=`, mysql `time_zone='...'`) affects in-database functions and `timestamptz`/`TIMESTAMP` rendering only - never the encoding of bound time values. The MySQL `loc=` codec parameter is never emitted; the go-sql-driver default `Loc=UTC` is part of the contract.
+- **DB-side column defaults** (`DEFAULT CURRENT_TIMESTAMP` from migrations) follow the database session/server timezone, not this contract - prefer managed stamps. For new schemas prefer `TimestampsTz()` (timezone-aware columns) over `Timestamps()`.
+- **Writers that hold their own `*sql.DB`** (bypassing the ORM driver seam) must stamp `time.Now().UTC()` themselves; the framework's queue and outbox tables do.
+- Rows written by non-UTC hosts **before** this contract are data, not code: they are not rewritten, and their wall clocks remain skewed by the original host offset.
+
+`APP_TIMEZONE` is deliberately outside this contract: it configures presentation (formatting, scheduler cron evaluation), never storage.
 
 ## Session
 

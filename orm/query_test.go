@@ -49,10 +49,11 @@ func TestUpdate_DoesNotMutateCallerMap(t *testing.T) {
 }
 
 // TestUpdate_RawSQLMarkerEmitsLiteral asserts that values of type RawSQL
-// are emitted verbatim into the generated SQL and are NOT bound as
-// parameters. This covers all three dialect grammars; the query.go Update
-// path is a thin wrapper over these grammars so testing them directly is
-// representative of the full Update pipeline.
+// are emitted into the generated SQL (with the well-known current-timestamp
+// sentinels pinned to their UTC form) and are NOT bound as parameters. This
+// covers all three dialect grammars; the query.go Update path is a thin
+// wrapper over these grammars so testing them directly is representative of
+// the full Update pipeline.
 func TestUpdate_RawSQLMarkerEmitsLiteral(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -64,13 +65,13 @@ func TestUpdate_RawSQLMarkerEmitsLiteral(t *testing.T) {
 			name:        "mysql NOW()",
 			grammar:     &drivers.MySQLGrammar{},
 			value:       NOW,
-			wantLiteral: "NOW()",
+			wantLiteral: "UTC_TIMESTAMP()",
 		},
 		{
 			name:        "postgres NOW()",
 			grammar:     &drivers.PostgresGrammar{},
 			value:       NOW,
-			wantLiteral: "NOW()",
+			wantLiteral: "(NOW() AT TIME ZONE 'UTC')",
 		},
 		{
 			name:        "sqlite CURRENT_TIMESTAMP",
@@ -98,10 +99,10 @@ func TestUpdate_RawSQLMarkerEmitsLiteral(t *testing.T) {
 			// form of the sentinel, if it did, the grammar bound it as
 			// a parameter (the pre-fix bug).
 			for i, a := range args {
-				if s, ok := a.(string); ok && s == tt.wantLiteral {
+				if s, ok := a.(string); ok && s == string(tt.value) {
 					t.Errorf("args[%d] = %q (RawSQL sentinel leaked into bound args)", i, s)
 				}
-				if r, ok := a.(RawSQL); ok && string(r) == tt.wantLiteral {
+				if r, ok := a.(RawSQL); ok && r == tt.value {
 					t.Errorf("args[%d] = RawSQL(%q) (RawSQL sentinel leaked into bound args)", i, string(r))
 				}
 			}

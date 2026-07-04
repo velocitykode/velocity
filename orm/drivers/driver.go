@@ -43,18 +43,23 @@ type Driver interface {
 
 // ConnectionConfig holds database connection settings
 type ConnectionConfig struct {
-	Driver             string
-	Host               string
-	Port               string
-	Database           string
-	Username           string
-	Password           string
-	Charset            string
-	Collation          string
-	Prefix             string
-	Schema             string
-	SSLMode            string // postgres: sslmode (disable/prefer/require/verify-ca/verify-full)
-	TLS                string // mysql: tls= value (true/false/skip-verify/preferred/named-profile)
+	Driver    string
+	Host      string
+	Port      string
+	Database  string
+	Username  string
+	Password  string
+	Charset   string
+	Collation string
+	Prefix    string
+	Schema    string
+	SSLMode   string // postgres: sslmode (disable/prefer/require/verify-ca/verify-full)
+	TLS       string // mysql: tls= value (true/false/skip-verify/preferred/named-profile)
+	// TimeZone sets the database SESSION timezone (postgres `TimeZone=`,
+	// mysql `time_zone='...'`), which affects in-database functions and
+	// timestamptz/TIMESTAMP rendering only. It never affects how bound
+	// time.Time values are encoded: storage is unconditionally UTC (see
+	// NormalizeTimeArgs). SQLite has no session timezone; unused there.
 	TimeZone           string
 	MaxIdleConns       int
 	MaxOpenConns       int

@@ -189,6 +189,7 @@ The lower-level pieces are conservative too:
 | Auth        | JWT rejects `alg=none` and algorithm substitution; session ID rotates on login  |
 | Tokens      | 32-byte `crypto/rand` session and CSRF tokens                                    |
 | ORM         | parameterized queries, validated identifiers, deny-by-default mass assignment    |
+| Timestamps  | instants stored UTC on every write path regardless of host timezone; zones are presentation |
 | Storage     | `os.Root` path containment (openat2 on Linux), no traversal or symlink escape    |
 | HTTP client | SSRF guard blocks private and link-local ranges by default, TLS 1.2 floor        |
 

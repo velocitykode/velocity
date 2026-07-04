@@ -362,7 +362,7 @@ func (r *DatabaseBatchRepository) Save(ctx context.Context, batch *Batch) error 
 	if err := ctxErr(ctx); err != nil {
 		return err
 	}
-	now := time.Now()
+	now := time.Now().UTC()
 	// The *_dispatched columns are explicitly initialised to false here
 	// rather than relying on the DEFAULT 0 so a misapplied migration that
 	// dropped the DEFAULT (or a re-issued INSERT against a row built from
@@ -539,7 +539,7 @@ func (r *DatabaseBatchRepository) Cancel(ctx context.Context, id BatchID) (*Batc
 	}
 	const q = `UPDATE job_batches SET cancelled_at = $1, updated_at = $2
 	           WHERE id = $3 AND cancelled_at IS NULL`
-	now := time.Now()
+	now := time.Now().UTC()
 	if _, err := r.db.ExecContext(ctx, r.rewriteQuery(q), now, now, string(id)); err != nil {
 		return nil, fmt.Errorf("velocity/queue: batch cancel: %w", err)
 	}
@@ -572,7 +572,7 @@ func (r *DatabaseBatchRepository) PruneStale(ctx context.Context, olderThan time
 	if err := ctxErr(ctx); err != nil {
 		return 0, err
 	}
-	cutoff := time.Now().Add(-olderThan)
+	cutoff := time.Now().UTC().Add(-olderThan)
 	const q = `DELETE FROM job_batches WHERE completed_at IS NOT NULL AND completed_at < $1`
 	res, err := r.db.ExecContext(ctx, r.rewriteQuery(q), cutoff)
 	if err != nil {
@@ -599,7 +599,7 @@ func (r *DatabaseBatchRepository) MarkCallbackDispatched(ctx context.Context, id
 		return err
 	}
 	q := fmt.Sprintf(`UPDATE job_batches SET %s = $1, updated_at = $2 WHERE id = $3 AND %s = $4`, col, col)
-	now := time.Now()
+	now := time.Now().UTC()
 	if _, err := r.db.ExecContext(ctx, r.rewriteQuery(q), true, now, string(id), false); err != nil {
 		return fmt.Errorf("velocity/queue: mark callback dispatched: %w", err)
 	}

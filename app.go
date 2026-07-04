@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/auth"
@@ -159,6 +160,26 @@ func New(opts ...Option) (*App, error) {
 	// where they may emit env-aware warnings instead of hard failures.
 	if err := a.config.Validate(); err != nil {
 		return nil, err
+	}
+
+	// Apply the app's presentation timezone before any service or
+	// goroutine starts (time.Local writes are not synchronized, so this
+	// must happen while New() is still single-threaded). It governs
+	// formatting and scheduler cron evaluation only; persistence is
+	// unconditionally UTC and never reads it. Empty means "leave the
+	// process timezone alone" - ConfigFromEnv defaults APP_TIMEZONE to
+	// "UTC", so env-driven apps always get a deterministic zone, while
+	// WithConfig callers (e.g. tests) opt in explicitly.
+	var appLocation *time.Location
+	if a.config.Timezone != "" {
+		loc, err := time.LoadLocation(a.config.Timezone)
+		if err != nil {
+			return nil, fmt.Errorf("velocity: invalid app timezone %q (APP_TIMEZONE): %w", a.config.Timezone, err)
+		}
+		appLocation = loc
+		if time.Local != loc {
+			time.Local = loc
+		}
 	}
 
 	// 1. Initialize logger first (everything else may need to log)
@@ -509,6 +530,11 @@ func New(opts ...Option) (*App, error) {
 	sched := scheduler.New()
 	sched.SetEnv(a.config.Env)
 	sched.SetLogger(a.Log)
+	// Cron expressions evaluate in the app timezone (scheduler would
+	// otherwise silently use time.Local, i.e. the host zone).
+	if appLocation != nil {
+		sched.SetTimezone(appLocation)
+	}
 	// Wire a cache-backed Locker when the configured cache driver
 	// supports the cache Lock primitive (Redis today). Without this,
 	// scheduler.New defaults to InMemoryLocker, which means

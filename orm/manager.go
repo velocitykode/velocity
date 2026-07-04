@@ -17,15 +17,20 @@ import (
 
 // ManagerConfig holds typed configuration for creating an ORM Manager.
 type ManagerConfig struct {
-	Driver          string
-	Host            string
-	Port            string
-	Database        string
-	Username        string
-	Password        string
-	Charset         string
-	SSLMode         string // postgres
-	TLS             string // mysql
+	Driver   string
+	Host     string
+	Port     string
+	Database string
+	Username string
+	Password string
+	Charset  string
+	SSLMode  string // postgres
+	TLS      string // mysql
+	// TimeZone is the database SESSION timezone (postgres `TimeZone=`,
+	// mysql `time_zone='...'`). It affects in-database functions and
+	// timestamptz/TIMESTAMP rendering only, never the encoding of bound
+	// time values (storage is unconditionally UTC). Unused on SQLite.
+	TimeZone        string
 	MaxIdleConns    int
 	MaxOpenConns    int
 	ConnMaxLifetime time.Duration
@@ -118,6 +123,7 @@ func NewManagerWithContext(ctx context.Context, config ManagerConfig) (*Manager,
 		Charset:  stringOrDefault(config.Charset, "utf8mb4"),
 		SSLMode:  config.SSLMode,
 		TLS:      config.TLS,
+		TimeZone: config.TimeZone,
 	}
 
 	if config.MaxIdleConns > 0 {
@@ -263,7 +269,10 @@ func (m *Manager) Raw(ctx context.Context, query string, args ...any) (*sql.Rows
 	// transaction-rollback helper) would escape to the pool and miss
 	// the transaction's own writes.
 	if tx, ok := TxFromContext(ctx); ok {
-		rows, err := tx.QueryContext(ctx, query, args...)
+		// This branch hits *sql.Tx directly, bypassing the driver
+		// interface where time args are normally rebased to UTC, so
+		// normalize here too (storage contract: instants stored UTC).
+		rows, err := tx.QueryContext(ctx, query, drivers.NormalizeTimeArgs(args)...)
 		if err != nil {
 			return nil, fmt.Errorf("orm: raw query failed: %w", err)
 		}
@@ -293,7 +302,9 @@ func (m *Manager) Exec(ctx context.Context, query string, args ...any) (sql.Resu
 	// Without this a raw Exec inside a transaction (e.g. a test using the
 	// transaction-rollback helper) would escape and never roll back.
 	if tx, ok := TxFromContext(ctx); ok {
-		res, err := tx.ExecContext(ctx, query, args...)
+		// Direct *sql.Tx path bypasses the driver interface; rebase
+		// time args to UTC here as well.
+		res, err := tx.ExecContext(ctx, query, drivers.NormalizeTimeArgs(args)...)
 		if err != nil {
 			return nil, fmt.Errorf("orm: exec failed: %w", err)
 		}

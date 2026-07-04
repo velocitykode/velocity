@@ -1,6 +1,7 @@
 package mysql
 
 import (
+	"net/url"
 	"strings"
 	"testing"
 
@@ -92,6 +93,29 @@ func TestMySQLDriver_DSNParamsIncludeTLSDefault(t *testing.T) {
 	}
 }
 
+// TestMySQLDriver_DSNNeverEmitsLoc pins the time codec: `loc=` must never
+// appear in the DSN (go-sql-driver's default Loc=UTC is the storage
+// contract - it converts bound time.Time params to UTC on the wire and
+// returns scanned timestamps in time.UTC). TimeZone maps to the session
+// `time_zone` system variable instead, mirroring postgres's `TimeZone=`.
+func TestMySQLDriver_DSNNeverEmitsLoc(t *testing.T) {
+	t.Run("no TimeZone", func(t *testing.T) {
+		params := buildMySQLParamsForTest(drivers.ConnectionConfig{})
+		if strings.Contains(params, "loc=") {
+			t.Errorf("params contain loc= (time codec must stay UTC), got %q", params)
+		}
+	})
+	t.Run("TimeZone set becomes session variable", func(t *testing.T) {
+		params := buildMySQLParamsForTest(drivers.ConnectionConfig{TimeZone: "Asia/Karachi"})
+		if strings.Contains(params, "loc=") {
+			t.Errorf("params contain loc= (time codec must stay UTC), got %q", params)
+		}
+		if !strings.Contains(params, "time_zone=%27Asia%2FKarachi%27") {
+			t.Errorf("expected session time_zone param, got %q", params)
+		}
+	})
+}
+
 // buildMySQLParamsForTest mirrors the DSN-parameter assembly in Connect so
 // we can inspect the resulting query string without opening a network
 // connection. Keep in sync with MySQLDriver.Connect.
@@ -106,7 +130,7 @@ func buildMySQLParamsForTest(config drivers.ConnectionConfig) string {
 		params = append(params, "collation="+config.Collation)
 	}
 	if config.TimeZone != "" {
-		params = append(params, "loc="+config.TimeZone)
+		params = append(params, "time_zone="+url.QueryEscape("'"+config.TimeZone+"'"))
 	}
 	params = append(params, "tls="+resolveMySQLTLS(config.TLS))
 	return strings.Join(params, "&")

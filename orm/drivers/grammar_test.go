@@ -755,7 +755,7 @@ func TestMySQLGrammar_CompileUpdate(t *testing.T) {
 			wantArgLen: 2,
 		},
 		{
-			name:  "update with RawSQL NOW() sentinel emits verbatim",
+			name:  "update with RawSQL NOW() sentinel emits UTC-pinned expression",
 			table: "users",
 			values: map[string]any{
 				"updated_at": RawSQL("NOW()"),
@@ -763,7 +763,7 @@ func TestMySQLGrammar_CompileUpdate(t *testing.T) {
 			conditions: []Condition{
 				{Column: "id", Operator: "=", Value: 1, Type: "and"},
 			},
-			wantParts:  []string{"UPDATE `users` SET", "`updated_at` = NOW()", "WHERE `id` = ?"},
+			wantParts:  []string{"UPDATE `users` SET", "`updated_at` = UTC_TIMESTAMP()", "WHERE `id` = ?"},
 			wantArgLen: 1,
 		},
 		{
@@ -1277,7 +1277,7 @@ func TestPostgresGrammar_CompileUpdate(t *testing.T) {
 			wantArgLen: 2,
 		},
 		{
-			name:  "update with RawSQL NOW() sentinel emits verbatim",
+			name:  "update with RawSQL NOW() sentinel emits UTC-pinned expression",
 			table: "users",
 			values: map[string]any{
 				"updated_at": RawSQL("NOW()"),
@@ -1285,7 +1285,7 @@ func TestPostgresGrammar_CompileUpdate(t *testing.T) {
 			conditions: []Condition{
 				{Column: "id", Operator: "=", Value: 1, Type: "and"},
 			},
-			wantParts:  []string{`UPDATE "users" SET`, `"updated_at" = NOW()`, `WHERE "id" =`},
+			wantParts:  []string{`UPDATE "users" SET`, `"updated_at" = (NOW() AT TIME ZONE 'UTC')`, `WHERE "id" =`},
 			wantArgLen: 1,
 		},
 		{
@@ -1412,7 +1412,7 @@ func TestPostgresGrammar_CompileUpdateReturning(t *testing.T) {
 				{Column: "id", Operator: "=", Value: 1, Type: "and"},
 			},
 			pkCol:      "id",
-			wantParts:  []string{`UPDATE "users" SET`, `"updated_at" = NOW()`, `WHERE "id" = $1`},
+			wantParts:  []string{`UPDATE "users" SET`, `"updated_at" = (NOW() AT TIME ZONE 'UTC')`, `WHERE "id" = $1`},
 			wantSuffix: ` RETURNING "id"`,
 			wantArgLen: 1,
 		},

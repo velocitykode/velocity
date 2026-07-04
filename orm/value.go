@@ -51,5 +51,16 @@ func (q *Query[T]) Value(ctx context.Context, column string) (any, error) {
 		return nil, err
 	}
 
-	return result, nil
+	return rebaseAnyTimeUTC(result), nil
+}
+
+// rebaseAnyTimeUTC rebases a driver-returned value to UTC when it is a
+// time.Time; every other value passes through. Read side of the storage
+// contract for the any-typed scan paths (Value, Pluck, pivot extras) that
+// bypass scanIntoStruct.
+func rebaseAnyTimeUTC(v any) any {
+	if t, ok := v.(time.Time); ok && t.Location() != time.UTC {
+		return t.In(time.UTC)
+	}
+	return v
 }

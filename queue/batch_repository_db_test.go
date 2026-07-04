@@ -357,8 +357,10 @@ func TestDatabaseBatchRepository_PruneStale(t *testing.T) {
 	_ = repo.Save(context.Background(), old)
 	_, _, _ = repo.IncrementSuccess(context.Background(), old.id)
 	// Backdate completed_at via direct UPDATE; otherwise PruneStale won't
-	// see the row as stale within the test runtime.
-	twoHrsAgo := time.Now().Add(-2 * time.Hour)
+	// see the row as stale within the test runtime. Stamp UTC like every
+	// other writer under the storage contract, or the TEXT comparison in
+	// PruneStale misorders on non-UTC hosts.
+	twoHrsAgo := time.Now().UTC().Add(-2 * time.Hour)
 	if _, err := db.Exec("UPDATE job_batches SET completed_at = ? WHERE id = ?", twoHrsAgo, string(old.id)); err != nil {
 		t.Fatalf("backdate: %v", err)
 	}

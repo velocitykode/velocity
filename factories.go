@@ -223,6 +223,7 @@ func initDB(config DBConfig) (*orm.Manager, error) {
 		Charset:         config.Charset,
 		SSLMode:         config.SSLMode,
 		TLS:             config.TLS,
+		TimeZone:        config.TimeZone,
 		MaxIdleConns:    config.MaxIdleConns,
 		MaxOpenConns:    config.MaxOpenConns,
 		ConnMaxLifetime: config.ConnMaxLifetime,

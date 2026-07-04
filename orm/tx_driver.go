@@ -25,19 +25,19 @@ type txDriver struct {
 // QueryContext routes the read through the bound tx so reads observe
 // uncommitted writes from the same transaction.
 func (d *txDriver) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
-	return d.tx.QueryContext(ctx, query, args...)
+	return d.tx.QueryContext(ctx, query, drivers.NormalizeTimeArgs(args)...)
 }
 
 // QueryRowContext routes the single-row read through the bound tx.
 // Save's RETURNING-id path on Postgres lands here.
 func (d *txDriver) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
-	return d.tx.QueryRowContext(ctx, query, args...)
+	return d.tx.QueryRowContext(ctx, query, drivers.NormalizeTimeArgs(args)...)
 }
 
 // ExecContext routes mutations through the bound tx so INSERT/UPDATE/
 // DELETE participate in the caller's transaction.
 func (d *txDriver) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	return d.tx.ExecContext(ctx, query, args...)
+	return d.tx.ExecContext(ctx, query, drivers.NormalizeTimeArgs(args)...)
 }
 
 // BeginTx is intentionally disabled on a tx-bound driver. Nesting a

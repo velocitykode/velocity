@@ -110,15 +110,14 @@ func (d *SQLiteDriver) Connect(config ConnectionConfig) error {
 		}
 	}
 
-	// Add connection parameters
-	params := []string{}
-	if config.TimeZone != "" {
-		params = append(params, "_loc="+config.TimeZone)
-	}
-
-	if len(params) > 0 {
-		dsn += "?" + strings.Join(params, "&")
-	}
+	// No time-related DSN parameters: the time codec stays at the
+	// backend default so time.Time params (rebased to UTC by
+	// NormalizeTimeArgs before binding) are stored with a UTC wall
+	// clock. The old `_loc=` param was a mattn-only codec knob - the
+	// default modernc backend silently ignored it - and codec knobs
+	// that vary by config are exactly how storage guarantees die.
+	// SQLite has no session-timezone concept, so ConnectionConfig.
+	// TimeZone is intentionally unused here.
 
 	db, err := sql.Open(d.sqlDriverName(), dsn)
 	if err != nil {
@@ -442,6 +441,12 @@ func (g *SQLiteGrammar) CompileInsert(table string, columns []string, values [][
 			if j > 0 {
 				sql.WriteString(", ")
 			}
+			// Raw SQL values (e.g. orm.CurrentTimestamp) emit as SQL
+			// expressions instead of binding, matching CompileUpdate.
+			if raw, ok := row[j].(RawSQL); ok {
+				sql.WriteString(sqliteRawSQLExpr(raw))
+				continue
+			}
 			sql.WriteString("?")
 			args = append(args, row[j])
 		}
@@ -467,11 +472,13 @@ func (g *SQLiteGrammar) CompileUpdate(table string, values map[string]any, condi
 		}
 		sql.WriteString(g.QuoteIdentifier(column))
 
-		// Raw SQL values (e.g. CURRENT_TIMESTAMP) emit verbatim; all
-		// other values bind as parameters.
+		// Raw SQL values (e.g. CURRENT_TIMESTAMP) emit verbatim, with the
+		// well-known current-timestamp sentinels mapped to SQLite's
+		// CURRENT_TIMESTAMP (already UTC); all other values bind as
+		// parameters.
 		if rawVal, ok := value.(RawSQL); ok {
 			sql.WriteString(" = ")
-			sql.WriteString(string(rawVal))
+			sql.WriteString(sqliteRawSQLExpr(rawVal))
 		} else {
 			sql.WriteString(" = ?")
 			args = append(args, value)
