@@ -209,9 +209,9 @@ func defaultDriverOrErr(op string) (drivers.Driver, error) {
 	if m == nil {
 		return nil, fmt.Errorf("velocity/orm: %s: no default manager set", op)
 	}
-	drv := m.DefaultDriver()
-	if drv == nil {
-		return nil, fmt.Errorf("velocity/orm: %s: no database connection", op)
+	drv, err := m.liveDriver()
+	if err != nil {
+		return nil, fmt.Errorf("velocity/orm: %s: %w", op, err)
 	}
 	return drv, nil
 }

@@ -48,7 +48,9 @@ func (q *Query[T]) aggregate(ctx context.Context, fn, column string) (float64, e
 	if q.err != nil {
 		return 0, q.err
 	}
-	q.bindTxFromContextValue(ctx)
+	if err := q.bindTxFromContextValue(ctx); err != nil {
+		return 0, err
+	}
 	q.applyGlobalScopes(ctx)
 	// A scope predicate that fails validation (invalid identifier,
 	// unknown operator, driver-registered operator with bad value) sets

@@ -230,14 +230,13 @@ func quoteIdent(name, driver string) string {
 // not re-raised, so callers may handle the failure as a normal error per
 // the framework's "no panics in library code" rule.
 func (m *Manager) TransactionWithOutbox(ctx context.Context, fn func(tx *sql.Tx, outbox Pending) error) (retErr error) {
+	driver, err := m.liveDriver()
+	if err != nil {
+		return err
+	}
 	m.mu.RLock()
-	driver := m.defaultDriver
 	logger := m.logger
 	m.mu.RUnlock()
-
-	if driver == nil {
-		return errors.New("velocity/orm: no database connection")
-	}
 
 	tx, err := driver.BeginTx(ctx, nil)
 	if err != nil {
@@ -495,9 +494,9 @@ func OutboxMigrationSQL(driver string) []string {
 // connection. Idempotent (uses IF NOT EXISTS). Useful for tests and for
 // app-level wiring that does not use the migrate package.
 func (m *Manager) EnsureOutboxTable(ctx context.Context) error {
-	driver := m.DefaultDriver()
-	if driver == nil {
-		return errors.New("velocity/orm: no database connection")
+	driver, err := m.liveDriver()
+	if err != nil {
+		return err
 	}
 	for _, stmt := range OutboxMigrationSQL(driver.DriverName()) {
 		if _, err := driver.ExecContext(ctx, stmt); err != nil {
@@ -639,9 +638,13 @@ func (r *Relay) Start(ctx context.Context) error {
 		r.mu.Unlock()
 		return errors.New("velocity/orm: relay already running")
 	}
-	if r.mgr == nil || r.mgr.DefaultDriver() == nil {
+	if r.mgr == nil {
 		r.mu.Unlock()
 		return errors.New("velocity/orm: relay needs a connected manager")
+	}
+	if _, err := r.mgr.liveDriver(); err != nil {
+		r.mu.Unlock()
+		return err
 	}
 	r.running = true
 	loopCtx, cancel := context.WithCancel(ctx)
@@ -848,9 +851,9 @@ type outboxRow struct {
 // This portable strategy works on SQLite (no SKIP LOCKED), MySQL, and Postgres
 // without taking long-held locks. The conditional UPDATE is the atomic step.
 func (r *Relay) claimBatch(ctx context.Context) ([]outboxRow, error) {
-	driver := r.mgr.DefaultDriver()
-	if driver == nil {
-		return nil, errors.New("velocity/orm: no database connection")
+	driver, err := r.mgr.liveDriver()
+	if err != nil {
+		return nil, err
 	}
 	driverName := driver.DriverName()
 	now := time.Now().UTC()
@@ -914,7 +917,11 @@ func (r *Relay) scanCandidates(ctx context.Context, driver string, now time.Time
 			" ORDER BY partition_key, id LIMIT ?"
 	}
 
-	rows, err := r.mgr.DefaultDriver().QueryContext(ctx, q, now, now, r.cfg.BatchSize)
+	drv, err := r.mgr.liveDriver()
+	if err != nil {
+		return nil, nil, err
+	}
+	rows, err := drv.QueryContext(ctx, q, now, now, r.cfg.BatchSize)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -946,7 +953,11 @@ func (r *Relay) tryClaim(ctx context.Context, driver string, id int64, leaseUnti
 		upd = "UPDATE " + t + " SET leased_until=?, leased_by=? WHERE id=? AND dlq=0 AND (leased_until IS NULL OR leased_until <= ?)"
 	}
 
-	res, err := r.mgr.DefaultDriver().ExecContext(ctx, upd, leaseUntil, r.cfg.RelayID, id, now)
+	drv, err := r.mgr.liveDriver()
+	if err != nil {
+		return outboxRow{}, false, err
+	}
+	res, err := drv.ExecContext(ctx, upd, leaseUntil, r.cfg.RelayID, id, now)
 	if err != nil {
 		return outboxRow{}, false, err
 	}
@@ -966,7 +977,7 @@ func (r *Relay) tryClaim(ctx context.Context, driver string, id int64, leaseUnti
 	default:
 		sel = "SELECT id, COALESCE(partition_key,''), kind, idempotency_key, payload, payload_type, attempts, max_attempts FROM " + t + " WHERE id=?"
 	}
-	row := r.mgr.DefaultDriver().QueryRowContext(ctx, sel, id)
+	row := drv.QueryRowContext(ctx, sel, id)
 	var or outboxRow
 	if err := row.Scan(&or.ID, &or.PartitionKey, &or.Kind, &or.IdempotencyKey, &or.Payload, &or.PayloadType, &or.Attempts, &or.MaxAttempts); err != nil {
 		return outboxRow{}, false, err
@@ -1025,9 +1036,9 @@ func (r *Relay) writebackCtx() context.Context {
 // in-flight DELETE can be cancelled when Stop's grace window elapses,
 // preventing relay shutdown from hanging on DB pressure.
 func (r *Relay) recordSuccess(ctx context.Context, row outboxRow) error {
-	driver := r.mgr.DefaultDriver()
-	if driver == nil {
-		return errors.New("velocity/orm: no database connection")
+	driver, err := r.mgr.liveDriver()
+	if err != nil {
+		return err
 	}
 	driverName := driver.DriverName()
 	t := quoteIdent(OutboxTableName, driverName)
@@ -1037,7 +1048,7 @@ func (r *Relay) recordSuccess(ctx context.Context, row outboxRow) error {
 	} else {
 		q = "DELETE FROM " + t + " WHERE id=?"
 	}
-	_, err := driver.ExecContext(ctx, q, row.ID)
+	_, err = driver.ExecContext(ctx, q, row.ID)
 	return err
 }
 
@@ -1045,9 +1056,9 @@ func (r *Relay) recordSuccess(ctx context.Context, row outboxRow) error {
 // max) flips the row into the DLQ. Uses the relay-scoped shutdown ctx so
 // an in-flight UPDATE is cancelled when Stop's grace window elapses.
 func (r *Relay) recordFailure(ctx context.Context, row outboxRow, cause error) error {
-	driver := r.mgr.DefaultDriver()
-	if driver == nil {
-		return errors.New("velocity/orm: no database connection")
+	driver, err := r.mgr.liveDriver()
+	if err != nil {
+		return err
 	}
 	driverName := driver.DriverName()
 	t := quoteIdent(OutboxTableName, driverName)
@@ -1069,16 +1080,16 @@ func (r *Relay) recordFailure(ctx context.Context, row outboxRow, cause error) e
 		q = "UPDATE " + t + " SET attempts=?, available_at=?, leased_until=NULL, leased_by=NULL, dlq=?, last_error=? WHERE id=?"
 	}
 	dlqVal := boolForDriver(dead, driverName)
-	_, err := driver.ExecContext(ctx, q, attempts, nextAt, dlqVal, errMsg, row.ID)
+	_, err = driver.ExecContext(ctx, q, attempts, nextAt, dlqVal, errMsg, row.ID)
 	return err
 }
 
 // Replay flips a DLQ row back into the active set, resetting attempts to
 // zero. Returns ErrOutboxRowNotFound when the id does not exist.
 func (r *Relay) Replay(ctx context.Context, id int64) error {
-	driver := r.mgr.DefaultDriver()
-	if driver == nil {
-		return errors.New("velocity/orm: no database connection")
+	driver, err := r.mgr.liveDriver()
+	if err != nil {
+		return err
 	}
 	driverName := driver.DriverName()
 	t := quoteIdent(OutboxTableName, driverName)
@@ -1161,9 +1172,9 @@ type OutboxRowSnapshot struct {
 
 // ListOutboxRows returns up to limit rows for inspection. Order is by id ASC.
 func (m *Manager) ListOutboxRows(ctx context.Context, limit int) ([]OutboxRowSnapshot, error) {
-	driver := m.DefaultDriver()
-	if driver == nil {
-		return nil, errors.New("velocity/orm: no database connection")
+	driver, err := m.liveDriver()
+	if err != nil {
+		return nil, err
 	}
 	if limit <= 0 {
 		limit = 100
@@ -1205,9 +1216,9 @@ func (m *Manager) ListOutboxRows(ctx context.Context, limit int) ([]OutboxRowSna
 
 // CountOutboxRows returns total rows in the outbox table. Useful for tests.
 func (m *Manager) CountOutboxRows(ctx context.Context) (int, error) {
-	driver := m.DefaultDriver()
-	if driver == nil {
-		return 0, errors.New("velocity/orm: no database connection")
+	driver, err := m.liveDriver()
+	if err != nil {
+		return 0, err
 	}
 	t := quoteIdent(OutboxTableName, driver.DriverName())
 	var n int

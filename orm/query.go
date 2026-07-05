@@ -86,7 +86,13 @@ func isValidOperator(op string) bool {
 // queries in their own constructor rather than attempt to reuse a single
 // *Query[T] across requests.
 type Query[T any] struct {
-	driver        drivers.Driver
+	driver drivers.Driver
+	// mgr is the Manager the driver was resolved from (nil for detached
+	// builders, e.g. eager-load constructor queries or WhereGroup subs).
+	// Execution liveness checks consult it so a query built before
+	// Manager.Shutdown and executed after still returns
+	// ErrManagerShutdown instead of dereferencing a dead driver.
+	mgr           *Manager
 	table         string
 	conditions    []drivers.Condition
 	orders        []drivers.Order
@@ -145,11 +151,13 @@ func (q *Query[T]) Err() error {
 // newQuery creates a new query builder for type T
 func newQuery[T any]() *Query[T] {
 	var drv drivers.Driver
-	if m := Default(); m != nil {
+	m := Default()
+	if m != nil {
 		drv = m.DefaultDriver()
 	}
 	q := &Query[T]{
 		driver:        drv,
+		mgr:           m,
 		table:         getTableName[T](),
 		columns:       []string{"*"},
 		hasSoftDelete: modelHasSoftDelete[T](),
@@ -241,6 +249,7 @@ func (q *Query[T]) Clone() *Query[T] {
 	}
 	clone := &Query[T]{
 		driver:              q.driver,
+		mgr:                 q.mgr,
 		table:               q.table,
 		distinct:            q.distinct,
 		withTrashed:         q.withTrashed,
@@ -402,6 +411,7 @@ func (q *Query[T]) appendGroup(joinType string, fn func(*Query[T])) *Query[T] {
 	}
 	sub := &Query[T]{
 		driver:        q.driver,
+		mgr:           q.mgr,
 		table:         q.table,
 		hasSoftDelete: q.hasSoftDelete,
 		hasUpdatedAt:  q.hasUpdatedAt,
@@ -846,6 +856,11 @@ func (q *Query[T]) buildJoinOn(first, operator, second string) (string, error) {
 	if !isValidOperator(operator) {
 		return "", fmt.Errorf("invalid JOIN operator: %q", operator)
 	}
+	// Chain-time driver dereference: a query built after Manager.Shutdown
+	// (or with no connection configured) has a nil driver here.
+	if err := q.driverLive(); err != nil {
+		return "", err
+	}
 	grammar := q.driver.Grammar()
 	return fmt.Sprintf("%s %s %s", grammar.QuoteIdentifier(first), operator, grammar.QuoteIdentifier(second)), nil
 }
@@ -1099,9 +1114,8 @@ func (q *Query[T]) Save(ctx context.Context, model *T) error {
 	if q.err != nil {
 		return q.err
 	}
-	q.bindTxFromContextValue(ctx)
-	if q.driver == nil {
-		return errors.New("orm: no database connection")
+	if err := q.bindTxFromContextValue(ctx); err != nil {
+		return err
 	}
 	return saveWithDriver(ctx, q.driver, model)
 }
@@ -1119,9 +1133,8 @@ func (q *Query[T]) CreateMany(ctx context.Context, records []T) error {
 	if q.err != nil {
 		return q.err
 	}
-	q.bindTxFromContextValue(ctx)
-	if q.driver == nil {
-		return errors.New("orm: no database connection")
+	if err := q.bindTxFromContextValue(ctx); err != nil {
+		return err
 	}
 	for i := range records {
 		if err := saveWithDriver(ctx, q.driver, &records[i]); err != nil {
@@ -1140,9 +1153,8 @@ func (q *Query[T]) FirstOrCreate(ctx context.Context, conditions map[string]any,
 	if q.err != nil {
 		return nil, q.err
 	}
-	q.bindTxFromContextValue(ctx)
-	if q.driver == nil {
-		return nil, errors.New("orm: no database connection")
+	if err := q.bindTxFromContextValue(ctx); err != nil {
+		return nil, err
 	}
 	return firstOrCreateWithDriver[T](ctx, q.driver, conditions, values)
 }
@@ -1155,9 +1167,8 @@ func (q *Query[T]) UpdateOrCreate(ctx context.Context, conditions map[string]any
 	if q.err != nil {
 		return nil, q.err
 	}
-	q.bindTxFromContextValue(ctx)
-	if q.driver == nil {
-		return nil, errors.New("orm: no database connection")
+	if err := q.bindTxFromContextValue(ctx); err != nil {
+		return nil, err
 	}
 	return updateOrCreateWithDriver[T](ctx, q.driver, conditions, values)
 }
@@ -1171,9 +1182,8 @@ func (q *Query[T]) Create(ctx context.Context, data any) (*T, error) {
 	if q.err != nil {
 		return nil, q.err
 	}
-	q.bindTxFromContextValue(ctx)
-	if q.driver == nil {
-		return nil, errors.New("orm: no database connection")
+	if err := q.bindTxFromContextValue(ctx); err != nil {
+		return nil, err
 	}
 	switch v := data.(type) {
 	case map[string]any:
@@ -1225,9 +1235,14 @@ func (q *Query[T]) Create(ctx context.Context, data any) (*T, error) {
 // Concurrency: q.driver is mutated in place. *sql.Tx is single-threaded
 // by stdlib contract, so callers who fan out a tx-bound query across
 // goroutines were already broken; this helper does not change that.
-func (q *Query[T]) bindTxFromContextValue(ctx context.Context) {
+//
+// Liveness: after binding, the helper validates the driver via
+// driverLive and returns ErrManagerShutdown / ErrNoConnection so no
+// terminal can reach a nil (or post-Shutdown) driver dereference.
+// Every caller must check the returned error before executing.
+func (q *Query[T]) bindTxFromContextValue(ctx context.Context) error {
 	if q == nil {
-		return
+		return ErrNoConnection
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -1242,12 +1257,12 @@ func (q *Query[T]) bindTxFromContextValue(ctx context.Context) {
 		if outer, isTx := q.driver.(*txDriver); isTx {
 			q.driver = outer.Driver
 		}
-		return
+		return q.driverLive()
 	}
 	base := q.driver
 	if outer, isTx := base.(*txDriver); isTx {
 		if outer.tx == tx {
-			return
+			return q.driverLive()
 		}
 		base = outer.Driver
 	}
@@ -1256,10 +1271,25 @@ func (q *Query[T]) bindTxFromContextValue(ctx context.Context) {
 			base = m.DefaultDriver()
 		}
 	}
-	if base == nil {
-		return
+	if base != nil {
+		q.driver = &txDriver{Driver: base, tx: tx}
 	}
-	q.driver = &txDriver{Driver: base, tx: tx}
+	return q.driverLive()
+}
+
+// driverLive reports whether the query can execute against its driver.
+// The manager closed check runs first (and wins): after Shutdown the
+// driver may be nil OR a stale non-nil pointer to a closed pool, and
+// "shut down" is the actionable diagnosis either way. One atomic load
+// on the healthy path; no locks.
+func (q *Query[T]) driverLive() error {
+	if q.mgr != nil && q.mgr.closed.Load() {
+		return ErrManagerShutdown
+	}
+	if q.driver == nil {
+		return ErrNoConnection
+	}
+	return nil
 }
 
 // Execution methods
@@ -1291,7 +1321,9 @@ func (q *Query[T]) Get(ctx context.Context) ([]T, error) {
 	if q.err != nil {
 		return nil, q.err
 	}
-	q.bindTxFromContextValue(ctx)
+	if err := q.bindTxFromContextValue(ctx); err != nil {
+		return nil, err
+	}
 	q.applySoftDeleteScope(ctx)
 	// A scope predicate that fails validation (invalid identifier,
 	// unknown operator, driver-registered operator with bad value) sets
@@ -1410,7 +1442,9 @@ func (q *Query[T]) Count(ctx context.Context) (int, error) {
 	if q.err != nil {
 		return 0, q.err
 	}
-	q.bindTxFromContextValue(ctx)
+	if err := q.bindTxFromContextValue(ctx); err != nil {
+		return 0, err
+	}
 	q.applySoftDeleteScope(ctx)
 	// A scope predicate that fails validation sets q.err during apply.
 	// Surface it before issuing SQL so a broken scope cannot silently
@@ -1490,7 +1524,9 @@ func (q *Query[T]) Pluck(ctx context.Context, column string) ([]any, error) {
 	if q.err != nil {
 		return nil, q.err
 	}
-	q.bindTxFromContextValue(ctx)
+	if err := q.bindTxFromContextValue(ctx); err != nil {
+		return nil, err
+	}
 	q.applySoftDeleteScope(ctx)
 	// A scope predicate that fails validation sets q.err during apply.
 	// Surface it before issuing SQL so a broken scope cannot silently
@@ -1626,7 +1662,9 @@ func (q *Query[T]) bulkUpdate(ctx context.Context, updates map[string]any, op Bu
 	if len(updates) == 0 {
 		return 0, errors.New("no updates provided")
 	}
-	q.bindTxFromContextValue(ctx)
+	if err := q.bindTxFromContextValue(ctx); err != nil {
+		return 0, err
+	}
 	// Soft-delete scope: an Update on a soft-deletable model must not touch
 	// already-trashed rows unless the caller explicitly opted in via
 	// WithTrashed / OnlyTrashed. Delete delegates here for the soft-delete
@@ -1789,7 +1827,9 @@ func (q *Query[T]) InsertGetId(ctx context.Context, data map[string]any) (int64,
 	if q.err != nil {
 		return 0, q.err
 	}
-	q.bindTxFromContextValue(ctx)
+	if err := q.bindTxFromContextValue(ctx); err != nil {
+		return 0, err
+	}
 	if len(data) == 0 {
 		return 0, errors.New("no data provided for insert")
 	}
@@ -1843,7 +1883,9 @@ func (q *Query[T]) insertExec(ctx context.Context, data map[string]any) error {
 	if q.err != nil {
 		return q.err
 	}
-	q.bindTxFromContextValue(ctx)
+	if err := q.bindTxFromContextValue(ctx); err != nil {
+		return err
+	}
 	if len(data) == 0 {
 		return errors.New("no data provided for insert")
 	}
@@ -1886,7 +1928,9 @@ func (q *Query[T]) Delete(ctx context.Context) (int64, error) {
 		// other ORM-managed lifecycle column (one clock: app, UTC). Route
 		// through bulkUpdate (not Update) so BulkAfterCommitHook listeners
 		// receive op=BulkOpDelete instead of op=BulkOpUpdate.
-		q.bindTxFromContextValue(ctx)
+		if err := q.bindTxFromContextValue(ctx); err != nil {
+			return 0, err
+		}
 		return q.bulkUpdate(ctx, map[string]any{
 			"deleted_at": time.Now().UTC(),
 		}, BulkOpDelete)
@@ -1916,7 +1960,9 @@ func (q *Query[T]) ForceDelete(ctx context.Context) (int64, error) {
 	if q.err != nil {
 		return 0, q.err
 	}
-	q.bindTxFromContextValue(ctx)
+	if err := q.bindTxFromContextValue(ctx); err != nil {
+		return 0, err
+	}
 	// Apply every registered global scope EXCEPT soft-delete so user
 	// scopes (tenant, archive, locale, ...) still constrain the rows we
 	// drop. The soft-delete scope must be skipped because ForceDelete
@@ -2242,8 +2288,11 @@ func ToSnakeCase(str string) string {
 // SQL, which is a legitimate use case (e.g. admin dashboards).
 type RawQuery[T any] struct {
 	driver drivers.Driver
-	sql    string
-	args   []any
+	// mgr mirrors Query.mgr: the Manager the driver was resolved from,
+	// consulted by execution liveness checks. See Query.mgr.
+	mgr  *Manager
+	sql  string
+	args []any
 }
 
 // NewRawQuery creates a new raw query builder.
@@ -2263,11 +2312,13 @@ type RawQuery[T any] struct {
 // the terminal to opt out and execute against the pool driver instead.
 func NewRawQuery[T any](sql string, args ...any) *RawQuery[T] {
 	var drv drivers.Driver
-	if m := Default(); m != nil {
+	m := Default()
+	if m != nil {
 		drv = m.DefaultDriver()
 	}
 	return &RawQuery[T]{
 		driver: drv,
+		mgr:    m,
 		sql:    sql,
 		args:   args,
 	}
@@ -2316,9 +2367,13 @@ func NewRawQuerySoftDeleteOnly[T any](sql string, args ...any) *RawQuery[T] {
 // Concurrency: r.driver is mutated in place. *sql.Tx is single-threaded
 // by stdlib contract, so callers who fan out a tx-bound raw query across
 // goroutines were already broken; this helper does not change that.
-func (r *RawQuery[T]) bindTxFromContextValue(ctx context.Context) {
+//
+// Liveness: mirrors Query.bindTxFromContextValue. After binding, the
+// driver is validated and ErrManagerShutdown / ErrNoConnection is
+// returned so terminals never dereference a nil or post-Shutdown driver.
+func (r *RawQuery[T]) bindTxFromContextValue(ctx context.Context) error {
 	if r == nil {
-		return
+		return ErrNoConnection
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -2328,12 +2383,12 @@ func (r *RawQuery[T]) bindTxFromContextValue(ctx context.Context) {
 		if outer, isTx := r.driver.(*txDriver); isTx {
 			r.driver = outer.Driver
 		}
-		return
+		return r.driverLive()
 	}
 	base := r.driver
 	if outer, isTx := base.(*txDriver); isTx {
 		if outer.tx == tx {
-			return
+			return r.driverLive()
 		}
 		base = outer.Driver
 	}
@@ -2342,10 +2397,21 @@ func (r *RawQuery[T]) bindTxFromContextValue(ctx context.Context) {
 			base = m.DefaultDriver()
 		}
 	}
-	if base == nil {
-		return
+	if base != nil {
+		r.driver = &txDriver{Driver: base, tx: tx}
 	}
-	r.driver = &txDriver{Driver: base, tx: tx}
+	return r.driverLive()
+}
+
+// driverLive mirrors Query.driverLive for the raw-SQL escape hatch.
+func (r *RawQuery[T]) driverLive() error {
+	if r.mgr != nil && r.mgr.closed.Load() {
+		return ErrManagerShutdown
+	}
+	if r.driver == nil {
+		return ErrNoConnection
+	}
+	return nil
 }
 
 // First executes the raw query and scans the first result into dest.
@@ -2357,7 +2423,9 @@ func (r *RawQuery[T]) First(ctx context.Context, dest *T) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	r.bindTxFromContextValue(ctx)
+	if err := r.bindTxFromContextValue(ctx); err != nil {
+		return err
+	}
 
 	start := time.Now()
 	rows, err := r.driver.QueryContext(ctx, r.sql, r.args...)
@@ -2395,7 +2463,9 @@ func (r *RawQuery[T]) Get(ctx context.Context) ([]T, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	r.bindTxFromContextValue(ctx)
+	if err := r.bindTxFromContextValue(ctx); err != nil {
+		return nil, err
+	}
 
 	start := time.Now()
 	rows, err := r.driver.QueryContext(ctx, r.sql, r.args...)
@@ -2440,7 +2510,9 @@ func (r *RawQuery[T]) Scan(ctx context.Context, dest ...any) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	r.bindTxFromContextValue(ctx)
+	if err := r.bindTxFromContextValue(ctx); err != nil {
+		return err
+	}
 
 	start := time.Now()
 	err := r.driver.QueryRowContext(ctx, r.sql, r.args...).Scan(dest...)
@@ -2471,7 +2543,9 @@ func (r *RawQuery[T]) Exec(ctx context.Context) (sql.Result, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	r.bindTxFromContextValue(ctx)
+	if err := r.bindTxFromContextValue(ctx); err != nil {
+		return nil, err
+	}
 
 	start := time.Now()
 	result, err := r.driver.ExecContext(ctx, r.sql, r.args...)

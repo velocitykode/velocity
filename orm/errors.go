@@ -9,6 +9,18 @@ import (
 var (
 	ErrNoRows         = errors.New("velocity/orm: no rows found")
 	ErrDriverNotFound = errors.New("velocity/orm: driver not found")
+	// ErrNoConnection is returned by execution entry points when no
+	// default database connection was ever configured. It signals a
+	// boot/wiring mistake: the manager exists but was never connected,
+	// or no default manager was set. Matchable with errors.Is.
+	ErrNoConnection = errors.New("velocity/orm: no database connection")
+	// ErrManagerShutdown is returned by execution entry points when the
+	// Manager has been shut down via Shutdown. It signals a
+	// teardown-ordering mistake: application code issued a query after
+	// (or racing) manager teardown. Distinct from ErrNoConnection so the
+	// operator knows to fix lifecycle ordering, not connection config.
+	// Matchable with errors.Is.
+	ErrManagerShutdown = errors.New("velocity/orm: manager is shut down")
 	// ErrNoTxCallbacks is returned by orm.OnCommit / orm.OnRollback
 	// when ctx carries no active per-tx callbacks holder. Callers
 	// either forgot to wrap ctx with PrepareTxCallbacks before

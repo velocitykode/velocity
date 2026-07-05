@@ -1163,9 +1163,9 @@ func Save[T any](ctx context.Context, m *Manager, model *T) error {
 	if m == nil {
 		return errors.New("orm: no default manager set - call SetDefault or pass a *Manager")
 	}
-	drv := m.DefaultDriver()
-	if drv == nil {
-		return errors.New("orm: no database connection")
+	drv, err := m.liveDriver()
+	if err != nil {
+		return err
 	}
 	// Honor a tx slot in ctx so the manager-routed Save and
 	// Query[T].Save behave identically: both enroll in the tx when ctx

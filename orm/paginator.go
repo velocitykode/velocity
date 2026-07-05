@@ -63,7 +63,9 @@ func (q *Query[T]) Paginate(ctx context.Context, page, perPage int) (*PaginatedR
 	if q.err != nil {
 		return nil, q.err
 	}
-	q.bindTxFromContextValue(ctx)
+	if err := q.bindTxFromContextValue(ctx); err != nil {
+		return nil, err
+	}
 
 	// Apply global scopes once on q so the count and data queries use
 	// identical conditions. The countQ inherits globalScopesApplied=true
@@ -85,6 +87,7 @@ func (q *Query[T]) Paginate(ctx context.Context, page, perPage int) (*PaginatedR
 
 	countQ := &Query[T]{
 		driver:              q.driver,
+		mgr:                 q.mgr,
 		table:               q.table,
 		conditions:          countConditions,
 		joins:               q.joins,

@@ -161,9 +161,9 @@ func (m *Morph) Resolve(ctx context.Context) (any, error) {
 	if mgr == nil {
 		return nil, errors.New("orm: Morph.Resolve: no default manager set")
 	}
-	driver := mgr.DefaultDriver()
-	if driver == nil {
-		return nil, errors.New("orm: Morph.Resolve: no database connection")
+	driver, err := mgr.liveDriver()
+	if err != nil {
+		return nil, fmt.Errorf("orm: Morph.Resolve: %w", err)
 	}
 
 	tableName := resolveTableNameReflect(relatedType)

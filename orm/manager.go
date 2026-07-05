@@ -81,6 +81,12 @@ type Manager struct {
 	connections   map[string]drivers.Driver
 	defaultName   string
 	databaseName  string
+	// closed flips to true at the start of Shutdown, before any driver
+	// is closed, so racing queries fail fast with ErrManagerShutdown
+	// instead of surfacing database/sql closed-connection noise (or nil
+	// dereferences). Atomic so execution hot paths can check liveness
+	// without taking mu.
+	closed atomic.Bool
 	// eventDispatcher is the typed event handler invoked by dispatchEvent.
 	// SetEventDispatcher (deprecated, untyped) adapts the legacy signature
 	// into a typed call so internal event firing remains type-safe.
@@ -174,6 +180,12 @@ func (m *Manager) DB() *sql.DB {
 
 // Connection returns a named database connection.
 func (m *Manager) Connection(name string) (drivers.Driver, error) {
+	// The closed check runs first: Shutdown also empties m.connections,
+	// and "shut down" (fix lifecycle ordering) is the more specific
+	// diagnosis than "not found" (fix connection config).
+	if m.closed.Load() {
+		return nil, ErrManagerShutdown
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -193,20 +205,22 @@ func (m *Manager) AddConnection(name string, driver drivers.Driver) {
 
 // Introspector returns the schema introspector for the default connection.
 func (m *Manager) Introspector() (drivers.SchemaIntrospector, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if m.defaultDriver == nil {
-		return nil, errors.New("orm: no database connection")
+	driver, err := m.liveDriver()
+	if err != nil {
+		return nil, err
 	}
-	introspector, ok := m.defaultDriver.(drivers.SchemaIntrospector)
+	introspector, ok := driver.(drivers.SchemaIntrospector)
 	if !ok {
-		return nil, fmt.Errorf("orm: driver %s does not support schema introspection", m.defaultDriver.DriverName())
+		return nil, fmt.Errorf("orm: driver %s does not support schema introspection", driver.DriverName())
 	}
 	return introspector, nil
 }
 
 // ConnectionIntrospector returns the schema introspector for a named connection.
 func (m *Manager) ConnectionIntrospector(name string) (drivers.SchemaIntrospector, error) {
+	if m.closed.Load() {
+		return nil, ErrManagerShutdown
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	driver, exists := m.connections[name]
@@ -261,6 +275,12 @@ func (m *Manager) DescribeTableOn(ctx context.Context, name, table string) ([]dr
 // WARNING: The caller is responsible for preventing SQL injection by using
 // parameterized queries. Never concatenate user input into the query string.
 func (m *Manager) Raw(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	// Fail fast once shutdown has begun, even on the tx path: the
+	// underlying pool is closing, so surfacing the ordering mistake
+	// beats database/sql closed-connection noise.
+	if m.closed.Load() {
+		return nil, ErrManagerShutdown
+	}
 	// Honor a tx carried in ctx (set by Manager.Transaction or
 	// WithTxContext): route the read through the tx so it observes
 	// uncommitted writes from the same transaction, mirroring how the
@@ -279,12 +299,11 @@ func (m *Manager) Raw(ctx context.Context, query string, args ...any) (*sql.Rows
 		return rows, nil
 	}
 
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if m.defaultDriver == nil {
-		return nil, errors.New("orm: no database connection")
+	driver, err := m.liveDriver()
+	if err != nil {
+		return nil, err
 	}
-	rows, err := m.defaultDriver.QueryContext(ctx, query, args...)
+	rows, err := driver.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("orm: raw query failed: %w", err)
 	}
@@ -296,6 +315,10 @@ func (m *Manager) Raw(ctx context.Context, query string, args ...any) (*sql.Rows
 // WARNING: The caller is responsible for preventing SQL injection by using
 // parameterized queries. Never concatenate user input into the query string.
 func (m *Manager) Exec(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	// Fail fast once shutdown has begun; see Raw for rationale.
+	if m.closed.Load() {
+		return nil, ErrManagerShutdown
+	}
 	// Honor a tx carried in ctx (set by Manager.Transaction or
 	// WithTxContext): route the write through the tx so it participates in
 	// the caller's transaction instead of auto-committing on the pool.
@@ -311,12 +334,11 @@ func (m *Manager) Exec(ctx context.Context, query string, args ...any) (sql.Resu
 		return res, nil
 	}
 
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if m.defaultDriver == nil {
-		return nil, errors.New("orm: no database connection")
+	driver, err := m.liveDriver()
+	if err != nil {
+		return nil, err
 	}
-	return m.defaultDriver.ExecContext(ctx, query, args...)
+	return driver.ExecContext(ctx, query, args...)
 }
 
 // Transaction executes fn inside a database transaction with the
@@ -367,16 +389,15 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 		return nil
 	}
 
+	driver, err := m.liveDriver()
+	if err != nil {
+		return err
+	}
 	m.mu.RLock()
-	driver := m.defaultDriver
 	logger := m.logger
 	rawDispatcher := m.rawEventDispatcher
 	bus := m.txEventBus
 	m.mu.RUnlock()
-
-	if driver == nil {
-		return errors.New("velocity/orm: no database connection")
-	}
 
 	// Savepoint nesting: when ctx already carries a *sql.Tx (set by an
 	// outer Manager.Transaction, or by WithTxContext - e.g. the test
@@ -705,17 +726,21 @@ func nextSavepointName() string {
 
 // Begin starts a new transaction.
 func (m *Manager) Begin(ctx context.Context) (*sql.Tx, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if m.defaultDriver == nil {
-		return nil, errors.New("orm: no database connection")
+	driver, err := m.liveDriver()
+	if err != nil {
+		return nil, err
 	}
-	return m.defaultDriver.BeginTx(ctx, nil)
+	return driver.BeginTx(ctx, nil)
 }
 
 // Shutdown closes the default database connection and all named connections,
 // honoring the context deadline.
 func (m *Manager) Shutdown(ctx context.Context) error {
+	// Mark closed before touching any driver (and before taking mu) so
+	// concurrent queries observe the shutdown immediately and return
+	// ErrManagerShutdown rather than hitting a half-closed pool.
+	m.closed.Store(true)
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -739,12 +764,11 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 
 // Ping verifies the default database connection.
 func (m *Manager) Ping() error {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if m.defaultDriver == nil {
-		return errors.New("orm: no database connection")
+	driver, err := m.liveDriver()
+	if err != nil {
+		return err
 	}
-	return m.defaultDriver.Ping()
+	return driver.Ping()
 }
 
 // DefaultDriver returns the default database driver (used internally by model Save).
@@ -752,6 +776,24 @@ func (m *Manager) DefaultDriver() drivers.Driver {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.defaultDriver
+}
+
+// liveDriver returns the default driver, or the sentinel explaining why it
+// is unavailable: ErrManagerShutdown after Shutdown, ErrNoConnection when
+// no default connection was ever configured. The closed check runs first
+// because after Shutdown the driver is also nil, and "shut down" is the
+// more specific diagnosis.
+func (m *Manager) liveDriver() (drivers.Driver, error) {
+	if m.closed.Load() {
+		return nil, ErrManagerShutdown
+	}
+	m.mu.RLock()
+	d := m.defaultDriver
+	m.mu.RUnlock()
+	if d == nil {
+		return nil, ErrNoConnection
+	}
+	return d, nil
 }
 
 // DriverName returns the name of the default database driver.

@@ -45,8 +45,8 @@ func stripReadOnlyKeys(updates map[string]any, meta *ModelMeta) {
 // vector query has no meaningful fallback on a non-vector driver, so callers
 // surface this through the deferred-error path rather than degrading.
 func (q *Query[T]) vectorGrammar(op string) (drivers.QueryGrammar, drivers.VectorGrammar, bool) {
-	if q.driver == nil {
-		q.setErr(op, fmt.Errorf("no database driver configured"))
+	if err := q.driverLive(); err != nil {
+		q.setErr(op, err)
 		return nil, nil, false
 	}
 	grammar := q.driver.Grammar()

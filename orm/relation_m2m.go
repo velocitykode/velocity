@@ -440,9 +440,9 @@ func LoadManyToManyWithPivot[T any, R any](parent *T, relationName string) ([]Pi
 	if mgr == nil {
 		return nil, errors.New("orm: LoadManyToManyWithPivot: no default manager set")
 	}
-	driver := mgr.DefaultDriver()
-	if driver == nil {
-		return nil, errors.New("orm: LoadManyToManyWithPivot: no database connection")
+	driver, err := mgr.liveDriver()
+	if err != nil {
+		return nil, fmt.Errorf("orm: LoadManyToManyWithPivot: %w", err)
 	}
 
 	parentType := reflect.TypeOf(*parent)
@@ -525,9 +525,9 @@ func M2M[T any](parent *T, relationName string) (*M2MAccessor, error) {
 	if mgr == nil {
 		return nil, errors.New("orm: M2M: no default manager set")
 	}
-	driver := mgr.DefaultDriver()
-	if driver == nil {
-		return nil, errors.New("orm: M2M: no database connection")
+	driver, err := mgr.liveDriver()
+	if err != nil {
+		return nil, fmt.Errorf("orm: M2M: %w", err)
 	}
 	parentType := reflect.TypeOf(*parent)
 	meta, err := resolveManyToManyMeta(parentType, relationName)

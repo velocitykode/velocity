@@ -20,7 +20,9 @@ func (q *Query[T]) Value(ctx context.Context, column string) (any, error) {
 	if q.err != nil {
 		return nil, q.err
 	}
-	q.bindTxFromContextValue(ctx)
+	if err := q.bindTxFromContextValue(ctx); err != nil {
+		return nil, err
+	}
 
 	q.columns = []string{column}
 	one := 1

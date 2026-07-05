@@ -113,7 +113,9 @@ func (q *Query[T]) incrementOrDecrement(ctx context.Context, column, op string, 
 	if q.err != nil {
 		return q.err
 	}
-	q.bindTxFromContextValue(ctx)
+	if err := q.bindTxFromContextValue(ctx); err != nil {
+		return err
+	}
 	q.applyGlobalScopes(ctx)
 	// A scope predicate that fails validation (invalid identifier,
 	// unknown operator, driver-registered operator with bad value) sets
