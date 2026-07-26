@@ -2,7 +2,6 @@ package drivers
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -45,7 +44,7 @@ func hasDotDotTraversal(path string) bool {
 // security-sensitive directory-permission logic.
 type SQLiteDriver struct {
 	BaseDriver
-	// sqlDriver is the database/sql driver name passed to sql.Open. Set by
+	// sqlDriver is the database/sql driver name to open. Set by
 	// NewSQLiteDriver (pure-Go "sqlite") or, for the cgo leaf, the
 	// sqlitebackend seam ("sqlite3"); empty is treated as the pure-Go
 	// default "sqlite".
@@ -119,7 +118,9 @@ func (d *SQLiteDriver) Connect(config ConnectionConfig) error {
 	// SQLite has no session-timezone concept, so ConnectionConfig.
 	// TimeZone is intentionally unused here.
 
-	db, err := sql.Open(d.sqlDriverName(), dsn)
+	// Opened through OpenInstrumented so statement telemetry covers every
+	// route into this pool, not just the ORM query builder.
+	db, err := d.OpenInstrumented(d.sqlDriverName(), d.DriverName(), dsn)
 	if err != nil {
 		return err
 	}

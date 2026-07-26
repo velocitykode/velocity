@@ -91,6 +91,14 @@ type Manager struct {
 	// SetEventDispatcher (deprecated, untyped) adapts the legacy signature
 	// into a typed call so internal event firing remains type-safe.
 	eventDispatcher func(ctx context.Context, event Event) error
+	// hasDispatcher mirrors "eventDispatcher != nil" for the statement
+	// observation fast path, which runs inside a driver callback and must
+	// not take mu.
+	hasDispatcher atomic.Bool
+	// pump delivers statement events off the goroutine that ran the query.
+	// Created on the first SetEventDispatcher with a non-nil dispatcher;
+	// nil until then, so a manager nobody listens to owns no goroutine.
+	pump atomic.Pointer[eventPump]
 	// rawEventDispatcher is the untyped dispatcher set via SetEventDispatcher.
 	// It is the legacy flush sink for KindDispatch / KindDispatchNow buffered
 	// entries; richer kinds (Async / After / Until) prefer txEventBus when
@@ -164,8 +172,24 @@ func NewManagerWithContext(ctx context.Context, config ManagerConfig) (*Manager,
 		defaultName:   config.Driver,
 		databaseName:  config.Database,
 	}
+	m.attachStatementObserver(driver)
 
 	return m, nil
+}
+
+// attachStatementObserver points a driver's pool at this manager, so the
+// statements it executes dispatch through this manager's event dispatcher.
+// Drivers that did not open an instrumented pool do not implement the
+// interface and are skipped.
+//
+// Binding per pool (rather than resolving a process-wide default at dispatch
+// time) is what makes a manager's telemetry its own: a manager constructed
+// without SetDefault still reports, and two managers never cross-dispatch.
+// A driver handed to two managers reports to whichever attached last.
+func (m *Manager) attachStatementObserver(d drivers.Driver) {
+	if obs, ok := d.(drivers.StatementObservable); ok {
+		obs.SetStatementObserver(managerObserver{m: m})
+	}
 }
 
 // DB returns the underlying *sql.DB from the default connection.
@@ -196,8 +220,10 @@ func (m *Manager) Connection(name string) (drivers.Driver, error) {
 	return driver, nil
 }
 
-// AddConnection registers a named database connection.
+// AddConnection registers a named database connection. Statements executed
+// against it dispatch through this manager's event dispatcher.
 func (m *Manager) AddConnection(name string, driver drivers.Driver) {
+	m.attachStatementObserver(driver)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.connections[name] = driver
@@ -453,8 +479,10 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 	// txCtx, so we install txSpanID as the parent on the body ctx and a fresh
 	// stmtRoot as the body's own span.
 	//
-	// Statements emitted under txTraceCtx increment txStmtCounter via
-	// dispatchQueryExecuted; the count ships on the TransactionExecuted event.
+	// Statements emitted under txTraceCtx increment txStmtCounter as the
+	// statement observer records them - synchronously, even though their
+	// events are delivered later - so the count ships accurately on the
+	// TransactionExecuted event.
 	parentSpanID := txSpanIDFromContext(ctx)
 	if parentSpanID == "" {
 		parentSpanID = trace.GetSpanID(ctx)
@@ -741,6 +769,25 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	// ErrManagerShutdown rather than hitting a half-closed pool.
 	m.closed.Store(true)
 
+	// Deliver queued statement events before the dispatcher goes away.
+	// Runs before mu is taken: the pump calls dispatchEvent, which reads
+	// under mu.
+	if p := m.pump.Load(); p != nil {
+		p.stop(ctx)
+		// Dropped telemetry that nothing reports is telemetry nobody
+		// knows to distrust. Say so once, at the only point where the
+		// final count is known.
+		if dropped := p.dropped.Load(); dropped > 0 {
+			m.mu.RLock()
+			logger := m.logger
+			m.mu.RUnlock()
+			if logger != nil {
+				logger.Warn("velocity/orm: query events dropped; listeners could not keep up with the query rate",
+					"dropped", dropped, "queue_size", queryEventQueueSize)
+			}
+		}
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -826,17 +873,53 @@ func (m *Manager) Stats() sql.DBStats {
 // ctx so listeners observe request- / tx-scoped values (trace IDs,
 // auth, deadlines).
 func (m *Manager) SetEventDispatcher(fn func(ctx context.Context, event any) error) {
+	// The whole transition - dispatcher fields, pump, and the hasDispatcher
+	// flag - happens under mu. Updating the flag outside the lock makes
+	// concurrent calls lose updates: a call installing a dispatcher could
+	// release mu, be overtaken by a call clearing it, and then stamp the
+	// flag back to true. Statements would be recorded against a manager
+	// with no dispatcher and silently discarded at delivery.
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
 	if fn == nil {
 		m.eventDispatcher = nil
 		m.rawEventDispatcher = nil
+		m.hasDispatcher.Store(false)
 		return
 	}
 	m.rawEventDispatcher = fn
 	m.eventDispatcher = func(ctx context.Context, event Event) error {
 		return fn(ctx, event)
 	}
+
+	// A manager already shut down does not get a new pump: its Shutdown has
+	// drained and stopped the old one, and starting another would leak the
+	// goroutine. Leaving hasDispatcher false keeps the observer off.
+	if m.closed.Load() {
+		return
+	}
+
+	// Start the statement-event pump on first use. Managers that never
+	// wire a dispatcher never own a goroutine.
+	//
+	// Ordering matters: a running pump must exist before hasDispatcher goes
+	// true. The observer checks hasDispatcher to decide whether to record a
+	// statement and then needs a pump to hand it to, so advertising first
+	// would open a window where concurrent statements are observed and then
+	// discarded for want of a pump - silent loss outside the documented
+	// queue-full drop.
+	//
+	// Starting the pump while holding mu is safe: start only spawns the
+	// delivery goroutine, which blocks on an empty queue and, when it does
+	// dispatch, takes mu for reading and so simply waits for this call to
+	// return.
+	if m.pump.Load() == nil {
+		p := newEventPump()
+		p.start(m.dispatchEvent)
+		m.pump.Store(p)
+	}
+	m.hasDispatcher.Store(true)
 }
 
 // SetTxEventBus wires a kind-aware events.Dispatcher used to drain the

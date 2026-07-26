@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/velocitykode/velocity/orm/drivers"
@@ -272,10 +273,17 @@ func TestBulkAfterCommit_Returning_QueryExecutedFiresOnce(t *testing.T) {
 	setBulkHookRecorder(rec)
 	t.Cleanup(func() { setBulkHookRecorder(nil) })
 
-	var queryEvents []*QueryExecuted
+	// Statement events are delivered on the pump goroutine, so the
+	// collector needs a lock and the assertions need a flush.
+	var (
+		mu          sync.Mutex
+		queryEvents []*QueryExecuted
+	)
 	manager.SetEventDispatcher(func(_ context.Context, ev any) error {
 		if q, ok := ev.(*QueryExecuted); ok {
+			mu.Lock()
 			queryEvents = append(queryEvents, q)
+			mu.Unlock()
 		}
 		return nil
 	})
@@ -287,7 +295,12 @@ func TestBulkAfterCommit_Returning_QueryExecutedFiresOnce(t *testing.T) {
 	if uerr != nil {
 		t.Fatalf("Update: %v", uerr)
 	}
+	if err := manager.FlushQueryEvents(context.Background()); err != nil {
+		t.Fatalf("FlushQueryEvents: %v", err)
+	}
 
+	mu.Lock()
+	defer mu.Unlock()
 	var writes int
 	var preselects int
 	for _, q := range queryEvents {

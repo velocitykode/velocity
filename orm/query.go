@@ -1354,20 +1354,8 @@ func (q *Query[T]) Get(ctx context.Context) ([]T, error) {
 	q.lastSQL = sql
 	q.lastArgs = args
 
-	// Track query timing
-	start := time.Now()
-
 	rows, err := q.driver.QueryContext(ctx, sql, args...)
-
-	// Dispatch event regardless of error
-	duration := time.Since(start)
-	var rowCount int64
-	if err == nil {
-		// We'll count rows as we scan them
-	}
-
 	if err != nil {
-		dispatchQueryExecuted(ctx, sql, args, duration, 0, q.driver.DriverName(), 2)
 		return nil, err
 	}
 	defer rows.Close()
@@ -1376,7 +1364,6 @@ func (q *Query[T]) Get(ctx context.Context) ([]T, error) {
 	for rows.Next() {
 		var model T
 		if err := scanIntoStruct(rows, &model); err != nil {
-			dispatchQueryExecuted(ctx, sql, args, duration, int64(len(results)), q.driver.DriverName(), 2)
 			return nil, err
 		}
 		results = append(results, model)
@@ -1385,7 +1372,6 @@ func (q *Query[T]) Get(ctx context.Context) ([]T, error) {
 	// rows.Next()/Scan. Without this check a truncated result set would
 	// be returned as success.
 	if err := rows.Err(); err != nil {
-		dispatchQueryExecuted(ctx, sql, args, duration, int64(len(results)), q.driver.DriverName(), 2)
 		return nil, err
 	}
 	// Side-channel existence is keyed by pointer. Mark each slice
@@ -1395,9 +1381,6 @@ func (q *Query[T]) Get(ctx context.Context) ([]T, error) {
 	for i := range results {
 		markExisting(&results[i])
 	}
-
-	rowCount = int64(len(results))
-	dispatchQueryExecuted(ctx, sql, args, time.Since(start), rowCount, q.driver.DriverName(), 2)
 
 	// Handle eager loading
 	if len(q.preloads) > 0 {
@@ -1496,10 +1479,8 @@ func (q *Query[T]) Count(ctx context.Context) (int, error) {
 		sql, args = q.driver.Grammar().CompileSelect(selectQuery)
 	}
 
-	start := time.Now()
 	var count int64
 	err := q.driver.QueryRowContext(ctx, sql, args...).Scan(&count)
-	dispatchQueryExecuted(ctx, sql, args, time.Since(start), 1, q.driver.DriverName(), 2)
 
 	return int(count), err
 }
@@ -1552,10 +1533,8 @@ func (q *Query[T]) Pluck(ctx context.Context, column string) ([]any, error) {
 	q.lastSQL = sql
 	q.lastArgs = args
 
-	start := time.Now()
 	rows, err := q.driver.QueryContext(ctx, sql, args...)
 	if err != nil {
-		dispatchQueryExecuted(ctx, sql, args, time.Since(start), 0, q.driver.DriverName(), 2)
 		return nil, err
 	}
 	defer rows.Close()
@@ -1564,7 +1543,6 @@ func (q *Query[T]) Pluck(ctx context.Context, column string) ([]any, error) {
 	for rows.Next() {
 		var value any
 		if err := rows.Scan(&value); err != nil {
-			dispatchQueryExecuted(ctx, sql, args, time.Since(start), int64(len(results)), q.driver.DriverName(), 2)
 			return nil, err
 		}
 		results = append(results, rebaseAnyTimeUTC(value))
@@ -1572,11 +1550,9 @@ func (q *Query[T]) Pluck(ctx context.Context, column string) ([]any, error) {
 	// A driver error mid-iteration surfaces via rows.Err(), not via
 	// rows.Next()/Scan.
 	if err := rows.Err(); err != nil {
-		dispatchQueryExecuted(ctx, sql, args, time.Since(start), int64(len(results)), q.driver.DriverName(), 2)
 		return nil, err
 	}
 
-	dispatchQueryExecuted(ctx, sql, args, time.Since(start), int64(len(results)), q.driver.DriverName(), 2)
 	return results, nil
 }
 
@@ -1714,12 +1690,11 @@ func (q *Query[T]) bulkUpdate(ctx context.Context, updates map[string]any, op Bu
 	// us to capture ids atomically via RETURNING (no pre-SELECT, no
 	// race window); otherwise the plan has either pre-captured the
 	// ids/rows or has no hook work at all.
-	plan, err := q.bulkPrepareHooks(ctx, op, callerSkipBulkUpdate)
+	plan, err := q.bulkPrepareHooks(ctx, op)
 	if err != nil {
 		return 0, err
 	}
 
-	driverName := q.driver.DriverName()
 	grammar := q.driver.Grammar()
 
 	var (
@@ -1741,7 +1716,6 @@ func (q *Query[T]) bulkUpdate(ctx context.Context, updates map[string]any, op Bu
 	q.lastSQL = sqlStr
 	q.lastArgs = args
 
-	start := time.Now()
 	var (
 		rowsAffected int64
 		execErr      error
@@ -1759,18 +1733,9 @@ func (q *Query[T]) bulkUpdate(ctx context.Context, updates map[string]any, op Bu
 			rowsAffected, _ = result.RowsAffected()
 		}
 	}
-	duration := time.Since(start)
-
-	// skip=3 because bulkUpdate is always reached through Update or
-	// Delete (one extra frame above bulkUpdate compared to the
-	// inline-emitter terminals like Get / Count / ForceDelete).
-	// Exactly one event per bulk statement on every driver: the
-	// Postgres RETURNING path counts as a single statement.
 	if execErr != nil {
-		dispatchQueryExecuted(ctx, sqlStr, args, duration, 0, driverName, 3)
 		return 0, execErr
 	}
-	dispatchQueryExecuted(ctx, sqlStr, args, duration, rowsAffected, driverName, 3)
 
 	plan.invoke(retIDs)
 
@@ -1844,34 +1809,23 @@ func (q *Query[T]) InsertGetId(ctx context.Context, data map[string]any) (int64,
 	// Check driver type to determine how to get last insert ID
 	if driverName == "sqlite" || driverName == "mysql" {
 		// SQLite/MySQL: Use standard INSERT and get last insert ID from result
-		start := time.Now()
 		result, err := q.driver.ExecContext(ctx, sqlStr, values...)
-		duration := time.Since(start)
-
 		if err != nil {
-			dispatchQueryExecuted(ctx, sqlStr, values, duration, 0, driverName, 2)
 			return 0, err
 		}
 
 		lastID, _ := result.LastInsertId()
-		dispatchQueryExecuted(ctx, sqlStr, values, duration, 1, driverName, 2)
 		return lastID, nil
 	}
 
 	// PostgreSQL: append a grammar-quoted RETURNING id clause and scan it
 	sqlStr += " RETURNING " + q.driver.Grammar().QuoteIdentifier("id")
 
-	start := time.Now()
 	var lastID int64
-	err = q.driver.QueryRowContext(ctx, sqlStr, values...).Scan(&lastID)
-	duration := time.Since(start)
-
-	if err != nil {
-		dispatchQueryExecuted(ctx, sqlStr, values, duration, 0, driverName, 2)
+	if err := q.driver.QueryRowContext(ctx, sqlStr, values...).Scan(&lastID); err != nil {
 		return 0, err
 	}
 
-	dispatchQueryExecuted(ctx, sqlStr, values, duration, 1, driverName, 2)
 	return lastID, nil
 }
 
@@ -1895,18 +1849,9 @@ func (q *Query[T]) insertExec(ctx context.Context, data map[string]any) error {
 		return fmt.Errorf("velocity/orm: insert: %w", err)
 	}
 
-	driverName := q.driver.DriverName()
-	start := time.Now()
-	result, err := q.driver.ExecContext(ctx, sqlStr, values...)
-	duration := time.Since(start)
-
-	if err != nil {
-		dispatchQueryExecuted(ctx, sqlStr, values, duration, 0, driverName, 2)
+	if _, err := q.driver.ExecContext(ctx, sqlStr, values...); err != nil {
 		return err
 	}
-
-	rowsAffected, _ := result.RowsAffected()
-	dispatchQueryExecuted(ctx, sqlStr, values, duration, rowsAffected, driverName, 2)
 	return nil
 }
 
@@ -1978,12 +1923,11 @@ func (q *Query[T]) ForceDelete(ctx context.Context) (int64, error) {
 		return 0, q.err
 	}
 
-	plan, err := q.bulkPrepareHooks(ctx, BulkOpForceDelete, callerSkipForceDelete)
+	plan, err := q.bulkPrepareHooks(ctx, BulkOpForceDelete)
 	if err != nil {
 		return 0, err
 	}
 
-	driverName := q.driver.DriverName()
 	grammar := q.driver.Grammar()
 
 	var (
@@ -2000,7 +1944,6 @@ func (q *Query[T]) ForceDelete(ctx context.Context) (int64, error) {
 		sqlStr, args = grammar.CompileDelete(q.table, q.conditions)
 	}
 
-	start := time.Now()
 	var (
 		rowsAffected int64
 		execErr      error
@@ -2018,13 +1961,9 @@ func (q *Query[T]) ForceDelete(ctx context.Context) (int64, error) {
 			rowsAffected, _ = result.RowsAffected()
 		}
 	}
-	duration := time.Since(start)
-
 	if execErr != nil {
-		dispatchQueryExecuted(ctx, sqlStr, args, duration, 0, driverName, 2)
 		return 0, execErr
 	}
-	dispatchQueryExecuted(ctx, sqlStr, args, duration, rowsAffected, driverName, 2)
 
 	plan.invoke(retIDs)
 
@@ -2427,23 +2366,17 @@ func (r *RawQuery[T]) First(ctx context.Context, dest *T) error {
 		return err
 	}
 
-	start := time.Now()
 	rows, err := r.driver.QueryContext(ctx, r.sql, r.args...)
-	duration := time.Since(start)
-
 	if err != nil {
-		dispatchQueryExecuted(ctx, r.sql, r.args, duration, 0, r.driver.DriverName(), 2)
 		return err
 	}
 	defer rows.Close()
 
 	if !rows.Next() {
-		dispatchQueryExecuted(ctx, r.sql, r.args, duration, 0, r.driver.DriverName(), 2)
 		return ErrRecordNotFound
 	}
 
 	if err := scanIntoStruct(rows, dest); err != nil {
-		dispatchQueryExecuted(ctx, r.sql, r.args, duration, 0, r.driver.DriverName(), 2)
 		return err
 	}
 
@@ -2453,7 +2386,6 @@ func (r *RawQuery[T]) First(ctx context.Context, dest *T) error {
 	// Immutable* (correct, no UPDATE branch exists for them).
 	markExisting(dest)
 
-	dispatchQueryExecuted(ctx, r.sql, r.args, duration, 1, r.driver.DriverName(), 2)
 	return nil
 }
 
@@ -2467,12 +2399,8 @@ func (r *RawQuery[T]) Get(ctx context.Context) ([]T, error) {
 		return nil, err
 	}
 
-	start := time.Now()
 	rows, err := r.driver.QueryContext(ctx, r.sql, r.args...)
-	duration := time.Since(start)
-
 	if err != nil {
-		dispatchQueryExecuted(ctx, r.sql, r.args, duration, 0, r.driver.DriverName(), 2)
 		return nil, err
 	}
 	defer rows.Close()
@@ -2481,7 +2409,6 @@ func (r *RawQuery[T]) Get(ctx context.Context) ([]T, error) {
 	for rows.Next() {
 		var model T
 		if err := scanIntoStruct(rows, &model); err != nil {
-			dispatchQueryExecuted(ctx, r.sql, r.args, duration, int64(len(results)), r.driver.DriverName(), 2)
 			return nil, err
 		}
 		results = append(results, model)
@@ -2489,7 +2416,6 @@ func (r *RawQuery[T]) Get(ctx context.Context) ([]T, error) {
 	// A driver error mid-iteration surfaces via rows.Err(), not via
 	// rows.Next()/Scan.
 	if err := rows.Err(); err != nil {
-		dispatchQueryExecuted(ctx, r.sql, r.args, duration, int64(len(results)), r.driver.DriverName(), 2)
 		return nil, err
 	}
 	// Mark each slice element AFTER all appends so the backing array
@@ -2498,7 +2424,6 @@ func (r *RawQuery[T]) Get(ctx context.Context) ([]T, error) {
 		markExisting(&results[i])
 	}
 
-	dispatchQueryExecuted(ctx, r.sql, r.args, duration, int64(len(results)), r.driver.DriverName(), 2)
 	return results, nil
 }
 
@@ -2514,17 +2439,7 @@ func (r *RawQuery[T]) Scan(ctx context.Context, dest ...any) error {
 		return err
 	}
 
-	start := time.Now()
-	err := r.driver.QueryRowContext(ctx, r.sql, r.args...).Scan(dest...)
-	duration := time.Since(start)
-
-	rowCount := int64(0)
-	if err == nil {
-		rowCount = 1
-	}
-	dispatchQueryExecuted(ctx, r.sql, r.args, duration, rowCount, r.driver.DriverName(), 2)
-
-	return err
+	return r.driver.QueryRowContext(ctx, r.sql, r.args...).Scan(dest...)
 }
 
 // Exec executes a raw SQL statement (INSERT, UPDATE, DELETE) and returns
@@ -2547,17 +2462,10 @@ func (r *RawQuery[T]) Exec(ctx context.Context) (sql.Result, error) {
 		return nil, err
 	}
 
-	start := time.Now()
 	result, err := r.driver.ExecContext(ctx, r.sql, r.args...)
-	duration := time.Since(start)
-
 	if err != nil {
-		dispatchQueryExecuted(ctx, r.sql, r.args, duration, 0, r.driver.DriverName(), 2)
 		return nil, err
 	}
-
-	rowsAffected, _ := result.RowsAffected()
-	dispatchQueryExecuted(ctx, r.sql, r.args, duration, rowsAffected, r.driver.DriverName(), 2)
 
 	return result, nil
 }

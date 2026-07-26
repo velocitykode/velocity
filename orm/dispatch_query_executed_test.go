@@ -46,6 +46,9 @@ func TestDispatchQueryExecuted_FiresOnBulkUpdate(t *testing.T) {
 	if rows != 2 {
 		t.Fatalf("rows = %d, want 2", rows)
 	}
+	if err := manager.FlushQueryEvents(context.Background()); err != nil {
+		t.Fatalf("FlushQueryEvents: %v", err)
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -116,6 +119,9 @@ func TestDispatchQueryExecuted_PreSelectCallerFrame(t *testing.T) {
 	})
 	if uerr != nil {
 		t.Fatalf("Update: %v", uerr)
+	}
+	if err := manager.FlushQueryEvents(context.Background()); err != nil {
+		t.Fatalf("FlushQueryEvents: %v", err)
 	}
 
 	mu.Lock()

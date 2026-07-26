@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-	"time"
 
 	"github.com/velocitykode/velocity/orm/drivers"
 )
@@ -209,10 +208,8 @@ func loadByIDs(driver drivers.Driver, ctx context.Context, relatedType reflect.T
 	if scopeErr != nil {
 		return nil, fmt.Errorf("orm: failed to apply scopes for polymorphic %s: %w", relatedType.Name(), scopeErr)
 	}
-	start := time.Now()
 	rows, err := driver.QueryContext(ctx, sqlStr, sqlArgs...)
 	if err != nil {
-		dispatchQueryExecuted(ctx, sqlStr, sqlArgs, time.Since(start), 0, driver.DriverName(), 2)
 		return nil, err
 	}
 	defer rows.Close()
@@ -228,6 +225,5 @@ func loadByIDs(driver drivers.Driver, ctx context.Context, relatedType reflect.T
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	dispatchQueryExecuted(ctx, sqlStr, sqlArgs, time.Since(start), int64(len(out)), driver.DriverName(), 2)
 	return out, nil
 }

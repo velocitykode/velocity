@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-	"time"
 
 	"github.com/velocitykode/velocity/orm/drivers"
 )
@@ -542,19 +541,14 @@ func (q *Query[T]) loadRelation(ctx context.Context, models *[]T, meta *relation
 		return fmt.Errorf("orm: failed to apply scopes for relation %q: %w", meta.fieldName, scopeErr)
 	}
 
-	start := time.Now()
 	rows, err := q.driver.QueryContext(ctx, relSQL, sqlArgs...)
-	duration := time.Since(start)
-
 	if err != nil {
-		dispatchQueryExecuted(ctx, relSQL, sqlArgs, duration, 0, q.driver.DriverName(), 2)
 		return fmt.Errorf("orm: failed to load relation %q: %w", meta.fieldName, err)
 	}
 	defer rows.Close()
 
 	// 3. Scan results and group by the query column value
 	groups := make(map[any][]reflect.Value)
-	var rowCount int64
 	for rows.Next() {
 		ptr := reflect.New(meta.relatedType)
 		if err := scanIntoStruct(rows, ptr.Interface()); err != nil {
@@ -562,7 +556,6 @@ func (q *Query[T]) loadRelation(ctx context.Context, models *[]T, meta *relation
 		}
 		elem := ptr.Elem()
 		markIsExisting(elem)
-		rowCount++
 
 		groupKey, ok := getFieldValueByColumn(elem, queryColumn)
 		if !ok {
@@ -574,8 +567,6 @@ func (q *Query[T]) loadRelation(ctx context.Context, models *[]T, meta *relation
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("orm: error iterating relation %q results: %w", meta.fieldName, err)
 	}
-
-	dispatchQueryExecuted(ctx, relSQL, sqlArgs, duration, rowCount, q.driver.DriverName(), 2)
 
 	// 4. Assign results back to parent models
 	for i := range *models {

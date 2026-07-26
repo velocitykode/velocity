@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"time"
 
 	"github.com/velocitykode/velocity/orm/drivers"
 )
@@ -76,11 +75,8 @@ func (q *Query[T]) aggregate(ctx context.Context, fn, column string) (float64, e
 
 	sqlStr, args := q.driver.Grammar().CompileSelect(selectQuery)
 
-	start := time.Now()
 	var result sql.NullFloat64
 	err := q.driver.QueryRowContext(ctx, sqlStr, args...).Scan(&result)
-	dispatchQueryExecuted(ctx, sqlStr, args, time.Since(start), 1, q.driver.DriverName(), 2)
-
 	if err != nil {
 		return 0, err
 	}

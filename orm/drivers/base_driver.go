@@ -12,6 +12,11 @@ import (
 type BaseDriver struct {
 	db     *sql.DB
 	Config ConnectionConfig
+	// binding links the pool opened by OpenInstrumented to the observer
+	// that receives its statement events. It stays nil until a pool is
+	// opened, and is filled with an observer when the owning manager
+	// attaches itself via SetStatementObserver.
+	binding *observerBinding
 	// queryLogger receives every executed statement when Config.LogQueries
 	// is set. It defaults to defaultQueryLogger (stdout via fmt.Printf) so
 	// behavior is unchanged out of the box; SetQueryLogger swaps in a sink
@@ -118,10 +123,15 @@ func (b *BaseDriver) ConfigurePool(db *sql.DB) {
 // logic and the unexported db field live in one place; b.Config must be set
 // before calling.
 //
+// The handle is opened through OpenInstrumented, so every statement executed
+// against it - including ones issued through the raw *sql.DB by subsystems
+// outside the ORM, and ones issued inside a *sql.Tx - is reported to the
+// attached StatementObserver.
+//
 // On any failure the handle is left nil and the error is returned wrapped;
 // leaves add dialect-specific context (e.g. a redacted DSN) on top.
 func (b *BaseDriver) OpenAndPing(driverName, dsn string) error {
-	db, err := sql.Open(driverName, dsn)
+	db, err := b.OpenInstrumented(driverName, driverName, dsn)
 	if err != nil {
 		return fmt.Errorf("velocity/orm: failed to open database: %w", err)
 	}
@@ -132,6 +142,35 @@ func (b *BaseDriver) OpenAndPing(driverName, dsn string) error {
 	b.ConfigurePool(db)
 	b.db = db
 	return nil
+}
+
+// OpenInstrumented opens an instrumented pool and records its observer binding
+// on the receiver, so a later SetStatementObserver reaches it. It returns the
+// handle rather than installing it, letting a driver run dialect setup (SQLite
+// PRAGMAs) before committing to it; callers assign the result themselves.
+//
+// sqlDriverName is the database/sql driver to open, connectionName is the
+// logical name that appears on emitted events (usually Driver.DriverName()),
+// and dsn is the data source name. Drivers that embed BaseDriver but do their
+// own dialing must route it through here (or OpenAndPing) to inherit query
+// telemetry; a driver that calls sql.Open directly stays invisible to APM.
+func (b *BaseDriver) OpenInstrumented(sqlDriverName, connectionName, dsn string) (*sql.DB, error) {
+	db, binding, err := openInstrumented(sqlDriverName, connectionName, dsn)
+	if err != nil {
+		return nil, err
+	}
+	b.binding = binding
+	return db, nil
+}
+
+// SetStatementObserver attaches o to the pool this driver opened, satisfying
+// StatementObservable. It is a no-op when the driver has not opened an
+// instrumented pool. Passing nil detaches the current observer.
+func (b *BaseDriver) SetStatementObserver(o StatementObserver) {
+	if b.binding == nil {
+		return
+	}
+	b.binding.set(o)
 }
 
 // CreateTableWith creates a new table using the provided grammar.

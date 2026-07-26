@@ -41,11 +41,8 @@ func (q *Query[T]) Value(ctx context.Context, column string) (any, error) {
 
 	sqlStr, args := q.driver.Grammar().CompileSelect(selectQuery)
 
-	start := time.Now()
 	var result any
 	err := q.driver.QueryRowContext(ctx, sqlStr, args...).Scan(&result)
-	dispatchQueryExecuted(ctx, sqlStr, args, time.Since(start), 1, q.driver.DriverName(), 2)
-
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound

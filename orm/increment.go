@@ -6,7 +6,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // pgPlaceholderPattern matches a complete postgres placeholder ($1, $12,
@@ -179,9 +178,6 @@ func (q *Query[T]) incrementOrDecrement(ctx context.Context, column, op string, 
 
 	sqlStr := sqlBuilder.String()
 
-	start := time.Now()
 	_, err := q.driver.ExecContext(ctx, sqlStr, args...)
-	dispatchQueryExecuted(ctx, sqlStr, args, time.Since(start), 0, q.driver.DriverName(), 2)
-
 	return err
 }

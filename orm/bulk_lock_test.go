@@ -256,6 +256,11 @@ func TestWithBulkLock_NoOpOnReturningPath(t *testing.T) {
 	if rows != 3 {
 		t.Fatalf("rows=%d, want 3", rows)
 	}
+	// Statement events are delivered asynchronously; force delivery before
+	// inspecting what was recorded.
+	if err := manager.FlushQueryEvents(context.Background()); err != nil {
+		t.Fatalf("FlushQueryEvents: %v", err)
+	}
 
 	queries := disp.snapshot()
 	// The RETURNING path must not emit a separate SELECT (lock or otherwise);

@@ -8,7 +8,6 @@ import (
 	"reflect"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/velocitykode/velocity/orm/drivers"
 )
@@ -280,10 +279,8 @@ func queryPivotRows(driver drivers.Driver, ctx context.Context, meta *m2mMeta, p
 		strings.Join(placeholders, ", "),
 	)
 
-	start := time.Now()
 	rows, err := driver.QueryContext(ctx, pivotSQL, parentIDs...)
 	if err != nil {
-		dispatchQueryExecuted(ctx, pivotSQL, parentIDs, time.Since(start), 0, driver.DriverName(), 2)
 		return nil, nil, fmt.Errorf("orm: failed to query pivot %q: %w", meta.pivotTable, err)
 	}
 	defer rows.Close()
@@ -340,7 +337,6 @@ func queryPivotRows(driver drivers.Driver, ctx context.Context, meta *m2mMeta, p
 	if err := rows.Err(); err != nil {
 		return nil, nil, err
 	}
-	dispatchQueryExecuted(ctx, pivotSQL, parentIDs, time.Since(start), int64(len(results)), driver.DriverName(), 2)
 
 	return results, relatedIDs, nil
 }
@@ -360,10 +356,8 @@ func queryRelatedRows(driver drivers.Driver, ctx context.Context, meta *m2mMeta,
 		return nil, fmt.Errorf("orm: failed to apply scopes for m2m related rows: %w", scopeErr)
 	}
 
-	start := time.Now()
 	rows, err := driver.QueryContext(ctx, relSQL, sqlArgs...)
 	if err != nil {
-		dispatchQueryExecuted(ctx, relSQL, sqlArgs, time.Since(start), 0, driver.DriverName(), 2)
 		return nil, fmt.Errorf("orm: failed to load m2m related rows: %w", err)
 	}
 	defer rows.Close()
@@ -381,7 +375,6 @@ func queryRelatedRows(driver drivers.Driver, ctx context.Context, meta *m2mMeta,
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	dispatchQueryExecuted(ctx, relSQL, sqlArgs, time.Since(start), int64(len(out)), driver.DriverName(), 2)
 	return out, nil
 }
 

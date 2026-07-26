@@ -5,28 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"reflect"
-	"time"
 
 	"github.com/velocitykode/velocity/orm/drivers"
-)
-
-// Caller-skip constants for the QueryExecuted dispatches inside the
-// pre-SELECT path of bulkPrepareHooks. Each value names the number of
-// stack frames between bulkPrepareHooks and the application caller for
-// a given public bulk entry point, so APM listeners surface the
-// caller's source location rather than a velocity-internal frame.
-//
-// The selectPrimaryKeys helper adds its own internal frames on top
-// (captureCallerInfo + dispatchQueryExecuted + selectPrimaryKeys +
-// bulkPrepareHooks); see selectPrimaryKeys for the arithmetic.
-const (
-	// callerSkipBulkUpdate is the skip used when bulkPrepareHooks is
-	// reached through bulkUpdate (which is itself reached through the
-	// public Update or Delete entry point).
-	callerSkipBulkUpdate = 3
-	// callerSkipForceDelete is the skip used when bulkPrepareHooks is
-	// reached directly through the public ForceDelete entry point.
-	callerSkipForceDelete = 2
 )
 
 // BulkOp identifies the kind of bulk write that triggered a
@@ -159,13 +139,7 @@ func modelBulkAfterCommitHook[T any]() (BulkAfterCommitHook, bool) {
 // the surrounding transaction. The flag is plumbed through to
 // [drivers.SelectQuery.LockForUpdate] verbatim; grammars that do not
 // support row-level locking (SQLite) silently ignore it.
-//
-// callerSkip is the number of stack frames between the public bulk
-// entry point (Update / Delete / ForceDelete) and the caller, so the
-// QueryExecuted event surfaces the application call site rather than
-// a velocity-internal frame. selectPrimaryKeys adds its own internal
-// frames on top.
-func selectPrimaryKeys(ctx context.Context, drv drivers.Driver, table, pkCol string, conditions []drivers.Condition, lockForUpdate bool, callerSkip int) ([]any, error) {
+func selectPrimaryKeys(ctx context.Context, drv drivers.Driver, table, pkCol string, conditions []drivers.Condition, lockForUpdate bool) ([]any, error) {
 	if drv == nil {
 		return nil, fmt.Errorf("velocity/orm: bulk: nil driver")
 	}
@@ -176,16 +150,8 @@ func selectPrimaryKeys(ctx context.Context, drv drivers.Driver, table, pkCol str
 		LockForUpdate: lockForUpdate,
 	}
 	sqlStr, args := drv.Grammar().CompileSelect(sel)
-	// Frame budget for the QueryExecuted dispatches below: 2 frames for
-	// captureCallerInfo + dispatchQueryExecuted, 1 for selectPrimaryKeys
-	// itself, 1 for bulkPrepareHooks (always a frame above us), then
-	// callerSkip more frames to reach the public bulk entry point and
-	// land on the application call site.
-	skip := 2 + callerSkip
-	start := time.Now()
 	rows, err := drv.QueryContext(ctx, sqlStr, args...)
 	if err != nil {
-		dispatchQueryExecuted(ctx, sqlStr, args, time.Since(start), 0, drv.DriverName(), skip)
 		return nil, err
 	}
 	defer rows.Close()
@@ -194,16 +160,13 @@ func selectPrimaryKeys(ctx context.Context, drv drivers.Driver, table, pkCol str
 	for rows.Next() {
 		var id any
 		if err := rows.Scan(&id); err != nil {
-			dispatchQueryExecuted(ctx, sqlStr, args, time.Since(start), int64(len(ids)), drv.DriverName(), skip)
 			return nil, err
 		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
-		dispatchQueryExecuted(ctx, sqlStr, args, time.Since(start), int64(len(ids)), drv.DriverName(), skip)
 		return nil, err
 	}
-	dispatchQueryExecuted(ctx, sqlStr, args, time.Since(start), int64(len(ids)), drv.DriverName(), skip)
 	return ids, nil
 }
 
@@ -298,14 +261,7 @@ func (p *bulkHookPlan) invoke(ids []any) {
 // the write so the captured set reflects what the write WILL touch (an
 // Update that flips a predicate column would mask its own effect on a
 // post-fetch).
-//
-// callerSkip is the number of stack frames between the public bulk
-// entry point (Update / Delete / ForceDelete) and the application
-// caller. Threaded into the QueryExecuted dispatches inside the
-// pre-SELECT path so APM listeners see the application call site,
-// matching the skip handling already in place on the write
-// dispatches in bulkUpdate (skip=3) and ForceDelete (skip=2).
-func (q *Query[T]) bulkPrepareHooks(ctx context.Context, op BulkOp, callerSkip int) (bulkHookPlan, error) {
+func (q *Query[T]) bulkPrepareHooks(ctx context.Context, op BulkOp) (bulkHookPlan, error) {
 	if q == nil || q.driver == nil {
 		return bulkHookPlan{}, nil
 	}
@@ -368,7 +324,7 @@ func (q *Query[T]) bulkPrepareHooks(ctx context.Context, op BulkOp, callerSkip i
 	// WithBulkLock opts the pre-SELECT into FOR UPDATE so the captured
 	// row set is held for the rest of the surrounding transaction; the
 	// flag is silently ignored on the atomic RETURNING branch above.
-	ids, selErr := selectPrimaryKeys(ctx, q.driver, q.table, pkCol, q.conditions, q.withBulkLock, callerSkip)
+	ids, selErr := selectPrimaryKeys(ctx, q.driver, q.table, pkCol, q.conditions, q.withBulkLock)
 	if selErr != nil {
 		return bulkHookPlan{}, selErr
 	}
