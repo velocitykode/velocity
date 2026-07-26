@@ -1,7 +1,7 @@
 package velocity
 
 import (
-	"strings"
+	"net/http"
 	"testing"
 
 	"github.com/velocitykode/velocity/auth"
@@ -9,104 +9,9 @@ import (
 	"github.com/velocitykode/velocity/orm"
 )
 
-// TestInitAuth_ResolvesConfiguredModel covers the happy path: the default
-// AUTH_MODEL resolves through the ormauth registry and lands as a provider.
-func TestInitAuth_ResolvesConfiguredModel(t *testing.T) {
-	manager, err := initAuth(auth.Config{
-		Providers: map[string]auth.ProviderConfig{
-			"users": {Driver: "orm", Model: ormauth.DefaultModelName},
-		},
-	}, auth.SessionConfig{}, nil, nil)
-	if err != nil {
-		t.Fatalf("initAuth: %v", err)
-	}
-	if _, err := manager.Provider("users"); err != nil {
-		t.Fatalf("provider not registered: %v", err)
-	}
-}
-
-// TestInitAuth_EmptyModelUsesDefault covers a ProviderConfig whose Model was
-// never set.
-func TestInitAuth_EmptyModelUsesDefault(t *testing.T) {
-	manager, err := initAuth(auth.Config{
-		Providers: map[string]auth.ProviderConfig{
-			"users": {Driver: "orm"},
-		},
-	}, auth.SessionConfig{}, nil, nil)
-	if err != nil {
-		t.Fatalf("initAuth: %v", err)
-	}
-	if _, err := manager.Provider("users"); err != nil {
-		t.Fatalf("provider not registered: %v", err)
-	}
-}
-
-// TestInitAuth_UnregisteredModelIsAStartupError is the regression test for
-// the dead AUTH_MODEL knob: a model name nobody registered used to produce
-// byte-identical SQL against the users table. It must now abort boot,
-// naming the model.
-func TestInitAuth_UnregisteredModelIsAStartupError(t *testing.T) {
-	_, err := initAuth(auth.Config{
-		Providers: map[string]auth.ProviderConfig{
-			"users": {Driver: "orm", Model: "Nonexistent"},
-		},
-	}, auth.SessionConfig{}, nil, nil)
-	if err == nil {
-		t.Fatal("an unregistered AUTH_MODEL booted successfully")
-	}
-	if !strings.Contains(err.Error(), "Nonexistent") {
-		t.Errorf("error does not name the model: %v", err)
-	}
-	if !strings.Contains(err.Error(), `auth provider "users"`) {
-		t.Errorf("error does not name the provider: %v", err)
-	}
-}
-
-// TestInitAuth_UnknownDriverIsAStartupError covers the missing default case
-// in the provider switch: an unrecognised driver used to register nothing
-// and surface one loop later as a guard-level "provider not found" warning,
-// naming the guard rather than the driver typo.
-func TestInitAuth_UnknownDriverIsAStartupError(t *testing.T) {
-	_, err := initAuth(auth.Config{
-		Providers: map[string]auth.ProviderConfig{
-			"users": {Driver: "eloquent", Model: ormauth.DefaultModelName},
-		},
-	}, auth.SessionConfig{}, nil, nil)
-	if err == nil {
-		t.Fatal("an unknown provider driver booted successfully")
-	}
-	if !strings.Contains(err.Error(), `unknown driver "eloquent"`) {
-		t.Errorf("error does not name the driver: %v", err)
-	}
-	if !strings.Contains(err.Error(), `auth provider "users"`) {
-		t.Errorf("error does not name the provider: %v", err)
-	}
-}
-
-// TestInitAuth_ProviderErrorsAreDeterministic pins the sorted iteration: Go
-// randomises map order, so without it a config with two broken providers
-// would report a different one on every boot.
-func TestInitAuth_ProviderErrorsAreDeterministic(t *testing.T) {
-	cfg := auth.Config{
-		Providers: map[string]auth.ProviderConfig{
-			"admins": {Driver: "bogus-a"},
-			"users":  {Driver: "bogus-b"},
-		},
-	}
-
-	for i := 0; i < 20; i++ {
-		_, err := initAuth(cfg, auth.SessionConfig{}, nil, nil)
-		if err == nil {
-			t.Fatal("expected an error")
-		}
-		if !strings.Contains(err.Error(), `auth provider "admins"`) {
-			t.Fatalf("iteration %d reported %v, want the alphabetically first provider", i, err)
-		}
-	}
-}
-
-// wiringAdmin stands in for an application's own auth model: a name that
-// only exists because the application registered it.
+// wiringAdmin stands in for an application's own auth model: a different
+// type, a different table, and column names that share nothing with the
+// framework default.
 type wiringAdmin struct {
 	orm.IDInt[wiringAdmin]
 
@@ -121,68 +26,138 @@ func (wiringAdmin) Fillable() []string {
 	return []string{"username", "pass_hash", "recall_token"}
 }
 
-// TestInitAuth_HonorsRegisteredNonDefaultModel closes the loop the old
-// provider never did: AUTH_MODEL=Admin must select the application's model,
-// not silently resolve to the users table. The provider that comes back is
-// typed on the registered model, which is the assertion that would have
-// failed before - the old provider stored the model name in a field it
-// never read.
-func TestInitAuth_HonorsRegisteredNonDefaultModel(t *testing.T) {
-	if err := ormauth.Register("Admin", ormauth.Factory[wiringAdmin](
-		ormauth.WithIdentifierColumn("username"),
-		ormauth.WithPasswordColumn("pass_hash"),
-		ormauth.WithRememberTokenColumn("recall_token"),
-	)); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	t.Cleanup(func() { ormauth.Unregister("Admin") })
+// TestInitAuth_InstallsDefaultProvider covers the zero-configuration path:
+// an app that sets nothing still authenticates, against the framework's
+// built-in model.
+func TestInitAuth_InstallsDefaultProvider(t *testing.T) {
+	manager := initAuth(auth.Config{}, auth.SessionConfig{}, nil, nil)
 
-	manager, err := initAuth(auth.Config{
-		Providers: map[string]auth.ProviderConfig{
-			"admins": {Driver: "orm", Model: "Admin"},
-		},
-	}, auth.SessionConfig{}, nil, nil)
-	if err != nil {
-		t.Fatalf("initAuth: %v", err)
+	provider := manager.DefaultProvider()
+	if provider == nil {
+		t.Fatal("no default provider installed")
 	}
-
-	provider, err := manager.Provider("admins")
-	if err != nil {
-		t.Fatalf("provider not registered: %v", err)
-	}
-	typed, ok := provider.(*ormauth.Provider[wiringAdmin])
-	if !ok {
-		t.Fatalf("provider is %T, want a provider typed on the registered model", provider)
-	}
-	if opts := typed.Options(); opts.IdentifierColumn != "username" {
-		t.Errorf("IdentifierColumn = %q, want the registered value", opts.IdentifierColumn)
+	if _, ok := provider.(*ormauth.Provider[ormauth.User]); !ok {
+		t.Fatalf("default provider is %T, want the built-in User model", provider)
 	}
 }
 
 // TestInitAuth_ThreadsManagerHasherToProvider proves the operator-configured
-// bcrypt cost reaches the provider, rather than the provider falling back to
+// bcrypt cost reaches the provider rather than the provider falling back to
 // its own default.
 func TestInitAuth_ThreadsManagerHasherToProvider(t *testing.T) {
-	manager, err := initAuth(auth.Config{
-		BcryptCost: 12,
-		Providers: map[string]auth.ProviderConfig{
-			"users": {Driver: "orm", Model: ormauth.DefaultModelName},
-		},
-	}, auth.SessionConfig{}, nil, nil)
-	if err != nil {
-		t.Fatalf("initAuth: %v", err)
-	}
+	manager := initAuth(auth.Config{BcryptCost: 12}, auth.SessionConfig{}, nil, nil)
 
-	provider, err := manager.Provider("users")
-	if err != nil {
-		t.Fatalf("provider not registered: %v", err)
-	}
-	hasher := provider.(*ormauth.Provider[ormauth.User]).Options().Hasher
-	bcryptHasher, ok := hasher.(*auth.BcryptHasher)
+	provider, ok := manager.DefaultProvider().(*ormauth.Provider[ormauth.User])
 	if !ok {
-		t.Fatalf("provider hasher is %T, want the manager's *auth.BcryptHasher", hasher)
+		t.Fatalf("default provider is %T", manager.DefaultProvider())
 	}
-	if got := bcryptHasher.Cost(); got != 12 {
+	hasher, ok := provider.Options().Hasher.(*auth.BcryptHasher)
+	if !ok {
+		t.Fatalf("provider hasher is %T, want the manager's *auth.BcryptHasher", provider.Options().Hasher)
+	}
+	if got := hasher.Cost(); got != 12 {
 		t.Errorf("provider bcrypt cost = %d, want the configured 12", got)
 	}
+}
+
+// TestSetProvider_SwapsTheAuthModel is the supported way to change which
+// model authenticates: hand the manager a provider built on the app's own
+// type. No configuration string, no registry, no name to typo.
+func TestSetProvider_SwapsTheAuthModel(t *testing.T) {
+	manager := initAuth(auth.Config{}, auth.SessionConfig{}, nil, nil)
+
+	swapped := ormauth.New[wiringAdmin](
+		ormauth.WithIdentifierColumn("username"),
+		ormauth.WithPasswordColumn("pass_hash"),
+		ormauth.WithRememberTokenColumn("recall_token"),
+	)
+	if err := swapped.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	manager.SetProvider(swapped)
+
+	if _, ok := manager.DefaultProvider().(*ormauth.Provider[wiringAdmin]); !ok {
+		t.Fatalf("provider after swap is %T, want the application model", manager.DefaultProvider())
+	}
+}
+
+// TestSetProvider_RepointsRegisteredGuards is the ordering guarantee that
+// makes the swap usable from a service provider: guards built during
+// initAuth already hold the default provider, so SetProvider must reach
+// them too. Without this, swapping the model would appear to work while
+// every guard kept authenticating against the old one.
+func TestSetProvider_RepointsRegisteredGuards(t *testing.T) {
+	manager := auth.NewManager()
+	guard := &recordingGuard{}
+	manager.RegisterGuard("web", guard)
+
+	replacement := ormauth.New[ormauth.User]()
+	manager.SetProvider(replacement)
+
+	if guard.provider == nil {
+		t.Fatal("SetProvider did not reach an already-registered guard")
+	}
+	if guard.provider != auth.UserProvider(replacement) {
+		t.Errorf("guard received %T, want the provider just installed", guard.provider)
+	}
+}
+
+// TestSetProvider_IgnoresNil keeps a nil argument from silently
+// uninstalling authentication.
+func TestSetProvider_IgnoresNil(t *testing.T) {
+	manager := initAuth(auth.Config{}, auth.SessionConfig{}, nil, nil)
+	before := manager.DefaultProvider()
+
+	manager.SetProvider(nil)
+
+	if manager.DefaultProvider() != before {
+		t.Error("SetProvider(nil) replaced the installed provider")
+	}
+}
+
+// TestRegisterProvider_EscapeHatch covers the named-provider API kept for
+// the uncommon app that authenticates two identity stores in one process.
+// It is deliberately absent from configuration.
+func TestRegisterProvider_EscapeHatch(t *testing.T) {
+	manager := initAuth(auth.Config{}, auth.SessionConfig{}, nil, nil)
+
+	second := ormauth.New[wiringAdmin](
+		ormauth.WithIdentifierColumn("username"),
+		ormauth.WithPasswordColumn("pass_hash"),
+		ormauth.WithRememberTokenColumn("recall_token"),
+	)
+	manager.RegisterProvider("admins", second)
+
+	got, err := manager.Provider("admins")
+	if err != nil {
+		t.Fatalf("Provider(admins): %v", err)
+	}
+	if _, ok := got.(*ormauth.Provider[wiringAdmin]); !ok {
+		t.Fatalf("named provider is %T", got)
+	}
+
+	// The default is untouched: the escape hatch does not fan out.
+	if _, ok := manager.DefaultProvider().(*ormauth.Provider[ormauth.User]); !ok {
+		t.Errorf("RegisterProvider changed the default provider to %T", manager.DefaultProvider())
+	}
+}
+
+// recordingGuard captures the provider handed to it by SetProvider.
+type recordingGuard struct {
+	provider auth.UserProvider
+}
+
+func (g *recordingGuard) SetProvider(p auth.UserProvider)                 { g.provider = p }
+func (g *recordingGuard) Check(*http.Request) bool                        { return false }
+func (g *recordingGuard) User(*http.Request) auth.Authenticatable         { return nil }
+func (g *recordingGuard) ID(*http.Request) interface{}                    { return nil }
+func (g *recordingGuard) Logout(http.ResponseWriter, *http.Request) error { return nil }
+func (g *recordingGuard) Login(http.ResponseWriter, *http.Request, auth.Authenticatable, ...bool) error {
+	return nil
+}
+func (g *recordingGuard) LoginByID(http.ResponseWriter, *http.Request, interface{}, ...bool) error {
+	return nil
+}
+func (g *recordingGuard) Attempt(http.ResponseWriter, *http.Request, map[string]interface{}, ...bool) (bool, error) {
+	return false, nil
 }

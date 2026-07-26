@@ -6,33 +6,39 @@
 // engine). ormauth sits below both and imports each of them, so no cycle
 // is created.
 //
-// # Why a registry
+// # Choosing the model
 //
 // Velocity's ORM is generic: every query entry point resolves its table
 // and column set from a compile-time Go type (Model[T], Query[T]). The
-// framework ships inside the application's binary but cannot name the
-// application's own model type, and configuration only carries a string
-// (AUTH_MODEL). A string cannot be turned into a Go type without a
-// registry that the application itself populates, so the application
-// registers its model under the name its configuration uses (Register
-// returns an error; MustRegister is the init()-friendly wrapper):
+// auth model is therefore supplied as a type parameter, in code, not as a
+// configuration string - Go cannot turn the name "Admin" into a type, and
+// a linker that sees no reference to a type is free to discard it.
 //
-//	func init() {
-//	    ormauth.MustRegister("Admin", ormauth.Factory[models.Admin]())
+// An application installs its own model from a service provider:
+//
+//	func (p *AuthProvider) Boot(s *app.Services) error {
+//	    provider := ormauth.New[models.Admin](
+//	        ormauth.WithIdentifierColumn("username"),
+//	    )
+//	    if err := provider.Validate(); err != nil {
+//	        return err
+//	    }
+//	    s.Auth.SetProvider(provider)
+//	    return nil
 //	}
 //
-// with AUTH_MODEL=Admin. A name that was never registered is a hard
-// startup error naming the model and listing what is registered; it is
-// never silently downgraded to the users table.
+// Swapping the model is editing the type parameter: a typo is a compile
+// error rather than a boot-time failure, and the IDE completes the
+// available options. auth.Manager.SetProvider re-points every registered
+// guard, so this works regardless of whether it runs before or after the
+// framework installs its default.
 //
 // # Default model
 //
-// The name "User" (the AUTH_MODEL default) is pre-registered by this
-// package to [User], a model whose table and column set reproduce the
-// framework's historical hardcoded shape (id, name, email, password,
-// remember_token on users). An application that has always relied on the
-// default keeps working with no registration of its own. Registering
-// "User" again from application code overrides the built-in.
+// velocity.New installs New[User] against the users table, reproducing
+// the column set the framework used to hardcode (id, name, email,
+// password, remember_token). An application that configures nothing keeps
+// working unchanged.
 //
 // # Model requirements
 //
@@ -43,14 +49,15 @@
 // so a model with no "name" column, or with "username" instead of
 // "email", is configured rather than special-cased:
 //
-//	ormauth.MustRegister("Admin", ormauth.Factory[models.Admin](
+//	ormauth.New[models.Admin](
 //	    ormauth.WithIdentifierColumn("username"),
+//	    ormauth.WithPasswordColumn("pass_hash"),
 //	    ormauth.WithRememberTokenColumn("recall_token"),
-//	))
+//	)
 //
 // Because the remember token is persisted through the ORM's map-based
 // update path, the model must also declare a mass-assignment policy that
 // permits that column (Fillable, Guarded, or AllowAllColumns). Models
-// that declare no policy at all are rejected at startup rather than
-// failing on the first remember-me login.
+// that declare no policy at all are rejected by [Provider.Validate]
+// rather than failing on the first remember-me login.
 package ormauth

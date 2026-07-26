@@ -73,13 +73,14 @@ func seedUser(t *testing.T, m *orm.Manager, email, password string) string {
 	return string(hash)
 }
 
-// newProvider builds the default-model provider with a cheap hasher.
+// newProvider builds the framework default-model provider with a cheap
+// hasher, the same construction velocity.New performs.
 func newProvider(t *testing.T) auth.UserProvider {
 	t.Helper()
 
-	p, err := ormauth.Resolve(ormauth.DefaultModelName, ormauth.WithHasher(auth.NewBcryptHasher(bcrypt.MinCost)))
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
+	p := ormauth.New[ormauth.User](ormauth.WithHasher(auth.NewBcryptHasher(bcrypt.MinCost)))
+	if err := p.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
 	}
 	return p
 }
@@ -388,9 +389,9 @@ func TestProvider_UsesConfiguredHasher(t *testing.T) {
 		return password == testPassword
 	}}
 
-	p, err := ormauth.Resolve(ormauth.DefaultModelName, ormauth.WithHasher(spy))
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
+	p := ormauth.New[ormauth.User](ormauth.WithHasher(spy))
+	if err := p.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
 	}
 	user, err := p.FindByCredentialsCtx(context.Background(), map[string]interface{}{"email": testEmail})
 	if err != nil {

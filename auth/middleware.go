@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/internal/clientip"
 	"github.com/velocitykode/velocity/router"
 )
@@ -161,6 +162,32 @@ func denyForbidden(manager *Manager, c *router.Context) error {
 // can rely on the documented nil contract instead of a panic.
 func FromContext(ctx *router.Context) *Manager {
 	s := ctx.ServicesIfSet()
+	if s == nil || s.Auth == nil {
+		return nil
+	}
+	m, _ := s.Auth.(*Manager)
+	return m
+}
+
+// FromServices extracts the *Manager from a service container, which is
+// what a ServiceProvider's Register/Boot receives. It is the Services-side
+// counterpart to [FromContext]: app.Services types the field as
+// contract.AuthManager (contract is a stdlib-only leaf and cannot name
+// auth's types), so a provider that needs the concrete manager - to install
+// its own user provider, for instance - goes through here.
+//
+// Returns nil when auth is not configured, so callers get the documented
+// nil contract rather than a panic.
+//
+//	func (p *AppProvider) Register(s *velocity.Services) error {
+//	    manager := auth.FromServices(s)
+//	    if manager == nil {
+//	        return errors.New("auth is not configured")
+//	    }
+//	    manager.SetProvider(ormauth.New[models.User]())
+//	    return nil
+//	}
+func FromServices(s *app.Services) *Manager {
 	if s == nil || s.Auth == nil {
 		return nil
 	}

@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 
 	"github.com/velocitykode/velocity/app"
@@ -89,17 +88,21 @@ func initStorage(config StorageConfig, logger log.Logger) *storage.Manager {
 	return mgr
 }
 
-// initAuth builds the auth manager by registering user providers (ORM-backed) and
-// guards (session, JWT) from config.
+// initAuth builds the auth manager: one ORM-backed user provider plus the
+// configured guards (session, JWT).
 //
-// The two failure classes are treated differently on purpose. A misconfigured
-// *guard* is skipped with a warning so the app can still start - only the broken
-// guard is unavailable at runtime. A misconfigured *provider* (unknown driver, or
-// a model name that was never registered with ormauth) is a hard error: the
-// alternative is registering nothing, which surfaces one loop later as a
-// "provider not found" warning naming the guard rather than the actual mistake,
-// and historically meant authenticating against the wrong table.
-func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger log.Logger, enc crypto.Encryptor) (*auth.Manager, error) {
+// Velocity authenticates a single identity store. The provider installed here
+// is the framework default, backed by ormauth.User against the users table;
+// an application swaps in its own model from a service provider:
+//
+//	s.Auth.SetProvider(ormauth.New[models.Admin]())
+//
+// SetProvider re-points every registered guard, so the swap works regardless
+// of whether it runs before or after this function.
+//
+// Misconfigured guards are skipped with a warning so the app can still start -
+// only the broken guard is unavailable at runtime.
+func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger log.Logger, enc crypto.Encryptor) *auth.Manager {
 	manager := auth.NewManager()
 
 	// Route auth diagnostics (authentication/authorization denials, hasher
@@ -137,37 +140,15 @@ func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger log.Logger
 		}
 	}
 
-	// Register providers. Iterate deterministically so a config with more
-	// than one broken provider always reports the same one first.
-	for _, name := range sortedProviderNames(authCfg.Providers) {
-		provCfg := authCfg.Providers[name]
-		switch provCfg.Driver {
-		case "orm":
-			// provCfg.Model is resolved through the ormauth registry,
-			// which maps the configured name onto the application's own
-			// compile-time model type. The ORM is generic, so a string
-			// alone cannot select a table; an unregistered name is an
-			// error naming the model rather than a silent fallback.
-			provider, err := ormauth.Resolve(provCfg.Model, ormauth.WithHasher(manager.GetHasher()))
-			if err != nil {
-				return nil, fmt.Errorf("auth provider %q: %w", name, err)
-			}
-			manager.RegisterProvider(name, provider)
-		default:
-			return nil, fmt.Errorf("auth provider %q: unknown driver %q (supported: orm)", name, provCfg.Driver)
-		}
-	}
+	// Install the framework's default user provider. It queries through the
+	// ORM's generic builder, so the table name, placeholder dialect, and
+	// identifier quoting all come from the grammar rather than from SQL
+	// assembled here.
+	manager.SetProvider(ormauth.New[ormauth.User](ormauth.WithHasher(manager.GetHasher())))
+	provider := manager.DefaultProvider()
 
 	// Register guards
 	for name, guardCfg := range authCfg.Guards {
-		provider, err := manager.Provider(guardCfg.Provider)
-		if err != nil {
-			if logger != nil {
-				logger.Warn("Auth guard skipped: provider not found", "guard", name, "provider", guardCfg.Provider)
-			}
-			continue
-		}
-
 		switch guardCfg.Driver {
 		case "session":
 			guard, err := guards.NewSessionGuard(provider, sessCfg, enc)
@@ -223,19 +204,7 @@ func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger log.Logger
 		}
 	}
 
-	return manager, nil
-}
-
-// sortedProviderNames returns the provider names in a stable order so
-// provider misconfiguration reports deterministically across boots
-// (Go map iteration order is randomised).
-func sortedProviderNames(providers map[string]auth.ProviderConfig) []string {
-	names := make([]string, 0, len(providers))
-	for name := range providers {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+	return manager
 }
 
 // initDB creates the ORM manager from config. Returns nil if no connection is configured.

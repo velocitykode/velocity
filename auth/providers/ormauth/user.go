@@ -2,19 +2,12 @@ package ormauth
 
 import "github.com/velocitykode/velocity/orm"
 
-// DefaultModelName is the model name AUTH_MODEL defaults to. It is
-// pre-registered by this package to [User].
-const DefaultModelName = "User"
-
-func init() {
-	MustRegister(DefaultModelName, Factory[User]())
-}
-
-// User is the framework's default auth model, registered under
-// [DefaultModelName]. Its table and column set reproduce the shape the
-// provider previously hardcoded (id, name, email, password,
-// remember_token on users), so an application that never set AUTH_MODEL
-// keeps authenticating against exactly the same rows and columns.
+// User is the framework's default auth model, installed by velocity.New
+// when an application does not call auth.Manager.SetProvider with one of
+// its own. Its table and column set reproduce the shape the provider
+// previously hardcoded (id, name, email, password, remember_token on
+// users), so an application that configures nothing keeps authenticating
+// against exactly the same rows and columns.
 //
 // It deliberately composes orm.IDInt rather than orm.Model: the ORM
 // stamps updated_at on every map-based update of a timestamped model,

@@ -7,89 +7,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### The auth user provider is actually ORM-backed, and `AUTH_MODEL` actually works
+### The auth user provider is ORM-backed, and the auth model is swappable
 
 `auth.ORMUserProvider` used no ORM and ignored its model. It held a raw
 `*sql.DB`, hand-wrote its four statements, and reimplemented placeholder
 dialect selection (`ph(n)`) that the ORM grammar already owns. Its
-`modelType` field was assigned and never read again: every statement
-hardcoded `users` and the columns `id, name, email, password,
-remember_token`, so `AUTH_MODEL=Admin` produced byte-identical SQL against
-`users` with no error and no warning.
+`modelType` field was assigned and never read: every statement hardcoded
+`users` and the columns `id, name, email, password, remember_token`, so
+`AUTH_MODEL=Admin` produced byte-identical SQL against `users` with no error
+and no warning.
 
 - **New package `auth/providers/ormauth`.** `auth` still does not import
   `orm` (the direction is fixed - `auth` sits under router-side packages
   that must not drag the query engine); the new leaf imports both. Every
   read and write goes through `orm.Model[T]`, so table naming, placeholder
   dialect, identifier quoting, and soft-delete scoping are the ORM's.
-- **`ormauth.New[T](opts...)` is generic**, because the ORM is: `Query[T]`
-  resolves its table from a compile-time Go type, and configuration only
-  carries a string. A name-to-factory registry bridges the two, populated
-  by the application:
+
+- **The model is a type parameter, not a config string.** Velocity's ORM
+  resolves its table from a compile-time Go type, and Go cannot turn the
+  name `"Admin"` into a type - a linker that sees no reference to a type is
+  free to discard it. The auth model is therefore chosen in code:
 
   ```go
-  ormauth.MustRegister("Admin", ormauth.Factory[models.Admin]())
+  func (p *AuthProvider) Boot(s *app.Services) error {
+      provider := ormauth.New[models.Admin](
+          ormauth.WithIdentifierColumn("username"),
+          ormauth.WithPasswordColumn("pass_hash"),
+      )
+      if err := provider.Validate(); err != nil {
+          return err
+      }
+      s.Auth.SetProvider(provider)
+      return nil
+  }
   ```
 
-  `Register` returns an error (library code does not panic); `MustRegister`
-  is the `init()`-friendly wrapper, mirroring
-  `orm.RegisterModel`/`MustRegisterModel`. `New[T]` rejects a non-struct `T`
-  at construction: `orm.MetaFor` derefs pointers, so `New[*models.Admin]`
-  would otherwise map cleanly and then indirect through a nil pointer.
+  Swapping the model is editing the type parameter, so a typo is a compile
+  error instead of a boot failure. Identifier, password, and remember-token
+  columns are options; a model implementing `auth.Authenticatable` is used
+  directly, otherwise the columns are mapped onto that interface through ORM
+  metadata (`string`, `*string`, and `sql.NullString` carriers).
 
-  `AUTH_MODEL=Admin` then resolves that type. An unregistered name is a
-  **startup error** naming the model and listing what is registered, never
-  a silent fallback to `users`.
-- **Columns are configurable**: `WithIdentifierColumn` (default `email`),
-  `WithPasswordColumn` (`password`), `WithRememberTokenColumn`
-  (`remember_token`), `WithCredentialsKey`. A model that implements
-  `auth.Authenticatable` itself is used directly; otherwise the columns are
-  mapped onto that interface through ORM metadata (`string`, `*string`, and
-  `sql.NullString` carriers).
-- **Backward compatible for the default.** `AUTH_MODEL` defaults to
-  `"User"`, which `ormauth` pre-registers to a built-in model reproducing
-  the historical table and column set, so an app that never set `AUTH_MODEL`
-  authenticates against exactly the same rows. That model deliberately
-  composes `orm.IDInt` without `orm.Timestamps`: remember-token rotation
-  must not start stamping `users.updated_at` on every recall, or break on a
-  table without the column. Applications may override `"User"` by
-  registering their own.
+- **`auth.Manager.SetProvider` re-points every registered guard**, so the
+  swap works from a service provider regardless of whether it runs before or
+  after `velocity.New` installs the default. Without that fan-out the model
+  would appear to change while guards kept the old provider.
+
+- **Zero-config default preserved.** `velocity.New` installs
+  `ormauth.New[ormauth.User]` against `users`, reproducing the historical
+  column set, so an application that configures nothing is unaffected. That
+  model composes `orm.IDInt` without `orm.Timestamps` so token rotation does
+  not stamp `users.updated_at` on every remember-me recall.
+
 - **Model requirement:** because the remember token is persisted through the
   ORM's map-based `Update`, an auth model must declare a mass-assignment
-  policy (`Fillable`, `Guarded`, or `AllowAllColumns`). A model with no
-  policy is rejected at startup rather than failing on the first
+  policy (`Fillable`, `Guarded`, or `AllowAllColumns`). `Provider.Validate`
+  reports a model with no policy rather than letting it fail on the first
   remember-me login.
-- **Unknown provider drivers now fail loudly.** The driver switch in
-  `initAuth` had no `default`, so a typo registered nothing and surfaced one
-  loop later as `"Auth guard skipped: provider not found"`, naming the guard
-  instead of the driver. It now returns
-  `auth provider "users": unknown driver "eloquent" (supported: orm)`.
-  Provider registration iterates in sorted order so the reported failure is
-  deterministic.
-- **Breaking:** `auth.ORMUserProvider`, `auth.NewORMUserProvider`, and
-  `auth.NewORMUserProviderForDialect` are removed. `auth.AuthUser` stays,
-  and `normalizeID` is now exported as `auth.NormalizeID` for out-of-package
-  providers. `initAuth` returns an error, and `velocity.New` propagates it.
 
-  This is an intentional pre-1.0 removal with no deprecation window. The
-  removed type could not be kept honestly: its `dialect` argument
-  reimplemented what the ORM grammar owns, and its `modelType` argument was
-  never read, so retaining it as "deprecated" would preserve the fixed
-  `users` schema and the misleading model parameter that are the entire
-  subject of this change. Applications constructing it directly migrate to
-  a typed registration:
+**Breaking:**
 
-  ```go
-  // before - model argument silently ignored, users hardcoded
-  provider := auth.NewORMUserProviderForDialect(db, "Admin", hasher, "postgres")
+- `auth.ORMUserProvider`, `auth.NewORMUserProvider`, and
+  `auth.NewORMUserProviderForDialect` are removed with no deprecation
+  window. Retaining them would preserve the fixed `users` schema and the
+  misleading model parameter this change exists to remove. `normalizeID` is
+  exported as `auth.NormalizeID` for out-of-package providers.
 
-  // after - the model type selects the table; no db, no dialect
-  ormauth.MustRegister("Admin", ormauth.Factory[models.Admin]())
-  provider, err := ormauth.Resolve("Admin", ormauth.WithHasher(hasher))
-  ```
+- **`AUTH_MODEL` is gone**, along with `auth.ProviderConfig` and
+  `auth.Config.Providers`. Velocity authenticates one identity store; the
+  env var selected a model by name, which required a name-to-type registry
+  that existed purely to serve it. Choosing the model in code removes the
+  registry, the string, and every failure mode that came with them
+  (unregistered name, stale registration, typo'd value). Remove `AUTH_MODEL`
+  from `.env`.
 
-  Applications that only ever configured `AUTH_MODEL` (or nothing at all)
-  need no change.
+- **`auth.GuardConfig.Provider` is gone.** Guards use the single installed
+  provider. Multiple guards (`web`, `api`, `jwt`) over one identity store
+  are unchanged - only the multiple-identity-stores config surface is
+  removed. `auth.Manager.RegisterProvider(name, …)` remains as a code-level
+  escape hatch for an app that genuinely needs two, and is deliberately not
+  reachable from configuration.
+
 
 ### UTC timestamp normalization (storage contract)
 

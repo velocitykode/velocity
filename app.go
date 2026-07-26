@@ -304,11 +304,7 @@ func New(opts ...Option) (*App, error) {
 	// user provider issues its queries through orm.Model[T], which resolves
 	// the connection from the default manager installed in step 4 above and
 	// owns placeholder dialect selection itself.
-	authManager, err := initAuth(a.config.Auth, a.config.Session, a.Log, a.Crypto)
-	if err != nil {
-		return nil, fmt.Errorf("velocity: failed to initialize auth: %w", err)
-	}
-	a.Auth = authManager
+	a.Auth = initAuth(a.config.Auth, a.config.Session, a.Log, a.Crypto)
 
 	// 7. Initialize cache
 	a.Cache = initCache(a.config.Cache)

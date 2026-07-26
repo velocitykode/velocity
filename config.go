@@ -349,7 +349,6 @@ func ConfigFromEnv() Config {
 	config.Auth = auth.Config{
 		DefaultGuard:   os.Getenv("AUTH_GUARD"),
 		Guards:         make(map[string]auth.GuardConfig),
-		Providers:      make(map[string]auth.ProviderConfig),
 		BcryptCost:     envIntOrDefault("HASH_BCRYPT_COST", 10),
 		TrustedProxies: splitTrustedProxies(os.Getenv("AUTH_TRUSTED_PROXIES")),
 		// AUTH_ATTEMPT_FLOOR is the wall-clock floor for guard Attempt
@@ -367,8 +366,7 @@ func ConfigFromEnv() Config {
 	if config.Auth.DefaultGuard != "" {
 		// Session/web guard
 		config.Auth.Guards["web"] = auth.GuardConfig{
-			Driver:   "session",
-			Provider: "users",
+			Driver: "session",
 			Options: map[string]interface{}{
 				"session": config.Session,
 			},
@@ -382,8 +380,7 @@ func ConfigFromEnv() Config {
 		}
 
 		config.Auth.Guards["api"] = auth.GuardConfig{
-			Driver:   "jwt",
-			Provider: "users",
+			Driver: "jwt",
 			Options: map[string]interface{}{
 				"jwt": auth.JWTConfig{
 					Secret:           os.Getenv("AUTH_JWT_SECRET"),
@@ -395,12 +392,6 @@ func ConfigFromEnv() Config {
 			},
 		}
 		config.Auth.Guards["jwt"] = config.Auth.Guards["api"]
-
-		// Default user provider
-		config.Auth.Providers["users"] = auth.ProviderConfig{
-			Driver: "orm",
-			Model:  envOrDefault("AUTH_MODEL", "User"),
-		}
 	}
 
 	// CSRF: seed from csrf.DefaultConfig() so new fields added to the

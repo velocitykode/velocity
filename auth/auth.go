@@ -376,7 +376,60 @@ func (m *Manager) RegisterGuard(name string, guard Guard) {
 	}
 }
 
-// RegisterProvider registers a user provider
+// DefaultProviderName is the key the single, canonical user provider is
+// stored under. Velocity authenticates one identity store; the named map
+// below is an escape hatch for the rare application that needs a second
+// one, and is not reachable from configuration.
+const DefaultProviderName = "default"
+
+// SetProvider installs the application's user provider, replacing the
+// framework default. This is the supported way to change which model
+// authenticates:
+//
+//	s.Auth.SetProvider(ormauth.New[models.Admin](
+//	    ormauth.WithIdentifierColumn("username"),
+//	))
+//
+// The provider is propagated to every guard already registered, so calling
+// this from a service provider's Register or Boot takes effect regardless of
+// construction order. Guards registered afterwards pick it up at
+// registration. Passing nil is ignored.
+func (m *Manager) SetProvider(provider UserProvider) {
+	if provider == nil {
+		return
+	}
+
+	m.mu.Lock()
+	m.providers[DefaultProviderName] = provider
+	// Snapshot the guards and notify them outside the lock: Guard
+	// implementations may take their own locks in SetProvider, and holding
+	// m.mu across a foreign call is how lock-order inversions start.
+	guards := make([]Guard, 0, len(m.guards))
+	for _, guard := range m.guards {
+		guards = append(guards, guard)
+	}
+	m.mu.Unlock()
+
+	for _, guard := range guards {
+		guard.SetProvider(provider)
+	}
+}
+
+// DefaultProvider returns the canonical user provider, or nil when none was
+// installed (an app constructed without a database, for instance).
+func (m *Manager) DefaultProvider() UserProvider {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.providers[DefaultProviderName]
+}
+
+// RegisterProvider registers a user provider under an explicit name.
+//
+// Velocity's configuration surface only ever installs one provider (see
+// [Manager.SetProvider]); this exists for the uncommon application that
+// authenticates two separate identity stores in a single process, such as an
+// admin panel colocated with a customer app. Guards are not notified, so the
+// caller wires the provider into whichever guard should use it.
 func (m *Manager) RegisterProvider(name string, provider UserProvider) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -607,7 +660,6 @@ func NewManagerFromConfig(config Config) (*Manager, error) {
 type Config struct {
 	DefaultGuard string
 	Guards       map[string]GuardConfig
-	Providers    map[string]ProviderConfig
 	BcryptCost   int // Bcrypt cost for password hashing. 0 uses the default.
 
 	// TrustedProxies is the list of IP/CIDR strings whose forwarded
@@ -637,15 +689,8 @@ type Config struct {
 
 // GuardConfig holds guard configuration
 type GuardConfig struct {
-	Driver   string
-	Provider string
-	Options  map[string]interface{}
-}
-
-// ProviderConfig holds provider configuration
-type ProviderConfig struct {
-	Driver string
-	Model  string
+	Driver  string
+	Options map[string]interface{}
 }
 
 // SetServerSessionStore installs a server-side session store. Pass nil to
