@@ -4,11 +4,13 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/guards"
+	"github.com/velocitykode/velocity/auth/providers/ormauth"
 	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
@@ -88,9 +90,16 @@ func initStorage(config StorageConfig, logger log.Logger) *storage.Manager {
 }
 
 // initAuth builds the auth manager by registering user providers (ORM-backed) and
-// guards (session, JWT) from config. Misconfigured guards are skipped with a warning
-// so the app can still start - only the broken guard is unavailable at runtime.
-func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger log.Logger, db *sql.DB, enc crypto.Encryptor, dbDialect string) *auth.Manager {
+// guards (session, JWT) from config.
+//
+// The two failure classes are treated differently on purpose. A misconfigured
+// *guard* is skipped with a warning so the app can still start - only the broken
+// guard is unavailable at runtime. A misconfigured *provider* (unknown driver, or
+// a model name that was never registered with ormauth) is a hard error: the
+// alternative is registering nothing, which surfaces one loop later as a
+// "provider not found" warning naming the guard rather than the actual mistake,
+// and historically meant authenticating against the wrong table.
+func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger log.Logger, enc crypto.Encryptor) (*auth.Manager, error) {
 	manager := auth.NewManager()
 
 	// Route auth diagnostics (authentication/authorization denials, hasher
@@ -128,15 +137,24 @@ func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger log.Logger
 		}
 	}
 
-	// Register providers
-	for name, provCfg := range authCfg.Providers {
+	// Register providers. Iterate deterministically so a config with more
+	// than one broken provider always reports the same one first.
+	for _, name := range sortedProviderNames(authCfg.Providers) {
+		provCfg := authCfg.Providers[name]
 		switch provCfg.Driver {
 		case "orm":
-			model := provCfg.Model
-			if model == "" {
-				model = "User"
+			// provCfg.Model is resolved through the ormauth registry,
+			// which maps the configured name onto the application's own
+			// compile-time model type. The ORM is generic, so a string
+			// alone cannot select a table; an unregistered name is an
+			// error naming the model rather than a silent fallback.
+			provider, err := ormauth.Resolve(provCfg.Model, ormauth.WithHasher(manager.GetHasher()))
+			if err != nil {
+				return nil, fmt.Errorf("auth provider %q: %w", name, err)
 			}
-			manager.RegisterProvider(name, auth.NewORMUserProviderForDialect(db, model, manager.GetHasher(), dbDialect))
+			manager.RegisterProvider(name, provider)
+		default:
+			return nil, fmt.Errorf("auth provider %q: unknown driver %q (supported: orm)", name, provCfg.Driver)
 		}
 	}
 
@@ -205,7 +223,19 @@ func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger log.Logger
 		}
 	}
 
-	return manager
+	return manager, nil
+}
+
+// sortedProviderNames returns the provider names in a stable order so
+// provider misconfiguration reports deterministically across boots
+// (Go map iteration order is randomised).
+func sortedProviderNames(providers map[string]auth.ProviderConfig) []string {
+	names := make([]string, 0, len(providers))
+	for name := range providers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // initDB creates the ORM manager from config. Returns nil if no connection is configured.

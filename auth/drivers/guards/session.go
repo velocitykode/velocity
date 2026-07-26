@@ -1291,7 +1291,7 @@ func (g *SessionGuard) issueRememberCookie(w http.ResponseWriter, user auth.Auth
 
 	// Create cookie value: userID|token (raw token; cookie is encrypted).
 	// GetAuthIdentifier returns interface{}: a uint for the default
-	// integer primary key (ORMUserProvider.normalizeID) and a string for
+	// integer primary key (auth.NormalizeID) and a string for
 	// UUID keys. Encode whatever it is as a string so both round-trip;
 	// checkRememberCookie reads it back and hands it to FindByID, which
 	// accepts either form. A bare .(string) assertion here silently broke

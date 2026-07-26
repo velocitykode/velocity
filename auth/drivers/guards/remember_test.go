@@ -122,7 +122,7 @@ func TestSetRememberCookie_StoresHashedToken(t *testing.T) {
 }
 
 // uintIDUser mirrors a user loaded from an integer primary key, where
-// ORMUserProvider.normalizeID hands back a uint (not a string). This is
+// auth.NormalizeID hands back a uint (not a string). This is
 // the default app shape; a prior bare .(string) assertion in
 // setRememberCookie failed here and silently broke remember-me.
 type uintIDUser struct {
