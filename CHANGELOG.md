@@ -48,6 +48,22 @@ and no warning.
   directly, otherwise the columns are mapped onto that interface through ORM
   metadata (`string`, `*string`, and `sql.NullString` carriers).
 
+- **Applications declare the model through the root package**, so no app
+  needs to import the provider leaf:
+
+  ```go
+  func (p *AppProvider) Register(s *velocity.Services) error {
+      return velocity.SetAuthModel[models.User](s)
+  }
+  ```
+
+  `velocity.SetAuthModel[T]` validates the model, inherits the auth
+  manager's hasher (preserving the operator-configured bcrypt cost), and
+  installs the provider. Column names are `velocity.WithAuth*Column`
+  options for models that do not follow the defaults; a model that does
+  needs none. `velocity.ORMUserProvider[T]` builds a provider without
+  installing it.
+
 - **`auth.Manager.SetProvider` re-points every registered guard**, so the
   swap works from a service provider regardless of whether it runs before or
   after `velocity.New` installs the default. Without that fan-out the model
