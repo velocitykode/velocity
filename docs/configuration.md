@@ -29,7 +29,7 @@ that cannot import `app`).
 | `APP_ENV` | `app/env.go`, `config.go`, `maintenance.go`, `grpc/server.go`, `grpc/gateway.go`, `orm/testing/*` | `development` | recommended | drives every "is prod?" gate (cookies Secure, queue signing, gRPC TLS) | Canonical: route reads through `app.Env()` / `app.IsProduction()` |
 | `APP_DEBUG` | `config.go` | `false` | no (force-disabled in prod by `exceptions.Handler`) | leaks stack traces and source if enabled in prod | |
 | `APP_PORT` | `config.go`, `cmd_ops.go` | `4000` | no | none | |
-| `APP_KEY` | `config.go`, `maintenance.go` | empty | YES (errors out unless `APP_ENV` is one of `development`, `dev`, `test`, `testing`, `local` per `contract.NonProdEnvNames()`) | crypto/session/CSRF/queue-signing all key off this; weak key compromises every secret | Generate via `vel key:generate` |
+| `APP_KEY` | `config.go`, `maintenance.go` | empty | YES (errors out unless `APP_ENV` is one of `development`, `dev`, `test`, `testing`, `local` per `contract.NonProdEnvNames()`) | crypto/session/CSRF/queue-signing all key off this; weak key compromises every secret | Generate via `vel key generate` |
 | `APP_TIMEZONE` | `config.go`, `app.go` | `UTC` | no | none | IANA name. PRESENTATION only: applied to `time.Local` and scheduler cron evaluation at bootstrap. Persistence never reads it (see "Timestamp storage contract" below). Invalid value fails `New()`. Programmatic `WithConfig` with an empty `Timezone` leaves the process timezone untouched. |
 
 ## Database
@@ -83,7 +83,7 @@ that cannot import `app`).
 
 | Name | Package | Default | Required in prod? | Security impact | Notes |
 |------|---------|---------|-------------------|-----------------|-------|
-| `AUTH_GUARD` | `config.go` | empty | optional | none | enables `web`/`api` guards |
+| `AUTH_SCHEME` | `config.go` | empty | optional | none | enables `web`/`api` schemes |
 | `AUTH_MODEL` | `config.go` | `User` | no | none | |
 | `AUTH_TRUSTED_PROXIES` | `config.go` | empty | YES if behind proxy | XFF spoofing -> throttle bypass + bogus audit IPs | comma-separated IP/CIDR; empty = trust nothing (secure default) |
 | `AUTH_ATTEMPT_FLOOR` | `config.go` | `200ms` | no | login timing side-channel | raise when `HASH_BCRYPT_COST` >= 12 |
