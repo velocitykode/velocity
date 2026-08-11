@@ -186,14 +186,14 @@ func TestOpenFlash_EmptyValueRejected(t *testing.T) {
 	}
 }
 
-func TestContextWithErrors_SetsAuthenticatedCookie(t *testing.T) {
+func TestContextFlashErrors_SetsAuthenticatedCookie(t *testing.T) {
 	enc := newFlashEncryptor(t)
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 	c := NewContext(w, r)
 	c.SetServices(&app.Services{Crypto: enc})
 
-	c.WithErrors(map[string]any{"email": "required"})
+	c.FlashErrors(map[string]any{"email": "required"})
 
 	cookies := w.Result().Cookies()
 	if len(cookies) != 1 {
@@ -220,7 +220,7 @@ func TestContextWithErrors_SetsAuthenticatedCookie(t *testing.T) {
 	}
 }
 
-func TestContextWithErrors_NoEncryptorIsSilentNoop(t *testing.T) {
+func TestContextFlashErrors_NoEncryptorIsSilentNoop(t *testing.T) {
 	// When the app has no Crypto wired (e.g. test contexts), the write
 	// must NOT emit a plaintext cookie. Silent no-op is the correct
 	// fail-safe.
@@ -229,7 +229,7 @@ func TestContextWithErrors_NoEncryptorIsSilentNoop(t *testing.T) {
 	c := NewContext(w, r)
 	c.SetServices(&app.Services{}) // Crypto is nil
 
-	c.WithErrors(map[string]any{"email": "required"})
+	c.FlashErrors(map[string]any{"email": "required"})
 
 	cookies := w.Result().Cookies()
 	if len(cookies) != 0 {
@@ -237,27 +237,27 @@ func TestContextWithErrors_NoEncryptorIsSilentNoop(t *testing.T) {
 	}
 }
 
-func TestContextWithErrors_NoServicesIsSilentNoop(t *testing.T) {
+func TestContextFlashErrors_NoServicesIsSilentNoop(t *testing.T) {
 	// Raw NewContext with no SetServices: also a fail-safe no-op.
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 	c := NewContext(w, r)
 
-	c.WithErrors(map[string]any{"k": "v"})
+	c.FlashErrors(map[string]any{"k": "v"})
 
 	if cookies := w.Result().Cookies(); len(cookies) != 0 {
 		t.Errorf("expected no cookies without services, got %d", len(cookies))
 	}
 }
 
-func TestContextWithInput_SetsAuthenticatedCookie(t *testing.T) {
+func TestContextFlashInput_SetsAuthenticatedCookie(t *testing.T) {
 	enc := newFlashEncryptor(t)
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 	c := NewContext(w, r)
 	c.SetServices(&app.Services{Crypto: enc})
 
-	c.WithInput(map[string]any{"email": "bad@"})
+	c.FlashInput(map[string]any{"email": "bad@"})
 
 	cookies := w.Result().Cookies()
 	if len(cookies) != 1 || cookies[0].Name != FlashInputCookie {

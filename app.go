@@ -726,8 +726,8 @@ func New(opts ...Option) (*App, error) {
 		if !result.HasErrors() {
 			return nil
 		}
-		c.WithErrors(result.All())
-		c.WithInput(result.Old())
+		c.FlashErrors(result.All())
+		c.FlashInput(result.Old())
 		if v := c.View(); v != nil {
 			v.Back(c.Response, c.Request)
 		}

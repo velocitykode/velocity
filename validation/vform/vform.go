@@ -132,8 +132,8 @@ func Form[T any](ctx *router.Context) (*T, error) {
 		return req, nil
 	}
 
-	ctx.WithErrors(result.All())
-	ctx.WithInput(result.Old())
+	ctx.FlashErrors(result.All())
+	ctx.FlashInput(result.Old())
 
 	if v := safeView(ctx); v != nil {
 		v.Back(ctx.Response, ctx.Request)

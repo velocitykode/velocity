@@ -38,7 +38,7 @@ func requestWithServices(t *testing.T, enc crypto.Encryptor) *http.Request {
 }
 
 // sealCookie returns an authenticated cookie value for name produced
-// under enc, matching what router.Context.WithErrors / WithInput emit
+// under enc, matching what router.Context.FlashErrors / FlashInput emit
 // on the wire.
 func sealCookie(t *testing.T, enc crypto.Encryptor, name string, value any) string {
 	t.Helper()
@@ -579,7 +579,7 @@ func TestApplyFlashData_NullJSON(t *testing.T) {
 }
 
 // TestFlash_EndToEnd_RouterSealBondOpen exercises the full path: a
-// router.Context seals the cookie via WithErrors, the response carries
+// router.Context seals the cookie via FlashErrors, the response carries
 // the Set-Cookie, a subsequent request replays the cookie, bond's
 // Render consumes it via applyFlashData, and the resulting page props
 // carry the original errors map. This is the bond integration test
@@ -587,7 +587,7 @@ func TestApplyFlashData_NullJSON(t *testing.T) {
 func TestFlash_EndToEnd_RouterSealBondOpen(t *testing.T) {
 	enc := testFlashEncryptor(t)
 
-	// --- POST handler seals the flash via WithErrors ---
+	// --- POST handler seals the flash via FlashErrors ---
 	postW := httptest.NewRecorder()
 	postR := httptest.NewRequest(http.MethodPost, "/signup", nil)
 	postR = router.WithServices(postR, &app.Services{Crypto: enc})
@@ -595,13 +595,13 @@ func TestFlash_EndToEnd_RouterSealBondOpen(t *testing.T) {
 	postCtx.SetServices(&app.Services{Crypto: enc})
 
 	wantErrors := map[string]any{"email": "must be valid", "name": "required"}
-	postCtx.WithErrors(wantErrors)
-	postCtx.WithInput(map[string]any{"email": "bogus"})
+	postCtx.FlashErrors(wantErrors)
+	postCtx.FlashInput(map[string]any{"email": "bogus"})
 
 	// Pull the Set-Cookie headers off the POST response.
 	setCookies := postW.Result().Cookies()
 	if len(setCookies) != 2 {
-		t.Fatalf("expected 2 cookies from WithErrors+WithInput, got %d: %#v", len(setCookies), setCookies)
+		t.Fatalf("expected 2 cookies from FlashErrors+FlashInput, got %d: %#v", len(setCookies), setCookies)
 	}
 
 	// --- GET request carries the cookies back and renders via bond ---

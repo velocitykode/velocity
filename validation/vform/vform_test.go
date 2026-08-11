@@ -19,7 +19,7 @@ import (
 
 // testFormEncryptor returns an AES-256-GCM encryptor for vform tests
 // that exercise flash-cookie emission. Sealing requires an encryptor;
-// without one, ctx.WithErrors no-ops and the cookie is never set.
+// without one, ctx.FlashErrors no-ops and the cookie is never set.
 func testFormEncryptor(t *testing.T) crypto.Encryptor {
 	t.Helper()
 	enc, err := crypto.NewEncryptor(crypto.Config{
@@ -94,7 +94,7 @@ func jsonCtx(t *testing.T, body string) (*router.Context, *httptest.ResponseReco
 	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	c := router.NewContext(w, r)
-	// Wire a real encryptor so ctx.WithErrors / WithInput can seal the
+	// Wire a real encryptor so ctx.FlashErrors / FlashInput can seal the
 	// flash cookies. Tests that need a DB still attach one via
 	// SetServices directly; they can preserve Crypto by reading it
 	// off the existing services first.
@@ -313,7 +313,7 @@ func TestForm_Failure_FlashesErrorCookie(t *testing.T) {
 
 	_, _ = Form[signupRequest](ctx)
 
-	// _velocity_errors flash cookie should be set by ctx.WithErrors.
+	// _velocity_errors flash cookie should be set by ctx.FlashErrors.
 	cookies := w.Result().Cookies()
 	var foundErrors bool
 	for _, c := range cookies {

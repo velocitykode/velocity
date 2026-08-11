@@ -49,7 +49,7 @@ func hasCookie(r *http.Request, name string) bool {
 }
 
 // readFlashCookie reads an authenticated flash cookie produced by
-// router.Context.WithErrors / WithInput and returns the decoded value.
+// router.Context.FlashErrors / FlashInput and returns the decoded value.
 // Returns false when the cookie is absent, the app key is unavailable,
 // the cookie exceeds router.MaxFlashCookieSize, or authentication
 // fails for any reason (wrong key, tampered payload, AAD mismatch,

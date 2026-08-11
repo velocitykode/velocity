@@ -229,7 +229,7 @@ func TestFlashCookie_Builder(t *testing.T) {
 }
 
 // End to end through the router pool: a service-level opt-out reaches
-// WithErrors via ctxWiring, and the pool's zero value stays Secure.
+// FlashErrors via ctxWiring, and the pool's zero value stays Secure.
 func TestFlashWrite_SecureFollowsServices(t *testing.T) {
 	flashCookieFromResponse := func(t *testing.T, w *httptest.ResponseRecorder) *http.Cookie {
 		t.Helper()
@@ -247,7 +247,7 @@ func TestFlashWrite_SecureFollowsServices(t *testing.T) {
 		r := NewV2()
 		r.SetServices(svc)
 		r.Get("/fail", func(c *Context) error {
-			c.WithErrors(map[string]any{"field": "required"})
+			c.FlashErrors(map[string]any{"field": "required"})
 			return c.String(http.StatusOK, "ok")
 		})
 		w := httptest.NewRecorder()

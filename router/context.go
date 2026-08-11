@@ -1590,7 +1590,7 @@ func flashAADFor(name string) string {
 	return ""
 }
 
-// WithErrors stashes validation errors as a flash cookie so they survive
+// FlashErrors stashes validation errors as a flash cookie so they survive
 // a redirect and are available on the next request. The cookie payload is
 // encrypted with the app key via AES-GCM (or AES-CBC+HMAC, whichever the
 // app's crypto.Encryptor was configured with), with the cookie name's AAD
@@ -1604,14 +1604,14 @@ func flashAADFor(name string) string {
 // only manifests in misconfigured environments. Operators should treat
 // a missing encryptor as a configuration bug; the lack of a flash
 // cookie on the response is the visible symptom.
-func (c *Context) WithErrors(errors any) {
+func (c *Context) FlashErrors(errors any) {
 	writeFlashCookie(c.Response, c.flashEncryptor(), FlashErrorsCookie, errors, !c.insecureFlashCookies)
 }
 
-// WithInput stashes old form input as a flash cookie so it survives
-// a redirect and is available on the next request. See WithErrors for
+// FlashInput stashes old form input as a flash cookie so it survives
+// a redirect and is available on the next request. See FlashErrors for
 // authentication and configuration notes.
-func (c *Context) WithInput(input any) {
+func (c *Context) FlashInput(input any) {
 	writeFlashCookie(c.Response, c.flashEncryptor(), FlashInputCookie, input, !c.insecureFlashCookies)
 }
 
