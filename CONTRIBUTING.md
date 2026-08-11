@@ -307,7 +307,7 @@ coexist on the same type without naming collisions during the transition.
 
 Apply to: `queue.Driver` (already conforms), `cache.Store` / driver
 implementations, `mail.Mailer` (already conforms), `broadcast.Driver`,
-`storage.Driver`, `auth.UserProvider`, validation DB rules.
+`storage.Driver`, `auth.UserStore`, validation DB rules.
 
 Optional capability interfaces follow the same rule: extension
 interfaces that adopt context-awareness use `Ctx`-suffixed method names

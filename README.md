@@ -231,7 +231,7 @@ ormtesting.NewModelFactory[User](manager, newUser).
     CreateOne(ctx, nil) // seed test data
 
 velhttp.NewTestClient(t, router).
-    ActingAs(guard, user).
+    ActingAs(scheme, user).
     PostJSON("/signup", map[string]any{"email": "a@b.com"}).
     AssertCreated().
     AssertJSONPath("user.email", "a@b.com")
