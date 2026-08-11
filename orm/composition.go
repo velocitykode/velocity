@@ -107,7 +107,7 @@ func featuresForT[T any]() (modelFeatures, error) {
 }
 
 // RegisterModel eagerly validates the trait composition for T and
-// caches the result. Call from a provider Boot() or main() to surface
+// caches the result. Call from a module Start() or main() to surface
 // trait misconfiguration at startup rather than at first request.
 //
 // Returns *FeaturesError if the composition is invalid (e.g. dual

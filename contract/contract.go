@@ -31,8 +31,8 @@ type EventDispatcherAware interface {
 //   - return a non-nil error only when cleanup actually failed — a
 //     no-op Shutdown returns nil.
 //
-// The provider registry and App.Shutdown call Shutdown in reverse
-// registration order; see serve.go and app/provider.go.
+// The module registry and App.Shutdown call Shutdown in reverse
+// registration order; see serve.go and app/module.go.
 type ShutdownAware interface {
 	Shutdown(ctx context.Context) error
 }

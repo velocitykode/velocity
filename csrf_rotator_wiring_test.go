@@ -107,7 +107,7 @@ func (p *csrfReplaceModule) Shutdown(_ context.Context) error { return nil }
 // framework-built CSRF created during New().
 //
 // Pre-fix: app.go installed the rotator AT New() time, so any chain
-// module that replaced s.CSRF in its Boot() left the auth manager
+// module that replaced s.CSRF in its Start() left the auth manager
 // holding the original framework instance. RotateToken / RevokeToken /
 // WriteXSRFCookie calls during Login / Logout / remember-cookie revival
 // silently targeted a CSRF store no longer in the request path, and the
