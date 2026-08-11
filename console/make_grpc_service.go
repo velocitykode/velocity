@@ -18,7 +18,7 @@ import (
 // MakeGRPCServiceOptions holds flags for the gen grpc service command. The
 // zero value reproduces the single-argument behaviour: the package leaf,
 // proto wire package, file names, and impl directory are all derived from the
-// service name, and the provider is wired automatically.
+// service name, and the module is wired automatically.
 type MakeGRPCServiceOptions struct {
 	// Package overrides the directory leaf under api/proto/ and api/gen/go/
 	// (e.g. "admin"). When empty the leaf is derived from the service name.
@@ -34,7 +34,7 @@ type MakeGRPCServiceOptions struct {
 	// internal/grpc/services).
 	Dir string
 	// Alias overrides the import alias used for the generated proto package
-	// in the impl and provider files (default "<leaf>pb").
+	// in the impl and module files (default "<leaf>pb").
 	Alias string
 	// ProtoName overrides the proto file base name, without extension
 	// (default: the lower-cased service base, e.g. "templatecontrol").
@@ -42,14 +42,14 @@ type MakeGRPCServiceOptions struct {
 	// ImplName overrides the Go impl file base name, without extension
 	// (default: the snake_case service base, e.g. "template_control").
 	ImplName string
-	// NoProvider skips provider scaffolding/wiring entirely (proto + impl
+	// NoModule skips module scaffolding/wiring entirely (proto + impl
 	// only). Useful when the app registers services through its own server
-	// wiring rather than the generated internal/providers/grpc_provider.go.
-	NoProvider bool
+	// wiring rather than the generated internal/providers/grpc_module.go.
+	NoModule bool
 }
 
 // grpcScaffold holds every resolved, validated value the writers need. It is
-// produced once by resolveGRPCScaffold so the proto, impl, and provider stay
+// produced once by resolveGRPCScaffold so the proto, impl, and module stay
 // in agreement on names, paths, and import aliases.
 type grpcScaffold struct {
 	ServiceName    string // Go service type, e.g. "TemplateControlService"
@@ -63,8 +63,8 @@ type grpcScaffold struct {
 	ImplDir        string // impl output dir, e.g. "internal/shared/grpc/services"
 	ServicesImport string // import path for the impl package
 	ModulePath     string // module path from go.mod
-	VarName        string // local var in the provider, e.g. "templateControl"
-	NoProvider     bool
+	VarName        string // local var in the module, e.g. "templateControl"
+	NoModule       bool
 }
 
 var (
@@ -79,8 +79,8 @@ var (
 )
 
 // MakeGRPCService scaffolds a new gRPC service: proto file, server impl, and
-// (unless opts.NoProvider) provider wiring. It is safe to call repeatedly
-// with different service names. The provider is created once and subsequent
+// (unless opts.NoModule) module wiring. It is safe to call repeatedly
+// with different service names. The module is created once and subsequent
 // calls inject registrations at the // vel:grpc:imports and // vel:grpc:services
 // marker comments.
 func MakeGRPCService(name string, opts MakeGRPCServiceOptions) error {
@@ -89,11 +89,11 @@ func MakeGRPCService(name string, opts MakeGRPCServiceOptions) error {
 		return err
 	}
 
-	// Preflight the provider wire before writing any files. The compatibility
-	// guard (a service whose impl dir differs from the existing provider's)
+	// Preflight the module wire before writing any files. The compatibility
+	// guard (a service whose impl dir differs from the existing module's)
 	// must fail here, not after the proto and impl exist - otherwise the
-	// suggested "re-run with --no-provider" would trip "proto already exists".
-	if err := preflightProviderWiring(sc); err != nil {
+	// suggested "re-run with --no-module" would trip "proto already exists".
+	if err := preflightModuleWiring(sc); err != nil {
 		return err
 	}
 
@@ -101,7 +101,7 @@ func MakeGRPCService(name string, opts MakeGRPCServiceOptions) error {
 	// proto on disk that blocks the user from rerunning. The previous
 	// order (proto then configs) could lock the command into "proto
 	// already exists" on every subsequent attempt after a config-write
-	// failure, with no impl or provider wired.
+	// failure, with no impl or module wired.
 	if err := ensureBufConfigs(); err != nil {
 		return err
 	}
@@ -111,8 +111,8 @@ func MakeGRPCService(name string, opts MakeGRPCServiceOptions) error {
 	if err := writeServiceImpl(sc); err != nil {
 		return err
 	}
-	if !sc.NoProvider {
-		if err := wireGRPCProvider(sc); err != nil {
+	if !sc.NoModule {
+		if err := wireGRPCModule(sc); err != nil {
 			return err
 		}
 	}
@@ -212,7 +212,7 @@ func resolveGRPCScaffold(name string, opts MakeGRPCServiceOptions) (grpcScaffold
 	sc.ServicesImport = modulePath + "/" + filepath.ToSlash(implDir)
 
 	sc.VarName = lowerFirst(base)
-	sc.NoProvider = opts.NoProvider
+	sc.NoModule = opts.NoModule
 	return sc, nil
 }
 

@@ -14,7 +14,7 @@ func (genGRPCServiceCmd) name() string {
 	return "gen grpc service"
 }
 func (genGRPCServiceCmd) description() string {
-	return "Scaffold a new gRPC service (proto + impl + provider wire)"
+	return "Scaffold a new gRPC service (proto + impl + module wire)"
 }
 func (genGRPCServiceCmd) run(a *App, args []string) error {
 	name, opts, err := parseGenGRPCServiceArgs(args)
@@ -40,12 +40,12 @@ func grpcServiceUsage() {
 	prism.Muted("  --alias <ident>           proto import alias (default: <leaf>pb)")
 	prism.Muted("  --proto-name <base>       proto file base name (default: lowercased Name)")
 	prism.Muted("  --impl-name <base>        impl file base name (default: snake_case Name)")
-	prism.Muted("  --no-provider             skip provider scaffolding/wiring")
+	prism.Muted("  --no-module               skip module scaffolding/wiring")
 	prism.Newline()
 	prism.Muted("Examples:")
 	prism.Muted("  vel gen grpc service Foo")
 	prism.Muted("  vel gen grpc service TemplateControl --package admin \\")
-	prism.Muted("    --proto-package velship.admin.v1 --dir internal/shared/grpc/services --no-provider")
+	prism.Muted("    --proto-package velship.admin.v1 --dir internal/shared/grpc/services --no-module")
 }
 
 // parseGenGRPCServiceArgs parses the positional service name and the optional
@@ -59,8 +59,8 @@ func parseGenGRPCServiceArgs(args []string) (string, console.MakeGRPCServiceOpti
 	)
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if arg == "--no-provider" {
-			opts.NoProvider = true
+		if arg == "--no-module" {
+			opts.NoModule = true
 			continue
 		}
 		if strings.HasPrefix(arg, "--") {

@@ -11,14 +11,14 @@ import (
 type EventRegistry struct {
 	mu        sync.RWMutex
 	listeners map[string][]string // event name -> listener names
-	providers []EventProvider
+	modules   []EventModule
 }
 
 // NewEventRegistry creates a new event registry
 func NewEventRegistry() *EventRegistry {
 	return &EventRegistry{
 		listeners: make(map[string][]string),
-		providers: make([]EventProvider, 0),
+		modules:   make([]EventModule, 0),
 	}
 }
 
@@ -102,28 +102,28 @@ func extractEventName(methodName string) string {
 	return strings.ToLower(result.String())
 }
 
-// EventProvider provides event registration
-type EventProvider interface {
+// EventModule provides event registration
+type EventModule interface {
 	// Register registers events with the dispatcher
 	Register(dispatcher Dispatcher)
 }
 
-// AddProvider adds an event provider
-func (r *EventRegistry) AddProvider(provider EventProvider) {
+// AddModule adds an event module
+func (r *EventRegistry) AddModule(module EventModule) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.providers = append(r.providers, provider)
+	r.modules = append(r.modules, module)
 }
 
-// BootProviders boots all registered providers
-func (r *EventRegistry) BootProviders(dispatcher Dispatcher) {
+// BootModules boots all registered modules
+func (r *EventRegistry) BootModules(dispatcher Dispatcher) {
 	r.mu.RLock()
-	providers := make([]EventProvider, len(r.providers))
-	copy(providers, r.providers)
+	modules := make([]EventModule, len(r.modules))
+	copy(modules, r.modules)
 	r.mu.RUnlock()
 
-	for _, provider := range providers {
-		provider.Register(dispatcher)
+	for _, module := range modules {
+		module.Register(dispatcher)
 	}
 }
 
@@ -132,7 +132,7 @@ func (r *EventRegistry) Clear() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.listeners = make(map[string][]string)
-	r.providers = make([]EventProvider, 0)
+	r.modules = make([]EventModule, 0)
 }
 
 // Count returns the total number of listener registrations

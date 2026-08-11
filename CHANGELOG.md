@@ -24,6 +24,10 @@ behavior are untouched.
   Root aliases track the new names (`velocity.Module`,
   `velocity.ModuleRegistry`, `velocity.RouteModule`, …). Lifecycle error
   labels now read "module init failed" / "chain module start failed".
+  The separate discovery-side interface `events.EventProvider` is
+  `events.EventModule`, and `EventRegistry.AddProvider`/`BootProviders`
+  are `AddModule`/`BootModules` (its `Register(dispatcher)` method is
+  unchanged).
 
 - **`auth.Guard` is `auth.Scheme`** (`SessionGuard` -> `SessionScheme`,
   `JWTGuard` -> `JWTScheme`), **`auth.Gate` is `auth.Access`**
@@ -62,6 +66,14 @@ behavior are untouched.
   `MakeModule`/`MakeModuleOptions`, and `gen module` emits a `Module`
   (`Init`/`Start`/`Shutdown`); the generated output path
   (`internal/providers`) is unchanged.
+
+- **`gen grpc service` scaffolds a module, not a provider.** The wired
+  file is `internal/providers/grpc_module.go` (was `grpc_provider.go`)
+  and the generated type is `GRPCModule` (was `GRPCProvider`); the flag
+  that skips it is `--no-module` (was `--no-provider`), backed by
+  `console.MakeGRPCServiceOptions.NoModule` (was `NoProvider`). The
+  marker comments (`// vel:grpc:imports`, `// vel:grpc:services`), the
+  output directory, and the wiring behavior are unchanged.
 
 **Env:** `AUTH_GUARD` is now `AUTH_SCHEME`, the only environment key
 carrying the old word. Scheme map keys (`web`, `session`, `api`, `jwt`),
