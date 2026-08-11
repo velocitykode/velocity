@@ -535,7 +535,7 @@ func (l *TestShouldHandleListener) Handle(ctx context.Context, event interface{}
 	return nil
 }
 
-func (l *TestShouldHandleListener) ShouldQueue() bool {
+func (l *TestShouldHandleListener) Async() bool {
 	return false
 }
 
@@ -556,7 +556,7 @@ func (l *priorityTestListener) Handle(ctx context.Context, event interface{}) er
 	return nil
 }
 
-func (l *priorityTestListener) ShouldQueue() bool {
+func (l *priorityTestListener) Async() bool {
 	return false
 }
 
@@ -585,7 +585,7 @@ func (l *stoppablePropagationTestListener) Handle(ctx context.Context, event int
 	return nil
 }
 
-func (l *stoppablePropagationTestListener) ShouldQueue() bool {
+func (l *stoppablePropagationTestListener) Async() bool {
 	return false
 }
 
@@ -622,7 +622,7 @@ func TestQueueIntegratedDispatchWithQueued(t *testing.T) {
 		t.Errorf("Expected 1 listener, got %d", len(listeners))
 	}
 
-	if !listeners[0].ShouldQueue() {
+	if !listeners[0].Async() {
 		t.Error("Listener should be marked for queueing")
 	}
 }

@@ -102,8 +102,9 @@ type Manager struct {
 	// rawEventDispatcher is the untyped dispatcher set via SetEventDispatcher.
 	// It is the legacy flush sink for KindDispatch / KindDispatchNow buffered
 	// entries; richer kinds (Async / After / Until) prefer txEventBus when
-	// it is wired so listener semantics like ShouldQueue and the original
-	// delay are preserved across the transactional buffer boundary.
+	// it is wired so listener semantics like the Async() queue opt-in and
+	// the original delay are preserved across the transactional buffer
+	// boundary.
 	rawEventDispatcher func(ctx context.Context, event any) error
 	// txEventBus, when non-nil, is the kind-aware sink for buffered
 	// entries flushed at commit. It is wired by velocity.bootstrap so the
@@ -515,7 +516,8 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 	// The flush callback routes each entry through the dispatcher method
 	// the caller originally requested (Dispatch / DispatchNow /
 	// DispatchAsync / DispatchAfter / Until) so listener semantics like
-	// ShouldQueue and the recorded delay survive the buffer boundary.
+	// the Async() queue opt-in and the recorded delay survive the buffer
+	// boundary.
 	// When a richer events.Dispatcher is wired (the production path) we
 	// dispatch through it; otherwise we fall back to the untyped legacy
 	// sink, which collapses every kind onto Dispatch.

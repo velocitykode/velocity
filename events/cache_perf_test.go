@@ -15,7 +15,7 @@ func (l *cacheCountListener) Handle(_ context.Context, _ interface{}) error {
 	return nil
 }
 
-func (l *cacheCountListener) ShouldQueue() bool { return false }
+func (l *cacheCountListener) Async() bool { return false }
 
 // cacheReflectEvent is a plain struct WITHOUT a Name() method, so its name
 // resolves via reflection (CacheReflectEvent -> cache.reflect.event),

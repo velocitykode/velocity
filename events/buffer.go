@@ -37,15 +37,16 @@ func (h *bufferHolder) swap(b *BufferedDispatcher) (prev *BufferedDispatcher) {
 // DispatchKind tags a buffered event with the dispatch method the caller
 // originally requested. The Flush callback uses the kind to route the
 // event back through the matching method on the underlying dispatcher so
-// listener semantics like ShouldQueue / async / delay are preserved.
+// listener semantics like the Async queue opt-in, goroutine dispatch, and
+// delay are preserved.
 type DispatchKind int
 
 const (
 	// KindDispatch corresponds to Dispatcher.Dispatch, the default path
-	// where listeners with ShouldQueue may opt in to async delivery.
+	// where listeners with Async may opt in to queue-backed delivery.
 	KindDispatch DispatchKind = iota
 	// KindDispatchNow corresponds to Dispatcher.DispatchNow: synchronous
-	// delivery to every listener regardless of ShouldQueue.
+	// delivery to every listener regardless of Async.
 	KindDispatchNow
 	// KindDispatchAsync corresponds to Dispatcher.DispatchAsync: every
 	// listener fires off the request goroutine.
@@ -101,9 +102,10 @@ func (e BufferedEvent) Kind() DispatchKind { return e.kind }
 func (e BufferedEvent) Delay() time.Duration { return e.delay }
 
 // FlushFunc forwards a buffered entry to the underlying dispatcher,
-// respecting the original dispatch kind so ShouldQueue / async / delay
-// semantics flow through. Implementations switch on entry.Kind() and call
-// the matching method on the wrapped Dispatcher.
+// respecting the original dispatch kind so the Async queue opt-in,
+// goroutine dispatch, and delay semantics flow through. Implementations
+// switch on entry.Kind() and call the matching method on the wrapped
+// Dispatcher.
 //
 // Returning a non-nil error stops the flush at that entry; the failing
 // entry and every entry after it are returned to the buffer so the caller
@@ -122,8 +124,8 @@ type FlushFunc func(entry BufferedEvent) error
 // DispatchAfter / Until that record events into the buffer. Each
 // recorded entry remembers the dispatch kind (and DispatchAfter delay)
 // so Flush can route the event back through the matching method on the
-// underlying dispatcher; listeners' ShouldQueue and async semantics are
-// therefore preserved across the buffer boundary.
+// underlying dispatcher; listeners' Async (queue) and goroutine-dispatch
+// semantics are therefore preserved across the buffer boundary.
 type BufferedDispatcher struct {
 	mu       sync.Mutex
 	events   []BufferedEvent

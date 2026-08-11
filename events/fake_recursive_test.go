@@ -21,7 +21,7 @@ func (l *reentrantListener) Handle(ctx context.Context, event interface{}) error
 	return nil
 }
 
-func (l *reentrantListener) ShouldQueue() bool { return false }
+func (l *reentrantListener) Async() bool { return false }
 
 // runWithTimeout invokes fn in a goroutine and fails the test with msg if
 // it does not complete within d. Used to convert lock-acquisition deadlocks

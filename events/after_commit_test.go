@@ -24,7 +24,7 @@ func (l *afterCommitListener) Handle(ctx context.Context, event interface{}) err
 	return l.handleErr
 }
 
-func (l *afterCommitListener) ShouldQueue() bool               { return false }
+func (l *afterCommitListener) Async() bool                     { return false }
 func (l *afterCommitListener) ShouldDispatchAfterCommit() bool { return l.defer_ }
 
 // inlineListener does NOT implement ShouldDispatchAfterCommit. It is the
@@ -38,7 +38,7 @@ func (l *inlineListener) Handle(ctx context.Context, event interface{}) error {
 	return nil
 }
 
-func (l *inlineListener) ShouldQueue() bool { return false }
+func (l *inlineListener) Async() bool { return false }
 
 // TestDispatch_AfterCommitListener_FiresOnCommit asserts the happy path:
 // a listener opting in via ShouldDispatchAfterCommit is queued during
@@ -482,7 +482,7 @@ func TestDispatch_AfterCommitListener_UsesReplayContext(t *testing.T) {
 			sawValue = ctx.Value(ctxKey{})
 			return nil
 		},
-		shouldQueue: false,
+		isAsync:     false,
 		shouldDefer: true,
 	})
 
@@ -506,7 +506,7 @@ func TestDispatch_AfterCommitListener_UsesReplayContext(t *testing.T) {
 // that need a one-off ShouldDispatchAfterCommit listener.
 type funcListener struct {
 	handle      func(ctx context.Context, event interface{}) error
-	shouldQueue bool
+	isAsync     bool
 	shouldDefer bool
 }
 
@@ -514,7 +514,7 @@ func (l funcListener) Handle(ctx context.Context, event interface{}) error {
 	return l.handle(ctx, event)
 }
 
-func (l funcListener) ShouldQueue() bool               { return l.shouldQueue }
+func (l funcListener) Async() bool                     { return l.isAsync }
 func (l funcListener) ShouldDispatchAfterCommit() bool { return l.shouldDefer }
 
 // TestInstallAfterCommitQueue_NestedHandleTruncatesBaseline pins the M-48
@@ -612,7 +612,7 @@ func (q *recordingQueue) Push(_ context.Context, event interface{}, listener Lis
 	return nil
 }
 
-// queueDeferListener implements BOTH ShouldQueue and
+// queueDeferListener implements BOTH Async and
 // ShouldDispatchAfterCommit. Under a transaction, Dispatch must defer to
 // the after-commit queue; at commit time, the replay must re-route
 // through the queue dispatcher (not run the listener inline). Without
@@ -626,16 +626,16 @@ func (l *queueDeferListener) Handle(_ context.Context, _ interface{}) error {
 	return nil
 }
 
-func (l *queueDeferListener) ShouldQueue() bool               { return true }
+func (l *queueDeferListener) Async() bool                     { return true }
 func (l *queueDeferListener) ShouldDispatchAfterCommit() bool { return true }
 
-// TestDispatch_AfterCommitListener_ShouldQueueRoutesThroughQueueAtCommit
+// TestDispatch_AfterCommitListener_AsyncRoutesThroughQueueAtCommit
 // closes the M-47 follow-up: a listener that opts into both
 // after-commit AND queue must be PUSHED to the queue when the
 // transaction commits, not invoked synchronously on the commit
 // goroutine. Sync invocation silently breaks the listener's declared
 // async semantics and blocks the orm wrapper return.
-func TestDispatch_AfterCommitListener_ShouldQueueRoutesThroughQueueAtCommit(t *testing.T) {
+func TestDispatch_AfterCommitListener_AsyncRoutesThroughQueueAtCommit(t *testing.T) {
 	d := NewDispatcher()
 	q := &recordingQueue{}
 	d.SetQueueDispatcher(q)
@@ -665,7 +665,7 @@ func TestDispatch_AfterCommitListener_ShouldQueueRoutesThroughQueueAtCommit(t *t
 		t.Fatalf("FireAfterCommit returned error: %v", err)
 	}
 
-	// At commit: the replay closure ran, observed ShouldQueue()==true,
+	// At commit: the replay closure ran, observed Async()==true,
 	// and pushed to the queue. The listener body did NOT run on the
 	// commit goroutine; the queue would invoke it asynchronously in
 	// production.
@@ -683,11 +683,11 @@ func TestDispatch_AfterCommitListener_ShouldQueueRoutesThroughQueueAtCommit(t *t
 	}
 }
 
-// TestDispatch_AfterCommitListener_ShouldQueueFallsThroughWhenQueueUnwired
+// TestDispatch_AfterCommitListener_AsyncFallsThroughWhenQueueUnwired
 // pins the rare-race fallback: if the queue dispatcher is unwired
 // between dispatch and commit, the replay closure falls back to inline
 // invocation rather than silently dropping the listener.
-func TestDispatch_AfterCommitListener_ShouldQueueFallsThroughWhenQueueUnwired(t *testing.T) {
+func TestDispatch_AfterCommitListener_AsyncFallsThroughWhenQueueUnwired(t *testing.T) {
 	d := NewDispatcher()
 	q := &recordingQueue{}
 	d.SetQueueDispatcher(q)

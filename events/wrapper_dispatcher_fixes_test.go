@@ -25,7 +25,7 @@ func (l *reentrantRLListener) Handle(ctx context.Context, event interface{}) err
 	return nil
 }
 
-func (l *reentrantRLListener) ShouldQueue() bool { return false }
+func (l *reentrantRLListener) Async() bool { return false }
 
 // TestRateLimitedDispatcher_ReentrantDispatchNoDeadlock proves B36: a listener
 // that re-dispatches through the same RateLimitedDispatcher must complete
@@ -76,7 +76,7 @@ func (l *flakyListener) Handle(ctx context.Context, event interface{}) error {
 	return nil
 }
 
-func (l *flakyListener) ShouldQueue() bool { return false }
+func (l *flakyListener) Async() bool { return false }
 
 // TestBatchingDispatcher_FlushPartialFailureResumes proves B37: when a flush
 // fails partway, the failing entry plus the remainder stay buffered so a retry
@@ -160,7 +160,7 @@ func TestTransactionalDispatcher_CommitPartialFailureResumes(t *testing.T) {
 type errListener struct{ err error }
 
 func (l *errListener) Handle(ctx context.Context, event interface{}) error { return l.err }
-func (l *errListener) ShouldQueue() bool                                   { return false }
+func (l *errListener) Async() bool                                         { return false }
 
 // TestFakeDispatcher_UntilPropagatesError proves the fake.go fix: Until must
 // return the error from a listener rather than discarding it.

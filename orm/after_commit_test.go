@@ -21,7 +21,7 @@ func (l *afterCommitTestListener) Handle(ctx context.Context, event interface{})
 	return nil
 }
 
-func (l *afterCommitTestListener) ShouldQueue() bool               { return false }
+func (l *afterCommitTestListener) Async() bool                     { return false }
 func (l *afterCommitTestListener) ShouldDispatchAfterCommit() bool { return l.defer_ }
 
 // inlineTestListener is the behaviour control: no opt-in interface, must
@@ -35,7 +35,7 @@ func (l *inlineTestListener) Handle(ctx context.Context, event interface{}) erro
 	return nil
 }
 
-func (l *inlineTestListener) ShouldQueue() bool { return false }
+func (l *inlineTestListener) Async() bool { return false }
 
 // TestTransaction_AfterCommitListener_FiresOnCommit asserts the
 // integration M-48 happy path: a listener opting in via

@@ -16,13 +16,13 @@ type panicingListener struct{}
 func (l *panicingListener) Handle(ctx context.Context, event interface{}) error {
 	panic("boom")
 }
-func (l *panicingListener) ShouldQueue() bool { return false }
+func (l *panicingListener) Async() bool { return false }
 
 // erroringListener returns a non-nil error.
 type erroringListener struct{ msg string }
 
 func (l *erroringListener) Handle(ctx context.Context, event interface{}) error { return fmtErr(l.msg) }
-func (l *erroringListener) ShouldQueue() bool                                   { return false }
+func (l *erroringListener) Async() bool                                         { return false }
 
 type fmtErrType string
 

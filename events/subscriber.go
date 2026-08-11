@@ -201,7 +201,7 @@ func (l *methodListener) Handle(ctx context.Context, event interface{}) error {
 	return l.handler(ctx, event)
 }
 
-func (l *methodListener) ShouldQueue() bool {
+func (l *methodListener) Async() bool {
 	return false
 }
 
@@ -306,8 +306,8 @@ type QueuedMethodListener struct {
 	tries     int
 }
 
-// ShouldQueue returns true for queued listeners
-func (l *QueuedMethodListener) ShouldQueue() bool {
+// Async returns true for queued listeners
+func (l *QueuedMethodListener) Async() bool {
 	return true
 }
 

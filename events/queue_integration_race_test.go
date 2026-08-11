@@ -34,7 +34,7 @@ func (nopMemQueueDriver) Shutdown(ctx context.Context) error                    
 type raceQueuedListener struct{}
 
 func (raceQueuedListener) Handle(ctx context.Context, event interface{}) error { return nil }
-func (raceQueuedListener) ShouldQueue() bool                                   { return true }
+func (raceQueuedListener) Async() bool                                         { return true }
 func (raceQueuedListener) OnConnection() string                                { return "" }
 func (raceQueuedListener) OnQueue() string                                     { return "default" }
 func (raceQueuedListener) WithDelay() time.Duration                            { return 0 }

@@ -32,7 +32,7 @@ func (l *failingTriesListener) Handle(ctx context.Context, event interface{}) er
 	return errors.New("velocity/events: forced queued-listener failure")
 }
 
-func (l *failingTriesListener) ShouldQueue() bool        { return true }
+func (l *failingTriesListener) Async() bool              { return true }
 func (l *failingTriesListener) OnConnection() string     { return "default" }
 func (l *failingTriesListener) OnQueue() string          { return "" } // -> "default"
 func (l *failingTriesListener) WithDelay() time.Duration { return 0 }

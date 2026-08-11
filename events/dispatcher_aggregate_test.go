@@ -16,7 +16,7 @@ func (l *aggCountListener) Handle(ctx context.Context, event interface{}) error 
 	l.calls++
 	return l.err
 }
-func (l *aggCountListener) ShouldQueue() bool { return false }
+func (l *aggCountListener) Async() bool { return false }
 
 // TestDispatch_AggregatesListenerErrors covers Task 6c: errors from every
 // listener are joined so one failure does not mask later ones.

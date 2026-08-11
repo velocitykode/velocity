@@ -267,7 +267,7 @@ func (d *QueueIntegratedDispatcher) RegisterListenerFactory(listenerType string,
 //     promoted default and silently ignore the override.
 //   - A listener that opts into ShouldDispatchAfterCommit is deferred onto
 //     the after-commit queue via EnqueueAfterCommit and replayed at commit
-//     (through pushToQueue when it also ShouldQueue, otherwise inline),
+//     (through pushToQueue when it is also Async, otherwise inline),
 //     mirroring dispatcher.go. Outside a transaction the gate collapses to
 //     the inline / queue branches.
 //   - Listener errors are aggregated with errors.Join rather than returned
@@ -290,7 +290,7 @@ func (d *QueueIntegratedDispatcher) Dispatch(ctx context.Context, event interfac
 			ev := event
 			ln := listener
 			if EnqueueAfterCommit(ctx, func(replayCtx context.Context) error {
-				if ln.ShouldQueue() {
+				if ln.Async() {
 					if err := d.pushToQueue(replayCtx, ev, ln); err != nil {
 						return fmt.Errorf("failed to queue listener: %w", err)
 					}
@@ -304,7 +304,7 @@ func (d *QueueIntegratedDispatcher) Dispatch(ctx context.Context, event interfac
 			// listener fires inline / via queue just like a non-opt-in one.
 		}
 
-		if listener.ShouldQueue() {
+		if listener.Async() {
 			// Enhanced queue integration
 			if err := d.pushToQueue(ctx, event, listener); err != nil {
 				errs = append(errs, fmt.Errorf("failed to queue listener: %w", err))
@@ -871,7 +871,7 @@ func (d *StoppablePropagationDispatcher) Dispatch(ctx context.Context, event int
 				if stoppable, ok := ev.(StoppableEvent); ok && stoppable.ShouldStopPropagation() {
 					return nil
 				}
-				if ln.ShouldQueue() {
+				if ln.Async() {
 					if err := d.pushToQueue(replayCtx, ev, ln); err != nil {
 						return fmt.Errorf("failed to queue listener: %w", err)
 					}
@@ -883,7 +883,7 @@ func (d *StoppablePropagationDispatcher) Dispatch(ctx context.Context, event int
 			}
 		}
 
-		if listener.ShouldQueue() {
+		if listener.Async() {
 			// For queued listeners, we don't stop propagation since they're async
 			if err := d.pushToQueue(ctx, event, listener); err != nil {
 				errs = append(errs, fmt.Errorf("failed to queue listener: %w", err))

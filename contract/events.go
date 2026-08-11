@@ -13,8 +13,8 @@ type EventListener interface {
 	// Handle processes the event
 	Handle(ctx context.Context, event interface{}) error
 
-	// ShouldQueue determines if this listener should be queued
-	ShouldQueue() bool
+	// Async determines if this listener should be queued
+	Async() bool
 }
 
 // EventSubscriber registers multiple event listeners

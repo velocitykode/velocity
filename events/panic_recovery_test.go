@@ -20,7 +20,7 @@ func (p *countingPanicListener) Handle(ctx context.Context, event interface{}) e
 	p.handled.Add(1)
 	panic("listener boom")
 }
-func (p *countingPanicListener) ShouldQueue() bool { return false }
+func (p *countingPanicListener) Async() bool { return false }
 
 // TestAsyncDispatcher_Push_RecoversPanic verifies that a listener panic in
 // the async goroutine does not tear down the process.
@@ -83,7 +83,7 @@ func TestDispatcher_DispatchAsync_Fallback_RecoversPanic(t *testing.T) {
 type listenerFunc func(ctx context.Context, event interface{}) error
 
 func (f listenerFunc) Handle(ctx context.Context, event interface{}) error { return f(ctx, event) }
-func (f listenerFunc) ShouldQueue() bool                                   { return false }
+func (f listenerFunc) Async() bool                                         { return false }
 
 // Guard against accidentally shadowing stdlib sync.
 var _ sync.Locker = (*sync.Mutex)(nil)

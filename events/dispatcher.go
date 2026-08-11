@@ -361,7 +361,7 @@ func (d *DefaultDispatcher) Subscribe(subscriber Subscriber) {
 }
 
 // Dispatch fires an event to all registered listeners.
-// Listeners that return true from ShouldQueue are dispatched via the queue;
+// Listeners that return true from Async are dispatched via the queue;
 // all others are processed synchronously. Returns an error if event is nil.
 //
 // After-commit gating: a listener that implements
@@ -371,7 +371,7 @@ func (d *DefaultDispatcher) Subscribe(subscriber Subscriber) {
 // transaction commits and is dropped on rollback. Outside a transaction
 // (no queue on ctx) the listener fires inline so behaviour is unchanged
 // for callers that have not wired the orm hook. Non-opt-in listeners
-// always fire inline (or via the queue if ShouldQueue is true) regardless
+// always fire inline (or via the queue if Async is true) regardless
 // of the after-commit queue state.
 func (d *DefaultDispatcher) Dispatch(ctx context.Context, event interface{}) error {
 	return d.dispatch(ctx, event, true)
@@ -407,10 +407,10 @@ func (d *DefaultDispatcher) dispatch(ctx context.Context, event interface{}, rep
 			// time. The replay uses commit-time ctx (not the in-flight
 			// tx ctx) so listeners see post-transaction values.
 			//
-			// At commit time we re-check ShouldQueue and the live queue
+			// At commit time we re-check Async and the live queue
 			// handle: a listener that opts into BOTH after-commit AND
 			// queueing must still take the queue branch when the
-			// transaction lands. Without this gate a ShouldQueue
+			// transaction lands. Without this gate an Async
 			// listener that also implements ShouldDispatchAfterCommit
 			// would run synchronously on the commit goroutine, blocking
 			// the orm wrapper return and silently changing the listener's
@@ -418,7 +418,7 @@ func (d *DefaultDispatcher) dispatch(ctx context.Context, event interface{}, rep
 			ev := event
 			ln := listener
 			if EnqueueAfterCommit(ctx, func(replayCtx context.Context) error {
-				if ln.ShouldQueue() {
+				if ln.Async() {
 					d.mu.RLock()
 					replayQueue := d.queue
 					d.mu.RUnlock()
@@ -440,7 +440,7 @@ func (d *DefaultDispatcher) dispatch(ctx context.Context, event interface{}, rep
 			// the queue already drained. The listener fires inline
 			// just like a non-opt-in listener would.
 		}
-		if listener.ShouldQueue() && q != nil {
+		if listener.Async() && q != nil {
 			if err := q.Push(ctx, event, listener, 0); err != nil {
 				return fmt.Errorf("failed to queue listener: %w", err)
 			}

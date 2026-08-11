@@ -387,7 +387,7 @@ func (l *countingListener) Handle(ctx context.Context, event interface{}) error 
 	return nil
 }
 
-func (l *countingListener) ShouldQueue() bool {
+func (l *countingListener) Async() bool {
 	return false
 }
 

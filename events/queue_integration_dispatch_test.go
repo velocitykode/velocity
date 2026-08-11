@@ -18,8 +18,8 @@ func (l *orderingPriorityListener) Handle(_ context.Context, _ interface{}) erro
 	*l.order = append(*l.order, l.label)
 	return nil
 }
-func (l *orderingPriorityListener) ShouldQueue() bool { return false }
-func (l *orderingPriorityListener) Priority() int     { return l.priority }
+func (l *orderingPriorityListener) Async() bool   { return false }
+func (l *orderingPriorityListener) Priority() int { return l.priority }
 
 // TestPriorityDispatcher_Dispatch_InvokesInPriorityOrder is the B9 regression.
 // PriorityDispatcher inherits Dispatch from QueueIntegratedDispatcher; before

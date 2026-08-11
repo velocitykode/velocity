@@ -32,7 +32,7 @@ func (l *h22Listener) Handle(ctx context.Context, event interface{}) error {
 	}
 	return nil
 }
-func (l *h22Listener) ShouldQueue() bool { return true }
+func (l *h22Listener) Async() bool { return true }
 
 // h22FailingListener returns an error from Handle so the worker exhausts
 // retries and calls EventListenerJob.Failed, exercising the reporter
@@ -42,7 +42,7 @@ type h22FailingListener struct{}
 func (h22FailingListener) Handle(ctx context.Context, event interface{}) error {
 	return errors.New("listener intentional failure")
 }
-func (h22FailingListener) ShouldQueue() bool { return true }
+func (h22FailingListener) Async() bool { return true }
 
 // runWorkerOnce drains at most one successful job from the queue, returning
 // once the listener has fired or the timeout elapses. We do not need the

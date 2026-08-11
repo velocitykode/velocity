@@ -21,7 +21,7 @@ func (l *untilPanicHandleListener) Handle(ctx context.Context, event interface{}
 	panic("until handle boom")
 }
 
-func (l *untilPanicHandleListener) ShouldQueue() bool { return false }
+func (l *untilPanicHandleListener) Async() bool { return false }
 
 // untilPanicResultListener panics from HandleWithResult. Used to
 // exercise the HandleWithResult branch of Until's recovery path so the
@@ -39,7 +39,7 @@ func (l *untilPanicResultListener) HandleWithResult(ctx context.Context, event i
 	panic("until result boom")
 }
 
-func (l *untilPanicResultListener) ShouldQueue() bool { return false }
+func (l *untilPanicResultListener) Async() bool { return false }
 
 // untilCountingListener records invocations and returns nil so Until
 // proceeds to the next listener. Lets the Until-panic tests prove that
@@ -56,7 +56,7 @@ func (l *untilCountingListener) Handle(ctx context.Context, event interface{}) e
 	return nil
 }
 
-func (l *untilCountingListener) ShouldQueue() bool { return false }
+func (l *untilCountingListener) Async() bool { return false }
 
 // TestDispatcher_Until_RecoversHandlePanic verifies the M-05 fix: a
 // listener that panics from Handle while Until is iterating must not

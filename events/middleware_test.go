@@ -381,7 +381,7 @@ func (l *middlewareTestListener) Handle(ctx context.Context, event interface{}) 
 	return nil
 }
 
-func (l *middlewareTestListener) ShouldQueue() bool {
+func (l *middlewareTestListener) Async() bool {
 	return false
 }
 

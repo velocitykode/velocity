@@ -391,10 +391,11 @@ func TestDispatchAfter_DelayPreserved(t *testing.T) {
 }
 
 // TestDispatchAsync_KindPreserved verifies that the dispatch kind is
-// preserved across the buffer boundary so listeners' ShouldQueue / async
-// semantics flow through to the underlying dispatcher on Flush. Without
-// this fix all variants collapsed to KindDispatch and async listeners
-// fired synchronously on the commit goroutine.
+// preserved across the buffer boundary so listeners' Async queue opt-in
+// and goroutine-dispatch semantics flow through to the underlying
+// dispatcher on Flush. Without this fix all variants collapsed to
+// KindDispatch and async listeners fired synchronously on the commit
+// goroutine.
 func TestDispatchAsync_KindPreserved(t *testing.T) {
 	var kinds []DispatchKind
 	_, buf := WithBuffer(context.Background(), func(e BufferedEvent) error {

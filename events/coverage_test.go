@@ -31,7 +31,7 @@ func (l *SimpleListener) Handle(ctx context.Context, event interface{}) error {
 	return nil
 }
 
-func (l *SimpleListener) ShouldQueue() bool {
+func (l *SimpleListener) Async() bool {
 	return false
 }
 
@@ -50,7 +50,7 @@ func (l *SimpleQueuedListener) Handle(ctx context.Context, event interface{}) er
 	return nil
 }
 
-func (l *SimpleQueuedListener) ShouldQueue() bool {
+func (l *SimpleQueuedListener) Async() bool {
 	return true
 }
 
@@ -95,8 +95,8 @@ func TestBaseListenerComplete(t *testing.T) {
 		t.Errorf("Handle should return nil, got %v", err)
 	}
 
-	// Test ShouldQueue
-	if listener.ShouldQueue() {
+	// Test Async
+	if listener.Async() {
 		t.Error("BaseListener should not queue")
 	}
 }
@@ -127,7 +127,7 @@ func TestQueuedBaseListenerComplete(t *testing.T) {
 		t.Errorf("Expected 5 tries, got %d", listener.Tries())
 	}
 
-	if !listener.ShouldQueue() {
+	if !listener.Async() {
 		t.Error("QueuedBaseListener should queue")
 	}
 
@@ -687,7 +687,7 @@ func (l *TestFullQueuedListener) WasHandled() bool {
 	return l.handled
 }
 
-func (l *TestFullQueuedListener) ShouldQueue() bool {
+func (l *TestFullQueuedListener) Async() bool {
 	return true
 }
 
@@ -723,7 +723,7 @@ func (l *shouldHandleListener) Handle(ctx context.Context, event interface{}) er
 	return nil
 }
 
-func (l *shouldHandleListener) ShouldQueue() bool {
+func (l *shouldHandleListener) Async() bool {
 	return false
 }
 
@@ -740,7 +740,7 @@ func (l *resultListener) Handle(ctx context.Context, event interface{}) error {
 	return nil
 }
 
-func (l *resultListener) ShouldQueue() bool {
+func (l *resultListener) Async() bool {
 	return false
 }
 

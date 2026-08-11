@@ -30,7 +30,7 @@ type userProfile struct {
 }
 
 // capturingListener stores the last value its Handle received so the test
-// can assert on the concrete typed payload (not a map). ShouldQueue is true
+// can assert on the concrete typed payload (not a map). Async is true
 // so QueueIntegratedDispatcher.Dispatch routes through the queue.
 type capturingListener struct {
 	mu       sync.Mutex
@@ -52,7 +52,7 @@ func (l *capturingListener) Handle(ctx context.Context, event interface{}) error
 	return l.failWith
 }
 
-func (l *capturingListener) ShouldQueue() bool { return true }
+func (l *capturingListener) Async() bool { return true }
 
 func (l *capturingListener) Got() interface{} {
 	l.mu.Lock()

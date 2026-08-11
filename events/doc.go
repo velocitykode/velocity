@@ -5,7 +5,7 @@
 //
 // Listeners MAY implement any of these to opt into framework features:
 //
-//	QueueableListener     ShouldQueue() returns true so the dispatcher
+//	QueueableListener     Async() returns true so the dispatcher
 //	                      routes the event onto the queue instead of
 //	                      invoking the listener inline.
 //

@@ -152,7 +152,7 @@ type panicListener struct{}
 func (p *panicListener) Handle(ctx context.Context, event interface{}) error {
 	panic("listener blew up")
 }
-func (p *panicListener) ShouldQueue() bool { return false }
+func (p *panicListener) Async() bool { return false }
 
 func TestDispatcherConcurrentModification(t *testing.T) {
 	d := NewDispatcher()
@@ -249,7 +249,7 @@ func (l *PanicListener) Handle(ctx context.Context, event interface{}) error {
 	panic("listener panic")
 }
 
-func (l *PanicListener) ShouldQueue() bool {
+func (l *PanicListener) Async() bool {
 	return false
 }
 
@@ -266,7 +266,7 @@ func (l *TestQueuedListener) Handle(ctx context.Context, event interface{}) erro
 	return nil
 }
 
-func (l *TestQueuedListener) ShouldQueue() bool {
+func (l *TestQueuedListener) Async() bool {
 	return true
 }
 

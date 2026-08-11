@@ -388,8 +388,8 @@ func TestMethodListener(t *testing.T) {
 		t.Error("Event was not passed correctly")
 	}
 
-	// Test ShouldQueue
-	if listener.ShouldQueue() {
+	// Test Async
+	if listener.Async() {
 		t.Error("Method listener should not be queued by default")
 	}
 }
@@ -407,9 +407,9 @@ func TestQueuedMethodListener(t *testing.T) {
 		tries:     5,
 	}
 
-	// Test ShouldQueue
-	if !listener.ShouldQueue() {
-		t.Error("Queued listener should return true for ShouldQueue")
+	// Test Async
+	if !listener.Async() {
+		t.Error("Queued listener should return true for Async")
 	}
 
 	// Test OnQueue

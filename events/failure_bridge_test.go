@@ -151,7 +151,7 @@ var _ contract.FailureEvent = (*otherFailed)(nil)
 type listenerFn func(ctx context.Context, event interface{}) error
 
 func (f listenerFn) Handle(ctx context.Context, event interface{}) error { return f(ctx, event) }
-func (f listenerFn) ShouldQueue() bool                                   { return false }
+func (f listenerFn) Async() bool                                         { return false }
 
 // Static check the test relies on: AsyncFailed implements the contract.
 var _ contract.FailureEvent = (*AsyncFailed)(nil)

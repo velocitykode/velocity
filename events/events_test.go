@@ -49,7 +49,7 @@ func (l *TestListener) Handle(ctx context.Context, event interface{}) error {
 	return nil
 }
 
-func (l *TestListener) ShouldQueue() bool {
+func (l *TestListener) Async() bool {
 	return false
 }
 
@@ -75,7 +75,7 @@ func (l *CountingListener) Handle(ctx context.Context, event interface{}) error 
 	return nil
 }
 
-func (l *CountingListener) ShouldQueue() bool {
+func (l *CountingListener) Async() bool {
 	return false
 }
 

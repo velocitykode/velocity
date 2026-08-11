@@ -33,7 +33,7 @@ func (l *scalarCapturingListener) Handle(ctx context.Context, event interface{})
 	}
 	return nil
 }
-func (l *scalarCapturingListener) ShouldQueue() bool { return true }
+func (l *scalarCapturingListener) Async() bool { return true }
 func (l *scalarCapturingListener) Got() interface{} {
 	l.mu.Lock()
 	defer l.mu.Unlock()

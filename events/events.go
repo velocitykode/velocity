@@ -133,8 +133,8 @@ func (l *BaseListener) Handle(ctx context.Context, event interface{}) error {
 	return nil
 }
 
-// ShouldQueue returns whether the listener should be queued
-func (l *BaseListener) ShouldQueue() bool {
+// Async returns whether the listener should be queued
+func (l *BaseListener) Async() bool {
 	return false
 }
 
@@ -176,7 +176,7 @@ func (l *QueuedBaseListener) Tries() int {
 	return 3
 }
 
-// ShouldQueue returns true for queued listeners
-func (l *QueuedBaseListener) ShouldQueue() bool {
+// Async returns true for queued listeners
+func (l *QueuedBaseListener) Async() bool {
 	return true
 }
