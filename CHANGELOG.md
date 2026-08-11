@@ -7,7 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### The auth user provider is ORM-backed, and the auth model is swappable
+### Identity rename: providers are modules, auth guards are schemes
+
+Velocity's extension and auth vocabulary drops its borrowed names. Every
+change below is an identifier rename: registration order, the two-phase
+lifecycle, failure unwinding, shutdown ordering, and every command's
+behavior are untouched.
+
+- **`app.ServiceProvider` is `app.Module`**, and its `Register`/`Boot`
+  methods are `Init`/`Start` (`Shutdown` is unchanged). The surrounding
+  surface follows: `WithProviders` -> `WithModules`, `App.Providers` ->
+  `App.Modules`, `chain.ProviderRegistry` -> `chain.ModuleRegistry`
+  (`Providers()` -> `Modules()`), and the optional `RouteProvider`,
+  `MiddlewareProvider`, `EventProvider`, `ScheduleProvider`, and
+  `CommandProvider` interfaces become the matching `*Module` interfaces.
+  Root aliases track the new names (`velocity.Module`,
+  `velocity.ModuleRegistry`, `velocity.RouteModule`, …). Lifecycle error
+  labels now read "module init failed" / "chain module start failed".
+
+- **`auth.Guard` is `auth.Scheme`** (`SessionGuard` -> `SessionScheme`,
+  `JWTGuard` -> `JWTScheme`), **`auth.Gate` is `auth.Access`**
+  (`Manager.Gate()` -> `Manager.Access()`, `GateCallback` ->
+  `AccessCallback`, `UserGate` -> `UserAccess`, `NewGate` -> `NewAccess`,
+  `ErrGateNotFound` -> `ErrAccessNotFound`), and **`auth.UserProvider` is
+  `auth.UserStore`** (`ormauth.Provider` -> `ormauth.Store`,
+  `velocity.ORMUserProvider` -> `velocity.ORMUserStore`,
+  `authtest.RunUserProviderContractTests` -> `RunUserStoreContractTests`).
+
+  The `Manager` surface follows:
+  `RegisterGuard`/`SetDefaultGuard`/`Guard`/`DefaultGuard` become
+  `RegisterScheme`/`SetDefaultScheme`/`Scheme`/`DefaultScheme`;
+  `SetProvider`/`RegisterProvider`/`DefaultProvider`/`Provider` become
+  `SetUserStore`/`RegisterUserStore`/`DefaultUserStore`/`UserStore`;
+  `DefaultProviderName` is `DefaultUserStoreName` (value `"default"`
+  unchanged); `ErrGuardNotFound` is `ErrSchemeNotFound`. `auth.Config`
+  fields `DefaultGuard`/`Guards` are `DefaultScheme`/`Schemes`, and
+  `auth.GuardConfig` is `auth.SchemeConfig`. The `Scheme` interface method
+  `SetProvider` is `SetUserStore`. `PasswordNeedsRehashEvent.GuardName` is
+  `SchemeName`. `contract.AuthManager` de-prefixes to `Allows`/`Authorize`.
+
+- **The event listener opt-in `ShouldQueue()` is `Async()`.**
+
+- **`router.Context.WithErrors`/`WithInput` are `FlashErrors`/`FlashInput`.**
+
+- **The CLI drops its colon grammar for space-separated subcommands.**
+  `make:*` becomes `gen *` (`make:provider` -> `gen module`, matching the
+  module rename), `route:list` -> `routes`, `migrate:X` -> `migrate X`,
+  `db:wipe` -> `db wipe`, `cache:clear` -> `cache clear`, `queue:work` ->
+  `queue work`, `schedule:work` -> `schedule work`, and `key:generate` ->
+  `key generate`. A subcommand wins over its bare parent (`migrate fresh`
+  over `migrate`), while `vel migrate --pretend` and `vel run seed` still
+  resolve to the one-word command with the rest passed through.
+  `console.MakeProvider`/`MakeProviderOptions` become
+  `MakeModule`/`MakeModuleOptions`, and `gen module` emits a `Module`
+  (`Init`/`Start`/`Shutdown`); the generated output path
+  (`internal/providers`) is unchanged.
+
+**Env:** `AUTH_GUARD` is now `AUTH_SCHEME`, the only environment key
+carrying the old word. Scheme map keys (`web`, `session`, `api`, `jwt`),
+driver values (`session`, `jwt`), event name strings, and the flash cookie
+names are untouched.
+
+### The auth user store is ORM-backed, and the auth model is swappable
 
 `auth.ORMUserProvider` used no ORM and ignored its model. It held a raw
 `*sql.DB`, hand-wrote its four statements, and reimplemented placeholder
@@ -29,15 +90,15 @@ and no warning.
   free to discard it. The auth model is therefore chosen in code:
 
   ```go
-  func (p *AuthProvider) Boot(s *app.Services) error {
-      provider := ormauth.New[models.Admin](
+  func (m *AuthModule) Start(s *app.Services) error {
+      userStore := ormauth.New[models.Admin](
           ormauth.WithIdentifierColumn("username"),
           ormauth.WithPasswordColumn("pass_hash"),
       )
-      if err := provider.Validate(); err != nil {
+      if err := userStore.Validate(); err != nil {
           return err
       }
-      s.Auth.SetProvider(provider)
+      s.Auth.SetUserStore(userStore)
       return nil
   }
   ```
@@ -49,25 +110,25 @@ and no warning.
   metadata (`string`, `*string`, and `sql.NullString` carriers).
 
 - **Applications declare the model through the root package**, so no app
-  needs to import the provider leaf:
+  needs to import the user store leaf:
 
   ```go
-  func (p *AppProvider) Register(s *velocity.Services) error {
+  func (m *AppModule) Init(s *velocity.Services) error {
       return velocity.SetAuthModel[models.User](s)
   }
   ```
 
   `velocity.SetAuthModel[T]` validates the model, inherits the auth
   manager's hasher (preserving the operator-configured bcrypt cost), and
-  installs the provider. Column names are `velocity.WithAuth*Column`
+  installs the user store. Column names are `velocity.WithAuth*Column`
   options for models that do not follow the defaults; a model that does
-  needs none. `velocity.ORMUserProvider[T]` builds a provider without
+  needs none. `velocity.ORMUserStore[T]` builds a user store without
   installing it.
 
-- **`auth.Manager.SetProvider` re-points every registered guard**, so the
-  swap works from a service provider regardless of whether it runs before or
-  after `velocity.New` installs the default. Without that fan-out the model
-  would appear to change while guards kept the old provider.
+- **`auth.Manager.SetUserStore` re-points every registered scheme**, so the
+  swap works from a module regardless of whether it runs before or after
+  `velocity.New` installs the default. Without that fan-out the model would
+  appear to change while schemes kept the old user store.
 
 - **Zero-config default preserved.** `velocity.New` installs
   `ormauth.New[ormauth.User]` against `users`, reproducing the historical
@@ -77,7 +138,7 @@ and no warning.
 
 - **Model requirement:** because the remember token is persisted through the
   ORM's map-based `Update`, an auth model must declare a mass-assignment
-  policy (`Fillable`, `Guarded`, or `AllowAllColumns`). `Provider.Validate`
+  policy (`Fillable`, `Guarded`, or `AllowAllColumns`). `Store.Validate`
   reports a model with no policy rather than letting it fail on the first
   remember-me login.
 
@@ -87,7 +148,7 @@ and no warning.
   `auth.NewORMUserProviderForDialect` are removed with no deprecation
   window. Retaining them would preserve the fixed `users` schema and the
   misleading model parameter this change exists to remove. `normalizeID` is
-  exported as `auth.NormalizeID` for out-of-package providers.
+  exported as `auth.NormalizeID` for out-of-package user stores.
 
 - **`AUTH_MODEL` is gone**, along with `auth.ProviderConfig` and
   `auth.Config.Providers`. Velocity authenticates one identity store; the
@@ -97,11 +158,13 @@ and no warning.
   (unregistered name, stale registration, typo'd value). Remove `AUTH_MODEL`
   from `.env`.
 
-- **`auth.GuardConfig.Provider` is gone.** Guards use the single installed
-  provider. Multiple guards (`web`, `api`, `jwt`) over one identity store
-  are unchanged - only the multiple-identity-stores config surface is
-  removed. `auth.Manager.RegisterProvider(name, …)` remains as a code-level
-  escape hatch for an app that genuinely needs two, and is deliberately not
+- **The per-scheme user-store config field is gone.** `auth.GuardConfig`
+  (now `auth.SchemeConfig`, see the rename entry above) no longer carries a
+  `Provider` field; schemes use the single installed user store. Multiple
+  schemes (`web`, `api`, `jwt`) over one identity store are unchanged - only
+  the multiple-identity-stores config surface is removed.
+  `auth.Manager.RegisterUserStore(name, …)` remains as a code-level escape
+  hatch for an app that genuinely needs two, and is deliberately not
   reachable from configuration.
 
 

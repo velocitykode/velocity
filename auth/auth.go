@@ -391,9 +391,9 @@ const DefaultUserStoreName = "default"
 //	))
 //
 // The user store is propagated to every scheme already registered, so calling
-// this from a service provider's Register or Boot takes effect regardless of
-// construction order. Schemes registered afterwards pick it up at
-// registration. Passing nil is ignored.
+// this from a module's Init or Start takes effect regardless of construction
+// order. Schemes registered afterwards pick it up at registration. Passing nil
+// is ignored.
 func (m *Manager) SetUserStore(userStore UserStore) {
 	if userStore == nil {
 		return
