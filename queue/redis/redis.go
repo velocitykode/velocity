@@ -687,7 +687,7 @@ func (r *RedisDriver) moveDelayedJobs(ctx context.Context, queueName string) err
 // Idempotent per the contract.ShutdownAware contract: a second call after
 // the underlying client is already closed returns nil rather than the
 // "redis: client is closed" error the go-redis library raises on
-// double-close. The provider registry and App.Shutdown invoke this in
+// double-close. The module registry and App.Shutdown invoke this in
 // reverse order and may call it on retry paths; treating "already closed"
 // as success keeps the contract clean.
 func (r *RedisDriver) Shutdown(ctx context.Context) error {

@@ -17,13 +17,13 @@
 // An application installs its own model from a module:
 //
 //	func (p *AuthModule) Start(s *app.Services) error {
-//	    user store := ormauth.New[models.Admin](
+//	    userStore := ormauth.New[models.Admin](
 //	        ormauth.WithIdentifierColumn("username"),
 //	    )
-//	    if err := user store.Validate(); err != nil {
+//	    if err := userStore.Validate(); err != nil {
 //	        return err
 //	    }
-//	    s.Auth.SetUserStore(user store)
+//	    s.Auth.SetUserStore(userStore)
 //	    return nil
 //	}
 //

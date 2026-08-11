@@ -451,7 +451,7 @@ func installSessionMiddleware(a *App) {
 // recall regenerate. See contract.CSRFTokenRotator for the full contract.
 //
 // Start-order rationale: a chain module may legitimately replace s.CSRF
-// in its Boot() (custom store, different mode, decorator wrapping the
+// in its Start() (custom store, different mode, decorator wrapping the
 // framework-built instance). Running this install BEFORE Start would
 // freeze the rotator to the original framework-built CSRF, and any
 // subsequent consumer swap would leave the auth manager rotating a
