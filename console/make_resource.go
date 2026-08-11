@@ -6,7 +6,7 @@ import (
 	"github.com/velocitykode/velocity/console/scaffold"
 )
 
-// MakeResourceOptions holds flags for the make:resource command.
+// MakeResourceOptions holds flags for the gen resource command.
 type MakeResourceOptions struct {
 	Dir string // --dir output directory override (default internal/resources)
 }

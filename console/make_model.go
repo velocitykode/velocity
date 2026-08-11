@@ -8,7 +8,7 @@ import (
 	"github.com/velocitykode/velocity/str"
 )
 
-// MakeModelOptions holds flags for the make:model command.
+// MakeModelOptions holds flags for the gen model command.
 type MakeModelOptions struct {
 	UUID        bool
 	SoftDeletes bool

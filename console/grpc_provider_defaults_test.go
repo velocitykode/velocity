@@ -34,7 +34,7 @@ func TestMakeGRPCService_ProviderDoesNotForceReflection(t *testing.T) {
 // failed-generation hazard is fixed: when buf.yaml cannot be written (here
 // because api/proto is a read-only directory) the scaffolder must return a
 // real error rather than print a success message and recommend `vel
-// make:grpc:gen` against missing configs.
+// gen grpc gen` against missing configs.
 func TestEnsureBufConfigs_PropagatesWriteFailure(t *testing.T) {
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 		t.Skip("requires POSIX permissions and non-root user")

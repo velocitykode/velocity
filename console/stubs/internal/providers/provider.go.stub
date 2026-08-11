@@ -6,20 +6,20 @@ import (
 	"github.com/velocitykode/velocity"
 )
 
-// {{ .Name }}ServiceProvider registers and boots the {{ .Name }} service.
-type {{ .Name }}ServiceProvider struct{}
+// {{ .Name }}Module initializes and starts the {{ .Name }} service.
+type {{ .Name }}Module struct{}
 
 // Init binds services into the container.
-func (p *{{ .Name }}ServiceProvider) Init(s *velocity.Services) error {
+func (m *{{ .Name }}Module) Init(s *velocity.Services) error {
 	return nil
 }
 
 // Start is called after all modules have been initialized.
-func (p *{{ .Name }}ServiceProvider) Start(s *velocity.Services) error {
+func (m *{{ .Name }}Module) Start(s *velocity.Services) error {
 	return nil
 }
 
-// Shutdown gracefully tears down provider resources.
-func (p *{{ .Name }}ServiceProvider) Shutdown(ctx context.Context) error {
+// Shutdown gracefully tears down module resources.
+func (m *{{ .Name }}Module) Shutdown(ctx context.Context) error {
 	return nil
 }

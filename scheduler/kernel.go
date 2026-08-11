@@ -29,7 +29,7 @@ func (k *Kernel) Schedule() *Scheduler {
 func (k *Kernel) Define() {
 	// Override this method in your application to define scheduled tasks
 	// Example:
-	// k.Schedule().Command("cache:clear").Daily()
+	// k.Schedule().Command("./vel", "cache", "clear").Daily()
 	// k.Schedule().Call(func() {
 	//     // Task logic
 	// }).EveryFiveMinutes()

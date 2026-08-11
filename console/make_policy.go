@@ -6,7 +6,7 @@ import (
 	"github.com/velocitykode/velocity/console/scaffold"
 )
 
-// MakePolicyOptions holds flags for the make:policy command.
+// MakePolicyOptions holds flags for the gen policy command.
 type MakePolicyOptions struct {
 	Dir string // --dir output directory override (default internal/policies)
 }

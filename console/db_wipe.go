@@ -12,7 +12,7 @@ import (
 //
 // DBWipe performs no environment check, confirmation, or --force handling by
 // design: it is the programmatic primitive. The production gate lives in the
-// `vel db:wipe` CLI command; programmatic callers are expected to apply their
+// `vel db wipe` CLI command; programmatic callers are expected to apply their
 // own safeguards.
 func DBWipe(db orm.Database) error {
 	if db == nil {

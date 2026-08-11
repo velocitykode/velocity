@@ -144,7 +144,7 @@ func runServer(opts ServeOptions) error {
 		return fmt.Errorf("build failed: %w", err)
 	}
 
-	serverCmd := exec.Command(".vel/tmp/server", "serve:run")
+	serverCmd := exec.Command(".vel/tmp/server", "serve", "run")
 	serverCmd.Stdout = os.Stdout
 	serverCmd.Stderr = os.Stderr
 	serverCmd.Env = os.Environ()
@@ -198,7 +198,7 @@ func runWithWatcher(opts ServeOptions) error {
 		}
 
 		// Refresh the project's ./vel binary so one-shot CLI commands
-		// (route:list, migrate, make:*) in other terminals see current
+		// (routes, migrate, gen *) in other terminals see current
 		// source while serve --watch is running. Go's build cache makes
 		// this ~100ms since the source was just compiled above. Failure
 		// here is non-fatal — the server itself rebuilt successfully,
@@ -213,7 +213,7 @@ func runWithWatcher(opts ServeOptions) error {
 		}
 
 		prism.Info(fmt.Sprintf("Starting server on port %s...", opts.Port))
-		serverCmd = exec.Command(".vel/tmp/server", "serve:run")
+		serverCmd = exec.Command(".vel/tmp/server", "serve", "run")
 		serverCmd.Stdout = os.Stdout
 		serverCmd.Stderr = os.Stderr
 		serverCmd.Env = append(os.Environ(),

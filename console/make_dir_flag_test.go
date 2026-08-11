@@ -9,7 +9,7 @@ import (
 	"github.com/velocitykode/velocity/console/scaffold"
 )
 
-// TestResolveMakeDir covers the shared --dir resolver that every make:*
+// TestResolveMakeDir covers the shared --dir resolver that every gen
 // generator now routes through. An empty override must pass the default
 // untouched; a legitimate nested override must be cleaned and returned; and
 // traversal / absolute / charset-violating overrides must be rejected before
@@ -68,18 +68,18 @@ func TestMake_DirFlag_WritesToCustomDir(t *testing.T) {
 		setup   func(t *testing.T)
 		defltAt string // package default dir that must stay empty
 	}{
-		{name: "make:command", run: func(n string) error { return MakeCommand(n, MakeCommandOptions{Dir: dir}) }, input: "SendEmail", file: "send_email.go", defltAt: "internal/commands"},
-		{name: "make:event", run: func(n string) error { return MakeEvent(n, MakeEventOptions{Dir: dir}) }, input: "UserRegistered", file: "user_registered.go", defltAt: "internal/events"},
-		{name: "make:job", run: func(n string) error { return MakeJob(n, MakeJobOptions{Dir: dir}) }, input: "ProcessImport", file: "process_import.go", defltAt: "internal/jobs"},
-		{name: "make:listener", run: func(n string) error { return MakeListener(n, MakeListenerOptions{Dir: dir}) }, input: "SendWelcome", file: "send_welcome.go", defltAt: "internal/listeners"},
-		{name: "make:mail", run: func(n string) error { return MakeMail(n, MakeMailOptions{Dir: dir}) }, input: "OrderShipped", file: "order_shipped.go", defltAt: "internal/mail"},
-		{name: "make:middleware", run: func(n string) error { return MakeMiddleware(n, MakeMiddlewareOptions{Dir: dir}) }, input: "RateLimit", file: "rate_limit.go", defltAt: "internal/middleware"},
-		{name: "make:model", run: func(n string) error { return MakeModel(n, MakeModelOptions{Dir: dir}) }, input: "Invoice", file: "invoice.go", defltAt: "internal/models"},
-		{name: "make:notification", run: func(n string) error { return MakeNotification(n, MakeNotificationOptions{Dir: dir}) }, input: "PaymentFailed", file: "payment_failed.go", defltAt: "internal/notifications"},
-		{name: "make:policy", run: func(n string) error { return MakePolicy(n, MakePolicyOptions{Dir: dir}) }, input: "Post", file: "post.go", defltAt: "internal/policies"},
-		{name: "make:provider", run: func(n string) error { return MakeProvider(n, MakeProviderOptions{Dir: dir}) }, input: "Payment", file: "payment.go", defltAt: "internal/providers"},
-		{name: "make:resource", run: func(n string) error { return MakeResource(n, MakeResourceOptions{Dir: dir}) }, input: "User", file: "user.go", defltAt: "internal/resources"},
-		{name: "make:handler", run: func(n string) error { return MakeHandler(n, MakeHandlerOptions{Dir: dir}) }, input: "Dashboard", file: "dashboard.go", defltAt: "internal/handlers"},
+		{name: "gen command", run: func(n string) error { return MakeCommand(n, MakeCommandOptions{Dir: dir}) }, input: "SendEmail", file: "send_email.go", defltAt: "internal/commands"},
+		{name: "gen event", run: func(n string) error { return MakeEvent(n, MakeEventOptions{Dir: dir}) }, input: "UserRegistered", file: "user_registered.go", defltAt: "internal/events"},
+		{name: "gen job", run: func(n string) error { return MakeJob(n, MakeJobOptions{Dir: dir}) }, input: "ProcessImport", file: "process_import.go", defltAt: "internal/jobs"},
+		{name: "gen listener", run: func(n string) error { return MakeListener(n, MakeListenerOptions{Dir: dir}) }, input: "SendWelcome", file: "send_welcome.go", defltAt: "internal/listeners"},
+		{name: "gen mail", run: func(n string) error { return MakeMail(n, MakeMailOptions{Dir: dir}) }, input: "OrderShipped", file: "order_shipped.go", defltAt: "internal/mail"},
+		{name: "gen middleware", run: func(n string) error { return MakeMiddleware(n, MakeMiddlewareOptions{Dir: dir}) }, input: "RateLimit", file: "rate_limit.go", defltAt: "internal/middleware"},
+		{name: "gen model", run: func(n string) error { return MakeModel(n, MakeModelOptions{Dir: dir}) }, input: "Invoice", file: "invoice.go", defltAt: "internal/models"},
+		{name: "gen notification", run: func(n string) error { return MakeNotification(n, MakeNotificationOptions{Dir: dir}) }, input: "PaymentFailed", file: "payment_failed.go", defltAt: "internal/notifications"},
+		{name: "gen policy", run: func(n string) error { return MakePolicy(n, MakePolicyOptions{Dir: dir}) }, input: "Post", file: "post.go", defltAt: "internal/policies"},
+		{name: "gen module", run: func(n string) error { return MakeModule(n, MakeModuleOptions{Dir: dir}) }, input: "Payment", file: "payment.go", defltAt: "internal/providers"},
+		{name: "gen resource", run: func(n string) error { return MakeResource(n, MakeResourceOptions{Dir: dir}) }, input: "User", file: "user.go", defltAt: "internal/resources"},
+		{name: "gen handler", run: func(n string) error { return MakeHandler(n, MakeHandlerOptions{Dir: dir}) }, input: "Dashboard", file: "dashboard.go", defltAt: "internal/handlers"},
 	}
 
 	for _, tc := range cases {
@@ -125,7 +125,7 @@ func TestResolveMakeDir_RejectsSymlinkComponent(t *testing.T) {
 
 	// And end-to-end: the generator must write nothing through the link.
 	if err := MakeModel("Invoice", MakeModelOptions{Dir: "custom/models"}); err == nil {
-		t.Fatal("make:model accepted a --dir routed through a symlink")
+		t.Fatal("gen model accepted a --dir routed through a symlink")
 	}
 	if _, err := os.Stat(filepath.Join(outside, "models", "invoice.go")); err == nil {
 		t.Errorf("a file escaped to %s via the symlink", outside)
@@ -152,7 +152,7 @@ func TestMakeHandler_RejectsSymlinkInNameNesting(t *testing.T) {
 
 	err := MakeHandler("Admin/Dashboard", MakeHandlerOptions{Dir: "internal/web/handlers"})
 	if err == nil {
-		t.Fatal("make:handler accepted a name-nested path routed through a symlink")
+		t.Fatal("gen handler accepted a name-nested path routed through a symlink")
 	}
 	if _, statErr := os.Stat(filepath.Join(outside, "dashboard.go")); statErr == nil {
 		t.Errorf("a handler file escaped to %s via the symlink", outside)
@@ -181,7 +181,7 @@ func TestMake_DirFlag_RejectsDanglingFinalSymlink(t *testing.T) {
 	}
 
 	if err := MakeModel("Invoice", MakeModelOptions{Dir: "custom/output"}); err == nil {
-		t.Fatal("make:model wrote through a dangling final-path symlink")
+		t.Fatal("gen model wrote through a dangling final-path symlink")
 	}
 	if _, err := os.Stat(target); err == nil {
 		t.Errorf("a file escaped to %s via the final-path symlink", target)
@@ -197,7 +197,7 @@ func TestMake_DirFlag_RejectsTraversal(t *testing.T) {
 
 	err := MakeModel("Invoice", MakeModelOptions{Dir: "../../tmp/owned"})
 	if err == nil {
-		t.Fatal("make:model accepted traversal via --dir")
+		t.Fatal("gen model accepted traversal via --dir")
 	}
 	if !strings.Contains(err.Error(), "--dir") {
 		t.Errorf("expected --dir rejection, got %v", err)

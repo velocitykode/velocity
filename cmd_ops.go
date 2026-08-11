@@ -11,14 +11,14 @@ import (
 
 type dbWipeCmd struct{}
 
-func (dbWipeCmd) name() string        { return "db:wipe" }
+func (dbWipeCmd) name() string        { return "db wipe" }
 func (dbWipeCmd) description() string { return "Drop all tables" }
 func (dbWipeCmd) run(a *App, args []string) error {
 	// Only --force / -f is legal; reject any other token before the guard.
 	if err := parseForceOnlyArgs(args); err != nil {
 		return err
 	}
-	if err := guardProductionDataLoss(a, "db:wipe", args); err != nil {
+	if err := guardProductionDataLoss(a, "db wipe", args); err != nil {
 		return err
 	}
 	if err := a.Bootstrap(); err != nil {
@@ -31,7 +31,7 @@ func (dbWipeCmd) run(a *App, args []string) error {
 
 type cacheClearCmd struct{}
 
-func (cacheClearCmd) name() string        { return "cache:clear" }
+func (cacheClearCmd) name() string        { return "cache clear" }
 func (cacheClearCmd) description() string { return "Flush the application cache" }
 func (cacheClearCmd) run(a *App, args []string) error {
 	if err := rejectNoArgs(args); err != nil {
@@ -47,7 +47,7 @@ func (cacheClearCmd) run(a *App, args []string) error {
 
 type queueWorkCmd struct{}
 
-func (queueWorkCmd) name() string        { return "queue:work" }
+func (queueWorkCmd) name() string        { return "queue work" }
 func (queueWorkCmd) description() string { return "Start processing queue jobs" }
 func (queueWorkCmd) run(a *App, args []string) error {
 	// Parse before Bootstrap so a typo fails fast without starting modules.
@@ -66,7 +66,7 @@ func (queueWorkCmd) run(a *App, args []string) error {
 
 type scheduleWorkCmd struct{}
 
-func (scheduleWorkCmd) name() string        { return "schedule:work" }
+func (scheduleWorkCmd) name() string        { return "schedule work" }
 func (scheduleWorkCmd) description() string { return "Start the task scheduler" }
 func (scheduleWorkCmd) run(a *App, args []string) error {
 	if err := rejectNoArgs(args); err != nil {
@@ -107,7 +107,7 @@ func (upCmd) run(a *App, args []string) error {
 
 type keyGenerateCmd struct{}
 
-func (keyGenerateCmd) name() string        { return "key:generate" }
+func (keyGenerateCmd) name() string        { return "key generate" }
 func (keyGenerateCmd) description() string { return "Generate a new application key" }
 func (keyGenerateCmd) run(a *App, args []string) error {
 	if err := rejectNoArgs(args); err != nil {
@@ -209,11 +209,15 @@ func (h helpCmd) run(a *App, args []string) error {
 // spawning the .vel/tmp/server subprocess. Not user-facing - don't document
 // in printHelp. The child must go straight to a.serveHTTP() (which opens
 // the HTTP listener and blocks); calling a.Serve() would re-enter the
-// args-dispatch path (Serve → Run → runCommand("serve:run") → this method)
+// args-dispatch path (Serve → Run → runCommand("serve run") → this method)
 // and recurse until the goroutine stack overflows.
+//
+// Its two-word name makes it a subcommand of the user-facing "serve": the
+// dispatcher's longest-match rule sends `vel serve run` here and everything
+// else (`vel serve --port 8080`) to serveCmd.
 type serveRunCmd struct{}
 
-func (serveRunCmd) name() string        { return "serve:run" }
+func (serveRunCmd) name() string        { return "serve run" }
 func (serveRunCmd) description() string { return "" }
 func (serveRunCmd) run(a *App, args []string) error {
 	if err := rejectNoArgs(args); err != nil {

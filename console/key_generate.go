@@ -63,7 +63,7 @@ func KeyGenerate() error {
 	}
 	// .env carries APP_KEY and other secrets; os.WriteFile preserves the
 	// perms of a pre-existing file, so an older 0o644 .env would stay
-	// world-readable across a key:generate run. Force the tight mode.
+	// world-readable across a `key generate` run. Force the tight mode.
 	if err := os.Chmod(envPath, secretFileMode); err != nil {
 		return fmt.Errorf("failed to tighten .env permissions: %w", err)
 	}

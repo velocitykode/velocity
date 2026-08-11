@@ -7,7 +7,7 @@ import (
 	"github.com/velocitykode/velocity/console/scaffold"
 )
 
-// MakeCommandOptions holds flags for the make:command command.
+// MakeCommandOptions holds flags for the gen command command.
 type MakeCommandOptions struct {
 	Dir string // --dir output directory override (default internal/commands)
 }

@@ -12,7 +12,7 @@ import (
 // commands. They are deliberately pure (no *App, no services, no I/O) so the
 // dispatcher can parse a command's flags BEFORE bootstrapping the application
 // - a typo then fails fast without spinning up modules - and so each parser
-// can be unit-tested in isolation the way parseMakeGRPCServiceArgs is.
+// can be unit-tested in isolation the way parseGenGRPCServiceArgs is.
 //
 // Every parser rejects tokens it does not recognise rather than silently
 // dropping them: an unknown flag yields "unknown flag: <flag>", a stray
@@ -79,8 +79,8 @@ func unknownToken(arg, key string) error {
 }
 
 // rejectNoArgs is the parser for built-in commands that accept no user
-// arguments. It errors on the first token so a typo like `migrate:status
-// extra` or `cache:clear --bogus` fails fast instead of being silently
+// arguments. It errors on the first token so a typo like `migrate status
+// extra` or `cache clear --bogus` fails fast instead of being silently
 // ignored.
 func rejectNoArgs(args []string) error {
 	if len(args) > 0 {
@@ -89,8 +89,8 @@ func rejectNoArgs(args []string) error {
 	return nil
 }
 
-// parseForceOnlyArgs is the parser for the destructive commands (db:wipe,
-// migrate:fresh) that accept only the --force / -f flag consumed by
+// parseForceOnlyArgs is the parser for the destructive commands (db wipe,
+// migrate fresh) that accept only the --force / -f flag consumed by
 // guardProductionDataLoss. Every other token is rejected.
 func parseForceOnlyArgs(args []string) error {
 	for _, arg := range args {
@@ -117,7 +117,7 @@ func parseMigrateArgs(args []string) (console.MigrateOptions, error) {
 	return opts, nil
 }
 
-// parseRollbackArgs parses `migrate:rollback` arguments and returns the number
+// parseRollbackArgs parses `migrate rollback` arguments and returns the number
 // of batches to roll back (default 1). It accepts --step N, -s N and
 // --step=N in any position, and tolerates the --force / -f flag that the
 // production-data-loss guard consumes separately. A missing step value, a
@@ -164,7 +164,7 @@ func atoiStep(flag, raw string) (int, error) {
 	return n, nil
 }
 
-// parseQueueWorkArgs parses `queue:work` arguments. The Logger field is
+// parseQueueWorkArgs parses `queue work` arguments. The Logger field is
 // attached by the caller after bootstrapping, not here.
 func parseQueueWorkArgs(args []string) (console.QueueWorkOptions, error) {
 	var opts console.QueueWorkOptions
@@ -309,8 +309,8 @@ func parseBuildArgs(args []string) (console.BuildOptions, error) {
 	return opts, nil
 }
 
-// parseMakeHandlerArgs parses the post-name arguments for `make:handler`.
-func parseMakeHandlerArgs(args []string) (console.MakeHandlerOptions, error) {
+// parseGenHandlerArgs parses the post-name arguments for `gen handler`.
+func parseGenHandlerArgs(args []string) (console.MakeHandlerOptions, error) {
 	var opts console.MakeHandlerOptions
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -332,8 +332,8 @@ func parseMakeHandlerArgs(args []string) (console.MakeHandlerOptions, error) {
 	return opts, nil
 }
 
-// parseMakeModelArgs parses the post-name arguments for `make:model`.
-func parseMakeModelArgs(args []string) (console.MakeModelOptions, error) {
+// parseGenModelArgs parses the post-name arguments for `gen model`.
+func parseGenModelArgs(args []string) (console.MakeModelOptions, error) {
 	var opts console.MakeModelOptions
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -357,10 +357,10 @@ func parseMakeModelArgs(args []string) (console.MakeModelOptions, error) {
 	return opts, nil
 }
 
-// parseMakeMigrationArgs parses the post-name arguments for `make:migration`.
+// parseGenMigrationArgs parses the post-name arguments for `gen migration`.
 // --create and --table take a value in either form; a dangling flag with no
 // value errors rather than being dropped.
-func parseMakeMigrationArgs(args []string) (console.MakeMigrationOptions, error) {
+func parseGenMigrationArgs(args []string) (console.MakeMigrationOptions, error) {
 	var opts console.MakeMigrationOptions
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -406,9 +406,9 @@ func parseMakeMigrationArgs(args []string) (console.MakeMigrationOptions, error)
 	return opts, nil
 }
 
-// parseDirOnlyArgs parses the post-name arguments for the make:* commands that
+// parseDirOnlyArgs parses the post-name arguments for the gen commands that
 // accept only an optional --dir override (middleware, event, listener, job,
-// mail, notification, resource, policy, provider, command). Any other flag is
+// mail, notification, resource, policy, module, command). Any other flag is
 // an unknown flag and any extra positional is an unexpected argument.
 func parseDirOnlyArgs(args []string) (string, error) {
 	dir := ""

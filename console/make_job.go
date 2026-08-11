@@ -6,7 +6,7 @@ import (
 	"github.com/velocitykode/velocity/console/scaffold"
 )
 
-// MakeJobOptions holds flags for the make:job command.
+// MakeJobOptions holds flags for the gen job command.
 type MakeJobOptions struct {
 	Dir string // --dir output directory override (default internal/jobs)
 }

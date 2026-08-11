@@ -61,7 +61,7 @@ func TestParseMakeGRPCServiceArgs(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			name, opts, err := parseMakeGRPCServiceArgs(tc.args)
+			name, opts, err := parseGenGRPCServiceArgs(tc.args)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected error, got name=%q opts=%+v", name, opts)

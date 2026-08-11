@@ -14,7 +14,7 @@ import (
 // exercise the same-second collision guard.
 var timeNow = time.Now
 
-// MakeMigrationOptions holds flags for the make:migration command.
+// MakeMigrationOptions holds flags for the gen migration command.
 type MakeMigrationOptions struct {
 	Create      string // table name for create-table boilerplate
 	Table       string // table name for alter-table boilerplate

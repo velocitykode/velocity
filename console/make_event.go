@@ -7,7 +7,7 @@ import (
 	"github.com/velocitykode/velocity/console/scaffold"
 )
 
-// MakeEventOptions holds flags for the make:event command.
+// MakeEventOptions holds flags for the gen event command.
 type MakeEventOptions struct {
 	Dir string // --dir output directory override (default internal/events)
 }

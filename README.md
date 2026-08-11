@@ -177,7 +177,7 @@ and `SameSite=Lax`. CORS rejects every cross-origin request until you name
 the origins you trust. CSRF is on for every state-changing method. The app
 won't start without an `APP_KEY`, and `APP_DEBUG=true` is ignored in
 production so stack traces never leak. The destructive CLI commands
-(`db:wipe`, `migrate:fresh`, `migrate:rollback`) refuse to touch a
+(`db wipe`, `migrate fresh`, `migrate rollback`) refuse to touch a
 production database unless you pass `--force`.
 
 The lower-level pieces are conservative too:
@@ -247,14 +247,14 @@ Each project builds a `./vel` binary for development and code generation.
 ```bash
 ./vel serve              # dev server with live reload
 ./vel build              # compile the production binary
-./vel migrate            # run migrations (also :fresh, :rollback, :status)
-./vel queue:work         # process queued jobs
-./vel schedule:work      # run the scheduler
-./vel route:list         # list registered routes
-./vel cache:clear        # flush the cache
-./vel key:generate       # generate the app encryption key
+./vel migrate            # run migrations (also fresh, rollback, status)
+./vel queue work         # process queued jobs
+./vel schedule work      # run the scheduler
+./vel routes             # list registered routes
+./vel cache clear        # flush the cache
+./vel key generate       # generate the app encryption key
 ./vel up / ./vel down    # toggle maintenance mode
-./vel make:model User    # scaffold (model, handler, job, policy, provider, migration, ...)
+./vel gen model User     # scaffold (model, handler, job, policy, module, migration, ...)
 ```
 
 Full reference: [vel.build/docs/cli/commands](https://vel.build/docs/cli/commands).

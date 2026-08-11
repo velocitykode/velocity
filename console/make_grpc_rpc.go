@@ -43,7 +43,7 @@ func (o MakeGRPCRPCOptions) kind() (grpcRPCKind, error) {
 
 // MakeGRPCRPC appends a new rpc to an existing service's proto file and adds
 // a matching method stub on the Go impl. The service must already exist;
-// run `vel make:grpc:service <Name>` first.
+// run `vel gen grpc service <Name>` first.
 func MakeGRPCRPC(serviceArg, rpcArg string, opts MakeGRPCRPCOptions) error {
 	kind, err := opts.kind()
 	if err != nil {
@@ -76,7 +76,7 @@ func MakeGRPCRPC(serviceArg, rpcArg string, opts MakeGRPCRPCOptions) error {
 		return fmt.Errorf("invalid service name %q: %w", serviceArg, err)
 	}
 	if _, err := os.Stat(protoPath); os.IsNotExist(err) {
-		return fmt.Errorf("proto not found: %s (run `vel make:grpc:service %s` first)", protoPath, serviceName)
+		return fmt.Errorf("proto not found: %s (run `vel gen grpc service %s` first)", protoPath, serviceName)
 	}
 
 	implRoot := filepath.Join("internal", "grpc", "services")

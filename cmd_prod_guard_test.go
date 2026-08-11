@@ -9,10 +9,10 @@ import (
 // database data and must therefore refuse to run in a production-class
 // environment without --force. If a new drop/truncate command is added to the
 // registry, add it here so it inherits the guard coverage.
-var destructiveDBCommands = []string{"db:wipe", "migrate:fresh", "migrate:rollback"}
+var destructiveDBCommands = []string{"db wipe", "migrate fresh", "migrate rollback"}
 
 // TestDestructiveDBCommands_RefuseInProductionWithoutForce is the V2-06
-// regression test: db:wipe / migrate:fresh / migrate:rollback must refuse in
+// regression test: db wipe / migrate fresh / migrate rollback must refuse in
 // every production-class APP_ENV (including "staging" and unknown values,
 // which contract.IsProductionEnv treats as production fail-secure) unless
 // --force was passed. The refusal must fire BEFORE Bootstrap so no provider

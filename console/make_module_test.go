@@ -6,11 +6,11 @@ import (
 	"testing"
 )
 
-func TestMakeProvider_CreatesFile(t *testing.T) {
+func TestMakeModule_CreatesFile(t *testing.T) {
 	t.Chdir(t.TempDir())
 
-	if err := MakeProvider("Cache", MakeProviderOptions{}); err != nil {
-		t.Fatalf("MakeProvider() error = %v", err)
+	if err := MakeModule("Cache", MakeModuleOptions{}); err != nil {
+		t.Fatalf("MakeModule() error = %v", err)
 	}
 
 	content, err := os.ReadFile("internal/providers/cache.go")
@@ -22,8 +22,8 @@ func TestMakeProvider_CreatesFile(t *testing.T) {
 	if !strings.Contains(s, "package providers") {
 		t.Error("expected package providers")
 	}
-	if !strings.Contains(s, "CacheServiceProvider") {
-		t.Error("expected CacheServiceProvider struct")
+	if !strings.Contains(s, "CacheModule") {
+		t.Error("expected CacheModule struct")
 	}
 	if !strings.Contains(s, "Init(s *velocity.Services) error") {
 		t.Error("expected Init method")
@@ -39,11 +39,11 @@ func TestMakeProvider_CreatesFile(t *testing.T) {
 	}
 }
 
-func TestMakeProvider_StripsSuffix(t *testing.T) {
+func TestMakeModule_StripsSuffix(t *testing.T) {
 	t.Chdir(t.TempDir())
 
-	if err := MakeProvider("CacheProvider", MakeProviderOptions{}); err != nil {
-		t.Fatalf("MakeProvider() error = %v", err)
+	if err := MakeModule("CacheProvider", MakeModuleOptions{}); err != nil {
+		t.Fatalf("MakeModule() error = %v", err)
 	}
 
 	if _, err := os.Stat("internal/providers/cache.go"); err != nil {
@@ -51,11 +51,11 @@ func TestMakeProvider_StripsSuffix(t *testing.T) {
 	}
 }
 
-func TestMakeProvider_StripsServiceProviderSuffix(t *testing.T) {
+func TestMakeModule_StripsServiceProviderSuffix(t *testing.T) {
 	t.Chdir(t.TempDir())
 
-	if err := MakeProvider("CacheServiceProvider", MakeProviderOptions{}); err != nil {
-		t.Fatalf("MakeProvider() error = %v", err)
+	if err := MakeModule("CacheServiceProvider", MakeModuleOptions{}); err != nil {
+		t.Fatalf("MakeModule() error = %v", err)
 	}
 
 	if _, err := os.Stat("internal/providers/cache.go"); err != nil {
@@ -63,26 +63,38 @@ func TestMakeProvider_StripsServiceProviderSuffix(t *testing.T) {
 	}
 }
 
-func TestMakeProvider_AlreadyExists(t *testing.T) {
+func TestMakeModule_StripsModuleSuffix(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	if err := MakeModule("CacheModule", MakeModuleOptions{}); err != nil {
+		t.Fatalf("MakeModule() error = %v", err)
+	}
+
+	if _, err := os.Stat("internal/providers/cache.go"); err != nil {
+		t.Error("expected cache.go (Module suffix should be stripped)")
+	}
+}
+
+func TestMakeModule_AlreadyExists(t *testing.T) {
 	t.Chdir(t.TempDir())
 
 	os.MkdirAll("internal/providers", 0755)
 	os.WriteFile("internal/providers/cache.go", []byte("existing"), 0644)
 
-	err := MakeProvider("Cache", MakeProviderOptions{})
+	err := MakeModule("Cache", MakeModuleOptions{})
 	if err == nil {
-		t.Error("expected error when provider already exists")
+		t.Error("expected error when module already exists")
 	}
 	if err != nil && !strings.Contains(err.Error(), "already exists") {
 		t.Errorf("expected 'already exists' in error, got: %v", err)
 	}
 }
 
-func TestMakeProvider_VerifiesContent(t *testing.T) {
+func TestMakeModule_VerifiesContent(t *testing.T) {
 	t.Chdir(t.TempDir())
 
-	if err := MakeProvider("Payment", MakeProviderOptions{}); err != nil {
-		t.Fatalf("MakeProvider() error = %v", err)
+	if err := MakeModule("Payment", MakeModuleOptions{}); err != nil {
+		t.Fatalf("MakeModule() error = %v", err)
 	}
 
 	content, err := os.ReadFile("internal/providers/payment.go")
@@ -91,8 +103,8 @@ func TestMakeProvider_VerifiesContent(t *testing.T) {
 	}
 
 	s := string(content)
-	if !strings.Contains(s, "PaymentServiceProvider") {
-		t.Error("expected PaymentServiceProvider struct")
+	if !strings.Contains(s, "PaymentModule") {
+		t.Error("expected PaymentModule struct")
 	}
 	if !strings.Contains(s, `"context"`) {
 		t.Error("expected context import")

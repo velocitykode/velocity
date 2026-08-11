@@ -21,41 +21,41 @@ func TestCmdRejectsUnknownFlags(t *testing.T) {
 		wantErrContains string
 	}{
 		// Routes
-		{"route:list unknown flag", "route:list", []string{"--bogus"}, "unknown flag: --bogus"},
+		{"routes unknown flag", "routes", []string{"--bogus"}, "unknown flag: --bogus"},
 		// Migrations
 		{"migrate unknown flag", "migrate", []string{"--bogus"}, "unknown flag: --bogus"},
-		{"migrate:fresh unknown flag", "migrate:fresh", []string{"--bogus"}, "unknown flag: --bogus"},
-		{"migrate:rollback unknown flag", "migrate:rollback", []string{"--bogus"}, "unknown flag: --bogus"},
-		{"migrate:status unknown flag", "migrate:status", []string{"--bogus"}, "unknown flag: --bogus"},
+		{"migrate fresh unknown flag", "migrate fresh", []string{"--bogus"}, "unknown flag: --bogus"},
+		{"migrate rollback unknown flag", "migrate rollback", []string{"--bogus"}, "unknown flag: --bogus"},
+		{"migrate status unknown flag", "migrate status", []string{"--bogus"}, "unknown flag: --bogus"},
 		// Database
-		{"db:wipe unknown flag", "db:wipe", []string{"--bogus"}, "unknown flag: --bogus"},
+		{"db wipe unknown flag", "db wipe", []string{"--bogus"}, "unknown flag: --bogus"},
 		// Cache
-		{"cache:clear unknown flag", "cache:clear", []string{"--bogus"}, "unknown flag: --bogus"},
-		// Code generation (make:*)
-		{"make:handler unknown flag", "make:handler", []string{"User", "--bogus"}, "unknown flag: --bogus"},
-		{"make:model unknown flag", "make:model", []string{"User", "--bogus"}, "unknown flag: --bogus"},
-		{"make:migration unknown flag", "make:migration", []string{"create_x", "--bogus"}, "unknown flag: --bogus"},
-		{"make:middleware unknown flag", "make:middleware", []string{"Auth", "--bogus"}, "unknown flag: --bogus"},
-		{"make:event unknown flag", "make:event", []string{"Ev", "--bogus"}, "unknown flag: --bogus"},
-		{"make:listener unknown flag", "make:listener", []string{"Ln", "--bogus"}, "unknown flag: --bogus"},
-		{"make:job unknown flag", "make:job", []string{"Jb", "--bogus"}, "unknown flag: --bogus"},
-		{"make:mail unknown flag", "make:mail", []string{"Ml", "--bogus"}, "unknown flag: --bogus"},
-		{"make:notification unknown flag", "make:notification", []string{"Nt", "--bogus"}, "unknown flag: --bogus"},
-		{"make:resource unknown flag", "make:resource", []string{"Rs", "--bogus"}, "unknown flag: --bogus"},
-		{"make:policy unknown flag", "make:policy", []string{"Pl", "--bogus"}, "unknown flag: --bogus"},
-		{"make:provider unknown flag", "make:provider", []string{"Pr", "--bogus"}, "unknown flag: --bogus"},
-		{"make:command unknown flag", "make:command", []string{"Cm", "--bogus"}, "unknown flag: --bogus"},
-		{"make:grpc:rpc unknown flag", "make:grpc:rpc", []string{"Svc", "Rpc", "--bogus"}, "unknown flag: --bogus"},
-		{"make:grpc:service unknown flag", "make:grpc:service", []string{"Svc", "--bogus"}, "unknown flag: --bogus"},
-		{"make:grpc:gen unknown flag", "make:grpc:gen", []string{"--bogus"}, "unknown flag: --bogus"},
+		{"cache clear unknown flag", "cache clear", []string{"--bogus"}, "unknown flag: --bogus"},
+		// Code generation (gen *)
+		{"gen handler unknown flag", "gen handler", []string{"User", "--bogus"}, "unknown flag: --bogus"},
+		{"gen model unknown flag", "gen model", []string{"User", "--bogus"}, "unknown flag: --bogus"},
+		{"gen migration unknown flag", "gen migration", []string{"create_x", "--bogus"}, "unknown flag: --bogus"},
+		{"gen middleware unknown flag", "gen middleware", []string{"Auth", "--bogus"}, "unknown flag: --bogus"},
+		{"gen event unknown flag", "gen event", []string{"Ev", "--bogus"}, "unknown flag: --bogus"},
+		{"gen listener unknown flag", "gen listener", []string{"Ln", "--bogus"}, "unknown flag: --bogus"},
+		{"gen job unknown flag", "gen job", []string{"Jb", "--bogus"}, "unknown flag: --bogus"},
+		{"gen mail unknown flag", "gen mail", []string{"Ml", "--bogus"}, "unknown flag: --bogus"},
+		{"gen notification unknown flag", "gen notification", []string{"Nt", "--bogus"}, "unknown flag: --bogus"},
+		{"gen resource unknown flag", "gen resource", []string{"Rs", "--bogus"}, "unknown flag: --bogus"},
+		{"gen policy unknown flag", "gen policy", []string{"Pl", "--bogus"}, "unknown flag: --bogus"},
+		{"gen module unknown flag", "gen module", []string{"Pr", "--bogus"}, "unknown flag: --bogus"},
+		{"gen command unknown flag", "gen command", []string{"Cm", "--bogus"}, "unknown flag: --bogus"},
+		{"gen grpc rpc unknown flag", "gen grpc rpc", []string{"Svc", "Rpc", "--bogus"}, "unknown flag: --bogus"},
+		{"gen grpc service unknown flag", "gen grpc service", []string{"Svc", "--bogus"}, "unknown flag: --bogus"},
+		{"gen grpc gen unknown flag", "gen grpc gen", []string{"--bogus"}, "unknown flag: --bogus"},
 		// Queue & scheduler
-		{"queue:work unknown flag", "queue:work", []string{"--bogus"}, "unknown flag: --bogus"},
-		{"schedule:work unknown flag", "schedule:work", []string{"--bogus"}, "unknown flag: --bogus"},
+		{"queue work unknown flag", "queue work", []string{"--bogus"}, "unknown flag: --bogus"},
+		{"schedule work unknown flag", "schedule work", []string{"--bogus"}, "unknown flag: --bogus"},
 		// Maintenance
 		{"down unknown flag", "down", []string{"--bogus"}, "unknown flag: --bogus"},
 		{"up unknown flag", "up", []string{"--bogus"}, "unknown flag: --bogus"},
 		// Keys
-		{"key:generate unknown flag", "key:generate", []string{"--bogus"}, "unknown flag: --bogus"},
+		{"key generate unknown flag", "key generate", []string{"--bogus"}, "unknown flag: --bogus"},
 		// Server / build
 		{"serve unknown flag", "serve", []string{"--bogus"}, "unknown flag: --bogus"},
 		{"build unknown flag", "build", []string{"--bogus"}, "unknown flag: --bogus"},
@@ -67,33 +67,33 @@ func TestCmdRejectsUnknownFlags(t *testing.T) {
 		{"-h unknown flag", "-h", []string{"--bogus"}, "unknown flag: --bogus"},
 
 		// Stray positionals
-		{"make:middleware second positional", "make:middleware", []string{"Auth", "Extra"}, "unexpected argument: Extra"},
-		{"make:command second positional", "make:command", []string{"Cm", "Extra"}, "unexpected argument: Extra"},
-		{"make:grpc:rpc third positional", "make:grpc:rpc", []string{"Svc", "Rpc", "Extra"}, "unexpected argument: Extra"},
+		{"gen middleware second positional", "gen middleware", []string{"Auth", "Extra"}, "unexpected argument: Extra"},
+		{"gen command second positional", "gen command", []string{"Cm", "Extra"}, "unexpected argument: Extra"},
+		{"gen grpc rpc third positional", "gen grpc rpc", []string{"Svc", "Rpc", "Extra"}, "unexpected argument: Extra"},
 
-		// migrate:rollback --step validation
-		{"rollback step junk", "migrate:rollback", []string{"--step", "junk"}, "integer"},
-		{"rollback step=junk", "migrate:rollback", []string{"--step=junk"}, "integer"},
-		{"rollback step zero", "migrate:rollback", []string{"--step", "0"}, ">= 1"},
-		{"rollback step missing value", "migrate:rollback", []string{"--step"}, "needs a value"},
+		// migrate rollback --step validation
+		{"rollback step junk", "migrate rollback", []string{"--step", "junk"}, "integer"},
+		{"rollback step=junk", "migrate rollback", []string{"--step=junk"}, "integer"},
+		{"rollback step zero", "migrate rollback", []string{"--step", "0"}, ">= 1"},
+		{"rollback step missing value", "migrate rollback", []string{"--step"}, "needs a value"},
 
 		// Value flags missing their value
-		{"queue:work tries missing value", "queue:work", []string{"--tries"}, "needs a value"},
-		{"queue:work tries non-integer", "queue:work", []string{"--tries", "abc"}, "integer"},
+		{"queue work tries missing value", "queue work", []string{"--tries"}, "needs a value"},
+		{"queue work tries non-integer", "queue work", []string{"--tries", "abc"}, "integer"},
 		{"down retry non-integer", "down", []string{"--retry", "abc"}, "integer"},
-		{"make:migration create missing value", "make:migration", []string{"create_x", "--create"}, "needs a value"},
-		{"make:migration table missing value", "make:migration", []string{"create_x", "--table"}, "needs a value"},
-		{"make:handler dir missing value", "make:handler", []string{"User", "--dir"}, "needs a value"},
+		{"gen migration create missing value", "gen migration", []string{"create_x", "--create"}, "needs a value"},
+		{"gen migration table missing value", "gen migration", []string{"create_x", "--table"}, "needs a value"},
+		{"gen handler dir missing value", "gen handler", []string{"User", "--dir"}, "needs a value"},
 
 		// An unknown flag must not be swallowed as the preceding flag's value.
-		{"queue:work queue then unknown flag", "queue:work", []string{"--queue", "--bogus"}, "unknown flag: --bogus"},
+		{"queue work queue then unknown flag", "queue work", []string{"--queue", "--bogus"}, "unknown flag: --bogus"},
 		{"down secret then unknown flag", "down", []string{"--secret", "--bogus"}, "unknown flag: --bogus"},
 		{"serve env then unknown flag", "serve", []string{"--env", "--bogus"}, "unknown flag: --bogus"},
 		{"build output then unknown flag", "build", []string{"--output", "--bogus"}, "unknown flag: --bogus"},
-		{"make:migration create then unknown flag", "make:migration", []string{"create_x", "--create", "--bogus"}, "unknown flag: --bogus"},
-		{"make:migration table then unknown flag", "make:migration", []string{"create_x", "--table", "--bogus"}, "unknown flag: --bogus"},
-		{"make:handler dir then unknown flag", "make:handler", []string{"User", "--dir", "--bogus"}, "unknown flag: --bogus"},
-		{"make:grpc:service package then unknown flag", "make:grpc:service", []string{"Svc", "--package", "--bogus"}, "unknown flag: --bogus"},
+		{"gen migration create then unknown flag", "gen migration", []string{"create_x", "--create", "--bogus"}, "unknown flag: --bogus"},
+		{"gen migration table then unknown flag", "gen migration", []string{"create_x", "--table", "--bogus"}, "unknown flag: --bogus"},
+		{"gen handler dir then unknown flag", "gen handler", []string{"User", "--dir", "--bogus"}, "unknown flag: --bogus"},
+		{"gen grpc service package then unknown flag", "gen grpc service", []string{"Svc", "--package", "--bogus"}, "unknown flag: --bogus"},
 	}
 
 	for _, tc := range cases {
@@ -223,8 +223,8 @@ func TestParseMigrateArgs(t *testing.T) {
 	}
 }
 
-func TestParseMakeHandlerArgs(t *testing.T) {
-	got, err := parseMakeHandlerArgs([]string{"--resource", "--api", "--dir", "internal/web"})
+func TestParseGenHandlerArgs(t *testing.T) {
+	got, err := parseGenHandlerArgs([]string{"--resource", "--api", "--dir", "internal/web"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -232,13 +232,13 @@ func TestParseMakeHandlerArgs(t *testing.T) {
 	if got != want {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
-	if got, _ := parseMakeHandlerArgs([]string{"-r"}); !got.Resource {
+	if got, _ := parseGenHandlerArgs([]string{"-r"}); !got.Resource {
 		t.Errorf("short -r not honored")
 	}
 }
 
-func TestParseMakeModelArgs(t *testing.T) {
-	got, err := parseMakeModelArgs([]string{"--uuid", "--soft-deletes", "-m", "--dir=app/models"})
+func TestParseGenModelArgs(t *testing.T) {
+	got, err := parseGenModelArgs([]string{"--uuid", "--soft-deletes", "-m", "--dir=app/models"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -248,8 +248,8 @@ func TestParseMakeModelArgs(t *testing.T) {
 	}
 }
 
-func TestParseMakeMigrationArgs(t *testing.T) {
-	got, err := parseMakeMigrationArgs([]string{"--create", "posts", "--uuid"})
+func TestParseGenMigrationArgs(t *testing.T) {
+	got, err := parseGenMigrationArgs([]string{"--create", "posts", "--uuid"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestParseMakeMigrationArgs(t *testing.T) {
 		t.Errorf("got %+v, want Create=posts UUID=true", got)
 	}
 	// --table in the equals form.
-	if got, _ := parseMakeMigrationArgs([]string{"--table=users"}); got.Table != "users" {
+	if got, _ := parseGenMigrationArgs([]string{"--table=users"}); got.Table != "users" {
 		t.Errorf("--table=users -> Table = %q, want users", got.Table)
 	}
 }

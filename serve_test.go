@@ -10,9 +10,9 @@ import (
 //
 // Pre-fix, the hot-reload subprocess entry point recursed indefinitely:
 //
-//	Serve()             // os.Args = ["bin", "serve:run"], len > 1
+//	Serve()             // os.Args = ["bin", "serve", "run"], len > 1
 //	  → Run()           // dispatches on os.Args[1]
-//	    → runCommand("serve:run")
+//	    → runCommand(["serve", "run"])
 //	      → serveRunCmd.run
 //	        → a.Serve() // back to the top, recurse forever
 //
@@ -41,10 +41,10 @@ func TestServeRunCmd_DoesNotRecurseThroughServe(t *testing.T) {
 
 	// Simulate the hot-reload subprocess invocation. If serveRunCmd.run
 	// calls a.Serve() (the pre-fix behavior), Serve() sees len(os.Args)>1
-	// and delegates to Run(), which dispatches on os.Args[1] = "serve:run"
+	// and delegates to Run(), which dispatches on os.Args[1:] = ["serve", "run"]
 	// and re-enters serveRunCmd.run — infinite recursion.
 	saved := os.Args
-	os.Args = []string{"vel", "serve:run"}
+	os.Args = []string{"vel", "serve", "run"}
 	t.Cleanup(func() { os.Args = saved })
 
 	var calls int

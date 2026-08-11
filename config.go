@@ -264,10 +264,10 @@ func WithModules(modules ...app.Module) Option {
 
 // WithSchedulerInProcess starts the scheduler loop inside the same process
 // as the HTTP server. By default the scheduler is constructed but never
-// run under Serve(); only the `vel schedule:work` CLI invokes Run(ctx).
+// run under Serve(); only the `vel schedule work` CLI invokes Run(ctx).
 // Use this for single-process deployments that don't want to manage a
 // separate scheduler worker. Multi-process deployments (where a dedicated
-// `vel schedule:work` worker runs alongside `vel serve`) should leave it
+// `vel schedule work` worker runs alongside `vel serve`) should leave it
 // off so jobs are not duplicated.
 //
 // The scheduler is started after Router.Freeze() and before

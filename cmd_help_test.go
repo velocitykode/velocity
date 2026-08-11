@@ -12,7 +12,7 @@ import (
 // capturing styled stdout.
 
 // wantHelpSections is the help layout printHelp renders, in order. The empty
-// title at the end is the hidden group (help aliases + internal serve:run):
+// title at the end is the hidden group (help aliases + internal "serve run"):
 // registered for dispatch but omitted from help output.
 var wantHelpSections = []commandSection{
 	{title: "Server", cmds: []command{
@@ -28,16 +28,16 @@ var wantHelpSections = []commandSection{
 		cacheClearCmd{},
 	}},
 	{title: "Code Generation", cmds: []command{
-		makeHandlerCmd{}, makeModelCmd{}, makeMigrationCmd{}, makeMiddlewareCmd{},
-		makeEventCmd{}, makeListenerCmd{}, makeJobCmd{}, makeMailCmd{},
-		makeNotificationCmd{}, makeResourceCmd{}, makePolicyCmd{}, makeProviderCmd{},
-		makeCommandCmd{}, makeGRPCServiceCmd{}, makeGRPCRPCCmd{}, makeGRPCGenCmd{},
+		genHandlerCmd{}, genModelCmd{}, genMigrationCmd{}, genMiddlewareCmd{},
+		genEventCmd{}, genListenerCmd{}, genJobCmd{}, genMailCmd{},
+		genNotificationCmd{}, genResourceCmd{}, genPolicyCmd{}, genModuleCmd{},
+		genCommandCmd{}, genGRPCServiceCmd{}, genGRPCRPCCmd{}, genGRPCGenCmd{},
 	}},
 	{title: "Custom Commands", cmds: []command{
 		runCmd{},
 	}},
 	{title: "Other", cmds: []command{
-		routeListCmd{}, keyGenerateCmd{},
+		routesCmd{}, keyGenerateCmd{},
 	}},
 	{title: "", cmds: []command{
 		helpCmd{name_: "help"}, helpCmd{name_: "--help"}, helpCmd{name_: "-h"}, serveRunCmd{},
@@ -70,18 +70,18 @@ func TestHelpSections_TitlesAndOrder(t *testing.T) {
 func TestRegistryOrder_FlattensSections(t *testing.T) {
 	want := []string{
 		"serve", "build", "down", "up",
-		"migrate", "migrate:fresh", "migrate:rollback", "migrate:status",
-		"db:wipe",
-		"queue:work", "schedule:work",
-		"cache:clear",
-		"make:handler", "make:model", "make:migration", "make:middleware",
-		"make:event", "make:listener", "make:job", "make:mail",
-		"make:notification", "make:resource", "make:policy", "make:provider",
-		"make:command", "make:grpc:service", "make:grpc:rpc", "make:grpc:gen",
+		"migrate", "migrate fresh", "migrate rollback", "migrate status",
+		"db wipe",
+		"queue work", "schedule work",
+		"cache clear",
+		"gen handler", "gen model", "gen migration", "gen middleware",
+		"gen event", "gen listener", "gen job", "gen mail",
+		"gen notification", "gen resource", "gen policy", "gen module",
+		"gen command", "gen grpc service", "gen grpc rpc", "gen grpc gen",
 		"run",
-		"route:list", "key:generate",
+		"routes", "key generate",
 		"help", "--help", "-h",
-		"serve:run",
+		"serve run",
 	}
 	got := tokenNames(newCommandRegistry().order)
 	if !reflect.DeepEqual(got, want) {
@@ -140,8 +140,8 @@ func TestHelpSections_EveryCommandInExactlyOneSection(t *testing.T) {
 }
 
 // TestHelpPadWidth asserts helpPadWidth equals the longest help-visible token
-// plus two, and that the current longest token (make:notification /
-// make:grpc:service, 17 chars) yields width 19.
+// plus two, and that the current longest token (gen notification /
+// gen grpc service / migrate rollback, 16 chars) yields width 18.
 func TestHelpPadWidth(t *testing.T) {
 	reg := newCommandRegistry()
 
@@ -163,11 +163,11 @@ func TestHelpPadWidth(t *testing.T) {
 	if got := reg.helpPadWidth(); got != max+2 {
 		t.Errorf("helpPadWidth() = %d, want maxlen+2 = %d", got, max+2)
 	}
-	if max != 17 {
-		t.Errorf("longest visible token = %d chars, want 17 (make:grpc:service/make:notification)", max)
+	if max != 16 {
+		t.Errorf("longest visible token = %d chars, want 16 (gen grpc service/gen notification/migrate rollback)", max)
 	}
-	if got := reg.helpPadWidth(); got != 19 {
-		t.Errorf("helpPadWidth() = %d, want 19", got)
+	if got := reg.helpPadWidth(); got != 18 {
+		t.Errorf("helpPadWidth() = %d, want 18", got)
 	}
 }
 

@@ -8,19 +8,19 @@ import (
 	"github.com/velocitykode/velocity/console"
 )
 
-// makeNameUsageHint prints the one-line usage shown by the name-only make:*
-// commands. usage is the command token, e.g. "make:middleware".
-func makeNameUsageHint(usage string) {
+// genNameUsageHint prints the one-line usage shown by the name-only gen
+// commands. usage is the command token, e.g. "gen middleware".
+func genNameUsageHint(usage string) {
 	prism.Muted("  Usage: vel " + usage + " [name]")
 }
 
-// requireMakeName returns an error when args is empty, after printing the
+// requireGenName returns an error when args is empty, after printing the
 // unified usage block (a leading blank line, the one-line usage, and, when
 // examples are supplied, an "Examples:" list). Callers that receive a nil
 // error may safely index args[0]. Returning (instead of os.Exit) lets
 // deferred cleanup in the CLI dispatcher and caller run before the process
 // exits.
-func requireMakeName(args []string, label, usage string, examples ...string) error {
+func requireGenName(args []string, label, usage string, examples ...string) error {
 	printUsage := func() {
 		prism.Newline()
 		prism.Muted("Usage: vel " + usage + " [name]")
@@ -45,252 +45,252 @@ func requireMakeName(args []string, label, usage string, examples ...string) err
 	return nil
 }
 
-type makeHandlerCmd struct{}
+type genHandlerCmd struct{}
 
-func (makeHandlerCmd) name() string        { return "make:handler" }
-func (makeHandlerCmd) description() string { return "Create a new handler" }
-func makeHandlerUsage() {
+func (genHandlerCmd) name() string        { return "gen handler" }
+func (genHandlerCmd) description() string { return "Create a new handler" }
+func genHandlerUsage() {
 	prism.Newline()
-	prism.Muted("Usage: vel make:handler [name]")
+	prism.Muted("Usage: vel gen handler [name]")
 	prism.Newline()
 	prism.Muted("Examples:")
-	prism.Muted("  vel make:handler User")
-	prism.Muted("  vel make:handler Admin/Dashboard --resource")
-	prism.Muted("  vel make:handler User --dir internal/web/handlers")
+	prism.Muted("  vel gen handler User")
+	prism.Muted("  vel gen handler Admin/Dashboard --resource")
+	prism.Muted("  vel gen handler User --dir internal/web/handlers")
 }
 
-func (makeHandlerCmd) run(a *App, args []string) error {
-	if err := requireMakeName(args, "Handler", "make:handler",
-		"  vel make:handler User",
-		"  vel make:handler Admin/Dashboard --resource",
-		"  vel make:handler User --dir internal/web/handlers"); err != nil {
+func (genHandlerCmd) run(a *App, args []string) error {
+	if err := requireGenName(args, "Handler", "gen handler",
+		"  vel gen handler User",
+		"  vel gen handler Admin/Dashboard --resource",
+		"  vel gen handler User --dir internal/web/handlers"); err != nil {
 		return err
 	}
-	opts, err := parseMakeHandlerArgs(args[1:])
+	opts, err := parseGenHandlerArgs(args[1:])
 	if err != nil {
-		makeHandlerUsage()
+		genHandlerUsage()
 		return err
 	}
 	return console.MakeHandler(args[0], opts)
 }
 
-type makeModelCmd struct{}
+type genModelCmd struct{}
 
-func (makeModelCmd) name() string        { return "make:model" }
-func (makeModelCmd) description() string { return "Create a new model" }
-func makeModelUsage() {
+func (genModelCmd) name() string        { return "gen model" }
+func (genModelCmd) description() string { return "Create a new model" }
+func genModelUsage() {
 	prism.Newline()
-	prism.Muted("Usage: vel make:model [name]")
+	prism.Muted("Usage: vel gen model [name]")
 	prism.Newline()
 	prism.Muted("Examples:")
-	prism.Muted("  vel make:model User")
-	prism.Muted("  vel make:model Post --uuid --soft-deletes")
-	prism.Muted("  vel make:model Comment --migration")
-	prism.Muted("  vel make:model Invoice --dir internal/billing/models")
+	prism.Muted("  vel gen model User")
+	prism.Muted("  vel gen model Post --uuid --soft-deletes")
+	prism.Muted("  vel gen model Comment --migration")
+	prism.Muted("  vel gen model Invoice --dir internal/billing/models")
 }
 
-func (makeModelCmd) run(a *App, args []string) error {
-	if err := requireMakeName(args, "Model", "make:model",
-		"  vel make:model User",
-		"  vel make:model Post --uuid --soft-deletes",
-		"  vel make:model Comment --migration",
-		"  vel make:model Invoice --dir internal/billing/models"); err != nil {
+func (genModelCmd) run(a *App, args []string) error {
+	if err := requireGenName(args, "Model", "gen model",
+		"  vel gen model User",
+		"  vel gen model Post --uuid --soft-deletes",
+		"  vel gen model Comment --migration",
+		"  vel gen model Invoice --dir internal/billing/models"); err != nil {
 		return err
 	}
-	opts, err := parseMakeModelArgs(args[1:])
+	opts, err := parseGenModelArgs(args[1:])
 	if err != nil {
-		makeModelUsage()
+		genModelUsage()
 		return err
 	}
 	return console.MakeModel(args[0], opts)
 }
 
-type makeMigrationCmd struct{}
+type genMigrationCmd struct{}
 
-func (makeMigrationCmd) name() string        { return "make:migration" }
-func (makeMigrationCmd) description() string { return "Create a new migration" }
-func makeMigrationUsage() {
+func (genMigrationCmd) name() string        { return "gen migration" }
+func (genMigrationCmd) description() string { return "Create a new migration" }
+func genMigrationUsage() {
 	prism.Newline()
-	prism.Muted("Usage: vel make:migration [name]")
+	prism.Muted("Usage: vel gen migration [name]")
 	prism.Newline()
 	prism.Muted("Examples:")
-	prism.Muted("  vel make:migration create_posts")
-	prism.Muted("  vel make:migration add_slug_to_posts --table=posts")
-	prism.Muted("  vel make:migration create_comments --create=comments")
-	prism.Muted("  vel make:migration create_posts --dir db/migrations")
+	prism.Muted("  vel gen migration create_posts")
+	prism.Muted("  vel gen migration add_slug_to_posts --table=posts")
+	prism.Muted("  vel gen migration create_comments --create=comments")
+	prism.Muted("  vel gen migration create_posts --dir db/migrations")
 }
 
-func (makeMigrationCmd) run(a *App, args []string) error {
-	if err := requireMakeName(args, "Migration", "make:migration",
-		"  vel make:migration create_posts",
-		"  vel make:migration add_slug_to_posts --table=posts",
-		"  vel make:migration create_comments --create=comments",
-		"  vel make:migration create_posts --dir db/migrations"); err != nil {
+func (genMigrationCmd) run(a *App, args []string) error {
+	if err := requireGenName(args, "Migration", "gen migration",
+		"  vel gen migration create_posts",
+		"  vel gen migration add_slug_to_posts --table=posts",
+		"  vel gen migration create_comments --create=comments",
+		"  vel gen migration create_posts --dir db/migrations"); err != nil {
 		return err
 	}
-	opts, err := parseMakeMigrationArgs(args[1:])
+	opts, err := parseGenMigrationArgs(args[1:])
 	if err != nil {
-		makeMigrationUsage()
+		genMigrationUsage()
 		return err
 	}
 	return console.MakeMigration(args[0], opts)
 }
 
-type makeMiddlewareCmd struct{}
+type genMiddlewareCmd struct{}
 
-func (makeMiddlewareCmd) name() string        { return "make:middleware" }
-func (makeMiddlewareCmd) description() string { return "Create a new middleware" }
-func (makeMiddlewareCmd) run(a *App, args []string) error {
-	if err := requireMakeName(args, "Middleware", "make:middleware"); err != nil {
+func (genMiddlewareCmd) name() string        { return "gen middleware" }
+func (genMiddlewareCmd) description() string { return "Create a new middleware" }
+func (genMiddlewareCmd) run(a *App, args []string) error {
+	if err := requireGenName(args, "Middleware", "gen middleware"); err != nil {
 		return err
 	}
 	dir, err := parseDirOnlyArgs(args[1:])
 	if err != nil {
-		makeNameUsageHint("make:middleware")
+		genNameUsageHint("gen middleware")
 		return err
 	}
 	return console.MakeMiddleware(args[0], console.MakeMiddlewareOptions{Dir: dir})
 }
 
-type makeEventCmd struct{}
+type genEventCmd struct{}
 
-func (makeEventCmd) name() string        { return "make:event" }
-func (makeEventCmd) description() string { return "Create a new event" }
-func (makeEventCmd) run(a *App, args []string) error {
-	if err := requireMakeName(args, "Event", "make:event"); err != nil {
+func (genEventCmd) name() string        { return "gen event" }
+func (genEventCmd) description() string { return "Create a new event" }
+func (genEventCmd) run(a *App, args []string) error {
+	if err := requireGenName(args, "Event", "gen event"); err != nil {
 		return err
 	}
 	dir, err := parseDirOnlyArgs(args[1:])
 	if err != nil {
-		makeNameUsageHint("make:event")
+		genNameUsageHint("gen event")
 		return err
 	}
 	return console.MakeEvent(args[0], console.MakeEventOptions{Dir: dir})
 }
 
-type makeListenerCmd struct{}
+type genListenerCmd struct{}
 
-func (makeListenerCmd) name() string        { return "make:listener" }
-func (makeListenerCmd) description() string { return "Create a new listener" }
-func (makeListenerCmd) run(a *App, args []string) error {
-	if err := requireMakeName(args, "Listener", "make:listener"); err != nil {
+func (genListenerCmd) name() string        { return "gen listener" }
+func (genListenerCmd) description() string { return "Create a new listener" }
+func (genListenerCmd) run(a *App, args []string) error {
+	if err := requireGenName(args, "Listener", "gen listener"); err != nil {
 		return err
 	}
 	dir, err := parseDirOnlyArgs(args[1:])
 	if err != nil {
-		makeNameUsageHint("make:listener")
+		genNameUsageHint("gen listener")
 		return err
 	}
 	return console.MakeListener(args[0], console.MakeListenerOptions{Dir: dir})
 }
 
-type makeJobCmd struct{}
+type genJobCmd struct{}
 
-func (makeJobCmd) name() string        { return "make:job" }
-func (makeJobCmd) description() string { return "Create a new job" }
-func (makeJobCmd) run(a *App, args []string) error {
-	if err := requireMakeName(args, "Job", "make:job"); err != nil {
+func (genJobCmd) name() string        { return "gen job" }
+func (genJobCmd) description() string { return "Create a new job" }
+func (genJobCmd) run(a *App, args []string) error {
+	if err := requireGenName(args, "Job", "gen job"); err != nil {
 		return err
 	}
 	dir, err := parseDirOnlyArgs(args[1:])
 	if err != nil {
-		makeNameUsageHint("make:job")
+		genNameUsageHint("gen job")
 		return err
 	}
 	return console.MakeJob(args[0], console.MakeJobOptions{Dir: dir})
 }
 
-type makeMailCmd struct{}
+type genMailCmd struct{}
 
-func (makeMailCmd) name() string        { return "make:mail" }
-func (makeMailCmd) description() string { return "Create a new mailable" }
-func (makeMailCmd) run(a *App, args []string) error {
-	if err := requireMakeName(args, "Mail", "make:mail"); err != nil {
+func (genMailCmd) name() string        { return "gen mail" }
+func (genMailCmd) description() string { return "Create a new mailable" }
+func (genMailCmd) run(a *App, args []string) error {
+	if err := requireGenName(args, "Mail", "gen mail"); err != nil {
 		return err
 	}
 	dir, err := parseDirOnlyArgs(args[1:])
 	if err != nil {
-		makeNameUsageHint("make:mail")
+		genNameUsageHint("gen mail")
 		return err
 	}
 	return console.MakeMail(args[0], console.MakeMailOptions{Dir: dir})
 }
 
-type makeNotificationCmd struct{}
+type genNotificationCmd struct{}
 
-func (makeNotificationCmd) name() string        { return "make:notification" }
-func (makeNotificationCmd) description() string { return "Create a new notification" }
-func (makeNotificationCmd) run(a *App, args []string) error {
-	if err := requireMakeName(args, "Notification", "make:notification"); err != nil {
+func (genNotificationCmd) name() string        { return "gen notification" }
+func (genNotificationCmd) description() string { return "Create a new notification" }
+func (genNotificationCmd) run(a *App, args []string) error {
+	if err := requireGenName(args, "Notification", "gen notification"); err != nil {
 		return err
 	}
 	dir, err := parseDirOnlyArgs(args[1:])
 	if err != nil {
-		makeNameUsageHint("make:notification")
+		genNameUsageHint("gen notification")
 		return err
 	}
 	return console.MakeNotification(args[0], console.MakeNotificationOptions{Dir: dir})
 }
 
-type makeResourceCmd struct{}
+type genResourceCmd struct{}
 
-func (makeResourceCmd) name() string        { return "make:resource" }
-func (makeResourceCmd) description() string { return "Create a new API resource" }
-func (makeResourceCmd) run(a *App, args []string) error {
-	if err := requireMakeName(args, "Resource", "make:resource"); err != nil {
+func (genResourceCmd) name() string        { return "gen resource" }
+func (genResourceCmd) description() string { return "Create a new API resource" }
+func (genResourceCmd) run(a *App, args []string) error {
+	if err := requireGenName(args, "Resource", "gen resource"); err != nil {
 		return err
 	}
 	dir, err := parseDirOnlyArgs(args[1:])
 	if err != nil {
-		makeNameUsageHint("make:resource")
+		genNameUsageHint("gen resource")
 		return err
 	}
 	return console.MakeResource(args[0], console.MakeResourceOptions{Dir: dir})
 }
 
-type makePolicyCmd struct{}
+type genPolicyCmd struct{}
 
-func (makePolicyCmd) name() string        { return "make:policy" }
-func (makePolicyCmd) description() string { return "Create a new policy" }
-func (makePolicyCmd) run(a *App, args []string) error {
-	if err := requireMakeName(args, "Policy", "make:policy"); err != nil {
+func (genPolicyCmd) name() string        { return "gen policy" }
+func (genPolicyCmd) description() string { return "Create a new policy" }
+func (genPolicyCmd) run(a *App, args []string) error {
+	if err := requireGenName(args, "Policy", "gen policy"); err != nil {
 		return err
 	}
 	dir, err := parseDirOnlyArgs(args[1:])
 	if err != nil {
-		makeNameUsageHint("make:policy")
+		genNameUsageHint("gen policy")
 		return err
 	}
 	return console.MakePolicy(args[0], console.MakePolicyOptions{Dir: dir})
 }
 
-type makeProviderCmd struct{}
+type genModuleCmd struct{}
 
-func (makeProviderCmd) name() string        { return "make:provider" }
-func (makeProviderCmd) description() string { return "Create a new service provider" }
-func (makeProviderCmd) run(a *App, args []string) error {
-	if err := requireMakeName(args, "Provider", "make:provider"); err != nil {
+func (genModuleCmd) name() string        { return "gen module" }
+func (genModuleCmd) description() string { return "Create a new module" }
+func (genModuleCmd) run(a *App, args []string) error {
+	if err := requireGenName(args, "Module", "gen module"); err != nil {
 		return err
 	}
 	dir, err := parseDirOnlyArgs(args[1:])
 	if err != nil {
-		makeNameUsageHint("make:provider")
+		genNameUsageHint("gen module")
 		return err
 	}
-	return console.MakeProvider(args[0], console.MakeProviderOptions{Dir: dir})
+	return console.MakeModule(args[0], console.MakeModuleOptions{Dir: dir})
 }
 
-type makeCommandCmd struct{}
+type genCommandCmd struct{}
 
-func (makeCommandCmd) name() string        { return "make:command" }
-func (makeCommandCmd) description() string { return "Create a new command" }
-func (makeCommandCmd) run(a *App, args []string) error {
-	if err := requireMakeName(args, "Command", "make:command"); err != nil {
+func (genCommandCmd) name() string        { return "gen command" }
+func (genCommandCmd) description() string { return "Create a new command" }
+func (genCommandCmd) run(a *App, args []string) error {
+	if err := requireGenName(args, "Command", "gen command"); err != nil {
 		return err
 	}
 	dir, err := parseDirOnlyArgs(args[1:])
 	if err != nil {
-		makeNameUsageHint("make:command")
+		genNameUsageHint("gen command")
 		return err
 	}
 	return console.MakeCommand(args[0], console.MakeCommandOptions{Dir: dir})

@@ -8,7 +8,7 @@ import (
 	"github.com/velocitykode/velocity/console/scaffold"
 )
 
-// MakeHandlerOptions holds flags for the make:handler command.
+// MakeHandlerOptions holds flags for the gen handler command.
 type MakeHandlerOptions struct {
 	Resource bool
 	API      bool

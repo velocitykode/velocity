@@ -3,6 +3,7 @@ package velocity
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/velocitykode/prism"
 	"github.com/velocitykode/velocity/contract"
@@ -17,16 +18,19 @@ import (
 // User-facing custom commands implement the separate chain.Command interface
 // and are invoked via `vel run <name>`.
 type command interface {
-	// name returns the command token users type (e.g. "migrate:fresh").
+	// name returns the command users type. Multi-word names are written
+	// space-separated (e.g. "migrate fresh", "gen grpc service"); the
+	// dispatcher rejoins the leading argv tokens to match them.
 	name() string
 
 	// description is the single-line help text shown by printHelp. May be
 	// empty for commands that are intentionally omitted from help output
-	// (e.g. the internal "serve:run" subprocess entry point).
+	// (e.g. the internal "serve run" subprocess entry point).
 	description() string
 
-	// run executes the command with the already-split argument list (i.e.
-	// os.Args[2:] for top-level commands). It must not re-read os.Args.
+	// run executes the command with the already-split argument list (the
+	// argv tail left after the name words are consumed, i.e. os.Args[2:]
+	// for a one-word name). It must not re-read os.Args.
 	run(a *App, args []string) error
 }
 
@@ -51,7 +55,7 @@ func usageToken(c command) string {
 // section list is the single source of truth for both dispatch (every
 // command is registered) and printHelp (titled sections render in order). A
 // section with an empty title is hidden from help - used for the help aliases
-// and the internal serve:run entry point, which are dispatchable but not
+// and the internal "serve run" entry point, which are dispatchable but not
 // documented.
 type commandSection struct {
 	title string
@@ -66,6 +70,11 @@ type commandRegistry struct {
 	byName   map[string]command
 	order    []command
 	sections []commandSection
+
+	// maxWords is the highest word count among registered names ("gen grpc
+	// service" = 3). It caps how many leading argv tokens the dispatcher
+	// joins when looking a command up.
+	maxWords int
 }
 
 func newCommandRegistry() *commandRegistry {
@@ -91,28 +100,28 @@ func newCommandRegistry() *commandRegistry {
 		cacheClearCmd{},
 	)
 	r.addSection("Code Generation",
-		makeHandlerCmd{},
-		makeModelCmd{},
-		makeMigrationCmd{},
-		makeMiddlewareCmd{},
-		makeEventCmd{},
-		makeListenerCmd{},
-		makeJobCmd{},
-		makeMailCmd{},
-		makeNotificationCmd{},
-		makeResourceCmd{},
-		makePolicyCmd{},
-		makeProviderCmd{},
-		makeCommandCmd{},
-		makeGRPCServiceCmd{},
-		makeGRPCRPCCmd{},
-		makeGRPCGenCmd{},
+		genHandlerCmd{},
+		genModelCmd{},
+		genMigrationCmd{},
+		genMiddlewareCmd{},
+		genEventCmd{},
+		genListenerCmd{},
+		genJobCmd{},
+		genMailCmd{},
+		genNotificationCmd{},
+		genResourceCmd{},
+		genPolicyCmd{},
+		genModuleCmd{},
+		genCommandCmd{},
+		genGRPCServiceCmd{},
+		genGRPCRPCCmd{},
+		genGRPCGenCmd{},
 	)
 	r.addSection("Custom Commands",
 		runCmd{},
 	)
 	r.addSection("Other",
-		routeListCmd{},
+		routesCmd{},
 		keyGenerateCmd{},
 	)
 	// Hidden group (empty title): help aliases and the internal subprocess
@@ -138,8 +147,28 @@ func (r *commandRegistry) addSection(title string, cmds ...command) {
 
 func (r *commandRegistry) add(cmds ...command) {
 	for _, c := range cmds {
-		r.byName[c.name()] = c
+		name := c.name()
+		r.byName[name] = c
+		if n := len(strings.Fields(name)); n > r.maxWords {
+			r.maxWords = n
+		}
 	}
+}
+
+// nameWords returns the leading argv tokens that may form a command name:
+// at most maxWords of them, and never extending across a flag-like token, so
+// `vel migrate --pretend` looks up "migrate" (with --pretend left as an
+// argument) instead of the non-existent "migrate --pretend". argv[0] is
+// always included - the "--help" and "-h" aliases are flag-like names in
+// their own right. argv must be non-empty.
+func (r *commandRegistry) nameWords(argv []string) []string {
+	n := min(r.maxWords, len(argv))
+	for i := 1; i < n; i++ {
+		if strings.HasPrefix(argv[i], "-") {
+			return argv[:i]
+		}
+	}
+	return argv[:n]
 }
 
 // helpPadWidth returns the column width printHelp left-pads command tokens to:
@@ -180,7 +209,7 @@ func hasForceFlag(args []string) bool {
 }
 
 // guardProductionDataLoss refuses to run a command that destroys database
-// data (db:wipe, migrate:fresh, migrate:rollback) in a production-class
+// data (db wipe, migrate fresh, migrate rollback) in a production-class
 // environment unless the operator passed --force. Same fail-secure stance
 // as the other production gates (session store validation, gRPC reflection,
 // mail log-driver warning): contract.IsProductionEnv treats "production",
@@ -206,27 +235,38 @@ func guardProductionDataLoss(a *App, name string, args []string) error {
 }
 
 // Run dispatches CLI commands or starts the HTTP server.
-// If os.Args contains a command (e.g. "route:list"), it runs that command.
-// With no arguments, it displays available commands.
+// If os.Args contains a command (e.g. "routes", "migrate fresh"), it runs
+// that command. With no arguments, it displays available commands.
 func (a *App) Run() error {
 	if len(os.Args) > 1 {
-		return a.runCommand(os.Args[1], os.Args[2:])
+		return a.runCommand(os.Args[1:])
 	}
 	a.printHelp()
 	return nil
 }
 
-func (a *App) runCommand(name string, args []string) error {
+// runCommand resolves argv against the registry, longest name first, so a
+// subcommand ("migrate fresh") wins over its bare parent ("migrate") while
+// `vel migrate --pretend` and `vel run seed` still fall back to the
+// single-token command with the rest passed through as arguments.
+func (a *App) runCommand(argv []string) error {
+	if len(argv) == 0 {
+		a.printHelp()
+		return nil
+	}
 	reg := newCommandRegistry()
-	if cmd, ok := reg.get(name); ok {
-		return cmd.run(a, args)
+	words := reg.nameWords(argv)
+	for n := len(words); n >= 1; n-- {
+		if cmd, ok := reg.get(strings.Join(words[:n], " ")); ok {
+			return cmd.run(a, argv[n:])
+		}
 	}
 	// Return the error instead of os.Exit(1) so deferred cleanup (notably
 	// Serve()'s shutdownCancel and any caller-installed defers) gets a chance
 	// to run. The top-level caller (main.go via Serve() → Run()) is
 	// responsible for converting the returned error into a non-zero exit code.
 	a.printHelp()
-	return fmt.Errorf("vel: unknown command %q", name)
+	return fmt.Errorf("vel: unknown command %q", strings.Join(words, " "))
 }
 
 func (a *App) printHelp() {
@@ -260,7 +300,7 @@ func (a *App) printUserCommands() {
 		prism.Newline()
 		prism.Muted("No custom commands registered.")
 		prism.Newline()
-		prism.Muted("Create one with: vel make:command <Name>")
+		prism.Muted("Create one with: vel gen command <Name>")
 		prism.Newline()
 		return
 	}

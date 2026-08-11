@@ -2,6 +2,7 @@ package velocity
 
 import (
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -18,24 +19,24 @@ func TestCommandRegistry_CoversEveryPreviousSwitchCase(t *testing.T) {
 
 	want := []string{
 		// Routes
-		"route:list",
+		"routes",
 		// Migrations
-		"migrate", "migrate:fresh", "migrate:rollback", "migrate:status",
+		"migrate", "migrate fresh", "migrate rollback", "migrate status",
 		// Code generation
-		"make:handler", "make:model", "make:migration", "make:middleware",
-		"make:event", "make:listener", "make:job", "make:mail",
-		"make:notification", "make:resource", "make:policy", "make:provider",
-		"make:command",
+		"gen handler", "gen model", "gen migration", "gen middleware",
+		"gen event", "gen listener", "gen job", "gen mail",
+		"gen notification", "gen resource", "gen policy", "gen module",
+		"gen command",
 		// Database
-		"db:wipe",
+		"db wipe",
 		// Cache
-		"cache:clear",
+		"cache clear",
 		// Queue & scheduler
-		"queue:work", "schedule:work",
+		"queue work", "schedule work",
 		// Maintenance
 		"down", "up",
 		// Keys
-		"key:generate",
+		"key generate",
 		// Server / build
 		"serve", "build",
 		// Custom command runner
@@ -43,7 +44,7 @@ func TestCommandRegistry_CoversEveryPreviousSwitchCase(t *testing.T) {
 		// Help aliases
 		"help", "--help", "-h",
 		// Internal subprocess entry
-		"serve:run",
+		"serve run",
 	}
 
 	for _, name := range want {
@@ -55,7 +56,7 @@ func TestCommandRegistry_CoversEveryPreviousSwitchCase(t *testing.T) {
 
 // TestCommandRegistry_DescriptionsPresent asserts every non-alias command
 // has a non-empty description. Empty strings are reserved for help aliases
-// ("--help"/"-h"/"help") and the internal "serve:run" subprocess entry.
+// ("--help"/"-h"/"help") and the internal "serve run" subprocess entry.
 func TestCommandRegistry_DescriptionsPresent(t *testing.T) {
 	reg := newCommandRegistry()
 
@@ -63,7 +64,7 @@ func TestCommandRegistry_DescriptionsPresent(t *testing.T) {
 		"help":      true,
 		"--help":    true,
 		"-h":        true,
-		"serve:run": true,
+		"serve run": true,
 	}
 
 	for _, c := range reg.order {
@@ -191,15 +192,115 @@ func TestRunCommand_UnknownCustomCommand_ReturnsError(t *testing.T) {
 	}
 }
 
-// TestRequireMakeName_ReturnsErrorWhenEmpty asserts the shared helper used
-// by make:* commands returns an error (rather than os.Exit) when the
+// TestRequireGenName_ReturnsErrorWhenEmpty asserts the shared helper used
+// by the gen commands returns an error (rather than os.Exit) when the
 // required name argument is missing. Exits would skip deferred cleanup.
-func TestRequireMakeName_ReturnsErrorWhenEmpty(t *testing.T) {
-	if err := requireMakeName(nil, "Middleware", "make:middleware"); err == nil {
-		t.Fatal("requireMakeName(nil) returned nil error, want non-nil")
+func TestRequireGenName_ReturnsErrorWhenEmpty(t *testing.T) {
+	if err := requireGenName(nil, "Middleware", "gen middleware"); err == nil {
+		t.Fatal("requireGenName(nil) returned nil error, want non-nil")
 	}
-	if err := requireMakeName([]string{"Foo"}, "Middleware", "make:middleware"); err != nil {
-		t.Errorf("requireMakeName with arg returned error %v, want nil", err)
+	if err := requireGenName([]string{"Foo"}, "Middleware", "gen middleware"); err != nil {
+		t.Errorf("requireGenName with arg returned error %v, want nil", err)
+	}
+}
+
+// TestRegistry_NameWords pins the token-joining rule the multi-word
+// dispatcher relies on: at most maxWords tokens, never extending across a
+// flag-like token, and argv[0] always included (so the "--help" / "-h"
+// aliases stay reachable).
+func TestRegistry_NameWords(t *testing.T) {
+	reg := newCommandRegistry()
+
+	if reg.maxWords != 3 {
+		t.Errorf("maxWords = %d, want 3 (longest name is %q)", reg.maxWords, "gen grpc service")
+	}
+
+	cases := []struct {
+		argv []string
+		want []string
+	}{
+		{[]string{"migrate"}, []string{"migrate"}},
+		{[]string{"migrate", "fresh"}, []string{"migrate", "fresh"}},
+		{[]string{"migrate", "--pretend"}, []string{"migrate"}},
+		{[]string{"gen", "model", "User"}, []string{"gen", "model", "User"}},
+		{[]string{"gen", "grpc", "service", "Foo"}, []string{"gen", "grpc", "service"}},
+		{[]string{"gen", "model", "--dir", "x"}, []string{"gen", "model"}},
+		{[]string{"--help"}, []string{"--help"}},
+		{[]string{"-h", "--bogus"}, []string{"-h"}},
+	}
+	for _, tc := range cases {
+		got := reg.nameWords(tc.argv)
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("nameWords(%v) = %v, want %v", tc.argv, got, tc.want)
+		}
+	}
+}
+
+// TestRunCommand_LongestMatchWins exercises the dispatcher end to end: a
+// multi-word name beats its bare prefix, the remaining tokens arrive as the
+// command's args, and a flag-like token never gets consumed as a name word.
+// Every case here fails during argument parsing (before Bootstrap), so no
+// service is touched.
+func TestRunCommand_LongestMatchWins(t *testing.T) {
+	cases := []struct {
+		name            string
+		argv            []string
+		wantErrContains string
+	}{
+		// Two-word name resolves to the gen command, which then reports the
+		// missing artifact name.
+		{"two word name", []string{"gen", "model"}, "model name is required"},
+		// Three-word name: the trailing flag is passed through as an arg.
+		{"three word name", []string{"gen", "grpc", "gen", "--bogus"}, "unknown flag: --bogus"},
+		// Bare parent still wins when the next token is a flag.
+		{"flag is not a name word", []string{"migrate", "--bogus"}, "unknown flag: --bogus"},
+		// Unknown multi-word names report the joined token.
+		{"unknown two word name", []string{"gen", "nonsense"}, `unknown command "gen nonsense"`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, err := NewTestApp()
+			if err != nil {
+				t.Fatalf("NewTestApp() error: %v", err)
+			}
+			err = a.runCommand(tc.argv)
+			if err == nil {
+				t.Fatalf("runCommand(%v) = nil, want error", tc.argv)
+			}
+			if !strings.Contains(err.Error(), tc.wantErrContains) {
+				t.Errorf("runCommand(%v) error = %q, want containing %q", tc.argv, err.Error(), tc.wantErrContains)
+			}
+		})
+	}
+}
+
+// TestRunCommand_FallsBackToSingleToken asserts `vel run <name>` still
+// reaches the single-token "run" command with the custom command name left
+// in args, rather than failing as an unknown two-word name.
+func TestRunCommand_FallsBackToSingleToken(t *testing.T) {
+	a, err := NewTestApp()
+	if err != nil {
+		t.Fatalf("NewTestApp() error: %v", err)
+	}
+
+	var gotArgs []string
+	a.Commands(func(r *chain.Commands) {
+		r.Add(&stubCommand{
+			name:        "seed",
+			description: "Seed the database",
+			handleFn: func(s *app.Services, args []string) error {
+				gotArgs = args
+				return nil
+			},
+		})
+	})
+
+	if err := a.runCommand([]string{"run", "seed", "one"}); err != nil {
+		t.Fatalf("runCommand([run seed one]) error: %v", err)
+	}
+	if len(gotArgs) != 1 || gotArgs[0] != "one" {
+		t.Errorf("custom command got args %v, want [one]", gotArgs)
 	}
 }
 

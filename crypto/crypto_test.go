@@ -164,7 +164,7 @@ func TestBase64Key(t *testing.T) {
 // TestBase64Key_AcceptsExactLength covers the base64-prefixed key path
 // for each cipher's required decoded byte length. Mirrors the raw-key
 // acceptance test so operators using `base64:` keys (the default written
-// by `vel key:generate`) get the same coverage.
+// by `vel key generate`) get the same coverage.
 func TestBase64Key_AcceptsExactLength(t *testing.T) {
 	tests := []struct {
 		name    string

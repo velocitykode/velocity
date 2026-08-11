@@ -6,7 +6,7 @@ import (
 	"github.com/velocitykode/velocity/console/scaffold"
 )
 
-// MakeNotificationOptions holds flags for the make:notification command.
+// MakeNotificationOptions holds flags for the gen notification command.
 type MakeNotificationOptions struct {
 	Dir string // --dir output directory override (default internal/notifications)
 }

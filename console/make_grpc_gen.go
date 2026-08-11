@@ -14,7 +14,7 @@ import (
 func MakeGRPCGen() error {
 	dir := filepath.Join("api", "proto")
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		return fmt.Errorf("no api/proto directory; run `vel make:grpc:service <Name>` first")
+		return fmt.Errorf("no api/proto directory; run `vel gen grpc service <Name>` first")
 	}
 	if _, err := exec.LookPath("buf"); err != nil {
 		return fmt.Errorf("buf not found in PATH; install from https://buf.build/docs/installation")

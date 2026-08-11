@@ -47,12 +47,12 @@ var BuildInfo = struct {
 // ErrNoAppKey is returned from New when APP_KEY (or CRYPTO_KEY) is unset
 // outside the canonical non-production environments (per
 // contract.NonProdEnvNames). The fix is to generate one via
-// `vel key:generate` and set it in the environment before boot.
+// `vel key generate` and set it in the environment before boot.
 //
 // Built from contract.NonProdEnvNames so the relaxation vocabulary lives
 // in exactly one place: a rename or addition there flows through to this
 // error text automatically.
-var ErrNoAppKey = errors.New("velocity: APP_KEY is required outside " + strings.Join(contract.NonProdEnvNames(), "/") + " environments (run `vel key:generate`)")
+var ErrNoAppKey = errors.New("velocity: APP_KEY is required outside " + strings.Join(contract.NonProdEnvNames(), "/") + " environments (run `vel key generate`)")
 
 // App represents the Velocity application container.
 // It owns all framework subsystem instances and provides them to the consumer.
@@ -247,7 +247,7 @@ func New(opts ...Option) (*App, error) {
 	// "production", "prod", "staging", and any unknown value fail closed
 	// with ErrNoAppKey.
 	if a.config.Crypto.Key == "" {
-		if err := a.envGatedSecurityCheck("APP_KEY is unset, crypto subsystem disabled. Run `vel key:generate` before exercising auth/csrf/session flows.", nil, ErrNoAppKey); err != nil {
+		if err := a.envGatedSecurityCheck("APP_KEY is unset, crypto subsystem disabled. Run `vel key generate` before exercising auth/csrf/session flows.", nil, ErrNoAppKey); err != nil {
 			return nil, err
 		}
 	} else {
@@ -694,12 +694,12 @@ func New(opts ...Option) (*App, error) {
 	// downgraded to an unsigned route. Mirror the APP_KEY check earlier
 	// in New() (Crypto.Key gating): permit the canonical dev/test
 	// profiles to run without APP_KEY so local-dev does not require
-	// `vel key:generate`, but every other environment must have
+	// `vel key generate`, but every other environment must have
 	// APP_KEY set explicitly. Routes through the canonical helpers so
 	// "dev", "test", "local" behave the same way as "development" /
 	// "testing".
 	if a.config.Key == "" {
-		if err := a.envGatedSecurityCheck("APP_KEY is unset, router signed-URL middleware will fail closed (403) on every signed route. Run `vel key:generate` before exercising signed-URL flows.", nil, fmt.Errorf("velocity: %w", ErrNoAppKey)); err != nil {
+		if err := a.envGatedSecurityCheck("APP_KEY is unset, router signed-URL middleware will fail closed (403) on every signed route. Run `vel key generate` before exercising signed-URL flows.", nil, fmt.Errorf("velocity: %w", ErrNoAppKey)); err != nil {
 			return nil, err
 		}
 	} else {

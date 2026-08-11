@@ -91,8 +91,8 @@ func TestMakeGRPCGen_MissingProtoDir(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when api/proto missing")
 	}
-	if !strings.Contains(err.Error(), "make:grpc:service") {
-		t.Errorf("error should hint at running make:grpc:service, got: %v", err)
+	if !strings.Contains(err.Error(), "gen grpc service") {
+		t.Errorf("error should hint at running gen grpc service, got: %v", err)
 	}
 }
 

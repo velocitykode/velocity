@@ -9,7 +9,7 @@ import (
 
 // legacyProvider mirrors the shape of an existing grpc_provider.go that
 // predates the marker convention (e.g. one hand-written before the
-// make:grpc:service command existed). The wire helper must treat it as
+// gen grpc service command existed). The wire helper must treat it as
 // read-only and emit a manual snippet instead of mutating it.
 const legacyProvider = `package providers
 

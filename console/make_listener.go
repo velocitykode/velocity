@@ -6,7 +6,7 @@ import (
 	"github.com/velocitykode/velocity/console/scaffold"
 )
 
-// MakeListenerOptions holds flags for the make:listener command.
+// MakeListenerOptions holds flags for the gen listener command.
 type MakeListenerOptions struct {
 	Dir string // --dir output directory override (default internal/listeners)
 }

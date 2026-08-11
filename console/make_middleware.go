@@ -6,7 +6,7 @@ import (
 	"github.com/velocitykode/velocity/console/scaffold"
 )
 
-// MakeMiddlewareOptions holds flags for the make:middleware command.
+// MakeMiddlewareOptions holds flags for the gen middleware command.
 type MakeMiddlewareOptions struct {
 	Dir string // --dir output directory override (default internal/middleware)
 }

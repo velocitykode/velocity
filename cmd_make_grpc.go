@@ -8,16 +8,16 @@ import (
 	"github.com/velocitykode/velocity/console"
 )
 
-type makeGRPCServiceCmd struct{}
+type genGRPCServiceCmd struct{}
 
-func (makeGRPCServiceCmd) name() string {
-	return "make:grpc:service"
+func (genGRPCServiceCmd) name() string {
+	return "gen grpc service"
 }
-func (makeGRPCServiceCmd) description() string {
+func (genGRPCServiceCmd) description() string {
 	return "Scaffold a new gRPC service (proto + impl + provider wire)"
 }
-func (makeGRPCServiceCmd) run(a *App, args []string) error {
-	name, opts, err := parseMakeGRPCServiceArgs(args)
+func (genGRPCServiceCmd) run(a *App, args []string) error {
+	name, opts, err := parseGenGRPCServiceArgs(args)
 	if err != nil {
 		grpcServiceUsage()
 		return err
@@ -31,7 +31,7 @@ func (makeGRPCServiceCmd) run(a *App, args []string) error {
 
 func grpcServiceUsage() {
 	prism.Newline()
-	prism.Muted("Usage: vel make:grpc:service [Name] [flags]")
+	prism.Muted("Usage: vel gen grpc service [Name] [flags]")
 	prism.Newline()
 	prism.Muted("Flags:")
 	prism.Muted("  --package <leaf>          dir leaf under api/proto and api/gen/go (default: from Name)")
@@ -43,16 +43,16 @@ func grpcServiceUsage() {
 	prism.Muted("  --no-provider             skip provider scaffolding/wiring")
 	prism.Newline()
 	prism.Muted("Examples:")
-	prism.Muted("  vel make:grpc:service Foo")
-	prism.Muted("  vel make:grpc:service TemplateControl --package admin \\")
+	prism.Muted("  vel gen grpc service Foo")
+	prism.Muted("  vel gen grpc service TemplateControl --package admin \\")
 	prism.Muted("    --proto-package velship.admin.v1 --dir internal/shared/grpc/services --no-provider")
 }
 
-// parseMakeGRPCServiceArgs parses the positional service name and the optional
+// parseGenGRPCServiceArgs parses the positional service name and the optional
 // flags. Flags may appear before or after the name and accept either
 // "--flag value" or "--flag=value" forms. Unknown flags are rejected so a
 // typo does not silently fall through as the service name.
-func parseMakeGRPCServiceArgs(args []string) (string, console.MakeGRPCServiceOptions, error) {
+func parseGenGRPCServiceArgs(args []string) (string, console.MakeGRPCServiceOptions, error) {
 	var (
 		name string
 		opts console.MakeGRPCServiceOptions
@@ -111,26 +111,26 @@ func parseMakeGRPCServiceArgs(args []string) (string, console.MakeGRPCServiceOpt
 	return name, opts, nil
 }
 
-type makeGRPCRPCCmd struct{}
+type genGRPCRPCCmd struct{}
 
-func (makeGRPCRPCCmd) name() string {
-	return "make:grpc:rpc"
+func (genGRPCRPCCmd) name() string {
+	return "gen grpc rpc"
 }
-func (makeGRPCRPCCmd) description() string {
+func (genGRPCRPCCmd) description() string {
 	return "Add an rpc to an existing gRPC service"
 }
 func grpcRPCUsage() {
 	prism.Newline()
-	prism.Muted("Usage: vel make:grpc:rpc [Service] [RPC] [--stream|--client-stream|--bidi]")
+	prism.Muted("Usage: vel gen grpc rpc [Service] [RPC] [--stream|--client-stream|--bidi]")
 	prism.Newline()
 	prism.Muted("Examples:")
-	prism.Muted("  vel make:grpc:rpc Foo Hello")
-	prism.Muted("  vel make:grpc:rpc Foo Tail --stream")
-	prism.Muted("  vel make:grpc:rpc Foo Upload --client-stream")
-	prism.Muted("  vel make:grpc:rpc Foo Chat --bidi")
+	prism.Muted("  vel gen grpc rpc Foo Hello")
+	prism.Muted("  vel gen grpc rpc Foo Tail --stream")
+	prism.Muted("  vel gen grpc rpc Foo Upload --client-stream")
+	prism.Muted("  vel gen grpc rpc Foo Chat --bidi")
 }
 
-func (makeGRPCRPCCmd) run(a *App, args []string) error {
+func (genGRPCRPCCmd) run(a *App, args []string) error {
 	if len(args) < 2 {
 		grpcRPCUsage()
 		return fmt.Errorf("service and rpc name are required")
@@ -143,7 +143,7 @@ func (makeGRPCRPCCmd) run(a *App, args []string) error {
 			return unknownToken(n, n)
 		}
 	}
-	opts, err := parseMakeGRPCRPCArgs(args[2:])
+	opts, err := parseGenGRPCRPCArgs(args[2:])
 	if err != nil {
 		grpcRPCUsage()
 		return err
@@ -151,9 +151,9 @@ func (makeGRPCRPCCmd) run(a *App, args []string) error {
 	return console.MakeGRPCRPC(args[0], args[1], opts)
 }
 
-// parseMakeGRPCRPCArgs parses the streaming flags that follow the service and
+// parseGenGRPCRPCArgs parses the streaming flags that follow the service and
 // rpc names. Unknown flags and stray positionals (a third name) are rejected.
-func parseMakeGRPCRPCArgs(args []string) (console.MakeGRPCRPCOptions, error) {
+func parseGenGRPCRPCArgs(args []string) (console.MakeGRPCRPCOptions, error) {
 	var opts console.MakeGRPCRPCOptions
 	for _, arg := range args {
 		switch arg {
@@ -173,15 +173,15 @@ func parseMakeGRPCRPCArgs(args []string) (console.MakeGRPCRPCOptions, error) {
 	return opts, nil
 }
 
-type makeGRPCGenCmd struct{}
+type genGRPCGenCmd struct{}
 
-func (makeGRPCGenCmd) name() string {
-	return "make:grpc:gen"
+func (genGRPCGenCmd) name() string {
+	return "gen grpc gen"
 }
-func (makeGRPCGenCmd) description() string {
+func (genGRPCGenCmd) description() string {
 	return "Run `buf generate` in api/proto"
 }
-func (makeGRPCGenCmd) run(a *App, args []string) error {
+func (genGRPCGenCmd) run(a *App, args []string) error {
 	if err := rejectNoArgs(args); err != nil {
 		return err
 	}

@@ -63,7 +63,7 @@ func grpcBaseName(name string) string {
 // itself is named "<leaf>v1" via the proto go_package option; the alias is
 // purely the local name code refers to it by, and the house convention is
 // "<leaf>pb". A caller can override it with the --alias flag on
-// make:grpc:service.
+// gen grpc service.
 func grpcProtoAlias(packageName string) string {
 	return packageName + "pb"
 }

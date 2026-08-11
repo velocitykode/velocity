@@ -15,7 +15,7 @@ import (
 	"github.com/velocitykode/velocity/console/stubs"
 )
 
-// MakeGRPCServiceOptions holds flags for the make:grpc:service command. The
+// MakeGRPCServiceOptions holds flags for the gen grpc service command. The
 // zero value reproduces the single-argument behaviour: the package leaf,
 // proto wire package, file names, and impl directory are all derived from the
 // service name, and the provider is wired automatically.
@@ -118,7 +118,7 @@ func MakeGRPCService(name string, opts MakeGRPCServiceOptions) error {
 	}
 
 	prism.Newline()
-	prism.Muted("Next: vel make:grpc:gen  (generate Go code from .proto)")
+	prism.Muted("Next: vel gen grpc gen  (generate Go code from .proto)")
 	return nil
 }
 
@@ -346,7 +346,7 @@ func writeProtoFile(sc grpcScaffold) error {
 }
 
 // ensureBufConfigs writes api/proto/buf.yaml and api/proto/buf.gen.yaml on
-// first run so `vel make:grpc:gen` works out of the box. Existing files are
+// first run so `vel gen grpc gen` works out of the box. Existing files are
 // left untouched. Write failures are propagated, since the scaffolder
 // otherwise reports success while leaving generation broken.
 func ensureBufConfigs() error {

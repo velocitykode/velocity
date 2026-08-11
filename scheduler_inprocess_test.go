@@ -118,7 +118,7 @@ func TestWithSchedulerInProcess_RunsUnderServe(t *testing.T) {
 // WithSchedulerInProcess is NOT set, the scheduler loop is not started
 // under serveHTTP. This locks in the separate-process default so a
 // future refactor can't silently flip it on (which would cause job
-// duplication for consumers running a separate `vel schedule:work`).
+// duplication for consumers running a separate `vel schedule work`).
 func TestWithSchedulerInProcess_OffByDefault(t *testing.T) {
 	a, err := NewTestApp(WithPort("0"))
 	if err != nil {

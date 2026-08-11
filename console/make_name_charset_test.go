@@ -10,7 +10,7 @@ import (
 )
 
 // TestValidateMakeName_Charset locks the identifier charset contract for
-// make:* name arguments: the name must match [A-Za-z][A-Za-z0-9_-]* with no
+// gen command name arguments: the name must match [A-Za-z][A-Za-z0-9_-]* with no
 // "/" at all. Names flow unescaped through toPascalCase / toSnakeCase into
 // text/template-generated Go source, so anything outside that set (quotes,
 // backticks, semicolons, newlines, unicode confusables) must be rejected
@@ -71,7 +71,7 @@ func TestValidateMakeName_Charset(t *testing.T) {
 
 // TestValidateMakeNestedName locks the contract for the slash-permitting
 // variant used by callers that intentionally support nested output paths
-// (make:handler names, make:grpc:service --dir): slashes separate segments
+// (gen handler names, gen grpc service --dir): slashes separate segments
 // and each segment must independently satisfy the identifier charset.
 func TestValidateMakeNestedName(t *testing.T) {
 	accepted := []string{
@@ -125,70 +125,70 @@ func TestMake_RejectsSourceInjection(t *testing.T) {
 		setup func(t *testing.T)
 	}{
 		{
-			name: "make:command",
+			name: "gen command",
 			run:  func(n string) error { return MakeCommand(n, MakeCommandOptions{}) },
 		},
 		{
-			name: "make:event",
+			name: "gen event",
 			run:  func(n string) error { return MakeEvent(n, MakeEventOptions{}) },
 		},
 		{
-			name: "make:handler",
+			name: "gen handler",
 			run:  func(n string) error { return MakeHandler(n, MakeHandlerOptions{}) },
 		},
 		{
-			name: "make:job",
+			name: "gen job",
 			run:  func(n string) error { return MakeJob(n, MakeJobOptions{}) },
 		},
 		{
-			name: "make:listener",
+			name: "gen listener",
 			run:  func(n string) error { return MakeListener(n, MakeListenerOptions{}) },
 		},
 		{
-			name: "make:mail",
+			name: "gen mail",
 			run:  func(n string) error { return MakeMail(n, MakeMailOptions{}) },
 		},
 		{
-			name: "make:middleware",
+			name: "gen middleware",
 			run:  func(n string) error { return MakeMiddleware(n, MakeMiddlewareOptions{}) },
 		},
 		{
-			name: "make:migration",
+			name: "gen migration",
 			run:  func(n string) error { return MakeMigration(n, MakeMigrationOptions{}) },
 		},
 		{
-			name: "make:model",
+			name: "gen model",
 			run:  func(n string) error { return MakeModel(n, MakeModelOptions{}) },
 		},
 		{
-			name: "make:notification",
+			name: "gen notification",
 			run:  func(n string) error { return MakeNotification(n, MakeNotificationOptions{}) },
 		},
 		{
-			name: "make:policy",
+			name: "gen policy",
 			run:  func(n string) error { return MakePolicy(n, MakePolicyOptions{}) },
 		},
 		{
-			name: "make:provider",
-			run:  func(n string) error { return MakeProvider(n, MakeProviderOptions{}) },
+			name: "gen module",
+			run:  func(n string) error { return MakeModule(n, MakeModuleOptions{}) },
 		},
 		{
-			name: "make:resource",
+			name: "gen resource",
 			run:  func(n string) error { return MakeResource(n, MakeResourceOptions{}) },
 		},
 		{
-			name: "make:grpc:service",
+			name: "gen grpc service",
 			run:  func(n string) error { return MakeGRPCService(n, MakeGRPCServiceOptions{}) },
 			setup: func(t *testing.T) {
 				writeFakeGoMod(t, "acme/app")
 			},
 		},
 		{
-			name: "make:grpc:rpc service arg",
+			name: "gen grpc rpc service arg",
 			run:  func(n string) error { return MakeGRPCRPC(n, "Hello", MakeGRPCRPCOptions{}) },
 		},
 		{
-			name: "make:grpc:rpc rpc arg",
+			name: "gen grpc rpc rpc arg",
 			run:  func(n string) error { return MakeGRPCRPC("Greeter", n, MakeGRPCRPCOptions{}) },
 		},
 	}
@@ -221,7 +221,7 @@ func TestMake_RejectsSourceInjection(t *testing.T) {
 }
 
 // TestMake_RejectsSlashInIdentifierNames asserts every generator whose name
-// becomes a Go/proto identifier (everything except make:handler, which maps
+// becomes a Go/proto identifier (everything except gen handler, which maps
 // slashes to nested directories) rejects a slash-separated input. A name like
 // "List/Foo" previously passed the shared validator and reached templating as
 // an invalid identifier (e.g. an rpc stub `rpc List/Foo(...)`).
@@ -234,66 +234,66 @@ func TestMake_RejectsSlashInIdentifierNames(t *testing.T) {
 		setup func(t *testing.T)
 	}{
 		{
-			name: "make:command",
+			name: "gen command",
 			run:  func(n string) error { return MakeCommand(n, MakeCommandOptions{}) },
 		},
 		{
-			name: "make:event",
+			name: "gen event",
 			run:  func(n string) error { return MakeEvent(n, MakeEventOptions{}) },
 		},
 		{
-			name: "make:job",
+			name: "gen job",
 			run:  func(n string) error { return MakeJob(n, MakeJobOptions{}) },
 		},
 		{
-			name: "make:listener",
+			name: "gen listener",
 			run:  func(n string) error { return MakeListener(n, MakeListenerOptions{}) },
 		},
 		{
-			name: "make:mail",
+			name: "gen mail",
 			run:  func(n string) error { return MakeMail(n, MakeMailOptions{}) },
 		},
 		{
-			name: "make:middleware",
+			name: "gen middleware",
 			run:  func(n string) error { return MakeMiddleware(n, MakeMiddlewareOptions{}) },
 		},
 		{
-			name: "make:migration",
+			name: "gen migration",
 			run:  func(n string) error { return MakeMigration(n, MakeMigrationOptions{}) },
 		},
 		{
-			name: "make:model",
+			name: "gen model",
 			run:  func(n string) error { return MakeModel(n, MakeModelOptions{}) },
 		},
 		{
-			name: "make:notification",
+			name: "gen notification",
 			run:  func(n string) error { return MakeNotification(n, MakeNotificationOptions{}) },
 		},
 		{
-			name: "make:policy",
+			name: "gen policy",
 			run:  func(n string) error { return MakePolicy(n, MakePolicyOptions{}) },
 		},
 		{
-			name: "make:provider",
-			run:  func(n string) error { return MakeProvider(n, MakeProviderOptions{}) },
+			name: "gen module",
+			run:  func(n string) error { return MakeModule(n, MakeModuleOptions{}) },
 		},
 		{
-			name: "make:resource",
+			name: "gen resource",
 			run:  func(n string) error { return MakeResource(n, MakeResourceOptions{}) },
 		},
 		{
-			name: "make:grpc:service",
+			name: "gen grpc service",
 			run:  func(n string) error { return MakeGRPCService(n, MakeGRPCServiceOptions{}) },
 			setup: func(t *testing.T) {
 				writeFakeGoMod(t, "acme/app")
 			},
 		},
 		{
-			name: "make:grpc:rpc service arg",
+			name: "gen grpc rpc service arg",
 			run:  func(n string) error { return MakeGRPCRPC(n, "Hello", MakeGRPCRPCOptions{}) },
 		},
 		{
-			name: "make:grpc:rpc rpc arg",
+			name: "gen grpc rpc rpc arg",
 			run:  func(n string) error { return MakeGRPCRPC("Greeter", n, MakeGRPCRPCOptions{}) },
 		},
 	}

@@ -114,7 +114,7 @@ func TestNew_UnsetEnvRefusesBootWithoutAppKey(t *testing.T) {
 
 // TestNew_DevelopmentBootsWithoutAppKey verifies the dev-ergonomics
 // escape hatch survives the fix. A fresh project before `vel
-// key:generate` must still boot, and the middleware must be in the
+// key generate` must still boot, and the middleware must be in the
 // fail-closed mode (proven separately by router tests) so any signed
 // route the developer wires up surfaces the misconfiguration on the
 // first request rather than silently downgrading to unsigned.
@@ -123,7 +123,7 @@ func TestNew_DevelopmentBootsWithoutAppKey(t *testing.T) {
 	cfg.Env = "development"
 	cfg.Key = ""
 	// Crypto.Key intentionally empty too; matches a brand-new project
-	// where the operator has not run vel key:generate yet.
+	// where the operator has not run vel key generate yet.
 
 	app, err := New(WithConfig(cfg))
 	if err != nil {

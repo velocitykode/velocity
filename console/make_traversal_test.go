@@ -8,7 +8,7 @@ import (
 )
 
 // TestMake_RejectsTraversal asserts every public Make* generator rejects a
-// classic path-traversal input. The make:* commands all derive the output
+// classic path-traversal input. The gen commands all derive the output
 // file path from the user-supplied name, so a single missed validator lets a
 // caller scaffold files outside the project root. This table exists to lock
 // the contract in place: any new Make* generator added to the package should
@@ -25,66 +25,66 @@ func TestMake_RejectsTraversal(t *testing.T) {
 		expect string             // optional substring on top of "invalid"
 	}{
 		{
-			name: "make:command",
+			name: "gen command",
 			run:  func(n string) error { return MakeCommand(n, MakeCommandOptions{}) },
 		},
 		{
-			name: "make:event",
+			name: "gen event",
 			run:  func(n string) error { return MakeEvent(n, MakeEventOptions{}) },
 		},
 		{
-			name: "make:handler",
+			name: "gen handler",
 			run:  func(n string) error { return MakeHandler(n, MakeHandlerOptions{}) },
 		},
 		{
-			name: "make:job",
+			name: "gen job",
 			run:  func(n string) error { return MakeJob(n, MakeJobOptions{}) },
 		},
 		{
-			name: "make:listener",
+			name: "gen listener",
 			run:  func(n string) error { return MakeListener(n, MakeListenerOptions{}) },
 		},
 		{
-			name: "make:mail",
+			name: "gen mail",
 			run:  func(n string) error { return MakeMail(n, MakeMailOptions{}) },
 		},
 		{
-			name: "make:middleware",
+			name: "gen middleware",
 			run:  func(n string) error { return MakeMiddleware(n, MakeMiddlewareOptions{}) },
 		},
 		{
-			name: "make:migration",
+			name: "gen migration",
 			run:  func(n string) error { return MakeMigration(n, MakeMigrationOptions{}) },
 		},
 		{
-			name: "make:model",
+			name: "gen model",
 			run:  func(n string) error { return MakeModel(n, MakeModelOptions{}) },
 		},
 		{
-			name: "make:notification",
+			name: "gen notification",
 			run:  func(n string) error { return MakeNotification(n, MakeNotificationOptions{}) },
 		},
 		{
-			name: "make:policy",
+			name: "gen policy",
 			run:  func(n string) error { return MakePolicy(n, MakePolicyOptions{}) },
 		},
 		{
-			name: "make:provider",
-			run:  func(n string) error { return MakeProvider(n, MakeProviderOptions{}) },
+			name: "gen module",
+			run:  func(n string) error { return MakeModule(n, MakeModuleOptions{}) },
 		},
 		{
-			name: "make:resource",
+			name: "gen resource",
 			run:  func(n string) error { return MakeResource(n, MakeResourceOptions{}) },
 		},
 		{
-			name: "make:grpc:service",
+			name: "gen grpc service",
 			run:  func(n string) error { return MakeGRPCService(n, MakeGRPCServiceOptions{}) },
 			setup: func(t *testing.T) {
 				writeFakeGoMod(t, "acme/app")
 			},
 		},
 		{
-			name: "make:grpc:rpc",
+			name: "gen grpc rpc",
 			run:  func(n string) error { return MakeGRPCRPC(n, "Hello", MakeGRPCRPCOptions{}) },
 		},
 	}
@@ -126,79 +126,79 @@ func TestMake_AcceptsValidName(t *testing.T) {
 		expected string
 	}{
 		{
-			name:     "make:command",
+			name:     "gen command",
 			run:      func(n string) error { return MakeCommand(n, MakeCommandOptions{}) },
 			input:    "SendEmail",
 			expected: filepath.Join("internal", "commands", "send_email.go"),
 		},
 		{
-			name:     "make:event",
+			name:     "gen event",
 			run:      func(n string) error { return MakeEvent(n, MakeEventOptions{}) },
 			input:    "UserRegistered",
 			expected: filepath.Join("internal", "events", "user_registered.go"),
 		},
 		{
-			name:     "make:handler",
+			name:     "gen handler",
 			run:      func(n string) error { return MakeHandler(n, MakeHandlerOptions{}) },
 			input:    "Dashboard",
 			expected: filepath.Join("internal", "handlers", "dashboard.go"),
 		},
 		{
-			name:     "make:job",
+			name:     "gen job",
 			run:      func(n string) error { return MakeJob(n, MakeJobOptions{}) },
 			input:    "ProcessImport",
 			expected: filepath.Join("internal", "jobs", "process_import.go"),
 		},
 		{
-			name:     "make:listener",
+			name:     "gen listener",
 			run:      func(n string) error { return MakeListener(n, MakeListenerOptions{}) },
 			input:    "SendWelcomeEmail",
 			expected: filepath.Join("internal", "listeners", "send_welcome_email.go"),
 		},
 		{
-			name:     "make:mail",
+			name:     "gen mail",
 			run:      func(n string) error { return MakeMail(n, MakeMailOptions{}) },
 			input:    "WelcomeEmail",
 			expected: filepath.Join("internal", "mail", "welcome_email.go"),
 		},
 		{
-			name:     "make:middleware",
+			name:     "gen middleware",
 			run:      func(n string) error { return MakeMiddleware(n, MakeMiddlewareOptions{}) },
 			input:    "Auth",
 			expected: filepath.Join("internal", "middleware", "auth.go"),
 		},
 		{
-			name:     "make:model",
+			name:     "gen model",
 			run:      func(n string) error { return MakeModel(n, MakeModelOptions{}) },
 			input:    "User",
 			expected: filepath.Join("internal", "models", "user.go"),
 		},
 		{
-			name:     "make:notification",
+			name:     "gen notification",
 			run:      func(n string) error { return MakeNotification(n, MakeNotificationOptions{}) },
 			input:    "OrderShipped",
 			expected: filepath.Join("internal", "notifications", "order_shipped.go"),
 		},
 		{
-			name:     "make:policy",
+			name:     "gen policy",
 			run:      func(n string) error { return MakePolicy(n, MakePolicyOptions{}) },
 			input:    "Post",
 			expected: filepath.Join("internal", "policies", "post.go"),
 		},
 		{
-			name:     "make:provider",
-			run:      func(n string) error { return MakeProvider(n, MakeProviderOptions{}) },
+			name:     "gen module",
+			run:      func(n string) error { return MakeModule(n, MakeModuleOptions{}) },
 			input:    "Mailer",
 			expected: filepath.Join("internal", "providers", "mailer.go"),
 		},
 		{
-			name:     "make:resource",
+			name:     "gen resource",
 			run:      func(n string) error { return MakeResource(n, MakeResourceOptions{}) },
 			input:    "User",
 			expected: filepath.Join("internal", "resources", "user.go"),
 		},
 		{
-			name: "make:grpc:service",
+			name: "gen grpc service",
 			run:  func(n string) error { return MakeGRPCService(n, MakeGRPCServiceOptions{}) },
 			setup: func(t *testing.T) {
 				writeFakeGoMod(t, "acme/app")
@@ -226,7 +226,7 @@ func TestMake_AcceptsValidName(t *testing.T) {
 }
 
 // TestMakeMigration_AcceptsValidName is split out from TestMake_AcceptsValidName
-// because make:migration produces a timestamp-prefixed filename that cannot
+// because gen migration produces a timestamp-prefixed filename that cannot
 // be matched as an exact string.
 func TestMakeMigration_AcceptsValidName(t *testing.T) {
 	t.Chdir(t.TempDir())

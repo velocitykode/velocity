@@ -6,7 +6,7 @@ import (
 	"github.com/velocitykode/velocity/console/scaffold"
 )
 
-// MakeMailOptions holds flags for the make:mail command.
+// MakeMailOptions holds flags for the gen mail command.
 type MakeMailOptions struct {
 	Dir string // --dir output directory override (default internal/mail)
 }

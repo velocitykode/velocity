@@ -12,7 +12,7 @@ import (
 	"github.com/velocitykode/velocity/queue"
 )
 
-// QueueWorkOptions holds flags for the queue:work command.
+// QueueWorkOptions holds flags for the queue work command.
 type QueueWorkOptions struct {
 	Queue   string
 	Tries   int
