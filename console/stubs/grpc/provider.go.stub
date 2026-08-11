@@ -17,7 +17,7 @@ type GRPCProvider struct {
 	server *velgrpc.Server
 }
 
-func (p *GRPCProvider) Register(s *velocity.Services) error {
+func (p *GRPCProvider) Init(s *velocity.Services) error {
 	port := os.Getenv("GRPC_PORT")
 	if port == "" {
 		port = "50051"
@@ -37,7 +37,7 @@ func (p *GRPCProvider) Register(s *velocity.Services) error {
 	return nil
 }
 
-func (p *GRPCProvider) Boot(s *velocity.Services) error {
+func (p *GRPCProvider) Start(s *velocity.Services) error {
 	if err := p.server.Build(); err != nil {
 		return err
 	}

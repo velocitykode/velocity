@@ -75,17 +75,17 @@ func (c *panicComp) Shutdown(_ context.Context) error {
 
 var _ contract.ShutdownAware = (*panicComp)(nil)
 
-// componentRegisteringShutdownProvider registers a ShutdownAware component
+// componentRegisteringShutdownModule registers a ShutdownAware component
 // during Register, mimicking an SDK module that binds a closable value.
-type componentRegisteringShutdownProvider struct {
+type componentRegisteringShutdownModule struct {
 	comp *shutdownComp
 }
 
-func (p *componentRegisteringShutdownProvider) Register(s *app.Services) error {
+func (p *componentRegisteringShutdownModule) Init(s *app.Services) error {
 	return app.Register(s, p.comp)
 }
-func (p *componentRegisteringShutdownProvider) Boot(_ *app.Services) error       { return nil }
-func (p *componentRegisteringShutdownProvider) Shutdown(_ context.Context) error { return nil }
+func (p *componentRegisteringShutdownModule) Start(_ *app.Services) error      { return nil }
+func (p *componentRegisteringShutdownModule) Shutdown(_ context.Context) error { return nil }
 
 // (1) Two ShutdownAware components registered A then B are shut down B then A.
 func TestShutdown_Components_ReverseRegistrationOrder(t *testing.T) {
@@ -114,11 +114,11 @@ func TestShutdown_Components_ReverseRegistrationOrder(t *testing.T) {
 	}
 }
 
-// (2) Component shutdown happens AFTER provider Shutdown and BEFORE the queue
+// (2) Component shutdown happens AFTER module Shutdown and BEFORE the queue
 // driver closes.
-func TestShutdown_Components_BetweenProvidersAndQueue(t *testing.T) {
+func TestShutdown_Components_BetweenModulesAndQueue(t *testing.T) {
 	var order []string
-	a, err := NewTestApp(WithProviders(&orderRecordingProvider{order: &order}))
+	a, err := NewTestApp(WithModules(&orderRecordingModule{order: &order}))
 	if err != nil {
 		t.Fatalf("NewTestApp: %v", err)
 	}
@@ -249,18 +249,18 @@ func TestShutdown_Components_PanicConvertedRemainingRun(t *testing.T) {
 	}
 }
 
-// (6) A New() failure after the provider phase unwinds registered components:
-// a value an earlier provider registered is torn down on the failure path.
-func TestNew_ProviderFailure_UnwindsComponents(t *testing.T) {
+// (6) A New() failure after the module phase unwinds registered components:
+// a value an earlier module registered is torn down on the failure path.
+func TestNew_ModuleFailure_UnwindsComponents(t *testing.T) {
 	comp := &shutdownComp{label: "registered-before-failure"}
-	regProvider := &componentRegisteringShutdownProvider{comp: comp}
-	failsRegister := &shutdownRecorder{registerErr: errors.New("register kaboom")}
+	regModule := &componentRegisteringShutdownModule{comp: comp}
+	failsRegister := &shutdownRecorder{initErr: errors.New("register kaboom")}
 
-	_, err := NewTestApp(WithProviders(regProvider, failsRegister))
+	_, err := NewTestApp(WithModules(regModule, failsRegister))
 	if err == nil {
 		t.Fatal("expected register failure to propagate from New()")
 	}
-	if !errors.Is(err, failsRegister.registerErr) {
+	if !errors.Is(err, failsRegister.initErr) {
 		t.Fatalf("expected wrapped register error, got: %v", err)
 	}
 

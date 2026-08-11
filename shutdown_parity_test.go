@@ -24,7 +24,7 @@ import (
 // TestServeHTTP_ListenError_RunsShutdown proves the ListenAndServe error
 // branch in serveHTTP tears the app down instead of returning immediately.
 // Before the fix, a port-in-use error left every bootstrapped subsystem
-// (providers included) dangling, while the bootstrap-failure branch just
+// (modules included) dangling, while the bootstrap-failure branch just
 // above ran a full Shutdown.
 func TestServeHTTP_ListenError_RunsShutdown(t *testing.T) {
 	// Occupy a wildcard port so the app's ListenAndServe fails fast with
@@ -37,7 +37,7 @@ func TestServeHTTP_ListenError_RunsShutdown(t *testing.T) {
 	port := ln.Addr().(*net.TCPAddr).Port
 
 	rec := &shutdownRecorder{}
-	a, err := NewTestApp(WithProviders(rec))
+	a, err := NewTestApp(WithModules(rec))
 	if err != nil {
 		t.Fatalf("NewTestApp: %v", err)
 	}
@@ -177,20 +177,20 @@ func TestShutdown_ClearsQueuePayloadEncryptor(t *testing.T) {
 	}
 }
 
-// TestNew_RegisterFailure_DoesNotShutDownUnregisteredProviders pins the
-// register-failure unwind scope: providers whose Register completed are shut
-// down; the provider that failed its own Register and providers that never
+// TestNew_InitFailure_DoesNotShutDownUninitializedModules pins the
+// register-failure unwind scope: modules whose Register completed are shut
+// down; the module that failed its own Register and modules that never
 // ran are not. Before the fix all three saw Shutdown.
-func TestNew_RegisterFailure_DoesNotShutDownUnregisteredProviders(t *testing.T) {
+func TestNew_InitFailure_DoesNotShutDownUninitializedModules(t *testing.T) {
 	ok := &shutdownRecorder{}
-	failsRegister := &shutdownRecorder{registerErr: errors.New("register kaboom")}
+	failsRegister := &shutdownRecorder{initErr: errors.New("register kaboom")}
 	never := &shutdownRecorder{}
 
-	_, err := NewTestApp(WithProviders(ok, failsRegister, never))
+	_, err := NewTestApp(WithModules(ok, failsRegister, never))
 	if err == nil {
 		t.Fatal("expected register failure to propagate from New()")
 	}
-	if !errors.Is(err, failsRegister.registerErr) {
+	if !errors.Is(err, failsRegister.initErr) {
 		t.Fatalf("expected wrapped register error, got: %v", err)
 	}
 
@@ -237,25 +237,25 @@ func (q *orderRecordingQueue) Shutdown(_ context.Context) error {
 	return nil
 }
 
-// orderRecordingProvider records its Shutdown into the shared order slice.
-type orderRecordingProvider struct {
+// orderRecordingModule records its Shutdown into the shared order slice.
+type orderRecordingModule struct {
 	order *[]string
 }
 
-func (p *orderRecordingProvider) Register(_ *app.Services) error { return nil }
-func (p *orderRecordingProvider) Boot(_ *app.Services) error     { return nil }
-func (p *orderRecordingProvider) Shutdown(_ context.Context) error {
+func (p *orderRecordingModule) Init(_ *app.Services) error  { return nil }
+func (p *orderRecordingModule) Start(_ *app.Services) error { return nil }
+func (p *orderRecordingModule) Shutdown(_ context.Context) error {
 	*p.order = append(*p.order, "provider")
 	return nil
 }
 
-// TestShutdown_ProvidersBeforeQueue pins the Shutdown order change: provider
-// teardown runs before the queue driver closes, so providers can still flush
-// work into the queue. Mirrors the New() failure path, where the provider
+// TestShutdown_ModulesBeforeQueue pins the Shutdown order change: module
+// teardown runs before the queue driver closes, so modules can still flush
+// work into the queue. Mirrors the New() failure path, where the module
 // unwind closure is pushed last and runs first.
-func TestShutdown_ProvidersBeforeQueue(t *testing.T) {
+func TestShutdown_ModulesBeforeQueue(t *testing.T) {
 	var order []string
-	a, err := NewTestApp(WithProviders(&orderRecordingProvider{order: &order}))
+	a, err := NewTestApp(WithModules(&orderRecordingModule{order: &order}))
 	if err != nil {
 		t.Fatalf("NewTestApp: %v", err)
 	}

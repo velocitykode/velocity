@@ -50,7 +50,7 @@ type queueWorkCmd struct{}
 func (queueWorkCmd) name() string        { return "queue:work" }
 func (queueWorkCmd) description() string { return "Start processing queue jobs" }
 func (queueWorkCmd) run(a *App, args []string) error {
-	// Parse before Bootstrap so a typo fails fast without starting providers.
+	// Parse before Bootstrap so a typo fails fast without starting modules.
 	opts, err := parseQueueWorkArgs(args)
 	if err != nil {
 		return err
@@ -163,7 +163,7 @@ func (runCmd) description() string { return "Run a custom command" }
 func (runCmd) usageToken() string { return "run <command>" }
 func (runCmd) run(a *App, args []string) error {
 	// Reject a flag-like first token before Bootstrap so `vel run --bogus`
-	// fails fast like the other built-ins instead of starting providers and
+	// fails fast like the other built-ins instead of starting modules and
 	// reporting it as an unknown custom command.
 	if len(args) > 0 && strings.HasPrefix(args[0], "-") {
 		key, _, _ := strings.Cut(args[0], "=")

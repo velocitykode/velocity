@@ -15,12 +15,12 @@ import (
 	"github.com/velocitykode/velocity/trace"
 )
 
-// Bootstrap runs the declarative chain (providers, middleware, routes, events,
+// Bootstrap runs the declarative chain (modules, middleware, routes, events,
 // schedule, exceptions) without starting the HTTP server. Safe to call multiple
 // times, but only the first call does the work. The result is sticky: after a
 // successful run subsequent calls return nil, and after a failed run they
 // return the same error (a partially-completed bootstrap is never re-run,
-// because providers, middleware and routes registered before the failure
+// because modules, middleware and routes registered before the failure
 // would be registered twice).
 func (a *App) Bootstrap() error {
 	return a.bootstrap()
@@ -36,47 +36,47 @@ func (a *App) bootstrap() error {
 }
 
 func (a *App) runBootstrap() error {
-	// 1. Collect and run chain providers
-	if a.providersFn != nil {
-		reg := &chain.ProviderRegistry{}
-		a.providersFn(reg)
-		a.chainProviders = reg.Providers()
+	// 1. Collect and run chain modules
+	if a.modulesFn != nil {
+		reg := &chain.ModuleRegistry{}
+		a.modulesFn(reg)
+		a.chainModules = reg.Modules()
 	}
 
-	if registered, err := runProviderLifecycle(a.chainProviders, a.Services, "chain provider"); err != nil {
-		// Unwind providers whose Register completed, in reverse order,
+	if registered, err := runModuleLifecycle(a.chainModules, a.Services, "chain module"); err != nil {
+		// Unwind modules whose Init completed, in reverse order,
 		// mirroring the New() failure path: a direct Bootstrap() caller
-		// gets a full provider teardown without having to call Shutdown.
-		// The provider that failed Register and any after it are excluded
-		// (a failing Register must release anything it opened before
-		// returning; later providers never ran at all). Empty the slice
+		// gets a full module teardown without having to call Shutdown.
+		// The module that failed Init and any after it are excluded
+		// (a failing Init must release anything it opened before
+		// returning; later modules never ran at all). Empty the slice
 		// afterwards so the Shutdown that follows a failed bootstrap
-		// (serveHTTP error path) does not tear the same providers down a
+		// (serveHTTP error path) does not tear the same modules down a
 		// second time.
 		for i := registered - 1; i >= 0; i-- {
-			_ = a.chainProviders[i].Shutdown(context.Background())
+			_ = a.chainModules[i].Shutdown(context.Background())
 		}
-		a.chainProviders = nil
+		a.chainModules = nil
 		return err
 	}
 
-	// Chain providers may have registered registry components or replaced
-	// service instances (e.g. s.CSRF) during Register/Boot; the wireInstanceEvents
+	// Chain modules may have registered registry components or replaced
+	// service instances (e.g. s.CSRF) during Init/Start; the wireInstanceEvents
 	// sweep in New() ran before any of them existed, so re-sweep services
 	// and components so the final instances receive the dispatcher. Every
 	// wiring setter is an idempotent overwrite, so re-running is safe.
 	wireInstanceEvents(a)
 
 	// 1a. Re-install the CSRF token rotator on the auth manager NOW,
-	// AFTER every chain provider's Boot() has had a chance to replace
+	// AFTER every chain module's Start() has had a chance to replace
 	// s.CSRF with a customised instance. New() already wired the
 	// rotator at construction time so direct-New consumers (no
 	// Bootstrap, no Serve) still get session lifecycle rotation; this
-	// second call lets a Boot-phase swap of s.CSRF win. The helper is
+	// second call lets a Start-phase swap of s.CSRF win. The helper is
 	// idempotent (sets a mutex-protected function pointer on
 	// auth.Manager); double-install is safe, the last call wins.
 	//
-	// Without this re-install, a consumer Boot that replaces s.CSRF
+	// Without this re-install, a consumer Start that replaces s.CSRF
 	// would leave the auth manager rotating a store no longer in the
 	// request path -> Login/Logout rotations silently target a dead
 	// store and the first POST after login 419s. See app.go for the
@@ -98,7 +98,7 @@ func (a *App) runBootstrap() error {
 	// bootstrapped=true short-circuits before any middleware wiring.
 	installSessionMiddleware(a)
 
-	dispatchProviderCallback(a.chainProviders, func(mp chain.MiddlewareProvider) {
+	dispatchModuleCallback(a.chainModules, func(mp chain.MiddlewareModule) {
 		mp.Middleware(mwStack)
 	})
 	if a.middlewareFn != nil {
@@ -111,7 +111,7 @@ func (a *App) runBootstrap() error {
 	// 3. Register routes
 	routing := chain.NewRouting(a.Router, mwStack)
 
-	dispatchProviderCallback(a.chainProviders, func(rp chain.RouteProvider) {
+	dispatchModuleCallback(a.chainModules, func(rp chain.RouteModule) {
 		rp.Routes(routing)
 	})
 	if a.routesFn != nil {
@@ -123,27 +123,27 @@ func (a *App) runBootstrap() error {
 	// with a nil dispatcher would panic on first use inside consumer
 	// code, so skip them entirely and warn when any were registered.
 	if a.Services.Events != nil {
-		dispatchProviderCallback(a.chainProviders, func(ep chain.EventProvider) {
+		dispatchModuleCallback(a.chainModules, func(ep chain.EventModule) {
 			ep.Events(a.Services.Events)
 		})
 		if a.eventsFn != nil {
 			a.eventsFn(a.Services.Events)
 		}
 	} else {
-		hasProviderEvents := false
-		for _, p := range a.chainProviders {
-			if _, ok := p.(chain.EventProvider); ok {
-				hasProviderEvents = true
+		hasModuleEvents := false
+		for _, p := range a.chainModules {
+			if _, ok := p.(chain.EventModule); ok {
+				hasModuleEvents = true
 				break
 			}
 		}
-		if a.eventsFn != nil || hasProviderEvents {
+		if a.eventsFn != nil || hasModuleEvents {
 			a.Log.Warn("events are disabled via WithoutEvents; skipping event listener registration callbacks")
 		}
 	}
 
 	// 5. Register scheduled jobs
-	dispatchProviderCallback(a.chainProviders, func(sp chain.ScheduleProvider) {
+	dispatchModuleCallback(a.chainModules, func(sp chain.ScheduleModule) {
 		sp.Schedule(a.Services.Scheduler)
 	})
 	if a.scheduleFn != nil {
@@ -152,7 +152,7 @@ func (a *App) runBootstrap() error {
 
 	// 6. Register custom commands
 	a.commands = chain.NewCommands()
-	dispatchProviderCallback(a.chainProviders, func(cp chain.CommandProvider) {
+	dispatchModuleCallback(a.chainModules, func(cp chain.CommandModule) {
 		cp.Commands(a.commands)
 	})
 	if a.commandsFn != nil {
@@ -234,7 +234,7 @@ func wireInstanceEvents(a *App) {
 // dispatches: it forwards the failure to ExceptionHandler.Report with an
 // ExceptionContext carrying the trace ID and event name. It reads
 // a.Services.Exceptions at call time, so a handler swapped in during a
-// provider Boot phase wins.
+// module Start phase wins.
 func buildFailureReporter(a *App) func(ctx context.Context, event interface{}, err error) {
 	return func(ctx context.Context, event interface{}, err error) {
 		h := a.Services.Exceptions
@@ -285,9 +285,9 @@ func buildEventDispatch(a *App) func(ctx context.Context, event any) error {
 // wireComponentEvents wires the event dispatcher into every registry entry
 // (registered value plus its hook adapters) that implements
 // contract.EventDispatcherAware. It is called from wireInstanceEvents so it
-// re-runs after each provider lifecycle (WithProviders in New, chain providers
-// in bootstrap): providers
-// register components only during Register/Boot, so the New-time sweep would
+// re-runs after each module lifecycle (WithModules in New, chain modules
+// in bootstrap): modules
+// register components only during Init/Start, so the New-time sweep would
 // always see an empty registry. SetEventDispatcher overwrite is idempotent on
 // every conforming type, so re-sweeping already wired components is safe.
 //
@@ -318,36 +318,36 @@ func wireComponentEvents(a *App) {
 	})
 }
 
-// runProviderLifecycle executes the two-phase provider startup: all Register() calls
-// run first (bind services, no cross-provider usage), then all Boot() calls (wire
-// dependencies, all services available). This ordering guarantees that Boot() can
-// safely reference services registered by other providers.
+// runModuleLifecycle executes the two-phase module startup: all Init() calls
+// run first (bind services, no cross-module usage), then all Start() calls (wire
+// dependencies, all services available). This ordering guarantees that Start() can
+// safely reference services registered by other modules.
 //
-// The returned count is the number of providers whose Register COMPLETED, so
-// failure-path unwinds can scope Shutdown to providers[:registered]. A provider
-// whose own Register returns an error is NOT counted (it must release anything
-// it opened before returning), and providers after it never ran at all. On a
-// Boot failure every Register already completed, so the count is len(providers).
-func runProviderLifecycle(providers []app.ServiceProvider, services *app.Services, label string) (int, error) {
-	for i, p := range providers {
-		if err := p.Register(services); err != nil {
-			return i, fmt.Errorf("velocity: %s register failed: %w", label, err)
+// The returned count is the number of modules whose Init COMPLETED, so
+// failure-path unwinds can scope Shutdown to modules[:registered]. A module
+// whose own Init returns an error is NOT counted (it must release anything
+// it opened before returning), and modules after it never ran at all. On a
+// Start failure every Init already completed, so the count is len(modules).
+func runModuleLifecycle(modules []app.Module, services *app.Services, label string) (int, error) {
+	for i, p := range modules {
+		if err := p.Init(services); err != nil {
+			return i, fmt.Errorf("velocity: %s init failed: %w", label, err)
 		}
 	}
-	for _, p := range providers {
-		if err := p.Boot(services); err != nil {
-			return len(providers), fmt.Errorf("velocity: %s boot failed: %w", label, err)
+	for _, p := range modules {
+		if err := p.Start(services); err != nil {
+			return len(modules), fmt.Errorf("velocity: %s start failed: %w", label, err)
 		}
 	}
-	return len(providers), nil
+	return len(modules), nil
 }
 
-// dispatchProviderCallback invokes fn on each provider that implements the optional
-// interface T (e.g., chain.RouteProvider, chain.EventProvider). This lets providers
-// opt into lifecycle hooks without requiring every provider to implement every
+// dispatchModuleCallback invokes fn on each module that implements the optional
+// interface T (e.g., chain.RouteModule, chain.EventModule). This lets modules
+// opt into lifecycle hooks without requiring every module to implement every
 // interface.
-func dispatchProviderCallback[T any](providers []app.ServiceProvider, fn func(T)) {
-	for _, p := range providers {
+func dispatchModuleCallback[T any](modules []app.Module, fn func(T)) {
+	for _, p := range modules {
 		if t, ok := any(p).(T); ok {
 			fn(t)
 		}
@@ -370,11 +370,11 @@ var ErrCookieStoreInProduction = fmt.Errorf("velocity/auth: production deploymen
 // validateSessionStoreForProduction implements the H-04 boot-time guard.
 // Skip in testing/development; skip when the active guard is not the session
 // guard (JWT-only setups carry their own credentials); skip when a
-// ServerSessionStore has been installed by an earlier Boot() hook; skip when
+// ServerSessionStore has been installed by an earlier Start() hook; skip when
 // the operator opted in.
 //
-// The check runs at the END of bootstrap so providers that wire a
-// ServerSessionStore in their Boot() callback are honoured before the gate
+// The check runs at the END of bootstrap so modules that wire a
+// ServerSessionStore in their Start() callback are honoured before the gate
 // fires.
 func validateSessionStoreForProduction(a *App) error {
 	if a == nil || a.config == nil {
@@ -444,19 +444,19 @@ func installSessionMiddleware(a *App) {
 }
 
 // installCSRFTokenRotator wires the final s.CSRF instance (post chain
-// provider Boot) into the auth manager as a contract.CSRFTokenRotator so
+// module Start) into the auth manager as a contract.CSRFTokenRotator so
 // SessionGuard.Login regenerates the per-session CSRF token alongside the
 // session id, SessionGuard.Logout revokes it before the session is
 // invalidated, and the remember-cookie revival path rotates it across the
 // recall regenerate. See contract.CSRFTokenRotator for the full contract.
 //
-// Boot-order rationale: a chain provider may legitimately replace s.CSRF
+// Start-order rationale: a chain module may legitimately replace s.CSRF
 // in its Boot() (custom store, different mode, decorator wrapping the
-// framework-built instance). Running this install BEFORE Boot would
+// framework-built instance). Running this install BEFORE Start would
 // freeze the rotator to the original framework-built CSRF, and any
 // subsequent consumer swap would leave the auth manager rotating a
 // store no longer in the request path -> orphan tokens, first-POST 419.
-// So this install runs AFTER runProviderLifecycle returns.
+// So this install runs AFTER runModuleLifecycle returns.
 //
 // No-op when:
 //   - a.CSRF does not implement contract.CSRFTokenRotator (custom

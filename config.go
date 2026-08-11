@@ -254,11 +254,11 @@ func WithFakeMail(fake mail.Mailer) Option {
 	}
 }
 
-// WithProviders appends service providers to the application.
-// Providers are registered and booted in the order they are given.
-func WithProviders(providers ...app.ServiceProvider) Option {
+// WithModules appends modules to the application.
+// Modules are initialized and started in the order they are given.
+func WithModules(modules ...app.Module) Option {
 	return func(a *App) {
-		a.providers = append(a.providers, providers...)
+		a.modules = append(a.modules, modules...)
 	}
 }
 

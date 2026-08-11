@@ -33,7 +33,7 @@ type migrateCmd struct{}
 func (migrateCmd) name() string        { return "migrate" }
 func (migrateCmd) description() string { return "Run database migrations" }
 func (migrateCmd) run(a *App, args []string) error {
-	// Parse before Bootstrap so a typo fails fast without starting providers.
+	// Parse before Bootstrap so a typo fails fast without starting modules.
 	opts, err := parseMigrateArgs(args)
 	if err != nil {
 		return err

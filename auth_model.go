@@ -48,7 +48,7 @@ var ErrAuthNotConfigured = errors.New("velocity: auth is not configured (set AUT
 // into a type. Swapping the model is editing T, so a mistake is a compile
 // error rather than a boot failure:
 //
-//	func (p *AppProvider) Register(s *velocity.Services) error {
+//	func (p *AppModule) Init(s *velocity.Services) error {
 //	    return velocity.SetAuthModel[models.User](s)
 //	}
 //
@@ -59,7 +59,7 @@ var ErrAuthNotConfigured = errors.New("velocity: auth is not configured (set AUT
 //	    velocity.WithAuthPasswordColumn("pass_hash"),
 //	)
 //
-// Call it from a service provider's Register or Boot. velocity.New has
+// Call it from a module's Init or Start. velocity.New has
 // already built the guards against the framework's built-in user model;
 // installing a provider re-points every one of them, so ordering does not
 // matter.

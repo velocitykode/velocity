@@ -126,7 +126,7 @@ func injectGRPCServiceRegistration(path string, sc grpcScaffold) error {
 	if !strings.Contains(content, grpcImportsMarker) || !strings.Contains(content, grpcServicesMarker) {
 		prism.Muted("grpc_provider.go missing markers; add the following manually:")
 		prism.Muted(fmt.Sprintf("  import: %s \"%s\"", sc.Alias, importPath))
-		prism.Muted(fmt.Sprintf("  in Register(): %s := services.New%s()", sc.VarName, sc.ServiceName))
+		prism.Muted(fmt.Sprintf("  in Init(): %s := services.New%s()", sc.VarName, sc.ServiceName))
 		prism.Muted("                 p.server.RegisterService(func(srv interface{}) {")
 		prism.Muted(fmt.Sprintf("                     %s.Register%sServer(srv.(*googleGrpc.Server), %s)", sc.Alias, sc.ServiceName, sc.VarName))
 		prism.Muted("                 })")

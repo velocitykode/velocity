@@ -13,9 +13,9 @@ import (
 	"github.com/velocitykode/velocity/scheduler"
 )
 
-// bootstrapTrackingProvider extends trackingProvider with optional bootstrap interfaces.
-type bootstrapTrackingProvider struct {
-	trackingProvider
+// bootstrapTrackingModule extends trackingModule with optional bootstrap interfaces.
+type bootstrapTrackingModule struct {
+	trackingModule
 	routesCalled     bool
 	middlewareCalled bool
 	eventsCalled     bool
@@ -23,27 +23,27 @@ type bootstrapTrackingProvider struct {
 	commandsCalled   bool
 }
 
-func (p *bootstrapTrackingProvider) Routes(r *chain.Routing) {
+func (p *bootstrapTrackingModule) Routes(r *chain.Routing) {
 	*p.calls = append(*p.calls, p.name+":routes")
 	p.routesCalled = true
 }
 
-func (p *bootstrapTrackingProvider) Middleware(m *chain.MiddlewareStack) {
+func (p *bootstrapTrackingModule) Middleware(m *chain.MiddlewareStack) {
 	*p.calls = append(*p.calls, p.name+":middleware")
 	p.middlewareCalled = true
 }
 
-func (p *bootstrapTrackingProvider) Events(d events.Dispatcher) {
+func (p *bootstrapTrackingModule) Events(d events.Dispatcher) {
 	*p.calls = append(*p.calls, p.name+":events")
 	p.eventsCalled = true
 }
 
-func (p *bootstrapTrackingProvider) Schedule(s scheduler.TaskScheduler) {
+func (p *bootstrapTrackingModule) Schedule(s scheduler.TaskScheduler) {
 	*p.calls = append(*p.calls, p.name+":schedule")
 	p.scheduleCalled = true
 }
 
-func (p *bootstrapTrackingProvider) Commands(r *chain.Commands) {
+func (p *bootstrapTrackingModule) Commands(r *chain.Commands) {
 	*p.calls = append(*p.calls, p.name+":commands")
 	p.commandsCalled = true
 }
@@ -81,7 +81,7 @@ func TestBootstrap_FullChain(t *testing.T) {
 	}
 
 	var (
-		providersCalled  bool
+		modulesCalled    bool
 		middlewareCalled bool
 		routesCalled     bool
 		eventsCalled     bool
@@ -90,8 +90,8 @@ func TestBootstrap_FullChain(t *testing.T) {
 		exceptionsCalled bool
 	)
 
-	a.Providers(func(r *chain.ProviderRegistry) {
-		providersCalled = true
+	a.Modules(func(r *chain.ModuleRegistry) {
+		modulesCalled = true
 	}).Middleware(func(m *chain.MiddlewareStack) {
 		middlewareCalled = true
 	}).Routes(func(r *chain.Routing) {
@@ -110,8 +110,8 @@ func TestBootstrap_FullChain(t *testing.T) {
 		t.Fatalf("bootstrap() error: %v", err)
 	}
 
-	if !providersCalled {
-		t.Error("Providers callback not called")
+	if !modulesCalled {
+		t.Error("Modules callback not called")
 	}
 	if !middlewareCalled {
 		t.Error("Middleware callback not called")
@@ -154,7 +154,7 @@ func TestBootstrap_ChainOrderIndependent(t *testing.T) {
 		order = append(order, "routes")
 	}).Middleware(func(m *chain.MiddlewareStack) {
 		order = append(order, "middleware")
-	}).Providers(func(r *chain.ProviderRegistry) {
+	}).Modules(func(r *chain.ModuleRegistry) {
 		order = append(order, "providers")
 	})
 
@@ -174,17 +174,17 @@ func TestBootstrap_ChainOrderIndependent(t *testing.T) {
 	}
 }
 
-func TestBootstrap_ProviderLifecycle(t *testing.T) {
+func TestBootstrap_ModuleLifecycle(t *testing.T) {
 	a, err := NewTestApp()
 	if err != nil {
 		t.Fatalf("NewTestApp() error: %v", err)
 	}
 
 	var calls []string
-	pA := &bootstrapTrackingProvider{trackingProvider: trackingProvider{name: "A", calls: &calls}}
-	pB := &bootstrapTrackingProvider{trackingProvider: trackingProvider{name: "B", calls: &calls}}
+	pA := &bootstrapTrackingModule{trackingModule: trackingModule{name: "A", calls: &calls}}
+	pB := &bootstrapTrackingModule{trackingModule: trackingModule{name: "B", calls: &calls}}
 
-	a.Providers(func(r *chain.ProviderRegistry) {
+	a.Modules(func(r *chain.ModuleRegistry) {
 		r.Add(pA, pB)
 	})
 
@@ -220,18 +220,18 @@ func TestBootstrap_ProviderLifecycle(t *testing.T) {
 
 func TestBootstrap_ShutdownOrder(t *testing.T) {
 	var calls []string
-	withA := &trackingProvider{name: "withA", calls: &calls}
-	withB := &trackingProvider{name: "withB", calls: &calls}
+	withA := &trackingModule{name: "withA", calls: &calls}
+	withB := &trackingModule{name: "withB", calls: &calls}
 
-	a, err := NewTestApp(WithProviders(withA, withB))
+	a, err := NewTestApp(WithModules(withA, withB))
 	if err != nil {
 		t.Fatalf("NewTestApp() error: %v", err)
 	}
 
-	chainA := &trackingProvider{name: "chainA", calls: &calls}
-	chainB := &trackingProvider{name: "chainB", calls: &calls}
+	chainA := &trackingModule{name: "chainA", calls: &calls}
+	chainB := &trackingModule{name: "chainB", calls: &calls}
 
-	a.Providers(func(r *chain.ProviderRegistry) {
+	a.Modules(func(r *chain.ModuleRegistry) {
 		r.Add(chainA, chainB)
 	})
 
@@ -246,7 +246,7 @@ func TestBootstrap_ShutdownOrder(t *testing.T) {
 		t.Fatalf("Shutdown() error: %v", err)
 	}
 
-	// Chain providers shut down first (reverse), then WithProviders (reverse)
+	// Chain modules shut down first (reverse), then WithModules (reverse)
 	want := []string{"chainB:shutdown", "chainA:shutdown", "withB:shutdown", "withA:shutdown"}
 	if len(calls) != len(want) {
 		t.Fatalf("got %d shutdown calls, want %d: %v", len(calls), len(want), calls)
@@ -266,9 +266,9 @@ func TestBootstrap_RegisterError(t *testing.T) {
 
 	wantErr := errors.New("register boom")
 	var calls []string
-	pA := &trackingProvider{name: "A", calls: &calls, registerErr: wantErr}
+	pA := &trackingModule{name: "A", calls: &calls, initErr: wantErr}
 
-	a.Providers(func(r *chain.ProviderRegistry) {
+	a.Modules(func(r *chain.ModuleRegistry) {
 		r.Add(pA)
 	})
 
@@ -289,9 +289,9 @@ func TestBootstrap_BootError(t *testing.T) {
 
 	wantErr := errors.New("boot boom")
 	var calls []string
-	pA := &trackingProvider{name: "A", calls: &calls, bootErr: wantErr}
+	pA := &trackingModule{name: "A", calls: &calls, startErr: wantErr}
 
-	a.Providers(func(r *chain.ProviderRegistry) {
+	a.Modules(func(r *chain.ModuleRegistry) {
 		r.Add(pA)
 	})
 
@@ -311,18 +311,18 @@ func TestBootstrap_NilCallbacks(t *testing.T) {
 	}
 
 	var calls []string
-	pA := &trackingProvider{name: "A", calls: &calls}
+	pA := &trackingModule{name: "A", calls: &calls}
 
-	a.Providers(func(r *chain.ProviderRegistry) {
+	a.Modules(func(r *chain.ModuleRegistry) {
 		r.Add(pA)
 	})
 
-	// Only Providers set, no other chain methods
+	// Only Modules set, no other chain methods
 	if err := a.bootstrap(); err != nil {
 		t.Fatalf("bootstrap() should succeed with nil callbacks: %v", err)
 	}
 
-	// Provider register + boot should still run
+	// Module register + boot should still run
 	want := []string{"A:register", "A:boot"}
 	if len(calls) != len(want) {
 		t.Fatalf("got %d calls, want %d: %v", len(calls), len(want), calls)
@@ -542,9 +542,9 @@ func TestBootstrap_ChainReturnsSameApp(t *testing.T) {
 		t.Fatalf("NewTestApp() error: %v", err)
 	}
 
-	got := a.Providers(func(*chain.ProviderRegistry) {})
+	got := a.Modules(func(*chain.ModuleRegistry) {})
 	if got != a {
-		t.Error("Providers() did not return same *App")
+		t.Error("Modules() did not return same *App")
 	}
 
 	got = a.Middleware(func(*chain.MiddlewareStack) {})
@@ -684,8 +684,8 @@ func TestBootstrap_FailureIsSticky(t *testing.T) {
 
 	wantErr := errors.New("register boom")
 	var calls []string
-	a.Providers(func(r *chain.ProviderRegistry) {
-		r.Add(&trackingProvider{name: "A", calls: &calls, registerErr: wantErr})
+	a.Modules(func(r *chain.ModuleRegistry) {
+		r.Add(&trackingModule{name: "A", calls: &calls, initErr: wantErr})
 	})
 
 	first := a.Bootstrap()
@@ -704,7 +704,7 @@ func TestBootstrap_FailureIsSticky(t *testing.T) {
 		t.Errorf("second Bootstrap() error %q differs from first %q", second, first)
 	}
 
-	// The provider must not have been re-registered by the second call.
+	// The module must not have been re-registered by the second call.
 	registers := 0
 	for _, c := range calls {
 		if c == "A:register" {
@@ -728,8 +728,8 @@ func TestRunCmd_AfterFailedBootstrap_NoPanic(t *testing.T) {
 
 	wantErr := errors.New("register boom")
 	var calls []string
-	a.Providers(func(r *chain.ProviderRegistry) {
-		r.Add(&trackingProvider{name: "A", calls: &calls, registerErr: wantErr})
+	a.Modules(func(r *chain.ModuleRegistry) {
+		r.Add(&trackingModule{name: "A", calls: &calls, initErr: wantErr})
 	})
 
 	if err := a.Bootstrap(); !errors.Is(err, wantErr) {

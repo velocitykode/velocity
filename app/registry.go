@@ -64,7 +64,7 @@ type RegisterOption func(*componentEntry)
 // registered value, never a hook. Multiple WithHooks options accumulate.
 //
 // Ownership rule: the registry owns teardown of the registered value and its
-// hooks. A provider that registers a value MUST NOT also close it (or close a
+// hooks. A module that registers a value MUST NOT also close it (or close a
 // resource the hook owns) in its own Shutdown; the App.Shutdown registry sweep
 // closes anything that implements contract.ShutdownAware exactly once.
 func WithHooks(hooks ...any) RegisterOption {
@@ -87,7 +87,7 @@ func WithHooks(hooks ...any) RegisterOption {
 // Returns an error if v is nil, whether an untyped nil or a typed nil
 // pointer/map/chan/func/slice (a nil value would make Get useless and would
 // panic the event-wiring sweep), or if the key is already registered (a
-// duplicate usually means a provider ran twice). A provider that registers a
+// duplicate usually means a module ran twice). A module that registers a
 // value MUST NOT also close it in its own
 // Shutdown: the registry owns reverse-order teardown of registered values.
 func Register[T any](s *Services, v T, opts ...RegisterOption) error {

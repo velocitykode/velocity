@@ -1,7 +1,7 @@
 package velocity
 
 // Event-wiring conformance tests. Event wiring has regressed several
-// independent ways (B3 bus never autowired, B12 provider-registered
+// independent ways (B3 bus never autowired, B12 module-registered
 // components swept against an empty registry, B13 CSRF missing from the
 // candidate slice, B47 dispatcher wiring drift); these tests pin the
 // contract so the next drift fails CI instead of silently dropping events:
@@ -228,22 +228,22 @@ func TestConformance_ServicesEventWiringCandidates(t *testing.T) {
 	}
 }
 
-// conformanceComponentProvider registers a dispatcher-aware value in the
+// conformanceComponentModule registers a dispatcher-aware value in the
 // type-keyed component registry during Register, the way a first-party SDK
 // module opts into framework events.
-type conformanceComponentProvider struct {
+type conformanceComponentModule struct {
 	probe *componentProbe
 }
 
-func (p *conformanceComponentProvider) Register(s *app.Services) error {
+func (p *conformanceComponentModule) Init(s *app.Services) error {
 	return app.Register(s, p.probe)
 }
 
-func (p *conformanceComponentProvider) Boot(_ *app.Services) error       { return nil }
-func (p *conformanceComponentProvider) Shutdown(_ context.Context) error { return nil }
+func (p *conformanceComponentModule) Start(_ *app.Services) error      { return nil }
+func (p *conformanceComponentModule) Shutdown(_ context.Context) error { return nil }
 
 // Part D: canonical pin of the component wiring contract. A dispatcher-aware
-// value registered in the type-keyed registry by a provider must receive the
+// value registered in the type-keyed registry by a module must receive the
 // dispatcher, and a dispatch through it must land in the app dispatcher. This
 // guards future SDKs that self-register via app.Register against a wiring
 // regression in wireComponentEvents.
@@ -253,7 +253,7 @@ func TestConformance_ComponentReceivesDispatcher(t *testing.T) {
 
 	a, err := NewTestApp(
 		WithFakeEvents(fake),
-		WithProviders(&conformanceComponentProvider{probe: probe}),
+		WithModules(&conformanceComponentModule{probe: probe}),
 	)
 	if err != nil {
 		t.Fatalf("NewTestApp() error: %v", err)
@@ -263,18 +263,18 @@ func TestConformance_ComponentReceivesDispatcher(t *testing.T) {
 	assertProbeDispatches(t, &probe.dispatcherProbe, fake)
 }
 
-// busRegisteringProvider registers an application bus in the type-keyed
+// busRegisteringModule registers an application bus in the type-keyed
 // component registry via the typed app.Register API.
-type busRegisteringProvider struct {
+type busRegisteringModule struct {
 	bus *bus.Bus
 }
 
-func (p *busRegisteringProvider) Register(s *app.Services) error {
+func (p *busRegisteringModule) Init(s *app.Services) error {
 	return app.Register[*bus.Bus](s, p.bus)
 }
 
-func (p *busRegisteringProvider) Boot(_ *app.Services) error       { return nil }
-func (p *busRegisteringProvider) Shutdown(_ context.Context) error { return nil }
+func (p *busRegisteringModule) Start(_ *app.Services) error      { return nil }
+func (p *busRegisteringModule) Shutdown(_ context.Context) error { return nil }
 
 type conformanceCommand struct {
 	ID int
@@ -290,7 +290,7 @@ func TestConformance_BusCommandEventsReachDispatcher(t *testing.T) {
 
 	a, err := NewTestApp(
 		WithFakeEvents(fake),
-		WithProviders(&busRegisteringProvider{bus: b}),
+		WithModules(&busRegisteringModule{bus: b}),
 	)
 	if err != nil {
 		t.Fatalf("NewTestApp() error: %v", err)

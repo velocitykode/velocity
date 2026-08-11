@@ -9,13 +9,13 @@ import (
 // {{ .Name }}ServiceProvider registers and boots the {{ .Name }} service.
 type {{ .Name }}ServiceProvider struct{}
 
-// Register binds services into the container.
-func (p *{{ .Name }}ServiceProvider) Register(s *velocity.Services) error {
+// Init binds services into the container.
+func (p *{{ .Name }}ServiceProvider) Init(s *velocity.Services) error {
 	return nil
 }
 
-// Boot is called after all providers have been registered.
-func (p *{{ .Name }}ServiceProvider) Boot(s *velocity.Services) error {
+// Start is called after all modules have been initialized.
+func (p *{{ .Name }}ServiceProvider) Start(s *velocity.Services) error {
 	return nil
 }
 

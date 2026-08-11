@@ -84,36 +84,36 @@ var (
 	_ auth.CSRFTokenRotatorReceiver = (*recorderGuard)(nil)
 )
 
-// csrfReplaceProvider is a chain ServiceProvider whose Boot replaces
+// csrfReplaceModule is a chain Module whose Boot replaces
 // s.CSRF with a customised fake. Mirrors the velship.com pattern where
-// a consumer bootstrapCSRF provider swaps in its own CSRF instance.
-type csrfReplaceProvider struct {
+// a consumer bootstrapCSRF module swaps in its own CSRF instance.
+type csrfReplaceModule struct {
 	replacement *fakeCSRFRotator
 }
 
-func (p *csrfReplaceProvider) Register(_ *app.Services) error { return nil }
-func (p *csrfReplaceProvider) Boot(s *app.Services) error {
+func (p *csrfReplaceModule) Init(_ *app.Services) error { return nil }
+func (p *csrfReplaceModule) Start(s *app.Services) error {
 	// Capture the framework-built s.CSRF for the optional pre-fix
 	// "did the framework wire the rotator at the wrong moment" probe;
 	// the test does not need it but documents intent.
 	s.CSRF = p.replacement
 	return nil
 }
-func (p *csrfReplaceProvider) Shutdown(_ context.Context) error { return nil }
+func (p *csrfReplaceModule) Shutdown(_ context.Context) error { return nil }
 
 // TestCSRFRotator_PointsToBootReplacement pins the boot-order fix that
 // keeps the auth manager's CSRF token rotator aligned with the FINAL
-// s.CSRF on Services (post chain provider Boot) rather than the
+// s.CSRF on Services (post chain module Boot) rather than the
 // framework-built CSRF created during New().
 //
 // Pre-fix: app.go installed the rotator AT New() time, so any chain
-// provider that replaced s.CSRF in its Boot() left the auth manager
+// module that replaced s.CSRF in its Boot() left the auth manager
 // holding the original framework instance. RotateToken / RevokeToken /
 // WriteXSRFCookie calls during Login / Logout / remember-cookie revival
 // silently targeted a CSRF store no longer in the request path, and the
 // first POST after login returned 419.
 //
-// Post-fix: bootstrap.go installs the rotator AFTER runProviderLifecycle
+// Post-fix: bootstrap.go installs the rotator AFTER runModuleLifecycle
 // returns, so the install picks up the consumer's replacement.
 //
 // Observation strategy: register a brand-new recorderGuard on the auth
@@ -140,15 +140,15 @@ func TestCSRFRotator_PointsToBootReplacement(t *testing.T) {
 		t.Fatal("test fake collides with framework-built instance")
 	}
 
-	a.Providers(func(r *chain.ProviderRegistry) {
-		r.Add(&csrfReplaceProvider{replacement: replacement})
+	a.Modules(func(r *chain.ModuleRegistry) {
+		r.Add(&csrfReplaceModule{replacement: replacement})
 	})
 
 	if err := a.Bootstrap(); err != nil {
 		t.Fatalf("Bootstrap() error: %v", err)
 	}
 
-	// Sanity: the provider Boot actually swapped Services.CSRF.
+	// Sanity: the module Boot actually swapped Services.CSRF.
 	if a.Services.CSRF != replacement {
 		t.Fatalf("Services.CSRF after Bootstrap: got %#v, want fake replacement %#v",
 			a.Services.CSRF, replacement)
@@ -186,7 +186,7 @@ func TestCSRFRotator_PointsToBootReplacement(t *testing.T) {
 //
 // Regression model: an earlier follow-up moved the install out of
 // New() entirely into bootstrap(); the bootstrap-only install is
-// correct for chain-provider Boot swaps but silently broke this
+// correct for chain-module Boot swaps but silently broke this
 // audience because their code path never ran bootstrap(). The current
 // fix installs in BOTH places (New() and bootstrap()) and this test
 // guards the New-only half.

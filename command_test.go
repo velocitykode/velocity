@@ -183,28 +183,28 @@ func TestCommands_CalledDuringBootstrap(t *testing.T) {
 	}
 }
 
-// commandTrackingProvider is a provider that implements chain.CommandProvider.
-type commandTrackingProvider struct {
-	trackingProvider
+// commandTrackingModule is a module that implements chain.CommandModule.
+type commandTrackingModule struct {
+	trackingModule
 	commandsCalled bool
 }
 
-func (p *commandTrackingProvider) Commands(r *chain.Commands) {
+func (p *commandTrackingModule) Commands(r *chain.Commands) {
 	*p.calls = append(*p.calls, p.name+":commands")
 	p.commandsCalled = true
 	r.Add(&stubCommand{name: "provider-cmd", description: "From provider"})
 }
 
-func TestBootstrap_CommandProvider(t *testing.T) {
+func TestBootstrap_CommandModule(t *testing.T) {
 	a, err := NewTestApp()
 	if err != nil {
 		t.Fatalf("NewTestApp() error: %v", err)
 	}
 
 	var calls []string
-	pA := &commandTrackingProvider{trackingProvider: trackingProvider{name: "A", calls: &calls}}
+	pA := &commandTrackingModule{trackingModule: trackingModule{name: "A", calls: &calls}}
 
-	a.Providers(func(r *chain.ProviderRegistry) {
+	a.Modules(func(r *chain.ModuleRegistry) {
 		r.Add(pA)
 	})
 
@@ -213,7 +213,7 @@ func TestBootstrap_CommandProvider(t *testing.T) {
 	}
 
 	if !pA.commandsCalled {
-		t.Error("CommandProvider.Commands() was not called")
+		t.Error("CommandModule.Commands() was not called")
 	}
 
 	cmd, ok := a.commands.Get("provider-cmd")

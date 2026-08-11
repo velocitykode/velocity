@@ -7,14 +7,14 @@
 // # Canonical import path
 //
 // Application code should import only "github.com/velocitykode/velocity". The
-// declarative bootstrap types (Routing, MiddlewareStack, ProviderRegistry,
-// Commands, Services, ServiceProvider, and the provider interfaces) are
+// declarative bootstrap types (Routing, MiddlewareStack, ModuleRegistry,
+// Commands, Services, Module, and the optional module interfaces) are
 // re-exported from this package as type aliases; their implementation homes
 // (chain/ and app/) are framework-internal concerns driven by import-cycle
 // constraints, not public API. Sibling packages (prism, generated
 // scaffolding, examples, templates) all use the velocity.X names.
 //
-// Framework-internal code and third-party service providers that need to
+// Framework-internal code and third-party modules that need to
 // embed or implement these types may import chain/ or app/ directly —
 // velocity.X and chain.X resolve to the same Go type, so either path works.
 //

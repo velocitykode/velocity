@@ -35,7 +35,7 @@ func (a *App) Serve() error {
 	}
 
 	// If CLI arguments are present, delegate to the command dispatcher.
-	// This allows main.go to be a single call: v.Providers(...).Routes(...).Serve()
+	// This allows main.go to be a single call: v.Modules(...).Routes(...).Serve()
 	if len(os.Args) > 1 {
 		return a.Run()
 	}
@@ -65,8 +65,8 @@ func (a *App) serveHTTP() error {
 	defer signal.Stop(quit)
 
 	if err := a.bootstrap(); err != nil {
-		// Bootstrap may have partially wired subsystems (chain providers
-		// Register/Boot, middleware, event listeners). Shutdown unwinds
+		// Bootstrap may have partially wired subsystems (chain modules
+		// Init/Start, middleware, event listeners). Shutdown unwinds
 		// every subsystem idempotently, so run it here before returning
 		// so nothing is left dangling. Its error is joined onto the
 		// bootstrap error so the caller sees both failures.
@@ -153,13 +153,13 @@ func (a *App) serveHTTP() error {
 
 // Shutdown gracefully shuts down all services in reverse initialization order:
 // HTTP server, event dispatcher and file root, scheduler, outbox relay, then
-// chain providers and WithProviders providers (reverse registration order),
+// chain modules and WithModules modules (reverse registration order),
 // then registry components (reverse registration order), then queue, cache,
-// CSRF, mail, storage, notification, view, DB, and the logger last. Providers
-// tear down before queue/cache/DB because they Register/Boot after all core
+// CSRF, mail, storage, notification, view, DB, and the logger last. Modules
+// tear down before queue/cache/DB because they Init/Start after all core
 // services; unwinding them first keeps those services alive for final flushes
 // and matches the New() failure-path order. Registry components sweep after
-// providers (so a provider can flush using a value it registered) and before
+// modules (so a module can flush using a value it registered) and before
 // queue/cache/DB (so a component can still reach core services during its own
 // teardown); the registry owns teardown of registered values.
 // Every subsystem's Shutdown is called even if an earlier one fails; all errors
@@ -204,23 +204,23 @@ func (a *App) Shutdown(ctx context.Context) error {
 		collect(a.outboxRelay.Stop(ctx))
 	}
 
-	// 4. Shutdown chain providers in reverse order, then WithProviders
-	// providers in reverse registration order. Providers Register/Boot
+	// 4. Shutdown chain modules in reverse order, then WithModules
+	// modules in reverse registration order. Modules Init/Start
 	// AFTER all core services, so reverse-order teardown unwinds them
 	// first, while queue/cache/DB are still alive for final flushes;
-	// this matches the New() failure path, where the provider-unwind
+	// this matches the New() failure path, where the module-unwind
 	// closure is pushed last onto the cleanup stack and runs first.
-	for i := len(a.chainProviders) - 1; i >= 0; i-- {
-		collect(a.chainProviders[i].Shutdown(ctx))
+	for i := len(a.chainModules) - 1; i >= 0; i-- {
+		collect(a.chainModules[i].Shutdown(ctx))
 	}
-	for i := len(a.providers) - 1; i >= 0; i-- {
-		collect(a.providers[i].Shutdown(ctx))
+	for i := len(a.modules) - 1; i >= 0; i-- {
+		collect(a.modules[i].Shutdown(ctx))
 	}
 
 	// 4a. Sweep registry components in reverse registration order. The
-	// registry owns teardown of registered values: a provider that
+	// registry owns teardown of registered values: a module that
 	// registers a value MUST NOT also close it in its own Shutdown (see
-	// app.Register). This runs after provider Shutdown so a provider can
+	// app.Register). This runs after module Shutdown so a module can
 	// flush using a value it registered, and before queue/cache/DB close so
 	// a component can still reach core services during its own teardown.
 	shutdownComponents(ctx, a.Services, collect)
@@ -333,7 +333,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 //
 // Each Shutdown call is panic-guarded (see safeComponentShutdown) so a
 // misbehaving third-party Close cannot abort the remaining teardown. The
-// sweep runs after provider Shutdowns and before core services close, so
+// sweep runs after module Shutdowns and before core services close, so
 // hooks may still flush through the queue, cache, or DB.
 func shutdownComponents(ctx context.Context, s *app.Services, collect func(error)) {
 	if s == nil {

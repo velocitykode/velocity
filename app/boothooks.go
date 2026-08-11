@@ -3,7 +3,7 @@ package app
 import "sync"
 
 // BootHook runs once per velocity.New() call, after all core services are
-// constructed, instance event dispatchers are wired, and the provider
+// constructed, instance event dispatchers are wired, and the module
 // lifecycle has completed. The hook receives the live Services and may
 // attach event listeners, register components (app.Register), or read
 // service handles.

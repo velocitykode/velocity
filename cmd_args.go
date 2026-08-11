@@ -11,7 +11,7 @@ import (
 // This file holds the standalone argument parsers for the built-in CLI
 // commands. They are deliberately pure (no *App, no services, no I/O) so the
 // dispatcher can parse a command's flags BEFORE bootstrapping the application
-// - a typo then fails fast without spinning up providers - and so each parser
+// - a typo then fails fast without spinning up modules - and so each parser
 // can be unit-tested in isolation the way parseMakeGRPCServiceArgs is.
 //
 // Every parser rejects tokens it does not recognise rather than silently

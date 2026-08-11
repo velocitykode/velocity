@@ -188,7 +188,7 @@ func hasForceFlag(args []string) bool {
 // typo'd APP_ENV cannot disable the gate.
 //
 // The guard lives in the cmd layer by design and runs BEFORE Bootstrap so a
-// refused command never executes the provider lifecycle. Programmatic
+// refused command never executes the module lifecycle. Programmatic
 // callers of console.DBWipe / console.MigrateFresh / console.MigrateRollback
 // are unaffected; those functions are unguarded by contract.
 func guardProductionDataLoss(a *App, name string, args []string) error {

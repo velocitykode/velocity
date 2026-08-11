@@ -93,7 +93,7 @@ func initStorage(config StorageConfig, logger log.Logger) *storage.Manager {
 //
 // Velocity authenticates a single identity store. The provider installed here
 // is the framework default, backed by ormauth.User against the users table;
-// an application swaps in its own model from a service provider:
+// an application swaps in its own model from a module:
 //
 //	s.Auth.SetProvider(ormauth.New[models.Admin]())
 //

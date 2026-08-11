@@ -170,16 +170,16 @@ func FromContext(ctx *router.Context) *Manager {
 }
 
 // FromServices extracts the *Manager from a service container, which is
-// what a ServiceProvider's Register/Boot receives. It is the Services-side
+// what a Module's Init/Start receives. It is the Services-side
 // counterpart to [FromContext]: app.Services types the field as
 // contract.AuthManager (contract is a stdlib-only leaf and cannot name
-// auth's types), so a provider that needs the concrete manager - to install
+// auth's types), so a module that needs the concrete manager - to install
 // its own user provider, for instance - goes through here.
 //
 // Returns nil when auth is not configured, so callers get the documented
 // nil contract rather than a panic.
 //
-//	func (p *AppProvider) Register(s *velocity.Services) error {
+//	func (p *AppModule) Init(s *velocity.Services) error {
 //	    manager := auth.FromServices(s)
 //	    if manager == nil {
 //	        return errors.New("auth is not configured")

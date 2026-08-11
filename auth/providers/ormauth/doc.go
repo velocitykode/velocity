@@ -14,9 +14,9 @@
 // configuration string - Go cannot turn the name "Admin" into a type, and
 // a linker that sees no reference to a type is free to discard it.
 //
-// An application installs its own model from a service provider:
+// An application installs its own model from a module:
 //
-//	func (p *AuthProvider) Boot(s *app.Services) error {
+//	func (p *AuthModule) Start(s *app.Services) error {
 //	    provider := ormauth.New[models.Admin](
 //	        ormauth.WithIdentifierColumn("username"),
 //	    )

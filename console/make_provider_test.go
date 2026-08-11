@@ -25,11 +25,11 @@ func TestMakeProvider_CreatesFile(t *testing.T) {
 	if !strings.Contains(s, "CacheServiceProvider") {
 		t.Error("expected CacheServiceProvider struct")
 	}
-	if !strings.Contains(s, "Register(s *velocity.Services) error") {
-		t.Error("expected Register method")
+	if !strings.Contains(s, "Init(s *velocity.Services) error") {
+		t.Error("expected Init method")
 	}
-	if !strings.Contains(s, "Boot(s *velocity.Services) error") {
-		t.Error("expected Boot method")
+	if !strings.Contains(s, "Start(s *velocity.Services) error") {
+		t.Error("expected Start method")
 	}
 	if !strings.Contains(s, "Shutdown(ctx context.Context) error") {
 		t.Error("expected Shutdown method")

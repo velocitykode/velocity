@@ -70,23 +70,23 @@ type App struct {
 	version        string
 	noEvents       bool // skip event dispatcher initialization
 	runScheduler   bool // start scheduler in-process under Serve() (WithSchedulerInProcess)
-	providers      []app.ServiceProvider
+	modules        []app.Module
 	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
 
 	// Declarative bootstrap chain
-	providersFn    func(*chain.ProviderRegistry)
-	chainProviders []app.ServiceProvider
-	middlewareFn   func(*chain.MiddlewareStack)
-	routesFn       func(*chain.Routing)
-	eventsFn       func(events.Dispatcher)
-	scheduleFn     func(scheduler.TaskScheduler)
-	commandsFn     func(*chain.Commands)
-	commands       *chain.Commands
-	exceptionsFn   func(exceptions.ExceptionHandler)
-	bootstrapped   bool
+	modulesFn    func(*chain.ModuleRegistry)
+	chainModules []app.Module
+	middlewareFn func(*chain.MiddlewareStack)
+	routesFn     func(*chain.Routing)
+	eventsFn     func(events.Dispatcher)
+	scheduleFn   func(scheduler.TaskScheduler)
+	commandsFn   func(*chain.Commands)
+	commands     *chain.Commands
+	exceptionsFn func(exceptions.ExceptionHandler)
+	bootstrapped bool
 	// bootstrapErr is the sticky result of the first bootstrap() run.
-	// A failed bootstrap must NOT be re-run (providers, middleware and
+	// A failed bootstrap must NOT be re-run (modules, middleware and
 	// routes registered before the failure would double-register), so
 	// every subsequent bootstrap() call returns this same error.
 	bootstrapErr error
@@ -148,7 +148,7 @@ func New(opts ...Option) (*App, error) {
 	}()
 	// The shutdown context must always be cancelled on the failure path
 	// so any goroutine observing shutdownCtx.Done() (e.g. a BaseContext
-	// consumer spawned by a provider) unwinds promptly. On the success
+	// consumer spawned by a module) unwinds promptly. On the success
 	// path, Shutdown() cancels it.
 	// As cleanups[0], the deferred reverse walk runs this cancel() on every
 	// failure return below, so later sites need no explicit cancel() call.
@@ -415,15 +415,15 @@ func New(opts ...Option) (*App, error) {
 	// across recall. This covers embed-mode apps, tests, and scripts
 	// that hold an *App without calling the declarative chain.
 	//
-	// bootstrap() re-runs the same install AFTER chain providers' Boot
-	// so consumers that legitimately replace s.CSRF in their Boot have
+	// bootstrap() re-runs the same install AFTER chain modules' Start
+	// so consumers that legitimately replace s.CSRF in their Start have
 	// their replacement honored. The install helper is idempotent
 	// (just sets a function pointer on auth.Manager protected by mu),
 	// so calling it twice is safe; the last call wins, which is the
-	// bootstrap-time call when a chain provider participated.
+	// bootstrap-time call when a chain module participated.
 	//
 	// See installCSRFTokenRotator in bootstrap.go,
-	// TestCSRFRotator_PointsToBootReplacement (chain-provider path),
+	// TestCSRFRotator_PointsToBootReplacement (chain-module path),
 	// and TestCSRFRotator_WiredByNewWithoutBootstrap (direct-New path).
 	installCSRFTokenRotator(a)
 
@@ -760,18 +760,18 @@ func New(opts ...Option) (*App, error) {
 	// Wire event dispatchers into service instances
 	wireInstanceEvents(a)
 
-	// Run provider lifecycle: Register all, then Boot all. On failure,
-	// providers that already completed Register will be unwound by
+	// Run module lifecycle: Init all, then Start all. On failure,
+	// modules that already completed Init will be unwound by
 	// calling Shutdown in reverse registration order, same behaviour as
 	// App.Shutdown so consumers see a single, consistent teardown. The
-	// provider that failed and any after it are excluded: a failing
-	// Register must clean up before returning, and later providers
+	// module that failed and any after it are excluded: a failing
+	// Init must clean up before returning, and later modules
 	// never ran at all.
-	if registered, err := runProviderLifecycle(a.providers, a.Services, "provider"); err != nil {
-		// Mirror App.Shutdown: providers unwind first, then the registry
-		// sweep tears down any values providers registered before failing.
+	if registered, err := runModuleLifecycle(a.modules, a.Services, "module"); err != nil {
+		// Mirror App.Shutdown: modules unwind first, then the registry
+		// sweep tears down any values modules registered before failing.
 		// The cleanup stack runs in reverse push order, so push the
-		// component sweep BEFORE the provider unwind to have the unwind run
+		// component sweep BEFORE the module unwind to have the unwind run
 		// first and the sweep immediately after. Failure-path teardown is
 		// best-effort, so errors are discarded (New returns the original err).
 		cleanups = append(cleanups, func() {
@@ -780,14 +780,14 @@ func New(opts ...Option) (*App, error) {
 		cleanups = append(cleanups, func() {
 			shutdownCtx := context.Background()
 			for i := registered - 1; i >= 0; i-- {
-				_ = a.providers[i].Shutdown(shutdownCtx)
+				_ = a.modules[i].Shutdown(shutdownCtx)
 			}
 		})
 		return nil, err
 	}
 
-	// Providers may have registered components or replaced service
-	// instances (e.g. Services.CSRF) during Register/Boot; the
+	// Modules may have registered components or replaced service
+	// instances (e.g. Services.CSRF) during Init/Start; the
 	// wireInstanceEvents sweep above ran before the lifecycle, so it saw
 	// an empty component registry and the original instances. Re-sweep now
 	// that registrations are done; every wiring setter is an idempotent
@@ -796,13 +796,13 @@ func New(opts ...Option) (*App, error) {
 
 	// Run registered boot hooks (zero-config instrumentation that
 	// self-registers via app.OnBoot from a blank-imported package). Hooks
-	// run last so they see the final service set, after providers have
-	// registered and booted. Components a hook registers via app.Register
+	// run last so they see the final service set, after modules have
+	// initialized and started. Components a hook registers via app.Register
 	// are covered by the ShutdownAware sweep in App.Shutdown but NOT by
 	// the wireInstanceEvents sweeps above (already run); a hook needing
 	// the dispatcher reads s.Events directly. On error, mirror the
-	// provider-failure teardown: providers unwind first (reverse push
-	// order), then the component sweep releases hook/provider-registered
+	// module-failure teardown: modules unwind first (reverse push
+	// order), then the component sweep releases hook/module-registered
 	// values.
 	if err := app.RunBootHooks(a.Services); err != nil {
 		cleanups = append(cleanups, func() {
@@ -810,8 +810,8 @@ func New(opts ...Option) (*App, error) {
 		})
 		cleanups = append(cleanups, func() {
 			shutdownCtx := context.Background()
-			for i := len(a.providers) - 1; i >= 0; i-- {
-				_ = a.providers[i].Shutdown(shutdownCtx)
+			for i := len(a.modules) - 1; i >= 0; i-- {
+				_ = a.modules[i].Shutdown(shutdownCtx)
 			}
 		})
 		return nil, fmt.Errorf("velocity: boot hook failed: %w", err)
@@ -854,12 +854,12 @@ func (a *App) Version() string {
 
 // --- Declarative bootstrap chain ---
 
-// Providers registers a callback that adds service providers to the application.
-// Providers registered here participate in the full bootstrap lifecycle including
-// optional interfaces (chain.RouteProvider, chain.MiddlewareProvider,
-// chain.EventProvider, chain.ScheduleProvider, chain.CommandProvider).
-func (a *App) Providers(fn func(*chain.ProviderRegistry)) *App {
-	a.providersFn = fn
+// Modules registers a callback that adds modules to the application.
+// Modules registered here participate in the full bootstrap lifecycle including
+// optional interfaces (chain.RouteModule, chain.MiddlewareModule,
+// chain.EventModule, chain.ScheduleModule, chain.CommandModule).
+func (a *App) Modules(fn func(*chain.ModuleRegistry)) *App {
+	a.modulesFn = fn
 	return a
 }
 

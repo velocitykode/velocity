@@ -11,7 +11,7 @@ import (
 // consumer callbacks (which reference the chain types via *App methods).
 // That split is a framework-internal concern; consumers should not have
 // to learn it. These aliases re-expose the types under the root package
-// so handler code, provider code, and generated scaffolding all stay
+// so handler code, module code, and generated scaffolding all stay
 // inside the "velocity" namespace.
 //
 // Unlike view/bond, there is no swappable implementation hiding behind
@@ -33,27 +33,27 @@ type (
 	// respective chains.
 	MiddlewareStack = chain.MiddlewareStack
 
-	// ProviderRegistry is the argument to App.Providers(fn). Use
-	// (*ProviderRegistry).Add to register ServiceProvider implementations
+	// ModuleRegistry is the argument to App.Modules(fn). Use
+	// (*ModuleRegistry).Add to register Module implementations
 	// from the chain.
-	ProviderRegistry = chain.ProviderRegistry
+	ModuleRegistry = chain.ModuleRegistry
 
 	// Commands is the argument to App.Commands(fn). Use (*Commands).Add
 	// to register a custom CLI command reachable via `vel run <name>`.
 	Commands = chain.Commands
 )
 
-// Optional provider interfaces — implemented by ServiceProvider types to
+// Optional module interfaces — implemented by Module types to
 // auto-wire routes, middleware, events, schedules, or commands during
 // bootstrap. Implementation is structural (no explicit "implements"
 // declaration needed), but type assertions and compile-time conformance
 // checks use these names.
 type (
-	RouteProvider      = chain.RouteProvider
-	MiddlewareProvider = chain.MiddlewareProvider
-	EventProvider      = chain.EventProvider
-	ScheduleProvider   = chain.ScheduleProvider
-	CommandProvider    = chain.CommandProvider
+	RouteModule      = chain.RouteModule
+	MiddlewareModule = chain.MiddlewareModule
+	EventModule      = chain.EventModule
+	ScheduleModule   = chain.ScheduleModule
+	CommandModule    = chain.CommandModule
 )
 
 // Service container types.
@@ -63,9 +63,9 @@ type (
 	// and shared with router.Context via Router.SetServices.
 	Services = app.Services
 
-	// ServiceProvider is the lifecycle interface for modular service
-	// registration. Implement Register (bind services), Boot (wire
+	// Module is the lifecycle interface for modular service
+	// registration. Implement Init (bind services), Start (wire
 	// dependencies), and Shutdown (teardown). Register in order via
-	// App.Providers(fn) or velocity.New(WithProviders(...)).
-	ServiceProvider = app.ServiceProvider
+	// App.Modules(fn) or velocity.New(WithModules(...)).
+	Module = app.Module
 )

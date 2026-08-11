@@ -70,42 +70,42 @@ type plainValue struct {
 	name string
 }
 
-// componentRegisteringProvider registers a dispatcher-aware value in the
+// componentRegisteringModule registers a dispatcher-aware value in the
 // component registry during Register, mimicking a first-party SDK module.
-type componentRegisteringProvider struct {
+type componentRegisteringModule struct {
 	probe *componentProbe
 }
 
-func (p *componentRegisteringProvider) Register(s *app.Services) error {
+func (p *componentRegisteringModule) Init(s *app.Services) error {
 	return app.Register(s, p.probe)
 }
 
-func (p *componentRegisteringProvider) Boot(_ *app.Services) error       { return nil }
-func (p *componentRegisteringProvider) Shutdown(_ context.Context) error { return nil }
+func (p *componentRegisteringModule) Start(_ *app.Services) error      { return nil }
+func (p *componentRegisteringModule) Shutdown(_ context.Context) error { return nil }
 
-// hookedValueProvider registers a velocity-unaware value alongside a
+// hookedValueModule registers a velocity-unaware value alongside a
 // dispatcher-aware hook adapter, the WithHooks bridging pattern.
-type hookedValueProvider struct {
+type hookedValueModule struct {
 	value   *plainValue
 	adapter *dispatcherProbe
 }
 
-func (p *hookedValueProvider) Register(s *app.Services) error {
+func (p *hookedValueModule) Init(s *app.Services) error {
 	return app.Register(s, p.value, app.WithHooks(p.adapter))
 }
 
-func (p *hookedValueProvider) Boot(_ *app.Services) error       { return nil }
-func (p *hookedValueProvider) Shutdown(_ context.Context) error { return nil }
+func (p *hookedValueModule) Start(_ *app.Services) error      { return nil }
+func (p *hookedValueModule) Shutdown(_ context.Context) error { return nil }
 
 // (a) A first-party component implementing EventDispatcherAware, registered via
-// a WithProviders provider's Register, receives the dispatcher after New.
-func TestNew_WithProviders_ComponentReceivesDispatcher(t *testing.T) {
+// a WithModules module's Register, receives the dispatcher after New.
+func TestNew_WithModules_ComponentReceivesDispatcher(t *testing.T) {
 	fake := events.NewFakeDispatcher()
 	probe := &componentProbe{}
 
 	a, err := NewTestApp(
 		WithFakeEvents(fake),
-		WithProviders(&componentRegisteringProvider{probe: probe}),
+		WithModules(&componentRegisteringModule{probe: probe}),
 	)
 	if err != nil {
 		t.Fatalf("NewTestApp() error: %v", err)
@@ -118,14 +118,14 @@ func TestNew_WithProviders_ComponentReceivesDispatcher(t *testing.T) {
 // (b) A velocity-unaware value registered with a dispatcher-aware hook adapter:
 // the adapter receives the dispatcher, the raw value is untouched and returned
 // verbatim by Get.
-func TestNew_WithProviders_HookAdapterReceivesDispatcher(t *testing.T) {
+func TestNew_WithModules_HookAdapterReceivesDispatcher(t *testing.T) {
 	fake := events.NewFakeDispatcher()
 	value := &plainValue{name: "third-party"}
 	adapter := &dispatcherProbe{}
 
 	a, err := NewTestApp(
 		WithFakeEvents(fake),
-		WithProviders(&hookedValueProvider{value: value, adapter: adapter}),
+		WithModules(&hookedValueModule{value: value, adapter: adapter}),
 	)
 	if err != nil {
 		t.Fatalf("NewTestApp() error: %v", err)
@@ -146,9 +146,9 @@ func TestNew_WithProviders_HookAdapterReceivesDispatcher(t *testing.T) {
 	}
 }
 
-// (c) A component registered by a chain provider during bootstrap() is wired by
-// the bootstrap.go re-sweep that runs after the chain provider lifecycle.
-func TestBootstrap_ChainProviderComponentReceivesDispatcher(t *testing.T) {
+// (c) A component registered by a chain module during bootstrap() is wired by
+// the bootstrap.go re-sweep that runs after the chain module lifecycle.
+func TestBootstrap_ChainModuleComponentReceivesDispatcher(t *testing.T) {
 	fake := events.NewFakeDispatcher()
 	probe := &componentProbe{}
 
@@ -158,8 +158,8 @@ func TestBootstrap_ChainProviderComponentReceivesDispatcher(t *testing.T) {
 	}
 	defer a.Shutdown(context.Background())
 
-	a.Providers(func(r *chain.ProviderRegistry) {
-		r.Add(&componentRegisteringProvider{probe: probe})
+	a.Modules(func(r *chain.ModuleRegistry) {
+		r.Add(&componentRegisteringModule{probe: probe})
 	})
 
 	if err := a.Bootstrap(); err != nil {
@@ -216,7 +216,7 @@ func TestWireInstanceEvents_CSRFReceivesDispatcher(t *testing.T) {
 
 // Under WithoutEvents the dispatcher is nil; the bootstrap-time component
 // sweep must no-op cleanly instead of wiring a nil closure. Ported from the
-// removed string-extension SweepNoOps test (the B12 WithProviders and chain
+// removed string-extension SweepNoOps test (the B12 WithModules and chain
 // paths it shared a helper with are already covered by the Component
 // equivalents above).
 func TestBootstrap_WithoutEvents_ComponentSweepNoOps(t *testing.T) {
@@ -228,8 +228,8 @@ func TestBootstrap_WithoutEvents_ComponentSweepNoOps(t *testing.T) {
 	}
 	defer a.Shutdown(context.Background())
 
-	a.Providers(func(r *chain.ProviderRegistry) {
-		r.Add(&componentRegisteringProvider{probe: probe})
+	a.Modules(func(r *chain.ModuleRegistry) {
+		r.Add(&componentRegisteringModule{probe: probe})
 	})
 
 	if err := a.Bootstrap(); err != nil {

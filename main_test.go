@@ -8,36 +8,36 @@ import (
 	"github.com/velocitykode/velocity/app"
 )
 
-// trackingProvider records lifecycle calls for verification.
-type trackingProvider struct {
+// trackingModule records lifecycle calls for verification.
+type trackingModule struct {
 	name        string
 	calls       *[]string
-	registerErr error
-	bootErr     error
+	initErr     error
+	startErr    error
 	shutdownErr error
 }
 
-func (p *trackingProvider) Register(_ *app.Services) error {
+func (p *trackingModule) Init(_ *app.Services) error {
 	*p.calls = append(*p.calls, p.name+":register")
-	return p.registerErr
+	return p.initErr
 }
 
-func (p *trackingProvider) Boot(_ *app.Services) error {
+func (p *trackingModule) Start(_ *app.Services) error {
 	*p.calls = append(*p.calls, p.name+":boot")
-	return p.bootErr
+	return p.startErr
 }
 
-func (p *trackingProvider) Shutdown(_ context.Context) error {
+func (p *trackingModule) Shutdown(_ context.Context) error {
 	*p.calls = append(*p.calls, p.name+":shutdown")
 	return p.shutdownErr
 }
 
-func TestNewTestApp_WithProviders_Lifecycle(t *testing.T) {
+func TestNewTestApp_WithModules_Lifecycle(t *testing.T) {
 	var calls []string
-	pA := &trackingProvider{name: "A", calls: &calls}
-	pB := &trackingProvider{name: "B", calls: &calls}
+	pA := &trackingModule{name: "A", calls: &calls}
+	pB := &trackingModule{name: "B", calls: &calls}
 
-	a, err := NewTestApp(WithProviders(pA, pB))
+	a, err := NewTestApp(WithModules(pA, pB))
 	if err != nil {
 		t.Fatalf("NewTestApp() error: %v", err)
 	}
@@ -70,14 +70,14 @@ func TestNewTestApp_WithProviders_Lifecycle(t *testing.T) {
 	}
 }
 
-func TestNewTestApp_WithProviders_RegisterError(t *testing.T) {
+func TestNewTestApp_WithModules_InitError(t *testing.T) {
 	var calls []string
 	wantErr := errors.New("register boom")
-	pA := &trackingProvider{name: "A", calls: &calls}
-	pB := &trackingProvider{name: "B", calls: &calls, registerErr: wantErr}
-	pC := &trackingProvider{name: "C", calls: &calls}
+	pA := &trackingModule{name: "A", calls: &calls}
+	pB := &trackingModule{name: "B", calls: &calls, initErr: wantErr}
+	pC := &trackingModule{name: "C", calls: &calls}
 
-	_, err := NewTestApp(WithProviders(pA, pB, pC))
+	_, err := NewTestApp(WithModules(pA, pB, pC))
 	if err == nil {
 		t.Fatal("expected error from register")
 	}
@@ -99,13 +99,13 @@ func TestNewTestApp_WithProviders_RegisterError(t *testing.T) {
 	}
 }
 
-func TestNewTestApp_WithProviders_BootError(t *testing.T) {
+func TestNewTestApp_WithModules_StartError(t *testing.T) {
 	var calls []string
 	wantErr := errors.New("boot boom")
-	pA := &trackingProvider{name: "A", calls: &calls}
-	pB := &trackingProvider{name: "B", calls: &calls, bootErr: wantErr}
+	pA := &trackingModule{name: "A", calls: &calls}
+	pB := &trackingModule{name: "B", calls: &calls, startErr: wantErr}
 
-	_, err := NewTestApp(WithProviders(pA, pB))
+	_, err := NewTestApp(WithModules(pA, pB))
 	if err == nil {
 		t.Fatal("expected error from boot")
 	}
@@ -125,13 +125,13 @@ func TestNewTestApp_WithProviders_BootError(t *testing.T) {
 	}
 }
 
-func TestNewTestApp_WithProviders_ShutdownError(t *testing.T) {
+func TestNewTestApp_WithModules_ShutdownError(t *testing.T) {
 	var calls []string
 	shutdownErr := errors.New("shutdown boom")
-	pA := &trackingProvider{name: "A", calls: &calls}
-	pB := &trackingProvider{name: "B", calls: &calls, shutdownErr: shutdownErr}
+	pA := &trackingModule{name: "A", calls: &calls}
+	pB := &trackingModule{name: "B", calls: &calls, shutdownErr: shutdownErr}
 
-	a, err := NewTestApp(WithProviders(pA, pB))
+	a, err := NewTestApp(WithModules(pA, pB))
 	if err != nil {
 		t.Fatalf("NewTestApp() error: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestNewTestApp_WithProviders_ShutdownError(t *testing.T) {
 		t.Errorf("expected wrapped shutdown error, got: %v", err)
 	}
 
-	// Both providers should still have been called (first error captured, chain continues)
+	// Both modules should still have been called (first error captured, chain continues)
 	wantShutdown := []string{"B:shutdown", "A:shutdown"}
 	if len(calls) != len(wantShutdown) {
 		t.Fatalf("got %d shutdown calls, want %d: %v", len(calls), len(wantShutdown), calls)

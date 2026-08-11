@@ -13,26 +13,26 @@ import (
 	"github.com/velocitykode/velocity/chain"
 )
 
-// shutdownRecorder is a ServiceProvider that records whether its Shutdown
+// shutdownRecorder is a Module that records whether its Shutdown
 // was invoked. It is used by New() failure-path tests to prove that a
-// provider opened earlier in the lifecycle is torn down when a later
-// provider's Register/Boot fails.
+// module opened earlier in the lifecycle is torn down when a later
+// module's Register/Boot fails.
 type shutdownRecorder struct {
-	registerErr error
-	bootErr     error
-	registered  atomic.Bool
-	booted      atomic.Bool
-	shutdowns   atomic.Int32
+	initErr    error
+	startErr   error
+	registered atomic.Bool
+	booted     atomic.Bool
+	shutdowns  atomic.Int32
 }
 
-func (p *shutdownRecorder) Register(_ *app.Services) error {
+func (p *shutdownRecorder) Init(_ *app.Services) error {
 	p.registered.Store(true)
-	return p.registerErr
+	return p.initErr
 }
 
-func (p *shutdownRecorder) Boot(_ *app.Services) error {
+func (p *shutdownRecorder) Start(_ *app.Services) error {
 	p.booted.Store(true)
-	return p.bootErr
+	return p.startErr
 }
 
 func (p *shutdownRecorder) Shutdown(_ context.Context) error {
@@ -40,25 +40,25 @@ func (p *shutdownRecorder) Shutdown(_ context.Context) error {
 	return nil
 }
 
-// TestNew_ProviderBootFailure_UnwindsRegisteredProviders proves that when
-// a provider's Boot returns an error, every provider that previously
+// TestNew_ModuleStartFailure_UnwindsInitializedModules proves that when
+// a module's Boot returns an error, every module that previously
 // completed its Register/Boot gets its Shutdown invoked before New()
 // returns. Before the fix, New() leaked resources on the failure path:
-// providers that had already bound their services were never unwound.
-func TestNew_ProviderBootFailure_UnwindsRegisteredProviders(t *testing.T) {
+// modules that had already bound their services were never unwound.
+func TestNew_ModuleStartFailure_UnwindsInitializedModules(t *testing.T) {
 	good := &shutdownRecorder{}
-	bad := &shutdownRecorder{bootErr: errors.New("boot kaboom")}
+	bad := &shutdownRecorder{startErr: errors.New("boot kaboom")}
 
-	_, err := NewTestApp(WithProviders(good, bad))
+	_, err := NewTestApp(WithModules(good, bad))
 	if err == nil {
 		t.Fatal("expected boot failure to propagate from New()")
 	}
-	if !errors.Is(err, bad.bootErr) {
+	if !errors.Is(err, bad.startErr) {
 		t.Fatalf("expected wrapped boot error, got: %v", err)
 	}
 
-	// Both providers registered in order (two-phase lifecycle runs Register
-	// for every provider before any Boot).
+	// Both modules registered in order (two-phase lifecycle runs Register
+	// for every module before any Boot).
 	if !good.registered.Load() || !bad.registered.Load() {
 		t.Fatal("expected both providers to have registered")
 	}
@@ -66,7 +66,7 @@ func TestNew_ProviderBootFailure_UnwindsRegisteredProviders(t *testing.T) {
 		t.Fatal("expected first provider to have booted before second failed")
 	}
 
-	// Both providers should have Shutdown called on the failure path.
+	// Both modules should have Shutdown called on the failure path.
 	if got := good.shutdowns.Load(); got != 1 {
 		t.Errorf("good provider Shutdown called %d times, want 1", got)
 	}
@@ -75,28 +75,28 @@ func TestNew_ProviderBootFailure_UnwindsRegisteredProviders(t *testing.T) {
 	}
 }
 
-// TestNew_ProviderRegisterFailure_UnwindsEarlierProviders is the sibling
-// of the boot test: if the second provider's Register fails, the first
-// provider — which already completed Register — must still see its
+// TestNew_ModuleInitFailure_UnwindsEarlierModules is the sibling
+// of the boot test: if the second module's Register fails, the first
+// module — which already completed Register — must still see its
 // Shutdown called.
-func TestNew_ProviderRegisterFailure_UnwindsEarlierProviders(t *testing.T) {
+func TestNew_ModuleInitFailure_UnwindsEarlierModules(t *testing.T) {
 	good := &shutdownRecorder{}
-	bad := &shutdownRecorder{registerErr: errors.New("register kaboom")}
+	bad := &shutdownRecorder{initErr: errors.New("register kaboom")}
 
-	_, err := NewTestApp(WithProviders(good, bad))
+	_, err := NewTestApp(WithModules(good, bad))
 	if err == nil {
 		t.Fatal("expected register failure to propagate from New()")
 	}
-	if !errors.Is(err, bad.registerErr) {
+	if !errors.Is(err, bad.initErr) {
 		t.Fatalf("expected wrapped register error, got: %v", err)
 	}
 
 	if !good.registered.Load() {
 		t.Fatal("expected first provider to have registered")
 	}
-	// Providers whose Register completed receive Shutdown during unwind
+	// Modules whose Register completed receive Shutdown during unwind
 	// even if their own Boot never ran (resources they opened during
-	// Register still need releasing). The provider whose Register FAILED
+	// Register still need releasing). The module whose Register FAILED
 	// must not: it is required to clean up before returning the error,
 	// and calling Shutdown on it would tear down state it never owned.
 	if got := good.shutdowns.Load(); got != 1 {
@@ -109,7 +109,7 @@ func TestNew_ProviderRegisterFailure_UnwindsEarlierProviders(t *testing.T) {
 
 // TestNew_FailurePath_ClosesQueueWorkers is a concrete
 // leak regression: the memory queue driver starts a worker goroutine in
-// its Start() method; before the fix, a provider failure after queue init
+// its Start() method; before the fix, a module failure after queue init
 // left that goroutine running. We compare goroutine counts from before
 // New() to after the failure to prove the worker was stopped.
 func TestNew_FailurePath_ClosesQueueWorkers(t *testing.T) {
@@ -118,8 +118,8 @@ func TestNew_FailurePath_ClosesQueueWorkers(t *testing.T) {
 	waitForGoroutinesToSettle(t, time.Second)
 	before := runtime.NumGoroutine()
 
-	bad := &shutdownRecorder{bootErr: errors.New("boot kaboom")}
-	_, err := NewTestApp(WithProviders(bad))
+	bad := &shutdownRecorder{startErr: errors.New("boot kaboom")}
+	_, err := NewTestApp(WithModules(bad))
 	if err == nil {
 		t.Fatal("expected boot failure to propagate from New()")
 	}
@@ -185,21 +185,21 @@ func TestServe_CancelsShutdownCtxOnCLIDispatch(t *testing.T) {
 
 // TestServeHTTP_BootstrapFailure_ShutsDownSubsystems proves the bootstrap
 // error path in serveHTTP does not skip graceful shutdown. If bootstrap
-// fails after wiring providers, serveHTTP must call App.Shutdown so those
-// providers' Shutdown hooks run. Before Fix 4, serveHTTP returned the
-// bootstrap error directly, leaving partially-wired providers dangling.
+// fails after wiring modules, serveHTTP must call App.Shutdown so those
+// modules' Shutdown hooks run. Before Fix 4, serveHTTP returned the
+// bootstrap error directly, leaving partially-wired modules dangling.
 func TestServeHTTP_BootstrapFailure_ShutsDownSubsystems(t *testing.T) {
 	a, err := NewTestApp()
 	if err != nil {
 		t.Fatalf("NewTestApp: %v", err)
 	}
 
-	// Bootstrap runs chain providers' Register/Boot. A chain provider whose
+	// Bootstrap runs chain modules' Register/Boot. A chain module whose
 	// Boot returns an error is the simplest way to force bootstrap failure
-	// after other providers have already registered.
+	// after other modules have already registered.
 	good := &shutdownRecorder{}
-	bad := &shutdownRecorder{bootErr: errors.New("chain boot kaboom")}
-	a.Providers(func(r *chain.ProviderRegistry) {
+	bad := &shutdownRecorder{startErr: errors.New("chain boot kaboom")}
+	a.Modules(func(r *chain.ModuleRegistry) {
 		r.Add(good, bad)
 	})
 
