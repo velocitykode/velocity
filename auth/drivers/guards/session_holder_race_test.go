@@ -10,29 +10,29 @@ import (
 	"github.com/velocitykode/velocity/auth"
 )
 
-// holderRaceUserProvider returns a stable user every time. The test wants
+// holderRaceUserStore returns a stable user every time. The test wants
 // the cache cells to race, not the user lookup.
-type holderRaceUserProvider struct{}
+type holderRaceUserStore struct{}
 
-func (p *holderRaceUserProvider) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *holderRaceUserStore) FindByID(id interface{}) (auth.Authenticatable, error) {
 	return &auth.AuthUser{ID: id, Name: "Test", Email: "t@example.com"}, nil
 }
-func (p *holderRaceUserProvider) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+func (p *holderRaceUserStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
 	return p.FindByID(id)
 }
-func (p *holderRaceUserProvider) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *holderRaceUserStore) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
 	return &auth.AuthUser{ID: "1", Name: "Test", Email: "t@example.com"}, nil
 }
-func (p *holderRaceUserProvider) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *holderRaceUserStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
 	return p.FindByCredentials(credentials)
 }
-func (p *holderRaceUserProvider) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
+func (p *holderRaceUserStore) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
 	return true
 }
-func (p *holderRaceUserProvider) UpdateRememberToken(auth.Authenticatable, string) error {
+func (p *holderRaceUserStore) UpdateRememberToken(auth.Authenticatable, string) error {
 	return nil
 }
-func (p *holderRaceUserProvider) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+func (p *holderRaceUserStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
 	return p.UpdateRememberToken(user, token)
 }
 
@@ -59,19 +59,19 @@ func (s *holderRaceStore) ListForUser(context.Context, string) ([]*auth.SessionM
 // storeRec, storeErr) used to be mutated from fan-out goroutines without
 // mutex protection. `go test -race` catches that.
 //
-// Test method: build a SessionGuard with a server-side store, plant a
+// Test method: build a SessionScheme with a server-side store, plant a
 // session id, fan out N goroutines that all call User(req) on the SAME
 // request (so they all hit the same holder) and let them race.
 func TestSessionHolder_ConcurrentAccess_NoRace(t *testing.T) {
 	store := &mockSessionStore{}
-	guard := &SessionGuard{
+	scheme := &SessionScheme{
 		store:  store,
 		config: auth.SessionConfig{Name: "test_session"},
 		hasher: auth.NewBcryptHasher(10),
 	}
-	guard.provider.Store(&providerHolder{p: &holderRaceUserProvider{}})
-	guard.throttler.Store(&throttlerHolder{t: auth.NoopLoginThrottler{}})
-	guard.SetServerSessionStore(&holderRaceStore{user: "1"})
+	scheme.userStore.Store(&userStoreHolder{p: &holderRaceUserStore{}})
+	scheme.throttler.Store(&throttlerHolder{t: auth.NoopLoginThrottler{}})
+	scheme.SetServerSessionStore(&holderRaceStore{user: "1"})
 
 	// Seed the holder via WithSessionContext so every goroutine sees the
 	// same *sessionHolder pointer.
@@ -96,7 +96,7 @@ func TestSessionHolder_ConcurrentAccess_NoRace(t *testing.T) {
 			// writes storeOnce/storeRec on first call and reads
 			// them on every subsequent call. With M-06 unfixed,
 			// -race would flag a data race here.
-			_ = guard.User(req)
+			_ = scheme.User(req)
 		}()
 	}
 	wg.Wait()

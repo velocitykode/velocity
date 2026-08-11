@@ -12,38 +12,38 @@ import (
 	"github.com/velocitykode/velocity/crypto"
 )
 
-// bcryptVerifyingProvider mimics a real UserProvider: ValidateCredentials
+// bcryptVerifyingStore mimics a real UserStore: ValidateCredentials
 // runs bcrypt.CompareHashAndPassword via the framework hasher. We need
 // this to exercise the wrong-password path at full bcrypt cost so the
 // timing comparison against the missing-user branch is meaningful.
-type bcryptVerifyingProvider struct {
+type bcryptVerifyingStore struct {
 	user *timingTestUser
 	cost int
 }
 
-func (p *bcryptVerifyingProvider) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *bcryptVerifyingStore) FindByID(id interface{}) (auth.Authenticatable, error) {
 	if p.user != nil && p.user.id == id {
 		return p.user, nil
 	}
 	return nil, nil
 }
-func (p *bcryptVerifyingProvider) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *bcryptVerifyingStore) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
 	email, _ := credentials["email"].(string)
 	if p.user != nil && email == p.user.id {
 		return p.user, nil
 	}
 	return nil, nil
 }
-func (p *bcryptVerifyingProvider) ValidateCredentials(user auth.Authenticatable, credentials map[string]interface{}) bool {
+func (p *bcryptVerifyingStore) ValidateCredentials(user auth.Authenticatable, credentials map[string]interface{}) bool {
 	password, _ := credentials["password"].(string)
 	return auth.NewBcryptHasher(p.cost).Verify(password, p.user.password)
 }
-func (p *bcryptVerifyingProvider) UpdateRememberToken(auth.Authenticatable, string) error {
+func (p *bcryptVerifyingStore) UpdateRememberToken(auth.Authenticatable, string) error {
 	return nil
 }
 
-// TestSessionGuard_Attempt_DummyHashTracksBcryptCost is the F2 regression
-// test. When the operator configures bcrypt cost N on the guard via
+// TestSessionScheme_Attempt_DummyHashTracksBcryptCost is the F2 regression
+// test. When the operator configures bcrypt cost N on the scheme via
 // SetHasher, the missing-user branch MUST run the dummy hash at the same
 // cost N (not the package default 10). Without cost-matching, the
 // missing-user CPU profile is faster than the wrong-password profile and
@@ -53,7 +53,7 @@ func (p *bcryptVerifyingProvider) UpdateRememberToken(auth.Authenticatable, stri
 // confirming wall-clock latencies are within a tight ratio. With the bug
 // present (dummy at default cost, real verify at configured cost), the
 // ratio diverges by 5-10x; with the fix it stays close to 1x.
-func TestSessionGuard_Attempt_DummyHashTracksBcryptCost(t *testing.T) {
+func TestSessionScheme_Attempt_DummyHashTracksBcryptCost(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping bcrypt-cost timing test in -short mode")
 	}
@@ -73,18 +73,18 @@ func TestSessionGuard_Attempt_DummyHashTracksBcryptCost(t *testing.T) {
 		t.Fatalf("hash password: %v", err)
 	}
 	user := &timingTestUser{id: "real@example.com", password: bcryptHash}
-	provider := &bcryptVerifyingProvider{user: user, cost: realCost}
+	userStore := &bcryptVerifyingStore{user: user, cost: realCost}
 
-	guard, err := guards_NewSessionGuard(provider, enc)
+	scheme, err := schemes_NewSessionScheme(userStore, enc)
 	if err != nil {
-		t.Fatalf("NewSessionGuard: %v", err)
+		t.Fatalf("NewSessionScheme: %v", err)
 	}
 	// Install a hasher at the same cost the real user uses. The fix
 	// then sizes the dummy hash at this same cost.
-	guard.SetHasher(auth.NewBcryptHasher(realCost))
+	scheme.SetHasher(auth.NewBcryptHasher(realCost))
 	// Disable the floor so we measure the underlying credential-check
 	// CPU profile directly.
-	guard.SetAttemptFloor(-1)
+	scheme.SetAttemptFloor(-1)
 
 	// Warm the dummy-hash and real-hash caches so neither branch pays
 	// first-call generate-from-password latency.
@@ -95,7 +95,7 @@ func TestSessionGuard_Attempt_DummyHashTracksBcryptCost(t *testing.T) {
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest(http.MethodPost, "/login", nil)
 		start := time.Now()
-		_, _ = guard.Attempt(w, r, map[string]interface{}{
+		_, _ = scheme.Attempt(w, r, map[string]interface{}{
 			"email":    email,
 			"password": "wrong-password",
 		})
@@ -130,11 +130,11 @@ func TestSessionGuard_Attempt_DummyHashTracksBcryptCost(t *testing.T) {
 	}
 }
 
-// guards_NewSessionGuard is a thin local helper that bypasses the
-// guard's NewSessionGuard ergonomic-config layer so we control every
+// schemes_NewSessionScheme is a thin local helper that bypasses the
+// scheme's NewSessionScheme ergonomic-config layer so we control every
 // detail of the test setup.
-func guards_NewSessionGuard(provider auth.UserProvider, enc crypto.Encryptor) (*SessionGuard, error) {
-	return NewSessionGuard(provider, auth.SessionConfig{
+func schemes_NewSessionScheme(userStore auth.UserStore, enc crypto.Encryptor) (*SessionScheme, error) {
+	return NewSessionScheme(userStore, auth.SessionConfig{
 		Name:     "vel_session",
 		Lifetime: 60,
 		Path:     "/",
@@ -143,11 +143,11 @@ func guards_NewSessionGuard(provider auth.UserProvider, enc crypto.Encryptor) (*
 	}, enc)
 }
 
-// TestSessionGuard_SetHasher_PropagatesToDummyHashCost is the focused
+// TestSessionScheme_SetHasher_PropagatesToDummyHashCost is the focused
 // behavioural test for F2: after SetHasher at cost 12, the missing-user
 // branch must invoke the hasher with a cost-12 dummy hash. We verify by
 // observing the resolved dummy hash from the hasher chain.
-func TestSessionGuard_SetHasher_PropagatesToDummyHashCost(t *testing.T) {
+func TestSessionScheme_SetHasher_PropagatesToDummyHashCost(t *testing.T) {
 	const targetCost = 11
 
 	enc, err := crypto.NewEncryptor(crypto.Config{
@@ -158,7 +158,7 @@ func TestSessionGuard_SetHasher_PropagatesToDummyHashCost(t *testing.T) {
 		t.Fatalf("NewEncryptor: %v", err)
 	}
 
-	guard, err := NewSessionGuard(&mockSessionGuardUserProvider{}, auth.SessionConfig{
+	scheme, err := NewSessionScheme(&mockSessionSchemeUserStore{}, auth.SessionConfig{
 		Name:     "vel_session",
 		Lifetime: 60,
 		Path:     "/",
@@ -166,11 +166,11 @@ func TestSessionGuard_SetHasher_PropagatesToDummyHashCost(t *testing.T) {
 		SameSite: http.SameSiteLaxMode,
 	}, enc)
 	if err != nil {
-		t.Fatalf("NewSessionGuard: %v", err)
+		t.Fatalf("NewSessionScheme: %v", err)
 	}
-	guard.SetHasher(auth.NewBcryptHasher(targetCost))
+	scheme.SetHasher(auth.NewBcryptHasher(targetCost))
 
-	hash := dummyHashForHasher(guard.effectiveHasher())
+	hash := dummyHashForHasher(scheme.effectiveHasher())
 	// bcrypt hashes start with $2a$<cost>$... so we can parse the cost.
 	// Format: $2a$11$...
 	if !strings.HasPrefix(string(hash), "$2") {
@@ -188,21 +188,21 @@ func TestSessionGuard_SetHasher_PropagatesToDummyHashCost(t *testing.T) {
 	}
 }
 
-// TestSessionGuard_Attempt_AttemptFloorOverride confirms a non-default
+// TestSessionScheme_Attempt_AttemptFloorOverride confirms a non-default
 // AttemptFloor configured via SetAttemptFloor is respected. F2 mandates
 // operators with bcrypt cost > 10 raise the floor so the real-verify
 // path fits inside the timebox budget.
-func TestSessionGuard_Attempt_AttemptFloorOverride(t *testing.T) {
-	guard, _, _ := newTimingGuard(t, "correct-password")
+func TestSessionScheme_Attempt_AttemptFloorOverride(t *testing.T) {
+	scheme, _, _ := newTimingScheme(t, "correct-password")
 	const want = 350 * time.Millisecond
-	guard.SetAttemptFloor(want)
+	scheme.SetAttemptFloor(want)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/login", nil)
 	r = WithSessionContext(r)
 
 	start := time.Now()
-	_, _ = guard.Attempt(w, r, map[string]interface{}{
+	_, _ = scheme.Attempt(w, r, map[string]interface{}{
 		"email":    "ghost@example.com",
 		"password": "anything",
 	})
@@ -254,13 +254,13 @@ func TestGetDummyBcryptHash_ClampsCost(t *testing.T) {
 	}
 }
 
-// Ctx-suffixed shims for auth.UserProvider, added in Sweep 1b.
-func (p *bcryptVerifyingProvider) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+// Ctx-suffixed shims for auth.UserStore, added in Sweep 1b.
+func (p *bcryptVerifyingStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
 	return p.FindByID(id)
 }
-func (p *bcryptVerifyingProvider) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *bcryptVerifyingStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
 	return p.FindByCredentials(credentials)
 }
-func (p *bcryptVerifyingProvider) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+func (p *bcryptVerifyingStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
 	return p.UpdateRememberToken(user, token)
 }

@@ -28,19 +28,19 @@ func (e *errInvalidateSession) Invalidate() error {
 	return e.err
 }
 
-// TestSessionGuard_LogoutContinuesTeardownOnInvalidateError pins the
+// TestSessionScheme_LogoutContinuesTeardownOnInvalidateError pins the
 // invariant that an Invalidate() failure does NOT short-circuit the
 // rest of Logout. Pre-fix the early return skipped Save (no delete
 // cookie on the wire), CookieStore.Revoke (cookie still decrypts),
 // and server-store Delete (live record survives). Post-fix every
 // teardown step still runs against the pre-Invalidate sessionID and
 // the Invalidate error is returned at the end.
-func TestSessionGuard_LogoutContinuesTeardownOnInvalidateError(t *testing.T) {
+func TestSessionScheme_LogoutContinuesTeardownOnInvalidateError(t *testing.T) {
 	store := session.NewMemoryStore()
 	defer store.Close(context.Background())
 
-	guard, _ := newRevokeGuard(t, store)
-	cookie := loginAndCookie(t, guard, "u1")
+	scheme, _ := newRevokeScheme(t, store)
+	cookie := loginAndCookie(t, scheme, "u1")
 
 	list, _ := store.ListForUser(context.Background(), "u1")
 	if len(list) != 1 {
@@ -53,12 +53,12 @@ func TestSessionGuard_LogoutContinuesTeardownOnInvalidateError(t *testing.T) {
 	logoutR = WithSessionContext(logoutR)
 
 	// Resolve the real session, wrap it, and replace the cached
-	// session on the request's sessionHolder so guard.Logout
+	// session on the request's sessionHolder so scheme.Logout
 	// consumes the wrapped instance. getSession does not expose a
 	// constructor hook, so injection has to land on the holder.
-	real := guard.getSession(logoutR)
+	real := scheme.getSession(logoutR)
 	if real == nil {
-		t.Fatal("guard.getSession returned nil on logout request")
+		t.Fatal("scheme.getSession returned nil on logout request")
 	}
 	sentinel := errors.New("rand-source exhausted")
 	wrapped := &errInvalidateSession{Session: real, err: sentinel}
@@ -68,7 +68,7 @@ func TestSessionGuard_LogoutContinuesTeardownOnInvalidateError(t *testing.T) {
 	}
 	holder.setSession(wrapped)
 
-	err := guard.Logout(logoutW, logoutR)
+	err := scheme.Logout(logoutW, logoutR)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("Logout must surface the Invalidate error; got %v want %v", err, sentinel)
 	}

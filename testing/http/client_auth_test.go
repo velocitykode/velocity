@@ -25,12 +25,12 @@ func (u *memUser) GetAuthPassword() string        { return u.password }
 func (u *memUser) GetRememberToken() string       { return u.rememberToken }
 func (u *memUser) SetRememberToken(token string)  { u.rememberToken = token }
 
-// memProvider is a minimal in-memory auth.UserProvider keyed by identifier.
-type memProvider struct {
+// memStore is a minimal in-memory auth.UserStore keyed by identifier.
+type memStore struct {
 	users map[interface{}]*memUser
 }
 
-func (p *memProvider) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *memStore) FindByID(id interface{}) (auth.Authenticatable, error) {
 	u, ok := p.users[id]
 	if !ok {
 		return nil, nil
@@ -38,31 +38,31 @@ func (p *memProvider) FindByID(id interface{}) (auth.Authenticatable, error) {
 	return u, nil
 }
 
-func (p *memProvider) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+func (p *memStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
 	return p.FindByID(id)
 }
 
-func (p *memProvider) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
+func (p *memStore) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
 	return nil, nil
 }
 
-func (p *memProvider) FindByCredentialsCtx(_ context.Context, c map[string]interface{}) (auth.Authenticatable, error) {
+func (p *memStore) FindByCredentialsCtx(_ context.Context, c map[string]interface{}) (auth.Authenticatable, error) {
 	return p.FindByCredentials(c)
 }
 
-func (p *memProvider) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
+func (p *memStore) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
 	return true
 }
 
-func (p *memProvider) UpdateRememberToken(auth.Authenticatable, string) error { return nil }
+func (p *memStore) UpdateRememberToken(auth.Authenticatable, string) error { return nil }
 
-func (p *memProvider) UpdateRememberTokenCtx(_ context.Context, u auth.Authenticatable, t string) error {
+func (p *memStore) UpdateRememberTokenCtx(_ context.Context, u auth.Authenticatable, t string) error {
 	return p.UpdateRememberToken(u, t)
 }
 
-// newActingAsGuard builds a SessionGuard backed by the production CookieStore
-// and a real AES-256-GCM encryptor, with an in-memory provider holding user.
-func newActingAsGuard(t *testing.T, user *memUser) *guards.SessionGuard {
+// newActingAsScheme builds a SessionScheme backed by the production CookieStore
+// and a real AES-256-GCM encryptor, with an in-memory user store holding user.
+func newActingAsScheme(t *testing.T, user *memUser) *guards.SessionScheme {
 	t.Helper()
 	enc, err := crypto.NewEncryptor(crypto.Config{
 		Key:    strings.Repeat("k", 32),
@@ -71,8 +71,8 @@ func newActingAsGuard(t *testing.T, user *memUser) *guards.SessionGuard {
 	if err != nil {
 		t.Fatalf("NewEncryptor: %v", err)
 	}
-	provider := &memProvider{users: map[interface{}]*memUser{user.id: user}}
-	guard, err := guards.NewSessionGuard(provider, auth.SessionConfig{
+	userStore := &memStore{users: map[interface{}]*memUser{user.id: user}}
+	scheme, err := guards.NewSessionScheme(userStore, auth.SessionConfig{
 		Name:     "vel_session",
 		Lifetime: 60,
 		Path:     "/",
@@ -80,18 +80,18 @@ func newActingAsGuard(t *testing.T, user *memUser) *guards.SessionGuard {
 		SameSite: http.SameSiteLaxMode,
 	}, enc)
 	if err != nil {
-		t.Fatalf("NewSessionGuard: %v", err)
+		t.Fatalf("NewSessionScheme: %v", err)
 	}
-	return guard
+	return scheme
 }
 
 // newAuthGatedRouter returns a router whose GET /me route is gated by the
-// session guard: authenticated requests get 200, guests get 401.
-func newAuthGatedRouter(guard *guards.SessionGuard) *router.VelocityRouterV2 {
+// session scheme: authenticated requests get 200, guests get 401.
+func newAuthGatedRouter(scheme *guards.SessionScheme) *router.VelocityRouterV2 {
 	r := router.New()
-	r.Use(guard.SessionMiddleware())
+	r.Use(scheme.SessionMiddleware())
 	r.Get("/me", func(c *router.Context) error {
-		if !guard.Check(c.Request) {
+		if !scheme.Check(c.Request) {
 			return c.String(http.StatusUnauthorized, "guest")
 		}
 		return c.String(http.StatusOK, "authenticated")
@@ -101,33 +101,33 @@ func newAuthGatedRouter(guard *guards.SessionGuard) *router.VelocityRouterV2 {
 
 func TestActingAs_AuthenticatesGatedRoute(t *testing.T) {
 	user := &memUser{id: "user-1", password: "x"}
-	guard := newActingAsGuard(t, user)
-	r := newAuthGatedRouter(guard)
+	scheme := newActingAsScheme(t, user)
+	r := newAuthGatedRouter(scheme)
 
-	client := velhttp.NewTestClient(t, r).ActingAs(guard, user)
+	client := velhttp.NewTestClient(t, r).ActingAs(scheme, user)
 
 	client.Get("/me").AssertOk().AssertBodyContains("authenticated")
-	client.AssertAuthenticated(guard)
+	client.AssertAuthenticated(scheme)
 }
 
 func TestActingAsID_AuthenticatesGatedRoute(t *testing.T) {
 	user := &memUser{id: "user-2", password: "x"}
-	guard := newActingAsGuard(t, user)
-	r := newAuthGatedRouter(guard)
+	scheme := newActingAsScheme(t, user)
+	r := newAuthGatedRouter(scheme)
 
-	client := velhttp.NewTestClient(t, r).ActingAsID(guard, "user-2")
+	client := velhttp.NewTestClient(t, r).ActingAsID(scheme, "user-2")
 
 	client.Get("/me").AssertOk().AssertBodyContains("authenticated")
-	client.AssertAuthenticated(guard)
+	client.AssertAuthenticated(scheme)
 }
 
 func TestActingAs_GuestWithoutLogin(t *testing.T) {
 	user := &memUser{id: "user-3", password: "x"}
-	guard := newActingAsGuard(t, user)
-	r := newAuthGatedRouter(guard)
+	scheme := newActingAsScheme(t, user)
+	r := newAuthGatedRouter(scheme)
 
 	client := velhttp.NewTestClient(t, r)
 
 	client.Get("/me").AssertUnauthorized()
-	client.AssertGuest(guard)
+	client.AssertGuest(scheme)
 }

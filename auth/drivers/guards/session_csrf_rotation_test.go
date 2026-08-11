@@ -12,7 +12,7 @@ import (
 
 // fakeCSRFRotator is a contract.CSRFTokenRotator that records every
 // RotateToken / RevokeToken / WriteXSRFCookie call. Tests use it to pin
-// the pre/post session-id pairs the guard passes to the rotator across
+// the pre/post session-id pairs the scheme passes to the rotator across
 // Login, Logout, and remember-cookie revival, and to verify the
 // post-rotation XSRF cookie write (M-04).
 type fakeCSRFRotator struct {
@@ -54,28 +54,28 @@ func (f *fakeCSRFRotator) ClearXSRFCookie(_ http.ResponseWriter, _ *http.Request
 	f.xsrfCleared++
 }
 
-// compile-time guarantee SessionGuard satisfies the propagation shape.
+// compile-time guarantee SessionScheme satisfies the propagation shape.
 var _ interface {
 	SetCSRFTokenRotator(contract.CSRFTokenRotator)
-} = (*SessionGuard)(nil)
+} = (*SessionScheme)(nil)
 
-// TestSessionGuard_LoginRotatesCSRFToken pins the Login half of H-02.
-// SessionGuard.Login MUST call rotator.RotateToken(oldID, newID) after
+// TestSessionScheme_LoginRotatesCSRFToken pins the Login half of H-02.
+// SessionScheme.Login MUST call rotator.RotateToken(oldID, newID) after
 // Session.Regenerate so any CSRF token bound to the pre-login session
 // id is dropped and the post-login id gets a fresh token. Pre-fix Login
 // regenerated the session id without touching the CSRF store, leaving
 // an orphan token reachable for the full token-store TTL (24h default)
 // under an id an attacker may have planted before login.
-func TestSessionGuard_LoginRotatesCSRFToken(t *testing.T) {
+func TestSessionScheme_LoginRotatesCSRFToken(t *testing.T) {
 	rotator := &fakeCSRFRotator{}
-	guard, _ := newRevokeGuard(t, nil)
-	guard.SetCSRFTokenRotator(rotator)
+	scheme, _ := newRevokeScheme(t, nil)
+	scheme.SetCSRFTokenRotator(rotator)
 
 	req := httptest.NewRequest(http.MethodPost, "/login", nil)
 	req = WithSessionContext(req)
 	w := httptest.NewRecorder()
 
-	if err := guard.Login(w, req, &revokeTestUser{id: "u1"}); err != nil {
+	if err := scheme.Login(w, req, &revokeTestUser{id: "u1"}); err != nil {
 		t.Fatalf("Login: %v", err)
 	}
 
@@ -91,22 +91,22 @@ func TestSessionGuard_LoginRotatesCSRFToken(t *testing.T) {
 	}
 }
 
-// TestSessionGuard_LoginWritesXSRFCookie pins M-04: SessionGuard.Login
+// TestSessionScheme_LoginWritesXSRFCookie pins M-04: SessionScheme.Login
 // MUST call rotator.WriteXSRFCookie(w, newID) after the successful
 // RotateToken so the Login response carries the freshly-minted XSRF
 // token to the SPA. Pre-fix the per-session token was minted in the
 // CSRF store but no Set-Cookie was emitted; the SPA's very next POST
 // returned 419 because the client had no XSRF-TOKEN cookie to echo.
-func TestSessionGuard_LoginWritesXSRFCookie(t *testing.T) {
+func TestSessionScheme_LoginWritesXSRFCookie(t *testing.T) {
 	rotator := &fakeCSRFRotator{}
-	guard, _ := newRevokeGuard(t, nil)
-	guard.SetCSRFTokenRotator(rotator)
+	scheme, _ := newRevokeScheme(t, nil)
+	scheme.SetCSRFTokenRotator(rotator)
 
 	req := httptest.NewRequest(http.MethodPost, "/login", nil)
 	req = WithSessionContext(req)
 	w := httptest.NewRecorder()
 
-	if err := guard.Login(w, req, &revokeTestUser{id: "u1"}); err != nil {
+	if err := scheme.Login(w, req, &revokeTestUser{id: "u1"}); err != nil {
 		t.Fatalf("Login: %v", err)
 	}
 
@@ -126,16 +126,16 @@ func TestSessionGuard_LoginWritesXSRFCookie(t *testing.T) {
 	}
 }
 
-// TestSessionGuard_LogoutRevokesCSRFToken pins the Logout half of H-02.
-// SessionGuard.Logout MUST call rotator.RevokeToken(id) BEFORE
+// TestSessionScheme_LogoutRevokesCSRFToken pins the Logout half of H-02.
+// SessionScheme.Logout MUST call rotator.RevokeToken(id) BEFORE
 // Session.Invalidate destroys the bag, so the per-session CSRF token
 // does not survive logout in the CSRF store. Pre-fix Logout invalidated
 // the session without touching the CSRF store, so a captured
 // cookie+token pair stayed valid for the store TTL past logout.
-func TestSessionGuard_LogoutRevokesCSRFToken(t *testing.T) {
+func TestSessionScheme_LogoutRevokesCSRFToken(t *testing.T) {
 	rotator := &fakeCSRFRotator{}
-	guard, _ := newRevokeGuard(t, nil)
-	guard.SetCSRFTokenRotator(rotator)
+	scheme, _ := newRevokeScheme(t, nil)
+	scheme.SetCSRFTokenRotator(rotator)
 
 	// Establish a real session via Login first so Logout has something
 	// to tear down. Login's own rotation also goes through the rotator
@@ -143,13 +143,13 @@ func TestSessionGuard_LogoutRevokesCSRFToken(t *testing.T) {
 	loginReq := httptest.NewRequest(http.MethodPost, "/login", nil)
 	loginReq = WithSessionContext(loginReq)
 	loginW := httptest.NewRecorder()
-	if err := guard.Login(loginW, loginReq, &revokeTestUser{id: "u1"}); err != nil {
+	if err := scheme.Login(loginW, loginReq, &revokeTestUser{id: "u1"}); err != nil {
 		t.Fatalf("Login: %v", err)
 	}
 
 	// Reuse the same session context so Logout sees the same session.
 	logoutW := httptest.NewRecorder()
-	if err := guard.Logout(logoutW, loginReq); err != nil {
+	if err := scheme.Logout(logoutW, loginReq); err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
 
@@ -169,21 +169,21 @@ func TestSessionGuard_LogoutRevokesCSRFToken(t *testing.T) {
 	}
 }
 
-// TestSessionGuard_LoginAbortsOnRotateFailure pins the rotation
+// TestSessionScheme_LoginAbortsOnRotateFailure pins the rotation
 // invariant: if the CSRF rotator returns an error during Login the call
 // MUST fail rather than commit a session whose CSRF token is missing or
 // orphaned. The user sees an error and no authenticated session is
 // established.
-func TestSessionGuard_LoginAbortsOnRotateFailure(t *testing.T) {
+func TestSessionScheme_LoginAbortsOnRotateFailure(t *testing.T) {
 	rotator := &fakeCSRFRotator{rotateErr: errors.New("store outage")}
-	guard, _ := newRevokeGuard(t, nil)
-	guard.SetCSRFTokenRotator(rotator)
+	scheme, _ := newRevokeScheme(t, nil)
+	scheme.SetCSRFTokenRotator(rotator)
 
 	req := httptest.NewRequest(http.MethodPost, "/login", nil)
 	req = WithSessionContext(req)
 	w := httptest.NewRecorder()
 
-	err := guard.Login(w, req, &revokeTestUser{id: "u1"})
+	err := scheme.Login(w, req, &revokeTestUser{id: "u1"})
 	if err == nil {
 		t.Fatal("Login must return an error when csrf rotation fails")
 	}
@@ -192,7 +192,7 @@ func TestSessionGuard_LoginAbortsOnRotateFailure(t *testing.T) {
 	}
 }
 
-// TestSessionGuard_RememberRevival_RotatesCSRFToken pins the revival
+// TestSessionScheme_RememberRevival_RotatesCSRFToken pins the revival
 // half of H-02. The recall path inside anchorRecalledUser MUST call
 // rotator.RotateToken(oldID, newID) between Session.Regenerate and the
 // user_id Put so any CSRF token an attacker planted under the pre-
@@ -200,14 +200,14 @@ func TestSessionGuard_LoginAbortsOnRotateFailure(t *testing.T) {
 // token. Both User() and CheckWithError() reach this path via G2's H-08
 // helper; the CSRF rotation must run regardless of which entry point
 // fires.
-func TestSessionGuard_RememberRevival_RotatesCSRFToken(t *testing.T) {
+func TestSessionScheme_RememberRevival_RotatesCSRFToken(t *testing.T) {
 	rotator := &fakeCSRFRotator{}
-	guard, _ := newRevokeGuard(t, nil)
-	provider := &rememberRevivalProvider{user: &revokeTestUser{id: "u1"}}
-	guard.SetProvider(provider)
-	guard.SetCSRFTokenRotator(rotator)
+	scheme, _ := newRevokeScheme(t, nil)
+	userStore := &rememberRevivalStore{user: &revokeTestUser{id: "u1"}}
+	scheme.SetUserStore(userStore)
+	scheme.SetCSRFTokenRotator(rotator)
 
-	rememberCookie := mintRememberCookie(t, guard)
+	rememberCookie := mintRememberCookie(t, scheme)
 	// Login above also produced a rotation entry; discard it so the
 	// revival assertion below is on a clean slate.
 	rotator.rotated = nil
@@ -215,9 +215,9 @@ func TestSessionGuard_RememberRevival_RotatesCSRFToken(t *testing.T) {
 	req := rememberRecallRequest(t, rememberCookie, httptest.NewRecorder())
 
 	// Capture pre-revival id by loading the session once (no user_id).
-	preID := guard.getSession(req).ID()
+	preID := scheme.getSession(req).ID()
 
-	if u := guard.User(req); u == nil {
+	if u := scheme.User(req); u == nil {
 		t.Fatal("User(req) returned nil; revival must succeed without a server store")
 	}
 
@@ -236,21 +236,21 @@ func TestSessionGuard_RememberRevival_RotatesCSRFToken(t *testing.T) {
 	}
 }
 
-// TestSessionGuard_RememberRevival_WritesXSRFCookie pins the cookie half
+// TestSessionScheme_RememberRevival_WritesXSRFCookie pins the cookie half
 // of the revival rotation. The rotator contract requires
 // WriteXSRFCookie after RotateToken on the remember-cookie revival path
 // too: the rotation deletes the token bound to the pre-revival id, so
 // without a fresh XSRF-TOKEN cookie the client keeps echoing a stale
 // value and its next state-changing request 419s. Pre-fix the revival
 // path rotated without writing the cookie.
-func TestSessionGuard_RememberRevival_WritesXSRFCookie(t *testing.T) {
+func TestSessionScheme_RememberRevival_WritesXSRFCookie(t *testing.T) {
 	rotator := &fakeCSRFRotator{}
-	guard, _ := newRevokeGuard(t, nil)
-	provider := &rememberRevivalProvider{user: &revokeTestUser{id: "u1"}}
-	guard.SetProvider(provider)
-	guard.SetCSRFTokenRotator(rotator)
+	scheme, _ := newRevokeScheme(t, nil)
+	userStore := &rememberRevivalStore{user: &revokeTestUser{id: "u1"}}
+	scheme.SetUserStore(userStore)
+	scheme.SetCSRFTokenRotator(rotator)
 
-	rememberCookie := mintRememberCookie(t, guard)
+	rememberCookie := mintRememberCookie(t, scheme)
 	// Login above also rotated and wrote a cookie; discard so the
 	// revival assertions below are on a clean slate.
 	rotator.rotated = nil
@@ -258,7 +258,7 @@ func TestSessionGuard_RememberRevival_WritesXSRFCookie(t *testing.T) {
 
 	req := rememberRecallRequest(t, rememberCookie, httptest.NewRecorder())
 
-	if u := guard.User(req); u == nil {
+	if u := scheme.User(req); u == nil {
 		t.Fatal("User(req) returned nil; revival must succeed without a server store")
 	}
 
@@ -273,19 +273,19 @@ func TestSessionGuard_RememberRevival_WritesXSRFCookie(t *testing.T) {
 	}
 }
 
-// TestSessionGuard_RememberRevival_AbortsOnRotateFailure pins fail-
+// TestSessionScheme_RememberRevival_AbortsOnRotateFailure pins fail-
 // closed semantics on the revival path. When the rotator errors during
-// recall the guard must refuse to authenticate the request, mirroring
+// recall the scheme must refuse to authenticate the request, mirroring
 // Login's abort-on-rotate-failure behavior. User and Check must BOTH
 // return false / nil because both go through anchorRecalledUser.
-func TestSessionGuard_RememberRevival_AbortsOnRotateFailure(t *testing.T) {
+func TestSessionScheme_RememberRevival_AbortsOnRotateFailure(t *testing.T) {
 	rotator := &fakeCSRFRotator{}
-	guard, _ := newRevokeGuard(t, nil)
-	provider := &rememberRevivalProvider{user: &revokeTestUser{id: "u1"}}
-	guard.SetProvider(provider)
-	guard.SetCSRFTokenRotator(rotator)
+	scheme, _ := newRevokeScheme(t, nil)
+	userStore := &rememberRevivalStore{user: &revokeTestUser{id: "u1"}}
+	scheme.SetUserStore(userStore)
+	scheme.SetCSRFTokenRotator(rotator)
 
-	rememberCookie := mintRememberCookie(t, guard)
+	rememberCookie := mintRememberCookie(t, scheme)
 
 	// Switch the rotator to error mode AFTER the Login above so the
 	// remember cookie itself was minted successfully. Revival must
@@ -300,11 +300,11 @@ func TestSessionGuard_RememberRevival_AbortsOnRotateFailure(t *testing.T) {
 
 			switch name {
 			case "User":
-				if u := guard.User(req); u != nil {
+				if u := scheme.User(req); u != nil {
 					t.Fatalf("User must return nil when csrf rotation fails on revival, got %v", u)
 				}
 			case "Check":
-				if guard.Check(req) {
+				if scheme.Check(req) {
 					t.Fatal("Check must return false when csrf rotation fails on revival")
 				}
 			}

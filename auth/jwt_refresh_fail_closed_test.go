@@ -32,14 +32,14 @@ func TestJWT_RefreshToken_FailsClosedOnRefreshGenerationStoreError(t *testing.T)
 	}
 
 	user := &jwtRefreshTestUser{id: "user-store-down"}
-	provider := &jwtRefreshTestProvider{user: user}
+	userStore := &jwtRefreshTestStore{user: user}
 
 	refreshToken, err := mgr.GenerateRefreshToken(user)
 	if err != nil {
 		t.Fatalf("GenerateRefreshToken: %v", err)
 	}
 
-	token, err := mgr.RefreshToken(refreshToken, provider)
+	token, err := mgr.RefreshToken(refreshToken, userStore)
 	if err == nil {
 		t.Fatal("RefreshToken returned nil error; expected store transport error")
 	}
@@ -52,22 +52,22 @@ func TestJWT_RefreshToken_FailsClosedOnRefreshGenerationStoreError(t *testing.T)
 	if token != "" {
 		t.Fatalf("RefreshToken token = %q; want empty token", token)
 	}
-	if provider.findByIDCalls != 0 {
-		t.Fatalf("FindByID called %d times; want 0", provider.findByIDCalls)
+	if userStore.findByIDCalls != 0 {
+		t.Fatalf("FindByID called %d times; want 0", userStore.findByIDCalls)
 	}
 }
 
 func TestJWT_RefreshToken_DefaultInMemoryStoreStillRefreshes(t *testing.T) {
 	mgr := newJWTManagerForRefresh(t)
 	user := &jwtRefreshTestUser{id: "user-default-store"}
-	provider := &jwtRefreshTestProvider{user: user}
+	userStore := &jwtRefreshTestStore{user: user}
 
 	refreshToken, err := mgr.GenerateRefreshToken(user)
 	if err != nil {
 		t.Fatalf("GenerateRefreshToken: %v", err)
 	}
 
-	token, err := mgr.RefreshToken(refreshToken, provider)
+	token, err := mgr.RefreshToken(refreshToken, userStore)
 	if err != nil {
 		t.Fatalf("RefreshToken: %v", err)
 	}

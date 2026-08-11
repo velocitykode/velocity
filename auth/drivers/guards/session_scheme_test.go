@@ -12,80 +12,80 @@ import (
 	"github.com/velocitykode/velocity/crypto"
 )
 
-// mockSessionGuardUserProvider implements auth.UserProvider for session guard tests
-type mockSessionGuardUserProvider struct {
+// mockSessionSchemeUserStore implements auth.UserStore for session scheme tests
+type mockSessionSchemeUserStore struct {
 	findByIDFunc            func(id interface{}) (auth.Authenticatable, error)
 	findByCredentialsFunc   func(credentials map[string]interface{}) (auth.Authenticatable, error)
 	validateCredentialsFunc func(user auth.Authenticatable, credentials map[string]interface{}) bool
 	updateRememberTokenFunc func(user auth.Authenticatable, token string) error
 }
 
-func (p *mockSessionGuardUserProvider) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *mockSessionSchemeUserStore) FindByID(id interface{}) (auth.Authenticatable, error) {
 	if p.findByIDFunc != nil {
 		return p.findByIDFunc(id)
 	}
-	return &mockSessionGuardUser{id: id, password: "hashedpassword"}, nil
+	return &mockSessionSchemeUser{id: id, password: "hashedpassword"}, nil
 }
 
-func (p *mockSessionGuardUserProvider) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+func (p *mockSessionSchemeUserStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
 	return p.FindByID(id)
 }
 
-func (p *mockSessionGuardUserProvider) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *mockSessionSchemeUserStore) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
 	if p.findByCredentialsFunc != nil {
 		return p.findByCredentialsFunc(credentials)
 	}
-	return &mockSessionGuardUser{id: "user123", email: "test@example.com", password: "hashedpassword"}, nil
+	return &mockSessionSchemeUser{id: "user123", email: "test@example.com", password: "hashedpassword"}, nil
 }
 
-func (p *mockSessionGuardUserProvider) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *mockSessionSchemeUserStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
 	return p.FindByCredentials(credentials)
 }
 
-func (p *mockSessionGuardUserProvider) ValidateCredentials(user auth.Authenticatable, credentials map[string]interface{}) bool {
+func (p *mockSessionSchemeUserStore) ValidateCredentials(user auth.Authenticatable, credentials map[string]interface{}) bool {
 	if p.validateCredentialsFunc != nil {
 		return p.validateCredentialsFunc(user, credentials)
 	}
 	return true
 }
 
-func (p *mockSessionGuardUserProvider) UpdateRememberToken(user auth.Authenticatable, token string) error {
+func (p *mockSessionSchemeUserStore) UpdateRememberToken(user auth.Authenticatable, token string) error {
 	if p.updateRememberTokenFunc != nil {
 		return p.updateRememberTokenFunc(user, token)
 	}
 	return nil
 }
 
-func (p *mockSessionGuardUserProvider) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+func (p *mockSessionSchemeUserStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
 	return p.UpdateRememberToken(user, token)
 }
 
-// mockSessionGuardUser implements auth.Authenticatable for session guard tests
-type mockSessionGuardUser struct {
+// mockSessionSchemeUser implements auth.Authenticatable for session scheme tests
+type mockSessionSchemeUser struct {
 	id            interface{}
 	email         string
 	password      string
 	rememberToken string
 }
 
-func (u *mockSessionGuardUser) GetAuthIdentifier() interface{} {
+func (u *mockSessionSchemeUser) GetAuthIdentifier() interface{} {
 	return u.id
 }
 
-func (u *mockSessionGuardUser) GetAuthPassword() string {
+func (u *mockSessionSchemeUser) GetAuthPassword() string {
 	return u.password
 }
 
-func (u *mockSessionGuardUser) GetRememberToken() string {
+func (u *mockSessionSchemeUser) GetRememberToken() string {
 	return u.rememberToken
 }
 
-func (u *mockSessionGuardUser) SetRememberToken(token string) {
+func (u *mockSessionSchemeUser) SetRememberToken(token string) {
 	u.rememberToken = token
 }
 
-// mockSessionGuardSession implements auth.Session for testing
-type mockSessionGuardSession struct {
+// mockSessionSchemeSession implements auth.Session for testing
+type mockSessionSchemeSession struct {
 	id              string
 	data            map[string]interface{}
 	flash           map[string]interface{}
@@ -96,39 +96,39 @@ type mockSessionGuardSession struct {
 	invalidated     bool
 }
 
-func newMockSessionGuardSession(id string) *mockSessionGuardSession {
+func newMockSessionSchemeSession(id string) *mockSessionSchemeSession {
 	if id == "" {
 		id = "test-session-id"
 	}
-	return &mockSessionGuardSession{
+	return &mockSessionSchemeSession{
 		id:    id,
 		data:  make(map[string]interface{}),
 		flash: make(map[string]interface{}),
 	}
 }
 
-func (s *mockSessionGuardSession) ID() string                        { return s.id }
-func (s *mockSessionGuardSession) Get(key string) interface{}        { return s.data[key] }
-func (s *mockSessionGuardSession) Put(key string, value interface{}) { s.data[key] = value }
-func (s *mockSessionGuardSession) Has(key string) bool               { _, ok := s.data[key]; return ok }
-func (s *mockSessionGuardSession) Remove(key string)                 { delete(s.data, key) }
-func (s *mockSessionGuardSession) Clear()                            { s.data = make(map[string]interface{}) }
-func (s *mockSessionGuardSession) Regenerate() error {
+func (s *mockSessionSchemeSession) ID() string                        { return s.id }
+func (s *mockSessionSchemeSession) Get(key string) interface{}        { return s.data[key] }
+func (s *mockSessionSchemeSession) Put(key string, value interface{}) { s.data[key] = value }
+func (s *mockSessionSchemeSession) Has(key string) bool               { _, ok := s.data[key]; return ok }
+func (s *mockSessionSchemeSession) Remove(key string)                 { delete(s.data, key) }
+func (s *mockSessionSchemeSession) Clear()                            { s.data = make(map[string]interface{}) }
+func (s *mockSessionSchemeSession) Regenerate() error {
 	s.regenerated = true
 	return s.regenerateError
 }
-func (s *mockSessionGuardSession) Invalidate() error {
+func (s *mockSessionSchemeSession) Invalidate() error {
 	s.invalidated = true
 	s.data = make(map[string]interface{})
 	return s.invalidateError
 }
-func (s *mockSessionGuardSession) Flash(key string, value interface{}) { s.flash[key] = value }
-func (s *mockSessionGuardSession) GetFlash(key string) interface{} {
+func (s *mockSessionSchemeSession) Flash(key string, value interface{}) { s.flash[key] = value }
+func (s *mockSessionSchemeSession) GetFlash(key string) interface{} {
 	v := s.flash[key]
 	delete(s.flash, key)
 	return v
 }
-func (s *mockSessionGuardSession) FlushFlash() map[string]interface{} {
+func (s *mockSessionSchemeSession) FlushFlash() map[string]interface{} {
 	if len(s.flash) == 0 {
 		return nil
 	}
@@ -136,10 +136,10 @@ func (s *mockSessionGuardSession) FlushFlash() map[string]interface{} {
 	s.flash = make(map[string]interface{})
 	return out
 }
-func (s *mockSessionGuardSession) Save(w http.ResponseWriter) error { return s.saveError }
+func (s *mockSessionSchemeSession) Save(w http.ResponseWriter) error { return s.saveError }
 
-// mockSessionGuardStore implements auth.SessionStore for testing
-type mockSessionGuardStore struct {
+// mockSessionSchemeStore implements auth.SessionStore for testing
+type mockSessionSchemeStore struct {
 	createFunc  func(id string) (auth.Session, error)
 	getFunc     func(r *http.Request, id string) (auth.Session, error)
 	saveFunc    func(w http.ResponseWriter, session auth.Session) error
@@ -147,35 +147,35 @@ type mockSessionGuardStore struct {
 	gcFunc      func(maxLifetime time.Duration) error
 }
 
-func (s *mockSessionGuardStore) Create(id string) (auth.Session, error) {
+func (s *mockSessionSchemeStore) Create(id string) (auth.Session, error) {
 	if s.createFunc != nil {
 		return s.createFunc(id)
 	}
-	return newMockSessionGuardSession(id), nil
+	return newMockSessionSchemeSession(id), nil
 }
 
-func (s *mockSessionGuardStore) Get(r *http.Request, id string) (auth.Session, error) {
+func (s *mockSessionSchemeStore) Get(r *http.Request, id string) (auth.Session, error) {
 	if s.getFunc != nil {
 		return s.getFunc(r, id)
 	}
-	return newMockSessionGuardSession(id), nil
+	return newMockSessionSchemeSession(id), nil
 }
 
-func (s *mockSessionGuardStore) Save(w http.ResponseWriter, session auth.Session) error {
+func (s *mockSessionSchemeStore) Save(w http.ResponseWriter, session auth.Session) error {
 	if s.saveFunc != nil {
 		return s.saveFunc(w, session)
 	}
 	return nil
 }
 
-func (s *mockSessionGuardStore) Destroy(id string) error {
+func (s *mockSessionSchemeStore) Destroy(id string) error {
 	if s.destroyFunc != nil {
 		return s.destroyFunc(id)
 	}
 	return nil
 }
 
-func (s *mockSessionGuardStore) GarbageCollect(maxLifetime time.Duration) error {
+func (s *mockSessionSchemeStore) GarbageCollect(maxLifetime time.Duration) error {
 	if s.gcFunc != nil {
 		return s.gcFunc(maxLifetime)
 	}
@@ -193,7 +193,7 @@ func newTestSessionConfig() auth.SessionConfig {
 	}
 }
 
-func TestNewSessionGuard(t *testing.T) {
+func TestNewSessionScheme(t *testing.T) {
 	// Create encryptor instance for cookie store creation
 	encryptor, err := crypto.NewEncryptor(crypto.Config{
 		Key:    "test-key-32-bytes-long-for-test!",
@@ -204,14 +204,14 @@ func TestNewSessionGuard(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		provider auth.UserProvider
-		config   auth.SessionConfig
-		wantErr  bool
+		name      string
+		userStore auth.UserStore
+		config    auth.SessionConfig
+		wantErr   bool
 	}{
 		{
-			name:     "creates guard with cookie store",
-			provider: &mockSessionGuardUserProvider{},
+			name:      "creates scheme with cookie store",
+			userStore: &mockSessionSchemeUserStore{},
 			config: auth.SessionConfig{
 				Name: "test_session",
 			},
@@ -221,20 +221,20 @@ func TestNewSessionGuard(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			guard, err := NewSessionGuard(tt.provider, tt.config, encryptor)
+			scheme, err := NewSessionScheme(tt.userStore, tt.config, encryptor)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("NewSessionGuard() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("NewSessionScheme() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if !tt.wantErr {
-				if guard == nil {
-					t.Error("NewSessionGuard() returned nil guard")
+				if scheme == nil {
+					t.Error("NewSessionScheme() returned nil scheme")
 					return
 				}
-				if guard.loadProvider() != tt.provider {
+				if scheme.loadUserStore() != tt.userStore {
 					t.Error("provider not set correctly")
 				}
-				if guard.store == nil {
+				if scheme.store == nil {
 					t.Error("store not initialized")
 				}
 			}
@@ -242,19 +242,19 @@ func TestNewSessionGuard(t *testing.T) {
 	}
 }
 
-func TestSessionGuard_Check(t *testing.T) {
+func TestSessionScheme_Check(t *testing.T) {
 	tests := []struct {
-		name       string
-		setupGuard func() *SessionGuard
-		setupReq   func() *http.Request
-		want       bool
+		name        string
+		setupScheme func() *SessionScheme
+		setupReq    func() *http.Request
+		want        bool
 	}{
 		{
 			name: "returns true when session has user_id and user exists",
-			setupGuard: func() *SessionGuard {
-				session := newMockSessionGuardSession("test-id")
+			setupScheme: func() *SessionScheme {
+				session := newMockSessionSchemeSession("test-id")
 				session.Put("user_id", int64(123))
-				store := &mockSessionGuardStore{
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return session, nil
 					},
@@ -262,13 +262,13 @@ func TestSessionGuard_Check(t *testing.T) {
 						return session, nil
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
+				return func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
 			},
@@ -281,8 +281,8 @@ func TestSessionGuard_Check(t *testing.T) {
 		},
 		{
 			name: "returns false when session is nil",
-			setupGuard: func() *SessionGuard {
-				store := &mockSessionGuardStore{
+			setupScheme: func() *SessionScheme {
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return nil, errors.New("session not found")
 					},
@@ -290,13 +290,13 @@ func TestSessionGuard_Check(t *testing.T) {
 						return nil, errors.New("cannot create session")
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
+				return func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
 			},
@@ -309,10 +309,10 @@ func TestSessionGuard_Check(t *testing.T) {
 		},
 		{
 			name: "returns false when session has no user_id",
-			setupGuard: func() *SessionGuard {
-				session := newMockSessionGuardSession("test-id")
+			setupScheme: func() *SessionScheme {
+				session := newMockSessionSchemeSession("test-id")
 				// No user_id set
-				store := &mockSessionGuardStore{
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return session, nil
 					},
@@ -320,13 +320,13 @@ func TestSessionGuard_Check(t *testing.T) {
 						return session, nil
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
+				return func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
 			},
@@ -339,10 +339,10 @@ func TestSessionGuard_Check(t *testing.T) {
 		},
 		{
 			name: "returns false when user not found",
-			setupGuard: func() *SessionGuard {
-				session := newMockSessionGuardSession("test-id")
+			setupScheme: func() *SessionScheme {
+				session := newMockSessionSchemeSession("test-id")
 				session.Put("user_id", int64(123))
-				store := &mockSessionGuardStore{
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return session, nil
 					},
@@ -350,18 +350,18 @@ func TestSessionGuard_Check(t *testing.T) {
 						return session, nil
 					},
 				}
-				provider := &mockSessionGuardUserProvider{
+				userStore := &mockSessionSchemeUserStore{
 					findByIDFunc: func(id interface{}) (auth.Authenticatable, error) {
 						return nil, errors.New("user not found")
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
+				return func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: provider})
+					g.userStore.Store(&userStoreHolder{p: userStore})
 					return g
 				}()
 			},
@@ -374,10 +374,10 @@ func TestSessionGuard_Check(t *testing.T) {
 		},
 		{
 			name: "returns false when user is nil",
-			setupGuard: func() *SessionGuard {
-				session := newMockSessionGuardSession("test-id")
+			setupScheme: func() *SessionScheme {
+				session := newMockSessionSchemeSession("test-id")
 				session.Put("user_id", int64(123))
-				store := &mockSessionGuardStore{
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return session, nil
 					},
@@ -385,18 +385,18 @@ func TestSessionGuard_Check(t *testing.T) {
 						return session, nil
 					},
 				}
-				provider := &mockSessionGuardUserProvider{
+				userStore := &mockSessionSchemeUserStore{
 					findByIDFunc: func(id interface{}) (auth.Authenticatable, error) {
 						return nil, nil
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
+				return func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: provider})
+					g.userStore.Store(&userStoreHolder{p: userStore})
 					return g
 				}()
 			},
@@ -411,9 +411,9 @@ func TestSessionGuard_Check(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			guard := tt.setupGuard()
+			scheme := tt.setupScheme()
 			req := tt.setupReq()
-			got := guard.Check(req)
+			got := scheme.Check(req)
 			if got != tt.want {
 				t.Errorf("Check() = %v, want %v", got, tt.want)
 			}
@@ -421,20 +421,20 @@ func TestSessionGuard_Check(t *testing.T) {
 	}
 }
 
-func TestSessionGuard_User(t *testing.T) {
+func TestSessionScheme_User(t *testing.T) {
 	tests := []struct {
-		name       string
-		setupGuard func() *SessionGuard
-		setupReq   func() *http.Request
-		wantNil    bool
-		wantID     interface{}
+		name        string
+		setupScheme func() *SessionScheme
+		setupReq    func() *http.Request
+		wantNil     bool
+		wantID      interface{}
 	}{
 		{
 			name: "returns user when session has user_id",
-			setupGuard: func() *SessionGuard {
-				session := newMockSessionGuardSession("test-id")
+			setupScheme: func() *SessionScheme {
+				session := newMockSessionSchemeSession("test-id")
 				session.Put("user_id", "user123")
-				store := &mockSessionGuardStore{
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return session, nil
 					},
@@ -442,13 +442,13 @@ func TestSessionGuard_User(t *testing.T) {
 						return session, nil
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
+				return func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
 			},
@@ -462,8 +462,8 @@ func TestSessionGuard_User(t *testing.T) {
 		},
 		{
 			name: "returns nil when session is nil",
-			setupGuard: func() *SessionGuard {
-				store := &mockSessionGuardStore{
+			setupScheme: func() *SessionScheme {
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return nil, errors.New("session not found")
 					},
@@ -471,13 +471,13 @@ func TestSessionGuard_User(t *testing.T) {
 						return nil, errors.New("cannot create")
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
+				return func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
 			},
@@ -490,9 +490,9 @@ func TestSessionGuard_User(t *testing.T) {
 		},
 		{
 			name: "returns nil when session has no user_id",
-			setupGuard: func() *SessionGuard {
-				session := newMockSessionGuardSession("test-id")
-				store := &mockSessionGuardStore{
+			setupScheme: func() *SessionScheme {
+				session := newMockSessionSchemeSession("test-id")
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return session, nil
 					},
@@ -500,13 +500,13 @@ func TestSessionGuard_User(t *testing.T) {
 						return session, nil
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
+				return func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
 			},
@@ -518,11 +518,11 @@ func TestSessionGuard_User(t *testing.T) {
 			wantNil: true,
 		},
 		{
-			name: "returns nil when provider returns error",
-			setupGuard: func() *SessionGuard {
-				session := newMockSessionGuardSession("test-id")
+			name: "returns nil when user store returns error",
+			setupScheme: func() *SessionScheme {
+				session := newMockSessionSchemeSession("test-id")
 				session.Put("user_id", "user123")
-				store := &mockSessionGuardStore{
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return session, nil
 					},
@@ -530,18 +530,18 @@ func TestSessionGuard_User(t *testing.T) {
 						return session, nil
 					},
 				}
-				provider := &mockSessionGuardUserProvider{
+				userStore := &mockSessionSchemeUserStore{
 					findByIDFunc: func(id interface{}) (auth.Authenticatable, error) {
 						return nil, errors.New("database error")
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
+				return func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: provider})
+					g.userStore.Store(&userStoreHolder{p: userStore})
 					return g
 				}()
 			},
@@ -556,9 +556,9 @@ func TestSessionGuard_User(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			guard := tt.setupGuard()
+			scheme := tt.setupScheme()
 			req := tt.setupReq()
-			got := guard.User(req)
+			got := scheme.User(req)
 			if tt.wantNil {
 				if got != nil {
 					t.Errorf("User() = %v, want nil", got)
@@ -576,20 +576,20 @@ func TestSessionGuard_User(t *testing.T) {
 	}
 }
 
-func TestSessionGuard_ID(t *testing.T) {
+func TestSessionScheme_ID(t *testing.T) {
 	tests := []struct {
-		name       string
-		setupGuard func() *SessionGuard
-		setupReq   func() *http.Request
-		wantNil    bool
-		wantID     interface{}
+		name        string
+		setupScheme func() *SessionScheme
+		setupReq    func() *http.Request
+		wantNil     bool
+		wantID      interface{}
 	}{
 		{
 			name: "returns user_id from session",
-			setupGuard: func() *SessionGuard {
-				session := newMockSessionGuardSession("test-id")
+			setupScheme: func() *SessionScheme {
+				session := newMockSessionSchemeSession("test-id")
 				session.Put("user_id", int64(456))
-				store := &mockSessionGuardStore{
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return session, nil
 					},
@@ -597,13 +597,13 @@ func TestSessionGuard_ID(t *testing.T) {
 						return session, nil
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
+				return func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
 			},
@@ -617,8 +617,8 @@ func TestSessionGuard_ID(t *testing.T) {
 		},
 		{
 			name: "returns nil when session is nil",
-			setupGuard: func() *SessionGuard {
-				store := &mockSessionGuardStore{
+			setupScheme: func() *SessionScheme {
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return nil, errors.New("no session")
 					},
@@ -626,13 +626,13 @@ func TestSessionGuard_ID(t *testing.T) {
 						return nil, errors.New("cannot create")
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
+				return func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
 			},
@@ -645,9 +645,9 @@ func TestSessionGuard_ID(t *testing.T) {
 		},
 		{
 			name: "returns nil when session has no user_id",
-			setupGuard: func() *SessionGuard {
-				session := newMockSessionGuardSession("test-id")
-				store := &mockSessionGuardStore{
+			setupScheme: func() *SessionScheme {
+				session := newMockSessionSchemeSession("test-id")
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return session, nil
 					},
@@ -655,13 +655,13 @@ func TestSessionGuard_ID(t *testing.T) {
 						return session, nil
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
+				return func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
 			},
@@ -676,9 +676,9 @@ func TestSessionGuard_ID(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			guard := tt.setupGuard()
+			scheme := tt.setupScheme()
 			req := tt.setupReq()
-			got := guard.ID(req)
+			got := scheme.ID(req)
 			if tt.wantNil {
 				if got != nil {
 					t.Errorf("ID() = %v, want nil", got)
@@ -692,21 +692,21 @@ func TestSessionGuard_ID(t *testing.T) {
 	}
 }
 
-func TestSessionGuard_Login(t *testing.T) {
+func TestSessionScheme_Login(t *testing.T) {
 	tests := []struct {
-		name       string
-		setupGuard func() *SessionGuard
-		setupReq   func() *http.Request
-		user       auth.Authenticatable
-		remember   []bool
-		wantErr    bool
-		checkGuard func(t *testing.T, guard *SessionGuard, req *http.Request)
+		name        string
+		setupScheme func() *SessionScheme
+		setupReq    func() *http.Request
+		user        auth.Authenticatable
+		remember    []bool
+		wantErr     bool
+		checkScheme func(t *testing.T, scheme *SessionScheme, req *http.Request)
 	}{
 		{
 			name: "stores user_id in session and regenerates session",
-			setupGuard: func() *SessionGuard {
-				session := newMockSessionGuardSession("test-id")
-				store := &mockSessionGuardStore{
+			setupScheme: func() *SessionScheme {
+				session := newMockSessionSchemeSession("test-id")
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return session, nil
 					},
@@ -714,13 +714,13 @@ func TestSessionGuard_Login(t *testing.T) {
 						return session, nil
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
+				return func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
 			},
@@ -729,10 +729,10 @@ func TestSessionGuard_Login(t *testing.T) {
 				req.AddCookie(&http.Cookie{Name: "test_session", Value: "session-id"})
 				return req
 			},
-			user:    &mockSessionGuardUser{id: "newuser123"},
+			user:    &mockSessionSchemeUser{id: "newuser123"},
 			wantErr: false,
-			checkGuard: func(t *testing.T, guard *SessionGuard, req *http.Request) {
-				session := guard.getSession(req)
+			checkScheme: func(t *testing.T, scheme *SessionScheme, req *http.Request) {
+				session := scheme.getSession(req)
 				if session == nil {
 					t.Error("session should not be nil after login")
 					return
@@ -745,9 +745,9 @@ func TestSessionGuard_Login(t *testing.T) {
 		},
 		{
 			name: "creates new session if none exists",
-			setupGuard: func() *SessionGuard {
-				session := newMockSessionGuardSession("")
-				store := &mockSessionGuardStore{
+			setupScheme: func() *SessionScheme {
+				session := newMockSessionSchemeSession("")
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return nil, errors.New("no session")
 					},
@@ -755,26 +755,26 @@ func TestSessionGuard_Login(t *testing.T) {
 						return session, nil
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
+				return func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
 			},
 			setupReq: func() *http.Request {
 				return httptest.NewRequest("POST", "/login", nil)
 			},
-			user:    &mockSessionGuardUser{id: "user123"},
+			user:    &mockSessionSchemeUser{id: "user123"},
 			wantErr: false,
 		},
 		{
 			name: "returns error when session creation fails",
-			setupGuard: func() *SessionGuard {
-				store := &mockSessionGuardStore{
+			setupScheme: func() *SessionScheme {
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return nil, errors.New("no session")
 					},
@@ -782,32 +782,32 @@ func TestSessionGuard_Login(t *testing.T) {
 						return nil, errors.New("cannot create session")
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
+				return func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
 			},
 			setupReq: func() *http.Request {
 				return httptest.NewRequest("POST", "/login", nil)
 			},
-			user:    &mockSessionGuardUser{id: "user123"},
+			user:    &mockSessionSchemeUser{id: "user123"},
 			wantErr: true,
 		},
 		{
 			name: "returns error when session save fails",
-			setupGuard: func() *SessionGuard {
-				session := &mockSessionGuardSession{
+			setupScheme: func() *SessionScheme {
+				session := &mockSessionSchemeSession{
 					id:        "test-id",
 					data:      make(map[string]interface{}),
 					flash:     make(map[string]interface{}),
 					saveError: errors.New("save failed"),
 				}
-				store := &mockSessionGuardStore{
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return session, nil
 					},
@@ -815,13 +815,13 @@ func TestSessionGuard_Login(t *testing.T) {
 						return session, nil
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
+				return func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
 			},
@@ -830,43 +830,43 @@ func TestSessionGuard_Login(t *testing.T) {
 				req.AddCookie(&http.Cookie{Name: "test_session", Value: "session-id"})
 				return req
 			},
-			user:    &mockSessionGuardUser{id: "user123"},
+			user:    &mockSessionSchemeUser{id: "user123"},
 			wantErr: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			guard := tt.setupGuard()
+			scheme := tt.setupScheme()
 			req := tt.setupReq()
 			w := httptest.NewRecorder()
 
-			err := guard.Login(w, req, tt.user, tt.remember...)
+			err := scheme.Login(w, req, tt.user, tt.remember...)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Login() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			if tt.checkGuard != nil && !tt.wantErr {
-				tt.checkGuard(t, guard, req)
+			if tt.checkScheme != nil && !tt.wantErr {
+				tt.checkScheme(t, scheme, req)
 			}
 		})
 	}
 }
 
-func TestSessionGuard_LoginByID(t *testing.T) {
+func TestSessionScheme_LoginByID(t *testing.T) {
 	tests := []struct {
-		name       string
-		setupGuard func() *SessionGuard
-		setupReq   func() *http.Request
-		id         interface{}
-		remember   []bool
-		wantErr    bool
+		name        string
+		setupScheme func() *SessionScheme
+		setupReq    func() *http.Request
+		id          interface{}
+		remember    []bool
+		wantErr     bool
 	}{
 		{
 			name: "logs in user by ID",
-			setupGuard: func() *SessionGuard {
-				session := newMockSessionGuardSession("test-id")
-				store := &mockSessionGuardStore{
+			setupScheme: func() *SessionScheme {
+				session := newMockSessionSchemeSession("test-id")
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return session, nil
 					},
@@ -874,13 +874,13 @@ func TestSessionGuard_LoginByID(t *testing.T) {
 						return session, nil
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
+				return func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
 			},
@@ -894,19 +894,19 @@ func TestSessionGuard_LoginByID(t *testing.T) {
 		},
 		{
 			name: "returns error when user not found",
-			setupGuard: func() *SessionGuard {
-				provider := &mockSessionGuardUserProvider{
+			setupScheme: func() *SessionScheme {
+				userStore := &mockSessionSchemeUserStore{
 					findByIDFunc: func(id interface{}) (auth.Authenticatable, error) {
 						return nil, errors.New("user not found")
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
-						store:  &mockSessionGuardStore{},
+				return func() *SessionScheme {
+					g := &SessionScheme{
+						store:  &mockSessionSchemeStore{},
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: provider})
+					g.userStore.Store(&userStoreHolder{p: userStore})
 					return g
 				}()
 			},
@@ -918,9 +918,9 @@ func TestSessionGuard_LoginByID(t *testing.T) {
 		},
 		{
 			name: "passes remember flag to Login",
-			setupGuard: func() *SessionGuard {
-				session := newMockSessionGuardSession("test-id")
-				store := &mockSessionGuardStore{
+			setupScheme: func() *SessionScheme {
+				session := newMockSessionSchemeSession("test-id")
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return session, nil
 					},
@@ -928,13 +928,13 @@ func TestSessionGuard_LoginByID(t *testing.T) {
 						return session, nil
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
+				return func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
 			},
@@ -951,9 +951,9 @@ func TestSessionGuard_LoginByID(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			guard := tt.setupGuard()
+			scheme := tt.setupScheme()
 
-			// Set encryptor on guard for tests that use remember functionality
+			// Set encryptor on scheme for tests that use remember functionality
 			if len(tt.remember) > 0 && tt.remember[0] {
 				enc, err := crypto.NewEncryptor(crypto.Config{
 					Key:    "test-key-32-bytes-long-for-test!",
@@ -962,13 +962,13 @@ func TestSessionGuard_LoginByID(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Failed to create encryptor: %v", err)
 				}
-				guard.encryptor = enc
+				scheme.encryptor = enc
 			}
 
 			req := tt.setupReq()
 			w := httptest.NewRecorder()
 
-			err := guard.LoginByID(w, req, tt.id, tt.remember...)
+			err := scheme.LoginByID(w, req, tt.id, tt.remember...)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("LoginByID() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -976,10 +976,10 @@ func TestSessionGuard_LoginByID(t *testing.T) {
 	}
 }
 
-func TestSessionGuard_Attempt(t *testing.T) {
+func TestSessionScheme_Attempt(t *testing.T) {
 	tests := []struct {
 		name        string
-		setupGuard  func() *SessionGuard
+		setupScheme func() *SessionScheme
 		setupReq    func() *http.Request
 		credentials map[string]interface{}
 		remember    []bool
@@ -988,9 +988,9 @@ func TestSessionGuard_Attempt(t *testing.T) {
 	}{
 		{
 			name: "returns true for valid credentials",
-			setupGuard: func() *SessionGuard {
-				session := newMockSessionGuardSession("test-id")
-				store := &mockSessionGuardStore{
+			setupScheme: func() *SessionScheme {
+				session := newMockSessionSchemeSession("test-id")
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return session, nil
 					},
@@ -998,13 +998,13 @@ func TestSessionGuard_Attempt(t *testing.T) {
 						return session, nil
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
+				return func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
 			},
@@ -1022,19 +1022,19 @@ func TestSessionGuard_Attempt(t *testing.T) {
 		},
 		{
 			name: "returns false when user not found",
-			setupGuard: func() *SessionGuard {
-				provider := &mockSessionGuardUserProvider{
+			setupScheme: func() *SessionScheme {
+				userStore := &mockSessionSchemeUserStore{
 					findByCredentialsFunc: func(credentials map[string]interface{}) (auth.Authenticatable, error) {
 						return nil, errors.New("user not found")
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
-						store:  &mockSessionGuardStore{},
+				return func() *SessionScheme {
+					g := &SessionScheme{
+						store:  &mockSessionSchemeStore{},
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: provider})
+					g.userStore.Store(&userStoreHolder{p: userStore})
 					return g
 				}()
 			},
@@ -1050,14 +1050,14 @@ func TestSessionGuard_Attempt(t *testing.T) {
 		},
 		{
 			name: "returns error when password not a string",
-			setupGuard: func() *SessionGuard {
-				return func() *SessionGuard {
-					g := &SessionGuard{
-						store:  &mockSessionGuardStore{},
+			setupScheme: func() *SessionScheme {
+				return func() *SessionScheme {
+					g := &SessionScheme{
+						store:  &mockSessionSchemeStore{},
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
 			},
@@ -1073,19 +1073,19 @@ func TestSessionGuard_Attempt(t *testing.T) {
 		},
 		{
 			name: "returns false when password validation fails",
-			setupGuard: func() *SessionGuard {
-				provider := &mockSessionGuardUserProvider{
+			setupScheme: func() *SessionScheme {
+				userStore := &mockSessionSchemeUserStore{
 					validateCredentialsFunc: func(user auth.Authenticatable, credentials map[string]interface{}) bool {
 						return false
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
-						store:  &mockSessionGuardStore{},
+				return func() *SessionScheme {
+					g := &SessionScheme{
+						store:  &mockSessionSchemeStore{},
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: provider})
+					g.userStore.Store(&userStoreHolder{p: userStore})
 					return g
 				}()
 			},
@@ -1101,8 +1101,8 @@ func TestSessionGuard_Attempt(t *testing.T) {
 		},
 		{
 			name: "returns error when login fails after successful validation",
-			setupGuard: func() *SessionGuard {
-				store := &mockSessionGuardStore{
+			setupScheme: func() *SessionScheme {
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return nil, errors.New("no session")
 					},
@@ -1110,13 +1110,13 @@ func TestSessionGuard_Attempt(t *testing.T) {
 						return nil, errors.New("cannot create session")
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
+				return func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
 			},
@@ -1134,11 +1134,11 @@ func TestSessionGuard_Attempt(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			guard := tt.setupGuard()
+			scheme := tt.setupScheme()
 			req := tt.setupReq()
 			w := httptest.NewRecorder()
 
-			success, err := guard.Attempt(w, req, tt.credentials, tt.remember...)
+			success, err := scheme.Attempt(w, req, tt.credentials, tt.remember...)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Attempt() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -1150,20 +1150,20 @@ func TestSessionGuard_Attempt(t *testing.T) {
 	}
 }
 
-func TestSessionGuard_Logout(t *testing.T) {
+func TestSessionScheme_Logout(t *testing.T) {
 	tests := []struct {
-		name       string
-		setupGuard func() *SessionGuard
-		setupReq   func() *http.Request
-		wantErr    bool
-		checkResp  func(t *testing.T, w *httptest.ResponseRecorder)
+		name        string
+		setupScheme func() *SessionScheme
+		setupReq    func() *http.Request
+		wantErr     bool
+		checkResp   func(t *testing.T, w *httptest.ResponseRecorder)
 	}{
 		{
 			name: "invalidates session successfully",
-			setupGuard: func() *SessionGuard {
-				session := newMockSessionGuardSession("test-id")
+			setupScheme: func() *SessionScheme {
+				session := newMockSessionSchemeSession("test-id")
 				session.Put("user_id", "user123")
-				store := &mockSessionGuardStore{
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return session, nil
 					},
@@ -1171,13 +1171,13 @@ func TestSessionGuard_Logout(t *testing.T) {
 						return session, nil
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
+				return func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
 			},
@@ -1190,8 +1190,8 @@ func TestSessionGuard_Logout(t *testing.T) {
 		},
 		{
 			name: "returns nil when session is nil",
-			setupGuard: func() *SessionGuard {
-				store := &mockSessionGuardStore{
+			setupScheme: func() *SessionScheme {
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return nil, errors.New("no session")
 					},
@@ -1199,13 +1199,13 @@ func TestSessionGuard_Logout(t *testing.T) {
 						return nil, errors.New("cannot create")
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
+				return func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
 			},
@@ -1216,14 +1216,14 @@ func TestSessionGuard_Logout(t *testing.T) {
 		},
 		{
 			name: "returns error when session invalidation fails",
-			setupGuard: func() *SessionGuard {
-				session := &mockSessionGuardSession{
+			setupScheme: func() *SessionScheme {
+				session := &mockSessionSchemeSession{
 					id:              "test-id",
 					data:            make(map[string]interface{}),
 					flash:           make(map[string]interface{}),
 					invalidateError: errors.New("invalidate failed"),
 				}
-				store := &mockSessionGuardStore{
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return session, nil
 					},
@@ -1231,13 +1231,13 @@ func TestSessionGuard_Logout(t *testing.T) {
 						return session, nil
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
+				return func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
 			},
@@ -1250,9 +1250,9 @@ func TestSessionGuard_Logout(t *testing.T) {
 		},
 		{
 			name: "clears remember cookie on logout",
-			setupGuard: func() *SessionGuard {
-				session := newMockSessionGuardSession("test-id")
-				store := &mockSessionGuardStore{
+			setupScheme: func() *SessionScheme {
+				session := newMockSessionSchemeSession("test-id")
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return session, nil
 					},
@@ -1260,13 +1260,13 @@ func TestSessionGuard_Logout(t *testing.T) {
 						return session, nil
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
+				return func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
 			},
@@ -1293,11 +1293,11 @@ func TestSessionGuard_Logout(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			guard := tt.setupGuard()
+			scheme := tt.setupScheme()
 			req := tt.setupReq()
 			w := httptest.NewRecorder()
 
-			err := guard.Logout(w, req)
+			err := scheme.Logout(w, req)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Logout() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -1308,56 +1308,56 @@ func TestSessionGuard_Logout(t *testing.T) {
 	}
 }
 
-func TestSessionGuard_SetProvider(t *testing.T) {
+func TestSessionScheme_SetUserStore(t *testing.T) {
 	tests := []struct {
-		name        string
-		newProvider auth.UserProvider
+		name     string
+		newStore auth.UserStore
 	}{
 		{
-			name:        "sets new provider",
-			newProvider: &mockSessionGuardUserProvider{},
+			name:     "sets new provider",
+			newStore: &mockSessionSchemeUserStore{},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			guard := func() *SessionGuard {
-				g := &SessionGuard{
-					store:  &mockSessionGuardStore{},
+			scheme := func() *SessionScheme {
+				g := &SessionScheme{
+					store:  &mockSessionSchemeStore{},
 					config: newTestSessionConfig(),
 					hasher: auth.NewBcryptHasher(10),
 				}
-				g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+				g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 				return g
 			}()
-			guard.SetProvider(tt.newProvider)
-			if guard.loadProvider() != tt.newProvider {
-				t.Error("SetProvider() did not update provider")
+			scheme.SetUserStore(tt.newStore)
+			if scheme.loadUserStore() != tt.newStore {
+				t.Error("SetUserStore() did not update provider")
 			}
 		})
 	}
 }
 
-func TestSessionGuard_getSession(t *testing.T) {
+func TestSessionScheme_getSession(t *testing.T) {
 	tests := []struct {
-		name       string
-		setupGuard func() *SessionGuard
-		setupReq   func() *http.Request
-		wantNil    bool
+		name        string
+		setupScheme func() *SessionScheme
+		setupReq    func() *http.Request
+		wantNil     bool
 	}{
 		{
 			name: "returns cached session",
-			setupGuard: func() *SessionGuard {
-				guard := func() *SessionGuard {
-					g := &SessionGuard{
-						store:  &mockSessionGuardStore{},
+			setupScheme: func() *SessionScheme {
+				scheme := func() *SessionScheme {
+					g := &SessionScheme{
+						store:  &mockSessionSchemeStore{},
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
-				return guard
+				return scheme
 			},
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("GET", "/", nil)
@@ -1368,22 +1368,22 @@ func TestSessionGuard_getSession(t *testing.T) {
 		},
 		{
 			name: "creates new session when cookie exists but session not found",
-			setupGuard: func() *SessionGuard {
-				store := &mockSessionGuardStore{
+			setupScheme: func() *SessionScheme {
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return nil, errors.New("session not found")
 					},
 					createFunc: func(id string) (auth.Session, error) {
-						return newMockSessionGuardSession("new-session"), nil
+						return newMockSessionSchemeSession("new-session"), nil
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
+				return func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
 			},
@@ -1396,19 +1396,19 @@ func TestSessionGuard_getSession(t *testing.T) {
 		},
 		{
 			name: "creates new session when no cookie exists",
-			setupGuard: func() *SessionGuard {
-				store := &mockSessionGuardStore{
+			setupScheme: func() *SessionScheme {
+				store := &mockSessionSchemeStore{
 					createFunc: func(id string) (auth.Session, error) {
-						return newMockSessionGuardSession("new-session"), nil
+						return newMockSessionSchemeSession("new-session"), nil
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
+				return func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
 			},
@@ -1419,8 +1419,8 @@ func TestSessionGuard_getSession(t *testing.T) {
 		},
 		{
 			name: "returns nil when session creation fails",
-			setupGuard: func() *SessionGuard {
-				store := &mockSessionGuardStore{
+			setupScheme: func() *SessionScheme {
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return nil, errors.New("get failed")
 					},
@@ -1428,13 +1428,13 @@ func TestSessionGuard_getSession(t *testing.T) {
 						return nil, errors.New("create failed")
 					},
 				}
-				return func() *SessionGuard {
-					g := &SessionGuard{
+				return func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
 			},
@@ -1449,9 +1449,9 @@ func TestSessionGuard_getSession(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			guard := tt.setupGuard()
+			scheme := tt.setupScheme()
 			req := tt.setupReq()
-			got := guard.getSession(req)
+			got := scheme.getSession(req)
 			if tt.wantNil {
 				if got != nil {
 					t.Errorf("getSession() = %v, want nil", got)
@@ -1465,18 +1465,18 @@ func TestSessionGuard_getSession(t *testing.T) {
 	}
 }
 
-func TestSessionGuard_SessionRegeneration(t *testing.T) {
+func TestSessionScheme_SessionRegeneration(t *testing.T) {
 	tests := []struct {
-		name       string
-		setupGuard func() (*SessionGuard, *mockSessionGuardSession)
-		user       auth.Authenticatable
-		wantRegen  bool
+		name        string
+		setupScheme func() (*SessionScheme, *mockSessionSchemeSession)
+		user        auth.Authenticatable
+		wantRegen   bool
 	}{
 		{
 			name: "regenerates session ID on login for security",
-			setupGuard: func() (*SessionGuard, *mockSessionGuardSession) {
-				session := newMockSessionGuardSession("old-session-id")
-				store := &mockSessionGuardStore{
+			setupScheme: func() (*SessionScheme, *mockSessionSchemeSession) {
+				session := newMockSessionSchemeSession("old-session-id")
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return session, nil
 					},
@@ -1484,30 +1484,30 @@ func TestSessionGuard_SessionRegeneration(t *testing.T) {
 						return session, nil
 					},
 				}
-				guard := func() *SessionGuard {
-					g := &SessionGuard{
+				scheme := func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
-				return guard, session
+				return scheme, session
 			},
-			user:      &mockSessionGuardUser{id: "user123"},
+			user:      &mockSessionSchemeUser{id: "user123"},
 			wantRegen: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			guard, session := tt.setupGuard()
+			scheme, session := tt.setupScheme()
 			req := httptest.NewRequest("POST", "/login", nil)
 			req.AddCookie(&http.Cookie{Name: "test_session", Value: "session-id"})
 			w := httptest.NewRecorder()
 
-			err := guard.Login(w, req, tt.user)
+			err := scheme.Login(w, req, tt.user)
 			if err != nil {
 				t.Fatalf("Login() error = %v", err)
 			}
@@ -1519,18 +1519,18 @@ func TestSessionGuard_SessionRegeneration(t *testing.T) {
 	}
 }
 
-func TestSessionGuard_SessionInvalidation(t *testing.T) {
+func TestSessionScheme_SessionInvalidation(t *testing.T) {
 	tests := []struct {
 		name           string
-		setupGuard     func() (*SessionGuard, *mockSessionGuardSession)
+		setupScheme    func() (*SessionScheme, *mockSessionSchemeSession)
 		wantInvalidate bool
 	}{
 		{
 			name: "invalidates session on logout",
-			setupGuard: func() (*SessionGuard, *mockSessionGuardSession) {
-				session := newMockSessionGuardSession("session-id")
+			setupScheme: func() (*SessionScheme, *mockSessionSchemeSession) {
+				session := newMockSessionSchemeSession("session-id")
 				session.Put("user_id", "user123")
-				store := &mockSessionGuardStore{
+				store := &mockSessionSchemeStore{
 					getFunc: func(r *http.Request, id string) (auth.Session, error) {
 						return session, nil
 					},
@@ -1538,16 +1538,16 @@ func TestSessionGuard_SessionInvalidation(t *testing.T) {
 						return session, nil
 					},
 				}
-				guard := func() *SessionGuard {
-					g := &SessionGuard{
+				scheme := func() *SessionScheme {
+					g := &SessionScheme{
 						store:  store,
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 					return g
 				}()
-				return guard, session
+				return scheme, session
 			},
 			wantInvalidate: true,
 		},
@@ -1555,12 +1555,12 @@ func TestSessionGuard_SessionInvalidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			guard, session := tt.setupGuard()
+			scheme, session := tt.setupScheme()
 			req := httptest.NewRequest("POST", "/logout", nil)
 			req.AddCookie(&http.Cookie{Name: "test_session", Value: "session-id"})
 			w := httptest.NewRecorder()
 
-			err := guard.Logout(w, req)
+			err := scheme.Logout(w, req)
 			if err != nil {
 				t.Fatalf("Logout() error = %v", err)
 			}
@@ -1579,10 +1579,10 @@ func TestSessionGuard_SessionInvalidation(t *testing.T) {
 // and must NOT write user_id into the session.
 func TestLogin_RegenerateErrorFailsLogin(t *testing.T) {
 	originalID := "fixation-attacker-chose-this-id"
-	session := newMockSessionGuardSession(originalID)
+	session := newMockSessionSchemeSession(originalID)
 	session.regenerateError = errors.New("store I/O failure")
 
-	store := &mockSessionGuardStore{
+	store := &mockSessionSchemeStore{
 		getFunc: func(r *http.Request, id string) (auth.Session, error) {
 			return session, nil
 		},
@@ -1590,22 +1590,22 @@ func TestLogin_RegenerateErrorFailsLogin(t *testing.T) {
 			return session, nil
 		},
 	}
-	guard := func() *SessionGuard {
-		g := &SessionGuard{
+	scheme := func() *SessionScheme {
+		g := &SessionScheme{
 			store:  store,
 			config: newTestSessionConfig(),
 			hasher: auth.NewBcryptHasher(10),
 		}
-		g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+		g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 		return g
 	}()
 
 	req := httptest.NewRequest("POST", "/login", nil)
 	req.AddCookie(&http.Cookie{Name: "test_session", Value: originalID})
 	w := httptest.NewRecorder()
-	user := &mockSessionGuardUser{id: "victim123"}
+	user := &mockSessionSchemeUser{id: "victim123"}
 
-	err := guard.Login(w, req, user)
+	err := scheme.Login(w, req, user)
 	if err == nil {
 		t.Fatal("expected Login to fail when Regenerate fails")
 	}
@@ -1629,23 +1629,23 @@ func TestLogin_RegenerateErrorFailsLogin(t *testing.T) {
 	}
 }
 
-// TestSessionGuard_LoginByID_UnknownID is the regression for the nil-user
-// panic: UserProvider.FindByID is contractually allowed to return (nil, nil)
+// TestSessionScheme_LoginByID_UnknownID is the regression for the nil-user
+// panic: UserStore.FindByID is contractually allowed to return (nil, nil)
 // for an unknown id. LoginByID must surface that as auth.ErrUserNotFound
 // instead of passing the nil user into Login and panicking on the user_id
 // deref. Nothing may be written to the response.
-func TestSessionGuard_LoginByID_UnknownID(t *testing.T) {
-	provider := &mockSessionGuardUserProvider{
+func TestSessionScheme_LoginByID_UnknownID(t *testing.T) {
+	userStore := &mockSessionSchemeUserStore{
 		findByIDFunc: func(id interface{}) (auth.Authenticatable, error) {
 			return nil, nil // not found, no error: contract-permitted
 		},
 	}
-	g := &SessionGuard{
-		store:  &mockSessionGuardStore{},
+	g := &SessionScheme{
+		store:  &mockSessionSchemeStore{},
 		config: newTestSessionConfig(),
 		hasher: auth.NewBcryptHasher(10),
 	}
-	g.provider.Store(&providerHolder{p: provider})
+	g.userStore.Store(&userStoreHolder{p: userStore})
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("POST", "/login", nil)
@@ -1668,17 +1668,17 @@ func TestSessionGuard_LoginByID_UnknownID(t *testing.T) {
 	}
 }
 
-// TestSessionGuard_Login_NilUser guards the deref site directly: Login is
+// TestSessionScheme_Login_NilUser guards the deref site directly: Login is
 // exported, so any caller (not just LoginByID) can reach it with a nil user.
 // It must return auth.ErrUserNotFound before touching the session, never
 // panic, and write nothing.
-func TestSessionGuard_Login_NilUser(t *testing.T) {
-	g := &SessionGuard{
-		store:  &mockSessionGuardStore{},
+func TestSessionScheme_Login_NilUser(t *testing.T) {
+	g := &SessionScheme{
+		store:  &mockSessionSchemeStore{},
 		config: newTestSessionConfig(),
 		hasher: auth.NewBcryptHasher(10),
 	}
-	g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+	g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("POST", "/login", nil)

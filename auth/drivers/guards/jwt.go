@@ -37,12 +37,12 @@ type cachedUser struct {
 	cachedAt time.Time
 }
 
-// JWTGuard implements JWT-based authentication for APIs
-type JWTGuard struct {
-	// provider and throttler are held via atomic.Pointer so concurrent
-	// SetProvider / SetLoginThrottler calls cannot tear a reader's
+// JWTScheme implements JWT-based authentication for APIs
+type JWTScheme struct {
+	// user store and throttler are held via atomic.Pointer so concurrent
+	// SetUserStore / SetLoginThrottler calls cannot tear a reader's
 	// two-word interface fetch in Attempt / User / Check (H-10 fix).
-	provider  atomic.Pointer[providerHolder]
+	userStore atomic.Pointer[userStoreHolder]
 	throttler atomic.Pointer[throttlerHolder]
 
 	jwtManager     *auth.JWTManager
@@ -65,9 +65,9 @@ type JWTGuard struct {
 	eventDispatcher func(ctx context.Context, event any) error
 }
 
-// loadProvider returns the active auth.UserProvider via atomic load.
-func (g *JWTGuard) loadProvider() auth.UserProvider {
-	h := g.provider.Load()
+// loadUserStore returns the active auth.UserStore via atomic load.
+func (g *JWTScheme) loadUserStore() auth.UserStore {
+	h := g.userStore.Load()
 	if h == nil {
 		return nil
 	}
@@ -76,7 +76,7 @@ func (g *JWTGuard) loadProvider() auth.UserProvider {
 
 // loadThrottler returns the active contract.LoginThrottler via atomic load.
 // Falls back to NoopLoginThrottler when no throttler has been installed.
-func (g *JWTGuard) loadThrottler() contract.LoginThrottler {
+func (g *JWTScheme) loadThrottler() contract.LoginThrottler {
 	h := g.throttler.Load()
 	if h == nil || h.t == nil {
 		return auth.NoopLoginThrottler{}
@@ -86,13 +86,13 @@ func (g *JWTGuard) loadThrottler() contract.LoginThrottler {
 
 // SetAttemptFloor configures the wall-clock floor that Attempt blocks for.
 // See auth.Config.AttemptFloor for the threat model.
-func (g *JWTGuard) SetAttemptFloor(d time.Duration) {
+func (g *JWTScheme) SetAttemptFloor(d time.Duration) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.attemptFloor = d
 }
 
-func (g *JWTGuard) effectiveAttemptFloor() time.Duration {
+func (g *JWTScheme) effectiveAttemptFloor() time.Duration {
 	g.mu.RLock()
 	d := g.attemptFloor
 	g.mu.RUnlock()
@@ -105,7 +105,7 @@ func (g *JWTGuard) effectiveAttemptFloor() time.Duration {
 	return d
 }
 
-func (g *JWTGuard) effectiveHasher() auth.Hasher {
+func (g *JWTScheme) effectiveHasher() auth.Hasher {
 	g.mu.RLock()
 	h := g.hasher
 	g.mu.RUnlock()
@@ -123,7 +123,7 @@ func (g *JWTGuard) effectiveHasher() auth.Hasher {
 // setter so the dummy hash on the missing-user path runs at the same
 // cost as the real verify; without this, a configured cost of 14 would
 // have the dummy at cost 10 and the H-09 timing channel would reopen.
-func (g *JWTGuard) SetHasher(h auth.Hasher) {
+func (g *JWTScheme) SetHasher(h auth.Hasher) {
 	if h == nil {
 		return
 	}
@@ -137,11 +137,11 @@ func (g *JWTGuard) SetHasher(h auth.Hasher) {
 // "no proxies trusted" (forwarded headers are ignored, RemoteAddr is
 // used verbatim).
 //
-// Manager.SetTrustedProxies propagates to every registered guard via
+// Manager.SetTrustedProxies propagates to every registered scheme via
 // the auth.TrustedProxiesReceiver interface, so consumers normally do
 // not need to call this directly.
-func (g *JWTGuard) SetTrustedProxies(proxies []*net.IPNet) {
-	// Deep-clone (see SessionGuard.SetTrustedProxies for rationale).
+func (g *JWTScheme) SetTrustedProxies(proxies []*net.IPNet) {
+	// Deep-clone (see SessionScheme.SetTrustedProxies for rationale).
 	cloned := clientip.CloneIPNets(proxies)
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -150,8 +150,8 @@ func (g *JWTGuard) SetTrustedProxies(proxies []*net.IPNet) {
 
 // getTrustedProxies returns the installed trusted-proxy list under a
 // read lock so concurrent Attempt() calls see a consistent snapshot.
-// The returned slice is a deep clone (see SessionGuard.getTrustedProxies).
-func (g *JWTGuard) getTrustedProxies() []*net.IPNet {
+// The returned slice is a deep clone (see SessionScheme.getTrustedProxies).
+func (g *JWTScheme) getTrustedProxies() []*net.IPNet {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return clientip.CloneIPNets(g.trustedProxies)
@@ -162,7 +162,7 @@ func (g *JWTGuard) getTrustedProxies() []*net.IPNet {
 //
 // Stored via atomic.Pointer so concurrent Attempt() readers cannot tear the
 // two-word interface fetch on the throttler field (H-10 fix).
-func (g *JWTGuard) SetLoginThrottler(t contract.LoginThrottler) {
+func (g *JWTScheme) SetLoginThrottler(t contract.LoginThrottler) {
 	if t == nil {
 		g.throttler.Store(&throttlerHolder{t: auth.NoopLoginThrottler{}})
 		return
@@ -175,10 +175,10 @@ func (g *JWTGuard) SetLoginThrottler(t contract.LoginThrottler) {
 // stored hash that no longer matches the configured Hasher parameters
 // (M-08). Pass nil to disable emission. Safe for concurrent use.
 //
-// Manager.SetEventDispatcher propagates to every registered guard via
+// Manager.SetEventDispatcher propagates to every registered scheme via
 // the auth.EventDispatcherReceiver interface; consumers normally do not
 // need to call this directly.
-func (g *JWTGuard) SetEventDispatcher(fn func(ctx context.Context, event any) error) {
+func (g *JWTScheme) SetEventDispatcher(fn func(ctx context.Context, event any) error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.eventDispatcher = fn
@@ -187,27 +187,27 @@ func (g *JWTGuard) SetEventDispatcher(fn func(ctx context.Context, event any) er
 // getEventDispatcher returns the installed dispatcher under a read lock
 // so concurrent Attempt() readers observe a consistent value across a
 // SetEventDispatcher swap.
-func (g *JWTGuard) getEventDispatcher() func(ctx context.Context, event any) error {
+func (g *JWTScheme) getEventDispatcher() func(ctx context.Context, event any) error {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return g.eventDispatcher
 }
 
-// NewJWTGuard creates a new JWT guard.
+// NewJWTScheme creates a new JWT scheme.
 // Call Start() to begin the background cache cleanup goroutine.
 // Returns an error when the underlying JWTConfig fails validation.
-func NewJWTGuard(provider auth.UserProvider, config auth.JWTConfig) (*JWTGuard, error) {
+func NewJWTScheme(userStore auth.UserStore, config auth.JWTConfig) (*JWTScheme, error) {
 	manager, err := auth.NewJWTManager(config)
 	if err != nil {
 		return nil, err
 	}
-	g := &JWTGuard{
+	g := &JWTScheme{
 		jwtManager:  manager,
 		config:      config,
 		userCache:   make(map[string]cachedUser),
 		stopCleanup: make(chan struct{}),
 	}
-	g.provider.Store(&providerHolder{p: provider})
+	g.userStore.Store(&userStoreHolder{p: userStore})
 	g.throttler.Store(&throttlerHolder{t: auth.NoopLoginThrottler{}})
 	return g, nil
 }
@@ -215,7 +215,7 @@ func NewJWTGuard(provider auth.UserProvider, config auth.JWTConfig) (*JWTGuard, 
 // Start begins the background cache cleanup goroutine. An optional
 // context.Context controls the goroutine lifetime; if none is provided,
 // use StopCleanup() to stop it.
-func (g *JWTGuard) Start(ctx ...context.Context) {
+func (g *JWTScheme) Start(ctx ...context.Context) {
 	if len(ctx) > 0 && ctx[0] != nil {
 		bg := ctx[0]
 		async.Go(func() { g.cleanupLoopWithContext(bg) })
@@ -228,13 +228,13 @@ func (g *JWTGuard) Start(ctx ...context.Context) {
 // and safe for concurrent use: the close is guarded by a sync.Once
 // because the previous select-then-close pattern let two concurrent
 // callers both observe "not closed" and both reach close (panic).
-func (g *JWTGuard) StopCleanup() {
+func (g *JWTScheme) StopCleanup() {
 	g.stopOnce.Do(func() {
 		close(g.stopCleanup)
 	})
 }
 
-func (g *JWTGuard) cleanupLoop() {
+func (g *JWTScheme) cleanupLoop() {
 	ticker := time.NewTicker(jwtCleanupInterval)
 	defer ticker.Stop()
 	for {
@@ -247,7 +247,7 @@ func (g *JWTGuard) cleanupLoop() {
 	}
 }
 
-func (g *JWTGuard) cleanupLoopWithContext(ctx context.Context) {
+func (g *JWTScheme) cleanupLoopWithContext(ctx context.Context) {
 	ticker := time.NewTicker(jwtCleanupInterval)
 	defer ticker.Stop()
 	for {
@@ -262,7 +262,7 @@ func (g *JWTGuard) cleanupLoopWithContext(ctx context.Context) {
 	}
 }
 
-func (g *JWTGuard) evictExpired() {
+func (g *JWTScheme) evictExpired() {
 	now := time.Now()
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -273,7 +273,7 @@ func (g *JWTGuard) evictExpired() {
 	}
 }
 
-func (g *JWTGuard) getCachedUser(token string) (auth.Authenticatable, bool) {
+func (g *JWTScheme) getCachedUser(token string) (auth.Authenticatable, bool) {
 	g.mu.RLock()
 	entry, ok := g.userCache[token]
 	g.mu.RUnlock()
@@ -289,7 +289,7 @@ func (g *JWTGuard) getCachedUser(token string) (auth.Authenticatable, bool) {
 	return entry.user, true
 }
 
-func (g *JWTGuard) cacheUser(token string, user auth.Authenticatable) {
+func (g *JWTScheme) cacheUser(token string, user auth.Authenticatable) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -312,7 +312,7 @@ func (g *JWTGuard) cacheUser(token string, user auth.Authenticatable) {
 }
 
 // Check if user is authenticated via JWT
-func (g *JWTGuard) Check(r *http.Request) bool {
+func (g *JWTScheme) Check(r *http.Request) bool {
 	token := g.getTokenFromRequest(r)
 	if token == "" {
 		return false
@@ -324,7 +324,7 @@ func (g *JWTGuard) Check(r *http.Request) bool {
 	}
 
 	// Validate user still exists
-	user, err := g.loadProvider().FindByIDCtx(r.Context(), claims.UserID)
+	user, err := g.loadUserStore().FindByIDCtx(r.Context(), claims.UserID)
 	if err != nil || user == nil {
 		return false
 	}
@@ -335,7 +335,7 @@ func (g *JWTGuard) Check(r *http.Request) bool {
 }
 
 // User returns the authenticated user from JWT
-func (g *JWTGuard) User(r *http.Request) auth.Authenticatable {
+func (g *JWTScheme) User(r *http.Request) auth.Authenticatable {
 	token := g.getTokenFromRequest(r)
 	if token == "" {
 		return nil
@@ -343,7 +343,7 @@ func (g *JWTGuard) User(r *http.Request) auth.Authenticatable {
 
 	// Validate on EVERY call: a token blacklisted or expired since it was
 	// first seen must stop authenticating immediately, not after the cache
-	// TTL. The cache may only memoize the provider lookup, never the
+	// TTL. The cache may only memoize the user store lookup, never the
 	// validity decision (audit: revocation/expiry bypass window).
 	claims, err := g.jwtManager.ValidateAccessToken(token)
 	if err != nil {
@@ -354,7 +354,7 @@ func (g *JWTGuard) User(r *http.Request) auth.Authenticatable {
 		return user
 	}
 
-	user, err := g.loadProvider().FindByIDCtx(r.Context(), claims.UserID)
+	user, err := g.loadUserStore().FindByIDCtx(r.Context(), claims.UserID)
 	if err != nil || user == nil {
 		// FindByIDCtx may return (nil, nil) for an unknown id; a nil
 		// user must not be cached as an authenticated entry.
@@ -366,7 +366,7 @@ func (g *JWTGuard) User(r *http.Request) auth.Authenticatable {
 }
 
 // ID returns the authenticated user ID from JWT
-func (g *JWTGuard) ID(r *http.Request) interface{} {
+func (g *JWTScheme) ID(r *http.Request) interface{} {
 	token := g.getTokenFromRequest(r)
 	if token == "" {
 		return nil
@@ -381,7 +381,7 @@ func (g *JWTGuard) ID(r *http.Request) interface{} {
 }
 
 // Login generates a JWT token for the user
-func (g *JWTGuard) Login(w http.ResponseWriter, r *http.Request, user auth.Authenticatable, remember ...bool) error {
+func (g *JWTScheme) Login(w http.ResponseWriter, r *http.Request, user auth.Authenticatable, remember ...bool) error {
 	// Generate access token
 	token, err := g.jwtManager.GenerateToken(user)
 	if err != nil {
@@ -406,8 +406,8 @@ func (g *JWTGuard) Login(w http.ResponseWriter, r *http.Request, user auth.Authe
 }
 
 // LoginByID logs in a user by ID and generates JWT
-func (g *JWTGuard) LoginByID(w http.ResponseWriter, r *http.Request, id interface{}, remember ...bool) error {
-	user, err := g.loadProvider().FindByIDCtx(r.Context(), id)
+func (g *JWTScheme) LoginByID(w http.ResponseWriter, r *http.Request, id interface{}, remember ...bool) error {
+	user, err := g.loadUserStore().FindByIDCtx(r.Context(), id)
 	if err != nil {
 		return err
 	}
@@ -429,13 +429,13 @@ func (g *JWTGuard) LoginByID(w http.ResponseWriter, r *http.Request, id interfac
 // fast path and the wrong-password slow path pad to the same wall-clock
 // duration (H-09 fix). The dummy bcrypt run on the missing-user branch
 // matches the CPU profile of the bcrypt verify branch.
-func (g *JWTGuard) Attempt(w http.ResponseWriter, r *http.Request, credentials map[string]interface{}, remember ...bool) (bool, error) {
-	// Snapshot throttler, provider, and hasher once so the credential
+func (g *JWTScheme) Attempt(w http.ResponseWriter, r *http.Request, credentials map[string]interface{}, remember ...bool) (bool, error) {
+	// Snapshot throttler, user store, and hasher once so the credential
 	// check and the success tail below see consistent references even if
 	// a concurrent Set* call swaps one mid-call.
 	throttler := g.loadThrottler()
 	hasher := g.effectiveHasher()
-	user, keys, ok, err := attemptCredentials(r, credentials, g.loadProvider(), hasher, throttler, g.effectiveAttemptFloor(), g.getTrustedProxies())
+	user, keys, ok, err := attemptCredentials(r, credentials, g.loadUserStore(), hasher, throttler, g.effectiveAttemptFloor(), g.getTrustedProxies())
 	if !ok {
 		return false, err
 	}
@@ -461,20 +461,20 @@ func (g *JWTGuard) Attempt(w http.ResponseWriter, r *http.Request, credentials m
 // RevokeAllRefreshTokensForUser implements auth.RefreshTokenRevoker. It
 // bumps the per-user refresh-token generation counter so every
 // outstanding refresh token issued under a lower generation is rejected
-// on its next /auth/refresh call. The same mechanism as JWTGuard.Logout
+// on its next /auth/refresh call. The same mechanism as JWTScheme.Logout
 // uses for the single-user single-Logout case; the difference is the
 // trigger (administrative "sign out everywhere" vs. user-initiated
 // logout).
 //
 // Without this hook, Manager.RevokeAllSessions deleted server-side
-// session records and cleared session-guard remember-me tokens but left
+// session records and cleared session-scheme remember-me tokens but left
 // outstanding refresh tokens valid until their natural expiry (default
 // 14 days). A phished refresh token therefore survived the
 // administrative purge and re-minted fresh access tokens for the
 // attacker (audit M-10).
 //
 // userID is the string form to match RememberTokenClearer / DeleteAllForUser.
-func (g *JWTGuard) RevokeAllRefreshTokensForUser(_ context.Context, userID string) error {
+func (g *JWTScheme) RevokeAllRefreshTokensForUser(_ context.Context, userID string) error {
 	if userID == "" {
 		return nil
 	}
@@ -492,7 +492,7 @@ func (g *JWTGuard) RevokeAllRefreshTokensForUser(_ context.Context, userID strin
 // the user is rejected on the next /auth/refresh call (audit H-07).
 // Without the bump a phished refresh token would survive Logout for up
 // to RefreshTTL (default 14 days).
-func (g *JWTGuard) Logout(w http.ResponseWriter, r *http.Request) error {
+func (g *JWTScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	token := g.getTokenFromRequest(r)
 	if token == "" {
 		return nil
@@ -529,15 +529,15 @@ func (g *JWTGuard) Logout(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// SetProvider sets the user provider. Stored via atomic.Pointer so
+// SetUserStore sets the user store. Stored via atomic.Pointer so
 // concurrent Attempt / User / Check readers cannot tear the two-word
-// interface fetch on the provider field (H-10 fix). Passing nil leaves
-// the previously installed provider in place.
-func (g *JWTGuard) SetProvider(provider auth.UserProvider) {
-	if provider == nil {
+// interface fetch on the user store field (H-10 fix). Passing nil leaves
+// the previously installed user store in place.
+func (g *JWTScheme) SetUserStore(userStore auth.UserStore) {
+	if userStore == nil {
 		return
 	}
-	g.provider.Store(&providerHolder{p: provider})
+	g.userStore.Store(&userStoreHolder{p: userStore})
 }
 
 // SetRefreshGenerationStore installs a shared per-user refresh-generation
@@ -553,27 +553,27 @@ func (g *JWTGuard) SetProvider(provider auth.UserProvider) {
 // Forwards to JWTManager.SetRefreshGenerationStore, which itself stores
 // the value under a mutex so concurrent Refresh / Logout callers cannot
 // tear the interface read.
-func (g *JWTGuard) SetRefreshGenerationStore(store auth.RefreshGenerationStore) {
+func (g *JWTScheme) SetRefreshGenerationStore(store auth.RefreshGenerationStore) {
 	g.jwtManager.SetRefreshGenerationStore(store)
 }
 
 // GenerateToken generates a JWT token for a user
-func (g *JWTGuard) GenerateToken(user auth.Authenticatable, claims ...map[string]interface{}) (string, error) {
+func (g *JWTScheme) GenerateToken(user auth.Authenticatable, claims ...map[string]interface{}) (string, error) {
 	return g.jwtManager.GenerateToken(user, claims...)
 }
 
 // GenerateRefreshToken generates a refresh token
-func (g *JWTGuard) GenerateRefreshToken(user auth.Authenticatable) (string, error) {
+func (g *JWTScheme) GenerateRefreshToken(user auth.Authenticatable) (string, error) {
 	return g.jwtManager.GenerateRefreshToken(user)
 }
 
 // RefreshToken refreshes an access token using refresh token
-func (g *JWTGuard) RefreshToken(refreshToken string) (string, error) {
-	return g.jwtManager.RefreshToken(refreshToken, g.loadProvider())
+func (g *JWTScheme) RefreshToken(refreshToken string) (string, error) {
+	return g.jwtManager.RefreshToken(refreshToken, g.loadUserStore())
 }
 
 // ValidateToken validates a JWT token
-func (g *JWTGuard) ValidateToken(token string) (*auth.Claims, error) {
+func (g *JWTScheme) ValidateToken(token string) (*auth.Claims, error) {
 	return g.jwtManager.ValidateToken(token)
 }
 
@@ -585,7 +585,7 @@ func (g *JWTGuard) ValidateToken(token string) (*auth.Claims, error) {
 // WebSocket upgrades ONLY when JWTConfig.AllowQueryToken is explicitly enabled;
 // it is off by default because query-string credentials can leak through access
 // logs, proxy logs, browser history, and Referer headers.
-func (g *JWTGuard) getTokenFromRequest(r *http.Request) string {
+func (g *JWTScheme) getTokenFromRequest(r *http.Request) string {
 	// Check Authorization header — only accept "Bearer <token>" format
 	authHeader := r.Header.Get("Authorization")
 	if authHeader != "" {

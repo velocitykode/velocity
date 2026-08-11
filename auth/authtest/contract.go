@@ -1,5 +1,5 @@
 // Package authtest provides executable specifications (contract tests) for
-// [auth.UserProvider], [auth.ServerSessionStore], and [contract.LoginThrottler]
+// [auth.UserStore], [auth.ServerSessionStore], and [contract.LoginThrottler]
 // implementations.
 //
 // Each runner is independent so drivers that only implement one of the three
@@ -18,25 +18,25 @@ import (
 	"github.com/velocitykode/velocity/contract"
 )
 
-// UserProviderFactory builds a fresh provider seeded with a known user per
-// sub-test. SeedUser is the user the runner asks the provider to look up;
+// UserStoreFactory builds a fresh user store seeded with a known user per
+// sub-test. SeedUser is the user the runner asks the user store to look up;
 // it must be findable by id and by the credentials map
 // {"email": SeedEmail, "password": SeedPassword}.
-type UserProviderFactory struct {
-	// New returns a fresh provider seeded with the SeedUser (or an empty
+type UserStoreFactory struct {
+	// New returns a fresh user store seeded with the SeedUser (or an empty
 	// store if the runner only exercises miss paths).
-	New func(t *testing.T) auth.UserProvider
-	// SeedUser is the user the seeded provider must return.
+	New func(t *testing.T) auth.UserStore
+	// SeedUser is the user the seeded user store must return.
 	SeedUser auth.Authenticatable
 	// SeedEmail is the email key in the credentials map.
 	SeedEmail string
-	// SeedPassword is the plaintext password the provider must accept
+	// SeedPassword is the plaintext password the user store must accept
 	// for the seeded user.
 	SeedPassword string
 }
 
-// RunUserProviderContractTests exercises [auth.UserProvider].
-func RunUserProviderContractTests(t *testing.T, f UserProviderFactory) {
+// RunUserStoreContractTests exercises [auth.UserStore].
+func RunUserStoreContractTests(t *testing.T, f UserStoreFactory) {
 	t.Helper()
 
 	t.Run("FindByIDCtx_KnownID_ReturnsUser", func(t *testing.T) {
@@ -135,7 +135,7 @@ func RunUserProviderContractTests(t *testing.T, f UserProviderFactory) {
 			t.Fatalf("seed lookup: %v", err)
 		}
 		// Missing or wrong-type password must collapse to false; the
-		// provider must NOT panic.
+		// user store must NOT panic.
 		if p.ValidateCredentials(got, map[string]interface{}{}) {
 			t.Fatal("expected false when no password supplied")
 		}

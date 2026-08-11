@@ -263,7 +263,7 @@ func (c *CSRF) maybeWriteXSRFCookie(w http.ResponseWriter, r *http.Request) {
 }
 
 // WriteXSRFCookie writes the XSRF-TOKEN cookie for sessionID to w. It
-// is the public hook session guards call after RotateToken so the
+// is the public hook session schemes call after RotateToken so the
 // response that establishes the new session also carries the freshly
 // minted CSRF token; without this the SPA's first POST after Login (or
 // remember-cookie revival) returns 419 because the per-session token
@@ -721,7 +721,7 @@ func (c *CSRF) RefreshHandler() http.HandlerFunc {
 }
 
 // RotateToken implements contract.CSRFTokenRotator. It deletes any token
-// bound to oldID and mints a fresh token bound to newID. Session guards
+// bound to oldID and mints a fresh token bound to newID. Session schemes
 // call this from Login (immediately after Session.Regenerate) and from
 // the remember-cookie revival path so the token follows the session-id
 // rotation, closing the orphan-token window described in the H-02 audit
@@ -770,7 +770,7 @@ func (c *CSRF) RotateToken(oldID, newID string) error {
 // the Go process, while still allowing explicit Secure=false dev/test
 // configs to delete a plain-HTTP cookie.
 //
-// Called from SessionGuard.Logout right after RevokeToken.
+// Called from SessionScheme.Logout right after RevokeToken.
 func (c *CSRF) ClearXSRFCookie(w http.ResponseWriter, r *http.Request) {
 	if c == nil || c.config == nil || w == nil || r == nil {
 		return
@@ -794,7 +794,7 @@ func (c *CSRF) ClearXSRFCookie(w http.ResponseWriter, r *http.Request) {
 }
 
 // RevokeToken implements contract.CSRFTokenRotator. It deletes the token
-// bound to id. Session guards call this from Logout (before
+// bound to id. Session schemes call this from Logout (before
 // Session.Invalidate) so the token does not survive the session in the
 // CSRF store; without this a captured cookie+token pair would remain
 // valid for the store TTL (24h default) past logout.

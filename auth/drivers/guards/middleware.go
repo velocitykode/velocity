@@ -19,7 +19,7 @@ type preCommitHooker interface {
 
 // SessionMiddleware returns a router.MiddlewareFunc that enables Laravel
 // StartSession-equivalent semantics: every request is given a sessionHolder
-// (via WithSessionContext) so SessionGuard.getSession can cache the
+// (via WithSessionContext) so SessionScheme.getSession can cache the
 // resolved session for the lifetime of the request; BEFORE the response
 // headers are committed AND as a defer fallback, the holder is consulted
 // and, if a session was touched and mutated, it is saved to the response
@@ -46,13 +46,13 @@ type preCommitHooker interface {
 // every Flash() write is silently lost because the framework never calls
 // session.Save(w) on its own.
 //
-// Auto-installed by velocity.bootstrap() when the active guard is a
-// *SessionGuard; consumers do not normally need to wire this themselves.
-func (g *SessionGuard) SessionMiddleware() router.MiddlewareFunc {
+// Auto-installed by velocity.bootstrap() when the active scheme is a
+// *SessionScheme; consumers do not normally need to wire this themselves.
+func (g *SessionScheme) SessionMiddleware() router.MiddlewareFunc {
 	return func(next router.HandlerFunc) router.HandlerFunc {
 		return func(c *router.Context) error {
 			// Replace the request with one carrying a sessionHolder so
-			// any guard call inside the handler caches its session
+			// any scheme call inside the handler caches its session
 			// lookup AND so we can recover the session after the
 			// handler returns.
 			//
@@ -66,7 +66,7 @@ func (g *SessionGuard) SessionMiddleware() router.MiddlewareFunc {
 				c.Request = r
 			}
 
-			// Hand the response writer to the holder so guard read paths
+			// Hand the response writer to the holder so scheme read paths
 			// (User/Check) can emit Set-Cookie during remember-cookie
 			// revival: rotate-on-use needs to deliver the replacement
 			// remember cookie, and those methods only see the request.
@@ -78,7 +78,7 @@ func (g *SessionGuard) SessionMiddleware() router.MiddlewareFunc {
 			// stateful concerns (CSRF token mint, flash bag, anything
 			// that wants a stable per-visitor id) have something to bind
 			// to before the handler runs. Without this the lazy
-			// SessionGuard.getSession path means a handler that never
+			// SessionScheme.getSession path means a handler that never
 			// touches the session (a plain Inertia page render, a static
 			// dashboard, the login form GET) leaves the response with no
 			// Set-Cookie, so the next POST arrives with no session id and
@@ -91,7 +91,7 @@ func (g *SessionGuard) SessionMiddleware() router.MiddlewareFunc {
 			// the cookie even when the handler never touched the bag.
 			ensureSession(g, c.Request)
 
-			// saved guards both the pre-commit hook AND the defer
+			// saved schemes both the pre-commit hook AND the defer
 			// fallback so the session writes Set-Cookie at most once
 			// per request. Without this gate a handler that calls
 			// WriteHeader explicitly + the defer-fallback would issue
@@ -142,7 +142,7 @@ func (g *SessionGuard) SessionMiddleware() router.MiddlewareFunc {
 }
 
 // ensureSession is the eager-bootstrap helper used by SessionMiddleware.
-// It triggers the guard's normal getSession path, which loads an
+// It triggers the scheme's normal getSession path, which loads an
 // existing session from cookie OR mints a fresh one via
 // auth.GetSessionFromRequest's store.Create("") fallback. The session
 // is cached in the request-scoped sessionHolder so downstream
@@ -151,10 +151,10 @@ func (g *SessionGuard) SessionMiddleware() router.MiddlewareFunc {
 // doSave path writes the Set-Cookie even when the handler never
 // touches the bag.
 //
-// Exists as a package-level var so test fixtures that stub guard
+// Exists as a package-level var so test fixtures that stub scheme
 // internals can override it, mirroring saveSessionFromMiddleware's
 // seam.
-var ensureSession = func(g *SessionGuard, r *http.Request) {
+var ensureSession = func(g *SessionScheme, r *http.Request) {
 	_ = g.getSession(r)
 }
 
@@ -162,7 +162,7 @@ var ensureSession = func(g *SessionGuard, r *http.Request) {
 // the save path without reaching into router/http internals. It exists
 // solely to keep SessionMiddleware ergonomic to unit-test alongside the
 // store implementation it drives.
-var saveSessionFromMiddleware = func(g *SessionGuard, w http.ResponseWriter, s auth.Session) error {
+var saveSessionFromMiddleware = func(g *SessionScheme, w http.ResponseWriter, s auth.Session) error {
 	if err := s.Save(w); err != nil {
 		g.logWarn("velocity/auth: save-at-end middleware: session save failed", "session_id", s.ID(), "error", err)
 		return err

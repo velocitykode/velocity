@@ -1,20 +1,20 @@
-// Package auth implements authentication (Guards), authorization
-// (Gate), and user lookup (UserProvider) for the Velocity framework.
+// Package auth implements authentication (Schemes), authorization
+// (Access), and user lookup (UserStore) for the Velocity framework.
 //
-// # Optional guard capabilities
+// # Optional scheme capabilities
 //
-// Guards MAY implement any of these to opt into framework features:
+// Schemes MAY implement any of these to opt into framework features:
 //
 //	SessionAware         Session(r) returns the request-scoped Session
-//	                     when the guard is session-backed. JWT/bearer
-//	                     guards omit this; Manager.Session returns nil
-//	                     for guards that do not implement it.
+//	                     when the scheme is session-backed. JWT/bearer
+//	                     schemes omit this; Manager.Session returns nil
+//	                     for schemes that do not implement it.
 //
 // # Optional Manager collaborators (set via Manager setters)
 //
 //	contract.CSRFTokenRotator
 //	                     Aligns CSRF token lifecycle with session
-//	                     regenerate/invalidate. Session guards call
+//	                     regenerate/invalidate. Session schemes call
 //	                     RotateToken on Login and RevokeToken on Logout
 //	                     when a rotator is wired.
 //

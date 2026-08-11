@@ -9,22 +9,22 @@ import (
 )
 
 // ActingAs authenticates subsequent requests from the client as user under the
-// given session guard. It performs a real login against the guard's session
+// given session scheme. It performs a real login against the scheme's session
 // store (the same code path production login takes), captures the resulting
 // session Set-Cookie, and replays that cookie on every later request.
 //
 // Only the session cookie is seeded. Mutating verbs (POST/PUT/PATCH/DELETE)
 // routed through CSRF middleware still require a valid CSRF token or CSRF
 // disabled - ActingAs does not exempt requests from CSRF protection.
-func (c *TestClient) ActingAs(guard *guards.SessionGuard, user auth.Authenticatable) *TestClient {
+func (c *TestClient) ActingAs(scheme *guards.SessionScheme, user auth.Authenticatable) *TestClient {
 	c.t.Helper()
-	// A session cache must be attached to the request or the guard's
+	// A session cache must be attached to the request or the scheme's
 	// per-request session caching no-ops and Login cannot persist.
 	w := httptest.NewRecorder()
 	req := guards.WithSessionContext(httptest.NewRequest(http.MethodGet, "/", nil))
 
-	if err := guard.Login(w, req, user); err != nil {
-		c.t.Errorf("ActingAs: guard.Login failed: %v", err)
+	if err := scheme.Login(w, req, user); err != nil {
+		c.t.Errorf("ActingAs: scheme.Login failed: %v", err)
 		return c
 	}
 
@@ -33,18 +33,18 @@ func (c *TestClient) ActingAs(guard *guards.SessionGuard, user auth.Authenticata
 }
 
 // ActingAsID authenticates subsequent requests as the user with the given
-// identifier, resolving the user through the guard's provider. It mirrors
+// identifier, resolving the user through the scheme's user store. It mirrors
 // ActingAs but logs in by ID.
 //
 // As with ActingAs, only the session cookie is seeded; CSRF-protected mutating
 // verbs still need a valid token or CSRF disabled.
-func (c *TestClient) ActingAsID(guard *guards.SessionGuard, id interface{}) *TestClient {
+func (c *TestClient) ActingAsID(scheme *guards.SessionScheme, id interface{}) *TestClient {
 	c.t.Helper()
 	w := httptest.NewRecorder()
 	req := guards.WithSessionContext(httptest.NewRequest(http.MethodGet, "/", nil))
 
-	if err := guard.LoginByID(w, req, id); err != nil {
-		c.t.Errorf("ActingAsID: guard.LoginByID failed: %v", err)
+	if err := scheme.LoginByID(w, req, id); err != nil {
+		c.t.Errorf("ActingAsID: scheme.LoginByID failed: %v", err)
 		return c
 	}
 
@@ -70,7 +70,7 @@ func (c *TestClient) setCookie(cookie *http.Cookie) {
 // client's cookie jar. Login regenerates the session id and writes the real,
 // encrypted session cookie via session.Save - a fabricated cookie would not
 // decrypt in the store, so the genuine Set-Cookie must be captured here. The
-// cookie name comes from the guard config, never hardcoded.
+// cookie name comes from the scheme config, never hardcoded.
 //
 // Each captured cookie replaces any existing cookie of the same name rather
 // than being appended. Otherwise a stale session cookie (or a second
@@ -85,30 +85,30 @@ func (c *TestClient) captureSessionCookies(w *httptest.ResponseRecorder) {
 }
 
 // AssertAuthenticated asserts that the client's current cookies authenticate a
-// request under the given guard. It builds a request carrying the client's
-// cookies, wraps it with a session cache, and consults the guard's Check.
-func (c *TestClient) AssertAuthenticated(guard *guards.SessionGuard) *TestClient {
+// request under the given scheme. It builds a request carrying the client's
+// cookies, wraps it with a session cache, and consults the scheme's Check.
+func (c *TestClient) AssertAuthenticated(scheme *guards.SessionScheme) *TestClient {
 	c.t.Helper()
-	if !guard.Check(c.authProbeRequest()) {
+	if !scheme.Check(c.authProbeRequest()) {
 		c.t.Errorf("AssertAuthenticated: expected an authenticated user, but the request is a guest")
 	}
 	return c
 }
 
 // AssertGuest asserts that the client's current cookies do NOT authenticate a
-// request under the given guard (i.e. the request is unauthenticated).
-func (c *TestClient) AssertGuest(guard *guards.SessionGuard) *TestClient {
+// request under the given scheme (i.e. the request is unauthenticated).
+func (c *TestClient) AssertGuest(scheme *guards.SessionScheme) *TestClient {
 	c.t.Helper()
-	if user := guard.User(c.authProbeRequest()); user != nil {
+	if user := scheme.User(c.authProbeRequest()); user != nil {
 		c.t.Errorf("AssertGuest: expected a guest, but request is authenticated as %v", user.GetAuthIdentifier())
 	}
 	return c
 }
 
 // authProbeRequest builds a GET request carrying the client's current cookies
-// and a session cache, suitable for passing to guard.Check / guard.User. It
+// and a session cache, suitable for passing to scheme.Check / scheme.User. It
 // applies cookies the same way doRequest does, then attaches the session
-// context the guard requires.
+// context the scheme requires.
 func (c *TestClient) authProbeRequest() *http.Request {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	for _, cookie := range c.cookies {

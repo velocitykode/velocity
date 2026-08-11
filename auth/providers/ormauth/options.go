@@ -7,8 +7,8 @@ import (
 )
 
 // Default column names. They reproduce the column set the framework
-// previously hardcoded, so a provider constructed with no options at all
-// queries exactly what the old raw-SQL provider queried.
+// previously hardcoded, so a user store constructed with no options at all
+// queries exactly what the old raw-SQL user store queried.
 const (
 	// DefaultIdentifierColumn is the column matched against the login
 	// credential (NOT the primary key - see Options.IdentifierColumn).
@@ -21,7 +21,7 @@ const (
 	DefaultRememberTokenColumn = "remember_token"
 )
 
-// Options is the resolved configuration of a Provider. Construct it
+// Options is the resolved configuration of a Store. Construct it
 // through [Option] values passed to [New] or [Factory] rather than
 // building it directly.
 type Options struct {
@@ -53,7 +53,7 @@ type Options struct {
 	CredentialsKey string
 }
 
-// Option customises a Provider.
+// Option customises a Store.
 type Option func(*Options)
 
 // WithHasher sets the password hasher. A nil hasher is ignored so a

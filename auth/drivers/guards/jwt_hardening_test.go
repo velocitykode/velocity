@@ -28,8 +28,8 @@ func (c *countingReader) Read(p []byte) (int, error) {
 
 // B17: an oversized urlencoded POST body must not be read past the cap,
 // and must yield no token even when a token field sits beyond the cap.
-func TestJWTGuard_FormToken_OversizedBodyNotSlurped(t *testing.T) {
-	guard := mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+func TestJWTScheme_FormToken_OversizedBodyNotSlurped(t *testing.T) {
+	scheme := mustNewJWTScheme(&mockJWTUserStore{}, newTestJWTConfig())
 
 	// Padding pushes the token field past the 1 MiB cap.
 	padding := strings.Repeat("x", jwtMaxFormBodyBytes+1024)
@@ -39,7 +39,7 @@ func TestJWTGuard_FormToken_OversizedBodyNotSlurped(t *testing.T) {
 	r := httptest.NewRequest("POST", "/protected", counter)
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	if got := guard.getTokenFromRequest(r); got != "" {
+	if got := scheme.getTokenFromRequest(r); got != "" {
 		t.Fatalf("expected no token from oversized body, got %q", got)
 	}
 	if counter.n > jwtMaxFormBodyBytes+1 {
@@ -50,20 +50,20 @@ func TestJWTGuard_FormToken_OversizedBodyNotSlurped(t *testing.T) {
 // B17: within the cap, the token is extracted AND the downstream handler
 // can still read the full body afterwards (the old r.FormValue path
 // consumed the body).
-func TestJWTGuard_FormToken_BodyRemainsReadable(t *testing.T) {
-	guard := mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+func TestJWTScheme_FormToken_BodyRemainsReadable(t *testing.T) {
+	scheme := mustNewJWTScheme(&mockJWTUserStore{}, newTestJWTConfig())
 
 	const body = "token=tok123&foo=bar"
 	r := httptest.NewRequest("POST", "/protected", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	if got := guard.getTokenFromRequest(r); got != "tok123" {
+	if got := scheme.getTokenFromRequest(r); got != "tok123" {
 		t.Fatalf("token = %q, want %q", got, "tok123")
 	}
 
 	// A second extraction (e.g. Check then User on the same request)
 	// still works because the body is restored after every read.
-	if got := guard.getTokenFromRequest(r); got != "tok123" {
+	if got := scheme.getTokenFromRequest(r); got != "tok123" {
 		t.Errorf("second extraction = %q, want %q", got, "tok123")
 	}
 
@@ -79,15 +79,15 @@ func TestJWTGuard_FormToken_BodyRemainsReadable(t *testing.T) {
 
 // B17: non-urlencoded bodies (multipart and friends) are never parsed and
 // never consumed by token extraction.
-func TestJWTGuard_FormToken_NonFormContentTypeUntouched(t *testing.T) {
-	guard := mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+func TestJWTScheme_FormToken_NonFormContentTypeUntouched(t *testing.T) {
+	scheme := mustNewJWTScheme(&mockJWTUserStore{}, newTestJWTConfig())
 
 	const body = `{"token":"not-a-form"}`
 	counter := &countingReader{r: strings.NewReader(body)}
 	r := httptest.NewRequest("POST", "/protected", counter)
 	r.Header.Set("Content-Type", "application/json")
 
-	if got := guard.getTokenFromRequest(r); got != "" {
+	if got := scheme.getTokenFromRequest(r); got != "" {
 		t.Fatalf("expected no token from JSON body, got %q", got)
 	}
 	if counter.n != 0 {
@@ -95,36 +95,36 @@ func TestJWTGuard_FormToken_NonFormContentTypeUntouched(t *testing.T) {
 	}
 }
 
-// B18: LoginByID with a provider returning (nil, nil) must yield
+// B18: LoginByID with a user store returning (nil, nil) must yield
 // ErrUserNotFound, not a panic inside Login/GenerateToken.
-func TestJWTGuard_LoginByID_NilUserReturnsErrUserNotFound(t *testing.T) {
-	provider := &mockJWTUserProvider{
+func TestJWTScheme_LoginByID_NilUserReturnsErrUserNotFound(t *testing.T) {
+	userStore := &mockJWTUserStore{
 		findByIDFunc: func(id interface{}) (auth.Authenticatable, error) {
-			return nil, nil // not found, per UserProvider contract
+			return nil, nil // not found, per UserStore contract
 		},
 	}
-	guard := mustNewJWTGuard(provider, newTestJWTConfig())
+	scheme := mustNewJWTScheme(userStore, newTestJWTConfig())
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("POST", "/login", nil)
 
-	err := guard.LoginByID(w, r, "missing-user")
+	err := scheme.LoginByID(w, r, "missing-user")
 	if !errors.Is(err, auth.ErrUserNotFound) {
 		t.Fatalf("LoginByID error = %v, want ErrUserNotFound", err)
 	}
 }
 
-// B18: User() with a provider returning (nil, nil) must return nil and
+// B18: User() with a user store returning (nil, nil) must return nil and
 // must not cache the nil as an authenticated entry.
-func TestJWTGuard_User_NilUserNoPanic(t *testing.T) {
-	provider := &mockJWTUserProvider{
+func TestJWTScheme_User_NilUserNoPanic(t *testing.T) {
+	userStore := &mockJWTUserStore{
 		findByIDFunc: func(id interface{}) (auth.Authenticatable, error) {
 			return nil, nil
 		},
 	}
-	guard := mustNewJWTGuard(provider, newTestJWTConfig())
+	scheme := mustNewJWTScheme(userStore, newTestJWTConfig())
 
-	token, err := guard.GenerateToken(&mockJWTUser{id: "user123"})
+	token, err := scheme.GenerateToken(&mockJWTUser{id: "user123"})
 	if err != nil {
 		t.Fatalf("GenerateToken: %v", err)
 	}
@@ -132,31 +132,31 @@ func TestJWTGuard_User_NilUserNoPanic(t *testing.T) {
 	r := httptest.NewRequest("GET", "/me", nil)
 	r.Header.Set("Authorization", "Bearer "+token)
 
-	if user := guard.User(r); user != nil {
-		t.Fatalf("User = %v, want nil for not-found provider result", user)
+	if user := scheme.User(r); user != nil {
+		t.Fatalf("User = %v, want nil for not-found user store result", user)
 	}
-	if _, ok := guard.getCachedUser(token); ok {
+	if _, ok := scheme.getCachedUser(token); ok {
 		t.Error("nil user was cached as an authenticated entry")
 	}
 }
 
-// B18: JWTManager.RefreshToken (driven via the guard) with a provider
+// B18: JWTManager.RefreshToken (driven via the scheme) with a user store
 // returning (nil, nil) must yield ErrUserNotFound, not a panic in
 // GenerateToken.
-func TestJWTGuard_RefreshToken_NilUserReturnsErrUserNotFound(t *testing.T) {
-	provider := &mockJWTUserProvider{
+func TestJWTScheme_RefreshToken_NilUserReturnsErrUserNotFound(t *testing.T) {
+	userStore := &mockJWTUserStore{
 		findByIDFunc: func(id interface{}) (auth.Authenticatable, error) {
 			return nil, nil
 		},
 	}
-	guard := mustNewJWTGuard(provider, newTestJWTConfig())
+	scheme := mustNewJWTScheme(userStore, newTestJWTConfig())
 
-	refresh, err := guard.GenerateRefreshToken(&mockJWTUser{id: "user123"})
+	refresh, err := scheme.GenerateRefreshToken(&mockJWTUser{id: "user123"})
 	if err != nil {
 		t.Fatalf("GenerateRefreshToken: %v", err)
 	}
 
-	_, err = guard.RefreshToken(refresh)
+	_, err = scheme.RefreshToken(refresh)
 	if !errors.Is(err, auth.ErrUserNotFound) {
 		t.Fatalf("RefreshToken error = %v, want ErrUserNotFound", err)
 	}
@@ -164,41 +164,41 @@ func TestJWTGuard_RefreshToken_NilUserReturnsErrUserNotFound(t *testing.T) {
 
 // StopCleanup race: concurrent callers must not double-close the stop
 // channel. Run with -race.
-func TestJWTGuard_StopCleanup_Concurrent(t *testing.T) {
-	guard := mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
-	guard.Start()
+func TestJWTScheme_StopCleanup_Concurrent(t *testing.T) {
+	scheme := mustNewJWTScheme(&mockJWTUserStore{}, newTestJWTConfig())
+	scheme.Start()
 
 	var wg sync.WaitGroup
 	for i := 0; i < 16; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			guard.StopCleanup()
+			scheme.StopCleanup()
 		}()
 	}
 	wg.Wait()
 }
 
-// ctxCapturingProvider records the context FindByIDCtx receives so the
-// test can prove the guard threads the request context through instead
+// ctxCapturingStore records the context FindByIDCtx receives so the
+// test can prove the scheme threads the request context through instead
 // of the deprecated context.Background() shim.
-type ctxCapturingProvider struct {
-	mockJWTUserProvider
+type ctxCapturingStore struct {
+	mockJWTUserStore
 	gotCtx context.Context
 }
 
-func (p *ctxCapturingProvider) FindByIDCtx(ctx context.Context, id interface{}) (auth.Authenticatable, error) {
+func (p *ctxCapturingStore) FindByIDCtx(ctx context.Context, id interface{}) (auth.Authenticatable, error) {
 	p.gotCtx = ctx
 	return &mockJWTUser{id: id, password: "hashedpassword"}, nil
 }
 
 type ctxProbeKey struct{}
 
-func TestJWTGuard_User_PropagatesRequestContext(t *testing.T) {
-	provider := &ctxCapturingProvider{}
-	guard := mustNewJWTGuard(provider, newTestJWTConfig())
+func TestJWTScheme_User_PropagatesRequestContext(t *testing.T) {
+	userStore := &ctxCapturingStore{}
+	scheme := mustNewJWTScheme(userStore, newTestJWTConfig())
 
-	token, err := guard.GenerateToken(&mockJWTUser{id: "user123"})
+	token, err := scheme.GenerateToken(&mockJWTUser{id: "user123"})
 	if err != nil {
 		t.Fatalf("GenerateToken: %v", err)
 	}
@@ -207,13 +207,13 @@ func TestJWTGuard_User_PropagatesRequestContext(t *testing.T) {
 	r = r.WithContext(context.WithValue(r.Context(), ctxProbeKey{}, "probe"))
 	r.Header.Set("Authorization", "Bearer "+token)
 
-	if user := guard.User(r); user == nil {
+	if user := scheme.User(r); user == nil {
 		t.Fatal("User returned nil")
 	}
-	if provider.gotCtx == nil {
+	if userStore.gotCtx == nil {
 		t.Fatal("FindByIDCtx never called")
 	}
-	if got, _ := provider.gotCtx.Value(ctxProbeKey{}).(string); got != "probe" {
+	if got, _ := userStore.gotCtx.Value(ctxProbeKey{}).(string); got != "probe" {
 		t.Errorf("FindByIDCtx received context without request value; got %q", got)
 	}
 }

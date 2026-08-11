@@ -18,31 +18,31 @@ func (u *jwtRefreshTestUser) GetAuthPassword() string        { return "" }
 func (u *jwtRefreshTestUser) GetRememberToken() string       { return "" }
 func (u *jwtRefreshTestUser) SetRememberToken(string)        {}
 
-// jwtRefreshTestProvider returns the user for any id so the
+// jwtRefreshTestStore returns the user for any id so the
 // RefreshToken path can resolve through it.
-type jwtRefreshTestProvider struct {
+type jwtRefreshTestStore struct {
 	user          *jwtRefreshTestUser
 	findByIDCalls int
 }
 
-func (p *jwtRefreshTestProvider) FindByID(id interface{}) (Authenticatable, error) {
+func (p *jwtRefreshTestStore) FindByID(id interface{}) (Authenticatable, error) {
 	p.findByIDCalls++
 	return p.user, nil
 }
-func (p *jwtRefreshTestProvider) FindByIDCtx(context.Context, interface{}) (Authenticatable, error) {
+func (p *jwtRefreshTestStore) FindByIDCtx(context.Context, interface{}) (Authenticatable, error) {
 	return p.user, nil
 }
-func (p *jwtRefreshTestProvider) FindByCredentials(map[string]interface{}) (Authenticatable, error) {
+func (p *jwtRefreshTestStore) FindByCredentials(map[string]interface{}) (Authenticatable, error) {
 	return p.user, nil
 }
-func (p *jwtRefreshTestProvider) FindByCredentialsCtx(context.Context, map[string]interface{}) (Authenticatable, error) {
+func (p *jwtRefreshTestStore) FindByCredentialsCtx(context.Context, map[string]interface{}) (Authenticatable, error) {
 	return p.user, nil
 }
-func (p *jwtRefreshTestProvider) ValidateCredentials(Authenticatable, map[string]interface{}) bool {
+func (p *jwtRefreshTestStore) ValidateCredentials(Authenticatable, map[string]interface{}) bool {
 	return true
 }
-func (p *jwtRefreshTestProvider) UpdateRememberToken(Authenticatable, string) error { return nil }
-func (p *jwtRefreshTestProvider) UpdateRememberTokenCtx(context.Context, Authenticatable, string) error {
+func (p *jwtRefreshTestStore) UpdateRememberToken(Authenticatable, string) error { return nil }
+func (p *jwtRefreshTestStore) UpdateRememberTokenCtx(context.Context, Authenticatable, string) error {
 	return nil
 }
 
@@ -77,11 +77,11 @@ func newJWTManagerForRefresh(t *testing.T) *JWTManager {
 // TestJWT_RefreshToken_StaleAfterBump is the H-07 regression test. A
 // refresh token issued before BumpRefreshGeneration MUST be rejected with
 // ErrRefreshGenerationStale after the bump fires; this is what makes
-// JWTGuard.Logout effective against stolen refresh tokens.
+// JWTScheme.Logout effective against stolen refresh tokens.
 func TestJWT_RefreshToken_StaleAfterBump(t *testing.T) {
 	mgr := newJWTManagerForRefresh(t)
 	user := &jwtRefreshTestUser{id: "user-1"}
-	provider := &jwtRefreshTestProvider{user: user}
+	userStore := &jwtRefreshTestStore{user: user}
 
 	// Issue a refresh token before any bump (generation 0).
 	rt, err := mgr.GenerateRefreshToken(user)
@@ -90,7 +90,7 @@ func TestJWT_RefreshToken_StaleAfterBump(t *testing.T) {
 	}
 
 	// Sanity: with no bump, the token refreshes successfully.
-	if _, err := mgr.RefreshToken(rt, provider); err != nil {
+	if _, err := mgr.RefreshToken(rt, userStore); err != nil {
 		t.Fatalf("RefreshToken pre-bump returned %v; expected success", err)
 	}
 
@@ -100,7 +100,7 @@ func TestJWT_RefreshToken_StaleAfterBump(t *testing.T) {
 	}
 
 	// Same refresh token, post-bump: MUST be rejected as stale.
-	_, err = mgr.RefreshToken(rt, provider)
+	_, err = mgr.RefreshToken(rt, userStore)
 	if err == nil {
 		t.Fatal("RefreshToken post-bump returned nil; expected ErrRefreshGenerationStale")
 	}
@@ -112,7 +112,7 @@ func TestJWT_RefreshToken_StaleAfterBump(t *testing.T) {
 func TestJWT_RefreshToken_FailsClosedWhenGenerationStoreErrors(t *testing.T) {
 	mgr := newJWTManagerForRefresh(t)
 	user := &jwtRefreshTestUser{id: "user-store-error"}
-	provider := &jwtRefreshTestProvider{user: user}
+	userStore := &jwtRefreshTestStore{user: user}
 
 	rt, err := mgr.GenerateRefreshToken(user)
 	if err != nil {
@@ -122,7 +122,7 @@ func TestJWT_RefreshToken_FailsClosedWhenGenerationStoreErrors(t *testing.T) {
 	storeErr := errors.New("refresh generation store transport error")
 	mgr.SetRefreshGenerationStore(erroringRefreshGenerationStore{err: storeErr})
 
-	token, err := mgr.RefreshToken(rt, provider)
+	token, err := mgr.RefreshToken(rt, userStore)
 	if err == nil {
 		t.Fatal("RefreshToken returned nil error; expected store failure")
 	}
@@ -135,8 +135,8 @@ func TestJWT_RefreshToken_FailsClosedWhenGenerationStoreErrors(t *testing.T) {
 	if got, want := err.Error(), "velocity/auth: refresh generation store unavailable"; got != want {
 		t.Fatalf("RefreshToken error = %q; want %q", got, want)
 	}
-	if provider.findByIDCalls != 0 {
-		t.Fatalf("FindByID called %d times; want 0", provider.findByIDCalls)
+	if userStore.findByIDCalls != 0 {
+		t.Fatalf("FindByID called %d times; want 0", userStore.findByIDCalls)
 	}
 }
 
@@ -146,7 +146,7 @@ func TestJWT_RefreshToken_FailsClosedWhenGenerationStoreErrors(t *testing.T) {
 func TestJWT_RefreshToken_FreshAfterBumpStillWorks(t *testing.T) {
 	mgr := newJWTManagerForRefresh(t)
 	user := &jwtRefreshTestUser{id: "user-2"}
-	provider := &jwtRefreshTestProvider{user: user}
+	userStore := &jwtRefreshTestStore{user: user}
 
 	if _, err := mgr.BumpRefreshGeneration("user-2"); err != nil {
 		t.Fatalf("BumpRefreshGeneration: %v", err)
@@ -156,7 +156,7 @@ func TestJWT_RefreshToken_FreshAfterBumpStillWorks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateRefreshToken: %v", err)
 	}
-	if _, err := mgr.RefreshToken(rt, provider); err != nil {
+	if _, err := mgr.RefreshToken(rt, userStore); err != nil {
 		t.Fatalf("RefreshToken on freshly-minted token returned %v; expected success", err)
 	}
 }
@@ -167,7 +167,7 @@ func TestJWT_RefreshToken_DifferentUserNotAffected(t *testing.T) {
 	mgr := newJWTManagerForRefresh(t)
 	userA := &jwtRefreshTestUser{id: "user-a"}
 	userB := &jwtRefreshTestUser{id: "user-b"}
-	provider := &jwtRefreshTestProvider{user: userB}
+	userStore := &jwtRefreshTestStore{user: userB}
 
 	// userB's refresh token, issued before any bump.
 	rtB, err := mgr.GenerateRefreshToken(userB)
@@ -181,7 +181,7 @@ func TestJWT_RefreshToken_DifferentUserNotAffected(t *testing.T) {
 	}
 
 	// userB's token MUST still refresh.
-	if _, err := mgr.RefreshToken(rtB, provider); err != nil {
+	if _, err := mgr.RefreshToken(rtB, userStore); err != nil {
 		t.Fatalf("RefreshToken for unrelated user-b returned %v; expected success", err)
 	}
 

@@ -12,12 +12,12 @@ import (
 )
 
 // attemptCredentials runs the credential-check phase shared by
-// SessionGuard.Attempt and JWTGuard.Attempt: throttle-key derivation and
-// Allow checks, the Timebox-wrapped provider lookup + password verify with
+// SessionScheme.Attempt and JWTScheme.Attempt: throttle-key derivation and
+// Allow checks, the Timebox-wrapped user store lookup + password verify with
 // the dummy-hash timing pad (H-09), and RecordFailure on every failure
 // branch. The caller owns the success tail (session login + remember cookie
 // vs. token generation), the PasswordNeedsRehashEvent emission, and the
-// RecordSuccess calls (which must run only after the guard-specific login
+// RecordSuccess calls (which must run only after the scheme-specific login
 // succeeded), which is why keys are returned.
 //
 // One key per throttle dimension (pair / identifier / IP, see
@@ -39,12 +39,12 @@ import (
 // with a constant-time floor.
 //
 // Returns (user, keys, true, nil) when the credentials are valid. Returns
-// ok == false with the error the guard's Attempt must surface (nil,
+// ok == false with the error the scheme's Attempt must surface (nil,
 // auth.ErrLoginThrottled, or auth.ErrInvalidCredentials) otherwise.
 func attemptCredentials(
 	r *http.Request,
 	credentials map[string]interface{},
-	provider auth.UserProvider,
+	userStore auth.UserStore,
 	hasher auth.Hasher,
 	throttler contract.LoginThrottler,
 	attemptFloor time.Duration,
@@ -92,7 +92,7 @@ func attemptCredentials(
 	// timing difference even with the AttemptFloor in place.
 	dummyHash := dummyHashForHasher(hasher)
 	auth.Timebox(attemptFloor, func() {
-		user, findErr = provider.FindByCredentialsCtx(r.Context(), credentials)
+		user, findErr = userStore.FindByCredentialsCtx(r.Context(), credentials)
 		password, passwordTypedOK = credentials["password"].(string)
 
 		if findErr != nil || user == nil {
@@ -114,7 +114,7 @@ func attemptCredentials(
 			invalidCredErr = auth.ErrInvalidCredentials
 			return
 		}
-		credentialsOK = provider.ValidateCredentials(user, map[string]interface{}{"password": password})
+		credentialsOK = userStore.ValidateCredentials(user, map[string]interface{}{"password": password})
 	})
 
 	if findErr != nil || user == nil {
@@ -155,7 +155,7 @@ func maybeEmitRehashEvent(
 	dispatch func(ctx context.Context, event any) error,
 	hasher auth.Hasher,
 	user auth.Authenticatable,
-	guardName string,
+	schemeName string,
 	warn func(msg string, kvs ...any),
 ) {
 	if dispatch == nil || hasher == nil || user == nil {
@@ -165,8 +165,8 @@ func maybeEmitRehashEvent(
 		return
 	}
 	if err := dispatch(ctx, auth.PasswordNeedsRehashEvent{
-		UserID:    user.GetAuthIdentifier(),
-		GuardName: guardName,
+		UserID:     user.GetAuthIdentifier(),
+		SchemeName: schemeName,
 	}); err != nil && warn != nil {
 		warn("velocity/auth: password needs-rehash event dispatch failed", "user_id", user.GetAuthIdentifier(), "error", err)
 	}

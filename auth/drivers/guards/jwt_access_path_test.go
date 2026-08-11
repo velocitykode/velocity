@@ -6,15 +6,15 @@ import (
 	"testing"
 )
 
-func TestJWTGuard_RejectsRefreshTokenOnAccessPath(t *testing.T) {
-	guard := mustNewJWTGuard(&mockJWTUserProvider{}, newTestJWTConfig())
+func TestJWTScheme_RejectsRefreshTokenOnAccessPath(t *testing.T) {
+	scheme := mustNewJWTScheme(&mockJWTUserStore{}, newTestJWTConfig())
 	user := &mockJWTUser{id: "user123"}
 
-	accessToken, err := guard.GenerateToken(user)
+	accessToken, err := scheme.GenerateToken(user)
 	if err != nil {
 		t.Fatalf("GenerateToken: %v", err)
 	}
-	refreshToken, err := guard.GenerateRefreshToken(user)
+	refreshToken, err := scheme.GenerateRefreshToken(user)
 	if err != nil {
 		t.Fatalf("GenerateRefreshToken: %v", err)
 	}
@@ -28,13 +28,13 @@ func TestJWTGuard_RejectsRefreshTokenOnAccessPath(t *testing.T) {
 	t.Run("refresh token rejected", func(t *testing.T) {
 		r := requestWithBearer(refreshToken)
 
-		if guard.Check(r) {
+		if scheme.Check(r) {
 			t.Fatal("Check returned true for refresh token")
 		}
-		if got := guard.User(r); got != nil {
+		if got := scheme.User(r); got != nil {
 			t.Fatalf("User returned %#v for refresh token, want nil", got)
 		}
-		if got := guard.ID(r); got != nil {
+		if got := scheme.ID(r); got != nil {
 			t.Fatalf("ID returned %#v for refresh token, want nil", got)
 		}
 	})
@@ -42,13 +42,13 @@ func TestJWTGuard_RejectsRefreshTokenOnAccessPath(t *testing.T) {
 	t.Run("access token accepted", func(t *testing.T) {
 		r := requestWithBearer(accessToken)
 
-		if !guard.Check(r) {
+		if !scheme.Check(r) {
 			t.Fatal("Check returned false for access token")
 		}
-		if got := guard.User(r); got == nil {
+		if got := scheme.User(r); got == nil {
 			t.Fatal("User returned nil for access token")
 		}
-		if got := guard.ID(r); got == nil {
+		if got := scheme.ID(r); got == nil {
 			t.Fatal("ID returned nil for access token")
 		}
 	})

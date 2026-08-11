@@ -10,8 +10,8 @@ import (
 	"github.com/velocitykode/velocity/auth"
 )
 
-// failedAttempt drives the throttler exactly the way the guards do for a
-// failed login (see SessionGuard.Attempt): derive every dimension key,
+// failedAttempt drives the throttler exactly the way the schemes do for a
+// failed login (see SessionScheme.Attempt): derive every dimension key,
 // check Allow on each, and on an allowed attempt record the failure
 // against each. Returns false when any dimension denied the attempt.
 func failedAttempt(th *cacheLoginThrottler, remoteAddr, email string) bool {
@@ -172,13 +172,13 @@ func TestInstallLoginThrottler_PerDimensionEnvWiring(t *testing.T) {
 	t.Setenv("AUTH_LOGIN_DECAY", "60s")
 
 	manager := auth.NewManager()
-	guard := &fakeLoginThrottlerGuard{}
-	manager.RegisterGuard("web", guard)
+	scheme := &fakeLoginThrottlerScheme{}
+	manager.RegisterScheme("web", scheme)
 	installLoginThrottler(manager, newMemoryCacheManager(), nil)
 
-	th, ok := guard.throttler.(*cacheLoginThrottler)
+	th, ok := scheme.throttler.(*cacheLoginThrottler)
 	if !ok {
-		t.Fatalf("installed throttler is %T, want *cacheLoginThrottler", guard.throttler)
+		t.Fatalf("installed throttler is %T, want *cacheLoginThrottler", scheme.throttler)
 	}
 	for i := 0; i < 2; i++ {
 		if !failedAttempt(th, "203.0.113.7:40000", fmt.Sprintf("user%d@example.com", i)) {

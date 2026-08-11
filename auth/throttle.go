@@ -14,7 +14,7 @@ import (
 	"github.com/velocitykode/velocity/internal/clientip"
 )
 
-// ErrLoginThrottled is returned from guard Attempt() methods when the
+// ErrLoginThrottled is returned from scheme Attempt() methods when the
 // configured LoginThrottler rejects an attempt before credentials are checked.
 var ErrLoginThrottled = errors.New("velocity/auth: too many login attempts")
 
@@ -90,7 +90,7 @@ const (
 // trustedProxies is the list of proxy networks whose forwarded headers
 // may be honoured; pass nil to disable XFF/Forwarded resolution (secure
 // default). At boot the framework parses Config.TrustedProxies and
-// propagates the result to every guard via SetTrustedProxies.
+// propagates the result to every scheme via SetTrustedProxies.
 //
 // The hex output is prefixed with "login:" so cache-backend operators
 // can distinguish login-throttle entries from other rate-limit keys.
@@ -134,7 +134,7 @@ func pairThrottleKey(ident, ip string) string {
 //     password spraying from one source. Omitted when the client IP
 //     cannot be resolved.
 //
-// Guards check Allow for every returned key, record failures against
+// Schemes check Allow for every returned key, record failures against
 // every key, and clear every key on success. The pair and IP dimensions
 // deny before the credential check; the identifier dimension is
 // verify-first: it denies only attempts whose credentials are wrong, so
@@ -165,7 +165,7 @@ func ThrottleKeys(r *http.Request, credentials map[string]interface{}, trustedPr
 
 // normaliseIdentifier extracts the first non-empty value among the
 // common credential keys (email, username, name, login) and applies
-// the same case/whitespace/Unicode folding the UserProvider must use
+// the same case/whitespace/Unicode folding the UserStore must use
 // when looking up users. Without normalisation
 // "Victim@example.com" and "VICTIM@example.com" hash to distinct
 // throttle keys but resolve to the same account.

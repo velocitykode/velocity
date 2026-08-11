@@ -1,4 +1,4 @@
-// Package ormauth provides an ORM-backed [auth.UserProvider].
+// Package ormauth provides an ORM-backed [auth.UserStore].
 //
 // It exists as a separate leaf because the import direction is fixed:
 // auth must never import orm (they are independent subsystems today, and
@@ -17,20 +17,20 @@
 // An application installs its own model from a module:
 //
 //	func (p *AuthModule) Start(s *app.Services) error {
-//	    provider := ormauth.New[models.Admin](
+//	    user store := ormauth.New[models.Admin](
 //	        ormauth.WithIdentifierColumn("username"),
 //	    )
-//	    if err := provider.Validate(); err != nil {
+//	    if err := user store.Validate(); err != nil {
 //	        return err
 //	    }
-//	    s.Auth.SetProvider(provider)
+//	    s.Auth.SetUserStore(user store)
 //	    return nil
 //	}
 //
 // Swapping the model is editing the type parameter: a typo is a compile
 // error rather than a boot-time failure, and the IDE completes the
-// available options. auth.Manager.SetProvider re-points every registered
-// guard, so this works regardless of whether it runs before or after the
+// available options. auth.Manager.SetUserStore re-points every registered
+// scheme, so this works regardless of whether it runs before or after the
 // framework installs its default.
 //
 // # Default model
@@ -58,6 +58,6 @@
 // Because the remember token is persisted through the ORM's map-based
 // update path, the model must also declare a mass-assignment policy that
 // permits that column (Fillable, Guarded, or AllowAllColumns). Models
-// that declare no policy at all are rejected by [Provider.Validate]
+// that declare no policy at all are rejected by [Store.Validate]
 // rather than failing on the first remember-me login.
 package ormauth

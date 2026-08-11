@@ -26,10 +26,10 @@ func newTestSessionStoreConfig() auth.SessionConfig {
 	}
 }
 
-// newAppWithSessionGuard builds a minimal *App carrying a *auth.Manager with
-// a registered *guards.SessionGuard, suitable for exercising
+// newAppWithSessionScheme builds a minimal *App carrying a *auth.Manager with
+// a registered *guards.SessionScheme, suitable for exercising
 // validateSessionStoreForProduction in isolation.
-func newAppWithSessionGuard(t *testing.T, env string) *App {
+func newAppWithSessionScheme(t *testing.T, env string) *App {
 	t.Helper()
 	enc, err := crypto.NewEncryptor(crypto.Config{
 		Key:    strings.Repeat("k", 32),
@@ -39,13 +39,13 @@ func newAppWithSessionGuard(t *testing.T, env string) *App {
 		t.Fatalf("NewEncryptor: %v", err)
 	}
 	mgr := auth.NewManager()
-	provider := &stubProvider{}
-	guard, err := guards.NewSessionGuard(provider, newTestSessionStoreConfig(), enc)
+	userStore := &stubStore{}
+	scheme, err := guards.NewSessionScheme(userStore, newTestSessionStoreConfig(), enc)
 	if err != nil {
-		t.Fatalf("NewSessionGuard: %v", err)
+		t.Fatalf("NewSessionScheme: %v", err)
 	}
-	mgr.RegisterGuard("web", guard)
-	mgr.SetDefaultGuard("web")
+	mgr.RegisterScheme("web", scheme)
+	mgr.SetDefaultScheme("web")
 
 	cfg := ConfigFromEnv()
 	cfg.Env = env
@@ -59,25 +59,25 @@ func newAppWithSessionGuard(t *testing.T, env string) *App {
 	}
 }
 
-// stubProvider is the minimum auth.UserProvider needed to construct a
-// SessionGuard. None of its methods are invoked by the production-gate test.
-type stubProvider struct{}
+// stubStore is the minimum auth.UserStore needed to construct a
+// SessionScheme. None of its methods are invoked by the production-gate test.
+type stubStore struct{}
 
-func (stubProvider) FindByID(interface{}) (auth.Authenticatable, error) { return nil, nil }
-func (stubProvider) FindByIDCtx(context.Context, interface{}) (auth.Authenticatable, error) {
+func (stubStore) FindByID(interface{}) (auth.Authenticatable, error) { return nil, nil }
+func (stubStore) FindByIDCtx(context.Context, interface{}) (auth.Authenticatable, error) {
 	return nil, nil
 }
-func (stubProvider) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
+func (stubStore) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
 	return nil, nil
 }
-func (stubProvider) FindByCredentialsCtx(context.Context, map[string]interface{}) (auth.Authenticatable, error) {
+func (stubStore) FindByCredentialsCtx(context.Context, map[string]interface{}) (auth.Authenticatable, error) {
 	return nil, nil
 }
-func (stubProvider) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
+func (stubStore) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
 	return false
 }
-func (stubProvider) UpdateRememberToken(auth.Authenticatable, string) error { return nil }
-func (stubProvider) UpdateRememberTokenCtx(context.Context, auth.Authenticatable, string) error {
+func (stubStore) UpdateRememberToken(auth.Authenticatable, string) error { return nil }
+func (stubStore) UpdateRememberTokenCtx(context.Context, auth.Authenticatable, string) error {
 	return nil
 }
 
@@ -85,7 +85,7 @@ func (stubProvider) UpdateRememberTokenCtx(context.Context, auth.Authenticatable
 // H-04 regression test: APP_ENV=production with the default CookieStore and
 // no ServerSessionStore MUST fail Bootstrap unless the operator opted in.
 func TestValidateSessionStoreForProduction_RefusesCookieStoreWithoutOptIn(t *testing.T) {
-	a := newAppWithSessionGuard(t, "production")
+	a := newAppWithSessionScheme(t, "production")
 
 	err := validateSessionStoreForProduction(a)
 	if err == nil {
@@ -100,7 +100,7 @@ func TestValidateSessionStoreForProduction_RefusesCookieStoreWithoutOptIn(t *tes
 // hatch: operators who accept the single-host risk can set
 // SessionConfig.AllowCookieStoreInProduction and Bootstrap proceeds.
 func TestValidateSessionStoreForProduction_AllowsExplicitOptIn(t *testing.T) {
-	a := newAppWithSessionGuard(t, "production")
+	a := newAppWithSessionScheme(t, "production")
 	a.config.Session.AllowCookieStoreInProduction = true
 
 	if err := validateSessionStoreForProduction(a); err != nil {
@@ -112,7 +112,7 @@ func TestValidateSessionStoreForProduction_AllowsExplicitOptIn(t *testing.T) {
 // happy path: when the operator wires a ServerSessionStore (via a provider's
 // Boot hook, typically), Bootstrap proceeds.
 func TestValidateSessionStoreForProduction_AllowsServerStoreInstalled(t *testing.T) {
-	a := newAppWithSessionGuard(t, "production")
+	a := newAppWithSessionScheme(t, "production")
 	mgr := a.Auth.(*auth.Manager)
 	mgr.SetServerSessionStore(stubServerStore{})
 
@@ -126,7 +126,7 @@ func TestValidateSessionStoreForProduction_AllowsServerStoreInstalled(t *testing
 func TestValidateSessionStoreForProduction_SkipsNonProductionEnvs(t *testing.T) {
 	for _, env := range []string{"development", "testing"} {
 		t.Run(env, func(t *testing.T) {
-			a := newAppWithSessionGuard(t, env)
+			a := newAppWithSessionScheme(t, env)
 			if err := validateSessionStoreForProduction(a); err != nil {
 				t.Fatalf("env=%q: validateSessionStoreForProduction returned %v; expected nil", env, err)
 			}

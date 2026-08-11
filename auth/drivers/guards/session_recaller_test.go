@@ -10,13 +10,13 @@ import (
 	"github.com/velocitykode/velocity/auth"
 )
 
-// rememberRevivalProvider exposes UpdateRememberToken so the test can mint
+// rememberRevivalStore exposes UpdateRememberToken so the test can mint
 // a valid remember cookie via Login + Save, then drive the revival path.
-type rememberRevivalProvider struct {
+type rememberRevivalStore struct {
 	user *revokeTestUser
 }
 
-func (p *rememberRevivalProvider) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *rememberRevivalStore) FindByID(id interface{}) (auth.Authenticatable, error) {
 	if p.user == nil {
 		return nil, nil
 	}
@@ -28,15 +28,15 @@ func (p *rememberRevivalProvider) FindByID(id interface{}) (auth.Authenticatable
 	return nil, nil
 }
 
-func (p *rememberRevivalProvider) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
+func (p *rememberRevivalStore) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
 	return nil, nil
 }
 
-func (p *rememberRevivalProvider) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
+func (p *rememberRevivalStore) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
 	return true
 }
 
-func (p *rememberRevivalProvider) UpdateRememberToken(user auth.Authenticatable, token string) error {
+func (p *rememberRevivalStore) UpdateRememberToken(user auth.Authenticatable, token string) error {
 	if u, ok := user.(*revokeTestUser); ok {
 		u.rememberToken = token
 	}
@@ -46,9 +46,9 @@ func (p *rememberRevivalProvider) UpdateRememberToken(user auth.Authenticatable,
 	return nil
 }
 
-// CompareAndSwapRememberToken implements the capability the guard now
+// CompareAndSwapRememberToken implements the capability the scheme now
 // requires for recall rotation; recalls fail closed without it.
-func (p *rememberRevivalProvider) CompareAndSwapRememberToken(_ context.Context, user auth.Authenticatable, oldToken, newToken string) (bool, error) {
+func (p *rememberRevivalStore) CompareAndSwapRememberToken(_ context.Context, user auth.Authenticatable, oldToken, newToken string) (bool, error) {
 	if p.user == nil || p.user.rememberToken != oldToken {
 		return false, nil
 	}
@@ -58,12 +58,12 @@ func (p *rememberRevivalProvider) CompareAndSwapRememberToken(_ context.Context,
 // mintRememberCookie returns the remember cookie set by a fresh Login that
 // passed remember=true. The session cookie is discarded so the revival path
 // runs with ONLY the remember cookie present.
-func mintRememberCookie(t *testing.T, guard *SessionGuard) *http.Cookie {
+func mintRememberCookie(t *testing.T, scheme *SessionScheme) *http.Cookie {
 	t.Helper()
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/login", nil)
 	r = WithSessionContext(r)
-	if err := guard.Login(w, r, &revokeTestUser{id: "u1"}, true); err != nil {
+	if err := scheme.Login(w, r, &revokeTestUser{id: "u1"}, true); err != nil {
 		t.Fatalf("Login: %v", err)
 	}
 	for _, c := range w.Result().Cookies() {
@@ -92,56 +92,56 @@ func (failingServerStore) ListForUser(_ context.Context, _ string) ([]*auth.Sess
 	return nil, nil
 }
 
-// TestSessionGuard_RememberRevival_FailsWhenStoreUnreachable is the H-08
+// TestSessionScheme_RememberRevival_FailsWhenStoreUnreachable is the H-08
 // regression test. With a server-side store wired AND the revival path
 // matching (valid remember cookie, no session user_id), if the store
 // write/read fails the user MUST NOT be returned. Pre-fix the recaller
 // silently anchored user_id into the in-memory session and returned the
 // user, granting one fully authenticated request despite the store being
 // the authoritative source of truth.
-func TestSessionGuard_RememberRevival_FailsWhenStoreUnreachable(t *testing.T) {
-	guard, _ := newRevokeGuard(t, nil)
-	provider := &rememberRevivalProvider{user: &revokeTestUser{id: "u1"}}
-	guard.SetProvider(provider)
+func TestSessionScheme_RememberRevival_FailsWhenStoreUnreachable(t *testing.T) {
+	scheme, _ := newRevokeScheme(t, nil)
+	userStore := &rememberRevivalStore{user: &revokeTestUser{id: "u1"}}
+	scheme.SetUserStore(userStore)
 
-	rememberCookie := mintRememberCookie(t, guard)
+	rememberCookie := mintRememberCookie(t, scheme)
 
 	// Install the failing store AFTER Login so the remember cookie
 	// itself was minted successfully. The revival now has to write
 	// against the broken store; both Put and Get will error.
-	guard.SetServerSessionStore(failingServerStore{})
+	scheme.SetServerSessionStore(failingServerStore{})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.AddCookie(rememberCookie)
 	req = WithSessionContext(req)
 
-	if u := guard.User(req); u != nil {
+	if u := scheme.User(req); u != nil {
 		t.Fatalf("User(req) returned %v; expected nil when revival cannot persist to store", u)
 	}
-	if guard.Check(req) {
+	if scheme.Check(req) {
 		t.Fatal("Check(req) returned true; expected false when revival cannot persist to store")
 	}
 }
 
-// TestSessionGuard_RememberRevival_RotatesSessionID pins the
+// TestSessionScheme_RememberRevival_RotatesSessionID pins the
 // session-fixation defense: a request that arrives with a planted
 // session id PLUS a valid remember cookie must end up on a fresh
 // rotated id, not the planted one.
-func TestSessionGuard_RememberRevival_RotatesSessionID(t *testing.T) {
+func TestSessionScheme_RememberRevival_RotatesSessionID(t *testing.T) {
 	// No server-side store here; the rotation check applies regardless.
-	guard, _ := newRevokeGuard(t, nil)
-	provider := &rememberRevivalProvider{user: &revokeTestUser{id: "u1"}}
-	guard.SetProvider(provider)
+	scheme, _ := newRevokeScheme(t, nil)
+	userStore := &rememberRevivalStore{user: &revokeTestUser{id: "u1"}}
+	scheme.SetUserStore(userStore)
 
-	rememberCookie := mintRememberCookie(t, guard)
+	rememberCookie := mintRememberCookie(t, scheme)
 
 	// Capture the pre-revival session id by loading the session via
-	// the guard's normal path (no user_id yet). We then rerun User()
+	// the scheme's normal path (no user_id yet). We then rerun User()
 	// which should observe the remember cookie and rotate the id.
 	preReq := httptest.NewRequest(http.MethodGet, "/", nil)
 	preReq.AddCookie(rememberCookie)
 	preReq = WithSessionContext(preReq)
-	preSession := guard.getSession(preReq)
+	preSession := scheme.getSession(preReq)
 	preID := ""
 	if preSession != nil {
 		preID = preSession.ID()
@@ -149,7 +149,7 @@ func TestSessionGuard_RememberRevival_RotatesSessionID(t *testing.T) {
 
 	req := rememberRecallRequest(t, rememberCookie, httptest.NewRecorder())
 
-	if u := guard.User(req); u == nil {
+	if u := scheme.User(req); u == nil {
 		t.Fatal("User(req) returned nil; expected revival to succeed without server store")
 	}
 
@@ -173,13 +173,13 @@ func TestSessionGuard_RememberRevival_RotatesSessionID(t *testing.T) {
 	}
 }
 
-// Ctx-suffixed shims for auth.UserProvider, added in Sweep 1b.
-func (p *rememberRevivalProvider) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+// Ctx-suffixed shims for auth.UserStore, added in Sweep 1b.
+func (p *rememberRevivalStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
 	return p.FindByID(id)
 }
-func (p *rememberRevivalProvider) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *rememberRevivalStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
 	return p.FindByCredentials(credentials)
 }
-func (p *rememberRevivalProvider) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+func (p *rememberRevivalStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
 	return p.UpdateRememberToken(user, token)
 }

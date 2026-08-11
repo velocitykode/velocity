@@ -94,18 +94,18 @@ func TestInstallLoginThrottler_InstallsCacheBackedDefault(t *testing.T) {
 	t.Setenv("AUTH_LOGIN_DECAY", "60s")
 
 	manager := auth.NewManager()
-	guard := &fakeLoginThrottlerGuard{}
-	manager.RegisterGuard("web", guard)
+	scheme := &fakeLoginThrottlerScheme{}
+	manager.RegisterScheme("web", scheme)
 
 	installLoginThrottler(manager, newMemoryCacheManager(), nil)
-	if guard.throttler == nil {
+	if scheme.throttler == nil {
 		t.Fatal("installLoginThrottler did not propagate a throttler")
 	}
 
 	r := httptest.NewRequest(http.MethodPost, "/login", nil)
-	guard.throttler.RecordFailure(r, "installed-default")
-	guard.throttler.RecordFailure(r, "installed-default")
-	if guard.throttler.Allow(r, "installed-default") {
+	scheme.throttler.RecordFailure(r, "installed-default")
+	scheme.throttler.RecordFailure(r, "installed-default")
+	if scheme.throttler.Allow(r, "installed-default") {
 		t.Fatal("installed default did not throttle after configured max failures")
 	}
 }
@@ -133,29 +133,29 @@ func newMemoryCacheManager() *cache.Manager {
 	})
 }
 
-type fakeLoginThrottlerGuard struct {
+type fakeLoginThrottlerScheme struct {
 	throttler contract.LoginThrottler
 }
 
-func (g *fakeLoginThrottlerGuard) SetLoginThrottler(t contract.LoginThrottler) {
+func (g *fakeLoginThrottlerScheme) SetLoginThrottler(t contract.LoginThrottler) {
 	g.throttler = t
 }
 
-func (g *fakeLoginThrottlerGuard) Check(*http.Request) bool { return false }
-func (g *fakeLoginThrottlerGuard) User(*http.Request) auth.Authenticatable {
+func (g *fakeLoginThrottlerScheme) Check(*http.Request) bool { return false }
+func (g *fakeLoginThrottlerScheme) User(*http.Request) auth.Authenticatable {
 	return nil
 }
-func (g *fakeLoginThrottlerGuard) ID(*http.Request) interface{} { return nil }
-func (g *fakeLoginThrottlerGuard) Login(http.ResponseWriter, *http.Request, auth.Authenticatable, ...bool) error {
+func (g *fakeLoginThrottlerScheme) ID(*http.Request) interface{} { return nil }
+func (g *fakeLoginThrottlerScheme) Login(http.ResponseWriter, *http.Request, auth.Authenticatable, ...bool) error {
 	return nil
 }
-func (g *fakeLoginThrottlerGuard) LoginByID(http.ResponseWriter, *http.Request, interface{}, ...bool) error {
+func (g *fakeLoginThrottlerScheme) LoginByID(http.ResponseWriter, *http.Request, interface{}, ...bool) error {
 	return nil
 }
-func (g *fakeLoginThrottlerGuard) Attempt(http.ResponseWriter, *http.Request, map[string]interface{}, ...bool) (bool, error) {
+func (g *fakeLoginThrottlerScheme) Attempt(http.ResponseWriter, *http.Request, map[string]interface{}, ...bool) (bool, error) {
 	return false, nil
 }
-func (g *fakeLoginThrottlerGuard) Logout(http.ResponseWriter, *http.Request) error {
+func (g *fakeLoginThrottlerScheme) Logout(http.ResponseWriter, *http.Request) error {
 	return nil
 }
-func (g *fakeLoginThrottlerGuard) SetProvider(auth.UserProvider) {}
+func (g *fakeLoginThrottlerScheme) SetUserStore(auth.UserStore) {}

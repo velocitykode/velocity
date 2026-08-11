@@ -12,7 +12,7 @@ import (
 	"github.com/velocitykode/velocity/crypto"
 )
 
-// rotationEncryptor mirrors the encryptor newRevokeGuard builds internally
+// rotationEncryptor mirrors the encryptor newRevokeScheme builds internally
 // so tests can decrypt the remember cookies it mints.
 func rotationEncryptor(t *testing.T) crypto.Encryptor {
 	t.Helper()
@@ -73,18 +73,18 @@ func findRememberCookie(w *httptest.ResponseRecorder) *http.Cookie {
 // Set-Cookie with a different raw token, and the persisted hash is replaced
 // so the presented token cannot be replayed.
 func TestRememberRecall_RotatesToken(t *testing.T) {
-	guard, _ := newRevokeGuard(t, nil)
-	provider := &rememberRevivalProvider{user: &revokeTestUser{id: "u1"}}
-	guard.SetProvider(provider)
+	scheme, _ := newRevokeScheme(t, nil)
+	userStore := &rememberRevivalStore{user: &revokeTestUser{id: "u1"}}
+	scheme.SetUserStore(userStore)
 	enc := rotationEncryptor(t)
 
-	oldCookie := mintRememberCookie(t, guard)
+	oldCookie := mintRememberCookie(t, scheme)
 	oldToken := rawRememberToken(t, enc, oldCookie)
-	oldHash := provider.user.rememberToken
+	oldHash := userStore.user.rememberToken
 
 	w := httptest.NewRecorder()
 	r := rememberRecallRequest(t, oldCookie, w)
-	if u := guard.User(r); u == nil {
+	if u := scheme.User(r); u == nil {
 		t.Fatal("User(req) returned nil; expected recall to succeed")
 	}
 
@@ -96,10 +96,10 @@ func TestRememberRecall_RotatesToken(t *testing.T) {
 	if newToken == oldToken {
 		t.Fatal("rotated remember token equals the presented token; expected a fresh token")
 	}
-	if provider.user.rememberToken == oldHash {
+	if userStore.user.rememberToken == oldHash {
 		t.Fatal("persisted remember hash unchanged after recall; expected rotation to overwrite it")
 	}
-	if provider.user.rememberToken != hashRememberToken(newToken) {
+	if userStore.user.rememberToken != hashRememberToken(newToken) {
 		t.Error("persisted hash does not match the freshly minted token")
 	}
 }
@@ -108,14 +108,14 @@ func TestRememberRecall_RotatesToken(t *testing.T) {
 // once a recall rotated the token, the previously presented cookie must no
 // longer authenticate, while the replacement cookie must.
 func TestRememberRecall_OldTokenRejectedAfterRotation(t *testing.T) {
-	guard, _ := newRevokeGuard(t, nil)
-	provider := &rememberRevivalProvider{user: &revokeTestUser{id: "u1"}}
-	guard.SetProvider(provider)
+	scheme, _ := newRevokeScheme(t, nil)
+	userStore := &rememberRevivalStore{user: &revokeTestUser{id: "u1"}}
+	scheme.SetUserStore(userStore)
 
-	oldCookie := mintRememberCookie(t, guard)
+	oldCookie := mintRememberCookie(t, scheme)
 
 	w := httptest.NewRecorder()
-	if u := guard.User(rememberRecallRequest(t, oldCookie, w)); u == nil {
+	if u := scheme.User(rememberRecallRequest(t, oldCookie, w)); u == nil {
 		t.Fatal("first recall failed; cannot exercise replay")
 	}
 	newCookie := findRememberCookie(w)
@@ -125,16 +125,16 @@ func TestRememberRecall_OldTokenRejectedAfterRotation(t *testing.T) {
 
 	// Replay the old cookie on a fresh request: must be unauthenticated.
 	replayW := httptest.NewRecorder()
-	if u := guard.User(rememberRecallRequest(t, oldCookie, replayW)); u != nil {
+	if u := scheme.User(rememberRecallRequest(t, oldCookie, replayW)); u != nil {
 		t.Fatalf("replayed old remember cookie authenticated as %v; expected nil", u.GetAuthIdentifier())
 	}
-	if guard.Check(rememberRecallRequest(t, oldCookie, httptest.NewRecorder())) {
+	if scheme.Check(rememberRecallRequest(t, oldCookie, httptest.NewRecorder())) {
 		t.Fatal("Check accepted the replayed old remember cookie")
 	}
 
 	// The replacement cookie keeps working (and rotates again).
 	nextW := httptest.NewRecorder()
-	if u := guard.User(rememberRecallRequest(t, newCookie, nextW)); u == nil {
+	if u := scheme.User(rememberRecallRequest(t, newCookie, nextW)); u == nil {
 		t.Fatal("rotated remember cookie rejected; expected it to authenticate")
 	}
 	if findRememberCookie(nextW) == nil {
@@ -146,14 +146,14 @@ func TestRememberRecall_OldTokenRejectedAfterRotation(t *testing.T) {
 // rotation reuses setRememberCookie, so the replacement cookie must carry
 // the same Path/MaxAge/HttpOnly/Secure/SameSite as the login-minted one.
 func TestRememberRecall_RotatedCookieKeepsFlags(t *testing.T) {
-	guard, _ := newRevokeGuard(t, nil)
-	provider := &rememberRevivalProvider{user: &revokeTestUser{id: "u1"}}
-	guard.SetProvider(provider)
+	scheme, _ := newRevokeScheme(t, nil)
+	userStore := &rememberRevivalStore{user: &revokeTestUser{id: "u1"}}
+	scheme.SetUserStore(userStore)
 
-	oldCookie := mintRememberCookie(t, guard)
+	oldCookie := mintRememberCookie(t, scheme)
 
 	w := httptest.NewRecorder()
-	if u := guard.User(rememberRecallRequest(t, oldCookie, w)); u == nil {
+	if u := scheme.User(rememberRecallRequest(t, oldCookie, w)); u == nil {
 		t.Fatal("recall failed")
 	}
 	newCookie := findRememberCookie(w)
@@ -179,29 +179,29 @@ func TestRememberRecall_RotatedCookieKeepsFlags(t *testing.T) {
 }
 
 // TestRememberRecall_NoWriterFailsClosed pins the fail-closed contract for
-// guard calls outside SessionMiddleware: with no response writer on the
+// scheme calls outside SessionMiddleware: with no response writer on the
 // holder there is nowhere to deliver a replacement cookie, rotation cannot
 // complete, and the recall must be rejected, without burning the stored
 // token and without leaving user_id anchored on the in-memory session.
 // The same cookie then authenticates through a properly wired request.
 func TestRememberRecall_NoWriterFailsClosed(t *testing.T) {
-	guard, _ := newRevokeGuard(t, nil)
-	provider := &rememberRevivalProvider{user: &revokeTestUser{id: "u1"}}
-	guard.SetProvider(provider)
+	scheme, _ := newRevokeScheme(t, nil)
+	userStore := &rememberRevivalStore{user: &revokeTestUser{id: "u1"}}
+	scheme.SetUserStore(userStore)
 
-	oldCookie := mintRememberCookie(t, guard)
-	oldHash := provider.user.rememberToken
+	oldCookie := mintRememberCookie(t, scheme)
+	oldHash := userStore.user.rememberToken
 
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.AddCookie(oldCookie)
 	r = WithSessionContext(r)
-	if u := guard.User(r); u != nil {
+	if u := scheme.User(r); u != nil {
 		t.Fatalf("recall without response writer authenticated as %v; expected fail-closed nil", u.GetAuthIdentifier())
 	}
-	if guard.Check(r) {
+	if scheme.Check(r) {
 		t.Fatal("Check accepted a recall that could not rotate the remember token")
 	}
-	if provider.user.rememberToken != oldHash {
+	if userStore.user.rememberToken != oldHash {
 		t.Fatal("stored hash rotated despite the rejected recall")
 	}
 	if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok && holder != nil {
@@ -214,70 +214,70 @@ func TestRememberRecall_NoWriterFailsClosed(t *testing.T) {
 
 	// The same cookie still authenticates on a writer-equipped request.
 	w := httptest.NewRecorder()
-	if u := guard.User(rememberRecallRequest(t, oldCookie, w)); u == nil {
+	if u := scheme.User(rememberRecallRequest(t, oldCookie, w)); u == nil {
 		t.Fatal("cookie rejected after writer-less recall; token must not have been burned")
 	}
 }
 
-// casRememberProvider layers call counting on top of
-// rememberRevivalProvider so tests can drive the rotate-on-use race
+// casRememberStore layers call counting on top of
+// rememberRevivalStore so tests can drive the rotate-on-use race
 // deterministically. plainCalls counts unconditional updates (the login
 // path only); casCalls counts swap attempts.
-type casRememberProvider struct {
-	*rememberRevivalProvider
+type casRememberStore struct {
+	*rememberRevivalStore
 	casCalls   int
 	plainCalls int
 	forceStale bool
 }
 
-var _ auth.RememberTokenCompareAndSwapper = (*casRememberProvider)(nil)
+var _ auth.RememberTokenCompareAndSwapper = (*casRememberStore)(nil)
 
-func (p *casRememberProvider) UpdateRememberToken(u auth.Authenticatable, tok string) error {
+func (p *casRememberStore) UpdateRememberToken(u auth.Authenticatable, tok string) error {
 	p.plainCalls++
-	return p.rememberRevivalProvider.UpdateRememberToken(u, tok)
+	return p.rememberRevivalStore.UpdateRememberToken(u, tok)
 }
 
-func (p *casRememberProvider) UpdateRememberTokenCtx(_ context.Context, u auth.Authenticatable, tok string) error {
+func (p *casRememberStore) UpdateRememberTokenCtx(_ context.Context, u auth.Authenticatable, tok string) error {
 	return p.UpdateRememberToken(u, tok)
 }
 
-func (p *casRememberProvider) CompareAndSwapRememberToken(_ context.Context, u auth.Authenticatable, oldToken, newToken string) (bool, error) {
+func (p *casRememberStore) CompareAndSwapRememberToken(_ context.Context, u auth.Authenticatable, oldToken, newToken string) (bool, error) {
 	p.casCalls++
 	if p.forceStale || p.user == nil || p.user.rememberToken != oldToken {
 		return false, nil
 	}
-	return true, p.rememberRevivalProvider.UpdateRememberToken(u, newToken)
+	return true, p.rememberRevivalStore.UpdateRememberToken(u, newToken)
 }
 
 // TestRememberRecall_PrefersCompareAndSwap pins that rotation persists via
-// the provider's CompareAndSwapRememberToken capability when present: the
+// the user store's CompareAndSwapRememberToken capability when present: the
 // recall succeeds, exactly one swap runs, and no unconditional update is
 // issued beyond the one Login performed when minting the cookie.
 func TestRememberRecall_PrefersCompareAndSwap(t *testing.T) {
-	guard, _ := newRevokeGuard(t, nil)
-	provider := &casRememberProvider{rememberRevivalProvider: &rememberRevivalProvider{user: &revokeTestUser{id: "u1"}}}
-	guard.SetProvider(provider)
+	scheme, _ := newRevokeScheme(t, nil)
+	userStore := &casRememberStore{rememberRevivalStore: &rememberRevivalStore{user: &revokeTestUser{id: "u1"}}}
+	scheme.SetUserStore(userStore)
 	enc := rotationEncryptor(t)
 
-	oldCookie := mintRememberCookie(t, guard)
-	loginUpdates := provider.plainCalls
+	oldCookie := mintRememberCookie(t, scheme)
+	loginUpdates := userStore.plainCalls
 
 	w := httptest.NewRecorder()
-	if u := guard.User(rememberRecallRequest(t, oldCookie, w)); u == nil {
-		t.Fatal("recall with CAS-capable provider failed; expected success")
+	if u := scheme.User(rememberRecallRequest(t, oldCookie, w)); u == nil {
+		t.Fatal("recall with CAS-capable user store failed; expected success")
 	}
-	if provider.casCalls != 1 {
-		t.Errorf("CompareAndSwapRememberToken calls = %d, want 1", provider.casCalls)
+	if userStore.casCalls != 1 {
+		t.Errorf("CompareAndSwapRememberToken calls = %d, want 1", userStore.casCalls)
 	}
-	if provider.plainCalls != loginUpdates {
-		t.Errorf("unconditional updates during recall = %d, want 0", provider.plainCalls-loginUpdates)
+	if userStore.plainCalls != loginUpdates {
+		t.Errorf("unconditional updates during recall = %d, want 0", userStore.plainCalls-loginUpdates)
 	}
 
 	newCookie := findRememberCookie(w)
 	if newCookie == nil {
 		t.Fatal("recall response carries no rotated remember cookie")
 	}
-	if provider.user.rememberToken != hashRememberToken(rawRememberToken(t, enc, newCookie)) {
+	if userStore.user.rememberToken != hashRememberToken(rawRememberToken(t, enc, newCookie)) {
 		t.Error("persisted hash does not match the swapped-in token")
 	}
 }
@@ -289,23 +289,23 @@ func TestRememberRecall_PrefersCompareAndSwap(t *testing.T) {
 // no user_id anchored, instead of minting a second valid credential via
 // last-writer-wins.
 func TestRememberRecall_StaleSwapFailsClosed(t *testing.T) {
-	guard, _ := newRevokeGuard(t, nil)
-	provider := &casRememberProvider{rememberRevivalProvider: &rememberRevivalProvider{user: &revokeTestUser{id: "u1"}}}
-	guard.SetProvider(provider)
+	scheme, _ := newRevokeScheme(t, nil)
+	userStore := &casRememberStore{rememberRevivalStore: &rememberRevivalStore{user: &revokeTestUser{id: "u1"}}}
+	scheme.SetUserStore(userStore)
 
-	oldCookie := mintRememberCookie(t, guard)
-	oldHash := provider.user.rememberToken
-	provider.forceStale = true
+	oldCookie := mintRememberCookie(t, scheme)
+	oldHash := userStore.user.rememberToken
+	userStore.forceStale = true
 
 	w := httptest.NewRecorder()
 	r := rememberRecallRequest(t, oldCookie, w)
-	if u := guard.User(r); u != nil {
+	if u := scheme.User(r); u != nil {
 		t.Fatalf("stale-swap recall authenticated as %v; expected fail-closed nil", u.GetAuthIdentifier())
 	}
-	if guard.Check(rememberRecallRequest(t, oldCookie, httptest.NewRecorder())) {
+	if scheme.Check(rememberRecallRequest(t, oldCookie, httptest.NewRecorder())) {
 		t.Fatal("Check accepted a recall whose compare-and-swap reported stale")
 	}
-	if provider.user.rememberToken != oldHash {
+	if userStore.user.rememberToken != oldHash {
 		t.Error("stored hash mutated by a losing swap; the winner's credential must stand")
 	}
 	if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok && holder != nil {
@@ -317,30 +317,30 @@ func TestRememberRecall_StaleSwapFailsClosed(t *testing.T) {
 	}
 }
 
-// nonCASProvider hides any compare-and-swap capability behind the plain
-// UserProvider interface: the wrapper's method set carries only the
-// embedded interface's methods, so the guard's capability assertion fails.
-type nonCASProvider struct {
-	auth.UserProvider
+// nonCASStore hides any compare-and-swap capability behind the plain
+// UserStore interface: the wrapper's method set carries only the
+// embedded interface's methods, so the scheme's capability assertion fails.
+type nonCASStore struct {
+	auth.UserStore
 }
 
-// TestRememberRecall_NonCASProviderFailsClosed pins that recall rotation
-// requires the atomic swap: a provider without
+// TestRememberRecall_NonCASStoreFailsClosed pins that recall rotation
+// requires the atomic swap: a user store without
 // auth.RememberTokenCompareAndSwapper must fail every recall closed
 // instead of downgrading to an unconditional last-writer-wins update.
 // Login-time issuance (no prior token consumed) must keep working.
-func TestRememberRecall_NonCASProviderFailsClosed(t *testing.T) {
-	guard, _ := newRevokeGuard(t, nil)
-	base := &rememberRevivalProvider{user: &revokeTestUser{id: "u1"}}
-	guard.SetProvider(nonCASProvider{base})
+func TestRememberRecall_NonCASStoreFailsClosed(t *testing.T) {
+	scheme, _ := newRevokeScheme(t, nil)
+	base := &rememberRevivalStore{user: &revokeTestUser{id: "u1"}}
+	scheme.SetUserStore(nonCASStore{base})
 
-	oldCookie := mintRememberCookie(t, guard)
+	oldCookie := mintRememberCookie(t, scheme)
 	oldHash := base.user.rememberToken
 
 	w := httptest.NewRecorder()
 	r := rememberRecallRequest(t, oldCookie, w)
-	if u := guard.User(r); u != nil {
-		t.Fatalf("recall authenticated as %v with a non-CAS provider; expected fail-closed nil", u.GetAuthIdentifier())
+	if u := scheme.User(r); u != nil {
+		t.Fatalf("recall authenticated as %v with a non-CAS user store; expected fail-closed nil", u.GetAuthIdentifier())
 	}
 	if base.user.rememberToken != oldHash {
 		t.Error("stored hash mutated; non-CAS recall must not fall back to an unconditional update")
@@ -357,31 +357,31 @@ func TestRememberRecall_NonCASProviderFailsClosed(t *testing.T) {
 	}
 }
 
-// failingUpdateProvider errors on every remember-token persist once armed,
+// failingUpdateStore errors on every remember-token persist once armed,
 // after Login has minted the cookie successfully.
-type failingUpdateProvider struct {
-	*rememberRevivalProvider
+type failingUpdateStore struct {
+	*rememberRevivalStore
 	failUpdates bool
 }
 
-func (p *failingUpdateProvider) UpdateRememberToken(u auth.Authenticatable, tok string) error {
+func (p *failingUpdateStore) UpdateRememberToken(u auth.Authenticatable, tok string) error {
 	if p.failUpdates {
 		return errors.New("test: persist outage")
 	}
-	return p.rememberRevivalProvider.UpdateRememberToken(u, tok)
+	return p.rememberRevivalStore.UpdateRememberToken(u, tok)
 }
 
-func (p *failingUpdateProvider) UpdateRememberTokenCtx(_ context.Context, u auth.Authenticatable, tok string) error {
+func (p *failingUpdateStore) UpdateRememberTokenCtx(_ context.Context, u auth.Authenticatable, tok string) error {
 	return p.UpdateRememberToken(u, tok)
 }
 
 // CompareAndSwapRememberToken shadows the embedded implementation so the
-// armed outage also hits the swap path the guard uses during recall.
-func (p *failingUpdateProvider) CompareAndSwapRememberToken(ctx context.Context, u auth.Authenticatable, oldToken, newToken string) (bool, error) {
+// armed outage also hits the swap path the scheme uses during recall.
+func (p *failingUpdateStore) CompareAndSwapRememberToken(ctx context.Context, u auth.Authenticatable, oldToken, newToken string) (bool, error) {
 	if p.failUpdates {
 		return false, errors.New("test: persist outage")
 	}
-	return p.rememberRevivalProvider.CompareAndSwapRememberToken(ctx, u, oldToken, newToken)
+	return p.rememberRevivalStore.CompareAndSwapRememberToken(ctx, u, oldToken, newToken)
 }
 
 // TestRememberRecall_PersistFailureFailsClosed pins fail-closed rotation
@@ -389,20 +389,20 @@ func (p *failingUpdateProvider) CompareAndSwapRememberToken(ctx context.Context,
 // rather than authenticating a request whose presented credential was
 // never burned.
 func TestRememberRecall_PersistFailureFailsClosed(t *testing.T) {
-	guard, _ := newRevokeGuard(t, nil)
-	provider := &failingUpdateProvider{rememberRevivalProvider: &rememberRevivalProvider{user: &revokeTestUser{id: "u1"}}}
-	guard.SetProvider(provider)
+	scheme, _ := newRevokeScheme(t, nil)
+	userStore := &failingUpdateStore{rememberRevivalStore: &rememberRevivalStore{user: &revokeTestUser{id: "u1"}}}
+	scheme.SetUserStore(userStore)
 
-	oldCookie := mintRememberCookie(t, guard)
-	oldHash := provider.user.rememberToken
-	provider.failUpdates = true
+	oldCookie := mintRememberCookie(t, scheme)
+	oldHash := userStore.user.rememberToken
+	userStore.failUpdates = true
 
 	w := httptest.NewRecorder()
 	r := rememberRecallRequest(t, oldCookie, w)
-	if u := guard.User(r); u != nil {
+	if u := scheme.User(r); u != nil {
 		t.Fatalf("recall authenticated as %v despite persist failure; expected fail-closed nil", u.GetAuthIdentifier())
 	}
-	if provider.user.rememberToken != oldHash {
+	if userStore.user.rememberToken != oldHash {
 		t.Error("stored hash changed despite the persist error")
 	}
 	if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok && holder != nil {
@@ -414,32 +414,32 @@ func TestRememberRecall_PersistFailureFailsClosed(t *testing.T) {
 	}
 
 	// Once the outage clears, the unburned cookie authenticates again.
-	provider.failUpdates = false
-	if u := guard.User(rememberRecallRequest(t, oldCookie, httptest.NewRecorder())); u == nil {
+	userStore.failUpdates = false
+	if u := scheme.User(rememberRecallRequest(t, oldCookie, httptest.NewRecorder())); u == nil {
 		t.Fatal("cookie rejected after persist outage cleared; token must not have been burned")
 	}
 }
 
-// TestRememberRecall_SingleRotationPerRequest pins that repeated guard
+// TestRememberRecall_SingleRotationPerRequest pins that repeated scheme
 // reads on one request rotate at most once: after the first User() call
 // anchors user_id into the session, subsequent calls take the session
 // path and must not mint additional cookies.
 func TestRememberRecall_SingleRotationPerRequest(t *testing.T) {
-	guard, _ := newRevokeGuard(t, nil)
-	provider := &rememberRevivalProvider{user: &revokeTestUser{id: "u1"}}
-	guard.SetProvider(provider)
+	scheme, _ := newRevokeScheme(t, nil)
+	userStore := &rememberRevivalStore{user: &revokeTestUser{id: "u1"}}
+	scheme.SetUserStore(userStore)
 
-	oldCookie := mintRememberCookie(t, guard)
+	oldCookie := mintRememberCookie(t, scheme)
 
 	w := httptest.NewRecorder()
 	r := rememberRecallRequest(t, oldCookie, w)
-	if u := guard.User(r); u == nil {
+	if u := scheme.User(r); u == nil {
 		t.Fatal("first User() failed")
 	}
-	if u := guard.User(r); u == nil {
+	if u := scheme.User(r); u == nil {
 		t.Fatal("second User() failed; rotation must not invalidate the in-flight request")
 	}
-	if !guard.Check(r) {
+	if !scheme.Check(r) {
 		t.Fatal("Check() failed after rotation on the same request")
 	}
 

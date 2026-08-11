@@ -1,11 +1,11 @@
 package auth
 
-// RequireTwoFactor returns a Gate BeforeCallback that denies any ability
+// RequireTwoFactor returns an Access BeforeCallback that denies any ability
 // when the supplied status function reports the user has not completed a
 // 2FA challenge. When status reports true (2FA satisfied) the callback
-// returns nil so subsequent gates and policies run normally.
+// returns nil so subsequent abilities and policies run normally.
 //
-// Register on a Gate via gate.Before(auth.RequireTwoFactor(fn)). The
+// Register on an Access via access.Before(auth.RequireTwoFactor(fn)). The
 // status function receives the Authenticatable as an `any` so consumer
 // code can type-assert to its own user model without auth depending on
 // it.
@@ -18,7 +18,7 @@ func RequireTwoFactor(getStatus func(actor any) bool) BeforeCallback {
 			return nil
 		}
 		if getStatus(user) {
-			// 2FA satisfied: defer to the actual gate / policy.
+			// 2FA satisfied: defer to the actual access / policy.
 			return nil
 		}
 		deny := false

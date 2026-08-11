@@ -409,42 +409,42 @@ func TestTOTP_DecodeSecret_AcceptsLowercaseAndSpaces(t *testing.T) {
 }
 
 func TestRequireTwoFactor_DeniesWhenStatusFalse(t *testing.T) {
-	gate := NewGate()
-	gate.Define("admin", func(user Authenticatable, args ...interface{}) bool { return true })
-	gate.Before(RequireTwoFactor(func(actor any) bool { return false }))
+	access := NewAccess()
+	access.Define("admin", func(user Authenticatable, args ...interface{}) bool { return true })
+	access.Before(RequireTwoFactor(func(actor any) bool { return false }))
 
 	user := &mockUser{id: 1}
-	if gate.Allows(user, "admin") {
-		t.Error("expected gate to deny when 2FA status is false")
+	if access.Allows(user, "admin") {
+		t.Error("expected access to deny when 2FA status is false")
 	}
 }
 
 func TestRequireTwoFactor_AllowsWhenStatusTrue(t *testing.T) {
-	gate := NewGate()
-	gate.Define("admin", func(user Authenticatable, args ...interface{}) bool { return true })
-	gate.Before(RequireTwoFactor(func(actor any) bool { return true }))
+	access := NewAccess()
+	access.Define("admin", func(user Authenticatable, args ...interface{}) bool { return true })
+	access.Before(RequireTwoFactor(func(actor any) bool { return true }))
 
 	user := &mockUser{id: 1}
-	if !gate.Allows(user, "admin") {
-		t.Error("expected gate to allow when 2FA status is true")
+	if !access.Allows(user, "admin") {
+		t.Error("expected access to allow when 2FA status is true")
 	}
 }
 
 func TestRequireTwoFactor_NilStatusIsNoop(t *testing.T) {
-	gate := NewGate()
-	gate.Define("admin", func(user Authenticatable, args ...interface{}) bool { return true })
-	gate.Before(RequireTwoFactor(nil))
+	access := NewAccess()
+	access.Define("admin", func(user Authenticatable, args ...interface{}) bool { return true })
+	access.Before(RequireTwoFactor(nil))
 
 	user := &mockUser{id: 1}
-	if !gate.Allows(user, "admin") {
-		t.Error("nil status fn should not interfere with gate decisions")
+	if !access.Allows(user, "admin") {
+		t.Error("nil status fn should not interfere with access decisions")
 	}
 }
 
 func TestRequireTwoFactor_NilUserIsNoop(t *testing.T) {
 	cb := RequireTwoFactor(func(actor any) bool { return false })
 	if cb(nil, "admin") != nil {
-		t.Error("nil user should defer to gate (return nil)")
+		t.Error("nil user should defer to access (return nil)")
 	}
 }
 

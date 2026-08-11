@@ -88,20 +88,20 @@ func initStorage(config StorageConfig, logger log.Logger) *storage.Manager {
 	return mgr
 }
 
-// initAuth builds the auth manager: one ORM-backed user provider plus the
-// configured guards (session, JWT).
+// initAuth builds the auth manager: one ORM-backed user store plus the
+// configured schemes (session, JWT).
 //
-// Velocity authenticates a single identity store. The provider installed here
+// Velocity authenticates a single identity store. The user store installed here
 // is the framework default, backed by ormauth.User against the users table;
 // an application swaps in its own model from a module:
 //
-//	s.Auth.SetProvider(ormauth.New[models.Admin]())
+//	s.Auth.SetUserStore(ormauth.New[models.Admin]())
 //
-// SetProvider re-points every registered guard, so the swap works regardless
+// SetUserStore re-points every registered scheme, so the swap works regardless
 // of whether it runs before or after this function.
 //
-// Misconfigured guards are skipped with a warning so the app can still start -
-// only the broken guard is unavailable at runtime.
+// Misconfigured schemes are skipped with a warning so the app can still start -
+// only the broken scheme is unavailable at runtime.
 func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger log.Logger, enc crypto.Encryptor) *auth.Manager {
 	manager := auth.NewManager()
 
@@ -109,20 +109,20 @@ func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger log.Logger
 	// warnings) through the framework logger. Safe to pass nil.
 	manager.SetLogger(logger)
 
-	if authCfg.DefaultGuard != "" {
-		manager.SetDefaultGuard(authCfg.DefaultGuard)
+	if authCfg.DefaultScheme != "" {
+		manager.SetDefaultScheme(authCfg.DefaultScheme)
 	}
 	if authCfg.BcryptCost > 0 {
 		manager.SetHasher(auth.NewBcryptHasher(authCfg.BcryptCost))
 	}
 
-	// Parse the trusted-proxy list and propagate it to every guard via
+	// Parse the trusted-proxy list and propagate it to every scheme via
 	// the auth.TrustedProxiesReceiver interface. SetTrustedProxies must
-	// be called BEFORE RegisterGuard below so newly registered guards
+	// be called BEFORE RegisterScheme below so newly registered schemes
 	// inherit the list at registration time. A malformed entry is
 	// logged and the list is dropped (no proxies trusted), which is
 	// the same "warn-and-continue" stance the rest of initAuth uses
-	// for guard-level misconfiguration. Operators who want fail-fast
+	// for scheme-level misconfiguration. Operators who want fail-fast
 	// should validate at boot via clientip.ParseCIDRs explicitly.
 	if len(authCfg.TrustedProxies) > 0 {
 		proxies, err := clientip.ParseCIDRs(authCfg.TrustedProxies)
@@ -140,21 +140,21 @@ func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger log.Logger
 		}
 	}
 
-	// Install the framework's default user provider. It queries through the
+	// Install the framework's default user store. It queries through the
 	// ORM's generic builder, so the table name, placeholder dialect, and
 	// identifier quoting all come from the grammar rather than from SQL
 	// assembled here.
-	manager.SetProvider(ormauth.New[ormauth.User](ormauth.WithHasher(manager.GetHasher())))
-	provider := manager.DefaultProvider()
+	manager.SetUserStore(ormauth.New[ormauth.User](ormauth.WithHasher(manager.GetHasher())))
+	userStore := manager.DefaultUserStore()
 
-	// Register guards
-	for name, guardCfg := range authCfg.Guards {
-		switch guardCfg.Driver {
+	// Register schemes
+	for name, schemeCfg := range authCfg.Schemes {
+		switch schemeCfg.Driver {
 		case "session":
-			guard, err := guards.NewSessionGuard(provider, sessCfg, enc)
+			scheme, err := guards.NewSessionScheme(userStore, sessCfg, enc)
 			if err != nil {
 				if logger != nil {
-					logger.Warn("Failed to create session guard", "guard", name, "error", err)
+					logger.Warn("Failed to create session scheme", "scheme", name, "error", err)
 				}
 				continue
 			}
@@ -164,43 +164,43 @@ func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger log.Logger
 			// path runs cost 10 while real verify runs cost 14,
 			// reopening the username-enumeration channel (F2).
 			if authCfg.BcryptCost > 0 {
-				guard.SetHasher(auth.NewBcryptHasher(authCfg.BcryptCost))
+				scheme.SetHasher(auth.NewBcryptHasher(authCfg.BcryptCost))
 			}
 			if authCfg.AttemptFloor != 0 {
-				guard.SetAttemptFloor(authCfg.AttemptFloor)
+				scheme.SetAttemptFloor(authCfg.AttemptFloor)
 			}
-			manager.RegisterGuard(name, guard)
+			manager.RegisterScheme(name, scheme)
 
 		case "jwt":
 			var jwtCfg auth.JWTConfig
-			if opts, ok := guardCfg.Options["jwt"]; ok {
+			if opts, ok := schemeCfg.Options["jwt"]; ok {
 				if jc, ok := opts.(auth.JWTConfig); ok {
 					jwtCfg = jc
 				} else if logger != nil {
-					logger.Warn("JWT guard config has wrong type, using defaults", "guard", name, "type", fmt.Sprintf("%T", opts))
+					logger.Warn("JWT scheme config has wrong type, using defaults", "scheme", name, "type", fmt.Sprintf("%T", opts))
 				}
 			}
 			if jwtCfg.Secret == "" {
 				if logger != nil {
-					logger.Warn("JWT guard skipped: no secret configured", "guard", name)
+					logger.Warn("JWT scheme skipped: no secret configured", "scheme", name)
 				}
 				continue
 			}
-			guard, err := guards.NewJWTGuard(provider, jwtCfg)
+			scheme, err := guards.NewJWTScheme(userStore, jwtCfg)
 			if err != nil {
 				if logger != nil {
-					logger.Warn("Failed to create JWT guard", "guard", name, "error", err)
+					logger.Warn("Failed to create JWT scheme", "scheme", name, "error", err)
 				}
 				continue
 			}
 			if authCfg.BcryptCost > 0 {
-				guard.SetHasher(auth.NewBcryptHasher(authCfg.BcryptCost))
+				scheme.SetHasher(auth.NewBcryptHasher(authCfg.BcryptCost))
 			}
 			if authCfg.AttemptFloor != 0 {
-				guard.SetAttemptFloor(authCfg.AttemptFloor)
+				scheme.SetAttemptFloor(authCfg.AttemptFloor)
 			}
-			guard.Start()
-			manager.RegisterGuard(name, guard)
+			scheme.Start()
+			manager.RegisterScheme(name, scheme)
 		}
 	}
 
@@ -381,7 +381,7 @@ func initNotification(mailer mail.Mailer, db *sql.DB, dbDriver string) *notifica
 
 // queueAcceptUnsigned reports whether the operator has explicitly opted
 // into running the queue without payload signing. Recognises the common
-// truthy spellings so a typo does not silently disable the guard.
+// truthy spellings so a typo does not silently disable the scheme.
 //
 // final: do not rename. QUEUE_ACCEPT_UNSIGNED is the 1.0 surface name for
 // the queue payload-signing opt-out.

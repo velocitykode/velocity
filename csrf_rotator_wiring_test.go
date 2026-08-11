@@ -16,8 +16,8 @@ import (
 // fakeCSRFRotator is a contract.CSRFProtector + contract.CSRFTokenRotator
 // pair used to spot whether the framework's bootstrap installed THIS
 // instance on auth.Manager or the original framework-built CSRF. The
-// identifying field `tag` is captured by recorderGuard.SetCSRFTokenRotator
-// after RegisterGuard runs the rotator through the propagation path.
+// identifying field `tag` is captured by recorderScheme.SetCSRFTokenRotator
+// after RegisterScheme runs the rotator through the propagation path.
 type fakeCSRFRotator struct {
 	tag string
 }
@@ -38,50 +38,50 @@ var (
 	_ contract.CSRFTokenRotator = (*fakeCSRFRotator)(nil)
 )
 
-// recorderGuard is a minimal auth.Guard that captures the rotator passed
-// to it via the CSRFTokenRotatorReceiver propagation when RegisterGuard
-// runs. Every other Guard method is a no-op; only Login is exercised by
+// recorderScheme is a minimal auth.Scheme that captures the rotator passed
+// to it via the CSRFTokenRotatorReceiver propagation when RegisterScheme
+// runs. Every other Scheme method is a no-op; only Login is exercised by
 // the rest of the test surface (it returns an error so any caller fails
 // fast if it somehow does run).
-type recorderGuard struct {
+type recorderScheme struct {
 	mu          sync.Mutex
 	got         contract.CSRFTokenRotator
 	setCallsLen int
 }
 
-func (g *recorderGuard) SetCSRFTokenRotator(r contract.CSRFTokenRotator) {
+func (g *recorderScheme) SetCSRFTokenRotator(r contract.CSRFTokenRotator) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.got = r
 	g.setCallsLen++
 }
 
-func (g *recorderGuard) lastRotator() contract.CSRFTokenRotator {
+func (g *recorderScheme) lastRotator() contract.CSRFTokenRotator {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.got
 }
 
-func (g *recorderGuard) Check(_ *http.Request) bool                { return false }
-func (g *recorderGuard) User(_ *http.Request) auth.Authenticatable { return nil }
-func (g *recorderGuard) ID(_ *http.Request) interface{}            { return nil }
-func (g *recorderGuard) Login(_ http.ResponseWriter, _ *http.Request, _ auth.Authenticatable, _ ...bool) error {
-	return errors.New("recorderGuard.Login: should not be called in this test")
+func (g *recorderScheme) Check(_ *http.Request) bool                { return false }
+func (g *recorderScheme) User(_ *http.Request) auth.Authenticatable { return nil }
+func (g *recorderScheme) ID(_ *http.Request) interface{}            { return nil }
+func (g *recorderScheme) Login(_ http.ResponseWriter, _ *http.Request, _ auth.Authenticatable, _ ...bool) error {
+	return errors.New("recorderScheme.Login: should not be called in this test")
 }
-func (g *recorderGuard) LoginByID(_ http.ResponseWriter, _ *http.Request, _ interface{}, _ ...bool) error {
-	return errors.New("recorderGuard.LoginByID: should not be called in this test")
+func (g *recorderScheme) LoginByID(_ http.ResponseWriter, _ *http.Request, _ interface{}, _ ...bool) error {
+	return errors.New("recorderScheme.LoginByID: should not be called in this test")
 }
-func (g *recorderGuard) Attempt(_ http.ResponseWriter, _ *http.Request, _ map[string]interface{}, _ ...bool) (bool, error) {
+func (g *recorderScheme) Attempt(_ http.ResponseWriter, _ *http.Request, _ map[string]interface{}, _ ...bool) (bool, error) {
 	return false, nil
 }
-func (g *recorderGuard) Logout(_ http.ResponseWriter, _ *http.Request) error { return nil }
-func (g *recorderGuard) SetProvider(_ auth.UserProvider)                     {}
+func (g *recorderScheme) Logout(_ http.ResponseWriter, _ *http.Request) error { return nil }
+func (g *recorderScheme) SetUserStore(_ auth.UserStore)                       {}
 
-// compile-time check: recorderGuard satisfies BOTH Guard and the
+// compile-time check: recorderScheme satisfies BOTH Scheme and the
 // rotator-receiver capability the manager propagates to.
 var (
-	_ auth.Guard                    = (*recorderGuard)(nil)
-	_ auth.CSRFTokenRotatorReceiver = (*recorderGuard)(nil)
+	_ auth.Scheme                   = (*recorderScheme)(nil)
+	_ auth.CSRFTokenRotatorReceiver = (*recorderScheme)(nil)
 )
 
 // csrfReplaceModule is a chain Module whose Boot replaces
@@ -116,11 +116,11 @@ func (p *csrfReplaceModule) Shutdown(_ context.Context) error { return nil }
 // Post-fix: bootstrap.go installs the rotator AFTER runModuleLifecycle
 // returns, so the install picks up the consumer's replacement.
 //
-// Observation strategy: register a brand-new recorderGuard on the auth
-// manager AFTER Bootstrap returns. Manager.RegisterGuard propagates the
-// currently-installed csrfRotator to any guard that implements the
+// Observation strategy: register a brand-new recorderScheme on the auth
+// manager AFTER Bootstrap returns. Manager.RegisterScheme propagates the
+// currently-installed csrfRotator to any scheme that implements the
 // CSRFTokenRotatorReceiver capability (auth/auth.go line 319-322). Assert
-// the recorderGuard received the fake replacement, NOT some other
+// the recorderScheme received the fake replacement, NOT some other
 // (framework-built) instance.
 func TestCSRFRotator_PointsToBootReplacement(t *testing.T) {
 	a, err := NewTestApp()
@@ -159,16 +159,16 @@ func TestCSRFRotator_PointsToBootReplacement(t *testing.T) {
 		t.Fatalf("a.Auth is not *auth.Manager: %T", a.Auth)
 	}
 
-	// Register a brand-new spy guard. Manager.RegisterGuard propagates
-	// the currently-installed csrfRotator to any guard that implements
+	// Register a brand-new spy scheme. Manager.RegisterScheme propagates
+	// the currently-installed csrfRotator to any scheme that implements
 	// CSRFTokenRotatorReceiver. If bootstrap installed the rotator
 	// AFTER the consumer's Boot swap, the spy receives the replacement.
-	spy := &recorderGuard{}
-	mgr.RegisterGuard("csrf-rotator-spy", spy)
+	spy := &recorderScheme{}
+	mgr.RegisterScheme("csrf-rotator-spy", spy)
 
 	got := spy.lastRotator()
 	if got == nil {
-		t.Fatal("RegisterGuard did not propagate any rotator to the spy guard; the boot-order install in bootstrap.go did not run")
+		t.Fatal("RegisterScheme did not propagate any rotator to the spy scheme; the boot-order install in bootstrap.go did not run")
 	}
 	if got != contract.CSRFTokenRotator(replacement) {
 		t.Errorf("auth.Manager carries the WRONG CSRF token rotator after Bootstrap:\n  got      = %#v\n  want     = %#v (consumer Boot replacement)\n  original = %#v (framework-built, should NOT be installed)",
@@ -181,7 +181,7 @@ func TestCSRFRotator_PointsToBootReplacement(t *testing.T) {
 // never call Bootstrap()/Serve() (embed-mode apps, tests, scripts that
 // drive auth/csrf operations directly). For this audience the
 // framework-built s.CSRF must still be wired into auth.Manager at New()
-// time so SessionGuard.Login / Logout / remember-cookie revival keep
+// time so SessionScheme.Login / Logout / remember-cookie revival keep
 // the CSRF token store aligned with the session lifecycle.
 //
 // Regression model: an earlier follow-up moved the install out of
@@ -189,11 +189,11 @@ func TestCSRFRotator_PointsToBootReplacement(t *testing.T) {
 // correct for chain-module Boot swaps but silently broke this
 // audience because their code path never ran bootstrap(). The current
 // fix installs in BOTH places (New() and bootstrap()) and this test
-// guards the New-only half.
+// schemes the New-only half.
 //
 // Observation strategy mirrors TestCSRFRotator_PointsToBootReplacement:
-// register a spy guard on the auth manager and check
-// RegisterGuard propagated a non-nil rotator pointing at the
+// register a spy scheme on the auth manager and check
+// RegisterScheme propagated a non-nil rotator pointing at the
 // framework-built s.CSRF (because no consumer Boot ran to swap it).
 func TestCSRFRotator_WiredByNewWithoutBootstrap(t *testing.T) {
 	a, err := NewTestApp()
@@ -213,8 +213,8 @@ func TestCSRFRotator_WiredByNewWithoutBootstrap(t *testing.T) {
 		t.Fatalf("a.Auth is not *auth.Manager: %T", a.Auth)
 	}
 
-	spy := &recorderGuard{}
-	mgr.RegisterGuard("csrf-rotator-spy-new-only", spy)
+	spy := &recorderScheme{}
+	mgr.RegisterScheme("csrf-rotator-spy-new-only", spy)
 
 	got := spy.lastRotator()
 	if got == nil {

@@ -11,8 +11,8 @@ import (
 // fall back to the package default; the trade-off is one of CPU-cost
 // matching, not correctness.
 //
-// Used by the missing-user branch of SessionGuard.Attempt and
-// JWTGuard.Attempt so the timing defense from H-09 still holds when
+// Used by the missing-user branch of SessionScheme.Attempt and
+// JWTScheme.Attempt so the timing defense from H-09 still holds when
 // the operator configures BcryptCost > 10 (the package default).
 // Without cost-matching, a configured cost of 14 would make the real
 // verify ~5x slower than the dummy verify, reopening the username

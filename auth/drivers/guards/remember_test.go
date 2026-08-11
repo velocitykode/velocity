@@ -48,20 +48,20 @@ func (u *mockRememberUser) GetAuthPassword() string        { return u.password }
 func (u *mockRememberUser) GetRememberToken() string       { return u.rememberToken }
 func (u *mockRememberUser) SetRememberToken(tok string)    { u.rememberToken = tok }
 
-type mockRememberProvider struct {
+type mockRememberStore struct {
 	updated string
 }
 
-func (p *mockRememberProvider) FindByID(interface{}) (auth.Authenticatable, error) {
+func (p *mockRememberStore) FindByID(interface{}) (auth.Authenticatable, error) {
 	return nil, nil
 }
-func (p *mockRememberProvider) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
+func (p *mockRememberStore) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
 	return nil, nil
 }
-func (p *mockRememberProvider) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
+func (p *mockRememberStore) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
 	return false
 }
-func (p *mockRememberProvider) UpdateRememberToken(u auth.Authenticatable, tok string) error {
+func (p *mockRememberStore) UpdateRememberToken(u auth.Authenticatable, tok string) error {
 	p.updated = tok
 	u.SetRememberToken(tok)
 	return nil
@@ -84,13 +84,13 @@ func TestGenerateRememberToken_RandFailure(t *testing.T) {
 
 func TestSetRememberCookie_StoresHashedToken(t *testing.T) {
 	enc := newRememberEncryptor(t)
-	provider := &mockRememberProvider{}
-	g := func() *SessionGuard {
-		g := &SessionGuard{
+	userStore := &mockRememberStore{}
+	g := func() *SessionScheme {
+		g := &SessionScheme{
 			config:    auth.SessionConfig{Name: "sess", Lifetime: 60},
 			encryptor: enc,
 		}
-		g.provider.Store(&providerHolder{p: provider})
+		g.userStore.Store(&userStoreHolder{p: userStore})
 		g.throttler.Store(&throttlerHolder{t: auth.NoopLoginThrottler{}})
 		return g
 	}()
@@ -106,7 +106,7 @@ func TestSetRememberCookie_StoresHashedToken(t *testing.T) {
 	if len(user.GetRememberToken()) != 64 {
 		t.Errorf("expected sha256-hex (64 chars), got %q (%d)", user.GetRememberToken(), len(user.GetRememberToken()))
 	}
-	if provider.updated != user.GetRememberToken() {
+	if userStore.updated != user.GetRememberToken() {
 		t.Error("provider should have been called with the hashed token")
 	}
 
@@ -138,12 +138,12 @@ func (u *uintIDUser) SetRememberToken(tok string)    { u.rememberToken = tok }
 
 func TestSetRememberCookie_NonStringIdentifier(t *testing.T) {
 	enc := newRememberEncryptor(t)
-	provider := &mockRememberProvider{}
-	g := &SessionGuard{
+	userStore := &mockRememberStore{}
+	g := &SessionScheme{
 		config:    auth.SessionConfig{Name: "sess", Lifetime: 60},
 		encryptor: enc,
 	}
-	g.provider.Store(&providerHolder{p: provider})
+	g.userStore.Store(&userStoreHolder{p: userStore})
 	g.throttler.Store(&throttlerHolder{t: auth.NoopLoginThrottler{}})
 
 	user := &uintIDUser{id: 42}
@@ -169,12 +169,12 @@ func TestSetRememberCookie_NonStringIdentifier(t *testing.T) {
 
 func TestSetRememberCookie_RefusesZeroLifetime(t *testing.T) {
 	enc := newRememberEncryptor(t)
-	g := func() *SessionGuard {
-		g := &SessionGuard{
+	g := func() *SessionScheme {
+		g := &SessionScheme{
 			config:    auth.SessionConfig{Name: "sess", Lifetime: 0},
 			encryptor: enc,
 		}
-		g.provider.Store(&providerHolder{p: &mockRememberProvider{}})
+		g.userStore.Store(&userStoreHolder{p: &mockRememberStore{}})
 		g.throttler.Store(&throttlerHolder{t: auth.NoopLoginThrottler{}})
 		return g
 	}()
@@ -196,17 +196,17 @@ func TestCheckRememberCookie_ComparesHashedToken(t *testing.T) {
 	hashed := hashRememberToken(rawToken)
 	user := &mockRememberUser{id: "u1", rememberToken: hashed}
 
-	g := func() *SessionGuard {
-		g := &SessionGuard{
+	g := func() *SessionScheme {
+		g := &SessionScheme{
 			config:    auth.SessionConfig{Name: "sess", Lifetime: 60},
 			encryptor: enc,
 		}
-		g.provider.Store(&providerHolder{p: &mockRememberProvider{}})
+		g.userStore.Store(&userStoreHolder{p: &mockRememberStore{}})
 		g.throttler.Store(&throttlerHolder{t: auth.NoopLoginThrottler{}})
 		return g
 	}()
 	// Install a lookup that returns our user.
-	g.SetProvider(&remLookupProvider{user: user})
+	g.SetUserStore(&remLookupStore{user: user})
 
 	// Encrypt cookie value "userID|rawToken".
 	value := "u1|" + rawToken
@@ -227,37 +227,37 @@ func TestCheckRememberCookie_ComparesHashedToken(t *testing.T) {
 	}
 }
 
-type remLookupProvider struct {
+type remLookupStore struct {
 	user auth.Authenticatable
 }
 
-func (p *remLookupProvider) FindByID(interface{}) (auth.Authenticatable, error) {
+func (p *remLookupStore) FindByID(interface{}) (auth.Authenticatable, error) {
 	return p.user, nil
 }
-func (p *remLookupProvider) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
+func (p *remLookupStore) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
 	return nil, nil
 }
-func (p *remLookupProvider) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
+func (p *remLookupStore) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
 	return false
 }
-func (p *remLookupProvider) UpdateRememberToken(auth.Authenticatable, string) error { return nil }
+func (p *remLookupStore) UpdateRememberToken(auth.Authenticatable, string) error { return nil }
 
-// Ctx-suffixed shims for auth.UserProvider, added in Sweep 1b.
-func (p *mockRememberProvider) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+// Ctx-suffixed shims for auth.UserStore, added in Sweep 1b.
+func (p *mockRememberStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
 	return p.FindByID(id)
 }
-func (p *remLookupProvider) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+func (p *remLookupStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
 	return p.FindByID(id)
 }
-func (p *mockRememberProvider) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *mockRememberStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
 	return p.FindByCredentials(credentials)
 }
-func (p *remLookupProvider) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *remLookupStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
 	return p.FindByCredentials(credentials)
 }
-func (p *mockRememberProvider) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+func (p *mockRememberStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
 	return p.UpdateRememberToken(user, token)
 }
-func (p *remLookupProvider) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+func (p *remLookupStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
 	return p.UpdateRememberToken(user, token)
 }

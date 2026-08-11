@@ -33,7 +33,7 @@ type sessionCtxKey struct{}
 
 // sessionHolder is a mutable container for session data stored in request context.
 // It also caches the result of the server-side session store lookup so that
-// multiple guard methods invoked on the same request (Check, then User, then
+// multiple scheme methods invoked on the same request (Check, then User, then
 // ID) only pay the Redis round-trip once.
 //
 // All fields are protected by mu. Handlers that fan out goroutines sharing
@@ -51,8 +51,8 @@ type sessionHolder struct {
 	// installed by SessionMiddleware. The remember-cookie revival path
 	// (anchorRecalledUser → rotateRememberToken) needs it to deliver the
 	// replacement cookie when rotating the remember token, because the
-	// Guard read methods (User, Check) only receive the *http.Request.
-	// Nil when the guard is driven outside the middleware.
+	// Scheme read methods (User, Check) only receive the *http.Request.
+	// Nil when the scheme is driven outside the middleware.
 	respWriter http.ResponseWriter
 }
 
@@ -99,7 +99,7 @@ func (h *sessionHolder) getResponseWriter() http.ResponseWriter {
 }
 
 // setResponseWriter records the in-flight request's response writer so
-// guard read paths can emit cookies (remember-token rotation).
+// scheme read paths can emit cookies (remember-token rotation).
 func (h *sessionHolder) setResponseWriter(w http.ResponseWriter) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -127,7 +127,7 @@ func WithSessionContext(r *http.Request) *http.Request {
 
 // sessionFromHolder returns the session cached on r's holder, or nil when no
 // handler in the request resolved one (the holder was attached but
-// SessionGuard.getSession was never called). Test helper / middleware helper
+// SessionScheme.getSession was never called). Test helper / middleware helper
 // only; nil is a normal outcome.
 func sessionFromHolder(r *http.Request) auth.Session {
 	holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder)
@@ -168,22 +168,22 @@ type modifiedSession interface {
 // timestamps without amplifying write volume.
 const lastSeenDebounce = 60 * time.Second
 
-// providerHolder boxes an auth.UserProvider so atomic.Pointer can hold the
+// userStoreHolder boxes an auth.UserStore so atomic.Pointer can hold the
 // two-word interface as a single addressable value (H-10 fix). Without the
 // box, swaps would race on the interface itab + data pair.
-type providerHolder struct{ p auth.UserProvider }
+type userStoreHolder struct{ p auth.UserStore }
 
 // throttlerHolder boxes a contract.LoginThrottler for the same reason.
 type throttlerHolder struct{ t contract.LoginThrottler }
 
-// SessionGuard implements session-based authentication
-type SessionGuard struct {
-	// provider and throttler are held via atomic.Pointer so concurrent
-	// SetProvider / SetLoginThrottler calls cannot tear a reader's
+// SessionScheme implements session-based authentication
+type SessionScheme struct {
+	// user store and throttler are held via atomic.Pointer so concurrent
+	// SetUserStore / SetLoginThrottler calls cannot tear a reader's
 	// two-word interface fetch in Attempt / Login (H-10 fix). The
 	// pointers are NEVER nil after construction; helpers always wrap
 	// before storing.
-	provider  atomic.Pointer[providerHolder]
+	userStore atomic.Pointer[userStoreHolder]
 	throttler atomic.Pointer[throttlerHolder]
 
 	store          auth.SessionStore
@@ -213,9 +213,9 @@ type SessionGuard struct {
 	eventDispatcher func(ctx context.Context, event any) error
 }
 
-// loadProvider returns the active auth.UserProvider via atomic load.
-func (g *SessionGuard) loadProvider() auth.UserProvider {
-	h := g.provider.Load()
+// loadUserStore returns the active auth.UserStore via atomic load.
+func (g *SessionScheme) loadUserStore() auth.UserStore {
+	h := g.userStore.Load()
 	if h == nil {
 		return nil
 	}
@@ -225,7 +225,7 @@ func (g *SessionGuard) loadProvider() auth.UserProvider {
 // loadThrottler returns the active contract.LoginThrottler via atomic load.
 // Falls back to NoopLoginThrottler when no throttler has been installed so
 // callers never need a nil check.
-func (g *SessionGuard) loadThrottler() contract.LoginThrottler {
+func (g *SessionScheme) loadThrottler() contract.LoginThrottler {
 	h := g.throttler.Load()
 	if h == nil || h.t == nil {
 		return auth.NoopLoginThrottler{}
@@ -239,14 +239,14 @@ func (g *SessionGuard) loadThrottler() contract.LoginThrottler {
 // Negative values disable the floor (test-only).
 //
 // See auth.Config.AttemptFloor for the threat model.
-func (g *SessionGuard) SetAttemptFloor(d time.Duration) {
+func (g *SessionScheme) SetAttemptFloor(d time.Duration) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.attemptFloor = d
 }
 
 // SetHasher installs the password hasher used both for ValidateCredentials
-// (via the configured UserProvider, indirectly) and for the dummy-hash
+// (via the configured UserStore, indirectly) and for the dummy-hash
 // timing defense on the missing-user branch of Attempt. Passing nil
 // leaves the previously installed hasher in place.
 //
@@ -255,7 +255,7 @@ func (g *SessionGuard) SetAttemptFloor(d time.Duration) {
 // cost as the real verify; without this, a configured cost of 14 would
 // have the dummy at cost 10 (5x faster) and the timing channel from
 // H-09 would reopen.
-func (g *SessionGuard) SetHasher(h auth.Hasher) {
+func (g *SessionScheme) SetHasher(h auth.Hasher) {
 	if h == nil {
 		return
 	}
@@ -267,7 +267,7 @@ func (g *SessionGuard) SetHasher(h auth.Hasher) {
 // effectiveHasher returns the configured hasher under a read lock so a
 // concurrent SetHasher swap is observed atomically. Used by Attempt's
 // dummy-hash sizing path.
-func (g *SessionGuard) effectiveHasher() auth.Hasher {
+func (g *SessionScheme) effectiveHasher() auth.Hasher {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return g.hasher
@@ -275,7 +275,7 @@ func (g *SessionGuard) effectiveHasher() auth.Hasher {
 
 // effectiveAttemptFloor returns the configured floor, falling back to the
 // package-level default when unset.
-func (g *SessionGuard) effectiveAttemptFloor() time.Duration {
+func (g *SessionScheme) effectiveAttemptFloor() time.Duration {
 	g.mu.RLock()
 	d := g.attemptFloor
 	g.mu.RUnlock()
@@ -288,10 +288,10 @@ func (g *SessionGuard) effectiveAttemptFloor() time.Duration {
 	return d
 }
 
-// NewSessionGuard creates a new session guard.
+// NewSessionScheme creates a new session scheme.
 // The encryptor parameter is optional — pass nil if crypto is not configured
-// (session guard will still work if a non-cookie store is used later).
-func NewSessionGuard(provider auth.UserProvider, config auth.SessionConfig, encryptor ...crypto.Encryptor) (*SessionGuard, error) {
+// (session scheme will still work if a non-cookie store is used later).
+func NewSessionScheme(userStore auth.UserStore, config auth.SessionConfig, encryptor ...crypto.Encryptor) (*SessionScheme, error) {
 	var enc crypto.Encryptor
 	if len(encryptor) > 0 {
 		enc = encryptor[0]
@@ -302,13 +302,13 @@ func NewSessionGuard(provider auth.UserProvider, config auth.SessionConfig, encr
 		return nil, err
 	}
 
-	g := &SessionGuard{
+	g := &SessionScheme{
 		store:     store,
 		config:    config,
 		hasher:    auth.NewBcryptHasher(10),
 		encryptor: enc,
 	}
-	g.provider.Store(&providerHolder{p: provider})
+	g.userStore.Store(&userStoreHolder{p: userStore})
 	g.throttler.Store(&throttlerHolder{t: auth.NoopLoginThrottler{}})
 	return g, nil
 }
@@ -318,7 +318,7 @@ func NewSessionGuard(provider auth.UserProvider, config auth.SessionConfig, encr
 //
 // Stored via atomic.Pointer so concurrent Attempt() readers cannot tear the
 // two-word interface fetch on the throttler field (H-10 fix).
-func (g *SessionGuard) SetLoginThrottler(t contract.LoginThrottler) {
+func (g *SessionScheme) SetLoginThrottler(t contract.LoginThrottler) {
 	if t == nil {
 		g.throttler.Store(&throttlerHolder{t: auth.NoopLoginThrottler{}})
 		return
@@ -327,14 +327,14 @@ func (g *SessionGuard) SetLoginThrottler(t contract.LoginThrottler) {
 }
 
 // SetServerSessionStore installs (or removes when nil) a server-side session
-// store. When set, the guard records sessions on Login, looks them up on
+// store. When set, the scheme records sessions on Login, looks them up on
 // Check/User to honor administrative revocations, and deletes them on
 // Logout. Cookie-only behavior is preserved when the store is nil.
 //
-// Manager.SetServerSessionStore propagates to every registered guard via
+// Manager.SetServerSessionStore propagates to every registered scheme via
 // the auth.ServerSessionStoreReceiver interface, so consumers normally do
 // not need to call this directly.
-func (g *SessionGuard) SetServerSessionStore(store auth.ServerSessionStore) {
+func (g *SessionScheme) SetServerSessionStore(store auth.ServerSessionStore) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.serverStore = store
@@ -345,12 +345,12 @@ func (g *SessionGuard) SetServerSessionStore(store auth.ServerSessionStore) {
 // recorded on Login. Pass nil to revert to "no proxies trusted"
 // (forwarded headers are ignored, RemoteAddr is used verbatim).
 //
-// Manager.SetTrustedProxies propagates to every registered guard via
+// Manager.SetTrustedProxies propagates to every registered scheme via
 // the auth.TrustedProxiesReceiver interface, so consumers normally do
 // not need to call this directly.
-func (g *SessionGuard) SetTrustedProxies(proxies []*net.IPNet) {
+func (g *SessionScheme) SetTrustedProxies(proxies []*net.IPNet) {
 	// Deep-clone so caller mutation of any *net.IPNet's IP / Mask
-	// (or the slice header) cannot flip the guard's trust decisions
+	// (or the slice header) cannot flip the scheme's trust decisions
 	// at runtime. A shallow []*net.IPNet copy would reuse the same
 	// IPNet pointers and re-expose the audit-finding hole.
 	cloned := clientip.CloneIPNets(proxies)
@@ -362,9 +362,9 @@ func (g *SessionGuard) SetTrustedProxies(proxies []*net.IPNet) {
 // getTrustedProxies returns the installed trusted-proxy list under a
 // read lock so concurrent Attempt() / Login() calls see a consistent
 // snapshot. Returns a deep clone so the caller cannot mutate the
-// guard's state by editing the returned slice or its IPNet elements.
+// scheme's state by editing the returned slice or its IPNet elements.
 // Returns nil when none has been configured.
-func (g *SessionGuard) getTrustedProxies() []*net.IPNet {
+func (g *SessionScheme) getTrustedProxies() []*net.IPNet {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return clientip.CloneIPNets(g.trustedProxies)
@@ -372,7 +372,7 @@ func (g *SessionGuard) getTrustedProxies() []*net.IPNet {
 
 // SetLogger installs a logger used for non-fatal store errors (e.g. Redis
 // transient failure on Put). Nil disables logging.
-func (g *SessionGuard) SetLogger(l auth.Logger) {
+func (g *SessionScheme) SetLogger(l auth.Logger) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.logger = l
@@ -380,7 +380,7 @@ func (g *SessionGuard) SetLogger(l auth.Logger) {
 
 // getServerStore returns the installed server-side session store, or nil
 // when none has been configured.
-func (g *SessionGuard) getServerStore() auth.ServerSessionStore {
+func (g *SessionScheme) getServerStore() auth.ServerSessionStore {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return g.serverStore
@@ -395,10 +395,10 @@ func (g *SessionGuard) getServerStore() auth.ServerSessionStore {
 // CSRF store after Session.Regenerate, and tokens for the now-destroyed
 // session would survive Logout for the full token-store TTL (24h default).
 //
-// Manager.SetCSRFTokenRotator propagates to every registered guard via
+// Manager.SetCSRFTokenRotator propagates to every registered scheme via
 // the auth.CSRFTokenRotatorReceiver interface; consumers normally do not
 // need to call this directly.
-func (g *SessionGuard) SetCSRFTokenRotator(rotator contract.CSRFTokenRotator) {
+func (g *SessionScheme) SetCSRFTokenRotator(rotator contract.CSRFTokenRotator) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.csrfRotator = rotator
@@ -408,13 +408,13 @@ func (g *SessionGuard) SetCSRFTokenRotator(rotator contract.CSRFTokenRotator) {
 // emit auth.PasswordNeedsRehashEvent after a successful login against a
 // stored hash that no longer matches the configured Hasher parameters
 // (e.g. operator bumped BcryptCost from 10 to 14). Pass nil to disable
-// emission; the guard otherwise becomes silent on the rehash signal.
+// emission; the scheme otherwise becomes silent on the rehash signal.
 // Safe for concurrent use.
 //
-// Manager.SetEventDispatcher propagates to every registered guard via
+// Manager.SetEventDispatcher propagates to every registered scheme via
 // the auth.EventDispatcherReceiver interface; consumers normally do not
 // need to call this directly.
-func (g *SessionGuard) SetEventDispatcher(fn func(ctx context.Context, event any) error) {
+func (g *SessionScheme) SetEventDispatcher(fn func(ctx context.Context, event any) error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.eventDispatcher = fn
@@ -423,7 +423,7 @@ func (g *SessionGuard) SetEventDispatcher(fn func(ctx context.Context, event any
 // getEventDispatcher returns the installed dispatcher under a read lock
 // so concurrent Attempt() readers observe a consistent value across a
 // SetEventDispatcher swap.
-func (g *SessionGuard) getEventDispatcher() func(ctx context.Context, event any) error {
+func (g *SessionScheme) getEventDispatcher() func(ctx context.Context, event any) error {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return g.eventDispatcher
@@ -432,7 +432,7 @@ func (g *SessionGuard) getEventDispatcher() func(ctx context.Context, event any)
 // getCSRFTokenRotator returns the installed rotator under a read lock so
 // concurrent Login / Logout / recall paths see a consistent snapshot.
 // Returns nil when none has been configured (rotation becomes a no-op).
-func (g *SessionGuard) getCSRFTokenRotator() contract.CSRFTokenRotator {
+func (g *SessionScheme) getCSRFTokenRotator() contract.CSRFTokenRotator {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return g.csrfRotator
@@ -440,7 +440,7 @@ func (g *SessionGuard) getCSRFTokenRotator() contract.CSRFTokenRotator {
 
 // logWarn emits a warn event when a logger is configured. Safe to call
 // when no logger has been installed.
-func (g *SessionGuard) logWarn(msg string, kvs ...any) {
+func (g *SessionScheme) logWarn(msg string, kvs ...any) {
 	g.mu.RLock()
 	l := g.logger
 	g.mu.RUnlock()
@@ -455,7 +455,7 @@ func (g *SessionGuard) logWarn(msg string, kvs ...any) {
 // cookie itself is still valid. Errors (including ErrSessionRevoked) are
 // swallowed; callers that need to distinguish causes should use
 // CheckWithError instead.
-func (g *SessionGuard) Check(r *http.Request) bool {
+func (g *SessionScheme) Check(r *http.Request) bool {
 	ok, _ := g.CheckWithError(r)
 	return ok
 }
@@ -472,8 +472,8 @@ func (g *SessionGuard) Check(r *http.Request) bool {
 //     configured.
 //
 // Use this from middleware to deliver a "your session was signed out
-// remotely" UX without breaking the Guard interface.
-func (g *SessionGuard) CheckWithError(r *http.Request) (bool, error) {
+// remotely" UX without breaking the Scheme interface.
+func (g *SessionScheme) CheckWithError(r *http.Request) (bool, error) {
 	// Surface the consultServerStore error to the caller (asymmetric
 	// with User, which swallows it to nil).
 	_, ok, err := g.resolveAuthenticatedUser(r)
@@ -491,7 +491,7 @@ func (g *SessionGuard) CheckWithError(r *http.Request) (bool, error) {
 //     this, an attacker holding a valid remember cookie could
 //     authenticate one request even after administrative revocation
 //     cleared the server-side record.
-//  3. user_id present: resolve the user via the provider; a lookup error
+//  3. user_id present: resolve the user via the user store; a lookup error
 //     or vanished user means unauthenticated.
 //  4. Consult the server-side store (when installed); a store failure or
 //     revoked record fails closed.
@@ -500,7 +500,7 @@ func (g *SessionGuard) CheckWithError(r *http.Request) (bool, error) {
 // the consultServerStore error from step 4 (nil on every other
 // unauthenticated path). Error policy is owned by the callers:
 // CheckWithError surfaces err while User swallows everything to nil.
-func (g *SessionGuard) resolveAuthenticatedUser(r *http.Request) (auth.Authenticatable, bool, error) {
+func (g *SessionScheme) resolveAuthenticatedUser(r *http.Request) (auth.Authenticatable, bool, error) {
 	session := g.getSession(r)
 	if session == nil {
 		return nil, false, nil
@@ -523,7 +523,7 @@ func (g *SessionGuard) resolveAuthenticatedUser(r *http.Request) (auth.Authentic
 		return user, true, nil
 	}
 
-	user, err := g.loadProvider().FindByIDCtx(r.Context(), userID)
+	user, err := g.loadUserStore().FindByIDCtx(r.Context(), userID)
 	if err != nil || user == nil {
 		return nil, false, nil
 	}
@@ -545,7 +545,7 @@ func (g *SessionGuard) resolveAuthenticatedUser(r *http.Request) (auth.Authentic
 // user_id is anchored on the new session, and the server-side session
 // store (when configured) is consulted on the rotated ID. If the store is
 // configured and the write/lookup fails, User returns nil.
-func (g *SessionGuard) User(r *http.Request) auth.Authenticatable {
+func (g *SessionScheme) User(r *http.Request) auth.Authenticatable {
 	// Swallow the consultServerStore error to nil (asymmetric with
 	// CheckWithError, which surfaces it).
 	user, ok, _ := g.resolveAuthenticatedUser(r)
@@ -568,7 +568,7 @@ func (g *SessionGuard) User(r *http.Request) auth.Authenticatable {
 //   - the remember-token rotation could not complete (V2-08; see
 //     rotateRememberToken). Recall success is conditional on the
 //     presented credential being burned and a replacement delivered.
-func (g *SessionGuard) anchorRecalledUser(r *http.Request, session auth.Session, user auth.Authenticatable) bool {
+func (g *SessionScheme) anchorRecalledUser(r *http.Request, session auth.Session, user auth.Authenticatable) bool {
 	// Capture the pre-rotation id so the CSRF rotator (when wired) can
 	// drop any token bound to the planted id. Required to keep the
 	// session-fixation defense complete: H-02 says the CSRF token MUST
@@ -638,7 +638,7 @@ func (g *SessionGuard) anchorRecalledUser(r *http.Request, session auth.Session,
 	// replacement here makes the remember credential single-use, so a
 	// stolen cookie cannot replay silently for its full 30-day lifetime.
 	// Rotation is part of the recall contract: when the replacement cannot
-	// be minted, persisted, or delivered (no response writer, provider
+	// be minted, persisted, or delivered (no response writer, user store
 	// failure, or a concurrent rotation already burned the presented
 	// token), the recall fails closed. user_id is removed again so the
 	// save-at-end middleware does not persist an authenticated session
@@ -669,28 +669,28 @@ var errRememberTokenStale = errors.New("velocity/auth: remember token rotated co
 // the replacement credential was not fully issued and the caller
 // (anchorRecalledUser) must reject the recall:
 //
-//   - no response writer is available (bare guard reads outside
+//   - no response writer is available (bare scheme reads outside
 //     SessionMiddleware have nowhere to deliver the replacement cookie),
 //   - minting or encrypting the replacement failed,
 //   - persisting the new hash failed,
-//   - the provider does not implement auth.RememberTokenCompareAndSwapper, or
+//   - the user store does not implement auth.RememberTokenCompareAndSwapper, or
 //   - the stored hash no longer matches the presented token.
 //
 // The compare-and-swap is what closes the parallel-recall race: two
 // requests presenting the same old cookie both validate before either
 // write, but only one swap can land; the loser fails here instead of
 // minting a second valid credential via last-writer-wins. An unconditional
-// UpdateRememberTokenCtx cannot give that guarantee, so a provider without
+// UpdateRememberTokenCtx cannot give that guarantee, so a user store without
 // the capability fails the recall closed rather than silently downgrading
 // to last-writer-wins; the unconditional update remains in use only on the
 // login path, where no previously issued token is being consumed.
 //
 // Rotation is strict; there is no grace window for the previous token.
 // The storage shape (a single remember_token hash on the user record)
-// offers no durable slot for a previous-token grace entry, and guard-local
+// offers no durable slot for a previous-token grace entry, and scheme-local
 // memory would not survive multi-host deployments, so we fail secure: at
 // worst the user signs in again.
-func (g *SessionGuard) rotateRememberToken(r *http.Request, user auth.Authenticatable) error {
+func (g *SessionScheme) rotateRememberToken(r *http.Request, user auth.Authenticatable) error {
 	holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder)
 	if !ok || holder == nil {
 		return errors.New("velocity/auth: no session holder on request; cannot deliver rotated remember cookie")
@@ -705,9 +705,9 @@ func (g *SessionGuard) rotateRememberToken(r *http.Request, user auth.Authentica
 	oldToken := user.GetRememberToken()
 
 	return g.issueRememberCookie(w, user, func(hashed string) error {
-		cas, ok := g.loadProvider().(auth.RememberTokenCompareAndSwapper)
+		cas, ok := g.loadUserStore().(auth.RememberTokenCompareAndSwapper)
 		if !ok {
-			return errors.New("velocity/auth: user provider does not implement RememberTokenCompareAndSwapper; cannot rotate remember token atomically")
+			return errors.New("velocity/auth: user store does not implement RememberTokenCompareAndSwapper; cannot rotate remember token atomically")
 		}
 		swapped, err := cas.CompareAndSwapRememberToken(r.Context(), user, oldToken, hashed)
 		if err != nil {
@@ -724,7 +724,7 @@ func (g *SessionGuard) rotateRememberToken(r *http.Request, user auth.Authentica
 // revocation, user-existence, and remember-cookie revival checks as User and
 // CheckWithError, so a revoked session or deleted user is not trusted for
 // authorization.
-func (g *SessionGuard) ID(r *http.Request) interface{} {
+func (g *SessionScheme) ID(r *http.Request) interface{} {
 	user := g.User(r)
 	if user == nil {
 		return nil
@@ -733,10 +733,10 @@ func (g *SessionGuard) ID(r *http.Request) interface{} {
 }
 
 // Login logs in a user
-func (g *SessionGuard) Login(w http.ResponseWriter, r *http.Request, user auth.Authenticatable, remember ...bool) error {
+func (g *SessionScheme) Login(w http.ResponseWriter, r *http.Request, user auth.Authenticatable, remember ...bool) error {
 	// Guard the nil user before any session work. user is deref'd below
 	// (session.Put("user_id", user.GetAuthIdentifier())), so a nil here would
-	// panic. UserProvider.FindByID is contractually allowed to return
+	// panic. UserStore.FindByID is contractually allowed to return
 	// (nil, nil) for a not-found id, so LoginByID and any external caller can
 	// reach this with a nil user. Return a normal error instead of panicking
 	// on a runtime condition.
@@ -805,7 +805,7 @@ func (g *SessionGuard) Login(w http.ResponseWriter, r *http.Request, user auth.A
 	}
 
 	// Handle remember me as best-effort. A failure here (e.g. the users
-	// table lacks a remember_token column, the provider cannot persist,
+	// table lacks a remember_token column, the user store cannot persist,
 	// or the identifier cannot be encoded) must NOT fail an otherwise-
 	// successful login, and must not undo the already-committed session
 	// and CSRF rotation. Log and continue: the user is authenticated for
@@ -821,8 +821,8 @@ func (g *SessionGuard) Login(w http.ResponseWriter, r *http.Request, user auth.A
 }
 
 // LoginByID logs in a user by ID
-func (g *SessionGuard) LoginByID(w http.ResponseWriter, r *http.Request, id interface{}, remember ...bool) error {
-	user, err := g.loadProvider().FindByIDCtx(r.Context(), id)
+func (g *SessionScheme) LoginByID(w http.ResponseWriter, r *http.Request, id interface{}, remember ...bool) error {
+	user, err := g.loadUserStore().FindByIDCtx(r.Context(), id)
 	if err != nil {
 		return err
 	}
@@ -843,16 +843,16 @@ func (g *SessionGuard) LoginByID(w http.ResponseWriter, r *http.Request, id inte
 // The entire credential-check phase runs inside auth.Timebox so the
 // missing-user fast path and the wrong-password slow path both pad to the
 // same wall-clock duration (H-09 fix). When the user does not exist the
-// guard still runs the configured hasher against a dummy bcrypt hash so
+// scheme still runs the configured hasher against a dummy bcrypt hash so
 // the CPU cost also matches; without this an attacker can probe valid
 // emails by measuring response time even with a constant-time floor.
-func (g *SessionGuard) Attempt(w http.ResponseWriter, r *http.Request, credentials map[string]interface{}, remember ...bool) (bool, error) {
-	// Snapshot throttler, provider, and hasher once so the credential
+func (g *SessionScheme) Attempt(w http.ResponseWriter, r *http.Request, credentials map[string]interface{}, remember ...bool) (bool, error) {
+	// Snapshot throttler, user store, and hasher once so the credential
 	// check and the success tail below see consistent references even if
 	// a concurrent Set* call swaps one mid-call.
 	throttler := g.loadThrottler()
 	hasher := g.effectiveHasher()
-	user, keys, ok, err := attemptCredentials(r, credentials, g.loadProvider(), hasher, throttler, g.effectiveAttemptFloor(), g.getTrustedProxies())
+	user, keys, ok, err := attemptCredentials(r, credentials, g.loadUserStore(), hasher, throttler, g.effectiveAttemptFloor(), g.getTrustedProxies())
 	if !ok {
 		return false, err
 	}
@@ -888,7 +888,7 @@ type sessionRevoker interface {
 }
 
 // Logout logs out the user
-func (g *SessionGuard) Logout(w http.ResponseWriter, r *http.Request) error {
+func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	session := g.getSession(r)
 	if session == nil {
 		return nil
@@ -923,7 +923,7 @@ func (g *SessionGuard) Logout(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	// Cycle the persisted remember-me token (H-06 fix). Laravel's
-	// SessionGuard::logout calls cycleRememberToken on every individual
+	// SessionScheme::logout calls cycleRememberToken on every individual
 	// logout precisely so a stolen remember cookie is not later
 	// replayable against the user's account. Velocity used to clear the
 	// remember cookie on the client only (via clearRememberCookie below);
@@ -935,9 +935,9 @@ func (g *SessionGuard) Logout(w http.ResponseWriter, r *http.Request) error {
 	// half-logged-out state. Failures are logged so operators can
 	// reconcile.
 	if userID := session.Get("user_id"); userID != nil {
-		provider := g.loadProvider()
-		if user, err := provider.FindByIDCtx(r.Context(), userID); err == nil && user != nil {
-			if err := provider.UpdateRememberTokenCtx(r.Context(), user, ""); err != nil {
+		userStore := g.loadUserStore()
+		if user, err := userStore.FindByIDCtx(r.Context(), userID); err == nil && user != nil {
+			if err := userStore.UpdateRememberTokenCtx(r.Context(), user, ""); err != nil {
 				g.logWarn("velocity/auth: clear remember token (logout) failed", "user_id", userID, "error", err)
 			}
 		}
@@ -992,16 +992,16 @@ func (g *SessionGuard) Logout(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// SetProvider sets the user provider. Stored via atomic.Pointer so
+// SetUserStore sets the user store. Stored via atomic.Pointer so
 // concurrent Attempt() readers cannot tear the two-word interface fetch
-// on the provider field (H-10 fix). Passing nil leaves the previously
-// installed provider in place; SessionGuard must always have a non-nil
-// provider so nil swaps are silently ignored.
-func (g *SessionGuard) SetProvider(provider auth.UserProvider) {
-	if provider == nil {
+// on the user store field (H-10 fix). Passing nil leaves the previously
+// installed user store in place; SessionScheme must always have a non-nil
+// user store so nil swaps are silently ignored.
+func (g *SessionScheme) SetUserStore(userStore auth.UserStore) {
+	if userStore == nil {
 		return
 	}
-	g.provider.Store(&providerHolder{p: provider})
+	g.userStore.Store(&userStoreHolder{p: userStore})
 }
 
 // Session returns the request-scoped Session, loading from the cookie store
@@ -1010,13 +1010,13 @@ func (g *SessionGuard) SetProvider(provider auth.UserProvider) {
 //
 // Implements the auth.SessionAware capability so auth.Manager.Session(r)
 // can surface the session bag (including Flash / GetFlash / FlushFlash)
-// without consumers reaching into the guard directly.
-func (g *SessionGuard) Session(r *http.Request) auth.Session {
+// without consumers reaching into the scheme directly.
+func (g *SessionScheme) Session(r *http.Request) auth.Session {
 	return g.getSession(r)
 }
 
 // getSession gets or creates session for request
-func (g *SessionGuard) getSession(r *http.Request) auth.Session {
+func (g *SessionScheme) getSession(r *http.Request) auth.Session {
 	// Check request context cache first
 	if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok {
 		if cached := holder.getSession(); cached != nil {
@@ -1041,12 +1041,12 @@ func (g *SessionGuard) getSession(r *http.Request) auth.Session {
 // consultServerStore enforces server-side session revocation. When a store
 // has been installed, every authenticated request looks up the session by
 // id; a missing or expired record returns ErrSessionRevoked. The Get result
-// is cached on the request-scoped sessionHolder so multiple guard methods
+// is cached on the request-scoped sessionHolder so multiple scheme methods
 // in the same request only pay one round-trip. LastSeenAt is refreshed on
 // the underlying store at most once per lastSeenDebounce interval.
 //
 // Returns nil when no store is configured (cookie-only mode preserved).
-func (g *SessionGuard) consultServerStore(r *http.Request, session auth.Session) error {
+func (g *SessionScheme) consultServerStore(r *http.Request, session auth.Session) error {
 	store := g.getServerStore()
 	if store == nil {
 		return nil
@@ -1095,7 +1095,7 @@ func (g *SessionGuard) consultServerStore(r *http.Request, session auth.Session)
 // maybeRefreshLastSeen writes a debounced LastSeenAt update back to the
 // store. The debounce keeps the read on every request (mandatory for
 // revocation) without doubling the round-trips.
-func (g *SessionGuard) maybeRefreshLastSeen(ctx context.Context, store auth.ServerSessionStore, rec *auth.StoredSession) {
+func (g *SessionScheme) maybeRefreshLastSeen(ctx context.Context, store auth.ServerSessionStore, rec *auth.StoredSession) {
 	if rec == nil {
 		return
 	}
@@ -1120,7 +1120,7 @@ func (g *SessionGuard) maybeRefreshLastSeen(ctx context.Context, store auth.Serv
 // MemoryStore sweep / Redis TTL to reap; the "active sessions" listing
 // may briefly show two rows for the same user. Acceptable trade-off vs.
 // tracking the prior id across the regenerate boundary.
-func (g *SessionGuard) recordServerSession(r *http.Request, session auth.Session, user auth.Authenticatable) {
+func (g *SessionScheme) recordServerSession(r *http.Request, session auth.Session, user auth.Authenticatable) {
 	store := g.getServerStore()
 	if store == nil {
 		return
@@ -1155,7 +1155,7 @@ func (g *SessionGuard) recordServerSession(r *http.Request, session auth.Session
 
 // ClearRememberTokensForUser implements auth.RememberTokenClearer. It
 // resets the user's persistent remember-me token via the configured
-// UserProvider so a "sign out everywhere" admin action also invalidates
+// UserStore so a "sign out everywhere" admin action also invalidates
 // the remember cookie path. A missing user is treated as a no-op (the
 // remember credential cannot resurrect what does not exist), so the
 // caller (Manager.RevokeAllSessions) does not surface a confusing error
@@ -1165,17 +1165,17 @@ func (g *SessionGuard) recordServerSession(r *http.Request, session auth.Session
 // token across every device, which is the intended behavior for
 // RevokeAllSessions but is why Manager.RevokeSession (single-session)
 // deliberately does NOT call this method.
-func (g *SessionGuard) ClearRememberTokensForUser(ctx context.Context, userID string) error {
-	provider := g.loadProvider()
-	user, err := provider.FindByIDCtx(ctx, userID)
+func (g *SessionScheme) ClearRememberTokensForUser(ctx context.Context, userID string) error {
+	userStore := g.loadUserStore()
+	user, err := userStore.FindByIDCtx(ctx, userID)
 	if err != nil || user == nil {
 		return nil
 	}
-	return provider.UpdateRememberTokenCtx(ctx, user, "")
+	return userStore.UpdateRememberTokenCtx(ctx, user, "")
 }
 
 // clientIP returns the originating client IP for r, honouring the
-// guard's configured trusted-proxy list. When no proxies are trusted
+// scheme's configured trusted-proxy list. When no proxies are trusted
 // (the default), the result is the host portion of r.RemoteAddr with
 // the ephemeral TCP port stripped. When the request arrives from a
 // trusted proxy, RFC 7239 Forwarded / X-Forwarded-For / X-Real-IP
@@ -1185,7 +1185,7 @@ func (g *SessionGuard) ClearRememberTokensForUser(ctx context.Context, userID st
 // listings show the real client, not the load balancer, and so the
 // administrative "Sign out everywhere" UX surfaces meaningful IPs.
 // Returns "" when r.RemoteAddr is unparseable.
-func (g *SessionGuard) clientIP(r *http.Request) string {
+func (g *SessionScheme) clientIP(r *http.Request) string {
 	return clientip.ExtractString(r, g.getTrustedProxies())
 }
 
@@ -1195,7 +1195,7 @@ func (g *SessionGuard) clientIP(r *http.Request) string {
 // Validation only: rotate-on-use (V2-08) happens in anchorRecalledUser,
 // which calls rotateRememberToken once the revival fully anchors, so a
 // recall that fails fixation/store checks does not burn the token.
-func (g *SessionGuard) checkRememberCookie(r *http.Request) auth.Authenticatable {
+func (g *SessionScheme) checkRememberCookie(r *http.Request) auth.Authenticatable {
 	cookie, err := r.Cookie("remember_" + g.config.Name)
 	if err != nil {
 		return nil
@@ -1220,7 +1220,7 @@ func (g *SessionGuard) checkRememberCookie(r *http.Request) auth.Authenticatable
 	token := parts[1]
 
 	// Look up user by ID
-	user, err := g.loadProvider().FindByIDCtx(r.Context(), userID)
+	user, err := g.loadUserStore().FindByIDCtx(r.Context(), userID)
 	if err != nil || user == nil {
 		return nil
 	}
@@ -1246,7 +1246,7 @@ func (g *SessionGuard) checkRememberCookie(r *http.Request) auth.Authenticatable
 // rememberCookieLifetime returns the cookie TTL for remember-me:
 // min(session lifetime, remember-me default). Returns an error when the
 // session lifetime is zero so callers refuse to create the cookie.
-func (g *SessionGuard) rememberCookieLifetime() (time.Duration, error) {
+func (g *SessionScheme) rememberCookieLifetime() (time.Duration, error) {
 	const defaultRememberDuration = 30 * 24 * time.Hour
 	if g.config.Lifetime <= 0 {
 		return 0, errors.New("velocity/auth: session lifetime must be positive to enable remember-me")
@@ -1259,12 +1259,12 @@ func (g *SessionGuard) rememberCookieLifetime() (time.Duration, error) {
 }
 
 // setRememberCookie sets the remember me cookie at login, persisting the
-// new token hash unconditionally through the provider (there is no prior
+// new token hash unconditionally through the user store (there is no prior
 // credential to guard against; login may always overwrite). ctx is the
-// request context so a client disconnect aborts the provider write.
-func (g *SessionGuard) setRememberCookie(ctx context.Context, w http.ResponseWriter, user auth.Authenticatable) error {
+// request context so a client disconnect aborts the user store write.
+func (g *SessionScheme) setRememberCookie(ctx context.Context, w http.ResponseWriter, user auth.Authenticatable) error {
 	return g.issueRememberCookie(w, user, func(hashed string) error {
-		return g.loadProvider().UpdateRememberTokenCtx(ctx, user, hashed)
+		return g.loadUserStore().UpdateRememberTokenCtx(ctx, user, hashed)
 	})
 }
 
@@ -1277,7 +1277,7 @@ func (g *SessionGuard) setRememberCookie(ctx context.Context, w http.ResponseWri
 // Encryption runs BEFORE persist so an encryptor failure cannot strand
 // the user: overwriting the stored hash while unable to deliver the
 // replacement cookie would silently sign the device out.
-func (g *SessionGuard) issueRememberCookie(w http.ResponseWriter, user auth.Authenticatable, persist func(hashed string) error) error {
+func (g *SessionScheme) issueRememberCookie(w http.ResponseWriter, user auth.Authenticatable, persist func(hashed string) error) error {
 	ttl, err := g.rememberCookieLifetime()
 	if err != nil {
 		return err
@@ -1335,7 +1335,7 @@ func (g *SessionGuard) issueRememberCookie(w http.ResponseWriter, user auth.Auth
 }
 
 // clearRememberCookie clears remember me cookie
-func (g *SessionGuard) clearRememberCookie(w http.ResponseWriter) {
+func (g *SessionScheme) clearRememberCookie(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     "remember_" + g.config.Name,
 		Value:    "",

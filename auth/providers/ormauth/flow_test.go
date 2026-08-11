@@ -10,25 +10,25 @@ import (
 )
 
 // TestSessionAuthFlow is the integration test for session-based auth:
-// provider lookup, password verification, session put/has, and invalidate.
+// user store lookup, password verification, session put/has, and invalidate.
 func TestSessionAuthFlow(t *testing.T) {
 	m := newManager(t)
 	seedUser(t, m, testEmail, testPassword)
-	provider := newProvider(t)
+	userStore := newStore(t)
 
 	credentials := map[string]interface{}{
 		"email":    testEmail,
 		"password": testPassword,
 	}
 
-	user, err := provider.FindByCredentials(credentials)
+	user, err := userStore.FindByCredentials(credentials)
 	if err != nil {
 		t.Fatalf("FindByCredentials: %v", err)
 	}
-	if !provider.ValidateCredentials(user, credentials) {
+	if !userStore.ValidateCredentials(user, credentials) {
 		t.Fatal("ValidateCredentials should succeed with the correct password")
 	}
-	if provider.ValidateCredentials(user, map[string]interface{}{"password": "wrong-password"}) {
+	if userStore.ValidateCredentials(user, map[string]interface{}{"password": "wrong-password"}) {
 		t.Error("ValidateCredentials should fail with the wrong password")
 	}
 
@@ -44,13 +44,13 @@ func TestSessionAuthFlow(t *testing.T) {
 	}
 }
 
-// TestJWTAuthFlow is the integration test for JWT auth: provider lookup,
+// TestJWTAuthFlow is the integration test for JWT auth: user store lookup,
 // password verification, token generation, and a Bearer header round-trip
 // with claims verification.
 func TestJWTAuthFlow(t *testing.T) {
 	m := newManager(t)
 	seedUser(t, m, testEmail, testPassword)
-	provider := newProvider(t)
+	userStore := newStore(t)
 
 	jwtMgr, err := auth.NewJWTManager(auth.JWTConfig{
 		Secret:    "test-secret-key-for-testing-must-be-32",
@@ -66,11 +66,11 @@ func TestJWTAuthFlow(t *testing.T) {
 		"password": testPassword,
 	}
 
-	user, err := provider.FindByCredentials(credentials)
+	user, err := userStore.FindByCredentials(credentials)
 	if err != nil {
 		t.Fatalf("FindByCredentials: %v", err)
 	}
-	if !provider.ValidateCredentials(user, credentials) {
+	if !userStore.ValidateCredentials(user, credentials) {
 		t.Fatal("ValidateCredentials should succeed with the correct password")
 	}
 

@@ -41,35 +41,35 @@ func (h *hasherCallCounter) Verify(password, hash string) bool {
 }
 func (h *hasherCallCounter) NeedsRehash(hash string) bool { return h.inner.NeedsRehash(hash) }
 
-// timingTestProvider implements auth.UserProvider with toggleable behavior
+// timingTestStore implements auth.UserStore with toggleable behavior
 // so the test can simulate "user not found" and "user found, password
 // wrong" without database plumbing.
-type timingTestProvider struct {
+type timingTestStore struct {
 	user *timingTestUser
 }
 
-func (p *timingTestProvider) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *timingTestStore) FindByID(id interface{}) (auth.Authenticatable, error) {
 	if p.user != nil && p.user.id == id {
 		return p.user, nil
 	}
 	return nil, errors.New("not found")
 }
-func (p *timingTestProvider) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *timingTestStore) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
 	email, _ := credentials["email"].(string)
 	if p.user != nil && email == p.user.id {
 		return p.user, nil
 	}
 	return nil, errors.New("not found")
 }
-func (p *timingTestProvider) ValidateCredentials(user auth.Authenticatable, credentials map[string]interface{}) bool {
+func (p *timingTestStore) ValidateCredentials(user auth.Authenticatable, credentials map[string]interface{}) bool {
 	password, _ := credentials["password"].(string)
 	return password == p.user.password
 }
-func (p *timingTestProvider) UpdateRememberToken(auth.Authenticatable, string) error { return nil }
+func (p *timingTestStore) UpdateRememberToken(auth.Authenticatable, string) error { return nil }
 
-// newTimingGuard builds a SessionGuard backed by an in-memory provider
+// newTimingScheme builds a SessionScheme backed by an in-memory user store
 // and a hasher whose Verify calls are observable.
-func newTimingGuard(t *testing.T, password string) (*SessionGuard, *hasherCallCounter, *timingTestProvider) {
+func newTimingScheme(t *testing.T, password string) (*SessionScheme, *hasherCallCounter, *timingTestStore) {
 	t.Helper()
 	enc, err := crypto.NewEncryptor(crypto.Config{
 		Key:    strings.Repeat("k", 32),
@@ -83,8 +83,8 @@ func newTimingGuard(t *testing.T, password string) (*SessionGuard, *hasherCallCo
 		t.Fatalf("hash password: %v", err)
 	}
 	user := &timingTestUser{id: "real@example.com", password: bcryptHash}
-	provider := &timingTestProvider{user: user}
-	guard, err := NewSessionGuard(provider, auth.SessionConfig{
+	userStore := &timingTestStore{user: user}
+	scheme, err := NewSessionScheme(userStore, auth.SessionConfig{
 		Name:     "vel_session",
 		Lifetime: 60,
 		Path:     "/",
@@ -92,29 +92,29 @@ func newTimingGuard(t *testing.T, password string) (*SessionGuard, *hasherCallCo
 		SameSite: http.SameSiteLaxMode,
 	}, enc)
 	if err != nil {
-		t.Fatalf("NewSessionGuard: %v", err)
+		t.Fatalf("NewSessionScheme: %v", err)
 	}
 	counter := &hasherCallCounter{inner: auth.NewBcryptHasher(4)}
-	guard.hasher = counter
-	return guard, counter, provider
+	scheme.hasher = counter
+	return scheme, counter, userStore
 }
 
-// TestSessionGuard_Attempt_MissingUserStillCallsHasher confirms the H-09
+// TestSessionScheme_Attempt_MissingUserStillCallsHasher confirms the H-09
 // dummy-bcrypt mitigation: when the user does not exist, Attempt MUST still
 // run the configured hasher (against the dummy hash) so the CPU profile
 // matches the bcrypt-verify branch.
-func TestSessionGuard_Attempt_MissingUserStillCallsHasher(t *testing.T) {
-	guard, counter, _ := newTimingGuard(t, "correct-password")
+func TestSessionScheme_Attempt_MissingUserStillCallsHasher(t *testing.T) {
+	scheme, counter, _ := newTimingScheme(t, "correct-password")
 	// Bypass the wall-clock floor for this test; we only care that the
 	// hasher fired, not how long the call took.
-	guard.SetAttemptFloor(-1)
+	scheme.SetAttemptFloor(-1)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/login", nil)
 	r = WithSessionContext(r)
 
-	ok, err := guard.Attempt(w, r, map[string]interface{}{
-		"email":    "ghost@example.com", // not in provider
+	ok, err := scheme.Attempt(w, r, map[string]interface{}{
+		"email":    "ghost@example.com", // not in userStore
 		"password": "anything",
 	})
 	if ok {
@@ -128,18 +128,18 @@ func TestSessionGuard_Attempt_MissingUserStillCallsHasher(t *testing.T) {
 	}
 }
 
-// TestSessionGuard_Attempt_EnforcesFloor pins the wall-clock floor: with a
+// TestSessionScheme_Attempt_EnforcesFloor pins the wall-clock floor: with a
 // configured floor of 50ms, the missing-user path MUST take at least 50ms.
-func TestSessionGuard_Attempt_EnforcesFloor(t *testing.T) {
-	guard, _, _ := newTimingGuard(t, "correct-password")
-	guard.SetAttemptFloor(50 * time.Millisecond)
+func TestSessionScheme_Attempt_EnforcesFloor(t *testing.T) {
+	scheme, _, _ := newTimingScheme(t, "correct-password")
+	scheme.SetAttemptFloor(50 * time.Millisecond)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/login", nil)
 	r = WithSessionContext(r)
 
 	start := time.Now()
-	_, err := guard.Attempt(w, r, map[string]interface{}{
+	_, err := scheme.Attempt(w, r, map[string]interface{}{
 		"email":    "ghost@example.com",
 		"password": "anything",
 	})
@@ -152,13 +152,13 @@ func TestSessionGuard_Attempt_EnforcesFloor(t *testing.T) {
 	}
 }
 
-// TestSessionGuard_Attempt_DefaultFloorIsApplied confirms the package
+// TestSessionScheme_Attempt_DefaultFloorIsApplied confirms the package
 // default of 200ms kicks in when SetAttemptFloor was never called.
-func TestSessionGuard_Attempt_DefaultFloorIsApplied(t *testing.T) {
+func TestSessionScheme_Attempt_DefaultFloorIsApplied(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping 200ms wall-clock test in -short mode")
 	}
-	guard, _, _ := newTimingGuard(t, "correct-password")
+	scheme, _, _ := newTimingScheme(t, "correct-password")
 	// Do NOT call SetAttemptFloor: rely on the package default.
 
 	w := httptest.NewRecorder()
@@ -166,7 +166,7 @@ func TestSessionGuard_Attempt_DefaultFloorIsApplied(t *testing.T) {
 	r = WithSessionContext(r)
 
 	start := time.Now()
-	_, _ = guard.Attempt(w, r, map[string]interface{}{
+	_, _ = scheme.Attempt(w, r, map[string]interface{}{
 		"email":    "ghost@example.com",
 		"password": "anything",
 	})
@@ -190,13 +190,13 @@ func TestTimebox_NoFloorSkipsSleep(t *testing.T) {
 	}
 }
 
-// Ctx-suffixed shims for auth.UserProvider, added in Sweep 1b.
-func (p *timingTestProvider) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+// Ctx-suffixed shims for auth.UserStore, added in Sweep 1b.
+func (p *timingTestStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
 	return p.FindByID(id)
 }
-func (p *timingTestProvider) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *timingTestStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
 	return p.FindByCredentials(credentials)
 }
-func (p *timingTestProvider) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+func (p *timingTestStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
 	return p.UpdateRememberToken(user, token)
 }

@@ -347,11 +347,11 @@ func ConfigFromEnv() Config {
 
 	// Auth
 	config.Auth = auth.Config{
-		DefaultGuard:   os.Getenv("AUTH_GUARD"),
-		Guards:         make(map[string]auth.GuardConfig),
+		DefaultScheme:  os.Getenv("AUTH_SCHEME"),
+		Schemes:        make(map[string]auth.SchemeConfig),
 		BcryptCost:     envIntOrDefault("HASH_BCRYPT_COST", 10),
 		TrustedProxies: splitTrustedProxies(os.Getenv("AUTH_TRUSTED_PROXIES")),
-		// AUTH_ATTEMPT_FLOOR is the wall-clock floor for guard Attempt
+		// AUTH_ATTEMPT_FLOOR is the wall-clock floor for scheme Attempt
 		// (H-09); zero falls back to auth.DefaultAttemptFloor (200ms).
 		// Operators with high bcrypt cost (12+) should raise this so
 		// the real-verify path still fits inside the budget; otherwise
@@ -362,24 +362,24 @@ func ConfigFromEnv() Config {
 		AttemptFloor: envDurationOrDefault("AUTH_ATTEMPT_FLOOR", 0),
 	}
 
-	// Configure guards if AUTH_GUARD is set
-	if config.Auth.DefaultGuard != "" {
-		// Session/web guard
-		config.Auth.Guards["web"] = auth.GuardConfig{
+	// Configure schemes if AUTH_SCHEME is set
+	if config.Auth.DefaultScheme != "" {
+		// Session/web scheme
+		config.Auth.Schemes["web"] = auth.SchemeConfig{
 			Driver: "session",
 			Options: map[string]interface{}{
 				"session": config.Session,
 			},
 		}
-		config.Auth.Guards["session"] = config.Auth.Guards["web"]
+		config.Auth.Schemes["session"] = config.Auth.Schemes["web"]
 
-		// JWT/API guard
+		// JWT/API scheme
 		jwtAlgo := os.Getenv("AUTH_JWT_ALGO")
 		if jwtAlgo == "" {
 			jwtAlgo = "HS256"
 		}
 
-		config.Auth.Guards["api"] = auth.GuardConfig{
+		config.Auth.Schemes["api"] = auth.SchemeConfig{
 			Driver: "jwt",
 			Options: map[string]interface{}{
 				"jwt": auth.JWTConfig{
@@ -391,7 +391,7 @@ func ConfigFromEnv() Config {
 				},
 			},
 		}
-		config.Auth.Guards["jwt"] = config.Auth.Guards["api"]
+		config.Auth.Schemes["jwt"] = config.Auth.Schemes["api"]
 	}
 
 	// CSRF: seed from csrf.DefaultConfig() so new fields added to the

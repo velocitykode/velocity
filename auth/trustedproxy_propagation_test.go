@@ -9,21 +9,21 @@ import (
 	"github.com/velocitykode/velocity/internal/clientip"
 )
 
-// fakeTrustedProxyGuard is a minimal Guard that records the
+// fakeTrustedProxyScheme is a minimal Scheme that records the
 // TrustedProxies snapshot it receives via the auth.TrustedProxiesReceiver
 // interface so we can assert Manager propagates correctly.
-type fakeTrustedProxyGuard struct {
+type fakeTrustedProxyScheme struct {
 	mu      sync.Mutex
 	proxies []*net.IPNet
 }
 
-func (g *fakeTrustedProxyGuard) SetTrustedProxies(p []*net.IPNet) {
+func (g *fakeTrustedProxyScheme) SetTrustedProxies(p []*net.IPNet) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.proxies = append([]*net.IPNet(nil), p...)
 }
 
-func (g *fakeTrustedProxyGuard) snapshot() []*net.IPNet {
+func (g *fakeTrustedProxyScheme) snapshot() []*net.IPNet {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	out := make([]*net.IPNet, len(g.proxies))
@@ -31,31 +31,31 @@ func (g *fakeTrustedProxyGuard) snapshot() []*net.IPNet {
 	return out
 }
 
-// Implement the Guard interface (no-op for everything besides
+// Implement the Scheme interface (no-op for everything besides
 // SetTrustedProxies; nothing under test exercises these paths).
-func (g *fakeTrustedProxyGuard) Check(*http.Request) bool { return false }
-func (g *fakeTrustedProxyGuard) User(*http.Request) Authenticatable {
+func (g *fakeTrustedProxyScheme) Check(*http.Request) bool { return false }
+func (g *fakeTrustedProxyScheme) User(*http.Request) Authenticatable {
 	return nil
 }
-func (g *fakeTrustedProxyGuard) ID(*http.Request) interface{} { return nil }
-func (g *fakeTrustedProxyGuard) Login(http.ResponseWriter, *http.Request, Authenticatable, ...bool) error {
+func (g *fakeTrustedProxyScheme) ID(*http.Request) interface{} { return nil }
+func (g *fakeTrustedProxyScheme) Login(http.ResponseWriter, *http.Request, Authenticatable, ...bool) error {
 	return nil
 }
-func (g *fakeTrustedProxyGuard) LoginByID(http.ResponseWriter, *http.Request, interface{}, ...bool) error {
+func (g *fakeTrustedProxyScheme) LoginByID(http.ResponseWriter, *http.Request, interface{}, ...bool) error {
 	return nil
 }
-func (g *fakeTrustedProxyGuard) Attempt(http.ResponseWriter, *http.Request, map[string]interface{}, ...bool) (bool, error) {
+func (g *fakeTrustedProxyScheme) Attempt(http.ResponseWriter, *http.Request, map[string]interface{}, ...bool) (bool, error) {
 	return false, nil
 }
-func (g *fakeTrustedProxyGuard) Logout(http.ResponseWriter, *http.Request) error {
+func (g *fakeTrustedProxyScheme) Logout(http.ResponseWriter, *http.Request) error {
 	return nil
 }
-func (g *fakeTrustedProxyGuard) SetProvider(UserProvider) {}
+func (g *fakeTrustedProxyScheme) SetUserStore(UserStore) {}
 
-func TestManager_SetTrustedProxies_PropagatesToRegisteredGuards(t *testing.T) {
+func TestManager_SetTrustedProxies_PropagatesToRegisteredSchemes(t *testing.T) {
 	m := NewManager()
-	g := &fakeTrustedProxyGuard{}
-	m.RegisterGuard("test", g)
+	g := &fakeTrustedProxyScheme{}
+	m.RegisterScheme("test", g)
 
 	proxies, err := clientip.ParseCIDRs([]string{"10.0.0.0/8", "192.168.0.0/16"})
 	if err != nil {
@@ -66,7 +66,7 @@ func TestManager_SetTrustedProxies_PropagatesToRegisteredGuards(t *testing.T) {
 
 	got := g.snapshot()
 	if len(got) != 2 {
-		t.Fatalf("guard did not receive proxies: len=%d", len(got))
+		t.Fatalf("scheme did not receive proxies: len=%d", len(got))
 	}
 	mgrSnap := m.TrustedProxies()
 	if len(mgrSnap) != 2 {
@@ -74,25 +74,25 @@ func TestManager_SetTrustedProxies_PropagatesToRegisteredGuards(t *testing.T) {
 	}
 }
 
-func TestManager_RegisterGuard_InheritsTrustedProxies(t *testing.T) {
-	// SetTrustedProxies BEFORE RegisterGuard: guards registered later
+func TestManager_RegisterScheme_InheritsTrustedProxies(t *testing.T) {
+	// SetTrustedProxies BEFORE RegisterScheme: schemes registered later
 	// must still inherit the list.
 	m := NewManager()
 	proxies, _ := clientip.ParseCIDRs([]string{"10.0.0.0/8"})
 	m.SetTrustedProxies(proxies)
 
-	g := &fakeTrustedProxyGuard{}
-	m.RegisterGuard("test", g)
+	g := &fakeTrustedProxyScheme{}
+	m.RegisterScheme("test", g)
 
 	if got := g.snapshot(); len(got) != 1 {
-		t.Fatalf("guard registered after SetTrustedProxies did not inherit: len=%d", len(got))
+		t.Fatalf("scheme registered after SetTrustedProxies did not inherit: len=%d", len(got))
 	}
 }
 
 func TestManager_SetTrustedProxies_NilClears(t *testing.T) {
 	m := NewManager()
-	g := &fakeTrustedProxyGuard{}
-	m.RegisterGuard("test", g)
+	g := &fakeTrustedProxyScheme{}
+	m.RegisterScheme("test", g)
 
 	proxies, _ := clientip.ParseCIDRs([]string{"10.0.0.0/8"})
 	m.SetTrustedProxies(proxies)

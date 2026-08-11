@@ -6,67 +6,67 @@ import (
 	"testing"
 )
 
-// mockSessionGuard is a Guard that also satisfies SessionAware so the
+// mockSessionScheme is a Scheme that also satisfies SessionAware so the
 // Manager.Session delegation path can be exercised.
-type mockSessionGuard struct {
-	mockGuard
+type mockSessionScheme struct {
+	mockScheme
 	session Session
 }
 
-func (g *mockSessionGuard) Session(*http.Request) Session { return g.session }
+func (g *mockSessionScheme) Session(*http.Request) Session { return g.session }
 
 // Compile-time check that the test mocks satisfy the interfaces under test.
 var (
-	_ Guard        = (*mockGuard)(nil)
-	_ Guard        = (*mockSessionGuard)(nil)
-	_ SessionAware = (*mockSessionGuard)(nil)
+	_ Scheme       = (*mockScheme)(nil)
+	_ Scheme       = (*mockSessionScheme)(nil)
+	_ SessionAware = (*mockSessionScheme)(nil)
 )
 
-func TestManagerSession_NoDefaultGuard(t *testing.T) {
+func TestManagerSession_NoDefaultScheme(t *testing.T) {
 	m := NewManager()
 
-	// Sanity: no guard registered, DefaultGuard must error.
-	if _, err := m.DefaultGuard(); err == nil {
-		t.Fatal("precondition: DefaultGuard() should error when no guard registered")
+	// Sanity: no scheme registered, DefaultScheme must error.
+	if _, err := m.DefaultScheme(); err == nil {
+		t.Fatal("precondition: DefaultScheme() should error when no scheme registered")
 	}
 
 	r := httptest.NewRequest("GET", "/", nil)
 
 	// Must not panic; must return nil.
 	if got := m.Session(r); got != nil {
-		t.Errorf("Session() with no default guard = %v, want nil", got)
+		t.Errorf("Session() with no default scheme = %v, want nil", got)
 	}
 }
 
-func TestManagerSession_GuardNotSessionAware(t *testing.T) {
+func TestManagerSession_SchemeNotSessionAware(t *testing.T) {
 	m := NewManager()
-	m.RegisterGuard("web", &mockGuard{name: "web"})
+	m.RegisterScheme("web", &mockScheme{name: "web"})
 
 	r := httptest.NewRequest("GET", "/", nil)
 
 	if got := m.Session(r); got != nil {
-		t.Errorf("Session() with non-SessionAware guard = %v, want nil", got)
+		t.Errorf("Session() with non-SessionAware scheme = %v, want nil", got)
 	}
 }
 
-func TestManagerSession_GuardSessionAware(t *testing.T) {
+func TestManagerSession_SchemeSessionAware(t *testing.T) {
 	wantSession := NewSession("manager-session-id")
 	wantSession.Flash("greeting", "hello")
 
 	m := NewManager()
-	m.RegisterGuard("web", &mockSessionGuard{
-		mockGuard: mockGuard{name: "web"},
-		session:   wantSession,
+	m.RegisterScheme("web", &mockSessionScheme{
+		mockScheme: mockScheme{name: "web"},
+		session:    wantSession,
 	})
 
 	r := httptest.NewRequest("GET", "/", nil)
 
 	got := m.Session(r)
 	if got == nil {
-		t.Fatal("Session() returned nil for SessionAware guard")
+		t.Fatal("Session() returned nil for SessionAware scheme")
 	}
 	if got != Session(wantSession) {
-		t.Error("Session() did not return the guard's session instance")
+		t.Error("Session() did not return the scheme's session instance")
 	}
 
 	// Confirm we can drive the flash bag through the Manager surface.

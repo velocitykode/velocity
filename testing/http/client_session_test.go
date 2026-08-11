@@ -25,33 +25,33 @@ func (m *sessionMockT) Errorf(format string, args ...interface{}) {
 	m.errors = append(m.errors, fmt.Sprintf(format, args...))
 }
 
-// stubUserProvider satisfies auth.UserProvider for guard construction. No
+// stubUserStore satisfies auth.UserStore for scheme construction. No
 // session helper below resolves a user, so every method returns a zero value.
-type stubUserProvider struct{}
+type stubUserStore struct{}
 
-func (stubUserProvider) FindByIDCtx(ctx context.Context, id interface{}) (auth.Authenticatable, error) {
+func (stubUserStore) FindByIDCtx(ctx context.Context, id interface{}) (auth.Authenticatable, error) {
 	return nil, nil
 }
-func (stubUserProvider) FindByID(id interface{}) (auth.Authenticatable, error) { return nil, nil }
-func (stubUserProvider) FindByCredentialsCtx(ctx context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (stubUserStore) FindByID(id interface{}) (auth.Authenticatable, error) { return nil, nil }
+func (stubUserStore) FindByCredentialsCtx(ctx context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
 	return nil, nil
 }
-func (stubUserProvider) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (stubUserStore) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
 	return nil, nil
 }
-func (stubUserProvider) ValidateCredentials(user auth.Authenticatable, credentials map[string]interface{}) bool {
+func (stubUserStore) ValidateCredentials(user auth.Authenticatable, credentials map[string]interface{}) bool {
 	return false
 }
-func (stubUserProvider) UpdateRememberTokenCtx(ctx context.Context, user auth.Authenticatable, token string) error {
+func (stubUserStore) UpdateRememberTokenCtx(ctx context.Context, user auth.Authenticatable, token string) error {
 	return nil
 }
-func (stubUserProvider) UpdateRememberToken(user auth.Authenticatable, token string) error {
+func (stubUserStore) UpdateRememberToken(user auth.Authenticatable, token string) error {
 	return nil
 }
 
-// newSessionTestGuard builds a real session guard backed by a cookie store and
+// newSessionTestScheme builds a real session scheme backed by a cookie store and
 // an AES-256-GCM encryptor, the same shape production wiring produces.
-func newSessionTestGuard(t *testing.T) (*guards.SessionGuard, crypto.Encryptor) {
+func newSessionTestScheme(t *testing.T) (*guards.SessionScheme, crypto.Encryptor) {
 	t.Helper()
 	enc, err := crypto.NewEncryptor(crypto.Config{
 		Key:    strings.Repeat("k", 32),
@@ -60,7 +60,7 @@ func newSessionTestGuard(t *testing.T) (*guards.SessionGuard, crypto.Encryptor) 
 	if err != nil {
 		t.Fatalf("NewEncryptor: %v", err)
 	}
-	guard, err := guards.NewSessionGuard(stubUserProvider{}, auth.SessionConfig{
+	scheme, err := guards.NewSessionScheme(stubUserStore{}, auth.SessionConfig{
 		Name:     "vel_session",
 		Lifetime: 3600,
 		Path:     "/",
@@ -68,9 +68,9 @@ func newSessionTestGuard(t *testing.T) (*guards.SessionGuard, crypto.Encryptor) 
 		SameSite: http.SameSiteLaxMode,
 	}, enc)
 	if err != nil {
-		t.Fatalf("NewSessionGuard: %v", err)
+		t.Fatalf("NewSessionScheme: %v", err)
 	}
-	return guard, enc
+	return scheme, enc
 }
 
 // noopHandler is a router that does nothing. The session-data assertions are
@@ -96,64 +96,64 @@ func TestClient_WithSession_SeedsReadableSession(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			guard, _ := newSessionTestGuard(t)
+			scheme, _ := newSessionTestScheme(t)
 			client := NewTestClient(t, noopHandler())
 
-			client.WithSession(guard, tt.seed)
-			client.AssertSessionHas(guard, tt.key, tt.expect)
+			client.WithSession(scheme, tt.seed)
+			client.AssertSessionHas(scheme, tt.key, tt.expect)
 		})
 	}
 }
 
 func TestClient_WithSession_AssertSessionMissing(t *testing.T) {
-	guard, _ := newSessionTestGuard(t)
+	scheme, _ := newSessionTestScheme(t)
 	client := NewTestClient(t, noopHandler())
 
-	client.WithSession(guard, map[string]any{"role": "admin"})
+	client.WithSession(scheme, map[string]any{"role": "admin"})
 
-	client.AssertSessionHas(guard, "role", "admin")
-	client.AssertSessionMissing(guard, "nonexistent")
+	client.AssertSessionHas(scheme, "role", "admin")
+	client.AssertSessionMissing(scheme, "nonexistent")
 }
 
 func TestClient_AssertSessionHas_Mismatch_Fails(t *testing.T) {
 	tests := []struct {
 		name    string
-		assert  func(c *TestClient, guard *guards.SessionGuard)
+		assert  func(c *TestClient, scheme *guards.SessionScheme)
 		wantErr bool
 	}{
 		{
 			name:    "present key correct value passes",
-			assert:  func(c *TestClient, g *guards.SessionGuard) { c.AssertSessionHas(g, "role", "admin") },
+			assert:  func(c *TestClient, g *guards.SessionScheme) { c.AssertSessionHas(g, "role", "admin") },
 			wantErr: false,
 		},
 		{
 			name:    "present key wrong value fails",
-			assert:  func(c *TestClient, g *guards.SessionGuard) { c.AssertSessionHas(g, "role", "editor") },
+			assert:  func(c *TestClient, g *guards.SessionScheme) { c.AssertSessionHas(g, "role", "editor") },
 			wantErr: true,
 		},
 		{
 			name:    "missing key fails",
-			assert:  func(c *TestClient, g *guards.SessionGuard) { c.AssertSessionHas(g, "ghost", "x") },
+			assert:  func(c *TestClient, g *guards.SessionScheme) { c.AssertSessionHas(g, "ghost", "x") },
 			wantErr: true,
 		},
 		{
 			name:    "present key fails AssertSessionMissing",
-			assert:  func(c *TestClient, g *guards.SessionGuard) { c.AssertSessionMissing(g, "role") },
+			assert:  func(c *TestClient, g *guards.SessionScheme) { c.AssertSessionMissing(g, "role") },
 			wantErr: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			guard, _ := newSessionTestGuard(t)
+			scheme, _ := newSessionTestScheme(t)
 			// Seed the session into the client jar with a recording T, then run
 			// the assertion under test against the same client. Seeding does not
 			// fail, so any recorded error comes from the assertion.
 			mt := &sessionMockT{}
 			client := NewTestClient(mt, noopHandler())
-			client.WithSession(guard, map[string]any{"role": "admin"})
+			client.WithSession(scheme, map[string]any{"role": "admin"})
 
-			tt.assert(client, guard)
+			tt.assert(client, scheme)
 
 			if got := len(mt.errors) > 0; got != tt.wantErr {
 				t.Errorf("wantErr=%v, got errors=%v", tt.wantErr, mt.errors)
@@ -193,7 +193,7 @@ func TestResponse_AssertSessionHasErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, enc := newSessionTestGuard(t)
+			_, enc := newSessionTestScheme(t)
 			client := NewTestClient(t, flashErrorsHandler(t, enc, bag))
 			resp := client.Get("/")
 
@@ -209,7 +209,7 @@ func TestResponse_AssertSessionHasErrors(t *testing.T) {
 }
 
 func TestResponse_AssertSessionHasErrors_NoCookie_Fails(t *testing.T) {
-	_, enc := newSessionTestGuard(t)
+	_, enc := newSessionTestScheme(t)
 	// Handler writes nothing, so there is no flash cookie to decrypt.
 	client := NewTestClient(t, noopHandler())
 	resp := client.Get("/")
@@ -224,7 +224,7 @@ func TestResponse_AssertSessionHasErrors_NoCookie_Fails(t *testing.T) {
 }
 
 func TestResponse_AssertSessionHasErrors_NoEncryptor_Fails(t *testing.T) {
-	_, enc := newSessionTestGuard(t)
+	_, enc := newSessionTestScheme(t)
 	// A nil encryptor is passed, so there is no key to open the bag and the
 	// assertion fails clean.
 	client := NewTestClient(t, flashErrorsHandler(t, enc, map[string]any{"email": "required"}))
@@ -240,7 +240,7 @@ func TestResponse_AssertSessionHasErrors_NoEncryptor_Fails(t *testing.T) {
 }
 
 func TestResponse_AssertSessionHasErrors_WrongKey_Fails(t *testing.T) {
-	_, enc := newSessionTestGuard(t)
+	_, enc := newSessionTestScheme(t)
 
 	// A different key cannot authenticate the sealed cookie, so the bag must
 	// read as absent rather than partially trusted.

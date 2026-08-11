@@ -17,7 +17,7 @@ func (panicPolicy) Authorize(user Authenticatable, action string, resource inter
 // TestAuthorizePolicy_BeforePanicDoesNotLeakRLock is the regression test for
 // security finding E-04. AuthorizePolicy previously held g.mu.RLock while
 // invoking user-supplied Before callbacks; a panic from those callbacks
-// bypassed the explicit RUnlock and permanently wedged the Gate's RWMutex,
+// bypassed the explicit RUnlock and permanently wedged the Access's RWMutex,
 // hanging every subsequent Define / RegisterPolicy / Before / After writer
 // (and eventually every reader queued behind that writer).
 //
@@ -31,9 +31,9 @@ func (panicPolicy) Authorize(user Authenticatable, action string, resource inter
 // Repeats 10 times to confirm no cumulative goroutine leak.
 func TestAuthorizePolicy_BeforePanicDoesNotLeakRLock(t *testing.T) {
 	for iter := 0; iter < 10; iter++ {
-		gate := NewGate()
-		gate.RegisterPolicy("post", panicPolicy{})
-		gate.Before(func(user Authenticatable, ability string, args ...interface{}) *bool {
+		access := NewAccess()
+		access.RegisterPolicy("post", panicPolicy{})
+		access.Before(func(user Authenticatable, ability string, args ...interface{}) *bool {
 			panic("E-04 regression: simulate before-callback panic")
 		})
 
@@ -47,7 +47,7 @@ func TestAuthorizePolicy_BeforePanicDoesNotLeakRLock(t *testing.T) {
 			defer func() {
 				_ = recover() // expected, ignored
 			}()
-			_ = gate.AuthorizePolicy(user, "post", "edit", post)
+			_ = access.AuthorizePolicy(user, "post", "edit", post)
 		}()
 
 		select {
@@ -60,7 +60,7 @@ func TestAuthorizePolicy_BeforePanicDoesNotLeakRLock(t *testing.T) {
 		defineDone := make(chan struct{})
 		go func() {
 			defer close(defineDone)
-			gate.Define("x", func(user Authenticatable, args ...interface{}) bool {
+			access.Define("x", func(user Authenticatable, args ...interface{}) bool {
 				return true
 			})
 		}()
@@ -80,14 +80,14 @@ func TestAuthorizePolicy_BeforePanicDoesNotLeakRLock(t *testing.T) {
 // (RWMutex contract forbids new readers when a writer is queued), so
 // authorization would stop responding process-wide.
 func TestAuthorizePolicy_PanicAllowsConcurrentAuthorization(t *testing.T) {
-	gate := NewGate()
-	gate.RegisterPolicy("post", PolicyFunc(func(user Authenticatable, action string, resource interface{}) bool {
+	access := NewAccess()
+	access.RegisterPolicy("post", PolicyFunc(func(user Authenticatable, action string, resource interface{}) bool {
 		return true
 	}))
 
 	// Register a panicking Before first, then a regular Define attempt
 	// after the panic to prove the writer path is unblocked.
-	gate.Before(func(user Authenticatable, ability string, args ...interface{}) *bool {
+	access.Before(func(user Authenticatable, ability string, args ...interface{}) *bool {
 		panic("E-04 regression: panic in before")
 	})
 
@@ -97,14 +97,14 @@ func TestAuthorizePolicy_PanicAllowsConcurrentAuthorization(t *testing.T) {
 	// Trigger the panic once.
 	func() {
 		defer func() { _ = recover() }()
-		_ = gate.AuthorizePolicy(user, "post", "edit", post)
+		_ = access.AuthorizePolicy(user, "post", "edit", post)
 	}()
 
 	// Writer must not hang.
 	writeDone := make(chan struct{})
 	go func() {
 		defer close(writeDone)
-		gate.Define("after", func(u Authenticatable, args ...interface{}) bool { return true })
+		access.Define("after", func(u Authenticatable, args ...interface{}) bool { return true })
 	}()
 	select {
 	case <-writeDone:
@@ -120,7 +120,7 @@ func TestAuthorizePolicy_PanicAllowsConcurrentAuthorization(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			defer func() { _ = recover() }()
-			_ = gate.AuthorizePolicy(user, "post", "edit", post)
+			_ = access.AuthorizePolicy(user, "post", "edit", post)
 		}()
 	}
 

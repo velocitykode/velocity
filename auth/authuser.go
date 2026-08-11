@@ -8,13 +8,13 @@ import (
 // so that GetAuthIdentifier() always returns a consistent type regardless
 // of the underlying database driver.
 //
-// Guards depend on this: SessionGuard encodes the identifier into the
+// Schemes depend on this: SessionScheme encodes the identifier into the
 // remember-me cookie and hands it back to FindByID, so a driver that
 // surfaces an integer primary key as int64 on one backend and int on
 // another must not change the identifier's Go type. String identifiers
 // (UUIDs) pass through unchanged.
 //
-// Exported for UserProvider implementations outside this package (see
+// Exported for UserStore implementations outside this package (see
 // auth/providers/ormauth), which must produce identifiers of the same
 // shape.
 func NormalizeID(v interface{}) interface{} {
@@ -37,8 +37,8 @@ func NormalizeID(v interface{}) interface{} {
 	}
 }
 
-// AuthUser is a minimal [Authenticatable] value. It is the shape guards
-// and tests use when a provider has no model of its own to hand back.
+// AuthUser is a minimal [Authenticatable] value. It is the shape schemes
+// and tests use when a user store has no model of its own to hand back.
 type AuthUser struct {
 	ID            interface{}
 	Name          string

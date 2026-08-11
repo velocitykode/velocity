@@ -264,7 +264,7 @@ func New(opts ...Option) (*App, error) {
 		return nil, fmt.Errorf("velocity: failed to initialize database: %w", err)
 	}
 	// sqlDB is the raw handle the queue and notification database drivers
-	// still take directly. Auth no longer needs one - its provider queries
+	// still take directly. Auth no longer needs one - its user store queries
 	// through the ORM's default manager set just below.
 	var sqlDB *sql.DB
 	if dbManager != nil {
@@ -297,11 +297,11 @@ func New(opts ...Option) (*App, error) {
 	}
 
 	// 6. Initialize auth manager. No cleanup registration: *auth.Manager
-	// does not currently expose Shutdown. JWT guard cleanup goroutines are
+	// does not currently expose Shutdown. JWT scheme cleanup goroutines are
 	// tied to the process lifetime.
 	//
 	// No *sql.DB or dialect is threaded through any more: the ORM-backed
-	// user provider issues its queries through orm.Model[T], which resolves
+	// user store issues its queries through orm.Model[T], which resolves
 	// the connection from the default manager installed in step 4 above and
 	// owns placeholder dialect selection itself.
 	a.Auth = initAuth(a.config.Auth, a.config.Session, a.Log, a.Crypto)

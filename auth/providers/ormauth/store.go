@@ -11,15 +11,15 @@ import (
 	"github.com/velocitykode/velocity/orm"
 )
 
-// Provider is an [auth.UserProvider] backed by the ORM's generic query
+// Store is an [auth.UserStore] backed by the ORM's generic query
 // builder for model type T. Every read and write goes through
 // orm.Model[T], so the table name, the placeholder dialect, soft-delete
 // scoping, and identifier quoting are all owned by the ORM grammar
 // rather than reimplemented here.
 //
-// A Provider is immutable after construction and safe for concurrent
+// A Store is immutable after construction and safe for concurrent
 // use; all per-call state lives on the stack.
-type Provider[T any] struct {
+type Store[T any] struct {
 	opts Options
 
 	// meta is the ORM's canonical reflection view of T.
@@ -48,36 +48,36 @@ type Provider[T any] struct {
 
 // compile-time interface conformance.
 var (
-	_ auth.UserProvider                   = (*Provider[User])(nil)
-	_ auth.RememberTokenCompareAndSwapper = (*Provider[User])(nil)
+	_ auth.UserStore                      = (*Store[User])(nil)
+	_ auth.RememberTokenCompareAndSwapper = (*Store[User])(nil)
 )
 
-// New builds a Provider for model type T.
+// New builds a Store for model type T.
 //
 // Construction never panics and never returns an error inline; a model
-// that cannot be mapped records the failure, which [Provider.Validate]
+// that cannot be mapped records the failure, which [Store.Validate]
 // reports and every query method returns. Callers wiring from
 // configuration should go through [Factory] / [Resolve], which surface
 // that failure at startup.
-func New[T any](opts ...Option) *Provider[T] {
-	p := &Provider[T]{opts: resolveOptions(opts)}
+func New[T any](opts ...Option) *Store[T] {
+	p := &Store[T]{opts: resolveOptions(opts)}
 	p.resolve()
 	return p
 }
 
-// Validate reports whether the provider mapped cleanly onto T.
-func (p *Provider[T]) Validate() error { return p.err }
+// Validate reports whether the user store mapped cleanly onto T.
+func (p *Store[T]) Validate() error { return p.err }
 
 // Options returns the resolved configuration. Useful for diagnostics.
-func (p *Provider[T]) Options() Options { return p.opts }
+func (p *Store[T]) Options() Options { return p.opts }
 
 // resolve maps the configured columns onto T once, at construction.
-func (p *Provider[T]) resolve() {
+func (p *Store[T]) resolve() {
 	var zero T
 
 	// Resolve T through *T rather than reflect.TypeOf(zero): the latter is
 	// nil for a pointer or interface T, which would both lose the name from
-	// every diagnostic below and hide the rejection this guard exists for.
+	// every diagnostic below and hide the rejection this scheme exists for.
 	modelName := reflect.TypeOf(&zero).Elem()
 
 	// T must be the struct itself, never a pointer to it. orm.MetaFor
@@ -161,7 +161,7 @@ func (p *Provider[T]) resolve() {
 }
 
 // FindByIDCtx retrieves a user by primary key.
-func (p *Provider[T]) FindByIDCtx(ctx context.Context, id interface{}) (auth.Authenticatable, error) {
+func (p *Store[T]) FindByIDCtx(ctx context.Context, id interface{}) (auth.Authenticatable, error) {
 	if p.err != nil {
 		return nil, p.err
 	}
@@ -174,13 +174,13 @@ func (p *Provider[T]) FindByIDCtx(ctx context.Context, id interface{}) (auth.Aut
 // FindByID retrieves a user by primary key.
 //
 // Deprecated: use FindByIDCtx with a request-scoped context.Context.
-func (p *Provider[T]) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *Store[T]) FindByID(id interface{}) (auth.Authenticatable, error) {
 	return p.FindByIDCtx(context.Background(), id)
 }
 
 // FindByCredentialsCtx retrieves a user by the configured identifier
 // column, read from the credentials map under the configured key.
-func (p *Provider[T]) FindByCredentialsCtx(ctx context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *Store[T]) FindByCredentialsCtx(ctx context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
 	if p.err != nil {
 		return nil, p.err
 	}
@@ -194,12 +194,12 @@ func (p *Provider[T]) FindByCredentialsCtx(ctx context.Context, credentials map[
 // FindByCredentials retrieves a user by credentials.
 //
 // Deprecated: use FindByCredentialsCtx with a request-scoped context.Context.
-func (p *Provider[T]) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *Store[T]) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
 	return p.FindByCredentialsCtx(context.Background(), credentials)
 }
 
 // first runs the single-row lookup shared by both find paths.
-func (p *Provider[T]) first(ctx context.Context, column string, value any) (auth.Authenticatable, error) {
+func (p *Store[T]) first(ctx context.Context, column string, value any) (auth.Authenticatable, error) {
 	var model T
 	if err := (orm.Model[T]{}).Where(column+" = ?", value).First(ctx, &model); err != nil {
 		// orm.ErrRecordNotFound is sql.ErrNoRows; match the sentinel so
@@ -214,7 +214,7 @@ func (p *Provider[T]) first(ctx context.Context, column string, value any) (auth
 
 // ValidateCredentials compares a candidate password against the stored
 // hash. Pure CPU work; no query is issued.
-func (p *Provider[T]) ValidateCredentials(user auth.Authenticatable, credentials map[string]interface{}) bool {
+func (p *Store[T]) ValidateCredentials(user auth.Authenticatable, credentials map[string]interface{}) bool {
 	if user == nil {
 		return false
 	}
@@ -228,14 +228,14 @@ func (p *Provider[T]) ValidateCredentials(user auth.Authenticatable, credentials
 // UpdateRememberTokenCtx persists a freshly minted remember token. Used
 // on the login path, where no prior token is being consumed; rotation of
 // an existing token goes through CompareAndSwapRememberToken.
-func (p *Provider[T]) UpdateRememberTokenCtx(ctx context.Context, user auth.Authenticatable, token string) error {
+func (p *Store[T]) UpdateRememberTokenCtx(ctx context.Context, user auth.Authenticatable, token string) error {
 	if p.err != nil {
 		return p.err
 	}
 	if user == nil {
 		return auth.ErrUserNotFound
 	}
-	// Mutate first, matching the previous provider: the in-memory user
+	// Mutate first, matching the previous user store: the in-memory user
 	// carries the token the caller is about to write to the cookie even
 	// if persistence fails.
 	user.SetRememberToken(token)
@@ -249,7 +249,7 @@ func (p *Provider[T]) UpdateRememberTokenCtx(ctx context.Context, user auth.Auth
 // UpdateRememberToken persists a remember token.
 //
 // Deprecated: use UpdateRememberTokenCtx with a request-scoped context.Context.
-func (p *Provider[T]) UpdateRememberToken(user auth.Authenticatable, token string) error {
+func (p *Store[T]) UpdateRememberToken(user auth.Authenticatable, token string) error {
 	return p.UpdateRememberTokenCtx(context.Background(), user, token)
 }
 
@@ -259,7 +259,7 @@ func (p *Provider[T]) UpdateRememberToken(user auth.Authenticatable, token strin
 // cookie cannot both mint a valid credential. Returns false with a nil
 // error when no row matched; the in-memory user is mutated only on a
 // successful swap.
-func (p *Provider[T]) CompareAndSwapRememberToken(ctx context.Context, user auth.Authenticatable, oldToken, newToken string) (bool, error) {
+func (p *Store[T]) CompareAndSwapRememberToken(ctx context.Context, user auth.Authenticatable, oldToken, newToken string) (bool, error) {
 	if p.err != nil {
 		return false, p.err
 	}
@@ -283,7 +283,7 @@ func (p *Provider[T]) CompareAndSwapRememberToken(ctx context.Context, user auth
 }
 
 // wrap adapts a loaded model to auth.Authenticatable.
-func (p *Provider[T]) wrap(model *T) (auth.Authenticatable, error) {
+func (p *Store[T]) wrap(model *T) (auth.Authenticatable, error) {
 	if p.native {
 		return any(model).(auth.Authenticatable), nil
 	}

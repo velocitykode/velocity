@@ -73,9 +73,9 @@ func seedUser(t *testing.T, m *orm.Manager, email, password string) string {
 	return string(hash)
 }
 
-// newProvider builds the framework default-model provider with a cheap
+// newStore builds the framework default-model user store with a cheap
 // hasher, the same construction velocity.New performs.
-func newProvider(t *testing.T) auth.UserProvider {
+func newStore(t *testing.T) auth.UserStore {
 	t.Helper()
 
 	p := ormauth.New[ormauth.User](ormauth.WithHasher(auth.NewBcryptHasher(bcrypt.MinCost)))
@@ -85,14 +85,14 @@ func newProvider(t *testing.T) auth.UserProvider {
 	return p
 }
 
-// TestProvider_Contract runs the authtest executable specification against
-// the ORM-backed provider.
-func TestProvider_Contract(t *testing.T) {
-	authtest.RunUserProviderContractTests(t, authtest.UserProviderFactory{
-		New: func(t *testing.T) auth.UserProvider {
+// TestStore_Contract runs the authtest executable specification against
+// the ORM-backed user store.
+func TestStore_Contract(t *testing.T) {
+	authtest.RunUserStoreContractTests(t, authtest.UserStoreFactory{
+		New: func(t *testing.T) auth.UserStore {
 			m := newManager(t)
 			seedUser(t, m, testEmail, testPassword)
-			return newProvider(t)
+			return newStore(t)
 		},
 		SeedUser:     &auth.AuthUser{ID: uint(1), Email: testEmail, Name: testName},
 		SeedEmail:    testEmail,
@@ -100,13 +100,13 @@ func TestProvider_Contract(t *testing.T) {
 	})
 }
 
-// TestProvider_QueriesTheModelsTable proves the provider reads the table
+// TestStore_QueriesTheModelsTable proves the user store reads the table
 // derived from the registered model type rather than a hardcoded name, and
 // that both lookups return the same row.
-func TestProvider_QueriesTheModelsTable(t *testing.T) {
+func TestStore_QueriesTheModelsTable(t *testing.T) {
 	m := newManager(t)
 	seedUser(t, m, testEmail, testPassword)
-	p := newProvider(t)
+	p := newStore(t)
 	ctx := context.Background()
 
 	byCreds, err := p.FindByCredentialsCtx(ctx, map[string]interface{}{"email": testEmail})
@@ -126,18 +126,18 @@ func TestProvider_QueriesTheModelsTable(t *testing.T) {
 	}
 }
 
-// TestProvider_LoadsRememberToken proves the remember-cookie recall path can
+// TestStore_LoadsRememberToken proves the remember-cookie recall path can
 // read the stored token back: if a load path dropped the column,
 // checkRememberCookie would always see an empty hash and recall would
 // silently never fire.
-func TestProvider_LoadsRememberToken(t *testing.T) {
+func TestStore_LoadsRememberToken(t *testing.T) {
 	m := newManager(t)
 	seedUser(t, m, testEmail, testPassword)
 	if _, err := m.DB().Exec(`UPDATE users SET remember_token = ? WHERE id = 1`, "stored-token-hash"); err != nil {
 		t.Fatalf("seed token: %v", err)
 	}
 
-	p := newProvider(t)
+	p := newStore(t)
 	ctx := context.Background()
 
 	byCreds, err := p.FindByCredentialsCtx(ctx, map[string]interface{}{"email": testEmail})
@@ -157,14 +157,14 @@ func TestProvider_LoadsRememberToken(t *testing.T) {
 	}
 }
 
-// TestProvider_NullRememberTokenLoadsEmpty guards the nullable column: a
+// TestStore_NullRememberTokenLoadsEmpty guards the nullable column: a
 // user who has never used remember-me must load cleanly with an empty
 // token, not fail the scan.
-func TestProvider_NullRememberTokenLoadsEmpty(t *testing.T) {
+func TestStore_NullRememberTokenLoadsEmpty(t *testing.T) {
 	m := newManager(t)
 	seedUser(t, m, testEmail, testPassword)
 
-	user, err := newProvider(t).FindByIDCtx(context.Background(), 1)
+	user, err := newStore(t).FindByIDCtx(context.Background(), 1)
 	if err != nil {
 		t.Fatalf("FindByIDCtx: %v", err)
 	}
@@ -173,11 +173,11 @@ func TestProvider_NullRememberTokenLoadsEmpty(t *testing.T) {
 	}
 }
 
-// TestProvider_UpdateRememberTokenPersists covers the login-path write.
-func TestProvider_UpdateRememberTokenPersists(t *testing.T) {
+// TestStore_UpdateRememberTokenPersists covers the login-path write.
+func TestStore_UpdateRememberTokenPersists(t *testing.T) {
 	m := newManager(t)
 	seedUser(t, m, testEmail, testPassword)
-	p := newProvider(t)
+	p := newStore(t)
 	ctx := context.Background()
 
 	user, err := p.FindByIDCtx(ctx, 1)
@@ -200,13 +200,13 @@ func TestProvider_UpdateRememberTokenPersists(t *testing.T) {
 	}
 }
 
-// TestProvider_CompareAndSwapRememberToken pins the rotate-on-use
+// TestStore_CompareAndSwapRememberToken pins the rotate-on-use
 // contract: the swap lands only when the row still holds the old token.
-func TestProvider_CompareAndSwapRememberToken(t *testing.T) {
+func TestStore_CompareAndSwapRememberToken(t *testing.T) {
 	m := newManager(t)
 	seedUser(t, m, testEmail, testPassword)
 
-	p := newProvider(t)
+	p := newStore(t)
 	swapper, ok := p.(auth.RememberTokenCompareAndSwapper)
 	if !ok {
 		t.Fatal("provider does not implement RememberTokenCompareAndSwapper; remember-me recall would fail closed")
@@ -254,13 +254,13 @@ func TestProvider_CompareAndSwapRememberToken(t *testing.T) {
 	}
 }
 
-// TestProvider_CompareAndSwapRememberToken_Concurrent proves only one of N
+// TestStore_CompareAndSwapRememberToken_Concurrent proves only one of N
 // racing recalls of the same cookie can win.
-func TestProvider_CompareAndSwapRememberToken_Concurrent(t *testing.T) {
+func TestStore_CompareAndSwapRememberToken_Concurrent(t *testing.T) {
 	m := newManager(t)
 	seedUser(t, m, testEmail, testPassword)
 
-	p := newProvider(t)
+	p := newStore(t)
 	swapper := p.(auth.RememberTokenCompareAndSwapper)
 	ctx := context.Background()
 
@@ -305,11 +305,11 @@ func TestProvider_CompareAndSwapRememberToken_Concurrent(t *testing.T) {
 	}
 }
 
-// TestProvider_UnknownRowsReturnErrUserNotFound covers both miss paths.
-func TestProvider_UnknownRowsReturnErrUserNotFound(t *testing.T) {
+// TestStore_UnknownRowsReturnErrUserNotFound covers both miss paths.
+func TestStore_UnknownRowsReturnErrUserNotFound(t *testing.T) {
 	m := newManager(t)
 	seedUser(t, m, testEmail, testPassword)
-	p := newProvider(t)
+	p := newStore(t)
 	ctx := context.Background()
 
 	if _, err := p.FindByIDCtx(ctx, 9999); !errors.Is(err, auth.ErrUserNotFound) {
@@ -323,12 +323,12 @@ func TestProvider_UnknownRowsReturnErrUserNotFound(t *testing.T) {
 	}
 }
 
-// TestProvider_DeprecatedShims covers the non-Ctx variants the UserProvider
+// TestStore_DeprecatedShims covers the non-Ctx variants the UserStore
 // interface still carries.
-func TestProvider_DeprecatedShims(t *testing.T) {
+func TestStore_DeprecatedShims(t *testing.T) {
 	m := newManager(t)
 	seedUser(t, m, testEmail, testPassword)
-	p := newProvider(t)
+	p := newStore(t)
 
 	user, err := p.FindByCredentials(map[string]interface{}{"email": testEmail})
 	if err != nil {
@@ -350,12 +350,12 @@ func TestProvider_DeprecatedShims(t *testing.T) {
 	}
 }
 
-// TestProvider_ValidateCredentials covers the pure-CPU comparison,
+// TestStore_ValidateCredentials covers the pure-CPU comparison,
 // including the shapes that must collapse to false rather than panic.
-func TestProvider_ValidateCredentials(t *testing.T) {
+func TestStore_ValidateCredentials(t *testing.T) {
 	m := newManager(t)
 	seedUser(t, m, testEmail, testPassword)
-	p := newProvider(t)
+	p := newStore(t)
 
 	user, err := p.FindByCredentialsCtx(context.Background(), map[string]interface{}{"email": testEmail})
 	if err != nil {
@@ -376,10 +376,10 @@ func TestProvider_ValidateCredentials(t *testing.T) {
 	}
 }
 
-// TestProvider_UsesConfiguredHasher proves the framework-supplied hasher
+// TestStore_UsesConfiguredHasher proves the framework-supplied hasher
 // (and therefore the operator's configured bcrypt cost) is the one used to
-// verify, rather than a provider-local default.
-func TestProvider_UsesConfiguredHasher(t *testing.T) {
+// verify, rather than a user store-local default.
+func TestStore_UsesConfiguredHasher(t *testing.T) {
 	m := newManager(t)
 	seedUser(t, m, testEmail, testPassword)
 

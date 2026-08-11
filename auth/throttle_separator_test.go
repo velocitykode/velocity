@@ -66,7 +66,7 @@ func TestThrottleKey_UnitSeparatorBearingIdentifier(t *testing.T) {
 	}
 }
 
-// TestNormaliseIdentifier_CapBytes pins the maxIdentifierBytes guard
+// TestNormaliseIdentifier_CapBytes pins the maxIdentifierBytes scheme
 // from C-05: a multi-MB email field must NOT survive past the
 // normalisation stage. With the cap in place the normalised string
 // length is exactly maxIdentifierBytes so cache-store key amplification

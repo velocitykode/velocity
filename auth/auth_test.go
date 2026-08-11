@@ -226,73 +226,73 @@ func TestSessionManagement(t *testing.T) {
 func TestAuthManager(t *testing.T) {
 	manager := NewManager()
 
-	// Register a mock provider
-	provider := &mockProvider{}
-	manager.RegisterProvider("users", provider)
+	// Register a mock user store
+	userStore := &mockStore{}
+	manager.RegisterUserStore("users", userStore)
 
-	// Note: In a real test, we'd create actual guard instances
+	// Note: In a real test, we'd create actual scheme instances
 	// For now, we just test the manager structure
 
-	// Test default guard
-	manager.SetDefaultGuard("web")
+	// Test default scheme
+	manager.SetDefaultScheme("web")
 
-	// Test provider retrieval
-	retrievedProvider, err := manager.Provider("users")
+	// Test user store retrieval
+	retrievedStore, err := manager.UserStore("users")
 	if err != nil {
-		t.Errorf("Should find registered provider: %v", err)
+		t.Errorf("Should find registered user store: %v", err)
 	}
 
-	if retrievedProvider == nil {
-		t.Error("Provider should not be nil")
+	if retrievedStore == nil {
+		t.Error("Store should not be nil")
 	}
 
-	// Test non-existent provider
-	_, err = manager.Provider("nonexistent")
+	// Test non-existent user store
+	_, err = manager.UserStore("nonexistent")
 	if err == nil {
 		t.Error("Should error on non-existent provider")
 	}
 }
 
-// mockGuard implements Guard for Manager tests.
-type mockGuard struct {
+// mockScheme implements Scheme for Manager tests.
+type mockScheme struct {
 	name     string
 	user     Authenticatable
 	checkVal bool
 }
 
-func (g *mockGuard) Check(*http.Request) bool                        { return g.checkVal }
-func (g *mockGuard) User(*http.Request) Authenticatable              { return g.user }
-func (g *mockGuard) ID(*http.Request) interface{}                    { return nil }
-func (g *mockGuard) SetProvider(UserProvider)                        {}
-func (g *mockGuard) Logout(http.ResponseWriter, *http.Request) error { return nil }
-func (g *mockGuard) Login(http.ResponseWriter, *http.Request, Authenticatable, ...bool) error {
+func (g *mockScheme) Check(*http.Request) bool                        { return g.checkVal }
+func (g *mockScheme) User(*http.Request) Authenticatable              { return g.user }
+func (g *mockScheme) ID(*http.Request) interface{}                    { return nil }
+func (g *mockScheme) SetUserStore(UserStore)                          {}
+func (g *mockScheme) Logout(http.ResponseWriter, *http.Request) error { return nil }
+func (g *mockScheme) Login(http.ResponseWriter, *http.Request, Authenticatable, ...bool) error {
 	return nil
 }
-func (g *mockGuard) LoginByID(http.ResponseWriter, *http.Request, interface{}, ...bool) error {
+func (g *mockScheme) LoginByID(http.ResponseWriter, *http.Request, interface{}, ...bool) error {
 	return nil
 }
-func (g *mockGuard) Attempt(http.ResponseWriter, *http.Request, map[string]interface{}, ...bool) (bool, error) {
+func (g *mockScheme) Attempt(http.ResponseWriter, *http.Request, map[string]interface{}, ...bool) (bool, error) {
 	return false, nil
 }
 
-// mockProvider implements UserProvider for Manager tests.
-type mockProvider struct{}
+// mockStore implements UserStore for Manager tests.
+type mockStore struct{}
 
-func (p *mockProvider) FindByID(interface{}) (Authenticatable, error) { return nil, nil }
-func (p *mockProvider) FindByIDCtx(context.Context, interface{}) (Authenticatable, error) {
+func (p *mockStore) FindByID(interface{}) (Authenticatable, error) { return nil, nil }
+func (p *mockStore) FindByIDCtx(context.Context, interface{}) (Authenticatable, error) {
 	return nil, nil
 }
-func (p *mockProvider) FindByCredentials(map[string]interface{}) (Authenticatable, error) {
+func (p *mockStore) FindByCredentials(map[string]interface{}) (Authenticatable, error) {
 	return nil, nil
 }
-func (p *mockProvider) FindByCredentialsCtx(context.Context, map[string]interface{}) (Authenticatable, error) {
+func (p *mockStore) FindByCredentialsCtx(context.Context, map[string]interface{}) (Authenticatable, error) {
 	return nil, nil
 }
-func (p *mockProvider) ValidateCredentials(Authenticatable, map[string]interface{}) bool {
+func (p *mockStore) ValidateCredentials(Authenticatable, map[string]interface{}) bool {
 	return false
 }
-func (p *mockProvider) UpdateRememberToken(Authenticatable, string) error { return nil }
-func (p *mockProvider) UpdateRememberTokenCtx(context.Context, Authenticatable, string) error {
+func (p *mockStore) UpdateRememberToken(Authenticatable, string) error { return nil }
+func (p *mockStore) UpdateRememberTokenCtx(context.Context, Authenticatable, string) error {
 	return nil
 }
 
@@ -301,120 +301,120 @@ func TestNewManager(t *testing.T) {
 	if m == nil {
 		t.Fatal("NewManager() returned nil")
 	}
-	if m.guards == nil {
-		t.Error("guards map not initialized")
+	if m.schemes == nil {
+		t.Error("schemes map not initialized")
 	}
-	if m.providers == nil {
+	if m.userStores == nil {
 		t.Error("providers map not initialized")
 	}
-	if m.defaultGuard != "web" {
-		t.Errorf("defaultGuard = %q, want %q", m.defaultGuard, "web")
+	if m.defaultScheme != "web" {
+		t.Errorf("defaultScheme = %q, want %q", m.defaultScheme, "web")
 	}
 }
 
-func TestManagerRegisterGuard(t *testing.T) {
+func TestManagerRegisterScheme(t *testing.T) {
 	m := NewManager()
-	g := &mockGuard{name: "session"}
+	g := &mockScheme{name: "session"}
 
-	m.RegisterGuard("web", g)
+	m.RegisterScheme("web", g)
 
-	got, err := m.Guard("web")
+	got, err := m.Scheme("web")
 	if err != nil {
-		t.Fatalf("Guard() error: %v", err)
+		t.Fatalf("Scheme() error: %v", err)
 	}
 	if got != g {
-		t.Error("Guard() returned wrong instance")
+		t.Error("Scheme() returned wrong instance")
 	}
 }
 
-func TestManagerRegisterProvider(t *testing.T) {
+func TestManagerRegisterUserStore(t *testing.T) {
 	m := NewManager()
-	p := &mockProvider{}
+	p := &mockStore{}
 
-	m.RegisterProvider("users", p)
+	m.RegisterUserStore("users", p)
 
-	got, err := m.Provider("users")
+	got, err := m.UserStore("users")
 	if err != nil {
-		t.Fatalf("Provider() error: %v", err)
+		t.Fatalf("Store() error: %v", err)
 	}
 	if got != p {
-		t.Error("Provider() returned wrong instance")
+		t.Error("Store() returned wrong instance")
 	}
 }
 
-func TestManagerGuard(t *testing.T) {
+func TestManagerScheme(t *testing.T) {
 	m := NewManager()
-	g := &mockGuard{name: "web"}
-	m.RegisterGuard("web", g)
+	g := &mockScheme{name: "web"}
+	m.RegisterScheme("web", g)
 
 	tests := []struct {
 		name    string
-		guard   string
+		scheme  string
 		wantErr bool
 	}{
-		{"nonexistent guard returns error", "api", true},
-		{"empty name uses default guard", "", false},
-		{"named guard returns guard", "web", false},
+		{"nonexistent scheme returns error", "api", true},
+		{"empty name uses default scheme", "", false},
+		{"named scheme returns scheme", "web", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := m.Guard(tt.guard)
+			got, err := m.Scheme(tt.scheme)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("Guard(%q) error = %v, wantErr %v", tt.guard, err, tt.wantErr)
+				t.Errorf("Scheme(%q) error = %v, wantErr %v", tt.scheme, err, tt.wantErr)
 				return
 			}
 			if !tt.wantErr && got == nil {
-				t.Error("Guard() returned nil")
+				t.Error("Scheme() returned nil")
 			}
 		})
 	}
 }
 
-func TestManagerDefaultGuard(t *testing.T) {
+func TestManagerDefaultScheme(t *testing.T) {
 	m := NewManager()
 
-	// No guard registered — should error
-	_, err := m.DefaultGuard()
+	// No scheme registered — should error
+	_, err := m.DefaultScheme()
 	if err == nil {
-		t.Error("DefaultGuard() should error when no guard is registered")
+		t.Error("DefaultScheme() should error when no scheme is registered")
 	}
 
 	// Register and retrieve
-	g := &mockGuard{name: "web"}
-	m.RegisterGuard("web", g)
-	got, err := m.DefaultGuard()
+	g := &mockScheme{name: "web"}
+	m.RegisterScheme("web", g)
+	got, err := m.DefaultScheme()
 	if err != nil {
-		t.Fatalf("DefaultGuard() error: %v", err)
+		t.Fatalf("DefaultScheme() error: %v", err)
 	}
 	if got != g {
-		t.Error("DefaultGuard() returned wrong instance")
+		t.Error("DefaultScheme() returned wrong instance")
 	}
 
 	// Custom default
-	g2 := &mockGuard{name: "api"}
-	m.RegisterGuard("api", g2)
-	m.SetDefaultGuard("api")
-	got, err = m.DefaultGuard()
+	g2 := &mockScheme{name: "api"}
+	m.RegisterScheme("api", g2)
+	m.SetDefaultScheme("api")
+	got, err = m.DefaultScheme()
 	if err != nil {
-		t.Fatalf("DefaultGuard() after SetDefaultGuard error: %v", err)
+		t.Fatalf("DefaultScheme() after SetDefaultScheme error: %v", err)
 	}
 	if got != g2 {
-		t.Error("DefaultGuard() did not switch to api guard")
+		t.Error("DefaultScheme() did not switch to api scheme")
 	}
 }
 
-func TestManagerSetDefaultGuard(t *testing.T) {
+func TestManagerSetDefaultScheme(t *testing.T) {
 	m := NewManager()
 
-	m.SetDefaultGuard("jwt")
-	if m.defaultGuard != "jwt" {
-		t.Errorf("defaultGuard = %q, want %q", m.defaultGuard, "jwt")
+	m.SetDefaultScheme("jwt")
+	if m.defaultScheme != "jwt" {
+		t.Errorf("defaultScheme = %q, want %q", m.defaultScheme, "jwt")
 	}
 
-	m.SetDefaultGuard("session")
-	if m.defaultGuard != "session" {
-		t.Errorf("defaultGuard = %q, want %q", m.defaultGuard, "session")
+	m.SetDefaultScheme("session")
+	if m.defaultScheme != "session" {
+		t.Errorf("defaultScheme = %q, want %q", m.defaultScheme, "session")
 	}
 }
 
@@ -426,37 +426,37 @@ func TestManagerConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			name := fmt.Sprintf("guard-%d", idx)
+			name := fmt.Sprintf("scheme-%d", idx)
 
-			// Register guard
-			m.RegisterGuard(name, &mockGuard{name: name})
+			// Register scheme
+			m.RegisterScheme(name, &mockScheme{name: name})
 
-			// Register provider
-			m.RegisterProvider(name, &mockProvider{})
+			// Register user store
+			m.RegisterUserStore(name, &mockStore{})
 
-			// Retrieve guard
-			_, _ = m.Guard(name)
+			// Retrieve scheme
+			_, _ = m.Scheme(name)
 
-			// Retrieve provider
-			_, _ = m.Provider(name)
+			// Retrieve user store
+			_, _ = m.UserStore(name)
 
-			// Default guard operations
-			m.SetDefaultGuard(name)
-			_, _ = m.DefaultGuard()
+			// Default scheme operations
+			m.SetDefaultScheme(name)
+			_, _ = m.DefaultScheme()
 		}(i)
 	}
 	wg.Wait()
 }
 
-func TestManagerGate(t *testing.T) {
+func TestManagerAccess(t *testing.T) {
 	m := NewManager()
 
-	if m.Gate() == nil {
-		t.Fatal("Gate() should not be nil on a new Manager")
+	if m.Access() == nil {
+		t.Fatal("Access() should not be nil on a new Manager")
 	}
 
-	// Define a gate and verify it works through the manager
-	m.Gate().Define("edit-post", func(user Authenticatable, args ...interface{}) bool {
+	// Define an access rule and verify it works through the manager
+	m.Access().Define("edit-post", func(user Authenticatable, args ...interface{}) bool {
 		if len(args) == 0 {
 			return false
 		}
@@ -468,88 +468,88 @@ func TestManagerGate(t *testing.T) {
 	})
 
 	user := &mockUser{id: 1}
-	guard := &mockGuard{name: "web", user: user, checkVal: true}
-	m.RegisterGuard("web", guard)
+	scheme := &mockScheme{name: "web", user: user, checkVal: true}
+	m.RegisterScheme("web", scheme)
 
 	r := httptest.NewRequest("GET", "/", nil)
 
 	ownPost := &mockPost{ID: 1, AuthorID: 1}
 	otherPost := &mockPost{ID: 2, AuthorID: 2}
 
-	if !m.GateAllows(r, "edit-post", ownPost) {
-		t.Error("expected GateAllows to return true for own post")
+	if !m.Allows(r, "edit-post", ownPost) {
+		t.Error("expected Allows to return true for own post")
 	}
 
-	if m.GateAllows(r, "edit-post", otherPost) {
-		t.Error("expected GateAllows to return false for other's post")
+	if m.Allows(r, "edit-post", otherPost) {
+		t.Error("expected Allows to return false for other's post")
 	}
 }
 
-func TestManagerGateAllows_NoUser(t *testing.T) {
+func TestManagerAllows_NoUser(t *testing.T) {
 	m := NewManager()
 
-	// Guard that returns no user
-	guard := &mockGuard{name: "web", user: nil, checkVal: false}
-	m.RegisterGuard("web", guard)
+	// Scheme that returns no user
+	scheme := &mockScheme{name: "web", user: nil, checkVal: false}
+	m.RegisterScheme("web", scheme)
 
-	m.Gate().Define("anything", func(user Authenticatable, args ...interface{}) bool {
+	m.Access().Define("anything", func(user Authenticatable, args ...interface{}) bool {
 		return true
 	})
 
 	r := httptest.NewRequest("GET", "/", nil)
 
-	if m.GateAllows(r, "anything") {
-		t.Error("expected GateAllows to return false when no user is authenticated")
+	if m.Allows(r, "anything") {
+		t.Error("expected Allows to return false when no user is authenticated")
 	}
 }
 
-func TestManagerGateAllows_NoGuard(t *testing.T) {
+func TestManagerAllows_NoScheme(t *testing.T) {
 	m := NewManager()
 
-	// No guard registered at all
+	// No scheme registered at all
 	r := httptest.NewRequest("GET", "/", nil)
 
-	if m.GateAllows(r, "anything") {
-		t.Error("expected GateAllows to return false when no guard is registered")
+	if m.Allows(r, "anything") {
+		t.Error("expected Allows to return false when no scheme is registered")
 	}
 }
 
-func TestManagerGateAuthorize(t *testing.T) {
+func TestManagerAuthorize(t *testing.T) {
 	m := NewManager()
 
 	user := &mockUser{id: 1}
-	guard := &mockGuard{name: "web", user: user, checkVal: true}
-	m.RegisterGuard("web", guard)
+	scheme := &mockScheme{name: "web", user: user, checkVal: true}
+	m.RegisterScheme("web", scheme)
 
-	m.Gate().Define("create-post", func(u Authenticatable, args ...interface{}) bool {
+	m.Access().Define("create-post", func(u Authenticatable, args ...interface{}) bool {
 		return true
 	})
-	m.Gate().Define("delete-post", func(u Authenticatable, args ...interface{}) bool {
+	m.Access().Define("delete-post", func(u Authenticatable, args ...interface{}) bool {
 		return false
 	})
 
 	r := httptest.NewRequest("GET", "/", nil)
 
 	// Allowed ability should return nil
-	if err := m.GateAuthorize(r, "create-post"); err != nil {
+	if err := m.Authorize(r, "create-post"); err != nil {
 		t.Errorf("expected nil error for allowed ability, got %v", err)
 	}
 
 	// Denied ability should return ErrUnauthorized
-	if err := m.GateAuthorize(r, "delete-post"); err != ErrUnauthorized {
+	if err := m.Authorize(r, "delete-post"); err != ErrUnauthorized {
 		t.Errorf("expected ErrUnauthorized, got %v", err)
 	}
 }
 
-func TestManagerGateAuthorize_NoUser(t *testing.T) {
+func TestManagerAuthorize_NoUser(t *testing.T) {
 	m := NewManager()
 
-	guard := &mockGuard{name: "web", user: nil, checkVal: false}
-	m.RegisterGuard("web", guard)
+	scheme := &mockScheme{name: "web", user: nil, checkVal: false}
+	m.RegisterScheme("web", scheme)
 
 	r := httptest.NewRequest("GET", "/", nil)
 
-	if err := m.GateAuthorize(r, "anything"); err != ErrUnauthorized {
+	if err := m.Authorize(r, "anything"); err != ErrUnauthorized {
 		t.Errorf("expected ErrUnauthorized when no user, got %v", err)
 	}
 }

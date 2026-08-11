@@ -90,9 +90,9 @@ func (a *App) runBootstrap() error {
 	// consumer middleware so it wraps every request: session writes
 	// inside the handler (Put/Flash/login-helpers) must be persisted by
 	// the framework, not by every consumer remembering to call Save(w).
-	// See guards.SessionGuard.SessionMiddleware for the contract.
+	// See guards.SessionScheme.SessionMiddleware for the contract.
 	//
-	// Installed only when the default auth guard is the session guard;
+	// Installed only when the default auth scheme is the session scheme;
 	// JWT-only or other configurations are skipped (no session bag to
 	// persist). Idempotent under repeated bootstrap() calls because
 	// bootstrapped=true short-circuits before any middleware wiring.
@@ -355,7 +355,7 @@ func dispatchModuleCallback[T any](modules []app.Module, fn func(T)) {
 }
 
 // ErrCookieStoreInProduction is returned by App.Bootstrap when the app is
-// running with APP_ENV unset / production AND the session guard is using
+// running with APP_ENV unset / production AND the session scheme is using
 // the default CookieStore AND no ServerSessionStore has been installed AND
 // the operator has not opted in via SessionConfig.AllowCookieStoreInProduction.
 //
@@ -368,8 +368,8 @@ func dispatchModuleCallback[T any](modules []app.Module, fn func(T)) {
 var ErrCookieStoreInProduction = fmt.Errorf("velocity/auth: production deployment must install a ServerSessionStore (or opt-in via SessionConfig.AllowCookieStoreInProduction)")
 
 // validateSessionStoreForProduction implements the H-04 boot-time guard.
-// Skip in testing/development; skip when the active guard is not the session
-// guard (JWT-only setups carry their own credentials); skip when a
+// Skip in testing/development; skip when the active scheme is not the session
+// scheme (JWT-only setups carry their own credentials); skip when a
 // ServerSessionStore has been installed by an earlier Start() hook; skip when
 // the operator opted in.
 //
@@ -393,11 +393,11 @@ func validateSessionStoreForProduction(a *App) error {
 	if !ok {
 		return nil
 	}
-	guard, err := mgr.DefaultGuard()
+	scheme, err := mgr.DefaultScheme()
 	if err != nil {
 		return nil
 	}
-	if _, ok := guard.(*guards.SessionGuard); !ok {
+	if _, ok := scheme.(*guards.SessionScheme); !ok {
 		return nil
 	}
 	if mgr.ServerSessionStore() != nil {
@@ -406,9 +406,9 @@ func validateSessionStoreForProduction(a *App) error {
 	return ErrCookieStoreInProduction
 }
 
-// installSessionMiddleware mounts guards.SessionGuard.SessionMiddleware
+// installSessionMiddleware mounts guards.SessionScheme.SessionMiddleware
 // onto the router as the outermost global middleware when the active
-// default auth guard is a *SessionGuard. The fix for security audit H-05
+// default auth scheme is a *SessionScheme. The fix for security audit H-05
 // (CONFIRMED HIGH: "No save-at-end session middleware installed").
 //
 // Without this hook, every ctx.Auth().Session(r).Put / Flash call inside
@@ -432,11 +432,11 @@ func installSessionMiddleware(a *App) {
 	if !ok {
 		return
 	}
-	guard, err := mgr.DefaultGuard()
+	scheme, err := mgr.DefaultScheme()
 	if err != nil {
 		return
 	}
-	sg, ok := guard.(*guards.SessionGuard)
+	sg, ok := scheme.(*guards.SessionScheme)
 	if !ok {
 		return
 	}
@@ -445,8 +445,8 @@ func installSessionMiddleware(a *App) {
 
 // installCSRFTokenRotator wires the final s.CSRF instance (post chain
 // module Start) into the auth manager as a contract.CSRFTokenRotator so
-// SessionGuard.Login regenerates the per-session CSRF token alongside the
-// session id, SessionGuard.Logout revokes it before the session is
+// SessionScheme.Login regenerates the per-session CSRF token alongside the
+// session id, SessionScheme.Logout revokes it before the session is
 // invalidated, and the remember-cookie revival path rotates it across the
 // recall regenerate. See contract.CSRFTokenRotator for the full contract.
 //

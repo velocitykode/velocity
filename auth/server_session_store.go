@@ -17,7 +17,7 @@ var (
 	// stored session record has passed its ExpiresAt deadline.
 	ErrSessionExpired = errors.New("velocity/auth: session expired")
 
-	// ErrSessionRevoked is returned by SessionGuard.CheckWithError when
+	// ErrSessionRevoked is returned by SessionScheme.CheckWithError when
 	// the request carries a valid cookie but the corresponding server-side
 	// session record has been deleted (e.g. via Manager.RevokeSession or
 	// RevokeAllSessions). Distinct from ErrSessionExpired: expired means
@@ -32,7 +32,7 @@ var (
 )
 
 // StoredSession is the server-side persisted view of a session. It is the
-// shape passed across the ServerSessionStore boundary; the cookie / guard
+// shape passed across the ServerSessionStore boundary; the cookie / scheme
 // layer is unchanged. Data is the per-session bag (kept narrow on purpose,
 // large blobs belong elsewhere).
 type StoredSession struct {
@@ -113,18 +113,18 @@ type ServerSessionStore interface {
 	ListForUser(ctx context.Context, userID string) ([]*SessionMeta, error)
 }
 
-// ServerSessionStoreReceiver is the optional interface a Guard implements
+// ServerSessionStoreReceiver is the optional interface a Scheme implements
 // to opt into server-side session revocation. Manager.SetServerSessionStore
-// walks all registered guards and propagates the store to every guard that
-// implements this interface; guards that do not implement it (e.g. JWT) are
+// walks all registered schemes and propagates the store to every scheme that
+// implements this interface; schemes that do not implement it (e.g. JWT) are
 // skipped without error.
 type ServerSessionStoreReceiver interface {
 	SetServerSessionStore(store ServerSessionStore)
 }
 
-// RememberTokenClearer is the optional interface a Guard implements to
+// RememberTokenClearer is the optional interface a Scheme implements to
 // invalidate persistent "remember me" credentials for a user.
-// Manager.RevokeAllSessions walks every registered guard and invokes
+// Manager.RevokeAllSessions walks every registered scheme and invokes
 // ClearRememberTokensForUser so a "sign out everywhere" admin action also
 // kills the remember cookie path; without this hook, a revoked browser
 // could resurrect via its remember cookie on the next request.
@@ -133,24 +133,24 @@ type ServerSessionStoreReceiver interface {
 // store-side session deletion, so callers should log + continue.
 //
 // userID is passed as the string form (matching DeleteAllForUser);
-// providers keyed by other types convert in their own FindByID.
+// user stores keyed by other types convert in their own FindByID.
 type RememberTokenClearer interface {
 	ClearRememberTokensForUser(ctx context.Context, userID string) error
 }
 
-// RefreshTokenRevoker is the optional interface a Guard implements to
+// RefreshTokenRevoker is the optional interface a Scheme implements to
 // invalidate persistent refresh tokens (bearer-token / JWT auth) for a
-// user. Manager.RevokeAllSessions walks every registered guard and
+// user. Manager.RevokeAllSessions walks every registered scheme and
 // invokes RevokeAllRefreshTokensForUser so a "sign out everywhere"
 // admin action also kills outstanding refresh tokens; without this
 // hook, a phished refresh token survives the administrative purge for
 // up to RefreshTTL (default 14 days) and re-mints fresh access tokens
 // for the attacker (audit M-10).
 //
-// Session guards do not need this interface (the cookie revocation list
+// Session schemes do not need this interface (the cookie revocation list
 // and server-side store deletion already cover their access surface);
-// JWT guards do because their refresh tokens have no equivalent of a
-// per-session record on the server. JWTGuard's implementation bumps
+// JWT schemes do because their refresh tokens have no equivalent of a
+// per-session record on the server. JWTScheme's implementation bumps
 // the user's refresh-token generation counter (the same H-07 mechanism
 // used on individual Logout).
 //

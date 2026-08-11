@@ -914,7 +914,7 @@ func (c *Context) Can(ability string, args ...interface{}) bool {
 	if c.services == nil || c.services.Auth == nil {
 		return false
 	}
-	return c.services.Auth.GateAllows(c.Request, ability, args...)
+	return c.services.Auth.Allows(c.Request, ability, args...)
 }
 
 // Cannot returns true if the authenticated user is NOT allowed to perform the
@@ -930,7 +930,7 @@ func (c *Context) Authorize(ability string, args ...interface{}) error {
 	if c.services == nil || c.services.Auth == nil {
 		return NewHTTPError(http.StatusForbidden)
 	}
-	if err := c.services.Auth.GateAuthorize(c.Request, ability, args...); err != nil {
+	if err := c.services.Auth.Authorize(c.Request, ability, args...); err != nil {
 		return NewHTTPError(http.StatusForbidden)
 	}
 	return nil

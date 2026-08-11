@@ -57,48 +57,48 @@ func TestAuditSalt_ConcurrentSetAndGet(t *testing.T) {
 	wg.Wait()
 }
 
-// mockGuardForMiddleware implements Guard for middleware tests.
-type mockGuardForMiddleware struct {
+// mockSchemeForMiddleware implements Scheme for middleware tests.
+type mockSchemeForMiddleware struct {
 	authenticated bool
 	user          Authenticatable
 }
 
-func (g *mockGuardForMiddleware) Check(*http.Request) bool { return g.authenticated }
-func (g *mockGuardForMiddleware) User(*http.Request) Authenticatable {
+func (g *mockSchemeForMiddleware) Check(*http.Request) bool { return g.authenticated }
+func (g *mockSchemeForMiddleware) User(*http.Request) Authenticatable {
 	if g.authenticated {
 		return g.user
 	}
 	return nil
 }
-func (g *mockGuardForMiddleware) ID(*http.Request) interface{} { return nil }
-func (g *mockGuardForMiddleware) SetProvider(UserProvider)     {}
-func (g *mockGuardForMiddleware) Logout(http.ResponseWriter, *http.Request) error {
+func (g *mockSchemeForMiddleware) ID(*http.Request) interface{} { return nil }
+func (g *mockSchemeForMiddleware) SetUserStore(UserStore)       {}
+func (g *mockSchemeForMiddleware) Logout(http.ResponseWriter, *http.Request) error {
 	return nil
 }
-func (g *mockGuardForMiddleware) Login(http.ResponseWriter, *http.Request, Authenticatable, ...bool) error {
+func (g *mockSchemeForMiddleware) Login(http.ResponseWriter, *http.Request, Authenticatable, ...bool) error {
 	return nil
 }
-func (g *mockGuardForMiddleware) LoginByID(http.ResponseWriter, *http.Request, interface{}, ...bool) error {
+func (g *mockSchemeForMiddleware) LoginByID(http.ResponseWriter, *http.Request, interface{}, ...bool) error {
 	return nil
 }
-func (g *mockGuardForMiddleware) Attempt(http.ResponseWriter, *http.Request, map[string]interface{}, ...bool) (bool, error) {
+func (g *mockSchemeForMiddleware) Attempt(http.ResponseWriter, *http.Request, map[string]interface{}, ...bool) (bool, error) {
 	return false, nil
 }
 
-func newManagerWithGuard(authenticated bool) *Manager {
+func newManagerWithScheme(authenticated bool) *Manager {
 	m := NewManager()
-	m.RegisterGuard("web", &mockGuardForMiddleware{authenticated: authenticated})
+	m.RegisterScheme("web", &mockSchemeForMiddleware{authenticated: authenticated})
 	return m
 }
 
 func newManagerWithUser(user *mockUser) *Manager {
 	m := NewManager()
-	m.RegisterGuard("web", &mockGuardForMiddleware{authenticated: true, user: user})
+	m.RegisterScheme("web", &mockSchemeForMiddleware{authenticated: true, user: user})
 	return m
 }
 
 func TestAuthMiddleware_AllowsAuthenticatedUsers(t *testing.T) {
-	m := newManagerWithGuard(true)
+	m := newManagerWithScheme(true)
 	mw := AuthMiddleware(m)
 
 	var called bool
@@ -124,7 +124,7 @@ func TestAuthMiddleware_AllowsAuthenticatedUsers(t *testing.T) {
 }
 
 func TestAuthMiddleware_RedirectsUnauthenticated(t *testing.T) {
-	m := newManagerWithGuard(false)
+	m := newManagerWithScheme(false)
 	mw := AuthMiddleware(m)
 
 	handler := mw(func(c *router.Context) error {
@@ -158,7 +158,7 @@ func TestAuthMiddleware_RedirectsUnauthenticated(t *testing.T) {
 }
 
 func TestAuthMiddleware_ReturnsJSONForAPIRequests(t *testing.T) {
-	m := newManagerWithGuard(false)
+	m := newManagerWithScheme(false)
 	mw := AuthMiddleware(m)
 
 	handler := mw(func(c *router.Context) error {
@@ -196,7 +196,7 @@ func TestAuthMiddleware_ReturnsJSONForAPIRequests(t *testing.T) {
 // branch and is redirected to /login. An API client must send
 // Accept: application/json to get a 401 JSON body.
 func TestAuthMiddleware_XHRWithoutJSONAcceptRedirects(t *testing.T) {
-	m := newManagerWithGuard(false)
+	m := newManagerWithScheme(false)
 	mw := AuthMiddleware(m)
 
 	handler := mw(func(c *router.Context) error {
@@ -220,19 +220,19 @@ func TestAuthMiddleware_XHRWithoutJSONAcceptRedirects(t *testing.T) {
 	}
 }
 
-// sessionAwareGuard is a mock guard that also satisfies SessionAware so
+// sessionAwareScheme is a mock scheme that also satisfies SessionAware so
 // manager.Session(r) returns a real session the stash path can write to.
-type sessionAwareGuard struct {
-	mockGuardForMiddleware
+type sessionAwareScheme struct {
+	mockSchemeForMiddleware
 	sess Session
 }
 
-func (g *sessionAwareGuard) Session(*http.Request) Session { return g.sess }
+func (g *sessionAwareScheme) Session(*http.Request) Session { return g.sess }
 
 func TestAuthMiddleware_StashesIntendedInSession(t *testing.T) {
 	sess := NewSession("sid")
 	m := NewManager()
-	m.RegisterGuard("web", &sessionAwareGuard{mockGuardForMiddleware{authenticated: false}, sess})
+	m.RegisterScheme("web", &sessionAwareScheme{mockSchemeForMiddleware{authenticated: false}, sess})
 	mw := AuthMiddleware(m)
 
 	handler := mw(func(c *router.Context) error {
@@ -266,7 +266,7 @@ func TestAuthMiddleware_StashesIntendedInSession(t *testing.T) {
 func TestRequireRole_AllowsUserWithRole(t *testing.T) {
 	user := &mockUser{id: 1, roles: []string{"admin"}}
 	m := newManagerWithUser(user)
-	m.Gate().SetRoleChecker(func(u Authenticatable, role string) bool {
+	m.Access().SetRoleChecker(func(u Authenticatable, role string) bool {
 		mu := u.(*mockUser)
 		for _, r := range mu.roles {
 			if r == role {
@@ -300,7 +300,7 @@ func TestRequireRole_AllowsUserWithRole(t *testing.T) {
 func TestRequireRole_DeniesUserWithoutRole(t *testing.T) {
 	user := &mockUser{id: 1, roles: []string{"editor"}}
 	m := newManagerWithUser(user)
-	m.Gate().SetRoleChecker(func(u Authenticatable, role string) bool {
+	m.Access().SetRoleChecker(func(u Authenticatable, role string) bool {
 		mu := u.(*mockUser)
 		for _, r := range mu.roles {
 			if r == role {
@@ -337,7 +337,7 @@ func TestRequireRole_DeniesUserWithoutRole(t *testing.T) {
 }
 
 func TestRequireRole_ReturnsUnauthorizedWhenNotAuthenticated(t *testing.T) {
-	m := newManagerWithGuard(false)
+	m := newManagerWithScheme(false)
 
 	handler := RequireRole(m, "admin")(func(c *router.Context) error {
 		t.Error("next handler should not be called")
@@ -360,7 +360,7 @@ func TestRequireRole_ReturnsUnauthorizedWhenNotAuthenticated(t *testing.T) {
 func TestRequireRole_HTMLForbidden(t *testing.T) {
 	user := &mockUser{id: 1, roles: []string{}}
 	m := newManagerWithUser(user)
-	m.Gate().SetRoleChecker(func(Authenticatable, string) bool { return false })
+	m.Access().SetRoleChecker(func(Authenticatable, string) bool { return false })
 
 	handler := RequireRole(m, "admin")(func(c *router.Context) error {
 		t.Error("next handler should not be called")
@@ -385,7 +385,7 @@ func TestRequireRole_HTMLForbidden(t *testing.T) {
 func TestRequireAnyRole_AllowsUserWithOneMatchingRole(t *testing.T) {
 	user := &mockUser{id: 1, roles: []string{"editor"}}
 	m := newManagerWithUser(user)
-	m.Gate().SetRoleChecker(func(u Authenticatable, role string) bool {
+	m.Access().SetRoleChecker(func(u Authenticatable, role string) bool {
 		mu := u.(*mockUser)
 		for _, r := range mu.roles {
 			if r == role {
@@ -416,7 +416,7 @@ func TestRequireAnyRole_AllowsUserWithOneMatchingRole(t *testing.T) {
 func TestRequireAnyRole_DeniesUserWithNoMatchingRole(t *testing.T) {
 	user := &mockUser{id: 1, roles: []string{"viewer"}}
 	m := newManagerWithUser(user)
-	m.Gate().SetRoleChecker(func(u Authenticatable, role string) bool {
+	m.Access().SetRoleChecker(func(u Authenticatable, role string) bool {
 		mu := u.(*mockUser)
 		for _, r := range mu.roles {
 			if r == role {
@@ -445,7 +445,7 @@ func TestRequireAnyRole_DeniesUserWithNoMatchingRole(t *testing.T) {
 }
 
 func TestRequireAnyRole_ReturnsUnauthorizedWhenNotAuthenticated(t *testing.T) {
-	m := newManagerWithGuard(false)
+	m := newManagerWithScheme(false)
 
 	handler := RequireAnyRole(m, "admin", "editor")(func(c *router.Context) error {
 		t.Error("next handler should not be called")
@@ -470,7 +470,7 @@ func TestRequireAnyRole_ReturnsUnauthorizedWhenNotAuthenticated(t *testing.T) {
 func TestRequireAllRoles_AllowsUserWithAllRoles(t *testing.T) {
 	user := &mockUser{id: 1, roles: []string{"admin", "editor"}}
 	m := newManagerWithUser(user)
-	m.Gate().SetRoleChecker(func(u Authenticatable, role string) bool {
+	m.Access().SetRoleChecker(func(u Authenticatable, role string) bool {
 		mu := u.(*mockUser)
 		for _, r := range mu.roles {
 			if r == role {
@@ -501,7 +501,7 @@ func TestRequireAllRoles_AllowsUserWithAllRoles(t *testing.T) {
 func TestRequireAllRoles_DeniesUserMissingOneRole(t *testing.T) {
 	user := &mockUser{id: 1, roles: []string{"admin"}}
 	m := newManagerWithUser(user)
-	m.Gate().SetRoleChecker(func(u Authenticatable, role string) bool {
+	m.Access().SetRoleChecker(func(u Authenticatable, role string) bool {
 		mu := u.(*mockUser)
 		for _, r := range mu.roles {
 			if r == role {
@@ -530,7 +530,7 @@ func TestRequireAllRoles_DeniesUserMissingOneRole(t *testing.T) {
 }
 
 func TestRequireAllRoles_ReturnsUnauthorizedWhenNotAuthenticated(t *testing.T) {
-	m := newManagerWithGuard(false)
+	m := newManagerWithScheme(false)
 
 	handler := RequireAllRoles(m, "admin", "editor")(func(c *router.Context) error {
 		t.Error("next handler should not be called")
@@ -555,7 +555,7 @@ func TestRequireAllRoles_ReturnsUnauthorizedWhenNotAuthenticated(t *testing.T) {
 func TestAuthorizeMiddleware_AllowsWhenAbilityGranted(t *testing.T) {
 	user := &mockUser{id: 1}
 	m := newManagerWithUser(user)
-	m.Gate().Define("view-reports", func(u Authenticatable, args ...interface{}) bool {
+	m.Access().Define("view-reports", func(u Authenticatable, args ...interface{}) bool {
 		return true
 	})
 
@@ -580,7 +580,7 @@ func TestAuthorizeMiddleware_AllowsWhenAbilityGranted(t *testing.T) {
 func TestAuthorizeMiddleware_DeniesWhenAbilityDenied(t *testing.T) {
 	user := &mockUser{id: 1}
 	m := newManagerWithUser(user)
-	m.Gate().Define("view-reports", func(u Authenticatable, args ...interface{}) bool {
+	m.Access().Define("view-reports", func(u Authenticatable, args ...interface{}) bool {
 		return false
 	})
 
@@ -613,7 +613,7 @@ func TestAuthorizeMiddleware_DeniesWhenAbilityDenied(t *testing.T) {
 func TestAuthorizeMiddleware_WithResourceFunc(t *testing.T) {
 	user := &mockUser{id: 1}
 	m := newManagerWithUser(user)
-	m.Gate().Define("edit-post", func(u Authenticatable, args ...interface{}) bool {
+	m.Access().Define("edit-post", func(u Authenticatable, args ...interface{}) bool {
 		if len(args) > 0 {
 			postOwner, ok := args[0].(int)
 			if ok {
@@ -646,7 +646,7 @@ func TestAuthorizeMiddleware_WithResourceFunc(t *testing.T) {
 func TestAuthorizeMiddleware_WithResourceFunc_Denied(t *testing.T) {
 	user := &mockUser{id: 1}
 	m := newManagerWithUser(user)
-	m.Gate().Define("edit-post", func(u Authenticatable, args ...interface{}) bool {
+	m.Access().Define("edit-post", func(u Authenticatable, args ...interface{}) bool {
 		if len(args) > 0 {
 			postOwner, ok := args[0].(int)
 			if ok {
@@ -677,7 +677,7 @@ func TestAuthorizeMiddleware_WithResourceFunc_Denied(t *testing.T) {
 }
 
 func TestAuthorizeMiddleware_ReturnsUnauthorizedWhenNotAuthenticated(t *testing.T) {
-	m := newManagerWithGuard(false)
+	m := newManagerWithScheme(false)
 
 	handler := AuthorizeMiddleware(m, "view-reports")(func(c *router.Context) error {
 		t.Error("next handler should not be called")
@@ -700,7 +700,7 @@ func TestAuthorizeMiddleware_ReturnsUnauthorizedWhenNotAuthenticated(t *testing.
 func TestAuthorizeMiddleware_UndefinedAbilityDenied(t *testing.T) {
 	user := &mockUser{id: 1}
 	m := newManagerWithUser(user)
-	// No gate defined for "fly" — should deny by default
+	// No access defined for "fly" — should deny by default
 
 	handler := AuthorizeMiddleware(m, "fly")(func(c *router.Context) error {
 		t.Error("next handler should not be called")
@@ -723,7 +723,7 @@ func TestAuthorizeMiddleware_UndefinedAbilityDenied(t *testing.T) {
 // --- GuestMiddleware tests ---
 
 func TestGuestMiddleware_AllowsUnauthenticatedUsers(t *testing.T) {
-	m := newManagerWithGuard(false)
+	m := newManagerWithScheme(false)
 
 	var called bool
 	handler := GuestMiddleware(m)(func(c *router.Context) error {
@@ -747,7 +747,7 @@ func TestGuestMiddleware_AllowsUnauthenticatedUsers(t *testing.T) {
 }
 
 func TestGuestMiddleware_RedirectsAuthenticatedHTML(t *testing.T) {
-	m := newManagerWithGuard(true)
+	m := newManagerWithScheme(true)
 
 	handler := GuestMiddleware(m)(func(c *router.Context) error {
 		t.Error("next handler should not be called")
@@ -772,7 +772,7 @@ func TestGuestMiddleware_RedirectsAuthenticatedHTML(t *testing.T) {
 }
 
 func TestGuestMiddleware_ReturnsForbiddenForJSON(t *testing.T) {
-	m := newManagerWithGuard(true)
+	m := newManagerWithScheme(true)
 
 	handler := GuestMiddleware(m)(func(c *router.Context) error {
 		t.Error("next handler should not be called")
@@ -811,7 +811,7 @@ func setInertia(r *http.Request) {
 }
 
 func TestGuestMiddleware_InertiaRedirectsInsteadOfJSON(t *testing.T) {
-	m := newManagerWithGuard(true)
+	m := newManagerWithScheme(true)
 	handler := GuestMiddlewareWithRedirect(m, "/dashboard")(func(c *router.Context) error {
 		t.Error("next handler should not be called")
 		return nil
@@ -834,7 +834,7 @@ func TestGuestMiddleware_InertiaRedirectsInsteadOfJSON(t *testing.T) {
 }
 
 func TestAuthMiddleware_InertiaRedirectsToLogin(t *testing.T) {
-	m := newManagerWithGuard(false)
+	m := newManagerWithScheme(false)
 	handler := AuthMiddleware(m)(func(c *router.Context) error {
 		t.Error("next handler should not be called")
 		return nil
@@ -882,7 +882,7 @@ func TestDenyForbidden_InertiaEmitsLocationReload(t *testing.T) {
 }
 
 func TestGuestMiddlewareWithRedirect_UsesCustomURL(t *testing.T) {
-	m := newManagerWithGuard(true)
+	m := newManagerWithScheme(true)
 
 	handler := GuestMiddlewareWithRedirect(m, "/dashboard")(func(c *router.Context) error {
 		t.Error("next handler should not be called")
@@ -907,7 +907,7 @@ func TestGuestMiddlewareWithRedirect_UsesCustomURL(t *testing.T) {
 }
 
 func TestGuestMiddlewareWithRedirect_AllowsUnauthenticated(t *testing.T) {
-	m := newManagerWithGuard(false)
+	m := newManagerWithScheme(false)
 
 	var called bool
 	handler := GuestMiddlewareWithRedirect(m, "/dashboard")(func(c *router.Context) error {

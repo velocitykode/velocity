@@ -69,55 +69,55 @@ func (s *fakeSession) FlushFlash() map[string]any { return nil }
 
 var _ auth.Session = (*fakeSession)(nil)
 
-// sessionAwareGuard is a Guard that also satisfies auth.SessionAware so the
+// sessionAwareScheme is a Scheme that also satisfies auth.SessionAware so the
 // ReqEngine flash path can locate the recording session.
-type sessionAwareGuard struct {
+type sessionAwareScheme struct {
 	session auth.Session
 }
 
-func (g *sessionAwareGuard) Check(*http.Request) bool                { return false }
-func (g *sessionAwareGuard) User(*http.Request) auth.Authenticatable { return nil }
-func (g *sessionAwareGuard) ID(*http.Request) any                    { return nil }
-func (g *sessionAwareGuard) SetProvider(auth.UserProvider)           {}
-func (g *sessionAwareGuard) Logout(http.ResponseWriter, *http.Request) error {
+func (g *sessionAwareScheme) Check(*http.Request) bool                { return false }
+func (g *sessionAwareScheme) User(*http.Request) auth.Authenticatable { return nil }
+func (g *sessionAwareScheme) ID(*http.Request) any                    { return nil }
+func (g *sessionAwareScheme) SetUserStore(auth.UserStore)             {}
+func (g *sessionAwareScheme) Logout(http.ResponseWriter, *http.Request) error {
 	return nil
 }
-func (g *sessionAwareGuard) Login(http.ResponseWriter, *http.Request, auth.Authenticatable, ...bool) error {
+func (g *sessionAwareScheme) Login(http.ResponseWriter, *http.Request, auth.Authenticatable, ...bool) error {
 	return nil
 }
-func (g *sessionAwareGuard) LoginByID(http.ResponseWriter, *http.Request, any, ...bool) error {
+func (g *sessionAwareScheme) LoginByID(http.ResponseWriter, *http.Request, any, ...bool) error {
 	return nil
 }
-func (g *sessionAwareGuard) Attempt(http.ResponseWriter, *http.Request, map[string]any, ...bool) (bool, error) {
+func (g *sessionAwareScheme) Attempt(http.ResponseWriter, *http.Request, map[string]any, ...bool) (bool, error) {
 	return false, nil
 }
-func (g *sessionAwareGuard) Session(*http.Request) auth.Session { return g.session }
+func (g *sessionAwareScheme) Session(*http.Request) auth.Session { return g.session }
 
 var (
-	_ auth.Guard        = (*sessionAwareGuard)(nil)
-	_ auth.SessionAware = (*sessionAwareGuard)(nil)
+	_ auth.Scheme       = (*sessionAwareScheme)(nil)
+	_ auth.SessionAware = (*sessionAwareScheme)(nil)
 )
 
-// nonSessionGuard satisfies auth.Guard without implementing SessionAware so
+// nonSessionScheme satisfies auth.Scheme without implementing SessionAware so
 // Manager.Session returns nil (e.g. JWT-only deployments).
-type nonSessionGuard struct{}
+type nonSessionScheme struct{}
 
-func (g *nonSessionGuard) Check(*http.Request) bool                        { return false }
-func (g *nonSessionGuard) User(*http.Request) auth.Authenticatable         { return nil }
-func (g *nonSessionGuard) ID(*http.Request) any                            { return nil }
-func (g *nonSessionGuard) SetProvider(auth.UserProvider)                   {}
-func (g *nonSessionGuard) Logout(http.ResponseWriter, *http.Request) error { return nil }
-func (g *nonSessionGuard) Login(http.ResponseWriter, *http.Request, auth.Authenticatable, ...bool) error {
+func (g *nonSessionScheme) Check(*http.Request) bool                        { return false }
+func (g *nonSessionScheme) User(*http.Request) auth.Authenticatable         { return nil }
+func (g *nonSessionScheme) ID(*http.Request) any                            { return nil }
+func (g *nonSessionScheme) SetUserStore(auth.UserStore)                     {}
+func (g *nonSessionScheme) Logout(http.ResponseWriter, *http.Request) error { return nil }
+func (g *nonSessionScheme) Login(http.ResponseWriter, *http.Request, auth.Authenticatable, ...bool) error {
 	return nil
 }
-func (g *nonSessionGuard) LoginByID(http.ResponseWriter, *http.Request, any, ...bool) error {
+func (g *nonSessionScheme) LoginByID(http.ResponseWriter, *http.Request, any, ...bool) error {
 	return nil
 }
-func (g *nonSessionGuard) Attempt(http.ResponseWriter, *http.Request, map[string]any, ...bool) (bool, error) {
+func (g *nonSessionScheme) Attempt(http.ResponseWriter, *http.Request, map[string]any, ...bool) (bool, error) {
 	return false, nil
 }
 
-var _ auth.Guard = (*nonSessionGuard)(nil)
+var _ auth.Scheme = (*nonSessionScheme)(nil)
 
 // stubViewEngine implements contract.ViewEngine but is not a *view.Engine, so
 // view.FromContext returns nil when this value is wired onto a context.
@@ -131,8 +131,8 @@ var _ contract.ViewEngine = stubViewEngine{}
 // so auth.FromContext returns nil when this value is wired onto a context.
 type stubAuthManager struct{}
 
-func (stubAuthManager) GateAllows(*http.Request, string, ...any) bool { return false }
-func (stubAuthManager) GateAuthorize(*http.Request, string, ...any) error {
+func (stubAuthManager) Allows(*http.Request, string, ...any) bool { return false }
+func (stubAuthManager) Authorize(*http.Request, string, ...any) error {
 	return nil
 }
 
@@ -157,7 +157,7 @@ func newRedirectCtx(t *testing.T, method, path string, engine contract.ViewEngin
 
 func newAuthManagerWithSession(sess auth.Session) *auth.Manager {
 	m := auth.NewManager()
-	m.RegisterGuard("web", &sessionAwareGuard{session: sess})
+	m.RegisterScheme("web", &sessionAwareScheme{session: sess})
 	return m
 }
 
@@ -405,18 +405,18 @@ func TestFor_Flash_NoAuthManager_IsNoopAndDoesNotSave(t *testing.T) {
 	// the response carries the expected redirect.
 }
 
-func TestFor_Flash_GuardNotSessionAware_IsNoop(t *testing.T) {
+func TestFor_Flash_SchemeNotSessionAware_IsNoop(t *testing.T) {
 	engine := newTestEngine(t)
 	mgr := auth.NewManager()
-	mgr.RegisterGuard("web", &nonSessionGuard{})
+	mgr.RegisterScheme("web", &nonSessionScheme{})
 
 	ctx, rec := newRedirectCtx(t, "POST", "/submit", engine, mgr)
-	sess := &fakeSession{} // unused; nonSessionGuard never hands it out
+	sess := &fakeSession{} // unused; nonSessionScheme never hands it out
 	_ = sess
 
 	For(ctx).Flash("error", "x").Redirect("/foo")
 
-	// Manager.Session returns nil because nonSessionGuard does not
+	// Manager.Session returns nil because nonSessionScheme does not
 	// implement SessionAware, so the ReqEngine never acquires a session.
 	// The redirect still fires.
 	if rec.Code != http.StatusSeeOther {

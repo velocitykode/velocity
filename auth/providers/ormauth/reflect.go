@@ -73,7 +73,7 @@ func stringCarrier(t reflect.Type) bool {
 
 // readString extracts the string value of an accepted carrier. A NULL
 // column (nil pointer, invalid NullString) reads as the empty string,
-// matching the sql.NullString handling the previous raw-SQL provider
+// matching the sql.NullString handling the previous raw-SQL user store
 // applied to remember_token.
 func readString(v reflect.Value) (string, error) {
 	switch {

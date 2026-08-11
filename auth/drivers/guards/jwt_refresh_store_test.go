@@ -15,7 +15,7 @@ import (
 
 // sharedRefreshGenStore is the test surrogate for a Redis-backed
 // RefreshGenerationStore: a single counter map shared between two
-// JWTGuard instances that simulate two hosts in a fleet.
+// JWTScheme instances that simulate two hosts in a fleet.
 type sharedRefreshGenStore struct {
 	mu     sync.RWMutex
 	counts map[string]int64
@@ -51,27 +51,27 @@ func (u *jwtSharedStoreUser) GetAuthPassword() string        { return "" }
 func (u *jwtSharedStoreUser) GetRememberToken() string       { return "" }
 func (u *jwtSharedStoreUser) SetRememberToken(string)        {}
 
-// jwtSharedStoreProvider returns the user for any id.
-type jwtSharedStoreProvider struct {
+// jwtSharedStoreUserStore returns the user for any id.
+type jwtSharedStoreUserStore struct {
 	user *jwtSharedStoreUser
 }
 
-func (p *jwtSharedStoreProvider) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *jwtSharedStoreUserStore) FindByID(id interface{}) (auth.Authenticatable, error) {
 	return p.user, nil
 }
-func (p *jwtSharedStoreProvider) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
+func (p *jwtSharedStoreUserStore) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
 	return p.user, nil
 }
-func (p *jwtSharedStoreProvider) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
+func (p *jwtSharedStoreUserStore) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
 	return true
 }
-func (p *jwtSharedStoreProvider) UpdateRememberToken(auth.Authenticatable, string) error {
+func (p *jwtSharedStoreUserStore) UpdateRememberToken(auth.Authenticatable, string) error {
 	return nil
 }
 
-// newFleetGuard builds a JWTGuard wired against a caller-supplied shared
+// newFleetScheme builds a JWTScheme wired against a caller-supplied shared
 // RefreshGenerationStore. Used to simulate two hosts in a fleet.
-func newFleetGuard(t *testing.T, sharedStore auth.RefreshGenerationStore, user *jwtSharedStoreUser) *JWTGuard {
+func newFleetScheme(t *testing.T, sharedStore auth.RefreshGenerationStore, user *jwtSharedStoreUser) *JWTScheme {
 	t.Helper()
 	cfg := auth.JWTConfig{
 		Secret:                 strings.Repeat("s", 64),
@@ -80,29 +80,29 @@ func newFleetGuard(t *testing.T, sharedStore auth.RefreshGenerationStore, user *
 		RefreshTTL:             20160,
 		RefreshGenerationStore: sharedStore,
 	}
-	guard, err := NewJWTGuard(&jwtSharedStoreProvider{user: user}, cfg)
+	scheme, err := NewJWTScheme(&jwtSharedStoreUserStore{user: user}, cfg)
 	if err != nil {
-		t.Fatalf("NewJWTGuard: %v", err)
+		t.Fatalf("NewJWTScheme: %v", err)
 	}
-	return guard
+	return scheme
 }
 
-// TestJWTGuard_RefreshGenerationStore_PropagatesAcrossGuards is the F1
-// regression test. Two JWTGuard instances pointing at the same
+// TestJWTScheme_RefreshGenerationStore_PropagatesAcrossSchemes is the F1
+// regression test. Two JWTScheme instances pointing at the same
 // RefreshGenerationStore simulate a multi-host fleet. Logout on host A
 // MUST stale every refresh token outstanding for that user, including
 // those tracked on host B.
 //
 // Without JWTConfig.RefreshGenerationStore (the operator-installable
-// hook), each guard kept its own in-memory counter and a Logout on host A
+// hook), each scheme kept its own in-memory counter and a Logout on host A
 // did not propagate. A stolen refresh token would happily refresh on
 // host B until its TTL expired (default 14 days).
-func TestJWTGuard_RefreshGenerationStore_PropagatesAcrossGuards(t *testing.T) {
+func TestJWTScheme_RefreshGenerationStore_PropagatesAcrossSchemes(t *testing.T) {
 	user := &jwtSharedStoreUser{id: "fleet-user"}
 	shared := newSharedRefreshGenStore()
 
-	hostA := newFleetGuard(t, shared, user)
-	hostB := newFleetGuard(t, shared, user)
+	hostA := newFleetScheme(t, shared, user)
+	hostB := newFleetScheme(t, shared, user)
 
 	// Host A mints a refresh token at generation 0.
 	refreshToken, err := hostA.GenerateRefreshToken(user)
@@ -142,24 +142,24 @@ func TestJWTGuard_RefreshGenerationStore_PropagatesAcrossGuards(t *testing.T) {
 	}
 }
 
-// TestJWTGuard_SetRefreshGenerationStore_Runtime confirms the setter
-// hot-swaps the store after construction without re-creating the guard.
+// TestJWTScheme_SetRefreshGenerationStore_Runtime confirms the setter
+// hot-swaps the store after construction without re-creating the scheme.
 // Used by providers that defer cache wiring to Boot().
-func TestJWTGuard_SetRefreshGenerationStore_Runtime(t *testing.T) {
+func TestJWTScheme_SetRefreshGenerationStore_Runtime(t *testing.T) {
 	user := &jwtSharedStoreUser{id: "runtime-swap"}
-	provider := &jwtSharedStoreProvider{user: user}
+	userStore := &jwtSharedStoreUserStore{user: user}
 
-	guard, err := NewJWTGuard(provider, auth.JWTConfig{
+	scheme, err := NewJWTScheme(userStore, auth.JWTConfig{
 		Secret:    strings.Repeat("s", 64),
 		Algorithm: "HS256",
 		TTL:       60,
 	})
 	if err != nil {
-		t.Fatalf("NewJWTGuard: %v", err)
+		t.Fatalf("NewJWTScheme: %v", err)
 	}
 
 	// Mint a refresh token against the default in-memory store.
-	rt, err := guard.GenerateRefreshToken(user)
+	rt, err := scheme.GenerateRefreshToken(user)
 	if err != nil {
 		t.Fatalf("GenerateRefreshToken: %v", err)
 	}
@@ -170,9 +170,9 @@ func TestJWTGuard_SetRefreshGenerationStore_Runtime(t *testing.T) {
 	// MUST still succeed: generation comparison is against the active
 	// store, not the issuance-time store.
 	shared := newSharedRefreshGenStore()
-	guard.SetRefreshGenerationStore(shared)
+	scheme.SetRefreshGenerationStore(shared)
 
-	if _, err := guard.RefreshToken(rt); err != nil {
+	if _, err := scheme.RefreshToken(rt); err != nil {
 		t.Fatalf("RefreshToken post-swap pre-bump: %v", err)
 	}
 
@@ -180,7 +180,7 @@ func TestJWTGuard_SetRefreshGenerationStore_Runtime(t *testing.T) {
 	if _, err := shared.Bump("runtime-swap"); err != nil {
 		t.Fatalf("Bump on shared store: %v", err)
 	}
-	_, err = guard.RefreshToken(rt)
+	_, err = scheme.RefreshToken(rt)
 	if err == nil {
 		t.Fatal("RefreshToken post-bump returned nil; expected ErrRefreshGenerationStale")
 	}
@@ -189,39 +189,39 @@ func TestJWTGuard_SetRefreshGenerationStore_Runtime(t *testing.T) {
 	}
 }
 
-// TestJWTGuard_SetRefreshGenerationStore_NilReverts confirms passing nil
+// TestJWTScheme_SetRefreshGenerationStore_NilReverts confirms passing nil
 // resets to the in-process default rather than panicking on a nil
 // interface read inside RefreshToken.
-func TestJWTGuard_SetRefreshGenerationStore_NilReverts(t *testing.T) {
+func TestJWTScheme_SetRefreshGenerationStore_NilReverts(t *testing.T) {
 	user := &jwtSharedStoreUser{id: "nil-revert"}
-	guard, err := NewJWTGuard(&jwtSharedStoreProvider{user: user}, auth.JWTConfig{
+	scheme, err := NewJWTScheme(&jwtSharedStoreUserStore{user: user}, auth.JWTConfig{
 		Secret:    strings.Repeat("s", 64),
 		Algorithm: "HS256",
 		TTL:       60,
 	})
 	if err != nil {
-		t.Fatalf("NewJWTGuard: %v", err)
+		t.Fatalf("NewJWTScheme: %v", err)
 	}
 
-	guard.SetRefreshGenerationStore(nil)
+	scheme.SetRefreshGenerationStore(nil)
 
 	// Should still operate (in-memory default reinstalled).
-	rt, err := guard.GenerateRefreshToken(user)
+	rt, err := scheme.GenerateRefreshToken(user)
 	if err != nil {
 		t.Fatalf("GenerateRefreshToken after nil-reset: %v", err)
 	}
-	if _, err := guard.RefreshToken(rt); err != nil {
+	if _, err := scheme.RefreshToken(rt); err != nil {
 		t.Fatalf("RefreshToken after nil-reset: %v", err)
 	}
 }
 
-// Ctx-suffixed shims for auth.UserProvider, added in Sweep 1b.
-func (p *jwtSharedStoreProvider) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+// Ctx-suffixed shims for auth.UserStore, added in Sweep 1b.
+func (p *jwtSharedStoreUserStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
 	return p.FindByID(id)
 }
-func (p *jwtSharedStoreProvider) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *jwtSharedStoreUserStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
 	return p.FindByCredentials(credentials)
 }
-func (p *jwtSharedStoreProvider) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+func (p *jwtSharedStoreUserStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
 	return p.UpdateRememberToken(user, token)
 }

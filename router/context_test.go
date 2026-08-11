@@ -1857,21 +1857,21 @@ func TestContext_Accepts(t *testing.T) {
 // Can / Cannot / Authorize tests
 // ---------------------------------------------------------------------------
 
-// mockAuthGateChecker satisfies the contract.AuthManager interface used by Context
+// mockAuthAccessChecker satisfies the contract.AuthManager interface used by Context
 // without importing pkg/auth.
-type mockAuthGateChecker struct {
+type mockAuthAccessChecker struct {
 	allows map[string]bool
 }
 
-func (m *mockAuthGateChecker) GateAllows(r *http.Request, ability string, args ...interface{}) bool {
+func (m *mockAuthAccessChecker) Allows(r *http.Request, ability string, args ...interface{}) bool {
 	if m.allows == nil {
 		return false
 	}
 	return m.allows[ability]
 }
 
-func (m *mockAuthGateChecker) GateAuthorize(r *http.Request, ability string, args ...interface{}) error {
-	if !m.GateAllows(r, ability, args...) {
+func (m *mockAuthAccessChecker) Authorize(r *http.Request, ability string, args ...interface{}) error {
+	if !m.Allows(r, ability, args...) {
 		return fmt.Errorf("unauthorized action")
 	}
 	return nil
@@ -1886,19 +1886,19 @@ func TestContext_Can(t *testing.T) {
 	}{
 		{
 			name:    "allowed ability",
-			auth:    &mockAuthGateChecker{allows: map[string]bool{"edit": true}},
+			auth:    &mockAuthAccessChecker{allows: map[string]bool{"edit": true}},
 			ability: "edit",
 			want:    true,
 		},
 		{
 			name:    "denied ability",
-			auth:    &mockAuthGateChecker{allows: map[string]bool{"edit": false}},
+			auth:    &mockAuthAccessChecker{allows: map[string]bool{"edit": false}},
 			ability: "edit",
 			want:    false,
 		},
 		{
 			name:    "undefined ability",
-			auth:    &mockAuthGateChecker{allows: map[string]bool{}},
+			auth:    &mockAuthAccessChecker{allows: map[string]bool{}},
 			ability: "delete",
 			want:    false,
 		},
@@ -1941,7 +1941,7 @@ func TestContext_Cannot(t *testing.T) {
 	w := httptest.NewRecorder()
 	c := NewContext(w, req)
 	c.services = &app.Services{
-		Auth: &mockAuthGateChecker{allows: map[string]bool{"edit": true, "delete": false}},
+		Auth: &mockAuthAccessChecker{allows: map[string]bool{"edit": true, "delete": false}},
 	}
 
 	if c.Cannot("edit") {
@@ -1967,13 +1967,13 @@ func TestContext_Authorize(t *testing.T) {
 	}{
 		{
 			name:     "allowed ability returns nil",
-			services: &app.Services{Auth: &mockAuthGateChecker{allows: map[string]bool{"edit": true}}},
+			services: &app.Services{Auth: &mockAuthAccessChecker{allows: map[string]bool{"edit": true}}},
 			ability:  "edit",
 			wantErr:  false,
 		},
 		{
 			name:     "denied ability returns 403",
-			services: &app.Services{Auth: &mockAuthGateChecker{allows: map[string]bool{"delete": false}}},
+			services: &app.Services{Auth: &mockAuthAccessChecker{allows: map[string]bool{"delete": false}}},
 			ability:  "delete",
 			wantErr:  true,
 			wantCode: http.StatusForbidden,
@@ -2083,7 +2083,7 @@ func TestContext_Resource(t *testing.T) {
 	}
 }
 
-// TestContext_reset_clearsAllFields is a regression gate against pooled
+// TestContext_reset_clearsAllFields is a regression access against pooled
 // contexts leaking state from one request into the next (Gin CVE-2020-28483
 // shape). If a new field is added to Context, this test will fail unless
 // reset() clears it; add the corresponding assertion below.

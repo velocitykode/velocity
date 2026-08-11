@@ -55,7 +55,7 @@ func decryptSessionID(t *testing.T, enc crypto.Encryptor, cookieValue string) st
 //     also has a valid remember cookie). The login cookie is discarded.
 //  3. A new request arrives carrying BOTH the planted session cookie P
 //     AND the victim's remember cookie. It hits /whoami which calls
-//     guard.User; the recall path runs because the planted session has
+//     scheme.User; the recall path runs because the planted session has
 //     no user_id.
 //  4. anchorRecalledUser captures oldID=planted-id, Regenerates to
 //     newID, RotateToken(planted-id, newID), then Put("user_id", u1).
@@ -68,7 +68,7 @@ func decryptSessionID(t *testing.T, enc crypto.Encryptor, cookieValue string) st
 //   - CSRF store has NO token under "planted-id" (RotateToken cleared
 //     the orphan);
 //   - follow-up request bearing the new cookie reads user_id back via
-//     guard.User, proving the rotation persisted across requests.
+//     scheme.User, proving the rotation persisted across requests.
 //
 // Pre-G2 this test could not exist: no save-at-end primitive flushed the
 // rotated cookie. With the pre-commit hook + the CSRF rotator wired
@@ -92,13 +92,13 @@ func TestCSRFRotation_RememberCookieRevival_RotatesAndPersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCookieStore: %v", err)
 	}
-	// Use the existing rememberRevivalProvider helper (defined in
+	// Use the existing rememberRevivalStore helper (defined in
 	// session_recaller_test.go) so the user's stored remember-token
 	// hash matches the cookie minted by Login + setRememberCookie.
-	provider := &rememberRevivalProvider{user: &revokeTestUser{id: "u1"}}
-	guard, err := NewSessionGuard(provider, sessCfg, enc)
+	userStore := &rememberRevivalStore{user: &revokeTestUser{id: "u1"}}
+	scheme, err := NewSessionScheme(userStore, sessCfg, enc)
 	if err != nil {
-		t.Fatalf("NewSessionGuard: %v", err)
+		t.Fatalf("NewSessionScheme: %v", err)
 	}
 
 	// Real CSRF instance backed by an in-memory store, with a resolver
@@ -128,7 +128,7 @@ func TestCSRFRotation_RememberCookieRevival_RotatesAndPersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("csrf.NewE: %v", err)
 	}
-	guard.SetCSRFTokenRotator(csrfInstance)
+	scheme.SetCSRFTokenRotator(csrfInstance)
 
 	// Step 1: mint a planted session cookie via the real CookieStore.
 	// The session is a fresh empty bag (no user_id); the cookie is
@@ -170,7 +170,7 @@ func TestCSRFRotation_RememberCookieRevival_RotatesAndPersists(t *testing.T) {
 	loginReq := httptest.NewRequest(http.MethodPost, "/login", nil)
 	loginReq = WithSessionContext(loginReq)
 	loginW := httptest.NewRecorder()
-	if err := guard.Login(loginW, loginReq, &revokeTestUser{id: "u1"}, true); err != nil {
+	if err := scheme.Login(loginW, loginReq, &revokeTestUser{id: "u1"}, true); err != nil {
 		t.Fatalf("Login: %v", err)
 	}
 	var rememberCookie *http.Cookie
@@ -184,11 +184,11 @@ func TestCSRFRotation_RememberCookieRevival_RotatesAndPersists(t *testing.T) {
 	}
 
 	// Step 3: build a router with save-at-end middleware + handler
-	// that drives the recall via guard.User.
+	// that drives the recall via scheme.User.
 	r := router.New()
-	r.Use(guard.SessionMiddleware())
+	r.Use(scheme.SessionMiddleware())
 	r.Get("/whoami", func(c *router.Context) error {
-		u := guard.User(c.Request)
+		u := scheme.User(c.Request)
 		if u == nil {
 			return c.JSON(http.StatusUnauthorized, map[string]string{"err": "anon"})
 		}
@@ -251,7 +251,7 @@ func TestCSRFRotation_RememberCookieRevival_RotatesAndPersists(t *testing.T) {
 	}
 
 	// Assertion 4: a follow-up request bearing the rotated cookie
-	// reads user_id back via guard.User. Proves the rotation
+	// reads user_id back via scheme.User. Proves the rotation
 	// persisted across requests (Set-Cookie actually landed AND the
 	// session bag rotated correctly).
 	followReq, err := http.NewRequest(http.MethodGet, srv.URL+"/whoami", nil)

@@ -12,7 +12,7 @@ import (
 
 // TestSetAuthModel_InstallsApplicationModel covers the supported path: an
 // application declares its user model through the root package, without
-// naming the provider package at all.
+// naming the user store package at all.
 func TestSetAuthModel_InstallsApplicationModel(t *testing.T) {
 	manager := initAuth(auth.Config{}, auth.SessionConfig{}, nil, nil)
 	services := &app.Services{Auth: manager}
@@ -25,17 +25,17 @@ func TestSetAuthModel_InstallsApplicationModel(t *testing.T) {
 		t.Fatalf("SetAuthModel: %v", err)
 	}
 
-	provider, ok := manager.DefaultProvider().(*ormauth.Provider[wiringAdmin])
+	userStore, ok := manager.DefaultUserStore().(*ormauth.Store[wiringAdmin])
 	if !ok {
-		t.Fatalf("installed provider is %T, want the application model", manager.DefaultProvider())
+		t.Fatalf("installed user store is %T, want the application model", manager.DefaultUserStore())
 	}
-	if got := provider.Options().IdentifierColumn; got != "username" {
+	if got := userStore.Options().IdentifierColumn; got != "username" {
 		t.Errorf("IdentifierColumn = %q, want username", got)
 	}
 }
 
 // TestSetAuthModel_InheritsManagerHasher proves the operator-configured
-// bcrypt cost survives the swap rather than resetting to the provider's own
+// bcrypt cost survives the swap rather than resetting to the user store's own
 // default.
 func TestSetAuthModel_InheritsManagerHasher(t *testing.T) {
 	manager := initAuth(auth.Config{BcryptCost: 12}, auth.SessionConfig{}, nil, nil)
@@ -45,10 +45,10 @@ func TestSetAuthModel_InheritsManagerHasher(t *testing.T) {
 		t.Fatalf("SetAuthModel: %v", err)
 	}
 
-	provider := manager.DefaultProvider().(*ormauth.Provider[ormauth.User])
-	hasher, ok := provider.Options().Hasher.(*auth.BcryptHasher)
+	userStore := manager.DefaultUserStore().(*ormauth.Store[ormauth.User])
+	hasher, ok := userStore.Options().Hasher.(*auth.BcryptHasher)
 	if !ok {
-		t.Fatalf("hasher is %T, want the manager's *auth.BcryptHasher", provider.Options().Hasher)
+		t.Fatalf("hasher is %T, want the manager's *auth.BcryptHasher", userStore.Options().Hasher)
 	}
 	if got := hasher.Cost(); got != 12 {
 		t.Errorf("bcrypt cost = %d, want the configured 12", got)
@@ -67,30 +67,30 @@ func TestSetAuthModel_CallerOptionsWinOverInheritedHasher(t *testing.T) {
 		t.Fatalf("SetAuthModel: %v", err)
 	}
 
-	provider := manager.DefaultProvider().(*ormauth.Provider[ormauth.User])
-	if provider.Options().Hasher != auth.Hasher(explicit) {
+	userStore := manager.DefaultUserStore().(*ormauth.Store[ormauth.User])
+	if userStore.Options().Hasher != auth.Hasher(explicit) {
 		t.Error("an explicitly supplied hasher was overridden by the inherited one")
 	}
 }
 
 // TestSetAuthModel_RejectsUnmappableModel proves validation happens before
-// installation: a model the provider cannot map is a boot error naming the
-// problem, and the previously installed provider is left in place.
+// installation: a model the user store cannot map is a boot error naming the
+// problem, and the previously installed user store is left in place.
 func TestSetAuthModel_RejectsUnmappableModel(t *testing.T) {
 	manager := initAuth(auth.Config{}, auth.SessionConfig{}, nil, nil)
 	services := &app.Services{Auth: manager}
-	before := manager.DefaultProvider()
+	before := manager.DefaultUserStore()
 
 	err := SetAuthModel[noPolicyModel](services)
 	if err == nil {
 		t.Fatal("a model with no mass-assignment policy was installed")
 	}
-	if manager.DefaultProvider() != before {
+	if manager.DefaultUserStore() != before {
 		t.Error("a failed SetAuthModel replaced the installed provider")
 	}
 }
 
-// TestSetAuthModel_WithoutAuthConfigured covers an app whose guards were
+// TestSetAuthModel_WithoutAuthConfigured covers an app whose schemes were
 // never built.
 func TestSetAuthModel_WithoutAuthConfigured(t *testing.T) {
 	if err := SetAuthModel[ormauth.User](&app.Services{}); !errors.Is(err, ErrAuthNotConfigured) {
@@ -101,26 +101,26 @@ func TestSetAuthModel_WithoutAuthConfigured(t *testing.T) {
 	}
 }
 
-// TestORMUserProvider_BuildsWithoutInstalling covers the escape hatch used
-// when the caller wants the provider itself.
-func TestORMUserProvider_BuildsWithoutInstalling(t *testing.T) {
+// TestORMUserStore_BuildsWithoutInstalling covers the escape hatch used
+// when the caller wants the user store itself.
+func TestORMUserStore_BuildsWithoutInstalling(t *testing.T) {
 	manager := initAuth(auth.Config{}, auth.SessionConfig{}, nil, nil)
-	before := manager.DefaultProvider()
+	before := manager.DefaultUserStore()
 
-	provider := ORMUserProvider[wiringAdmin](
+	userStore := ORMUserStore[wiringAdmin](
 		WithAuthIdentifierColumn("username"),
 		WithAuthPasswordColumn("pass_hash"),
 		WithAuthRememberTokenColumn("recall_token"),
 		WithAuthCredentialsKey("login"),
 	)
-	if err := provider.Validate(); err != nil {
+	if err := userStore.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
-	if got := provider.Options().CredentialsKey; got != "login" {
+	if got := userStore.Options().CredentialsKey; got != "login" {
 		t.Errorf("CredentialsKey = %q, want login", got)
 	}
-	if manager.DefaultProvider() != before {
-		t.Error("ORMUserProvider installed the provider; it must only build one")
+	if manager.DefaultUserStore() != before {
+		t.Error("ORMUserStore installed the user store; it must only build one")
 	}
 }
 

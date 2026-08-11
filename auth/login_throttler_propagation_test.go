@@ -8,23 +8,23 @@ import (
 	"github.com/velocitykode/velocity/contract"
 )
 
-type fakeLoginThrottlerReceiverGuard struct {
-	mockGuard
+type fakeLoginThrottlerReceiverScheme struct {
+	mockScheme
 	manager   *Manager
 	mu        sync.Mutex
 	throttler contract.LoginThrottler
 }
 
-func (g *fakeLoginThrottlerReceiverGuard) SetLoginThrottler(t contract.LoginThrottler) {
+func (g *fakeLoginThrottlerReceiverScheme) SetLoginThrottler(t contract.LoginThrottler) {
 	if g.manager != nil {
-		_, _ = g.manager.Guard("test")
+		_, _ = g.manager.Scheme("test")
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.throttler = t
 }
 
-func (g *fakeLoginThrottlerReceiverGuard) snapshot() contract.LoginThrottler {
+func (g *fakeLoginThrottlerReceiverScheme) snapshot() contract.LoginThrottler {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.throttler
@@ -32,8 +32,8 @@ func (g *fakeLoginThrottlerReceiverGuard) snapshot() contract.LoginThrottler {
 
 func TestManagerSetLoginThrottlerPropagatesOutsideLock(t *testing.T) {
 	m := NewManager()
-	g := &fakeLoginThrottlerReceiverGuard{manager: m}
-	m.RegisterGuard("test", g)
+	g := &fakeLoginThrottlerReceiverScheme{manager: m}
+	m.RegisterScheme("test", g)
 
 	throttler := NoopLoginThrottler{}
 	done := make(chan struct{})
@@ -49,30 +49,30 @@ func TestManagerSetLoginThrottlerPropagatesOutsideLock(t *testing.T) {
 	}
 
 	if got := g.snapshot(); got == nil {
-		t.Fatal("guard did not receive login throttler")
+		t.Fatal("scheme did not receive login throttler")
 	}
 }
 
-func TestManagerRegisterGuardInheritsLoginThrottler(t *testing.T) {
+func TestManagerRegisterSchemeInheritsLoginThrottler(t *testing.T) {
 	m := NewManager()
 	throttler := NoopLoginThrottler{}
 	m.SetLoginThrottler(throttler)
 
-	g := &fakeLoginThrottlerReceiverGuard{}
-	m.RegisterGuard("test", g)
+	g := &fakeLoginThrottlerReceiverScheme{}
+	m.RegisterScheme("test", g)
 
 	if got := g.snapshot(); got == nil {
-		t.Fatal("guard registered after SetLoginThrottler did not inherit")
+		t.Fatal("scheme registered after SetLoginThrottler did not inherit")
 	}
 }
 
 func TestManagerSetLoginThrottlerSkipsNonReceivers(t *testing.T) {
 	m := NewManager()
-	m.RegisterGuard("test", &mockGuard{})
+	m.RegisterScheme("test", &mockScheme{})
 
 	m.SetLoginThrottler(NoopLoginThrottler{})
 }
 
-var _ Guard = (*fakeLoginThrottlerReceiverGuard)(nil)
-var _ LoginThrottlerReceiver = (*fakeLoginThrottlerReceiverGuard)(nil)
+var _ Scheme = (*fakeLoginThrottlerReceiverScheme)(nil)
+var _ LoginThrottlerReceiver = (*fakeLoginThrottlerReceiverScheme)(nil)
 var _ contract.LoginThrottler = NoopLoginThrottler{}

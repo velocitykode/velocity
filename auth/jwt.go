@@ -187,7 +187,7 @@ func (c JWTConfig) Validate() error {
 			return errors.New("velocity/auth: jwt secret must be at least 32 bytes for hmac algorithms")
 		}
 		// Previous secrets enable verify-only key rotation (E-02). The
-		// length guard mirrors the active secret so a retired weak key
+		// length scheme mirrors the active secret so a retired weak key
 		// never re-enters service via this slot.
 		for i, prev := range c.PreviousSecrets {
 			if prev == "" {
@@ -237,7 +237,7 @@ type Claims struct {
 	// RefreshGeneration is the per-user generation counter at the time
 	// the refresh token was issued. RefreshToken rejects any refresh
 	// token whose RefreshGeneration is less than the user's current
-	// generation, so JWTGuard.Logout can revoke every refresh token
+	// generation, so JWTScheme.Logout can revoke every refresh token
 	// outstanding for the user by bumping the counter. Access tokens
 	// leave this zero. See audit H-07.
 	RefreshGeneration int64 `json:"rgn,omitempty"`
@@ -263,7 +263,7 @@ type RefreshGenerationStore interface {
 	Current(userID string) (int64, error)
 
 	// Bump increments and returns the new generation for userID. Used
-	// by JWTGuard.Logout to invalidate every refresh token outstanding
+	// by JWTScheme.Logout to invalidate every refresh token outstanding
 	// for the user.
 	Bump(userID string) (int64, error)
 }
@@ -423,7 +423,7 @@ func (j *JWTManager) refreshGenStore() RefreshGenerationStore {
 // BumpRefreshGeneration invalidates every refresh token outstanding for
 // userID by bumping the per-user counter; refresh-token validation rejects
 // any token whose embedded generation is less than the current value. Used
-// by JWTGuard.Logout (H-07 fix).
+// by JWTScheme.Logout (H-07 fix).
 //
 // Returns the new generation value. Best-effort: implementations are
 // permitted to return an error on transport failure; the caller decides
@@ -669,7 +669,7 @@ func (j *JWTManager) ValidateAccessToken(tokenString string) (*Claims, error) {
 // H-07 fix uses this to invalidate every outstanding refresh token on
 // Logout: bumping the counter immediately stales all prior refresh
 // tokens for that user, without writing each JTI to a blacklist.
-func (j *JWTManager) RefreshToken(refreshTokenString string, provider UserProvider) (string, error) {
+func (j *JWTManager) RefreshToken(refreshTokenString string, userStore UserStore) (string, error) {
 	// Validate refresh token
 	claims, err := j.ValidateToken(refreshTokenString)
 	if err != nil {
@@ -700,7 +700,7 @@ func (j *JWTManager) RefreshToken(refreshTokenString string, provider UserProvid
 	}
 
 	// Get user
-	user, err := provider.FindByID(claims.UserID)
+	user, err := userStore.FindByID(claims.UserID)
 	if err != nil {
 		return "", err
 	}

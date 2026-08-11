@@ -73,45 +73,45 @@ func (s *mockSessionStore) GarbageCollect(maxLifetime time.Duration) error {
 	return nil
 }
 
-// mockUserProvider implements auth.UserProvider for testing
-type mockUserProvider struct{}
+// mockUserStore implements auth.UserStore for testing
+type mockUserStore struct{}
 
-func (p *mockUserProvider) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *mockUserStore) FindByID(id interface{}) (auth.Authenticatable, error) {
 	return p.FindByIDCtx(context.Background(), id)
 }
 
-func (p *mockUserProvider) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+func (p *mockUserStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
 	return &auth.AuthUser{ID: id, Name: "Test", Email: "test@test.com"}, nil
 }
 
-func (p *mockUserProvider) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *mockUserStore) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
 	return p.FindByCredentialsCtx(context.Background(), credentials)
 }
 
-func (p *mockUserProvider) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *mockUserStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
 	return &auth.AuthUser{ID: 1, Name: "Test", Email: "test@test.com"}, nil
 }
 
-func (p *mockUserProvider) ValidateCredentials(user auth.Authenticatable, credentials map[string]interface{}) bool {
+func (p *mockUserStore) ValidateCredentials(user auth.Authenticatable, credentials map[string]interface{}) bool {
 	return true
 }
 
-func (p *mockUserProvider) UpdateRememberToken(user auth.Authenticatable, token string) error {
+func (p *mockUserStore) UpdateRememberToken(user auth.Authenticatable, token string) error {
 	return nil
 }
 
-func (p *mockUserProvider) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+func (p *mockUserStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
 	return nil
 }
 
-func TestSessionGuard_ConcurrentGetSession(t *testing.T) {
-	guard := func() *SessionGuard {
-		g := &SessionGuard{
+func TestSessionScheme_ConcurrentGetSession(t *testing.T) {
+	scheme := func() *SessionScheme {
+		g := &SessionScheme{
 			store:  &mockSessionStore{},
 			config: auth.SessionConfig{Name: "test_session"},
 			hasher: auth.NewBcryptHasher(10),
 		}
-		g.provider.Store(&providerHolder{p: &mockUserProvider{}})
+		g.userStore.Store(&userStoreHolder{p: &mockUserStore{}})
 		return g
 	}()
 
@@ -131,7 +131,7 @@ func TestSessionGuard_ConcurrentGetSession(t *testing.T) {
 			defer wg.Done()
 			// Call getSession multiple times concurrently
 			for j := 0; j < 10; j++ {
-				session := guard.getSession(req)
+				session := scheme.getSession(req)
 				if session == nil {
 					t.Error("getSession returned nil")
 				}
@@ -142,14 +142,14 @@ func TestSessionGuard_ConcurrentGetSession(t *testing.T) {
 	wg.Wait()
 }
 
-func TestSessionGuard_ConcurrentCheck(t *testing.T) {
-	guard := func() *SessionGuard {
-		g := &SessionGuard{
+func TestSessionScheme_ConcurrentCheck(t *testing.T) {
+	scheme := func() *SessionScheme {
+		g := &SessionScheme{
 			store:  &mockSessionStore{},
 			config: auth.SessionConfig{Name: "test_session"},
 			hasher: auth.NewBcryptHasher(10),
 		}
-		g.provider.Store(&providerHolder{p: &mockUserProvider{}})
+		g.userStore.Store(&userStoreHolder{p: &mockUserStore{}})
 		return g
 	}()
 
@@ -158,7 +158,7 @@ func TestSessionGuard_ConcurrentCheck(t *testing.T) {
 	req.AddCookie(&http.Cookie{Name: "test_session", Value: "session-id"})
 
 	// Pre-populate session with user_id
-	session := guard.getSession(req)
+	session := scheme.getSession(req)
 	if session != nil {
 		session.Put("user_id", int64(1))
 	}
@@ -172,7 +172,7 @@ func TestSessionGuard_ConcurrentCheck(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 20; j++ {
-				guard.Check(req)
+				scheme.Check(req)
 			}
 		}()
 	}
@@ -180,14 +180,14 @@ func TestSessionGuard_ConcurrentCheck(t *testing.T) {
 	wg.Wait()
 }
 
-func TestSessionGuard_ConcurrentMixedOperations(t *testing.T) {
-	guard := func() *SessionGuard {
-		g := &SessionGuard{
+func TestSessionScheme_ConcurrentMixedOperations(t *testing.T) {
+	scheme := func() *SessionScheme {
+		g := &SessionScheme{
 			store:  &mockSessionStore{},
 			config: auth.SessionConfig{Name: "test_session"},
 			hasher: auth.NewBcryptHasher(10),
 		}
-		g.provider.Store(&providerHolder{p: &mockUserProvider{}})
+		g.userStore.Store(&userStoreHolder{p: &mockUserStore{}})
 		return g
 	}()
 
@@ -205,11 +205,11 @@ func TestSessionGuard_ConcurrentMixedOperations(t *testing.T) {
 			for j := 0; j < 10; j++ {
 				switch j % 3 {
 				case 0:
-					guard.getSession(req)
+					scheme.getSession(req)
 				case 1:
-					guard.Check(req)
+					scheme.Check(req)
 				case 2:
-					guard.User(req)
+					scheme.User(req)
 				}
 			}
 		}(i)
@@ -218,15 +218,15 @@ func TestSessionGuard_ConcurrentMixedOperations(t *testing.T) {
 	wg.Wait()
 }
 
-func TestSessionGuard_RaceCondition(t *testing.T) {
+func TestSessionScheme_RaceCondition(t *testing.T) {
 	// This test verifies that concurrent access to getSession doesn't cause a race condition
-	guard := func() *SessionGuard {
-		g := &SessionGuard{
+	scheme := func() *SessionScheme {
+		g := &SessionScheme{
 			store:  &mockSessionStore{},
 			config: auth.SessionConfig{Name: "test_session"},
 			hasher: auth.NewBcryptHasher(10),
 		}
-		g.provider.Store(&providerHolder{p: &mockUserProvider{}})
+		g.userStore.Store(&userStoreHolder{p: &mockUserStore{}})
 		return g
 	}()
 
@@ -244,7 +244,7 @@ func TestSessionGuard_RaceCondition(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < 50; j++ {
 				// This should not panic with "concurrent map writes"
-				guard.getSession(req)
+				scheme.getSession(req)
 			}
 		}()
 	}
@@ -252,49 +252,49 @@ func TestSessionGuard_RaceCondition(t *testing.T) {
 	wg.Wait()
 }
 
-// TestSessionGuard_Session_ExportsGetSession verifies that the exported
+// TestSessionScheme_Session_ExportsGetSession verifies that the exported
 // Session method returns the same instance as the internal getSession path,
 // satisfying the auth.SessionAware contract.
-func TestSessionGuard_Session_ExportsGetSession(t *testing.T) {
-	guard := func() *SessionGuard {
-		g := &SessionGuard{
+func TestSessionScheme_Session_ExportsGetSession(t *testing.T) {
+	scheme := func() *SessionScheme {
+		g := &SessionScheme{
 			store:  &mockSessionStore{},
 			config: auth.SessionConfig{Name: "test_session"},
 			hasher: auth.NewBcryptHasher(10),
 		}
-		g.provider.Store(&providerHolder{p: &mockUserProvider{}})
+		g.userStore.Store(&userStoreHolder{p: &mockUserStore{}})
 		return g
 	}()
 
-	// Compile-time check that SessionGuard satisfies auth.SessionAware.
-	var _ auth.SessionAware = guard
+	// Compile-time check that SessionScheme satisfies auth.SessionAware.
+	var _ auth.SessionAware = scheme
 
 	req := httptest.NewRequest("GET", "/", nil)
 	req = WithSessionContext(req)
 
-	first := guard.Session(req)
+	first := scheme.Session(req)
 	if first == nil {
 		t.Fatal("Session() returned nil")
 	}
 
 	// Internal getSession should hit the same context cache.
-	internal := guard.getSession(req)
+	internal := scheme.getSession(req)
 	if internal != first {
 		t.Error("Session() and getSession() returned different instances within the same request")
 	}
 }
 
-// TestSessionGuard_Session_CachesWithinRequest confirms that two Session
+// TestSessionScheme_Session_CachesWithinRequest confirms that two Session
 // calls on the same request (with WithSessionContext applied) reuse the
 // cached holder rather than reloading from the store.
-func TestSessionGuard_Session_CachesWithinRequest(t *testing.T) {
-	guard := func() *SessionGuard {
-		g := &SessionGuard{
+func TestSessionScheme_Session_CachesWithinRequest(t *testing.T) {
+	scheme := func() *SessionScheme {
+		g := &SessionScheme{
 			store:  &mockSessionStore{},
 			config: auth.SessionConfig{Name: "test_session"},
 			hasher: auth.NewBcryptHasher(10),
 		}
-		g.provider.Store(&providerHolder{p: &mockUserProvider{}})
+		g.userStore.Store(&userStoreHolder{p: &mockUserStore{}})
 		return g
 	}()
 
@@ -302,8 +302,8 @@ func TestSessionGuard_Session_CachesWithinRequest(t *testing.T) {
 	req.AddCookie(&http.Cookie{Name: "test_session", Value: "cookie-value"})
 	req = WithSessionContext(req)
 
-	first := guard.Session(req)
-	second := guard.Session(req)
+	first := scheme.Session(req)
+	second := scheme.Session(req)
 	if first == nil || second == nil {
 		t.Fatal("Session() returned nil")
 	}
@@ -312,29 +312,29 @@ func TestSessionGuard_Session_CachesWithinRequest(t *testing.T) {
 	}
 }
 
-// TestSessionGuard_Session_WithoutContextLoadsFreshEachCall verifies that
-// without WithSessionContext, the guard falls back to loading from the
+// TestSessionScheme_Session_WithoutContextLoadsFreshEachCall verifies that
+// without WithSessionContext, the scheme falls back to loading from the
 // store every call. Both calls must return non-nil sessions.
-func TestSessionGuard_Session_WithoutContextLoadsFreshEachCall(t *testing.T) {
-	guard := func() *SessionGuard {
-		g := &SessionGuard{
+func TestSessionScheme_Session_WithoutContextLoadsFreshEachCall(t *testing.T) {
+	scheme := func() *SessionScheme {
+		g := &SessionScheme{
 			store:  &mockSessionStore{},
 			config: auth.SessionConfig{Name: "test_session"},
 			hasher: auth.NewBcryptHasher(10),
 		}
-		g.provider.Store(&providerHolder{p: &mockUserProvider{}})
+		g.userStore.Store(&userStoreHolder{p: &mockUserStore{}})
 		return g
 	}()
 
 	req := httptest.NewRequest("GET", "/", nil)
 	req.AddCookie(&http.Cookie{Name: "test_session", Value: "cookie-value"})
 
-	first := guard.Session(req)
+	first := scheme.Session(req)
 	if first == nil {
 		t.Fatal("first Session() returned nil")
 	}
 
-	second := guard.Session(req)
+	second := scheme.Session(req)
 	if second == nil {
 		t.Fatal("second Session() returned nil")
 	}

@@ -3,8 +3,8 @@ package ormauth
 import "github.com/velocitykode/velocity/orm"
 
 // User is the framework's default auth model, installed by velocity.New
-// when an application does not call auth.Manager.SetProvider with one of
-// its own. Its table and column set reproduce the shape the provider
+// when an application does not call auth.Manager.SetUserStore with one of
+// its own. Its table and column set reproduce the shape the user store
 // previously hardcoded (id, name, email, password, remember_token on
 // users), so an application that configures nothing keeps authenticating
 // against exactly the same rows and columns.

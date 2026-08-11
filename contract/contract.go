@@ -40,8 +40,8 @@ type ShutdownAware interface {
 // AuthManager defines the contract for authorization checks.
 // Implemented by *auth.Manager.
 type AuthManager interface {
-	GateAllows(r *http.Request, ability string, args ...interface{}) bool
-	GateAuthorize(r *http.Request, ability string, args ...interface{}) error
+	Allows(r *http.Request, ability string, args ...interface{}) bool
+	Authorize(r *http.Request, ability string, args ...interface{}) error
 }
 
 // CSRFProtector defines the contract for CSRF protection middleware.

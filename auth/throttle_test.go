@@ -88,7 +88,7 @@ func TestThrottleKey_IdentifierFullwidthAtSign(t *testing.T) {
 	// The fullwidth at-sign ("＠", U+FF20) is the load-bearing case: an
 	// attacker rotating between halfwidth and fullwidth "@" in the local
 	// part would otherwise get one bucket per encoding while the user
-	// provider's UTF-8 collation resolves them to one account.
+	// user store's UTF-8 collation resolves them to one account.
 	r, _ := http.NewRequest(http.MethodPost, "/login", nil)
 	r.RemoteAddr = "203.0.113.5:54321"
 

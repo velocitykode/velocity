@@ -89,9 +89,9 @@ const operatorsSchema = `CREATE TABLE operators (
 	remember_token TEXT
 )`
 
-// newAdminProvider is the construction an application with an Admin model
+// newAdminStore is the construction an application with an Admin model
 // would write: every column renamed away from the defaults.
-func newAdminProvider(t *testing.T) *ormauth.Provider[Admin] {
+func newAdminStore(t *testing.T) *ormauth.Store[Admin] {
 	t.Helper()
 
 	p := ormauth.New[Admin](
@@ -128,65 +128,65 @@ func seedAdmin(t *testing.T, m *orm.Manager, username, password string) {
 // which surfaces at Validate rather than as a runtime surprise.
 func TestNew_RejectsUnmappableModels(t *testing.T) {
 	tests := []struct {
-		name     string
-		provider interface{ Validate() error }
-		wants    string
+		name      string
+		userStore interface{ Validate() error }
+		wants     string
 	}{
 		{
-			name:     "missing identifier column",
-			provider: ormauth.New[Admin](),
-			wants:    `has no column "email"`,
+			name:      "missing identifier column",
+			userStore: ormauth.New[Admin](),
+			wants:     `has no column "email"`,
 		},
 		{
-			name:     "missing remember token column",
-			provider: ormauth.New[Admin](ormauth.WithIdentifierColumn("username")),
-			wants:    `has no column "remember_token"`,
+			name:      "missing remember token column",
+			userStore: ormauth.New[Admin](ormauth.WithIdentifierColumn("username")),
+			wants:     `has no column "remember_token"`,
 		},
 		{
 			name: "missing password column",
-			provider: ormauth.New[Admin](
+			userStore: ormauth.New[Admin](
 				ormauth.WithIdentifierColumn("username"),
 				ormauth.WithRememberTokenColumn("recall_token"),
 			),
 			wants: `has no column "password"`,
 		},
 		{
-			name:     "no mass-assignment policy",
-			provider: ormauth.New[NoPolicy](),
-			wants:    "declares no mass-assignment policy",
+			name:      "no mass-assignment policy",
+			userStore: ormauth.New[NoPolicy](),
+			wants:     "declares no mass-assignment policy",
 		},
 		{
-			name:     "no primary key",
-			provider: ormauth.New[NoPrimaryKey](),
-			wants:    "declares no primary key",
+			name:      "no primary key",
+			userStore: ormauth.New[NoPrimaryKey](),
+			wants:     "declares no primary key",
 		},
 		{
-			name:     "unusable column type",
-			provider: ormauth.New[BadTypes](),
-			wants:    "must be string, *string, or sql.NullString",
+			name:      "unusable column type",
+			userStore: ormauth.New[BadTypes](),
+			wants:     "must be string, *string, or sql.NullString",
 		},
 		{
-			name:     "not a struct",
-			provider: ormauth.New[int](),
-			wants:    "is not a struct model",
+			name:      "not a struct",
+			userStore: ormauth.New[int](),
+			wants:     "is not a struct model",
 		},
 		{
 			// orm.MetaFor derefs pointers, so a pointer T maps cleanly
 			// and would then indirect through a nil pointer in wrap.
-			name:     "pointer to a struct",
-			provider: ormauth.New[*Admin](),
-			wants:    "is not a struct model",
+			name:      "pointer to a struct",
+			userStore: ormauth.New[*Admin](),
+			wants:     "is not a struct model",
 		},
 		{
-			name:     "interface",
-			provider: ormauth.New[auth.Authenticatable](),
-			wants:    "is not a struct model",
+			name:      "interface",
+			userStore: ormauth.New[auth.Authenticatable](),
+			wants:     "is not a struct model",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := tc.provider.Validate()
+			err := tc.userStore.Validate()
 			if err == nil {
 				t.Fatal("expected a construction error")
 			}
@@ -197,35 +197,35 @@ func TestNew_RejectsUnmappableModels(t *testing.T) {
 	}
 }
 
-// TestProvider_UnvalidatedProviderNeverQueries proves a provider that
+// TestStore_UnvalidatedStoreNeverQueries proves a user store that
 // failed to map refuses I/O instead of issuing a wrong query.
-func TestProvider_UnvalidatedProviderNeverQueries(t *testing.T) {
+func TestStore_UnvalidatedStoreNeverQueries(t *testing.T) {
 	newManager(t)
 	p := ormauth.New[NoPolicy]()
 	ctx := context.Background()
 
 	if _, err := p.FindByIDCtx(ctx, 1); err == nil {
-		t.Error("FindByIDCtx on an unmapped provider succeeded")
+		t.Error("FindByIDCtx on an unmapped user store succeeded")
 	}
 	if _, err := p.FindByCredentialsCtx(ctx, map[string]interface{}{"email": testEmail}); err == nil {
-		t.Error("FindByCredentialsCtx on an unmapped provider succeeded")
+		t.Error("FindByCredentialsCtx on an unmapped user store succeeded")
 	}
 	if err := p.UpdateRememberTokenCtx(ctx, &auth.AuthUser{ID: uint(1)}, "t"); err == nil {
-		t.Error("UpdateRememberTokenCtx on an unmapped provider succeeded")
+		t.Error("UpdateRememberTokenCtx on an unmapped user store succeeded")
 	}
 	if _, err := p.CompareAndSwapRememberToken(ctx, &auth.AuthUser{ID: uint(1)}, "a", "b"); err == nil {
-		t.Error("CompareAndSwapRememberToken on an unmapped provider succeeded")
+		t.Error("CompareAndSwapRememberToken on an unmapped user store succeeded")
 	}
 }
 
-// TestProvider_MappedModel_NullString exercises the non-native path: a
+// TestStore_MappedModel_NullString exercises the non-native path: a
 // model that does not implement auth.Authenticatable, with every column
 // renamed and a sql.NullString remember token.
-func TestProvider_MappedModel_NullString(t *testing.T) {
+func TestStore_MappedModel_NullString(t *testing.T) {
 	m := newManager(t)
 	seedAdmin(t, m, "root", testPassword)
 
-	p := newAdminProvider(t)
+	p := newAdminStore(t)
 	ctx := context.Background()
 
 	user, err := p.FindByCredentialsCtx(ctx, map[string]interface{}{"username": "root"})
@@ -278,8 +278,8 @@ func TestProvider_MappedModel_NullString(t *testing.T) {
 	}
 }
 
-// TestProvider_MappedModel_PointerString covers the *string carrier.
-func TestProvider_MappedModel_PointerString(t *testing.T) {
+// TestStore_MappedModel_PointerString covers the *string carrier.
+func TestStore_MappedModel_PointerString(t *testing.T) {
 	m := newManager(t)
 	if _, err := m.DB().Exec(operatorsSchema); err != nil {
 		t.Fatalf("schema: %v", err)
@@ -311,15 +311,15 @@ func TestProvider_MappedModel_PointerString(t *testing.T) {
 	}
 }
 
-// TestProvider_SwapsTable is the headline for model swappability: pointing
-// the provider at a different model type moves every statement onto that
+// TestStore_SwapsTable is the headline for model swappability: pointing
+// the user store at a different model type moves every statement onto that
 // model's table, with that model's column names. No configuration string is
 // involved - the type parameter is the switch.
-func TestProvider_SwapsTable(t *testing.T) {
+func TestStore_SwapsTable(t *testing.T) {
 	m := newManager(t)
 	seedAdmin(t, m, "root", testPassword)
 
-	// A users table seeded too. If the provider still carried the
+	// A users table seeded too. If the user store still carried the
 	// framework's hardcoded table, these statements would land there.
 	seedUser(t, m, testEmail, testPassword)
 
@@ -348,7 +348,7 @@ func TestProvider_SwapsTable(t *testing.T) {
 	statements = nil
 	mu.Unlock()
 
-	p := newAdminProvider(t)
+	p := newAdminStore(t)
 
 	user, err := p.FindByCredentialsCtx(ctx, map[string]interface{}{"username": "root"})
 	if err != nil {

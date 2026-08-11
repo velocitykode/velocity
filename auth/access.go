@@ -9,13 +9,13 @@ import (
 var (
 	ErrUnauthorized    = errors.New("unauthorized action")
 	ErrPolicyNotFound  = errors.New("policy not found")
-	ErrGateNotFound    = errors.New("gate not found")
+	ErrAccessNotFound  = errors.New("access not found")
 	ErrNoUserInContext = errors.New("no authenticated user in context")
 	ErrInvalidResource = errors.New("invalid resource type")
 )
 
-// GateCallback is a function that determines if a user can perform an action
-type GateCallback func(user Authenticatable, args ...interface{}) bool
+// AccessCallback is a function that determines if a user can perform an action
+type AccessCallback func(user Authenticatable, args ...interface{}) bool
 
 // Policy defines authorization logic for a specific resource type
 type Policy interface {
@@ -31,19 +31,19 @@ func (f PolicyFunc) Authorize(user Authenticatable, action string, resource inte
 	return f(user, action, resource)
 }
 
-// BeforeCallback is called before any gate/policy check
+// BeforeCallback is called before any access/policy check
 // Return true to allow, false to deny, nil to continue to the actual check
 type BeforeCallback func(user Authenticatable, ability string, args ...interface{}) *bool
 
-// AfterCallback is called after any gate/policy check
+// AfterCallback is called after any access/policy check
 type AfterCallback func(user Authenticatable, ability string, result bool, args ...interface{}) bool
 
 // RoleChecker is a function that checks if a user has a role
 type RoleChecker func(user Authenticatable, role string) bool
 
-// Gate manages authorization gates and policies
-type Gate struct {
-	gates       map[string]GateCallback
+// Access manages authorization abilities and policies
+type Access struct {
+	abilities   map[string]AccessCallback
 	policies    map[string]Policy
 	before      []BeforeCallback
 	after       []AfterCallback
@@ -51,59 +51,59 @@ type Gate struct {
 	mu          sync.RWMutex
 }
 
-// NewGate creates a new Gate instance
-func NewGate() *Gate {
-	return &Gate{
-		gates:    make(map[string]GateCallback),
-		policies: make(map[string]Policy),
-		before:   make([]BeforeCallback, 0),
-		after:    make([]AfterCallback, 0),
+// NewAccess creates a new Access instance
+func NewAccess() *Access {
+	return &Access{
+		abilities: make(map[string]AccessCallback),
+		policies:  make(map[string]Policy),
+		before:    make([]BeforeCallback, 0),
+		after:     make([]AfterCallback, 0),
 	}
 }
 
-// Define registers a gate callback for an ability
-func (g *Gate) Define(ability string, callback GateCallback) {
+// Define registers an access callback for an ability
+func (g *Access) Define(ability string, callback AccessCallback) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.gates[ability] = callback
+	g.abilities[ability] = callback
 }
 
 // Policy registers a policy for a resource type
-func (g *Gate) RegisterPolicy(resourceType string, policy Policy) {
+func (g *Access) RegisterPolicy(resourceType string, policy Policy) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.policies[resourceType] = policy
 }
 
 // Before registers a callback to run before authorization checks
-func (g *Gate) Before(callback BeforeCallback) {
+func (g *Access) Before(callback BeforeCallback) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.before = append(g.before, callback)
 }
 
 // After registers a callback to run after authorization checks
-func (g *Gate) After(callback AfterCallback) {
+func (g *Access) After(callback AfterCallback) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.after = append(g.after, callback)
 }
 
 // SetRoleChecker sets the function used to check user roles
-func (g *Gate) SetRoleChecker(checker RoleChecker) {
+func (g *Access) SetRoleChecker(checker RoleChecker) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.roleChecker = checker
 }
 
 // Allows checks if a user is allowed to perform an ability
-func (g *Gate) Allows(user Authenticatable, ability string, args ...interface{}) bool {
+func (g *Access) Allows(user Authenticatable, ability string, args ...interface{}) bool {
 	g.mu.RLock()
 	beforeCallbacks := make([]BeforeCallback, len(g.before))
 	copy(beforeCallbacks, g.before)
 	afterCallbacks := make([]AfterCallback, len(g.after))
 	copy(afterCallbacks, g.after)
-	callback, ok := g.gates[ability]
+	callback, ok := g.abilities[ability]
 	g.mu.RUnlock()
 
 	// Run before callbacks
@@ -113,7 +113,7 @@ func (g *Gate) Allows(user Authenticatable, ability string, args ...interface{})
 		}
 	}
 
-	// Check gate
+	// Check access
 	if ok {
 		result := callback(user, args...)
 		return runAfter(afterCallbacks, user, ability, result, args...)
@@ -123,12 +123,12 @@ func (g *Gate) Allows(user Authenticatable, ability string, args ...interface{})
 }
 
 // Denies checks if a user is denied from performing an ability
-func (g *Gate) Denies(user Authenticatable, ability string, args ...interface{}) bool {
+func (g *Access) Denies(user Authenticatable, ability string, args ...interface{}) bool {
 	return !g.Allows(user, ability, args...)
 }
 
 // Check checks multiple abilities (all must pass)
-func (g *Gate) Check(user Authenticatable, abilities []string, args ...interface{}) bool {
+func (g *Access) Check(user Authenticatable, abilities []string, args ...interface{}) bool {
 	for _, ability := range abilities {
 		if !g.Allows(user, ability, args...) {
 			return false
@@ -138,7 +138,7 @@ func (g *Gate) Check(user Authenticatable, abilities []string, args ...interface
 }
 
 // Any checks if any of the abilities pass
-func (g *Gate) Any(user Authenticatable, abilities []string, args ...interface{}) bool {
+func (g *Access) Any(user Authenticatable, abilities []string, args ...interface{}) bool {
 	for _, ability := range abilities {
 		if g.Allows(user, ability, args...) {
 			return true
@@ -153,10 +153,10 @@ func (g *Gate) Any(user Authenticatable, abilities []string, args ...interface{}
 // under a brief RLock, then release the lock and invoke user callbacks
 // OUTSIDE any lock. A panic inside a before callback would otherwise leak
 // the RLock permanently (sync.RWMutex is not goroutine-attached and does
-// not unwind on panic), wedging every future Gate.Define/Before/After
+// not unwind on panic), wedging every future Access.Define/Before/After
 // writer and every reader queued behind it, a permanent authorization DoS.
 // Mirrors the snapshot used by runAfterCallbacks below.
-func (g *Gate) AuthorizePolicy(user Authenticatable, resourceType, action string, resource interface{}) bool {
+func (g *Access) AuthorizePolicy(user Authenticatable, resourceType, action string, resource interface{}) bool {
 	g.mu.RLock()
 	policy, ok := g.policies[resourceType]
 	// Snapshot before-callback slice. append() inside Before() either grows
@@ -184,7 +184,7 @@ func (g *Gate) AuthorizePolicy(user Authenticatable, resourceType, action string
 }
 
 // HasRole checks if a user has a specific role
-func (g *Gate) HasRole(user Authenticatable, role string) bool {
+func (g *Access) HasRole(user Authenticatable, role string) bool {
 	g.mu.RLock()
 	checker := g.roleChecker
 	g.mu.RUnlock()
@@ -196,7 +196,7 @@ func (g *Gate) HasRole(user Authenticatable, role string) bool {
 }
 
 // HasAnyRole checks if a user has any of the given roles
-func (g *Gate) HasAnyRole(user Authenticatable, roles ...string) bool {
+func (g *Access) HasAnyRole(user Authenticatable, roles ...string) bool {
 	for _, role := range roles {
 		if g.HasRole(user, role) {
 			return true
@@ -206,7 +206,7 @@ func (g *Gate) HasAnyRole(user Authenticatable, roles ...string) bool {
 }
 
 // HasAllRoles checks if a user has all the given roles
-func (g *Gate) HasAllRoles(user Authenticatable, roles ...string) bool {
+func (g *Access) HasAllRoles(user Authenticatable, roles ...string) bool {
 	for _, role := range roles {
 		if !g.HasRole(user, role) {
 			return false
@@ -216,7 +216,7 @@ func (g *Gate) HasAllRoles(user Authenticatable, roles ...string) bool {
 }
 
 // runAfterCallbacks runs after callbacks and returns the final result
-func (g *Gate) runAfterCallbacks(user Authenticatable, ability string, result bool, args ...interface{}) bool {
+func (g *Access) runAfterCallbacks(user Authenticatable, ability string, result bool, args ...interface{}) bool {
 	g.mu.RLock()
 	afterCallbacks := make([]AfterCallback, len(g.after))
 	copy(afterCallbacks, g.after)
@@ -233,41 +233,41 @@ func runAfter(afterCallbacks []AfterCallback, user Authenticatable, ability stri
 }
 
 // ForUser creates a user-scoped authorization checker
-func (g *Gate) ForUser(user Authenticatable) *UserGate {
-	return &UserGate{
-		gate: g,
-		user: user,
+func (g *Access) ForUser(user Authenticatable) *UserAccess {
+	return &UserAccess{
+		access: g,
+		user:   user,
 	}
 }
 
-// UserGate provides authorization methods for a specific user
-type UserGate struct {
-	gate *Gate
-	user Authenticatable
+// UserAccess provides authorization methods for a specific user
+type UserAccess struct {
+	access *Access
+	user   Authenticatable
 }
 
 // Allows checks if the user is allowed to perform an ability
-func (ug *UserGate) Allows(ability string, args ...interface{}) bool {
-	return ug.gate.Allows(ug.user, ability, args...)
+func (ug *UserAccess) Allows(ability string, args ...interface{}) bool {
+	return ug.access.Allows(ug.user, ability, args...)
 }
 
 // Denies checks if the user is denied from performing an ability
-func (ug *UserGate) Denies(ability string, args ...interface{}) bool {
-	return ug.gate.Denies(ug.user, ability, args...)
+func (ug *UserAccess) Denies(ability string, args ...interface{}) bool {
+	return ug.access.Denies(ug.user, ability, args...)
 }
 
 // Can is an alias for Allows
-func (ug *UserGate) Can(ability string, args ...interface{}) bool {
+func (ug *UserAccess) Can(ability string, args ...interface{}) bool {
 	return ug.Allows(ability, args...)
 }
 
 // Cannot is an alias for Denies
-func (ug *UserGate) Cannot(ability string, args ...interface{}) bool {
+func (ug *UserAccess) Cannot(ability string, args ...interface{}) bool {
 	return ug.Denies(ability, args...)
 }
 
 // Authorize checks authorization and returns an error if denied
-func (ug *UserGate) Authorize(ability string, args ...interface{}) error {
+func (ug *UserAccess) Authorize(ability string, args ...interface{}) error {
 	if !ug.Allows(ability, args...) {
 		return ErrUnauthorized
 	}

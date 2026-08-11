@@ -17,10 +17,10 @@ import (
 	"github.com/velocitykode/velocity/router"
 )
 
-// newRealCookieGuard builds a SessionGuard backed by the production
+// newRealCookieScheme builds a SessionScheme backed by the production
 // CookieStore + AES-256-GCM encryptor, so the integration tests below
 // observe real Set-Cookie headers on the wire, not a mock store.
-func newRealCookieGuard(t *testing.T) *SessionGuard {
+func newRealCookieScheme(t *testing.T) *SessionScheme {
 	t.Helper()
 	enc, err := crypto.NewEncryptor(crypto.Config{
 		Key:    strings.Repeat("k", 32),
@@ -29,7 +29,7 @@ func newRealCookieGuard(t *testing.T) *SessionGuard {
 	if err != nil {
 		t.Fatalf("NewEncryptor: %v", err)
 	}
-	guard, err := NewSessionGuard(&mockSessionGuardUserProvider{}, auth.SessionConfig{
+	scheme, err := NewSessionScheme(&mockSessionSchemeUserStore{}, auth.SessionConfig{
 		Name:     "vel_session",
 		Lifetime: 60,
 		Path:     "/",
@@ -37,18 +37,18 @@ func newRealCookieGuard(t *testing.T) *SessionGuard {
 		SameSite: http.SameSiteLaxMode,
 	}, enc)
 	if err != nil {
-		t.Fatalf("NewSessionGuard: %v", err)
+		t.Fatalf("NewSessionScheme: %v", err)
 	}
-	return guard
+	return scheme
 }
 
 // newRouterWithSessionMiddleware returns a freshly constructed router
 // with the save-at-end session middleware installed. handler is the
 // single route at GET / for the test scenario.
-func newRouterWithSessionMiddleware(t *testing.T, guard *SessionGuard, handler router.HandlerFunc) *router.VelocityRouterV2 {
+func newRouterWithSessionMiddleware(t *testing.T, scheme *SessionScheme, handler router.HandlerFunc) *router.VelocityRouterV2 {
 	t.Helper()
 	r := router.New()
-	r.Use(guard.SessionMiddleware())
+	r.Use(scheme.SessionMiddleware())
 	r.Get("/", handler)
 	return r
 }
@@ -73,10 +73,10 @@ func hasSessionCookie(resp *http.Response, name string) (*http.Cookie, bool) {
 // post-handler save wrote Set-Cookie into already-flushed headers,
 // silently dropping it.
 func TestSessionMiddleware_Integration_JSONHandlerFlushesCookie(t *testing.T) {
-	guard := newRealCookieGuard(t)
-	r := newRouterWithSessionMiddleware(t, guard, func(c *router.Context) error {
+	scheme := newRealCookieScheme(t)
+	r := newRouterWithSessionMiddleware(t, scheme, func(c *router.Context) error {
 		// Mutate the session, then commit headers via JSON.
-		s := guard.getSession(c.Request)
+		s := scheme.getSession(c.Request)
 		s.Put("user_id", "u-json")
 		return c.JSON(http.StatusOK, map[string]string{"ok": "true"})
 	})
@@ -106,9 +106,9 @@ func TestSessionMiddleware_Integration_JSONHandlerFlushesCookie(t *testing.T) {
 // redirect path. http.Redirect calls WriteHeader with 302 from inside
 // c.Redirect; without the pre-commit hook the cookie would be lost.
 func TestSessionMiddleware_Integration_RedirectFlushesCookie(t *testing.T) {
-	guard := newRealCookieGuard(t)
-	r := newRouterWithSessionMiddleware(t, guard, func(c *router.Context) error {
-		s := guard.getSession(c.Request)
+	scheme := newRealCookieScheme(t)
+	r := newRouterWithSessionMiddleware(t, scheme, func(c *router.Context) error {
+		s := scheme.getSession(c.Request)
 		s.Put("redirect", "yes")
 		return c.Redirect(http.StatusFound, "/elsewhere")
 	})
@@ -141,9 +141,9 @@ func TestSessionMiddleware_Integration_RedirectFlushesCookie(t *testing.T) {
 // writing any output. The pre-commit hook never fires; the defer Save
 // MUST still flush Set-Cookie.
 func TestSessionMiddleware_Integration_EmptyHandlerFlushesCookie(t *testing.T) {
-	guard := newRealCookieGuard(t)
-	r := newRouterWithSessionMiddleware(t, guard, func(c *router.Context) error {
-		s := guard.getSession(c.Request)
+	scheme := newRealCookieScheme(t)
+	r := newRouterWithSessionMiddleware(t, scheme, func(c *router.Context) error {
+		s := scheme.getSession(c.Request)
 		s.Put("empty", "yes")
 		// No JSON, no WriteHeader, no Write.
 		return nil
@@ -173,9 +173,9 @@ func TestSessionMiddleware_Integration_EmptyHandlerFlushesCookie(t *testing.T) {
 // presents that cookie and only reads, so the second response must
 // carry no Set-Cookie.
 func TestSessionMiddleware_Integration_ReadOnlyHandlerNoCookie(t *testing.T) {
-	guard := newRealCookieGuard(t)
-	r := newRouterWithSessionMiddleware(t, guard, func(c *router.Context) error {
-		s := guard.getSession(c.Request)
+	scheme := newRealCookieScheme(t)
+	r := newRouterWithSessionMiddleware(t, scheme, func(c *router.Context) error {
+		s := scheme.getSession(c.Request)
 		// Two distinct routes? No: one handler, mutation gated by
 		// query param so we can drive both states from one test.
 		if c.Request.URL.Query().Get("write") == "1" {
@@ -221,9 +221,9 @@ func TestSessionMiddleware_Integration_ReadOnlyHandlerNoCookie(t *testing.T) {
 // Invalidate path: a handler that destroys the session MUST emit a
 // MaxAge=-1 cookie so the browser drops the session id immediately.
 func TestSessionMiddleware_Integration_DestroyedSessionEmitsDelete(t *testing.T) {
-	guard := newRealCookieGuard(t)
-	r := newRouterWithSessionMiddleware(t, guard, func(c *router.Context) error {
-		s := guard.getSession(c.Request)
+	scheme := newRealCookieScheme(t)
+	r := newRouterWithSessionMiddleware(t, scheme, func(c *router.Context) error {
+		s := scheme.getSession(c.Request)
 		_ = s.Invalidate()
 		return c.JSON(http.StatusOK, map[string]string{"ok": "destroyed"})
 	})
@@ -267,7 +267,7 @@ func (h *hijackingResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) 
 // upgrades. A handler that type-asserts c.Response.(http.Hijacker)
 // MUST still get a working Hijack call.
 func TestSessionMiddleware_Integration_HijackerForwardsThroughWrapper(t *testing.T) {
-	guard := newRealCookieGuard(t)
+	scheme := newRealCookieScheme(t)
 
 	// Build the wrapper manually so we control the underlying writer.
 	// We can't easily use httptest.NewServer because the test client
@@ -276,9 +276,9 @@ func TestSessionMiddleware_Integration_HijackerForwardsThroughWrapper(t *testing
 
 	r := router.New()
 	hijackerSeen := atomic.Bool{}
-	r.Use(guard.SessionMiddleware())
+	r.Use(scheme.SessionMiddleware())
 	r.Get("/ws", func(c *router.Context) error {
-		s := guard.getSession(c.Request)
+		s := scheme.getSession(c.Request)
 		s.Put("ws-user", "u-1")
 		// Now simulate a websocket upgrade: type-assert Hijacker and
 		// invoke Hijack. The responseWriter wrapper MUST forward.
@@ -312,9 +312,9 @@ func TestSessionMiddleware_Integration_HijackerForwardsThroughWrapper(t *testing
 // pre-commit hook works under concurrent request load: each request must
 // get its own session cookie and the wrapper must not deadlock.
 func TestSessionMiddleware_Integration_ConcurrentRequests(t *testing.T) {
-	guard := newRealCookieGuard(t)
-	r := newRouterWithSessionMiddleware(t, guard, func(c *router.Context) error {
-		s := guard.getSession(c.Request)
+	scheme := newRealCookieScheme(t)
+	r := newRouterWithSessionMiddleware(t, scheme, func(c *router.Context) error {
+		s := scheme.getSession(c.Request)
 		s.Put("concurrent", c.Request.URL.Query().Get("id"))
 		return c.JSON(http.StatusOK, map[string]string{"ok": "true"})
 	})
@@ -384,10 +384,10 @@ func (e errSentinel) Error() string { return string(e) }
 // production response writer is exercised (httptest.ResponseRecorder
 // accepts late header writes and would mask the bug).
 func TestSessionMiddleware_Integration_FlushFlushesCookie(t *testing.T) {
-	guard := newRealCookieGuard(t)
-	r := newRouterWithSessionMiddleware(t, guard, func(c *router.Context) error {
+	scheme := newRealCookieScheme(t)
+	r := newRouterWithSessionMiddleware(t, scheme, func(c *router.Context) error {
 		// Mutate the session BEFORE any write.
-		s := guard.getSession(c.Request)
+		s := scheme.getSession(c.Request)
 		s.Put("sse-user", "u-sse")
 
 		// SSE-style setup: set headers, then write an event frame and
@@ -449,9 +449,9 @@ func TestSessionMiddleware_Integration_FlushFlushesCookie(t *testing.T) {
 // Flush would commit empty headers without firing the hook and the
 // downstream Write/return would write into already-committed headers.
 func TestSessionMiddleware_Integration_BareFlushBeforeWriteFiresHook(t *testing.T) {
-	guard := newRealCookieGuard(t)
-	r := newRouterWithSessionMiddleware(t, guard, func(c *router.Context) error {
-		s := guard.getSession(c.Request)
+	scheme := newRealCookieScheme(t)
+	r := newRouterWithSessionMiddleware(t, scheme, func(c *router.Context) error {
+		s := scheme.getSession(c.Request)
 		s.Put("bare-flush", "yes")
 
 		// Bare Flush before any Write. Go commits status line + headers

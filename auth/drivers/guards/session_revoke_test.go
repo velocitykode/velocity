@@ -17,7 +17,7 @@ import (
 )
 
 // revokeTestUser is the minimal Authenticatable used by the revocation
-// suite. The provider returns the same instance for any id, so tests can
+// suite. The user store returns the same instance for any id, so tests can
 // share a single user id across cookies.
 type revokeTestUser struct {
 	id            string
@@ -29,24 +29,24 @@ func (u *revokeTestUser) GetAuthPassword() string        { return "" }
 func (u *revokeTestUser) GetRememberToken() string       { return u.rememberToken }
 func (u *revokeTestUser) SetRememberToken(t string)      { u.rememberToken = t }
 
-type revokeTestProvider struct {
+type revokeTestStore struct {
 	users map[string]*revokeTestUser
 }
 
-func (p *revokeTestProvider) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *revokeTestStore) FindByID(id interface{}) (auth.Authenticatable, error) {
 	key, _ := id.(string)
 	if u, ok := p.users[key]; ok {
 		return u, nil
 	}
 	return nil, errors.New("not found")
 }
-func (p *revokeTestProvider) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
+func (p *revokeTestStore) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
 	return nil, errors.New("unused")
 }
-func (p *revokeTestProvider) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
+func (p *revokeTestStore) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
 	return true
 }
-func (p *revokeTestProvider) UpdateRememberToken(user auth.Authenticatable, token string) error {
+func (p *revokeTestStore) UpdateRememberToken(user auth.Authenticatable, token string) error {
 	// Propagate the token to the canonical user in the map so subsequent
 	// FindByID reflects it. checkRememberCookie compares against the
 	// stored token, so without this propagation the remember-me flow
@@ -58,9 +58,9 @@ func (p *revokeTestProvider) UpdateRememberToken(user auth.Authenticatable, toke
 	return nil
 }
 
-// CompareAndSwapRememberToken implements the capability the guard now
+// CompareAndSwapRememberToken implements the capability the scheme now
 // requires for recall rotation; recalls fail closed without it.
-func (p *revokeTestProvider) CompareAndSwapRememberToken(_ context.Context, user auth.Authenticatable, oldToken, newToken string) (bool, error) {
+func (p *revokeTestStore) CompareAndSwapRememberToken(_ context.Context, user auth.Authenticatable, oldToken, newToken string) (bool, error) {
 	id, _ := user.GetAuthIdentifier().(string)
 	u, ok := p.users[id]
 	if !ok || u.rememberToken != oldToken {
@@ -69,10 +69,10 @@ func (p *revokeTestProvider) CompareAndSwapRememberToken(_ context.Context, user
 	return true, p.UpdateRememberToken(user, newToken)
 }
 
-// newRevokeGuard constructs a SessionGuard backed by a real cookie store
+// newRevokeScheme constructs a SessionScheme backed by a real cookie store
 // and AES-256-GCM encryptor. When store is non-nil it is installed via
 // SetServerSessionStore.
-func newRevokeGuard(t *testing.T, store auth.ServerSessionStore) (*SessionGuard, *revokeTestProvider) {
+func newRevokeScheme(t *testing.T, store auth.ServerSessionStore) (*SessionScheme, *revokeTestStore) {
 	t.Helper()
 	enc, err := crypto.NewEncryptor(crypto.Config{
 		Key:    strings.Repeat("k", 32),
@@ -81,11 +81,11 @@ func newRevokeGuard(t *testing.T, store auth.ServerSessionStore) (*SessionGuard,
 	if err != nil {
 		t.Fatalf("NewEncryptor: %v", err)
 	}
-	provider := &revokeTestProvider{users: map[string]*revokeTestUser{
+	userStore := &revokeTestStore{users: map[string]*revokeTestUser{
 		"u1": {id: "u1"},
 		"u2": {id: "u2"},
 	}}
-	guard, err := NewSessionGuard(provider, auth.SessionConfig{
+	scheme, err := NewSessionScheme(userStore, auth.SessionConfig{
 		Name:     "vel_session",
 		Lifetime: 60,
 		Path:     "/",
@@ -93,25 +93,25 @@ func newRevokeGuard(t *testing.T, store auth.ServerSessionStore) (*SessionGuard,
 		SameSite: http.SameSiteLaxMode,
 	}, enc)
 	if err != nil {
-		t.Fatalf("NewSessionGuard: %v", err)
+		t.Fatalf("NewSessionScheme: %v", err)
 	}
 	if store != nil {
-		guard.SetServerSessionStore(store)
+		scheme.SetServerSessionStore(store)
 	}
-	return guard, provider
+	return scheme, userStore
 }
 
 // loginAndCookie performs Login for userID and returns the resulting
 // session cookie. The request goes through WithSessionContext so the
 // holder cache mirrors production middleware behavior.
-func loginAndCookie(t *testing.T, guard *SessionGuard, userID string) *http.Cookie {
+func loginAndCookie(t *testing.T, scheme *SessionScheme, userID string) *http.Cookie {
 	t.Helper()
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("POST", "/login", nil)
 	r.RemoteAddr = "10.0.0.1:1234"
 	r.Header.Set("User-Agent", "test-agent/1.0")
 	r = WithSessionContext(r)
-	if err := guard.Login(w, r, &revokeTestUser{id: userID}); err != nil {
+	if err := scheme.Login(w, r, &revokeTestUser{id: userID}); err != nil {
 		t.Fatalf("Login: %v", err)
 	}
 	for _, c := range w.Result().Cookies() {
@@ -131,18 +131,18 @@ func requestWith(cookie *http.Cookie) *http.Request {
 	return WithSessionContext(r)
 }
 
-// TestSessionGuard_RevokeTakesEffectOnNextRequest is the regression
-// guard for the velship Wave 3 #5a bug: a Manager.RevokeSession call
+// TestSessionScheme_RevokeTakesEffectOnNextRequest is the regression
+// scheme for the velship Wave 3 #5a bug: a Manager.RevokeSession call
 // must invalidate the matching cookie on the very next request.
-func TestSessionGuard_RevokeTakesEffectOnNextRequest(t *testing.T) {
+func TestSessionScheme_RevokeTakesEffectOnNextRequest(t *testing.T) {
 	store := session.NewMemoryStore()
 	defer store.Close(context.Background())
 
-	guard, _ := newRevokeGuard(t, store)
-	cookie := loginAndCookie(t, guard, "u1")
+	scheme, _ := newRevokeScheme(t, store)
+	cookie := loginAndCookie(t, scheme, "u1")
 
 	// Sanity: Check passes before revoke.
-	if !guard.Check(requestWith(cookie)) {
+	if !scheme.Check(requestWith(cookie)) {
 		t.Fatal("Check must pass for fresh cookie")
 	}
 
@@ -156,12 +156,12 @@ func TestSessionGuard_RevokeTakesEffectOnNextRequest(t *testing.T) {
 	}
 
 	// Bool path: Check must return false.
-	if guard.Check(requestWith(cookie)) {
+	if scheme.Check(requestWith(cookie)) {
 		t.Fatal("Check must return false after revocation")
 	}
 
 	// Sentinel path: CheckWithError must surface ErrSessionRevoked.
-	ok, err := guard.CheckWithError(requestWith(cookie))
+	ok, err := scheme.CheckWithError(requestWith(cookie))
 	if ok {
 		t.Fatal("CheckWithError ok=true after revocation")
 	}
@@ -170,26 +170,26 @@ func TestSessionGuard_RevokeTakesEffectOnNextRequest(t *testing.T) {
 	}
 
 	// User must also return nil.
-	if u := guard.User(requestWith(cookie)); u != nil {
+	if u := scheme.User(requestWith(cookie)); u != nil {
 		t.Fatalf("User returned %v after revocation", u)
 	}
 }
 
-// TestSessionGuard_SignOutEverywhere verifies DeleteAllForUser removes
+// TestSessionScheme_SignOutEverywhere verifies DeleteAllForUser removes
 // every session belonging to a user, leaving sessions of other users
 // untouched.
-func TestSessionGuard_SignOutEverywhere(t *testing.T) {
+func TestSessionScheme_SignOutEverywhere(t *testing.T) {
 	store := session.NewMemoryStore()
 	defer store.Close(context.Background())
 
-	guard, _ := newRevokeGuard(t, store)
+	scheme, _ := newRevokeScheme(t, store)
 
-	cookieA := loginAndCookie(t, guard, "u1")
-	cookieB := loginAndCookie(t, guard, "u1")
-	cookieC := loginAndCookie(t, guard, "u2")
+	cookieA := loginAndCookie(t, scheme, "u1")
+	cookieB := loginAndCookie(t, scheme, "u1")
+	cookieC := loginAndCookie(t, scheme, "u2")
 
 	for _, c := range []*http.Cookie{cookieA, cookieB, cookieC} {
-		if !guard.Check(requestWith(c)) {
+		if !scheme.Check(requestWith(c)) {
 			t.Fatalf("baseline Check failed for %s", c.Value[:12])
 		}
 	}
@@ -198,28 +198,28 @@ func TestSessionGuard_SignOutEverywhere(t *testing.T) {
 		t.Fatalf("DeleteAllForUser: %v", err)
 	}
 
-	if guard.Check(requestWith(cookieA)) {
+	if scheme.Check(requestWith(cookieA)) {
 		t.Error("u1 cookieA must be revoked")
 	}
-	if guard.Check(requestWith(cookieB)) {
+	if scheme.Check(requestWith(cookieB)) {
 		t.Error("u1 cookieB must be revoked")
 	}
-	if !guard.Check(requestWith(cookieC)) {
+	if !scheme.Check(requestWith(cookieC)) {
 		t.Error("u2 cookieC must remain valid")
 	}
 }
 
-// TestSessionGuard_CookieOnlyFallback ensures that without a server
-// store installed the guard never returns ErrSessionRevoked and continues
+// TestSessionScheme_CookieOnlyFallback ensures that without a server
+// store installed the scheme never returns ErrSessionRevoked and continues
 // to authenticate purely from the cookie.
-func TestSessionGuard_CookieOnlyFallback(t *testing.T) {
-	guard, _ := newRevokeGuard(t, nil) // no store
-	cookie := loginAndCookie(t, guard, "u1")
+func TestSessionScheme_CookieOnlyFallback(t *testing.T) {
+	scheme, _ := newRevokeScheme(t, nil) // no store
+	cookie := loginAndCookie(t, scheme, "u1")
 
-	if !guard.Check(requestWith(cookie)) {
+	if !scheme.Check(requestWith(cookie)) {
 		t.Fatal("Check must pass cookie-only")
 	}
-	ok, err := guard.CheckWithError(requestWith(cookie))
+	ok, err := scheme.CheckWithError(requestWith(cookie))
 	if !ok {
 		t.Fatalf("CheckWithError ok=false err=%v", err)
 	}
@@ -228,16 +228,16 @@ func TestSessionGuard_CookieOnlyFallback(t *testing.T) {
 	}
 }
 
-// TestSessionGuard_LastSeenAtRefresh verifies that the debounce window is
+// TestSessionScheme_LastSeenAtRefresh verifies that the debounce window is
 // respected: a second Check inside the window does not advance LastSeenAt,
 // while a Check after the window does. We drive this by mutating the
 // stored record directly to simulate elapsed time without sleeping.
-func TestSessionGuard_LastSeenAtRefresh(t *testing.T) {
+func TestSessionScheme_LastSeenAtRefresh(t *testing.T) {
 	store := session.NewMemoryStore()
 	defer store.Close(context.Background())
 
-	guard, _ := newRevokeGuard(t, store)
-	cookie := loginAndCookie(t, guard, "u1")
+	scheme, _ := newRevokeScheme(t, store)
+	cookie := loginAndCookie(t, scheme, "u1")
 
 	list, _ := store.ListForUser(context.Background(), "u1")
 	if len(list) != 1 {
@@ -247,7 +247,7 @@ func TestSessionGuard_LastSeenAtRefresh(t *testing.T) {
 	first := list[0].LastSeenAt
 
 	// Inside-window Check: LastSeenAt must not change (debounce).
-	if !guard.Check(requestWith(cookie)) {
+	if !scheme.Check(requestWith(cookie)) {
 		t.Fatal("Check failed")
 	}
 	list, _ = store.ListForUser(context.Background(), "u1")
@@ -267,7 +267,7 @@ func TestSessionGuard_LastSeenAtRefresh(t *testing.T) {
 
 	// Use a fresh request so the cached holder result does not short-circuit
 	// the store lookup.
-	if !guard.Check(requestWith(cookie)) {
+	if !scheme.Check(requestWith(cookie)) {
 		t.Fatal("Check failed post-backdate")
 	}
 	list, _ = store.ListForUser(context.Background(), "u1")
@@ -276,16 +276,16 @@ func TestSessionGuard_LastSeenAtRefresh(t *testing.T) {
 	}
 }
 
-// TestSessionGuard_ConcurrentCheckRevoke exercises the race between a
+// TestSessionScheme_ConcurrentCheckRevoke exercises the race between a
 // goroutine revoking the session and another performing Check. No matter
 // who wins, neither must panic and Check must never return true after
 // the revoke is observed.
-func TestSessionGuard_ConcurrentCheckRevoke(t *testing.T) {
+func TestSessionScheme_ConcurrentCheckRevoke(t *testing.T) {
 	store := session.NewMemoryStore()
 	defer store.Close(context.Background())
 
-	guard, _ := newRevokeGuard(t, store)
-	cookie := loginAndCookie(t, guard, "u1")
+	scheme, _ := newRevokeScheme(t, store)
+	cookie := loginAndCookie(t, scheme, "u1")
 
 	list, _ := store.ListForUser(context.Background(), "u1")
 	if len(list) != 1 {
@@ -301,7 +301,7 @@ func TestSessionGuard_ConcurrentCheckRevoke(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < N; i++ {
-			ok := guard.Check(requestWith(cookie))
+			ok := scheme.Check(requestWith(cookie))
 			if revoked.Load() && ok {
 				t.Errorf("Check returned true after revoke was observed")
 				return
@@ -315,27 +315,27 @@ func TestSessionGuard_ConcurrentCheckRevoke(t *testing.T) {
 	}()
 	wg.Wait()
 
-	if guard.Check(requestWith(cookie)) {
+	if scheme.Check(requestWith(cookie)) {
 		t.Fatal("Check must return false post-revoke")
 	}
 }
 
-// TestSessionGuard_TransientStoreErrorFailsClosed verifies that a generic
+// TestSessionScheme_TransientStoreErrorFailsClosed verifies that a generic
 // store error (not Not-Found / Expired) is surfaced from CheckWithError
 // and causes Check to return false.
-func TestSessionGuard_TransientStoreErrorFailsClosed(t *testing.T) {
+func TestSessionScheme_TransientStoreErrorFailsClosed(t *testing.T) {
 	flaky := &flakyStore{inner: session.NewMemoryStore()}
 	defer flaky.inner.Close(context.Background())
 
-	guard, _ := newRevokeGuard(t, flaky)
-	cookie := loginAndCookie(t, guard, "u1")
+	scheme, _ := newRevokeScheme(t, flaky)
+	cookie := loginAndCookie(t, scheme, "u1")
 
 	flaky.fail.Store(true)
 
-	if guard.Check(requestWith(cookie)) {
+	if scheme.Check(requestWith(cookie)) {
 		t.Fatal("Check must fail-closed on store error")
 	}
-	ok, err := guard.CheckWithError(requestWith(cookie))
+	ok, err := scheme.CheckWithError(requestWith(cookie))
 	if ok {
 		t.Fatal("ok=true on store error")
 	}
@@ -371,14 +371,14 @@ func (f *flakyStore) ListForUser(ctx context.Context, userID string) ([]*auth.Se
 	return f.inner.ListForUser(ctx, userID)
 }
 
-// TestSessionGuard_LogoutDeletesStoreRecord ensures Logout tears down the
+// TestSessionScheme_LogoutDeletesStoreRecord ensures Logout tears down the
 // server-side row even though the cookie is also wiped client-side.
-func TestSessionGuard_LogoutDeletesStoreRecord(t *testing.T) {
+func TestSessionScheme_LogoutDeletesStoreRecord(t *testing.T) {
 	store := session.NewMemoryStore()
 	defer store.Close(context.Background())
 
-	guard, _ := newRevokeGuard(t, store)
-	cookie := loginAndCookie(t, guard, "u1")
+	scheme, _ := newRevokeScheme(t, store)
+	cookie := loginAndCookie(t, scheme, "u1")
 
 	list, _ := store.ListForUser(context.Background(), "u1")
 	if len(list) != 1 {
@@ -389,7 +389,7 @@ func TestSessionGuard_LogoutDeletesStoreRecord(t *testing.T) {
 	logoutR := httptest.NewRequest("POST", "/logout", nil)
 	logoutR.AddCookie(cookie)
 	logoutR = WithSessionContext(logoutR)
-	if err := guard.Logout(logoutW, logoutR); err != nil {
+	if err := scheme.Logout(logoutW, logoutR); err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
 
@@ -399,62 +399,62 @@ func TestSessionGuard_LogoutDeletesStoreRecord(t *testing.T) {
 	}
 }
 
-// TestManager_PropagatesStoreToRegisteredGuards covers the wiring path:
+// TestManager_PropagatesStoreToRegisteredSchemes covers the wiring path:
 // Manager.SetServerSessionStore must call SetServerSessionStore on every
-// registered guard that implements ServerSessionStoreReceiver.
-func TestManager_PropagatesStoreToRegisteredGuards(t *testing.T) {
+// registered scheme that implements ServerSessionStoreReceiver.
+func TestManager_PropagatesStoreToRegisteredSchemes(t *testing.T) {
 	mgr := auth.NewManager()
-	guard, _ := newRevokeGuard(t, nil)
-	mgr.RegisterGuard("web", guard)
+	scheme, _ := newRevokeScheme(t, nil)
+	mgr.RegisterScheme("web", scheme)
 
 	store := session.NewMemoryStore()
 	defer store.Close(context.Background())
 	mgr.SetServerSessionStore(store)
 
-	cookie := loginAndCookie(t, guard, "u1")
+	cookie := loginAndCookie(t, scheme, "u1")
 	list, _ := store.ListForUser(context.Background(), "u1")
 	if len(list) != 1 {
-		t.Fatalf("expected guard to write to propagated store, got %d entries", len(list))
+		t.Fatalf("expected scheme to write to propagated store, got %d entries", len(list))
 	}
 
 	if err := store.Delete(context.Background(), list[0].ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if guard.Check(requestWith(cookie)) {
-		t.Fatal("guard must honor revocation via Manager-propagated store")
+	if scheme.Check(requestWith(cookie)) {
+		t.Fatal("scheme must honor revocation via Manager-propagated store")
 	}
 }
 
-// TestManager_RegisterGuardAfterStoreInstalled verifies the late-registration
-// path: if the store is installed before the guard is registered, the guard
+// TestManager_RegisterSchemeAfterStoreInstalled verifies the late-registration
+// path: if the store is installed before the scheme is registered, the scheme
 // still receives it.
-func TestManager_RegisterGuardAfterStoreInstalled(t *testing.T) {
+func TestManager_RegisterSchemeAfterStoreInstalled(t *testing.T) {
 	mgr := auth.NewManager()
 	store := session.NewMemoryStore()
 	defer store.Close(context.Background())
 	mgr.SetServerSessionStore(store)
 
-	guard, _ := newRevokeGuard(t, nil)
-	mgr.RegisterGuard("web", guard)
+	scheme, _ := newRevokeScheme(t, nil)
+	mgr.RegisterScheme("web", scheme)
 
-	cookie := loginAndCookie(t, guard, "u1")
+	cookie := loginAndCookie(t, scheme, "u1")
 	list, _ := store.ListForUser(context.Background(), "u1")
 	if len(list) != 1 {
-		t.Fatalf("guard registered late did not receive store: %d entries", len(list))
+		t.Fatalf("scheme registered late did not receive store: %d entries", len(list))
 	}
 	_ = cookie
 }
 
 // loginAndCookies performs Login with remember=true and returns both the
 // session and remember cookies issued.
-func loginAndCookies(t *testing.T, guard *SessionGuard, userID string) (sess, rem *http.Cookie) {
+func loginAndCookies(t *testing.T, scheme *SessionScheme, userID string) (sess, rem *http.Cookie) {
 	t.Helper()
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("POST", "/login", nil)
 	r.RemoteAddr = "10.0.0.1:1234"
 	r.Header.Set("User-Agent", "test-agent/1.0")
 	r = WithSessionContext(r)
-	if err := guard.Login(w, r, &revokeTestUser{id: userID}, true); err != nil {
+	if err := scheme.Login(w, r, &revokeTestUser{id: userID}, true); err != nil {
 		t.Fatalf("Login: %v", err)
 	}
 	for _, c := range w.Result().Cookies() {
@@ -488,7 +488,7 @@ func requestWithRememberOnly(rem *http.Cookie) *http.Request {
 
 // TestManager_RevokeAllSessions_ClearsRememberToken verifies the Option C
 // wiring: Manager.RevokeAllSessions also nukes the user's remember-me
-// token via the registered guard's RememberTokenClearer impl, so the
+// token via the registered scheme's RememberTokenClearer impl, so the
 // remember cookie alone can no longer resurrect a session on the next
 // request.
 func TestManager_RevokeAllSessions_ClearsRememberToken(t *testing.T) {
@@ -497,16 +497,16 @@ func TestManager_RevokeAllSessions_ClearsRememberToken(t *testing.T) {
 	defer store.Close(context.Background())
 	mgr.SetServerSessionStore(store)
 
-	guard, provider := newRevokeGuard(t, nil)
-	mgr.RegisterGuard("web", guard)
+	scheme, userStore := newRevokeScheme(t, nil)
+	mgr.RegisterScheme("web", scheme)
 
-	_, rem := loginAndCookies(t, guard, "u1")
+	_, rem := loginAndCookies(t, scheme, "u1")
 
 	// Sanity: remember cookie alone authenticates before revocation.
-	if !guard.Check(requestWithRememberOnly(rem)) {
+	if !scheme.Check(requestWithRememberOnly(rem)) {
 		t.Fatal("baseline: remember cookie must authenticate before revoke")
 	}
-	if provider.users["u1"].rememberToken == "" {
+	if userStore.users["u1"].rememberToken == "" {
 		t.Fatal("baseline: remember token must be persisted on provider")
 	}
 
@@ -514,10 +514,10 @@ func TestManager_RevokeAllSessions_ClearsRememberToken(t *testing.T) {
 		t.Fatalf("RevokeAllSessions: %v", err)
 	}
 
-	if got := provider.users["u1"].rememberToken; got != "" {
+	if got := userStore.users["u1"].rememberToken; got != "" {
 		t.Errorf("remember token must be cleared, got %q", got)
 	}
-	if guard.Check(requestWithRememberOnly(rem)) {
+	if scheme.Check(requestWithRememberOnly(rem)) {
 		t.Fatal("remember cookie must not authenticate after RevokeAllSessions")
 	}
 }
@@ -533,10 +533,10 @@ func TestManager_RevokeSession_LeavesRememberIntact(t *testing.T) {
 	defer store.Close(context.Background())
 	mgr.SetServerSessionStore(store)
 
-	guard, provider := newRevokeGuard(t, nil)
-	mgr.RegisterGuard("web", guard)
+	scheme, userStore := newRevokeScheme(t, nil)
+	mgr.RegisterScheme("web", scheme)
 
-	_, rem := loginAndCookies(t, guard, "u1")
+	_, rem := loginAndCookies(t, scheme, "u1")
 
 	list, _ := store.ListForUser(context.Background(), "u1")
 	if len(list) != 1 {
@@ -546,10 +546,10 @@ func TestManager_RevokeSession_LeavesRememberIntact(t *testing.T) {
 		t.Fatalf("RevokeSession: %v", err)
 	}
 
-	if got := provider.users["u1"].rememberToken; got == "" {
+	if got := userStore.users["u1"].rememberToken; got == "" {
 		t.Error("remember token must remain intact after RevokeSession")
 	}
-	if !guard.Check(requestWithRememberOnly(rem)) {
+	if !scheme.Check(requestWithRememberOnly(rem)) {
 		t.Error("remember cookie must still authenticate after single-session revoke")
 	}
 }
@@ -558,63 +558,63 @@ func TestManager_RevokeSession_LeavesRememberIntact(t *testing.T) {
 // when the user no longer exists. Manager.RevokeAllSessions calls this
 // best-effort and a missing user is not an error worth surfacing.
 func TestRememberTokenClearer_UserNotFound(t *testing.T) {
-	guard, _ := newRevokeGuard(t, nil)
-	if err := guard.ClearRememberTokensForUser(context.Background(), "ghost_id"); err != nil {
+	scheme, _ := newRevokeScheme(t, nil)
+	if err := scheme.ClearRememberTokensForUser(context.Background(), "ghost_id"); err != nil {
 		t.Fatalf("ClearRememberTokensForUser must be no-op for missing user, got %v", err)
 	}
 }
 
-// noReceiverGuard is a Guard that intentionally does NOT implement
+// noReceiverScheme is a Scheme that intentionally does NOT implement
 // ServerSessionStoreReceiver or RememberTokenClearer. It pins the
-// optional-interface contract: Manager must skip such guards silently
+// optional-interface contract: Manager must skip such schemes silently
 // rather than panic during type assertion.
-type noReceiverGuard struct{}
+type noReceiverScheme struct{}
 
-func (noReceiverGuard) Check(*http.Request) bool                { return false }
-func (noReceiverGuard) User(*http.Request) auth.Authenticatable { return nil }
-func (noReceiverGuard) ID(*http.Request) interface{}            { return nil }
-func (noReceiverGuard) Login(http.ResponseWriter, *http.Request, auth.Authenticatable, ...bool) error {
+func (noReceiverScheme) Check(*http.Request) bool                { return false }
+func (noReceiverScheme) User(*http.Request) auth.Authenticatable { return nil }
+func (noReceiverScheme) ID(*http.Request) interface{}            { return nil }
+func (noReceiverScheme) Login(http.ResponseWriter, *http.Request, auth.Authenticatable, ...bool) error {
 	return nil
 }
-func (noReceiverGuard) LoginByID(http.ResponseWriter, *http.Request, interface{}, ...bool) error {
+func (noReceiverScheme) LoginByID(http.ResponseWriter, *http.Request, interface{}, ...bool) error {
 	return nil
 }
-func (noReceiverGuard) Attempt(http.ResponseWriter, *http.Request, map[string]interface{}, ...bool) (bool, error) {
+func (noReceiverScheme) Attempt(http.ResponseWriter, *http.Request, map[string]interface{}, ...bool) (bool, error) {
 	return false, nil
 }
-func (noReceiverGuard) Logout(http.ResponseWriter, *http.Request) error { return nil }
-func (noReceiverGuard) SetProvider(auth.UserProvider)                   {}
+func (noReceiverScheme) Logout(http.ResponseWriter, *http.Request) error { return nil }
+func (noReceiverScheme) SetUserStore(auth.UserStore)                     {}
 
-// TestManager_GuardWithoutReceiverInterfaces_Skipped pins the type-assertion
-// contract: a Guard that implements neither ServerSessionStoreReceiver nor
+// TestManager_SchemeWithoutReceiverInterfaces_Skipped pins the type-assertion
+// contract: a Scheme that implements neither ServerSessionStoreReceiver nor
 // RememberTokenClearer must be silently skipped by SetServerSessionStore
 // and RevokeAllSessions. Catches a regression where a future refactor
-// might call methods on a non-conforming guard and panic.
-func TestManager_GuardWithoutReceiverInterfaces_Skipped(t *testing.T) {
+// might call methods on a non-conforming scheme and panic.
+func TestManager_SchemeWithoutReceiverInterfaces_Skipped(t *testing.T) {
 	mgr := auth.NewManager()
 	store := session.NewMemoryStore()
 	defer store.Close(context.Background())
 
-	mgr.RegisterGuard("inert", noReceiverGuard{})
+	mgr.RegisterScheme("inert", noReceiverScheme{})
 
 	// Setting the store must not panic and must not error.
 	mgr.SetServerSessionStore(store)
 
 	// RevokeAllSessions must succeed (store delete only, clearer skipped).
 	if err := mgr.RevokeAllSessions(context.Background(), "u1"); err != nil {
-		t.Fatalf("RevokeAllSessions must not error for non-receiver guard, got %v", err)
+		t.Fatalf("RevokeAllSessions must not error for non-receiver scheme, got %v", err)
 	}
 }
 
-// failingClearerGuard wraps SessionGuard but overrides
+// failingClearerScheme wraps SessionScheme but overrides
 // ClearRememberTokensForUser to always return an error, exercising the
 // new ErrRememberClearPartial return path.
-type failingClearerGuard struct {
-	*SessionGuard
+type failingClearerScheme struct {
+	*SessionScheme
 	err error
 }
 
-func (f *failingClearerGuard) ClearRememberTokensForUser(context.Context, string) error {
+func (f *failingClearerScheme) ClearRememberTokensForUser(context.Context, string) error {
 	return f.err
 }
 
@@ -629,12 +629,12 @@ func TestManager_RevokeAllSessions_ClearerErrorReturnsPartial(t *testing.T) {
 	defer store.Close(context.Background())
 	mgr.SetServerSessionStore(store)
 
-	innerGuard, _ := newRevokeGuard(t, nil)
+	innerScheme, _ := newRevokeScheme(t, nil)
 	clearerErr := errors.New("provider DB down")
-	mgr.RegisterGuard("web", &failingClearerGuard{SessionGuard: innerGuard, err: clearerErr})
+	mgr.RegisterScheme("web", &failingClearerScheme{SessionScheme: innerScheme, err: clearerErr})
 
 	// Seed a session so DeleteAllForUser has something to delete.
-	_, _ = loginAndCookies(t, innerGuard, "u1")
+	_, _ = loginAndCookies(t, innerScheme, "u1")
 
 	err := mgr.RevokeAllSessions(context.Background(), "u1")
 	if err == nil {
@@ -655,13 +655,13 @@ func TestManager_RevokeAllSessions_ClearerErrorReturnsPartial(t *testing.T) {
 	}
 }
 
-// Ctx-suffixed shims for auth.UserProvider, added in Sweep 1b.
-func (p *revokeTestProvider) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+// Ctx-suffixed shims for auth.UserStore, added in Sweep 1b.
+func (p *revokeTestStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
 	return p.FindByID(id)
 }
-func (p *revokeTestProvider) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *revokeTestStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
 	return p.FindByCredentials(credentials)
 }
-func (p *revokeTestProvider) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+func (p *revokeTestStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
 	return p.UpdateRememberToken(user, token)
 }

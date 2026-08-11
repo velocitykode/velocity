@@ -16,7 +16,7 @@ import (
 	"github.com/velocitykode/velocity/internal/clientip"
 )
 
-// DefaultAttemptFloor is the wall-clock floor applied to guard.Attempt
+// DefaultAttemptFloor is the wall-clock floor applied to scheme.Attempt
 // when Config.AttemptFloor is zero. 200ms matches Laravel's Timebox
 // default and brackets a typical bcrypt verify at cost 10-12, so the
 // missing-user path and the wrong-password path both pad to the same
@@ -40,7 +40,7 @@ var DummyBcryptHash = mustBcrypt(bcrypt.DefaultCost)
 var dummyHashCache sync.Map // map[int][]byte
 
 // GetDummyBcryptHash returns a bcrypt hash generated at the requested
-// cost, suitable for the missing-user branch of guard.Attempt. Hashes
+// cost, suitable for the missing-user branch of scheme.Attempt. Hashes
 // are memoised per cost via dummyHashCache; the first call at cost N
 // pays the bcrypt-N generation latency and every subsequent call is
 // O(1) map lookup.
@@ -101,7 +101,7 @@ func realTimebox(floor time.Duration, inner func()) {
 }
 
 // Timebox runs inner and blocks until at least floor has elapsed since
-// entry. Exposed publicly so JWTGuard.Attempt and SessionGuard.Attempt
+// entry. Exposed publicly so JWTScheme.Attempt and SessionScheme.Attempt
 // share a single implementation; consumers should not need to call this
 // directly.
 func Timebox(floor time.Duration, inner func()) {
@@ -109,7 +109,7 @@ func Timebox(floor time.Duration, inner func()) {
 }
 
 // PasswordNeedsRehashEvent is dispatched after a successful credential
-// check (guard Attempt) when the stored password hash no longer matches
+// check (scheme Attempt) when the stored password hash no longer matches
 // the configured Hasher parameters (e.g. operator bumped BcryptCost from
 // 10 to 14). Listeners typically queue a job to re-hash the password on
 // the user's next login while the plaintext is still in memory; the
@@ -120,8 +120,8 @@ func Timebox(floor time.Duration, inner func()) {
 // invoked, so a cost-bump silently left every legacy hash at the lower
 // cost forever.
 type PasswordNeedsRehashEvent struct {
-	UserID    interface{}
-	GuardName string
+	UserID     interface{}
+	SchemeName string
 }
 
 // EventName returns the canonical event name used by listeners
@@ -136,13 +136,13 @@ var (
 	ErrNotAuthenticated   = errors.New("not authenticated")
 	ErrInvalidCredentials = errors.New("invalid credentials")
 	ErrUserNotFound       = errors.New("user not found")
-	ErrGuardNotFound      = errors.New("guard not found")
+	ErrSchemeNotFound     = errors.New("scheme not found")
 	ErrNotInitialized     = errors.New("auth manager not initialized")
 	ErrInvalidSession     = errors.New("invalid session")
 
 	// ErrRememberClearPartial is returned (wrapped, with errors.Join'd
 	// causes) by Manager.RevokeAllSessions when the server-side session
-	// deletion succeeded but one or more guards' RememberTokenClearer
+	// deletion succeeded but one or more schemes' RememberTokenClearer
 	// implementations failed. The load-bearing security action (revoking
 	// active sessions) has succeeded; callers can decide whether to retry
 	// the clear, surface a degraded status to admins, or ignore.
@@ -157,7 +157,7 @@ type Authenticatable interface {
 	SetRememberToken(token string)
 }
 
-// UserProvider handles user retrieval and validation.
+// UserStore handles user retrieval and validation.
 //
 // Every method that performs I/O (database query, identity provider RPC,
 // etc.) comes in pairs: a `Ctx`-suffixed variant that threads the caller's
@@ -169,9 +169,9 @@ type Authenticatable interface {
 // ValidateCredentials does no I/O (it compares a candidate password to the
 // already-loaded user's stored hash), so it has no Ctx variant.
 //
-// Implementations must pass authtest.RunUserProviderContractTests. See
+// Implementations must pass authtest.RunUserStoreContractTests. See
 // authtest for the executable specification.
-type UserProvider interface {
+type UserStore interface {
 	// FindByIDCtx retrieves a user by ID using the provided context.
 	FindByIDCtx(ctx context.Context, id interface{}) (Authenticatable, error)
 
@@ -188,7 +188,7 @@ type UserProvider interface {
 	// representation. Pure CPU work (bcrypt compare), so no Ctx variant.
 	ValidateCredentials(user Authenticatable, credentials map[string]interface{}) bool
 
-	// UpdateRememberTokenCtx persists the remember token through the provider's
+	// UpdateRememberTokenCtx persists the remember token through the user store's
 	// backing store.
 	UpdateRememberTokenCtx(ctx context.Context, user Authenticatable, token string) error
 
@@ -196,17 +196,17 @@ type UserProvider interface {
 	UpdateRememberToken(user Authenticatable, token string) error
 }
 
-// RememberTokenCompareAndSwapper is a UserProvider capability required for
+// RememberTokenCompareAndSwapper is a UserStore capability required for
 // atomic rotate-on-use of the remember-me credential.
 // CompareAndSwapRememberToken must replace the persisted remember token
 // with newToken only when the currently stored value still equals
 // oldToken, and report swapped=false (with a nil error) when it does not.
 //
-// SessionGuard's remember-cookie recall persists rotation exclusively
+// SessionScheme's remember-cookie recall persists rotation exclusively
 // through this interface: two parallel recalls presenting the same cookie
 // both validate before either write, but only one swap can succeed, so
 // the loser is rejected instead of minting a second valid credential via
-// last-writer-wins. A provider that does not implement it fails every
+// last-writer-wins. A user store that does not implement it fails every
 // recall closed (remember cookies are still issued at login but can
 // never revive a session); the unconditional UpdateRememberTokenCtx is used
 // only on the login path, where no prior token is being consumed.
@@ -214,20 +214,20 @@ type RememberTokenCompareAndSwapper interface {
 	CompareAndSwapRememberToken(ctx context.Context, user Authenticatable, oldToken, newToken string) (swapped bool, err error)
 }
 
-// SessionAware is an optional capability interface implemented by guards
-// that back authentication with a request-scoped Session. Guards that do
+// SessionAware is an optional capability interface implemented by schemes
+// that back authentication with a request-scoped Session. Schemes that do
 // not have a session (e.g. JWT/bearer-token) leave this unimplemented;
 // Manager.Session returns nil for those.
 type SessionAware interface {
 	// Session returns the Session attached to this request, loading from
 	// the cookie store on first call and caching in the request context
 	// for subsequent calls. Returns nil when no session is available
-	// (no cookie, decode error, or the guard does not maintain sessions).
+	// (no cookie, decode error, or the scheme does not maintain sessions).
 	Session(r *http.Request) Session
 }
 
-// Guard defines authentication guard interface
-type Guard interface {
+// Scheme defines authentication scheme interface
+type Scheme interface {
 	// Check if user is authenticated
 	Check(r *http.Request) bool
 
@@ -249,8 +249,8 @@ type Guard interface {
 	// Logout user
 	Logout(w http.ResponseWriter, r *http.Request) error
 
-	// Set user provider
-	SetProvider(provider UserProvider)
+	// Set user store
+	SetUserStore(userStore UserStore)
 }
 
 // Logger is the minimal logging interface the auth package uses for
@@ -264,17 +264,17 @@ type Logger interface {
 	Error(msg string, kvs ...any)
 }
 
-// Manager manages multiple authentication guards
+// Manager manages multiple authentication schemes
 type Manager struct {
-	guards       map[string]Guard
-	providers    map[string]UserProvider
-	defaultGuard string
-	hasher       Hasher
-	gate         *Gate
+	schemes       map[string]Scheme
+	userStores    map[string]UserStore
+	defaultScheme string
+	hasher        Hasher
+	access        *Access
 
 	// logger is stored atomically so middleware request paths can read
 	// the current logger without contending with the RWMutex protecting
-	// the guard/provider maps.
+	// the scheme/user store maps.
 	logger atomic.Value // holds authLoggerHolder{Logger}
 
 	// serverSessions holds an optional server-side session store used by
@@ -283,14 +283,14 @@ type Manager struct {
 	serverSessions ServerSessionStore
 
 	// trustedProxies is the parsed proxy-network list propagated to
-	// every guard so login throttling, audit-trail IP capture, and
+	// every scheme so login throttling, audit-trail IP capture, and
 	// per-IP rate limits all agree on "who is the real client?".
 	// Set via SetTrustedProxies (typically at boot from Config.TrustedProxies).
 	// Nil means "no proxies trusted" (forwarded headers are ignored).
 	trustedProxies []*net.IPNet
 
 	// loginThrottler is the framework-wide login throttler propagated
-	// to every guard that supports Attempt throttling. Nil means guards
+	// to every scheme that supports Attempt throttling. Nil means schemes
 	// keep their own default/fallback behavior.
 	loginThrottler contract.LoginThrottler
 
@@ -299,13 +299,13 @@ type Manager struct {
 	// it, and the remember-cookie revival path rotates it across the
 	// recall regenerate. Set via SetCSRFTokenRotator (typically at boot
 	// once the CSRF instance is constructed). Propagates to every
-	// registered guard implementing CSRFTokenRotatorReceiver.
+	// registered scheme implementing CSRFTokenRotatorReceiver.
 	csrfRotator contract.CSRFTokenRotator
 
 	// eventDispatcher is the framework-wide event dispatcher used to emit
 	// auth events (e.g. PasswordNeedsRehashEvent on a successful login
 	// against an out-of-date hash). Stored atomically so request paths
-	// can load it without contending with the guard-map mutex. Nil when
+	// can load it without contending with the scheme-map mutex. Nil when
 	// no dispatcher has been wired (auth events become no-ops).
 	eventDispatcher atomic.Pointer[authEventDispatcherHolder]
 
@@ -324,21 +324,21 @@ type authLoggerHolder struct{ Logger }
 // NewManager creates a new auth manager
 func NewManager() *Manager {
 	return &Manager{
-		guards:       make(map[string]Guard),
-		providers:    make(map[string]UserProvider),
-		defaultGuard: "web",
-		gate:         NewGate(),
+		schemes:       make(map[string]Scheme),
+		userStores:    make(map[string]UserStore),
+		defaultScheme: "web",
+		access:        NewAccess(),
 	}
 }
 
-// RegisterGuard registers an authentication guard. If a server-side
-// session store is already installed and the guard implements
+// RegisterScheme registers an authentication scheme. If a server-side
+// session store is already installed and the scheme implements
 // ServerSessionStoreReceiver, the store is propagated immediately so
 // registration order does not matter. The same applies to the
 // trusted-proxies list and TrustedProxiesReceiver.
-func (m *Manager) RegisterGuard(name string, guard Guard) {
+func (m *Manager) RegisterScheme(name string, scheme Scheme) {
 	m.mu.Lock()
-	m.guards[name] = guard
+	m.schemes[name] = scheme
 	store := m.serverSessions
 	proxies := m.trustedProxies
 	throttler := m.loginThrottler
@@ -346,229 +346,229 @@ func (m *Manager) RegisterGuard(name string, guard Guard) {
 	m.mu.Unlock()
 
 	if dispatcher := m.eventDispatcher.Load(); dispatcher != nil && dispatcher.fn != nil {
-		if r, ok := guard.(EventDispatcherReceiver); ok {
+		if r, ok := scheme.(EventDispatcherReceiver); ok {
 			r.SetEventDispatcher(dispatcher.fn)
 		}
 	}
 
 	if store != nil {
-		if r, ok := guard.(ServerSessionStoreReceiver); ok {
+		if r, ok := scheme.(ServerSessionStoreReceiver); ok {
 			r.SetServerSessionStore(store)
 		}
 	}
 	if len(proxies) > 0 {
-		if r, ok := guard.(TrustedProxiesReceiver); ok {
-			// Deep-clone so the newly registered guard cannot affect
-			// the manager's snapshot (or any sibling guard's) by
+		if r, ok := scheme.(TrustedProxiesReceiver); ok {
+			// Deep-clone so the newly registered scheme cannot affect
+			// the manager's snapshot (or any sibling scheme's) by
 			// mutating the list it receives.
 			r.SetTrustedProxies(clientip.CloneIPNets(proxies))
 		}
 	}
 	if throttler != nil {
-		if r, ok := guard.(LoginThrottlerReceiver); ok {
+		if r, ok := scheme.(LoginThrottlerReceiver); ok {
 			r.SetLoginThrottler(throttler)
 		}
 	}
 	if rotator != nil {
-		if r, ok := guard.(CSRFTokenRotatorReceiver); ok {
+		if r, ok := scheme.(CSRFTokenRotatorReceiver); ok {
 			r.SetCSRFTokenRotator(rotator)
 		}
 	}
 }
 
-// DefaultProviderName is the key the single, canonical user provider is
+// DefaultUserStoreName is the key the single, canonical user store is
 // stored under. Velocity authenticates one identity store; the named map
 // below is an escape hatch for the rare application that needs a second
 // one, and is not reachable from configuration.
-const DefaultProviderName = "default"
+const DefaultUserStoreName = "default"
 
-// SetProvider installs the application's user provider, replacing the
+// SetUserStore installs the application's user store, replacing the
 // framework default. This is the supported way to change which model
 // authenticates:
 //
-//	s.Auth.SetProvider(ormauth.New[models.Admin](
+//	s.Auth.SetUserStore(ormauth.New[models.Admin](
 //	    ormauth.WithIdentifierColumn("username"),
 //	))
 //
-// The provider is propagated to every guard already registered, so calling
+// The user store is propagated to every scheme already registered, so calling
 // this from a service provider's Register or Boot takes effect regardless of
-// construction order. Guards registered afterwards pick it up at
+// construction order. Schemes registered afterwards pick it up at
 // registration. Passing nil is ignored.
-func (m *Manager) SetProvider(provider UserProvider) {
-	if provider == nil {
+func (m *Manager) SetUserStore(userStore UserStore) {
+	if userStore == nil {
 		return
 	}
 
 	m.mu.Lock()
-	m.providers[DefaultProviderName] = provider
-	// Snapshot the guards and notify them outside the lock: Guard
-	// implementations may take their own locks in SetProvider, and holding
+	m.userStores[DefaultUserStoreName] = userStore
+	// Snapshot the schemes and notify them outside the lock: Scheme
+	// implementations may take their own locks in SetUserStore, and holding
 	// m.mu across a foreign call is how lock-order inversions start.
-	guards := make([]Guard, 0, len(m.guards))
-	for _, guard := range m.guards {
-		guards = append(guards, guard)
+	schemes := make([]Scheme, 0, len(m.schemes))
+	for _, scheme := range m.schemes {
+		schemes = append(schemes, scheme)
 	}
 	m.mu.Unlock()
 
-	for _, guard := range guards {
-		guard.SetProvider(provider)
+	for _, scheme := range schemes {
+		scheme.SetUserStore(userStore)
 	}
 }
 
-// DefaultProvider returns the canonical user provider, or nil when none was
+// DefaultUserStore returns the canonical user store, or nil when none was
 // installed (an app constructed without a database, for instance).
-func (m *Manager) DefaultProvider() UserProvider {
+func (m *Manager) DefaultUserStore() UserStore {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.providers[DefaultProviderName]
+	return m.userStores[DefaultUserStoreName]
 }
 
-// RegisterProvider registers a user provider under an explicit name.
+// RegisterUserStore registers a user store under an explicit name.
 //
-// Velocity's configuration surface only ever installs one provider (see
-// [Manager.SetProvider]); this exists for the uncommon application that
+// Velocity's configuration surface only ever installs one user store (see
+// [Manager.SetUserStore]); this exists for the uncommon application that
 // authenticates two separate identity stores in a single process, such as an
-// admin panel colocated with a customer app. Guards are not notified, so the
-// caller wires the provider into whichever guard should use it.
-func (m *Manager) RegisterProvider(name string, provider UserProvider) {
+// admin panel colocated with a customer app. Schemes are not notified, so the
+// caller wires the user store into whichever scheme should use it.
+func (m *Manager) RegisterUserStore(name string, userStore UserStore) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.providers[name] = provider
+	m.userStores[name] = userStore
 }
 
-// SetDefaultGuard sets the default guard
-func (m *Manager) SetDefaultGuard(name string) {
+// SetDefaultScheme sets the default scheme
+func (m *Manager) SetDefaultScheme(name string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.defaultGuard = name
+	m.defaultScheme = name
 }
 
-// Guard returns a guard by name
-func (m *Manager) Guard(name string) (Guard, error) {
+// Scheme returns a scheme by name
+func (m *Manager) Scheme(name string) (Scheme, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	if name == "" {
-		name = m.defaultGuard
+		name = m.defaultScheme
 	}
 
-	guard, ok := m.guards[name]
+	scheme, ok := m.schemes[name]
 	if !ok {
-		return nil, ErrGuardNotFound
+		return nil, ErrSchemeNotFound
 	}
 
-	return guard, nil
+	return scheme, nil
 }
 
-// DefaultGuard returns the default guard
-func (m *Manager) DefaultGuard() (Guard, error) {
-	return m.Guard("")
+// DefaultScheme returns the default scheme
+func (m *Manager) DefaultScheme() (Scheme, error) {
+	return m.Scheme("")
 }
 
-// Provider returns a provider by name
-func (m *Manager) Provider(name string) (UserProvider, error) {
+// UserStore returns a user store by name
+func (m *Manager) UserStore(name string) (UserStore, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	provider, ok := m.providers[name]
+	userStore, ok := m.userStores[name]
 	if !ok {
-		return nil, errors.New("provider not found")
+		return nil, errors.New("user store not found")
 	}
 
-	return provider, nil
+	return userStore, nil
 }
 
-// Check returns true if the request is authenticated using the default guard.
+// Check returns true if the request is authenticated using the default scheme.
 func (m *Manager) Check(r *http.Request) bool {
-	guard, err := m.DefaultGuard()
+	scheme, err := m.DefaultScheme()
 	if err != nil {
 		return false
 	}
-	return guard.Check(r)
+	return scheme.Check(r)
 }
 
-// User returns the authenticated user using the default guard.
+// User returns the authenticated user using the default scheme.
 func (m *Manager) User(r *http.Request) Authenticatable {
-	guard, err := m.DefaultGuard()
+	scheme, err := m.DefaultScheme()
 	if err != nil {
 		return nil
 	}
-	return guard.User(r)
+	return scheme.User(r)
 }
 
 // Session returns the Session attached to the request via the default
-// guard, or nil when the guard does not implement SessionAware or no
+// scheme, or nil when the scheme does not implement SessionAware or no
 // session is available. Handlers use this to set flash messages or
-// read/write session data without reaching into a specific guard impl.
+// read/write session data without reaching into a specific scheme impl.
 func (m *Manager) Session(r *http.Request) Session {
-	guard, err := m.DefaultGuard()
+	scheme, err := m.DefaultScheme()
 	if err != nil {
 		return nil
 	}
-	sa, ok := guard.(SessionAware)
+	sa, ok := scheme.(SessionAware)
 	if !ok {
 		return nil
 	}
 	return sa.Session(r)
 }
 
-// ID returns the authenticated user ID using the default guard.
+// ID returns the authenticated user ID using the default scheme.
 func (m *Manager) ID(r *http.Request) interface{} {
-	guard, err := m.DefaultGuard()
+	scheme, err := m.DefaultScheme()
 	if err != nil {
 		return nil
 	}
-	return guard.ID(r)
+	return scheme.ID(r)
 }
 
-// Login logs in a user using the default guard.
+// Login logs in a user using the default scheme.
 func (m *Manager) Login(w http.ResponseWriter, r *http.Request, user Authenticatable, remember ...bool) error {
-	guard, err := m.DefaultGuard()
+	scheme, err := m.DefaultScheme()
 	if err != nil {
 		return err
 	}
-	return guard.Login(w, r, user, remember...)
+	return scheme.Login(w, r, user, remember...)
 }
 
-// Attempt attempts login with credentials using the default guard.
+// Attempt attempts login with credentials using the default scheme.
 func (m *Manager) Attempt(w http.ResponseWriter, r *http.Request, credentials map[string]interface{}, remember ...bool) (bool, error) {
-	guard, err := m.DefaultGuard()
+	scheme, err := m.DefaultScheme()
 	if err != nil {
 		return false, err
 	}
-	return guard.Attempt(w, r, credentials, remember...)
+	return scheme.Attempt(w, r, credentials, remember...)
 }
 
-// Logout logs out the user using the default guard.
+// Logout logs out the user using the default scheme.
 func (m *Manager) Logout(w http.ResponseWriter, r *http.Request) error {
-	guard, err := m.DefaultGuard()
+	scheme, err := m.DefaultScheme()
 	if err != nil {
 		return err
 	}
-	return guard.Logout(w, r)
+	return scheme.Logout(w, r)
 }
 
-// Gate returns the authorization gate.
-func (m *Manager) Gate() *Gate {
-	return m.gate
+// Access returns the authorization access rules.
+func (m *Manager) Access() *Access {
+	return m.access
 }
 
-// GateAllows checks if the authenticated user (from the default guard) is
+// Allows checks if the authenticated user (from the default scheme) is
 // allowed to perform the given ability. Returns false when there is no
 // authenticated user.
-func (m *Manager) GateAllows(r *http.Request, ability string, args ...interface{}) bool {
+func (m *Manager) Allows(r *http.Request, ability string, args ...interface{}) bool {
 	user := m.User(r)
 	if user == nil {
 		return false
 	}
-	return m.gate.Allows(user, ability, args...)
+	return m.access.Allows(user, ability, args...)
 }
 
-// GateAuthorize checks if the authenticated user (from the default guard) is
+// Authorize checks if the authenticated user (from the default scheme) is
 // allowed to perform the given ability. Returns ErrUnauthorized on denial or
 // when there is no authenticated user.
-func (m *Manager) GateAuthorize(r *http.Request, ability string, args ...interface{}) error {
-	if !m.GateAllows(r, ability, args...) {
+func (m *Manager) Authorize(r *http.Request, ability string, args ...interface{}) error {
+	if !m.Allows(r, ability, args...) {
 		return ErrUnauthorized
 	}
 	return nil
@@ -645,8 +645,8 @@ func (m *Manager) GetHasher() Hasher {
 func NewManagerFromConfig(config Config) (*Manager, error) {
 	manager := NewManager()
 
-	if config.DefaultGuard != "" {
-		manager.SetDefaultGuard(config.DefaultGuard)
+	if config.DefaultScheme != "" {
+		manager.SetDefaultScheme(config.DefaultScheme)
 	}
 
 	if config.BcryptCost > 0 {
@@ -658,9 +658,9 @@ func NewManagerFromConfig(config Config) (*Manager, error) {
 
 // Config holds authentication configuration
 type Config struct {
-	DefaultGuard string
-	Guards       map[string]GuardConfig
-	BcryptCost   int // Bcrypt cost for password hashing. 0 uses the default.
+	DefaultScheme string
+	Schemes       map[string]SchemeConfig
+	BcryptCost    int // Bcrypt cost for password hashing. 0 uses the default.
 
 	// TrustedProxies is the list of IP/CIDR strings whose forwarded
 	// headers (Forwarded, X-Forwarded-For, X-Real-IP) may be honoured
@@ -670,10 +670,10 @@ type Config struct {
 	// at boot to match your load balancer / reverse proxy topology.
 	//
 	// Entries are parsed via internal/clientip.ParseCIDRs and
-	// propagated to every guard via Manager.SetTrustedProxies.
+	// propagated to every scheme via Manager.SetTrustedProxies.
 	TrustedProxies []string
 
-	// AttemptFloor is the minimum wall-clock duration a guard.Attempt
+	// AttemptFloor is the minimum wall-clock duration a scheme.Attempt
 	// call must take, regardless of whether the user existed and
 	// regardless of whether the password matched. The H-09 fix uses
 	// this to defeat the timing side-channel that lets an unauthenticated
@@ -681,14 +681,14 @@ type Config struct {
 	// returns in <5ms, valid user with wrong password takes 80-300ms
 	// inside bcrypt; the delta is two orders of magnitude).
 	//
-	// Mirrors Laravel's $this->timeboxDuration on SessionGuard. A zero
+	// Mirrors Laravel's $this->timeboxDuration on SessionScheme. A zero
 	// value falls back to DefaultAttemptFloor (200ms). Negative values
 	// are clamped to zero (no floor) which is for tests only.
 	AttemptFloor time.Duration
 }
 
-// GuardConfig holds guard configuration
-type GuardConfig struct {
+// SchemeConfig holds scheme configuration
+type SchemeConfig struct {
 	Driver  string
 	Options map[string]interface{}
 }
@@ -696,14 +696,14 @@ type GuardConfig struct {
 // SetServerSessionStore installs a server-side session store. Pass nil to
 // remove a previously installed store. Safe for concurrent use.
 //
-// Every registered guard that implements ServerSessionStoreReceiver is
-// notified so it can consult the store on Login/Check/Logout. Guards that
+// Every registered scheme that implements ServerSessionStoreReceiver is
+// notified so it can consult the store on Login/Check/Logout. Schemes that
 // do not implement the interface (e.g. JWT) are silently skipped.
 func (m *Manager) SetServerSessionStore(store ServerSessionStore) {
 	m.mu.Lock()
 	m.serverSessions = store
-	receivers := make([]ServerSessionStoreReceiver, 0, len(m.guards))
-	for _, g := range m.guards {
+	receivers := make([]ServerSessionStoreReceiver, 0, len(m.schemes))
+	for _, g := range m.schemes {
 		if r, ok := g.(ServerSessionStoreReceiver); ok {
 			receivers = append(receivers, r)
 		}
@@ -716,26 +716,26 @@ func (m *Manager) SetServerSessionStore(store ServerSessionStore) {
 }
 
 // TrustedProxiesReceiver is an optional capability interface implemented
-// by guards that derive a client IP for throttling or audit logging.
+// by schemes that derive a client IP for throttling or audit logging.
 // Manager.SetTrustedProxies propagates the parsed proxy network list to
-// every registered guard that satisfies this interface so the throttle
+// every registered scheme that satisfies this interface so the throttle
 // key, the session audit trail, and per-IP limiters all agree on
 // "who is the real client?".
 //
-// Guards that do not maintain a client-IP-sensitive surface (e.g. a
-// pure bearer-token guard) leave this unimplemented; Manager silently
+// Schemes that do not maintain a client-IP-sensitive surface (e.g. a
+// pure bearer-token scheme) leave this unimplemented; Manager silently
 // skips them.
 type TrustedProxiesReceiver interface {
 	SetTrustedProxies(proxies []*net.IPNet)
 }
 
 // LoginThrottlerReceiver is an optional capability interface
-// implemented by guards that throttle credential-based login attempts.
+// implemented by schemes that throttle credential-based login attempts.
 // Manager.SetLoginThrottler propagates the throttler to every
-// registered guard that satisfies this interface so all Attempt
+// registered scheme that satisfies this interface so all Attempt
 // implementations share the same brute-force protection policy.
 //
-// Guards that have no credential-checking surface leave this
+// Schemes that have no credential-checking surface leave this
 // unimplemented; Manager silently skips them.
 type LoginThrottlerReceiver interface {
 	SetLoginThrottler(t contract.LoginThrottler)
@@ -746,9 +746,9 @@ type LoginThrottlerReceiver interface {
 // previously installed list (reverts to "trust nothing"). Safe for
 // concurrent use.
 //
-// Every registered guard implementing TrustedProxiesReceiver is
-// notified immediately; guards registered later inherit the list at
-// registration time (see RegisterGuard).
+// Every registered scheme implementing TrustedProxiesReceiver is
+// notified immediately; schemes registered later inherit the list at
+// registration time (see RegisterScheme).
 //
 // At boot the framework parses Config.TrustedProxies via
 // internal/clientip.ParseCIDRs and calls this with the result, so app
@@ -762,33 +762,33 @@ func (m *Manager) SetTrustedProxies(proxies []*net.IPNet) {
 
 	m.mu.Lock()
 	m.trustedProxies = cloned
-	receivers := make([]TrustedProxiesReceiver, 0, len(m.guards))
-	for _, g := range m.guards {
+	receivers := make([]TrustedProxiesReceiver, 0, len(m.schemes))
+	for _, g := range m.schemes {
 		if r, ok := g.(TrustedProxiesReceiver); ok {
 			receivers = append(receivers, r)
 		}
 	}
 	m.mu.Unlock()
 
-	// Each guard gets an INDEPENDENT clone. Sharing one snapshot across
-	// receivers would let one guard's later mutation reach the others.
+	// Each scheme gets an INDEPENDENT clone. Sharing one snapshot across
+	// receivers would let one scheme's later mutation reach the others.
 	for _, r := range receivers {
 		r.SetTrustedProxies(clientip.CloneIPNets(cloned))
 	}
 }
 
 // SetLoginThrottler installs the login throttler used across the auth
-// package. Pass nil to clear a previously installed throttler (guards
+// package. Pass nil to clear a previously installed throttler (schemes
 // revert to their own fallback). Safe for concurrent use.
 //
-// Every registered guard implementing LoginThrottlerReceiver is
-// notified immediately; guards registered later inherit the throttler
-// at registration time (see RegisterGuard).
+// Every registered scheme implementing LoginThrottlerReceiver is
+// notified immediately; schemes registered later inherit the throttler
+// at registration time (see RegisterScheme).
 func (m *Manager) SetLoginThrottler(t contract.LoginThrottler) {
 	m.mu.Lock()
 	m.loginThrottler = t
-	receivers := make([]LoginThrottlerReceiver, 0, len(m.guards))
-	for _, g := range m.guards {
+	receivers := make([]LoginThrottlerReceiver, 0, len(m.schemes))
+	for _, g := range m.schemes {
 		if r, ok := g.(LoginThrottlerReceiver); ok {
 			receivers = append(receivers, r)
 		}
@@ -810,13 +810,13 @@ func (m *Manager) TrustedProxies() []*net.IPNet {
 }
 
 // CSRFTokenRotatorReceiver is an optional capability interface implemented
-// by guards that maintain a session lifecycle and need to keep the CSRF
+// by schemes that maintain a session lifecycle and need to keep the CSRF
 // token store aligned with that lifecycle. Manager.SetCSRFTokenRotator
-// propagates the rotator to every registered guard satisfying this
+// propagates the rotator to every registered scheme satisfying this
 // interface so Login regenerates the bound token, Logout revokes it, and
 // the remember-cookie revival path rotates it across recall.
 //
-// Guards that have no session boundary (e.g. JWT) leave this
+// Schemes that have no session boundary (e.g. JWT) leave this
 // unimplemented; Manager silently skips them.
 type CSRFTokenRotatorReceiver interface {
 	SetCSRFTokenRotator(rotator contract.CSRFTokenRotator)
@@ -825,13 +825,13 @@ type CSRFTokenRotatorReceiver interface {
 // SetCSRFTokenRotator installs a CSRF token rotator. Pass nil to remove
 // a previously installed rotator. Safe for concurrent use.
 //
-// Every registered guard implementing CSRFTokenRotatorReceiver is
-// notified immediately; guards registered later inherit the rotator at
-// registration time (see RegisterGuard).
+// Every registered scheme implementing CSRFTokenRotatorReceiver is
+// notified immediately; schemes registered later inherit the rotator at
+// registration time (see RegisterScheme).
 //
 // At boot the framework constructs the CSRF instance and calls this so
-// SessionGuard.Login rotates the per-session token alongside the session
-// id, SessionGuard.Logout revokes it before the session is invalidated,
+// SessionScheme.Login rotates the per-session token alongside the session
+// id, SessionScheme.Logout revokes it before the session is invalidated,
 // and the remember-cookie revival path inside anchorRecalledUser rotates
 // the token across the recall regenerate. Without this hook, tokens
 // minted under a pre-login session id persist as orphans in the CSRF
@@ -840,8 +840,8 @@ type CSRFTokenRotatorReceiver interface {
 func (m *Manager) SetCSRFTokenRotator(rotator contract.CSRFTokenRotator) {
 	m.mu.Lock()
 	m.csrfRotator = rotator
-	receivers := make([]CSRFTokenRotatorReceiver, 0, len(m.guards))
-	for _, g := range m.guards {
+	receivers := make([]CSRFTokenRotatorReceiver, 0, len(m.schemes))
+	for _, g := range m.schemes {
 		if r, ok := g.(CSRFTokenRotatorReceiver); ok {
 			receivers = append(receivers, r)
 		}
@@ -854,12 +854,12 @@ func (m *Manager) SetCSRFTokenRotator(rotator contract.CSRFTokenRotator) {
 }
 
 // EventDispatcherReceiver is the optional capability interface implemented
-// by guards that need to emit framework events (e.g. session and JWT
-// guards emit PasswordNeedsRehashEvent after a successful login against an
+// by schemes that need to emit framework events (e.g. session and JWT
+// schemes emit PasswordNeedsRehashEvent after a successful login against an
 // out-of-date hash). Manager.SetEventDispatcher walks every registered
-// guard implementing this interface so listeners can subscribe to auth
+// scheme implementing this interface so listeners can subscribe to auth
 // events at the framework dispatcher level without knowing about
-// individual guards.
+// individual schemes.
 //
 // The dispatcher signature mirrors contract.EventDispatcherAware so the
 // app-level dispatcher passes through unchanged.
@@ -868,9 +868,9 @@ type EventDispatcherReceiver interface {
 }
 
 // SetEventDispatcher installs the framework event dispatcher used by
-// the manager and propagates it to every registered guard implementing
+// the manager and propagates it to every registered scheme implementing
 // EventDispatcherReceiver. Pass nil to remove a previously installed
-// dispatcher; guards become silent. Safe for concurrent use.
+// dispatcher; schemes become silent. Safe for concurrent use.
 //
 // At boot the framework calls this from wireInstanceEvents so auth
 // events (PasswordNeedsRehashEvent on cost-bumped hashes etc.) flow
@@ -883,8 +883,8 @@ func (m *Manager) SetEventDispatcher(fn func(ctx context.Context, event any) err
 	}
 
 	m.mu.RLock()
-	receivers := make([]EventDispatcherReceiver, 0, len(m.guards))
-	for _, g := range m.guards {
+	receivers := make([]EventDispatcherReceiver, 0, len(m.schemes))
+	for _, g := range m.schemes {
 		if r, ok := g.(EventDispatcherReceiver); ok {
 			receivers = append(receivers, r)
 		}
@@ -923,9 +923,9 @@ func (m *Manager) RevokeSession(ctx context.Context, sessionID string) error {
 }
 
 // RevokeAllSessions deletes every server-side session belonging to
-// userID, clears the user's remember-me token on every registered guard
+// userID, clears the user's remember-me token on every registered scheme
 // that implements RememberTokenClearer, and revokes outstanding refresh
-// tokens on every registered guard that implements RefreshTokenRevoker.
+// tokens on every registered scheme that implements RefreshTokenRevoker.
 // Returns ErrNoServerSessionStore when no store has been configured.
 //
 // Remember-token clearing and refresh-token revocation are best-effort:
@@ -943,16 +943,16 @@ func (m *Manager) RevokeAllSessions(ctx context.Context, userID string) error {
 		return err
 	}
 
-	type guardCapabilities struct {
+	type schemeCapabilities struct {
 		name    string
 		clearer RememberTokenClearer
 		revoker RefreshTokenRevoker
 	}
 
 	m.mu.RLock()
-	caps := make([]guardCapabilities, 0, len(m.guards))
-	for name, g := range m.guards {
-		gc := guardCapabilities{name: name}
+	caps := make([]schemeCapabilities, 0, len(m.schemes))
+	for name, g := range m.schemes {
+		gc := schemeCapabilities{name: name}
 		if c, ok := g.(RememberTokenClearer); ok {
 			gc.clearer = c
 		}
@@ -969,14 +969,14 @@ func (m *Manager) RevokeAllSessions(ctx context.Context, userID string) error {
 	for _, gc := range caps {
 		if gc.clearer != nil {
 			if err := gc.clearer.ClearRememberTokensForUser(ctx, userID); err != nil {
-				m.logWarn("velocity/auth: clear remember token failed", "guard", gc.name, "user_id", userID, "error", err)
-				partialErrs = append(partialErrs, fmt.Errorf("guard %q clear remember: %w", gc.name, err))
+				m.logWarn("velocity/auth: clear remember token failed", "scheme", gc.name, "user_id", userID, "error", err)
+				partialErrs = append(partialErrs, fmt.Errorf("scheme %q clear remember: %w", gc.name, err))
 			}
 		}
 		if gc.revoker != nil {
 			if err := gc.revoker.RevokeAllRefreshTokensForUser(ctx, userID); err != nil {
-				m.logWarn("velocity/auth: revoke refresh tokens failed", "guard", gc.name, "user_id", userID, "error", err)
-				partialErrs = append(partialErrs, fmt.Errorf("guard %q revoke refresh: %w", gc.name, err))
+				m.logWarn("velocity/auth: revoke refresh tokens failed", "scheme", gc.name, "user_id", userID, "error", err)
+				partialErrs = append(partialErrs, fmt.Errorf("scheme %q revoke refresh: %w", gc.name, err))
 			}
 		}
 	}

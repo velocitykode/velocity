@@ -174,7 +174,7 @@ func FromContext(ctx *router.Context) *Manager {
 // counterpart to [FromContext]: app.Services types the field as
 // contract.AuthManager (contract is a stdlib-only leaf and cannot name
 // auth's types), so a module that needs the concrete manager - to install
-// its own user provider, for instance - goes through here.
+// its own user store, for instance - goes through here.
 //
 // Returns nil when auth is not configured, so callers get the documented
 // nil contract rather than a panic.
@@ -184,7 +184,7 @@ func FromContext(ctx *router.Context) *Manager {
 //	    if manager == nil {
 //	        return errors.New("auth is not configured")
 //	    }
-//	    manager.SetProvider(ormauth.New[models.User]())
+//	    manager.SetUserStore(ormauth.New[models.User]())
 //	    return nil
 //	}
 func FromServices(s *app.Services) *Manager {
@@ -217,7 +217,7 @@ func RequireRole(manager *Manager, role string) router.MiddlewareFunc {
 				return denyUnauthenticated(manager, c)
 			}
 			user := manager.User(c.Request)
-			if !manager.Gate().HasRole(user, role) {
+			if !manager.Access().HasRole(user, role) {
 				return denyForbidden(manager, c)
 			}
 			return next(c)
@@ -235,7 +235,7 @@ func RequireAnyRole(manager *Manager, roles ...string) router.MiddlewareFunc {
 				return denyUnauthenticated(manager, c)
 			}
 			user := manager.User(c.Request)
-			if !manager.Gate().HasAnyRole(user, roles...) {
+			if !manager.Access().HasAnyRole(user, roles...) {
 				return denyForbidden(manager, c)
 			}
 			return next(c)
@@ -253,7 +253,7 @@ func RequireAllRoles(manager *Manager, roles ...string) router.MiddlewareFunc {
 				return denyUnauthenticated(manager, c)
 			}
 			user := manager.User(c.Request)
-			if !manager.Gate().HasAllRoles(user, roles...) {
+			if !manager.Access().HasAllRoles(user, roles...) {
 				return denyForbidden(manager, c)
 			}
 			return next(c)
@@ -263,7 +263,7 @@ func RequireAllRoles(manager *Manager, roles ...string) router.MiddlewareFunc {
 
 // AuthorizeMiddleware returns middleware that checks if the authenticated user
 // can perform the given ability. An optional resourceFunc can provide the
-// resource argument for the gate check. Returns 401 if not authenticated, 403
+// resource argument for the access check. Returns 401 if not authenticated, 403
 // if the ability is denied.
 func AuthorizeMiddleware(manager *Manager, ability string, resourceFunc ...func(*router.Context) interface{}) router.MiddlewareFunc {
 	return func(next router.HandlerFunc) router.HandlerFunc {
@@ -275,9 +275,9 @@ func AuthorizeMiddleware(manager *Manager, ability string, resourceFunc ...func(
 			var allowed bool
 			if len(resourceFunc) > 0 && resourceFunc[0] != nil {
 				resource := resourceFunc[0](c)
-				allowed = manager.Gate().Allows(user, ability, resource)
+				allowed = manager.Access().Allows(user, ability, resource)
 			} else {
-				allowed = manager.Gate().Allows(user, ability)
+				allowed = manager.Access().Allows(user, ability)
 			}
 			if !allowed {
 				return denyForbidden(manager, c)

@@ -10,15 +10,15 @@ import (
 	"github.com/velocitykode/velocity/auth"
 )
 
-// rememberClearingProvider exposes the UpdateRememberToken call so the test
+// rememberClearingStore exposes the UpdateRememberToken call so the test
 // can assert Logout cycled the persisted token.
-type rememberClearingProvider struct {
+type rememberClearingStore struct {
 	user    auth.Authenticatable
 	updates []string
 	updated int32
 }
 
-func (p *rememberClearingProvider) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *rememberClearingStore) FindByID(id interface{}) (auth.Authenticatable, error) {
 	if p.user == nil {
 		return nil, nil
 	}
@@ -31,13 +31,13 @@ func (p *rememberClearingProvider) FindByID(id interface{}) (auth.Authenticatabl
 	return nil, nil
 }
 
-func (p *rememberClearingProvider) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
+func (p *rememberClearingStore) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
 	return nil, nil
 }
-func (p *rememberClearingProvider) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
+func (p *rememberClearingStore) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
 	return true
 }
-func (p *rememberClearingProvider) UpdateRememberToken(user auth.Authenticatable, token string) error {
+func (p *rememberClearingStore) UpdateRememberToken(user auth.Authenticatable, token string) error {
 	p.updates = append(p.updates, token)
 	atomic.AddInt32(&p.updated, 1)
 	user.SetRememberToken(token)
@@ -55,21 +55,21 @@ func (u *rememberClearingUser) GetAuthPassword() string        { return "" }
 func (u *rememberClearingUser) GetRememberToken() string       { return u.rememberToken }
 func (u *rememberClearingUser) SetRememberToken(t string)      { u.rememberToken = t }
 
-// TestSessionGuard_Logout_ClearsRememberToken is the H-06 regression test.
+// TestSessionScheme_Logout_ClearsRememberToken is the H-06 regression test.
 // Logout MUST call UpdateRememberToken(user, "") for the authenticated user
 // so a previously issued remember cookie cannot be replayed after sign-out.
-func TestSessionGuard_Logout_ClearsRememberToken(t *testing.T) {
+func TestSessionScheme_Logout_ClearsRememberToken(t *testing.T) {
 	user := &rememberClearingUser{id: "u-42", rememberToken: "stored-hash"}
-	provider := &rememberClearingProvider{user: user}
-	guard, _ := newRevokeGuard(t, nil)
-	// Swap the provider so we can observe UpdateRememberToken calls.
-	guard.SetProvider(provider)
+	userStore := &rememberClearingStore{user: user}
+	scheme, _ := newRevokeScheme(t, nil)
+	// Swap the user store so we can observe UpdateRememberToken calls.
+	scheme.SetUserStore(userStore)
 
 	// Log the user in so a session cookie exists carrying user_id.
 	loginW := httptest.NewRecorder()
 	loginR := httptest.NewRequest(http.MethodPost, "/login", nil)
 	loginR = WithSessionContext(loginR)
-	if err := guard.Login(loginW, loginR, user); err != nil {
+	if err := scheme.Login(loginW, loginR, user); err != nil {
 		t.Fatalf("Login: %v", err)
 	}
 	var cookie *http.Cookie
@@ -88,48 +88,48 @@ func TestSessionGuard_Logout_ClearsRememberToken(t *testing.T) {
 	logoutR := httptest.NewRequest(http.MethodPost, "/logout", nil)
 	logoutR.AddCookie(cookie)
 	logoutR = WithSessionContext(logoutR)
-	if err := guard.Logout(logoutW, logoutR); err != nil {
+	if err := scheme.Logout(logoutW, logoutR); err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
 
-	if got := atomic.LoadInt32(&provider.updated); got < 1 {
+	if got := atomic.LoadInt32(&userStore.updated); got < 1 {
 		t.Fatalf("expected UpdateRememberToken to be called, got %d", got)
 	}
 	if user.rememberToken != "" {
 		t.Fatalf("remember_token after Logout = %q; want empty string", user.rememberToken)
 	}
 	// Most recent update must be the empty string.
-	if last := provider.updates[len(provider.updates)-1]; last != "" {
+	if last := userStore.updates[len(userStore.updates)-1]; last != "" {
 		t.Fatalf("last UpdateRememberToken value = %q; want empty string", last)
 	}
 }
 
-// TestSessionGuard_Logout_NoUserInSessionSkipsClear pins the defensive branch:
+// TestSessionScheme_Logout_NoUserInSessionSkipsClear pins the defensive branch:
 // when the session has no user_id (already-anonymous logout), the remember
 // token clearing path is skipped without erroring.
-func TestSessionGuard_Logout_NoUserInSessionSkipsClear(t *testing.T) {
-	provider := &rememberClearingProvider{}
-	guard, _ := newRevokeGuard(t, nil)
-	guard.SetProvider(provider)
+func TestSessionScheme_Logout_NoUserInSessionSkipsClear(t *testing.T) {
+	userStore := &rememberClearingStore{}
+	scheme, _ := newRevokeScheme(t, nil)
+	scheme.SetUserStore(userStore)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/logout", nil)
 	r = WithSessionContext(r)
-	if err := guard.Logout(w, r); err != nil {
+	if err := scheme.Logout(w, r); err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
-	if got := atomic.LoadInt32(&provider.updated); got != 0 {
+	if got := atomic.LoadInt32(&userStore.updated); got != 0 {
 		t.Fatalf("expected no UpdateRememberToken call for anonymous Logout, got %d", got)
 	}
 }
 
-// Ctx-suffixed shims for auth.UserProvider, added in Sweep 1b.
-func (p *rememberClearingProvider) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+// Ctx-suffixed shims for auth.UserStore, added in Sweep 1b.
+func (p *rememberClearingStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
 	return p.FindByID(id)
 }
-func (p *rememberClearingProvider) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *rememberClearingStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
 	return p.FindByCredentials(credentials)
 }
-func (p *rememberClearingProvider) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+func (p *rememberClearingStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
 	return p.UpdateRememberToken(user, token)
 }

@@ -146,7 +146,7 @@ func (h *BcryptHasher) SetCost(cost int) {
 }
 
 // Cost returns the effective bcrypt cost used for Hash/Verify. Exposed
-// so the timing-defense path in guard.Attempt can size its dummy hash
+// so the timing-defense path in scheme.Attempt can size its dummy hash
 // to match the real-user verify latency: without this, a configured
 // cost of 14 would run the real verify ~5x slower than the dummy hash
 // at cost 10, reopening the H-09 enumeration channel.

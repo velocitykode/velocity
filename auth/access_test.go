@@ -32,10 +32,10 @@ type mockPost struct {
 	AuthorID interface{}
 }
 
-func TestGate_Define(t *testing.T) {
-	gate := NewGate()
+func TestAccess_Define(t *testing.T) {
+	access := NewAccess()
 
-	gate.Define("edit-post", func(user Authenticatable, args ...interface{}) bool {
+	access.Define("edit-post", func(user Authenticatable, args ...interface{}) bool {
 		if len(args) == 0 {
 			return false
 		}
@@ -50,80 +50,80 @@ func TestGate_Define(t *testing.T) {
 	ownPost := &mockPost{ID: 1, AuthorID: 1}
 	otherPost := &mockPost{ID: 2, AuthorID: 2}
 
-	if !gate.Allows(user, "edit-post", ownPost) {
+	if !access.Allows(user, "edit-post", ownPost) {
 		t.Error("expected user to be allowed to edit own post")
 	}
 
-	if gate.Allows(user, "edit-post", otherPost) {
+	if access.Allows(user, "edit-post", otherPost) {
 		t.Error("expected user to be denied editing other's post")
 	}
 }
 
-func TestGate_Denies(t *testing.T) {
-	gate := NewGate()
+func TestAccess_Denies(t *testing.T) {
+	access := NewAccess()
 
-	gate.Define("admin-action", func(user Authenticatable, args ...interface{}) bool {
+	access.Define("admin-action", func(user Authenticatable, args ...interface{}) bool {
 		return false // always deny
 	})
 
 	user := &mockUser{id: 1}
 
-	if !gate.Denies(user, "admin-action") {
+	if !access.Denies(user, "admin-action") {
 		t.Error("expected Denies to return true for denied action")
 	}
 }
 
-func TestGate_Check(t *testing.T) {
-	gate := NewGate()
+func TestAccess_Check(t *testing.T) {
+	access := NewAccess()
 
-	gate.Define("read", func(user Authenticatable, args ...interface{}) bool {
+	access.Define("read", func(user Authenticatable, args ...interface{}) bool {
 		return true
 	})
-	gate.Define("write", func(user Authenticatable, args ...interface{}) bool {
+	access.Define("write", func(user Authenticatable, args ...interface{}) bool {
 		return true
 	})
-	gate.Define("delete", func(user Authenticatable, args ...interface{}) bool {
+	access.Define("delete", func(user Authenticatable, args ...interface{}) bool {
 		return false
 	})
 
 	user := &mockUser{id: 1}
 
-	if !gate.Check(user, []string{"read", "write"}) {
+	if !access.Check(user, []string{"read", "write"}) {
 		t.Error("expected Check to pass for allowed abilities")
 	}
 
-	if gate.Check(user, []string{"read", "delete"}) {
+	if access.Check(user, []string{"read", "delete"}) {
 		t.Error("expected Check to fail when one ability is denied")
 	}
 }
 
-func TestGate_Any(t *testing.T) {
-	gate := NewGate()
+func TestAccess_Any(t *testing.T) {
+	access := NewAccess()
 
-	gate.Define("read", func(user Authenticatable, args ...interface{}) bool {
+	access.Define("read", func(user Authenticatable, args ...interface{}) bool {
 		return false
 	})
-	gate.Define("write", func(user Authenticatable, args ...interface{}) bool {
+	access.Define("write", func(user Authenticatable, args ...interface{}) bool {
 		return true
 	})
 
 	user := &mockUser{id: 1}
 
-	if !gate.Any(user, []string{"read", "write"}) {
+	if !access.Any(user, []string{"read", "write"}) {
 		t.Error("expected Any to pass when at least one ability is allowed")
 	}
 
-	if gate.Any(user, []string{"read"}) {
+	if access.Any(user, []string{"read"}) {
 		t.Error("expected Any to fail when no abilities are allowed")
 	}
 }
 
-func TestGate_Before(t *testing.T) {
-	gate := NewGate()
+func TestAccess_Before(t *testing.T) {
+	access := NewAccess()
 
 	// Admin bypass
 	allowTrue := true
-	gate.Before(func(user Authenticatable, ability string, args ...interface{}) *bool {
+	access.Before(func(user Authenticatable, ability string, args ...interface{}) *bool {
 		if u, ok := user.(*mockUser); ok {
 			for _, role := range u.roles {
 				if role == "admin" {
@@ -134,46 +134,46 @@ func TestGate_Before(t *testing.T) {
 		return nil
 	})
 
-	gate.Define("restricted", func(user Authenticatable, args ...interface{}) bool {
+	access.Define("restricted", func(user Authenticatable, args ...interface{}) bool {
 		return false
 	})
 
 	regularUser := &mockUser{id: 1, roles: []string{"user"}}
 	adminUser := &mockUser{id: 2, roles: []string{"admin"}}
 
-	if gate.Allows(regularUser, "restricted") {
+	if access.Allows(regularUser, "restricted") {
 		t.Error("expected regular user to be denied")
 	}
 
-	if !gate.Allows(adminUser, "restricted") {
+	if !access.Allows(adminUser, "restricted") {
 		t.Error("expected admin user to bypass restriction")
 	}
 }
 
-func TestGate_After(t *testing.T) {
-	gate := NewGate()
+func TestAccess_After(t *testing.T) {
+	access := NewAccess()
 
 	var afterCalled bool
-	gate.After(func(user Authenticatable, ability string, result bool, args ...interface{}) bool {
+	access.After(func(user Authenticatable, ability string, result bool, args ...interface{}) bool {
 		afterCalled = true
 		return result
 	})
 
-	gate.Define("test", func(user Authenticatable, args ...interface{}) bool {
+	access.Define("test", func(user Authenticatable, args ...interface{}) bool {
 		return true
 	})
 
 	user := &mockUser{id: 1}
-	gate.Allows(user, "test")
+	access.Allows(user, "test")
 
 	if !afterCalled {
 		t.Error("expected after callback to be called")
 	}
 }
 
-func TestGate_Allows_NoDeadlockUnderConcurrentDefine(t *testing.T) {
-	gate := NewGate()
-	gate.Define("x", func(user Authenticatable, args ...interface{}) bool {
+func TestAccess_Allows_NoDeadlockUnderConcurrentDefine(t *testing.T) {
+	access := NewAccess()
+	access.Define("x", func(user Authenticatable, args ...interface{}) bool {
 		return true
 	})
 
@@ -193,7 +193,7 @@ func TestGate_Allows_NoDeadlockUnderConcurrentDefine(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < allowIterations; j++ {
-				if !gate.Allows(user, "x") {
+				if !access.Allows(user, "x") {
 					denied.Store(true)
 				}
 			}
@@ -205,13 +205,13 @@ func TestGate_Allows_NoDeadlockUnderConcurrentDefine(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < writeIterations; j++ {
-				gate.Define("x", func(user Authenticatable, args ...interface{}) bool {
+				access.Define("x", func(user Authenticatable, args ...interface{}) bool {
 					return true
 				})
-				gate.Before(func(user Authenticatable, ability string, args ...interface{}) *bool {
+				access.Before(func(user Authenticatable, ability string, args ...interface{}) *bool {
 					return nil
 				})
-				gate.After(func(user Authenticatable, ability string, result bool, args ...interface{}) bool {
+				access.After(func(user Authenticatable, ability string, result bool, args ...interface{}) bool {
 					return result
 				})
 			}
@@ -227,7 +227,7 @@ func TestGate_Allows_NoDeadlockUnderConcurrentDefine(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("concurrent Allows and gate mutation did not complete")
+		t.Fatal("concurrent Allows and access mutation did not complete")
 	}
 
 	if denied.Load() {
@@ -235,13 +235,13 @@ func TestGate_Allows_NoDeadlockUnderConcurrentDefine(t *testing.T) {
 	}
 }
 
-func TestGate_Allows_BeforeCallbackPanicDoesNotWedgeGate(t *testing.T) {
-	gate := NewGate()
+func TestAccess_Allows_BeforeCallbackPanicDoesNotWedgeAccess(t *testing.T) {
+	access := NewAccess()
 	user := &mockUser{id: 1}
 	var shouldPanic atomic.Bool
 	shouldPanic.Store(true)
 
-	gate.Before(func(user Authenticatable, ability string, args ...interface{}) *bool {
+	access.Before(func(user Authenticatable, ability string, args ...interface{}) *bool {
 		if shouldPanic.Swap(false) {
 			panic("before callback panic")
 		}
@@ -254,15 +254,15 @@ func TestGate_Allows_BeforeCallbackPanicDoesNotWedgeGate(t *testing.T) {
 				t.Fatal("expected before callback panic")
 			}
 		}()
-		gate.Allows(user, "x")
+		access.Allows(user, "x")
 	}()
 
 	done := make(chan struct{})
 	go func() {
-		gate.Define("x", func(user Authenticatable, args ...interface{}) bool {
+		access.Define("x", func(user Authenticatable, args ...interface{}) bool {
 			return true
 		})
-		if !gate.Allows(user, "x") {
+		if !access.Allows(user, "x") {
 			t.Error("expected subsequent Allows call to succeed")
 		}
 		close(done)
@@ -271,14 +271,14 @@ func TestGate_Allows_BeforeCallbackPanicDoesNotWedgeGate(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("gate remained wedged after before callback panic")
+		t.Fatal("access remained wedged after before callback panic")
 	}
 }
 
-func TestGate_RoleChecker(t *testing.T) {
-	gate := NewGate()
+func TestAccess_RoleChecker(t *testing.T) {
+	access := NewAccess()
 
-	gate.SetRoleChecker(func(user Authenticatable, role string) bool {
+	access.SetRoleChecker(func(user Authenticatable, role string) bool {
 		if u, ok := user.(*mockUser); ok {
 			for _, r := range u.roles {
 				if r == role {
@@ -291,19 +291,19 @@ func TestGate_RoleChecker(t *testing.T) {
 
 	user := &mockUser{id: 1, roles: []string{"admin", "editor"}}
 
-	if !gate.HasRole(user, "admin") {
+	if !access.HasRole(user, "admin") {
 		t.Error("expected user to have admin role")
 	}
 
-	if gate.HasRole(user, "superadmin") {
+	if access.HasRole(user, "superadmin") {
 		t.Error("expected user to not have superadmin role")
 	}
 }
 
-func TestGate_HasAnyRole(t *testing.T) {
-	gate := NewGate()
+func TestAccess_HasAnyRole(t *testing.T) {
+	access := NewAccess()
 
-	gate.SetRoleChecker(func(user Authenticatable, role string) bool {
+	access.SetRoleChecker(func(user Authenticatable, role string) bool {
 		if u, ok := user.(*mockUser); ok {
 			for _, r := range u.roles {
 				if r == role {
@@ -316,19 +316,19 @@ func TestGate_HasAnyRole(t *testing.T) {
 
 	user := &mockUser{id: 1, roles: []string{"editor"}}
 
-	if !gate.HasAnyRole(user, "admin", "editor") {
+	if !access.HasAnyRole(user, "admin", "editor") {
 		t.Error("expected user to have at least one role")
 	}
 
-	if gate.HasAnyRole(user, "admin", "superadmin") {
+	if access.HasAnyRole(user, "admin", "superadmin") {
 		t.Error("expected user to not have any of the roles")
 	}
 }
 
-func TestGate_HasAllRoles(t *testing.T) {
-	gate := NewGate()
+func TestAccess_HasAllRoles(t *testing.T) {
+	access := NewAccess()
 
-	gate.SetRoleChecker(func(user Authenticatable, role string) bool {
+	access.SetRoleChecker(func(user Authenticatable, role string) bool {
 		if u, ok := user.(*mockUser); ok {
 			for _, r := range u.roles {
 				if r == role {
@@ -341,17 +341,17 @@ func TestGate_HasAllRoles(t *testing.T) {
 
 	user := &mockUser{id: 1, roles: []string{"admin", "editor"}}
 
-	if !gate.HasAllRoles(user, "admin", "editor") {
+	if !access.HasAllRoles(user, "admin", "editor") {
 		t.Error("expected user to have all roles")
 	}
 
-	if gate.HasAllRoles(user, "admin", "superadmin") {
+	if access.HasAllRoles(user, "admin", "superadmin") {
 		t.Error("expected user to not have all roles")
 	}
 }
 
 func TestPolicy_Authorize(t *testing.T) {
-	gate := NewGate()
+	access := NewAccess()
 
 	// Register a team policy
 	teamPolicy := PolicyFunc(func(user Authenticatable, action string, resource interface{}) bool {
@@ -370,78 +370,78 @@ func TestPolicy_Authorize(t *testing.T) {
 		}
 	})
 
-	gate.RegisterPolicy("team", teamPolicy)
+	access.RegisterPolicy("team", teamPolicy)
 
 	owner := &mockUser{id: 1}
 	other := &mockUser{id: 2}
 	team := &mockTeam{ID: 1, OwnerID: 1}
 
-	if !gate.AuthorizePolicy(owner, "team", "view", team) {
+	if !access.AuthorizePolicy(owner, "team", "view", team) {
 		t.Error("expected owner to be able to view team")
 	}
 
-	if !gate.AuthorizePolicy(other, "team", "view", team) {
+	if !access.AuthorizePolicy(other, "team", "view", team) {
 		t.Error("expected other user to be able to view team")
 	}
 
-	if !gate.AuthorizePolicy(owner, "team", "update", team) {
+	if !access.AuthorizePolicy(owner, "team", "update", team) {
 		t.Error("expected owner to be able to update team")
 	}
 
-	if gate.AuthorizePolicy(other, "team", "update", team) {
+	if access.AuthorizePolicy(other, "team", "update", team) {
 		t.Error("expected other user to not be able to update team")
 	}
 }
 
-func TestUserGate(t *testing.T) {
-	gate := NewGate()
+func TestUserAccess(t *testing.T) {
+	access := NewAccess()
 
-	gate.Define("post.create", func(user Authenticatable, args ...interface{}) bool {
+	access.Define("post.create", func(user Authenticatable, args ...interface{}) bool {
 		return true
 	})
 
-	gate.Define("post.delete", func(user Authenticatable, args ...interface{}) bool {
+	access.Define("post.delete", func(user Authenticatable, args ...interface{}) bool {
 		return false
 	})
 
 	user := &mockUser{id: 1}
-	userGate := gate.ForUser(user)
+	userAccess := access.ForUser(user)
 
-	if !userGate.Can("post.create") {
+	if !userAccess.Can("post.create") {
 		t.Error("expected Can to return true for allowed ability")
 	}
 
-	if userGate.Can("post.delete") {
+	if userAccess.Can("post.delete") {
 		t.Error("expected Can to return false for denied ability")
 	}
 
-	if !userGate.Cannot("post.delete") {
+	if !userAccess.Cannot("post.delete") {
 		t.Error("expected Cannot to return true for denied ability")
 	}
 
-	if err := userGate.Authorize("post.create"); err != nil {
+	if err := userAccess.Authorize("post.create"); err != nil {
 		t.Errorf("expected Authorize to return nil for allowed ability, got %v", err)
 	}
 
-	if err := userGate.Authorize("post.delete"); err != ErrUnauthorized {
+	if err := userAccess.Authorize("post.delete"); err != ErrUnauthorized {
 		t.Errorf("expected Authorize to return ErrUnauthorized for denied ability, got %v", err)
 	}
 }
 
-func TestGate_UndefinedAbility(t *testing.T) {
-	gate := NewGate()
+func TestAccess_UndefinedAbility(t *testing.T) {
+	access := NewAccess()
 	user := &mockUser{id: 1}
 
 	// Undefined ability should return false
-	if gate.Allows(user, "undefined-ability") {
+	if access.Allows(user, "undefined-ability") {
 		t.Error("expected undefined ability to return false")
 	}
 }
 
-func TestGate_Concurrent(t *testing.T) {
-	gate := NewGate()
+func TestAccess_Concurrent(t *testing.T) {
+	access := NewAccess()
 
-	gate.Define("concurrent-test", func(user Authenticatable, args ...interface{}) bool {
+	access.Define("concurrent-test", func(user Authenticatable, args ...interface{}) bool {
 		return true
 	})
 
@@ -452,7 +452,7 @@ func TestGate_Concurrent(t *testing.T) {
 	// Multiple goroutines checking authorization
 	for i := 0; i < 100; i++ {
 		go func() {
-			gate.Allows(user, "concurrent-test")
+			access.Allows(user, "concurrent-test")
 			done <- true
 		}()
 	}

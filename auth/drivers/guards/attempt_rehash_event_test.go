@@ -24,25 +24,25 @@ func (h *rehashStubHasher) Hash(password string) (string, error) { return "stub:
 func (h *rehashStubHasher) Verify(password, hash string) bool    { return hash == "stub:"+password }
 func (h *rehashStubHasher) NeedsRehash(string) bool              { return h.needs }
 
-// rehashStubProvider validates credentials using the stub hasher.
-type rehashStubProvider struct {
+// rehashStubStore validates credentials using the stub hasher.
+type rehashStubStore struct {
 	user   *timingTestUser
 	hasher auth.Hasher
 }
 
-func (p *rehashStubProvider) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *rehashStubStore) FindByID(id interface{}) (auth.Authenticatable, error) {
 	return p.user, nil
 }
-func (p *rehashStubProvider) FindByCredentials(creds map[string]interface{}) (auth.Authenticatable, error) {
+func (p *rehashStubStore) FindByCredentials(creds map[string]interface{}) (auth.Authenticatable, error) {
 	return p.user, nil
 }
-func (p *rehashStubProvider) ValidateCredentials(_ auth.Authenticatable, creds map[string]interface{}) bool {
+func (p *rehashStubStore) ValidateCredentials(_ auth.Authenticatable, creds map[string]interface{}) bool {
 	pw, _ := creds["password"].(string)
 	return p.hasher.Verify(pw, p.user.password)
 }
-func (p *rehashStubProvider) UpdateRememberToken(auth.Authenticatable, string) error { return nil }
+func (p *rehashStubStore) UpdateRememberToken(auth.Authenticatable, string) error { return nil }
 
-func newRehashGuard(t *testing.T, needsRehash bool) (*SessionGuard, *rehashStubHasher) {
+func newRehashScheme(t *testing.T, needsRehash bool) (*SessionScheme, *rehashStubHasher) {
 	t.Helper()
 	enc, err := crypto.NewEncryptor(crypto.Config{
 		Key:    strings.Repeat("k", 32),
@@ -53,7 +53,7 @@ func newRehashGuard(t *testing.T, needsRehash bool) (*SessionGuard, *rehashStubH
 	}
 	stub := &rehashStubHasher{needs: needsRehash}
 	user := &timingTestUser{id: "alice@example.com", password: "stub:correct"}
-	guard, err := NewSessionGuard(&rehashStubProvider{user: user, hasher: stub}, auth.SessionConfig{
+	scheme, err := NewSessionScheme(&rehashStubStore{user: user, hasher: stub}, auth.SessionConfig{
 		Name:     "vel_session",
 		Lifetime: 60,
 		Path:     "/",
@@ -61,23 +61,23 @@ func newRehashGuard(t *testing.T, needsRehash bool) (*SessionGuard, *rehashStubH
 		SameSite: http.SameSiteLaxMode,
 	}, enc)
 	if err != nil {
-		t.Fatalf("NewSessionGuard: %v", err)
+		t.Fatalf("NewSessionScheme: %v", err)
 	}
-	guard.SetHasher(stub)
-	guard.SetAttemptFloor(-1)
-	return guard, stub
+	scheme.SetHasher(stub)
+	scheme.SetAttemptFloor(-1)
+	return scheme, stub
 }
 
-// TestSessionGuard_Attempt_EmitsRehashEvent verifies M-08: after a
+// TestSessionScheme_Attempt_EmitsRehashEvent verifies M-08: after a
 // successful login against a hash that no longer matches the configured
-// Hasher parameters, the guard dispatches auth.PasswordNeedsRehashEvent
+// Hasher parameters, the scheme dispatches auth.PasswordNeedsRehashEvent
 // with the user identifier. The plaintext is NOT included.
-func TestSessionGuard_Attempt_EmitsRehashEvent(t *testing.T) {
-	guard, _ := newRehashGuard(t, true)
+func TestSessionScheme_Attempt_EmitsRehashEvent(t *testing.T) {
+	scheme, _ := newRehashScheme(t, true)
 
 	var events []auth.PasswordNeedsRehashEvent
 	var mu sync.Mutex
-	guard.SetEventDispatcher(func(_ context.Context, event any) error {
+	scheme.SetEventDispatcher(func(_ context.Context, event any) error {
 		mu.Lock()
 		defer mu.Unlock()
 		if ev, ok := event.(auth.PasswordNeedsRehashEvent); ok {
@@ -88,7 +88,7 @@ func TestSessionGuard_Attempt_EmitsRehashEvent(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/login", nil)
-	ok, err := guard.Attempt(w, r, map[string]interface{}{
+	ok, err := scheme.Attempt(w, r, map[string]interface{}{
 		"email":    "alice@example.com",
 		"password": "correct",
 	})
@@ -108,28 +108,28 @@ func TestSessionGuard_Attempt_EmitsRehashEvent(t *testing.T) {
 	if got.UserID != "alice@example.com" {
 		t.Errorf("event UserID = %v, want alice@example.com", got.UserID)
 	}
-	if got.GuardName != "session" {
-		t.Errorf("event GuardName = %q, want session", got.GuardName)
+	if got.SchemeName != "session" {
+		t.Errorf("event SchemeName = %q, want session", got.SchemeName)
 	}
 	if got.EventName() != "auth.password.needs_rehash" {
 		t.Errorf("EventName = %q, want auth.password.needs_rehash", got.EventName())
 	}
 }
 
-// TestSessionGuard_Attempt_NoEventWhenHashFresh confirms the rehash event
+// TestSessionScheme_Attempt_NoEventWhenHashFresh confirms the rehash event
 // fires only when NeedsRehash returns true.
-func TestSessionGuard_Attempt_NoEventWhenHashFresh(t *testing.T) {
-	guard, _ := newRehashGuard(t, false)
+func TestSessionScheme_Attempt_NoEventWhenHashFresh(t *testing.T) {
+	scheme, _ := newRehashScheme(t, false)
 
 	var fired bool
-	guard.SetEventDispatcher(func(context.Context, any) error {
+	scheme.SetEventDispatcher(func(context.Context, any) error {
 		fired = true
 		return nil
 	})
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/login", nil)
-	if _, err := guard.Attempt(w, r, map[string]interface{}{
+	if _, err := scheme.Attempt(w, r, map[string]interface{}{
 		"email":    "alice@example.com",
 		"password": "correct",
 	}); err != nil {
@@ -140,21 +140,21 @@ func TestSessionGuard_Attempt_NoEventWhenHashFresh(t *testing.T) {
 	}
 }
 
-// TestSessionGuard_Attempt_NoEventOnInvalidPassword confirms the rehash
+// TestSessionScheme_Attempt_NoEventOnInvalidPassword confirms the rehash
 // event is gated by login success; a failed Attempt must not surface the
 // signal.
-func TestSessionGuard_Attempt_NoEventOnInvalidPassword(t *testing.T) {
-	guard, _ := newRehashGuard(t, true)
+func TestSessionScheme_Attempt_NoEventOnInvalidPassword(t *testing.T) {
+	scheme, _ := newRehashScheme(t, true)
 
 	var fired bool
-	guard.SetEventDispatcher(func(context.Context, any) error {
+	scheme.SetEventDispatcher(func(context.Context, any) error {
 		fired = true
 		return nil
 	})
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/login", nil)
-	if _, err := guard.Attempt(w, r, map[string]interface{}{
+	if _, err := scheme.Attempt(w, r, map[string]interface{}{
 		"email":    "alice@example.com",
 		"password": "wrong",
 	}); err != nil {
@@ -165,13 +165,13 @@ func TestSessionGuard_Attempt_NoEventOnInvalidPassword(t *testing.T) {
 	}
 }
 
-// TestManager_SetEventDispatcher_PropagatesToGuards verifies the
+// TestManager_SetEventDispatcher_PropagatesToSchemes verifies the
 // EventDispatcherReceiver propagation pattern: a dispatcher installed on
-// the Manager reaches every registered guard implementing the receiver.
-func TestManager_SetEventDispatcher_PropagatesToGuards(t *testing.T) {
+// the Manager reaches every registered scheme implementing the receiver.
+func TestManager_SetEventDispatcher_PropagatesToSchemes(t *testing.T) {
 	mgr := auth.NewManager()
-	guard, _ := newRehashGuard(t, true)
-	mgr.RegisterGuard("web", guard)
+	scheme, _ := newRehashScheme(t, true)
+	mgr.RegisterScheme("web", scheme)
 
 	var seen bool
 	mgr.SetEventDispatcher(func(context.Context, any) error {
@@ -181,7 +181,7 @@ func TestManager_SetEventDispatcher_PropagatesToGuards(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/login", nil)
-	if _, err := guard.Attempt(w, r, map[string]interface{}{
+	if _, err := scheme.Attempt(w, r, map[string]interface{}{
 		"email":    "alice@example.com",
 		"password": "correct",
 	}); err != nil {
@@ -192,13 +192,13 @@ func TestManager_SetEventDispatcher_PropagatesToGuards(t *testing.T) {
 	}
 }
 
-// Ctx-suffixed shims for auth.UserProvider, added in Sweep 1b.
-func (p *rehashStubProvider) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+// Ctx-suffixed shims for auth.UserStore, added in Sweep 1b.
+func (p *rehashStubStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
 	return p.FindByID(id)
 }
-func (p *rehashStubProvider) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *rehashStubStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
 	return p.FindByCredentials(credentials)
 }
-func (p *rehashStubProvider) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+func (p *rehashStubStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
 	return p.UpdateRememberToken(user, token)
 }

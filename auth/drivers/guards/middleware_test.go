@@ -49,16 +49,16 @@ func (s *trackingStore) Save(w http.ResponseWriter, session auth.Session) error 
 func (s *trackingStore) Destroy(id string) error                        { return nil }
 func (s *trackingStore) GarbageCollect(maxLifetime time.Duration) error { return nil }
 
-// helper: build a SessionGuard whose getSession returns the trackingSession.
-func newGuardForMiddleware(t *testing.T, store *trackingStore) *SessionGuard {
+// helper: build a SessionScheme whose getSession returns the trackingSession.
+func newSchemeForMiddleware(t *testing.T, store *trackingStore) *SessionScheme {
 	t.Helper()
-	g := func() *SessionGuard {
-		g := &SessionGuard{
+	g := func() *SessionScheme {
+		g := &SessionScheme{
 			store:  store,
 			config: auth.SessionConfig{Name: "test_session"},
 			hasher: auth.NewBcryptHasher(4),
 		}
-		g.provider.Store(&providerHolder{p: &mockSessionGuardUserProvider{}})
+		g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 		g.throttler.Store(&throttlerHolder{t: auth.NoopLoginThrottler{}})
 		return g
 	}()
@@ -67,7 +67,7 @@ func newGuardForMiddleware(t *testing.T, store *trackingStore) *SessionGuard {
 
 // runMiddleware drives a single request through SessionMiddleware so we can
 // assert the post-handler save fired (or did not).
-func runMiddleware(t *testing.T, g *SessionGuard, mutate func(s auth.Session)) (*trackingSession, *httptest.ResponseRecorder) {
+func runMiddleware(t *testing.T, g *SessionScheme, mutate func(s auth.Session)) (*trackingSession, *httptest.ResponseRecorder) {
 	t.Helper()
 
 	store, ok := g.store.(*trackingStore)
@@ -77,7 +77,7 @@ func runMiddleware(t *testing.T, g *SessionGuard, mutate func(s auth.Session)) (
 
 	mw := g.SessionMiddleware()
 	handler := mw(func(c *router.Context) error {
-		// Resolve the session through the guard so the holder cache
+		// Resolve the session through the scheme so the holder cache
 		// is populated exactly the way real request paths do.
 		sess := g.getSession(c.Request)
 		if sess == nil {
@@ -101,7 +101,7 @@ func runMiddleware(t *testing.T, g *SessionGuard, mutate func(s auth.Session)) (
 
 func TestSessionMiddleware_PersistsModifiedSessionAfterHandler(t *testing.T) {
 	store := &trackingStore{session: newTrackingSession()}
-	g := newGuardForMiddleware(t, store)
+	g := newSchemeForMiddleware(t, store)
 
 	sess, _ := runMiddleware(t, g, func(s auth.Session) {
 		s.Put("user_id", "u-1")
@@ -114,7 +114,7 @@ func TestSessionMiddleware_PersistsModifiedSessionAfterHandler(t *testing.T) {
 
 func TestSessionMiddleware_NoopWhenSessionUnmodified(t *testing.T) {
 	store := &trackingStore{session: newTrackingSession()}
-	g := newGuardForMiddleware(t, store)
+	g := newSchemeForMiddleware(t, store)
 
 	sess, _ := runMiddleware(t, g, func(s auth.Session) {
 		// Read-only: Get returns nil, no Put, no Flash. The session
@@ -129,7 +129,7 @@ func TestSessionMiddleware_NoopWhenSessionUnmodified(t *testing.T) {
 
 func TestSessionMiddleware_NoopWhenSessionNeverAccessed(t *testing.T) {
 	store := &trackingStore{session: newTrackingSession()}
-	g := newGuardForMiddleware(t, store)
+	g := newSchemeForMiddleware(t, store)
 
 	mw := g.SessionMiddleware()
 	handler := mw(func(c *router.Context) error {
@@ -165,7 +165,7 @@ func TestSessionMiddleware_NoopWhenSessionNeverAccessed(t *testing.T) {
 // called it, so the trackingStore never observed a Save() call.
 func TestSessionMiddleware_EagerlyBootstrapsForAnonymousVisitor(t *testing.T) {
 	store := &trackingStore{session: &trackingSession{BaseSession: auth.NewSession("")}}
-	g := newGuardForMiddleware(t, store)
+	g := newSchemeForMiddleware(t, store)
 
 	mw := g.SessionMiddleware()
 	handler := mw(func(c *router.Context) error {
@@ -192,7 +192,7 @@ func TestSessionMiddleware_FlashWriteIsPersisted(t *testing.T) {
 	// pick that up the same as a Put. Laravel-equivalent flash messages
 	// rely on this round-trip.
 	store := &trackingStore{session: newTrackingSession()}
-	g := newGuardForMiddleware(t, store)
+	g := newSchemeForMiddleware(t, store)
 
 	sess, _ := runMiddleware(t, g, func(s auth.Session) {
 		s.Flash("status", "saved")
@@ -208,7 +208,7 @@ func TestSessionMiddleware_DestroyedSessionIsSaved(t *testing.T) {
 	// handler invalidates the session and forgets to Save, the middleware
 	// MUST still flush so the cookie-delete header is emitted.
 	store := &trackingStore{session: newTrackingSession()}
-	g := newGuardForMiddleware(t, store)
+	g := newSchemeForMiddleware(t, store)
 
 	sess, _ := runMiddleware(t, g, func(s auth.Session) {
 		_ = s.Invalidate()

@@ -3,10 +3,10 @@
 // Auth integration tests — run with: make test-integration
 //
 // The unit-test suite exercises each auth component (bcrypt hasher, JWT
-// manager, cookie store, session guard, JWT guard) with mock collaborators.
+// manager, cookie store, session scheme, JWT scheme) with mock collaborators.
 // This file wires the real components together, backs them with a real
 // Postgres user table, and walks the full login → cookie round-trip →
-// check → logout flow for both session and JWT guards.
+// check → logout flow for both session and JWT schemes.
 //
 // The point of running this "integration" rather than as another unit
 // test: real bcrypt verify against rows that were inserted through the
@@ -72,19 +72,19 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// pgUserProvider is a minimal auth.UserProvider backed by a Postgres table.
+// pgUserStore is a minimal auth.UserStore backed by a Postgres table.
 // Each test creates its own table so parallel runs don't clobber each other.
-type pgUserProvider struct {
+type pgUserStore struct {
 	db     *sql.DB
 	table  string
 	hasher auth.Hasher
 }
 
-func (p *pgUserProvider) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *pgUserStore) FindByID(id interface{}) (auth.Authenticatable, error) {
 	return p.FindByIDCtx(context.Background(), id)
 }
 
-func (p *pgUserProvider) FindByIDCtx(ctx context.Context, id interface{}) (auth.Authenticatable, error) {
+func (p *pgUserStore) FindByIDCtx(ctx context.Context, id interface{}) (auth.Authenticatable, error) {
 	q := fmt.Sprintf("SELECT id, email, password, remember_token FROM %s WHERE id=$1", p.table)
 	row := p.db.QueryRowContext(ctx, q, id)
 	u := &auth.AuthUser{}
@@ -99,11 +99,11 @@ func (p *pgUserProvider) FindByIDCtx(ctx context.Context, id interface{}) (auth.
 	return u, nil
 }
 
-func (p *pgUserProvider) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *pgUserStore) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
 	return p.FindByCredentialsCtx(context.Background(), credentials)
 }
 
-func (p *pgUserProvider) FindByCredentialsCtx(ctx context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *pgUserStore) FindByCredentialsCtx(ctx context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
 	email, _ := credentials["email"].(string)
 	q := fmt.Sprintf("SELECT id, email, password, remember_token FROM %s WHERE email=$1", p.table)
 	row := p.db.QueryRowContext(ctx, q, email)
@@ -119,25 +119,25 @@ func (p *pgUserProvider) FindByCredentialsCtx(ctx context.Context, credentials m
 	return u, nil
 }
 
-func (p *pgUserProvider) ValidateCredentials(user auth.Authenticatable, credentials map[string]interface{}) bool {
+func (p *pgUserStore) ValidateCredentials(user auth.Authenticatable, credentials map[string]interface{}) bool {
 	password, _ := credentials["password"].(string)
 	return p.hasher.Verify(password, user.GetAuthPassword())
 }
 
-func (p *pgUserProvider) UpdateRememberToken(user auth.Authenticatable, token string) error {
+func (p *pgUserStore) UpdateRememberToken(user auth.Authenticatable, token string) error {
 	return p.UpdateRememberTokenCtx(context.Background(), user, token)
 }
 
-func (p *pgUserProvider) UpdateRememberTokenCtx(ctx context.Context, user auth.Authenticatable, token string) error {
+func (p *pgUserStore) UpdateRememberTokenCtx(ctx context.Context, user auth.Authenticatable, token string) error {
 	q := fmt.Sprintf("UPDATE %s SET remember_token=$1 WHERE id=$2", p.table)
 	_, err := p.db.ExecContext(ctx, q, token, user.GetAuthIdentifier())
 	return err
 }
 
 // setupUsersTable creates a fresh table with a unique name per test and
-// seeds one user. Returns the provider and the plaintext password so the
+// seeds one user. Returns the user store and the plaintext password so the
 // test can attempt login with known-good creds.
-func setupUsersTable(t *testing.T) (*pgUserProvider, string) {
+func setupUsersTable(t *testing.T) (*pgUserStore, string) {
 	t.Helper()
 
 	table := fmt.Sprintf("auth_integration_%d_%d", os.Getpid(), time.Now().UnixNano())
@@ -167,15 +167,15 @@ func setupUsersTable(t *testing.T) (*pgUserProvider, string) {
 		t.Fatalf("insert user: %v", err)
 	}
 
-	return &pgUserProvider{db: db, table: table, hasher: hasher}, password
+	return &pgUserStore{db: db, table: table, hasher: hasher}, password
 }
 
-// TestSessionGuard_LoginThenCheckThenLogout walks the full cookie flow:
+// TestSessionScheme_LoginThenCheckThenLogout walks the full cookie flow:
 // Login issues a Set-Cookie, a subsequent request carrying that cookie is
 // Check-authenticated, and Logout rejects the same cookie on the round
 // after.
-func TestSessionGuard_LoginThenCheckThenLogout(t *testing.T) {
-	provider, password := setupUsersTable(t)
+func TestSessionScheme_LoginThenCheckThenLogout(t *testing.T) {
+	userStore, password := setupUsersTable(t)
 
 	enc, err := crypto.NewEncryptor(crypto.Config{
 		Key:    strings.Repeat("k", 32), // 32 raw bytes → AES-256
@@ -185,7 +185,7 @@ func TestSessionGuard_LoginThenCheckThenLogout(t *testing.T) {
 		t.Fatalf("NewEncryptor: %v", err)
 	}
 
-	guard, err := guards.NewSessionGuard(provider, auth.SessionConfig{
+	scheme, err := guards.NewSessionScheme(userStore, auth.SessionConfig{
 		Name:     "velocity_session",
 		Lifetime: 60,
 		Path:     "/",
@@ -193,14 +193,14 @@ func TestSessionGuard_LoginThenCheckThenLogout(t *testing.T) {
 		SameSite: http.SameSiteLaxMode,
 	}, enc)
 	if err != nil {
-		t.Fatalf("NewSessionGuard: %v", err)
+		t.Fatalf("NewSessionScheme: %v", err)
 	}
 
-	// 1. Attempt with good credentials — guard writes a session cookie.
+	// 1. Attempt with good credentials — scheme writes a session cookie.
 	loginW := httptest.NewRecorder()
 	loginR := httptest.NewRequest("POST", "/login", nil)
 	loginR = guards.WithSessionContext(loginR)
-	ok, err := guard.Attempt(loginW, loginR, map[string]interface{}{
+	ok, err := scheme.Attempt(loginW, loginR, map[string]interface{}{
 		"email":    "alice@example.com",
 		"password": password,
 	})
@@ -224,11 +224,11 @@ func TestSessionGuard_LoginThenCheckThenLogout(t *testing.T) {
 	checkR := httptest.NewRequest("GET", "/dashboard", nil)
 	checkR.AddCookie(session)
 	checkR = guards.WithSessionContext(checkR)
-	if !guard.Check(checkR) {
+	if !scheme.Check(checkR) {
 		t.Fatal("Check must return true for a request with a freshly issued session cookie")
 	}
 
-	user := guard.User(checkR)
+	user := scheme.User(checkR)
 	if user == nil {
 		t.Fatal("User must return the authenticated user")
 	}
@@ -241,39 +241,39 @@ func TestSessionGuard_LoginThenCheckThenLogout(t *testing.T) {
 	logoutR := httptest.NewRequest("POST", "/logout", nil)
 	logoutR.AddCookie(session)
 	logoutR = guards.WithSessionContext(logoutR)
-	if err := guard.Logout(logoutW, logoutR); err != nil {
+	if err := scheme.Logout(logoutW, logoutR); err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
 
 	postLogoutR := httptest.NewRequest("GET", "/dashboard", nil)
 	postLogoutR.AddCookie(session)
 	postLogoutR = guards.WithSessionContext(postLogoutR)
-	if guard.Check(postLogoutR) {
+	if scheme.Check(postLogoutR) {
 		t.Error("Check must return false after Logout destroys the session")
 	}
 }
 
-// TestSessionGuard_BadCredentialsRejected verifies the guard does not
+// TestSessionScheme_BadCredentialsRejected verifies the scheme does not
 // issue a session cookie on a wrong password — a regression where
 // Attempt returned ok=true on a wrong password would silently log
 // anyone in.
-func TestSessionGuard_BadCredentialsRejected(t *testing.T) {
-	provider, _ := setupUsersTable(t)
+func TestSessionScheme_BadCredentialsRejected(t *testing.T) {
+	userStore, _ := setupUsersTable(t)
 
 	enc, _ := crypto.NewEncryptor(crypto.Config{
 		Key: strings.Repeat("k", 32), Cipher: "AES-256-GCM",
 	})
-	guard, err := guards.NewSessionGuard(provider, auth.SessionConfig{
+	scheme, err := guards.NewSessionScheme(userStore, auth.SessionConfig{
 		Name: "velocity_session", Lifetime: 60, Path: "/",
 	}, enc)
 	if err != nil {
-		t.Fatalf("NewSessionGuard: %v", err)
+		t.Fatalf("NewSessionScheme: %v", err)
 	}
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("POST", "/login", nil)
 	r = guards.WithSessionContext(r)
-	ok, _ := guard.Attempt(w, r, map[string]interface{}{
+	ok, _ := scheme.Attempt(w, r, map[string]interface{}{
 		"email":    "alice@example.com",
 		"password": "wrong password",
 	})
@@ -287,15 +287,15 @@ func TestSessionGuard_BadCredentialsRejected(t *testing.T) {
 	}
 }
 
-// TestJWTGuard_LoginValidateLogout exercises the JWT flow including the
+// TestJWTScheme_LoginValidateLogout exercises the JWT flow including the
 // blacklist: after Logout, the same token must no longer validate.
-// Without the blacklist this is trivially defeated; with it, the guard
+// Without the blacklist this is trivially defeated; with it, the scheme
 // stores the token's JTI and rejects it on re-presentation.
-func TestJWTGuard_LoginValidateLogout(t *testing.T) {
-	provider, password := setupUsersTable(t)
+func TestJWTScheme_LoginValidateLogout(t *testing.T) {
+	userStore, password := setupUsersTable(t)
 
 	secret := strings.Repeat("s", 48)
-	guard, err := guards.NewJWTGuard(provider, auth.JWTConfig{
+	scheme, err := guards.NewJWTScheme(userStore, auth.JWTConfig{
 		Secret:           secret,
 		Algorithm:        "HS256",
 		TTL:              5,
@@ -304,16 +304,16 @@ func TestJWTGuard_LoginValidateLogout(t *testing.T) {
 		BlacklistStore:   auth.NewInMemoryBlacklistStore(),
 	})
 	if err != nil {
-		t.Fatalf("NewJWTGuard: %v", err)
+		t.Fatalf("NewJWTScheme: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	guard.Start(ctx)
+	scheme.Start(ctx)
 	t.Cleanup(cancel)
 
 	// 1. Login via credentials — Attempt writes the token into a header.
 	loginW := httptest.NewRecorder()
 	loginR := httptest.NewRequest("POST", "/api/login", nil)
-	ok, err := guard.Attempt(loginW, loginR, map[string]interface{}{
+	ok, err := scheme.Attempt(loginW, loginR, map[string]interface{}{
 		"email":    "alice@example.com",
 		"password": password,
 	})
@@ -326,17 +326,17 @@ func TestJWTGuard_LoginValidateLogout(t *testing.T) {
 		t.Fatalf("Attempt must set X-Auth-Token header")
 	}
 
-	// The guard only caches users when Check/User is called. Manually
+	// The scheme only caches users when Check/User is called. Manually
 	// ValidateToken asserts the token is structurally correct before we
 	// carry it to the protected request.
-	if _, err := guard.ValidateToken(token); err != nil {
+	if _, err := scheme.ValidateToken(token); err != nil {
 		t.Fatalf("ValidateToken(fresh): %v", err)
 	}
 
 	// 2. Carry the token on a subsequent request — Check must pass.
 	protectedR := httptest.NewRequest("GET", "/api/me", nil)
 	protectedR.Header.Set("Authorization", "Bearer "+token)
-	if !guard.Check(protectedR) {
+	if !scheme.Check(protectedR) {
 		t.Fatal("Check must return true for a fresh JWT")
 	}
 
@@ -344,41 +344,41 @@ func TestJWTGuard_LoginValidateLogout(t *testing.T) {
 	logoutW := httptest.NewRecorder()
 	logoutR := httptest.NewRequest("POST", "/api/logout", nil)
 	logoutR.Header.Set("Authorization", "Bearer "+token)
-	if err := guard.Logout(logoutW, logoutR); err != nil {
+	if err := scheme.Logout(logoutW, logoutR); err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
 
 	// 4. The same token must no longer validate (blacklist hit).
-	if _, err := guard.ValidateToken(token); err == nil {
+	if _, err := scheme.ValidateToken(token); err == nil {
 		t.Error("ValidateToken must error on a revoked token; blacklist missed")
 	}
 	postLogoutR := httptest.NewRequest("GET", "/api/me", nil)
 	postLogoutR.Header.Set("Authorization", "Bearer "+token)
-	if guard.Check(postLogoutR) {
+	if scheme.Check(postLogoutR) {
 		t.Error("Check must return false after Logout blacklists the token")
 	}
 }
 
-// TestSessionGuard_TamperedCookieRejected surfaces a class of real
+// TestSessionScheme_TamperedCookieRejected surfaces a class of real
 // breach: an attacker flips bits in the encrypted session cookie. The
 // store's AEAD must reject the payload — Check must return false, and
 // no user is ever surfaced.
-func TestSessionGuard_TamperedCookieRejected(t *testing.T) {
-	provider, password := setupUsersTable(t)
+func TestSessionScheme_TamperedCookieRejected(t *testing.T) {
+	userStore, password := setupUsersTable(t)
 
 	enc, _ := crypto.NewEncryptor(crypto.Config{
 		Key: strings.Repeat("k", 32), Cipher: "AES-256-GCM",
 	})
-	guard, err := guards.NewSessionGuard(provider, auth.SessionConfig{
+	scheme, err := guards.NewSessionScheme(userStore, auth.SessionConfig{
 		Name: "velocity_session", Lifetime: 60, Path: "/",
 	}, enc)
 	if err != nil {
-		t.Fatalf("NewSessionGuard: %v", err)
+		t.Fatalf("NewSessionScheme: %v", err)
 	}
 
 	loginW := httptest.NewRecorder()
 	loginR := guards.WithSessionContext(httptest.NewRequest("POST", "/login", nil))
-	if _, err := guard.Attempt(loginW, loginR, map[string]interface{}{
+	if _, err := scheme.Attempt(loginW, loginR, map[string]interface{}{
 		"email":    "alice@example.com",
 		"password": password,
 	}); err != nil {
@@ -417,10 +417,10 @@ func TestSessionGuard_TamperedCookieRejected(t *testing.T) {
 	r := httptest.NewRequest("GET", "/dashboard", nil)
 	r.AddCookie(tampered)
 	r = guards.WithSessionContext(r)
-	if guard.Check(r) {
+	if scheme.Check(r) {
 		t.Error("Check must reject a tampered session cookie")
 	}
-	if u := guard.User(r); u != nil {
+	if u := scheme.User(r); u != nil {
 		t.Errorf("User must be nil for a tampered cookie, got %v", u)
 	}
 }

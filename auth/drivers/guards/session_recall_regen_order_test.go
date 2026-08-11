@@ -82,37 +82,37 @@ func (s *orderTrackingStore) tracking() *orderTrackingSession {
 	return s.created
 }
 
-// TestSessionGuard_RememberRevival_RegenBeforePut covers audit M-09:
+// TestSessionScheme_RememberRevival_RegenBeforePut covers audit M-09:
 // the remember-cookie revival path MUST call Session.Regenerate strictly
 // before writing user_id, otherwise a planted session id is reused as
 // the anchored authenticated id (session fixation). Both User() and
 // CheckWithError() reach the same anchorRecalledUser helper post-H-08;
 // pin the ordering directly via an instrumented session.
-func TestSessionGuard_RememberRevival_RegenBeforePut(t *testing.T) {
-	guard, _ := newRevokeGuard(t, nil)
-	provider := &rememberRevivalProvider{user: &revokeTestUser{id: "u1"}}
-	guard.SetProvider(provider)
+func TestSessionScheme_RememberRevival_RegenBeforePut(t *testing.T) {
+	scheme, _ := newRevokeScheme(t, nil)
+	userStore := &rememberRevivalStore{user: &revokeTestUser{id: "u1"}}
+	scheme.SetUserStore(userStore)
 
 	// Swap in the tracking store so the revival path operates on our
 	// instrumented session.
-	tracker := &orderTrackingStore{inner: guard.store}
-	guard.store = tracker
+	tracker := &orderTrackingStore{inner: scheme.store}
+	scheme.store = tracker
 
 	for _, method := range []string{"User", "Check"} {
 		t.Run(method, func(t *testing.T) {
 			// Mint a fresh remember cookie per subtest: recall now
 			// rotates the token (V2-08), so a cookie consumed by the
 			// previous subtest no longer authenticates.
-			rememberCookie := mintRememberCookie(t, guard)
+			rememberCookie := mintRememberCookie(t, scheme)
 			req := rememberRecallRequest(t, rememberCookie, httptest.NewRecorder())
 
 			switch method {
 			case "User":
-				if u := guard.User(req); u == nil {
+				if u := scheme.User(req); u == nil {
 					t.Fatal("User returned nil")
 				}
 			case "Check":
-				if !guard.Check(req) {
+				if !scheme.Check(req) {
 					t.Fatal("Check returned false")
 				}
 			}

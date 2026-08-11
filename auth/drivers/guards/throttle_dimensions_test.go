@@ -12,7 +12,7 @@ import (
 	"github.com/velocitykode/velocity/crypto"
 )
 
-// recordingThrottler captures every key the guard consults so tests can
+// recordingThrottler captures every key the scheme consults so tests can
 // assert the V2-04 multi-dimension fan-out: Allow checked per dimension,
 // RecordFailure/RecordSuccess applied to every dimension key.
 type recordingThrottler struct {
@@ -42,7 +42,7 @@ func (t *recordingThrottler) RecordSuccess(_ *http.Request, key string) {
 	t.successes = append(t.successes, key)
 }
 
-func newThrottleDimensionsSessionGuard(t *testing.T, provider *mockSessionGuardUserProvider, throttler *recordingThrottler) *SessionGuard {
+func newThrottleDimensionsSessionScheme(t *testing.T, userStore *mockSessionSchemeUserStore, throttler *recordingThrottler) *SessionScheme {
 	t.Helper()
 	enc, err := crypto.NewEncryptor(crypto.Config{
 		Key:    strings.Repeat("k", 32),
@@ -51,7 +51,7 @@ func newThrottleDimensionsSessionGuard(t *testing.T, provider *mockSessionGuardU
 	if err != nil {
 		t.Fatalf("NewEncryptor: %v", err)
 	}
-	guard, err := NewSessionGuard(provider, auth.SessionConfig{
+	scheme, err := NewSessionScheme(userStore, auth.SessionConfig{
 		Name:     "vel_session",
 		Lifetime: 60,
 		Path:     "/",
@@ -59,11 +59,11 @@ func newThrottleDimensionsSessionGuard(t *testing.T, provider *mockSessionGuardU
 		SameSite: http.SameSiteLaxMode,
 	}, enc)
 	if err != nil {
-		t.Fatalf("NewSessionGuard: %v", err)
+		t.Fatalf("NewSessionScheme: %v", err)
 	}
-	guard.SetAttemptFloor(-1) // bypass the 200ms timebox
-	guard.SetLoginThrottler(throttler)
-	return guard
+	scheme.SetAttemptFloor(-1) // bypass the 200ms timebox
+	scheme.SetLoginThrottler(throttler)
+	return scheme
 }
 
 func sortedCopy(keys []string) []string {
@@ -85,21 +85,21 @@ func assertSameKeySet(t *testing.T, got, want []string, what string) {
 	}
 }
 
-// TestSessionGuard_Attempt_DeniedWhenHardDimensionThrottled proves an
+// TestSessionScheme_Attempt_DeniedWhenHardDimensionThrottled proves an
 // over-cap per-IP or pair dimension blocks the attempt before the
-// credential check (the mock provider would accept the credentials), and
+// credential check (the mock user store would accept the credentials), and
 // that the error is the shared auth.ErrLoginThrottled.
-func TestSessionGuard_Attempt_DeniedWhenHardDimensionThrottled(t *testing.T) {
+func TestSessionScheme_Attempt_DeniedWhenHardDimensionThrottled(t *testing.T) {
 	for _, denyPrefix := range []string{
 		auth.ThrottleKeyIPPrefix,
 		auth.ThrottleKeyPairPrefix,
 	} {
 		throttler := &recordingThrottler{denyPrefix: denyPrefix}
-		guard := newThrottleDimensionsSessionGuard(t, &mockSessionGuardUserProvider{}, throttler)
+		scheme := newThrottleDimensionsSessionScheme(t, &mockSessionSchemeUserStore{}, throttler)
 
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest(http.MethodPost, "/login", nil)
-		ok, err := guard.Attempt(w, r, map[string]interface{}{
+		ok, err := scheme.Attempt(w, r, map[string]interface{}{
 			"email":    "victim@example.com",
 			"password": "x",
 		})
@@ -112,19 +112,19 @@ func TestSessionGuard_Attempt_DeniedWhenHardDimensionThrottled(t *testing.T) {
 	}
 }
 
-// TestSessionGuard_Attempt_IdentifierThrottleAllowsValidCredentials proves
+// TestSessionScheme_Attempt_IdentifierThrottleAllowsValidCredentials proves
 // the identifier dimension is verify-first: an over-cap identifier bucket
 // (the distributed-spray shape) cannot lock the account holder out when
 // they present the correct password, and the successful login clears every
 // dimension bucket.
-func TestSessionGuard_Attempt_IdentifierThrottleAllowsValidCredentials(t *testing.T) {
+func TestSessionScheme_Attempt_IdentifierThrottleAllowsValidCredentials(t *testing.T) {
 	throttler := &recordingThrottler{denyPrefix: auth.ThrottleKeyIdentifierPrefix}
-	guard := newThrottleDimensionsSessionGuard(t, &mockSessionGuardUserProvider{}, throttler)
+	scheme := newThrottleDimensionsSessionScheme(t, &mockSessionSchemeUserStore{}, throttler)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/login", nil)
 	creds := map[string]interface{}{"email": "victim@example.com", "password": "correct"}
-	ok, err := guard.Attempt(w, r, creds)
+	ok, err := scheme.Attempt(w, r, creds)
 	if !ok || err != nil {
 		t.Fatalf("Attempt = (%v, %v), want (true, nil): over-cap identifier bucket must not lock out valid credentials", ok, err)
 	}
@@ -134,42 +134,42 @@ func TestSessionGuard_Attempt_IdentifierThrottleAllowsValidCredentials(t *testin
 	assertSameKeySet(t, throttler.successes, auth.ThrottleKeys(r, creds, nil), "RecordSuccess keys")
 }
 
-// TestSessionGuard_Attempt_IdentifierThrottleDeniesInvalidCredentials
+// TestSessionScheme_Attempt_IdentifierThrottleDeniesInvalidCredentials
 // proves an over-cap identifier bucket still denies wrong-credential
 // attempts, with the shared throttle error and failures recorded on every
 // dimension.
-func TestSessionGuard_Attempt_IdentifierThrottleDeniesInvalidCredentials(t *testing.T) {
-	provider := &mockSessionGuardUserProvider{
+func TestSessionScheme_Attempt_IdentifierThrottleDeniesInvalidCredentials(t *testing.T) {
+	userStore := &mockSessionSchemeUserStore{
 		validateCredentialsFunc: func(auth.Authenticatable, map[string]interface{}) bool { return false },
 	}
 	throttler := &recordingThrottler{denyPrefix: auth.ThrottleKeyIdentifierPrefix}
-	guard := newThrottleDimensionsSessionGuard(t, provider, throttler)
+	scheme := newThrottleDimensionsSessionScheme(t, userStore, throttler)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/login", nil)
 	creds := map[string]interface{}{"email": "victim@example.com", "password": "wrong"}
-	ok, err := guard.Attempt(w, r, creds)
+	ok, err := scheme.Attempt(w, r, creds)
 	if ok || err != auth.ErrLoginThrottled {
 		t.Fatalf("Attempt = (%v, %v), want (false, ErrLoginThrottled)", ok, err)
 	}
 	assertSameKeySet(t, throttler.failures, auth.ThrottleKeys(r, creds, nil), "RecordFailure keys")
 }
 
-// TestSessionGuard_Attempt_RecordsFailureOnEveryDimension proves a failed
+// TestSessionScheme_Attempt_RecordsFailureOnEveryDimension proves a failed
 // credential check increments all three dimension buckets.
-func TestSessionGuard_Attempt_RecordsFailureOnEveryDimension(t *testing.T) {
-	provider := &mockSessionGuardUserProvider{
+func TestSessionScheme_Attempt_RecordsFailureOnEveryDimension(t *testing.T) {
+	userStore := &mockSessionSchemeUserStore{
 		findByCredentialsFunc: func(map[string]interface{}) (auth.Authenticatable, error) {
 			return nil, nil // user not found
 		},
 	}
 	throttler := &recordingThrottler{}
-	guard := newThrottleDimensionsSessionGuard(t, provider, throttler)
+	scheme := newThrottleDimensionsSessionScheme(t, userStore, throttler)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/login", nil)
 	creds := map[string]interface{}{"email": "ghost@example.com", "password": "x"}
-	if ok, err := guard.Attempt(w, r, creds); ok || err != nil {
+	if ok, err := scheme.Attempt(w, r, creds); ok || err != nil {
 		t.Fatalf("Attempt = (%v, %v), want (false, nil)", ok, err)
 	}
 
@@ -181,24 +181,24 @@ func TestSessionGuard_Attempt_RecordsFailureOnEveryDimension(t *testing.T) {
 	assertSameKeySet(t, throttler.allowCalls, want, "Allow keys")
 }
 
-// TestJWTGuard_Attempt_DeniedWhenAnyDimensionThrottled mirrors the
-// per-dimension denial check on the JWT guard surface.
-func TestJWTGuard_Attempt_DeniedWhenAnyDimensionThrottled(t *testing.T) {
-	guard, err := NewJWTGuard(&mockSessionGuardUserProvider{}, auth.JWTConfig{
+// TestJWTScheme_Attempt_DeniedWhenAnyDimensionThrottled mirrors the
+// per-dimension denial check on the JWT scheme surface.
+func TestJWTScheme_Attempt_DeniedWhenAnyDimensionThrottled(t *testing.T) {
+	scheme, err := NewJWTScheme(&mockSessionSchemeUserStore{}, auth.JWTConfig{
 		Secret:    strings.Repeat("s", 64),
 		Algorithm: "HS256",
 		TTL:       60,
 	})
 	if err != nil {
-		t.Fatalf("NewJWTGuard: %v", err)
+		t.Fatalf("NewJWTScheme: %v", err)
 	}
-	guard.SetAttemptFloor(-1)
+	scheme.SetAttemptFloor(-1)
 	throttler := &recordingThrottler{denyPrefix: auth.ThrottleKeyIPPrefix}
-	guard.SetLoginThrottler(throttler)
+	scheme.SetLoginThrottler(throttler)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/login", nil)
-	ok, err := guard.Attempt(w, r, map[string]interface{}{
+	ok, err := scheme.Attempt(w, r, map[string]interface{}{
 		"email":    "victim@example.com",
 		"password": "x",
 	})
@@ -210,33 +210,33 @@ func TestJWTGuard_Attempt_DeniedWhenAnyDimensionThrottled(t *testing.T) {
 	}
 }
 
-// TestJWTGuard_Attempt_IdentifierThrottleVerifyFirst mirrors the
-// verify-first identifier-dimension checks on the JWT guard surface:
+// TestJWTScheme_Attempt_IdentifierThrottleVerifyFirst mirrors the
+// verify-first identifier-dimension checks on the JWT scheme surface:
 // over-cap identifier bucket allows valid credentials and denies invalid
 // ones with the shared throttle error.
-func TestJWTGuard_Attempt_IdentifierThrottleVerifyFirst(t *testing.T) {
-	newGuard := func(provider *mockSessionGuardUserProvider, throttler *recordingThrottler) *JWTGuard {
-		guard, err := NewJWTGuard(provider, auth.JWTConfig{
+func TestJWTScheme_Attempt_IdentifierThrottleVerifyFirst(t *testing.T) {
+	newScheme := func(userStore *mockSessionSchemeUserStore, throttler *recordingThrottler) *JWTScheme {
+		scheme, err := NewJWTScheme(userStore, auth.JWTConfig{
 			Secret:    strings.Repeat("s", 64),
 			Algorithm: "HS256",
 			TTL:       60,
 		})
 		if err != nil {
-			t.Fatalf("NewJWTGuard: %v", err)
+			t.Fatalf("NewJWTScheme: %v", err)
 		}
-		guard.SetAttemptFloor(-1)
-		guard.SetLoginThrottler(throttler)
-		return guard
+		scheme.SetAttemptFloor(-1)
+		scheme.SetLoginThrottler(throttler)
+		return scheme
 	}
 
 	t.Run("valid credentials allowed", func(t *testing.T) {
 		throttler := &recordingThrottler{denyPrefix: auth.ThrottleKeyIdentifierPrefix}
-		guard := newGuard(&mockSessionGuardUserProvider{}, throttler)
+		scheme := newScheme(&mockSessionSchemeUserStore{}, throttler)
 
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest(http.MethodPost, "/login", nil)
 		creds := map[string]interface{}{"email": "victim@example.com", "password": "correct"}
-		ok, err := guard.Attempt(w, r, creds)
+		ok, err := scheme.Attempt(w, r, creds)
 		if !ok || err != nil {
 			t.Fatalf("Attempt = (%v, %v), want (true, nil)", ok, err)
 		}
@@ -244,16 +244,16 @@ func TestJWTGuard_Attempt_IdentifierThrottleVerifyFirst(t *testing.T) {
 	})
 
 	t.Run("invalid credentials denied", func(t *testing.T) {
-		provider := &mockSessionGuardUserProvider{
+		userStore := &mockSessionSchemeUserStore{
 			validateCredentialsFunc: func(auth.Authenticatable, map[string]interface{}) bool { return false },
 		}
 		throttler := &recordingThrottler{denyPrefix: auth.ThrottleKeyIdentifierPrefix}
-		guard := newGuard(provider, throttler)
+		scheme := newScheme(userStore, throttler)
 
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest(http.MethodPost, "/login", nil)
 		creds := map[string]interface{}{"email": "victim@example.com", "password": "wrong"}
-		ok, err := guard.Attempt(w, r, creds)
+		ok, err := scheme.Attempt(w, r, creds)
 		if ok || err != auth.ErrLoginThrottled {
 			t.Fatalf("Attempt = (%v, %v), want (false, ErrLoginThrottled)", ok, err)
 		}
@@ -261,30 +261,30 @@ func TestJWTGuard_Attempt_IdentifierThrottleVerifyFirst(t *testing.T) {
 	})
 }
 
-// TestJWTGuard_Attempt_RecordsFailureOnEveryDimension mirrors the
-// failure fan-out check on the JWT guard surface.
-func TestJWTGuard_Attempt_RecordsFailureOnEveryDimension(t *testing.T) {
-	provider := &mockSessionGuardUserProvider{
+// TestJWTScheme_Attempt_RecordsFailureOnEveryDimension mirrors the
+// failure fan-out check on the JWT scheme surface.
+func TestJWTScheme_Attempt_RecordsFailureOnEveryDimension(t *testing.T) {
+	userStore := &mockSessionSchemeUserStore{
 		findByCredentialsFunc: func(map[string]interface{}) (auth.Authenticatable, error) {
 			return nil, nil
 		},
 	}
-	guard, err := NewJWTGuard(provider, auth.JWTConfig{
+	scheme, err := NewJWTScheme(userStore, auth.JWTConfig{
 		Secret:    strings.Repeat("s", 64),
 		Algorithm: "HS256",
 		TTL:       60,
 	})
 	if err != nil {
-		t.Fatalf("NewJWTGuard: %v", err)
+		t.Fatalf("NewJWTScheme: %v", err)
 	}
-	guard.SetAttemptFloor(-1)
+	scheme.SetAttemptFloor(-1)
 	throttler := &recordingThrottler{}
-	guard.SetLoginThrottler(throttler)
+	scheme.SetLoginThrottler(throttler)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/login", nil)
 	creds := map[string]interface{}{"email": "ghost@example.com", "password": "x"}
-	if ok, err := guard.Attempt(w, r, creds); ok || err != nil {
+	if ok, err := scheme.Attempt(w, r, creds); ok || err != nil {
 		t.Fatalf("Attempt = (%v, %v), want (false, nil)", ok, err)
 	}
 	assertSameKeySet(t, throttler.failures, auth.ThrottleKeys(r, creds, nil), "RecordFailure keys")

@@ -10,7 +10,7 @@ import (
 	"github.com/velocitykode/velocity/orm"
 )
 
-// TestProvider_EmitsQueryEvents is the regression test for the blind spot
+// TestStore_EmitsQueryEvents is the regression test for the blind spot
 // that motivated moving query telemetry into the database/sql driver: the
 // login lookup runs on every single authentication attempt and used to emit
 // nothing at all, leaving authentication invisible to APM.
@@ -21,7 +21,7 @@ import (
 // an UPDATE that touches only remember_token. The default model composes
 // orm.IDInt without orm.Timestamps precisely so token rotation does not
 // start stamping users.updated_at on every remember-me recall.
-func TestProvider_EmitsQueryEvents(t *testing.T) {
+func TestStore_EmitsQueryEvents(t *testing.T) {
 	m := newManager(t)
 	seedUser(t, m, testEmail, testPassword)
 
@@ -55,7 +55,7 @@ func TestProvider_EmitsQueryEvents(t *testing.T) {
 		return out
 	}
 
-	p := newProvider(t)
+	p := newStore(t)
 	ctx := context.Background()
 
 	user, err := p.FindByCredentialsCtx(ctx, map[string]interface{}{"email": testEmail})
@@ -115,10 +115,10 @@ func TestProvider_EmitsQueryEvents(t *testing.T) {
 	}
 }
 
-// TestProvider_EmitsQueryFailed covers the failure side of the same path: a
+// TestStore_EmitsQueryFailed covers the failure side of the same path: a
 // statement against a missing table must surface as query.failed rather than
 // as a zero-row success.
-func TestProvider_EmitsQueryFailed(t *testing.T) {
+func TestStore_EmitsQueryFailed(t *testing.T) {
 	m := newManager(t) // no users table on this connection
 
 	var (
@@ -138,7 +138,7 @@ func TestProvider_EmitsQueryFailed(t *testing.T) {
 		return nil
 	})
 
-	if _, err := newProvider(t).FindByCredentialsCtx(context.Background(), map[string]interface{}{
+	if _, err := newStore(t).FindByCredentialsCtx(context.Background(), map[string]interface{}{
 		"email": testEmail,
 	}); err == nil {
 		t.Fatal("expected the lookup to fail against a missing table")
@@ -156,7 +156,7 @@ func TestProvider_EmitsQueryFailed(t *testing.T) {
 		t.Errorf("failing lookup also emitted %d QueryExecuted events", executed)
 	}
 	if !strings.Contains(failed[0].Query, "FROM `users`") {
-		t.Errorf("Query = %q, want the provider statement", failed[0].Query)
+		t.Errorf("Query = %q, want the user store statement", failed[0].Query)
 	}
 	if failed[0].Error == "" {
 		t.Error("Error is empty")

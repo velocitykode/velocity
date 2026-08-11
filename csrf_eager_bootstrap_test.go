@@ -45,12 +45,12 @@ func TestCSRF_EagerBootstrap_AnonymousGETMintsTokenAndCookie(t *testing.T) {
 		t.Fatalf("NewEncryptor: %v", err)
 	}
 	sessionCookieName := "vel_session"
-	provider := &eagerStubProvider{}
-	sessionGuard, err := guards.NewSessionGuard(provider, auth.SessionConfig{
+	userStore := &eagerStubStore{}
+	sessionScheme, err := guards.NewSessionScheme(userStore, auth.SessionConfig{
 		Name: sessionCookieName,
 	}, enc)
 	if err != nil {
-		t.Fatalf("NewSessionGuard: %v", err)
+		t.Fatalf("NewSessionScheme: %v", err)
 	}
 
 	// Replicate the resolver shape installed by velocity.New (see
@@ -86,7 +86,7 @@ func TestCSRF_EagerBootstrap_AnonymousGETMintsTokenAndCookie(t *testing.T) {
 	csrfInst := csrf.New(csrfCfg)
 
 	// SessionMiddleware (eager bootstrap) -> csrf.Middleware -> noop.
-	chain := sessionGuard.SessionMiddleware()(func(c *router.Context) error {
+	chain := sessionScheme.SessionMiddleware()(func(c *router.Context) error {
 		csrfInst.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})).ServeHTTP(c.Response, c.Request)
@@ -152,30 +152,30 @@ func TestCSRF_EagerBootstrap_AnonymousGETMintsTokenAndCookie(t *testing.T) {
 	}
 }
 
-// eagerStubProvider is the minimum auth.UserProvider needed to
-// construct a SessionGuard; none of its methods run in the
+// eagerStubStore is the minimum auth.UserStore needed to
+// construct a SessionScheme; none of its methods run in the
 // anonymous-bootstrap test path.
-type eagerStubProvider struct{}
+type eagerStubStore struct{}
 
-func (eagerStubProvider) FindByID(interface{}) (auth.Authenticatable, error) {
+func (eagerStubStore) FindByID(interface{}) (auth.Authenticatable, error) {
 	return nil, nil
 }
-func (eagerStubProvider) FindByIDCtx(context.Context, interface{}) (auth.Authenticatable, error) {
+func (eagerStubStore) FindByIDCtx(context.Context, interface{}) (auth.Authenticatable, error) {
 	return nil, nil
 }
-func (eagerStubProvider) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
+func (eagerStubStore) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
 	return nil, nil
 }
-func (eagerStubProvider) FindByCredentialsCtx(context.Context, map[string]interface{}) (auth.Authenticatable, error) {
+func (eagerStubStore) FindByCredentialsCtx(context.Context, map[string]interface{}) (auth.Authenticatable, error) {
 	return nil, nil
 }
-func (eagerStubProvider) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
+func (eagerStubStore) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
 	return false
 }
-func (eagerStubProvider) UpdateRememberToken(auth.Authenticatable, string) error {
+func (eagerStubStore) UpdateRememberToken(auth.Authenticatable, string) error {
 	return nil
 }
-func (eagerStubProvider) UpdateRememberTokenCtx(context.Context, auth.Authenticatable, string) error {
+func (eagerStubStore) UpdateRememberTokenCtx(context.Context, auth.Authenticatable, string) error {
 	return nil
 }
 
