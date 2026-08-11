@@ -21,13 +21,13 @@ func TestParseMakeGRPCServiceArgs(t *testing.T) {
 		},
 		{
 			name:     "north star, name first",
-			args:     []string{"TemplateControl", "--package", "admin", "--proto-package", "velship.admin.v1", "--dir", "internal/shared/grpc/services", "--no-provider"},
+			args:     []string{"TemplateControl", "--package", "admin", "--proto-package", "velship.admin.v1", "--dir", "internal/shared/grpc/services", "--no-module"},
 			wantName: "TemplateControl",
 			want: console.MakeGRPCServiceOptions{
 				Package:      "admin",
 				ProtoPackage: "velship.admin.v1",
 				Dir:          "internal/shared/grpc/services",
-				NoProvider:   true,
+				NoModule:     true,
 			},
 		},
 		{

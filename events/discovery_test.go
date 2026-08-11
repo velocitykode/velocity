@@ -134,33 +134,33 @@ func TestEventDiscovery(t *testing.T) {
 	})
 }
 
-func TestEventProvider(t *testing.T) {
-	t.Run("adds and boots providers", func(t *testing.T) {
+func TestEventModule(t *testing.T) {
+	t.Run("adds and boots modules", func(t *testing.T) {
 		registry := NewEventRegistry()
 		dispatcher := NewDispatcher()
-		provider := &TestProvider{registered: false}
+		module := &TestModule{registered: false}
 
-		registry.AddProvider(provider)
-		registry.BootProviders(dispatcher)
+		registry.AddModule(module)
+		registry.BootModules(dispatcher)
 
-		if !provider.registered {
-			t.Error("Expected provider to be registered")
+		if !module.registered {
+			t.Error("Expected module to be registered")
 		}
 	})
 
-	t.Run("boots multiple providers", func(t *testing.T) {
+	t.Run("boots multiple modules", func(t *testing.T) {
 		registry := NewEventRegistry()
 		dispatcher := NewDispatcher()
 
-		provider1 := &TestProvider{}
-		provider2 := &TestProvider{}
+		module1 := &TestModule{}
+		module2 := &TestModule{}
 
-		registry.AddProvider(provider1)
-		registry.AddProvider(provider2)
-		registry.BootProviders(dispatcher)
+		registry.AddModule(module1)
+		registry.AddModule(module2)
+		registry.BootModules(dispatcher)
 
-		if !provider1.registered || !provider2.registered {
-			t.Error("Expected all providers to be registered")
+		if !module1.registered || !module2.registered {
+			t.Error("Expected all modules to be registered")
 		}
 	})
 }
@@ -250,12 +250,12 @@ func (s *TestDiscoverySubscriber) HandlePaymentProcessed(event interface{}) erro
 	return nil
 }
 
-type TestProvider struct {
+type TestModule struct {
 	registered bool
 }
 
-func (p *TestProvider) Register(dispatcher Dispatcher) {
-	p.registered = true
+func (m *TestModule) Register(dispatcher Dispatcher) {
+	m.registered = true
 }
 
 // Benchmarks

@@ -13,11 +13,11 @@ import (
 	googleGrpc "google.golang.org/grpc"
 )
 
-type GRPCProvider struct {
+type GRPCModule struct {
 	server *velgrpc.Server
 }
 
-func (p *GRPCProvider) Init(s *velocity.Services) error {
+func (p *GRPCModule) Init(s *velocity.Services) error {
 	port := os.Getenv("GRPC_PORT")
 	if port == "" {
 		port = "50051"
@@ -37,13 +37,13 @@ func (p *GRPCProvider) Init(s *velocity.Services) error {
 	return nil
 }
 
-func (p *GRPCProvider) Start(s *velocity.Services) error {
+func (p *GRPCModule) Start(s *velocity.Services) error {
 	if err := p.server.Build(); err != nil {
 		return err
 	}
 	return p.server.StartAsync()
 }
 
-func (p *GRPCProvider) Shutdown(ctx context.Context) error {
+func (p *GRPCModule) Shutdown(ctx context.Context) error {
 	return p.server.Shutdown(ctx)
 }

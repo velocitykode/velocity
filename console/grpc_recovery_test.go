@@ -14,7 +14,7 @@ import (
 // rerun cleanly once the condition is resolved. The previous order wrote
 // foo.proto first; a config-write failure then left foo.proto on disk,
 // and subsequent reruns failed with "proto already exists" before any
-// impl or provider was created.
+// impl or module was created.
 func TestMakeGRPCService_RerunSucceedsAfterBufConfigWriteFailure(t *testing.T) {
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 		t.Skip("requires POSIX permissions and non-root user")
@@ -40,7 +40,7 @@ func TestMakeGRPCService_RerunSucceedsAfterBufConfigWriteFailure(t *testing.T) {
 	for _, p := range []string{
 		filepath.Join("api", "proto", "foo", "v1", "foo.proto"),
 		filepath.Join("internal", "grpc", "services", "foo.go"),
-		filepath.Join("internal", "providers", "grpc_provider.go"),
+		filepath.Join("internal", "providers", "grpc_module.go"),
 	} {
 		if _, err := os.Stat(p); err == nil {
 			t.Errorf("after failed first attempt, %s should not exist", p)
@@ -60,7 +60,7 @@ func TestMakeGRPCService_RerunSucceedsAfterBufConfigWriteFailure(t *testing.T) {
 		filepath.Join("api", "proto", "buf.gen.yaml"),
 		filepath.Join("api", "proto", "foo", "v1", "foo.proto"),
 		filepath.Join("internal", "grpc", "services", "foo.go"),
-		filepath.Join("internal", "providers", "grpc_provider.go"),
+		filepath.Join("internal", "providers", "grpc_module.go"),
 	} {
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("expected %s after recovery rerun: %v", p, err)

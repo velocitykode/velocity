@@ -36,7 +36,7 @@ func TestMakeGRPCService_CreatesAll(t *testing.T) {
 			"foopb.UnimplementedFooServiceServer",
 			"func NewFooService() *FooService",
 		},
-		filepath.Join("internal", "providers", "grpc_provider.go"): {
+		filepath.Join("internal", "providers", "grpc_module.go"): {
 			"// vel:grpc:imports",
 			"// vel:grpc:services",
 			"RegisterFooServiceServer(",
@@ -83,9 +83,9 @@ func TestMakeGRPCService_TwoServicesWireBoth(t *testing.T) {
 		t.Fatalf("second service: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join("internal", "providers", "grpc_provider.go"))
+	data, err := os.ReadFile(filepath.Join("internal", "providers", "grpc_module.go"))
 	if err != nil {
-		t.Fatalf("read provider: %v", err)
+		t.Fatalf("read module: %v", err)
 	}
 	s := string(data)
 	for _, n := range []string{
@@ -95,7 +95,7 @@ func TestMakeGRPCService_TwoServicesWireBoth(t *testing.T) {
 		`barpb "acme/app/api/gen/go/bar/v1"`,
 	} {
 		if !strings.Contains(s, n) {
-			t.Errorf("provider missing %q", n)
+			t.Errorf("module missing %q", n)
 		}
 	}
 }
