@@ -144,7 +144,7 @@ func TestJWTScheme_RefreshGenerationStore_PropagatesAcrossSchemes(t *testing.T) 
 
 // TestJWTScheme_SetRefreshGenerationStore_Runtime confirms the setter
 // hot-swaps the store after construction without re-creating the scheme.
-// Used by providers that defer cache wiring to Boot().
+// Used by modules that defer cache wiring to Start().
 func TestJWTScheme_SetRefreshGenerationStore_Runtime(t *testing.T) {
 	user := &jwtSharedStoreUser{id: "runtime-swap"}
 	userStore := &jwtSharedStoreUserStore{user: user}

@@ -546,7 +546,7 @@ func TestVerificationKeySet_Shape(t *testing.T) {
 	}
 }
 
-// TestValidate_RotationStillRejectsForgedAlgNone confirms the alg=none scheme
+// TestValidate_RotationStillRejectsForgedAlgNone confirms the alg=none guard
 // is unchanged by the rotation work. Forged none-alg token must be rejected
 // even when verification has multiple keys to try.
 func TestValidate_RotationStillRejectsForgedAlgNone(t *testing.T) {

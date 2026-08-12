@@ -11,7 +11,7 @@
 // leaves they need instead.
 //
 // This aggregator MUST NOT be imported by core, router, or app packages
-// because it pulls in provider dependencies.
+// because it pulls in driver dependencies.
 package standard
 
 import (

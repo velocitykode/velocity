@@ -190,7 +190,7 @@ func (r *Registry[D, C]) Resolve(ctx context.Context, name string, cfg C) (D, er
 //
 // This is intentionally NOT the same as contract.ShutdownAware: Closer is
 // for individual driver instances, ShutdownAware is for whole subsystems
-// (managers, providers). A driver may implement either, neither, or both.
+// (managers, modules). A driver may implement either, neither, or both.
 type Closer interface {
 	Close(ctx context.Context) error
 }

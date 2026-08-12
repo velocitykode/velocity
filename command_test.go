@@ -192,7 +192,7 @@ type commandTrackingModule struct {
 func (p *commandTrackingModule) Commands(r *chain.Commands) {
 	*p.calls = append(*p.calls, p.name+":commands")
 	p.commandsCalled = true
-	r.Add(&stubCommand{name: "provider-cmd", description: "From provider"})
+	r.Add(&stubCommand{name: "module-cmd", description: "From module"})
 }
 
 func TestBootstrap_CommandModule(t *testing.T) {
@@ -216,12 +216,12 @@ func TestBootstrap_CommandModule(t *testing.T) {
 		t.Error("CommandModule.Commands() was not called")
 	}
 
-	cmd, ok := a.commands.Get("provider-cmd")
+	cmd, ok := a.commands.Get("module-cmd")
 	if !ok {
-		t.Fatal("expected command from provider to be registered")
+		t.Fatal("expected command from module to be registered")
 	}
-	if cmd.Description() != "From provider" {
-		t.Errorf("cmd.Description() = %q, want %q", cmd.Description(), "From provider")
+	if cmd.Description() != "From module" {
+		t.Errorf("cmd.Description() = %q, want %q", cmd.Description(), "From module")
 	}
 }
 

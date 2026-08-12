@@ -196,14 +196,18 @@ func existingImportAlias(content, importPath, genPkgName string) (string, bool) 
 
 // writeFormattedGo gofmt-formats src before writing it to path so the
 // generated/mutated module stays canonical (notably keeping the injected
-// imports sorted). If formatting fails (e.g. a user hand-edit left the file
-// unparseable) the original bytes are written so the wire still lands.
+// imports sorted). A formatting failure means src does not parse as Go, so
+// nothing is written and the error is returned: the previous behaviour wrote
+// the unparseable bytes anyway and reported success, which is how an empty
+// VarName could land ` := services.NewService()` in the module and still exit
+// 0. The caller sees the parse position, which is enough to locate either a
+// stray hand-edit in the existing module or a bad generated fragment.
 func writeFormattedGo(path string, src []byte) error {
-	out := src
-	if formatted, err := format.Source(src); err == nil {
-		out = formatted
+	formatted, err := format.Source(src)
+	if err != nil {
+		return fmt.Errorf("generated Go is not parseable, refusing to write %s: %w", path, err)
 	}
-	return os.WriteFile(path, out, defaultFileMode)
+	return os.WriteFile(path, formatted, defaultFileMode)
 }
 
 // injectAfterMarker inserts injectLine immediately after the first line that

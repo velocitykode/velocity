@@ -13,6 +13,11 @@ import (
 // normalises to the empty string. Without the normalised-name check that
 // empty result becomes a file named ".go", which the Go toolchain ignores:
 // the command reports success and leaves the user with no usable file.
+//
+// Each row must list EVERY suffix its generator strips, in every case form the
+// generator accepts. A missing form is a real hole: "mail" was absent while
+// "Mail" was present, and the generator matched that asymmetry by stripping
+// only "Mail", so `vel gen mail mail` generated a file named ".go".
 func TestGenerators_SuffixOnlyNameRejected(t *testing.T) {
 	tests := []struct {
 		name string
@@ -37,7 +42,7 @@ func TestGenerators_SuffixOnlyNameRejected(t *testing.T) {
 		{"job", []string{"Job", "job"}, func(n string) error {
 			return GenJob(n, GenJobOptions{})
 		}},
-		{"mailable", []string{"Mailable", "mailable", "Mail"}, func(n string) error {
+		{"mailable", []string{"Mailable", "mailable", "Mail", "mail"}, func(n string) error {
 			return GenMail(n, GenMailOptions{})
 		}},
 		{"notification", []string{"Notification", "notification"}, func(n string) error {

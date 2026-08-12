@@ -260,7 +260,7 @@ func isInfrastructureFrame(fn, file string) bool {
 // one Manager. Attaching it at the driver layer is what makes query telemetry
 // unconditional: the query builder, Manager.Raw / Manager.Exec, statements
 // issued inside a *sql.Tx, and subsystems holding a raw *sql.DB (the auth user
-// provider) all reach the database through the same instrumented connection,
+// store) all reach the database through the same instrumented connection,
 // so none of them has to opt in.
 //
 // It is bound to the manager that owns the pool, not to a process-wide

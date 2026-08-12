@@ -133,6 +133,14 @@ func resolveGRPCScaffold(name string, opts GenGRPCServiceOptions) (grpcScaffold,
 	}
 	sc.ServiceName = grpcServiceName(name)
 	base := grpcBaseName(name)
+	// A name that is nothing but the redundant "Service" suffix normalises to
+	// an empty base. The derived leaf / file names would catch that on their
+	// own, but --package, --proto-name, and --impl-name each replace one of
+	// those derivations, so with all three set the empty base reaches the
+	// module writer as an empty VarName and emits ` := services.NewService()`.
+	if err := requireNormalizedName(name, base, "service"); err != nil {
+		return sc, err
+	}
 
 	// Resolve the directory leaf and version. Priority: an explicit
 	// --proto-package supplies both (its trailing segments), an explicit

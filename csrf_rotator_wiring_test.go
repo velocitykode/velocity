@@ -84,7 +84,7 @@ var (
 	_ auth.CSRFTokenRotatorReceiver = (*recorderScheme)(nil)
 )
 
-// csrfReplaceModule is a chain Module whose Boot replaces
+// csrfReplaceModule is a chain Module whose Start replaces
 // s.CSRF with a customised fake. Mirrors the velship.com pattern where
 // a consumer bootstrapCSRF module swaps in its own CSRF instance.
 type csrfReplaceModule struct {
@@ -101,9 +101,9 @@ func (p *csrfReplaceModule) Start(s *app.Services) error {
 }
 func (p *csrfReplaceModule) Shutdown(_ context.Context) error { return nil }
 
-// TestCSRFRotator_PointsToBootReplacement pins the boot-order fix that
+// TestCSRFRotator_PointsToStartReplacement pins the boot-order fix that
 // keeps the auth manager's CSRF token rotator aligned with the FINAL
-// s.CSRF on Services (post chain module Boot) rather than the
+// s.CSRF on Services (post chain module Start) rather than the
 // framework-built CSRF created during New().
 //
 // Pre-fix: app.go installed the rotator AT New() time, so any chain
@@ -122,20 +122,20 @@ func (p *csrfReplaceModule) Shutdown(_ context.Context) error { return nil }
 // CSRFTokenRotatorReceiver capability (auth/auth.go line 319-322). Assert
 // the recorderScheme received the fake replacement, NOT some other
 // (framework-built) instance.
-func TestCSRFRotator_PointsToBootReplacement(t *testing.T) {
+func TestCSRFRotator_PointsToStartReplacement(t *testing.T) {
 	a, err := NewTestApp()
 	if err != nil {
 		t.Fatalf("NewTestApp() error: %v", err)
 	}
 
-	// Capture the framework-built CSRF so we can prove the post-Boot
+	// Capture the framework-built CSRF so we can prove the post-Start
 	// instance differs and ensure the assertion is non-trivial.
 	originalCSRF := a.CSRF
 	if originalCSRF == nil {
 		t.Fatal("framework-built a.CSRF is nil; cannot verify swap")
 	}
 
-	replacement := &fakeCSRFRotator{tag: "consumer-boot-replacement"}
+	replacement := &fakeCSRFRotator{tag: "consumer-start-replacement"}
 	if any(replacement) == any(originalCSRF) {
 		t.Fatal("test fake collides with framework-built instance")
 	}
@@ -148,7 +148,7 @@ func TestCSRFRotator_PointsToBootReplacement(t *testing.T) {
 		t.Fatalf("Bootstrap() error: %v", err)
 	}
 
-	// Sanity: the module Boot actually swapped Services.CSRF.
+	// Sanity: the module Start actually swapped Services.CSRF.
 	if a.Services.CSRF != replacement {
 		t.Fatalf("Services.CSRF after Bootstrap: got %#v, want fake replacement %#v",
 			a.Services.CSRF, replacement)
@@ -162,7 +162,7 @@ func TestCSRFRotator_PointsToBootReplacement(t *testing.T) {
 	// Register a brand-new spy scheme. Manager.RegisterScheme propagates
 	// the currently-installed csrfRotator to any scheme that implements
 	// CSRFTokenRotatorReceiver. If bootstrap installed the rotator
-	// AFTER the consumer's Boot swap, the spy receives the replacement.
+	// AFTER the consumer's Start swap, the spy receives the replacement.
 	spy := &recorderScheme{}
 	mgr.RegisterScheme("csrf-rotator-spy", spy)
 
@@ -171,7 +171,7 @@ func TestCSRFRotator_PointsToBootReplacement(t *testing.T) {
 		t.Fatal("RegisterScheme did not propagate any rotator to the spy scheme; the boot-order install in bootstrap.go did not run")
 	}
 	if got != contract.CSRFTokenRotator(replacement) {
-		t.Errorf("auth.Manager carries the WRONG CSRF token rotator after Bootstrap:\n  got      = %#v\n  want     = %#v (consumer Boot replacement)\n  original = %#v (framework-built, should NOT be installed)",
+		t.Errorf("auth.Manager carries the WRONG CSRF token rotator after Bootstrap:\n  got      = %#v\n  want     = %#v (consumer Start replacement)\n  original = %#v (framework-built, should NOT be installed)",
 			got, replacement, originalCSRF)
 	}
 }
@@ -186,15 +186,15 @@ func TestCSRFRotator_PointsToBootReplacement(t *testing.T) {
 //
 // Regression model: an earlier follow-up moved the install out of
 // New() entirely into bootstrap(); the bootstrap-only install is
-// correct for chain-module Boot swaps but silently broke this
+// correct for chain-module Start swaps but silently broke this
 // audience because their code path never ran bootstrap(). The current
 // fix installs in BOTH places (New() and bootstrap()) and this test
 // guards the New-only half.
 //
-// Observation strategy mirrors TestCSRFRotator_PointsToBootReplacement:
+// Observation strategy mirrors TestCSRFRotator_PointsToStartReplacement:
 // register a spy scheme on the auth manager and check
 // RegisterScheme propagated a non-nil rotator pointing at the
-// framework-built s.CSRF (because no consumer Boot ran to swap it).
+// framework-built s.CSRF (because no consumer Start ran to swap it).
 func TestCSRFRotator_WiredByNewWithoutBootstrap(t *testing.T) {
 	a, err := NewTestApp()
 	if err != nil {

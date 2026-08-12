@@ -306,7 +306,7 @@ func TestRunCommand_FallsBackToSingleToken(t *testing.T) {
 
 // TestRunCmd_BootstrapsOnce asserts the "run" command path calls Bootstrap
 // (needed so a.commands is populated from a.commandsFn). We verify by
-// observing a provider-callback side effect.
+// observing a module-callback side effect.
 func TestRunCmd_BootstrapsOnce(t *testing.T) {
 	a, err := NewTestApp()
 	if err != nil {

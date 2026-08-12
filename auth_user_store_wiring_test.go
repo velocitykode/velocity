@@ -53,10 +53,10 @@ func TestInitAuth_ThreadsManagerHasherToStore(t *testing.T) {
 	}
 	hasher, ok := userStore.Options().Hasher.(*auth.BcryptHasher)
 	if !ok {
-		t.Fatalf("provider hasher is %T, want the manager's *auth.BcryptHasher", userStore.Options().Hasher)
+		t.Fatalf("user store hasher is %T, want the manager's *auth.BcryptHasher", userStore.Options().Hasher)
 	}
 	if got := hasher.Cost(); got != 12 {
-		t.Errorf("provider bcrypt cost = %d, want the configured 12", got)
+		t.Errorf("user store bcrypt cost = %d, want the configured 12", got)
 	}
 }
 
@@ -77,7 +77,7 @@ func TestSetUserStore_SwapsTheAuthModel(t *testing.T) {
 	manager.SetUserStore(swapped)
 
 	if _, ok := manager.DefaultUserStore().(*ormauth.Store[wiringAdmin]); !ok {
-		t.Fatalf("provider after swap is %T, want the application model", manager.DefaultUserStore())
+		t.Fatalf("user store after swap is %T, want the application model", manager.DefaultUserStore())
 	}
 }
 
@@ -111,7 +111,7 @@ func TestSetUserStore_IgnoresNil(t *testing.T) {
 	manager.SetUserStore(nil)
 
 	if manager.DefaultUserStore() != before {
-		t.Error("SetUserStore(nil) replaced the installed provider")
+		t.Error("SetUserStore(nil) replaced the installed user store")
 	}
 }
 

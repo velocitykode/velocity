@@ -188,7 +188,7 @@ func TestRegisterModel_StartupValidationOK(t *testing.T) {
 }
 
 // TestRegisterModel_StartupValidationFails asserts the opt-in eager
-// validator surfaces *FeaturesError so a provider Boot() can fail
+// validator surfaces *FeaturesError so a module Start() can fail
 // loudly at startup rather than waiting for the first request.
 func TestRegisterModel_StartupValidationFails(t *testing.T) {
 	if err := RegisterModel[DualPK](); err == nil {

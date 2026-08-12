@@ -113,7 +113,7 @@ func (b *Bond) MiddlewareFunc() router.MiddlewareFunc {
 				// Re-point the Context at the real writer before
 				// serveBuffered flushes. flush calls orig.WriteHeader,
 				// which fires the real writer's BeforeFirstWrite
-				// precommit hooks (e.g. the session guard's deferred
+				// precommit hooks (e.g. the session scheme's deferred
 				// Set-Cookie save). Those hooks write to c.Response live;
 				// if it still pointed at the now-drained buffer, a late
 				// Set-Cookie would land in the buffer's header map after

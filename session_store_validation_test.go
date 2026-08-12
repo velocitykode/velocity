@@ -109,8 +109,8 @@ func TestValidateSessionStoreForProduction_AllowsExplicitOptIn(t *testing.T) {
 }
 
 // TestValidateSessionStoreForProduction_AllowsServerStoreInstalled pins the
-// happy path: when the operator wires a ServerSessionStore (via a provider's
-// Boot hook, typically), Bootstrap proceeds.
+// happy path: when the operator wires a ServerSessionStore (via a module's
+// Start hook, typically), Bootstrap proceeds.
 func TestValidateSessionStoreForProduction_AllowsServerStoreInstalled(t *testing.T) {
 	a := newAppWithSessionScheme(t, "production")
 	mgr := a.Auth.(*auth.Manager)

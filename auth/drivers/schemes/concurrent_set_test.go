@@ -56,7 +56,7 @@ func TestSessionScheme_SetUserStore_RaceWithAttempt(t *testing.T) {
 	}()
 
 	// Reader: calls Attempt repeatedly. The race detector flags any
-	// torn read of provider/throttler under -race.
+	// torn read of user store / throttler under -race.
 	for i := 0; i < iterations; i++ {
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest(http.MethodPost, "/login", nil)

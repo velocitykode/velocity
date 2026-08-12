@@ -77,7 +77,7 @@ func (p *Store[T]) resolve() {
 
 	// Resolve T through *T rather than reflect.TypeOf(zero): the latter is
 	// nil for a pointer or interface T, which would both lose the name from
-	// every diagnostic below and hide the rejection this scheme exists for.
+	// every diagnostic below and hide the rejection this guard exists for.
 	modelName := reflect.TypeOf(&zero).Elem()
 
 	// T must be the struct itself, never a pointer to it. orm.MetaFor
