@@ -185,7 +185,7 @@ func installLoginThrottler(manager *auth.Manager, cm cache.CacheManager, log ins
 	if err != nil || store == nil {
 		if log != nil {
 			log.Warn(
-				"velocity/auth: cache default store unavailable; falling back to no-op login throttler; guard.Attempt brute-force protection will NOT work",
+				"velocity/auth: cache default store unavailable; falling back to no-op login throttler; Scheme.Attempt brute-force protection will NOT work",
 				"error", err,
 			)
 		}

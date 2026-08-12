@@ -18,6 +18,9 @@ func GenResource(name string, opts GenResourceOptions) error {
 	}
 
 	resourceName := toResourceName(name)
+	if err := requireNormalizedName(name, resourceName, "resource"); err != nil {
+		return err
+	}
 
 	data := map[string]interface{}{
 		"Package": "resources",

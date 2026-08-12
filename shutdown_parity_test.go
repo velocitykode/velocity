@@ -51,7 +51,7 @@ func TestServeHTTP_ListenError_RunsShutdown(t *testing.T) {
 		t.Errorf("expected 'velocity: server error:' wrap, got: %v", err)
 	}
 	if got := rec.shutdowns.Load(); got != 1 {
-		t.Errorf("provider Shutdown called %d times after server error, want 1", got)
+		t.Errorf("module Shutdown called %d times after server error, want 1", got)
 	}
 }
 
@@ -178,33 +178,33 @@ func TestShutdown_ClearsQueuePayloadEncryptor(t *testing.T) {
 }
 
 // TestNew_InitFailure_DoesNotShutDownUninitializedModules pins the
-// register-failure unwind scope: modules whose Register completed are shut
-// down; the module that failed its own Register and modules that never
+// init-failure unwind scope: modules whose Init completed are shut
+// down; the module that failed its own Init and modules that never
 // ran are not. Before the fix all three saw Shutdown.
 func TestNew_InitFailure_DoesNotShutDownUninitializedModules(t *testing.T) {
 	ok := &shutdownRecorder{}
-	failsRegister := &shutdownRecorder{initErr: errors.New("register kaboom")}
+	failsInit := &shutdownRecorder{initErr: errors.New("init kaboom")}
 	never := &shutdownRecorder{}
 
-	_, err := NewTestApp(WithModules(ok, failsRegister, never))
+	_, err := NewTestApp(WithModules(ok, failsInit, never))
 	if err == nil {
-		t.Fatal("expected register failure to propagate from New()")
+		t.Fatal("expected init failure to propagate from New()")
 	}
-	if !errors.Is(err, failsRegister.initErr) {
-		t.Fatalf("expected wrapped register error, got: %v", err)
+	if !errors.Is(err, failsInit.initErr) {
+		t.Fatalf("expected wrapped init error, got: %v", err)
 	}
 
 	if got := ok.shutdowns.Load(); got != 1 {
-		t.Errorf("registered provider Shutdown called %d times, want 1", got)
+		t.Errorf("initialized module Shutdown called %d times, want 1", got)
 	}
-	if got := failsRegister.shutdowns.Load(); got != 0 {
-		t.Errorf("failing provider Shutdown called %d times, want 0", got)
+	if got := failsInit.shutdowns.Load(); got != 0 {
+		t.Errorf("failing module Shutdown called %d times, want 0", got)
 	}
 	if got := never.shutdowns.Load(); got != 0 {
-		t.Errorf("never-registered provider Shutdown called %d times, want 0", got)
+		t.Errorf("never-initialized module Shutdown called %d times, want 0", got)
 	}
-	if never.registered.Load() {
-		t.Error("provider after the failing one should never have registered")
+	if never.initialized.Load() {
+		t.Error("module after the failing one should never have initialized")
 	}
 }
 
@@ -245,7 +245,7 @@ type orderRecordingModule struct {
 func (p *orderRecordingModule) Init(_ *app.Services) error  { return nil }
 func (p *orderRecordingModule) Start(_ *app.Services) error { return nil }
 func (p *orderRecordingModule) Shutdown(_ context.Context) error {
-	*p.order = append(*p.order, "provider")
+	*p.order = append(*p.order, "module")
 	return nil
 }
 
@@ -274,13 +274,13 @@ func TestShutdown_ModulesBeforeQueue(t *testing.T) {
 		t.Fatalf("Shutdown: %v", err)
 	}
 
-	want := []string{"provider", "queue"}
+	want := []string{"module", "queue"}
 	if len(order) != len(want) {
 		t.Fatalf("recorded teardown order %v, want %v", order, want)
 	}
 	for i := range want {
 		if order[i] != want[i] {
-			t.Fatalf("teardown order %v, want %v (provider must shut down before the queue closes)", order, want)
+			t.Fatalf("teardown order %v, want %v (module must shut down before the queue closes)", order, want)
 		}
 	}
 }

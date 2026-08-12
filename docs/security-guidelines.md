@@ -79,7 +79,7 @@ Findings from the same review that were fixed in code rather than
 documented here, with their land commits (platform-policy wave):
 
 - `a0d3eb3` console: `--force` required for destructive db commands in production
-- `e492327` console: identifier charset validation on all `make:*` inputs
+- `e492327` console: identifier charset validation on all `gen *` inputs
 - `80c82ba` mail: Mailgun API error bodies redacted to match Postmark posture
 - `505afee` storage/orm: S3 CopySource encoding, full-read MIME sniff, quoted DDL defaults
 - `9f5e897` exceptions: app logger wired into default error reporting

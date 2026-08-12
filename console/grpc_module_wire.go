@@ -105,7 +105,7 @@ func writeNewGRPCModule(path string, sc grpcScaffold) error {
 		return fmt.Errorf("write module: %w", err)
 	}
 	prism.Success(fmt.Sprintf("Created: %s", path))
-	prism.Muted("  Register in internal/app/bootstrap.go: modules.GRPCModule{}")
+	prism.Muted("  Register in internal/app/bootstrap.go: &modules.GRPCModule{}")
 	return nil
 }
 

@@ -84,7 +84,6 @@ that cannot import `app`).
 | Name | Package | Default | Required in prod? | Security impact | Notes |
 |------|---------|---------|-------------------|-----------------|-------|
 | `AUTH_SCHEME` | `config.go` | empty | optional | none | enables `web`/`api` schemes |
-| `AUTH_MODEL` | `config.go` | `User` | no | none | |
 | `AUTH_TRUSTED_PROXIES` | `config.go` | empty | YES if behind proxy | XFF spoofing -> throttle bypass + bogus audit IPs | comma-separated IP/CIDR; empty = trust nothing (secure default) |
 | `AUTH_ATTEMPT_FLOOR` | `config.go` | `200ms` | no | login timing side-channel | raise when `HASH_BCRYPT_COST` >= 12 |
 | `HASH_BCRYPT_COST` | `config.go` | `10` | recommended >=12 | weak password hashes | |
@@ -238,7 +237,7 @@ A boot in production (`APP_ENV` set to anything other than `dev`, `development`,
 4. `CSRF_SECURE=true` (default), `CSRF_HTTP_ONLY=true` (default).
 5. `CSRF_SAME_SITE` and `SESSION_SAME_SITE` set to a non-default value
    (`lax`, `strict`, or `none`).
-6. A `ServerSessionStore` wired by a provider OR
+6. A `ServerSessionStore` wired by a module OR
    `SessionConfig.AllowCookieStoreInProduction=true`.
 7. `AUTH_TRUSTED_PROXIES` set when the deployment is behind a load
    balancer / reverse proxy. Empty means "trust nothing"; the framework

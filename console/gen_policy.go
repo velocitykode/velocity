@@ -18,6 +18,9 @@ func GenPolicy(name string, opts GenPolicyOptions) error {
 	}
 
 	policyName := toPolicyName(name)
+	if err := requireNormalizedName(name, policyName, "policy"); err != nil {
+		return err
+	}
 
 	data := map[string]interface{}{
 		"Package": "policies",

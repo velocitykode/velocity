@@ -42,6 +42,12 @@ func GenHandler(name string, opts GenHandlerOptions) error {
 		outputDir = filepath.Join(handlerRoot, filepath.Join(parts[:len(parts)-1]...))
 	}
 
+	// Checked after the nested-name branch so the namespaced form
+	// ("Admin/Handler") is judged on its final segment, not the whole name.
+	if err := requireNormalizedName(name, handlerName, "handler"); err != nil {
+		return err
+	}
+
 	// Defence in depth: even though scaffold.ValidateName rejects the known
 	// traversal shapes, recompute and confirm the resolved directory still
 	// lives inside the handler root before writing anything to disk.

@@ -105,3 +105,44 @@ func TestGenModule_VerifiesContent(t *testing.T) {
 		t.Error("expected context import")
 	}
 }
+
+// TestGenModule_SuffixOnlyName pins the validate-then-normalise ordering: the
+// raw argument passes scaffold.ValidateName, but stripping the redundant
+// "Module" suffix can leave nothing behind. Such a name must be rejected
+// rather than written out as "internal/modules/.go", which Go ignores.
+func TestGenModule_SuffixOnlyName(t *testing.T) {
+	tests := []struct {
+		name     string
+		arg      string
+		wantErr  bool
+		wantFile string
+	}{
+		{name: "pascal suffix alone", arg: "Module", wantErr: true},
+		{name: "lower suffix alone", arg: "module", wantErr: true},
+		{name: "normal name", arg: "Cache", wantFile: "internal/modules/cache.go"},
+		{name: "normal name with suffix", arg: "CacheModule", wantFile: "internal/modules/cache.go"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+
+			err := GenModule(tt.arg, GenModuleOptions{})
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("GenModule(%q) = nil, want error", tt.arg)
+				}
+				if _, statErr := os.Stat("internal/modules/.go"); statErr == nil {
+					t.Error("GenModule wrote internal/modules/.go, which the Go toolchain ignores")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("GenModule(%q) error = %v", tt.arg, err)
+			}
+			if _, statErr := os.Stat(tt.wantFile); statErr != nil {
+				t.Errorf("expected %s: %v", tt.wantFile, statErr)
+			}
+		})
+	}
+}

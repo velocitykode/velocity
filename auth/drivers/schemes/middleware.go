@@ -91,7 +91,7 @@ func (g *SessionScheme) SessionMiddleware() router.MiddlewareFunc {
 			// the cookie even when the handler never touched the bag.
 			ensureSession(g, c.Request)
 
-			// saved schemes both the pre-commit hook AND the defer
+			// saved guards both the pre-commit hook AND the defer
 			// fallback so the session writes Set-Cookie at most once
 			// per request. Without this gate a handler that calls
 			// WriteHeader explicitly + the defer-fallback would issue

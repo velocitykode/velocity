@@ -157,7 +157,7 @@ variables.
 | Queue        | Memory, Redis, Database                                  |
 | Storage      | Local, S3, Memory                                        |
 | Mail         | Postmark, Mailgun, Local (writes to disk)                |
-| Auth         | Sessions, JWT (plus gates and policies on top)           |
+| Auth         | Sessions, JWT (plus access policies on top)              |
 | Broadcasting | WebSocket (additional drivers planned)                   |
 
 SQLite in development, PostgreSQL in production. One env var:

@@ -19,6 +19,9 @@ func GenCommand(name string, opts GenCommandOptions) error {
 	}
 
 	commandName := toCommandStructName(name)
+	if err := requireNormalizedName(name, commandName, "command"); err != nil {
+		return err
+	}
 	kebabName := toKebabCase(commandName)
 
 	data := map[string]interface{}{

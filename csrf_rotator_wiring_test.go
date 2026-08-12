@@ -189,7 +189,7 @@ func TestCSRFRotator_PointsToBootReplacement(t *testing.T) {
 // correct for chain-module Boot swaps but silently broke this
 // audience because their code path never ran bootstrap(). The current
 // fix installs in BOTH places (New() and bootstrap()) and this test
-// schemes the New-only half.
+// guards the New-only half.
 //
 // Observation strategy mirrors TestCSRFRotator_PointsToBootReplacement:
 // register a spy scheme on the auth manager and check

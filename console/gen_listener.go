@@ -18,6 +18,9 @@ func GenListener(name string, opts GenListenerOptions) error {
 	}
 
 	listenerName := toListenerName(name)
+	if err := requireNormalizedName(name, listenerName, "listener"); err != nil {
+		return err
+	}
 
 	data := map[string]interface{}{
 		"Package": "listeners",
