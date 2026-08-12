@@ -74,7 +74,7 @@ func TestTableNameDerivation_Unified_RegressionB7(t *testing.T) {
 }
 
 // TestTableNameDerivation_ScaffolderParity_B7 asserts the runtime fallback
-// matches the scaffolder's toTableName (console/make_model.go), which emits
+// matches the scaffolder's toTableName (console/gen_model.go), which emits
 // str.Plural(orm.ToSnakeCase(name)). Asserting the formula directly avoids
 // an orm <- console import cycle. UserProfile is the sample the unification
 // decision calls out.
