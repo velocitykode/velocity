@@ -1618,7 +1618,7 @@ func (q *Query[T]) Update(ctx context.Context, updates map[string]any) (int64, e
 	// soft-delete branch of Delete call bulkUpdate directly and are not
 	// policed, mirroring the Create(*T) scoping.
 	var zero T
-	if PolicyFor(&zero).implicitDeny {
+	if AccessFor(&zero).implicitDeny {
 		if denied := deniedUpdateKeys(updates, MetaForValue(reflect.ValueOf(zero))); len(denied) > 0 {
 			return 0, &MassAssignmentError{Model: reflect.TypeOf(zero).String(), Keys: denied}
 		}

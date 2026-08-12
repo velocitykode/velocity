@@ -243,7 +243,7 @@ func markExisting[T any](model *T) {
 // reported verbatim, in column order, so the error is stable.
 func denyUndeclaredMapKeys[T any](conditions, values map[string]any) error {
 	var zero T
-	if !PolicyFor(&zero).implicitDeny {
+	if !AccessFor(&zero).implicitDeny {
 		return nil
 	}
 	meta := MetaFor(reflect.TypeOf(zero))

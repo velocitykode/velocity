@@ -822,7 +822,7 @@ type Protected interface {
 // are always preserved, even when the model declares an assignable
 // allowlist that omits them.
 func applyAssignmentAccessToStruct(s any) error {
-	policy := PolicyFor(s)
+	policy := AccessFor(s)
 	if policy.implicitDeny {
 		// No declared policy. Deny-by-default applies only to map-based
 		// writes; a *T the caller constructed field-by-field in code is
@@ -917,7 +917,7 @@ func mapToStruct(m map[string]any, s any) error {
 	if meta == nil {
 		return nil
 	}
-	policy := PolicyFor(s)
+	policy := AccessFor(s)
 	if policy.implicitDeny {
 		// No declared policy: reject every map key that resolves to an
 		// application column. Collected before any write so the caller
