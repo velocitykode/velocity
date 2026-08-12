@@ -837,8 +837,6 @@ func New(opts ...Option) (*App, error) {
 	return a, nil
 }
 
-// envGatedSecurityCheck applies the shared environment classification used by
-// the security-sensitive boot switches (crypto key, session/CSRF cookie
 // validationDB resolves the driver-facing database the DB-backed validation
 // rules need, without panicking. An app configured with no DB_CONNECTION has
 // no database at all (initDB returns nil), and validation runs per request,
@@ -863,6 +861,8 @@ func validationDB(c *router.Context) orm.Database {
 	return db
 }
 
+// envGatedSecurityCheck applies the shared environment classification used by
+// the security-sensitive boot switches (crypto key, session/CSRF cookie
 // validation, signed-URL key). The canonical testing environments skip the
 // check silently; the other documented non-prod profiles (dev/development/
 // local) log warnMsg/warnArgs through the app logger and continue; every
