@@ -30,7 +30,7 @@ func columnNames(meta *orm.ModelMeta) []string {
 
 // implicitDeny reports whether model resolves to the ORM's deny-by-default
 // mass-assignment policy: no AssignableFields(), no ProtectedFields(), and no
-// AllowAllColumns() opt-in. It mirrors orm.PolicyFor's own branch rather
+// AllowAllColumns() opt-in. It mirrors orm.AccessFor's own branch rather
 // than calling it, because the resulting flag is unexported and the
 // distinction matters: a model with a declared policy is never policed by
 // Query.Update, so a declared policy that happens to omit the

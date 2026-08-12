@@ -658,10 +658,10 @@ type AllowAllColumns interface {
 	AllowAllColumns() bool
 }
 
-// PolicyFor extracts mass-assignment policy from a model instance.
+// AccessFor extracts mass-assignment policy from a model instance.
 //
 // Deny-by-default: when a model declares neither AssignableFields() nor ProtectedFields(),
-// PolicyFor resolves it as an EMPTY Assignable allowlist, so Allows returns
+// AccessFor resolves it as an EMPTY Assignable allowlist, so Allows returns
 // false for every application field. The map-based write paths
 // (Query[T].Create(map), Model[T].Create(map), FirstOrCreate,
 // UpdateOrCreate) surface that as a *MassAssignmentError naming the model
@@ -673,7 +673,7 @@ type AllowAllColumns interface {
 // from a map: implement AllowAllColumns() bool returning true (explicit
 // marker, preferred), or declare ProtectedFields() with an empty slice (an empty
 // denylist guards nothing, so everything is allowed).
-func PolicyFor(s any) AssignmentAccess {
+func AccessFor(s any) AssignmentAccess {
 	p := AssignmentAccess{}
 	if f, ok := s.(Assignable); ok {
 		set := make(map[string]bool, len(f.AssignableFields()))
@@ -708,7 +708,7 @@ func PolicyFor(s any) AssignmentAccess {
 // (the snake_case'd Go field name).
 //
 // For a model with no declared policy and no AllowAllColumns opt-in,
-// PolicyFor resolves an empty allowlist, so Allows returns false for
+// AccessFor resolves an empty allowlist, so Allows returns false for
 // every application field (deny-by-default).
 func (p AssignmentAccess) Allows(fieldNameKey string) bool {
 	if p.HasAssignable && !p.Assignable[fieldNameKey] {

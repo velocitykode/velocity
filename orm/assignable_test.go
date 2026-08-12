@@ -156,16 +156,16 @@ func TestAssignmentAccessAllows_DocumentsMassAssignmentDefaults(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			policy := PolicyFor(tt.model)
+			policy := AccessFor(tt.model)
 			if got := policy.Allows(tt.fieldKey); got != tt.want {
-				t.Fatalf("PolicyFor(%T).Allows(%q) = %v, want %v", tt.model, tt.fieldKey, got, tt.want)
+				t.Fatalf("AccessFor(%T).Allows(%q) = %v, want %v", tt.model, tt.fieldKey, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestPolicyFor_UndeclaredModelDeniesByDefault(t *testing.T) {
-	policy := PolicyFor(&plainModel{})
+func TestAccessFor_UndeclaredModelDeniesByDefault(t *testing.T) {
+	policy := AccessFor(&plainModel{})
 	if policy.Allows("name") {
 		t.Fatal("model without Assignable or Protected should deny every application field by default")
 	}
@@ -177,8 +177,8 @@ func TestPolicyFor_UndeclaredModelDeniesByDefault(t *testing.T) {
 	}
 }
 
-func TestPolicyFor_AllowAllColumnsRestoresOpenPolicy(t *testing.T) {
-	policy := PolicyFor(&openPolicyModel{})
+func TestAccessFor_AllowAllColumnsRestoresOpenPolicy(t *testing.T) {
+	policy := AccessFor(&openPolicyModel{})
 	if !policy.Allows("is_admin") || !policy.Allows("role") {
 		t.Fatal("AllowAllColumns opt-in should allow every field")
 	}
