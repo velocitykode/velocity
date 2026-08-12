@@ -29,17 +29,17 @@ func TestWriteScaffoldedFile_HardFailsOnMissingStub(t *testing.T) {
 	}
 }
 
-// TestMakeHandler_NestedRoutesThroughGenerator confirms the handler scaffolder
+// TestGenHandler_NestedRoutesThroughGenerator confirms the handler scaffolder
 // still produces the name-derived nested directory and parent-derived package
 // now that the write goes through the shared generator. The defense-in-depth
 // EnsureWithinRoot / EnsureNoSymlinkComponents guards run before the generator,
 // so a traversal name is rejected with nothing written outside the root.
-func TestMakeHandler_NestedRoutesThroughGenerator(t *testing.T) {
+func TestGenHandler_NestedRoutesThroughGenerator(t *testing.T) {
 	t.Run("nested", func(t *testing.T) {
 		t.Chdir(t.TempDir())
 
-		if err := MakeHandler("Admin/Reports", MakeHandlerOptions{}); err != nil {
-			t.Fatalf("MakeHandler(Admin/Reports) error = %v", err)
+		if err := GenHandler("Admin/Reports", GenHandlerOptions{}); err != nil {
+			t.Fatalf("GenHandler(Admin/Reports) error = %v", err)
 		}
 
 		path := filepath.Join("internal/handlers/admin", "reports.go")
@@ -57,8 +57,8 @@ func TestMakeHandler_NestedRoutesThroughGenerator(t *testing.T) {
 		tmp := t.TempDir()
 		t.Chdir(tmp)
 
-		if err := MakeHandler("../../tmp/owned", MakeHandlerOptions{}); err == nil {
-			t.Fatal("MakeHandler accepted a traversal name, want error")
+		if err := GenHandler("../../tmp/owned", GenHandlerOptions{}); err == nil {
+			t.Fatal("GenHandler accepted a traversal name, want error")
 		}
 		if _, statErr := os.Stat(filepath.Join(tmp, "..", "owned")); statErr == nil {
 			t.Error("a file appeared outside the project root")

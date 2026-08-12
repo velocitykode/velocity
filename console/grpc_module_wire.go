@@ -21,7 +21,7 @@ const (
 
 // grpcModulePath is the fixed location of the generated module.
 func grpcModulePath() string {
-	return filepath.Join("internal", "providers", "grpc_module.go")
+	return filepath.Join("internal", "modules", "grpc_module.go")
 }
 
 // preflightModuleWiring rejects an unsupported module wire before any
@@ -62,7 +62,7 @@ func checkModuleServicesImport(content string, sc grpcScaffold) error {
 	return nil
 }
 
-// wireGRPCModule creates internal/providers/grpc_module.go if missing or
+// wireGRPCModule creates internal/modules/grpc_module.go if missing or
 // injects a new service registration at the marker comments if it exists.
 // When the file exists without markers, a manual wire snippet is printed
 // instead of mutating user code.
@@ -105,7 +105,7 @@ func writeNewGRPCModule(path string, sc grpcScaffold) error {
 		return fmt.Errorf("write module: %w", err)
 	}
 	prism.Success(fmt.Sprintf("Created: %s", path))
-	prism.Muted("  Register in internal/app/bootstrap.go: providers.GRPCModule{}")
+	prism.Muted("  Register in internal/app/bootstrap.go: modules.GRPCModule{}")
 	return nil
 }
 
@@ -137,7 +137,7 @@ func injectGRPCServiceRegistration(path string, sc grpcScaffold) error {
 	// package). Auto-wiring cannot safely register a service whose impl lives
 	// in a different directory: the registration calls services.NewX() against
 	// that single import, and adding a second `services` package would clash.
-	// MakeGRPCService preflights this before writing files; the check is
+	// GenGRPCService preflights this before writing files; the check is
 	// repeated here as the last line of defense for direct callers.
 	if err := checkModuleServicesImport(content, sc); err != nil {
 		return err

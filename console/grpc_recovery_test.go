@@ -8,14 +8,14 @@ import (
 	"testing"
 )
 
-// TestMakeGRPCService_RerunSucceedsAfterBufConfigWriteFailure proves the
+// TestGenGRPCService_RerunSucceedsAfterBufConfigWriteFailure proves the
 // partial-scaffold lockout is fixed: if a transient filesystem condition
 // causes buf.yaml/buf.gen.yaml to fail to write, the user must be able to
 // rerun cleanly once the condition is resolved. The previous order wrote
 // foo.proto first; a config-write failure then left foo.proto on disk,
 // and subsequent reruns failed with "proto already exists" before any
 // impl or module was created.
-func TestMakeGRPCService_RerunSucceedsAfterBufConfigWriteFailure(t *testing.T) {
+func TestGenGRPCService_RerunSucceedsAfterBufConfigWriteFailure(t *testing.T) {
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 		t.Skip("requires POSIX permissions and non-root user")
 	}
@@ -30,8 +30,8 @@ func TestMakeGRPCService_RerunSucceedsAfterBufConfigWriteFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := MakeGRPCService("Foo", MakeGRPCServiceOptions{}); err == nil {
-		t.Fatal("expected first MakeGRPCService to fail due to read-only api/proto")
+	if err := GenGRPCService("Foo", GenGRPCServiceOptions{}); err == nil {
+		t.Fatal("expected first GenGRPCService to fail due to read-only api/proto")
 	}
 
 	// Verify no service-specific artifact landed on disk; if it had, the
@@ -40,7 +40,7 @@ func TestMakeGRPCService_RerunSucceedsAfterBufConfigWriteFailure(t *testing.T) {
 	for _, p := range []string{
 		filepath.Join("api", "proto", "foo", "v1", "foo.proto"),
 		filepath.Join("internal", "grpc", "services", "foo.go"),
-		filepath.Join("internal", "providers", "grpc_module.go"),
+		filepath.Join("internal", "modules", "grpc_module.go"),
 	} {
 		if _, err := os.Stat(p); err == nil {
 			t.Errorf("after failed first attempt, %s should not exist", p)
@@ -51,7 +51,7 @@ func TestMakeGRPCService_RerunSucceedsAfterBufConfigWriteFailure(t *testing.T) {
 	if err := os.Chmod(filepath.Join("api", "proto"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := MakeGRPCService("Foo", MakeGRPCServiceOptions{}); err != nil {
+	if err := GenGRPCService("Foo", GenGRPCServiceOptions{}); err != nil {
 		t.Fatalf("rerun should succeed after fixing the filesystem, got: %v", err)
 	}
 
@@ -60,7 +60,7 @@ func TestMakeGRPCService_RerunSucceedsAfterBufConfigWriteFailure(t *testing.T) {
 		filepath.Join("api", "proto", "buf.gen.yaml"),
 		filepath.Join("api", "proto", "foo", "v1", "foo.proto"),
 		filepath.Join("internal", "grpc", "services", "foo.go"),
-		filepath.Join("internal", "providers", "grpc_module.go"),
+		filepath.Join("internal", "modules", "grpc_module.go"),
 	} {
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("expected %s after recovery rerun: %v", p, err)

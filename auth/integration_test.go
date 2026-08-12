@@ -30,7 +30,7 @@ import (
 	_ "github.com/lib/pq"
 
 	"github.com/velocitykode/velocity/auth"
-	"github.com/velocitykode/velocity/auth/drivers/guards"
+	"github.com/velocitykode/velocity/auth/drivers/schemes"
 	"github.com/velocitykode/velocity/crypto"
 )
 
@@ -185,7 +185,7 @@ func TestSessionScheme_LoginThenCheckThenLogout(t *testing.T) {
 		t.Fatalf("NewEncryptor: %v", err)
 	}
 
-	scheme, err := guards.NewSessionScheme(userStore, auth.SessionConfig{
+	scheme, err := schemes.NewSessionScheme(userStore, auth.SessionConfig{
 		Name:     "velocity_session",
 		Lifetime: 60,
 		Path:     "/",
@@ -199,7 +199,7 @@ func TestSessionScheme_LoginThenCheckThenLogout(t *testing.T) {
 	// 1. Attempt with good credentials — scheme writes a session cookie.
 	loginW := httptest.NewRecorder()
 	loginR := httptest.NewRequest("POST", "/login", nil)
-	loginR = guards.WithSessionContext(loginR)
+	loginR = schemes.WithSessionContext(loginR)
 	ok, err := scheme.Attempt(loginW, loginR, map[string]interface{}{
 		"email":    "alice@example.com",
 		"password": password,
@@ -223,7 +223,7 @@ func TestSessionScheme_LoginThenCheckThenLogout(t *testing.T) {
 	// 2. Subsequent request carrying the cookie must Check-pass.
 	checkR := httptest.NewRequest("GET", "/dashboard", nil)
 	checkR.AddCookie(session)
-	checkR = guards.WithSessionContext(checkR)
+	checkR = schemes.WithSessionContext(checkR)
 	if !scheme.Check(checkR) {
 		t.Fatal("Check must return true for a request with a freshly issued session cookie")
 	}
@@ -240,14 +240,14 @@ func TestSessionScheme_LoginThenCheckThenLogout(t *testing.T) {
 	logoutW := httptest.NewRecorder()
 	logoutR := httptest.NewRequest("POST", "/logout", nil)
 	logoutR.AddCookie(session)
-	logoutR = guards.WithSessionContext(logoutR)
+	logoutR = schemes.WithSessionContext(logoutR)
 	if err := scheme.Logout(logoutW, logoutR); err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
 
 	postLogoutR := httptest.NewRequest("GET", "/dashboard", nil)
 	postLogoutR.AddCookie(session)
-	postLogoutR = guards.WithSessionContext(postLogoutR)
+	postLogoutR = schemes.WithSessionContext(postLogoutR)
 	if scheme.Check(postLogoutR) {
 		t.Error("Check must return false after Logout destroys the session")
 	}
@@ -263,7 +263,7 @@ func TestSessionScheme_BadCredentialsRejected(t *testing.T) {
 	enc, _ := crypto.NewEncryptor(crypto.Config{
 		Key: strings.Repeat("k", 32), Cipher: "AES-256-GCM",
 	})
-	scheme, err := guards.NewSessionScheme(userStore, auth.SessionConfig{
+	scheme, err := schemes.NewSessionScheme(userStore, auth.SessionConfig{
 		Name: "velocity_session", Lifetime: 60, Path: "/",
 	}, enc)
 	if err != nil {
@@ -272,7 +272,7 @@ func TestSessionScheme_BadCredentialsRejected(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("POST", "/login", nil)
-	r = guards.WithSessionContext(r)
+	r = schemes.WithSessionContext(r)
 	ok, _ := scheme.Attempt(w, r, map[string]interface{}{
 		"email":    "alice@example.com",
 		"password": "wrong password",
@@ -295,7 +295,7 @@ func TestJWTScheme_LoginValidateLogout(t *testing.T) {
 	userStore, password := setupUsersTable(t)
 
 	secret := strings.Repeat("s", 48)
-	scheme, err := guards.NewJWTScheme(userStore, auth.JWTConfig{
+	scheme, err := schemes.NewJWTScheme(userStore, auth.JWTConfig{
 		Secret:           secret,
 		Algorithm:        "HS256",
 		TTL:              5,
@@ -369,7 +369,7 @@ func TestSessionScheme_TamperedCookieRejected(t *testing.T) {
 	enc, _ := crypto.NewEncryptor(crypto.Config{
 		Key: strings.Repeat("k", 32), Cipher: "AES-256-GCM",
 	})
-	scheme, err := guards.NewSessionScheme(userStore, auth.SessionConfig{
+	scheme, err := schemes.NewSessionScheme(userStore, auth.SessionConfig{
 		Name: "velocity_session", Lifetime: 60, Path: "/",
 	}, enc)
 	if err != nil {
@@ -377,7 +377,7 @@ func TestSessionScheme_TamperedCookieRejected(t *testing.T) {
 	}
 
 	loginW := httptest.NewRecorder()
-	loginR := guards.WithSessionContext(httptest.NewRequest("POST", "/login", nil))
+	loginR := schemes.WithSessionContext(httptest.NewRequest("POST", "/login", nil))
 	if _, err := scheme.Attempt(loginW, loginR, map[string]interface{}{
 		"email":    "alice@example.com",
 		"password": password,
@@ -416,7 +416,7 @@ func TestSessionScheme_TamperedCookieRejected(t *testing.T) {
 
 	r := httptest.NewRequest("GET", "/dashboard", nil)
 	r.AddCookie(tampered)
-	r = guards.WithSessionContext(r)
+	r = schemes.WithSessionContext(r)
 	if scheme.Check(r) {
 		t.Error("Check must reject a tampered session cookie")
 	}

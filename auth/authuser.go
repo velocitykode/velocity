@@ -15,7 +15,7 @@ import (
 // (UUIDs) pass through unchanged.
 //
 // Exported for UserStore implementations outside this package (see
-// auth/providers/ormauth), which must produce identifiers of the same
+// auth/stores/ormauth), which must produce identifiers of the same
 // shape.
 func NormalizeID(v interface{}) interface{} {
 	switch id := v.(type) {

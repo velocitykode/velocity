@@ -5,7 +5,7 @@ import (
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/auth"
-	"github.com/velocitykode/velocity/auth/providers/ormauth"
+	"github.com/velocitykode/velocity/auth/stores/ormauth"
 )
 
 // AuthOption configures the ORM-backed user store installed by

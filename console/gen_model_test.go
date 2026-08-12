@@ -1,0 +1,235 @@
+package console
+
+import (
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+)
+
+func TestGenModel_CreatesFile(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	if err := GenModel("User", GenModelOptions{}); err != nil {
+		t.Fatalf("GenModel() error = %v", err)
+	}
+
+	content, err := os.ReadFile("internal/models/user.go")
+	if err != nil {
+		t.Fatalf("Failed to read generated file: %v", err)
+	}
+
+	s := string(content)
+	if !strings.Contains(s, "package models") {
+		t.Error("expected package models")
+	}
+	if !strings.Contains(s, "orm.Model[User]") {
+		t.Error("expected orm.Model[User] embedding")
+	}
+	if !strings.Contains(s, `return "users"`) {
+		t.Error("expected pluralized table name 'users'")
+	}
+	if !strings.Contains(s, "func (User) TableName()") {
+		t.Error("expected TableName method")
+	}
+}
+
+func TestGenModel_UUID(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	if err := GenModel("Post", GenModelOptions{UUID: true}); err != nil {
+		t.Fatalf("GenModel() error = %v", err)
+	}
+
+	content, err := os.ReadFile("internal/models/post.go")
+	if err != nil {
+		t.Fatalf("Failed to read generated file: %v", err)
+	}
+
+	if !strings.Contains(string(content), "orm.UUIDModel[Post]") {
+		t.Error("expected orm.UUIDModel[Post] embedding")
+	}
+}
+
+func TestGenModel_SoftDeletes(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	if err := GenModel("Comment", GenModelOptions{SoftDeletes: true}); err != nil {
+		t.Fatalf("GenModel() error = %v", err)
+	}
+
+	content, err := os.ReadFile("internal/models/comment.go")
+	if err != nil {
+		t.Fatalf("Failed to read generated file: %v", err)
+	}
+
+	if !strings.Contains(string(content), "orm.SoftDeleteModel[Comment]") {
+		t.Error("expected orm.SoftDeleteModel[Comment] embedding")
+	}
+}
+
+func TestGenModel_UUIDAndSoftDeletes(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	if err := GenModel("Order", GenModelOptions{UUID: true, SoftDeletes: true}); err != nil {
+		t.Fatalf("GenModel() error = %v", err)
+	}
+
+	content, err := os.ReadFile("internal/models/order.go")
+	if err != nil {
+		t.Fatalf("Failed to read generated file: %v", err)
+	}
+
+	if !strings.Contains(string(content), "orm.SoftDeleteUUIDModel[Order]") {
+		t.Error("expected orm.SoftDeleteUUIDModel[Order] embedding")
+	}
+}
+
+func TestGenModel_AlreadyExists(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	os.MkdirAll("internal/models", 0755)
+	os.WriteFile("internal/models/user.go", []byte("existing"), 0644)
+
+	err := GenModel("User", GenModelOptions{})
+	if err == nil {
+		t.Error("expected error when model already exists")
+	}
+	if err != nil && !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("expected 'already exists' in error, got: %v", err)
+	}
+}
+
+func TestGenModel_StripsSuffix(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	if err := GenModel("UserModel", GenModelOptions{}); err != nil {
+		t.Fatalf("GenModel() error = %v", err)
+	}
+
+	if _, err := os.Stat("internal/models/user.go"); err != nil {
+		t.Error("expected user.go (Model suffix should be stripped)")
+	}
+}
+
+func TestGenModel_WithMigration(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	if err := GenModel("Article", GenModelOptions{Migration: true}); err != nil {
+		t.Fatalf("GenModel() error = %v", err)
+	}
+
+	if _, err := os.Stat("internal/models/article.go"); err != nil {
+		t.Error("expected model file to be created")
+	}
+
+	entries, err := os.ReadDir("database/migrations")
+	if err != nil {
+		t.Fatalf("Failed to read migrations directory: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 migration file, got %d", len(entries))
+	}
+
+	migrationFile := entries[0].Name()
+	if !strings.Contains(migrationFile, "create_articles") {
+		t.Errorf("expected migration name to contain 'create_articles', got %q", migrationFile)
+	}
+
+	content, err := os.ReadFile(filepath.Join("database/migrations", migrationFile))
+	if err != nil {
+		t.Fatalf("Failed to read migration file: %v", err)
+	}
+
+	s := string(content)
+	if !strings.Contains(s, "package migrations") {
+		t.Error("expected package migrations")
+	}
+	if !strings.Contains(s, "migrate.Register") {
+		t.Error("expected migrate.Register call")
+	}
+	if !strings.Contains(s, `CreateTable("articles"`) {
+		t.Error("expected CreateTable with 'articles' table name")
+	}
+}
+
+func TestGenModel_WithMigrationUUIDSoftDeletes(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	if err := GenModel("Product", GenModelOptions{Migration: true, UUID: true, SoftDeletes: true}); err != nil {
+		t.Fatalf("GenModel() error = %v", err)
+	}
+
+	entries, err := os.ReadDir("database/migrations")
+	if err != nil {
+		t.Fatalf("Failed to read migrations directory: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 migration file, got %d", len(entries))
+	}
+
+	content, err := os.ReadFile(filepath.Join("database/migrations", entries[0].Name()))
+	if err != nil {
+		t.Fatalf("Failed to read migration file: %v", err)
+	}
+	s := string(content)
+
+	if !strings.Contains(s, "UUIDPrimary") {
+		t.Error("expected migration to use UUIDPrimary")
+	}
+	if !strings.Contains(s, "SoftDeletes") {
+		t.Error("expected migration to include SoftDeletes")
+	}
+}
+
+func TestToTableName(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"User", "users"},
+		{"Post", "posts"},
+		{"Category", "categories"},
+		{"UserProfile", "user_profiles"},
+	}
+
+	for _, tt := range tests {
+		got := toTableName(tt.input)
+		if got != tt.expected {
+			t.Errorf("toTableName(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestGenMigration_TimestampFormat(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	if err := GenMigration("create_tags", GenMigrationOptions{}); err != nil {
+		t.Fatalf("GenMigration() error = %v", err)
+	}
+
+	entries, err := os.ReadDir("database/migrations")
+	if err != nil {
+		t.Fatalf("Failed to read migrations directory: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 migration file, got %d", len(entries))
+	}
+
+	name := entries[0].Name()
+	pattern := regexp.MustCompile(`^\d{14}_create_tags\.go$`)
+	if !pattern.MatchString(name) {
+		t.Errorf("filename %q does not match expected pattern YYYYMMDDHHMMSS_create_tags.go", name)
+	}
+
+	// Verify the version in the file content matches the filename prefix
+	content, err := os.ReadFile(filepath.Join("database/migrations", name))
+	if err != nil {
+		t.Fatalf("Failed to read migration file: %v", err)
+	}
+	version := name[:14]
+	if !strings.Contains(string(content), `"`+version+`"`) {
+		t.Error("expected Version field in file to match filename timestamp")
+	}
+}

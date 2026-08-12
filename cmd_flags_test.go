@@ -228,7 +228,7 @@ func TestParseGenHandlerArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := console.MakeHandlerOptions{Resource: true, API: true, Dir: "internal/web"}
+	want := console.GenHandlerOptions{Resource: true, API: true, Dir: "internal/web"}
 	if got != want {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
@@ -242,7 +242,7 @@ func TestParseGenModelArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := console.MakeModelOptions{UUID: true, SoftDeletes: true, Migration: true, Dir: "app/models"}
+	want := console.GenModelOptions{UUID: true, SoftDeletes: true, Migration: true, Dir: "app/models"}
 	if got != want {
 		t.Errorf("got %+v, want %+v", got, want)
 	}

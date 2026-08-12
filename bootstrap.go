@@ -7,7 +7,7 @@ import (
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/auth"
-	"github.com/velocitykode/velocity/auth/drivers/guards"
+	"github.com/velocitykode/velocity/auth/drivers/schemes"
 	"github.com/velocitykode/velocity/chain"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/orm"
@@ -90,7 +90,7 @@ func (a *App) runBootstrap() error {
 	// consumer middleware so it wraps every request: session writes
 	// inside the handler (Put/Flash/login-helpers) must be persisted by
 	// the framework, not by every consumer remembering to call Save(w).
-	// See guards.SessionScheme.SessionMiddleware for the contract.
+	// See schemes.SessionScheme.SessionMiddleware for the contract.
 	//
 	// Installed only when the default auth scheme is the session scheme;
 	// JWT-only or other configurations are skipped (no session bag to
@@ -397,7 +397,7 @@ func validateSessionStoreForProduction(a *App) error {
 	if err != nil {
 		return nil
 	}
-	if _, ok := scheme.(*guards.SessionScheme); !ok {
+	if _, ok := scheme.(*schemes.SessionScheme); !ok {
 		return nil
 	}
 	if mgr.ServerSessionStore() != nil {
@@ -406,7 +406,7 @@ func validateSessionStoreForProduction(a *App) error {
 	return ErrCookieStoreInProduction
 }
 
-// installSessionMiddleware mounts guards.SessionScheme.SessionMiddleware
+// installSessionMiddleware mounts schemes.SessionScheme.SessionMiddleware
 // onto the router as the outermost global middleware when the active
 // default auth scheme is a *SessionScheme. The fix for security audit H-05
 // (CONFIRMED HIGH: "No save-at-end session middleware installed").
@@ -436,7 +436,7 @@ func installSessionMiddleware(a *App) {
 	if err != nil {
 		return
 	}
-	sg, ok := scheme.(*guards.SessionScheme)
+	sg, ok := scheme.(*schemes.SessionScheme)
 	if !ok {
 		return
 	}

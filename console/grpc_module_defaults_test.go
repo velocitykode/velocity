@@ -8,19 +8,19 @@ import (
 	"testing"
 )
 
-// TestMakeGRPCService_ModuleDoesNotForceReflection guards a contract with
+// TestGenGRPCService_ModuleDoesNotForceReflection guards a contract with
 // the runtime: velocity/grpc reads GRPC_REFLECTION from env (default false)
 // and refuses to boot in production when reflection is enabled. A scaffold
 // that hard-codes `velgrpc.WithReflection(true)` therefore (a) overrides the
 // user's env default and (b) makes the generated app crash on prod boot.
 // The stub must let the framework default through.
-func TestMakeGRPCService_ModuleDoesNotForceReflection(t *testing.T) {
+func TestGenGRPCService_ModuleDoesNotForceReflection(t *testing.T) {
 	t.Chdir(t.TempDir())
 	writeFakeGoMod(t, "acme/app")
-	if err := MakeGRPCService("Foo", MakeGRPCServiceOptions{}); err != nil {
-		t.Fatalf("MakeGRPCService: %v", err)
+	if err := GenGRPCService("Foo", GenGRPCServiceOptions{}); err != nil {
+		t.Fatalf("GenGRPCService: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join("internal", "providers", "grpc_module.go"))
+	data, err := os.ReadFile(filepath.Join("internal", "modules", "grpc_module.go"))
 	if err != nil {
 		t.Fatalf("read module: %v", err)
 	}

@@ -9,7 +9,7 @@ import (
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/auth"
-	"github.com/velocitykode/velocity/auth/drivers/guards"
+	"github.com/velocitykode/velocity/auth/drivers/schemes"
 	"github.com/velocitykode/velocity/crypto"
 )
 
@@ -27,7 +27,7 @@ func newTestSessionStoreConfig() auth.SessionConfig {
 }
 
 // newAppWithSessionScheme builds a minimal *App carrying a *auth.Manager with
-// a registered *guards.SessionScheme, suitable for exercising
+// a registered *schemes.SessionScheme, suitable for exercising
 // validateSessionStoreForProduction in isolation.
 func newAppWithSessionScheme(t *testing.T, env string) *App {
 	t.Helper()
@@ -40,7 +40,7 @@ func newAppWithSessionScheme(t *testing.T, env string) *App {
 	}
 	mgr := auth.NewManager()
 	userStore := &stubStore{}
-	scheme, err := guards.NewSessionScheme(userStore, newTestSessionStoreConfig(), enc)
+	scheme, err := schemes.NewSessionScheme(userStore, newTestSessionStoreConfig(), enc)
 	if err != nil {
 		t.Fatalf("NewSessionScheme: %v", err)
 	}
