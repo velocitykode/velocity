@@ -2,6 +2,7 @@ package validation
 
 import (
 	"fmt"
+	"reflect"
 	"strconv"
 
 	"github.com/velocitykode/velocity/contract"
@@ -147,11 +148,17 @@ func Accepted() Rule { return newRule("accepted") }
 
 // Set rules.
 
-// In requires the value to be one of values.
-func In(values ...string) Rule { return newRuleWith("in", values...) }
+// In requires the value to be one of the given values. The first value is a
+// separate parameter so an empty value list cannot be expressed.
+func In(value string, additional ...string) Rule {
+	return simpleRule{name: "in", params: fieldList(value, additional)}
+}
 
-// NotIn requires the value to be none of values.
-func NotIn(values ...string) Rule { return newRuleWith("not_in", values...) }
+// NotIn requires the value to be none of the given values. The first value is
+// a separate parameter so an empty value list cannot be expressed.
+func NotIn(value string, additional ...string) Rule {
+	return simpleRule{name: "not_in", params: fieldList(value, additional)}
+}
 
 // Conditional rules.
 
@@ -219,14 +226,18 @@ func UUID() Rule { return newRule("uuid") }
 // ULID requires a valid ULID.
 func ULID() Rule { return newRule("ulid") }
 
-// StartsWith requires the value to begin with one of prefixes.
-func StartsWith(prefixes ...string) Rule {
-	return newRuleWith("starts_with", prefixes...)
+// StartsWith requires the value to begin with one of the given prefixes. The
+// first prefix is a separate parameter so an empty prefix list cannot be
+// expressed.
+func StartsWith(prefix string, additional ...string) Rule {
+	return simpleRule{name: "starts_with", params: fieldList(prefix, additional)}
 }
 
-// EndsWith requires the value to end with one of suffixes.
-func EndsWith(suffixes ...string) Rule {
-	return newRuleWith("ends_with", suffixes...)
+// EndsWith requires the value to end with one of the given suffixes. The
+// first suffix is a separate parameter so an empty suffix list cannot be
+// expressed.
+func EndsWith(suffix string, additional ...string) Rule {
+	return simpleRule{name: "ends_with", params: fieldList(suffix, additional)}
 }
 
 // Numeric comparison rules. The parameter is another field's name, or a
@@ -284,11 +295,12 @@ type MimesSpec struct {
 	allowSVG bool
 }
 
-// Mimes requires an uploaded file whose extension is one of exts and whose
-// sniffed content matches that extension. SVG uploads additionally require
-// AllowSVG.
-func Mimes(exts ...string) MimesSpec {
-	return MimesSpec{exts: append([]string(nil), exts...)}
+// Mimes requires an uploaded file whose extension is one of the given
+// extensions and whose sniffed content matches that extension. The first
+// extension is a separate parameter so an empty extension list cannot be
+// expressed. SVG uploads additionally require AllowSVG.
+func Mimes(ext string, additional ...string) MimesSpec {
+	return MimesSpec{exts: fieldList(ext, additional)}
 }
 
 // AllowSVG returns a copy of the rule that accepts script-free SVG uploads.
@@ -339,7 +351,8 @@ func (i ImageSpec) Rule() contract.ValidationRuleSpec {
 type UniqueSpec struct {
 	table     string
 	column    string
-	except    interface{}
+	except    string
+	exceptErr error
 	hasExcept bool
 	idColumn  string
 }
@@ -353,8 +366,12 @@ func Unique(table, column string) UniqueSpec {
 // Except returns a copy of the rule that ignores the row whose id column
 // holds id. id must be an integer, a string, or a fmt.Stringer; anything
 // else is reported when the rule set is normalized.
+//
+// The value is converted once, here: a fmt.Stringer's String method runs
+// exactly one time, so a stateful or racy implementation cannot make the
+// rule drift between normalization and evaluation.
 func (u UniqueSpec) Except(id interface{}) UniqueSpec {
-	u.except = id
+	u.except, u.exceptErr = exceptParam(id)
 	u.hasExcept = true
 	return u
 }
@@ -370,13 +387,9 @@ func (u UniqueSpec) IDColumn(name string) UniqueSpec {
 func (u UniqueSpec) Rule() contract.ValidationRuleSpec {
 	params := []string{u.table, u.column}
 	if u.hasExcept {
-		except, err := exceptParam(u.except)
-		if err != nil {
-			// Unreachable through a normalized rule set: normalization
-			// rejects the value before the engine asks for the spec.
-			except = ""
-		}
-		params = append(params, except)
+		// An unconvertible Except is reported by validateRule during
+		// normalization, so the engine never reaches this spec.
+		params = append(params, u.except)
 		if u.idColumn != "" {
 			params = append(params, u.idColumn)
 		}
@@ -386,11 +399,7 @@ func (u UniqueSpec) Rule() contract.ValidationRuleSpec {
 
 // validateRule reports an Except value the unique rule cannot carry.
 func (u UniqueSpec) validateRule() error {
-	if !u.hasExcept {
-		return nil
-	}
-	_, err := exceptParam(u.except)
-	return err
+	return u.exceptErr
 }
 
 // Exists requires the value to be present in table.column. An empty column
@@ -400,37 +409,36 @@ func Exists(table, column string) Rule {
 }
 
 // exceptParam renders a Unique().Except() argument as a query parameter.
-// Only integers, strings, and fmt.Stringer values are accepted: anything
-// else has no unambiguous SQL comparison value.
+// Any integer, unsigned integer, or string kind is accepted, so a named type
+// such as `type UserID int64` works; so does a fmt.Stringer. Anything else
+// has no unambiguous SQL comparison value and is reported.
 func exceptParam(id interface{}) (string, error) {
-	switch v := id.(type) {
-	case string:
-		return v, nil
-	case int:
-		return strconv.Itoa(v), nil
-	case int8:
-		return strconv.FormatInt(int64(v), 10), nil
-	case int16:
-		return strconv.FormatInt(int64(v), 10), nil
-	case int32:
-		return strconv.FormatInt(int64(v), 10), nil
-	case int64:
-		return strconv.FormatInt(v, 10), nil
-	case uint:
-		return strconv.FormatUint(uint64(v), 10), nil
-	case uint8:
-		return strconv.FormatUint(uint64(v), 10), nil
-	case uint16:
-		return strconv.FormatUint(uint64(v), 10), nil
-	case uint32:
-		return strconv.FormatUint(uint64(v), 10), nil
-	case uint64:
-		return strconv.FormatUint(v, 10), nil
-	case fmt.Stringer:
-		return v.String(), nil
-	default:
-		return "", fmt.Errorf("%w: unique except value of type %T must be an integer, string, or fmt.Stringer", ErrInvalidRule, id)
+	if id == nil {
+		return "", fmt.Errorf("%w: unique except value must be an integer, string, or fmt.Stringer, got nil", ErrInvalidRule)
 	}
+
+	v := reflect.ValueOf(id)
+	switch v.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return strconv.FormatInt(v.Int(), 10), nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return strconv.FormatUint(v.Uint(), 10), nil
+	case reflect.String:
+		return v.String(), nil
+	}
+
+	if s, ok := id.(fmt.Stringer); ok {
+		// A typed-nil Stringer would panic in String(); report it instead.
+		switch v.Kind() {
+		case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func:
+			if v.IsNil() {
+				return "", fmt.Errorf("%w: unique except value of type %T is nil", ErrInvalidRule, id)
+			}
+		}
+		return s.String(), nil
+	}
+
+	return "", fmt.Errorf("%w: unique except value of type %T must be an integer, string, or fmt.Stringer", ErrInvalidRule, id)
 }
 
 // customRule carries its own handler so it runs on any validator the rule
@@ -445,15 +453,19 @@ type customRule struct {
 // value, so no prior registration on a long-lived validator is required.
 // A nil handler, or a name that shadows a built-in rule, is reported when
 // the rule set is normalized.
+//
+// The returned value is the rule's identity: reuse one Custom value wherever
+// the rule applies. Two Custom values sharing a name in one rule set are
+// rejected during normalization, since nothing decides which handler wins.
 func Custom(name string, handler RuleHandler) Rule {
-	return customRule{name: name, handler: handler}
+	return &customRule{name: name, handler: handler}
 }
 
 // Rule implements contract.ValidationRule.
-func (c customRule) Rule() contract.ValidationRuleSpec {
+func (c *customRule) Rule() contract.ValidationRuleSpec {
 	return contract.ValidationRuleSpec{Name: c.name, Handler: c.handler}
 }
 
 // carriesHandler marks customRule so normalization can tell a custom rule
 // with a nil handler from a built-in rule, which legitimately has none.
-func (c customRule) carriesHandler() {}
+func (c *customRule) carriesHandler() {}

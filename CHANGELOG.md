@@ -25,9 +25,16 @@ pre-split, so a parameter may contain any character, including `,` and `|`.
   file (`File`, `Mimes`, `Image`). `Unique(table, column)` and
   `Exists(table, column)` describe the DB-backed checks;
   `Unique(...).Except(id)` and `.IDColumn(name)` return new rule values, so a
-  package-level rule set is immutable and safe for concurrent reuse.
-  `Password().MinLength(n)`, `Mimes(...).AllowSVG()`, and
-  `Image().AllowSVG()` reach the options those rules accept.
+  package-level rule set is immutable and safe for concurrent reuse. `Except`
+  accepts any integer, unsigned-integer, or string kind (including named types
+  such as `type UserID int64`) and any `fmt.Stringer`, converting the value
+  once at construction. `Password().MinLength(n)`, `Mimes(...).AllowSVG()`,
+  and `Image().AllowSVG()` reach the options those rules accept.
+
+  Every rule whose handler needs at least one parameter takes its first one as
+  a required argument, so an empty parameter list does not compile:
+  `In(value, additional...)`, `NotIn`, `StartsWith`, `EndsWith`, `Mimes`,
+  `RequiredWith`, and `RequiredWithout`.
 
   ```go
   rules := validation.Rules{
@@ -38,10 +45,12 @@ pre-split, so a parameter may contain any character, including `,` and `|`.
 
 - **One rule shape across every entry point:** `ctx.Validate`,
   `vform.FormRequest.Rules()`, `router.Validatable`, `validation.Check` /
-  `CheckW` / `CheckData`, `dbrules.Check*`, `Validator.Validate` /
-  `ValidateRequest`, and `ValidateValue(value, rules...)`. `vform.FormRequest`
-  is an alias for `router.Validatable`, so one form struct serves both
-  `ctx.BindValid` and `vform.Form`.
+  `CheckW` / `CheckData`, `dbrules.Check*`, `Validator.Validate`, and
+  `Validator.ValidateValue(value, rules...)`. `vform.FormRequest` is an alias
+  for `router.Validatable`, so one form struct serves both `ctx.BindValid` and
+  `vform.Form`. Request bodies are read through the body-limited seam
+  (`CheckW`, `dbrules.CheckWithDBW`), which wraps the read with
+  `http.MaxBytesReader`.
 
 - **Message overrides are keyed by field and rule:**
   `validation.Messages{{Field: "email", Rule: "required"}: "We need your email."}`,
@@ -50,7 +59,10 @@ pre-split, so a parameter may contain any character, including `,` and `|`.
 - **Rule sets are validated before they run.** Normalization reports a nil or
   typed-nil rule, an empty rule name, a `Unique().Except()` argument that is
   not an integer, string, or `fmt.Stringer`, a custom rule with a nil handler,
-  and a custom name that shadows a framework rule. Every failure wraps
+  a custom name that shadows a framework rule, and two distinct rule values
+  claiming one custom name. Evaluation is preceded by a resolution check, so a
+  rule name nothing provides (a typo, or `Unique` with no database wired) is
+  reported to the caller instead of failing the field. Every failure wraps
   `validation.ErrInvalidRule`. `Check*` and `dbrules.Check*` return
   `(*Result, error)`, keeping a malformed rule set (a handler bug) distinct
   from field-level failures (user input). `ctx.Validate` returns an error when
@@ -58,7 +70,10 @@ pre-split, so a parameter may contain any character, including `,` and `|`.
 
 - **`validation.Custom(name, handler)` carries its handler with the rule**, so
   a custom rule runs everywhere a rule set reaches, including the per-request
-  validator built by the `Check` helpers, with no registration step.
+  validator built by the `Check` helpers, with no registration step. The
+  returned value is the rule's identity: reuse one `Custom` value wherever the
+  rule applies, since two values sharing a name in one rule set are rejected
+  (Go cannot compare handlers, so nothing could decide which one wins).
 
 - **`required_with` and `required_without` honour every field they name:**
   `RequiredWith("a", "b")` requires the field when ANY of the named fields is

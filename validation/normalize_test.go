@@ -30,6 +30,10 @@ func noopHandler(field string, value interface{}, params []string, data map[stri
 	return nil
 }
 
+// sharedEvenRule is one rule value reused across fields, the supported way to
+// apply a custom rule to more than one field.
+var sharedEvenRule = Custom("even", noopHandler)
+
 func TestNormalizeRuleSet_Errors(t *testing.T) {
 	var typedNil *nilableRule
 
@@ -84,14 +88,12 @@ func TestNormalizeRuleSet_Errors(t *testing.T) {
 			want:  `custom rule "unique" on field "f" shadows a built-in rule`,
 		},
 		{
-			name: "same custom name with two handlers",
+			name: "same custom name from two rule values",
 			rules: Rules{
 				"a": {Custom("even", noopHandler)},
-				"b": {Custom("even", func(field string, value interface{}, params []string, data map[string]interface{}) error {
-					return fmt.Errorf("other")
-				})},
+				"b": {Custom("even", noopHandler)},
 			},
-			want: `custom rule "even" is declared with two different handlers`,
+			want: `custom rule "even" is declared by two different rule values`,
 		},
 	}
 
@@ -134,8 +136,8 @@ func TestNormalizeRuleSet_Accepts(t *testing.T) {
 			wantFields: map[string]int{"email": 2, "age": 2},
 		},
 		{
-			name:       "custom rule carried once",
-			rules:      Rules{"a": {Custom("even", noopHandler)}, "b": {Custom("even", noopHandler)}},
+			name:       "one custom rule value reused across fields",
+			rules:      Rules{"a": {sharedEvenRule}, "b": {sharedEvenRule}},
 			wantFields: map[string]int{"a": 1, "b": 1},
 			wantCustom: []string{"even"},
 		},
@@ -250,6 +252,68 @@ func TestRunNormalized_CustomRuleRunsOnFreshValidator(t *testing.T) {
 
 // TestRunNormalized_CustomRuleCollidingWithExtra reports rather than panics
 // when a carried handler cannot be registered alongside the DB handlers.
+// TestRunNormalized_UnresolvableRuleIsAConfigError covers the Check path: an
+// unregistered rule name is returned as an error, never as a field failure.
+func TestRunNormalized_UnresolvableRuleIsAConfigError(t *testing.T) {
+	typo := staticRule{spec: contract.ValidationRuleSpec{Name: "uniqe", Params: []string{"users", "email"}}}
+	normalized, err := normalizeRuleSet(Rules{"email": {typo}})
+	if err != nil {
+		t.Fatalf("normalizeRuleSet: %v", err)
+	}
+
+	result, err := runNormalized(map[string]interface{}{"email": "a@b.com"}, normalized, nil)
+	if err == nil {
+		t.Fatal("expected an error for an unregistered rule name")
+	}
+	if !errors.Is(err, ErrInvalidRule) {
+		t.Errorf("error does not wrap ErrInvalidRule: %v", err)
+	}
+	if result != nil {
+		t.Error("no result should be produced when the set cannot run")
+	}
+
+	// The same name resolves once a handler is supplied as an extra, which
+	// is how the DB-backed rules reach the engine.
+	extra := map[string]RuleHandler{"uniqe": noopHandler}
+	if _, err := runNormalized(map[string]interface{}{"email": "a@b.com"}, normalized, extra); err != nil {
+		t.Errorf("unexpected error once the handler is installed: %v", err)
+	}
+}
+
+// TestCheckData_UnresolvableRuleIsAConfigError covers the same through the
+// public entry point.
+func TestCheckData_UnresolvableRuleIsAConfigError(t *testing.T) {
+	typo := staticRule{spec: contract.ValidationRuleSpec{Name: "requried"}}
+
+	result, err := CheckData(map[string]interface{}{"email": ""}, Rules{"email": {typo}})
+	if err == nil {
+		t.Fatal("expected an error for an unregistered rule name")
+	}
+	if !errors.Is(err, ErrInvalidRule) {
+		t.Errorf("error does not wrap ErrInvalidRule: %v", err)
+	}
+	if result != nil {
+		t.Error("no result should be produced when the set cannot run")
+	}
+}
+
+// TestCheckData_UniqueWithoutDatabase reports the missing handler rather than
+// failing the field: naming a DB rule with no database wired is a wiring bug.
+func TestCheckData_UniqueWithoutDatabase(t *testing.T) {
+	_, err := CheckData(map[string]interface{}{"email": "a@b.com"}, Rules{
+		"email": {Required(), Unique("users", "email")},
+	})
+	if err == nil {
+		t.Fatal("expected an error for a DB rule with no handler installed")
+	}
+	if !errors.Is(err, ErrInvalidRule) {
+		t.Errorf("error does not wrap ErrInvalidRule: %v", err)
+	}
+	if !strings.Contains(err.Error(), `names rule "unique"`) {
+		t.Errorf("error = %q, want it to name the unique rule", err.Error())
+	}
+}
+
 func TestRunNormalized_CustomRuleCollidingWithExtra(t *testing.T) {
 	normalized, err := normalizeRuleSet(Rules{"f": {Custom("lookup", noopHandler)}})
 	if err != nil {
@@ -465,15 +529,77 @@ func TestHandlerCarrierMarker(t *testing.T) {
 	}
 }
 
-func TestSameHandler(t *testing.T) {
-	other := func(field string, value interface{}, params []string, data map[string]interface{}) error {
-		return nil
+// TestCarriedRule_DuplicateNames pins the identity rule: one Custom value
+// may appear on many fields, two distinct values claiming one name may not.
+// Go cannot compare handlers, so a second declaration is refused rather than
+// resolved by whichever the map happens to yield first.
+func TestCarriedRule_DuplicateNames(t *testing.T) {
+	// Two rules built from the SAME closure literal with DIFFERENT captures:
+	// their code pointers are identical, their behaviour is not.
+	digits := func(want int) RuleHandler {
+		return func(field string, value interface{}, params []string, data map[string]interface{}) error {
+			s, _ := value.(string)
+			if len(s) != want {
+				return fmt.Errorf("The %s field must have %d digits.", field, want)
+			}
+			return nil
+		}
 	}
-	if !sameHandler(noopHandler, noopHandler) {
-		t.Error("identical handlers reported as different")
+
+	shared := Custom("phone", digits(7))
+
+	t.Run("same value on two fields", func(t *testing.T) {
+		got, err := normalizeRuleSet(Rules{"home": {shared}, "work": {shared}})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got.custom) != 1 {
+			t.Errorf("carried count = %d, want 1", len(got.custom))
+		}
+	})
+
+	t.Run("two values from one closure literal", func(t *testing.T) {
+		rules := Rules{"home": {Custom("phone", digits(7))}, "work": {Custom("phone", digits(10))}}
+		// Map traversal order varies per run; the verdict must not.
+		for i := 0; i < 50; i++ {
+			_, err := normalizeRuleSet(rules)
+			if err == nil {
+				t.Fatalf("iteration %d: expected an error", i)
+			}
+			if !errors.Is(err, ErrInvalidRule) {
+				t.Fatalf("iteration %d: error does not wrap ErrInvalidRule: %v", i, err)
+			}
+			if !strings.Contains(err.Error(), "two different rule values") {
+				t.Fatalf("iteration %d: error = %q", i, err.Error())
+			}
+		}
+	})
+
+	t.Run("two values on one field", func(t *testing.T) {
+		if _, err := normalizeRuleSet(Rules{"home": {Custom("phone", digits(7)), Custom("phone", digits(7))}}); err == nil {
+			t.Error("expected an error for two rule values sharing a name")
+		}
+	})
+}
+
+func TestSameRuleValue(t *testing.T) {
+	shared := Custom("x", noopHandler)
+	other := Custom("x", noopHandler)
+
+	if !sameRuleValue(shared, shared) {
+		t.Error("one rule value must equal itself")
 	}
-	if sameHandler(noopHandler, other) {
-		t.Error("distinct handlers reported as the same")
+	if sameRuleValue(shared, other) {
+		t.Error("two separately built rule values must not compare equal")
+	}
+	// A rule value Go cannot compare (its spec holds a slice and a func)
+	// reports false instead of panicking on ==.
+	uncomparable := staticRule{spec: contract.ValidationRuleSpec{Name: "x", Params: []string{"p"}, Handler: noopHandler}}
+	if sameRuleValue(uncomparable, uncomparable) {
+		t.Error("an uncomparable rule value must not claim identity")
+	}
+	if sameRuleValue(shared, uncomparable) {
+		t.Error("rule values of different types must not compare equal")
 	}
 }
 
@@ -496,24 +622,4 @@ func TestRuleRegistry_RegisterErrors(t *testing.T) {
 	if err := reg.register("y", nil); err == nil {
 		t.Error("expected a nil-handler error")
 	}
-}
-
-// TestMustRegister_PanicsOnFrameworkDefect pins the one surviving panic: a
-// duplicate in the built-in table is a framework defect at construction, not
-// adopter input.
-func TestMustRegister_PanicsOnFrameworkDefect(t *testing.T) {
-	reg := &ruleRegistry{rules: make(map[string]RuleHandler)}
-	mustRegister(reg, "x", noopHandler)
-
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Error("mustRegister must panic on a duplicate")
-			return
-		}
-		if _, ok := r.(*contract.RegistrationError); !ok {
-			t.Errorf("panic value = %T, want *contract.RegistrationError", r)
-		}
-	}()
-	mustRegister(reg, "x", noopHandler)
 }

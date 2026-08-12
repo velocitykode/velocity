@@ -3,7 +3,6 @@ package contract
 import (
 	"errors"
 	"fmt"
-	"net/http"
 	"strconv"
 	"strings"
 )
@@ -15,7 +14,6 @@ import (
 // override any message the built-in rules emit.
 type Validator interface {
 	Validate(data interface{}, rules ValidationRuleSet) (*ValidatedData, error)
-	ValidateRequest(r *http.Request, rules ValidationRuleSet) (*ValidatedData, error)
 	ValidateValue(value interface{}, rules ...ValidationRule) error
 	SetMessages(messages ValidationMessages)
 }

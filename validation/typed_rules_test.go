@@ -1,6 +1,8 @@
 package validation
 
 import (
+	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -217,6 +219,30 @@ type stringerID struct{ v string }
 
 func (s stringerID) String() string { return s.v }
 
+// countingStringer records how many times String is called, so the test can
+// pin that Except snapshots the value exactly once.
+type countingStringer struct{ calls *int }
+
+func (c countingStringer) String() string {
+	*c.calls++
+	return fmt.Sprintf("call-%d", *c.calls)
+}
+
+// nilStringer has a pointer receiver so a nil *nilStringer satisfies
+// fmt.Stringer while panicking if String is ever called.
+type nilStringer struct{ v string }
+
+func (n *nilStringer) String() string { return n.v }
+
+// userID is a named integer type, the shape an app's typed ID takes.
+type userID int64
+
+// tenantID is a named unsigned type.
+type tenantID uint32
+
+// slugID is a named string type.
+type slugID string
+
 func TestExceptParam_AcceptedTypes(t *testing.T) {
 	tests := []struct {
 		name string
@@ -234,6 +260,9 @@ func TestExceptParam_AcceptedTypes(t *testing.T) {
 		{name: "uint16", id: uint16(3), want: "3"},
 		{name: "uint32", id: uint32(4), want: "4"},
 		{name: "uint64", id: uint64(5), want: "5"},
+		{name: "named int64", id: userID(7), want: "7"},
+		{name: "named uint32", id: tenantID(9), want: "9"},
+		{name: "named string", id: slugID("acme"), want: "acme"},
 		{name: "stringer", id: stringerID{v: "uuid-1"}, want: "uuid-1"},
 	}
 	for _, tc := range tests {
@@ -257,13 +286,61 @@ func TestExceptParam_RejectsUnusableTypes(t *testing.T) {
 	}
 }
 
-// TestUniqueSpec_RuleWithUnusableExcept documents the rendering fallback for a
-// spec that normalization has already rejected: the parameter is dropped
-// rather than rendered from an unusable value.
-func TestUniqueSpec_RuleWithUnusableExcept(t *testing.T) {
-	spec := Unique("users", "email").Except(3.5).Rule()
-	if !reflect.DeepEqual(spec.Params, []string{"users", "email", ""}) {
-		t.Errorf("params = %#v, want [users email ]", spec.Params)
+// TestUniqueSpec_ExceptSnapshotsOnce pins that a fmt.Stringer is read exactly
+// once, at construction: a stateful or racy implementation cannot make the
+// rule drift between normalization and evaluation.
+func TestUniqueSpec_ExceptSnapshotsOnce(t *testing.T) {
+	calls := 0
+	rule := Unique("users", "email").Except(countingStringer{calls: &calls})
+
+	if calls != 1 {
+		t.Fatalf("String called %d times at construction, want 1", calls)
+	}
+
+	if _, err := normalizeRuleSet(Rules{"email": {rule}}); err != nil {
+		t.Fatalf("normalizeRuleSet: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		_ = rule.Rule()
+	}
+	if calls != 1 {
+		t.Errorf("String called %d times overall, want 1", calls)
+	}
+	if got := rule.Rule().Params; !reflect.DeepEqual(got, []string{"users", "email", "call-1"}) {
+		t.Errorf("params = %#v, want the snapshot taken at construction", got)
+	}
+}
+
+// TestUniqueSpec_ExceptTypedNilStringer reports rather than panicking on a
+// Stringer whose String method would dereference nil.
+func TestUniqueSpec_ExceptTypedNilStringer(t *testing.T) {
+	var typedNil *nilStringer
+
+	rule := Unique("users", "email").Except(typedNil)
+	_, err := normalizeRuleSet(Rules{"email": {rule}})
+	if err == nil {
+		t.Fatal("expected a normalization error for a typed-nil Stringer")
+	}
+	if !errors.Is(err, ErrInvalidRule) {
+		t.Errorf("error does not wrap ErrInvalidRule: %v", err)
+	}
+}
+
+// TestUniqueSpec_UnusableExceptIsCarriedToNormalization pins where an
+// unconvertible Except surfaces: the conversion error is stored at
+// construction and reported when the rule set is normalized, so the engine
+// never runs the rule.
+func TestUniqueSpec_UnusableExceptIsCarriedToNormalization(t *testing.T) {
+	rule := Unique("users", "email").Except(3.5)
+
+	if err := rule.validateRule(); err == nil {
+		t.Error("expected the conversion error to be carried on the rule value")
+	}
+	if _, err := normalizeRuleSet(Rules{"email": {rule}}); err == nil {
+		t.Error("expected normalization to report the carried error")
+	}
+	if got := rule.Rule().Params; !reflect.DeepEqual(got, []string{"users", "email", ""}) {
+		t.Errorf("params = %#v, want the empty except placeholder", got)
 	}
 }
 
@@ -294,9 +371,10 @@ func TestCustom_CarriesHandler(t *testing.T) {
 }
 
 // TestFieldListConstructors_RequireAFirstField pins the shape that makes an
-// empty field list unrepresentable: the first field is a separate parameter,
-// so RequiredWith() does not compile. The rest fold into the same parameter
-// list, in order.
+// empty parameter list unrepresentable for every rule whose handler requires
+// at least one: the first value is a separate parameter, so RequiredWith(),
+// In(), NotIn(), StartsWith(), EndsWith(), and Mimes() do not compile with no
+// arguments. The rest fold into the same parameter list, in order.
 func TestFieldListConstructors_RequireAFirstField(t *testing.T) {
 	tests := []struct {
 		name string
@@ -307,6 +385,16 @@ func TestFieldListConstructors_RequireAFirstField(t *testing.T) {
 		{name: "required_with multi", rule: RequiredWith("a", "b", "c"), want: []string{"a", "b", "c"}},
 		{name: "required_without single", rule: RequiredWithout("a"), want: []string{"a"}},
 		{name: "required_without multi", rule: RequiredWithout("a", "b", "c"), want: []string{"a", "b", "c"}},
+		{name: "in single", rule: In("a"), want: []string{"a"}},
+		{name: "in multi", rule: In("a", "b", "c"), want: []string{"a", "b", "c"}},
+		{name: "not_in single", rule: NotIn("a"), want: []string{"a"}},
+		{name: "not_in multi", rule: NotIn("a", "b", "c"), want: []string{"a", "b", "c"}},
+		{name: "starts_with single", rule: StartsWith("a"), want: []string{"a"}},
+		{name: "starts_with multi", rule: StartsWith("a", "b"), want: []string{"a", "b"}},
+		{name: "ends_with single", rule: EndsWith("a"), want: []string{"a"}},
+		{name: "ends_with multi", rule: EndsWith("a", "b"), want: []string{"a", "b"}},
+		{name: "mimes single", rule: Mimes("jpg"), want: []string{"jpg"}},
+		{name: "mimes multi", rule: Mimes("jpg", "png"), want: []string{"jpg", "png"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -328,16 +416,16 @@ func TestFieldListConstructors_RequireAFirstField(t *testing.T) {
 // TestVariadicConstructors_CopyCallerSlice guards immutability: a caller that
 // spreads its own slice must not be able to rewrite the rule afterwards.
 func TestVariadicConstructors_CopyCallerSlice(t *testing.T) {
-	values := []string{"a", "b"}
-	rule := In(values...)
-	mimes := Mimes(values...)
-	values[0] = "mutated"
+	additional := []string{"b", "c"}
+	rule := In("a", additional...)
+	mimes := Mimes("a", additional...)
+	additional[0] = "mutated"
 
-	if got := rule.Rule().Params; !reflect.DeepEqual(got, []string{"a", "b"}) {
-		t.Errorf("In params = %#v, want [a b]", got)
+	if got := rule.Rule().Params; !reflect.DeepEqual(got, []string{"a", "b", "c"}) {
+		t.Errorf("In params = %#v, want [a b c]", got)
 	}
-	if got := mimes.Rule().Params; !reflect.DeepEqual(got, []string{"a", "b"}) {
-		t.Errorf("Mimes params = %#v, want [a b]", got)
+	if got := mimes.Rule().Params; !reflect.DeepEqual(got, []string{"a", "b", "c"}) {
+		t.Errorf("Mimes params = %#v, want [a b c]", got)
 	}
 }
 

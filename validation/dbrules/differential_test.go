@@ -17,6 +17,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/orm/drivers"
 	"github.com/velocitykode/velocity/validation"
@@ -153,6 +154,16 @@ func TestDBRules_TypedRulesAssembleQueries(t *testing.T) {
 			wantArgs:  []any{"a@b.com", "5"},
 		},
 		{
+			name:      "unique excepting an app-defined id type",
+			driver:    "postgres",
+			field:     "email",
+			rule:      validation.Unique("users", "email").Except(userID(42)),
+			value:     "a@b.com",
+			count:     0,
+			wantQuery: `SELECT COUNT(*) FROM "users" WHERE "email" = $1 AND "id" != $2`,
+			wantArgs:  []any{"a@b.com", "42"},
+		},
+		{
 			name:      "unique with dotted identifiers on sqlite",
 			driver:    "sqlite",
 			field:     "email",
@@ -228,6 +239,54 @@ func TestDBRules_TypedRulesAssembleQueries(t *testing.T) {
 			}
 		})
 	}
+}
+
+// userID is a named integer type, the shape an app's typed primary key takes.
+type userID int64
+
+// TestDBRules_MissingDatabaseIsAConfigError pins that naming a DB-backed rule
+// without a database wired is reported to the caller, not turned into a field
+// error blaming the user's input.
+func TestDBRules_MissingDatabaseIsAConfigError(t *testing.T) {
+	result, err := dbrules.CheckDataWithDB(
+		map[string]interface{}{"email": "a@b.com"},
+		validation.Rules{"email": {validation.Required(), validation.Unique("users", "email")}},
+		nil,
+	)
+	if err == nil {
+		t.Fatal("expected an error when no database is wired")
+	}
+	if !errors.Is(err, validation.ErrInvalidRule) {
+		t.Errorf("error does not wrap ErrInvalidRule: %v", err)
+	}
+	if result != nil {
+		t.Error("no result should be produced when the set cannot run")
+	}
+}
+
+// TestDBRules_UnregisteredRuleIsAConfigError covers a typo'd rule name on the
+// DB path: the extras install unique/exists, nothing installs the typo.
+func TestDBRules_UnregisteredRuleIsAConfigError(t *testing.T) {
+	db, _ := newFakeDB("postgres", 0)
+
+	_, err := dbrules.CheckDataWithDB(
+		map[string]interface{}{"email": "a@b.com"},
+		validation.Rules{"email": {validation.Exists("teams", "id"), typoRule{}}},
+		db,
+	)
+	if err == nil {
+		t.Fatal("expected an error for an unregistered rule name")
+	}
+	if !errors.Is(err, validation.ErrInvalidRule) {
+		t.Errorf("error does not wrap ErrInvalidRule: %v", err)
+	}
+}
+
+// typoRule names a rule that no registry, extra, or carried handler provides.
+type typoRule struct{}
+
+func (typoRule) Rule() contract.ValidationRuleSpec {
+	return contract.ValidationRuleSpec{Name: "uniqe", Params: []string{"users", "email"}}
 }
 
 // argValues flattens driver.NamedValue to the bound values in ordinal order.

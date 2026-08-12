@@ -1,9 +1,8 @@
 package validation
 
 import (
+	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -421,35 +420,34 @@ func TestValidate(t *testing.T) {
 	}
 }
 
-func TestValidateRequest(t *testing.T) {
-	// Create a test request with form data
-	formData := "name=John&email=john@example.com&age=25"
-	req := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(formData))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	rules := Rules{
-		"name":  {Required(), String()},
-		"email": {Required(), Email()},
-		"age":   {Required(), Numeric()},
-	}
-
+// TestValidate_UnresolvableRuleIsAConfigError pins that a rule name nothing
+// can resolve is reported to the caller, not turned into a field error the
+// end user would read.
+func TestValidate_UnresolvableRuleIsAConfigError(t *testing.T) {
 	v := NewValidator()
-	result, err := v.ValidateRequest(req, rules)
-	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
+	typo := staticRule{spec: contract.ValidationRuleSpec{Name: "requried"}}
+
+	validated, err := v.Validate(map[string]interface{}{"email": "a@b.com"}, Rules{"email": {typo}})
+	if err == nil {
+		t.Fatal("expected an error for an unregistered rule name")
+	}
+	if !errors.Is(err, ErrInvalidRule) {
+		t.Errorf("error does not wrap ErrInvalidRule: %v", err)
+	}
+	if !strings.Contains(err.Error(), `names rule "requried"`) {
+		t.Errorf("error = %q, want it to name the rule", err.Error())
+	}
+	if validated != nil {
+		t.Error("no validated data should be produced")
 	}
 
-	if result == nil {
-		t.Error("Expected result but got nil")
+	var verr ValidationErrors
+	if errors.As(err, &verr) {
+		t.Error("an unresolvable rule must not surface as field errors")
 	}
 
-	// Verify validated data
-	if result.GetString("name") != "John" {
-		t.Errorf("Expected name to be John, got %s", result.GetString("name"))
-	}
-
-	if result.GetString("email") != "john@example.com" {
-		t.Errorf("Expected email to be john@example.com, got %s", result.GetString("email"))
+	if err := v.ValidateValue("x", typo); err == nil || !errors.Is(err, ErrInvalidRule) {
+		t.Errorf("ValidateValue error = %v, want ErrInvalidRule", err)
 	}
 }
 
@@ -908,8 +906,8 @@ func TestRuleRegistry_ConcurrentRegisterAndGet(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < reads; i++ {
-				// "required" is always present from registerBuiltInRules;
-				// exercising the read path on a known rule keeps it hot.
+				// "required" is always resolvable from the built-in
+				// table; exercising the read path keeps it hot.
 				_ = v.ValidateValue("x", Required())
 			}
 		}()
