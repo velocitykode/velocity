@@ -114,6 +114,13 @@ var _ contract.Validator = (*defaultValidator)(nil)
 
 // NewValidator creates a new Validator instance.
 func NewValidator() Validator {
+	return newDefaultValidator()
+}
+
+// newDefaultValidator builds a validator with the built-in rules registered,
+// keeping the concrete type for internal callers that need the typed
+// rule-set entry points.
+func newDefaultValidator() *defaultValidator {
 	v := &defaultValidator{
 		registry: &RuleRegistry{
 			rules: make(map[string]RuleHandler),
@@ -147,28 +154,7 @@ func (v *defaultValidator) Validate(data interface{}, rules Rules) (*ValidatedDa
 	// compatibility with the legacy PipeRules form. parseRuleSlice flattens
 	// both shapes into a single ordered list of parsedRule values.
 	for field, fieldRuleStrings := range rules {
-		value := getFieldValue(dataMap, field)
-		fieldRules := parseRuleSlice(fieldRuleStrings)
-
-		// "nullable" short-circuit: a field carrying "nullable" whose value is
-		// empty (nil or "") skips ALL other rules - including "required" - and
-		// is recorded as validated. See nullableRule for the semantics.
-		if rulesContainNullable(fieldRules) && isNullableEmpty(value) {
-			validated.Set(field, value)
-			continue
-		}
-
-		for _, rule := range fieldRules {
-			if err := v.validateField(field, value, rule, dataMap); err != nil {
-				validated.AddError(field, err.Error(), rule.name)
-				break // Stop on first error for this field
-			}
-		}
-
-		// Add to validated data if no errors
-		if !validated.Errors().HasError(field) {
-			validated.Set(field, value)
-		}
+		v.validateFieldRules(validated, dataMap, field, parseRuleSlice(fieldRuleStrings))
 	}
 
 	if validated.HasErrors() {
@@ -224,6 +210,32 @@ func (v *defaultValidator) SetMessages(messages Messages) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.messages = messages
+}
+
+// validateFieldRules applies one field's parsed rules and records the value
+// or the first failure on validated. Callers hold v.mu for reading.
+func (v *defaultValidator) validateFieldRules(validated *ValidatedData, dataMap map[string]interface{}, field string, fieldRules []parsedRule) {
+	value := getFieldValue(dataMap, field)
+
+	// "nullable" short-circuit: a field carrying "nullable" whose value is
+	// empty (nil or "") skips ALL other rules - including "required" - and
+	// is recorded as validated. See nullableRule for the semantics.
+	if rulesContainNullable(fieldRules) && isNullableEmpty(value) {
+		validated.Set(field, value)
+		return
+	}
+
+	for _, rule := range fieldRules {
+		if err := v.validateField(field, value, rule, dataMap); err != nil {
+			validated.AddError(field, err.Error(), rule.name)
+			break // Stop on first error for this field
+		}
+	}
+
+	// Add to validated data if no errors
+	if !validated.Errors().HasError(field) {
+		validated.Set(field, value)
+	}
 }
 
 // validateField validates a single field against a rule

@@ -28,15 +28,25 @@ type RuleRegistry struct {
 // Panics with *contract.RegistrationError if handler is nil or a rule with the
 // same name is already registered.
 func (r *RuleRegistry) Register(name string, handler RuleHandler) {
+	if err := r.register(name, handler); err != nil {
+		panic(err)
+	}
+}
+
+// register is the error-returning form of Register, used by paths that run
+// on request input (rule sets carrying their own handlers) where a panic is
+// not an acceptable failure mode.
+func (r *RuleRegistry) register(name string, handler RuleHandler) error {
 	if handler == nil {
-		panic(contract.NewRegistrationError("validation", fmt.Sprintf("nil handler for rule %q", name)))
+		return contract.NewRegistrationError("validation", fmt.Sprintf("nil handler for rule %q", name))
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, exists := r.rules[name]; exists {
-		panic(contract.NewRegistrationError("validation", fmt.Sprintf("rule %q already registered", name)))
+		return contract.NewRegistrationError("validation", fmt.Sprintf("rule %q already registered", name))
 	}
 	r.rules[name] = handler
+	return nil
 }
 
 // Get retrieves a validation rule handler
