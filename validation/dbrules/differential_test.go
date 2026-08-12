@@ -1,11 +1,12 @@
 package dbrules_test
 
-// Differential parity test: the DEPRECATED reflection shims in the core
-// validation package and the typed dbrules surface now share one
-// implementation (validation/internal/dbcheck). This test feeds IDENTICAL
-// inputs through BOTH public surfaces against a recording *sql.DB and asserts
-// they assemble byte-identical queries + args and return identical error
-// strings, so the two surfaces can never silently diverge.
+// End-to-end outcome test for the DB-backed rules: a typed rule value built
+// with validation.Unique / validation.Exists is driven through the public
+// dbrules entry point against a recording *sql.DB, and the assembled query,
+// bound arguments, and user-facing message are asserted. This is the seam
+// where a constructor's pre-split parameters become SQL, so it pins the
+// positional contract (table, column, except, id column) and the
+// identifier-injection refusal.
 
 import (
 	"context"
@@ -14,7 +15,6 @@ import (
 	"errors"
 	"io"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/velocitykode/velocity/orm"
@@ -27,7 +27,7 @@ import (
 //
 // A minimal driver that records the last query + args handed to
 // QueryRowContext and yields a single configurable count row, so the SQL each
-// surface assembles is observable without a real database.
+// rule assembles is observable without a real database.
 
 type recorder struct {
 	query string
@@ -74,10 +74,9 @@ func (r *recRows) Next(dest []driver.Value) error {
 
 // --- fake orm.Database wrapping the recording *sql.DB --------------------
 //
-// Only DriverName() and DB() are exercised by the unique/exists rules (the
-// typed surface reads them directly; the reflection shim reaches them via
-// MethodByName). The remaining orm.Database methods exist only to satisfy the
-// interface and must never be called.
+// Only DriverName() and DB() are exercised by the unique/exists rules. The
+// remaining orm.Database methods exist only to satisfy the interface and must
+// never be called.
 
 type fakeDB struct {
 	driver string
@@ -109,99 +108,136 @@ func newFakeDB(driverName string, count int64) (*fakeDB, *recorder) {
 	return &fakeDB{driver: driverName, sqlDB: sql.OpenDB(recConnector{rec: rec})}, rec
 }
 
-// surfaces returns the unique/exists rule handler from each surface for the
-// same db, so the test can drive both with identical (field, value, params).
-// The compat shim takes db as `any` (reflection seam); dbrules takes the typed
-// orm.Database. Both must produce the same handler behavior.
-type surface struct {
-	unique validation.RuleHandler
-	exists validation.RuleHandler
-}
-
-func TestDifferential_CompatVsDbrules(t *testing.T) {
+func TestDBRules_TypedRulesAssembleQueries(t *testing.T) {
 	cases := []struct {
 		name   string
 		driver string
-		rule   string // "unique" or "exists"
 		field  string
+		rule   validation.Rule
 		value  any
-		params []string
 		count  int64
-		// wantErrSubstr is "" when the rule should pass (nil error).
-		wantErrSubstr string
+		// wantQuery is "" when the rule refuses before querying.
+		wantQuery string
+		wantArgs  []any
+		wantMsg   string
 	}{
-		{"unique-taken-pg", "postgres", "unique", "email", "a@b.com", []string{"users", "email"}, 1, "already been taken"},
-		{"unique-free-pg", "postgres", "unique", "email", "a@b.com", []string{"users", "email"}, 0, ""},
-		{"unique-exceptid-mysql", "mysql", "unique", "email", "a@b.com", []string{"users", "email", "5", "user_id"}, 0, ""},
-		{"unique-dotted-sqlite", "sqlite", "unique", "email", "a@b.com", []string{"public.users", "users.email"}, 1, "already been taken"},
-		{"unique-bad-ident", "postgres", "unique", "email", "x", []string{"users; DROP TABLE users", "email"}, 0, "invalid SQL identifier"},
-		{"exists-present-pg", "postgres", "exists", "team_id", 7, []string{"teams", "id"}, 1, ""},
-		{"exists-missing-mysql", "mysql", "exists", "team_id", 7, []string{"teams", "id"}, 0, "is invalid"},
-		{"exists-bad-ident", "sqlite", "exists", "team_id", 7, []string{"teams", "id; --"}, 0, "invalid SQL identifier"},
+		{
+			name:      "unique taken on postgres",
+			driver:    "postgres",
+			field:     "email",
+			rule:      validation.Unique("users", "email"),
+			value:     "a@b.com",
+			count:     1,
+			wantQuery: `SELECT COUNT(*) FROM "users" WHERE "email" = $1`,
+			wantArgs:  []any{"a@b.com"},
+			wantMsg:   "The email has already been taken.",
+		},
+		{
+			name:      "unique free on postgres",
+			driver:    "postgres",
+			field:     "email",
+			rule:      validation.Unique("users", "email"),
+			value:     "a@b.com",
+			count:     0,
+			wantQuery: `SELECT COUNT(*) FROM "users" WHERE "email" = $1`,
+			wantArgs:  []any{"a@b.com"},
+		},
+		{
+			name:      "unique with except and id column on mysql",
+			driver:    "mysql",
+			field:     "email",
+			rule:      validation.Unique("users", "email").Except(5).IDColumn("user_id"),
+			value:     "a@b.com",
+			count:     0,
+			wantQuery: "SELECT COUNT(*) FROM `users` WHERE `email` = ? AND `user_id` != ?",
+			wantArgs:  []any{"a@b.com", "5"},
+		},
+		{
+			name:      "unique with dotted identifiers on sqlite",
+			driver:    "sqlite",
+			field:     "email",
+			rule:      validation.Unique("public.users", "users.email"),
+			value:     "a@b.com",
+			count:     1,
+			wantQuery: "SELECT COUNT(*) FROM `public`.`users` WHERE `users`.`email` = ?",
+			wantArgs:  []any{"a@b.com"},
+			wantMsg:   "The email has already been taken.",
+		},
+		{
+			name:    "unique refuses an injected table name",
+			driver:  "postgres",
+			field:   "email",
+			rule:    validation.Unique("users; DROP TABLE users", "email"),
+			value:   "x",
+			count:   0,
+			wantMsg: `invalid SQL identifier: "users; DROP TABLE users"`,
+		},
+		{
+			name:      "exists present on postgres",
+			driver:    "postgres",
+			field:     "team_id",
+			rule:      validation.Exists("teams", "id"),
+			value:     7,
+			count:     1,
+			wantQuery: `SELECT COUNT(*) FROM "teams" WHERE "id" = $1`,
+			wantArgs:  []any{int64(7)},
+		},
+		{
+			name:      "exists missing on mysql",
+			driver:    "mysql",
+			field:     "team_id",
+			rule:      validation.Exists("teams", "id"),
+			value:     7,
+			count:     0,
+			wantQuery: "SELECT COUNT(*) FROM `teams` WHERE `id` = ?",
+			wantArgs:  []any{int64(7)},
+			wantMsg:   "The selected team_id is invalid.",
+		},
+		{
+			name:    "exists refuses an injected column name",
+			driver:  "sqlite",
+			field:   "team_id",
+			rule:    validation.Exists("teams", "id; --"),
+			value:   7,
+			count:   0,
+			wantMsg: `invalid SQL identifier: "id; --"`,
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			compatDB, compatRec := newFakeDB(tc.driver, tc.count)
-			dbrulesDB, dbrulesRec := newFakeDB(tc.driver, tc.count)
+			db, rec := newFakeDB(tc.driver, tc.count)
 
-			compat := surface{
-				unique: validation.UniqueRule(compatDB),
-				exists: validation.ExistsRule(compatDB),
-			}
-			typed := surface{
-				unique: dbrules.UniqueRule(dbrulesDB),
-				exists: dbrules.ExistsRule(dbrulesDB),
-			}
-
-			run := func(s surface) error {
-				if tc.rule == "unique" {
-					return s.unique(tc.field, tc.value, tc.params, nil)
-				}
-				return s.exists(tc.field, tc.value, tc.params, nil)
+			result, err := dbrules.CheckDataWithDB(
+				map[string]interface{}{tc.field: tc.value},
+				validation.Rules{tc.field: {tc.rule}},
+				db,
+			)
+			if err != nil {
+				t.Fatalf("unexpected rule-set error: %v", err)
 			}
 
-			compatErr := run(compat)
-			typedErr := run(typed)
-
-			// Error strings must match between surfaces.
-			if errStr(compatErr) != errStr(typedErr) {
-				t.Fatalf("error mismatch: compat=%q dbrules=%q", errStr(compatErr), errStr(typedErr))
+			if got := result.First(tc.field); got != tc.wantMsg {
+				t.Errorf("message = %q, want %q", got, tc.wantMsg)
 			}
-			// And match the expected substring (or nil).
-			if tc.wantErrSubstr == "" {
-				if compatErr != nil {
-					t.Fatalf("expected nil error, got %v", compatErr)
-				}
-			} else if compatErr == nil || !strings.Contains(compatErr.Error(), tc.wantErrSubstr) {
-				t.Fatalf("expected error containing %q, got %v", tc.wantErrSubstr, compatErr)
+			if rec.query != tc.wantQuery {
+				t.Errorf("query = %q, want %q", rec.query, tc.wantQuery)
 			}
-
-			// When the identifier is rejected the query never runs, so the
-			// recorders stay empty; both surfaces must agree on that too.
-			if compatRec.query != dbrulesRec.query {
-				t.Fatalf("query mismatch:\n  compat:  %q\n  dbrules: %q", compatRec.query, dbrulesRec.query)
-			}
-			if !reflect.DeepEqual(namedArgs(compatRec.args), namedArgs(dbrulesRec.args)) {
-				t.Fatalf("args mismatch:\n  compat:  %v\n  dbrules: %v", compatRec.args, dbrulesRec.args)
+			if !reflect.DeepEqual(argValues(rec.args), tc.wantArgs) {
+				t.Errorf("args = %#v, want %#v", argValues(rec.args), tc.wantArgs)
 			}
 		})
 	}
 }
 
-func errStr(err error) string {
-	if err == nil {
-		return ""
+// argValues flattens driver.NamedValue to the bound values in ordinal order.
+func argValues(in []driver.NamedValue) []any {
+	if len(in) == 0 {
+		return nil
 	}
-	return err.Error()
-}
-
-// namedArgs flattens driver.NamedValue to comparable (ordinal,value) pairs;
-// the ordinal positions and bound values must be identical across surfaces.
-func namedArgs(in []driver.NamedValue) []any {
-	out := make([]any, 0, len(in))
+	out := make([]any, len(in))
 	for _, a := range in {
-		out = append(out, [2]any{a.Ordinal, a.Value})
+		out[a.Ordinal-1] = a.Value
 	}
 	return out
 }

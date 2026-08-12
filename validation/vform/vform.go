@@ -15,20 +15,33 @@ import (
 )
 
 // FormRequest defines validation rules for a request. Implement this on a
-// struct to make it self-validating; rules use the canonical
-// validation.Rules type (map[string][]string).
+// struct to make it self-validating; rules are built with the validation
+// package's rule constructors.
+//
+//	func (r *SignupRequest) Rules() validation.Rules {
+//	    return validation.Rules{
+//	        "email":    {validation.Required(), validation.Email()},
+//	        "password": {validation.Required(), validation.Min(8)},
+//	    }
+//	}
 //
 // The return type is validation.Rules so the same value can be passed
 // straight into validation.Check / dbrules.CheckWithDB without intermediate
 // conversion.
 type FormRequest interface {
-	Rules() validation.Rules
+	Rules() contract.ValidationRuleSet
 }
 
-// WithMessages can be implemented alongside FormRequest to provide custom
-// error messages keyed by "field.rule".
+// WithMessages can be implemented alongside FormRequest to override the
+// message a given field+rule pair produces.
+//
+//	func (r *SignupRequest) ValidationMessages() validation.Messages {
+//	    return validation.Messages{
+//	        {Field: "email", Rule: "required"}: "We need your email.",
+//	    }
+//	}
 type WithMessages interface {
-	ValidationMessages() map[string]string
+	ValidationMessages() contract.ValidationMessages
 }
 
 // Result is re-exported from the validation package for callers using the
@@ -62,7 +75,7 @@ func Validate[T any](ctx *router.Context) (*T, *Result, error) {
 		if sig, has := mismatchedRulesMethod(req); has {
 			return nil, nil, fmt.Errorf(
 				"velocity/vform: %T has a Rules method but its signature %s does not satisfy vform.FormRequest; "+
-					"change the signature to `Rules() validation.Rules` (alias for map[string][]string) or `Rules() map[string][]string`",
+					"change the signature to `Rules() validation.Rules`",
 				req, sig,
 			)
 		}
@@ -76,13 +89,16 @@ func Validate[T any](ctx *router.Context) (*T, *Result, error) {
 
 	var msgs []validation.Messages
 	if wm, ok := any(req).(WithMessages); ok {
-		msgs = append(msgs, validation.Messages(wm.ValidationMessages()))
+		msgs = append(msgs, wm.ValidationMessages())
 	}
 
 	// CheckWithDBW threads ctx.Response into the body-read path so
 	// http.MaxBytesReader can signal a connection-close hint on
 	// oversized bodies (rule 5).
-	result := dbrules.CheckWithDBW(ctx.Response, ctx.Request, rules, safeDB(ctx), msgs...)
+	result, err := dbrules.CheckWithDBW(ctx.Response, ctx.Request, rules, safeDB(ctx), msgs...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("velocity/vform: %T rule set is invalid: %w", req, err)
+	}
 	if result.HasErrors() {
 		return new(T), result, nil
 	}

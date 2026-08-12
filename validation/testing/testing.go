@@ -18,34 +18,34 @@ func NewTestValidator() validation.Validator {
 	return validation.NewValidator()
 }
 
-// RuleAssertion runs a single built-in rule against input and fails the
-// test when the observed outcome (error or no error) disagrees with
-// expected. expected is a pipe-separated rule string, the same format the
-// validation package accepts, so callers can express composite rules like
-// "required|min:3".
+// RuleAssertion runs the given rules against input and fails the test when
+// the observed outcome (error or no error) disagrees with expected.
 //
 // Example:
 //
-//	RuleAssertion(t, "required|email", map[string]interface{}{"email": "bad"}, true)
+//	RuleAssertion(t, map[string]interface{}{"email": "bad"}, true,
+//	    validation.Required(), validation.Email())
 //
 // expectedErr=true means the input is expected to fail validation;
-// expectedErr=false means it should pass.
-func RuleAssertion(t *testing.T, rule string, input map[string]interface{}, expectedErr bool) {
+// expectedErr=false means it should pass. A malformed rule set always fails
+// the test.
+func RuleAssertion(t *testing.T, input map[string]interface{}, expectedErr bool, rules ...validation.Rule) {
 	t.Helper()
 	v := NewTestValidator()
-	rules := validation.Rules{}
-	// Apply the same rule to every key in the input so callers only need
-	// to supply the rule string once. The pipe-string is wrapped in a
-	// single-element slice; the validator splits on '|' internally for
-	// backward compatibility with the legacy PipeRules form.
+	// Apply the same rules to every key in the input so callers only need
+	// to supply them once.
+	ruleSet := validation.Rules{}
 	for k := range input {
-		rules[k] = []string{rule}
+		ruleSet[k] = rules
 	}
-	_, err := v.Validate(input, rules)
+	_, err := v.Validate(input, ruleSet)
+	if errors.Is(err, validation.ErrInvalidRule) {
+		t.Fatalf("RuleAssertion(%+v): malformed rule set: %v", input, err)
+	}
 	gotErr := err != nil
 	if gotErr != expectedErr {
-		t.Fatalf("RuleAssertion(%q, %+v): want err=%v, got err=%v (%v)",
-			rule, input, expectedErr, gotErr, err)
+		t.Fatalf("RuleAssertion(%+v): want err=%v, got err=%v (%v)",
+			input, expectedErr, gotErr, err)
 	}
 }
 

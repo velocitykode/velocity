@@ -43,12 +43,15 @@ var sensitiveFieldSubstrings = []string{
 // Check validates request data against the given rules.
 // It extracts form values or JSON body from the request automatically.
 //
+// The error return reports a malformed rule set (wrapping ErrInvalidRule),
+// never a field-level failure: those travel on *Result.
+//
 // Prefer CheckW(w, r, ...) when a *http.ResponseWriter is available so the
 // body read is wrapped with http.MaxBytesReader and an oversized body can
 // signal the connection to close. This shim passes a nil writer; the
 // MaxBytesReader call still enforces the read cap, it just can't trigger
 // the optional requestTooLarge connection-close optimisation.
-func Check(r *http.Request, rules Rules, messages ...Messages) *Result {
+func Check(r *http.Request, rules Rules, messages ...Messages) (*Result, error) {
 	return CheckW(nil, r, rules, messages...)
 }
 
@@ -56,33 +59,24 @@ func Check(r *http.Request, rules Rules, messages ...Messages) *Result {
 // can wrap r.Body with http.MaxBytesReader properly. Returns a result with
 // a sentinel field-level error on oversized body (rather than truncating
 // silently the way io.LimitReader did).
-func CheckW(w http.ResponseWriter, r *http.Request, rules Rules, messages ...Messages) *Result {
+func CheckW(w http.ResponseWriter, r *http.Request, rules Rules, messages ...Messages) (*Result, error) {
 	return CheckWithRulesW(w, r, rules, nil, messages...)
 }
 
 // CheckData validates a pre-extracted data map against rules.
-func CheckData(data map[string]interface{}, rules Rules, messages ...Messages) *Result {
+func CheckData(data map[string]interface{}, rules Rules, messages ...Messages) (*Result, error) {
 	return CheckDataWithRules(data, rules, nil, messages...)
 }
 
 // DB-backed validation (the unique / exists rules, plus the driver-error
-// mapper AsValidationError) now lives in the validation/dbrules subpackage so
-// this core package stays free of orm and SQL-driver dependencies. New code
-// should call the dbrules variants:
+// mapper AsValidationError) lives in the validation/dbrules subpackage so
+// this core package stays free of orm and SQL-driver dependencies:
 //
-//	validation.CheckWithDB      -> dbrules.CheckWithDB
-//	validation.CheckWithDBW     -> dbrules.CheckWithDBW
-//	validation.CheckDataWithDB  -> dbrules.CheckDataWithDB
-//	validation.CheckDataWithDBCtx -> dbrules.CheckDataWithDBCtx
-//	validation.UniqueRule/Ctx   -> dbrules.UniqueRule/Ctx
-//	validation.ExistsRule/Ctx   -> dbrules.ExistsRule/Ctx
-//	validation.AsValidationError -> dbrules.AsValidationError
-//
-// The old validation.* names are retained as DEPRECATED, orm-free
-// compatibility shims in dbrules_compat.go (they reach the database
-// structurally via reflection) so existing callers keep compiling and
-// working. See CHANGELOG "DB-backed validation API moved out of validation"
-// for the rationale (decoupling orm/driver deps from the core package).
+//	dbrules.CheckWithDB / CheckWithDBW
+//	dbrules.CheckDataWithDB / CheckDataWithDBCtx
+//	dbrules.UniqueRule / UniqueRuleCtx
+//	dbrules.ExistsRule / ExistsRuleCtx
+//	dbrules.AsValidationError
 
 // CheckWithRulesW is the engine behind DB-backed Check helpers that live in
 // subpackages (e.g. validation/dbrules) so the core validation package need
@@ -93,19 +87,27 @@ func CheckData(data map[string]interface{}, rules Rules, messages ...Messages) *
 // extra maps rule name -> handler; a nil or empty map runs the standard,
 // orm-free rule set only. Subpackages pass DB-backed handlers (unique,
 // exists) here so cancellation and quoting live with the orm dependency.
-func CheckWithRulesW(w http.ResponseWriter, r *http.Request, rules Rules, extra map[string]RuleHandler, messages ...Messages) *Result {
+func CheckWithRulesW(w http.ResponseWriter, r *http.Request, rules Rules, extra map[string]RuleHandler, messages ...Messages) (*Result, error) {
+	normalized, err := normalizeRuleSet(rules)
+	if err != nil {
+		return nil, err
+	}
 	data, bodyErr := extractRequestDataW(w, r, DefaultMaxBodyBytes)
 	if bodyErr != nil {
-		return resultForBodyError(bodyErr)
+		return resultForBodyError(bodyErr), nil
 	}
-	return runWithRules(data, rules, extra, messages...)
+	return runNormalized(data, normalized, extra, messages...)
 }
 
 // CheckDataWithRules is the pre-extracted-data variant of CheckWithRulesW.
 // extra maps rule name -> handler; a nil or empty map runs the standard
 // rule set only.
-func CheckDataWithRules(data map[string]interface{}, rules Rules, extra map[string]RuleHandler, messages ...Messages) *Result {
-	return runWithRules(data, rules, extra, messages...)
+func CheckDataWithRules(data map[string]interface{}, rules Rules, extra map[string]RuleHandler, messages ...Messages) (*Result, error) {
+	normalized, err := normalizeRuleSet(rules)
+	if err != nil {
+		return nil, err
+	}
+	return runNormalized(data, normalized, extra, messages...)
 }
 
 // Result holds the outcome of a validation check.
@@ -200,34 +202,6 @@ func (r *Result) Old() map[string]interface{} {
 		old[k] = v
 	}
 	return old
-}
-
-// runWithRules validates data against rules using a fresh validator. Any
-// handlers in extra are registered on the validator before validation runs.
-// This is how DB-backed rules (unique, exists), which live in the
-// validation/dbrules subpackage so the core package stays orm-free, get
-// wired in without core taking an orm dependency.
-func runWithRules(data map[string]interface{}, rules Rules, extra map[string]RuleHandler, messages ...Messages) *Result {
-	v := NewValidator()
-
-	for name, handler := range extra {
-		v.RegisterRule(name, handler)
-	}
-
-	if len(messages) > 0 {
-		v.SetMessages(messages[0])
-	}
-
-	result := &Result{input: data}
-
-	_, err := v.Validate(data, rules)
-	if err != nil {
-		if ve, ok := err.(ValidationErrors); ok {
-			result.errors = ve.Errors
-		}
-	}
-
-	return result
 }
 
 // ExtractRequestData reads form values or JSON body from the request.

@@ -1,6 +1,10 @@
 package testing
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/velocitykode/velocity/validation"
+)
 
 func TestNewTestValidator(t *testing.T) {
 	v := NewTestValidator()
@@ -11,14 +15,14 @@ func TestNewTestValidator(t *testing.T) {
 
 func TestRuleAssertion(t *testing.T) {
 	// Passing input with a valid email should not fail.
-	RuleAssertion(t, "required|email", map[string]interface{}{"email": "a@b.co"}, false)
+	RuleAssertion(t, map[string]interface{}{"email": "a@b.co"}, false, validation.Required(), validation.Email())
 
 	// Invalid email should fail (expectedErr=true).
-	RuleAssertion(t, "required|email", map[string]interface{}{"email": "not-an-email"}, true)
+	RuleAssertion(t, map[string]interface{}{"email": "not-an-email"}, true, validation.Required(), validation.Email())
 
 	// Required field present, min length met.
-	RuleAssertion(t, "required|min:3", map[string]interface{}{"name": "Alice"}, false)
+	RuleAssertion(t, map[string]interface{}{"name": "Alice"}, false, validation.Required(), validation.Min(3))
 
 	// Required field missing (empty string).
-	RuleAssertion(t, "required|min:3", map[string]interface{}{"name": ""}, true)
+	RuleAssertion(t, map[string]interface{}{"name": ""}, true, validation.Required(), validation.Min(3))
 }

@@ -1,5 +1,10 @@
 // Package validation provides Velocity's validation rules engine.
 //
+// Rules are typed values built by the constructors in this package
+// (validation.Required(), validation.Min(8), ...) and collected in a
+// validation.Rules set keyed by field name. Rule parameters are carried
+// pre-split, so a parameter may contain any character.
+//
 // The core package depends only on contract, validation/rules, and the
 // standard library; it carries no orm or SQL-driver dependency. DB-backed
 // rules (unique, exists) and the driver-error mapper (AsValidationError)
@@ -9,94 +14,17 @@
 package validation
 
 import (
-	"encoding/binary"
 	"fmt"
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	"github.com/velocitykode/velocity/contract"
 )
 
 // Validator provides validation functionality. The canonical declaration
-// lives in the stdlib-only contract leaf; this alias keeps the validation
-// API byte-identical for existing callers.
+// lives in the stdlib-only contract leaf.
 type Validator = contract.Validator
-
-// Rules defines validation rules per field. Rules is the canonical adopter
-// facing type and matches the shape returned by vform.FormRequest.Rules():
-// each field maps to a slice of individual rule strings. Canonical
-// declaration lives in the contract leaf as ValidationRules.
-//
-//	rules := validation.Rules{
-//	    "email":    {"required", "email"},
-//	    "password": {"required", "min:8", "confirmed"},
-//	}
-//
-// Authoring rules in pipe-string form (e.g. "required|email") is still
-// supported via PipeRules and the NewRules() helper, which converts a
-// PipeRules value into the canonical Rules type:
-//
-//	rules := validation.NewRules(validation.PipeRules{
-//	    "email": "required|email",
-//	})
-//
-// Pipe-delimited tokens inside a single slice element are accepted for
-// backward compatibility; the validator splits on '|' before evaluating.
-//
-// Rules is a type alias (not a defined type) so that adopter methods
-// declared with the underlying map type, e.g.
-//
-//	func (r *RegisterRequest) Rules() map[string][]string { ... }
-//
-// still satisfy interfaces declared against validation.Rules (notably
-// vform.FormRequest). Using a defined type here would cause those
-// methods to silently fail the interface assertion in vform, skipping
-// validation entirely.
-type Rules = contract.ValidationRules
-
-// PipeRules is the legacy pipe-string form of validation rules. Each field
-// maps to a single string of '|'-delimited rule tokens. Convert to the
-// canonical Rules type with NewRules() before passing to a validator.
-type PipeRules map[string]string
-
-// NewRules converts a PipeRules (legacy "required|email" form) into the
-// canonical slice-of-rules Rules type. Empty tokens are dropped.
-func NewRules(p PipeRules) Rules {
-	if p == nil {
-		return nil
-	}
-	out := make(Rules, len(p))
-	for field, pipe := range p {
-		out[field] = splitPipe(pipe)
-	}
-	return out
-}
-
-// splitPipe splits a "required|min:3" string into ["required", "min:3"],
-// trimming whitespace and dropping empty tokens. Exposed as a package-private
-// helper so both NewRules() and the validator's internal rule parser share
-// one implementation.
-func splitPipe(s string) []string {
-	if s == "" {
-		return nil
-	}
-	parts := strings.Split(s, "|")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		out = append(out, p)
-	}
-	return out
-}
-
-// Messages defines custom error messages. Canonical declaration lives in the
-// contract leaf as ValidationMessages.
-type Messages = contract.ValidationMessages
 
 // ValidatedData contains validated and cleaned data. Canonical declaration
 // (struct and methods) lives in the stdlib-only contract leaf.
@@ -118,7 +46,7 @@ func NewValidator() Validator {
 }
 
 // newDefaultValidator builds a validator with the built-in rules registered,
-// keeping the concrete type for internal callers that need the typed
+// keeping the concrete type for internal callers that need the normalized
 // rule-set entry points.
 func newDefaultValidator() *defaultValidator {
 	v := &defaultValidator{
@@ -132,36 +60,24 @@ func newDefaultValidator() *defaultValidator {
 }
 
 // RegisterRule registers a custom validation rule on this validator instance.
-func (v *defaultValidator) RegisterRule(name string, handler RuleHandler) {
-	v.registry.Register(name, handler)
+// It reports an error for a nil handler or a name that is already taken;
+// adopters that build rules dynamically get an error rather than a panic.
+//
+// A rule built with Custom() carries its own handler and needs no
+// registration; use this for app-wide rules referenced by name.
+func (v *defaultValidator) RegisterRule(name string, handler RuleHandler) error {
+	return v.registry.register(name, handler)
 }
 
-// Validate implements the Validator interface
+// Validate implements the Validator interface. It returns an error for a
+// malformed rule set (wrapping ErrInvalidRule) and a ValidationErrors for
+// field failures.
 func (v *defaultValidator) Validate(data interface{}, rules Rules) (*ValidatedData, error) {
-	v.mu.RLock()
-	defer v.mu.RUnlock()
-
-	validated := contract.NewValidatedData()
-
-	// Convert data to map
-	dataMap, err := toMap(data)
+	normalized, err := normalizeRuleSet(rules)
 	if err != nil {
-		return nil, fmt.Errorf("failed to convert data to map: %w", err)
+		return nil, err
 	}
-
-	// Validate each field. Rules is map[string][]string; each slice element
-	// may itself be a pipe-delimited string ("required|min:3") for backward
-	// compatibility with the legacy PipeRules form. parseRuleSlice flattens
-	// both shapes into a single ordered list of parsedRule values.
-	for field, fieldRuleStrings := range rules {
-		v.validateFieldRules(validated, dataMap, field, parseRuleSlice(fieldRuleStrings))
-	}
-
-	if validated.HasErrors() {
-		return validated, validated.Errors()
-	}
-
-	return validated, nil
+	return v.validateNormalized(data, normalized)
 }
 
 // ValidateRequest validates an HTTP request
@@ -184,12 +100,18 @@ func (v *defaultValidator) ValidateRequest(r *http.Request, rules Rules) (*Valid
 	return v.Validate(data, rules)
 }
 
-// ValidateValue validates a single value against a rule
-func (v *defaultValidator) ValidateValue(value interface{}, rule string) error {
+// ValidateValue validates a single value against the given rules. The value
+// has no field name, so messages and message-key lookups use "value".
+func (v *defaultValidator) ValidateValue(value interface{}, rules ...Rule) error {
+	normalized, err := normalizeRuleSet(Rules{"value": rules})
+	if err != nil {
+		return err
+	}
+
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 
-	fieldRules := parseRules(rule)
+	fieldRules := normalized.fields["value"]
 
 	// Mirror the engine's "nullable" short-circuit: an empty value (nil or "")
 	// with "nullable" skips every other rule. See nullableRule.
@@ -198,7 +120,7 @@ func (v *defaultValidator) ValidateValue(value interface{}, rule string) error {
 	}
 
 	for _, r := range fieldRules {
-		if err := v.validateField("value", value, r, nil); err != nil {
+		if err := v.validateField("value", value, r, nil, normalized.custom); err != nil {
 			return err
 		}
 	}
@@ -212,9 +134,11 @@ func (v *defaultValidator) SetMessages(messages Messages) {
 	v.messages = messages
 }
 
-// validateFieldRules applies one field's parsed rules and records the value
-// or the first failure on validated. Callers hold v.mu for reading.
-func (v *defaultValidator) validateFieldRules(validated *ValidatedData, dataMap map[string]interface{}, field string, fieldRules []parsedRule) {
+// validateFieldRules applies one field's rules and records the value or the
+// first failure on validated. Callers hold v.mu for reading. custom carries
+// the handlers supplied by the rule set itself and is consulted before the
+// registry.
+func (v *defaultValidator) validateFieldRules(validated *ValidatedData, dataMap map[string]interface{}, field string, fieldRules []parsedRule, custom map[string]RuleHandler) {
 	value := getFieldValue(dataMap, field)
 
 	// "nullable" short-circuit: a field carrying "nullable" whose value is
@@ -226,7 +150,7 @@ func (v *defaultValidator) validateFieldRules(validated *ValidatedData, dataMap 
 	}
 
 	for _, rule := range fieldRules {
-		if err := v.validateField(field, value, rule, dataMap); err != nil {
+		if err := v.validateField(field, value, rule, dataMap, custom); err != nil {
 			validated.AddError(field, err.Error(), rule.name)
 			break // Stop on first error for this field
 		}
@@ -238,26 +162,30 @@ func (v *defaultValidator) validateFieldRules(validated *ValidatedData, dataMap 
 	}
 }
 
-// validateField validates a single field against a rule
-func (v *defaultValidator) validateField(field string, value interface{}, rule parsedRule, data map[string]interface{}) error {
-	handler, exists := v.registry.Get(rule.name)
+// validateField validates a single field against a rule. Handlers carried by
+// the rule set win over the registry; normalization has already refused a
+// carried name that shadows a framework rule, so the overlay cannot hijack a
+// built-in.
+func (v *defaultValidator) validateField(field string, value interface{}, rule parsedRule, data map[string]interface{}, custom map[string]RuleHandler) error {
+	handler, exists := custom[rule.name]
+	if !exists {
+		handler, exists = v.registry.Get(rule.name)
+	}
 	if !exists {
 		return fmt.Errorf("unknown validation rule: %s", rule.name)
 	}
 
-	// rule.params may be backed by a slice shared from the parse cache (see
-	// ruleCache). Hand the handler its own copy so a custom rule that mutates
-	// params in place cannot corrupt cached entries or race other goroutines
-	// validating the same rule set. No-param rules pay nothing.
+	// rule.params is owned by the rule value that produced it and may be
+	// shared across goroutines. Hand the handler its own copy so a custom
+	// rule that mutates params in place cannot corrupt the rule set or race
+	// another goroutine validating with it. No-param rules pay nothing.
 	params := rule.params
 	if len(params) > 0 {
 		params = append([]string(nil), params...)
 	}
 
 	if err := handler(field, value, params, data); err != nil {
-		// Check for custom message
-		messageKey := fmt.Sprintf("%s.%s", field, rule.name)
-		if customMsg, ok := v.messages[messageKey]; ok {
+		if customMsg, ok := v.messages[MessageKey{Field: field, Rule: rule.name}]; ok {
 			return fmt.Errorf("%s", customMsg)
 		}
 		return err
@@ -266,118 +194,7 @@ func (v *defaultValidator) validateField(field string, value interface{}, rule p
 	return nil
 }
 
-// parseRules parses a single pipe-delimited rule string into parsedRule
-// values. Retained for ValidateValue and any internal callers that still
-// receive a single string. New code should prefer parseRuleSlice which
-// accepts the canonical Rules slice form.
-func parseRules(ruleString string) []parsedRule {
-	return parseRuleSlice(splitPipe(ruleString))
-}
-
-// ruleCache memoizes parsed rule slices keyed by their token list. Rule sets
-// are authored by application code (FormRequest.Rules() methods, inline
-// Validate calls), not by request input, so the key space is bounded by the
-// app's distinct rule definitions. Without the cache, parseRuleSlice re-split
-// and re-allocated an identical parsedRule slice on every Validate call
-// (~65% of Validate's allocations). Cached entries are shared across calls and
-// goroutines, so they must be treated as immutable: validateField hands each
-// handler a defensive copy of rule.params (a custom rule may mutate params in
-// place), and nothing else writes through a cached slice. ruleCacheCap bounds
-// growth defensively; past the cap, parsing still happens, it just is not memoized.
-// Single- and multi-token rule sets cache into separate maps so the common
-// single-token case keys on the raw token (zero-alloc lookup) while multi-token
-// sets key on a collision-free length-framed encoding. Separate namespaces mean
-// a raw single token can never collide with a framed multi-token key. A shared
-// size counter bounds combined growth.
-var (
-	ruleCacheSingle sync.Map // map[string][]parsedRule, key = raw single token
-	ruleCacheMulti  sync.Map // map[string][]parsedRule, key = ruleCacheKey(tokens)
-	ruleCacheSize   atomic.Int64
-)
-
-const ruleCacheCap = 4096
-
-// parseRuleSlice parses an ordered slice of rule tokens into parsedRule
-// values. Each token may itself contain '|' (legacy pipe-string form) and
-// is re-split before parsing. Empty / whitespace-only tokens are dropped.
-// Results are memoized in ruleCache keyed by the token list.
-func parseRuleSlice(tokens []string) []parsedRule {
-	if len(tokens) == 0 {
-		return nil
-	}
-	cache := &ruleCacheMulti
-	var key string
-	if len(tokens) == 1 {
-		cache = &ruleCacheSingle
-		key = tokens[0] // zero-alloc: raw token, separate namespace from framed keys
-	} else {
-		key = ruleCacheKey(tokens)
-	}
-	if cached, ok := cache.Load(key); ok {
-		return cached.([]parsedRule)
-	}
-	rules := parseRuleSliceUncached(tokens)
-	if ruleCacheSize.Load() < ruleCacheCap {
-		if _, loaded := cache.LoadOrStore(key, rules); !loaded {
-			ruleCacheSize.Add(1)
-		}
-	}
-	return rules
-}
-
-// ruleCacheKey builds a collision-free key for a token list. Each token is
-// length-prefixed with an unsigned varint, so distinct token lists always
-// produce distinct keys regardless of token content. A bare separator byte
-// (e.g. NUL) is unsafe: rule strings may contain any byte, including NUL, so
-// a separator can collide a multi-token join with a single-token string that
-// happens to contain that byte. Length framing has no such ambiguity.
-func ruleCacheKey(tokens []string) string {
-	n := 0
-	for _, t := range tokens {
-		n += uvarintLen(uint64(len(t))) + len(t)
-	}
-	var b strings.Builder
-	b.Grow(n)
-	var lenbuf [binary.MaxVarintLen64]byte
-	for _, t := range tokens {
-		m := binary.PutUvarint(lenbuf[:], uint64(len(t)))
-		b.Write(lenbuf[:m])
-		b.WriteString(t)
-	}
-	return b.String()
-}
-
-// uvarintLen returns the number of bytes binary.PutUvarint writes for x.
-func uvarintLen(x uint64) int {
-	n := 1
-	for x >= 0x80 {
-		x >>= 7
-		n++
-	}
-	return n
-}
-
-// parseRuleSliceUncached is the raw parser behind parseRuleSlice's cache.
-func parseRuleSliceUncached(tokens []string) []parsedRule {
-	var rules []parsedRule
-	for _, raw := range tokens {
-		// Each slice element may itself be a pipe-delimited compound rule.
-		for _, part := range splitPipe(raw) {
-			colonIndex := strings.Index(part, ":")
-			if colonIndex == -1 {
-				rules = append(rules, parsedRule{name: part})
-				continue
-			}
-			name := part[:colonIndex]
-			paramString := part[colonIndex+1:]
-			params := strings.Split(paramString, ",")
-			rules = append(rules, parsedRule{name: name, params: params})
-		}
-	}
-	return rules
-}
-
-// parsedRule represents a parsed validation rule
+// parsedRule is one rule resolved to the form the engine evaluates.
 type parsedRule struct {
 	name   string
 	params []string

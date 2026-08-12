@@ -341,11 +341,11 @@ func TestVariadicConstructors_CopyCallerSlice(t *testing.T) {
 	}
 }
 
-// TestRuleSet_IsContractType pins the alias identity: adopter code writes
-// validation.RuleSet and must satisfy interfaces declared against the
+// TestRules_IsContractType pins the alias identity: adopter code writes
+// validation.Rules and must satisfy interfaces declared against the
 // contract type.
-func TestRuleSet_IsContractType(t *testing.T) {
-	var rs RuleSet = RuleSet{"email": {Required(), Email()}}
+func TestRules_IsContractType(t *testing.T) {
+	var rs Rules = Rules{"email": {Required(), Email()}}
 	if len(rs["email"]) != 2 {
 		t.Fatalf("rule count = %d, want 2", len(rs["email"]))
 	}

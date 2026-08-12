@@ -22,10 +22,13 @@ func TestCheck_FormDataValid(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	result := Check(r, Rules{
-		"name":  {"required|min:3"},
-		"email": {"required|email"},
+	result, err := Check(r, Rules{
+		"name":  {Required(), Min(3)},
+		"email": {Required(), Email()},
 	})
+	if err != nil {
+		t.Fatalf("unexpected rule-set error: %v", err)
+	}
 
 	if result.HasErrors() {
 		t.Fatalf("expected no errors, got: %v", result.All())
@@ -40,10 +43,13 @@ func TestCheck_FormDataInvalid(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	result := Check(r, Rules{
-		"name":  {"required|min:3"},
-		"email": {"required|email"},
+	result, err := Check(r, Rules{
+		"name":  {Required(), Min(3)},
+		"email": {Required(), Email()},
 	})
+	if err != nil {
+		t.Fatalf("unexpected rule-set error: %v", err)
+	}
 
 	if !result.HasErrors() {
 		t.Fatal("expected validation errors")
@@ -61,10 +67,13 @@ func TestCheck_JSONBody(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte(body)))
 	r.Header.Set("Content-Type", "application/json")
 
-	result := Check(r, Rules{
-		"name":  {"required"},
-		"email": {"required|email"},
+	result, err := Check(r, Rules{
+		"name":  {Required()},
+		"email": {Required(), Email()},
 	})
+	if err != nil {
+		t.Fatalf("unexpected rule-set error: %v", err)
+	}
 
 	if !result.HasErrors() {
 		t.Fatal("expected validation errors")
@@ -82,11 +91,14 @@ func TestCheck_CustomMessages(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	result := Check(r, Rules{
-		"title": {"required"},
+	result, err := Check(r, Rules{
+		"title": {Required()},
 	}, Messages{
-		"title.required": "A title is mandatory",
+		{Field: "title", Rule: "required"}: "A title is mandatory",
 	})
+	if err != nil {
+		t.Fatalf("unexpected rule-set error: %v", err)
+	}
 
 	if !result.HasErrors() {
 		t.Fatal("expected errors")
@@ -106,10 +118,13 @@ func TestCheckData_Valid(t *testing.T) {
 		"email": "alice@example.com",
 	}
 
-	result := CheckData(data, Rules{
-		"name":  {"required"},
-		"email": {"required|email"},
+	result, err := CheckData(data, Rules{
+		"name":  {Required()},
+		"email": {Required(), Email()},
 	})
+	if err != nil {
+		t.Fatalf("unexpected rule-set error: %v", err)
+	}
 
 	if result.HasErrors() {
 		t.Fatalf("expected no errors, got: %v", result.All())
@@ -122,40 +137,19 @@ func TestCheckData_Invalid(t *testing.T) {
 		"email": "bad",
 	}
 
-	result := CheckData(data, Rules{
-		"name":  {"required"},
-		"email": {"required|email"},
+	result, err := CheckData(data, Rules{
+		"name":  {Required()},
+		"email": {Required(), Email()},
 	})
+	if err != nil {
+		t.Fatalf("unexpected rule-set error: %v", err)
+	}
 
 	if !result.HasErrors() {
 		t.Fatal("expected errors")
 	}
 	if result.First("email") == "" {
 		t.Error("expected error for email")
-	}
-}
-
-// TestCheck_BothFormsConverge confirms that PipeRules->NewRules path and a
-// hand-written slice literal produce identical validation outcomes.
-func TestCheck_BothFormsConverge(t *testing.T) {
-	form := url.Values{}
-	form.Set("name", "Al") // too short
-	r1 := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(form.Encode()))
-	r1.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	r2 := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(form.Encode()))
-	r2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	slice := Rules{"name": {"required", "min:3"}}
-	pipe := NewRules(PipeRules{"name": "required|min:3"})
-
-	a := Check(r1, slice)
-	b := Check(r2, pipe)
-
-	if a.HasErrors() != b.HasErrors() {
-		t.Fatalf("convergence mismatch: slice=%v pipe=%v", a.HasErrors(), b.HasErrors())
-	}
-	if a.First("name") != b.First("name") {
-		t.Errorf("messages diverge: slice=%q pipe=%q", a.First("name"), b.First("name"))
 	}
 }
 
@@ -543,7 +537,10 @@ func TestCheckW_OversizedJSON_SurfacesValidationError(t *testing.T) {
 	r.Header.Set("Content-Type", "application/json")
 
 	w := httptest.NewRecorder()
-	result := CheckW(w, r, Rules{"x": {"required"}})
+	result, err := CheckW(w, r, Rules{"x": {Required()}})
+	if err != nil {
+		t.Fatalf("unexpected rule-set error: %v", err)
+	}
 	if !result.HasErrors() {
 		t.Fatal("expected validation error from oversized body, got no errors")
 	}
@@ -562,7 +559,10 @@ func TestCheckW_OversizedForm_SurfacesValidationError(t *testing.T) {
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	w := httptest.NewRecorder()
-	result := CheckW(w, r, Rules{"name": {"required"}})
+	result, err := CheckW(w, r, Rules{"name": {Required()}})
+	if err != nil {
+		t.Fatalf("unexpected rule-set error: %v", err)
+	}
 	if !result.HasErrors() {
 		t.Fatal("expected validation error from oversized form body, got no errors")
 	}
@@ -581,10 +581,13 @@ func TestCheck_UnderLimit_StillWorks(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	result := Check(r, Rules{
-		"name":  {"required|min:3"},
-		"email": {"required|email"},
+	result, err := Check(r, Rules{
+		"name":  {Required(), Min(3)},
+		"email": {Required(), Email()},
 	})
+	if err != nil {
+		t.Fatalf("unexpected rule-set error: %v", err)
+	}
 	if result.HasErrors() {
 		t.Fatalf("expected no errors for normal-sized body, got: %v", result.All())
 	}

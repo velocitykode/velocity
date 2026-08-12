@@ -55,8 +55,8 @@ func TestValidationRuleSet_IsDefinedType(t *testing.T) {
 	}
 }
 
-func TestValidationMessageSet_KeyedByFieldAndRule(t *testing.T) {
-	messages := ValidationMessageSet{
+func TestValidationMessages_KeyedByFieldAndRule(t *testing.T) {
+	messages := ValidationMessages{
 		{Field: "email", Rule: "required"}: "We need your email.",
 		{Field: "email", Rule: "unique"}:   "That email is taken.",
 	}

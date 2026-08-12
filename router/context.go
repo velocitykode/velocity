@@ -96,7 +96,7 @@ type Context struct {
 	// opened, e.g. missing or permission denied). The handle is owned
 	// by the router, the context never closes it.
 	fileRoot   *os.Root
-	validateFn func(c *Context, rules map[string][]string, messages ...map[string]string) error
+	validateFn func(c *Context, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error
 	// intendedFn pulls the post-login "intended" URL from the session.
 	// Wired during app init via Router.SetIntendedResolver so router need
 	// not import auth. Returns "" when nothing is stashed.
@@ -526,7 +526,7 @@ type ctxWiring struct {
 	trustedProxies       *TrustedProxies
 	redirectAllowedHosts []string
 	fileRoot             *os.Root
-	validateFn           func(c *Context, rules map[string][]string, messages ...map[string]string) error
+	validateFn           func(c *Context, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error
 	intendedFn           func(c *Context) string
 	insecureFlashCookies bool
 }
@@ -983,9 +983,11 @@ func (c *Context) BindAuto(v interface{}) error {
 	}
 }
 
-// Validatable is implemented by structs that define their own validation rules.
+// Validatable is implemented by structs that define their own validation
+// rules. The signature matches vform.FormRequest, so one form struct can
+// serve both entry points.
 type Validatable interface {
-	ValidationRules() contract.ValidationRules
+	Rules() contract.ValidationRuleSet
 }
 
 // BindValid binds JSON then validates using the struct's own rules (if any).
@@ -997,7 +999,7 @@ func (c *Context) BindValid(v interface{}) error {
 	validator := c.Validator()
 	if val, ok := v.(Validatable); ok {
 		dataMap := structToMap(v)
-		_, err := validator.Validate(dataMap, val.ValidationRules())
+		_, err := validator.Validate(dataMap, val.Rules())
 		return err
 	}
 	return nil
@@ -1732,19 +1734,22 @@ func writeFlashCookie(w http.ResponseWriter, enc contract.Encryptor, name string
 // redirect response has already been written.
 //
 //	func (h *Handler) Store(ctx *router.Context) error {
-//	    if err := ctx.Validate(map[string][]string{
-//	        "name":  {"required"},
-//	        "email": {"required", "email", "unique:users,email"},
+//	    if err := ctx.Validate(validation.Rules{
+//	        "name":  {validation.Required()},
+//	        "email": {validation.Required(), validation.Email(), validation.Unique("users", "email")},
 //	    }); err != nil {
 //	        return err
 //	    }
 //	    // only reaches here if valid
 //	}
-func (c *Context) Validate(rules map[string][]string, messages ...map[string]string) error {
-	if c.validateFn != nil {
-		return c.validateFn(c, rules, messages...)
+//
+// Returns an error when no validator is wired: validation runs per request,
+// so a missing service is reported, not fatal.
+func (c *Context) Validate(rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error {
+	if c.validateFn == nil {
+		return errors.New("velocity/router: validator not configured")
 	}
-	panic("velocity/router: validator not configured")
+	return c.validateFn(c, rules, messages...)
 }
 
 // ---------------------------------------------------------------------------

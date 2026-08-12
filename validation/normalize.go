@@ -83,12 +83,20 @@ func normalizeRuleSet(rs contract.ValidationRuleSet) (normalizedRuleSet, error) 
 	}
 	out.fields = make(map[string][]parsedRule, len(rs))
 
+	// One backing array for every field's rules: normalization runs per
+	// request, so the field count must not drive the allocation count.
+	total := 0
+	for _, fieldRules := range rs {
+		total += len(fieldRules)
+	}
+	buf := make([]parsedRule, 0, total)
+
 	for field, fieldRules := range rs {
 		if len(fieldRules) == 0 {
 			out.fields[field] = nil
 			continue
 		}
-		parsed := make([]parsedRule, 0, len(fieldRules))
+		start := len(buf)
 		for i, r := range fieldRules {
 			if isNilRule(r) {
 				return normalizedRuleSet{}, fmt.Errorf("%w: field %q rule %d is nil", ErrInvalidRule, field, i)
@@ -112,9 +120,11 @@ func normalizeRuleSet(rs contract.ValidationRuleSet) (normalizedRuleSet, error) 
 				}
 			}
 
-			parsed = append(parsed, parsedRule{name: spec.Name, params: spec.Params})
+			buf = append(buf, parsedRule{name: spec.Name, params: spec.Params})
 		}
-		out.fields[field] = parsed
+		// Capped slice: a consumer appending to one field's rules must not
+		// write into the next field's entries.
+		out.fields[field] = buf[start:len(buf):len(buf)]
 	}
 
 	return out, nil

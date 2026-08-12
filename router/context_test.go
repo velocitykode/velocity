@@ -827,10 +827,10 @@ type validatableStruct struct {
 	Email string `json:"email"`
 }
 
-func (v validatableStruct) ValidationRules() validation.Rules {
+func (v validatableStruct) Rules() validation.Rules {
 	return validation.Rules{
-		"name":  {"required"},
-		"email": {"required", "email"},
+		"name":  {validation.Required()},
+		"email": {validation.Required(), validation.Email()},
 	}
 }
 
@@ -2100,7 +2100,9 @@ func TestContext_reset_clearsAllFields(t *testing.T) {
 		services:       &app.Services{},
 		sseStarted:     true,
 		trustedProxies: trusted,
-		validateFn:     func(c *Context, rules map[string][]string, messages ...map[string]string) error { return nil },
+		validateFn: func(c *Context, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error {
+			return nil
+		},
 	}
 
 	c.reset()

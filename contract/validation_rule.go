@@ -42,6 +42,7 @@ type ValidationMessageKey struct {
 	Rule  string
 }
 
-// ValidationMessageSet maps a field+rule pair to the message that replaces
-// the built-in one.
-type ValidationMessageSet map[ValidationMessageKey]string
+// ValidationMessages maps a field+rule pair to the message that replaces the
+// built-in one. A key with an empty Rule is not consulted: an override always
+// names the rule it replaces.
+type ValidationMessages map[ValidationMessageKey]string

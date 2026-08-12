@@ -6,14 +6,10 @@ import (
 	"github.com/velocitykode/velocity/contract"
 )
 
-// validateNormalized runs an already-normalized rule set against data. It is
-// the typed counterpart of Validate: same engine loop, same nullable
-// short-circuit, same first-failure-per-field behaviour, but no rule string
-// is parsed on the way in.
-//
-// Handlers carried by custom rules are NOT registered here; a validator that
-// runs a set with carried handlers must register them first (see
-// runNormalized).
+// validateNormalized runs an already-normalized rule set against data.
+// Handlers the set carries are passed down as an overlay rather than
+// registered, so a custom rule works on a shared long-lived validator
+// without mutating it.
 func (v *defaultValidator) validateNormalized(data interface{}, rs normalizedRuleSet) (*ValidatedData, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
@@ -26,7 +22,7 @@ func (v *defaultValidator) validateNormalized(data interface{}, rs normalizedRul
 	}
 
 	for field, fieldRules := range rs.fields {
-		v.validateFieldRules(validated, dataMap, field, fieldRules)
+		v.validateFieldRules(validated, dataMap, field, fieldRules, rs.custom)
 	}
 
 	if validated.HasErrors() {
@@ -37,16 +33,15 @@ func (v *defaultValidator) validateNormalized(data interface{}, rs normalizedRul
 }
 
 // runNormalized validates data against a normalized rule set on a fresh
-// validator, registering the extra handlers first and then the handlers the
-// set carries with it. This is the path that makes custom rules work without
-// prior registration on a long-lived validator.
+// validator holding the extra handlers.
 //
 // extra maps rule name -> handler; subpackages pass DB-backed handlers
 // (unique, exists) here so the orm dependency stays out of this package.
 //
-// The returned error reports a rule set that cannot be run at all (a custom
-// handler colliding with a rule already registered on the validator), which
-// is distinct from field-level validation failures carried by *Result.
+// The returned error reports a rule set that cannot be run at all (an extra
+// handler that cannot be registered, or a carried handler that would shadow
+// one), which is distinct from field-level validation failures carried by
+// *Result.
 func runNormalized(data map[string]interface{}, rs normalizedRuleSet, extra map[string]RuleHandler, messages ...Messages) (*Result, error) {
 	v := newDefaultValidator()
 
@@ -54,10 +49,8 @@ func runNormalized(data map[string]interface{}, rs normalizedRuleSet, extra map[
 		if err := v.registry.register(name, handler); err != nil {
 			return nil, err
 		}
-	}
-	for name, handler := range rs.custom {
-		if err := v.registry.register(name, handler); err != nil {
-			return nil, fmt.Errorf("%w: custom rule %q cannot be registered: %s", ErrInvalidRule, name, err)
+		if _, carried := rs.custom[name]; carried {
+			return nil, fmt.Errorf("%w: custom rule %q shadows the %q rule supplied by the caller", ErrInvalidRule, name, name)
 		}
 	}
 
