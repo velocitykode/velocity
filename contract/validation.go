@@ -17,7 +17,6 @@ type Validator interface {
 	Validate(data interface{}, rules ValidationRuleSet) (*ValidatedData, error)
 	ValidateRequest(r *http.Request, rules ValidationRuleSet) (*ValidatedData, error)
 	ValidateValue(value interface{}, rules ...ValidationRule) error
-	RegisterRule(name string, handler RuleHandler) error
 	SetMessages(messages ValidationMessages)
 }
 

@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Validation rules are typed values
+
+Rules are built by constructors in the `validation` package and collected in
+a `validation.Rules` set keyed by field name. Rule parameters are carried
+pre-split, so a parameter may contain any character, including `,` and `|`.
+
+- **The rule constructors** cover every built-in: presence
+  (`Required`, `Nullable`, `Filled`, `Present`), type (`String`, `Integer`,
+  `Numeric`, `Boolean`, `Array`), string format (`Email`, `URL`, `URLPublic`,
+  `Alpha`, `AlphaDash`, `AlphaNum`), size (`Min`, `Max`, `Size`, `Between`),
+  comparison (`Same`, `Different`, `Confirmed`, `Accepted`), sets (`In`,
+  `NotIn`), conditional (`RequiredIf`, `RequiredUnless`, `RequiredWith`,
+  `RequiredWithout`), date (`Date`, `DateFormat`, `Timezone`), network (`IP`,
+  `IPv4`, `IPv6`), format (`Regex`, `JSON`, `UUID`, `ULID`, `StartsWith`,
+  `EndsWith`, `Password`), numeric comparison (`Gt`, `Gte`, `Lt`, `Lte`), and
+  file (`File`, `Mimes`, `Image`). `Unique(table, column)` and
+  `Exists(table, column)` describe the DB-backed checks;
+  `Unique(...).Except(id)` and `.IDColumn(name)` return new rule values, so a
+  package-level rule set is immutable and safe for concurrent reuse.
+  `Password().MinLength(n)`, `Mimes(...).AllowSVG()`, and
+  `Image().AllowSVG()` reach the options those rules accept.
+
+  ```go
+  rules := validation.Rules{
+      "name":  {validation.Required(), validation.Min(3)},
+      "email": {validation.Required(), validation.Email(), validation.Unique("users", "email")},
+  }
+  ```
+
+- **One rule shape across every entry point:** `ctx.Validate`,
+  `vform.FormRequest.Rules()`, `router.Validatable`, `validation.Check` /
+  `CheckW` / `CheckData`, `dbrules.Check*`, `Validator.Validate` /
+  `ValidateRequest`, and `ValidateValue(value, rules...)`. `vform.FormRequest`
+  is an alias for `router.Validatable`, so one form struct serves both
+  `ctx.BindValid` and `vform.Form`.
+
+- **Message overrides are keyed by field and rule:**
+  `validation.Messages{{Field: "email", Rule: "required"}: "We need your email."}`,
+  accepted by `SetMessages` and by every `Check*` helper.
+
+- **Rule sets are validated before they run.** Normalization reports a nil or
+  typed-nil rule, an empty rule name, a `Unique().Except()` argument that is
+  not an integer, string, or `fmt.Stringer`, a custom rule with a nil handler,
+  and a custom name that shadows a framework rule. Every failure wraps
+  `validation.ErrInvalidRule`. `Check*` and `dbrules.Check*` return
+  `(*Result, error)`, keeping a malformed rule set (a handler bug) distinct
+  from field-level failures (user input). `ctx.Validate` returns an error when
+  no validator is wired rather than panicking, since it runs per request.
+
+- **`validation.Custom(name, handler)` carries its handler with the rule**, so
+  a custom rule runs everywhere a rule set reaches, including the per-request
+  validator built by the `Check` helpers, with no registration step.
+
+- **`required_with` and `required_without` honour every field they name:**
+  `RequiredWith("a", "b")` requires the field when ANY of the named fields is
+  present, `RequiredWithout("a", "b")` when ANY is absent. The first field is
+  a separate parameter, so an empty field list cannot be expressed.
+
 ### The pre-1.0 vocabulary for extensions, auth, and the CLI
 
 Velocity's extension points, auth surface, and CLI grammar carry their
@@ -518,16 +576,7 @@ handler depends on the dropped methods, so most apps need no change.
 - **`orm.ToSnakeCase` (and the auto-derived table/column names that flow from it) now splits acronym->word and digit->word boundaries.** Previously consecutive uppercase letters collapsed into a single token, so `SSHKey` mapped to table `sshkey` (and pluralized to `sshkeys`), `URLPath` mapped to column `urlpath`, `OAuthID` to `oauthid`, `Field1Name` to `field1name`. The new mapping is `ssh_key` / `url_path` / `o_auth_id` / `field1_name` respectively. Apps with acronym-named or digit-bearing model types that relied on the previous mapping must either override `TableName()` on the model to pin the legacy name, or run a migration to rename the table/column to the new convention. The `console` scaffolder (`vel gen model`, `vel gen migration`, etc.) now uses the same algorithm via `orm.ToSnakeCase`, so newly generated migrations match the runtime ORM.
 - **`cache/drivers.Lock` interface gains `GetWithErr(ctx) (bool, error)`.** The existing `Get(ctx) bool` collapsed backend errors and contention into a single false return, so callers (notably the scheduler's distributed Locker) could not tell a Redis outage from healthy contention. `GetWithErr` returns the SETNX-equivalent outcome and the backend error separately. `Get` is preserved as a thin wrapper that discards the error, so existing callsites compile unchanged. **Migration for third-party cache drivers:** implement `GetWithErr` on every `Lock` implementation. Drivers that perform no I/O (memory-shaped) can return `(acquired, nil)`. Drivers that perform I/O (redis, database, memcached, ...) must return the underlying client error verbatim. A trivial in-tree migration sketch: `func (l *MyLock) Get(ctx context.Context) bool { acquired, _ := l.GetWithErr(ctx); return acquired }` plus a real implementation of `GetWithErr` that calls the backend and returns its error. The framework's built-in `MemoryLock` and `RedisLock` are migrated.
 - **`scheduler.Logger` interface gains `Warn(msg string, kvs ...any)`.** Required so the scheduler can route Locker.Acquire backend errors (Redis outage, AUTH failure, ...) to Warn-level logs while leaving healthy contention at Debug. The framework's `log.Logger` already satisfies the new shape; third-party adapters must add a `Warn` method.
-- **DB-backed validation implementation moved into the new `validation/dbrules` subpackage** so the core `validation` package no longer imports `orm`, `database/sql`, or any SQL driver. Adopters who only use the standard (orm-free) rule set no longer transitively pull those dependencies (and their CGO / cross-compile constraints) into their build. The old `validation.*` names below are **retained as deprecated, orm-free compatibility shims** (they reach the database structurally via reflection), so existing callers keep compiling and working unchanged; new code should prefer the `dbrules.*` variants:
-  - `validation.CheckWithDB` -> `dbrules.CheckWithDB`
-  - `validation.CheckWithDBW` -> `dbrules.CheckWithDBW`
-  - `validation.CheckDataWithDB` -> `dbrules.CheckDataWithDB`
-  - `validation.CheckDataWithDBCtx` -> `dbrules.CheckDataWithDBCtx`
-  - `validation.UniqueRule` / `validation.UniqueRuleCtx` -> `dbrules.UniqueRule` / `dbrules.UniqueRuleCtx`
-  - `validation.ExistsRule` / `validation.ExistsRuleCtx` -> `dbrules.ExistsRule` / `dbrules.ExistsRuleCtx`
-  - `validation.AsValidationError` -> `dbrules.AsValidationError`
-
-  **Migration (optional but recommended):** import `github.com/velocitykode/velocity/validation/dbrules` and replace the `validation.` qualifier with `dbrules.` on the calls above. No argument or return-type changes are required; the `dbrules.*` functions are thin wrappers over the new core seam `validation.CheckWithRulesW` / `validation.CheckDataWithRules`, which register DB-backed rule handlers on the orm-free engine without the core taking an orm dependency. The retained `validation.*` deprecated shims keep old call sites compiling and working; their `db` parameter is now typed `any` (an `orm.Database` satisfies it) and they reach `*sql.DB` via reflection. The one behavioral nuance: `validation.AsValidationError` matches UNIQUE violations by error-string only, whereas `dbrules.AsValidationError` adds typed `pq.Error` / `mysql.MySQLError` fast paths. Callers that used only orm-free entry points (`validation.Check`, `CheckW`, `CheckData`, `ExtractRequestData`, ...) are unaffected.
+- **DB-backed validation lives in the `validation/dbrules` subpackage**, so the core `validation` package imports no `orm`, `database/sql`, or SQL driver. Adopters who use only the standard rule set do not pull those dependencies (and their CGO / cross-compile constraints) into their build. The DB-backed surface is `dbrules.CheckWithDB` / `CheckWithDBW` / `CheckDataWithDB` / `CheckDataWithDBCtx`, `dbrules.UniqueRule` / `UniqueRuleCtx`, `dbrules.ExistsRule` / `ExistsRuleCtx`, and `dbrules.AsValidationError`. They are thin wrappers over the core seam `validation.CheckWithRulesW` / `validation.CheckDataWithRules`, which installs DB-backed rule handlers on the orm-free engine for the duration of one run. `dbrules.AsValidationError` matches UNIQUE violations through typed `pq.Error` / `mysql.MySQLError` fast paths, registered from the `orm/postgres` and `orm/mysql` leaves, and falls back to error-string matching when no driver leaf is linked.
 
 ### Added
 

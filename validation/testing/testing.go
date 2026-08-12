@@ -12,8 +12,8 @@ import (
 )
 
 // NewTestValidator returns a fresh validation.Validator with all built-in
-// rules registered. Call RegisterRule or SetMessages on the returned value
-// to customise for a particular test.
+// rules registered. Call SetMessages on the returned value to customise
+// messages; a test-specific rule travels with validation.Custom.
 func NewTestValidator() validation.Validator {
 	return validation.NewValidator()
 }

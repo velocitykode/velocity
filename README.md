@@ -106,9 +106,16 @@ queue, and a typed JSON response comes back — all in one handler:
 
 ```go
 v.Router.Post("/signup", func(c *router.Context) error {
+    if err := c.Validate(validation.Rules{
+        "email": {validation.Required(), validation.Email()},
+        "name":  {validation.Required()},
+    }); err != nil {
+        return err // errors and old input are flashed; redirect already written
+    }
+
     var input struct {
-        Email string `json:"email" validate:"required,email"`
-        Name  string `json:"name"  validate:"required"`
+        Email string `json:"email"`
+        Name  string `json:"name"`
     }
     if err := c.Bind(&input); err != nil {
         return c.BadRequest(err.Error())

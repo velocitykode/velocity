@@ -478,22 +478,22 @@ func TestSameHandler(t *testing.T) {
 }
 
 func TestRuleRegistry_RegisterErrors(t *testing.T) {
-	reg := &RuleRegistry{rules: make(map[string]RuleHandler)}
+	reg := &ruleRegistry{rules: make(map[string]RuleHandler)}
 
 	if err := reg.register("x", noopHandler); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// The public form reports; only the built-in bootstrap is allowed to
-	// treat a registration failure as fatal.
-	err := reg.Register("x", noopHandler)
+	// Registration reports; only the built-in bootstrap is allowed to treat
+	// a failure as fatal.
+	err := reg.register("x", noopHandler)
 	if err == nil {
 		t.Fatal("expected a duplicate-registration error")
 	}
 	if _, ok := err.(*contract.RegistrationError); !ok {
 		t.Errorf("error = %T, want *contract.RegistrationError", err)
 	}
-	if err := reg.Register("y", nil); err == nil {
+	if err := reg.register("y", nil); err == nil {
 		t.Error("expected a nil-handler error")
 	}
 }
@@ -502,7 +502,7 @@ func TestRuleRegistry_RegisterErrors(t *testing.T) {
 // duplicate in the built-in table is a framework defect at construction, not
 // adopter input.
 func TestMustRegister_PanicsOnFrameworkDefect(t *testing.T) {
-	reg := &RuleRegistry{rules: make(map[string]RuleHandler)}
+	reg := &ruleRegistry{rules: make(map[string]RuleHandler)}
 	mustRegister(reg, "x", noopHandler)
 
 	defer func() {

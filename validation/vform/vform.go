@@ -28,9 +28,11 @@ import (
 // The return type is validation.Rules so the same value can be passed
 // straight into validation.Check / dbrules.CheckWithDB without intermediate
 // conversion.
-type FormRequest interface {
-	Rules() contract.ValidationRuleSet
-}
+//
+// It is an alias for router.Validatable, the same contract read by
+// ctx.BindValid: one form struct serves both entry points, and there is one
+// declaration to satisfy rather than two identical ones.
+type FormRequest = router.Validatable
 
 // WithMessages can be implemented alongside FormRequest to override the
 // message a given field+rule pair produces.

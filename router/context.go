@@ -984,8 +984,8 @@ func (c *Context) BindAuto(v interface{}) error {
 }
 
 // Validatable is implemented by structs that define their own validation
-// rules. The signature matches vform.FormRequest, so one form struct can
-// serve both entry points.
+// rules. It is the canonical declaration of that contract: vform.FormRequest
+// aliases it, so one form struct serves both ctx.BindValid and vform.Form.
 type Validatable interface {
 	Rules() contract.ValidationRuleSet
 }
