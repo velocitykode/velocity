@@ -24,18 +24,25 @@ type RuleRegistry struct {
 	rules map[string]RuleHandler
 }
 
-// Register registers a validation rule.
-// Panics with *contract.RegistrationError if handler is nil or a rule with the
-// same name is already registered.
-func (r *RuleRegistry) Register(name string, handler RuleHandler) {
+// Register registers a validation rule. It returns a *contract.RegistrationError
+// if handler is nil or a rule with the same name is already registered.
+//
+// Registration runs on adopter input (a rule name built at runtime), so it
+// reports rather than panics.
+func (r *RuleRegistry) Register(name string, handler RuleHandler) error {
+	return r.register(name, handler)
+}
+
+// mustRegister registers a built-in rule during validator construction. A
+// failure here is a framework defect in the built-in table, not adopter
+// input, so it is unrecoverable.
+func mustRegister(r *RuleRegistry, name string, handler RuleHandler) {
 	if err := r.register(name, handler); err != nil {
 		panic(err)
 	}
 }
 
-// register is the error-returning form of Register, used by paths that run
-// on request input (rule sets carrying their own handlers) where a panic is
-// not an acceptable failure mode.
+// register is the internal form shared by Register and mustRegister.
 func (r *RuleRegistry) register(name string, handler RuleHandler) error {
 	if handler == nil {
 		return contract.NewRegistrationError("validation", fmt.Sprintf("nil handler for rule %q", name))
@@ -60,77 +67,77 @@ func (r *RuleRegistry) Get(name string) (RuleHandler, bool) {
 // registerBuiltInRules registers all built-in validation rules on the given registry.
 func registerBuiltInRules(reg *RuleRegistry) {
 	// Presence rules
-	reg.Register("required", requiredRule)
-	reg.Register("nullable", nullableRule)
-	reg.Register("filled", filledRule)
-	reg.Register("present", presentRule)
+	mustRegister(reg, "required", requiredRule)
+	mustRegister(reg, "nullable", nullableRule)
+	mustRegister(reg, "filled", filledRule)
+	mustRegister(reg, "present", presentRule)
 
 	// Type rules from rules package
-	reg.Register("string", rules.StringRule)
-	reg.Register("integer", rules.IntegerRule)
-	reg.Register("numeric", rules.NumericRule)
-	reg.Register("boolean", rules.BooleanRule)
-	reg.Register("array", rules.ArrayRule)
+	mustRegister(reg, "string", rules.StringRule)
+	mustRegister(reg, "integer", rules.IntegerRule)
+	mustRegister(reg, "numeric", rules.NumericRule)
+	mustRegister(reg, "boolean", rules.BooleanRule)
+	mustRegister(reg, "array", rules.ArrayRule)
 
 	// String rules from rules package
-	reg.Register("email", rules.EmailRule)
-	reg.Register("url", rules.URLRule)
-	reg.Register("url_public", rules.URLPublicRule)
-	reg.Register("alpha", rules.AlphaRule)
-	reg.Register("alpha_dash", rules.AlphaDashRule)
-	reg.Register("alpha_num", rules.AlphaNumRule)
+	mustRegister(reg, "email", rules.EmailRule)
+	mustRegister(reg, "url", rules.URLRule)
+	mustRegister(reg, "url_public", rules.URLPublicRule)
+	mustRegister(reg, "alpha", rules.AlphaRule)
+	mustRegister(reg, "alpha_dash", rules.AlphaDashRule)
+	mustRegister(reg, "alpha_num", rules.AlphaNumRule)
 
 	// Size rules from rules package
-	reg.Register("min", rules.MinRule)
-	reg.Register("max", rules.MaxRule)
-	reg.Register("size", rules.SizeRule)
-	reg.Register("between", rules.BetweenRule)
+	mustRegister(reg, "min", rules.MinRule)
+	mustRegister(reg, "max", rules.MaxRule)
+	mustRegister(reg, "size", rules.SizeRule)
+	mustRegister(reg, "between", rules.BetweenRule)
 
 	// Comparison rules from rules package
-	reg.Register("same", rules.SameRule)
-	reg.Register("different", rules.DifferentRule)
-	reg.Register("in", rules.InRule)
-	reg.Register("not_in", rules.NotInRule)
-	reg.Register("confirmed", rules.ConfirmedRule)
-	reg.Register("accepted", rules.AcceptedRule)
+	mustRegister(reg, "same", rules.SameRule)
+	mustRegister(reg, "different", rules.DifferentRule)
+	mustRegister(reg, "in", rules.InRule)
+	mustRegister(reg, "not_in", rules.NotInRule)
+	mustRegister(reg, "confirmed", rules.ConfirmedRule)
+	mustRegister(reg, "accepted", rules.AcceptedRule)
 
 	// Conditional rules from rules package
-	reg.Register("required_if", rules.RequiredIfRule)
-	reg.Register("required_unless", rules.RequiredUnlessRule)
-	reg.Register("required_with", rules.RequiredWithRule)
-	reg.Register("required_without", rules.RequiredWithoutRule)
+	mustRegister(reg, "required_if", rules.RequiredIfRule)
+	mustRegister(reg, "required_unless", rules.RequiredUnlessRule)
+	mustRegister(reg, "required_with", rules.RequiredWithRule)
+	mustRegister(reg, "required_without", rules.RequiredWithoutRule)
 
 	// Date and time rules
-	reg.Register("date", rules.DateRule)
-	reg.Register("date_format", rules.DateFormatRule)
-	reg.Register("timezone", rules.TimezoneRule)
+	mustRegister(reg, "date", rules.DateRule)
+	mustRegister(reg, "date_format", rules.DateFormatRule)
+	mustRegister(reg, "timezone", rules.TimezoneRule)
 
 	// Network rules
-	reg.Register("ip", rules.IPRule)
-	reg.Register("ipv4", rules.IPv4Rule)
-	reg.Register("ipv6", rules.IPv6Rule)
+	mustRegister(reg, "ip", rules.IPRule)
+	mustRegister(reg, "ipv4", rules.IPv4Rule)
+	mustRegister(reg, "ipv6", rules.IPv6Rule)
 
 	// Format rules
-	reg.Register("regex", rules.RegexRule)
-	reg.Register("json", rules.JSONRule)
-	reg.Register("uuid", rules.UUIDRule)
-	reg.Register("ulid", rules.ULIDRule)
+	mustRegister(reg, "regex", rules.RegexRule)
+	mustRegister(reg, "json", rules.JSONRule)
+	mustRegister(reg, "uuid", rules.UUIDRule)
+	mustRegister(reg, "ulid", rules.ULIDRule)
 
 	// String prefix/suffix/password rules
-	reg.Register("starts_with", rules.StartsWithRule)
-	reg.Register("ends_with", rules.EndsWithRule)
-	reg.Register("password", rules.PasswordRule)
+	mustRegister(reg, "starts_with", rules.StartsWithRule)
+	mustRegister(reg, "ends_with", rules.EndsWithRule)
+	mustRegister(reg, "password", rules.PasswordRule)
 
 	// Numeric comparison rules
-	reg.Register("gt", rules.GtRule)
-	reg.Register("gte", rules.GteRule)
-	reg.Register("lt", rules.LtRule)
-	reg.Register("lte", rules.LteRule)
+	mustRegister(reg, "gt", rules.GtRule)
+	mustRegister(reg, "gte", rules.GteRule)
+	mustRegister(reg, "lt", rules.LtRule)
+	mustRegister(reg, "lte", rules.LteRule)
 
 	// File rules (require values to be *multipart.FileHeader or equivalent).
-	reg.Register("file", rules.FileRule)
-	reg.Register("mimes", rules.MimesRule)
-	reg.Register("image", rules.ImageRule)
+	mustRegister(reg, "file", rules.FileRule)
+	mustRegister(reg, "mimes", rules.MimesRule)
+	mustRegister(reg, "image", rules.ImageRule)
 }
 
 // requiredRule validates that a field is present and not empty
@@ -163,7 +170,7 @@ func requiredRule(field string, value interface{}, params []string, data map[str
 
 // nullableRule marks a field as nullable. The rule itself is a pure
 // pass-through (it never reports an error), so an explicit
-// ValidateValue(v, "nullable") call always resolves a handler. Its real
+// ValidateValue(v, Nullable()) call always resolves a handler. Its real
 // effect lives in the engine loop: when a field carries "nullable" and its
 // value is empty, the engine short-circuits and skips every other rule for
 // that field.
@@ -175,8 +182,8 @@ func requiredRule(field string, value interface{}, params []string, data map[str
 // empty-collection notion of emptiness.
 //
 // The short-circuit overrides ALL other rules for the field, INCLUDING
-// "required". Combining "required" with "nullable" is contradictory; nullable
-// wins, so a {"required", "nullable"} field with an empty value passes.
+// "required". Combining Required() with Nullable() is contradictory; nullable
+// wins, so such a field with an empty value passes.
 func nullableRule(field string, value interface{}, params []string, data map[string]interface{}) error {
 	// Pass-through: the skip-when-empty behavior is implemented in the engine.
 	return nil
@@ -194,9 +201,8 @@ func isNullableEmpty(value interface{}) bool {
 	return ok && s == ""
 }
 
-// rulesContainNullable reports whether the parsed rule list includes the
-// "nullable" rule. Detection is done on parsed rules (not raw strings) so
-// pipe-delimited tokens like "nullable|url" are handled correctly.
+// rulesContainNullable reports whether the rule list includes the "nullable"
+// rule.
 func rulesContainNullable(rules []parsedRule) bool {
 	for _, r := range rules {
 		if r.name == "nullable" {

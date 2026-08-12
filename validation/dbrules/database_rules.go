@@ -10,15 +10,13 @@
 // validation.CheckDataWithRules with the unique/exists handlers registered.
 //
 // The driver-agnostic core of the rules and the error mapper live in
-// validation/internal/dbcheck and are shared with the deprecated reflection
-// shims in the core validation package, so both surfaces stay byte-identical.
-// This package keeps ONLY the typed orm.Database seam (DriverName / DB().
-// QueryRowContext) and the public signatures, which fill that shared core's
-// seam and delegate to it.
+// validation/internal/dbcheck. This package keeps ONLY the typed orm.Database
+// seam (DriverName / DB().QueryRowContext) and the public signatures, which
+// fill that shared core's seam and delegate to it.
 //
-// # Best-effort uniqueness: ToCToU on the unique: rule
+// # Best-effort uniqueness: ToCToU on the unique rule
 //
-// The unique: rule (UniqueRule / UniqueRuleCtx) issues a SELECT COUNT(*)
+// The unique rule (UniqueRule / UniqueRuleCtx) issues a SELECT COUNT(*)
 // to confirm no row already holds the candidate value, then returns to
 // the caller, which typically follows up with an INSERT. The window
 // between SELECT and INSERT is a classic Time-of-Check to Time-of-Use
@@ -33,7 +31,7 @@
 // definition). The validator's job is to convert "the value is already
 // taken" into a friendly field-level message before the insert; the
 // constraint's job is to refuse the race-loser at write time. Without
-// the constraint, the unique: rule is advisory and two rows with the
+// the constraint, the unique rule is advisory and two rows with the
 // same value can persist after a race.
 //
 // When the constraint fires, the INSERT fails with a driver-specific
@@ -75,11 +73,11 @@ func countQuery(ctx context.Context, db orm.Database) dbcheck.CountFunc {
 
 // UniqueRule returns a RuleHandler that checks database uniqueness.
 //
-// Syntax: unique:table,column[,except_id[,id_column]]
+// Parameters, in order: table, column, except id, id column.
 //
-//	"email": "required|email|unique:users,email"
-//	"email": "required|email|unique:users,email,5"         // exclude id=5
-//	"email": "required|email|unique:users,email,5,user_id" // custom id column
+//	"email": {validation.Required(), validation.Email(), validation.Unique("users", "email")}
+//	validation.Unique("users", "email").Except(5)                  // exclude id=5
+//	validation.Unique("users", "email").Except(5).IDColumn("user_id")
 //
 // The returned handler uses context.Background() for the underlying query.
 // Callers that want request-scoped cancellation (so a slow query is dropped
@@ -128,9 +126,9 @@ func UniqueRuleCtx(ctx context.Context, db orm.Database) validation.RuleHandler 
 
 // ExistsRule returns a RuleHandler that checks a value exists in the database.
 //
-// Syntax: exists:table,column
+// Parameters, in order: table, column.
 //
-//	"team_id": "required|exists:teams,id"
+//	"team_id": {validation.Required(), validation.Exists("teams", "id")}
 //
 // The returned handler uses context.Background() for the underlying query.
 // Use ExistsRuleCtx with the request's context for cancellation propagation.

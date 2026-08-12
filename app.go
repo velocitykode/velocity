@@ -709,12 +709,7 @@ func New(opts ...Option) (*App, error) {
 		}
 		a.Router.SetSignedURLKey(signedKey)
 	}
-	a.Router.SetValidator(func(c *router.Context, rules map[string][]string, messages ...map[string]string) error {
-		// rules is the canonical Rules slice form; pass through directly.
-		var msgs []validation.Messages
-		for _, m := range messages {
-			msgs = append(msgs, validation.Messages(m))
-		}
+	a.Router.SetValidator(func(c *router.Context, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error {
 		// CheckWithDBW threads c.Response into the validation body-read
 		// path so http.MaxBytesReader can fire its requestTooLarge
 		// connection-close hint on oversized bodies (rule 5: limit all
@@ -722,7 +717,11 @@ func New(opts ...Option) (*App, error) {
 		// c.DB() returns the stdlib-only contract.Database; the orm-aware
 		// dbrules path needs the driver-facing orm.Database. The stored
 		// value is always the concrete *orm.Manager, so the assertion holds.
-		result := dbrules.CheckWithDBW(c.Response, c.Request, validation.Rules(rules), c.DB().(orm.Database), msgs...)
+		result, err := dbrules.CheckWithDBW(c.Response, c.Request, rules, c.DB().(orm.Database), messages...)
+		if err != nil {
+			// Malformed rule set: a handler bug, not user input.
+			return err
+		}
 		if !result.HasErrors() {
 			return nil
 		}

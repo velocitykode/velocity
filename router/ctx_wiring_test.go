@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // TestTimeoutClonePropagatesFullWiring verifies the Context clone built
@@ -24,7 +26,9 @@ func TestTimeoutClonePropagatesFullWiring(t *testing.T) {
 	r := New()
 	r.SetFileRoot(dir)
 	r.SetIntendedResolver(func(c *Context) string { return "/from-session" })
-	r.SetValidator(func(c *Context, rules map[string][]string, messages ...map[string]string) error { return nil })
+	r.SetValidator(func(c *Context, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error {
+		return nil
+	})
 	r.Use(Timeout(time.Second))
 
 	var sawFileRoot, sawIntendedFn, sawValidateFn bool
@@ -69,7 +73,9 @@ func TestNotFoundContextGetsFullWiring(t *testing.T) {
 	r := New()
 	r.SetFileRoot(dir)
 	r.SetIntendedResolver(func(c *Context) string { return "" })
-	r.SetValidator(func(c *Context, rules map[string][]string, messages ...map[string]string) error { return nil })
+	r.SetValidator(func(c *Context, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error {
+		return nil
+	})
 
 	var sawFileRoot, sawIntendedFn, sawValidateFn bool
 	r.Use(func(next HandlerFunc) HandlerFunc {

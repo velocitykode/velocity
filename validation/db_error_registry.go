@@ -26,7 +26,7 @@ import "sync"
 // and orm/mysql leaf packages and register themselves from init(); they are
 // only linked into binaries that import those leaves (directly or via
 // orm/standard). Apps that do not wire a driver fall through to the generic
-// error-string matching in validation/dbrules and the deprecated core shims.
+// error-string matching in validation/dbrules.
 type UniqueViolationClassifier func(err error) (columnHint string, isUnique bool, matched bool)
 
 var (

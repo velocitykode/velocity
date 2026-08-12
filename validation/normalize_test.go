@@ -35,57 +35,57 @@ func TestNormalizeRuleSet_Errors(t *testing.T) {
 
 	tests := []struct {
 		name  string
-		rules RuleSet
+		rules Rules
 		want  string
 	}{
 		{
 			name:  "nil rule",
-			rules: RuleSet{"f": {nil}},
+			rules: Rules{"f": {nil}},
 			want:  `field "f" rule 0 is nil`,
 		},
 		{
 			name:  "nil rule after a valid one",
-			rules: RuleSet{"f": {Required(), nil}},
+			rules: Rules{"f": {Required(), nil}},
 			want:  `field "f" rule 1 is nil`,
 		},
 		{
 			name:  "typed nil rule",
-			rules: RuleSet{"f": {typedNil}},
+			rules: Rules{"f": {typedNil}},
 			want:  `field "f" rule 0 is nil`,
 		},
 		{
 			name:  "empty rule name",
-			rules: RuleSet{"f": {staticRule{}}},
+			rules: Rules{"f": {staticRule{}}},
 			want:  `field "f" rule 0 has an empty name`,
 		},
 		{
 			name:  "unique except of an unusable type",
-			rules: RuleSet{"f": {Unique("users", "email").Except(3.5)}},
+			rules: Rules{"f": {Unique("users", "email").Except(3.5)}},
 			want:  "must be an integer, string, or fmt.Stringer",
 		},
 		{
 			name:  "unique except of a nil id",
-			rules: RuleSet{"f": {Unique("users", "email").Except(nil)}},
+			rules: Rules{"f": {Unique("users", "email").Except(nil)}},
 			want:  "must be an integer, string, or fmt.Stringer",
 		},
 		{
 			name:  "custom rule with a nil handler",
-			rules: RuleSet{"f": {Custom("even", nil)}},
+			rules: Rules{"f": {Custom("even", nil)}},
 			want:  `custom rule "even" on field "f" has a nil handler`,
 		},
 		{
 			name:  "custom rule shadowing a built-in",
-			rules: RuleSet{"f": {Custom("required", noopHandler)}},
+			rules: Rules{"f": {Custom("required", noopHandler)}},
 			want:  `custom rule "required" on field "f" shadows a built-in rule`,
 		},
 		{
 			name:  "custom rule shadowing a db rule",
-			rules: RuleSet{"f": {Custom("unique", noopHandler)}},
+			rules: Rules{"f": {Custom("unique", noopHandler)}},
 			want:  `custom rule "unique" on field "f" shadows a built-in rule`,
 		},
 		{
 			name: "same custom name with two handlers",
-			rules: RuleSet{
+			rules: Rules{
 				"a": {Custom("even", noopHandler)},
 				"b": {Custom("even", func(field string, value interface{}, params []string, data map[string]interface{}) error {
 					return fmt.Errorf("other")
@@ -114,7 +114,7 @@ func TestNormalizeRuleSet_Errors(t *testing.T) {
 func TestNormalizeRuleSet_Accepts(t *testing.T) {
 	tests := []struct {
 		name       string
-		rules      RuleSet
+		rules      Rules
 		wantFields map[string]int
 		wantCustom []string
 	}{
@@ -125,23 +125,23 @@ func TestNormalizeRuleSet_Accepts(t *testing.T) {
 		},
 		{
 			name:       "empty rule slice",
-			rules:      RuleSet{"f": {}},
+			rules:      Rules{"f": {}},
 			wantFields: map[string]int{"f": 0},
 		},
 		{
 			name:       "built-ins",
-			rules:      RuleSet{"email": {Required(), Email()}, "age": {Integer(), Min(18)}},
+			rules:      Rules{"email": {Required(), Email()}, "age": {Integer(), Min(18)}},
 			wantFields: map[string]int{"email": 2, "age": 2},
 		},
 		{
 			name:       "custom rule carried once",
-			rules:      RuleSet{"a": {Custom("even", noopHandler)}, "b": {Custom("even", noopHandler)}},
+			rules:      Rules{"a": {Custom("even", noopHandler)}, "b": {Custom("even", noopHandler)}},
 			wantFields: map[string]int{"a": 1, "b": 1},
 			wantCustom: []string{"even"},
 		},
 		{
 			name:       "unique with every builder",
-			rules:      RuleSet{"email": {Unique("users", "email").Except(7).IDColumn("uid")}},
+			rules:      Rules{"email": {Unique("users", "email").Except(7).IDColumn("uid")}},
 			wantFields: map[string]int{"email": 1},
 		},
 	}
@@ -177,7 +177,7 @@ func TestNormalizeRuleSet_Accepts(t *testing.T) {
 // it is carried, and still cannot shadow a built-in.
 func TestNormalizeRuleSet_CarriesHandlerWithoutMarker(t *testing.T) {
 	carried := staticRule{spec: contract.ValidationRuleSpec{Name: "adopter", Handler: noopHandler}}
-	got, err := normalizeRuleSet(RuleSet{"f": {carried}})
+	got, err := normalizeRuleSet(Rules{"f": {carried}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -186,20 +186,20 @@ func TestNormalizeRuleSet_CarriesHandlerWithoutMarker(t *testing.T) {
 	}
 
 	shadowing := staticRule{spec: contract.ValidationRuleSpec{Name: "email", Handler: noopHandler}}
-	if _, err := normalizeRuleSet(RuleSet{"f": {shadowing}}); err == nil {
+	if _, err := normalizeRuleSet(Rules{"f": {shadowing}}); err == nil {
 		t.Error("expected a shadowing error")
 	}
 
 	// A spec with no handler and no marker is left for the registry to
 	// resolve at evaluation time.
 	plain := staticRule{spec: contract.ValidationRuleSpec{Name: "registered_elsewhere"}}
-	if _, err := normalizeRuleSet(RuleSet{"f": {plain}}); err != nil {
+	if _, err := normalizeRuleSet(Rules{"f": {plain}}); err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
 
 func TestNormalizeRuleSet_PreservesRuleOrder(t *testing.T) {
-	got, err := normalizeRuleSet(RuleSet{"f": {Required(), Min(2), Max(4), Email()}})
+	got, err := normalizeRuleSet(Rules{"f": {Required(), Min(2), Max(4), Email()}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestRunNormalized_CustomRuleRunsOnFreshValidator(t *testing.T) {
 		return nil
 	}
 
-	normalized, err := normalizeRuleSet(RuleSet{"count": {Custom("even", even)}})
+	normalized, err := normalizeRuleSet(Rules{"count": {Custom("even", even)}})
 	if err != nil {
 		t.Fatalf("normalizeRuleSet: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestRunNormalized_CustomRuleRunsOnFreshValidator(t *testing.T) {
 // TestRunNormalized_CustomRuleCollidingWithExtra reports rather than panics
 // when a carried handler cannot be registered alongside the DB handlers.
 func TestRunNormalized_CustomRuleCollidingWithExtra(t *testing.T) {
-	normalized, err := normalizeRuleSet(RuleSet{"f": {Custom("lookup", noopHandler)}})
+	normalized, err := normalizeRuleSet(Rules{"f": {Custom("lookup", noopHandler)}})
 	if err != nil {
 		t.Fatalf("normalizeRuleSet: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestRunNormalized_CustomRuleCollidingWithExtra(t *testing.T) {
 }
 
 func TestRunNormalized_ExtraHandlerRejected(t *testing.T) {
-	normalized, err := normalizeRuleSet(RuleSet{"f": {Required()}})
+	normalized, err := normalizeRuleSet(Rules{"f": {Required()}})
 	if err != nil {
 		t.Fatalf("normalizeRuleSet: %v", err)
 	}
@@ -283,11 +283,11 @@ func TestRunNormalized_ExtraHandlerRejected(t *testing.T) {
 }
 
 func TestRunNormalized_AppliesMessageOverrides(t *testing.T) {
-	normalized, err := normalizeRuleSet(RuleSet{"email": {Required()}})
+	normalized, err := normalizeRuleSet(Rules{"email": {Required()}})
 	if err != nil {
 		t.Fatalf("normalizeRuleSet: %v", err)
 	}
-	result, err := runNormalized(map[string]interface{}{"email": ""}, normalized, nil, Messages{"email.required": "We need your email."})
+	result, err := runNormalized(map[string]interface{}{"email": ""}, normalized, nil, Messages{{Field: "email", Rule: "required"}: "We need your email."})
 	if err != nil {
 		t.Fatalf("runNormalized: %v", err)
 	}
@@ -297,7 +297,7 @@ func TestRunNormalized_AppliesMessageOverrides(t *testing.T) {
 }
 
 func TestValidateNormalized_RejectsUnsupportedData(t *testing.T) {
-	normalized, err := normalizeRuleSet(RuleSet{"f": {Required()}})
+	normalized, err := normalizeRuleSet(Rules{"f": {Required()}})
 	if err != nil {
 		t.Fatalf("normalizeRuleSet: %v", err)
 	}
@@ -307,7 +307,7 @@ func TestValidateNormalized_RejectsUnsupportedData(t *testing.T) {
 }
 
 func TestValidateNormalized_ReportsValidatedData(t *testing.T) {
-	normalized, err := normalizeRuleSet(RuleSet{"email": {Required(), Email()}})
+	normalized, err := normalizeRuleSet(Rules{"email": {Required(), Email()}})
 	if err != nil {
 		t.Fatalf("normalizeRuleSet: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestValidateNormalized_ReportsValidatedData(t *testing.T) {
 // sharedRules is a package-level rule set, the shape adopters are expected to
 // use. Rule values must be immutable so this can be normalized and evaluated
 // concurrently.
-var sharedRules = RuleSet{
+var sharedRules = Rules{
 	"email":    {Required(), Email()},
 	"password": {Required(), Min(8), Confirmed()},
 	"role":     {In("admin", "user")},
@@ -395,7 +395,7 @@ func TestSharedRuleSet_ConcurrentReuse(t *testing.T) {
 // validateField: a handler that writes to its params must not corrupt the
 // shared rule value.
 func TestSharedRuleSet_ParamsNotMutatedByHandlers(t *testing.T) {
-	rules := RuleSet{"f": {Custom("scribble", func(field string, value interface{}, params []string, data map[string]interface{}) error {
+	rules := Rules{"f": {Custom("scribble", func(field string, value interface{}, params []string, data map[string]interface{}) error {
 		for i := range params {
 			params[i] = "clobbered"
 		}
@@ -421,7 +421,7 @@ func TestSharedRuleSet_ParamsNotMutatedByHandlers(t *testing.T) {
 
 func TestIsNilRule(t *testing.T) {
 	var typedNil *nilableRule
-	var nilSet RuleSet
+	var nilSet Rules
 
 	tests := []struct {
 		name string
@@ -445,7 +445,7 @@ func TestIsNilRule(t *testing.T) {
 
 // nilRuleMap is a map-kinded rule implementation, used to cover the non-pointer
 // nil kinds isNilRule guards.
-type nilRuleMap RuleSet
+type nilRuleMap Rules
 
 func (n nilRuleMap) Rule() contract.ValidationRuleSpec {
 	return contract.ValidationRuleSpec{Name: "map"}
@@ -483,25 +483,37 @@ func TestRuleRegistry_RegisterErrors(t *testing.T) {
 	if err := reg.register("x", noopHandler); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if err := reg.register("x", noopHandler); err == nil {
-		t.Error("expected a duplicate-registration error")
+
+	// The public form reports; only the built-in bootstrap is allowed to
+	// treat a registration failure as fatal.
+	err := reg.Register("x", noopHandler)
+	if err == nil {
+		t.Fatal("expected a duplicate-registration error")
 	}
-	if err := reg.register("y", nil); err == nil {
+	if _, ok := err.(*contract.RegistrationError); !ok {
+		t.Errorf("error = %T, want *contract.RegistrationError", err)
+	}
+	if err := reg.Register("y", nil); err == nil {
 		t.Error("expected a nil-handler error")
 	}
+}
 
-	// The panicking public form is unchanged.
-	func() {
-		defer func() {
-			r := recover()
-			if r == nil {
-				t.Error("Register must still panic on a duplicate")
-				return
-			}
-			if _, ok := r.(*contract.RegistrationError); !ok {
-				t.Errorf("panic value = %T, want *contract.RegistrationError", r)
-			}
-		}()
-		reg.Register("x", noopHandler)
+// TestMustRegister_PanicsOnFrameworkDefect pins the one surviving panic: a
+// duplicate in the built-in table is a framework defect at construction, not
+// adopter input.
+func TestMustRegister_PanicsOnFrameworkDefect(t *testing.T) {
+	reg := &RuleRegistry{rules: make(map[string]RuleHandler)}
+	mustRegister(reg, "x", noopHandler)
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Error("mustRegister must panic on a duplicate")
+			return
+		}
+		if _, ok := r.(*contract.RegistrationError); !ok {
+			t.Errorf("panic value = %T, want *contract.RegistrationError", r)
+		}
 	}()
+	mustRegister(reg, "x", noopHandler)
 }

@@ -11,20 +11,24 @@ import (
 // the stdlib-only contract leaf.
 type Rule = contract.ValidationRule
 
-// RuleSet maps field names to the rules applied to that field. Canonical
+// Rules maps field names to the rules applied to that field. Canonical
 // declaration lives in the contract leaf as ValidationRuleSet.
 //
-//	rules := validation.RuleSet{
+//	rules := validation.Rules{
 //	    "email":    {validation.Required(), validation.Email()},
 //	    "password": {validation.Required(), validation.Min(8), validation.Confirmed()},
 //	}
-type RuleSet = contract.ValidationRuleSet
+type Rules = contract.ValidationRuleSet
 
 // MessageKey addresses one field+rule pair for message overrides.
 type MessageKey = contract.ValidationMessageKey
 
-// MessageSet maps a field+rule pair to a replacement message.
-type MessageSet = contract.ValidationMessageSet
+// Messages maps a field+rule pair to a replacement message.
+//
+//	messages := validation.Messages{
+//	    {Field: "email", Rule: "required"}: "We need your email.",
+//	}
+type Messages = contract.ValidationMessages
 
 // simpleRule is the immutable value behind every parameter-complete
 // constructor. Its params slice is never mutated after construction, so one

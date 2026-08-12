@@ -217,11 +217,14 @@ func TestCheckWithDB_UniqueExists_SQLite_EndToEnd(t *testing.T) {
 	// canonical Rules form (slice per field), exercising both unique and
 	// exists in a single CheckWithDB call.
 	rules := validation.Rules{
-		"email":   {"required", "unique:users,email"},
-		"team_id": {"required", "exists:teams,id"},
+		"email":   {validation.Required(), validation.Unique("users", "email")},
+		"team_id": {validation.Required(), validation.Exists("teams", "id")},
 	}
 
-	result := CheckWithDB(r, rules, db)
+	result, err := CheckWithDB(r, rules, db)
+	if err != nil {
+		t.Fatalf("unexpected rule-set error: %v", err)
+	}
 
 	// email should fail (already taken); team_id should pass (exists).
 	if !result.HasErrors() {

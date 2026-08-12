@@ -14,7 +14,7 @@ import (
 // instead of piling up goroutines + connections on the request hot path.
 //
 // Returns nil when db is nil so the core engine registers no DB rules and a
-// rules set referencing unique:/exists: simply has no handler for them
+// rules set referencing the unique / exists rules simply has no handler
 // (matching the previous "db == nil skips registration" behavior).
 func dbHandlers(ctx context.Context, db orm.Database) map[string]validation.RuleHandler {
 	if db == nil {
@@ -33,25 +33,25 @@ func dbHandlers(ctx context.Context, db orm.Database) map[string]validation.Rule
 // hot path.
 //
 // Prefer CheckWithDBW(w, r, ...) when a *http.ResponseWriter is available.
-func CheckWithDB(r *http.Request, rules validation.Rules, db orm.Database, messages ...validation.Messages) *validation.Result {
+func CheckWithDB(r *http.Request, rules validation.Rules, db orm.Database, messages ...validation.Messages) (*validation.Result, error) {
 	return CheckWithDBW(nil, r, rules, db, messages...)
 }
 
 // CheckWithDBW is CheckWithDB plus a *http.ResponseWriter for MaxBytesReader
 // wiring. See validation.CheckW for body-size handling.
-func CheckWithDBW(w http.ResponseWriter, r *http.Request, rules validation.Rules, db orm.Database, messages ...validation.Messages) *validation.Result {
+func CheckWithDBW(w http.ResponseWriter, r *http.Request, rules validation.Rules, db orm.Database, messages ...validation.Messages) (*validation.Result, error) {
 	return validation.CheckWithRulesW(w, r, rules, dbHandlers(r.Context(), db), messages...)
 }
 
 // CheckDataWithDB validates a data map with database rules available.
-func CheckDataWithDB(data map[string]interface{}, rules validation.Rules, db orm.Database, messages ...validation.Messages) *validation.Result {
+func CheckDataWithDB(data map[string]interface{}, rules validation.Rules, db orm.Database, messages ...validation.Messages) (*validation.Result, error) {
 	return CheckDataWithDBCtx(context.Background(), data, rules, db, messages...)
 }
 
 // CheckDataWithDBCtx is like CheckDataWithDB but uses the caller-supplied
 // context for unique/exists query cancellation. Use this in non-HTTP code
 // paths (workers, jobs) that still need to validate against the DB.
-func CheckDataWithDBCtx(ctx context.Context, data map[string]interface{}, rules validation.Rules, db orm.Database, messages ...validation.Messages) *validation.Result {
+func CheckDataWithDBCtx(ctx context.Context, data map[string]interface{}, rules validation.Rules, db orm.Database, messages ...validation.Messages) (*validation.Result, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}

@@ -68,8 +68,8 @@ jobs:
         run: go test -run=^$ -fuzz=FuzzJWTValidate -fuzztime=30s ./auth/
       - name: Fuzz redirect sanitizer
         run: go test -run=^$ -fuzz=FuzzSanitizeRedirect -fuzztime=30s ./router/
-      - name: Fuzz rule parser
-        run: go test -run=^$ -fuzz=FuzzParseRules -fuzztime=30s ./validation/
+      - name: Fuzz rule normalization
+        run: go test -run=^$ -fuzz=FuzzNormalizeRuleSet -fuzztime=30s ./validation/
       - name: Fuzz flash cookie decode
         run: go test -run=^$ -fuzz=FuzzReadFlashCookie -fuzztime=30s ./bond/
       - name: Fuzz CSRF token validate

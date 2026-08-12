@@ -8,7 +8,7 @@ import (
 // AsValidationError inspects err for a driver-specific UNIQUE-constraint
 // violation and, when one is detected, returns a *validation.ValidationErrors
 // keyed by the offending field with the same "has already been taken" message
-// the unique: validator rule would have produced.
+// the unique validator rule would have produced.
 //
 // fieldRules is a map of field name to rule name. Pass the rules that
 // correspond to columns covered by the UNIQUE constraint(s) you expect to
@@ -47,8 +47,8 @@ import (
 // failure that needs a 500".
 //
 // The detection and field-attribution logic lives once in
-// validation/internal/dbcheck and is shared with the deprecated core shims;
-// the typed *pq.Error / *mysql.MySQLError fast paths are supplied by the
+// validation/internal/dbcheck; the typed *pq.Error / *mysql.MySQLError
+// fast paths are supplied by the
 // classifier registry (validation.ClassifyUniqueViolation), which the
 // orm/postgres and orm/mysql leaves populate from init().
 func AsValidationError(err error, fieldRules map[string]string) (*validation.ValidationErrors, bool) {

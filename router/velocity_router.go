@@ -125,7 +125,7 @@ type VelocityRouterV2 struct {
 	ErrorHandler func(*Context, error)
 
 	// validateFn is wired during app init to run validation with DB support.
-	validateFn func(c *Context, rules map[string][]string, messages ...map[string]string) error
+	validateFn func(c *Context, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error
 
 	// errorLogger is wired during app init (see SetErrorLogger) so the
 	// default error path logs 500-class handler errors and recovered
@@ -212,7 +212,7 @@ func (r *VelocityRouterV2) AllowedRedirectHosts() []string {
 }
 
 // SetValidator sets the validation function used by ctx.Validate().
-func (r *VelocityRouterV2) SetValidator(fn func(c *Context, rules map[string][]string, messages ...map[string]string) error) {
+func (r *VelocityRouterV2) SetValidator(fn func(c *Context, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error) {
 	r.validateFn = fn
 }
 

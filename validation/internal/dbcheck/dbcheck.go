@@ -107,7 +107,7 @@ func Placeholder(driver string, n int) string {
 // UniqueRule returns a RuleHandler that checks database uniqueness against the
 // supplied driver and count seam.
 //
-// Syntax: unique:table,column[,except_id[,id_column]]
+// Parameters, in order: table, column, except id, id column.
 //
 // Raw DB errors are deliberately swallowed and replaced with a generic
 // "Unable to validate <field>." message: schema names, table existence, and
@@ -172,7 +172,7 @@ func UniqueRule(driver string, count CountFunc) contract.RuleHandler {
 // ExistsRule returns a RuleHandler that checks a value exists in the database
 // against the supplied driver and count seam.
 //
-// Syntax: exists:table,column
+// Parameters, in order: table, column.
 //
 // Same error handling as UniqueRule: the query runs through the count seam and
 // raw DB errors are suppressed in the client-visible message but logged via
@@ -219,7 +219,7 @@ func ExistsRule(driver string, count CountFunc) contract.RuleHandler {
 
 // AsValidationError inspects err for a UNIQUE-constraint violation and, when
 // one is detected, returns a *contract.ValidationErrors keyed by the offending
-// field with the same "has already been taken" message the unique: rule emits.
+// field with the same "has already been taken" message the unique rule emits.
 // classify is the typed-classifier seam (validation.ClassifyUniqueViolation);
 // when it does not match, the generic per-driver error-string fallback runs.
 //

@@ -45,8 +45,8 @@ type signupRequest struct {
 
 func (signupRequest) Rules() validation.Rules {
 	return validation.Rules{
-		"email":    {"required", "email"},
-		"password": {"required", "min:8"},
+		"email":    {validation.Required(), validation.Email()},
+		"password": {validation.Required(), validation.Min(8)},
 	}
 }
 
@@ -55,22 +55,21 @@ type signupRequestWithMessages struct {
 	signupRequest
 }
 
-func (signupRequestWithMessages) ValidationMessages() map[string]string {
-	return map[string]string{
-		"email.required": "Tell us your email.",
-		"password.min":   "Password too short.",
+func (signupRequestWithMessages) ValidationMessages() contract.ValidationMessages {
+	return validation.Messages{
+		{Field: "email", Rule: "required"}: "Tell us your email.",
+		{Field: "password", Rule: "min"}:   "Password too short.",
 	}
 }
 
-// signupPipeRequest exercises the legacy compatibility path: a single slice
-// element that itself contains pipe-delimited tokens.
+// signupPipeRequest is a second form request used by the multi-request tests.
 type signupPipeRequest struct {
 	Email string `json:"email"`
 }
 
 func (signupPipeRequest) Rules() validation.Rules {
 	return validation.Rules{
-		"email": {"required|email"},
+		"email": {validation.Required(), validation.Email()},
 	}
 }
 
@@ -229,13 +228,10 @@ func TestValidate_MultipleRulesPerField_StopsAtFirstError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Validate[T]: legacy pipe-string compatibility
+// Validate[T]: a second form request type
 // ---------------------------------------------------------------------------
 
-func TestValidate_PipeStringInSliceElement_StillWorks(t *testing.T) {
-	// signupPipeRequest uses {"required|email"}: single slice element with
-	// pipe-delimited rules. The validator's parseRuleSlice splits on '|'
-	// so this remains backward-compatible.
+func TestValidate_SecondFormRequestType_Validates(t *testing.T) {
 	ctx, _ := jsonCtx(t, `{"email":"a@b.com"}`)
 
 	_, result, err := Validate[signupPipeRequest](ctx)
@@ -375,23 +371,11 @@ type aliasFormRequest struct{}
 
 func (aliasFormRequest) Rules() validation.Rules {
 	return validation.Rules{
-		"email": {"required", "email"},
+		"email": {validation.Required(), validation.Email()},
 	}
 }
 
 var _ FormRequest = aliasFormRequest{}
-
-// Compile-time assertion: NewRules converts PipeRules to the canonical Rules
-// type, and the result satisfies the FormRequest contract.
-type pipeFormRequest struct{}
-
-func (pipeFormRequest) Rules() validation.Rules {
-	return validation.NewRules(validation.PipeRules{
-		"email": "required|email",
-	})
-}
-
-var _ FormRequest = pipeFormRequest{}
 
 func TestRules_AliasForm_CompilesAndValidates(t *testing.T) {
 	ctx, _ := jsonCtx(t, `{"email":"bad"}`)
@@ -404,108 +388,40 @@ func TestRules_AliasForm_CompilesAndValidates(t *testing.T) {
 	}
 }
 
-func TestRules_PipeFormViaNewRules_CompilesAndValidates(t *testing.T) {
-	ctx, _ := jsonCtx(t, `{"email":"bad"}`)
-	_, result, err := Validate[pipeFormRequest](ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result == nil || !result.HasErrors() {
-		t.Fatal("expected validation failure")
-	}
-}
-
-func TestRules_DirectLiteralAndNewRules_AreEquivalent(t *testing.T) {
-	a := validation.Rules{
-		"email": {"required", "email"},
-	}
-	b := validation.NewRules(validation.PipeRules{
-		"email": "required|email",
-	})
-	if len(a) != len(b) {
-		t.Fatalf("len mismatch: a=%d b=%d", len(a), len(b))
-	}
-	if len(a["email"]) != 2 || len(b["email"]) != 2 {
-		t.Fatalf("rule slice length mismatch: a=%v b=%v", a["email"], b["email"])
-	}
-	for i := range a["email"] {
-		if a["email"][i] != b["email"][i] {
-			t.Errorf("token %d: a=%q b=%q", i, a["email"][i], b["email"][i])
-		}
-	}
-}
-
-func TestNewRules_NilInput_ReturnsNil(t *testing.T) {
-	if got := validation.NewRules(nil); got != nil {
-		t.Errorf("expected nil, got %v", got)
-	}
-}
-
-func TestNewRules_EmptyMap_ReturnsEmptyRules(t *testing.T) {
-	got := validation.NewRules(validation.PipeRules{})
-	if got == nil {
-		t.Fatal("expected non-nil empty Rules")
-	}
-	if len(got) != 0 {
-		t.Errorf("expected empty Rules, got %v", got)
-	}
-}
-
-func TestNewRules_DropsEmptyTokens(t *testing.T) {
-	got := validation.NewRules(validation.PipeRules{
-		"x": "required||min:3| ",
-	})
-	if len(got["x"]) != 2 {
-		t.Errorf("expected 2 tokens after dropping empties, got %v", got["x"])
-	}
-	if got["x"][0] != "required" || got["x"][1] != "min:3" {
-		t.Errorf("unexpected tokens: %v", got["x"])
-	}
-}
-
 // ---------------------------------------------------------------------------
-// Validate[T]: plain map return type (alias regression guard)
+// Validate[T]: raw map return type (defined-type guard)
 // ---------------------------------------------------------------------------
 
-// plainMapRulesRequest declares Rules with the underlying map[string][]string
-// type rather than the canonical validation.Rules alias. Before validation.Rules
-// became a type alias, this exact shape silently failed the FormRequest
-// interface assertion and validation was skipped entirely. The compile-time
-// _ = FormRequest(...) assertion plus this runtime test guard against that
-// regression.
-type plainMapRulesRequest struct {
+// rawMapRulesRequest declares Rules with the map type underlying
+// validation.Rules rather than the defined type itself. The defined type is
+// what makes this a compile-time miss instead of a silent skip: it does not
+// satisfy FormRequest, and the guardrail in Validate[T] reports it instead of
+// binding without validation.
+type rawMapRulesRequest struct {
 	Email                string `json:"email"`
 	Password             string `json:"password"`
 	PasswordConfirmation string `json:"password_confirmation"`
 }
 
-func (plainMapRulesRequest) Rules() map[string][]string {
-	return map[string][]string{
-		"email":    {"required", "email"},
-		"password": {"required", "min:8", "confirmed"},
+func (rawMapRulesRequest) Rules() map[string][]contract.ValidationRule {
+	return map[string][]contract.ValidationRule{
+		"email":    {validation.Required(), validation.Email()},
+		"password": {validation.Required(), validation.Min(8), validation.Confirmed()},
 	}
 }
 
-// Compile-time check: plain map return type must satisfy FormRequest.
-var _ FormRequest = plainMapRulesRequest{}
-
-func TestValidate_PlainMapRulesReturnType_RunsValidation(t *testing.T) {
-	// password fails "confirmed" (no matching confirmation). If the alias
-	// fix regresses, this returns nil *Result and the assertion below trips.
+func TestValidate_RawMapRulesReturnType_IsReported(t *testing.T) {
 	ctx, _ := jsonCtx(t, `{"email":"a@b.com","password":"longenough","password_confirmation":"different"}`)
 
-	_, result, err := Validate[plainMapRulesRequest](ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	_, result, err := Validate[rawMapRulesRequest](ctx)
+	if err == nil {
+		t.Fatal("expected the mismatched Rules signature to be reported")
 	}
-	if result == nil {
-		t.Fatal("validation skipped: Rules() map[string][]string did not satisfy FormRequest interface (alias regression)")
+	if result != nil {
+		t.Error("no result should be produced for a rejected form request")
 	}
-	if !result.HasErrors() {
-		t.Fatal("expected confirmed-rule failure")
-	}
-	if result.First("password") == "" {
-		t.Error("expected password confirmation error")
+	if !strings.Contains(err.Error(), "does not satisfy vform.FormRequest") {
+		t.Errorf("error = %q, want the FormRequest guardrail message", err.Error())
 	}
 }
 

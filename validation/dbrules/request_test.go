@@ -22,10 +22,13 @@ func TestCheckWithDB_NilDB(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	result := CheckWithDB(r, validation.Rules{
-		"name":  {"required"},
-		"email": {"required|email"},
+	result, err := CheckWithDB(r, validation.Rules{
+		"name":  {validation.Required()},
+		"email": {validation.Required(), validation.Email()},
 	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected rule-set error: %v", err)
+	}
 
 	if result.HasErrors() {
 		t.Fatalf("expected no errors, got: %v", result.All())
@@ -39,10 +42,13 @@ func TestCheckWithDB_NilDB_Invalid(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	result := CheckWithDB(r, validation.Rules{
-		"name":  {"required"},
-		"email": {"required|email"},
+	result, err := CheckWithDB(r, validation.Rules{
+		"name":  {validation.Required()},
+		"email": {validation.Required(), validation.Email()},
 	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected rule-set error: %v", err)
+	}
 
 	if !result.HasErrors() {
 		t.Fatal("expected errors")
@@ -58,9 +64,12 @@ func TestCheckDataWithDB_NilDB_Valid(t *testing.T) {
 		"name": "Alice",
 	}
 
-	result := CheckDataWithDB(data, validation.Rules{
-		"name": {"required|min:3"},
+	result, err := CheckDataWithDB(data, validation.Rules{
+		"name": {validation.Required(), validation.Min(3)},
 	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected rule-set error: %v", err)
+	}
 
 	if result.HasErrors() {
 		t.Fatalf("expected no errors, got: %v", result.All())
@@ -72,9 +81,12 @@ func TestCheckDataWithDB_NilDB_Invalid(t *testing.T) {
 		"name": "Al",
 	}
 
-	result := CheckDataWithDB(data, validation.Rules{
-		"name": {"required|min:3"},
+	result, err := CheckDataWithDB(data, validation.Rules{
+		"name": {validation.Required(), validation.Min(3)},
 	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected rule-set error: %v", err)
+	}
 
 	if !result.HasErrors() {
 		t.Fatal("expected errors")

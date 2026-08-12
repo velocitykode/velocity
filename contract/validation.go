@@ -14,34 +14,12 @@ import (
 // fields were removed in the validation consolidation, use SetMessages to
 // override any message the built-in rules emit.
 type Validator interface {
-	Validate(data interface{}, rules ValidationRules) (*ValidatedData, error)
-	ValidateRequest(r *http.Request, rules ValidationRules) (*ValidatedData, error)
-	ValidateValue(value interface{}, rule string) error
-	RegisterRule(name string, handler RuleHandler)
+	Validate(data interface{}, rules ValidationRuleSet) (*ValidatedData, error)
+	ValidateRequest(r *http.Request, rules ValidationRuleSet) (*ValidatedData, error)
+	ValidateValue(value interface{}, rules ...ValidationRule) error
+	RegisterRule(name string, handler RuleHandler) error
 	SetMessages(messages ValidationMessages)
 }
-
-// ValidationRules defines validation rules per field. It is the canonical
-// adopter facing type and matches the shape returned by vform.FormRequest.Rules():
-// each field maps to a slice of individual rule strings.
-//
-//	rules := validation.Rules{
-//	    "email":    {"required", "email"},
-//	    "password": {"required", "min:8", "confirmed"},
-//	}
-//
-// ValidationRules is a type alias (not a defined type) so that adopter methods
-// declared with the underlying map type, e.g.
-//
-//	func (r *RegisterRequest) Rules() map[string][]string { ... }
-//
-// still satisfy interfaces declared against it (notably vform.FormRequest).
-// Using a defined type here would cause those methods to silently fail the
-// interface assertion in vform, skipping validation entirely.
-type ValidationRules = map[string][]string
-
-// ValidationMessages defines custom error messages.
-type ValidationMessages = map[string]string
 
 // RuleHandler defines a validation rule function.
 type RuleHandler func(field string, value interface{}, params []string, data map[string]interface{}) error
