@@ -70,7 +70,8 @@ type RouteParam struct {
 // Context wraps http.Request and http.ResponseWriter with helper methods.
 //
 // Router-owned wiring fields (services, trustedProxies,
-// redirectAllowedHosts, fileRoot, validateFn, intendedFn) flow through
+// redirectAllowedHosts, fileRoot, validateFn, validateDataFn, intendedFn)
+// flow through
 // ctxWiring; any new wiring field must be added to ctxWiring (and its
 // applyWiring/snapshotWiring methods) AND to reset().
 type Context struct {
@@ -97,6 +98,11 @@ type Context struct {
 	// by the router, the context never closes it.
 	fileRoot   *os.Root
 	validateFn func(c *Context, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error
+	// validateDataFn validates an already-extracted data map. Wired during
+	// app init via Router.SetDataValidator so the DB-backed rules are
+	// available to BindValid without router importing them. Nil outside a
+	// wired app; BindValid then falls back to the validator service.
+	validateDataFn func(c *Context, data map[string]interface{}, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error
 	// intendedFn pulls the post-login "intended" URL from the session.
 	// Wired during app init via Router.SetIntendedResolver so router need
 	// not import auth. Returns "" when nothing is stashed.
@@ -527,6 +533,7 @@ type ctxWiring struct {
 	redirectAllowedHosts []string
 	fileRoot             *os.Root
 	validateFn           func(c *Context, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error
+	validateDataFn       func(c *Context, data map[string]interface{}, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error
 	intendedFn           func(c *Context) string
 	insecureFlashCookies bool
 }
@@ -538,6 +545,7 @@ func (c *Context) applyWiring(w ctxWiring) {
 	c.redirectAllowedHosts = w.redirectAllowedHosts
 	c.fileRoot = w.fileRoot
 	c.validateFn = w.validateFn
+	c.validateDataFn = w.validateDataFn
 	c.intendedFn = w.intendedFn
 	c.insecureFlashCookies = w.insecureFlashCookies
 }
@@ -552,6 +560,7 @@ func (c *Context) snapshotWiring() ctxWiring {
 		redirectAllowedHosts: c.redirectAllowedHosts,
 		fileRoot:             c.fileRoot,
 		validateFn:           c.validateFn,
+		validateDataFn:       c.validateDataFn,
 		intendedFn:           c.intendedFn,
 		insecureFlashCookies: c.insecureFlashCookies,
 	}
@@ -573,6 +582,7 @@ func (c *Context) reset() {
 	c.redirectAllowedHosts = nil
 	c.fileRoot = nil
 	c.validateFn = nil
+	c.validateDataFn = nil
 	c.intendedFn = nil
 	c.insecureFlashCookies = false
 }
@@ -991,18 +1001,36 @@ type Validatable interface {
 }
 
 // BindValid binds JSON then validates using the struct's own rules (if any).
-// Panics if the validator service is not configured.
+// It returns the validation error; unlike ctx.Validate it neither flashes
+// errors nor redirects back.
+//
+// Rules run through the same seam vform uses when the app wires one
+// (Router.SetDataValidator), so DB-backed rules resolve here too. Without
+// that seam it falls back to the validator service, which resolves the
+// orm-free rule set only: a rule the validator cannot resolve is reported as
+// a configuration error, never as a field failure.
+//
+// Returns an error when neither the seam nor a validator service is wired.
 func (c *Context) BindValid(v interface{}) error {
 	if err := c.Bind(v); err != nil {
 		return err
 	}
-	validator := c.Validator()
-	if val, ok := v.(Validatable); ok {
-		dataMap := structToMap(v)
-		_, err := validator.Validate(dataMap, val.Rules())
-		return err
+	val, ok := v.(Validatable)
+	if !ok {
+		return nil
 	}
-	return nil
+
+	dataMap := structToMap(v)
+	if c.validateDataFn != nil {
+		return c.validateDataFn(c, dataMap, val.Rules())
+	}
+
+	s := c.ServicesIfSet()
+	if s == nil || s.Validator == nil {
+		return errors.New("velocity/router: validator not configured")
+	}
+	_, err := s.Validator.Validate(dataMap, val.Rules())
+	return err
 }
 
 // structToMap converts a struct (or pointer to struct) to map[string]interface{}

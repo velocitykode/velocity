@@ -733,6 +733,21 @@ func New(opts ...Option) (*App, error) {
 		return router.ErrValidationAborted
 	})
 
+	// Wire the data validator: ctx.BindValid validates an already-bound
+	// struct, so there is no request body to read here, but it must reach
+	// the same DB-backed rules ctx.Validate and vform do. The request
+	// context is threaded through so a slow unique/exists query is dropped
+	// when the client disconnects.
+	a.Router.SetDataValidator(func(c *router.Context, data map[string]interface{}, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error {
+		db, _ := c.DB().(orm.Database)
+		result, err := dbrules.CheckDataWithDBCtx(c.Request.Context(), data, rules, db, messages...)
+		if err != nil {
+			// Malformed rule set: a handler bug, not user input.
+			return err
+		}
+		return result.Err()
+	})
+
 	// Wire the intended-redirect resolver: ctx.Intended pulls the URL that
 	// auth's denyUnauthenticated stashed under router.IntendedSessionKey
 	// before bouncing the unauthenticated request to a clean /login.
