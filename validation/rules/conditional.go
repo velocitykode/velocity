@@ -44,38 +44,40 @@ func RequiredUnlessRule(field string, value interface{}, params []string, data m
 	return checkRequired(field, value)
 }
 
-// RequiredWithRule validates that a field is required when another field is present.
-// Usage: required_with:other_field
+// RequiredWithRule validates that a field is required when ANY of the listed
+// fields is present. Every parameter is honored.
+// Usage: required_with:other_field or required_with:phone,mobile
 func RequiredWithRule(field string, value interface{}, params []string, data map[string]interface{}) error {
 	if len(params) < 1 {
 		return fmt.Errorf("The required_with rule requires at least 1 parameter.")
 	}
 
-	otherField := params[0]
-
-	if _, exists := data[otherField]; !exists {
-		return nil
+	for _, otherField := range params {
+		if _, exists := data[otherField]; exists {
+			// One of the listed fields is present, this field is required.
+			return checkRequired(field, value)
+		}
 	}
 
-	// Other field is present — this field is required
-	return checkRequired(field, value)
+	return nil
 }
 
-// RequiredWithoutRule validates that a field is required when another field is absent.
-// Usage: required_without:other_field
+// RequiredWithoutRule validates that a field is required when ANY of the
+// listed fields is absent. Every parameter is honored.
+// Usage: required_without:other_field or required_without:phone,mobile
 func RequiredWithoutRule(field string, value interface{}, params []string, data map[string]interface{}) error {
 	if len(params) < 1 {
 		return fmt.Errorf("The required_without rule requires at least 1 parameter.")
 	}
 
-	otherField := params[0]
-
-	if _, exists := data[otherField]; exists {
-		return nil
+	for _, otherField := range params {
+		if _, exists := data[otherField]; !exists {
+			// One of the listed fields is absent, this field is required.
+			return checkRequired(field, value)
+		}
 	}
 
-	// Other field is absent — this field is required
-	return checkRequired(field, value)
+	return nil
 }
 
 // checkRequired checks that a value is present and not empty.
