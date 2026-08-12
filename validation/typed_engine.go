@@ -14,6 +14,14 @@ func (v *defaultValidator) validateNormalized(data interface{}, rs normalizedRul
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 
+	// Every handler this set needs is installed by now: the built-ins, the
+	// extras a Check helper supplied, and the ones the rules carry. A name
+	// that still does not resolve is a configuration bug, so it is reported
+	// here rather than evaluated into a field error.
+	if err := v.checkResolvable(rs); err != nil {
+		return nil, err
+	}
+
 	validated := contract.NewValidatedData()
 
 	dataMap, err := toMap(data)
@@ -39,9 +47,9 @@ func (v *defaultValidator) validateNormalized(data interface{}, rs normalizedRul
 // (unique, exists) here so the orm dependency stays out of this package.
 //
 // The returned error reports a rule set that cannot be run at all (an extra
-// handler that cannot be registered, or a carried handler that would shadow
-// one), which is distinct from field-level validation failures carried by
-// *Result.
+// handler that cannot be registered, a carried handler that would shadow one,
+// or a rule name nothing resolves), which is distinct from field-level
+// validation failures carried by *Result.
 func runNormalized(data map[string]interface{}, rs normalizedRuleSet, extra map[string]RuleHandler, messages ...Messages) (*Result, error) {
 	v := newDefaultValidator()
 
@@ -62,9 +70,12 @@ func runNormalized(data map[string]interface{}, rs normalizedRuleSet, extra map[
 
 	_, err := v.validateNormalized(data, rs)
 	if err != nil {
-		if ve, ok := err.(ValidationErrors); ok {
-			result.errors = ve.Errors
+		ve, ok := err.(ValidationErrors)
+		if !ok {
+			// Not a field-level failure: the set could not run at all.
+			return nil, err
 		}
+		result.errors = ve.Errors
 	}
 
 	return result, nil

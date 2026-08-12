@@ -15,7 +15,6 @@ package validation
 
 import (
 	"fmt"
-	"net/http"
 	"strings"
 	"sync"
 
@@ -45,18 +44,17 @@ func NewValidator() Validator {
 	return newDefaultValidator()
 }
 
-// newDefaultValidator builds a validator with the built-in rules registered,
-// keeping the concrete type for internal callers that need the normalized
-// rule-set entry points.
+// newDefaultValidator builds a validator, keeping the concrete type for
+// internal callers that need the normalized rule-set entry points. The
+// built-in rules are resolved from the shared table, so construction copies
+// nothing: this runs once per request on the Check helpers' path.
 func newDefaultValidator() *defaultValidator {
-	v := &defaultValidator{
+	return &defaultValidator{
 		registry: &ruleRegistry{
 			rules: make(map[string]RuleHandler),
 		},
 		messages: make(Messages),
 	}
-	registerBuiltInRules(v.registry)
-	return v
 }
 
 // Validate implements the Validator interface. It returns an error for a
@@ -70,26 +68,6 @@ func (v *defaultValidator) Validate(data interface{}, rules Rules) (*ValidatedDa
 	return v.validateNormalized(data, normalized)
 }
 
-// ValidateRequest validates an HTTP request
-func (v *defaultValidator) ValidateRequest(r *http.Request, rules Rules) (*ValidatedData, error) {
-	// Parse form data
-	if err := r.ParseForm(); err != nil {
-		return nil, fmt.Errorf("failed to parse form: %w", err)
-	}
-
-	// Convert form values to map
-	data := make(map[string]interface{})
-	for key, values := range r.Form {
-		if len(values) == 1 {
-			data[key] = values[0]
-		} else {
-			data[key] = values
-		}
-	}
-
-	return v.Validate(data, rules)
-}
-
 // ValidateValue validates a single value against the given rules. The value
 // has no field name, so messages and message-key lookups use "value".
 func (v *defaultValidator) ValidateValue(value interface{}, rules ...Rule) error {
@@ -100,6 +78,10 @@ func (v *defaultValidator) ValidateValue(value interface{}, rules ...Rule) error
 
 	v.mu.RLock()
 	defer v.mu.RUnlock()
+
+	if err := v.checkResolvable(normalized); err != nil {
+		return err
+	}
 
 	fieldRules := normalized.fields["value"]
 
@@ -128,7 +110,7 @@ func (v *defaultValidator) SetMessages(messages Messages) {
 // first failure on validated. Callers hold v.mu for reading. custom carries
 // the handlers supplied by the rule set itself and is consulted before the
 // registry.
-func (v *defaultValidator) validateFieldRules(validated *ValidatedData, dataMap map[string]interface{}, field string, fieldRules []parsedRule, custom map[string]RuleHandler) {
+func (v *defaultValidator) validateFieldRules(validated *ValidatedData, dataMap map[string]interface{}, field string, fieldRules []parsedRule, custom map[string]carriedRule) {
 	value := getFieldValue(dataMap, field)
 
 	// "nullable" short-circuit: a field carrying "nullable" whose value is
@@ -156,12 +138,11 @@ func (v *defaultValidator) validateFieldRules(validated *ValidatedData, dataMap 
 // the rule set win over the registry; normalization has already refused a
 // carried name that shadows a framework rule, so the overlay cannot hijack a
 // built-in.
-func (v *defaultValidator) validateField(field string, value interface{}, rule parsedRule, data map[string]interface{}, custom map[string]RuleHandler) error {
-	handler, exists := custom[rule.name]
+func (v *defaultValidator) validateField(field string, value interface{}, rule parsedRule, data map[string]interface{}, custom map[string]carriedRule) error {
+	handler, exists := v.resolve(rule.name, custom)
 	if !exists {
-		handler, exists = v.registry.get(rule.name)
-	}
-	if !exists {
+		// Unreachable: checkResolvable runs before evaluation and rejects
+		// a rule set naming a handler this validator cannot resolve.
 		return fmt.Errorf("unknown validation rule: %s", rule.name)
 	}
 
@@ -181,6 +162,33 @@ func (v *defaultValidator) validateField(field string, value interface{}, rule p
 		return err
 	}
 
+	return nil
+}
+
+// resolve finds the handler for a rule name. Handlers carried by the rule set
+// win over the ones installed on the validator; normalization has already
+// refused a carried name that shadows a framework rule, so the overlay cannot
+// hijack a built-in.
+func (v *defaultValidator) resolve(name string, custom map[string]carriedRule) (RuleHandler, bool) {
+	if carried, ok := custom[name]; ok {
+		return carried.handler, true
+	}
+	return v.registry.get(name)
+}
+
+// checkResolvable reports a rule set naming a handler this validator cannot
+// resolve. It runs after every handler is installed, so an unresolvable name
+// is a configuration bug (a typo, or a DB rule without a database wired) and
+// is reported to the caller instead of surfacing as a field error the end
+// user would see. Callers hold v.mu for reading.
+func (v *defaultValidator) checkResolvable(rs normalizedRuleSet) error {
+	for field, fieldRules := range rs.fields {
+		for _, rule := range fieldRules {
+			if _, ok := v.resolve(rule.name, rs.custom); !ok {
+				return fmt.Errorf("%w: field %q names rule %q, which is not registered", ErrInvalidRule, field, rule.name)
+			}
+		}
+	}
 	return nil
 }
 

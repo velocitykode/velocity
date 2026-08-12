@@ -12,34 +12,108 @@ import (
 // in the stdlib-only contract leaf.
 type RuleHandler = contract.RuleHandler
 
-// ruleRegistry holds the handlers one validator can resolve by name: the
-// built-ins, plus the DB-backed handlers a Check helper installs for the
+// builtinRules is the rule table every validator resolves against. It is a
+// package-level literal so a duplicate name is a compile error, not a runtime
+// failure mode, and it is never written after initialization, so validators
+// share it without synchronization.
+var builtinRules = map[string]RuleHandler{
+	// Presence rules
+	"required": requiredRule,
+	"nullable": nullableRule,
+	"filled":   filledRule,
+	"present":  presentRule,
+
+	// Type rules from rules package
+	"string":  rules.StringRule,
+	"integer": rules.IntegerRule,
+	"numeric": rules.NumericRule,
+	"boolean": rules.BooleanRule,
+	"array":   rules.ArrayRule,
+
+	// String rules from rules package
+	"email":      rules.EmailRule,
+	"url":        rules.URLRule,
+	"url_public": rules.URLPublicRule,
+	"alpha":      rules.AlphaRule,
+	"alpha_dash": rules.AlphaDashRule,
+	"alpha_num":  rules.AlphaNumRule,
+
+	// Size rules from rules package
+	"min":     rules.MinRule,
+	"max":     rules.MaxRule,
+	"size":    rules.SizeRule,
+	"between": rules.BetweenRule,
+
+	// Comparison rules from rules package
+	"same":      rules.SameRule,
+	"different": rules.DifferentRule,
+	"in":        rules.InRule,
+	"not_in":    rules.NotInRule,
+	"confirmed": rules.ConfirmedRule,
+	"accepted":  rules.AcceptedRule,
+
+	// Conditional rules from rules package
+	"required_if":      rules.RequiredIfRule,
+	"required_unless":  rules.RequiredUnlessRule,
+	"required_with":    rules.RequiredWithRule,
+	"required_without": rules.RequiredWithoutRule,
+
+	// Date and time rules
+	"date":        rules.DateRule,
+	"date_format": rules.DateFormatRule,
+	"timezone":    rules.TimezoneRule,
+
+	// Network rules
+	"ip":   rules.IPRule,
+	"ipv4": rules.IPv4Rule,
+	"ipv6": rules.IPv6Rule,
+
+	// Format rules
+	"regex": rules.RegexRule,
+	"json":  rules.JSONRule,
+	"uuid":  rules.UUIDRule,
+	"ulid":  rules.ULIDRule,
+
+	// String prefix/suffix/password rules
+	"starts_with": rules.StartsWithRule,
+	"ends_with":   rules.EndsWithRule,
+	"password":    rules.PasswordRule,
+
+	// Numeric comparison rules
+	"gt":  rules.GtRule,
+	"gte": rules.GteRule,
+	"lt":  rules.LtRule,
+	"lte": rules.LteRule,
+
+	// File rules (require values to be *multipart.FileHeader or equivalent).
+	"file":  rules.FileRule,
+	"mimes": rules.MimesRule,
+	"image": rules.ImageRule,
+}
+
+// ruleRegistry holds the handlers installed on one validator beyond the
+// built-in table: the DB-backed handlers a Check helper supplies for the
 // duration of one run. Rules an adopter writes carry their own handler
 // (see Custom), so nothing outside this package registers into it.
 //
-// The registry is safe for concurrent use: register acquires a write lock
-// and get acquires a read lock. This matters because app.Services.Validator
-// is a long-lived singleton shared across every handler goroutine.
+// Lookups fall back to builtinRules, which is immutable, so construction
+// copies nothing. The per-validator map is mutex-guarded because
+// app.Services.Validator is a long-lived singleton shared across every
+// handler goroutine.
 type ruleRegistry struct {
 	mu    sync.RWMutex
 	rules map[string]RuleHandler
 }
 
-// mustRegister registers a built-in rule during validator construction. A
-// failure here is a framework defect in the built-in table, not adopter
-// input, so it is unrecoverable.
-func mustRegister(r *ruleRegistry, name string, handler RuleHandler) {
-	if err := r.register(name, handler); err != nil {
-		panic(err)
-	}
-}
-
-// register reports a nil handler or a name that is already taken. It runs on
-// caller-supplied handlers (the Check helpers' extra map), so it reports
-// rather than panics.
+// register reports a nil handler, a name already taken on this validator, or
+// a name that shadows a built-in. It runs on caller-supplied handlers (the
+// Check helpers' extra map), so it reports rather than panics.
 func (r *ruleRegistry) register(name string, handler RuleHandler) error {
 	if handler == nil {
 		return contract.NewRegistrationError("validation", fmt.Sprintf("nil handler for rule %q", name))
+	}
+	if _, builtin := builtinRules[name]; builtin {
+		return contract.NewRegistrationError("validation", fmt.Sprintf("rule %q already registered", name))
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -50,88 +124,17 @@ func (r *ruleRegistry) register(name string, handler RuleHandler) error {
 	return nil
 }
 
-// get retrieves a validation rule handler
+// get retrieves a validation rule handler, preferring the handlers installed
+// on this validator over the built-in table.
 func (r *ruleRegistry) get(name string) (RuleHandler, bool) {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
 	handler, exists := r.rules[name]
+	r.mu.RUnlock()
+	if exists {
+		return handler, true
+	}
+	handler, exists = builtinRules[name]
 	return handler, exists
-}
-
-// registerBuiltInRules registers all built-in validation rules on the given registry.
-func registerBuiltInRules(reg *ruleRegistry) {
-	// Presence rules
-	mustRegister(reg, "required", requiredRule)
-	mustRegister(reg, "nullable", nullableRule)
-	mustRegister(reg, "filled", filledRule)
-	mustRegister(reg, "present", presentRule)
-
-	// Type rules from rules package
-	mustRegister(reg, "string", rules.StringRule)
-	mustRegister(reg, "integer", rules.IntegerRule)
-	mustRegister(reg, "numeric", rules.NumericRule)
-	mustRegister(reg, "boolean", rules.BooleanRule)
-	mustRegister(reg, "array", rules.ArrayRule)
-
-	// String rules from rules package
-	mustRegister(reg, "email", rules.EmailRule)
-	mustRegister(reg, "url", rules.URLRule)
-	mustRegister(reg, "url_public", rules.URLPublicRule)
-	mustRegister(reg, "alpha", rules.AlphaRule)
-	mustRegister(reg, "alpha_dash", rules.AlphaDashRule)
-	mustRegister(reg, "alpha_num", rules.AlphaNumRule)
-
-	// Size rules from rules package
-	mustRegister(reg, "min", rules.MinRule)
-	mustRegister(reg, "max", rules.MaxRule)
-	mustRegister(reg, "size", rules.SizeRule)
-	mustRegister(reg, "between", rules.BetweenRule)
-
-	// Comparison rules from rules package
-	mustRegister(reg, "same", rules.SameRule)
-	mustRegister(reg, "different", rules.DifferentRule)
-	mustRegister(reg, "in", rules.InRule)
-	mustRegister(reg, "not_in", rules.NotInRule)
-	mustRegister(reg, "confirmed", rules.ConfirmedRule)
-	mustRegister(reg, "accepted", rules.AcceptedRule)
-
-	// Conditional rules from rules package
-	mustRegister(reg, "required_if", rules.RequiredIfRule)
-	mustRegister(reg, "required_unless", rules.RequiredUnlessRule)
-	mustRegister(reg, "required_with", rules.RequiredWithRule)
-	mustRegister(reg, "required_without", rules.RequiredWithoutRule)
-
-	// Date and time rules
-	mustRegister(reg, "date", rules.DateRule)
-	mustRegister(reg, "date_format", rules.DateFormatRule)
-	mustRegister(reg, "timezone", rules.TimezoneRule)
-
-	// Network rules
-	mustRegister(reg, "ip", rules.IPRule)
-	mustRegister(reg, "ipv4", rules.IPv4Rule)
-	mustRegister(reg, "ipv6", rules.IPv6Rule)
-
-	// Format rules
-	mustRegister(reg, "regex", rules.RegexRule)
-	mustRegister(reg, "json", rules.JSONRule)
-	mustRegister(reg, "uuid", rules.UUIDRule)
-	mustRegister(reg, "ulid", rules.ULIDRule)
-
-	// String prefix/suffix/password rules
-	mustRegister(reg, "starts_with", rules.StartsWithRule)
-	mustRegister(reg, "ends_with", rules.EndsWithRule)
-	mustRegister(reg, "password", rules.PasswordRule)
-
-	// Numeric comparison rules
-	mustRegister(reg, "gt", rules.GtRule)
-	mustRegister(reg, "gte", rules.GteRule)
-	mustRegister(reg, "lt", rules.LtRule)
-	mustRegister(reg, "lte", rules.LteRule)
-
-	// File rules (require values to be *multipart.FileHeader or equivalent).
-	mustRegister(reg, "file", rules.FileRule)
-	mustRegister(reg, "mimes", rules.MimesRule)
-	mustRegister(reg, "image", rules.ImageRule)
 }
 
 // requiredRule validates that a field is present and not empty

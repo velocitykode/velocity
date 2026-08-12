@@ -114,8 +114,9 @@ func Validate[T any](ctx *router.Context) (*T, *Result, error) {
 // safeDB returns the ORM database from ctx.Services without panicking when
 // either the services container or the DB field is nil. This lets adopters
 // run vform in test contexts (no DB), in API-only handlers (no DB rules),
-// or before service wiring completes; database rules (unique/exists) simply
-// short-circuit when no DB is attached.
+// or before service wiring completes. A rule set that names Unique or Exists
+// with no database attached has no handler for them, which Validate reports
+// as an error rather than failing the field.
 func safeDB(ctx *router.Context) orm.Database {
 	s := ctx.ServicesIfSet()
 	if s == nil || s.DB == nil {
@@ -178,7 +179,7 @@ func mismatchedRulesMethod(req any) (string, bool) {
 	}
 	t := m.Type()
 	// Compatible: zero inputs (method value already binds receiver), one
-	// output of type validation.Rules (which is map[string][]string).
+	// output of type validation.Rules.
 	if t.NumIn() == 0 && t.NumOut() == 1 && t.Out(0) == reflect.TypeOf(validation.Rules(nil)) {
 		return "", false
 	}

@@ -22,7 +22,15 @@ var ErrInvalidRule = errors.New("velocity/validation: invalid rule")
 // parameters carrying ',' or '|' survive intact.
 type normalizedRuleSet struct {
 	fields map[string][]parsedRule
-	custom map[string]RuleHandler
+	custom map[string]carriedRule
+}
+
+// carriedRule is a handler supplied by the rule set itself, kept with the
+// rule value that supplied it so a second rule claiming the same name can be
+// told apart from the same rule value reused across fields.
+type carriedRule struct {
+	handler RuleHandler
+	source  contract.ValidationRule
 }
 
 // handlerCarrier is implemented by rule values that are expected to supply
@@ -39,14 +47,11 @@ type selfValidatingRule interface {
 	validateRule() error
 }
 
-// builtinRuleNames is the set of rule names the engine registers on every
-// validator, derived from the registration function itself so the two
-// cannot drift.
+// builtinRuleNames is the set of rule names every validator resolves,
+// derived from the rule table itself so the two cannot drift.
 var builtinRuleNames = func() map[string]struct{} {
-	reg := &ruleRegistry{rules: make(map[string]RuleHandler)}
-	registerBuiltInRules(reg)
-	names := make(map[string]struct{}, len(reg.rules))
-	for name := range reg.rules {
+	names := make(map[string]struct{}, len(builtinRules))
+	for name := range builtinRules {
 		names[name] = struct{}{}
 	}
 	return names
@@ -115,7 +120,7 @@ func normalizeRuleSet(rs contract.ValidationRuleSet) (normalizedRuleSet, error) 
 				return normalizedRuleSet{}, fmt.Errorf("%w: custom rule %q on field %q has a nil handler", ErrInvalidRule, spec.Name, field)
 			}
 			if spec.Handler != nil {
-				if err := out.carry(field, spec); err != nil {
+				if err := out.carry(field, r, spec); err != nil {
 					return normalizedRuleSet{}, err
 				}
 			}
@@ -130,32 +135,42 @@ func normalizeRuleSet(rs contract.ValidationRuleSet) (normalizedRuleSet, error) 
 	return out, nil
 }
 
-// carry records a self-carrying handler for later registration on the
-// validator that runs the set.
-func (n *normalizedRuleSet) carry(field string, spec contract.ValidationRuleSpec) error {
+// carry records a self-carrying handler so the engine can resolve the rule.
+//
+// One name maps to one handler per rule set. Reusing a single rule value
+// across fields is legal; two distinct rule values claiming the same name are
+// rejected, because nothing in a map traversal decides which handler wins.
+// Go cannot compare functions, so the test is rule-value identity, not
+// handler identity.
+func (n *normalizedRuleSet) carry(field string, r contract.ValidationRule, spec contract.ValidationRuleSpec) error {
 	if isReservedRuleName(spec.Name) {
 		return fmt.Errorf("%w: custom rule %q on field %q shadows a built-in rule", ErrInvalidRule, spec.Name, field)
 	}
 	if n.custom == nil {
-		n.custom = make(map[string]RuleHandler, 1)
+		n.custom = make(map[string]carriedRule, 1)
 	}
 	if existing, ok := n.custom[spec.Name]; ok {
-		if !sameHandler(existing, spec.Handler) {
-			return fmt.Errorf("%w: custom rule %q is declared with two different handlers", ErrInvalidRule, spec.Name)
+		if !sameRuleValue(existing.source, r) {
+			return fmt.Errorf("%w: custom rule %q is declared by two different rule values", ErrInvalidRule, spec.Name)
 		}
 		return nil
 	}
-	n.custom[spec.Name] = spec.Handler
+	n.custom[spec.Name] = carriedRule{handler: spec.Handler, source: r}
 	return nil
 }
 
-// sameHandler reports whether two handlers refer to the same function.
-// Go cannot compare funcs, so identity is the code pointer: two closures
-// created from one function literal compare equal even when they captured
-// different variables. Treating those as the same rule is the conservative
-// outcome, it keeps a legitimate repeated rule from being rejected.
-func sameHandler(a, b RuleHandler) bool {
-	return reflect.ValueOf(a).Pointer() == reflect.ValueOf(b).Pointer()
+// sameRuleValue reports whether two rule values are the same instance.
+// Custom returns a pointer, so reuse of one value compares equal while two
+// separately built rules never do. A dynamic type that Go cannot compare
+// (a struct holding a slice or a func) reports false rather than panicking
+// on ==: an adopter rule value that cannot prove its identity is treated as
+// a distinct declaration, which errors instead of silently picking one.
+func sameRuleValue(a, b contract.ValidationRule) bool {
+	av, bv := reflect.ValueOf(a), reflect.ValueOf(b)
+	if av.Type() != bv.Type() || !av.Comparable() {
+		return false
+	}
+	return a == b
 }
 
 // isNilRule reports whether r is nil or a typed nil, which would panic on
