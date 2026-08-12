@@ -32,7 +32,7 @@ type ValidatedData = contract.ValidatedData
 
 // defaultValidator is the default validator implementation
 type defaultValidator struct {
-	registry *RuleRegistry
+	registry *ruleRegistry
 	messages Messages
 	mu       sync.RWMutex
 }
@@ -50,23 +50,13 @@ func NewValidator() Validator {
 // rule-set entry points.
 func newDefaultValidator() *defaultValidator {
 	v := &defaultValidator{
-		registry: &RuleRegistry{
+		registry: &ruleRegistry{
 			rules: make(map[string]RuleHandler),
 		},
 		messages: make(Messages),
 	}
 	registerBuiltInRules(v.registry)
 	return v
-}
-
-// RegisterRule registers a custom validation rule on this validator instance.
-// It reports an error for a nil handler or a name that is already taken;
-// adopters that build rules dynamically get an error rather than a panic.
-//
-// A rule built with Custom() carries its own handler and needs no
-// registration; use this for app-wide rules referenced by name.
-func (v *defaultValidator) RegisterRule(name string, handler RuleHandler) error {
-	return v.registry.register(name, handler)
 }
 
 // Validate implements the Validator interface. It returns an error for a
@@ -169,7 +159,7 @@ func (v *defaultValidator) validateFieldRules(validated *ValidatedData, dataMap 
 func (v *defaultValidator) validateField(field string, value interface{}, rule parsedRule, data map[string]interface{}, custom map[string]RuleHandler) error {
 	handler, exists := custom[rule.name]
 	if !exists {
-		handler, exists = v.registry.Get(rule.name)
+		handler, exists = v.registry.get(rule.name)
 	}
 	if !exists {
 		return fmt.Errorf("unknown validation rule: %s", rule.name)

@@ -635,9 +635,7 @@ func TestValidationErrors(t *testing.T) {
 	}
 }
 
-func TestRegisterCustomRule(t *testing.T) {
-	v := NewValidator()
-
+func TestCustomRule_ResolvesFromCarriedHandlerAndRegistry(t *testing.T) {
 	uppercase := func(field string, value interface{}, params []string, data map[string]interface{}) error {
 		str, ok := value.(string)
 		if !ok {
@@ -649,23 +647,19 @@ func TestRegisterCustomRule(t *testing.T) {
 		return nil
 	}
 
-	// Register a custom rule on the validator instance. A rule set reaches
-	// it through a rule value naming it; a rule built with Custom carries
-	// its own handler and needs no registration at all.
-	if err := v.RegisterRule("uppercase", uppercase); err != nil {
-		t.Fatalf("RegisterRule: %v", err)
-	}
-	if err := v.RegisterRule("uppercase", uppercase); err == nil {
-		t.Error("re-registering a name must report an error")
-	}
-	if err := v.RegisterRule("nil_handler", nil); err == nil {
-		t.Error("a nil handler must report an error")
-	}
+	// A rule built with Custom carries its handler, so it runs on a shared
+	// long-lived validator without registering anything.
+	carried := Rules{"code": {Custom("uppercase", uppercase)}}
 
-	registered := Rules{"code": {staticRule{spec: contract.ValidationRuleSpec{Name: "uppercase"}}}}
-	carried := Rules{"code": {Custom("uppercase_carried", uppercase)}}
+	// The registry is the framework's own path: the DB-backed handlers are
+	// installed this way and reached by name from Unique() / Exists().
+	v := newDefaultValidator()
+	if err := v.registry.register("uppercase", uppercase); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	byName := Rules{"code": {staticRule{spec: contract.ValidationRuleSpec{Name: "uppercase"}}}}
 
-	for name, rules := range map[string]Rules{"registered": registered, "carried": carried} {
+	for name, rules := range map[string]Rules{"carried": carried, "by name": byName} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := v.Validate(map[string]interface{}{"code": "ABC"}, rules); err != nil {
 				t.Errorf("Unexpected error for uppercase value: %v", err)
@@ -878,13 +872,13 @@ func BenchmarkNormalizeRuleSet(b *testing.B) {
 	}
 }
 
-// TestRuleRegistry_ConcurrentRegisterAndGet stresses RuleRegistry under
-// simultaneous Register and Get calls. Before the registry grew an internal
+// TestRuleRegistry_ConcurrentRegisterAndGet stresses the registry under
+// simultaneous register and get calls. Before the registry grew an internal
 // RWMutex, this would trip Go's runtime concurrent-map detector and abort the
 // test binary with "fatal error: concurrent map read and map write" under
 // -race. It must pass cleanly now.
 func TestRuleRegistry_ConcurrentRegisterAndGet(t *testing.T) {
-	v := NewValidator()
+	v := newDefaultValidator()
 
 	const (
 		writers = 8
@@ -901,7 +895,7 @@ func TestRuleRegistry_ConcurrentRegisterAndGet(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < writes; i++ {
 				name := fmt.Sprintf("rule_w%d_i%d", id, i)
-				if err := v.RegisterRule(name, func(field string, value interface{}, params []string, data map[string]interface{}) error {
+				if err := v.registry.register(name, func(field string, value interface{}, params []string, data map[string]interface{}) error {
 					return nil
 				}); err != nil {
 					panic(err)
@@ -915,7 +909,7 @@ func TestRuleRegistry_ConcurrentRegisterAndGet(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < reads; i++ {
 				// "required" is always present from registerBuiltInRules;
-				// exercising Get on a known rule keeps the read path hot.
+				// exercising the read path on a known rule keeps it hot.
 				_ = v.ValidateValue("x", Required())
 			}
 		}()

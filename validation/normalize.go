@@ -43,7 +43,7 @@ type selfValidatingRule interface {
 // validator, derived from the registration function itself so the two
 // cannot drift.
 var builtinRuleNames = func() map[string]struct{} {
-	reg := &RuleRegistry{rules: make(map[string]RuleHandler)}
+	reg := &ruleRegistry{rules: make(map[string]RuleHandler)}
 	registerBuiltInRules(reg)
 	names := make(map[string]struct{}, len(reg.rules))
 	for name := range reg.rules {

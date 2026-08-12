@@ -12,38 +12,32 @@ import (
 // in the stdlib-only contract leaf.
 type RuleHandler = contract.RuleHandler
 
-// RuleRegistry manages validation rules.
+// ruleRegistry holds the handlers one validator can resolve by name: the
+// built-ins, plus the DB-backed handlers a Check helper installs for the
+// duration of one run. Rules an adopter writes carry their own handler
+// (see Custom), so nothing outside this package registers into it.
 //
-// The registry is safe for concurrent use: Register acquires a write lock and
-// Get acquires a read lock. This matters because app.Services.Validator is a
-// long-lived singleton shared across every handler goroutine, and adopters
-// may call RegisterRule from lazily initialized code paths while requests are
-// already running.
-type RuleRegistry struct {
+// The registry is safe for concurrent use: register acquires a write lock
+// and get acquires a read lock. This matters because app.Services.Validator
+// is a long-lived singleton shared across every handler goroutine.
+type ruleRegistry struct {
 	mu    sync.RWMutex
 	rules map[string]RuleHandler
-}
-
-// Register registers a validation rule. It returns a *contract.RegistrationError
-// if handler is nil or a rule with the same name is already registered.
-//
-// Registration runs on adopter input (a rule name built at runtime), so it
-// reports rather than panics.
-func (r *RuleRegistry) Register(name string, handler RuleHandler) error {
-	return r.register(name, handler)
 }
 
 // mustRegister registers a built-in rule during validator construction. A
 // failure here is a framework defect in the built-in table, not adopter
 // input, so it is unrecoverable.
-func mustRegister(r *RuleRegistry, name string, handler RuleHandler) {
+func mustRegister(r *ruleRegistry, name string, handler RuleHandler) {
 	if err := r.register(name, handler); err != nil {
 		panic(err)
 	}
 }
 
-// register is the internal form shared by Register and mustRegister.
-func (r *RuleRegistry) register(name string, handler RuleHandler) error {
+// register reports a nil handler or a name that is already taken. It runs on
+// caller-supplied handlers (the Check helpers' extra map), so it reports
+// rather than panics.
+func (r *ruleRegistry) register(name string, handler RuleHandler) error {
 	if handler == nil {
 		return contract.NewRegistrationError("validation", fmt.Sprintf("nil handler for rule %q", name))
 	}
@@ -56,8 +50,8 @@ func (r *RuleRegistry) register(name string, handler RuleHandler) error {
 	return nil
 }
 
-// Get retrieves a validation rule handler
-func (r *RuleRegistry) Get(name string) (RuleHandler, bool) {
+// get retrieves a validation rule handler
+func (r *ruleRegistry) get(name string) (RuleHandler, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	handler, exists := r.rules[name]
@@ -65,7 +59,7 @@ func (r *RuleRegistry) Get(name string) (RuleHandler, bool) {
 }
 
 // registerBuiltInRules registers all built-in validation rules on the given registry.
-func registerBuiltInRules(reg *RuleRegistry) {
+func registerBuiltInRules(reg *ruleRegistry) {
 	// Presence rules
 	mustRegister(reg, "required", requiredRule)
 	mustRegister(reg, "nullable", nullableRule)
