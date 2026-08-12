@@ -20,7 +20,7 @@ func (TestUser) TableName() string {
 	return "test_users"
 }
 
-func (TestUser) Fillable() []string {
+func (TestUser) AssignableFields() []string {
 	return []string{"name", "email", "age", "is_active"}
 }
 
@@ -231,7 +231,7 @@ func (TestProject) TableName() string {
 	return "test_projects"
 }
 
-func (TestProject) Fillable() []string {
+func (TestProject) AssignableFields() []string {
 	return []string{"name", "description"}
 }
 
@@ -691,30 +691,30 @@ func TestStructToMap_MapToStruct_RoundTrip(t *testing.T) {
 	}
 }
 
-// guardedLegacyColumnModel pairs a column-tagged field with a Guarded()
+// protectedLegacyColumnModel pairs a column-tagged field with a ProtectedFields()
 // denylist keyed on the snake_case'd Go FIELD NAME (the user-facing
 // contract), not the column name. Used to verify mass-assignment protection
 // stays consistent regardless of column-tag renaming.
-type guardedLegacyColumnModel struct {
-	Model[guardedLegacyColumnModel]
+type protectedLegacyColumnModel struct {
+	Model[protectedLegacyColumnModel]
 	RenamedField string `orm:"column:legacy_xyz"`
 	Plain        string
 }
 
-func (guardedLegacyColumnModel) TableName() string { return "guarded_legacy_column_models" }
-func (guardedLegacyColumnModel) Guarded() []string {
+func (protectedLegacyColumnModel) TableName() string { return "protected_legacy_column_models" }
+func (protectedLegacyColumnModel) ProtectedFields() []string {
 	// Users protect by Go field name (snake_case), not by column.
 	return []string{"renamed_field"}
 }
 
-// TestMapToStruct_GuardedHonorsFieldNameNotColumn is the regression test for
-// the reviewer-flagged bug: mapToStruct must look up fillable/guarded sets
-// by the snake_case'd Go field name (consistent with applyFillableToStruct
-// and the user-facing Fillable()/Guarded() contract), even when the field
+// TestMapToStruct_ProtectedHonorsFieldNameNotColumn is the regression test for
+// the reviewer-flagged bug: mapToStruct must look up assignable/protected sets
+// by the snake_case'd Go field name (consistent with applyAssignmentAccessToStruct
+// and the user-facing AssignableFields()/ProtectedFields() contract), even when the field
 // is column-tagged. Otherwise an attacker could bypass guards by submitting
 // the column key.
-func TestMapToStruct_GuardedHonorsFieldNameNotColumn(t *testing.T) {
-	var dst guardedLegacyColumnModel
+func TestMapToStruct_ProtectedHonorsFieldNameNotColumn(t *testing.T) {
+	var dst protectedLegacyColumnModel
 	src := map[string]any{
 		"legacy_xyz": "evil", // column key (would slip past column-keyed guard)
 		"plain":      "ok",
@@ -723,30 +723,30 @@ func TestMapToStruct_GuardedHonorsFieldNameNotColumn(t *testing.T) {
 		t.Fatalf("mapToStruct: %v", err)
 	}
 	if dst.RenamedField != "" {
-		t.Errorf("RenamedField must remain empty: Guarded()=[\"renamed_field\"] should block legacy_xyz too; got %q", dst.RenamedField)
+		t.Errorf("RenamedField must remain empty: ProtectedFields()=[\"renamed_field\"] should block legacy_xyz too; got %q", dst.RenamedField)
 	}
 	if dst.Plain != "ok" {
-		t.Errorf("Plain (not guarded) should be set; got %q", dst.Plain)
+		t.Errorf("Plain (not protected) should be set; got %q", dst.Plain)
 	}
 }
 
-// fillableLegacyColumnModel is the Fillable counterpart: the allowlist is
+// assignableLegacyColumnModel is the Assignable counterpart: the allowlist is
 // keyed on the field name. mapToStruct must respect that even though the
 // map uses the column key.
-type fillableLegacyColumnModel struct {
-	Model[fillableLegacyColumnModel]
+type assignableLegacyColumnModel struct {
+	Model[assignableLegacyColumnModel]
 	RenamedField string `orm:"column:legacy_xyz"`
 	Plain        string
 }
 
-func (fillableLegacyColumnModel) TableName() string { return "fillable_legacy_column_models" }
-func (fillableLegacyColumnModel) Fillable() []string {
-	// Only "plain" is fillable; "renamed_field" is NOT in the allowlist.
+func (assignableLegacyColumnModel) TableName() string { return "assignable_legacy_column_models" }
+func (assignableLegacyColumnModel) AssignableFields() []string {
+	// Only "plain" is assignable; "renamed_field" is NOT in the allowlist.
 	return []string{"plain"}
 }
 
-func TestMapToStruct_FillableHonorsFieldNameNotColumn(t *testing.T) {
-	var dst fillableLegacyColumnModel
+func TestMapToStruct_AssignableHonorsFieldNameNotColumn(t *testing.T) {
+	var dst assignableLegacyColumnModel
 	src := map[string]any{
 		"legacy_xyz": "evil",
 		"plain":      "ok",
@@ -755,10 +755,10 @@ func TestMapToStruct_FillableHonorsFieldNameNotColumn(t *testing.T) {
 		t.Fatalf("mapToStruct: %v", err)
 	}
 	if dst.RenamedField != "" {
-		t.Errorf("RenamedField must remain empty: Fillable()=[\"plain\"] should reject legacy_xyz; got %q", dst.RenamedField)
+		t.Errorf("RenamedField must remain empty: AssignableFields()=[\"plain\"] should reject legacy_xyz; got %q", dst.RenamedField)
 	}
 	if dst.Plain != "ok" {
-		t.Errorf("Plain (fillable) should be set; got %q", dst.Plain)
+		t.Errorf("Plain (assignable) should be set; got %q", dst.Plain)
 	}
 }
 

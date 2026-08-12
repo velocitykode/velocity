@@ -346,8 +346,8 @@ type afterCommitModel struct {
 	Name string `orm:"column:name"`
 }
 
-func (afterCommitModel) TableName() string  { return "tx_hook_models" }
-func (afterCommitModel) Fillable() []string { return []string{"name"} }
+func (afterCommitModel) TableName() string          { return "tx_hook_models" }
+func (afterCommitModel) AssignableFields() []string { return []string{"name"} }
 
 var afterCommitFired struct {
 	mu       sync.Mutex
@@ -692,8 +692,8 @@ type panickingAfterCommitModel struct {
 	Name string
 }
 
-func (panickingAfterCommitModel) TableName() string  { return "tx_hook_models" }
-func (panickingAfterCommitModel) Fillable() []string { return []string{"name"} }
+func (panickingAfterCommitModel) TableName() string          { return "tx_hook_models" }
+func (panickingAfterCommitModel) AssignableFields() []string { return []string{"name"} }
 
 func (m *panickingAfterCommitModel) AfterCommit(ctx context.Context) error {
 	panic("inline AfterCommit boom")

@@ -14,7 +14,7 @@ type txHookModel struct {
 }
 
 func (txHookModel) TableName() string { return "tx_hook_models" }
-func (txHookModel) Fillable() []string {
+func (txHookModel) AssignableFields() []string {
 	return []string{"name"}
 }
 
@@ -25,8 +25,8 @@ type auditLog struct {
 	Message string `orm:"column:message"`
 }
 
-func (auditLog) TableName() string  { return "audit_logs" }
-func (auditLog) Fillable() []string { return []string{"message"} }
+func (auditLog) TableName() string          { return "audit_logs" }
+func (auditLog) AssignableFields() []string { return []string{"message"} }
 
 // hooksFiredOnTx records hook invocations for the tests below. Local
 // package-level mutation is fine because the tests are single-threaded

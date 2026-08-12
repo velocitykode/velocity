@@ -25,9 +25,9 @@ type Admin struct {
 	RecallToken sql.NullString `orm:"column:recall_token"`
 }
 
-// Fillable declares a mass-assignment policy so the remember-token write is
-// not rejected by the ORM's deny-by-default gate.
-func (Admin) Fillable() []string { return []string{"username", "pass_hash", "recall_token"} }
+// AssignableFields declares a mass-assignment policy so the remember-token
+// write is not rejected by the ORM's deny-by-default rule.
+func (Admin) AssignableFields() []string { return []string{"username", "pass_hash", "recall_token"} }
 
 // Operator covers the *string carrier for the remember-token column.
 type Operator struct {
@@ -38,11 +38,11 @@ type Operator struct {
 	Recall   *string `orm:"column:remember_token"`
 }
 
-// Guarded declares an empty denylist, which is the other way out of
+// ProtectedFields declares an empty denylist, which is the other way out of
 // deny-by-default.
-func (Operator) Guarded() []string { return nil }
+func (Operator) ProtectedFields() []string { return nil }
 
-// NoPolicy declares neither Fillable nor Guarded, so every map-based write
+// NoPolicy declares neither AssignableFields nor ProtectedFields, so every map-based write
 // against it is rejected by the ORM.
 type NoPolicy struct {
 	orm.IDInt[NoPolicy]
@@ -59,9 +59,11 @@ type NoPrimaryKey struct {
 	RememberToken string `orm:"column:remember_token"`
 }
 
-// Fillable satisfies the mass-assignment gate so the primary-key failure is
-// the one the test observes.
-func (NoPrimaryKey) Fillable() []string { return []string{"email", "password", "remember_token"} }
+// AssignableFields satisfies the mass-assignment policy so the primary-key
+// failure is the one the test observes.
+func (NoPrimaryKey) AssignableFields() []string {
+	return []string{"email", "password", "remember_token"}
+}
 
 // BadTypes carries a remember-token column that cannot hold a string.
 type BadTypes struct {
@@ -72,8 +74,8 @@ type BadTypes struct {
 	RememberToken int    `orm:"column:remember_token"`
 }
 
-// Fillable satisfies the mass-assignment gate.
-func (BadTypes) Fillable() []string { return []string{"email", "password", "remember_token"} }
+// AssignableFields satisfies the mass-assignment policy.
+func (BadTypes) AssignableFields() []string { return []string{"email", "password", "remember_token"} }
 
 const adminsSchema = `CREATE TABLE admins (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,

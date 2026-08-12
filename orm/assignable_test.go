@@ -2,8 +2,8 @@ package orm
 
 import "testing"
 
-// assignableModel declares a Assignable allowlist. Only "name" may be
-// mass-assigned — "role" must be zeroed by applyAssignmentPolicyToStruct even
+// assignableModel declares an assignable allowlist. Only "name" may be
+// mass-assigned - "role" must be zeroed by applyAssignmentAccessToStruct even
 // when the caller pre-populates the struct.
 type assignableModel struct {
 	Model[assignableModel]
@@ -61,8 +61,8 @@ func TestApplyAssignableToStruct_AssignableAllowlist(t *testing.T) {
 		Name: "alice",
 		Role: "admin",
 	}
-	if err := applyAssignmentPolicyToStruct(m); err != nil {
-		t.Fatalf("applyAssignmentPolicyToStruct: %v", err)
+	if err := applyAssignmentAccessToStruct(m); err != nil {
+		t.Fatalf("applyAssignmentAccessToStruct: %v", err)
 	}
 	if m.Name != "alice" {
 		t.Errorf("Name zeroed unexpectedly: %q", m.Name)
@@ -79,8 +79,8 @@ func TestApplyAssignableToStruct_ProtectedDenylist(t *testing.T) {
 		Name: "alice",
 		Role: "admin",
 	}
-	if err := applyAssignmentPolicyToStruct(m); err != nil {
-		t.Fatalf("applyAssignmentPolicyToStruct: %v", err)
+	if err := applyAssignmentAccessToStruct(m); err != nil {
+		t.Fatalf("applyAssignmentAccessToStruct: %v", err)
 	}
 	if m.Name != "alice" {
 		t.Errorf("Name zeroed unexpectedly: %q", m.Name)
@@ -101,15 +101,15 @@ func (plainModel) TableName() string { return "plain_models" }
 
 func TestApplyAssignableToStruct_NoPolicyNoOp(t *testing.T) {
 	m := &plainModel{Name: "alice"}
-	if err := applyAssignmentPolicyToStruct(m); err != nil {
-		t.Fatalf("applyAssignmentPolicyToStruct: %v", err)
+	if err := applyAssignmentAccessToStruct(m); err != nil {
+		t.Fatalf("applyAssignmentAccessToStruct: %v", err)
 	}
 	if m.Name != "alice" {
 		t.Errorf("Name unexpectedly modified: %q", m.Name)
 	}
 }
 
-func TestAssignmentPolicyAllows_DocumentsMassAssignmentDefaults(t *testing.T) {
+func TestAssignmentAccessAllows_DocumentsMassAssignmentDefaults(t *testing.T) {
 	tests := []struct {
 		name     string
 		model    any

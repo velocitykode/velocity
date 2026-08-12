@@ -14,14 +14,14 @@ func ({{ .ModelName }}) TableName() string {
 	return "{{ .TableName }}"
 }
 
-// Fillable is the mass-assignment allowlist: only the fields listed here
-// (snake_case Go field names) may be set from a client-supplied map via
+// AssignableFields is the mass-assignment allowlist: only the fields listed
+// here (snake_case Go field names) may be set from a client-supplied map via
 // Create(map) / FirstOrCreate / UpdateOrCreate. Mass assignment is
-// deny-by-default: a model that declares neither Fillable() nor Guarded()
-// rejects every map-based write with an error. Use Guarded() instead if you
-// prefer a denylist, or opt a model out entirely with
-// AllowAllColumns() bool { return true }.
-func ({{ .ModelName }}) Fillable() []string {
+// deny-by-default: a model that declares neither AssignableFields() nor
+// ProtectedFields() rejects every map-based write with an error. Use
+// ProtectedFields() instead if you prefer a denylist, or opt a model out
+// entirely with AllowAllColumns() bool { return true }.
+func ({{ .ModelName }}) AssignableFields() []string {
 	return []string{
 		// "name",
 		// "email",

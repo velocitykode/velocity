@@ -124,7 +124,7 @@ func TestORMUserStore_BuildsWithoutInstalling(t *testing.T) {
 	}
 }
 
-// noPolicyModel declares neither Fillable nor Guarded, so the ORM rejects
+// noPolicyModel declares neither Assignable nor Protected, so the ORM rejects
 // every map-based write against it - including the remember-token update.
 type noPolicyModel struct {
 	orm.IDInt[noPolicyModel]

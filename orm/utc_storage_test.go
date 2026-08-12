@@ -18,7 +18,7 @@ type tzStorageRecord struct {
 
 func (tzStorageRecord) TableName() string { return "tz_storage_records" }
 
-func (tzStorageRecord) Fillable() []string { return []string{"name"} }
+func (tzStorageRecord) AssignableFields() []string { return []string{"name"} }
 
 // TestUTCStorage_NonUTCHost is the regression test for the storage
 // contract: a writer whose process timezone is not UTC must store the same

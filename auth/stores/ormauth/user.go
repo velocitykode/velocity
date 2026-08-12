@@ -32,10 +32,10 @@ type User struct {
 	RememberToken *string `orm:"column:remember_token" json:"-"`
 }
 
-// Fillable declares the mass-assignment allowlist. Without a declared
+// AssignableFields declares the mass-assignment allowlist. Without a declared
 // policy the ORM denies every map-based write, which would reject the
 // remember-token update.
-func (User) Fillable() []string {
+func (User) AssignableFields() []string {
 	return []string{"name", "email", "password", "remember_token"}
 }
 
