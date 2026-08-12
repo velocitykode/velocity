@@ -29,14 +29,18 @@ func TestTimeoutClonePropagatesFullWiring(t *testing.T) {
 	r.SetValidator(func(c *Context, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error {
 		return nil
 	})
+	r.SetDataValidator(func(c *Context, data map[string]interface{}, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error {
+		return nil
+	})
 	r.Use(Timeout(time.Second))
 
-	var sawFileRoot, sawIntendedFn, sawValidateFn bool
+	var sawFileRoot, sawIntendedFn, sawValidateFn, sawValidateDataFn bool
 	var intended string
 	r.Get("/probe", func(c *Context) error {
 		sawFileRoot = c.fileRoot != nil
 		sawIntendedFn = c.intendedFn != nil
 		sawValidateFn = c.validateFn != nil
+		sawValidateDataFn = c.validateDataFn != nil
 		intended = c.Intended("/fallback")
 		return c.File("hello.txt")
 	})
@@ -52,6 +56,9 @@ func TestTimeoutClonePropagatesFullWiring(t *testing.T) {
 	}
 	if !sawValidateFn {
 		t.Error("Timeout clone missing validateFn")
+	}
+	if !sawValidateDataFn {
+		t.Error("Timeout clone missing validateDataFn")
 	}
 	if intended != "/from-session" {
 		t.Errorf("Intended under Timeout: expected /from-session, got %q", intended)
@@ -76,13 +83,17 @@ func TestNotFoundContextGetsFullWiring(t *testing.T) {
 	r.SetValidator(func(c *Context, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error {
 		return nil
 	})
+	r.SetDataValidator(func(c *Context, data map[string]interface{}, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error {
+		return nil
+	})
 
-	var sawFileRoot, sawIntendedFn, sawValidateFn bool
+	var sawFileRoot, sawIntendedFn, sawValidateFn, sawValidateDataFn bool
 	r.Use(func(next HandlerFunc) HandlerFunc {
 		return func(c *Context) error {
 			sawFileRoot = c.fileRoot != nil
 			sawIntendedFn = c.intendedFn != nil
 			sawValidateFn = c.validateFn != nil
+			sawValidateDataFn = c.validateDataFn != nil
 			return next(c)
 		}
 	})
@@ -99,6 +110,9 @@ func TestNotFoundContextGetsFullWiring(t *testing.T) {
 	}
 	if !sawIntendedFn {
 		t.Error("not-found context missing intendedFn")
+	}
+	if !sawValidateDataFn {
+		t.Error("not-found context missing validateDataFn")
 	}
 	if !sawValidateFn {
 		t.Error("not-found context missing validateFn")

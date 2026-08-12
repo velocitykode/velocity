@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -834,22 +835,90 @@ func (v validatableStruct) Rules() validation.Rules {
 	}
 }
 
-func TestContext_BindValid_NoServices_Panics(t *testing.T) {
+// TestContext_BindValid_Unwired pins the unwired behaviour: BindValid runs
+// per request, so a missing validator is reported, not fatal.
+func TestContext_BindValid_Unwired(t *testing.T) {
 	body := `{"name":"John","email":"john@example.com"}`
 	req := httptest.NewRequest("POST", "/test", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	c := NewContext(w, req)
 
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic when validator service not configured")
-		}
-	}()
+	var data validatableStruct
+	err := c.BindValid(&data)
+	if err == nil {
+		t.Fatal("expected an error when no validator is wired")
+	}
+	if !strings.Contains(err.Error(), "validator not configured") {
+		t.Errorf("error = %q, want the not-configured message", err.Error())
+	}
+}
+
+// TestContext_BindValid_UsesDataValidatorSeam pins that BindValid prefers the
+// router seam, which is where the DB-backed rules live: without it, a rule set
+// naming Unique could not resolve here while the same struct validated fine
+// through vform.
+func TestContext_BindValid_UsesDataValidatorSeam(t *testing.T) {
+	body := `{"name":"John","email":"john@example.com"}`
+	req := httptest.NewRequest("POST", "/test", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	c := NewContext(w, req)
+	// A validator service is present too; the seam must win.
+	c.services = &app.Services{Validator: validation.NewValidator()}
+
+	var gotData map[string]interface{}
+	var gotRules validation.Rules
+	sentinel := errors.New("seam ran")
+	c.validateDataFn = func(_ *Context, data map[string]interface{}, rules contract.ValidationRuleSet, _ ...contract.ValidationMessages) error {
+		gotData, gotRules = data, rules
+		return sentinel
+	}
 
 	var data validatableStruct
-	c.BindValid(&data)
+	if err := c.BindValid(&data); !errors.Is(err, sentinel) {
+		t.Fatalf("BindValid error = %v, want the seam's error", err)
+	}
+	if gotData["name"] != "John" || gotData["email"] != "john@example.com" {
+		t.Errorf("seam received %#v, want the bound struct as a data map", gotData)
+	}
+	if len(gotRules["email"]) != 2 {
+		t.Errorf("seam received rules %#v, want the struct's own rules", gotRules)
+	}
+}
+
+// dbRuleStruct names a DB-backed rule, which only the seam can resolve.
+type dbRuleStruct struct {
+	Email string `json:"email"`
+}
+
+func (dbRuleStruct) Rules() validation.Rules {
+	return validation.Rules{"email": {validation.Required(), validation.Unique("users", "email")}}
+}
+
+// TestContext_BindValid_DBRuleWithoutSeam documents the fallback: the core
+// validator resolves the orm-free rule set only, so a DB rule with no seam
+// wired is reported as a configuration error rather than failing the field.
+func TestContext_BindValid_DBRuleWithoutSeam(t *testing.T) {
+	body := `{"email":"john@example.com"}`
+	req := httptest.NewRequest("POST", "/test", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	c := NewContext(w, req)
+	c.services = &app.Services{Validator: validation.NewValidator()}
+
+	var data dbRuleStruct
+	err := c.BindValid(&data)
+	if err == nil {
+		t.Fatal("expected an error for a DB rule with no seam wired")
+	}
+	if !errors.Is(err, validation.ErrInvalidRule) {
+		t.Errorf("error does not wrap ErrInvalidRule: %v", err)
+	}
+	var verr validation.ValidationErrors
+	if errors.As(err, &verr) {
+		t.Error("an unresolvable rule must not surface as field errors")
+	}
 }
 
 func TestContext_BindValid_WithValidator(t *testing.T) {
@@ -2103,6 +2172,9 @@ func TestContext_reset_clearsAllFields(t *testing.T) {
 		validateFn: func(c *Context, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error {
 			return nil
 		},
+		validateDataFn: func(c *Context, data map[string]interface{}, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error {
+			return nil
+		},
 	}
 
 	c.reset()
@@ -2133,6 +2205,9 @@ func TestContext_reset_clearsAllFields(t *testing.T) {
 	}
 	if c.validateFn != nil {
 		t.Error("reset did not clear validateFn")
+	}
+	if c.validateDataFn != nil {
+		t.Error("reset did not clear validateDataFn")
 	}
 }
 

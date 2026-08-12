@@ -48,9 +48,13 @@ pre-split, so a parameter may contain any character, including `,` and `|`.
   `CheckW` / `CheckData`, `dbrules.Check*`, `Validator.Validate`, and
   `Validator.ValidateValue(value, rules...)`. `vform.FormRequest` is an alias
   for `router.Validatable`, so one form struct serves both `ctx.BindValid` and
-  `vform.Form`. Request bodies are read through the body-limited seam
+  `vform.Form`, and both reach the DB-backed rules: `ctx.BindValid` validates
+  through `Router.SetDataValidator`, the callback seam `velocity.New` wires to
+  `dbrules.CheckDataWithDBCtx` (router itself imports neither the validation
+  engine nor orm). Request bodies are read through the body-limited seam
   (`CheckW`, `dbrules.CheckWithDBW`), which wraps the read with
-  `http.MaxBytesReader`.
+  `http.MaxBytesReader`. `ctx.BindValid` returns an error when no validator is
+  wired.
 
 - **Message overrides are keyed by field and rule:**
   `validation.Messages{{Field: "email", Rule: "required"}: "We need your email."}`,

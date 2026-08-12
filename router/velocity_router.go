@@ -126,6 +126,9 @@ type VelocityRouterV2 struct {
 
 	// validateFn is wired during app init to run validation with DB support.
 	validateFn func(c *Context, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error
+	// validateDataFn is wired during app init so ctx.BindValid validates an
+	// extracted data map with the same DB support.
+	validateDataFn func(c *Context, data map[string]interface{}, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error
 
 	// errorLogger is wired during app init (see SetErrorLogger) so the
 	// default error path logs 500-class handler errors and recovered
@@ -209,6 +212,17 @@ func (r *VelocityRouterV2) AllowedRedirectHosts() []string {
 	out := make([]string, len(r.RedirectAllowedHosts))
 	copy(out, r.RedirectAllowedHosts)
 	return out
+}
+
+// SetDataValidator sets the function used by ctx.BindValid() to validate an
+// already-extracted data map. It carries the same callback seam as
+// SetValidator so the DB-backed rules stay behind it and router imports
+// neither the validation engine nor orm.
+//
+// Like SetValidator, this must be called before serving begins; it is read
+// per request without synchronization.
+func (r *VelocityRouterV2) SetDataValidator(fn func(c *Context, data map[string]interface{}, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error) {
+	r.validateDataFn = fn
 }
 
 // SetValidator sets the validation function used by ctx.Validate().
@@ -901,6 +915,7 @@ func (r *VelocityRouterV2) currentWiring() ctxWiring {
 		redirectAllowedHosts: r.RedirectAllowedHosts,
 		fileRoot:             r.FileRootHandle(),
 		validateFn:           r.validateFn,
+		validateDataFn:       r.validateDataFn,
 		intendedFn:           r.intendedFn,
 		insecureFlashCookies: r.services != nil && r.services.InsecureFlashCookies,
 	}
