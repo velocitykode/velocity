@@ -81,7 +81,8 @@ type FailedJobRecord struct {
 // DefaultRetryAfter is the lease duration applied to a row reserved by a
 // worker. After this elapses without an Ack / Release / FailReserved the
 // row becomes eligible for reclamation by the next PopCtxReserved call.
-// The value mirrors Laravel's `retry_after` default (90 seconds).
+// 90s is long enough for a typical handler to finish and short enough
+// that a killed worker's rows recover promptly.
 const DefaultRetryAfter = 90 * time.Second
 
 // Compile-time assertion that DatabaseDriver implements all the
@@ -411,9 +412,9 @@ func (d *DatabaseDriver) popSelectLocked(ctx context.Context, queueName string, 
 	now := time.Now().UTC()
 	reclaimCutoff := now.Add(-d.retryAfter())
 
-	// Reservation predicate (Laravel parity): a row is poppable if it is
-	// unreserved and due, OR its lease has expired (reserved_at older
-	// than retryAfter). The latter clause is what makes the queue
+	// Reservation predicate: a row is poppable if it is unreserved and
+	// due, OR its lease has expired (reserved_at older than
+	// retryAfter). The latter clause is what makes the queue
 	// recoverable after a SIGKILL, OOM, or pod eviction; no separate
 	// reaper goroutine is required. The delete-mode path uses the same
 	// predicate so a stuck-reserved row can still be drained by an admin
@@ -518,9 +519,8 @@ func (d *DatabaseDriver) popSelectLocked(ctx context.Context, queueName string, 
 
 	case popModeReserve:
 		// Reserve the row. attempts is bumped here so the column
-		// reflects the durable retry budget across process restarts,
-		// matching Laravel's markJobAsReserved semantics. The
-		// post-increment value is computed in Go (jobRecord.Attempts
+		// reflects the durable retry budget across process restarts.
+		// The post-increment value is computed in Go (jobRecord.Attempts
 		// was loaded inside the same tx under the row lock, so it
 		// cannot have been advanced by a concurrent worker) and
 		// surfaced on the ReservationToken; the worker uses it as the
@@ -579,7 +579,8 @@ func (d *DatabaseDriver) AckCtx(ctx context.Context, token ReservationToken) err
 //
 // NB: this updates the existing row in place; it does NOT call
 // PushDelayedCtx. The persisted attempts counter therefore survives the
-// retry, which is the desired Laravel semantics.
+// retry, which is the desired semantics: a released job keeps burning
+// down its attempt budget rather than starting over.
 func (d *DatabaseDriver) ReleaseCtx(ctx context.Context, token ReservationToken, delay time.Duration) error {
 	if token.IsZero() {
 		return nil

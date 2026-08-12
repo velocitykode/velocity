@@ -922,11 +922,11 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 		rotator.ClearXSRFCookie(w, r)
 	}
 
-	// Cycle the persisted remember-me token (H-06 fix). Laravel's
-	// SessionScheme::logout calls cycleRememberToken on every individual
-	// logout precisely so a stolen remember cookie is not later
-	// replayable against the user's account. Velocity used to clear the
-	// remember cookie on the client only (via clearRememberCookie below);
+	// Cycle the persisted remember-me token (H-06 fix). Every individual
+	// logout cycles the stored token precisely so a stolen remember
+	// cookie is not later replayable against the user's account.
+	// Velocity used to clear the remember cookie on the client only
+	// (via clearRememberCookie below);
 	// the server-side users.remember_token survived intact, so a captured
 	// remember-cookie + the post-logout request could re-authenticate.
 	//

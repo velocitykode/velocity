@@ -97,7 +97,7 @@ func (tc *TestCase) RefreshDatabase() {
 }
 
 // BeginTransaction provides transaction-rollback test isolation, the fast
-// equivalent of Laravel's RefreshDatabase trait:
+// alternative to refreshing the whole database between tests:
 //  1. Runs migrations ONCE per test suite (not per test).
 //  2. Opens a transaction and returns a context carrying it. Every ORM call
 //     (and every *Ctx assertion) that receives this context enrolls in the

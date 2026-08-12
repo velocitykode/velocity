@@ -78,10 +78,9 @@ func modelTypeFor[T any]() reflect.Type {
 // The scope fn receives the per-call ctx and the *Query[T]; it MUST
 // mutate q in place (q.Where(...) etc.). It does not return the query:
 // a returned replacement pointer would be silently dropped, which is a
-// footgun. This matches Eloquent's addGlobalScope(Scope) shape, where
-// Scope::apply returns void. ctx is the same context.Context passed to
-// the terminal that triggered the apply, so scopes can read tenant /
-// actor / locale values plumbed through ctx.
+// footgun. ctx is the same context.Context passed to the terminal that
+// triggered the apply, so scopes can read tenant / actor / locale values
+// plumbed through ctx.
 //
 // Re-registering an existing name replaces the prior function. Pass a
 // nil fn to remove a scope.

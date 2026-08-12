@@ -218,12 +218,10 @@ func (s *Schedule) Cron(expression string) *Schedule {
 
 // Days sets specific days of the month.
 //
-// Velocity's Days() targets the day-of-month cron field. Note this
-// diverges from Laravel's days() helper, which targets day-of-week
-// (and accepts Sunday=0 .. Saturday=6). Velocity exposes day-of-week
-// constants via Sundays() / Mondays() / ... / Weekdays() / Weekends()
-// instead. Day-of-month values outside 1-31 are rejected with
-// ErrInvalidDayOfMonth; the error is stored on the schedule and
+// Days() targets the day-of-month cron field, NOT day-of-week. Velocity
+// exposes day-of-week constants via Sundays() / Mondays() / ... /
+// Weekdays() / Weekends() instead. Day-of-month values outside 1-31 are
+// rejected with ErrInvalidDayOfMonth; the error is stored on the schedule and
 // surfaced by Scheduler.ValidateJobs (and the Run loop) so callers see
 // the misconfiguration at boot time, not at the first tick.
 func (s *Schedule) Days(days ...int) *Schedule {

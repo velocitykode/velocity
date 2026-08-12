@@ -47,8 +47,8 @@ type Job struct {
 
 	// withoutOverlappingTTL is the TTL of the distributed lock acquired
 	// when WithoutOverlapping() is set. Zero means use the scheduler's
-	// default (24h, matching Laravel's $expiresAt = 1440 minutes). Set via
-	// WithoutOverlappingFor(d) for finer-grained control. The lock is
+	// default (24h). Set via WithoutOverlappingFor(d) for finer-grained
+	// control. The lock is
 	// always released on Job.Run exit (normal, error, or panic); the TTL
 	// is the upper bound the lock can be held by a crashed process.
 	withoutOverlappingTTL time.Duration
@@ -1026,15 +1026,15 @@ func (j *Job) overlapLockKey() string {
 // The key embeds the scheduled minute (in the scheduler's timezone) so
 // each cron tick gets a fresh contest -- exactly one host wins per minute,
 // any host that misses the tick (e.g. due to load) cannot starve future
-// ticks. Matches Laravel's CacheSchedulingMutex (`<mutexName><time->Hi>`).
+// ticks. The key shape is `<prefix>:<jobName>:<scheduledMinute>`.
 // Callers MUST hold no Job mutex; this method takes its own RLock.
 func (j *Job) oneServerLockKey(scheduledMinute time.Time) string {
 	j.mu.RLock()
 	name := j.name
 	j.mu.RUnlock()
-	// Format like Laravel's `Hi` (HHMM) but include the date so a stuck
-	// 1h-TTL lock from a different day cannot accidentally gate today's
-	// run. RFC 3339 minute precision is sufficient and unambiguous.
+	// A bare HHMM stamp would let a stuck 1h-TTL lock from a different
+	// day accidentally gate today's run, so the date is included too.
+	// RFC 3339 minute precision is sufficient and unambiguous.
 	return "velocity/scheduler/oneserver:" + name + ":" + scheduledMinute.Format("2006-01-02T15:04")
 }
 

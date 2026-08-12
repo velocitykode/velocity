@@ -207,8 +207,8 @@ func (s *BaseSession) Regenerate() error {
 // Without rotation an attacker who learned the old ID (logged elsewhere,
 // browser history, etc.) could re-submit it before the store flushes the
 // deletion and a downstream layer that rebuilds a session by ID would
-// reattach to the old identifier. Mirrors Laravel's Session::invalidate
-// (which delegates to migrate(destroy=true) and produces a new id).
+// reattach to the old identifier. Invalidate is therefore a destroy plus
+// an ID migration, not just a data wipe.
 //
 // A regenerate failure is non-fatal: the session is still marked
 // destroyed, the bags are cleared, and the id is forced to empty so the

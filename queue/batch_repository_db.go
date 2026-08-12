@@ -22,9 +22,9 @@ import (
 var ErrBatchRepositoryClosed = errors.New("velocity/queue: batch repository is closed")
 
 // DefaultReaperInterval is the period between sweeps of undispatched
-// callbacks. 15s matches Laravel's behaviour and is short enough that a
-// transient Redis outage recovers within a few ticks; long enough that
-// the SELECT on job_batches is not a hot loop on idle apps. Override
+// callbacks. 15s is short enough that a transient Redis outage recovers
+// within a few ticks; long enough that the SELECT on job_batches is not
+// a hot loop on idle apps. Override
 // via NewDatabaseBatchRepositoryWithReaperInterval when wiring a
 // repository whose backing queue has a different SLA.
 const DefaultReaperInterval = 15 * time.Second

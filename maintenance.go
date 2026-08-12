@@ -223,8 +223,8 @@ func appendUniquePath(ps []string, p string) []string {
 // configured exclude entries. Match is prefix-only and deliberately strict:
 // "/healthz" excludes "/healthz" and "/healthz/anything"; "/healthz" does
 // NOT exclude "/healthzoo" because the next char after the prefix must be
-// the end of the path or a "/". Mirrors how Laravel's Except() matcher
-// behaves for non-wildcard entries.
+// the end of the path or a "/". Entries are matched literally: no
+// wildcard or glob expansion is applied.
 func matchesExcludePath(reqPath string, excludes []string) bool {
 	for _, e := range excludes {
 		if reqPath == e {

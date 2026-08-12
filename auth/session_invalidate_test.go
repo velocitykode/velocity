@@ -7,7 +7,7 @@ import (
 
 // TestBaseSessionInvalidate_RotatesID verifies that Invalidate() rotates
 // the session ID so a caller holding the pre-invalidate id cannot reuse
-// it to rehydrate state. Mirrors Laravel's Session::invalidate semantics.
+// it to rehydrate state.
 //
 // Audit M-05: an attacker who learned the old ID (logged elsewhere,
 // remote leak, downstream rehydration) must not get back into a session

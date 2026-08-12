@@ -17,10 +17,9 @@ import (
 )
 
 // DefaultAttemptFloor is the wall-clock floor applied to scheme.Attempt
-// when Config.AttemptFloor is zero. 200ms matches Laravel's Timebox
-// default and brackets a typical bcrypt verify at cost 10-12, so the
-// missing-user path and the wrong-password path both pad to the same
-// observable duration.
+// when Config.AttemptFloor is zero. 200ms brackets a typical bcrypt
+// verify at cost 10-12, so the missing-user path and the wrong-password
+// path both pad to the same observable duration.
 const DefaultAttemptFloor = 200 * time.Millisecond
 
 // DummyBcryptHash is the legacy package-default dummy hash, generated at
@@ -83,9 +82,9 @@ func mustBcrypt(cost int) []byte {
 var timeboxFn = realTimebox
 
 // realTimebox sleeps so the total wall clock for the wrapped call is
-// >=floor when floor > 0. Mirrors Laravel's Timebox::call. Always runs
-// inner before deciding the residual sleep so panics inside inner
-// propagate untouched (the defer floor still applies).
+// >=floor when floor > 0. Always runs inner before deciding the residual
+// sleep so panics inside inner propagate untouched (the defer floor
+// still applies).
 func realTimebox(floor time.Duration, inner func()) {
 	if floor <= 0 {
 		inner()
@@ -681,9 +680,10 @@ type Config struct {
 	// returns in <5ms, valid user with wrong password takes 80-300ms
 	// inside bcrypt; the delta is two orders of magnitude).
 	//
-	// Mirrors Laravel's $this->timeboxDuration on SessionScheme. A zero
-	// value falls back to DefaultAttemptFloor (200ms). Negative values
-	// are clamped to zero (no floor) which is for tests only.
+	// Both the session and JWT schemes apply the floor around every
+	// Attempt. A zero value falls back to DefaultAttemptFloor (200ms).
+	// Negative values are clamped to zero (no floor) which is for
+	// tests only.
 	AttemptFloor time.Duration
 }
 

@@ -10,10 +10,10 @@ import (
 // `job_batches` table for the given driver. Callers may run these
 // statements directly or wrap them in an orm/migrate.Migration.
 //
-// The schema mirrors Laravel's `job_batches` so multi-host workers can
-// observe pending/completed/failed counters and the dispatcher process
-// can CAS on `completed_at` to fire Then/Catch/Finally callbacks
-// exactly once.
+// The schema keeps the batch state in the database so multi-host
+// workers can observe pending/completed/failed counters and the
+// dispatcher process can CAS on `completed_at` to fire
+// Then/Catch/Finally callbacks exactly once.
 //
 // then_callback / catch_callback / finally_callback columns store the
 // NAME of a callback registered via RegisterBatchCallback /

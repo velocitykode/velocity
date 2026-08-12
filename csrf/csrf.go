@@ -204,10 +204,9 @@ func (c *CSRF) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Testing-environment bypass, mirroring Laravel's
-		// PreventRequestForgery.runningUnitTests() short-circuit: when this
-		// instance's configured Env names a test profile, unsafe requests are
-		// exempt from token validation so HTTP feature tests drive mutating
+		// Testing-environment bypass: when this instance's configured Env
+		// names a test profile, unsafe requests are exempt from token
+		// validation so HTTP feature tests drive mutating
 		// routes without a token round-trip. Keyed on c.config.Env (the app's
 		// configured environment, captured at construction) - NOT a per-request
 		// os.Getenv - so it is opt-in per instance: a Config built directly

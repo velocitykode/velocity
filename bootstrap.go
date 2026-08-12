@@ -413,8 +413,8 @@ func validateSessionStoreForProduction(a *App) error {
 //
 // Without this hook, every ctx.Auth().Session(r).Put / Flash call inside
 // a handler is silently dropped because the cookie session store is only
-// flushed by an explicit Session.Save(w). Laravel's StartSession is the
-// reference implementation: handle, then saveSession on the way out.
+// flushed by an explicit Session.Save(w). The middleware supplies that
+// flush: run the inner handler, then save the session on the way out.
 //
 // We type-assert through contract.AuthManager because a.Services.Auth is
 // the public interface (the auth/csrf/view packages cannot import each
