@@ -607,8 +607,8 @@ func newDetachedQuery(grammar drivers.QueryGrammar) *Query[TestUser] {
 	}
 }
 
-// TestWhere_ThreeArgForm_RegressionB6 covers the Eloquent-style
-// three-argument form Where(column, operator, value). Before the B6 fix
+// TestWhere_ThreeArgForm_RegressionB6 covers the three-argument form
+// Where(column, operator, value). Before the B6 fix,
 // this parsed as column="age", operator="=", value=">" — the operator
 // string was bound as the value and 18 was silently dropped.
 func TestWhere_ThreeArgForm_RegressionB6(t *testing.T) {

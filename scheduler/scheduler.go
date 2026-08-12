@@ -88,12 +88,12 @@ type Scheduler struct {
 
 	// oneServerTTL is the TTL for OnOneServer() locks. Short by design --
 	// each cron tick gets a fresh contest (the minute is embedded in the
-	// key). Default 1h, matching Laravel's CacheSchedulingMutex.
+	// key). Default 1h.
 	oneServerTTL time.Duration
 
 	// overlapTTL is the default TTL for WithoutOverlapping() locks when
 	// the job does not specify its own via WithoutOverlappingFor(d).
-	// Default 24h, matching Laravel's $expiresAt = 1440 minutes.
+	// Default 24h (1440 minutes).
 	overlapTTL time.Duration
 
 	// runCtx is the scheduler's lifetime context. Run(ctx) derives it
@@ -401,8 +401,7 @@ func funcNameForPC(pc uintptr) string {
 		return "closure"
 	}
 	// Trim the package path so the name is short enough to be a useful
-	// log/event field; full path is rarely needed and Laravel's scheduler
-	// also uses short names.
+	// log/event field; the full path is rarely needed.
 	if idx := strings.LastIndex(name, "/"); idx >= 0 {
 		name = name[idx+1:]
 	}

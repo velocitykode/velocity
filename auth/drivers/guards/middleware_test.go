@@ -189,8 +189,8 @@ func TestSessionMiddleware_EagerlyBootstrapsForAnonymousVisitor(t *testing.T) {
 
 func TestSessionMiddleware_FlashWriteIsPersisted(t *testing.T) {
 	// Flash() mutates the bag and marks modified. The middleware MUST
-	// pick that up the same as a Put. Laravel-equivalent flash messages
-	// rely on this round-trip.
+	// pick that up the same as a Put. Flash messages rely on this
+	// round-trip.
 	store := &trackingStore{session: newTrackingSession()}
 	g := newSchemeForMiddleware(t, store)
 

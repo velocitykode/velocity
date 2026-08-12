@@ -40,9 +40,9 @@ package http
 //     reach from a test client. There is, however, normally no need to: when the
 //     CSRF instance is built with a testing Env (csrf.Config.Env, which the
 //     framework copies from the app Config.Env - velocitytest.NewApp uses
-//     "testing"), the csrf middleware skips token validation on unsafe requests
-//     (Laravel runningUnitTests parity). Outside a testing Env, disable CSRF at
-//     router-build time or inject a valid token.
+//     "testing"), the csrf middleware skips token validation on unsafe
+//     requests. Outside a testing Env, disable CSRF at router-build time or
+//     inject a valid token.
 //   - InjectCSRFToken: minting a CSRF token is not trivially supported from
 //     outside the pipeline. csrf.TokenForRequest (csrf/request_token.go) reads
 //     a per-request token state that only csrf middleware installs, and the

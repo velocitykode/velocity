@@ -17,8 +17,8 @@ type preCommitHooker interface {
 	BeforeFirstWrite(fn func())
 }
 
-// SessionMiddleware returns a router.MiddlewareFunc that enables Laravel
-// StartSession-equivalent semantics: every request is given a sessionHolder
+// SessionMiddleware returns a router.MiddlewareFunc that gives every
+// request save-at-end session semantics: the request is given a sessionHolder
 // (via WithSessionContext) so SessionScheme.getSession can cache the
 // resolved session for the lifetime of the request; BEFORE the response
 // headers are committed AND as a defer fallback, the holder is consulted

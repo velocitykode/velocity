@@ -14,10 +14,10 @@ var (
 
 	// ErrInvalidDayOfMonth is returned by Schedule.Days / Job.Days
 	// when an argument is outside the 1-31 day-of-month range.
-	// Velocity's Days() targets the day-of-month field (diverges from
-	// Laravel's days() which targets day-of-week); the documented
-	// contract is day-of-month so we validate against 1-31. Zero in
-	// particular wrote an invalid cron field that silently surfaced as
+	// Velocity's Days() targets the day-of-month field, not day-of-week;
+	// the documented contract is day-of-month so we validate against
+	// 1-31. Zero in particular wrote an invalid cron field that silently
+	// surfaced as
 	// "value out of bounds" at the first tick - now we fail at
 	// registration.
 	ErrInvalidDayOfMonth = errors.New("velocity/scheduler: invalid day of month (must be 1-31)")

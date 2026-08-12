@@ -1,9 +1,8 @@
 // Package vite emits Vite asset tags from a Go template.
 //
-// It mirrors Laravel's Illuminate\Foundation\Vite helper: a single Tags
-// call decides between the dev server (when public/hot exists) and the
-// production manifest (public/build/.vite/manifest.json), and returns
-// the appropriate <link>/<script> markup.
+// A single Tags call decides between the dev server (when public/hot
+// exists) and the production manifest (public/build/.vite/manifest.json),
+// and returns the appropriate <link>/<script> markup.
 //
 // Typical wiring through bond.Config.Funcs:
 //
@@ -194,8 +193,7 @@ func (h *Helper) Tags(entrypoints ...string) (template.HTML, error) {
 		}
 
 		// Preload chunks the entry imports — gives the browser a head
-		// start while it parses the entry script. Matches Laravel's
-		// behavior in Vite::__invoke.
+		// start while it parses the entry script.
 		for _, imp := range chunk.Imports {
 			if dep, ok := m[imp]; ok {
 				addPreload(dep.File)

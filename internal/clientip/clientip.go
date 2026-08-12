@@ -50,8 +50,8 @@ import (
 //
 // trustedProxies may be nil or empty. In that case Extract always
 // returns the IP parsed from r.RemoteAddr, never honouring forwarded
-// headers (secure default; matches Laravel's behaviour before
-// TrustProxies is configured).
+// headers (secure default: forwarded headers are only honoured once
+// trusted proxies have been configured).
 //
 // Returns nil when r is nil or RemoteAddr is unparseable.
 func Extract(r *http.Request, trustedProxies []*net.IPNet) net.IP {

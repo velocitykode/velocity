@@ -579,7 +579,7 @@ func OnCommitFailure(ctx context.Context, fn TxCommitFailureCallback) error {
 // Bulk write asymmetry: this hook is per-row. The bulk paths
 // Query.Update, Query.Delete, and Query.ForceDelete translate to a
 // single UPDATE/DELETE statement and do NOT fire AfterCommit per
-// affected row (matches GORM, Bun, ent, Eloquent). Two opt-ins:
+// affected row (matches GORM, Bun, and ent). Two opt-ins:
 //   - Implement BulkAfterCommitHook for one event per bulk statement
 //     carrying the affected primary-key set.
 //   - Call Query.WithRowHooks() to pre-select the rows, hydrate them,

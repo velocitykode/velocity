@@ -11,9 +11,8 @@ import (
 // TestMiddleware_TestingEnvBypass pins the per-instance, config-driven CSRF
 // testing bypass and its fail-secure boundary. A CSRF instance whose
 // Config.Env names a test profile ("test"/"testing") skips token validation on
-// unsafe requests (Laravel PreventRequestForgery.runningUnitTests parity);
-// every other Env - including the empty zero value, "development", and
-// "production" - enforces.
+// unsafe requests; every other Env - including the empty zero value,
+// "development", and "production" - enforces.
 //
 // Keying on Config.Env (set by the app at construction) rather than a
 // process-wide os.Getenv is the load-bearing property: csrf's own tests build
