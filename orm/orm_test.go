@@ -19,7 +19,7 @@ func (User) TableName() string {
 	return "users"
 }
 
-func (User) Fillable() []string {
+func (User) AssignableFields() []string {
 	return []string{"name", "email", "age"}
 }
 

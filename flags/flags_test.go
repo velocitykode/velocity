@@ -7,16 +7,16 @@ import (
 	"testing"
 )
 
-// stubProvider is a minimal Provider used by ctx/default precedence tests.
-// Its responses are static per name so tests can assert which provider
+// stubDriver is a minimal Driver used by ctx/default precedence tests.
+// Its responses are static per name so tests can assert which driver
 // answered.
-type stubProvider struct {
+type stubDriver struct {
 	name string
 	on   map[string]bool
 	hits atomic.Int32
 }
 
-func (s *stubProvider) Enabled(_ context.Context, name string) bool {
+func (s *stubDriver) Enabled(_ context.Context, name string) bool {
 	s.hits.Add(1)
 	return s.on[name]
 }
@@ -32,42 +32,42 @@ func resetDefault(t *testing.T) {
 func TestEnabled_FromCtx(t *testing.T) {
 	resetDefault(t)
 
-	ctxProv := &stubProvider{name: "ctx", on: map[string]bool{"feature": true}}
-	defProv := &stubProvider{name: "def", on: map[string]bool{"feature": false}}
-	SetDefault(defProv)
+	ctxDrv := &stubDriver{name: "ctx", on: map[string]bool{"feature": true}}
+	defDrv := &stubDriver{name: "def", on: map[string]bool{"feature": false}}
+	SetDefault(defDrv)
 
-	ctx := WithProvider(context.Background(), ctxProv)
+	ctx := WithDriver(context.Background(), ctxDrv)
 
 	if !Enabled(ctx, "feature") {
-		t.Fatalf("expected ctx provider to win and return true")
+		t.Fatalf("expected ctx driver to win and return true")
 	}
-	if ctxProv.hits.Load() != 1 {
-		t.Fatalf("ctx provider should have been called exactly once, got %d", ctxProv.hits.Load())
+	if ctxDrv.hits.Load() != 1 {
+		t.Fatalf("ctx driver should have been called exactly once, got %d", ctxDrv.hits.Load())
 	}
-	if defProv.hits.Load() != 0 {
-		t.Fatalf("default provider must not be consulted when ctx provides one")
+	if defDrv.hits.Load() != 0 {
+		t.Fatalf("default driver must not be consulted when ctx provides one")
 	}
 }
 
 func TestEnabled_FromDefault(t *testing.T) {
 	resetDefault(t)
 
-	defProv := &stubProvider{name: "def", on: map[string]bool{"feature": true}}
-	SetDefault(defProv)
+	defDrv := &stubDriver{name: "def", on: map[string]bool{"feature": true}}
+	SetDefault(defDrv)
 
 	if !Enabled(context.Background(), "feature") {
-		t.Fatalf("expected default provider to answer true")
+		t.Fatalf("expected default driver to answer true")
 	}
-	if defProv.hits.Load() != 1 {
-		t.Fatalf("default should have been called once, got %d", defProv.hits.Load())
+	if defDrv.hits.Load() != 1 {
+		t.Fatalf("default should have been called once, got %d", defDrv.hits.Load())
 	}
 }
 
-func TestEnabled_NoProvider_FalseSafe(t *testing.T) {
+func TestEnabled_NoDriver_FalseSafe(t *testing.T) {
 	resetDefault(t)
 
 	if Enabled(context.Background(), "anything") {
-		t.Fatalf("expected false when no provider is configured")
+		t.Fatalf("expected false when no driver is configured")
 	}
 	// nil context must also be handled gracefully.
 	//lint:ignore SA1012 deliberate nil-ctx safety check.
@@ -79,32 +79,32 @@ func TestEnabled_NoProvider_FalseSafe(t *testing.T) {
 func TestEnabled_MissingFlag_DefaultsFalse(t *testing.T) {
 	resetDefault(t)
 
-	prov := &stubProvider{on: map[string]bool{"known": true}}
-	SetDefault(prov)
+	drv := &stubDriver{on: map[string]bool{"known": true}}
+	SetDefault(drv)
 
 	if Enabled(context.Background(), "unknown") {
 		t.Fatalf("unknown flag should default to false")
 	}
 }
 
-func TestWithProvider_NilContext(t *testing.T) {
-	// WithProvider must not panic on a nil context; it should normalize to
-	// context.Background() and still attach the provider.
-	prov := &stubProvider{on: map[string]bool{"x": true}}
+func TestWithDriver_NilContext(t *testing.T) {
+	// WithDriver must not panic on a nil context; it should normalize to
+	// context.Background() and still attach the driver.
+	drv := &stubDriver{on: map[string]bool{"x": true}}
 	//lint:ignore SA1012 deliberate nil-ctx safety check.
-	ctx := WithProvider(nil, prov)
+	ctx := WithDriver(nil, drv)
 	if ctx == nil {
 		t.Fatalf("expected non-nil context")
 	}
 	if !Enabled(ctx, "x") {
-		t.Fatalf("expected provider attached via nil-ctx path to answer")
+		t.Fatalf("expected driver attached via nil-ctx path to answer")
 	}
 }
 
 func TestSetDefault_NilClears(t *testing.T) {
 	resetDefault(t)
 
-	SetDefault(&stubProvider{on: map[string]bool{"a": true}})
+	SetDefault(&stubDriver{on: map[string]bool{"a": true}})
 	if !Enabled(context.Background(), "a") {
 		t.Fatalf("expected default to answer before clear")
 	}
@@ -117,8 +117,8 @@ func TestSetDefault_NilClears(t *testing.T) {
 	}
 }
 
-func TestMemoryProvider_SetGet(t *testing.T) {
-	m := NewMemoryProvider(map[string]bool{"seeded": true})
+func TestMemoryDriver_SetGet(t *testing.T) {
+	m := NewMemoryDriver(map[string]bool{"seeded": true})
 
 	if !m.Enabled(context.Background(), "seeded") {
 		t.Fatalf("expected seeded flag to be on")
@@ -138,34 +138,34 @@ func TestMemoryProvider_SetGet(t *testing.T) {
 	}
 }
 
-func TestNewMemoryProvider_NilInitial(t *testing.T) {
-	m := NewMemoryProvider(nil)
+func TestNewMemoryDriver_NilInitial(t *testing.T) {
+	m := NewMemoryDriver(nil)
 	if m == nil {
 		t.Fatalf("constructor must not return nil")
 	}
 	if m.Enabled(context.Background(), "anything") {
-		t.Fatalf("nil-seeded provider should answer false for any flag")
+		t.Fatalf("nil-seeded driver should answer false for any flag")
 	}
 }
 
-func TestNewMemoryProvider_CopiesInitial(t *testing.T) {
+func TestNewMemoryDriver_CopiesInitial(t *testing.T) {
 	src := map[string]bool{"a": true}
-	m := NewMemoryProvider(src)
+	m := NewMemoryDriver(src)
 
-	// Mutate the caller's map after construction; provider must not change.
+	// Mutate the caller's map after construction; driver must not change.
 	src["a"] = false
 	src["b"] = true
 
 	if !m.Enabled(context.Background(), "a") {
-		t.Fatalf("provider must snapshot initial map; outside mutation leaked in")
+		t.Fatalf("driver must snapshot initial map; outside mutation leaked in")
 	}
 	if m.Enabled(context.Background(), "b") {
-		t.Fatalf("provider must snapshot initial map; outside addition leaked in")
+		t.Fatalf("driver must snapshot initial map; outside addition leaked in")
 	}
 }
 
-func TestMemoryProvider_SetAll_ReplacesAll(t *testing.T) {
-	m := NewMemoryProvider(map[string]bool{"old": true, "stale": true})
+func TestMemoryDriver_SetAll_ReplacesAll(t *testing.T) {
+	m := NewMemoryDriver(map[string]bool{"old": true, "stale": true})
 
 	m.SetAll(map[string]bool{"fresh": true})
 
@@ -186,8 +186,8 @@ func TestMemoryProvider_SetAll_ReplacesAll(t *testing.T) {
 	}
 }
 
-func TestMemoryProvider_SetAll_CopiesInput(t *testing.T) {
-	m := NewMemoryProvider(nil)
+func TestMemoryDriver_SetAll_CopiesInput(t *testing.T) {
+	m := NewMemoryDriver(nil)
 	src := map[string]bool{"a": true}
 	m.SetAll(src)
 
@@ -202,7 +202,7 @@ func TestMemoryProvider_SetAll_CopiesInput(t *testing.T) {
 	}
 }
 
-func TestMemoryProvider_Concurrent(t *testing.T) {
+func TestMemoryDriver_Concurrent(t *testing.T) {
 	const (
 		writers       = 8
 		readers       = 16
@@ -210,7 +210,7 @@ func TestMemoryProvider_Concurrent(t *testing.T) {
 		flagPoolCount = 32
 	)
 
-	m := NewMemoryProvider(nil)
+	m := NewMemoryDriver(nil)
 
 	var wg sync.WaitGroup
 	wg.Add(writers + readers + 1)
@@ -255,8 +255,8 @@ func TestMemoryProvider_Concurrent(t *testing.T) {
 func TestSetDefault_Concurrent(t *testing.T) {
 	resetDefault(t)
 
-	provA := &stubProvider{on: map[string]bool{"x": true}}
-	provB := &stubProvider{on: map[string]bool{"x": false}}
+	drvA := &stubDriver{on: map[string]bool{"x": true}}
+	drvB := &stubDriver{on: map[string]bool{"x": false}}
 
 	const (
 		swappers     = 4
@@ -272,9 +272,9 @@ func TestSetDefault_Concurrent(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < opsPerWorker; j++ {
 				if (id+j)%2 == 0 {
-					SetDefault(provA)
+					SetDefault(drvA)
 				} else {
-					SetDefault(provB)
+					SetDefault(drvB)
 				}
 			}
 		}(i)

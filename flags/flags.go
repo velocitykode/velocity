@@ -1,6 +1,6 @@
 // Package flags is the framework's feature-flag adapter surface.
 //
-// The package intentionally ships only the Provider interface, a top-level
+// The package intentionally ships only the Driver interface, a top-level
 // Enabled helper, request-scoped context attachment, a process-wide default
 // slot, and a memory driver for tests/dev. Production deployments are
 // expected to plug in a third-party SaaS (LaunchDarkly, Unleash, PostHog,
@@ -17,68 +17,68 @@ import (
 	"sync"
 )
 
-// Provider is the minimum surface a feature-flag backend must implement.
+// Driver is the minimum surface a feature-flag backend must implement.
 // Implementations should return false for unknown flags and must be safe
 // for concurrent use.
-type Provider interface {
+type Driver interface {
 	Enabled(ctx context.Context, name string) bool
 }
 
-// providerKey is the unexported context key used by WithProvider / Enabled.
-type providerKey struct{}
+// driverKey is the unexported context key used by WithDriver / Enabled.
+type driverKey struct{}
 
-// WithProvider attaches p to ctx so request-scoped code (middleware,
+// WithDriver attaches d to ctx so request-scoped code (middleware,
 // handlers) can override the process-wide default for the duration of a
 // request. The returned context is safe to pass to Enabled.
-func WithProvider(ctx context.Context, p Provider) context.Context {
+func WithDriver(ctx context.Context, d Driver) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return context.WithValue(ctx, providerKey{}, p)
+	return context.WithValue(ctx, driverKey{}, d)
 }
 
-// providerFromContext returns the Provider attached to ctx via WithProvider,
+// driverFromContext returns the Driver attached to ctx via WithDriver,
 // or nil if none is attached.
-func providerFromContext(ctx context.Context) Provider {
+func driverFromContext(ctx context.Context) Driver {
 	if ctx == nil {
 		return nil
 	}
-	p, _ := ctx.Value(providerKey{}).(Provider)
-	return p
+	d, _ := ctx.Value(driverKey{}).(Driver)
+	return d
 }
 
 var (
-	defaultMu       sync.RWMutex
-	defaultProvider Provider
+	defaultMu     sync.RWMutex
+	defaultDriver Driver
 )
 
-// SetDefault installs p as the process-wide default Provider used by
+// SetDefault installs d as the process-wide default Driver used by
 // Enabled when ctx does not carry one. Pass nil to clear the default.
 // Safe for concurrent use.
-func SetDefault(p Provider) {
+func SetDefault(d Driver) {
 	defaultMu.Lock()
-	defaultProvider = p
+	defaultDriver = d
 	defaultMu.Unlock()
 }
 
-// Default returns the current process-wide Provider, or nil if unset.
-func Default() Provider {
+// Default returns the current process-wide Driver, or nil if unset.
+func Default() Driver {
 	defaultMu.RLock()
-	p := defaultProvider
+	d := defaultDriver
 	defaultMu.RUnlock()
-	return p
+	return d
 }
 
 // Enabled reports whether the named flag is on. Resolution order:
-//  1. Provider attached to ctx via WithProvider (request-scoped override).
+//  1. Driver attached to ctx via WithDriver (request-scoped override).
 //  2. Process-wide default installed via SetDefault.
 //  3. false (safe default - unknown flag stays off).
 func Enabled(ctx context.Context, name string) bool {
-	if p := providerFromContext(ctx); p != nil {
-		return p.Enabled(ctx, name)
+	if d := driverFromContext(ctx); d != nil {
+		return d.Enabled(ctx, name)
 	}
-	if p := Default(); p != nil {
-		return p.Enabled(ctx, name)
+	if d := Default(); d != nil {
+		return d.Enabled(ctx, name)
 	}
 	return false
 }

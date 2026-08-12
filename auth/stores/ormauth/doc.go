@@ -57,7 +57,7 @@
 //
 // Because the remember token is persisted through the ORM's map-based
 // update path, the model must also declare a mass-assignment policy that
-// permits that column (Fillable, Guarded, or AllowAllColumns). Models
+// permits that column (Assignable, Protected, or AllowAllColumns). Models
 // that declare no policy at all are rejected by [Store.Validate]
 // rather than failing on the first remember-me login.
 package ormauth

@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// undeclaredUser declares neither Fillable() nor Guarded() nor
+// undeclaredUser declares neither AssignableFields() nor ProtectedFields() nor
 // AllowAllColumns: the deny-by-default target. Field names are chosen to
 // look like the classic privilege-escalation payload.
 type undeclaredUser struct {
@@ -36,7 +36,7 @@ func setupDenyDefaultTests(t *testing.T) *Manager {
 			updated_at DATETIME,
 			deleted_at DATETIME
 		)`,
-		`CREATE TABLE fillable_models (
+		`CREATE TABLE assignable_models (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT,
 			role TEXT,
@@ -44,7 +44,7 @@ func setupDenyDefaultTests(t *testing.T) *Manager {
 			updated_at DATETIME,
 			deleted_at DATETIME
 		)`,
-		`CREATE TABLE guarded_models (
+		`CREATE TABLE protected_models (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT,
 			role TEXT,
@@ -315,16 +315,16 @@ func TestUpdateOrCreate_UndeclaredModelRejectsColumnAliasKeys(t *testing.T) {
 	}
 }
 
-func TestCreateMap_FillableModelAcceptsListedSkipsUnlisted(t *testing.T) {
+func TestCreateMap_AssignableModelAcceptsListedSkipsUnlisted(t *testing.T) {
 	setupDenyDefaultTests(t)
 
-	// fillableModel (fillable_test.go) allows only "name".
-	created, err := Model[fillableModel]{}.Create(context.Background(), map[string]any{
+	// assignableModel (assignable_test.go) allows only "name".
+	created, err := Model[assignableModel]{}.Create(context.Background(), map[string]any{
 		"name": "alice",
 		"role": "admin",
 	})
 	if err != nil {
-		t.Fatalf("Create on Fillable model: %v", err)
+		t.Fatalf("Create on Assignable model: %v", err)
 	}
 	if created.Name != "alice" {
 		t.Errorf("listed key should be written; Name = %q", created.Name)
@@ -334,22 +334,22 @@ func TestCreateMap_FillableModelAcceptsListedSkipsUnlisted(t *testing.T) {
 	}
 }
 
-func TestCreateMap_GuardedModelAcceptsUnguardedSkipsGuarded(t *testing.T) {
+func TestCreateMap_ProtectedModelAcceptsUnprotectedSkipsProtected(t *testing.T) {
 	setupDenyDefaultTests(t)
 
-	// guardedModel (fillable_test.go) guards only "role".
-	created, err := Model[guardedModel]{}.Create(context.Background(), map[string]any{
+	// protectedModel (assignable_test.go) guards only "role".
+	created, err := Model[protectedModel]{}.Create(context.Background(), map[string]any{
 		"name": "bob",
 		"role": "admin",
 	})
 	if err != nil {
-		t.Fatalf("Create on Guarded model: %v", err)
+		t.Fatalf("Create on Protected model: %v", err)
 	}
 	if created.Name != "bob" {
-		t.Errorf("unguarded key should be written; Name = %q", created.Name)
+		t.Errorf("unprotected key should be written; Name = %q", created.Name)
 	}
 	if created.Role != "" {
-		t.Errorf("guarded key must be skipped; Role = %q", created.Role)
+		t.Errorf("protected key must be skipped; Role = %q", created.Role)
 	}
 }
 
@@ -490,21 +490,21 @@ func TestQueryUpdate_UndeclaredModelRejectsColumnAliasKeys(t *testing.T) {
 
 // TestQueryUpdate_DeclaredAndOpenPolicyModelsUnaffected pins that the
 // implicit-deny check on bulk Update does not touch models with a
-// declared Fillable/Guarded policy or an AllowAllColumns opt-in.
+// declared Assignable/Protected policy or an AllowAllColumns opt-in.
 func TestQueryUpdate_DeclaredAndOpenPolicyModelsUnaffected(t *testing.T) {
 	setupDenyDefaultTests(t)
 
-	_, err := Model[fillableModel]{}.Where("name = ?", "nobody").Update(context.Background(), map[string]any{
+	_, err := Model[assignableModel]{}.Where("name = ?", "nobody").Update(context.Background(), map[string]any{
 		"name": "renamed",
 	})
 	if err != nil {
-		t.Fatalf("Update on Fillable model: %v", err)
+		t.Fatalf("Update on Assignable model: %v", err)
 	}
-	_, err = Model[guardedModel]{}.Where("name = ?", "nobody").Update(context.Background(), map[string]any{
+	_, err = Model[protectedModel]{}.Where("name = ?", "nobody").Update(context.Background(), map[string]any{
 		"name": "renamed",
 	})
 	if err != nil {
-		t.Fatalf("Update on Guarded model: %v", err)
+		t.Fatalf("Update on Protected model: %v", err)
 	}
 	_, err = Model[openPolicyModel]{}.Where("name = ?", "nobody").Update(context.Background(), map[string]any{
 		"is_admin": true,

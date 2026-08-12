@@ -13,7 +13,7 @@ type scanTZRecord struct {
 
 func (scanTZRecord) TableName() string { return "scan_tz_records" }
 
-func (scanTZRecord) Fillable() []string { return []string{"name"} }
+func (scanTZRecord) AssignableFields() []string { return []string{"name"} }
 
 // TestScannedTimestampsSurfaceUTC pins the read side of the storage
 // contract: whatever location the driver hands back (modernc sqlite

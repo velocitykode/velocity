@@ -101,10 +101,10 @@ type Bond struct {
 	// the app's event bus.
 	eventDispatcher func(ctx context.Context, event interface{}) error
 
-	// flashProvider returns one-shot flash data for the request, which
+	// flashReader returns one-shot flash data for the request, which
 	// bond merges onto Page.Flash during Render. Wired by the framework
-	// via SetFlashProvider so bond stays decoupled from auth.
-	flashProvider FlashProvider
+	// via SetFlashReader so bond stays decoupled from auth.
+	flashReader FlashReader
 }
 
 // SetEncryptor sets the encryptor used for history state encryption.

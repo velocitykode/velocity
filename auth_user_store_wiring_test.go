@@ -20,9 +20,9 @@ type wiringAdmin struct {
 	RecallToken string `orm:"column:recall_token"`
 }
 
-// Fillable declares the mass-assignment policy the remember-token write
+// Assignable declares the mass-assignment policy the remember-token write
 // needs.
-func (wiringAdmin) Fillable() []string {
+func (wiringAdmin) AssignableFields() []string {
 	return []string{"username", "pass_hash", "recall_token"}
 }
 

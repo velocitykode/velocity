@@ -864,7 +864,7 @@ func (SoftDeleteUser) TableName() string {
 	return "soft_delete_users"
 }
 
-func (SoftDeleteUser) Fillable() []string {
+func (SoftDeleteUser) AssignableFields() []string {
 	return []string{"name", "email", "age"}
 }
 

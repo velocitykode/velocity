@@ -157,7 +157,7 @@ func modelWith[T any](relations ...string) *Query[T] {
 }
 
 // modelCreate inserts a new record from a map[string]any or a *T. A *T is run
-// through applyFillableToStruct so mass-assignment protection cannot be
+// through applyAssignmentAccessToStruct so mass-assignment protection cannot be
 // bypassed by callers who construct the struct manually.
 func modelCreate[T any](ctx context.Context, data any) (*T, error) {
 	switch v := data.(type) {
@@ -171,7 +171,7 @@ func modelCreate[T any](ctx context.Context, data any) (*T, error) {
 		}
 		return model, nil
 	case *T:
-		if err := applyFillableToStruct(v); err != nil {
+		if err := applyAssignmentAccessToStruct(v); err != nil {
 			return nil, err
 		}
 		if err := Save(ctx, nil, v); err != nil {
@@ -793,34 +793,35 @@ type AfterDeleteHook interface {
 	AfterDelete() error
 }
 
-// Fillable interface allows models to specify which fields can be mass-assigned
-type Fillable interface {
-	Fillable() []string
+// Assignable interface allows models to specify which fields can be
+// mass-assigned
+type Assignable interface {
+	AssignableFields() []string
 }
 
-// Guarded interface allows models to specify which fields are protected from mass-assignment
-type Guarded interface {
-	Guarded() []string
+// Protected interface allows models to specify which fields are protected
+// from mass-assignment
+type Protected interface {
+	ProtectedFields() []string
 }
 
 // Helper functions
 
-// applyFillableToStruct zeros out any guarded fields and any fields not in
-// the Fillable allowlist before the struct is persisted. This mirrors the
-// enforcement performed by mapToStruct so Create(*T) and Create(map) share
-// the same mass-assignment policy.
+// applyAssignmentAccessToStruct zeros out any protected fields and any
+// fields not in the assignable allowlist before the struct is persisted.
+// This mirrors the enforcement performed by mapToStruct so Create(*T) and
+// Create(map) share the same mass-assignment policy.
 //
-// Fields protected by the framework itself (ID, timestamps, embedded Model
-// bookkeeping) are always left intact - fillable/guarded only governs
-// fields the application explicitly manages.
-// applyFillableToStruct zeros every field on s that is not allowed by the
-// model's Fillable/Guarded policy. Resolves columns and policy through the
-// canonical ModelMeta + FillablePolicy so the protection rules match
-// mapToStruct exactly, regardless of which entry point the caller used.
+// Fields managed by the framework itself (ID, timestamps, embedded Model
+// bookkeeping) are always left intact - the policy only governs fields the
+// application explicitly manages.
 //
-// Embedded base columns are framework-managed and always preserved, even
-// when the model declares a Fillable allowlist that omits them.
-func applyFillableToStruct(s any) error {
+// Resolves columns and policy through the canonical ModelMeta +
+// AssignmentAccess so the protection rules match mapToStruct exactly,
+// regardless of which entry point the caller used. Embedded base columns
+// are always preserved, even when the model declares an assignable
+// allowlist that omits them.
+func applyAssignmentAccessToStruct(s any) error {
 	policy := PolicyFor(s)
 	if policy.implicitDeny {
 		// No declared policy. Deny-by-default applies only to map-based
@@ -828,7 +829,7 @@ func applyFillableToStruct(s any) error {
 		// not attacker-shaped input, so it persists untouched.
 		return nil
 	}
-	if !policy.HasFillable && !policy.HasGuarded {
+	if !policy.HasAssignable && !policy.HasProtected {
 		return nil
 	}
 
@@ -891,18 +892,18 @@ func fieldColumnName(field reflect.StructField) string {
 // every column through the canonical ModelMeta so the read path is
 // guaranteed symmetric with the write path (structToMap) and with every
 // other reflection callsite. Mass-assignment policy is enforced via
-// FillablePolicy keyed on the snake_case'd Go field name, so attackers
-// cannot bypass a guard by submitting the column-tag value instead.
+// AssignmentAccess keyed on the snake_case'd Go field name, so attackers
+// cannot bypass the policy by submitting the column-tag value instead.
 //
-// Deny-by-default: a model that declares neither Fillable() nor Guarded()
-// (and does not opt out via AllowAllColumns) rejects the write with a
-// *MassAssignmentError naming the model and the offending keys, rather
-// than silently skipping or - worse - writing them. Models with a
-// declared policy keep the established semantics: disallowed keys are
-// silently skipped.
+// Deny-by-default: a model that declares neither AssignableFields() nor
+// ProtectedFields() (and does not opt out via AllowAllColumns) rejects the
+// write with a *MassAssignmentError naming the model and the offending
+// keys, rather than silently skipping or - worse - writing them. Models
+// with a declared policy keep the established semantics: disallowed keys
+// are silently skipped.
 //
 // Embedded base columns (id, created_at, updated_at, deleted_at) bypass
-// the Fillable/Guarded check by design: they are framework-managed and
+// the assignment-access check by design: they are framework-managed and
 // users never key policy on them.
 func mapToStruct(m map[string]any, s any) error {
 	v := reflect.ValueOf(s)

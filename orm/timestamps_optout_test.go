@@ -23,7 +23,7 @@ type catalogRelease struct {
 
 func (catalogRelease) TableName() string { return "catalog_releases" }
 
-func (catalogRelease) Fillable() []string { return []string{"version"} }
+func (catalogRelease) AssignableFields() []string { return []string{"version"} }
 
 // UsesTimestamps opts the model out of created_at/updated_at management.
 func (catalogRelease) UsesTimestamps() bool { return false }

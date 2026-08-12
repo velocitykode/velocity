@@ -1176,7 +1176,7 @@ func (q *Query[T]) UpdateOrCreate(ctx context.Context, conditions map[string]any
 // Create inserts a new record through the query's bound driver. Takes
 // ctx as the first argument: a ctx returned by Manager.Transaction
 // enrolls the write in the caller's transaction. Accepts a
-// map[string]any for fillable assignment or a *T already populated by
+// map[string]any for assignable assignment or a *T already populated by
 // the caller.
 func (q *Query[T]) Create(ctx context.Context, data any) (*T, error) {
 	if q.err != nil {
@@ -1196,10 +1196,10 @@ func (q *Query[T]) Create(ctx context.Context, data any) (*T, error) {
 		}
 		return model, nil
 	case *T:
-		// Mirror Model[T].Create: fillable/guarded gates apply to
+		// Mirror Model[T].Create: the assignment policy applies to
 		// pre-built struct pointers so mass-assignment protection is
 		// not bypassed by callers who construct the model manually.
-		if err := applyFillableToStruct(v); err != nil {
+		if err := applyAssignmentAccessToStruct(v); err != nil {
 			return nil, err
 		}
 		if err := saveWithDriver(ctx, q.driver, v); err != nil {
@@ -1603,7 +1603,7 @@ func deniedUpdateKeys(updates map[string]any, meta *ModelMeta) []string {
 func (q *Query[T]) Update(ctx context.Context, updates map[string]any) (int64, error) {
 	// Mass-assignment policy: a map passed to Update is attacker-shaped
 	// input exactly like a map passed to Create, so a model with no
-	// declared Fillable/Guarded policy (and no AllowAllColumns opt-in)
+	// declared Assignable/Protected policy (and no AllowAllColumns opt-in)
 	// rejects any key that resolves to an application column with
 	// *MassAssignmentError before SQL compilation. Matching is
 	// case-insensitive and covers both the SQL column name and the
@@ -2018,7 +2018,7 @@ func getTableName[T any]() string {
 
 // scanIntoStruct hydrates dest from the next row of rows. Resolves columns
 // through the canonical ModelMeta so the read path is symmetric with
-// structToMap (write) and applyFillableToStruct (policy). Before the
+// structToMap (write) and applyAssignmentAccessToStruct (policy). Before the
 // resolver landed, this path independently parsed tags AND re-applied
 // toSnakeCase to the resolved column name, which mangled `column:LegacyXYZ`
 // into legacy_x_y_z and silently broke read-back of column-tagged fields

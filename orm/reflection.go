@@ -3,7 +3,7 @@
 // Canonical reflection resolver for ORM model types. Every code path that
 // needs to translate between Go struct fields and database columns -
 // whether reading (scan, hydrate, eager-load), writing (insert, update,
-// serialize), or enforcing policy (Fillable/Guarded mass-assignment) -
+// serialize), or enforcing policy (Assignable/Protected mass-assignment) -
 // goes through ModelMeta.
 //
 // Before this file existed, three different resolvers coexisted and drifted
@@ -27,7 +27,7 @@
 // Each landed in one of those resolvers without unifying the others.
 //
 // ModelMeta is the single source of truth: every callsite resolves columns,
-// fillable/guarded sets, embedded-base fields, and the existence flag through
+// assignable/protected sets, embedded-base fields, and the existence flag through
 // it. Per-type metadata is computed once and cached in a sync.Map keyed by
 // reflect.Type.
 package orm
@@ -41,7 +41,7 @@ import (
 // ColumnDef describes one column of a model: the database column name
 // (already snake_case'd or honoring an explicit orm:"column:..." tag), the
 // reflect index path to walk into the value, the original Go field name
-// (used for Fillable/Guarded lookups so policy keys on the field-name view
+// (used for Assignable/Protected lookups so policy keys on the field-name view
 // even when the column has been renamed via tag), and a small set of
 // classifier flags so callers don't have to re-parse the tag.
 //
@@ -55,7 +55,7 @@ type ColumnDef struct {
 	Column string
 
 	// FieldName is the Go struct field name (e.g. "RenamedField"), used
-	// for Fillable/Guarded lookup so users key policy on the field-name
+	// for Assignable/Protected lookup so users key policy on the field-name
 	// view (snake_case'd) regardless of orm:"column:..." renaming.
 	FieldName string
 
@@ -622,25 +622,25 @@ func hasTagPart(tag, name string) bool {
 // Mass-assignment policy
 // ----------------------------------------------------------------------------
 
-// FillablePolicy holds the resolved fillable allowlist and guarded
+// AssignmentAccess holds the resolved assignable allowlist and protected
 // denylist for a given model instance. Built once per write call so the
 // downstream loop can answer "is this column writable?" in O(1).
 //
-// Both maps key on the snake_case'd Go field name. Users declare
-// policies via the Fillable()/Guarded() interfaces, and the framework
+// Both maps key on the snake_case'd Go field name. Users declare policies
+// via the AssignableFields()/ProtectedFields() interfaces, and the framework
 // guarantees that policy is enforced regardless of whether the inbound
 // payload uses field names or column names. This is the security
-// invariant: an attacker cannot bypass a guard by submitting the
+// invariant: an attacker cannot bypass the policy by submitting the
 // column-tag value instead of the snake_case field name.
-type FillablePolicy struct {
-	HasFillable bool
-	HasGuarded  bool
-	Fillable    map[string]bool
-	Guarded     map[string]bool
+type AssignmentAccess struct {
+	HasAssignable bool
+	HasProtected  bool
+	Assignable    map[string]bool
+	Protected     map[string]bool
 
-	// implicitDeny marks a policy that resolved to the empty Fillable
-	// allowlist because the model declares neither Fillable() nor
-	// Guarded() and does not opt out via AllowAllColumns. Map-based
+	// implicitDeny marks a policy that resolved to the empty Assignable
+	// allowlist because the model declares neither AssignableFields() nor
+	// ProtectedFields() and does not opt out via AllowAllColumns. Map-based
 	// writes reject such models with *MassAssignmentError. Struct-based
 	// writes (Create(*T)) ignore an implicit policy: the caller built
 	// the value field-by-field in code, so there is no attacker-shaped
@@ -649,19 +649,19 @@ type FillablePolicy struct {
 }
 
 // AllowAllColumns is the explicit escape hatch from deny-by-default mass
-// assignment. A model that declares neither Fillable() nor Guarded() but
+// assignment. A model that declares neither AssignableFields() nor ProtectedFields() but
 // implements AllowAllColumns() returning true resolves to an open policy:
 // every application column is writable from a map-based write, restoring
-// the pre-deny-by-default behavior. When a model also declares Fillable()
-// or Guarded(), the declared policy wins and this marker has no effect.
+// the pre-deny-by-default behavior. When a model also declares AssignableFields()
+// or ProtectedFields(), the declared policy wins and this marker has no effect.
 type AllowAllColumns interface {
 	AllowAllColumns() bool
 }
 
 // PolicyFor extracts mass-assignment policy from a model instance.
 //
-// Deny-by-default: when a model declares neither Fillable() nor Guarded(),
-// PolicyFor resolves it as an EMPTY Fillable allowlist, so Allows returns
+// Deny-by-default: when a model declares neither AssignableFields() nor ProtectedFields(),
+// PolicyFor resolves it as an EMPTY Assignable allowlist, so Allows returns
 // false for every application field. The map-based write paths
 // (Query[T].Create(map), Model[T].Create(map), FirstOrCreate,
 // UpdateOrCreate) surface that as a *MassAssignmentError naming the model
@@ -671,34 +671,34 @@ type AllowAllColumns interface {
 //
 // Escape hatches for models that genuinely want every column writable
 // from a map: implement AllowAllColumns() bool returning true (explicit
-// marker, preferred), or declare Guarded() with an empty slice (an empty
+// marker, preferred), or declare ProtectedFields() with an empty slice (an empty
 // denylist guards nothing, so everything is allowed).
-func PolicyFor(s any) FillablePolicy {
-	p := FillablePolicy{}
-	if f, ok := s.(Fillable); ok {
-		set := make(map[string]bool, len(f.Fillable()))
-		for _, name := range f.Fillable() {
+func PolicyFor(s any) AssignmentAccess {
+	p := AssignmentAccess{}
+	if f, ok := s.(Assignable); ok {
+		set := make(map[string]bool, len(f.AssignableFields()))
+		for _, name := range f.AssignableFields() {
 			set[name] = true
 		}
-		p.Fillable = set
-		p.HasFillable = true
+		p.Assignable = set
+		p.HasAssignable = true
 	}
-	if g, ok := s.(Guarded); ok {
-		set := make(map[string]bool, len(g.Guarded()))
-		for _, name := range g.Guarded() {
+	if g, ok := s.(Protected); ok {
+		set := make(map[string]bool, len(g.ProtectedFields()))
+		for _, name := range g.ProtectedFields() {
 			set[name] = true
 		}
-		p.Guarded = set
-		p.HasGuarded = true
+		p.Protected = set
+		p.HasProtected = true
 	}
-	if !p.HasFillable && !p.HasGuarded {
+	if !p.HasAssignable && !p.HasProtected {
 		if open, ok := s.(AllowAllColumns); ok && open.AllowAllColumns() {
 			// Explicit opt-in to the open policy: zero maps, Allows
 			// returns true for everything.
 			return p
 		}
-		p.Fillable = map[string]bool{}
-		p.HasFillable = true
+		p.Assignable = map[string]bool{}
+		p.HasAssignable = true
 		p.implicitDeny = true
 	}
 	return p
@@ -710,11 +710,11 @@ func PolicyFor(s any) FillablePolicy {
 // For a model with no declared policy and no AllowAllColumns opt-in,
 // PolicyFor resolves an empty allowlist, so Allows returns false for
 // every application field (deny-by-default).
-func (p FillablePolicy) Allows(fieldNameKey string) bool {
-	if p.HasFillable && !p.Fillable[fieldNameKey] {
+func (p AssignmentAccess) Allows(fieldNameKey string) bool {
+	if p.HasAssignable && !p.Assignable[fieldNameKey] {
 		return false
 	}
-	if p.HasGuarded && p.Guarded[fieldNameKey] {
+	if p.HasProtected && p.Protected[fieldNameKey] {
 		return false
 	}
 	return true

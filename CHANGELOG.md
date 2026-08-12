@@ -7,92 +7,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Identity rename: providers are modules, auth guards are schemes
+### The pre-1.0 vocabulary for extensions, auth, and the CLI
 
-Velocity's extension and auth vocabulary drops its borrowed names. Every
-change below is an identifier rename: registration order, the two-phase
-lifecycle, failure unwinding, shutdown ordering, and every command's
-behavior are untouched.
+Velocity's extension points, auth surface, and CLI grammar carry their
+final pre-1.0 names. These entries are naming and grammar only:
+registration order, the two-phase lifecycle, failure unwinding, shutdown
+ordering, and every command's behavior are unaffected.
 
-- **`app.ServiceProvider` is `app.Module`**, and its `Register`/`Boot`
-  methods are `Init`/`Start` (`Shutdown` is unchanged). The surrounding
-  surface follows: `WithProviders` -> `WithModules`, `App.Providers` ->
-  `App.Modules`, `chain.ProviderRegistry` -> `chain.ModuleRegistry`
-  (`Providers()` -> `Modules()`), and the optional `RouteProvider`,
-  `MiddlewareProvider`, `EventProvider`, `ScheduleProvider`, and
-  `CommandProvider` interfaces become the matching `*Module` interfaces.
-  Root aliases track the new names (`velocity.Module`,
-  `velocity.ModuleRegistry`, `velocity.RouteModule`, …). Lifecycle error
-  labels now read "module init failed" / "chain module start failed".
-  The separate discovery-side interface `events.EventProvider` is
-  `events.EventModule`, and `EventRegistry.AddProvider`/`BootProviders`
-  are `AddModule`/`BootModules` (its `Register(dispatcher)` method is
-  unchanged).
+- **`app.Module` is the extension unit**, with `Init`/`Start`/`Shutdown`
+  phases: `Init` binds services, `Start` wires them once every service is
+  available, and `Shutdown` tears down in reverse registration order. The
+  surrounding surface is `WithModules`, `App.Modules`, and
+  `chain.ModuleRegistry` (`Modules()`); the optional auto-wiring
+  interfaces are `RouteModule`, `MiddlewareModule`, `EventModule`,
+  `ScheduleModule`, and `CommandModule`, all re-exported at the root
+  (`velocity.Module`, `velocity.ModuleRegistry`, `velocity.RouteModule`,
+  ...). Lifecycle error labels read "module init failed" / "chain module
+  start failed". The discovery-side interface is `events.EventModule`,
+  registered through `EventRegistry.AddModule`/`BootModules` (its
+  `Register(dispatcher)` method is separate).
 
-- **`auth.Guard` is `auth.Scheme`** (`SessionGuard` -> `SessionScheme`,
-  `JWTGuard` -> `JWTScheme`), **`auth.Gate` is `auth.Access`**
-  (`Manager.Gate()` -> `Manager.Access()`, `GateCallback` ->
-  `AccessCallback`, `UserGate` -> `UserAccess`, `NewGate` -> `NewAccess`,
-  `ErrGateNotFound` -> `ErrAccessNotFound`), and **`auth.UserProvider` is
-  `auth.UserStore`** (`ormauth.Provider` -> `ormauth.Store`,
-  `velocity.ORMUserProvider` -> `velocity.ORMUserStore`,
-  `authtest.RunUserProviderContractTests` -> `RunUserStoreContractTests`).
+- **Auth is built from schemes, user stores, and an access authorizer.**
+  `auth.Scheme` is the credential mechanism (`schemes.SessionScheme`,
+  `schemes.JWTScheme`), `auth.UserStore` loads users (`ormauth.Store`,
+  re-exported as `velocity.ORMUserStore`, with contract coverage via
+  `authtest.RunUserStoreContractTests`), and `auth.Access` answers
+  authorization questions (`Manager.Access()`, `AccessCallback`,
+  `UserAccess`, `NewAccess`, `ErrAccessNotFound`).
 
-  The `Manager` surface follows:
-  `RegisterGuard`/`SetDefaultGuard`/`Guard`/`DefaultGuard` become
-  `RegisterScheme`/`SetDefaultScheme`/`Scheme`/`DefaultScheme`;
-  `SetProvider`/`RegisterProvider`/`DefaultProvider`/`Provider` become
-  `SetUserStore`/`RegisterUserStore`/`DefaultUserStore`/`UserStore`;
-  `DefaultProviderName` is `DefaultUserStoreName` (value `"default"`
-  unchanged); `ErrGuardNotFound` is `ErrSchemeNotFound`. `auth.Config`
-  fields `DefaultGuard`/`Guards` are `DefaultScheme`/`Schemes`, and
-  `auth.GuardConfig` is `auth.SchemeConfig`. The `Scheme` interface method
-  `SetProvider` is `SetUserStore`. `PasswordNeedsRehashEvent.GuardName` is
-  `SchemeName`. `contract.AuthManager` de-prefixes to `Allows`/`Authorize`.
+  The `Manager` surface is
+  `RegisterScheme`/`SetDefaultScheme`/`Scheme`/`DefaultScheme` and
+  `SetUserStore`/`RegisterUserStore`/`DefaultUserStore`/`UserStore`, with
+  `DefaultUserStoreName` (value `"default"`) and `ErrSchemeNotFound`.
+  `auth.Config` carries `DefaultScheme`/`Schemes`, built from
+  `auth.SchemeConfig`; the `Scheme` interface method is `SetUserStore`;
+  `PasswordNeedsRehashEvent` carries `SchemeName`; and
+  `contract.AuthManager` is `Allows`/`Authorize`.
 
-- **The event listener opt-in `ShouldQueue()` is `Async()`.**
+- **The event listener async opt-in is `Async()`.**
 
-- **`router.Context.WithErrors`/`WithInput` are `FlashErrors`/`FlashInput`.**
+- **`router.Context.FlashErrors`/`FlashInput` write the flash cookies.**
 
-- **The CLI drops its colon grammar for space-separated subcommands.**
-  `make:*` becomes `gen *` (`make:provider` -> `gen module`, matching the
-  module rename), `route:list` -> `routes`, `migrate:X` -> `migrate X`,
-  `db:wipe` -> `db wipe`, `cache:clear` -> `cache clear`, `queue:work` ->
-  `queue work`, `schedule:work` -> `schedule work`, and `key:generate` ->
-  `key generate`. A subcommand wins over its bare parent (`migrate fresh`
-  over `migrate`), while `vel migrate --pretend` and `vel run seed` still
-  resolve to the one-word command with the rest passed through.
-  `console.MakeProvider`/`MakeProviderOptions` become
-  `GenModule`/`GenModuleOptions`, and `gen module` emits a `Module`
-  (`Init`/`Start`/`Shutdown`) into `internal/modules`.
+- **ORM mass assignment is declared with `AssignableFields()` (allowlist)
+  or `ProtectedFields()` (denylist)**, backed by the `orm.Assignable` and
+  `orm.Protected` interfaces and resolved into an `orm.AssignmentAccess`.
+  Deny-by-default holds: a model declaring neither, and not opting out via
+  `AllowAllColumns`, rejects every map-based write with a
+  `*MassAssignmentError`.
 
-- **`gen grpc service` scaffolds a module, not a provider.** The wired
-  file is `internal/modules/grpc_module.go` (was `grpc_provider.go`)
-  and the generated type is `GRPCModule` (was `GRPCProvider`); the flag
-  that skips it is `--no-module` (was `--no-provider`), backed by
-  `console.GenGRPCServiceOptions.NoModule` (was `NoProvider`). The
-  marker comments (`// vel:grpc:imports`, `// vel:grpc:services`) and
-  the wiring behavior are unchanged.
+- **`flags.Driver` is the feature-flag backend interface**, attached
+  per-request with `flags.WithDriver` and defaulted process-wide with
+  `flags.SetDefault`. The in-process implementation for tests and dev is
+  `flags.MemoryDriver` (`flags.NewMemoryDriver`).
 
-- **Package directories carry the new vocabulary.** The auth scheme
+- **`bond.FlashReader` is the one-shot flash-bag callback**, wired with
+  `Bond.SetFlashReader` and drained once per `Render`.
+
+- **The CLI uses space-separated subcommands.** `gen *` covers code
+  generation (`gen module`, `gen model`, `gen grpc service`, ...),
+  alongside `routes`, `migrate X`, `db wipe`, `cache clear`, `queue work`,
+  `schedule work`, and `key generate`. A subcommand wins over its bare
+  parent (`migrate fresh` over `migrate`), while `vel migrate --pretend`
+  and `vel run seed` resolve to the one-word command with the rest passed
+  through.
+
+- **`gen grpc service` scaffolds a module.** It wires
+  `internal/modules/grpc_module.go` holding a `GRPCModule` type;
+  `--no-module` (`console.GenGRPCServiceOptions.NoModule`) skips that
+  file. The marker comments `// vel:grpc:imports` and
+  `// vel:grpc:services` drive the wiring.
+
+- **Package directories carry the same vocabulary.** The auth scheme
   drivers live in `auth/drivers/schemes` (package `schemes`, holding
-  `SessionScheme` and `JWTScheme`), and the ORM-backed user store lives
-  in `auth/stores/ormauth`. Every generator writes modules to
-  `internal/modules` under `package modules`, and the module stub is
-  `internal/modules/module.go.stub`.
+  `SessionScheme` and `JWTScheme`), and the ORM-backed user store lives in
+  `auth/stores/ormauth`. Every generator writes modules to
+  `internal/modules` under `package modules`, from the
+  `internal/modules/module.go.stub` stub.
 
-- **The `console` generators are `Gen*`, not `Make*`.** `GenHandler`,
-  `GenModel`, `GenMigration`, `GenMiddleware`, `GenEvent`, `GenListener`,
-  `GenJob`, `GenMail`, `GenNotification`, `GenResource`, `GenPolicy`,
-  `GenModule`, `GenCommand`, `GenGRPCService`, `GenGRPCRPC`, and
-  `GenGRPCGen`, each with the matching `Gen*Options` struct. The names
-  now match the `gen *` command grammar; the generated output is
-  identical.
+- **The `console` generators are `Gen*`, matching the `gen *` grammar.**
+  `GenHandler`, `GenModel`, `GenMigration`, `GenMiddleware`, `GenEvent`,
+  `GenListener`, `GenJob`, `GenMail`, `GenNotification`, `GenResource`,
+  `GenPolicy`, `GenModule`, `GenCommand`, `GenGRPCService`, `GenGRPCRPC`,
+  and `GenGRPCGen`, each with the matching `Gen*Options` struct.
 
-**Env:** `AUTH_GUARD` is now `AUTH_SCHEME`, the only environment key
-carrying the old word. Scheme map keys (`web`, `session`, `api`, `jwt`),
-driver values (`session`, `jwt`), event name strings, and the flash cookie
-names are untouched.
+**Env:** `AUTH_SCHEME` names the default auth scheme and, when non-empty,
+is what makes `ConfigFromEnv` build the scheme configs at all. Scheme map
+keys (`web`, `session`, `api`, `jwt`), driver values (`session`, `jwt`),
+event name strings, and the flash cookie names are plain strings,
+unaffected by the Go-level naming.
 
 ### The auth user store is ORM-backed, and the auth model is swappable
 
@@ -164,7 +166,8 @@ and no warning.
 
 - **Model requirement:** because the remember token is persisted through the
   ORM's map-based `Update`, an auth model must declare a mass-assignment
-  policy (`Fillable`, `Guarded`, or `AllowAllColumns`). `Store.Validate`
+  policy (`AssignableFields`, `ProtectedFields`, or `AllowAllColumns`).
+  `Store.Validate`
   reports a model with no policy rather than letting it fail on the first
   remember-me login.
 
@@ -184,9 +187,9 @@ and no warning.
   (unregistered name, stale registration, typo'd value). Remove `AUTH_MODEL`
   from `.env`.
 
-- **The per-scheme user-store config field is gone.** `auth.GuardConfig`
-  (now `auth.SchemeConfig`, see the rename entry above) no longer carries a
-  `Provider` field; schemes use the single installed user store. Multiple
+- **The per-scheme user-store config field is gone.** `auth.SchemeConfig`
+  carries no user-store field; schemes use the single installed user
+  store. Multiple
   schemes (`web`, `api`, `jwt`) over one identity store are unchanged - only
   the multiple-identity-stores config surface is removed.
   `auth.Manager.RegisterUserStore(name, …)` remains as a code-level escape
@@ -359,7 +362,7 @@ produced different wall clocks in naive timestamp columns).
 - **Sweep 3 round-3 - LOW-2: `ErrNoAppKey` message drift fixed.** The
   error text now reads "APP_KEY is required outside
   development/dev/test/testing/local environments (run `vel
-  key:generate`)" with the vocabulary built from
+  key generate`)" with the vocabulary built from
   `contract.NonProdEnvNames()` via `strings.Join` so future
   vocabulary changes flow through automatically. Previously it
   hard-coded "testing or development", which lied to operators who
@@ -444,7 +447,7 @@ func (s *MyStore) Get(key string) (any, bool) {
 
 The five affected interfaces and the methods that became required:
 
-- **`auth.UserProvider`** (`auth/auth.go`). Added: `FindByIDCtx(ctx, id) (Authenticatable, error)`,
+- **`auth.UserStore`** (`auth/auth.go`). Added: `FindByIDCtx(ctx, id) (Authenticatable, error)`,
   `FindByCredentialsCtx(ctx, credentials) (Authenticatable, error)`,
   `UpdateRememberTokenCtx(ctx, user, token) error`. `ValidateCredentials`
   is unchanged (pure-CPU bcrypt compare, no ctx threading point).
@@ -503,7 +506,7 @@ handler depends on the dropped methods, so most apps need no change.
 
 ### Breaking changes
 
-- **Mass assignment is now deny-by-default for map-based writes.** A model that declares neither `Fillable()` (allowlist) nor `Guarded()` (denylist) previously accepted EVERY map key that resolved to a column - `Create(map)`, `FirstOrCreate`, and `UpdateOrCreate` would happily persist attacker-supplied keys like `role` or `is_admin`. Such models now resolve to an empty allowlist: any map-based write that targets an application column fails with a `*orm.MassAssignmentError` naming the model and the rejected keys (an error for developers and logs; the production error renderer already collapses it to a generic 500 for HTTP clients). What is unchanged: struct-based writes (`Create(*T)`, `Save`) are unaffected because the caller constructs the value in code; framework-managed embedded columns (`id`, `created_at`, `updated_at`, `deleted_at`) still bypass policy; and models with a declared policy keep the established silent-skip semantics for disallowed keys. **Migration:** declare `Fillable()` listing the user-writable fields (snake_case Go field names) - the secure choice - or `Guarded()` for a denylist; to genuinely restore the old allow-all behavior, implement the new escape hatch `AllowAllColumns() bool { return true }` on the model (declaring `Guarded()` with an empty slice is equivalent). Removed with the flip: the `orm.StrictMassAssignment` opt-in interface (deny-by-default is now the default; a leftover `StrictMassAssignment()` method on a model still compiles but is ignored) and `orm.SetMassAssignmentWarner` plus the boot-time warning that backed it (nothing to warn about anymore - the insecure default no longer exists).
+- **Mass assignment is now deny-by-default for map-based writes.** A model that declares neither `AssignableFields()` (allowlist) nor `ProtectedFields()` (denylist) previously accepted EVERY map key that resolved to a column - `Create(map)`, `FirstOrCreate`, and `UpdateOrCreate` would happily persist attacker-supplied keys like `role` or `is_admin`. Such models now resolve to an empty allowlist: any map-based write that targets an application column fails with a `*orm.MassAssignmentError` naming the model and the rejected keys (an error for developers and logs; the production error renderer already collapses it to a generic 500 for HTTP clients). What is unchanged: struct-based writes (`Create(*T)`, `Save`) are unaffected because the caller constructs the value in code; framework-managed embedded columns (`id`, `created_at`, `updated_at`, `deleted_at`) still bypass policy; and models with a declared policy keep the established silent-skip semantics for disallowed keys. **Migration:** declare `AssignableFields()` listing the user-writable fields (snake_case Go field names) - the secure choice - or `ProtectedFields()` for a denylist; to genuinely restore the old allow-all behavior, implement the new escape hatch `AllowAllColumns() bool { return true }` on the model (declaring `ProtectedFields()` with an empty slice is equivalent). Removed with the flip: the `orm.StrictMassAssignment` opt-in interface (deny-by-default is now the default; a leftover `StrictMassAssignment()` method on a model still compiles but is ignored) and `orm.SetMassAssignmentWarner` plus the boot-time warning that backed it (nothing to warn about anymore - the insecure default no longer exists).
 - **New framework table `job_dedupe` for queue-layer at-most-once enqueue.** Backs the new `queue.DedupeAwarePusher` optional driver interface and its `PushIfNotExistsCtx(ctx, job, dedupeKey, queue...)` method. The `DatabaseDriver` implementation INSERTs into `job_dedupe` under a PRIMARY KEY (postgres `ON CONFLICT DO NOTHING`, mysql `INSERT IGNORE`, sqlite `INSERT OR IGNORE`) inside the same transaction as the `jobs` insert; a row already present in `job_dedupe` is treated as success without touching `jobs`. This is what makes the batch-callback reaper idempotent at the storage layer even when `MarkCallbackDispatched` (the bookkeeping write after a successful push) fails. Deployed apps must run an `ALTER TABLE`-equivalent migration to create the sidecar table before upgrading. Example for Postgres:
   ```sql
   CREATE TABLE IF NOT EXISTS job_dedupe (
@@ -524,7 +527,7 @@ handler depends on the dropped methods, so most apps need no change.
     ON job_batches (completed_at, then_dispatched, catch_dispatched, finally_dispatched);
   ```
   The columns track which named Then/Catch/Finally callbacks have been successfully PushCtx'd onto the queue. A background reaper goroutine on `queue.DatabaseBatchRepository` retries enqueue every 15s for any row where the corresponding `*_dispatched` flag is still false, which makes cross-process callback delivery durable across transient queue outages and dispatcher-process crashes that race the completion CAS. Existing rows produced by the previous schema take the DEFAULT 0 values and will be retried on the next reaper tick (idempotent: dispatched is monotonic).
-- **`orm.ToSnakeCase` (and the auto-derived table/column names that flow from it) now splits acronym->word and digit->word boundaries.** Previously consecutive uppercase letters collapsed into a single token, so `SSHKey` mapped to table `sshkey` (and pluralized to `sshkeys`), `URLPath` mapped to column `urlpath`, `OAuthID` to `oauthid`, `Field1Name` to `field1name`. The new mapping is `ssh_key` / `url_path` / `o_auth_id` / `field1_name` respectively. Apps with acronym-named or digit-bearing model types that relied on the previous mapping must either override `TableName()` on the model to pin the legacy name, or run a migration to rename the table/column to the new convention. The `console` scaffolder (`vel make:model`, `vel make:migration`, etc.) now uses the same algorithm via `orm.ToSnakeCase`, so newly generated migrations match the runtime ORM.
+- **`orm.ToSnakeCase` (and the auto-derived table/column names that flow from it) now splits acronym->word and digit->word boundaries.** Previously consecutive uppercase letters collapsed into a single token, so `SSHKey` mapped to table `sshkey` (and pluralized to `sshkeys`), `URLPath` mapped to column `urlpath`, `OAuthID` to `oauthid`, `Field1Name` to `field1name`. The new mapping is `ssh_key` / `url_path` / `o_auth_id` / `field1_name` respectively. Apps with acronym-named or digit-bearing model types that relied on the previous mapping must either override `TableName()` on the model to pin the legacy name, or run a migration to rename the table/column to the new convention. The `console` scaffolder (`vel gen model`, `vel gen migration`, etc.) now uses the same algorithm via `orm.ToSnakeCase`, so newly generated migrations match the runtime ORM.
 - **`cache/drivers.Lock` interface gains `GetWithErr(ctx) (bool, error)`.** The existing `Get(ctx) bool` collapsed backend errors and contention into a single false return, so callers (notably the scheduler's distributed Locker) could not tell a Redis outage from healthy contention. `GetWithErr` returns the SETNX-equivalent outcome and the backend error separately. `Get` is preserved as a thin wrapper that discards the error, so existing callsites compile unchanged. **Migration for third-party cache drivers:** implement `GetWithErr` on every `Lock` implementation. Drivers that perform no I/O (memory-shaped) can return `(acquired, nil)`. Drivers that perform I/O (redis, database, memcached, ...) must return the underlying client error verbatim. A trivial in-tree migration sketch: `func (l *MyLock) Get(ctx context.Context) bool { acquired, _ := l.GetWithErr(ctx); return acquired }` plus a real implementation of `GetWithErr` that calls the backend and returns its error. The framework's built-in `MemoryLock` and `RedisLock` are migrated.
 - **`scheduler.Logger` interface gains `Warn(msg string, kvs ...any)`.** Required so the scheduler can route Locker.Acquire backend errors (Redis outage, AUTH failure, ...) to Warn-level logs while leaving healthy contention at Debug. The framework's `log.Logger` already satisfies the new shape; third-party adapters must add a `Warn` method.
 - **DB-backed validation implementation moved into the new `validation/dbrules` subpackage** so the core `validation` package no longer imports `orm`, `database/sql`, or any SQL driver. Adopters who only use the standard (orm-free) rule set no longer transitively pull those dependencies (and their CGO / cross-compile constraints) into their build. The old `validation.*` names below are **retained as deprecated, orm-free compatibility shims** (they reach the database structurally via reflection), so existing callers keep compiling and working unchanged; new code should prefer the `dbrules.*` variants:
@@ -540,19 +543,19 @@ handler depends on the dropped methods, so most apps need no change.
 
 ### Added
 
-- **`auth.Config.TrustedProxies` (`AUTH_TRUSTED_PROXIES` env var):** comma-separated list of IPs/CIDRs whose forwarded headers (`Forwarded` / `X-Forwarded-For` / `X-Real-IP`) may be honoured when deriving the client IP for the login throttler and the session audit trail. Default is empty (no proxies trusted, secure default; XFF spoofing is fully ignored). Configure to match your load balancer / reverse proxy topology, e.g. `AUTH_TRUSTED_PROXIES=10.0.0.0/8,192.168.0.0/16`. Entries are parsed via the new `internal/clientip.ParseCIDRs` helper and propagated to every guard via the new `auth.TrustedProxiesReceiver` interface; guards registered after `Manager.SetTrustedProxies` inherit the list automatically.
-- **`auth.TrustedProxiesReceiver`**: optional interface a `Guard` implements so `Manager.SetTrustedProxies` can plumb the parsed proxy network list through. `SessionGuard` and `JWTGuard` implement it; pure bearer-token guards can leave it unimplemented.
-- **`auth.Manager.SetTrustedProxies([]*net.IPNet)` / `Manager.TrustedProxies() []*net.IPNet`**: install / read the parsed proxy network list. The setter takes a defensive copy so post-install caller mutation cannot affect the manager's view, and propagates the list to every registered guard implementing `TrustedProxiesReceiver`.
-- **`internal/clientip` package**: framework-internal single source of truth for "who is the real client?" given an `*http.Request` and a trusted-proxy network list. Resolves `Forwarded` (RFC 7239) > `X-Forwarded-For` (right-most-of-trusted) > `X-Real-IP` (single-value only), strips ephemeral TCP ports, handles IPv4-in-IPv6 brackets, and refuses to trust headers from untrusted `RemoteAddr`. `auth/throttle.go` and `auth/drivers/guards/session.go` now both call it; the exceptions logger and other adopters should adopt it next so the framework has one IP-extraction policy, not three.
+- **`auth.Config.TrustedProxies` (`AUTH_TRUSTED_PROXIES` env var):** comma-separated list of IPs/CIDRs whose forwarded headers (`Forwarded` / `X-Forwarded-For` / `X-Real-IP`) may be honoured when deriving the client IP for the login throttler and the session audit trail. Default is empty (no proxies trusted, secure default; XFF spoofing is fully ignored). Configure to match your load balancer / reverse proxy topology, e.g. `AUTH_TRUSTED_PROXIES=10.0.0.0/8,192.168.0.0/16`. Entries are parsed via the new `internal/clientip.ParseCIDRs` helper and propagated to every scheme via the new `auth.TrustedProxiesReceiver` interface; schemes registered after `Manager.SetTrustedProxies` inherit the list automatically.
+- **`auth.TrustedProxiesReceiver`**: optional interface a `Scheme` implements so `Manager.SetTrustedProxies` can plumb the parsed proxy network list through. `SessionScheme` and `JWTScheme` implement it; pure bearer-token schemes can leave it unimplemented.
+- **`auth.Manager.SetTrustedProxies([]*net.IPNet)` / `Manager.TrustedProxies() []*net.IPNet`**: install / read the parsed proxy network list. The setter takes a defensive copy so post-install caller mutation cannot affect the manager's view, and propagates the list to every registered scheme implementing `TrustedProxiesReceiver`.
+- **`internal/clientip` package**: framework-internal single source of truth for "who is the real client?" given an `*http.Request` and a trusted-proxy network list. Resolves `Forwarded` (RFC 7239) > `X-Forwarded-For` (right-most-of-trusted) > `X-Real-IP` (single-value only), strips ephemeral TCP ports, handles IPv4-in-IPv6 brackets, and refuses to trust headers from untrusted `RemoteAddr`. `auth/throttle.go` and `auth/drivers/schemes/session.go` now both call it; the exceptions logger and other adopters should adopt it next so the framework has one IP-extraction policy, not three.
 - **`orm.Model[T].WithContext(ctx)`** on Model, UUIDModel, SoftDeleteModel, SoftDeleteUUIDModel, ImmutableModel, ImmutableUUIDModel. Returns `*Query[T]` so the static-helper entry points (`Find`, `FindBy`, `First`, `Last`, `All`, `Create`, etc.) can carry a context without rewriting to the verbose chain form. Example: `User{}.WithContext(ctx).Where("id=?", id).First(&u)`.
 - **`orm.Query[T].WhereGroup(func(*Query[T]))` / `OrWhereGroup(...)`**: emits parenthesized AND/OR sub-conditions. Replaces the previous flat `Where(...).Where(...).OrWhere(...)` chain that bound `OR` against the wrong predicate. Implemented via a new `Condition.Group` field plus a shared recursive `compileConditions` in the postgres/mysql/sqlite grammars.
 - **`orm.ImmutableModel[T]` / `orm.ImmutableUUIDModel[T]`**: append-only base models for tables without an `updated_at` column (e.g. `audit_logs`). Provides the same static helpers as `Model[T]` minus the update path. Save on a persisted record returns `orm.ErrImmutableModelUpdate`. Use `orm.Save(manager, &record)` for inserts.
-- **`auth.SessionGuard.CheckWithError(r *http.Request) (bool, error)`**: companion to `Check` that surfaces *why* a request is unauthenticated. Returns `(false, auth.ErrSessionRevoked)` when the cookie is valid but the matching server-side session record was deleted; `(false, nil)` for ordinary unauthenticated states (no cookie, missing user); `(false, err)` on transient store failures (fail-closed). Lets middleware deliver "your session was signed out remotely" UX without breaking the `auth.Guard` interface, which still returns `bool`.
+- **`schemes.SessionScheme.CheckWithError(r *http.Request) (bool, error)`**: companion to `Check` that surfaces *why* a request is unauthenticated. Returns `(false, auth.ErrSessionRevoked)` when the cookie is valid but the matching server-side session record was deleted; `(false, nil)` for ordinary unauthenticated states (no cookie, missing user); `(false, err)` on transient store failures (fail-closed). Lets middleware deliver "your session was signed out remotely" UX without breaking the `auth.Scheme` interface, which still returns `bool`.
 - **Auth public surface for server-side session lifecycle:**
   - `auth.ErrSessionRevoked`: sentinel returned by `CheckWithError` when a cookie's session record was administratively removed.
-  - `auth.ErrRememberClearPartial`: sentinel returned (wrapped, with `errors.Join`'d causes) by `Manager.RevokeAllSessions` when the store delete succeeded but at least one guard's `RememberTokenClearer` failed.
-  - `auth.ServerSessionStoreReceiver`: optional interface a `Guard` implements to receive the store via `Manager.SetServerSessionStore`. Non-receivers (e.g. JWT) are silently skipped.
-  - `auth.RememberTokenClearer`: optional interface a `Guard` implements so `Manager.RevokeAllSessions` can also nuke the user's remember-me token.
+  - `auth.ErrRememberClearPartial`: sentinel returned (wrapped, with `errors.Join`'d causes) by `Manager.RevokeAllSessions` when the store delete succeeded but at least one scheme's `RememberTokenClearer` failed.
+  - `auth.ServerSessionStoreReceiver`: optional interface a `Scheme` implements to receive the store via `Manager.SetServerSessionStore`. Non-receivers (e.g. JWT) are silently skipped.
+  - `auth.RememberTokenClearer`: optional interface a `Scheme` implements so `Manager.RevokeAllSessions` can also nuke the user's remember-me token.
 
 ### Changed
 
@@ -561,15 +564,15 @@ handler depends on the dropped methods, so most apps need no change.
 
 ### Fixed
 
-- **Remember-cookie revival now writes the fresh XSRF-TOKEN cookie after rotating the CSRF token.** `SessionGuard`'s silent-revival path rotated the per-session CSRF token (deleting the token bound to the pre-revival session id) but, unlike `Login`, never emitted the replacement cookie, so the SPA kept echoing a stale value and its next state-changing request 419'd until a later safe-method response happened to re-sync it. The revival path now calls `WriteXSRFCookie` with the post-rotation session id, mirroring `Login`.
+- **Remember-cookie revival now writes the fresh XSRF-TOKEN cookie after rotating the CSRF token.** `SessionScheme`'s silent-revival path rotated the per-session CSRF token (deleting the token bound to the pre-revival session id) but, unlike `Login`, never emitted the replacement cookie, so the SPA kept echoing a stale value and its next state-changing request 419'd until a later safe-method response happened to re-sync it. The revival path now calls `WriteXSRFCookie` with the post-rotation session id, mirroring `Login`.
 - **`auth.ORMUserProvider` SQL is now placeholder-dialect aware.** All four provider statements (`FindByID`, `FindByCredentials`, `UpdateRememberToken`, `CompareAndSwapRememberToken`) hardcoded PostgreSQL `$N` placeholders, which are a syntax error on MySQL; combined with the fail-closed rotate-on-use recall, every remember-cookie recall on MySQL was silently rejected. New `auth.NewORMUserProviderForDialect(db, model, hasher, dialect)` selects `$N` for `"postgres"` and `?` otherwise; `velocity.New` wires `DB_CONNECTION` through automatically. The plain `NewORMUserProvider` constructor keeps the historical PostgreSQL syntax.
-- **The per-identifier login-throttle dimension is now verify-first, closing a remote account-lockout DoS.** The identifier bucket aggregates one account's failures across ALL source IPs, and it was checked before the password, so an attacker spraying a victim's email from throwaway IPs (20 wrong passwords / 60s by default) locked the real user out from every IP. Guards (`SessionGuard.Attempt`, `JWTGuard.Attempt`) now deny pre-check only on the pair and per-IP dimensions; an over-cap identifier bucket runs the (timeboxed) credential check and denies only wrong-credential attempts, so the account holder with the correct password is never locked out, while distributed guessers keep receiving the uniform `auth.ErrLoginThrottled`. Pre-check denials are padded to the attempt floor so the tripped dimension is not distinguishable by timing. Previously `drivers.MemoryStore` kept entries in an unbounded map: the periodic sweep removed only expired items, `Forever` entries lived forever, and any attacker-influenceable key shape (per-user, per-IP, per-request-derived) could grow the map until the process OOMed. The store now holds at most `DefaultMaxEntries` (1,000,000) entries; inserting past the cap evicts an approximately least-recently-used entry (sampled LRU: hits stamp an atomic access sequence, eviction samples up to 16 map entries and removes the stalest, preferring already-expired ones; stores at or below the sample size get exact LRU). Reads stay on the shared read lock on bounded and unbounded stores alike, so cache hits run concurrently. Configure via `CACHE_MEMORY_MAX_ENTRIES` (root `CacheConfig.MemoryMaxEntries` -> `cache.StoreConfig.MaxEntries` -> new `drivers.WithMaxEntries` option): `0` = default cap, positive = explicit cap, negative = unlimited (documented escape hatch restoring the old behaviour). `Forever` entries never expire but ARE evictable at cap; replacing an existing key never evicts; `Add`/`Increment` atomicity is unchanged (eviction runs under the same mutex). `NewMemoryStore` gained variadic `MemoryOption`s, so existing call sites compile unchanged but are now bounded by default.
+- **The per-identifier login-throttle dimension is now verify-first, closing a remote account-lockout DoS.** The identifier bucket aggregates one account's failures across ALL source IPs, and it was checked before the password, so an attacker spraying a victim's email from throwaway IPs (20 wrong passwords / 60s by default) locked the real user out from every IP. Schemes (`SessionScheme.Attempt`, `JWTScheme.Attempt`) now deny pre-check only on the pair and per-IP dimensions; an over-cap identifier bucket runs the (timeboxed) credential check and denies only wrong-credential attempts, so the account holder with the correct password is never locked out, while distributed guessers keep receiving the uniform `auth.ErrLoginThrottled`. Pre-check denials are padded to the attempt floor so the tripped dimension is not distinguishable by timing. Previously `drivers.MemoryStore` kept entries in an unbounded map: the periodic sweep removed only expired items, `Forever` entries lived forever, and any attacker-influenceable key shape (per-user, per-IP, per-request-derived) could grow the map until the process OOMed. The store now holds at most `DefaultMaxEntries` (1,000,000) entries; inserting past the cap evicts an approximately least-recently-used entry (sampled LRU: hits stamp an atomic access sequence, eviction samples up to 16 map entries and removes the stalest, preferring already-expired ones; stores at or below the sample size get exact LRU). Reads stay on the shared read lock on bounded and unbounded stores alike, so cache hits run concurrently. Configure via `CACHE_MEMORY_MAX_ENTRIES` (root `CacheConfig.MemoryMaxEntries` -> `cache.StoreConfig.MaxEntries` -> new `drivers.WithMaxEntries` option): `0` = default cap, positive = explicit cap, negative = unlimited (documented escape hatch restoring the old behaviour). `Forever` entries never expire but ARE evictable at cap; replacing an existing key never evicts; `Add`/`Increment` atomicity is unchanged (eviction runs under the same mutex). `NewMemoryStore` gained variadic `MemoryOption`s, so existing call sites compile unchanged but are now bounded by default.
 
 - **`exceptions.Handler` no longer honours `X-Forwarded-For` / `X-Real-IP` unconditionally (security: C-05 follow-up).** Previously `exceptions/middleware.go:getClientIP` took the left-most XFF entry from every request, so any direct-internet client could spoof the IP recorded on `ExceptionContext.IP` (CWE-345 log poisoning / forensics evasion). It also took the LEFT-most where the rate-limit path takes RIGHT-most-of-trusted, so the same request was attributed to two different IPs across subsystems. `Handler` now carries a `trustedProxies []*net.IPNet` field set via the new `exceptions.WithTrustedProxies(...)` option or the new `Handler.SetTrustedProxies([]*net.IPNet)` runtime setter; `ErrorHandler` routes through `internal/clientip.ExtractString` so the audit log uses the same secure resolution as the throttle / rate-limit / session-audit layers. `velocity.New` wires the deployment list from `Config.Auth.TrustedProxies` automatically.
 - **`router.RateLimitByIP` now consumes the router-level trusted-proxy list (security: C-05 follow-up).** Previously it had its own per-middleware `WithTrustedProxies` parsed independently of `Router.TrustedProxies`; operators who configured trust once at the router level lost it at the rate-limit layer, silently fell back to "no proxies trusted", and every client behind the LB shared one bucket. `RateLimitByIP` now reads `Context.TrustedProxyNets()` (the parsed router-level list) on every request and unions it with the per-middleware extras. `extractIP` and the throttle key both route through `internal/clientip.Extract`, so all three subsystems (router rate limit, auth login throttle, exceptions audit log) agree on "who is the real client?".
 - **`auth.ThrottleKey` no longer keys by ephemeral TCP port and now resolves the real client IP behind trusted proxies (security: C-05).** The previous implementation used `r.RemoteAddr` verbatim, which is `host:port`. The port rotates per TCP connection, so every login attempt produced a fresh throttle key, effectively disabling the limiter. Behind any load balancer, every client also shared one bucket (the LB IP), so legitimate users got DoS-throttled while attackers spread across forwarded clients. The key is now a length-bounded SHA-256 hex digest over `(normalised_identifier, client_ip)`: the identifier is `strings.TrimSpace` + NFKC + `strings.ToLower` (so `Victim@example.com` and `VICTIM@example.com` hit the same bucket), capped at 254 bytes; the IP is resolved via the new `internal/clientip.Extract` honouring `auth.Config.TrustedProxies`. The `"|"` separator footgun (`alice|10.0.0.5` colliding with `alice` from `10.0.0.5`) is closed both by `\x00` separation and by hashing. The function signature gained a `trustedProxies []*net.IPNet` parameter; the only in-tree callers are the session and JWT guards, which now plumb their per-guard list automatically. The session guard's `clientIP(r)` helper (used for the audit-trail IP recorded on `Login`) now delegates to the same `clientip.Extract` so the throttle, audit log, and per-IP limiter all agree. Default trusted-proxy list is empty (forwarded headers untrusted); set `AUTH_TRUSTED_PROXIES` to match your topology.
-- **`auth.SessionGuard` now consults `ServerSessionStore` on every request when one is installed.** Previously `Manager.RevokeSession` / `RevokeAllSessions` deleted the store row but `SessionGuard.Check` / `User` only validated the encrypted cookie, so a "logged out" browser stayed authenticated until the cookie's TTL elapsed. The guard now performs `store.Get(sessionID)` on every authenticated request; a missing or expired record returns the new `auth.ErrSessionRevoked` sentinel and `Check` returns `false`. New `SessionGuard.CheckWithError(r) (bool, error)` lets middleware distinguish revoked from expired from no-cookie for UX. `Login` writes the session record (id, user id, created/last-seen/expires, IP, User-Agent) to the store; `Logout` deletes it. `LastSeenAt` write-back is debounced to one `Put` per 60s to avoid amplifying read RTTs into double round-trips. Cookie-only behavior is preserved when no store is installed; `Manager.SetServerSessionStore` propagates to every guard implementing the new `auth.ServerSessionStoreReceiver` interface (and to guards registered after the store is installed). IP is captured from `r.RemoteAddr` with the `:port` suffix stripped via `net.SplitHostPort`; `X-Forwarded-For` / trusted-proxy support is deferred.
-- **`auth.Manager.RevokeAllSessions` also clears the user's remember-me token.** Without this, a "sign out everywhere" admin action would still let the revoked browser resurrect a fresh session on the next request via its remember cookie. Manager now walks every registered guard and calls `ClearRememberTokensForUser` on guards implementing the new `auth.RememberTokenClearer` interface; `SessionGuard` implements it by calling `UserProvider.UpdateRememberToken(user, "")`. `Manager.RevokeSession` (single-session) intentionally does NOT clear the remember token, since remember tokens are per-user and wiping one would log the user out across every device; if you need that, call `RevokeAllSessions`. (See **Changed** above for the new partial-failure return-error contract.)
+- **`schemes.SessionScheme` now consults `ServerSessionStore` on every request when one is installed.** Previously `Manager.RevokeSession` / `RevokeAllSessions` deleted the store row but `SessionScheme.Check` / `User` only validated the encrypted cookie, so a "logged out" browser stayed authenticated until the cookie's TTL elapsed. The guard now performs `store.Get(sessionID)` on every authenticated request; a missing or expired record returns the new `auth.ErrSessionRevoked` sentinel and `Check` returns `false`. New `SessionScheme.CheckWithError(r) (bool, error)` lets middleware distinguish revoked from expired from no-cookie for UX. `Login` writes the session record (id, user id, created/last-seen/expires, IP, User-Agent) to the store; `Logout` deletes it. `LastSeenAt` write-back is debounced to one `Put` per 60s to avoid amplifying read RTTs into double round-trips. Cookie-only behavior is preserved when no store is installed; `Manager.SetServerSessionStore` propagates to every guard implementing the new `auth.ServerSessionStoreReceiver` interface (and to guards registered after the store is installed). IP is captured from `r.RemoteAddr` with the `:port` suffix stripped via `net.SplitHostPort`; `X-Forwarded-For` / trusted-proxy support is deferred.
+- **`auth.Manager.RevokeAllSessions` also clears the user's remember-me token.** Without this, a "sign out everywhere" admin action would still let the revoked browser resurrect a fresh session on the next request via its remember cookie. Manager now walks every registered guard and calls `ClearRememberTokensForUser` on guards implementing the new `auth.RememberTokenClearer` interface; `SessionScheme` implements it by calling `UserStore.UpdateRememberToken(user, "")`. `Manager.RevokeSession` (single-session) intentionally does NOT clear the remember token, since remember tokens are per-user and wiping one would log the user out across every device; if you need that, call `RevokeAllSessions`. (See **Changed** above for the new partial-failure return-error contract.)
 - **`Pluck()` now honors `Distinct()`**. Previously the `SelectQuery{}` literal in `Pluck` omitted `Distinct`, so `Model[User]{}.Distinct().Pluck("role")` silently returned duplicates. Asserted across all three driver grammars.
 - **WHERE compilation no longer mis-binds nested AND/OR**. The flat-slice condition compiler is replaced by a recursive walk that emits parens around grouped predicates.
 - **Side fix in postgres `CompileUpdate` / `CompileDelete`**: `WhereIn(...).Update(...)` and `WhereIn(...).Delete()` previously emitted `col IN $1` and bound the slice as a single param, producing a runtime driver error or silent corruption. The shared `compileConditions` helper now expands `IN` / `NOT IN` / `BETWEEN` / `NOT BETWEEN` correctly in UPDATE and DELETE WHERE clauses on every driver. Adopters who routed those queries through `NewRawQuery` to work around the breakage can drop the workaround.

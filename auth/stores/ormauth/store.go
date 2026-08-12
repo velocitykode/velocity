@@ -133,7 +133,7 @@ func (p *Store[T]) resolve() {
 	// declares no policy at all rejects every map key, so remember-me
 	// would fail on first use at runtime; refuse at startup instead.
 	if implicitDeny(&zero) {
-		p.err = fmt.Errorf("velocity/ormauth: model %v declares no mass-assignment policy, so writing %q would be rejected; declare Fillable() including %q (or Guarded()/AllowAllColumns)",
+		p.err = fmt.Errorf("velocity/ormauth: model %v declares no mass-assignment policy, so writing %q would be rejected; declare AssignableFields() including %q (or ProtectedFields()/AllowAllColumns)",
 			modelName, p.opts.RememberTokenColumn, p.opts.RememberTokenColumn)
 		return
 	}
