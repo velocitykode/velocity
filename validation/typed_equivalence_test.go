@@ -85,8 +85,25 @@ var equivalenceCases = []equivCase{
 		data: []map[string]interface{}{{"other": "yes"}, {"other": "no"}, {"other": "no", "f": "x"}}},
 	{name: "required_with", field: "f", token: "required_with:other", rule: RequiredWith("other"),
 		data: []map[string]interface{}{{"other": "x"}, {}, {"other": "x", "f": "y"}}},
+	{name: "required_with multi", field: "f", token: "required_with:a,b", rule: RequiredWith("a", "b"),
+		data: []map[string]interface{}{
+			{"a": "x"},
+			{"b": "x"},
+			{"a": "x", "b": "y"},
+			{"c": "x"},
+			{},
+			{"b": "x", "f": "y"},
+		}},
 	{name: "required_without", field: "f", token: "required_without:other", rule: RequiredWithout("other"),
 		data: []map[string]interface{}{{}, {"other": "x"}, {"f": "y"}}},
+	{name: "required_without multi", field: "f", token: "required_without:a,b", rule: RequiredWithout("a", "b"),
+		data: []map[string]interface{}{
+			{"a": "x"},
+			{"b": "x"},
+			{"a": "x", "b": "y"},
+			{},
+			{"a": "x", "f": "y"},
+		}},
 
 	{name: "date", field: "f", token: "date", rule: Date(),
 		data: []map[string]interface{}{{"f": "2024-01-02"}, {"f": "nope"}}},
@@ -239,6 +256,51 @@ func TestTypedRules_EquivalenceAcrossCombinedRules(t *testing.T) {
 					t.Errorf("input %d %#v: typed = %#v, tokens = %#v",
 						i, data, typedResult.Messages(), legacyResult.Messages())
 				}
+			}
+		})
+	}
+}
+
+// TestRequiredWithFamily_AnyFieldSemantics pins the outcome itself, not just
+// typed / token agreement: required_with fires when ANY listed field is
+// present, required_without when ANY listed field is absent. The equivalence
+// harness alone cannot catch a regression here, since both paths run the same
+// handler.
+func TestRequiredWithFamily_AnyFieldSemantics(t *testing.T) {
+	tests := []struct {
+		name     string
+		rule     Rule
+		data     map[string]interface{}
+		wantFail bool
+	}{
+		{name: "with: first listed present", rule: RequiredWith("a", "b", "c"), data: map[string]interface{}{"a": "x"}, wantFail: true},
+		{name: "with: middle listed present", rule: RequiredWith("a", "b", "c"), data: map[string]interface{}{"b": "x"}, wantFail: true},
+		{name: "with: last listed present", rule: RequiredWith("a", "b", "c"), data: map[string]interface{}{"c": "x"}, wantFail: true},
+		{name: "with: all listed present", rule: RequiredWith("a", "b"), data: map[string]interface{}{"a": "x", "b": "y"}, wantFail: true},
+		{name: "with: none listed present", rule: RequiredWith("a", "b", "c"), data: map[string]interface{}{"d": "x"}, wantFail: false},
+		{name: "with: empty data", rule: RequiredWith("a", "b"), data: map[string]interface{}{}, wantFail: false},
+		{name: "with: listed present but value supplied", rule: RequiredWith("a", "b"), data: map[string]interface{}{"b": "x", "f": "given"}, wantFail: false},
+
+		{name: "without: first listed absent", rule: RequiredWithout("a", "b", "c"), data: map[string]interface{}{"b": "x", "c": "y"}, wantFail: true},
+		{name: "without: middle listed absent", rule: RequiredWithout("a", "b", "c"), data: map[string]interface{}{"a": "x", "c": "y"}, wantFail: true},
+		{name: "without: last listed absent", rule: RequiredWithout("a", "b", "c"), data: map[string]interface{}{"a": "x", "b": "y"}, wantFail: true},
+		{name: "without: none listed present", rule: RequiredWithout("a", "b"), data: map[string]interface{}{}, wantFail: true},
+		{name: "without: all listed present", rule: RequiredWithout("a", "b"), data: map[string]interface{}{"a": "x", "b": "y"}, wantFail: false},
+		{name: "without: listed absent but value supplied", rule: RequiredWithout("a", "b"), data: map[string]interface{}{"a": "x", "f": "given"}, wantFail: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			normalized, err := normalizeRuleSet(RuleSet{"f": {tc.rule}})
+			if err != nil {
+				t.Fatalf("normalizeRuleSet: %v", err)
+			}
+			result, err := runNormalized(tc.data, normalized, nil)
+			if err != nil {
+				t.Fatalf("runNormalized: %v", err)
+			}
+			if got := result.HasErrors(); got != tc.wantFail {
+				t.Errorf("failed = %v, want %v (messages %#v)", got, tc.wantFail, result.Messages())
 			}
 		})
 	}

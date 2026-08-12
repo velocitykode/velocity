@@ -56,7 +56,9 @@ var constructorCases = []struct {
 	{name: "RequiredIf", rule: RequiredIf("other", "yes"), want: "required_if", params: []string{"other", "yes"}},
 	{name: "RequiredUnless", rule: RequiredUnless("other", "yes"), want: "required_unless", params: []string{"other", "yes"}},
 	{name: "RequiredWith", rule: RequiredWith("other"), want: "required_with", params: []string{"other"}},
+	{name: "RequiredWith multi", rule: RequiredWith("a", "b", "c"), want: "required_with", params: []string{"a", "b", "c"}},
 	{name: "RequiredWithout", rule: RequiredWithout("other"), want: "required_without", params: []string{"other"}},
+	{name: "RequiredWithout multi", rule: RequiredWithout("a", "b", "c"), want: "required_without", params: []string{"a", "b", "c"}},
 
 	// Date and time.
 	{name: "Date", rule: Date(), want: "date"},
@@ -288,6 +290,38 @@ func TestCustom_CarriesHandler(t *testing.T) {
 	}
 	if spec.Params != nil {
 		t.Errorf("params = %#v, want nil", spec.Params)
+	}
+}
+
+// TestFieldListConstructors_RequireAFirstField pins the shape that makes an
+// empty field list unrepresentable: the first field is a separate parameter,
+// so RequiredWith() does not compile. The rest fold into the same parameter
+// list, in order.
+func TestFieldListConstructors_RequireAFirstField(t *testing.T) {
+	tests := []struct {
+		name string
+		rule Rule
+		want []string
+	}{
+		{name: "required_with single", rule: RequiredWith("a"), want: []string{"a"}},
+		{name: "required_with multi", rule: RequiredWith("a", "b", "c"), want: []string{"a", "b", "c"}},
+		{name: "required_without single", rule: RequiredWithout("a"), want: []string{"a"}},
+		{name: "required_without multi", rule: RequiredWithout("a", "b", "c"), want: []string{"a", "b", "c"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.rule.Rule().Params; !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("params = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+
+	// The additional fields are copied, like every other variadic constructor.
+	additional := []string{"b", "c"}
+	rule := RequiredWith("a", additional...)
+	additional[0] = "mutated"
+	if got := rule.Rule().Params; !reflect.DeepEqual(got, []string{"a", "b", "c"}) {
+		t.Errorf("params = %#v, want [a b c]", got)
 	}
 }
 

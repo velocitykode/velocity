@@ -50,6 +50,14 @@ func newRuleWith(name string, params ...string) Rule {
 	return simpleRule{name: name, params: append([]string(nil), params...)}
 }
 
+// fieldList joins a required first field with the optional rest into one
+// parameter slice the caller cannot mutate afterwards.
+func fieldList(field string, additional []string) []string {
+	params := make([]string, 0, 1+len(additional))
+	params = append(params, field)
+	return append(params, additional...)
+}
+
 // Presence rules.
 
 // Required requires the field to be present and non-empty.
@@ -153,14 +161,18 @@ func RequiredUnless(field, value string) Rule {
 	return newRuleWith("required_unless", field, value)
 }
 
-// RequiredWith requires the field when the first of fields is present.
-func RequiredWith(fields ...string) Rule {
-	return newRuleWith("required_with", fields...)
+// RequiredWith requires the field when any of the named fields is present.
+// The first field is a separate parameter so an empty field list cannot be
+// expressed.
+func RequiredWith(field string, additional ...string) Rule {
+	return simpleRule{name: "required_with", params: fieldList(field, additional)}
 }
 
-// RequiredWithout requires the field when the first of fields is absent.
-func RequiredWithout(fields ...string) Rule {
-	return newRuleWith("required_without", fields...)
+// RequiredWithout requires the field when any of the named fields is absent.
+// The first field is a separate parameter so an empty field list cannot be
+// expressed.
+func RequiredWithout(field string, additional ...string) Rule {
+	return simpleRule{name: "required_without", params: fieldList(field, additional)}
 }
 
 // Date and time rules.
