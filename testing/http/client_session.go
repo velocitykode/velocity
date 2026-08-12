@@ -56,7 +56,7 @@ import (
 	"reflect"
 
 	"github.com/velocitykode/velocity/auth"
-	"github.com/velocitykode/velocity/auth/drivers/guards"
+	"github.com/velocitykode/velocity/auth/drivers/schemes"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/router"
 )
@@ -71,18 +71,18 @@ import (
 // The scheme is taken as a parameter (TestClient holds none), consistent with
 // ActingAs. An empty data map writes nothing: the store skips an unmodified
 // session, so no cookie is captured.
-func (c *TestClient) WithSession(scheme *guards.SessionScheme, data map[string]any) *TestClient {
+func (c *TestClient) WithSession(scheme *schemes.SessionScheme, data map[string]any) *TestClient {
 	c.t.Helper()
 
 	if scheme == nil {
-		c.t.Errorf("WithSession: a non-nil *guards.SessionScheme is required")
+		c.t.Errorf("WithSession: a non-nil *schemes.SessionScheme is required")
 		return c
 	}
 
 	// A session cache must be attached or the scheme's per-request caching
 	// no-ops; mirrors ActingAs's seed request.
 	w := httptest.NewRecorder()
-	req := guards.WithSessionContext(httptest.NewRequest(http.MethodGet, "/", nil))
+	req := schemes.WithSessionContext(httptest.NewRequest(http.MethodGet, "/", nil))
 
 	session := scheme.Session(req)
 	if session == nil {
@@ -141,11 +141,11 @@ func (r *TestResponse) AssertSessionHasErrors(enc crypto.Encryptor, fields ...st
 // It is client-level (not response-level): the seeded session lives in the
 // client's cookie jar, and a normal request need not re-emit a Set-Cookie, so a
 // response may carry no session even though later requests still send it.
-func (c *TestClient) AssertSessionHas(scheme *guards.SessionScheme, key string, value any) *TestClient {
+func (c *TestClient) AssertSessionHas(scheme *schemes.SessionScheme, key string, value any) *TestClient {
 	c.t.Helper()
 
 	if scheme == nil {
-		c.t.Errorf("AssertSessionHas: a non-nil *guards.SessionScheme is required")
+		c.t.Errorf("AssertSessionHas: a non-nil *schemes.SessionScheme is required")
 		return c
 	}
 
@@ -167,11 +167,11 @@ func (c *TestClient) AssertSessionHas(scheme *guards.SessionScheme, key string, 
 // AssertSessionMissing asserts that the client's current session does not have
 // key. A client that carried no session cookie trivially satisfies this (the
 // key cannot be present), so it passes.
-func (c *TestClient) AssertSessionMissing(scheme *guards.SessionScheme, key string) *TestClient {
+func (c *TestClient) AssertSessionMissing(scheme *schemes.SessionScheme, key string) *TestClient {
 	c.t.Helper()
 
 	if scheme == nil {
-		c.t.Errorf("AssertSessionMissing: a non-nil *guards.SessionScheme is required")
+		c.t.Errorf("AssertSessionMissing: a non-nil *schemes.SessionScheme is required")
 		return c
 	}
 
@@ -189,7 +189,7 @@ func (c *TestClient) AssertSessionMissing(scheme *guards.SessionScheme, key stri
 // current cookies. It reuses authProbeRequest (the same probe path AssertGuest /
 // AssertAuthenticated use), so reads go through the real cookie jar rather than a
 // single response's Set-Cookie.
-func (c *TestClient) sessionFromClient(scheme *guards.SessionScheme) auth.Session {
+func (c *TestClient) sessionFromClient(scheme *schemes.SessionScheme) auth.Session {
 	if scheme == nil {
 		return nil
 	}

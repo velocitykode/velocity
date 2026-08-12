@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/auth"
-	"github.com/velocitykode/velocity/auth/drivers/guards"
+	"github.com/velocitykode/velocity/auth/drivers/schemes"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/csrf"
 	"github.com/velocitykode/velocity/csrf/stores"
@@ -46,7 +46,7 @@ func TestCSRF_EagerBootstrap_AnonymousGETMintsTokenAndCookie(t *testing.T) {
 	}
 	sessionCookieName := "vel_session"
 	userStore := &eagerStubStore{}
-	sessionScheme, err := guards.NewSessionScheme(userStore, auth.SessionConfig{
+	sessionScheme, err := schemes.NewSessionScheme(userStore, auth.SessionConfig{
 		Name: sessionCookieName,
 	}, enc)
 	if err != nil {
@@ -57,7 +57,7 @@ func TestCSRF_EagerBootstrap_AnonymousGETMintsTokenAndCookie(t *testing.T) {
 	// app.go: default SessionIDResolver). Holder-first, cookie-decrypt
 	// fallback. This is the unit under test.
 	resolver := func(r *http.Request) (string, error) {
-		if sess := guards.SessionFromRequest(r); sess != nil {
+		if sess := schemes.SessionFromRequest(r); sess != nil {
 			if id := sess.ID(); id != "" {
 				return id, nil
 			}

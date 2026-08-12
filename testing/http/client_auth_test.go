@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/auth"
-	"github.com/velocitykode/velocity/auth/drivers/guards"
+	"github.com/velocitykode/velocity/auth/drivers/schemes"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/router"
 	velhttp "github.com/velocitykode/velocity/testing/http"
@@ -62,7 +62,7 @@ func (p *memStore) UpdateRememberTokenCtx(_ context.Context, u auth.Authenticata
 
 // newActingAsScheme builds a SessionScheme backed by the production CookieStore
 // and a real AES-256-GCM encryptor, with an in-memory user store holding user.
-func newActingAsScheme(t *testing.T, user *memUser) *guards.SessionScheme {
+func newActingAsScheme(t *testing.T, user *memUser) *schemes.SessionScheme {
 	t.Helper()
 	enc, err := crypto.NewEncryptor(crypto.Config{
 		Key:    strings.Repeat("k", 32),
@@ -72,7 +72,7 @@ func newActingAsScheme(t *testing.T, user *memUser) *guards.SessionScheme {
 		t.Fatalf("NewEncryptor: %v", err)
 	}
 	userStore := &memStore{users: map[interface{}]*memUser{user.id: user}}
-	scheme, err := guards.NewSessionScheme(userStore, auth.SessionConfig{
+	scheme, err := schemes.NewSessionScheme(userStore, auth.SessionConfig{
 		Name:     "vel_session",
 		Lifetime: 60,
 		Path:     "/",
@@ -87,7 +87,7 @@ func newActingAsScheme(t *testing.T, user *memUser) *guards.SessionScheme {
 
 // newAuthGatedRouter returns a router whose GET /me route is gated by the
 // session scheme: authenticated requests get 200, guests get 401.
-func newAuthGatedRouter(scheme *guards.SessionScheme) *router.VelocityRouterV2 {
+func newAuthGatedRouter(scheme *schemes.SessionScheme) *router.VelocityRouterV2 {
 	r := router.New()
 	r.Use(scheme.SessionMiddleware())
 	r.Get("/me", func(c *router.Context) error {

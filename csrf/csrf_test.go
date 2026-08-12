@@ -1562,7 +1562,7 @@ func TestSessionIDResolver_ErrorPropagation(t *testing.T) {
 
 // TestWriteXSRFCookie_PostRotation pins M-04 at the csrf layer:
 // WriteXSRFCookie reads the token currently bound to sessionID and writes
-// it as a non-HttpOnly cookie. Session guards call this after
+// it as a non-HttpOnly cookie. Session schemes call this after
 // RotateToken on Login so the response that establishes the new session
 // also carries the matching XSRF-TOKEN cookie; without that hook the
 // SPA's first POST after login returns 419 because the new token lives

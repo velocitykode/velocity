@@ -53,7 +53,7 @@ type CSRFProtector interface {
 // CSRFTokenRotator is the contract the auth subsystem uses to keep CSRF
 // tokens aligned with the session lifecycle. Implemented by *csrf.CSRF.
 //
-// Session guards MUST call RotateToken after Session.Regenerate (Login,
+// Session schemes MUST call RotateToken after Session.Regenerate (Login,
 // privilege change, remember-cookie revival) so the token bound to the
 // old session id is gone and the new id has a fresh token. They MUST
 // call RevokeToken before Session.Invalidate (Logout) so the token does
@@ -79,7 +79,7 @@ type CSRFTokenRotator interface {
 	// clients can read it via document.cookie and echo it back as
 	// X-XSRF-TOKEN on subsequent unsafe requests.
 	//
-	// Session guards MUST call this after RotateToken on Login and on the
+	// Session schemes MUST call this after RotateToken on Login and on the
 	// remember-cookie revival path: without it the response carries the
 	// new session cookie but no fresh XSRF-TOKEN, and the very next POST
 	// from the SPA returns 419 (the new per-session token is in the store
@@ -106,7 +106,7 @@ type CSRFTokenRotator interface {
 	// ignore Secure Set-Cookie received over HTTP, leaving the stale
 	// value in place).
 	//
-	// Session guards MUST call this from Logout right after RevokeToken
+	// Session schemes MUST call this from Logout right after RevokeToken
 	// and before session teardown. Without it the browser keeps the
 	// stale XSRF-TOKEN value, and the next POST after logout (e.g. the
 	// follow-up login) echoes it as X-XSRF-TOKEN; the server has no
@@ -239,7 +239,7 @@ type Database interface {
 //     implementation clears any failure counters for the key.
 //
 // A single login attempt may consult several keys, one per throttle
-// dimension: the built-in guards derive them via auth.ThrottleKeys
+// dimension: the built-in schemes derive them via auth.ThrottleKeys
 // ((identifier, IP) pair, identifier-only, IP-only; each a hashed,
 // prefix-tagged digest), call Allow for each and deny when any returns
 // false, and fan RecordFailure/RecordSuccess out to every key.

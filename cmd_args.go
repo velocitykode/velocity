@@ -310,8 +310,8 @@ func parseBuildArgs(args []string) (console.BuildOptions, error) {
 }
 
 // parseGenHandlerArgs parses the post-name arguments for `gen handler`.
-func parseGenHandlerArgs(args []string) (console.MakeHandlerOptions, error) {
-	var opts console.MakeHandlerOptions
+func parseGenHandlerArgs(args []string) (console.GenHandlerOptions, error) {
+	var opts console.GenHandlerOptions
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
@@ -333,8 +333,8 @@ func parseGenHandlerArgs(args []string) (console.MakeHandlerOptions, error) {
 }
 
 // parseGenModelArgs parses the post-name arguments for `gen model`.
-func parseGenModelArgs(args []string) (console.MakeModelOptions, error) {
-	var opts console.MakeModelOptions
+func parseGenModelArgs(args []string) (console.GenModelOptions, error) {
+	var opts console.GenModelOptions
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
@@ -360,8 +360,8 @@ func parseGenModelArgs(args []string) (console.MakeModelOptions, error) {
 // parseGenMigrationArgs parses the post-name arguments for `gen migration`.
 // --create and --table take a value in either form; a dangling flag with no
 // value errors rather than being dropped.
-func parseGenMigrationArgs(args []string) (console.MakeMigrationOptions, error) {
-	var opts console.MakeMigrationOptions
+func parseGenMigrationArgs(args []string) (console.GenMigrationOptions, error) {
+	var opts console.GenMigrationOptions
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {

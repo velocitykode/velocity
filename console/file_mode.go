@@ -3,7 +3,7 @@ package console
 import "os"
 
 // Default and secret-tier filesystem permission constants used by every
-// generator and provider wirer in the console package. Centralising them
+// generator and module wirer in the console package. Centralising them
 // here keeps the values consistent across the framework and ensures the
 // security review can audit every disk-touching call site in one place.
 //

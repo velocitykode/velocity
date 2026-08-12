@@ -21,7 +21,7 @@ const (
 	// tight cap would penalise a victim's account or a shared NAT
 	// egress cheaply. They exist to cap distributed brute force and
 	// password spraying, not to replace the pair limit. The identifier
-	// dimension is additionally verify-first in the guards (see
+	// dimension is additionally verify-first in the schemes (see
 	// auth.ThrottleKeys): an over-cap identifier bucket denies only
 	// wrong-credential attempts, so it cannot lock the account holder
 	// out.

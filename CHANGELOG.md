@@ -63,17 +63,31 @@ behavior are untouched.
   over `migrate`), while `vel migrate --pretend` and `vel run seed` still
   resolve to the one-word command with the rest passed through.
   `console.MakeProvider`/`MakeProviderOptions` become
-  `MakeModule`/`MakeModuleOptions`, and `gen module` emits a `Module`
-  (`Init`/`Start`/`Shutdown`); the generated output path
-  (`internal/providers`) is unchanged.
+  `GenModule`/`GenModuleOptions`, and `gen module` emits a `Module`
+  (`Init`/`Start`/`Shutdown`) into `internal/modules`.
 
 - **`gen grpc service` scaffolds a module, not a provider.** The wired
-  file is `internal/providers/grpc_module.go` (was `grpc_provider.go`)
+  file is `internal/modules/grpc_module.go` (was `grpc_provider.go`)
   and the generated type is `GRPCModule` (was `GRPCProvider`); the flag
   that skips it is `--no-module` (was `--no-provider`), backed by
-  `console.MakeGRPCServiceOptions.NoModule` (was `NoProvider`). The
-  marker comments (`// vel:grpc:imports`, `// vel:grpc:services`), the
-  output directory, and the wiring behavior are unchanged.
+  `console.GenGRPCServiceOptions.NoModule` (was `NoProvider`). The
+  marker comments (`// vel:grpc:imports`, `// vel:grpc:services`) and
+  the wiring behavior are unchanged.
+
+- **Package directories carry the new vocabulary.** The auth scheme
+  drivers live in `auth/drivers/schemes` (package `schemes`, holding
+  `SessionScheme` and `JWTScheme`), and the ORM-backed user store lives
+  in `auth/stores/ormauth`. Every generator writes modules to
+  `internal/modules` under `package modules`, and the module stub is
+  `internal/modules/module.go.stub`.
+
+- **The `console` generators are `Gen*`, not `Make*`.** `GenHandler`,
+  `GenModel`, `GenMigration`, `GenMiddleware`, `GenEvent`, `GenListener`,
+  `GenJob`, `GenMail`, `GenNotification`, `GenResource`, `GenPolicy`,
+  `GenModule`, `GenCommand`, `GenGRPCService`, `GenGRPCRPC`, and
+  `GenGRPCGen`, each with the matching `Gen*Options` struct. The names
+  now match the `gen *` command grammar; the generated output is
+  identical.
 
 **Env:** `AUTH_GUARD` is now `AUTH_SCHEME`, the only environment key
 carrying the old word. Scheme map keys (`web`, `session`, `api`, `jwt`),
@@ -90,7 +104,7 @@ dialect selection (`ph(n)`) that the ORM grammar already owns. Its
 `AUTH_MODEL=Admin` produced byte-identical SQL against `users` with no error
 and no warning.
 
-- **New package `auth/providers/ormauth`.** `auth` still does not import
+- **New package `auth/stores/ormauth`.** `auth` still does not import
   `orm` (the direction is fixed - `auth` sits under router-side packages
   that must not drag the query engine); the new leaf imports both. Every
   read and write goes through `orm.Model[T]`, so table naming, placeholder

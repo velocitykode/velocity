@@ -1,7 +1,7 @@
 // Package velocity is a batteries-included web framework for Go. It provides
 // a dependency-injection container (*App), a radix-tree router, a generic ORM
 // (Model[T]), driver-based cache/queue/log/mail/storage subsystems, an auth
-// manager with guards and gates, an Inertia.js-compatible view layer, and a
+// manager with schemes and access policies, an Inertia.js-compatible view layer, and a
 // declarative bootstrap API for wiring it all together.
 //
 // # Canonical import path

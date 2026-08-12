@@ -11,7 +11,7 @@ import (
 // predates the marker convention (e.g. one hand-written before the
 // gen grpc service command existed). The wire helper must treat it as
 // read-only and emit a manual snippet instead of mutating it.
-const legacyModule = `package providers
+const legacyModule = `package modules
 
 import (
 	"context"
@@ -46,7 +46,7 @@ func (p *GRPCModule) Shutdown(ctx context.Context) error { return p.server.Shutd
 
 func writeModule(t *testing.T, content string) string {
 	t.Helper()
-	dir := filepath.Join("internal", "providers")
+	dir := filepath.Join("internal", "modules")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		t.Fatalf("mkdir module dir: %v", err)
 	}
@@ -57,7 +57,7 @@ func writeModule(t *testing.T, content string) string {
 	return path
 }
 
-func TestMakeGRPCService_NoMarkersDoesNotMutateModule(t *testing.T) {
+func TestGenGRPCService_NoMarkersDoesNotMutateModule(t *testing.T) {
 	t.Chdir(t.TempDir())
 	writeFakeGoMod(t, "acme/app")
 	modulePath := writeModule(t, legacyModule)
@@ -67,8 +67,8 @@ func TestMakeGRPCService_NoMarkersDoesNotMutateModule(t *testing.T) {
 		t.Fatalf("read module: %v", err)
 	}
 
-	if err := MakeGRPCService("Bar", MakeGRPCServiceOptions{}); err != nil {
-		t.Fatalf("MakeGRPCService: %v", err)
+	if err := GenGRPCService("Bar", GenGRPCServiceOptions{}); err != nil {
+		t.Fatalf("GenGRPCService: %v", err)
 	}
 
 	after, err := os.ReadFile(modulePath)

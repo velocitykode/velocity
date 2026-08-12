@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/auth"
-	"github.com/velocitykode/velocity/auth/drivers/guards"
+	"github.com/velocitykode/velocity/auth/drivers/schemes"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/router"
 )
@@ -51,7 +51,7 @@ func (stubUserStore) UpdateRememberToken(user auth.Authenticatable, token string
 
 // newSessionTestScheme builds a real session scheme backed by a cookie store and
 // an AES-256-GCM encryptor, the same shape production wiring produces.
-func newSessionTestScheme(t *testing.T) (*guards.SessionScheme, crypto.Encryptor) {
+func newSessionTestScheme(t *testing.T) (*schemes.SessionScheme, crypto.Encryptor) {
 	t.Helper()
 	enc, err := crypto.NewEncryptor(crypto.Config{
 		Key:    strings.Repeat("k", 32),
@@ -60,7 +60,7 @@ func newSessionTestScheme(t *testing.T) (*guards.SessionScheme, crypto.Encryptor
 	if err != nil {
 		t.Fatalf("NewEncryptor: %v", err)
 	}
-	scheme, err := guards.NewSessionScheme(stubUserStore{}, auth.SessionConfig{
+	scheme, err := schemes.NewSessionScheme(stubUserStore{}, auth.SessionConfig{
 		Name:     "vel_session",
 		Lifetime: 3600,
 		Path:     "/",
@@ -118,27 +118,27 @@ func TestClient_WithSession_AssertSessionMissing(t *testing.T) {
 func TestClient_AssertSessionHas_Mismatch_Fails(t *testing.T) {
 	tests := []struct {
 		name    string
-		assert  func(c *TestClient, scheme *guards.SessionScheme)
+		assert  func(c *TestClient, scheme *schemes.SessionScheme)
 		wantErr bool
 	}{
 		{
 			name:    "present key correct value passes",
-			assert:  func(c *TestClient, g *guards.SessionScheme) { c.AssertSessionHas(g, "role", "admin") },
+			assert:  func(c *TestClient, g *schemes.SessionScheme) { c.AssertSessionHas(g, "role", "admin") },
 			wantErr: false,
 		},
 		{
 			name:    "present key wrong value fails",
-			assert:  func(c *TestClient, g *guards.SessionScheme) { c.AssertSessionHas(g, "role", "editor") },
+			assert:  func(c *TestClient, g *schemes.SessionScheme) { c.AssertSessionHas(g, "role", "editor") },
 			wantErr: true,
 		},
 		{
 			name:    "missing key fails",
-			assert:  func(c *TestClient, g *guards.SessionScheme) { c.AssertSessionHas(g, "ghost", "x") },
+			assert:  func(c *TestClient, g *schemes.SessionScheme) { c.AssertSessionHas(g, "ghost", "x") },
 			wantErr: true,
 		},
 		{
 			name:    "present key fails AssertSessionMissing",
-			assert:  func(c *TestClient, g *guards.SessionScheme) { c.AssertSessionMissing(g, "role") },
+			assert:  func(c *TestClient, g *schemes.SessionScheme) { c.AssertSessionMissing(g, "role") },
 			wantErr: true,
 		},
 	}

@@ -8,8 +8,8 @@ import (
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/auth"
-	"github.com/velocitykode/velocity/auth/drivers/guards"
-	"github.com/velocitykode/velocity/auth/providers/ormauth"
+	"github.com/velocitykode/velocity/auth/drivers/schemes"
+	"github.com/velocitykode/velocity/auth/stores/ormauth"
 	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
@@ -151,7 +151,7 @@ func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger log.Logger
 	for name, schemeCfg := range authCfg.Schemes {
 		switch schemeCfg.Driver {
 		case "session":
-			scheme, err := guards.NewSessionScheme(userStore, sessCfg, enc)
+			scheme, err := schemes.NewSessionScheme(userStore, sessCfg, enc)
 			if err != nil {
 				if logger != nil {
 					logger.Warn("Failed to create session scheme", "scheme", name, "error", err)
@@ -186,7 +186,7 @@ func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger log.Logger
 				}
 				continue
 			}
-			scheme, err := guards.NewJWTScheme(userStore, jwtCfg)
+			scheme, err := schemes.NewJWTScheme(userStore, jwtCfg)
 			if err != nil {
 				if logger != nil {
 					logger.Warn("Failed to create JWT scheme", "scheme", name, "error", err)

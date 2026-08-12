@@ -155,7 +155,7 @@ func TestBootstrap_ChainOrderIndependent(t *testing.T) {
 	}).Middleware(func(m *chain.MiddlewareStack) {
 		order = append(order, "middleware")
 	}).Modules(func(r *chain.ModuleRegistry) {
-		order = append(order, "providers")
+		order = append(order, "modules")
 	})
 
 	if err := a.bootstrap(); err != nil {
@@ -163,7 +163,7 @@ func TestBootstrap_ChainOrderIndependent(t *testing.T) {
 	}
 
 	// Execution order must be fixed regardless of registration order
-	want := []string{"providers", "middleware", "routes", "events", "schedule", "commands", "exceptions"}
+	want := []string{"modules", "middleware", "routes", "events", "schedule", "commands", "exceptions"}
 	if len(order) != len(want) {
 		t.Fatalf("got %d calls, want %d: %v", len(order), len(want), order)
 	}

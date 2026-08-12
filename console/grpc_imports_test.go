@@ -50,12 +50,12 @@ type FooService struct{}
 	}
 }
 
-// TestMakeGRPCRPC_AddsContextImportOnFirstUnary protects the contract between
+// TestGenGRPCRPC_AddsContextImportOnFirstUnary protects the contract between
 // the scaffold stub (which omits "context") and appendMethodToImpl: a freshly
 // created service has no context import, so the first unary rpc must inject
 // it. Server-stream-only services should NOT acquire the import since their
 // signatures do not take a ctx parameter.
-func TestMakeGRPCRPC_AddsContextImportOnFirstUnary(t *testing.T) {
+func TestGenGRPCRPC_AddsContextImportOnFirstUnary(t *testing.T) {
 	t.Chdir(t.TempDir())
 	setupServiceForRPC(t)
 
@@ -64,8 +64,8 @@ func TestMakeGRPCRPC_AddsContextImportOnFirstUnary(t *testing.T) {
 		t.Fatalf("precondition: scaffold should not import context yet, got:\n%s", impl)
 	}
 
-	if err := MakeGRPCRPC("Foo", "Hello", MakeGRPCRPCOptions{}); err != nil {
-		t.Fatalf("MakeGRPCRPC unary: %v", err)
+	if err := GenGRPCRPC("Foo", "Hello", GenGRPCRPCOptions{}); err != nil {
+		t.Fatalf("GenGRPCRPC unary: %v", err)
 	}
 
 	impl, _ = os.ReadFile(filepath.Join("internal", "grpc", "services", "foo.go"))
@@ -77,14 +77,14 @@ func TestMakeGRPCRPC_AddsContextImportOnFirstUnary(t *testing.T) {
 	}
 }
 
-func TestMakeGRPCRPC_DoesNotDuplicateContextOnSecondUnary(t *testing.T) {
+func TestGenGRPCRPC_DoesNotDuplicateContextOnSecondUnary(t *testing.T) {
 	t.Chdir(t.TempDir())
 	setupServiceForRPC(t)
 
-	if err := MakeGRPCRPC("Foo", "Hello", MakeGRPCRPCOptions{}); err != nil {
+	if err := GenGRPCRPC("Foo", "Hello", GenGRPCRPCOptions{}); err != nil {
 		t.Fatalf("first rpc: %v", err)
 	}
-	if err := MakeGRPCRPC("Foo", "Bye", MakeGRPCRPCOptions{}); err != nil {
+	if err := GenGRPCRPC("Foo", "Bye", GenGRPCRPCOptions{}); err != nil {
 		t.Fatalf("second rpc: %v", err)
 	}
 
@@ -94,15 +94,15 @@ func TestMakeGRPCRPC_DoesNotDuplicateContextOnSecondUnary(t *testing.T) {
 	}
 }
 
-// TestMakeGRPCRPC_StreamOnlyDoesNotAddContext verifies the asymmetry: a
+// TestGenGRPCRPC_StreamOnlyDoesNotAddContext verifies the asymmetry: a
 // server-stream rpc signature has no ctx parameter, so we must avoid
 // injecting an unused "context" import that would fail `go build`.
-func TestMakeGRPCRPC_StreamOnlyDoesNotAddContext(t *testing.T) {
+func TestGenGRPCRPC_StreamOnlyDoesNotAddContext(t *testing.T) {
 	t.Chdir(t.TempDir())
 	setupServiceForRPC(t)
 
-	if err := MakeGRPCRPC("Foo", "Tail", MakeGRPCRPCOptions{Stream: true}); err != nil {
-		t.Fatalf("MakeGRPCRPC stream: %v", err)
+	if err := GenGRPCRPC("Foo", "Tail", GenGRPCRPCOptions{Stream: true}); err != nil {
+		t.Fatalf("GenGRPCRPC stream: %v", err)
 	}
 	impl, _ := os.ReadFile(filepath.Join("internal", "grpc", "services", "foo.go"))
 	if strings.Contains(string(impl), `"context"`) {
