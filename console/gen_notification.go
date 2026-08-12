@@ -18,6 +18,9 @@ func GenNotification(name string, opts GenNotificationOptions) error {
 	}
 
 	notificationName := toNotificationName(name)
+	if err := requireNormalizedName(name, notificationName, "notification"); err != nil {
+		return err
+	}
 
 	data := map[string]interface{}{
 		"Package": "notifications",

@@ -18,12 +18,12 @@ type trackingModule struct {
 }
 
 func (p *trackingModule) Init(_ *app.Services) error {
-	*p.calls = append(*p.calls, p.name+":register")
+	*p.calls = append(*p.calls, p.name+":init")
 	return p.initErr
 }
 
 func (p *trackingModule) Start(_ *app.Services) error {
-	*p.calls = append(*p.calls, p.name+":boot")
+	*p.calls = append(*p.calls, p.name+":start")
 	return p.startErr
 }
 
@@ -42,8 +42,8 @@ func TestNewTestApp_WithModules_Lifecycle(t *testing.T) {
 		t.Fatalf("NewTestApp() error: %v", err)
 	}
 
-	// Verify Register→Boot ordering: all registers before any boot
-	want := []string{"A:register", "B:register", "A:boot", "B:boot"}
+	// Verify Init->Start ordering: every Init runs before any Start
+	want := []string{"A:init", "B:init", "A:start", "B:start"}
 	if len(calls) != len(want) {
 		t.Fatalf("got %d calls, want %d: %v", len(calls), len(want), calls)
 	}
@@ -72,56 +72,56 @@ func TestNewTestApp_WithModules_Lifecycle(t *testing.T) {
 
 func TestNewTestApp_WithModules_InitError(t *testing.T) {
 	var calls []string
-	wantErr := errors.New("register boom")
+	wantErr := errors.New("init boom")
 	pA := &trackingModule{name: "A", calls: &calls}
 	pB := &trackingModule{name: "B", calls: &calls, initErr: wantErr}
 	pC := &trackingModule{name: "C", calls: &calls}
 
 	_, err := NewTestApp(WithModules(pA, pB, pC))
 	if err == nil {
-		t.Fatal("expected error from register")
+		t.Fatal("expected error from Init")
 	}
 	if !errors.Is(err, wantErr) {
-		t.Errorf("expected wrapped register error, got: %v", err)
+		t.Errorf("expected wrapped init error, got: %v", err)
 	}
 
 	// C should never have been called
 	for _, c := range calls {
-		if c == "C:register" {
-			t.Error("C:register should not have been called after B failed")
+		if c == "C:init" {
+			t.Error("C:init should not have been called after B failed")
 		}
 	}
-	// No boot calls should have happened
+	// No Start calls should have happened
 	for _, c := range calls {
-		if c == "A:boot" || c == "B:boot" || c == "C:boot" {
-			t.Errorf("no boot should run after register failure, but got %q", c)
+		if c == "A:start" || c == "B:start" || c == "C:start" {
+			t.Errorf("no Start should run after Init failure, but got %q", c)
 		}
 	}
 }
 
 func TestNewTestApp_WithModules_StartError(t *testing.T) {
 	var calls []string
-	wantErr := errors.New("boot boom")
+	wantErr := errors.New("start boom")
 	pA := &trackingModule{name: "A", calls: &calls}
 	pB := &trackingModule{name: "B", calls: &calls, startErr: wantErr}
 
 	_, err := NewTestApp(WithModules(pA, pB))
 	if err == nil {
-		t.Fatal("expected error from boot")
+		t.Fatal("expected error from Start")
 	}
 	if !errors.Is(err, wantErr) {
-		t.Errorf("expected wrapped boot error, got: %v", err)
+		t.Errorf("expected wrapped start error, got: %v", err)
 	}
 
-	// Both should have registered
-	registered := 0
+	// Both should have initialized
+	initialized := 0
 	for _, c := range calls {
-		if c == "A:register" || c == "B:register" {
-			registered++
+		if c == "A:init" || c == "B:init" {
+			initialized++
 		}
 	}
-	if registered != 2 {
-		t.Errorf("expected 2 register calls, got %d", registered)
+	if initialized != 2 {
+		t.Errorf("expected 2 Init calls, got %d", initialized)
 	}
 }
 

@@ -18,6 +18,9 @@ func GenMiddleware(name string, opts GenMiddlewareOptions) error {
 	}
 
 	middlewareName := toMiddlewareName(name)
+	if err := requireNormalizedName(name, middlewareName, "middleware"); err != nil {
+		return err
+	}
 
 	data := map[string]interface{}{
 		"Package": "middleware",

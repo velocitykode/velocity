@@ -193,8 +193,8 @@ func TestBootstrap_ModuleLifecycle(t *testing.T) {
 	}
 
 	want := []string{
-		"A:register", "B:register",
-		"A:boot", "B:boot",
+		"A:init", "B:init",
+		"A:start", "B:start",
 		"A:middleware", "B:middleware",
 		"A:routes", "B:routes",
 		"A:events", "B:events",
@@ -211,10 +211,10 @@ func TestBootstrap_ModuleLifecycle(t *testing.T) {
 	}
 
 	if !pA.routesCalled || !pA.middlewareCalled || !pA.eventsCalled || !pA.scheduleCalled || !pA.commandsCalled {
-		t.Error("provider A missing optional interface calls")
+		t.Error("module A missing optional interface calls")
 	}
 	if !pB.routesCalled || !pB.middlewareCalled || !pB.eventsCalled || !pB.scheduleCalled || !pB.commandsCalled {
-		t.Error("provider B missing optional interface calls")
+		t.Error("module B missing optional interface calls")
 	}
 }
 
@@ -239,7 +239,7 @@ func TestBootstrap_ShutdownOrder(t *testing.T) {
 		t.Fatalf("bootstrap() error: %v", err)
 	}
 
-	// Clear register/boot calls, only track shutdown
+	// Clear Init/Start calls, only track shutdown
 	calls = nil
 
 	if err := a.Shutdown(context.Background()); err != nil {
@@ -323,7 +323,7 @@ func TestBootstrap_NilCallbacks(t *testing.T) {
 	}
 
 	// Module register + boot should still run
-	want := []string{"A:register", "A:boot"}
+	want := []string{"A:init", "A:start"}
 	if len(calls) != len(want) {
 		t.Fatalf("got %d calls, want %d: %v", len(calls), len(want), calls)
 	}
@@ -704,15 +704,15 @@ func TestBootstrap_FailureIsSticky(t *testing.T) {
 		t.Errorf("second Bootstrap() error %q differs from first %q", second, first)
 	}
 
-	// The module must not have been re-registered by the second call.
-	registers := 0
+	// The module must not have been re-initialized by the second call.
+	inits := 0
 	for _, c := range calls {
-		if c == "A:register" {
-			registers++
+		if c == "A:init" {
+			inits++
 		}
 	}
-	if registers != 1 {
-		t.Errorf("Register called %d times, want 1 (failed bootstrap must not re-run)", registers)
+	if inits != 1 {
+		t.Errorf("Init called %d times, want 1 (failed bootstrap must not re-run)", inits)
 	}
 }
 

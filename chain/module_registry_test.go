@@ -18,14 +18,14 @@ type trackingModule struct {
 
 func (p *trackingModule) Init(_ *app.Services) error {
 	if p.calls != nil {
-		*p.calls = append(*p.calls, p.name+":register")
+		*p.calls = append(*p.calls, p.name+":init")
 	}
 	return p.initErr
 }
 
 func (p *trackingModule) Start(_ *app.Services) error {
 	if p.calls != nil {
-		*p.calls = append(*p.calls, p.name+":boot")
+		*p.calls = append(*p.calls, p.name+":start")
 	}
 	return p.startErr
 }

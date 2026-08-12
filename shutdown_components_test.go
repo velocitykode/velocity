@@ -140,13 +140,13 @@ func TestShutdown_Components_BetweenModulesAndQueue(t *testing.T) {
 		t.Fatalf("Shutdown: %v", err)
 	}
 
-	want := []string{"provider", "component", "queue"}
+	want := []string{"module", "component", "queue"}
 	if len(order) != len(want) {
 		t.Fatalf("teardown order %v, want %v", order, want)
 	}
 	for i := range want {
 		if order[i] != want[i] {
-			t.Fatalf("teardown order %v, want %v (components sweep after providers, before queue)", order, want)
+			t.Fatalf("teardown order %v, want %v (components sweep after modules, before queue)", order, want)
 		}
 	}
 }

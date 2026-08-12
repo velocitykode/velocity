@@ -19,6 +19,9 @@ func GenEvent(name string, opts GenEventOptions) error {
 	}
 
 	eventName := toEventName(name)
+	if err := requireNormalizedName(name, eventName, "event"); err != nil {
+		return err
+	}
 	dotName := toDotSeparated(eventName)
 
 	data := map[string]interface{}{

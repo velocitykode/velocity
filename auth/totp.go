@@ -123,7 +123,7 @@ func (g *TOTPGenerator) Verify(secret, code string) bool {
 		expected := generateCode(key, step+int64(offset), g.cfg.Digits)
 		if len(expected) != len(supplied) {
 			// Length mismatch always fails; constant-time compare requires
-			// equal lengths so scheme explicitly.
+			// equal lengths so guard explicitly.
 			continue
 		}
 		matched |= byte(subtle.ConstantTimeCompare(expected, supplied))

@@ -18,6 +18,9 @@ func GenModule(name string, opts GenModuleOptions) error {
 	}
 
 	moduleName := toModuleName(name)
+	if err := requireNormalizedName(name, moduleName, "module"); err != nil {
+		return err
+	}
 
 	data := map[string]interface{}{
 		"Package": "modules",

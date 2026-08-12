@@ -18,6 +18,9 @@ func GenMail(name string, opts GenMailOptions) error {
 	}
 
 	mailName := toMailName(name)
+	if err := requireNormalizedName(name, mailName, "mailable"); err != nil {
+		return err
+	}
 
 	data := map[string]interface{}{
 		"Package": "mail",

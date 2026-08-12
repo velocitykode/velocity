@@ -8,6 +8,18 @@ import (
 	"github.com/velocitykode/velocity/console/stubs"
 )
 
+// requireNormalizedName rejects a name that survives scaffold.ValidateName but
+// normalizes to nothing once its redundant kind suffix is stripped (e.g.
+// "vel gen module Module"). The generators validate the raw argument and then
+// normalize, so without this check the empty result reaches the writer as a
+// filename of ".go", which the Go toolchain silently ignores.
+func requireNormalizedName(raw, normalized, kind string) error {
+	if normalized == "" {
+		return fmt.Errorf("invalid %s name %q: nothing remains after stripping the redundant %s suffix; pass the bare name instead", kind, raw, kind)
+	}
+	return nil
+}
+
 func runScaffoldGenerator(g scaffold.Generator, name, dirOverride string, data map[string]any) (scaffold.Result, error) {
 	result, err := g.Generate(name, dirOverride, data)
 	if err != nil {

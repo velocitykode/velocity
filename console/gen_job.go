@@ -18,6 +18,9 @@ func GenJob(name string, opts GenJobOptions) error {
 	}
 
 	jobName := toJobName(name)
+	if err := requireNormalizedName(name, jobName, "job"); err != nil {
+		return err
+	}
 
 	data := map[string]interface{}{
 		"Package": "jobs",

@@ -187,7 +187,7 @@ func (c JWTConfig) Validate() error {
 			return errors.New("velocity/auth: jwt secret must be at least 32 bytes for hmac algorithms")
 		}
 		// Previous secrets enable verify-only key rotation (E-02). The
-		// length scheme mirrors the active secret so a retired weak key
+		// length guard mirrors the active secret so a retired weak key
 		// never re-enters service via this slot.
 		for i, prev := range c.PreviousSecrets {
 			if prev == "" {

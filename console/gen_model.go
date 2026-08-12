@@ -23,6 +23,9 @@ func GenModel(name string, opts GenModelOptions) error {
 	}
 
 	modelName := toModelName(name)
+	if err := requireNormalizedName(name, modelName, "model"); err != nil {
+		return err
+	}
 	tableName := toTableName(modelName)
 
 	data := map[string]interface{}{

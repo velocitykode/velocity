@@ -33,7 +33,7 @@ type tableNameEntry struct {
 // (getTableName), the write path (saveWithDriver) and the relation
 // resolver (resolveTableNameReflect), so a given model resolves to the
 // SAME table no matter which path reaches it. It also matches the
-// scaffolder's toTableName (console/make_model.go), so a generated model's
+// scaffolder's toTableName (console/gen_model.go), so a generated model's
 // runtime table equals the one the generator named.
 //
 // BREAKING (vs. the historical per-path conventions): the fallback now
