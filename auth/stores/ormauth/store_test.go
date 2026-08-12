@@ -209,7 +209,7 @@ func TestStore_CompareAndSwapRememberToken(t *testing.T) {
 	p := newStore(t)
 	swapper, ok := p.(auth.RememberTokenCompareAndSwapper)
 	if !ok {
-		t.Fatal("provider does not implement RememberTokenCompareAndSwapper; remember-me recall would fail closed")
+		t.Fatal("user store does not implement RememberTokenCompareAndSwapper; remember-me recall would fail closed")
 	}
 	ctx := context.Background()
 

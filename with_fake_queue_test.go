@@ -30,7 +30,7 @@ func TestWithFakeQueue_PreSetDriverKept(t *testing.T) {
 	if a.Queue != contract.QueueDriver(fake) {
 		t.Fatalf("a.Queue = %p, want pre-set fake %p", a.Queue, fake)
 	}
-	// App embeds *app.Services, so the DI surface providers read must agree.
+	// App embeds *app.Services, so the DI surface modules read must agree.
 	if a.Services.Queue != contract.QueueDriver(fake) {
 		t.Fatalf("a.Services.Queue = %p, want pre-set fake %p", a.Services.Queue, fake)
 	}

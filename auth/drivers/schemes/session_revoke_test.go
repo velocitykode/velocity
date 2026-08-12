@@ -507,7 +507,7 @@ func TestManager_RevokeAllSessions_ClearsRememberToken(t *testing.T) {
 		t.Fatal("baseline: remember cookie must authenticate before revoke")
 	}
 	if userStore.users["u1"].rememberToken == "" {
-		t.Fatal("baseline: remember token must be persisted on provider")
+		t.Fatal("baseline: remember token must be persisted on the user store")
 	}
 
 	if err := mgr.RevokeAllSessions(context.Background(), "u1"); err != nil {
@@ -630,7 +630,7 @@ func TestManager_RevokeAllSessions_ClearerErrorReturnsPartial(t *testing.T) {
 	mgr.SetServerSessionStore(store)
 
 	innerScheme, _ := newRevokeScheme(t, nil)
-	clearerErr := errors.New("provider DB down")
+	clearerErr := errors.New("user store DB down")
 	mgr.RegisterScheme("web", &failingClearerScheme{SessionScheme: innerScheme, err: clearerErr})
 
 	// Seed a session so DeleteAllForUser has something to delete.

@@ -107,7 +107,7 @@ func TestSetRememberCookie_StoresHashedToken(t *testing.T) {
 		t.Errorf("expected sha256-hex (64 chars), got %q (%d)", user.GetRememberToken(), len(user.GetRememberToken()))
 	}
 	if userStore.updated != user.GetRememberToken() {
-		t.Error("provider should have been called with the hashed token")
+		t.Error("user store should have been called with the hashed token")
 	}
 
 	// Cookie TTL should be min(session lifetime, 30d). With lifetime=60 min,

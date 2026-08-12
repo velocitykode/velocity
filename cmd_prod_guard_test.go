@@ -15,7 +15,7 @@ var destructiveDBCommands = []string{"db wipe", "migrate fresh", "migrate rollba
 // regression test: db wipe / migrate fresh / migrate rollback must refuse in
 // every production-class APP_ENV (including "staging" and unknown values,
 // which contract.IsProductionEnv treats as production fail-secure) unless
-// --force was passed. The refusal must fire BEFORE Bootstrap so no provider
+// --force was passed. The refusal must fire BEFORE Bootstrap so no module
 // lifecycle runs.
 func TestDestructiveDBCommands_RefuseInProductionWithoutForce(t *testing.T) {
 	for _, name := range destructiveDBCommands {
@@ -40,7 +40,7 @@ func TestDestructiveDBCommands_RefuseInProductionWithoutForce(t *testing.T) {
 					t.Errorf("%s refusal error = %q, want mention of --force", name, err.Error())
 				}
 				if a.bootstrapped {
-					t.Errorf("%s refusal ran Bootstrap; guard must fire before the provider lifecycle", name)
+					t.Errorf("%s refusal ran Bootstrap; guard must fire before the module lifecycle", name)
 				}
 			})
 		}

@@ -249,7 +249,7 @@ func TestAuthManager(t *testing.T) {
 	// Test non-existent user store
 	_, err = manager.UserStore("nonexistent")
 	if err == nil {
-		t.Error("Should error on non-existent provider")
+		t.Error("Should error on non-existent user store")
 	}
 }
 
@@ -305,7 +305,7 @@ func TestNewManager(t *testing.T) {
 		t.Error("schemes map not initialized")
 	}
 	if m.userStores == nil {
-		t.Error("providers map not initialized")
+		t.Error("userStores map not initialized")
 	}
 	if m.defaultScheme != "web" {
 		t.Errorf("defaultScheme = %q, want %q", m.defaultScheme, "web")

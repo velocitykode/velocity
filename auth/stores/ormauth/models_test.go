@@ -368,7 +368,7 @@ func TestStore_SwapsTable(t *testing.T) {
 	sawSelect, sawUpdate := false, false
 	for _, stmt := range statements {
 		if strings.Contains(stmt, "`users`") {
-			t.Errorf("provider statement touched the users table: %q", stmt)
+			t.Errorf("user store statement touched the users table: %q", stmt)
 		}
 		if !strings.Contains(stmt, "`admins`") {
 			continue

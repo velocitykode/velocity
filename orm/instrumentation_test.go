@@ -87,7 +87,7 @@ func setupInstrumentedTest(t *testing.T) (*Manager, *stmtCollector) {
 // TestInstrumentation_RawSQLDBEmitsEvents covers the path that motivated
 // moving instrumentation into the driver: a subsystem holding the raw *sql.DB
 // pulled out of the manager, which never touches drivers.Driver or the query
-// builder. This was the shape of the old raw-SQL auth provider, whose login query ran on
+// builder. This was the shape of the old raw-SQL auth user store, whose login query ran on
 // every authentication attempt and emitted nothing.
 func TestInstrumentation_RawSQLDBEmitsEvents(t *testing.T) {
 	m, c := setupInstrumentedTest(t)

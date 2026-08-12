@@ -72,7 +72,7 @@ func For(ctx *router.Context) *ReqEngine {
 // (Redirect / Location / Back / Render) is invoked on the same chain.
 //
 // Returns the receiver for chaining. Silently no-ops when no auth manager
-// is on the context or the default guard does not back sessions (e.g.
+// is on the context or the default scheme does not back sessions (e.g.
 // JWT-only deployments).
 func (re *ReqEngine) Flash(key string, value any) *ReqEngine {
 	if re == nil {
@@ -149,7 +149,7 @@ func (re *ReqEngine) Back() {
 }
 
 // Render renders an Inertia component, persisting any pending flash bag
-// first so bond.Render's flash provider drains the same bag onto
+// first so bond.Render's flash reader drains the same bag onto
 // Page.Flash on this response.
 func (re *ReqEngine) Render(component string, props ...Props) error {
 	if re == nil {

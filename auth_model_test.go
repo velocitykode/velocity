@@ -86,7 +86,7 @@ func TestSetAuthModel_RejectsUnmappableModel(t *testing.T) {
 		t.Fatal("a model with no mass-assignment policy was installed")
 	}
 	if manager.DefaultUserStore() != before {
-		t.Error("a failed SetAuthModel replaced the installed provider")
+		t.Error("a failed SetAuthModel replaced the installed user store")
 	}
 }
 

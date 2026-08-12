@@ -381,7 +381,7 @@ func initNotification(mailer mail.Mailer, db *sql.DB, dbDriver string) *notifica
 
 // queueAcceptUnsigned reports whether the operator has explicitly opted
 // into running the queue without payload signing. Recognises the common
-// truthy spellings so a typo does not silently disable the scheme.
+// truthy spellings so a typo does not silently disable the guard.
 //
 // final: do not rename. QUEUE_ACCEPT_UNSIGNED is the 1.0 surface name for
 // the queue payload-signing opt-out.

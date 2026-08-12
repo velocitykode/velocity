@@ -232,7 +232,7 @@ func TestNewSessionScheme(t *testing.T) {
 					return
 				}
 				if scheme.loadUserStore() != tt.userStore {
-					t.Error("provider not set correctly")
+					t.Error("user store not set correctly")
 				}
 				if scheme.store == nil {
 					t.Error("store not initialized")
@@ -1314,7 +1314,7 @@ func TestSessionScheme_SetUserStore(t *testing.T) {
 		newStore auth.UserStore
 	}{
 		{
-			name:     "sets new provider",
+			name:     "sets new user store",
 			newStore: &mockSessionSchemeUserStore{},
 		},
 	}
@@ -1332,7 +1332,7 @@ func TestSessionScheme_SetUserStore(t *testing.T) {
 			}()
 			scheme.SetUserStore(tt.newStore)
 			if scheme.loadUserStore() != tt.newStore {
-				t.Error("SetUserStore() did not update provider")
+				t.Error("SetUserStore() did not update user store")
 			}
 		})
 	}

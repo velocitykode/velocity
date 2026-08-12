@@ -16,7 +16,7 @@ import (
 // telemetry: every statement issued against a database opened with
 // OpenInstrumented produces exactly one event, whether it originated in the
 // ORM query builder, Manager.Raw / Manager.Exec, a raw *sql.DB held by another
-// subsystem (the auth user provider), a *sql.Tx, or a prepared *sql.Stmt.
+// subsystem (the auth user store), a *sql.Tx, or a prepared *sql.Stmt.
 //
 // Err distinguishes the two outcomes: nil for a completed statement, non-nil
 // for a failure. Control-flow sentinels the sql package uses internally

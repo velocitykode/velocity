@@ -24,8 +24,8 @@ var ErrPathOutsideRoot = errors.New("velocity/router: file path outside allowed 
 
 // ErrNilRoot is returned by OpenFileIn when the caller passes a nil
 // *os.Root. The framework never constructs a nil Root internally; a nil
-// value here indicates a caller bug (e.g. forgetting to run the service
-// provider that opens the root) and must not panic library code.
+// value here indicates a caller bug (e.g. forgetting to run the module
+// that opens the root) and must not panic library code.
 var ErrNilRoot = errors.New("velocity/router: nil *os.Root")
 
 // OpenFileIn opens relative against root, returning the open handle.
