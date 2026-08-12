@@ -714,10 +714,7 @@ func New(opts ...Option) (*App, error) {
 		// path so http.MaxBytesReader can fire its requestTooLarge
 		// connection-close hint on oversized bodies (rule 5: limit all
 		// request body reads).
-		// c.DB() returns the stdlib-only contract.Database; the orm-aware
-		// dbrules path needs the driver-facing orm.Database. The stored
-		// value is always the concrete *orm.Manager, so the assertion holds.
-		result, err := dbrules.CheckWithDBW(c.Response, c.Request, rules, c.DB().(orm.Database), messages...)
+		result, err := dbrules.CheckWithDBW(c.Response, c.Request, rules, validationDB(c), messages...)
 		if err != nil {
 			// Malformed rule set: a handler bug, not user input.
 			return err
@@ -727,8 +724,12 @@ func New(opts ...Option) (*App, error) {
 		}
 		c.FlashErrors(result.All())
 		c.FlashInput(result.Old())
-		if v := c.View(); v != nil {
-			v.Back(c.Response, c.Request)
+		// Redirect back when a view engine is installed. c.View() is fatal
+		// when the service is unset, and an app without one is supported
+		// (API-only), so the container is read directly: the caller already
+		// receives ErrValidationAborted and can render its own response.
+		if s := c.ServicesIfSet(); s != nil && s.View != nil {
+			s.View.Back(c.Response, c.Request)
 		}
 		return router.ErrValidationAborted
 	})
@@ -739,8 +740,7 @@ func New(opts ...Option) (*App, error) {
 	// context is threaded through so a slow unique/exists query is dropped
 	// when the client disconnects.
 	a.Router.SetDataValidator(func(c *router.Context, data map[string]interface{}, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error {
-		db, _ := c.DB().(orm.Database)
-		result, err := dbrules.CheckDataWithDBCtx(c.Request.Context(), data, rules, db, messages...)
+		result, err := dbrules.CheckDataWithDBCtx(c.Request.Context(), data, rules, validationDB(c), messages...)
 		if err != nil {
 			// Malformed rule set: a handler bug, not user input.
 			return err
@@ -839,6 +839,30 @@ func New(opts ...Option) (*App, error) {
 
 // envGatedSecurityCheck applies the shared environment classification used by
 // the security-sensitive boot switches (crypto key, session/CSRF cookie
+// validationDB resolves the driver-facing database the DB-backed validation
+// rules need, without panicking. An app configured with no DB_CONNECTION has
+// no database at all (initDB returns nil), and validation runs per request,
+// so this reports absence by returning nil rather than going through
+// c.DB(), which is fatal when the service is unset.
+//
+// A nil return is a supported state: dbrules installs no unique/exists
+// handler, orm-free rules validate normally, and a rule set that names a
+// DB-backed rule is reported as a configuration error instead of failing the
+// field. The comma-ok assertion covers an adopter who installed a
+// contract.Database that is not the framework's *orm.Manager; the driver-facing
+// interface is what dbrules needs, and a value lacking it counts as absent.
+func validationDB(c *router.Context) orm.Database {
+	s := c.ServicesIfSet()
+	if s == nil || s.DB == nil {
+		return nil
+	}
+	db, ok := s.DB.(orm.Database)
+	if !ok {
+		return nil
+	}
+	return db
+}
+
 // validation, signed-URL key). The canonical testing environments skip the
 // check silently; the other documented non-prod profiles (dev/development/
 // local) log warnMsg/warnArgs through the app logger and continue; every

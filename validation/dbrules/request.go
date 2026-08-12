@@ -13,11 +13,11 @@ import (
 // slow query is dropped when the client disconnects or a timeout fires,
 // instead of piling up goroutines + connections on the request hot path.
 //
-// Returns nil when db is nil so the core engine registers no DB rules and a
-// rules set referencing the unique / exists rules simply has no handler
-// (matching the previous "db == nil skips registration" behavior).
+// Returns nil when no database is attached, so the engine installs no DB
+// rules and a rule set naming unique / exists is reported as a configuration
+// error rather than evaluated. A DB-less app is a supported configuration.
 func dbHandlers(ctx context.Context, db orm.Database) map[string]validation.RuleHandler {
-	if db == nil {
+	if isNilDatabase(db) {
 		return nil
 	}
 	return map[string]validation.RuleHandler{

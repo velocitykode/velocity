@@ -233,12 +233,40 @@ func TestSharedContract_BindValidAndVformAgree(t *testing.T) {
 	}
 }
 
-// TestSharedContract_BindValidPlainRulesWithoutDB pins that the seam does not
-// require a database: a rule set with no DB-backed rule validates through
-// BindValid with a nil DB.
-func TestSharedContract_BindValidPlainRulesWithoutDB(t *testing.T) {
+// TestSharedContract_BindValidPlainRulesThroughSeam pins that the production
+// seam handles a rule set with no DB-backed rule and no database attached:
+// the wiring is the one velocity.New installs, and a nil database is a
+// supported state.
+func TestSharedContract_BindValidPlainRulesThroughSeam(t *testing.T) {
+	r := router.New()
+	r.SetServices(&app.Services{})
+	r.SetDataValidator(func(c *router.Context, data map[string]interface{}, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error {
+		// Mirrors velocity.New: a DB-less app hands the helper a nil
+		// orm.Database rather than reaching through ctx.DB().
+		result, err := dbrules.CheckDataWithDBCtx(c.Request.Context(), data, rules, nil, messages...)
+		if err != nil {
+			return err
+		}
+		return result.Err()
+	})
+
+	runPlainRules(t, r)
+}
+
+// TestSharedContract_BindValidPlainRulesWithoutSeam pins the other half of
+// the contract: with no seam wired, BindValid falls back to the validator
+// service and still validates an orm-free rule set.
+func TestSharedContract_BindValidPlainRulesWithoutSeam(t *testing.T) {
 	r := router.New()
 	r.SetServices(&app.Services{Validator: validation.NewValidator()})
+
+	runPlainRules(t, r)
+}
+
+// runPlainRules drives a passing and a failing body through BindValid on the
+// supplied router.
+func runPlainRules(t *testing.T, r *router.VelocityRouterV2) {
+	t.Helper()
 
 	var got error
 	r.Post("/signup", func(c *router.Context) error {
@@ -256,6 +284,7 @@ func TestSharedContract_BindValidPlainRulesWithoutDB(t *testing.T) {
 		{name: "invalid", body: `{"email":"nope"}`, wantFail: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			got = nil
 			rec := httptest.NewRecorder()
 			httpReq := httptest.NewRequest(http.MethodPost, "/signup", strings.NewReader(tc.body))
 			httpReq.Header.Set("Content-Type", "application/json")
