@@ -115,6 +115,51 @@ func TestGenGRPCRPC_Idempotent(t *testing.T) {
 	}
 }
 
+func TestGenGRPCRPC_MultiWordServiceFindsSnakeCaseImpl(t *testing.T) {
+	t.Chdir(t.TempDir())
+	writeFakeGoMod(t, "acme/app")
+	if err := GenGRPCService("TemplateControl", GenGRPCServiceOptions{}); err != nil {
+		t.Fatalf("seed service: %v", err)
+	}
+
+	if err := GenGRPCRPC("TemplateControl", "Hello", GenGRPCRPCOptions{}); err != nil {
+		t.Fatalf("GenGRPCRPC: %v", err)
+	}
+
+	proto, err := os.ReadFile(filepath.Join("api", "proto", "templatecontrol", "v1", "templatecontrol.proto"))
+	if err != nil {
+		t.Fatalf("read proto: %v", err)
+	}
+	if !strings.Contains(string(proto), "rpc Hello(HelloRequest) returns (HelloResponse);") {
+		t.Errorf("proto missing Hello rpc, got:\n%s", proto)
+	}
+
+	impl, err := os.ReadFile(filepath.Join("internal", "grpc", "services", "template_control.go"))
+	if err != nil {
+		t.Fatalf("read impl: %v", err)
+	}
+	if !strings.Contains(string(impl), "func (s *TemplateControlService) Hello(ctx context.Context, req *templatecontrolpb.HelloRequest) (*templatecontrolpb.HelloResponse, error)") {
+		t.Errorf("impl missing Hello method, got:\n%s", impl)
+	}
+}
+
+func TestGenGRPCRPC_CustomImplNameReportsExpectedPath(t *testing.T) {
+	t.Chdir(t.TempDir())
+	writeFakeGoMod(t, "acme/app")
+	if err := GenGRPCService("TemplateControl", GenGRPCServiceOptions{ImplName: "custom_impl"}); err != nil {
+		t.Fatalf("seed service: %v", err)
+	}
+
+	err := GenGRPCRPC("TemplateControl", "Hello", GenGRPCRPCOptions{})
+	if err == nil {
+		t.Fatal("expected error: custom --impl-name is not discovered by gen grpc rpc")
+	}
+	want := filepath.Join("internal", "grpc", "services", "template_control.go")
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("error should report the expected impl path %q, got: %v", want, err)
+	}
+}
+
 func TestGenGRPCRPC_MissingService(t *testing.T) {
 	t.Chdir(t.TempDir())
 	writeFakeGoMod(t, "acme/app")
