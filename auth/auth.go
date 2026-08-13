@@ -385,7 +385,7 @@ const DefaultUserStoreName = "default"
 // framework default. This is the supported way to change which model
 // authenticates:
 //
-//	s.Auth.SetUserStore(ormauth.New[models.Admin](
+//	auth.FromServices(s).SetUserStore(ormauth.New[models.Admin](
 //	    ormauth.WithIdentifierColumn("username"),
 //	))
 //
