@@ -79,13 +79,16 @@ func GenGRPCRPC(serviceArg, rpcArg string, opts GenGRPCRPCOptions) error {
 		return fmt.Errorf("proto not found: %s (run `vel gen grpc service %s` first)", protoPath, serviceName)
 	}
 
+	// The impl filename must match what gen grpc service writes: the
+	// snake_case of the PascalCase base (TemplateControl -> template_control.go),
+	// not the flattened package name (templatecontrol.go).
 	implRoot := filepath.Join("internal", "grpc", "services")
-	implPath := filepath.Join(implRoot, packageName+".go")
+	implPath := filepath.Join(implRoot, toSnakeCase(grpcBaseName(serviceArg))+".go")
 	if err := scaffold.EnsureWithinRoot(implRoot, implPath); err != nil {
 		return fmt.Errorf("invalid service name %q: %w", serviceArg, err)
 	}
 	if _, err := os.Stat(implPath); os.IsNotExist(err) {
-		return fmt.Errorf("service impl not found: %s", implPath)
+		return fmt.Errorf("service impl not found: looked for %s (an impl generated with a custom --impl-name must be renamed to match)", implPath)
 	}
 
 	if err := appendRPCToProto(protoPath, serviceName, rpcName, kind); err != nil {
