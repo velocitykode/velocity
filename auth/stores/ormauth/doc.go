@@ -23,7 +23,7 @@
 //	    if err := userStore.Validate(); err != nil {
 //	        return err
 //	    }
-//	    s.Auth.SetUserStore(userStore)
+//	    auth.FromServices(s).SetUserStore(userStore)
 //	    return nil
 //	}
 //
