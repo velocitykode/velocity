@@ -29,21 +29,14 @@ func (routesCmd) run(a *App, args []string) error {
 		}
 		return unknownToken(arg, arg)
 	}
-	if asJSON {
-		// Bootstrap logs through the console logger and prism, both of
-		// which write to os.Stdout; route them to stderr for the duration
-		// so stdout carries only the JSON document (vel routes --json | jq).
-		realStdout := os.Stdout
-		os.Stdout = os.Stderr
-		err := a.Bootstrap()
-		os.Stdout = realStdout
-		if err != nil {
-			return err
-		}
-		return console.RouteListJSON(a.Router, realStdout)
-	}
 	if err := a.Bootstrap(); err != nil {
 		return err
+	}
+	if asJSON {
+		// Logs are already on stderr: New() detected --json in argv and
+		// routed the console logger and prism there before any output,
+		// so stdout carries only the JSON document.
+		return console.RouteListJSON(a.Router, os.Stdout)
 	}
 	return console.RouteList(a.Router)
 }
