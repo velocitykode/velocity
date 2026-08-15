@@ -6,29 +6,26 @@ import (
 
 // Result wraps an async operation's outcome.
 //
-// Get is safe to call multiple times (including concurrently). Producers
-// (Run, RunWithTimeout, RunWithContext, Race, RaceWithTimeout) send exactly
-// one value on valueCh OR exactly one error on errorCh, and the first Get
-// drains that send into the cached outcome and closes done. Subsequent
-// calls observe done already-closed and read straight from the cache, so
-// no caller blocks on an empty channel.
+// Producers (Run, RunWithTimeout, RunWithContext, Race, RaceWithTimeout)
+// deliver exactly one outcome via complete/fail. The first delivery wins:
+// completeOnce writes the cached value/error and closes done; later calls
+// are no-ops. Get is safe to call multiple times (including concurrently)
+// and Ready turns true as soon as the producer completes, independent of
+// any Get call.
 type Result[T any] struct {
-	valueCh chan T
-	errorCh chan error
-	done    chan struct{}
+	done chan struct{}
 
 	timedOut bool
 	mu       sync.RWMutex
 
-	// drainOnce gates the single goroutine that reads from valueCh/errorCh
-	// and populates the cached outcome. Pairs with closeOnce on done so a
-	// second concurrent caller does not also try to close the done channel
-	// or drain an already-empty buffered channel (X-03).
-	drainOnce sync.Once
-	closeOnce sync.Once
+	// completeOnce gates the single outcome delivery. It writes value/err
+	// and closes done, so a second producer (e.g. a losing Race goroutine
+	// or the panic-recovery path) can never double-close done or clobber
+	// the cached outcome (X-03).
+	completeOnce sync.Once
 
-	// cached outcome, written by the drainer and read by every caller
-	// after done is closed.
+	// cached outcome, written under completeOnce before done is closed and
+	// read by every caller after done is closed.
 	value T
 	err   error
 }
@@ -36,40 +33,35 @@ type Result[T any] struct {
 // NewResult creates a new Result
 func NewResult[T any]() *Result[T] {
 	return &Result[T]{
-		valueCh: make(chan T, 1),
-		errorCh: make(chan error, 1),
-		done:    make(chan struct{}),
+		done: make(chan struct{}),
 	}
 }
 
-// Get blocks until result is ready. Safe to call multiple times: subsequent
-// calls return the same value and error as the first call without panicking
-// or blocking forever. The internal `done` channel is closed via sync.Once
-// so repeated/concurrent calls never trigger `close of closed channel`
-// panics (X-03).
-func (r *Result[T]) Get() (T, error) {
-	// Fast path: outcome already cached. done was closed by the drainer.
-	select {
-	case <-r.done:
-		return r.value, r.err
-	default:
-	}
-
-	// Race to be the drainer. drainOnce makes exactly one goroutine read
-	// from valueCh/errorCh and write the cached outcome. Losers fall
-	// through and block on done below.
-	r.drainOnce.Do(func() {
-		select {
-		case v := <-r.valueCh:
-			r.value = v
-		case e := <-r.errorCh:
-			r.err = e
-		}
-		r.closeOnce.Do(func() { close(r.done) })
+// complete delivers the outcome. The first call wins: it caches value/err,
+// closes done, and returns true. Later calls are no-ops and return false.
+func (r *Result[T]) complete(value T, err error) bool {
+	won := false
+	r.completeOnce.Do(func() {
+		r.value = value
+		r.err = err
+		won = true
+		close(r.done)
 	})
+	return won
+}
 
-	// Both the drainer and all losers wait here until done is closed. For
-	// the drainer this is a no-op (done already closed inside the Once).
+// fail delivers an error outcome with the zero value. Same first-call-wins
+// semantics as complete.
+func (r *Result[T]) fail(err error) bool {
+	var zero T
+	return r.complete(zero, err)
+}
+
+// Get blocks until the result is ready. Safe to call multiple times:
+// every call returns the same cached value and error the producer
+// delivered. The close of `done` happens under completeOnce, so repeated
+// or concurrent calls never race on the cached outcome (X-03).
+func (r *Result[T]) Get() (T, error) {
 	<-r.done
 	return r.value, r.err
 }
@@ -85,11 +77,8 @@ func (r *Result[T]) GetOrDefault(defaultValue T) T {
 
 // Ready checks if result is available (non-blocking).
 //
-// Ready reflects whether Get has produced a cached outcome (i.e. whether
-// done has been closed by the drainer). It returns false while the producer
-// goroutine is still running, true once Get has consumed the producer's
-// send. Callers using Ready as a polling primitive should call Get to
-// trigger the drain.
+// Ready returns true once the producer has delivered its outcome, whether
+// or not Get has been called. Once true, Get returns immediately.
 func (r *Result[T]) Ready() bool {
 	select {
 	case <-r.done:

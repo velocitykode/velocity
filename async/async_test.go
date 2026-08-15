@@ -48,6 +48,45 @@ func TestRun(t *testing.T) {
 	})
 }
 
+// VEL-88 regression: Ready must turn true once the producer completes,
+// without any prior Get call, and Get must then return immediately.
+func TestResultReady_ReflectsCompletionWithoutGet(t *testing.T) {
+	release := make(chan struct{})
+	result := Run(func() int {
+		<-release
+		return 42
+	})
+
+	if result.Ready() {
+		t.Fatal("Ready() should be false while the producer is still running")
+	}
+	close(release)
+
+	deadline := time.After(2 * time.Second)
+	for !result.Ready() {
+		select {
+		case <-deadline:
+			t.Fatal("Ready() never became true after the producer completed")
+		case <-time.After(time.Millisecond):
+		}
+	}
+
+	// Ready is true with no Get issued yet; Get must not block.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		v, err := result.Get()
+		if err != nil || v != 42 {
+			t.Errorf("Get after Ready: want (42,nil), got (%d,%v)", v, err)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Get blocked even though Ready() reported true")
+	}
+}
+
 func TestRunWithTimeout(t *testing.T) {
 	t.Run("completes before timeout", func(t *testing.T) {
 		result := RunWithTimeout(200*time.Millisecond, func() string {

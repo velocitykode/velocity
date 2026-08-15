@@ -117,16 +117,15 @@ func TestResultGet_ConcurrentCallersNoPanic(t *testing.T) {
 	}
 }
 
-// X-03 regression: the audit-flagged Ready -> Get -> Get pattern. Ready()
-// reports completion only after Get() has consumed the channel (since
-// Get is what closes `done`). The audit's concern is that once Ready
-// returns true a misread/polling pattern leads to a second Get(), which
-// historically panicked with `close of closed channel`. Confirm a stream
-// of post-first-Get calls is safe.
+// X-03 regression: the audit-flagged Ready -> Get -> Get pattern. The
+// audit's concern is that once Ready returns true a misread/polling
+// pattern leads to a second Get(), which historically panicked with
+// `close of closed channel`. Confirm a stream of post-first-Get calls
+// is safe.
 func TestResultGet_AfterReadyThenDoubleGet(t *testing.T) {
 	r := Run(func() int { return 7 })
 
-	// First Get drains the channel and closes done. After this Ready must
+	// First Get waits for the producer's completion. After this Ready must
 	// be true and further Gets are the path under audit.
 	v0, err0 := r.Get()
 	if err0 != nil || v0 != 7 {
@@ -151,8 +150,8 @@ func TestResultGet_AfterReadyThenDoubleGet(t *testing.T) {
 	}
 }
 
-// X-03 regression: after RunWithTimeout fires the timeout path (errorCh), a
-// repeat Get() must still not double-close `done`.
+// X-03 regression: after RunWithTimeout fires the timeout path, a repeat
+// Get() must still not double-close `done`.
 func TestResultGet_TimeoutDoubleGetNoPanic(t *testing.T) {
 	r := RunWithTimeout(20*time.Millisecond, func() int {
 		time.Sleep(200 * time.Millisecond)
