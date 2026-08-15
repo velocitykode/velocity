@@ -1,6 +1,8 @@
 package velocity
 
 import (
+	"os"
+
 	"github.com/velocitykode/velocity/console"
 	"github.com/velocitykode/velocity/orm"
 )
@@ -19,11 +21,19 @@ type routesCmd struct{}
 func (routesCmd) name() string        { return "routes" }
 func (routesCmd) description() string { return "List all registered routes" }
 func (routesCmd) run(a *App, args []string) error {
-	if err := rejectNoArgs(args); err != nil {
-		return err
+	asJSON := false
+	for _, arg := range args {
+		if arg == "--json" {
+			asJSON = true
+			continue
+		}
+		return unknownToken(arg, arg)
 	}
 	if err := a.Bootstrap(); err != nil {
 		return err
+	}
+	if asJSON {
+		return console.RouteListJSON(a.Router, os.Stdout)
 	}
 	return console.RouteList(a.Router)
 }

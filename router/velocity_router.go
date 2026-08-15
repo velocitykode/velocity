@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -1158,36 +1159,67 @@ func (r *VelocityRouterV2) ClearRoutes() {
 	r.frozen = false
 }
 
-// RouteInfo represents a registered route for inspection/display.
+// RouteInfo represents a registered route for inspection/display. Handler and
+// Middleware carry best-effort function names resolved via runtime; anonymous
+// functions surface with their compiler-assigned names (e.g. "pkg.Register.func1").
 type RouteInfo struct {
-	Method string
-	Path   string
-	Name   string
+	Method     string   `json:"method"`
+	Path       string   `json:"path"`
+	Handler    string   `json:"handler"`
+	Middleware []string `json:"middleware"`
+	Name       string   `json:"name"`
 }
 
 // AllRoutes returns all registered routes by walking the group definition tree
 // and expanding resource routes.
 func (r *VelocityRouterV2) AllRoutes() []RouteInfo {
 	var routes []RouteInfo
-	collectGroupRoutes(r.rootGroup, &routes)
+	collectGroupRoutes(r.rootGroup, nil, &routes)
 	for _, res := range r.resources {
 		routes = append(routes, res.routeInfos()...)
 	}
 	return routes
 }
 
-func collectGroupRoutes(g *GroupDefinition, routes *[]RouteInfo) {
+func collectGroupRoutes(g *GroupDefinition, inherited []string, routes *[]RouteInfo) {
 	prefix := g.FullPrefix()
+	groupMW := inherited
+	for _, mw := range g.middlewares {
+		groupMW = append(groupMW[:len(groupMW):len(groupMW)], funcName(mw))
+	}
 	for _, route := range g.routes {
+		mw := groupMW
+		for _, m := range route.Middlewares {
+			mw = append(mw[:len(mw):len(mw)], funcName(m))
+		}
 		*routes = append(*routes, RouteInfo{
-			Method: route.Method,
-			Path:   prefix + route.Path,
-			Name:   route.Name,
+			Method:     route.Method,
+			Path:       prefix + route.Path,
+			Handler:    funcName(route.Handler),
+			Middleware: mw,
+			Name:       route.Name,
 		})
 	}
 	for _, child := range g.children {
-		collectGroupRoutes(child, routes)
+		collectGroupRoutes(child, groupMW, routes)
 	}
+}
+
+// funcName resolves the symbol name of a function value for display, or ""
+// when v is not a resolvable function.
+func funcName(v any) string {
+	if v == nil {
+		return ""
+	}
+	rv := reflect.ValueOf(v)
+	if rv.Kind() != reflect.Func || rv.IsNil() {
+		return ""
+	}
+	fn := runtime.FuncForPC(rv.Pointer())
+	if fn == nil {
+		return ""
+	}
+	return fn.Name()
 }
 
 // buildPath constructs the full path including any prefix
