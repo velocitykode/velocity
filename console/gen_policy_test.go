@@ -25,6 +25,12 @@ func TestGenPolicy_CreatesFile(t *testing.T) {
 	if !strings.Contains(s, "PostPolicy") {
 		t.Error("expected PostPolicy struct")
 	}
+	if !strings.Contains(s, "func (p PostPolicy) Authorize(user auth.Authenticatable, action string, resource any) bool") {
+		t.Error("expected Authorize method satisfying auth.Policy")
+	}
+	if !strings.Contains(s, "var _ auth.Policy = PostPolicy{}") {
+		t.Error("expected compile-time auth.Policy assertion")
+	}
 	if !strings.Contains(s, "func (p PostPolicy) View(") {
 		t.Error("expected View method")
 	}
@@ -36,9 +42,6 @@ func TestGenPolicy_CreatesFile(t *testing.T) {
 	}
 	if !strings.Contains(s, "func (p PostPolicy) Delete(") {
 		t.Error("expected Delete method")
-	}
-	if !strings.Contains(s, "*http.Request") {
-		t.Error("expected *http.Request parameter")
 	}
 }
 
@@ -85,7 +88,10 @@ func TestGenPolicy_VerifiesContent(t *testing.T) {
 	if !strings.Contains(s, "CommentPolicy") {
 		t.Error("expected CommentPolicy struct")
 	}
-	if !strings.Contains(s, `"net/http"`) {
-		t.Error("expected net/http import")
+	if !strings.Contains(s, `"github.com/velocitykode/velocity/auth"`) {
+		t.Error("expected velocity auth import")
+	}
+	if !strings.Contains(s, `RegisterPolicy("Comment", CommentPolicy{})`) {
+		t.Error("expected registration hint comment")
 	}
 }
