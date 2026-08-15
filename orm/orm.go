@@ -2,8 +2,6 @@ package orm
 
 import (
 	"database/sql"
-
-	"golang.org/x/crypto/bcrypt"
 )
 
 // QueryExecutor interface for *sql.DB and *sql.Tx
@@ -24,13 +22,4 @@ func getDefaultPort(driver string) string {
 	default:
 		return ""
 	}
-}
-
-// Hash hashes a password using bcrypt
-func Hash(password string) string {
-	hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		panic("failed to hash password: " + err.Error())
-	}
-	return string(hashed)
 }
