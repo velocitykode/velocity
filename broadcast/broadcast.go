@@ -4,10 +4,11 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"log"
 	"sync"
+
+	"github.com/velocitykode/velocity/crypto"
 )
 
 // Broadcaster defines the main broadcasting interface
@@ -433,7 +434,7 @@ func (b *BroadcastManager) SignAuthToken(socketID, channel string) (string, erro
 }
 
 // VerifyAuthToken checks a caller-supplied auth token for (socketID:channel).
-// The comparison is performed in constant time via crypto/subtle to avoid
+// The comparison is performed in constant time to avoid
 // timing side-channels that would leak the signature byte-by-byte.
 func (b *BroadcastManager) VerifyAuthToken(socketID, channel, token string) bool {
 	b.mu.RLock()
@@ -444,8 +445,8 @@ func (b *BroadcastManager) VerifyAuthToken(socketID, channel, token string) bool
 		return false
 	}
 	expected := computeAuthSignature(secret, socketID, channel)
-	// subtle.ConstantTimeCompare returns 1 iff lengths match AND bytes are equal.
-	return subtle.ConstantTimeCompare([]byte(token), []byte(expected)) == 1
+	// crypto.EqualString matches iff lengths match AND bytes are equal.
+	return crypto.EqualString(token, expected)
 }
 
 // computeAuthSignature returns hex(HMAC-SHA256(secret, socketID ":" channel)).

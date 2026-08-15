@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -17,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/mail"
 )
 
@@ -309,5 +309,5 @@ func (d *MailgunDriver) VerifyWebhookSignature(timestamp, token, signature strin
 	mac.Write([]byte(timestamp + token))
 	expected := hex.EncodeToString(mac.Sum(nil))
 
-	return subtle.ConstantTimeCompare([]byte(expected), []byte(signature)) == 1
+	return crypto.EqualString(expected, signature)
 }

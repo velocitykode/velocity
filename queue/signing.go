@@ -3,13 +3,13 @@ package queue
 import (
 	"crypto/hmac"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"sync"
 
+	"github.com/velocitykode/velocity/crypto"
 	"golang.org/x/crypto/hkdf"
 )
 
@@ -235,7 +235,7 @@ func verifyPayload(data []byte, signature string) error {
 	mac.Write(data)
 	expected := hex.EncodeToString(mac.Sum(nil))
 
-	if subtle.ConstantTimeCompare([]byte(expected), []byte(signature)) != 1 {
+	if !crypto.EqualString(expected, signature) {
 		return fmt.Errorf("velocity/queue: payload signature verification failed")
 	}
 

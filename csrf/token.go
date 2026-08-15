@@ -2,8 +2,9 @@ package csrf
 
 import (
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/base64"
+
+	"github.com/velocitykode/velocity/crypto"
 )
 
 const tokenLength = 32
@@ -19,6 +20,6 @@ func GenerateToken() (string, error) {
 
 // ValidateToken compares tokens using constant-time comparison to prevent timing attacks
 func ValidateToken(token1, token2 string) bool {
-	// Use subtle.ConstantTimeCompare to prevent timing attacks
-	return subtle.ConstantTimeCompare([]byte(token1), []byte(token2)) == 1
+	// Constant-time comparison prevents timing attacks
+	return crypto.EqualString(token1, token2)
 }

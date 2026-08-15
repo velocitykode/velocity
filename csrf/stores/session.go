@@ -2,12 +2,12 @@ package stores
 
 import (
 	"context"
-	"crypto/subtle"
 	"errors"
 	"sync"
 	"time"
 
 	"github.com/velocitykode/velocity/async"
+	"github.com/velocitykode/velocity/crypto"
 )
 
 var (
@@ -154,7 +154,7 @@ func (s *SessionStore) ConsumeIfMatch(id string, expected string) (bool, error) 
 	}
 	// Constant-time compare to avoid leaking a length/timing oracle to
 	// callers who can probe entries via the public refresh handler.
-	if subtle.ConstantTimeCompare([]byte(entry.token), []byte(expected)) != 1 {
+	if !crypto.EqualString(entry.token, expected) {
 		return false, nil
 	}
 	delete(s.tokens, id)
