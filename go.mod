@@ -1,6 +1,6 @@
 module github.com/velocitykode/velocity
 
-go 1.26.5
+go 1.26.6
 
 retract (
 	v1.0.0 // Published by mistake. Velocity has not reached a stable v1 release; use the latest v0.x.y.
