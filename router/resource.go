@@ -118,8 +118,9 @@ func (rr *resourceWrapperV2) routeInfos() []RouteInfo {
 			continue
 		}
 		infos = append(infos, RouteInfo{
-			Method: config.HttpMethod,
-			Path:   rr.path + config.PathSuffix,
+			Method:  config.HttpMethod,
+			Path:    rr.path + config.PathSuffix,
+			Handler: controllerType.String() + "." + config.Action,
 		})
 	}
 	return infos
