@@ -54,6 +54,12 @@ func TestTransaction_StatementsParentUnderTxSpan(t *testing.T) {
 		t.Fatalf("Transaction: %v", err)
 	}
 
+	// Statement events are delivered asynchronously via the event pump;
+	// force delivery before asserting on them.
+	if err := m.FlushQueryEvents(context.Background()); err != nil {
+		t.Fatalf("FlushQueryEvents: %v", err)
+	}
+
 	var (
 		queryEvents []*QueryExecuted
 		txEvent     *TransactionExecuted
