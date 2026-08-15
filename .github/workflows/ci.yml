@@ -26,6 +26,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
+          check-latest: true
       - run: go vet ./...
 
   staticcheck:
@@ -36,6 +37,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
+          check-latest: true
       - name: Install staticcheck
         run: go install honnef.co/go/tools/cmd/staticcheck@latest
       - run: staticcheck ./...
@@ -48,6 +50,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
+          check-latest: true
       - name: Run tests with race detector
         run: go test -race -timeout 10m ./...
 
@@ -64,6 +67,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
+          check-latest: true
       - name: Fuzz JWT validate
         run: go test -run=^$ -fuzz=FuzzJWTValidate -fuzztime=30s ./auth/
       - name: Fuzz redirect sanitizer
@@ -127,6 +131,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
+          check-latest: true
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
@@ -145,6 +150,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
+          check-latest: true
       - name: Enforce per-package coverage floors
         run: scripts/ci/check-coverage-floors.sh
 
@@ -161,6 +167,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
+          check-latest: true
       - name: Run router benchmarks
         run: |
           go test -run='^$' -bench='BenchmarkRouter_(StaticHit|DynamicHit|MissFallback)' \
@@ -174,6 +181,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
+          check-latest: true
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - run: govulncheck ./...
@@ -287,6 +295,7 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
+          check-latest: true
 
       - name: Auto-format
         if: steps.check.outputs.skip == 'false'
