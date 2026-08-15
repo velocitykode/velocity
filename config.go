@@ -221,13 +221,13 @@ func WithoutEvents() Option {
 }
 
 // WithFakeEvents replaces the event dispatcher with a fake that records
-// dispatched events without executing listeners. Use the returned
-// *events.FakeDispatcher for assertions:
+// dispatched events without executing listeners. Assert through eventstest,
+// which fails the test directly:
 //
 //	fake := events.NewFakeDispatcher()
 //	app, _ := velocitytest.NewApp(velocity.WithFakeEvents(fake))
 //	// ... trigger actions ...
-//	fake.AssertDispatched(router.RequestHandled{}, nil)
+//	eventstest.AssertDispatched(t, fake, router.RequestHandled{}, nil)
 func WithFakeEvents(fake *events.FakeDispatcher) Option {
 	return func(a *App) {
 		a.Services.Events = fake

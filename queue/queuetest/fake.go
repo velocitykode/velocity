@@ -129,7 +129,7 @@ func (f *FakeQueue) Shutdown(ctx context.Context) error {
 }
 
 // AssertPushed fails the test if no recorded job satisfies match.
-func (f *FakeQueue) AssertPushed(t *testing.T, match func(contract.QueueJob) bool) {
+func (f *FakeQueue) AssertPushed(t testing.TB, match func(contract.QueueJob) bool) {
 	t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -143,7 +143,7 @@ func (f *FakeQueue) AssertPushed(t *testing.T, match func(contract.QueueJob) boo
 
 // AssertPushedOn fails the test if no recorded job on the given queue
 // satisfies match.
-func (f *FakeQueue) AssertPushedOn(t *testing.T, queue string, match func(contract.QueueJob) bool) {
+func (f *FakeQueue) AssertPushedOn(t testing.TB, queue string, match func(contract.QueueJob) bool) {
 	t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -156,7 +156,7 @@ func (f *FakeQueue) AssertPushedOn(t *testing.T, queue string, match func(contra
 }
 
 // AssertNotPushed fails the test if any recorded job satisfies match.
-func (f *FakeQueue) AssertNotPushed(t *testing.T, match func(contract.QueueJob) bool) {
+func (f *FakeQueue) AssertNotPushed(t testing.TB, match func(contract.QueueJob) bool) {
 	t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -169,7 +169,7 @@ func (f *FakeQueue) AssertNotPushed(t *testing.T, match func(contract.QueueJob) 
 }
 
 // AssertNothingPushed fails the test if any job was recorded.
-func (f *FakeQueue) AssertNothingPushed(t *testing.T) {
+func (f *FakeQueue) AssertNothingPushed(t testing.TB) {
 	t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
