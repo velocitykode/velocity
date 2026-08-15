@@ -59,6 +59,22 @@ func TestRouteListJSON_EmitsStableShape(t *testing.T) {
 	}
 }
 
+func TestRouteListJSON_NoMiddlewareIsEmptyArray(t *testing.T) {
+	r := router.NewV2()
+	r.Get("/plain", namedHandler)
+
+	var buf bytes.Buffer
+	if err := RouteListJSON(r, &buf); err != nil {
+		t.Fatalf("RouteListJSON: %v", err)
+	}
+	if strings.Contains(buf.String(), `"middleware": null`) {
+		t.Errorf("middleware encoded as null; want []:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), `"middleware": []`) {
+		t.Errorf("expected \"middleware\": [] in output:\n%s", buf.String())
+	}
+}
+
 func TestRouteListJSON_EmptyIsEmptyArray(t *testing.T) {
 	var buf bytes.Buffer
 	if err := RouteListJSON(router.NewV2(), &buf); err != nil {

@@ -1171,12 +1171,22 @@ type RouteInfo struct {
 }
 
 // AllRoutes returns all registered routes by walking the group definition tree
-// and expanding resource routes.
+// and expanding resource routes. Every route's Middleware starts with the
+// global chain (Router.Use), then group middleware outermost-first, then
+// per-route middleware; it is always non-nil so JSON output stays a stable
+// array.
 func (r *VelocityRouterV2) AllRoutes() []RouteInfo {
+	global := make([]string, 0, len(r.middlewares))
+	for _, mw := range r.middlewares {
+		global = append(global, funcName(mw))
+	}
 	var routes []RouteInfo
-	collectGroupRoutes(r.rootGroup, nil, &routes)
+	collectGroupRoutes(r.rootGroup, global, &routes)
 	for _, res := range r.resources {
-		routes = append(routes, res.routeInfos()...)
+		for _, info := range res.routeInfos() {
+			info.Middleware = append(global[:len(global):len(global)], info.Middleware...)
+			routes = append(routes, info)
+		}
 	}
 	return routes
 }
@@ -1191,6 +1201,9 @@ func collectGroupRoutes(g *GroupDefinition, inherited []string, routes *[]RouteI
 		mw := groupMW
 		for _, m := range route.Middlewares {
 			mw = append(mw[:len(mw):len(mw)], funcName(m))
+		}
+		if mw == nil {
+			mw = []string{}
 		}
 		*routes = append(*routes, RouteInfo{
 			Method:     route.Method,
