@@ -1,26 +1,48 @@
 package {{ .Package }}
 
-import "net/http"
+import "github.com/velocitykode/velocity/auth"
 
 // {{ .Name }}Policy defines authorization rules for the {{ .Name }} resource.
+//
+// Register it during bootstrap:
+//
+//	v.Auth.Access().RegisterPolicy("{{ .Name }}", {{ .Name }}Policy{})
 type {{ .Name }}Policy struct{}
 
+var _ auth.Policy = {{ .Name }}Policy{}
+
+// Authorize implements auth.Policy by routing actions to the methods below.
+func (p {{ .Name }}Policy) Authorize(user auth.Authenticatable, action string, resource any) bool {
+	switch action {
+	case "view":
+		return p.View(user, resource)
+	case "create":
+		return p.Create(user)
+	case "update":
+		return p.Update(user, resource)
+	case "delete":
+		return p.Delete(user, resource)
+	default:
+		return false
+	}
+}
+
 // View determines if the user can view the resource.
-func (p {{ .Name }}Policy) View(r *http.Request, model any) bool {
-	return true
+func (p {{ .Name }}Policy) View(user auth.Authenticatable, resource any) bool {
+	return false
 }
 
 // Create determines if the user can create a resource.
-func (p {{ .Name }}Policy) Create(r *http.Request) bool {
-	return true
+func (p {{ .Name }}Policy) Create(user auth.Authenticatable) bool {
+	return false
 }
 
 // Update determines if the user can update the resource.
-func (p {{ .Name }}Policy) Update(r *http.Request, model any) bool {
-	return true
+func (p {{ .Name }}Policy) Update(user auth.Authenticatable, resource any) bool {
+	return false
 }
 
 // Delete determines if the user can delete the resource.
-func (p {{ .Name }}Policy) Delete(r *http.Request, model any) bool {
-	return true
+func (p {{ .Name }}Policy) Delete(user auth.Authenticatable, resource any) bool {
+	return false
 }
