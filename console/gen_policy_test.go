@@ -91,7 +91,7 @@ func TestGenPolicy_VerifiesContent(t *testing.T) {
 	if !strings.Contains(s, `"github.com/velocitykode/velocity/auth"`) {
 		t.Error("expected velocity auth import")
 	}
-	if !strings.Contains(s, `RegisterPolicy("Comment", CommentPolicy{})`) {
+	if !strings.Contains(s, `auth.FromServices(s).Access().RegisterPolicy("Comment", CommentPolicy{})`) {
 		t.Error("expected registration hint comment")
 	}
 }

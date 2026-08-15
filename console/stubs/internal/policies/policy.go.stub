@@ -4,9 +4,9 @@ import "github.com/velocitykode/velocity/auth"
 
 // {{ .Name }}Policy defines authorization rules for the {{ .Name }} resource.
 //
-// Register it during bootstrap:
+// Register it during bootstrap (e.g. in a module's Start(s *app.Services)):
 //
-//	v.Auth.Access().RegisterPolicy("{{ .Name }}", {{ .Name }}Policy{})
+//	auth.FromServices(s).Access().RegisterPolicy("{{ .Name }}", {{ .Name }}Policy{})
 type {{ .Name }}Policy struct{}
 
 var _ auth.Policy = {{ .Name }}Policy{}
