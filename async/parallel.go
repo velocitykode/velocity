@@ -209,15 +209,15 @@ func AllWithErrorN[T any](concurrency int, fns ...func() (T, error)) ([]T, error
 //   - zero fns passed: Get returns a descriptive error.
 //   - every fn panics: each panic is routed through handlePanic (logging +
 //     SetPanicHook parity with Run/ForEach) and converted via
-//     panicerr.FromRecovered; the first recorded panic error is delivered on
-//     errorCh once the supervisor observes that no goroutine won.
+//     panicerr.FromRecovered; the first recorded panic error becomes the
+//     result's error once the supervisor observes that no goroutine won.
 func Race[T any](fns ...func() T) *Result[T] {
 	r := NewResult[T]()
 
-	// Zero fns: no goroutine can ever send, so Get would block forever.
+	// Zero fns: no goroutine can ever complete, so Get would block forever.
 	// Surface a runtime error instead.
 	if len(fns) == 0 {
-		r.errorCh <- errors.New("async: Race called with zero functions")
+		r.fail(errors.New("async: Race called with zero functions"))
 		return r
 	}
 
@@ -225,7 +225,7 @@ func Race[T any](fns ...func() T) *Result[T] {
 
 	var (
 		wg       sync.WaitGroup
-		won      atomic.Bool // set once a goroutine wins the valueCh send
+		won      atomic.Bool // set once a goroutine wins the complete race
 		panicMu  sync.Mutex
 		panicErr error // first recorded panic, guarded by panicMu
 	)
@@ -254,22 +254,19 @@ func Race[T any](fns ...func() T) *Result[T] {
 				return
 			default:
 				value := fn()
-				select {
-				case r.valueCh <- value:
+				if r.complete(value, nil) {
 					won.Store(true)
 					cancel() // Cancel other goroutines
-				case <-ctx.Done():
-					return
 				}
 			}
 		}()
 	}
 
 	// Supervisor: once every goroutine has settled, guarantee Get unblocks.
-	// If a winner sent its value, just release the ctx. If none won (every
-	// fn panicked, or each lost the send race to a cancelled ctx), deliver
-	// the recorded panic error - or a generic one if somehow none was
-	// recorded - so Get does not hang. Safe to call cancel twice.
+	// If a winner delivered its value, just release the ctx. If none won
+	// (every fn panicked, or each observed a cancelled ctx before running),
+	// deliver the recorded panic error - or a generic one if somehow none
+	// was recorded - so Get does not hang. Safe to call cancel twice.
 	go func() {
 		wg.Wait()
 		if !won.Load() {
@@ -279,7 +276,7 @@ func Race[T any](fns ...func() T) *Result[T] {
 			if err == nil {
 				err = errors.New("async: all Race functions failed without producing a value")
 			}
-			r.errorCh <- err
+			r.fail(err)
 		}
 		cancel()
 	}()
@@ -325,11 +322,11 @@ func RaceWithTimeout[T any](timeout time.Duration, fns ...func() T) *Result[T] {
 		select {
 		case value := <-completed:
 			cancel()
-			r.valueCh <- value
+			r.complete(value, nil)
 		case <-ctx.Done():
 			cancel()
 			r.setTimedOut()
-			r.errorCh <- context.DeadlineExceeded
+			r.fail(context.DeadlineExceeded)
 		}
 	}()
 

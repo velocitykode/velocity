@@ -129,10 +129,10 @@ func Run[T any](fn func() T) *Result[T] {
 		defer func() {
 			if p := recover(); p != nil {
 				handlePanic(p)
-				r.errorCh <- panicerr.FromRecovered(p)
+				r.fail(panicerr.FromRecovered(p))
 			}
 		}()
-		r.valueCh <- fn()
+		r.complete(fn(), nil)
 	}()
 
 	return r
@@ -148,7 +148,7 @@ func RunWithTimeout[T any](timeout time.Duration, fn func() T) *Result[T] {
 		defer func() {
 			if p := recover(); p != nil {
 				handlePanic(p)
-				r.errorCh <- panicerr.FromRecovered(p)
+				r.fail(panicerr.FromRecovered(p))
 			}
 		}()
 
@@ -175,12 +175,12 @@ func RunWithTimeout[T any](timeout time.Duration, fn func() T) *Result[T] {
 
 		select {
 		case v := <-done:
-			r.valueCh <- v
+			r.complete(v, nil)
 		case err := <-panicCh:
-			r.errorCh <- err
+			r.fail(err)
 		case <-t.C:
 			r.setTimedOut()
-			r.errorCh <- fmt.Errorf("operation timed out after %v", timeout)
+			r.fail(fmt.Errorf("operation timed out after %v", timeout))
 		}
 	}()
 
@@ -198,7 +198,7 @@ func RunWithContext[T any](ctx context.Context, fn func() T) *Result[T] {
 		defer func() {
 			if p := recover(); p != nil {
 				handlePanic(p)
-				r.errorCh <- panicerr.FromRecovered(p)
+				r.fail(panicerr.FromRecovered(p))
 			}
 		}()
 
@@ -218,11 +218,11 @@ func RunWithContext[T any](ctx context.Context, fn func() T) *Result[T] {
 
 		select {
 		case v := <-done:
-			r.valueCh <- v
+			r.complete(v, nil)
 		case err := <-panicCh:
-			r.errorCh <- err
+			r.fail(err)
 		case <-ctx.Done():
-			r.errorCh <- ctx.Err()
+			r.fail(ctx.Err())
 		}
 	}()
 
