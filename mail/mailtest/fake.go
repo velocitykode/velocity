@@ -57,7 +57,7 @@ func (f *FakeMailer) countMatching(match func(*contract.Message) bool) int {
 }
 
 // AssertSent asserts that at least one recorded message satisfies match.
-func (f *FakeMailer) AssertSent(t *testing.T, match func(*contract.Message) bool) {
+func (f *FakeMailer) AssertSent(t testing.TB, match func(*contract.Message) bool) {
 	t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -67,7 +67,7 @@ func (f *FakeMailer) AssertSent(t *testing.T, match func(*contract.Message) bool
 }
 
 // AssertSentTimes asserts that exactly n recorded messages satisfy match.
-func (f *FakeMailer) AssertSentTimes(t *testing.T, n int, match func(*contract.Message) bool) {
+func (f *FakeMailer) AssertSentTimes(t testing.TB, n int, match func(*contract.Message) bool) {
 	t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -77,7 +77,7 @@ func (f *FakeMailer) AssertSentTimes(t *testing.T, n int, match func(*contract.M
 }
 
 // AssertNotSent asserts that no recorded message satisfies match.
-func (f *FakeMailer) AssertNotSent(t *testing.T, match func(*contract.Message) bool) {
+func (f *FakeMailer) AssertNotSent(t testing.TB, match func(*contract.Message) bool) {
 	t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -87,7 +87,7 @@ func (f *FakeMailer) AssertNotSent(t *testing.T, match func(*contract.Message) b
 }
 
 // AssertNothingSent asserts that no messages were recorded at all.
-func (f *FakeMailer) AssertNothingSent(t *testing.T) {
+func (f *FakeMailer) AssertNothingSent(t testing.TB) {
 	t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
