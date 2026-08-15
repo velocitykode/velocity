@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/velocitykode/prism"
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/schemes"
@@ -183,6 +185,19 @@ func New(opts ...Option) (*App, error) {
 	}
 
 	// 1. Initialize logger first (everything else may need to log)
+	//
+	// When argv requests machine-readable stdout (vel routes --json),
+	// route the console logger and prism to stderr BEFORE the logger
+	// exists: New() itself emits warnings (trusted proxies, mail driver)
+	// that would otherwise land ahead of the JSON document and break
+	// piping into jq.
+	if machineOutputRequested(os.Args[1:]) {
+		if a.config.Log.Config == nil {
+			a.config.Log.Config = map[string]any{}
+		}
+		a.config.Log.Config["writer"] = "stderr"
+		prism.SetWriter(os.Stderr)
+	}
 	logger, err := log.NewLogger(a.config.Log)
 	if err != nil {
 		return nil, fmt.Errorf("velocity: failed to initialize logger: %w", err)

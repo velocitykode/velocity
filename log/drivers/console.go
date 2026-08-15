@@ -2,6 +2,8 @@ package drivers
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"time"
 
 	"github.com/velocitykode/velocity/log/internal/sanitize"
@@ -10,12 +12,28 @@ import (
 // ConsoleLogger writes log messages to standard output with timestamps.
 type ConsoleLogger struct {
 	level int // minimum level: 0=debug, 1=info, 2=warn, 3=error, 4=fatal
+	out   io.Writer
 }
 
 // NewConsoleLogger creates a new console logger that outputs to stdout.
 // level sets the minimum severity (0=debug .. 4=fatal).
 func NewConsoleLogger(level int) *ConsoleLogger {
 	return &ConsoleLogger{level: level}
+}
+
+// NewConsoleLoggerTo creates a console logger that writes to w instead of
+// stdout. Used when stdout must stay machine-readable (vel routes --json).
+func NewConsoleLoggerTo(w io.Writer, level int) *ConsoleLogger {
+	return &ConsoleLogger{level: level, out: w}
+}
+
+// writer returns the configured destination, defaulting to the current
+// os.Stdout when none was injected.
+func (c *ConsoleLogger) writer() io.Writer {
+	if c.out != nil {
+		return c.out
+	}
+	return os.Stdout
 }
 
 // formatMessage creates a formatted log line with timestamp, level, and key-value pairs.
@@ -58,7 +76,7 @@ func (c *ConsoleLogger) Debug(msg string, kvs ...any) {
 	if c.level > 0 {
 		return
 	}
-	fmt.Println(c.formatMessage("DEBUG", msg, kvs...))
+	fmt.Fprintln(c.writer(), c.formatMessage("DEBUG", msg, kvs...))
 }
 
 // Info logs an info-level message to console
@@ -66,7 +84,7 @@ func (c *ConsoleLogger) Info(msg string, kvs ...any) {
 	if c.level > 1 {
 		return
 	}
-	fmt.Println(c.formatMessage("INFO", msg, kvs...))
+	fmt.Fprintln(c.writer(), c.formatMessage("INFO", msg, kvs...))
 }
 
 // Warn logs a warning-level message to console
@@ -74,7 +92,7 @@ func (c *ConsoleLogger) Warn(msg string, kvs ...any) {
 	if c.level > 2 {
 		return
 	}
-	fmt.Println(c.formatMessage("WARN", msg, kvs...))
+	fmt.Fprintln(c.writer(), c.formatMessage("WARN", msg, kvs...))
 }
 
 // Error logs an error-level message to console
@@ -82,10 +100,10 @@ func (c *ConsoleLogger) Error(msg string, kvs ...any) {
 	if c.level > 3 {
 		return
 	}
-	fmt.Println(c.formatMessage("ERROR", msg, kvs...))
+	fmt.Fprintln(c.writer(), c.formatMessage("ERROR", msg, kvs...))
 }
 
 // Fatal logs a fatal-level message to console
 func (c *ConsoleLogger) Fatal(msg string, kvs ...any) {
-	fmt.Println(c.formatMessage("FATAL", msg, kvs...))
+	fmt.Fprintln(c.writer(), c.formatMessage("FATAL", msg, kvs...))
 }

@@ -64,6 +64,11 @@ func Drivers() *driverregistry.Registry[Logger, LogConfig] { return driverRegist
 // github.com/velocitykode/velocity/log/standard to enable them.
 func init() {
 	Drivers().Register("console", func(_ context.Context, cfg LogConfig) (Logger, error) {
+		// Optional "writer": "stderr" moves output off stdout so stdout
+		// can carry machine-readable command output (vel routes --json).
+		if w, ok := cfg.Config["writer"].(string); ok && w == "stderr" {
+			return WrapWithRedactors(drivers.NewConsoleLoggerTo(os.Stderr, ExtractLevel(cfg.Config)), cfg), nil
+		}
 		return WrapWithRedactors(drivers.NewConsoleLogger(ExtractLevel(cfg.Config)), cfg), nil
 	})
 

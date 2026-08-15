@@ -199,6 +199,21 @@ func (r *commandRegistry) get(name string) (command, bool) {
 
 // hasForceFlag reports whether args carries the --force / -f flag used to
 // override guardProductionDataLoss.
+// machineOutputRequested reports whether argv asks for machine-readable
+// stdout, so New() can route logs to stderr before anything is printed.
+// Today that is exactly "routes --json".
+func machineOutputRequested(argv []string) bool {
+	if len(argv) == 0 || argv[0] != "routes" {
+		return false
+	}
+	for _, arg := range argv[1:] {
+		if arg == "--json" {
+			return true
+		}
+	}
+	return false
+}
+
 func hasForceFlag(args []string) bool {
 	for _, arg := range args {
 		if arg == "--force" || arg == "-f" {
