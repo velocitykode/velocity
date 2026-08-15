@@ -1,12 +1,12 @@
 package broadcast
 
 import (
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/crypto"
 )
 
 // SecureCompareToken compares two private/presence channel tokens in
@@ -16,9 +16,9 @@ import (
 //
 // Returns true iff the two byte sequences are identical. Length mismatch
 // short-circuits to false without consulting the bytes, which is the
-// intended subtle.ConstantTimeCompare behaviour.
+// intended constant-time comparison behaviour.
 func SecureCompareToken(a, b string) bool {
-	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+	return crypto.EqualString(a, b)
 }
 
 var (

@@ -2,11 +2,12 @@ package webhook
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/hex"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/velocitykode/velocity/crypto"
 )
 
 // NonceStore is an optional dependency on Verifier that records signatures
@@ -136,7 +137,7 @@ func (v *Verifier) VerifyContext(ctx context.Context, payload []byte, header str
 	}
 
 	expected := v.Algorithm.Sign(v.Secret, framed(strconv.FormatInt(ts, 10), payload))
-	if subtle.ConstantTimeCompare(expected, supplied) != 1 {
+	if !crypto.Equal(expected, supplied) {
 		return ErrSignatureMismatch
 	}
 

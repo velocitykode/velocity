@@ -3,7 +3,6 @@ package velocity
 import (
 	"crypto/hmac"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -20,6 +19,7 @@ import (
 	"golang.org/x/crypto/hkdf"
 
 	"github.com/velocitykode/velocity/app"
+	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/internal/maintpath"
 	"github.com/velocitykode/velocity/router"
 )
@@ -285,7 +285,7 @@ func PreventRequestsDuringMaintenance(opts ...MaintenanceOption) router.Middlewa
 			if candidate == "" {
 				candidate = strings.TrimPrefix(c.Request.URL.Path, "/")
 			}
-			if payload.Secret != "" && subtle.ConstantTimeCompare([]byte(candidate), []byte(payload.Secret)) == 1 {
+			if payload.Secret != "" && crypto.EqualString(candidate, payload.Secret) {
 				cookie := mintMaintenanceBypassCookieWithSalt(payload.Secret, maintenanceBypassDefaultTTL, cfg.salt)
 				c.SetCookie(cookie)
 				// Redirect via http.Redirect directly because c.Redirect
@@ -439,7 +439,7 @@ func hasValidBypassCookie(r *http.Request, secret string, salt []byte) bool {
 		return false
 	}
 	expectedMAC := computeMaintenanceMAC(macKey, expires)
-	if subtle.ConstantTimeCompare(providedMAC, expectedMAC) != 1 {
+	if !crypto.Equal(providedMAC, expectedMAC) {
 		return false
 	}
 	// Reject after MAC verification so timing of the expiry check cannot

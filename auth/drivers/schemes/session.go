@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -1234,10 +1233,10 @@ func (g *SessionScheme) checkRememberCookie(r *http.Request) auth.Authenticatabl
 		return nil
 	}
 	candidateHash := hashRememberToken(token)
-	if subtle.ConstantTimeCompare([]byte(storedToken), []byte(candidateHash)) == 1 {
+	if crypto.EqualString(storedToken, candidateHash) {
 		return user
 	}
-	if subtle.ConstantTimeCompare([]byte(storedToken), []byte(token)) == 1 {
+	if crypto.EqualString(storedToken, token) {
 		return user
 	}
 	return nil
