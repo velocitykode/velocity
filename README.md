@@ -13,7 +13,7 @@ One binary. No external runtime. No Docker required for development.
 
 Requires Go 1.26+.
 
-> **Status:** Pre-1.0 (currently v0.62.x). API is still in flux — breaking
+> **Status:** Pre-1.0 (currently v0.74.x). API is still in flux — breaking
 > changes may occur between minor releases. See [RELEASES.md](RELEASES.md)
 > for the versioning policy and [CHANGELOG.md](CHANGELOG.md) for per-release
 > breaking-change notes.
@@ -257,7 +257,7 @@ Each project builds a `./vel` binary for development and code generation.
 ./vel migrate            # run migrations (also fresh, rollback, status)
 ./vel queue work         # process queued jobs
 ./vel schedule work      # run the scheduler
-./vel routes             # list registered routes
+./vel routes             # list registered routes (--json for machine-readable output)
 ./vel cache clear        # flush the cache
 ./vel key generate       # generate the app encryption key
 ./vel up / ./vel down    # toggle maintenance mode
