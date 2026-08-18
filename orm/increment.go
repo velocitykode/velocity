@@ -16,11 +16,11 @@ var pgPlaceholderPattern = regexp.MustCompile(`\$(\d+)`)
 
 // modelIncrement / modelDecrement hold the single canonical static-side
 // implementation; every base's Increment/Decrement is a one-line delegation.
-func modelIncrement[T any](ctx context.Context, column string, amount ...int) error {
+func modelIncrement[T any](ctx context.Context, column string, amount ...int64) error {
 	return newQuery[T]().Increment(ctx, column, amount...)
 }
 
-func modelDecrement[T any](ctx context.Context, column string, amount ...int) error {
+func modelDecrement[T any](ctx context.Context, column string, amount ...int64) error {
 	return newQuery[T]().Decrement(ctx, column, amount...)
 }
 
@@ -28,13 +28,13 @@ func modelDecrement[T any](ctx context.Context, column string, amount ...int) er
 
 // Increment atomically increments a column by amount (default 1) for all records of this type.
 // Takes ctx as the first argument so transaction enrollment is mandatory and explicit.
-func (Model[T]) Increment(ctx context.Context, column string, amount ...int) error {
+func (Model[T]) Increment(ctx context.Context, column string, amount ...int64) error {
 	return modelIncrement[T](ctx, column, amount...)
 }
 
 // Decrement atomically decrements a column by amount (default 1) for all records of this type.
 // Takes ctx as the first argument.
-func (Model[T]) Decrement(ctx context.Context, column string, amount ...int) error {
+func (Model[T]) Decrement(ctx context.Context, column string, amount ...int64) error {
 	return modelDecrement[T](ctx, column, amount...)
 }
 
@@ -42,13 +42,13 @@ func (Model[T]) Decrement(ctx context.Context, column string, amount ...int) err
 
 // Increment atomically increments a column by amount (default 1) for all records of this type.
 // Takes ctx as the first argument.
-func (UUIDModel[T]) Increment(ctx context.Context, column string, amount ...int) error {
+func (UUIDModel[T]) Increment(ctx context.Context, column string, amount ...int64) error {
 	return modelIncrement[T](ctx, column, amount...)
 }
 
 // Decrement atomically decrements a column by amount (default 1) for all records of this type.
 // Takes ctx as the first argument.
-func (UUIDModel[T]) Decrement(ctx context.Context, column string, amount ...int) error {
+func (UUIDModel[T]) Decrement(ctx context.Context, column string, amount ...int64) error {
 	return modelDecrement[T](ctx, column, amount...)
 }
 
@@ -56,13 +56,13 @@ func (UUIDModel[T]) Decrement(ctx context.Context, column string, amount ...int)
 
 // Increment atomically increments a column by amount (default 1) for all records of this type.
 // Takes ctx as the first argument.
-func (SoftDeleteModel[T]) Increment(ctx context.Context, column string, amount ...int) error {
+func (SoftDeleteModel[T]) Increment(ctx context.Context, column string, amount ...int64) error {
 	return modelIncrement[T](ctx, column, amount...)
 }
 
 // Decrement atomically decrements a column by amount (default 1) for all records of this type.
 // Takes ctx as the first argument.
-func (SoftDeleteModel[T]) Decrement(ctx context.Context, column string, amount ...int) error {
+func (SoftDeleteModel[T]) Decrement(ctx context.Context, column string, amount ...int64) error {
 	return modelDecrement[T](ctx, column, amount...)
 }
 
@@ -70,13 +70,13 @@ func (SoftDeleteModel[T]) Decrement(ctx context.Context, column string, amount .
 
 // Increment atomically increments a column by amount (default 1) for all records of this type.
 // Takes ctx as the first argument.
-func (SoftDeleteUUIDModel[T]) Increment(ctx context.Context, column string, amount ...int) error {
+func (SoftDeleteUUIDModel[T]) Increment(ctx context.Context, column string, amount ...int64) error {
 	return modelIncrement[T](ctx, column, amount...)
 }
 
 // Decrement atomically decrements a column by amount (default 1) for all records of this type.
 // Takes ctx as the first argument.
-func (SoftDeleteUUIDModel[T]) Decrement(ctx context.Context, column string, amount ...int) error {
+func (SoftDeleteUUIDModel[T]) Decrement(ctx context.Context, column string, amount ...int64) error {
 	return modelDecrement[T](ctx, column, amount...)
 }
 
@@ -84,13 +84,13 @@ func (SoftDeleteUUIDModel[T]) Decrement(ctx context.Context, column string, amou
 
 // Increment atomically increments a column by amount (default 1) for matching records.
 // Takes ctx as the first argument so transaction enrollment is mandatory and explicit.
-func (q *Query[T]) Increment(ctx context.Context, column string, amount ...int) error {
+func (q *Query[T]) Increment(ctx context.Context, column string, amount ...int64) error {
 	return q.incrementOrDecrement(ctx, column, "+", amount...)
 }
 
 // Decrement atomically decrements a column by amount (default 1) for matching records.
 // Takes ctx as the first argument.
-func (q *Query[T]) Decrement(ctx context.Context, column string, amount ...int) error {
+func (q *Query[T]) Decrement(ctx context.Context, column string, amount ...int64) error {
 	return q.incrementOrDecrement(ctx, column, "-", amount...)
 }
 
@@ -105,7 +105,7 @@ func (q *Query[T]) Decrement(ctx context.Context, column string, amount ...int) 
 // modify rows outside the caller's tenant scope, and an Increment on a
 // SoftDeleteModel does NOT touch trashed rows. Opt out per-query with
 // [Query.WithoutGlobalScope].
-func (q *Query[T]) incrementOrDecrement(ctx context.Context, column, op string, amount ...int) error {
+func (q *Query[T]) incrementOrDecrement(ctx context.Context, column, op string, amount ...int64) error {
 	if err := validateIdentifier(column); err != nil {
 		return fmt.Errorf("velocity/orm: increment/decrement: %w", err)
 	}
@@ -125,7 +125,7 @@ func (q *Query[T]) incrementOrDecrement(ctx context.Context, column, op string, 
 		return q.err
 	}
 
-	amt := 1
+	var amt int64 = 1
 	if len(amount) > 0 {
 		amt = amount[0]
 	}
