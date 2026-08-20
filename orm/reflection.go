@@ -131,6 +131,18 @@ type ModelMeta struct {
 	pkIndex        int
 	createdAtIndex int
 	updatedAtIndex int
+
+	// morphPaths maps each polymorphic morph column (the type and id
+	// halves of a Morph pair) to the reflect index path of the
+	// corresponding sub-field inside the Morph value. Morph fields are
+	// excluded from columns because they span two columns sourced from a
+	// single struct field; read paths resolve them through
+	// MorphPathByColumn instead. Morph values are conventionally declared
+	// at the outer model level, not promoted through embedded bases, so
+	// only top-level fields are scanned. Like byColumn/byField, the map
+	// is written only during buildMeta and read-only once published via
+	// the metaCache, so no lock is needed.
+	morphPaths map[string][]int
 }
 
 // metaCache caches ModelMeta per concrete reflect.Type. sync.Map is used
@@ -267,6 +279,18 @@ func (m *ModelMeta) UpdatedAtColumn() (ColumnDef, bool) {
 	return m.columns[m.updatedAtIndex], true
 }
 
+// MorphPathByColumn looks up the reflect index path for a polymorphic
+// morph column (the type or id half of a Morph pair). Returns the path
+// and true on hit, nil and false when the column is not a morph column
+// of this model. The slice is owned by the meta - treat as read-only.
+func (m *ModelMeta) MorphPathByColumn(column string) ([]int, bool) {
+	if m == nil {
+		return nil, false
+	}
+	path, ok := m.morphPaths[column]
+	return path, ok
+}
+
 // ----------------------------------------------------------------------------
 // Builder
 // ----------------------------------------------------------------------------
@@ -356,7 +380,42 @@ func buildMeta(t reflect.Type) *ModelMeta {
 		meta.appendColumn(col)
 	}
 
+	meta.buildMorphPaths(t)
+
 	return meta
+}
+
+// buildMorphPaths registers the (column -> index path) entries for every
+// polymorphic morph field declared directly on t. Each Morph field
+// contributes two columns (type, id) sourced from a single struct field,
+// which is why they are excluded from the regular column set: the read
+// path resolves them through MorphPathByColumn instead. Morph values are
+// conventionally declared at the outer model level, not promoted through
+// embedded bases, so only top-level fields are scanned.
+func (m *ModelMeta) buildMorphPaths(t reflect.Type) {
+	m.morphPaths = map[string][]int{}
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		tag := field.Tag.Get("orm")
+		pv := extractPolymorphicValue(tag)
+		if pv == "" {
+			continue
+		}
+		typeCol, idCol, perr := parsePolymorphicTag(pv)
+		if perr != nil {
+			continue
+		}
+		morphType := field.Type
+		if morphType.Kind() != reflect.Struct {
+			continue
+		}
+		if tnf, ok := morphType.FieldByName("TypeName"); ok {
+			m.morphPaths[typeCol] = append(append([]int{}, i), tnf.Index...)
+		}
+		if idf, ok := morphType.FieldByName("ID"); ok {
+			m.morphPaths[idCol] = append(append([]int{}, i), idf.Index...)
+		}
+	}
 }
 
 // appendColumn registers a ColumnDef and updates the lookup indices.

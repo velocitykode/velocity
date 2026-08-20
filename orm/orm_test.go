@@ -300,3 +300,51 @@ func BenchmarkModelSave(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkQueryGetScan exercises the multi-row read path (Query[T].Get)
+// on an in-memory SQLite database with 100 rows per iteration. The
+// column-to-field resolution now happens once per result set via the
+// scanPlan instead of once per row (per-row rows.Columns plus a morph
+// pre-pass over all struct fields); ReportAllocs surfaces the reduced
+// per-row reflection overhead.
+func BenchmarkQueryGetScan(b *testing.B) {
+	m := newTestManager(b)
+	defer m.Shutdown(context.Background())
+	prev := Default()
+	SetDefault(m)
+	defer SetDefault(prev)
+
+	if _, err := m.DB().Exec(`CREATE TABLE test_users (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL,
+		email TEXT,
+		age INTEGER,
+		is_active BOOLEAN,
+		created_at DATETIME,
+		updated_at DATETIME,
+		deleted_at DATETIME
+	)`); err != nil {
+		b.Fatalf("create table: %v", err)
+	}
+
+	ctx := context.Background()
+	for i := 0; i < 100; i++ {
+		u := &TestUser{Name: "User", Email: "user@example.com", Age: 25, IsActive: true}
+		if err := Save(ctx, m, u); err != nil {
+			b.Fatalf("save: %v", err)
+		}
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		results, err := Model[TestUser]{}.All(ctx)
+		if err != nil {
+			b.Fatalf("get: %v", err)
+		}
+		if len(results) != 100 {
+			b.Fatalf("results: got %d, want 100", len(results))
+		}
+	}
+}

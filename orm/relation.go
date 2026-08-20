@@ -547,11 +547,20 @@ func (q *Query[T]) loadRelation(ctx context.Context, models *[]T, meta *relation
 	}
 	defer rows.Close()
 
-	// 3. Scan results and group by the query column value
+	// 3. Scan results and group by the query column value. The scan plan
+	// is resolved once for the whole result set (lazily, so an empty
+	// result set never touches rows.Columns).
 	groups := make(map[any][]reflect.Value)
+	var plan *scanPlan
 	for rows.Next() {
+		if plan == nil {
+			var perr error
+			if plan, perr = newScanPlan(rows, meta.relatedType); perr != nil {
+				return fmt.Errorf("orm: failed to scan relation %q: %w", meta.fieldName, perr)
+			}
+		}
 		ptr := reflect.New(meta.relatedType)
-		if err := scanIntoStruct(rows, ptr.Interface()); err != nil {
+		if err := plan.scanRow(rows, ptr.Elem()); err != nil {
 			return fmt.Errorf("orm: failed to scan relation %q: %w", meta.fieldName, err)
 		}
 		elem := ptr.Elem()
